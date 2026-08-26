@@ -561,10 +561,35 @@ Two rules fall out, and both are in the protocol rather than in a policy:
 - **A flushed request may still be answered.** The client must tolerate the
   reply it asked to have cancelled, arriving before the `Rflush`.
 
-What this needs from Vectra that does not exist yet: a way to name and wake a
-blocked server thread. That is a scheduler feature, and it is the reason this
-question was open. The *design* is no longer open -- when the scheduler lands,
-the shape it has to support is the one above.
+**Built, in `kernel/mnt`.** The thing this was waiting for was never really the
+protocol: it was a transport that can leave a request pending, which needs
+threads to leave it pending *on*. `vectra9.In_Process` runs the handler on the
+caller's own stack, so a client behind it has nothing outstanding to flush and
+no way to send the flush if it did.
+
+`kernel/mnt` is that transport -- a pool of in-flight requests indexed by tag, a
+work queue, and worker threads -- plus both halves of the flush. Three details
+are worth knowing before reading it:
+
+- **The tag is the pool slot.** A `Tflush` names a request by tag, so the server
+  has to find one by tag, so the pool *is* the tag space. A tag that is not an
+  index into it names no request, which is a case the protocol requires an
+  answer for rather than an error.
+- **Each request's flush is preallocated above it.** A client whose request is
+  stuck has to be able to send `Tflush`; if that flush competed for an ordinary
+  slot, a full pool of stuck requests would leave nobody able to unstick
+  anything.
+- **`Rflush` is written by whoever finishes the original.** Not by the worker
+  that received the `Tflush`, which would have to park to honour the ordering
+  and would be a worker not serving anything. The `Tflush` records itself as
+  the original's partner and returns; the ordering rule is then structural
+  rather than a wait.
+
+What is *not* built is `kernel/vfs` using it. A reply that borrows the server's
+storage -- section 4's rule -- was safe because the session lock spanned the
+whole exchange, and with several requests in flight it is not. That is a
+property of the transport rather than of the protocol, and settling it is the
+next step rather than this one.
 
 ### 7.4 Union create goes to the first member flagged Create, and stops there
 

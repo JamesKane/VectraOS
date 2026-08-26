@@ -24,7 +24,12 @@ What is deliberately absent:
 
   - a current directory. `resolve` takes absolute paths and `#name` specs only,
     because a relative path needs a process to be relative to.
-  - Tflush. Section 7.3 pins the shape; serving it needs a thread to wake.
+  - Tflush, which exists but not here. `kernel/mnt` implements it over a
+    transport that can have several requests in flight; this package still
+    speaks `vectra9.In_Process`, where a request is never outstanding and there
+    is nothing to flush. Moving is not a matter of swapping the transport: the
+    borrow rule below depends on the session lock spanning the whole exchange,
+    and a connection with more than one worker breaks that.
 */
 package vfs
 

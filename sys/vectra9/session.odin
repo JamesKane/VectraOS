@@ -25,16 +25,30 @@ cannot answer has still answered.
 `server` is the handler's own state, passed back to it rather than captured,
 because Odin closures would need an allocator and this runs in a kernel that
 would rather not.
+
+`tag` names the request being answered. It looks redundant -- a synchronous
+transport has exactly one request outstanding and the handler is standing in
+it -- and it stops being redundant the moment a transport lets a client have
+two. A server that implements `Tflush` has to be able to say which of its
+in-flight requests a given `oldtag` refers to, and a handler that cannot name
+its own request cannot take part in that. See `kernel/mnt`.
 */
-Handler :: #type proc "contextless" (server: rawptr, s: ^Session, request: ^Msg, reply: ^Msg)
+Handler :: #type proc "contextless" (server: rawptr, s: ^Session, tag: Tag, request: ^Msg, reply: ^Msg)
 
 /*
 How a request reaches a handler.
 
-`call` is synchronous: it returns once `reply` is filled in. An asynchronous
-transport -- one that lets a client have several requests outstanding, which is
-what tags are for -- will need a second entry point, and it will need the
-scheduler to exist first.
+`call` is synchronous *from the caller's side*: it returns once `reply` is
+filled in. That is not the same as the transport being synchronous underneath,
+and the distinction is the whole of `Tflush`. `kernel/mnt` implements this
+signature over a queue and a pool of server threads, so several clients really
+do have requests outstanding at once and a caller that gives up has a tag it
+must get back before it can reuse it.
+
+`tag` is the transport's to interpret. A transport that can only ever have one
+request in flight may ignore it; one that cannot must be able to find a request
+by it, which is why the pool in `kernel/mnt` is indexed by tag and why the tag
+it uses is its own rather than the session's. See `alloc_tag`.
 */
 Transport :: struct {
 	data: rawptr,
@@ -63,6 +77,13 @@ alloc_tag hands out the next request tag.
 NOTAG is skipped because it is reserved for Tversion. Wrapping is not an error:
 a tag only has to be unique among *outstanding* requests, and with a synchronous
 transport there is never more than one.
+
+A transport that tracks its outstanding requests takes its tags from whatever
+structure does the tracking, not from here -- `kernel/mnt` uses the index of
+the pool slot, because a tag that is not an index into the pool cannot be
+looked up when a `Tflush` names it. This counter is then unused, which is the
+honest state of affairs rather than a layering violation: the tag space belongs
+to whoever has to make tags unique among the requests actually in flight.
 */
 alloc_tag :: proc "contextless" (s: ^Session) -> Tag {
 	s.next_tag += 1
@@ -165,15 +186,11 @@ in_process_call :: proc "contextless" (
 	request: ^Msg,
 	reply: ^Msg,
 ) -> Error {
-	// The tag is meaningless here -- it exists to identify an outstanding
-	// request, and a synchronous in-process call has exactly one.
-	_ = tag
-
 	p := cast(^In_Process)data
 	if p.handler == nil {
 		return .Transport_Failed
 	}
-	p.handler(p.server, s, request, reply)
+	p.handler(p.server, s, tag, request, reply)
 	return .None
 }
 
@@ -229,7 +246,7 @@ encoded_loopback_call :: proc "contextless" (
 	}
 
 	answer: Msg
-	p.handler(p.server, s, &decoded, &answer)
+	p.handler(p.server, s, sent_tag, &decoded, &answer)
 
 	// The reply carries the request's tag back. A transport that lost this
 	// would work perfectly against a synchronous client and fail the moment

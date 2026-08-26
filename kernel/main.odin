@@ -172,6 +172,7 @@ kmain :: proc "sysv" () {
 			verify_preemption()
 			verify_sleep_lock()
 			verify_sleep_queue()
+			verify_flush()
 			verify_vfs_threads()
 		}
 	}

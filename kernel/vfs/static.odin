@@ -300,10 +300,12 @@ static_mutates :: proc "contextless" (k: vectra9.Kind) -> bool {
 static_handler :: proc "contextless" (
 	server: rawptr,
 	s: ^vectra9.Session,
+	tag: vectra9.Tag,
 	request: ^vectra9.Msg,
 	reply: ^vectra9.Msg,
 ) #no_bounds_check {
 	_ = s
+	_ = tag
 	t := cast(^Static_Tree)server
 	if t == nil {
 		reply^ = vectra9.error_reply(vectra9.EIO)

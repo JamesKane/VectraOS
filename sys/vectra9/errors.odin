@@ -21,6 +21,7 @@ Error :: enum {
 	String_Too_Long, // A string longer than the 16-bit length prefix can hold
 	Too_Many_Walk_Elements, // More than MAX_WALK_ELEMENTS names or qids
 	Transport_Failed,
+	Interrupted, // The caller gave up and the request was flushed
 }
 
 // describe renders an Error for a log. There is no `fmt` down here, and an enum
@@ -35,6 +36,7 @@ describe :: proc "contextless" (err: Error) -> string {
 	case .String_Too_Long:        return "string exceeds the 16-bit length prefix"
 	case .Too_Many_Walk_Elements: return "walk has more than 16 elements"
 	case .Transport_Failed:       return "transport failed"
+	case .Interrupted:            return "request flushed before it was answered"
 	}
 	return "unknown codec error"
 }

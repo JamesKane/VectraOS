@@ -199,7 +199,14 @@ Deliberately not a constant: a transport that dropped the request and invented
 a reply would pass a test whose expected answer did not depend on the request.
 */
 @(private = "file")
-echo_handler :: proc "contextless" (server: rawptr, s: ^Session, request: ^Msg, reply: ^Msg) {
+echo_handler :: proc "contextless" (
+	server: rawptr,
+	s: ^Session,
+	tag: Tag,
+	request: ^Msg,
+	reply: ^Msg,
+) {
+	_ = tag
 	_ = server
 	_ = s
 
