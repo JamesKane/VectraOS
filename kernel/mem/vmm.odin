@@ -368,6 +368,39 @@ map_at :: proc "contextless" (
 }
 
 /*
+map_mmio brings a device's register page into the direct map.
+
+Mapped at its natural HHDM address rather than somewhere arbitrary, so
+`phys_to_virt` keeps telling the truth about it and a driver holding a physical
+address from a table can find its registers without a second lookup.
+
+`.No_Cache` is not optional and neither is the flush. A cached mapping of a
+device turns a status register into a value read once and remembered, and a
+stale negative TLB entry from before this call turns the first access into a
+fault -- both of which present as hardware that does not respond.
+
+Always 4 KiB leaves: MMIO ranges are page-granular, rarely large, and a 2 MiB
+leaf here would map whatever the firmware put next to the device.
+*/
+map_mmio :: proc "contextless" (phys: uintptr, size: u64) -> (rawptr, Error) {
+	base := align_down(u64(phys), u64(arch.PAGE_SIZE))
+	offset := u64(phys) - base
+	pages := page_count(offset + size)
+
+	virt := uintptr(phys_to_virt(uintptr(base)))
+	flags := arch.Page_Flags{.Write, .No_Cache, .No_Execute}
+
+	for i in 0 ..< pages {
+		step := uintptr(i) * uintptr(arch.PAGE_SIZE)
+		if err := map_at(&kernel_space, virt + step, uintptr(base) + step, flags, 1); err != .None {
+			return nil, err
+		}
+		arch.flush_page(virt + step)
+	}
+	return rawptr(virt + uintptr(offset)), .None
+}
+
+/*
 unmap_page clears one leaf and shoots down its translation.
 
 The tables it walked through are left in place. Freeing an emptied table means

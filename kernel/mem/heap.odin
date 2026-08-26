@@ -28,6 +28,8 @@ package mem
 import "base:intrinsics"
 import "base:runtime"
 
+import "kernel:sync"
+
 // Classes are powers of two from 16 bytes to half a page. Below 16 the header
 // dominates; above 2 KiB a page-granular allocation wastes less than a size
 // class rounded up to the next power of two would.
@@ -68,6 +70,23 @@ Slab_Class :: struct {
 @(private = "file") classes: [CLASS_COUNT]Slab_Class
 @(private = "file") large_frames: int
 @(private = "file") large_blocks: int
+
+/*
+The heap lock.
+
+Nothing here was ever re-entrant and now everything is: a timer interrupt can
+land between a free-list pop and the store that consumes it, and the thread it
+switches to allocates. The window is a handful of instructions and the failure
+is two callers holding the same object, which surfaces arbitrarily far from
+here.
+
+Held across the whole of `alloc`, `free` and `resize` rather than around the
+individual list operations, because the invariant spans them: a class's
+`free_count` and its `free_list` have to agree, and in the middle they do not.
+`resize` calls `alloc`, so the lock is taken twice on that path -- which is why
+`sync.Spinlock` nests.
+*/
+@(private = "file") heap_lock: sync.Spinlock
 @(private = "file") heap_ready: bool
 
 Heap_Stats :: struct {
@@ -182,6 +201,9 @@ choice because page tables and slab objects want it and a buffer about to be
 overwritten does not.
 */
 alloc :: proc "contextless" (size: int, align: int = MIN_ALIGN, zeroed := true) -> (rawptr, bool) {
+	guard := sync.acquire(&heap_lock)
+	defer sync.release(&heap_lock, guard)
+
 	if !heap_ready || size <= 0 {
 		return nil, false
 	}
@@ -243,6 +265,9 @@ bug into heap corruption diagnosed somewhere else entirely. Here it is simply
 ignored, and the leak is the cheaper outcome.
 */
 free :: proc "contextless" (ptr: rawptr) -> bool {
+	guard := sync.acquire(&heap_lock)
+	defer sync.release(&heap_lock, guard)
+
 	if ptr == nil {
 		return false
 	}
@@ -296,6 +321,9 @@ resize :: proc "contextless" (
 	align: int = MIN_ALIGN,
 	zeroed := true,
 ) -> (rawptr, bool) {
+	guard := sync.acquire(&heap_lock)
+	defer sync.release(&heap_lock, guard)
+
 	if ptr == nil {
 		return alloc(size, align, zeroed)
 	}

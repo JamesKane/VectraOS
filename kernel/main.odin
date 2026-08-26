@@ -24,6 +24,7 @@ import "kernel:drivers/console"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mem"
+import "kernel:sched"
 import "kernel:vfs"
 import "vsys:libodin"
 import "vsys:vectra9"
@@ -159,8 +160,15 @@ kmain :: proc "sysv" () {
 	init_namespace()
 	verify_namespace()
 
-	log_line(&klog, .Ok, "boot complete -- halting (no scheduler yet)")
-	arch.halt_forever()
+	if init_scheduler() {
+		verify_scheduler()
+		if init_timer() {
+			verify_preemption()
+		}
+	}
+
+	log_line(&klog, .Ok, "boot complete -- idling")
+	sched.exit()
 }
 
 /*
@@ -817,4 +825,159 @@ live_objects :: proc "contextless" (s: mem.Heap_Stats) -> int {
 		live += s.class_total[i] - s.class_free[i]
 	}
 	return live
+}
+
+/*
+init_scheduler adopts the boot context as a thread and gives the core an idle
+one.
+
+From here on `kmain` is thread 0 rather than the only thing running, and every
+line after this can be preempted -- which is why the heap grew a lock and why
+this comes after everything that has to happen exactly once.
+*/
+init_scheduler :: proc() -> bool {
+	if !sched.init() {
+		log_line(&klog, .Fault, "scheduler: no memory for the boot thread")
+		return false
+	}
+
+	s := sched.stats()
+	sink := begin(&klog)
+	libodin.put_str(&sink, "sched cpu0 ")
+	libodin.put_str(&sink, class_name(s.class))
+	libodin.put_str(&sink, ", capacity ")
+	libodin.put_uint(&sink, u64(s.capacity))
+	libodin.put_str(&sink, "/1024, slice ")
+	libodin.put_uint(&sink, u64(s.slice))
+	libodin.put_str(&sink, " ticks, ")
+	libodin.put_uint(&sink, u64(sched.PRIORITY_LEVELS))
+	libodin.put_str(&sink, " priority levels")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+// class_name renders a core's class for the boot line. Every amd64 core is
+// `.Performance`; the other two exist so that an arm64 part can report what it
+// really has without the scheduler learning a new vocabulary first.
+class_name :: proc "contextless" (class: arch.Cpu_Class) -> string {
+	switch class {
+	case .Efficiency:  return "efficiency"
+	case .Performance: return "performance"
+	case .Prime:       return "prime"
+	}
+	return "unknown"
+}
+
+/*
+verify_scheduler runs the cooperative half of the self-test.
+
+Before the timer, deliberately: a cooperative scheduler is deterministic, so a
+failure here is reproducible. See `kernel/sched/verify.odin`.
+*/
+verify_scheduler :: proc() {
+	result := sched.verify()
+	report_sched(result, "sched", proc(sink: ^libodin.Sink, r: sched.Verify_Result) {
+		libodin.put_str(sink, " scheduler checks passed -- ")
+		libodin.put_uint(sink, r.switches)
+		libodin.put_str(sink, " switches, round-robin and priority verified")
+	})
+}
+
+/*
+init_timer maps the local APIC, measures it against the PIT and starts the tick.
+
+This is where interrupts come on for the first time in Vectra's life. Everything
+before it ran with IF clear from the moment the bootloader handed over.
+*/
+init_timer :: proc() -> bool {
+	if !arch.timer_available() {
+		log_line(&klog, .Warn, "no local APIC; running without preemption")
+		return false
+	}
+
+	phys := arch.timer_physical_base()
+	virt, err := mem.map_mmio(phys, arch.LAPIC_MMIO_SIZE)
+	if err != .None {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "lapic: cannot map registers at ")
+		libodin.put_hex(&sink, u64(phys), 16)
+		libodin.put_str(&sink, " -- ")
+		libodin.put_str(&sink, mem.describe(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
+
+	arch.timer_attach(virt)
+	if !sched.start_timer(TICK_HZ) {
+		log_line(&klog, .Fault, "lapic: timer would not calibrate; running without preemption")
+		return false
+	}
+
+	t := sched.timer_stats()
+	sink := begin(&klog)
+	libodin.put_str(&sink, "lapic timer ")
+	libodin.put_uint(&sink, t.hz)
+	libodin.put_str(&sink, " Hz -- bus clock ")
+	libodin.put_uint(&sink, t.frequency / 1_000_000)
+	libodin.put_str(&sink, ".")
+	libodin.put_uint(&sink, (t.frequency / 100_000) % 10)
+	libodin.put_str(&sink, " MHz measured against the PIT, ")
+	libodin.put_uint(&sink, u64(t.count))
+	libodin.put_str(&sink, " counts per tick")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+TICK_HZ :: 1000
+
+/*
+verify_preemption is the half that needs the timer.
+
+Three threads that never yield, and the boot thread as a fourth. On a kernel
+that did not preempt, the first one dispatched would still be running.
+*/
+verify_preemption :: proc() {
+	result: sched.Verify_Result
+	sched.verify_preemption(&result)
+	report_sched(result, "sched preemption", proc(sink: ^libodin.Sink, r: sched.Verify_Result) {
+		libodin.put_str(sink, " checks passed -- ")
+		libodin.put_uint(sink, u64(r.preempted))
+		libodin.put_str(sink, " threads preempted, none starved (")
+		libodin.put_uint(sink, r.min_progress)
+		libodin.put_str(sink, "-")
+		libodin.put_uint(sink, r.max_progress)
+		libodin.put_str(sink, " rounds), decayed to ")
+		libodin.put_uint(sink, u64(r.decayed_to))
+		libodin.put_str(sink, ", ")
+		libodin.put_uint(sink, u64(r.fpu_checked))
+		libodin.put_str(sink, " fpu accumulators intact")
+	})
+}
+
+// report_sched prints one self-test result. The success wording differs
+// between the two halves and the failure wording does not, which is the whole
+// reason this takes a procedure rather than a format string there is no
+// formatter for.
+report_sched :: proc(
+	r: sched.Verify_Result,
+	label: string,
+	success: proc(sink: ^libodin.Sink, r: sched.Verify_Result),
+) {
+	ok := r.failures == 0 && r.checks > 0
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, label)
+	libodin.put_byte(&sink, ' ')
+	libodin.put_uint(&sink, u64(r.checks))
+	if ok {
+		success(&sink, r)
+		emit(&klog, .Ok, &sink)
+		return
+	}
+
+	libodin.put_str(&sink, " checks, ")
+	libodin.put_uint(&sink, u64(r.failures))
+	libodin.put_str(&sink, " FAILED -- first: ")
+	libodin.put_str(&sink, r.first_failure)
+	emit(&klog, .Fault, &sink)
 }

@@ -73,6 +73,44 @@ Trap_Frame :: struct {
 	ss:     u64,
 }
 
+#assert(size_of(Trap_Frame) == 176)
+
+/*
+Where to resume, which is not always where we came from.
+
+The two halves of a thread's saved CPU state: the general-purpose and `iret`
+registers in `frame`, the x87/SSE image in `fpu`. Both live on that thread's own
+kernel stack, carved by the entry tail below -- so switching threads is
+switching which `Resume` the tail is handed back, and the state travels with the
+stack rather than with any global.
+
+Nothing here is per-CPU, which is deliberate: the day there is a second CPU,
+this struct is already what each of them independently passes and receives.
+*/
+Resume :: struct {
+	frame: ^Trap_Frame,
+	fpu:   rawptr, // 512-byte FXSAVE image, 16-byte aligned
+}
+
+// The 512 bytes and 16-byte alignment FXSAVE requires. `FPU_AREA_RESERVE`
+// includes room to align a pointer that arrived anywhere.
+FPU_AREA_SIZE :: 512
+FPU_AREA_ALIGN :: 16
+FPU_AREA_RESERVE :: FPU_AREA_SIZE + FPU_AREA_ALIGN
+
+/*
+The three vectors Vectra drives itself.
+
+The timer is the LAPIC's, placed just above the architectural exceptions. Yield
+is a software interrupt, so a voluntary switch and a preemption arrive by the
+same path and there is one context-switch mechanism rather than two. Spurious is
+the LAPIC's own, and the architecture pins it to a vector whose low four bits
+are all set.
+*/
+VECTOR_TIMER :: 0x20
+VECTOR_YIELD :: 0x81
+VECTOR_SPURIOUS :: 0xFF
+
 /*
 A neutral description of what went wrong.
 
@@ -267,6 +305,37 @@ read_idt_limit :: proc "contextless" () -> u16 {
 // -- Dispatch ----------------------------------------------------------------
 
 /*
+What a vector does, when something claims one.
+
+Takes the state it was interrupted in and returns the state to resume -- the
+same one, for a handler that just services a device, or a different thread's,
+for the scheduler. Returning the decision rather than performing it is what
+keeps the switch in one place: the tail below is the only code that reloads
+`rsp`, and it does so for preemption, for a voluntary yield and for an ordinary
+interrupt return without knowing which it is.
+
+`contextless` and allocation-free, like everything on this path.
+*/
+Interrupt_Handler :: #type proc "contextless" (r: Resume) -> Resume
+
+@(private = "file")
+vectors: [VECTOR_COUNT]Interrupt_Handler
+
+/*
+set_interrupt_handler claims one vector.
+
+Separate from `set_trap_handler`, which is the single fallback for the
+architectural exceptions: a fault is a failure to be reported, an interrupt is a
+device to be serviced, and a table that mixed them would let a missing timer
+handler look like a working one.
+*/
+set_interrupt_handler :: proc "contextless" (vector: int, h: Interrupt_Handler) #no_bounds_check {
+	if vector >= 0 && vector < VECTOR_COUNT {
+		vectors[vector] = h
+	}
+}
+
+/*
 trap_dispatch is where every stub lands.
 
 Called from the assembly tail below with the frame it just built, under an
@@ -278,7 +347,22 @@ allocates, nothing here logs, and nothing here can afford to fault. The handler
 it calls is what does the talking.
 */
 @(export, link_name = "vectra_trap_dispatch")
-trap_dispatch :: proc "sysv" (frame: ^Trap_Frame) {
+trap_dispatch :: proc "sysv" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no_bounds_check {
+	// Resume where we came from unless something says otherwise. Written first
+	// so that every path below -- including the ones that do not return -- has
+	// left a valid answer behind it.
+	out^ = Resume {
+		frame = frame,
+		fpu   = fpu,
+	}
+
+	if frame.vector < VECTOR_COUNT {
+		if h := vectors[frame.vector]; h != nil {
+			out^ = h(out^)
+			return
+		}
+	}
+
 	name, kind := vector_info(frame.vector)
 
 	trap := Trap {
@@ -301,6 +385,34 @@ trap_dispatch :: proc "sysv" (frame: ^Trap_Frame) {
 		return
 	}
 	halt_forever()
+}
+
+/*
+fpu_init writes the FXSAVE image a thread starts life with.
+
+Not zeroes. FXRSTOR faults on reserved bits set in MXCSR, and a zeroed image
+would also start the thread with every SSE exception *unmasked* and the x87
+control word saying 24-bit precision -- so a new thread would take a #XF on the
+first denormal instead of behaving like every other thread on the machine.
+
+These two words are what the CPU itself puts there after `finit` and a reset:
+0x037F is 64-bit precision with all x87 exceptions masked, 0x1F80 is all SSE
+exceptions masked and round-to-nearest.
+*/
+fpu_init :: proc "contextless" (area: rawptr) {
+	bytes := ([^]u8)(area)
+	for i in 0 ..< FPU_AREA_SIZE {
+		bytes[i] = 0
+	}
+	(^u16)(area)^ = 0x037F // FCW
+	(^u32)(rawptr(uintptr(area) + 24))^ = 0x1F80 // MXCSR
+}
+
+// yield_trap raises the software interrupt the scheduler listens on. A
+// voluntary switch takes the same path a preemption does, which is the whole
+// reason it is an `int` and not a call.
+yield_trap :: proc "contextless" () {
+	asm(){"int $$0x81", "~{memory}"}()
 }
 
 // -- Reporting ---------------------------------------------------------------
@@ -454,11 +566,28 @@ corrupts it. Nothing ever calls this procedure -- it is a container for the
 symbols the blob defines, and the `retq` the compiler puts after it is
 unreachable.
 
-The tail saves the general-purpose registers only. No FXSAVE, so a handler that
-*returns* into code with live SSE state would corrupt it; panics never return,
-and the only path that does return today is a breakpoint the kernel raised on
-itself. The day something resumes arbitrary code -- a debugger, a page fault
-that fixes up and retries -- this is the first thing that has to grow.
+The tail saves the general-purpose registers *and* the x87/SSE state, and it is
+the only code in Vectra that reloads `rsp` from something other than a `pop`.
+Those two facts are what make preemption possible, and they are worth spelling
+out because the sequence looks arbitrary and is not:
+
+  1. Fifteen pushes build the `Trap_Frame`. `rsp` now points at it, and that
+     pointer is the first argument.
+  2. 528 bytes are reserved below it and the pointer aligned down to 16.
+     FXSAVE needs both, and it has to happen *here* rather than in Odin: the
+     compiler uses XMM registers for ordinary struct moves, so the first line
+     of the dispatcher would already have destroyed what we are trying to save.
+  3. Sixteen more bytes are an out-slot for the answer, kept in `%r12` across
+     the call because SysV makes the callee preserve it. Three arguments in and
+     two pointers out, rather than a struct return -- Odin's multi-value ABI is
+     not something to be guessing at from assembly.
+  4. FXRSTOR from whatever image came back, *then* `rsp` from whatever frame
+     came back. Both reads finish before the pops begin, so it is safe for a
+     thread's saved state to sit in stack it is about to run on.
+
+A handler that returns the state it was given produces an ordinary interrupt
+return. One that returns another thread's produces a context switch. The tail
+cannot tell the difference and does not need to.
 
 `cld` because the System V ABI requires the direction flag clear on entry to
 compiled code and an interrupt can land anywhere, including inside a `std`.
@@ -485,8 +614,22 @@ vectra_isr_common:
 	pushq %r13
 	pushq %r14
 	pushq %r15
+
 	movq %rsp, %rdi
+	subq $$528, %rsp
+	andq $$-16, %rsp
+	fxsave (%rsp)
+	movq %rsp, %rsi
+
+	subq $$16, %rsp
+	movq %rsp, %rdx
+	movq %rsp, %r12
 	call vectra_trap_dispatch
+
+	movq 8(%r12), %rax
+	fxrstor (%rax)
+	movq 0(%r12), %rsp
+
 	popq %r15
 	popq %r14
 	popq %r13

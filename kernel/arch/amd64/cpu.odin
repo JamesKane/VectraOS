@@ -208,3 +208,40 @@ read_efer :: proc "contextless" () -> u64 {
 write_efer :: proc "contextless" (value: u64) {
 	write_msr(MSR_EFER, value)
 }
+
+// -- Interrupt flag ----------------------------------------------------------
+
+RFLAGS_IF :: u64(1) << 9
+
+read_rflags :: proc "contextless" () -> u64 {
+	return asm() -> u64 {"pushfq; popq $0", "=r,~{memory}"}()
+}
+
+/*
+irq_save masks interrupts and reports whether they were on.
+
+The uniprocessor lock. With one CPU and no preemption other than the timer,
+"nothing else can run" and "interrupts are off" are the same statement, so a
+critical section is this and its matching restore. It stays correct on SMP as
+the *inner* half of a spinlock -- what changes is that a lock word is needed
+too, not that this stops being necessary.
+
+Returns the previous state rather than unconditionally enabling on the way out,
+because these nest: a handler that ran with interrupts already masked must not
+turn them on when it finishes.
+*/
+irq_save :: proc "contextless" () -> bool {
+	was_on := read_rflags() & RFLAGS_IF != 0
+	cli()
+	return was_on
+}
+
+irq_restore :: proc "contextless" (was_on: bool) {
+	if was_on {
+		sti()
+	}
+}
+
+interrupts_enabled :: proc "contextless" () -> bool {
+	return read_rflags() & RFLAGS_IF != 0
+}

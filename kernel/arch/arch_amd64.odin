@@ -94,6 +94,58 @@ KERNEL_CODE_SELECTOR :: amd64.KERNEL_CODE_SEL
 TASK_SELECTOR :: amd64.TSS_SEL
 
 /*
+-- Scheduling -----------------------------------------------------------------
+
+The state a thread is resumed from, the tick that preempts it, and what kind of
+core it is running on. `kernel/sched` is written against these names and has
+never seen a `Trap_Frame`.
+*/
+
+Resume :: amd64.Resume
+Interrupt_Handler :: amd64.Interrupt_Handler
+Cpu_Class :: amd64.Cpu_Class
+
+CAPACITY_FULL :: amd64.CAPACITY_FULL
+MIN_STACK_SIZE :: amd64.MIN_STACK_SIZE
+
+VECTOR_TIMER :: amd64.VECTOR_TIMER
+VECTOR_YIELD :: amd64.VECTOR_YIELD
+VECTOR_SPURIOUS :: amd64.VECTOR_SPURIOUS
+
+set_interrupt_handler :: amd64.set_interrupt_handler
+thread_resume_init :: amd64.thread_resume_init
+cpu_class :: amd64.cpu_class
+
+// yield_now raises the software interrupt the scheduler listens on, so that a
+// voluntary switch and a preemption arrive by the same path.
+yield_now :: amd64.yield_trap
+
+// The uniprocessor critical section. See `kernel/sync`, which is what callers
+// should be reaching for -- these are what it is made of.
+irq_save :: amd64.irq_save
+irq_restore :: amd64.irq_restore
+interrupts_enabled :: amd64.interrupts_enabled
+
+/*
+-- The local timer ------------------------------------------------------------
+
+Split across the arch boundary in three steps because the register page has to
+be mapped, and mapping is `kernel/mem`'s job, which is above this file: ask
+where it is, map it, hand back the virtual address.
+*/
+
+LAPIC_MMIO_SIZE :: amd64.LAPIC_MMIO_SIZE
+
+timer_available :: amd64.lapic_available
+timer_physical_base :: amd64.lapic_physical_base
+timer_attach :: amd64.lapic_attach
+timer_attached :: amd64.lapic_attached
+timer_calibrate :: amd64.lapic_calibrate
+timer_periodic :: amd64.lapic_timer_periodic
+timer_stop :: amd64.lapic_timer_stop
+timer_ack :: amd64.lapic_eoi
+
+/*
 init_traps replaces the bootloader's tables with our own.
 
 Order matters twice over. The GDT comes first because an IDT entry names a code

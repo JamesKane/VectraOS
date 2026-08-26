@@ -26,16 +26,17 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 4 is done: the namespace exists, and paths resolve across servers.**
+**Milestone 5 is done: it preempts.**
 
 Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
 behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
 screen. Milestone 3 added `sys/vectra9/` — the whole 9P2000.L message set, a
-codec, and the session/transport boundary. Milestone 4 adds `kernel/vfs/`, which
-is the first thing that *uses* any of it: `Chan`, a per-namespace mount table,
-union directories, `bind`, `rfork` semantics, and a walker that crosses from one
-server to another mid-path. About 10,900 lines of Odin; the linked image is
-~523 KB debug, ~199 KB release.
+codec, and the session/transport boundary. Milestone 4 added `kernel/vfs/`, the
+namespace that uses it. Milestone 5 adds `kernel/sched/` and the local APIC
+timer under it: kernel threads, priority run queues with Plan 9 decay and boost,
+and a context switch that a voluntary yield and a timer interrupt reach by the
+same path. About 13,200 lines of Odin; the linked image is ~571 KB debug,
+~222 KB release.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
@@ -45,12 +46,12 @@ server to another mid-path. About 10,900 lines of Odin; the linked image is
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x000000001bbbc000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x000000001bbb5000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
-[  --  ] memory map: 29 entries spanning 12.7 GiB
-[  ok  ] usable 467.0 MiB, reclaimable 39.5 MiB
+[  --  ] memory map: 28 entries spanning 12.7 GiB
+[  ok  ] usable 466.9 MiB, reclaimable 39.5 MiB
 [  --  ] largest usable region 395.2 MiB at 0x0000000001600000
-[  ok  ] pmm 119555 frames free of 123521 tracked, bitmap 15.0 KiB at 0x0000000000001000
+[  ok  ] pmm 119536 frames free of 123414 tracked, bitmap 15.0 KiB at 0x0000000000001000
 [  ok  ] vmm root 0x0000000000005000, mapped 515.4 MiB in 271 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
@@ -58,64 +59,125 @@ server to another mid-path. About 10,900 lines of Odin; the linked image is
 [  ok  ] vectra9 9P2000.L: 57 message kinds round-trip, both transports agree
 [  ok  ] namespace: #/ attached as /, 7 conventional directories
 [  ok  ] vfs 51 namespace checks passed -- union of 4 names over two servers, 1 mount point, heap balanced
-[  ok  ] boot complete -- halting (no scheduler yet)
+[  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
+[  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62537 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (17728177-18134560 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] boot complete -- idling
 ```
 
 **The design is written down in `docs/VECTRA9.md`, and it is the thing to read
-before touching any of this.** Three decisions in it shape everything
-downstream, all three taken deliberately:
+before touching the protocol or the namespace.** Three decisions in it shape
+everything downstream, all three taken deliberately:
 
 1. **The wire is 9P2000.L and nothing is added to it.** No new message, no extra
    field, no private version string. When a service needs an operation 9P does
-   not have, the answer is a *file* — a `ctl` that takes a line of text. This is
-   a real constraint with real costs, and it is what stops the protocol from
-   becoming a design surface every subsystem negotiates over.
-2. **Servers speak decoded messages; only the transport knows about bytes.** An
-   in-kernel `Tread` is a struct passed by pointer with no copy of the payload.
-   The same handler behind a pipe gets an identical `Tread` because the
-   transport decoded it first. Neither the caller nor the handler can tell which
-   one it has.
+   not have, the answer is a *file* — a `ctl` that takes a line of text.
+2. **Servers speak decoded messages; only the transport knows about bytes.**
+   Neither the caller nor the handler can tell which transport it has.
 3. **The namespace is the full Plan 9 model** — `bind`/`mount` with
    before/after/replace, union directories, per-process mount tables copied or
-   shared on fork. Section 5 of that document, and now `kernel/vfs/`.
+   shared on fork.
 
-**The root is an ordinary server.** `#/` is an instance of `static.odin`, a
-read-only server over a table of nodes, and the walker has no special case for
-it. That is Plan 9's `devroot` and it buys two things: one code path instead of
-one plus a root, and a `/` that is rebindable like any other name. The same
-server implementation is what the self-test instantiates twice to build a union
-out of two real trees.
+### The switch
 
-**The two self-tests are the interesting part of the boot line.** The Vectra9
-one encodes, decodes and re-encodes every message kind and compares the byte
-strings, which catches a field written in the wrong order, read at the wrong
-width, or forgotten by the decoder; every field in every sample is non-zero and
-distinct, which is what makes that oracle sound. The namespace one runs 51
-checks against two real servers over real 9P traffic — a union searched in mount
-order, a directory read that concatenates members without filtering duplicates,
-`..` out of a mounted root onto a server that has never heard of the tree it
-just left, a `Copy` fork that diverges and a `Clean` one that can name nothing
-until `#/` rebuilds it.
+There is one context-switch mechanism and one place that performs it. The
+assembly tail in `kernel/arch/amd64/idt.odin` is the only code in Vectra that
+reloads `rsp` from something other than a `pop`, and it does that for a
+preemption, a voluntary yield and an ordinary interrupt return without knowing
+which it has:
 
-Both have been negative-controlled, and the controls are worth keeping: making
-the decoder drop `Tlopen.flags` gives `1 FAILED -- first Tlopen`; making `bind`
-resolve its target with crossing gives `6 FAILED -- first: /dev is a union of
-two members`; dropping the `mounted_over` climb gives `.. out of a mounted root
-crosses to the mount point's server`; letting `Clean` inherit the parent's root
-gives `a Clean namespace is empty`.
+```
+    thread A ---- int $0x81 -----+
+                                 |
+    timer -------- vector 0x20 --+--> trap tail --> reschedule --> thread B
+                                 |     (fxsave)      (policy)       (fxrstor)
+    fault --------- vector n ----+                                  (rsp swap)
+```
 
-**The namespace self-test is bracketed by heap statistics** and fails if the
-count of live objects is not exactly where it started. This is not decoration:
-it caught a leaked chan on its first run, and a refcount bug in this layer is a
-fid the server never gets back rather than anything that crashes.
+A handler is handed the state it interrupted and returns the state to resume. If
+those are the same, nothing happened. If they are different, that was a context
+switch. The saved state — `arch.Resume`, a `Trap_Frame` pointer and a 512-byte
+FXSAVE image — lives on the switching thread's own stack, so nothing about it is
+per-CPU and none of it is a global.
 
-**What still does not exist.** No `/srv`, so nothing outside the kernel can be
-mounted yet. No `Tflush` service — section 7.3 pins the shape, but it needs a
-thread to wake. No current directory, so `resolve` takes absolute paths and
-`#name` specs only. No locking anywhere in `kernel/vfs`; one CPU and no
-preemption is the only reason that is safe. No LAPIC, no timer, no scheduler;
-nothing has ever called `sti`. No userland, no compositor. `kmain` halts on
-purpose.
+**Priority is dynamic, following Plan 9.** Sixteen levels; highest non-empty
+wins and rotates within itself. A thread that burns a whole slice without
+blocking drops a level, floored at 1. A thread that blocks and is woken is
+lifted to its base plus one, capped below the realtime range. That is the entire
+anti-starvation mechanism, which is why there is not a second one, and it is
+visible in the boot line: three compute-bound threads start at 8 and are at 5 by
+the time the test ends.
+
+**The core's *class* is a first-class input, on a machine that has one class.**
+`arch.cpu_class` reports a class and a capacity, and a time slice is
+`QUANTUM_TICKS * 1024 / capacity` — equal work per round rather than equal time,
+so a thread on a half-speed core gets twice the ticks. On amd64 that is always
+`.Performance` at 1024 and the arithmetic is a no-op. It is there now because
+retrofitting capacity-awareness into a scheduler is a rewrite and adding a
+number to a struct is not, and because arm64 will report three classes.
+
+### The self-tests, and what they cost to make honest
+
+Two halves. The cooperative half runs **before** the timer is armed, on purpose:
+a cooperative scheduler is deterministic, so a failure there is reproducible,
+and adding an asynchronous interrupt source to a scheduler not yet shown to
+switch correctly makes every subsequent bug two bugs. The preemptive half then
+runs three threads that never yield, with the boot thread as a fourth.
+
+Six negative controls, all of which now fail the run they should:
+
+| Mutation | First failure |
+|---|---|
+| `reschedule` never switches | `every cooperative worker finished` |
+| enqueue at the head, not the tail | `every cooperative worker finished` |
+| lowest priority picked first | `both priority workers finished` |
+| no decay on a full slice | `burning full slices decayed the workers below their base` |
+| no boost on wake | `waking boosts it above its base` |
+| no FXSAVE/FXRSTOR in the trap tail | `preemption preserved every worker's floating-point registers` |
+
+**Two of those took a second attempt, and both are worth knowing about.**
+
+The FPU check was written first as four floating-point accumulators in an
+ordinary Odin loop. It passed with the FXSAVE removed. The disassembly said why:
+an unoptimised build spills every temporary to the stack after each instruction,
+so the values were sitting on the thread's own stack, which is preserved by
+construction, and nothing was being tested. It is now `fpu_hold` — a single asm
+block that fills xmm0..xmm3 and spins *inside itself* until told to stop, so
+those registers are live across every preemption the worker takes.
+
+The seventh control — removing the EOI from the tick handler — did not fail. It
+**hung**, with the last thing printed being the timer coming up successfully.
+`verify_preemption` was waiting on the tick count with no bound, so a timer that
+stopped stopped the boot. It now checks liveness instead: every 20 million times
+round the spin, the tick count has to have moved. A self-test that hangs is
+worse than one that fails — it says nothing, in the place hardest to attach a
+debugger to.
+
+### What preemption cost elsewhere
+
+**The heap has a lock.** `kernel/sync` is that lock: on one core with no SMP,
+"nothing else can run" and "interrupts are off" are the same statement, so
+`Spinlock` is a name for the interrupt flag with the nesting handled. There is
+no lock *word* yet and that is deliberate — a second core needs one, and every
+site that will need it has already been found and wrapped. `alloc`, `free` and
+`resize` take it; `resize` calls `alloc`, which is why it nests.
+
+**`kernel/vfs` does not have one, and now needs one.** Chan reference counts and
+the mount table are not safe against two threads in the same namespace. Nothing
+does that yet — the vfs self-test is single-threaded and runs before the
+scheduler — but it is the first thing that breaks when something does. Named
+here rather than fixed, because locking nine files is not what "start a
+scheduler" asked for.
+
+**What still does not exist.** No userland and no address-space switching — a
+thread grows an `^Address_Space` and `reschedule` grows one comparison when
+there is one. No SMP: `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 is
+ever brought up, and there is no IPI, no AP trampoline and no lock word. No
+`/srv`. No `Tflush` service, though the scheduler it was waiting for now exists.
+No sleep or timed wait — `block` and `ready` are the only blocking primitives.
+No `swapgs`, no per-CPU state behind GS. `kmain` ends by calling `sched.exit`,
+so the machine idles rather than halting.
 
 ## 3. Build and run
 
@@ -165,6 +227,8 @@ ways whose error messages do not point back here.
 | `proc "naked"`, not `@(naked)` | Odin has no `naked` attribute — it is a *calling convention*. `@(naked)` fails with "Unknown attribute element name", and the suggested `-ignore-unknown-attributes` would silence the error while still emitting a prologue, which corrupts the interrupt frame. |
 | `$$` in an inline-asm template | Odin substitutes `$0`, `$1` … for operands, so a literal immediate needs `$$0x10`. Operands passed under the `i` constraint supply their own `$` — `movw $2, %ax` with `u64(0x10)` assembles as `movw $0x10, %ax`. |
 | The error-code vector list is written twice | Once as an assembler `.if` inside the stub blob and once as `vector_has_error_code` in Odin. They cannot share a definition — one is consumed at build time, the other at run time — and if they disagree every field in `Trap_Frame` reads as the one next door. They live in the same file for that reason. |
+| An unoptimised build spills every temporary | Debug builds keep nothing in a register across an instruction boundary. This is not a curiosity: a test written to verify that FXSAVE preserves XMM passed with the FXSAVE removed, because the values it was checking were on the stack the whole time. Anything that must observe *register* state has to pin it with inline asm and hold it there — see `fpu_hold` in `kernel/sched/verify.odin`. |
+| A missing EOI stops the timer silently | The local APIC delivers nothing further at or below that priority. There is no error, no fault, and no bit anywhere saying so — it looks exactly like a timer that was never armed. Any loop waiting on the tick count needs a liveness bound, or a one-line bug hangs the boot with the last line printed being the timer coming up successfully. |
 | `int $8` is not a double fault | A software interrupt to an error-code vector does **not** push an error code, so it lands on a stub that assumes one was pushed. Never test `#DF` that way; provoke a real one by faulting on a bad stack. |
 
 **No vendored runtime shim.** The neighbouring `odin-os` project hand-maintains
@@ -419,46 +483,39 @@ are the load-bearing bits:
 
 ## 7. Where to go next
 
-The protocol is designed, the message layer is built, and the namespace stands
-on top of it. Everything left needs a scheduler, which is now the single thing
-blocking the most work.
+The scheduler was the thing blocking everything else and it is no longer. What
+is left divides cleanly into "needs a lock" and "needs userland".
 
-**The scheduler is next, and it is what makes the rest real.** `Tflush` is
-unreachable without it, tags are decorative without it, `pmm_reclaim` is blocked
-on it, and `/srv` — a server outside the kernel posting a channel — needs a
-thread on each side of the transport. The three things flagged in Milestone 2
-still stand and are still cheaper to build in than to retrofit:
+**Lock `kernel/vfs`.** The first real exposure the scheduler created. Chan
+reference counts (`chan_incref`/`chan_close`) and the mount table are not safe
+against two threads sharing a namespace, and preemption is what makes that
+reachable. `kernel/sync` is the lock; the work is deciding the granularity — one
+lock per namespace is probably right, since that is the object two threads
+actually share.
 
-1. **`FXSAVE`/`FXRSTOR` in the trap tail.** A scheduler preempting on a timer is
-   exactly the "resumes arbitrary code" case this breaks on, and it breaks
-   silently — as wrong floating-point results, not as a fault.
-2. **A lock type in `kernel/mem`.** The first interrupt handler that allocates
-   races the code it interrupted. Every mutation in `kernel/vfs/mount.odin` is
-   marked with where the same lock goes.
-3. **`swapgs` and per-CPU state behind GS.**
+**Then, in roughly this order:**
 
-**What `kernel/vfs` is missing, in the order it will be wanted:**
+1. **A sleep queue and timed waits.** `block` and `ready` are the only blocking
+   primitives, so nothing can wait for a duration or for a device. A tick-keyed
+   list on `Cpu`, drained by `on_tick`, is most of it.
+2. **`Tflush`.** Section 7.3 of `VECTRA9.md` pins the shape and the scheduler
+   it was waiting for now exists: a tag-indexed pool of in-flight requests,
+   `Rflush` after the original's fate is decided, never an error reply.
+3. **A first real device server.** `devfs` with `/dev/cons` over the console
+   driver, which makes the whole path from a name to a byte on screen exist end
+   to end. `static.odin` is the wrong shape only because it is read-only.
+4. **`/srv`**, which needs a thread on each side of a transport and therefore
+   needed the scheduler.
+5. **Userland.** A thread grows an `^Address_Space`, `reschedule` grows one
+   comparison, and the GDT already has the selectors laid out for
+   SYSCALL/SYSRET. `swapgs` and per-CPU state behind GS belong to this step and
+   are cheaper to build with it than after it.
 
-1. **A current directory**, so `resolve` takes relative paths. It is a chan on
-   a process, and it needs a process; the walker grows one more starting point
-   rather than a second implementation.
-2. **Create.** `union_create_target` picks the member and section 7.4 fixes the
-   rule — first `Create`-flagged member, and *no* fall-through on failure — but
-   nothing calls it yet, because the only server is read-only.
-3. **`/srv`**, which is how a userland server becomes mountable without a
-   rendezvous mechanism of its own. `mount_device` is the kernel-side half of
-   the same operation and shows the shape.
-4. **`Tflush` service.** Section 7.3 pins it: a tag-indexed pool of in-flight
-   requests, `Rflush` after the original's fate is decided, never an error
-   reply, and a client that tolerates the answer it asked to cancel.
-5. **Batched `Twalk`.** Every path element is currently one message; 9P allows
-   sixteen per walk, across elements that stay within one server. `resolve` is
-   where that goes, and it has to discover the run length as it walks.
-
-**A first real device.** `devfs` with `/dev/cons` bound over the console driver
-would make the whole path from a name to a byte on screen exist end to end, and
-`static.odin` is the wrong shape for it only because it is read-only —
-everything else about a device server is already there.
+**SMP, when it is wanted.** The shapes are already right: `Cpu` is per-core,
+`Resume` is per-thread and lives on that thread's stack, and every mount-table
+and heap mutation is inside a `sync.Spinlock`. What is missing is a lock word in
+that struct, an AP trampoline, IPIs, and a placement policy for `enqueue` — which
+is where `eligible` and the class/capacity fields stop being inert.
 
 **Smaller things worth doing when convenient:**
 
@@ -466,9 +523,13 @@ everything else about a device server is already there.
   say is already there.
 - Make `check_base_revision()` a hard stop rather than a warning.
 - A free list for fids. `alloc_fid` is monotonic and therefore finite: four
-  billion opens per session, never reused. The comment says so where it will be
-  read.
-- Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging and trap interfaces.
+  billion opens per session, never reused.
+- `reap` only runs from `spawn` and from the self-test, so a dead thread's stack
+  comes back at the next spawn rather than when it exits. Fine now; an idle-time
+  reaper is the fix.
+- Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging, trap and scheduling
+  interfaces. `cpu_class` is the one that pays off immediately — a big.LITTLE
+  part reporting three classes makes the capacity arithmetic do real work.
 
 ## 8. File map
 
@@ -494,6 +555,9 @@ kernel/
     amd64/gdt.odin      GDT, TSS, and the interrupt stack table
     amd64/idt.odin      IDT, the 256 entry stubs, dispatch, fault reporting
     amd64/pic.odin      Legacy 8259s: remapped clear of the exceptions, masked
+    amd64/lapic.odin    Local APIC, the timer that preempts, EOI
+    amd64/pit.odin      Channel 2 as a ruler, to measure the LAPIC against
+    amd64/context.odin  A new thread's first saved state; what class a core is
   boot/limine/
     limine.odin         Protocol bindings (v12.6.1)
     markers.odin        Base revision tag + request delimiters
@@ -518,7 +582,12 @@ kernel/
     static.odin         A read-only server over a node table, and its fid table
     root.odin           `#/`, an instance of it, and the boot namespace
     verify.odin         The boot self-test: 51 checks, two real servers
-  sched/                Empty
+  sched/
+    thread.odin         Thread, Cpu, priorities, decay and boost, slice scaling
+    queue.odin          Per-level FIFOs and the pick
+    sched.odin          init, spawn, block/ready, reschedule, the tick
+    verify.odin         The boot self-test: cooperative half and preemptive half
+  sync/spin.odin        The one lock type: the interrupt flag, nesting handled
 sys/
   libodin/format.odin   Allocation-free formatting (Sink)
   vectra9/
