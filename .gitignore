@@ -1,0 +1,6 @@
+build/
+.vectra-build
+*.o
+*.elf
+*.ppm
+.DS_Store
