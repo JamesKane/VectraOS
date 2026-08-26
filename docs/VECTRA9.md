@@ -607,3 +607,73 @@ a bug that surfaces weeks later as a file nobody can find.
 
 If the first `Create` member being read-only is a problem, the fix is the mount
 order, which is the process's own to change.
+
+---
+
+## 8. What the implementation decided
+
+Sections 1-7 are the design. This section is `sys/vectra9/` as built -- the
+choices that are not derivable from the protocol, and what it would take to
+reverse them. The namespace's own are in `docs/NAMESPACE.md` and the
+asynchronous transport's are in `docs/TRANSPORT.md`.
+
+- **Nothing is added to the wire.** The version string is `9P2000.L` and a stock
+  Linux `v9fs` client must be able to mount a Vectra server. Extensions are
+  files, not messages. The payoff is not interoperability for its own sake — it
+  is that the protocol stops being a design surface, because the answer to "what
+  messages does my subsystem need" is always the same nine.
+- **Servers speak decoded messages.** The transport is the only thing that knows
+  bytes exist. Rejected alternatives, both defensible: marshal everywhere (one
+  code path, but two memcpys and a parse on every read of every file, in a
+  system where thread state *is* a file), and a typed device vtable with 9P only
+  for remote servers, which is what Plan 9 itself does (faster still, but two
+  interfaces to keep in step and a server that cannot move between kernel and
+  userland without a rewrite).
+- **A decoded message borrows its buffer.** Strings and slices inside a `Msg`
+  point into whatever it was decoded from. This is what makes an `Rread` of
+  4 KiB free to pass around, and it is the rule most likely to be broken. Odin
+  cannot express the lifetime, so it is stated at the top of `proto.odin` and
+  nowhere else.
+- **`Twalk` bounds names at sixteen, so they live inline.** That is the only
+  reason a `Msg` is a stack value; the `#assert` on `size_of(Msg)` is there to
+  stop it quietly becoming something else.
+- **Codec errors and protocol errors are separate types.** `Error` means the
+  bytes are wrong and no reply can be built. `Errno` means the request was
+  well-formed and the answer is no. Merging them would let a corrupt message be
+  answered as though it had been understood.
+- **The codec latches errors; `libodin.Sink` saturates.** Opposite choices, both
+  right: a truncated log line beats no log line, and a truncated 9P message is a
+  protocol violation the far end would blame on itself.
+- **`decode` bounds the cursor by the message's declared size, not the buffer.**
+  A body that reads past its own message is then a malformed message rather than
+  a short buffer, and every accessor gets that for free. A declared size larger
+  than the buffer is refused outright — that is the classic way a codec is
+  talked into reading past the end of a packet.
+- **Where Plan 9 has an answer, Vectra takes it.** Four questions that were open
+  in the first draft of the design are settled in `VECTRA9.md` section 7, each
+  against what Plan 9's source actually does rather than what is remembered
+  about it: a fid is a number and never a pointer (`Chan.fid` is a `ulong`, and
+  the table lookup is what makes a fid a capability); the root is an ordinary
+  in-kernel server, as `devroot` is a real device rather than a special case in
+  `namec`; `Tflush` needs a tag-indexed pool of in-flight requests and `Rflush`
+  is the barrier, which is what `mountio` and lib9p between them implement; and
+  a union `create` goes to the first `Create`-flagged member and **does not fall
+  through** if it fails, exactly as `createdir` refuses to.
+- **`Encoded_Loopback` is a test instrument that is also the skeleton of a real
+  transport.** It does every step a pipe transport would except crossing an
+  address space, so writing that transport is replacing two copies with reads
+  and writes — and meanwhile it is how the boot self-test proves a handler
+  cannot tell which transport it is behind.
+
+### Known warts
+
+- **Every Vectra9 server so far is a self-test or a synthetic tree.**
+  `static.odin` is real code with real clients, but it is read-only and serves
+  from a node table; nothing has yet had to block, fail partway, or answer out
+  of order. `kernel/verify_flush.odin`'s server is the first that deliberately
+  will not finish, and it found nothing — which is a statement about how little
+  has been asked of the layer, not about how solid it is.
+- **`Session.alloc_fid` is a monotonic counter.** It runs out after four billion
+  opens without ever reusing one. The right fix is a free list fed by `Tclunk`,
+  not a wider counter.
+
