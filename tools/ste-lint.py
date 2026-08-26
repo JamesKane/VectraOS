@@ -107,25 +107,46 @@ CODEISH = re.compile(
 )
 
 
+# Inside a `...` span, a full stop is part of an identifier rather than the end
+# of a sentence. Hide those characters behind private-use codepoints for the
+# duration of the checks, and put them back before anything is printed, so a
+# finding quotes the source verbatim.
+HIDDEN = {".": "\ue000", ";": "\ue001", "!": "\ue002", "?": "\ue003"}
+SHOWN = {v: k for k, v in HIDDEN.items()}
+
+
 def strip_inline_code(text: str) -> str:
-    """Replace `...` spans with a neutral token so their dots and semicolons
-    do not read as punctuation. The token is a word, so it still counts
-    toward sentence length."""
-    return re.sub(r"`[^`]*`", "CODE", text)
+    def hide(m):
+        s = m.group(0)
+        for ch, sub in HIDDEN.items():
+            s = s.replace(ch, sub)
+        return s
+    return re.sub(r"`[^`]*`", hide, text)
+
+
+def unhide(text: str) -> str:
+    for sub, ch in SHOWN.items():
+        text = text.replace(sub, ch)
+    return text
 
 
 def odin_prose(path):
-    """Yield (lineno, text) for every prose line in an Odin file."""
+    """Yield (lineno, text) for every prose line in an Odin file.
+
+    Leading whitespace inside a block comment is kept, because this tree uses
+    it for aligned display tables and `is_table_row` needs to see it. Tabs
+    become four spaces so an indent inside a tab-indented doc comment measures
+    the same as one at the top of a file."""
     out = []
     in_block = False
     with open(path, encoding="utf-8") as f:
         for n, raw in enumerate(f, 1):
-            line = raw.rstrip("\n")
+            line = raw.rstrip().replace("\t", "    ")
             stripped = line.strip()
             if not in_block:
                 if stripped.startswith("/*"):
                     in_block = True
-                    body = stripped[2:]
+                    body = line.split("/*", 1)[1]
                     if "*/" in body:
                         in_block = False
                         body = body.split("*/")[0]
@@ -133,13 +154,13 @@ def odin_prose(path):
                         out.append((n, body))
                     continue
                 if stripped.startswith("//"):
-                    out.append((n, stripped[2:]))
+                    out.append((n, line.split("//", 1)[1]))
                 continue
             # inside a block comment
-            if "*/" in stripped:
+            if "*/" in line:
                 in_block = False
-                stripped = stripped.split("*/")[0]
-            out.append((n, stripped))
+                line = line.split("*/")[0]
+            out.append((n, line))
     return [(n, t) for n, t in out if t.strip()]
 
 
@@ -442,7 +463,7 @@ def main():
                     d = fn(sent, ctx)
                     if d:
                         report(path, start, name, d,
-                               sent if args.full else sent[:70])
+                               unhide(sent if args.full else sent[:70]))
         if not (args.rule and "paragraph" not in args.rule):
             check_paragraphs(lines, report, path)
 

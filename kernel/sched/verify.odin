@@ -15,10 +15,10 @@ time, so a failure is reproducible and a passing run means something. Adding an
 asynchronous interrupt source to a scheduler that has not been shown to switch
 correctly makes every subsequent bug two bugs.
 
-Everything shared with a worker thread is read and written through
-`volatile_load`/`volatile_store`. These are real concurrent variables now: the
-compiler has no reason to believe a spin loop's condition can change, and
-without the volatile it is entitled to hoist the load and spin forever.
+Everything shared with a worker thread goes through `volatile_load` and
+`volatile_store`. These are real concurrent variables now. The compiler has no
+reason to believe a spin loop's condition can change. Without the volatile it is
+entitled to hoist the load, and spin forever.
 */
 package sched
 
@@ -34,8 +34,8 @@ COOP_ROUNDS :: 32
 MAX_WAIT_YIELDS :: 4096
 
 // Ticks to let the spinners run. At 1 kHz and a ten-tick slice, this is a few
-// dozen slices -- enough for every worker to be dispatched several times and
-// for decay to have visibly happened.
+// dozen slices. That is enough for every worker to reach a core several times,
+// and for decay to show.
 PREEMPT_TICKS :: 120
 
 Verify_Result :: struct {
@@ -76,20 +76,20 @@ One floating-point sum per worker, computed in registers deliberately held
 across preemption.
 
 This is the only test of the FXSAVE the trap tail does, and the first version of
-it did not work. Written as ordinary Odin -- four accumulators in a loop -- it
-passed with the FXSAVE removed, because an unoptimised build spills every
-temporary to the stack after each instruction. The values were sitting on the
-thread's own stack, which is preserved by construction, so nothing was being
-tested. The disassembly said so plainly and the check did not.
+it did not work. It was ordinary Odin, four accumulators in a loop, and it
+passed with the FXSAVE removed. An unoptimised build spills every temporary to
+the stack after each instruction, so the values sat on the thread's own stack. A
+thread's own stack survives by construction, so the check tested nothing. The
+disassembly said so plainly, and the check did not.
 
 So the registers are held from assembly instead. `fpu_hold` fills xmm0 through
-xmm3 with multiples of a per-worker value and then spins *inside the asm block*
-until told to stop, so those four registers are live across every preemption the
-worker takes -- which is the exact condition FXSAVE exists for. They are summed
-at the end and compared against ten times the value.
+xmm3 with multiples of a per-worker value. It then spins *inside the asm block*
+until something tells it to stop. Those four registers are therefore live across
+every preemption the worker takes, which is the exact condition FXSAVE exists
+for. The code sums them at the end, and compares against ten times the value.
 
-Different values per worker, so a failure is not merely wrong but recognisably
-somebody else's.
+Different values per worker, so a failure is not merely wrong. It is
+recognisably somebody else's.
 */
 @(private = "file")
 sums: [WORKER_COUNT]f64
@@ -100,10 +100,10 @@ fpu_hold loads four XMM registers, spins until `flag`, and sums them back.
     xmm0 = v    xmm1 = 2v    xmm2 = 3v    xmm3 = 4v    ->  out = 10v
 
 The spin is in here rather than in Odin around it, because that is the whole
-point: between the fill and the sum there must be no instruction the compiler
-chose, or it will use these registers for something of its own and destroy the
-thing being measured. `counter` is incremented in the same loop, so progress
-and the FPU check come out of the same spinning.
+point. Between the fill and the sum there must be no instruction the compiler
+chose. Given one, it will use these registers for something of its own, and
+destroy the thing under measurement. The same loop increments `counter`, so
+progress and the FPU check come out of the same spin.
 
 All four registers are declared clobbered, so nothing of the compiler's is
 living in them across the call either.
@@ -174,9 +174,8 @@ coop_worker :: proc "contextless" (arg: rawptr) {
 /*
 Never yields, and holds floating-point state while not yielding.
 
-The only thing that can take this off the core is the timer, which is the first
-half of what is being checked; `fpu_hold` is the second. Both come out of the
-same spin.
+Only the timer can take this off the core, which is the first half of what this
+checks. `fpu_hold` is the second. Both come out of the same spin.
 */
 @(private = "file")
 spin_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
@@ -259,9 +258,9 @@ verify :: proc() -> Verify_Result {
 verify_round_robin runs three threads that yield between every increment.
 
 The counters prove they all finished. The switch count proves they took turns
-rather than running one after another: three threads yielding
-`COOP_ROUNDS` times each cannot complete in fewer than that many switches, and
-a scheduler that ran each to completion would show far fewer.
+rather than ran one after another. Three threads that yield `COOP_ROUNDS` times
+each cannot finish in fewer than that many switches. A scheduler that ran each
+to completion would show far fewer.
 */
 @(private = "file")
 verify_round_robin :: proc(r: ^Verify_Result) {
@@ -296,9 +295,9 @@ verify_round_robin :: proc(r: ^Verify_Result) {
 verify_priority_order checks that a higher level wins, strictly.
 
 Both threads are spawned above the boot thread, and the higher of the two must
-record itself first. Spawned high-then-low would pass by accident on a
-scheduler that ignored priority entirely, so they are spawned low first: a FIFO
-with no priority in it would record 20 before 21.
+record itself first. High-then-low would pass by accident on a scheduler that
+ignored priority entirely, so they are spawned low first. A FIFO with no
+priority in it would record 20 before 21.
 */
 @(private = "file")
 verify_priority_order :: proc(r: ^Verify_Result) {
@@ -323,10 +322,10 @@ verify_priority_order :: proc(r: ^Verify_Result) {
 /*
 verify_block_and_boost is the anti-starvation mechanism, in miniature.
 
-A blocked thread must be off every queue -- if it were merely marked, the
-scheduler would keep dispatching it and `block` would be a busy wait. And a
-woken thread must come back *above* where it started, because that is the whole
-of what keeps an interactive thread responsive against a compute-bound one.
+A blocked thread must be off every queue. Merely marked, it would keep reaching
+a core, and `block` would be a busy wait. And a woken thread must come back
+*above* where it started. That is the whole of what keeps an interactive thread
+responsive against a compute-bound one.
 */
 @(private = "file")
 verify_block_and_boost :: proc(r: ^Verify_Result) {
@@ -355,16 +354,16 @@ verify_block_and_boost :: proc(r: ^Verify_Result) {
 /*
 verify_preemption is the other half, and needs the timer already running.
 
-Three threads that never yield. On a kernel without preemption the first one
-dispatched runs forever and this never returns -- which is why the boot thread
-waits on the tick count rather than on the workers, and why the wait is bounded
-by ticks rather than by iterations.
+Three threads that never yield. On a kernel with no preemption, the first one to
+reach a core runs forever and this never returns. That is why the boot thread
+waits on the tick count rather than on the workers, and why ticks bound the wait
+rather than iterations.
 
-Two things are being asserted and they are different. That each worker was
-preempted proves the timer interrupts and switches. That each worker made
-progress proves the round-robin still turns under preemption -- a scheduler that
-preempted correctly and then always re-dispatched the same thread would pass
-the first and fail the second.
+This asserts two different things. A worker that something preempted proves the
+timer interrupts and switches. A worker that made progress proves the
+round-robin still turns under preemption. A scheduler that preempted correctly,
+and then always re-picked the same thread, would pass the first and fail the
+second.
 */
 verify_preemption :: proc(r: ^Verify_Result) {
 	for i in 0 ..< WORKER_COUNT {
@@ -381,28 +380,28 @@ verify_preemption :: proc(r: ^Verify_Result) {
 		}
 	}
 
-	// Waiting on the clock, not on the workers: nothing here can ask them to
-	// stop until the timer has had a chance to take them off the core.
+	// The wait is on the clock, not on the workers. Nothing here can ask them
+	// to stop until the timer gets a chance to take them off the core.
 	start := ticks()
 	if !check(r, start > 0 || timer_hz > 0, "the timer is running") {
 		return
 	}
 	/*
-	Deliberately not a yield: the boot thread is a fourth compute-bound thread
-	for the duration, so the round-robin is being asked to share the core four
-	ways rather than being handed it back voluntarily.
+	Deliberately not a yield. The boot thread is a fourth compute-bound thread
+	for the duration. This therefore asks the round-robin to share the core
+	four ways, rather than hands it back voluntarily.
 
 	Bounded by liveness rather than by iterations, because iterations are not a
-	unit anything here knows the length of. Every `STALL_SPINS` times round, the
-	tick count has to have moved -- a stretch of spinning that long is orders of
-	magnitude longer than a millisecond on any machine that can boot this, so a
-	live timer always has. A timer that has stopped is caught in one window
+	unit anything here knows the length of. Every `STALL_SPINS` times round,
+	the tick count must move. A spin that long is orders of magnitude longer
+	than a millisecond on any machine that can boot this. A live timer
+	therefore always moves it. This catches a stopped timer in one window
 	instead of never.
 
-	That bound is not hypothetical. Removing the EOI from the tick handler --
-	one line -- makes the local APIC deliver nothing further, and without this
-	the boot hung here with the last thing printed being the timer coming up
-	successfully. A self-test that hangs is worse than one that fails: it says
+	That bound is not hypothetical. Remove the EOI from the tick handler, one
+	line, and the local APIC delivers nothing further. Without this bound the
+	boot hung here, and the last line printed was the timer's own success. A
+	self-test that hangs is worse than one that fails. It says
 	nothing, and it says it in the place hardest to attach a debugger to.
 	*/
 	STALL_SPINS :: 20_000_000
@@ -426,9 +425,9 @@ verify_preemption :: proc(r: ^Verify_Result) {
 		spins = 0
 	}
 
-	// Set before the check below returns, so the workers can finish either way:
-	// once this is true they leave their spin on the next dispatch, and a
-	// `yield` is enough to give them one even with no timer at all.
+	// Set before the check below returns, so the workers can finish either
+	// way. Once this is true they leave their spin the next time they reach a
+	// core. A `yield` gives them one even with no timer at all.
 	intrinsics.volatile_store(&stop, true)
 	check(r, !stalled, "the timer went on ticking")
 	if !check(r, wait_until_dead(threads[:]), "every spinning worker stopped") {
@@ -468,10 +467,10 @@ verify_preemption :: proc(r: ^Verify_Result) {
 /*
 verify_fpu checks that preemption preserved each worker's XMM registers.
 
-Every worker filled xmm0..xmm3 with v, 2v, 3v and 4v and held them across every
+Every worker filled xmm0..xmm3 with v, 2v, 3v and 4v, and held them across every
 preemption it took, so the sum can only be 10v. A trap tail that did not save
-them would leave a worker resuming with whatever the previous thread had --
-or, more often, with whatever the scheduler itself last put in xmm0.
+them would leave a worker to resume with whatever the previous thread had. More
+often, that is whatever the scheduler itself last put in xmm0.
 
 Exact comparison. There is no rounding anywhere in this, so a tolerance would
 only serve to hide the thing being looked for.

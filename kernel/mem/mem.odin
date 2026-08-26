@@ -14,11 +14,11 @@ file that owns the Limine requests -- is what fills that in. Booting Vectra some
 other way means writing a different translation there, not touching anything
 here.
 
-The physical/virtual distinction is load-bearing throughout and is carried in
-the types: a `uintptr` in this package is always physical, and a `rawptr` or a
-typed pointer is always virtual. `phys_to_virt` is the only bridge, and it goes
-through the HHDM, which under Limine base revision 6 does not cover everything.
-`hhdm_mapped` is what says which regions it does.
+The physical and virtual distinction is load-bearing throughout, and the types
+carry it. A `uintptr` in this package is always physical. A `rawptr`, or a
+typed pointer, is always virtual. `phys_to_virt` is the only bridge, and it
+goes through the HHDM, which under Limine base revision 6 does not cover
+everything. `hhdm_mapped` is what says which regions it does.
 */
 package mem
 
@@ -29,9 +29,9 @@ PAGE_MASK :: PAGE_SIZE - 1
 
 // -- Alignment ---------------------------------------------------------------
 //
-// `align` is always a power of two here; a general version would need a divide,
-// and every alignment in a memory manager is a page, a cache line or a size
-// class.
+// `align` is always a power of two here. A general version would need a
+// divide, and every alignment in a memory manager is a page, a cache line or a
+// size class.
 
 align_down :: proc "contextless" (value: u64, align: u64) -> u64 {
 	return value &~ (align - 1)
@@ -55,20 +55,20 @@ page_count :: proc "contextless" (bytes: u64) -> u64 {
 /*
 The kinds of physical memory the kernel distinguishes.
 
-These are Limine's memory map types minus the ones nothing can be done with,
-and they are separated by *what may be done to them* rather than by where they
-came from:
+These are Limine's memory map types, minus the ones nothing can use. What
+separates them is *what a caller may do to them*, rather than where they came
+from:
 
   - Usable            free for the PMM to hand out
-  - Reclaimable       bootloader structures; readable, and free once we no
-                      longer need anything in them (see `pmm_reclaim`)
-  - Executable        the kernel image and its modules; never allocatable
+  - Reclaimable       bootloader structures, readable, and free once nothing
+                      needs anything in them (see `pmm_reclaim`)
+  - Executable        the kernel image and its modules, never allocatable
   - Framebuffer,
     ACPI_Reclaimable,
     ACPI_NVS,
     Reserved_Mapped   not allocatable, but HHDM-mapped and legal to read
-  - Unmapped          reserved or bad; not allocatable, not mapped, and
-                      dereferencing through the HHDM is undefined
+  - Unmapped          reserved or bad, not allocatable, not mapped, and
+                      undefined to dereference through the HHDM
 */
 Region_Kind :: enum u8 {
 	Usable,
@@ -84,10 +84,10 @@ Region_Kind :: enum u8 {
 /*
 hhdm_mapped reports whether the higher-half direct map covers this kind.
 
-Base revision 6 tightened the HHDM from "all of physical memory" to exactly this
-list. Getting it wrong is not a fault at map time -- it is a fault much later,
-in whatever code eventually dereferences the address, with nothing left to say
-where the bad assumption was made.
+Base revision 6 tightened the HHDM from "all of physical memory" to exactly
+this list. An error here is not a fault at map time. It is a fault much later,
+in whatever code eventually dereferences the address, with nothing left to name
+the bad assumption.
 */
 hhdm_mapped :: proc "contextless" (kind: Region_Kind) -> bool {
 	#partial switch kind {
@@ -98,7 +98,8 @@ hhdm_mapped :: proc "contextless" (kind: Region_Kind) -> bool {
 }
 
 // allocatable reports whether the PMM may hand pages of this kind out. Note
-// that Reclaimable is *not* allocatable until it has been explicitly reclaimed.
+// that Reclaimable is *not* allocatable until something explicitly reclaims
+// it.
 allocatable :: proc "contextless" (kind: Region_Kind) -> bool {
 	return kind == .Usable
 }
@@ -109,9 +110,9 @@ Region :: struct {
 	kind:   Region_Kind,
 }
 
-// A firmware memory map is a few dozen entries; 128 is slack enough that the
-// overflow path below has never been taken, and small enough to stay a static
-// array in .bss rather than the allocator's first customer.
+// A firmware memory map is a few dozen entries. 128 is slack enough that
+// nothing has ever taken the overflow path below. It is also small enough to
+// stay a static array in .bss, rather than the allocator's first customer.
 MAX_REGIONS :: 128
 
 Boot_Memory :: struct {
@@ -147,10 +148,10 @@ regions :: proc "contextless" (b: ^Boot_Memory) -> []Region {
 covers reports whether one HHDM-mapped region already contains a whole range.
 
 The caller is `kernel/main.odin`, checking whether the framebuffer needs adding
-by hand. Base revision 6 guarantees the framebuffer *is* direct-mapped; it does
-not guarantee the firmware described it as an entry in the map, and the
-difference between those two only shows up as a fault on the first character
-drawn after the address space switch.
+by hand. Base revision 6 guarantees the framebuffer *is* direct-mapped. It does
+not guarantee the firmware described it as an entry in the map. The difference
+between those two shows up only as a fault, on the first character drawn after
+the address space switch.
 
 Deliberately not a range-merging check: a range spanning two adjacent regions
 answers false and gets added again. For the one caller there is, a false
@@ -180,10 +181,10 @@ hhdm :: proc "contextless" () -> u64 {
 /*
 phys_to_virt maps a physical address into the direct map.
 
-Valid only for addresses inside a region whose kind `hhdm_mapped` accepts. There
-is no check here because this is on the path of every page table write and every
-slab carve; the discipline is that callers get their physical addresses from the
-PMM, which only ever hands out pages that are mapped.
+Valid only for addresses inside a region whose kind `hhdm_mapped` accepts.
+There is no check here, because this is on the path of every page table write
+and every slab carve. The discipline is that callers get their physical
+addresses from the PMM, and the PMM only ever hands out mapped pages.
 */
 phys_to_virt :: proc "contextless" (phys: uintptr) -> rawptr {
 	return rawptr(uintptr(u64(phys) + hhdm_offset))
@@ -233,11 +234,11 @@ describe :: proc "contextless" (err: Error) -> string {
 init brings up all three layers, in the only order that works.
 
 The PMM has to exist before the VMM, because page tables are made of pages. The
-VMM has to be live before the heap, because a slab is a page reached through the
-direct map and the direct map is not ours until we are on our own tables. And
-the heap has to come last because it is the only one of the three that is
-allowed to fail gracefully -- the other two failing means the kernel has nowhere
-to live.
+VMM has to be live before the heap. A slab is a page reached through the direct
+map, and the direct map is not ours until the kernel is on its own tables. And
+the heap has to come last, because it is the only one of the three that may
+fail gracefully. A failure in either of the other two means the kernel has
+nowhere to live.
 
 After this returns `.None`, `context.allocator` is real and ordinary Odin data
 structures work.

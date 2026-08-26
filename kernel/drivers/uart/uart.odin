@@ -1,9 +1,9 @@
 /*
 16550-compatible UART driver.
 
-This is the first thing Vectra brings up and the last thing that still works
-when the framebuffer console is wedged, so it stays free of dependencies on
-memory management, interrupts, and the scheduler. Transmit is polled.
+This is the first thing Vectra starts, and the last thing that still works when
+the framebuffer console is wedged. It therefore depends on no memory
+management, no interrupts, and no scheduler. Transmit is polled.
 */
 package uart
 
@@ -40,7 +40,8 @@ MCR_LOOPBACK :: u8(0x10)
 LSR_DATA_READY   :: u8(0x01)
 LSR_TX_HOLD_FREE :: u8(0x20)
 
-// The 16550 divides a fixed 115200 Hz clock; divisor 1 is therefore 115200 baud.
+// The 16550 divides a fixed 115200 Hz clock. Divisor 1 is therefore 115200
+// baud.
 BASE_CLOCK :: 115200
 
 Port :: struct {
@@ -52,9 +53,11 @@ Port :: struct {
 init configures `base` for 8N1 at `baud` and probes the chip via its own
 loopback mode.
 
-The probe matters under QEMU as much as on real hardware: if the port is not
-wired up, `present` stays false and every later write becomes a no-op instead
-of spinning forever waiting on a transmit-holding bit that will never set.
+The probe matters under QEMU as much as on real hardware. If nothing wired the
+port up, `present` stays false, and every later write becomes a no-op.
+
+Without it, a write spins forever on a transmit-holding bit that will never
+set.
 */
 init :: proc "contextless" (base: u16, baud: u32 = 115200) -> Port {
 	port := Port{base = base}
@@ -105,8 +108,8 @@ write_byte :: proc "contextless" (port: ^Port, b: u8) {
 /*
 write_string sends `text`, expanding LF to CRLF.
 
-Terminal emulators on the far end of a serial cable do not do that expansion
-for us, and a log that stair-steps down the screen is a log nobody reads.
+A terminal emulator at the far end of a serial cable does not do that
+expansion. A log that stair-steps down the screen is a log nobody reads.
 */
 write_string :: proc "contextless" (port: ^Port, text: string) {
 	for i in 0 ..< len(text) {

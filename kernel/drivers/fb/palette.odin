@@ -5,7 +5,7 @@ These are the only colours the kernel-side chrome is allowed to invent.
 `intuition` will expose the same table through /ws/screen/palette so that the
 boot splash, the panic screen, and the desktop are visibly the same machine.
 
-Surfaces are brushed dark magnesium over deep slate; accents are the three
+Surfaces are brushed dark magnesium over deep slate. Accents are the three
 phosphor colours a CRT of that era could actually make bloom.
 */
 package fb

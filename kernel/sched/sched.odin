@@ -1,12 +1,13 @@
 /*
 The scheduler.
 
-One entry point into the switch and one way out of it. A voluntary `yield` and a
-timer preemption both arrive as an interrupt, both land in `reschedule`, and
-both leave by returning a different `arch.Resume` to the trap tail -- which
-reloads `rsp` from it and `iretq`s into whatever thread that was. There is no
-second mechanism for cooperative switching and deliberately so: the two paths
-would drift, and the one that drifts is the one that runs rarely.
+One entry point into the switch, and one way out of it. A voluntary `yield` and
+a timer preemption both arrive as an interrupt, and both land in `reschedule`.
+Both leave by a return of a different `arch.Resume` to the trap tail. That tail
+reloads `rsp` from it, and `iretq`s into whatever thread that was.
+
+There is no second mechanism for a cooperative switch, and deliberately so. The
+two paths would drift, and the one that drifts is the one that runs rarely.
 
     thread A ---- int $0x81 -----+
                                  |
@@ -15,9 +16,9 @@ would drift, and the one that drifts is the one that runs rarely.
     fault --------- vector n ----+                                  (rsp swap)
 
 What runs here cannot allocate, cannot log and cannot fault. The run queues are
-intrusive -- the link is a field on `Thread` -- for exactly that reason: a
-scheduler that had to allocate to record that a thread is runnable could not
-run out of memory at the one moment it must not.
+intrusive, which means the link is a field on `Thread`, for exactly that reason.
+A scheduler that had to allocate to record that a thread is runnable could run
+out of memory at the one moment it must not.
 */
 package sched
 
@@ -38,7 +39,7 @@ The scheduler lock.
 
 Every mutation of a run queue happens either inside an interrupt handler, where
 interrupts are already off, or under this. On one core that is the same thing
-twice; on two it is a lock word away from still being true. See `kernel/sync`.
+twice. On two it is a lock word away from still being true. See `kernel/sync`.
 */
 @(private)
 lock: sync.Spinlock
@@ -54,13 +55,13 @@ current :: proc "contextless" () -> ^Thread {
 }
 
 /*
-ticks is the count of timer interrupts this core has taken.
+ticks is the count of timer interrupts this core took.
 
-Volatile because it is written by an interrupt handler and read by ordinary
-code, usually in a loop waiting for it to change. A plain load there is one the
-compiler is entitled to hoist out of the loop, and the loop then never ends --
-which is the single most confusing way for a scheduler to fail, because
-everything about it looks correct in the source.
+Volatile, because an interrupt handler writes it and ordinary code reads it,
+usually in a loop that waits for a change. The compiler is entitled to hoist a
+plain load out of that loop, and the loop then never ends. That is the single
+most confusing way for a scheduler to fail, because everything about it looks
+correct in the source.
 */
 ticks :: proc "contextless" () -> u64 {
 	return intrinsics.volatile_load(&cpu().ticks)
@@ -76,9 +77,9 @@ Limine's -- and is already running. It becomes thread 0 at normal priority and
 is scheduled like anything else from the next tick onward. Its stack is not ours
 to free, which is what `owns_stack` records.
 
-The idle thread is created here rather than lazily because the alternative is a
-`reschedule` that can fail, and the moment it would fail is the moment every
-other thread has exited.
+The idle thread is created here rather than lazily, because the alternative is a
+`reschedule` that can fail. The moment it would fail is the moment every other
+thread exited.
 */
 init :: proc() -> bool {
 	c := cpu()
@@ -154,10 +155,10 @@ idle_loop :: proc "contextless" (arg: rawptr) {
 /*
 spawn creates a runnable thread.
 
-Allocates two things -- the `Thread` and its stack -- and does so from the
-caller's context, never from the scheduler's. Reaping happens here too, which
-is why a dead thread's stack comes back at the next spawn rather than at the
-moment it exits: freeing a stack requires being off it.
+Allocates two things, the `Thread` and its stack, and does so from the caller's
+context, never from the scheduler's. The reap happens here too, which is why a
+dead thread's stack comes back at the next spawn rather than at the moment it
+exits. A free of a stack requires something else to be standing on.
 */
 spawn :: proc(
 	name: string,
@@ -232,9 +233,9 @@ spawn_at :: proc(
 /*
 thread_start is where every thread's first `iretq` lands.
 
-It exists so that an entry procedure is reached by an ordinary `call` -- with
-the stack alignment the ABI promises and a real return address behind it -- and
-so that returning from one is caught here instead of jumping to whatever the
+It exists for two reasons. An ordinary `call` reaches the entry procedure, with
+the stack alignment the ABI promises and a real return address behind it. And a
+return from that procedure lands here, rather than jumping to whatever the
 initial frame happened to leave in the return slot.
 */
 @(private = "file")
@@ -249,11 +250,12 @@ thread_start :: proc "sysv" (arg: rawptr) {
 /*
 exit ends the calling thread and does not return.
 
-The thread is marked dead and yields; `reschedule` moves it onto the reap list
-rather than back onto a queue, and the next `spawn` gives its stack back. The
-loop is not defensive padding -- it is what happens if this thread is somehow
-scheduled again, and halting inside it is better than falling off the end of a
-stack that is being reclaimed.
+The thread marks itself dead and yields. `reschedule` moves it onto the reap
+list rather than back onto a queue, and the next `spawn` gives its stack back.
+
+The loop is not defensive padding. It is what happens if something schedules
+this thread again. A halt inside it beats a fall off the end of a stack somebody
+is reclaiming.
 */
 exit :: proc "contextless" () -> ! {
 	arch.disable_interrupts()
@@ -266,11 +268,11 @@ exit :: proc "contextless" () -> ! {
 }
 
 /*
-reap gives back the stacks of threads that have exited.
+reap gives back the stacks of threads that exited.
 
-Called from thread context only. A dead thread is still standing on its stack
-at the moment it is descheduled -- the trap tail read its frame out of it --
-so the free has to wait until something else is running.
+Called from thread context only. A dead thread still stands on its stack at the
+moment it leaves the CPU, because the trap tail read its frame out of it. The
+free therefore has to wait until something else is running.
 */
 reap :: proc() {
 	c := cpu()
@@ -298,14 +300,14 @@ reap :: proc() {
 /*
 block takes the caller off every queue until someone calls `ready` on it.
 
-Interrupts stay masked from the state change through the yield, which is what
-closes the window: a tick landing between "I am blocked" and the switch would
-find a Running thread marked Blocked and leave it off the queue with nothing
-scheduled to put it back. Masking makes the two one step.
+Interrupts stay masked from the state change through the yield, and that is what
+closes the window. A tick that landed between `I am blocked` and the switch
+would find a Running thread marked Blocked. It would leave that thread off the
+queue, with nothing scheduled to put it back. The mask makes the two one step.
 
-There is no lost wake-up in the other direction. If `ready` runs on another
-thread before this one reaches the `int`, it sets the state back to Ready and
-enqueues it, and the yield then finds an ordinary runnable thread.
+There is no lost wake-up in the other direction. Say `ready` runs on another
+thread before this one reaches the `int`. It sets the state back to Ready and
+enqueues the thread, and the yield then finds an ordinary runnable thread.
 */
 block :: proc "contextless" () {
 	was_on := arch.irq_save()
@@ -319,9 +321,9 @@ block :: proc "contextless" () {
 /*
 ready makes a blocked thread runnable again, and boosts it for having blocked.
 
-Safe to call on a thread that is already ready or running -- waking something
-twice is a race every caller would otherwise have to avoid, and the second wake
-is a no-op rather than a second queue entry.
+Safe on a thread that is already ready or running. A double wake is a race every
+caller would otherwise have to avoid. The second wake is a no-op rather than a
+second queue entry.
 */
 ready :: proc "contextless" (t: ^Thread) {
 	wake(t, boosted = true)
@@ -331,17 +333,19 @@ ready :: proc "contextless" (t: ^Thread) {
 unpark makes a thread runnable *without* boosting it.
 
 The distinction is the one Plan 9's boost is really about. A thread woken from
-I/O waited on something outside itself and gets its priority back as the price
-of having been polite -- that is what makes an interactive thread beat a
-compute-bound one. A thread woken because a lock it wanted came free waited on
-nothing of the kind: it was running flat out and merely queued behind another
-thread doing the same. Boosting that one pays a thread for contending.
+I/O waited on something outside itself. It gets its priority back as the price
+of good manners, and that is what makes an interactive thread beat a
+compute-bound one.
+
+A thread woken because a lock it wanted came free waited on nothing of the kind.
+It ran flat out, and merely queued behind another thread that did the same. A
+boost there pays a thread for contention.
 
 It is not a fine distinction in practice. `kernel/verify_vfs.odin` puts five
-threads on one 9P session, where every message is a lock: with `ready` the
-worker whose rounds are longest was starved twenty-fold, because every thread's
-priority was pinned to the top by the contention itself and the scheduler had
-nothing left to tell them apart with.
+threads on one 9P session, where every message is a lock. With `ready`, the
+worker whose rounds are longest starved twenty-fold. The contention itself
+pinned every thread's priority to the top, and the scheduler had nothing left to
+tell them apart with.
 */
 unpark :: proc "contextless" (t: ^Thread) {
 	wake(t, boosted = false)
@@ -369,10 +373,9 @@ wake :: proc "contextless" (t: ^Thread, boosted: bool) {
 /*
 What `kernel:sync` is handed so its sleeping locks can park a thread.
 
-Adapters rather than the procedures themselves because `sync` cannot name a
-`^Thread`: it is imported *by* this package, so the dependency only runs one
-way, and a thread is a `rawptr` on the other side of it. See `kernel/sync/
-sleep.odin`.
+Adapters rather than the procedures themselves, because `sync` cannot name a
+`^Thread`. This package imports it, so the dependency only runs one way, and a
+thread is a `rawptr` on the other side of it. See `kernel/sync/sleep.odin`.
 */
 @(private = "file")
 current_waiter :: proc "contextless" () -> rawptr {
@@ -398,9 +401,9 @@ waiter_priority :: proc "contextless" (w: rawptr) -> int {
 	return int(t.prio)
 }
 
-// yield gives up the rest of the current slice without losing priority. A
-// thread that yields has not burned its slice, so it does not decay -- which
-// is what stops a polite thread from being punished for being polite.
+// yield gives up the rest of the current slice and keeps its priority. A thread
+// that yields did not burn its slice, so it does not decay. That is what stops
+// the scheduler from punishing a polite thread for good manners.
 yield :: proc "contextless" () {
 	arch.yield_now()
 }
@@ -416,22 +419,22 @@ on_yield :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 on_tick is the preemption path, and the only clock anything else has.
 
 The acknowledgement comes first and unconditionally. Everything after it can
-decide not to switch, but nothing after it may decide not to acknowledge: an
+decide not to switch. Nothing after it may decide not to acknowledge. An
 un-acknowledged local APIC delivers no further interrupt at that priority, and
 the symptom is a timer that stopped with nothing anywhere reporting an error.
 
-Deadlines are next, before the slice is charged and long before anyone decides
-who runs. `sync.tick` starts every thread whose deadline has arrived and says
-how many that was; a thread due at this tick is on a run queue by the time
-`reschedule` looks. The direction is the one that is allowed -- this package
-imports `kernel:sync`, so the clock is handed down rather than reached up for.
+Deadlines are next, before anything charges a slice, and long before anyone
+decides who runs. `sync.tick` starts every thread whose deadline arrived, and
+says how many that was. A thread due at this tick is on a run queue by the time
+`reschedule` looks. The direction is the one that is allowed. This package
+imports `kernel:sync`, so the clock comes down rather than up.
 
 A wake is a reason to re-decide, and it is not a reason to charge anybody. The
-running thread has not spent its slice, so `spent_slice` is false and it neither
-decays nor counts a preemption; it goes to the back of its own level and gets
+running thread did not spend its slice, so `spent_slice` is false. It neither
+decays nor counts a preemption. It goes to the back of its own level, and gets
 the core straight back unless the thread that just woke outranks it. Without
-that call a thread that asked for one tick would be handed the core somewhere
-in the next ten, which is not what it asked for.
+that call, a thread that asked for one tick would reach the core somewhere in
+the next ten. That is not what it asked for.
 */
 @(private = "file")
 on_tick :: proc "contextless" (r: arch.Resume) -> arch.Resume {
@@ -456,8 +459,8 @@ on_tick :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	return reschedule(r, spent_slice = true)
 }
 
-// on_spurious is the local APIC saying an interrupt it had begun to deliver
-// was withdrawn. It is not acknowledged -- the architecture says a spurious
+// on_spurious is the local APIC's report that it withdrew an interrupt it began
+// to deliver. Nothing acknowledges it. The architecture says a spurious
 // interrupt does not set the in-service bit, so an EOI here would retire
 // somebody else's.
 @(private = "file")
@@ -468,15 +471,15 @@ on_spurious :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 /*
 reschedule is the policy, and it is the only thing that changes `cpu.current`.
 
-Runs with interrupts off in every case -- the gates are interrupt gates and
-`block` masks by hand -- so it takes no lock and must not acquire one.
+Runs with interrupts off in every case, because the gates are interrupt gates
+and `block` masks by hand. It therefore takes no lock, and must not acquire one.
 
 The outgoing thread's fate depends on the state it was in, not on why we got
 here:
 
     Running, spent a slice   decays a level, goes to the back of the new level
     Running, did not         keeps its priority, goes to the back of its level
-    Blocked                  goes nowhere; `ready` is what brings it back
+    Blocked                  goes nowhere, and `ready` is what brings it back
     Dead                     goes on the reap list
 
 `spent_slice` is the whole of the charge, and it is a question about the
@@ -525,7 +528,7 @@ reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Res
 		next = c.idle
 	}
 	if next == nil {
-		// Before `init` has run there is nothing to switch to, and returning
+		// Before `init` runs there is nothing to switch to, and a return of
 		// what we were given is an ordinary interrupt return.
 		return r
 	}
@@ -533,10 +536,10 @@ reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Res
 	c.current = next
 	next.state = .Running
 	next.cpu = c
-	// A fresh slice only for a thread that has spent its last one. A thread
-	// that blocked halfway through keeps the other half, which is what makes
-	// decay a measure of CPU consumed rather than of how often it was
-	// interrupted -- see `Thread.ticks_left`.
+	// A fresh slice only for a thread that spent its last one. A thread that
+	// blocked halfway through keeps the other half. That is what makes decay
+	// a measure of CPU consumed, rather than of how often something
+	// interrupted it. See `Thread.ticks_left`.
 	if next.ticks_left <= 0 {
 		next.ticks_left = slice_ticks(c)
 	}
@@ -557,13 +560,13 @@ timer_count: u32
 /*
 start_timer arms the local timer and lets interrupts in for the first time.
 
-`hz` is the tick rate, not the slice: a slice is `QUANTUM_TICKS` of these. One
-kilohertz gives a ten-millisecond slice with a tick fine enough to be worth
+`hz` is the tick rate, not the slice. A slice is `QUANTUM_TICKS` of these. One
+kilohertz gives a ten-millisecond slice, with a tick fine enough to be worth
 having for anything else that will eventually want one.
 
-Returns false when the timer could not be calibrated. That is not fatal and the
-caller is expected to say so rather than halt -- a kernel with no preemption
-still runs, it just runs whatever thread does not yield.
+Returns false when the timer could not be calibrated. That is not fatal, and the
+caller must say so rather than halt. A kernel with no preemption still runs. It
+just runs whatever thread does not yield.
 */
 start_timer :: proc "contextless" (hz: u64 = 1000) -> bool {
 	if !arch.timer_attached() || hz == 0 {

@@ -2,10 +2,10 @@
 A queue of parked threads, and what this package needs from a scheduler.
 
 Everything in `kernel:sync` that can put a thread to sleep stands on this file.
-A `Mutex` parks the losers of a race for one lock; a `Rendez` parks threads
-waiting for a condition, with or without a deadline. Both want the same three
-things -- a list of waiters, a way to stop a thread, and a way to start it
-again -- and neither wants them enough to own them.
+A `Mutex` parks the losers of a race for one lock. A `Rendez` parks threads that
+wait for a condition, with or without a deadline. Both want the same three
+things: a list of waiters, a way to stop a thread, and a way to start it again.
+Neither wants them enough to own them.
 
 ## The scheduler is a dependency this package cannot import
 
@@ -15,65 +15,67 @@ instead, and `Waiter` is a `rawptr` because the identity of a thread is the
 scheduler's business, not this file's.
 
 The indirection is not only a layering trick. Before `sched.init` runs there is
-no thread to park, and `have_sched` says so honestly: a lock taken during boot
-is uncontended by construction, because there is exactly one thing running.
+no thread to park, and `have_sched` says so honestly. Nothing contends for a
+lock taken during boot, because there is exactly one thing running.
 
 ## Nodes live on the waiting thread's own stack
 
-A node is valid for exactly as long as it is reachable: a thread on one of
-these lists is parked inside the procedure that holds its node, and the node is
-unlinked before the thread is made runnable again. So a wait costs no
-allocation and cannot fail, which matters for machinery the allocator itself
-may one day want -- and it is why every path that wakes a thread unlinks first
-and wakes second, in that order, without exception. The woken thread unlinks
-itself as well, on the way out, which is redundant on purpose; `wait_on` in
-`rendez.odin` says what each half is actually for.
+A node is valid for exactly as long as it is reachable. A thread on one of these
+lists is parked inside the procedure that holds its node. Something unlinks that
+node before the thread becomes runnable again. A wait therefore costs no
+allocation and cannot fail, which matters for machinery the allocator itself may
+one day want.
 
-A thread waiting with a deadline is on *two* lists at once: the queue it is
-waiting on and the timer list in `rendez.odin`. Whichever fires first takes it
-off both. `unlink` is written to be safe on a node that is on neither.
+That is why every path that wakes a thread unlinks first and wakes second, in
+that order, without exception. The woken thread unlinks itself as well, as it
+leaves. That is redundant on purpose, and `wait_on` in `rendez.odin` says what
+each half is actually for.
+
+A thread that waits with a deadline is on *two* lists at once. Those are the
+queue it waits on, and the timer list in `rendez.odin`. Whichever fires first
+takes it off both. `unlink` is safe on a node that is on neither.
 
 ## Whoever the scheduler would have picked
 
-`take_best` serves the highest-priority waiter and uses arrival order only to
-break ties. Arrival order alone was the first version and it was wrong in a way
-worth keeping written down: a queue that serves in arrival order is a second
-scheduler, and a worse one, because it decides who runs next using the one
-piece of information the real scheduler is not allowed to use.
+`take_best` serves the highest-priority waiter, and uses arrival order only to
+break ties. Arrival order alone was the first version, and it was wrong in a way
+worth keeping written down. A queue that serves in arrival order is a second
+scheduler, and a worse one. It decides who runs next from the one piece of
+information the real scheduler is not allowed to use.
 
-`kernel/verify_vfs.odin` made that concrete. Five threads on a handful of 9P
-sessions, and the thread using the *least* CPU -- the one the scheduler had
-therefore raised to priority 7 while the others decayed to 1 -- was served last
-every time, and got between a fiftieth and a fifth of the turns it was entitled
-to. The scheduler's decision was correct and the lock was quietly overruling it
-several thousand times a second.
+`kernel/verify_vfs.odin` made that concrete. Five threads shared a handful of 9P
+sessions. The thread that used the *least* CPU was served last every time. The
+scheduler raised it to priority 7 while the others decayed to 1. It still got
+between a fiftieth and a fifth of the turns it was entitled to. The
+scheduler's decision was correct, and the lock quietly overruled it several
+thousand times a second.
 
-Starvation is what arrival order is usually defending against, and priority
-order does not reintroduce it here, because the defence is already somewhere
-better: a thread that loses every race is a thread burning no CPU, so it does
-not decay, while the threads beating it do. It rises past them and wins. That
-is the scheduler's own anti-starvation mechanism doing the work, which is
-exactly the argument for not having a second one in here.
+Arrival order usually defends against starvation. Priority order does not
+reintroduce starvation here, because the defence is already somewhere better. A
+thread that loses every race burns no CPU, so it does not decay, while the
+threads that beat it do. It rises past them and wins. That is the scheduler's
+own anti-starvation mechanism at work, which is exactly the argument against a
+second one in here.
 
 That mechanism only works if decay measures CPU rather than interruptions, and
-it did not until sleeping locks existed -- see `Thread.ticks_left`. The two
-belong together: a queue that hands off on priority is only as fair as the
-number it is handing off on.
+it did not until sleeping locks existed. See `Thread.ticks_left`. The two belong
+together. A queue that hands off on priority is only as fair as the number it
+hands off on.
 
 A linear scan rather than a heap keyed on priority, because the scan reads
-priorities *now*: a thread's priority moves while it waits, and a queue sorted
-on arrival would be handing out turns on the strength of what the scheduler
-thought several slices ago. It is a scan of the threads contending for one
-object, which is a number that stays small for the same reason contention does.
+priorities *now*. A thread's priority moves while it waits. A queue sorted on
+arrival would hand out turns on the strength of what the scheduler thought
+several slices ago. It is a scan of the threads that contend for one object, and
+that number stays small for the same reason contention does.
 
 ## Interrupts, and what stands in for a lock
 
-Every procedure here requires interrupts to be masked and none of them mask on
-their own behalf -- the callers do, because the caller's decision and the queue
-operation have to be one step. Masking is the exclusion, on one core. It is
-also the thing that has to change first on a second one: these lists then need
+Every procedure here requires interrupts to be masked, and none of them mask on
+their own behalf. The callers do, because the caller's decision and the queue
+operation have to be one step. The mask is the exclusion, on one core. It is
+also the thing that has to change first on a second core. These lists then need
 a real lock word, and `Rendez` grows the `^Spinlock` that Plan 9's `Rendez`
-always had.
+always carried.
 */
 package sync
 
@@ -87,31 +89,33 @@ Waiter :: rawptr
 What a sleeping wait needs from a scheduler, and nothing more.
 
 `block` takes the calling thread off every run queue until something starts it
-again. It is called with interrupts already masked by this package, which is
-what makes "record that I am waiting" and "stop running" a single step -- a
-wake-up that landed between them would find a running thread marked blocked and
-leave it that way.
+again. This package masks interrupts before it calls that. The mask is what
+makes `record that I am waiting` and `stop running` a single step. A wake-up
+that landed between them would find a running thread marked blocked, and leave
+it that way.
 
-`unpark` and `ready` are the same act with different consequences for priority,
-and they are two hooks rather than one flag because the difference is about
-*what was waited for* rather than about the wake:
+`unpark` and `ready` are the same act with different consequences for priority.
+They are two hooks rather than one flag, because the difference is about *what
+the thread waited for* rather than about the wake:
 
     unpark   a lock it queued for came free
     ready    the thing it was waiting for happened
 
 A thread woken from a lock did not wait for the world. It queued behind another
-thread doing exactly what it was doing, and a scheduler that rewards that has
-no way left to tell five contending threads apart. A thread woken from a
-rendezvous or a deadline did wait on something outside itself, and gets its
-priority back as the price of having been polite -- which is the whole of Plan
-9's boost, and the reason an interactive thread beats a compute-bound one.
+thread doing exactly what it was doing. A scheduler that rewards that has no way
+left to tell five contending threads apart.
+
+A thread woken from a rendezvous or a deadline did wait on something outside
+itself. It gets its priority back as the price of good manners. That is the
+whole of Plan 9's boost, and the reason an interactive thread beats a
+compute-bound one.
 
 The names are the scheduler's own, so that following one of these hooks is a
 grep rather than a puzzle.
 
 `priority` is how a queue hands off to whoever the scheduler would have picked.
-Higher is better and the scale is the scheduler's; nothing here interprets the
-number beyond comparing two of them.
+Higher is better, and the scale is the scheduler's. Nothing here interprets the
+number beyond a comparison of two of them.
 */
 Scheduler :: struct {
 	current:  proc "contextless" () -> Waiter,
@@ -140,7 +144,7 @@ Where a broken waiting rule goes.
 Every failure this package can detect is an invariant violation with no
 sensible recovery -- a lock released by nobody, a wait entered with interrupts
 masked, a rendezvous that nothing could ever end. Returning an error would hand
-the caller a decision it cannot make; carrying on would turn a rule into a
+the caller a decision it cannot make. To carry on would turn a rule into a
 suggestion. So it stops the machine and says which rule, which is the whole
 reason these are checks rather than comments.
 
@@ -167,10 +171,10 @@ fail :: proc "contextless" (reason: string) -> ! {
 /*
 One waiter, living on the waiting thread's own stack.
 
-`queue` is the authority on whether this node is linked, not the presence of a
-`next` -- a node at the end of a list has neither, and a node that has been
-taken off has both cleared. `deadline` and `timer` belong to `rendez.odin` and
-are inert for a wait that has no deadline.
+`queue` is the authority on whether this node is linked, and the presence of a
+`next` is not. A node at the end of a list has neither. An unlinked node has
+both cleared. `deadline` and `timer` belong to `rendez.odin`, and are inert for
+a wait that has no deadline.
 */
 @(private)
 Wait_Node :: struct {
@@ -183,7 +187,7 @@ Wait_Node :: struct {
 	timer:    ^Wait_Node, // Link within the timer list
 }
 
-// A list of parked threads, oldest first. Served by priority; see the file
+// A list of parked threads, oldest first. Served by priority. See the file
 // comment for why the order in the list is not the order it is served in.
 Wait_Queue :: struct {
 	head: ^Wait_Node,
@@ -211,9 +215,10 @@ push :: proc "contextless" (q: ^Wait_Queue, n: ^Wait_Node) {
 /*
 take_best removes and returns the waiter the scheduler would have picked.
 
-Strictly greater, so a tie leaves the older node in place: the list is in
-arrival order, so equal priorities are served oldest first and the queue is
-FIFO within a priority level, which is where FIFO is the right answer.
+Strictly greater, so a tie leaves the older node in place. The list is in
+arrival order, so equal priorities are served oldest first. The queue is
+therefore FIFO within a priority level, which is where FIFO is the right
+answer.
 */
 @(private)
 take_best :: proc "contextless" (q: ^Wait_Queue) -> ^Wait_Node {
@@ -267,9 +272,9 @@ take_first :: proc "contextless" (q: ^Wait_Queue) -> ^Wait_Node {
 	return n
 }
 
-// unlink takes a node off whatever queue it is on, if it is on one. Safe to
-// call on a node that has already been taken off, which is what makes a wake
-// and a deadline arriving together harmless rather than a corrupted list.
+// unlink removes a node from whatever queue it is on, if it is on one. It is
+// safe on an already-unlinked node, which is what makes a wake and a deadline
+// that arrive together harmless rather than a corrupted list.
 @(private)
 unlink :: proc "contextless" (n: ^Wait_Node) {
 	q := n.queue
@@ -311,8 +316,8 @@ priority_of :: proc "contextless" (n: ^Wait_Node) -> int {
 }
 
 // Counters, for the self-tests. `sleeps` is how many times a thread actually
-// had to park -- the number that says whether a concurrency test contended for
-// anything at all, or merely ran.
+// had to park. That is the number that says whether a concurrency test
+// contended for anything at all, or merely ran.
 @(private)
 sleeps: u64
 @(private)

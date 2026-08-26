@@ -8,7 +8,7 @@ which queue a thread lands in.
 
 Sixteen levels scanned downward rather than a bitmask and a bit-scan. At one
 tick a millisecond, sixteen iterations of a loop that reads one pointer is not
-where the time goes, and the loop says what it does. The bitmask is what this
+where the time goes. The loop also says what it does. The bitmask is what this
 becomes if the levels ever multiply.
 
 Every procedure here requires interrupts to be off. They are called from the
@@ -59,14 +59,14 @@ queue_pop :: proc "contextless" (q: ^Queue) -> ^Thread {
 /*
 enqueue puts a ready thread on a core's queue at its current priority.
 
-Onto the *tail*, always. A thread that has just been preempted goes behind
-everything else at its level, which is the round robin; a thread that has just
-been boosted goes behind everything at the level it was boosted to, which is
-usually nothing, so it runs next.
+Onto the *tail*, always. A freshly preempted thread goes behind everything else
+at its level, which is the round robin. A freshly boosted thread goes behind
+everything at the level the boost took it to, which is usually nothing, so it
+runs next.
 
-The idle thread is never enqueued -- it lives in `cpu.idle` and is reached only
-when every queue is empty. Enqueuing it would put it in a level where it could
-be picked ahead of a runnable thread.
+The idle thread never joins a queue. It lives in `cpu.idle`, and only an empty
+set of queues reaches it. On a queue it would sit in a level where `pick` could
+take it ahead of a runnable thread.
 */
 enqueue :: proc "contextless" (c: ^Cpu, t: ^Thread) #no_bounds_check {
 	if t == nil || t == c.idle {
@@ -84,7 +84,7 @@ enqueue :: proc "contextless" (c: ^Cpu, t: ^Thread) #no_bounds_check {
 dequeue_highest takes the next thread to run, or nil when there is none.
 
 Nil means the idle thread, and that decision is the caller's rather than this
-one's: `reschedule` has to know the difference to keep the idle thread's
+one's. `reschedule` has to know the difference, to keep the idle thread's
 bookkeeping out of the round-robin statistics.
 */
 dequeue_highest :: proc "contextless" (c: ^Cpu) -> ^Thread #no_bounds_check {
@@ -100,9 +100,9 @@ dequeue_highest :: proc "contextless" (c: ^Cpu) -> ^Thread #no_bounds_check {
 	return nil
 }
 
-// remove takes a specific thread off whatever queue it is on. Linear in the
-// length of its level, which is fine for the one caller: a thread being killed
-// while it is merely ready, rather than running.
+// remove unlinks a specific thread from whatever queue it is on. Linear in the
+// length of its level, which is fine for the one caller. That caller kills a
+// thread while it is merely ready, rather than running.
 remove :: proc "contextless" (c: ^Cpu, t: ^Thread) -> bool #no_bounds_check {
 	level := clamp_priority(t.prio)
 	q := &c.runq.level[level]
@@ -131,10 +131,10 @@ remove :: proc "contextless" (c: ^Cpu, t: ^Thread) -> bool #no_bounds_check {
 /*
 clamp_priority is the one place a priority becomes an array index.
 
-Nothing should ever hand it an out-of-range value, and if something does, the
-wrong thread running is a far better outcome than an index off the end of a
-core's queue array -- which would corrupt whatever the linker put next to it and
-surface as a fault somewhere unrelated.
+Nothing should ever hand it an out-of-range value. If something does, the wrong
+thread runs, and that is a far better outcome than an index off the end of a
+core's queue array. That index would corrupt whatever the linker put next to it,
+and surface as a fault somewhere unrelated.
 */
 @(private)
 clamp_priority :: proc "contextless" (p: Priority) -> int {

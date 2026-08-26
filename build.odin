@@ -14,14 +14,15 @@ Targets:
 
 Options:
     --arch=amd64|arm64|riscv64   Target architecture (default: amd64)
-    --release                    Optimise; otherwise a debug build
+    --release                    Optimise, otherwise a debug build
     --serial=stdio|file          Where QEMU's COM1 goes (default: stdio)
-    --gfx                        Open a QEMU window; default is headless
+    --gfx                        Open a QEMU window, otherwise headless
 
-Why an Odin program and not a shell script: the flag handling, the arch table,
-and the link line are all things that will grow per-architecture, and this way
-they grow in the same language and the same type system as the thing being
-built. `justfile` and `Makefile` are thin wrappers over this.
+An Odin program rather than a shell script, for one reason. The flag handling,
+the arch table and the link line will all grow per-architecture.
+
+This way they grow in the same language, and the same type system, as the thing
+they build. `justfile` and `Makefile` are thin wrappers over this.
 */
 #+feature dynamic-literals
 package main
@@ -45,8 +46,8 @@ Arch :: enum {
 Per-architecture knobs.
 
 `odin_target` and `ld_emulation` have to agree, and the linker script has to
-match both -- keeping the three in one row is the cheapest way to keep a port
-from silently linking an amd64 script into an arm64 image.
+match both. The three in one row is the cheapest way to stop a port from
+silently linking an amd64 script into an arm64 image.
 */
 Arch_Config :: struct {
 	odin_target:   string,
@@ -234,9 +235,11 @@ build_kernel :: proc(opts: Options) {
 stage_esp builds an EFI system partition as a plain directory.
 
 QEMU's vvfat backend (`-drive format=raw,file=fat:rw:<dir>`) presents that
-directory to the firmware as a FAT volume, so there is no disk image to build
-and no loop device to mount -- which is what makes this work unmodified on
-macOS, where losetup and mkfs.vfat do not exist.
+directory to the firmware as a FAT volume. There is no disk image to build, and
+no loop device to mount.
+
+That is what makes this work unmodified on macOS, where losetup and mkfs.vfat
+do not exist.
 */
 stage_esp :: proc(opts: Options) {
 	build_kernel(opts)
@@ -251,9 +254,8 @@ stage_esp :: proc(opts: Options) {
 		fmt.tprintf("boot/limine/%s", cfg.efi_boot_name),
 		fmt.tprintf("%s/EFI/BOOT/%s", ESP_DIR, cfg.efi_boot_name),
 	)
-	// Limine looks next to its own EFI executable first, so the config goes
-	// there rather than at the volume root where another limine.conf could
-	// shadow it.
+	// Limine looks next to its own EFI executable first. The config goes there,
+	// rather than at the volume root, where another limine.conf could shadow it.
 	copy_file("boot/limine.conf", fmt.tprintf("%s/EFI/BOOT/limine.conf", ESP_DIR))
 	copy_file(KERNEL_ELF, fmt.tprintf("%s/vectra.elf", ESP_DIR))
 }
@@ -338,8 +340,8 @@ ensure_dir :: proc(path: string) {
 /*
 copy_file rewrites the destination whole.
 
-Deliberately not a mtime check: a stale kernel.elf on the ESP that boots as if
-the edit worked is the single most expensive bug in an OS build system.
+Deliberately not a mtime check. A stale kernel.elf on the ESP, that boots as
+though the edit worked, is the single most expensive bug in an OS build system.
 */
 copy_file :: proc(src, dst: string) {
 	data, err := os.read_entire_file_from_path(src, context.allocator)
@@ -355,9 +357,8 @@ copy_file :: proc(src, dst: string) {
 lint checks the prose in this tree against ASD-STE100.
 
 The rules, the two modes and the project dictionary are in `docs/STYLE.md`. The
-checker itself is Python rather than Odin because the job is regular
-expressions over text, and because it has to run over the `.md` files as well
-as the source.
+checker itself is Python rather than Odin. The job is regular expressions over
+text, and it has to run over the `.md` files as well as the source.
 
 A finding exits non-zero, so this works as a gate. The tree is at zero.
 */

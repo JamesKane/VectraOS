@@ -1,9 +1,9 @@
 /*
 The aarch64 binding of the architecture interface.
 
-Not yet implemented. The file exists so that a `-target:freestanding_arm64`
-build fails at the missing bodies below rather than at a missing package, which
-keeps the port a matter of filling in blanks.
+Not yet implemented. The file exists so a `-target:freestanding_arm64` build
+fails at the missing bodies below, rather than at a missing package. The port
+stays a matter of blanks to fill in.
 */
 #+build arm64
 package arch

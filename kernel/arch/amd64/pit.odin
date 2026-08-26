@@ -1,22 +1,23 @@
 /*
 The 8253/8254 interval timer, used for one thing only.
 
-Vectra does not schedule on the PIT -- the LAPIC timer is per-CPU and the PIT is
-not -- but the LAPIC timer runs at an undocumented frequency derived from the
-bus clock, and something has to tell it what a second is. The PIT is the one
-clock on a PC whose rate is a constant of the architecture rather than a
-property of the machine, so it is the ruler and the LAPIC is what gets measured.
+Vectra does not schedule on the PIT, because the LAPIC timer is per-CPU and the
+PIT is not. But the LAPIC timer runs at an undocumented frequency derived from
+the bus clock, and something has to tell it what a second is. The PIT is the
+one clock on a PC whose rate is a constant of the architecture, rather than a
+property of the machine. It is therefore the ruler, and the LAPIC is what it
+measures.
 
 Channel 2 rather than channel 0, because channel 2's gate is under software
-control through port 0x61 and its output is readable there. That means a
-calibration can be *polled* -- start it, spin, read it -- with no interrupt
-handler, no vector, and nothing that has to be true about the PIC. Channel 0
-would need all three, at a point in the boot before any of them are ready.
+control through port 0x61 and its output is readable there. A calibration can
+therefore be *polled*. Start it, spin, read it. There is no interrupt handler,
+no vector, and nothing that has to be true about the PIC. Channel 0 would need
+all three, at a point in the boot before any of them are ready.
 */
 package amd64
 
-// 1.193182 MHz: the NTSC colourburst divided by three, which is why it is not a
-// round number and why every PC has kept it for forty years.
+// 1.193182 MHz, the NTSC colourburst divided by three. That is why it is not a
+// round number, and why every PC keeps it forty years later.
 PIT_FREQUENCY :: 1_193_182
 
 PIT_CHANNEL2 :: u16(0x42)
@@ -35,17 +36,17 @@ PIT_SPEAKER :: u8(1 << 1)
 PIT_OUTPUT :: u8(1 << 5)
 
 // Channel 2, access lobyte then hibyte, mode 0 (interrupt on terminal count),
-// binary. Mode 0 is the one that holds its output low from the moment the
-// control word is written until the count runs out, which is exactly the shape
-// of "tell me when this much time has passed".
+// binary. Mode 0 holds its output low from the moment the control word goes in
+// until the count runs out. That is exactly the shape of `tell me when this
+// much time went by`.
 PIT_MODE0_CHANNEL2 :: u8(0b10_11_000_0)
 
 /*
 pit_count_for_micros converts microseconds to counter ticks.
 
-Clamped rather than wrapped. A request longer than the 16-bit counter can hold
--- about 54.9 ms -- becomes the longest interval it can, which makes a
-calibration less precise; letting it wrap would make one silently wrong.
+Clamped rather than wrapped. The 16-bit counter holds about 54.9 ms. A longer
+request becomes the longest interval it can take, which makes a calibration
+less precise. A wrap would make one silently wrong.
 */
 pit_count_for_micros :: proc "contextless" (micros: u64) -> u16 {
 	count := (u64(PIT_FREQUENCY) * micros) / 1_000_000
@@ -61,9 +62,9 @@ pit_count_for_micros :: proc "contextless" (micros: u64) -> u16 {
 /*
 pit_gate_arm loads the counter with the gate held low, so nothing starts yet.
 
-Split from `pit_gate_start` because whatever is being measured has to be
-started too, and the two starts should be as close together as the instruction
-stream allows. Everything slow -- three port writes, each of which is a bus
+Split from `pit_gate_start`, because the thing under measurement has to start
+too. The two starts should be as close together as the instruction stream
+allows. Everything slow -- three port writes, each of which is a bus
 transaction -- happens here.
 */
 pit_gate_arm :: proc "contextless" (count: u16) {

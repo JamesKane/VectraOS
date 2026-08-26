@@ -1,17 +1,19 @@
 /*
 The kernel log.
 
-One writer, two sinks: the serial port (which works before the framebuffer and
-after a compositor crash) and the on-screen console (which is the only sink a
-user without a serial cable can read). Both are best-effort; neither is allowed
-to block boot.
+One writer, two sinks. The serial port works before the framebuffer, and after
+a compositor crash.
+
+The on-screen console is the only sink a user with no serial cable can read.
+Both are best-effort. Neither may block boot.
 
 Formatting goes through a fixed 512-byte line buffer. Nothing here allocates,
 so this is safe to call from a fault handler.
 
-Lines logged before the framebuffer exists are held in a replay buffer and
-re-drawn when the console attaches, so the screen shows the whole boot rather
-than the tail of it. Serial is unaffected -- it already received them live.
+A replay buffer holds the lines logged before the framebuffer exists, and
+redraws them when the console attaches. The screen therefore shows the whole
+boot, rather than the tail of it. Serial is unaffected -- it already received
+them live.
 */
 package kernel
 
@@ -31,10 +33,10 @@ Log_Level :: enum {
 /*
 One buffered line, held until a screen exists to draw it on.
 
-Sized well under the 512-byte formatting buffer on purpose: these are boot
-survey lines, and the ones that matter -- the ones the screen is missing -- are
-short. A longer line is kept up to the limit and marked, which beats dropping
-it whole.
+Sized well under the 512-byte formatting buffer on purpose. These are boot
+survey lines, and the ones that matter are short. Those are the ones the screen
+is missing. A longer line is kept up to the limit and marked, which beats
+dropping it whole.
 */
 EARLY_LINE_MAX :: 128
 EARLY_LINES_MAX :: 16
@@ -72,9 +74,9 @@ log_tag :: proc "contextless" (level: Log_Level) -> (tag: string, color: fb.RGB)
 /*
 begin starts a log line and returns the sink to format into.
 
-The two-step begin/emit shape exists so a caller can build a line out of mixed
-strings and numbers without a varargs formatter -- which would need an
-allocator we do not have this early.
+The two-step begin and emit shape lets a caller build a line out of mixed
+strings and numbers, with no varargs formatter. A formatter would need an
+allocator, and there is none this early.
 */
 begin :: proc "contextless" (l: ^Logger) -> libodin.Sink {
 	return libodin.sink_from(l.line[:])
@@ -83,9 +85,9 @@ begin :: proc "contextless" (l: ^Logger) -> libodin.Sink {
 /*
 emit writes a completed line to whichever sinks exist.
 
-Serial gets it immediately; the console gets it now if attached, or on replay
-from `attach_screen` if the framebuffer is not up yet. Colour is a screen-only
-concern, so it is looked up in `draw_line` rather than here.
+Serial gets it immediately. The console gets it now if it is attached, or on
+replay from `attach_screen` if the framebuffer is not up yet. Colour is a
+screen-only concern, so it is looked up in `draw_line` rather than here.
 */
 emit :: proc "contextless" (l: ^Logger, level: Log_Level, s: ^libodin.Sink) {
 	tag, _ := log_tag(level)
@@ -154,9 +156,9 @@ stash_early :: proc "contextless" (l: ^Logger, level: Log_Level, body: string, t
 /*
 attach_screen points the logger at a console and replays what it missed.
 
-Called instead of assigning `screen` directly: the assignment alone would leave
-everything logged before the framebuffer came up visible only on serial, which
-is exactly the half of the boot a user without a serial cable most wants.
+Called rather than a direct assignment to `screen`. The assignment alone would
+leave everything logged before the framebuffer visible only on serial. That is
+exactly the half of the boot a user with no serial cable most wants.
 */
 attach_screen :: proc "contextless" (l: ^Logger, con: ^console.Console) #no_bounds_check {
 	l.screen = con
@@ -170,8 +172,8 @@ attach_screen :: proc "contextless" (l: ^Logger, con: ^console.Console) #no_boun
 		log_line(l, .Warn, "early log replay buffer overflowed; some boot lines are serial-only")
 	}
 
-	// The buffer has done its job. Reset it so a later re-attach -- a panic
-	// screen taking over, say -- does not redraw the whole boot again.
+	// The buffer did its job. Reset it so a later re-attach -- a panic screen
+	// taking over, say -- does not redraw the whole boot again.
 	l.early_count = 0
 	l.early_overflow = false
 }

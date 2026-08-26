@@ -4,8 +4,10 @@ Vectra is built on.
 
 A `Surface` is deliberately just memory plus geometry. The boot splash, the
 panic screen, and later the `intuition` compositor all render through this same
-type -- the compositor's off-screen window buffers are Surfaces too, so a
-bevel drawn at boot and a bevel drawn on a window titlebar are the same code.
+type.
+
+The compositor's off-screen window buffers are Surfaces too. A bevel drawn at
+boot and a bevel drawn on a window titlebar are therefore the same code.
 
 Every primitive clips to the surface. Nothing here allocates.
 */
@@ -54,8 +56,8 @@ from_limine :: proc "contextless" (f: ^limine.Framebuffer) -> Surface {
 /*
 pack converts an 8-bit-per-channel colour into the surface's native pixel word.
 
-Channel sizes below 8 bits are handled by discarding low bits, which is what a
-15/16bpp mode wants; sizes above 8 are not produced by any mode Limine hands us.
+A channel below 8 bits drops its low bits, which is what a 15bpp or 16bpp mode
+wants. No mode Limine hands over produces a channel above 8.
 */
 pack :: proc "contextless" (s: ^Surface, c: RGB) -> u32 {
 	r := u32(c[0]) >> (8 - s.red_size)
@@ -67,8 +69,8 @@ pack :: proc "contextless" (s: ^Surface, c: RGB) -> u32 {
 /*
 mix blends `a` toward `b` by `t` in 1/256ths.
 
-Used for gradients and for deriving bevel edges from a face colour, so that a
-control tinted at runtime still bevels correctly instead of needing three
+Used for gradients, and to derive bevel edges from a face colour. A control
+tinted at runtime therefore still bevels correctly, and needs no three
 hand-picked palette entries.
 */
 mix :: proc "contextless" (a, b: RGB, t: u8) -> RGB {
@@ -116,9 +118,9 @@ put_pixel :: proc "contextless" (s: ^Surface, x, y: int, c: RGB) {
 /*
 clip intersects `r` with the surface bounds.
 
-Returns ok=false for a fully off-surface or empty rect so callers can bail
-before computing a span; every primitive below funnels through this, which is
-why none of them need their own bounds checks.
+Returns ok=false for a fully off-surface or empty rect, so a caller can stop
+before it computes a span. Every primitive below goes through this, which is
+why none of them need bounds checks of their own.
 */
 clip :: proc "contextless" (s: ^Surface, r: Rect) -> (out: Rect, ok: bool) {
 	x0 := max(r.x, 0)
@@ -237,8 +239,8 @@ inset_of :: proc "contextless" (r: Rect, depth := 1) -> Rect {
 /*
 brushed fills `r` with a subtly striated face to suggest brushed magnesium.
 
-The striation is a fixed two-row pattern rather than noise: it has to survive
-being drawn one dirty rectangle at a time and still line up with the rows the
+The striation is a fixed two-row pattern rather than noise. It has to survive a
+draw of one dirty rectangle at a time, and still line up with the rows the
 compositor drew last frame.
 */
 brushed :: proc "contextless" (s: ^Surface, r: Rect, face: RGB) {

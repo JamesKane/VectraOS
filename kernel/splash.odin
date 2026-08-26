@@ -3,11 +3,13 @@ The boot chassis: the first thing Vectra draws and the visual contract for
 everything that follows.
 
 Nothing here is decoration for its own sake. The chassis establishes the four
-surface roles the whole system reuses -- brushed plinth, copper trim, recessed
-well, indicator lamp -- so that `intuition`'s window frames are recognisably
-the same object as the screen the kernel painted before there was a compositor.
+surface roles the whole system reuses. Those are the brushed plinth, the copper
+trim, the recessed well, and the indicator lamp.
 
-Geometry is derived from the framebuffer at runtime; there are no fixed
+`intuition`'s window frames are therefore recognisably the same object as the
+screen the kernel painted before there was a compositor.
+
+The geometry comes from the framebuffer at runtime. There are no fixed
 resolutions.
 */
 package kernel
@@ -33,8 +35,9 @@ Chassis :: struct {
 draw_chassis paints the full boot screen and returns the sub-rectangles the
 caller should render into.
 
-Returning the geometry rather than stashing it globally keeps the panic path
-able to draw its own chassis over the top without disturbing this one's state.
+The geometry comes back to the caller, rather than into a global. The panic
+path can then draw its own chassis over the top, and disturb none of this one's
+state.
 */
 draw_chassis :: proc "contextless" (s: ^fb.Surface, title, subtitle: string) -> Chassis {
 	// Backdrop: a very dark vertical wash so the plinth reads as lit from above.
@@ -85,8 +88,8 @@ draw_chassis :: proc "contextless" (s: ^fb.Surface, title, subtitle: string) -> 
 /*
 draw_spaced renders `text` with `extra` pixels of tracking between glyphs.
 
-The console's fixed 8px advance is right for a log and wrong for a wordmark;
-industrial panels of the era let their lettering breathe.
+The console's fixed 8px advance is right for a log and wrong for a wordmark.
+Industrial panels of the era let their lettering breathe.
 */
 draw_spaced :: proc "contextless" (
 	s: ^fb.Surface,
@@ -107,9 +110,9 @@ draw_spaced :: proc "contextless" (
 Lamp is one indicator in the bottom strip: a recessed socket with a lit or
 unlit jewel in it.
 
-Unlit lamps are drawn as a dark version of their own colour rather than as a
-neutral grey, so a bank of lamps still reads as "these three are the same kind
-of thing" when none of them are on.
+An unlit lamp is a dark version of its own colour, rather than a neutral grey.
+A bank of lamps with none of them on therefore still reads as three of the same
+kind of thing.
 */
 draw_lamp :: proc "contextless" (s: ^fb.Surface, x, y: int, color: fb.RGB, lit: bool) {
 	socket := fb.Rect{x, y, LAMP, LAMP}

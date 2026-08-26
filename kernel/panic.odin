@@ -2,13 +2,13 @@
 The panic screen.
 
 A fault the kernel cannot continue past gets the same chassis the boot splash
-draws, with an alert band where the copper bar's calm would be, and the whole
-report rendered into the console well underneath it. Deliberately the same
-object: a machine that panics should look like the machine that booted, not
-like a different program took over.
+draws. An alert band takes the place of the copper bar's calm. The whole report
+renders into the console well underneath it. Deliberately the same object: a
+machine that panics should look like the machine that booted, not like a
+different program took over.
 
-Everything here also goes to the serial port, because the panic that matters
-most is the one on a machine whose framebuffer is the reason it panicked.
+Everything here also goes to the serial port. The panic that matters most is
+the one on a machine whose framebuffer is the reason it panicked.
 
 Three rules the code has to keep and the comments have to justify:
 
@@ -19,7 +19,7 @@ Three rules the code has to keep and the comments have to justify:
     back here and loop forever, drawing over itself, so the re-entry guard is
     checked before anything touches the framebuffer.
   - Nothing returns. `panic_trap` hands `false` back to the arch dispatcher,
-    which halts; `panic_stop` halts directly.
+    which halts. `panic_stop` halts directly.
 */
 package kernel
 
@@ -37,19 +37,20 @@ import "vsys:libodin"
 /*
 Re-entry guard.
 
-Set before the first pixel is drawn, so a fault inside the drawing code -- an
-unmapped framebuffer, a console whose bounds no longer fit -- comes back here,
-finds the flag, and stops with one line on the serial port instead of recursing
-until the stack runs out.
+Set before the first pixel goes down. A fault inside the drawing code then
+comes back here, finds the flag, and stops with one line on the serial port.
+
+That covers an unmapped framebuffer, and a console whose bounds no longer fit.
+Without the flag it would recurse until the stack ran out.
 */
 @(private = "file") panicking: bool
 
 /*
 Set by the boot self-test around a deliberate `int3`.
 
-The only trap Vectra currently expects to survive. Kept as narrow as it looks:
-armed immediately before the breakpoint and disarmed by the first breakpoint
-that arrives, so a stray #BP from anywhere else still panics.
+The only trap Vectra currently expects to survive. As narrow as it looks. It is
+armed immediately before the breakpoint, and the first breakpoint that arrives
+disarms it. A stray #BP from anywhere else still panics.
 */
 @(private = "file") expect_breakpoint: bool
 
@@ -66,8 +67,8 @@ panic_trap is the handler `arch` calls for every trap that reaches the kernel.
 
 Returns true to resume the interrupted instruction stream and false to stop the
 machine. The only thing it ever resumes is the breakpoint the boot self-test
-arms for itself; everything else is a fault, and a kernel with no scheduler and
-no fault recovery has nothing useful to do with one but explain it.
+arms for itself. Everything else is a fault. A kernel with no scheduler and no
+fault recovery has nothing useful to do with one but explain it.
 */
 panic_trap :: proc "contextless" (t: ^arch.Trap) -> bool {
 	if t.kind == .Breakpoint && expect_breakpoint {
@@ -129,11 +130,11 @@ panic_trap :: proc "contextless" (t: ^arch.Trap) -> bool {
 /*
 report_faulting_address says what was mapped at CR2, not just where it was.
 
-The address alone rarely settles anything -- 0x0 could be a null dereference or
-a jump through a nil proc pointer, and an address in the middle of the kernel
-could be a stray write or a stack that ran off its end. What was actually mapped
-there, and with what permissions, usually does settle it: "nothing mapped" and
-"mapped read-only and you wrote to it" are different bugs that produce the same
+The address alone rarely settles anything. 0x0 could be a null dereference, or
+a jump through a nil proc pointer. An address in the middle of the kernel could
+be a stray write, or a stack that ran off its end. What was actually mapped
+there, and with what permissions, usually does settle it. `nothing mapped` and
+`mapped read-only and you wrote to it` are different bugs that produce the same
 CR2.
 */
 @(private = "file")
@@ -198,28 +199,29 @@ panic_stop :: proc "contextless" (reason: string) -> ! {
 open_panic_screen repaints the machine in its alert state and points the log at
 it.
 
-Redraws the whole chassis rather than writing over the boot log, because a panic
-screen that is half old log and half new report is ambiguous about which lines
-belong to the fault. The boot log is already on the serial port for anyone who
-wants both.
+Redraws the whole chassis, rather than writes over the boot log. A panic screen
+that is half old log and half new report is ambiguous about which lines belong
+to the fault. The boot log is already on the serial port for anyone who wants
+both.
 
-`klog.screen` is assigned rather than passed to `attach_screen`, which is the
-one place in the kernel that difference matters: `attach_screen` replays the
-early buffer, and replaying the boot onto a panic screen would push the fault
-off the top of it.
+`klog.screen` is assigned rather than passed to `attach_screen`. This is the
+one place in the kernel where that difference matters.
+
+`attach_screen` replays the early buffer. The boot replayed onto a panic screen
+would push the fault off the top of it.
 */
 @(private = "file")
 open_panic_screen :: proc "contextless" (headline: string) {
 	if screen.pixels == nil {
-		// No framebuffer. The logger keeps its serial sink and everything below
-		// still reports; there is simply nothing to draw on.
+		// No framebuffer. The logger keeps its serial sink, and everything below
+		// still reports. There is simply nothing to draw on.
 		return
 	}
 
 	c := draw_chassis(&screen, "VECTRA", "FAULT")
 
-	// The alert band takes the top of the well, styled as the copper title bar's
-	// angry twin so the two read as the same control in two states.
+	// The alert band takes the top of the well. It is styled as the copper title
+	// bar's angry twin, so the two read as one control in two states.
 	band := fb.Rect{c.well.x, c.well.y, c.well.w, TITLE_H}
 	fb.gradient_v(&screen, band, fb.ALERT, fb.ALERT_DIM)
 	fb.bevel_edges(&screen, band, .Raised, fb.mix(fb.ALERT, fb.AMBER_HOT, 90), fb.ALERT_DIM, 1)
@@ -227,9 +229,9 @@ open_panic_screen :: proc "contextless" (headline: string) {
 	draw_spaced(&screen, band.x + PAD, ty, headline, fb.SLATE_DEEP, 3, .Engraved)
 
 	well := fb.inset_of(fb.Rect{c.well.x, band.y + band.h, c.well.w, c.well.h - band.h}, PAD)
-	// Amber body text, not red. The alarm is already carried by the band, the
-	// FAIL tags and the lamp; the report itself is mostly hex that has to be
-	// read carefully, and a wall of red is the worst way to present it.
+	// Amber body text, not red. The band, the FAIL tags and the lamp already
+	// carry the alarm. The report itself is mostly hex that a reader has to take
+	// slowly, and a wall of red is the worst way to present it.
 	pcon = console.init(&screen, well, fb.AMBER_HOT, fb.SLATE)
 	klog.screen = &pcon
 

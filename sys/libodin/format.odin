@@ -3,8 +3,8 @@ libodin -- the minimal freestanding core shared by the kernel and by userland
 servers before libposix is available.
 
 Everything in here writes into caller-supplied storage. There is no allocator
-in a `-default-to-nil-allocator` build, and code that runs during early boot or
-inside a fault handler must not be the code that discovers that.
+in a `-default-to-nil-allocator` build. Code that runs during early boot, or
+inside a fault handler, must not be the code that discovers that.
 */
 package libodin
 
@@ -14,9 +14,9 @@ DIGITS_UPPER :: "0123456789ABCDEF"
 /*
 A Sink is a fixed byte buffer plus a write cursor.
 
-Overflow is saturating rather than fatal: `overflowed` records that output was
-lost so a caller can flag it, but a too-long panic message still prints what
-fits instead of faulting inside the panic path.
+Overflow saturates rather than kills. `overflowed` records that output went
+missing, so a caller can flag it. A panic message that is too long still prints
+what fits, rather than faults inside the panic path.
 */
 Sink :: struct {
 	buf:        []u8,
@@ -28,7 +28,7 @@ sink_from :: proc "contextless" (buf: []u8) -> Sink {
 	return Sink{buf = buf}
 }
 
-// bytes returns the portion of the sink's buffer that has been written.
+// bytes returns the portion of the sink's buffer that something wrote.
 bytes :: proc "contextless" (s: ^Sink) -> []u8 {
 	return s.buf[:s.len]
 }
@@ -119,7 +119,8 @@ put_ptr :: proc "contextless" (s: ^Sink, p: rawptr) {
 put_size writes a byte count in the largest binary unit that keeps the integer
 part non-zero, with one fractional digit.
 
-Boot logs are read at a glance; "3.9 GiB" carries more than 4293918720 does.
+A reader takes a boot log at a glance, and `3.9 GiB` carries more than
+4293918720 does.
 */
 put_size :: proc "contextless" (s: ^Sink, bytes_count: u64) {
 	units := [?]string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}

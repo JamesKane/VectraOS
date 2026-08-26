@@ -1,6 +1,6 @@
 /*
-The riscv64 binding of the architecture interface. Not yet implemented; see
-`arch_arm64.odin` for the rationale behind the stub.
+The riscv64 binding of the architecture interface. Not yet implemented. See
+`arch_arm64.odin` for the reasoning behind the stub.
 */
 #+build riscv64
 package arch

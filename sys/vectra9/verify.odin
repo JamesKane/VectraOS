@@ -1,22 +1,25 @@
 /*
 The codec's self-test, run at boot.
 
-There is nowhere to run a unit test in a kernel, and a wire codec is exactly the
-kind of code whose bugs are invisible until something on the other end of a
-cable disagrees with you. So it checks itself on the machine, once, and says so
-in the boot log.
+There is nowhere to run a unit test in a kernel. A wire codec is exactly the
+kind of code whose bugs stay invisible until something at the other end of a
+cable disagrees. So it checks itself on the machine, once, and says so in the
+boot log.
 
-The oracle is re-encoding. For every message kind, a fully-populated sample is
-encoded, decoded, and encoded again; the two byte strings must be identical.
+The oracle is a re-encode. For every message kind, a fully-populated sample is
+encoded, decoded, and encoded again. The two byte strings must be identical.
+
 That catches a field written in the wrong order, a field read at the wrong
-width, and a field the decoder forgot -- all of which produce a byte string that
-differs somewhere. It is worth far more than comparing the decoded structs,
-which would need fifty more comparison cases and would not catch a codec that
-was self-consistently wrong about the *order* of two same-width fields.
+width, and a field the decoder forgot. All three produce a byte string that
+differs somewhere. It is worth far more than a comparison of the decoded
+structs. That would need fifty more comparison cases. It would also miss a
+codec that is self-consistently wrong about the *order* of two same-width
+fields.
 
 Every field in every sample is non-zero and distinct, which is what makes the
-oracle sound: a decoder that silently dropped a field would re-encode it as zero
-and the comparison would fail. Samples with zeroes in them would let that pass.
+oracle sound. A decoder that silently dropped a field would re-encode it as
+zero, and the comparison would fail. Samples with zeroes in them would let that
+pass.
 */
 package vectra9
 
@@ -36,8 +39,8 @@ PAYLOAD := [?]u8{0xA5, 0x01, 0x02, 0xFE, 0x7F, 0x80, 0x33, 0xCC}
 /*
 verify round-trips every message kind and exercises both transports.
 
-`scratch` is split four ways and must be at least 2 KiB; the largest sample is
-Rgetattr at a little over 200 bytes, and the loopback needs a request and a
+`scratch` is split four ways, and must be at least 2 KiB. The largest sample is
+Rgetattr, at a little over 200 bytes. The loopback needs a request buffer and a
 reply buffer of its own.
 */
 verify :: proc "contextless" (scratch: []u8) -> Verify_Result {
@@ -69,8 +72,8 @@ verify :: proc "contextless" (scratch: []u8) -> Verify_Result {
 		}
 	}
 
-	// The malformed-input cases. A codec is only half-tested by valid input:
-	// these are the paths that stop a corrupt message being acted on.
+	// The malformed-input cases. Valid input only half-tests a codec. These are
+	// the paths that stop anything from acting on a corrupt message.
 	if !rejects_bad_input() {
 		result.failures += 1
 		if result.first_error == .None {
@@ -93,11 +96,12 @@ verify :: proc "contextless" (scratch: []u8) -> Verify_Result {
 /*
 round_trip encodes, decodes, re-encodes, and compares the two byte strings.
 
-The decoded message borrows `a`, so `b` has to be a different buffer -- encoding
-back into `a` would overwrite the very bytes the decoded message's strings and
-slices point at, and the comparison would then be against whatever the encoder
-happened to leave behind. That is a bug this test would otherwise be uniquely
-bad at noticing.
+The decoded message borrows `a`, so `b` has to be a different buffer.
+
+An encode back into `a` would overwrite the very bytes the decoded message's
+strings and slices point at. The comparison would then run against whatever the
+encoder happened to leave behind. That is a bug this test would otherwise be
+uniquely bad at noticing.
 */
 @(private = "file")
 round_trip :: proc "contextless" (a, b: []u8, msg: Msg) -> Error #no_bounds_check {
@@ -137,8 +141,8 @@ round_trip :: proc "contextless" (a, b: []u8, msg: Msg) -> Error #no_bounds_chec
 /*
 rejects_bad_input checks that malformed messages are refused rather than parsed.
 
-Each of these is a shape an attacker or a broken peer can put on a wire, and
-each has to fail as an error rather than as a plausible-looking message.
+Each of these is a shape an attacker or a broken peer can put on a wire. Each
+has to fail as an error, rather than as a plausible-looking message.
 */
 @(private = "file")
 rejects_bad_input :: proc "contextless" () -> bool #no_bounds_check {
@@ -195,7 +199,7 @@ rejects_bad_input :: proc "contextless" () -> bool #no_bounds_check {
 /*
 A handler that answers Tread with something derived from what it was asked.
 
-Deliberately not a constant: a transport that dropped the request and invented
+Deliberately not a constant. A transport that dropped the request and invented
 a reply would pass a test whose expected answer did not depend on the request.
 */
 @(private = "file")
@@ -223,9 +227,9 @@ echo_handler :: proc "contextless" (
 /*
 transports_agree runs the same handler behind both transports.
 
-This is the design's central claim made testable: `In_Process` hands the message
-over by pointer, `Encoded_Loopback` serialises it and parses it back, and the
-handler must not be able to tell. If these two ever disagree, something has
+This is the design's central claim, made testable. `In_Process` hands the
+message over by pointer. `Encoded_Loopback` serialises it and parses it back.
+The handler must not be able to tell. If these two ever disagree, something
 leaked across the transport boundary that was supposed to stay behind it.
 */
 @(private = "file")
@@ -271,10 +275,10 @@ transports_agree :: proc "contextless" (request_buf, reply_buf: []u8) -> bool {
 /*
 sample returns message number `index`, or false once they run out.
 
-One per kind, every field distinct and non-zero, for the reason given at the top
-of this file. A switch rather than a table because the messages are different
-types and a table would need the union anyway -- and because the compiler will
-not let this drift out of step with `Kind` without someone noticing the count.
+One per kind, every field distinct and non-zero, for the reason given at the
+top of this file. A switch rather than a table, because the messages are
+different types and a table would need the union anyway. And the compiler will
+not let this drift out of step with `Kind` without somebody noticing the count.
 */
 @(private = "file")
 sample :: proc "contextless" (index: int) -> (Msg, bool) {

@@ -2,10 +2,11 @@
 Tflush, and the ordering rule that is the whole of it.
 
 `Tflush` has one requirement and everything else about it follows: **Rflush is
-sent after the flushed request's fate is decided.** A client treats Rflush as
-"that tag is mine again", so a server that sends it early hands back a slot
-something is still writing into. Nothing about that failure is visible at the
-moment it happens; it shows up later as a reply landing in the wrong request.
+sent after the flushed request's fate is decided.** A client reads Rflush as
+`that tag is mine again`. A server that sends it early therefore hands back a
+slot something is still writing into. Nothing about that failure is visible at
+the moment it happens. It surfaces later, as a reply that lands in the wrong
+request.
 
 Testing it needs a server that will not finish, and two kinds of them, because
 the protocol permits both and they fail differently:
@@ -20,11 +21,13 @@ The second is the one worth building the test around. A server that always
 aborts makes "after the fate is decided" and "immediately" the same instant, so
 an implementation that sends Rflush first would pass. Here the boot thread
 holds the work open, watches the client stay parked, and only then lets it
-finish -- so early Rflush is a check that fails rather than a race that might.
+finish. An early Rflush is therefore a check that fails, rather than a race
+that might.
 
-`kernel/mnt` counts the same thing from the other side: `Stats.unsettled` is
-incremented by the client whenever an Rflush arrives while its request is still
-running, and it is checked to be zero. One rule, observed from both ends.
+`kernel/mnt` counts the same thing from the other side. The client increments
+`Stats.unsettled` whenever an Rflush arrives while its request is still
+running, and a check asserts that count is zero. One rule, observed from both
+ends.
 */
 package kernel
 
@@ -44,7 +47,7 @@ GIVE_UP_TICKS :: 10
 
 // How long the boot thread watches a stubborn flush stay unanswered before
 // accepting that Rflush is genuinely waiting. Several times GIVE_UP_TICKS, so
-// an implementation that answered early has had every chance to.
+// an implementation that answers early gets every chance to.
 @(private = "file")
 WATCH_TICKS :: 40
 
@@ -56,12 +59,12 @@ One worker per request that can be blocked at once, plus one.
 
 `kernel/mnt` cannot check this and says so: a worker inside a stuck handler is
 a worker not serving the `Tflush` that would unstick it. The spare is what
-serves the flushes, and it is exactly one because a flush never blocks -- it
-marks the request, prods the server and returns.
+serves the flushes. It is exactly one, because a flush never blocks. It marks
+the request, prods the server, and returns.
 
 This number is also what makes the full-pool phase below mean anything. With
-fewer workers the flushes would queue behind the reads rather than being served
-alongside them, and the phase would be testing the queue rather than the pool.
+fewer workers the flushes would queue behind the reads, rather than run
+alongside them. The phase would then test the queue rather than the pool.
 */
 @(private = "file")
 WORKERS :: mnt.MAX_REQUESTS + 1
@@ -76,10 +79,11 @@ FAST_CALLS :: 20
 /*
 The server under test.
 
-`open` is what lets a blocked Tread complete. `stubborn` decides whether being
-flushed is enough on its own: a stubborn server notes the flush and carries on,
-which is a legal thing for a server to be and the only configuration in which
-the ordering rule has room to be broken.
+`open` is what lets a blocked Tread complete. `stubborn` decides whether a
+flush alone is enough. A stubborn server notes the flush and carries on.
+
+That is a legal thing for a server to be, and it is the only configuration
+where the ordering rule has room to break.
 */
 @(private = "file")
 Slow :: struct {
@@ -127,8 +131,8 @@ slow_ready :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
 The abort hook: what `kernel/mnt` calls when a Tflush names a live request.
 
 Recording and waking is all it does. Whether the handler acts on it is the
-server's policy -- `slow_ready` above is where that policy lives -- and keeping
-the two apart is what makes a stubborn server expressible at all.
+server's policy, and `slow_ready` above is where that policy lives. The two
+kept apart is what makes a stubborn server expressible at all.
 */
 @(private = "file")
 slow_abort :: proc "contextless" (server: rawptr, tag: vectra9.Tag) #no_bounds_check {
@@ -388,9 +392,8 @@ verify_flush :: proc() #no_bounds_check {
 
 	The server will not abandon this read, so `Rflush` cannot be sent until
 	something else finishes it. The client is therefore still inside its flush
-	long after the flush was received, and that is the check -- an
-	implementation that answered Rflush on receipt would have this client back
-	within a tick or two.
+	long after the flush arrived, and that is the check. An implementation that
+	answered Rflush on receipt would have this client back within a tick or two.
 	*/
 	intrinsics.volatile_store(&slow.open, false)
 	intrinsics.volatile_store(&slow.stubborn, true)
@@ -433,12 +436,12 @@ verify_flush :: proc() #no_bounds_check {
 	/*
 	The reason a flush does not queue for a slot like everything else.
 
-	Every request slot is occupied here and every one of them is stuck, so a
-	`Tflush` that had to claim an ordinary slot would wait for one of the
-	requests it was sent to unstick. Nothing would ever move again, and the
-	deadlock would be reachable by a client doing nothing wrong. Each request's
-	flush partner is reserved above it in the pool for exactly this, and this
-	is the phase where that stops being an assertion.
+	Every request slot is occupied here, and every one of them is stuck. A
+	`Tflush` that had to claim an ordinary slot would wait for one of the requests
+	it was sent to unstick. Nothing would ever move again, and the deadlock would
+	be reachable by a client doing nothing wrong. Each request's flush partner is
+	reserved above it in the pool for exactly this, and this is the phase where
+	that stops being an assertion.
 	*/
 	intrinsics.volatile_store(&slow.open, false)
 	intrinsics.volatile_store(&slow.stubborn, true)
@@ -538,11 +541,12 @@ verify_flush :: proc() #no_bounds_check {
 	mnt.serve_stop(&conn)
 	fcheck(&r, verify_transparency(&r), "a real server behind a queue answers as it always did")
 
-	// Last, and after every `serve_stop` has returned. A worker's stack is
-	// freed by whoever runs next, not by the worker standing on it, so a reap
-	// taken before the final connection stops leaves that connection's threads
-	// for the next self-test to find -- which `verify_vfs.odin` does, as a
-	// heap that shrank underneath its own bracket.
+	// Last, and after every `serve_stop` returns. Whoever runs next frees a
+	// worker's stack, and not the worker that stands on it.
+	//
+	// A reap taken before the final connection stops therefore leaves that
+	// connection's threads for the next self-test to find. `verify_vfs.odin` does
+	// find them, as a heap that shrank underneath its own bracket.
 	sched.reap()
 
 	report_flush(&r)
@@ -573,10 +577,10 @@ all_blocked :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&slow.blocked) >= intrinsics.volatile_load(&expected)
 }
 
-// Every client has not only stopped in the server but has given up on it and
-// had its Tflush delivered. Waiting for this rather than for `all_blocked` is
-// what makes the phase about the pool: a client released while its deadline is
-// still running gets its answer, which proves nothing about flushing.
+// Every client not only stopped in the server. It also gave up on it, and its
+// Tflush arrived. A wait for this, rather than for `all_blocked`, is what
+// makes the phase about the pool. A client released while its deadline still
+// runs gets its answer, and that proves nothing about a flush.
 @(private = "file")
 all_flushed :: proc "contextless" (arg: rawptr) -> bool {
 	seen := intrinsics.volatile_load(&slow.aborts) - intrinsics.volatile_load(&abort_base)
@@ -599,10 +603,12 @@ PLAIN_NODES := [?]vfs.Static_Node {
 /*
 The claim the whole design rests on, checked against a third transport.
 
-`static_handler` is not modified for any of this, and one worker is what keeps
-its reply-borrows-my-storage rule true -- with a single thread serving, a queued
-connection has exactly one request in flight, which is what `In_Process` had.
-That restriction is the honest state of things and `mnt.odin` says why.
+Nothing modifies `static_handler` for any of this. One worker is what keeps its
+reply-borrows-my-storage rule true.
+
+With a single thread to serve it, a queued connection has exactly one request
+in flight. That is what `In_Process` had. That restriction is the honest state
+of things and `mnt.odin` says why.
 */
 @(private = "file")
 verify_transparency :: proc(r: ^Flush_Result) -> bool #no_bounds_check {

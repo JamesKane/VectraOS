@@ -14,9 +14,9 @@ Vectra requests **base revision 6**. What that buys us, and what it costs:
     and it has to run before any other Odin statement.
 
 Vectra only declares the requests it actually consumes. An unused request is
-not free: the bootloader must still find and service it, and a response we
-never read is a response occupying bootloader-reclaimable memory we cannot
-reclaim until we know nobody wants it.
+not free. The bootloader must still find and service it. A response nothing
+reads occupies bootloader-reclaimable memory, and nothing can reclaim that
+until it is clear nobody wants it.
 
 Reference: limine-protocol/PROTOCOL.md at tag v12.6.1.
 */
@@ -35,10 +35,10 @@ BASE_REVISION_MAGIC_2 :: 0x6a7b384944536bdc
 /*
 The base revision tag is a three-word handshake, not a request.
 
-We write our desired revision into word 2 and the bootloader answers in place:
-zero means "supported", unchanged means "too new for me, you were loaded as
-something else". `markers.odin` owns the tag itself; the helpers here read the
-answer.
+The kernel writes its desired revision into word 2, and the bootloader answers
+in place. Zero means `supported`. Unchanged means `too new for me, you were
+loaded as something else`. `markers.odin` owns the tag itself. The helpers here
+read the answer.
 */
 Base_Revision_Tag :: [3]u64
 
@@ -49,8 +49,8 @@ base_revision_supported :: proc "contextless" (tag: ^Base_Revision_Tag) -> bool 
 /*
 loaded_base_revision reports what the bootloader actually used.
 
-Only meaningful once the bootloader has stamped word 1; a bootloader too old to
-know about base revisions leaves the magic there, which is what `ok` reports.
+Only meaningful once the bootloader stamps word 1. A bootloader too old to know
+about base revisions leaves the magic there, which is what `ok` reports.
 Anything that behaves differently across base revisions -- HHDM coverage above
 all -- must branch on this rather than on BASE_REVISION.
 */
@@ -241,7 +241,7 @@ PAGING_MODE_REQUEST :: [4]u64 {
 
 /*
 Paging mode numbering is per-architecture: 0 means 4-level on x86-64 and
-aarch64 but Sv39 on riscv64. `arch` supplies the right constants; these are the
+aarch64 but Sv39 on riscv64. `arch` supplies the right constants. These are the
 x86-64 spellings.
 */
 X86_64_PAGING_4LVL :: u64(0)
@@ -302,9 +302,9 @@ Memmap_Request :: struct {
 
 // -- Executable load address -------------------------------------------------
 //
-// Called "kernel address" before the v9 rename; the magic is unchanged, so an
-// old binding compiles happily against a new bootloader and only the naming
-// gives away that it is stale.
+// Called `kernel address` before the v9 rename. The magic is unchanged, so an
+// old binding compiles happily against a new bootloader. Only the naming gives
+// away that it is stale.
 
 EXECUTABLE_ADDRESS_REQUEST :: [4]u64 {
 	COMMON_MAGIC_1,

@@ -5,10 +5,10 @@ Two error vocabularies, deliberately not merged.
 them. `Errno` is the protocol's, carried in Rlerror: the request was
 well-formed and the answer is no.
 
-Collapsing them would make it possible to answer a corrupt message as though it
-had been understood. A Tread on a fid that was never opened is EBADF and a
-perfectly ordinary reply; a Tread whose declared size runs past the buffer is a
-transport failure and the whole session is suspect.
+A merge of the two would let a server answer a corrupt message as though it
+understood it. A Tread on a fid that was never opened is EBADF, and a perfectly
+ordinary reply. A Tread whose declared size runs past the buffer is a transport
+failure, and the whole session is suspect.
 */
 package vectra9
 
@@ -44,13 +44,13 @@ describe :: proc "contextless" (err: Error) -> string {
 /*
 Protocol errors, as Linux numbers.
 
-9P2000.L carries an errno in Rlerror rather than the human-readable string plain
-9P used. Worse to read and far better to translate, which is what libposix will
-be doing with it -- and it is a wire-compatibility obligation, not a claim that
-errno is a good error model.
+9P2000.L carries an errno in Rlerror rather than the human-readable string
+plain 9P used. Worse to read, and far better to translate, which is what
+libposix will do with it. It is a wire-compatibility obligation, not a claim
+that errno is a good error model.
 
 Only the codes a file server actually produces are named. An unnamed code is
-still a perfectly valid Errno; it just prints as a number.
+still a perfectly valid Errno. It just prints as a number.
 */
 Errno :: distinct u32
 

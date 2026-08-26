@@ -1,21 +1,21 @@
 /*
 The local APIC, and the timer that drives preemption.
 
-One per CPU, which is the reason it and not the PIT is what a scheduler runs on:
-the interrupt is delivered to the core that owns the timer, so there is no
-cross-CPU wakeup and no arbitration for a single shared counter. Everything
-about this file that looks like extra work compared to the PIT -- the MMIO
-mapping, the calibration, the spurious vector -- is that property being paid
-for.
+One per CPU, which is why a scheduler runs on it rather than on the PIT. The
+interrupt goes to the core that owns the timer. There is no cross-CPU wakeup,
+and no arbitration for a single shared counter. Three things here look like
+extra work next to the PIT. Those are the MMIO mapping, the calibration and the
+spurious vector. All three are the price of that property.
 
 Registers are 32 bits wide, aligned to 16, and must be accessed as whole
 32-bit loads and stores. They go through `volatile_load`/`volatile_store`
 because the compiler is otherwise entitled to notice that nothing reads back
 what it wrote to EOI and delete it.
 
-The MMIO page is not mapped by anything else. `arch` sits below `kernel/mem` and
-cannot map it itself, so the sequence is: ask this file where the APIC is, map
-it in the caller, hand the virtual address back through `lapic_attach`.
+The MMIO page is not mapped by anything else. `arch` sits below `kernel/mem`
+and cannot map it itself. So the sequence is three steps. Ask this file where
+the APIC is, map it in the caller, and hand the virtual address back through
+`lapic_attach`.
 */
 package amd64
 
@@ -48,10 +48,10 @@ LVT_PERIODIC :: u32(1) << 17
 
 SPURIOUS_ENABLE :: u32(1) << 8
 
-// The divide configuration is not a plain number: bit 2 is skipped, so the
-// encoding for "divide by 16" is 0b0011 and for "by 1" is 0b1011. Sixteen keeps
-// a millisecond comfortably inside 32 bits on any plausible bus clock while
-// still leaving the counter fine-grained.
+// The divide configuration is not a plain number. Bit 2 is skipped, so the
+// encoding for `divide by 16` is 0b0011, and for `by 1` it is 0b1011. Sixteen
+// keeps a millisecond comfortably inside 32 bits on any plausible bus clock
+// while still leaving the counter fine-grained.
 TIMER_DIVIDE_16 :: u32(0b0011)
 TIMER_DIVISOR :: 16
 
@@ -88,11 +88,11 @@ lapic_attach takes the mapped register page and brings the APIC up.
 
 Two enables, and both are needed. The MSR bit is the hardware one: with it
 clear the register page does not respond at all. The SVR bit is the software
-one, and it also carries the vector a spurious interrupt is delivered on --
-which is not optional, and is why `VECTOR_SPURIOUS` has its low four bits set.
-Some steppings ignore those bits entirely and deliver on 0xFF regardless, so
-picking anything else means occasionally receiving an interrupt on a vector
-nothing claimed.
+one. It also carries the vector a spurious interrupt arrives on. That is not
+optional, and it is why `VECTOR_SPURIOUS` has its low four bits set. Some
+steppings ignore those bits entirely and deliver on 0xFF regardless, so picking
+anything else means occasionally receiving an interrupt on a vector nothing
+claimed.
 
 The task priority register is cleared because firmware may leave it high enough
 to block everything we are about to ask for.
@@ -125,8 +125,8 @@ lapic_id :: proc "contextless" () -> u32 {
 /*
 lapic_eoi acknowledges the interrupt currently being serviced.
 
-Must happen before the handler returns and must happen exactly once. Skip it and
-the APIC never delivers another interrupt at or below that priority -- which
+Must happen before the handler returns and must happen exactly once. Skip it
+and the APIC never delivers another interrupt at or below that priority. That
 looks exactly like a timer that stopped, with no error anywhere to say why.
 */
 lapic_eoi :: proc "contextless" () {
@@ -137,17 +137,19 @@ lapic_eoi :: proc "contextless" () {
 lapic_calibrate measures the timer against the PIT and returns its frequency.
 
 Counts down from all-ones for a known interval and reports how far it got. The
-LAPIC is started fractionally *before* the PIT gate rises, so the answer is
-biased high by the couple of microseconds between two port writes -- about two
-parts in ten thousand at the default interval, and in the direction that makes
-the scheduler tick slightly fast rather than slightly slow.
+LAPIC starts fractionally *before* the PIT gate rises, so the answer is biased
+high by the couple of microseconds between two port writes.
+
+That is about two parts in ten thousand at the default interval. It is also in
+the direction that makes the scheduler tick slightly fast rather than slightly
+slow.
 
 Interrupts must be off. A tick that landed in the middle of this would be
 measured as part of the interval and there is no way to notice afterwards.
 
-Returns zero if the measurement is not believable -- a counter that did not
-move, or one that ran out entirely -- rather than a number the caller would go
-on to divide by.
+Returns zero if the measurement is not believable, rather than a number the
+caller would then divide by. That covers a counter that did not move, and one
+that ran out entirely.
 */
 lapic_calibrate :: proc "contextless" (micros: u64 = 10_000) -> u64 {
 	lapic_write(LAPIC_TIMER_DIVIDE, TIMER_DIVIDE_16)
@@ -176,9 +178,9 @@ lapic_calibrate :: proc "contextless" (micros: u64 = 10_000) -> u64 {
 /*
 lapic_timer_periodic starts the tick.
 
-The LVT is written before the initial count, because the count is what starts
-the timer and a timer that started while its vector said "masked" would deliver
-its first interrupt a whole period late.
+The LVT goes in before the initial count, because the count is what starts the
+timer. A timer that started while its vector said `masked` would deliver its
+first interrupt a whole period late.
 */
 lapic_timer_periodic :: proc "contextless" (vector: u8, initial: u32) {
 	lapic_write(LAPIC_TIMER_DIVIDE, TIMER_DIVIDE_16)

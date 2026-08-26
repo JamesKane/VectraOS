@@ -3,26 +3,28 @@ The amd64 page table format.
 
 This file knows the shape of an x86-64 page table and nothing about policy.
 Which regions get mapped, where the tables come from, and what the kernel
-address space looks like are all `kernel/mem`'s business; what a present bit is
-and which nine bits of a virtual address select an entry at level 3 are this
-file's.
+address space looks like are all `kernel/mem`'s business.
+
+What a present bit is, and which nine bits of a virtual address select an entry
+at level 3, are this file's.
 
 The split matters because the walk itself is not architecture-specific. amd64's
-4-level tables, aarch64's 4-level stage-1 tables and riscv64's Sv39/Sv48 are all
-"radix trees of 512 entries, indexed nine bits at a time, with leaves allowed
-part-way up". `kernel/mem/vmm.odin` implements that loop once against the
-primitives below, so a port supplies an encoding rather than a second walker.
+4-level tables, aarch64's 4-level stage-1 tables and riscv64's Sv39/Sv48 are
+all the same shape. Each is a radix tree of 512 entries, indexed nine bits at a
+time, with leaves allowed part-way up. `kernel/mem/vmm.odin` implements that
+loop once against the primitives below, so a port supplies an encoding rather
+than a second walker.
 
-Level numbering runs downward, so that `level` is also the count of translation
-steps remaining: 4 is the PML4, 1 is the PT whose entries are 4 KiB pages.
+Level numbering runs downward, so `level` is also the count of translation
+steps remaining. 4 is the PML4. 1 is the PT whose entries are 4 KiB pages.
 */
 package amd64
 
 PAGE_SHIFT :: 12
 PAGE_SIZE :: 1 << PAGE_SHIFT
 
-// Nine bits of virtual address per level, hence 512 entries of 8 bytes -- one
-// page per table, which is the property the whole scheme is built on.
+// Nine bits of virtual address per level, hence 512 entries of 8 bytes. That
+// is one page per table, and it is the property the whole scheme rests on.
 TABLE_BITS :: 9
 TABLE_ENTRIES :: 1 << TABLE_BITS
 TABLE_LEVELS :: 4
@@ -33,10 +35,12 @@ Page_Table :: [TABLE_ENTRIES]Page_Table_Entry
 /*
 Neutral permission and caching flags.
 
-Deliberately not a 1:1 mirror of the hardware bits: `Write` and `User` are
-positive here as they are in the entry, but `No_Execute` is stated as a
-permission the caller must ask to remove, so that a zero `Page_Flags` is the
-most restrictive mapping rather than the most permissive one.
+Deliberately not a 1:1 mirror of the hardware bits. `Write` and `User` are
+positive here, as they are in the entry.
+
+`No_Execute` reads as a permission the caller must ask to remove. A zero
+`Page_Flags` is therefore the most restrictive mapping, rather than the most
+permissive one.
 */
 Page_Flag :: enum u8 {
 	Write,
@@ -68,11 +72,11 @@ PTE_ADDR_MASK :: u64(0x000F_FFFF_FFFF_F000)
 
 // -- Optional features -------------------------------------------------------
 //
-// NX and PGE are enables, not just capabilities: setting bit 63 of an entry
-// before EFER.NXE is on makes it a *reserved* bit, and the mapping faults on
-// first use with a reserved-bit page fault rather than simply ignoring it. The
-// encoder below drops both bits unless the corresponding enable actually took,
-// so the VMM can ask for them unconditionally.
+// NX and PGE are enables, not just capabilities. Bit 63 of an entry, set
+// before EFER.NXE is on, is a *reserved* bit. The mapping then faults on first
+// use, with a reserved-bit page fault, rather than ignores it. The encoder
+// below drops both bits unless the corresponding enable actually took, so the
+// VMM can ask for them unconditionally.
 
 @(private = "file") nx_enabled: bool
 @(private = "file") global_enabled: bool
@@ -83,10 +87,11 @@ enable_paging_features turns on everything the mapper wants and records what it
 got.
 
 Must run before the first entry is encoded. Limine base revision 5 and above
-hands us a CPU with every cr0/cr4/EFER bit the protocol does not require
-cleared, so none of these can be assumed on -- including CR0.WP, without which
-the kernel can happily write through a read-only mapping and the .rodata
-protection installed by the VMM is decorative.
+hands over a CPU with every cr0, cr4 and EFER bit the protocol does not require
+cleared. None of these can be assumed on.
+
+CR0.WP is included. Without it the kernel can happily write through a read-only
+mapping, and the .rodata protection the VMM installed is decorative.
 */
 enable_paging_features :: proc "contextless" () {
 	cr0 := read_cr0()
@@ -115,9 +120,9 @@ global_available :: proc "contextless" () -> bool {
 /*
 max_leaf_level reports the highest level at which a leaf may be installed.
 
-Level 1 (4 KiB) and level 2 (2 MiB) are architectural in long mode; level 3
-(1 GiB) is a feature bit. This is what lets the HHDM cost thirteen tables
-instead of three thousand.
+Level 1 (4 KiB) and level 2 (2 MiB) are architectural in long mode. Level 3 (1
+GiB) is a feature bit. This is what lets the HHDM cost thirteen tables instead
+of three thousand.
 */
 max_leaf_level :: proc "contextless" () -> int {
 	return gigabyte_pages ? 3 : 2
@@ -145,8 +150,8 @@ level_size :: proc "contextless" (level: int) -> uintptr {
 /*
 is_canonical reports whether `virt` is a form the CPU will accept.
 
-Under 4-level paging bits 63..48 must all copy bit 47; anything else raises a
-general protection fault on use rather than a page fault, which is a far less
+Under 4-level paging, bits 63..48 must all copy bit 47. Anything else raises a
+general protection fault on use, rather than a page fault. That is a far less
 informative way to find out. The VMM checks before mapping so the complaint
 names the address.
 */
@@ -160,10 +165,11 @@ is_canonical :: proc "contextless" (virt: uintptr) -> bool {
 /*
 leaf_encode builds an entry that terminates a walk at `level`.
 
-Permissions are taken literally: this is the entry the CPU checks last, and on
-amd64 the effective permission is the AND of `Write`/`User` down the whole path
-and the OR of `No_Execute`, so restrictions belong here and permissiveness
-belongs in `branch_encode`.
+Permissions are taken literally, because this is the entry the CPU checks last.
+
+On amd64 the effective permission is the AND of `Write` and `User` down the
+whole path, and the OR of `No_Execute`. Restrictions therefore belong here, and
+permissiveness belongs in `branch_encode`.
 */
 leaf_encode :: proc "contextless" (phys: uintptr, flags: Page_Flags, level: int) -> Page_Table_Entry {
 	e := (u64(phys) & PTE_ADDR_MASK) | PTE_PRESENT
@@ -196,11 +202,11 @@ leaf_encode :: proc "contextless" (phys: uintptr, flags: Page_Flags, level: int)
 branch_encode builds an entry pointing at the next table down.
 
 Always writable and always executable, because the hardware ANDs write
-permission and ORs no-execute along the path: a read-only branch would make
-every leaf beneath it read-only too. `User` is the exception -- it is ANDed as
-well, so a branch that omits it seals off the whole subtree from userland, which
-is what we want for kernel mappings and why it is propagated rather than
-assumed.
+permission and ORs no-execute along the path. A read-only branch would make
+every leaf beneath it read-only too. `User` is the exception, because the
+hardware ANDs it as well. A branch that omits it seals the whole subtree from
+userland. That is what a kernel mapping wants, and it is why this propagates
+the bit rather than assumes it.
 */
 branch_encode :: proc "contextless" (phys: uintptr, flags: Page_Flags) -> Page_Table_Entry {
 	e := (u64(phys) & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE
@@ -214,8 +220,8 @@ entry_present :: proc "contextless" (e: Page_Table_Entry) -> bool {
 	return u64(e) & PTE_PRESENT != 0
 }
 
-// entry_is_leaf reports whether a walk stops at this entry. Level 1 entries are
-// always leaves; above that it takes the large-page bit.
+// entry_is_leaf reports whether a walk stops at this entry. Level 1 entries
+// are always leaves. Above that it takes the large-page bit.
 entry_is_leaf :: proc "contextless" (e: Page_Table_Entry, level: int) -> bool {
 	return level == 1 || u64(e) & PTE_LARGE != 0
 }
@@ -227,15 +233,16 @@ entry_address :: proc "contextless" (e: Page_Table_Entry) -> uintptr {
 /*
 entry_flags decodes an entry back into the neutral flags.
 
-The inverse of `leaf_encode`, and not merely a debugging convenience: a page
-fault handler has to know what the mapping it faulted on actually permits before
-it can tell a protection violation from a missing page, and anything that
-reports the address space to userland reads it through here.
+The inverse of `leaf_encode`, and not merely a debugging convenience. A page
+fault handler has to know what the mapping it faulted on permits. Only then can
+it tell a protection violation from a missing page.
 
-`No_Execute` and `Global` are reported as the entry holds them. If the
-corresponding feature was never enabled, `leaf_encode` never set the bit, so
-this reads back false -- which is the truth about the mapping, whatever the
-caller asked for.
+Anything that reports the address space to userland also reads it through here.
+
+`No_Execute` and `Global` are reported as the entry holds them. If nothing ever
+enabled the corresponding feature, `leaf_encode` never set the bit, so this
+reads back false. That is the truth about the mapping, whatever the caller
+asked for.
 */
 entry_flags :: proc "contextless" (e: Page_Table_Entry) -> Page_Flags {
 	flags: Page_Flags
@@ -283,10 +290,10 @@ flush_page :: proc "contextless" (virt: uintptr) {
 /*
 flush_all drops every translation, global entries included.
 
-A plain CR3 reload leaves global pages behind by design -- that is what makes
-them worth having for kernel mappings -- so clearing CR4.PGE and putting it back
-is the only way to reach them. Expensive, and only needed after changing a
-mapping that was installed as global.
+A plain CR3 reload leaves global pages behind by design, and that is what makes
+them worth having for kernel mappings. CR4.PGE cleared and put back is the only
+way to reach them. Expensive, and only needed after changing a mapping that was
+installed as global.
 */
 flush_all :: proc "contextless" () {
 	if global_enabled {

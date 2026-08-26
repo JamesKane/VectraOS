@@ -12,9 +12,9 @@ Two paths, chosen by size:
 
 Both paths put a header immediately before the pointer they return, so `free`
 knows which path a block came from without a lookup structure. That header is
-also what makes over-aligned allocations work: the block is oversized, the
-returned pointer is aligned inside it, and the header records how far in it
-sits so the block's real start can be recovered.
+also what makes over-aligned allocations work. The block is oversized, and the
+returned pointer is aligned inside it. The header records how far in it sits,
+so `free` can recover the block's real start.
 
 What this deliberately is not: slabs are never returned to the PMM. Reclaiming
 one means proving every object in it is free, which means per-slab occupancy
@@ -31,13 +31,14 @@ import "base:runtime"
 import "kernel:sync"
 
 // Classes are powers of two from 16 bytes to half a page. Below 16 the header
-// dominates; above 2 KiB a page-granular allocation wastes less than a size
+// dominates. Above 2 KiB, a page-granular allocation wastes less than a size
 // class rounded up to the next power of two would.
 SIZE_CLASSES :: [?]int{16, 32, 64, 128, 256, 512, 1024, 2048}
 CLASS_COUNT :: len(SIZE_CLASSES)
 
-// Every class size is a multiple of 16, so every object start is 16-aligned and
-// an allocation asking for no more than that never needs the over-align path.
+// Every class size is a multiple of 16, so every object start is 16-aligned.
+// An allocation that asks for no more than that never needs the over-align
+// path.
 MIN_ALIGN :: 16
 
 HEADER_MAGIC :: u32(0x5645_4331) // "VEC1"
@@ -46,8 +47,8 @@ KIND_LARGE :: u8(0xFF)
 /*
 The per-block header, sitting in the sixteen bytes below every returned pointer.
 
-`offset` rather than a back-pointer because it is half the width and because a
-corrupted small integer is far easier to recognise than a corrupted pointer.
+`offset` rather than a back-pointer, because it is half the width. A corrupted
+small integer is also far easier to recognise than a corrupted pointer.
 */
 Header :: struct {
 	magic:  u32,
@@ -74,14 +75,14 @@ Slab_Class :: struct {
 /*
 The heap lock.
 
-Nothing here was ever re-entrant and now everything is: a timer interrupt can
+Nothing here was ever re-entrant, and now everything is. A timer interrupt can
 land between a free-list pop and the store that consumes it, and the thread it
 switches to allocates. The window is a handful of instructions and the failure
 is two callers holding the same object, which surfaces arbitrarily far from
 here.
 
-Held across the whole of `alloc`, `free` and `resize` rather than around the
-individual list operations, because the invariant spans them: a class's
+Held across the whole of `alloc`, `free` and `resize`, rather than around the
+individual list operations, because the invariant spans them. A class's
 `free_count` and its `free_list` have to agree, and in the middle they do not.
 `resize` calls `alloc`, so the lock is taken twice on that path -- which is why
 `sync.Spinlock` nests.
@@ -115,8 +116,8 @@ heap_stats :: proc "contextless" () -> Heap_Stats {
 heap_init records the size classes and nothing else.
 
 No slab is carved until something asks for one. A kernel that never allocates
-64-byte objects should not be paying a page for the possibility, and the first
-allocation in each class is one PMM call more expensive than the rest.
+64-byte objects should not pay a page for the possibility. The first allocation
+in each class is one PMM call more expensive than the rest.
 */
 @(private)
 heap_init :: proc "contextless" () {
@@ -132,10 +133,10 @@ heap_init :: proc "contextless" () {
 slab_grow takes one page from the PMM and threads its objects onto the free
 list.
 
-The link lives in the object's own first eight bytes, which is free storage: the
-object is not in use while it is on the list. Objects are pushed back to front
-so that the list comes out in ascending address order, which keeps a run of
-allocations walking forward through the page instead of backward through it.
+The link lives in the object's own first eight bytes, which is free storage.
+Nothing uses the object while it is on the list. Objects go on back to front,
+so the list comes out in ascending address order. That keeps a run of
+allocations moving forward through the page, rather than backward.
 */
 @(private = "file")
 slab_grow :: proc "contextless" (c: ^Slab_Class) -> bool {
@@ -194,11 +195,11 @@ class_for :: proc "contextless" (size: int) -> int {
 /*
 alloc returns `size` bytes aligned to at least `align`.
 
-The block reserved is `size` plus the header plus, when the caller wants more
-than the 16 bytes every object already guarantees, enough slack to move the
-returned pointer up to an aligned address inside it. Zeroing is the caller's
-choice because page tables and slab objects want it and a buffer about to be
-overwritten does not.
+The reserved block is `size` plus the header. A caller that wants more than the
+16 bytes every object already guarantees also gets slack. That slack moves the
+returned pointer up to an aligned address inside the block. Zeroing is the
+caller's choice because page tables and slab objects want it and a buffer about
+to be overwritten does not.
 */
 alloc :: proc "contextless" (size: int, align: int = MIN_ALIGN, zeroed := true) -> (rawptr, bool) {
 	guard := sync.acquire(&heap_lock)
@@ -237,7 +238,7 @@ alloc :: proc "contextless" (size: int, align: int = MIN_ALIGN, zeroed := true) 
 	}
 
 	// The header has to fit below the pointer, so the earliest the pointer can
-	// sit is one header in; align upward from there.
+	// sit is one header in. Align upward from there.
 	base := uintptr(block)
 	ptr := uintptr(align_up(u64(base) + size_of(Header), u64(alignment)))
 
@@ -259,10 +260,11 @@ alloc :: proc "contextless" (size: int, align: int = MIN_ALIGN, zeroed := true) 
 free returns a block to whichever path produced it.
 
 The magic is checked rather than assumed. A pointer that did not come from
-`alloc` -- an interior pointer, a double free, a stack address -- would
-otherwise be read as a header and its garbage acted on, which turns a caller's
-bug into heap corruption diagnosed somewhere else entirely. Here it is simply
-ignored, and the leak is the cheaper outcome.
+`alloc` might be an interior pointer, a double free, or a stack address.
+
+Without the magic, `free` would read one as a header and act on its garbage.
+That turns a caller's bug into heap corruption diagnosed somewhere else
+entirely. Here it is simply ignored, and the leak is the cheaper outcome.
 */
 free :: proc "contextless" (ptr: rawptr) -> bool {
 	guard := sync.acquire(&heap_lock)
@@ -311,9 +313,9 @@ resize grows or shrinks a block, in place when the rounding already allows it.
 
 An allocation rounded up to a size class usually has room to spare, so a
 sequence of small `append`s does not copy on every step. When it does not fit,
-this is allocate-copy-free, because a slab object cannot be extended and a large
-block can only be extended if the frames above it happen to be free -- a check
-that costs about as much as the copy it would save.
+this is allocate-copy-free. A slab object cannot grow. A large block can only
+grow if the frames above it happen to be free. That check costs about as much
+as the copy it would save.
 */
 resize :: proc "contextless" (
 	ptr: rawptr,
@@ -357,10 +359,10 @@ resize :: proc "contextless" (
 allocator returns the heap in the form `context.allocator` wants.
 
 Installing this is what makes `new`, `make`, `append` and every core container
-work in the kernel. Until `mem.init` has run, the build's
-`-default-to-nil-allocator` is in force instead, so an accidental allocation
-during early boot returns nil and fails at its use rather than quietly
-succeeding against a heap that does not exist yet.
+work in the kernel. Until `mem.init` runs, the build's
+`-default-to-nil-allocator` is in force instead. An accidental allocation
+during early boot therefore returns nil, and fails at its use. It does not
+quietly succeed against a heap that does not exist yet.
 */
 allocator :: proc "contextless" () -> runtime.Allocator {
 	return runtime.Allocator{procedure = allocator_proc, data = nil}
@@ -399,9 +401,9 @@ allocator_proc :: proc(
 		return nil, nil
 
 	case .Free_All:
-		// There is nothing to walk. Slabs are shared between every caller and
-		// large blocks are not tracked in a list, so freeing everything would
-		// mean pulling the floor out from under the whole kernel.
+		// There is nothing to walk. Every caller shares the slabs, and no list
+		// tracks the large blocks. A free of everything would pull the floor out
+		// from under the whole kernel.
 		return nil, .Mode_Not_Implemented
 
 	case .Query_Features:

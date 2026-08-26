@@ -6,9 +6,9 @@ design constraint rather than an accident: see docs/VECTRA9.md. Nothing in this
 package invents a message, adds a field, or negotiates a private version string.
 When a service needs an operation 9P does not have, the answer is a file.
 
-This file is the vocabulary -- the fifty-odd message bodies and the tagged union
-over them. `codec.odin` turns that union into bytes and back; `session.odin`
-decides whether bytes are involved at all.
+This file is the vocabulary -- the fifty-odd message bodies and the tagged
+union over them. `codec.odin` turns that union into bytes and back.
+`session.odin` decides whether bytes take any part at all.
 
 Ownership, because it is the rule most easily broken: **a decoded message
 borrows its buffer.** Strings and byte slices inside a `Msg` point into whatever
@@ -22,7 +22,7 @@ VERSION :: "9P2000.L"
 
 // The largest single message either side will send, negotiated by Tversion.
 // Two pages, which is what Linux's v9fs asks for by default. It bounds the
-// wire; an in-process transport has no buffer to overflow and may report
+// wire. An in-process transport has no buffer to overflow, and may report
 // whatever it likes.
 MSIZE_DEFAULT :: 8192
 
@@ -56,9 +56,9 @@ NONUNAME :: u32(0xFFFF_FFFF)
 The server's permanent identity for a file.
 
 `path` is the identity: two qids with equal paths are the same file, forever.
-`version` changes whenever the contents do, which makes cache validation
-possible and makes a whole qid unsuitable as a mount-table key -- creating a
-file inside a mounted-over directory would otherwise unmount it.
+`version` changes whenever the contents do. That makes cache validation
+possible, and makes a whole qid unsuitable as a mount-table key. A file created
+inside a mounted-over directory would otherwise unmount it.
 */
 Qid_Flag :: enum u8 {
 	Link    = 0, // 0x01 -- hard link
@@ -79,7 +79,7 @@ Qid :: struct {
 	path:    u64,
 }
 
-// Thirteen on the wire; sixteen in memory, because Odin aligns `path`. Both
+// Thirteen on the wire. Sixteen in memory, because Odin aligns `path`. Both
 // numbers are needed and confusing them truncates every qid in a walk.
 QID_WIRE_SIZE :: 13
 
@@ -88,9 +88,9 @@ QID_WIRE_SIZE :: 13
 /*
 The 9P2000.L message numbers.
 
-Numbering is the protocol's, not ours, and the gaps are real: 9P2000.L took over
-the low numbers for its own operations and left the classic 9P2000 messages at
-100 and above. Six (`Tlerror`) is reserved and illegal to send.
+The numbering is the protocol's, not ours, and the gaps are real. 9P2000.L
+claimed the low numbers for its own operations, and left the classic 9P2000
+messages at 100 and above. Six (`Tlerror`) is reserved and illegal to send.
 
 Absent, because 9P2000.L replaced them: Topen, Tcreate, Tstat, Twstat, Rerror.
 Anything asking for those is speaking plain 9P2000 and should be refused at
@@ -159,10 +159,11 @@ Kind :: enum u8 {
 /*
 kind_name renders a message kind for a log.
 
-Needed the moment anyone traces 9P traffic, which is the first thing anyone does
-when a server and a client disagree -- and an enum otherwise prints as its
-ordinal, which for this enum is the wire number and therefore just misleading
-enough to waste an afternoon.
+Needed the moment anyone traces 9P traffic, which is the first thing anyone
+does when a server and a client disagree.
+
+An enum otherwise prints as its ordinal. For this enum that is the wire number,
+which is just misleading enough to waste an afternoon.
 */
 kind_name :: proc "contextless" (k: Kind) -> string {
 	switch k {
@@ -283,11 +284,11 @@ Rlerror :: struct {
 /*
 Tflush asks the server to abandon a pending request.
 
-Not a cancellation so much as a synchronisation point: the server may finish the
-flushed request or drop it, but Rflush must come *after* whatever it does with
-the original tag, and the client must not reuse that tag until Rflush arrives.
-This is the one ordering requirement in the protocol, and it is what makes a
-blocked read interruptible.
+Not a cancellation so much as a synchronisation point. The server may finish
+the flushed request or drop it. But Rflush must come *after* whatever it does
+with the original tag, and the client must not reuse that tag until Rflush
+arrives. This is the one ordering requirement in the protocol, and it is what
+makes a blocked read interruptible.
 
 Two rules that are part of the protocol rather than any server's policy, both
 taken from how Plan 9 implements this (docs/VECTRA9.md section 7.3):
@@ -296,10 +297,10 @@ taken from how Plan 9 implements this (docs/VECTRA9.md section 7.3):
     connection is broken. A server that can neither find nor abort the request
     still answers Rflush -- the client only needs to know the tag is free.
   - **A flushed request may still be answered.** The client has to tolerate the
-    reply it asked to have cancelled, arriving before the Rflush.
+    reply to the request it tried to cancel, arriving before the Rflush.
 
 Serving this needs a pool of in-flight requests indexed by tag, and a way to
-wake the thread blocked on one. Neither exists yet; the scheduler is what
+wake the thread blocked on one. Neither exists yet. The scheduler is what
 unblocks it.
 */
 Tflush :: struct {
@@ -372,8 +373,8 @@ Treaddir reads directory entries, not raw bytes.
 
 `offset` is an opaque cookie: it must be zero or a value previously returned in
 an Rreaddir entry, never an arbitrary byte position. That requirement is what
-lets a union directory encode which member it is partway through in the high
-bits of the offset -- see docs/VECTRA9.md section 5.6.
+lets a union directory encode which member it is part-way through, in the high
+bits of the offset. See docs/VECTRA9.md section 5.6.
 */
 Treaddir :: struct {
 	fid:    Fid,
@@ -498,7 +499,7 @@ Runlinkat :: struct {}
 // -- Attributes --------------------------------------------------------------
 
 /*
-Tgetattr asks for the fields named in `request_mask`; Rgetattr's `valid` says
+Tgetattr asks for the fields named in `request_mask`. Rgetattr's `valid` says
 which it actually filled in.
 
 The two masks are not the same thing and a server is entitled to return fewer
@@ -691,8 +692,8 @@ Msg :: union {
 A Msg is a stack value, and this assert is what keeps it one.
 
 Twalk's sixteen inline names set the floor. If this trips, something grew an
-inline array -- fix that rather than raising the bound, because every message in
-the system is this size whether it needs to be or not.
+inline array. Fix that rather than raise the bound. Every message in the system
+is this size, whether it needs to be or not.
 */
 #assert(size_of(Msg) <= 320)
 

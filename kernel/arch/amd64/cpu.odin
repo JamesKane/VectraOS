@@ -3,8 +3,8 @@ amd64 CPU primitives.
 
 Everything here is `contextless` and allocation-free: these run before the
 runtime is up and from interrupt context. Inline assembly uses LLVM's AT&T
-dialect with explicit register constraints so the operand order is fixed
-regardless of how the optimiser feels about it that day.
+dialect, with explicit register constraints. The operand order is then fixed,
+whatever the optimiser thinks of it that day.
 */
 package amd64
 
@@ -147,11 +147,11 @@ CPUID_Result :: struct {
 /*
 cpuid reads one leaf of the CPU feature identification.
 
-`cpuid` clobbers `rbx`, which LLVM handles on x86-64 by saving it around the
-block -- unlike i386, where `ebx` is the PIC base and the same constraint is a
-trap. Callers should check `max_leaf` before trusting a leaf's contents: an
-unimplemented leaf does not fault, it returns whatever the highest implemented
-one does, which is indistinguishable from a real answer.
+`cpuid` clobbers `rbx`. On x86-64, LLVM handles that with a save around the
+block. On i386 it does not, because `ebx` is the PIC base, and the same
+constraint is a trap. Callers must check `max_leaf` before they trust a leaf's
+contents. An unimplemented leaf does not fault. It returns whatever the highest
+implemented one does, and nothing tells that apart from a real answer.
 */
 cpuid :: proc "contextless" (leaf: u32, subleaf: u32 = 0) -> CPUID_Result {
 	return asm(u32, u32) -> CPUID_Result{"cpuid", "={eax},={ebx},={ecx},={edx},{eax},{ecx}"}(leaf, subleaf)
@@ -220,14 +220,14 @@ read_rflags :: proc "contextless" () -> u64 {
 /*
 irq_save masks interrupts and reports whether they were on.
 
-The uniprocessor lock. With one CPU and no preemption other than the timer,
-"nothing else can run" and "interrupts are off" are the same statement, so a
-critical section is this and its matching restore. It stays correct on SMP as
-the *inner* half of a spinlock -- what changes is that a lock word is needed
-too, not that this stops being necessary.
+The uniprocessor lock. With one CPU, and no preemption other than the timer,
+`nothing else can run` and `interrupts are off` are the same statement. A
+critical section is therefore this and its matching restore. It stays correct
+on SMP, as the *inner* half of a spinlock. What changes is that a lock word is
+needed too. This does not stop being necessary.
 
-Returns the previous state rather than unconditionally enabling on the way out,
-because these nest: a handler that ran with interrupts already masked must not
+Returns the previous state, rather than unconditionally enables on the way out,
+because these nest. A handler that ran with interrupts already masked must not
 turn them on when it finishes.
 */
 irq_save :: proc "contextless" () -> bool {

@@ -2,8 +2,8 @@
 The namespace self-test, run on the machine that will use it.
 
 Every claim `docs/VECTRA9.md` section 5 makes is checked here against two real
-servers and real 9P traffic -- no stubs, and nothing that would pass if the
-mount table were a lookup table with a fancier name. The ones worth naming:
+servers and real 9P traffic. There are no stubs, and nothing here would pass if
+the mount table were a lookup table with a fancier name. The ones worth naming:
 
   - a union searched in mount order, with the first member winning a name both
     members have
@@ -13,7 +13,7 @@ mount table were a lookup table with a fancier name. The ones worth naming:
   - a `Copy` fork that diverges, and a `Clean` fork with no way to name anything
 
 The last of those is the one to watch. A `Clean` namespace that could still
-reach a file would be a sandbox with a hole in it, and it would look exactly
+reach a file would be a sandbox with a hole in it. It would also look exactly
 like a working one from anywhere else.
 */
 package vfs
@@ -89,9 +89,9 @@ read_file :: proc(ns: ^Namespace, path: string, buf: []u8) -> (string, Errno) {
 /*
 list_dir walks a whole directory listing, following the opaque cookies.
 
-Bounded by `MAX_LISTING_PASSES` rather than trusting the loop to end: a server
-that returned the same cookie twice, or a union that failed to advance past an
-exhausted member, would otherwise spin here forever instead of failing.
+Bounded by `MAX_LISTING_PASSES`, rather than trust in the loop to end. A server
+that returned the same cookie twice would otherwise spin here forever rather
+than fail. So would a union that failed to advance past an exhausted member.
 */
 @(private = "file")
 MAX_LISTING_PASSES :: 32
@@ -292,11 +292,11 @@ verify_union :: proc(r: ^Verify_Result, ns: ^Namespace, buf: []u8) {
 	check(r, member_count(mp) == 2, "/dev is a union of two members")
 
 	/*
-	The chan a union resolves to is its *first* member -- so `stat /dev`
-	describes alpha, the same tree `open /dev/cons` reaches. Checked on the
-	chan's own identity because nothing else can see it: names are resolved by
-	searching the member list, and a listing is assembled from the member list,
-	so both come out right even if the crossing picked the wrong member.
+	The chan a union resolves to is its *first* member -- so `stat /dev` describes
+	alpha, the same tree `open /dev/cons` reaches. Checked on the chan's own
+	identity, because nothing else can see it. A search of the member list
+	resolves names, and a listing concatenates the member list. Both therefore
+	come out right even if the crossing picked the wrong member.
 	*/
 	dev: ^Chan
 	dev, err = resolve(ns, "/dev")
@@ -321,10 +321,10 @@ verify_union :: proc(r: ^Verify_Result, ns: ^Namespace, buf: []u8) {
 	check(r, total == 4, "the union lists every member's entries")
 	check(r, matches == 2, "a duplicated name is listed twice, not filtered")
 
-	// Alpha holds `cons` and `sub`, beta holds `cons` and `mouse`. In mount
-	// order that puts `mouse` last, and nowhere else -- which is what catches a
-	// union that concatenates its members backwards, a bug every count-based
-	// check above is blind to because the counts come out the same either way.
+	// Alpha holds `cons` and `sub`, beta holds `cons` and `mouse`. In mount order
+	// that puts `mouse` last, and nowhere else. That is what catches a union that
+	// concatenates its members backwards. Every count-based check above is blind
+	// to that bug, because the counts come out the same either way.
 	_, _, at, merr := list_dir(ns, "/dev", buf, "mouse")
 	check(r, merr == OK && at == 3, "members are listed in mount order")
 

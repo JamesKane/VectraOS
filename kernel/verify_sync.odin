@@ -1,10 +1,10 @@
 /*
 The sleeping lock, checked directly.
 
-`kernel/verify_vfs.odin` exercises `sync.Mutex` hard -- ten thousand parks a
-second under five threads -- but only through the namespace, where a lock
-failure arrives as a wrong directory listing several layers up. This is the
-lock on its own terms: two threads, one mutex, and the three properties the
+`kernel/verify_vfs.odin` exercises `sync.Mutex` hard, at ten thousand parks a
+second under five threads. But it does that only through the namespace, where a
+lock failure arrives as a wrong directory listing several layers up. This is
+the lock on its own terms: two threads, one mutex, and the three properties the
 rest of the kernel is entitled to assume.
 
     exclusion    two threads are never inside it at once
@@ -12,19 +12,20 @@ rest of the kernel is entitled to assume.
     accounting   a thread that spent a slice of CPU decayed, even though it
                  blocked its way through every one of them
 
-The third looks like a scheduler property in a lock's self-test, and it is
-here because a sleeping lock is what made it reachable. `Thread.ticks_left`
-used to be refilled on every dispatch, which was the same thing as refilling
-it every slice for exactly as long as nothing blocked. Two threads handing a
-mutex back and forth are dispatched several hundred times a second and reach
-the end of a slice never, so under the old rule they sit at their base
-priority no matter how much of the machine they are using -- and the priority
-they are sitting at is now also the one this lock hands off on.
+The third looks like a scheduler property in a lock's self-test, and it is here
+because a sleeping lock is what made it reachable. `Thread.ticks_left` used to
+be refilled on every dispatch, which was the same thing as refilling it every
+slice for exactly as long as nothing blocked. Two threads that hand a mutex
+back and forth are dispatched several hundred times a second, and reach the end
+of a slice never. Under the old rule they sit at their base priority, no matter
+how much of the machine they use.
 
-The critical section is a spin rather than a few instructions, deliberately.
-It has to be long enough that a timer lands inside it and short enough that it
-never runs a whole slice on its own, because that gap is precisely what
-distinguishes "charged for the CPU it used" from "never finished a slice".
+And the priority they sit at is now also the one this lock hands off on.
+
+The critical section is a spin rather than a few instructions, deliberately. It
+has to be long enough for a timer to land inside it. It also has to be short
+enough never to run a whole slice on its own. That gap is precisely what tells
+`charged for the CPU it used` apart from `never finished a slice`.
 */
 package kernel
 
@@ -37,7 +38,7 @@ import "kernel:sync"
 import "vsys:libodin"
 
 // Long enough for a 1 kHz tick to land inside the critical section a good
-// fraction of the time; far short of the ten ticks in a slice.
+// fraction of the time. Far short of the ten ticks in a slice.
 @(private = "file")
 HOLD_SPINS :: 20_000
 
@@ -90,9 +91,9 @@ both_done :: proc "contextless" (arg: rawptr) -> bool {
 /*
 contend_worker takes the lock, occupies it visibly, and gives it back.
 
-`contend_inside` is a plain bool guarded by nothing but the mutex, which is
-the point: if two threads are ever inside at once, one of them sees it set on
-the way in or clear on the way out. Volatile so the compiler cannot decide
+`contend_inside` is a plain bool, and nothing but the mutex guards it. That is
+the point. If two threads are ever inside at once, one of them sees it set on
+the way in, or clear on the way out. Volatile so the compiler cannot decide
 that a variable this thread just wrote is still what it wrote.
 */
 @(private = "file")
@@ -167,9 +168,9 @@ scheck :: proc "contextless" (r: ^Sync_Result, ok: bool, what: string) -> bool {
 /*
 verify_sleep_lock runs the whole thing and reports.
 
-Ordered before the namespace self-test on purpose: if the lock itself is
+Ordered before the namespace self-test on purpose. If the lock itself is
 broken, the five-thread namespace run says so in the vocabulary of mount
-tables, and this says so in the vocabulary of locks.
+tables. This says so in the vocabulary of locks.
 */
 verify_sleep_lock :: proc() #no_bounds_check {
 	r: Sync_Result
@@ -214,10 +215,11 @@ verify_sleep_lock :: proc() #no_bounds_check {
 		return
 	}
 
-	// The boot thread has nothing to do here and no business competing with
-	// the two threads it is measuring, so it parks: off every run queue until
-	// the second of them is finished, with a deadline so that a contender
-	// that wedges is a failed check rather than a hung boot.
+	// The boot thread has nothing to do here, and no business in contention with
+	// the two threads it measures. So it parks.
+	//
+	// It is off every run queue until the second of them finishes. The deadline
+	// makes a contender that wedges a failed check, rather than a hung boot.
 	scheck(
 		&r,
 		sync.sleep_for(&contend_over, both_done, nil, CONTEND_TICKS + PATIENCE),
@@ -248,17 +250,17 @@ verify_sleep_lock :: proc() #no_bounds_check {
 	/*
 	The accounting check.
 
-	Two threads that hand a lock back and forth are dispatched hundreds of
-	times a second and finish a slice on their own never. They are also using
-	the entire machine between them. A scheduler that only decays a thread for
-	reaching the end of a slice leaves both of them near their base priority
-	for ever, which is what happened before `Thread.ticks_left` learned to
-	carry its remainder across a block.
+	Two threads that hand a lock back and forth are dispatched hundreds of times a
+	second and finish a slice on their own never. They are also using the entire
+	machine between them. A scheduler that only decays a thread at the end of a
+	slice leaves both of them near their base priority for ever. That is what
+	happened before `Thread.ticks_left` learned to carry its remainder across a
+	block.
 
-	The bar is four levels rather than one because one level is what the old
-	rule manages by accident: each thread's first dispatch runs uncontended
-	and does reach the end of a slice. Charged properly the two of them reach
-	the floor; charged per dispatch they stop at seven.
+	The bar is four levels rather than one, because one level is what the old rule
+	manages by accident. Each thread's first dispatch runs uncontended, and does
+	reach the end of a slice. Charged properly, the two of them reach the floor.
+	Charged per dispatch, they stop at seven.
 	*/
 	scheck(
 		&r,

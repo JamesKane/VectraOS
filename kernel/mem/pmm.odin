@@ -1,15 +1,17 @@
 /*
 The physical memory manager: one bit per page frame, 1 meaning taken.
 
-A bitmap rather than a free list because a free list has to live *in* the pages
-it tracks, which means a page fault at the wrong moment corrupts the allocator
-itself, and because contiguous multi-page allocation -- which the VMM needs for
-tables and the heap needs for large objects -- is a run search over a bitmap and
-a linear walk over a list.
+A bitmap rather than a free list, for two reasons. A free list has to live *in*
+the pages it tracks, so a page fault at the wrong moment corrupts the allocator
+itself.
 
-The cost is a scan. It is bounded by keeping a rotating hint at the last
-allocation, and by skipping fully-occupied bytes eight frames at a time, which
-matters because the common shape of kernel memory is a long taken prefix
+And contiguous multi-page allocation is a run search over a bitmap, against a
+linear walk over a list. The VMM needs that for tables, and the heap needs it
+for large objects.
+
+The cost is a scan. Two things bound it. A rotating hint sits at the last
+allocation, and a skip passes fully-occupied bytes eight frames at a time. That
+matters, because the common shape of kernel memory is a long taken prefix
 followed by a long free tail.
 
 The bitmap covers every frame from 0 to the top of allocatable memory, holes
@@ -80,16 +82,18 @@ release :: proc "contextless" (frame: int) #no_bounds_check {
 /*
 pmm_init builds the bitmap out of the memory map and puts it somewhere.
 
-The bootstrap problem -- the bitmap needs memory, and memory needs the bitmap --
-is solved in the usual order: pick a home for the bitmap by hand out of the raw
-map, declare everything taken, free the allocatable regions wholesale, and then
-take the bitmap's own frames back. The last step is why the second pass cannot
-be skipped by simply avoiding the bitmap's range in the first.
+The bitmap needs memory, and memory needs the bitmap. The usual order solves
+that bootstrap problem:
 
-Frames are page-aligned inward, never outward: a region running from the middle
-of one page to the middle of another contributes only the whole pages strictly
-inside it. Rounding the other way would hand out a frame that overlaps something
-the firmware still owns.
+Pick a home for the bitmap by hand out of the raw map. Declare everything
+taken. Free the allocatable regions wholesale. Then take the bitmap's own
+frames back. The last step is why the first pass cannot simply avoid the
+bitmap's range, and skip the second.
+
+Frames are page-aligned inward, never outward. A region that runs from the
+middle of one page to the middle of another contributes only the whole pages
+strictly inside it. Rounding the other way would hand out a frame that overlaps
+something the firmware still owns.
 */
 @(private)
 pmm_init :: proc "contextless" (b: ^Boot_Memory) -> Error {
@@ -136,10 +140,10 @@ pmm_init :: proc "contextless" (b: ^Boot_Memory) -> Error {
 		take(bitmap_frame + i)
 	}
 
-	// Frame 0 stays taken forever. Base revision 6 allows the firmware to call
-	// it usable, and a kernel that hands it out loses the one thing that makes
-	// a null dereference report itself as a fault instead of quietly reading a
-	// page of somebody's data.
+	// Frame 0 stays taken forever. Base revision 6 allows the firmware to call it
+	// usable. A kernel that hands it to a caller loses the one thing that makes a
+	// null dereference report itself as a fault. Without it, that dereference
+	// quietly reads a page of somebody's data.
 	take(0)
 
 	hint = 0
@@ -149,10 +153,10 @@ pmm_init :: proc "contextless" (b: ^Boot_Memory) -> Error {
 /*
 find_bitmap_home picks a physical home for the bitmap out of the raw map.
 
-First fit, skipping frame 0 for the reason above. Deliberately not best fit: the
-bitmap is allocated exactly once and never moves, and first fit places it in low
-memory, which leaves the largest region -- the one every later allocation comes
-out of -- unfragmented.
+First fit, skipping frame 0 for the reason above. Deliberately not best fit.
+The bitmap is allocated exactly once and never moves. First fit places it in
+low memory, which leaves the largest region unfragmented. That is the region
+every later allocation comes out of.
 */
 @(private = "file")
 find_bitmap_home :: proc "contextless" (b: ^Boot_Memory, need: u64) -> (u64, bool) {
@@ -187,12 +191,13 @@ release_range :: proc "contextless" (base, length: u64) {
 /*
 pmm_reclaim hands the bootloader's own memory to the allocator.
 
-Not called during boot, and calling it early is fatal in a way that is very hard
-to read afterwards. Bootloader-reclaimable memory holds three things the kernel
-is still standing on at the end of `mem.init`: the stack `kmain` is running on,
-every Limine response structure, and the memory map being iterated to do the
-reclaiming. It becomes free only once the scheduler has moved onto a kernel
-stack of its own and anything wanted from the responses has been copied out.
+Not called during boot, and calling it early is fatal in a way that is very
+hard to read afterwards. Bootloader-reclaimable memory holds three things the
+kernel still stands on at the end of `mem.init`. Those are the stack `kmain`
+runs on, every Limine response structure, and the memory map the reclaim itself
+iterates. It becomes free only once two things are true. The scheduler must sit
+on a kernel stack of its own, and anything the kernel wants from the responses
+must already sit somewhere else.
 
 It is worth doing -- it is 39 MiB on this machine -- which is why it is written
 down now rather than rediscovered later.
@@ -214,11 +219,11 @@ pmm_reclaim :: proc "contextless" (b: ^Boot_Memory) -> (frames: int) {
 /*
 alloc_pages finds `count` contiguous free frames and takes them.
 
-The search starts at the last allocation and wraps once, so a run of
-allocations walks forward through memory instead of re-scanning the taken
-prefix each time. Failure is a return value rather than a panic: the heap has a
-fallback for it and the VMM turns it into a `mem.Error`, and a physical
-allocator that halts the machine is not one a page fault handler can call.
+The search starts at the last allocation and wraps once. A run of allocations
+therefore walks forward through memory, rather than re-scans the taken prefix
+each time. Failure is a return value rather than a panic. The heap has a
+fallback for it, and the VMM turns it into a `mem.Error`. A physical allocator
+that halts the machine is not one a page fault handler can call.
 */
 alloc_pages :: proc "contextless" (count: int) -> (phys: uintptr, ok: bool) {
 	if count <= 0 || count > frame_free {
@@ -254,9 +259,9 @@ alloc_page :: proc "contextless" () -> (phys: uintptr, ok: bool) {
 /*
 alloc_page_zeroed is the page table constructor's allocator.
 
-A fresh table has to read as "no entry present" in all 512 slots, and a frame
-that has been used before does not. Zeroing goes through the direct map, which
-is why the PMM may only ever hand out frames from HHDM-mapped regions.
+A fresh table has to read as `no entry present` in all 512 slots. A frame
+something used before does not. Zeroing goes through the direct map, which is
+why the PMM may only ever hand out frames from HHDM-mapped regions.
 */
 alloc_page_zeroed :: proc "contextless" () -> (phys: uintptr, ok: bool) {
 	phys, ok = alloc_pages(1)
@@ -275,8 +280,8 @@ free_pages :: proc "contextless" (phys: uintptr, count: int) {
 			release(f)
 		}
 	}
-	// Freed frames are the cheapest thing to allocate next, so aim the search
-	// at them rather than leaving the hint past the hole they just made.
+	// Freed frames are the cheapest thing to allocate next. Aim the search at
+	// them, rather than leave the hint past the hole they just made.
 	if frame < hint {
 		hint = frame
 	}
@@ -289,10 +294,10 @@ free_page :: proc "contextless" (phys: uintptr) {
 /*
 scan looks for `count` consecutive free frames in [from, to).
 
-The 0xFF fast path is what makes this cheap in practice: a fully-taken byte
+The 0xFF fast path is what makes this cheap in practice. A fully-taken byte
 cannot contain any part of a run, so it costs one compare per eight frames
-instead of eight. It only fires on a byte boundary with no run in progress,
-because a run crossing into the byte has to be broken by the loop proper.
+rather than eight. It only fires on a byte boundary with no run in progress.
+The loop proper has to break a run that crosses into the byte.
 */
 @(private = "file")
 scan :: proc "contextless" (from, to, count: int) -> (int, bool) #no_bounds_check {

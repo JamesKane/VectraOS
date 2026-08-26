@@ -130,6 +130,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, and the borrow rule | Walking, binding, or adding a server |
 | `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush` | Writing a transport, or making a request interruptible |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
+| `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
 Three rules run through all of them and are worth knowing before opening any:
 
@@ -384,7 +385,11 @@ sys/
     verify.odin         The boot self-test
   libposix/             Empty
 servers/ apps/          Empty
-tools/genfont.py        TTF -> font_data.odin
+tools/
+  genfont.py            TTF -> font_data.odin
+  ste-lint.py           The ASD-STE100 checker; `build.odin -- lint` runs it
+.claude/skills/
+  asd-ste100/           The controlled-language skill this tree writes under
 docs/
   HANDOFF.md            This file: status, build, roadmap, and the index below
   VECTRA9.md            The protocol and namespace design, and what
@@ -396,6 +401,8 @@ docs/
   NAMESPACE.md          kernel/vfs: what guards what, and the borrow rule
   TRANSPORT.md          kernel/mnt: the tag pool, the workers, Tflush
   TESTING.md            The self-test discipline, and the negative controls
+  STYLE.md              ASD-STE100: the two modes, the checked rules, and the
+                        project dictionary
   milestone0-boot.png   Milestone 0 screenshot -- it boots
   milestone1-memory.png Milestone 1 screenshot -- PMM, VMM, heap
   panic-screen.png      Milestone 2 screenshot -- a deliberate #PF, reported

@@ -1,25 +1,24 @@
 /*
 A read-only server over a table of nodes.
 
-One implementation, many instances: `#/` is one, and anything else that wants
-to publish a fixed shape -- a boot manifest, a set of tunables, the skeleton a
-real filesystem gets bound into -- is another. Writing a second server should
-not mean writing a second fid table.
+One implementation, many instances. `#/` is one. So is anything else with a
+fixed shape to publish. A boot manifest, a set of tunables, or the skeleton a
+real filesystem binds into. A second server should not mean a second fid table.
 
 Two properties are worth being explicit about, because they are what make this
 usable at boot before anything else exists:
 
   - **The handler never allocates.** It is `contextless` like every other
-    Vectra9 handler, and the two things a server needs to grow -- a fid table
-    and somewhere to encode a directory listing -- are sized once in
-    `static_init`. A server that ran out of fids returns ENFILE, which is the
+  Vectra9 handler. The two things a server needs to grow are a fid table and
+  somewhere to encode a directory listing, and `static_init` sizes both once. A
+  server that ran out of fids returns ENFILE, which is the
     truth, rather than reaching for a heap it may be underneath.
   - **A read costs no copy.** `Rread.data` points straight into the node's
     string, which lives in `.rodata`. The copy happens once, in `chan_read`,
     because that is the layer whose caller owns a buffer.
 
 `.` and `..` are not in a directory listing here. 9P walks them, and Plan 9's
-servers do not emit them; a POSIX layer that needs them synthesises them where
+servers do not emit them. A POSIX layer that needs them synthesises them where
 it synthesises the rest of `struct dirent`.
 */
 package vfs
@@ -45,9 +44,9 @@ STATIC_FID_BUCKETS :: 32
 /*
 One client fid, bound to one node.
 
-Chained by index rather than by pointer so the whole table is one allocation
-and a slot can be on the free list or in a bucket without either being a
-different type. `next` is that chain in both roles.
+Chained by index rather than by pointer, so the whole table is one allocation.
+A slot can then be on the free list or in a bucket, and neither is a different
+type. `next` is that chain in both roles.
 */
 @(private)
 Fid_Slot :: struct {
@@ -71,14 +70,15 @@ Static_Tree :: struct {
 	One buffer per server, borrowed by the reply and valid until the next
 	message -- which is exactly the ownership rule the whole package runs on.
 
-	"Until the next message" used to mean "until this caller sends another
-	one", because nothing could get in between. Preemption ended that: a timer
-	between the reply landing and the client copying out of it lets a second
-	thread issue a Treaddir and overwrite the buffer the first is standing in.
-	What keeps that from happening is `Server.lock`, held across the message
-	*and* the caller's use of the reply -- see `rpc` and the borrow rule in
-	`lock.odin`. One buffer is still the right shape; what changed is that the
-	rule protecting it is now a lock rather than an absence of threads.
+	`Until the next message` used to mean `until this caller sends another one`,
+	because nothing could get in between. Preemption ended that. A timer between
+	the reply and the client's copy out of it lets a second thread issue a
+	Treaddir. That second thread overwrites the buffer the first is standing in.
+
+	What stops that is `Server.lock`, held across the message *and* the caller's
+	use of the reply. See `rpc` and the borrow rule in `lock.odin`. One buffer is
+	still the right shape. What changed is that a lock now protects it, rather
+	than an absence of threads.
 	*/
 	dirbuf: []u8,
 
@@ -86,12 +86,13 @@ Static_Tree :: struct {
 	The server's own state, which is every field above this one.
 
 	Distinct from the session lock a client holds across a message, and not
-	implied by it: `Static_Tree` is the *server* side, and a server protects
-	itself rather than trusting each client to have serialised first. Today the
-	two are redundant -- one tree, one session, one message at a time -- and
-	that redundancy costs a nested acquire on a uniprocessor, which is a
-	decrement and an increment. Cheap enough that the layering is worth keeping
-	honest.
+	implied by it. `Static_Tree` is the *server* side, and a server protects
+	itself rather than trusts each client to serialise first.
+
+	Today the two are redundant, because there is one tree, one session, and one
+	message at a time. That redundancy costs a nested acquire on a uniprocessor,
+	which is a decrement and an increment. Cheap enough that the layering is worth
+	keeping honest.
 	*/
 	lock:   sync.Spinlock,
 }
@@ -99,8 +100,8 @@ Static_Tree :: struct {
 /*
 static_init sizes a server's tables and returns whether it could.
 
-`max_fids` is a real limit and is meant to be: a fid is a server resource, and
-a server that grows its table on demand is a server a client can exhaust the
+`max_fids` is a real limit, and is meant to be. A fid is a server resource. A
+server that grows its table on demand is a server a client can exhaust the
 machine's memory through.
 */
 static_init :: proc(
@@ -254,9 +255,9 @@ step :: proc "contextless" (t: ^Static_Tree, from: i32, name: string) -> i32 #no
 	case ".":
 		return from
 	case "..":
-		// The root's parent is the root. A server has no name for anything
-		// above its own tree, and saying so plainly here is what lets the
-		// namespace layer notice and climb through `mounted_over` instead.
+		// The root's parent is the root. A server has no name for anything above its
+		// own tree. This says so plainly, which is what lets the namespace layer
+		// notice and climb through `mounted_over` instead.
 		p := t.nodes[from].parent
 		return p < 0 ? from : p
 	}
@@ -269,10 +270,10 @@ step :: proc "contextless" (t: ^Static_Tree, from: i32, name: string) -> i32 #no
 /*
 static_mutates reports whether a message would change the tree.
 
-Answered by kind rather than by falling through to a default, so a read-only
-server refuses a write with EROFS -- "there is such an operation and you may
-not" -- rather than EOPNOTSUPP, which would say the server does not implement
-it and send a client looking for a different one.
+Answered by kind, rather than by a fall through to a default. A read-only
+server therefore refuses a write with EROFS, which says `there is such an
+operation and you may not`. EOPNOTSUPP would say the server does not implement
+it, and send a client to look for a different one.
 */
 @(private = "file")
 static_mutates :: proc "contextless" (k: vectra9.Kind) -> bool {
@@ -331,8 +332,8 @@ static_handler :: proc "contextless" (
 
 	#partial switch m in request^ {
 	case vectra9.Tversion:
-		// Refusing a dialect is done by answering with a different version
-		// string, which is what a client checks. Never an Rlerror.
+		// A refused dialect gets a different version string in the answer, which is
+		// what a client checks. Never an Rlerror.
 		if m.version != vectra9.VERSION {
 			reply^ = vectra9.Rversion{msize = m.msize, version = "unknown"}
 			return
@@ -440,11 +441,11 @@ static_walk resolves up to sixteen names in one message.
 The two rules a walk has to get right, both easy to miss:
 
   - **A partial walk binds nothing.** If element three of five fails, `newfid`
-    is untouched and the client still holds only `fid`. Binding it to where the
-    walk stopped would hand back a handle on a directory the client never asked
-    for and cannot tell apart from success.
-  - **A failure at element zero is an error reply; a failure later is a short
-    Rwalk.** The client distinguishes "the first name is not there" from "the
+    is untouched and the client still holds only `fid`. Bound to where the walk
+    stopped, it would hand back a handle on a directory the client never asked
+    for. The client cannot tell that apart from success.
+  - **A failure at element zero is an error reply. A failure later is a short
+  Rwalk.** The client distinguishes "the first name is not there" from "the
     path runs out partway" by which of those it gets.
 */
 @(private = "file")
@@ -496,14 +497,14 @@ static_readdir :: proc "contextless" (t: ^Static_Tree, m: vectra9.Treaddir, repl
 	c := vectra9.cursor_from(t.dirbuf[:room])
 
 	/*
-	The cookie is the child's ordinal within its parent, one-based, so it is
-	"resume after this one" rather than "resume at this one" -- which is what
-	Treaddir means by an offset and why zero is a legal starting value that is
-	never returned in an entry.
+	The cookie is the child's ordinal within its parent, one-based. It therefore
+	means `resume after this one` rather than `resume at this one`. That is what
+	Treaddir means by an offset, and it is why zero is a legal starting value that
+	no entry ever returns.
 
-	Linear in the size of the whole table per call, which is fine for a table
-	that fits in a cache line's worth of directories and would not be for a
-	real filesystem. A real one keeps its children in a list.
+	Linear in the size of the whole table per call. That is fine for a table that
+	fits in a cache line's worth of directories. It would not be for a real
+	filesystem. A real one keeps its children in a list.
 	*/
 	ordinal := u64(0)
 	for i in 0 ..< len(t.nodes) {

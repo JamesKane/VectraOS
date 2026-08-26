@@ -2,14 +2,14 @@
 Chan -- a handle on a file in a namespace.
 
 A fid names a file within one session. A `Chan` names a file within one
-*namespace*, which is a larger claim: it knows which server is answering, and
-it carries the two fields that let a walk of `..` leave a mounted tree and land
-somewhere the server it just left has never heard of.
+*namespace*, which is a larger claim. It knows which server answers. It also
+carries the two fields for a walk of `..` out of a mounted tree. That walk
+lands somewhere the server it just left never heard of.
 
 Chans are reference counted and shared. `chan_clone` is the one that costs a
-message -- it is a Twalk with no names, 9P's way of asking for a second handle
-on the same file -- and `chan_incref` is the one that does not. Use clone when
-the copy will be opened or walked independently, incref when it will not.
+message. It is a Twalk with no names, which is 9P's way to ask for a second
+handle on the same file. `chan_incref` is the one that costs nothing. Use clone
+when the copy will be opened or walked independently, incref when it will not.
 */
 package vfs
 
@@ -24,11 +24,11 @@ Chan :: struct {
 	/*
 	Namespace bookkeeping, for `..` across a mount point.
 
-	`tree_root` is the qid this chan's tree is rooted at and `mounted_over` is
-	the chan that tree was mounted onto. When a walk of `..` arrives at a chan
-	whose qid matches its own `tree_root`, there is nothing above it that this
-	server can name, and the walk continues from `mounted_over` instead. See
-	docs/VECTRA9.md section 5.5 for why the server cannot answer this itself.
+	`tree_root` is the qid this chan's tree is rooted at and `mounted_over` is the
+	chan that tree was mounted onto. When a walk of `..` arrives at a chan whose
+	qid matches its own `tree_root`, there is nothing above it this server can
+	name. The walk continues from `mounted_over` instead. See docs/VECTRA9.md
+	section 5.5 for why the server cannot answer this itself.
 	*/
 	mounted_over: ^Chan,
 	tree_root:    vectra9.Qid,
@@ -37,19 +37,20 @@ Chan :: struct {
 	The mount point this chan was reached through, if it was reached through
 	one.
 
-	Not in the design sketch, and needed by exactly one caller: `readdir`, which
-	has to concatenate every member of a union and cannot find them from here
-	otherwise. By the time a caller holds the chan, `cross_mounts` has already
-	substituted the *first* member -- so the key the mount point is filed under,
-	the file that was mounted over, is no longer reachable from `server` and
+	Not in the design sketch, and needed by exactly one caller. `readdir` has to
+	concatenate every member of a union, and cannot find them from here otherwise.
+
+	By the time a caller holds the chan, `cross_mounts` already substituted the
+	*first* member. The key the mount point is filed under, the file that
+	something mounted over, is therefore no longer reachable from `server` and
 	`qid`. Plan 9 keeps the same pointer on `Chan.umh`.
 
-	A counted reference, not a bare pointer. Unmounting `/dev` entirely while
-	something still holds a chan reached through it would otherwise free the
-	mount point out from under this field -- reachable today with no threads at
-	all, just a chan held across an `unmount`. A dissolved mount point survives
-	with an empty member list, so the chan goes on working on the member it is
-	already standing on.
+	A counted reference, not a bare pointer. An `unmount` of `/dev` entirely,
+	while something still holds a chan reached through it, would otherwise free
+	the mount point out from under this field. That is reachable today with no
+	threads at all, from one chan held across an `unmount`. A dissolved mount
+	point survives with an empty member list, so the chan goes on working on the
+	member it is already standing on.
 	*/
 	union_head: ^Mount_Point,
 	refs:       int,
@@ -57,7 +58,7 @@ Chan :: struct {
 }
 
 // Linux open flags, as 9P2000.L carries them. Only the ones a Vectra server
-// currently distinguishes are named; the rest pass through untouched.
+// currently distinguishes are named. The rest pass through untouched.
 O_RDONLY :: u32(0o0)
 O_WRONLY :: u32(0o1)
 O_RDWR :: u32(0o2)
@@ -78,8 +79,8 @@ chan_alloc :: proc(sv: ^Server, fid: vectra9.Fid, qid: vectra9.Qid) -> ^Chan {
 
 	// Until something says otherwise, a chan is at the root of its own tree.
 	// `walk` overwrites this from the chan it came from, and `bind` sets it on
-	// the member it stores; the default only matters for a fresh attach, where
-	// it is exactly right.
+	// the member it stores. The default only matters for a fresh attach, where it
+	// is exactly right.
 	c.tree_root = qid
 	c.refs = 1
 	return c
@@ -101,12 +102,12 @@ chan_incref :: proc(c: ^Chan) -> ^Chan {
 chan_close drops a reference and clunks the fid when the last one goes.
 
 Tclunk's reply is ignored on purpose. There is nothing to do about a server
-that fails to release a fid, the fid is gone from our side either way, and a
+that fails to release a fid. The fid is gone from our side either way, and a
 close path that can fail is a close path callers get wrong.
 
-The `mounted_over` chain is released here rather than by whoever built it: a
-mounted tree's parent has to outlive every chan inside that tree, and reference
-counting is the only thing that knows when the last one is gone.
+The `mounted_over` chain is released here rather than by whoever built it. A
+mounted tree's parent has to outlive every chan inside that tree, and only the
+reference count knows when the last one is gone.
 */
 chan_close :: proc(c: ^Chan) {
 	c := c
@@ -149,7 +150,7 @@ chan_close :: proc(c: ^Chan) {
 chan_open marks a chan open for reading or writing.
 
 `iounit` is discarded because nothing chunks by it yet. When a transport exists
-that can fragment a large write, this is the number it must chunk by -- not
+that can fragment a large write, this is the number it must chunk by. It is not
 msize, which bounds the message rather than the operation.
 */
 chan_open :: proc(c: ^Chan, flags: u32) -> Errno {
@@ -175,10 +176,10 @@ chan_open :: proc(c: ^Chan, flags: u32) -> Errno {
 /*
 chan_read copies at most len(buf) bytes from `offset`.
 
-The copy is here and not further down because `Rread.data` borrows the reply
-buffer -- on the in-process transport, that is the server's own storage, and it
-is valid only until the next message. A caller that wanted to avoid the copy
-would have to hold that promise, and no caller does.
+The copy is here and not further down, because `Rread.data` borrows the reply
+buffer. On the in-process transport that is the server's own storage, and it is
+valid only until the next message. A caller that wanted to avoid the copy would
+have to hold that promise, and no caller does.
 
 A short read is not an error and not the end of the file. Zero bytes is the end
 of the file.
@@ -196,7 +197,8 @@ chan_read :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 	reply: vectra9.Msg
 
 	// The guard runs to the end of the procedure, which is what makes the copy
-	// below safe: `answer.data` is the server's storage until it is released.
+	// below safe. `answer.data` is the server's storage until the guard releases
+	// it.
 	e, g := rpc(c.server, &request, &reply)
 	defer rpc_end(g)
 	if e != OK {
@@ -231,8 +233,9 @@ chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 }
 
 // The Tgetattr request masks a client can ask for. `BASIC` is what stat(2)
-// needs and what every Vectra server answers; asking for more is legal and
-// gets whatever the server chose to fill in, which is what `valid` reports.
+// needs, and what every Vectra server answers. A request for more is legal,
+// and gets whatever the server chose to fill in. `valid` reports which that
+// was.
 GETATTR_MODE :: u64(0x0000_0001)
 GETATTR_NLINK :: u64(0x0000_0004)
 GETATTR_SIZE :: u64(0x0000_0200)
@@ -265,9 +268,9 @@ chan_is_dir :: proc "contextless" (c: ^Chan) -> bool {
 chan_clone asks the server for a second handle on the same file.
 
 A Twalk with no names, which is 9P's clone: it must not fail on a file, must
-not check permissions, and returns no qids. The namespace fields are carried
-over by hand rather than copied wholesale -- `refs` and `opened` belong to the
-new handle, and an open fid is not clonable-as-open in 9P.
+not check permissions, and returns no qids. The namespace fields carry over by
+hand rather than wholesale. `refs` and `opened` belong to the new handle, and
+9P cannot clone an open fid as open.
 */
 chan_clone :: proc(c: ^Chan) -> (^Chan, Errno) {
 	if c == nil {

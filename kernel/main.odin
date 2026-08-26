@@ -10,9 +10,9 @@ Boot order is load-bearing and deliberately short:
   5. framebuffer      -- the chassis, then the console inside it
   6. survey           -- report what the bootloader handed us
 
-Steps 3 onward each degrade rather than fail: no serial port still boots, no
-framebuffer still logs, and an unsupported base revision is reported rather
-than assumed away.
+Steps 3 onward each degrade rather than fail. No serial port still boots. No
+framebuffer still logs. An unsupported base revision gets reported, rather than
+assumed away.
 */
 package kernel
 
@@ -35,10 +35,10 @@ VERSION :: "0.1.0-pre"
 // -- Bootloader requests -----------------------------------------------------
 //
 // Every one of these MUST carry `link_section = ".limine_requests"`. Vectra
-// asks for base revision 6, under which the request delimiters in
-// `kernel/boot/limine/markers.odin` are binding rather than advisory: a
-// request placed anywhere else in the image is never scanned, and its
-// `response` silently stays nil.
+// asks for base revision 6. Under that revision, the request delimiters in
+// `kernel/boot/limine/markers.odin` are binding rather than advisory. Nothing
+// scans a request placed anywhere else in the image, and its `response`
+// silently stays nil.
 
 @(export, link_section = ".limine_requests")
 framebuffer_request := limine.Framebuffer_Request {
@@ -79,11 +79,11 @@ firmware_type_request := limine.Firmware_Type_Request {
 /*
 Pin the paging mode rather than accepting whatever the firmware left on.
 
-Limine will happily hand us 5-level paging on a machine that supports it, which
-changes the shape of every page table walk and the position of the canonical
-hole. Vectra's VMM will be written for one layout at a time; asking for exactly
-4-level here means the day we add 5-level support is a deliberate change to
-this request, not a machine-dependent surprise.
+Limine will happily hand over 5-level paging on a machine that supports it.
+That changes the shape of every page table walk, and the position of the
+canonical hole. Vectra's VMM is written for one layout at a time. A request for
+exactly 4-level here makes the day 5-level support arrives a deliberate change
+to this line, rather than a machine-dependent surprise.
 */
 @(export, link_section = ".limine_requests")
 paging_mode_request := limine.Paging_Mode_Request {
@@ -114,8 +114,8 @@ chassis: Chassis
 // the reclaim.
 boot_mem: mem.Boot_Memory
 
-// Whether `mem.init` has completed. Read by the panic screen, which can ask the
-// VMM what was mapped at a faulting address only once there is a VMM to ask.
+// Whether `mem.init` finished. Read by the panic screen, which can ask the VMM
+// what was mapped at a faulting address only once there is a VMM to ask.
 memory_online: bool
 
 @(export, link_name = "_start")
@@ -185,16 +185,17 @@ kmain :: proc "sysv" () {
 check_base_revision verifies the bootloader honoured our request.
 
 Two separate failures hide here. The bootloader may not support base revision 6
-at all, in which case word 2 comes back unchanged and we are running under
-whatever it picked. Or it may support it and still have loaded us as something
-else -- word 1 tells us which. Both matter to code that assumes base revision 6
-semantics, most of all the restrictive HHDM: under an older revision, more of
-the memory map is HHDM-mapped than we would otherwise be entitled to touch, so
-we would be building on a guarantee we do not actually have.
+at all. Word 2 then comes back unchanged, and the kernel runs under whatever it
+picked. Or it may support it, and still load the kernel as something else. Word
+1 says which. Both matter to code that assumes base revision 6 semantics, most
+of all the restrictive HHDM.
+
+Under an older revision, the HHDM maps more of the memory map than this kernel
+is entitled to touch. It would then stand on a guarantee it does not have.
 
 We report and continue. Nothing in Milestone 0 dereferences an HHDM address, so
-this is a warning today and will become a hard stop the moment the VMM starts
-trusting the map.
+this is a warning today. It becomes a hard stop the moment the VMM starts to
+trust the map.
 */
 check_base_revision :: proc "contextless" () {
 	tag := &limine.base_revision_tag
@@ -230,17 +231,20 @@ check_base_revision :: proc "contextless" () {
 init_traps installs the GDT, TSS and IDT, then proves they work.
 
 The proof is a breakpoint the kernel raises on itself. It is the only exception
-that can be armed, taken and resumed from, so it exercises the whole path end to
-end -- the stub pushing the right vector, the tail building a frame the
-dispatcher can read, the handler recognising it, and `iretq` landing back on the
-instruction after the `int3`. Anything wrong anywhere in that chain shows up
-here, three lines into the boot, rather than as an unexplained reset during
-whatever is written next.
+something can arm, take and resume from, so it exercises the whole path end to
+end.
 
-There is no graceful failure. If the IDT is wrong the `int3` triple faults and
-the machine resets before the check below runs; if it is merely mis-wired the
-check reports it and the boot goes on, because a kernel that cannot report
-faults is still worth booting far enough to say so.
+The stub pushes the right vector. The tail builds a frame the dispatcher can
+read. The handler recognises it. And `iretq` lands back on the instruction
+after the `int3`. Anything wrong anywhere in that chain shows up here, three
+lines into the boot, rather than as an unexplained reset during whatever is
+written next.
+
+There is no graceful failure. If the IDT is wrong, the `int3` triple faults,
+and the machine resets before the check below runs.
+
+If it is merely mis-wired, the check reports it and the boot goes on. A kernel
+that cannot report faults is still worth a boot far enough to say so.
 */
 init_traps :: proc "contextless" () {
 	arch.init_traps()
@@ -284,10 +288,12 @@ init_screen :: proc "contextless" () -> bool {
 	well := fb.inset_of(chassis.well, WELL_D + PAD / 2)
 	kcon = console.init(&screen, well, fb.AMBER, fb.SLATE)
 
-	// attach_screen rather than `klog.screen = &kcon`: everything logged
-	// before this point -- the banner and the base revision handshake -- gets
-	// replayed onto the console, so the screen carries the whole boot and not
-	// just the part that happened after there was somewhere to draw it.
+	// attach_screen rather than `klog.screen = &kcon`. Everything logged before
+	// this point replays onto the console, which is the banner and the base
+	// revision handshake.
+	//
+	// The screen therefore carries the whole boot, and not just the part after
+	// there was somewhere to draw it.
 	attach_screen(&klog, &kcon)
 
 	draw_lamps(memory = false)
@@ -319,11 +325,12 @@ init_screen :: proc "contextless" () -> bool {
 /*
 draw_lamps repaints the indicator strip.
 
-Called twice: once from `init_screen` with the memory lamp dark, and again after
-`mem.init` returns with it lit. Redrawing the whole row rather than the one lamp
-that changed keeps the strip's layout in a single place -- the labels and their
-spacing are computed by `draw_lamp_row`, and a caller that poked at one lamp
-would have to duplicate that arithmetic to know where it was.
+Called twice: once from `init_screen` with the memory lamp dark, and again
+after `mem.init` returns with it lit. A redraw of the whole row, rather than
+the one lamp that changed, keeps the strip's layout in a single place.
+
+`draw_lamp_row` computes the labels and their spacing. A caller that poked at
+one lamp would have to duplicate that arithmetic to find it.
 */
 draw_lamps :: proc "contextless" (memory: bool) {
 	if screen.pixels == nil {
@@ -351,8 +358,8 @@ report_bootloader :: proc "contextless" () {
 	libodin.put_str(&sink, " ")
 	libodin.put_str(&sink, string(info.version))
 
-	// Firmware type rides along on the same line: on its own it is one word,
-	// and it is only ever interesting next to who booted us.
+	// Firmware type rides along on the same line. On its own it is one word, and
+	// it is only ever interesting next to who did the boot.
 	if fw := firmware_type_request.response; fw != nil {
 		libodin.put_str(&sink, " via ")
 		switch fw.firmware_type {
@@ -370,8 +377,8 @@ report_bootloader :: proc "contextless" () {
 report_paging_mode confirms we got the paging layout we pinned.
 
 Limine clamps to what the hardware supports, so a mismatch here is not a
-bootloader bug -- it means the VMM about to be written would be walking a
-different number of levels than it was designed for.
+bootloader bug. It means the VMM about to be written would walk a different
+number of levels than its design assumed.
 */
 report_paging_mode :: proc "contextless" () {
 	response := paging_mode_request.response
@@ -419,15 +426,15 @@ report_kernel_layout :: proc "contextless" () {
 /*
 survey_memory translates Limine's memory map into `kernel/mem`'s vocabulary.
 
-This is the only place in Vectra that knows both, and it exists so that nothing
-below it knows either: `kernel/mem` is handed a `Boot_Memory` and never learns
-which bootloader filled it in. Booting some other way -- a different protocol, a
-hypervisor handing over directly -- means rewriting this one procedure.
+This is the only place in Vectra that knows both, and it exists so nothing
+below it knows either. `kernel/mem` receives a `Boot_Memory`, and never learns
+which bootloader filled it in. Booting some other way -- a different protocol,
+a hypervisor handing over directly -- means rewriting this one procedure.
 
 The three responses read here are not optional the way the rest of the survey
-is. Without a memory map there is nothing to allocate from, and without the HHDM
-offset or the load address there is no way to reach it or to rebuild the
-kernel's own mapping. Each missing one is fatal and says so.
+is. With no memory map there is nothing to allocate from. With no HHDM offset,
+and no load address, there is no way to reach it or to rebuild the kernel's own
+mapping. Each missing one is fatal and says so.
 */
 survey_memory :: proc "contextless" () -> bool #no_bounds_check {
 	memmap := memmap_request.response
@@ -458,12 +465,12 @@ survey_memory :: proc "contextless" () -> bool #no_bounds_check {
 	/*
 	The framebuffer, if the map did not already account for it.
 
-	Base revision 6 guarantees the framebuffer is in the direct map; it does not
+	Base revision 6 guarantees the framebuffer is in the direct map. It does not
 	guarantee the firmware described it as a memory map entry, and OVMF is not
-	consistent about it. Discovering the difference the hard way means the VMM
-	builds an address space with no framebuffer in it, and the machine dies on
-	the first character drawn after the switch -- with the console being the
-	thing that would have said so.
+	consistent about it. Found the hard way, the difference means the VMM builds
+	an address space with no framebuffer in it. The machine then dies on the first
+	character drawn after the switch. The console is the thing that would have
+	said so.
 	*/
 	if response := framebuffer_request.response; response != nil && response.framebuffer_count > 0 {
 		f := response.framebuffers[0]
@@ -491,9 +498,9 @@ survey_memory :: proc "contextless" () -> bool #no_bounds_check {
 /*
 region_kind maps a Limine memory type onto what the kernel may do with it.
 
-Reserved and bad memory both collapse to `.Unmapped`: the distinction matters to
-firmware and to a diagnostic tool, but to a kernel that will neither allocate
-from them nor place them in the direct map they are the same thing.
+Reserved and bad memory both collapse to `.Unmapped`. The distinction matters
+to firmware, and to a diagnostic tool. To a kernel that will neither allocate
+from them nor put them in the direct map, they are the same thing.
 */
 region_kind :: proc "contextless" (type: limine.Memmap_Type) -> mem.Region_Kind {
 	switch type {
@@ -512,9 +519,9 @@ region_kind :: proc "contextless" (type: limine.Memmap_Type) -> mem.Region_Kind 
 /*
 report_memory summarises the surveyed map.
 
-Only the totals and the largest usable region are printed: a full dump is
-twenty-odd lines that push everything else off the screen, and once the PMM is
-up its own figures are the ones worth reading.
+Only the totals and the largest usable region are printed. A full dump is
+twenty-odd lines that push everything else off the screen. Once the PMM is up,
+its own figures are the ones worth reading.
 */
 report_memory :: proc "contextless" () {
 	usable, reclaimable, total: u64
@@ -559,11 +566,13 @@ report_memory :: proc "contextless" () {
 /*
 init_memory brings up all three memory layers and reports what each one built.
 
-The address space switch happens inside `mem.init`, between the second and third
-lines logged here. That the fourth line reaches the screen at all is the proof
-that the new tables cover the framebuffer, the kernel image and the stack --
-which is worth more than any check that could be written for it, because a
-kernel that got that wrong would not survive to print a failure.
+The address space switch happens inside `mem.init`, between the second and
+third lines logged here. The fourth line's arrival on the screen is itself the
+proof that the new tables cover the framebuffer, the kernel image and the
+stack.
+
+That is worth more than any check written for it. A kernel that got it wrong
+would not survive to print a failure.
 */
 init_memory :: proc "contextless" () -> bool {
 	if err := mem.init(&boot_mem); err != .None {
@@ -618,9 +627,10 @@ init_memory :: proc "contextless" () -> bool {
 verify_memory exercises each layer once, on the machine that will run it.
 
 Not a substitute for tests, which there is nowhere to run. It is here because
-the three ways this subsystem fails are all silent at the point of failure: a
-PMM that hands the same frame out twice, a page table that translates to the
-wrong place, and an allocator that is installed but hands back memory nobody
+the three ways this subsystem fails are all silent at the point of failure.
+
+A PMM that hands the same frame out twice. A page table that translates to the
+wrong place. And an allocator that is installed, but hands back memory nobody
 owns. Each of those surfaces much later as a corrupted structure with no trail
 back. A dozen lines at boot turns all three into one line in the log.
 */
@@ -640,8 +650,8 @@ verify_memory :: proc() {
 	mem.free_page(again)
 	mem.free_page(first)
 
-	// VMM: walking our own tables for a kernel global has to land on the
-	// physical address the bootloader loaded it at, and the direct map has to
+	// VMM: a walk of the kernel's own tables for a kernel global has to land on
+	// the physical address the bootloader put it at. And the direct map has to
 	// agree with itself.
 	space := mem.kernel_address_space()
 	global_virt := uintptr(&klog)
@@ -653,8 +663,8 @@ verify_memory :: proc() {
 	ok = ok && direct_ok && direct == expect
 
 	// And the segment permissions the linker script implied are the ones the
-	// hardware will actually enforce -- read back out of the tables rather than
-	// taken on trust from the code that wrote them.
+	// hardware will actually enforce. The check reads them back out of the
+	// tables, rather than trusts the code that wrote them.
 	ok = ok && mem.vmm_verify()
 
 	// Heap, through Odin's own interface: if `make` works, so does every core
@@ -693,13 +703,14 @@ verify_memory :: proc() {
 /*
 verify_protocol checks the Vectra9 wire codec on the machine.
 
-Deliberately after `verify_memory` and deliberately using the heap: the scratch
-buffer comes from `make`, so this is also the first real customer the allocator
-has ever had, and a heap that only ever satisfied its own self-test would be
-suspicious.
+Deliberately after `verify_memory`, and deliberately on the heap. The scratch
+buffer comes from `make`.
 
-The codec is checked by re-encoding -- every message kind is encoded, decoded
-and encoded again, and the two byte strings must match. See
+This is therefore also the allocator's first real customer. A heap that only
+ever satisfied its own self-test would be suspicious.
+
+A re-encode checks the codec. Every message kind is encoded, decoded and
+encoded again, and the two byte strings must match. See
 `sys/vectra9/verify.odin` for why that is a better oracle than comparing the
 decoded structs.
 */
@@ -738,11 +749,13 @@ verify_protocol :: proc() {
 init_namespace stands up the root device and the namespace every process will
 inherit.
 
-Last in the boot because it needs everything before it: the heap for chans and
-fid tables, and Vectra9 for the messages that reach the root server. The root
-is an ordinary server reached through `#/` rather than a special case in the
-walker -- see docs/VECTRA9.md section 7.2 -- so if this line prints, the escape
-hatch a `Clean` namespace depends on has been exercised once already.
+Last in the boot, because it needs everything before it. That is the heap for
+chans and fid tables, and Vectra9 for the messages that reach the root server.
+The root is an ordinary server reached through `#/`, rather than a special case
+in the walker. See docs/VECTRA9.md section 7.2.
+
+So if this line prints, something already exercised the escape hatch a `Clean`
+namespace depends on.
 */
 init_namespace :: proc() {
 	if err := vfs.init(); err != vfs.OK {
@@ -765,7 +778,7 @@ verify_namespace exercises the namespace layer against two real servers.
 
 Binds, unions, `..` across a mount point, and both fork modes -- all on the
 machine, all over real 9P traffic. See `kernel/vfs/verify.odin` for what each
-check is for; this only reports.
+check is for. This only reports.
 */
 verify_namespace :: proc() {
 	scratch := make([]u8, 1024)
@@ -776,11 +789,11 @@ verify_namespace :: proc() {
 	defer delete(scratch)
 
 	/*
-	Bracketed by heap stats, because the namespace layer is the first thing in
-	Vectra that allocates and frees in volume, and its failure mode is a
-	reference count rather than a crash. A leaked chan is a fid the server
-	never gets back; a chan freed twice is a fid handed out again while someone
-	still holds it. Neither shows up as a failed check -- both show up here.
+	Heap stats bracket it, because the namespace layer is the first thing in
+	Vectra that allocates and frees in volume. Its failure mode is a reference
+	count rather than a crash. A leaked chan is a fid the server never gets back.
+	A chan freed twice is a fid given out again while somebody still holds it.
+	Neither shows up as a failed check -- both show up here.
 
 	Every allocation the self-test makes is also released by it, so the only
 	correct answer is zero.
@@ -841,8 +854,8 @@ live_objects :: proc "contextless" (s: mem.Heap_Stats) -> int {
 init_scheduler adopts the boot context as a thread and gives the core an idle
 one.
 
-From here on `kmain` is thread 0 rather than the only thing running, and every
-line after this can be preempted -- which is why the heap grew a lock and why
+From here on `kmain` is thread 0, rather than the only thing running. Something
+can preempt every line after this. That is why the heap grew a lock, and why
 this comes after everything that has to happen exactly once.
 */
 init_scheduler :: proc() -> bool {
@@ -867,8 +880,8 @@ init_scheduler :: proc() -> bool {
 }
 
 // class_name renders a core's class for the boot line. Every amd64 core is
-// `.Performance`; the other two exist so that an arm64 part can report what it
-// really has without the scheduler learning a new vocabulary first.
+// `.Performance`. The other two exist so an arm64 part can report what it
+// really has, and the scheduler learns no new vocabulary first.
 class_name :: proc "contextless" (class: arch.Cpu_Class) -> string {
 	switch class {
 	case .Efficiency:  return "efficiency"
@@ -965,8 +978,8 @@ verify_preemption :: proc() {
 }
 
 // report_sched prints one self-test result. The success wording differs
-// between the two halves and the failure wording does not, which is the whole
-// reason this takes a procedure rather than a format string there is no
+// between the two halves, and the failure wording does not. That is the whole
+// reason this takes a procedure, rather than a format string there is no
 // formatter for.
 report_sched :: proc(
 	r: sched.Verify_Result,

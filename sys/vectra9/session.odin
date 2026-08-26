@@ -18,20 +18,20 @@ package vectra9
 /*
 What a server presents to the world.
 
-A handler always produces a reply, even when the answer is no -- that is what
+A handler always produces a reply, even when the answer is no. That is what
 `Rlerror` is for, and it is why there is no error return here. A handler that
 cannot answer has still answered.
 
-`server` is the handler's own state, passed back to it rather than captured,
-because Odin closures would need an allocator and this runs in a kernel that
-would rather not.
+`server` is the handler's own state, passed back to it rather than captured.
+Odin closures would need an allocator, and this runs in a kernel that would
+rather not.
 
-`tag` names the request being answered. It looks redundant -- a synchronous
-transport has exactly one request outstanding and the handler is standing in
-it -- and it stops being redundant the moment a transport lets a client have
-two. A server that implements `Tflush` has to be able to say which of its
-in-flight requests a given `oldtag` refers to, and a handler that cannot name
-its own request cannot take part in that. See `kernel/mnt`.
+`tag` names the request being answered. It looks redundant, because a
+synchronous transport has exactly one request outstanding and the handler
+stands in it. It stops being redundant the moment a transport lets a client
+have two. A server that implements `Tflush` has to be able to say which of its
+in-flight requests a given `oldtag` names. A handler that cannot name its own
+request cannot take part in that. See `kernel/mnt`.
 */
 Handler :: #type proc "contextless" (server: rawptr, s: ^Session, tag: Tag, request: ^Msg, reply: ^Msg)
 
@@ -41,14 +41,16 @@ How a request reaches a handler.
 `call` is synchronous *from the caller's side*: it returns once `reply` is
 filled in. That is not the same as the transport being synchronous underneath,
 and the distinction is the whole of `Tflush`. `kernel/mnt` implements this
-signature over a queue and a pool of server threads, so several clients really
-do have requests outstanding at once and a caller that gives up has a tag it
-must get back before it can reuse it.
+signature over a queue and a pool of server threads. Several clients really do
+have requests outstanding at once. A caller that gives up holds a tag it must
+get back before anything can reuse it.
 
 `tag` is the transport's to interpret. A transport that can only ever have one
-request in flight may ignore it; one that cannot must be able to find a request
-by it, which is why the pool in `kernel/mnt` is indexed by tag and why the tag
-it uses is its own rather than the session's. See `alloc_tag`.
+request in flight may ignore it. One that cannot must be able to find a request
+by it.
+
+That is why `kernel/mnt` indexes its pool by tag, and why the tag it uses is
+its own rather than the session's. See `alloc_tag`.
 */
 Transport :: struct {
 	data: rawptr,
@@ -60,9 +62,9 @@ Session :: struct {
 	msize:     u32,
 	version:   string,
 
-	// Monotonic counters. Recycling fids needs a free list, which needs an
-	// allocator; until a session outlives a few thousand opens this is enough,
-	// and `alloc_fid` says so where it will be read.
+	// Monotonic counters. A recycled fid needs a free list, which needs an
+	// allocator. Until a session outlives a few thousand opens this is enough,
+	// and `alloc_fid` says so where a reader will find it.
 	next_tag:  Tag,
 	next_fid:  Fid,
 }
@@ -74,16 +76,18 @@ session_from :: proc "contextless" (transport: Transport) -> Session {
 /*
 alloc_tag hands out the next request tag.
 
-NOTAG is skipped because it is reserved for Tversion. Wrapping is not an error:
-a tag only has to be unique among *outstanding* requests, and with a synchronous
-transport there is never more than one.
+NOTAG is skipped because it is reserved for Tversion. A wrap is not an error. A
+tag only has to be unique among *outstanding* requests, and a synchronous
+transport never has more than one.
 
 A transport that tracks its outstanding requests takes its tags from whatever
-structure does the tracking, not from here -- `kernel/mnt` uses the index of
-the pool slot, because a tag that is not an index into the pool cannot be
-looked up when a `Tflush` names it. This counter is then unused, which is the
-honest state of affairs rather than a layering violation: the tag space belongs
-to whoever has to make tags unique among the requests actually in flight.
+structure does the tracking, and not from here.
+
+`kernel/mnt` uses the index of the pool slot. A tag that is not an index into
+the pool cannot be found when a `Tflush` names it. This counter is then unused,
+which is the honest state of affairs rather than a layering violation. The tag
+space belongs to whoever has to keep tags unique among the requests actually in
+flight.
 */
 alloc_tag :: proc "contextless" (s: ^Session) -> Tag {
 	s.next_tag += 1
@@ -97,18 +101,19 @@ alloc_tag :: proc "contextless" (s: ^Session) -> Tag {
 alloc_fid hands out the next fid.
 
 Monotonic, and therefore finite: this runs out after four billion opens without
-ever reusing one. That is a real limit and the wrong fix is to make the counter
-wider -- a session should hand fids back on `Tclunk` and take them from a free
-list. Deferred until there is a client that opens enough files to care.
+ever reusing one. That is a real limit, and a wider counter is the wrong fix. A
+session should hand fids back on `Tclunk`, and take them from a free list.
+Deferred until there is a client that opens enough files to care.
 
-A fid stays a *number* on both transports, including the in-process one where
-there is no wire and a pointer to the server's file object would be faster. Two
-reasons, and the first is the one that matters: a fid is a capability, and the
-lookup against the server's own table is what makes it one. A number can only
-name files that server chose to hand out; a pointer bypasses the check entirely,
-and a client that can forge one can name anything. The second is that it would
-make the two transports observably different, which is precisely what the
-comment at the top of this file says they are not.
+A fid stays a *number* on both transports. That includes the in-process one,
+where there is no wire, and a pointer to the server's file object would be
+faster. Two reasons, and the first is the one that matters. A fid is a
+capability, and the lookup against the server's own table is what makes it one.
+
+A number can only name files that server chose to give out. A pointer skips the
+check entirely, and a client that can forge one can name anything. The second
+reason is that it would make the two transports observably different. That is
+precisely what the comment at the top of this file says they are not.
 
 See docs/VECTRA9.md section 7.1.
 */
@@ -133,8 +138,9 @@ negotiate performs the Tversion handshake.
 
 Both sides clamp msize downward and the client is obliged to accept the
 server's answer, so this takes the smaller of the two. A server that answers
-with a version string other than the one asked for is refusing -- 9P's way of
-saying "not that dialect" -- and the only correct response is to stop.
+with a version string other than the one asked for is a server that refuses.
+That is 9P's way to say `not that dialect`, and the only correct response is to
+stop.
 */
 negotiate :: proc "contextless" (s: ^Session, msize: u32 = MSIZE_DEFAULT) -> Error {
 	request := Msg(Tversion{msize = msize, version = VERSION})
@@ -166,8 +172,8 @@ The fast path: no encoding at all.
 
 The request struct is handed to the handler by pointer and the reply comes back
 the same way. A devfs read of /dev/cons costs one indirect call and no copy of
-the payload -- which is the reason this design was chosen over marshalling
-everything, in a system where reading thread state is reading a file.
+the payload. That is the reason this design beat a marshal of everything.
+Thread state here is a file, and a read of it is a read of a file.
 */
 In_Process :: struct {
 	handler: Handler,
@@ -203,10 +209,11 @@ Encodes the request, decodes it, calls the handler, encodes the reply, decodes
 that, and hands it back. Every step a real out-of-process transport would take
 except the part that crosses an address space.
 
-Two uses. It is the skeleton a pipe or network transport is written against, so
-that transport is a matter of replacing two memory copies with reads and writes.
-And it is how the boot self-test proves the claim this file opens with: the same
-handler, behind this instead of `In_Process`, must produce the same answers.
+Two uses. It is the skeleton a pipe or network transport is written against.
+That transport is then a matter of two memory copies replaced with reads and
+writes. And it is how the boot self-test proves the claim this file opens with.
+The same handler, behind this rather than `In_Process`, must produce the same
+answers.
 
 Both buffers are the caller's, and the reply borrows `reply_buf` -- so that
 buffer has to outlive the reply, like every other borrowed message in Vectra9.

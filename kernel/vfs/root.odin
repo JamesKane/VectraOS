@@ -2,11 +2,11 @@
 The root -- an ordinary server, deliberately.
 
 Plan 9's `devroot` is a real device with `rootattach`, `rootwalk`, `rootopen`
-and `rootread`, not a special case inside `namec`. Vectra takes the same line
-and gets the same two things out of it: the walker has one code path instead of
-one plus a root, and the root becomes rebindable like anything else. A process
-that wants a different `/` binds one, and nothing below this comment has to
-know. See docs/VECTRA9.md section 7.2.
+and `rootread`, not a special case inside `namec`. Vectra takes the same line,
+and gets the same two things out of it. The walker has one code path rather
+than one plus a root. And the root becomes rebindable like anything else. A
+process that wants a different `/` binds one, and nothing below this comment
+has to know. See docs/VECTRA9.md section 7.2.
 
 The tree it serves is the conventional layout from section 5.9 -- empty
 directories waiting for the servers that will be bound into them. Convention,
@@ -79,9 +79,9 @@ init :: proc() -> Errno {
 		return vectra9.ENOMEM
 	}
 
-	// Through `#/` rather than by calling `attach` directly, so the one path
-	// that has to work after a `Clean` fork is the one the kernel itself uses
-	// to stand a namespace up. If the escape hatch is broken, boot says so.
+	// Through `#/` rather than a direct call to `attach`. The one path that has
+	// to work after a `Clean` fork is therefore the one the kernel itself uses to
+	// build a namespace. If the escape hatch is broken, boot says so.
 	root, err := device_attach("#/")
 	if err != OK {
 		return err

@@ -15,8 +15,8 @@ import "kernel:drivers/fb"
 
 /*
 Text is drawn embossed by default: a dark copy one pixel down-right, then the
-lit copy. It costs a second glyph blit and it is the single cheapest thing that
-makes amber-on-slate read as engraved metal rather than as a web page.
+lit copy. It costs a second glyph blit. It is also the single cheapest thing
+that makes amber-on-slate read as engraved metal rather than a web page.
 */
 Style :: enum {
 	Flat,
@@ -37,7 +37,7 @@ Console :: struct {
 	bg:    fb.RGB,
 	style: Style,
 
-	// Leading added between rows. The 8x16 cell is tight; one or two extra
+	// Leading added between rows. The 8x16 cell is tight. One or two extra
 	// scanlines is what makes a wall of boot log legible.
 	line_gap: int,
 }
@@ -69,9 +69,9 @@ cell_height :: proc "contextless" (c: ^Console) -> int {
 /*
 draw_glyph blits one cell at pixel position (px, py).
 
-Background is not painted -- glyphs composite onto whatever is already there,
-so a console can sit over a gradient or a brushed panel without punching
-rectangles through it.
+Nothing paints the background. Glyphs composite onto whatever is already there,
+so a console can sit over a gradient or a brushed panel and punch no rectangles
+through it.
 */
 draw_glyph :: proc "contextless" (s: ^fb.Surface, px, py: int, ch: u8, color: fb.RGB) #no_bounds_check {
 	if ch < FONT_FIRST || ch > FONT_LAST {
@@ -167,7 +167,7 @@ scroll moves the console region up one text row.
 
 This is a straight memmove of the owned sub-rectangle: slow, and correct even
 when the console is a window over a busy surface. The compositor will get a
-dirty-rect path; the boot log does not need one.
+dirty-rect path. The boot log does not need one.
 */
 scroll :: proc "contextless" (c: ^Console) #no_bounds_check {
 	s := c.surface

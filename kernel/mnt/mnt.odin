@@ -13,70 +13,75 @@ mean describing the ordering rule twice.
 
 ## Why this had to exist before Tflush could
 
-`vectra9.In_Process` runs the handler on the caller's own stack and returns.
-A client behind it cannot have two requests outstanding, cannot be interrupted
-in the middle of one, and therefore has nothing to flush and no way to send the
-flush if it did. `Tflush` is not a feature of the protocol layer; it is a
-feature of a transport that can leave a request pending, and Vectra had no such
-transport until the scheduler and the sleep queue existed. `docs/VECTRA9.md`
-section 7.3 said as much and left the question open on exactly those grounds.
+`vectra9.In_Process` runs the handler on the caller's own stack and returns. A
+client behind it cannot have two requests outstanding, and nothing can
+interrupt it in the middle of one. It therefore has nothing to flush, and no
+way to send the flush if it did.
+
+`Tflush` is not a feature of the protocol layer. It is a feature of a transport
+that can leave a request pending. Vectra had no such transport until the
+scheduler and the sleep queue existed. `docs/VECTRA9.md` section 7.3 said as
+much, and left the question open on exactly those grounds.
 
 ## The tag is the slot
 
 A `Tflush` names a request by its tag, so the server has to be able to find one
 by tag. The cheapest structure that does that is an array, so the pool *is* the
-tag space: slot `i` has tag `i`, and a tag that is not an index into the pool is
-a tag naming no request — which is a case the protocol requires an answer for
-rather than an error.
+tag space. Slot `i` has tag `i`.
+
+A tag that is not an index into the pool names no request. The protocol
+requires an answer for that case rather than an error.
 
 The upper half of the pool is reserved. Slot `i + MAX_REQUESTS` is the flush
 partner of slot `i` and belongs to whoever owns `i`. That is not a
-micro-optimisation, it is the only thing standing between this design and a
-deadlock: a client whose request is stuck has to be able to send a `Tflush`, and
-if the flush had to compete for an ordinary slot then a full pool of stuck
-requests would leave nobody able to unstick anything.
+micro-optimisation. It is the only thing between this design and a deadlock.
+
+A client whose request is stuck has to be able to send a `Tflush`. If that
+flush had to compete for an ordinary slot, a full pool of stuck requests would
+leave nobody able to unstick anything.
 
 ## What the states mean
 
     Free      nobody owns it
-    Queued    a client owns it; it is on the work queue, or about to be
+    Queued    a client owns it, and it is on the work queue, or about to be
     Running   a worker has it and is inside the handler
-    Done      the reply is written; the client may take it and free the slot
+    Done      the reply is written, and the client may take it and free it
 
 Only the client ever moves a slot back to `Free`, including when the request
-was flushed. That is the protocol's rule rather than a convenience: the tag is
-not free until `Rflush` arrives, so the only thread that knows when it may be
-reused is the one that asked for the flush.
+was flushed. That is the protocol's rule rather than a convenience. The tag is
+not free until `Rflush` arrives. The only thread that knows when something may
+reuse it is the one that asked for the flush.
 
 ## Locking
 
-`Conn.lock` is a spinlock and covers the pool states, the work queue and the
-flush partner link — a handful of instructions each, never held across a
-handler and never held across a wait. Every sleep in this package happens
+`Conn.lock` is a spinlock. It covers the pool states, the work queue and the
+flush partner link. Each is a handful of instructions. It is never held across
+a handler, and never held across a wait. Every sleep in this package happens
 outside it, which is the rule `sync.can_sleep` checks.
 
 Waiting is a `sync.Rendez` per slot rather than a flag and a spin. The
 condition is the slot's own state, so a wake that lands before the wait is not
 lost: `sync.sleep` tests before it parks. That property is what lets the client
-release the lock between filling the slot in and waiting on it, which in turn
-is what keeps the lock short.
+release the lock between the moment it fills the slot in and the moment it
+waits on it. That in turn is what keeps the lock short.
 
 ## What this does not yet solve
 
 **A reply that borrows the server's storage is unsafe here beyond one worker.**
 `Rread.data` and `Rreaddir.data` point into whatever the handler had lying
-about, and "valid until that server's next message" was a rule that held
-because `kernel/vfs` held the session across the whole exchange. With several
-workers, the next message is already in progress. The borrow rule is a property
-of the transport and not of the protocol, and settling it -- a payload buffer
-per slot, most likely -- is what `kernel/vfs` is waiting for before it can sit
-on this. Until then a server behind a multi-worker `Conn` must reply out of
-storage it does not reuse.
+about. `valid until that server's next message` was a rule that held because
+`kernel/vfs` held the session across the whole exchange. With several workers,
+the next message is already in progress.
+
+The borrow rule is a property of the transport and not of the protocol. A
+payload buffer per slot, most likely, is what settles it. That is what
+`kernel/vfs` is waiting for before it can sit on this. Until then a server
+behind a multi-worker `Conn` must reply out of storage it does not reuse.
 
 **The worker pool has to be bigger than the number of requests that can block
 at once.** A worker inside a blocked handler is a worker not serving anything,
 including the `Tflush` that would unblock it. Plan 9 avoids the question with a
-thread per request; this counts them instead, and `serve_start` says so.
+thread per request. This counts them instead, and `serve_start` says so.
 */
 package mnt
 
@@ -89,14 +94,14 @@ import "vsys:vectra9"
 How many requests may be outstanding at once, and therefore how large the tag
 space is.
 
-Small on purpose. A tag pool is a server resource and a client that can grow
-one without bound is a client that can exhaust the machine through a legal
-sequence of legal messages -- the same argument that fixes the static server's
-fid table. Eight is more than the whole kernel currently has threads to fill.
+Small on purpose. A tag pool is a server resource. A client that can grow one
+without bound can exhaust the machine through a legal sequence of legal
+messages. That is the same argument that fixes the static server's fid table.
+Eight is more than the whole kernel currently has threads to fill.
 */
 MAX_REQUESTS :: 8
 
-// Requests occupy the lower half; each one's flush partner sits directly above
+// Requests occupy the lower half. Each one's flush partner sits directly above
 // it. See the file comment for why the flush cannot be allowed to queue.
 POOL :: 2 * MAX_REQUESTS
 
@@ -111,11 +116,12 @@ Rpc_State :: enum u32 {
 One request, in flight.
 
 `request` and `reply` are copies rather than pointers into the caller's frame.
-The caller is parked for the whole exchange so a pointer would in fact be
-valid, and copying is still right: a `Msg` is a stack value by design, the
-copy removes a lifetime question from the one place in the kernel where two
-threads look at the same message, and the borrow rule above is quite enough
-lifetime for one file.
+The caller is parked for the whole exchange, so a pointer would in fact be
+valid. The copy is still right.
+
+A `Msg` is a stack value by design. The copy removes a lifetime question from
+the one place in the kernel where two threads look at the same message. And the
+borrow rule above is quite enough lifetime for one file.
 */
 Rpc :: struct {
 	tag:     vectra9.Tag,
@@ -140,9 +146,10 @@ Counters, for the self-test and for anyone wondering what a connection did.
 
 `unsettled` is the one to look at, and it should never be anything but zero. It
 counts flushes whose `Rflush` came back while the request it named was still
-running -- which is the single ordering rule `Tflush` has, checked from the
-side that would be harmed by breaking it rather than asserted on the side that
-implements it.
+running. That is the single ordering rule `Tflush` has.
+
+The check is on the side a violation would harm, rather than an assertion on
+the side that implements it.
 */
 Stats :: struct {
 	requests:  u64,
@@ -191,7 +198,8 @@ Conn :: struct {
 // -- Bring-up ----------------------------------------------------------------
 
 /*
-init prepares a connection. It does not start serving; `serve_start` does.
+init prepares a connection. It does not start to serve. `serve_start` does
+that.
 
 Split because the workers are threads and threads want an allocator, while
 everything here is arithmetic over storage the caller already owns. A `Conn`
@@ -226,7 +234,7 @@ init :: proc "contextless" (
 }
 
 // transport presents this connection as something a `vectra9.Session` can sit
-// on. The session's own tag counter goes unused; see `alloc_tag`.
+// on. The session's own tag counter goes unused. See `alloc_tag`.
 transport :: proc "contextless" (c: ^Conn) -> vectra9.Transport {
 	return vectra9.Transport{data = c, call = transport_call}
 }
@@ -316,8 +324,8 @@ slot_free :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
 /*
 take claims a request slot, waiting for one if the pool is full.
 
-Claimed by moving it to `Queued` under the lock, before the request is filled
-in: the state is what reserves it, and the work queue is what makes a worker
+Claimed by a move to `Queued` under the lock, before anything fills the request
+in. The state is what reserves it, and the work queue is what makes a worker
 look at it. The two are deliberately separate so that filling a 320-byte
 message in happens with the lock down.
 */
@@ -371,7 +379,7 @@ call sends one request and waits for its reply.
 
 Uninterruptible: it returns when the server answers, however long that is. Use
 `call_for` where the caller has a deadline and something better to do than
-wait, which is every real caller and none of the boot-time ones.
+wait. That is every real caller, and none of the boot-time ones.
 */
 call :: proc "contextless" (
 	c: ^Conn,
@@ -395,20 +403,24 @@ call :: proc "contextless" (
 call_for is the same request with a deadline, and it is the reason this package
 exists.
 
-On expiry the caller does *not* simply walk away. Walking away would leave a
-tag the server still believes is in use and a slot nobody may reuse, so the
-caller flushes: it sends `Tflush` naming its own tag and waits for `Rflush`,
-which the server sends only after the original request's fate is decided. Only
-then is the tag free. That wait is not itself interruptible, because a flush of
-a flush has nowhere to end.
+On expiry the caller does *not* simply walk away. A caller that walked away
+would leave a tag the server still believes is in use, and a slot nobody may
+reuse. So the caller flushes.
 
-Returns `.Interrupted` when it gave up, whether or not the original request was
-answered in the meantime -- the caller asked for a deadline and the deadline
-passed, and Plan 9's `mountio` discards the late answer for the same reason.
-Tolerating that answer is the client's obligation under the protocol and it is
-where a careless client corrupts itself: the reply is written into a slot the
-client has stopped looking at, and the slot is only safe to reuse because the
-`Rflush` that just arrived says the writing is over.
+It sends `Tflush` naming its own tag, and waits for `Rflush`. The server sends
+that only after the original request's fate is decided. Only then is the tag
+free. That wait is not itself interruptible, because a flush of a flush has
+nowhere to end.
+
+Returns `.Interrupted` when it gave up, whether or not an answer to the
+original request arrived in the meantime. The caller asked for a deadline, and
+the deadline passed. Plan 9's `mountio` discards the late answer for the same
+reason. The client's obligation under the protocol is to tolerate that answer,
+and it is where a careless client corrupts itself.
+
+The reply goes into a slot the client stopped looking at. The slot is only safe
+to reuse because the `Rflush` that just arrived says the server finished
+writing.
 */
 call_for :: proc "contextless" (
 	c: ^Conn,
@@ -454,11 +466,11 @@ submit :: proc "contextless" (c: ^Conn, request: ^vectra9.Msg) -> ^Rpc {
 }
 
 /*
-flush sends `Tflush` for a request this caller has given up on, and waits.
+flush sends `Tflush` for a request this caller abandoned, and waits.
 
 The flush slot is `r`'s reserved partner, so this cannot fail to find one and
-cannot queue behind ordinary traffic. When it returns, the server has decided
-what to do with `r` and said so, and `r`'s tag is the caller's again.
+cannot queue behind ordinary traffic. When it returns, the server decided what
+to do with `r` and said so. `r`'s tag is the caller's again.
 */
 @(private = "file")
 flush :: proc "contextless" (c: ^Conn, r: ^Rpc) {
@@ -479,10 +491,10 @@ flush :: proc "contextless" (c: ^Conn, r: ^Rpc) {
 	sync.sleep(&f.settled, is_done, f)
 
 	/*
-	Rflush is here, so the request it named is finished with -- by definition,
-	because the only code that writes Rflush for a running request is the code
-	that has just stopped running it. Checking rather than trusting, because
-	this is the invariant the caller is about to bet the slot on.
+	Rflush is here, so nothing is still using the request it named. That is true
+	by definition. The only code that writes Rflush for a running request is the
+	code that just stopped running it. Checking rather than trusting, because this
+	is the invariant the caller is about to bet the slot on.
 	*/
 	guard2 := sync.acquire(&c.lock)
 	if r.state != .Done {

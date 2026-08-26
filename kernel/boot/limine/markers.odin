@@ -9,13 +9,13 @@ out in the one order the protocol accepts:
     .limine_requests         <- base revision tag, then every request
     .limine_requests_end     <- end marker
 
-Under base revision 2 and above the delimiters are binding rather than
-advisory, so a request that lands outside them is simply never seen -- it
-compiles, it links, it boots, and its response stays nil. Every request must
-therefore carry `@(link_section = ".limine_requests")`; see `kernel/main.odin`.
+Under base revision 2 and above, the delimiters are binding rather than
+advisory. Nothing ever sees a request that lands outside them. It compiles, it
+links, it boots, and its response stays nil. Every request must therefore carry
+`@(link_section = ".limine_requests")`. See `kernel/main.odin`.
 
-The whole region has to be writable: the bootloader fills in each request's
-`response` pointer and stamps its answer into the base revision tag in place.
+The whole region has to be writable. The bootloader fills in each request's
+`response` pointer, and stamps its answer into the base revision tag in place.
 */
 package limine
 

@@ -1,21 +1,22 @@
 /*
 Threads, priorities, and what a core is.
 
-A thread here is a kernel thread: one stack, one saved `Resume`, and no address
-space of its own. There is no userland yet, so nothing in this package switches
-CR3 -- when there is, a thread grows an `^Address_Space` and `reschedule` grows
-one comparison, and nothing else in this file changes.
+A thread here is a kernel thread. It has one stack, one saved `Resume`, and no
+address space of its own. There is no userland yet, so nothing in this package
+switches CR3. When there is, a thread grows an `^Address_Space` and `reschedule`
+grows one comparison, and nothing else in this file changes.
 
-Priority is dynamic. A thread has a `base` it was created at and a `prio` it is
-running at, and the two drift apart in the two directions Plan 9 drifts them: a
-thread that accumulates a whole slice of CPU sinks a level, and a thread that
-blocks and is woken is lifted back to its base and a little above. That is the
-whole anti-starvation mechanism, and it is why there is not a separate one. The
-effect is that a compute-bound thread settles at the bottom of the range within
-a few slices while an interactive one stays near the top without either of them
-being told which they are.
+Priority is dynamic. A thread has a `base` it was created at, and a `prio` it is
+running at. The two drift apart in the two directions Plan 9 drifts them. A
+thread that accumulates a whole slice of CPU sinks a level. A thread that
+blocks, and that something then wakes, rises to its base and a little above.
 
-*Accumulates* is load-bearing and used to say "burns without blocking", which
+That is the whole anti-starvation mechanism, and it is why there is not a
+separate one. A compute-bound thread settles at the bottom of the range within a
+few slices. An interactive one stays near the top. Nothing ever tells either
+which it is.
+
+*Accumulates* is load-bearing. It used to say `burns without blocking`, which
 was the same sentence for as long as nothing blocked. See `ticks_left`.
 */
 package sched
@@ -35,9 +36,9 @@ Sixteen levels, of which three are reserved.
     1   the floor for anything that is not the idle thread
     0   the idle thread, and only the idle thread
 
-Realtime is a promise the scheduler keeps rather than a hint, which is exactly
-why it is not the default: a runaway thread up there stops the machine. Nothing
-in Vectra runs there yet.
+Realtime is a promise the scheduler keeps rather than a hint. That is exactly
+why it is not the default, because a runaway thread up there stops the machine.
+Nothing in Vectra runs there yet.
 */
 Priority :: distinct int
 
@@ -58,10 +59,10 @@ Thread_State :: enum {
 /*
 Which classes of core a thread may run on.
 
-Empty means "no constraint", which is not the same as the empty set meaning
-"nowhere" -- an unset affinity is by far the common case and making it the
-zero value keeps `spawn` from needing a sentinel. `eligible` is the one place
-that distinction is decided.
+Empty means `no constraint`. It does not mean the empty set, which would be
+`nowhere`. An unset affinity is by far the common case, and the zero value keeps
+`spawn` from a sentinel. `eligible` is the one place that decides the
+distinction.
 
 On amd64 every core is `.Performance` and this is inert. On a big.LITTLE arm64
 part it is the difference between a housekeeping thread that belongs on an
@@ -94,19 +95,21 @@ Thread :: struct {
 	Ticks left in the current slice, sized from the core's capacity so the
 	same thread gets a longer slice on a slower core.
 
-	Refilled when it runs out, *not* on every dispatch, and the difference is
-	the whole of a thread's CPU accounting. A thread that blocks keeps what is
-	left of its slice and resumes on it, so the slice measures CPU consumed
-	rather than time between blocks.
+	Refilled when it runs out, *not* on every dispatch. That difference is the
+	whole of a thread's CPU accounting. A thread that blocks keeps what is
+	left of its slice, and resumes on it. The slice therefore measures CPU
+	consumed rather than time between blocks.
 
-	Refilling on every dispatch was the original and it was invisible until
+	A refill on every dispatch was the original, and it was invisible until
 	something blocked. A thread that parks forty times a tick never reaches
-	the end of a slice, so it never decays, so it sits at its base priority
-	for ever while the thread doing steady work sinks past it. The first
-	sleeping lock made that reachable and `kernel/verify_vfs.odin` found it
-	immediately: the one worker that was not blocking got five dispatches in a
-	thousand ticks. Decay is meant to measure appetite for the CPU, and a
-	thread's appetite is what it consumes, not how it is interrupted.
+	the end of a slice. It therefore never decays, and sits at its base
+	priority for ever, while the thread that does steady work sinks past it.
+
+	The first sleeping lock made that reachable, and `kernel/verify_vfs.odin`
+	found it immediately. The one worker that did not block got five
+	dispatches in a thousand ticks. Decay is meant to measure appetite for
+	the CPU, and a thread's appetite is what it consumes, not what interrupts
+	it.
 	*/
 	ticks_left: int,
 
@@ -126,14 +129,13 @@ Thread :: struct {
 /*
 One core.
 
-Vectra has one and the struct is per-core anyway, because the alternative is a
-scheduler written against globals that has to be unpicked the first time a
-second core comes up. Run queues, the current thread, the idle thread and the
-tick count are all properties of a core and none of them are properties of the
-machine.
+Vectra has one, and the struct is per-core anyway. The alternative is a
+scheduler written against globals, which somebody has to unpick the first time a
+second core starts. Run queues, the current thread, the idle thread and the tick
+count are all properties of a core. None of them are properties of the machine.
 
 `class` and `capacity` come from `arch.cpu_class`. On amd64 that is always
-`.Performance` at full capacity; on arm64 it is what makes a three-tier part
+`.Performance` at full capacity. On arm64 it is what makes a three-tier part
 schedule sensibly.
 */
 Cpu :: struct {
@@ -149,17 +151,17 @@ Cpu :: struct {
 	switches:    u64,
 	preemptions: u64,
 
-	// Threads that have exited, waiting for someone in thread context to give
-	// their stacks back. Freeing a stack from inside the timer interrupt would
-	// mean allocating from an interrupt handler, and it would mean freeing the
-	// stack the interrupt is standing on.
+	// Threads that exited, and that wait for somebody in thread context to
+	// give their stacks back. A stack freed inside the timer interrupt would
+	// mean an allocation from an interrupt handler. It would also mean a free
+	// of the stack the interrupt stands on.
 	reap: ^Thread,
 }
 
 MAX_CPUS :: 8
 
 // eligible reports whether `t` may run on `c`. An empty affinity is no
-// constraint; anything else is a whitelist of core classes.
+// constraint. Anything else is a whitelist of core classes.
 eligible :: proc "contextless" (t: ^Thread, c: ^Cpu) -> bool {
 	if t.affinity == ANY_CLASS {
 		return true
@@ -180,9 +182,9 @@ QUANTUM_TICKS :: 10
 slice_ticks is that quantum, scaled by how fast the core is.
 
 Equal *work*, not equal *time*. A core at half capacity does half as much in a
-tick, so a thread there gets twice as many ticks -- otherwise moving a thread to
-an efficiency core would silently halve what it gets done per round of the
-queue, and the round-robin would be fair only in a unit nobody cares about.
+tick, so a thread there gets twice as many ticks. Without that, a thread moved
+to an efficiency core would silently get half as much done per round of the
+queue. The round-robin would then be fair only in a unit nobody cares about.
 */
 slice_ticks :: proc "contextless" (c: ^Cpu) -> int {
 	if c.capacity <= 0 {
@@ -195,16 +197,16 @@ slice_ticks :: proc "contextless" (c: ^Cpu) -> int {
 /*
 decay drops a thread a level for consuming a whole slice.
 
-Floored at `PRIORITY_MIN` rather than at zero: level zero belongs to the idle
-thread, and a compute-bound thread that reached it would be competing with the
-one thing that must always lose.
+Floored at `PRIORITY_MIN` rather than at zero. Level zero belongs to the idle
+thread, and a compute-bound thread that reached it would contend with the one
+thing that must always lose.
 
 Realtime threads do not decay. That is the promise, and it is also the hazard.
 */
 decay :: proc "contextless" (t: ^Thread) {
 	// Counted here rather than at dispatch, which makes `slices` the count of
-	// slices *consumed* -- the same quantity `ticks_left` measures, and not
-	// the number of times the thread was put on a core.
+	// slices *consumed*. That is the same quantity `ticks_left` measures, and
+	// not the number of times a core took the thread.
 	t.slices += 1
 	if t.prio >= PRIORITY_REALTIME {
 		return
@@ -217,11 +219,11 @@ decay :: proc "contextless" (t: ^Thread) {
 /*
 boost lifts a thread that blocked and was woken.
 
-Back to its base, plus one, capped below realtime -- so an interactive thread
-recovers everything a run of full slices cost it and gets a little on top,
-which is what makes it win the race to the CPU against the compute-bound thread
-that woke it. It cannot climb into realtime by blocking often; that level has to
-be asked for.
+Back to its base, plus one, capped below realtime. An interactive thread
+therefore recovers everything a run of full slices cost it, and gets a little on
+top. That is what makes it win the race to the CPU against the compute-bound
+thread that woke it. Frequent blocks cannot climb it into realtime. A thread has
+to ask for that level.
 */
 boost :: proc "contextless" (t: ^Thread) {
 	t.wakeups += 1

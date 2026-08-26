@@ -1,7 +1,7 @@
 /*
 The mount table.
 
-A mount point is keyed by the file being mounted **over**:
+The key of a mount point is the file that something mounts **over**:
 
     key = (server identity, qid.path)
 
@@ -9,8 +9,8 @@ A mount point is keyed by the file being mounted **over**:
 directory is modified. Keying on the version would unmount `/dev` the moment
 somebody created a file in whatever `/dev` was mounted onto.
 
-Each key holds an *ordered list* of members. One member is an ordinary mount;
-several are a union directory, searched in list order:
+Each key holds an *ordered list* of members. One member is an ordinary mount.
+Several are a union directory, searched in list order:
 
     bind -a /dev/usb /dev        # after:  /dev then /dev/usb
     bind -b /tmp/bin /bin        # before: /tmp/bin then /bin
@@ -30,10 +30,10 @@ import "vsys:vectra9"
 /*
 Thirty-two buckets, chained.
 
-A namespace with more than a few dozen mounts is unusual -- Plan 9's are
-typically ten to thirty -- and a chain of two costs one pointer chase per path
-element. This is sized for the common case on purpose; the pathological case
-degrades linearly rather than failing.
+A namespace with more than a few dozen mounts is unusual. Plan 9's are
+typically ten to thirty, and a chain of two costs one pointer chase per path
+element. This is sized for the common case on purpose. The pathological case
+degrades linearly rather than fails.
 */
 MOUNT_BUCKETS :: 32
 
@@ -44,7 +44,7 @@ Mount_Order :: enum {
 }
 
 // Create marks the member new files are made in. Exactly one member should
-// carry it; `union_create_target` explains what happens when none does.
+// carry it. `union_create_target` says what happens when none does.
 Mount_Flag :: enum {
 	Create,
 }
@@ -60,18 +60,18 @@ Mount :: struct {
 /*
 Mount_Point is reference counted, and outlives the table it was filed in.
 
-The table holds one reference; every `Chan.union_head` holds another. That is
-not bookkeeping for its own sake -- a chan reached through a union keeps a
-pointer to the mount point so `readdir` can find the other members, and
-unmounting while that chan is alive would otherwise free the object it points
-at. `unmount` therefore dissolves rather than deletes: the members go, the
-struct stays until the last chan lets go, and a chan holding an empty mount
+The table holds one reference. Every `Chan.union_head` holds another. That is
+not bookkeeping for its own sake. A chan reached through a union keeps a
+pointer to the mount point, so `readdir` can find the other members.
+
+An `unmount` while that chan is alive would otherwise free the object it points
+at. `unmount` therefore dissolves rather than deletes. The members go. The
+struct stays until the last chan releases it. A chan that holds an empty mount
 point behaves like one that was never in a union at all.
 
-`members` is guarded by `object_lock`, not by the namespace's lock, for the
-same reason: a mount point can be reached from a chan whose namespace has
-already been torn down, and a lock you can only find through the namespace is
-no lock at all by then.
+`object_lock` guards `members`, and the namespace's lock does not, for the same
+reason. A chan whose namespace is already gone can still reach a mount point. A
+lock reachable only through the namespace is no lock at all by then.
 */
 Mount_Point :: struct {
 	server:  ^Server, // Identity half of the key: whose qid.path this is
@@ -83,19 +83,21 @@ Mount_Point :: struct {
 	Bumped every time `members` changes, so a walker can tell whether the list
 	it just searched held still while it was searching.
 
-	Plan 9 does not need this: it read-locks the mount head for the whole union
-	search, which it can do because its locks put a process to sleep and a 9P
-	call under one is ordinary. Vectra's lock is the interrupt flag, so holding
-	it across a message is not an option -- see `lock.odin` -- and the search
-	has to let go between members. That leaves one hole, and it is a real one:
-	a member removed from the *front* of the list shifts every later member
-	down by one, and a walker resuming at index 1 skips the entry that used to
-	be there. The file it was looking for is still bound, still in the same
-	tree, and the walk says ENOENT.
+	Plan 9 does not need this. It read-locks the mount head for the whole union
+	search. It can do that, because its locks put a process to sleep, and a 9P
+	call under one is ordinary.
 
-	The counter closes it without a lock. A search that finds nothing is only
-	believed if the list is the same one it started on; otherwise the search
-	was inconclusive and runs again. See `walk1_ex`.
+	Vectra's lock is the interrupt flag, so it cannot be held across a message.
+	See `lock.odin`. The search has to release it between members.
+
+	That leaves one hole, and it is a real one. A member removed from the *front*
+	of the list shifts every later member down by one. A walker that resumes at
+	index 1 then skips the entry that used to be there. The file it wanted is
+	still bound, still in the same tree, and the walk says ENOENT.
+
+	The counter closes it without a lock. A search that finds nothing counts only
+	if the list is the same one it started on. Otherwise the search was
+	inconclusive, and runs again. See `walk1_ex`.
 	*/
 	generation: u64,
 	next:    ^Mount_Point, // Hash chain
@@ -109,7 +111,7 @@ members_changed :: proc "contextless" (mp: ^Mount_Point) {
 }
 
 // mount_point_generation reads that counter. A walker compares it before and
-// after searching; equal means the answer is trustworthy.
+// after the search. Equal means the answer is trustworthy.
 @(private)
 mount_point_generation :: proc "contextless" (mp: ^Mount_Point) -> u64 {
 	if mp == nil {
@@ -133,9 +135,9 @@ mount_point_incref :: proc(mp: ^Mount_Point) -> ^Mount_Point {
 /*
 mount_point_release drops a reference and frees the last one.
 
-Whatever drives the count to zero has already been unlinked -- the table's own
-reference is the one `mount_point_unlink` drops -- so `members` is nil by
-construction here and there is nothing left to send a message about.
+Whatever drives the count to zero is already unlinked, because the table's own
+reference is the one `mount_point_unlink` drops. `members` is therefore nil by
+construction here, and there is nothing left to send a message about.
 */
 mount_point_release :: proc(mp: ^Mount_Point) {
 	if mp == nil {
@@ -152,8 +154,8 @@ mount_point_release :: proc(mp: ^Mount_Point) {
 
 @(private)
 mount_hash :: proc "contextless" (sv: ^Server, path: u64) -> int {
-	// The server pointer is 16-byte aligned at best, so its low bits are dead;
-	// fold it down before mixing so two servers with adjacent allocations do
+	// The server pointer is 16-byte aligned at best, so its low bits are dead.
+	// Fold it down before the mix, so two servers with adjacent allocations do
 	// not collide on every file they serve.
 	h := u64(uintptr(rawptr(sv))) >> 4
 	h ~= path * 0x9E37_79B9_7F4A_7C15
@@ -164,12 +166,12 @@ mount_hash :: proc "contextless" (sv: ^Server, path: u64) -> int {
 /*
 mount_head finds the mount point a chan is the key of, or nil.
 
-Called once per path element by `cross_mounts`, which is what makes a walk
-alternate between asking servers and consulting the table -- and what lets a
-single path element cross from one server to another.
+`cross_mounts` calls it once per path element. That is what makes a walk
+alternate between the servers it asks and the table it consults. It is also
+what lets a single path element cross from one server to another.
 
-**The caller must hold `ns.lock`**, and must not let go of it before it has
-either finished with the result or taken a reference to it. Returning a bare
+**The caller must hold `ns.lock`**. It must not release that lock before it
+either finishes with the result or takes a reference to it. Returning a bare
 pointer out from under the lock is `mount_head_ref`'s job.
 */
 @(private)
@@ -226,15 +228,16 @@ mount_head_create :: proc(ns: ^Namespace, c: ^Chan) -> ^Mount_Point #no_bounds_c
 /*
 bind makes `source` visible at the name `over` resolved to.
 
-`mount` in Plan 9 is the same operation reaching a server through a posted
-channel instead of an existing name; once `/srv` exists it will be a wrapper
-around this and not a second implementation.
+`mount` in Plan 9 is the same operation, and reaches a server through a posted
+channel rather than an existing name. Once `/srv` exists it will be a wrapper
+around this, and not a second implementation.
 
-Both chans stay the caller's. The table takes its own handles: `source` is
-cloned because the stored member is walked from independently, and `over` is
-cloned because it becomes the `mounted_over` that every chan inside the mounted
-tree will climb through on `..` -- for as long as any of them lives, which is
-longer than the caller's own reference.
+Both chans stay the caller's. The table takes its own handles. `source` is
+cloned because walks start from the stored member independently.
+
+`over` is cloned because it becomes the `mounted_over` that every chan inside
+the mounted tree climbs through on `..`. That lasts as long as any of them
+lives, which is longer than the caller's own reference.
 */
 bind :: proc(
 	ns: ^Namespace,
@@ -265,8 +268,9 @@ bind :: proc(
 		return err
 	}
 
-	// This is what makes `..` work out of the mounted tree: the member is the
-	// root of its tree, and the chan it was mounted onto is what lies above it.
+	// This is what makes `..` work out of the mounted tree. The member is the
+	// root of its tree, and the chan something mounted it onto is what lies above
+	// it.
 	member_chan.tree_root = source.qid
 	if member_chan.mounted_over != nil {
 		chan_close(member_chan.mounted_over)
@@ -274,8 +278,8 @@ bind :: proc(
 	member_chan.mounted_over = parent
 
 	// The member is the root of its own tree, not a member of whatever union
-	// `source` was reached through. The clone inherited that reference; drop
-	// it rather than overwriting the field and losing the count.
+	// `source` was reached through. The clone inherited that reference. Drop it,
+	// rather than overwrite the field and lose the count.
 	if member_chan.union_head != nil {
 		mount_point_release(member_chan.union_head)
 		member_chan.union_head = nil
@@ -290,13 +294,14 @@ bind :: proc(
 	m.flags = flags
 
 	/*
-	Everything above this point sent messages; nothing below it does.
+	Everything above this point sent messages. Nothing below it does.
 
 	That split is the whole locking discipline in one procedure. The two clones
-	are Twalks and cannot happen under a lock, so the table is not touched until
-	both have landed -- and `.Replace` hands the list it displaces back to the
-	caller's stack rather than freeing it here, because freeing a member clunks
-	a fid, which is another message.
+	are Twalks and cannot happen under a lock, so nothing touches the table until
+	both land.
+
+	`.Replace` hands the list it displaces back to the caller's stack, rather than
+	frees it here. A member freed here clunks a fid, and that is another message.
 	*/
 	displaced: ^Mount
 
@@ -339,19 +344,19 @@ bind :: proc(
 /*
 unmount removes one member, or the whole mount point when `source` is nil.
 
-Matching is by (server, qid.path) rather than by chan identity, because the
-caller resolved `/dev/usb` again to name what to remove and got a different
-`Chan` than the one the table holds. The qid is the file's permanent identity;
-the chan is just a handle on it.
+The match is by (server, qid.path) rather than by chan identity. The caller
+resolved `/dev/usb` again to name what to remove, and got a different `Chan`
+than the one the table holds. The qid is the file's permanent identity. The
+chan is just a handle on it.
 */
 unmount :: proc(ns: ^Namespace, source: ^Chan, over: ^Chan) -> Errno #no_bounds_check {
 	if ns == nil || over == nil {
 		return vectra9.EINVAL
 	}
 
-	// Members come off the list under the lock and are freed off it, for the
-	// same reason `bind` displaces rather than frees: closing a member chan
-	// clunks a fid, and a fid is a message.
+	// Members leave the list under the lock, and are freed outside it, for the
+	// same reason `bind` displaces rather than frees. A member chan closed clunks
+	// a fid, and a fid is a message.
 	removed: ^Mount
 	err := OK
 
@@ -394,9 +399,9 @@ unmount :: proc(ns: ^Namespace, source: ^Chan, over: ^Chan) -> Errno #no_bounds_
 	}
 
 	// An empty mount point leaves the table. It does not necessarily leave
-	// memory: a chan reached through it still holds a reference, and finds an
-	// empty list, which is exactly what "this union has been dissolved" should
-	// look like from inside.
+	// memory. A chan reached through it still holds a reference, and finds an
+	// empty list. That is exactly what a dissolved union should look like from
+	// inside.
 	if err == OK {
 		members_changed(mp)
 	}
@@ -420,9 +425,10 @@ unmount :: proc(ns: ^Namespace, source: ^Chan, over: ^Chan) -> Errno #no_bounds_
 mount_point_unlink takes a mount point out of the table and drops the table's
 reference to it. Requires `ns.lock` and `object_lock`.
 
-The count is decremented inline rather than through `mount_point_release`,
-which would take `object_lock` a second time -- harmless, since it nests, but
-the free has to happen outside both locks and doing it here would put a heap
+The count drops inline rather than through `mount_point_release`, which would
+take `object_lock` a second time. That is harmless, because it nests.
+
+But the free has to happen outside both locks, and a free here would put a heap
 call under the namespace lock for no reason.
 */
 @(private)
@@ -449,13 +455,14 @@ mount_point_unlink :: proc(ns: ^Namespace, mp: ^Mount_Point) -> (orphaned: bool)
 /*
 member_ref_at returns a counted reference to the member at `idx`.
 
-Index rather than pointer, and a reference rather than a borrow, because the
-two callers that walk a union -- `walk1_ex` and `readdir_union` -- send a
-message per member and cannot hold a lock while they do. Re-finding the member
-by position each time is what makes that safe: the list may have changed, and
-the worst that costs is a member visited twice or skipped, which is already
-what rebinding a union mid-walk means. What it cannot do is hand back a pointer
-to something freed.
+Index rather than pointer, and a reference rather than a borrow. The two
+callers that walk a union are `walk1_ex` and `readdir_union`. Both send a
+message per member, and cannot hold a lock while they do.
+
+A fresh find of the member by position each time is what makes that safe. The
+list may have moved. The worst that costs is a member visited twice or skipped,
+which is already what a union rebound mid-walk means. What it cannot do is hand
+back a pointer to something freed.
 
 `ok` is false past the end. The caller closes what it gets.
 */
@@ -497,12 +504,12 @@ members_free :: proc(head: ^Mount) {
 /*
 mount_point_refs reports how many holders a mount point has.
 
-Introspection for the self-test, and the only way to see the invariant that
-matters directly: a mount point in a table with one chan reached through it has
-exactly two references, and dissolving it must leave exactly one. The
-alternative -- inferring it from behaviour after the fact -- does not work,
-because a `Mount_Point` freed one reference early still reads as a valid empty
-one until something else claims the block.
+Introspection for the self-test, and the only direct view of the invariant that
+matters. A mount point in a table, with one chan reached through it, has
+exactly two references. A dissolve must leave exactly one. The alternative is
+to infer it from behaviour after the fact, and that does not work. A
+`Mount_Point` freed one reference early still reads as a valid empty one, until
+something else claims the block.
 */
 mount_point_refs :: proc "contextless" (mp: ^Mount_Point) -> int {
 	if mp == nil {
@@ -514,8 +521,8 @@ mount_point_refs :: proc "contextless" (mp: ^Mount_Point) -> int {
 }
 
 // member_count reports how many trees a mount point presents as one. One is an
-// ordinary mount; more is a union. Zero is a mount point that has been
-// dissolved and is still referenced -- see `Mount_Point`.
+// ordinary mount. More is a union. Zero is a mount point something dissolved
+// while a reference remained. See `Mount_Point`.
 member_count :: proc "contextless" (mp: ^Mount_Point) -> int {
 	if mp == nil {
 		return 0
@@ -535,10 +542,11 @@ union_create_target picks the member a new file is made in.
 
 Plan 9's rule, and it has two halves: take the first member flagged `Create`,
 and *do not fall through* if creating there fails. The second half is the one
-that matters. Falling through would put a new file in `/bin` in whichever tree
-happened to be writable that day, with no way for the caller to know which -- a
-create that fails where the namespace chose is a comprehensible error; one that
-silently lands elsewhere surfaces weeks later as a file nobody can find.
+that matters. A fallthrough would put a new file in `/bin` in whichever tree
+happened to be writable that day. The caller would have no way to know which.
+
+A create that fails where the namespace chose is a comprehensible error. One
+that silently lands elsewhere surfaces weeks later as a file nobody can find.
 
 Nil means no member is flagged, which is EPERM at the call site rather than a
 guess. See docs/VECTRA9.md section 7.4.
@@ -567,11 +575,11 @@ union_create_target :: proc(mp: ^Mount_Point) -> ^Chan {
 The three of these exist so that no caller has to remember which side of a bind
 gets `resolve` and which gets `resolve_mount_point`.
 
-Getting that backwards produces a namespace that looks right and is not: the
-bind succeeds, the name resolves to the same file it did before, and the new
-member is never searched, because it was filed under a key nothing looks up.
-An API that can be held wrong in a way that fails silently is an API with a bug
-in it, so this is the one that should be reached for.
+Backwards, it produces a namespace that looks right and is not. The bind
+succeeds. The name resolves to the same file it did before. And nothing ever
+searches the new member, because it went under a key nothing looks up. An API a
+caller can hold wrong, in a way that fails silently, is an API with a bug in
+it. So this is the one to reach for.
 */
 bind_path :: proc(
 	ns: ^Namespace,
@@ -599,9 +607,9 @@ bind_path :: proc(
 /*
 mount_device attaches a `#name` tree and binds it at a path.
 
-The kernel-side half of what `mount` will be once `/srv` exists: same
-operation, reaching the server through the device table instead of through a
-posted channel.
+The kernel-side half of what `mount` will be once `/srv` exists. It is the same
+operation, and reaches the server through the device table rather than a posted
+channel.
 */
 mount_device :: proc(
 	ns: ^Namespace,

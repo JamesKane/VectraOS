@@ -2,31 +2,31 @@
 The wire codec: decoded messages to 9P2000.L bytes, and back.
 
 Only a transport that crosses an address space ever calls this. An in-process
-call passes the `Msg` by pointer and this file is not involved -- which is the
-whole point of the layer, and why the codec can afford to be strict and simple
-rather than fast.
+call passes the `Msg` by pointer, and this file takes no part. That is the
+whole point of the layer, and it is why the codec can afford to be strict and
+simple rather than fast.
 
 Framing is `size[4] type[1] tag[2]` then a body, with `size` counting itself.
 Strings are a 16-bit length and then bytes, never NUL-terminated. Qids are
 thirteen bytes on the wire and sixteen in memory. Everything is little-endian,
-assembled a byte at a time rather than cast through a pointer, because a
-message buffer has no alignment guarantee and an unaligned `u64` load is a
-fault on some of the architectures Vectra intends to run on.
+and assembled a byte at a time rather than cast through a pointer. A message
+buffer has no alignment guarantee, and an unaligned `u64` load is a fault on
+some of the architectures Vectra intends to run on.
 
 Bounds are checked once per field, in `advance`, and the first failure latches
-into `Cursor.err`. Every accessor after that is a no-op returning zero, so a
-long decode does not need a check after every line -- the error is still there
-at the end.
+into `Cursor.err`. Every accessor after that is a no-op that returns zero. A
+long decode therefore needs no check after every line, because the error is
+still there at the end.
 */
 package vectra9
 
 /*
 A bounds-checked position in a buffer, for reading or for writing.
 
-Errors latch rather than saturating, which is the opposite of `libodin.Sink`.
-A truncated log line is better than no log line; a truncated 9P message is a
-protocol violation, and a codec that quietly produced one would put a
-malformed message on the wire and blame the far end.
+Errors latch rather than saturating, which is the opposite of `libodin.Sink`. A
+truncated log line is better than no log line. A truncated 9P message is a
+protocol violation. A codec that quietly produced one would put a malformed
+message on the wire, and blame the far end.
 */
 Cursor :: struct {
 	buf: []u8,
@@ -38,7 +38,7 @@ cursor_from :: proc "contextless" (buf: []u8) -> Cursor {
 	return Cursor{buf = buf}
 }
 
-// bytes returns what has been written so far.
+// bytes returns what the cursor wrote so far.
 written :: proc "contextless" (c: ^Cursor) -> []u8 {
 	return c.buf[:c.pos]
 }
@@ -201,10 +201,10 @@ get_data :: proc "contextless" (c: ^Cursor) -> []u8 #no_bounds_check {
 /*
 One entry inside an Rreaddir payload: `qid[13] offset[8] type[1] name[s]`.
 
-`offset` is the cookie a client passes back to continue the listing -- it is
-what the next Treaddir's offset field must be to read the entry *after* this
-one, and it is deliberately opaque. A union directory hides its member index in
-the high bits of exactly this field.
+`offset` is the cookie a client passes back to continue the listing. It is what
+the next Treaddir's offset field must be, to read the entry *after* this one.
+It is deliberately opaque. A union directory hides its member index in the high
+bits of exactly this field.
 */
 Dirent :: struct {
 	qid:    Qid,
@@ -249,9 +249,9 @@ next_dirent :: proc "contextless" (c: ^Cursor) -> (e: Dirent, ok: bool) {
 /*
 encode writes one complete message into `buf` and returns its length.
 
-The size field is written as a placeholder and patched once the body is known,
-which is cheaper than measuring the message twice and is why `buf` has to be
-writable rather than a stream.
+The size field goes in as a placeholder, and gets patched once the body is
+known. That is cheaper than two measurements of the message, and it is why
+`buf` has to be writable rather than a stream.
 */
 encode :: proc "contextless" (buf: []u8, tag: Tag, msg: Msg) -> (n: int, err: Error) #no_bounds_check {
 	c := cursor_from(buf)
@@ -277,7 +277,7 @@ encode :: proc "contextless" (buf: []u8, tag: Tag, msg: Msg) -> (n: int, err: Er
 message_size peeks at a message's declared length without decoding it.
 
 What a stream transport needs to know how many bytes to wait for. Reports false
-until at least the four bytes of the size field have arrived.
+until at least the four bytes of the size field arrive.
 */
 message_size :: proc "contextless" (data: []u8) -> (size: u32, ok: bool) #no_bounds_check {
 	if len(data) < 4 {
@@ -290,9 +290,9 @@ message_size :: proc "contextless" (data: []u8) -> (size: u32, ok: bool) #no_bou
 /*
 decode parses one message out of `data`.
 
-Trailing bytes are permitted and ignored, so a caller holding a stream buffer
-can hand over what it has; the message is bounded by its own declared size, and
-anything claiming to be longer than the buffer is refused rather than read.
+Trailing bytes are permitted and ignored, so a caller that holds a stream
+buffer can pass what it has. The message's own declared size bounds it.
+Anything that claims to be longer than the buffer is refused rather than read.
 
 The result borrows `data`.
 */
@@ -305,10 +305,9 @@ decode :: proc "contextless" (data: []u8) -> (tag: Tag, msg: Msg, err: Error) {
 		return 0, nil, .Size_Mismatch
 	}
 
-	// Bound the cursor by the declared size, not by the buffer. A body that
-	// tries to read past its own message is a malformed message, not a short
-	// buffer, and confining it here means every accessor below gets that for
-	// free.
+	// Bound the cursor by the declared size, not by the buffer. A body that tries
+	// to read past its own message is a malformed message, not a short buffer.
+	// The bound is here, so every accessor below gets that for free.
 	c := cursor_from(data[:size])
 	c.pos = 4
 

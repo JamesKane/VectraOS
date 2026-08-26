@@ -2,30 +2,32 @@
 The sleep queue, checked directly.
 
 A rendezvous is harder to test than a lock, because the interesting properties
-are all about a thread that is *not running*. A lock can be caught by two
-threads observing each other inside it; a sleep can only be caught by measuring
-what the rest of the machine did while the sleeper was gone.
+are all about a thread that is *not running*. Two threads that observe each
+other inside a lock catch a lock bug. Only a measurement of what the rest of
+the machine did, while the sleeper was gone, catches a sleep bug.
 
     the clock      a thread asking for N ticks comes back after N ticks, and
                    not after a slice's worth more
     the park       it really left the core, rather than spinning quietly --
                    which is a context switch the machine would not otherwise
-                   have made
+                   make
     the condition  a wake-up that arrives before the wait is not lost, because
                    the state is in the condition and not in the queue
     the order      the queue serves the waiter the scheduler would have picked
 
 The park is the one worth explaining. `delay` and a spin loop are
 indistinguishable from inside the thread that ran them -- both return after the
-right number of ticks. They differ in what the core did in between, and with
-only the boot thread and the idle thread alive that difference is exact rather
-than statistical: a spinning boot thread is re-picked by `reschedule`, which
-does not count a switch when the thread it picked is the thread it had. A
-parked one switches to idle and back. Two, versus zero.
+right number of ticks. They differ in what the core did in between. With only
+the boot thread and the idle thread alive, that difference is exact rather than
+statistical.
 
-Ordered after `verify_sleep_lock` because a rendezvous is built on the same
-queue, and a broken queue should be reported in the vocabulary of the thing
-that is simplest to reason about.
+`reschedule` re-picks a spinning boot thread, and does not count a switch when
+the thread it picked is the thread it had. A parked one switches to idle and
+back. Two, versus zero.
+
+Ordered after `verify_sleep_lock`, because a rendezvous stands on the same
+queue. A broken queue should report itself in the vocabulary of the simplest
+thing that uses it.
 */
 package kernel
 
@@ -44,15 +46,17 @@ NAP_TICKS :: 25
 How late a deadline may be honoured.
 
 Two ticks, which is tight on purpose. A wake is `ready`, so the sleeper
-outranks whatever woke it and runs at the very next switch -- and `on_tick`
-makes a switch happen the moment `sync.tick` reports it started anybody. Take
-that reschedule out and the sleeper waits for the running thread's slice to
-end instead, which is up to ten ticks. That is the failure this number exists
-to catch, and five ticks of slack would have hidden it.
+outranks whatever woke it, and runs at the very next switch. `on_tick` forces a
+switch the moment `sync.tick` reports it started anybody. Take that reschedule
+out and the sleeper waits for the running thread's slice to end instead, which
+is up to ten ticks. That is the failure this number exists to catch, and five
+ticks of slack would have hidden it.
 
-One tick of skew is inside the noise and is not checked: the clock can advance
-between a caller reading it and `sleep_for` computing a deadline from it, and
-no thread that can be preempted between those two lines can measure its own
+One tick of skew is inside the noise, and nothing checks it. The clock can
+advance between the moment a caller reads it and the moment `sleep_for`
+computes a deadline from it.
+
+No thread something can preempt between those two lines measures its own
 latency more finely than that.
 */
 @(private = "file")
@@ -95,11 +99,11 @@ timed_finished: bool
 /*
 The condition the sleepers wait on.
 
-It counts its own false answers, which is the only way to know from outside
-that a thread has committed to parking. `sleep` runs this with interrupts
-masked and parks the caller immediately afterwards without unmasking, so a
-thread that has bumped `parked` is a thread that is going to sleep -- there is
-no window between the two for the observer to catch.
+It counts its own false answers. That is the only way to know from outside that
+a thread committed to a park. `sleep` runs this with interrupts masked, and
+parks the caller immediately afterwards with no unmask. A thread that bumped
+`parked` is therefore a thread on its way to sleep. There is no window between
+the two for the observer to catch.
 */
 @(private = "file")
 is_released :: proc "contextless" (arg: rawptr) -> bool {
@@ -136,10 +140,9 @@ sleeper :: proc "contextless" (arg: rawptr) #no_bounds_check {
 
 	sync.sleep(&gate, is_released)
 
-	// Woken, and the condition really is true -- `sleep` does not return until
-	// it is. The turn is taken here rather than in the waker so that it
-	// records the order threads were *released* in, which is the order the
-	// queue chose.
+	// Woken, and the condition really is true -- `sleep` does not return until it
+	// is. The turn is taken here rather than in the waker, so it records the
+	// order the queue *released* threads in. That is the order the queue chose.
 	turn := intrinsics.volatile_load(&next_turn)
 	intrinsics.volatile_store(&next_turn, turn + 1)
 	intrinsics.volatile_store(&wake_order[slot], turn)
@@ -187,9 +190,9 @@ rcheck :: proc "contextless" (r: ^Rendez_Result, ok: bool, what: string) -> bool
 }
 
 // wait_parked spins the boot thread down onto the clock until `want` threads
-// have committed to sleeping. A poll, but a polite one: between looks this
-// thread is off the run queue entirely, so the threads it is waiting for have
-// the core to themselves.
+// commit to a sleep. A poll, but a polite one. Between looks, this thread is
+// off the run queue entirely, so the threads it waits for have the core to
+// themselves.
 @(private = "file")
 wait_parked :: proc "contextless" (want: int) -> bool {
 	for _ in 0 ..< PATIENCE {
@@ -282,12 +285,13 @@ verify_sleep_queue :: proc() #no_bounds_check {
 	Started one at a time, lowest priority first, so that arrival order and
 	priority order disagree.
 
-	Spawning all three at once does not achieve that and quietly makes the
-	ordering check worthless, which is exactly what happened: the scheduler
-	dispatches the highest-priority thread first, so it is also the first to
-	reach the queue, and a queue serving in arrival order gets the same answer
-	as one serving by priority. The first version of this check passed with
-	the priority scan disabled.
+	All three at once does not achieve that, and quietly makes the ordering check
+	worthless. That is exactly what happened.
+
+	The scheduler dispatches the highest-priority thread first, so it is also the
+	first to reach the queue. A queue that serves in arrival order then gets the
+	same answer as one that serves by priority. The first version of this check
+	passed with the priority scan disabled.
 
 	So each sleeper is parked before the next is created. The queue then holds
 	them low-to-high in arrival order, and the two orderings can only agree by

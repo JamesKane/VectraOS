@@ -2,14 +2,15 @@
 Namespace -- a private mapping from names to files.
 
 Not a view of a global tree with permissions on it. There is no global tree. A
-namespace is a root chan and a mount table, and everything a process can name
-is reachable from those two things or from `#name`, which is section 5.8's
+namespace is a root chan and a mount table. Everything a process can name is
+reachable from those two things, or from `#name`, which is section 5.8's
 deliberate escape hatch.
 
-That is what "modular operating system" means here in concrete terms: a service
-is swapped by rebinding a name, not by changing a subsystem. Testing the network
-stack means running the real one and binding a fake `/net` over it in one
-process, while every other process on the machine goes on using the real one.
+That is what `modular operating system` means here in concrete terms. A rebound
+name swaps a service. A changed subsystem does not.
+
+To test the network stack, run the real one and bind a fake `/net` over it in
+one process. Every other process on the machine goes on using the real one.
 */
 package vfs
 
@@ -25,11 +26,11 @@ Namespace :: struct {
 	/*
 	Guards every field above it.
 
-	Per namespace because a namespace is the object processes choose to share:
-	`rfork` with no flags hands the child this same pointer, so a `bind` in
-	either is a mutation both see, and that is the feature rather than an
-	accident. Two processes in *different* namespaces contend for nothing here,
-	which is what makes the granularity worth having.
+	Per namespace, because a namespace is the object processes choose to share.
+	`rfork` with no flags hands the child this same pointer, so a `bind` in either
+	is a mutation both see. That is the feature rather than an accident. Two
+	processes in *different* namespaces contend for nothing here, which is what
+	makes the granularity worth having.
 
 	What it does not guard is anything reachable from a namespace other than
 	this one -- chan reference counts, mount point member lists. Those are
@@ -41,13 +42,13 @@ Namespace :: struct {
 /*
 How a child gets its namespace, following Plan 9's rfork.
 
-The default -- no flags -- is *share*, which surprises people and is right: a
-later `bind` in either process is visible to both, which is how a shell's `bind`
+The default, no flags, is *share*. That surprises people and is right. A later
+`bind` in either process is visible to both, which is how a shell's `bind`
 affects the commands it runs.
 
 `Clean` is the interesting one. A process with an empty namespace cannot open a
-file, because there are no names: it is a sandbox with nothing to escape from,
-and the parent constructs its world by binding exactly what it should have.
+file, because there are no names. It is a sandbox with nothing to escape from.
+The parent then builds its world, and binds exactly what it should have.
 `Clean` and `Copy` together is `Clean` -- there is nothing to copy.
 */
 Fork_Flag :: enum {
@@ -79,9 +80,9 @@ ns_incref :: proc(ns: ^Namespace) -> ^Namespace {
 /*
 ns_set_root installs the namespace root, cloning the caller's handle.
 
-Cloned rather than increfed because the root is the one chan the walker starts
-from on every absolute path, and a caller that later opened or closed its own
-copy would otherwise be reaching into the namespace's state.
+Cloned rather than increfed, because the root is the one chan the walker starts
+from on every absolute path. A caller that later opened or closed its own copy
+would otherwise reach into the namespace's state.
 
 `..` at the root is the root: `root.tree_root` equals `root.qid` and its
 `mounted_over` is nil, so the climb in `walk1` has nowhere to go. That is what
@@ -92,9 +93,9 @@ ns_set_root :: proc(ns: ^Namespace, c: ^Chan) -> Errno {
 	if ns == nil || c == nil {
 		return vectra9.EINVAL
 	}
-	// The clone is a message and so happens before the lock. What the lock
-	// covers is the swap, and what it hands back is the old root -- closed
-	// after the lock, because closing it clunks a fid.
+	// The clone is a message and so happens before the lock. What the lock covers
+	// is the swap, and what it hands back is the old root. That root closes after
+	// the lock, because a close clunks a fid.
 	root, err := chan_clone(c)
 	if err != OK {
 		return err
@@ -112,10 +113,10 @@ ns_set_root :: proc(ns: ^Namespace, c: ^Chan) -> Errno {
 /*
 ns_root_ref takes a counted reference to the namespace root.
 
-The root is a pointer another thread may replace -- `ns_set_root` swaps it and
-closes the old one -- so a walker that read the field and then sent a message
-would be walking a chan that had been clunked. Every reader goes through this
-and closes what it gets.
+The root is a pointer another thread may replace, because `ns_set_root` swaps
+it and closes the old one. A walker that read the field and then sent a message
+would walk a clunked chan. Every reader goes through this and closes what it
+gets.
 */
 @(private)
 ns_root_ref :: proc(ns: ^Namespace) -> ^Chan {
@@ -130,11 +131,11 @@ ns_root_ref :: proc(ns: ^Namespace) -> ^Chan {
 /*
 ns_fork produces the child's namespace.
 
-Copy duplicates the mount table and shares the member chans, which is safe
-because nothing in this package mutates one: a walk from a member allocates a
-fresh fid rather than moving the member's, and `bind` and `unmount` replace
-list entries rather than editing them. Reference counting is what makes the
-sharing invisible.
+Copy duplicates the mount table and shares the member chans. That is safe
+because nothing in this package mutates one. A walk from a member allocates a
+fresh fid rather than moves the member's, and `bind` and `unmount` replace list
+entries rather than edit them. Reference counting is what makes the sharing
+invisible.
 */
 ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds_check {
 	if ns == nil {
@@ -173,10 +174,10 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 	}
 
 	/*
-	The table copy holds the parent's lock throughout, and can: it allocates
-	and increments counts, and does neither of the two things a lock here must
-	not do. It sends no message, and it never takes the child's lock -- the
-	child is not published until this returns, so nothing else can reach it.
+	The table copy holds the parent's lock throughout, and may. It allocates and
+	increments counts, and does neither of the two things a lock here must not do.
+	It sends no message, and it never takes the child's lock -- the child is not
+	published until this returns, so nothing else can reach it.
 	*/
 	gl := sync.acquire(&ns.lock)
 	go := sync.acquire(&object_lock)
@@ -219,8 +220,8 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 	sync.release(&ns.lock, gl)
 
 	if !ok {
-		// Whatever was copied is a well-formed namespace; tearing it down is
-		// the ordinary path, and it clunks the fids the copy took.
+		// Whatever the copy produced is a well-formed namespace. To tear it down is
+		// the ordinary path, and that clunks the fids the copy took.
 		ns_close(child)
 		return nil
 	}
@@ -228,9 +229,9 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 }
 
 // ns_close drops a reference and tears the namespace down when the last one
-// goes. Every chan it holds is released, which clunks every fid it opened --
-// the only thing that stops a server's fid table filling up with the handles
-// of processes that have exited.
+// goes. It releases every chan it holds, which clunks every fid it opened.
+// That is the only thing that stops a server's fid table from filling with the
+// handles of processes that exited.
 ns_close :: proc(ns: ^Namespace) #no_bounds_check {
 	if ns == nil {
 		return
@@ -244,14 +245,14 @@ ns_close :: proc(ns: ^Namespace) #no_bounds_check {
 	}
 
 	/*
-	Nothing else can reach this namespace now -- the last reference was ours --
-	so the loop below runs unlocked, and has to: every `members_free` clunks a
-	fid, and a mount point that outlives the table still needs its reference
-	dropped, which may free it.
+	Nothing else can reach this namespace now, because the last reference was
+	ours. The loop below therefore runs unlocked, and has to. Every `members_free`
+	clunks a fid, and a mount point that outlives the table still needs its
+	reference dropped, which may free it.
 
-	`object_lock` is still taken for the member lists themselves, because a
-	chan holding one of these mount points through `union_head` can outlive the
-	namespace and go on reading them.
+	`object_lock` is still taken for the member lists themselves. A chan that
+	holds one of these mount points through `union_head` can outlive the
+	namespace, and go on reading them.
 	*/
 	for bucket in 0 ..< MOUNT_BUCKETS {
 		mp := ns.mounts[bucket]

@@ -1,21 +1,21 @@
 /*
 The global descriptor table and the task state segment.
 
-Long mode barely uses segmentation -- base and limit are ignored for code and
-data, and the descriptors exist mostly to carry a privilege level and the "this
-is 64-bit code" bit. So this table is small, and almost all of its content is
+Long mode barely uses segmentation. Base and limit are ignored for code and
+data. The descriptors exist mostly to carry a privilege level, and the `this is
+64-bit code` bit. So this table is small, and almost all of its content is
 there for two things that still matter:
 
   - The TSS, which is how the CPU finds a stack to fault onto. Without one,
     a fault that happens *because* the stack is bad has nowhere to push its
-    frame, and the result is a triple fault with nothing to show for it. The
+    frame. The result is a triple fault with nothing to show for it. The
     interrupt stack table below is the whole reason this file exists before
     userland does.
   - The selector layout, which SYSCALL/SYSRET will read out of the STAR MSR and
     cannot be renumbered later without breaking it.
 
 Limine leaves us a GDT of its own in bootloader-reclaimable memory. It works,
-but it has no TSS and it is memory we want to reclaim, so the first thing the
+but it has no TSS, and it is memory worth reclaiming. So the first thing the
 kernel does with traps is stop depending on it.
 */
 package amd64
@@ -25,9 +25,9 @@ Selector layout, fixed by what SYSCALL and SYSRET expect.
 
 `SYSCALL` loads CS from `STAR[47:32]` and SS from that plus 8, so the kernel
 pair has to be adjacent in that order. `SYSRET` to 64-bit code loads CS from
-`STAR[63:48]` plus 16 and SS from plus 8, so the user side has to read
-[code32, data, code64] with code32 present even though nothing will ever load
-it. Getting this wrong is not a link error or a fault at boot -- it is the first
+`STAR[63:48]` plus 16, and SS from plus 8. The user side therefore has to read
+[code32, data, code64]. code32 is present even though nothing will ever load
+it. An error here is not a link error, and not a fault at boot. It is the first
 system call returning to the wrong privilege level, years from now.
 
 The TSS descriptor is sixteen bytes and therefore occupies two slots.
@@ -92,11 +92,11 @@ TSS :: struct #packed {
 /*
 Dedicated fault stacks.
 
-Static, in `.bss`, and deliberately not from the page allocator: traps are
-installed before `kernel/mem` exists, precisely so that a fault *during* memory
-bring-up has somewhere to land. 16 KiB each is generous for a handler that
-formats a few lines and halts, and the generosity is the point -- the stack a
-double fault lands on is the last one the machine has.
+Static, in `.bss`, and deliberately not from the page allocator. Traps go in
+before `kernel/mem` exists, precisely so a fault *during* memory bring-up has
+somewhere to land. 16 KiB each is generous for a handler that formats a few
+lines and halts. The generosity is the point. The stack a double fault lands on
+is the last one the machine has.
 
 IST1 takes the double fault, which is the one that cannot be allowed to fault
 again. IST2 takes NMI, which can arrive on any stack at any time including
@@ -119,11 +119,11 @@ IST_MACHINE_CHECK :: 3
 /*
 stack_top returns a 16-byte-aligned top-of-stack for a static array.
 
-Aligned downward from the end, so the alignment is bought out of the unused
-space above the stack pointer rather than out of the stack itself. The CPU
-requires the value in an IST slot to be 16-byte aligned; a misaligned one is not
-rejected, it just makes every frame pushed onto it misaligned too, and the first
-SSE instruction in the handler faults.
+Aligned downward from the end, so the alignment comes out of the unused space
+above the stack pointer, rather than out of the stack itself. The CPU requires
+the value in an IST slot to be 16-byte aligned. It does not reject a misaligned
+one. It just makes every frame pushed onto it misaligned too, and the first SSE
+instruction in the handler faults.
 */
 @(private = "file")
 stack_top :: proc "contextless" (stack: []u8) -> u64 {
@@ -133,9 +133,9 @@ stack_top :: proc "contextless" (stack: []u8) -> u64 {
 
 @(private = "file")
 segment_descriptor :: proc "contextless" (access, flags: u8) -> u64 {
-	// Base 0, limit 4 GiB. Long mode ignores both for code and data segments;
-	// they are written in the classic flat form anyway so that a descriptor
-	// dumped in a debugger reads the way the manuals draw it.
+	// Base 0, limit 4 GiB. Long mode ignores both for code and data segments.
+	// They go in in the classic flat form anyway, so a descriptor dumped in a
+	// debugger reads the way the manuals draw it.
 	limit := u64(0xF_FFFF)
 	return(
 		(limit & 0xFFFF) |
@@ -149,10 +149,10 @@ segment_descriptor :: proc "contextless" (access, flags: u8) -> u64 {
 gdt_init builds the table, loads it, and reloads every selector from it.
 
 The reload is not optional. `lgdt` only changes where the CPU looks up
-descriptors; the segment registers still hold Limine's selectors, whose indices
-may not even exist in our table. CS in particular cannot be assigned -- the only
-way to change it is a control transfer, which is why the loader below returns
-through a far pointer it pushes itself.
+descriptors. The segment registers still hold Limine's selectors, whose indices
+may not even exist in this table. CS in particular cannot be assigned. Only a
+control transfer changes it, which is why the loader below returns through a
+far pointer it pushes itself.
 */
 gdt_init :: proc "contextless" () {
 	gdt[0] = 0
@@ -197,9 +197,9 @@ gdt_init :: proc "contextless" () {
 /*
 install_tss_descriptor writes the sixteen-byte system descriptor for a TSS.
 
-Unlike a code or data descriptor, this one's base and limit are real: the CPU
-reads the TSS through them, so a wrong base is a fault at the first interrupt
-that needs an IST stack rather than at load time.
+Unlike a code or data descriptor, this one's base and limit are real. The CPU
+reads the TSS through them. A wrong base is therefore a fault at the first
+interrupt that needs an IST stack, rather than at load time.
 */
 @(private = "file")
 install_tss_descriptor :: proc "contextless" (slot: ^u64, entry: ^TSS) {
@@ -214,23 +214,23 @@ install_tss_descriptor :: proc "contextless" (slot: ^u64, entry: ^TSS) {
 		(((base >> 24) & 0xFF) << 56)
 
 	slot^ = low
-	// The upper half is the top 32 bits of the base and nothing else. It is a
-	// separate GDT slot as far as the selector arithmetic is concerned, which
-	// is why TSS_SEL is followed by a gap rather than by another segment.
+	// The upper half is the top 32 bits of the base and nothing else. The
+	// selector arithmetic treats it as a separate GDT slot. That is why a gap
+	// follows TSS_SEL, rather than another segment.
 	(cast([^]u64)slot)[1] = base >> 32
 }
 
 /*
 load_gdt installs the table and reloads CS, then the data selectors.
 
-CS is reloaded by pushing a selector and a return address and executing a far
-return into the next instruction -- the only way to load CS outside of a call
-gate or an interrupt return. Everything after the `lretq` is running under the
-new code descriptor.
+To reload CS, push a selector and a return address, then execute a far return
+into the next instruction. That is the only way to load CS outside a call gate
+or an interrupt return. Everything after the `lretq` is running under the new
+code descriptor.
 
 FS and GS are set to the null selector rather than to kernel data. Their bases
-come from MSRs in long mode, per-CPU state will live behind GS, and loading a
-non-null selector into either one *clears* the corresponding base MSR on Intel.
+come from MSRs in long mode, and per-CPU state will live behind GS. On Intel, a
+non-null selector loaded into either one *clears* the corresponding base MSR.
 Null keeps that from being a surprise the day GS starts meaning something.
 */
 @(private = "file")

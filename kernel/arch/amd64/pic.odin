@@ -2,21 +2,21 @@
 The legacy 8259 interrupt controllers -- remapped and then silenced.
 
 Vectra will drive interrupts through the local APIC and the I/O APIC, not
-through these. They are here because the pair exists on every PC, powers up
-mapped over vectors 8 to 15, and cannot be assumed to have been left masked by
-whatever ran before us.
+through these. They are here because the pair exists on every PC, and powers up
+mapped over vectors 8 to 15. The kernel cannot assume whatever ran before it
+left them masked.
 
 Vectors 8 to 15 are the double fault, the invalid TSS, the segment faults, the
-general protection fault and the page fault. So a stray IRQ from an unmasked PIC
-does not arrive as a stray IRQ -- it arrives as a *page fault*, with a garbage
-error code and a CR2 left over from something else, and the panic screen says
-so with total confidence. That is the bug this file exists to prevent, and it is
-worth twenty lines to prevent it before the first `sti` rather than after.
+general protection fault and the page fault. So a stray IRQ from an unmasked
+PIC does not arrive as a stray IRQ. It arrives as a *page fault*, with a
+garbage error code and a CR2 left over from something else. The panic screen
+then says so with total confidence. That is the bug this file exists to
+prevent, and it is worth twenty lines to prevent it before the first `sti`
+rather than after.
 
-The controllers are remapped before being masked rather than only masked,
-because masking is not absolute: a spurious IRQ 7 can still get through, and it
-is far better for it to land on vector 39 and be reported as an unexpected
-external interrupt.
+The controllers are remapped as well as masked, because a mask is not absolute.
+A spurious IRQ 7 can still arrive. It is far better for that one to land on
+vector 39, and be reported as an unexpected external interrupt.
 */
 package amd64
 
@@ -37,10 +37,11 @@ ICW4_8086 :: u8(0x01) // 8086/88 mode rather than MCS-80/85
 pic_disable remaps both controllers clear of the exception vectors and masks
 every line.
 
-The `io_wait` between writes is not superstition: the 8259 needs time to settle
-between initialisation words, and on hardware fast enough to matter the writes
-otherwise run together and the controller ends up in a state that is neither the
-old one nor the new one.
+The `io_wait` between writes is not superstition. The 8259 needs time to settle
+between initialisation words.
+
+On hardware fast enough to matter the writes otherwise run together. The
+controller then settles in a state that is neither the old one nor the new one.
 */
 pic_disable :: proc "contextless" () {
 	// ICW1: start the initialisation sequence on both controllers.

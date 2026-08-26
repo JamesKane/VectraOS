@@ -3,9 +3,8 @@ The amd64 binding of the architecture interface.
 
 `package arch` is the only thing the portable kernel is allowed to import for
 CPU-level work. Each architecture supplies one file, selected by build tag,
-that binds the neutral names below to its own implementation -- so adding
-aarch64 means adding `arch_arm64.odin`, not editing call sites in sched/ or
-mem/.
+that binds the neutral names below to its own implementation. aarch64 therefore
+means one new `arch_arm64.odin`, and no edits to call sites in sched/ or mem/.
 */
 #+build amd64
 package arch
@@ -66,9 +65,9 @@ flush_all :: amd64.flush_all
 -- Traps ----------------------------------------------------------------------
 
 The GDT, the IDT and the fault reporting that hangs off them. `Trap` is neutral
-enough for `kernel/panic.odin` to report a fault without knowing which CPU it
-happened on; `register_line` and `describe_error` are the two places that do
-know, and they write into a caller's sink rather than printing.
+enough for `kernel/panic.odin` to report a fault with no knowledge of which CPU
+it happened on. `register_line` and `describe_error` are the two places that do
+know, and they write into a caller's sink rather than print.
 */
 
 Trap :: amd64.Trap
@@ -129,9 +128,9 @@ interrupts_enabled :: amd64.interrupts_enabled
 /*
 -- The local timer ------------------------------------------------------------
 
-Split across the arch boundary in three steps because the register page has to
-be mapped, and mapping is `kernel/mem`'s job, which is above this file: ask
-where it is, map it, hand back the virtual address.
+Split across the arch boundary in three steps, because something has to map the
+register page, and that is `kernel/mem`'s job, above this file. Ask where it
+is, map it, and hand back the virtual address.
 */
 
 LAPIC_MMIO_SIZE :: amd64.LAPIC_MMIO_SIZE
@@ -148,14 +147,14 @@ timer_ack :: amd64.lapic_eoi
 /*
 init_traps replaces the bootloader's tables with our own.
 
-Order matters twice over. The GDT comes first because an IDT entry names a code
-selector, and the selector it names has to exist in the table the CPU is
-actually consulting. The PIC is silenced last because it is the only step that
-can produce an interrupt, and by then there is somewhere for one to land.
+Order matters twice over. The GDT comes first, because an IDT entry names a
+code selector. That selector has to exist in the table the CPU actually
+consults. The PIC is silenced last, because it is the only step that can
+produce an interrupt. By then there is somewhere for one to land.
 
-Safe to call before `kernel/mem` exists, and meant to be: the fault stacks are
-static, so this is what makes memory bring-up debuggable rather than something
-that has to wait for it.
+Safe to call before `kernel/mem` exists, and meant to be. The fault stacks are
+static. This is therefore what makes memory bring-up debuggable, rather than
+something that has to wait for it.
 */
 init_traps :: proc "contextless" () {
 	amd64.gdt_init()
@@ -167,7 +166,7 @@ init_traps :: proc "contextless" () {
 early_init runs before anything else in kmain, including the Odin runtime
 startup.
 
-On amd64 that means enabling SSE: Odin's codegen uses XMM registers for plain
+On amd64 that means SSE turned on. Odin's codegen uses XMM registers for plain
 struct assignment, so the first line of Odin that is not this one would fault
 without it.
 */
