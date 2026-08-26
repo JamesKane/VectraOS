@@ -40,6 +40,18 @@ for it whether or not a symlink was involved, which is what Linux does too.
 MAX_PATH_ELEMENTS :: 64
 
 /*
+How many times a union search will start over because the union changed.
+
+Only ever more than one when something is rebinding the same mount point in the
+middle of somebody else's walk, which is rare and is meant to be. The bound is
+there so that a namespace being rearranged in a loop cannot hold a walk
+forever; giving up and reporting ENOENT after eight attempts is honest, because
+by then the name genuinely has not been in the namespace at any point the
+walker managed to look.
+*/
+UNION_WALK_ATTEMPTS :: 8
+
+/*
 attach opens a server's tree and returns a chan on its root.
 
 `aname` selects which tree, for a server that offers more than one -- the empty
@@ -53,6 +65,12 @@ attach :: proc(sv: ^Server, aname: string = "", uname: string = "vectra") -> (^C
 		return nil, vectra9.ENODEV
 	}
 
+	g, e := rpc_begin(sv)
+	defer rpc_end(g)
+	if e != OK {
+		return nil, e
+	}
+
 	fid := vectra9.alloc_fid(&sv.session)
 	request := vectra9.Msg(
 		vectra9.Tattach {
@@ -64,7 +82,7 @@ attach :: proc(sv: ^Server, aname: string = "", uname: string = "vectra") -> (^C
 		},
 	)
 	reply: vectra9.Msg
-	if e := rpc(sv, &request, &reply); e != OK {
+	if e = rpc_under(g, &request, &reply); e != OK {
 		return nil, e
 	}
 	answer, ok := reply.(vectra9.Rattach)
@@ -131,6 +149,12 @@ server_walk1 :: proc(from: ^Chan, name: string) -> (^Chan, Errno) #no_bounds_che
 		return nil, vectra9.EBADF
 	}
 
+	g, e := rpc_begin(from.server)
+	defer rpc_end(g)
+	if e != OK {
+		return nil, e
+	}
+
 	newfid := vectra9.alloc_fid(&from.server.session)
 	t := vectra9.Twalk {
 		fid    = from.fid,
@@ -141,7 +165,7 @@ server_walk1 :: proc(from: ^Chan, name: string) -> (^Chan, Errno) #no_bounds_che
 
 	request := vectra9.Msg(t)
 	reply: vectra9.Msg
-	if e := rpc(from.server, &request, &reply); e != OK {
+	if e = rpc_under(g, &request, &reply); e != OK {
 		return nil, e
 	}
 	answer, ok := reply.(vectra9.Rwalk)
@@ -178,16 +202,48 @@ would be a second lookup that can only find the same thing.
 */
 @(private)
 cross_mounts :: proc(ns: ^Namespace, c: ^Chan) -> (^Chan, Errno) {
-	mp := mount_head(ns, c)
-	if mp == nil || mp.members == nil {
+	if ns == nil || c == nil {
 		return c, OK
 	}
 
-	nc, err := chan_clone(mp.members.chan)
+	/*
+	Two references come out from under the lock and a message is sent after it.
+
+	The member is increfed because the clone below is a Twalk and cannot happen
+	inside a lock, and an `unmount` in that window would otherwise free the
+	chan being cloned. The mount point is increfed because it is about to
+	become this chan's `union_head`, which is a reference by definition.
+	*/
+	first: ^Chan
+	mp: ^Mount_Point
+
+	gl := vlock(&ns.lock)
+	if head := mount_head(ns, c); head != nil {
+		go := vlock(&object_lock)
+		if head.members != nil {
+			first = chan_incref(head.members.chan)
+			mp = mount_point_incref(head)
+		}
+		vunlock(&object_lock, go)
+	}
+	vunlock(&ns.lock, gl)
+
+	if first == nil {
+		return c, OK
+	}
+
+	nc, err := chan_clone(first)
+	chan_close(first)
 	if err != OK {
+		mount_point_release(mp)
 		chan_close(c)
 		return nil, err
 	}
+
+	// A member is the root of its own tree and carries no union head of its
+	// own, so the clone brought none across; release anyway rather than depend
+	// on that from here.
+	mount_point_release(nc.union_head)
 	nc.union_head = mp
 	chan_close(c)
 	return nc, OK
@@ -232,7 +288,7 @@ walk1_ex :: proc(ns: ^Namespace, c: ^Chan, name: string, cross: bool) -> (^Chan,
 	// comes from whichever member provided it, and searching the others for
 	// its children would union trees the namespace never joined.
 	mp := c.union_head
-	if mp == nil || mp.members == nil {
+	if mp == nil || member_count(mp) == 0 {
 		nc, err := server_walk1(c, name)
 		if err != OK {
 			return nil, err
@@ -243,20 +299,44 @@ walk1_ex :: proc(ns: ^Namespace, c: ^Chan, name: string, cross: bool) -> (^Chan,
 		return cross_mounts(ns, nc)
 	}
 
-	// ENOENT until something more specific happens. A member that answers
-	// EACCES has told us something worth reporting; a member that simply does
-	// not have the file has not, and must not stop the search.
+	/*
+	ENOENT until something more specific happens. A member that answers EACCES
+	has told us something worth reporting; a member that simply does not have
+	the file has not, and must not stop the search.
+
+	Members are taken one at a time by index rather than by walking the list,
+	because each attempt is a Twalk and the list cannot be held under a lock
+	across one. See `member_ref_at`.
+	*/
 	last := Errno(vectra9.ENOENT)
-	for m := mp.members; m != nil; m = m.next {
-		nc, err := server_walk1(m.chan, name)
-		if err == OK {
-			if !cross {
-				return nc, OK
+	for _ in 0 ..< UNION_WALK_ATTEMPTS {
+		generation := mount_point_generation(mp)
+		last = vectra9.ENOENT
+
+		for idx := 0; idx < MAX_UNION_MEMBERS; idx += 1 {
+			member, _, present := member_ref_at(mp, idx)
+			if !present {
+				break
 			}
-			return cross_mounts(ns, nc)
+			nc, err := server_walk1(member, name)
+			chan_close(member)
+			if err == OK {
+				if !cross {
+					return nc, OK
+				}
+				return cross_mounts(ns, nc)
+			}
+			if err != vectra9.ENOENT {
+				last = err
+			}
 		}
-		if err != vectra9.ENOENT {
-			last = err
+
+		// A hit is a hit whenever it happens -- the file was there. A miss is
+		// only a miss if the list did not move while it was being searched;
+		// otherwise the search skipped past whatever shifted, and the right
+		// answer is to look again rather than to say the name is not there.
+		if mount_point_generation(mp) == generation {
+			return nil, last
 		}
 	}
 	return nil, last
@@ -293,11 +373,11 @@ walk_up :: proc(ns: ^Namespace, c: ^Chan) -> (^Chan, Errno) {
 
 	// `..` at the namespace root is the root. There is no escaping upward,
 	// which is what makes a chroot-equivalent free.
-	if ns != nil &&
-	   ns.root != nil &&
-	   base.server == ns.root.server &&
-	   base.qid.path == ns.root.qid.path {
-		return chan_clone(ns.root)
+	if root := ns_root_ref(ns); root != nil {
+		defer chan_close(root)
+		if base.server == root.server && base.qid.path == root.qid.path {
+			return chan_clone(root)
+		}
 	}
 
 	up, err := server_walk1(base, "..")
@@ -382,10 +462,12 @@ resolve_ex :: proc(ns: ^Namespace, path: string, cross_last: bool) -> (^Chan, Er
 		}
 		start = end
 	} else if path[0] == '/' {
-		if ns.root == nil {
+		root := ns_root_ref(ns)
+		if root == nil {
 			return nil, vectra9.ENOENT
 		}
-		cur, err = chan_clone(ns.root)
+		cur, err = chan_clone(root)
+		chan_close(root)
 		if err != OK {
 			return nil, err
 		}

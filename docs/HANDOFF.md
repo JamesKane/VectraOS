@@ -26,17 +26,17 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 5 is done: it preempts.**
+**Milestone 6 is done: the namespace is safe under threads.**
 
 Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
 behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
 screen. Milestone 3 added `sys/vectra9/` — the whole 9P2000.L message set, a
 codec, and the session/transport boundary. Milestone 4 added `kernel/vfs/`, the
-namespace that uses it. Milestone 5 adds `kernel/sched/` and the local APIC
-timer under it: kernel threads, priority run queues with Plan 9 decay and boost,
-and a context switch that a voluntary yield and a timer interrupt reach by the
-same path. About 13,200 lines of Odin; the linked image is ~571 KB debug,
-~222 KB release.
+namespace that uses it. Milestone 5 added `kernel/sched/` and the local APIC
+timer under it. Milestone 6 locks the namespace against the threads Milestone 5
+made possible, and proves it with five threads walking, listing, reading and
+rebinding the same namespace at once. About 14,000 lines of Odin; the linked
+image is ~592 KB debug, ~237 KB release.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
@@ -63,8 +63,14 @@ same path. About 13,200 lines of Odin; the linked image is ~571 KB debug,
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62537 counts per tick
 [  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (17728177-18134560 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] vfs 33 concurrency checks passed -- 3822 namespace operations across 5 threads, 625 rebinds under them in 1058 ms, heap balanced
 [  ok  ] boot complete -- idling
 ```
+
+The last line is the one that moves between builds, on purpose: `just release`
+does the same thousand ticks of work and reports about fifty thousand
+operations. See "Measuring a concurrency test in ticks" below for why that is
+the right way round.
 
 **The design is written down in `docs/VECTRA9.md`, and it is the thing to read
 before touching the protocol or the namespace.** Three decisions in it shape
@@ -163,12 +169,102 @@ no lock *word* yet and that is deliberate — a second core needs one, and every
 site that will need it has already been found and wrapped. `alloc`, `free` and
 `resize` take it; `resize` calls `alloc`, which is why it nests.
 
-**`kernel/vfs` does not have one, and now needs one.** Chan reference counts and
-the mount table are not safe against two threads in the same namespace. Nothing
-does that yet — the vfs self-test is single-threaded and runs before the
-scheduler — but it is the first thing that breaks when something does. Named
-here rather than fixed, because locking nine files is not what "start a
-scheduler" asked for.
+**`kernel/vfs` has one now too — five of them, and the interesting part is that
+they do not all behave the same way.** See the next section.
+
+### Locking the namespace
+
+`kernel/vfs/lock.odin` is the whole discipline in one file. Five locks, and they
+divide into two kinds with opposite rules:
+
+| Lock | Guards | Held across a 9P message? |
+|---|---|---|
+| `Namespace.lock` | `root`, the mount table, `refs` | **never** |
+| `object_lock` (global) | `Chan.refs`, `Mount_Point.refs`, `Mount_Point.members` | **never** |
+| `Server.lock` | the session: fid and tag counters, one message in flight, a borrowed reply's lifetime | **always** |
+| `Static_Tree.lock` | one server's own fid table and directory buffer | (server side) |
+| `device_lock` (global) | the `#name` table | never |
+
+**The session lock has to be held across the message; the bookkeeping locks must
+never be.** That is not a style preference. `Rread.data` and `Rreaddir.data`
+point into the server's own storage — the static server's `dirbuf`, a node's
+string in `.rodata` — and "valid until the server's next message" used to be
+safe because nothing could interrupt the caller between the reply and the copy.
+Preemption ended that. So `rpc` returns a guard and the reply is only valid
+until it is released:
+
+```odin
+e, g := rpc(c.server, &request, &reply)
+defer rpc_end(g)
+```
+
+Every caller takes the guard, including the ones whose replies borrow nothing,
+so there is no second entry point to reach for and no judgement about which
+replies borrow. The same lock is what makes a fid mean something: `alloc_fid` is
+a plain increment, and two threads that both read the counter before either
+writes it both walk to `newfid`.
+
+The other direction is enforced rather than documented. `kernel/sync`'s lock
+*is* the interrupt flag, so a bookkeeping lock held across a message becomes a
+hang the first time a transport blocks — a bug that would not appear until the
+transport changed, months from the code that caused it. `vfs` counts its own
+lock nesting and `rpc` refuses with `EDEADLK` if it is not zero. A negative
+control that moves one clone inside the namespace lock fails four checks
+immediately.
+
+**Two bugs that predate threads came out of this.** `Chan.union_head` was a bare
+pointer to a `Mount_Point`, and unmounting freed it — reachable with one thread
+and a directory held open across an `unmount`. Mount points are reference
+counted now, and `unmount` dissolves rather than deletes: the members go, the
+struct survives until the last chan lets go, and a chan holding an empty mount
+point behaves like one that was never in a union.
+
+The second is `Mount_Point.generation`, and it is the one the self-test found on
+its own. A union searched by index while a member is removed from the *front*
+shifts every later member down, and a walker resuming at index 1 skips the entry
+that used to be there — so a file that never moved comes back `ENOENT`. Plan 9
+does not have this problem because it read-locks the mount head for the whole
+union search; it can, because its locks sleep. Vectra's cannot. The counter
+replaces the lock: a search that finds nothing is only believed if the list is
+the same one it started on.
+
+### Measuring a concurrency test in ticks
+
+`kernel/verify_vfs.odin` runs five threads for a fixed number of *ticks*, not a
+fixed number of rounds, and that distinction was worth a rewrite.
+
+The first version ran a fixed round count. It failed correctly under `just run`
+with the session lock removed — and passed under `just release`, every time. The
+optimised kernel does the same 3,600 operations in a thirteenth of the ticks, so
+it got a thirteenth of the preemptions and tested itself thirteen times less
+thoroughly. What finds a race is not how much work happens, it is how often a
+thread is interrupted in the middle of some. Both builds now get the same
+thousand ticks; the fast one simply gets more done between them, and the control
+fails in both.
+
+Making the run tick-driven also lengthened the churn thread's share of it from
+a sixth to all of it, which is what surfaced the `generation` bug above.
+
+**Three of five mutations are caught. The two that are not are the more
+interesting half**, and the file says so rather than filing it as a gap:
+
+| Mutation | Result |
+|---|---|
+| remove `Server.lock` | caught — both listers, in both builds |
+| free a referenced `Mount_Point` | caught — the reference count check |
+| hold a namespace lock across a message | caught — `EDEADLK`, four checks |
+| drop `cross_mounts`' reference to a member | **not caught** |
+| unlocked chan reference counts | **not caught** |
+
+Both uncaught windows are a few instructions wide, and catching one means
+landing a timer interrupt inside about thirty instructions out of the twenty
+thousand a round takes *and* having another thread free that exact object first.
+Fifty thousand operations against seven thousand rebinds found neither. Turning
+the tick rate up barely helps: at 20 kHz only about 1.4× as many ticks are
+actually *delivered*, because every lock here is the interrupt flag and this
+layer holds one for most of its instructions. **A uniprocessor Vectra thread
+doing file I/O is very nearly non-preemptible**, which is exactly why the narrow
+races are nearly unreachable now and will be ordinary on a second core.
 
 **What still does not exist.** No userland and no address-space switching — a
 thread grows an `^Address_Space` and `reschedule` grows one comparison when
@@ -229,6 +325,8 @@ ways whose error messages do not point back here.
 | The error-code vector list is written twice | Once as an assembler `.if` inside the stub blob and once as `vector_has_error_code` in Odin. They cannot share a definition — one is consumed at build time, the other at run time — and if they disagree every field in `Trap_Frame` reads as the one next door. They live in the same file for that reason. |
 | An unoptimised build spills every temporary | Debug builds keep nothing in a register across an instruction boundary. This is not a curiosity: a test written to verify that FXSAVE preserves XMM passed with the FXSAVE removed, because the values it was checking were on the stack the whole time. Anything that must observe *register* state has to pin it with inline asm and hold it there — see `fpu_hold` in `kernel/sched/verify.odin`. |
 | A missing EOI stops the timer silently | The local APIC delivers nothing further at or below that priority. There is no error, no fault, and no bit anywhere saying so — it looks exactly like a timer that was never armed. Any loop waiting on the tick count needs a liveness bound, or a one-line bug hangs the boot with the last line printed being the timer coming up successfully. |
+| A freed object reads as a valid one | The slab allocator writes its free-list link over the first field and leaves the rest. A `Mount_Point` freed one reference early still reports zero members, which is exactly what a correctly dissolved one reports — so the obvious use-after-free check passes whether or not the bug is there. Testing a lifetime bug means testing the *reference count*, or forcing the block to be reused first. |
+| The LAPIC coalesces what it cannot deliver | Ticks that arrive while interrupts are masked do not queue up. Raising the timer from 1 kHz to 20 kHz over a lock-heavy workload delivered about 1.4× as many interrupts, not 20×. Anything that expects a preemption *rate* has to account for how much of the time interrupts are actually on. |
 | `int $8` is not a double fault | A software interrupt to an error-code vector does **not** push an error code, so it lands on a stub that assumes one was pushed. Never test `#DF` that way; provoke a real one by faulting on a bad stack. |
 
 **No vendored runtime shim.** The neighbouring `odin-os` project hand-maintains
@@ -483,21 +581,25 @@ are the load-bearing bits:
 
 ## 7. Where to go next
 
-The scheduler was the thing blocking everything else and it is no longer. What
-is left divides cleanly into "needs a lock" and "needs userland".
+The scheduler was the thing blocking everything else, and the namespace it
+exposed is now locked. What is left divides cleanly into "needs a sleeping lock"
+and "needs userland".
 
-**Lock `kernel/vfs`.** The first real exposure the scheduler created. Chan
-reference counts (`chan_incref`/`chan_close`) and the mount table are not safe
-against two threads sharing a namespace, and preemption is what makes that
-reachable. `kernel/sync` is the lock; the work is deciding the granularity — one
-lock per namespace is probably right, since that is the object two threads
-actually share.
+**A sleeping lock is the next structural piece, and two things now want it.**
+`Server.lock` is held across a whole 9P message, which is correct and also the
+reason no transport can block yet: the reply to an out-of-process request
+arrives on an interrupt, and the lock that is waiting for it has interrupts
+masked. The first transport that crosses an address space and a sleeping lock
+arrive together or neither does. Plan 9's union walk wants the same thing for a
+different reason — `Mount_Point.generation` exists because a read lock could not
+be held across the search.
 
 **Then, in roughly this order:**
 
 1. **A sleep queue and timed waits.** `block` and `ready` are the only blocking
    primitives, so nothing can wait for a duration or for a device. A tick-keyed
-   list on `Cpu`, drained by `on_tick`, is most of it.
+   list on `Cpu`, drained by `on_tick`, is most of it — and it is what a
+   sleeping lock is built out of.
 2. **`Tflush`.** Section 7.3 of `VECTRA9.md` pins the shape and the scheduler
    it was waiting for now exists: a tag-indexed pool of in-flight requests,
    `Rflush` after the original's fate is decided, never an error reply.
@@ -512,10 +614,13 @@ actually share.
    are cheaper to build with it than after it.
 
 **SMP, when it is wanted.** The shapes are already right: `Cpu` is per-core,
-`Resume` is per-thread and lives on that thread's stack, and every mount-table
-and heap mutation is inside a `sync.Spinlock`. What is missing is a lock word in
-that struct, an AP trampoline, IPIs, and a placement policy for `enqueue` — which
-is where `eligible` and the class/capacity fields stop being inert.
+`Resume` is per-thread and lives on that thread's stack, and every mount-table,
+namespace and heap mutation is inside a `sync.Spinlock`. What is missing is a
+lock word in that struct, an AP trampoline, IPIs, and a placement policy for
+`enqueue` — which is where `eligible` and the class/capacity fields stop being
+inert. Two things become urgent the moment a second core runs: `Chan.refs` and
+`Mount_Point.refs` want atomic increments rather than a global lock, and
+`vfs.lock_depth` has to become per-CPU state. Both are named where they live.
 
 **Smaller things worth doing when convenient:**
 
@@ -526,7 +631,12 @@ is where `eligible` and the class/capacity fields stop being inert.
   billion opens per session, never reused.
 - `reap` only runs from `spawn` and from the self-test, so a dead thread's stack
   comes back at the next spawn rather than when it exits. Fine now; an idle-time
-  reaper is the fix.
+  reaper is the fix. The vfs concurrency test has to call `sched.reap()` by hand
+  before it measures the heap, which is the smell.
+- `readdir` over a union is still index-based and still documented as undefined
+  if the union is rebound mid-listing — the cookie names a position in a list
+  that moved. `walk` no longer has that property (see `Mount_Point.generation`);
+  a listing could get the same treatment if it ever matters.
 - Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging, trap and scheduling
   interfaces. `cpu_class` is the one that pays off immediately — a big.LITTLE
   part reporting three classes makes the capacity arithmetic do real work.
@@ -541,6 +651,7 @@ boot/
   limine/               Vendored Limine 12.6.1 UEFI binaries + VERSION + README
 kernel/
   main.odin             kmain, Limine requests, boot survey, memory bring-up
+  verify_vfs.odin       The namespace under five threads: 33 checks, two servers
   splash.odin           Boot chassis: plinth, copper bar, well, lamps
   log.odin              Kernel log; serial + screen, with early-line replay
   panic.odin            The panic screen, and the trap handler behind it
@@ -573,7 +684,8 @@ kernel/
     vmm.odin            Page table walk, kernel address space, translate
     heap.odin           Slab allocator + Odin's context.allocator
   vfs/
-    vfs.odin            Server, the #name device table, the one RPC helper
+    lock.odin           What guards what, in what order, and the borrow rule
+    vfs.odin            Server, the #name device table, the guarded RPC pair
     chan.odin           Chan, refcounting, open/read/write/stat/clone
     mount.odin          The mount table, bind/unmount, union member lists
     namespace.odin      Namespace, rfork semantics, teardown

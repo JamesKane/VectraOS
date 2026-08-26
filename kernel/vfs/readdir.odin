@@ -31,18 +31,6 @@ UNION_MEMBER_SHIFT :: 56
 UNION_OFFSET_MASK :: (u64(1) << UNION_MEMBER_SHIFT) - 1
 MAX_UNION_MEMBERS :: 1 << (64 - UNION_MEMBER_SHIFT)
 
-@(private)
-member_at :: proc "contextless" (mp: ^Mount_Point, idx: int) -> ^Mount {
-	i := 0
-	for m := mp != nil ? mp.members : nil; m != nil; m = m.next {
-		if i == idx {
-			return m
-		}
-		i += 1
-	}
-	return nil
-}
-
 /*
 readdir fills `buf` with directory entries starting at `offset`.
 
@@ -65,7 +53,7 @@ readdir :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 	}
 
 	mp := c.union_head
-	if mp == nil || mp.members == nil || mp.members.next == nil {
+	if member_count(mp) < 2 {
 		return readdir_one(c, offset, buf)
 	}
 	return readdir_union(c, mp, offset, buf)
@@ -77,7 +65,12 @@ readdir_one :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 	count := u32(min(len(buf), int(c.server.session.msize) - vectra9.HEADER_SIZE - 4))
 	request := vectra9.Msg(vectra9.Treaddir{fid = c.fid, offset = offset, count = count})
 	reply: vectra9.Msg
-	if e := rpc(c.server, &request, &reply); e != OK {
+
+	// Held to the end of the procedure: `answer.data` is the server's own
+	// directory buffer, and it stays this thread's only while the session does.
+	e, g := rpc(c.server, &request, &reply)
+	defer rpc_end(g)
+	if e != OK {
 		return 0, e
 	}
 	answer, ok := reply.(vectra9.Rreaddir)
@@ -122,10 +115,11 @@ readdir_union :: proc(
 	out := vectra9.cursor_from(buf)
 
 	for ; idx < MAX_UNION_MEMBERS; idx += 1 {
-		m := member_at(mp, idx)
-		if m == nil {
+		member, _, present := member_ref_at(mp, idx)
+		if !present {
 			break // Past the last member: the union is exhausted.
 		}
+		defer chan_close(member)
 
 		/*
 		The caller's chan is already open on whichever member `cross_mounts`
@@ -137,8 +131,8 @@ readdir_union :: proc(
 		*/
 		src := c
 		borrowed := true
-		if m.chan.server != c.server || m.chan.qid.path != c.qid.path {
-			src, err = chan_clone(m.chan)
+		if member.server != c.server || member.qid.path != c.qid.path {
+			src, err = chan_clone(member)
 			if err != OK {
 				return 0, err
 			}
@@ -194,7 +188,12 @@ union_pass :: proc(
 		vectra9.Treaddir{fid = src.fid, offset = member_offset, count = count},
 	)
 	reply: vectra9.Msg
-	if e := rpc(src.server, &request, &reply); e != OK {
+
+	// The re-encode below reads `answer.data` all the way through, so the
+	// session is held for the whole of it -- that buffer is the server's.
+	e, g := rpc(src.server, &request, &reply)
+	defer rpc_end(g)
+	if e != OK {
 		return 0, e
 	}
 	answer, ok := reply.(vectra9.Rreaddir)

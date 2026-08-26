@@ -24,6 +24,7 @@ it synthesises the rest of `struct dirent`.
 */
 package vfs
 
+import "kernel:sync"
 import "vsys:vectra9"
 
 Static_Node :: struct {
@@ -68,13 +69,31 @@ Static_Tree :: struct {
 	Where an Rreaddir payload is built.
 
 	One buffer per server, borrowed by the reply and valid until the next
-	message -- which is exactly the ownership rule the whole package runs on,
-	and is safe here for the same reason it is safe everywhere else: the
-	in-process transport is synchronous, so there is never a second message in
-	flight. An asynchronous transport needs a buffer per outstanding request,
-	and that is a scheduler-shaped problem.
+	message -- which is exactly the ownership rule the whole package runs on.
+
+	"Until the next message" used to mean "until this caller sends another
+	one", because nothing could get in between. Preemption ended that: a timer
+	between the reply landing and the client copying out of it lets a second
+	thread issue a Treaddir and overwrite the buffer the first is standing in.
+	What keeps that from happening is `Server.lock`, held across the message
+	*and* the caller's use of the reply -- see `rpc` and the borrow rule in
+	`lock.odin`. One buffer is still the right shape; what changed is that the
+	rule protecting it is now a lock rather than an absence of threads.
 	*/
 	dirbuf: []u8,
+
+	/*
+	The server's own state, which is every field above this one.
+
+	Distinct from the session lock a client holds across a message, and not
+	implied by it: `Static_Tree` is the *server* side, and a server protects
+	itself rather than trusting each client to have serialised first. Today the
+	two are redundant -- one tree, one session, one message at a time -- and
+	that redundancy costs a nested acquire on a uniprocessor, which is a
+	decrement and an increment. Cheap enough that the layering is worth keeping
+	honest.
+	*/
+	lock:   sync.Spinlock,
 }
 
 /*
@@ -290,6 +309,14 @@ static_handler :: proc "contextless" (
 		reply^ = vectra9.error_reply(vectra9.EIO)
 		return
 	}
+
+	// The whole handler, because the fid table is read and written across most
+	// of it and `dirbuf` is written near the end of it. Released on the way
+	// out -- the *reply* borrowing `dirbuf` past this point is the client's
+	// session lock's problem, not this one's.
+	g := sync.acquire(&t.lock)
+	defer sync.release(&t.lock, g)
+
 	if static_mutates(vectra9.kind(request^)) {
 		reply^ = vectra9.error_reply(vectra9.EROFS)
 		return

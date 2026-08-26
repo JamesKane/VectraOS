@@ -287,7 +287,8 @@ verify_union :: proc(r: ^Verify_Result, ns: ^Namespace, buf: []u8) {
 
 	// The second bind must have joined the existing mount point rather than
 	// keying a new one on alpha's root. Two members, one union.
-	mp := mount_head(ns, over)
+	mp := mount_head_ref(ns, over)
+	defer mount_point_release(mp)
 	check(r, member_count(mp) == 2, "/dev is a union of two members")
 
 	/*

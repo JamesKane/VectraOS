@@ -77,6 +77,7 @@ ESPIPE :: Errno(29)
 EROFS :: Errno(30)
 EMLINK :: Errno(31)
 EPIPE :: Errno(32)
+EDEADLK :: Errno(35)
 ENAMETOOLONG :: Errno(36)
 ENOSYS :: Errno(38)
 ENOTEMPTY :: Errno(39)
@@ -113,6 +114,7 @@ errno_name :: proc "contextless" (code: Errno) -> string {
 	case EROFS:        return "EROFS"
 	case EMLINK:       return "EMLINK"
 	case EPIPE:        return "EPIPE"
+	case EDEADLK:      return "EDEADLK"
 	case ENAMETOOLONG: return "ENAMETOOLONG"
 	case ENOSYS:       return "ENOSYS"
 	case ENOTEMPTY:    return "ENOTEMPTY"

@@ -164,6 +164,7 @@ kmain :: proc "sysv" () {
 		verify_scheduler()
 		if init_timer() {
 			verify_preemption()
+			verify_vfs_threads()
 		}
 	}
 

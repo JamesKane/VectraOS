@@ -42,6 +42,13 @@ Chan :: struct {
 	substituted the *first* member -- so the key the mount point is filed under,
 	the file that was mounted over, is no longer reachable from `server` and
 	`qid`. Plan 9 keeps the same pointer on `Chan.umh`.
+
+	A counted reference, not a bare pointer. Unmounting `/dev` entirely while
+	something still holds a chan reached through it would otherwise free the
+	mount point out from under this field -- reachable today with no threads at
+	all, just a chan held across an `unmount`. A dissolved mount point survives
+	with an empty member list, so the chan goes on working on the member it is
+	already standing on.
 	*/
 	union_head: ^Mount_Point,
 	refs:       int,
@@ -80,9 +87,12 @@ chan_alloc :: proc(sv: ^Server, fid: vectra9.Fid, qid: vectra9.Qid) -> ^Chan {
 // chan_incref takes another reference. Nil-safe, because `mounted_over` is
 // usually nil and every caller would otherwise have to say so.
 chan_incref :: proc(c: ^Chan) -> ^Chan {
-	if c != nil {
-		c.refs += 1
+	if c == nil {
+		return nil
 	}
+	g := vlock(&object_lock)
+	c.refs += 1
+	vunlock(&object_lock, g)
 	return c
 }
 
@@ -100,15 +110,28 @@ counting is the only thing that knows when the last one is gone.
 chan_close :: proc(c: ^Chan) {
 	c := c
 	for c != nil {
+		// The count comes down under the lock and the teardown happens
+		// outside it, because the teardown sends a message. Whoever drives
+		// the count to zero owns the object outright -- nobody else can find
+		// it, so nothing below here needs the lock back.
+		g := vlock(&object_lock)
 		c.refs -= 1
-		if c.refs > 0 {
+		last := c.refs <= 0
+		vunlock(&object_lock, g)
+		if !last {
 			return
+		}
+
+		if c.union_head != nil {
+			mount_point_release(c.union_head)
+			c.union_head = nil
 		}
 
 		if c.fid != vectra9.NOFID {
 			request := vectra9.Msg(vectra9.Tclunk{fid = c.fid})
 			reply: vectra9.Msg
-			_ = rpc(c.server, &request, &reply)
+			_, rg := rpc(c.server, &request, &reply)
+			rpc_end(rg)
 		}
 
 		// Loop rather than recurse: mount nesting is unbounded and this runs
@@ -134,7 +157,9 @@ chan_open :: proc(c: ^Chan, flags: u32) -> Errno {
 	}
 	request := vectra9.Msg(vectra9.Tlopen{fid = c.fid, flags = flags})
 	reply: vectra9.Msg
-	if e := rpc(c.server, &request, &reply); e != OK {
+	e, g := rpc(c.server, &request, &reply)
+	defer rpc_end(g)
+	if e != OK {
 		return e
 	}
 	answer, ok := reply.(vectra9.Rlopen)
@@ -168,7 +193,12 @@ chan_read :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 	count := u32(min(len(buf), int(c.server.session.msize) - vectra9.HEADER_SIZE - 4))
 	request := vectra9.Msg(vectra9.Tread{fid = c.fid, offset = offset, count = count})
 	reply: vectra9.Msg
-	if e := rpc(c.server, &request, &reply); e != OK {
+
+	// The guard runs to the end of the procedure, which is what makes the copy
+	// below safe: `answer.data` is the server's storage until it is released.
+	e, g := rpc(c.server, &request, &reply)
+	defer rpc_end(g)
+	if e != OK {
 		return 0, e
 	}
 	answer, ok := reply.(vectra9.Rread)
@@ -187,7 +217,9 @@ chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 	}
 	request := vectra9.Msg(vectra9.Twrite{fid = c.fid, offset = offset, data = data})
 	reply: vectra9.Msg
-	if e := rpc(c.server, &request, &reply); e != OK {
+	e, g := rpc(c.server, &request, &reply)
+	defer rpc_end(g)
+	if e != OK {
 		return 0, e
 	}
 	answer, ok := reply.(vectra9.Rwrite)
@@ -211,7 +243,9 @@ chan_stat :: proc(c: ^Chan, mask: u64 = GETATTR_BASIC) -> (attr: vectra9.Rgetatt
 	}
 	request := vectra9.Msg(vectra9.Tgetattr{fid = c.fid, request_mask = mask})
 	reply: vectra9.Msg
-	if e := rpc(c.server, &request, &reply); e != OK {
+	e, g := rpc(c.server, &request, &reply)
+	defer rpc_end(g)
+	if e != OK {
 		return {}, e
 	}
 	answer, ok := reply.(vectra9.Rgetattr)
@@ -239,10 +273,18 @@ chan_clone :: proc(c: ^Chan) -> (^Chan, Errno) {
 		return nil, vectra9.EBADF
 	}
 
+	g, e := rpc_begin(c.server)
+	defer rpc_end(g)
+	if e != OK {
+		return nil, e
+	}
+
+	// The fid is allocated and used without letting go of the session --
+	// see `rpc_begin` for why that is not just tidiness.
 	newfid := vectra9.alloc_fid(&c.server.session)
 	request := vectra9.Msg(vectra9.Twalk{fid = c.fid, newfid = newfid, count = 0})
 	reply: vectra9.Msg
-	if e := rpc(c.server, &request, &reply); e != OK {
+	if e = rpc_under(g, &request, &reply); e != OK {
 		return nil, e
 	}
 	if _, ok := reply.(vectra9.Rwalk); !ok {
@@ -255,6 +297,6 @@ chan_clone :: proc(c: ^Chan) -> (^Chan, Errno) {
 	}
 	nc.tree_root = c.tree_root
 	nc.mounted_over = chan_incref(c.mounted_over)
-	nc.union_head = c.union_head
+	nc.union_head = mount_point_incref(c.union_head)
 	return nc, OK
 }
