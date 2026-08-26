@@ -8,12 +8,15 @@ one comparison, and nothing else in this file changes.
 
 Priority is dynamic. A thread has a `base` it was created at and a `prio` it is
 running at, and the two drift apart in the two directions Plan 9 drifts them: a
-thread that burns a whole slice without blocking sinks a level, and a thread
-that blocks and is woken is lifted back to its base and a little above. That is
-the whole anti-starvation mechanism, and it is why there is not a separate one.
-The effect is that a compute-bound thread settles at the bottom of the range
-within a few slices while an interactive one stays near the top without either
-of them being told which they are.
+thread that accumulates a whole slice of CPU sinks a level, and a thread that
+blocks and is woken is lifted back to its base and a little above. That is the
+whole anti-starvation mechanism, and it is why there is not a separate one. The
+effect is that a compute-bound thread settles at the bottom of the range within
+a few slices while an interactive one stays near the top without either of them
+being told which they are.
+
+*Accumulates* is load-bearing and used to say "burns without blocking", which
+was the same sentence for as long as nothing blocked. See `ticks_left`.
 */
 package sched
 
@@ -87,15 +90,31 @@ Thread :: struct {
 	base:   Priority, // Where a wake-up restores it to
 	prio:   Priority, // Where it is now, after decay and boost
 
-	// Ticks left in the current slice. Set from the core's capacity on every
-	// dispatch, so the same thread gets a longer slice on a slower core.
+	/*
+	Ticks left in the current slice, sized from the core's capacity so the
+	same thread gets a longer slice on a slower core.
+
+	Refilled when it runs out, *not* on every dispatch, and the difference is
+	the whole of a thread's CPU accounting. A thread that blocks keeps what is
+	left of its slice and resumes on it, so the slice measures CPU consumed
+	rather than time between blocks.
+
+	Refilling on every dispatch was the original and it was invisible until
+	something blocked. A thread that parks forty times a tick never reaches
+	the end of a slice, so it never decays, so it sits at its base priority
+	for ever while the thread doing steady work sinks past it. The first
+	sleeping lock made that reachable and `kernel/verify_vfs.odin` found it
+	immediately: the one worker that was not blocking got five dispatches in a
+	thousand ticks. Decay is meant to measure appetite for the CPU, and a
+	thread's appetite is what it consumes, not how it is interrupted.
+	*/
 	ticks_left: int,
 
 	affinity: Cpu_Classes,
 	cpu:      ^Cpu,
 
 	// Counters, all of them for the self-test rather than for the scheduler.
-	slices:      u64, // Full slices burned without blocking
+	slices:      u64, // Whole slices of CPU consumed, blocking or not
 	preemptions: u64,
 	dispatches:  u64,
 	wakeups:     u64,
@@ -174,7 +193,7 @@ slice_ticks :: proc "contextless" (c: ^Cpu) -> int {
 }
 
 /*
-decay drops a thread a level for burning a whole slice.
+decay drops a thread a level for consuming a whole slice.
 
 Floored at `PRIORITY_MIN` rather than at zero: level zero belongs to the idle
 thread, and a compute-bound thread that reached it would be competing with the
@@ -183,6 +202,9 @@ one thing that must always lose.
 Realtime threads do not decay. That is the promise, and it is also the hazard.
 */
 decay :: proc "contextless" (t: ^Thread) {
+	// Counted here rather than at dispatch, which makes `slices` the count of
+	// slices *consumed* -- the same quantity `ticks_left` measures, and not
+	// the number of times the thread was put on a core.
 	t.slices += 1
 	if t.prio >= PRIORITY_REALTIME {
 		return

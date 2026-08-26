@@ -5,7 +5,10 @@ The namespace under threads.
 one thread at a time. This file answers the question preemption added: does it
 still mean that when two threads are inside it at once.
 
-Four races, each with a lock that is supposed to close it:
+Four races, each with a lock that is supposed to close it -- and since
+`Server.lock` started sleeping, a fifth thing this file is watching, which is
+whether the workers get a fair share of the machine at all. A lock that decides
+who runs next is a scheduler, and this is where it gets to be wrong in public.
 
   1. **One session, two callers.** A fid is a plain counter increment and a
      reply borrows the server's own buffer. Two threads walking the same server
@@ -31,35 +34,36 @@ spin loop that never ends.
 ## What the negative controls say
 
 Every check here was run against a deliberately broken build, in both build
-modes, because a self-test that cannot fail proves nothing. Three of five
-mutations are caught, and the two that are not are the more interesting half.
+modes, because a self-test that cannot fail proves nothing.
 
     remove Server.lock                        caught -- both listers, at once
     free a referenced Mount_Point             caught -- the reference count
     hold a namespace lock across a message    caught -- EDEADLK, four checks
+    boost a thread woken by a lock            caught -- two workers starved
+    serve waiters in arrival order            caught, one run in ten
     drop cross_mounts' reference to a member  NOT caught
     unlocked chan reference counts            NOT caught
 
-The last two are not caught, and will not be by any run of this length. Both
-windows are a few instructions wide: the gap between reading a member out of
-the mount table and cloning it, and the gap between loading a reference count
-and storing it back. Catching one means landing a timer interrupt inside about
-thirty instructions out of the twenty thousand a round takes, *and* having
-another thread free that exact object before this one resumes. Fifty thousand
-namespace operations against seven thousand rebinds found neither.
+The last two are not caught, and the interesting part is that making this layer
+*preemptible* did not change that. Before `Server.lock` slept, every message
+ran with the interrupt flag clear, and the standing explanation for these two
+was that a uniprocessor holding a spinlock for most of its instructions is
+nearly impossible to interrupt -- turning the tick rate up to 20 kHz delivered
+only 1.4 times as many ticks, because the LAPIC coalesces what it cannot
+deliver. A sleeping session lock removed that objection entirely: the same run
+now parks and switches a hundred thousand times, at every message boundary, and
+neither mutation was caught in either build mode.
 
-Turning the tick rate up helps far less than it sounds like it should, which is
-itself worth knowing: at 20 kHz only about 1.4 times as many ticks are actually
-*delivered*. Every lock in `kernel/sync` is the interrupt flag, and this layer
-holds one for most of its instructions -- across every message, every heap call,
-every table lookup -- so the LAPIC coalesces what it cannot deliver. A
-uniprocessor Vectra thread doing file I/O is very nearly non-preemptible, which
-is what makes the narrow races very nearly unreachable.
+Which says the explanation was only half right. The added switch points are all
+at lock boundaries, and neither of these windows is at a lock boundary. Both are
+a few instructions wide -- the gap between loading a reference count and storing
+it back, the gap between reading a member out of the mount table and cloning it
+-- and the only thing that can land inside one is still a timer, of which there
+are still about a thousand a run. Voluntary switches, however many, do not
+interleave two threads at an arbitrary instruction. Only a second CPU does.
 
-So those two locks are here on the argument rather than the evidence. On a
-second CPU the same windows stop being a matter of timing luck and become two
-cores executing at once. Which is exactly why they are cheap to leave out now
-and expensive to find later.
+So those two locks are here on the argument rather than the evidence, and the
+argument is now sharper for having had its first explanation falsified.
 
 The one thing this test did catch on its own is in `walk1_ex`: a union searched
 by index while a member is removed from the front of the list skips an entry,
@@ -74,6 +78,7 @@ import "base:runtime"
 
 import "kernel:mem"
 import "kernel:sched"
+import "kernel:sync"
 import "kernel:vfs"
 import "vsys:libodin"
 import "vsys:vectra9"
@@ -152,20 +157,45 @@ RUN_TICKS :: 1000
 MIN_ROUNDS :: 50
 
 /*
-How the boot thread decides the run is over.
+How far apart the busiest and the quietest worker are allowed to end up.
 
-Not a yield budget, and not a yield loop at all -- which was the first attempt
-and was wrong in an instructive way. A thread that waits by yielding never
-burns a slice, so it never decays, while the workers burn every slice they get
-and decay to the bottom within a few of them. The waiter then outranks
-everything it is waiting for and gets dispatched forever. The scheduler was
-doing exactly what it was built to do: an interactive thread beats a CPU-bound
-one. It just made the waiter the most interactive thread on the machine.
+A round is not the same amount of work in every worker -- the churn thread's is
+several times the cost of a listing -- so this is not a fairness bar and cannot
+be one. It is an order-of-magnitude starvation bar, and it is here because the
+first sleeping lock walked straight into the thing it is checking for: served
+in arrival order, the lock ignored priority entirely and the quietest thread
+was left a fiftieth of what its neighbours got. Serving the best waiter instead
+puts the spread between two and four, in both build modes, which is what the
+number below leaves room for.
+*/
+@(private = "file")
+MAX_SPREAD :: 20
 
-So the boot thread spins instead, the way `verify_preemption` does, and decays
-alongside the workers into an even rotation. What bounds the wait is progress:
-if the workers have completed no further rounds in STALL_TICKS milliseconds,
-something is stuck, and that is a failed check rather than a hung boot.
+/*
+Who watches the clock, and why it is not the boot thread.
+
+Two attempts got this wrong before the third, and both were about priority.
+
+The first waited by yielding. A thread that yields never burns a slice, so it
+never decays, while the workers burn every slice and decay to the bottom within
+a few -- the waiter then outranked everything it was waiting for and was
+dispatched forever.
+
+The second spun instead, which worked for exactly as long as nothing in the
+namespace blocked. `Server.lock` became a sleeping lock and that stopped being
+true: a worker parked on a contended session is woken by `ready`, which boosts
+it back above its base, so the workers now sit *above* a boot thread that only
+ever decays. The waiter starved instead of the workers, which is the same bug
+seen from the other end -- a spin loop's priority is not something a test can
+rely on, in either direction.
+
+So no thread waits on the clock. Every worker reads the same deadline and stops
+itself, and the boot thread only has to observe that they are all gone -- which
+it can, because once they are, it is the only thing runnable. What still bounds
+the wait is progress: if the workers have completed no further rounds in
+STALL_TICKS milliseconds, something is stuck, and that is a failed check rather
+than a hung boot. That watchdog now fires precisely when it is needed, since a
+wedged worker is a worker not competing for the core.
 */
 @(private = "file")
 STALL_TICKS :: 500
@@ -177,6 +207,8 @@ WORKERS :: 5
 
 @(private = "file")
 stop: bool
+@(private = "file")
+deadline: u64 // Absolute tick the workers stop themselves at
 @(private = "file")
 finished: int
 @(private = "file")
@@ -195,6 +227,25 @@ churn_done: int
 union_errors: int // A union listing with a name from no tree in it
 @(private = "file")
 deadlocks: int // Any EDEADLK: a lock was held across a message
+
+/*
+running is every worker's loop condition.
+
+Each worker checks the deadline itself rather than being told, and the first
+one past it latches `stop` so the others do not have to reach it independently
+-- which matters for the churn worker, whose round is the longest.
+*/
+@(private = "file")
+running :: proc "contextless" () -> bool {
+	if intrinsics.volatile_load(&stop) {
+		return false
+	}
+	if sched.ticks() >= intrinsics.volatile_load(&deadline) {
+		intrinsics.volatile_store(&stop, true)
+		return false
+	}
+	return true
+}
 
 @(private = "file")
 bump :: proc "contextless" (p: ^int) {
@@ -246,7 +297,7 @@ list_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	path := which == 0 ? "#t/a" : "#t/b"
 
 	buf: [512]u8
-	for !intrinsics.volatile_load(&stop) {
+	for running() {
 		if !list_is(path, letter, buf[:], &list_errors[which]) {
 			bump(&list_errors[which])
 		}
@@ -317,7 +368,7 @@ read_worker :: proc "contextless" (arg: rawptr) {
 	_ = arg
 
 	buf: [64]u8
-	for !intrinsics.volatile_load(&stop) {
+	for running() {
 		c, err := vfs.open_path(vfs.boot_namespace, "/mnt/a/a0", vfs.O_RDONLY)
 		if err != vfs.OK {
 			note(err, &read_errors)
@@ -354,7 +405,7 @@ union_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	_ = arg
 
 	buf: [512]u8
-	for !intrinsics.volatile_load(&stop) {
+	for running() {
 		c, err := vfs.open_path(
 			vfs.boot_namespace,
 			"/mnt",
@@ -437,7 +488,7 @@ churn_worker :: proc "contextless" (arg: rawptr) {
 	context = worker_context()
 	_ = arg
 
-	for !intrinsics.volatile_load(&stop) {
+	for running() {
 		note(vfs.mount_device(vfs.boot_namespace, "#u", "/mnt", .Before), &churn_errors)
 		note(vfs.unmount_path(vfs.boot_namespace, "#u", "/mnt"), &churn_errors)
 		bump(&churn_done)
@@ -464,6 +515,7 @@ Vfs_Threads :: struct {
 	operations:    int, // Namespace operations the workers completed
 	rebinds:       int,
 	ticks:         u64, // What the run cost the boot, in timer ticks
+	slept:         u64, // Times a worker parked on a contended session lock
 	leaked_run:    int, // Objects the worker phase did not give back
 	leaked_total:  int,
 	settled:       bool, // Every worker is gone; teardown is safe
@@ -560,16 +612,20 @@ verify_vfs_threads :: proc() {
 }
 
 /*
-run_workers starts four threads and waits for them.
+run_workers starts the five threads and waits for them.
 
-The wait is a yield loop with a bound rather than a join, because there is no
-join: a thread that never finishes is a scheduler question, and the only thing
-this self-test owes the boot is to say so rather than to hang.
+There is no join and this is not one: a thread that never finishes is a
+scheduler question, and the only thing this self-test owes the boot is to say
+so rather than to hang.
 */
 @(private = "file")
 run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	intrinsics.volatile_store(&finished, 0)
 	intrinsics.volatile_store(&stop, false)
+
+	started := sched.ticks()
+	intrinsics.volatile_store(&deadline, started + RUN_TICKS)
+	slept_before := sync.sleep_stats().sleeps
 
 	spawned := 0
 	if sched.spawn("vfs-list-a", list_worker, rawptr(uintptr(0))) != nil {
@@ -591,15 +647,14 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 		return
 	}
 
-	// Let them run by the clock, then ask them to stop. The spin is the point
-	// -- see STALL_TICKS -- and it decays into an even rotation with the rest.
-	started := sched.ticks()
-	for sched.ticks() - started < RUN_TICKS {
-	}
-	intrinsics.volatile_store(&stop, true)
+	/*
+	The workers stop themselves at `deadline`; this waits for the last of them.
 
-	// Now wait for them to notice. Bounded by progress rather than by a
-	// deadline: a worker that is not finishing and not advancing is stuck.
+	Bounded by progress rather than by a clock of its own: a worker that is
+	neither finishing nor advancing is stuck, and saying so is worth more than
+	a boot that hangs. This thread need not be scheduled at all while the run
+	is going -- see STALL_TICKS -- and in practice it is not.
+	*/
 	checked := sched.ticks()
 	seen := completed()
 	for intrinsics.volatile_load(&finished) < WORKERS {
@@ -635,6 +690,7 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	*/
 	sched.reap()
 	r.settled = true
+	r.slept = sync.sleep_stats().sleeps - slept_before
 
 	a_done := intrinsics.volatile_load(&list_done[0])
 	b_done := intrinsics.volatile_load(&list_done[1])
@@ -648,6 +704,14 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	tcheck(r, reads >= MIN_ROUNDS, "so did the reader")
 	tcheck(r, rebinds >= MIN_ROUNDS, "so did the thread rearranging the table under them")
 
+	// And none of them got a share that only counts as one arithmetically.
+	// This is the lock's check, not the scheduler's: a handoff that ignores
+	// priority leaves exactly one thread behind, and MIN_ROUNDS alone catches
+	// that only when it is severe.
+	busiest := max(a_done, b_done, reads, rebinds)
+	quietest := min(a_done, b_done, reads, rebinds)
+	tcheck(r, quietest * MAX_SPREAD >= busiest, "and the lock served the quietest of them too")
+
 	// The four that matter. Each is one lock's job, and each of them fails
 	// loudly and often when that lock is not there.
 	tcheck(r, intrinsics.volatile_load(&list_errors[0]) == 0, "/a listed only /a, every time")
@@ -656,6 +720,18 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	tcheck(r, intrinsics.volatile_load(&churn_errors) == 0, "every bind and unmount succeeded")
 	tcheck(r, intrinsics.volatile_load(&union_errors) == 0, "no union listing invented a name")
 	tcheck(r, intrinsics.volatile_load(&deadlocks) == 0, "no lock was held across a message")
+
+	/*
+	That the session lock is a *sleeping* one, demonstrated rather than assumed.
+
+	A spinlock cannot be contended on one CPU: it masks interrupts, so the
+	thread holding it is the only thread there is until it lets go, and this
+	number would be zero however hard the workers ran. A non-zero count is a
+	thread that was preempted in the middle of a 9P message and a second thread
+	that parked behind it -- which is to say, proof that the vfs layer became
+	preemptible.
+	*/
+	tcheck(r, r.slept > 0, "threads parked on a busy session rather than masking the machine")
 }
 
 /*
@@ -765,7 +841,9 @@ report_vfs_threads :: proc(r: ^Vfs_Threads) {
 		libodin.put_uint(&sink, u64(r.rebinds))
 		libodin.put_str(&sink, " rebinds under them in ")
 		libodin.put_uint(&sink, r.ticks)
-		libodin.put_str(&sink, " ms, heap balanced")
+		libodin.put_str(&sink, " ms, ")
+		libodin.put_uint(&sink, r.slept)
+		libodin.put_str(&sink, " session waits slept, heap balanced")
 		emit(&klog, .Ok, &sink)
 		return
 	}

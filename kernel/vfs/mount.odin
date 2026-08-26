@@ -24,6 +24,7 @@ more real than the other.
 */
 package vfs
 
+import "kernel:sync"
 import "vsys:vectra9"
 
 /*
@@ -114,8 +115,8 @@ mount_point_generation :: proc "contextless" (mp: ^Mount_Point) -> u64 {
 	if mp == nil {
 		return 0
 	}
-	g := vlock(&object_lock)
-	defer vunlock(&object_lock, g)
+	g := sync.acquire(&object_lock)
+	defer sync.release(&object_lock, g)
 	return mp.generation
 }
 
@@ -123,9 +124,9 @@ mount_point_incref :: proc(mp: ^Mount_Point) -> ^Mount_Point {
 	if mp == nil {
 		return nil
 	}
-	g := vlock(&object_lock)
+	g := sync.acquire(&object_lock)
 	mp.refs += 1
-	vunlock(&object_lock, g)
+	sync.release(&object_lock, g)
 	return mp
 }
 
@@ -140,10 +141,10 @@ mount_point_release :: proc(mp: ^Mount_Point) {
 	if mp == nil {
 		return
 	}
-	g := vlock(&object_lock)
+	g := sync.acquire(&object_lock)
 	mp.refs -= 1
 	last := mp.refs <= 0
-	vunlock(&object_lock, g)
+	sync.release(&object_lock, g)
 	if last {
 		free(mp)
 	}
@@ -195,8 +196,8 @@ mount_head_ref :: proc(ns: ^Namespace, c: ^Chan) -> ^Mount_Point {
 	if ns == nil {
 		return nil
 	}
-	g := vlock(&ns.lock)
-	defer vunlock(&ns.lock, g)
+	g := sync.acquire(&ns.lock)
+	defer sync.release(&ns.lock, g)
 	return mount_point_incref(mount_head(ns, c))
 }
 
@@ -299,16 +300,16 @@ bind :: proc(
 	*/
 	displaced: ^Mount
 
-	gl := vlock(&ns.lock)
+	gl := sync.acquire(&ns.lock)
 	mp := mount_head_create(ns, over)
 	if mp == nil {
-		vunlock(&ns.lock, gl)
+		sync.release(&ns.lock, gl)
 		chan_close(member_chan)
 		free(m)
 		return vectra9.ENOMEM
 	}
 
-	go := vlock(&object_lock)
+	go := sync.acquire(&object_lock)
 	switch order {
 	case .Replace:
 		displaced = mp.members
@@ -328,8 +329,8 @@ bind :: proc(
 		tail.next = m
 	}
 	members_changed(mp)
-	vunlock(&object_lock, go)
-	vunlock(&ns.lock, gl)
+	sync.release(&object_lock, go)
+	sync.release(&ns.lock, gl)
 
 	members_free(displaced)
 	return OK
@@ -354,8 +355,8 @@ unmount :: proc(ns: ^Namespace, source: ^Chan, over: ^Chan) -> Errno #no_bounds_
 	removed: ^Mount
 	err := OK
 
-	gl := vlock(&ns.lock)
-	go := vlock(&object_lock)
+	gl := sync.acquire(&ns.lock)
+	go := sync.acquire(&object_lock)
 
 	mp := mount_head(ns, over)
 	if mp == nil {
@@ -405,8 +406,8 @@ unmount :: proc(ns: ^Namespace, source: ^Chan, over: ^Chan) -> Errno #no_bounds_
 		orphaned = mount_point_unlink(ns, mp)
 	}
 
-	vunlock(&object_lock, go)
-	vunlock(&ns.lock, gl)
+	sync.release(&object_lock, go)
+	sync.release(&ns.lock, gl)
 
 	if orphaned {
 		free(mp)
@@ -463,8 +464,8 @@ member_ref_at :: proc(mp: ^Mount_Point, idx: int) -> (c: ^Chan, flags: Mount_Fla
 	if mp == nil || idx < 0 {
 		return nil, {}, false
 	}
-	g := vlock(&object_lock)
-	defer vunlock(&object_lock, g)
+	g := sync.acquire(&object_lock)
+	defer sync.release(&object_lock, g)
 
 	i := 0
 	for m := mp.members; m != nil; m = m.next {
@@ -507,8 +508,8 @@ mount_point_refs :: proc "contextless" (mp: ^Mount_Point) -> int {
 	if mp == nil {
 		return 0
 	}
-	g := vlock(&object_lock)
-	defer vunlock(&object_lock, g)
+	g := sync.acquire(&object_lock)
+	defer sync.release(&object_lock, g)
 	return mp.refs
 }
 
@@ -519,8 +520,8 @@ member_count :: proc "contextless" (mp: ^Mount_Point) -> int {
 	if mp == nil {
 		return 0
 	}
-	g := vlock(&object_lock)
-	defer vunlock(&object_lock, g)
+	g := sync.acquire(&object_lock)
+	defer sync.release(&object_lock, g)
 
 	n := 0
 	for m := mp.members; m != nil; m = m.next {
@@ -546,8 +547,8 @@ union_create_target :: proc(mp: ^Mount_Point) -> ^Chan {
 	if mp == nil {
 		return nil
 	}
-	g := vlock(&object_lock)
-	defer vunlock(&object_lock, g)
+	g := sync.acquire(&object_lock)
+	defer sync.release(&object_lock, g)
 
 	for m := mp.members; m != nil; m = m.next {
 		if .Create in m.flags {

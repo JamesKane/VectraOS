@@ -70,9 +70,9 @@ ns_incref :: proc(ns: ^Namespace) -> ^Namespace {
 	if ns == nil {
 		return nil
 	}
-	g := vlock(&ns.lock)
+	g := sync.acquire(&ns.lock)
 	ns.refs += 1
-	vunlock(&ns.lock, g)
+	sync.release(&ns.lock, g)
 	return ns
 }
 
@@ -100,10 +100,10 @@ ns_set_root :: proc(ns: ^Namespace, c: ^Chan) -> Errno {
 		return err
 	}
 
-	g := vlock(&ns.lock)
+	g := sync.acquire(&ns.lock)
 	old := ns.root
 	ns.root = root
-	vunlock(&ns.lock, g)
+	sync.release(&ns.lock, g)
 
 	chan_close(old)
 	return OK
@@ -122,8 +122,8 @@ ns_root_ref :: proc(ns: ^Namespace) -> ^Chan {
 	if ns == nil {
 		return nil
 	}
-	g := vlock(&ns.lock)
-	defer vunlock(&ns.lock, g)
+	g := sync.acquire(&ns.lock)
+	defer sync.release(&ns.lock, g)
 	return chan_incref(ns.root)
 }
 
@@ -159,9 +159,9 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 	`ns.root` is read under the parent's lock and a reference taken, so a
 	concurrent `ns_set_root` cannot free it between the read and the clone.
 	*/
-	gr := vlock(&ns.lock)
+	gr := sync.acquire(&ns.lock)
 	parent_root := chan_incref(ns.root)
-	vunlock(&ns.lock, gr)
+	sync.release(&ns.lock, gr)
 
 	if parent_root != nil {
 		err := ns_set_root(child, parent_root)
@@ -178,8 +178,8 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 	not do. It sends no message, and it never takes the child's lock -- the
 	child is not published until this returns, so nothing else can reach it.
 	*/
-	gl := vlock(&ns.lock)
-	go := vlock(&object_lock)
+	gl := sync.acquire(&ns.lock)
+	go := sync.acquire(&object_lock)
 	ok := true
 
 	copy_loop: for bucket in 0 ..< MOUNT_BUCKETS {
@@ -215,8 +215,8 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 		}
 	}
 
-	vunlock(&object_lock, go)
-	vunlock(&ns.lock, gl)
+	sync.release(&object_lock, go)
+	sync.release(&ns.lock, gl)
 
 	if !ok {
 		// Whatever was copied is a well-formed namespace; tearing it down is
@@ -235,10 +235,10 @@ ns_close :: proc(ns: ^Namespace) #no_bounds_check {
 	if ns == nil {
 		return
 	}
-	g := vlock(&ns.lock)
+	g := sync.acquire(&ns.lock)
 	ns.refs -= 1
 	last := ns.refs <= 0
-	vunlock(&ns.lock, g)
+	sync.release(&ns.lock, g)
 	if !last {
 		return
 	}
@@ -260,13 +260,13 @@ ns_close :: proc(ns: ^Namespace) #no_bounds_check {
 			next := mp.next
 			mp.next = nil
 
-			go := vlock(&object_lock)
+			go := sync.acquire(&object_lock)
 			members := mp.members
 			mp.members = nil
 			members_changed(mp)
 			mp.refs -= 1
 			orphaned := mp.refs <= 0
-			vunlock(&object_lock, go)
+			sync.release(&object_lock, go)
 
 			members_free(members)
 			if orphaned {

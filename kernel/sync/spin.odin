@@ -1,5 +1,5 @@
 /*
-The one lock type.
+The lock that masks, as opposed to the lock that sleeps.
 
 Vectra has exactly one CPU running exactly one thread at a time, and the only
 thing that can interrupt either is a trap. So a critical section is "interrupts
@@ -7,6 +7,11 @@ off", and `Spinlock` is a name for that with the nesting handled -- `acquire`
 reports what the interrupt flag was and `release` puts it back, so a lock taken
 inside a handler that was already masked does not turn interrupts on when it
 finishes.
+
+`Mutex` in `sleep.odin` is the other one, and the two are not interchangeable:
+this one may be held anywhere and must be released within a few instructions,
+that one may be held across a wait and must never be taken inside this one.
+`can_sleep` below is how that rule is checked rather than remembered.
 
 There is no lock *word* yet, and that is the honest state of things rather than
 an oversight: a second CPU would need one, and adding it now would be a field
@@ -53,11 +58,13 @@ acquire :: proc "contextless" (l: ^Spinlock) -> Guard {
 		interrupts_were_on = arch.irq_save(),
 	}
 	l.depth += 1
+	critical_depth += 1
 	return g
 }
 
 release :: proc "contextless" (l: ^Spinlock, g: Guard) {
 	l.depth -= 1
+	critical_depth -= 1
 	arch.irq_restore(g.interrupts_were_on)
 }
 
@@ -66,4 +73,28 @@ release :: proc "contextless" (l: ^Spinlock, g: Guard) {
 // that use it say so.
 held :: proc "contextless" (l: ^Spinlock) -> bool {
 	return l.depth > 0
+}
+
+/*
+How many spinlocks this CPU is inside, counting all of them together.
+
+Not per lock -- `Spinlock.depth` is that. This is a property of the CPU, and it
+answers exactly one question: may the code running right now stop running? A
+thread inside any spinlock has interrupts masked, so descheduling it leaves the
+machine with the interrupt flag clear and nothing scheduled to set it again.
+That is a hang with no error, at a point arbitrarily far from the code that
+caused it.
+
+So every sleeping wait checks this first, and `kernel/vfs` checks it before it
+sends a 9P message -- see `rpc_begin`. One counter rather than one per CPU
+because there is one CPU; it becomes per-CPU state at the same moment
+`Spinlock` grows a word, and for the same reason.
+*/
+@(private)
+critical_depth: int
+
+// can_sleep reports whether the caller is free to block. False inside any
+// spinlock, including one taken several frames up by somebody else.
+can_sleep :: proc "contextless" () -> bool {
+	return critical_depth == 0
 }

@@ -70,14 +70,16 @@ Server :: struct {
 	it, and a reply that borrows the server's storage is valid only while it is
 	held. See the borrow rule in `lock.odin`.
 
-	A spinlock is the right shape only while every transport is synchronous.
-	The in-process transport runs the handler on the caller's own stack and
-	returns, so nothing sleeps under this. The first transport that crosses an
-	address space changes that -- the reply arrives on an interrupt, and a lock
-	that masks interrupts while waiting for one is a hang. That transport and a
-	sleeping lock arrive together or neither does.
+	A `sync.Mutex` rather than a `sync.Spinlock`, and that is the whole reason
+	`kernel/sync/sleep.odin` exists. A spinlock is the interrupt flag: holding
+	one across a message makes every message unpreemptible, which is why a
+	uniprocessor doing file I/O used to be very nearly impossible to interrupt,
+	and it becomes a hang outright the day a reply arrives *on* an interrupt.
+	A mutex parks the thread that loses the race, so the session is exclusive
+	without the machine being deaf while it is held, and an out-of-process
+	transport can wait under it.
 	*/
-	lock:      sync.Spinlock,
+	lock:      sync.Mutex,
 }
 
 /*
@@ -132,8 +134,8 @@ register_device :: proc "contextless" (sv: ^Server) -> bool #no_bounds_check {
 	if sv == nil {
 		return false
 	}
-	g := vlock(&device_lock)
-	defer vunlock(&device_lock, g)
+	g := sync.acquire(&device_lock)
+	defer sync.release(&device_lock, g)
 
 	if device_count >= MAX_DEVICES {
 		return false
@@ -158,8 +160,8 @@ attach -- not per walk, not per read. Cheap enough that being sure is worth
 more than being clever.
 */
 find_device :: proc "contextless" (name: string) -> ^Server #no_bounds_check {
-	g := vlock(&device_lock)
-	defer vunlock(&device_lock, g)
+	g := sync.acquire(&device_lock)
+	defer sync.release(&device_lock, g)
 
 	for i in 0 ..< device_count {
 		if devices[i].name == name {
@@ -175,7 +177,6 @@ find_device :: proc "contextless" (name: string) -> ^Server #no_bounds_check {
 @(private)
 Rpc_Guard :: struct {
 	server: ^Server,
-	guard:  sync.Guard,
 	held:   bool,
 }
 
@@ -201,17 +202,24 @@ rpc_begin :: proc "contextless" (sv: ^Server) -> (Rpc_Guard, Errno) {
 	/*
 	The invariant `lock.odin` describes, checked rather than trusted.
 
-	A bookkeeping lock held here would be held across a message, and the day a
-	transport blocks that is a machine that stops. Refusing is not graceful
-	degradation -- every caller turns this into a failed open or a failed walk
-	-- and that is the point: a rule broken loudly at the first call beats one
-	broken silently until the transport changes.
+	A spinlock held here is the interrupt flag held here, and taking the
+	session mutex may park this thread -- which would deschedule it with
+	interrupts masked and nothing left to turn them back on. `sync.Mutex`
+	stops the machine and names the rule if it gets that far; this refuses
+	first, and refusing is the better failure: every caller turns it into a
+	failed open or a failed walk, with a name on it, at the call that broke
+	the rule rather than months later somewhere else.
+
+	`sync.can_sleep` counts every spinlock on the CPU, not just this
+	package's. That is wider than the old rule and correctly so -- the heap
+	lock and the scheduler lock are just as fatal to hold across a wait.
 	*/
-	if lock_depth != 0 {
+	if !sync.can_sleep() {
 		return {}, vectra9.EDEADLK
 	}
 
-	return Rpc_Guard{server = sv, guard = sync.acquire(&sv.lock), held = true}, OK
+	sync.mutex_lock(&sv.lock)
+	return Rpc_Guard{server = sv, held = true}, OK
 }
 
 /*
@@ -280,6 +288,6 @@ first checking whether the call got that far.
 @(private)
 rpc_end :: proc "contextless" (g: Rpc_Guard) {
 	if g.held {
-		sync.release(&g.server.lock, g.guard)
+		sync.mutex_unlock(&g.server.lock)
 	}
 }

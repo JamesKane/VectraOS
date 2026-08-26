@@ -9,13 +9,19 @@ land between two instructions.
 There are two kinds of lock here and they have opposite rules, which is the
 part worth reading:
 
-  **Bookkeeping locks** -- `Namespace.lock` and `object_lock` below -- guard
-  pointers and counts. They are held for a handful of instructions and are
-  never held across a 9P message. See `rpc`.
+  **Bookkeeping locks** -- `Namespace.lock` and `object_lock` below -- are
+  `sync.Spinlock`s. They guard pointers and counts, are held for a handful of
+  instructions, and are never held across a 9P message. See `rpc`.
 
-  **The session lock** -- `Server.lock` -- is held *across* a message, and has
-  to be: it is what makes "one request in flight per session" true, and that is
-  what makes a borrowed reply safe. See the borrow rule below.
+  **The session lock** -- `Server.lock` -- is a `sync.Mutex`, and is held
+  *across* a message. It has to be: it is what makes "one request in flight per
+  session" true, and that is what makes a borrowed reply safe. See the borrow
+  rule below.
+
+The difference is not a matter of degree. A spinlock here *is* the interrupt
+flag, so holding one across a message would make every message unpreemptible
+and would hang the machine outright the day a reply arrives on an interrupt. A
+mutex parks its loser, which costs a context switch and buys both.
 
 ## Who guards what
 
@@ -26,9 +32,12 @@ part worth reading:
     Static_Tree.lock  one server's own fid table and directory buffer
     device_lock       the `#name` table
 
-Lock order is `Namespace.lock` -> `object_lock`, and nothing takes a namespace
-lock while holding an object lock. The heap takes its own lock underneath both,
-which is fine because the heap never reaches back up here.
+Lock order has two rules. Among the spinlocks it is `Namespace.lock` ->
+`object_lock`, and nothing takes a namespace lock while holding an object lock.
+Across the two kinds it is `Server.lock` -> any spinlock, never the reverse:
+the session may be held while the heap or a mount table is touched, and a
+spinlock may not be held while the session is asked for. `sync.can_sleep` is
+that second rule, checked -- see `rpc_begin`.
 
 `object_lock` is global rather than per-object, and that is a decision about
 what the state *is* rather than about contention. A `Chan` is shared across
@@ -41,10 +50,13 @@ actually want is an atomic increment, and when there is a second CPU that is
 what they should become, at which point this lock covers only `members`.
 
 Worth knowing about this one specifically: `kernel/verify_vfs.odin` cannot make
-it fail. Removing it leaves a window a few instructions wide, and a uniprocessor
-holding the interrupt flag as its only lock does not land a timer inside one --
-sixty thousand namespace operations did not find it. It is here because on a
-second CPU that window is not a matter of timing luck. The file says more.
+it fail, and it is not for want of preemption. Removing it leaves a window two
+instructions wide, between loading a count and storing it back, and the only
+thing that can land inside one is a timer -- of which there are a thousand a
+run whether or not the layer around it blocks. A hundred thousand voluntary
+parks per run do not help, because every one of them is at a lock boundary and
+this window is not. It is here because on a second CPU that window is not a
+matter of timing luck. The file says more.
 
 ## The borrow rule
 
@@ -55,6 +67,12 @@ interrupt the caller between the reply and the copy. It is not safe now: a
 timer between `rpc` returning and `copy` landing lets another thread issue a
 Treaddir to the same server and overwrite the buffer the first thread is about
 to read.
+
+What makes it safe now is the session lock rather than the interrupt flag, and
+that is a real change of mechanism: the thread copying a borrowed buffer can be
+preempted, and is, thousands of times a run. It is safe because the second
+thread cannot get a message onto that server to overwrite the buffer -- it
+parks in `rpc_begin` instead.
 
 So `rpc` returns a guard and the reply is valid only until it is released:
 
@@ -90,32 +108,3 @@ object_lock: sync.Spinlock
 // The `#name` table. Written once at boot, read on every device attach.
 @(private)
 device_lock: sync.Spinlock
-
-/*
-How deep in bookkeeping locks this CPU is.
-
-Exists to make "no bookkeeping lock is held across a 9P message" a checked
-invariant rather than a comment. `rpc` refuses with EDEADLK if this is not
-zero, which turns a rule that would otherwise be broken silently -- and then
-found months later as a hang the first time a transport blocks -- into a
-failed operation with a name on it.
-
-One counter rather than one per CPU because there is one CPU. It becomes
-per-CPU state at the same moment `Spinlock` grows a word, and for the same
-reason.
-*/
-@(private)
-lock_depth: int
-
-@(private)
-vlock :: proc "contextless" (l: ^sync.Spinlock) -> sync.Guard {
-	g := sync.acquire(l)
-	lock_depth += 1
-	return g
-}
-
-@(private)
-vunlock :: proc "contextless" (l: ^sync.Spinlock, g: sync.Guard) {
-	lock_depth -= 1
-	sync.release(l, g)
-}

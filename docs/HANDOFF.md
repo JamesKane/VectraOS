@@ -26,7 +26,7 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 6 is done: the namespace is safe under threads.**
+**Milestone 7 is done: the kernel has a lock that sleeps.**
 
 Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
 behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
@@ -35,8 +35,11 @@ codec, and the session/transport boundary. Milestone 4 added `kernel/vfs/`, the
 namespace that uses it. Milestone 5 added `kernel/sched/` and the local APIC
 timer under it. Milestone 6 locks the namespace against the threads Milestone 5
 made possible, and proves it with five threads walking, listing, reading and
-rebinding the same namespace at once. About 14,000 lines of Odin; the linked
-image is ~592 KB debug, ~237 KB release.
+rebinding the same namespace at once. Milestone 7 makes the one lock held
+across a 9P message a *sleeping* lock, which is what an out-of-process
+transport was waiting for — and which made the vfs layer preemptible for the
+first time. About 15,500 lines of Odin; the linked image is
+~627 KB debug, ~242 KB release.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
@@ -63,7 +66,8 @@ image is ~592 KB debug, ~237 KB release.
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62537 counts per tick
 [  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (17728177-18134560 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] vfs 33 concurrency checks passed -- 3822 namespace operations across 5 threads, 625 rebinds under them in 1058 ms, heap balanced
+[  ok  ] sync 13 sleeping lock checks passed -- 1513 acquisitions, 1403 parked and handed back, decayed to 1
+[  ok  ] vfs 35 concurrency checks passed -- 1326 namespace operations across 5 threads, 264 rebinds under them in 1018 ms, 12008 session waits slept, heap balanced
 [  ok  ] boot complete -- idling
 ```
 
@@ -179,11 +183,11 @@ divide into two kinds with opposite rules:
 
 | Lock | Guards | Held across a 9P message? |
 |---|---|---|
-| `Namespace.lock` | `root`, the mount table, `refs` | **never** |
-| `object_lock` (global) | `Chan.refs`, `Mount_Point.refs`, `Mount_Point.members` | **never** |
-| `Server.lock` | the session: fid and tag counters, one message in flight, a borrowed reply's lifetime | **always** |
-| `Static_Tree.lock` | one server's own fid table and directory buffer | (server side) |
-| `device_lock` (global) | the `#name` table | never |
+| `Namespace.lock` | `root`, the mount table, `refs` | spinlock — **never** |
+| `object_lock` (global) | `Chan.refs`, `Mount_Point.refs`, `Mount_Point.members` | spinlock — **never** |
+| `Server.lock` | the session: fid and tag counters, one message in flight, a borrowed reply's lifetime | **mutex — always** |
+| `Static_Tree.lock` | one server's own fid table and directory buffer | spinlock (server side) |
+| `device_lock` (global) | the `#name` table | spinlock — never |
 
 **The session lock has to be held across the message; the bookkeeping locks must
 never be.** That is not a style preference. `Rread.data` and `Rreaddir.data`
@@ -204,13 +208,15 @@ replies borrow. The same lock is what makes a fid mean something: `alloc_fid` is
 a plain increment, and two threads that both read the counter before either
 writes it both walk to `newfid`.
 
-The other direction is enforced rather than documented. `kernel/sync`'s lock
-*is* the interrupt flag, so a bookkeeping lock held across a message becomes a
-hang the first time a transport blocks — a bug that would not appear until the
-transport changed, months from the code that caused it. `vfs` counts its own
-lock nesting and `rpc` refuses with `EDEADLK` if it is not zero. A negative
-control that moves one clone inside the namespace lock fails four checks
-immediately.
+The other direction is enforced rather than documented. A `sync.Spinlock` *is*
+the interrupt flag, so a bookkeeping lock held while the session is asked for
+means blocking with interrupts masked, which is a machine that stops. `rpc`
+refuses with `EDEADLK` if `sync.can_sleep()` is false. That check used to be a
+counter `vfs` kept for itself; it is now a property of the CPU that `sync`
+maintains in `acquire`/`release`, so the rule covers the heap lock and the
+scheduler lock as well — both are equally fatal to hold across a wait. A
+negative control that moves one clone inside the namespace lock fails four
+checks immediately.
 
 **Two bugs that predate threads came out of this.** `Chan.union_head` was a bare
 pointer to a `Mount_Point`, and unmounting freed it — reachable with one thread
@@ -227,6 +233,71 @@ does not have this problem because it read-locks the mount head for the whole
 union search; it can, because its locks sleep. Vectra's cannot. The counter
 replaces the lock: a search that finds nothing is only believed if the list is
 the same one it started on.
+
+### The lock that sleeps, and the two things it broke
+
+`kernel/sync/sleep.odin` is Milestone 7. `Server.lock` is a `sync.Mutex` now:
+it parks the thread that loses instead of masking interrupts, which is what an
+out-of-process transport was waiting for — a reply that arrives *on* an
+interrupt cannot be waited for by a lock that masks interrupts. Nothing sleeps
+under it yet, because the in-process transport runs the handler on the caller's
+own stack, but the vfs layer became preemptible the moment it stopped masking
+for every message it sends. The self-test measures 12,000 parks a second in
+debug and 110,000 in release.
+
+**`kernel/sync` cannot import `kernel/sched`** — the run queues are under a
+spinlock, so the dependency already runs the other way. The scheduler registers
+itself instead (`sync.set_scheduler`), a thread is a `rawptr` on this side of
+that boundary, and `have_sched` makes "there is no thread to park yet" an honest
+state rather than a crash during boot. `sync.set_panic` is the same trick for
+the panic screen, which lives in `package kernel`, above everything.
+
+**Wait nodes live on the waiting thread's stack.** A parked thread is standing
+on the frame that holds its node and is unlinked before it is made runnable, so
+the queue costs no allocation and cannot fail — which matters for a lock the
+allocator itself may one day want.
+
+Two things the sleeping lock broke, both of which were latent and neither of
+which was a locking bug:
+
+**1. A lock that serves in arrival order is a second scheduler, and a worse
+one.** FIFO handoff was the first version. `kernel/verify_vfs.odin` showed the
+thread using the *least* CPU — the one the scheduler had therefore raised to
+priority 7 while the others decayed to 1 — being served last every time, and
+getting between a fiftieth and a fifth of the turns it was entitled to. The
+scheduler's decision was correct and the lock was overruling it several thousand
+times a second. `mutex_unlock` now hands off to the highest-priority waiter,
+ties broken by arrival, so it is FIFO *within* a level. Starvation is not
+reintroduced, because the defence is already better placed: a thread that loses
+every race burns no CPU, so it does not decay, while the threads beating it do —
+it rises past them and wins. The spread between busiest and quietest worker went
+from up to 50× to a consistent 2–4×.
+
+**2. Decay measured interruptions, not CPU.** `Thread.ticks_left` was refilled
+on *every dispatch*, which was the same thing as refilling it every slice for
+exactly as long as nothing blocked. Two threads handing a mutex back and forth
+are dispatched hundreds of times a second and reach the end of a slice never, so
+they sat at their base priority no matter how much of the machine they were
+using — and one worker that *was* consuming CPU decayed past them and got five
+dispatches in a thousand ticks. A thread now keeps the remainder of its slice
+across a block and is only refilled when it runs out, so decay measures CPU
+consumed. The two changes belong together: a lock that hands off on priority is
+only as fair as the number it hands off on.
+
+**Waking from a lock is not waking from I/O.** `sched.ready` boosts, because a
+thread that waited on the world has earned its priority back; `sched.unpark`
+does not, because a thread that queued behind another thread doing exactly what
+it was doing has earned nothing. Boosting lock wake-ups pins every contender to
+the top of the range and leaves the scheduler nothing to tell them apart with —
+a negative control that does it fails both self-tests.
+
+**`kernel/verify_sync.odin` tests the lock on its own terms**, because a failure
+seen only through the namespace arrives in the vocabulary of mount tables. Two
+threads, one mutex, thirteen checks: exclusion, that they really contended, and
+that a thread which blocked its way through a whole slice of CPU was still
+charged for it. The critical section is a spin deliberately sized to be longer
+than a tick and shorter than a slice — that gap is exactly what distinguishes
+"charged for the CPU it used" from "never finished a slice".
 
 ### Measuring a concurrency test in ticks
 
@@ -245,7 +316,7 @@ fails in both.
 Making the run tick-driven also lengthened the churn thread's share of it from
 a sixth to all of it, which is what surfaced the `generation` bug above.
 
-**Three of five mutations are caught. The two that are not are the more
+**Five of seven mutations are caught. The two that are not are the more
 interesting half**, and the file says so rather than filing it as a gap:
 
 | Mutation | Result |
@@ -253,25 +324,35 @@ interesting half**, and the file says so rather than filing it as a gap:
 | remove `Server.lock` | caught — both listers, in both builds |
 | free a referenced `Mount_Point` | caught — the reference count check |
 | hold a namespace lock across a message | caught — `EDEADLK`, four checks |
+| boost a thread woken by a lock | caught — two workers starved |
+| serve waiters in arrival order | caught, one run in ten |
 | drop `cross_mounts`' reference to a member | **not caught** |
 | unlocked chan reference counts | **not caught** |
 
-Both uncaught windows are a few instructions wide, and catching one means
-landing a timer interrupt inside about thirty instructions out of the twenty
-thousand a round takes *and* having another thread free that exact object first.
-Fifty thousand operations against seven thousand rebinds found neither. Turning
-the tick rate up barely helps: at 20 kHz only about 1.4× as many ticks are
-actually *delivered*, because every lock here is the interrupt flag and this
-layer holds one for most of its instructions. **A uniprocessor Vectra thread
-doing file I/O is very nearly non-preemptible**, which is exactly why the narrow
-races are nearly unreachable now and will be ordinary on a second core.
+The two uncaught ones had a standing explanation, and Milestone 7 falsified half
+of it. The story was that a uniprocessor holding the interrupt flag for most of
+its instructions is nearly impossible to interrupt — turning the tick rate up to
+20 kHz delivered only about 1.4× as many ticks, because the LAPIC coalesces what
+it cannot deliver, so **a Vectra thread doing file I/O was very nearly
+non-preemptible**. A sleeping session lock removed that objection completely: the
+same run now parks and switches *a hundred thousand times*, at every message
+boundary, in both build modes. Neither mutation was caught.
+
+So the real reason is narrower and worth keeping. Both windows are two or three
+instructions wide, and neither is at a lock boundary — the gap between loading a
+reference count and storing it back, the gap between reading a member out of the
+table and cloning it. Voluntary switches, however many, do not interleave two
+threads at an arbitrary instruction; only a timer does, and there are still
+about a thousand of those per run. **Only a second CPU makes these reachable**,
+which is exactly why they are cheap to leave in now and expensive to find later.
 
 **What still does not exist.** No userland and no address-space switching — a
 thread grows an `^Address_Space` and `reschedule` grows one comparison when
 there is one. No SMP: `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 is
 ever brought up, and there is no IPI, no AP trampoline and no lock word. No
 `/srv`. No `Tflush` service, though the scheduler it was waiting for now exists.
-No sleep or timed wait — `block` and `ready` are the only blocking primitives.
+No sleep or timed wait — `block`, `ready`/`unpark` and `sync.Mutex` are the only
+blocking primitives, and none of them can wait for a duration.
 No `swapgs`, no per-CPU state behind GS. `kmain` ends by calling `sched.exit`,
 so the machine idles rather than halting.
 
@@ -327,6 +408,8 @@ ways whose error messages do not point back here.
 | A missing EOI stops the timer silently | The local APIC delivers nothing further at or below that priority. There is no error, no fault, and no bit anywhere saying so — it looks exactly like a timer that was never armed. Any loop waiting on the tick count needs a liveness bound, or a one-line bug hangs the boot with the last line printed being the timer coming up successfully. |
 | A freed object reads as a valid one | The slab allocator writes its free-list link over the first field and leaves the rest. A `Mount_Point` freed one reference early still reports zero members, which is exactly what a correctly dissolved one reports — so the obvious use-after-free check passes whether or not the bug is there. Testing a lifetime bug means testing the *reference count*, or forcing the block to be reused first. |
 | The LAPIC coalesces what it cannot deliver | Ticks that arrive while interrupts are masked do not queue up. Raising the timer from 1 kHz to 20 kHz over a lock-heavy workload delivered about 1.4× as many interrupts, not 20×. Anything that expects a preemption *rate* has to account for how much of the time interrupts are actually on. |
+| A voluntary switch is not a preemption | Making a layer block often does not make its narrow races reachable. A sleeping session lock took `kernel/verify_vfs.odin` from ~1,000 context switches a run to ~110,000, and caught not one additional mutation — every added switch is at a lock boundary, and a two-instruction read-modify-write window is not. Only a timer, or a second core, interleaves two threads at an arbitrary instruction. |
+| Refilling a slice on dispatch is not scheduling | `Thread.ticks_left` reset on every dispatch is indistinguishable from resetting it every slice, right up until something blocks. A thread that parks hundreds of times a second then never reaches the end of a slice, never decays, and outranks the thread doing steady work for ever. Decay has to measure CPU consumed, which means carrying the remainder across a block. |
 | `int $8` is not a double fault | A software interrupt to an error-code vector does **not** push an error code, so it lands on a stub that assumes one was pushed. Never test `#DF` that way; provoke a real one by faulting on a bad stack. |
 
 **No vendored runtime shim.** The neighbouring `odin-os` project hand-maintains
@@ -536,6 +619,21 @@ are the load-bearing bits:
 - **No `swapgs` in the entry path.** Correct today, because nothing runs at
   CPL 3. It becomes wrong the moment userland does, and the fix has to land in
   the same tail that the point above rewrites.
+- **Two lock types, and the rule between them is checked.** `sync.Spinlock`
+  masks interrupts and may be held anywhere for a few instructions;
+  `sync.Mutex` parks the thread and may be held across a wait. Taking a mutex
+  inside a spinlock is a hang with no error, so `sync` counts spinlock nesting
+  per CPU and `can_sleep()` is the check — `vfs.rpc_begin` turns it into an
+  `EDEADLK`, and `mutex_lock` stops the machine and names the rule. Reversing
+  this means going back to a namespace that cannot talk to an out-of-process
+  server.
+- **`sync.Mutex` hands off to the highest-priority waiter, not the first.** A
+  lock that serves in arrival order decides who runs next using information the
+  scheduler is not allowed to use, and it measurably overruled the scheduler
+  several thousand times a second. Ties break by arrival, so it is FIFO within a
+  priority level. What makes this safe against starvation is that decay measures
+  CPU consumed — the loser of every race burns nothing and rises past the
+  winners. The two are one decision, not two.
 - **The panic screen has no backtrace.** It reports the faulting instruction and
   the register state but cannot walk the stack; that needs frame pointers kept
   deliberately or unwind tables retained. It is the largest single thing missing
@@ -548,12 +646,14 @@ are the load-bearing bits:
   not a wider counter.
 - **The transport is synchronous.** `Transport.call` returns with the reply
   filled in, so a client can never have two requests outstanding — which makes
-  tags decorative and `Tflush` unreachable. Both become real with the scheduler,
-  and that is when the async entry point has to be designed.
-- **No locking anywhere in `kernel/mem`.** Single CPU, single thread, and now —
-  since the IDT exists — interrupts that are still never enabled. The PMM's
-  bitmap and the heap's free lists both need a lock before the first AP comes up
-  or the first interrupt handler allocates.
+  tags decorative and `Tflush` unreachable. The two things that blocked an async
+  transport are now both built: the scheduler, and a session lock that can be
+  held across a wait without masking interrupts. What is left is designing the
+  async entry point itself.
+- **The PMM has no lock.** The heap does — `sync.Spinlock`, taken by `alloc`,
+  `free` and `resize` — but `pmm.odin`'s bitmap does not, because nothing
+  allocates frames after boot. It needs one before the first AP comes up or the
+  first interrupt handler allocates.
 - **Slabs are never returned to the PMM.** Reclaiming one means proving every
   object in it is free, which means per-slab occupancy counts and a
   partial/full/empty chain per class. The fix belongs in `slab_grow`/`slab_free`,
@@ -581,34 +681,34 @@ are the load-bearing bits:
 
 ## 7. Where to go next
 
-The scheduler was the thing blocking everything else, and the namespace it
-exposed is now locked. What is left divides cleanly into "needs a sleeping lock"
-and "needs userland".
+The scheduler was the thing blocking everything else, the namespace it exposed
+is now locked, and the lock that holds a session across a message now sleeps.
+What is left divides cleanly into "needs a sleep queue" and "needs userland".
 
-**A sleeping lock is the next structural piece, and two things now want it.**
-`Server.lock` is held across a whole 9P message, which is correct and also the
-reason no transport can block yet: the reply to an out-of-process request
-arrives on an interrupt, and the lock that is waiting for it has interrupts
-masked. The first transport that crosses an address space and a sleeping lock
-arrive together or neither does. Plan 9's union walk wants the same thing for a
-different reason — `Mount_Point.generation` exists because a read lock could not
-be held across the search.
+**A sleep queue is the next structural piece, and it is mostly written.**
+`sync.Mutex` already has the parts — a wait list of stack-allocated nodes, and
+a scheduler registered through `sync.set_scheduler` — but they are private to
+that file and can only be woken by an unlock. A `Wait_Queue` lifted out of it,
+plus a tick-keyed list on `Cpu` drained by `on_tick`, gives waits with a
+deadline. Nothing can wait for a duration or for a device until it exists, which
+is what `Tflush` and every real driver want. A condition variable falls out of
+the same piece.
+
+**A read/write sleeping lock is worth wanting too.** `Mount_Point.generation`
+exists only because a read lock could not be held across a union search — Plan 9
+holds one, because its locks sleep. Now that Vectra's can, the retry loop in
+`walk1_ex` could become a read lock and the generation counter could go.
 
 **Then, in roughly this order:**
-
-1. **A sleep queue and timed waits.** `block` and `ready` are the only blocking
-   primitives, so nothing can wait for a duration or for a device. A tick-keyed
-   list on `Cpu`, drained by `on_tick`, is most of it — and it is what a
-   sleeping lock is built out of.
-2. **`Tflush`.** Section 7.3 of `VECTRA9.md` pins the shape and the scheduler
+1. **`Tflush`.** Section 7.3 of `VECTRA9.md` pins the shape and the scheduler
    it was waiting for now exists: a tag-indexed pool of in-flight requests,
    `Rflush` after the original's fate is decided, never an error reply.
-3. **A first real device server.** `devfs` with `/dev/cons` over the console
+2. **A first real device server.** `devfs` with `/dev/cons` over the console
    driver, which makes the whole path from a name to a byte on screen exist end
    to end. `static.odin` is the wrong shape only because it is read-only.
-4. **`/srv`**, which needs a thread on each side of a transport and therefore
+3. **`/srv`**, which needs a thread on each side of a transport and therefore
    needed the scheduler.
-5. **Userland.** A thread grows an `^Address_Space`, `reschedule` grows one
+4. **Userland.** A thread grows an `^Address_Space`, `reschedule` grows one
    comparison, and the GDT already has the selectors laid out for
    SYSCALL/SYSRET. `swapgs` and per-CPU state behind GS belong to this step and
    are cheaper to build with it than after it.
@@ -618,9 +718,12 @@ be held across the search.
 namespace and heap mutation is inside a `sync.Spinlock`. What is missing is a
 lock word in that struct, an AP trampoline, IPIs, and a placement policy for
 `enqueue` — which is where `eligible` and the class/capacity fields stop being
-inert. Two things become urgent the moment a second core runs: `Chan.refs` and
-`Mount_Point.refs` want atomic increments rather than a global lock, and
-`vfs.lock_depth` has to become per-CPU state. Both are named where they live.
+inert. Three things become urgent the moment a second core runs: `Chan.refs` and
+`Mount_Point.refs` want atomic increments rather than a global lock;
+`sync.critical_depth` has to become per-CPU state; and `sync.Mutex` needs the
+scheduler to drop its guard *after* the switch, since a parked thread currently
+relies on the interrupt mask travelling with it through the trap frame. All
+three are named where they live.
 
 **Smaller things worth doing when convenient:**
 
@@ -629,10 +732,14 @@ inert. Two things become urgent the moment a second core runs: `Chan.refs` and
 - Make `check_base_revision()` a hard stop rather than a warning.
 - A free list for fids. `alloc_fid` is monotonic and therefore finite: four
   billion opens per session, never reused.
-- `reap` only runs from `spawn` and from the self-test, so a dead thread's stack
+- `reap` only runs from `spawn` and from the self-tests, so a dead thread's stack
   comes back at the next spawn rather than when it exits. Fine now; an idle-time
-  reaper is the fix. The vfs concurrency test has to call `sched.reap()` by hand
-  before it measures the heap, which is the smell.
+  reaper is the fix. Both concurrency self-tests have to call `sched.reap()` by
+  hand before measuring the heap, which is the smell.
+- `sync.Mutex` has no priority inheritance. Handoff goes to the best *waiter*,
+  but a low-priority *holder* still delays a high-priority waiter for as long as
+  it holds. Worth wanting when there is a realtime thread that matters; Plan 9
+  never had it either.
 - `readdir` over a union is still index-based and still documented as undefined
   if the union is rebound mid-listing — the cookie names a position in a list
   that moved. `walk` no longer has that property (see `Mount_Point.generation`);
@@ -651,7 +758,8 @@ boot/
   limine/               Vendored Limine 12.6.1 UEFI binaries + VERSION + README
 kernel/
   main.odin             kmain, Limine requests, boot survey, memory bring-up
-  verify_vfs.odin       The namespace under five threads: 33 checks, two servers
+  verify_sync.odin      The sleeping lock on its own terms: 13 checks, 2 threads
+  verify_vfs.odin       The namespace under five threads: 35 checks, two servers
   splash.odin           Boot chassis: plinth, copper bar, well, lamps
   log.odin              Kernel log; serial + screen, with early-line replay
   panic.odin            The panic screen, and the trap handler behind it
@@ -697,9 +805,11 @@ kernel/
   sched/
     thread.odin         Thread, Cpu, priorities, decay and boost, slice scaling
     queue.odin          Per-level FIFOs and the pick
-    sched.odin          init, spawn, block/ready, reschedule, the tick
+    sched.odin          init, spawn, block/ready/unpark, reschedule, the tick
     verify.odin         The boot self-test: cooperative half and preemptive half
-  sync/spin.odin        The one lock type: the interrupt flag, nesting handled
+  sync/
+    spin.odin           The lock that masks: the interrupt flag, nesting handled
+    sleep.odin          The lock that parks: wait queues, priority handoff
 sys/
   libodin/format.odin   Allocation-free formatting (Sink)
   vectra9/

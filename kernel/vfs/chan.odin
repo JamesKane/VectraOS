@@ -13,6 +13,7 @@ the copy will be opened or walked independently, incref when it will not.
 */
 package vfs
 
+import "kernel:sync"
 import "vsys:vectra9"
 
 Chan :: struct {
@@ -90,9 +91,9 @@ chan_incref :: proc(c: ^Chan) -> ^Chan {
 	if c == nil {
 		return nil
 	}
-	g := vlock(&object_lock)
+	g := sync.acquire(&object_lock)
 	c.refs += 1
-	vunlock(&object_lock, g)
+	sync.release(&object_lock, g)
 	return c
 }
 
@@ -114,10 +115,10 @@ chan_close :: proc(c: ^Chan) {
 		// outside it, because the teardown sends a message. Whoever drives
 		// the count to zero owns the object outright -- nobody else can find
 		// it, so nothing below here needs the lock back.
-		g := vlock(&object_lock)
+		g := sync.acquire(&object_lock)
 		c.refs -= 1
 		last := c.refs <= 0
-		vunlock(&object_lock, g)
+		sync.release(&object_lock, g)
 		if !last {
 			return
 		}

@@ -28,6 +28,7 @@ Two consequences worth stating plainly:
 */
 package vfs
 
+import "kernel:sync"
 import "vsys:vectra9"
 
 /*
@@ -217,16 +218,16 @@ cross_mounts :: proc(ns: ^Namespace, c: ^Chan) -> (^Chan, Errno) {
 	first: ^Chan
 	mp: ^Mount_Point
 
-	gl := vlock(&ns.lock)
+	gl := sync.acquire(&ns.lock)
 	if head := mount_head(ns, c); head != nil {
-		go := vlock(&object_lock)
+		go := sync.acquire(&object_lock)
 		if head.members != nil {
 			first = chan_incref(head.members.chan)
 			mp = mount_point_incref(head)
 		}
-		vunlock(&object_lock, go)
+		sync.release(&object_lock, go)
 	}
-	vunlock(&ns.lock, gl)
+	sync.release(&ns.lock, gl)
 
 	if first == nil {
 		return c, OK

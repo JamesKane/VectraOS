@@ -119,6 +119,18 @@ init :: proc() -> bool {
 
 	arch.set_interrupt_handler(arch.VECTOR_YIELD, on_yield)
 	arch.set_interrupt_handler(arch.VECTOR_SPURIOUS, on_spurious)
+
+	// Last, because it publishes a working scheduler to `kernel:sync`: from
+	// here on a `sync.Mutex` parks its loser instead of refusing. Everything
+	// above this line ran with one thread and could not contend.
+	sync.set_scheduler(
+		sync.Scheduler {
+			current  = current_waiter,
+			block    = block,
+			wake     = wake_waiter,
+			priority = waiter_priority,
+		},
+	)
 	return true
 }
 
@@ -311,6 +323,31 @@ twice is a race every caller would otherwise have to avoid, and the second wake
 is a no-op rather than a second queue entry.
 */
 ready :: proc "contextless" (t: ^Thread) {
+	wake(t, boosted = true)
+}
+
+/*
+unpark makes a thread runnable *without* boosting it.
+
+The distinction is the one Plan 9's boost is really about. A thread woken from
+I/O waited on something outside itself and gets its priority back as the price
+of having been polite -- that is what makes an interactive thread beat a
+compute-bound one. A thread woken because a lock it wanted came free waited on
+nothing of the kind: it was running flat out and merely queued behind another
+thread doing the same. Boosting that one pays a thread for contending.
+
+It is not a fine distinction in practice. `kernel/verify_vfs.odin` puts five
+threads on one 9P session, where every message is a lock: with `ready` the
+worker whose rounds are longest was starved twenty-fold, because every thread's
+priority was pinned to the top by the contention itself and the scheduler had
+nothing left to tell them apart with.
+*/
+unpark :: proc "contextless" (t: ^Thread) {
+	wake(t, boosted = false)
+}
+
+@(private = "file")
+wake :: proc "contextless" (t: ^Thread, boosted: bool) {
 	if t == nil {
 		return
 	}
@@ -320,8 +357,39 @@ ready :: proc "contextless" (t: ^Thread) {
 	if t.state == .Ready || t.state == .Running || t.state == .Dead {
 		return
 	}
-	boost(t)
+	if boosted {
+		boost(t)
+	} else {
+		t.wakeups += 1
+	}
 	enqueue(cpu(), t)
+}
+
+/*
+What `kernel:sync` is handed so its sleeping locks can park a thread.
+
+Adapters rather than the procedures themselves because `sync` cannot name a
+`^Thread`: it is imported *by* this package, so the dependency only runs one
+way, and a thread is a `rawptr` on the other side of it. See `kernel/sync/
+sleep.odin`.
+*/
+@(private = "file")
+current_waiter :: proc "contextless" () -> rawptr {
+	return rawptr(current())
+}
+
+@(private = "file")
+wake_waiter :: proc "contextless" (w: rawptr) {
+	unpark((^Thread)(w))
+}
+
+@(private = "file")
+waiter_priority :: proc "contextless" (w: rawptr) -> int {
+	t := (^Thread)(w)
+	if t == nil {
+		return int(PRIORITY_IDLE)
+	}
+	return int(t.prio)
 }
 
 // yield gives up the rest of the current slice without losing priority. A
@@ -433,7 +501,13 @@ reschedule :: proc "contextless" (r: arch.Resume, voluntary: bool) -> arch.Resum
 	c.current = next
 	next.state = .Running
 	next.cpu = c
-	next.ticks_left = slice_ticks(c)
+	// A fresh slice only for a thread that has spent its last one. A thread
+	// that blocked halfway through keeps the other half, which is what makes
+	// decay a measure of CPU consumed rather than of how often it was
+	// interrupted -- see `Thread.ticks_left`.
+	if next.ticks_left <= 0 {
+		next.ticks_left = slice_ticks(c)
+	}
 	next.dispatches += 1
 	if next != prev {
 		c.switches += 1

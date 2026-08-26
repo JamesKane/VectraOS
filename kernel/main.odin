@@ -25,6 +25,7 @@ import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mem"
 import "kernel:sched"
+import "kernel:sync"
 import "kernel:vfs"
 import "vsys:libodin"
 import "vsys:vectra9"
@@ -135,6 +136,11 @@ kmain :: proc "sysv" () {
 	check_base_revision()
 	init_traps()
 
+	// `kernel:sync` sits below the panic screen and cannot call it. A broken
+	// locking rule is not a recoverable condition, so it is given a way to
+	// stop the machine and name the rule -- see `kernel/sync/sleep.odin`.
+	sync.set_panic(panic_stop)
+
 	if !init_screen() {
 		log_line(&klog, .Warn, "no framebuffer from bootloader; serial only")
 	}
@@ -164,6 +170,7 @@ kmain :: proc "sysv" () {
 		verify_scheduler()
 		if init_timer() {
 			verify_preemption()
+			verify_sleep_lock()
 			verify_vfs_threads()
 		}
 	}
