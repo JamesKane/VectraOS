@@ -6,42 +6,55 @@ on top.
 
 ## Status
 
-Milestone 1 — **it owns its own memory.** The kernel comes up under Limine on
-`x86_64`, brings up serial and the framebuffer, draws its chassis and surveys
-the boot; then it builds a bitmap physical page allocator over the memory map,
-constructs a complete set of page tables from scratch and switches onto them,
-and brings up a slab heap that is installed as `context.allocator` — so
-ordinary Odin `new`, `make` and `append` work in the kernel. There is no
-scheduler and no VFS yet; `kmain` halts after a self-test.
+Milestone 2 — **it can survive its own mistakes.** The kernel comes up under
+Limine on `x86_64`, installs a GDT, TSS and IDT of its own, brings up serial and
+the framebuffer, then builds a bitmap physical page allocator, constructs a
+complete set of page tables from scratch and switches onto them, and brings up a
+slab heap installed as `context.allocator` — so ordinary Odin `new`, `make` and
+`append` work in the kernel. A fault is drawn onto the chassis with its cause
+decoded rather than resetting the machine. There is no scheduler and no VFS yet;
+`kmain` halts after a self-test.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
 [  ok  ] base revision 6 as requested
+[  ok  ] traps: cs 0x8, tr 0x30, 256 vectors, #BP round-trip ok
 [  ok  ] framebuffer 1280x800 @ 32bpp, pitch 5120 -> 0xffff800080000000
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x000000001fe56000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x000000001fe3c000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 27 entries spanning 12.7 GiB
-[  ok  ] usable 467.6 MiB, reclaimable 39.1 MiB
+[  ok  ] usable 467.4 MiB, reclaimable 39.2 MiB
 [  --  ] largest usable region 421.4 MiB at 0x0000000001600000
-[  ok  ] pmm 119718 frames free of 123529 tracked, bitmap 15.0 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.1 MiB in 269 tables (1.0 MiB)
+[  ok  ] pmm 119678 frames free of 123400 tracked, bitmap 15.0 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 515.1 MiB in 270 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
 [  ok  ] boot complete -- halting (no scheduler yet)
 ```
 
-The `vmm` line is printed *after* the address space switch, so the fact that it
-reaches the screen is the proof that the new tables cover the framebuffer, the
-kernel image and the stack the bootloader left us on. The self-test checks the
-things that would otherwise fail silently: that the page allocator does not hand
-out the same frame twice, that walking the new tables for a kernel global lands
-where the bootloader actually loaded it, that `.text` is mapped
+Both self-tests check the things that fail silently. `#BP round-trip ok` means a
+breakpoint was armed, raised, caught and resumed from, which exercises the whole
+trap path end to end. The memory self-test checks that the page allocator does
+not hand out the same frame twice, that walking the new tables for a kernel
+global lands where the bootloader actually loaded it, that `.text` is mapped
 executable-and-not-writable while `.rodata` is neither, and that memory returned
 by `make` survives being written and read back.
+
+A fault reports itself on the chassis, with the error code decoded and — for a
+page fault — what was actually mapped at the faulting address:
+
+```
+[ FAIL ] #PF page fault (vector 14)
+[  !!  ] error code: protection violation, write, supervisor (raw 0x3)
+[ FAIL ] faulting address 0xffffffff80000000
+[  !!  ]   mapped to 0x000000001fe3c000 r-x supervisor global
+```
+
+Screenshot: `docs/panic-screen.png`.
 
 ## Building
 
@@ -80,10 +93,11 @@ kernel/
   splash.odin           The boot chassis: plinth, copper bar, well, lamps
   log.odin              Kernel log; serial and screen, with replay of
                         lines emitted before the framebuffer existed
+  panic.odin            The panic screen and the trap handler behind it
   link_amd64.ld         Static-PIE image layout for the Limine protocol
   arch/                 Architecture interface (arch_amd64.odin binds it)
-    amd64/              Port I/O, control registers, MSRs, CPUID, SSE, and
-                        the page table format
+    amd64/              Port I/O, control registers, MSRs, CPUID, SSE, the
+                        page table format, and the GDT/TSS/IDT
   boot/limine/          Limine protocol bindings; markers.odin owns the
                         base revision tag and the request delimiters
   drivers/
@@ -129,3 +143,10 @@ tools/genfont.py        Bakes a host TTF into kernel/drivers/console/font_data.o
   exports `__text_start` … `__data_end`, rather than being restated in Odin. The
   VMM maps a segment at a time using them, so the permissions it installs cannot
   drift out of step with the layout the linker actually produced.
+- Interrupt entry stubs use `proc "naked"` — a calling convention, not the
+  `@(naked)` attribute, which Odin does not have. All 256 are emitted by the
+  assembler with `.rept`, padded to sixteen bytes each by `.balign 16` so the
+  nth is found by multiplying rather than through a table of function pointers.
+- The legacy 8259 PICs are remapped clear of the exception vectors *and* then
+  masked. Masking alone leaves a spurious IRQ 7 able to arrive as a page fault
+  with a stale CR2, which is a very convincing wrong answer.

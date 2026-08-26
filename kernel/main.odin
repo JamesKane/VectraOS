@@ -110,6 +110,10 @@ chassis: Chassis
 // the reclaim.
 boot_mem: mem.Boot_Memory
 
+// Whether `mem.init` has completed. Read by the panic screen, which can ask the
+// VMM what was mapped at a faulting address only once there is a VMM to ask.
+memory_online: bool
+
 @(export, link_name = "_start")
 kmain :: proc "sysv" () {
 	arch.early_init()
@@ -126,6 +130,7 @@ kmain :: proc "sysv" () {
 	log_line(&klog, .Info, "Vectra " + VERSION + " (" + arch.NAME + ") entering kmain")
 
 	check_base_revision()
+	init_traps()
 
 	if !init_screen() {
 		log_line(&klog, .Warn, "no framebuffer from bootloader; serial only")
@@ -136,11 +141,11 @@ kmain :: proc "sysv" () {
 	report_kernel_layout()
 
 	if !survey_memory() {
-		arch.halt_forever()
+		panic_stop("cannot survey physical memory")
 	}
 	report_memory()
 	if !init_memory() {
-		arch.halt_forever()
+		panic_stop("cannot bring up memory management")
 	}
 
 	// From here on, ordinary Odin allocation works. Everything before this
@@ -195,6 +200,46 @@ check_base_revision :: proc "contextless" () {
 	libodin.put_uint(&sink, limine.BASE_REVISION)
 	libodin.put_str(&sink, " was requested")
 	emit(&klog, .Warn, &sink)
+}
+
+/*
+init_traps installs the GDT, TSS and IDT, then proves they work.
+
+The proof is a breakpoint the kernel raises on itself. It is the only exception
+that can be armed, taken and resumed from, so it exercises the whole path end to
+end -- the stub pushing the right vector, the tail building a frame the
+dispatcher can read, the handler recognising it, and `iretq` landing back on the
+instruction after the `int3`. Anything wrong anywhere in that chain shows up
+here, three lines into the boot, rather than as an unexplained reset during
+whatever is written next.
+
+There is no graceful failure. If the IDT is wrong the `int3` triple faults and
+the machine resets before the check below runs; if it is merely mis-wired the
+check reports it and the boot goes on, because a kernel that cannot report
+faults is still worth booting far enough to say so.
+*/
+init_traps :: proc "contextless" () {
+	arch.init_traps()
+	arch.set_trap_handler(panic_trap)
+
+	arm_breakpoint_test()
+	arch.breakpoint()
+
+	cs := arch.code_selector()
+	tr := arch.task_selector()
+	vectors := u64(arch.idt_limit() + 1) / 16
+	ok := cs == arch.KERNEL_CODE_SELECTOR && tr == arch.TASK_SELECTOR && breakpoint_test_fired()
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "traps: cs ")
+	libodin.put_hex(&sink, u64(cs), 0)
+	libodin.put_str(&sink, ", tr ")
+	libodin.put_hex(&sink, u64(tr), 0)
+	libodin.put_str(&sink, ", ")
+	libodin.put_uint(&sink, vectors)
+	libodin.put_str(&sink, " vectors, #BP round-trip ")
+	libodin.put_str(&sink, breakpoint_test_fired() ? "ok" : "LOST")
+	emit(&klog, ok ? .Ok : .Fault, &sink)
 }
 
 /*
@@ -540,6 +585,7 @@ init_memory :: proc "contextless" () -> bool {
 	emit(&klog, .Info, &sink)
 
 	log_line(&klog, .Ok, "heap online -- context.allocator is live")
+	memory_online = true
 	draw_lamps(memory = true)
 	return true
 }

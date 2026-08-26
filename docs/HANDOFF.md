@@ -1,6 +1,6 @@
 # Vectra — session handoff
 
-Written 2026-08-26, revised the same day after Milestone 1. Read this first
+Written 2026-08-26, revised the same day after Milestones 1 and 2. Read this first
 when picking the project up in a new session; it records the things the code cannot tell you on its own — what was
 decided and why, what cost time, and what is deliberately missing.
 
@@ -26,55 +26,60 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 1 is done and verified: the kernel owns its own memory.**
+**Milestone 2 is done and verified: the kernel can survive its own mistakes.**
 
-Everything from Milestone 0 still holds — it boots under Limine 12.6.1 on
-x86_64 UEFI, brings up serial and the framebuffer, draws its chassis and surveys
-the boot. On top of that it now builds a bitmap PMM over the memory map,
-constructs a complete set of page tables from scratch and switches CR3 onto
-them, and brings up a slab heap that is installed as `context.allocator` — so
-ordinary Odin `new`, `make` and `append` work in the kernel. About 4,200 lines
-of Odin; the linked image is ~168 KB debug, ~50 KB release.
+Milestone 0 boots it; Milestone 1 gave it a PMM, its own page tables and a heap
+behind `context.allocator`. Milestone 2 replaces Limine's descriptor tables with
+a GDT and TSS of our own, installs an IDT covering all 256 vectors, and draws a
+panic screen on the chassis the boot splash already established. About 5,450
+lines of Odin; the linked image is ~201 KB debug, ~85 KB release.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
 [  ok  ] base revision 6 as requested
+[  ok  ] traps: cs 0x8, tr 0x30, 256 vectors, #BP round-trip ok
 [  ok  ] framebuffer 1280x800 @ 32bpp, pitch 5120 -> 0xffff800080000000
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x000000001fe56000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x000000001fe3c000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 27 entries spanning 12.7 GiB
-[  ok  ] usable 467.6 MiB, reclaimable 39.1 MiB
+[  ok  ] usable 467.4 MiB, reclaimable 39.2 MiB
 [  --  ] largest usable region 421.4 MiB at 0x0000000001600000
-[  ok  ] pmm 119718 frames free of 123529 tracked, bitmap 15.0 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.1 MiB in 269 tables (1.0 MiB)
+[  ok  ] pmm 119678 frames free of 123400 tracked, bitmap 15.0 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 515.1 MiB in 270 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
 [  ok  ] boot complete -- halting (no scheduler yet)
 ```
 
-Screenshot: `docs/milestone1-memory.png`. The last four lines are the new part,
-and the third of them is the interesting one: it is printed *after* the address
-space switch, so the fact that it reaches the screen at all is the proof that
-the new tables cover the framebuffer, the kernel image and the stack Limine left
-us on.
+Screenshots: `docs/milestone1-memory.png` (a clean boot) and
+`docs/panic-screen.png` (a deliberate write into `.text`).
 
-The self-test on the second-to-last line is not decoration. It checks, on the
-machine, that two PMM allocations differ and that a freed frame comes back, that
-walking the new tables for a kernel global lands on the physical address the
-bootloader loaded it at, that the direct map agrees with itself, that `.text` is
-mapped executable-and-not-writable while `.rodata` is neither and `.data` is
-writable-and-not-executable, that Odin's `make` returns memory that survives
-being written and read back, and that an over-aligned allocation is actually
-aligned. It has been negative-controlled: asserting `.text` is writable makes it
-report FAILED, so it is not passing vacuously.
+The third line is the new one, and every field in it is a check rather than a
+report. `cs 0x8` and `tr 0x30` say the segment reload and `ltr` took, read back
+out of the CPU. `#BP round-trip ok` says a breakpoint was armed, raised, caught,
+recognised and resumed from — which exercises the whole path end to end: the
+stub pushing the right vector, the tail building a frame the dispatcher can
+read, and `iretq` landing back on the instruction after the `int3`.
 
-**What still does not exist.** No GDT and no IDT — see section 7, this is now
-the most expensive gap by a distance. No scheduler, no VFS, no 9P, no userland,
-no compositor. `kmain` halts on purpose.
+**The panic path has been exercised on the machine, not just written.** Three
+deliberate faults, each removed again afterwards:
+
+| Provoked | Reported |
+|---|---|
+| write into `.text` | `#PF`, `protection violation, write, supervisor`, CR2 = the text base, `mapped to 0x1fe3c000 r-x supervisor global` |
+| null dereference | `#PF`, `page not present, write, supervisor`, CR2 = 0, `nothing is mapped there` |
+| `rsp` moved to an unmapped page, then a push | `#DF double fault (vector 8)` — caught on IST1, and QEMU logged no third CPU reset, so it never triple-faulted |
+
+That last one is the whole reason the TSS exists, and it is the only one of the
+three that could not have been checked by reading the code.
+
+**What still does not exist.** No LAPIC, no I/O APIC, no timer, so nothing has
+ever called `sti` and no interrupt has ever arrived — only exceptions. No
+scheduler, no VFS, no 9P, no userland, no compositor. `kmain` halts on purpose.
 
 ## 3. Build and run
 
@@ -121,6 +126,10 @@ ways whose error messages do not point back here.
 | EFER.NXE before the first NX mapping | Bit 63 of a page table entry is *reserved*, not ignored, until `EFER.NXE` is set. Install a mapping with it first and the fault comes on first touch, as a reserved-bit #PF, nowhere near the cause. `amd64.enable_paging_features` is what turns it on, and `leaf_encode` drops the bit if it did not take. |
 | Segment bounds come from `link_amd64.ld`, not from Odin | `__text_start` … `__data_end` are declared in a bare `foreign { }` block in `kernel/mem/vmm.odin`. They are defined *inside* their output sections in the linker script on purpose: written between sections they become orphans, and ld is free to attach an orphan to whichever segment it likes. |
 | `intrinsics` has `mem_zero` and `mem_copy`, but no `mem_set` | There is no fill-with-a-byte intrinsic. The PMM's bitmap fill is a plain loop. `memset`/`memcpy`/`memmove` *are* provided by stock `base:runtime`, which is why the link has no undefined symbols. |
+| `proc "naked"`, not `@(naked)` | Odin has no `naked` attribute — it is a *calling convention*. `@(naked)` fails with "Unknown attribute element name", and the suggested `-ignore-unknown-attributes` would silence the error while still emitting a prologue, which corrupts the interrupt frame. |
+| `$$` in an inline-asm template | Odin substitutes `$0`, `$1` … for operands, so a literal immediate needs `$$0x10`. Operands passed under the `i` constraint supply their own `$` — `movw $2, %ax` with `u64(0x10)` assembles as `movw $0x10, %ax`. |
+| The error-code vector list is written twice | Once as an assembler `.if` inside the stub blob and once as `vector_has_error_code` in Odin. They cannot share a definition — one is consumed at build time, the other at run time — and if they disagree every field in `Trap_Frame` reads as the one next door. They live in the same file for that reason. |
+| `int $8` is not a double fault | A software interrupt to an error-code vector does **not** push an error code, so it lands on a stub that assumes one was pushed. Never test `#DF` that way; provoke a real one by faulting on a bad stack. |
 
 **No vendored runtime shim.** The neighbouring `odin-os` project hand-maintains
 a copy of `base:runtime` that must track the compiler. Current Odin ships
@@ -224,13 +233,66 @@ Memory, added in Milestone 1:
   boot still returns nil and fails at its use, rather than quietly succeeding
   against a heap that does not exist yet.
 
+Traps, added in Milestone 2:
+
+- **Traps come up before the framebuffer**, immediately after the serial port
+  and the base revision check. Everything after that point is code that faults
+  while it is being written, and a fault before it is a triple fault with
+  nothing to show for it. The consequence is that the fault stacks have to be
+  static `.bss` arrays rather than PMM pages — which is the right trade, because
+  it is memory bring-up above all that this needs to be able to debug.
+- **The selector layout is fixed by SYSCALL/SYSRET**, not by taste. `SYSCALL`
+  takes CS from `STAR[47:32]` and SS from that plus 8; `SYSRET` to 64-bit code
+  takes CS from `STAR[63:48]` plus 16 and SS from plus 8. Hence kernel code then
+  kernel data, and user code32 then user data then user code64 — with the
+  code32 slot present purely as a placeholder. Renumbering these later does not
+  break the build, it breaks the first system call.
+- **Three vectors get interrupt stacks of their own**: the double fault (IST1),
+  NMI (IST2) and the machine check (IST3). The double fault is the one that
+  matters — a fault that happens *because* the stack is bad has nowhere to push
+  its frame, and that is a triple fault. Verified by provoking one.
+- **All 256 vectors are installed, not just the 32 exceptions.** A stray
+  interrupt on a vector with no descriptor is a `#GP`, and a `#GP` with no
+  handler is a double fault, so the cheapest way to make a stray interrupt say
+  "vector 39 arrived and nobody was expecting it" is to give every vector a stub.
+- **The stubs are generated by the assembler, not written out or code-generated
+  into a file.** `.rept` emits 256 of them and `.balign 16` makes each exactly
+  sixteen bytes whether or not it pushed a dummy error code, so `idt_init` finds
+  the nth by multiplying. That alignment is load-bearing: it is what turns a
+  table of 256 function pointers into one label and a shift.
+- **The legacy PICs are remapped *and* masked** before anything could call
+  `sti`. Masking alone is not enough — a spurious IRQ 7 can still get through,
+  and unremapped it arrives as a **page fault** with a garbage error code and a
+  stale CR2, which the panic screen would then report with total confidence.
+- **A trap handler returns a bool: resume, or stop.** The only thing that ever
+  resumes today is the breakpoint the boot self-test arms for itself, and that
+  narrowness is deliberate — a stray `#BP` from anywhere else still panics.
+- **The panic screen's body text is amber, not red.** The alarm is carried by
+  the red band, the `[ FAIL ]` tags and the FAULT lamp; the report itself is
+  mostly hex that has to be read carefully, and a wall of red is the worst way
+  to present it.
+- **The panic path reports what was *mapped* at CR2, not just the address.**
+  "nothing is mapped there" and "mapped read-only and you wrote to it" are
+  different bugs that produce the same CR2, and `mem.permissions` already knew
+  how to tell them apart.
+
 ## 6. Known warts
 
-- **No IDT, and now it hurts.** Any fault is a triple fault with no diagnostic.
-  Milestone 1 was debugged with `qemu -d int,cpu_reset` reading register dumps,
-  which worked but only because nothing went wrong. See section 7.
-- **No locking anywhere in `kernel/mem`.** Single CPU, single thread, no
-  interrupts — all three true today and none of them true for long. The PMM's
+- **The trap stub saves general-purpose registers only.** No `FXSAVE`, so a
+  handler that *returns* into code with live SSE state would corrupt it. Panics
+  never return, and the only resuming path today is a breakpoint the kernel
+  raised on itself, so this is fine now and is the first thing that has to grow
+  the day anything resumes arbitrary code — a debugger, or a page fault that
+  fixes up and retries.
+- **No `swapgs` in the entry path.** Correct today, because nothing runs at
+  CPL 3. It becomes wrong the moment userland does, and the fix has to land in
+  the same tail that the point above rewrites.
+- **The panic screen has no backtrace.** It reports the faulting instruction and
+  the register state but cannot walk the stack; that needs frame pointers kept
+  deliberately or unwind tables retained. It is the largest single thing missing
+  from an otherwise complete fault report.
+- **No locking anywhere in `kernel/mem`.** Single CPU, single thread, and now —
+  since the IDT exists — interrupts that are still never enabled. The PMM's
   bitmap and the heap's free lists both need a lock before the first AP comes up
   or the first interrupt handler allocates.
 - **Slabs are never returned to the PMM.** Reclaiming one means proving every
@@ -250,58 +312,50 @@ Memory, added in Milestone 1:
   will need `AAVMF`/`RISCV_VIRT` equivalents before the other arches can boot.
 - **QEMU's vvfat is read-write, so OVMF writes `NvVars` into `build/esp/`.**
   Harmless, but it means the staged ESP is not byte-reproducible.
-- **`arm64` and `riscv64` are stubs.** `build.odin` has their rows filled in
-  (targets, LLD emulations, QEMU machines, EFI names) and the vendored
-  bootloaders are present, but there are no `link_arm64.ld` /
-  `link_riscv64.ld` scripts and the `arch_*` bodies are empty — and they are now
-  further behind, since `arch_amd64.odin` grew the whole paging interface that
-  `arch_arm64.odin` and `arch_riscv64.odin` do not yet declare.
+- **`arm64` and `riscv64` are stubs, and are falling further behind.**
+  `build.odin` has their rows filled in and the vendored bootloaders are
+  present, but there are no `link_arm64.ld` / `link_riscv64.ld` scripts, and
+  `arch_amd64.odin` has now grown both the paging interface *and* the trap
+  interface that the other two do not declare.
 - **Memory-map entry count varies run to run** (27, 31, 33) with OVMF/vvfat. Not
   a bug; do not chase it.
-- **Not a git repository.** Nothing is committed. Consider `git init` early.
 
 ## 7. Where to go next
 
-**Recommended, and no longer optional: GDT and IDT.** This was the "needed
-before either gets far" note last time; it is now the thing actually in the way.
-The protocol leaves the IDT undefined and Vectra loads neither, so every bug
-from here on presents as a triple fault and a reboot. Everything Milestone 1
-added is exactly the kind of code that faults while you are writing it, and the
-next three subsystems are worse. Concretely:
+The GDT/IDT blocker from the last handoff is gone. What is left is the fork that
+has been waiting since Milestone 1, and it is genuinely open:
 
-1. A GDT with kernel code/data and a TSS, replacing whatever Limine left.
-2. An IDT with stubs for all 32 exceptions plus a shared dispatcher.
-3. A panic handler that draws onto the existing chassis — `fb.Surface` and the
-   palette are already there, and `mem.permissions` already answers "what was
-   mapped at the faulting address", which is most of what a #PF report wants to
-   say. `arch.fault_address` reads CR2.
-
-That last piece is why this pays for itself immediately rather than eventually:
-a page fault that prints the address, the permissions and a backtrace onto the
-amber console is worth more than any amount of `-d int` archaeology.
-
-**After that, the fork in the road is unchanged**, and the memory work has not
-tipped it either way:
-
+- **`kernel/sched/`** — threads, a kernel stack per thread, a timer. Needs the
+  local APIC first, which is the natural next use of the IDT now that it exists:
+  map the LAPIC, program its timer, install a handler on a vector above 32, and
+  call `sti` for the first time. This is also what unblocks `pmm_reclaim` — the
+  39 MiB of bootloader memory becomes free the moment the kernel is off Limine's
+  stack, and the reason it is not called yet is written down in section 5.
 - **`sys/vectra9/`** — design the 9P message layer and the namespace model
   before the kernel grows structures that assume otherwise. The VFS is the
-  architectural heart, and it now has an allocator to be built on.
-- **`kernel/sched/`** — threads, a kernel stack per thread, and a timer. This is
-  also what unblocks `pmm_reclaim`: the 39 MiB of bootloader memory becomes free
-  the moment the kernel is off Limine's stack.
+  architectural heart and it now has both an allocator and a fault handler
+  underneath it.
 
-If the scheduler comes first, do `pmm_reclaim` in the same breath — the reason
-it is not called yet is written down in section 5, and it will not be obvious
-from the code six weeks from now.
+If the scheduler goes first, do these in the same pass rather than after it:
+
+1. **`FXSAVE`/`FXRSTOR` in the trap tail.** A scheduler preempting on a timer
+   interrupt is exactly the "resumes arbitrary code" case that section 6 says
+   this breaks on, and it will break silently — as wrong floating-point results,
+   not as a fault.
+2. **A lock type in `kernel/mem`.** The first interrupt handler that allocates
+   is racing the code it interrupted.
+3. **`swapgs` and per-CPU state behind GS.** Cheaper to build into the entry
+   path now than to retrofit around a working scheduler.
 
 **Smaller things worth doing when convenient:**
 
+- A stack backtrace on the panic screen. Everything else a fault report wants to
+  say is already there.
 - Make `check_base_revision()` a hard stop rather than a warning. The condition
-  for that in the last handoff was "as soon as anything dereferences an HHDM
-  address", and `mem.init` now does, on every page table write.
-- Add a lock type to `kernel/mem` before SMP, not after.
-- Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging interface, so a port
-  is still a matter of filling in blanks.
+  for that was "as soon as anything dereferences an HHDM address", and
+  `mem.init` now does, on every page table write.
+- Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging and trap interfaces,
+  so a port is still a matter of filling in blanks.
 
 ## 8. File map
 
@@ -315,6 +369,7 @@ kernel/
   main.odin             kmain, Limine requests, boot survey, memory bring-up
   splash.odin           Boot chassis: plinth, copper bar, well, lamps
   log.odin              Kernel log; serial + screen, with early-line replay
+  panic.odin            The panic screen, and the trap handler behind it
   link_amd64.ld         Static-PIE layout; orders .limine_requests, exports
                         the __text/__rodata/__data segment bounds
   arch/
@@ -323,6 +378,9 @@ kernel/
     arch_riscv64.odin   Stub
     amd64/cpu.odin      Port I/O, control regs, MSRs, CPUID, EFER, SSE
     amd64/paging.odin   Page table format: entry bits, encode/decode, TLB
+    amd64/gdt.odin      GDT, TSS, and the interrupt stack table
+    amd64/idt.odin      IDT, the 256 entry stubs, dispatch, fault reporting
+    amd64/pic.odin      Legacy 8259s: remapped clear of the exceptions, masked
   boot/limine/
     limine.odin         Protocol bindings (v12.6.1)
     markers.odin        Base revision tag + request delimiters
@@ -347,4 +405,5 @@ docs/
   HANDOFF.md            This file
   milestone0-boot.png   Milestone 0 screenshot -- it boots
   milestone1-memory.png Milestone 1 screenshot -- PMM, VMM, heap
+  panic-screen.png      Milestone 2 screenshot -- a deliberate #PF, reported
 ```
