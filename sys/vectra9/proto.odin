@@ -283,6 +283,19 @@ flushed request or drop it, but Rflush must come *after* whatever it does with
 the original tag, and the client must not reuse that tag until Rflush arrives.
 This is the one ordering requirement in the protocol, and it is what makes a
 blocked read interruptible.
+
+Two rules that are part of the protocol rather than any server's policy, both
+taken from how Plan 9 implements this (docs/VECTRA9.md section 7.3):
+
+  - **Tflush can never be answered with an error.** It gets Rflush or the
+    connection is broken. A server that can neither find nor abort the request
+    still answers Rflush -- the client only needs to know the tag is free.
+  - **A flushed request may still be answered.** The client has to tolerate the
+    reply it asked to have cancelled, arriving before the Rflush.
+
+Serving this needs a pool of in-flight requests indexed by tag, and a way to
+wake the thread blocked on one. Neither exists yet; the scheduler is what
+unblocks it.
 */
 Tflush :: struct {
 	oldtag: Tag,

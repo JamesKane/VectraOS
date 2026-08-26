@@ -79,6 +79,17 @@ Monotonic, and therefore finite: this runs out after four billion opens without
 ever reusing one. That is a real limit and the wrong fix is to make the counter
 wider -- a session should hand fids back on `Tclunk` and take them from a free
 list. Deferred until there is a client that opens enough files to care.
+
+A fid stays a *number* on both transports, including the in-process one where
+there is no wire and a pointer to the server's file object would be faster. Two
+reasons, and the first is the one that matters: a fid is a capability, and the
+lookup against the server's own table is what makes it one. A number can only
+name files that server chose to hand out; a pointer bypasses the check entirely,
+and a client that can forge one can name anything. The second is that it would
+make the two transports observably different, which is precisely what the
+comment at the top of this file says they are not.
+
+See docs/VECTRA9.md section 7.1.
 */
 alloc_fid :: proc "contextless" (s: ^Session) -> Fid {
 	s.next_fid += 1

@@ -2,7 +2,8 @@
 
 Status: **design**, 2026-08-26. The message layer described in sections 2 to 4
 is implemented in `sys/vectra9/`. The namespace model in section 5 is on paper;
-it gets built when `kernel/vfs/` does.
+it gets built when `kernel/vfs/` does. Section 7 records four decisions that
+were open and are now settled, each following Plan 9.
 
 ---
 
@@ -307,7 +308,8 @@ Mount :: struct {
 
 `Replace` clears the list. `Before` pushes onto the front, `After` onto the
 back. A mount point with more than one member is a **union directory**: it
-presents several trees as one.
+presents several trees as one. `Create` marks a member as the one new files are
+made in -- see §7.4 for what happens when it is not the one that resolved.
 
 ```
     bind -a /dev/usb /dev        # after:  /dev then /dev/usb
@@ -453,19 +455,88 @@ that table becomes readable.
   better fit for per-process namespaces and is a much larger design.
 - **Anything that would change the wire.** See §1.
 
-## 7. Open questions
+## 7. Resolved: what Plan 9 does
 
-1. **Where do fids live for an in-process session?** A fid is an index into a
-   server's table. If there is no serialisation, the client could hold a pointer
-   instead — faster, and it makes the two transports observably different in a
-   way §2.1 promised they would not be. Probably not worth it; noted because it
-   will come up.
-2. **Does the kernel root come from a server or is it special?** Plan 9's root
-   is a real device (`#/`). Making Vectra's root an ordinary in-kernel server is
-   more uniform; making it special saves a session on every walk from `/`.
-3. **How does `Tflush` interact with a preemptive scheduler?** §3.1 states the
-   ordering requirement. Meeting it needs a way to name and interrupt a blocked
-   server thread, which is a scheduler feature that does not exist yet.
-4. **Union `create` semantics.** `Mount_Flag.Create` marks a member as accepting
-   creates, and Plan 9 gives the create to the first such member. Whether that
-   is the right default when the first member is read-only is unresolved.
+These were open. They are not any more. Where Plan 9 has an answer, Vectra takes
+it -- not out of deference, but because these are all questions Plan 9 answered
+under load, twenty years ago, and the answers are in the source rather than in
+folklore.
+
+### 7.1 A fid is a number, never a pointer
+
+An in-process session has no serialisation, so a client *could* hold a pointer
+to the server's file object instead of an index into its table. Faster, and
+wrong twice over.
+
+Plan 9 does not face this question in the same shape -- its in-kernel devices
+never see a fid at all, because `devmnt` is the only thing that speaks 9P -- but
+its discipline settles it anyway: **in Plan 9 a fid that appears in a message is
+always a number**, allocated from the mount driver's pool, and `Chan.fid` is a
+`ulong`. There is no path by which a client hands the kernel a pointer.
+
+Two reasons to keep it that way here:
+
+- **A fid is a capability, and the table lookup is what makes it one.** A number
+  validated against the server's own table can only name files that server chose
+  to hand out. A pointer bypasses that check entirely, and a client that can
+  forge one can name anything.
+- It would make the two transports **observably different**, which is exactly
+  what §2.1 promises they are not.
+
+So: `Fid` stays `distinct u32` on both paths. The speed is not worth the
+property.
+
+### 7.2 The root is an ordinary server
+
+Plan 9's root is `devroot` -- a real device with `rootattach`, `rootwalk`,
+`rootopen` and `rootread`, reached as `#/`, holding a static table of directory
+entries. It is not a special case in `namec`; it is a device like `#c` or `#e`.
+
+Vectra does the same. The root is an in-kernel server implementing `Handler`,
+with no privileges the others lack and no shortcut through the walk. The saving
+from special-casing it -- one session lookup per walk from `/` -- is not worth a
+second code path through the most-exercised function in the system.
+
+### 7.3 Tflush: the server keeps a tag table, and Rflush is the barrier
+
+Plan 9's mechanism is specific and worth copying whole.
+
+On the **client** side, `mountio` in `devmnt.c` sends the request and, if the
+process is interrupted, builds a `Tflush` and *waits for `Rflush` before
+returning*. It cannot abandon the request unilaterally, because the tag is not
+free until the server says so.
+
+On the **server** side, lib9p keeps a pool of in-flight requests indexed by tag.
+A `Tflush` looks up `oldtag`, marks that request flushed, and gives the server a
+chance to abort it. Either way the original request's fate is decided first and
+`Rflush` is sent after.
+
+Two rules fall out, and both are in the protocol rather than in a policy:
+
+- **`Tflush` can never be answered with an error.** It gets `Rflush` or the
+  connection is broken. A server that can neither find nor abort the request
+  still answers `Rflush` -- the client only needs to know the tag is free.
+- **A flushed request may still be answered.** The client must tolerate the
+  reply it asked to have cancelled, arriving before the `Rflush`.
+
+What this needs from Vectra that does not exist yet: a way to name and wake a
+blocked server thread. That is a scheduler feature, and it is the reason this
+question was open. The *design* is no longer open -- when the scheduler lands,
+the shape it has to support is the one above.
+
+### 7.4 Union create goes to the first member flagged Create, and stops there
+
+`createdir` in Plan 9's `chan.c` walks the union list, takes the first mount
+with `MCREATE` set, and creates there. If none has it, the error is
+`Enocreate`. If the create *fails* on that member, the failure is returned --
+Plan 9 does **not** fall through to the next member.
+
+Vectra does the same, and the no-fallthrough half is the important half. Falling
+through would mean a file created under `/bin` could land in any of several
+trees depending on which happened to be writable that day, and the caller would
+have no way to know which. A create that fails on the member the namespace
+chose is a comprehensible error; a create that silently lands somewhere else is
+a bug that surfaces weeks later as a file nobody can find.
+
+If the first `Create` member being read-only is a problem, the fix is the mount
+order, which is the process's own to change.

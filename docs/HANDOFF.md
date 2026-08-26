@@ -321,6 +321,16 @@ are the load-bearing bits:
   a short buffer, and every accessor gets that for free. A declared size larger
   than the buffer is refused outright — that is the classic way a codec is
   talked into reading past the end of a packet.
+- **Where Plan 9 has an answer, Vectra takes it.** Four questions that were open
+  in the first draft of the design are settled in `VECTRA9.md` section 7, each
+  against what Plan 9's source actually does rather than what is remembered
+  about it: a fid is a number and never a pointer (`Chan.fid` is a `ulong`, and
+  the table lookup is what makes a fid a capability); the root is an ordinary
+  in-kernel server, as `devroot` is a real device rather than a special case in
+  `namec`; `Tflush` needs a tag-indexed pool of in-flight requests and `Rflush`
+  is the barrier, which is what `mountio` and lib9p between them implement; and
+  a union `create` goes to the first `Create`-flagged member and **does not fall
+  through** if it fails, exactly as `createdir` refuses to.
 - **`Encoded_Loopback` is a test instrument that is also the skeleton of a real
   transport.** It does every step a pipe transport would except crossing an
   address space, so writing that transport is replacing two copies with reads
@@ -413,11 +423,13 @@ cheaper to build in than to retrofit:
    races the code it interrupted.
 3. **`swapgs` and per-CPU state behind GS.**
 
-**Open questions carried in the design** (section 7 of `VECTRA9.md`), each of
-which wants an answer before the code that depends on it: whether an in-process
-fid can be a pointer, whether the kernel root is an ordinary server or special,
-how `Tflush` ordering survives preemption, and what union `create` should do
-when the first member is read-only.
+**The design's open questions are closed.** Section 7 of `VECTRA9.md` now
+records four decisions rather than four questions, each following Plan 9. Two of
+them constrain work that is about to start and should be read before it does:
+the root is an ordinary server with no shortcut through the walk, and a union
+`create` goes to the first `Create`-flagged member and fails there rather than
+falling through. The `Tflush` resolution is a shape the scheduler has to
+support, not something to build now.
 
 **Smaller things worth doing when convenient:**
 
