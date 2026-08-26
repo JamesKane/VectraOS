@@ -1,6 +1,6 @@
 # Vectra — session handoff
 
-Written 2026-08-26, revised the same day after Milestones 1 and 2. Read this first
+Written 2026-08-26, revised the same day after Milestones 1, 2 and 3. Read this first
 when picking the project up in a new session; it records the things the code cannot tell you on its own — what was
 decided and why, what cost time, and what is deliberately missing.
 
@@ -26,13 +26,14 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 2 is done and verified: the kernel can survive its own mistakes.**
+**Milestone 3 is done: the protocol layer exists and checks itself.**
 
-Milestone 0 boots it; Milestone 1 gave it a PMM, its own page tables and a heap
-behind `context.allocator`. Milestone 2 replaces Limine's descriptor tables with
-a GDT and TSS of our own, installs an IDT covering all 256 vectors, and draws a
-panic screen on the chassis the boot splash already established. About 5,450
-lines of Odin; the linked image is ~201 KB debug, ~85 KB release.
+Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
+behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
+screen. Milestone 3 adds `sys/vectra9/` — the whole 9P2000.L message set,
+a codec, and the session/transport boundary the rest of the system will be built
+on. About 8,000 lines of Odin; the linked image is ~408 KB debug, ~152 KB
+release.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
@@ -42,44 +43,53 @@ lines of Odin; the linked image is ~201 KB debug, ~85 KB release.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x000000001fe3c000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 27 entries spanning 12.7 GiB
 [  ok  ] usable 467.4 MiB, reclaimable 39.2 MiB
-[  --  ] largest usable region 421.4 MiB at 0x0000000001600000
 [  ok  ] pmm 119678 frames free of 123400 tracked, bitmap 15.0 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.1 MiB in 270 tables (1.0 MiB)
+[  ok  ] vmm root 0x0000000000005000, mapped 515.3 MiB in 270 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
+[  ok  ] vectra9 9P2000.L: 57 message kinds round-trip, both transports agree
 [  ok  ] boot complete -- halting (no scheduler yet)
 ```
 
-Screenshots: `docs/milestone1-memory.png` (a clean boot) and
-`docs/panic-screen.png` (a deliberate write into `.text`).
+**The design is written down in `docs/VECTRA9.md`, and it is the thing to read
+before touching any of this.** Three decisions in it shape everything
+downstream, all three taken deliberately:
 
-The third line is the new one, and every field in it is a check rather than a
-report. `cs 0x8` and `tr 0x30` say the segment reload and `ltr` took, read back
-out of the CPU. `#BP round-trip ok` says a breakpoint was armed, raised, caught,
-recognised and resumed from — which exercises the whole path end to end: the
-stub pushing the right vector, the tail building a frame the dispatcher can
-read, and `iretq` landing back on the instruction after the `int3`.
+1. **The wire is 9P2000.L and nothing is added to it.** No new message, no extra
+   field, no private version string. When a service needs an operation 9P does
+   not have, the answer is a *file* — a `ctl` that takes a line of text. This is
+   a real constraint with real costs, and it is what stops the protocol from
+   becoming a design surface every subsystem negotiates over.
+2. **Servers speak decoded messages; only the transport knows about bytes.** An
+   in-kernel `Tread` is a struct passed by pointer with no copy of the payload.
+   The same handler behind a pipe gets an identical `Tread` because the
+   transport decoded it first. Neither the caller nor the handler can tell which
+   one it has.
+3. **The namespace is the full Plan 9 model** — `bind`/`mount` with
+   before/after/replace, union directories, per-process mount tables copied or
+   shared on fork. Designed in section 5 of that document; not yet built.
 
-**The panic path has been exercised on the machine, not just written.** Three
-deliberate faults, each removed again afterwards:
+The self-test is the interesting part of the boot line. Every message kind is
+encoded, decoded, and encoded again, and the two byte strings must be identical
+— which catches a field written in the wrong order, read at the wrong width, or
+forgotten by the decoder. Every field in every sample is non-zero and distinct,
+which is what makes that oracle sound. It has been negative-controlled: making
+the decoder silently drop `Tlopen.flags` produces
+`57 kinds tested, 1 FAILED -- first Tlopen`.
 
-| Provoked | Reported |
-|---|---|
-| write into `.text` | `#PF`, `protection violation, write, supervisor`, CR2 = the text base, `mapped to 0x1fe3c000 r-x supervisor global` |
-| null dereference | `#PF`, `page not present, write, supervisor`, CR2 = 0, `nothing is mapped there` |
-| `rsp` moved to an unmapped page, then a push | `#DF double fault (vector 8)` — caught on IST1, and QEMU logged no third CPU reset, so it never triple-faulted |
+It also checks that malformed input is *refused* rather than parsed — a header
+claiming to be longer than its buffer, the reserved type 6, an unknown type
+byte, a walk with seventeen elements — and that the same handler behind
+`In_Process` and behind `Encoded_Loopback` gives the same answers, which is
+decision 2 made testable rather than merely asserted.
 
-That last one is the whole reason the TSS exists, and it is the only one of the
-three that could not have been checked by reading the code.
-
-**What still does not exist.** No LAPIC, no I/O APIC, no timer, so nothing has
-ever called `sti` and no interrupt has ever arrived — only exceptions. No
-scheduler, no VFS, no 9P, no userland, no compositor. `kmain` halts on purpose.
+**What still does not exist.** No VFS, so nothing yet *uses* Vectra9. No
+namespace, no `Chan`, no mount table. No LAPIC, no timer, no scheduler; nothing
+has ever called `sti`. No userland, no compositor. `kmain` halts on purpose.
 
 ## 3. Build and run
 
@@ -276,6 +286,47 @@ Traps, added in Milestone 2:
   different bugs that produce the same CR2, and `mem.permissions` already knew
   how to tell them apart.
 
+Vectra9, added in Milestone 3. The full argument is in `docs/VECTRA9.md`; these
+are the load-bearing bits:
+
+- **Nothing is added to the wire.** The version string is `9P2000.L` and a stock
+  Linux `v9fs` client must be able to mount a Vectra server. Extensions are
+  files, not messages. The payoff is not interoperability for its own sake — it
+  is that the protocol stops being a design surface, because the answer to "what
+  messages does my subsystem need" is always the same nine.
+- **Servers speak decoded messages.** The transport is the only thing that knows
+  bytes exist. Rejected alternatives, both defensible: marshal everywhere (one
+  code path, but two memcpys and a parse on every read of every file, in a
+  system where thread state *is* a file), and a typed device vtable with 9P only
+  for remote servers, which is what Plan 9 itself does (faster still, but two
+  interfaces to keep in step and a server that cannot move between kernel and
+  userland without a rewrite).
+- **A decoded message borrows its buffer.** Strings and slices inside a `Msg`
+  point into whatever it was decoded from. This is what makes an `Rread` of
+  4 KiB free to pass around, and it is the rule most likely to be broken. Odin
+  cannot express the lifetime, so it is stated at the top of `proto.odin` and
+  nowhere else.
+- **`Twalk` bounds names at sixteen, so they live inline.** That is the only
+  reason a `Msg` is a stack value; the `#assert` on `size_of(Msg)` is there to
+  stop it quietly becoming something else.
+- **Codec errors and protocol errors are separate types.** `Error` means the
+  bytes are wrong and no reply can be built. `Errno` means the request was
+  well-formed and the answer is no. Merging them would let a corrupt message be
+  answered as though it had been understood.
+- **The codec latches errors; `libodin.Sink` saturates.** Opposite choices, both
+  right: a truncated log line beats no log line, and a truncated 9P message is a
+  protocol violation the far end would blame on itself.
+- **`decode` bounds the cursor by the message's declared size, not the buffer.**
+  A body that reads past its own message is then a malformed message rather than
+  a short buffer, and every accessor gets that for free. A declared size larger
+  than the buffer is refused outright — that is the classic way a codec is
+  talked into reading past the end of a packet.
+- **`Encoded_Loopback` is a test instrument that is also the skeleton of a real
+  transport.** It does every step a pipe transport would except crossing an
+  address space, so writing that transport is replacing two copies with reads
+  and writes — and meanwhile it is how the boot self-test proves a handler
+  cannot tell which transport it is behind.
+
 ## 6. Known warts
 
 - **The trap stub saves general-purpose registers only.** No `FXSAVE`, so a
@@ -291,6 +342,16 @@ Traps, added in Milestone 2:
   the register state but cannot walk the stack; that needs frame pointers kept
   deliberately or unwind tables retained. It is the largest single thing missing
   from an otherwise complete fault report.
+- **Nothing uses Vectra9 yet.** The codec is verified but no server implements
+  a handler and no client holds a session, so the layer has only ever talked to
+  itself. The first real server will find things the self-test cannot.
+- **`Session.alloc_fid` is a monotonic counter.** It runs out after four billion
+  opens without ever reusing one. The right fix is a free list fed by `Tclunk`,
+  not a wider counter.
+- **The transport is synchronous.** `Transport.call` returns with the reply
+  filled in, so a client can never have two requests outstanding — which makes
+  tags decorative and `Tflush` unreachable. Both become real with the scheduler,
+  and that is when the async entry point has to be designed.
 - **No locking anywhere in `kernel/mem`.** Single CPU, single thread, and now —
   since the IDT exists — interrupts that are still never enabled. The PMM's
   bitmap and the heap's free lists both need a lock before the first AP comes up
@@ -322,40 +383,48 @@ Traps, added in Milestone 2:
 
 ## 7. Where to go next
 
-The GDT/IDT blocker from the last handoff is gone. What is left is the fork that
-has been waiting since Milestone 1, and it is genuinely open:
+The fork from the last two handoffs is resolved on one side: the protocol is
+designed and the message layer is built. What is left is to give it something to
+carry, and that now has a clear order.
 
-- **`kernel/sched/`** — threads, a kernel stack per thread, a timer. Needs the
-  local APIC first, which is the natural next use of the IDT now that it exists:
-  map the LAPIC, program its timer, install a handler on a vector above 32, and
-  call `sti` for the first time. This is also what unblocks `pmm_reclaim` — the
-  39 MiB of bootloader memory becomes free the moment the kernel is off Limine's
-  stack, and the reason it is not called yet is written down in section 5.
-- **`sys/vectra9/`** — design the 9P message layer and the namespace model
-  before the kernel grows structures that assume otherwise. The VFS is the
-  architectural heart and it now has both an allocator and a fault handler
-  underneath it.
+**`kernel/vfs/` — build section 5 of `docs/VECTRA9.md`.** The namespace model is
+designed and nothing has been written against it yet, which is the cheapest
+moment it will ever be to change. In order:
 
-If the scheduler goes first, do these in the same pass rather than after it:
+1. **`Chan`** — session, fid, qid, plus the two fields (`mounted_over`,
+   `tree_root`) that exist solely so `..` can cross a mount point. Section 5.5
+   explains why the server physically cannot answer that question.
+2. **The mount table**, keyed by `(session, qid.path)` — *path*, not the whole
+   qid, or creating a file in a mounted-over directory would unmount it.
+3. **`walk`**, which alternates between asking servers and consulting the mount
+   table, and is where union directories get searched in order.
+4. **A first server** — an in-kernel root, or `devfs` with `/dev/cons` — so the
+   whole path from a name to a byte exists end to end.
 
-1. **`FXSAVE`/`FXRSTOR` in the trap tail.** A scheduler preempting on a timer
-   interrupt is exactly the "resumes arbitrary code" case that section 6 says
-   this breaks on, and it will break silently — as wrong floating-point results,
-   not as a fault.
+**Then the scheduler**, which is what makes the rest real: `Tflush` is
+unreachable without it, tags are decorative without it, and `pmm_reclaim` is
+blocked on it. The three things flagged in Milestone 2 still stand and are still
+cheaper to build in than to retrofit:
+
+1. **`FXSAVE`/`FXRSTOR` in the trap tail.** A scheduler preempting on a timer is
+   exactly the "resumes arbitrary code" case this breaks on, and it breaks
+   silently — as wrong floating-point results, not as a fault.
 2. **A lock type in `kernel/mem`.** The first interrupt handler that allocates
-   is racing the code it interrupted.
-3. **`swapgs` and per-CPU state behind GS.** Cheaper to build into the entry
-   path now than to retrofit around a working scheduler.
+   races the code it interrupted.
+3. **`swapgs` and per-CPU state behind GS.**
+
+**Open questions carried in the design** (section 7 of `VECTRA9.md`), each of
+which wants an answer before the code that depends on it: whether an in-process
+fid can be a pointer, whether the kernel root is an ordinary server or special,
+how `Tflush` ordering survives preemption, and what union `create` should do
+when the first member is read-only.
 
 **Smaller things worth doing when convenient:**
 
 - A stack backtrace on the panic screen. Everything else a fault report wants to
   say is already there.
-- Make `check_base_revision()` a hard stop rather than a warning. The condition
-  for that was "as soon as anything dereferences an HHDM address", and
-  `mem.init` now does, on every page table write.
-- Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging and trap interfaces,
-  so a port is still a matter of filling in blanks.
+- Make `check_base_revision()` a hard stop rather than a warning.
+- Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging and trap interfaces.
 
 ## 8. File map
 
@@ -398,11 +467,18 @@ kernel/
   sched/ vfs/           Empty
 sys/
   libodin/format.odin   Allocation-free formatting (Sink)
-  libposix/ vectra9/    Empty
+  vectra9/
+    proto.odin          Message kinds, Qid, the 57 bodies, the Msg union
+    codec.odin          Encode/decode over a bounds-checked cursor; dirents
+    errors.odin         Codec Error and protocol Errno, kept separate
+    session.odin        Session, Transport, Handler; in-process and loopback
+    verify.odin         The boot self-test
+  libposix/             Empty
 servers/ apps/          Empty
 tools/genfont.py        TTF -> font_data.odin
 docs/
   HANDOFF.md            This file
+  VECTRA9.md            The protocol and namespace design -- read before vfs/
   milestone0-boot.png   Milestone 0 screenshot -- it boots
   milestone1-memory.png Milestone 1 screenshot -- PMM, VMM, heap
   panic-screen.png      Milestone 2 screenshot -- a deliberate #PF, reported

@@ -25,6 +25,7 @@ import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mem"
 import "vsys:libodin"
+import "vsys:vectra9"
 
 VERSION :: "0.1.0-pre"
 
@@ -152,6 +153,7 @@ kmain :: proc "sysv" () {
 	// point had to make do with static storage and the caller's buffer.
 	context.allocator = mem.allocator()
 	verify_memory()
+	verify_protocol()
 
 	log_line(&klog, .Ok, "boot complete -- halting (no scheduler yet)")
 	arch.halt_forever()
@@ -664,4 +666,48 @@ verify_memory :: proc() {
 	libodin.put_uint(&sink, u64(heap.large_blocks))
 	libodin.put_str(&sink, " large blocks live")
 	emit(&klog, ok ? .Ok : .Fault, &sink)
+}
+
+/*
+verify_protocol checks the Vectra9 wire codec on the machine.
+
+Deliberately after `verify_memory` and deliberately using the heap: the scratch
+buffer comes from `make`, so this is also the first real customer the allocator
+has ever had, and a heap that only ever satisfied its own self-test would be
+suspicious.
+
+The codec is checked by re-encoding -- every message kind is encoded, decoded
+and encoded again, and the two byte strings must match. See
+`sys/vectra9/verify.odin` for why that is a better oracle than comparing the
+decoded structs.
+*/
+verify_protocol :: proc() {
+	scratch := make([]u8, 4096)
+	if scratch == nil {
+		log_line(&klog, .Fault, "vectra9 self-test skipped -- no memory for a scratch buffer")
+		return
+	}
+	defer delete(scratch)
+
+	result := vectra9.verify(scratch)
+	ok := result.failures == 0 && result.kinds_tested > 0
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "vectra9 ")
+	libodin.put_str(&sink, vectra9.VERSION)
+	libodin.put_str(&sink, ": ")
+	libodin.put_uint(&sink, u64(result.kinds_tested))
+	if ok {
+		libodin.put_str(&sink, " message kinds round-trip, both transports agree")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+
+	libodin.put_str(&sink, " kinds tested, ")
+	libodin.put_uint(&sink, u64(result.failures))
+	libodin.put_str(&sink, " FAILED -- first ")
+	libodin.put_str(&sink, vectra9.kind_name(result.first_failure))
+	libodin.put_str(&sink, ": ")
+	libodin.put_str(&sink, vectra9.describe(result.first_error))
+	emit(&klog, .Fault, &sink)
 }

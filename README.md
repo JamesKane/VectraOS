@@ -6,7 +6,7 @@ on top.
 
 ## Status
 
-Milestone 2 — **it can survive its own mistakes.** The kernel comes up under
+Milestone 3 — **the protocol layer exists.** The kernel comes up under
 Limine on `x86_64`, installs a GDT, TSS and IDT of its own, brings up serial and
 the framebuffer, then builds a bitmap physical page allocator, constructs a
 complete set of page tables from scratch and switches onto them, and brings up a
@@ -33,16 +33,44 @@ decoded rather than resetting the machine. There is no scheduler and no VFS yet;
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
+[  ok  ] vectra9 9P2000.L: 57 message kinds round-trip, both transports agree
 [  ok  ] boot complete -- halting (no scheduler yet)
 ```
 
-Both self-tests check the things that fail silently. `#BP round-trip ok` means a
+The self-tests check the things that fail silently. `#BP round-trip ok` means a
 breakpoint was armed, raised, caught and resumed from, which exercises the whole
 trap path end to end. The memory self-test checks that the page allocator does
 not hand out the same frame twice, that walking the new tables for a kernel
 global lands where the bootloader actually loaded it, that `.text` is mapped
 executable-and-not-writable while `.rodata` is neither, and that memory returned
-by `make` survives being written and read back.
+by `make` survives being written and read back. The protocol self-test encodes,
+decodes and re-encodes every message kind and compares the two byte strings,
+which catches a field written in the wrong order, read at the wrong width, or
+forgotten by the decoder.
+
+## Vectra9
+
+Every system service — drivers, the network stack, graphics, IPC, thread state —
+is a file tree behind a message-passing endpoint. The protocol is **9P2000.L,
+unmodified**, and keeping it that way is a design constraint: when a service
+needs an operation 9P does not have, the answer is a file, not a message.
+
+Servers speak *decoded* messages. The transport is the only thing that knows
+bytes exist, so an in-kernel read costs one indirect call and no copy of the
+payload, while the same handler behind a pipe gets an identical message because
+the transport parsed it first:
+
+```
+in-kernel:   caller -- Msg ------------------------> handler
+to userland: caller -- Msg -> encode -[bytes]-> decode -> handler
+```
+
+The namespace is the full Plan 9 model — `bind`/`mount` with before/after/
+replace, union directories, per-process mount tables copied or shared on fork.
+That part is designed but not yet built.
+
+**`docs/VECTRA9.md` is the design**, and the thing to read before touching
+`sys/vectra9/` or writing anything that talks to it.
 
 A fault reports itself on the chassis, with the error code decoded and — for a
 page fault — what was actually mapped at the faulting address:
@@ -108,7 +136,8 @@ kernel/
   sched/ vfs/           Not yet written
 sys/
   libodin/              Freestanding core shared by kernel and userland
-  libposix/ vectra9/    Not yet written
+  vectra9/              9P2000.L message layer: types, codec, sessions
+  libposix/             Not yet written
 servers/                devfs, netfs, intuition — not yet written
 apps/                   terminal, filemgr, tracker — not yet written
 tools/genfont.py        Bakes a host TTF into kernel/drivers/console/font_data.odin
