@@ -3,7 +3,7 @@
 `kernel/vfs/` — `vfs.odin`, `chan.odin`, `mount.odin`, `namespace.odin`,
 `walk.odin`, `readdir.odin`, `static.odin`, `root.odin`, `lock.odin`
 
-Everything above this package names files with paths; everything below it names
+Everything above this package names files with paths. Everything below it names
 them with fids. `kernel/vfs` is the translation, and the only place in the
 kernel that knows a path can cross from one server to another halfway through.
 
@@ -14,10 +14,10 @@ Three types carry the whole idea:
     Namespace   a private mapping from names to files -- root plus a mount table
 
 There is no global tree. `resolve` starts at a namespace's root and asks each
-server in turn, consulting the mount table between every element, so two
-processes can each have a `/dev/mouse` and they can be different files. **The
-design is `docs/VECTRA9.md` section 5; this document is what the implementation
-learned that the design did not say.**
+server in turn. It consults the mount table between every element. Two processes
+can therefore each have a `/dev/mouse`, and the two can be different files.
+**The design is `docs/VECTRA9.md` section 5. This document is what the
+implementation learned that the design did not say.**
 
 ## Locking the namespace
 
@@ -32,61 +32,68 @@ divide into two kinds with opposite rules:
 | `Static_Tree.lock` | one server's own fid table and directory buffer | spinlock (server side) |
 | `device_lock` (global) | the `#name` table | spinlock — never |
 
-**The session lock has to be held across the message; the bookkeeping locks must
+**The session lock has to be held across the message. The bookkeeping locks must
 never be.** That is not a style preference. `Rread.data` and `Rreaddir.data`
-point into the server's own storage — the static server's `dirbuf`, a node's
-string in `.rodata` — and "valid until the server's next message" used to be
-safe because nothing could interrupt the caller between the reply and the copy.
-Preemption ended that. So `rpc` returns a guard and the reply is only valid
-until it is released:
+point into the server's own storage. That storage is the static server's
+`dirbuf`, or a node's string in `.rodata`.
+
+`valid until the server's next message` used to be safe, because nothing could
+interrupt the caller between the reply and the copy. Preemption ended that. So
+`rpc` returns a guard, and the reply is only valid until it is released:
 
 ```odin
 e, g := rpc(c.server, &request, &reply)
 defer rpc_end(g)
 ```
 
-Every caller takes the guard, including the ones whose replies borrow nothing,
-so there is no second entry point to reach for and no judgement about which
-replies borrow. The same lock is what makes a fid mean something: `alloc_fid` is
-a plain increment, and two threads that both read the counter before either
-writes it both walk to `newfid`.
+Every caller takes the guard, including the ones whose replies borrow nothing.
+There is therefore no second entry point to reach for, and no judgement about
+which replies borrow.
+
+The same lock is what makes a fid mean something. `alloc_fid` is a plain
+increment. Two threads that both read the counter before either writes it both
+walk to `newfid`.
 
 The other direction is enforced rather than documented. A `sync.Spinlock` *is*
-the interrupt flag, so a bookkeeping lock held while the session is asked for
-means blocking with interrupts masked, which is a machine that stops. `rpc`
-refuses with `EDEADLK` if `sync.can_sleep()` is false. That check used to be a
-counter `vfs` kept for itself; it is now a property of the CPU that `sync`
-maintains in `acquire`/`release`, so the rule covers the heap lock and the
-scheduler lock as well — both are equally fatal to hold across a wait. A
-negative control that moves one clone inside the namespace lock fails four
-checks immediately.
+the interrupt flag. A bookkeeping lock held while the session is asked for
+therefore means a park with interrupts masked, and that is a machine that stops.
+`rpc` refuses with `EDEADLK` if `sync.can_sleep()` is false.
 
-**Two bugs that predate threads came out of this.** `Chan.union_head` was a bare
-pointer to a `Mount_Point`, and unmounting freed it — reachable with one thread
-and a directory held open across an `unmount`. Mount points are reference
-counted now, and `unmount` dissolves rather than deletes: the members go, the
-struct survives until the last chan lets go, and a chan holding an empty mount
-point behaves like one that was never in a union.
+That check used to be a counter `vfs` kept for itself. It is now a property of
+the CPU that `sync` maintains in `acquire` and `release`. The rule therefore
+covers the heap lock
+and the scheduler lock as well, and both are equally fatal to hold across a
+wait. A negative control that moves one clone inside the namespace lock fails
+four checks immediately.
+
+**This work found two bugs that predate threads.** `Chan.union_head` was a bare
+pointer to a `Mount_Point`, and an unmount freed it. One thread was enough to
+reach the freed pointer, with a directory held open across an `unmount`.
+
+Mount points are reference counted now, and `unmount` dissolves rather than
+deletes. The members go. The struct survives until the last chan releases it. A chan that
+holds an empty mount point behaves like one that was never in a union.
 
 The second is `Mount_Point.generation`, and it is the one the self-test found on
-its own. A union searched by index while a member is removed from the *front*
-shifts every later member down, and a walker resuming at index 1 skips the entry
-that used to be there — so a file that never moved comes back `ENOENT`. Plan 9
-does not have this problem because it read-locks the mount head for the whole
-union search; it can, because its locks sleep. Vectra's cannot. The counter
-replaces the lock: a search that finds nothing is only believed if the list is
-the same one it started on.
+its own. Remove a member from the *front* of a union, and every later member
+shifts down. A walker that resumes at index 1 then skips the entry that used to
+be there, so a file that never moved comes back `ENOENT`.
+
+Plan 9 does not have this problem, because it read-locks the mount head for the
+whole union search. It can do that, because its locks sleep. Vectra's cannot.
+The counter replaces the lock. A search that finds nothing counts only if the
+list is the same one it started on.
 
 ## Known gaps
 
 - **`Mount_Point.generation` exists because a read lock could not be held across
   a union search.** Plan 9 holds one, because its locks sleep. Vectra's can now
-  too, so the retry loop in `walk1_ex` could become a read lock and the
-  generation counter could go — see `docs/SYNC.md` for what is missing.
+  too. The retry loop in `walk1_ex` could become a read lock, and the
+  generation counter could go. See `docs/SYNC.md` for what is missing.
 - **No `Tflush` here.** It exists in `docs/TRANSPORT.md`, over a transport that
   can have several requests in flight. This package still speaks
-  `vectra9.In_Process`, and moving is not a matter of swapping the transport:
-  the borrow rule above depends on the session lock spanning the whole exchange.
+  `vectra9.In_Process`. A move is not a matter of a swapped transport, because
+  the borrow rule above depends on a session lock that spans the whole exchange.
 - **No current directory.** `resolve` takes absolute paths and `#name` specs
   only, because a relative path needs a process to be relative to.
 

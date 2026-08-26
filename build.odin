@@ -102,6 +102,10 @@ Options :: struct {
 	release: bool,
 	serial:  string,
 	gfx:     bool,
+
+	// Everything after the target, handed to the target untouched. Only
+	// `lint` reads it, so that `build lint --show docs` reaches the checker.
+	passthrough: []string,
 }
 
 main :: proc() {
@@ -112,6 +116,8 @@ main :: proc() {
 	}
 
 	positional_seen := false
+	rest: [dynamic]string
+	defer delete(rest)
 	for arg in os.args[1:] {
 		switch {
 		case strings.has_prefix(arg, "--arch="):
@@ -130,15 +136,23 @@ main :: proc() {
 		case arg == "--gfx":
 			opts.gfx = true
 		case strings.has_prefix(arg, "-"):
-			die("unknown option %s", arg)
+			// An option this script does not know is an error, unless a
+			// target has already claimed the line. Then it belongs to
+			// the target -- see `Options.passthrough`.
+			if !positional_seen {
+				die("unknown option %s", arg)
+			}
+			append(&rest, arg)
 		case:
 			if positional_seen {
-				die("more than one target given (%s)", arg)
+				append(&rest, arg)
+				continue
 			}
 			opts.target = arg
 			positional_seen = true
 		}
 	}
+	opts.passthrough = rest[:]
 
 	switch opts.target {
 	case "kernel": build_kernel(opts)
@@ -146,8 +160,9 @@ main :: proc() {
 	case "run":    stage_esp(opts); run_qemu(opts, debug = false)
 	case "debug":  stage_esp(opts); run_qemu(opts, debug = true)
 	case "clean":  clean()
+	case "lint":   lint(opts)
 	case:
-		die("unknown target %q (want kernel, esp, run, debug, clean)", opts.target)
+		die("unknown target %q (want kernel, esp, run, debug, clean, lint)", opts.target)
 	}
 }
 
@@ -334,6 +349,24 @@ copy_file :: proc(src, dst: string) {
 	if werr := os.write_entire_file(dst, data); werr != nil {
 		die("could not write %s: %v", dst, werr)
 	}
+}
+
+/*
+lint checks the prose in this tree against ASD-STE100.
+
+The rules, the two modes and the project dictionary are in `docs/STYLE.md`. The
+checker itself is Python rather than Odin because the job is regular
+expressions over text, and because it has to run over the `.md` files as well
+as the source.
+
+A finding exits non-zero, so this works as a gate. The tree is at zero.
+*/
+lint :: proc(opts: Options) {
+	step("checking prose against ASD-STE100")
+	args := [dynamic]string{"python3", "tools/ste-lint.py"}
+	defer delete(args)
+	append(&args, ..opts.passthrough)
+	run(args[:])
 }
 
 step :: proc(format: string, args: ..any) {

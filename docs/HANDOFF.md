@@ -1,9 +1,9 @@
 # Vectra — session handoff
 
-Read this first when picking the project up in a new session. It records what
-the code cannot tell you on its own — where things stand, how to build and run
-it, what the toolchain costs, and what to do next. **The reasoning behind each
-subsystem lives in its own document; section 3 is the index.**
+Read this first when you pick the project up in a new session. It records what
+the code cannot tell you on its own. That is where things stand, how to build
+and run it, what the toolchain costs, and what to do next. **The reasoning
+behind each subsystem lives in its own document. Section 3 is the index.**
 
 ---
 
@@ -12,10 +12,10 @@ subsystem lives in its own document; section 3 is the index.**
 A modular operating system in Odin. Two ideas define it:
 
 - **Plan 9-inspired structure.** Per-process namespaces, private mount tables,
-  and a synthetic file protocol (Vectra9 / 9P2000.L) through which *every*
-  system service — drivers, network stack, graphics, IPC, thread state — is a
-  file tree behind a message-passing endpoint. POSIX is a translation runtime on
-  top of that, never a set of hardwired syscalls.
+  and a synthetic file protocol, Vectra9 over 9P2000.L. *Every* system service
+  is a file tree behind a message-passing endpoint, drivers, network stack,
+  graphics, IPC and thread state alike. POSIX is a translation runtime on top of
+  that, never a set of hardwired syscalls.
 - **"Cyberpunk Workstation 1994" UX.** Heavy skeuomorphic bevels, brushed dark
   magnesium over deep slate, amber/cyan/phosphor accents, copper trim, a
   software dirty-rect compositor, and tracker-synthesised relay clicks.
@@ -31,20 +31,24 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
 behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
-screen. Milestone 3 added `sys/vectra9/` — the whole 9P2000.L message set, a
-codec, and the session/transport boundary. Milestone 4 added `kernel/vfs/`, the
-namespace that uses it. Milestone 5 added `kernel/sched/` and the local APIC
-timer under it. Milestone 6 locks the namespace against the threads Milestone 5
-made possible, and proves it with five threads walking, listing, reading and
-rebinding the same namespace at once. Milestone 7 makes the one lock held
-across a 9P message a *sleeping* lock, which is what an out-of-process
-transport was waiting for — and which made the vfs layer preemptible for the
-first time. Milestone 8 gives it the other half of blocking: a thread can now
-wait for a *condition* rather than for a lock, and it can wait with a deadline.
-Milestone 9 spends both on the question `docs/VECTRA9.md` left open longest — a
-9P transport that can leave a request pending, and `Tflush` over it.
-About 18,000 lines of Odin; the linked image is
-~683 KB debug, ~282 KB release.
+screen. Milestone 3 added `sys/vectra9/`, which is the whole 9P2000.L message
+set, a codec, and the session and transport boundary. Milestone 4 added
+`kernel/vfs/`, the namespace that uses it. Milestone 5 added `kernel/sched/` and
+the local APIC timer under it.
+
+Milestone 6 locks the namespace against the threads Milestone 5 made possible.
+It proves that with five threads that walk, list, read and rebind the same
+namespace at once. Milestone 7 makes the one lock held across a 9P message a
+*sleeping* lock. That is what an out-of-process transport was waiting for, and
+it made the vfs layer preemptible for the first time.
+
+Milestone 8 gives it the other half of the wait. A thread can now wait for a
+*condition* rather than for a lock, and it can wait with a deadline. Milestone 9
+spends both on the question `docs/VECTRA9.md` left open longest: a 9P transport
+that can leave a request pending, and `Tflush` over it.
+
+About 18,000 lines of Odin. The linked image is ~683 KB debug and ~282 KB
+release.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
@@ -78,20 +82,25 @@ About 18,000 lines of Odin; the linked image is
 [  ok  ] boot complete -- idling
 ```
 
-The last line is the one that moves between builds, on purpose: `just release`
-does the same thousand ticks of work and reports about fifty thousand
-operations. See "Measuring a concurrency test in ticks" below for why that is
-the right way round.
+The last line is the one that moves between builds, on purpose. `just release`
+does the same thousand ticks of work, and reports about fifty thousand
+operations. `docs/TESTING.md` says why that is the right way round.
 
-**What still does not exist.** No userland and no address-space switching — a
-thread grows an `^Address_Space` and `reschedule` grows one comparison when
-there is one. No SMP: `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 is
-ever brought up, and there is no IPI, no AP trampoline and no lock word. No
-`/srv`. No condition variable as such, because `sync.Rendez` is one. No
-read/write sleeping lock, which is the piece `Mount_Point.generation` is
-standing in for. `Tflush` exists in `kernel/mnt` but `kernel/vfs` cannot use it
-yet — see `docs/TRANSPORT.md`. No `swapgs`, no per-CPU state behind GS. `kmain`
-ends by calling `sched.exit`, so the machine idles rather than halting.
+**What still does not exist.**
+
+- No userland and no address-space switch. A thread grows an `^Address_Space`,
+  and `reschedule` grows one comparison, when there is one.
+- No SMP. `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 ever starts.
+  There is no IPI, no AP trampoline and no lock word.
+- No `/srv`.
+- No condition variable as such, because `sync.Rendez` is one.
+- No read/write sleeping lock, which is the piece `Mount_Point.generation`
+  stands in for.
+- No use of `Tflush` from `kernel/vfs`. It exists in `kernel/mnt`. See
+  `docs/TRANSPORT.md`.
+- No `swapgs`, and no per-CPU state behind GS.
+- `kmain` ends with a call to `sched.exit`, so the machine idles rather than
+  halts.
 
 **The design is written down in `docs/VECTRA9.md`, and it is the thing to read
 before touching the protocol or the namespace.** Three decisions in it shape
@@ -100,7 +109,7 @@ everything downstream, all three taken deliberately:
 1. **The wire is 9P2000.L and nothing is added to it.** No new message, no extra
    field, no private version string. When a service needs an operation 9P does
    not have, the answer is a *file* — a `ctl` that takes a line of text.
-2. **Servers speak decoded messages; only the transport knows about bytes.**
+2. **Servers speak decoded messages. Only the transport knows about bytes.**
    Neither the caller nor the handler can tell which transport it has.
 3. **The namespace is the full Plan 9 model** — `bind`/`mount` with
    before/after/replace, union directories, per-process mount tables copied or
@@ -168,7 +177,7 @@ ways whose error messages do not point back here.
 
 | Constraint | Why |
 |---|---|
-| `-no-thread-local` | Odin otherwise emits `STT_TLS` symbols with no `PT_TLS` segment; `ld.lld` refuses the image. Per-CPU state must go through `GS` explicitly. |
+| `-no-thread-local` | Odin otherwise emits `STT_TLS` symbols with no `PT_TLS` segment, and `ld.lld` refuses the image. Per-CPU state must go through `GS` explicitly. |
 | `ld.lld`, not `ld` | Apple's linker cannot produce ELF. |
 | `-out:.vectra-build` | See above — `./build` collides with `build/`. |
 | ESP is a **directory**, not an image | QEMU's vvfat (`-drive format=raw,file=fat:rw:build/esp`) presents it as FAT. This is what makes the build work on macOS, where `losetup`/`mkfs.vfat` do not exist. Same commands work on Linux. |
@@ -186,7 +195,7 @@ ways whose error messages do not point back here.
 | The LAPIC coalesces what it cannot deliver | Ticks that arrive while interrupts are masked do not queue up. Raising the timer from 1 kHz to 20 kHz over a lock-heavy workload delivered about 1.4× as many interrupts, not 20×. Anything that expects a preemption *rate* has to account for how much of the time interrupts are actually on. |
 | A voluntary switch is not a preemption | Making a layer block often does not make its narrow races reachable. A sleeping session lock took `kernel/verify_vfs.odin` from ~1,000 context switches a run to ~110,000, and caught not one additional mutation — every added switch is at a lock boundary, and a two-instruction read-modify-write window is not. Only a timer, or a second core, interleaves two threads at an arbitrary instruction. |
 | Refilling a slice on dispatch is not scheduling | `Thread.ticks_left` reset on every dispatch is indistinguishable from resetting it every slice, right up until something blocks. A thread that parks hundreds of times a second then never reaches the end of a slice, never decays, and outranks the thread doing steady work for ever. Decay has to measure CPU consumed, which means carrying the remainder across a block. |
-| `int $8` is not a double fault | A software interrupt to an error-code vector does **not** push an error code, so it lands on a stub that assumes one was pushed. Never test `#DF` that way; provoke a real one by faulting on a bad stack. |
+| `int $8` is not a double fault | A software interrupt to an error-code vector does **not** push an error code, so it lands on a stub that assumes one was pushed. Never test `#DF` that way. Provoke a real one by faulting on a bad stack. |
 
 **No vendored runtime shim.** The neighbouring `odin-os` project hand-maintains
 a copy of `base:runtime` that must track the compiler. Current Odin ships
@@ -195,34 +204,39 @@ a copy of `base:runtime` that must track the compiler. Current Odin ships
 
 ## 6. Where to go next
 
-The scheduler was the thing blocking everything else, the namespace it exposed
-is now locked, the lock that holds a session across a message sleeps, and a
-thread can now wait for a condition or a deadline. The primitives a driver needs
-in order to be written all exist. What is left is mostly *using* them.
+The scheduler was the thing that blocked everything else. The namespace it
+exposed is now locked. The lock that holds a session across a message sleeps,
+and a thread can now wait for a condition or a deadline. Every primitive a
+driver needs now exists. What is left is mostly *use* of them.
 
 **A payload buffer per request slot is the next piece, and it is what
-`kernel/vfs` is waiting for.** The borrow rule — `Rread.data` and
-`Rreaddir.data` valid until that server's next message — held because the
+`kernel/vfs` is waiting for.** The borrow rule says `Rread.data` and
+`Rreaddir.data` stay valid until that server's next message. It held because the
 session lock spanned the whole exchange, and `kernel/mnt` can have eight
-exchanges going at once. Until a reply's payload is copied into storage the
-request owns, a `Conn` serving `kernel/vfs` is limited to one worker, which is
-`In_Process` with extra steps. This is a small change with a large consequence:
-it is what lets the namespace sit on a transport that can be flushed, and after
-it `Server.lock` stops having to mean "one request in flight" and can go back to
-meaning "the fid counter is mine".
+exchanges going at once.
+
+Until a reply's payload lands in storage the request owns, a `Conn` that serves
+`kernel/vfs` is limited to one worker. That is `In_Process` with extra steps.
+This is a small change with a large consequence. It is what lets the namespace
+sit on a transport that can be flushed. After it, `Server.lock` stops having to
+mean `one request in flight`, and goes back to meaning `the fid counter is
+mine`.
 
 **A read/write sleeping lock is the other piece worth wanting.**
 `Mount_Point.generation` exists only because a read lock could not be held
-across a union search — Plan 9 holds one, because its locks sleep. Now that
-Vectra's can, the retry loop in `walk1_ex` could become a read lock and the
-generation counter could go. `Wait_Queue` is the right foundation and the
-reader/writer policy is the only new thinking: which of two waiting kinds
-`take_best` should prefer, and whether a waiting writer blocks arriving readers.
+across a union search. Plan 9 holds one, because its locks sleep. Now that
+Vectra's can, the retry loop in `walk1_ex` could become a read lock, and the
+generation counter could go.
+
+`Wait_Queue` is the right foundation. The
+reader/writer policy is the only new thinking, and it has two questions. Which
+of two waiting kinds should `take_best` prefer? Does a waiting writer block an
+arriving reader?
 
 **Priority inheritance is the known gap in what exists.** A lock or a rendezvous
 goes to the best waiter, but a low-priority *holder* still delays a
-high-priority waiter for as long as it holds. It has not bitten because nothing
-runs at realtime; it will the moment something does. Plan 9 never had it either,
+high-priority waiter for as long as it holds. It has not bitten, because nothing
+runs at realtime. It will the moment something does. Plan 9 never had it either,
 which is an argument about cost rather than about correctness.
 
 **Then, in roughly this order:**
@@ -239,21 +253,28 @@ which is an argument about cost rather than about correctness.
    SYSCALL/SYSRET. `swapgs` and per-CPU state behind GS belong to this step and
    are cheaper to build with it than after it.
 
-**SMP, when it is wanted.** The shapes are already right: `Cpu` is per-core,
+**SMP, when it is wanted.** The shapes are already right. `Cpu` is per-core,
 `Resume` is per-thread and lives on that thread's stack, and every mount-table,
-namespace and heap mutation is inside a `sync.Spinlock`. What is missing is a
-lock word in that struct, an AP trampoline, IPIs, and a placement policy for
-`enqueue` — which is where `eligible` and the class/capacity fields stop being
-inert. Three things become urgent the moment a second core runs: `Chan.refs` and
-`Mount_Point.refs` want atomic increments rather than a global lock;
-`sync.critical_depth` has to become per-CPU state; and `sync.Mutex` needs the
-scheduler to drop its guard *after* the switch, since a parked thread currently
-relies on the interrupt mask travelling with it through the trap frame. A fourth
-arrived with the sleep queue: masking is what stands in for a lock on every wait
-list, so `Wait_Queue` needs a real lock word and `Rendez` grows the `^Spinlock`
-Plan 9's always had, held by the caller across both the condition test and the
-wake-up. The API was given its present shape partly so that change would not
-alter it. All four are named where they live.
+namespace and heap mutation is inside a `sync.Spinlock`.
+
+What is missing is a lock word in that struct, an AP trampoline, IPIs, and a
+placement policy for `enqueue`. That last is where `eligible` and the class and
+capacity fields stop being inert.
+
+Three things become urgent the moment a second core runs:
+
+1. `Chan.refs` and `Mount_Point.refs` want atomic increments rather than a
+   global lock.
+2. `sync.critical_depth` has to become per-CPU state.
+3. `sync.Mutex` needs the scheduler to drop its guard *after* the switch. A
+   parked thread currently relies on the interrupt mask that travels with it
+   through the trap frame.
+
+A fourth arrived with the sleep queue. A mask is what stands in for a lock on
+every wait list, so `Wait_Queue` needs a real lock word. `Rendez` then grows the
+`^Spinlock` that Plan 9's always carried, held by the caller across both the
+condition test and the wake-up. The API has its present shape partly so that
+change will not alter it. All four are named where they live.
 
 **Smaller things worth doing when convenient:**
 
@@ -263,17 +284,18 @@ alter it. All four are named where they live.
 - A free list for fids. `alloc_fid` is monotonic and therefore finite: four
   billion opens per session, never reused.
 - `reap` only runs from `spawn` and from the self-tests, so a dead thread's stack
-  comes back at the next spawn rather than when it exits. Fine now; an idle-time
-  reaper is the fix. Both concurrency self-tests have to call `sched.reap()` by
+  comes back at the next spawn rather than when it exits. That is fine now. An
+  idle-time reaper is the fix. Both concurrency self-tests have to call `sched.reap()` by
   hand before measuring the heap, which is the smell.
 - `sync.Mutex` has no priority inheritance. Handoff goes to the best *waiter*,
   but a low-priority *holder* still delays a high-priority waiter for as long as
-  it holds. Worth wanting when there is a realtime thread that matters; Plan 9
-  never had it either.
-- `readdir` over a union is still index-based and still documented as undefined
-  if the union is rebound mid-listing — the cookie names a position in a list
-  that moved. `walk` no longer has that property (see `Mount_Point.generation`);
-  a listing could get the same treatment if it ever matters.
+  it holds. It is worth wanting when there is a realtime thread that matters.
+  Plan 9 never had it either.
+- `readdir` over a union is still index-based, and is still documented as
+  undefined if something rebinds the union part-way through. The cookie names a
+  position in a list that moved. `walk` no longer has that property, thanks to
+  `Mount_Point.generation`. A listing could get the same treatment if it ever
+  matters.
 - Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging, trap and scheduling
   interfaces. `cpu_class` is the one that pays off immediately — a big.LITTLE
   part reporting three classes makes the capacity arithmetic do real work.

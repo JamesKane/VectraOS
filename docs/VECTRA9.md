@@ -1,8 +1,8 @@
 # Vectra9 — the message layer and the namespace model
 
 Status: **design**, 2026-08-26. The message layer described in sections 2 to 4
-is implemented in `sys/vectra9/`. The namespace model in section 5 is on paper;
-it gets built when `kernel/vfs/` does. Section 7 records four decisions that
+is implemented in `sys/vectra9/`. The namespace model in section 5 is on paper.
+It gets built when `kernel/vfs/` does. Section 7 records four decisions that
 were open and are now settled, each following Plan 9.
 
 ---
@@ -16,12 +16,12 @@ That distinction is the whole of the design. Vectra9 is a *layer* — decoded
 message types, a codec, a session, a transport boundary, and the namespace those
 sessions are assembled into. 9P2000.L is a *wire format* that layer happens to
 serialise to when it has to. Almost everything interesting here is about the
-layer; almost nothing is about the bytes.
+layer. Almost nothing is about the bytes.
 
 **Every system service is a file tree behind this.** Drivers, the network stack,
-graphics, IPC, thread state. Not "can be exposed as files" — *is*. A process
-reads its own thread state by reading a file, and the kernel serves that file
-with the same nine operations a remote disk would.
+graphics, IPC, thread state. Not `can be exposed as files`. *Is*. A process
+reads its own thread state by a read of a file. The kernel serves that file with
+the same nine operations a remote disk would.
 
 ### The constraint that shapes everything else
 
@@ -32,10 +32,10 @@ to mount a Vectra server.
 
 This is a real constraint with real costs, accepted deliberately. When a driver
 needs an operation that 9P does not have, the answer is a **file**, not a
-message: a `ctl` file that accepts a line of text, a `status` file that renders
-state on read. That is how Plan 9 got away with nine operations for twenty
-years, and it is the discipline that keeps "everything is a file" from quietly
-becoming "everything is a file, plus fourteen special cases".
+message. It is a `ctl` file that accepts a line of text, or a `status` file that
+renders state on read. That is how Plan 9 lived on nine operations for twenty
+years. It is the discipline that stops `everything is a file` from quietly
+becoming `everything is a file, plus fourteen special cases`.
 
 The payoff is not interoperability for its own sake. It is that the protocol
 stops being a design surface. There is no per-subsystem negotiation about what
@@ -65,20 +65,21 @@ consumes those. Serialisation is not part of being a server.
 ```
 
 A `devfs` read of `/dev/cons` builds a `Tread`, hands it to a handler, and gets
-an `Rread` back — no buffer, no parse, no copy of the payload. The same handler
-behind a pipe gets the identical `Tread`, because the transport decoded it back
-into one before calling.
+an `Rread` back. There is no buffer, no parse and no copy of the payload. The
+same handler behind a pipe gets the identical `Tread`, because the transport
+decoded it back into one before the call.
 
-This is the point of the design. The alternative — marshal on every operation,
-kernel devices included — buys one code path at the cost of two `memcpy`s and a
-parse on every read of every file in the system, and in a system where *thread
-state is a file* that is the syscall path. The alternative in the other
-direction — a typed device vtable in the kernel and 9P only for remote servers,
-which is what Plan 9 itself does — is faster still but means two interfaces that
-have to be kept in step, and a server that cannot move between kernel and
-userland without being rewritten.
+This is the point of the design. One alternative is to marshal on every
+operation, kernel devices included. That buys one code path, at the cost of two
+`memcpy`s and a parse on every read of every file in the system. In a system
+where *thread state is a file*, that is the syscall path.
 
-The transport boundary is where that trade is made, once:
+The alternative in the other direction is a typed device vtable in the kernel,
+with 9P only for remote servers. That is what Plan 9 itself does, and it is
+faster still. It also means two interfaces that have to stay in step, and a
+server that cannot move between kernel and userland without a rewrite.
+
+The transport boundary is where that trade happens, once:
 
 ```odin
 Handler   :: proc(server: rawptr, s: ^Session, request: ^Msg, reply: ^Msg)
@@ -95,8 +96,8 @@ which one it has.
 ### 2.2 Borrowed buffers
 
 **A decoded message does not own its variable-length data.** Strings and byte
-slices inside a `Msg` point into the buffer it was decoded from, or — for a
-message built by hand — into whatever the builder owns.
+slices inside a `Msg` point into the buffer it was decoded from. For a message
+built by hand, they point into whatever the builder owns.
 
 ```odin
 msg, tag, err := vectra9.decode(wire[:n])   // msg aliases wire
@@ -105,13 +106,14 @@ msg, tag, err := vectra9.decode(wire[:n])   // msg aliases wire
 ```
 
 This is the rule that makes the fast path fast: `Rread` of 4 KiB carries a
-4 KiB slice, not a 4 KiB copy. It is also the rule most likely to be violated,
-so it is stated in one place — here — and enforced by convention rather than by
-the type system, which in Odin cannot express it.
+4 KiB slice, not a 4 KiB copy. It is also the rule most likely to break, so this
+document states it in one place, here. Convention enforces it, rather than the
+type system, which in Odin cannot express it.
 
-The bounded parts are inline rather than borrowed, because 9P bounds them:
-`Twalk` carries at most sixteen names (`MAX_WALK_ELEMENTS`), so the names live
-in a fixed array inside the message. That is what keeps a `Msg` a stack value.
+The bounded parts are inline rather than borrowed, because 9P bounds them.
+`Twalk` carries at most sixteen names, which is `MAX_WALK_ELEMENTS`, so the
+names live in a fixed array inside the message. That is what keeps a `Msg` a
+stack value.
 
 ### 2.3 Sessions, fids, tags, qids
 
@@ -123,9 +125,9 @@ in a fixed array inside the message. That is what keeps a `Msg` a stack value.
 | **Session** | a conversation with one server | — | one attach tree |
 
 A **Session** is one client's conversation with one server: a negotiated
-`msize`, a fid space, a tag space, and a transport. Two processes talking to the
-same server have two sessions and two fid spaces; fid 4 means different things
-to each, and neither can name the other's files.
+`msize`, a fid space, a tag space, and a transport. Two processes that talk to
+the same server have two sessions and two fid spaces. Fid 4 means a different
+thing to each, and neither can name the other's files.
 
 A **Qid** is `type[1] version[4] path[8]`. `path` is the server's permanent
 identity for the file — two qids with the same path are the same file. `version`
@@ -133,7 +135,7 @@ changes when the contents change, which is what makes cache validation possible
 and what makes a qid unsuitable as a mount-table key (see §5.3). `type` carries
 `QTDIR`, `QTSYMLINK`, `QTAPPEND` and friends.
 
-`NOFID` is `0xFFFF_FFFF`; `NOTAG` is `0xFFFF` and is legal only on `Tversion`.
+`NOFID` is `0xFFFF_FFFF`. `NOTAG` is `0xFFFF`, and is legal only on `Tversion`.
 
 ### 2.4 Errors
 
@@ -146,10 +148,10 @@ Two error vocabularies, deliberately not merged:
   mean *the request was well-formed and the answer is no*.
 
 They are different in kind. A `Tread` on a fid that was never opened is
-`Errno.EBADF` and a perfectly ordinary reply; a `Tread` whose declared size
-exceeds the buffer is a transport failure and the session is suspect. Collapsing
-them would make it possible to answer a corrupt message as though it had been
-understood.
+`Errno.EBADF`, and a perfectly ordinary reply. A `Tread` whose declared size
+exceeds the buffer is a transport failure, and the session is suspect. A merge
+of the two would let a server answer a corrupt message as though it understood
+it.
 
 `Errno` values are Linux's, because 9P2000.L's are and because libposix is a
 translation runtime over this. That is a wire-compatibility obligation, not an
@@ -161,10 +163,10 @@ endorsement of errno as an error model.
 send. The default is 8 KiB, two pages, matching what Linux's `v9fs` asks for.
 
 `msize` bounds the *wire*. It does not bound an in-process call, where there is
-no buffer to overflow, and a transport that never serialises may report an msize
-of whatever it likes. A correct client does not care: it asks the server for the
-`iounit` on open and reads in chunks no larger than that, which is the number
-that was always the real limit.
+no buffer to overflow. A transport that never serialises may report an msize of
+whatever it likes. A correct client does not care. It asks the server for the
+`iounit` on open, and reads in chunks no larger than that. That was always the
+real limit.
 
 ---
 
@@ -221,11 +223,11 @@ failure. Getting this wrong makes every "file not found" look like a protocol
 error.
 
 **`Tflush` is not a cancellation request, it is a synchronisation point.** The
-server may complete the flushed request or abandon it, but it must send
-`Rflush` *after* whatever it does with the original tag, and the client must not
-reuse the tag until `Rflush` arrives. This is what makes a blocked read
-interruptible, and it is the one part of the protocol with an ordering
-requirement the scheduler will have to respect.
+server may complete the flushed request or abandon it. But it must send `Rflush`
+*after* whatever it does with the original tag. And the client must not reuse
+the tag until `Rflush` arrives. This is what makes a blocked read interruptible.
+It is also the one part of the protocol with an ordering requirement that the
+scheduler will have to respect.
 
 ---
 
@@ -240,9 +242,9 @@ errors.odin    codec Error, protocol Errno, and their names
 session.odin   Session, Transport, Handler, and an in-process transport
 ```
 
-It allocates nothing, it is `contextless` throughout, and it is verified at boot
-by round-tripping one of every message kind through `encode` and `decode` and
-comparing the result field for field.
+It allocates nothing, and it is `contextless` throughout. The boot self-test
+round-trips one of every message kind through `encode` and `decode`, and
+compares the result field for field.
 
 `kernel/vfs/` holds the namespace layer that section 5 describes:
 
@@ -259,38 +261,38 @@ verify.odin      the boot self-test: 51 checks against two real servers
 ```
 
 Unlike `sys/vectra9/`, this layer allocates: chans, mount points and fid tables
-all come from the heap, so it comes up after `mem.init`. The boot self-test is
-bracketed by heap statistics and fails if the count of live objects is not
-exactly where it started -- a leaked chan is a fid the server never gets back,
-and it is not the kind of bug that announces itself.
+all come from the heap, so it starts after `mem.init`. Heap statistics bracket
+the boot self-test, which fails if the count of live objects is not exactly
+where it started. A leaked chan is a fid the server never gets back, and it is
+not the kind of bug that announces itself.
 
 ---
 
 ## 5. The namespace model
 
-Built. `kernel/vfs/` is this section; where the two disagree, the code is
-right and this is stale. Two things below the sketch level turned out to
-matter enough to record, and both are called out where they arise: `Chan`
-carries a `union_head` the sketch does not have (5.6), and `bind` resolves its
-target one step short of what is mounted there (5.3).
+Built. `kernel/vfs/` is this section. Where the two disagree, the code is right
+and this is stale. Two things below the sketch level turned out to matter enough
+to record, and this document names both where they arise. `Chan` carries a
+`union_head` the sketch does not have (5.6). And `bind` resolves its target one
+step short of what is mounted there (5.3).
 
 ### 5.1 The shape of the idea
 
 A **namespace** is a private, per-process mapping from names to files. Not a
-view of a global tree with permissions on it — there is no global tree. Two
-processes on the same machine can each have a `/dev/mouse` and they can be
+view of a global tree with permissions on it, because there is no global tree.
+Two processes on the same machine can each have a `/dev/mouse`. The two can be
 different files served by different servers, and neither is more real than the
 other.
 
-That is the Plan 9 idea, and it is what "modular operating system" means here in
-concrete terms: a service is swapped by rebinding a name, not by changing a
-subsystem. Testing the network stack means running the real one and binding a
-fake `/net` over it in one process.
+That is the Plan 9 idea, and it is what `modular operating system` means here in
+concrete terms. A rebound name swaps a service. A changed subsystem does not. To
+test the network stack, run the real one and bind a fake `/net` over it in one
+process.
 
 ### 5.2 Chan
 
-A **Chan** is a handle on a file *in a namespace* — as opposed to a fid, which
-is a handle on a file in a session.
+A **Chan** is a handle on a file *in a namespace*. A fid, by contrast, is a
+handle on a file in a session.
 
 ```odin
 Chan :: struct {
@@ -308,15 +310,15 @@ The last two fields exist for one reason, explained in §5.5.
 
 ### 5.3 Mount points and unions
 
-A mount point is keyed by the file being mounted **over**:
+The key of a mount point is the file that something mounts **over**:
 
 ```
 key = (session identity, qid.path)
 ```
 
-`qid.path` and not the whole qid, because `qid.version` changes when a directory
-is modified and a mount must not evaporate because someone created a file in the
-directory underneath it.
+`qid.path` and not the whole qid, because `qid.version` changes when something
+modifies a directory. A mount must not evaporate because somebody created a file
+in the directory underneath it.
 
 Each mount point holds an **ordered list** of members:
 
@@ -335,12 +337,14 @@ back. A mount point with more than one member is a **union directory**: it
 presents several trees as one. `Create` marks a member as the one new files are
 made in — see §7.4 for what happens when it is not the one that resolved.
 
-**A bind resolves its target one step short.** Resolving `/dev` normally answers
-with whatever is bound there, which is the one thing a caller about to change
-what is bound there must not be given: the new member would be filed under a key
-nothing looks up, so a second `bind -a` would nest a second union inside the
-first instead of joining it, and would never be searched. Plan 9 spells the
-distinction `Amount` versus `Aopen` in `namec`; Vectra spells it
+**A bind resolves its target one step short.** A resolve of `/dev` normally
+answers with whatever is bound there. That is the one answer a caller about to
+change what is bound there must not get. The new member would go under a key
+nothing looks up. A second `bind -a` would then nest a second union inside the
+first rather than join it, and nothing would ever search it.
+
+Plan 9 spells the distinction `Amount` against `Aopen` in `namec`. Vectra spells
+it
 `resolve_mount_point` versus `resolve`, and `bind_path` exists so that no caller
 has to remember which is which.
 
@@ -364,10 +368,10 @@ walk1(ns, c, name):
     return ENOENT
 ```
 
-`cross_mounts` is the second half: having arrived at a file, check whether *it*
-is mounted over, and if so return the first member of that mount instead. A
-walk therefore alternates between asking servers and consulting the mount table,
-and a single path element can cross from one server to another.
+`cross_mounts` is the second half. On arrival at a file, it checks whether *that
+file* is mounted over. If it is, it returns the first member of that mount
+instead. A walk therefore alternates between the servers it asks and the mount
+table it consults. A single path element can cross from one server to another.
 
 Two consequences worth stating plainly:
 
@@ -381,8 +385,8 @@ Two consequences worth stating plainly:
 
 ### 5.5 `..`, which is the hard part
 
-Walking `..` out of the root of a mounted tree must land at the parent of the
-**mount point**, not at the parent the server would name.
+A walk of `..` out of the root of a mounted tree must land at the parent of the
+**mount point**. It must not land at the parent the server would name.
 
 ```
     mount /srv/net  /net
@@ -395,13 +399,13 @@ Walking `..` out of the root of a mounted tree must land at the parent of the
 
 The server physically cannot answer this. It does not know it was mounted, does
 not know where, and has no name for anything above its own root. So the
-namespace answers it, using the two bookkeeping fields on `Chan`: when a walk of
+namespace answers it, from the two bookkeeping fields on `Chan`. When a walk of
 `..` arrives at a chan whose qid equals its `tree_root`, the walk substitutes
 `mounted_over` and continues from there.
 
-`..` at the namespace root is the root. There is no escaping upward, which is
-what makes a chroot-equivalent free: a process whose root is a subtree simply
-has no name for anything outside it.
+`..` at the namespace root is the root. Nothing escapes upward, which is what
+makes a chroot-equivalent free. A process whose root is a subtree simply has no
+name for anything outside it.
 
 ### 5.6 Reading a union directory
 
@@ -409,8 +413,8 @@ has no name for anything outside it.
 
 **Duplicates are not filtered.** If `/tmp/bin` and `/bin` both contain `ls`,
 a directory read shows `ls` twice, while *opening* `/bin/ls` gets the first.
-Filtering would mean holding every name already emitted for the life of the
-read, which is unbounded in the size of the directory, in the kernel, on behalf
+A filter would mean every name already emitted held for the life of the read.
+That is unbounded in the size of the directory, in the kernel, on behalf
 of a client that may not care. Plan 9 made this call and it was right.
 
 The offset is an opaque cookie, which 9P2000.L already requires — `Treaddir`
@@ -422,13 +426,13 @@ arbitrary. So the union encodes the member index in the high bits:
 ```
 
 Two hundred and fifty-six members would break this, and so would a server whose
-own cookies exceed 2^56. Neither is a real number; both are checked rather than
+own cookies exceed 2^56. Neither is a real number. Both are checked rather than
 assumed, because an offset that silently wraps reads the wrong directory instead
 of failing.
 
 Finding the members at all needs one field the sketch in §5.2 does not have. By
-the time a caller holds a chan on a union, `cross_mounts` has already
-substituted the first member — so the key the mount point is filed under is no
+the time a caller holds a chan on a union, `cross_mounts` already substituted
+the first member. The key the mount point is filed under is therefore no
 longer reachable from the chan's own server and qid. `Chan.union_head` is the
 pointer back, and Plan 9 keeps the same one on `Chan.umh`.
 
@@ -439,8 +443,8 @@ following Plan 9's `rfork`:
 
 | Flag | Effect |
 |---|---|
-| *(default)* | share the parent's namespace; a later `bind` is visible to both |
-| `Copy` | duplicate the mount table; both start identical and then diverge |
+| *(default)* | share the parent's namespace. A later `bind` is visible to both |
+| `Copy` | duplicate the mount table. Both start identical and then diverge |
 | `Clean` | start empty — no root, no mounts, no way to name anything |
 
 `Clean` is the interesting one. A process with an empty namespace cannot open a
@@ -452,16 +456,16 @@ and the parent constructs its world by binding exactly what it should have.
 Two escapes, because an empty namespace is otherwise a dead end.
 
 **`#name` attaches a kernel-served tree directly**, bypassing the namespace.
-`#c` is the console device, `#p` the process device, and so on — Plan 9's
-notation, kept because the problem it solves is real: after `Clean` there is
-literally no name for anything, and something has to be able to say "give me the
-console device" without a path to it. Access is a privilege, and a process
+`#c` is the console device, `#p` the process device, and so on. That is Plan 9's
+notation, kept because the problem it solves is real. After `Clean` there is
+literally no name for anything. Something has to be able to ask for the console
+device with no path to it. Access is a privilege, and a process
 without it cannot manufacture a channel out of nothing.
 
 **`/srv` is a directory of posted channels.** A userland server writes its
-channel into `/srv/net`; anyone who can see `/srv/net` can mount it. This is how
-services outside the kernel become mountable without a rendezvous mechanism of
-their own — the rendezvous is a file, like everything else.
+channel into `/srv/net`. Anyone who can see `/srv/net` can mount it. This is how
+services outside the kernel become mountable with no rendezvous mechanism of
+their own. The rendezvous is a file, like everything else.
 
 ### 5.9 The conventional layout
 
@@ -487,8 +491,8 @@ that table becomes readable.
 ## 6. Deliberately not in this design
 
 - **Caching.** No client-side cache of file contents or of walk results. Qid
-  versions make one possible later; adding it before there is a workload to
-  measure would be guessing.
+  versions make one possible later. A cache added before there is a workload to
+  measure would be a guess.
 - **A distributed namespace.** 9P is a network protocol and Vectra9 will
   eventually be spoken over one, but nothing here assumes or provides
   transparent remote mounting yet.
@@ -500,9 +504,8 @@ that table becomes readable.
 ## 7. Resolved: what Plan 9 does
 
 These were open. They are not any more. Where Plan 9 has an answer, Vectra takes
-it -- not out of deference, but because these are all questions Plan 9 answered
-under load, twenty years ago, and the answers are in the source rather than in
-folklore.
+it. That is not deference. These are all questions Plan 9 answered under load,
+twenty years ago, and the answers are in the source rather than in folklore.
 
 ### 7.1 A fid is a number, never a pointer
 
@@ -510,11 +513,12 @@ An in-process session has no serialisation, so a client *could* hold a pointer
 to the server's file object instead of an index into its table. Faster, and
 wrong twice over.
 
-Plan 9 does not face this question in the same shape -- its in-kernel devices
-never see a fid at all, because `devmnt` is the only thing that speaks 9P -- but
-its discipline settles it anyway: **in Plan 9 a fid that appears in a message is
-always a number**, allocated from the mount driver's pool, and `Chan.fid` is a
-`ulong`. There is no path by which a client hands the kernel a pointer.
+Plan 9 does not face this question in the same shape. Its in-kernel devices
+never see a fid at all, because `devmnt` is the only thing that speaks 9P. Its
+discipline settles the question anyway. **In Plan 9 a fid that appears in a
+message is always a number**, allocated from the mount driver's pool, and
+`Chan.fid` is a `ulong`. There is no path by which a client hands the kernel a
+pointer.
 
 Two reasons to keep it that way here:
 
@@ -532,12 +536,12 @@ property.
 
 Plan 9's root is `devroot` -- a real device with `rootattach`, `rootwalk`,
 `rootopen` and `rootread`, reached as `#/`, holding a static table of directory
-entries. It is not a special case in `namec`; it is a device like `#c` or `#e`.
+entries. It is not a special case in `namec`. It is a device like `#c` or `#e`.
 
 Vectra does the same. The root is an in-kernel server implementing `Handler`,
-with no privileges the others lack and no shortcut through the walk. The saving
-from special-casing it -- one session lookup per walk from `/` -- is not worth a
-second code path through the most-exercised function in the system.
+with no privileges the others lack and no shortcut through the walk. A special
+case would save one session lookup per walk from `/`. That is not worth a second
+code path through the most-exercised function in the system.
 
 ### 7.3 Tflush: the server keeps a tag table, and Rflush is the barrier
 
@@ -559,13 +563,13 @@ Two rules fall out, and both are in the protocol rather than in a policy:
   connection is broken. A server that can neither find nor abort the request
   still answers `Rflush` -- the client only needs to know the tag is free.
 - **A flushed request may still be answered.** The client must tolerate the
-  reply it asked to have cancelled, arriving before the `Rflush`.
+  reply to the request it tried to cancel, arriving before the `Rflush`.
 
 **Built, in `kernel/mnt`.** The thing this was waiting for was never really the
-protocol: it was a transport that can leave a request pending, which needs
-threads to leave it pending *on*. `vectra9.In_Process` runs the handler on the
-caller's own stack, so a client behind it has nothing outstanding to flush and
-no way to send the flush if it did.
+protocol. It was a transport that can leave a request pending, and that needs a
+thread to leave it pending *on*. `vectra9.In_Process` runs the handler on the
+caller's own stack. A client behind it therefore has nothing outstanding to
+flush, and no way to send the flush if it did.
 
 `kernel/mnt` is that transport -- a pool of in-flight requests indexed by tag, a
 work queue, and worker threads -- plus both halves of the flush. Three details
@@ -573,23 +577,23 @@ are worth knowing before reading it:
 
 - **The tag is the pool slot.** A `Tflush` names a request by tag, so the server
   has to find one by tag, so the pool *is* the tag space. A tag that is not an
-  index into it names no request, which is a case the protocol requires an
-  answer for rather than an error.
+  index into it names no request. The protocol requires an answer for that case
+  rather than an error.
 - **Each request's flush is preallocated above it.** A client whose request is
-  stuck has to be able to send `Tflush`; if that flush competed for an ordinary
+  stuck has to be able to send `Tflush`. If that flush competed for an ordinary
   slot, a full pool of stuck requests would leave nobody able to unstick
   anything.
-- **`Rflush` is written by whoever finishes the original.** Not by the worker
-  that received the `Tflush`, which would have to park to honour the ordering
-  and would be a worker not serving anything. The `Tflush` records itself as
-  the original's partner and returns; the ordering rule is then structural
-  rather than a wait.
+- **Whoever finishes the original writes the `Rflush`.** Not the worker that
+  received the `Tflush`, which would have to park to honour the ordering, and
+  would then be a worker that serves nothing. The `Tflush` records itself as the
+  original's partner and returns. The ordering rule is then structural rather
+  than a wait.
 
-What is *not* built is `kernel/vfs` using it. A reply that borrows the server's
-storage -- section 4's rule -- was safe because the session lock spanned the
-whole exchange, and with several requests in flight it is not. That is a
-property of the transport rather than of the protocol, and settling it is the
-next step rather than this one.
+What is *not* built is `kernel/vfs` on top of it. A reply that borrows the
+server's storage, under section 4's rule, was safe because the session lock
+spanned the whole exchange. With several requests in flight it is not. That is a
+property of the transport rather than of the protocol, and it is the next step
+rather than this one.
 
 ### 7.4 Union create goes to the first member flagged Create, and stops there
 
@@ -598,12 +602,12 @@ with `MCREATE` set, and creates there. If none has it, the error is
 `Enocreate`. If the create *fails* on that member, the failure is returned --
 Plan 9 does **not** fall through to the next member.
 
-Vectra does the same, and the no-fallthrough half is the important half. Falling
-through would mean a file created under `/bin` could land in any of several
-trees depending on which happened to be writable that day, and the caller would
-have no way to know which. A create that fails on the member the namespace
-chose is a comprehensible error; a create that silently lands somewhere else is
-a bug that surfaces weeks later as a file nobody can find.
+Vectra does the same, and the no-fallthrough half is the important half. With a
+fallthrough, a file created under `/bin` could land in any of several trees,
+depending on which happened to be writable that day. The caller would have no
+way to know which. A create that fails on the member the namespace chose is a
+comprehensible error. A create that silently lands somewhere else is a bug that
+surfaces weeks later as a file nobody can find.
 
 If the first `Create` member being read-only is a problem, the fix is the mount
 order, which is the process's own to change.
@@ -619,60 +623,64 @@ asynchronous transport's are in `docs/TRANSPORT.md`.
 
 - **Nothing is added to the wire.** The version string is `9P2000.L` and a stock
   Linux `v9fs` client must be able to mount a Vectra server. Extensions are
-  files, not messages. The payoff is not interoperability for its own sake — it
-  is that the protocol stops being a design surface, because the answer to "what
-  messages does my subsystem need" is always the same nine.
+  files, not messages. The payoff is not interoperability for its own sake. It
+  is that the protocol stops being a design surface, because the answer to `what
+  messages does my subsystem need` is always the same nine.
 - **Servers speak decoded messages.** The transport is the only thing that knows
-  bytes exist. Rejected alternatives, both defensible: marshal everywhere (one
-  code path, but two memcpys and a parse on every read of every file, in a
-  system where thread state *is* a file), and a typed device vtable with 9P only
-  for remote servers, which is what Plan 9 itself does (faster still, but two
-  interfaces to keep in step and a server that cannot move between kernel and
-  userland without a rewrite).
+  bytes exist. Two alternatives are rejected, and both are defensible.
+  - Marshal everywhere. That is one code path, at the cost of two memcpys and a
+    parse on every read of every file, in a system where thread state *is* a
+    file.
+  - A typed device vtable, with 9P only for remote servers. That is what Plan 9
+    itself does, and it is faster still. It is also two interfaces to keep in
+    step, and a server that cannot move between kernel and userland without a
+    rewrite.
 - **A decoded message borrows its buffer.** Strings and slices inside a `Msg`
   point into whatever it was decoded from. This is what makes an `Rread` of
   4 KiB free to pass around, and it is the rule most likely to be broken. Odin
   cannot express the lifetime, so it is stated at the top of `proto.odin` and
   nowhere else.
 - **`Twalk` bounds names at sixteen, so they live inline.** That is the only
-  reason a `Msg` is a stack value; the `#assert` on `size_of(Msg)` is there to
+  reason a `Msg` is a stack value. The `#assert` on `size_of(Msg)` is there to
   stop it quietly becoming something else.
 - **Codec errors and protocol errors are separate types.** `Error` means the
   bytes are wrong and no reply can be built. `Errno` means the request was
-  well-formed and the answer is no. Merging them would let a corrupt message be
-  answered as though it had been understood.
-- **The codec latches errors; `libodin.Sink` saturates.** Opposite choices, both
-  right: a truncated log line beats no log line, and a truncated 9P message is a
-  protocol violation the far end would blame on itself.
+  well-formed and the answer is no. A merge of the two would let a server answer
+  a corrupt message as though it understood it.
+- **The codec latches errors. `libodin.Sink` saturates.** Opposite choices, and
+  both right. A truncated log line beats no log line, and a truncated 9P message
+  is a protocol violation the far end would blame on itself.
 - **`decode` bounds the cursor by the message's declared size, not the buffer.**
   A body that reads past its own message is then a malformed message rather than
   a short buffer, and every accessor gets that for free. A declared size larger
-  than the buffer is refused outright — that is the classic way a codec is
-  talked into reading past the end of a packet.
-- **Where Plan 9 has an answer, Vectra takes it.** Four questions that were open
-  in the first draft of the design are settled in `VECTRA9.md` section 7, each
-  against what Plan 9's source actually does rather than what is remembered
-  about it: a fid is a number and never a pointer (`Chan.fid` is a `ulong`, and
-  the table lookup is what makes a fid a capability); the root is an ordinary
-  in-kernel server, as `devroot` is a real device rather than a special case in
-  `namec`; `Tflush` needs a tag-indexed pool of in-flight requests and `Rflush`
-  is the barrier, which is what `mountio` and lib9p between them implement; and
-  a union `create` goes to the first `Create`-flagged member and **does not fall
-  through** if it fails, exactly as `createdir` refuses to.
+  than the buffer is refused outright. That is the classic way a codec is talked
+  into a read past the end of a packet.
+- **Where Plan 9 has an answer, Vectra takes it.** Section 7 settles four
+  questions that the first draft of the design left open. Each is settled
+  against what Plan 9's source actually does, rather than what people remember
+  about it.
+  - A fid is a number and never a pointer. `Chan.fid` is a `ulong`, and the
+    table lookup is what makes a fid a capability.
+  - The root is an ordinary in-kernel server, as `devroot` is a real device
+    rather than a special case in `namec`.
+  - `Tflush` needs a tag-indexed pool of in-flight requests, and `Rflush` is the
+    barrier. That is what `mountio` and lib9p between them implement.
+  - A union `create` goes to the first `Create`-flagged member, and **does not
+    fall through** if it fails, exactly as `createdir` refuses to.
 - **`Encoded_Loopback` is a test instrument that is also the skeleton of a real
-  transport.** It does every step a pipe transport would except crossing an
-  address space, so writing that transport is replacing two copies with reads
-  and writes — and meanwhile it is how the boot self-test proves a handler
-  cannot tell which transport it is behind.
+  transport.** It does every step a pipe transport would, except the crossing of
+  an address space. To write that transport is to replace two copies with reads
+  and writes. Meanwhile it is how the boot self-test proves a handler cannot
+  tell which transport it is behind.
 
 ### Known warts
 
 - **Every Vectra9 server so far is a self-test or a synthetic tree.**
   `static.odin` is real code with real clients, but it is read-only and serves
-  from a node table; nothing has yet had to block, fail partway, or answer out
+  from a node table. Nothing has yet had to block, fail partway, or answer out
   of order. `kernel/verify_flush.odin`'s server is the first that deliberately
-  will not finish, and it found nothing — which is a statement about how little
-  has been asked of the layer, not about how solid it is.
+  will not finish, and it found nothing. That is a statement about how little
+  anything asked of the layer, not about how solid it is.
 - **`Session.alloc_fid` is a monotonic counter.** It runs out after four billion
   opens without ever reusing one. The right fix is a free list fed by `Tclunk`,
   not a wider counter.
