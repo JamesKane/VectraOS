@@ -244,11 +244,35 @@ It allocates nothing, it is `contextless` throughout, and it is verified at boot
 by round-tripping one of every message kind through `encode` and `decode` and
 comparing the result field for field.
 
+`kernel/vfs/` holds the namespace layer that section 5 describes:
+
+```
+vfs.odin         Server, the #name device table, the one RPC helper
+chan.odin        Chan, reference counting, open/read/write/stat/clone
+mount.odin       the mount table, bind/unmount, union member lists
+namespace.odin   Namespace, rfork semantics, teardown
+walk.odin        attach, walk1, cross_mounts, `..`, resolve
+readdir.odin     union directory reads and the member-index cookie
+static.odin      a read-only server over a node table -- and its fid table
+root.odin        `#/`, an instance of that server, and the boot namespace
+verify.odin      the boot self-test: 51 checks against two real servers
+```
+
+Unlike `sys/vectra9/`, this layer allocates: chans, mount points and fid tables
+all come from the heap, so it comes up after `mem.init`. The boot self-test is
+bracketed by heap statistics and fails if the count of live objects is not
+exactly where it started -- a leaked chan is a fid the server never gets back,
+and it is not the kind of bug that announces itself.
+
 ---
 
 ## 5. The namespace model
 
-This section is design. None of it is built yet.
+Built. `kernel/vfs/` is this section; where the two disagree, the code is
+right and this is stale. Two things below the sketch level turned out to
+matter enough to record, and both are called out where they arise: `Chan`
+carries a `union_head` the sketch does not have (5.6), and `bind` resolves its
+target one step short of what is mounted there (5.3).
 
 ### 5.1 The shape of the idea
 
@@ -309,7 +333,16 @@ Mount :: struct {
 `Replace` clears the list. `Before` pushes onto the front, `After` onto the
 back. A mount point with more than one member is a **union directory**: it
 presents several trees as one. `Create` marks a member as the one new files are
-made in -- see §7.4 for what happens when it is not the one that resolved.
+made in — see §7.4 for what happens when it is not the one that resolved.
+
+**A bind resolves its target one step short.** Resolving `/dev` normally answers
+with whatever is bound there, which is the one thing a caller about to change
+what is bound there must not be given: the new member would be filed under a key
+nothing looks up, so a second `bind -a` would nest a second union inside the
+first instead of joining it, and would never be searched. Plan 9 spells the
+distinction `Amount` versus `Aopen` in `namec`; Vectra spells it
+`resolve_mount_point` versus `resolve`, and `bind_path` exists so that no caller
+has to remember which is which.
 
 ```
     bind -a /dev/usb /dev        # after:  /dev then /dev/usb
@@ -388,7 +421,16 @@ arbitrary. So the union encodes the member index in the high bits:
     offset = member_index << 56 | member_offset
 ```
 
-Sixteen million members would break this. Nothing else will.
+Two hundred and fifty-six members would break this, and so would a server whose
+own cookies exceed 2^56. Neither is a real number; both are checked rather than
+assumed, because an offset that silently wraps reads the wrong directory instead
+of failing.
+
+Finding the members at all needs one field the sketch in §5.2 does not have. By
+the time a caller holds a chan on a union, `cross_mounts` has already
+substituted the first member — so the key the mount point is filed under is no
+longer reachable from the chan's own server and qid. `Chan.union_head` is the
+pointer back, and Plan 9 keeps the same one on `Chan.umh`.
 
 ### 5.7 Lifetime and fork
 

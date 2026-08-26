@@ -45,6 +45,11 @@ Tag :: distinct u16
 NOFID :: Fid(0xFFFF_FFFF)
 NOTAG :: Tag(0xFFFF)
 
+// NONUNAME is the absence of a numeric uid in Tauth and Tattach, for a client
+// that named itself with a string and left `n_uname` alone. Same sentinel shape
+// as NOFID and for the same reason: zero is a legal uid -- it is root.
+NONUNAME :: u32(0xFFFF_FFFF)
+
 // -- Qid ---------------------------------------------------------------------
 
 /*

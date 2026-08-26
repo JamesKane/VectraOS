@@ -26,14 +26,16 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 3 is done: the protocol layer exists and checks itself.**
+**Milestone 4 is done: the namespace exists, and paths resolve across servers.**
 
 Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
 behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
-screen. Milestone 3 adds `sys/vectra9/` — the whole 9P2000.L message set,
-a codec, and the session/transport boundary the rest of the system will be built
-on. About 8,000 lines of Odin; the linked image is ~408 KB debug, ~152 KB
-release.
+screen. Milestone 3 added `sys/vectra9/` — the whole 9P2000.L message set, a
+codec, and the session/transport boundary. Milestone 4 adds `kernel/vfs/`, which
+is the first thing that *uses* any of it: `Chan`, a per-namespace mount table,
+union directories, `bind`, `rfork` semantics, and a walker that crosses from one
+server to another mid-path. About 10,900 lines of Odin; the linked image is
+~523 KB debug, ~199 KB release.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
@@ -43,15 +45,19 @@ release.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
+[  --  ] kernel phys 0x000000001bbbc000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
-[  --  ] memory map: 27 entries spanning 12.7 GiB
-[  ok  ] usable 467.4 MiB, reclaimable 39.2 MiB
-[  ok  ] pmm 119678 frames free of 123400 tracked, bitmap 15.0 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.3 MiB in 270 tables (1.0 MiB)
+[  --  ] memory map: 29 entries spanning 12.7 GiB
+[  ok  ] usable 467.0 MiB, reclaimable 39.5 MiB
+[  --  ] largest usable region 395.2 MiB at 0x0000000001600000
+[  ok  ] pmm 119555 frames free of 123521 tracked, bitmap 15.0 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 515.4 MiB in 271 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
 [  ok  ] vectra9 9P2000.L: 57 message kinds round-trip, both transports agree
+[  ok  ] namespace: #/ attached as /, 7 conventional directories
+[  ok  ] vfs 51 namespace checks passed -- union of 4 names over two servers, 1 mount point, heap balanced
 [  ok  ] boot complete -- halting (no scheduler yet)
 ```
 
@@ -71,25 +77,45 @@ downstream, all three taken deliberately:
    one it has.
 3. **The namespace is the full Plan 9 model** — `bind`/`mount` with
    before/after/replace, union directories, per-process mount tables copied or
-   shared on fork. Designed in section 5 of that document; not yet built.
+   shared on fork. Section 5 of that document, and now `kernel/vfs/`.
 
-The self-test is the interesting part of the boot line. Every message kind is
-encoded, decoded, and encoded again, and the two byte strings must be identical
-— which catches a field written in the wrong order, read at the wrong width, or
-forgotten by the decoder. Every field in every sample is non-zero and distinct,
-which is what makes that oracle sound. It has been negative-controlled: making
-the decoder silently drop `Tlopen.flags` produces
-`57 kinds tested, 1 FAILED -- first Tlopen`.
+**The root is an ordinary server.** `#/` is an instance of `static.odin`, a
+read-only server over a table of nodes, and the walker has no special case for
+it. That is Plan 9's `devroot` and it buys two things: one code path instead of
+one plus a root, and a `/` that is rebindable like any other name. The same
+server implementation is what the self-test instantiates twice to build a union
+out of two real trees.
 
-It also checks that malformed input is *refused* rather than parsed — a header
-claiming to be longer than its buffer, the reserved type 6, an unknown type
-byte, a walk with seventeen elements — and that the same handler behind
-`In_Process` and behind `Encoded_Loopback` gives the same answers, which is
-decision 2 made testable rather than merely asserted.
+**The two self-tests are the interesting part of the boot line.** The Vectra9
+one encodes, decodes and re-encodes every message kind and compares the byte
+strings, which catches a field written in the wrong order, read at the wrong
+width, or forgotten by the decoder; every field in every sample is non-zero and
+distinct, which is what makes that oracle sound. The namespace one runs 51
+checks against two real servers over real 9P traffic — a union searched in mount
+order, a directory read that concatenates members without filtering duplicates,
+`..` out of a mounted root onto a server that has never heard of the tree it
+just left, a `Copy` fork that diverges and a `Clean` one that can name nothing
+until `#/` rebuilds it.
 
-**What still does not exist.** No VFS, so nothing yet *uses* Vectra9. No
-namespace, no `Chan`, no mount table. No LAPIC, no timer, no scheduler; nothing
-has ever called `sti`. No userland, no compositor. `kmain` halts on purpose.
+Both have been negative-controlled, and the controls are worth keeping: making
+the decoder drop `Tlopen.flags` gives `1 FAILED -- first Tlopen`; making `bind`
+resolve its target with crossing gives `6 FAILED -- first: /dev is a union of
+two members`; dropping the `mounted_over` climb gives `.. out of a mounted root
+crosses to the mount point's server`; letting `Clean` inherit the parent's root
+gives `a Clean namespace is empty`.
+
+**The namespace self-test is bracketed by heap statistics** and fails if the
+count of live objects is not exactly where it started. This is not decoration:
+it caught a leaked chan on its first run, and a refcount bug in this layer is a
+fid the server never gets back rather than anything that crashes.
+
+**What still does not exist.** No `/srv`, so nothing outside the kernel can be
+mounted yet. No `Tflush` service — section 7.3 pins the shape, but it needs a
+thread to wake. No current directory, so `resolve` takes absolute paths and
+`#name` specs only. No locking anywhere in `kernel/vfs`; one CPU and no
+preemption is the only reason that is safe. No LAPIC, no timer, no scheduler;
+nothing has ever called `sti`. No userland, no compositor. `kmain` halts on
+purpose.
 
 ## 3. Build and run
 
@@ -393,49 +419,55 @@ are the load-bearing bits:
 
 ## 7. Where to go next
 
-The fork from the last two handoffs is resolved on one side: the protocol is
-designed and the message layer is built. What is left is to give it something to
-carry, and that now has a clear order.
+The protocol is designed, the message layer is built, and the namespace stands
+on top of it. Everything left needs a scheduler, which is now the single thing
+blocking the most work.
 
-**`kernel/vfs/` — build section 5 of `docs/VECTRA9.md`.** The namespace model is
-designed and nothing has been written against it yet, which is the cheapest
-moment it will ever be to change. In order:
-
-1. **`Chan`** — session, fid, qid, plus the two fields (`mounted_over`,
-   `tree_root`) that exist solely so `..` can cross a mount point. Section 5.5
-   explains why the server physically cannot answer that question.
-2. **The mount table**, keyed by `(session, qid.path)` — *path*, not the whole
-   qid, or creating a file in a mounted-over directory would unmount it.
-3. **`walk`**, which alternates between asking servers and consulting the mount
-   table, and is where union directories get searched in order.
-4. **A first server** — an in-kernel root, or `devfs` with `/dev/cons` — so the
-   whole path from a name to a byte exists end to end.
-
-**Then the scheduler**, which is what makes the rest real: `Tflush` is
-unreachable without it, tags are decorative without it, and `pmm_reclaim` is
-blocked on it. The three things flagged in Milestone 2 still stand and are still
-cheaper to build in than to retrofit:
+**The scheduler is next, and it is what makes the rest real.** `Tflush` is
+unreachable without it, tags are decorative without it, `pmm_reclaim` is blocked
+on it, and `/srv` — a server outside the kernel posting a channel — needs a
+thread on each side of the transport. The three things flagged in Milestone 2
+still stand and are still cheaper to build in than to retrofit:
 
 1. **`FXSAVE`/`FXRSTOR` in the trap tail.** A scheduler preempting on a timer is
    exactly the "resumes arbitrary code" case this breaks on, and it breaks
    silently — as wrong floating-point results, not as a fault.
 2. **A lock type in `kernel/mem`.** The first interrupt handler that allocates
-   races the code it interrupted.
+   races the code it interrupted. Every mutation in `kernel/vfs/mount.odin` is
+   marked with where the same lock goes.
 3. **`swapgs` and per-CPU state behind GS.**
 
-**The design's open questions are closed.** Section 7 of `VECTRA9.md` now
-records four decisions rather than four questions, each following Plan 9. Two of
-them constrain work that is about to start and should be read before it does:
-the root is an ordinary server with no shortcut through the walk, and a union
-`create` goes to the first `Create`-flagged member and fails there rather than
-falling through. The `Tflush` resolution is a shape the scheduler has to
-support, not something to build now.
+**What `kernel/vfs` is missing, in the order it will be wanted:**
+
+1. **A current directory**, so `resolve` takes relative paths. It is a chan on
+   a process, and it needs a process; the walker grows one more starting point
+   rather than a second implementation.
+2. **Create.** `union_create_target` picks the member and section 7.4 fixes the
+   rule — first `Create`-flagged member, and *no* fall-through on failure — but
+   nothing calls it yet, because the only server is read-only.
+3. **`/srv`**, which is how a userland server becomes mountable without a
+   rendezvous mechanism of its own. `mount_device` is the kernel-side half of
+   the same operation and shows the shape.
+4. **`Tflush` service.** Section 7.3 pins it: a tag-indexed pool of in-flight
+   requests, `Rflush` after the original's fate is decided, never an error
+   reply, and a client that tolerates the answer it asked to cancel.
+5. **Batched `Twalk`.** Every path element is currently one message; 9P allows
+   sixteen per walk, across elements that stay within one server. `resolve` is
+   where that goes, and it has to discover the run length as it walks.
+
+**A first real device.** `devfs` with `/dev/cons` bound over the console driver
+would make the whole path from a name to a byte on screen exist end to end, and
+`static.odin` is the wrong shape for it only because it is read-only —
+everything else about a device server is already there.
 
 **Smaller things worth doing when convenient:**
 
 - A stack backtrace on the panic screen. Everything else a fault report wants to
   say is already there.
 - Make `check_base_revision()` a hard stop rather than a warning.
+- A free list for fids. `alloc_fid` is monotonic and therefore finite: four
+  billion opens per session, never reused. The comment says so where it will be
+  read.
 - Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging and trap interfaces.
 
 ## 8. File map
@@ -476,7 +508,17 @@ kernel/
     pmm.odin            Bitmap physical page allocator
     vmm.odin            Page table walk, kernel address space, translate
     heap.odin           Slab allocator + Odin's context.allocator
-  sched/ vfs/           Empty
+  vfs/
+    vfs.odin            Server, the #name device table, the one RPC helper
+    chan.odin           Chan, refcounting, open/read/write/stat/clone
+    mount.odin          The mount table, bind/unmount, union member lists
+    namespace.odin      Namespace, rfork semantics, teardown
+    walk.odin           attach, walk1, cross_mounts, `..`, resolve
+    readdir.odin        Union directory reads and the member-index cookie
+    static.odin         A read-only server over a node table, and its fid table
+    root.odin           `#/`, an instance of it, and the boot namespace
+    verify.odin         The boot self-test: 51 checks, two real servers
+  sched/                Empty
 sys/
   libodin/format.odin   Allocation-free formatting (Sink)
   vectra9/
@@ -490,7 +532,9 @@ servers/ apps/          Empty
 tools/genfont.py        TTF -> font_data.odin
 docs/
   HANDOFF.md            This file
-  VECTRA9.md            The protocol and namespace design -- read before vfs/
+  VECTRA9.md            The protocol and namespace design -- sections 1-4 are
+                        sys/vectra9/, section 5 is kernel/vfs/, section 7 is
+                        why four arguments are over
   milestone0-boot.png   Milestone 0 screenshot -- it boots
   milestone1-memory.png Milestone 1 screenshot -- PMM, VMM, heap
   panic-screen.png      Milestone 2 screenshot -- a deliberate #PF, reported

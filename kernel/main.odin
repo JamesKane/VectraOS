@@ -24,6 +24,7 @@ import "kernel:drivers/console"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mem"
+import "kernel:vfs"
 import "vsys:libodin"
 import "vsys:vectra9"
 
@@ -154,6 +155,9 @@ kmain :: proc "sysv" () {
 	context.allocator = mem.allocator()
 	verify_memory()
 	verify_protocol()
+
+	init_namespace()
+	verify_namespace()
 
 	log_line(&klog, .Ok, "boot complete -- halting (no scheduler yet)")
 	arch.halt_forever()
@@ -710,4 +714,107 @@ verify_protocol :: proc() {
 	libodin.put_str(&sink, ": ")
 	libodin.put_str(&sink, vectra9.describe(result.first_error))
 	emit(&klog, .Fault, &sink)
+}
+
+/*
+init_namespace stands up the root device and the namespace every process will
+inherit.
+
+Last in the boot because it needs everything before it: the heap for chans and
+fid tables, and Vectra9 for the messages that reach the root server. The root
+is an ordinary server reached through `#/` rather than a special case in the
+walker -- see docs/VECTRA9.md section 7.2 -- so if this line prints, the escape
+hatch a `Clean` namespace depends on has been exercised once already.
+*/
+init_namespace :: proc() {
+	if err := vfs.init(); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "namespace: root device failed -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "namespace: #/ attached as /, ")
+	libodin.put_uint(&sink, u64(vfs.ROOT_DIRECTORIES))
+	libodin.put_str(&sink, " conventional directories")
+	emit(&klog, .Ok, &sink)
+}
+
+/*
+verify_namespace exercises the namespace layer against two real servers.
+
+Binds, unions, `..` across a mount point, and both fork modes -- all on the
+machine, all over real 9P traffic. See `kernel/vfs/verify.odin` for what each
+check is for; this only reports.
+*/
+verify_namespace :: proc() {
+	scratch := make([]u8, 1024)
+	if scratch == nil {
+		log_line(&klog, .Fault, "namespace self-test skipped -- no memory for a scratch buffer")
+		return
+	}
+	defer delete(scratch)
+
+	/*
+	Bracketed by heap stats, because the namespace layer is the first thing in
+	Vectra that allocates and frees in volume, and its failure mode is a
+	reference count rather than a crash. A leaked chan is a fid the server
+	never gets back; a chan freed twice is a fid handed out again while someone
+	still holds it. Neither shows up as a failed check -- both show up here.
+
+	Every allocation the self-test makes is also released by it, so the only
+	correct answer is zero.
+	*/
+	before := live_objects(mem.heap_stats())
+	result := vfs.verify(scratch)
+	leaked := live_objects(mem.heap_stats()) - before
+
+	ok := result.failures == 0 && result.checks > 0 && leaked == 0
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "vfs ")
+	libodin.put_uint(&sink, u64(result.checks))
+	if ok {
+		libodin.put_str(&sink, " namespace checks passed -- union of ")
+		libodin.put_uint(&sink, u64(result.union_entries))
+		libodin.put_str(&sink, " names over two servers, ")
+		libodin.put_uint(&sink, u64(result.mounts))
+		libodin.put_str(&sink, " mount point")
+		if result.mounts != 1 {
+			libodin.put_str(&sink, "s")
+		}
+		libodin.put_str(&sink, ", heap balanced")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+
+	libodin.put_str(&sink, " checks, ")
+	if result.failures > 0 {
+		libodin.put_uint(&sink, u64(result.failures))
+		libodin.put_str(&sink, " FAILED -- first: ")
+		libodin.put_str(&sink, result.first_failure)
+	} else {
+		libodin.put_str(&sink, "all passed but ")
+		libodin.put_int(&sink, i64(leaked))
+		libodin.put_str(&sink, " objects LEAKED")
+	}
+	emit(&klog, .Fault, &sink)
+}
+
+/*
+live_objects counts what the heap is currently handing out.
+
+Slab classes report what they carved and what is on their free lists, so the
+difference is what a caller still holds. Large blocks are counted whole -- they
+have no free list to be on.
+*/
+@(private = "file")
+live_objects :: proc "contextless" (s: mem.Heap_Stats) -> int {
+	live := s.large_blocks
+	for i in 0 ..< len(s.class_total) {
+		live += s.class_total[i] - s.class_free[i]
+	}
+	return live
 }
