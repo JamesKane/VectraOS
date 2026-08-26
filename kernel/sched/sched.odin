@@ -127,7 +127,8 @@ init :: proc() -> bool {
 		sync.Scheduler {
 			current  = current_waiter,
 			block    = block,
-			wake     = wake_waiter,
+			unpark   = unpark_waiter,
+			ready    = ready_waiter,
 			priority = waiter_priority,
 		},
 	)
@@ -379,8 +380,13 @@ current_waiter :: proc "contextless" () -> rawptr {
 }
 
 @(private = "file")
-wake_waiter :: proc "contextless" (w: rawptr) {
+unpark_waiter :: proc "contextless" (w: rawptr) {
 	unpark((^Thread)(w))
+}
+
+@(private = "file")
+ready_waiter :: proc "contextless" (w: rawptr) {
+	ready((^Thread)(w))
 }
 
 @(private = "file")
@@ -403,32 +409,51 @@ yield :: proc "contextless" () {
 
 @(private = "file")
 on_yield :: proc "contextless" (r: arch.Resume) -> arch.Resume {
-	return reschedule(r, voluntary = true)
+	return reschedule(r, spent_slice = false)
 }
 
 /*
-on_tick is the preemption path.
+on_tick is the preemption path, and the only clock anything else has.
 
 The acknowledgement comes first and unconditionally. Everything after it can
 decide not to switch, but nothing after it may decide not to acknowledge: an
 un-acknowledged local APIC delivers no further interrupt at that priority, and
 the symptom is a timer that stopped with nothing anywhere reporting an error.
+
+Deadlines are next, before the slice is charged and long before anyone decides
+who runs. `sync.tick` starts every thread whose deadline has arrived and says
+how many that was; a thread due at this tick is on a run queue by the time
+`reschedule` looks. The direction is the one that is allowed -- this package
+imports `kernel:sync`, so the clock is handed down rather than reached up for.
+
+A wake is a reason to re-decide, and it is not a reason to charge anybody. The
+running thread has not spent its slice, so `spent_slice` is false and it neither
+decays nor counts a preemption; it goes to the back of its own level and gets
+the core straight back unless the thread that just woke outranks it. Without
+that call a thread that asked for one tick would be handed the core somewhere
+in the next ten, which is not what it asked for.
 */
 @(private = "file")
 on_tick :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	arch.timer_ack()
 
 	c := cpu()
-	intrinsics.volatile_store(&c.ticks, c.ticks + 1)
+	now := c.ticks + 1
+	intrinsics.volatile_store(&c.ticks, now)
+
+	woken := sync.tick(now)
 
 	t := c.current
 	if t != nil && t.state == .Running {
 		t.ticks_left -= 1
 		if t.ticks_left > 0 {
-			return r
+			if woken == 0 {
+				return r
+			}
+			return reschedule(r, spent_slice = false)
 		}
 	}
-	return reschedule(r, voluntary = false)
+	return reschedule(r, spent_slice = true)
 }
 
 // on_spurious is the local APIC saying an interrupt it had begun to deliver
@@ -449,13 +474,20 @@ Runs with interrupts off in every case -- the gates are interrupt gates and
 The outgoing thread's fate depends on the state it was in, not on why we got
 here:
 
-    Running + preempted   decays a level, goes to the back of the new level
-    Running + yielded     keeps its priority, goes to the back of its level
-    Blocked               goes nowhere; `ready` is what brings it back
-    Dead                  goes on the reap list
+    Running, spent a slice   decays a level, goes to the back of the new level
+    Running, did not         keeps its priority, goes to the back of its level
+    Blocked                  goes nowhere; `ready` is what brings it back
+    Dead                     goes on the reap list
+
+`spent_slice` is the whole of the charge, and it is a question about the
+outgoing thread rather than about why the switch happened. A thread that
+yielded did not spend one. Neither did one that was interrupted so that a
+thread whose deadline arrived could be looked at. Only running out of
+`ticks_left` spends a slice, which is what makes decay a measure of CPU
+consumed -- see `Thread.ticks_left`.
 */
 @(private)
-reschedule :: proc "contextless" (r: arch.Resume, voluntary: bool) -> arch.Resume {
+reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Resume {
 	c := cpu()
 	prev := c.current
 
@@ -467,7 +499,7 @@ reschedule :: proc "contextless" (r: arch.Resume, voluntary: bool) -> arch.Resum
 
 		switch prev.state {
 		case .Running:
-			if !voluntary {
+			if spent_slice {
 				prev.preemptions += 1
 				c.preemptions += 1
 				decay(prev)

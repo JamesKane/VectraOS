@@ -73,6 +73,20 @@ contend_prio: [CONTENDERS]int
 @(private = "file")
 contend_done: int
 
+// Where the boot thread waits for the two of them.
+@(private = "file")
+contend_over: sync.Rendez
+
+// How long past the contenders' own deadline the boot thread keeps waiting
+// before deciding one of them is stuck.
+@(private = "file")
+PATIENCE :: 200
+
+@(private = "file")
+both_done :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.volatile_load(&contend_done) >= CONTENDERS
+}
+
 /*
 contend_worker takes the lock, occupies it visibly, and gives it back.
 
@@ -124,6 +138,7 @@ contend_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
 		intrinsics.volatile_store(&contend_prio[slot], int(t.prio))
 	}
 	intrinsics.volatile_store(&contend_done, intrinsics.volatile_load(&contend_done) + 1)
+	sync.wakeup(&contend_over)
 }
 
 @(private = "file")
@@ -199,11 +214,15 @@ verify_sleep_lock :: proc() #no_bounds_check {
 		return
 	}
 
-	// The boot thread has nothing to do here and no way to be sure it will be
-	// scheduled while the two of them hold the core, so it waits on the one
-	// thing that is certain: once they are done, it is all that is left.
-	for intrinsics.volatile_load(&contend_done) < CONTENDERS {
-	}
+	// The boot thread has nothing to do here and no business competing with
+	// the two threads it is measuring, so it parks: off every run queue until
+	// the second of them is finished, with a deadline so that a contender
+	// that wedges is a failed check rather than a hung boot.
+	scheck(
+		&r,
+		sync.sleep_for(&contend_over, both_done, nil, CONTEND_TICKS + PATIENCE),
+		"both contenders finished",
+	)
 	sched.reap()
 
 	after := sync.sleep_stats()

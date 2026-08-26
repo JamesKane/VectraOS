@@ -172,9 +172,9 @@ number below leaves room for.
 MAX_SPREAD :: 20
 
 /*
-Who watches the clock, and why it is not the boot thread.
+Who watches the clock, and why the boot thread does not.
 
-Two attempts got this wrong before the third, and both were about priority.
+Three attempts got this wrong, and all three were about priority.
 
 The first waited by yielding. A thread that yields never burns a slice, so it
 never decays, while the workers burn every slice and decay to the bottom within
@@ -189,21 +189,35 @@ ever decays. The waiter starved instead of the workers, which is the same bug
 seen from the other end -- a spin loop's priority is not something a test can
 rely on, in either direction.
 
-So no thread waits on the clock. Every worker reads the same deadline and stops
-itself, and the boot thread only has to observe that they are all gone -- which
-it can, because once they are, it is the only thing runnable. What still bounds
-the wait is progress: if the workers have completed no further rounds in
-STALL_TICKS milliseconds, something is stuck, and that is a failed check rather
-than a hung boot. That watchdog now fires precisely when it is needed, since a
-wedged worker is a worker not competing for the core.
+The third took the boot thread out of the race by giving the job to the
+workers: every one of them reads the same deadline and stops itself, and the
+boot thread only had to notice they were gone. That is still how the run ends,
+and it is still right. What it did not fix was the noticing, which was a poll
+with a progress watchdog stapled to it -- a loop whose correctness depended on
+the priority of the thread running it, which is the thing all three attempts
+had just proved could not be relied on.
+
+The fourth is the one that stops the argument. The boot thread parks on a
+rendezvous until the last worker is finished, so it is not on a run queue at
+all and its priority is not a number anything consults. `PATIENCE` is what
+keeps a wedged worker from becoming a hung boot: the wait has a deadline, and
+missing it is a failed check.
+
+The lesson is worth the four paragraphs. A thread that must not compete should
+not be runnable, and every cheaper way of saying that turned out to be a
+statement about priorities that some later change was free to falsify.
 */
 @(private = "file")
-STALL_TICKS :: 500
+PATIENCE :: 500
 
 @(private = "file")
 WORKERS :: 5
 
 // -- What the workers report -------------------------------------------------
+
+// Where the boot thread waits for the last worker.
+@(private = "file")
+all_done: sync.Rendez
 
 @(private = "file")
 stop: bool
@@ -304,6 +318,7 @@ list_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
 		bump(&list_done[which])
 	}
 	bump(&finished)
+	sync.wakeup(&all_done)
 }
 
 /*
@@ -386,6 +401,7 @@ read_worker :: proc "contextless" (arg: rawptr) {
 		bump(&read_done)
 	}
 	bump(&finished)
+	sync.wakeup(&all_done)
 }
 
 /*
@@ -451,6 +467,7 @@ union_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
 		vfs.chan_close(c)
 	}
 	bump(&finished)
+	sync.wakeup(&all_done)
 }
 
 // The complete vocabulary of `/mnt`: `#t`'s two directories and `#u`'s three
@@ -494,6 +511,7 @@ churn_worker :: proc "contextless" (arg: rawptr) {
 		bump(&churn_done)
 	}
 	bump(&finished)
+	sync.wakeup(&all_done)
 }
 
 // -- The boot thread's part --------------------------------------------------
@@ -521,16 +539,12 @@ Vfs_Threads :: struct {
 	settled:       bool, // Every worker is gone; teardown is safe
 }
 
-// completed totals what the workers have finished, for the progress check. A
-// plain sum of volatile loads: it does not have to be a consistent snapshot,
-// only larger than it was.
+// The condition the boot thread waits on. Run by `sync.sleep_for` with
+// interrupts masked, which is the whole of why it may not do anything but
+// read.
 @(private = "file")
-completed :: proc "contextless" () -> int #no_bounds_check {
-	return(
-		intrinsics.volatile_load(&list_done[0]) +
-		intrinsics.volatile_load(&list_done[1]) +
-		intrinsics.volatile_load(&read_done) +
-		intrinsics.volatile_load(&churn_done) 	)
+all_workers_done :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.volatile_load(&finished) >= WORKERS
 }
 
 @(private = "file")
@@ -650,25 +664,13 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	/*
 	The workers stop themselves at `deadline`; this waits for the last of them.
 
-	Bounded by progress rather than by a clock of its own: a worker that is
-	neither finishing nor advancing is stuck, and saying so is worth more than
-	a boot that hangs. This thread need not be scheduled at all while the run
-	is going -- see STALL_TICKS -- and in practice it is not.
+	Off every run queue for the whole run, so the five threads under test have
+	the core entirely to themselves and nothing here has an opinion about
+	priority -- see PATIENCE. Each worker wakes this rendezvous as it leaves,
+	so the first four wakes find the condition still false and `sleep_for`
+	parks again; the fifth is the one that returns.
 	*/
-	checked := sched.ticks()
-	seen := completed()
-	for intrinsics.volatile_load(&finished) < WORKERS {
-		now := sched.ticks()
-		if now - checked < STALL_TICKS {
-			continue
-		}
-		checked = now
-		if done := completed(); done > seen {
-			seen = done
-			continue
-		}
-		break
-	}
+	_ = sync.sleep_for(&all_done, all_workers_done, nil, RUN_TICKS + PATIENCE)
 	r.ticks = sched.ticks() - started
 
 	// Nothing below here is safe to run while a worker is still inside the

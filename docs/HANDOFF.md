@@ -26,7 +26,7 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 7 is done: the kernel has a lock that sleeps.**
+**Milestone 8 is done: the kernel has a sleep queue.**
 
 Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
 behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
@@ -38,8 +38,10 @@ made possible, and proves it with five threads walking, listing, reading and
 rebinding the same namespace at once. Milestone 7 makes the one lock held
 across a 9P message a *sleeping* lock, which is what an out-of-process
 transport was waiting for — and which made the vfs layer preemptible for the
-first time. About 15,500 lines of Odin; the linked image is
-~627 KB debug, ~242 KB release.
+first time. Milestone 8 gives it the other half of blocking: a thread can now
+wait for a *condition* rather than for a lock, and it can wait with a deadline.
+About 16,600 lines of Odin; the linked image is
+~650 KB debug, ~256 KB release.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
@@ -65,9 +67,10 @@ first time. About 15,500 lines of Odin; the linked image is
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62537 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (17728177-18134560 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 13 sleeping lock checks passed -- 1513 acquisitions, 1403 parked and handed back, decayed to 1
-[  ok  ] vfs 35 concurrency checks passed -- 1326 namespace operations across 5 threads, 264 rebinds under them in 1018 ms, 12008 session waits slept, heap balanced
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (16428925-16578328 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 2057 acquisitions, 1962 parked and handed back, decayed to 1
+[  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
+[  ok  ] vfs 35 concurrency checks passed -- 1474 namespace operations across 5 threads, 2543 rebinds under them in 1000 ms, 12619 session waits slept, heap balanced
 [  ok  ] boot complete -- idling
 ```
 
@@ -293,11 +296,124 @@ a negative control that does it fails both self-tests.
 
 **`kernel/verify_sync.odin` tests the lock on its own terms**, because a failure
 seen only through the namespace arrives in the vocabulary of mount tables. Two
-threads, one mutex, thirteen checks: exclusion, that they really contended, and
+threads, one mutex, fourteen checks: exclusion, that they really contended, and
 that a thread which blocked its way through a whole slice of CPU was still
 charged for it. The critical section is a spin deliberately sized to be longer
 than a tick and shorter than a slice — that gap is exactly what distinguishes
 "charged for the CPU it used" from "never finished a slice".
+
+### The sleep queue
+
+`kernel/sync/wait.odin` and `kernel/sync/rendez.odin` are Milestone 8. A mutex
+answers one question — may I have this? — and answers it by handing ownership
+over. Almost nothing else a kernel waits for has that shape. A thread waiting
+for a reply, a key, a disc or ten milliseconds is waiting for a *condition*, and
+whoever makes it true has nothing to hand over. `sync.Rendez` is where those
+threads wait, and it is Plan 9's `Rendez` down to the name.
+
+```odin
+sync.sleep(&r, cond, arg)               // until cond is true
+sync.sleep_for(&r, cond, arg, ticks)    // ...or the deadline; reports which
+sync.delay(ticks)                       // give the core up and come back
+sync.wakeup(&r) / sync.wakeup_all(&r)   // safe from an interrupt handler
+```
+
+**The condition is a procedure, and that is the whole trick.** The obvious API —
+"put me on this queue and stop me" — has a race the caller cannot fix from its
+own side: between testing the condition and calling in, the condition can become
+true and the wake-up can happen, and the thread then parks waiting for something
+that has already occurred. So the queue takes the *test* rather than the answer
+and runs it itself with interrupts already masked. The check and the park are
+then one step and the window has nowhere left to be. That is why `cond` is
+`contextless` and must not allocate, log or take a sleeping lock: it runs in the
+moment the machine is not taking interrupts.
+
+It is also why a `wakeup` that finds nobody waiting is not a lost wake-up. The
+state lives in the condition, never in the queue; a thread arriving afterwards
+runs the test, finds it true and never parks. The API is shaped so there is
+nowhere else to put that state.
+
+**Waking is a hint, so `sleep` loops.** `wakeup` cannot promise the condition is
+still true when the woken thread actually runs — a third thread can consume it
+in between — so `sleep` re-tests and parks again. That is the exact opposite of
+`mutex_unlock`, which hands the lock over and wakes a thread with nothing left
+to check. A mutex can transfer the thing being waited for; a rendezvous cannot.
+
+**The queue, the scheduler hooks and the stack-node rule moved out of
+`sleep.odin` into `wait.odin`,** because a `Rendez` wants all three. `Mutex` is
+now just handoff on top of them. Priority-ordered service, which Milestone 7 put
+in the mutex, is shared code and therefore applies to both.
+
+**Time comes down from the scheduler, never up.** `sched.on_tick` calls
+`sync.tick(now)`, which is the only clock this package has; deadlines are in
+ticks because that is exactly as much resolution as exists. `tick` returns how
+many threads it started, and `on_tick` reschedules when that is non-zero *without
+charging the running thread a slice* — the thread did not spend one, and a
+deadline honoured somewhere in the next ten ticks is not a deadline honoured.
+`reschedule`'s flag was renamed `voluntary` → `spent_slice` for this: the
+question is about the outgoing thread, not about why the switch happened.
+
+**A thread with a deadline is on two lists,** the rendezvous and the timer list,
+and each of `wakeup` and `tick` unlinks from both before waking. The woken
+thread then unlinks itself again on the way out. That is redundant on purpose,
+and the negative controls measured exactly how redundant: mutating *either* side
+alone passes every check in the suite, and mutating both faults inside the timer
+interrupt on a stack frame that has gone. They stay because they are not the
+same guarantee — the waker's unlink stops a node being handed out twice while
+its thread is runnable but has not run; the sleeper's stops a departing frame
+leaving a pointer to itself in a list.
+
+**Three busy-waits went away, and the last of them was the point.**
+`kernel/verify_vfs.odin` had spent three attempts trying to have the boot thread
+watch a five-thread run without disturbing it: yielding starved the workers,
+spinning starved the waiter once lock wake-ups started boosting, and the third
+put a progress watchdog on a poll whose correctness still depended on the
+priority of the thread running it. The boot thread now parks on a rendezvous
+with a deadline, so it is not on a run queue at all and its priority is not a
+number anything consults. **A thread that must not compete should not be
+runnable**, and every cheaper way of saying that turned out to be a claim about
+priorities that a later change was free to falsify.
+
+Getting out of the way is measurable: the churn worker's rebinds went from ~250
+a run to ~2,500 in debug and ~24,500 in release, and the sleeping-lock test's
+acquisitions roughly doubled. The boot thread had been taking that.
+
+**`kernel/verify_rendez.odin` checks it, and the hard part is that the
+interesting properties are all about a thread that is not running.** A lock can
+be caught by two threads seeing each other inside it; a sleep can only be caught
+by measuring what the rest of the machine did while the sleeper was gone. Twenty
+checks over four properties — the clock, the park, the condition, the order:
+
+- *The park.* `delay(25)` and a 25-tick spin are indistinguishable from inside
+  the thread that ran them. They differ in the switch count, and with only the
+  boot and idle threads alive that difference is exact rather than statistical:
+  `reschedule` does not count a switch when the thread it picked is the thread
+  it had, so a spin is **zero** switches and a park is **two**.
+- *The clock.* Two ticks of slack, which is tight on purpose — it is what
+  catches the missing reschedule in `on_tick`, where the sleeper would instead
+  wait out the running thread's slice. One tick of skew is not checked and is
+  not checkable: the clock can advance between a caller reading it and
+  `sleep_for` computing a deadline from it.
+- *The order.* Three sleepers at spread priorities, **started one at a time**.
+  Spawning all three at once quietly made this check worthless and the negative
+  control found it: the scheduler dispatches the highest-priority thread first,
+  so it is also the first to reach the queue, and arrival order and priority
+  order agree. The check passed with the priority scan disabled. Each sleeper is
+  parked before the next is created now.
+
+**Six of eight mutations are caught**, and the two that are not are the halves
+of that deliberate redundancy:
+
+| Mutation | Result |
+|---|---|
+| `sleep` does not re-test after waking | caught — three failures, all three suites |
+| serve waiters in arrival order | caught — the ordering check, deterministically |
+| no reschedule when a deadline fires | caught — "given the core back promptly" |
+| park before testing the condition | caught — hangs the boot, loudly and at once |
+| neither side unlinks from the rendezvous | caught — "the rendezvous came back empty" |
+| neither side unlinks from the timer list | caught — `#PF` at `0x19`, in the tick |
+| only the timer skips the unlink | **not caught** — the sleeper covers it |
+| only the waker skips the timer removal | **not caught** — the sleeper covers it |
 
 ### Measuring a concurrency test in ticks
 
@@ -350,10 +466,10 @@ which is exactly why they are cheap to leave in now and expensive to find later.
 thread grows an `^Address_Space` and `reschedule` grows one comparison when
 there is one. No SMP: `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 is
 ever brought up, and there is no IPI, no AP trampoline and no lock word. No
-`/srv`. No `Tflush` service, though the scheduler it was waiting for now exists.
-No sleep or timed wait — `block`, `ready`/`unpark` and `sync.Mutex` are the only
-blocking primitives, and none of them can wait for a duration.
-No `swapgs`, no per-CPU state behind GS. `kmain` ends by calling `sched.exit`,
+`/srv`. No `Tflush` service, though the scheduler *and* the timed wait it was
+waiting for now both exist. No condition variable as such, because `sync.Rendez`
+is one. No read/write sleeping lock, which is the piece `Mount_Point.generation`
+is standing in for. No `swapgs`, no per-CPU state behind GS. `kmain` ends by calling `sched.exit`,
 so the machine idles rather than halting.
 
 ## 3. Build and run
@@ -634,6 +750,33 @@ are the load-bearing bits:
   priority level. What makes this safe against starvation is that decay measures
   CPU consumed — the loser of every race burns nothing and rises past the
   winners. The two are one decision, not two.
+- **A rendezvous takes the condition, not the answer.** `sync.sleep` is handed a
+  `contextless` predicate and runs it itself with interrupts masked, so the test
+  and the park are one step. Handing the queue an already-computed answer leaves
+  a window between the caller's test and the call that nothing inside the queue
+  can see, and the thread parks waiting for something that has already happened.
+  The same shape is what makes an early `wakeup` harmless — the state lives in
+  the condition, never in the queue — and it is what will survive SMP unchanged,
+  where the mask is replaced by a spinlock held across both.
+- **`sync.sleep` loops; `mutex_unlock` does not.** A mutex transfers the thing
+  being waited for, so a woken thread has nothing to re-check. A rendezvous
+  transfers nothing, so a wake is only ever a hint and the condition is
+  re-tested. Callers get "the condition held when this returned" without writing
+  a loop of their own, and a mutation that removes the loop fails all three
+  concurrency self-tests.
+- **The clock is handed down to `kernel/sync`, not reached up for.**
+  `sched.on_tick` calls `sync.tick(now)`; `sync` keeps no clock of its own and
+  deadlines are in ticks, because that is exactly the resolution the timer has.
+  It is the same dependency direction as `sync.set_scheduler` and for the same
+  reason — `sched` imports `sync`, so nothing in `sync` may name a `^Thread` or
+  a `^Cpu`.
+- **A deadline that fires reschedules immediately, and charges nobody.**
+  `sync.tick` reports how many threads it started and `on_tick` switches when
+  that is non-zero, with `spent_slice` false: the running thread did not spend a
+  slice, and a thread that asked to be woken at tick N and gets the core at tick
+  N+9 was not woken at tick N. This is why `reschedule`'s flag is `spent_slice`
+  and no longer `voluntary` — the question is about the outgoing thread, not
+  about the reason for the switch.
 - **The panic screen has no backtrace.** It reports the faulting instruction and
   the register state but cannot walk the stack; that needs frame pointers kept
   deliberately or unwind tables retained. It is the largest single thing missing
@@ -682,27 +825,33 @@ are the load-bearing bits:
 ## 7. Where to go next
 
 The scheduler was the thing blocking everything else, the namespace it exposed
-is now locked, and the lock that holds a session across a message now sleeps.
-What is left divides cleanly into "needs a sleep queue" and "needs userland".
+is now locked, the lock that holds a session across a message sleeps, and a
+thread can now wait for a condition or a deadline. The primitives a driver needs
+in order to be written all exist. What is left is mostly *using* them.
 
-**A sleep queue is the next structural piece, and it is mostly written.**
-`sync.Mutex` already has the parts — a wait list of stack-allocated nodes, and
-a scheduler registered through `sync.set_scheduler` — but they are private to
-that file and can only be woken by an unlock. A `Wait_Queue` lifted out of it,
-plus a tick-keyed list on `Cpu` drained by `on_tick`, gives waits with a
-deadline. Nothing can wait for a duration or for a device until it exists, which
-is what `Tflush` and every real driver want. A condition variable falls out of
-the same piece.
+**`Tflush` is now unblocked and is the obvious next piece.** Section 7.3 of
+`VECTRA9.md` pins the shape and every dependency it was waiting for is in
+place: a tag-indexed pool of in-flight requests, a `Rendez` per tag for the
+caller to wait on, `Rflush` after the original's fate is decided, never an error
+reply. It is also the first thing that will genuinely exercise `sleep_for`
+against something other than a self-test.
 
-**A read/write sleeping lock is worth wanting too.** `Mount_Point.generation`
-exists only because a read lock could not be held across a union search — Plan 9
-holds one, because its locks sleep. Now that Vectra's can, the retry loop in
-`walk1_ex` could become a read lock and the generation counter could go.
+**A read/write sleeping lock is the other piece worth wanting.**
+`Mount_Point.generation` exists only because a read lock could not be held
+across a union search — Plan 9 holds one, because its locks sleep. Now that
+Vectra's can, the retry loop in `walk1_ex` could become a read lock and the
+generation counter could go. `Wait_Queue` is the right foundation and the
+reader/writer policy is the only new thinking: which of two waiting kinds
+`take_best` should prefer, and whether a waiting writer blocks arriving readers.
+
+**Priority inheritance is the known gap in what exists.** A lock or a rendezvous
+goes to the best waiter, but a low-priority *holder* still delays a
+high-priority waiter for as long as it holds. It has not bitten because nothing
+runs at realtime; it will the moment something does. Plan 9 never had it either,
+which is an argument about cost rather than about correctness.
 
 **Then, in roughly this order:**
-1. **`Tflush`.** Section 7.3 of `VECTRA9.md` pins the shape and the scheduler
-   it was waiting for now exists: a tag-indexed pool of in-flight requests,
-   `Rflush` after the original's fate is decided, never an error reply.
+1. **`Tflush`.** See above.
 2. **A first real device server.** `devfs` with `/dev/cons` over the console
    driver, which makes the whole path from a name to a byte on screen exist end
    to end. `static.odin` is the wrong shape only because it is read-only.
@@ -722,8 +871,12 @@ inert. Three things become urgent the moment a second core runs: `Chan.refs` and
 `Mount_Point.refs` want atomic increments rather than a global lock;
 `sync.critical_depth` has to become per-CPU state; and `sync.Mutex` needs the
 scheduler to drop its guard *after* the switch, since a parked thread currently
-relies on the interrupt mask travelling with it through the trap frame. All
-three are named where they live.
+relies on the interrupt mask travelling with it through the trap frame. A fourth
+arrived with the sleep queue: masking is what stands in for a lock on every wait
+list, so `Wait_Queue` needs a real lock word and `Rendez` grows the `^Spinlock`
+Plan 9's always had, held by the caller across both the condition test and the
+wake-up. The API was given its present shape partly so that change would not
+alter it. All four are named where they live.
 
 **Smaller things worth doing when convenient:**
 
@@ -758,7 +911,9 @@ boot/
   limine/               Vendored Limine 12.6.1 UEFI binaries + VERSION + README
 kernel/
   main.odin             kmain, Limine requests, boot survey, memory bring-up
-  verify_sync.odin      The sleeping lock on its own terms: 13 checks, 2 threads
+  verify_sync.odin      The sleeping lock on its own terms: 14 checks, 2 threads
+  verify_rendez.odin    The sleep queue: 20 checks -- the clock, the park, the
+                        condition, the order
   verify_vfs.odin       The namespace under five threads: 35 checks, two servers
   splash.odin           Boot chassis: plinth, copper bar, well, lamps
   log.odin              Kernel log; serial + screen, with early-line replay
@@ -806,10 +961,13 @@ kernel/
     thread.odin         Thread, Cpu, priorities, decay and boost, slice scaling
     queue.odin          Per-level FIFOs and the pick
     sched.odin          init, spawn, block/ready/unpark, reschedule, the tick
+                        that also drains sync's deadlines
     verify.odin         The boot self-test: cooperative half and preemptive half
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled
-    sleep.odin          The lock that parks: wait queues, priority handoff
+    wait.odin           Wait queues, scheduler hooks, priority-ordered service
+    sleep.odin          The lock that parks: Mutex, and handoff rather than retry
+    rendez.odin         Waiting for a condition, with or without a deadline
 sys/
   libodin/format.odin   Allocation-free formatting (Sink)
   vectra9/
