@@ -110,6 +110,26 @@ run. **Only a second CPU makes these
 reachable**, which is exactly why they are cheap to leave in now and expensive
 to find later.
 
+## A self-test that hangs says nothing, and it keeps happening
+
+Twice now, in different subsystems, and the second time is what makes it a
+pattern rather than an anecdote.
+
+The first was the missing EOI in the tick handler. `verify_preemption` waited on
+the tick count with no bound, so a timer that stopped stopped the boot. It
+checks liveness instead now.
+
+The second was `chan_read_for` with its deadline ignored. That read never
+returns, and the check ran on the boot thread, so the boot printed nothing at
+all from that point on. The give-up read runs on a spawned thread now, watched
+with a bounded wait. A read that does not come back is then a check that fails.
+
+**The rule that falls out of both: a self-test may never do the blocking thing
+on the thread that reports.** Spawn it, watch it with a bound, and treat the
+bound running out as the failure it is. What that costs is a thread and ten
+lines. What it buys is that the failure names itself, in the place hardest to
+attach a debugger to.
+
 ## A control that runs on every boot
 
 `kernel/verify_payload.odin` does something the tables above do not, and it is
@@ -141,17 +161,29 @@ expressible, it is worth the twenty lines.
 
 | Subsystem | Table | Caught |
 |---|---|---|
-| The namespace under five threads | above | 5 of 7 |
+| The namespace under five threads | above | 5 of 8 |
 | The sleep queue | `docs/SYNC.md` | 6 of 8 |
 | `Tflush` and its transport | `docs/TRANSPORT.md` | 5 of 6 |
 | The payload buffer per request slot | `docs/TRANSPORT.md` | 3 of 4 |
+| The namespace over a transport with workers | `docs/NAMESPACE.md` | 4 of 6 |
 
-**The uncaught ones cluster, and the cluster is the finding.** Every one of them
+**The uncaught ones cluster, and the cluster is the finding.** Almost every one
 is a window two or three instructions wide, and none is at a lock boundary.
 
-One is a count loaded and stored back. Another is a slot claimed and not yet
-marked. Only a second CPU makes any of them easy to reach. That is why they are
-cheap to leave in now, and expensive to find later.
+One is a count loaded and stored back. One is a slot claimed and not yet marked.
+One is a fid slot read and written. Only a second CPU makes any of them easy to
+reach. That is why they are cheap to leave in now, and expensive to find later.
+
+**The one that does not fit the pattern is worth naming separately.** Deleting
+`rpc`'s `can_sleep` refusal in `kernel/vfs` changes nothing, because no correct
+caller holds a spinlock across a message and there is therefore nothing to
+refuse.
+
+That is not a gap in the test. Deleting a guard which only acts on
+already-broken code tests nothing. The control which does test it breaks the
+code instead: move a `chan_clone` inside `object_lock` and watch `EDEADLK` come
+back. When a mutation of a guard comes back clean, check that the mutation was
+the right one before recording it as uncaught.
 
 ## See also
 

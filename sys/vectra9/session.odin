@@ -15,6 +15,8 @@ one rather than an assertion.
 */
 package vectra9
 
+import "base:intrinsics"
+
 /*
 What a server presents to the world.
 
@@ -80,16 +82,31 @@ transport that keeps a request's payload in storage of its own copies it here
 before it returns. The caller has no way to know when that storage stops being
 its. A caller that asks for nothing larger than a message header may pass nil,
 and a transport that never took a copy ignores it.
+
+`call_for` is the same request with a deadline, and it is optional. A transport
+that runs the handler on the caller's own stack has nothing to interrupt and
+leaves it nil. `call_for` below then falls back to `call`, which is the honest
+translation of `this transport cannot be interrupted`. A caller that must know
+the difference asks `interruptible`.
 */
 Transport :: struct {
-	data: rawptr,
-	call: proc "contextless" (
+	data:     rawptr,
+	call:     proc "contextless" (
 		data: rawptr,
 		s: ^Session,
 		tag: Tag,
 		request: ^Msg,
 		reply: ^Msg,
 		buf: []u8,
+	) -> Error,
+	call_for: proc "contextless" (
+		data: rawptr,
+		s: ^Session,
+		tag: Tag,
+		request: ^Msg,
+		reply: ^Msg,
+		buf: []u8,
+		ticks: u64,
 	) -> Error,
 }
 
@@ -98,9 +115,19 @@ Session :: struct {
 	msize:     u32,
 	version:   string,
 
-	// Monotonic counters. A recycled fid needs a free list, which needs an
-	// allocator. Until a session outlives a few thousand opens this is enough,
-	// and `alloc_fid` says so where a reader will find it.
+	/*
+	Monotonic counters, and the two fields of a session that several threads
+	write.
+
+	A recycled fid needs a free list, which needs an allocator. Until a session
+	outlives a few thousand opens this is enough, and `alloc_fid` says so where a
+	reader will find it.
+
+	Both move by an atomic increment, because a session is shared. `kernel/vfs`
+	used to hold a lock across every message, which made these two counters
+	incidentally safe. It no longer does. A lost update here hands two threads the
+	same fid, and each then holds the other's file.
+	*/
 	next_tag:  Tag,
 	next_fid:  Fid,
 }
@@ -126,11 +153,12 @@ space belongs to whoever has to keep tags unique among the requests actually in
 flight.
 */
 alloc_tag :: proc "contextless" (s: ^Session) -> Tag {
-	s.next_tag += 1
-	if s.next_tag == NOTAG {
-		s.next_tag = 0
+	for {
+		next := Tag(intrinsics.atomic_add(cast(^u16)&s.next_tag, 1)) + 1
+		if next != NOTAG {
+			return next
+		}
 	}
-	return s.next_tag
 }
 
 /*
@@ -154,11 +182,12 @@ precisely what the comment at the top of this file says they are not.
 See docs/VECTRA9.md section 7.1.
 */
 alloc_fid :: proc "contextless" (s: ^Session) -> Fid {
-	s.next_fid += 1
-	if s.next_fid == NOFID {
-		s.next_fid = 0
+	for {
+		next := Fid(intrinsics.atomic_add(cast(^u32)&s.next_fid, 1)) + 1
+		if next != NOFID {
+			return next
+		}
 	}
-	return s.next_fid
 }
 
 /*
@@ -174,6 +203,38 @@ call :: proc "contextless" (s: ^Session, request: ^Msg, reply: ^Msg, buf: []u8 =
 		return .Transport_Failed
 	}
 	return s.transport.call(s.transport.data, s, alloc_tag(s), request, reply, buf)
+}
+
+/*
+call_for is the same request with a deadline.
+
+Returns `.Interrupted` when the deadline passed first. The request is then
+flushed and its tag is free, which is the only reason a caller may walk away
+from a request at all. See `kernel/mnt`.
+
+A transport with nothing to interrupt answers this exactly as `call` does, and
+`interruptible` is how a caller finds that out in advance. Falling back is the
+honest translation rather than a convenience. A synchronous transport runs the
+handler on the caller's own stack, so there is no other thread to give up on.
+Refusing would leave every caller with a fallback path to write.
+*/
+call_for :: proc "contextless" (
+	s: ^Session,
+	request: ^Msg,
+	reply: ^Msg,
+	ticks: u64,
+	buf: []u8 = nil,
+) -> Error {
+	if s.transport.call_for == nil {
+		return call(s, request, reply, buf)
+	}
+	return s.transport.call_for(s.transport.data, s, alloc_tag(s), request, reply, buf, ticks)
+}
+
+// interruptible reports whether `call_for` on this session can actually give
+// up. False means a deadline is accepted and ignored.
+interruptible :: proc "contextless" (s: ^Session) -> bool {
+	return s.transport.call_for != nil
 }
 
 /*

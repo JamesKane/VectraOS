@@ -26,15 +26,20 @@ What is deliberately absent:
 
   - a current directory. `resolve` takes absolute paths and `#name` specs only,
     because a relative path needs a process to be relative to.
-  - Tflush, which exists but not here. `kernel/mnt` implements it over a
-    transport that can have several requests in flight; this package still
-    speaks `vectra9.In_Process`, where a request is never outstanding and there
-    is nothing to flush. A move is not a matter of a swapped transport. The
-    borrow rule below depends on a session lock that spans the whole exchange,
-    and a connection with more than one worker breaks that.
+  - a global tree, and any lock that would imply one.
+
+A server here sits on one of two transports and does not know which. The
+synchronous one runs the handler on the caller's own stack. The asynchronous
+one is `kernel/mnt`: a queue, a pool of worker threads, several requests in
+flight, and `Tflush` under a caller that gives up. `server_start` is the move
+between them, and nothing above it changes.
+
+That is the claim `docs/VECTRA9.md` opens with, and it is now checked rather
+than asserted. `kernel/verify_vfs.odin` runs the same namespace over both.
 */
 package vfs
 
+import "kernel:mnt"
 import "kernel:sync"
 import "vsys:vectra9"
 
@@ -68,28 +73,30 @@ but a second fid space to keep straight.
 Server :: struct {
 	name:      string, // The `#name` this is attached by, without the '#'
 	session:   vectra9.Session,
-	transport: vectra9.In_Process,
 
 	/*
-	The session lock -- held across a whole message, unlike every other lock
-	in this package.
+	The synchronous transport, used when this server has no workers of its own.
 
-	It is what makes `one request in flight per session` true, and that claim is
-	load-bearing twice over. The fid and tag counters go out under it. And a reply
-	that borrows the server's storage is valid only while something holds it. See
-	the borrow rule in `lock.odin`.
-
-	A `sync.Mutex` rather than a `sync.Spinlock`, and that is the whole reason
-	`kernel/sync/sleep.odin` exists. A spinlock is the interrupt flag. Held across
-	a message, one makes every message unpreemptible. That is why a uniprocessor
-	doing file I/O used to be very nearly impossible to interrupt.
-
-	It becomes a hang outright the day a reply arrives *on* an interrupt. A mutex
-	parks the thread that loses the race. The session is therefore exclusive, and
-	the machine is not deaf while something holds it. An out-of-process transport
-	can also wait under it.
+	The handler runs on the caller's own stack. That is one indirect call and no
+	copy of anything. It is the right shape for a tree that lives in kernel memory
+	and answers without waiting. The root device is one. So is anything registered
+	before the scheduler exists, because workers are threads.
 	*/
-	lock:      sync.Mutex,
+	direct:    vectra9.In_Process,
+
+	/*
+	The asynchronous transport, when this server has workers.
+
+	Non-nil means requests go on a queue and come back by tag, several at once.
+	A caller with a deadline can then give up and flush. That is what a server
+	which waits for hardware, or which lives in another address space, has to sit
+	behind. `server_start` builds it and `server_stop` takes it down.
+
+	`arena` is the payload storage it divides among its request slots. It stays
+	this server's for as long as the connection does. See `docs/TRANSPORT.md`.
+	*/
+	conn:      ^mnt.Conn,
+	arena:     []u8,
 }
 
 /*
@@ -98,6 +105,10 @@ server_init wires a handler up as a server and performs the Tversion handshake.
 The handshake is not ceremony even in-process. It is the one message that
 establishes msize. A server that answers a version other than 9P2000.L is a
 server that refuses. Better to find that out here than at the first Twalk.
+
+Synchronous, because workers are threads and this runs before there are any.
+`server_start` is how a server gets them, and it is a separate call for that
+reason rather than for tidiness.
 */
 server_init :: proc "contextless" (
 	sv: ^Server,
@@ -106,12 +117,143 @@ server_init :: proc "contextless" (
 	state: rawptr,
 ) -> vectra9.Error {
 	sv.name = name
-	sv.transport = vectra9.In_Process {
+	sv.conn = nil
+	sv.arena = nil
+	sv.direct = vectra9.In_Process {
 		handler = handler,
 		server  = state,
 	}
-	sv.session = vectra9.session_from(vectra9.in_process_transport(&sv.transport))
+	sv.session = vectra9.session_from(vectra9.in_process_transport(&sv.direct))
 	return vectra9.negotiate(&sv.session)
+}
+
+/*
+server_start moves a server onto `kernel/mnt`, with `workers` threads on it.
+
+The server keeps its handler and its state. What changes is that requests reach
+it through a queue rather than through the caller's stack, several at once. A
+caller with a deadline can then give up on one, which is what makes `Tflush`
+reachable from a path.
+
+**Two things a handler must already be, and one it need not be.** It must be
+safe against several threads inside it at once, because there now are. It must
+build any payload it answers with in the `buf` it is handed. The storage it used
+to borrow is shared, and several requests now use it. What a handler need not be
+is aware of any of this. `vfs.static_handler` moved with no change at all.
+
+`payload` is the bytes each request slot gets, and it becomes the session's
+msize. Zero asks for `DEFAULT_PAYLOAD`.
+
+`abort` is what a server does when one of its requests is flushed, and it is
+optional. A server without one is still correct. It simply cannot abandon work,
+so `Rflush` waits for the request to finish on its own. A caller's deadline then
+buys nothing but a name for what happened. See `docs/TRANSPORT.md`.
+
+Fails, and leaves the server on its synchronous transport, if the heap has no
+room or no worker would start. A server that half-moved would be worse than one
+that did not move: the session's transport is what every existing chan reaches
+it through.
+*/
+DEFAULT_PAYLOAD :: 4096
+
+server_start :: proc(
+	sv: ^Server,
+	workers: int = 2,
+	payload: int = 0,
+	abort: proc "contextless" (server: rawptr, tag: vectra9.Tag) = nil,
+) -> bool {
+	if sv == nil || sv.conn != nil || workers <= 0 {
+		return false
+	}
+	per := payload if payload > 0 else DEFAULT_PAYLOAD
+	if per < mnt.MIN_PAYLOAD {
+		return false
+	}
+
+	arena := make([]u8, per * mnt.MAX_REQUESTS)
+	if arena == nil {
+		return false
+	}
+	conn := new(mnt.Conn)
+	if conn == nil {
+		delete(arena)
+		return false
+	}
+
+	if !mnt.init(conn, sv.direct.handler, sv.direct.server, abort, arena) {
+		free(conn)
+		delete(arena)
+		return false
+	}
+	if !mnt.serve_start(conn, workers) {
+		// Whatever started has to come down. `serve_stop` waits for it, which
+		// is the only way to know the threads are off this connection before
+		// the memory under them goes.
+		mnt.serve_stop(conn)
+		free(conn)
+		delete(arena)
+		return false
+	}
+
+	/*
+	The session is rebuilt rather than edited, because msize comes from the new
+	transport and the fid space does not.
+
+	A fid the old session handed out is still bound on the server, and every
+	live `Chan` still names it. Carrying the counter over is what stops the next
+	`alloc_fid` from handing out one that is already in use.
+	*/
+	next_fid := sv.session.next_fid
+	sv.conn = conn
+	sv.arena = arena
+	sv.session = mnt.session(conn)^
+	sv.session.next_fid = next_fid
+
+	if vectra9.negotiate(&sv.session) != .None {
+		return false
+	}
+	return true
+}
+
+/*
+server_stop takes the workers off a server and puts it back on its own stack.
+
+Waits for the workers, because the next thing to happen is that their arena is
+freed. Requests in flight fail as transport failures, which is what a
+connection that goes away looks like from the outside.
+
+Deliberately reversible. A server that stops is still a server, and a chan that
+survives the change still names a fid its handler knows. The self-tests need
+that, and so does anything that ever moves a service in or out of a thread.
+*/
+server_stop :: proc(sv: ^Server) {
+	if sv == nil || sv.conn == nil {
+		return
+	}
+	mnt.serve_stop(sv.conn)
+
+	next_fid := sv.session.next_fid
+	free(sv.conn)
+	delete(sv.arena)
+	sv.conn = nil
+	sv.arena = nil
+
+	sv.session = vectra9.session_from(vectra9.in_process_transport(&sv.direct))
+	sv.session.next_fid = next_fid
+	_ = vectra9.negotiate(&sv.session)
+}
+
+// server_interruptible reports whether a request to this server can be given up
+// on. False on the synchronous transport, where there is nothing to give up.
+server_interruptible :: proc "contextless" (sv: ^Server) -> bool {
+	return sv != nil && vectra9.interruptible(&sv.session)
+}
+
+// server_msize is the largest message this server's transport carries. It
+// changes when a server moves between transports, because it is a property of
+// the buffer underneath rather than of the server. See `server_start`.
+server_msize :: proc "contextless" (sv: ^Server) -> u32 {
+	return sv == nil ? 0 : sv.session.msize
 }
 
 /*
@@ -183,78 +325,110 @@ find_device :: proc "contextless" (name: string) -> ^Server #no_bounds_check {
 
 // -- Talking to a server -----------------------------------------------------
 
-// What a reply is valid for. Opaque. `rpc_end` is the only thing that reads
-// it.
-@(private)
-Rpc_Guard :: struct {
-	server: ^Server,
-	held:   bool,
-}
-
 /*
-rpc_begin takes the session, and with it the right to allocate a fid.
+rpc sends one request and waits for its reply.
 
-Separate from `rpc` for the three callers that need a fid *in* the request they
-are about to send -- attach, walk and clone. A fid one thread hands out and
-another uses is not a fid. It is a collision.
+    e := rpc(c.server, &request, &reply, buf)
 
-`alloc_fid` is a plain increment. Two threads that both read the counter before
-either writes it both walk to `newfid`, and one of them silently holds the
-other's file. Allocating under the session lock and sending without dropping it
-is what makes the number mean something.
+`buf` is where a reply that carries a payload lands, and it is the caller's.
+`Rread.data` and `Rreaddir.data` point into it when this returns, and they stay
+good for as long as the caller's own storage does. A request that answers with
+no payload passes nil.
 
-Fails with EDEADLK if a bookkeeping lock is held -- see `lock.odin`.
+**That is a change of ownership, and it is what let the session lock go.** The
+payload used to live in the server's storage and stay valid only while something
+held the session. Every caller therefore took a guard and released it when it
+was done reading. A request slot in `kernel/mnt` now owns a buffer, the handler
+builds its reply there, and `mnt.call` copies it here before the slot goes back.
+See `docs/TRANSPORT.md`.
+
+Two failure kinds collapse to one return, and the collapse is deliberate in
+this direction only. A transport failure becomes EIO, because there is nothing
+a path-layer caller could do differently about it. The distinction that matters
+-- `vectra9.Error` versus `Errno`, bytes wrong versus answer no -- is kept
+where it is actionable, at the codec. See `sys/vectra9/errors.odin`.
 */
 @(private)
-rpc_begin :: proc "contextless" (sv: ^Server) -> (Rpc_Guard, Errno) {
-	if sv == nil {
-		return {}, vectra9.EIO
-	}
-
-	/*
-	The invariant `lock.odin` describes, checked rather than trusted.
-
-	A spinlock held here is the interrupt flag held here. The session mutex may
-	park this thread. That would take it off the CPU with interrupts masked, and
-	nothing left to turn them back on. `sync.Mutex` stops the machine and names
-	the rule if it gets that far. This refuses first, and a refusal is the better
-	failure.
-
-	Every caller turns it into a failed open or a failed walk, with a name on it,
-	at the call that broke the rule. That beats a fault months later somewhere
-	else.
-
-	`sync.can_sleep` counts every spinlock on the CPU, not just this
-	package's. That is wider than the old rule and correctly so -- the heap
-	lock and the scheduler lock are just as fatal to hold across a wait.
-	*/
-	if !sync.can_sleep() {
-		return {}, vectra9.EDEADLK
-	}
-
-	sync.mutex_lock(&sv.lock)
-	return Rpc_Guard{server = sv, held = true}, OK
-}
-
-/*
-rpc_under sends one request on a session the caller already holds.
-
-Two failure kinds collapse to one return here, and the collapse is deliberate
-in this direction only. A transport failure becomes EIO, because there is
-nothing a path-layer caller could do differently about it. The distinction that
-matters -- `vectra9.Error` versus `Errno`, bytes wrong versus answer no -- is
-kept where it is actionable, at the codec. See `sys/vectra9/errors.odin`.
-*/
-@(private)
-rpc_under :: proc "contextless" (
-	g: Rpc_Guard,
+rpc :: proc "contextless" (
+	sv: ^Server,
 	request: ^vectra9.Msg,
 	reply: ^vectra9.Msg,
+	buf: []u8 = nil,
 ) -> Errno {
-	if !g.held {
+	if e := rpc_ready(sv); e != OK {
+		return e
+	}
+	return rpc_answer(vectra9.call(&sv.session, request, reply, buf), reply)
+}
+
+/*
+rpc_for is the same request with a deadline, and it is why this package moved.
+
+Returns EINTR when the deadline passed. The request was flushed, so the tag is
+free and nothing will write into `buf` afterwards. That is the guarantee
+`Tflush` exists to provide and the only reason a caller may walk away.
+
+On a server with no workers there is nothing to interrupt, and this answers
+exactly as `rpc` does. `server_interruptible` is how a caller finds that out in
+advance rather than by waiting.
+*/
+@(private)
+rpc_for :: proc "contextless" (
+	sv: ^Server,
+	request: ^vectra9.Msg,
+	reply: ^vectra9.Msg,
+	ticks: u64,
+	buf: []u8 = nil,
+) -> Errno {
+	if e := rpc_ready(sv); e != OK {
+		return e
+	}
+	return rpc_answer(vectra9.call_for(&sv.session, request, reply, ticks, buf), reply)
+}
+
+/*
+rpc_ready refuses a message this thread is not allowed to send.
+
+Fails with EDEADLK if a bookkeeping lock is held -- see `lock.odin`.
+
+A spinlock held here is the interrupt flag held here, and a message can park
+this thread. On `kernel/mnt` it always does: the caller sleeps until a worker
+answers. That would take the thread off the CPU with interrupts masked, and
+nothing left to turn them back on.
+
+The rule used to be about the session mutex, which was the thing that could
+park. It is now about the transport, which is a better reason for the same rule.
+It holds whether or not this package locks anything. It also holds for every
+caller, rather than for the ones that happen to take a lock.
+
+Every caller turns a refusal into a failed open or a failed walk, with a name
+on it, at the call that broke the rule. That beats a fault months later
+somewhere else.
+
+`sync.can_sleep` counts every spinlock on the CPU, not just this package's.
+That is wider than the old rule and correctly so. The heap lock and the
+scheduler lock are just as fatal to hold across a wait.
+*/
+@(private)
+rpc_ready :: proc "contextless" (sv: ^Server) -> Errno {
+	if sv == nil {
 		return vectra9.EIO
 	}
-	if err := vectra9.call(&g.server.session, request, reply); err != .None {
+	if !sync.can_sleep() {
+		return vectra9.EDEADLK
+	}
+	return OK
+}
+
+@(private)
+rpc_answer :: proc "contextless" (err: vectra9.Error, reply: ^vectra9.Msg) -> Errno {
+	#partial switch err {
+	case .None:
+	case .Interrupted:
+		// The caller's own deadline, not a server's refusal. It is the one
+		// transport error a path-layer caller can act on, so it keeps its name.
+		return vectra9.EINTR
+	case:
 		return vectra9.EIO
 	}
 	if e, is_error := reply.(vectra9.Rlerror); is_error {
@@ -266,42 +440,57 @@ rpc_under :: proc "contextless" (
 }
 
 /*
-rpc is the common case: one request, one reply, no fid to allocate first.
+new_fid takes the next fid on a server's session.
 
-    e, g := rpc(c.server, &request, &reply)
-    defer rpc_end(g)
+Separate from the message that uses it, which it did not used to be. The old
+arrangement allocated a fid and sent the request without letting go of the
+session. `alloc_fid` was a plain increment, and two threads could read the
+counter before either wrote it.
 
-`reply` is valid until `rpc_end`, and not one instruction longer. `Rread.data`
-and `Rreaddir.data` point into the server's own storage, which the server may
-reuse for the next message. The session stays held until the caller is done.
-That is what stops a second thread's Treaddir from overwriting the buffer this
-one is about to copy. Every caller takes the guard, including the ones whose
-replies borrow nothing. There is therefore no second entry point to reach for,
-and no judgement about which replies borrow.
+`alloc_fid` is an atomic increment now, so the number is this thread's the
+moment it comes back. Nothing has to be held around the message that carries
+it. See `sys/vectra9/session.odin`.
 */
 @(private)
-rpc :: proc "contextless" (
-	sv: ^Server,
-	request: ^vectra9.Msg,
-	reply: ^vectra9.Msg,
-) -> (Errno, Rpc_Guard) {
-	g, e := rpc_begin(sv)
-	if e != OK {
-		return e, g
-	}
-	return rpc_under(g, request, reply), g
+new_fid :: proc "contextless" (sv: ^Server) -> vectra9.Fid {
+	return vectra9.alloc_fid(&sv.session)
 }
 
 /*
-rpc_end releases the session, and with it any storage the reply borrowed.
+take_payload reports how many bytes of a reply's payload are in `buf`, and
+copies them there only when they are not already.
 
-Safe on a guard from a call that never acquired one, such as a nil server or
-the EDEADLK refusal. A caller can therefore `defer` it on the line after `rpc`,
-and never check whether the call got that far.
+They usually are. `rpc` hands the server the caller's own storage, so a handler
+that built its payload where it was told to wrote it in place. On the
+synchronous transport that is a read with no copy anywhere in it, which is the
+property `docs/VECTRA9.md` opens by claiming.
+
+A server may still answer out of storage of its own. A file whose contents are
+a string in `.rodata` has no reason to copy them somewhere first. That reply is
+valid because the storage is, and this is where it lands instead.
 */
 @(private)
-rpc_end :: proc "contextless" (g: Rpc_Guard) {
-	if g.held {
-		sync.mutex_unlock(&g.server.lock)
+take_payload :: proc "contextless" (buf: []u8, data: []u8) -> int {
+	n := min(len(data), len(buf))
+	if n <= 0 {
+		return 0
 	}
+	if raw_data(data) == raw_data(buf) {
+		return n
+	}
+	copy(buf[:n], data[:n])
+	return n
+}
+
+/*
+max_payload is the largest payload this server may answer a single request
+with, which is its msize less a header and a count prefix.
+
+A caller sizes its own buffer by this. A server that answers with more than it
+was told there was room for gets refused by the transport rather than allowed
+to overrun. See `deliver` in `kernel/mnt`.
+*/
+@(private)
+max_payload :: proc "contextless" (sv: ^Server) -> int {
+	return int(sv.session.msize) - vectra9.HEADER_SIZE - 4
 }

@@ -38,35 +38,44 @@ that never ends.
 Every check here was run against a deliberately broken build, in both build
 modes, because a self-test that cannot fail proves nothing.
 
-    remove Server.lock                        caught -- both listers, at once
     free a referenced Mount_Point             caught -- the reference count
     hold a namespace lock across a message    caught -- EDEADLK, four checks
     boost a thread woken by a lock            caught -- two workers starved
     serve waiters in arrival order            caught, one run in ten
+    union_pass leaves a cookie unstamped      caught -- the union worker
     drop cross_mounts' reference to a member  NOT caught
     unlocked chan reference counts            NOT caught
+    remove Static_Tree.lock                   NOT caught
 
-The last two are not caught, and the interesting part is that making this layer
-*preemptible* did not change that. Before `Server.lock` slept, every message
-ran with the interrupt flag clear. The standing explanation for these two was
-that a uniprocessor which holds a spinlock for most of its instructions is
-nearly impossible to interrupt.
+**There used to be a `remove Server.lock` row at the top, and it was caught.**
+That lock is gone. It served one message at a time per server, which is what
+made a borrowed reply safe. Removing it let two listers into the same directory
+buffer at once. A request slot owns its payload buffer now, so there is no
+shared buffer to remove a lock from. `docs/NAMESPACE.md` has the whole of what
+changed.
 
-A tick rate raised to 20 kHz delivered only 1.4 times as many ticks, because
-the LAPIC coalesces what it cannot deliver. A sleeping session lock removed
-that objection entirely. The same run now parks and switches a hundred thousand
-times, at every message boundary. Neither mutation was caught, in either build
-mode.
+What replaced it in this table is the row underneath, and the result is
+different. `Static_Tree.lock` is the *server's* own, and with the directory
+buffer no longer shared the only thing left under it is a fid table. Removed,
+that is a few instructions between a slot read and a slot written, and this run
+does not find it.
 
-Which says the explanation was only half right. The added switch points are all
-at lock boundaries, and neither of these windows is at a lock boundary. Both
-are a few instructions wide. One is the gap between a reference count loaded
-and stored back. The other is the gap between a member read out of the mount
-table and cloned.
+**So three mutations are uncaught, and they are the same shape.** One is a
+reference count loaded and stored back. One is a member read out of the mount
+table and cloned. One is a fid slot claimed and marked. Every one is two or
+three instructions wide, and none is at a lock boundary.
 
-Only a timer can still land inside one, and there are still about a thousand of
-those a run. Voluntary switches, however many, do not interleave two threads at
-an arbitrary instruction. Only a second CPU does.
+Making this layer preemptible did not change that, which is worth knowing
+because it falsified the first explanation. The story used to be that a
+uniprocessor holding a spinlock for most of its instructions is nearly
+impossible to interrupt. A tick rate raised to 20 kHz delivered only 1.4 times
+as many ticks, because the LAPIC coalesces what it cannot deliver.
+
+A sleeping session lock removed that objection entirely, and the run then parked
+a hundred thousand times, at every message boundary. Neither mutation was
+caught in either build mode. Voluntary switches, however many, do not interleave
+two threads at an arbitrary instruction. Only a timer does, and only a second
+CPU makes one land reliably.
 
 So those two locks are here on the argument rather than the evidence. The
 argument is sharper now that something falsified its first explanation.
@@ -551,7 +560,6 @@ Vfs_Threads :: struct {
 	operations:    int, // Namespace operations the workers completed
 	rebinds:       int,
 	ticks:         u64, // What the run cost the boot, in timer ticks
-	slept:         u64, // Times a worker parked on a contended session lock
 	leaked_run:    int, // Objects the worker phase did not give back
 	leaked_total:  int,
 	settled:       bool, // Every worker is gone; teardown is safe
@@ -656,7 +664,6 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 
 	started := sched.ticks()
 	intrinsics.volatile_store(&deadline, started + RUN_TICKS)
-	slept_before := sync.sleep_stats().sleeps
 
 	spawned := 0
 	if sched.spawn("vfs-list-a", list_worker, rawptr(uintptr(0))) != nil {
@@ -709,7 +716,6 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	*/
 	sched.reap()
 	r.settled = true
-	r.slept = sync.sleep_stats().sleeps - slept_before
 
 	a_done := intrinsics.volatile_load(&list_done[0])
 	b_done := intrinsics.volatile_load(&list_done[1])
@@ -723,13 +729,12 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	tcheck(r, reads >= MIN_ROUNDS, "so did the reader")
 	tcheck(r, rebinds >= MIN_ROUNDS, "so did the thread rearranging the table under them")
 
-	// And none of them got a share that only counts as one arithmetically. This
-	// is the lock's check, not the scheduler's. A handoff that ignores priority
-	// leaves exactly one thread behind, and MIN_ROUNDS alone catches that only
-	// when it is severe.
+	// And none of them got a share that only counts as one arithmetically. A
+	// scheduler that ignores priority on a wake leaves exactly one thread
+	// behind, and MIN_ROUNDS alone catches that only when it is severe.
 	busiest := max(a_done, b_done, reads, rebinds)
 	quietest := min(a_done, b_done, reads, rebinds)
-	tcheck(r, quietest * MAX_SPREAD >= busiest, "and the lock served the quietest of them too")
+	tcheck(r, quietest * MAX_SPREAD >= busiest, "and the quietest of them still got a share")
 
 	// The four that matter. Each is one lock's job, and each of them fails
 	// loudly and often when that lock is not there.
@@ -739,17 +744,6 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	tcheck(r, intrinsics.volatile_load(&churn_errors) == 0, "every bind and unmount succeeded")
 	tcheck(r, intrinsics.volatile_load(&union_errors) == 0, "no union listing invented a name")
 	tcheck(r, intrinsics.volatile_load(&deadlocks) == 0, "no lock was held across a message")
-
-	/*
-	That the session lock is a *sleeping* one, demonstrated rather than assumed.
-
-	Nothing can contend for a spinlock on one CPU. It masks interrupts, so the
-	thread that holds it is the only thread there is until it releases it. This
-	number would be zero however hard the workers ran. A non-zero count is one
-	thread preempted in the middle of a 9P message, and a second thread parked
-	behind it. That is proof the vfs layer became preemptible.
-	*/
-	tcheck(r, r.slept > 0, "threads parked on a busy session rather than masking the machine")
 }
 
 /*
@@ -866,9 +860,7 @@ report_vfs_threads :: proc(r: ^Vfs_Threads) {
 		libodin.put_uint(&sink, u64(r.rebinds))
 		libodin.put_str(&sink, " rebinds under them in ")
 		libodin.put_uint(&sink, r.ticks)
-		libodin.put_str(&sink, " ms, ")
-		libodin.put_uint(&sink, r.slept)
-		libodin.put_str(&sink, " session waits slept, heap balanced")
+		libodin.put_str(&sink, " ms, nothing serialised, heap balanced")
 		emit(&klog, .Ok, &sink)
 		return
 	}

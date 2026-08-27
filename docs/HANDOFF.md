@@ -27,8 +27,9 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 9 is done: `Tflush` works, the transport that made it possible, and
-the payload buffer that lets a real server sit behind it.**
+**Milestone 9 is done, and the namespace is on it.** `Tflush` works, and so does
+the transport that made it possible. A payload buffer per request slot lets a
+real server sit behind it. A read from a path can be walked away from.
 
 Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
 behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
@@ -54,7 +55,14 @@ made false. Each slot now owns a buffer and the handler is handed it, so a real
 server can sit behind several workers. `vfs.static_handler` does, unmodified,
 under four threads listing one directory at once.
 
-About 19,300 lines of Odin. The linked image is ~711 KB debug and ~300 KB
+`kernel/vfs` then moved onto it. A `Server` sits on either transport and nothing
+above it knows which. What that cost the namespace was `Server.lock`, and the
+lock is gone rather than narrowed. It existed to keep one message in flight per
+session, and a reply borrows the caller now. `alloc_fid` is an atomic increment,
+which was the lock's other job. What it bought is `chan_read_for`, a read with a
+deadline that sends `Tflush` and waits for `Rflush` before it lets the fid go.
+
+About 20,300 lines of Odin. The linked image is ~735 KB debug and ~319 KB
 release.
 
 ```
@@ -86,7 +94,8 @@ release.
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
-[  ok  ] vfs 35 concurrency checks passed -- 1429 namespace operations across 5 threads, 2526 rebinds under them in 1000 ms, 12072 session waits slept, heap balanced
+[  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
+[  ok  ] vfs 34 concurrency checks passed -- 4763 namespace operations across 5 threads, 762 rebinds under them in 1000 ms, nothing serialised, heap balanced
 [  ok  ] boot complete -- idling
 ```
 
@@ -135,7 +144,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/MEMORY.md` | `kernel/mem/` — PMM, VMM, heap | Allocating, mapping, or wondering where 1 MiB went |
 | `docs/SCHED.md` | `kernel/sched/` — the switch, priorities, the tick | Adding a thread state, a priority rule, or a second core |
 | `docs/SYNC.md` | `kernel/sync/` — spinlocks, sleeping locks, the sleep queue | Taking any lock, or making anything wait |
-| `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, and the borrow rule | Walking, binding, or adding a server |
+| `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, the two transports, and the lock that went | Walking, binding, adding a server, or giving up on a read |
 | `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
@@ -220,19 +229,14 @@ exposed is now locked. The lock that holds a session across a message sleeps,
 and a thread can now wait for a condition or a deadline. Every primitive a
 driver needs now exists. What is left is mostly *use* of them.
 
-**`kernel/vfs` on `kernel/mnt` is the next piece, and nothing blocks it now.**
-The payload buffer was what it was waiting for. A reply used to borrow the
-server's storage. That held while the session lock spanned the whole exchange,
-and stopped holding the moment eight exchanges could run at once. Each request
-slot now owns a buffer and the handler is handed it, so a `Conn` serving
-`kernel/vfs` is no longer limited to one worker.
+**A first real device server is the next piece.** `devfs` with `/dev/cons` over
+the console driver, which makes the whole path from a name to a byte on screen
+exist end to end. `static.odin` is the wrong shape only because it is read-only.
+Everything under it is now in place. A server can have workers, a read of it can
+be given up on, and a write has somewhere to put its payload.
 
-The move itself is small. `rpc` grows a buffer parameter, and the callers in
-`chan.odin` and `readdir.odin` pass the one they were going to copy into anyway.
-`Server.lock` then stops having to mean `one request in flight`, and goes back
-to meaning `the fid counter is mine`. That is what lets the namespace sit on a
-transport that can be flushed, and what an interruptible read from a slow device
-needs.
+That server is also the first one whose reads genuinely block. Everything that
+waits today waits because a self-test told it to.
 
 **A read/write sleeping lock is the other piece worth wanting.**
 `Mount_Point.generation` exists only because a read lock could not be held
@@ -330,7 +334,10 @@ kernel/
   verify_payload.odin   A payload buffer per request slot: 23 checks, and a
                         shared-buffer control that runs on every boot and has to
                         corrupt
-  verify_vfs.odin       The namespace under five threads: 35 checks, two servers
+  verify_vfs_mnt.odin   The namespace over a transport with workers: 41 checks,
+                        four threads on one namespace, and a read given up from
+                        a path
+  verify_vfs.odin       The namespace under five threads: 34 checks, two servers
   splash.odin           Boot chassis: plinth, copper bar, well, lamps
   log.odin              Kernel log; serial + screen, with early-line replay
   panic.odin            The panic screen, and the trap handler behind it
@@ -363,9 +370,10 @@ kernel/
     vmm.odin            Page table walk, kernel address space, translate
     heap.odin           Slab allocator + Odin's context.allocator
   vfs/
-    lock.odin           What guards what, in what order, and the borrow rule
-    vfs.odin            Server, the #name device table, the guarded RPC pair
-    chan.odin           Chan, refcounting, open/read/write/stat/clone
+    lock.odin           What guards what, in what order, and the lock that went
+    vfs.odin            Server on either transport, the #name device table, rpc
+    chan.odin           Chan, refcounting, open/read/write/stat/clone, and a
+                        read with a deadline
     mount.odin          The mount table, bind/unmount, union member lists
     namespace.odin      Namespace, rfork semantics, teardown
     walk.odin           attach, walk1, cross_mounts, `..`, resolve

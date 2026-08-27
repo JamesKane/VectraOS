@@ -187,6 +187,11 @@ in whatever buffer the transport names. Behind `In_Process` that is still its
 own `dirbuf`, and behind this connection it is the slot's. Before the buffer,
 that arrangement was the one `serve_start` had to refuse.
 
+The larger payoff is one layer up. `kernel/vfs` sits on this now, so a read from
+a path can be given up on. `kernel/verify_vfs_mnt.odin` is that, and
+`docs/NAMESPACE.md` is what it cost the namespace to get there -- which was a
+lock, and only a lock.
+
 ## Decisions, and what would reverse them
 
 - **The tag space belongs to whatever tracks the requests in flight.**
@@ -223,21 +228,26 @@ that arrangement was the one `serve_start` had to refuse.
 
 ## Known warts
 
-- **The two transports in `sys/vectra9` are synchronous, and `kernel/vfs` uses
-  one of them.** `In_Process` and `Encoded_Loopback` both run the handler on
-  the caller's own stack. A client behind either can therefore never have two
-  requests outstanding. `kernel/mnt` is the asynchronous one, and it lives in
-  the kernel because it needs threads. What kept `kernel/vfs` on the synchronous
-  side was the borrow rule, and nothing keeps it there now. See
-  `docs/HANDOFF.md` section 6.
+- **The two transports in `sys/vectra9` are synchronous, and a server may sit
+  on either.** `In_Process` and `Encoded_Loopback` both run the handler on the
+  caller's own stack, so a client behind either can never have two requests
+  outstanding. `kernel/mnt` is the asynchronous one, and it lives in the kernel
+  because it needs threads.
+
+  `kernel/vfs` uses both. `vfs.server_start` moves a server here and
+  `vfs.server_stop` moves it back. The root device stays synchronous, because it
+  is a tree in kernel memory that answers without waiting. What used
+  to keep the whole namespace on the synchronous side was the borrow rule, and
+  that is what the payload buffer removed.
 - **A reply *string* still borrows the server's storage.** `Rreadlink.target`
   and `Rgetlock.client_id` are the two, and no server in the tree returns
   either. Neither needs a special case when one does. `deliver` copies whatever
   lies inside the slot and leaves alone whatever does not. A handler that builds
   a symlink target in `buf` is therefore already handled.
-- **`kernel/vfs` still passes nil and keeps its session lock.** Nothing blocks
-  the move now. It is the next step rather than this one, and `docs/HANDOFF.md`
-  section 6 says what falls out of it.
+- **Only `Tread` has a deadline above this package.** `mnt.call_for` takes any
+  message and `vfs.rpc_for` passes any message down, but `vfs.chan_read_for` is
+  the one caller. A walk or a listing against a server that never answers still
+  waits. See `docs/NAMESPACE.md`.
 
 ## See also
 

@@ -328,10 +328,16 @@ init :: proc "contextless" (
 	return true
 }
 
-// transport presents this connection as something a `vectra9.Session` can sit
-// on. The session's own tag counter goes unused. See `alloc_tag`.
+/*
+transport presents this connection as something a `vectra9.Session` can sit on.
+The session's own tag counter goes unused. See `alloc_tag`.
+
+`call_for` is filled in, which is the whole point of this package. A session on
+this transport answers true to `vectra9.interruptible`, and a caller with a
+deadline gets one honoured rather than accepted and ignored.
+*/
 transport :: proc "contextless" (c: ^Conn) -> vectra9.Transport {
-	return vectra9.Transport{data = c, call = transport_call}
+	return vectra9.Transport{data = c, call = transport_call, call_for = transport_call_for}
 }
 
 // session is the connection's own session, for a client that wants to speak to
@@ -364,6 +370,21 @@ transport_call :: proc "contextless" (
 	_ = s
 	_ = tag
 	return call(cast(^Conn)data, request, reply, buf)
+}
+
+@(private = "file")
+transport_call_for :: proc "contextless" (
+	data: rawptr,
+	s: ^vectra9.Session,
+	tag: vectra9.Tag,
+	request: ^vectra9.Msg,
+	reply: ^vectra9.Msg,
+	buf: []u8,
+	ticks: u64,
+) -> vectra9.Error {
+	_ = s
+	_ = tag
+	return call_for(cast(^Conn)data, request, reply, ticks, buf)
 }
 
 // -- The pool ----------------------------------------------------------------

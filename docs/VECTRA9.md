@@ -100,6 +100,12 @@ when a transport lets a client have two requests outstanding. `tag` is how a
 `Tflush` names one of them. `buf` is where a reply that carries a payload builds
 one, and section 2.2 is why it cannot be anywhere else.
 
+`Transport` carries one more thing, and it is optional. `call_for` is the same
+request with a deadline. A transport that runs the handler on the caller's stack
+has nothing to interrupt and leaves it nil. `call_for` then answers exactly as
+`call` does, and `interruptible` is how a caller finds that out before it waits
+rather than after.
+
 ### 2.2 Borrowed buffers
 
 **A decoded message does not own its variable-length data.** Strings and byte
@@ -615,9 +621,15 @@ several requests in flight it was not, and the repair had to come before the
 handler rather than after it. `Handler` therefore takes the storage its reply
 must be built in. See `docs/TRANSPORT.md`.
 
-What is *not* built is `kernel/vfs` on top of any of this. Nothing blocks it
-now. `Server.lock` stops having to mean `one request in flight` and goes back to
-meaning `the fid counter is mine`.
+`kernel/vfs` is built on top of it, and that is what the payload buffer was for.
+A `Server` sits on either transport and nothing above it knows which.
+`server_start` moves one onto workers, `server_stop` moves it back, and a `Chan`
+taken before either still names its file afterwards.
+
+`Server.lock` did not narrow. It went. It made `one request in flight` true,
+which is what made a borrowed reply safe, and it made `alloc_fid` mean
+something. A reply borrows the caller now, and `alloc_fid` is an atomic
+increment. See `docs/NAMESPACE.md`.
 
 ### 7.4 Union create goes to the first member flagged Create, and stops there
 

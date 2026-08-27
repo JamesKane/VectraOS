@@ -67,13 +67,11 @@ attach :: proc(sv: ^Server, aname: string = "", uname: string = "vectra") -> (^C
 		return nil, vectra9.ENODEV
 	}
 
-	g, e := rpc_begin(sv)
-	defer rpc_end(g)
-	if e != OK {
+	if e := rpc_ready(sv); e != OK {
 		return nil, e
 	}
 
-	fid := vectra9.alloc_fid(&sv.session)
+	fid := new_fid(sv)
 	request := vectra9.Msg(
 		vectra9.Tattach {
 			fid = fid,
@@ -84,7 +82,7 @@ attach :: proc(sv: ^Server, aname: string = "", uname: string = "vectra") -> (^C
 		},
 	)
 	reply: vectra9.Msg
-	if e = rpc_under(g, &request, &reply); e != OK {
+	if e := rpc(sv, &request, &reply); e != OK {
 		return nil, e
 	}
 	answer, ok := reply.(vectra9.Rattach)
@@ -151,13 +149,11 @@ server_walk1 :: proc(from: ^Chan, name: string) -> (^Chan, Errno) #no_bounds_che
 		return nil, vectra9.EBADF
 	}
 
-	g, e := rpc_begin(from.server)
-	defer rpc_end(g)
-	if e != OK {
+	if e := rpc_ready(from.server); e != OK {
 		return nil, e
 	}
 
-	newfid := vectra9.alloc_fid(&from.server.session)
+	newfid := new_fid(from.server)
 	t := vectra9.Twalk {
 		fid    = from.fid,
 		newfid = newfid,
@@ -167,7 +163,7 @@ server_walk1 :: proc(from: ^Chan, name: string) -> (^Chan, Errno) #no_bounds_che
 
 	request := vectra9.Msg(t)
 	reply: vectra9.Msg
-	if e = rpc_under(g, &request, &reply); e != OK {
+	if e := rpc(from.server, &request, &reply); e != OK {
 		return nil, e
 	}
 	answer, ok := reply.(vectra9.Rwalk)

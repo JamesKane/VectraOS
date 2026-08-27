@@ -52,6 +52,38 @@ remaining :: proc "contextless" (c: ^Cursor) -> int {
 	return len(c.buf) - c.pos
 }
 
+/*
+free_space hands back the room left, for a caller that fills it some other way
+than field by field.
+
+The one that does is a payload which arrives already encoded and needs a field
+changed. `kernel/vfs`'s union directory read is that: a member's entries land
+here and only the cookie is rewritten. Copying them through this cursor would
+mean holding the same bytes twice to change eight of them.
+
+`commit` is how the caller says how much it used.
+*/
+free_space :: proc "contextless" (c: ^Cursor) -> []u8 {
+	if c.err != .None {
+		return nil
+	}
+	return c.buf[c.pos:]
+}
+
+// commit advances past bytes a caller wrote into `free_space` itself. Latches
+// `Short_Buffer` rather than moves past the end, like every other write here.
+commit :: proc "contextless" (c: ^Cursor, n: int) -> bool {
+	if c.err != .None {
+		return false
+	}
+	if n < 0 || c.pos + n > len(c.buf) {
+		c.err = .Short_Buffer
+		return false
+	}
+	c.pos += n
+	return true
+}
+
 @(private = "file")
 advance :: proc "contextless" (c: ^Cursor, n: int) -> (start: int, ok: bool) {
 	if c.err != .None {

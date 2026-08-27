@@ -62,15 +62,14 @@ readdir :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 // readdir_one is the ordinary case: one server, its own cookies, no rewriting.
 @(private)
 readdir_one :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
-	count := u32(min(len(buf), int(c.server.session.msize) - vectra9.HEADER_SIZE - 4))
+	count := u32(min(len(buf), max_payload(c.server)))
 	request := vectra9.Msg(vectra9.Treaddir{fid = c.fid, offset = offset, count = count})
 	reply: vectra9.Msg
 
-	// Held to the end of the procedure: `answer.data` is the server's own
-	// directory buffer, and it stays this thread's only while the session does.
-	e, g := rpc(c.server, &request, &reply)
-	defer rpc_end(g)
-	if e != OK {
+	// `buf` is where the entries are built rather than where they are copied
+	// afterwards. The caller's buffer is the server's for the length of the
+	// message, and nobody else's ever.
+	if e := rpc(c.server, &request, &reply, buf); e != OK {
 		return 0, e
 	}
 	answer, ok := reply.(vectra9.Rreaddir)
@@ -84,8 +83,7 @@ readdir_one :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 	if len(answer.data) > len(buf) {
 		return 0, vectra9.EPROTO
 	}
-	n = copy(buf, answer.data)
-	return n, OK
+	return take_payload(buf, answer.data), OK
 }
 
 /*
@@ -166,12 +164,21 @@ readdir_union :: proc(
 }
 
 /*
-union_pass copies one member's entries into `out`, restamping the cookies.
+union_pass takes one member's entries into `out`, restamping the cookies where
+they lie.
 
-Entries are re-encoded rather than memcpy'd, because the offset field has to
-change. The re-encode is exact. Only `offset` differs, so the payload is the
-same length it arrived as. That is what lets the request ask for exactly the
-room left in `out` and be sure the answer fits.
+The member answers into the room `out` leaves, which is the caller's own buffer
+at the point this listing reached. Nothing is copied. Only the cookie has to
+change, and it is eight bytes at a known place inside an entry that is otherwise
+already exactly right.
+
+That is the whole of what the old re-encode did, and the old comment said as
+much. The re-encode was exact, only `offset` differed, and the payload was the
+same length it arrived as. The payload now arrives here rather than in the
+server's own buffer, so there is no second copy of it to read from.
+
+It is also why the request may ask for exactly the room left and be sure the
+answer fits.
 */
 @(private)
 union_pass :: proc(
@@ -184,43 +191,56 @@ union_pass :: proc(
 	if room <= 0 {
 		return 0, OK
 	}
+	landing := vectra9.free_space(out)
 
-	count := u32(min(room, int(src.server.session.msize) - vectra9.HEADER_SIZE - 4))
+	count := u32(min(room, max_payload(src.server)))
 	request := vectra9.Msg(
 		vectra9.Treaddir{fid = src.fid, offset = member_offset, count = count},
 	)
 	reply: vectra9.Msg
-
-	// The re-encode below reads `answer.data` all the way through, so the
-	// session is held for the whole of it -- that buffer is the server's.
-	e, g := rpc(src.server, &request, &reply)
-	defer rpc_end(g)
-	if e != OK {
+	if e := rpc(src.server, &request, &reply, landing); e != OK {
 		return 0, e
 	}
 	answer, ok := reply.(vectra9.Rreaddir)
 	if !ok {
 		return 0, vectra9.EPROTO
 	}
+	if len(answer.data) > room {
+		return 0, vectra9.EPROTO
+	}
+	n := take_payload(landing, answer.data)
 
-	in_cursor := vectra9.cursor_from(answer.data)
+	/*
+	Every entry is walked before any of it is kept, and a malformed one fails
+	the whole pass.
+
+	The walk is what validates the payload, and the patch rides on it. `at` is
+	where the entry starts, and a cookie sits `QID_WIRE_SIZE` bytes into it. That
+	is the layout `put_dirent` writes and `next_dirent` reads, stated once in
+	`codec.odin` and relied on here.
+	*/
+	scan := vectra9.cursor_from(landing[:n])
 	for {
-		entry, more := vectra9.next_dirent(&in_cursor)
+		at := scan.pos
+		entry, more := vectra9.next_dirent(&scan)
 		if !more {
 			break
 		}
 		if entry.offset > UNION_OFFSET_MASK {
 			return 0, vectra9.EPROTO
 		}
-		entry.offset = u64(idx) << UNION_MEMBER_SHIFT | entry.offset
-		vectra9.put_dirent(out, entry)
-		if out.err != .None {
+		patch := vectra9.cursor_from(landing[at + vectra9.QID_WIRE_SIZE:])
+		vectra9.put_u64(&patch, u64(idx) << UNION_MEMBER_SHIFT | entry.offset)
+		if patch.err != .None {
 			return 0, vectra9.EPROTO
 		}
 		wrote += 1
 	}
 
-	if in_cursor.err != .None {
+	if scan.err != .None {
+		return 0, vectra9.EPROTO
+	}
+	if !vectra9.commit(out, n) {
 		return 0, vectra9.EPROTO
 	}
 	return wrote, OK

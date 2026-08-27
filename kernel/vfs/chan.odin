@@ -132,8 +132,7 @@ chan_close :: proc(c: ^Chan) {
 		if c.fid != vectra9.NOFID {
 			request := vectra9.Msg(vectra9.Tclunk{fid = c.fid})
 			reply: vectra9.Msg
-			_, rg := rpc(c.server, &request, &reply)
-			rpc_end(rg)
+			_ = rpc(c.server, &request, &reply)
 		}
 
 		// Loop rather than recurse: mount nesting is unbounded and this runs
@@ -159,9 +158,7 @@ chan_open :: proc(c: ^Chan, flags: u32) -> Errno {
 	}
 	request := vectra9.Msg(vectra9.Tlopen{fid = c.fid, flags = flags})
 	reply: vectra9.Msg
-	e, g := rpc(c.server, &request, &reply)
-	defer rpc_end(g)
-	if e != OK {
+	if e := rpc(c.server, &request, &reply); e != OK {
 		return e
 	}
 	answer, ok := reply.(vectra9.Rlopen)
@@ -174,12 +171,12 @@ chan_open :: proc(c: ^Chan, flags: u32) -> Errno {
 }
 
 /*
-chan_read copies at most len(buf) bytes from `offset`.
+chan_read reads at most len(buf) bytes from `offset` into `buf`.
 
-The copy is here and not further down, because `Rread.data` borrows the reply
-buffer. On the in-process transport that is the server's own storage, and it is
-valid only until the next message. A caller that wanted to avoid the copy would
-have to hold that promise, and no caller does.
+`buf` is the storage the reply's payload is built in, rather than somewhere the
+payload is copied to afterwards. A server that fills it in place is read with no
+copy at all. One that answers out of its own `.rodata` is copied once, here,
+which is the copy that always had to happen.
 
 A short read is not an error and not the end of the file. Zero bytes is the end
 of the file.
@@ -192,26 +189,57 @@ chan_read :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 		return 0, OK
 	}
 
-	count := u32(min(len(buf), int(c.server.session.msize) - vectra9.HEADER_SIZE - 4))
+	count := u32(min(len(buf), max_payload(c.server)))
 	request := vectra9.Msg(vectra9.Tread{fid = c.fid, offset = offset, count = count})
 	reply: vectra9.Msg
-
-	// The guard runs to the end of the procedure, which is what makes the copy
-	// below safe. `answer.data` is the server's storage until the guard releases
-	// it.
-	e, g := rpc(c.server, &request, &reply)
-	defer rpc_end(g)
-	if e != OK {
+	if e := rpc(c.server, &request, &reply, buf); e != OK {
 		return 0, e
 	}
 	answer, ok := reply.(vectra9.Rread)
 	if !ok {
 		return 0, vectra9.EPROTO
 	}
+	return take_payload(buf, answer.data), OK
+}
 
-	n = min(len(answer.data), len(buf))
-	copy(buf[:n], answer.data[:n])
-	return n, OK
+/*
+chan_read_for is a read the caller may give up on, and it is the reason this
+package moved onto `kernel/mnt`.
+
+Returns EINTR when `ticks` passed with no answer. The request was flushed
+first, so the server knows the tag is finished with and nothing will write into
+`buf` afterwards. Walking away without that is what corrupts a client, and
+`Tflush` exists to make it unnecessary.
+
+A server with no workers has nothing to interrupt, and this is then an ordinary
+read with a number attached. `chan_interruptible` reports which a caller has,
+before it waits rather than after.
+*/
+chan_read_for :: proc(c: ^Chan, offset: u64, buf: []u8, ticks: u64) -> (n: int, err: Errno) {
+	if c == nil {
+		return 0, vectra9.EBADF
+	}
+	if len(buf) == 0 {
+		return 0, OK
+	}
+
+	count := u32(min(len(buf), max_payload(c.server)))
+	request := vectra9.Msg(vectra9.Tread{fid = c.fid, offset = offset, count = count})
+	reply: vectra9.Msg
+	if e := rpc_for(c.server, &request, &reply, ticks, buf); e != OK {
+		return 0, e
+	}
+	answer, ok := reply.(vectra9.Rread)
+	if !ok {
+		return 0, vectra9.EPROTO
+	}
+	return take_payload(buf, answer.data), OK
+}
+
+// chan_interruptible reports whether a deadline on this chan's server means
+// anything. See `chan_read_for`.
+chan_interruptible :: proc "contextless" (c: ^Chan) -> bool {
+	return c != nil && server_interruptible(c.server)
 }
 
 chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
@@ -220,9 +248,7 @@ chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 	}
 	request := vectra9.Msg(vectra9.Twrite{fid = c.fid, offset = offset, data = data})
 	reply: vectra9.Msg
-	e, g := rpc(c.server, &request, &reply)
-	defer rpc_end(g)
-	if e != OK {
+	if e := rpc(c.server, &request, &reply); e != OK {
 		return 0, e
 	}
 	answer, ok := reply.(vectra9.Rwrite)
@@ -247,9 +273,7 @@ chan_stat :: proc(c: ^Chan, mask: u64 = GETATTR_BASIC) -> (attr: vectra9.Rgetatt
 	}
 	request := vectra9.Msg(vectra9.Tgetattr{fid = c.fid, request_mask = mask})
 	reply: vectra9.Msg
-	e, g := rpc(c.server, &request, &reply)
-	defer rpc_end(g)
-	if e != OK {
+	if e := rpc(c.server, &request, &reply); e != OK {
 		return {}, e
 	}
 	answer, ok := reply.(vectra9.Rgetattr)
@@ -277,18 +301,16 @@ chan_clone :: proc(c: ^Chan) -> (^Chan, Errno) {
 		return nil, vectra9.EBADF
 	}
 
-	g, e := rpc_begin(c.server)
-	defer rpc_end(g)
-	if e != OK {
+	// Refused before a fid is spent rather than after, so a caller that broke
+	// the locking rule has not also moved the counter. See `rpc_ready`.
+	if e := rpc_ready(c.server); e != OK {
 		return nil, e
 	}
 
-	// The fid is allocated and used without letting go of the session --
-	// see `rpc_begin` for why that is not just tidiness.
-	newfid := vectra9.alloc_fid(&c.server.session)
+	newfid := new_fid(c.server)
 	request := vectra9.Msg(vectra9.Twalk{fid = c.fid, newfid = newfid, count = 0})
 	reply: vectra9.Msg
-	if e = rpc_under(g, &request, &reply); e != OK {
+	if e := rpc(c.server, &request, &reply); e != OK {
 		return nil, e
 	}
 	if _, ok := reply.(vectra9.Rwalk); !ok {
