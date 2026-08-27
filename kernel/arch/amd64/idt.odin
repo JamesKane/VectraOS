@@ -115,6 +115,17 @@ VECTOR_YIELD :: 0x81
 VECTOR_SPURIOUS :: 0xFF
 
 /*
+Where a device interrupt lands: `VECTOR_IRQ_BASE` plus the ISA line.
+
+Above the 8259s' remapped range rather than inside it, and that is not
+tidiness. `PIC1_VECTOR_BASE` is 32 and so is `VECTOR_TIMER`. The collision is
+harmless while every 8259 line is masked, and a device routed into that range
+would make it matter. Sixteen lines fit, which is every ISA interrupt there is.
+*/
+VECTOR_IRQ_BASE :: 0x30
+VECTOR_IRQ_COUNT :: 16
+
+/*
 A neutral description of what went wrong.
 
 `kind` is what the portable kernel branches on. `name` and `error_code` are

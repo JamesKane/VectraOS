@@ -130,6 +130,19 @@ bound running out as the failure it is. What that costs is a thread and ten
 lines. What it buys is that the failure names itself, in the place hardest to
 attach a debugger to.
 
+**The third time was the keyboard, and it added a second rule.** The control
+that removes the EOI from the keyboard's top half hung the boot, exactly as the
+one that removed it from the timer's had. The wait was bounded, and the bound
+was `sync.delay` -- measured in ticks. With no EOI the APIC delivers nothing at
+or below that priority, and the timer sits at that priority. So the bug being
+tested was the bug that stops the clock the bound was counting.
+
+**A bound has to be measured in something the failure cannot destroy.** The
+keyboard's wait counts yields now. A yield is a software interrupt, so it
+executes rather than arriving, and it works whether or not the APIC still
+delivers. `verify_preemption` reached the same place from the other direction:
+it counts spins and checks the clock, rather than trusting it.
+
 ## A control that runs on every boot
 
 `kernel/verify_payload.odin` does something the tables above do not, and it is
@@ -198,6 +211,7 @@ nothing else in common.
 | The namespace over a transport with workers | `docs/NAMESPACE.md` | 4 of 6 |
 | The first device server | `docs/DEVFS.md` | 18 of 20 |
 | Services published by name | `docs/SRV.md` | 9 of 9 |
+| The first device that interrupts | `docs/KBD.md` | 7 of 7 |
 
 **The uncaught ones cluster, and the cluster is the finding.** Almost every one
 is a window two or three instructions wide, and none is at a lock boundary.

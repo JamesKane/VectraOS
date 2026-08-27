@@ -35,12 +35,15 @@ boundary they sit on. The move is a build change rather than a rewrite.
 
 The machine boots, brings up memory, a namespace, a scheduler and a preempting
 timer, and publishes `#c` at `/dev` and `#s` at `/srv`. It then runs about four
-hundred checks against itself and idles. `/dev/cons` is a real terminal: a line
-typed at the serial port is edited, echoed, and handed to a reader that parked
-waiting for it. `/srv` is a directory of running services, and a name posted
-there can be mounted anywhere in a namespace.
+hundred checks against itself and idles.
 
-About 24,500 lines of Odin. The linked image is ~851 KB debug and ~383 KB
+`/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
+port is edited, echoed, and handed to a reader that parked waiting for it. A
+keystroke gets there by raising IRQ 1, which is the first interrupt Vectra
+receives rather than arms. `/srv` is a directory of running services, and a name
+posted there can be mounted anywhere in a namespace.
+
+About 25,800 lines of Odin. The linked image is ~881 KB debug and ~396 KB
 release.
 
 **What exists, and which document says why:**
@@ -56,6 +59,7 @@ release.
 | `kernel/mnt/` | A 9P connection with several requests in flight, and `Tflush` over it | `docs/TRANSPORT.md` |
 | `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, and `/dev/consctl` | `docs/DEVFS.md` |
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs | `docs/SRV.md` |
+| `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, and a top half that may not park | `docs/KBD.md` |
 
 **The order they arrived in matters in exactly one way**, and it is worth
 knowing before reading any of them. Each of these unblocked the next, and none
@@ -68,6 +72,7 @@ of them could have come earlier:
     kernel/mnt              a request can be left pending, and flushed
     kernel/devfs            a read can wait for hardware rather than for a test
     kernel/srv              a service can be named after the kernel was built
+    the I/O APIC            a device can interrupt, rather than only the timer
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -80,13 +85,13 @@ code it explains.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x000000001a000000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x0000000019ff4000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 32 entries spanning 12.7 GiB
-[  ok  ] usable 466.4 MiB, reclaimable 39.8 MiB
-[  --  ] largest usable region 394.0 MiB at 0x0000000001600000
-[  ok  ] pmm 119409 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.6 MiB in 270 tables (1.0 MiB)
+[  ok  ] usable 466.3 MiB, reclaimable 39.8 MiB
+[  --  ] largest usable region 393.9 MiB at 0x0000000001600000
+[  ok  ] pmm 119397 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 515.6 MiB in 271 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
@@ -95,19 +100,22 @@ code it explains.
 [  ok  ] vfs 51 namespace checks passed -- union of 4 names over two servers, 1 mount point, heap balanced
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62518 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (18196239-18291747 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 2258 acquisitions, 2156 parked and handed back, decayed to 1
+[  ok  ] ioapic version 0x20, 24 lines, all masked
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62556 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (19186051-19511721 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 2374 acquisitions, 2264 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 4413 namespace operations across 5 threads, 715 rebinds under them in 1000 ms, nothing serialised, heap balanced
+[  ok  ] vfs 34 concurrency checks passed -- 4686 namespace operations across 5 threads, 747 rebinds under them in 1000 ms, nothing serialised, heap balanced
 [  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/cons
 [  ok  ] devfs 81 device checks passed -- 4 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 10 ticks
 [  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
 [  ok  ] srv 69 service checks passed -- 35 posted, 6 listed across 6 passes with one removed under them, 1 mounted, heap balanced
+[  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
+[  ok  ] kbd 48 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
 [  ok  ] boot complete -- idling
 ```
 
@@ -142,8 +150,13 @@ And the smaller ones, each named where it lives:
 
 - No way to post a service from outside the kernel. `/srv` names, lists, mounts
   and removes, and the one step that needs a file descriptor waits for one.
-- No keyboard driver, so console input comes from the serial port and a thread
-  polls it. That thread is where an interrupt handler will go.
+- No ACPI. The I/O APIC's address and the ISA-to-GSI mapping are assumed rather
+  than read from a MADT. Both are right on every PC and neither is discovered.
+- No interrupt on the serial line. `devfs.cons_input` still polls it once a
+  tick, and the keyboard shows the shape a replacement takes.
+- Nothing stops a handler from taking a sleeping lock. `sync.can_sleep` counts
+  spinlocks and an interrupt handler holds none, so the rule that a top half may
+  not park is argued in prose rather than checked. See `docs/KBD.md`.
 - No word erase and no cursor inside a line. `^W` and the arrow keys are the two
   a person misses next.
 - No read/write sleeping lock, which is the piece `Mount_Point.generation`
@@ -183,6 +196,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/SYNC.md` | `kernel/sync/` — spinlocks, sleeping locks, the sleep queue | Taking any lock, or making anything wait |
 | `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, the two transports, and the lock that went | Walking, binding, adding a server, or giving up on a read |
 | `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
+| `docs/KBD.md` | `kernel/drivers/kbd/` — scancodes, the I/O APIC, and why a handler splits in two | Adding a device that interrupts, routing a line, or wondering why the polling thread is still there |
 | `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention | Adding a device file, adding a `ctl` file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
@@ -271,19 +285,18 @@ by something that is not a self-test.
 
 **Next, in order:**
 
-1. **A keyboard driver.** The smallest well-defined piece left. It turns
-   `devfs.cons_input` from a thread that polls into an interrupt handler, and
-   `cons_feed` is the entry point it already has. Everything above the ring is
-   written not to care which one filled it.
-2. **Userland**, and posting to `/srv` from it. A thread grows an
+1. **Userland**, and posting to `/srv` from it. A thread grows an
    `^Address_Space`, `reschedule` grows one comparison, and the GDT already has
    the selectors laid out for SYSCALL/SYSRET. `swapgs` and per-CPU state behind
    GS belong to this step and are cheaper to build with it than after it.
    The first thing a process will want is to post a service, and everything on
    this side of that step exists. What it needs is a file descriptor to carry a
    connection, and `docs/SRV.md` says precisely which line that is.
-3. **`/dev/draw`**, over `kernel/drivers/fb`. The other half of a console, and
+2. **`/dev/draw`**, over `kernel/drivers/fb`. The other half of a console, and
    the thing `apps/terminal` will actually want.
+3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
+   table lists the cores SMP will need to start. Worth doing when one of those
+   two becomes a reason rather than a tidiness.
 
 **Standing gaps.** Each of these is something that exists and is incomplete,
 rather than something absent. All are named in the code they live in.
@@ -310,6 +323,12 @@ rather than something absent. All are named in the code they live in.
   part-way through. `kernel/srv` is the worked example of the fix: a monotonic
   id, and a cookie that means `resume after this one` however the table moved.
   See `docs/SRV.md`.
+- **An interrupt context `sync.can_sleep` knows about.** A top half may hold a
+  spinlock and may not hold anything that parks. `can_sleep` counts spinlocks
+  and a bare handler holds none, so the rule is argued where it should be
+  checked. A depth counter the trap dispatcher brackets a handler with would
+  turn it into a named stop, the way the spinlock rule already is. It touches
+  the scheduler's hot path, so it wants a milestone rather than a patch.
 - **A free list for fids and for `/srv` ids.** Both counters are monotonic and
   therefore finite: four billion opens per session, two billion posts. One fix
   retires both.
@@ -393,6 +412,8 @@ kernel/
     amd64/gdt.odin      GDT, TSS, and the interrupt stack table
     amd64/idt.odin      IDT, the 256 entry stubs, dispatch, fault reporting
     amd64/pic.odin      Legacy 8259s: remapped clear of the exceptions, masked
+    amd64/ioapic.odin   The I/O APIC: the register window, and one redirection
+                        entry per line
     amd64/lapic.odin    Local APIC, the timer that preempts, EOI
     amd64/pit.odin      Channel 2 as a ruler, to measure the LAPIC against
     amd64/context.odin  A new thread's first saved state; what class a core is
@@ -431,6 +452,12 @@ kernel/
     sched.odin          init, spawn, block/ready/unpark, reschedule, the tick
                         that also drains sync's deadlines
     verify.odin         The boot self-test: cooperative half and preemptive half
+  drivers/kbd/
+    kbd.odin            PS/2 scancodes: the top half that may not park, the
+                        ring, the bottom half that may, and set 1 for a US
+                        layout
+    verify.odin         The boot self-test: 44 checks -- the state machine on
+                        its own, and one interrupt the 8042 was asked to raise
   mnt/
     mnt.odin            A 9P connection with several requests in flight: the
                         tag pool, the payload buffer per slot, the work queue,
@@ -483,6 +510,8 @@ docs/
   TRANSPORT.md          kernel/mnt: the tag pool, the workers, Tflush
   SRV.md                kernel/srv: #s at /srv, what a posted service is, and
                         the two decisions a directory that changes needs
+  KBD.md                kernel/drivers/kbd: scancodes, the I/O APIC route, and
+                        the constraint that splits a handler in two
   DEVFS.md              kernel/devfs: #c at /dev, the console device, the
                         line discipline, the ctl convention, and the twenty
                         controls the self-test was measured against

@@ -108,10 +108,17 @@ CAPACITY_FULL :: amd64.CAPACITY_FULL
 MIN_STACK_SIZE :: amd64.MIN_STACK_SIZE
 
 VECTOR_TIMER :: amd64.VECTOR_TIMER
+VECTOR_IRQ_BASE :: amd64.VECTOR_IRQ_BASE
+VECTOR_IRQ_COUNT :: amd64.VECTOR_IRQ_COUNT
 VECTOR_YIELD :: amd64.VECTOR_YIELD
 VECTOR_SPURIOUS :: amd64.VECTOR_SPURIOUS
 
 set_interrupt_handler :: amd64.set_interrupt_handler
+
+// Port I/O, for a driver that has registers rather than memory. The 8042 is
+// the first, and on this architecture it is the only way to reach it.
+inb :: amd64.inb
+outb :: amd64.outb
 thread_resume_init :: amd64.thread_resume_init
 cpu_class :: amd64.cpu_class
 
@@ -143,6 +150,32 @@ timer_calibrate :: amd64.lapic_calibrate
 timer_periodic :: amd64.lapic_timer_periodic
 timer_stop :: amd64.lapic_timer_stop
 timer_ack :: amd64.lapic_eoi
+
+/*
+The I/O APIC, which is how a device interrupt reaches a core.
+
+Same shape as the timer above, and for the same reason. The portable kernel
+maps the page, because mapping is its job. This architecture is the only thing
+that knows the address to map and the register layout behind it.
+
+`irq_route` claims a line and leaves it masked. `irq_unmask` is what lets the
+first interrupt through, and it is separate so a driver can register its handler
+in between. See `kernel/arch/amd64/ioapic.odin`.
+*/
+IOAPIC_MMIO_SIZE :: amd64.IOAPIC_MMIO_SIZE
+
+irq_available :: amd64.ioapic_available
+irq_physical_base :: amd64.ioapic_physical_base
+irq_attach :: amd64.ioapic_attach
+irq_attached :: amd64.ioapic_attached
+irq_lines :: amd64.ioapic_lines
+irq_version :: amd64.ioapic_version
+irq_route :: amd64.ioapic_route
+irq_set_mask :: amd64.ioapic_set_mask
+irq_masked :: amd64.ioapic_masked
+irq_vector_of :: amd64.ioapic_vector_of
+irq_ack :: amd64.lapic_eoi
+cpu_lapic_id :: amd64.lapic_id
 
 /*
 init_traps replaces the bootloader's tables with our own.

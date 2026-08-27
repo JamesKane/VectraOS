@@ -224,6 +224,22 @@ tree :: proc "contextless" () -> ^Dev_Tree {
 	return &dev_tree
 }
 
+/*
+keyboard_sink is where a keyboard driver's translated bytes arrive.
+
+The same entry point the serial poller uses, one layer up. `kernel/drivers/kbd`
+does not know what a console is and this does not know what a scancode is. The
+byte between them is the whole interface.
+
+Two producers into one ring is not a special case. `Cons.lock` guards it and
+always did. By the time a byte gets here, one typed at a keyboard is
+indistinguishable from one off the serial line. That is what makes the line
+discipline one implementation rather than two.
+*/
+keyboard_sink :: proc "contextless" (b: u8) {
+	_ = cons_feed(&dev_tree.cons, b)
+}
+
 // input_started reports whether the producer thread is on the port. False on a
 // machine with no serial port, where `/dev/cons` writes and never reads.
 input_started :: proc "contextless" () -> bool {

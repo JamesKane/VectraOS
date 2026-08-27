@@ -22,6 +22,7 @@ import "kernel:arch"
 import "kernel:boot/limine"
 import "kernel:devfs"
 import "kernel:drivers/console"
+import "kernel:drivers/kbd"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mem"
@@ -187,6 +188,13 @@ kmain :: proc "sysv" () {
 			}
 			if init_srv() {
 				verify_srv()
+			}
+
+			// Last of all, because a keystroke needs somewhere to go. The
+			// bottom half hands its bytes to `/dev/cons`, which has to exist
+			// before the first interrupt is let through.
+			if init_keyboard() {
+				verify_keyboard()
 			}
 		}
 	}
@@ -945,6 +953,7 @@ init_timer :: proc() -> bool {
 	}
 
 	arch.timer_attach(virt)
+	init_ioapic()
 	if !sched.start_timer(TICK_HZ) {
 		log_line(&klog, .Fault, "lapic: timer would not calibrate; running without preemption")
 		return false
@@ -1175,5 +1184,108 @@ verify_srv :: proc() {
 		libodin.put_int(&sink, i64(leaked))
 		libodin.put_str(&sink, ")")
 	}
+	emit(&klog, .Fault, &sink)
+}
+
+/*
+init_ioapic maps the I/O APIC and masks every line on it.
+
+This is how a device interrupt reaches a core, and until this milestone nothing
+needed one. The LAPIC timer is the only interrupt Vectra had, and the kernel
+armed it rather than receiving it.
+
+Reported rather than fatal. A machine with no I/O APIC still boots, still
+schedules and still has a console over the serial line. What it does not get is
+a keyboard, and `init_keyboard` says so on its own line.
+
+The address is assumed rather than discovered, because Vectra parses no ACPI
+tables. `kernel/arch/amd64/ioapic.odin` says exactly which assumption that is
+and what would retire it.
+*/
+init_ioapic :: proc() -> bool {
+	virt, err := mem.map_mmio(arch.irq_physical_base(), arch.IOAPIC_MMIO_SIZE)
+	if err != .None {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "ioapic: cannot map registers at ")
+		libodin.put_hex(&sink, u64(arch.irq_physical_base()), 16)
+		libodin.put_str(&sink, " -- ")
+		libodin.put_str(&sink, mem.describe(err))
+		emit(&klog, .Warn, &sink)
+		return false
+	}
+
+	arch.irq_attach(virt)
+	if !arch.irq_available() {
+		log_line(&klog, .Warn, "no I/O APIC; running without device interrupts")
+		return false
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "ioapic version ")
+	libodin.put_hex(&sink, u64(arch.irq_version()), 2)
+	libodin.put_str(&sink, ", ")
+	libodin.put_uint(&sink, u64(arch.irq_lines()))
+	libodin.put_str(&sink, " lines, all masked")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+init_keyboard routes IRQ 1 and puts the first real device interrupt on it.
+
+Every interrupt before this one was the LAPIC timer, which this kernel asked
+for. A keystroke arrives because somebody outside the machine decided it
+should.
+
+The bytes go to `/dev/cons`, alongside the ones the serial poller delivers.
+Nothing above the console's ring can tell which producer filled it, which is
+what makes the line discipline one implementation rather than two.
+*/
+init_keyboard :: proc() -> bool {
+	vector := arch.VECTOR_IRQ_BASE + kbd.KBD_IRQ
+	if !kbd.init(vector, devfs.keyboard_sink) {
+		log_line(&klog, .Warn, "no keyboard; console input is the serial line only")
+		return false
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "kbd ps/2 on irq ")
+	libodin.put_uint(&sink, u64(kbd.KBD_IRQ))
+	libodin.put_str(&sink, " -> vector ")
+	libodin.put_hex(&sink, u64(vector), 2)
+	libodin.put_str(&sink, ", scancode set 1, us layout")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+verify_keyboard checks the translation, and then makes the controller interrupt.
+
+The state machine is a pure question and is checked against a keyboard of the
+test's own. The interrupt path is not. Instead, the check asks the 8042 to
+deliver a byte as though somebody typed it. See `kernel/drivers/kbd/verify.odin`.
+*/
+verify_keyboard :: proc() {
+	result := kbd.verify()
+	ok := result.failures == 0 && result.checks > 0
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "kbd ")
+	libodin.put_uint(&sink, u64(result.checks))
+	if ok {
+		s := kbd.stats()
+		libodin.put_str(&sink, " keyboard checks passed -- ")
+		libodin.put_uint(&sink, u64(result.translated))
+		libodin.put_str(&sink, " scancodes translated, ")
+		libodin.put_uint(&sink, s.interrupts)
+		libodin.put_str(&sink, " interrupts taken, an injected key reached the sink")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+
+	libodin.put_str(&sink, " checks, ")
+	libodin.put_uint(&sink, u64(result.failures))
+	libodin.put_str(&sink, " FAILED -- first: ")
+	libodin.put_str(&sink, result.first_failure)
 	emit(&klog, .Fault, &sink)
 }
