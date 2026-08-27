@@ -65,7 +65,7 @@ Static_Tree :: struct {
 	live:    int,
 
 	/*
-	Where an Rreaddir payload is built.
+	Where an Rreaddir payload is built when the transport supplies nowhere else.
 
 	One buffer per server, borrowed by the reply and valid until the next
 	message -- which is exactly the ownership rule the whole package runs on.
@@ -79,6 +79,13 @@ Static_Tree :: struct {
 	use of the reply. See `rpc` and the borrow rule in `lock.odin`. One buffer is
 	still the right shape. What changed is that a lock now protects it, rather
 	than an absence of threads.
+
+	A lock is enough for one request at a time and cannot be enough for more. The
+	fix is not a second buffer here. It is that the transport hands each request
+	storage of its own, and this server writes there instead. `static_readdir`
+	takes that buffer when it is offered, and falls back to this one when it is
+	not. A transport that offers none is a transport with one request in flight,
+	where this buffer was always sufficient.
 	*/
 	dirbuf: []u8,
 
@@ -304,6 +311,7 @@ static_handler :: proc "contextless" (
 	tag: vectra9.Tag,
 	request: ^vectra9.Msg,
 	reply: ^vectra9.Msg,
+	buf: []u8,
 ) #no_bounds_check {
 	_ = s
 	_ = tag
@@ -313,10 +321,11 @@ static_handler :: proc "contextless" (
 		return
 	}
 
-	// The whole handler, because the fid table is read and written across most
-	// of it and `dirbuf` is written near the end of it. Released on the way
-	// out -- the *reply* borrowing `dirbuf` past this point is the client's
-	// session lock's problem, not this one's.
+	// The whole handler. The fid table is read and written across most of it,
+	// and the fallback `dirbuf` near the end of it. Released on the way out. A
+	// reply that borrows `dirbuf` past this point is the client's session
+	// lock's problem, not this one's. A reply built in `buf` borrows nothing of
+	// this server's and has no such problem.
 	g := sync.acquire(&t.lock)
 	defer sync.release(&t.lock, g)
 
@@ -388,7 +397,7 @@ static_handler :: proc "contextless" (
 		reply^ = vectra9.Rread{data = data[start:end]}
 
 	case vectra9.Treaddir:
-		static_readdir(t, m, reply)
+		static_readdir(t, m, reply, buf)
 
 	case vectra9.Tgetattr:
 		node := node_of(t, m.fid)
@@ -482,7 +491,12 @@ static_walk :: proc "contextless" (t: ^Static_Tree, m: vectra9.Twalk, reply: ^ve
 }
 
 @(private = "file")
-static_readdir :: proc "contextless" (t: ^Static_Tree, m: vectra9.Treaddir, reply: ^vectra9.Msg) #no_bounds_check {
+static_readdir :: proc "contextless" (
+	t: ^Static_Tree,
+	m: vectra9.Treaddir,
+	reply: ^vectra9.Msg,
+	buf: []u8,
+) #no_bounds_check {
 	node := node_of(t, m.fid)
 	if node < 0 {
 		reply^ = vectra9.error_reply(vectra9.EBADF)
@@ -493,8 +507,16 @@ static_readdir :: proc "contextless" (t: ^Static_Tree, m: vectra9.Treaddir, repl
 		return
 	}
 
-	room := min(len(t.dirbuf), int(m.count))
-	c := vectra9.cursor_from(t.dirbuf[:room])
+	// The transport's buffer when there is one, and this server's own when
+	// there is not. Only the first is safe with several handlers running, and
+	// only the second existed before there were. See `Static_Tree.dirbuf`.
+	out := buf
+	if out == nil {
+		out = t.dirbuf
+	}
+
+	room := min(len(out), int(m.count))
+	c := vectra9.cursor_from(out[:room])
 
 	/*
 	The cookie is the child's ordinal within its parent, one-based. It therefore

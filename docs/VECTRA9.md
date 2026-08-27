@@ -82,16 +82,23 @@ server that cannot move between kernel and userland without a rewrite.
 The transport boundary is where that trade happens, once:
 
 ```odin
-Handler   :: proc(server: rawptr, s: ^Session, request: ^Msg, reply: ^Msg)
+Handler   :: proc(server: rawptr, s: ^Session, tag: Tag,
+                  request: ^Msg, reply: ^Msg, buf: []u8)
 Transport :: struct {
     data: rawptr,
-    call: proc(data: rawptr, s: ^Session, request: ^Msg, reply: ^Msg) -> Error,
+    call: proc(data: rawptr, s: ^Session, tag: Tag,
+               request: ^Msg, reply: ^Msg, buf: []u8) -> Error,
 }
 ```
 
 An in-process transport's `call` invokes the handler. A pipe transport's `call`
 encodes, writes, reads, decodes. Neither the caller nor the handler can tell
 which one it has.
+
+`tag` and `buf` both look redundant, and both stop being so at the same moment:
+when a transport lets a client have two requests outstanding. `tag` is how a
+`Tflush` names one of them. `buf` is where a reply that carries a payload builds
+one, and section 2.2 is why it cannot be anywhere else.
 
 ### 2.2 Borrowed buffers
 
@@ -114,6 +121,18 @@ The bounded parts are inline rather than borrowed, because 9P bounds them.
 `Twalk` carries at most sixteen names, which is `MAX_WALK_ELEMENTS`, so the
 names live in a fixed array inside the message. That is what keeps a `Msg` a
 stack value.
+
+**The rule has a limit, and it is one request at a time.** `Valid until that
+server writes the next message` is something a server can promise while there is
+one message. It is not something it can promise while there are eight. The next
+message is already in progress. A transport cannot repair that after the fact,
+because by the time a handler returns another handler is in the storage.
+
+So the buffer travels the other way. A transport that runs several requests at
+once gives each one storage of its own, and hands it to the handler as `buf`.
+The reply then borrows the request rather than the server, which is a lifetime
+the transport can state. `kernel/mnt` does this, `docs/TRANSPORT.md` says how,
+and a transport with one request in flight passes nil and keeps the old rule.
 
 ### 2.3 Sessions, fids, tags, qids
 
@@ -589,11 +608,16 @@ are worth knowing before reading it:
   original's partner and returns. The ordering rule is then structural rather
   than a wait.
 
-What is *not* built is `kernel/vfs` on top of it. A reply that borrows the
-server's storage, under section 4's rule, was safe because the session lock
-spanned the whole exchange. With several requests in flight it is not. That is a
-property of the transport rather than of the protocol, and it is the next step
-rather than this one.
+**A reply that borrows the server's storage was the thing left over**, and a
+payload buffer per request slot is what settled it. Under section 2.2's rule the
+borrow was safe because the session lock spanned the whole exchange. With
+several requests in flight it was not, and the repair had to come before the
+handler rather than after it. `Handler` therefore takes the storage its reply
+must be built in. See `docs/TRANSPORT.md`.
+
+What is *not* built is `kernel/vfs` on top of any of this. Nothing blocks it
+now. `Server.lock` stops having to mean `one request in flight` and goes back to
+meaning `the fid counter is mine`.
 
 ### 7.4 Union create goes to the first member flagged Create, and stops there
 
@@ -640,6 +664,14 @@ asynchronous transport's are in `docs/TRANSPORT.md`.
   4 KiB free to pass around, and it is the rule most likely to be broken. Odin
   cannot express the lifetime, so it is stated at the top of `proto.odin` and
   nowhere else.
+- **A handler is given the storage its reply borrows.** The rule above says
+  *how long* a payload lives, not *whose* it is. A server with one buffer of its
+  own kept the rule with one request in flight and broke it with eight.
+  `Handler` takes a `buf` for that reason. Passing the buffer in
+  rather than copying the payload out is the whole of the fix. A transport that
+  copied afterwards would find another handler already in the storage.
+  `kernel/verify_payload.odin` runs the shared-buffer arrangement as a live
+  control on every boot, and it corrupts seven readers of eight.
 - **`Twalk` bounds names at sixteen, so they live inline.** That is the only
   reason a `Msg` is a stack value. The `#assert` on `size_of(Msg)` is there to
   stop it quietly becoming something else.

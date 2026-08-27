@@ -32,8 +32,31 @@ stands in it. It stops being redundant the moment a transport lets a client
 have two. A server that implements `Tflush` has to be able to say which of its
 in-flight requests a given `oldtag` names. A handler that cannot name its own
 request cannot take part in that. See `kernel/mnt`.
+
+`buf` is storage this request owns, and it is where a reply that carries a
+payload must build one. `Rread.data` and `Rreaddir.data` then point into it.
+
+It is the answer to the ownership rule at the top of `proto.odin`. A decoded
+message borrows its buffer. A reply the server built in storage of its own is
+valid only until that server writes the next one.
+
+One request at a time made that rule workable. Several make it false. No copy
+the transport takes after the handler returns can repair that, because another
+handler is already in the storage by then. The buffer therefore has to arrive
+before the handler does.
+
+A transport that has one request in flight may pass nil, and a handler that
+gets nil may build its reply wherever it did before. That is the old rule,
+which is still true on the transport it was true on. See `kernel/mnt`.
 */
-Handler :: #type proc "contextless" (server: rawptr, s: ^Session, tag: Tag, request: ^Msg, reply: ^Msg)
+Handler :: #type proc "contextless" (
+	server: rawptr,
+	s: ^Session,
+	tag: Tag,
+	request: ^Msg,
+	reply: ^Msg,
+	buf: []u8,
+)
 
 /*
 How a request reaches a handler.
@@ -51,10 +74,23 @@ by it.
 
 That is why `kernel/mnt` indexes its pool by tag, and why the tag it uses is
 its own rather than the session's. See `alloc_tag`.
+
+`buf` is the caller's storage for whatever payload the reply carries. A
+transport that keeps a request's payload in storage of its own copies it here
+before it returns. The caller has no way to know when that storage stops being
+its. A caller that asks for nothing larger than a message header may pass nil,
+and a transport that never took a copy ignores it.
 */
 Transport :: struct {
 	data: rawptr,
-	call: proc "contextless" (data: rawptr, s: ^Session, tag: Tag, request: ^Msg, reply: ^Msg) -> Error,
+	call: proc "contextless" (
+		data: rawptr,
+		s: ^Session,
+		tag: Tag,
+		request: ^Msg,
+		reply: ^Msg,
+		buf: []u8,
+	) -> Error,
 }
 
 Session :: struct {
@@ -125,12 +161,19 @@ alloc_fid :: proc "contextless" (s: ^Session) -> Fid {
 	return s.next_fid
 }
 
-// call sends one request and waits for its reply, allocating a tag for it.
-call :: proc "contextless" (s: ^Session, request: ^Msg, reply: ^Msg) -> Error {
+/*
+call sends one request and waits for its reply, allocating a tag for it.
+
+`buf` is where the reply's payload lands, and it must outlive every use of
+`reply`. Size it by `s.msize` less `HEADER_SIZE` and the count prefix, which is
+the largest payload the negotiation permits. A caller that sends nothing which
+answers with a payload may pass nil.
+*/
+call :: proc "contextless" (s: ^Session, request: ^Msg, reply: ^Msg, buf: []u8 = nil) -> Error {
 	if s.transport.call == nil {
 		return .Transport_Failed
 	}
-	return s.transport.call(s.transport.data, s, alloc_tag(s), request, reply)
+	return s.transport.call(s.transport.data, s, alloc_tag(s), request, reply, buf)
 }
 
 /*
@@ -141,6 +184,11 @@ server's answer, so this takes the smaller of the two. A server that answers
 with a version string other than the one asked for is a server that refuses.
 That is 9P's way to say `not that dialect`, and the only correct response is to
 stop.
+
+The session's own msize is a third clamp, and it is the transport's. `kernel/mnt`
+carries a payload in a fixed buffer per request slot, and the size of that
+buffer is the largest message it can carry. A transport that says so in
+`msize` cannot then be talked above it by either side.
 */
 negotiate :: proc "contextless" (s: ^Session, msize: u32 = MSIZE_DEFAULT) -> Error {
 	request := Msg(Tversion{msize = msize, version = VERSION})
@@ -151,7 +199,7 @@ negotiate :: proc "contextless" (s: ^Session, msize: u32 = MSIZE_DEFAULT) -> Err
 	if s.transport.call == nil {
 		return .Transport_Failed
 	}
-	if err := s.transport.call(s.transport.data, s, NOTAG, &request, &reply); err != .None {
+	if err := s.transport.call(s.transport.data, s, NOTAG, &request, &reply, nil); err != .None {
 		return err
 	}
 
@@ -160,7 +208,7 @@ negotiate :: proc "contextless" (s: ^Session, msize: u32 = MSIZE_DEFAULT) -> Err
 		return .Unknown_Kind
 	}
 
-	s.msize = min(msize, answer.msize)
+	s.msize = min(msize, answer.msize, s.msize)
 	s.version = answer.version
 	return .None
 }
@@ -174,6 +222,10 @@ The request struct is handed to the handler by pointer and the reply comes back
 the same way. A devfs read of /dev/cons costs one indirect call and no copy of
 the payload. That is the reason this design beat a marshal of everything.
 Thread state here is a file, and a read of it is a read of a file.
+
+The caller's `buf` reaches the handler untouched, and the handler may fill it.
+Nothing copies it afterwards, because there is nothing to copy it out of: the
+caller stands on its own stack for the whole exchange.
 */
 In_Process :: struct {
 	handler: Handler,
@@ -191,12 +243,13 @@ in_process_call :: proc "contextless" (
 	tag: Tag,
 	request: ^Msg,
 	reply: ^Msg,
+	buf: []u8,
 ) -> Error {
 	p := cast(^In_Process)data
 	if p.handler == nil {
 		return .Transport_Failed
 	}
-	p.handler(p.server, s, tag, request, reply)
+	p.handler(p.server, s, tag, request, reply, buf)
 	return .None
 }
 
@@ -217,6 +270,10 @@ answers.
 
 Both buffers are the caller's, and the reply borrows `reply_buf` -- so that
 buffer has to outlive the reply, like every other borrowed message in Vectra9.
+
+The caller's `buf` reaches the handler, and is then irrelevant. Whatever the
+handler builds there is encoded and decoded on the way back, so the reply the
+caller receives points into `reply_buf` either way.
 */
 Encoded_Loopback :: struct {
 	handler:     Handler,
@@ -236,6 +293,7 @@ encoded_loopback_call :: proc "contextless" (
 	tag: Tag,
 	request: ^Msg,
 	reply: ^Msg,
+	buf: []u8,
 ) -> Error {
 	p := cast(^Encoded_Loopback)data
 	if p.handler == nil {
@@ -253,7 +311,7 @@ encoded_loopback_call :: proc "contextless" (
 	}
 
 	answer: Msg
-	p.handler(p.server, s, sent_tag, &decoded, &answer)
+	p.handler(p.server, s, sent_tag, &decoded, &answer, buf)
 
 	// The reply carries the request's tag back. A transport that lost this
 	// would work perfectly against a synchronous client and fail the moment

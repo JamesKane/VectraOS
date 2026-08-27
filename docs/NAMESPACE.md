@@ -92,8 +92,16 @@ list is the same one it started on.
   generation counter could go. See `docs/SYNC.md` for what is missing.
 - **No `Tflush` here.** It exists in `docs/TRANSPORT.md`, over a transport that
   can have several requests in flight. This package still speaks
-  `vectra9.In_Process`. A move is not a matter of a swapped transport, because
-  the borrow rule above depends on a session lock that spans the whole exchange.
+  `vectra9.In_Process`, and the borrow rule above is why. A reply's payload used
+  to live in the server's own storage, which only a session lock spanning the
+  whole exchange made safe.
+
+  That is no longer the arrangement. A request slot in `kernel/mnt` owns a
+  buffer, and the handler builds its payload there. `Server.lock` can therefore
+  go back to meaning `the fid counter is mine`. `rpc` grows a buffer parameter,
+  and
+  `chan.odin` and `readdir.odin` pass the one they were going to copy into
+  anyway. See `docs/HANDOFF.md` section 6.
 - **No current directory.** `resolve` takes absolute paths and `#name` specs
   only, because a relative path needs a process to be relative to.
 

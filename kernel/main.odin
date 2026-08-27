@@ -173,6 +173,7 @@ kmain :: proc "sysv" () {
 			verify_sleep_lock()
 			verify_sleep_queue()
 			verify_flush()
+			verify_payload()
 			verify_vfs_threads()
 		}
 	}

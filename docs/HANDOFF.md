@@ -27,7 +27,8 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 9 is done: `Tflush` works, and the transport that made it possible.**
+**Milestone 9 is done: `Tflush` works, the transport that made it possible, and
+the payload buffer that lets a real server sit behind it.**
 
 Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
 behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
@@ -47,7 +48,13 @@ Milestone 8 gives it the other half of the wait. A thread can now wait for a
 spends both on the question `docs/VECTRA9.md` left open longest: a 9P transport
 that can leave a request pending, and `Tflush` over it.
 
-About 18,000 lines of Odin. The linked image is ~683 KB debug and ~282 KB
+The last piece of it is a payload buffer per request slot. A reply used to
+borrow the server's storage, which one request at a time made safe and eight
+made false. Each slot now owns a buffer and the handler is handed it, so a real
+server can sit behind several workers. `vfs.static_handler` does, unmodified,
+under four threads listing one directory at once.
+
+About 19,300 lines of Odin. The linked image is ~711 KB debug and ~300 KB
 release.
 
 ```
@@ -77,8 +84,9 @@ release.
 [  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (16428925-16578328 rounds), decayed to 5, 3 fpu accumulators intact
 [  ok  ] sync 14 sleeping lock checks passed -- 2057 acquisitions, 1962 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
-[  ok  ] 9p 34 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
-[  ok  ] vfs 35 concurrency checks passed -- 1436 namespace operations across 5 threads, 2510 rebinds under them in 1000 ms, 10956 session waits slept, heap balanced
+[  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
+[  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
+[  ok  ] vfs 35 concurrency checks passed -- 1429 namespace operations across 5 threads, 2526 rebinds under them in 1000 ms, 12072 session waits slept, heap balanced
 [  ok  ] boot complete -- idling
 ```
 
@@ -128,7 +136,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/SCHED.md` | `kernel/sched/` — the switch, priorities, the tick | Adding a thread state, a priority rule, or a second core |
 | `docs/SYNC.md` | `kernel/sync/` — spinlocks, sleeping locks, the sleep queue | Taking any lock, or making anything wait |
 | `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, and the borrow rule | Walking, binding, or adding a server |
-| `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush` | Writing a transport, or making a request interruptible |
+| `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
@@ -137,6 +145,8 @@ Three rules run through all of them and are worth knowing before opening any:
 1. **A decoded 9P message borrows its buffer.** Strings and slices inside a
    `Msg` point into whatever it was decoded from. Odin cannot express the
    lifetime, so it is stated in prose and broken by accident. `docs/VECTRA9.md`.
+   A transport that runs several requests at once hands each handler the storage
+   its reply must be built in, because that rule cannot hold otherwise.
 2. **A sleeping lock is never taken inside a spinlock**, and that is checked
    rather than remembered — `sync.can_sleep`. `docs/SYNC.md`.
 3. **A self-test that cannot fail proves nothing.** Every milestone ends by
@@ -210,18 +220,19 @@ exposed is now locked. The lock that holds a session across a message sleeps,
 and a thread can now wait for a condition or a deadline. Every primitive a
 driver needs now exists. What is left is mostly *use* of them.
 
-**A payload buffer per request slot is the next piece, and it is what
-`kernel/vfs` is waiting for.** The borrow rule says `Rread.data` and
-`Rreaddir.data` stay valid until that server's next message. It held because the
-session lock spanned the whole exchange, and `kernel/mnt` can have eight
-exchanges going at once.
+**`kernel/vfs` on `kernel/mnt` is the next piece, and nothing blocks it now.**
+The payload buffer was what it was waiting for. A reply used to borrow the
+server's storage. That held while the session lock spanned the whole exchange,
+and stopped holding the moment eight exchanges could run at once. Each request
+slot now owns a buffer and the handler is handed it, so a `Conn` serving
+`kernel/vfs` is no longer limited to one worker.
 
-Until a reply's payload lands in storage the request owns, a `Conn` that serves
-`kernel/vfs` is limited to one worker. That is `In_Process` with extra steps.
-This is a small change with a large consequence. It is what lets the namespace
-sit on a transport that can be flushed. After it, `Server.lock` stops having to
-mean `one request in flight`, and goes back to meaning `the fid counter is
-mine`.
+The move itself is small. `rpc` grows a buffer parameter, and the callers in
+`chan.odin` and `readdir.odin` pass the one they were going to copy into anyway.
+`Server.lock` then stops having to mean `one request in flight`, and goes back
+to meaning `the fid counter is mine`. That is what lets the namespace sit on a
+transport that can be flushed, and what an interruptible read from a slow device
+needs.
 
 **A read/write sleeping lock is the other piece worth wanting.**
 `Mount_Point.generation` exists only because a read lock could not be held
@@ -241,9 +252,8 @@ runs at realtime. It will the moment something does. Plan 9 never had it either,
 which is an argument about cost rather than about correctness.
 
 **Then, in roughly this order:**
-1. **`kernel/vfs` on `kernel/mnt`.** See the payload buffer above. This is what
-   makes `Tflush` reachable from a path rather than from a self-test, and it is
-   what an interruptible read from a slow device needs.
+1. **`kernel/vfs` on `kernel/mnt`.** See above. This is what makes `Tflush`
+   reachable from a path rather than from a self-test.
 2. **A first real device server.** `devfs` with `/dev/cons` over the console
    driver, which makes the whole path from a name to a byte on screen exist end
    to end. `static.odin` is the wrong shape only because it is read-only.
@@ -314,9 +324,12 @@ kernel/
   verify_sync.odin      The sleeping lock on its own terms: 14 checks, 2 threads
   verify_rendez.odin    The sleep queue: 20 checks -- the clock, the park, the
                         condition, the order
-  verify_flush.odin     Tflush: 34 checks, against a server that will not finish
+  verify_flush.odin     Tflush: 35 checks, against a server that will not finish
                         -- abortable and stubborn, and the stubborn one is the
                         test
+  verify_payload.odin   A payload buffer per request slot: 23 checks, and a
+                        shared-buffer control that runs on every boot and has to
+                        corrupt
   verify_vfs.odin       The namespace under five threads: 35 checks, two servers
   splash.odin           Boot chassis: plinth, copper bar, well, lamps
   log.odin              Kernel log; serial + screen, with early-line replay
@@ -368,7 +381,8 @@ kernel/
     verify.odin         The boot self-test: cooperative half and preemptive half
   mnt/
     mnt.odin            A 9P connection with several requests in flight: the
-                        tag pool, the work queue, and the client's flush
+                        tag pool, the payload buffer per slot, the work queue,
+                        and the client's flush
     serve.odin          The workers, and where Rflush's ordering rule lives
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled

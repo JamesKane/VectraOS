@@ -209,10 +209,12 @@ echo_handler :: proc "contextless" (
 	tag: Tag,
 	request: ^Msg,
 	reply: ^Msg,
+	buf: []u8,
 ) {
 	_ = tag
 	_ = server
 	_ = s
+	_ = buf
 
 	#partial switch m in request^ {
 	case Tread:

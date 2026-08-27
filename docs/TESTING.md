@@ -110,6 +110,33 @@ run. **Only a second CPU makes these
 reachable**, which is exactly why they are cheap to leave in now and expensive
 to find later.
 
+## A control that runs on every boot
+
+`kernel/verify_payload.odin` does something the tables above do not, and it is
+worth copying where it fits.
+
+Somebody applies every other mutation in this document by hand, observes it
+once, and records it in prose. That is honest, and it decays. The mutation is
+not in the tree, so nothing re-runs it. A later change that quietly makes a
+check unfalsifiable again goes unnoticed until somebody repeats the exercise.
+
+The payload buffer had a control that could stay. The server under test can be
+told to answer the old way, out of one buffer for the whole server. That is
+exactly what a 9P server looked like before the milestone. Eight readers run
+against it, and the check is that they corrupt each other. The same eight then
+run against the real arrangement, and the check is that they do not.
+
+    one buffer for the server    1 reader of 8 got its own bytes back
+    one buffer per slot          8 of 8
+
+**A failure to corrupt is itself a failure.** Nobody has to revert anything or
+reason about anything. If a later change makes the shared arrangement stop
+corrupting, the boot says so on the line where the property lives.
+
+This only works where the wrong arrangement is *expressible* rather than absent
+— a flag on a test server, not a deleted line of kernel code. Where it is
+expressible, it is worth the twenty lines.
+
 ## Where the other control tables are
 
 | Subsystem | Table | Caught |
@@ -117,6 +144,7 @@ to find later.
 | The namespace under five threads | above | 5 of 7 |
 | The sleep queue | `docs/SYNC.md` | 6 of 8 |
 | `Tflush` and its transport | `docs/TRANSPORT.md` | 5 of 6 |
+| The payload buffer per request slot | `docs/TRANSPORT.md` | 3 of 4 |
 
 **The uncaught ones cluster, and the cluster is the finding.** Every one of them
 is a window two or three instructions wide, and none is at a lock boundary.

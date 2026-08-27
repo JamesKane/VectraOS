@@ -115,6 +115,21 @@ slow: Slow
 @(private = "file")
 conn: mnt.Conn
 
+/*
+The payload arena, which this test needs only to be allowed more than one
+worker.
+
+`slow_handler` answers with no payload at all -- it exists to block, not to
+carry bytes. `serve_start` still refuses a second worker without an arena. It
+cannot tell a server that carries nothing from one that carries bytes into
+shared storage. The floor is `mnt.MIN_PAYLOAD` per slot, and the smallest arena
+that clears it is what is here.
+
+`kernel/verify_payload.odin` is where a payload is what is being tested.
+*/
+@(private = "file")
+arena: [mnt.MAX_REQUESTS * mnt.MIN_PAYLOAD]u8
+
 @(private = "file")
 slow_ready :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
 	w := cast(^Slow_Wait)arg
@@ -152,8 +167,10 @@ slow_handler :: proc "contextless" (
 	tag: vectra9.Tag,
 	request: ^vectra9.Msg,
 	reply: ^vectra9.Msg,
+	buf: []u8,
 ) #no_bounds_check {
 	_ = s
+	_ = buf
 	sv := cast(^Slow)server
 
 	reply^ = vectra9.error_reply(vectra9.EOPNOTSUPP)
@@ -332,7 +349,11 @@ one_aborted :: proc "contextless" (arg: rawptr) -> bool {
 verify_flush :: proc() #no_bounds_check {
 	r: Flush_Result
 
-	mnt.init(&conn, slow_handler, &slow, slow_abort)
+	fcheck(
+		&r,
+		mnt.init(&conn, slow_handler, &slow, slow_abort, arena[:]),
+		"the connection took a payload arena it could divide",
+	)
 	if !fcheck(&r, mnt.serve_start(&conn, WORKERS), "the connection started serving") {
 		report_flush(&r)
 		return
@@ -617,7 +638,11 @@ verify_transparency :: proc(r: ^Flush_Result) -> bool #no_bounds_check {
 	}
 	defer vfs.static_destroy(&plain_tree)
 
-	mnt.init(&plain_conn, vfs.static_handler, &plain_tree)
+	// No arena, and therefore one worker. That is the pairing `serve_start`
+	// enforces, and it is the shape this check is about.
+	if !mnt.init(&plain_conn, vfs.static_handler, &plain_tree) {
+		return false
+	}
 	if !mnt.serve_start(&plain_conn, 1) {
 		return false
 	}

@@ -1,4 +1,4 @@
-# The asynchronous 9P transport, and Tflush
+# The asynchronous 9P transport, Tflush, and the payload buffer
 
 `kernel/mnt/` — `mnt.odin`, `serve.odin`
 
@@ -9,9 +9,14 @@ mechanism. A split would mean the ordering rule written down twice.
 
 ```
 client thread ──▶ [ tag pool ] ──▶ work queue ──▶ worker ──▶ handler
-      ▲                                                        │
+      ▲              │  buffer                                 │
+      │              └───────────────────────────────────────▶ ┘
       └──────────────── reply, by tag ─────────────────────────┘
 ```
+
+Each slot in that pool owns a payload buffer, and the handler is handed it. That
+is the second half of the milestone, and section 3 is why it could not be a copy
+taken afterwards.
 
 ## Tflush, and the transport underneath it
 
@@ -103,17 +108,84 @@ needs a timer inside that window, and eight client threads that each run for a
 few microseconds do not reliably produce one. It is a real bug, and only a
 second CPU makes it easy to find.
 
-**What `kernel/vfs` still cannot do with this.** A reply can borrow the server's
-storage. `Rread.data` points into a node's `.rodata`, and `Rreaddir.data` points
-into the server's `dirbuf`. That was safe because the session lock spanned the
-whole exchange. With several requests in flight it is not, and *the borrow rule
-is a property of the transport rather than of the protocol*.
+**What `kernel/vfs` could not do with this** was the thing left over, and the
+payload buffer is what settled it. Section 3 is that story.
 
-A single-worker `Conn` still honours it, which is what the transparency check
+A single-worker `Conn` needs none of it, which is what the transparency check
 uses. `static_handler`, unmodified, sits behind a queue and a thread, and
-answers `Tattach` and `Twalk` exactly as it does behind `In_Process`. Anything
-more needs a payload buffer per slot, and that is the next step rather than this
-one.
+answers `Tattach` and `Twalk` exactly as it does behind `In_Process`.
+
+## A payload buffer per request slot
+
+A reply can borrow the server's storage. `Rread.data` points into a node's
+`.rodata`, and `Rreaddir.data` used to point into the server's one `dirbuf`.
+That was safe because the session lock spanned the whole exchange. With several
+requests in flight it is not, and *the borrow rule is a property of the
+transport rather than of the protocol*.
+
+**The buffer has to arrive before the handler, not after it.** This is the
+finding, and it is the one that is easy to get wrong. The obvious repair is for
+the worker to copy the payload out of the server's storage the moment the
+handler returns. That looks correct and is not. There is no instant, after a
+handler returns, at which its borrow is still good — another handler is already
+inside the shared storage.
+
+So the direction reverses. Each request slot owns a buffer, `vectra9.Handler`
+grew a `buf` parameter, and the handler builds its payload there. Nothing is
+shared, so there is nothing to overwrite. A transport with one request in flight
+passes nil, and a handler that gets nil answers where it always did.
+
+**The slot outlives the client, which is what makes the buffer safe.** A client
+that gives up sends `Tflush` and waits for `Rflush`, and only then is the slot
+free. A stubborn server therefore goes on writing into a buffer whose client
+walked away — into a slot nothing else may claim. That is the rule `Tflush`
+already needed for the tag, and the buffer rides on it for free.
+
+**The buffer size is the msize.** `init` sets `Session.msize` from what one slot
+holds, so a client that sizes a read by msize has room for whatever comes back.
+A payload that does not fit is then a server bug rather than an overrun.
+`call` reports `Short_Buffer` and replaces the reply. The reply that did not fit
+is the one still pointing into a slot about to be released.
+
+**A connection with no arena is held to one worker.** `serve_start` refuses the
+second. The alternative is a comment. The failure it would guard against
+produces correct replies every time until the timing changes, and then hands one
+thread's directory listing to another.
+
+**23 checks in `kernel/verify_payload.odin`, and a control that runs on every
+boot.** The server under test can be told to answer the old way, out of one
+buffer of its own. Eight readers then run against it, and the check is that the
+readers corrupt each other:
+
+| Arrangement | Readers that got their own bytes back |
+|---|---|
+| one buffer for the whole server | 1 of 8 |
+| one buffer per request slot | 8 of 8 |
+
+A failure to corrupt is itself a failure. Nobody has to revert the control or
+reason about it, which is the difference between this and the mutation tables
+elsewhere in these documents.
+
+**Four mutations, three caught:**
+
+| Mutation | Result |
+|---|---|
+| every slot points at the same buffer | caught — `every one of them got its own bytes back` |
+| the payload is never copied out of the slot | caught — four failures |
+| `serve_start` allows many workers with no arena | caught — `is then refused a second worker` |
+| remove the barrier that overlaps the handlers | **not caught** — the control still spoiled 7 of 8 |
+
+The last one is worth keeping anyway, and its result is the reason. The
+tick-long wait inside each handler already overlaps them on this machine, so the
+barrier changes nothing today. What it buys is that the control corrupts by
+construction rather than by how the scheduler happened to order eight threads. A
+control that works by accident stops working the day the accident does.
+
+**The payoff, against a server nothing was changed for.** Four threads list one
+directory at once through `vfs.static_handler`. It builds its `Rreaddir` payload
+in whatever buffer the transport names. Behind `In_Process` that is still its
+own `dirbuf`, and behind this connection it is the slot's. Before the buffer,
+that arrangement was the one `serve_start` had to refuse.
 
 ## Decisions, and what would reverse them
 
@@ -138,6 +210,16 @@ one.
   transport that can only have one request outstanding. It is load-bearing on
   any transport that cannot. A server that implements `Tflush` must be able to
   say which of its in-flight requests an `oldtag` names.
+- **`vectra9.Handler` also takes the storage its reply borrows.** Same shape,
+  same reason, one milestone later. A copy taken after the handler returns is
+  the alternative, and it is wrong rather than slower. Reversing this puts the
+  connection back to one worker, which is `In_Process` with extra steps.
+- **The payload arena is the caller's, and its size becomes the msize.** `init`
+  divides what it is handed among the request slots and says so in
+  `Session.msize`. The alternative is a fixed array inside `Conn`, which makes
+  every connection pay the largest payload any server might send. A caller knows
+  what its own server answers with, and msize is the field that exists to say
+  it.
 
 ## Known warts
 
@@ -145,15 +227,17 @@ one.
   one of them.** `In_Process` and `Encoded_Loopback` both run the handler on
   the caller's own stack. A client behind either can therefore never have two
   requests outstanding. `kernel/mnt` is the asynchronous one, and it lives in
-  the kernel
-  because it needs threads. What keeps `kernel/vfs` on the synchronous side is
-  the borrow rule, not the interface. See `docs/HANDOFF.md` section 6.
-- **A reply's payload has no owner on an asynchronous transport.** `Rread.data`
-  points into the server's storage, and is valid until that server's next
-  message. That was a workable rule while the session lock spanned the whole
-  exchange. It is not one when eight exchanges are in flight. A `Conn` with one
-  worker still honours it. Anything more needs the payload copied into the
-  request's own slot, and nothing does that yet.
+  the kernel because it needs threads. What kept `kernel/vfs` on the synchronous
+  side was the borrow rule, and nothing keeps it there now. See
+  `docs/HANDOFF.md` section 6.
+- **A reply *string* still borrows the server's storage.** `Rreadlink.target`
+  and `Rgetlock.client_id` are the two, and no server in the tree returns
+  either. Neither needs a special case when one does. `deliver` copies whatever
+  lies inside the slot and leaves alone whatever does not. A handler that builds
+  a symlink target in `buf` is therefore already handled.
+- **`kernel/vfs` still passes nil and keeps its session lock.** Nothing blocks
+  the move now. It is the next step rather than this one, and `docs/HANDOFF.md`
+  section 6 says what falls out of it.
 
 ## See also
 

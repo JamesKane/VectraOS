@@ -51,11 +51,18 @@ One worker is the exception, and is worth having. A connection one thread
 serves has one request in flight at a time, which makes it behave exactly like
 `vectra9.In_Process` from the outside.
 
-That is the shape a server whose replies borrow its own storage still needs.
-See the file comment in `mnt.odin`.
+That is the shape a server whose replies borrow its own storage still needs. It
+is also the only shape open to a connection with no payload arena.
+
+Refused rather than documented. A connection that gets this wrong answers
+correctly every time until the timing changes. Then it hands one thread's
+directory listing to another thread. See the file comment in `mnt.odin`.
 */
 serve_start :: proc(c: ^Conn, n: int = 2) -> bool {
 	if c == nil || c.handler == nil || n <= 0 {
+		return false
+	}
+	if n > 1 && c.per == 0 {
 		return false
 	}
 
@@ -151,7 +158,10 @@ serve_one :: proc "contextless" (c: ^Conn, r: ^Rpc) {
 			return
 		}
 	} else {
-		c.handler(c.server, &c.session, r.tag, &r.request, &r.reply)
+		// `r.payload` is this request's own, and the handler may fill it. It is
+		// nil on a connection with no arena. `serve_start` held that connection
+		// to one worker, where the old borrow rule is still sound.
+		c.handler(c.server, &c.session, r.tag, &r.request, &r.reply, r.payload)
 	}
 	finish(c, r)
 }
