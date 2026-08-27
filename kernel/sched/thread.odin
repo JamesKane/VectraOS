@@ -22,6 +22,7 @@ was the same sentence for as long as nothing blocked. See `ticks_left`.
 package sched
 
 import "kernel:arch"
+import "kernel:mem"
 
 /*
 Sixteen levels, of which three are reserved.
@@ -116,6 +117,19 @@ Thread :: struct {
 	affinity: Cpu_Classes,
 	cpu:      ^Cpu,
 
+	/*
+	The address space this thread translates through, or nil for the kernel's.
+
+	Nil rather than a pointer to the kernel space, and the difference is what
+	`reschedule` compares. Every kernel thread carries nil, so a switch between
+	two of them compares two nils and writes no CR3. That is the common case by
+	a wide margin, and the one that must cost nothing.
+
+	A thread with a space is not yet a process. A process is a space, a
+	namespace and a set of open files, and this is the first of the three.
+	*/
+	space: ^mem.Address_Space,
+
 	// Counters, all of them for the self-test rather than for the scheduler.
 	slices:      u64, // Whole slices of CPU consumed, blocking or not
 	preemptions: u64,
@@ -149,6 +163,10 @@ Cpu :: struct {
 
 	ticks:       u64,
 	switches:    u64,
+
+	// Switches that also reloaded CR3. A fraction of `switches`, and the
+	// fraction is the point: two kernel threads cost none.
+	space_switches: u64,
 	preemptions: u64,
 
 	// Threads that exited, and that wait for somebody in thread context to

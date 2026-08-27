@@ -46,7 +46,14 @@ Address_Space :: struct {
 }
 
 @(private = "file") kernel_space: Address_Space
-@(private = "file") table_frames: int
+
+// Frames spent on page tables, across every address space there is.
+//
+// One counter and not one per space, because a page table is a page table.
+// `map_at` grows it wherever the mapping lands, and `space_destroy` shrinks it
+// by what it hands back. Two counters would be two things that must agree, and
+// the self-test that brackets this would be bracketing only half of it.
+@(private) table_frames: int
 @(private = "file") mapped_bytes: u64
 
 Vmm_Stats :: struct {
@@ -67,6 +74,15 @@ vmm_stats :: proc "contextless" () -> Vmm_Stats {
 		global       = arch.global_available(),
 		max_leaf     = arch.max_leaf_level(),
 	}
+}
+
+// kernel_root is the physical address of the kernel's top-level table. Separate
+// from `kernel_address_space` because `space_new` copies out of the table
+// rather than out of the record. A pointer to the record would say the wrong
+// thing about what is shared.
+@(private)
+kernel_root :: proc "contextless" () -> uintptr {
+	return kernel_space.root
 }
 
 // kernel_address_space is the one every kernel thread runs in, and the top half

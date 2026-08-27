@@ -35,6 +35,11 @@ TABLE_LEVELS :: amd64.TABLE_LEVELS
 
 Page_Table :: amd64.Page_Table
 Page_Table_Entry :: amd64.Page_Table_Entry
+
+// The register that names the current address space. A write is what a context
+// switch does, and it flushes every non-global translation on the way.
+read_cr3 :: amd64.read_cr3
+write_cr3 :: amd64.write_cr3
 Page_Flag :: amd64.Page_Flag
 Page_Flags :: amd64.Page_Flags
 

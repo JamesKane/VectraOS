@@ -25,6 +25,7 @@ package sched
 import "base:intrinsics"
 
 import "kernel:arch"
+import "kernel:mem"
 import "kernel:sync"
 
 @(private)
@@ -167,9 +168,10 @@ spawn :: proc(
 	priority: Priority = PRIORITY_NORMAL,
 	affinity: Cpu_Classes = ANY_CLASS,
 	stack_size: int = DEFAULT_STACK_SIZE,
+	space: ^mem.Address_Space = nil,
 ) -> ^Thread {
 	reap()
-	return spawn_at(cpu(), name, entry, arg, priority, affinity, stack_size)
+	return spawn_at(cpu(), name, entry, arg, priority, affinity, stack_size, space)
 }
 
 @(private)
@@ -181,6 +183,7 @@ spawn_at :: proc(
 	priority: Priority,
 	affinity: Cpu_Classes,
 	stack_size: int,
+	space: ^mem.Address_Space = nil,
 ) -> ^Thread {
 	if entry == nil || stack_size < arch.MIN_STACK_SIZE {
 		return nil
@@ -223,6 +226,17 @@ spawn_at :: proc(
 	t.prio = priority
 	t.id = next_id
 	next_id += 1
+
+	/*
+	The space is set before the thread is enqueued, and that ordering is the
+	whole of it. The next interrupt can dispatch a thread sitting on a run queue.
+	One dispatched with the wrong space runs its first instruction through
+	somebody else's tables.
+
+	Nil is the kernel's, which is what every thread before this milestone
+	carried and what every kernel thread still does.
+	*/
+	t.space = space
 
 	guard := sync.acquire(&lock)
 	enqueue(c, t)
@@ -533,6 +547,28 @@ reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Res
 		return r
 	}
 
+	/*
+	The address space, before anything else about the incoming thread.
+
+	Compared rather than written, because a write to CR3 flushes every
+	non-global translation whether or not the value changed. Two kernel threads
+	both carry nil, so the common switch does one comparison and no flush.
+
+	The kernel half is identical in every space and mapped `Global`. The code
+	executing this line, the stack under it and the thread record it reads all
+	survive the reload. That is what `populate_higher_half` and
+	`map_kernel_image` were for, four milestones before there was anything to
+	switch to.
+	*/
+	if next.space != prev_space(prev) {
+		c.space_switches += 1
+		if next.space != nil {
+			mem.space_switch(next.space)
+		} else {
+			mem.space_switch(mem.kernel_address_space())
+		}
+	}
+
 	c.current = next
 	next.state = .Running
 	next.cpu = c
@@ -548,6 +584,15 @@ reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Res
 		c.switches += 1
 	}
 	return next.resume
+}
+
+// prev_space is the space the machine is translating through right now. Nil
+// when the outgoing thread was a kernel one, and nil when there was none at
+// all. The first dispatch on a core runs out of the kernel's space, because
+// nothing else exists yet.
+@(private = "file")
+prev_space :: proc "contextless" (prev: ^Thread) -> ^mem.Address_Space {
+	return prev == nil ? nil : prev.space
 }
 
 // -- The tick ----------------------------------------------------------------
@@ -613,6 +658,10 @@ Stats :: struct {
 	ready:       int,
 	ticks:       u64,
 	switches:    u64,
+
+	// Switches that also reloaded CR3, which is a fraction of `switches` and
+	// meant to be. Two kernel threads share the kernel's space and cost none.
+	space_switches: u64,
 	preemptions: u64,
 	class:       arch.Cpu_Class,
 	capacity:    int,
@@ -626,6 +675,7 @@ stats :: proc "contextless" () -> Stats {
 		ready       = ready_count(c),
 		ticks       = c.ticks,
 		switches    = c.switches,
+		space_switches = c.space_switches,
 		preemptions = c.preemptions,
 		class       = c.class,
 		capacity    = c.capacity,

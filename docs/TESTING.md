@@ -212,6 +212,7 @@ nothing else in common.
 | The first device server | `docs/DEVFS.md` | 18 of 20 |
 | Services published by name | `docs/SRV.md` | 9 of 9 |
 | The first device that interrupts | `docs/KBD.md` | 7 of 7 |
+| Address spaces | `docs/SPACE.md` | 3 checked, 2 faults, 1 inert |
 
 **The uncaught ones cluster, and the cluster is the finding.** Almost every one
 is a window two or three instructions wide, and none is at a lock boundary.
@@ -253,6 +254,17 @@ for it.
 A control that comes back clean is a question, not an answer. It asks whether
 the check is weak, whether the mutation is inert, or whether the code carries
 something it does not need. All three happen.
+
+**`docs/SPACE.md` found a fourth.** A teardown that freed frames it did not own
+passed every check, because the physical allocator absorbs a double free without
+a word. The count was already safe -- a second release finds the bit clear and
+changes nothing -- so the arithmetic agreed and the bug stayed invisible. The
+allocator counts double frees now.
+
+So the question a clean control asks has four answers. The fourth: **does
+something below the code under test quietly forgive an error?**
+An allocator, a lock, or a protocol that absorbs a mistake makes every check
+above it weaker than it reads.
 
 ## See also
 

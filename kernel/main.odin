@@ -196,6 +196,7 @@ kmain :: proc "sysv" () {
 			if init_keyboard() {
 				verify_keyboard()
 			}
+			verify_space()
 		}
 	}
 

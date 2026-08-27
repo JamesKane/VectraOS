@@ -27,6 +27,7 @@ import "base:intrinsics"
 @(private = "file") frame_total: int // Frames the bitmap covers, holes included
 @(private = "file") frame_usable: int // Frames that were ever free
 @(private = "file") frame_free: int
+@(private = "file") double_frees: int
 @(private = "file") frame_peak: int // High-water mark of frames in use
 @(private = "file") bitmap_frame: int // Where the bitmap put itself
 @(private = "file") bitmap_frames: int
@@ -36,6 +37,7 @@ Pmm_Stats :: struct {
 	total_frames:  int,
 	usable_frames: int,
 	free_frames:   int,
+	double_frees:  int, // Frames released while already free -- always a bug
 	peak_frames:   int,
 	bitmap_bytes:  int,
 	bitmap_phys:   uintptr,
@@ -46,6 +48,7 @@ pmm_stats :: proc "contextless" () -> Pmm_Stats {
 		total_frames  = frame_total,
 		usable_frames = frame_usable,
 		free_frames   = frame_free,
+		double_frees  = double_frees,
 		peak_frames   = frame_peak,
 		bitmap_bytes  = len(bitmap),
 		bitmap_phys   = uintptr(u64(bitmap_frame) * PAGE_SIZE),
@@ -73,6 +76,21 @@ release :: proc "contextless" (frame: int) #no_bounds_check {
 	mask := u8(1) << uint(frame & 7)
 	if bitmap[frame >> 3] & mask != 0 {
 		frame_free += 1
+	} else {
+		/*
+		A frame freed twice, counted rather than ignored.
+
+		The count was already safe. A second release finds the bit clear and does not
+		raise `frame_free`, so the arithmetic stays true whatever a caller does. What it was not, was *visible*. A double free is
+		always a bug in the caller, and an allocator that absorbs it silently is
+		an allocator that hides one.
+
+		A count rather than a stop, because this is the physical allocator and
+		the panic screen it would reach for needs frames of its own. A self-test
+		that brackets this sees a number that should be zero, which is what
+		found the first one -- see `docs/SPACE.md`.
+		*/
+		double_frees += 1
 	}
 	bitmap[frame >> 3] &~= mask
 }
