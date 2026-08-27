@@ -1,94 +1,150 @@
 # Vectra
 
 A modular operating system written in Odin. Plan 9-inspired namespaces and a
-synthetic file protocol underneath; a skeuomorphic 1994-cyberpunk workstation
+synthetic file protocol underneath, a skeuomorphic 1994-cyberpunk workstation
 on top.
 
 ## Status
 
-Milestone 3 — **the protocol layer exists.** The kernel comes up under
-Limine on `x86_64`, installs a GDT, TSS and IDT of its own, brings up serial and
-the framebuffer, then builds a bitmap physical page allocator, constructs a
-complete set of page tables from scratch and switches onto them, and brings up a
-slab heap installed as `context.allocator` — so ordinary Odin `new`, `make` and
-`append` work in the kernel. A fault is drawn onto the chassis with its cause
-decoded rather than resetting the machine. There is no scheduler and no VFS yet;
-`kmain` halts after a self-test.
+**Userland runs.** The kernel comes up under Limine on `x86_64` with descriptor
+tables, page tables and a heap of its own. It publishes `#c` at `/dev` and `#s`
+at `/srv` over 9P2000.L, preempts on the local APIC, and takes keyboard
+interrupts through the I/O APIC. Then it starts processes in ring 3 that open
+files by name and write to the console.
+
+A process is an address space, a namespace and a set of open files. Two
+processes can hand the kernel one path and get different files. The mount table
+belongs to the process rather than to the machine.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
 [  ok  ] base revision 6 as requested
 [  ok  ] traps: cs 0x8, tr 0x30, 256 vectors, #BP round-trip ok
 [  ok  ] framebuffer 1280x800 @ 32bpp, pitch 5120 -> 0xffff800080000000
-[  --  ] console 149 cols x 36 rows
-[  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
-[  ok  ] paging 4-level
-[  --  ] kernel phys 0x000000001fe3c000 virt 0xffffffff80000000
-[  --  ] hhdm offset 0xffff800000000000
-[  --  ] memory map: 27 entries spanning 12.7 GiB
-[  ok  ] usable 467.4 MiB, reclaimable 39.2 MiB
-[  --  ] largest usable region 421.4 MiB at 0x0000000001600000
-[  ok  ] pmm 119678 frames free of 123400 tracked, bitmap 15.0 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.1 MiB in 270 tables (1.0 MiB)
-[  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
+[  ok  ] pmm 119371 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 515.7 MiB in 271 tables (1.0 MiB)
 [  ok  ] heap online -- context.allocator is live
-[  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
 [  ok  ] vectra9 9P2000.L: 57 message kinds round-trip, both transports agree
-[  ok  ] boot complete -- halting (no scheduler yet)
+[  ok  ] namespace: #/ attached as /, 7 conventional directories
+[  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT
+[  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
+[  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
+[  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
+[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half
+[  ok  ] syscall armed -- entry at 0xffffffff8001ed30, /dev/cons is descriptor 1
+-- a program in ring 3 wrote this line
+-- a process opened this file by name
+-- this line went to /dev/null
+[  ok  ] user 168 userland checks passed -- 12 processes, 28 system calls, one path two files
+[  ok  ] boot complete -- idling
 ```
 
-The self-tests check the things that fail silently. `#BP round-trip ok` means a
-breakpoint was armed, raised, caught and resumed from, which exercises the whole
-trap path end to end. The memory self-test checks that the page allocator does
-not hand out the same frame twice, that walking the new tables for a kernel
-global lands where the bootloader actually loaded it, that `.text` is mapped
-executable-and-not-writable while `.rodata` is neither, and that memory returned
-by `make` survives being written and read back. The protocol self-test encodes,
-decodes and re-encodes every message kind and compares the two byte strings,
-which catches a field written in the wrong order, read at the wrong width, or
-forgotten by the decoder.
+That is an abridged log. The full one is about forty lines and every one of
+them is a self-test.
+
+### Three of those lines are worth explaining
+
+`-- a program in ring 3 wrote this line` crosses every layer there is. The
+`syscall` instruction. A copy out of a program's memory that the kernel checked
+first. A 9P write over the real transport, the `#c` device server, and the
+framebuffer console.
+
+`-- this line went to /dev/null` is the one that is not there. A process bound
+`/dev/null` over `/dev/cons` **in its own namespace**. Then it wrote the same
+line twice, once by that path and once through a descriptor it opened before
+the bind. The console moved once, and nothing else on the machine saw the
+change.
+
+`7 spoiled by a shared buffer`, in the full log, is a **pass**. It is a control
+that runs on every boot. Eight readers share one reply buffer, the way a 9P
+server looked before the payload-per-slot milestone. A failure to corrupt each
+other would be the failure.
+
+## What exists
+
+| Subsystem | What it is |
+|---|---|
+| `boot/`, `kernel/arch/` | Limine, GDT/TSS/IDT, traps, the panic screen |
+| `kernel/mem/` | Bitmap PMM, page tables, slab heap behind `context.allocator`, one address space per process |
+| `kernel/sched/` | Threads, priorities, decay and boost, the LAPIC tick that preempts |
+| `kernel/sync/` | The lock that masks, the lock that parks, and waiting for a condition |
+| `sys/vectra9/` | The 9P2000.L message set, its codec, and the transport boundary |
+| `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings |
+| `kernel/mnt/` | A 9P connection with several requests in flight, and `Tflush` |
+| `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl` |
+| `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs |
+| `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, a top half that may not park |
+| `kernel/user/` | Ring 3, `syscall`/`sysret`, and a process that owns what it opens |
+
+`servers/` and `apps/` are still empty, and `kernel/devfs` lives in the kernel
+because of it. What is missing is not the boundary. `devfs` already speaks 9P
+over a transport that hides which side of one it sits on. What is missing is
+the step before it. Nothing loads a program out of a file, and nothing starts a
+process the kernel did not build itself.
+
+**`docs/HANDOFF.md` is the orientation document**, and each subsystem has one
+of its own beside the code it explains.
 
 ## Vectra9
 
-Every system service — drivers, the network stack, graphics, IPC, thread state —
-is a file tree behind a message-passing endpoint. The protocol is **9P2000.L,
-unmodified**, and keeping it that way is a design constraint: when a service
-needs an operation 9P does not have, the answer is a file, not a message.
+Every system service — drivers, the network stack, graphics, IPC, thread state
+— is a file tree behind a message-passing endpoint. The protocol is **9P2000.L,
+unmodified**, and keeping it that way is a design constraint. When a service
+needs an operation 9P does not have, the answer is a *file*. `/dev/consctl` is
+the first, and it takes a line of text.
 
 Servers speak *decoded* messages. The transport is the only thing that knows
 bytes exist, so an in-kernel read costs one indirect call and no copy of the
-payload, while the same handler behind a pipe gets an identical message because
-the transport parsed it first:
+payload. The same handler behind a pipe gets an identical message, because the
+transport parsed it first:
 
 ```
 in-kernel:   caller -- Msg ------------------------> handler
 to userland: caller -- Msg -> encode -[bytes]-> decode -> handler
 ```
 
-The namespace is the full Plan 9 model — `bind`/`mount` with before/after/
-replace, union directories, per-process mount tables copied or shared on fork.
-That part is designed but not yet built.
+The namespace is the full Plan 9 model: `bind`/`mount` with
+before/after/replace, union directories, and per-process mount tables copied or
+shared on fork. It is built, and ring 3 reaches it through `bind`.
 
 **`docs/VECTRA9.md` is the design**, and the thing to read before touching
-`sys/vectra9/` or writing anything that talks to it.
+`sys/vectra9/`, a server, or the mount model.
 
-A fault reports itself on the chassis, with the error code decoded and — for a
-page fault — what was actually mapped at the faulting address:
+## Every line of that boot log is a self-test
 
-```
-[ FAIL ] #PF page fault (vector 14)
-[  !!  ] error code: protection violation, write, supervisor (raw 0x3)
-[ FAIL ] faulting address 0xffffffff80000000
-[  !!  ]   mapped to 0x000000001fe3c000 r-x supervisor global
-```
+There is no test harness and no host-side test build. Every layer proves itself
+on the machine that will run it, during boot, and reports one line. About six
+hundred and fifty checks run on every boot.
 
-Screenshot: `docs/panic-screen.png`.
+The cost of that is a self-test can be *unfalsifiable* — it passes because it
+cannot fail, and nothing about a green line says which. So every milestone ends
+by mutating the code, one change at a time, and recording which checks notice.
+**The mutations nothing catches are the more interesting half**, and each
+subsystem's document lists them rather than files them as gaps.
+
+Four of the things that found:
+
+- A test that FXSAVE preserves XMM registers **passed with the FXSAVE
+  removed**. An unoptimised build spills every value to the thread's own stack,
+  and a thread's own stack survives by construction.
+- A check that a write reached the screen was the driver's byte counter, which
+  rises whether or not a glyph is drawn. It is the console's cursor column now,
+  and the newline goes in a second write so the number is exact.
+- A control that removed the `User` bit from the kernel's copy-in check passed
+  everything, because the only bad address the test used was a kernel one and a
+  range check refused it first. A program that hands the kernel an address in
+  its *own* half that it may not read is what closes it.
+- A teardown that freed frames it did not own passed every check, because the
+  physical allocator absorbed a double free without a word. It counts them now.
+
+`docs/TESTING.md` is the discipline, and it is short.
 
 ## Building
 
 Requires `odin`, `ld.lld`, `qemu-system-x86_64`, and `python3` with Pillow (only
-to regenerate the console font). No `xorriso`, no loop devices, no `sudo` — the
-bootable volume is a directory that QEMU's vvfat backend presents to the
+to regenerate the console font). No `xorriso`, no loop devices, and no `sudo`.
+The bootable volume is a directory that QEMU's vvfat backend presents to the
 firmware as FAT, so the same commands work on macOS and Linux.
 
 ```sh
@@ -96,10 +152,11 @@ just run          # build, stage, boot headless with serial on stdio
 just gui          # same, but open a QEMU window
 just debug        # boot halted; `just gdb` in another shell
 just release      # optimised, bounds checks off
+just check        # type-check everything, emit nothing
 make run          # if you don't have `just`
 ```
 
-`build.odin` is the real build system; `justfile` and `Makefile` are wrappers
+`build.odin` is the real build system. `justfile` and `Makefile` are wrappers
 over it, and its options are documented in the comment at the top of the file.
 Invoke it directly as:
 
@@ -107,9 +164,23 @@ Invoke it directly as:
 odin run build.odin -file -out:.vectra-build -- run --gfx
 ```
 
-The explicit `-out:` matters: without it `odin run` names the driver binary
+The explicit `-out:` matters. Without it `odin run` names the driver binary
 after the script and drops `./build` right on top of the `build/` output
 directory.
+
+## Prose is linted
+
+Comments and documents are written in **ASD-STE100**, the controlled English
+the aerospace industry uses for maintenance manuals. `tools/ste-lint.py` checks
+the seven rules a program can decide on its own. Sentence length, the
+semicolon, the perfect tense, and the passive with a named actor are four of
+them. The tree stays at zero findings, and this file is inside it.
+
+```sh
+odin run build.odin -file -out:.vectra-build -- lint --show
+```
+
+`docs/STYLE.md` says what that costs and why it is worth it.
 
 ## Layout
 
@@ -117,65 +188,81 @@ directory.
 build.odin              Build driver: compile, link, stage ESP, run QEMU
 boot/                   Bootloader assets staged into the EFI system partition
 kernel/
-  main.odin             kmain, the Limine requests, and memory bring-up
+  main.odin             kmain, the Limine requests, and the boot order
+  verify_*.odin         The self-tests that span more than one package
   splash.odin           The boot chassis: plinth, copper bar, well, lamps
-  log.odin              Kernel log; serial and screen, with replay of
-                        lines emitted before the framebuffer existed
+  log.odin              Kernel log; serial and screen, with replay
   panic.odin            The panic screen and the trap handler behind it
   link_amd64.ld         Static-PIE image layout for the Limine protocol
   arch/                 Architecture interface (arch_amd64.odin binds it)
-    amd64/              Port I/O, control registers, MSRs, CPUID, SSE, the
-                        page table format, and the GDT/TSS/IDT
-  boot/limine/          Limine protocol bindings; markers.odin owns the
-                        base revision tag and the request delimiters
+    amd64/              Port I/O, MSRs, paging, GDT/TSS/IDT, LAPIC, I/O APIC,
+                        the per-CPU record behind GS, and the syscall stub
+  boot/limine/          Limine protocol bindings and the request delimiters
   drivers/
     uart/               16550 serial, polled
     fb/                 Linear framebuffer surface, bevels, gradients, palette
     console/            Framebuffer text console + baked 8x16 font
-  mem/                  Bitmap PMM, page tables, slab heap
-  sched/ vfs/           Not yet written
+    kbd/                PS/2 scancodes, a top half and a bottom half
+  mem/                  Bitmap PMM, page tables, slab heap, address spaces
+  sync/                 Spinlock, sleeping lock, sleep queue, rendezvous
+  sched/                Threads, run queues, the switch, the tick
+  vfs/                  Chans, mount table, walking, union listings
+  mnt/                  A 9P connection with several requests in flight
+  devfs/                `#c` at /dev
+  srv/                  `#s` at /srv
+  user/                 Ring 3, the system calls, and a process
 sys/
   libodin/              Freestanding core shared by kernel and userland
   vectra9/              9P2000.L message layer: types, codec, sessions
   libposix/             Not yet written
 servers/                devfs, netfs, intuition — not yet written
 apps/                   terminal, filemgr, tracker — not yet written
-tools/genfont.py        Bakes a host TTF into kernel/drivers/console/font_data.odin
+docs/                   One document per subsystem, plus HANDOFF and TESTING
+tools/
+  genfont.py            Bakes a host TTF into the console font
+  ste-lint.py           The ASD-STE100 checker
 ```
 
 ## Notes on the toolchain
 
+These each cost something to find. `docs/HANDOFF.md` section 5 has the full
+list with what breaks when you change one.
+
 - The kernel builds against **stock `base:runtime`**. Odin's freestanding
-  target now carries its own `os_specific` stubs, so there is no vendored
-  runtime shim to keep in sync with the compiler.
-- `-no-thread-local` is required: Odin otherwise emits `STT_TLS` symbols with
-  no `PT_TLS` segment to put them in. Per-CPU state will go through `GS`.
+  target carries its own `os_specific` stubs, so there is no vendored runtime
+  shim to keep in sync with the compiler.
+- `-no-thread-local` is required. Odin otherwise emits `STT_TLS` symbols with
+  no `PT_TLS` segment to put them in, and per-CPU state goes through `GS`
+  explicitly instead.
 - `ld.lld` does the linking. Apple's `ld` cannot produce ELF.
-- The bundled Limine is **v12.6.1** (UEFI applications only, in `boot/limine/`).
-  Vectra requests **base revision 6**, and `kmain` reports whether it got it.
-- Under base revision 2 and above the request delimiters are binding, not
-  advisory. Every request must carry `@(link_section = ".limine_requests")` or
-  the bootloader never sees it — it links and boots, and the response is just
-  silently nil. `kernel/link_amd64.ld` orders the section start/body/end.
+- The bundled Limine is **v12.6.1** (UEFI applications only). Vectra requests
+  **base revision 6**, and `kmain` reports whether it got it.
+- Since base revision 2 the request delimiters are binding, not advisory. Every
+  request must carry `@(link_section = ".limine_requests")` or the bootloader
+  never sees it. It links, it boots, and the response is silently nil.
 - Base revision 5 and above clear every `cr0`/`cr4`/`EFER` bit the protocol does
-  not require, `CR4.OSFXSR` included, so `arch.early_init` enabling SSE is a
-  hard requirement rather than belt-and-braces.
-- Base revision 6's HHDM is restrictive: only usable, bootloader-reclaimable,
-  executable, framebuffer, reserved-mapped, ACPI-reclaimable and ACPI-NVS
-  regions are mapped. The VMM will have to respect that.
-- The paging mode is pinned to 4-level. Limine would otherwise hand us 5-level
-  on hardware that supports it, which moves the canonical hole.
-- `EFER.NXE` has to be enabled before the first mapping that sets the no-execute
+  not require, `CR4.OSFXSR` included. Odin's codegen uses XMM registers for
+  ordinary struct moves, so `arch.early_init` enabling SSE is what stops the
+  *first* Odin statement after entry from faulting.
+- `EFER.NXE` has to be on before the first mapping that sets the no-execute
   bit. Until it is, bit 63 of a page table entry is *reserved* rather than
-  ignored, and the mapping faults on first touch nowhere near the cause.
+  ignored. The mapping then faults on first touch, nowhere near the cause.
 - The kernel image's segment bounds come from `kernel/link_amd64.ld`, which
-  exports `__text_start` … `__data_end`, rather than being restated in Odin. The
-  VMM maps a segment at a time using them, so the permissions it installs cannot
-  drift out of step with the layout the linker actually produced.
-- Interrupt entry stubs use `proc "naked"` — a calling convention, not the
-  `@(naked)` attribute, which Odin does not have. All 256 are emitted by the
-  assembler with `.rept`, padded to sixteen bytes each by `.balign 16` so the
-  nth is found by multiplying rather than through a table of function pointers.
+  exports `__text_start` … `__data_end`, rather than being restated in Odin.
+  The permissions the VMM installs therefore cannot drift out of step with the
+  layout the linker produced.
+- Entry stubs use `proc "naked"` — a calling convention, not the `@(naked)`
+  attribute, which Odin does not have. The assembler emits all 256 interrupt
+  stubs with `.rept` and pads each to sixteen bytes with `.balign 16`. Finding
+  the nth is then a multiplication rather than a table of function pointers.
+- The user selectors in the GDT are laid out `[code32, data, code64]`, which is
+  what `SYSRET` reads out of `STAR`. `SYSRET` does not validate what it loads,
+  so a wrong layout is not a link error and not a fault at boot. It is a system
+  call returning to the wrong privilege level.
 - The legacy 8259 PICs are remapped clear of the exception vectors *and* then
   masked. Masking alone leaves a spurious IRQ 7 able to arrive as a page fault
   with a stale CR2, which is a very convincing wrong answer.
+- A missing EOI stops the local timer silently. There is no error, no fault and
+  no bit anywhere saying so, and it looks exactly like a timer that was never
+  armed. Any loop waiting on the tick count needs a liveness bound measured in
+  something the failure cannot destroy.

@@ -3,8 +3,8 @@
 Check the prose in this tree against the structural rules of ASD-STE100.
 
 What it reads is prose, not code: the block and line comments in `*.odin`, the
-body text of `docs/*.md`, and -- in strict mode -- the runtime strings the
-kernel prints. Code inside those regions is skipped, because a `::` declaration
+body text of `README.md` and `docs/*.md`, and -- in strict mode -- the runtime
+strings the kernel prints. Code inside those regions is skipped, because a `::` declaration
 quoted in a doc comment is not a sentence and has no opinion about semicolons.
 
 The standard has 53 rules. This checks the seven that a program can decide on
@@ -430,7 +430,8 @@ def walk(paths):
 
 def main():
     ap = argparse.ArgumentParser(add_help=True)
-    ap.add_argument("paths", nargs="*", default=["docs", "kernel", "sys"])
+    ap.add_argument("paths", nargs="*",
+                    default=["README.md", "docs", "kernel", "sys"])
     ap.add_argument("--show", action="store_true", help="print every finding")
     ap.add_argument("--full", action="store_true",
                     help="print the whole sentence, not the first 70 characters")
@@ -438,7 +439,7 @@ def main():
                     help="also check the strings the kernel prints")
     ap.add_argument("--rule", action="append", help="limit to these rules")
     args = ap.parse_args()
-    paths = args.paths or ["docs", "kernel", "sys"]
+    paths = args.paths or ["README.md", "docs", "kernel", "sys"]
 
     findings = []
 
