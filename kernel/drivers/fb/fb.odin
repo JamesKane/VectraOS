@@ -106,6 +106,35 @@ put_raw :: proc "contextless" (s: ^Surface, x, y: int, value: u32) #no_bounds_ch
 	}
 }
 
+/*
+get_raw reads one pixel back, in the surface's native word.
+
+The only thing that says a fill happened. Nothing else in this package reads the
+framebuffer, and a self-test that checks a cursor position rather than a pixel
+is checking bookkeeping. `kernel/devfs/verify.odin` uses this to prove that an
+erased character came off the screen, and `docs/TESTING.md` says why that
+distinction keeps mattering.
+
+Off-surface reads answer zero rather than fault. A caller comparing against
+`pack` gets a mismatch, which is the honest answer for a pixel that is not
+there.
+*/
+get_raw :: proc "contextless" (s: ^Surface, x, y: int) -> u32 #no_bounds_check {
+	if x < 0 || y < 0 || x >= s.width || y >= s.height {
+		return 0
+	}
+	offset := y * s.pitch + x * s.bytes_pp
+	switch s.bytes_pp {
+	case 4:
+		return (cast(^u32)&s.pixels[offset])^
+	case 3:
+		return u32(s.pixels[offset]) | u32(s.pixels[offset + 1]) << 8 | u32(s.pixels[offset + 2]) << 16
+	case 2:
+		return u32((cast(^u16)&s.pixels[offset])^)
+	}
+	return 0
+}
+
 put_pixel :: proc "contextless" (s: ^Surface, x, y: int, c: RGB) {
 	if x < 0 || y < 0 || x >= s.width || y >= s.height {
 		return

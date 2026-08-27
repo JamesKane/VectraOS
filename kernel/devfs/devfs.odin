@@ -73,6 +73,7 @@ table has to learn a new file kind.
 Dev_Kind :: enum u8 {
 	Dir,
 	Cons, // The console: writes draw, reads park until a key
+	Consctl, // The console's rules: writes command, reads report
 	Null, // Writes vanish, reads are at end of file
 	Zero, // Writes vanish, reads are zeroes and never end
 }
@@ -95,6 +96,7 @@ ten lines and both are files a POSIX layer will need on its first day.
 DEV_NODES := [?]Dev_Node {
 	{name = "/", parent = -1, kind = .Dir},
 	{name = "cons", parent = 0, kind = .Cons},
+	{name = "consctl", parent = 0, kind = .Consctl},
 	{name = "null", parent = 0, kind = .Null},
 	{name = "zero", parent = 0, kind = .Zero},
 }
@@ -138,6 +140,14 @@ Dev_Tree :: struct {
 	fids:   vfs.Fid_Table,
 	lock:   sync.Spinlock,
 	waits:  [mnt.MAX_REQUESTS]Read_Wait,
+
+	/*
+	How many fids have `/dev/consctl` open right now.
+
+	Under `lock`, with the fid table it is counted from. When it reaches zero
+	the console goes back to cooked mode with echo on. See `consctl_close`.
+	*/
+	ctl_opens: int,
 }
 
 /*
@@ -282,11 +292,51 @@ node_of :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> i32 {
 	return vfs.fidtab_node(&t.fids, fid)
 }
 
+/*
+mark_open records an open, and counts it when the file is `/dev/consctl`.
+
+`ctl` says whether this fid is one of the console's owners, rather than the
+handler working it out again. The two facts move together and one lock covers
+both.
+*/
 @(private = "file")
-drop_fid :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) {
+mark_open :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid, ctl: bool) {
 	g := sync.acquire(&t.lock)
 	defer sync.release(&t.lock, g)
+
+	if !vfs.fidtab_set_open(&t.fids, fid, true) {
+		return
+	}
+	if ctl {
+		t.ctl_opens += 1
+	}
+}
+
+/*
+drop_fid releases a fid and reports whether it was an open `/dev/consctl`.
+
+The report is what the caller acts on, and it has to come from in here. Whether
+the fid was open, and what it was bound to, are both gone the instant the slot
+goes back on the free list.
+
+The console is *not* reverted under this lock. `cons_set_mode` takes the
+console's own lock, and two spinlocks nested is an order to get right rather
+than a thing to do by accident. The rule in this package is one at a time.
+*/
+@(private = "file")
+drop_fid :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (was_ctl_open: bool) {
+	g := sync.acquire(&t.lock)
+	defer sync.release(&t.lock, g)
+
+	node := vfs.fidtab_node(&t.fids, fid)
+	open := vfs.fidtab_is_open(&t.fids, fid)
 	_ = vfs.fidtab_release(&t.fids, fid)
+
+	if !open || node < 0 || DEV_NODES[node].kind != .Consctl {
+		return false
+	}
+	t.ctl_opens -= 1
+	return t.ctl_opens <= 0
 }
 
 // live_fids is what this server has out. A self-test that opens and closes in
@@ -297,6 +347,186 @@ live_fids :: proc "contextless" () -> int {
 	g := sync.acquire(&t.lock)
 	defer sync.release(&t.lock, g)
 	return vfs.fidtab_live(&t.fids)
+}
+
+// -- /dev/consctl ------------------------------------------------------------
+
+/*
+The first `ctl` file in the tree, and therefore where the convention gets set.
+
+`docs/VECTRA9.md` decision 1 covers this. When a service needs an operation 9P
+does not have, the answer is a file that takes a line of text. This is the first
+service to need one. Four rules, and each is a decision rather than an
+accident:
+
+  - **One write is one command.** Nothing is buffered between writes and a
+    command may not be split across two of them. A ctl file that reassembled a
+    command from fragments would have to guess where one ended, and 9P gives it
+    nothing to guess with.
+  - **A command nothing recognises is EINVAL**, and the write takes none of it.
+    Silence would let a client believe it changed something.
+  - **The file reads back as the writes that would restore it.** Not a status
+    report in a different vocabulary. A reader can save what it reads and write
+    it back later, and that is what makes this one file rather than two.
+  - **The last close reverts it.** Below.
+
+Surrounding whitespace is ignored, and a trailing newline is expected rather
+than merely tolerated. A client that writes `rawon` is writing a line of text.
+*/
+
+// The command vocabulary, and the whole of it. A table rather than a chain of
+// comparisons, so the read side can walk the same rows the write side matches
+// against.
+@(private = "file")
+Consctl_Command :: struct {
+	word: string,
+	mode: Cons_Mode,
+	echo: bool,
+}
+
+@(private = "file")
+CONSCTL_COMMANDS := [?]Consctl_Command {
+	// Raw turns echo off and cooked turns it on, because a raw read that echoed
+	// would be a password on a screen. See `cons.odin`.
+	{word = "rawon", mode = .Raw, echo = false},
+	{word = "rawoff", mode = .Cooked, echo = true},
+}
+
+// Echo moves on its own as well, for a client that wants a combination the two
+// commands above do not produce. A cooked line nobody sees is a reasonable
+// thing to want and there is no other way to ask for it.
+@(private = "file")
+ECHO_ON :: "echoon"
+@(private = "file")
+ECHO_OFF :: "echooff"
+
+/*
+trim removes surrounding whitespace and at most one trailing newline.
+
+A client writes a line. Whether the line arrives with its newline is a property
+of the client. No ctl file should have an opinion about that.
+*/
+@(private = "file")
+trim :: proc "contextless" (data: []u8) -> string #no_bounds_check {
+	lo := 0
+	hi := len(data)
+	for lo < hi && is_space(data[lo]) {
+		lo += 1
+	}
+	for hi > lo && is_space(data[hi - 1]) {
+		hi -= 1
+	}
+	return string(data[lo:hi])
+}
+
+@(private = "file")
+is_space :: proc "contextless" (b: u8) -> bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
+}
+
+/*
+consctl_command applies one command and reports whether it was one.
+
+A write of nothing at all is accepted and does nothing, because that is what a
+write of no bytes means everywhere else. A write of only whitespace is refused:
+the client meant to send a command and sent none.
+*/
+@(private = "file")
+consctl_command :: proc "contextless" (t: ^Dev_Tree, data: []u8) -> bool #no_bounds_check {
+	if len(data) == 0 {
+		return true
+	}
+	word := trim(data)
+	if word == "" {
+		return false
+	}
+
+	for cmd in CONSCTL_COMMANDS {
+		if word == cmd.word {
+			_ = cons_set_mode(&t.cons, cmd.mode, cmd.echo)
+			return true
+		}
+	}
+
+	switch word {
+	case ECHO_ON, ECHO_OFF:
+		mode, _ := cons_mode(&t.cons)
+		_ = cons_set_mode(&t.cons, mode, word == ECHO_ON)
+		return true
+	}
+	return false
+}
+
+/*
+consctl_report renders the state as the commands that would restore it.
+
+    rawoff
+    echoon
+
+Generated on every read rather than snapshotted at open. Plan 9 snapshots a ctl
+file, and it is right to for one whose contents are long or expensive. This is
+under twenty bytes and a client that reads it twice wants the second answer to
+be true.
+
+`offset` is honoured so a client with a small buffer can finish the file. A
+read past the end then returns nothing rather than repeating.
+*/
+@(private = "file")
+consctl_report :: proc "contextless" (t: ^Dev_Tree, offset: u64, buf: []u8) -> []u8 #no_bounds_check {
+	mode, echo := cons_mode(&t.cons)
+
+	// Built into the caller's buffer from the start, then sliced by offset.
+	// The whole file is shorter than the smallest payload a slot ever has, so
+	// there is no case where it does not fit.
+	line: [64]u8
+	n := 0
+	for cmd in CONSCTL_COMMANDS {
+		if cmd.mode != mode {
+			continue
+		}
+		for i in 0 ..< len(cmd.word) {
+			line[n] = cmd.word[i]
+			n += 1
+		}
+		line[n] = '\n'
+		n += 1
+		break
+	}
+
+	word := echo ? ECHO_ON : ECHO_OFF
+	for i in 0 ..< len(word) {
+		line[n] = word[i]
+		n += 1
+	}
+	line[n] = '\n'
+	n += 1
+
+	if offset >= u64(n) {
+		return nil
+	}
+	start := int(offset)
+	end := min(n, start + len(buf))
+	copy(buf[:end - start], line[start:end])
+	return buf[:end - start]
+}
+
+/*
+consctl_close puts the console back the way it was found.
+
+**The last close reverts the mode, and that is the point of the file.** A
+program that turns raw mode on and then faults leaves a console nobody can type
+at. No echo, and no line editing to fix a mistake with. Tying the mode to an
+open fid means the kernel undoes it when the program goes. The program does not
+have to survive long enough to undo it itself.
+
+Plan 9 does exactly this, and it is worth copying for exactly this reason.
+
+Called from `Tclunk`, and only when `drop_fid` reports that the last open
+`/dev/consctl` fid went.
+*/
+@(private = "file")
+consctl_close :: proc "contextless" (t: ^Dev_Tree) {
+	_ = cons_set_mode(&t.cons, .Cooked, true)
 }
 
 // -- The abort hook ----------------------------------------------------------
@@ -432,6 +662,10 @@ devfs_handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 			return
 		}
+		// The open is recorded, not merely allowed. `/dev/consctl` owns the
+		// console's rules for as long as somebody holds it open, and the count
+		// of who does is kept here. See `consctl_close`.
+		mark_open(t, m.fid, DEV_NODES[node].kind == .Consctl)
 		reply^ = vectra9.Rlopen{qid = node_qid(node), iounit = 0}
 
 	case vectra9.Tread:
@@ -480,7 +714,9 @@ devfs_handler :: proc "contextless" (
 		// Clunking a fid this server never bound is not worth an error. The
 		// client wanted it gone and it is gone. A refusal would only ever break
 		// a cleanup path.
-		drop_fid(t, m.fid)
+		if drop_fid(t, m.fid) {
+			consctl_close(t)
+		}
 		reply^ = vectra9.Rclunk{}
 
 	case vectra9.Tflush:
@@ -588,6 +824,9 @@ devfs_read :: proc "contextless" (
 		intrinsics.mem_zero(raw_data(buf), room)
 		reply^ = vectra9.Rread{data = buf[:room]}
 
+	case .Consctl:
+		reply^ = vectra9.Rread{data = consctl_report(t, m.offset, buf[:room])}
+
 	case .Cons:
 		if int(tag) >= mnt.MAX_REQUESTS {
 			// A tag this server cannot index is a tag it cannot ask the
@@ -603,6 +842,13 @@ devfs_read :: proc "contextless" (
 		for {
 			if n := cons_take(&t.cons, buf[:room]); n > 0 {
 				reply^ = vectra9.Rread{data = buf[:n]}
+				return
+			}
+			if cons_take_eof(&t.cons) {
+				// A `^D` on an empty line, and the one place a read of the
+				// console answers with nothing. The drain above came first, so
+				// this cannot overtake bytes typed before it.
+				reply^ = vectra9.Rread{data = nil}
 				return
 			}
 			if vfs.server_flushed(&t.server, tag) {
@@ -625,8 +871,10 @@ devfs_read :: proc "contextless" (
 /*
 devfs_write hands a payload to a device and reports how much it took.
 
-Never short. None of these three devices has back pressure to report, so a
-count below `len(m.data)` would mean a bug rather than a busy device.
+Never short, and `/dev/consctl` is why that is worth stating rather than
+assuming. A ctl file takes one command per write and either understands it or
+refuses the whole thing. A short count there would mean `I took some of your
+command`, which no client could act on.
 
 `m.data` points into the request slot for as long as this handler runs, which is
 the borrow rule at the top of `sys/vectra9/proto.odin`. `cons_write` copies it
@@ -646,6 +894,13 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 
 	case .Cons:
 		reply^ = vectra9.Rwrite{count = u32(cons_write(&t.cons, m.data))}
+
+	case .Consctl:
+		if !consctl_command(t, m.data) {
+			reply^ = vectra9.error_reply(vectra9.EINVAL)
+			return
+		}
+		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 
 	case .Null, .Zero:
 		// Accepted and discarded, which is what both mean. A write that failed

@@ -1,6 +1,7 @@
 # devfs: the first server whose files are devices
 
-`kernel/devfs/` — `#c` bound at `/dev`, with `cons`, `null` and `zero` in it.
+`kernel/devfs/` — `#c` bound at `/dev`, with `cons`, `consctl`, `null` and
+`zero` in it.
 
 Everything before this in Vectra could name a file. Nothing before it could name
 a piece of hardware. `devfs` closes that gap, and the line it prints during the
@@ -20,6 +21,10 @@ from a self-test.
 | A payload buffer per request slot | `kernel/mnt` | Every `Rread` from `/dev/cons` |
 | A read with a deadline, and `Tflush` | `kernel/vfs` | `chan_read_for` on `/dev/cons` |
 | A thread that waits for a condition | `kernel/sync` | A read of an empty console |
+
+`/dev/consctl` is the other half of the console, and the first `ctl` file in the
+tree. It is what makes `/dev/cons` a terminal rather than a byte pipe, and the
+convention it sets is the one every later `ctl` file follows.
 
 ## Why `static.odin` could not be it
 
@@ -139,6 +144,130 @@ A full ring drops the byte and counts it in `dropped`. That is what an interrupt
 handler with nowhere to put a byte does, and this has to behave the way its
 replacement will.
 
+### Cooked and raw
+
+A byte that arrives does not go straight into the ring. It goes into a line
+under construction, and the whole line reaches the ring when the user presses
+Enter. That is *cooked* mode, and it is the default because it is what a person
+at a keyboard wants. A typed character can be taken back until the moment the
+line is sent.
+
+| Typed | Cooked mode does |
+|---|---|
+| a printable character | appends it to the line, and echoes it |
+| `\b` or DEL | takes the last character off the line, and off the screen |
+| `^U` | throws the line away, and the echo starts a fresh one |
+| `\r` or `\n` | sends the line, newline included |
+| `^D` on a line with characters | sends the line, with no newline |
+| `^D` on an empty line | is the end of the file |
+| any other control character | nothing, and it never reaches a reader |
+
+*Raw* mode is the other half. Every byte reaches the ring as it arrives, none of
+those characters mean anything, and nothing is echoed. That is what a program
+which draws its own input needs, and what a program which reads a password
+needs.
+
+**Two things about that table are decisions rather than conventions.**
+
+`^D` means two things, and which one depends on whether there is a line to send.
+On a line with characters it sends them with no newline, which is how a reader
+receives a line nobody ended. On an empty line there is nothing to send and the
+only remaining meaning is *there will be no more*. That is also the one place a
+read of `/dev/cons` may answer with zero bytes. Nothing else does, which is
+what makes zero bytes usable as an end of file.
+
+`^U` echoes a newline rather than erasing the line it threw away. Erasing would
+be one acquisition of `out` per character. A kill is also a deliberate
+abandonment, and seeing where the old line stopped is better feedback than
+watching it disappear.
+
+**A line that fills stops accepting characters.** It does not send itself and it
+does not throw itself away. Both would lose work the typist can still see. The
+limit is one short of the array, so Enter always has somewhere to go. A line
+that could fill completely would be a line Enter could not end.
+
+### The end of file is a count, and it is read last
+
+`Cons.eofs` is a count rather than a flag, because two `^D` presses are two
+answers and a flag would merge them. A reader consumes one only when the ring is
+empty.
+
+That ordering is the whole of it. An end of file is something a reader *reaches*,
+so it must never overtake bytes typed before the `^D`. `devfs_read` drains first
+and asks second, and `cons_take_eof` refuses if anything is left.
+
+## `/dev/consctl`, and the convention it sets
+
+`docs/VECTRA9.md` decision 1 covers this. When a service needs an operation 9P
+does not have, the answer is a file that takes a line of text. This is the first
+service to need one, so this is where the shape of a `ctl` file gets decided.
+Four rules:
+
+1. **One write is one command.** Nothing is buffered between writes, and a
+   command may not be split across two of them. A `ctl` file that reassembled a
+   command from fragments would have to guess where one ended, and 9P gives it
+   nothing to guess with.
+2. **A command nothing recognises is EINVAL**, and the write takes none of it.
+   Silence would let a client believe it changed something. The write is never
+   short for the same reason. A count below what was sent would mean *I took
+   some of your command*, which no client can act on.
+3. **The file reads back as the writes that would restore it.** Not a status
+   report in a different vocabulary.
+4. **The last close reverts it.** Below.
+
+The vocabulary is four words:
+
+    rawon     bytes as they arrive, no editing, no echo
+    rawoff    the line discipline above, with echo
+    echoon    echo, without touching the mode
+    echooff   ...and the other way
+
+`rawon` turns echo off and `rawoff` turns it back on, because a raw read that
+echoed would be a password on a screen. `echoon` and `echooff` exist for a
+client that wants a combination those two do not produce. A cooked line nobody
+sees is a reasonable thing to want.
+
+### Reading a ctl file back
+
+Plan 9's `consctl` cannot be read. Vectra's can, and it answers with the
+commands that would restore it:
+
+    rawoff
+    echoon
+
+**That is a departure, and it is the one thing here Plan 9 would not recognise.**
+It is worth it for two reasons. A client can save what it reads and write it
+back later. That is what makes this one file rather than a `consctl` and a
+`consstat`. And a self-test has something exact to compare against, rather than
+a flag it has to reach into the driver for.
+
+Generated on every read rather than snapshotted at open. Plan 9 snapshots, and
+it is right to for a file whose contents are long or expensive. This one is
+fifteen bytes, and a client that reads it twice wants the second answer to be
+true. `offset` is honoured so a read past the end returns nothing rather than
+repeating.
+
+### The last close reverts the mode
+
+**This is the property the whole file exists for.** A program that turns raw
+mode on and then faults leaves a console nobody can type at. No echo, and no
+line editing to fix a mistake with. On a machine with no other terminal that is
+the end of the session.
+
+Tying the mode to an open fid means the kernel undoes it when the program goes.
+The program does not have to survive long enough to undo it itself. Plan 9 does
+exactly this, and it is worth copying for exactly this reason.
+
+What it costs is a count of open `/dev/consctl` fids, and knowing at `Tclunk`
+whether the fid being released was one of them. That is why `vfs.Fid_Table` grew
+an `open` flag per slot. 9P wants that flag anyway. A fid before `Tlopen` may
+be walked and may not be read, and a fid after it is the reverse. No server in
+this tree enforces that yet, and this milestone did not make it one.
+
+**A mode change discards the line under construction**, whoever caused it. Those
+characters were typed under rules that no longer apply. A raw reader handed a
+half-edited line would get characters the user already backspaced over.
+
 ## The worker count is a bound on blocked readers
 
 `WORKERS` is 4, so **at most three reads may park at once**. The fourth worker
@@ -158,14 +287,15 @@ the fix when threads are cheaper than they are today.
 
 ## What a device answers, and what it refuses
 
-| Message | `/dev` | `cons` | `null` | `zero` |
-|---|---|---|---|---|
-| `Tlopen` write | EISDIR | ok | ok | ok |
-| `Tread` | EISDIR | parks until a byte | 0 bytes | zeroes, for ever |
-| `Twrite` | EISDIR | draws, and sends | count | count |
-| `Treaddir` | three entries | ENOTDIR | ENOTDIR | ENOTDIR |
-| `Tgetattr` size | 0 | 0 | 0 | 0 |
-| `Tlcreate`, `Tmkdir`, `Tremove` | EPERM | EPERM | EPERM | EPERM |
+| Message | `/dev` | `cons` | `consctl` | `null` | `zero` |
+|---|---|---|---|---|---|
+| `Tlopen` write | EISDIR | ok | ok, and counted | ok | ok |
+| `Tread` | EISDIR | parks until a line | the state | 0 bytes | zeroes, for ever |
+| `Twrite` | EISDIR | draws, and sends | one command | count | count |
+| `Treaddir` | four entries | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR |
+| `Tclunk` | — | — | may revert the mode | — | — |
+| `Tgetattr` size | 0 | 0 | 0 | 0 | 0 |
+| `Tlcreate`, `Tmkdir`, `Tremove` | EPERM | EPERM | EPERM | EPERM | EPERM |
 
 Two of those rows are decisions rather than defaults.
 
@@ -175,11 +305,16 @@ shape of `/dev` is the driver table, and a client does not get to add a row to
 it.
 EOPNOTSUPP would send a client off to look for a server that does implement it.
 
-**Every device reports a size of zero,** and `offset` is ignored on every read.
-That is the definition of a stream rather than an oversight. A second read of
-`/dev/cons` at offset zero does not read the same bytes again, because the bytes
-are gone. A file whose contents are the future has no position to be at. A size
-of zero is what stops a caller from trying to read one by its length.
+**Every device reports a size of zero,** and `offset` is ignored on every read
+except `/dev/consctl`'s. That is the definition of a stream rather than an
+oversight. A second read of `/dev/cons` at offset zero does not read the same
+bytes again, because the bytes are gone. A file whose contents are the future
+has no position to be at. A size of zero is what stops a caller from trying to
+read one by its length.
+
+`/dev/consctl` is the exception because it is not a stream. It has contents, the
+contents are short, and a client with a small buffer has to be able to finish
+them.
 
 `null` and `zero` are here for two reasons beyond being useful. A dispatch table
 with one row is not a dispatch table. And the self-test needs a read that does
@@ -187,20 +322,20 @@ with one row is not a dispatch table. And the self-test needs a read that does
 
 ## What is deliberately absent
 
-**No line discipline.** A read returns bytes as they arrive rather than waiting
-for Enter. Backspace does nothing, because there is no line buffer to erase
-from. Plan 9 puts both behind `/dev/consctl`, and so will this. A `ctl` file
-that takes `rawon` and `rawoff` is the shape, because Vectra9 adds no message
-to 9P for something a file can carry. See `docs/VECTRA9.md`, decision 1.
+**No word erase, and no history.** `^W` and the arrow keys are what a person
+misses next after `^U`. Both are a larger edit buffer and a cursor position
+inside it, rather than a new idea.
 
-One translation happens anyway, because nothing above could undo it. A terminal
-sends CR for Enter. A reader that got CR would have to know which terminal
-typed at it. So CR becomes `\n` here, which is the newline everywhere else in
-the tree.
+One translation happens in both modes, because nothing above could undo it. A
+terminal sends CR for Enter. A reader that got CR would have to know which
+terminal typed at it. So CR becomes `\n` here, which is the newline everywhere
+else in the tree. No mode makes a reader want to know what kind of terminal it
+has.
 
-**No echo policy beyond a flag.** `Cons.echo` is on, because the only writer at a
-keyboard today is a person who wants to see what they typed. It belongs behind
-the same `ctl` file.
+**No per-namespace console.** There is one `Cons` and `/dev/consctl` changes it
+for everybody. That is correct while there is one screen and one keyboard, and
+it stops being correct the day `/dev` means something different in two
+namespaces.
 
 **No `/dev/random`, `/dev/draw`, `/dev/mouse` or `/dev/kbd`.** Each is a row in
 `DEV_NODES` and a case in two switches. `kbd` is the interesting one, because it
@@ -222,12 +357,30 @@ fails and a boot that carries on.
 The parked-read check waits for something *not* to happen, which is the one wait
 in the file that is not bounded by `watch`. A read of an empty console has to
 still be unanswered after `SETTLE_TICKS`. That is what distinguishes a parked
-read from a merely slow one. It is the check that a read answering nothing
-immediately would fail.
+read from a merely slow one.
+
+**Cooked mode made that check stronger, and the extra step is the interesting
+one.** The read has to still be unanswered *after a character arrives*, because
+a character is not a line. A console that delivered characters as they
+arrived would fail exactly there, and nothing else in the file would notice.
+
+The line-editing checks read bytes that reached the ring before the read
+started, so none of them means to park at all. They use `chan_read_for` with a
+short deadline rather than a thread. A read that cannot fail to return is not
+the blocking thing the rule is about. A bug that made one park comes back as
+EINTR and a failed check, rather than as a hang.
+
+**The echo checks are the console's cursor, twice.** There is no way to read a
+framebuffer back, so where the cursor stands is the only observable. A typed
+character has to move it one column, and a backspace has to move it back. Both
+happen at the end of the proof line rather than at column zero. That is where
+`console.backspace` has a real glyph beside it, and has to get the emboss
+shadow right.
 
 ### The controls
 
-Eleven mutations, one at a time, each observed on a real boot:
+Twenty mutations, one at a time, each observed on a real boot. The first eleven
+are the device server, the last nine are the line discipline and the `ctl` file.
 
 | Mutation | First failure |
 |---|---|
@@ -242,16 +395,43 @@ Eleven mutations, one at a time, each observed on a real boot:
 | the ring's read cursor never advances | `and exactly the one byte there was` (7 checks) |
 | a write to cons takes no lock | **not caught** |
 | creating a file in `/dev` is not refused | **not caught** |
+| cooked mode delivers each character as it arrives | `and the read still does not answer, because a character is not a line` (9 checks) |
+| a backspace does not shorten the line | `and takes the character off the line as well` |
+| a kill does not clear the line | `a kill throws the whole line away` |
+| `^D` on an empty line marks no end of file | `and is the end of the file, the only read that answers nothing` |
+| the last close of `/dev/consctl` does not revert | `and puts the console back in cooked mode` |
+| an unknown command is accepted | `a command nothing recognises is refused` |
+| the report ignores the offset | `a read at an offset starts there` |
+| a mode change keeps the line under construction | `and the half-typed line went with the rules that accepted it` |
+| `console.backspace` clears no pixels | `and takes the pixels off the screen, rather than only the cursor` |
 
-**The write check earns its place, and nearly did not.** It began as a check that
-the driver's own byte counter went up. That counter goes up whether or not a
-glyph was ever drawn, so the mutation above passed it. The check is now the
-console's own cursor: 49 bytes written is 49 columns further along. The newline
-goes separately, so the count is exact.
+**The last two only fail because the checks were rewritten to make them.** Both
+came back clean the first time, and neither was a narrow window — they were
+checks aimed one layer above the effect.
 
-This is the same lesson as the FPU accumulator in `docs/SCHED.md`. A check that
-observes a bookkeeping field rather than the effect is a check the effect can be
-removed from underneath.
+The mode-change control passed because every line the test typed ended in a
+newline, so the buffer it discards was always empty. It types four characters
+and leaves them there now.
+
+The backspace control passed because the check was the cursor column, and moving
+the cursor is exactly what the mutation kept doing. `fb.get_raw` exists so the
+check can count lit pixels in the cell instead.
+
+**The same mistake has now been made three times in this one file**, which makes
+it the pattern rather than the anecdote.
+
+The write check began as `the driver's byte counter went up`. That counter goes
+up whether or not a glyph was drawn. It became the console's cursor column: 49
+bytes written is 49 columns further along.
+
+Then the backspace check was that same cursor column, and a backspace that moved
+the cursor without clearing the cell passed it. That one became a count of lit
+pixels, which is the actual screen.
+
+Each fix moved the check one layer closer to the effect. Each time, the layer
+left behind was bookkeeping the code under test also maintains. It agrees with itself whatever else is broken. This is the same
+lesson as the FPU accumulator in `docs/SCHED.md`, and `docs/TESTING.md` now
+carries it as a rule rather than as three stories.
 
 **Both uncaught mutations are uncaught for the same reason, and it is not the
 usual one.** Neither is a narrow window. `Cons.out` guards against two threads
@@ -266,16 +446,20 @@ cannot be expressed is different from a control that fails to fire.
 
 ## What this leaves for next time
 
-- **`/dev/consctl`**, and the line discipline behind it. Cooked mode, echo, and
-  the `rawon`/`rawoff` pair. It is the first `ctl` file in the tree, so it is
-  also where the convention for parsing one gets set.
 - **A keyboard driver**, which is what makes `cons_input` an interrupt handler
-  and deletes the poll.
+  and deletes the poll. `cons_feed` is the entry point it already has.
+- **`^W` and a cursor in the line**, which is word erase and the arrow keys. A
+  larger edit buffer and a position inside it, rather than a new idea.
 - **`/dev/draw`**, over `kernel/drivers/fb`, which is the other half of a
   console and the thing `apps/terminal` will actually want.
 - **A worker per blocked request**, or a way for a handler to defer its reply
   without holding a worker. Either one removes the bound this file's worker
   count stands in for.
+- **The `open` flag on a fid, enforced.** `vfs.Fid_Table` now carries it, and
+  neither server refuses a walk on an open fid or a read on an unopened one.
+  Enforcing it is a change with a blast radius, because `chan_clone` walks a
+  fid that may already be open. It wants a milestone of its own rather than a
+  paragraph in this one.
 
 ## See also
 
@@ -283,5 +467,7 @@ cannot be expressed is different from a control that fails to fire.
   server's side.
 - `docs/NAMESPACE.md` — what `mount_device` and `resolve` do to get here.
 - `docs/BOOT.md` — the console driver this sits on, and the log that shares it.
+- `docs/VECTRA9.md` — decision 1, which is why `/dev/consctl` is a file rather
+  than a message.
 - `docs/TESTING.md` — the self-test discipline, and the two controls above that
   cannot be expressed yet.

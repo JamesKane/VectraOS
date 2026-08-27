@@ -138,6 +138,9 @@ write_byte :: proc "contextless" (c: ^Console, ch: u8) {
 	case '\r':
 		c.col = 0
 		return
+	case '\b':
+		backspace(c)
+		return
 	case '\t':
 		// Tabs land on 8-column stops, matching the font cell grid.
 		next := (c.col + 8) & ~int(7)
@@ -154,6 +157,35 @@ write_byte :: proc "contextless" (c: ^Console, ch: u8) {
 	py := c.bounds.y + c.row * cell_height(c)
 	draw_text_styled(c.surface, px, py, string([]u8{ch}), c.fg, c.style)
 	c.col += 1
+}
+
+/*
+backspace moves back one cell and clears it.
+
+**Destructive, which a terminal's backspace is not.** On a serial line the
+sequence to erase is `\b \b`: step back, overwrite with a space, step back
+again. That does not work here, because nothing in this file paints a
+background. A space glyph is blank, so it composites nothing over the character
+that is already there and the character stays.
+
+So this fills the cell instead. A caller with both sinks sends `\b \b` to the
+wire and calls this for the screen, which is what `devfs.cons_erase` does.
+
+One pixel wider and taller than a cell, because `draw_text_styled` puts the
+emboss shadow at +1,+1. A fill of exactly one cell would leave the erased
+glyph's shadow along the next cell's left edge.
+
+At column zero this does nothing. A backspace does not unwrap a line: the row
+above holds output the caller never asked to take back.
+*/
+backspace :: proc "contextless" (c: ^Console) {
+	if c.col <= 0 {
+		return
+	}
+	c.col -= 1
+	px := c.bounds.x + c.col * FONT_WIDTH
+	py := c.bounds.y + c.row * cell_height(c)
+	fb.fill_rect(c.surface, fb.Rect{px, py, FONT_WIDTH + 1, FONT_HEIGHT + 1}, c.bg)
 }
 
 write_string :: proc "contextless" (c: ^Console, text: string) {

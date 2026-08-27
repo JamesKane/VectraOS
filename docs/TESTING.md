@@ -157,22 +157,35 @@ This only works where the wrong arrangement is *expressible* rather than absent
 — a flag on a test server, not a deleted line of kernel code. Where it is
 expressible, it is worth the twenty lines.
 
-## A check on a counter is a check on a counter
+## Observe the effect, not the bookkeeping beside it
 
-`kernel/devfs/verify.odin` nearly shipped a check that could not fail, and the
-way it was caught is worth copying.
+`kernel/devfs/verify.odin` made the same mistake three times, one milestone
+apart. That makes it a rule rather than three stories.
 
 The claim was that a write to `/dev/cons` reaches the screen. The check was that
-the driver's byte counter went up. Then the mutation ran, with the call that
-draws glyphs removed, and the check passed. The counter goes up either way.
+the driver's byte counter went up. The mutation removed the call that draws
+glyphs, and the check passed. The counter goes up either way.
 
-The check is now the console's own cursor. Forty-nine bytes written is
+So the check became the console's own cursor. Forty-nine bytes written is
 forty-nine columns further along, and the newline goes in a second write so the
-number is exact. That is the same lesson as `fpu_hold` in `docs/SCHED.md`, in a
-subsystem with nothing else in common.
+number is exact. That caught it.
 
-**Observe the effect, not the bookkeeping beside it.** A field the code under
-test also maintains will agree with itself whatever else is broken.
+**One milestone later the cursor was the wrong layer too.** A backspace has to
+move the cursor back *and* clear the cell it left. The check was the cursor
+column, and a `console.backspace` that moved the cursor and cleared nothing
+passed it. `fb.get_raw` was added so the check could count lit pixels in the
+cell, which is the screen itself.
+
+The same shape a third time, in the line discipline. A mode change discards the
+line under construction. Every check typed lines that ended in a newline, so the
+buffer being discarded was always empty. The check now leaves four characters in
+it.
+
+The pattern in all three: **a field the code under test also maintains will
+agree with itself whatever else is broken.** Each fix moved the check one layer
+closer to the effect. Each time, the layer left behind was a number rather than
+a result. `fpu_hold` in `docs/SCHED.md` is the same lesson in a subsystem with
+nothing else in common.
 
 ## Where the other control tables are
 
@@ -183,7 +196,7 @@ test also maintains will agree with itself whatever else is broken.
 | `Tflush` and its transport | `docs/TRANSPORT.md` | 5 of 6 |
 | The payload buffer per request slot | `docs/TRANSPORT.md` | 3 of 4 |
 | The namespace over a transport with workers | `docs/NAMESPACE.md` | 4 of 6 |
-| The first device server | `docs/DEVFS.md` | 9 of 11 |
+| The first device server | `docs/DEVFS.md` | 18 of 20 |
 
 **The uncaught ones cluster, and the cluster is the finding.** Almost every one
 is a window two or three instructions wide, and none is at a lock boundary.
@@ -196,7 +209,13 @@ reach.
 Neither is a narrow window. One guards against two writers to a console, and the
 test has one. The other refuses a file creation that no client can request,
 because `kernel/vfs` has no `chan_create` yet. Both become reachable the moment
-there is something to reach them with. That is why they are cheap to leave in now, and expensive to find later.
+there is something to reach them with. That is why they are cheap to leave in
+now, and expensive to find later.
+
+Two more from that file *looked* like the same thing and were not. They came
+back clean because the checks were aimed one layer above the effect, and both
+fail now that they are not. **Check which kind you have before recording it.**
+The section above is what that took.
 
 **The one that does not fit the pattern is worth naming separately.** Deleting
 `rpc`'s `can_sleep` refusal in `kernel/vfs` changes nothing, because no correct

@@ -40,18 +40,41 @@ forbidden there, and a lock held by a dead thread is worse than a torn line. The
 ordering of a log line against a `/dev/cons` write is therefore undefined. What
 is defined is that neither can deadlock the other.
 
-## What this is not
+## Cooked and raw
 
-There is no line discipline. A read returns bytes as they arrive, rather than
-waiting for Enter. Backspace does nothing, because there is no line buffer to
-erase from. Plan 9 puts both behind `/dev/consctl`, and so will this. A `ctl`
-file that takes `rawon` and `rawoff` is the shape, because Vectra9 adds no
-message to 9P for something a file can carry.
+A byte that arrives does not go straight into the ring. It goes into a line
+under construction, and the whole line reaches the ring when the user presses
+Enter. That is *cooked* mode, and it is the default because it is what a person
+at a keyboard wants. A typed character can be taken back until the moment the
+line is sent.
 
-One translation happens anyway, and it is the one nothing above could undo. A
-terminal sends CR for Enter. A reader that got CR would have to know which
+    printable   appended to the line, and echoed where it was typed
+    \b or DEL   the last character comes off the line, and off the screen
+    ^U          the whole line goes, and the echo starts a fresh one
+    \r or \n    the line, with a newline on the end, reaches the ring
+    ^D          the line so far reaches the ring with no newline
+                ...and on an empty line, it is an end of file instead
+
+*Raw* mode is the other half. Every byte reaches the ring as it arrives, none
+of the characters above mean anything, and nothing is echoed. That is what a
+program which draws its own input needs, and it is what a program which reads a
+password needs.
+
+`/dev/consctl` is how a client moves between them, because Vectra9 adds no
+message to 9P for something a file can carry. See `devfs.odin` for the file and
+`docs/DEVFS.md` for the convention it sets.
+
+**Raw mode turns echo off, and cooked mode turns it back on.** They are separate
+fields and one command sets both, because a raw read that echoed would be a
+password on a screen. `echoon` and `echooff` are there for a client that wants
+the other combination on purpose.
+
+## One translation nothing above could undo
+
+A terminal sends CR for Enter. A reader that got CR would have to know which
 terminal typed at it. `\n` is the newline everywhere else in this tree, so CR
-becomes `\n` here.
+becomes `\n` here. It is the one substitution raw mode makes as well, because
+no mode makes a reader want to know what kind of terminal it has.
 */
 package devfs
 
@@ -85,6 +108,42 @@ parks, so the thread is off every run queue in between and the core is free.
 @(private = "file")
 POLL_TICKS :: 1
 
+/*
+How long a line may get before Enter.
+
+A line that reaches the limit stops accepting characters. It does not send
+itself, and it does not drop what the user typed so far. Both of those
+would lose work the user can still see on the screen. The typist gets no echo
+for the character that did not fit, which is the same feedback a terminal gives.
+
+Half the ring, so a full line always fits in the space a line goes into.
+*/
+CONS_LINE_BYTES :: CONS_INPUT_BYTES / 2
+
+// The control characters cooked mode acts on. Named because `0x15` in a switch
+// is a number somebody has to look up, and package-visible because the
+// self-test has to type them.
+@(private)
+CTRL_D :: u8(0x04) // End of transmission: send the line, or end the file
+@(private)
+CTRL_U :: u8(0x15) // Kill: the line under construction goes
+@(private)
+BACKSPACE :: u8(0x08)
+@(private)
+DEL :: u8(0x7F)
+
+/*
+What a byte that arrives does to the console.
+
+Not a mode of the *device* so much as a mode of the line discipline. That is
+why raw mode is describable as `there is no line discipline`. `Cooked` is the
+default, and the one `/dev/consctl` reverts to when its last fid closes.
+*/
+Cons_Mode :: enum u8 {
+	Cooked,
+	Raw,
+}
+
 Cons :: struct {
 	screen: ^console.Console,
 	port:   ^uart.Port,
@@ -106,12 +165,37 @@ Cons :: struct {
 	tail:   u64,
 	lock:   sync.Spinlock,
 
+	/*
+	The line under construction, in cooked mode.
+
+	Between the keyboard and the ring. Nothing here is visible to a reader, and
+	everything here can still be taken back. `edit_len` of zero is both an empty
+	line and no line at all. That is why `^D` on it means an end of file rather
+	than an empty send.
+
+	Guarded by `lock`, like the ring it feeds.
+	*/
+	edit:     [CONS_LINE_BYTES]u8,
+	edit_len: int,
+
+	/*
+	End-of-file marks a reader has not taken yet.
+
+	A count rather than a flag, because two `^D` presses are two end-of-file
+	answers and a flag would merge them. It is read only when the ring is empty:
+	an end of file is something a reader reaches, not something that overtakes
+	bytes already typed.
+	*/
+	eofs:     int,
+
 	// Where a reader with nothing to read parks. Woken by the producer, and by
 	// the abort hook when a Tflush names the read.
 	ready:  sync.Rendez,
 
-	// Whether a byte that arrives is drawn where it was typed. The line
-	// discipline this tree does not have yet, in the one form it needs today.
+	// What a byte that arrives does, and whether it is drawn where it was
+	// typed. `/dev/consctl` is the only thing that changes either. Guarded by
+	// `lock`, so a reader parked on the mode sees one value or the other.
+	mode:   Cons_Mode,
 	echo:   bool,
 
 	// Counters, reported at boot and checked by the self-test. Every one of
@@ -121,6 +205,10 @@ Cons :: struct {
 	typed:   u64, // Bytes the producer put in the ring
 	dropped: u64, // ...and bytes it could not, because the ring was full
 	blocks:  u64, // Reads that found nothing and parked
+	lines:   u64, // Lines cooked mode sent whole
+	erased:  u64, // Characters a backspace took back
+	killed:  u64, // Lines a ^U threw away
+	refused: u64, // Characters that did not fit the line under construction
 }
 
 /*
@@ -135,7 +223,41 @@ cons_init :: proc "contextless" (c: ^Cons, screen: ^console.Console, port: ^uart
 	c.port = port
 	c.head = 0
 	c.tail = 0
+	c.edit_len = 0
+	c.eofs = 0
+	c.mode = .Cooked
 	c.echo = true
+}
+
+/*
+cons_set_mode changes what an arriving byte does, and reports the mode it left.
+
+The line under construction goes when the mode changes, and that is deliberate.
+Those characters were typed under rules that no longer apply. A raw reader
+handed a line the user was still editing would get characters the user already
+backspaced over. A backspace only ever reached the edit buffer.
+
+`/dev/consctl` is the only caller. Nothing else should be changing the rules
+under a reader.
+*/
+cons_set_mode :: proc "contextless" (c: ^Cons, mode: Cons_Mode, echo: bool) -> Cons_Mode {
+	g := sync.acquire(&c.lock)
+	defer sync.release(&c.lock, g)
+
+	was := c.mode
+	if mode != c.mode {
+		c.edit_len = 0
+	}
+	c.mode = mode
+	c.echo = echo
+	return was
+}
+
+// cons_mode reports what an arriving byte does now, and whether it is echoed.
+cons_mode :: proc "contextless" (c: ^Cons) -> (mode: Cons_Mode, echo: bool) {
+	g := sync.acquire(&c.lock)
+	defer sync.release(&c.lock, g)
+	return c.mode, c.echo
 }
 
 // -- Output ------------------------------------------------------------------
@@ -168,12 +290,66 @@ cons_write :: proc "contextless" (c: ^Cons, data: []u8) -> int {
 	return len(data)
 }
 
+/*
+cons_erase takes the last character back on both sinks.
+
+Two sinks, two different sequences, which is the one place they disagree. A
+terminal at the end of a serial line erases with `\b \b`: step back, overwrite
+with a space, step back again. The framebuffer console cannot do that. Nothing
+in it paints a background, so a space glyph composites nothing over the
+character already there. `console.backspace` fills the cell instead.
+
+One acquisition of `out` for the pair, so the two sinks cannot be interleaved
+half-way through an erase by a write from somewhere else.
+*/
+cons_erase :: proc "contextless" (c: ^Cons) {
+	if c == nil {
+		return
+	}
+
+	sync.mutex_lock(&c.out)
+	defer sync.mutex_unlock(&c.out)
+
+	if c.screen != nil {
+		console.backspace(c.screen)
+	}
+	if c.port != nil {
+		uart.write_string(c.port, "\b \b")
+	}
+}
+
 // -- Input -------------------------------------------------------------------
 
-// cons_available is the condition a parked reader waits on, and the reason it
-// is a procedure rather than a flag. See `kernel/sync/rendez.odin`.
+/*
+cons_available is the condition a parked reader waits on, and the reason it is a
+procedure rather than a flag. See `kernel/sync/rendez.odin`.
+
+An end of file counts as something to find. A reader parked through a `^D` that
+went on waiting would wait for bytes the typist already said will not come.
+*/
 cons_available :: proc "contextless" (c: ^Cons) -> bool {
-	return intrinsics.volatile_load(&c.head) != intrinsics.volatile_load(&c.tail)
+	if intrinsics.volatile_load(&c.head) != intrinsics.volatile_load(&c.tail) {
+		return true
+	}
+	return intrinsics.volatile_load(&c.eofs) > 0
+}
+
+/*
+cons_take_eof consumes one end-of-file mark, and only when the ring is empty.
+
+The ordering is the whole of it. An end of file is something a reader *reaches*,
+so it must never overtake bytes that were typed before the `^D`. A caller
+therefore drains first and asks this second, which is what `devfs_read` does.
+*/
+cons_take_eof :: proc "contextless" (c: ^Cons) -> bool {
+	g := sync.acquire(&c.lock)
+	defer sync.release(&c.lock, g)
+
+	if c.head != c.tail || c.eofs <= 0 {
+		return false
+	}
+	c.eofs -= 1
+	return true
 }
 
 /*
@@ -212,18 +388,17 @@ cons_note_block :: proc "contextless" (c: ^Cons) {
 }
 
 /*
-cons_push puts one byte in the ring and reports whether it fit.
+ring_push puts one byte in the ring and reports whether it fit.
 
 The producer's half. A full ring drops the byte and counts it. The thread that
 runs this becomes an interrupt handler, and an interrupt handler has nowhere to
 wait. A driver that blocks its producer to keep a byte is a driver
 that stops the machine to keep a byte.
+
+Caller holds `lock`.
 */
 @(private = "file")
-cons_push :: proc "contextless" (c: ^Cons, b: u8) -> bool #no_bounds_check {
-	g := sync.acquire(&c.lock)
-	defer sync.release(&c.lock, g)
-
+ring_push :: proc "contextless" (c: ^Cons, b: u8) -> bool #no_bounds_check {
 	if c.head - c.tail >= CONS_INPUT_BYTES {
 		c.dropped += 1
 		return false
@@ -235,6 +410,24 @@ cons_push :: proc "contextless" (c: ^Cons, b: u8) -> bool #no_bounds_check {
 }
 
 /*
+What a fed byte asks the caller to draw.
+
+The line discipline runs inside `lock` and the echo cannot. A glyph blit takes
+`out`, which parks, and a spinlock forbids that. So the decision comes out of
+the locked part as one of these, and `cons_feed` acts on it with the lock down.
+
+`Erase` is not `Show` with a backspace in it, because the two sinks erase
+differently. See `cons_erase`.
+*/
+@(private = "file")
+Echo :: enum u8 {
+	Nothing,
+	Show, // Draw the byte in `echo_byte`
+	Erase, // Take the last character back
+	Newline, // Start a fresh line, with nothing taken back
+}
+
+/*
 cons_feed delivers one byte into the input path, as a keystroke does.
 
 The device's input path with the hardware taken out of it, which is exactly what
@@ -243,20 +436,175 @@ thing that finishes it, and it cannot type at a serial port.
 
 It is not a test-only entry point. The day there is a keyboard driver, this is
 what it calls.
+
+Reports whether the byte changed anything. False is a character the line had no
+room for, or a byte that arrived at a full ring. Neither is an error a keyboard
+can do anything about, and both are counted.
+
+**The wake-up is outside the lock and after the echo**, which costs a typist
+nothing and buys the ordering a reader wants. A reader woken first would run
+while the echo of its own byte is still going to the screen, and the two writes
+would interleave.
 */
 cons_feed :: proc "contextless" (c: ^Cons, b: u8) -> bool {
+	if c == nil {
+		return false
+	}
+
 	b := b
 	if b == '\r' {
 		b = '\n'
 	}
-	if !cons_push(c, b) {
+
+	echo, shown, ok, woke := cons_accept(c, b)
+
+	switch echo {
+	case .Nothing:
+	case .Show:
+		one := [1]u8{shown}
+		_ = cons_write(c, one[:])
+	case .Erase:
+		cons_erase(c)
+	case .Newline:
+		_ = cons_write(c, transmute([]u8)string("\n"))
+	}
+
+	if woke {
+		sync.wakeup(&c.ready)
+	}
+	return ok
+}
+
+/*
+cons_accept is the line discipline, and the whole of it runs under `lock`.
+
+Reports what the caller must echo, whether the byte changed anything, and
+whether a reader now has something to find. Nothing in here draws, writes to a
+port or parks, because all three are forbidden inside a spinlock.
+
+Raw mode is the first branch and it is the short one. Every byte goes to the
+ring as it arrives and none of the control characters mean anything. A raw
+reader gets what a raw reader asked for.
+*/
+@(private = "file")
+cons_accept :: proc "contextless" (
+	c: ^Cons,
+	b: u8,
+) -> (
+	echo: Echo,
+	shown: u8,
+	ok: bool,
+	woke: bool,
+) #no_bounds_check {
+	g := sync.acquire(&c.lock)
+	defer sync.release(&c.lock, g)
+
+	if c.mode == .Raw {
+		if !ring_push(c, b) {
+			return .Nothing, 0, false, false
+		}
+		return c.echo ? .Show : .Nothing, b, true, true
+	}
+
+	switch b {
+	case BACKSPACE, DEL:
+		if c.edit_len == 0 {
+			// Nothing left to take back. A backspace at the start of a line
+			// must not erase the prompt somebody else wrote.
+			return .Nothing, 0, false, false
+		}
+		c.edit_len -= 1
+		c.erased += 1
+		return c.echo ? .Erase : .Nothing, 0, true, false
+
+	case CTRL_U:
+		if c.edit_len == 0 {
+			return .Nothing, 0, false, false
+		}
+		c.edit_len = 0
+		c.killed += 1
+		// A fresh line rather than a full erase. Erasing one cell at a time
+		// would be one `out` acquisition per character. A kill is also a
+		// deliberate abandonment, and seeing where the old line stopped is
+		// better feedback.
+		return c.echo ? .Newline : .Nothing, 0, true, false
+
+	case '\n':
+		if c.edit_len >= CONS_LINE_BYTES {
+			// The newline itself has to fit, and the refusal below kept the
+			// line one short of the array for exactly this.
+			return .Nothing, 0, false, false
+		}
+		c.edit[c.edit_len] = '\n'
+		c.edit_len += 1
+		sent := edit_flush(c)
+		return c.echo ? .Show : .Nothing, '\n', sent, sent
+
+	case CTRL_D:
+		if c.edit_len == 0 {
+			/*
+			An end of file, and the one place a read of `/dev/cons` may answer
+			with nothing.
+
+			`^D` on a line with characters on it sends those characters and no newline.
+			That is how a reader gets a line nobody ended. On
+			an empty line there is nothing to send, and the only remaining
+			meaning is `there will be no more`.
+			*/
+			c.eofs += 1
+			return .Nothing, 0, true, true
+		}
+		sent := edit_flush(c)
+		return .Nothing, 0, sent, sent
+	}
+
+	if b < 0x20 {
+		// Every other control character is refused rather than stored. A line
+		// discipline that puts a bell or a form feed in the buffer hands a
+		// reader a byte it has no way to interpret.
+		return .Nothing, 0, false, false
+	}
+
+	if c.edit_len >= CONS_LINE_BYTES - 1 {
+		// One short of the array, so a newline always has somewhere to go. A
+		// line that could fill completely would be a line Enter could not end.
+		c.refused += 1
+		return .Nothing, 0, false, false
+	}
+	c.edit[c.edit_len] = b
+	c.edit_len += 1
+	return c.echo ? .Show : .Nothing, b, true, false
+}
+
+/*
+edit_flush moves the line under construction into the ring, and reports whether
+all of it fit.
+
+A line that does not fit is dropped whole rather than in part. Half a command
+line is worse than none: a reader cannot tell it from a line the user meant, and
+a shell would run it. The ring holds two full lines by construction, so this
+only happens to a reader that stopped reading.
+
+Caller holds `lock`.
+*/
+@(private = "file")
+edit_flush :: proc "contextless" (c: ^Cons) -> bool #no_bounds_check {
+	if c.edit_len == 0 {
 		return false
 	}
-	if c.echo {
-		one := [1]u8{b}
-		_ = cons_write(c, one[:])
+	if int(c.head - c.tail) + c.edit_len > CONS_INPUT_BYTES {
+		c.dropped += u64(c.edit_len)
+		c.edit_len = 0
+		return false
 	}
-	sync.wakeup(&c.ready)
+
+	for i in 0 ..< c.edit_len {
+		c.ring[c.head & RING_MASK] = c.edit[i]
+		c.head += 1
+		c.typed += 1
+	}
+	c.edit_len = 0
+	c.lines += 1
 	return true
 }
 

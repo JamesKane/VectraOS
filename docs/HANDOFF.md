@@ -27,9 +27,9 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 
 ## 2. Where things stand
 
-**Milestone 9 is done, and the namespace is on it.** `Tflush` works, and so does
-the transport that made it possible. A payload buffer per request slot lets a
-real server sit behind it. A read from a path can be walked away from.
+**Milestone 11 is done, and `/dev/cons` is a terminal.** A typed line can be
+edited before anything reads it. `/dev/consctl` is the first `ctl` file in the
+tree, and the last close of it puts the console back the way it was found.
 
 Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
 behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
@@ -74,9 +74,32 @@ the console. And `chan_read_for` on `/dev/cons`, which flushes a real driver
 waiting on real hardware.
 
 `vfs.Fid_Table` moved out of `static.odin` on the way, because a second server
-should not mean a second fid table. See `docs/DEVFS.md`.
+should not mean a second fid table.
 
-About 22,000 lines of Odin. The linked image is ~781 KB debug and ~345 KB
+**Milestone 11 gives that console a line discipline, and a file to switch it
+off.** A byte that arrives goes into a line under construction rather than
+straight to a reader. Backspace takes it back off the line and off the screen.
+`^U` throws the line away, and `^D` on an empty line is the end of the file.
+
+Enter is what sends a line, so a read of `/dev/cons` now parks through a
+character and finishes on the newline after it.
+
+`/dev/consctl` is how a client turns all of that off, and it is the first `ctl`
+file in the tree. That makes it where the convention gets set. One write is one
+command, an unrecognised command is EINVAL rather than silence, and the file
+reads back as the writes that would restore it.
+
+The fourth rule is the one the machinery is for. **The last close reverts the
+mode.** A program that turns raw mode on and then faults therefore leaves no
+console nobody can type at. Plan 9 does the same, for the same reason.
+
+`vfs.Fid_Table` grew an `open` flag per slot to make that count possible.
+`console` grew a destructive `backspace`, because a space glyph composites
+nothing and `\b \b` therefore erases on a serial line and not on a framebuffer.
+`fb` grew `get_raw`, which is how a self-test proves a glyph left the screen.
+See `docs/DEVFS.md`.
+
+About 23,000 lines of Odin. The linked image is ~807 KB debug and ~357 KB
 release.
 
 ```
@@ -110,9 +133,9 @@ release.
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
 [  ok  ] vfs 34 concurrency checks passed -- 4763 namespace operations across 5 threads, 762 rebinds under them in 1000 ms, nothing serialised, heap balanced
-[  ok  ] devfs #c bound at /dev, 3 devices on 4 workers, console input live
+[  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/cons
-[  ok  ] devfs 41 device checks passed -- 3 files under /dev, 49 bytes written to cons, 2 reads parked, a read gave up after 10 ticks
+[  ok  ] devfs 81 device checks passed -- 4 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 11 ticks
 [  ok  ] boot complete -- idling
 ```
 
@@ -132,10 +155,13 @@ operations. `docs/TESTING.md` says why that is the right way round.
 - No condition variable as such, because `sync.Rendez` is one.
 - No read/write sleeping lock, which is the piece `Mount_Point.generation`
   stands in for.
-- No line discipline on `/dev/cons`, and no `/dev/consctl` to hold one. A read
-  is raw and echoed. See `docs/DEVFS.md`.
 - No keyboard driver, so console input comes from the serial port and a thread
   polls it. That thread is where an interrupt handler will go.
+- No word erase and no cursor inside a line. `^W` and the arrow keys are the two
+  a person misses next. See `docs/DEVFS.md`.
+- No enforcement of the `open` flag `vfs.Fid_Table` now carries. 9P forbids a
+  walk on an open fid and a read on an unopened one, and neither server refuses
+  either.
 - No `swapgs`, and no per-CPU state behind GS.
 - `kmain` ends with a call to `sched.exit`, so the machine idles rather than
   halts.
@@ -167,7 +193,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/SYNC.md` | `kernel/sync/` — spinlocks, sleeping locks, the sleep queue | Taking any lock, or making anything wait |
 | `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, the two transports, and the lock that went | Walking, binding, adding a server, or giving up on a read |
 | `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
-| `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the abort hook | Adding a device file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
+| `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention | Adding a device file, adding a `ctl` file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
@@ -257,10 +283,10 @@ server side of that arrangement: workers, a payload buffer per slot, and an
 abort hook that a client's deadline reaches. What `/srv` adds is a name for a
 channel that a *process* posted, rather than one the kernel registered.
 
-**`/dev/consctl` is the small piece worth doing first.** It is the first `ctl`
-file in the tree, which makes it where the convention for parsing one gets set.
-Cooked mode, echo, and the `rawon`/`rawoff` pair are what it carries, and
-`docs/DEVFS.md` says what a line discipline would have to hold.
+**A keyboard driver is the small piece worth doing first.** It turns
+`devfs.cons_input` from a thread that polls into an interrupt handler, and
+`cons_feed` is the entry point it already has. Everything above the ring is
+written not to care which one filled it.
 
 **A read/write sleeping lock is the other piece worth wanting.**
 `Mount_Point.generation` exists only because a read lock could not be held
@@ -280,17 +306,14 @@ runs at realtime. It will the moment something does. Plan 9 never had it either,
 which is an argument about cost rather than about correctness.
 
 **Then, in roughly this order:**
-1. **`/dev/consctl`**, and the line discipline behind it. See above.
-2. **A keyboard driver.** It is what turns `devfs.cons_input` from a thread that
-   polls into an interrupt handler, and `cons_feed` is the entry point it
-   already has.
-3. **`/srv`**, which needs a thread on each side of a transport and therefore
+1. **A keyboard driver.** See above.
+2. **`/srv`**, which needs a thread on each side of a transport and therefore
    needed the scheduler.
-4. **Userland.** A thread grows an `^Address_Space`, `reschedule` grows one
+3. **Userland.** A thread grows an `^Address_Space`, `reschedule` grows one
    comparison, and the GDT already has the selectors laid out for
    SYSCALL/SYSRET. `swapgs` and per-CPU state behind GS belong to this step and
    are cheaper to build with it than after it.
-5. **`/dev/draw`**, over `kernel/drivers/fb`. It is the other half of a console
+4. **`/dev/draw`**, over `kernel/drivers/fb`. It is the other half of a console
    and the thing `apps/terminal` will actually want.
 
 **SMP, when it is wanted.** The shapes are already right. `Cpu` is per-core,
@@ -399,11 +422,13 @@ kernel/
     heap.odin           Slab allocator + Odin's context.allocator
   devfs/
     devfs.odin          `#c` at /dev: the node table, the handler, the abort
-                        hook, and the worker count that bounds parked readers
-    cons.odin           The console device: two sinks out, a ring and a poll
-                        thread in, and two locks of different kinds
-    verify.odin         The boot self-test: 41 checks over the real /dev -- a
-                        read that parks, and a read that gives up
+                        hook, /dev/consctl, and the worker count that bounds
+                        parked readers
+    cons.odin           The console device: two sinks out, a line discipline
+                        and a ring in, and two locks of different kinds
+    verify.odin         The boot self-test: 81 checks over the real /dev -- a
+                        read that parks through a character, a line edited, and
+                        a mode that reverts when its file closes
   vfs/
     lock.odin           What guards what, in what order, and the lock that went
     vfs.odin            Server on either transport, the #name device table, rpc
@@ -413,7 +438,8 @@ kernel/
     namespace.odin      Namespace, rfork semantics, teardown
     walk.odin           attach, walk1, cross_mounts, `..`, resolve
     readdir.odin        Union directory reads and the member-index cookie
-    fidtab.odin         The fid table both servers use: fid to i32, no lock
+    fidtab.odin         The fid table both servers use: fid to i32 plus an
+                        open flag, and no lock
     static.odin         A read-only server over a node table
     root.odin           `#/`, an instance of it, and the boot namespace
     verify.odin         The boot self-test: 51 checks, two real servers
@@ -458,8 +484,9 @@ docs/
   SYNC.md               Spinlock, sleeping lock, sleep queue, deadlines
   NAMESPACE.md          kernel/vfs: what guards what, and the borrow rule
   TRANSPORT.md          kernel/mnt: the tag pool, the workers, Tflush
-  DEVFS.md              kernel/devfs: #c at /dev, the console device, and the
-                        eleven controls the self-test was measured against
+  DEVFS.md              kernel/devfs: #c at /dev, the console device, the
+                        line discipline, the ctl convention, and the twenty
+                        controls the self-test was measured against
   TESTING.md            The self-test discipline, and the negative controls
   STYLE.md              ASD-STE100: the two modes, the checked rules, and the
                         project dictionary

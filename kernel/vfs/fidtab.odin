@@ -39,6 +39,20 @@ Fid_Slot :: struct {
 	node:  i32,
 	next:  i32, // Bucket chain when in use, free list when not; -1 ends both
 	inuse: bool,
+
+	/*
+	Whether the client opened this fid.
+
+	9P draws a hard line here. A fid before Tlopen may be walked and may not be
+	read. A fid after it is the reverse. Neither server in this tree enforces
+	that yet, and this flag is what a server would enforce it with.
+
+	What uses it today is narrower and is the reason it exists. Some servers hold
+	state for as long as a file stays open. At Tclunk, such a server has to know
+	whether the fid it releases was one of the open ones. `kernel/devfs` does,
+	for `/dev/consctl`.
+	*/
+	open:  bool,
 }
 
 Fid_Table :: struct {
@@ -113,7 +127,12 @@ second fid.
 */
 fidtab_bind :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid, node: i32) -> bool #no_bounds_check {
 	if i := fid_find(t, fid); i >= 0 {
+		// A rebind is a fresh binding, so whatever the fid was open on, it is
+		// not open on this. 9P forbids the walk that gets here on an open fid.
+		// Clearing the flag is what stops a server from believing otherwise if
+		// a client ever sends one.
 		t.slots[i].node = node
+		t.slots[i].open = false
 		return true
 	}
 	if t.free < 0 {
@@ -145,6 +164,24 @@ fidtab_node :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid) -> i32 #no_b
 	return t.slots[i].node
 }
 
+// fidtab_set_open records that the client opened this fid, or closed it.
+// Reports whether the fid was there to record it against.
+fidtab_set_open :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid, open: bool) -> bool #no_bounds_check {
+	i := fid_find(t, fid)
+	if i < 0 {
+		return false
+	}
+	t.slots[i].open = open
+	return true
+}
+
+// fidtab_is_open reports whether the client opened this fid. False for a fid
+// this table never bound, which is the answer a caller wants either way.
+fidtab_is_open :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid) -> bool #no_bounds_check {
+	i := fid_find(t, fid)
+	return i >= 0 && t.slots[i].open
+}
+
 // fidtab_release drops a fid and reports whether it was there. A caller that
 // answers Tclunk ignores the answer: the client wanted the fid gone, and it is
 // gone either way. Refusing would only ever break a cleanup path.
@@ -159,6 +196,7 @@ fidtab_release :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid) -> bool #
 				t.slots[prev].next = t.slots[i].next
 			}
 			t.slots[i].inuse = false
+			t.slots[i].open = false
 			t.slots[i].next = t.free
 			t.free = i
 			t.live -= 1
