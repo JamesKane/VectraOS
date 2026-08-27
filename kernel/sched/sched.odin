@@ -218,6 +218,7 @@ spawn_at :: proc(
 
 	t.resume = resume
 	t.stack = stack
+	t.kstack_top = arch.kernel_stack_top(stack)
 	t.owns_stack = true
 	t.name = name
 	t.entry = entry
@@ -242,6 +243,108 @@ spawn_at :: proc(
 	enqueue(c, t)
 	sync.release(&lock, guard)
 	return t
+}
+
+/*
+spawn_user creates a thread whose first instruction is a program's.
+
+The same thread as any other, built the same way. It differs in exactly one
+place: the frame `arch.thread_user_init` writes names a ring 3 code selector
+rather than the kernel's. Everything after that is the ordinary path. The
+scheduler dispatches it and the trap tail `iretq`s it. The CPU learns about the
+privilege change when it reads the selector out of the frame, and not before.
+
+`entry` and `sp` are addresses in `space`, and this procedure does not
+dereference either. A caller that maps neither gets a thread that faults on its
+first instruction fetch. That is the correct answer to nothing to run.
+
+`space` is not optional and the check is not defensive. A user thread with no
+space of its own would translate through the kernel's. Nothing in the kernel
+half carries the bit that lets a program reach it, which is the whole point of
+that half. The program would fault at once, four layers away from the mistake.
+
+`record` is what `Thread.user` carries, which is what a fault handler in
+interrupt context uses to find out whose program this was.
+*/
+spawn_user :: proc(
+	name: string,
+	space: ^mem.Address_Space,
+	entry: uintptr,
+	sp: uintptr,
+	arg0: u64 = 0,
+	arg1: u64 = 0,
+	record: rawptr = nil,
+	priority: Priority = PRIORITY_NORMAL,
+	stack_size: int = DEFAULT_STACK_SIZE,
+) -> ^Thread {
+	if space == nil || entry == 0 || sp == 0 || stack_size < arch.MIN_STACK_SIZE {
+		return nil
+	}
+	reap()
+
+	c := cpu()
+	t := new(Thread)
+	if t == nil {
+		return nil
+	}
+
+	stack := make([]u8, stack_size)
+	if stack == nil {
+		free(t)
+		return nil
+	}
+
+	resume, ok := arch.thread_user_init(stack, entry, sp, arg0, arg1)
+	if !ok {
+		delete(stack)
+		free(t)
+		return nil
+	}
+
+	t.resume = resume
+	t.stack = stack
+	t.kstack_top = arch.kernel_stack_top(stack)
+	t.owns_stack = true
+	t.name = name
+	t.base = priority
+	t.prio = priority
+	t.affinity = ANY_CLASS
+	t.id = next_id
+	next_id += 1
+
+	// Both before the enqueue, and for the same reason the space alone was.
+	// The next interrupt may dispatch this thread. One dispatched without its
+	// kernel stack in the TSS takes its first trap onto whatever address the
+	// last thread left there.
+	t.space = space
+	t.user = record
+
+	guard := sync.acquire(&lock)
+	enqueue(c, t)
+	sync.release(&lock, guard)
+	return t
+}
+
+/*
+kill_current ends the running thread from inside a trap handler.
+
+Takes the state the trap arrived with and returns the state to resume, which
+will be some other thread's. That is the only way to end a thread that is not
+cooperating. `exit` needs the thread to call it, and a program that faulted
+calls nothing.
+
+`spent_slice` is false. A thread that faulted did not consume a slice, and
+charging it one would decay a priority that is about to stop existing.
+
+The dead thread's stack is not freed here. `reschedule` puts it on the reap
+list, and the next `spawn` gives it back, because the stack this trap is
+standing on is that thread's.
+*/
+kill_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	if t := cpu().current; t != nil {
+		t.state = .Dead
+	}
+	return reschedule(r, spent_slice = false)
 }
 
 /*
@@ -567,6 +670,23 @@ reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Res
 		} else {
 			mem.space_switch(mem.kernel_address_space())
 		}
+	}
+
+	/*
+	And where the CPU will push a frame that arrives from ring 3.
+
+	Unconditional for every thread that owns a stack, rather than only for the
+	ones that will reach ring 3. The scheduler does not know which those are,
+	and the cost of being wrong is not a fault. A trap from ring 3 pushes onto
+	whatever this says, before anything can check it. A stale value is
+	therefore a triple fault with nothing on the screen.
+
+	The boot thread carries zero, because its stack is the loader's and it will
+	never be in ring 3 to come back from. Skipped rather than written, so the
+	slot keeps the last real stack instead of a null one.
+	*/
+	if next.kstack_top != 0 {
+		arch.set_kernel_stack(next.kstack_top)
 	}
 
 	c.current = next

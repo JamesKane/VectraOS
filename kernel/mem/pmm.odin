@@ -310,6 +310,26 @@ free_page :: proc "contextless" (phys: uintptr) {
 }
 
 /*
+frame_is_free asks the bitmap about one frame by its physical address.
+
+For a self-test that wants to say `this exact frame came back`, rather than
+`the total went back to what it was`. The total is much the weaker claim.
+Anything that allocated in between hides a leak inside it, and the heap is
+always allocating. See `kernel/user/verify.odin`. The measurement there is
+three frames a program held, and everything around it is a thread stack.
+
+An address outside the tracked range reads as free, because a frame this
+allocator does not own is not one it is holding.
+*/
+frame_is_free :: proc "contextless" (phys: uintptr) -> bool {
+	frame := int(u64(phys) / PAGE_SIZE)
+	if frame < 0 || frame >= frame_total {
+		return true
+	}
+	return !frame_taken(frame)
+}
+
+/*
 scan looks for `count` consecutive free frames in [from, to).
 
 The 0xFF fast path is what makes this cheap in practice. A fully-taken byte

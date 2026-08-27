@@ -62,7 +62,7 @@ thread_resume_init :: proc "contextless" (
 	}
 
 	base := uintptr(raw_data(stack))
-	top := align_down(base + uintptr(len(stack)), 16)
+	top := kernel_stack_top(stack)
 
 	sp := top - 8
 	(^uintptr)(sp)^ = uintptr(on_return)
@@ -128,4 +128,84 @@ class until there is a number worth trusting.
 */
 cpu_class :: proc "contextless" () -> (class: Cpu_Class, capacity: int) {
 	return .Performance, CAPACITY_FULL
+}
+
+/*
+kernel_stack_top is the address the CPU pushes an interrupt frame below.
+
+One definition, because two things need the same number. A disagreement between
+them is silent. `thread_resume_init` lays the first frame out from it. The
+scheduler puts it in the TSS, so a trap from ring 3 lands on the same stack.
+
+Aligned down to 16, so the alignment comes out of the space above the stack
+rather than out of the stack.
+*/
+kernel_stack_top :: proc "contextless" (stack: []u8) -> uintptr {
+	return align_down(uintptr(raw_data(stack)) + uintptr(len(stack)), 16)
+}
+
+/*
+thread_user_init lays out a thread whose first instruction is in ring 3.
+
+The same shape as `thread_resume_init` above, and deliberately the same shape.
+A thread that never ran looks like one something preempted. A thread that never
+ran *in a program* looks like one something preempted **in a program**.
+
+There is still one resume path. The first `iretq` a user thread takes is the
+trap tail's. That is the same instruction every other thread returns through,
+and the only difference is the selectors in the frame it reads.
+
+`entry` and `user_sp` are addresses in the space the thread will translate
+through, not in the kernel's. Nothing here dereferences either. The first thing
+that does is the CPU, after the privilege level has already changed.
+
+`stack` is still the *kernel* stack, and it is still where the frame is
+written. That is not a spare copy of a program's stack. It is where the next
+trap from ring 3 builds its frame. That is why `kernel_stack_top` and the TSS
+have to agree about where it ends.
+
+    cs = USER_CODE_SEL | 3     the RPL is what makes the `iretq` a privilege
+    ss = USER_DATA_SEL | 3     change rather than a jump
+
+RFLAGS is 0x202 for the same reason a kernel thread's is. A program entered
+with IF clear cannot be preempted, and on a program that does not fault, the
+machine never comes back.
+*/
+thread_user_init :: proc "contextless" (
+	stack: []u8,
+	entry: uintptr,
+	user_sp: uintptr,
+	arg0: u64,
+	arg1: u64,
+) -> (
+	resume: Resume,
+	ok: bool,
+) {
+	if len(stack) < MIN_STACK_SIZE || entry == 0 || user_sp == 0 {
+		return {}, false
+	}
+
+	base := uintptr(raw_data(stack))
+	top := kernel_stack_top(stack)
+
+	fpu := align_down(top - FPU_AREA_RESERVE, FPU_AREA_ALIGN)
+	frame_at := align_down(fpu - size_of(Trap_Frame), 16)
+	if frame_at <= base {
+		return {}, false
+	}
+
+	fpu_init(rawptr(fpu))
+
+	frame := (^Trap_Frame)(frame_at)
+	frame^ = Trap_Frame {
+		rdi    = arg0,
+		rsi    = arg1,
+		rip    = u64(entry),
+		cs     = u64(USER_CODE_RING3),
+		rflags = 0x202,
+		rsp    = u64(user_sp),
+		ss     = u64(USER_DATA_RING3),
+	}
+
+	return Resume{frame = frame, fpu = rawptr(fpu)}, true
 }

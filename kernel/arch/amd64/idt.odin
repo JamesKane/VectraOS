@@ -25,6 +25,8 @@ turns a table of 256 function pointers into one label and a shift.
 */
 package amd64
 
+import "base:intrinsics"
+
 import "vsys:libodin"
 
 VECTOR_COUNT :: 256
@@ -167,6 +169,11 @@ Trap :: struct {
 	sp:            uintptr,
 	fault_address: uintptr, // CR2; meaningful only for a page fault
 	frame:         ^Trap_Frame,
+
+	// Whether the interrupted code was a program rather than the kernel. Read
+	// out of the CS the CPU pushed, which is the only trustworthy answer: a
+	// program cannot forge it, and the kernel cannot lose it.
+	user:          bool,
 }
 
 /*
@@ -181,12 +188,65 @@ It is the portable handler's job to say something first.
 */
 Trap_Handler :: #type proc "contextless" (t: ^Trap) -> bool
 
+/*
+A fault that came from ring 3 is a different event from a fault in the kernel,
+and this is the table that says so.
+
+A kernel fault is a failure to report. The machine lost the argument, and
+`Trap_Handler` above says what it can before halting. A fault in a program is
+an ordinary outcome. The program is wrong, the kernel is not, and something has
+to end the program and carry on.
+
+Only the second one needs to change where execution resumes. That is why this
+signature takes and returns a `Resume` and the one above does not. A handler
+that returns the state it was given retries the faulting instruction, which for
+a fault is a loop. One that returns another thread's ended this one.
+
+With no handler installed a user fault falls through to `Trap_Handler` and
+panics. That is the right default: an unclaimed fault in ring 3 means something
+reached ring 3 that nothing was prepared to own.
+*/
+User_Trap_Handler :: #type proc "contextless" (t: ^Trap, r: Resume) -> Resume
+
 @(private = "file") handler: Trap_Handler
+@(private = "file") user_handler: User_Trap_Handler
 @(private = "file") idt: [VECTOR_COUNT]IDT_Entry
 @(private = "file") idtr: Descriptor_Pointer
 
+/*
+How many times the machine came back out of ring 3.
+
+Every trap, not only every fault: a timer preemption of a program is counted
+here too, and that is the useful half. It is the one number that says a program
+is being interrupted rather than merely running.
+
+Volatile, because an interrupt handler writes it and ordinary code reads it in
+a loop that waits for it to move.
+*/
+@(private = "file") user_traps: u64
+
+user_trap_count :: proc "contextless" () -> u64 {
+	return intrinsics.volatile_load(&user_traps)
+}
+
 set_trap_handler :: proc "contextless" (h: Trap_Handler) {
 	handler = h
+}
+
+set_user_trap_handler :: proc "contextless" (h: User_Trap_Handler) {
+	user_handler = h
+}
+
+/*
+frame_is_user reports whether the interrupted code was in ring 3.
+
+The privilege is in the low two bits of the CS the CPU pushed. A read from
+there rather than from anywhere else is what makes it unforgeable. The
+interrupt wrote that value out of the segment register, before any of this code
+ran.
+*/
+frame_is_user :: proc "contextless" (frame: ^Trap_Frame) -> bool {
+	return frame != nil && u16(frame.cs) & 3 == RING_USER
 }
 
 // -- Vector metadata ---------------------------------------------------------
@@ -378,6 +438,11 @@ trap_dispatch :: proc "sysv" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no
 		fpu   = fpu,
 	}
 
+	from_user := frame_is_user(frame)
+	if from_user {
+		intrinsics.volatile_store(&user_traps, intrinsics.volatile_load(&user_traps) + 1)
+	}
+
 	if frame.vector < VECTOR_COUNT {
 		if h := vectors[frame.vector]; h != nil {
 			out^ = h(out^)
@@ -396,11 +461,20 @@ trap_dispatch :: proc "sysv" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no
 		ip         = uintptr(frame.rip),
 		sp         = uintptr(frame.rsp),
 		frame      = frame,
+		user       = from_user,
 	}
 	if kind == .Page_Fault {
 		// CR2 is live only until the next page fault. An interrupt gate already
 		// guarantees there will not be one before this reads it.
 		trap.fault_address = read_cr2()
+	}
+
+	// A program's fault, to whatever owns programs. It answers with the state
+	// to resume, which is how it ends a thread without this file knowing what a
+	// thread is.
+	if from_user && user_handler != nil {
+		out^ = user_handler(&trap, out^)
+		return
 	}
 
 	if handler != nil && handler(&trap) {

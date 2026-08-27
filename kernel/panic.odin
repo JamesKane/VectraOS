@@ -93,6 +93,13 @@ panic_trap :: proc "contextless" (t: ^arch.Trap) -> bool {
 	libodin.put_str(&sink, " (vector ")
 	libodin.put_uint(&sink, t.vector)
 	libodin.put_str(&sink, ")")
+	// Which ring the fault came from, because it changes what the report means.
+	// A fault in the kernel is a bug in this image. A fault in a program that
+	// reaches this screen is a program nothing claimed. Every address below it
+	// is then in a space the kernel does not control.
+	if t.user {
+		libodin.put_str(&sink, " in a program, at ring 3")
+	}
 	emit(&klog, .Fault, &sink)
 
 	sink = begin(&klog)

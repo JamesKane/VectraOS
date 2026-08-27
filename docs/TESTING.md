@@ -143,6 +143,20 @@ executes rather than arriving, and it works whether or not the APIC still
 delivers. `verify_preemption` reached the same place from the other direction:
 it counts spins and checks the clock, rather than trusting it.
 
+**The fourth time was ring 3, and it found the case where no bound works.** One
+control enters a program with interrupts masked. That program cannot be
+preempted, so nothing else on the core ever runs. The observer is not slow. The
+observer is not scheduled, and a bound it holds is a bound nothing executes.
+
+So the thing under test ends on its own. `spin` counts to four hundred million
+and then runs the `ud2` that kills it, whatever the kernel does or does not
+say. The kernel normally stops it in a few ticks. A check says the count came
+back below the limit, so a run the safety net ended is a run that fails.
+
+**When the failure stops the observer from running, the bound has to be inside
+the thing being observed.** That is the last version of this rule, because
+there is nowhere further to put it.
+
 ## A control that runs on every boot
 
 `kernel/verify_payload.odin` does something the tables above do not, and it is
@@ -213,13 +227,15 @@ nothing else in common.
 | Services published by name | `docs/SRV.md` | 9 of 9 |
 | The first device that interrupts | `docs/KBD.md` | 7 of 7 |
 | Address spaces | `docs/SPACE.md` | 3 checked, 2 faults, 1 inert |
+| Ring 3 | `docs/USER.md` | 6 checked, 3 machine failures, 1 uncaught |
 
 **The uncaught ones cluster, and the cluster is the finding.** Almost every one
 is a window two or three instructions wide, and none is at a lock boundary.
 
 One is a count loaded and stored back. One is a slot claimed and not yet marked.
-One is a fid slot read and written. Only a second CPU makes any of them easy to
-reach.
+One is a fid slot read and written. One is a program record written the
+instruction after the thread that needs it becomes runnable. Only a second CPU
+makes any of them easy to reach.
 
 **`docs/DEVFS.md`'s two are the exception, and they are a different shape.**
 Neither is a narrow window. One guards against two writers to a console, and the
@@ -265,6 +281,25 @@ So the question a clean control asks has four answers. The fourth: **does
 something below the code under test quietly forgive an error?**
 An allocator, a lock, or a protocol that absorbs a mistake makes every check
 above it weaker than it reads.
+
+## Read where a caught control fails, not only that it did
+
+`docs/USER.md` has a control that removes the kill from the user fault path, so
+a faulting program retries its instruction for ever. Nine checks fail, which is
+a clear catch and the easy thing to write down.
+
+**The first nine checks passed, and that is the interesting part.** The whole of
+`verify_spin` ran green against a program that never stopped. The fault handler
+records the exit and *then* ends the thread. A reader that sees the record
+therefore learns the program stopped one region too early.
+
+On one core that ordering is safe, because both halves are inside the same
+interrupt-disabled handler. On two cores it is a use-after-free of an address
+space. Nothing in the tree would have asked the question, and the control asked
+it for free.
+
+**A control tells you two things: whether the checks notice, and which ones
+did.** The second is the half that finds bugs the mutation was not about.
 
 ## See also
 

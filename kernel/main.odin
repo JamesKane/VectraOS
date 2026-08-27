@@ -29,6 +29,7 @@ import "kernel:mem"
 import "kernel:sched"
 import "kernel:srv"
 import "kernel:sync"
+import "kernel:user"
 import "kernel:vfs"
 import "vsys:libodin"
 import "vsys:vectra9"
@@ -197,6 +198,12 @@ kmain :: proc "sysv" () {
 				verify_keyboard()
 			}
 			verify_space()
+
+			// Last, because ring 3 needs everything above it. A space to run
+			// in, a scheduler to preempt it, a clock behind the preemption,
+			// and a fault path with somewhere to report to.
+			init_user()
+			verify_user()
 		}
 	}
 
@@ -1280,6 +1287,55 @@ verify_keyboard :: proc() {
 		libodin.put_str(&sink, " scancodes translated, ")
 		libodin.put_uint(&sink, s.interrupts)
 		libodin.put_str(&sink, " interrupts taken, an injected key reached the sink")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+
+	libodin.put_str(&sink, " checks, ")
+	libodin.put_uint(&sink, u64(result.failures))
+	libodin.put_str(&sink, " FAILED -- first: ")
+	libodin.put_str(&sink, result.first_failure)
+	emit(&klog, .Fault, &sink)
+}
+
+/*
+init_user claims the fault path for programs.
+
+One line of code and a milestone of consequence. Until it runs, a trap from
+ring 3 falls through to `panic_trap` and stops the machine. That is the right
+default for a privilege level nothing owns yet. After it, a program's fault
+ends the program.
+
+There is nothing to report that is not a self-test result, so this says nothing
+on its own line. See `verify_user`.
+*/
+init_user :: proc "contextless" () {
+	user.init()
+}
+
+/*
+verify_user runs five programs in ring 3 and watches four of them be refused.
+
+The first one is the one that matters. It runs, the timer takes the core away
+from it, the kernel does work, and it gets the core back. Everything after it
+is a permission being enforced, which is only interesting once there is
+something running to enforce it against.
+*/
+verify_user :: proc() {
+	result := user.verify()
+	ok := result.failures == 0 && result.checks > 0
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "user ")
+	libodin.put_uint(&sink, u64(result.checks))
+	if ok {
+		libodin.put_str(&sink, " ring 3 checks passed -- ")
+		libodin.put_uint(&sink, u64(result.programs))
+		libodin.put_str(&sink, " programs, ")
+		libodin.put_uint(&sink, result.rounds)
+		libodin.put_str(&sink, " rounds of one preempted, ")
+		libodin.put_uint(&sink, result.traps)
+		libodin.put_str(&sink, " returns from ring 3, the kernel untouched")
 		emit(&klog, .Ok, &sink)
 		return
 	}

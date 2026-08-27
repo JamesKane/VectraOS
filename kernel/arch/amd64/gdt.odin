@@ -40,6 +40,25 @@ USER_DATA_SEL :: u16(0x20)
 USER_CODE_SEL :: u16(0x28)
 TSS_SEL :: u16(0x30) // And 0x38, which is its upper half
 
+/*
+The privilege level in the low two bits of a selector.
+
+A descriptor carries the privilege a segment *may* be used at. A selector
+carries the privilege it is being used *at*, and the CPU takes the weaker of
+the two. A user segment loaded with RPL 0 therefore still runs at ring 3,
+because the descriptor says DPL 3. A kernel segment loaded with RPL 3 does not
+become a kernel segment.
+
+`iretq` reads the RPL out of the CS it pops, to decide whether the return is a
+privilege change. A user frame with RPL 0 in CS returns to ring 0 code that
+lives in a ring 3 descriptor. That is neither an error nor userland.
+*/
+RING_KERNEL :: u16(0)
+RING_USER :: u16(3)
+
+USER_CODE_RING3 :: USER_CODE_SEL | RING_USER
+USER_DATA_RING3 :: USER_DATA_SEL | RING_USER
+
 GDT_SLOTS :: 8
 
 // -- Descriptor encoding -----------------------------------------------------
@@ -267,4 +286,31 @@ read_cs :: proc "contextless" () -> u16 {
 
 read_tr :: proc "contextless" () -> u16 {
 	return asm() -> u16 {"str $0", "=r"}()
+}
+
+/*
+set_kernel_stack tells the CPU where to push an interrupt frame that arrives
+from ring 3.
+
+`rsp0` is read at exactly one moment: an interrupt or an exception that raises
+the privilege level. The CPU loads it into RSP before it pushes anything. The
+frame therefore lands on a stack the kernel trusts, rather than on one a
+program chose. Nothing else in long mode reads the TSS.
+
+**A stale value here is not a fault. It is a triple fault**, because the push
+that reports the problem is the push that has nowhere to go. So the scheduler
+writes this on every switch, from the incoming thread's own kernel stack, and
+does it before that thread can reach ring 3.
+
+The value is the *top* of that stack. A thread in ring 3 has nothing on its
+kernel stack, so the whole of it is available to the frame.
+*/
+set_kernel_stack :: proc "contextless" (top: uintptr) {
+	tss.rsp[0] = u64(top)
+}
+
+// kernel_stack reads the slot back, so a self-test can say the scheduler wrote
+// it rather than assume it from the absence of a triple fault.
+kernel_stack :: proc "contextless" () -> uintptr {
+	return uintptr(tss.rsp[0])
 }

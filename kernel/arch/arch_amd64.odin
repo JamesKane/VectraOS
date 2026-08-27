@@ -98,6 +98,34 @@ KERNEL_CODE_SELECTOR :: amd64.KERNEL_CODE_SEL
 TASK_SELECTOR :: amd64.TSS_SEL
 
 /*
+-- Ring 3 ---------------------------------------------------------------------
+
+What it takes to run code the kernel does not trust, and to get back.
+
+Three things, and they are separable on purpose. `thread_user_init` lays out a
+thread whose first `iretq` lands in a program. `set_kernel_stack` is what gives
+the CPU somewhere to push the frame that brings it back. `set_user_trap_handler`
+is what decides that a fault in a program ends the program rather than the
+machine.
+
+`user_trap_count` is the one measurement: how many times the machine came back
+out of ring 3, faults and timer preemptions alike.
+*/
+
+USER_CODE_SELECTOR :: amd64.USER_CODE_RING3
+USER_DATA_SELECTOR :: amd64.USER_DATA_RING3
+
+User_Trap_Handler :: amd64.User_Trap_Handler
+
+thread_user_init :: amd64.thread_user_init
+kernel_stack_top :: amd64.kernel_stack_top
+set_kernel_stack :: amd64.set_kernel_stack
+kernel_stack :: amd64.kernel_stack
+set_user_trap_handler :: amd64.set_user_trap_handler
+frame_is_user :: amd64.frame_is_user
+user_trap_count :: amd64.user_trap_count
+
+/*
 -- Scheduling -----------------------------------------------------------------
 
 The state a thread is resumed from, the tick that preempts it, and what kind of

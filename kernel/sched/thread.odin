@@ -1,10 +1,15 @@
 /*
 Threads, priorities, and what a core is.
 
-A thread here is a kernel thread. It has one stack, one saved `Resume`, and no
-address space of its own. There is no userland yet, so nothing in this package
-switches CR3. When there is, a thread grows an `^Address_Space` and `reschedule`
-grows one comparison, and nothing else in this file changes.
+A thread has one stack, one saved `Resume`, and an address space it may or may
+not share with the kernel. Most of them are kernel threads and carry nil for
+that, which is what makes a switch between two of them cost one comparison.
+
+A thread whose saved `Resume` names a ring 3 code selector is running a program.
+Nothing in this file treats it differently, and that is the design rather than
+an omission. The privilege level lives in the frame, and the frame travels with
+the stack. The scheduler owes a user thread two stores, both of them below.
+One is the address space. The other is the kernel stack the CPU pushes onto.
 
 Priority is dynamic. A thread has a `base` it was created at, and a `prio` it is
 running at. The two drift apart in the two directions Plan 9 drifts them. A
@@ -129,6 +134,31 @@ Thread :: struct {
 	namespace and a set of open files, and this is the first of the three.
 	*/
 	space: ^mem.Address_Space,
+
+	/*
+	The top of this thread's kernel stack, which is where the CPU pushes an
+	interrupt frame that arrives from ring 3.
+
+	Cached rather than recomputed. `reschedule` writes it into the TSS on every
+	switch, and may not do arithmetic on a slice that could be nil. Zero for
+	the boot thread, whose stack is the loader's. That thread will never be in
+	ring 3 to come back from.
+
+	It is the same number `arch.thread_user_init` laid the first frame out from.
+	One definition of it lives in `arch`, and both callers ask.
+	*/
+	kstack_top: uintptr,
+
+	/*
+	Whatever the userland layer hangs off this thread, and nothing this package
+	ever dereferences.
+
+	`kernel/user` puts the program record here, so a fault arriving in interrupt
+	context can find out whose fault it was without a table to search. The
+	scheduler carries the pointer and has no opinion about it, which is the same
+	arrangement `sync` has with a waiter.
+	*/
+	user: rawptr,
 
 	// Counters, all of them for the self-test rather than for the scheduler.
 	slices:      u64, // Whole slices of CPU consumed, blocking or not

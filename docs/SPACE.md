@@ -168,9 +168,9 @@ the caller, and an allocator that absorbs it silently is one that hides it.
 
 ## What this leaves for next time
 
-- **Ring 3.** The GDT already has the user selectors laid out in the order
-  SYSRET requires, with `USER_CODE32_SEL` present as the placeholder that
-  ordering forces. Entering is an `iretq` with a user `CS` and `SS`.
+- **Ring 3.** Built. See `docs/USER.md`. Entering is an `iretq` with a user
+  `CS` and `SS`. Two things had to go with it: a kernel stack in the TSS, and a
+  fault path that ends a program rather than the machine.
 - **SYSCALL and SYSRET.** `EFER.SCE`, then `STAR`, `LSTAR` and `SFMASK`. The
   entry stub is naked assembly, and the first thing it needs is a stack.
 - **Per-CPU state behind `GS`.** Which is where that stack comes from, and why
@@ -186,5 +186,6 @@ the caller, and an allocator that absorbs it silently is one that hides it.
 
 - `docs/MEMORY.md` — the PMM, the VMM, and the kernel space this copies from.
 - `docs/SCHED.md` — the switch this added a comparison to.
-- `docs/HANDOFF.md` — section 6, and what the other three slices of userland
-  need.
+- `docs/USER.md` — ring 3, the slice that came next, and what it needed from
+  this one.
+- `docs/HANDOFF.md` — section 6, and what the other slices of userland need.
