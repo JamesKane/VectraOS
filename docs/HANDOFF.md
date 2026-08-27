@@ -25,82 +25,52 @@ libposix, Vectra9), `servers/` (devfs, netfs, intuition), `apps/` (terminal,
 filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 `aarch64` and `riscv64`.
 
+**`servers/` is empty and devfs lives in `kernel/` instead**, which is a
+departure from that layout and a temporary one. A server outside the kernel
+needs an address space to be outside it *in*. Both `kernel/devfs` and
+`kernel/srv` already speak 9P over a transport that hides which side of a
+boundary they sit on. The move is a build change rather than a rewrite.
+
 ## 2. Where things stand
 
-**Milestone 11 is done, and `/dev/cons` is a terminal.** A typed line can be
-edited before anything reads it. `/dev/consctl` is the first `ctl` file in the
-tree, and the last close of it puts the console back the way it was found.
+The machine boots, brings up memory, a namespace, a scheduler and a preempting
+timer, and publishes `#c` at `/dev` and `#s` at `/srv`. It then runs about four
+hundred checks against itself and idles. `/dev/cons` is a real terminal: a line
+typed at the serial port is edited, echoed, and handed to a reader that parked
+waiting for it. `/srv` is a directory of running services, and a name posted
+there can be mounted anywhere in a namespace.
 
-Milestone 0 boots it. Milestone 1 gave it a PMM, its own page tables and a heap
-behind `context.allocator`. Milestone 2 gave it a GDT, TSS, IDT and a panic
-screen. Milestone 3 added `sys/vectra9/`, which is the whole 9P2000.L message
-set, a codec, and the session and transport boundary. Milestone 4 added
-`kernel/vfs/`, the namespace that uses it. Milestone 5 added `kernel/sched/` and
-the local APIC timer under it.
-
-Milestone 6 locks the namespace against the threads Milestone 5 made possible.
-It proves that with five threads that walk, list, read and rebind the same
-namespace at once. Milestone 7 makes the one lock held across a 9P message a
-*sleeping* lock. That is what an out-of-process transport was waiting for, and
-it made the vfs layer preemptible for the first time.
-
-Milestone 8 gives it the other half of the wait. A thread can now wait for a
-*condition* rather than for a lock, and it can wait with a deadline. Milestone 9
-spends both on the question `docs/VECTRA9.md` left open longest: a 9P transport
-that can leave a request pending, and `Tflush` over it.
-
-The last piece of it is a payload buffer per request slot. A reply used to
-borrow the server's storage, which one request at a time made safe and eight
-made false. Each slot now owns a buffer and the handler is handed it, so a real
-server can sit behind several workers. `vfs.static_handler` does, unmodified,
-under four threads listing one directory at once.
-
-`kernel/vfs` then moved onto it. A `Server` sits on either transport and nothing
-above it knows which. What that cost the namespace was `Server.lock`, and the
-lock is gone rather than narrowed. It existed to keep one message in flight per
-session, and a reply borrows the caller now. `alloc_fid` is an atomic increment,
-which was the lock's other job. What it bought is `chan_read_for`, a read with a
-deadline that sends `Tflush` and waits for `Rflush` before it lets the fid go.
-
-**Milestone 10 spends all of that.** `kernel/devfs` is `#c`, bound at `/dev`,
-with `cons`, `null` and `zero` in it. It is the first server whose files are
-devices rather than strings. It is the first whose handler may not hold its own
-lock across a request. And it is the first whose reads genuinely park.
-Everything that waited before it waited because a self-test told it to.
-
-Three subsystems built for a server that did not exist are now reached from a
-path. Workers behind `#c`. A payload buffer per slot under every `Rread` from
-the console. And `chan_read_for` on `/dev/cons`, which flushes a real driver
-waiting on real hardware.
-
-`vfs.Fid_Table` moved out of `static.odin` on the way, because a second server
-should not mean a second fid table.
-
-**Milestone 11 gives that console a line discipline, and a file to switch it
-off.** A byte that arrives goes into a line under construction rather than
-straight to a reader. Backspace takes it back off the line and off the screen.
-`^U` throws the line away, and `^D` on an empty line is the end of the file.
-
-Enter is what sends a line, so a read of `/dev/cons` now parks through a
-character and finishes on the newline after it.
-
-`/dev/consctl` is how a client turns all of that off, and it is the first `ctl`
-file in the tree. That makes it where the convention gets set. One write is one
-command, an unrecognised command is EINVAL rather than silence, and the file
-reads back as the writes that would restore it.
-
-The fourth rule is the one the machinery is for. **The last close reverts the
-mode.** A program that turns raw mode on and then faults therefore leaves no
-console nobody can type at. Plan 9 does the same, for the same reason.
-
-`vfs.Fid_Table` grew an `open` flag per slot to make that count possible.
-`console` grew a destructive `backspace`, because a space glyph composites
-nothing and `\b \b` therefore erases on a serial line and not on a framebuffer.
-`fb` grew `get_raw`, which is how a self-test proves a glyph left the screen.
-See `docs/DEVFS.md`.
-
-About 23,000 lines of Odin. The linked image is ~807 KB debug and ~357 KB
+About 24,500 lines of Odin. The linked image is ~851 KB debug and ~383 KB
 release.
+
+**What exists, and which document says why:**
+
+| Subsystem | What it is | Read |
+|---|---|---|
+| `boot/`, `kernel/arch/` | Limine, descriptor tables, traps, the panic screen | `docs/BOOT.md` |
+| `kernel/mem/` | PMM, VMM, and a heap behind `context.allocator` | `docs/MEMORY.md` |
+| `kernel/sched/` | Threads, priorities, decay, and the LAPIC tick that preempts | `docs/SCHED.md` |
+| `kernel/sync/` | The lock that masks, the lock that parks, and waiting for a condition | `docs/SYNC.md` |
+| `sys/vectra9/` | The 9P2000.L message set, its codec, and the session and transport boundary | `docs/VECTRA9.md` |
+| `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings | `docs/NAMESPACE.md` |
+| `kernel/mnt/` | A 9P connection with several requests in flight, and `Tflush` over it | `docs/TRANSPORT.md` |
+| `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, and `/dev/consctl` | `docs/DEVFS.md` |
+| `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs | `docs/SRV.md` |
+
+**The order they arrived in matters in exactly one way**, and it is worth
+knowing before reading any of them. Each of these unblocked the next, and none
+of them could have come earlier:
+
+    a heap                  a namespace can allocate a chan
+    a scheduler             a server can have threads of its own
+    a lock that parks       a lock may be held across a 9P message
+    a rendezvous            a thread can wait for a condition, or a deadline
+    kernel/mnt              a request can be left pending, and flushed
+    kernel/devfs            a read can wait for hardware rather than for a test
+    kernel/srv              a service can be named after the kernel was built
+
+Everything else about how it got here is in the documents above, beside the
+code it explains.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
@@ -110,13 +80,13 @@ release.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x000000001bbb5000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x000000001a000000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
-[  --  ] memory map: 28 entries spanning 12.7 GiB
-[  ok  ] usable 466.9 MiB, reclaimable 39.5 MiB
-[  --  ] largest usable region 395.2 MiB at 0x0000000001600000
-[  ok  ] pmm 119536 frames free of 123414 tracked, bitmap 15.0 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.4 MiB in 271 tables (1.0 MiB)
+[  --  ] memory map: 32 entries spanning 12.7 GiB
+[  ok  ] usable 466.4 MiB, reclaimable 39.8 MiB
+[  --  ] largest usable region 394.0 MiB at 0x0000000001600000
+[  ok  ] pmm 119409 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 515.6 MiB in 270 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
@@ -125,44 +95,63 @@ release.
 [  ok  ] vfs 51 namespace checks passed -- union of 4 names over two servers, 1 mount point, heap balanced
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62537 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (16428925-16578328 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 2057 acquisitions, 1962 parked and handed back, decayed to 1
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62518 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (18196239-18291747 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 2258 acquisitions, 2156 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 4763 namespace operations across 5 threads, 762 rebinds under them in 1000 ms, nothing serialised, heap balanced
+[  ok  ] vfs 34 concurrency checks passed -- 4413 namespace operations across 5 threads, 715 rebinds under them in 1000 ms, nothing serialised, heap balanced
 [  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/cons
-[  ok  ] devfs 81 device checks passed -- 4 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 11 ticks
+[  ok  ] devfs 81 device checks passed -- 4 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 10 ticks
+[  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
+[  ok  ] srv 69 service checks passed -- 35 posted, 6 listed across 6 passes with one removed under them, 1 mounted, heap balanced
 [  ok  ] boot complete -- idling
 ```
 
-The untagged line in the middle is the self-test writing to `/dev/cons`, and it
-is the shortest proof this milestone has. The last line is the one that moves
-between builds, on purpose. `just release`
-does the same thousand ticks of work, and reports about fifty thousand
-operations. `docs/TESTING.md` says why that is the right way round.
+**Every line of that is a self-test on the machine that will run it**, and
+`docs/TESTING.md` is the discipline behind them. Three of them are worth
+knowing about before reading a boot:
+
+- The untagged line is the devfs self-test writing to `/dev/cons`, which is the
+  shortest proof that path exists. The echo checks leave an erase sequence after
+  it that a terminal consumes and a file capture keeps.
+- **Four of those lines carry numbers that move on every run**, and that is the
+  design rather than noise. The LAPIC calibration, the preemption round counts,
+  the lock acquisitions, and the operation count under a fixed tick budget are
+  all measured rather than asserted. `just release` does the same thousand ticks
+  of work and reports about fifty thousand operations. `docs/TESTING.md` says
+  why measuring in ticks is the right way round.
+- `9p 23 payload checks` reports **7 readers spoiled by a shared buffer**, and
+  that is a pass. It is a control that runs every boot: the wrong arrangement is
+  still expressible, and a failure to corrupt would be the failure.
 
 **What still does not exist.**
 
-- No userland and no address-space switch. A thread grows an `^Address_Space`,
-  and `reschedule` grows one comparison, when there is one.
-- No SMP. `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 ever starts.
-  There is no IPI, no AP trampoline and no lock word.
-- No `/srv`.
-- No condition variable as such, because `sync.Rendez` is one.
-- No read/write sleeping lock, which is the piece `Mount_Point.generation`
-  stands in for.
+The two that shape everything after them:
+
+- **No userland and no address-space switch.** A thread grows an
+  `^Address_Space`, and `reschedule` grows one comparison, when there is one.
+  `swapgs` and per-CPU state behind GS belong to the same step.
+- **No SMP.** `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 ever
+  starts. There is no IPI, no AP trampoline and no lock word.
+
+And the smaller ones, each named where it lives:
+
+- No way to post a service from outside the kernel. `/srv` names, lists, mounts
+  and removes, and the one step that needs a file descriptor waits for one.
 - No keyboard driver, so console input comes from the serial port and a thread
   polls it. That thread is where an interrupt handler will go.
 - No word erase and no cursor inside a line. `^W` and the arrow keys are the two
-  a person misses next. See `docs/DEVFS.md`.
-- No enforcement of the `open` flag `vfs.Fid_Table` now carries. 9P forbids a
-  walk on an open fid and a read on an unopened one, and neither server refuses
+  a person misses next.
+- No read/write sleeping lock, which is the piece `Mount_Point.generation`
+  stands in for.
+- No enforcement of the `open` flag `vfs.Fid_Table` carries. 9P forbids a walk
+  on an open fid and a read on an unopened one, and no server here refuses
   either.
-- No `swapgs`, and no per-CPU state behind GS.
+- No condition variable as such, because `sync.Rendez` is one.
 - `kmain` ends with a call to `sched.exit`, so the machine idles rather than
   halts.
 
@@ -173,6 +162,7 @@ everything downstream, all three taken deliberately:
 1. **The wire is 9P2000.L and nothing is added to it.** No new message, no extra
    field, no private version string. When a service needs an operation 9P does
    not have, the answer is a *file* — a `ctl` that takes a line of text.
+   `/dev/consctl` is the first, and `docs/DEVFS.md` has the convention it set.
 2. **Servers speak decoded messages. Only the transport knows about bytes.**
    Neither the caller nor the handler can tell which transport it has.
 3. **The namespace is the full Plan 9 model** — `bind`/`mount` with
@@ -194,6 +184,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, the two transports, and the lock that went | Walking, binding, adding a server, or giving up on a read |
 | `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
 | `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention | Adding a device file, adding a `ctl` file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
+| `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
@@ -272,49 +263,56 @@ a copy of `base:runtime` that must track the compiler. Current Odin ships
 
 ## 6. Where to go next
 
-The scheduler was the thing that blocked everything else. The namespace it
-exposed is now locked, the session lock sleeps, and a thread can wait for a
-condition or a deadline. Milestone 10 spent all of it on `#c` at `/dev`, so
-every primitive a driver needs is not only present but used.
+The scheduler was the thing that blocked everything else. What it exposed is now
+locked and the session lock parks. A thread can wait for a condition or a
+deadline, and a request can be left pending and flushed. Milestones 10 through
+12 spent all of it. Every primitive a driver needs is not only present but used
+by something that is not a self-test.
 
-**`/srv` is the next piece.** It needs a thread on each side of a transport, and
-it is what turns `mount_device` into a real `mount`. `kernel/devfs` proved the
-server side of that arrangement: workers, a payload buffer per slot, and an
-abort hook that a client's deadline reaches. What `/srv` adds is a name for a
-channel that a *process* posted, rather than one the kernel registered.
+**Next, in order:**
 
-**A keyboard driver is the small piece worth doing first.** It turns
-`devfs.cons_input` from a thread that polls into an interrupt handler, and
-`cons_feed` is the entry point it already has. Everything above the ring is
-written not to care which one filled it.
+1. **A keyboard driver.** The smallest well-defined piece left. It turns
+   `devfs.cons_input` from a thread that polls into an interrupt handler, and
+   `cons_feed` is the entry point it already has. Everything above the ring is
+   written not to care which one filled it.
+2. **Userland**, and posting to `/srv` from it. A thread grows an
+   `^Address_Space`, `reschedule` grows one comparison, and the GDT already has
+   the selectors laid out for SYSCALL/SYSRET. `swapgs` and per-CPU state behind
+   GS belong to this step and are cheaper to build with it than after it.
+   The first thing a process will want is to post a service, and everything on
+   this side of that step exists. What it needs is a file descriptor to carry a
+   connection, and `docs/SRV.md` says precisely which line that is.
+3. **`/dev/draw`**, over `kernel/drivers/fb`. The other half of a console, and
+   the thing `apps/terminal` will actually want.
 
-**A read/write sleeping lock is the other piece worth wanting.**
-`Mount_Point.generation` exists only because a read lock could not be held
-across a union search. Plan 9 holds one, because its locks sleep. Now that
-Vectra's can, the retry loop in `walk1_ex` could become a read lock, and the
-generation counter could go.
+**Standing gaps.** Each of these is something that exists and is incomplete,
+rather than something absent. All are named in the code they live in.
 
-`Wait_Queue` is the right foundation. The
-reader/writer policy is the only new thinking, and it has two questions. Which
-of two waiting kinds should `take_best` prefer? Does a waiting writer block an
-arriving reader?
+- **A read/write sleeping lock.** `Mount_Point.generation` exists only because a
+  read lock could not be held across a union search. Plan 9 holds one, because
+  its locks sleep. Now that Vectra's can, the retry loop in `walk1_ex` could
+  become a read lock and the generation counter could go.
 
-**Priority inheritance is the known gap in what exists.** A lock or a rendezvous
-goes to the best waiter, but a low-priority *holder* still delays a
-high-priority waiter for as long as it holds. It has not bitten, because nothing
-runs at realtime. It will the moment something does. Plan 9 never had it either,
-which is an argument about cost rather than about correctness.
-
-**Then, in roughly this order:**
-1. **A keyboard driver.** See above.
-2. **`/srv`**, which needs a thread on each side of a transport and therefore
-   needed the scheduler.
-3. **Userland.** A thread grows an `^Address_Space`, `reschedule` grows one
-   comparison, and the GDT already has the selectors laid out for
-   SYSCALL/SYSRET. `swapgs` and per-CPU state behind GS belong to this step and
-   are cheaper to build with it than after it.
-4. **`/dev/draw`**, over `kernel/drivers/fb`. It is the other half of a console
-   and the thing `apps/terminal` will actually want.
+  `Wait_Queue` is the right foundation, and the reader/writer policy is the only
+  new thinking. Which of two waiting kinds should `take_best` prefer? Does a
+  waiting writer block an arriving reader?
+- **Priority inheritance.** A lock or a rendezvous goes to the best *waiter*,
+  but a low-priority *holder* still delays a high-priority waiter for as long as
+  it holds. It has not bitten, because nothing runs at realtime. It will the
+  moment something does. Plan 9 never had it either, which is an argument about
+  cost rather than about correctness.
+- **A worker per blocked request.** `devfs` holds a worker for the length of
+  every parked read, so at most three reads of `/dev/cons` may park at once. A
+  fourth stalls the connection until a byte arrives. Plan 9 gives every request
+  a thread. See `docs/DEVFS.md`.
+- **A union listing whose cookie is not a position.** `readdir` over a union is
+  still index-based, and still documented as undefined if something rebinds
+  part-way through. `kernel/srv` is the worked example of the fix: a monotonic
+  id, and a cookie that means `resume after this one` however the table moved.
+  See `docs/SRV.md`.
+- **A free list for fids and for `/srv` ids.** Both counters are monotonic and
+  therefore finite: four billion opens per session, two billion posts. One fix
+  retires both.
 
 **SMP, when it is wanted.** The shapes are already right. `Cpu` is per-core,
 `Resume` is per-thread and lives on that thread's stack, and every mount-table,
@@ -324,7 +322,8 @@ What is missing is a lock word in that struct, an AP trampoline, IPIs, and a
 placement policy for `enqueue`. That last is where `eligible` and the class and
 capacity fields stop being inert.
 
-Three things become urgent the moment a second core runs:
+Four things become urgent the moment a second core runs, and all four are named
+where they live:
 
 1. `Chan.refs` and `Mount_Point.refs` want atomic increments rather than a
    global lock.
@@ -332,36 +331,27 @@ Three things become urgent the moment a second core runs:
 3. `sync.Mutex` needs the scheduler to drop its guard *after* the switch. A
    parked thread currently relies on the interrupt mask that travels with it
    through the trap frame.
-
-A fourth arrived with the sleep queue. A mask is what stands in for a lock on
-every wait list, so `Wait_Queue` needs a real lock word. `Rendez` then grows the
-`^Spinlock` that Plan 9's always carried, held by the caller across both the
-condition test and the wake-up. The API has its present shape partly so that
-change will not alter it. All four are named where they live.
+4. A mask is what stands in for a lock on every wait list, so `Wait_Queue` needs
+   a real lock word. `Rendez` then grows the `^Spinlock` that Plan 9's always
+   carried, held by the caller across both the condition test and the wake-up.
+   The API has its present shape partly so that change will not alter it.
 
 **Smaller things worth doing when convenient:**
 
 - A stack backtrace on the panic screen. Everything else a fault report wants to
   say is already there.
 - Make `check_base_revision()` a hard stop rather than a warning.
-- A free list for fids. `alloc_fid` is monotonic and therefore finite: four
-  billion opens per session, never reused.
-- `reap` only runs from `spawn` and from the self-tests, so a dead thread's stack
-  comes back at the next spawn rather than when it exits. That is fine now. An
-  idle-time reaper is the fix. Both concurrency self-tests have to call `sched.reap()` by
+- `^W` and a cursor inside the line under construction, which is word erase and
+  the arrow keys. A larger edit buffer and a position in it, rather than a new
+  idea. See `docs/DEVFS.md`.
+- Enforce the `open` flag on a fid. 9P forbids a walk on an open fid and a read
+  on an unopened one. `vfs.Fid_Table` carries the flag and no server checks it.
+  `chan_clone` walks a fid that may already be open, so this has a blast radius
+  and wants a milestone rather than a patch.
+- An idle-time reaper. `reap` only runs from `spawn` and from the self-tests, so
+  a dead thread's stack comes back at the next spawn rather than when it exits.
+  That is fine now. Both concurrency self-tests have to call `sched.reap()` by
   hand before measuring the heap, which is the smell.
-- `sync.Mutex` has no priority inheritance. Handoff goes to the best *waiter*,
-  but a low-priority *holder* still delays a high-priority waiter for as long as
-  it holds. It is worth wanting when there is a realtime thread that matters.
-  Plan 9 never had it either.
-- `devfs` holds a worker for the length of every parked read, so at most three
-  reads of `/dev/cons` may park at once. A fourth stalls the connection until a
-  byte arrives. Plan 9 gives every request a thread. See `docs/DEVFS.md`.
-- `readdir` over a union is still index-based, and is still documented as
-  undefined if something rebinds the union part-way through. The cookie names a
-  position in a list that moved. `walk` no longer has that property, thanks to
-  `Mount_Point.generation`. A listing could get the same treatment if it ever
-  matters.
 - Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging, trap and scheduling
   interfaces. `cpu_class` is the one that pays off immediately — a big.LITTLE
   part reporting three classes makes the capacity arithmetic do real work.
@@ -420,26 +410,18 @@ kernel/
     pmm.odin            Bitmap physical page allocator
     vmm.odin            Page table walk, kernel address space, translate
     heap.odin           Slab allocator + Odin's context.allocator
-  devfs/
-    devfs.odin          `#c` at /dev: the node table, the handler, the abort
-                        hook, /dev/consctl, and the worker count that bounds
-                        parked readers
-    cons.odin           The console device: two sinks out, a line discipline
-                        and a ring in, and two locks of different kinds
-    verify.odin         The boot self-test: 81 checks over the real /dev -- a
-                        read that parks through a character, a line edited, and
-                        a mode that reverts when its file closes
   vfs/
     lock.odin           What guards what, in what order, and the lock that went
     vfs.odin            Server on either transport, the #name device table, rpc
-    chan.odin           Chan, refcounting, open/read/write/stat/clone, and a
-                        read with a deadline
+    chan.odin           Chan, refcounting, open/read/write/remove/stat/clone,
+                        and a read with a deadline
     mount.odin          The mount table, bind/unmount, union member lists
     namespace.odin      Namespace, rfork semantics, teardown
     walk.odin           attach, walk1, cross_mounts, `..`, resolve
     readdir.odin        Union directory reads and the member-index cookie
-    fidtab.odin         The fid table both servers use: fid to i32 plus an
-                        open flag, and no lock
+                        that kernel/srv shows how to retire
+    fidtab.odin         The fid table every server here uses: fid to i32 plus
+                        an open flag, and no lock
     static.odin         A read-only server over a node table
     root.odin           `#/`, an instance of it, and the boot namespace
     verify.odin         The boot self-test: 51 checks, two real servers
@@ -454,6 +436,21 @@ kernel/
                         tag pool, the payload buffer per slot, the work queue,
                         and the client's flush
     serve.odin          The workers, and where Rflush's ordering rule lives
+  devfs/
+    devfs.odin          `#c` at /dev: the node table, the handler, the abort
+                        hook, /dev/consctl, and the worker count that bounds
+                        parked readers
+    cons.odin           The console device: two sinks out, a line discipline
+                        and a ring in, and two locks of different kinds
+    verify.odin         The boot self-test: 81 checks over the real /dev -- a
+                        read that parks through a character, a line edited, and
+                        a mode that reverts when its file closes
+  srv/
+    srv.odin            `#s` at /srv: the table, post and remove, mounting by
+                        name, and the id a fid binds instead of a slot
+    verify.odin         The boot self-test: 69 checks -- a service published,
+                        mounted, removed under its own mount, and a listing
+                        paced across a removal
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled
     wait.odin           Wait queues, scheduler hooks, priority-ordered service
@@ -484,6 +481,8 @@ docs/
   SYNC.md               Spinlock, sleeping lock, sleep queue, deadlines
   NAMESPACE.md          kernel/vfs: what guards what, and the borrow rule
   TRANSPORT.md          kernel/mnt: the tag pool, the workers, Tflush
+  SRV.md                kernel/srv: #s at /srv, what a posted service is, and
+                        the two decisions a directory that changes needs
   DEVFS.md              kernel/devfs: #c at /dev, the console device, the
                         line discipline, the ctl convention, and the twenty
                         controls the self-test was measured against
