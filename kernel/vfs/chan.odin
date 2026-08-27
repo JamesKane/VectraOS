@@ -258,6 +258,45 @@ chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 	return int(answer.count), OK
 }
 
+/*
+chan_remove asks the server to remove the file this chan names.
+
+**The fid is gone either way, and that is 9P's rule rather than a convenience.**
+Tremove clunks the fid whether or not the removal succeeds. A caller that
+retried on failure would retry with a fid the server already released.
+The chan is left holding NOFID, so `chan_close` does not clunk it a second time.
+
+Still returns the error, because the caller has to know whether the file went.
+The chan must still be closed afterwards: it is a reference like any other, and
+only the count knows when the last one goes.
+
+`kernel/srv` is the first server to implement Tremove, and `/srv` is the first
+tree in Vectra a client may change. See `docs/SRV.md`.
+*/
+chan_remove :: proc(c: ^Chan) -> Errno {
+	if c == nil {
+		return vectra9.EBADF
+	}
+	if c.fid == vectra9.NOFID {
+		return vectra9.EBADF
+	}
+
+	request := vectra9.Msg(vectra9.Tremove{fid = c.fid})
+	reply: vectra9.Msg
+	err := rpc(c.server, &request, &reply)
+
+	// Before the answer is examined, because the fid is spent on both paths.
+	c.fid = vectra9.NOFID
+
+	if err != OK {
+		return err
+	}
+	if _, ok := reply.(vectra9.Rremove); !ok {
+		return vectra9.EPROTO
+	}
+	return OK
+}
+
 // The Tgetattr request masks a client can ask for. `BASIC` is what stat(2)
 // needs, and what every Vectra server answers. A request for more is legal,
 // and gets whatever the server chose to fill in. `valid` reports which that

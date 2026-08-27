@@ -26,6 +26,7 @@ import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mem"
 import "kernel:sched"
+import "kernel:srv"
 import "kernel:sync"
 import "kernel:vfs"
 import "vsys:libodin"
@@ -183,6 +184,9 @@ kmain :: proc "sysv" () {
 			// above just finished proving all three.
 			if init_devfs() {
 				verify_devfs()
+			}
+			if init_srv() {
+				verify_srv()
 			}
 		}
 	}
@@ -1091,5 +1095,85 @@ verify_devfs :: proc() {
 	libodin.put_uint(&sink, u64(result.failures))
 	libodin.put_str(&sink, " FAILED -- first: ")
 	libodin.put_str(&sink, result.first_failure)
+	emit(&klog, .Fault, &sink)
+}
+
+/*
+init_srv brings up `#s` and binds it at `/srv`.
+
+Empty, and it stays empty until something posts. Plan 9's `/srv` works the same
+way. The kernel is not the thing that decides which of its own services deserve
+a public name. Nothing in this boot needs to mount another kernel service by
+one.
+
+Synchronous, unlike `#c`. Every message this server answers is a table lookup,
+so there is nothing for a worker thread to be doing while a caller waits.
+*/
+init_srv :: proc() -> bool {
+	if err := srv.init(vfs.boot_namespace); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "srv: #s would not come up -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "srv #s bound at /srv, ")
+	libodin.put_uint(&sink, u64(srv.count()))
+	libodin.put_str(&sink, " services posted, ")
+	libodin.put_uint(&sink, u64(srv.MAX_SERVICES))
+	libodin.put_str(&sink, " slots")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+verify_srv posts, lists, mounts and removes, against the boot namespace.
+
+The check worth naming is the listing cookie. `/srv` is the first directory in
+Vectra whose contents change, so it is the first whose cookie may not be a
+position. See `kernel/srv/verify.odin`.
+*/
+verify_srv :: proc() {
+	scratch := make([]u8, 1024)
+	if scratch == nil {
+		log_line(&klog, .Fault, "srv self-test skipped -- no memory for a scratch buffer")
+		return
+	}
+	defer delete(scratch)
+
+	before := live_objects(mem.heap_stats())
+	result := srv.verify(scratch)
+	leaked := live_objects(mem.heap_stats()) - before
+
+	ok := result.failures == 0 && result.checks > 0 && leaked == 0
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "srv ")
+	libodin.put_uint(&sink, u64(result.checks))
+	if ok {
+		libodin.put_str(&sink, " service checks passed -- ")
+		libodin.put_uint(&sink, u64(result.posted))
+		libodin.put_str(&sink, " posted, ")
+		libodin.put_uint(&sink, u64(result.listed))
+		libodin.put_str(&sink, " listed across ")
+		libodin.put_uint(&sink, u64(result.passes))
+		libodin.put_str(&sink, " passes with one removed under them, ")
+		libodin.put_uint(&sink, u64(result.mounted))
+		libodin.put_str(&sink, " mounted, heap balanced")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+
+	libodin.put_str(&sink, " checks, ")
+	libodin.put_uint(&sink, u64(result.failures))
+	libodin.put_str(&sink, " FAILED -- first: ")
+	libodin.put_str(&sink, result.first_failure)
+	if leaked != 0 {
+		libodin.put_str(&sink, " (leaked ")
+		libodin.put_int(&sink, i64(leaked))
+		libodin.put_str(&sink, ")")
+	}
 	emit(&klog, .Fault, &sink)
 }

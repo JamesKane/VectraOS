@@ -197,6 +197,7 @@ nothing else in common.
 | The payload buffer per request slot | `docs/TRANSPORT.md` | 3 of 4 |
 | The namespace over a transport with workers | `docs/NAMESPACE.md` | 4 of 6 |
 | The first device server | `docs/DEVFS.md` | 18 of 20 |
+| Services published by name | `docs/SRV.md` | 9 of 9 |
 
 **The uncaught ones cluster, and the cluster is the finding.** Almost every one
 is a window two or three instructions wide, and none is at a lock boundary.
@@ -227,6 +228,17 @@ already-broken code tests nothing. The control which does test it breaks the
 code instead: move a `chan_clone` inside `object_lock` and watch `EDEADLK` come
 back. When a mutation of a guard comes back clean, check that the mutation was
 the right one before recording it as uncaught.
+
+**`docs/SRV.md` has the other version of this, and it ends differently.** A
+control removed a `used: bool` from a table entry and every check passed. The
+mutation was wrong again, and for a reason worth acting on. `remove` zeroed the
+whole entry, so a test of `used` was already a test of the id beside it. The
+field was redundant, and the fix was to delete it rather than to write a check
+for it.
+
+A control that comes back clean is a question, not an answer. It asks whether
+the check is weak, whether the mutation is inert, or whether the code carries
+something it does not need. All three happen.
 
 ## See also
 
