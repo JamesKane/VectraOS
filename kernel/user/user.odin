@@ -54,6 +54,7 @@ import "kernel:arch"
 import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
+import "kernel:vfs"
 
 /*
 Where a program's three pages go.
@@ -106,6 +107,17 @@ Exit :: struct {
 	*/
 	sp:         uintptr,
 	kstack:     uintptr,
+
+	/*
+	Whether the program asked to stop, and what it said on the way out.
+
+	`deliberate` is the difference between the two ways out of ring 3 that
+	exist. A fault fills `kind` and `error_code` and says what the CPU refused.
+	`SYS_EXIT` fills `status` and says what the program chose. Both fill the
+	fields above, because both have a frame to fill them from.
+	*/
+	deliberate: bool,
+	status:     u64,
 }
 
 Program :: struct {
@@ -150,8 +162,9 @@ faults: int
 Stats :: struct {
 	live:   int, // Programs loaded and not destroyed
 	loaded: int, // Programs loaded since boot
-	faults: int, // Faults taken in ring 3, which is how every program has ended
-	traps:  u64, // Every return from ring 3, preemptions included
+	faults: int, // Faults taken in ring 3
+	calls:  int, // System calls answered
+	traps:  u64, // Every return from ring 3 through a trap, preemptions included
 }
 
 stats :: proc "contextless" () -> Stats {
@@ -161,19 +174,31 @@ stats :: proc "contextless" () -> Stats {
 			live += 1
 		}
 	}
-	return Stats{live = live, loaded = loaded, faults = faults, traps = arch.user_trap_count()}
+	return Stats {
+		live = live,
+		loaded = loaded,
+		faults = faults,
+		calls = syscall_count(),
+		traps = arch.user_trap_count(),
+	}
 }
 
 /*
 init claims the fault path for programs.
 
-One line, and it is the line that separates `a fault ends the machine` from `a
-fault ends the program`. Until it runs, a trap from ring 3 falls through to
+Two lines, and the first separates `a fault ends the machine` from `a fault
+ends the program`. Until it runs, a trap from ring 3 falls through to
 `kernel/panic.odin` and stops the boot. That is the right default for a
 privilege level nothing owns yet.
+
+The second arms `syscall` and opens the console behind descriptor 1. It reports
+false when the CPU has no such instruction, which no amd64 part does, and the
+caller says so rather than halts. Programs then have exactly one way out of
+ring 3 again, which is the fault. See `syscall.odin`.
 */
-init :: proc "contextless" () {
+init :: proc(ns: ^vfs.Namespace) -> bool {
 	arch.set_user_trap_handler(on_trap)
+	return syscall_init(ns)
 }
 
 /*
@@ -329,6 +354,25 @@ wait :: proc "contextless" (p: ^Program, patience: int) -> bool {
 	return intrinsics.volatile_load(&p.exit.done)
 }
 
+/*
+blocked reports how many times a program's thread was woken.
+
+A thread that never parked has none. A system call that parks is therefore
+visible from outside as a number, rather than inferred from how long the
+program took.
+
+**Valid only until the next `load`.** A dead thread's record is still allocated
+until something reaps it, and `spawn` is what reaps. `destroy` clears the
+pointer, which is why this reads zero afterwards rather than reads freed
+memory.
+*/
+blocked :: proc "contextless" (p: ^Program) -> u64 {
+	if p == nil || p.thread == nil {
+		return 0
+	}
+	return p.thread.wakeups
+}
+
 // ended reports whether a program already faulted, without waiting.
 ended :: proc "contextless" (p: ^Program) -> bool {
 	return p != nil && intrinsics.volatile_load(&p.exit.done)
@@ -380,6 +424,28 @@ destroy :: proc "contextless" (p: ^Program) -> bool {
 		return false
 	}
 	unload(p)
+	return true
+}
+
+/*
+set_bytes copies into a program's data page from the kernel side.
+
+The other direction of `copy_in` in `syscall.odin`, and much the easier one.
+The kernel owns the frame, reaches it through the direct map, and is not
+guessing about what is mapped where. That asymmetry is the whole reason a
+kernel has a `copy_in` and does not have a `copy_out` that checks anything.
+*/
+set_bytes :: proc "contextless" (p: ^Program, offset: int, data: []u8) -> bool {
+	if p == nil || p.data == 0 || offset < 0 {
+		return false
+	}
+	if offset + len(data) > arch.PAGE_SIZE {
+		return false
+	}
+	dst := (cast([^]u8)mem.phys_to_virt(p.data))[:arch.PAGE_SIZE]
+	for i in 0 ..< len(data) {
+		dst[offset + i] = data[i]
+	}
 	return true
 }
 

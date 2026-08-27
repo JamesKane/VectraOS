@@ -228,14 +228,23 @@ nothing else in common.
 | The first device that interrupts | `docs/KBD.md` | 7 of 7 |
 | Address spaces | `docs/SPACE.md` | 3 checked, 2 faults, 1 inert |
 | Ring 3 | `docs/USER.md` | 6 checked, 3 machine failures, 1 uncaught |
+| The system call door | `docs/USER.md` | 3 checked, 3 machine failures, 2 uncaught |
 
 **The uncaught ones cluster, and the cluster is the finding.** Almost every one
 is a window two or three instructions wide, and none is at a lock boundary.
 
 One is a count loaded and stored back. One is a slot claimed and not yet marked.
 One is a fid slot read and written. One is a program record written the
-instruction after the thread that needs it becomes runnable. Only a second CPU
-makes any of them easy to reach.
+instruction after the thread that needs it becomes runnable. One is a program's
+exit recorded a switch before the thread leaves the core.
+
+**One of them is not a second-CPU problem, and it is the newest.** A system
+call that leaves `IF` set for the four instructions before it has a kernel
+stack is wrong on one core. What makes it unreachable is that an interrupt
+almost never lands in a four-instruction window, not that only one core exists.
+A control confirmed that nothing notices.
+
+Only a second CPU makes the rest of them easy to reach.
 
 **`docs/DEVFS.md`'s two are the exception, and they are a different shape.**
 Neither is a narrow window. One guards against two writers to a console, and the
@@ -300,6 +309,30 @@ it for free.
 
 **A control tells you two things: whether the checks notice, and which ones
 did.** The second is the half that finds bugs the mutation was not about.
+
+## A control that passes may be asking whether the test reaches the code
+
+Two mutations in `docs/USER.md` came back clean and neither was a race.
+
+One removed the `User` requirement from the kernel's copy-in check, which is
+the single most security-relevant line in that directory. Every check passed.
+The reason was not a weak check. The only bad address the test ever handed over
+was a *kernel* address, and a separate range check refused it before
+permissions was consulted.
+
+The other named the wrong user selector base in `STAR`. `sysret` does not check
+what it loads, so a program ran correctly with nonsense in CS. The first thing
+that reads CS is an interrupt, and every program in the file ended within a few
+instructions of its last call.
+
+Both fixes changed the test rather than wrote the gap down. One program now
+hands the kernel an address in its *own* half that it may not read.
+Another runs twenty million rounds after its last call returns, so a timer
+lands there. Both mutations fail now.
+
+**So the four answers a clean control gives have a fifth in front of them: does
+the test reach the code at all?** Ask that first. It is the cheapest to check
+and the most embarrassing to miss.
 
 ## See also
 

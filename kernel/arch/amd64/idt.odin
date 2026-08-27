@@ -691,6 +691,12 @@ cannot tell the difference and does not need to.
 
 `cld`, because the System V ABI requires the direction flag clear on entry to
 compiled code. An interrupt can land anywhere, including inside a `std`.
+
+`swapgs`, twice, and only when the frame names ring 3. `GS` holds this core's
+own record while the kernel runs and the program's base while a program runs,
+so every crossing swaps exactly once. The privilege comes out of the CS the CPU
+pushed. That is offset 24 on the way in, and offset 8 once the vector and the
+error code come off. See `percpu.odin`, which has the one hazard this leaves.
 */
 @(export)
 vectra_isr_blob :: proc "naked" () {
@@ -699,6 +705,10 @@ vectra_isr_blob :: proc "naked" () {
 .globl vectra_isr_common
 vectra_isr_common:
 	cld
+	testb $$3, 24(%rsp)
+	jz 1f
+	swapgs
+1:
 	pushq %rax
 	pushq %rbx
 	pushq %rcx
@@ -746,6 +756,10 @@ vectra_isr_common:
 	popq %rbx
 	popq %rax
 	addq $$16, %rsp
+	testb $$3, 8(%rsp)
+	jz 2f
+	swapgs
+2:
 	iretq
 
 .balign 16

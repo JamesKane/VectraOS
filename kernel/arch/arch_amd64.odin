@@ -126,6 +126,26 @@ frame_is_user :: amd64.frame_is_user
 user_trap_count :: amd64.user_trap_count
 
 /*
+-- The system call door -------------------------------------------------------
+
+`syscall` and `sysret`, and the per-CPU record the entry stub finds a stack
+with. The portable kernel arms one and supplies the other's dispatcher. It
+never sees `STAR`, and it never sees a `swapgs`.
+
+`percpu_init` comes with `init_traps`, because the storage is static and the
+first thing that reads it runs before `kernel/mem` exists.
+*/
+
+VECTOR_SYSCALL :: amd64.VECTOR_SYSCALL
+
+syscall_available :: amd64.syscall_available
+syscall_init :: amd64.syscall_init
+syscall_armed :: amd64.syscall_armed
+syscall_entry_address :: amd64.syscall_entry_address
+percpu_kernel_stack :: amd64.percpu_kernel_stack
+percpu_id :: amd64.percpu_id
+
+/*
 -- Scheduling -----------------------------------------------------------------
 
 The state a thread is resumed from, the tick that preempts it, and what kind of
@@ -224,6 +244,11 @@ something that has to wait for it.
 */
 init_traps :: proc "contextless" () {
 	amd64.gdt_init()
+	// After the GDT, because `gdt_init` loads a null selector into GS and a
+	// selector load clears the base MSR on Intel. Before everything else,
+	// because the storage is static and a per-CPU record costs nothing to have
+	// early. See `amd64/percpu.odin`.
+	amd64.percpu_init(0)
 	amd64.idt_init()
 	amd64.pic_disable()
 }

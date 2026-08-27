@@ -1309,12 +1309,35 @@ ends the program.
 There is nothing to report that is not a self-test result, so this says nothing
 on its own line. See `verify_user`.
 */
-init_user :: proc "contextless" () {
-	user.init()
+init_user :: proc() -> bool {
+	if !user.init(vfs.boot_namespace) {
+		log_line(&klog, .Warn, "syscall: this CPU has no SYSCALL instruction -- a program can only fault")
+		return false
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "syscall armed -- entry at ")
+	libodin.put_hex(&sink, u64(arch.syscall_entry_address()), 16)
+	libodin.put_str(&sink, ", /dev/cons is descriptor 1")
+	emit(&klog, .Ok, &sink)
+	return true
 }
 
 /*
-verify_user runs five programs in ring 3 and watches four of them be refused.
+console_column reports where the boot console's cursor is.
+
+Handed to `user.verify` so it can check that a program's write reached the
+screen, rather than that the write returned a number. This file is the only one
+that owns a console, which is why the check reaches for a procedure rather than
+an import.
+*/
+@(private = "file")
+console_column :: proc "contextless" () -> int {
+	return kcon.col
+}
+
+/*
+verify_user runs seven programs in ring 3 and watches four of them be refused.
 
 The first one is the one that matters. It runs, the timer takes the core away
 from it, the kernel does work, and it gets the core back. Everything after it
@@ -1322,7 +1345,7 @@ is a permission being enforced, which is only interesting once there is
 something running to enforce it against.
 */
 verify_user :: proc() {
-	result := user.verify()
+	result := user.verify(console_column)
 	ok := result.failures == 0 && result.checks > 0
 
 	sink := begin(&klog)
@@ -1334,6 +1357,8 @@ verify_user :: proc() {
 		libodin.put_str(&sink, " programs, ")
 		libodin.put_uint(&sink, result.rounds)
 		libodin.put_str(&sink, " rounds of one preempted, ")
+		libodin.put_uint(&sink, u64(result.calls))
+		libodin.put_str(&sink, " system calls, ")
 		libodin.put_uint(&sink, result.traps)
 		libodin.put_str(&sink, " returns from ring 3, the kernel untouched")
 		emit(&klog, .Ok, &sink)

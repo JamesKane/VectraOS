@@ -36,6 +36,7 @@ import "kernel:arch"
 import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
+import "vsys:vectra9"
 
 /*
 The page fault error code, in the bits `describe_error` turns into words.
@@ -45,6 +46,23 @@ Written out here rather than shared, because the two uses are different claims.
 the CPU *must* report. A test that read its expectation from the code under test
 would agree with itself.
 */
+/*
+refused turns an errno into the bit pattern a program sees in `rax`.
+
+A system call answers with a signed number, and a program stores whatever
+lands in an unsigned register. So the check has to compare the same bits the
+program kept, rather than a sign the program never had.
+
+Written out rather than folded, because Odin will not fold a negative constant
+into a `u64` and it is right not to. A run-time cast of a run-time value says
+the same thing and compiles.
+*/
+@(private = "file")
+refused :: proc "contextless" (e: vectra9.Errno) -> u64 {
+	value := -i64(u32(e))
+	return u64(value)
+}
+
 @(private = "file") PF_PRESENT :: u64(1) << 0
 @(private = "file") PF_WRITE :: u64(1) << 1
 @(private = "file") PF_USER :: u64(1) << 2
@@ -62,7 +80,20 @@ Not a constant, and read through `volatile_load`, so the compiler answers from
 memory rather than from what it can prove about the value.
 */
 @(private = "file")
-kernel_witness: u64 = 0x1234_5678_9ABC_DEF0
+WITNESS :: u64(0x1234_5678_9ABC_DEF0)
+
+@(private = "file")
+kernel_witness: u64 = WITNESS
+
+/*
+Where `verify_shadow` maps a page a program may name and may not touch.
+
+In the lower half, so `copy_in`'s range check has nothing to say about it. That
+is the whole point: it leaves the `User` check as the only thing that can
+refuse.
+*/
+@(private = "file")
+SHADOW_VA :: uintptr(0x0050_0000)
 
 @(private = "file")
 PATIENCE :: 200
@@ -86,6 +117,7 @@ Result :: struct {
 	programs:      int,
 	traps:         u64, // Returns from ring 3 while the checks ran
 	rounds:        u64, // Times `spin` went round its loop in ring 3
+	calls:         int, // System calls the programs made
 }
 
 @(private = "file")
@@ -176,7 +208,17 @@ finish :: proc "contextless" (r: ^Result, p: ^Program, what: string) {
 	check(r, destroy(p), what)
 }
 
-verify :: proc() -> (r: Result) {
+/*
+verify runs every program and checks what each one was allowed to do.
+
+`column` is the console's cursor column, read from `kernel/main.odin`, which is
+the only place that owns the console. It is a parameter rather than an import
+because the console is a screen and this is the layer a fault handler lives in.
+
+It is also the one check here that watches the screen rather than a number.
+`docs/TESTING.md` has three milestones' worth of reasons for that.
+*/
+verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	before_tables := mem.space_stats()
 	before_doubles := mem.pmm_stats().double_frees
@@ -199,6 +241,12 @@ verify :: proc() -> (r: Result) {
 		&r,
 		sched.spawn_user("no-space", nil, TEXT_VA, STACK_TOP) == nil,
 		"and a program with no address space of its own is refused",
+	)
+	check(&r, arch.syscall_armed(), "the syscall instruction is armed and points at the stub")
+	check(
+		&r,
+		arch.percpu_id() == 0,
+		"and this core's own record answers through GS, which is where the stub finds a stack",
 	)
 
 	// -- A program runs, and the kernel keeps running under it ---------------
@@ -282,15 +330,11 @@ verify :: proc() -> (r: Result) {
 		)
 		check(&r, !in_text(p, program_jump()), "and the program counter is off its text, where it jumped")
 	}
-	if p != nil {
-		held = {p.text, p.data, p.stack}
-		check(
-			&r,
-			!mem.frame_is_free(held[0]) && !mem.frame_is_free(held[1]) && !mem.frame_is_free(held[2]),
-			"a program holds three frames while it exists",
-		)
-	}
 	finish(&r, p, "and taken down")
+
+	// -- And a program that asks rather than is refused ----------------------
+
+	verify_syscalls(&r, column, &held)
 
 	// -- What is left ---------------------------------------------------------
 
@@ -298,8 +342,9 @@ verify :: proc() -> (r: Result) {
 	check(&r, r.traps > 0, "the machine came back out of ring 3")
 
 	s := stats()
+	r.calls = s.calls
 	check(&r, s.live == 0, "every program was taken down")
-	check(&r, s.faults >= r.programs, "each of them by a fault")
+	check(&r, s.faults + s.calls >= r.programs, "each of them by a fault or by asking")
 
 	/*
 	Frames last, and by name rather than by total.
@@ -417,4 +462,215 @@ verify_spin :: proc(r: ^Result) {
 		"because the kernel said so, rather than because it ran out of patience",
 	)
 	check(r, destroy(p), "and it is taken down")
+}
+
+/*
+The message `hello` prints, and the only thing in this file a person sees.
+
+No newline. The check on the other side counts console columns, and a newline
+would reset the count to zero. `cons_finish` ends the line afterwards, which is
+the same split `kernel/devfs/verify.odin` makes for the same reason.
+*/
+@(private = "file")
+MESSAGE :: "-- a program in ring 3 wrote this line"
+
+// The message as bytes, which is what a write takes. A string constant has no
+// address until something gives it one.
+@(private = "file")
+message_bytes :: proc "contextless" () -> []u8 {
+	text := MESSAGE
+	return raw_data(text)[:len(text)]
+}
+
+/*
+verify_syscalls runs the two programs that ask the kernel for something.
+
+`hello` is the short one and the one worth reading. It writes a line to
+`/dev/cons` and exits with a status. That one sentence crosses every layer the
+kernel has. Ring 3, the syscall stub, a copy out of a program's memory, a 9P
+write over the real transport, a device server, and the console. **The line it
+prints is in the boot log**, which is the shortest proof any of it works.
+
+`probe` is the long one. It makes six calls and stores every answer, so a wrong
+one names the call rather than the program.
+
+`held` comes back with the last program's three frames, so the teardown check
+outside can ask about frames rather than about a total.
+*/
+@(private = "file")
+verify_syscalls :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^[3]uintptr) {
+	// -- A program writes a line to the console ------------------------------
+
+	p, err := load("hello", program_hello(), u64(len(MESSAGE)))
+	if !check(r, err == .None && p != nil, "a program is loaded that asks rather than faults") {
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, MESSAGE_OFFSET, message_bytes()), "with a line in its data page")
+
+	before := column()
+	if check(r, wait(p, PATIENCE), "and it comes back") {
+		after := column()
+
+		check(r, cell(p, CELL_MARK) == MARK_HELLO, "having reached its first instruction")
+		check(
+			r,
+			cell(p, CELL_WROTE) == u64(len(MESSAGE)),
+			"the write it asked for reported every byte",
+		)
+		/*
+		And the bytes are on the screen.
+
+		The count above is the syscall's own answer, which rises whether or not
+		a glyph is drawn. The console's cursor is one layer closer to the
+		effect, and the message carries no newline so the number is exact.
+		`docs/TESTING.md` has the three times this file's neighbour learned it.
+		*/
+		check(r, after - before == len(MESSAGE), "and the console moved that many columns")
+
+		check(r, p.exit.deliberate, "the program ended because it asked to, not because it faulted")
+		check(r, p.exit.status == HELLO_STATUS, "with the status it chose")
+		check(
+			r,
+			p.exit.vector == arch.VECTOR_SYSCALL,
+			"through the door rather than through the interrupt table",
+		)
+		check(r, p.exit.from_user, "and the frame it left says ring 3")
+		check(r, p.exit.sp == STACK_TOP, "on the stack it was given")
+		check(
+			r,
+			p.exit.kstack > p.kstack_lo && p.exit.kstack < p.kstack_hi,
+			"with the kernel's frame on that thread's own kernel stack",
+		)
+	}
+	cons_finish()
+	finish(r, p, "the program is taken down")
+
+	// -- And a program that asks for six other things ------------------------
+
+	witness := u64(uintptr(rawptr(&kernel_witness)))
+	p, err = load("probe", program_probe(), witness)
+	if !check(r, err == .None && p != nil, "a second program makes six calls") {
+		return
+	}
+	r.programs += 1
+
+	if check(r, wait(p, PATIENCE), "and comes back from all of them") {
+		check(r, cell(p, CELL_MARK) == MARK_PROBE, "having reached its first instruction")
+		check(r, cell(p, CELL_NOP) == 0, "a call that does nothing answers zero")
+		check(
+			r,
+			cell(p, CELL_ARGS) == ARGS_SUM,
+			"and one that adds its arguments gets all six of them",
+		)
+		check(
+			r,
+			cell(p, CELL_UNKNOWN) == refused(vectra9.ENOSYS),
+			"a number nothing implements is refused rather than obeyed",
+		)
+		check(
+			r,
+			cell(p, CELL_BAD_ADDRESS) == refused(vectra9.EFAULT),
+			"and a kernel address handed in as a buffer is refused",
+		)
+		check(r, kernel_witness == WITNESS, "with the kernel's own word untouched")
+
+		check(r, cell(p, CELL_SLEPT) == 4, "a call that waits reports what it waited")
+		/*
+		And it really parked, rather than spun.
+
+		A thread that never blocked has no wake-ups. This is the one number
+		that separates a system call which gave the core up from one which held
+		it. It comes from the scheduler rather than from the clock.
+		*/
+		check(r, blocked(p) > 0, "and gave the core up while it did")
+
+		check(r, cell(p, CELL_R8) == KEEP_R8, "a call leaves a caller-saved register alone")
+		check(r, cell(p, CELL_R12) == KEEP_R12, "and a callee-saved one")
+		check(
+			r,
+			cell(p, CELL_XMM) == KEEP_XMM,
+			"and the floating-point register the dispatcher writes over first",
+		)
+
+		/*
+		And it kept running in ring 3 after the last call returned.
+
+		`sysret` writes CS and SS out of `STAR` without checking either. A wrong
+		user base there produces a program that runs correctly with nonsense in
+		CS. The first thing that reads CS is an interrupt. A program that
+		returns from a call and exits at once gives nothing a chance to notice.
+		That is how a control found this, by passing. See `PROBE_SPIN`.
+		*/
+		check(r, cell(p, CELL_SPUN) == PROBE_SPIN, "and went on running in ring 3 after the last one returned")
+
+		check(r, p.exit.deliberate && p.exit.status == 0, "and it exits with nothing to report")
+	}
+
+	finish(r, p, "and is taken down")
+
+	// -- A page in a program's half that the program may not touch -----------
+
+	verify_shadow(r, held)
+}
+
+/*
+verify_shadow asks whether the kernel checks the *user* bit, or only the range.
+
+**This program exists because a control came back clean.** The mutation removed
+the `User` requirement from `copy_in`, and every check still passed. The reason
+was not a weak check. It was that the only bad address the test handed over was
+a kernel one, and the range check refuses those before permissions is
+consulted.
+
+So this hands over an address in the program's own half that the program itself
+cannot touch. `map_at` puts the program's own stack frame at a second address
+with no `User` bit on it. The program can name that address and cannot read it.
+The kernel's check is then the only thing between a program and memory it may
+not have.
+
+**That is the confused deputy, in three pages.** A program that cannot read
+something asks the kernel to read it instead.
+
+The kernel maps the page after the program is already running, so the program
+waits for the address to appear in its data page. `spin` uses the same
+handshake in the other direction.
+*/
+@(private = "file")
+verify_shadow :: proc(r: ^Result, held: ^[3]uintptr) {
+	p, err := load("shadow", program_shadow(), 0)
+	if !check(r, err == .None && p != nil, "a third program is given an address it may not read") {
+		return
+	}
+	r.programs += 1
+
+	mapped := mem.map_at(p.space, SHADOW_VA, p.stack, {.Write, .No_Execute}, 1)
+	check(r, mapped == .None, "a page goes into its half with no user bit on it")
+
+	flags, ok := mem.permissions(p.space, SHADOW_VA)
+	check(r, ok && .User not_in flags, "which is present, and not a page ring 3 may reach")
+
+	set_cell(p, CELL_HANDOFF, u64(SHADOW_VA))
+
+	if check(r, wait(p, PATIENCE), "the program is told where it is and asks the kernel to read it") {
+		check(r, cell(p, CELL_MARK) == MARK_SHADOW, "having reached its first instruction")
+		check(
+			r,
+			cell(p, CELL_WROTE) == refused(vectra9.EFAULT),
+			"and the kernel refuses, because the page is not one the program may reach",
+		)
+		check(
+			r,
+			p.exit.deliberate && p.exit.status == 0,
+			"rather than because the program gave up waiting",
+		)
+	}
+
+	held^ = {p.text, p.data, p.stack}
+	check(
+		r,
+		!mem.frame_is_free(held[0]) && !mem.frame_is_free(held[1]) && !mem.frame_is_free(held[2]),
+		"a program holds three frames while it exists",
+	)
+	finish(r, p, "and is taken down")
 }

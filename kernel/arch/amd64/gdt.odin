@@ -304,9 +304,15 @@ does it before that thread can reach ring 3.
 
 The value is the *top* of that stack. A thread in ring 3 has nothing on its
 kernel stack, so the whole of it is available to the frame.
+
+**Two places hold the same number, and both are written here.** The TSS is what
+an interrupt from ring 3 uses. `Percpu.kernel_rsp` is what `syscall` uses,
+because `syscall` does not consult the TSS at all. One writer, so they cannot
+drift.
 */
 set_kernel_stack :: proc "contextless" (top: uintptr) {
 	tss.rsp[0] = u64(top)
+	this_cpu().kernel_rsp = u64(top)
 }
 
 // kernel_stack reads the slot back, so a self-test can say the scheduler wrote
