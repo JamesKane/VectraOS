@@ -1337,11 +1337,15 @@ console_column :: proc "contextless" () -> int {
 }
 
 /*
-verify_user runs seven programs in ring 3 and watches four of them be refused.
+verify_user runs twelve processes in ring 3.
 
-The first one is the one that matters. It runs, the timer takes the core away
-from it, the kernel does work, and it gets the core back. Everything after it
-is a permission being enforced, which is only interesting once there is
+Four of them are refused something. Four ask the kernel for something. Three
+open files by name in a namespace of their own. One of those rearranges its
+namespace, and nothing else on the machine sees the change.
+
+The first is still the one that matters most. It runs, the timer takes the core
+away from it, the kernel does work, and it gets the core back. Everything after
+that is a rule being enforced, which is only interesting once there is
 something running to enforce it against.
 */
 verify_user :: proc() {
@@ -1352,15 +1356,13 @@ verify_user :: proc() {
 	libodin.put_str(&sink, "user ")
 	libodin.put_uint(&sink, u64(result.checks))
 	if ok {
-		libodin.put_str(&sink, " ring 3 checks passed -- ")
+		libodin.put_str(&sink, " userland checks passed -- ")
 		libodin.put_uint(&sink, u64(result.programs))
-		libodin.put_str(&sink, " programs, ")
+		libodin.put_str(&sink, " processes, ")
 		libodin.put_uint(&sink, result.rounds)
-		libodin.put_str(&sink, " rounds of one preempted, ")
+		libodin.put_str(&sink, " preempted rounds, ")
 		libodin.put_uint(&sink, u64(result.calls))
-		libodin.put_str(&sink, " system calls, ")
-		libodin.put_uint(&sink, result.traps)
-		libodin.put_str(&sink, " returns from ring 3, the kernel untouched")
+		libodin.put_str(&sink, " system calls, one path two files")
 		emit(&klog, .Ok, &sink)
 		return
 	}
@@ -1369,5 +1371,10 @@ verify_user :: proc() {
 	libodin.put_uint(&sink, u64(result.failures))
 	libodin.put_str(&sink, " FAILED -- first: ")
 	libodin.put_str(&sink, result.first_failure)
+	if result.leaked != 0 {
+		libodin.put_str(&sink, " (leaked ")
+		libodin.put_int(&sink, i64(result.leaked))
+		libodin.put_str(&sink, ")")
+	}
 	emit(&klog, .Fault, &sink)
 }

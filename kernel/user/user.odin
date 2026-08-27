@@ -5,9 +5,13 @@ Everything before this milestone ran at the privilege the loader handed over.
 The scheduler switched stacks, the address spaces switched page tables, and all
 of it was one program with many threads. This is where that stops being true.
 
-A program is three mapped pages and a thread whose saved frame names a ring 3
-code selector. Nothing else. There is no loader, no system call and no process,
-and the order is deliberate:
+**A program is bytes. A process is what runs them.** That distinction is the
+whole of this file's vocabulary and it took three milestones to earn:
+
+    a program     an image, in `program.odin`, and nothing that runs
+    a process     an address space, a namespace, and a set of open files
+
+The order the three arrived in was deliberate, and each unblocked the next:
 
     ring 3        a thread can run somewhere it cannot damage the kernel
     a syscall     it can ask for something anyway
@@ -32,19 +36,31 @@ the kernel's is not. `arch.set_user_trap_handler` is a separate table for
 exactly that reason, and `on_trap` below is what ends a program instead of the
 machine.
 
-## What a program owns, and what ends it
+## What a process owns
 
-Three frames and an address space. The frames are this package's, not the
-space's, because `mem.space_destroy` frees page tables and never leaves. See
-the file comment in `kernel/mem/space.odin` for why that division is there and
-what would change it.
+Three frames, an address space, a namespace, and a table of open files.
 
-A program ends by faulting, and there is currently no other way. It cannot ask,
-because there is no system call yet. The kernel cannot tell it either, because
-nothing but the clock interrupts a program. `destroy` therefore refuses a
-program that is still running, rather than free the tables underneath it. Plan
-9 ends a process with a note. That is the same missing piece by its proper
-name.
+The frames are this package's, not the space's, because `mem.space_destroy`
+frees page tables and never leaves. See the file comment in
+`kernel/mem/space.odin` for why that division is there and what would change
+it.
+
+**The namespace is a copy, and that is the point of having one.** `ns_fork`
+with `.Copy` duplicates the mount table and shares the member chans. A process
+can therefore rearrange its own view of the tree, and nothing else sees the
+change. `kernel/vfs` was built for that four milestones before anything could
+use it.
+
+Descriptors 0, 1 and 2 come open on `/dev/cons`, which is the convention every
+system with a shell keeps. Nothing reads 0 yet, and a read of it would park
+until somebody types, which is the correct answer rather than a bug.
+
+## What ends a process
+
+`SYS_EXIT`, or a fault. Nothing else, and in particular not the kernel.
+`destroy` refuses a process that is still running rather than free the tables
+underneath it, because its thread is translating through them. Plan 9 ends a
+process with a note. That is the missing piece by its proper name.
 */
 package user
 
@@ -120,7 +136,7 @@ Exit :: struct {
 	status:     u64,
 }
 
-Program :: struct {
+Process :: struct {
 	name:   string,
 	space:  ^mem.Address_Space,
 	thread: ^sched.Thread,
@@ -138,9 +154,51 @@ Program :: struct {
 	kstack_lo: uintptr,
 	kstack_hi: uintptr,
 
+	/*
+	This process's own view of the tree.
+
+	A copy rather than a reference, so `SYS_BIND` rearranges one process's
+	namespace and no other. `ns_fork` shares the member chans underneath and
+	counts references, which is what makes the copy cheap.
+	*/
+	ns:     ^vfs.Namespace,
+
+	/*
+	The open files, indexed by the number a program holds.
+
+	A fixed table, and small. The argument is the one `MAX_PROCESSES` makes
+	below and `srv.MAX_SERVICES` made before it. A descriptor is the first
+	kernel object a program can name and get a handle back for. It is therefore
+	the first one a program could ask for until the machine stopped.
+	*/
+	fds:    [MAX_FDS]Fd,
+
 	exit:   Exit,
 	live:   bool,
 }
+
+/*
+One open file.
+
+The chan is the namespace's answer to a path. The offset is the process's. It
+is here rather than on the chan because two descriptors may name one file and
+read it at different places. 9P has no cursor on the wire, because every
+`Tread` carries an offset. Somebody above the protocol has to keep one, and
+this is that somebody.
+*/
+Fd :: struct {
+	chan:   ^vfs.Chan,
+	offset: u64,
+}
+
+MAX_FDS :: 16
+
+// The three a process starts with, on `/dev/cons`. The numbers are the
+// convention rather than a requirement, and every program in `program.odin`
+// writes to 1.
+FD_STDIN :: 0
+FD_STDOUT :: 1
+FD_STDERR :: 2
 
 /*
 The programs, from a fixed table.
@@ -149,10 +207,10 @@ The same argument `mem.spaces` makes. A record a program can make the kernel
 allocate is a record a program can exhaust the machine through. This is also
 the first code in Vectra that anything untrusted will reach.
 */
-MAX_PROGRAMS :: 8
+MAX_PROCESSES :: 12
 
 @(private = "file")
-programs: [MAX_PROGRAMS]Program
+processes: [MAX_PROCESSES]Process
 
 @(private = "file")
 loaded: int
@@ -169,8 +227,8 @@ Stats :: struct {
 
 stats :: proc "contextless" () -> Stats {
 	live := 0
-	for i in 0 ..< MAX_PROGRAMS {
-		if programs[i].live {
+	for i in 0 ..< MAX_PROCESSES {
+		if processes[i].live {
 			live += 1
 		}
 	}
@@ -223,7 +281,7 @@ on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
 	faults += 1
 
 	if thread := sched.current(); thread != nil {
-		if p := (^Program)(thread.user); p != nil {
+		if p := (^Process)(thread.user); p != nil {
 			p.exit.kind = t.kind
 			p.exit.vector = t.vector
 			p.exit.error_code = t.error_code
@@ -255,11 +313,16 @@ Every one of those is a fault the self-test provokes on purpose, because a
 permission nothing tests is a permission that may not be there. `mem.map_user`
 adds `User` to all three, which is the bit that lets ring 3 reach them at all.
 
-`arg` is whatever the program's second argument should be. The blobs take an
-address to touch in it. Which address a blob receives is what makes one run a
-test of the kernel half and another a test of a read-only page.
+`arg` and `arg2` are the program's second and third arguments. The blobs take
+an address to touch, or a length to use. Which address a blob receives is what
+makes one run a test of the kernel half and another a test of a read-only page.
+
+**The namespace is forked here rather than shared**, and the descriptors are
+opened through the fork rather than through the kernel's. A caller that
+rearranges the fork before this returns therefore changes what descriptor 1
+means, which is the whole demonstration in `verify_namespaces`.
 */
-load :: proc(name: string, code: []u8, arg: u64 = 0) -> (^Program, mem.Error) {
+load :: proc(name: string, code: []u8, arg: u64 = 0, arg2: u64 = 0) -> (^Process, mem.Error) {
 	if len(code) == 0 || len(code) > arch.PAGE_SIZE {
 		return nil, .Not_Canonical
 	}
@@ -273,10 +336,16 @@ load :: proc(name: string, code: []u8, arg: u64 = 0) -> (^Program, mem.Error) {
 	if err != .None {
 		return nil, err
 	}
-	p^ = Program {
+	p^ = Process {
 		name  = name,
 		space = space,
 		live  = true,
+	}
+
+	p.ns = vfs.ns_fork(vfs.boot_namespace, {.Copy})
+	if p.ns == nil {
+		unload(p)
+		return nil, .Out_Of_Memory
 	}
 
 	ok: bool
@@ -314,9 +383,14 @@ load :: proc(name: string, code: []u8, arg: u64 = 0) -> (^Program, mem.Error) {
 		return nil, e
 	}
 
+	// Before the thread, not after. A program's first instruction may be a
+	// write to descriptor 1. The next interrupt can dispatch any thread that
+	// is already on a run queue.
+	open_standard(p)
+
 	// The thread gets `p` before it can run. The fault handler reads it, and
 	// the first fault may arrive on the very next interrupt.
-	p.thread = sched.spawn_user(name, space, TEXT_VA, STACK_TOP, u64(DATA_VA), arg, p)
+	p.thread = sched.spawn_user(name, space, TEXT_VA, STACK_TOP, u64(DATA_VA), arg, arg2, p)
 	if p.thread == nil {
 		unload(p)
 		return nil, .Out_Of_Memory
@@ -341,7 +415,7 @@ Returns false when the bound runs out, which is a program that did not end. The
 caller has to treat that as the failure it is: `destroy` will refuse it, and
 its space and frames stay out of circulation.
 */
-wait :: proc "contextless" (p: ^Program, patience: int) -> bool {
+wait :: proc "contextless" (p: ^Process, patience: int) -> bool {
 	if p == nil {
 		return false
 	}
@@ -366,7 +440,7 @@ until something reaps it, and `spawn` is what reaps. `destroy` clears the
 pointer, which is why this reads zero afterwards rather than reads freed
 memory.
 */
-blocked :: proc "contextless" (p: ^Program) -> u64 {
+blocked :: proc "contextless" (p: ^Process) -> u64 {
 	if p == nil || p.thread == nil {
 		return 0
 	}
@@ -374,7 +448,7 @@ blocked :: proc "contextless" (p: ^Program) -> u64 {
 }
 
 // ended reports whether a program already faulted, without waiting.
-ended :: proc "contextless" (p: ^Program) -> bool {
+ended :: proc "contextless" (p: ^Process) -> bool {
 	return p != nil && intrinsics.volatile_load(&p.exit.done)
 }
 
@@ -386,7 +460,7 @@ translating through those tables and must not have to be. That is also what
 makes the page shared in the honest sense: the same frame, two mappings, two
 privilege levels, and neither one a copy.
 */
-cell :: proc "contextless" (p: ^Program, index: int) -> u64 {
+cell :: proc "contextless" (p: ^Process, index: int) -> u64 {
 	if p == nil || p.data == 0 || index < 0 || index >= arch.PAGE_SIZE / size_of(u64) {
 		return 0
 	}
@@ -396,7 +470,7 @@ cell :: proc "contextless" (p: ^Program, index: int) -> u64 {
 
 // set_cell writes one word of a program's data page. The other direction of
 // `cell`, and what tells `spin` to stop.
-set_cell :: proc "contextless" (p: ^Program, index: int, value: u64) {
+set_cell :: proc "contextless" (p: ^Process, index: int, value: u64) {
 	if p == nil || p.data == 0 || index < 0 || index >= arch.PAGE_SIZE / size_of(u64) {
 		return
 	}
@@ -416,7 +490,7 @@ That refusal is a leak, and it is the honest kind: it is visible in
 `stats().live` and in the frame count, rather than absorbed. See the file
 comment.
 */
-destroy :: proc "contextless" (p: ^Program) -> bool {
+destroy :: proc(p: ^Process) -> bool {
 	if p == nil || !p.live {
 		return false
 	}
@@ -435,7 +509,7 @@ The kernel owns the frame, reaches it through the direct map, and is not
 guessing about what is mapped where. That asymmetry is the whole reason a
 kernel has a `copy_in` and does not have a `copy_out` that checks anything.
 */
-set_bytes :: proc "contextless" (p: ^Program, offset: int, data: []u8) -> bool {
+set_bytes :: proc "contextless" (p: ^Process, offset: int, data: []u8) -> bool {
 	if p == nil || p.data == 0 || offset < 0 {
 		return false
 	}
@@ -450,7 +524,21 @@ set_bytes :: proc "contextless" (p: ^Program, offset: int, data: []u8) -> bool {
 }
 
 @(private = "file")
-unload :: proc "contextless" (p: ^Program) {
+unload :: proc(p: ^Process) {
+	// The descriptors first, and the namespace after them. A chan holds a
+	// reference to the server it came from, and the mount table holds
+	// references to the chans it was built out of. The order is deliberate.
+	// Closing the namespace first would leave every open file pointing into a
+	// mount table with one reference left and no way to reach it.
+	for i in 0 ..< MAX_FDS {
+		if p.fds[i].chan != nil {
+			vfs.chan_close(p.fds[i].chan)
+			p.fds[i] = Fd{}
+		}
+	}
+	if p.ns != nil {
+		vfs.ns_close(p.ns)
+	}
 	if p.space != nil {
 		mem.space_destroy(p.space)
 	}
@@ -463,15 +551,105 @@ unload :: proc "contextless" (p: ^Program) {
 	if p.stack != 0 {
 		mem.free_page(p.stack)
 	}
-	p^ = Program{}
+	p^ = Process{}
 }
 
 @(private = "file")
-free_slot :: proc "contextless" () -> ^Program #no_bounds_check {
-	for i in 0 ..< MAX_PROGRAMS {
-		if !programs[i].live {
-			return &programs[i]
+free_slot :: proc "contextless" () -> ^Process #no_bounds_check {
+	for i in 0 ..< MAX_PROCESSES {
+		if !processes[i].live {
+			return &processes[i]
 		}
 	}
 	return nil
+}
+
+// -- Descriptors -------------------------------------------------------------
+
+/*
+fd_open puts a chan in the lowest free slot and reports the number.
+
+Lowest free, which is the rule every system with a shell depends on. A program
+that closes descriptor 1 and opens a file gets descriptor 1 back. That is how
+output goes to a file with no call for it.
+
+The chan's reference belongs to the table from here on. `fd_close` gives it
+back, and `unload` gives back whatever is left.
+*/
+@(private)
+fd_open :: proc(p: ^Process, c: ^vfs.Chan) -> (int, bool) #no_bounds_check {
+	if p == nil || c == nil {
+		return 0, false
+	}
+	for i in 0 ..< MAX_FDS {
+		if p.fds[i].chan == nil {
+			p.fds[i] = Fd{chan = c}
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+@(private)
+fd_at :: proc "contextless" (p: ^Process, fd: int) -> ^Fd #no_bounds_check {
+	if p == nil || fd < 0 || fd >= MAX_FDS || p.fds[fd].chan == nil {
+		return nil
+	}
+	return &p.fds[fd]
+}
+
+@(private)
+fd_close :: proc(p: ^Process, fd: int) -> bool #no_bounds_check {
+	f := fd_at(p, fd)
+	if f == nil {
+		return false
+	}
+	vfs.chan_close(f.chan)
+	f^ = Fd{}
+	return true
+}
+
+// fd_count reports how many descriptors a process holds, for a self-test that
+// wants to say a close really closed one.
+fd_count :: proc "contextless" (p: ^Process) -> int #no_bounds_check {
+	n := 0
+	if p == nil {
+		return 0
+	}
+	for i in 0 ..< MAX_FDS {
+		if p.fds[i].chan != nil {
+			n += 1
+		}
+	}
+	return n
+}
+
+/*
+open_standard gives a new process the three descriptors a program expects.
+
+All three on `/dev/cons`, through **this process's** namespace rather than the
+kernel's. That distinction is inert today, because the fork is a faithful copy
+at the moment it is made. It stops being inert the first time somebody
+rearranges the fork before the process starts.
+
+A failure here is not fatal to the process. A program that writes to a
+descriptor it does not have gets `EBADF`, which is a better answer than a
+process that could not start.
+*/
+@(private)
+open_standard :: proc(p: ^Process) {
+	if p == nil || p.ns == nil {
+		return
+	}
+	modes := [3]u32{vfs.O_RDONLY, vfs.O_WRONLY, vfs.O_WRONLY}
+	for mode in modes {
+		c, err := vfs.open_path(p.ns, "/dev/cons", mode)
+		if err != vfs.OK {
+			return
+		}
+		if _, ok := fd_open(p, c); !ok {
+			vfs.chan_close(c)
+			return
+		}
+	}
 }

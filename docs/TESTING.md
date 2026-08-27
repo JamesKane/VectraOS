@@ -229,6 +229,7 @@ nothing else in common.
 | Address spaces | `docs/SPACE.md` | 3 checked, 2 faults, 1 inert |
 | Ring 3 | `docs/USER.md` | 6 checked, 3 machine failures, 1 uncaught |
 | The system call door | `docs/USER.md` | 3 checked, 3 machine failures, 2 uncaught |
+| A process | `docs/USER.md` | 4 checked, 1 machine failure, 1 inert |
 
 **The uncaught ones cluster, and the cluster is the finding.** Almost every one
 is a window two or three instructions wide, and none is at a lock boundary.
@@ -309,6 +310,30 @@ it for free.
 
 **A control tells you two things: whether the checks notice, and which ones
 did.** The second is the half that finds bugs the mutation was not about.
+
+## Bracket what the thing under test actually holds
+
+`kernel/user/verify.odin` counts frames *and* heap objects, and it needs both.
+
+A process is three frames, an address space, a namespace and a set of open
+files. The frames and the page tables are physical memory. The namespace and
+every open file are heap objects. **A process that gave back its pages and kept
+its descriptors leaves the frame count balanced and nothing else wrong.**
+
+A control that closes a descriptor without closing the file behind it fails
+the heap line and nothing else. So the rule is not `bracket the allocator`. It
+is `bracket every allocator the thing under test uses`.
+
+That bracket needed one correction before it worked. Threads that exited in an
+*earlier* self-test keep their records and their stacks until something asks
+for them back. The opening reading counted those and the closing one did not.
+The number came out as **minus four objects**, which is a run that gave back
+more than it took.
+
+**A bracket that can go negative is not measuring what it says.** `sched.reap`
+runs before the opening reading now. `kernel/verify_space.odin` reached the
+same conclusion from the other side, by finding a phase with no threads in it
+at all.
 
 ## A control that passes may be asking whether the test reaches the code
 

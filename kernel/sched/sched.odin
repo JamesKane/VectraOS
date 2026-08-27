@@ -273,6 +273,7 @@ spawn_user :: proc(
 	sp: uintptr,
 	arg0: u64 = 0,
 	arg1: u64 = 0,
+	arg2: u64 = 0,
 	record: rawptr = nil,
 	priority: Priority = PRIORITY_NORMAL,
 	stack_size: int = DEFAULT_STACK_SIZE,
@@ -294,7 +295,7 @@ spawn_user :: proc(
 		return nil
 	}
 
-	resume, ok := arch.thread_user_init(stack, entry, sp, arg0, arg1)
+	resume, ok := arch.thread_user_init(stack, entry, sp, arg0, arg1, arg2)
 	if !ok {
 		delete(stack)
 		free(t)

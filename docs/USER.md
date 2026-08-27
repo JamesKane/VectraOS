@@ -1,4 +1,4 @@
-# Ring 3, and the door back in
+# Userland: ring 3, the door back in, and a process
 
 `kernel/user/`, and what the GDT, the IDT, the scheduler and `GS` grew to go
 with it.
@@ -7,20 +7,24 @@ Everything before this ran at the privilege the loader handed over. The
 scheduler switched stacks, the address spaces switched page tables, and all of
 it was one program with many threads. This is where that stops being true.
 
-A program is three mapped pages and a thread whose saved frame names a ring 3
-code selector. It can ask the kernel for five things, and one of them puts its
-own line in the boot log:
+**A program is bytes. A process is what runs them.** A process is an address
+space, a namespace and a set of open files. It can open a file by name, read
+it, write it, and rearrange its own view of the tree:
 
     -- a program in ring 3 wrote this line
+    -- a process opened this file by name
+    -- this line went to /dev/null
 
-`docs/SPACE.md` built the piece under all of it. Two milestones live in this
-document, because they live in the same directory:
+Three milestones live in this document, because they live in the same
+directory. `docs/SPACE.md` built the piece under all three:
 
     ring 3        a thread can run somewhere it cannot damage the kernel
     a syscall     it can ask for something anyway
     a process     what it asks for belongs to it rather than to the kernel
 
-The third is next, and the section at the end says what it needs.
+The third line is the one Plan 9 is about. Two processes hand the kernel the
+same path and get different files, because the mount table belongs to the
+process rather than to the machine.
 
 ## Three things make it ring 3 rather than a jump
 
@@ -126,6 +130,9 @@ a program may reach, whatever the source was.
 | `hello` | writes a line to `/dev/cons`, then exits with a status | `SYS_EXIT` |
 | `probe` | makes six calls, keeps every answer, then runs on | `SYS_EXIT` |
 | `shadow` | asks the kernel to read a page it may not read itself | `SYS_EXIT` |
+| `namer` | opens a file by name, writes, closes, then gets two refusals | `SYS_EXIT` |
+| `reader` | opens `/dev/zero`, reads into its page, then into its text | `SYS_EXIT` |
+| `binder` | binds over `/dev/cons` in its own namespace, then writes twice | `SYS_EXIT` |
 
 Every blob is position-independent, because a copy lands wherever the space
 maps it. Every one writes a mark to its data page first, which is how the
@@ -274,6 +281,32 @@ the effect rather than at a counter buys.
 an interrupt that almost never arrives there. Neither is a weak check. Both are
 races closed by reasoning, and the reasoning is above.
 
+### The controls for a process
+
+Six more.
+
+| Mutation | Result |
+|---|---|
+| `copy_out` does not demand a page the program could write | **#PF in the kernel at `0x400000`**, from a program's argument |
+| a process shares the kernel's namespace | 2 checks, first `and reaches the console, so one process changed only its own namespace` |
+| `open` resolves in the kernel's namespace | 1 check, `and exactly one of the two reached the console` |
+| a descriptor comes from the highest free slot | 9 checks, first `the write it asked for reported every byte` |
+| a close forgets the file rather than closes it | 1 check, `and every namespace and open file with it (leaked 5)` |
+| the standard descriptors open in the kernel's namespace | **not caught**, and the mutation is inert |
+
+**The first one is the most alarming thing in this document.** Without the
+`Write` demand in `copy_out`, a program names its own text page as a
+destination and the kernel writes there. `CR0.WP` turns that into a page fault
+**in the kernel**, so a program stops the machine with an address. The graceful
+answer the check wanted is `EFAULT`, and the guard is what produces it. The
+ungraceful one is what the hardware produces without it.
+
+**The inert one is inert for a stated reason.** The standard descriptors open
+through the process's fork rather than the kernel's namespace, and today the
+fork is a faithful copy at that moment. Nothing rearranges it in between, so
+the two are the same table. It becomes a real mutation the first time something
+binds before a process starts, and `load`'s comment says so.
+
 ### Two controls changed the test rather than confirmed it
 
 **The `User` bit had no test.** The mutation that removed it passed everything.
@@ -377,22 +410,29 @@ the TSS.
 address in `rcx` before the stub can save it. Linux made the same substitution
 for the same reason.
 
-| Call | What it does | Permanent |
-|---|---|---|
-| `exit` | ends the program with a status | yes |
-| `sleep` | parks the thread for a number of ticks | yes |
-| `write` | writes to `/dev/cons` through the real namespace | the path, not the descriptor |
-| `nop` | returns zero | no |
-| `args` | adds its six arguments | no |
-
-**Descriptor 1 is `/dev/cons`, opened once at boot, with no table behind it.** A
-file descriptor belongs to a process and a process is the next milestone. What
-is real is everything after the copy: a genuine 9P write, over the real
-transport, to the real console.
+| Call | What it does |
+|---|---|
+| `exit` | ends the process with a status |
+| `sleep` | parks the thread for a number of ticks |
+| `open` | resolves a path **in this process's namespace** and returns the lowest free number |
+| `close` | gives the number back |
+| `read` | fills a program's buffer from one of its descriptors |
+| `write` | empties one into a descriptor |
+| `bind` | rearranges this process's view of the tree, and nobody else's |
+| `seek` | moves a descriptor's cursor |
+| `nop`, `args` | the door's own self-test |
 
 **`exit` is what ring 3 lacked.** Before it, a program ended by doing something
 the CPU refused, and `user.destroy` had to refuse a program that was still
 running. Now a program can say so.
+
+**`bind` is what makes this a Plan 9 system.** Every other call has a Unix
+twin. This one does not, because in Unix the mount table belongs to the machine.
+
+Three are still missing. `create` waits on `vfs.chan_create`. `stat` waits on
+something that needs it. `mount` waits on a descriptor that can carry a
+connection. All three are the same shape as the eight above, and none of them
+is a design question.
 
 ### The record is written with interrupts off, and that is not tidiness
 
@@ -404,6 +444,72 @@ still translating through that space.
 A fault gets this property free, because a fault handler already runs masked.
 This path had to ask for it. `docs/TESTING.md` has the control that found the
 shape of the problem one milestone before it could happen.
+
+## A process, and the two things a program did not have
+
+A process is an address space, a namespace and a set of open files. The space
+came with `docs/SPACE.md`. The other two arrive here, and `kernel/vfs` was
+built for one of them four milestones before anything could use it.
+
+### The namespace is a copy
+
+`ns_fork` with `.Copy` duplicates the mount table and shares the member chans
+underneath. A process can therefore rearrange its own view of the tree, and
+nothing else on the machine sees the change.
+
+**That sentence is the milestone, and `binder` is it as a check.** The program
+binds `/dev/null` over `/dev/cons` in its own namespace, opens `/dev/cons`, and
+writes a line. Then it writes the same line again, through the descriptor it
+started with. Both writes report every byte. **The console moves once.**
+
+The check is a total rather than two readings, because nothing can read the
+console's cursor between two instructions of a program. The total is the
+sharper claim anyway. It fails if the redirected write shows, and it fails if
+the other one does not.
+
+A control that shares the kernel's namespace instead of forking one fails a
+different check afterwards. The kernel opens the same path, writes, and the
+line does not appear, because a program moved the kernel's own console.
+
+### A descriptor already open is not affected by a bind
+
+A bind changes what a *path* resolves to. A descriptor names a chan, and no
+rearrangement reaches it. That is Plan 9's rule, and it is the first one a
+program notices. It is also why `binder` writes twice: once through a name and
+once through a number.
+
+### The descriptors
+
+    0, 1, 2     open on /dev/cons when a process starts
+    lowest free is what `open` returns
+
+Lowest free is the rule every system with a shell depends on. A program that
+closes descriptor 1 and opens a file gets descriptor 1 back. That is how output
+goes to a file with no call for it. A control that returns the highest free
+slot fails nine checks.
+
+**The cursor is the process's, not the file's.** 9P has no cursor on the wire,
+because every `Tread` and `Twrite` carries an offset. Somebody above the
+protocol has to keep one, and two descriptors on one file have to be able to
+read it at different places.
+
+### What a process gives back, and the check that noticed
+
+`unload` closes the descriptors, then the namespace, then the space. The order
+matters. A chan holds a reference to its server, and the mount table holds
+references to the chans it was built from.
+
+**A frame count says nothing about either.** A chan and a `Namespace` are heap
+objects. A process that gave back its pages and kept its open files leaves the
+frame count balanced and nothing else wrong. So the run brackets the heap's
+live-object count. A control that forgets to close a chan fails that line and
+no other.
+
+That bracket needed one thing to be true first. `sched.reap` runs before the
+opening reading, because threads that exited in an *earlier* self-test keep
+their records until something asks for them back. Without it the number came
+out as **minus four objects**, which is a run that gave back more than it took.
+A bracket that can go negative is not measuring what it says.
 
 ## `copy_in`, and the confused deputy
 
@@ -435,22 +541,27 @@ reachable. The first program with two threads reaches it.
 
 ## What is missing, and named where it lives
 
-- **A program cannot be stopped from outside.** It can end itself now, and the
-  kernel still cannot end it. `destroy` refuses a running program rather than
+- **A process cannot be stopped from outside.** It can end itself now, and the
+  kernel still cannot end it. `destroy` refuses a running process rather than
   free the tables underneath it, and the leak is visible in
   `user.stats().live`. Plan 9 ends a process with a note. That is this missing
   piece by its proper name.
-- **A program is not a process.** A process is a space, a namespace and a set
-  of open files. The space is real, the namespace exists and belongs to the
-  kernel, and there are no open files at all. Descriptor 1 is a constant.
-- **The calls are not the interface.** `nop` and `args` go the day something
-  real needs their numbers. What belongs behind this door is the four or five
-  9P operations a namespace needs. Those are what make a program able to open a
-  file, rather than able to print.
-- **Nothing counts a program's calls against it.** `MAX_PROGRAMS` bounds how
-  many programs exist and nothing bounds what one of them asks for. A single
-  program can call `sleep` for ever.
-- **`MAX_PROGRAMS` is eight, from a fixed table.** The same argument
+- **Nothing forks and nothing execs.** The kernel builds every process here
+  out of a baked image. There is no `rfork`, so the `Fork_Flags` `kernel/vfs`
+  carries have one caller and it is this file. There is no loader, so
+  `program.odin` is where a program comes from.
+- **No `create`, no `stat`, no `mount`.** The first waits on
+  `vfs.chan_create`, the second on something that needs it, and the third on a
+  descriptor that can carry a connection. `docs/SRV.md` says which line that
+  is.
+- **Nothing counts a process's calls against it.** `MAX_PROCESSES` bounds how
+  many exist and `MAX_FDS` bounds what one holds. Nothing bounds what one asks
+  for, and a single process can call `sleep` for ever.
+- **`copy_in` and `copy_out` bound a call at 256 bytes**, on the calling
+  thread's kernel stack. A program that asks for more gets a short answer and
+  the count, which every write interface already makes a caller handle. A page
+  the process pins would be the answer if it ever matters.
+- **`MAX_PROCESSES` is twelve, from a fixed table.** The same argument
   `mem.spaces` and `srv.MAX_SERVICES` make. This is also the first code in
   Vectra that anything untrusted reaches. A record a program can make the
   kernel allocate is a record a program can exhaust the machine through.

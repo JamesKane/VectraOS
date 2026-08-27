@@ -36,6 +36,7 @@ import "kernel:arch"
 import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
+import "kernel:vfs"
 import "vsys:vectra9"
 
 /*
@@ -118,6 +119,7 @@ Result :: struct {
 	traps:         u64, // Returns from ring 3 while the checks ran
 	rounds:        u64, // Times `spin` went round its loop in ring 3
 	calls:         int, // System calls the programs made
+	leaked:        int, // Heap objects the run did not give back
 }
 
 @(private = "file")
@@ -151,7 +153,7 @@ run_program :: proc(
 	mark: u64,
 	arg: u64,
 	what: string,
-) -> ^Program {
+) -> ^Process {
 	p, err := load(name, code, arg)
 	if !check(r, err == .None && p != nil, what) {
 		return nil
@@ -196,12 +198,12 @@ run_program :: proc(
 // of the five did. `jump` stopped on the address it was fetching from, which is
 // the point of that one.
 @(private = "file")
-in_text :: proc "contextless" (p: ^Program, code: []u8) -> bool {
+in_text :: proc "contextless" (p: ^Process, code: []u8) -> bool {
 	return p.exit.ip >= TEXT_VA && p.exit.ip < TEXT_VA + uintptr(len(code))
 }
 
 @(private = "file")
-finish :: proc "contextless" (r: ^Result, p: ^Program, what: string) {
+finish :: proc(r: ^Result, p: ^Process, what: string) {
 	if p == nil {
 		return
 	}
@@ -220,6 +222,18 @@ It is also the one check here that watches the screen rather than a number.
 */
 verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
+	/*
+	The reap list is drained before the heap is measured, and that is not
+	tidiness.
+
+	Threads that exited in an earlier self-test keep their records and their
+	stacks until something asks for them back. The first reading would count
+	those and the last would not. The difference came out as **minus four
+	objects**, which is a run that gave back more than it took. A bracket that
+	can go negative is not measuring what it says.
+	*/
+	sched.reap()
+	before_heap := live_objects(mem.heap_stats())
 	before_tables := mem.space_stats()
 	before_doubles := mem.pmm_stats().double_frees
 	before_traps := arch.user_trap_count()
@@ -336,6 +350,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_syscalls(&r, column, &held)
 
+	// -- And a process, which is a space, a namespace and some open files ----
+
+	verify_processes(&r, column, &held)
+
 	// -- What is left ---------------------------------------------------------
 
 	r.traps = arch.user_trap_count() - before_traps
@@ -364,6 +382,20 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		mem.frame_is_free(held[0]) && mem.frame_is_free(held[1]) && mem.frame_is_free(held[2]),
 		"and gave back the three frames it held",
 	)
+
+	/*
+	The heap, which is where a namespace and a descriptor live.
+
+	Frames say nothing about either. A chan and a `Namespace` are heap objects.
+	A process that gave back its pages and kept its open files leaves the frame
+	count balanced and the object count wrong. This is the only check in the
+	file that would notice.
+
+	`sched.reap` runs above it, because a dead thread's stack is a heap object
+	too and nothing gives it back until something asks.
+	*/
+	r.leaked = live_objects(mem.heap_stats()) - before_heap
+	check(&r, r.leaked == 0, "and every namespace and open file with it")
 
 	after_tables := mem.space_stats()
 	check(&r, after_tables.live == before_tables.live, "every address space was destroyed")
@@ -673,4 +705,212 @@ verify_shadow :: proc(r: ^Result, held: ^[3]uintptr) {
 		"a program holds three frames while it exists",
 	)
 	finish(r, p, "and is taken down")
+}
+
+/*
+The paths and the line the three file programs are handed.
+
+Every one of these is nine bytes, which is why one register carries the length
+for both paths in `binder`. That is a convenience the blobs depend on, and the
+check below says so rather than leaves it to be discovered.
+*/
+@(private = "file") PATH_CONS :: "/dev/cons"
+@(private = "file") PATH_ZERO :: "/dev/zero"
+@(private = "file") PATH_NULL :: "/dev/null"
+@(private = "file") PATH_MISSING :: "/dev/nope"
+
+@(private = "file") NAMED :: "-- a process opened this file by name"
+@(private = "file") REDIRECTED :: "-- this line went to /dev/null"
+
+@(private = "file")
+bytes_of :: proc "contextless" (text: string) -> []u8 {
+	t := text
+	return raw_data(t)[:len(t)]
+}
+
+/*
+verify_processes runs the three programs that own something.
+
+A process is a space, a namespace and a set of open files. The space came two
+milestones ago and the door came one. **This is where the other two arrive**,
+and each program is one sentence about them.
+
+`namer` says a program can turn a path into a number and the number into
+bytes on a screen. `reader` says the same in the other direction, and that the
+kernel refuses to write where ring 3 may not. `binder` is the one that matters:
+it rearranges its own view of the tree, and nothing else on the machine sees
+the change.
+*/
+@(private = "file")
+verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^[3]uintptr) {
+	check(
+		r,
+		len(PATH_CONS) == len(PATH_ZERO) &&
+		len(PATH_CONS) == len(PATH_NULL) &&
+		len(PATH_CONS) == len(PATH_MISSING),
+		"the four paths are the same length, which is what the programs assume",
+	)
+
+	// -- A process opens a file by name --------------------------------------
+
+	p, err := load("namer", program_namer(), u64(len(PATH_CONS)), u64(len(NAMED)))
+	if !check(r, err == .None && p != nil, "a process is built with a namespace of its own") {
+		return
+	}
+	r.programs += 1
+	check(r, p.ns != nil, "which is a copy rather than the kernel's")
+	check(r, fd_count(p) == 3, "and three descriptors already open on the console")
+	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_CONS)), "with a path in its page")
+	check(r, set_bytes(p, SLOT_C, bytes_of(NAMED)), "and a line to write")
+	check(r, set_bytes(p, SLOT_D, bytes_of(PATH_MISSING)), "and a path that is not there")
+
+	before := column()
+	if check(r, wait(p, PATIENCE), "and it comes back") {
+		after := column()
+
+		check(r, cell(p, CELL_MARK) == MARK_NAMER, "having reached its first instruction")
+		check(
+			r,
+			cell(p, NAMER_OPENED) == 3,
+			"the open it asked for gave it the lowest number nothing was using",
+		)
+		check(r, cell(p, NAMER_WROTE) == u64(len(NAMED)), "the write reported every byte")
+		check(r, after - before == len(NAMED), "and the console moved that many columns")
+		check(r, cell(p, NAMER_CLOSED) == 0, "the close was accepted")
+		check(
+			r,
+			cell(p, NAMER_AFTER_CLOSE) == refused(vectra9.EBADF),
+			"and the number it held stopped meaning anything",
+		)
+		check(
+			r,
+			cell(p, NAMER_MISSING) == refused(vectra9.ENOENT),
+			"a path with nothing at it is refused by name",
+		)
+	}
+	cons_finish()
+	finish(r, p, "the process is taken down")
+
+	// -- And reads one -------------------------------------------------------
+
+	p, err = load("reader", program_reader(), u64(len(PATH_ZERO)))
+	if !check(r, err == .None && p != nil, "a second process opens a file to read") {
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_ZERO)), "with that path in its page")
+
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_READER, "having reached its first instruction")
+		check(r, cell(p, READER_OPENED) == 3, "with a descriptor of its own")
+		check(r, cell(p, READER_READ) == 8, "the read reported the bytes it asked for")
+		check(
+			r,
+			cell(p, READER_BUFFER) == 0,
+			"and they landed in its page, over the value it put there first",
+		)
+		/*
+		And the kernel refused to write into the program's text.
+
+		That page is `User` and not `Write`, so ring 3 cannot touch it. The
+		kernel could: its own write goes through a supervisor mapping, where
+		the read-only bit is `CR0.WP`'s business rather than the `User` bit's.
+		`copy_out` has to say no on its own account, and this is the check that
+		it does.
+		*/
+		check(
+			r,
+			cell(p, READER_REFUSED) == refused(vectra9.EFAULT),
+			"a read into its own text is refused, which ring 3 could not do either",
+		)
+		check(r, cell(p, READER_CLOSED) == 0, "and the close was accepted")
+	}
+	finish(r, p, "and is taken down")
+
+	// -- And one rearranges its own view of the tree -------------------------
+
+	p, err = load("binder", program_binder(), u64(len(PATH_NULL)), u64(len(REDIRECTED)))
+	if !check(r, err == .None && p != nil, "a third process rearranges its own namespace") {
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_NULL)), "binding one device")
+	check(r, set_bytes(p, SLOT_B, bytes_of(PATH_CONS)), "over another")
+	check(r, set_bytes(p, SLOT_C, bytes_of(REDIRECTED)), "with a line to send through both")
+
+	before = column()
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		after := column()
+
+		check(r, cell(p, CELL_MARK) == MARK_BINDER, "having reached its first instruction")
+		check(r, cell(p, BINDER_BOUND) == 0, "the bind was accepted")
+		check(r, cell(p, BINDER_OPENED) == 3, "the path it just rebound still opens")
+		check(r, cell(p, BINDER_WROTE) == u64(len(REDIRECTED)), "and the write reports every byte")
+
+		check(r, cell(p, BINDER_CLOSED) == 0, "the close was accepted")
+		/*
+		Then the same bytes again, through the descriptor it started with.
+
+		A bind changes what a *path* resolves to. A descriptor already open
+		names a chan, and no rearrangement reaches it. That is Plan 9's rule,
+		and it is the first one a program notices.
+		*/
+		check(r, cell(p, BINDER_AGAIN) == u64(len(REDIRECTED)), "the descriptor it started with wrote")
+
+		/*
+		**The same bytes went out twice, and the console moved once.**
+
+		This is the whole milestone in one number. Two writes of the same line,
+		one through a path the process rebound and one through a descriptor it
+		opened before the rebind. Both report every byte. Only the second one is
+		on the screen.
+
+		Measured as a total rather than as two readings, because nothing can
+		read the column between two instructions of a program. The total is the
+		sharper claim anyway: it fails if the redirected write shows, and it
+		fails if the other one does not.
+		*/
+		check(
+			r,
+			after - before == len(REDIRECTED),
+			"and exactly one of the two reached the console",
+		)
+	}
+	cons_finish()
+
+	held^ = {p.text, p.data, p.stack}
+	check(
+		r,
+		!mem.frame_is_free(held[0]) && !mem.frame_is_free(held[1]) && !mem.frame_is_free(held[2]),
+		"a process holds three frames while it exists",
+	)
+	finish(r, p, "and is taken down")
+
+	// -- And the kernel's own view of the tree is what it was ----------------
+
+	c, cerr := vfs.open_path(vfs.boot_namespace, PATH_CONS, vfs.O_WRONLY)
+	if check(r, cerr == vfs.OK && c != nil, "the kernel opens the same path afterwards") {
+		mark := column()
+		n, werr := vfs.chan_write(c, 0, bytes_of(NAMED))
+		check(r, werr == vfs.OK && n == len(NAMED), "and writes to it")
+		check(
+			r,
+			column() - mark == len(NAMED),
+			"and reaches the console, so one process changed only its own namespace",
+		)
+		vfs.chan_close(c)
+		cons_finish()
+	}
+}
+
+// live_objects counts what the heap is holding. The same arithmetic
+// `kernel/main.odin` does for the namespace and service self-tests, repeated
+// here because this package cannot reach into that one.
+@(private = "file")
+live_objects :: proc "contextless" (s: mem.Heap_Stats) -> int {
+	live := s.large_blocks
+	for i in 0 ..< len(s.class_total) {
+		live += s.class_total[i] - s.class_free[i]
+	}
+	return live
 }

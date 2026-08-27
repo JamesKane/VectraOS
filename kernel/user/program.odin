@@ -40,6 +40,9 @@ MARK_JUMP :: u64(0x4A55_4D50_4A55_4D50) // JUMPJUMP
 MARK_HELLO :: u64(0x4845_4C4C_4845_4C4C) // HELLHELL
 MARK_PROBE :: u64(0x5052_4F42_5052_4F42) // PROBPROB
 MARK_SHADOW :: u64(0x5348_4144_5348_4144) // SHADSHAD
+MARK_NAMER :: u64(0x4E41_4D45_4E41_4D45) // NAMENAME
+MARK_READER :: u64(0x5245_4144_5245_4144) // READREAD
+MARK_BINDER :: u64(0x4249_4E44_4249_4E44) // BINDBIND
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -74,7 +77,48 @@ CELL_R12 :: 7
 CELL_XMM :: 8
 CELL_SPUN :: 9
 
-MESSAGE_OFFSET :: 128
+/*
+The four places a program looks for something the kernel put there.
+
+Sixty-four bytes apart, past every cell, and named rather than numbered because
+each program uses them for different things. `namer` finds a path in the first
+and a path that is not there in the fourth. `binder` finds two paths and a line
+to print.
+
+`MESSAGE_OFFSET` is the first slot under its older name, which is what `hello`
+still calls it.
+*/
+SLOT_A :: 128
+SLOT_B :: 192
+SLOT_C :: 256
+SLOT_D :: 320
+
+MESSAGE_OFFSET :: SLOT_A
+
+/*
+Where the three programs that open files keep their answers.
+
+One cell per call, in the order the program makes them. A wrong answer names
+the call rather than the program, which is the only reason to spend five cells
+where one would do.
+*/
+NAMER_OPENED :: 1
+NAMER_WROTE :: 2
+NAMER_CLOSED :: 3
+NAMER_AFTER_CLOSE :: 4
+NAMER_MISSING :: 5
+
+READER_OPENED :: 1
+READER_READ :: 2
+READER_REFUSED :: 3
+READER_CLOSED :: 4
+READER_BUFFER :: 8 // Byte offset 64, which is where the read lands
+
+BINDER_BOUND :: 1
+BINDER_OPENED :: 2
+BINDER_WROTE :: 3
+BINDER_CLOSED :: 4
+BINDER_AGAIN :: 5
 
 // What `probe` adds up and sends to `SYS_ARGS`. Six powers of two, so a lost
 // or duplicated argument register changes the sum rather than hides in it.
@@ -174,6 +218,12 @@ foreign {
 	vectra_user_probe_end: byte
 	vectra_user_shadow: byte
 	vectra_user_shadow_end: byte
+	vectra_user_namer: byte
+	vectra_user_namer_end: byte
+	vectra_user_reader: byte
+	vectra_user_reader_end: byte
+	vectra_user_binder: byte
+	vectra_user_binder_end: byte
 }
 
 @(private)
@@ -197,6 +247,11 @@ program_jump :: proc "contextless" () -> []u8 {return blob(&vectra_user_jump, &v
 program_hello :: proc "contextless" () -> []u8 {return blob(&vectra_user_hello, &vectra_user_hello_end)}
 program_probe :: proc "contextless" () -> []u8 {return blob(&vectra_user_probe, &vectra_user_probe_end)}
 program_shadow :: proc "contextless" () -> []u8 {return blob(&vectra_user_shadow, &vectra_user_shadow_end)}
+
+// The three that open files by name, in a namespace of their own.
+program_namer :: proc "contextless" () -> []u8 {return blob(&vectra_user_namer, &vectra_user_namer_end)}
+program_reader :: proc "contextless" () -> []u8 {return blob(&vectra_user_reader, &vectra_user_reader_end)}
+program_binder :: proc "contextless" () -> []u8 {return blob(&vectra_user_binder, &vectra_user_binder_end)}
 
 /*
 The five programs, emitted by the assembler.
@@ -402,5 +457,151 @@ vectra_user_shadow:
 	ud2
 .globl vectra_user_shadow_end
 vectra_user_shadow_end:
+
+.balign 16
+.globl vectra_user_namer
+vectra_user_namer:
+	movq %rdi, %rbx
+	movq %rsi, %rbp
+	movq %rdx, %r12
+	movabsq $$0x4E414D454E414D45, %rax
+	movq %rax, (%rbx)
+
+	leaq 128(%rbx), %rdi
+	movq %rbp, %rsi
+	movq $$1, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r13
+
+	movq %r13, %rdi
+	leaq 256(%rbx), %rsi
+	movq %r12, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movq %r13, %rdi
+	movq $$6, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq %r13, %rdi
+	leaq 256(%rbx), %rsi
+	movq %r12, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	leaq 320(%rbx), %rdi
+	movq %rbp, %rsi
+	xorl %edx, %edx
+	movq $$5, %rax
+	syscall
+	movq %rax, 40(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_namer_end
+vectra_user_namer_end:
+
+.balign 16
+.globl vectra_user_reader
+vectra_user_reader:
+	movq %rdi, %rbx
+	movq %rsi, %rbp
+	movabsq $$0x5245414452454144, %rax
+	movq %rax, (%rbx)
+	movq $$-1, %rax
+	movq %rax, 64(%rbx)
+
+	leaq 128(%rbx), %rdi
+	movq %rbp, %rsi
+	xorl %edx, %edx
+	movq $$5, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r13
+
+	movq %r13, %rdi
+	leaq 64(%rbx), %rsi
+	movq $$8, %rdx
+	movq $$7, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movq %r13, %rdi
+	movq $$0x400000, %rsi
+	movq $$8, %rdx
+	movq $$7, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq %r13, %rdi
+	movq $$6, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_reader_end
+vectra_user_reader_end:
+
+.balign 16
+.globl vectra_user_binder
+vectra_user_binder:
+	movq %rdi, %rbx
+	movq %rsi, %rbp
+	movq %rdx, %r12
+	movabsq $$0x42494E4442494E44, %rax
+	movq %rax, (%rbx)
+
+	leaq 128(%rbx), %rdi
+	movq %rbp, %rsi
+	leaq 192(%rbx), %rdx
+	movq %rbp, %r10
+	xorl %r8d, %r8d
+	movq $$8, %rax
+	syscall
+	movq %rax, 8(%rbx)
+
+	leaq 192(%rbx), %rdi
+	movq %rbp, %rsi
+	movq $$1, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 16(%rbx)
+	movq %rax, %r13
+
+	movq %r13, %rdi
+	leaq 256(%rbx), %rsi
+	movq %r12, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq %r13, %rdi
+	movq $$6, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	movq $$1, %rdi
+	leaq 256(%rbx), %rsi
+	movq %r12, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 40(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_binder_end
+vectra_user_binder_end:
 `, "~{memory}"}()
 }

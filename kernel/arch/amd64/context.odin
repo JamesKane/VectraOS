@@ -177,6 +177,7 @@ thread_user_init :: proc "contextless" (
 	user_sp: uintptr,
 	arg0: u64,
 	arg1: u64,
+	arg2: u64,
 ) -> (
 	resume: Resume,
 	ok: bool,
@@ -200,6 +201,7 @@ thread_user_init :: proc "contextless" (
 	frame^ = Trap_Frame {
 		rdi    = arg0,
 		rsi    = arg1,
+		rdx    = arg2,
 		rip    = u64(entry),
 		cs     = u64(USER_CODE_RING3),
 		rflags = 0x202,

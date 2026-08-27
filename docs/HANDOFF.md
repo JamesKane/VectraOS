@@ -26,16 +26,20 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 `aarch64` and `riscv64`.
 
 **`servers/` is empty and devfs lives in `kernel/` instead**, which is a
-departure from that layout and a temporary one. A server outside the kernel
-needs an address space to be outside it *in*. Both `kernel/devfs` and
-`kernel/srv` already speak 9P over a transport that hides which side of a
-boundary they sit on. The move is a build change rather than a rewrite.
+departure from that layout and a temporary one. The address space a server
+needs to be outside the kernel *in* now exists, and so does the namespace it
+would speak through. Both `kernel/devfs` and `kernel/srv` already speak 9P over
+a transport that hides which side of a boundary they sit on.
+
+What is missing is the step before the move. Nothing loads a program out of a
+file, and nothing starts a process the kernel did not build itself. See section
+6.
 
 ## 2. Where things stand
 
 The machine boots, brings up memory, a namespace, a scheduler and a preempting
-timer, and publishes `#c` at `/dev` and `#s` at `/srv`. It then runs about five
-hundred and eighty checks against itself and idles.
+timer, and publishes `#c` at `/dev` and `#s` at `/srv`. It then runs about six
+hundred and fifty checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -43,22 +47,24 @@ keystroke gets there by raising IRQ 1, which is the first interrupt Vectra
 receives rather than arms. `/srv` is a directory of running services, and a name
 posted there can be mounted anywhere in a namespace.
 
-**Vectra now runs code it does not trust, and that code can ask for things.**
-Nine programs enter ring 3 during the boot. The timer takes the core away from
-one of them and gives it back. Four try something a program may not do, and the
-kernel ends the program rather than the machine. Four make system calls, and
-one of them puts its own line in the boot log:
+**Vectra runs processes.** Twelve of them enter ring 3 during the boot. Four
+try something a program may not do, and the kernel ends the process rather than
+the machine. The rest ask the kernel for things, and three of them open files
+by name in a namespace of their own:
 
     -- a program in ring 3 wrote this line
+    -- a process opened this file by name
+    -- this line went to /dev/null
 
-That line crosses every layer there is. Ring 3, the `syscall` stub, a copy out
-of a program's memory, a 9P write over the real transport, `#c` at `/dev`, and
-the console.
+The last of those is the point. A process bound `/dev/null` over `/dev/cons` in
+**its own** namespace, wrote the same line twice, and the console moved once.
+Nothing else on the machine saw the change.
 
-Three of the four things a program needs are built. The fourth is a process to
-own what it asks for, and section 6 says what that means.
+A process is an address space, a namespace and a set of open files, which is
+all four of the things a program needs. `docs/USER.md` has all three
+milestones.
 
-About 29,700 lines of Odin. The linked image is ~927 KB debug and ~429 KB
+About 30,500 lines of Odin. The linked image is ~948 KB debug and ~437 KB
 release.
 
 **What exists, and which document says why:**
@@ -76,7 +82,7 @@ release.
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs | `docs/SRV.md` |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, and a top half that may not park | `docs/KBD.md` |
 | `kernel/mem/space.odin` | An address space per process, sharing one kernel half | `docs/SPACE.md` |
-| `kernel/user/` | Ring 3, the door back in, and the nine programs that go through both | `docs/USER.md` |
+| `kernel/user/` | Ring 3, the door back in, and a process that owns what it opens | `docs/USER.md` |
 
 **The order they arrived in matters in exactly one way**, and it is worth
 knowing before reading any of them. Each of these unblocked the next, and none
@@ -93,6 +99,7 @@ of them could have come earlier:
     an address space        two threads can mean different memory by one name
     ring 3                  a thread can run where it cannot damage the kernel
     a system call           and can ask the kernel for something anyway
+    a process               and what it opens is its own, in its own namespace
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -105,12 +112,12 @@ code it explains.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x0000000019fda000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x0000000019fd1000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 32 entries spanning 12.7 GiB
 [  ok  ] usable 466.2 MiB, reclaimable 39.9 MiB
 [  --  ] largest usable region 393.8 MiB at 0x0000000001600000
-[  ok  ] pmm 119371 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
+[  ok  ] pmm 119362 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
 [  ok  ] vmm root 0x0000000000005000, mapped 515.7 MiB in 271 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
@@ -121,14 +128,14 @@ code it explains.
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] ioapic version 0x20, 24 lines, all masked
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62506 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (19218567-19452544 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 2355 acquisitions, 2245 parked and handed back, decayed to 1
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62518 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (17437225-17673437 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 2218 acquisitions, 2120 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 4672 namespace operations across 5 threads, 753 rebinds under them in 1000 ms, nothing serialised, heap balanced
+[  ok  ] vfs 34 concurrency checks passed -- 4448 namespace operations across 5 threads, 717 rebinds under them in 1000 ms, nothing serialised, heap balanced
 [  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/consX 
 [  ok  ] devfs 81 device checks passed -- 4 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 10 ticks
@@ -136,10 +143,13 @@ code it explains.
 [  ok  ] srv 69 service checks passed -- 35 posted, 6 listed across 6 passes with one removed under them, 1 mounted, heap balanced
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] kbd 48 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
-[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 133 CR3 reloads, one address two meanings
-[  ok  ] syscall armed -- entry at 0xffffffff8001f010, /dev/cons is descriptor 1
+[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 132 CR3 reloads, one address two meanings
+[  ok  ] syscall armed -- entry at 0xffffffff8001ed30, /dev/cons is descriptor 1
 -- a program in ring 3 wrote this line
-[  ok  ] user 124 ring 3 checks passed -- 9 programs, 7940543 rounds of one preempted, 11 system calls, 48 returns from ring 3, the kernel untouched
+-- a process opened this file by name
+-- this line went to /dev/null
+-- a process opened this file by name
+[  ok  ] user 168 userland checks passed -- 12 processes, 7596790 preempted rounds, 28 system calls, one path two files
 [  ok  ] boot complete -- idling
 ```
 
@@ -164,14 +174,12 @@ knowing about before reading a boot:
 
 The two that shape everything after them:
 
-- **No process.** A process is a space, a namespace and a set of open files.
-  The space is real, the namespace exists and belongs to the kernel, and there
-  are no open files at all. `SYS_WRITE`'s descriptor 1 is a constant with
-  `/dev/cons` behind it. That is why `Thread.space` is deliberately not called
-  a process. See `docs/USER.md`.
-- **The system calls are a door rather than an interface.** Five of them:
-  `exit`, `sleep`, `write`, and two that exist to test the door. What belongs
-  behind it is the four or five 9P operations a namespace needs.
+- **No `fork` and no `exec`.** The kernel builds every process out of an image
+  baked into itself. There is no loader and no way for a process to start
+  another one, so `servers/` and `apps/` still have nothing to put in them.
+- **No `create`, no `stat`, no `mount` behind the door.** The first waits on
+  `vfs.chan_create`, the second on something that needs it, and the third on a
+  descriptor that can carry a connection. See `docs/USER.md` and `docs/SRV.md`.
 - **No SMP.** `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 ever
   starts. There is no IPI, no AP trampoline and no lock word.
 
@@ -226,7 +234,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, the two transports, and the lock that went | Walking, binding, adding a server, or giving up on a read |
 | `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
 | `docs/SPACE.md` | `kernel/mem/space.odin` — a space per process, and the half of it that is shared | Building a process, mapping something a program may reach, or wondering what the scheduler reloads |
-| `docs/USER.md` | `kernel/user/` — ring 3, `syscall`/`sysret`, the per-CPU record behind GS, and the nine baked programs | Entering ring 3, adding a system call, copying a pointer in from a program, or wondering what a program may not do |
+| `docs/USER.md` | `kernel/user/` — ring 3, `syscall`/`sysret`, the per-CPU record behind GS, a process and its namespace | Entering ring 3, adding a system call, copying a pointer in from a program, or wondering what a program may not do |
 | `docs/KBD.md` | `kernel/drivers/kbd/` — scancodes, the I/O APIC, and why a handler splits in two | Adding a device that interrupts, routing a line, or wondering why the polling thread is still there |
 | `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention | Adding a device file, adding a `ctl` file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
@@ -316,25 +324,27 @@ by something that is not a self-test.
 
 **Next, in order:**
 
-1. **A process**, which is the last of userland's four pieces. Address spaces,
-   ring 3 and the system call door are built. `docs/SPACE.md` and
-   `docs/USER.md` say what each of them left behind.
+1. **A process that starts another one.** All four pieces of userland are
+   built, and what they cannot do is reproduce. There is no `fork`, no `exec`
+   and no loader, so `servers/` and `apps/` still have nothing to put in them.
 
-   A process is a space, a namespace and a set of open files. The space is
-   already on the thread. The namespace already exists and is the kernel's, so
-   what it needs is a per-process copy, which `vfs` was built for. The open
-   files do not exist at all: `SYS_WRITE`'s descriptor 1 is a constant.
+   Three things, and roughly this order.
 
-   **A descriptor table is what turns the door into an interface.** With one,
-   the calls behind `syscall` become `open`, `read`, `write`, `close` and
-   `bind`. Those are what make a program able to open a file rather than able
-   to print. `docs/VECTRA9.md` has the model, and `docs/SRV.md` says precisely
-   which line wants the descriptor first.
+   **A loader.** An image in a file, read through a namespace a process owns,
+   and mapped into a space `mem.space_new` already builds. Everything under it
+   exists. What it needs is a format, and the answer is probably not ELF for a
+   first one.
 
-   A process is also what would let the kernel *stop* a program. Nothing can
-   today. A program can end itself now, and `user.destroy` still refuses a
-   running one rather than free the tables underneath it. Plan 9 ends a process
-   with a note.
+   **`rfork`.** `vfs.ns_fork` already takes the flags, and `kernel/user` is its
+   only caller. A child that shares its parent's namespace or copies it is one
+   argument, and the space and the descriptors follow the same three cases.
+
+   **A note, or whatever ends a process from outside.** Nothing can today. A
+   process ends itself or faults, and `user.destroy` refuses a running one
+   rather than free the tables underneath it. Plan 9 sends a note.
+
+   With those, `servers/devfs` moves out of the kernel and the layout in
+   section 1 stops being aspirational.
 2. **`/dev/draw`**, over `kernel/drivers/fb`. The other half of a console, and
    the thing `apps/terminal` will actually want.
 3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
@@ -372,8 +382,8 @@ rather than something absent. All are named in the code they live in.
   checked. A depth counter the trap dispatcher brackets a handler with would
   turn it into a named stop, the way the spinlock rule already is. It touches
   the scheduler's hot path, so it wants a milestone rather than a patch.
-- **A program that cannot be stopped from outside.** It can end itself now, and
-  the kernel still cannot end it. `user.destroy` refuses a program that is
+- **A process that cannot be stopped from outside.** It can end itself now, and
+  the kernel still cannot end it. `user.destroy` refuses a process that is
   still running, because its thread is translating through the space and
   writing to the frames. The leak is honest rather than absorbed, and
   `user.stats().live` reports it. See `docs/USER.md`.
@@ -543,16 +553,17 @@ kernel/
                         mounted, removed under its own mount, and a listing
                         paced across a removal
   user/
-    user.odin           Ring 3: what a program is, how one is loaded into a
-                        space of its own, and the fault handler that ends one
-                        rather than the machine
+    user.odin           A process: a space, a namespace forked from the
+                        kernel's, a table of open files, and the fault handler
+                        that ends one rather than the machine
     syscall.odin        What is behind the door: the calling convention, the
-                        five calls, and the copy-in that decides whether a
+                        nine calls, and the two copies that decide whether a
                         pointer from ring 3 is one the kernel may follow
-    program.odin        The nine programs the assembler bakes into the image,
+    program.odin        The twelve programs the assembler bakes into the image,
                         and the marks they write to say they ran
-    verify.odin         The boot self-test: 124 checks -- one program preempted
-                        while the kernel works, four refused, and four that ask
+    verify.odin         The boot self-test: 168 checks -- one process preempted
+                        while the kernel works, four refused, four that ask,
+                        and three that open files by name
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled
     wait.odin           Wait queues, scheduler hooks, priority-ordered service
@@ -587,9 +598,9 @@ docs/
                         the two decisions a directory that changes needs
   SPACE.md              kernel/mem/space.odin: a space per process, what it
                         owns, and the comparison the scheduler grew
-  USER.md               kernel/user: ring 3, the three things that make it one,
-                        the door back in, the confused deputy, and the eighteen
-                        controls
+  USER.md               kernel/user: ring 3, the door back in, a process and
+                        its own namespace, the confused deputy, and the
+                        twenty-four controls
   KBD.md                kernel/drivers/kbd: scancodes, the I/O APIC route, and
                         the constraint that splits a handler in two
   DEVFS.md              kernel/devfs: #c at /dev, the console device, the

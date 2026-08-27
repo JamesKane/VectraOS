@@ -35,12 +35,21 @@ scheduler visible from ring 3.
 `nop` and `args` exist to test the door. They go the day something real needs
 their numbers.
 
-`write` is a placeholder around a real path. **Descriptor 1 is `/dev/cons`,
-opened once at boot, and there is no table behind it.** A file descriptor
-belongs to a process, and a process is the next milestone. Until then this is a
-hardcoded chan with a number in front of it. What is real about it is
-everything after the copy: a genuine 9P write, over the real transport, to the
-real console. A program's own bytes reach the boot log through it.
+`open`, `close`, `read`, `write` and `bind` are the interface. Five calls, and
+four of them are 9P operations with a descriptor in front. The fifth is what
+makes Vectra a Plan 9 system rather than a Unix one. **A process rearranges its
+own namespace, and no other process sees the change.**
+
+`nop` and `args` stay because they cost nothing and they are the only checks
+that say every argument register arrives. They are the door's own self-test.
+
+## What is still missing from the interface
+
+No `create`, because `kernel/vfs` has no `chan_create`. No `stat`, because
+nothing needs one yet. No `mount`, because posting a service from ring 3 needs
+a descriptor to carry the connection, and `docs/SRV.md` says which line that
+is. All three are the same shape as the five below and none of them is a design
+question.
 */
 package user
 
@@ -59,10 +68,15 @@ SYS_ARGS :: u64(1)
 SYS_WRITE :: u64(2)
 SYS_SLEEP :: u64(3)
 SYS_EXIT :: u64(4)
+SYS_OPEN :: u64(5)
+SYS_CLOSE :: u64(6)
+SYS_READ :: u64(7)
+SYS_BIND :: u64(8)
+SYS_SEEK :: u64(9)
 
-// The one descriptor there is. See the file comment for why it is a constant
-// rather than an index.
-FD_CONS :: u64(1)
+// The longest path a program may name in one call. Long enough for anything
+// in the tree, short enough to sit on a kernel stack beside the copy buffer.
+PATH_MAX :: 128
 
 /*
 How much of a program's memory one call may copy.
@@ -79,6 +93,12 @@ COPY_MAX :: 256
 // nothing would ever reap it.
 SLEEP_MAX :: u64(100)
 
+/*
+The kernel's own handle on the console, which is not a process's.
+
+`cons_finish` uses it to end a line a program wrote and did not. Every
+descriptor a program holds comes from that process's own namespace instead.
+*/
 @(private = "file")
 cons: ^vfs.Chan
 
@@ -147,7 +167,17 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		// that all six arrive, which is the one property the convention has.
 		result = i64(a0 + a1 + a2 + a3 + a4 + a5)
 	case SYS_WRITE:
-		result = sys_write(a0, uintptr(a1), int(a2))
+		result = sys_write(int(a0), uintptr(a1), int(a2))
+	case SYS_READ:
+		result = sys_read(int(a0), uintptr(a1), int(a2))
+	case SYS_OPEN:
+		result = sys_open(uintptr(a0), int(a1), u32(a2))
+	case SYS_CLOSE:
+		result = sys_close(int(a0))
+	case SYS_BIND:
+		result = sys_bind(uintptr(a0), int(a1), uintptr(a2), int(a3), a4)
+	case SYS_SEEK:
+		result = sys_seek(int(a0), a1)
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
 	case SYS_EXIT:
@@ -159,9 +189,27 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 	frame.rax = u64(result)
 }
 
+/*
+current reports the process the calling thread belongs to.
+
+One load, through `Thread.user`, which the scheduler carries and never reads.
+Every call below starts here, because every call below is about something a
+process owns.
+*/
 @(private = "file")
-sys_write :: proc(fd: u64, addr: uintptr, count: int) -> i64 {
-	if fd != FD_CONS || cons == nil {
+current :: proc "contextless" () -> ^Process {
+	thread := sched.current()
+	if thread == nil {
+		return nil
+	}
+	return (^Process)(thread.user)
+}
+
+@(private = "file")
+sys_write :: proc(fd: int, addr: uintptr, count: int) -> i64 {
+	p := current()
+	f := fd_at(p, fd)
+	if f == nil {
 		return -i64(vectra9.EBADF)
 	}
 	if count <= 0 {
@@ -174,11 +222,151 @@ sys_write :: proc(fd: u64, addr: uintptr, count: int) -> i64 {
 		return -i64(vectra9.EFAULT)
 	}
 
-	written, err := vfs.chan_write(cons, 0, buffer[:n])
+	written, err := vfs.chan_write(f.chan, f.offset, buffer[:n])
 	if err != vfs.OK {
 		return -i64(err)
 	}
+	// The cursor is the process's, not the file's. See `Fd`.
+	f.offset += u64(written)
 	return i64(written)
+}
+
+/*
+sys_read fills a program's buffer from one of its descriptors.
+
+Two copies, and the middle one is the kernel's. A read straight into a
+program's page would hand `vfs.chan_read` an address it cannot check. A 9P
+transport is the wrong place to grow a memory-protection opinion.
+
+`copy_out` runs after the read rather than before, so a refused destination
+costs the read rather than the file. That is the wrong way round for a device
+that consumes what it gives, and the right way round for everything else. The
+day `/dev/cons` is read this way, the answer is a buffer the process keeps.
+*/
+@(private = "file")
+sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
+	p := current()
+	f := fd_at(p, fd)
+	if f == nil {
+		return -i64(vectra9.EBADF)
+	}
+	if count <= 0 {
+		return 0
+	}
+
+	buffer: [COPY_MAX]u8
+	n := min(count, COPY_MAX)
+	got, err := vfs.chan_read(f.chan, f.offset, buffer[:n])
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	if got > 0 && !copy_out(addr, buffer[:got]) {
+		return -i64(vectra9.EFAULT)
+	}
+	f.offset += u64(got)
+	return i64(got)
+}
+
+/*
+sys_open resolves a path in **this process's** namespace and returns a number.
+
+The number is the lowest free one, which is the rule a shell depends on. The
+path comes through `copy_in` like every other pointer from ring 3, into a
+buffer bounded by `PATH_MAX`.
+
+The namespace is the process's fork, so two processes can hand this the same
+string and get different files. `verify_namespaces` is that sentence as a
+check.
+*/
+@(private = "file")
+sys_open :: proc(addr: uintptr, length: int, flags: u32) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+
+	path: [PATH_MAX]u8
+	if length <= 0 || length > PATH_MAX || !copy_in(addr, length, path[:]) {
+		return -i64(vectra9.EFAULT)
+	}
+
+	c, err := vfs.open_path(p.ns, string(path[:length]), flags)
+	if err != vfs.OK {
+		return -i64(err)
+	}
+
+	fd, ok := fd_open(p, c)
+	if !ok {
+		vfs.chan_close(c)
+		return -i64(vectra9.EMFILE)
+	}
+	return i64(fd)
+}
+
+@(private = "file")
+sys_close :: proc(fd: int) -> i64 {
+	if !fd_close(current(), fd) {
+		return -i64(vectra9.EBADF)
+	}
+	return 0
+}
+
+/*
+sys_bind rearranges this process's view of the tree, and nobody else's.
+
+**This is the call that makes Vectra a Plan 9 system.** Every other call here
+has a Unix twin. This one does not, because in Unix the mount table belongs to
+the machine and here it belongs to the process.
+
+`order` is `Mount_Order`, and it is a number from ring 3 rather than a name. An
+order the enum does not have becomes `.Replace`. A bind that lands somewhere
+unexpected is worse than one that lands where a caller with no opinion would
+want it.
+
+A descriptor already open is not affected. It names a chan, and a bind changes
+what a *path* resolves to. That is Plan 9's rule and it is the one a program
+notices first.
+*/
+@(private = "file")
+sys_bind :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order: u64) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+	if src_len <= 0 || src_len > PATH_MAX || dst_len <= 0 || dst_len > PATH_MAX {
+		return -i64(vectra9.EINVAL)
+	}
+
+	source: [PATH_MAX]u8
+	target: [PATH_MAX]u8
+	if !copy_in(src, src_len, source[:]) || !copy_in(dst, dst_len, target[:]) {
+		return -i64(vectra9.EFAULT)
+	}
+
+	how := vfs.Mount_Order.Replace
+	switch order {
+	case 1: how = .Before
+	case 2: how = .After
+	}
+
+	err := vfs.bind_path(p.ns, string(source[:src_len]), string(target[:dst_len]), how)
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	return 0
+}
+
+// sys_seek moves a descriptor's cursor. The cursor is the process's, so this
+// touches nothing the file knows about. There is no `whence`, because there is
+// no size to seek relative to until something answers `stat`.
+@(private = "file")
+sys_seek :: proc(fd: int, offset: u64) -> i64 {
+	f := fd_at(current(), fd)
+	if f == nil {
+		return -i64(vectra9.EBADF)
+	}
+	f.offset = offset
+	return i64(offset)
 }
 
 @(private = "file")
@@ -211,7 +399,7 @@ sys_exit :: proc(frame: ^arch.Trap_Frame, status: u64) {
 	arch.disable_interrupts()
 
 	if thread := sched.current(); thread != nil {
-		if p := (^Program)(thread.user); p != nil {
+		if p := (^Process)(thread.user); p != nil {
 			p.exit.vector = frame.vector
 			p.exit.ip = uintptr(frame.rip)
 			p.exit.sp = uintptr(frame.rsp)
@@ -245,9 +433,62 @@ unmap anything yet and a program has one thread, so the window is not
 reachable. The first program with two threads reaches it. The answer then is
 the one every kernel reaches for: fault the read and recover from it.
 */
+/*
+copy_out is the other direction, with one more thing to demand.
+
+The same range and the same `User` bit, and a `Write` bit as well. A program
+that names its own text page as a destination is asking the kernel to write
+where ring 3 may not. The kernel has to say no on its own account. `CR0.WP`
+turns that request into a page fault **in the kernel**, which is a program
+stopping the machine with an address.
+
+`set_bytes` in `user.odin` is the *kernel's* copy in this direction and checks
+none of it. The kernel owns the frame and reaches it through the direct map.
+That asymmetry is the whole reason these two exist and `set_bytes` does not.
+*/
+@(private = "file")
+copy_out :: proc "contextless" (addr: uintptr, src: []u8) -> bool {
+	if !reachable(addr, len(src), {.User, .Write}) {
+		return false
+	}
+	dst := cast([^]u8)addr
+	for i in 0 ..< len(src) {
+		dst[i] = src[i]
+	}
+	return true
+}
+
 @(private = "file")
 copy_in :: proc "contextless" (addr: uintptr, n: int, dst: []u8) -> bool {
 	if n <= 0 || n > len(dst) {
+		return false
+	}
+	if !reachable(addr, n, {.User}) {
+		return false
+	}
+
+	src := cast([^]u8)addr
+	for i in 0 ..< n {
+		dst[i] = src[i]
+	}
+	return true
+}
+
+/*
+reachable answers whether ring 3 could do this itself.
+
+One question asked once, so the two copy directions cannot drift apart. The
+range is inside the half a program may name, every page in it is present, and
+every page carries every flag in `need`.
+
+`addr >= USER_MAX` is not redundant beside `addr + span > USER_MAX`, and a
+control aimed at the wrong half of that pair proved it. An address near the top
+of the arithmetic wraps, and the sum comes out small. The first test is the one
+that catches it.
+*/
+@(private = "file")
+reachable :: proc "contextless" (addr: uintptr, n: int, need: arch.Page_Flags) -> bool {
+	if n <= 0 {
 		return false
 	}
 	if addr < mem.USER_MIN || addr >= mem.USER_MAX {
@@ -268,14 +509,9 @@ copy_in :: proc "contextless" (addr: uintptr, n: int, dst: []u8) -> bool {
 	last := (addr + span - 1) & ~(page - 1)
 	for at := first; at <= last; at += page {
 		flags, ok := mem.permissions(thread.space, at)
-		if !ok || .User not_in flags {
+		if !ok || need - flags != {} {
 			return false
 		}
-	}
-
-	src := cast([^]u8)addr
-	for i in 0 ..< n {
-		dst[i] = src[i]
 	}
 	return true
 }
