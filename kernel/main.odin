@@ -20,6 +20,7 @@ import "base:runtime"
 
 import "kernel:arch"
 import "kernel:boot/limine"
+import "kernel:devfs"
 import "kernel:drivers/console"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
@@ -176,6 +177,13 @@ kmain :: proc "sysv" () {
 			verify_payload()
 			verify_vfs_mnt()
 			verify_vfs_threads()
+
+			// Last, and only here. devfs is the first server whose reads
+			// park. It needs workers, a clock and a rendezvous, and the block
+			// above just finished proving all three.
+			if init_devfs() {
+				verify_devfs()
+			}
 		}
 	}
 
@@ -1004,5 +1012,80 @@ report_sched :: proc(
 	libodin.put_uint(&sink, u64(r.failures))
 	libodin.put_str(&sink, " FAILED -- first: ")
 	libodin.put_str(&sink, r.first_failure)
+	emit(&klog, .Fault, &sink)
+}
+
+/*
+init_devfs brings up `#c` and binds it at `/dev`.
+
+The first device server on the machine. It is also the first thing in the boot
+that makes a path lead to hardware rather than to a table.
+
+It gets the same console and the same serial port the kernel log writes to. That
+is what makes `/dev/cons` the console, rather than a copy of it.
+
+Last in the boot order, because it needs everything before it. Workers are
+threads, a parked reader waits on a rendezvous, and a reader that gives up needs
+a clock to give up against.
+*/
+init_devfs :: proc() -> bool {
+	if err := devfs.init(vfs.boot_namespace, &kcon, &serial); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "devfs: #c would not come up -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "devfs #c bound at /dev, ")
+	libodin.put_uint(&sink, u64(devfs.DEV_FILES))
+	libodin.put_str(&sink, " devices on ")
+	libodin.put_uint(&sink, u64(devfs.WORKERS))
+	libodin.put_str(&sink, " workers, console input ")
+	libodin.put_str(&sink, devfs.input_started() ? "live" : "absent")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+verify_devfs reads and writes the machine's own `/dev/cons`.
+
+Over the real mount, through the real transport, on the boot namespace. The two
+checks that matter are a read that parks until a byte arrives and a read that
+gives up and flushes. See `kernel/devfs/verify.odin`.
+*/
+verify_devfs :: proc() {
+	scratch := make([]u8, 512)
+	if scratch == nil {
+		log_line(&klog, .Fault, "devfs self-test skipped -- no memory for a scratch buffer")
+		return
+	}
+	defer delete(scratch)
+
+	result := devfs.verify(scratch)
+	ok := result.failures == 0 && result.checks > 0
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "devfs ")
+	libodin.put_uint(&sink, u64(result.checks))
+	if ok {
+		libodin.put_str(&sink, " device checks passed -- ")
+		libodin.put_uint(&sink, u64(result.listed))
+		libodin.put_str(&sink, " files under /dev, ")
+		libodin.put_uint(&sink, u64(result.written))
+		libodin.put_str(&sink, " bytes written to cons, ")
+		libodin.put_uint(&sink, result.parked)
+		libodin.put_str(&sink, " reads parked, a read gave up after ")
+		libodin.put_uint(&sink, result.gave_up)
+		libodin.put_str(&sink, " ticks")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+
+	libodin.put_str(&sink, " checks, ")
+	libodin.put_uint(&sink, u64(result.failures))
+	libodin.put_str(&sink, " FAILED -- first: ")
+	libodin.put_str(&sink, result.first_failure)
 	emit(&klog, .Fault, &sink)
 }

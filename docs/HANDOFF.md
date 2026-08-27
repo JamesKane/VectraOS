@@ -62,7 +62,21 @@ session, and a reply borrows the caller now. `alloc_fid` is an atomic increment,
 which was the lock's other job. What it bought is `chan_read_for`, a read with a
 deadline that sends `Tflush` and waits for `Rflush` before it lets the fid go.
 
-About 20,300 lines of Odin. The linked image is ~735 KB debug and ~319 KB
+**Milestone 10 spends all of that.** `kernel/devfs` is `#c`, bound at `/dev`,
+with `cons`, `null` and `zero` in it. It is the first server whose files are
+devices rather than strings. It is the first whose handler may not hold its own
+lock across a request. And it is the first whose reads genuinely park.
+Everything that waited before it waited because a self-test told it to.
+
+Three subsystems built for a server that did not exist are now reached from a
+path. Workers behind `#c`. A payload buffer per slot under every `Rread` from
+the console. And `chan_read_for` on `/dev/cons`, which flushes a real driver
+waiting on real hardware.
+
+`vfs.Fid_Table` moved out of `static.odin` on the way, because a second server
+should not mean a second fid table. See `docs/DEVFS.md`.
+
+About 22,000 lines of Odin. The linked image is ~781 KB debug and ~345 KB
 release.
 
 ```
@@ -96,10 +110,15 @@ release.
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
 [  ok  ] vfs 34 concurrency checks passed -- 4763 namespace operations across 5 threads, 762 rebinds under them in 1000 ms, nothing serialised, heap balanced
+[  ok  ] devfs #c bound at /dev, 3 devices on 4 workers, console input live
+-- this line reached the screen through /dev/cons
+[  ok  ] devfs 41 device checks passed -- 3 files under /dev, 49 bytes written to cons, 2 reads parked, a read gave up after 10 ticks
 [  ok  ] boot complete -- idling
 ```
 
-The last line is the one that moves between builds, on purpose. `just release`
+The untagged line in the middle is the self-test writing to `/dev/cons`, and it
+is the shortest proof this milestone has. The last line is the one that moves
+between builds, on purpose. `just release`
 does the same thousand ticks of work, and reports about fifty thousand
 operations. `docs/TESTING.md` says why that is the right way round.
 
@@ -113,8 +132,10 @@ operations. `docs/TESTING.md` says why that is the right way round.
 - No condition variable as such, because `sync.Rendez` is one.
 - No read/write sleeping lock, which is the piece `Mount_Point.generation`
   stands in for.
-- No use of `Tflush` from `kernel/vfs`. It exists in `kernel/mnt`. See
-  `docs/TRANSPORT.md`.
+- No line discipline on `/dev/cons`, and no `/dev/consctl` to hold one. A read
+  is raw and echoed. See `docs/DEVFS.md`.
+- No keyboard driver, so console input comes from the serial port and a thread
+  polls it. That thread is where an interrupt handler will go.
 - No `swapgs`, and no per-CPU state behind GS.
 - `kmain` ends with a call to `sched.exit`, so the machine idles rather than
   halts.
@@ -146,6 +167,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/SYNC.md` | `kernel/sync/` — spinlocks, sleeping locks, the sleep queue | Taking any lock, or making anything wait |
 | `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, the two transports, and the lock that went | Walking, binding, adding a server, or giving up on a read |
 | `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
+| `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the abort hook | Adding a device file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
@@ -225,18 +247,20 @@ a copy of `base:runtime` that must track the compiler. Current Odin ships
 ## 6. Where to go next
 
 The scheduler was the thing that blocked everything else. The namespace it
-exposed is now locked. The lock that holds a session across a message sleeps,
-and a thread can now wait for a condition or a deadline. Every primitive a
-driver needs now exists. What is left is mostly *use* of them.
+exposed is now locked, the session lock sleeps, and a thread can wait for a
+condition or a deadline. Milestone 10 spent all of it on `#c` at `/dev`, so
+every primitive a driver needs is not only present but used.
 
-**A first real device server is the next piece.** `devfs` with `/dev/cons` over
-the console driver, which makes the whole path from a name to a byte on screen
-exist end to end. `static.odin` is the wrong shape only because it is read-only.
-Everything under it is now in place. A server can have workers, a read of it can
-be given up on, and a write has somewhere to put its payload.
+**`/srv` is the next piece.** It needs a thread on each side of a transport, and
+it is what turns `mount_device` into a real `mount`. `kernel/devfs` proved the
+server side of that arrangement: workers, a payload buffer per slot, and an
+abort hook that a client's deadline reaches. What `/srv` adds is a name for a
+channel that a *process* posted, rather than one the kernel registered.
 
-That server is also the first one whose reads genuinely block. Everything that
-waits today waits because a self-test told it to.
+**`/dev/consctl` is the small piece worth doing first.** It is the first `ctl`
+file in the tree, which makes it where the convention for parsing one gets set.
+Cooked mode, echo, and the `rawon`/`rawoff` pair are what it carries, and
+`docs/DEVFS.md` says what a line discipline would have to hold.
 
 **A read/write sleeping lock is the other piece worth wanting.**
 `Mount_Point.generation` exists only because a read lock could not be held
@@ -256,17 +280,18 @@ runs at realtime. It will the moment something does. Plan 9 never had it either,
 which is an argument about cost rather than about correctness.
 
 **Then, in roughly this order:**
-1. **`kernel/vfs` on `kernel/mnt`.** See above. This is what makes `Tflush`
-   reachable from a path rather than from a self-test.
-2. **A first real device server.** `devfs` with `/dev/cons` over the console
-   driver, which makes the whole path from a name to a byte on screen exist end
-   to end. `static.odin` is the wrong shape only because it is read-only.
+1. **`/dev/consctl`**, and the line discipline behind it. See above.
+2. **A keyboard driver.** It is what turns `devfs.cons_input` from a thread that
+   polls into an interrupt handler, and `cons_feed` is the entry point it
+   already has.
 3. **`/srv`**, which needs a thread on each side of a transport and therefore
    needed the scheduler.
 4. **Userland.** A thread grows an `^Address_Space`, `reschedule` grows one
    comparison, and the GDT already has the selectors laid out for
    SYSCALL/SYSRET. `swapgs` and per-CPU state behind GS belong to this step and
    are cheaper to build with it than after it.
+5. **`/dev/draw`**, over `kernel/drivers/fb`. It is the other half of a console
+   and the thing `apps/terminal` will actually want.
 
 **SMP, when it is wanted.** The shapes are already right. `Cpu` is per-core,
 `Resume` is per-thread and lives on that thread's stack, and every mount-table,
@@ -306,6 +331,9 @@ change will not alter it. All four are named where they live.
   but a low-priority *holder* still delays a high-priority waiter for as long as
   it holds. It is worth wanting when there is a realtime thread that matters.
   Plan 9 never had it either.
+- `devfs` holds a worker for the length of every parked read, so at most three
+  reads of `/dev/cons` may park at once. A fourth stalls the connection until a
+  byte arrives. Plan 9 gives every request a thread. See `docs/DEVFS.md`.
 - `readdir` over a union is still index-based, and is still documented as
   undefined if something rebinds the union part-way through. The cookie names a
   position in a list that moved. `walk` no longer has that property, thanks to
@@ -369,6 +397,13 @@ kernel/
     pmm.odin            Bitmap physical page allocator
     vmm.odin            Page table walk, kernel address space, translate
     heap.odin           Slab allocator + Odin's context.allocator
+  devfs/
+    devfs.odin          `#c` at /dev: the node table, the handler, the abort
+                        hook, and the worker count that bounds parked readers
+    cons.odin           The console device: two sinks out, a ring and a poll
+                        thread in, and two locks of different kinds
+    verify.odin         The boot self-test: 41 checks over the real /dev -- a
+                        read that parks, and a read that gives up
   vfs/
     lock.odin           What guards what, in what order, and the lock that went
     vfs.odin            Server on either transport, the #name device table, rpc
@@ -378,7 +413,8 @@ kernel/
     namespace.odin      Namespace, rfork semantics, teardown
     walk.odin           attach, walk1, cross_mounts, `..`, resolve
     readdir.odin        Union directory reads and the member-index cookie
-    static.odin         A read-only server over a node table, and its fid table
+    fidtab.odin         The fid table both servers use: fid to i32, no lock
+    static.odin         A read-only server over a node table
     root.odin           `#/`, an instance of it, and the boot namespace
     verify.odin         The boot self-test: 51 checks, two real servers
   sched/
@@ -422,6 +458,8 @@ docs/
   SYNC.md               Spinlock, sleeping lock, sleep queue, deadlines
   NAMESPACE.md          kernel/vfs: what guards what, and the borrow rule
   TRANSPORT.md          kernel/mnt: the tag pool, the workers, Tflush
+  DEVFS.md              kernel/devfs: #c at /dev, the console device, and the
+                        eleven controls the self-test was measured against
   TESTING.md            The self-test discipline, and the negative controls
   STYLE.md              ASD-STE100: the two modes, the checked rules, and the
                         project dictionary

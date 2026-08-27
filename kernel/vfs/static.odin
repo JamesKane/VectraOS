@@ -9,10 +9,10 @@ Two properties are worth being explicit about, because they are what make this
 usable at boot before anything else exists:
 
   - **The handler never allocates.** It is `contextless` like every other
-  Vectra9 handler. The two things a server needs to grow are a fid table and
-  somewhere to encode a directory listing, and `static_init` sizes both once. A
-  server that ran out of fids returns ENFILE, which is the
-    truth, rather than reaching for a heap it may be underneath.
+    Vectra9 handler. The two things a server needs to grow are a fid table and
+    somewhere to encode a directory listing, and `static_init` sizes both once.
+    A server that ran out of fids returns ENFILE, which is the truth, rather
+    than reaching for a heap it may be underneath.
   - **A read costs no copy.** `Rread.data` points straight into the node's
     string, which lives in `.rodata`. The copy happens once, in `chan_read`,
     because that is the layer whose caller owns a buffer.
@@ -39,30 +39,13 @@ S_IFDIR :: u32(0o040000)
 @(private)
 S_IFREG :: u32(0o100000)
 
-STATIC_FID_BUCKETS :: 32
-
-/*
-One client fid, bound to one node.
-
-Chained by index rather than by pointer, so the whole table is one allocation.
-A slot can then be on the free list or in a bucket, and neither is a different
-type. `next` is that chain in both roles.
-*/
-@(private)
-Fid_Slot :: struct {
-	fid:   vectra9.Fid,
-	node:  i32,
-	next:  i32, // Bucket chain when in use, free list when not; -1 ends both
-	inuse: bool,
-}
-
 Static_Tree :: struct {
-	label:   string,
-	nodes:   []Static_Node,
-	slots:   []Fid_Slot,
-	buckets: [STATIC_FID_BUCKETS]i32,
-	free:    i32,
-	live:    int,
+	label: string,
+	nodes: []Static_Node,
+
+	// One fid table, shared with every other server in the tree -- see
+	// `fidtab.odin`. What this server binds to a fid is an index into `nodes`.
+	fids:  Fid_Table,
 
 	/*
 	Where an Rreaddir payload is built when the transport supplies nowhere else.
@@ -107,9 +90,9 @@ Static_Tree :: struct {
 /*
 static_init sizes a server's tables and returns whether it could.
 
-`max_fids` is a real limit, and is meant to be. A fid is a server resource. A
-server that grows its table on demand is a server a client can exhaust the
-machine's memory through.
+Both limits are real, and are meant to be. `fidtab_init` says why a fid table
+has a ceiling. `dirbuf_size` bounds the one listing this server can build when
+its transport offers nowhere else -- see `dirbuf` above.
 */
 static_init :: proc(
 	t: ^Static_Tree,
@@ -124,21 +107,10 @@ static_init :: proc(
 
 	t.label = label
 	t.nodes = nodes
-	t.slots = make([]Fid_Slot, max_fids)
 	t.dirbuf = make([]u8, dirbuf_size)
-	if t.slots == nil || t.dirbuf == nil {
+	if !fidtab_init(&t.fids, max_fids) || t.dirbuf == nil {
 		static_destroy(t)
 		return false
-	}
-
-	for i in 0 ..< max_fids {
-		t.slots[i].next = i32(i) + 1
-	}
-	t.slots[max_fids - 1].next = -1
-	t.free = 0
-	t.live = 0
-	for i in 0 ..< STATIC_FID_BUCKETS {
-		t.buckets[i] = -1
 	}
 	return true
 }
@@ -147,90 +119,11 @@ static_destroy :: proc(t: ^Static_Tree) {
 	if t == nil {
 		return
 	}
-	if t.slots != nil {
-		delete(t.slots)
-		t.slots = nil
-	}
+	fidtab_destroy(&t.fids)
 	if t.dirbuf != nil {
 		delete(t.dirbuf)
 		t.dirbuf = nil
 	}
-	t.live = 0
-}
-
-// -- Fid table ---------------------------------------------------------------
-
-@(private = "file")
-slot_hash :: proc "contextless" (fid: vectra9.Fid) -> int {
-	return int(u32(fid) % STATIC_FID_BUCKETS)
-}
-
-@(private = "file")
-slot_find :: proc "contextless" (t: ^Static_Tree, fid: vectra9.Fid) -> i32 #no_bounds_check {
-	for i := t.buckets[slot_hash(fid)]; i >= 0; i = t.slots[i].next {
-		if t.slots[i].fid == fid {
-			return i
-		}
-	}
-	return -1
-}
-
-// slot_bind attaches a fid to a node, rebinding one that already exists --
-// which is what a Twalk with newfid equal to fid asks for.
-@(private = "file")
-slot_bind :: proc "contextless" (t: ^Static_Tree, fid: vectra9.Fid, node: i32) -> bool #no_bounds_check {
-	if i := slot_find(t, fid); i >= 0 {
-		t.slots[i].node = node
-		return true
-	}
-	if t.free < 0 {
-		return false
-	}
-
-	i := t.free
-	t.free = t.slots[i].next
-
-	b := slot_hash(fid)
-	t.slots[i] = Fid_Slot {
-		fid   = fid,
-		node  = node,
-		next  = t.buckets[b],
-		inuse = true,
-	}
-	t.buckets[b] = i
-	t.live += 1
-	return true
-}
-
-@(private = "file")
-slot_release :: proc "contextless" (t: ^Static_Tree, fid: vectra9.Fid) -> bool #no_bounds_check {
-	b := slot_hash(fid)
-	prev := i32(-1)
-	for i := t.buckets[b]; i >= 0; i = t.slots[i].next {
-		if t.slots[i].fid == fid {
-			if prev < 0 {
-				t.buckets[b] = t.slots[i].next
-			} else {
-				t.slots[prev].next = t.slots[i].next
-			}
-			t.slots[i].inuse = false
-			t.slots[i].next = t.free
-			t.free = i
-			t.live -= 1
-			return true
-		}
-		prev = i
-	}
-	return false
-}
-
-@(private = "file")
-node_of :: proc "contextless" (t: ^Static_Tree, fid: vectra9.Fid) -> i32 #no_bounds_check {
-	i := slot_find(t, fid)
-	if i < 0 {
-		return -1
-	}
-	return t.slots[i].node
 }
 
 // -- The tree ----------------------------------------------------------------
@@ -353,7 +246,7 @@ static_handler :: proc "contextless" (
 		}
 
 	case vectra9.Tattach:
-		if !slot_bind(t, m.fid, 0) {
+		if !fidtab_bind(&t.fids, m.fid, 0) {
 			reply^ = vectra9.error_reply(vectra9.ENFILE)
 			return
 		}
@@ -363,7 +256,7 @@ static_handler :: proc "contextless" (
 		static_walk(t, m, reply)
 
 	case vectra9.Tlopen:
-		node := node_of(t, m.fid)
+		node := fidtab_node(&t.fids, m.fid)
 		if node < 0 {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
@@ -376,7 +269,7 @@ static_handler :: proc "contextless" (
 		reply^ = vectra9.Rlopen{qid = node_qid(t, node), iounit = 0}
 
 	case vectra9.Tread:
-		node := node_of(t, m.fid)
+		node := fidtab_node(&t.fids, m.fid)
 		if node < 0 {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
@@ -400,7 +293,7 @@ static_handler :: proc "contextless" (
 		static_readdir(t, m, reply, buf)
 
 	case vectra9.Tgetattr:
-		node := node_of(t, m.fid)
+		node := fidtab_node(&t.fids, m.fid)
 		if node < 0 {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
@@ -418,7 +311,7 @@ static_handler :: proc "contextless" (
 		reply^ = attr
 
 	case vectra9.Tstatfs:
-		if node_of(t, m.fid) < 0 {
+		if fidtab_node(&t.fids, m.fid) < 0 {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
 		}
@@ -432,7 +325,7 @@ static_handler :: proc "contextless" (
 	case vectra9.Tclunk:
 		// Clunking an unknown fid is not worth an error: the client wanted it
 		// gone and it is gone. Refusing would only ever break a cleanup path.
-		_ = slot_release(t, m.fid)
+		_ = fidtab_release(&t.fids, m.fid)
 		reply^ = vectra9.Rclunk{}
 
 	case vectra9.Tflush:
@@ -459,7 +352,7 @@ The two rules a walk has to get right, both easy to miss:
 */
 @(private = "file")
 static_walk :: proc "contextless" (t: ^Static_Tree, m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
-	node := node_of(t, m.fid)
+	node := fidtab_node(&t.fids, m.fid)
 	if node < 0 {
 		reply^ = vectra9.error_reply(vectra9.EBADF)
 		return
@@ -482,7 +375,7 @@ static_walk :: proc "contextless" (t: ^Static_Tree, m: vectra9.Twalk, reply: ^ve
 	}
 
 	if answer.count == m.count {
-		if !slot_bind(t, m.newfid, cur) {
+		if !fidtab_bind(&t.fids, m.newfid, cur) {
 			reply^ = vectra9.error_reply(vectra9.ENFILE)
 			return
 		}
@@ -497,7 +390,7 @@ static_readdir :: proc "contextless" (
 	reply: ^vectra9.Msg,
 	buf: []u8,
 ) #no_bounds_check {
-	node := node_of(t, m.fid)
+	node := fidtab_node(&t.fids, m.fid)
 	if node < 0 {
 		reply^ = vectra9.error_reply(vectra9.EBADF)
 		return

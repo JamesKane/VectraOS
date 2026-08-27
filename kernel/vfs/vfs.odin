@@ -249,6 +249,25 @@ server_interruptible :: proc "contextless" (sv: ^Server) -> bool {
 	return sv != nil && vectra9.interruptible(&sv.session)
 }
 
+/*
+server_flushed reports whether a Tflush named this request's tag.
+
+The other half of the abort hook, and the half a handler needs. The hook is the
+wake. This is the reason, and a handler that can abandon its work asks here
+before it decides to.
+
+Authoritative in a way a flag of the server's own could not be. The bit lives on
+the request slot, and `kernel/mnt` clears it when the slot is claimed. A server
+keeping its own copy would have to clear it at that same moment, which is a
+moment no server can see. See `kernel/devfs`.
+
+False on the synchronous transport, where nothing is ever pending and therefore
+nothing was ever flushed.
+*/
+server_flushed :: proc "contextless" (sv: ^Server, tag: vectra9.Tag) -> bool {
+	return sv != nil && sv.conn != nil && mnt.flushed(sv.conn, tag)
+}
+
 // server_msize is the largest message this server's transport carries. It
 // changes when a server moves between transports, because it is a property of
 // the buffer underneath rather than of the server. See `server_start`.
