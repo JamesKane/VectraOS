@@ -266,13 +266,34 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	args := [dynamic]string{cfg.qemu}
 	append(&args, ..cfg.qemu_machine)
 
-	// OVMF firmware, borrowed from the neighbouring odin-os checkout until we
-	// vendor our own.
-	firmware := "../odin-os/ovmf/ovmf_x64.fd"
-	if opts.arch == .amd64 && os.exists(firmware) {
-		append(&args, "-bios", firmware)
-	} else if opts.arch == .amd64 {
-		die("no OVMF firmware at %s -- UEFI boot needs it", firmware)
+	// UEFI firmware. A combined OVMF image, when one is around, goes in whole
+	// via -bios. Otherwise the split edk2 code+vars pair that every QEMU
+	// install ships is loaded as two pflash devices -- the code read-only,
+	// the vars copied somewhere writable first, because UEFI writes them.
+	if opts.arch == .amd64 {
+		combined := "../odin-os/ovmf/ovmf_x64.fd"
+		if os.exists(combined) {
+			append(&args, "-bios", combined)
+		} else {
+			share := ""
+			for dir in ([]string{"/opt/homebrew/share/qemu", "/usr/local/share/qemu", "/usr/share/qemu"}) {
+				if os.exists(fmt.tprintf("%s/edk2-x86_64-code.fd", dir)) {
+					share = dir
+					break
+				}
+			}
+			if share == "" {
+				die("no OVMF firmware at %s and no edk2 images beside QEMU -- UEFI boot needs one", combined)
+			}
+			vars := fmt.tprintf("%s/edk2-vars.fd", BUILD_DIR)
+			if !os.exists(vars) {
+				// The i386 name is not a mistake: QEMU ships one vars image
+				// for both x86 targets.
+				copy_file(fmt.tprintf("%s/edk2-i386-vars.fd", share), vars)
+			}
+			append(&args, "-drive", fmt.tprintf("if=pflash,format=raw,readonly=on,file=%s/edk2-x86_64-code.fd", share))
+			append(&args, "-drive", fmt.tprintf("if=pflash,format=raw,file=%s", vars))
+		}
 	}
 
 	append(&args, "-drive", fmt.tprintf("format=raw,file=fat:rw:%s", ESP_DIR))
