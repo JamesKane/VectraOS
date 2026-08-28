@@ -5,10 +5,12 @@ Everything here runs against the boot namespace, over the real mount at `/dev`,
 through the real transport with four workers on it. There is no fixture. A check
 that passes here is a check that the machine's own `/dev/cons` passes.
 
-Six claims, in the order they are checked:
+Seven claims, in the order they are checked:
 
-  - `/dev` lists four devices and `/dev/cons` is one of them
+  - `/dev` lists every device in the table and `/dev/cons` is first
   - a write to `/dev/cons` reaches the framebuffer and the serial port
+  - `/dev/fb` is the screen at an offset, `/dev/fbctl` reports its geometry,
+    and the boundary follows `fbdev.odin`'s three rules
   - a read of `/dev/cons` with nothing typed **parks**, stays parked through a
     character, and finishes on the newline after it
   - the line under construction can be edited, and `^D` ends the file
@@ -328,6 +330,10 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 		check(&r, clean, "and reads zeroes over whatever was in the buffer")
 		vfs.chan_close(zero)
 	}
+
+	// -- /dev/fb and /dev/fbctl ----------------------------------------------
+
+	verify_fb(&r, t, ns)
 
 	// -- What a directory refuses --------------------------------------------
 
@@ -670,6 +676,187 @@ verify_give_up :: proc(r: ^Verify_Result, cons: ^vfs.Chan) #no_bounds_check {
 	got: [8]u8
 	n, e := read_now(cons, got[:])
 	check(r, e == vfs.OK && same(got[:], n, "ok\n"), "and the same fid reads normally afterwards")
+}
+
+/*
+verify_fb is the raw framebuffer: the first device with contents, checked as
+one.
+
+Three claims. The geometry file reports the surface the server actually
+holds, rather than a copy of it. A write through the mount puts pixels on
+the screen at the offset it named. `fb.get_raw` is what says so -- the
+screen itself, not a counter the code under test also maintains. And the
+boundary follows `fbdev.odin`'s three rules. Short at the edge, the end of
+the file past it for a read, ENOSPC past it for a write.
+
+Every byte this writes goes back before it returns, through the same file.
+The screen belongs to whoever is sitting at it.
+*/
+@(private = "file")
+verify_fb :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bounds_check {
+	s := t.raw
+	if !check(r, s != nil && s.pixels != nil, "the server holds the screen's surface") {
+		return
+	}
+	limit := fb_size(s)
+
+	fbc, fb_err := vfs.open_path(ns, "/dev/fb", vfs.O_RDWR)
+	if !check(r, fb_err == vfs.OK, "/dev/fb opens for reading and writing") {
+		return
+	}
+	defer vfs.chan_close(fbc)
+
+	attr, attr_err := vfs.chan_stat(fbc)
+	check(r, attr_err == vfs.OK, "and stats")
+	check(r, attr.mode & 0o170000 == 0o020000, "as a character device")
+	check(r, limit > 0 && attr.size == limit, "with a real length, the first device that has one")
+
+	// -- The geometry file ----------------------------------------------------
+
+	ctl, ctl_err := vfs.open_path(ns, "/dev/fbctl", vfs.O_RDWR)
+	if check(r, ctl_err == vfs.OK, "/dev/fbctl opens") {
+		report: [128]u8
+		n, err := vfs.chan_read(ctl, 0, report[:])
+		check(r, err == vfs.OK && n > 0, "and reads")
+
+		want := [10]u64 {
+			u64(s.width),
+			u64(s.height),
+			u64(s.pitch),
+			u64(s.bytes_pp) * 8,
+			u64(s.red_size),
+			u64(s.red_shift),
+			u64(s.green_size),
+			u64(s.green_shift),
+			u64(s.blue_size),
+			u64(s.blue_shift),
+		}
+		got: [12]u64
+		found := report_numbers(report[:n], got[:])
+		agree := found == len(want)
+		if agree {
+			for i in 0 ..< len(want) {
+				if got[i] != want[i] {
+					agree = false
+				}
+			}
+		}
+		check(r, agree, "reporting the geometry of the surface the server holds")
+
+		tail: [128]u8
+		tn, terr := vfs.chan_read(ctl, 5, tail[:])
+		check(
+			r,
+			terr == vfs.OK && tn == n - 5 && same(tail[:], tn, string(report[5:n])),
+			"a read at an offset starts there",
+		)
+		tn, terr = vfs.chan_read(ctl, u64(n), tail[:])
+		check(r, terr == vfs.OK && tn == 0, "and a read past the end returns nothing")
+
+		_, werr := vfs.chan_write(ctl, 0, transmute([]u8)string("size 640 480\n"))
+		check(r, werr == vectra9.EINVAL, "a command is refused, because nothing here can be set yet")
+		vfs.chan_close(ctl)
+	}
+
+	// -- Pixels through the mount ---------------------------------------------
+
+	bpp := s.bytes_pp
+	span := bpp * 2
+	x := s.width - 4
+	y := s.height - 2
+	o := u64(y * s.pitch + x * bpp)
+
+	saved: [16]u8
+	for i in 0 ..< span {
+		saved[i] = s.pixels[int(o) + i]
+	}
+	pattern: [16]u8
+	for i in 0 ..< span {
+		pattern[i] = 0xA1 + u8(i) * 7
+	}
+
+	wn, werr := vfs.chan_write(fbc, o, pattern[:span])
+	check(r, werr == vfs.OK && wn == span, "a write to /dev/fb lands at the offset it named")
+	check(r, fb.get_raw(s, x, y) == assemble(pattern[:bpp]), "and the first pixel is on the screen")
+	check(r, fb.get_raw(s, x + 1, y) == assemble(pattern[bpp:span]), "and the second is one pixel along")
+
+	got: [16]u8
+	rn, rerr := vfs.chan_read(fbc, o, got[:span])
+	readback := rerr == vfs.OK && rn == span
+	for i in 0 ..< span {
+		if got[i] != pattern[i] {
+			readback = false
+		}
+	}
+	check(r, readback, "a read at the same offset answers the bytes the write put there")
+
+	// -- The boundary ---------------------------------------------------------
+
+	rn, rerr = vfs.chan_read(fbc, limit, got[:8])
+	check(r, rerr == vfs.OK && rn == 0, "a read at the end of the frame is the end of the file")
+	rn, rerr = vfs.chan_read(fbc, limit - 2, got[:8])
+	check(r, rerr == vfs.OK && rn == 2, "a read across the edge is short rather than refused")
+
+	edge: [2]u8
+	for i in 0 ..< 2 {
+		edge[i] = s.pixels[int(limit) - 2 + i]
+	}
+	// Well past the end, not merely at it. At exactly `limit` the clamp
+	// arithmetic answers zero with or without the offset guard. Past it the
+	// subtraction wraps, and only the guard stands between a client and a
+	// copy from beyond the frame. A control proved the at-the-edge checks
+	// alone missed exactly that.
+	rn, rerr = vfs.chan_read(fbc, limit + 8, got[:8])
+	check(r, rerr == vfs.OK && rn == 0, "a read well past the end answers nothing, with no wrap")
+
+	wn, werr = vfs.chan_write(fbc, limit - 2, pattern[:4])
+	check(r, werr == vfs.OK && wn == 2, "a write across the edge takes what fits and says so")
+	_, werr = vfs.chan_write(fbc, limit, pattern[:4])
+	check(r, werr == vectra9.ENOSPC, "and a write past it is refused for want of room")
+	_, werr = vfs.chan_write(fbc, limit + 8, pattern[:4])
+	check(r, werr == vectra9.ENOSPC, "from well past it too, with no wrap")
+
+	// The screen goes back the way it was found, through the same file.
+	_, _ = vfs.chan_write(fbc, limit - 2, edge[:])
+	_, _ = vfs.chan_write(fbc, o, saved[:span])
+}
+
+// assemble builds the pixel word `fb.get_raw` answers from the bytes a
+// client would write, low byte first. Independent arithmetic on purpose: a
+// check that used the device's own copy path would agree with it whatever
+// else was broken.
+@(private = "file")
+assemble :: proc "contextless" (bytes: []u8) -> u32 #no_bounds_check {
+	v := u32(0)
+	for i := len(bytes) - 1; i >= 0; i -= 1 {
+		v = v << 8 | u32(bytes[i])
+	}
+	return v
+}
+
+// report_numbers pulls every decimal run out of a report, in order, and says
+// how many there were. A parser this small cannot drift from the format, because
+// it has no opinion about anything but digits.
+@(private = "file")
+report_numbers :: proc "contextless" (data: []u8, out: []u64) -> int #no_bounds_check {
+	found := 0
+	i := 0
+	for i < len(data) {
+		if data[i] < '0' || data[i] > '9' {
+			i += 1
+			continue
+		}
+		v := u64(0)
+		for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+			v = v * 10 + u64(data[i] - '0')
+			i += 1
+		}
+		if found < len(out) {
+			out[found] = v
+		}
+		found += 1
+	}
+	return found
 }
 
 // -- Helpers -----------------------------------------------------------------

@@ -34,6 +34,7 @@ package user
 
 import "kernel:arch"
 import "kernel:devfs"
+import "kernel:drivers/fb"
 import "kernel:mem"
 import "kernel:pipe"
 import "kernel:sched"
@@ -360,6 +361,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// -- And a process, which is a space, a namespace and some open files ----
 
 	verify_processes(&r, column, &held)
+
+	// -- And a process that reaches the hardware -----------------------------
+
+	verify_painter(&r)
 
 	// -- And a process that starts another one -------------------------------
 
@@ -762,6 +767,7 @@ check below says so rather than leaves it to be discovered.
 @(private = "file") PATH_ZERO :: "/dev/zero"
 @(private = "file") PATH_NULL :: "/dev/null"
 @(private = "file") PATH_MISSING :: "/dev/nope"
+@(private = "file") PATH_FB :: "/dev/fb"
 
 @(private = "file") NAMED :: "-- a process opened this file by name"
 @(private = "file") REDIRECTED :: "-- this line went to /dev/null"
@@ -948,6 +954,106 @@ verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held:
 		vfs.chan_close(c)
 		cons_finish()
 	}
+}
+
+/*
+verify_painter is the handoff sentence made a process: a device a user
+process can reach.
+
+`painter` opens `/dev/fb` by name, seeks to an offset the kernel staged, and
+writes pixel bytes it was handed -- twice. The second write is what proves
+the descriptor's cursor carried. Then it seeks back, reads its own pixels
+into its page, and closes.
+
+The kernel's half of the check is the screen. `fb.get_raw` reads the frame
+at the pixel the offset names, which no cell of the program's can fake. A
+counter would agree with a broken device. The glass does not.
+
+The bytes go back afterwards, straight through the surface: the program
+painted the corner of a screen somebody is using.
+*/
+@(private = "file")
+verify_painter :: proc(r: ^Result) {
+	s := devfs.raw_surface()
+	if !check(r, s != nil && s.pixels != nil, "the raw framebuffer is behind /dev/fb") {
+		return
+	}
+
+	// Two pixels, written twice, in the bottom corner away from the boot log.
+	bpp := s.bytes_pp
+	span := bpp * 2
+	x := s.width - 6
+	y := s.height - 3
+	offset := u64(y * s.pitch + x * bpp)
+
+	pattern: [16]u8
+	for i in 0 ..< span {
+		pattern[i] = 0x35 + u8(i) * 11
+	}
+	saved: [32]u8
+	for i in 0 ..< span * 2 {
+		saved[i] = s.pixels[int(offset) + i]
+	}
+
+	p, err := load_held("painter", program_painter())
+	if !check(r, err == .None && p != nil, "a process is built to reach it") {
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_FB)), "with the path in its page")
+	set_cell(p, SLOT_B / 8, offset)
+	check(r, set_bytes(p, SLOT_C, pattern[:span]), "and pixel bytes to carry")
+
+	check(r, launch(p, u64(len(PATH_FB)), u64(span)), "and it launches, staged")
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_PAINTER, "having reached its first instruction")
+		check(r, cell(p, PAINTER_OPENED) == 3, "the screen's memory opened as a file")
+		check(r, cell(p, PAINTER_SEEKED) == offset, "the seek answered the offset it was given")
+		check(r, cell(p, PAINTER_WROTE) == u64(span), "the write took every pixel byte")
+		check(r, cell(p, PAINTER_AGAIN) == u64(span), "and so did the second, with no seek between")
+
+		first := pixel_word(pattern[:bpp])
+		second := pixel_word(pattern[bpp:span])
+		check(r, fb.get_raw(s, x, y) == first, "the first pixel is on the screen where the offset says")
+		check(r, fb.get_raw(s, x + 1, y) == second, "the second is beside it")
+		check(
+			r,
+			fb.get_raw(s, x + 2, y) == first && fb.get_raw(s, x + 3, y) == second,
+			"and the pair repeats where the carried cursor put the second write",
+		)
+
+		check(r, cell(p, PAINTER_RESEEK) == offset, "the seek back was answered")
+		check(r, cell(p, PAINTER_READ) == u64(span), "the read back answered every byte")
+		readback := true
+		for i in 0 ..< (span + 7) / 8 {
+			w := cell(p, PAINTER_BUFFER + i)
+			for b in 0 ..< 8 {
+				at := i * 8 + b
+				if at < span && u8(w >> (u64(b) * 8)) != pattern[at] {
+					readback = false
+				}
+			}
+		}
+		check(r, readback, "and its page holds the bytes it painted")
+		check(r, cell(p, PAINTER_CLOSED) == 0, "the close was accepted")
+	}
+
+	for i in 0 ..< span * 2 {
+		s.pixels[int(offset) + i] = saved[i]
+	}
+	finish(r, p, "and the process is taken down")
+}
+
+// pixel_word builds the value `fb.get_raw` answers from the bytes a program
+// wrote, low byte first. Its own arithmetic on purpose: a check that used
+// the device's copy path would agree with it whatever else was broken.
+@(private = "file")
+pixel_word :: proc "contextless" (bytes: []u8) -> u32 #no_bounds_check {
+	v := u32(0)
+	for i := len(bytes) - 1; i >= 0; i -= 1 {
+		v = v << 8 | u32(bytes[i])
+	}
+	return v
 }
 
 /*

@@ -298,7 +298,7 @@ races closed by reasoning, and the reasoning is above.
 
 ### The controls for a process
 
-Six more.
+Seven more.
 
 | Mutation | Result |
 |---|---|
@@ -308,6 +308,12 @@ Six more.
 | a descriptor comes from the highest free slot | 9 checks, first `the write it asked for reported every byte` |
 | a close forgets the file rather than closes it | 1 check, `and every namespace and open file with it (leaked 5)` |
 | the standard descriptors open in the kernel's namespace | **not caught**, and the mutation is inert |
+| `fd_seek` stores zero whatever it was asked | 3 checks, first `the first pixel is on the screen where the offset says` |
+
+The seek control is the counter lesson yet again, from a new side. `sys_seek`
+answers the offset it was *asked*, so the cell `painter` records it in agreed
+with the mutation. What disagreed was the screen: `fb.get_raw` at the pixel
+the offset names, which no bookkeeping of the door's can fake.
 
 **The first one is the most alarming thing in this document.** Without the
 `Write` demand in `copy_out`, a program names its own text page as a

@@ -1065,7 +1065,7 @@ threads, a parked reader waits on a rendezvous, and a reader that gives up needs
 a clock to give up against.
 */
 init_devfs :: proc() -> bool {
-	if err := devfs.init(vfs.boot_namespace, &kcon, &serial); err != vfs.OK {
+	if err := devfs.init(vfs.boot_namespace, &kcon, &serial, &screen); err != vfs.OK {
 		sink := begin(&klog)
 		libodin.put_str(&sink, "devfs: #c would not come up -- ")
 		libodin.put_str(&sink, vectra9.errno_name(err))

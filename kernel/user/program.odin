@@ -53,6 +53,7 @@ MARK_FORKER :: u64(0x464F_524B_464F_524B) // FORKFORK
 MARK_MEMFORK :: u64(0x4D45_4D46_4D45_4D46) // MEMFMEMF
 MARK_FDFORKER :: u64(0x4644_464B_4644_464B) // FDFKFDFK
 MARK_REFUSER :: u64(0x5245_4655_5245_4655) // REFUREFU
+MARK_PAINTER :: u64(0x5041_494E_5041_494E) // PAINPAIN
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -129,6 +130,25 @@ BINDER_OPENED :: 2
 BINDER_WROTE :: 3
 BINDER_CLOSED :: 4
 BINDER_AGAIN :: 5
+
+/*
+Where `painter` keeps its answers -- one cell per call, in call order.
+
+The story is the framebuffer reached from ring 3. Open `/dev/fb` by the
+path in slot A. Seek to the offset the kernel left in slot B, and record
+what seek answered. Write the pixel bytes from slot C twice -- the second
+write proves the descriptor's cursor carried, because its pixels land
+after the first's. Seek back, read the same bytes into slot D, and close.
+The kernel then looks at the screen, which is the half no cell can say.
+*/
+PAINTER_OPENED :: 1
+PAINTER_SEEKED :: 2
+PAINTER_WROTE :: 3
+PAINTER_AGAIN :: 4
+PAINTER_RESEEK :: 5
+PAINTER_READ :: 6
+PAINTER_CLOSED :: 7
+PAINTER_BUFFER :: 40 // Byte offset 320 -- slot D, where the readback lands
 
 /*
 Where the two programs that reproduce keep their answers.
@@ -426,6 +446,8 @@ foreign {
 	vectra_user_fdforker_end: byte
 	vectra_user_refuser: byte
 	vectra_user_refuser_end: byte
+	vectra_user_painter: byte
+	vectra_user_painter_end: byte
 }
 
 @(private)
@@ -454,6 +476,10 @@ program_shadow :: proc "contextless" () -> []u8 {return blob(&vectra_user_shadow
 program_namer :: proc "contextless" () -> []u8 {return blob(&vectra_user_namer, &vectra_user_namer_end)}
 program_reader :: proc "contextless" () -> []u8 {return blob(&vectra_user_reader, &vectra_user_reader_end)}
 program_binder :: proc "contextless" () -> []u8 {return blob(&vectra_user_binder, &vectra_user_binder_end)}
+
+// And the one that reaches hardware: pixels through /dev/fb, at an offset
+// it chose with `seek`.
+program_painter :: proc "contextless" () -> []u8 {return blob(&vectra_user_painter, &vectra_user_painter_end)}
 
 // And the four that stand alone -- the blobs `/bin` publishes as files.
 // Two reproduce, one publishes a service, and one *answers* one. See
@@ -1502,5 +1528,68 @@ vectra_user_refuser:
 	ud2
 .globl vectra_user_refuser_end
 vectra_user_refuser_end:
+
+.balign 16
+.globl vectra_user_painter
+vectra_user_painter:
+	movq %rdi, %rbx
+	movq %rsi, %rbp
+	movq %rdx, %r12
+	movabsq $$0x5041494E5041494E, %rax
+	movq %rax, (%rbx)
+
+	leaq 128(%rbx), %rdi
+	movq %rbp, %rsi
+	movq $$2, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r13
+
+	movq 192(%rbx), %r14
+	movq %r13, %rdi
+	movq %r14, %rsi
+	movq $$9, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movq %r13, %rdi
+	leaq 256(%rbx), %rsi
+	movq %r12, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq %r13, %rdi
+	leaq 256(%rbx), %rsi
+	movq %r12, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	movq %r13, %rdi
+	movq %r14, %rsi
+	movq $$9, %rax
+	syscall
+	movq %rax, 40(%rbx)
+
+	movq %r13, %rdi
+	leaq 320(%rbx), %rsi
+	movq %r12, %rdx
+	movq $$7, %rax
+	syscall
+	movq %rax, 48(%rbx)
+
+	movq %r13, %rdi
+	movq $$6, %rax
+	syscall
+	movq %rax, 56(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_painter_end
+vectra_user_painter_end:
 `, "~{memory}"}()
 }

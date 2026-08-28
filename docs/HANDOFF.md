@@ -38,17 +38,18 @@ the descriptor group is shared unless `RFFDG` copies it. Under it, frames
 got an owner that can be shared -- the refcounted *segment* -- and the fd
 table became a refcounted group. `docs/USER.md` owns the design.
 
-`kernel/devfs` still lives in the kernel. Its move now waits on one named
-gap rather than two: hardware a user process could reach. The other gap --
-a server that waits on two things -- closed this milestone, and `consrv`
-is the proof. See section 6.
+`kernel/devfs` still lives in the kernel, but the gap its move waited on
+is half closed: a user process can reach hardware now. `/dev/fb` serves
+the raw framebuffer, and the `painter` program paints through it from ring
+3. What the move still wants is the other two raw halves -- the UART's
+byte stream and the scancode stream. See section 6.
 
 ## 2. Where things stand
 
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-980 checks against itself and idles.
+1020 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -56,7 +57,16 @@ keystroke gets there by raising IRQ 1, which is the first interrupt Vectra
 receives rather than arms. `/srv` is a directory of running services, and a name
 posted there can be mounted anywhere in a namespace.
 
-**Vectra runs processes, and now a process can become two.** Twenty-seven
+**The screen itself is a file now.** `/dev/fb` is the raw framebuffer -- the
+first device with contents and a size -- and `/dev/fbctl` reports its
+geometry. A ring 3 program named `painter` proves the sentence this milestone
+was for. It opens `/dev/fb` by name, seeks to a pixel, writes it, and reads
+it back, and the self-test checks the glass rather than a counter. No new
+system call was needed: `seek` and the 9P offset already carried the position,
+and the new ground is a device that honours it. `docs/DEVFS.md` owns the
+design.
+
+**Vectra runs processes, and now a process can become two.** Twenty-eight
 enter ring 3 during the boot, and another process started eight of them --
 four by `spawn`, four by `rfork`. A forked child continues from the
 instruction after its parent's `syscall`, on a private copy of the stack.
@@ -101,7 +111,7 @@ The flag word is Plan 9's bit for bit. `RFPROC`, `RFMEM`, `RFFDG`,
 The rest are refused EINVAL rather than skipped. Without `RFPROC` the
 namespace and descriptor flags act on the caller in place.
 
-About 39,600 lines of Odin. The linked image is ~1284 KB debug and ~676 KB
+About 40,200 lines of Odin. The linked image is ~1302 KB debug and ~692 KB
 release, ~107 KB of both being the two embedded user images (`ramfs`,
 `consrv`).
 
@@ -117,7 +127,7 @@ release, ~107 KB of both being the two embedded user images (`ramfs`,
 | `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings | `docs/NAMESPACE.md` |
 | `kernel/mnt/` | A 9P connection with several requests in flight, `Tflush` over it, and the wire whose far side is bytes | `docs/TRANSPORT.md` |
 | `kernel/pipe/` | Two ends, a byte ring per direction, and the glue that makes a posted end a server | `docs/PIPE.md` |
-| `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, and `/dev/consctl` | `docs/DEVFS.md` |
+| `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl`, and the raw framebuffer | `docs/DEVFS.md` |
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, now from ring 3 too | `docs/SRV.md` |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, and a top half that may not park | `docs/KBD.md` |
 | `kernel/mem/space.odin` | An address space per process, sharing one kernel half | `docs/SPACE.md` |
@@ -149,6 +159,8 @@ of them could have come earlier:
     a note                  and what will not stop can be stopped, from outside
     an rfork                and one process can become two, sharing what they
                             choose -- so a server can wait on two things at once
+    a raw device            and the hardware itself is a file: the screen at
+                            an offset a process may seek
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -161,12 +173,12 @@ code it explains.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x0000000019a29000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x0000000019a21000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 33 entries spanning 12.7 GiB
-[  ok  ] usable 458.8 MiB, reclaimable 45.8 MiB
+[  ok  ] usable 458.8 MiB, reclaimable 45.9 MiB
 [  --  ] largest usable region 386.6 MiB at 0x0000000001780000
-[  ok  ] pmm 117470 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
+[  ok  ] pmm 117462 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
 [  ok  ] vmm root 0x0000000000005000, mapped 516.0 MiB in 274 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
@@ -177,17 +189,17 @@ code it explains.
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] ioapic version 0x20, 24 lines, all masked
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62525 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (9240222-9294502 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 844 acquisitions, 808 parked and handed back, decayed to 1
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.6 MHz measured against the PIT, 62606 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (8331705-8642499 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 785 acquisitions, 748 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 1791 namespace operations across 5 threads, 279 rebinds under them in 1001 ms, nothing serialised, heap balanced
-[  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
+[  ok  ] vfs 34 concurrency checks passed -- 1706 namespace operations across 5 threads, 263 rebinds under them in 1000 ms, nothing serialised, heap balanced
+[  ok  ] devfs #c bound at /dev, 6 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/consX 
-[  ok  ] devfs 81 device checks passed -- 4 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 10 ticks
+[  ok  ] devfs 102 device checks passed -- 6 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 11 ticks
 [  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
 [  ok  ] srv 82 service checks passed -- 35 posted, 6 listed across 6 passes with one removed under them, 1 mounted, 1 name reserved pending, heap balanced
 [  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
@@ -196,8 +208,8 @@ code it explains.
 [  ok  ] bin #b bound at /bin, 8 programs as files, formats VECTRA01 and 02
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] kbd 48 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
-[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 132 CR3 reloads, one address two meanings
-[  ok  ] syscall armed -- entry at 0xffffffff80025c30, /dev/cons is descriptor 1
+[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 4 CR3 reloads, one address two meanings
+[  ok  ] syscall armed -- entry at 0xffffffff80026750, /dev/cons is descriptor 1
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
 -- this line went to /dev/null
@@ -207,7 +219,7 @@ code it explains.
 -- this line went through a posted service
 -- a process answered this line
 these bytes live in a program's own segments
-[  ok  ] user 399 userland checks passed -- 27 processes, 8 started by another process, 4642046 preempted rounds, 270 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
+[  ok  ] user 418 userland checks passed -- 28 processes, 8 started by another process, 4544172 preempted rounds, 278 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
 [  ok  ] boot complete -- idling
 ```
 
@@ -314,7 +326,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/SPACE.md` | `kernel/mem/space.odin` — a space per process, and the half of it that is shared | Building a process, mapping something a program may reach, or wondering what the scheduler reloads |
 | `docs/USER.md` | `kernel/user/` — ring 3, `syscall`/`sysret`, the per-CPU record behind GS, a process and its namespace | Entering ring 3, adding a system call, copying a pointer in from a program, or wondering what a program may not do |
 | `docs/KBD.md` | `kernel/drivers/kbd/` — scancodes, the I/O APIC, and why a handler splits in two | Adding a device that interrupts, routing a line, or wondering why the polling thread is still there |
-| `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention | Adding a device file, adding a `ctl` file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
+| `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention, the raw framebuffer | Adding a device file, adding a `ctl` file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
@@ -414,12 +426,16 @@ That port now waits on exactly one thing, and it is the first below.
 
 **Next, in order:**
 
-1. **A device a user process can reach.** The console's hardware -- the
-   framebuffer, the UART, the scancode stream -- is all behind `#c`'s own
-   handler today. A userland devfs needs the kernel to serve the *raw* halves
-   as files a process can open. That is also most of the design of
-   `/dev/draw` over `kernel/drivers/fb`, so the raw framebuffer first serves
-   both masters. `consrv` is the server shape waiting for it.
+1. **The other raw halves: the UART and the scancode stream.** The
+   framebuffer half closed this milestone -- `/dev/fb` and `/dev/fbctl`
+   serve the screen's memory and geometry, and a ring 3 program paints
+   through them. The shape is set: a row in `DEV_NODES`, a case in two
+   switches, `fbdev.odin` as the worked example. The serial byte stream
+   and the raw scancodes are what a userland devfs still cannot reach,
+   and `consrv` is the server shape waiting for them. A repaint from ring
+   3 also costs a `write` per 256 bytes -- `user.COPY_MAX` -- which is
+   fine for a cursor and wrong for a compositor. The bulk path belongs to
+   whichever milestone first needs one.
 
 2. **A counted release for a posted service.** The wire, its arena, its
    reader and a chan reference are pinned per posted pipe -- seven heap
@@ -661,9 +677,13 @@ kernel/
                         parked readers
     cons.odin           The console device: two sinks out, a line discipline
                         and a ring in, and two locks of different kinds
-    verify.odin         The boot self-test: 81 checks over the real /dev -- a
-                        read that parks through a character, a line edited, and
-                        a mode that reverts when its file closes
+    fbdev.odin          The raw framebuffer: /dev/fb as the screen's memory
+                        at an offset, /dev/fbctl as its geometry, and the
+                        three boundary rules of the first device with a size
+    verify.odin         The boot self-test: 102 checks over the real /dev --
+                        a read that parks through a character, a line edited,
+                        a mode that reverts when its file closes, and pixels
+                        written through the mount and read off the screen
   srv/
     srv.odin            `#s` at /srv: the table, post and remove, mounting by
                         name, the id a fid binds instead of a slot, and the
@@ -691,16 +711,18 @@ kernel/
                         /bin serving blobs and compiled images alike
     spawn.odin          A process that starts another one: what a child
                         inherits, and the wait that parks for it by pid
-    program.odin        The twenty programs the assembler bakes into the
+    program.odin        The twenty-one programs the assembler bakes into the
                         image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 399 checks -- one process preempted
+    verify.odin         The boot self-test: 418 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
-                        three that open files by name, a parent that raises
-                        two children, a poster that publishes a service, a
-                        niner the kernel talks to as a 9P client, a compiled
-                        ramfs serving its own segments back, three processes
-                        ended by notes, four that fork, and a console server
-                        whose typed line crosses two forked processes
+                        three that open files by name, a painter that puts
+                        pixels on the screen through /dev/fb, a parent that
+                        raises two children, a poster that publishes a
+                        service, a niner the kernel talks to as a 9P client,
+                        a compiled ramfs serving its own segments back, three
+                        processes ended by notes, four that fork, and a
+                        console server whose typed line crosses two forked
+                        processes
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled
     wait.odin           Wait queues, scheduler hooks, priority-ordered service
@@ -756,12 +778,13 @@ docs/
                         owns, and the comparison the scheduler grew
   USER.md               kernel/user: ring 3, the door back in, a process and
                         its own namespace, the confused deputy, and the
-                        twenty-four controls
+                        twenty-five controls
   KBD.md                kernel/drivers/kbd: scancodes, the I/O APIC route, and
                         the constraint that splits a handler in two
   DEVFS.md              kernel/devfs: #c at /dev, the console device, the
-                        line discipline, the ctl convention, and the twenty
-                        controls the self-test was measured against
+                        line discipline, the ctl convention, the raw
+                        framebuffer, and the twenty-four controls the
+                        self-test was measured against
   TESTING.md            The self-test discipline, and the negative controls
   STYLE.md              ASD-STE100: the two modes, the checked rules, and the
                         project dictionary

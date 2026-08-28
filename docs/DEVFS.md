@@ -1,7 +1,7 @@
 # devfs: the first server whose files are devices
 
-`kernel/devfs/` — `#c` bound at `/dev`, with `cons`, `consctl`, `null` and
-`zero` in it.
+`kernel/devfs/` — `#c` bound at `/dev`, with `cons`, `consctl`, `null`,
+`zero`, `fb` and `fbctl` in it.
 
 Everything before this in Vectra could name a file. Nothing before it could name
 a piece of hardware. `devfs` closes that gap, and the line it prints during the
@@ -268,6 +268,58 @@ this tree enforces that yet, and this milestone did not make it one.
 characters were typed under rules that no longer apply. A raw reader handed a
 half-edited line would get characters the user already backspaced over.
 
+## The raw framebuffer, and the first device with contents
+
+`fbdev.odin` — `/dev/fb` is the screen's memory as a file, and `/dev/fbctl`
+is the geometry beside it. This is `docs/HANDOFF.md`'s "a device a user
+process can reach", and it took no new system call to reach it. A process
+opens `/dev/fb` by name, seeks its descriptor, and writes pixel bytes.
+`seek` already carried the position, `Twrite` already carried it here, and
+the new ground is only a device that honours it on the far side.
+
+Two masters want this file, which is why it exists now rather than with
+`/dev/draw`. A userland devfs needs the kernel to serve the console's raw
+halves, so a process can stand where `#c`'s handler stands. And `/dev/draw`
+is mostly a protocol over exactly this memory. One file serves both.
+
+**Every device before this one was a stream.** A stream has no length and
+ignores its offset, and `Rgetattr` says size zero so nobody reads one by its
+size. The framebuffer is the opposite on every count. It has exactly
+`height * pitch` bytes — padding included, because the padding is memory a
+client's row arithmetic addresses — and the offset names which of them. So
+`fb` is the one row in the table whose `Rgetattr` reports a real size. A
+screenshot is a read of the file by its length.
+
+The boundary follows three rules, each the honest answer at its edge:
+
+- a read at or past the end answers zero bytes, which is a real end of file
+- a read or a write that straddles the end takes what fits and reports the
+  short count, because the bytes up to the edge did move
+- a write that starts at or past the end is ENOSPC — there is no space at
+  that offset and there never will be, and a zero count would read as `try
+  again`
+
+**No lock covers a pixel copy, on purpose.** Two clients that write the
+same pixels tear the picture, and the picture is not kernel state. The
+screen already works that way: `klog` draws with no lock from the fault
+path, and the console's writes share the same surface. A server that
+serialised pixel writes would hold a worker to buy nothing.
+
+`/dev/fbctl` reports what a client cannot draw without:
+
+    size 1280 800
+    pitch 5120
+    depth 32
+    r 8 16
+    g 8 8
+    b 8 0
+
+One line per fact, `depth` in bits, each channel as its width and its shift
+into the pixel word. It is a `ctl` file with an empty command vocabulary,
+because nothing about this hardware can be set yet. Every write is
+therefore EINVAL, which is rule 2 with no rows in its table. The day a mode
+can change, `size` becomes a command and rule 3 starts to hold for it.
+
 ## The worker count is a bound on blocked readers
 
 `WORKERS` is 4, so **at most three reads may park at once**. The fourth worker
@@ -287,15 +339,15 @@ the fix when threads are cheaper than they are today.
 
 ## What a device answers, and what it refuses
 
-| Message | `/dev` | `cons` | `consctl` | `null` | `zero` |
-|---|---|---|---|---|---|
-| `Tlopen` write | EISDIR | ok | ok, and counted | ok | ok |
-| `Tread` | EISDIR | parks until a line | the state | 0 bytes | zeroes, for ever |
-| `Twrite` | EISDIR | draws, and sends | one command | count | count |
-| `Treaddir` | four entries | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR |
-| `Tclunk` | — | — | may revert the mode | — | — |
-| `Tgetattr` size | 0 | 0 | 0 | 0 | 0 |
-| `Tlcreate`, `Tmkdir`, `Tremove` | EPERM | EPERM | EPERM | EPERM | EPERM |
+| Message | `/dev` | `cons` | `consctl` | `null` | `zero` | `fb` | `fbctl` |
+|---|---|---|---|---|---|---|---|
+| `Tlopen` write | EISDIR | ok | ok, and counted | ok | ok | ok | ok |
+| `Tread` | EISDIR | parks until a line | the state | 0 bytes | zeroes, for ever | pixels at the offset | the geometry |
+| `Twrite` | EISDIR | draws, and sends | one command | count | count | pixels, may be short | EINVAL |
+| `Treaddir` | six entries | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR |
+| `Tclunk` | — | — | may revert the mode | — | — | — | — |
+| `Tgetattr` size | 0 | 0 | 0 | 0 | 0 | height × pitch | 0 |
+| `Tlcreate`, `Tmkdir`, `Tremove` | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM |
 
 Two of those rows are decisions rather than defaults.
 
@@ -305,16 +357,17 @@ shape of `/dev` is the driver table, and a client does not get to add a row to
 it.
 EOPNOTSUPP would send a client off to look for a server that does implement it.
 
-**Every device reports a size of zero,** and `offset` is ignored on every read
-except `/dev/consctl`'s. That is the definition of a stream rather than an
-oversight. A second read of `/dev/cons` at offset zero does not read the same
-bytes again, because the bytes are gone. A file whose contents are the future
-has no position to be at. A size of zero is what stops a caller from trying to
-read one by its length.
+**Every stream reports a size of zero,** and `offset` is ignored on every read
+except `/dev/consctl`'s and the framebuffer pair's. That is the definition of a
+stream rather than an oversight. A second read of `/dev/cons` at offset zero
+does not read the same bytes again, because the bytes are gone. A file whose
+contents are the future has no position to be at. A size of zero is what stops
+a caller from trying to read one by its length.
 
-`/dev/consctl` is the exception because it is not a stream. It has contents, the
-contents are short, and a client with a small buffer has to be able to finish
-them.
+`/dev/consctl` and `/dev/fbctl` are exceptions because they are not streams.
+Each has contents, the contents are short, and a client with a small buffer has
+to be able to finish them. `/dev/fb` is the full exception: contents, a size,
+and an offset that names a pixel. The section above owns that design.
 
 `null` and `zero` are here for two reasons beyond being useful. A dispatch table
 with one row is not a dispatch table. And the self-test needs a read that does
@@ -338,8 +391,10 @@ it stops being correct the day `/dev` means something different in two
 namespaces.
 
 **No `/dev/random`, `/dev/draw`, `/dev/mouse` or `/dev/kbd`.** Each is a row in
-`DEV_NODES` and a case in two switches. `kbd` is the interesting one, because it
-is what turns `cons_input` from a poll into an interrupt.
+`DEV_NODES` and a case in two switches, which is the path `fb` and `fbctl`
+walked. `kbd` is the interesting one, because it is what turns `cons_input`
+from a poll into an interrupt. `draw` is now a protocol question rather than a
+memory question, because `/dev/fb` already serves the memory.
 
 ## The self-test, and what it costs to make honest
 
@@ -379,8 +434,9 @@ shadow right.
 
 ### The controls
 
-Twenty mutations, one at a time, each observed on a real boot. The first eleven
-are the device server, the last nine are the line discipline and the `ctl` file.
+Twenty-four mutations, one at a time, each observed on a real boot. The first
+eleven are the device server, the next nine the line discipline and the `ctl`
+file, and the last four the raw framebuffer.
 
 | Mutation | First failure |
 |---|---|
@@ -404,6 +460,10 @@ are the device server, the last nine are the line discipline and the `ctl` file.
 | the report ignores the offset | `a read at an offset starts there` |
 | a mode change keeps the line under construction | `and the half-typed line went with the rules that accepted it` |
 | `console.backspace` clears no pixels | `and takes the pixels off the screen, rather than only the cursor` |
+| a write to `fb` ignores its offset | `and the first pixel is on the screen` (3 checks, 4 more in ring 3) |
+| `fb_read` loses its past-the-end guard | a `#PF` on the boot, at the first byte past the frame — see below |
+| the geometry report says depth in bytes | `reporting the geometry of the surface the server holds` |
+| `fb` reports a size of zero | `with a real length, the first device that has one` |
 
 **The last two only fail because the checks were rewritten to make them.** Both
 came back clean the first time, and neither was a narrow window — they were
@@ -433,6 +493,21 @@ left behind was bookkeeping the code under test also maintains. It agrees with i
 lesson as the FPU accumulator in `docs/SCHED.md`, and `docs/TESTING.md` now
 carries it as a rule rather than as three stories.
 
+**The guard control failed to fail on its first run, and the miss is worth
+more than the catch.** The boundary checks probed exactly `limit`, where the
+clamp `limit - offset` answers zero with or without the guard. The guard only
+matters strictly past the end, where the unsigned subtraction wraps, and
+nothing tested there. The checks now probe `limit + 8` as well, on both the
+read side and the write side.
+
+On the rerun the mutation did not fail a check. It stopped the machine: a
+kernel `#PF` at the first byte past the frame, because the page after the
+framebuffer is not mapped. That is recorded as caught, and it also names what
+the guard is. Without it, a process with a descriptor and a `seek` can fault
+the kernel with a number. The checks still earn their place. A subtler wrong
+arrangement — a partial clamp, a guard at the wrong comparison — corrupts an
+answer without leaving the frame, and fails a check instead.
+
 **Both uncaught mutations are uncaught for the same reason, and it is not the
 usual one.** Neither is a narrow window. `Cons.out` guards against two threads
 interleaving inside one line, and this test writes from one thread. The EPERM on
@@ -450,8 +525,14 @@ cannot be expressed is different from a control that fails to fire.
   and deletes the poll. `cons_feed` is the entry point it already has.
 - **`^W` and a cursor in the line**, which is word erase and the arrow keys. A
   larger edit buffer and a position inside it, rather than a new idea.
-- **`/dev/draw`**, over `kernel/drivers/fb`, which is the other half of a
-  console and the thing `apps/terminal` will actually want.
+- **The other raw halves: the UART's byte stream and the scancode stream.**
+  `/dev/fb` set the shape — a row in the table, a case in two switches — and
+  they are what a userland devfs still cannot reach.
+- **`/dev/draw`**, which is now a protocol question rather than a memory one.
+  `/dev/fb` serves the memory, and `apps/terminal` will want the protocol.
+- **A bulk path for pixels.** `user.COPY_MAX` is 256 bytes, so a ring 3 repaint
+  of the whole frame is about sixteen thousand `write` calls. Fine for a
+  cursor, wrong for a compositor. Either a bigger copy bound or a mapping.
 - **A worker per blocked request**, or a way for a handler to defer its reply
   without holding a worker. Either one removes the bound this file's worker
   count stands in for.

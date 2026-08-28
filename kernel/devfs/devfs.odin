@@ -1,8 +1,9 @@
 /*
 devfs -- the first server in Vectra whose files are devices.
 
-`#c` bound at `/dev`, with `cons`, `null` and `zero` in it. What that buys is
-the whole path from a name to a byte on a screen, end to end and over real 9P:
+`#c` bound at `/dev`, with `cons`, `null`, `zero` and the raw framebuffer in
+it. What that buys is the whole path from a name to a byte on a screen, end
+to end and over real 9P:
 
     open_path(ns, "/dev/cons", O_RDWR)   a walk across two servers
     chan_write(c, 0, "hello\n")          Twrite -> a worker -> the framebuffer
@@ -57,6 +58,7 @@ package devfs
 import "base:intrinsics"
 
 import "kernel:drivers/console"
+import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mnt"
 import "kernel:sync"
@@ -76,6 +78,8 @@ Dev_Kind :: enum u8 {
 	Consctl, // The console's rules: writes command, reads report
 	Null, // Writes vanish, reads are at end of file
 	Zero, // Writes vanish, reads are zeroes and never end
+	Fb, // The raw framebuffer: pixel bytes at an offset. See `fbdev.odin`
+	Fbctl, // The framebuffer's geometry: reads report, nothing to command yet
 }
 
 Dev_Node :: struct {
@@ -91,6 +95,10 @@ The tree, in the order a listing reports it.
 dispatch table with one row is not a dispatch table. And the self-test needs a
 read that does *not* park, to compare the one that does against. Both are about
 ten lines and both are files a POSIX layer will need on its first day.
+
+`fb` and `fbctl` are the console's raw half: the screen's memory as a file,
+and the geometry beside it. The first device a user process reaches for the
+hardware rather than for the line discipline. See `fbdev.odin`.
 */
 @(private)
 DEV_NODES := [?]Dev_Node {
@@ -99,6 +107,8 @@ DEV_NODES := [?]Dev_Node {
 	{name = "consctl", parent = 0, kind = .Consctl},
 	{name = "null", parent = 0, kind = .Null},
 	{name = "zero", parent = 0, kind = .Zero},
+	{name = "fb", parent = 0, kind = .Fb},
+	{name = "fbctl", parent = 0, kind = .Fbctl},
 }
 
 // How many devices this server publishes, not counting its own root. Reported
@@ -134,6 +144,11 @@ Read_Wait :: struct {
 Dev_Tree :: struct {
 	server: vfs.Server,
 	cons:   Cons,
+
+	// The screen's own memory, for `/dev/fb`. The whole surface rather than
+	// the console's region of it: the raw device is the hardware, and the
+	// console is one tenant. See `fbdev.odin`.
+	raw:    ^fb.Surface,
 
 	// Client fids, and the one thing in here that several workers write. See
 	// `kernel/vfs/fidtab.odin`.
@@ -185,13 +200,14 @@ Needs a scheduler and a running clock. The workers are threads, the producer is
 a thread, and a parked reader waits on a rendezvous. Everything before that
 point in the boot names files without ever reading one.
 */
-init :: proc(ns: ^vfs.Namespace, screen: ^console.Console, port: ^uart.Port) -> vfs.Errno {
+init :: proc(ns: ^vfs.Namespace, screen: ^console.Console, port: ^uart.Port, raw: ^fb.Surface) -> vfs.Errno {
 	t := &dev_tree
 
 	if !vfs.fidtab_init(&t.fids, DEV_MAX_FIDS) {
 		return vectra9.ENOMEM
 	}
 	cons_init(&t.cons, screen, port)
+	t.raw = raw
 
 	if err := vfs.server_init(&t.server, "c", devfs_handler, t); err != .None {
 		vfs.fidtab_destroy(&t.fids)
@@ -222,6 +238,13 @@ init :: proc(ns: ^vfs.Namespace, screen: ^console.Console, port: ^uart.Port) -> 
 // self-test and the boot log are the two, and both only read.
 tree :: proc "contextless" () -> ^Dev_Tree {
 	return &dev_tree
+}
+
+// raw_surface is the screen `/dev/fb` serves, for a self-test that has to
+// look at pixels a program wrote through the mount. Nothing else should
+// reach around the file.
+raw_surface :: proc "contextless" () -> ^fb.Surface {
+	return dev_tree.raw
 }
 
 /*
@@ -708,9 +731,10 @@ devfs_handler :: proc "contextless" (
 			// says otherwise arrives with the processes.
 			mode    = dir ? S_IFDIR | 0o555 : S_IFCHR | 0o666,
 			nlink   = dir ? 2 : 1,
-			// A device has no length. Zero is the honest answer and it is what
-			// stops a caller from reading a device by its size.
-			size    = 0,
+			// A stream has no length, and zero is what stops a caller from
+			// reading one by its size. The framebuffer is not a stream. It has
+			// exactly this many bytes, and a caller may read it by them.
+			size    = DEV_NODES[node].kind == .Fb ? fb_size(t.raw) : 0,
 			blksize = 512,
 		}
 
@@ -843,6 +867,15 @@ devfs_read :: proc "contextless" (
 	case .Consctl:
 		reply^ = vectra9.Rread{data = consctl_report(t, m.offset, buf[:room])}
 
+	case .Fb:
+		// The offset is honoured, and this device is why the streams above
+		// say so when they ignore theirs. Zero bytes past the end is a real
+		// end of file. See `fbdev.odin`.
+		reply^ = vectra9.Rread{data = fb_read(t.raw, m.offset, buf[:room])}
+
+	case .Fbctl:
+		reply^ = vectra9.Rread{data = fbctl_report(t.raw, m.offset, buf[:room])}
+
 	case .Cons:
 		if int(tag) >= mnt.MAX_REQUESTS {
 			// A tag this server cannot index is a tag it cannot ask the
@@ -917,6 +950,27 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 			return
 		}
 		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+
+	case .Fb:
+		// The one write in this server that can be short, and the one that
+		// can refuse for want of room. Both come from having a real size.
+		// See `fbdev.odin` for the boundary rules.
+		n, err := fb_write(t.raw, m.offset, m.data)
+		if err != vfs.OK {
+			reply^ = vectra9.error_reply(err)
+			return
+		}
+		reply^ = vectra9.Rwrite{count = u32(n)}
+
+	case .Fbctl:
+		// The command vocabulary is empty until something about the hardware
+		// can be set, so every command is one nothing recognises. A write of
+		// no bytes stays a write of no bytes, as everywhere else.
+		if len(m.data) > 0 {
+			reply^ = vectra9.error_reply(vectra9.EINVAL)
+			return
+		}
+		reply^ = vectra9.Rwrite{count = 0}
 
 	case .Null, .Zero:
 		// Accepted and discarded, which is what both mean. A write that failed
