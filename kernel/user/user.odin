@@ -148,6 +148,10 @@ Exit :: struct {
 	*/
 	deliberate: bool,
 	status:     u64,
+
+	// Whether a note is what ended it. Never true beside `deliberate`: a
+	// noted process dies at a boundary it did not choose to cross that way.
+	noted:      bool,
 }
 
 Process :: struct {
@@ -217,7 +221,17 @@ Process :: struct {
 
 	exit:   Exit,
 	live:   bool,
+
+	// The note's text, posted before delivery and kept for whoever collects
+	// the exit. Nothing interprets it yet -- the only action is an ending --
+	// but an ending that can say why beats one that cannot.
+	note_buf: [NOTE_MAX]u8,
+	note_len: int,
 }
+
+// The longest note. Plan 9 says ERRMAX for the same field, and the number
+// only has to hold a sentence.
+NOTE_MAX :: 64
 
 /*
 One open file.
@@ -311,6 +325,7 @@ ring 3 again, which is the fault. See `syscall.odin`.
 */
 init :: proc(ns: ^vfs.Namespace) -> bool {
 	arch.set_user_trap_handler(on_trap)
+	sched.set_note_trap(note_trap)
 	return syscall_init(ns)
 }
 
@@ -352,6 +367,92 @@ on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
 		}
 	}
 
+	// Interrupts are already off, and `wakeup_all` masks rather than enables,
+	// so a woken waiter cannot run before this thread leaves the core.
+	sync.wakeup_all(&exit_rendez)
+	return sched.kill_current(r)
+}
+
+/*
+Where everything that ends a process reports it, and where collectors wait.
+
+One rendezvous rather than one per process, because an exit is rare and a
+scan per wake is nothing. The condition is the child's own `exit.done`, so a
+wake for somebody else's child is a loop iteration rather than a wrong
+answer. This is what let `wait` stop polling: a parked parent costs the
+machine nothing until an ending wakes it.
+*/
+@(private)
+exit_rendez: sync.Rendez
+
+@(private)
+exit_done :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.volatile_load(&(^Process)(arg).exit.done)
+}
+
+/*
+post_note delivers an ending to a process, from outside it.
+
+The note is a flag on the thread and a line of text on the process. What
+makes it an *ending* is the boundaries: the next system call the thread
+enters, or the next tick that catches it in ring 3. `sched.note_thread`
+readies a parked thread, so an interruptible sleep unwinds toward one of
+those. Delivery is not instant, and this does not wait for it. A caller that
+wants the corpse waits on the exit and then destroys. That is `wait_pid`'s
+arc for parents, and the kernel's for itself.
+
+Refused on a process that already ended. The note would outlive its target
+and kill whatever reuses the thread, which is the aliasing every id in this
+tree exists to prevent.
+*/
+post_note :: proc "contextless" (p: ^Process, text: string) -> bool {
+	if p == nil || !p.live || p.thread == nil {
+		return false
+	}
+	if intrinsics.volatile_load(&p.exit.done) {
+		return false
+	}
+
+	n := min(len(text), NOTE_MAX)
+	for i in 0 ..< n {
+		p.note_buf[i] = text[i]
+	}
+	p.note_len = n
+
+	sched.note_thread(p.thread)
+	return true
+}
+
+// note reports the text an ending carried, empty when nothing was posted.
+note :: proc "contextless" (p: ^Process) -> string {
+	if p == nil {
+		return ""
+	}
+	return string(p.note_buf[:p.note_len])
+}
+
+/*
+note_trap is the tick's half of delivery: a noted thread caught in ring 3.
+
+Interrupt context, exactly like `on_trap`, and the same rules -- no lock, no
+log, no allocation. The record says a note ended the program, with the frame
+the tick interrupted, and the descriptors stay open until `destroy` closes
+them. That is the fault path's arrangement too, and the same collector
+finishes both.
+*/
+@(private = "file")
+note_trap :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	if thread := sched.current(); thread != nil {
+		if p := (^Process)(thread.user); p != nil {
+			p.exit.ip = uintptr(r.frame.rip)
+			p.exit.sp = uintptr(r.frame.rsp)
+			p.exit.kstack = uintptr(rawptr(r.frame))
+			p.exit.from_user = true
+			p.exit.noted = true
+			intrinsics.volatile_store(&p.exit.done, true)
+		}
+	}
+	sync.wakeup_all(&exit_rendez)
 	return sched.kill_current(r)
 }
 
@@ -505,13 +606,7 @@ wait :: proc "contextless" (p: ^Process, patience: int) -> bool {
 	if p == nil {
 		return false
 	}
-	for _ in 0 ..< patience {
-		if intrinsics.volatile_load(&p.exit.done) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return intrinsics.volatile_load(&p.exit.done)
+	return sync.sleep_for(&exit_rendez, exit_done, p, u64(patience))
 }
 
 /*

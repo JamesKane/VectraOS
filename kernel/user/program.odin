@@ -48,6 +48,7 @@ MARK_PARENT :: u64(0x5052_4E54_5052_4E54) // PRNTPRNT
 MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
 MARK_POSTER :: u64(0x504F_5354_504F_5354) // POSTPOST
 MARK_NINER :: u64(0x4E49_4E45_4E49_4E45) // NINENINE
+MARK_NOTER :: u64(0x4E4F_5452_4E4F_5452) // NOTRNOTR
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -208,6 +209,20 @@ they drift.
 */
 NINER_READ_LINE :: "these bytes came from ring 3"
 
+/*
+Where `noter` keeps its answers -- one cell per call, in call order.
+
+The story is the note's arc from ring 3. Spawn a child that loops for ever,
+note it, and collect an ending the child never chose. The wait answers
+EINTR, which is the kernel saying a note did this. Then note a pid that is
+nobody's child, and hear ECHILD, which is the wall between one process's
+authority and the table.
+*/
+NOTER_SPAWNED :: 1
+NOTER_NOTED :: 2
+NOTER_WAITED :: 3
+NOTER_STRANGER :: 4
+
 // The line the kernel writes through a mounted `/srv/niner`, which `niner`
 // forwards to the console. It lives here rather than in the blob: the payload
 // of a Twrite is the client's to choose, and the client is the kernel.
@@ -348,6 +363,8 @@ foreign {
 	vectra_user_poster_end: byte
 	vectra_user_niner: byte
 	vectra_user_niner_end: byte
+	vectra_user_noter: byte
+	vectra_user_noter_end: byte
 }
 
 @(private)
@@ -384,6 +401,7 @@ program_parent :: proc "contextless" () -> []u8 {return blob(&vectra_user_parent
 program_child :: proc "contextless" () -> []u8 {return blob(&vectra_user_child, &vectra_user_child_end)}
 program_poster :: proc "contextless" () -> []u8 {return blob(&vectra_user_poster, &vectra_user_poster_end)}
 program_niner :: proc "contextless" () -> []u8 {return blob(&vectra_user_niner, &vectra_user_niner_end)}
+program_noter :: proc "contextless" () -> []u8 {return blob(&vectra_user_noter, &vectra_user_noter_end)}
 
 /*
 The programs, emitted by the assembler.
@@ -1203,5 +1221,58 @@ vectra_user_niner:
 	.ascii "these bytes came from ring 3"
 .globl vectra_user_niner_end
 vectra_user_niner_end:
+
+/*
+noter -- a process that ends another one.
+
+Spawn /bin/spin, which never makes a system call and never stops on its
+own. Note it, and wait: the answer is -EINTR, the kernel's word for a note
+that ended a child. Then note pid 9999, which is nobody's child, and record
+the ECHILD. Each answer lands in its cell, in call order, as always.
+*/
+.balign 16
+.globl vectra_user_noter
+vectra_user_noter:
+	movq %rdi, %rbx
+	movabsq $$0x4E4F54524E4F5452, %rax
+	movq %rax, (%rbx)
+
+	leaq 24f(%rip), %rdi
+	movq $$9, %rsi
+	movq $$1, %rdx
+	movq $$10, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r13
+
+	movq %r13, %rdi
+	leaq 25f(%rip), %rsi
+	movq $$4, %rdx
+	movq $$16, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movq %r13, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq $$9999, %rdi
+	leaq 25f(%rip), %rsi
+	movq $$4, %rdx
+	movq $$16, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+24:
+	.ascii "/bin/spin"
+25:
+	.ascii "stop"
+.globl vectra_user_noter_end
+vectra_user_noter_end:
 `, "~{memory}"}()
 }

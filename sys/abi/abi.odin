@@ -35,6 +35,7 @@ SYS_CREATE :: u64(12)
 SYS_MOUNT :: u64(13)
 SYS_REMOVE :: u64(14)
 SYS_PIPE :: u64(15)
+SYS_NOTE :: u64(16)
 
 // The open flags `open` and `create` take, as 9P2000.L carries them.
 O_RDONLY :: u64(0)

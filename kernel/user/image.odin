@@ -281,7 +281,7 @@ when #exists("../../build/user/ramfs.vx") {
 }
 
 @(private = "file")
-bin_nodes: [6]vfs.Static_Node
+bin_nodes: [8]vfs.Static_Node
 
 @(private = "file")
 bin_tree: vfs.Static_Tree
@@ -312,16 +312,22 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 	parent := image_build(program_parent())
 	poster := image_build(program_poster())
 	niner := image_build(program_niner())
-	if child == nil || parent == nil || poster == nil || niner == nil {
+	noter := image_build(program_noter())
+	spin := image_build(program_spin())
+	if child == nil || parent == nil || poster == nil || niner == nil ||
+	   noter == nil || spin == nil {
 		return vectra9.ENOMEM
 	}
 
+	// `ramfs` last, so the fallback below can drop exactly it.
 	bin_nodes = {
 		{name = "/", parent = -1, dir = true},
 		{name = "child", parent = 0, data = string(child)},
 		{name = "niner", parent = 0, data = string(niner)},
+		{name = "noter", parent = 0, data = string(noter)},
 		{name = "parent", parent = 0, data = string(parent)},
 		{name = "poster", parent = 0, data = string(poster)},
+		{name = "spin", parent = 0, data = string(spin)},
 		{name = "ramfs", parent = 0, data = string(RAMFS_IMAGE)},
 	}
 
@@ -329,7 +335,7 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 	// has. The published count says so, and `verify_runtime` fails on it.
 	published := bin_nodes[:]
 	if len(RAMFS_IMAGE) == 0 {
-		published = bin_nodes[:5]
+		published = bin_nodes[:7]
 	}
 	bin_published = len(published) - 1
 

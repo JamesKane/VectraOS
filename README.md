@@ -6,7 +6,7 @@ on top.
 
 ## Status
 
-**Programs are compiled now, and one of them is a file server.** The kernel
+**Processes can be ended now, and everything else still runs.** The kernel
 comes up under Limine on `x86_64` with descriptor tables, page tables and a
 heap of its own. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin` over 9P2000.L. It preempts on the local APIC and takes keyboard
@@ -17,6 +17,11 @@ console. Those processes spawn children out of files under `/bin`, wait for
 them, and collect their exit status. One posts a service in `/srv` and mounts
 the name it published -- Plan 9's way, create the file and write a descriptor
 into it. One *answers* 9P by hand, in a page of assembler.
+
+And what runs can now be stopped. A *note*, posted from the kernel or from a
+parent to its own child, ends a process at the next kernel boundary it
+crosses. The tick catches a runaway loop, the door catches a call, and an
+unwound sleep catches a server parked on its pipe.
 
 And one is `servers/ramfs`, an Odin program the build driver compiled for ring 3. Its
 segments load with real permissions, and it serves a file tree through the
@@ -43,7 +48,7 @@ its paths in the world its parent arranged.
 [  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
 [  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
 [  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
-[  ok  ] bin #b bound at /bin, 5 programs as files, formats VECTRA01 and 02
+[  ok  ] bin #b bound at /bin, 7 programs as files, formats VECTRA01 and 02
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half
 [  ok  ] syscall armed -- entry at 0xffffffff80020410, /dev/cons is descriptor 1
@@ -54,7 +59,7 @@ its paths in the world its parent arranged.
 -- this line went through a posted service
 -- a process answered this line
 these bytes live in a program's own segments
-[  ok  ] user 304 userland checks passed -- 18 processes, 2 started by another process, 182 system calls, a file tree served by a compiled program
+[  ok  ] user 332 userland checks passed -- 21 processes, 3 started by another process, 194 system calls, a file tree served by a compiled program
 [  ok  ] boot complete -- idling
 ```
 
@@ -163,7 +168,7 @@ shared on fork. It is built, and ring 3 reaches it through `bind`.
 ## Every line of that boot log is a self-test
 
 There is no test harness and no host-side test build. Every layer proves itself
-on the machine that will run it, during boot, and reports one line. About 880
+on the machine that will run it, during boot, and reports one line. About 910
 checks run on every boot.
 
 The cost of that is a self-test can be *unfalsifiable* — it passes because it

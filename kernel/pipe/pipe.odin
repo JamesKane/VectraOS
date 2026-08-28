@@ -284,7 +284,14 @@ read :: proc "contextless" (p: ^Pipe, end: int, buf: []u8) -> int #no_bounds_che
 		if closed {
 			return 0
 		}
-		sync.sleep(&f.r, flow_readable, f)
+		if !sync.sleep_noted(&f.r, flow_readable, f) {
+			// A note is waiting for this thread, and a pipe is where a
+			// server parks for its whole idle life. Negative rather than
+			// zero, because zero is EOF and EOF is final. The kernel
+			// thread on a wire never carries a note, so for one this
+			// branch does not exist.
+			return -1
+		}
 	}
 }
 
@@ -322,7 +329,10 @@ write :: proc "contextless" (p: ^Pipe, end: int, data: []u8) -> (n: int, err: vf
 			continue
 		}
 		sync.release(&t.lock, g)
-		sync.sleep(&f.w, flow_writable, f)
+		if !sync.sleep_noted(&f.w, flow_writable, f) {
+			// The note again, mid-write this time. What crossed, crossed.
+			return sent, vectra9.EINTR
+		}
 	}
 	return sent, vfs.OK
 }
@@ -581,6 +591,10 @@ pipe_handler :: proc "contextless" (
 		}
 		// The park happens here, on the calling thread, with no lock held.
 		n := read(p, end, buf[:min(len(buf), int(m.count))])
+		if n < 0 {
+			reply^ = vectra9.error_reply(vectra9.EINTR)
+			return
+		}
 		reply^ = vectra9.Rread{data = buf[:n]}
 
 	case vectra9.Twrite:
@@ -595,7 +609,10 @@ pipe_handler :: proc "contextless" (
 			return
 		}
 		n, err := write(p, end, m.data)
-		if err != vfs.OK {
+		if err != vfs.OK && n == 0 {
+			// EPIPE with nothing crossed, or a note before the first byte.
+			// A partial write reports its count instead, whatever cut it
+			// short, which is every write interface's rule.
 			reply^ = vectra9.error_reply(err)
 			return
 		}

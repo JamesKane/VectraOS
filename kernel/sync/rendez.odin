@@ -216,6 +216,24 @@ sleep :: proc "contextless" (r: ^Rendez, cond: Condition, arg: rawptr = nil) {
 }
 
 /*
+sleep_noted waits until `cond` is true, or until a note interrupts it.
+
+Reports whether the condition was met. False means a note is waiting for
+this thread. The caller's job is then to unwind toward the boundary that
+delivers it -- EINTR outward, however many layers that is. The wake arrives
+because `sched.note_thread` made the thread runnable. The wait's own unlink
+takes it off every list, and this loop's check is what turns the wake into a
+return.
+
+A kernel thread is never noted, so for one this is `sleep` exactly. That is
+what lets a path both kinds of thread cross -- a pipe's flows -- wait this
+way unconditionally.
+*/
+sleep_noted :: proc "contextless" (r: ^Rendez, cond: Condition, arg: rawptr = nil) -> bool {
+	return wait_on(r, cond, arg, 0, timed = false, interruptible = true)
+}
+
+/*
 sleep_for waits until `cond` is true, or until `ticks` pass.
 
 Reports whether the condition was met. False is a deadline, not an error, and
@@ -320,6 +338,7 @@ wait_on :: proc "contextless" (
 	arg: rawptr,
 	ticks: u64,
 	timed: bool,
+	interruptible: bool = false,
 ) -> bool {
 	if !can_sleep() {
 		fail("slept on a rendezvous inside a spinlock")
@@ -348,6 +367,12 @@ wait_on :: proc "contextless" (
 		}
 		if timed && intrinsics.volatile_load(&now_ticks) >= deadline {
 			timeouts += 1
+			return false
+		}
+		if interruptible && have_sched && hooks.interrupted != nil &&
+		   hooks.interrupted(hooks.current()) {
+			// A note outranks the wait. The condition had its chance above,
+			// so a wake that raced the note still answers true.
 			return false
 		}
 		if !have_sched {

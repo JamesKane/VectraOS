@@ -21,8 +21,8 @@ another process from a file it names:
 -- a process answered this line
 ```
 
-Seven milestones live in this document, because they live in the same
-directory. `docs/SPACE.md` built the piece under all seven:
+Eight milestones live in this document, because they live in the same
+directory. `docs/SPACE.md` built the piece under all eight:
 
     ring 3        a thread can run somewhere it cannot damage the kernel
     a syscall     it can ask for something anyway
@@ -31,6 +31,7 @@ directory. `docs/SPACE.md` built the piece under all seven:
     a posting     and what it holds open, it can publish by name
     a service     and what it publishes, it can answer -- the kernel as client
     a runtime     and the server can be a program a compiler built
+    a note        and what will not stop can be stopped, from outside
 
 The third line is the one Plan 9 is about. Two processes hand the kernel the
 same path and get different files, because the mount table belongs to the
@@ -641,10 +642,10 @@ an id rather than a slot. The process table reuses slots, and a parent must
 not collect a stranger that moved in. Zero is the kernel, which is why a
 kernel-launched process has no parent a program could claim to be.
 
-`wait` polls, one parked tick per miss, on the same argument `user.wait`
-makes. The exit record comes from a path where nothing may take a lock or
-wake a sleeper. The rendezvous it should become wants a wake that is legal in
-a fault handler.
+`wait` parks on the exit rendezvous now, and every path out of a process
+wakes it. The wake from a fault turned out to be legal after all.
+`sync.wakeup_all` masks rather than enables, which is the argument the
+keyboard's top half already ran on. The note section below has the story.
 
 ### Two children, one line
 
@@ -760,24 +761,60 @@ clients park for ever. And `load` split into `load_held` and `launch`,
 because a flake caught the self-tests staging a data page while the thread
 already ran. Both stories are told in full in `docs/RUNTIME.md`.
 
+## The note
+
+The eighth milestone, and the one every gap in this file pointed at. A
+process could end itself or fault, and nothing could end it from outside. A
+runaway loop held its core, a hung server held its clients, and `wait` polled
+because no ending could wake anybody. One mechanism retires all of it, and it
+is Plan 9's, minus the half a program registers. `post_note` marks the
+target's thread, and delivery is an ending at the next kernel boundary the
+thread crosses.
+
+Three boundaries, because a process can be doing three things:
+
+    running in ring 3    the next tick catches it -- `note_trap`, interrupt
+                         context, the fault path's twin
+    entering the door    the dispatch check ends it before the call runs --
+                         `note_exit`, thread context, so its descriptors
+                         close with it
+    parked in a sleep    `sync.sleep_noted` returns false, EINTR unwinds to
+                         ring 3, and the door finishes the job
+
+The third is the one with reach. A pipe's flows wait interruptibly now, so a
+server parked with nothing to serve dies of a note within a tick. A read that
+waits on a device -- the console -- becomes a loop of bounded waits, with the
+note checked between. The transport's flush already knew how to pay for that.
+A kernel thread is never noted, so every one of these paths costs it nothing.
+
+The endings meet in one place: an exit rendezvous every path out of a process
+wakes. `wait` and `wait_pid` park on it, which is the polling retired, and
+the self-test's promptness check is what keeps the wake a wake. A noted child
+answers its parent's `wait` with EINTR, distinct from a fault's EIO on
+purpose. A parent that noted its own child expects the one and not the other.
+`SYS_NOTE` grants ring 3 the same power over its own children only. A pid
+that is nobody's child answers ECHILD, exactly like a pid that never existed,
+so noting teaches nothing about the table.
+
+What a note does not yet do is anything but end. Plan 9 lets a process
+register a handler and survive its notes. The fields are shaped for that day
+-- the text travels and is kept -- but today the only delivery is death. A *faulting* process also still holds its descriptors until
+`destroy`. Both its ways of dying are in interrupt context, where nothing
+may close a file, and only a collector in thread context can.
+
 ## What is missing, and named where it lives
 
-- **A process cannot be stopped from outside.** It can end itself now, and
-  the kernel still cannot end it. `destroy` refuses a running process rather
-  than free the tables underneath it, and the leak is visible in
-  `user.stats().live`. A *faulting* process also holds its descriptors until
-  `destroy`, where a deliberate exit closes its own. A server that dies by
-  fault is therefore a quiet pipe until somebody collects it. Plan 9 ends a
-  process with a note. That is this missing piece by its proper name.
+- **`destroy` still refuses a running process**, and rightly: its thread is
+  translating through the space. What changed is that the refusal has an
+  answer now. Post a note, wait on the exit, then destroy -- the arc
+  `wait_pid` walks for parents and the kernel can walk for itself. The
+  honest leak is a choice now rather than a fact.
 - **No `rfork` proper, and no `exec` in place.** `spawn` starts a process
   from a file, and the seam Plan 9 cuts between creating and replacing is
   still fused. A child that continues from the call site needs a copied trap
   frame and copied user pages. A program that replaces itself needs its
   syscall frame rewritten under it. Both are mechanism, not design -- the
   inheritance rules are settled and stay.
-- **`wait` polls.** A parked tick per miss, bounded by `WAIT_PATIENCE`. The
-  rendezvous it should become needs a wake that is legal in a fault handler.
-  A fault is one of the two ways a child ends.
 - **No `stat` behind the door.** `vfs.chan_stat` exists and nothing in ring 3
   needs it yet. It is the same shape as every call above and not a design
   question. `create` and `mount` were on this line for four milestones, and

@@ -226,22 +226,25 @@ wait_pid :: proc(caller_pid: u64, pid: u64, patience: int) -> i64 {
 		return -i64(vectra9.ECHILD)
 	}
 
-	for _ in 0 ..< patience {
-		if intrinsics.volatile_load(&child.exit.done) {
-			break
-		}
-		sync.delay(1)
-	}
-	if !intrinsics.volatile_load(&child.exit.done) {
+	// Parked rather than polled, at last. Every path out of a process wakes
+	// the exit rendezvous. The condition is this child's own record, so a
+	// wake for a stranger's child costs one re-check.
+	if !sync.sleep_for(&exit_rendez, exit_done, child, u64(patience)) {
 		return -i64(vectra9.EAGAIN)
 	}
 
 	answer: i64
-	if child.exit.deliberate {
+	switch {
+	case child.exit.noted:
+		// A note ended it, and EINTR is that sentence in one word. Distinct
+		// from EIO on purpose: a parent that noted its own child expects
+		// this, where a fault it did not ask for is news.
+		answer = -i64(vectra9.EINTR)
+	case child.exit.deliberate:
 		// The low half, so a status can never wander into the negative
 		// numbers where the errnos live. Nothing exits with 4 GiB to say.
 		answer = i64(u32(child.exit.status))
-	} else {
+	case:
 		answer = -i64(vectra9.EIO)
 	}
 
@@ -260,7 +263,7 @@ check and the pid check together are what slot reuse demands. A slot holds a
 new process the moment the old one goes. The pid is the field that never
 lies about which tenant answered.
 */
-@(private = "file")
+@(private)
 find_child :: proc "contextless" (caller_pid: u64, pid: u64) -> ^Process #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]

@@ -376,6 +376,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_runtime(&r, column)
 
+	// -- And an ending delivered from outside --------------------------------
+
+	verify_notes(&r)
+
 	// -- What is left ---------------------------------------------------------
 
 	r.traps = arch.user_trap_count() - before_traps
@@ -1695,6 +1699,100 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 	}
 	check(r, pinned == WIRE_PIN, "and what stays is one more wire's pin, to the object")
 	r.pinned += pinned
+}
+
+/*
+verify_notes is the milestone: an ending delivered from outside.
+
+Three deliveries, one per boundary. A compute-bound program never makes a
+system call, so the tick is what catches it in ring 3. `spin` dies mid loop,
+within a few ticks of the note, and its moving counter proves it was deep in
+its own business. A parked server sits in a pipe read, so the note unwinds
+the sleep. EINTR climbs out of the pipe, the serve loop turns toward its
+exit, and the door's check ends it before that exit is heard.
+
+And a process notes its own child from ring 3. It collects the EINTR that
+says a note did it, and hears ECHILD for a pid that is nobody's child.
+
+Every wait below also tests the other half of the milestone. `wait` and
+`wait_pid` park on the exit rendezvous now. The elapsed-tick check on the
+first delivery is what says the wake was a wake rather than a timeout.
+*/
+@(private = "file")
+verify_notes :: proc(r: ^Result) {
+	// -- The tick's delivery: a program that never crosses on its own ---------
+
+	p, err := load("spin-noted", program_spin(), 0)
+	if !check(r, err == .None && p != nil, "a program is started that loops for ever") {
+		return
+	}
+	r.programs += 1
+
+	before := sync.now()
+	check(r, post_note(p, "die"), "a note is posted to it")
+	if check(r, wait(p, 100), "and it ends") {
+		check(r, sync.now() - before < 50, "promptly -- the wake was a wake, not a timeout")
+		check(r, p.exit.noted, "the record says a note did it")
+		check(r, !p.exit.deliberate, "and not the program")
+		check(r, p.exit.from_user, "caught in ring 3, mid loop")
+		check(r, cell(p, CELL_COUNTER) > 0, "with its counter moving when the tick took it")
+		check(r, note(p) == "die", "and the text arrived whole")
+		check(r, !post_note(p, "again"), "a second note is refused -- the target is gone")
+	}
+	finish(r, p, "and it is taken down")
+
+	// -- The sleep's delivery: a server parked in a pipe ----------------------
+
+	serr: vfs.Errno
+	p, serr = spawn_path(nil, "/bin/ramfs", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "a server is started to park in its pipe") {
+		return
+	}
+	r.programs += 1
+
+	posted := false
+	for _ in 0 ..< PATIENCE {
+		if srv.lookup("ramfs") != nil {
+			posted = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, posted, "and it posts, then parks with nothing to serve")
+
+	check(r, post_note(p, "enough"), "a note is posted to the parked server")
+	if check(r, wait(p, 200), "the sleep unwinds and it ends") {
+		check(r, p.exit.noted, "by the note, at the door")
+		check(r, !p.exit.deliberate, "not by the exit it was walking toward")
+	}
+	check(r, srv.remove("ramfs") == vfs.OK, "the name comes away")
+	finish(r, p, "and the server is taken down")
+
+	// -- Ring 3's delivery: a parent ends its own child -----------------------
+
+	p, serr = spawn_path(nil, "/bin/noter", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "a process is started that will end another") {
+		return
+	}
+	r.programs += 1
+
+	if check(r, wait(p, PATIENCE), "and it comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_NOTER, "having reached its first instruction")
+		check(r, i64(cell(p, NOTER_SPAWNED)) > 0, "it spawned a child that loops for ever")
+		check(r, cell(p, NOTER_NOTED) == 0, "noted it")
+		check(
+			r,
+			cell(p, NOTER_WAITED) == refused(vectra9.EINTR),
+			"and collected EINTR -- the kernel's word for a note-ended child",
+		)
+		check(
+			r,
+			cell(p, NOTER_STRANGER) == refused(vectra9.ECHILD),
+			"while a pid that is nobody's child answers ECHILD",
+		)
+		check(r, p.exit.deliberate && p.exit.status == 0, "then exited with nothing to report")
+	}
+	finish(r, p, "and it is taken down")
 }
 
 // live_objects counts what the heap is holding. The same arithmetic

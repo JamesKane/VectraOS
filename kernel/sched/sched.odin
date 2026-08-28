@@ -127,14 +127,23 @@ init :: proc() -> bool {
 	// above this line ran with one thread and could not contend.
 	sync.set_scheduler(
 		sync.Scheduler {
-			current  = current_waiter,
-			block    = block,
-			unpark   = unpark_waiter,
-			ready    = ready_waiter,
-			priority = waiter_priority,
+			current     = current_waiter,
+			block       = block,
+			unpark      = unpark_waiter,
+			ready       = ready_waiter,
+			priority    = waiter_priority,
+			interrupted = waiter_interrupted,
 		},
 	)
 	return true
+}
+
+// waiter_interrupted answers `sync`'s question inside an interruptible sleep:
+// is a note waiting for this thread? Kernel threads answer no for ever.
+@(private = "file")
+waiter_interrupted :: proc "contextless" (w: sync.Waiter) -> bool {
+	t := (^Thread)(w)
+	return t != nil && intrinsics.volatile_load(&t.noted)
 }
 
 IDLE_STACK_SIZE :: 8 * 1024
@@ -341,6 +350,51 @@ The dead thread's stack is not freed here. `reschedule` puts it on the reap
 list, and the next `spawn` gives it back, because the stack this trap is
 standing on is that thread's.
 */
+/*
+note_thread marks a thread noted and makes it runnable if it was parked. The
+flag is the note, as far as this package knows. `ready` is what turns a
+parked thread's note into motion. The thread resumes inside its wait, the
+wait's own unlink takes its node off every list, and an interruptible sleep
+sees the flag and returns. The boundary checks handle a thread that was
+running, at its next system call or its next tick, so `ready` leaves one
+alone.
+
+`ready` already refuses a thread that is Ready, Running or Dead, so this is
+safe whatever the target is doing, including dying.
+*/
+note_thread :: proc "contextless" (t: ^Thread) {
+	if t == nil {
+		return
+	}
+	intrinsics.volatile_store(&t.noted, true)
+	ready(t)
+}
+
+// thread_noted reports whether a note is waiting for a thread. For the
+// boundary checks, which act where the flag alone cannot.
+thread_noted :: proc "contextless" (t: ^Thread) -> bool {
+	return t != nil && intrinsics.volatile_load(&t.noted)
+}
+
+/*
+What the tick does with a noted thread it caught in ring 3.
+
+Registered by `kernel/user`, the owner of processes, exactly as the fault
+handler is. The tick is the one boundary a program cannot avoid crossing. A
+compute-bound loop never makes a system call, and the timer is what makes `a
+note ends a process` true for it too. The hook runs in interrupt context
+with the interrupted thread's own frame, fills the record, and answers with
+`kill_current`.
+*/
+Note_Trap :: #type proc "contextless" (r: arch.Resume) -> arch.Resume
+
+@(private = "file")
+note_trap: Note_Trap
+
+set_note_trap :: proc "contextless" (h: Note_Trap) {
+	note_trap = h
+}
+
 kill_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	if t := cpu().current; t != nil {
 		t.state = .Dead
@@ -563,6 +617,15 @@ on_tick :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	intrinsics.volatile_store(&c.ticks, now)
 
 	woken := sync.tick(now)
+
+	// A noted thread caught in ring 3 dies here, because here is the one
+	// boundary it cannot help crossing. The frame is the interrupted
+	// thread's own, which is what the hook fills the record from.
+	if t := c.current; t != nil && note_trap != nil {
+		if intrinsics.volatile_load(&t.noted) && arch.frame_is_user(r.frame) {
+			return note_trap(r)
+		}
+	}
 
 	t := c.current
 	if t != nil && t.state == .Running {

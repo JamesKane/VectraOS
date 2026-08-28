@@ -115,10 +115,11 @@ these bugs *are*.
   still runs on it, and that is what makes the free safe. Kernel code that
   reads a pipe directly, as the wire and the self-tests do, has to join its
   readers before the second close. `wire_join` exists for exactly that.
-- **A pipe write inside a full ring parks with no deadline.** `chan_read_for`
-  has no write twin, so a process writing to a pipe nobody drains parks until
-  the reader returns or the far end closes. The note is what ends a process
-  stuck that way, and there is no note yet.
+- **A pipe wait ends three ways now.** Bytes, a closed far end, or a note:
+  the flows wait with `sync.sleep_noted`, so a process parked on a pipe is a
+  process a note can reach. What remains true is that nothing here has a
+  deadline. A wait that should give up on time is the caller's loop to write.
+  The wire's flush is how the kernel's own clients write it.
 
 ## See also
 

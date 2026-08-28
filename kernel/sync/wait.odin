@@ -118,11 +118,16 @@ Higher is better, and the scale is the scheduler's. Nothing here interprets the
 number beyond a comparison of two of them.
 */
 Scheduler :: struct {
-	current:  proc "contextless" () -> Waiter,
-	block:    proc "contextless" (),
-	unpark:   proc "contextless" (w: Waiter),
-	ready:    proc "contextless" (w: Waiter),
-	priority: proc "contextless" (w: Waiter) -> int,
+	current:     proc "contextless" () -> Waiter,
+	block:       proc "contextless" (),
+	unpark:      proc "contextless" (w: Waiter),
+	ready:       proc "contextless" (w: Waiter),
+	priority:    proc "contextless" (w: Waiter) -> int,
+
+	// Whether a note is waiting for this thread. Optional, read only by an
+	// interruptible sleep, and what makes `sleep_noted` mean something. A
+	// scheduler without it makes every interruptible sleep an ordinary one.
+	interrupted: proc "contextless" (w: Waiter) -> bool,
 }
 
 @(private)

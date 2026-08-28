@@ -263,6 +263,21 @@ of that deliberate redundancy:
   carried, held by the caller across both the condition test and the wake-up.
   The API has its present shape partly so that change will not alter it.
 
+## The interruptible sleep
+
+`sleep_noted` is `sleep` with one more way out: it returns false when a note
+is waiting for the calling thread. The check rides the loop that already
+re-tests the condition after every wake, so the mechanism is exactly the
+existing one. `sched.note_thread` sets the flag and readies the thread. The
+wait's own self-unlink takes its node off every list, and the loop's check
+turns the wake into a return.
+
+The condition still wins a race with the note, deliberately. A wake that
+arrives beside a note answers true, because the thing waited for did happen.
+A kernel thread is never noted, so for one `sleep_noted` is `sleep` exactly.
+That is what lets a path both kinds of thread cross, a pipe's flows, wait
+this way unconditionally. `docs/USER.md` owns the note itself.
+
 ## See also
 
 - `docs/SCHED.md` — what `block`, `ready` and `unpark` do on the other side.

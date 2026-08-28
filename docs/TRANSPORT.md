@@ -325,12 +325,13 @@ of the mechanism, and a copy is a thing that can drift.
   message and `vfs.rpc_for` passes any message down, but `vfs.chan_read_for` is
   the one caller. A walk or a listing against a server that never answers still
   waits. See `docs/NAMESPACE.md`.
-  - **A wire's server can hold a client for ever without breaking a rule the
+- **A wire's server can hold a client for ever without breaking a rule the
   wire checks.** Half a frame and then silence, or a request simply never
   answered, parks the caller with nothing to poison over. The wire punishes a
-  *lie*. It cannot punish silence, because silence is what a slow server also
-  looks like. The teardown order in `kernel/user/verify.odin` shows the safe
-  shape — let the death land, then close — and the note is the real answer.
+  *lie*, and cannot punish silence, because silence is what a slow server
+  also looks like. The answer arrived with the note. Post one to the silent
+  server, its sleep unwinds, its death closes the pipe, and the wire poisons
+  under every parked client. What holds them now is minded rather than stuck.
 
 ## See also
 

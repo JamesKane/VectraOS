@@ -94,6 +94,18 @@ Thread :: struct {
 
 	state:  Thread_State,
 
+	/*
+	Whether a note is waiting for this thread's process.
+
+	Set by `note_thread` and never cleared, because the only delivery today is
+	an ending. Volatile both ways: the poster writes it from another thread,
+	and the boundary checks read it on paths that must not be reordered around
+	it. It lives here rather than on the process. The tick and the
+	interruptible sleep act on it, and both know threads and must not know
+	processes.
+	*/
+	noted:  bool,
+
 	base:   Priority, // Where a wake-up restores it to
 	prio:   Priority, // Where it is now, after decay and boost
 

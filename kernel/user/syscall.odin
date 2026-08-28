@@ -97,6 +97,7 @@ SYS_CREATE :: abi.SYS_CREATE
 SYS_MOUNT :: abi.SYS_MOUNT
 SYS_REMOVE :: abi.SYS_REMOVE
 SYS_PIPE :: abi.SYS_PIPE
+SYS_NOTE :: abi.SYS_NOTE
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -200,6 +201,16 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 	context = syscall_context()
 	calls += 1
 
+	/*
+	The door is the boundary a note waits at, and the check comes before the
+	call. A noted program's next request is one nothing should honour. This is
+	also the delivery point that can do the whole job -- thread context, where
+	the descriptors can close, which the tick's half cannot.
+	*/
+	if sched.thread_noted(sched.current()) {
+		note_exit(frame)
+	}
+
 	number := frame.rax
 	a0 := frame.rdi
 	a1 := frame.rsi
@@ -240,6 +251,8 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = sys_remove(uintptr(a0), int(a1))
 	case SYS_PIPE:
 		result = sys_pipe()
+	case SYS_NOTE:
+		result = sys_note(a0, uintptr(a1), int(a2))
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
 	case SYS_EXIT:
@@ -318,7 +331,31 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 
 	buffer: [COPY_MAX]u8
 	n := min(count, COPY_MAX)
-	got, err := vfs.chan_read(f.chan, f.offset, buffer[:n])
+
+	got: int
+	err: vfs.Errno
+	if vfs.server_interruptible(f.chan.server) {
+		/*
+		A read that can park for ever, made noteable by refusing to park
+		for ever. The transport can give a read a deadline, so the wait
+		becomes a loop of bounded ones with the note checked between. A
+		flush and a retry every few ticks is the price, and the server's
+		abort hook already knows how to pay it. The pipe's own reads take
+		the other road -- their sleep checks the note itself -- because a
+		synchronous transport has no deadline to lean on.
+		*/
+		for {
+			got, err = vfs.chan_read_for(f.chan, f.offset, buffer[:n], NOTE_POLL)
+			if err != vectra9.EINTR {
+				break
+			}
+			if sched.thread_noted(sched.current()) {
+				return -i64(vectra9.EINTR)
+			}
+		}
+	} else {
+		got, err = vfs.chan_read(f.chan, f.offset, buffer[:n])
+	}
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -328,6 +365,12 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 	f.offset += u64(got)
 	return i64(got)
 }
+
+// Ticks between note checks on a read that waits for a device. Short enough
+// that a note lands promptly, long enough that a parked console reader costs
+// a handful of flushes a second rather than a poll.
+@(private = "file")
+NOTE_POLL :: u64(25)
 
 /*
 sys_open resolves a path in **this process's** namespace and returns a number.
@@ -545,6 +588,72 @@ sys_pipe :: proc() -> i64 {
 	return i64(fd0 | fd1 << 8)
 }
 
+/*
+sys_note posts a note to one of the caller's own children.
+
+The same authority rule as `wait`. A pid that is not the caller's child gets
+ECHILD exactly like a pid that never existed. A process therefore learns
+nothing about the table by noting. Plan 9 grants notes by user rather than by
+parenthood, and will again here the day processes have owners. The text
+crosses like every pointer from ring 3, bounded by what a note can hold.
+*/
+@(private = "file")
+sys_note :: proc(pid: u64, addr: uintptr, length: int) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ECHILD)
+	}
+	if length < 0 || length > NOTE_MAX {
+		return -i64(vectra9.EINVAL)
+	}
+
+	text: [NOTE_MAX]u8
+	if length > 0 && !copy_in(addr, length, text[:]) {
+		return -i64(vectra9.EFAULT)
+	}
+
+	child := find_child(p.pid, pid)
+	if child == nil {
+		return -i64(vectra9.ECHILD)
+	}
+	if !post_note(child, string(text[:length])) {
+		return -i64(vectra9.ESRCH)
+	}
+	return 0
+}
+
+/*
+note_exit is the door's half of delivery, and the half that finishes.
+
+The shape is `sys_exit`'s with the record saying `noted` instead of a
+status. The descriptors close first, in this thread context, because it is
+the last one this process ever has. That is the difference from the tick's
+half, whose interrupt context must leave them for `destroy`. A server noted
+while parked unwinds to ring 3 with EINTR and re-enters on its next call. It
+ends here, with its pipe already hung up for its clients.
+*/
+@(private = "file")
+note_exit :: proc(frame: ^arch.Trap_Frame) -> ! {
+	p := current()
+	if p != nil {
+		for i in 0 ..< MAX_FDS {
+			_ = fd_close(p, i)
+		}
+	}
+
+	arch.disable_interrupts()
+	if p != nil {
+		p.exit.ip = uintptr(frame.rip)
+		p.exit.sp = uintptr(frame.rsp)
+		p.exit.kstack = uintptr(rawptr(frame))
+		p.exit.from_user = arch.frame_is_user(frame)
+		p.exit.noted = true
+		intrinsics.volatile_store(&p.exit.done, true)
+	}
+	sync.wakeup_all(&exit_rendez)
+	sched.exit()
+}
+
 // sys_remove takes a file away by name, in this process's namespace. The fid
 // is spent whether or not the server agrees -- that is Tremove's rule, and
 // `vfs.chan_remove` keeps it. So the chan is closed on both paths.
@@ -682,11 +791,15 @@ sys_exit :: proc(frame: ^arch.Trap_Frame, status: u64) {
 			p.exit.kstack = uintptr(rawptr(frame))
 			p.exit.from_user = arch.frame_is_user(frame)
 			p.exit.status = status
-			p.exit.deliberate = true
+				p.exit.deliberate = true
 			intrinsics.volatile_store(&p.exit.done, true)
 		}
 	}
 
+	// The parent may be parked on the exit rendezvous. Interrupts are off, and
+	// `wakeup_all` masks rather than enables, so the woken waiter cannot run
+	// before this thread leaves the core.
+	sync.wakeup_all(&exit_rendez)
 	sched.exit()
 }
 
