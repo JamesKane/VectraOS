@@ -60,7 +60,9 @@ ESRCH :: Errno(3)
 EINTR :: Errno(4)
 EIO :: Errno(5)
 ENXIO :: Errno(6)
+ENOEXEC :: Errno(8)
 EBADF :: Errno(9)
+ECHILD :: Errno(10)
 EAGAIN :: Errno(11)
 ENOMEM :: Errno(12)
 EACCES :: Errno(13)
@@ -97,7 +99,9 @@ errno_name :: proc "contextless" (code: Errno) -> string {
 	case EINTR:        return "EINTR"
 	case EIO:          return "EIO"
 	case ENXIO:        return "ENXIO"
+	case ENOEXEC:      return "ENOEXEC"
 	case EBADF:        return "EBADF"
+	case ECHILD:       return "ECHILD"
 	case EAGAIN:       return "EAGAIN"
 	case ENOMEM:       return "ENOMEM"
 	case EACCES:       return "EACCES"

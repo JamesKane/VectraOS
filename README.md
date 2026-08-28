@@ -6,44 +6,49 @@ on top.
 
 ## Status
 
-**Userland runs.** The kernel comes up under Limine on `x86_64` with descriptor
-tables, page tables and a heap of its own. It publishes `#c` at `/dev` and `#s`
-at `/srv` over 9P2000.L, preempts on the local APIC, and takes keyboard
-interrupts through the I/O APIC. Then it starts processes in ring 3 that open
-files by name and write to the console.
+**Processes start processes.** The kernel comes up under Limine on `x86_64`
+with descriptor tables, page tables and a heap of its own. It publishes `#c`
+at `/dev`, `#s` at `/srv` and `#b` at `/bin` over 9P2000.L. It preempts on
+the local APIC and takes keyboard interrupts through the I/O APIC. Then it
+starts processes in ring 3 that open files by name and write to the console.
+Those processes spawn children out of files under `/bin`, wait for them, and
+collect their exit status.
 
 A process is an address space, a namespace and a set of open files. Two
-processes can hand the kernel one path and get different files. The mount table
-belongs to the process rather than to the machine.
+processes can hand the kernel one path and get different files. The mount
+table belongs to the process rather than to the machine, and a child resolves
+its paths in the world its parent arranged.
 
 ```
 [  --  ] Vectra 0.1.0-pre (amd64) entering kmain
 [  ok  ] base revision 6 as requested
 [  ok  ] traps: cs 0x8, tr 0x30, 256 vectors, #BP round-trip ok
 [  ok  ] framebuffer 1280x800 @ 32bpp, pitch 5120 -> 0xffff800080000000
-[  ok  ] pmm 119371 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.7 MiB in 271 tables (1.0 MiB)
+[  ok  ] pmm 117616 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 515.7 MiB in 274 tables (1.0 MiB)
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] vectra9 9P2000.L: 57 message kinds round-trip, both transports agree
-[  ok  ] namespace: #/ attached as /, 7 conventional directories
+[  ok  ] namespace: #/ attached as /, 8 conventional directories
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT
 [  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
 [  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
+[  ok  ] bin #b bound at /bin, 2 programs as files, header VECTRA01
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half
-[  ok  ] syscall armed -- entry at 0xffffffff8001ed30, /dev/cons is descriptor 1
+[  ok  ] syscall armed -- entry at 0xffffffff80020410, /dev/cons is descriptor 1
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
 -- this line went to /dev/null
-[  ok  ] user 168 userland checks passed -- 12 processes, 28 system calls, one path two files
+-- a process started this one
+[  ok  ] user 213 userland checks passed -- 15 processes, 2 started by another process, 52 system calls, two children one line
 [  ok  ] boot complete -- idling
 ```
 
 That is an abridged log. The full one is about forty lines and every one of
 them is a self-test.
 
-### Three of those lines are worth explaining
+### Four of those lines are worth explaining
 
 `-- a program in ring 3 wrote this line` crosses every layer there is. The
 `syscall` instruction. A copy out of a program's memory that the kernel checked
@@ -55,6 +60,12 @@ framebuffer console.
 line twice, once by that path and once through a descriptor it opened before
 the bind. The console moved once, and nothing else on the machine saw the
 change.
+
+`-- a process started this one` came from a program the kernel did not
+start. A parent process named `/bin/child` in its own namespace, and the
+kernel loaded the file and ran it. The parent then bound `/dev/null` over
+`/dev/cons` and spawned the same file again. Both children ran and reported
+the same status to their parent's `wait`. The line appeared once.
 
 `7 spoiled by a shared buffer`, in the full log, is a **pass**. It is a control
 that runs on every boot. Eight readers share one reply buffer, the way a 9P
@@ -75,13 +86,14 @@ other would be the failure.
 | `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl` |
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, a top half that may not park |
-| `kernel/user/` | Ring 3, `syscall`/`sysret`, and a process that owns what it opens |
+| `kernel/user/` | Ring 3, `syscall`/`sysret`, a process that owns what it opens, and the spawn that makes more |
 
 `servers/` and `apps/` are still empty, and `kernel/devfs` lives in the kernel
 because of it. What is missing is not the boundary. `devfs` already speaks 9P
-over a transport that hides which side of one it sits on. What is missing is
-the step before it. Nothing loads a program out of a file, and nothing starts a
-process the kernel did not build itself.
+over a transport that hides which side of one it sits on. A program is a file
+a loader reads through a namespace, and a process can start another one. What
+is missing now is `mount` behind the door -- the call that lets a process post
+what it serves.
 
 **`docs/HANDOFF.md` is the orientation document**, and each subsystem has one
 of its own beside the code it explains.
@@ -114,8 +126,8 @@ shared on fork. It is built, and ring 3 reaches it through `bind`.
 ## Every line of that boot log is a self-test
 
 There is no test harness and no host-side test build. Every layer proves itself
-on the machine that will run it, during boot, and reports one line. About six
-hundred and fifty checks run on every boot.
+on the machine that will run it, during boot, and reports one line. About
+seven hundred checks run on every boot.
 
 The cost of that is a self-test can be *unfalsifiable* — it passes because it
 cannot fail, and nothing about a green line says which. So every milestone ends
@@ -145,7 +157,9 @@ Four of the things that found:
 Requires `odin`, `ld.lld`, `qemu-system-x86_64`, and `python3` with Pillow (only
 to regenerate the console font). No `xorriso`, no loop devices, and no `sudo`.
 The bootable volume is a directory that QEMU's vvfat backend presents to the
-firmware as FAT, so the same commands work on macOS and Linux.
+firmware as FAT, so the same commands work on macOS and Linux. UEFI firmware
+comes from the edk2 images QEMU installs beside itself, unless a combined
+OVMF image is supplied.
 
 ```sh
 just run          # build, stage, boot headless with serial on stdio
@@ -210,7 +224,8 @@ kernel/
   mnt/                  A 9P connection with several requests in flight
   devfs/                `#c` at /dev
   srv/                  `#s` at /srv
-  user/                 Ring 3, the system calls, and a process
+  user/                 Ring 3, the system calls, a process, the image
+                        loader, and `#b` at /bin
 sys/
   libodin/              Freestanding core shared by kernel and userland
   vectra9/              9P2000.L message layer: types, codec, sessions

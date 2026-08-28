@@ -43,6 +43,11 @@ own namespace, and no other process sees the change.**
 `nop` and `args` stay because they cost nothing and they are the only checks
 that say every argument register arrives. They are the door's own self-test.
 
+`spawn` and `wait` arrived with the loader. One starts a process from a file
+the caller names in its own namespace, and the other collects what it
+started. `spawn.odin` says what a child inherits and why the call is not yet
+`rfork` and `exec`.
+
 ## What is still missing from the interface
 
 No `create`, because `kernel/vfs` has no `chan_create`. No `stat`, because
@@ -73,6 +78,8 @@ SYS_CLOSE :: u64(6)
 SYS_READ :: u64(7)
 SYS_BIND :: u64(8)
 SYS_SEEK :: u64(9)
+SYS_SPAWN :: u64(10)
+SYS_WAIT :: u64(11)
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -178,6 +185,10 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = sys_bind(uintptr(a0), int(a1), uintptr(a2), int(a3), a4)
 	case SYS_SEEK:
 		result = sys_seek(int(a0), a1)
+	case SYS_SPAWN:
+		result = sys_spawn(uintptr(a0), int(a1), a2)
+	case SYS_WAIT:
+		result = sys_wait(a0)
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
 	case SYS_EXIT:
@@ -354,6 +365,46 @@ sys_bind :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order: 
 		return -i64(err)
 	}
 	return 0
+}
+
+/*
+sys_spawn starts a process on another process's say-so.
+
+The first call here that creates a kernel object bigger than a descriptor.
+The path is copied in like every other pointer from ring 3. Everything else
+-- the loader, the namespace cases, the descriptor copy -- is `spawn_path`,
+shared with the kernel's own launches. The answer is the child's pid, which
+is the name `sys_wait` takes.
+*/
+@(private = "file")
+sys_spawn :: proc(addr: uintptr, length: int, flags: u64) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+
+	path: [PATH_MAX]u8
+	if length <= 0 || length > PATH_MAX || !copy_in(addr, length, path[:]) {
+		return -i64(vectra9.EFAULT)
+	}
+
+	child, err := spawn_path(p, string(path[:length]), flags)
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	return i64(child.pid)
+}
+
+// sys_wait collects one ended child by pid, and is the other half of
+// `sys_spawn`. What it returns is the status the child handed to `SYS_EXIT`.
+// What it takes down is everything the spawn built. See `wait_pid`.
+@(private = "file")
+sys_wait :: proc(pid: u64) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ECHILD)
+	}
+	return wait_pid(p.pid, pid, WAIT_PATIENCE)
 }
 
 // sys_seek moves a descriptor's cursor. The cursor is the process's, so this

@@ -1,10 +1,11 @@
 /*
-The programs, which are five short blobs of machine code baked into the image.
+The programs -- short blobs of machine code baked into the image.
 
-There is no loader yet and no file to load from. So the first thing ever to run
-in ring 3 has to come from somewhere the kernel already has. The assembler emits
-these the same way it emits the interrupt stubs. `user.load` then copies the
-bytes into a frame it maps into a program's space.
+The first thing ever to run in ring 3 had to come from somewhere the kernel
+already had. There was no loader and no file to load from. The assembler
+emits these the same way it emits the interrupt stubs. `user.load` copies the
+bytes into a frame it maps into a program's space. `image.odin` wraps the two
+that stand alone in the file format the loader reads.
 
 **The copy is not an accident of having no filesystem.** No `User` bit sits
 anywhere on the path to the kernel image, so a program cannot execute it where
@@ -43,6 +44,8 @@ MARK_SHADOW :: u64(0x5348_4144_5348_4144) // SHADSHAD
 MARK_NAMER :: u64(0x4E41_4D45_4E41_4D45) // NAMENAME
 MARK_READER :: u64(0x5245_4144_5245_4144) // READREAD
 MARK_BINDER :: u64(0x4249_4E44_4249_4E44) // BINDBIND
+MARK_PARENT :: u64(0x5052_4E54_5052_4E54) // PRNTPRNT
+MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -119,6 +122,50 @@ BINDER_OPENED :: 2
 BINDER_WROTE :: 3
 BINDER_CLOSED :: 4
 BINDER_AGAIN :: 5
+
+/*
+Where the two programs that reproduce keep their answers.
+
+`child` and `parent` are the first blobs that carry their own strings, in
+their own text, reached relative to the instruction pointer. Nothing stages a
+path into their data pages, because nothing could. The kernel does not start
+them, another program does. A file has no side channel. The cells below are
+therefore answers only -- one per call, in call order, as always.
+*/
+CHILD_OPENED :: 1
+CHILD_WROTE :: 2
+CHILD_CLOSED :: 3
+
+PARENT_SPAWN_A :: 1
+PARENT_WAIT_A :: 2
+PARENT_AGAIN :: 3
+PARENT_BOUND :: 4
+PARENT_SPAWN_B :: 5
+PARENT_WAIT_B :: 6
+PARENT_MISSING :: 7
+
+/*
+The line `child` writes, and the paths the two blobs open.
+
+**Each of these is written twice**: once here for the checks, and once as
+`.ascii` bytes inside the blob that uses it. The pairs have to agree.
+There is no way to share them: the assembler consumes one at build time and
+Odin the other at run time. That is `SPIN_LIMIT`'s problem again, with the
+same answer: the copies live in the same file, and a check fails loudly when
+they drift. The blobs also hard-code each string's length as an immediate,
+which is a third copy of one fact about it.
+*/
+CHILD_LINE :: "-- a process started this one"
+
+/*
+What `child` exits with: its descriptor in the high byte, the bytes it wrote
+in the low. One number that says the open landed on 3 -- so descriptors 0
+through 2 were inherited, occupied -- and the write reported the whole line.
+Both children exit with it: the one whose line reached the screen, and the
+one whose line went to `/dev/null`. That is the point. The two runs differ
+only in what the namespace did with the bytes.
+*/
+CHILD_STATUS :: u64(3 << 8 | len(CHILD_LINE))
 
 // What `probe` adds up and sends to `SYS_ARGS`. Six powers of two, so a lost
 // or duplicated argument register changes the sum rather than hides in it.
@@ -224,6 +271,10 @@ foreign {
 	vectra_user_reader_end: byte
 	vectra_user_binder: byte
 	vectra_user_binder_end: byte
+	vectra_user_parent: byte
+	vectra_user_parent_end: byte
+	vectra_user_child: byte
+	vectra_user_child_end: byte
 }
 
 @(private)
@@ -253,8 +304,19 @@ program_namer :: proc "contextless" () -> []u8 {return blob(&vectra_user_namer, 
 program_reader :: proc "contextless" () -> []u8 {return blob(&vectra_user_reader, &vectra_user_reader_end)}
 program_binder :: proc "contextless" () -> []u8 {return blob(&vectra_user_binder, &vectra_user_binder_end)}
 
+// And the two that reproduce -- the only blobs `/bin` publishes as files,
+// because they are the only ones that stand alone. See `image.odin`.
+program_parent :: proc "contextless" () -> []u8 {return blob(&vectra_user_parent, &vectra_user_parent_end)}
+program_child :: proc "contextless" () -> []u8 {return blob(&vectra_user_child, &vectra_user_child_end)}
+
 /*
-The five programs, emitted by the assembler.
+The programs, emitted by the assembler.
+
+`parent` and `child` are the two with `.ascii` bytes after their code. Their
+strings ride in their own text, reached relative to the instruction pointer,
+because nothing stages their data pages: a file has no side channel. The text
+page is mapped readable, so a string in it is a buffer a system call may
+copy in like any other.
 
 `proc "naked"` for the same reason the interrupt stubs are: this is a container
 for symbols, not a procedure. Nothing calls it. The `retq` the compiler puts
@@ -603,5 +665,114 @@ vectra_user_binder:
 	ud2
 .globl vectra_user_binder_end
 vectra_user_binder_end:
+
+.balign 16
+.globl vectra_user_parent
+vectra_user_parent:
+	movq %rdi, %rbx
+	movabsq $$0x50524E5450524E54, %rax
+	movq %rax, (%rbx)
+
+	leaq 4f(%rip), %rdi
+	movq $$10, %rsi
+	movq $$1, %rdx
+	movq $$10, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r13
+
+	movq %r13, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movq %r13, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	leaq 5f(%rip), %rdi
+	movq $$9, %rsi
+	leaq 6f(%rip), %rdx
+	movq $$9, %r10
+	xorl %r8d, %r8d
+	movq $$8, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	leaq 4f(%rip), %rdi
+	movq $$10, %rsi
+	movq $$1, %rdx
+	movq $$10, %rax
+	syscall
+	movq %rax, 40(%rbx)
+	movq %rax, %r13
+
+	movq %r13, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 48(%rbx)
+
+	leaq 7f(%rip), %rdi
+	movq $$12, %rsi
+	movq $$1, %rdx
+	movq $$10, %rax
+	syscall
+	movq %rax, 56(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+4:
+	.ascii "/bin/child"
+5:
+	.ascii "/dev/null"
+6:
+	.ascii "/dev/cons"
+7:
+	.ascii "/bin/no-such"
+.globl vectra_user_parent_end
+vectra_user_parent_end:
+
+.balign 16
+.globl vectra_user_child
+vectra_user_child:
+	movq %rdi, %rbx
+	movabsq $$0x43484C4443484C44, %rax
+	movq %rax, (%rbx)
+
+	leaq 8f(%rip), %rdi
+	movq $$9, %rsi
+	movq $$1, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r13
+
+	movq %r13, %rdi
+	leaq 9f(%rip), %rsi
+	movq $$29, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movq %r13, %rdi
+	movq $$6, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq %r13, %rdi
+	shlq $$8, %rdi
+	orq 16(%rbx), %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+8:
+	.ascii "/dev/cons"
+9:
+	.ascii "-- a process started this one"
+.globl vectra_user_child_end
+vectra_user_child_end:
 `, "~{memory}"}()
 }

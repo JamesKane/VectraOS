@@ -191,6 +191,11 @@ kmain :: proc "sysv" () {
 				verify_srv()
 			}
 
+			// The programs become files here, after the namespace has its
+			// conventional directories and before anything asks to run one.
+			// The loader below then has something to load.
+			init_bin()
+
 			// Last of all, because a keystroke needs somewhere to go. The
 			// bottom half hands its bytes to `/dev/cons`, which has to exist
 			// before the first interrupt is let through.
@@ -1299,6 +1304,31 @@ verify_keyboard :: proc() {
 }
 
 /*
+init_bin publishes the kernel's own programs as files.
+
+`#b` at `/bin` is the smallest filesystem with a program in it, and the
+loader's whole reason to exist. Two files today, each a header and a page of
+text. The day a build stages a real filesystem image, this server is the
+thing it replaces.
+*/
+init_bin :: proc() -> bool {
+	if err := user.bin_init(vfs.boot_namespace); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "bin: #b would not come up -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "bin #b bound at /bin, ")
+	libodin.put_uint(&sink, u64(user.BIN_PROGRAMS))
+	libodin.put_str(&sink, " programs as files, header VECTRA01")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
 init_user claims the fault path for programs.
 
 One line of code and a milestone of consequence. Until it runs, a trap from
@@ -1337,11 +1367,12 @@ console_column :: proc "contextless" () -> int {
 }
 
 /*
-verify_user runs twelve processes in ring 3.
+verify_user runs seventeen processes in ring 3.
 
 Four of them are refused something. Four ask the kernel for something. Three
-open files by name in a namespace of their own. One of those rearranges its
-namespace, and nothing else on the machine sees the change.
+open files by name in a namespace of their own. The loader brings three of
+them out of files under `/bin`. One of those starts two more itself, the
+only processes in the boot the kernel did not build.
 
 The first is still the one that matters most. It runs, the timer takes the core
 away from it, the kernel does work, and it gets the core back. Everything after
@@ -1359,10 +1390,12 @@ verify_user :: proc() {
 		libodin.put_str(&sink, " userland checks passed -- ")
 		libodin.put_uint(&sink, u64(result.programs))
 		libodin.put_str(&sink, " processes, ")
+		libodin.put_uint(&sink, u64(result.spawned))
+		libodin.put_str(&sink, " started by another process, ")
 		libodin.put_uint(&sink, result.rounds)
 		libodin.put_str(&sink, " preempted rounds, ")
 		libodin.put_uint(&sink, u64(result.calls))
-		libodin.put_str(&sink, " system calls, one path two files")
+		libodin.put_str(&sink, " system calls, two children one line")
 		emit(&klog, .Ok, &sink)
 		return
 	}

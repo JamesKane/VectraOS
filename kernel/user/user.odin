@@ -141,6 +141,22 @@ Process :: struct {
 	space:  ^mem.Address_Space,
 	thread: ^sched.Thread,
 
+	/*
+	Who this process is, and who started it.
+
+	`pid` is monotonic and never reused, for the same reason `kernel/srv`
+	keeps an id rather than a slot. The table reuses slots, and a parent must
+	not collect a stranger that moved in. `parent` is zero for a process the
+	kernel built, which is what makes `wait` refuse to collect it from ring 3.
+	*/
+	pid:    u64,
+	parent: u64,
+
+	// Where a spawned process's name lives. `load` is handed string literals
+	// that live in the image. `spawn_path` is handed a path sitting on the
+	// calling thread's syscall stack, which is gone when the call returns.
+	name_buf: [PATH_MAX]u8,
+
 	// The frames behind the three mappings. Physical, because that is what
 	// this package has to free and what `mem.phys_to_virt` needs to read the
 	// data page back.
@@ -209,20 +225,32 @@ the first code in Vectra that anything untrusted will reach.
 */
 MAX_PROCESSES :: 12
 
-@(private = "file")
+@(private)
 processes: [MAX_PROCESSES]Process
 
-@(private = "file")
+@(private)
 loaded: int
 @(private = "file")
 faults: int
 
+// The next process id, never reused. Zero is the kernel, so the first process
+// is 1. Monotonic and therefore finite, like a fid -- the same one fix
+// retires all three counters. See `docs/HANDOFF.md`.
+@(private)
+next_pid: u64 = 1
+
+// How many processes another process started, rather than the kernel. For
+// the boot line, which should say the new thing plainly.
+@(private)
+spawned: int
+
 Stats :: struct {
-	live:   int, // Programs loaded and not destroyed
-	loaded: int, // Programs loaded since boot
-	faults: int, // Faults taken in ring 3
-	calls:  int, // System calls answered
-	traps:  u64, // Every return from ring 3 through a trap, preemptions included
+	live:    int, // Programs loaded and not destroyed
+	loaded:  int, // Programs loaded since boot
+	spawned: int, // Of those, started by another process rather than the kernel
+	faults:  int, // Faults taken in ring 3
+	calls:   int, // System calls answered
+	traps:   u64, // Every return from ring 3 through a trap, preemptions included
 }
 
 stats :: proc "contextless" () -> Stats {
@@ -235,6 +263,7 @@ stats :: proc "contextless" () -> Stats {
 	return Stats {
 		live = live,
 		loaded = loaded,
+		spawned = spawned,
 		faults = faults,
 		calls = syscall_count(),
 		traps = arch.user_trap_count(),
@@ -340,7 +369,9 @@ load :: proc(name: string, code: []u8, arg: u64 = 0, arg2: u64 = 0) -> (^Process
 		name  = name,
 		space = space,
 		live  = true,
+		pid   = next_pid,
 	}
+	next_pid += 1
 
 	p.ns = vfs.ns_fork(vfs.boot_namespace, {.Copy})
 	if p.ns == nil {
@@ -523,7 +554,7 @@ set_bytes :: proc "contextless" (p: ^Process, offset: int, data: []u8) -> bool {
 	return true
 }
 
-@(private = "file")
+@(private)
 unload :: proc(p: ^Process) {
 	// The descriptors first, and the namespace after them. A chan holds a
 	// reference to the server it came from, and the mount table holds
@@ -554,7 +585,7 @@ unload :: proc(p: ^Process) {
 	p^ = Process{}
 }
 
-@(private = "file")
+@(private)
 free_slot :: proc "contextless" () -> ^Process #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		if !processes[i].live {

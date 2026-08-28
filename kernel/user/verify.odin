@@ -116,6 +116,7 @@ Result :: struct {
 	failures:      int,
 	first_failure: string,
 	programs:      int,
+	spawned:       int, // Of those, started by another process
 	traps:         u64, // Returns from ring 3 while the checks ran
 	rounds:        u64, // Times `spin` went round its loop in ring 3
 	calls:         int, // System calls the programs made
@@ -354,6 +355,11 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_processes(&r, column, &held)
 
+	// -- And a process that starts another one -------------------------------
+
+	verify_loading(&r, column)
+	verify_parenthood(&r, column, &held)
+
 	// -- What is left ---------------------------------------------------------
 
 	r.traps = arch.user_trap_count() - before_traps
@@ -361,6 +367,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	s := stats()
 	r.calls = s.calls
+	r.spawned = s.spawned
 	check(&r, s.live == 0, "every program was taken down")
 	check(&r, s.faults + s.calls >= r.programs, "each of them by a fault or by asking")
 
@@ -901,6 +908,222 @@ verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held:
 		vfs.chan_close(c)
 		cons_finish()
 	}
+}
+
+/*
+verify_loading is the loader on its own terms, before any process asks.
+
+The claims run inward. The programs are files a namespace can name. A file
+begins with a header the format can check. The kernel can build a process
+out of one. What is not a program gets the errno that says which rule it
+broke.
+
+The refusals matter most. A loader that runs whatever it is handed is a
+loader that will one day run a text file.
+*/
+@(private = "file")
+verify_loading :: proc(r: ^Result, column: proc "contextless" () -> int) {
+	// -- A program is a file now ---------------------------------------------
+
+	c, err := vfs.open_path(vfs.boot_namespace, "/bin/child", vfs.O_RDONLY)
+	if check(r, err == vfs.OK && c != nil, "the kernel's own programs are files under /bin") {
+		raw: [IMAGE_HEADER_SIZE]u8
+		n, rerr := vfs.chan_read(c, 0, raw[:])
+		check(r, rerr == vfs.OK && n == IMAGE_HEADER_SIZE, "a program file begins with a full header")
+
+		h, ok := image_read_header(raw[:])
+		check(r, ok && h.magic == IMAGE_MAGIC, "whose first word is the magic")
+		check(r, image_check(h), "and whose fields describe something loadable")
+		check(
+			r,
+			h.text == u64(len(program_child())),
+			"with exactly the program's bytes declared behind it",
+		)
+		vfs.chan_close(c)
+	}
+
+	/*
+	The format's refusals, one field at a time.
+
+	Directly, against headers built here, because no file on the machine
+	carries any of these defects and none ever should. Each is one clause of
+	`image_check`, and a clause no check exercises is a clause that can go
+	missing without a failure. That is `docs/TESTING.md`'s first rule.
+	*/
+	good := Image_Header {
+		magic = IMAGE_MAGIC,
+		entry = u64(TEXT_VA),
+		text  = 64,
+	}
+	check(r, image_check(good), "the format accepts a header that keeps its rules")
+	bad := good
+	bad.magic = 0
+	check(r, !image_check(bad), "and refuses one with the wrong magic")
+	bad = good
+	bad.reserved = 1
+	check(r, !image_check(bad), "or a reserved word it does not know, which is the future knocking")
+	bad = good
+	bad.entry = u64(TEXT_VA) + 64
+	check(r, !image_check(bad), "or an entry point past the end of the text")
+	bad = good
+	bad.text = u64(arch.PAGE_SIZE) + 1
+	check(r, !image_check(bad), "or more text than the page the loader maps")
+	bad = good
+	bad.text = 0
+	check(r, !image_check(bad), "or a program with nothing in it")
+
+	// -- The kernel starts a process from a file -----------------------------
+
+	before := column()
+	p, serr := spawn_path(nil, "/bin/child", SPAWN_NS_COPY)
+	if check(r, serr == vfs.OK && p != nil, "a process is built from a file rather than from a blob") {
+		r.programs += 1
+		if check(r, wait(p, PATIENCE), "and it comes back") {
+			after := column()
+			check(r, cell(p, CELL_MARK) == MARK_CHILD, "having reached its first instruction")
+			check(
+				r,
+				cell(p, CHILD_OPENED) == 3,
+				"it opened the console by name, on the next descriptor after the three it was given",
+			)
+			check(r, cell(p, CHILD_WROTE) == u64(len(CHILD_LINE)), "wrote its line from its own text")
+			check(r, after - before == len(CHILD_LINE), "and the console moved that many columns")
+			check(r, cell(p, CHILD_CLOSED) == 0, "it closed what it opened")
+			check(
+				r,
+				p.exit.deliberate && p.exit.status == CHILD_STATUS,
+				"and exited with the status that says all of that in one number",
+			)
+		}
+		cons_finish()
+		finish(r, p, "the process is taken down")
+	}
+
+	// -- And refuses what it must --------------------------------------------
+
+	_, serr = spawn_path(nil, "/bin/no-such", 0)
+	check(r, serr == vectra9.ENOENT, "a path with nothing at it is refused by name")
+
+	_, serr = spawn_path(nil, "/dev/zero", 0)
+	check(
+		r,
+		serr == vectra9.ENOEXEC,
+		"and a file that is not a program is refused by its header, before a byte of it runs",
+	)
+
+	// -- A clean namespace is a world with no names --------------------------
+
+	p, serr = spawn_path(nil, "/bin/child", SPAWN_NS_CLEAN)
+	if check(r, serr == vfs.OK && p != nil, "a child with a clean namespace still loads, through its parent's") {
+		r.programs += 1
+		if check(r, wait(p, PATIENCE), "and runs") {
+			check(r, cell(p, CELL_MARK) == MARK_CHILD, "having reached its first instruction")
+			check(
+				r,
+				cell(p, CHILD_OPENED) == refused(vectra9.ENOENT),
+				"but the same open is refused -- an empty namespace has no names in it",
+			)
+			check(
+				r,
+				cell(p, CHILD_WROTE) == refused(vectra9.EBADF),
+				"and it holds no descriptors either, because those come from names too",
+			)
+		}
+		finish(r, p, "and is taken down")
+	}
+}
+
+/*
+verify_parenthood is the milestone: a process starts another one.
+
+The kernel launches `/bin/parent` and then only watches. Everything after
+that -- the loader run, the namespace copy, the descriptor copy, the wait,
+the reap -- happens because a program in ring 3 asked, twice.
+
+**The number that matters is the console moving once.** Two children run the
+same file, open the same path, write the same line, and report the same
+status. Between them the parent bound `/dev/null` over `/dev/cons` in its own
+namespace. The second child inherited that choice and its line went to null.
+Same program, same path, one line on the screen -- which is a process handing
+its child a world it arranged.
+*/
+@(private = "file")
+verify_parenthood :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^[3]uintptr) {
+	spawned_before := stats().spawned
+
+	before := column()
+	p, serr := spawn_path(nil, "/bin/parent", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "a process is started that will start more") {
+		return
+	}
+	r.programs += 1
+
+	/*
+	While it lives: nobody else may collect it.
+
+	The caller pid here belongs to no process that ever existed, so the only
+	thing between it and a collection is the parentage check. This one is the
+	kernel's to make directly, because no program can hold a pid that is not
+	its own child's. `spawn` is the only source of pids there is.
+	*/
+	check(
+		r,
+		wait_pid(999, p.pid, 1) == -i64(vectra9.ECHILD),
+		"a process that is not the parent cannot collect it",
+	)
+
+	if check(r, wait(p, PATIENCE), "and it comes back, having raised two children") {
+		after := column()
+
+		check(r, cell(p, CELL_MARK) == MARK_PARENT, "having reached its first instruction")
+
+		pid_a := cell(p, PARENT_SPAWN_A)
+		pid_b := cell(p, PARENT_SPAWN_B)
+		check(r, i64(pid_a) > 0, "its first spawn answered with a pid")
+		check(
+			r,
+			cell(p, PARENT_WAIT_A) == CHILD_STATUS,
+			"and its wait collected that child's own exit status",
+		)
+		check(
+			r,
+			cell(p, PARENT_AGAIN) == refused(vectra9.ECHILD),
+			"a second wait on the same pid found nothing -- collecting is destroying",
+		)
+		check(r, cell(p, PARENT_BOUND) == 0, "it bound /dev/null over /dev/cons in its own namespace")
+		check(r, i64(pid_b) > 0 && pid_b != pid_a, "the second spawn answered with a pid nothing had used")
+		check(
+			r,
+			cell(p, PARENT_WAIT_B) == CHILD_STATUS,
+			"and that child ran the same file to the same status",
+		)
+		check(
+			r,
+			after - before == len(CHILD_LINE),
+			"two children wrote the same line by the same path, and the console moved once",
+		)
+		check(
+			r,
+			cell(p, PARENT_MISSING) == refused(vectra9.ENOENT),
+			"a spawn of a path with nothing at it was refused",
+		)
+		check(r, p.exit.deliberate && p.exit.status == 0, "and the parent exits with nothing to report")
+		check(
+			r,
+			stats().spawned - spawned_before == 2,
+			"two processes on this machine were started by another process",
+		)
+		check(r, stats().live == 1, "and neither outlived being collected -- the parent waited for both")
+	}
+	cons_finish()
+
+	held^ = {p.text, p.data, p.stack}
+	check(
+		r,
+		!mem.frame_is_free(held[0]) && !mem.frame_is_free(held[1]) && !mem.frame_is_free(held[2]),
+		"a spawned process holds three frames while it exists",
+	)
+	finish(r, p, "and is taken down")
 }
 
 // live_objects counts what the heap is holding. The same arithmetic

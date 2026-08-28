@@ -13,6 +13,7 @@ directories waiting for the servers that will be bound into them. Convention,
 not enforcement: a process is free to build something else, and `Clean` plus a
 handful of binds is how it does.
 
+    /bin/     boot images -- the programs the kernel ships, as files
     /dev/     devfs      cons, null, zero, random, draw, mouse, kbd
     /net/     netfs      tcp, udp, ipifc, dns
     /proc/    procfs     one directory per thread
@@ -28,6 +29,7 @@ import "vsys:vectra9"
 @(private)
 ROOT_NODES := [?]Static_Node {
 	{name = "/", parent = -1, dir = true},
+	{name = "bin", parent = 0, dir = true},
 	{name = "dev", parent = 0, dir = true},
 	{name = "env", parent = 0, dir = true},
 	{name = "mnt", parent = 0, dir = true},

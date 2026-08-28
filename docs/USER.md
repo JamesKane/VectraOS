@@ -9,22 +9,27 @@ it was one program with many threads. This is where that stops being true.
 
 **A program is bytes. A process is what runs them.** A process is an address
 space, a namespace and a set of open files. It can open a file by name, read
-it, write it, and rearrange its own view of the tree:
+it, write it, and rearrange its own view of the tree. It can also start
+another process from a file it names:
 
     -- a program in ring 3 wrote this line
     -- a process opened this file by name
     -- this line went to /dev/null
+    -- a process started this one
 
-Three milestones live in this document, because they live in the same
-directory. `docs/SPACE.md` built the piece under all three:
+Four milestones live in this document, because they live in the same
+directory. `docs/SPACE.md` built the piece under all four:
 
     ring 3        a thread can run somewhere it cannot damage the kernel
     a syscall     it can ask for something anyway
     a process     what it asks for belongs to it rather than to the kernel
+    a spawn       and what it starts inherits the world it arranged
 
 The third line is the one Plan 9 is about. Two processes hand the kernel the
 same path and get different files, because the mount table belongs to the
-process rather than to the machine.
+process rather than to the machine. The fourth is what makes that
+compositional: the namespace a process arranged is the namespace its children
+resolve in.
 
 ## Three things make it ring 3 rather than a jump
 
@@ -539,6 +544,119 @@ A second thread in the same space could unmap the page in between. Nothing can
 unmap anything yet and a program has one thread, so the window is not
 reachable. The first program with two threads reaches it.
 
+## A process that starts another one
+
+The fourth milestone, and the one the handoff called the step before
+`servers/` stops being empty. Three pieces arrived together: a format, a
+loader, and a pair of calls. `image.odin` holds the first two and
+`spawn.odin` the third.
+
+### The format is four words, and it is not ELF
+
+    +0   magic      "VECTRA01", as eight bytes
+    +8   entry      the virtual address of the first instruction
+    +16  text       how many bytes of code follow the header
+    +24  reserved   zero, and refused when it is not
+
+An ELF loader is program headers, relocation kinds, and a dozen decisions
+about what to refuse. All of that is worth having the day a real toolchain
+emits the input. Today the input is a page of position-bound code, and the
+format says exactly that. The check compares the reserved word against zero
+rather than skips it. A format that ignores what it does not understand can
+never mean anything new by it. So this kernel refuses an image from the
+future, and says why.
+
+The test probes the refusals field by field, against headers it builds
+itself. No file on the machine carries any of these defects, and none ever
+should. A wrong magic, a nonzero reserved word, an entry outside the text, a
+text bigger than the page, a text of nothing. Each is one clause of
+`image_check`. Each clause has one check that would notice it gone.
+
+### The programs are files, behind `#b` at `/bin`
+
+The loader could have read the blobs straight out of the kernel image. Then
+`a program is a file` would have been a sentence in a document rather than a
+property of the machine. Instead `image.odin` wraps the two blobs that stand
+alone in headers at init. It publishes them through an ordinary read-only
+server, registered as `#b` and bound at `/bin`. The server is
+`vfs.Static_Tree`, the implementation behind `#/`.
+
+The loader then walks a path like any other client, **through the namespace
+of whoever asked**. A process whose `/bin` is rebound loads something else.
+That is not a hole. It is the namespace doing its job. It is also how a test
+harness will one day substitute a program without the program knowing.
+
+### Spawn is fork and exec with the seam not yet cut
+
+Plan 9 starts a process with `rfork` then `exec`, and the seam between them
+is where a shell rearranges the child before replacing the program. Vectra
+will want the seam the day it has a shell. What it needs today is the whole
+arc: a new process, running a named file, inheriting what its parent chose.
+`spawn` is that arc as one call.
+
+Cutting it in two later is removal rather than redesign. The namespace flags
+are `vfs.ns_fork`'s three cases taken one for one. The descriptor rule is
+already `rfork`'s default. What a separate `rfork` adds is a child that
+continues from the call site, which is a copied trap frame and copied user
+pages. That work is deferred, not decided against.
+
+What a child inherits, each by its own rule:
+
+    the namespace     shared, copied, or clean -- the caller says which
+    the descriptors   copied: same chans, referenced again, own cursors
+    the program       none of it -- text, data and stack are fresh
+
+The copy goes number for number rather than lowest-free, because the numbers
+are the convention. A child's descriptor 1 must be whatever its parent's 1
+was, or inheriting is renaming. A control that hands the child nothing
+instead fails the wait-status checks twice, once per child.
+
+A clean namespace still loads, because the loader reads through the
+*parent's* namespace -- an exec reads through the namespace of whoever asked.
+The child then cannot open anything, and the check says so in two errnos.
+The open is ENOENT, because an empty namespace has no names. The write is
+EBADF, because descriptors come from names too.
+
+### Wait, pids, and who reaps
+
+`wait` collects one ended child by pid. It reports the status the child
+handed to `SYS_EXIT`, or EIO when a fault ended it. Only then does it take
+the record down. Collecting is destroying: a second wait on the same pid is
+ECHILD, and the parent program checks exactly that.
+
+A process that is not the parent gets ECHILD too, whether or not the pid
+exists. Waiting therefore probes nothing about the table. The control that
+drops the parentage clause fails one check, the one built for it.
+
+Pids are monotonic and never reused, for the same reason `kernel/srv` keeps
+an id rather than a slot. The process table reuses slots, and a parent must
+not collect a stranger that moved in. Zero is the kernel, which is why a
+kernel-launched process has no parent a program could claim to be.
+
+`wait` polls, one parked tick per miss, on the same argument `user.wait`
+makes. The exit record comes from a path where nothing may take a lock or
+wake a sleeper. The rendezvous it should become wants a wake that is legal in
+a fault handler.
+
+### Two children, one line
+
+The self-test's showpiece. The kernel launches `/bin/parent` and then only
+watches. Everything after that happens because a program asked. The parent
+spawns `/bin/child`, which opens `/dev/cons` by name, writes its line, and
+exits with its descriptor number and byte count folded into one status. The
+parent collects it, binds `/dev/null` over `/dev/cons` in its own namespace,
+and spawns the same file again.
+
+Both children run the same program, open the same path, report the same
+status. **The console moves once.** The second child's line went where its
+parent's namespace sent it, which is the whole milestone in one number --
+`binder`'s demonstration again, one generation deeper.
+
+The two programs carry their strings in their own text, reached relative to
+the instruction pointer. Nothing stages their data pages, because a file has
+no side channel. A string in a text page is a buffer a system call may copy
+in like any other, since the page is mapped readable.
+
 ## What is missing, and named where it lives
 
 - **A process cannot be stopped from outside.** It can end itself now, and the
@@ -546,10 +664,15 @@ reachable. The first program with two threads reaches it.
   free the tables underneath it, and the leak is visible in
   `user.stats().live`. Plan 9 ends a process with a note. That is this missing
   piece by its proper name.
-- **Nothing forks and nothing execs.** The kernel builds every process here
-  out of a baked image. There is no `rfork`, so the `Fork_Flags` `kernel/vfs`
-  carries have one caller and it is this file. There is no loader, so
-  `program.odin` is where a program comes from.
+- **No `rfork` proper, and no `exec` in place.** `spawn` starts a process
+  from a file, and the seam Plan 9 cuts between creating and replacing is
+  still fused. A child that continues from the call site needs a copied trap
+  frame and copied user pages. A program that replaces itself needs its
+  syscall frame rewritten under it. Both are mechanism, not design -- the
+  inheritance rules are settled and stay.
+- **`wait` polls.** A parked tick per miss, bounded by `WAIT_PATIENCE`. The
+  rendezvous it should become needs a wake that is legal in a fault handler.
+  A fault is one of the two ways a child ends.
 - **No `create`, no `stat`, no `mount`.** The first waits on
   `vfs.chan_create`, the second on something that needs it, and the third on a
   descriptor that can carry a connection. `docs/SRV.md` says which line that
