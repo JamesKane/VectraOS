@@ -6,13 +6,17 @@ on top.
 
 ## Status
 
-**Processes start processes.** The kernel comes up under Limine on `x86_64`
-with descriptor tables, page tables and a heap of its own. It publishes `#c`
-at `/dev`, `#s` at `/srv` and `#b` at `/bin` over 9P2000.L. It preempts on
-the local APIC and takes keyboard interrupts through the I/O APIC. Then it
-starts processes in ring 3 that open files by name and write to the console.
-Those processes spawn children out of files under `/bin`, wait for them, and
-collect their exit status.
+**Processes start processes, and publish services.** The kernel comes up
+under Limine on `x86_64` with descriptor tables, page tables and a heap of
+its own. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at `/bin` over
+9P2000.L. It preempts on the local APIC and takes keyboard interrupts
+through the I/O APIC.
+
+Then it starts processes in ring 3 that open files by name and write to the
+console. Those processes spawn children out of files under `/bin`, wait for
+them, and collect their exit status. One of them posts a service in `/srv`
+and mounts the name it published. The posting is Plan 9's way: create the
+file, then write a descriptor into it.
 
 A process is an address space, a namespace and a set of open files. Two
 processes can hand the kernel one path and get different files. The mount
@@ -41,14 +45,15 @@ its paths in the world its parent arranged.
 -- a process opened this file by name
 -- this line went to /dev/null
 -- a process started this one
-[  ok  ] user 213 userland checks passed -- 15 processes, 2 started by another process, 52 system calls, two children one line
+-- this line went through a posted service
+[  ok  ] user 242 userland checks passed -- 16 processes, 2 started by another process, 65 system calls, a service posted from ring 3
 [  ok  ] boot complete -- idling
 ```
 
 That is an abridged log. The full one is about forty lines and every one of
 them is a self-test.
 
-### Four of those lines are worth explaining
+### Five of those lines are worth explaining
 
 `-- a program in ring 3 wrote this line` crosses every layer there is. The
 `syscall` instruction. A copy out of a program's memory that the kernel checked
@@ -67,6 +72,12 @@ kernel loaded the file and ran it. The parent then bound `/dev/null` over
 `/dev/cons` and spawned the same file again. Both children ran and reported
 the same status to their parent's `wait`. The line appeared once.
 
+`-- this line went through a posted service` reached the screen by a name no
+kernel put anywhere. A process opened `/dev/cons`, created `/srv/cons2`, and
+wrote its descriptor's digit into it. Then it mounted the name it had just
+published at `/mnt` in its own namespace. Then it removed the name and kept
+using the mount, because removal ends the name rather than the service.
+
 `7 spoiled by a shared buffer`, in the full log, is a **pass**. It is a control
 that runs on every boot. Eight readers share one reply buffer, the way a 9P
 server looked before the payload-per-slot milestone. A failure to corrupt each
@@ -84,16 +95,17 @@ other would be the failure.
 | `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings |
 | `kernel/mnt/` | A 9P connection with several requests in flight, and `Tflush` |
 | `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl` |
-| `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs |
+| `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, from ring 3 too |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, a top half that may not park |
 | `kernel/user/` | Ring 3, `syscall`/`sysret`, a process that owns what it opens, and the spawn that makes more |
 
 `servers/` and `apps/` are still empty, and `kernel/devfs` lives in the kernel
 because of it. What is missing is not the boundary. `devfs` already speaks 9P
 over a transport that hides which side of one it sits on. A program is a file
-a loader reads through a namespace, and a process can start another one. What
-is missing now is `mount` behind the door -- the call that lets a process post
-what it serves.
+a loader reads through a namespace, a process can start another one, and a
+process can post and mount services. What is missing now is one transport: a
+pipe whose far side is a process. With it a program can *answer* 9P rather
+than only speak it.
 
 **`docs/HANDOFF.md` is the orientation document**, and each subsystem has one
 of its own beside the code it explains.
@@ -126,8 +138,8 @@ shared on fork. It is built, and ring 3 reaches it through `bind`.
 ## Every line of that boot log is a self-test
 
 There is no test harness and no host-side test build. Every layer proves itself
-on the machine that will run it, during boot, and reports one line. About
-seven hundred checks run on every boot.
+on the machine that will run it, during boot, and reports one line. About 740
+checks run on every boot.
 
 The cost of that is a self-test can be *unfalsifiable* — it passes because it
 cannot fail, and nothing about a green line says which. So every milestone ends

@@ -42,21 +42,30 @@ The name is copied rather than borrowed. A kernel caller hands over a string in
 a message buffer and be wrong. A copy costs 32 bytes a slot and
 removes the question.
 
-## What is deliberately not here
+## Posting is a file operation now
 
-**Posting is not a file operation yet.** Plan 9 posts by creating a file in
-`/srv` and writing a file descriptor number into it. The kernel takes the
-channel from that descriptor. Vectra has no file descriptors, so `Tlcreate` here
-answers EPERM and `post` is a kernel call.
+Plan 9 posts by creating a file in `/srv` and writing a file descriptor
+number into it, and Vectra does the same. `Tlcreate` on the root makes a
+**pending** entry: a name with no service behind it, whose read says
+`pending` and whose mount answers ENXIO. `Twrite` of a decimal descriptor
+completes it. The kernel takes the `^vfs.Server` behind that descriptor's
+chan, which is the step that turns a client's open connection into a posted
+service.
 
-That is the one piece of `/srv` that genuinely waits for userland, and it is
-worth being precise about which piece. Naming, listing, removal, lookup and
-mounting are all built. What is missing is the step that turns a client's open
-connection into a `^vfs.Server`, and nothing below userland can supply it.
+**Whose descriptor?** The writer's. A descriptor is a number in one process's
+table, so the write must be judged against the process that sent it. This
+server is synchronous, so the handler runs on the calling thread.
+`fd_resolver` -- registered by `kernel/user`, the owner of descriptor tables
+-- answers for whoever is current. A caller with no process gets EBADF,
+because a number from nowhere names nothing.
 
-**Removal is a file operation.** `Tremove` on `/srv/foo` takes the name away,
-because that step needs no descriptor. `srv.remove` is the same operation from
-inside the kernel.
+That is the confused deputy again, and Plan 9's `devsrv` settles it the same
+way: the kernel consults the caller's own table and nobody else's.
+
+**Removal is a file operation too.** `Tremove` on `/srv/foo` takes the name
+away, and works on a pending entry exactly as on a completed one. That is
+what reclaims a name whose creator died before writing. `srv.remove` is the
+same operation from inside the kernel.
 */
 package srv
 
@@ -110,8 +119,35 @@ wrong is the one that is not the identity.
 Service :: struct {
 	name:   [MAX_NAME]u8,
 	len:    int,
+
+	// Nil while the entry is pending: created, named, listed, removable, and
+	// not yet a service. `Twrite` of a descriptor is what fills it in, and
+	// everything that would follow the pointer refuses first. There is no
+	// second field saying `pending`, for the reason `used` is gone.
 	server: ^vfs.Server,
 	id:     i32,
+}
+
+/*
+How a descriptor number in a Twrite becomes a server.
+
+Registered by `kernel/user`, which owns descriptor tables, and consulted for
+**the calling thread's own process**. The handler runs on the caller's
+thread, because this server is synchronous. Nil until userland exists, and a
+resolver that finds no process answers nil too. Both mean a posting nobody
+can be charged for, and both are refused.
+
+The resolver runs under this server's spinlock. It may look tables up and
+may not send a message or take a lock that parks, and the one registered
+does neither.
+*/
+Fd_Resolver :: proc "contextless" (fd: int) -> ^vfs.Server
+
+@(private = "file")
+fd_resolver: Fd_Resolver
+
+set_fd_resolver :: proc "contextless" (r: Fd_Resolver) {
+	fd_resolver = r
 }
 
 // live reports whether a slot holds a service. `ROOT_ID` is zero and no service
@@ -306,8 +342,9 @@ remove :: proc "contextless" (name: string) -> vfs.Errno #no_bounds_check {
 	return vectra9.ENOENT
 }
 
-// lookup finds a posted service by name. Nil when nothing has that name, which
-// a caller must treat as `not posted` rather than as an error worth a code.
+// lookup finds a posted service by name. Nil when nothing has that name, and
+// nil for a pending entry too. A name is not a service until something wrote
+// a connection into it, and a caller treats both as `not posted`.
 lookup :: proc "contextless" (name: string) -> ^vfs.Server #no_bounds_check {
 	t := &srv_tree
 	g := sync.acquire(&t.lock)
@@ -405,6 +442,11 @@ service_at :: proc(ns: ^vfs.Namespace, path: string) -> (^vfs.Server, vfs.Errno)
 		// ENOENT is what a client would have got a moment earlier.
 		return nil, vectra9.ENOENT
 	}
+	if t.table[i].server == nil {
+		// Created and not yet written. The name is real and the connection
+		// behind it is not there, which is ENXIO's exact sentence.
+		return nil, vectra9.ENXIO
+	}
 	return t.table[i].server, vfs.OK
 }
 
@@ -459,17 +501,19 @@ slot_named :: proc "contextless" (t: ^Srv_Tree, name: string) -> int #no_bounds_
 // -- The handler -------------------------------------------------------------
 
 /*
-srv_creates reports whether a message would add a name to this tree.
+srv_creates reports whether a message would add a name some way this tree
+does not allow.
 
-EPERM rather than EOPNOTSUPP, and the difference matters here more than it did
-in `kernel/devfs`. A client that tries to create in `/srv` is doing the exact
-thing Plan 9 does to post a service. The answer is `not yet, and not like
-that`, which is a permission rather than an absence. See the file comment.
+`Tlcreate` is no longer in the list, because creating a file in `/srv` is
+how a service is posted -- the exact thing Plan 9 does. The rest still
+answer EPERM rather than EOPNOTSUPP. A directory, a link or a rename in
+`/srv` is a thing a client may imagine and may not have. That is a
+permission rather than an absence.
 */
 @(private = "file")
 srv_creates :: proc "contextless" (k: vectra9.Kind) -> bool {
 	#partial switch k {
-	case .Tlcreate, .Tmkdir, .Tmknod, .Tsymlink, .Tlink, .Trename, .Trenameat:
+	case .Tmkdir, .Tmknod, .Tsymlink, .Tlink, .Trename, .Trenameat:
 		return true
 	}
 	return false
@@ -525,6 +569,102 @@ srv_handler :: proc "contextless" (
 
 	case vectra9.Twalk:
 		srv_walk(t, m, reply)
+
+	case vectra9.Tlcreate:
+		/*
+		Posting, step one: a name is reserved and nothing serves it yet.
+
+		The fid arrives on the root and leaves on the new entry, open.
+		That mutation is Tlcreate's own semantics, and `fidtab_bind` on an
+		existing fid is exactly a rebind. The name is copied out of the
+		message before the reply, because the message's string borrows the
+		decode buffer.
+		*/
+		id := vfs.fidtab_node(&t.fids, m.fid)
+		if id < 0 {
+			reply^ = vectra9.error_reply(vectra9.EBADF)
+			return
+		}
+		if id != ROOT_ID {
+			reply^ = vectra9.error_reply(vectra9.ENOTDIR)
+			return
+		}
+		if !valid_name(m.name) {
+			reply^ = vectra9.error_reply(vectra9.EINVAL)
+			return
+		}
+		if slot_named(t, m.name) >= 0 {
+			reply^ = vectra9.error_reply(vectra9.EEXIST)
+			return
+		}
+		free := -1
+		for i in 0 ..< MAX_SERVICES {
+			if !live(&t.table[i]) {
+				free = i
+				break
+			}
+		}
+		if free < 0 || t.next_id <= 0 {
+			reply^ = vectra9.error_reply(vectra9.ENOSPC)
+			return
+		}
+		s := &t.table[free]
+		s^ = Service {
+			id  = t.next_id,
+			len = len(m.name),
+		}
+		for i in 0 ..< len(m.name) {
+			s.name[i] = m.name[i]
+		}
+		t.next_id += 1
+		t.count += 1
+		_ = vfs.fidtab_bind(&t.fids, m.fid, s.id)
+		reply^ = vectra9.Rlcreate{qid = qid_of_id(s.id), iounit = 0}
+
+	case vectra9.Twrite:
+		/*
+		Posting, step two: a descriptor number turns into the service.
+
+		The number is judged against the calling process's own table,
+		through the resolver `kernel/user` registered. See `Fd_Resolver`
+		for why that is sound here and nowhere else. A completed entry
+		refuses a second write: a posted service is not a thing to swap
+		underneath whoever mounted the name.
+		*/
+		id := vfs.fidtab_node(&t.fids, m.fid)
+		if id < 0 {
+			reply^ = vectra9.error_reply(vectra9.EBADF)
+			return
+		}
+		if id == ROOT_ID {
+			reply^ = vectra9.error_reply(vectra9.EISDIR)
+			return
+		}
+		i := slot_of(t, id)
+		if i < 0 {
+			reply^ = vectra9.error_reply(vectra9.ENOENT)
+			return
+		}
+		if t.table[i].server != nil {
+			reply^ = vectra9.error_reply(vectra9.EPERM)
+			return
+		}
+		fd, ok := parse_fd(m.data)
+		if !ok {
+			reply^ = vectra9.error_reply(vectra9.EINVAL)
+			return
+		}
+		sv: ^vfs.Server
+		if fd_resolver != nil {
+			sv = fd_resolver(fd)
+		}
+		if sv == nil {
+			reply^ = vectra9.error_reply(vectra9.EBADF)
+			return
+		}
+		t.table[i].server = sv
+		t.posts += 1
+		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 
 	case vectra9.Tlopen:
 		id := vfs.fidtab_node(&t.fids, m.fid)
@@ -634,6 +774,37 @@ srv_handler :: proc "contextless" (
 }
 
 /*
+parse_fd reads a decimal descriptor number out of a write's bytes.
+
+Digits, then at most one newline, then nothing -- the exact bytes a shell's
+`echo` or a program's formatter produces. Anything else is EINVAL from the
+caller's point of view, before any table is consulted. A malformed write
+therefore fails the same way whoever sent it.
+
+The bound is not a descriptor-table size. That table belongs to whoever
+resolves the number, and this parser only refuses values that could not be a
+descriptor anywhere.
+*/
+@(private = "file")
+parse_fd :: proc "contextless" (data: []u8) -> (fd: int, ok: bool) #no_bounds_check {
+	end := len(data)
+	if end > 0 && data[end - 1] == '\n' {
+		end -= 1
+	}
+	if end == 0 || end > 5 {
+		return 0, false
+	}
+	n := 0
+	for i in 0 ..< end {
+		if data[i] < '0' || data[i] > '9' {
+			return 0, false
+		}
+		n = n * 10 + int(data[i] - '0')
+	}
+	return n, true
+}
+
+/*
 srv_walk resolves names against a directory with one level in it.
 
 Every entry is a child of the root, so a walk of more than one name can only
@@ -735,6 +906,11 @@ report :: proc "contextless" (t: ^Srv_Tree, id: i32, out: []u8) -> int #no_bound
 		return n
 	}
 
+	if sv == nil {
+		// Created and not yet written. Saying so is more use to a person at
+		// a shell than any answer built from fields that are not there.
+		return put(out, n, "pending\n")
+	}
 	n = put(out, n, sv.name)
 	n = put(out, n, vfs.server_interruptible(sv) ? " workers\n" : " direct\n")
 	return n

@@ -29,6 +29,7 @@ Verify_Result :: struct {
 	failures:      int,
 	first_failure: string,
 	posted:        int, // Services this test published
+	reserved:      int, // Names it created and never completed
 	listed:        int, // Names it read back out of /srv
 	passes:        int, // Treaddir calls the paced listing took
 	mounted:       int, // Services it mounted and read through
@@ -125,14 +126,80 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 	verify_post(&r, ns, buf)
 	verify_mount(&r, ns, buf)
 	verify_cookie(&r, ns, buf)
+	verify_pending(&r, ns)
 
 	// -- Nothing left behind -------------------------------------------------
 
 	check(&r, count() == 0, "every name this test posted was removed")
 	posted_after, removed_after := stats()
 	check(&r, posted_after - posted_before == u64(r.posted), "and the server counted every post")
-	check(&r, removed_after - removed_before == u64(r.posted), "and every removal")
+	check(
+		&r,
+		removed_after - removed_before == u64(r.posted + r.reserved),
+		"and every removal, the reservation included",
+	)
 	return r
+}
+
+/*
+verify_pending is posting as a file operation, up to the step this boot
+cannot take yet.
+
+Create reserves a name: listed, counted, readable as `pending`, and not a
+service. A mount of it is ENXIO and a lookup answers nil. The write that
+would complete it is refused here. This runs before userland exists, and a
+descriptor number with no process behind it names nothing. The full arc
+runs in `kernel/user/verify.odin`, where there is a process to hold the
+number.
+*/
+@(private = "file")
+verify_pending :: proc(r: ^Verify_Result, ns: ^vfs.Namespace) {
+	c, err := vfs.create_path(ns, "/srv/embryo", vfs.O_WRONLY)
+	if !check(r, err == vfs.OK && c != nil, "a create in /srv reserves a name") {
+		return
+	}
+	r.reserved += 1
+	check(r, count() == 1, "which occupies a slot")
+
+	_, derr := vfs.create_path(ns, "/srv/embryo", vfs.O_WRONLY)
+	check(r, derr == vectra9.EEXIST, "a second create of the same name is refused")
+
+	dir, rerr := vfs.resolve(ns, "/srv")
+	if check(r, rerr == vfs.OK && dir != nil, "the directory itself resolves") {
+		check(
+			r,
+			vfs.chan_create(dir, "a/b", vfs.O_WRONLY, 0o600) == vectra9.EINVAL,
+			"a name with a slash in it is refused",
+		)
+		vfs.chan_close(dir)
+	}
+
+	junk := [4]u8{'j', 'u', 'n', 'k'}
+	_, werr := vfs.chan_write(c, 0, junk[:])
+	check(r, werr == vectra9.EINVAL, "a write that is not a decimal number is refused")
+
+	digit := [1]u8{'3'}
+	_, werr = vfs.chan_write(c, 0, digit[:])
+	check(
+		r,
+		werr == vectra9.EBADF,
+		"and a number is refused too, because nothing here holds descriptors",
+	)
+
+	line: [16]u8
+	rc, oerr := vfs.open_path(ns, "/srv/embryo", vfs.O_RDONLY)
+	if check(r, oerr == vfs.OK && rc != nil, "the pending entry opens by name") {
+		n, _ := vfs.chan_read(rc, 0, line[:])
+		check(r, string(line[:n]) == "pending\n", "and reads as pending")
+		vfs.chan_close(rc)
+	}
+
+	check(r, mount(ns, "/srv/embryo", "/mnt") == vectra9.ENXIO, "a pending name mounts nothing")
+	check(r, lookup("embryo") == nil, "and no lookup calls it a service")
+
+	check(r, vfs.chan_remove(c) == vfs.OK, "the reservation is removed like any name")
+	vfs.chan_close(c)
+	check(r, count() == 0, "and its slot is free again")
 }
 
 /*

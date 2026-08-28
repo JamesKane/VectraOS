@@ -35,6 +35,7 @@ package user
 import "kernel:arch"
 import "kernel:mem"
 import "kernel:sched"
+import "kernel:srv"
 import "kernel:sync"
 import "kernel:vfs"
 import "vsys:vectra9"
@@ -359,6 +360,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_loading(&r, column)
 	verify_parenthood(&r, column, &held)
+
+	// -- And a process that publishes a service ------------------------------
+
+	verify_posting(&r, column, &held)
 
 	// -- What is left ---------------------------------------------------------
 
@@ -1124,6 +1129,118 @@ verify_parenthood :: proc(r: ^Result, column: proc "contextless" () -> int, held
 		"a spawned process holds three frames while it exists",
 	)
 	finish(r, p, "and is taken down")
+}
+
+/*
+verify_posting is the milestone's second half: a process publishes a service.
+
+The kernel's part runs first and is all refusals. A read-only tree refuses a
+create. A name the kernel reserves in `/srv` is pending. Its read says so, a
+mount of it is ENXIO, and a write of a descriptor into it is EBADF. The
+boot thread has no process, and a number from nowhere names nothing.
+
+Then `/bin/poster` does the thing the refusals guard. It opens `/dev/cons`,
+creates `/srv/cons2`, writes the digit its own text carries, and mounts the
+name it just published at `/mnt` in its own namespace. The line it writes
+through `/mnt/cons` is on the screen, which is a process reaching hardware
+through a name no kernel put anywhere. Then it removes the name and opens
+`/mnt/null`. The name is gone and the mount is not, which is Plan 9's rule
+about what removal means.
+*/
+@(private = "file")
+verify_posting :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^[3]uintptr) {
+	count0 := srv.count()
+
+	// -- Creation is refused where it must be --------------------------------
+
+	_, cerr := vfs.create_path(vfs.boot_namespace, "/bin/nope", vfs.O_WRONLY)
+	check(r, cerr == vectra9.EROFS, "a read-only tree refuses a create")
+
+	// -- A reserved name is not yet a service --------------------------------
+
+	c, err := vfs.create_path(vfs.boot_namespace, "/srv/ktest", vfs.O_WRONLY)
+	if check(r, err == vfs.OK && c != nil, "creating /srv/ktest reserves a name with nothing behind it") {
+		check(r, srv.count() == count0 + 1, "which the table counts")
+
+		digit := [1]u8{'3'}
+		_, werr := vfs.chan_write(c, 0, digit[:])
+		check(
+			r,
+			werr == vectra9.EBADF,
+			"a thread with no process cannot post a descriptor into it",
+		)
+
+		line: [16]u8
+		rc, rerr := vfs.open_path(vfs.boot_namespace, "/srv/ktest", vfs.O_RDONLY)
+		if check(r, rerr == vfs.OK && rc != nil, "the pending entry opens by name") {
+			n, _ := vfs.chan_read(rc, 0, line[:])
+			check(r, string(line[:n]) == "pending\n", "and its read says pending")
+			vfs.chan_close(rc)
+		}
+
+		check(
+			r,
+			srv.mount(vfs.boot_namespace, "/srv/ktest", "/mnt") == vectra9.ENXIO,
+			"a pending name mounts nothing",
+		)
+		check(r, srv.lookup("ktest") == nil, "and no lookup calls it a service")
+
+		check(r, vfs.chan_remove(c) == vfs.OK, "the reservation is removed like any other name")
+		vfs.chan_close(c)
+		check(r, srv.count() == count0, "and the table is back where it was")
+	}
+
+	// -- A process posts a service, and reaches the console through it -------
+
+	before := column()
+	p, serr := spawn_path(nil, "/bin/poster", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "a process is started that will publish a service") {
+		return
+	}
+	r.programs += 1
+
+	if check(r, wait(p, PATIENCE), "and it comes back") {
+		after := column()
+
+		check(r, cell(p, CELL_MARK) == MARK_POSTER, "having reached its first instruction")
+		check(
+			r,
+			cell(p, POSTER_OPENED) == 3,
+			"it opened the console on descriptor 3, the digit its own text carries",
+		)
+		check(r, cell(p, POSTER_CREATED) == 4, "created /srv/cons2, and holds the reservation")
+		check(r, cell(p, POSTER_WROTE_FD) == 1, "wrote one digit into it, which posted the connection")
+		check(
+			r,
+			cell(p, POSTER_REWROTE) == refused(vectra9.EPERM),
+			"a second write is refused -- a posted name is not a thing to swap",
+		)
+		check(r, cell(p, POSTER_CLOSED) == 0, "closed the posting descriptor")
+		check(r, cell(p, POSTER_MOUNTED) == 0, "and mounted /srv/cons2 at /mnt in its own namespace")
+		check(r, cell(p, POSTER_VIA) == 4, "the console opened through the mount, on the number the close freed")
+		check(
+			r,
+			cell(p, POSTER_WROTE) == u64(len(POSTER_LINE)),
+			"and the write through the posted service reported every byte",
+		)
+		check(r, after - before == len(POSTER_LINE), "which are on the screen")
+
+		check(r, cell(p, POSTER_REMOVED) == 0, "the name was removed")
+		check(r, cell(p, POSTER_GONE) == refused(vectra9.ENOENT), "and is gone by name")
+		check(r, cell(p, POSTER_AGAIN) == 5, "while the mount still opens /mnt/null")
+		check(
+			r,
+			cell(p, POSTER_WROTE_AGAIN) == u64(len(POSTER_LINE)),
+			"and still carries every byte -- removal ends the name, not the service",
+		)
+
+		check(r, p.exit.deliberate && p.exit.status == 0, "the process exits with nothing to report")
+		check(r, srv.count() == count0, "and /srv holds exactly what it held before it ran")
+	}
+	cons_finish()
+
+	held^ = {p.text, p.data, p.stack}
+	finish(r, p, "and it is taken down")
 }
 
 // live_objects counts what the heap is holding. The same arithmetic

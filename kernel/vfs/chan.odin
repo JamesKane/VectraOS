@@ -259,6 +259,40 @@ chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 }
 
 /*
+chan_create asks the server to create a file in the directory this chan names.
+
+**The fid mutates.** Tlcreate takes a fid on a directory, and on success the
+same fid names the new file, open under `flags`. The chan follows: its qid
+becomes the new file's, and it is marked open. That is 9P's shape rather than
+a shortcut, and it is why a caller that wants to keep its handle on the
+directory clones first. `create_path` in `walk.odin` resolves a fresh chan
+per call, so it never has to.
+
+`gid` is zero because nothing here has a group. The field goes on the wire
+because the message has it, not because anything reads it back.
+
+`/srv` is the first server to answer this, and posting a service is the first
+thing creation is for. See `docs/SRV.md`.
+*/
+chan_create :: proc(c: ^Chan, name: string, flags: u32, mode: u32) -> Errno {
+	if c == nil {
+		return vectra9.EBADF
+	}
+	request := vectra9.Msg(vectra9.Tlcreate{fid = c.fid, name = name, flags = flags, mode = mode})
+	reply: vectra9.Msg
+	if e := rpc(c.server, &request, &reply); e != OK {
+		return e
+	}
+	answer, ok := reply.(vectra9.Rlcreate)
+	if !ok {
+		return vectra9.EPROTO
+	}
+	c.qid = answer.qid
+	c.opened = true
+	return OK
+}
+
+/*
 chan_remove asks the server to remove the file this chan names.
 
 **The fid is gone either way, and that is 9P's rule rather than a convenience.**

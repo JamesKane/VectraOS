@@ -46,6 +46,7 @@ MARK_READER :: u64(0x5245_4144_5245_4144) // READREAD
 MARK_BINDER :: u64(0x4249_4E44_4249_4E44) // BINDBIND
 MARK_PARENT :: u64(0x5052_4E54_5052_4E54) // PRNTPRNT
 MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
+MARK_POSTER :: u64(0x504F_5354_504F_5354) // POSTPOST
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -143,6 +144,34 @@ PARENT_BOUND :: 4
 PARENT_SPAWN_B :: 5
 PARENT_WAIT_B :: 6
 PARENT_MISSING :: 7
+
+/*
+Where `poster` keeps its answers -- one cell per call, in call order.
+
+The story the cells tell, in one pass. Open a connection, and reserve a name
+in `/srv`. Write the descriptor into it, and mount the name. Reach the
+console through the mount. Take the name away, and show the mount survives
+it.
+
+The descriptor it writes is the digit `3` in its own text. The first cell is
+the check that 3 is what the open really returned.
+*/
+POSTER_OPENED :: 1
+POSTER_CREATED :: 2
+POSTER_WROTE_FD :: 3
+POSTER_REWROTE :: 4
+POSTER_CLOSED :: 5
+POSTER_MOUNTED :: 6
+POSTER_VIA :: 7
+POSTER_WROTE :: 8
+POSTER_REMOVED :: 9
+POSTER_GONE :: 10
+POSTER_AGAIN :: 11
+POSTER_WROTE_AGAIN :: 12
+
+// The line `poster` sends through the service it published, written twice in
+// the blob's own text like every string a spawned program carries.
+POSTER_LINE :: "-- this line went through a posted service"
 
 /*
 The line `child` writes, and the paths the two blobs open.
@@ -275,6 +304,8 @@ foreign {
 	vectra_user_parent_end: byte
 	vectra_user_child: byte
 	vectra_user_child_end: byte
+	vectra_user_poster: byte
+	vectra_user_poster_end: byte
 }
 
 @(private)
@@ -304,10 +335,11 @@ program_namer :: proc "contextless" () -> []u8 {return blob(&vectra_user_namer, 
 program_reader :: proc "contextless" () -> []u8 {return blob(&vectra_user_reader, &vectra_user_reader_end)}
 program_binder :: proc "contextless" () -> []u8 {return blob(&vectra_user_binder, &vectra_user_binder_end)}
 
-// And the two that reproduce -- the only blobs `/bin` publishes as files,
-// because they are the only ones that stand alone. See `image.odin`.
+// And the three that stand alone -- the blobs `/bin` publishes as files.
+// Two reproduce, and one publishes a service. See `image.odin`.
 program_parent :: proc "contextless" () -> []u8 {return blob(&vectra_user_parent, &vectra_user_parent_end)}
 program_child :: proc "contextless" () -> []u8 {return blob(&vectra_user_child, &vectra_user_child_end)}
+program_poster :: proc "contextless" () -> []u8 {return blob(&vectra_user_poster, &vectra_user_poster_end)}
 
 /*
 The programs, emitted by the assembler.
@@ -774,5 +806,118 @@ vectra_user_child:
 	.ascii "-- a process started this one"
 .globl vectra_user_child_end
 vectra_user_child_end:
+
+.balign 16
+.globl vectra_user_poster
+vectra_user_poster:
+	movq %rdi, %rbx
+	movabsq $$0x504F5354504F5354, %rax
+	movq %rax, (%rbx)
+
+	leaq 10f(%rip), %rdi
+	movq $$9, %rsi
+	movq $$1, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 8(%rbx)
+
+	leaq 11f(%rip), %rdi
+	movq $$10, %rsi
+	movq $$1, %rdx
+	movq $$384, %r10
+	movq $$12, %rax
+	syscall
+	movq %rax, 16(%rbx)
+	movq %rax, %r14
+
+	movq %r14, %rdi
+	leaq 14f(%rip), %rsi
+	movq $$1, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq %r14, %rdi
+	leaq 14f(%rip), %rsi
+	movq $$1, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	movq %r14, %rdi
+	movq $$6, %rax
+	syscall
+	movq %rax, 40(%rbx)
+
+	leaq 11f(%rip), %rdi
+	movq $$10, %rsi
+	leaq 12f(%rip), %rdx
+	movq $$4, %r10
+	xorl %r8d, %r8d
+	movq $$13, %rax
+	syscall
+	movq %rax, 48(%rbx)
+
+	leaq 13f(%rip), %rdi
+	movq $$9, %rsi
+	movq $$1, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 56(%rbx)
+	movq %rax, %r15
+
+	movq %r15, %rdi
+	leaq 15f(%rip), %rsi
+	movq $$42, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 64(%rbx)
+
+	leaq 11f(%rip), %rdi
+	movq $$10, %rsi
+	movq $$14, %rax
+	syscall
+	movq %rax, 72(%rbx)
+
+	leaq 11f(%rip), %rdi
+	movq $$10, %rsi
+	movq $$1, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 80(%rbx)
+
+	leaq 16f(%rip), %rdi
+	movq $$9, %rsi
+	movq $$1, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 88(%rbx)
+	movq %rax, %rdi
+	leaq 15f(%rip), %rsi
+	movq $$42, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 96(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+10:
+	.ascii "/dev/cons"
+11:
+	.ascii "/srv/cons2"
+12:
+	.ascii "/mnt"
+13:
+	.ascii "/mnt/cons"
+14:
+	.ascii "3"
+15:
+	.ascii "-- this line went through a posted service"
+16:
+	.ascii "/mnt/null"
+.globl vectra_user_poster_end
+vectra_user_poster_end:
 `, "~{memory}"}()
 }

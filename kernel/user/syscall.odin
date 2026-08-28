@@ -48,12 +48,15 @@ the caller names in its own namespace, and the other collects what it
 started. `spawn.odin` says what a child inherits and why the call is not yet
 `rfork` and `exec`.
 
+`create`, `mount` and `remove` arrived with posting. Together they are Plan
+9's `/srv` arc from ring 3. Reserve a name, write a descriptor into it,
+mount what it names, take the name away. `docs/SRV.md` owns that design, and
+`resolve_fd_server` below is this package's part of it.
+
 ## What is still missing from the interface
 
-No `create`, because `kernel/vfs` has no `chan_create`. No `stat`, because
-nothing needs one yet. No `mount`, because posting a service from ring 3 needs
-a descriptor to carry the connection, and `docs/SRV.md` says which line that
-is. All three are the same shape as the five below and none of them is a design
+No `stat`, because nothing in ring 3 needs one yet. `vfs.chan_stat` exists,
+the call is the same shape as the ones below, and it is not a design
 question.
 */
 package user
@@ -64,6 +67,7 @@ import "base:runtime"
 import "kernel:arch"
 import "kernel:mem"
 import "kernel:sched"
+import "kernel:srv"
 import "kernel:sync"
 import "kernel:vfs"
 import "vsys:vectra9"
@@ -80,6 +84,9 @@ SYS_BIND :: u64(8)
 SYS_SEEK :: u64(9)
 SYS_SPAWN :: u64(10)
 SYS_WAIT :: u64(11)
+SYS_CREATE :: u64(12)
+SYS_MOUNT :: u64(13)
+SYS_REMOVE :: u64(14)
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -129,7 +136,33 @@ syscall_init :: proc(ns: ^vfs.Namespace) -> bool {
 			cons = c
 		}
 	}
+	// This package owns descriptor tables, so it is the one that can say what
+	// a number in a Twrite to `/srv` means. See `resolve_fd_server`.
+	srv.set_fd_resolver(resolve_fd_server)
 	return arch.syscall_init()
+}
+
+/*
+resolve_fd_server answers `/srv`'s question: whose connection is descriptor n?
+
+The calling thread's process's, which is the only sound answer and the reason
+the hook lives here. `/srv` is synchronous, so its handler runs on the thread
+that wrote, and `current()` names the process that holds the number. A kernel
+thread has no process and gets nil, which `/srv` turns into EBADF -- a number
+from nowhere names nothing.
+
+Runs under `/srv`'s spinlock: table lookups only, no messages, no lock that
+parks. What it hands back is the server behind the chan, not the chan. A
+posting publishes the connection, and a mount of it attaches fresh at the
+root.
+*/
+@(private = "file")
+resolve_fd_server :: proc "contextless" (fd: int) -> ^vfs.Server {
+	f := fd_at(current(), fd)
+	if f == nil {
+		return nil
+	}
+	return f.chan.server
 }
 
 syscall_count :: proc "contextless" () -> int {
@@ -189,6 +222,12 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = sys_spawn(uintptr(a0), int(a1), a2)
 	case SYS_WAIT:
 		result = sys_wait(a0)
+	case SYS_CREATE:
+		result = sys_create(uintptr(a0), int(a1), u32(a2), u32(a3))
+	case SYS_MOUNT:
+		result = sys_mount(uintptr(a0), int(a1), uintptr(a2), int(a3), a4)
+	case SYS_REMOVE:
+		result = sys_remove(uintptr(a0), int(a1))
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
 	case SYS_EXIT:
@@ -361,6 +400,104 @@ sys_bind :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order: 
 	}
 
 	err := vfs.bind_path(p.ns, string(source[:src_len]), string(target[:dst_len]), how)
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	return 0
+}
+
+/*
+sys_create makes a file where a path says, and returns a descriptor on it.
+
+A separate call rather than a flag on `open`, which is Plan 9's split and
+9P's. Tlopen and Tlcreate are different messages. To fold them back together
+here would be a translation layer's job done in the wrong place. The first
+thing creation is for is posting a service, and `/srv` is the first server
+that answers it.
+*/
+@(private = "file")
+sys_create :: proc(addr: uintptr, length: int, flags: u32, mode: u32) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+
+	path: [PATH_MAX]u8
+	if length <= 0 || length > PATH_MAX || !copy_in(addr, length, path[:]) {
+		return -i64(vectra9.EFAULT)
+	}
+
+	c, err := vfs.create_path(p.ns, string(path[:length]), flags, mode)
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	fd, ok := fd_open(p, c)
+	if !ok {
+		vfs.chan_close(c)
+		return -i64(vectra9.EMFILE)
+	}
+	return i64(fd)
+}
+
+/*
+sys_mount attaches a posted service and binds it in this process's namespace.
+
+The pair to `sys_bind`: bind rearranges names a namespace already has, and
+mount brings a *service* into one by the name `/srv` gave it. Both paths
+resolve in the caller's own namespace. A fork that dropped `/srv`, or a
+bind over it, changes what this can reach. That is the design, not a leak.
+`docs/SRV.md` says why the source must be a `/srv` entry and nothing else.
+*/
+@(private = "file")
+sys_mount :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order: u64) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+	if src_len <= 0 || src_len > PATH_MAX || dst_len <= 0 || dst_len > PATH_MAX {
+		return -i64(vectra9.EINVAL)
+	}
+
+	source: [PATH_MAX]u8
+	target: [PATH_MAX]u8
+	if !copy_in(src, src_len, source[:]) || !copy_in(dst, dst_len, target[:]) {
+		return -i64(vectra9.EFAULT)
+	}
+
+	how := vfs.Mount_Order.Replace
+	switch order {
+	case 1: how = .Before
+	case 2: how = .After
+	}
+
+	err := srv.mount(p.ns, string(source[:src_len]), string(target[:dst_len]), how)
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	return 0
+}
+
+// sys_remove takes a file away by name, in this process's namespace. The fid
+// is spent whether or not the server agrees -- that is Tremove's rule, and
+// `vfs.chan_remove` keeps it. So the chan is closed on both paths.
+@(private = "file")
+sys_remove :: proc(addr: uintptr, length: int) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+
+	path: [PATH_MAX]u8
+	if length <= 0 || length > PATH_MAX || !copy_in(addr, length, path[:]) {
+		return -i64(vectra9.EFAULT)
+	}
+
+	c, err := vfs.resolve(p.ns, string(path[:length]))
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	err = vfs.chan_remove(c)
+	vfs.chan_close(c)
 	if err != vfs.OK {
 		return -i64(err)
 	}

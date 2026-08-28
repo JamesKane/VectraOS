@@ -538,3 +538,48 @@ open_path :: proc(ns: ^Namespace, path: string, flags: u32 = O_RDONLY) -> (^Chan
 	}
 	return c, OK
 }
+
+/*
+create_path makes a file where the path says, and returns it open.
+
+The split is by the last slash. Everything before it must resolve to a
+directory, and the name after it is the server's to accept or refuse. The
+resolve crosses mounts like any other, so what `/srv/foo` creates *in*
+depends on the namespace. A bind over `/srv` catches a create the same way
+it catches an open.
+
+The chan handed back is the one the resolve produced, mutated by Tlcreate
+into the new file. That is why there is no clone here: the directory handle
+was this call's own, and nothing else holds it. See `chan_create`.
+
+ENOTDIR when the parent is a file, EINVAL when the path has no name to
+create. Whether the name may exist already is the server's answer, not this
+layer's.
+*/
+create_path :: proc(ns: ^Namespace, path: string, flags: u32, mode: u32 = 0o600) -> (^Chan, Errno) {
+	last := -1
+	for i in 0 ..< len(path) {
+		if path[i] == '/' {
+			last = i
+		}
+	}
+	if last < 0 || last + 1 >= len(path) {
+		return nil, vectra9.EINVAL
+	}
+	name := path[last + 1:]
+	parent := last == 0 ? "/" : path[:last]
+
+	c, err := resolve(ns, parent)
+	if err != OK {
+		return nil, err
+	}
+	if !chan_is_dir(c) {
+		chan_close(c)
+		return nil, vectra9.ENOTDIR
+	}
+	if e := chan_create(c, name, flags, mode); e != OK {
+		chan_close(c)
+		return nil, e
+	}
+	return c, OK
+}

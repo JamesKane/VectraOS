@@ -56,27 +56,53 @@ The name is copied rather than borrowed. A kernel caller hands over a string in
 a message buffer and be wrong. A copy costs 32 bytes a slot and removes the
 question.
 
-## Posting is the one piece that waits for userland
+## Posting is a file operation, in two steps
 
 Plan 9 posts a service by creating a file in `/srv` and writing a file
 descriptor number into it. The kernel takes the channel from that descriptor.
-Vectra has no file descriptors, so `Tlcreate` here answers EPERM and `post` is a
-kernel call.
+Vectra now does the same, and the two steps are worth keeping apart, because
+each can fail alone.
 
-**It is worth being precise about which piece that is.** Naming, listing,
-removal, lookup and mounting are all built and all reachable through the file
-protocol or through the namespace. What is missing is the single step that turns
-a client's open connection into a `^vfs.Server`, and nothing below userland can
-supply it.
+**`Tlcreate` reserves a name.** The entry it makes is *pending*: named,
+listed, counted, removable -- and not a service. Its read says `pending`, a
+mount of it answers ENXIO, and `lookup` answers nil. A pending entry is what
+a name looks like between a creator's two calls. It is also what one looks
+like for ever, if the creator dies in between. `Tremove` reclaims it either
+way.
 
-EPERM rather than EOPNOTSUPP, and the difference matters more here than it did
-in `kernel/devfs`. A client that tries to create in `/srv` is doing the exact
-thing Plan 9 does to post a service. The answer is *not yet, and not like that*,
-which is a permission rather than an absence.
+**`Twrite` of a decimal number completes it.** The number is a descriptor,
+and a descriptor is an index into one process's table. So the write is
+judged against the process that sent it. `#s` is synchronous, so the handler
+runs on the writing thread. `srv.Fd_Resolver` -- registered by
+`kernel/user`, the owner of descriptor tables -- answers for whoever is
+current.
 
-**Removal is a file operation**, because it needs no descriptor. `Tremove` on
-`/srv/foo` takes the name away, and `srv.remove` is the same operation from
-inside the kernel. That makes `/srv` the first tree in Vectra a client may
+What it hands back is the `^vfs.Server` behind the descriptor's chan. A
+caller with no process gets EBADF, because a number from nowhere names
+nothing.
+
+**That is the confused deputy again**, settled the way `copy_in` settled it:
+the kernel consults the caller's own table and nobody else's. It is also the
+one place in `/srv` that leans on the transport being synchronous. The day
+`#s` grows workers, the write arrives on a worker's thread and `current()`
+answers the wrong question. The resolver hook is where that day's fix goes,
+which is a caller identity carried with the message. The comment on
+`Fd_Resolver` says so where it will be found.
+
+**A completed entry refuses a second write, with EPERM.** A posted name is a
+capability, and other processes may already hold mounts of it. Swapping the
+service underneath them would make a mount mean something its holder never
+opened.
+
+**Removal is a file operation too**, because it needs no descriptor.
+`Tremove` on `/srv/foo` takes the name away, and `srv.remove` is the same
+operation from inside the kernel.
+
+What a posting publishes is the *connection*, not the file the descriptor
+was open on. A process that opens `/dev/cons` and posts descriptor 3 posts
+the whole of `#c`. A mount of the name attaches fresh at the server's root.
+That is Plan 9's semantics exactly: the channel is to the server, and the
+file it happened to name is not part of the capability. That makes `/srv` the first tree in Vectra a client may
 change, and `vfs.chan_remove` is Tremove's first implementation on either side.
 
 ## Mounting
@@ -160,7 +186,9 @@ read reports identity instead. An error would have been the other option, and
 worse. A file that cannot be read is a file with nothing to say about itself.
 
 Both facts are what a person at a shell wants from `cat /srv/foo`. Neither is
-something a client could work out from the namespace.
+something a client could work out from the namespace. An entry that was
+created and never completed reads as `pending`, which is the third thing a
+person would want to know.
 
 ## Why this server is synchronous
 
@@ -196,7 +224,7 @@ is about to post.
 
 ### The controls
 
-Nine mutations, one at a time, each observed on a real boot:
+Thirteen mutations, one at a time, each observed on a real boot:
 
 | Mutation | First failure |
 |---|---|
@@ -209,6 +237,14 @@ Nine mutations, one at a time, each observed on a real boot:
 | the root may be removed | `and refuses to be removed` |
 | removing a name nobody posted reports success | `and a name already gone is not there twice` |
 | the table accepts more than it has slots for | `the table fills to exactly its size` |
+| `Tlcreate` skips the name validation | `a name with a slash in it is refused` |
+| `parse_fd` accepts any bytes as descriptor zero | `a write that is not a decimal number is refused` |
+| a completed entry accepts a second write | `a second write is refused -- a posted name is not a thing to swap` |
+| `service_at` mounts a pending entry | `a pending name mounts nothing` |
+
+The last four arrived with posting as a file operation. The third of them
+fails in `kernel/user`'s suite rather than this one. Only a process can
+complete a posting and then try again, and `/bin/poster` does exactly that.
 
 **The first two are the ones that were worth building the test around**, because
 both are the design decisions above rather than ordinary bugs. Each has an
@@ -243,13 +279,19 @@ all exactly that shape — see `docs/TESTING.md`.
 
 ## What this leaves for next time
 
-- **Posting from userland**, which is the one piece that waits. A client creates
-  `/srv/foo`, writes a descriptor into it, and the kernel turns that into a
-  `^vfs.Server`. Everything on this side of that step already exists.
-- **A reference count on a posted service.** Today a `Server` is a kernel global
-  and outliving its mounts is free. When a process can post one, the entry has
-  to hold a counted reference. The connection then comes down when the last one
-  goes.
+- **A service a process implements.** Posting is built, and every server a
+  process can post is still one the kernel implements -- the connection
+  behind a descriptor leads to `#c`, `#s`, `#b` or `#/`. The missing piece
+  is a transport whose far side is a process. That is a pipe the kernel's
+  `mnt` client can speak 9P down, with a program answering. It is the step
+  `servers/devfs` actually waits on now.
+- **A reference count on a posted service.** Every server a descriptor can
+  name today is a kernel global, so outliving the mounts is free. When a
+  server can die with a process, the entry has to hold a counted reference.
+  The connection then comes down when the last one goes.
+- **A caller identity that survives a queue.** The fd resolver answers for
+  the *current* thread, which is right only while `#s` is synchronous. See
+  `Fd_Resolver`.
 - **Permissions that mean something.** An entry reports `0600` because a posted
   service is a capability, and there is nobody yet for it to be private *from*.
 - **A free list of ids**, which retires the same limit `vfs.alloc_fid` has.

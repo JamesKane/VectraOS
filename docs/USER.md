@@ -12,24 +12,29 @@ space, a namespace and a set of open files. It can open a file by name, read
 it, write it, and rearrange its own view of the tree. It can also start
 another process from a file it names:
 
-    -- a program in ring 3 wrote this line
-    -- a process opened this file by name
-    -- this line went to /dev/null
-    -- a process started this one
+```
+-- a program in ring 3 wrote this line
+-- a process opened this file by name
+-- this line went to /dev/null
+-- a process started this one
+-- this line went through a posted service
+```
 
-Four milestones live in this document, because they live in the same
-directory. `docs/SPACE.md` built the piece under all four:
+Five milestones live in this document, because they live in the same
+directory. `docs/SPACE.md` built the piece under all five:
 
     ring 3        a thread can run somewhere it cannot damage the kernel
     a syscall     it can ask for something anyway
     a process     what it asks for belongs to it rather than to the kernel
     a spawn       and what it starts inherits the world it arranged
+    a posting     and what it holds open, it can publish by name
 
 The third line is the one Plan 9 is about. Two processes hand the kernel the
 same path and get different files, because the mount table belongs to the
-process rather than to the machine. The fourth is what makes that
-compositional: the namespace a process arranged is the namespace its children
-resolve in.
+process rather than to the machine. The fourth makes that compositional: the
+namespace a process arranged is the namespace its children resolve in. The
+fifth closes the circle -- names are not only consumed from ring 3 but made
+there, and `/srv` is where they change hands.
 
 ## Three things make it ring 3 rather than a jump
 
@@ -657,6 +662,41 @@ the instruction pointer. Nothing stages their data pages, because a file has
 no side channel. A string in a text page is a buffer a system call may copy
 in like any other, since the page is mapped readable.
 
+## A process that publishes a service
+
+The fifth milestone, and the small one: three system calls and a program.
+Everything hard about it was already built on one side or the other.
+`docs/SRV.md` owns the design: the pending entry, the decimal write, and the
+confused deputy the fd resolver answers. What lives here is the door's side
+of it.
+
+`create` makes a file where a path says and returns a descriptor on it.
+Behind it is `vfs.create_path`, the `Tlcreate` client path that retired one
+of the named gaps. It is a separate call rather than a flag on `open`, which
+is Plan 9's split and 9P's. Two messages, two calls, and the folding is a
+translation layer's job.
+
+`mount` attaches a posted service by its `/srv` path and binds it in the
+caller's own namespace. It is the pair to `bind`,
+with the descriptor elided the way `srv.mount` documents. `remove` takes a
+name away, and is mostly `Tremove` reaching ring 3.
+
+The resolver `kernel/user` registers is the piece worth knowing about. When
+a program writes a descriptor number into a `/srv` entry, the handler asks
+this package what the number means *for the current process*. It can ask,
+because `#s` is synchronous and its handler runs on the writing thread.
+Descriptor tables belong here, so the answer does too. A kernel thread gets
+nil and the write gets EBADF.
+
+`/bin/poster` is the milestone as a program. It opens `/dev/cons`, creates
+`/srv/cons2`, and writes the digit `3` from its own text. Then it mounts the
+name it just published at `/mnt` in its own namespace. The line it writes
+through `/mnt/cons` lands on the screen -- a process reaching hardware
+through a name no kernel put anywhere. Then it removes the name, shows
+`/srv/cons2` is gone, and opens `/mnt/null` through the mount that survives
+it. Removal ends the name, not the service, which is Plan 9's rule and now a
+check.
+
 ## What is missing, and named where it lives
 
 - **A process cannot be stopped from outside.** It can end itself now, and the
@@ -673,10 +713,10 @@ in like any other, since the page is mapped readable.
 - **`wait` polls.** A parked tick per miss, bounded by `WAIT_PATIENCE`. The
   rendezvous it should become needs a wake that is legal in a fault handler.
   A fault is one of the two ways a child ends.
-- **No `create`, no `stat`, no `mount`.** The first waits on
-  `vfs.chan_create`, the second on something that needs it, and the third on a
-  descriptor that can carry a connection. `docs/SRV.md` says which line that
-  is.
+- **No `stat` behind the door.** `vfs.chan_stat` exists and nothing in ring 3
+  needs it yet. It is the same shape as every call above and not a design
+  question. `create` and `mount` were on this line for four milestones, and
+  posting is what pulled them through.
 - **Nothing counts a process's calls against it.** `MAX_PROCESSES` bounds how
   many exist and `MAX_FDS` bounds what one holds. Nothing bounds what one asks
   for, and a single process can call `sleep` for ever.

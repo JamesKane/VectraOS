@@ -1183,7 +1183,9 @@ verify_srv :: proc() {
 		libodin.put_uint(&sink, u64(result.passes))
 		libodin.put_str(&sink, " passes with one removed under them, ")
 		libodin.put_uint(&sink, u64(result.mounted))
-		libodin.put_str(&sink, " mounted, heap balanced")
+		libodin.put_str(&sink, " mounted, ")
+		libodin.put_uint(&sink, u64(result.reserved))
+		libodin.put_str(&sink, " name reserved pending, heap balanced")
 		emit(&klog, .Ok, &sink)
 		return
 	}
@@ -1395,7 +1397,7 @@ verify_user :: proc() {
 		libodin.put_uint(&sink, result.rounds)
 		libodin.put_str(&sink, " preempted rounds, ")
 		libodin.put_uint(&sink, u64(result.calls))
-		libodin.put_str(&sink, " system calls, two children one line")
+		libodin.put_str(&sink, " system calls, a service posted from ring 3")
 		emit(&klog, .Ok, &sink)
 		return
 	}
