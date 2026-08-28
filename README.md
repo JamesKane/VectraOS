@@ -6,19 +6,22 @@ on top.
 
 ## Status
 
-**Processes serve, and the kernel is their client.** The kernel comes up
-under Limine on `x86_64` with descriptor tables, page tables and a heap of
-its own. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at `/bin` over
-9P2000.L. It preempts on the local APIC and takes keyboard interrupts
-through the I/O APIC.
+**Programs are compiled now, and one of them is a file server.** The kernel
+comes up under Limine on `x86_64` with descriptor tables, page tables and a
+heap of its own. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
+`/bin` over 9P2000.L. It preempts on the local APIC and takes keyboard
+interrupts through the I/O APIC.
 
 Then it starts processes in ring 3 that open files by name and write to the
 console. Those processes spawn children out of files under `/bin`, wait for
 them, and collect their exit status. One posts a service in `/srv` and mounts
 the name it published -- Plan 9's way, create the file and write a descriptor
-into it. And one *answers* 9P: it posts a pipe end, and the kernel mounts the
-name, walks paths, and writes and reads through it. Every message crosses to
-ring 3 as bytes a program decodes and answers.
+into it. One *answers* 9P by hand, in a page of assembler.
+
+And one is `servers/ramfs`, an Odin program the build driver compiled for ring 3. Its
+segments load with real permissions, and it serves a file tree through the
+same codec the kernel links. The kernel mounts it, reads a file out of the
+program's rodata, and writes one into its bss.
 
 A process is an address space, a namespace and a set of open files. Two
 processes can hand the kernel one path and get different files. The mount
@@ -40,7 +43,7 @@ its paths in the world its parent arranged.
 [  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
 [  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
 [  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
-[  ok  ] bin #b bound at /bin, 4 programs as files, header VECTRA01
+[  ok  ] bin #b bound at /bin, 5 programs as files, formats VECTRA01 and 02
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half
 [  ok  ] syscall armed -- entry at 0xffffffff80020410, /dev/cons is descriptor 1
@@ -50,14 +53,15 @@ its paths in the world its parent arranged.
 -- a process started this one
 -- this line went through a posted service
 -- a process answered this line
-[  ok  ] user 265 userland checks passed -- 17 processes, 2 started by another process, 105 system calls, 11 9P requests answered by a process
+these bytes live in a program's own segments
+[  ok  ] user 304 userland checks passed -- 18 processes, 2 started by another process, 182 system calls, a file tree served by a compiled program
 [  ok  ] boot complete -- idling
 ```
 
 That is an abridged log. The full one is about forty lines and every one of
 them is a self-test.
 
-### Six of those lines are worth explaining
+### Seven of those lines are worth explaining
 
 `-- a program in ring 3 wrote this line` crosses every layer there is. The
 `syscall` instruction. A copy out of a program's memory that the kernel checked
@@ -90,6 +94,13 @@ write to the console, and served a read from its own text. The remove told it
 to stop. The layout this project is named for -- servers as programs -- now
 has its transport.
 
+`these bytes live in a program's own segments` is the newest, and the bytes
+kept every promise in their path. They were a string in `servers/ramfs`, an
+ordinary Odin package the build driver compiles, links at a fixed address,
+and converts to a flat segment image. The loader mapped them read-only in a
+rodata segment. The program served them over 9P through the handler shape
+every kernel server uses, and the kernel printed what it read.
+
 `7 spoiled by a shared buffer`, in the full log, is a **pass**. It is a control
 that runs on every boot. Eight readers share one reply buffer, the way a 9P
 server looked before the payload-per-slot milestone. A failure to corrupt each
@@ -111,14 +122,15 @@ other would be the failure.
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, from ring 3 too |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, a top half that may not park |
 | `kernel/user/` | Ring 3, `syscall`/`sysret`, a process that owns what it opens, and the spawn that makes more |
+| `sys/abi`, `sys/libuser` | The call numbers both sides include, and the ring 3 library: syscalls and a 9P serve loop |
+| `servers/ramfs` | The first compiled server: an Odin file tree in ring 3 |
 
-`servers/` and `apps/` are still empty, and `kernel/devfs` lives in the
-kernel for the moment. Nothing structural blocks the move any more.`devfs`
-already speaks 9P over a transport that hides which side of a boundary it
-sits on. The transport whose far side is a process now exists, and every boot
-proves it. What the move waits on is a userland worth writing a server in.
-That means a 9P library, more than a page of text, and a way to stop a server
-that will not stop itself.
+`servers/` has its first resident, and `apps/` is still empty. `kernel/devfs`
+stays in the kernel for the moment. A console server must wait on the
+keyboard and its clients at once, and a ring 3 process cannot wait on two
+things yet. The port also wants a note to stop a runaway server, and raw
+devices a user process could reach. All three are named, with the rest, in
+`docs/HANDOFF.md`.
 
 **`docs/HANDOFF.md` is the orientation document**, and each subsystem has one
 of its own beside the code it explains.
@@ -151,7 +163,7 @@ shared on fork. It is built, and ring 3 reaches it through `bind`.
 ## Every line of that boot log is a self-test
 
 There is no test harness and no host-side test build. Every layer proves itself
-on the machine that will run it, during boot, and reports one line. About 840
+on the machine that will run it, during boot, and reports one line. About 880
 checks run on every boot.
 
 The cost of that is a self-test can be *unfalsifiable* — it passes because it
@@ -254,10 +266,14 @@ kernel/
   user/                 Ring 3, the system calls, a process, the image
                         loader, and `#b` at /bin
 sys/
+  abi/                  The system call numbers both sides include
   libodin/              Freestanding core shared by kernel and userland
+  libuser/              Ring 3: syscall wrappers and a 9P serve loop
   vectra9/              9P2000.L message layer: types, codec, sessions
   libposix/             Not yet written
-servers/                devfs, netfs, intuition — not yet written
+servers/
+  ramfs/                The first compiled server; devfs, netfs, intuition
+                        are still to come
 apps/                   terminal, filemgr, tracker — not yet written
 docs/                   One document per subsystem, plus HANDOFF and TESTING
 tools/

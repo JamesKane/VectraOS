@@ -76,24 +76,27 @@ import "kernel:sched"
 import "kernel:srv"
 import "kernel:sync"
 import "kernel:vfs"
+import "vsys:abi"
 import "vsys:vectra9"
 
-SYS_NOP :: u64(0)
-SYS_ARGS :: u64(1)
-SYS_WRITE :: u64(2)
-SYS_SLEEP :: u64(3)
-SYS_EXIT :: u64(4)
-SYS_OPEN :: u64(5)
-SYS_CLOSE :: u64(6)
-SYS_READ :: u64(7)
-SYS_BIND :: u64(8)
-SYS_SEEK :: u64(9)
-SYS_SPAWN :: u64(10)
-SYS_WAIT :: u64(11)
-SYS_CREATE :: u64(12)
-SYS_MOUNT :: u64(13)
-SYS_REMOVE :: u64(14)
-SYS_PIPE :: u64(15)
+// The numbers live in `sys/abi`, the one file both sides of the door
+// include, so the dispatcher and the userland library cannot drift apart.
+SYS_NOP :: abi.SYS_NOP
+SYS_ARGS :: abi.SYS_ARGS
+SYS_WRITE :: abi.SYS_WRITE
+SYS_SLEEP :: abi.SYS_SLEEP
+SYS_EXIT :: abi.SYS_EXIT
+SYS_OPEN :: abi.SYS_OPEN
+SYS_CLOSE :: abi.SYS_CLOSE
+SYS_READ :: abi.SYS_READ
+SYS_BIND :: abi.SYS_BIND
+SYS_SEEK :: abi.SYS_SEEK
+SYS_SPAWN :: abi.SYS_SPAWN
+SYS_WAIT :: abi.SYS_WAIT
+SYS_CREATE :: abi.SYS_CREATE
+SYS_MOUNT :: abi.SYS_MOUNT
+SYS_REMOVE :: abi.SYS_REMOVE
+SYS_PIPE :: abi.SYS_PIPE
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -649,6 +652,26 @@ control that found the shape of this, one milestone before it could happen.
 */
 @(private = "file")
 sys_exit :: proc(frame: ^arch.Trap_Frame, status: u64) {
+	/*
+	The descriptors close here, on the exiting thread, before anything else.
+	This is thread context, where a clunk is legal, and it is the last moment
+	one ever runs for this process. `on_trap` cannot close anything, because a
+	fault handler may not send a message. The rule this keeps is the wire's. A
+	server that ends holding a pipe open is not dead, it is *quiet*, and its
+	clients park on requests nothing will answer.
+
+	A control found exactly that
+	hang. The kernel sat parked in a write, and the only thread that could have
+	run the teardown sat parked with it. A faulting process still holds its
+	descriptors until `destroy`, and that is the note's job to finish. An
+	ending the kernel delivers is an ending the kernel can also clean up after.
+	*/
+	if p := current(); p != nil {
+		for i in 0 ..< MAX_FDS {
+			_ = fd_close(p, i)
+		}
+	}
+
 	arch.disable_interrupts()
 
 	if thread := sched.current(); thread != nil {

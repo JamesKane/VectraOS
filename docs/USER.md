@@ -21,8 +21,8 @@ another process from a file it names:
 -- a process answered this line
 ```
 
-Six milestones live in this document, because they live in the same
-directory. `docs/SPACE.md` built the piece under all six:
+Seven milestones live in this document, because they live in the same
+directory. `docs/SPACE.md` built the piece under all seven:
 
     ring 3        a thread can run somewhere it cannot damage the kernel
     a syscall     it can ask for something anyway
@@ -30,6 +30,7 @@ directory. `docs/SPACE.md` built the piece under all six:
     a spawn       and what it starts inherits the world it arranged
     a posting     and what it holds open, it can publish by name
     a service     and what it publishes, it can answer -- the kernel as client
+    a runtime     and the server can be a program a compiler built
 
 The third line is the one Plan 9 is about. Two processes hand the kernel the
 same path and get different files, because the mount table belongs to the
@@ -738,13 +739,36 @@ wire fails at once, where a clunk to a merely silent server would wait for
 ever. A server that dies fails its clients fast. A server that goes quiet
 holds them, and the note is what ends that, not the wire.
 
+## A program a compiler built
+
+The seventh milestone moved the ceiling rather than the walls, and it lives
+in its own document: `docs/RUNTIME.md`. What this package contributed is the
+loader's second format and the split it forced.
+
+`load_program` asks the file which shape the process gets. A VECTRA01 blob
+still gets the three named pages the blobs were written against. A VECTRA02
+image gets a page span per segment, each mapped with the permissions its row
+asked for. Under those go a four-page stack, and a stack pointer tilted the
+eight bytes the SysV ABI assumes. `servers/ramfs` -- an Odin program with
+`sys/vectra9` linked in -- loads through it, posts a service, and serves a
+file tree the kernel reads, writes and lists.
+
+Two of this package's rules moved with it. `sys_exit` closes the process's
+descriptors before it ends, in thread context where a clunk is legal. A
+control found that an exited server otherwise holds its pipe open and its
+clients park for ever. And `load` split into `load_held` and `launch`,
+because a flake caught the self-tests staging a data page while the thread
+already ran. Both stories are told in full in `docs/RUNTIME.md`.
+
 ## What is missing, and named where it lives
 
-- **A process cannot be stopped from outside.** It can end itself now, and the
-  kernel still cannot end it. `destroy` refuses a running process rather than
-  free the tables underneath it, and the leak is visible in
-  `user.stats().live`. Plan 9 ends a process with a note. That is this missing
-  piece by its proper name.
+- **A process cannot be stopped from outside.** It can end itself now, and
+  the kernel still cannot end it. `destroy` refuses a running process rather
+  than free the tables underneath it, and the leak is visible in
+  `user.stats().live`. A *faulting* process also holds its descriptors until
+  `destroy`, where a deliberate exit closes its own. A server that dies by
+  fault is therefore a quiet pipe until somebody collects it. Plan 9 ends a
+  process with a note. That is this missing piece by its proper name.
 - **No `rfork` proper, and no `exec` in place.** `spawn` starts a process
   from a file, and the seam Plan 9 cuts between creating and replacing is
   still fused. A child that continues from the call site needs a copied trap

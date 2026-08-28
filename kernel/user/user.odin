@@ -90,6 +90,20 @@ STACK_TOP :: uintptr(0x7FFF_F000)
 STACK_VA :: STACK_TOP - uintptr(arch.PAGE_SIZE)
 
 /*
+What a VECTRA02 program gets that a blob does not.
+
+Four pages of stack rather than one, because compiled code spends stack the
+way assembler never did -- a codec frame here, a message union there. And a
+frame budget rather than a page. Sixty-four pages is a quarter megabyte,
+which is five of today's `ramfs`, and it is a *format* bound. A program that
+outgrows it asks this constant to move, visibly, rather than quietly taking
+the machine.
+*/
+MAX_PROGRAM_FRAMES :: 64
+STACK_PAGES2 :: 4
+STACK_VA2 :: STACK_TOP - uintptr(STACK_PAGES2 * arch.PAGE_SIZE)
+
+/*
 How a program ended.
 
 Filled in by `on_trap`, in interrupt context, on the thread that faulted.
@@ -163,6 +177,18 @@ Process :: struct {
 	text:   uintptr,
 	data:   uintptr,
 	stack:  uintptr,
+
+	/*
+	The frames behind a VECTRA02 program, segments first and stack last.
+
+	A blob is three pages with three names, and the fields above are those. A
+	compiled program is however many pages its segments say. This table is the
+	loader's receipt for them: everything `unload` must give back that has no
+	name of its own. Fixed, because a bound the image format enforces is a
+	bound this record can afford to carry.
+	*/
+	frames:      [MAX_PROGRAM_FRAMES]uintptr,
+	frame_count: int,
 
 	// The bounds of the thread's kernel stack, copied at load time. Copied
 	// rather than read back through `thread`, because the next `spawn` frees a
@@ -352,6 +378,21 @@ rearranges the fork before this returns therefore changes what descriptor 1
 means, which is the whole demonstration in `verify_namespaces`.
 */
 load :: proc(name: string, code: []u8, arg: u64 = 0, arg2: u64 = 0) -> (^Process, mem.Error) {
+	p, err := load_held(name, code)
+	if err != .None {
+		return nil, err
+	}
+	if !launch(p, arg, arg2) {
+		unload(p)
+		return nil, .Out_Of_Memory
+	}
+	return p, .None
+}
+
+// load_held is `load` up to the brink: space, namespace, pages, descriptors,
+// and no thread. What a caller stages into the data page before `launch` is
+// the program's from its first instruction.
+load_held :: proc(name: string, code: []u8) -> (^Process, mem.Error) {
 	if len(code) == 0 || len(code) > arch.PAGE_SIZE {
 		return nil, .Not_Canonical
 	}
@@ -418,20 +459,34 @@ load :: proc(name: string, code: []u8, arg: u64 = 0, arg2: u64 = 0) -> (^Process
 	// write to descriptor 1. The next interrupt can dispatch any thread that
 	// is already on a run queue.
 	open_standard(p)
+	return p, .None
+}
 
-	// The thread gets `p` before it can run. The fault handler reads it, and
-	// the first fault may arrive on the very next interrupt.
-	p.thread = sched.spawn_user(name, space, TEXT_VA, STACK_TOP, u64(DATA_VA), arg, arg2, p)
-	if p.thread == nil {
-		unload(p)
-		return nil, .Out_Of_Memory
+/*
+launch puts a thread on a held program, which is the moment it can run.
+
+Split from `load_held` for one reason, found as a one-in-twenty flake. A
+caller that stages bytes into the data page *after* the thread exists races
+the program for its own memory. The next interrupt can dispatch the new
+thread, and a program whose first message is half-staged prints the staged
+half and zeroes for the rest. Staging before `launch` is not a convention to
+remember. There is no thread yet, so there is no race to lose.
+
+The thread gets `p` before it can run, because the fault handler reads it
+and the first fault may arrive on the very next interrupt.
+*/
+launch :: proc(p: ^Process, arg: u64 = 0, arg2: u64 = 0) -> bool {
+	if p == nil || p.thread != nil {
+		return false
 	}
-
+	p.thread = sched.spawn_user(p.name, p.space, TEXT_VA, STACK_TOP, u64(DATA_VA), arg, arg2, p)
+	if p.thread == nil {
+		return false
+	}
 	p.kstack_lo = uintptr(raw_data(p.thread.stack))
 	p.kstack_hi = p.thread.kstack_top
-
 	loaded += 1
-	return p, .None
+	return p.thread != nil
 }
 
 /*
@@ -581,6 +636,9 @@ unload :: proc(p: ^Process) {
 	}
 	if p.stack != 0 {
 		mem.free_page(p.stack)
+	}
+	for i in 0 ..< p.frame_count {
+		mem.free_page(p.frames[i])
 	}
 	p^ = Process{}
 }

@@ -35,6 +35,23 @@ BUILD_DIR :: "build"
 ESP_DIR :: "build/esp"
 KERNEL_ELF :: "build/vectra.elf"
 KERNEL_OBJ :: "build/vectra.o"
+USER_DIR :: "build/user"
+
+/*
+The ring 3 programs this driver builds before the kernel.
+
+Each is an ordinary Odin package, compiled freestanding, linked by
+`sys/libuser/link_user.ld`, and converted from ELF to the flat VECTRA02
+image the kernel's loader reads. The kernel then embeds the image with
+`#load` and serves it from `/bin`, which is why these build first: the
+kernel's compile is what consumes the artifact.
+*/
+User_Program :: struct {
+	name: string, // The image's basename under build/user/
+	path: string, // The package directory
+}
+
+user_programs := [?]User_Program{{name = "ramfs", path = "servers/ramfs"}}
 
 Arch :: enum {
 	amd64,
@@ -157,13 +174,14 @@ main :: proc() {
 
 	switch opts.target {
 	case "kernel": build_kernel(opts)
+	case "user":   build_user(opts)
 	case "esp":    stage_esp(opts)
 	case "run":    stage_esp(opts); run_qemu(opts, debug = false)
 	case "debug":  stage_esp(opts); run_qemu(opts, debug = true)
 	case "clean":  clean()
 	case "lint":   lint(opts)
 	case:
-		die("unknown target %q (want kernel, esp, run, debug, clean, lint)", opts.target)
+		die("unknown target %q (want kernel, user, esp, run, debug, clean, lint)", opts.target)
 	}
 }
 
@@ -172,6 +190,11 @@ main :: proc() {
 build_kernel :: proc(opts: Options) {
 	cfg := arch_config(opts.arch)
 	ensure_dir(BUILD_DIR)
+
+	// The programs first, because the kernel's own compile `#load`s their
+	// images into `/bin`. A kernel built after them is a kernel that serves
+	// what was just built, never something stale.
+	build_user(opts)
 
 	step("compiling kernel for %s", cfg.odin_target)
 
@@ -229,6 +252,190 @@ build_kernel :: proc(opts: Options) {
 	if info, err := os.stat(KERNEL_ELF, context.allocator); err == nil {
 		step("kernel image is %d bytes", info.size)
 	}
+}
+
+/*
+build_user compiles the ring 3 programs and converts each to a flat image.
+
+The same compiler, target and vets as the kernel, minus the pieces only a
+bootloader payload needs: no PIC, because the loader maps every program at
+the one address `link_user.ld` names, and no single-module, because nothing
+here is relinked by anything else. Always optimised -- a program is a file
+the kernel embeds, and nobody debugs it with a host debugger anyway.
+*/
+build_user :: proc(opts: Options) {
+	cfg := arch_config(opts.arch)
+	ensure_dir(BUILD_DIR)
+	ensure_dir(USER_DIR)
+
+	for prog in user_programs {
+		step("compiling %s for ring 3", prog.path)
+		obj := fmt.tprintf("%s/%s.o", USER_DIR, prog.name)
+		elf := fmt.tprintf("%s/%s.elf", USER_DIR, prog.name)
+		img := fmt.tprintf("%s/%s.vx", USER_DIR, prog.name)
+
+		run({
+			"odin", "build", prog.path,
+			fmt.tprintf("-out:%s", obj),
+			"-build-mode:obj",
+			fmt.tprintf("-target:%s", cfg.odin_target),
+			"-collection:vsys=sys",
+			"-no-crt",
+			"-no-entry-point",
+			"-default-to-nil-allocator",
+			"-disable-red-zone",
+			"-no-thread-local",
+			"-vet",
+			"-strict-style",
+			"-disallow-do",
+			"-o:speed",
+			"-no-bounds-check",
+		})
+		run({
+			"ld.lld", obj,
+			"-o", elf,
+			"-m", cfg.ld_emulation,
+			"-T", "sys/libuser/link_user.ld",
+			"-nostdlib",
+			"-static",
+		})
+		elf_to_image(elf, img)
+	}
+}
+
+// The VECTRA02 constants, written here and in `kernel/user/image.odin`. The
+// two cannot share a definition -- this file builds the image and that one
+// loads it, and neither can import the other -- so they live beside a loud
+// check: the loader refuses anything these emit wrongly.
+IMG2_MAGIC :: u64(0x3230_4152_5443_4556) // "VECTRA02"
+IMG2_MAX_SEGS :: 4
+IMG2_FLAG_W :: u64(1)
+IMG2_FLAG_X :: u64(2)
+
+ELF_PT_LOAD :: u32(1)
+ELF_PF_X :: u32(1)
+ELF_PF_W :: u32(2)
+
+/*
+elf_to_image converts a linked program to the flat form the loader reads.
+
+An ELF's `PT_LOAD` segments already say everything the loader wants -- where,
+how many file bytes, how many memory bytes, which permissions -- so the image
+is those rows and their payloads, behind a header the kernel can check. What
+is refused here is what the loader would otherwise have to tolerate: a
+segment that starts mid-page shares a page with bytes that want different
+flags, and `link_user.ld` exists so that never links.
+*/
+elf_to_image :: proc(elf_path: string, out_path: string) {
+	data, err := os.read_entire_file_from_path(elf_path, context.allocator)
+	if err != nil {
+		die("cannot read %s", elf_path)
+	}
+	defer delete(data)
+
+	u16le :: proc(b: []u8, at: int) -> u64 {
+		return u64(b[at]) | u64(b[at + 1]) << 8
+	}
+	u32le :: proc(b: []u8, at: int) -> u64 {
+		v := u64(0)
+		for i in 0 ..< 4 {
+			v |= u64(b[at + i]) << (8 * u64(i))
+		}
+		return v
+	}
+	u64le :: proc(b: []u8, at: int) -> u64 {
+		v := u64(0)
+		for i in 0 ..< 8 {
+			v |= u64(b[at + i]) << (8 * u64(i))
+		}
+		return v
+	}
+
+	if len(data) < 64 || data[0] != 0x7F || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
+		die("%s is not an ELF file", elf_path)
+	}
+	if data[4] != 2 || data[5] != 1 {
+		die("%s is not a little-endian 64-bit ELF", elf_path)
+	}
+
+	entry := u64le(data, 24)
+	phoff := int(u64le(data, 32))
+	phentsize := int(u16le(data, 54))
+	phnum := int(u16le(data, 56))
+
+	Seg :: struct {
+		vaddr:  u64,
+		filesz: u64,
+		memsz:  u64,
+		flags:  u64,
+		offset: int,
+	}
+	segs: [dynamic]Seg
+	defer delete(segs)
+
+	for i in 0 ..< phnum {
+		at := phoff + i * phentsize
+		if u32(u32le(data, at)) != ELF_PT_LOAD {
+			continue
+		}
+		flags := u32(u32le(data, at + 4))
+		seg := Seg {
+			vaddr  = u64le(data, at + 16),
+			filesz = u64le(data, at + 32),
+			memsz  = u64le(data, at + 40),
+			offset = int(u64le(data, at + 8)),
+		}
+		if seg.memsz == 0 {
+			continue
+		}
+		if flags & ELF_PF_W != 0 {
+			seg.flags |= IMG2_FLAG_W
+		}
+		if flags & ELF_PF_X != 0 {
+			seg.flags |= IMG2_FLAG_X
+		}
+		if seg.vaddr % 0x1000 != 0 {
+			die("%s: segment at %x is not page-aligned; see link_user.ld", elf_path, seg.vaddr)
+		}
+		if seg.filesz > seg.memsz {
+			die("%s: segment at %x has more file than memory", elf_path, seg.vaddr)
+		}
+		append(&segs, seg)
+	}
+	if len(segs) == 0 || len(segs) > IMG2_MAX_SEGS {
+		die("%s: %d loadable segments (want 1..%d)", elf_path, len(segs), IMG2_MAX_SEGS)
+	}
+
+	out: [dynamic]u8
+	defer delete(out)
+	put :: proc(out: ^[dynamic]u8, v: u64) {
+		for i in 0 ..< 8 {
+			append(out, u8(v >> (8 * u64(i))))
+		}
+	}
+	put(&out, IMG2_MAGIC)
+	put(&out, entry)
+	put(&out, u64(len(segs)))
+	put(&out, 0)
+	for seg in segs {
+		put(&out, seg.vaddr)
+		put(&out, seg.filesz)
+		put(&out, seg.memsz)
+		put(&out, seg.flags)
+	}
+	for seg in segs {
+		if seg.offset + int(seg.filesz) > len(data) {
+			die("%s: segment payload runs past the file", elf_path)
+		}
+		for i in 0 ..< int(seg.filesz) {
+			append(&out, data[seg.offset + i])
+		}
+	}
+
+	if werr := os.write_entire_file(out_path, out[:]); werr != nil {
+		die("cannot write %s", out_path)
+	}
+	step("%s is %d bytes in %d segments, entry %x", out_path, len(out), len(segs), entry)
 }
 
 /*

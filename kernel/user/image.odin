@@ -58,6 +58,123 @@ IMAGE_MAGIC :: u64(0x3130_4152_5443_4556)
 // the wire layout cannot drift when the struct grows a field.
 IMAGE_HEADER_SIZE :: 32
 
+/*
+"VECTRA02" -- the format with segments, for programs a compiler built.
+
+VECTRA01 says `one page of text`, and the blobs it carries are exactly that.
+A linked program is more shapes than one. Text executes, rodata reads, data
+and bss write, and each wants its own permissions on its own pages. So the
+second format is a segment table -- the useful rows of an ELF's program
+headers, with everything else refused at build time:
+
+    +0   magic     "VECTRA02"
+    +8   entry     the virtual address of the first instruction
+    +16  nsegs     how many segment rows follow, 1 to 4
+    +24  reserved  zero, and refused when it is not
+
+    each row, 32 bytes:
+    vaddr filesz memsz flags     flags: bit 0 write, bit 1 execute
+
+The payloads follow the table, each segment's `filesz` bytes in row order.
+`build.odin` emits this and carries its own copy of these constants. The
+builder and the loader cannot share a file, and the checks below are what
+keeps the copies honest.
+*/
+IMAGE2_MAGIC :: u64(0x3230_4152_5443_4556)
+IMAGE2_HEADER_SIZE :: 32
+IMAGE2_SEG_SIZE :: 32
+IMAGE2_MAX_SEGS :: 4
+
+IMG_FLAG_W :: u64(1)
+IMG_FLAG_X :: u64(2)
+
+Image_Seg :: struct {
+	vaddr:  uintptr,
+	filesz: u64,
+	memsz:  u64,
+	flags:  u64,
+}
+
+/*
+image2_read_segs decodes and judges a segment table.
+
+Every refusal is a rule the loader relies on rather than taste:
+
+  - a segment starts on a page boundary, because pages are what get mapped
+    and a mid-page start would share a page across permissions
+  - no segment is both writable and executable, which makes W^X a property
+    of the *format* rather than a habit of its builders
+  - segments ascend and do not touch, so no page is claimed twice
+  - everything lands inside the program half, clear of the stack
+  - the entry is inside an executable segment
+
+The page budget is the caller's, because the caller owns the frame table
+the pages come from.
+*/
+image2_read_segs :: proc "contextless" (
+	raw: []u8,
+	entry: uintptr,
+	nsegs: int,
+	segs: []Image_Seg,
+	max_pages: int,
+) -> bool #no_bounds_check {
+	if nsegs <= 0 || nsegs > IMAGE2_MAX_SEGS || len(segs) < nsegs {
+		return false
+	}
+	if len(raw) < nsegs * IMAGE2_SEG_SIZE {
+		return false
+	}
+	word :: proc "contextless" (b: []u8) -> u64 {
+		v := u64(0)
+		for i in 0 ..< 8 {
+			v |= u64(b[i]) << (8 * u64(i))
+		}
+		return v
+	}
+
+	page := u64(arch.PAGE_SIZE)
+	total_pages := 0
+	entry_ok := false
+	prev_end := u64(0)
+
+	for i in 0 ..< nsegs {
+		at := i * IMAGE2_SEG_SIZE
+		s := Image_Seg {
+			vaddr  = uintptr(word(raw[at:])),
+			filesz = word(raw[at + 8:]),
+			memsz  = word(raw[at + 16:]),
+			flags  = word(raw[at + 24:]),
+		}
+		if s.memsz == 0 || s.filesz > s.memsz {
+			return false
+		}
+		if u64(s.vaddr) % page != 0 {
+			return false
+		}
+		if s.flags & IMG_FLAG_W != 0 && s.flags & IMG_FLAG_X != 0 {
+			return false
+		}
+		if s.vaddr < mem.USER_MIN {
+			return false
+		}
+		end := u64(s.vaddr) + s.memsz
+		if end > u64(STACK_VA2) || end < u64(s.vaddr) {
+			return false
+		}
+		if u64(s.vaddr) < prev_end {
+			return false
+		}
+		prev_end = end
+
+		total_pages += int((s.memsz + page - 1) / page)
+		if s.flags & IMG_FLAG_X != 0 && entry >= s.vaddr && u64(entry) < end {
+			entry_ok = true
+		}
+		segs[i] = s
+	}
+	return entry_ok && total_pages > 0 && total_pages <= max_pages
+}
+
 Image_Header :: struct {
 	magic:    u64,
 	entry:    u64,
@@ -144,15 +261,27 @@ image_build :: proc(code: []u8) -> []u8 {
 // -- The server --------------------------------------------------------------
 
 /*
-The four programs `/bin` serves, and the directory over them.
+The programs `/bin` serves, and the directory over them.
 
-Only the programs that stand alone are published. The other eleven blobs
-each expect the kernel to stage an address or a path into their data page
-before they run. A file cannot carry that arrangement. A program whose text
-holds everything it needs is the shape every later one takes.
+Only the programs that stand alone are published. The blob programs that
+expect the kernel to stage an address into their data page cannot be files,
+because a file has no side channel.
+
+`ramfs` is the different one: an image `build.odin` compiled and converted,
+embedded here at build time. The `when` is for a tree checked before the
+image was ever built. The kernel still compiles, `/bin` simply lacks the
+file, and the self-test says so loudly rather than nothing quietly.
 */
+when #exists("../../build/user/ramfs.vx") {
+	@(private = "file")
+	RAMFS_IMAGE := #load("../../build/user/ramfs.vx")
+} else {
+	@(private = "file")
+	RAMFS_IMAGE: []u8
+}
+
 @(private = "file")
-bin_nodes: [5]vfs.Static_Node
+bin_nodes: [6]vfs.Static_Node
 
 @(private = "file")
 bin_tree: vfs.Static_Tree
@@ -161,7 +290,15 @@ bin_tree: vfs.Static_Tree
 bin_server: vfs.Server
 
 // How many program files `/bin` serves, for the boot line.
-BIN_PROGRAMS :: len(bin_nodes) - 1
+@(private = "file")
+bin_published: int
+
+// bin_programs reports how many program files `/bin` serves, for the boot
+// line. A count rather than a constant, because a tree checked before the
+// ramfs image was built publishes one fewer.
+bin_programs :: proc "contextless" () -> int {
+	return bin_published
+}
 
 /*
 bin_init builds the images, brings `#b` up, and binds it at `/bin`.
@@ -185,9 +322,18 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 		{name = "niner", parent = 0, data = string(niner)},
 		{name = "parent", parent = 0, data = string(parent)},
 		{name = "poster", parent = 0, data = string(poster)},
+		{name = "ramfs", parent = 0, data = string(RAMFS_IMAGE)},
 	}
 
-	if !vfs.static_init(&bin_tree, "bin", bin_nodes[:]) {
+	// A tree checked before `build.odin` ever built the image serves what it
+	// has. The published count says so, and `verify_runtime` fails on it.
+	published := bin_nodes[:]
+	if len(RAMFS_IMAGE) == 0 {
+		published = bin_nodes[:5]
+	}
+	bin_published = len(published) - 1
+
+	if !vfs.static_init(&bin_tree, "bin", published) {
 		return vectra9.ENOMEM
 	}
 	if err := vfs.server_init(&bin_server, "b", vfs.static_handler, &bin_tree); err != .None {
@@ -199,56 +345,209 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 	return vfs.mount_device(ns, "#b", "/bin")
 }
 
+// read_exact fills `dst` from a file offset, or says the file ended early.
+// The loader's one loop, shared by every segment of every format.
+@(private = "file")
+read_exact :: proc(c: ^vfs.Chan, offset: u64, dst: []u8) -> vectra9.Errno {
+	filled := 0
+	for filled < len(dst) {
+		n, e := vfs.chan_read(c, offset + u64(filled), dst[filled:])
+		if e != vfs.OK {
+			return e
+		}
+		if n == 0 {
+			return vectra9.EIO
+		}
+		filled += n
+	}
+	return vfs.OK
+}
+
 /*
-load_image reads a program out of a file, through a namespace.
+load_program reads a program out of a file and builds its whole memory image.
 
-**This is the loader.** The path resolves in `ns` -- the namespace of whoever
-asked, not the kernel's -- so what `/bin/child` means depends on who is
-loading. The loader reads and checks the header before a byte of text moves.
-The text lands directly in the frame the caller will map, through the direct
-map. It arrives in bounded pieces, because the transport bounds a 9P read.
+**This is the loader for both formats**, and the split of labour with the
+callers moved when it arrived. `spawn_path` no longer assumes a shape, it
+asks. A VECTRA01 blob gets the three named pages the blobs were written
+against. Its `arg0` says the data page's address, which is the blobs' first
+argument. A VECTRA02 program gets a page span per segment and a
+`STACK_PAGES2` stack, each mapping with the permissions its row asked for.
+Its `arg0` is zero, because a compiled program's world is in its own
+segments.
 
-Returns the entry point, because that is the one fact the caller cannot know
-without trusting the file. Everything else about the mapping is the caller's.
-
-ENOENT is the walk failing, ENOEXEC is the file failing the format, EIO is a
-file that ended before its header said it would. Three different sentences
-for the caller to pass upward.
+Every frame allocated lands in the process record before anything can fail,
+so `unload` can always give back exactly what was taken. ENOEXEC is a file
+that is not a program. EIO is a program with its tail missing. ENOMEM is
+the machine, not the file.
 */
-load_image :: proc(ns: ^vfs.Namespace, path: string, frame: uintptr) -> (entry: uintptr, err: vectra9.Errno) {
-	if ns == nil || frame == 0 {
-		return 0, vectra9.EINVAL
+load_program :: proc(
+	p: ^Process,
+	ns: ^vfs.Namespace,
+	path: string,
+) -> (entry: uintptr, sp: uintptr, arg0: u64, err: vectra9.Errno) #no_bounds_check {
+	if p == nil || ns == nil {
+		return 0, 0, 0, vectra9.EINVAL
 	}
 
 	c, oerr := vfs.open_path(ns, path, vfs.O_RDONLY)
 	if oerr != vfs.OK {
-		return 0, oerr
+		return 0, 0, 0, oerr
 	}
 	defer vfs.chan_close(c)
 
-	raw: [IMAGE_HEADER_SIZE]u8
+	raw: [IMAGE2_HEADER_SIZE]u8
 	got, rerr := vfs.chan_read(c, 0, raw[:])
 	if rerr != vfs.OK {
-		return 0, rerr
+		return 0, 0, 0, rerr
 	}
-	header, ok := image_read_header(raw[:got])
-	if !ok || !image_check(header) {
-		return 0, vectra9.ENOEXEC
+	if got < IMAGE_HEADER_SIZE {
+		return 0, 0, 0, vectra9.ENOEXEC
 	}
 
-	text := (cast([^]u8)mem.phys_to_virt(frame))[:arch.PAGE_SIZE]
-	filled := 0
-	for filled < int(header.text) {
-		n, e := vfs.chan_read(c, u64(IMAGE_HEADER_SIZE + filled), text[filled:header.text])
-		if e != vfs.OK {
-			return 0, e
+	word :: proc "contextless" (b: []u8) -> u64 {
+		v := u64(0)
+		for i in 0 ..< 8 {
+			v |= u64(b[i]) << (8 * u64(i))
 		}
-		if n == 0 {
-			// The file ended before the header's count did. The header lied,
-			// and a program with its tail missing must not run.
-			return 0, vectra9.EIO
-		}
-		filled += n
+		return v
 	}
-	return uintptr(header.entry), vfs.OK
+
+	switch word(raw[:]) {
+	case IMAGE_MAGIC:
+		return load_v1(p, c, raw[:got])
+	case IMAGE2_MAGIC:
+		return load_v2(p, c, raw[:got])
+	}
+	return 0, 0, 0, vectra9.ENOEXEC
+}
+
+// load_v1 is the blob shape: one page each of text, data and stack, at the
+// addresses every blob was written against.
+@(private = "file")
+load_v1 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64, vectra9.Errno) {
+	header, ok := image_read_header(raw)
+	if !ok || !image_check(header) {
+		return 0, 0, 0, vectra9.ENOEXEC
+	}
+
+	if p.text, ok = mem.alloc_page_zeroed(); !ok {
+		return 0, 0, 0, vectra9.ENOMEM
+	}
+	if p.data, ok = mem.alloc_page_zeroed(); !ok {
+		return 0, 0, 0, vectra9.ENOMEM
+	}
+	if p.stack, ok = mem.alloc_page_zeroed(); !ok {
+		return 0, 0, 0, vectra9.ENOMEM
+	}
+
+	text := (cast([^]u8)mem.phys_to_virt(p.text))[:arch.PAGE_SIZE]
+	if e := read_exact(c, IMAGE_HEADER_SIZE, text[:header.text]); e != vfs.OK {
+		return 0, 0, 0, e
+	}
+
+	if mem.map_user(p.space, TEXT_VA, p.text, {}, 1) != .None {
+		return 0, 0, 0, vectra9.ENOMEM
+	}
+	if mem.map_user(p.space, DATA_VA, p.data, {.Write, .No_Execute}, 1) != .None {
+		return 0, 0, 0, vectra9.ENOMEM
+	}
+	if mem.map_user(p.space, STACK_VA, p.stack, {.Write, .No_Execute}, 1) != .None {
+		return 0, 0, 0, vectra9.ENOMEM
+	}
+	return uintptr(header.entry), STACK_TOP, u64(DATA_VA), vfs.OK
+}
+
+// load_v2 is the segment shape. Frames land in `p.frames` the moment they
+// exist, so a failure anywhere leaves nothing the teardown cannot find.
+/*
+load_v2 is the segment shape. Frames land in `p.frames` the moment they
+exist, so a failure anywhere leaves nothing the teardown cannot find.
+
+The stack pointer it answers is `STACK_TOP - 8`, and the eight matter. The
+SysV ABI enters a function with the return address already pushed. Compiled
+code therefore assumes `rsp + 8` is 16-byte aligned, and spills SSE
+registers on that belief. A blob never held the belief, so only this loader
+tilts the stack. There is no return address to pop, and `_start` never
+returns.
+*/
+@(private = "file")
+load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64, vectra9.Errno) #no_bounds_check {
+	word :: proc "contextless" (b: []u8) -> u64 {
+		v := u64(0)
+		for i in 0 ..< 8 {
+			v |= u64(b[i]) << (8 * u64(i))
+		}
+		return v
+	}
+	entry := uintptr(word(raw[8:]))
+	nsegs := int(word(raw[16:]))
+	if word(raw[24:]) != 0 {
+		return 0, 0, 0, vectra9.ENOEXEC
+	}
+
+	table: [IMAGE2_MAX_SEGS * IMAGE2_SEG_SIZE]u8
+	if nsegs <= 0 || nsegs > IMAGE2_MAX_SEGS {
+		return 0, 0, 0, vectra9.ENOEXEC
+	}
+	if e := read_exact(c, IMAGE2_HEADER_SIZE, table[:nsegs * IMAGE2_SEG_SIZE]); e != vfs.OK {
+		return 0, 0, 0, e
+	}
+
+	segs: [IMAGE2_MAX_SEGS]Image_Seg
+	budget := MAX_PROGRAM_FRAMES - STACK_PAGES2
+	if !image2_read_segs(table[:nsegs * IMAGE2_SEG_SIZE], entry, nsegs, segs[:], budget) {
+		return 0, 0, 0, vectra9.ENOEXEC
+	}
+
+	page := u64(arch.PAGE_SIZE)
+	offset := u64(IMAGE2_HEADER_SIZE + nsegs * IMAGE2_SEG_SIZE)
+	for i in 0 ..< nsegs {
+		s := segs[i]
+		flags: arch.Page_Flags = {.No_Execute}
+		if s.flags & IMG_FLAG_X != 0 {
+			flags = {}
+		}
+		if s.flags & IMG_FLAG_W != 0 {
+			flags = {.Write, .No_Execute}
+		}
+
+		pages := int((s.memsz + page - 1) / page)
+		copied := u64(0)
+		for j in 0 ..< pages {
+			frame, ok := mem.alloc_page_zeroed()
+			if !ok {
+				return 0, 0, 0, vectra9.ENOMEM
+			}
+			p.frames[p.frame_count] = frame
+			p.frame_count += 1
+
+			if copied < s.filesz {
+				chunk := min(s.filesz - copied, page)
+				dst := (cast([^]u8)mem.phys_to_virt(frame))[:chunk]
+				if e := read_exact(c, offset + copied, dst); e != vfs.OK {
+					return 0, 0, 0, e
+				}
+				copied += chunk
+			}
+			va := s.vaddr + uintptr(j) * uintptr(page)
+			if mem.map_user(p.space, va, frame, flags, 1) != .None {
+				return 0, 0, 0, vectra9.ENOMEM
+			}
+		}
+		offset += s.filesz
+	}
+
+	for j in 0 ..< STACK_PAGES2 {
+		frame, ok := mem.alloc_page_zeroed()
+		if !ok {
+			return 0, 0, 0, vectra9.ENOMEM
+		}
+		p.frames[p.frame_count] = frame
+		p.frame_count += 1
+		va := STACK_VA2 + uintptr(j * arch.PAGE_SIZE)
+		if mem.map_user(p.space, va, frame, {.Write, .No_Execute}, 1) != .None {
+			return 0, 0, 0, vectra9.ENOMEM
+		}
+	}
+	return entry, STACK_TOP - 8, 0, vfs.OK
 }

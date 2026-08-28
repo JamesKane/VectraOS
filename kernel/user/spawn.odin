@@ -65,6 +65,7 @@ import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
 import "kernel:vfs"
+import "vsys:abi"
 import "vsys:vectra9"
 
 /*
@@ -74,13 +75,13 @@ The default, zero, is share -- `ns_fork`'s own default, and Plan 9's. Copy and
 clean are the other two of its three cases. Copy-and-clean together means
 clean, which `ns_fork` already decides. The bits are not re-judged here.
 */
-SPAWN_NS_COPY :: u64(1)
-SPAWN_NS_CLEAN :: u64(2)
+SPAWN_NS_COPY :: abi.SPAWN_NS_COPY
+SPAWN_NS_CLEAN :: abi.SPAWN_NS_CLEAN
 
 // And whether it gets the descriptors. Zero copies them, which is what every
 // child that prints wants. The bit gives a child nothing at all -- Plan 9's
 // RFCFDG -- for a parent building a sandbox.
-SPAWN_FD_CLEAN :: u64(4)
+SPAWN_FD_CLEAN :: abi.SPAWN_FD_CLEAN
 
 /*
 How long `wait` watches before it reports nothing happened.
@@ -150,40 +151,15 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 		return nil, vectra9.ENOMEM
 	}
 
-	ok: bool
-	if p.text, ok = mem.alloc_page_zeroed(); !ok {
-		unload(p)
-		return nil, vectra9.ENOMEM
-	}
-	if p.data, ok = mem.alloc_page_zeroed(); !ok {
-		unload(p)
-		return nil, vectra9.ENOMEM
-	}
-	if p.stack, ok = mem.alloc_page_zeroed(); !ok {
-		unload(p)
-		return nil, vectra9.ENOMEM
-	}
-
 	// The loader, reading through the parent's namespace rather than the
 	// child's. The child's may be clean, and an exec reads through the
-	// namespace of whoever asked. See `load_image`.
-	entry, lerr := load_image(source, path, p.text)
+	// namespace of whoever asked. Which shape the process gets -- three
+	// named pages, or segments and a deeper stack -- is the file's to say.
+	// See `load_program`.
+	entry, sp, arg0, lerr := load_program(p, source, path)
 	if lerr != vfs.OK {
 		unload(p)
 		return nil, lerr
-	}
-
-	if e := mem.map_user(space, TEXT_VA, p.text, {}, 1); e != .None {
-		unload(p)
-		return nil, vectra9.ENOMEM
-	}
-	if e := mem.map_user(space, DATA_VA, p.data, {.Write, .No_Execute}, 1); e != .None {
-		unload(p)
-		return nil, vectra9.ENOMEM
-	}
-	if e := mem.map_user(space, STACK_VA, p.stack, {.Write, .No_Execute}, 1); e != .None {
-		unload(p)
-		return nil, vectra9.ENOMEM
 	}
 
 	if flags & SPAWN_FD_CLEAN == 0 {
@@ -194,7 +170,7 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 		}
 	}
 
-	p.thread = sched.spawn_user(p.name, space, entry, STACK_TOP, u64(DATA_VA), 0, 0, p)
+	p.thread = sched.spawn_user(p.name, space, entry, sp, arg0, 0, 0, p)
 	if p.thread == nil {
 		unload(p)
 		return nil, vectra9.ENOMEM

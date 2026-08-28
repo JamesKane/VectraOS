@@ -1402,8 +1402,8 @@ init_bin :: proc() -> bool {
 
 	sink := begin(&klog)
 	libodin.put_str(&sink, "bin #b bound at /bin, ")
-	libodin.put_uint(&sink, u64(user.BIN_PROGRAMS))
-	libodin.put_str(&sink, " programs as files, header VECTRA01")
+	libodin.put_uint(&sink, u64(user.bin_programs()))
+	libodin.put_str(&sink, " programs as files, formats VECTRA01 and 02")
 	emit(&klog, .Ok, &sink)
 	return true
 }
@@ -1477,7 +1477,7 @@ verify_user :: proc() {
 		libodin.put_uint(&sink, u64(result.calls))
 		libodin.put_str(&sink, " system calls, ")
 		libodin.put_uint(&sink, result.answered)
-		libodin.put_str(&sink, " 9P requests answered by a process")
+		libodin.put_str(&sink, " 9P requests answered by a process, a file tree served by a compiled one")
 		emit(&klog, .Ok, &sink)
 		return
 	}
