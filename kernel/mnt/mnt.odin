@@ -490,7 +490,7 @@ give_back :: proc "contextless" (c: ^Conn, r: ^Rpc) {
 	sync.wakeup(&c.free)
 }
 
-@(private = "file")
+@(private)
 is_done :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&(cast(^Rpc)arg).state) == .Done
 }
@@ -555,7 +555,7 @@ room for. That is worth a failure rather than a truncation. A truncated
 `Rreaddir` payload cuts an entry in half and hands the caller a cursor that
 fails part-way through a name.
 */
-@(private = "file")
+@(private)
 deliver :: proc "contextless" (r: ^Rpc, buf: []u8) -> (n: int, ok: bool) {
 	if r.payload == nil {
 		return 0, true
@@ -623,7 +623,7 @@ not fit still points into a slot this caller is about to release. To hand it
 back would be the bug this whole file exists to remove. A `Short_Buffer` beside
 it, saying not to look, would only add insult.
 */
-@(private = "file")
+@(private)
 settle :: proc "contextless" (c: ^Conn, r: ^Rpc, buf: []u8, err: vectra9.Error) -> vectra9.Error {
 	n, fitted := deliver(r, buf)
 

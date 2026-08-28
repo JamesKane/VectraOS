@@ -34,6 +34,7 @@ package user
 
 import "kernel:arch"
 import "kernel:mem"
+import "kernel:pipe"
 import "kernel:sched"
 import "kernel:srv"
 import "kernel:sync"
@@ -121,6 +122,8 @@ Result :: struct {
 	traps:         u64, // Returns from ring 3 while the checks ran
 	rounds:        u64, // Times `spin` went round its loop in ring 3
 	calls:         int, // System calls the programs made
+	answered:      u64, // 9P requests a process served over a wire
+	pinned:        int, // Heap objects the wire keeps on purpose
 	leaked:        int, // Heap objects the run did not give back
 }
 
@@ -365,6 +368,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_posting(&r, column, &held)
 
+	// -- And a process that *answers* one ------------------------------------
+
+	verify_service_answered(&r, column)
+
 	// -- What is left ---------------------------------------------------------
 
 	r.traps = arch.user_trap_count() - before_traps
@@ -406,8 +413,8 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	`sched.reap` runs above it, because a dead thread's stack is a heap object
 	too and nothing gives it back until something asks.
 	*/
-	r.leaked = live_objects(mem.heap_stats()) - before_heap
-	check(&r, r.leaked == 0, "and every namespace and open file with it")
+	r.leaked = live_objects(mem.heap_stats()) - before_heap - r.pinned
+	check(&r, r.leaked == 0, "and every namespace and open file beyond the wire's deliberate pin")
 
 	after_tables := mem.space_stats()
 	check(&r, after_tables.live == before_tables.live, "every address space was destroyed")
@@ -1241,6 +1248,157 @@ verify_posting :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^
 
 	held^ = {p.text, p.data, p.stack}
 	finish(r, p, "and it is taken down")
+}
+
+/*
+What a wire deliberately keeps, counted in heap objects.
+
+Two pipe rings, the wire's arena, the `Wire`, the `Server`, and the
+`Wire_End` the io callbacks close over. The seventh is one reference's worth
+of chan on the posted end. All seven stay until a posted service can be
+released, which is the reference count `docs/SRV.md` names as future work.
+
+A constant rather than a measurement, so the check below breaks when the pin
+grows. A pin that can grow silently is a leak with a title.
+*/
+@(private = "file")
+WIRE_PIN :: 7
+
+/*
+verify_service_answered is the milestone: a process answers 9P.
+
+`/bin/niner` makes a pipe, posts one end, and serves the other. Everything
+the kernel then does to `/srv/niner` crosses to ring 3 as bytes, and a
+program answers it. That covers the mount's handshake, the walks and the
+open, a write, a read, and the remove. The write's payload comes back out on
+the console, which is one line that travels kernel to process to kernel to
+screen.
+
+The remove is also the stop: `niner` answers it and exits, so the wire's far
+side hangs up with the kernel watching. What a dead server leaves behind is
+checked to the object: the wire's deliberate pin, and nothing else.
+*/
+@(private = "file")
+verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int) {
+	count0 := srv.count()
+
+	sched.reap()
+	pin_before := live_objects(mem.heap_stats())
+
+	p, serr := spawn_path(nil, "/bin/niner", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "a process is started that will answer 9P") {
+		return
+	}
+	r.programs += 1
+
+	// The posting is the process's own doing, so the kernel waits for the
+	// name rather than races it. `lookup` answers nil until the descriptor
+	// write lands.
+	posted := false
+	for _ in 0 ..< PATIENCE {
+		if srv.lookup("niner") != nil {
+			posted = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, posted, "which posts /srv/niner while the kernel watches")
+
+	line: [16]u8
+	if rc, rerr := vfs.open_path(vfs.boot_namespace, "/srv/niner", vfs.O_RDONLY); rerr == vfs.OK {
+		n, _ := vfs.chan_read(rc, 0, line[:])
+		check(r, string(line[:n]) == "| direct\n", "and the name reads back as a posted pipe")
+		vfs.chan_close(rc)
+	}
+
+	// The mount is where the wire is built, and its handshake is the first
+	// 9P message a process ever answered.
+	check(
+		r,
+		srv.mount(vfs.boot_namespace, "/srv/niner", "/mnt") == vfs.OK,
+		"the kernel mounts it, which negotiates 9P2000.L with a program",
+	)
+
+	c, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/served", vfs.O_RDWR)
+	if check(r, oerr == vfs.OK && c != nil, "a path resolves through walks the program answered") {
+		before := column()
+		wn, werr := vfs.chan_write(c, 0, transmute([]u8)string(NINER_ECHO_LINE))
+		check(r, werr == vfs.OK && wn == len(NINER_ECHO_LINE), "a write crosses to ring 3 and back")
+		check(
+			r,
+			column() - before == len(NINER_ECHO_LINE),
+			"and its bytes are on the screen, forwarded by the process",
+		)
+
+		buf: [64]u8
+		rn, rerr := vfs.chan_read(c, 0, buf[:])
+		check(r, rerr == vfs.OK && rn == len(NINER_READ_LINE), "a read is answered with a payload")
+		check(
+			r,
+			string(buf[:rn]) == NINER_READ_LINE,
+			"whose bytes are the ones the program's own text carries",
+		)
+
+		check(r, vfs.chan_remove(c) == vfs.OK, "a remove is answered too, and is the stop")
+		vfs.chan_close(c)
+	}
+
+	if check(r, wait(p, PATIENCE), "the server exits on its own say-so") {
+		check(r, p.exit.deliberate && p.exit.status == 0, "deliberately, with nothing to report")
+		check(r, cell(p, CELL_MARK) == MARK_NINER, "having reached its first instruction")
+		check(r, cell(p, NINER_PIPE) == NINER_FDS, "sys_pipe put the two ends on 3 and 4")
+		check(r, cell(p, NINER_CREATED) == 5, "the reservation took the next number")
+		check(r, cell(p, NINER_POSTED) == 1, "one digit posted the client end")
+		check(
+			r,
+			cell(p, NINER_CLOSED_SRV) == 0 && cell(p, NINER_CLOSED_END) == 0,
+			"and both spent descriptors closed -- the posting owns its reference",
+		)
+		r.answered = cell(p, NINER_SERVED)
+		check(r, r.answered >= 8, "it served the whole conversation")
+	}
+
+	check(r, srv.remove("niner") == vfs.OK, "the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds exactly what it held before")
+
+	cons_finish()
+
+	/*
+	The teardown order is load-bearing, and backwards from the usual one.
+
+	The process goes down first. Its teardown closes its descriptors, the serve
+	end of the pipe closes with them, and the wire poisons on the hangup. Only
+	then may the mount come down, because its close clunks a fid on the wire. A
+	clunk to a *poisoned* wire fails at once, where a clunk to a merely absent
+	server would wait for ever. A server that dies fails its clients fast. A
+	server that merely goes quiet holds them, and the note is what will end
+	that, not the wire.
+	*/
+	finish(r, p, "and the process is taken down")
+
+	// The dead server's wire noticed the hangup, and its reader is leaving.
+	// The measurement below counts stacks, so the leaving has to finish.
+	pipe.quiesce()
+	check(
+		r,
+		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
+		"the mount of a dead server comes down like any other",
+	)
+	/*
+	Measured until it settles rather than once. A dead thread is reapable only
+	after the scheduler switches off it for good, and two threads just died --
+	the server's and the wire reader's. The bound turns `not yet` into `never`,
+	and the check after the loop still demands the exact number.
+	*/
+	for _ in 0 ..< PATIENCE {
+		sched.reap()
+		r.pinned = live_objects(mem.heap_stats()) - pin_before
+		if r.pinned == WIRE_PIN {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, r.pinned == WIRE_PIN, "what stays is the wire's pin, to the object")
 }
 
 // live_objects counts what the heap is holding. The same arithmetic

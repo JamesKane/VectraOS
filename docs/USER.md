@@ -18,16 +18,18 @@ another process from a file it names:
 -- this line went to /dev/null
 -- a process started this one
 -- this line went through a posted service
+-- a process answered this line
 ```
 
-Five milestones live in this document, because they live in the same
-directory. `docs/SPACE.md` built the piece under all five:
+Six milestones live in this document, because they live in the same
+directory. `docs/SPACE.md` built the piece under all six:
 
     ring 3        a thread can run somewhere it cannot damage the kernel
     a syscall     it can ask for something anyway
     a process     what it asks for belongs to it rather than to the kernel
     a spawn       and what it starts inherits the world it arranged
     a posting     and what it holds open, it can publish by name
+    a service     and what it publishes, it can answer -- the kernel as client
 
 The third line is the one Plan 9 is about. Two processes hand the kernel the
 same path and get different files, because the mount table belongs to the
@@ -696,6 +698,45 @@ through a name no kernel put anywhere. Then it removes the name, shows
 `/srv/cons2` is gone, and opens `/mnt/null` through the mount that survives
 it. Removal ends the name, not the service, which is Plan 9's rule and now a
 check.
+
+## A process that answers 9P
+
+The sixth milestone, and the one the layout in `docs/HANDOFF.md` waited on:
+a transport whose far side is a process. One system call and one program
+live here. The transport itself is `kernel/mnt`'s wire over `kernel/pipe`,
+and those documents own it. What this package added is the descriptor shape
+of it, and the first program that is a server.
+
+`pipe` makes a pipe and answers with both ends, packed as two descriptors.
+End 0 sits in the low byte and end 1 in the next, which is the packing
+`child`'s exit status already uses. From there nothing about the ends is
+special. They travel to children through `spawn`, they close through `close`,
+and either one can go into a `/srv` entry. That write is what makes the far
+side of a pipe a *service*, and it changed nothing in the posting path.
+Posting always took the chan behind the descriptor, and a pipe end is a chan.
+
+`/bin/niner` is the milestone as a program, and it is the first blob that is
+a server rather than a client. It makes a pipe, posts end 1 as `/srv/niner`,
+and closes both spent descriptors, because the posting owns its reference
+now. Then it serves end 0: read a frame, look at the kind, answer under the
+same tag. It echoes `Tversion` and cans `Rattach`, `Rwalk` and `Rlopen`. It
+forwards a `Twrite`'s payload to the console, answers a `Tread` from its own
+text, and exits on `Tremove`. No codec and no tables: a 9P frame is small
+enough to build byte by byte over the request.
+
+The kernel is the client for all of it. The self-test mounts `/srv/niner`,
+and the mount's handshake is the first 9P message a process ever answered. It
+resolves a path through walks the program serves, and writes a line that
+comes back out on the console. Then it reads bytes the program's text
+carries, and sends the remove that stops it. Every message crosses ring 3
+twice as bytes.
+
+The teardown taught the one lesson worth recording here. The process goes
+down *first*, so the wire notices the hangup, and only then does the mount
+come down. The mount's close clunks a fid on the wire. A clunk to a poisoned
+wire fails at once, where a clunk to a merely silent server would wait for
+ever. A server that dies fails its clients fast. A server that goes quiet
+holds them, and the note is what ends that, not the wire.
 
 ## What is missing, and named where it lives
 

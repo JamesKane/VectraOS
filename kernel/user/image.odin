@@ -144,7 +144,7 @@ image_build :: proc(code: []u8) -> []u8 {
 // -- The server --------------------------------------------------------------
 
 /*
-The three programs `/bin` serves, and the directory over them.
+The four programs `/bin` serves, and the directory over them.
 
 Only the programs that stand alone are published. The other eleven blobs
 each expect the kernel to stage an address or a path into their data page
@@ -152,7 +152,7 @@ before they run. A file cannot carry that arrangement. A program whose text
 holds everything it needs is the shape every later one takes.
 */
 @(private = "file")
-bin_nodes: [4]vfs.Static_Node
+bin_nodes: [5]vfs.Static_Node
 
 @(private = "file")
 bin_tree: vfs.Static_Tree
@@ -174,13 +174,15 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 	child := image_build(program_child())
 	parent := image_build(program_parent())
 	poster := image_build(program_poster())
-	if child == nil || parent == nil || poster == nil {
+	niner := image_build(program_niner())
+	if child == nil || parent == nil || poster == nil || niner == nil {
 		return vectra9.ENOMEM
 	}
 
 	bin_nodes = {
 		{name = "/", parent = -1, dir = true},
 		{name = "child", parent = 0, data = string(child)},
+		{name = "niner", parent = 0, data = string(niner)},
 		{name = "parent", parent = 0, data = string(parent)},
 		{name = "poster", parent = 0, data = string(poster)},
 	}

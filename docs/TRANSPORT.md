@@ -1,6 +1,6 @@
 # The asynchronous 9P transport, Tflush, and the payload buffer
 
-`kernel/mnt/` — `mnt.odin`, `serve.odin`
+`kernel/mnt/` — `mnt.odin`, `serve.odin`, `wire.odin`
 
 `kernel/mnt` is Milestone 9. It is Plan 9's `devmnt`, the client half of a
 mounted connection, plus the server loop that lib9p provides on the other side.
@@ -192,6 +192,83 @@ a path can be given up on. `kernel/verify_vfs_mnt.odin` is that, and
 `docs/NAMESPACE.md` is what it cost the namespace to get there -- which was a
 lock, and only a lock.
 
+## The wire: the same client, over bytes
+
+`wire.odin` is Milestone 15, and it is the transport the handoff promised: a
+9P connection whose far side is a process. `Conn` hands a request to a
+handler it can call. A process is a handler nothing in the kernel can call,
+so what crosses is bytes, and the wire is the client half of that:
+
+    client thread ──▶ [ tag pool ] ── encode ──▶ io.write ──▶ ...a process
+          ▲                                                       │
+          └── settle, by tag ── decode ◀── reader thread ◀── io.read
+
+The pool is `Conn`'s pool, kept for the same three reasons. The tag is the
+slot, so a `Tflush` names something findable. The upper half is reserved for
+the flushes, so a full pool of stuck requests cannot strand the client that
+would unstick them. The self-test fills the pool and proves it. And each
+request slot owns the buffer its reply lands in. The reader copies a frame
+into the slot it is for and decodes it there, so the reply borrows storage
+the request already owns.
+
+`Wire_IO` is two calls and a pointer, so this package still does not know
+what a pipe is. `kernel/pipe` supplies the calls and owns the glue that
+builds a wire from a posted pipe end — see `docs/PIPE.md`.
+
+**What moved, when the server stopped being trusted.** `Conn` makes the
+protocol's rules true structurally, because both halves are its code. The
+wire's server is a program this kernel did not write, so the rules become
+things the wire *verifies*:
+
+  - A frame larger than the msize, or one that will not decode, **poisons the
+  connection**. The frame boundary is gone, and nothing knows where the next
+  message starts. Every request in flight fails as a transport failure, and
+  so does every request after. A mount over a poisoned wire answers EIO,
+  which is what a dead server should look like from a namespace. The size
+  check runs before the tag is even read. A drain sized by a lie would park
+  the reader on bytes that are never coming.
+- A reply naming no request in flight is **drained, counted and survived**.
+  The frame was whole, so the connection is still usable.
+- The byte stream ending is a hangup: the same poisoning, flagged as the
+  orderly kind. A server that dies fails its clients at once rather than
+  parks them.
+
+**`Tflush` needs no partner mechanism here.** The flush is a frame sent from
+its reserved slot, and the *server* orders its answers. What the client does
+on `Rflush` is what the protocol always meant. The tag is its own again,
+whether or not the original was ever answered. A server that discards a
+flushed request is legal, so an unanswered original is not an error. It is
+`discards`, a counter, because a count that should sit still is the cheapest
+check there is.
+
+**One exception is interned.** Every reply string from a wire borrows the
+slot, and `negotiate` passes no buffer. Kernel servers never made it need
+one, because their version strings live in `.rodata`. The one string a
+handshake accepts is the dialect this tree speaks, so an `Rversion` that
+matches becomes the constant and borrows nothing. A mismatch stays borrowed,
+and is a refusal before anything reads it twice.
+
+**46 checks in `kernel/verify_wire.odin`**, against a scripted server that
+touches the wire exactly as a process does. Frames come off a pipe end and go
+back down it, and nothing is shared with the kernel but the bytes. The
+handshake crosses under NOTAG, and a payload lands in the caller's own
+buffer. Two requests answered in the wrong order come back to the right
+callers. A full pool of sat-on requests flushes out through the reserved
+slots. A stale reply is dropped, a hangup fails a request in flight, and a
+junk frame poisons a second wire on purpose.
+
+**Three mutations, all caught, two of them found as real bugs while the suite
+was being built:**
+
+| Mutation | Result |
+|---|---|
+| the size check runs after the tag routing | caught — the junk-frame check hangs the boot, with the reader parked in a drain sized by the lie |
+| the version string is not interned | caught — `Tversion crosses the pipe and back` |
+| the flush queues for an ordinary slot | caught — deadlocks the boot on the full-pool check, nothing having sent an illegal message |
+
+The third is `Conn`'s own control, run again here. The wire has its own copy
+of the mechanism, and a copy is a thing that can drift.
+
 ## Decisions, and what would reverse them
 
 - **The tag space belongs to whatever tracks the requests in flight.**
@@ -248,9 +325,17 @@ lock, and only a lock.
   message and `vfs.rpc_for` passes any message down, but `vfs.chan_read_for` is
   the one caller. A walk or a listing against a server that never answers still
   waits. See `docs/NAMESPACE.md`.
+  - **A wire's server can hold a client for ever without breaking a rule the
+  wire checks.** Half a frame and then silence, or a request simply never
+  answered, parks the caller with nothing to poison over. The wire punishes a
+  *lie*. It cannot punish silence, because silence is what a slow server also
+  looks like. The teardown order in `kernel/user/verify.odin` shows the safe
+  shape — let the death land, then close — and the note is the real answer.
 
 ## See also
 
 - `docs/VECTRA9.md` section 7.3 — the design this implements, and Plan 9's.
 - `docs/SYNC.md` — `Rendez` and `sleep_for`, which every wait here is.
 - `docs/NAMESPACE.md` — the client that cannot use this yet, and why.
+- `docs/PIPE.md` — the bytes under the wire, and the glue that builds one
+  from a posted pipe end.

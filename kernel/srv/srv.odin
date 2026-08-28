@@ -24,18 +24,23 @@ bound `#s` cannot see any of it.
 
 ## What a posted service is
 
-A `^vfs.Server`, which is a handler plus the session a client reaches it
-through. That type already hides which transport is underneath -- the caller's
-own stack, or a queue with worker threads on it. So posting one is the same
-operation whether the service is a table in kernel memory or four threads
-answering messages.
+Two kinds. A kernel post, through `post`, is a `^vfs.Server`: a handler plus
+the session a client reaches it through. That type already hides which
+transport is underneath, so the service may be a table in kernel memory or
+four threads answering messages.
 
-**The `Server` belongs to whoever posted it, and must outlive every mount of
-it.** That is the same rule `vfs.register_device` already carries, for the same
-reason: a `Chan` holds a `^Server` directly. Removing a name does not stop a
-service, and an existing mount goes on working. Plan 9 behaves identically, and
-what makes it safe there is a reference count on the channel. Vectra will need
-one the day a `Server` can be freed, and that day arrives with processes.
+A descriptor post is a **connection**: the chan behind the written number,
+referenced so it outlives the descriptor and the process both. Which server
+that connection means is decided at mount time. Plan 9's `devsrv` stores the
+channel and `devmnt` builds the client from it, and `mount` below does the
+same through `pipe.server_for`. A chan on a pipe end becomes a wire with a
+program answering. Any other chan means the device behind it.
+
+**A kernel `Server` belongs to whoever posted it, and must outlive every
+mount of it.** That is the same rule `vfs.register_device` already carries,
+for the same reason: a `Chan` holds a `^Server` directly. Removing a name
+does not stop a service, and an existing mount goes on working. A posted
+connection keeps that promise with its reference count instead.
 
 The name is copied rather than borrowed. A kernel caller hands over a string in
 `.rodata` and is right. The first caller that is not the kernel would hand over
@@ -48,9 +53,8 @@ Plan 9 posts by creating a file in `/srv` and writing a file descriptor
 number into it, and Vectra does the same. `Tlcreate` on the root makes a
 **pending** entry: a name with no service behind it, whose read says
 `pending` and whose mount answers ENXIO. `Twrite` of a decimal descriptor
-completes it. The kernel takes the `^vfs.Server` behind that descriptor's
-chan, which is the step that turns a client's open connection into a posted
-service.
+completes it. The kernel references the chan behind that descriptor, which
+is the step that turns a client's open connection into a posted service.
 
 **Whose descriptor?** The writer's. A descriptor is a number in one process's
 table, so the write must be judged against the process that sent it. This
@@ -69,6 +73,10 @@ same operation from inside the kernel.
 */
 package srv
 
+import "base:runtime"
+
+import "kernel:mem"
+import "kernel:pipe"
 import "kernel:sync"
 import "kernel:vfs"
 import "vsys:vectra9"
@@ -117,19 +125,32 @@ wrong is the one that is not the identity.
 */
 @(private)
 Service :: struct {
-	name:   [MAX_NAME]u8,
-	len:    int,
+	name:     [MAX_NAME]u8,
+	len:      int,
 
-	// Nil while the entry is pending: created, named, listed, removable, and
-	// not yet a service. `Twrite` of a descriptor is what fills it in, and
-	// everything that would follow the pointer refuses first. There is no
-	// second field saying `pending`, for the reason `used` is gone.
-	server: ^vfs.Server,
-	id:     i32,
+	/*
+	What the name reaches, and there are two kinds.
+
+	`server` is a service the kernel posted directly, through `post`.
+	`endpoint` is a *connection* a process posted, through a descriptor write.
+	It is the chan behind that descriptor, referenced so it outlives the
+	descriptor and the process both. What server the connection reaches is
+	decided at mount time. `mount` asks `pipe.server_for`, which is where a
+	posted pipe end becomes a 9P client with a program answering. Plan 9's
+	`devsrv` holds a channel for the same reason.
+
+	Both nil is a pending entry: created, named, listed, removable, and not
+	yet a service. `Twrite` of a descriptor is what fills `endpoint` in, and
+	everything that would follow either pointer refuses first. There is no
+	second field saying `pending`, for the reason `used` is gone.
+	*/
+	server:   ^vfs.Server,
+	endpoint: ^vfs.Chan,
+	id:       i32,
 }
 
 /*
-How a descriptor number in a Twrite becomes a server.
+How a descriptor number in a Twrite becomes a connection.
 
 Registered by `kernel/user`, which owns descriptor tables, and consulted for
 **the calling thread's own process**. The handler runs on the caller's
@@ -137,11 +158,17 @@ thread, because this server is synchronous. Nil until userland exists, and a
 resolver that finds no process answers nil too. Both mean a posting nobody
 can be charged for, and both are refused.
 
+What comes back is the chan itself rather than the server behind it, because
+those are different capabilities. A chan on a pipe end *is* the connection a
+process serves, and the server a mount uses is built from it later. The
+server behind that chan is only the pipe device. Plan 9's `devsrv` stores
+the channel for the same reason.
+
 The resolver runs under this server's spinlock. It may look tables up and
 may not send a message or take a lock that parks, and the one registered
 does neither.
 */
-Fd_Resolver :: proc "contextless" (fd: int) -> ^vfs.Server
+Fd_Resolver :: proc "contextless" (fd: int) -> ^vfs.Chan
 
 @(private = "file")
 fd_resolver: Fd_Resolver
@@ -326,20 +353,31 @@ removal goes on working, because the `Chan` behind it holds the `^vfs.Server`
 rather than the name. What ends is the ability to make a *new* mount by that
 name.
 */
-remove :: proc "contextless" (name: string) -> vfs.Errno #no_bounds_check {
+remove :: proc(name: string) -> vfs.Errno #no_bounds_check {
 	t := &srv_tree
-	g := sync.acquire(&t.lock)
-	defer sync.release(&t.lock, g)
+	retired: ^vfs.Chan
 
+	g := sync.acquire(&t.lock)
+	found := false
 	for i in 0 ..< MAX_SERVICES {
 		if live(&t.table[i]) && name_of(&t.table[i]) == name {
+			retired = t.table[i].endpoint
 			t.table[i] = Service{}
 			t.count -= 1
 			t.removes += 1
-			return vfs.OK
+			found = true
+			break
 		}
 	}
-	return vectra9.ENOENT
+	sync.release(&t.lock, g)
+
+	if retired != nil {
+		// Outside the lock, because a close may clunk a fid, and a clunk is a
+		// message. The service does not stop -- a wire built from this chan
+		// holds its own reference. See `pipe.server_for`.
+		vfs.chan_close(retired)
+	}
+	return found ? vfs.OK : vectra9.ENOENT
 }
 
 // lookup finds a posted service by name. Nil when nothing has that name, and
@@ -352,8 +390,22 @@ lookup :: proc "contextless" (name: string) -> ^vfs.Server #no_bounds_check {
 
 	for i in 0 ..< MAX_SERVICES {
 		if live(&t.table[i]) && name_of(&t.table[i]) == name {
-			return t.table[i].server
+			return served_by(&t.table[i])
 		}
+	}
+	return nil
+}
+
+// served_by is the server a name reaches without a mount's work: the kernel
+// service, or the device behind a posted connection. A posted pipe end
+// answers with the pipe device here, and only `mount` builds the wire.
+@(private = "file")
+served_by :: proc "contextless" (s: ^Service) -> ^vfs.Server {
+	if s.server != nil {
+		return s.server
+	}
+	if s.endpoint != nil {
+		return s.endpoint.server
 	}
 	return nil
 }
@@ -386,9 +438,26 @@ mount :: proc(
 	order: vfs.Mount_Order = .Replace,
 	flags: vfs.Mount_Flags = {},
 ) -> vfs.Errno {
-	server, err := service_at(ns, path)
+	server, endpoint, err := service_at(ns, path)
 	if err != vfs.OK {
 		return err
+	}
+
+	if endpoint != nil {
+		/*
+		A posted connection rather than a kernel service. For a pipe end this is
+		where the wire is built, which is Plan 9's `devmnt` moment in the same
+		place. The kernel becomes a 9P client of whatever answers the far side,
+		and the first answer it wants is Tversion. For any other chan, the
+		connection is the device behind it, which is how posting a descriptor on
+		`/dev/cons` publishes the whole of `#c`.
+		*/
+		defer vfs.chan_close(endpoint)
+		if wired := pipe.server_for(endpoint); wired != nil {
+			server = wired
+		} else {
+			server = endpoint.server
+		}
 	}
 
 	source: ^vfs.Chan
@@ -409,28 +478,36 @@ mount :: proc(
 }
 
 /*
-service_at resolves a path and reports which posted service it names.
+service_at resolves a path and reports what the posted name holds.
+
+One of the two answers is non-nil on success: the kernel service, or the
+posted connection with a reference taken for the caller. The reference is
+what keeps the chan alive across the mount that follows, against a removal
+racing it.
 
 EINVAL when the path resolves to something this server does not serve, or to
 this server's own root. Neither is a service, and both are a caller that
 believes a path is a `/srv` entry when it is not.
 */
 @(private = "file")
-service_at :: proc(ns: ^vfs.Namespace, path: string) -> (^vfs.Server, vfs.Errno) #no_bounds_check {
+service_at :: proc(
+	ns: ^vfs.Namespace,
+	path: string,
+) -> (^vfs.Server, ^vfs.Chan, vfs.Errno) #no_bounds_check {
 	t := &srv_tree
 
 	c, err := vfs.resolve(ns, path)
 	if err != vfs.OK {
-		return nil, err
+		return nil, nil, err
 	}
 	defer vfs.chan_close(c)
 
 	if c.server != &t.server {
-		return nil, vectra9.EINVAL
+		return nil, nil, vectra9.EINVAL
 	}
 	id := id_of_qid(c.qid)
 	if id <= 0 {
-		return nil, vectra9.EINVAL
+		return nil, nil, vectra9.EINVAL
 	}
 
 	g := sync.acquire(&t.lock)
@@ -440,14 +517,17 @@ service_at :: proc(ns: ^vfs.Namespace, path: string) -> (^vfs.Server, vfs.Errno)
 	if i < 0 {
 		// The name resolved and the entry went between the walk and here.
 		// ENOENT is what a client would have got a moment earlier.
-		return nil, vectra9.ENOENT
+		return nil, nil, vectra9.ENOENT
 	}
-	if t.table[i].server == nil {
-		// Created and not yet written. The name is real and the connection
-		// behind it is not there, which is ENXIO's exact sentence.
-		return nil, vectra9.ENXIO
+	if t.table[i].server != nil {
+		return t.table[i].server, nil, vfs.OK
 	}
-	return t.table[i].server, vfs.OK
+	if t.table[i].endpoint != nil {
+		return nil, vfs.chan_incref(t.table[i].endpoint), vfs.OK
+	}
+	// Created and not yet written. The name is real and the connection
+	// behind it is not there, which is ENXIO's exact sentence.
+	return nil, nil, vectra9.ENXIO
 }
 
 // -- The tree ----------------------------------------------------------------
@@ -527,7 +607,7 @@ srv_handler :: proc "contextless" (
 	request: ^vectra9.Msg,
 	reply: ^vectra9.Msg,
 	buf: []u8,
-) #no_bounds_check {
+) {
 	_ = s
 	_ = tag
 	t := cast(^Srv_Tree)server
@@ -541,6 +621,30 @@ srv_handler :: proc "contextless" (
 		return
 	}
 
+	// A context, because two arms below touch chans, and chan bookkeeping is
+	// context code. Built once here rather than in each arm.
+	ctx := runtime.default_context()
+	ctx.allocator = mem.allocator()
+	context = ctx
+
+	retired := srv_dispatch(t, request, reply, buf)
+	if retired != nil {
+		// After the dispatch released the table lock, because a close may
+		// clunk a fid and a clunk is a message. The service behind the chan
+		// does not stop with the name. See `remove`.
+		vfs.chan_close(retired)
+	}
+}
+
+// srv_dispatch answers one message under the table lock. It hands back the
+// chan a removal retired, for the caller to close where a message is legal.
+@(private = "file")
+srv_dispatch :: proc(
+	t: ^Srv_Tree,
+	request: ^vectra9.Msg,
+	reply: ^vectra9.Msg,
+	buf: []u8,
+) -> (retired: ^vfs.Chan) #no_bounds_check {
 	// Everything unhandled is a genuine "not implemented". Set it first, so
 	// each case below is one assignment rather than one and a fall-through
 	// somebody forgets.
@@ -645,7 +749,7 @@ srv_handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.ENOENT)
 			return
 		}
-		if t.table[i].server != nil {
+		if t.table[i].server != nil || t.table[i].endpoint != nil {
 			reply^ = vectra9.error_reply(vectra9.EPERM)
 			return
 		}
@@ -654,15 +758,18 @@ srv_handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.EINVAL)
 			return
 		}
-		sv: ^vfs.Server
+		ch: ^vfs.Chan
 		if fd_resolver != nil {
-			sv = fd_resolver(fd)
+			ch = fd_resolver(fd)
 		}
-		if sv == nil {
+		if ch == nil {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
 		}
-		t.table[i].server = sv
+		// The reference is the posting. The descriptor may close and the
+		// process may end, and the connection stays reachable by name. The
+		// increment nests a spinlock and sends nothing, so it is legal here.
+		t.table[i].endpoint = vfs.chan_incref(ch)
 		t.posts += 1
 		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 
@@ -715,6 +822,7 @@ srv_handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.ENOENT)
 			return
 		}
+		retired = t.table[i].endpoint
 		t.table[i] = Service{}
 		t.count -= 1
 		t.removes += 1
@@ -771,6 +879,7 @@ srv_handler :: proc "contextless" (
 		_ = m
 		reply^ = vectra9.Rflush{}
 	}
+	return
 }
 
 /*
@@ -891,7 +1000,7 @@ report :: proc "contextless" (t: ^Srv_Tree, id: i32, out: []u8) -> int #no_bound
 	if i < 0 {
 		return 0
 	}
-	sv := t.table[i].server
+	sv := served_by(&t.table[i])
 
 	n := 0
 	put :: proc "contextless" (out: []u8, n: int, text: string) -> int #no_bounds_check {

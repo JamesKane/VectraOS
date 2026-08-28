@@ -26,6 +26,7 @@ import "kernel:drivers/kbd"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mem"
+import "kernel:pipe"
 import "kernel:sched"
 import "kernel:srv"
 import "kernel:sync"
@@ -189,6 +190,15 @@ kmain :: proc "sysv" () {
 			}
 			if init_srv() {
 				verify_srv()
+			}
+
+			// The pipe needs nothing above the scheduler, and the wire needs
+			// the pipe. Both come before userland, because a posted pipe is
+			// what a process's service will be. A machine that cannot keep
+			// that contract should say so before inviting one.
+			if init_pipe() {
+				verify_pipe()
+				verify_wire()
 			}
 
 			// The programs become files here, after the namespace has its
@@ -1203,6 +1213,74 @@ verify_srv :: proc() {
 }
 
 /*
+init_pipe brings the pipe server up. Nothing binds it and nothing registers
+it. A pipe end is reachable only through a descriptor the kernel handed out,
+which is the same privilege boundary `/srv` posting enforces.
+*/
+init_pipe :: proc() -> bool {
+	if !pipe.init() {
+		log_line(&klog, .Fault, "pipe: the pipe server would not come up")
+		return false
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "pipe #| ready, ")
+	libodin.put_uint(&sink, u64(pipe.MAX_PIPES))
+	libodin.put_str(&sink, " slots, ")
+	libodin.put_uint(&sink, u64(pipe.RING_SIZE))
+	libodin.put_str(&sink, " bytes per direction")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+verify_pipe moves bytes both ways across a real pipe, and parks a reader and
+a writer. Then it closes the two ends, to see EOF and EPIPE come out the
+right sides. See `kernel/pipe/verify.odin`.
+*/
+verify_pipe :: proc() {
+	scratch := make([]u8, 4096)
+	if scratch == nil {
+		log_line(&klog, .Fault, "pipe self-test skipped -- no memory for a scratch buffer")
+		return
+	}
+	defer delete(scratch)
+
+	// Threads earlier suites left dead are heap objects `pipe.verify`'s own
+	// reap would otherwise free inside the measured window.
+	sched.reap()
+	before := live_objects(mem.heap_stats())
+	result := pipe.verify(scratch)
+	leaked := live_objects(mem.heap_stats()) - before
+
+	ok := result.failures == 0 && result.checks > 0 && leaked == 0
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "pipe ")
+	libodin.put_uint(&sink, u64(result.checks))
+	if ok {
+		libodin.put_str(&sink, " checks passed -- ")
+		libodin.put_uint(&sink, u64(result.moved))
+		libodin.put_str(&sink, " bytes crossed, ")
+		libodin.put_uint(&sink, u64(result.parked))
+		libodin.put_str(&sink, " threads parked and woken, heap balanced")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+
+	libodin.put_str(&sink, " checks, ")
+	libodin.put_uint(&sink, u64(result.failures))
+	libodin.put_str(&sink, " FAILED -- first: ")
+	libodin.put_str(&sink, result.first_failure)
+	if leaked != 0 {
+		libodin.put_str(&sink, " (leaked ")
+		libodin.put_int(&sink, i64(leaked))
+		libodin.put_str(&sink, ")")
+	}
+	emit(&klog, .Fault, &sink)
+}
+
+/*
 init_ioapic maps the I/O APIC and masks every line on it.
 
 This is how a device interrupt reaches a core, and until this milestone nothing
@@ -1397,7 +1475,9 @@ verify_user :: proc() {
 		libodin.put_uint(&sink, result.rounds)
 		libodin.put_str(&sink, " preempted rounds, ")
 		libodin.put_uint(&sink, u64(result.calls))
-		libodin.put_str(&sink, " system calls, a service posted from ring 3")
+		libodin.put_str(&sink, " system calls, ")
+		libodin.put_uint(&sink, result.answered)
+		libodin.put_str(&sink, " 9P requests answered by a process")
 		emit(&klog, .Ok, &sink)
 		return
 	}

@@ -40,16 +40,29 @@ a mount when the name goes away.
 
 ## What a posted service is
 
-A `^vfs.Server`: a handler plus the session a client reaches it through. That
-type already hides which transport is underneath. Posting one is therefore the
-same operation whether the service is a table in kernel memory or four threads.
+Two kinds now, and the difference is who implements the answers.
 
-**The `Server` belongs to whoever posted it, and must outlive every mount of
-it.** That is the same rule `vfs.register_device` already carries, for the same
-reason — a `Chan` holds a `^Server` directly. Removing a name does not stop a
-service. Plan 9 behaves identically, and what makes it safe there is a reference
-count on the channel. Vectra will need one the day a `Server` can be freed, and
-that day arrives with processes.
+A kernel post, through `srv.post`, is a `^vfs.Server`: a handler plus the
+session a client reaches it through. That type already hides which transport
+is underneath. Posting one is therefore the same operation whether the
+service is a table in kernel memory or four threads.
+
+A descriptor post — the file-operation kind — is a **connection**: the
+`^vfs.Chan` behind the written descriptor, referenced so it outlives the
+descriptor and the process both. Which server that connection means is
+decided at *mount* time, which is Plan 9's arrangement exactly. `devsrv`
+stores the channel, and `devmnt` builds the client from it when somebody
+mounts. For a chan on a kernel device, the answer is that device — posting a
+descriptor on `/dev/cons` publishes the whole of `#c`. For a chan on a pipe
+end, the answer is a `mnt.Wire` over that pipe, with a program answering the
+far side. That last case is Milestone 15, and `docs/PIPE.md` owns the glue.
+
+**A kernel `Server` belongs to whoever posted it, and must outlive every
+mount of it.** That is the same rule `vfs.register_device` already carries,
+for the same reason — a `Chan` holds a `^Server` directly. Removing a name
+does not stop a service. A posted *connection* keeps the same promise with a
+reference. The entry's chan is referenced at the write and released at the
+removal, and a wire built from it holds a reference of its own.
 
 The name is copied rather than borrowed. A kernel caller hands over a string in
 `.rodata` and is right. The first caller that is not the kernel would hand over
@@ -77,9 +90,11 @@ runs on the writing thread. `srv.Fd_Resolver` -- registered by
 `kernel/user`, the owner of descriptor tables -- answers for whoever is
 current.
 
-What it hands back is the `^vfs.Server` behind the descriptor's chan. A
-caller with no process gets EBADF, because a number from nowhere names
-nothing.
+What it hands back is the chan itself, which `/srv` then references. The chan
+rather than the server behind it, because those are different capabilities. A
+pipe end's server is only the pipe device, and the service the posting means
+is whatever answers the pipe. A caller with no process gets EBADF, because a
+number from nowhere names nothing.
 
 **That is the confused deputy again**, settled the way `copy_in` settled it:
 the kernel consults the caller's own table and nobody else's. It is also the
@@ -98,12 +113,13 @@ opened.
 `Tremove` on `/srv/foo` takes the name away, and `srv.remove` is the same
 operation from inside the kernel.
 
-What a posting publishes is the *connection*, not the file the descriptor
-was open on. A process that opens `/dev/cons` and posts descriptor 3 posts
-the whole of `#c`. A mount of the name attaches fresh at the server's root.
-That is Plan 9's semantics exactly: the channel is to the server, and the
-file it happened to name is not part of the capability. That makes `/srv` the first tree in Vectra a client may
-change, and `vfs.chan_remove` is Tremove's first implementation on either side.
+What a posting publishes is the *connection*, not the file the descriptor was
+open on. A process that opens `/dev/cons` and posts descriptor 3 posts the
+whole of `#c`. A mount of the name attaches fresh at the server's root. That
+is Plan 9's semantics exactly: the channel is to the server, and the file it
+happened to name is not part of the capability. That makes `/srv` the first
+tree in Vectra a client may change, and `vfs.chan_remove` is Tremove's first
+implementation on either side.
 
 ## Mounting
 
@@ -118,6 +134,13 @@ Here the same two steps happen and the middle one is a kernel call. `path` is
 resolved **in the namespace**, so a bind over `/srv`, or a fork that dropped it,
 changes what this can reach. Then the qid on the resulting chan says which entry
 it landed on, and the entry says which service that is.
+
+For an entry holding a posted connection, this is also where the connection
+becomes a server. `mount` asks `pipe.server_for` what the chan is, and a pipe
+end answers with a wire. The wire is built once, on the first mount, with a
+Tversion handshake the far process must pass under a deadline. Any other chan
+falls back to the device behind it. The entry's chan is referenced across
+that work, against a removal racing the mount.
 
 **Refusing a path this server does not serve is what keeps that honest.**
 Without the check, `mount` would be a second way to name a service that skipped
@@ -166,9 +189,9 @@ an index, and is still documented as undefined if something rebinds part-way
 through.
 
 The self-test paces a listing one entry at a time over six names, and removes
-one in the middle. It removes a name the listing already passed. Six names come back, each
-exactly once. With an ordinal cookie, a survivor is skipped and the check says
-so.
+one in the middle. It removes a name the listing already passed. Six names
+come back, each exactly once. With an ordinal cookie, a survivor is skipped
+and the check says so.
 
 Finding the next id is a scan of the table per entry emitted, which is quadratic
 in a table of thirty-two. A directory of any real size wants its entries in a
@@ -241,6 +264,7 @@ Thirteen mutations, one at a time, each observed on a real boot:
 | `parse_fd` accepts any bytes as descriptor zero | `a write that is not a decimal number is refused` |
 | a completed entry accepts a second write | `a second write is refused -- a posted name is not a thing to swap` |
 | `service_at` mounts a pending entry | `a pending name mounts nothing` |
+| the posted chan is borrowed rather than referenced | caught in `kernel/user`'s suite -- five failures, first `and the name reads back as a posted pipe`, because the poster's own close freed the chan under the entry |
 
 The last four arrived with posting as a file operation. The third of them
 fails in `kernel/user`'s suite rather than this one. Only a process can
@@ -279,16 +303,17 @@ all exactly that shape — see `docs/TESTING.md`.
 
 ## What this leaves for next time
 
-- **A service a process implements.** Posting is built, and every server a
-  process can post is still one the kernel implements -- the connection
-  behind a descriptor leads to `#c`, `#s`, `#b` or `#/`. The missing piece
-  is a transport whose far side is a process. That is a pipe the kernel's
-  `mnt` client can speak 9P down, with a program answering. It is the step
-  `servers/devfs` actually waits on now.
-- **A reference count on a posted service.** Every server a descriptor can
-  name today is a kernel global, so outliving the mounts is free. When a
-  server can die with a process, the entry has to hold a counted reference.
-  The connection then comes down when the last one goes.
+- **A service a process implements exists now.** `/bin/niner` posts a pipe
+  end and answers 9P off the other, which was this list's first entry for
+  two milestones. What it proved out is written up in `docs/PIPE.md` and
+  `docs/TRANSPORT.md`, and what it opens is `servers/devfs` — a kernel
+  service rebuilt as a program.
+- **A reference count on a posted service.** The entry references its chan
+  now, and a wire references it again — so the *chan* survives correctly.
+  What still never comes back is the wire itself. The reader thread, the arena
+  and the server record stay pinned for the life of the machine. The user
+  self-test counts that pin to the object. A counted release —
+  connection down when the last mount goes — is the remaining half.
 - **A caller identity that survives a queue.** The fd resolver answers for
   the *current* thread, which is right only while `#s` is synchronous. See
   `Fd_Resolver`.
@@ -303,5 +328,7 @@ all exactly that shape — see `docs/TESTING.md`.
 - `docs/NAMESPACE.md` — `bind`, `mount_device`, and the union listing that still
   uses an index.
 - `docs/DEVFS.md` — the other device server, and why that one has workers.
+- `docs/PIPE.md` — the pipe a posted descriptor can name, and the wire a
+  mount builds from it.
 - `docs/TESTING.md` — the self-test discipline, and what an uncaught control
   usually means.

@@ -51,7 +51,12 @@ started. `spawn.odin` says what a child inherits and why the call is not yet
 `create`, `mount` and `remove` arrived with posting. Together they are Plan
 9's `/srv` arc from ring 3. Reserve a name, write a descriptor into it,
 mount what it names, take the name away. `docs/SRV.md` owns that design, and
-`resolve_fd_server` below is this package's part of it.
+`resolve_fd_chan` below is this package's part of it.
+
+`pipe` arrived with the wire, and it is the call that lets a program be a
+*server*. Two descriptors on one channel, either of which can be posted.
+`docs/PIPE.md` owns the channel, and `/bin/niner` in `program.odin` is the
+first program that answers what comes down one.
 
 ## What is still missing from the interface
 
@@ -66,6 +71,7 @@ import "base:runtime"
 
 import "kernel:arch"
 import "kernel:mem"
+import "kernel:pipe"
 import "kernel:sched"
 import "kernel:srv"
 import "kernel:sync"
@@ -87,6 +93,7 @@ SYS_WAIT :: u64(11)
 SYS_CREATE :: u64(12)
 SYS_MOUNT :: u64(13)
 SYS_REMOVE :: u64(14)
+SYS_PIPE :: u64(15)
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -138,12 +145,12 @@ syscall_init :: proc(ns: ^vfs.Namespace) -> bool {
 	}
 	// This package owns descriptor tables, so it is the one that can say what
 	// a number in a Twrite to `/srv` means. See `resolve_fd_server`.
-	srv.set_fd_resolver(resolve_fd_server)
+	srv.set_fd_resolver(resolve_fd_chan)
 	return arch.syscall_init()
 }
 
 /*
-resolve_fd_server answers `/srv`'s question: whose connection is descriptor n?
+resolve_fd_chan answers `/srv`'s question: whose connection is descriptor n?
 
 The calling thread's process's, which is the only sound answer and the reason
 the hook lives here. `/srv` is synchronous, so its handler runs on the thread
@@ -152,17 +159,17 @@ thread has no process and gets nil, which `/srv` turns into EBADF -- a number
 from nowhere names nothing.
 
 Runs under `/srv`'s spinlock: table lookups only, no messages, no lock that
-parks. What it hands back is the server behind the chan, not the chan. A
-posting publishes the connection, and a mount of it attaches fresh at the
-root.
+parks. What it hands back is the chan itself, which is the connection. `/srv`
+takes its own reference before the handler returns, so the borrow here never
+outlives the caller's own table.
 */
 @(private = "file")
-resolve_fd_server :: proc "contextless" (fd: int) -> ^vfs.Server {
+resolve_fd_chan :: proc "contextless" (fd: int) -> ^vfs.Chan {
 	f := fd_at(current(), fd)
 	if f == nil {
 		return nil
 	}
-	return f.chan.server
+	return f.chan
 }
 
 syscall_count :: proc "contextless" () -> int {
@@ -228,6 +235,8 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = sys_mount(uintptr(a0), int(a1), uintptr(a2), int(a3), a4)
 	case SYS_REMOVE:
 		result = sys_remove(uintptr(a0), int(a1))
+	case SYS_PIPE:
+		result = sys_pipe()
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
 	case SYS_EXIT:
@@ -475,6 +484,62 @@ sys_mount :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order:
 		return -i64(err)
 	}
 	return 0
+}
+
+/*
+sys_pipe makes a pipe and returns both ends, packed as two descriptors.
+
+End 0's descriptor sits in the low byte and end 1's in the next, which is the
+same packing `child` uses for its exit status. Two out-parameters would need
+a pointer from ring 3 and a copy out, to say two numbers that each fit in a
+byte. A caller that wants them apart shifts.
+
+The ends are ordinary descriptors from here on. They travel to children
+through `spawn`, and they close through `close`. Either one can be written
+into a `/srv` entry, which is the posting that makes the far side of the
+pipe a service. See `docs/SRV.md`.
+*/
+@(private = "file")
+sys_pipe :: proc() -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.EBADF)
+	}
+
+	pp := pipe.create()
+	if pp == nil {
+		return -i64(vectra9.ENOSPC)
+	}
+
+	c0, e0 := pipe.open_end(pp, 0)
+	c1, e1 := pipe.open_end(pp, 1)
+	if e0 != vfs.OK || e1 != vfs.OK {
+		if c0 != nil {
+			vfs.chan_close(c0)
+		} else {
+			pipe.close_end(pp, 0)
+		}
+		if c1 != nil {
+			vfs.chan_close(c1)
+		} else {
+			pipe.close_end(pp, 1)
+		}
+		return -i64(vectra9.ENOSPC)
+	}
+
+	fd0, ok0 := fd_open(p, c0)
+	if !ok0 {
+		vfs.chan_close(c0)
+		vfs.chan_close(c1)
+		return -i64(vectra9.EMFILE)
+	}
+	fd1, ok1 := fd_open(p, c1)
+	if !ok1 {
+		_ = fd_close(p, fd0)
+		vfs.chan_close(c1)
+		return -i64(vectra9.EMFILE)
+	}
+	return i64(fd0 | fd1 << 8)
 }
 
 // sys_remove takes a file away by name, in this process's namespace. The fid

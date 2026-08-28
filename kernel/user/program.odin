@@ -47,6 +47,7 @@ MARK_BINDER :: u64(0x4249_4E44_4249_4E44) // BINDBIND
 MARK_PARENT :: u64(0x5052_4E54_5052_4E54) // PRNTPRNT
 MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
 MARK_POSTER :: u64(0x504F_5354_504F_5354) // POSTPOST
+MARK_NINER :: u64(0x4E49_4E45_4E49_4E45) // NINENINE
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -172,6 +173,45 @@ POSTER_WROTE_AGAIN :: 12
 // The line `poster` sends through the service it published, written twice in
 // the blob's own text like every string a spawned program carries.
 POSTER_LINE :: "-- this line went through a posted service"
+
+/*
+Where `niner` keeps its answers -- one cell per call, then a count that moves.
+
+The story the cells tell. Make a pipe, and hold both ends. Reserve a name in
+`/srv`, and write the client end's digit into it. Give both spent
+descriptors back. Then serve: read a 9P request off the pipe, answer it, and
+count it. The count is the one cell that changes while the kernel watches,
+because the kernel is the client this time.
+*/
+NINER_PIPE :: 1
+NINER_CREATED :: 2
+NINER_POSTED :: 3
+NINER_CLOSED_SRV :: 4
+NINER_CLOSED_END :: 5
+NINER_SERVED :: 6
+
+// What `sys_pipe` answers `niner`: the serve end on 3 and the client end on
+// 4, packed the way `child` packs its status. Descriptors 0 through 2 arrived
+// occupied, which this number also proves.
+NINER_FDS :: u64(4 << 8 | 3)
+
+// What `niner` exits with when its byte stream ends before a Tremove does.
+// Any number a deliberate exit never uses.
+NINER_TORN :: u64(0x77)
+
+/*
+The line `niner` answers a Tread with, written twice like every string a
+spawned program carries. Once here for the check, once as `.ascii` bytes in
+the blob. Its length is hard-coded twice more, as immediates in the Rread
+the blob builds. All four have to agree, and the check fails loudly when
+they drift.
+*/
+NINER_READ_LINE :: "these bytes came from ring 3"
+
+// The line the kernel writes through a mounted `/srv/niner`, which `niner`
+// forwards to the console. It lives here rather than in the blob: the payload
+// of a Twrite is the client's to choose, and the client is the kernel.
+NINER_ECHO_LINE :: "-- a process answered this line"
 
 /*
 The line `child` writes, and the paths the two blobs open.
@@ -306,6 +346,8 @@ foreign {
 	vectra_user_child_end: byte
 	vectra_user_poster: byte
 	vectra_user_poster_end: byte
+	vectra_user_niner: byte
+	vectra_user_niner_end: byte
 }
 
 @(private)
@@ -335,11 +377,13 @@ program_namer :: proc "contextless" () -> []u8 {return blob(&vectra_user_namer, 
 program_reader :: proc "contextless" () -> []u8 {return blob(&vectra_user_reader, &vectra_user_reader_end)}
 program_binder :: proc "contextless" () -> []u8 {return blob(&vectra_user_binder, &vectra_user_binder_end)}
 
-// And the three that stand alone -- the blobs `/bin` publishes as files.
-// Two reproduce, and one publishes a service. See `image.odin`.
+// And the four that stand alone -- the blobs `/bin` publishes as files.
+// Two reproduce, one publishes a service, and one *answers* one. See
+// `image.odin`.
 program_parent :: proc "contextless" () -> []u8 {return blob(&vectra_user_parent, &vectra_user_parent_end)}
 program_child :: proc "contextless" () -> []u8 {return blob(&vectra_user_child, &vectra_user_child_end)}
 program_poster :: proc "contextless" () -> []u8 {return blob(&vectra_user_poster, &vectra_user_poster_end)}
+program_niner :: proc "contextless" () -> []u8 {return blob(&vectra_user_niner, &vectra_user_niner_end)}
 
 /*
 The programs, emitted by the assembler.
@@ -919,5 +963,245 @@ vectra_user_poster:
 	.ascii "/mnt/null"
 .globl vectra_user_poster_end
 vectra_user_poster_end:
+
+/*
+niner -- the first 9P server that is a program.
+
+It makes a pipe, posts the client end in /srv, and then answers requests it
+reads off the serve end. It answers version, attach, walk and open, and
+forwards a write's payload to the console. It answers a read from its own
+text, and the remove tells it to stop. The replies are built byte by byte
+over the request, because a program this small carries no codec. The frame
+layout is the 9P2000.L wire format, and docs/VECTRA9.md is the reference.
+
+Register roles, for reading the loop:
+
+    rbx    the data page
+    r12    the frame buffer, at rbx+256
+    r13    the serve descriptor
+    r14    the current frame's size
+    r15    the served count
+    rbp    the read cursor, and then the stop flag
+    r8/r9  the send cursor and length, in registers a system call preserves
+*/
+.balign 16
+.globl vectra_user_niner
+vectra_user_niner:
+	movq %rdi, %rbx
+	movabsq $$0x4E494E454E494E45, %rax
+	movq %rax, (%rbx)
+	leaq 256(%rbx), %r12
+
+	movq $$15, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r13
+	andq $$255, %r13
+	movq 8(%rbx), %r14
+	shrq $$8, %r14
+	andq $$255, %r14
+
+	leaq 20f(%rip), %rdi
+	movq $$10, %rsi
+	movq $$1, %rdx
+	movq $$384, %r10
+	movq $$12, %rax
+	syscall
+	movq %rax, 16(%rbx)
+	movq %rax, %r15
+
+	movq %r15, %rdi
+	leaq 21f(%rip), %rsi
+	movq $$1, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq %r15, %rdi
+	movq $$6, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	movq %r14, %rdi
+	movq $$6, %rax
+	syscall
+	movq %rax, 40(%rbx)
+
+	xorl %r15d, %r15d
+23:
+	xorl %ebp, %ebp
+24:
+	movq %r13, %rdi
+	leaq (%r12,%rbp), %rsi
+	movq $$7, %rdx
+	subq %rbp, %rdx
+	movq $$7, %rax
+	syscall
+	testq %rax, %rax
+	jle 38f
+	addq %rax, %rbp
+	cmpq $$7, %rbp
+	jb 24b
+
+	movl (%r12), %r14d
+	cmpq $$256, %r14
+	ja 38f
+	cmpq $$7, %r14
+	jb 38f
+25:
+	cmpq %r14, %rbp
+	jae 26f
+	movq %r13, %rdi
+	leaq (%r12,%rbp), %rsi
+	movq %r14, %rdx
+	subq %rbp, %rdx
+	movq $$7, %rax
+	syscall
+	testq %rax, %rax
+	jle 38f
+	addq %rax, %rbp
+	jmp 25b
+26:
+	xorl %ebp, %ebp
+	movzbl 4(%r12), %eax
+	cmpl $$100, %eax
+	je 27f
+	cmpl $$104, %eax
+	je 28f
+	cmpl $$110, %eax
+	je 29f
+	cmpl $$12, %eax
+	je 31f
+	cmpl $$118, %eax
+	je 32f
+	cmpl $$116, %eax
+	je 33f
+	cmpl $$120, %eax
+	je 35f
+	cmpl $$122, %eax
+	je 36f
+	movl $$11, (%r12)
+	movb $$7, 4(%r12)
+	movl $$95, 7(%r12)
+	movq $$11, %rdx
+	jmp 37f
+27:
+	movb $$101, 4(%r12)
+	movq %r14, %rdx
+	jmp 37f
+28:
+	movl $$20, (%r12)
+	movb $$105, 4(%r12)
+	movb $$0x80, 7(%r12)
+	movl $$0, 8(%r12)
+	movq $$1, 12(%r12)
+	movq $$20, %rdx
+	jmp 37f
+29:
+	movzwl 15(%r12), %ecx
+	movb $$111, 4(%r12)
+	movw %cx, 7(%r12)
+	leaq 9(%r12), %rsi
+30:
+	testl %ecx, %ecx
+	jz 39f
+	movb $$0, (%rsi)
+	movl $$0, 1(%rsi)
+	movq $$2, 5(%rsi)
+	addq $$13, %rsi
+	decl %ecx
+	jmp 30b
+39:
+	movzwl 7(%r12), %eax
+	imull $$13, %eax, %eax
+	addl $$9, %eax
+	movl %eax, (%r12)
+	movl %eax, %edx
+	jmp 37f
+31:
+	movl $$24, (%r12)
+	movb $$13, 4(%r12)
+	movb $$0, 7(%r12)
+	movl $$0, 8(%r12)
+	movq $$2, 12(%r12)
+	movl $$0, 20(%r12)
+	movq $$24, %rdx
+	jmp 37f
+32:
+	movl 19(%r12), %edx
+	movq $$1, %rdi
+	leaq 23(%r12), %rsi
+	movq $$2, %rax
+	syscall
+	movl 19(%r12), %eax
+	movl %eax, 7(%r12)
+	movl $$11, (%r12)
+	movb $$119, 4(%r12)
+	movq $$11, %rdx
+	jmp 37f
+33:
+	movl $$39, (%r12)
+	movb $$117, 4(%r12)
+	movl $$28, 7(%r12)
+	leaq 22f(%rip), %rsi
+	leaq 11(%r12), %rdi
+	movq $$28, %rcx
+34:
+	movb (%rsi), %al
+	movb %al, (%rdi)
+	incq %rsi
+	incq %rdi
+	decq %rcx
+	jnz 34b
+	movq $$39, %rdx
+	jmp 37f
+35:
+	movl $$7, (%r12)
+	movb $$121, 4(%r12)
+	movq $$7, %rdx
+	jmp 37f
+36:
+	movl $$7, (%r12)
+	movb $$123, 4(%r12)
+	movq $$7, %rdx
+	movq $$1, %rbp
+37:
+	incq %r15
+	movq %r15, 48(%rbx)
+	movq %rdx, %r9
+	xorl %r8d, %r8d
+40:
+	movq %r13, %rdi
+	leaq (%r12,%r8), %rsi
+	movq %r9, %rdx
+	subq %r8, %rdx
+	movq $$2, %rax
+	syscall
+	testq %rax, %rax
+	jle 38f
+	addq %rax, %r8
+	cmpq %r9, %r8
+	jb 40b
+	testq %rbp, %rbp
+	jnz 41f
+	jmp 23b
+38:
+	movq $$0x77, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+41:
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+20:
+	.ascii "/srv/niner"
+21:
+	.ascii "4"
+22:
+	.ascii "these bytes came from ring 3"
+.globl vectra_user_niner_end
+vectra_user_niner_end:
 `, "~{memory}"}()
 }

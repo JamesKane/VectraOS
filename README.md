@@ -6,7 +6,7 @@ on top.
 
 ## Status
 
-**Processes start processes, and publish services.** The kernel comes up
+**Processes serve, and the kernel is their client.** The kernel comes up
 under Limine on `x86_64` with descriptor tables, page tables and a heap of
 its own. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at `/bin` over
 9P2000.L. It preempts on the local APIC and takes keyboard interrupts
@@ -14,9 +14,11 @@ through the I/O APIC.
 
 Then it starts processes in ring 3 that open files by name and write to the
 console. Those processes spawn children out of files under `/bin`, wait for
-them, and collect their exit status. One of them posts a service in `/srv`
-and mounts the name it published. The posting is Plan 9's way: create the
-file, then write a descriptor into it.
+them, and collect their exit status. One posts a service in `/srv` and mounts
+the name it published -- Plan 9's way, create the file and write a descriptor
+into it. And one *answers* 9P: it posts a pipe end, and the kernel mounts the
+name, walks paths, and writes and reads through it. Every message crosses to
+ring 3 as bytes a program decodes and answers.
 
 A process is an address space, a namespace and a set of open files. Two
 processes can hand the kernel one path and get different files. The mount
@@ -37,7 +39,8 @@ its paths in the world its parent arranged.
 [  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT
 [  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
 [  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
-[  ok  ] bin #b bound at /bin, 2 programs as files, header VECTRA01
+[  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
+[  ok  ] bin #b bound at /bin, 4 programs as files, header VECTRA01
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half
 [  ok  ] syscall armed -- entry at 0xffffffff80020410, /dev/cons is descriptor 1
@@ -46,14 +49,15 @@ its paths in the world its parent arranged.
 -- this line went to /dev/null
 -- a process started this one
 -- this line went through a posted service
-[  ok  ] user 242 userland checks passed -- 16 processes, 2 started by another process, 65 system calls, a service posted from ring 3
+-- a process answered this line
+[  ok  ] user 265 userland checks passed -- 17 processes, 2 started by another process, 105 system calls, 11 9P requests answered by a process
 [  ok  ] boot complete -- idling
 ```
 
 That is an abridged log. The full one is about forty lines and every one of
 them is a self-test.
 
-### Five of those lines are worth explaining
+### Six of those lines are worth explaining
 
 `-- a program in ring 3 wrote this line` crosses every layer there is. The
 `syscall` instruction. A copy out of a program's memory that the kernel checked
@@ -78,6 +82,14 @@ wrote its descriptor's digit into it. Then it mounted the name it had just
 published at `/mnt` in its own namespace. Then it removed the name and kept
 using the mount, because removal ends the name rather than the service.
 
+`-- a process answered this line` is the newest, and the direction is the
+point. The *kernel* wrote it, as a 9P client of a service a program
+implements. `/bin/niner` made a pipe, posted one end in `/srv`, and served the
+other by hand. It answered version, attach, walks and an open, forwarded this
+write to the console, and served a read from its own text. The remove told it
+to stop. The layout this project is named for -- servers as programs -- now
+has its transport.
+
 `7 spoiled by a shared buffer`, in the full log, is a **pass**. It is a control
 that runs on every boot. Eight readers share one reply buffer, the way a 9P
 server looked before the payload-per-slot milestone. A failure to corrupt each
@@ -93,19 +105,20 @@ other would be the failure.
 | `kernel/sync/` | The lock that masks, the lock that parks, and waiting for a condition |
 | `sys/vectra9/` | The 9P2000.L message set, its codec, and the transport boundary |
 | `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings |
-| `kernel/mnt/` | A 9P connection with several requests in flight, and `Tflush` |
+| `kernel/mnt/` | A 9P connection with several requests in flight, `Tflush`, and the wire whose far side is bytes |
+| `kernel/pipe/` | A pipe: two ends, a byte ring per direction, and a posted end a mount turns into a server |
 | `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl` |
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, from ring 3 too |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, a top half that may not park |
 | `kernel/user/` | Ring 3, `syscall`/`sysret`, a process that owns what it opens, and the spawn that makes more |
 
-`servers/` and `apps/` are still empty, and `kernel/devfs` lives in the kernel
-because of it. What is missing is not the boundary. `devfs` already speaks 9P
-over a transport that hides which side of one it sits on. A program is a file
-a loader reads through a namespace, a process can start another one, and a
-process can post and mount services. What is missing now is one transport: a
-pipe whose far side is a process. With it a program can *answer* 9P rather
-than only speak it.
+`servers/` and `apps/` are still empty, and `kernel/devfs` lives in the
+kernel for the moment. Nothing structural blocks the move any more.`devfs`
+already speaks 9P over a transport that hides which side of a boundary it
+sits on. The transport whose far side is a process now exists, and every boot
+proves it. What the move waits on is a userland worth writing a server in.
+That means a 9P library, more than a page of text, and a way to stop a server
+that will not stop itself.
 
 **`docs/HANDOFF.md` is the orientation document**, and each subsystem has one
 of its own beside the code it explains.
@@ -138,7 +151,7 @@ shared on fork. It is built, and ring 3 reaches it through `bind`.
 ## Every line of that boot log is a self-test
 
 There is no test harness and no host-side test build. Every layer proves itself
-on the machine that will run it, during boot, and reports one line. About 740
+on the machine that will run it, during boot, and reports one line. About 840
 checks run on every boot.
 
 The cost of that is a self-test can be *unfalsifiable* — it passes because it
@@ -233,7 +246,9 @@ kernel/
   sync/                 Spinlock, sleeping lock, sleep queue, rendezvous
   sched/                Threads, run queues, the switch, the tick
   vfs/                  Chans, mount table, walking, union listings
-  mnt/                  A 9P connection with several requests in flight
+  mnt/                  A 9P connection with several requests in flight,
+                        and the wire a process answers
+  pipe/                 Anonymous pipes, and posted ends as servers
   devfs/                `#c` at /dev
   srv/                  `#s` at /srv
   user/                 Ring 3, the system calls, a process, the image

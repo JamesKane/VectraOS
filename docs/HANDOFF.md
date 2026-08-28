@@ -26,24 +26,24 @@ filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 `aarch64` and `riscv64`.
 
 **`servers/` is empty and devfs lives in `kernel/` instead**, which is a
-departure from that layout and a temporary one. The address space a server
-needs to be outside the kernel *in* now exists. So do the namespace it would
-speak through, and the loader that brings a program out of a file. So does
-the `spawn` that starts a process the kernel did not build. A process can
-post a service in `/srv` and mount one, both from ring 3. Both `kernel/devfs`
-and `kernel/srv` already speak 9P over a transport that hides which side of a
-boundary they sit on.
+departure from that layout and a temporary one. The last technical obstacle to
+the move fell this milestone. A pipe exists whose far side is a process,
+`kernel/mnt` runs a client over it, and `/bin/niner` answers 9P from ring 3.
+The boot mounts a service a *program* implements, writes through it, and reads
+back bytes the program's own text carries. Moving `servers/devfs` out of the
+kernel is now a porting job rather than a missing mechanism.
 
-What is missing now is exactly one transport: a pipe whose far side is a
-process. With it a program can *answer* 9P rather than only speak it. Every
-service a process can post today is one the kernel implements. The other gap
-is a way to stop a process that will not stop itself. See section 6.
+The gap that matters most now is the other one: a way to stop a process
+that will not stop itself. A server that dies fails its clients fast --
+the wire sees the hangup and poisons. A server that merely goes quiet holds
+them for ever, and only a note ends that. See section 6.
 
 ## 2. Where things stand
 
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
-`/bin`. It then runs about 740 checks against itself and idles.
+`/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
+840 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -51,14 +51,14 @@ keystroke gets there by raising IRQ 1, which is the first interrupt Vectra
 receives rather than arms. `/srv` is a directory of running services, and a name
 posted there can be mounted anywhere in a namespace.
 
-**Vectra runs processes, and processes make names.** Eighteen enter ring 3
-during the boot. Four try something a program may not do, and the kernel
-ends the process rather than the machine. The rest ask the kernel for
-things.
+**Vectra runs processes, and a process can be a server.** Nineteen enter
+ring 3 during the boot. Four try something a program may not do, and the
+kernel ends the process rather than the machine. The rest ask the kernel
+for things.
 
-Some open files by name in a namespace of their own. The kernel loads four
-of them out of files under `/bin`. One of those starts two more itself, and
-one publishes a service:
+Some open files by name in a namespace of their own. The kernel loads five
+of them out of files under `/bin`. One starts two more itself, one
+publishes a service, and one *answers* 9P:
 
 ```
 -- a program in ring 3 wrote this line
@@ -66,21 +66,27 @@ one publishes a service:
 -- this line went to /dev/null
 -- a process started this one
 -- this line went through a posted service
+-- a process answered this line
 ```
 
-The last of those is this milestone. `/bin/poster` opened `/dev/cons`,
-created `/srv/cons2`, and wrote its descriptor's digit into it -- Plan 9's
-posting, as file operations. Then it mounted the name it had just published
-at `/mnt` in its own namespace. The line went to the screen through that
-mount. Then it removed the name and wrote again. The name was gone and the
-service was not, which is Plan 9's rule about what removal means.
+The last of those is this milestone, and it is the layout in section 1
+stopping being aspirational. `/bin/niner` made a pipe with `sys_pipe`, posted
+one end as `/srv/niner`, and served the other. It answered version, attach,
+walks and an open, forwarded a write to the console, and served a read from
+its own text. The remove told it to stop. The kernel was the client for every
+message, and the mount's Tversion handshake was the first 9P request a process
+ever answered. The line above crossed ring 3 twice on its way to the screen.
 
-A process is an address space, a namespace and a set of open files. It can
-make more processes, and now it can put what it holds open into the
-namespace's hands. `docs/USER.md` has all five milestones, and `docs/SRV.md`
-has the posting design.
+Under it are the two pieces the handoff named for two milestones.
+`kernel/pipe` is a real pipe whose ends are chans a descriptor table can
+hold. The wire in `kernel/mnt` is the 9P client half over nothing but bytes,
+with the border controls an untrusted server obliges. A frame that lies about
+its size poisons the connection, and a hangup fails every request in flight
+at once. A full pool of stuck requests can still flush its way out.
+`docs/PIPE.md` and `docs/TRANSPORT.md` split that story, and `docs/USER.md`
+has all six ring-3 milestones.
 
-About 32,400 lines of Odin. The linked image is ~996 KB debug and ~467 KB
+About 35,700 lines of Odin. The linked image is ~1094 KB debug and ~522 KB
 release.
 
 **What exists, and which document says why:**
@@ -93,7 +99,8 @@ release.
 | `kernel/sync/` | The lock that masks, the lock that parks, and waiting for a condition | `docs/SYNC.md` |
 | `sys/vectra9/` | The 9P2000.L message set, its codec, and the session and transport boundary | `docs/VECTRA9.md` |
 | `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings | `docs/NAMESPACE.md` |
-| `kernel/mnt/` | A 9P connection with several requests in flight, and `Tflush` over it | `docs/TRANSPORT.md` |
+| `kernel/mnt/` | A 9P connection with several requests in flight, `Tflush` over it, and the wire whose far side is bytes | `docs/TRANSPORT.md` |
+| `kernel/pipe/` | Two ends, a byte ring per direction, and the glue that makes a posted end a server | `docs/PIPE.md` |
 | `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, and `/dev/consctl` | `docs/DEVFS.md` |
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, now from ring 3 too | `docs/SRV.md` |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, and a top half that may not park | `docs/KBD.md` |
@@ -119,6 +126,8 @@ of them could have come earlier:
     a loader                a program is a file a namespace can name
     spawn                   and a process can start another one, and wait for it
     a posting               and publish what it holds open, as a name in /srv
+    a pipe                  two ends a descriptor table can hold, that park
+    the wire                and 9P down one, so a process can answer it
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -131,13 +140,13 @@ code it explains.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x000000001bbac000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x000000001bb9b000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
-[  --  ] memory map: 33 entries spanning 12.7 GiB
-[  ok  ] usable 459.4 MiB, reclaimable 45.6 MiB
-[  --  ] largest usable region 387.7 MiB at 0x0000000001780000
-[  ok  ] pmm 117609 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.7 MiB in 274 tables (1.0 MiB)
+[  --  ] memory map: 31 entries spanning 12.7 GiB
+[  ok  ] usable 459.2 MiB, reclaimable 45.7 MiB
+[  --  ] largest usable region 387.6 MiB at 0x0000000001780000
+[  ok  ] pmm 117567 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 515.8 MiB in 274 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
@@ -147,24 +156,27 @@ code it explains.
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] ioapic version 0x20, 24 lines, all masked
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62525 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (9144427-9230106 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 839 acquisitions, 800 parked and handed back, decayed to 1
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62543 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (9288565-9379663 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 846 acquisitions, 810 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 1772 namespace operations across 5 threads, 277 rebinds under them in 1001 ms, nothing serialised, heap balanced
+[  ok  ] vfs 34 concurrency checks passed -- 1770 namespace operations across 5 threads, 278 rebinds under them in 1001 ms, nothing serialised, heap balanced
 [  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
--- this line reached the screen through /dev/consX
+-- this line reached the screen through /dev/consX 
 [  ok  ] devfs 81 device checks passed -- 4 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 10 ticks
 [  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
 [  ok  ] srv 82 service checks passed -- 35 posted, 6 listed across 6 passes with one removed under them, 1 mounted, 1 name reserved pending, heap balanced
-[  ok  ] bin #b bound at /bin, 3 programs as files, header VECTRA01
+[  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
+[  ok  ] pipe 37 checks passed -- 8227 bytes crossed, 2 threads parked and woken, heap balanced
+[  ok  ] wire 46 checks passed -- 18 frames answered by a thread the kernel cannot call, 9 flushed, 1 stale reply dropped, 2 wires poisoned on purpose
+[  ok  ] bin #b bound at /bin, 4 programs as files, header VECTRA01
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] kbd 48 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
 [  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 132 CR3 reloads, one address two meanings
-[  ok  ] syscall armed -- entry at 0xffffffff800200d0, /dev/cons is descriptor 1
+[  ok  ] syscall armed -- entry at 0xffffffff80024f50, /dev/cons is descriptor 1
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
 -- this line went to /dev/null
@@ -172,7 +184,8 @@ code it explains.
 -- a process started this one
 -- a process started this one
 -- this line went through a posted service
-[  ok  ] user 242 userland checks passed -- 16 processes, 2 started by another process, 4540576 preempted rounds, 65 system calls, a service posted from ring 3
+-- a process answered this line
+[  ok  ] user 265 userland checks passed -- 17 processes, 2 started by another process, 4616809 preempted rounds, 105 system calls, 11 9P requests answered by a process
 [  ok  ] boot complete -- idling
 ```
 
@@ -197,21 +210,24 @@ knowing about before reading a boot:
 
 The two that shape everything after them:
 
-- **No transport whose far side is a process.** A program can post a service
-  and mount one, and every service it can post is still one the kernel
-  implements. A process cannot yet *answer* 9P, because nothing carries a
-  message to ring 3 and back. The missing pieces are a pipe, and a way for
-  `kernel/mnt` to speak down it. This is the one step left between here and
-  `servers/devfs`. See `docs/SRV.md`.
-- **No note.** A process ends itself or faults, and nothing can end it from
+  - **No note.** A process ends itself or faults, and nothing can end it from
   outside. `user.destroy` refuses a running process rather than free the
   tables underneath it, and a parent's `wait` can only collect a child that
-  chose to stop. Plan 9 sends a note. Until Vectra can, a runaway service is
-  a leak the machine reports and cannot fix.
+  chose to stop. Plan 9 sends a note. It mattered before as a leak the
+  machine reports and cannot fix, and it matters more now that services are
+  processes. A server that *dies* fails its clients fast, because the wire
+  poisons on the hangup. A server that merely goes quiet holds every client
+  that called it, and only a note ends that.
 - **No SMP.** `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 ever
   starts. There is no IPI, no AP trampoline and no lock word.
 
-And on the new ground itself: `spawn` is fork and exec with the seam not yet
+And on the new ground itself: a posted service, once mounted, never comes
+down. The wire, its arena, its reader thread and one chan reference stay
+pinned for the life of the machine. The user self-test counts that pin to the
+object -- seven. A counted release is the missing piece, and it is the
+reference count `docs/SRV.md` names as future work.
+
+From the milestone before: `spawn` is fork and exec with the seam not yet
 cut. There is no `rfork` that continues from the call site, and no `exec`
 that replaces a running image. Both are mechanism whose rules the milestone
 already decided. `docs/USER.md` says exactly what each needs.
@@ -263,7 +279,8 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/SCHED.md` | `kernel/sched/` — the switch, priorities, the tick | Adding a thread state, a priority rule, or a second core |
 | `docs/SYNC.md` | `kernel/sync/` — spinlocks, sleeping locks, the sleep queue | Taking any lock, or making anything wait |
 | `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, the two transports, and the lock that went | Walking, binding, adding a server, or giving up on a read |
-| `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
+| `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer, and the wire over bytes | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
+| `docs/PIPE.md` | `kernel/pipe/` — the byte rings, the ends as chans, and a posted end becoming a server | Moving bytes between processes, or mounting a service a process answers |
 | `docs/SPACE.md` | `kernel/mem/space.odin` — a space per process, and the half of it that is shared | Building a process, mapping something a program may reach, or wondering what the scheduler reloads |
 | `docs/USER.md` | `kernel/user/` — ring 3, `syscall`/`sysret`, the per-CPU record behind GS, a process and its namespace | Entering ring 3, adding a system call, copying a pointer in from a program, or wondering what a program may not do |
 | `docs/KBD.md` | `kernel/drivers/kbd/` — scancodes, the I/O APIC, and why a handler splits in two | Adding a device that interrupts, routing a line, or wondering why the polling thread is still there |
@@ -361,38 +378,45 @@ deadline, and a request can be left pending and flushed. Milestones 10 through
 12 spent all of it. Every primitive a driver needs is not only present but used
 by something that is not a self-test.
 
-Processes reproduce, and processes publish. The loader reads an image out of
-a file through a namespace, and `/bin` serves the three programs that stand
-alone. `spawn` and `wait` let a program raise children and collect them.
-`create`, `mount` and `remove` let one post a service in `/srv` and mount a
-posted name, which the boot proves with `/bin/poster`.
-
-The two milestones left four things on the table, named in `docs/USER.md`
-and `docs/SRV.md`.
-There is no `rfork` from the call site and no `exec` in place. `wait` polls.
-Every service a process can post is one the kernel implements.
+Processes reproduce, processes publish, and now a process serves. The loader
+reads an image out of a file through a namespace, and `/bin` serves the four
+programs that stand alone. `spawn` and `wait` let a program raise children
+and collect them. `create`, `mount` and `remove` let one post a service in
+`/srv` and mount a posted name. `pipe` gives one a channel whose far side it
+can answer, and `/bin/niner` is a mounted service the kernel talks to as a
+client. Every mechanism the target layout in section 1 needs now exists.
 
 **Next, in order:**
 
-1. **A transport whose far side is a process.** The one step left between
-   here and `servers/devfs` moving out of the kernel. A pipe-shaped channel
-   a program can read requests from and write replies to, and a way for
-   `kernel/mnt` to run its workers over it. With that, a posted descriptor
-   can name a service a *process* answers, and the layout in section 1 stops
-   being aspirational. `docs/TRANSPORT.md` has the client half already.
+1. **`servers/devfs` — a service moved out of the kernel.** The point of
+   everything since Milestone 9, now unblocked. The shape: a program that
+   makes a pipe, posts it, and answers with a real device tree behind it.
+   What it will surface immediately: a user-side 9P library wants to exist,
+   because `niner` hand-builds five reply kinds and that does not scale.
+   Programs want more than one page of text, and a server wants `rfork`-like
+   threads or an event loop. Expect this milestone to be mostly *userland
+   runtime*, and only then a port. The wire's client half is done and
+   `docs/PIPE.md` has the mount-side glue.
 
 2. **A note, or whatever ends a process from outside.** Nothing can today. A
    process ends itself or faults, and `user.destroy` refuses a running one
    rather than free the tables underneath it. Plan 9 sends a note. It is also
-   what `wait` wants before it can stop polling. An ending the kernel can
-   deliver is an ending the kernel can wake a parent for. It matters more
-   once services are processes: a server that hangs is a machine that needs
-   a way to say stop.
+   what `wait` wants before it can stop polling. And it is now the only
+   answer to a server that goes quiet. The wire fails its clients when a
+   server *dies*, and cannot when one merely holds its silence. A machine
+   whose services are processes needs a way to say stop.
 
-3. **`/dev/draw`**, over `kernel/drivers/fb`. The other half of a console, and
+3. **A counted release for a posted service.** The wire, its arena, its
+   reader and a chan reference are pinned per posted pipe -- seven heap
+   objects the user self-test counts exactly. When the last mount and the
+   name are both gone, the connection should come down. This wants the note
+   first, so a teardown can interrupt the reader rather than wait for a
+   hangup.
+
+4. **`/dev/draw`**, over `kernel/drivers/fb`. The other half of a console, and
    the thing `apps/terminal` will actually want.
 
-4. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
+5. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
    two becomes a reason rather than a tidiness.
 
@@ -511,6 +535,9 @@ kernel/
   verify_space.odin     Address spaces: 33 checks -- two threads, one address,
                         two meanings, and a teardown that stops at the halfway
                         index
+  verify_wire.odin      The wire against a scripted server across a real pipe:
+                        46 checks -- out-of-order replies, a full pool
+                        flushing out, a stale reply, a hangup and a poisoning
   splash.odin           Boot chassis: plinth, copper bar, well, lamps
   log.odin              Kernel log; serial + screen, with early-line replay
   panic.odin            The panic screen, and the trap handler behind it
@@ -585,6 +612,17 @@ kernel/
                         tag pool, the payload buffer per slot, the work queue,
                         and the client's flush
     serve.odin          The workers, and where Rflush's ordering rule lives
+    wire.odin           The same client over bytes: frames down a Wire_IO,
+                        replies matched by tag, and the poison that answers a
+                        server that breaks framing
+  pipe/
+    pipe.odin           Two ends, a byte ring per direction, blocking reads
+                        and writes, and the ends as chans
+    serve9.odin         A posted pipe end turned into a mountable server: the
+                        wire build, the handshake deadline, and the pin
+    verify.odin         The boot self-test: 37 checks -- bytes across, a
+                        reader and a writer parked and woken, EOF and EPIPE
+                        out the right sides
   devfs/
     devfs.odin          `#c` at /dev: the node table, the handler, the abort
                         hook, /dev/consctl, and the worker count that bounds
@@ -596,8 +634,8 @@ kernel/
                         a mode that reverts when its file closes
   srv/
     srv.odin            `#s` at /srv: the table, post and remove, mounting by
-                        name, the id a fid binds instead of a slot, and
-                        posting by create-and-write from ring 3
+                        name, the id a fid binds instead of a slot, and the
+                        posted chan a mount turns into a server
     verify.odin         The boot self-test: 82 checks -- a service published,
                         mounted, removed under its own mount, a listing paced
                         across a removal, and a pending name refused
@@ -607,7 +645,7 @@ kernel/
                         kernel's, a table of open files, and the fault handler
                         that ends one rather than the machine
     syscall.odin        What is behind the door: the calling convention, the
-                        fourteen calls, the two copies that decide whether a
+                        fifteen calls, the two copies that decide whether a
                         pointer from ring 3 is one the kernel may follow, and
                         the resolver that answers /srv's descriptor question
     image.odin          The four-word image format, the loader that reads one
@@ -615,12 +653,13 @@ kernel/
                         programs as files
     spawn.odin          A process that starts another one: what a child
                         inherits, and the wait that collects it by pid
-    program.odin        The fourteen programs the assembler bakes into the
+    program.odin        The fifteen programs the assembler bakes into the
                         image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 242 checks -- one process preempted
+    verify.odin         The boot self-test: 265 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a parent that raises
-                        two children, and a poster that publishes a service
+                        two children, a poster that publishes a service, and
+                        a niner the kernel talks to as a 9P client
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled
     wait.odin           Wait queues, scheduler hooks, priority-ordered service
@@ -650,7 +689,10 @@ docs/
   SCHED.md              The switch, priorities, decay and boost, the tick
   SYNC.md               Spinlock, sleeping lock, sleep queue, deadlines
   NAMESPACE.md          kernel/vfs: what guards what, and the borrow rule
-  TRANSPORT.md          kernel/mnt: the tag pool, the workers, Tflush
+  TRANSPORT.md          kernel/mnt: the tag pool, the workers, Tflush, and
+                        the wire over bytes
+  PIPE.md               kernel/pipe: the byte rings, the ends as chans, and a
+                        posted end becoming a server
   SRV.md                kernel/srv: #s at /srv, what a posted service is, and
                         the two decisions a directory that changes needs
   SPACE.md              kernel/mem/space.odin: a space per process, what it
