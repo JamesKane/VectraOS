@@ -1,7 +1,7 @@
 # The userland runtime: Odin in ring 3
 
-`sys/abi/`, `sys/libuser/`, `servers/ramfs/`, the `VECTRA02` format, and the
-user half of `build.odin`.
+`sys/abi/`, `sys/libuser/`, `servers/ramfs/`, `servers/consrv/`, the
+`VECTRA02` format, and the user half of `build.odin`.
 
 Milestone 16. Every program before it was a page of assembler, because a page
 was all the loader could carry. This milestone is the runtime that ends that.
@@ -109,6 +109,32 @@ The image is 54 KB in three segments, thirteen times the size of a blob.
 `#b`. The kernel mounts `/srv/ramfs`, reads and writes through it, lists it,
 and removes to stop, with every byte crossing ring 3 twice.
 
+## `servers/consrv`: two processes, one server
+
+The rfork milestone's program, and the first server that waits on two
+things at once. `main.odin`'s comment tells its own story. What belongs
+here is what it proved about the runtime:
+
+- **`libuser.rfork(RFPROC | RFMEM)` from compiled code works as Plan 9's
+  does.** The child continues from the call site on a private copy of the
+  stack. An ordinary `if pid == 0` branches the two lives -- no entry
+  function, no stack juggling, no allocator.
+- **Shared bss is a real meeting point.** The child parks reading
+  `/dev/cons` and publishes bytes into a producer-consumer ring of two
+  monotonic counters. The parent drains it from its serve loop.
+  `intrinsics.volatile_load`/`store` order the counter against its bytes,
+  and each side owns exactly one counter. That is the only concurrency
+  discipline ring 3 has, and enough for this shape.
+- **The note is a teardown a program can drive.** On `Tremove` the parent
+  notes its reader out of a parked device read, and exits zero only if the
+  wait answered EINTR. `libuser` grew `rfork` and `note` wrappers for it.
+
+A read of `/line` with nothing arrived answers zero bytes, which a client
+cannot tell from EOF. The wart is deliberate: parking the Tread would hold
+the serve loop's one request while the keyboard is silent, starving every
+other client. A serve loop with a thread per request is the fix, and the
+argument for the next milestone.
+
 ## The build, and where the image goes
 
 `build.odin` compiles each entry in `user_programs` with the kernel's own
@@ -151,8 +177,11 @@ ordering beats the same rule kept by luck.
   environment to justify it, and nothing passes either yet.
 - **One request at a time, by design.** `serve` answers in order, so a slow
   file holds the connection the way any synchronous server does. The wire's
-  deadline and flush cover the client side. A concurrent user server wants
-  threads in ring 3, which is `rfork`'s milestone.
+  deadline and flush cover the client side. `rfork` gave a server more
+  processes, and `consrv` waits on two things with two. One *serve loop*
+  still answers one request at a time. Two processes must not `serve` one
+  descriptor, because `read_full` is not atomic. A concurrent serve loop
+  is its own milestone.
 - **The converter trusts `ld.lld` about overlap.** It refuses misalignment
   itself, and the loader's judge re-checks everything else. A malicious
   image never reaches further than the judge, which the crafted-table

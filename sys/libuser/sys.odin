@@ -124,6 +124,25 @@ wait :: proc "contextless" (pid: u64) -> i64 {
 	return raw1(abi.SYS_WAIT, pid)
 }
 
+/*
+rfork is Plan 9's fork, flags from `sys/abi`'s RF words.
+
+One wrapper, two callers answered. The parent hears the child's pid. The
+child continues from the same call site, on its own copy of the stack, and
+hears zero. `RFMEM` shares the data and bss between them. The kernel's
+`rfork.odin` says what each flag means and which are refused.
+*/
+rfork :: proc "contextless" (flags: u64) -> i64 {
+	return raw1(abi.SYS_RFORK, flags)
+}
+
+// note posts a note to one of the caller's own children, which today ends
+// it at its next kernel boundary. The child's wait status is EINTR, which
+// is how a parent tells an ending it asked for from one it did not.
+note :: proc "contextless" (pid: u64, text: string) -> i64 {
+	return raw3(abi.SYS_NOTE, pid, u64(uintptr(raw_data(text))), u64(len(text)))
+}
+
 sleep :: proc "contextless" (ticks: u64) -> i64 {
 	return raw1(abi.SYS_SLEEP, ticks)
 }

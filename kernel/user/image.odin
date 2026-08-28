@@ -280,8 +280,22 @@ when #exists("../../build/user/ramfs.vx") {
 	RAMFS_IMAGE: []u8
 }
 
+when #exists("../../build/user/consrv.vx") {
+	@(private = "file")
+	CONSRV_IMAGE := #load("../../build/user/consrv.vx")
+} else {
+	@(private = "file")
+	CONSRV_IMAGE: []u8
+}
+
 @(private = "file")
-bin_nodes: [8]vfs.Static_Node
+bin_nodes: [9]vfs.Static_Node
+
+// The rows `/bin` actually publishes -- `bin_nodes` less any compiled image
+// a fresh tree has not built yet. Package-scope, because `static_init`
+// borrows the slice for the life of the machine.
+@(private = "file")
+bin_live: [9]vfs.Static_Node
 
 @(private = "file")
 bin_tree: vfs.Static_Tree
@@ -319,10 +333,10 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 		return vectra9.ENOMEM
 	}
 
-	// `ramfs` last, so the fallback below can drop exactly it.
 	bin_nodes = {
 		{name = "/", parent = -1, dir = true},
 		{name = "child", parent = 0, data = string(child)},
+		{name = "consrv", parent = 0, data = string(CONSRV_IMAGE)},
 		{name = "niner", parent = 0, data = string(niner)},
 		{name = "noter", parent = 0, data = string(noter)},
 		{name = "parent", parent = 0, data = string(parent)},
@@ -331,15 +345,24 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 		{name = "ramfs", parent = 0, data = string(RAMFS_IMAGE)},
 	}
 
-	// A tree checked before `build.odin` ever built the image serves what it
-	// has. The published count says so, and `verify_runtime` fails on it.
-	published := bin_nodes[:]
-	if len(RAMFS_IMAGE) == 0 {
-		published = bin_nodes[:7]
+	/*
+	A tree checked before `build.odin` ever built an image serves what it
+	has. Two images can now be missing independently. The fallback is
+	therefore a filter rather than a slice: every file row with bytes
+	behind it, in order. Dropping a row cannot break a `parent` index, because every file
+	is a child of row zero. The published count says what happened, and
+	`verify_runtime` and `verify_consrv` fail loudly on an absence.
+	*/
+	count := 0
+	for node in bin_nodes {
+		if node.dir || len(node.data) > 0 {
+			bin_live[count] = node
+			count += 1
+		}
 	}
-	bin_published = len(published) - 1
+	bin_published = count - 1
 
-	if !vfs.static_init(&bin_tree, "bin", published) {
+	if !vfs.static_init(&bin_tree, "bin", bin_live[:count]) {
 		return vectra9.ENOMEM
 	}
 	if err := vfs.server_init(&bin_server, "b", vfs.static_handler, &bin_tree); err != .None {
@@ -436,13 +459,13 @@ load_v1 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 		return 0, 0, 0, vectra9.ENOEXEC
 	}
 
-	if p.text, ok = mem.alloc_page_zeroed(); !ok {
+	if p.text = segment_one_page(p, TEXT_VA, {}, .Text); p.text == 0 {
 		return 0, 0, 0, vectra9.ENOMEM
 	}
-	if p.data, ok = mem.alloc_page_zeroed(); !ok {
+	if p.data = segment_one_page(p, DATA_VA, {.Write, .No_Execute}, .Data); p.data == 0 {
 		return 0, 0, 0, vectra9.ENOMEM
 	}
-	if p.stack, ok = mem.alloc_page_zeroed(); !ok {
+	if p.stack = segment_one_page(p, STACK_VA, {.Write, .No_Execute}, .Stack); p.stack == 0 {
 		return 0, 0, 0, vectra9.ENOMEM
 	}
 
@@ -450,24 +473,13 @@ load_v1 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 	if e := read_exact(c, IMAGE_HEADER_SIZE, text[:header.text]); e != vfs.OK {
 		return 0, 0, 0, e
 	}
-
-	if mem.map_user(p.space, TEXT_VA, p.text, {}, 1) != .None {
-		return 0, 0, 0, vectra9.ENOMEM
-	}
-	if mem.map_user(p.space, DATA_VA, p.data, {.Write, .No_Execute}, 1) != .None {
-		return 0, 0, 0, vectra9.ENOMEM
-	}
-	if mem.map_user(p.space, STACK_VA, p.stack, {.Write, .No_Execute}, 1) != .None {
-		return 0, 0, 0, vectra9.ENOMEM
-	}
 	return uintptr(header.entry), STACK_TOP, u64(DATA_VA), vfs.OK
 }
 
-// load_v2 is the segment shape. Frames land in `p.frames` the moment they
-// exist, so a failure anywhere leaves nothing the teardown cannot find.
 /*
-load_v2 is the segment shape. Frames land in `p.frames` the moment they
-exist, so a failure anywhere leaves nothing the teardown cannot find.
+load_v2 is the segment shape, now literally: one `Segment` per image row and
+one for the stack. Each frame lands in its segment the moment it exists, so
+a failure anywhere leaves nothing the teardown cannot find.
 
 The stack pointer it answers is `STACK_TOP - 8`, and the eight matter. The
 SysV ABI enters a function with the return address already pushed. Compiled
@@ -510,11 +522,18 @@ load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 	for i in 0 ..< nsegs {
 		s := segs[i]
 		flags: arch.Page_Flags = {.No_Execute}
+		kind := Segment_Kind.Text
 		if s.flags & IMG_FLAG_X != 0 {
 			flags = {}
 		}
 		if s.flags & IMG_FLAG_W != 0 {
 			flags = {.Write, .No_Execute}
+			kind = .Data
+		}
+
+		seg := segment_new(s.vaddr, flags, kind)
+		if seg == nil || !proc_add_segment(p, seg) {
+			return 0, 0, 0, vectra9.ENOMEM
 		}
 
 		pages := int((s.memsz + page - 1) / page)
@@ -524,8 +543,10 @@ load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 			if !ok {
 				return 0, 0, 0, vectra9.ENOMEM
 			}
-			p.frames[p.frame_count] = frame
-			p.frame_count += 1
+			if !segment_add_frame(seg, frame) {
+				mem.free_page(frame)
+				return 0, 0, 0, vectra9.ENOMEM
+			}
 
 			if copied < s.filesz {
 				chunk := min(s.filesz - copied, page)
@@ -543,13 +564,19 @@ load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 		offset += s.filesz
 	}
 
+	stack := segment_new(STACK_VA2, {.Write, .No_Execute}, .Stack)
+	if stack == nil || !proc_add_segment(p, stack) {
+		return 0, 0, 0, vectra9.ENOMEM
+	}
 	for j in 0 ..< STACK_PAGES2 {
 		frame, ok := mem.alloc_page_zeroed()
 		if !ok {
 			return 0, 0, 0, vectra9.ENOMEM
 		}
-		p.frames[p.frame_count] = frame
-		p.frame_count += 1
+		if !segment_add_frame(stack, frame) {
+			mem.free_page(frame)
+			return 0, 0, 0, vectra9.ENOMEM
+		}
 		va := STACK_VA2 + uintptr(j * arch.PAGE_SIZE)
 		if mem.map_user(p.space, va, frame, {.Write, .No_Execute}, 1) != .None {
 			return 0, 0, 0, vectra9.ENOMEM

@@ -98,6 +98,7 @@ SYS_MOUNT :: abi.SYS_MOUNT
 SYS_REMOVE :: abi.SYS_REMOVE
 SYS_PIPE :: abi.SYS_PIPE
 SYS_NOTE :: abi.SYS_NOTE
+SYS_RFORK :: abi.SYS_RFORK
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -163,17 +164,19 @@ thread has no process and gets nil, which `/srv` turns into EBADF -- a number
 from nowhere names nothing.
 
 Runs under `/srv`'s spinlock: table lookups only, no messages, no lock that
-parks. What it hands back is the chan itself, which is the connection. `/srv`
-takes its own reference before the handler returns, so the borrow here never
-outlives the caller's own table.
+parks. What it hands back is the chan **with a reference of its own**, taken
+under the table's lock. `/srv` keeps that reference as the posting. A
+borrow would not survive a shared table -- a sibling's close could spend the
+chan between this answer and `/srv`'s increment. Lock order: `/srv` before
+the table, here and nowhere the other way.
 */
 @(private = "file")
 resolve_fd_chan :: proc "contextless" (fd: int) -> ^vfs.Chan {
-	f := fd_at(current(), fd)
-	if f == nil {
+	c, _, ok := fd_take(current(), fd)
+	if !ok {
 		return nil
 	}
-	return f.chan
+	return c
 }
 
 syscall_count :: proc "contextless" () -> int {
@@ -253,6 +256,10 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = sys_pipe()
 	case SYS_NOTE:
 		result = sys_note(a0, uintptr(a1), int(a2))
+	case SYS_RFORK:
+		// The frame crosses like `SYS_EXIT`'s, and for a bigger reason: the
+		// frame *is* the child's first state. See `rfork.odin`.
+		result = sys_rfork(frame, a0)
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
 	case SYS_EXIT:
@@ -269,9 +276,9 @@ current reports the process the calling thread belongs to.
 
 One load, through `Thread.user`, which the scheduler carries and never reads.
 Every call below starts here, because every call below is about something a
-process owns.
+process owns. `rfork.odin` starts at the same place, for the same reason.
 */
-@(private = "file")
+@(private)
 current :: proc "contextless" () -> ^Process {
 	thread := sched.current()
 	if thread == nil {
@@ -283,10 +290,14 @@ current :: proc "contextless" () -> ^Process {
 @(private = "file")
 sys_write :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 	p := current()
-	f := fd_at(p, fd)
-	if f == nil {
+	c, offset, ok := fd_take(p, fd)
+	if !ok {
 		return -i64(vectra9.EBADF)
 	}
+	// The reference, not the slot. A sibling on a shared table may close
+	// this descriptor while the write below is parked. The chan must
+	// outlive the operation it is in. See `fdtable.odin`.
+	defer vfs.chan_close(c)
 	if count <= 0 {
 		return 0
 	}
@@ -297,12 +308,13 @@ sys_write :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 		return -i64(vectra9.EFAULT)
 	}
 
-	written, err := vfs.chan_write(f.chan, f.offset, buffer[:n])
+	written, err := vfs.chan_write(c, offset, buffer[:n])
 	if err != vfs.OK {
 		return -i64(err)
 	}
-	// The cursor is the process's, not the file's. See `Fd`.
-	f.offset += u64(written)
+	// The cursor is the process's, not the file's, and it moves only if the
+	// descriptor still means this chan. See `fd_advance`.
+	fd_advance(p, fd, c, u64(written))
 	return i64(written)
 }
 
@@ -321,10 +333,13 @@ day `/dev/cons` is read this way, the answer is a buffer the process keeps.
 @(private = "file")
 sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 	p := current()
-	f := fd_at(p, fd)
-	if f == nil {
+	c, offset, ok := fd_take(p, fd)
+	if !ok {
 		return -i64(vectra9.EBADF)
 	}
+	// A reference of this call's own, for the same reason `sys_write` takes
+	// one -- a parked read must not have its chan spent under it.
+	defer vfs.chan_close(c)
 	if count <= 0 {
 		return 0
 	}
@@ -334,7 +349,7 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 
 	got: int
 	err: vfs.Errno
-	if vfs.server_interruptible(f.chan.server) {
+	if vfs.server_interruptible(c.server) {
 		/*
 		A read that can park for ever, made noteable by refusing to park
 		for ever. The transport can give a read a deadline, so the wait
@@ -345,7 +360,7 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 		synchronous transport has no deadline to lean on.
 		*/
 		for {
-			got, err = vfs.chan_read_for(f.chan, f.offset, buffer[:n], NOTE_POLL)
+			got, err = vfs.chan_read_for(c, offset, buffer[:n], NOTE_POLL)
 			if err != vectra9.EINTR {
 				break
 			}
@@ -354,7 +369,7 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 			}
 		}
 	} else {
-		got, err = vfs.chan_read(f.chan, f.offset, buffer[:n])
+		got, err = vfs.chan_read(c, offset, buffer[:n])
 	}
 	if err != vfs.OK {
 		return -i64(err)
@@ -362,7 +377,7 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 	if got > 0 && !copy_out(addr, buffer[:got]) {
 		return -i64(vectra9.EFAULT)
 	}
-	f.offset += u64(got)
+	fd_advance(p, fd, c, u64(got))
 	return i64(got)
 }
 
@@ -636,9 +651,12 @@ ends here, with its pipe already hung up for its clients.
 note_exit :: proc(frame: ^arch.Trap_Frame) -> ! {
 	p := current()
 	if p != nil {
-		for i in 0 ..< MAX_FDS {
-			_ = fd_close(p, i)
-		}
+		// Detach before the record is published, release in thread context.
+		// On a shared table this is one holder leaving, not a close-all: a
+		// sibling's descriptors survive their sibling's death.
+		t := p.fdt
+		p.fdt = nil
+		fdt_release(t)
 	}
 
 	arch.disable_interrupts()
@@ -726,11 +744,9 @@ sys_wait :: proc(pid: u64) -> i64 {
 // no size to seek relative to until something answers `stat`.
 @(private = "file")
 sys_seek :: proc(fd: int, offset: u64) -> i64 {
-	f := fd_at(current(), fd)
-	if f == nil {
+	if !fd_seek(current(), fd, offset) {
 		return -i64(vectra9.EBADF)
 	}
-	f.offset = offset
 	return i64(offset)
 }
 
@@ -774,11 +790,15 @@ sys_exit :: proc(frame: ^arch.Trap_Frame, status: u64) {
 	run the teardown sat parked with it. A faulting process still holds its
 	descriptors until `destroy`, and that is the note's job to finish. An
 	ending the kernel delivers is an ending the kernel can also clean up after.
+
+	On a shared table the close-all became a release: this holder leaves, and
+	the chans close only when the last one does. The detach comes before the
+	record is published, so `unload` finds nothing to release twice.
 	*/
 	if p := current(); p != nil {
-		for i in 0 ..< MAX_FDS {
-			_ = fd_close(p, i)
-		}
+		t := p.fdt
+		p.fdt = nil
+		fdt_release(t)
 	}
 
 	arch.disable_interrupts()
@@ -791,7 +811,7 @@ sys_exit :: proc(frame: ^arch.Trap_Frame, status: u64) {
 			p.exit.kstack = uintptr(rawptr(frame))
 			p.exit.from_user = arch.frame_is_user(frame)
 			p.exit.status = status
-				p.exit.deliberate = true
+			p.exit.deliberate = true
 			intrinsics.volatile_store(&p.exit.done, true)
 		}
 	}
@@ -817,9 +837,9 @@ half a program may name, every page in it is present, and every page carries
 name a kernel address, and the kernel's own read would succeed.
 
 **There is a window between the check and the read**, and nothing closes it. A
-second thread in the same space could unmap the page in between. Nothing can
-unmap anything yet and a program has one thread, so the window is not
-reachable. The first program with two threads reaches it. The answer then is
+sibling sharing the page could unmap it in between, and `rfork` means the
+sibling exists now. What still does not exist is any way to unmap, so the
+window stays unreachable. The first unmap reaches it. The answer then is
 the one every kernel reaches for: fault the read and recover from it.
 */
 /*

@@ -7,21 +7,16 @@ kernel can be. This file is the other arrangement, the one the handoff calls
 the step before `servers/` stops being empty. **A process names a file in its
 own namespace, and the kernel builds a process out of what the file says.**
 
-## Spawn, which is fork and exec with the seam not yet cut
+## Spawn, which is fork and exec with the seam half cut
 
 Plan 9 starts a process with `rfork` and then `exec`. The seam between them
 is where a shell rearranges the child: point descriptors somewhere, bind a
-namespace into shape, then replace the program. Vectra will want that seam
-the day it has a shell. What it needs today is the whole arc: a new process,
-running a named file, inheriting what its parent chose to hand down. `spawn`
-is that arc as one call.
-
-Cutting it in two later is removal rather than redesign. The namespace flags
-are already `vfs.ns_fork`'s, taken one for one. The descriptor rule is already
-a copy the way `rfork`'s default is. What a separate `rfork` adds is a child
-that continues from the call site. That is a copied trap frame and copied
-user pages. This file leaves that work for the milestone that needs it, and
-takes none of these decisions back.
+namespace into shape, then replace the program. `rfork.odin` cut the seam
+from the creating side, exactly as this file promised: a copied trap
+frame, copied user pages, removal rather than redesign. What `spawn`
+remains is the whole arc as one call: a new process, running a named file,
+inheriting what its parent chose. The `exec` that replaces a running image
+is the half still fused, and a shell is what will demand it.
 
 ## What a child inherits
 
@@ -39,8 +34,8 @@ still loads. It just cannot open what it did not inherit.
 
 The descriptors are copied rather than shared: the chan is referenced again,
 the offset is the child's own from there on. Two processes advancing one
-shared cursor is a coordination tool Plan 9 keeps (`rfork` without `RFFDG`);
-it can arrive with the rest of `rfork` later.
+shared cursor is a coordination tool Plan 9 keeps, and it arrived with
+`rfork` -- a fork without `RFFDG` shares the group. Spawn keeps the copy.
 
 ## Wait, and who reaps
 
@@ -51,11 +46,10 @@ gives its space back? Now the parent is the watcher of record, and a child
 nobody waits for stays, visibly, in `stats().live`. The kernel still reaps
 what it started itself, in the self-tests, the same way it always has.
 
-`wait` polls, on the same argument `user.wait` makes. The record it watches
-comes from a path where nothing may take a lock or wake a sleeper. Each miss
-parks the caller for a tick, so a waiting parent costs the machine nothing.
-The rendezvous this should become wants a wake that is legal in a fault
-handler, and that is a smaller milestone than it sounds.
+`wait` parks on the exit rendezvous, and every path out of a process wakes
+it. The wake from a fault is legal because `sync.wakeup_all` masks rather
+than enables. A noted child answers EINTR, a faulted one EIO, and a
+deliberate one its own status.
 */
 package user
 
@@ -124,10 +118,11 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 		return nil, vectra9.ENOMEM
 	}
 	p^ = Process {
-		space  = space,
-		live   = true,
-		pid    = next_pid,
-		parent = parent != nil ? parent.pid : 0,
+		space      = space,
+		live       = true,
+		pid        = next_pid,
+		parent     = parent != nil ? parent.pid : 0,
+		note_group = parent != nil ? parent.note_group : next_pid,
 	}
 	next_pid += 1
 
@@ -162,12 +157,21 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 		return nil, lerr
 	}
 
-	if flags & SPAWN_FD_CLEAN == 0 {
-		if parent != nil {
-			copy_descriptors(p, parent)
-		} else {
-			open_standard(p)
-		}
+	// A table exists whichever flag was passed. Clean means empty, not
+	// absent -- a child with no descriptors can still open. Spawn's rule is
+	// a copy, which is `RFFDG`'s. Sharing is `rfork`'s default, not this
+	// call's.
+	if flags & SPAWN_FD_CLEAN == 0 && parent != nil {
+		p.fdt = fdt_copy(parent.fdt)
+	} else {
+		p.fdt = fdt_new()
+	}
+	if p.fdt == nil {
+		unload(p)
+		return nil, vectra9.ENOMEM
+	}
+	if flags & SPAWN_FD_CLEAN == 0 && parent == nil {
+		open_standard(p)
 	}
 
 	p.thread = sched.spawn_user(p.name, space, entry, sp, arg0, 0, 0, p)
@@ -183,27 +187,6 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 		spawned += 1
 	}
 	return p, vfs.OK
-}
-
-/*
-copy_descriptors hands a child its parent's open files, number for number.
-
-Number for number rather than lowest-free, because the numbers are the
-convention. The child's descriptor 1 must be whatever the parent's 1 was, or
-inheriting is renaming. The chan is referenced again and the offset copied,
-so the two processes read the same file from independent cursors.
-*/
-@(private = "file")
-copy_descriptors :: proc(child: ^Process, parent: ^Process) #no_bounds_check {
-	for i in 0 ..< MAX_FDS {
-		if parent.fds[i].chan == nil {
-			continue
-		}
-		child.fds[i] = Fd {
-			chan   = vfs.chan_incref(parent.fds[i].chan),
-			offset = parent.fds[i].offset,
-		}
-	}
 }
 
 /*

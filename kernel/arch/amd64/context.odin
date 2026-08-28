@@ -211,3 +211,57 @@ thread_user_init :: proc "contextless" (
 
 	return Resume{frame = frame, fpu = rawptr(fpu)}, true
 }
+
+/*
+thread_user_clone lays out a thread that continues where another one is.
+
+The same geometry as `thread_user_init`, with the contents copied rather
+than built. The copy is the caller's whole `Trap_Frame` -- selectors,
+flags, every register -- and the FXSAVE image the syscall stub parked
+below it. `syscall_frame_fpu` finds the image, because the `-512` is stub
+layout and lives there.
+
+The one word that differs is RAX. The source frame still holds the call
+number, because the dispatcher's answer lands only after the handler
+returns. *This* copy answers zero. That zero is how the child of an
+`rfork` knows which side of the call it woke up on.
+
+The copied RIP is the instruction after the parent's `syscall`. The copied
+RSP points into the parent's stack addresses. The caller must therefore
+give the child a private copy of those addresses beforehand, or two
+threads run one stack. The trap tail resumes this frame by `iretq`, not `sysretq`. A
+non-canonical RIP would fault in ring 3 like any other bad jump, not in
+ring 0.
+*/
+thread_user_clone :: proc "contextless" (
+	stack: []u8,
+	src: ^Trap_Frame,
+) -> (
+	resume: Resume,
+	ok: bool,
+) {
+	if len(stack) < MIN_STACK_SIZE || src == nil {
+		return {}, false
+	}
+
+	base := uintptr(raw_data(stack))
+	top := kernel_stack_top(stack)
+
+	fpu := align_down(top - FPU_AREA_RESERVE, FPU_AREA_ALIGN)
+	frame_at := align_down(fpu - size_of(Trap_Frame), 16)
+	if frame_at <= base {
+		return {}, false
+	}
+
+	src_fpu := ([^]u8)(syscall_frame_fpu(src))
+	dst_fpu := ([^]u8)(rawptr(fpu))
+	for i in 0 ..< FPU_AREA_SIZE {
+		dst_fpu[i] = src_fpu[i]
+	}
+
+	frame := (^Trap_Frame)(frame_at)
+	frame^ = src^
+	frame.rax = 0
+
+	return Resume{frame = frame, fpu = rawptr(fpu)}, true
+}

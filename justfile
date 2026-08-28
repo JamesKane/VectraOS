@@ -50,3 +50,6 @@ check:
     odin check servers/ramfs -collection:vsys=sys \
         -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
         -vet -strict-style
+    odin check servers/consrv -collection:vsys=sys \
+        -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
+        -vet -strict-style

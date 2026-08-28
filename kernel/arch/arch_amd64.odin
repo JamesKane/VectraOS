@@ -118,6 +118,8 @@ USER_DATA_SELECTOR :: amd64.USER_DATA_RING3
 User_Trap_Handler :: amd64.User_Trap_Handler
 
 thread_user_init :: amd64.thread_user_init
+thread_user_clone :: amd64.thread_user_clone
+syscall_frame_fpu :: amd64.syscall_frame_fpu
 kernel_stack_top :: amd64.kernel_stack_top
 set_kernel_stack :: amd64.set_kernel_stack
 kernel_stack :: amd64.kernel_stack

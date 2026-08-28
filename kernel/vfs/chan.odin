@@ -88,7 +88,7 @@ chan_alloc :: proc(sv: ^Server, fid: vectra9.Fid, qid: vectra9.Qid) -> ^Chan {
 
 // chan_incref takes another reference. Nil-safe, because `mounted_over` is
 // usually nil and every caller would otherwise have to say so.
-chan_incref :: proc(c: ^Chan) -> ^Chan {
+chan_incref :: proc "contextless" (c: ^Chan) -> ^Chan {
 	if c == nil {
 		return nil
 	}

@@ -25,30 +25,30 @@ libposix, Vectra9), `servers/` (devfs, netfs, intuition), `apps/` (terminal,
 filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 `aarch64` and `riscv64`.
 
-**`servers/` has its first resident.** `servers/ramfs` is an Odin program
-`build.odin` compiles for ring 3, and the boot mounts it and reads a file
-tree it serves. The runtime under it -- `sys/abi`, `sys/libuser`, the
-VECTRA02 segment format, a loader that maps real permissions -- is this
-milestone, and `docs/RUNTIME.md` owns it.
+**`servers/` has two residents.** `servers/ramfs` serves a file tree.
+`servers/consrv` is the new one: a proto console server that *forks*, and
+waits on the keyboard and its clients at once. The runtime under both --
+`sys/abi`, `sys/libuser`, the VECTRA02 format, the loader -- is
+`docs/RUNTIME.md`'s.
 
-`kernel/devfs` still lives in the kernel. What its move now waits on is not
-a mechanism but two named gaps.
-Those are hardware a user process could reach, and a server that can wait on
-two things at once. See section 6.
+`rfork` exists now, by Plan 9's rules. One process becomes two at the call
+site, each with its own page tables. Text is shared, and writable data is
+shared under `RFMEM`. The stack is a private copy at the same address, and
+the descriptor group is shared unless `RFFDG` copies it. Under it, frames
+got an owner that can be shared -- the refcounted *segment* -- and the fd
+table became a refcounted group. `docs/USER.md` owns the design.
 
-The note exists now. A process that will not stop can be stopped, from
-outside, at whichever kernel boundary it crosses next. The tick catches a
-loop, the door catches a call, and an unwound sleep catches a parked server.
-`wait` parks instead of polling, and a parent can end its own child from ring
-3. What a note cannot yet do is anything but end, and section 6 has what that
-opens.
+`kernel/devfs` still lives in the kernel. Its move now waits on one named
+gap rather than two: hardware a user process could reach. The other gap --
+a server that waits on two things -- closed this milestone, and `consrv`
+is the proof. See section 6.
 
 ## 2. Where things stand
 
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-910 checks against itself and idles.
+980 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -56,16 +56,20 @@ keystroke gets there by raising IRQ 1, which is the first interrupt Vectra
 receives rather than arms. `/srv` is a directory of running services, and a name
 posted there can be mounted anywhere in a namespace.
 
-**Vectra runs processes, and now it can end one.** Twenty-three enter ring 3
-during the boot. Four try something a program may not do, and the kernel ends
-the process rather than the machine. Three more die of a *note*. The tick
-catches one spinning, a note unwinds one from the pipe it parked on, and
-one's own parent ends it from ring 3.
+**Vectra runs processes, and now a process can become two.** Twenty-seven
+enter ring 3 during the boot, and another process started eight of them --
+four by `spawn`, four by `rfork`. A forked child continues from the
+instruction after its parent's `syscall`, on a private copy of the stack.
+It answers zero where its parent hears a pid.
 
-Some open files by name in a namespace of their own. The kernel loads nine of
-them out of files under `/bin`. One starts two more itself, one publishes a
-service, one *answers* 9P, and one is fifty kilobytes of compiled Odin
-serving a file tree:
+The showpiece is `servers/consrv`, and it is the sentence this file kept
+for three milestones: **a server that waits on two things at once**. Its
+`RFMEM` child parks reading `/dev/cons`, a real device read, while the
+parent serves 9P from `/srv/consrv`. The two meet in a producer-consumer
+ring in the bss they share. The kernel types a line into the keyboard sink
+and reads it back through the mount. Teardown is the note doing the job it
+was built for. The parent notes its reader out of the parked read,
+collects EINTR, and exits zero only if it heard it.
 
 ```
 -- a program in ring 3 wrote this line
@@ -77,32 +81,29 @@ serving a file tree:
 these bytes live in a program's own segments
 ```
 
-This milestone is the note, and it is the mechanism the last three milestones
-kept pointing at. `user.post_note` marks a thread, and delivery is an ending
-at the next kernel boundary. The tick catches a compute-bound loop in ring 3.
-The door's check ends a caller before its call, and closes its descriptors.
-`sync.sleep_noted` unwinds a parked sleep, so EINTR climbs out of a pipe
-toward the door.
+Three objects carry the milestone, all in `kernel/user`. A **segment**
+owns the frames behind one mapping, refcounted. Text and `RFMEM` data
+therefore map into two spaces with one owner, which is the answer
+`mem/space.odin`'s file comment waited for.
 
-Every path out of a process now wakes one exit rendezvous.
-`wait` and `wait_pid` park on it instead of polling, with a promptness check
-keeping the wake honest. A noted child answers its parent's wait with EINTR,
-distinct from a fault's EIO. `SYS_NOTE` gives ring 3 the same power over its
-own children only.
+An **fd table** is a refcounted group now, shared by default the way Plan
+9's fork shares it. Its two invariants are in `fdtable.odin`. A syscall
+*takes* a chan reference rather than borrowing a slot. An exit *releases*
+the group rather than closing a sibling's files.
 
-What a note retires is a list this file kept for three milestones. A runaway
-loop can be stopped. A hung server can be stopped, and its death fails its
-clients fast through the wire. `destroy`'s refusal of a running process has
-an answer -- note, wait, destroy. And `wait` no longer costs a parked tick
-per miss. `docs/USER.md` owns the design, and has all eight ring-3
-milestones.
+The third object is `arch.thread_user_clone`, which copies the door's
+saved frame. The door already saved every register in the resumable
+layout, so continuing from the call site is a copy with `rax` answered
+zero.
 
-The milestone before built the floor this stands on: `kernel/pipe`, the wire
-in `kernel/mnt`, and `/bin/niner`, the assembler server that proved the
-transport. `docs/PIPE.md` and `docs/TRANSPORT.md` split that story.
+The flag word is Plan 9's bit for bit. `RFPROC`, `RFMEM`, `RFFDG`,
+`RFCFDG`, `RFNAMEG` and `RFCNAMEG` work. `RFNOTEG` is recorded and inert.
+The rest are refused EINVAL rather than skipped. Without `RFPROC` the
+namespace and descriptor flags act on the caller in place.
 
-About 37,600 lines of Odin. The linked image is ~1192 KB debug and ~602 KB
-release, and 54 KB of it is the embedded ramfs image.
+About 39,600 lines of Odin. The linked image is ~1284 KB debug and ~676 KB
+release, ~107 KB of both being the two embedded user images (`ramfs`,
+`consrv`).
 
 **What exists, and which document says why:**
 
@@ -120,8 +121,8 @@ release, and 54 KB of it is the embedded ramfs image.
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, now from ring 3 too | `docs/SRV.md` |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, and a top half that may not park | `docs/KBD.md` |
 | `kernel/mem/space.odin` | An address space per process, sharing one kernel half | `docs/SPACE.md` |
-| `kernel/user/` | Ring 3, the door back in, a process that owns what it opens, and the spawn that makes more | `docs/USER.md` |
-| `sys/abi`, `sys/libuser`, `servers/ramfs` | The shared call numbers, the ring 3 library and serve loop, and the first compiled server | `docs/RUNTIME.md` |
+| `kernel/user/` | Ring 3, the door back in, a process that owns what it opens, the spawn that makes more, and the rfork that makes two | `docs/USER.md` |
+| `sys/abi`, `sys/libuser`, `servers/` | The shared call numbers, the ring 3 library and serve loop, and the two compiled servers | `docs/RUNTIME.md` |
 
 **The order they arrived in matters in exactly one way**, and it is worth
 knowing before reading any of them. Each of these unblocked the next, and none
@@ -146,6 +147,8 @@ of them could have come earlier:
     the wire                and 9P down one, so a process can answer it
     a runtime               and the answerer can be a program a compiler built
     a note                  and what will not stop can be stopped, from outside
+    an rfork                and one process can become two, sharing what they
+                            choose -- so a server can wait on two things at once
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -158,13 +161,13 @@ code it explains.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x0000000019a5b000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x0000000019a29000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 33 entries spanning 12.7 GiB
-[  ok  ] usable 459.0 MiB, reclaimable 45.7 MiB
-[  --  ] largest usable region 386.8 MiB at 0x0000000001780000
-[  ok  ] pmm 117520 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.9 MiB in 274 tables (1.0 MiB)
+[  ok  ] usable 458.8 MiB, reclaimable 45.8 MiB
+[  --  ] largest usable region 386.6 MiB at 0x0000000001780000
+[  ok  ] pmm 117470 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 516.0 MiB in 274 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
@@ -174,14 +177,14 @@ code it explains.
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] ioapic version 0x20, 24 lines, all masked
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62531 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (9048219-9227105 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 855 acquisitions, 819 parked and handed back, decayed to 1
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62525 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (9240222-9294502 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 844 acquisitions, 808 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 1762 namespace operations across 5 threads, 277 rebinds under them in 1001 ms, nothing serialised, heap balanced
+[  ok  ] vfs 34 concurrency checks passed -- 1791 namespace operations across 5 threads, 279 rebinds under them in 1001 ms, nothing serialised, heap balanced
 [  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/consX 
 [  ok  ] devfs 81 device checks passed -- 4 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 10 ticks
@@ -190,11 +193,11 @@ code it explains.
 [  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
 [  ok  ] pipe 37 checks passed -- 8227 bytes crossed, 2 threads parked and woken, heap balanced
 [  ok  ] wire 46 checks passed -- 18 frames answered by a thread the kernel cannot call, 9 flushed, 1 stale reply dropped, 2 wires poisoned on purpose
-[  ok  ] bin #b bound at /bin, 7 programs as files, formats VECTRA01 and 02
+[  ok  ] bin #b bound at /bin, 8 programs as files, formats VECTRA01 and 02
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] kbd 48 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
 [  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 132 CR3 reloads, one address two meanings
-[  ok  ] syscall armed -- entry at 0xffffffff80024290, /dev/cons is descriptor 1
+[  ok  ] syscall armed -- entry at 0xffffffff80025c30, /dev/cons is descriptor 1
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
 -- this line went to /dev/null
@@ -204,7 +207,7 @@ code it explains.
 -- this line went through a posted service
 -- a process answered this line
 these bytes live in a program's own segments
-[  ok  ] user 332 userland checks passed -- 21 processes, 3 started by another process, 4709967 preempted rounds, 194 system calls, 11 9P requests answered by a process, a file tree served by a compiled one
+[  ok  ] user 399 userland checks passed -- 27 processes, 8 started by another process, 4642046 preempted rounds, 270 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
 [  ok  ] boot complete -- idling
 ```
 
@@ -238,18 +241,25 @@ The two that shape everything after them:
 - **No SMP.** `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 ever
   starts. There is no IPI, no AP trampoline and no lock word.
 
-And on the new ground itself: a note lands with bounded lag rather than
-instantly. A tick for a loop or a parked sleep, and up to `NOTE_POLL` ticks
-for a read waiting on a device. A *faulting* process still holds its
-descriptors until `destroy` collects it, because both its ways of dying are
-in interrupt context. The older ground stands too. A ring 3 program still has
-no allocator, no threads, and no wait on two descriptors, and a posted
-service, once mounted, never comes down.
+And on the new ground itself. An rfork child orphaned by its parent's exit
+is uncollectable from ring 3, because pids never reuse and nothing
+reparents. It stays, visibly, in `stats().live`, and `consrv` tears down
+child-first for exactly that reason. A read of `consrv`'s `/line` answers
+zero bytes when the ring is empty, which a client cannot tell from EOF.
+Parking the Tread would starve the serve loop's other clients. One serve
+loop still answers one request at a time, and two processes must not
+`serve` one descriptor.
 
-From the milestone before: `spawn` is fork and exec with the seam not yet
-cut. There is no `rfork` that continues from the call site, and no `exec`
-that replaces a running image. Both are mechanism whose rules the milestone
-already decided. `docs/USER.md` says exactly what each needs.
+The older ground stands too. A ring 3 program still has no allocator, and
+a posted service, once mounted, never comes down. One process still cannot
+wait on two descriptors -- it forks instead, which is Plan 9's answer.
+
+From the milestones before: the seam is cut on the creating side only,
+and there is no `exec` that replaces a running image. The note still lands
+with bounded lag rather than instantly. A loop or a parked sleep costs a
+tick, and a read waiting on a device costs up to `NOTE_POLL` ticks. A
+*faulting* process still holds its descriptors until `destroy` collects
+it.
 
 And the smaller ones, each named where it lives:
 
@@ -398,42 +408,46 @@ deadline, and a request can be left pending and flushed. Milestones 10 through
 12 spent all of it. Every primitive a driver needs is not only present but used
 by something that is not a self-test.
 
-Processes reproduce, processes publish, a compiled program serves, and a note
-ends what will not end itself. The `servers/devfs` port now waits on exactly
-two things, and they are the first two below. Everything else on this list
-got easier the day the note landed.
+Processes reproduce two ways now, and a forked pair can hold two parked
+reads between them -- the primitive the `servers/devfs` port was missing.
+That port now waits on exactly one thing, and it is the first below.
 
 **Next, in order:**
 
-1. **A server that waits on two things.** `ramfs` answers one pipe, and can,
-   because files in memory never park. A console server must wait on the
-   keyboard *and* its clients at once, and no primitive lets a process do
-   that. Reads park one at a time, and there is one thread per process.
-   Either `rfork` grows real -- threads sharing a space, the seam
-   `spawn.odin` documents -- or a multi-descriptor wait arrives. The note is
-   the machinery a threaded server will want for its own teardown, and it is
-   ready.
-
-2. **A device a user process can reach.** The console's hardware -- the
+1. **A device a user process can reach.** The console's hardware -- the
    framebuffer, the UART, the scancode stream -- is all behind `#c`'s own
    handler today. A userland devfs needs the kernel to serve the *raw* halves
    as files a process can open. That is also most of the design of
    `/dev/draw` over `kernel/drivers/fb`, so the raw framebuffer first serves
-   both masters.
+   both masters. `consrv` is the server shape waiting for it.
 
-3. **A counted release for a posted service.** The wire, its arena, its
+2. **A counted release for a posted service.** The wire, its arena, its
    reader and a chan reference are pinned per posted pipe -- seven heap
-   objects the user self-test counts exactly, twice. The note unblocked the
-   teardown: a wire's reader can now be ended rather than waited for. When
-   the last mount and the name are both gone, the connection should come
-   down.
+   objects the user self-test counts exactly, three times now. The note
+   unblocked the teardown: a wire's reader can now be ended rather than
+   waited for. When the last mount and the name are both gone, the
+   connection should come down.
 
-4. **A note handler in ring 3.** The other half of Plan 9's notify: a handler
+3. **A note handler in ring 3.** The other half of Plan 9's notify: a handler
    a process registers, a frame the kernel pushes onto the user stack, and a
    `noted` that resumes or dies. It is what turns the note from a kill into a
-   signal, and the text already travels for it.
+   signal. The text already travels for it, and `Process.note_group` now
+   waits for it too -- `RFNOTEG` records a group nothing yet posts to.
 
-5. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
+4. **exec, and the seam's other half.** `rfork` cut the creating side out
+   of `spawn`, and a shell wants the replacing side next. A program that
+   replaces itself needs its syscall frame rewritten under it, and its old
+   segments released for new ones. Both are short now that segments own
+   the frames. `RFNOWAIT` and reparenting belong to the same milestone: an
+   rfork orphan is currently an honest leak no `wait` can collect.
+
+5. **A concurrent serve loop.** `libuser.serve` answers one request at a
+   time, so `consrv`'s `/line` answers empty rather than parking, and a slow
+   file would hold every client. A process per request -- rfork is there now
+   -- or a request queue inside one process. This is also what retires the
+   worker-per-blocked-request bound `devfs` documents.
+
+6. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
    two becomes a reason rather than a tidiness.
 
@@ -659,11 +673,17 @@ kernel/
                         across a removal, and a pending name refused
                         everything but removal
   user/
-    user.odin           A process: a space, a namespace forked from the
-                        kernel's, a table of open files, and the fault handler
-                        that ends one rather than the machine
+    user.odin           A process: a space, segments, a namespace forked
+                        from the kernel's, a descriptor group, and the
+                        fault handler that ends one rather than the machine
+    segment.odin        The frames behind one mapping, refcounted -- what
+                        lets rfork map one segment into two spaces
+    fdtable.odin        The fd table as a refcounted group: the take/advance
+                        borrow discipline, and the release-once exit rule
+    rfork.odin          Plan 9's fork: the flag word, the per-kind segment
+                        copy rule, and the child built before it can run
     syscall.odin        What is behind the door: the calling convention, the
-                        sixteen calls, the note check the door runs first,
+                        eighteen calls, the note check the door runs first,
                         the two copies that judge a pointer from ring 3, and
                         the resolver that answers /srv's descriptor question
     image.odin          Both image formats, the segment judge, the loader
@@ -671,15 +691,16 @@ kernel/
                         /bin serving blobs and compiled images alike
     spawn.odin          A process that starts another one: what a child
                         inherits, and the wait that parks for it by pid
-    program.odin        The sixteen programs the assembler bakes into the
+    program.odin        The twenty programs the assembler bakes into the
                         image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 332 checks -- one process preempted
+    verify.odin         The boot self-test: 399 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a parent that raises
                         two children, a poster that publishes a service, a
                         niner the kernel talks to as a 9P client, a compiled
-                        ramfs serving its own segments back, and three
-                        processes ended by notes, one from its own parent
+                        ramfs serving its own segments back, three processes
+                        ended by notes, four that fork, and a console server
+                        whose typed line crosses two forked processes
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled
     wait.odin           Wait queues, scheduler hooks, priority-ordered service
@@ -706,6 +727,8 @@ sys/
 servers/
   ramfs/main.odin       The first compiled server: two files, one writable,
                         serving this program's own segments back
+  consrv/main.odin      The proto console server: an rfork'd reader parked
+                        on /dev/cons, a serve loop, and a shared ring
 apps/                   Empty
 tools/
   genfont.py            TTF -> font_data.odin

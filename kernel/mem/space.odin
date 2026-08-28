@@ -29,15 +29,15 @@ remembering to leave a bit clear on every mapping anybody makes.
 It owns its lower-half **page tables** and frees them. It does not own the
 frames those tables point at.
 
-That is a real limitation with a real reason. A frame mapped into two spaces
-has two owners and no count. Inventing a reference count for one caller would
-be inventing it in the wrong place. When there is a process to own its pages,
-the owner is the process, and `space_destroy` grows a walk that frees leaves
-too. Or frames grow a count, which is the question `Chan.refs` and
-`Mount_Point.refs` already answer.
+That division asked a question for three milestones: a frame mapped into
+two spaces has two owners and no count. `rfork` is what answered it.
+The owner is the *segment*, `kernel/user/segment.odin`: the frames behind
+one mapping, under one reference count, mapped into as many spaces as share
+it. This walk stays table-only exactly so that a space can die while the
+frames it mapped live on in a sibling.
 
-Until then the caller frees what it mapped, and `space_stats` reports enough for
-a self-test to notice when it did not.
+The caller still frees what it mapped -- through its segments now -- and
+`space_stats` reports enough for a self-test to notice when it did not.
 */
 package mem
 

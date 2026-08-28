@@ -49,6 +49,10 @@ MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
 MARK_POSTER :: u64(0x504F_5354_504F_5354) // POSTPOST
 MARK_NINER :: u64(0x4E49_4E45_4E49_4E45) // NINENINE
 MARK_NOTER :: u64(0x4E4F_5452_4E4F_5452) // NOTRNOTR
+MARK_FORKER :: u64(0x464F_524B_464F_524B) // FORKFORK
+MARK_MEMFORK :: u64(0x4D45_4D46_4D45_4D46) // MEMFMEMF
+MARK_FDFORKER :: u64(0x4644_464B_4644_464B) // FDFKFDFK
+MARK_REFUSER :: u64(0x5245_4655_5245_4655) // REFUREFU
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -223,6 +227,55 @@ NOTER_NOTED :: 2
 NOTER_WAITED :: 3
 NOTER_STRANGER :: 4
 
+/*
+Where the four rfork blobs keep their answers -- one cell per claim.
+
+`forker` is the call-site continuation and the copy. It seeds a cell
+*before* the fork, so both processes hold the seed. The child increments
+its copy and exits with what it read. The parent's copy has to still hold
+the seed when the kernel looks. Isolation is the number that did not
+move.
+
+`memfork` is the share, and the two lifetimes. The child writes a witness
+into a cell the parent shares under `RFMEM`. Then it spins on a stop cell
+the *kernel* writes, through the parent's data alias. The parent is dead
+and collected by then, which is the whole parent-exits-first argument in
+one handshake. The spin is bounded like `spin`'s, and the bound is written
+twice for `SPIN_LIMIT`'s reason.
+
+`fdforker` runs twice, its rfork flags arriving as the test's argument.
+The child closes descriptor 1 and exits. The parent then closes 1 itself.
+On a shared table the child's close already spent it, and the parent hears
+EBADF. Under `RFFDG` the parent's copy still holds it, and the close
+answers zero. One blob, two runs, and the flag is the only difference.
+
+`refuser` holds the flag word to its refusals: each unimplemented or
+contradictory word answers EINVAL, and the two harmless self forms answer
+zero.
+*/
+FORKER_PID :: 1
+FORKER_STATUS :: 3
+FORKER_ISO :: 4
+FORKER_SEED :: u64(10)
+
+MEMFORK_PID :: 1
+MEMFORK_WITNESS :: 2
+MEMFORK_STOP :: 3
+MEMFORK_WITNESS_VALUE :: u64(0xC0FF_EEC0_FFEE)
+MEMFORK_GAVE_UP :: u64(0x99)
+MEMFORK_PARENT_STATUS :: u64(42)
+
+FDFORKER_WAITED :: 2
+FDFORKER_CLOSED :: 3
+
+REFUSER_ENVG :: 1
+REFUSER_NOWAIT :: 2
+REFUSER_LONE_MEM :: 3
+REFUSER_BOTH_FDG :: 4
+REFUSER_NOMNT :: 5
+REFUSER_NOTHING :: 6
+REFUSER_NOTEG :: 7
+
 // The line the kernel writes through a mounted `/srv/niner`, which `niner`
 // forwards to the console. It lives here rather than in the blob: the payload
 // of a Twrite is the client's to choose, and the client is the kernel.
@@ -365,6 +418,14 @@ foreign {
 	vectra_user_niner_end: byte
 	vectra_user_noter: byte
 	vectra_user_noter_end: byte
+	vectra_user_forker: byte
+	vectra_user_forker_end: byte
+	vectra_user_memfork: byte
+	vectra_user_memfork_end: byte
+	vectra_user_fdforker: byte
+	vectra_user_fdforker_end: byte
+	vectra_user_refuser: byte
+	vectra_user_refuser_end: byte
 }
 
 @(private)
@@ -402,6 +463,13 @@ program_child :: proc "contextless" () -> []u8 {return blob(&vectra_user_child, 
 program_poster :: proc "contextless" () -> []u8 {return blob(&vectra_user_poster, &vectra_user_poster_end)}
 program_niner :: proc "contextless" () -> []u8 {return blob(&vectra_user_niner, &vectra_user_niner_end)}
 program_noter :: proc "contextless" () -> []u8 {return blob(&vectra_user_noter, &vectra_user_noter_end)}
+
+// And the four that reproduce *without* a file: two processes return from
+// each one's rfork, and the cells say what the copies and shares did.
+program_forker :: proc "contextless" () -> []u8 {return blob(&vectra_user_forker, &vectra_user_forker_end)}
+program_memfork :: proc "contextless" () -> []u8 {return blob(&vectra_user_memfork, &vectra_user_memfork_end)}
+program_fdforker :: proc "contextless" () -> []u8 {return blob(&vectra_user_fdforker, &vectra_user_fdforker_end)}
+program_refuser :: proc "contextless" () -> []u8 {return blob(&vectra_user_refuser, &vectra_user_refuser_end)}
 
 /*
 The programs, emitted by the assembler.
@@ -1274,5 +1342,165 @@ vectra_user_noter:
 	.ascii "stop"
 .globl vectra_user_noter_end
 vectra_user_noter_end:
+
+.balign 16
+.globl vectra_user_forker
+vectra_user_forker:
+	movq %rdi, %rbx
+	movabsq $$0x464F524B464F524B, %rax
+	movq %rax, (%rbx)
+
+	movq $$10, 32(%rbx)
+
+	movq $$0x10, %rdi
+	movq $$17, %rax
+	syscall
+	testq %rax, %rax
+	jnz 26f
+
+	incq 32(%rbx)
+	movq 32(%rbx), %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+26:
+	movq %rax, 8(%rbx)
+	movq %rax, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_forker_end
+vectra_user_forker_end:
+
+.balign 16
+.globl vectra_user_memfork
+vectra_user_memfork:
+	movq %rdi, %rbx
+	movabsq $$0x4D454D464D454D46, %rax
+	movq %rax, (%rbx)
+
+	movq $$0x30, %rdi
+	movq $$17, %rax
+	syscall
+	testq %rax, %rax
+	jnz 27f
+
+	movabsq $$0xC0FFEEC0FFEE, %rax
+	movq %rax, 16(%rbx)
+	movq $$400000000, %rcx
+28:
+	movq 24(%rbx), %rax
+	testq %rax, %rax
+	jnz 29f
+	decq %rcx
+	jnz 28b
+	movq $$0x99, %rdi
+	movq $$4, %rax
+	syscall
+29:
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+27:
+	movq %rax, 8(%rbx)
+	movq $$42, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_memfork_end
+vectra_user_memfork_end:
+
+.balign 16
+.globl vectra_user_fdforker
+vectra_user_fdforker:
+	movq %rdi, %rbx
+	movabsq $$0x4644464B4644464B, %rax
+	movq %rax, (%rbx)
+
+	movq %rsi, %rdi
+	movq $$17, %rax
+	syscall
+	testq %rax, %rax
+	jnz 30f
+
+	movq $$1, %rdi
+	movq $$6, %rax
+	syscall
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+30:
+	movq %rax, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movq $$1, %rdi
+	movq $$6, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_fdforker_end
+vectra_user_fdforker_end:
+
+.balign 16
+.globl vectra_user_refuser
+vectra_user_refuser:
+	movq %rdi, %rbx
+	movabsq $$0x5245465552454655, %rax
+	movq %rax, (%rbx)
+
+	movq $$0x2, %rdi
+	movq $$17, %rax
+	syscall
+	movq %rax, 8(%rbx)
+
+	movq $$0x40, %rdi
+	movq $$17, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movq $$0x20, %rdi
+	movq $$17, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq $$0x1014, %rdi
+	movq $$17, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	movq $$0x4000, %rdi
+	movq $$17, %rax
+	syscall
+	movq %rax, 40(%rbx)
+
+	xorl %edi, %edi
+	movq $$17, %rax
+	syscall
+	movq %rax, 48(%rbx)
+
+	movq $$0x8, %rdi
+	movq $$17, %rax
+	syscall
+	movq %rax, 56(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_refuser_end
+vectra_user_refuser_end:
 `, "~{memory}"}()
 }

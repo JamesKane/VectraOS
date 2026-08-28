@@ -230,6 +230,34 @@ nothing else in common.
 | Ring 3 | `docs/USER.md` | 6 checked, 3 machine failures, 1 uncaught |
 | The system call door | `docs/USER.md` | 3 checked, 3 machine failures, 2 uncaught |
 | A process | `docs/USER.md` | 4 checked, 1 machine failure, 1 inert |
+| rfork | `docs/USER.md` | 4 checked, 1 uncaught by design |
+
+**rfork's four controls, run on the milestone.** A leaked segment release
+fails the balance checks by name (4 failures, first the frame-by-name
+check). A stack segment shared instead of copied fails the structural
+check, "but never the stack segment". The check is structural on purpose.
+Stack *corruption* under a shared stack depends on interleaving, and a
+control that can pass by luck proves nothing. A child whose `rax` is left
+as the call number fails the continuation checks (3 failures).
+
+And the tick-delivery note test grew a handshake when the milestone's
+timing shift exposed a latent race. A note posted on the heels of `load` can catch the
+thread before its first instruction. The test now watches the counter move
+before posting. The flake was the finding.
+
+**The uncaught one is the borrow protocol itself, and it is uncaught by
+design.** `fd_take` hands a system call its own chan reference so a
+sibling's close cannot free the chan under a parked read. Removing the
+reference is not deterministically catchable. The benign orderings pass.
+The malignant one is a close landing while a write is parked on a full
+pipe. The guard now *defers* that close until the operation finishes, so
+the scenario that would have corrupted memory instead parks forever unless
+noted.
+
+The guard converts a use-after-free into a liveness property, and a
+liveness property needs a watchdog, not a mutation. It joins the cluster
+below as the one where construction closes the window and no check guards
+it.
 
 **The uncaught ones cluster, and the cluster is the finding.** Almost every one
 is a window two or three instructions wide, and none is at a lock boundary.

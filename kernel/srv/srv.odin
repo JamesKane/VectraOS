@@ -164,9 +164,14 @@ process serves, and the server a mount uses is built from it later. The
 server behind that chan is only the pipe device. Plan 9's `devsrv` stores
 the channel for the same reason.
 
-The resolver runs under this server's spinlock. It may look tables up and
-may not send a message or take a lock that parks, and the one registered
-does neither.
+**The answer carries its own reference**, taken under the table's lock, and
+this server keeps it as the posting rather than taking another. A borrow
+would not survive a shared descriptor table: a sibling process could close
+the number between the resolver's answer and an increment here.
+
+The resolver runs under this server's spinlock. It may look tables up, may
+nest a spinlock of its own, and may not send a message or take a lock that
+parks. The one registered keeps to that.
 */
 Fd_Resolver :: proc "contextless" (fd: int) -> ^vfs.Chan
 
@@ -766,10 +771,10 @@ srv_dispatch :: proc(
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
 		}
-		// The reference is the posting. The descriptor may close and the
-		// process may end, and the connection stays reachable by name. The
-		// increment nests a spinlock and sends nothing, so it is legal here.
-		t.table[i].endpoint = vfs.chan_incref(ch)
+		// The reference is the posting, and the resolver already took it.
+		// The descriptor may close and the process may end, and the
+		// connection stays reachable by name.
+		t.table[i].endpoint = ch
 		t.posts += 1
 		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 

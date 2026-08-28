@@ -51,7 +51,10 @@ User_Program :: struct {
 	path: string, // The package directory
 }
 
-user_programs := [?]User_Program{{name = "ramfs", path = "servers/ramfs"}}
+user_programs := [?]User_Program {
+	{name = "ramfs", path = "servers/ramfs"},
+	{name = "consrv", path = "servers/consrv"},
+}
 
 Arch :: enum {
 	amd64,

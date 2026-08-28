@@ -21,8 +21,8 @@ another process from a file it names:
 -- a process answered this line
 ```
 
-Eight milestones live in this document, because they live in the same
-directory. `docs/SPACE.md` built the piece under all eight:
+Nine milestones live in this document, because they live in the same
+directory. `docs/SPACE.md` built the piece under all nine:
 
     ring 3        a thread can run somewhere it cannot damage the kernel
     a syscall     it can ask for something anyway
@@ -32,6 +32,7 @@ directory. `docs/SPACE.md` built the piece under all eight:
     a service     and what it publishes, it can answer -- the kernel as client
     a runtime     and the server can be a program a compiler built
     a note        and what will not stop can be stopped, from outside
+    an rfork      and one process can become two, sharing what they choose
 
 The third line is the one Plan 9 is about. Two processes hand the kernel the
 same path and get different files, because the mount table belongs to the
@@ -549,9 +550,11 @@ kernel's check is all that stands between a program and memory it may not
 have.
 
 There is still a window between the check and the read, and nothing closes it.
-A second thread in the same space could unmap the page in between. Nothing can
-unmap anything yet and a program has one thread, so the window is not
-reachable. The first program with two threads reaches it.
+A sibling that shares the page could unmap it in between -- and `rfork` means
+the sibling exists now. What does not exist, still, is any way to unmap: no
+call takes a mapping away, so the window stays unreachable. The first unmap
+reaches it, and the answer then is the one every kernel reaches for: fault
+the read and recover from it.
 
 ## A process that starts another one
 
@@ -802,6 +805,70 @@ register a handler and survive its notes. The fields are shaped for that day
 `destroy`. Both its ways of dying are in interrupt context, where nothing
 may close a file, and only a collector in thread context can.
 
+## rfork
+
+The ninth milestone, and the seam cut from one side. `spawn` was fork and
+exec as one arc. `rfork(RFPROC)` is the fork half on its own: two
+processes return from one call. The parent gets the child's pid and the
+child gets zero, both at the instruction after the `syscall`. `rfork.odin`
+owns the mechanism, and three new objects carry it:
+
+    a segment       the frames behind one mapping, refcounted -- the owner
+                    `mem/space.odin`'s file comment always pointed at.
+                    `segment.odin`
+    a descriptor    the fd table as a refcounted group, so a fork can share
+    group           it, which is Plan 9's default. `fdtable.odin`
+    a cloned frame  `arch.thread_user_clone`: the door already saved every
+                    register in the resumable layout, so continuing from
+                    the call site is a copy with rax answered zero
+
+Per segment, Plan 9's copy rule. Text and read-only segments are shared
+always -- nothing can write them, so a copy would buy nothing. Writable
+data is copied unless `RFMEM` shares it. **The stack is copied always,
+whatever the flags say.** The child continues at the parent's stack
+addresses. The child's own frames must therefore stand behind those
+addresses, or two threads unwind one stack.
+
+This is also why the child of an `RFMEM` fork can share every global with
+its parent and still return from the function that forked.
+
+The descriptor group made two exit rules explicit, both stated in
+`fdtable.odin` as invariants rather than habits. A system call *takes* a
+chan: a reference of its own, under the table's lock, never a borrowed
+slot. A sibling's close can spend a slot while a read is parked on it. And
+an exit *releases* the group rather than closing descriptors, because a
+child's death must not close its sibling's files. The exit paths detach
+the table before publishing the exit record. `unload` releases only what
+is still attached, and the chans close when the last holder leaves.
+
+The flag word is Plan 9's bit for bit. The unimplemented bits -- `RFENVG`,
+`RFCENVG`, `RFNOWAIT`, `RFREND`, `RFNOMNT` -- are refused with EINVAL
+rather than skipped, so each can come to mean its whole self later.
+`RFNOTEG` is accepted and recorded. The note group field exists and
+inherits correctly, and nothing posts to a group until notes can be more
+than endings. Without `RFPROC` the namespace and descriptor flags act on
+the caller in place, which is how a process unshares later than it forked.
+
+Two consequences worth knowing before using it:
+
+- **An orphan is a leak, and an honest one.** A parent that exits before
+  its child leaves a process no `wait` can reach -- pids never reuse and
+  nothing reparents. It stays in `stats().live`. `consrv` tears down
+  child-first for exactly this reason. Reparenting arrives with `RFNOWAIT`.
+- **`copy_in`'s check-then-read window is still unreachable.** Two
+  processes can now share writable pages, but the window needs the *page*
+  to go away mid-copy, and nothing -- still -- can unmap anything. The
+  answer stays the same for the day something can: fault the read and
+  recover.
+
+`servers/consrv` is the milestone as a program, and `docs/RUNTIME.md` owns
+it. A proto console server: the `RFMEM` child parks reading `/dev/cons`,
+the parent serves 9P, and they meet in a producer-consumer ring in the
+shared bss. It is the sentence the handoff kept for three milestones: a
+server that waits on two things at once. Its teardown is the note doing
+the job it was built for. The parent notes its reader out of a parked
+device read, collects EINTR, and exits zero only if it heard it.
+
 ## What is missing, and named where it lives
 
 - **`destroy` still refuses a running process**, and rightly: its thread is
@@ -809,12 +876,14 @@ may close a file, and only a collector in thread context can.
   answer now. Post a note, wait on the exit, then destroy -- the arc
   `wait_pid` walks for parents and the kernel can walk for itself. The
   honest leak is a choice now rather than a fact.
-- **No `rfork` proper, and no `exec` in place.** `spawn` starts a process
-  from a file, and the seam Plan 9 cuts between creating and replacing is
-  still fused. A child that continues from the call site needs a copied trap
-  frame and copied user pages. A program that replaces itself needs its
-  syscall frame rewritten under it. Both are mechanism, not design -- the
-  inheritance rules are settled and stay.
+- **No `exec` in place.** `rfork` cut the seam from the creating side, and
+  the replacing side stays fused inside `spawn`. A program that replaces
+  itself needs its syscall frame rewritten under it, and its old segments
+  released for new ones. The segment layer makes that mechanism short now,
+  and a shell is what will demand it.
+- **An rfork orphan is uncollectable from ring 3.** Nothing reparents, and
+  `wait` answers ECHILD for a dead parent's child. The child stays in
+  `stats().live`, visibly. Reparenting and `RFNOWAIT` are one milestone.
 - **No `stat` behind the door.** `vfs.chan_stat` exists and nothing in ring 3
   needs it yet. It is the same shape as every call above and not a design
   question. `create` and `mount` were on this line for four milestones, and

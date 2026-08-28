@@ -33,6 +33,7 @@ never crosses:
 package user
 
 import "kernel:arch"
+import "kernel:devfs"
 import "kernel:mem"
 import "kernel:pipe"
 import "kernel:sched"
@@ -242,6 +243,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	before_tables := mem.space_stats()
 	before_doubles := mem.pmm_stats().double_frees
 	before_traps := arch.user_trap_count()
+	before_segs := segment_stats()
 
 	// The three frames of the last program to run, kept so the teardown can be
 	// checked frame by frame rather than by a total. See `mem.frame_is_free`.
@@ -380,6 +382,14 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_notes(&r)
 
+	// -- And a process that continues from the call site ----------------------
+
+	verify_rfork(&r)
+
+	// -- And a server that waits on two things at once -------------------------
+
+	verify_consrv(&r)
+
 	// -- What is left ---------------------------------------------------------
 
 	r.traps = arch.user_trap_count() - before_traps
@@ -432,6 +442,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		mem.pmm_stats().double_frees == before_doubles,
 		"and nothing twice",
 	)
+
+	after_segs := segment_stats()
+	check(&r, after_segs.live == before_segs.live, "every segment was released")
+	check(&r, after_segs.frames == before_segs.frames, "and owns no frame it did before")
 
 	return r
 }
@@ -1533,13 +1547,18 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 		return
 	}
 	r.programs += 1
+	total_pages := 0
+	for i in 0 ..< p.seg_count {
+		total_pages += p.segs[i].pages
+	}
 	check(
 		r,
-		p.frame_count > STACK_PAGES2 + 3 && p.frame_count <= MAX_PROGRAM_FRAMES,
+		total_pages > STACK_PAGES2 + 3 && total_pages <= MAX_PROGRAM_FRAMES,
 		"holding more pages than any blob could",
 	)
-	first_frame := p.frames[0]
-	last_frame := p.frames[p.frame_count - 1]
+	first_frame := p.segs[0].frames[0]
+	last_seg := p.segs[p.seg_count - 1]
+	last_frame := last_seg.frames[last_seg.pages - 1]
 
 	/*
 	The mappings themselves, asked directly. The format's judge refuses a
@@ -1728,6 +1747,21 @@ verify_notes :: proc(r: ^Result) {
 	}
 	r.programs += 1
 
+	// Mid loop, provably: the counter has to move before the note is
+	// posted. Posting on the heels of `load` raced the first dispatch.
+	// A tick that caught the thread before its first instruction read a
+	// counter of zero. The flake arrived the day the boot's timing
+	// shifted. The handshake is `verify_spin`'s, in one direction.
+	moving := false
+	for _ in 0 ..< PATIENCE {
+		if cell(p, CELL_COUNTER) > 0 {
+			moving = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, moving, "and its counter moves")
+
 	before := sync.now()
 	check(r, post_note(p, "die"), "a note is posted to it")
 	if check(r, wait(p, 100), "and it ends") {
@@ -1793,6 +1827,337 @@ verify_notes :: proc(r: ^Result) {
 		check(r, p.exit.deliberate && p.exit.status == 0, "then exited with nothing to report")
 	}
 	finish(r, p, "and it is taken down")
+}
+
+/*
+verify_rfork holds the fork to Plan 9's rules, one blob per claim.
+
+The four claims, in order. Two processes return from one call, and a copied
+data page isolates them. `RFMEM` shares the page instead, and the sharing
+outlives the parent. The kernel talks to the orphan through the dead
+parent's alias, which is the segment count doing real work.
+
+A shared descriptor group spends a close once. A copied one spends it
+twice. And the flag word refuses what the kernel does not implement,
+loudly.
+
+The bracket is the segment and table pools. Every path through here has to
+give back what it took, and the two sensors are what the negative controls
+in `docs/TESTING.md` lean on.
+*/
+@(private = "file")
+verify_rfork :: proc(r: ^Result) {
+	segs0 := segment_stats()
+	tables0 := fdt_stats()
+
+	// -- Two processes return from one call, and a copy divides them ----------
+
+	p, err := load("forker", program_forker())
+	if !check(r, err == .None && p != nil, "a program that forks starts") {
+		return
+	}
+	r.programs += 1
+	if check(r, wait(p, PATIENCE), "and both of it come back") {
+		check(r, cell(p, CELL_MARK) == MARK_FORKER, "having reached its first instruction")
+		check(r, i64(cell(p, FORKER_PID)) > 0, "the parent was answered a pid")
+		check(
+			r,
+			cell(p, FORKER_STATUS) == FORKER_SEED + 1,
+			"the child continued from the call site, saw the seed, and moved it",
+		)
+		check(
+			r,
+			cell(p, FORKER_ISO) == FORKER_SEED,
+			"and the parent's copy never felt the child's write",
+		)
+		check(r, p.exit.deliberate && p.exit.status == 0, "the parent collected it and left")
+	}
+	finish(r, p, "and the forker is taken down")
+
+	// -- RFMEM shares the page, and the share outlives the parent -------------
+
+	p, err = load("memfork", program_memfork())
+	if !check(r, err == .None && p != nil, "a program that shares memory starts") {
+		return
+	}
+	r.programs += 1
+	if !check(r, wait(p, PATIENCE), "the parent exits first, child still running") {
+		return
+	}
+	check(r, p.exit.deliberate && p.exit.status == MEMFORK_PARENT_STATUS, "and says so")
+
+	child := find_child(p.pid, u64(cell(p, MEMFORK_PID)))
+	if !check(r, child != nil, "the child is still in the table") {
+		_ = destroy(p)
+		return
+	}
+
+	// The structure, while both records stand: one text segment between
+	// them, one data segment between them, and two stacks that share
+	// nothing. The pointers are the proof, and the stack frames the
+	// counter-proof.
+	check(r, child.segs[0] == p.segs[0], "the child holds the parent's text segment itself")
+	check(r, child.segs[1] == p.segs[1], "and under RFMEM the data segment itself")
+	check(r, child.segs[2] != p.segs[2], "but never the stack segment")
+	check(
+		r,
+		child.segs[2].frames[0] != p.segs[2].frames[0],
+		"whose frames are the child's own",
+	)
+
+	shared_text := p.segs[0].frames[0]
+	shared_data := p.data
+	check(r, destroy(p), "the parent is collected while the child runs")
+	check(r, !mem.frame_is_free(shared_text), "and the shared text stays mapped")
+	check(r, segment_stats().live > segs0.live, "held by the segments the child keeps")
+
+	// The witness crossed the shared page, and the stop goes back the same
+	// way. It is written through what was the parent's data alias, now
+	// nobody's but the segment's.
+	saw := false
+	for _ in 0 ..< PATIENCE {
+		if cell(child, MEMFORK_WITNESS) == MEMFORK_WITNESS_VALUE {
+			saw = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, saw, "the child's write arrived through the shared frame")
+	check(r, child.data == shared_data, "which is the frame the parent's alias named")
+
+	set_cell(child, MEMFORK_STOP, 1)
+	if check(r, wait(child, PATIENCE), "the kernel's write releases the orphan") {
+		check(
+			r,
+			child.exit.deliberate && child.exit.status == 0,
+			"and it leaves on its own terms",
+		)
+	}
+	finish(r, child, "the orphan is taken down")
+	check(r, mem.frame_is_free(shared_text), "and the last release frees the shared text")
+
+	// -- A shared descriptor group spends a close once ------------------------
+
+	p, err = load("fdforker", program_fdforker(), RFPROC)
+	if !check(r, err == .None && p != nil, "a program forks sharing its descriptors") {
+		return
+	}
+	r.programs += 1
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, FDFORKER_WAITED) == 0, "the child closed descriptor 1 and left")
+		check(
+			r,
+			cell(p, FDFORKER_CLOSED) == refused(vectra9.EBADF),
+			"and the parent's own close finds it already spent -- one table",
+		)
+	}
+	finish(r, p, "and the sharer is taken down")
+
+	p, err = load("fdforker", program_fdforker(), RFPROC | RFFDG)
+	if !check(r, err == .None && p != nil, "the same program forks with RFFDG") {
+		return
+	}
+	r.programs += 1
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, FDFORKER_WAITED) == 0, "the child closed its copy's descriptor 1")
+		check(
+			r,
+			i64(cell(p, FDFORKER_CLOSED)) == 0,
+			"and the parent's close still finds its own -- two tables",
+		)
+	}
+	finish(r, p, "and the copier is taken down")
+
+	// -- The flag word refuses what it does not mean --------------------------
+
+	p, err = load("refuser", program_refuser())
+	if !check(r, err == .None && p != nil, "a program holds the flags to their refusals") {
+		return
+	}
+	r.programs += 1
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, REFUSER_ENVG) == refused(vectra9.EINVAL), "an environment group is refused")
+		check(r, cell(p, REFUSER_NOWAIT) == refused(vectra9.EINVAL), "dissociation is refused")
+		check(
+			r,
+			cell(p, REFUSER_LONE_MEM) == refused(vectra9.EINVAL),
+			"a memory share with no child is refused",
+		)
+		check(
+			r,
+			cell(p, REFUSER_BOTH_FDG) == refused(vectra9.EINVAL),
+			"copy-and-clean together is refused",
+		)
+		check(r, cell(p, REFUSER_NOMNT) == refused(vectra9.EINVAL), "mount restriction is refused")
+		check(r, cell(p, REFUSER_NOTHING) == 0, "while no flags at all asks for nothing and gets it")
+		check(r, cell(p, REFUSER_NOTEG) == 0, "and a fresh note group is granted in place")
+	}
+	finish(r, p, "and the refuser is taken down")
+
+	check(r, segment_stats().live == segs0.live, "every fork's segments came back")
+	check(r, fdt_stats() == tables0, "and every descriptor group")
+}
+
+// The line the kernel types at the console server, byte by byte through the
+// keyboard sink, exactly as IRQ 1's bottom half would deliver it. The
+// newline is what the cooked discipline releases a line on.
+@(private = "file")
+CONSRV_TYPED :: "vectra lives\n"
+
+/*
+verify_consrv is the milestone's showpiece: a server that waits on two
+things at once, which is the sentence `docs/HANDOFF.md` kept for three
+milestones.
+
+The shape under test. `/bin/consrv` forks with `RFMEM`. Its child parks
+reading `/dev/cons` -- a real device read through the transport, a devfs
+worker held -- while its parent serves 9P from `/srv/consrv`. Two parked
+readers, one process's worth of shared bss between them. The kernel types
+a line into the keyboard sink, and reads it back through the mount. The
+path is keyboard, child, shared ring, parent, pipe, here -- across ring 3
+twice.
+
+Echo goes off first, through `/dev/consctl`. The echo runs on the
+*feeding* thread -- this one -- and would paint the injected line into the
+boot transcript. The mode reverts when the ctl chan closes, whatever
+happens in between.
+
+The teardown is the note doing the job it was built for. A remove stops
+the serve loop. The parent notes its reader out of a parked device read,
+collects EINTR, and exits zero **only if it heard it**. Status 0x75 is a
+teardown that ended some other way.
+*/
+@(private = "file")
+verify_consrv :: proc(r: ^Result) {
+	count0 := srv.count()
+	sched.reap()
+	pin_before := live_objects(mem.heap_stats())
+
+	// -- The image is served, and is the second format ------------------------
+
+	header: [16]u8
+	if bc, berr := vfs.open_path(vfs.boot_namespace, "/bin/consrv", vfs.O_RDONLY); berr == vfs.OK {
+		n, _ := vfs.chan_read(bc, 0, header[:])
+		check(r, n == 16, "/bin serves the console server's image")
+		word :: proc "contextless" (b: []u8) -> u64 {
+			v := u64(0)
+			for i in 0 ..< 8 {
+				v |= u64(b[i]) << (8 * u64(i))
+			}
+			return v
+		}
+		check(r, word(header[:]) == IMAGE2_MAGIC, "and its header says VECTRA02")
+		vfs.chan_close(bc)
+	} else {
+		check(r, false, "/bin serves the console server's image")
+		return
+	}
+
+	// -- It starts, forks, and posts ------------------------------------------
+
+	p, serr := spawn_path(nil, "/bin/consrv", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "the loader starts the console server") {
+		return
+	}
+	r.programs += 1
+
+	posted := false
+	for _ in 0 ..< PATIENCE {
+		if srv.lookup("consrv") != nil {
+			posted = true
+			break
+		}
+		sync.delay(1)
+	}
+	if !check(r, posted, "it forks its reader and posts /srv/consrv") {
+		return
+	}
+	check(
+		r,
+		srv.mount(vfs.boot_namespace, "/srv/consrv", "/mnt") == vfs.OK,
+		"the kernel mounts it",
+	)
+
+	nc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/line", vfs.O_RDONLY)
+	if !check(r, oerr == vfs.OK, "and opens the line file through the mount") {
+		return
+	}
+
+	line: [64]u8
+	n0, e0 := vfs.chan_read(nc, 0, line[:])
+	check(r, e0 == vfs.OK && n0 == 0, "a read before any keystroke answers empty")
+
+	// -- A line is typed, and comes back through the mount --------------------
+
+	ctl, cerr := vfs.open_path(vfs.boot_namespace, "/dev/consctl", vfs.O_WRONLY)
+	if check(r, cerr == vfs.OK, "the kernel takes the echo off first") {
+		off := "echooff"
+		_, _ = vfs.chan_write(ctl, 0, transmute([]u8)off)
+	}
+
+	typed := CONSRV_TYPED
+	for i in 0 ..< len(typed) {
+		devfs.keyboard_sink(typed[i])
+	}
+
+	got := 0
+	for _ in 0 ..< PATIENCE {
+		n, e := vfs.chan_read(nc, 0, line[got:])
+		if e == vfs.OK && n > 0 {
+			got += n
+			if got >= len(CONSRV_TYPED) {
+				break
+			}
+			continue
+		}
+		sync.delay(1)
+	}
+	check(
+		r,
+		got == len(CONSRV_TYPED) && string(line[:got]) == CONSRV_TYPED,
+		"and the typed line comes back: keyboard, reader, shared ring, server, wire",
+	)
+
+	if ctl != nil {
+		vfs.chan_close(ctl)
+	}
+
+	// -- The teardown: a remove, a note, an EINTR, an exit --------------------
+
+	check(r, vfs.chan_remove(nc) == vfs.OK, "a remove is answered, and is the stop")
+	vfs.chan_close(nc)
+
+	if check(r, wait(p, PATIENCE), "the server exits") {
+		check(
+			r,
+			p.exit.deliberate && p.exit.status == 0,
+			"with zero -- its noted reader unwound a parked device read and answered EINTR",
+		)
+	}
+
+	check(r, srv.remove("consrv") == vfs.OK, "the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+
+	finish(r, p, "and the server is taken down")
+
+	pipe.quiesce()
+	check(
+		r,
+		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
+		"the mount of the dead server comes down",
+	)
+
+	pinned := 0
+	for _ in 0 ..< PATIENCE {
+		sched.reap()
+		pinned = live_objects(mem.heap_stats()) - pin_before
+		if pinned == WIRE_PIN {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, pinned == WIRE_PIN, "and what stays is one more wire's pin, to the object")
+	r.pinned += pinned
 }
 
 // live_objects counts what the heap is holding. The same arithmetic

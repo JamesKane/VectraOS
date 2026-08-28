@@ -1477,7 +1477,10 @@ verify_user :: proc() {
 		libodin.put_uint(&sink, u64(result.calls))
 		libodin.put_str(&sink, " system calls, ")
 		libodin.put_uint(&sink, result.answered)
-		libodin.put_str(&sink, " 9P requests answered by a process, a file tree served by a compiled one")
+		libodin.put_str(
+			&sink,
+			" 9P requests answered by a process, a typed line served by a process that forked",
+		)
 		emit(&klog, .Ok, &sink)
 		return
 	}

@@ -336,6 +336,69 @@ spawn_user :: proc(
 }
 
 /*
+spawn_user_clone starts a user thread that continues where another is now.
+
+`spawn_user`'s shape with the initial state copied rather than built.
+`arch.thread_user_clone` duplicates the caller's trap frame and FPU image
+onto the new thread's own kernel stack. The copy answers zero where the
+original will answer the child's pid. This is `rfork`'s half of the split.
+The caller has already built the record, the space, and the copies the
+frame's addresses land in. The enqueue at the bottom is the moment the
+next interrupt may dispatch the child.
+*/
+spawn_user_clone :: proc(
+	name: string,
+	space: ^mem.Address_Space,
+	src: ^arch.Trap_Frame,
+	record: rawptr = nil,
+	priority: Priority = PRIORITY_NORMAL,
+	stack_size: int = DEFAULT_STACK_SIZE,
+) -> ^Thread {
+	if space == nil || src == nil || stack_size < arch.MIN_STACK_SIZE {
+		return nil
+	}
+	reap()
+
+	c := cpu()
+	t := new(Thread)
+	if t == nil {
+		return nil
+	}
+
+	stack := make([]u8, stack_size)
+	if stack == nil {
+		free(t)
+		return nil
+	}
+
+	resume, ok := arch.thread_user_clone(stack, src)
+	if !ok {
+		delete(stack)
+		free(t)
+		return nil
+	}
+
+	t.resume = resume
+	t.stack = stack
+	t.kstack_top = arch.kernel_stack_top(stack)
+	t.owns_stack = true
+	t.name = name
+	t.base = priority
+	t.prio = priority
+	t.affinity = ANY_CLASS
+	t.id = next_id
+	next_id += 1
+
+	t.space = space
+	t.user = record
+
+	guard := sync.acquire(&lock)
+	enqueue(c, t)
+	sync.release(&lock, guard)
+	return t
+}
+
+/*
 kill_current ends the running thread from inside a trap handler.
 
 Takes the state the trap arrived with and returns the state to resume, which

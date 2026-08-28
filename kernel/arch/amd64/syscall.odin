@@ -216,3 +216,16 @@ vectra_syscall_entry:
 	sysretq
 `, "~{memory}"}()
 }
+
+/*
+syscall_frame_fpu names the FXSAVE image the stub above parked with a frame.
+
+The `subq $$512` before `fxsave` is the only thing that knows the image sits
+directly below the frame, and it is four lines up. A caller that wrote the
+`-512` itself would be copying stub layout into another package, where the
+next change to the stub cannot find it. `thread_user_clone` is the caller,
+the day a fork copies a running thread's state.
+*/
+syscall_frame_fpu :: proc "contextless" (frame: ^Trap_Frame) -> rawptr {
+	return rawptr(uintptr(rawptr(frame)) - FPU_AREA_SIZE)
+}

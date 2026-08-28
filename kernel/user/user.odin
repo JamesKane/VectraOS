@@ -38,12 +38,12 @@ machine.
 
 ## What a process owns
 
-Three frames, an address space, a namespace, and a table of open files.
+Segments, an address space, a namespace, and a table of open files.
 
-The frames are this package's, not the space's, because `mem.space_destroy`
-frees page tables and never leaves. See the file comment in
-`kernel/mem/space.odin` for why that division is there and what would change
-it.
+The frames are the *segments'*, not the space's, because `mem.space_destroy`
+frees page tables and never leaves. `segment.odin` is the owner that
+division always pointed at, and the reference count there is what lets two
+processes share one segment's frames.
 
 **The namespace is a copy, and that is the point of having one.** `ns_fork`
 with `.Copy` duplicates the mount table and shares the member chans. A process
@@ -170,29 +170,36 @@ Process :: struct {
 	pid:    u64,
 	parent: u64,
 
+	// Which note group this process is in. Inherited on fork and spawn,
+	// fresh under `RFNOTEG`. Nothing posts to a group yet. The field
+	// arrives with `rfork` because the flag does. The fan-out of a note
+	// to a whole group arrives with the ring 3 note handler. See
+	// `docs/USER.md`.
+	note_group: u64,
+
 	// Where a spawned process's name lives. `load` is handed string literals
 	// that live in the image. `spawn_path` is handed a path sitting on the
 	// calling thread's syscall stack, which is gone when the call returns.
 	name_buf: [PATH_MAX]u8,
 
-	// The frames behind the three mappings. Physical, because that is what
-	// this package has to free and what `mem.phys_to_virt` needs to read the
-	// data page back.
+	// The frames behind the three blob mappings, as *aliases*. Physical,
+	// because `mem.phys_to_virt` needs them to read the data page back for
+	// staging and marks. The segments below own the frames and free them;
+	// these fields name three of the same frames and free nothing.
 	text:   uintptr,
 	data:   uintptr,
 	stack:  uintptr,
 
 	/*
-	The frames behind a VECTRA02 program, segments first and stack last.
+	The segments behind every mapping, and the owners of every frame.
 
-	A blob is three pages with three names, and the fields above are those. A
-	compiled program is however many pages its segments say. This table is the
-	loader's receipt for them: everything `unload` must give back that has no
-	name of its own. Fixed, because a bound the image format enforces is a
-	bound this record can afford to carry.
+	A blob is three one-page segments. A compiled program is one per image
+	row and a stack. `unload` releases each, and the last holder's release
+	frees the frames. That rule is what lets `rfork` map one segment into
+	two spaces without a second owner. See `segment.odin`.
 	*/
-	frames:      [MAX_PROGRAM_FRAMES]uintptr,
-	frame_count: int,
+	segs:      [MAX_PROC_SEGS]^Segment,
+	seg_count: int,
 
 	// The bounds of the thread's kernel stack, copied at load time. Copied
 	// rather than read back through `thread`, because the next `spawn` frees a
@@ -210,14 +217,15 @@ Process :: struct {
 	ns:     ^vfs.Namespace,
 
 	/*
-	The open files, indexed by the number a program holds.
+	The open files, as a reference to a group.
 
-	A fixed table, and small. The argument is the one `MAX_PROCESSES` makes
-	below and `srv.MAX_SERVICES` made before it. A descriptor is the first
-	kernel object a program can name and get a handle back for. It is therefore
-	the first one a program could ask for until the machine stopped.
+	A reference rather than a field, because Plan 9's fork *shares* the
+	descriptor group by default and `RFFDG` asks for a copy. The table, its
+	lock, and the take/advance discipline live in `fdtable.odin`. The exit
+	paths detach and release this in thread context. `unload` releases
+	whatever is still attached.
 	*/
-	fds:    [MAX_FDS]Fd,
+	fdt:    ^Fd_Table,
 
 	exit:   Exit,
 	live:   bool,
@@ -508,10 +516,11 @@ load_held :: proc(name: string, code: []u8) -> (^Process, mem.Error) {
 		return nil, err
 	}
 	p^ = Process {
-		name  = name,
-		space = space,
-		live  = true,
-		pid   = next_pid,
+		name       = name,
+		space      = space,
+		live       = true,
+		pid        = next_pid,
+		note_group = next_pid,
 	}
 	next_pid += 1
 
@@ -520,40 +529,31 @@ load_held :: proc(name: string, code: []u8) -> (^Process, mem.Error) {
 		unload(p)
 		return nil, .Out_Of_Memory
 	}
+	if p.fdt = fdt_new(); p.fdt == nil {
+		unload(p)
+		return nil, .Out_Of_Memory
+	}
 
-	ok: bool
-	if p.text, ok = mem.alloc_page_zeroed(); !ok {
+	if p.text = segment_one_page(p, TEXT_VA, {}, .Text); p.text == 0 {
 		unload(p)
 		return nil, .Out_Of_Memory
 	}
-	if p.data, ok = mem.alloc_page_zeroed(); !ok {
+	if p.data = segment_one_page(p, DATA_VA, {.Write, .No_Execute}, .Data); p.data == 0 {
 		unload(p)
 		return nil, .Out_Of_Memory
 	}
-	if p.stack, ok = mem.alloc_page_zeroed(); !ok {
+	if p.stack = segment_one_page(p, STACK_VA, {.Write, .No_Execute}, .Stack); p.stack == 0 {
 		unload(p)
 		return nil, .Out_Of_Memory
 	}
 
 	// The copy the file comment in `program.odin` argues for. No `User` bit
 	// sits anywhere on the path to the kernel image. A program could not
-	// execute those bytes where they lie, whatever the source was.
+	// execute those bytes where they lie, whatever the source was. Mapped
+	// already, but there is no thread yet, so there is no race to lose.
 	dst := (cast([^]u8)mem.phys_to_virt(p.text))[:arch.PAGE_SIZE]
 	for i in 0 ..< len(code) {
 		dst[i] = code[i]
-	}
-
-	if e := mem.map_user(space, TEXT_VA, p.text, {}, 1); e != .None {
-		unload(p)
-		return nil, e
-	}
-	if e := mem.map_user(space, DATA_VA, p.data, {.Write, .No_Execute}, 1); e != .None {
-		unload(p)
-		return nil, e
-	}
-	if e := mem.map_user(space, STACK_VA, p.stack, {.Write, .No_Execute}, 1); e != .None {
-		unload(p)
-		return nil, e
 	}
 
 	// Before the thread, not after. A program's first instruction may be a
@@ -710,12 +710,12 @@ unload :: proc(p: ^Process) {
 	// reference to the server it came from, and the mount table holds
 	// references to the chans it was built out of. The order is deliberate.
 	// Closing the namespace first would leave every open file pointing into a
-	// mount table with one reference left and no way to reach it.
-	for i in 0 ..< MAX_FDS {
-		if p.fds[i].chan != nil {
-			vfs.chan_close(p.fds[i].chan)
-			p.fds[i] = Fd{}
-		}
+	// mount table with one reference left and no way to reach it. A process
+	// that exited deliberately already detached its table, and this release
+	// finds nothing -- one release per holder, whichever paths ran.
+	if p.fdt != nil {
+		fdt_release(p.fdt)
+		p.fdt = nil
 	}
 	if p.ns != nil {
 		vfs.ns_close(p.ns)
@@ -723,17 +723,12 @@ unload :: proc(p: ^Process) {
 	if p.space != nil {
 		mem.space_destroy(p.space)
 	}
-	if p.text != 0 {
-		mem.free_page(p.text)
-	}
-	if p.data != 0 {
-		mem.free_page(p.data)
-	}
-	if p.stack != 0 {
-		mem.free_page(p.stack)
-	}
-	for i in 0 ..< p.frame_count {
-		mem.free_page(p.frames[i])
+	// Segments after the space, deliberately. The tables come down first, so
+	// there is no window where a still-standing table entry names a frame the
+	// release already recycled. The frames themselves outlive this process
+	// whenever another still holds the segment.
+	for i in 0 ..< p.seg_count {
+		segment_release(p.segs[i])
 	}
 	p^ = Process{}
 }
@@ -749,64 +744,10 @@ free_slot :: proc "contextless" () -> ^Process #no_bounds_check {
 }
 
 // -- Descriptors -------------------------------------------------------------
-
-/*
-fd_open puts a chan in the lowest free slot and reports the number.
-
-Lowest free, which is the rule every system with a shell depends on. A program
-that closes descriptor 1 and opens a file gets descriptor 1 back. That is how
-output goes to a file with no call for it.
-
-The chan's reference belongs to the table from here on. `fd_close` gives it
-back, and `unload` gives back whatever is left.
-*/
-@(private)
-fd_open :: proc(p: ^Process, c: ^vfs.Chan) -> (int, bool) #no_bounds_check {
-	if p == nil || c == nil {
-		return 0, false
-	}
-	for i in 0 ..< MAX_FDS {
-		if p.fds[i].chan == nil {
-			p.fds[i] = Fd{chan = c}
-			return i, true
-		}
-	}
-	return 0, false
-}
-
-@(private)
-fd_at :: proc "contextless" (p: ^Process, fd: int) -> ^Fd #no_bounds_check {
-	if p == nil || fd < 0 || fd >= MAX_FDS || p.fds[fd].chan == nil {
-		return nil
-	}
-	return &p.fds[fd]
-}
-
-@(private)
-fd_close :: proc(p: ^Process, fd: int) -> bool #no_bounds_check {
-	f := fd_at(p, fd)
-	if f == nil {
-		return false
-	}
-	vfs.chan_close(f.chan)
-	f^ = Fd{}
-	return true
-}
-
-// fd_count reports how many descriptors a process holds, for a self-test that
-// wants to say a close really closed one.
-fd_count :: proc "contextless" (p: ^Process) -> int #no_bounds_check {
-	n := 0
-	if p == nil {
-		return 0
-	}
-	for i in 0 ..< MAX_FDS {
-		if p.fds[i].chan != nil {
-			n += 1
-		}
-	}
-	return n
-}
+//
+// The table itself, its pool, and every per-descriptor operation live in
+// `fdtable.odin`. What stays here is the one procedure that knows which
+// files a process is *born* holding.
 
 /*
 open_standard gives a new process the three descriptors a program expects.
