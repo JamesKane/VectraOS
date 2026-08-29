@@ -288,14 +288,22 @@ when #exists("../../build/user/consrv.vx") {
 	CONSRV_IMAGE: []u8
 }
 
+when #exists("../../build/user/kbdfs.vx") {
+	@(private = "file")
+	KBDFS_IMAGE := #load("../../build/user/kbdfs.vx")
+} else {
+	@(private = "file")
+	KBDFS_IMAGE: []u8
+}
+
 @(private = "file")
-bin_nodes: [9]vfs.Static_Node
+bin_nodes: [10]vfs.Static_Node
 
 // The rows `/bin` actually publishes -- `bin_nodes` less any compiled image
 // a fresh tree has not built yet. Package-scope, because `static_init`
 // borrows the slice for the life of the machine.
 @(private = "file")
-bin_live: [9]vfs.Static_Node
+bin_live: [10]vfs.Static_Node
 
 @(private = "file")
 bin_tree: vfs.Static_Tree
@@ -343,6 +351,7 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 		{name = "poster", parent = 0, data = string(poster)},
 		{name = "spin", parent = 0, data = string(spin)},
 		{name = "ramfs", parent = 0, data = string(RAMFS_IMAGE)},
+		{name = "kbdfs", parent = 0, data = string(KBDFS_IMAGE)},
 	}
 
 	/*

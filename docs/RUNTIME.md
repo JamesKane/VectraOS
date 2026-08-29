@@ -1,7 +1,7 @@
 # The userland runtime: Odin in ring 3
 
-`sys/abi/`, `sys/libuser/`, `servers/ramfs/`, `servers/consrv/`, the
-`VECTRA02` format, and the user half of `build.odin`.
+`sys/abi/`, `sys/libuser/`, `servers/ramfs/`, `servers/consrv/`,
+`servers/kbdfs/`, the `VECTRA02` format, and the user half of `build.odin`.
 
 Milestone 16. Every program before it was a page of assembler, because a page
 was all the loader could carry. This milestone is the runtime that ends that.
@@ -181,6 +181,38 @@ consumer end. The flag is for shutdown. A worker parked on an empty ring at
 teardown reads it and leaves, rather than polling for a byte the torn-down
 console will never send.
 
+## `servers/kbdfs`: a kernel service, rebuilt as a program
+
+The userland devfs the handoff pointed at, and its first tenant. `kbdfs`
+reads `/dev/scancode` -- the raw make and break codes the tap serves -- runs
+the scancode state machine, and serves the characters it makes on `/kbd`. The
+translation is `kernel/drivers/kbd`'s, byte for byte. The two US-layout
+tables, shift, caps, control, the extended prefix, and the rule that a
+release makes no character. A scancode becomes a byte on `/kbd` here, where
+the kernel would have made it one on `/dev/cons`. Nothing but the address
+space it runs in is different.
+
+The shape is `consrv`'s, because the problem is the same. A reader child
+parks on a device that blocks, the parent serves 9P through `serve_mux`, and
+a read of `/kbd` parks in a worker. Opening `/dev/scancode` is what diverts
+the raw stream to the program. Until it does, the kernel translates the
+scancodes itself.
+
+Three things this proved about the runtime:
+
+- **The raw halves are reachable.** `/dev/scancode` opens, diverts, and reads
+  from ring 3 like any file. `kbdfs` stands exactly where the kernel's
+  keyboard driver stood, one privilege level out.
+- **A program carries an initialised table.** `PLAIN` and `SHIFTED` are the
+  first static arrays a program in this tree relies on. The compiler puts
+  their bytes in the image and the loader maps them, so a program reads one
+  as readily as the kernel does.
+- **The flush order was wrong, and `kbdfs` found it.** A device read that
+  drained before checking the flush lost a keystroke to a flush racing its
+  arrival, about one boot in three. The read consumed the bytes into a reply
+  the client had already given up on, and `kernel/mnt` dropped it. Both
+  device-read loops check the flush first now. `docs/DEVFS.md` owns the fix.
+
 ## The build, and where the image goes
 
 `build.odin` compiles each entry in `user_programs` with the kernel's own
@@ -196,12 +228,12 @@ self-test fails loudly on the absence. `make check` also checks
 
 ## The controls
 
-Seven mutations and one flake, each observed on a real boot. The last three
-are the concurrent serve loop. The copy-before-fork invariant is not among
-them. A single-client test leaves too wide a gap before the next request for
-a worker to lose the race. That one is argued rather than tripped, the
-distinction `docs/TESTING.md` draws between a control that cannot be
-expressed and one that fails to fire.
+Nine mutations and one flake, each observed on a real boot. Three are the
+concurrent serve loop and two are `kbdfs`'s translation. The copy-before-fork
+invariant is not among them. A single-client test leaves too wide a gap
+before the next request for a worker to lose the race. That one is argued
+rather than tripped, the distinction `docs/TESTING.md` draws between a control
+that cannot be expressed and one that fails to fire.
 
 | Mutation | Result |
 |---|---|
@@ -212,6 +244,8 @@ expressed and one that fails to fire.
 | the `/line` read answers empty rather than parking | caught -- `the read parks on the empty line, rather than answering empty` |
 | `blocks` never defers, so the read runs inline | **the boot hangs** -- the inline read polls forever and freezes the serve loop, so the concurrent stat is never answered. The hang is the finding, the way `read_full`'s was |
 | the worker never writes its reply | caught -- `the parked read wakes when the line is typed`, which it never does |
+| `kbdfs` ignores shift | caught -- `carrying the characters the state machine made`, because the shifted `1` reads back as `1` not `!` |
+| `kbdfs`'s reader pushes the raw scancode | caught -- the same check, because a make code is not the character it names |
 
 And the flake: a one-in-twenty boot printed a program's line half-staged,
 with zeroes for a tail. `load` started the thread, and the self-tests staged

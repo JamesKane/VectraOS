@@ -25,11 +25,12 @@ libposix, Vectra9), `servers/` (devfs, netfs, intuition), `apps/` (terminal,
 filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 `aarch64` and `riscv64`.
 
-**`servers/` has two residents.** `servers/ramfs` serves a file tree.
-`servers/consrv` is the new one: a proto console server that *forks*, and
-waits on the keyboard and its clients at once. The runtime under both --
-`sys/abi`, `sys/libuser`, the VECTRA02 format, the loader -- is
-`docs/RUNTIME.md`'s.
+**`servers/` has three residents.** `servers/ramfs` serves a file tree.
+`servers/consrv` is a console server that *forks* and waits on the keyboard
+and its clients at once. `servers/kbdfs` is the new one: the kernel's
+keyboard translation, rebuilt as a program over `/dev/scancode`. The runtime
+under all three -- `sys/abi`, `sys/libuser`, the VECTRA02 format, the loader
+-- is `docs/RUNTIME.md`'s.
 
 `rfork` exists now, by Plan 9's rules. One process becomes two at the call
 site, each with its own page tables. Text is shared, and writable data is
@@ -50,7 +51,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1120 checks against itself and idles.
+1140 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -129,6 +130,18 @@ like a device read should. It takes the first lock ring 3 has -- a spinlock
 over `lock cmpxchg` -- to serialise the pipe writes, and `RFNOWAIT` reaps
 each worker. `docs/RUNTIME.md` owns the design.
 
+**A kernel service runs as a program now.** `servers/kbdfs` reads the raw
+scancodes `/dev/scancode` serves, runs `kernel/drivers/kbd`'s translation
+byte for byte, and serves the characters it makes on `/kbd`. It is the
+userland devfs's first tenant, and it stands where the kernel's keyboard
+driver stood, one privilege level out.
+
+Building it found a real bug. A device read drained its bytes before it
+checked the flush. A flush racing a keystroke then consumed the byte into a
+reply the client gave up on, about one boot in three. Both device-read loops
+check the flush first now. `docs/RUNTIME.md` owns the server, `docs/DEVFS.md`
+the fix.
+
 ```
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
@@ -159,7 +172,7 @@ The flag word is Plan 9's bit for bit. `RFPROC`, `RFMEM`, `RFFDG`,
 The rest are refused EINVAL rather than skipped. Without `RFPROC` the
 namespace and descriptor flags act on the caller in place.
 
-About 42,700 lines of Odin. The linked image is ~1348 KB debug and ~717 KB
+About 43,400 lines of Odin. The linked image is ~1437 KB debug and ~796 KB
 release, ~107 KB of both being the two embedded user images (`ramfs`,
 `consrv`).
 
@@ -219,6 +232,8 @@ of them could have come earlier:
                             keeping its descriptors -- the seam's other half
     a serve mux             and a userland server answers concurrently: a
                             worker per request that parks, the rest inline
+    a kbdfs                 and a kernel driver runs as a program: raw
+                            scancodes in a file, translated in ring 3
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -231,13 +246,13 @@ code it explains.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x0000000019a0e000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x00000000199f2000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 33 entries spanning 12.7 GiB
-[  ok  ] usable 458.7 MiB, reclaimable 45.9 MiB
-[  --  ] largest usable region 386.5 MiB at 0x0000000001780000
-[  ok  ] pmm 117443 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 516.0 MiB in 274 tables (1.0 MiB)
+[  ok  ] usable 458.6 MiB, reclaimable 46.0 MiB
+[  --  ] largest usable region 386.4 MiB at 0x0000000001780000
+[  ok  ] pmm 117415 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 516.1 MiB in 275 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
@@ -247,14 +262,14 @@ code it explains.
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] ioapic version 0x20, 24 lines, all masked
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62518 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (9130721-9159397 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 853 acquisitions, 817 parked and handed back, decayed to 1
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62575 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (8916701-9371279 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 853 acquisitions, 812 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 1781 namespace operations across 5 threads, 277 rebinds under them in 1001 ms, nothing serialised, heap balanced
+[  ok  ] vfs 34 concurrency checks passed -- 1785 namespace operations across 5 threads, 281 rebinds under them in 1001 ms, nothing serialised, heap balanced
 [  ok  ] devfs #c bound at /dev, 8 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/consX 
 -- these bytes went straight out the wire
@@ -264,10 +279,10 @@ code it explains.
 [  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
 [  ok  ] pipe 37 checks passed -- 8227 bytes crossed, 2 threads parked and woken, heap balanced
 [  ok  ] wire 46 checks passed -- 18 frames answered by a thread the kernel cannot call, 9 flushed, 1 stale reply dropped, 2 wires poisoned on purpose
-[  ok  ] bin #b bound at /bin, 8 programs as files, formats VECTRA01 and 02
+[  ok  ] bin #b bound at /bin, 9 programs as files, formats VECTRA01 and 02
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] kbd 55 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
-[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 133 CR3 reloads, one address two meanings
+[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 132 CR3 reloads, one address two meanings
 [  ok  ] syscall armed -- entry at 0xffffffff80026cf0, /dev/cons is descriptor 1
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
@@ -279,7 +294,7 @@ code it explains.
 -- a process answered this line
 these bytes live in a program's own segments
 -- a process started this one
-[  ok  ] user 482 userland checks passed -- 34 processes, 10 started by another process, 4670390 preempted rounds, 348 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
+[  ok  ] user 500 userland checks passed -- 35 processes, 12 started by another process, 4478137 preempted rounds, 411 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
 [  ok  ] boot complete -- idling
 ```
 
@@ -489,12 +504,11 @@ loop's shape, which is why the first two below sit ahead of the port.
 
 **Next, in order:**
 
-1. **The userland devfs itself.** Every raw half it needs is a file, its
-   connection releases cleanly, and `consrv` is the server shape --
-   `serve_mux` now handles the concurrency a device server needs. A `kbdfs`
-   over `/dev/scancode` is the natural first tenant. A ring 3 repaint
-   also still costs a `write` per 256 bytes -- `user.COPY_MAX` -- fine for
-   a cursor, wrong for a compositor.
+1. **More of the userland devfs.** `kbdfs` is the first tenant, over
+   `/dev/scancode`. The obvious next ones are a serial server over
+   `/dev/eia0` and a `/dev/draw` over `/dev/fb`. A ring 3 repaint still costs
+   one `write` per 256 bytes -- `user.COPY_MAX` -- so `/dev/draw` wants a bulk
+   path first. Fine for a cursor as it stands, wrong for a compositor.
 
 2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
@@ -763,7 +777,7 @@ kernel/
                         reaper that collects a detached orphan
     program.odin        The twenty-five programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 482 checks -- one process preempted
+    verify.odin         The boot self-test: 500 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that
@@ -773,9 +787,10 @@ kernel/
                         a compiled ramfs serving its own segments back, three
                         processes ended by notes, one that catches two and
                         one that declines, one that replaces itself, one that
-                        forks a child no parent waits for, four that fork, and
-                        a console server whose /line read parks in a worker
-                        while a stat is answered beside it
+                        forks a child no parent waits for, four that fork, a
+                        console server whose /line read parks in a worker,
+                        and a keyboard translator that turns raw scancodes
+                        into characters over a mount
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled
     wait.odin           Wait queues, scheduler hooks, priority-ordered service
@@ -807,6 +822,9 @@ servers/
   consrv/main.odin      The console server: an rfork'd reader parked on
                         /dev/cons, a concurrent serve loop whose /line reads
                         park in workers, and a shared ring under two locks
+  kbdfs/main.odin       The keyboard translator: an rfork'd reader on
+                        /dev/scancode, the kernel's scancode state machine
+                        rebuilt in ring 3, and /kbd served cooked
 apps/                   Empty
 tools/
   genfont.py            TTF -> font_data.odin
@@ -840,7 +858,7 @@ docs/
                         the constraint that splits a handler in two
   DEVFS.md              kernel/devfs: #c at /dev, the console device, the
                         line discipline, the ctl convention, the raw
-                        framebuffer and streams, and the twenty-eight
+                        framebuffer and streams, and the twenty-nine
                         controls the self-test was measured against
   TESTING.md            The self-test discipline, and the negative controls
   STYLE.md              ASD-STE100: the two modes, the checked rules, and the

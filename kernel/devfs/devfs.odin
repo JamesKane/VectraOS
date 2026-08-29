@@ -972,6 +972,16 @@ devfs_read :: proc "contextless" (
 		w.tap = nil
 
 		for {
+			// The flush is checked before the drain, and the order keeps a
+			// line from being lost to a flush that raced its arrival. A
+			// flushed request's reply is dropped, so a drain into one would
+			// consume the line and hand it to nobody. `flushed` is set before
+			// this reader wakes, so seeing it first leaves the line for the
+			// read that follows. See the `.Scancode` loop for the long form.
+			if vfs.server_flushed(&t.server, tag) {
+				reply^ = vectra9.error_reply(vectra9.EINTR)
+				return
+			}
 			if n := cons_take(&t.cons, buf[:room]); n > 0 {
 				reply^ = vectra9.Rread{data = buf[:n]}
 				return
@@ -981,12 +991,6 @@ devfs_read :: proc "contextless" (
 				// console answers with nothing. The drain above came first, so
 				// this cannot overtake bytes typed before it.
 				reply^ = vectra9.Rread{data = nil}
-				return
-			}
-			if vfs.server_flushed(&t.server, tag) {
-				// The client gave up and said so. It is not waiting for these
-				// bytes any more, and there are none.
-				reply^ = vectra9.error_reply(vectra9.EINTR)
 				return
 			}
 			cons_note_block(&t.cons)
@@ -1008,12 +1012,22 @@ devfs_read :: proc "contextless" (
 		w.tap = tp
 
 		for {
-			if n := tap_take(tp, buf[:room]); n > 0 {
-				reply^ = vectra9.Rread{data = buf[:n]}
-				return
-			}
+			/*
+			The flush is checked *before* the drain, and the order is
+			load-bearing. A client that gave up on this read has a tag the
+			transport reclaimed, and a reply on it is dropped. A drain before
+			the check would consume the bytes into that dropped reply. The
+			next read would find them gone -- a byte lost to a flush that
+			raced its arrival. The transport sets `flushed` before it wakes
+			this reader, so checking it first leaves the bytes in the tap for
+			the read that comes after.
+			*/
 			if vfs.server_flushed(&t.server, tag) {
 				reply^ = vectra9.error_reply(vectra9.EINTR)
+				return
+			}
+			if n := tap_take(tp, buf[:room]); n > 0 {
+				reply^ = vectra9.Rread{data = buf[:n]}
 				return
 			}
 			tap_note_block(tp)

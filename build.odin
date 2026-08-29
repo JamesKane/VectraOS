@@ -54,6 +54,7 @@ User_Program :: struct {
 user_programs := [?]User_Program {
 	{name = "ramfs", path = "servers/ramfs"},
 	{name = "consrv", path = "servers/consrv"},
+	{name = "kbdfs", path = "servers/kbdfs"},
 }
 
 Arch :: enum {

@@ -72,6 +72,18 @@ The loop around the park is `sync.sleep`'s contract honoured rather than
 defensive coding. A wake is a hint. Two readers woken by one byte cannot both
 have it, so the loser finds an empty ring and parks again.
 
+**The flush is checked before the drain, and the order is load-bearing.** A
+client that gave up on a read has a tag `kernel/mnt` reclaimed, and a reply
+on it is dropped. A reader that drained first would consume the bytes into
+that dropped reply. The next read would find them gone -- a byte lost to a
+flush that raced its arrival. The transport sets `flushed` before it wakes
+the reader, so checking it first leaves the bytes for the read that follows.
+
+`kbdfs` found this. Its reader reads `/dev/scancode` on the interruptible
+path, which flushes every `NOTE_POLL` ticks, and one boot in three lost a
+keystroke to the old order. Both device-read loops, the console's and the
+taps', check the flush first now.
+
 ### The first abort hook that means something
 
 `devfs_abort` is what `kernel/mnt` calls when a `Tflush` names a live request.
@@ -482,11 +494,11 @@ shadow right.
 
 ### The controls
 
-Twenty-eight mutations, one at a time, each observed on a real boot. The first
+Twenty-nine mutations, one at a time, each observed on a real boot. The first
 eleven are the device server, and the next nine the line discipline and the
-`ctl` file. Four more are the raw framebuffer, and the last four the taps.
-Two more tap controls live on the driver's side of the seam, in
-`docs/KBD.md`.
+`ctl` file. Four more are the raw framebuffer, four the taps, and the last the
+flush-order fix `kbdfs` demanded. Two more tap controls live on the driver's
+side of the seam, in `docs/KBD.md`.
 
 | Mutation | First failure |
 |---|---|
@@ -518,6 +530,7 @@ Two more tap controls live on the driver's side of the seam, in
 | the last close does not stop the tap | `and the stream is the console's again` (6 checks) — and the live keyboard again, stuck diverted |
 | the abort hook forgets the tap rendezvous | `a tap read that outlives its deadline comes back` |
 | `serial_deliver` bypasses the tap | `a byte off the port reaches the file raw` (2 checks) |
+| a device read drains before it checks the flush | `kbdfs`'s `carrying the characters ...` fails about one boot in three -- a flush racing a keystroke consumes it into a dropped reply. A flake, not a clean fail, and the reason the check moved to flush-first |
 
 **The last two only fail because the checks were rewritten to make them.** Both
 came back clean the first time, and neither was a narrow window — they were

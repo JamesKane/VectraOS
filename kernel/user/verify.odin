@@ -411,6 +411,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_consrv(&r)
 
+	// -- And a kernel service rebuilt as a program ----------------------------
+
+	verify_kbdfs(&r)
+
 	// -- What is left ---------------------------------------------------------
 
 	r.traps = arch.user_trap_count() - before_traps
@@ -2462,14 +2466,15 @@ verify_rfork :: proc(r: ^Result) {
 CONSRV_TYPED :: "vectra lives\n"
 
 /*
-One read of `/line`, on a thread, and what it came back with.
+One read of a mounted file, on a thread, and what it came back with.
 
-The read parks now, so it cannot run on the boot thread -- a read that never
-returns would print nothing after it. `done` goes true when the read returns,
-watched from the boot thread with a bound.
+A read that parks cannot run on the boot thread -- a read that never returns
+would print nothing after it. `done` goes true when the read returns, watched
+from the boot thread with a bound. Shared by the two servers whose reads
+park, `consrv` and `kbdfs`.
 */
 @(private = "file")
-Consrv_Reader :: struct {
+Mount_Reader :: struct {
 	c:    ^vfs.Chan,
 	n:    int,
 	err:  vfs.Errno,
@@ -2478,15 +2483,15 @@ Consrv_Reader :: struct {
 }
 
 @(private = "file")
-consrv_reader: Consrv_Reader
+mount_reader: Mount_Reader
 
 @(private = "file")
-consrv_read_thread :: proc "contextless" (arg: rawptr) {
+mount_read_thread :: proc "contextless" (arg: rawptr) {
 	context = runtime.default_context()
 	context.allocator = mem.allocator()
 	_ = arg
-	consrv_reader.n, consrv_reader.err = vfs.chan_read(consrv_reader.c, 0, consrv_reader.buf[:])
-	intrinsics.volatile_store(&consrv_reader.done, true)
+	mount_reader.n, mount_reader.err = vfs.chan_read(mount_reader.c, 0, mount_reader.buf[:])
+	intrinsics.volatile_store(&mount_reader.done, true)
 }
 
 /*
@@ -2577,8 +2582,8 @@ verify_consrv :: proc(r: ^Result) {
 	`serve_mux` hands it to a worker, so the server can answer other requests
 	while it waits -- which the getattr below proves.
 	*/
-	consrv_reader = Consrv_Reader{c = nc}
-	if !check(r, sched.spawn("consrv-read", consrv_read_thread, nil) != nil, "a thread to read /line") {
+	mount_reader = Mount_Reader{c = nc}
+	if !check(r, sched.spawn("consrv-read", mount_read_thread, nil) != nil, "a thread to read /line") {
 		return
 	}
 
@@ -2586,7 +2591,7 @@ verify_consrv :: proc(r: ^Result) {
 	parked := true
 	for _ in 0 ..< 20 {
 		sync.delay(1)
-		if intrinsics.volatile_load(&consrv_reader.done) {
+		if intrinsics.volatile_load(&mount_reader.done) {
 			parked = false
 			break
 		}
@@ -2600,7 +2605,7 @@ verify_consrv :: proc(r: ^Result) {
 		// The getattr runs inline in the main loop while the read waits off in
 		// a worker, which is the whole point of the mux.
 		check(r, aerr == vfs.OK, "and a stat is answered while the read still parks")
-		check(r, !intrinsics.volatile_load(&consrv_reader.done), "which did not wake the parked read")
+		check(r, !intrinsics.volatile_load(&mount_reader.done), "which did not wake the parked read")
 		vfs.chan_close(root)
 	}
 
@@ -2619,7 +2624,7 @@ verify_consrv :: proc(r: ^Result) {
 
 	woke := false
 	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&consrv_reader.done) {
+		if intrinsics.volatile_load(&mount_reader.done) {
 			woke = true
 			break
 		}
@@ -2628,8 +2633,8 @@ verify_consrv :: proc(r: ^Result) {
 	check(r, woke, "the parked read wakes when the line is typed")
 	check(
 		r,
-		consrv_reader.err == vfs.OK &&
-		string(consrv_reader.buf[:consrv_reader.n]) == CONSRV_TYPED,
+		mount_reader.err == vfs.OK &&
+		string(mount_reader.buf[:mount_reader.n]) == CONSRV_TYPED,
 		"carrying the whole line: keyboard, reader, shared ring, worker, wire",
 	)
 
@@ -2676,6 +2681,156 @@ verify_consrv :: proc(r: ^Result) {
 		sync.delay(1)
 	}
 	check(r, pinned == 0, "and the forked server's wire comes back whole")
+	r.pinned += pinned
+}
+
+// The scancodes the kernel injects into `/dev/scancode`, and the characters
+// `kbdfs` translates them to. `k b d` are make codes, then a shift press, a
+// `1` that shifts to `!`, a shift release, and Enter. The releases and the
+// shift itself produce nothing, so the cooked stream is five characters.
+@(private = "file")
+KBDFS_CODES :: [?]u8{0x25, 0x30, 0x20, 0x2A, 0x02, 0xAA, 0x1C}
+@(private = "file")
+KBDFS_COOKED :: "kbd!\n"
+
+/*
+verify_kbdfs is the userland devfs's first tenant: a kernel service rebuilt
+as a program.
+
+`kbdfs` opens `/dev/scancode`, which diverts the raw scancodes to it, and
+serves the characters it translates from them on `/kbd`. The translation is
+`kernel/drivers/kbd`'s, in ring 3 now. So this test injects make codes the
+way the keyboard self-test does, and reads the cooked result back through a
+mount instead.
+
+The read of `/kbd` parks in a worker, so it runs on a thread. Between the open
+and the first scancode it waits, which is the proof the file blocks on a key
+rather than answering empty. Then the kernel injects `kbd!` and a newline as
+scancodes. The parked read wakes carrying exactly the characters the state
+machine makes -- shift included, since one of them is shifted.
+*/
+@(private = "file")
+verify_kbdfs :: proc(r: ^Result) {
+	count0 := srv.count()
+	sched.reap()
+	pin_before := live_objects(mem.heap_stats())
+
+	p, serr := spawn_path(nil, "/bin/kbdfs", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "the loader starts the keyboard translator") {
+		return
+	}
+	r.programs += 1
+
+	posted := false
+	for _ in 0 ..< PATIENCE {
+		if srv.lookup("kbdfs") != nil {
+			posted = true
+			break
+		}
+		sync.delay(1)
+	}
+	if !check(r, posted, "it forks its reader, opens /dev/scancode, and posts /srv/kbdfs") {
+		return
+	}
+	check(
+		r,
+		srv.mount(vfs.boot_namespace, "/srv/kbdfs", "/mnt") == vfs.OK,
+		"the kernel mounts it",
+	)
+
+	kc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/kbd", vfs.O_RDONLY)
+	if !check(r, oerr == vfs.OK, "and opens the cooked keyboard file") {
+		return
+	}
+
+	// The read parks: no key is pressed, and the translated stream is empty.
+	// On a thread, because a parked read never returns.
+	mount_reader = Mount_Reader{c = kc}
+	if !check(r, sched.spawn("kbdfs-read", mount_read_thread, nil) != nil, "a thread to read /kbd") {
+		return
+	}
+	parked := true
+	for _ in 0 ..< 20 {
+		sync.delay(1)
+		if intrinsics.volatile_load(&mount_reader.done) {
+			parked = false
+			break
+		}
+	}
+	check(r, parked, "a read of /kbd parks until a key, rather than answering empty")
+
+	// Opening /dev/scancode diverted the raw stream to kbdfs. The kernel's own
+	// translation sees nothing now, which is what the diversion is for.
+	check(r, devfs.tap_active(&devfs.tree().scancode), "opening the file diverted the raw stream to it")
+
+	// The kernel presses keys at the controller's level. `kbdfs`'s reader
+	// child drains them from /dev/scancode and translates.
+	codes := KBDFS_CODES
+	for i in 0 ..< len(codes) {
+		devfs.scancode_tap(codes[i])
+	}
+	drained := false
+	for _ in 0 ..< PATIENCE {
+		if !devfs.tap_available(&devfs.tree().scancode) {
+			drained = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, drained, "and its reader child drains them from the raw stream")
+
+	woke := false
+	for _ in 0 ..< PATIENCE {
+		if intrinsics.volatile_load(&mount_reader.done) {
+			woke = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, woke, "the parked read wakes when the keys are pressed")
+	check(
+		r,
+		mount_reader.err == vfs.OK &&
+		string(mount_reader.buf[:mount_reader.n]) == KBDFS_COOKED,
+		"carrying the characters the state machine made: scancodes, shift and all",
+	)
+
+	// -- Teardown, the same arc consrv taught --------------------------------
+
+	check(r, vfs.chan_remove(kc) == vfs.OK, "a remove is answered, and is the stop")
+	vfs.chan_close(kc)
+
+	if check(r, wait(p, PATIENCE), "the translator exits") {
+		check(
+			r,
+			p.exit.deliberate && p.exit.status == 0,
+			"with zero -- its noted reader unwound a parked scancode read",
+		)
+	}
+
+	check(r, srv.remove("kbdfs") == vfs.OK, "the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+
+	finish(r, p, "and the translator is taken down")
+
+	pipe.quiesce()
+	check(
+		r,
+		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
+		"the mount of the dead translator comes down",
+	)
+
+	pinned := 0
+	for _ in 0 ..< PATIENCE {
+		reap_orphans()
+		sched.reap()
+		pinned = live_objects(mem.heap_stats()) - pin_before
+		if pinned == 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, pinned == 0, "and the translator's wire comes back whole")
 	r.pinned += pinned
 }
 
