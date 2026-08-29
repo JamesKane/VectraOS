@@ -54,6 +54,9 @@ MARK_MEMFORK :: u64(0x4D45_4D46_4D45_4D46) // MEMFMEMF
 MARK_FDFORKER :: u64(0x4644_464B_4644_464B) // FDFKFDFK
 MARK_REFUSER :: u64(0x5245_4655_5245_4655) // REFUREFU
 MARK_PAINTER :: u64(0x5041_494E_5041_494E) // PAINPAIN
+MARK_CATCHER :: u64(0x4354_4348_4354_4348) // CTCHCTCH
+MARK_DFLTNOTE :: u64(0x4446_4C54_4446_4C54) // DFLTDFLT
+MARK_FORGER :: u64(0x464F_5247_464F_5247) // FORGFORG
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -149,6 +152,44 @@ PAINTER_RESEEK :: 5
 PAINTER_READ :: 6
 PAINTER_CLOSED :: 7
 PAINTER_BUFFER :: 40 // Byte offset 320 -- slot D, where the readback lands
+
+/*
+Where `catcher` keeps its answers -- one cell per claim.
+
+The story is the note survived.
+
+A `noted` before any delivery is refused. The handler registers, and the
+program spins with a magic number parked in r13. The first note arrives at
+the tick, mid loop. The handler counts it, copies the text's first eight
+bytes out, trashes r13 on purpose, and answers NCONT. The second note
+arrives while the program loops on `sleep`, which is the door's boundary.
+After both, the program writes r13 to a cell -- the magic, twice restored
+-- and exits zero, alive to choose to.
+*/
+CATCHER_EARLY :: 1
+CATCHER_NOTIFIED :: 2
+CATCHER_ROUNDS :: 3
+CATCHER_HANDLED :: 4
+CATCHER_TEXT :: 5
+CATCHER_MAGIC :: 6
+
+// The magic `catcher` parks in r13 across both deliveries, written here and
+// as a movabsq in the blob. The two have to agree.
+CATCHER_MAGIC_VALUE :: u64(0x13C0_FFEE_13C0_FFEE)
+
+/*
+The note `catcher`'s first delivery carries, written here and matched as
+eight bytes in the check. Seven characters and the NUL make exactly one
+cell, so every compared byte is one the kernel defined.
+*/
+CATCHER_NOTE :: "signal!"
+
+// Where `dfltnote` keeps its answers. Its handler counts the delivery and
+// answers NDFLT: the default action, which is the ending. A handler may
+// look at a note and still decline it.
+DFLTNOTE_NOTIFIED :: 1
+DFLTNOTE_ROUNDS :: 2
+DFLTNOTE_RAN :: 3
 
 /*
 Where the two programs that reproduce keep their answers.
@@ -448,6 +489,10 @@ foreign {
 	vectra_user_refuser_end: byte
 	vectra_user_painter: byte
 	vectra_user_painter_end: byte
+	vectra_user_catcher: byte
+	vectra_user_catcher_end: byte
+	vectra_user_dfltnote: byte
+	vectra_user_dfltnote_end: byte
 }
 
 @(private)
@@ -480,6 +525,11 @@ program_binder :: proc "contextless" () -> []u8 {return blob(&vectra_user_binder
 // And the one that reaches hardware: pixels through /dev/fb, at an offset
 // it chose with `seek`.
 program_painter :: proc "contextless" () -> []u8 {return blob(&vectra_user_painter, &vectra_user_painter_end)}
+
+// And the two that catch notes: one survives two of them, one looks and
+// takes the default anyway.
+program_catcher :: proc "contextless" () -> []u8 {return blob(&vectra_user_catcher, &vectra_user_catcher_end)}
+program_dfltnote :: proc "contextless" () -> []u8 {return blob(&vectra_user_dfltnote, &vectra_user_dfltnote_end)}
 
 // And the four that stand alone -- the blobs `/bin` publishes as files.
 // Two reproduce, one publishes a service, and one *answers* one. See
@@ -1591,5 +1641,96 @@ vectra_user_painter:
 	ud2
 .globl vectra_user_painter_end
 vectra_user_painter_end:
+
+.balign 16
+.globl vectra_user_catcher
+vectra_user_catcher:
+	movq %rdi, %rbx
+	movabsq $$0x4354434843544348, %rax
+	movq %rax, (%rbx)
+
+	movq $$1, %rdi
+	movq $$19, %rax
+	syscall
+	movq %rax, 8(%rbx)
+
+	leaq 45f(%rip), %rdi
+	movq $$18, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movabsq $$0x13C0FFEE13C0FFEE, %r13
+	movq $$400000000, %rcx
+43:
+	incq 24(%rbx)
+	cmpq $$1, 32(%rbx)
+	jae 44f
+	decq %rcx
+	jnz 43b
+	movq $$0x7A, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+44:
+	movq $$2000, %rcx
+46:
+	cmpq $$2, 32(%rbx)
+	jae 47f
+	movq $$1, %rdi
+	movq $$3, %rax
+	syscall
+	decq %rcx
+	jnz 46b
+	movq $$0x7B, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+47:
+	movq %r13, 48(%rbx)
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+45:
+	incq 32(%rbx)
+	movq (%rsi), %rax
+	movq %rax, 40(%rbx)
+	xorq %r13, %r13
+	movq $$1, %rdi
+	movq $$19, %rax
+	syscall
+	ud2
+.globl vectra_user_catcher_end
+vectra_user_catcher_end:
+
+.balign 16
+.globl vectra_user_dfltnote
+vectra_user_dfltnote:
+	movq %rdi, %rbx
+	movabsq $$0x44464C5444464C54, %rax
+	movq %rax, (%rbx)
+
+	leaq 49f(%rip), %rdi
+	movq $$18, %rax
+	syscall
+	movq %rax, 8(%rbx)
+
+	movq $$400000000, %rcx
+48:
+	incq 16(%rbx)
+	decq %rcx
+	jnz 48b
+	movq $$0x7A, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+49:
+	incq 24(%rbx)
+	movq $$2, %rdi
+	movq $$19, %rax
+	syscall
+	ud2
+.globl vectra_user_dfltnote_end
+vectra_user_dfltnote_end:
 `, "~{memory}"}()
 }

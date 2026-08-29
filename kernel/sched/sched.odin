@@ -433,6 +433,15 @@ note_thread :: proc "contextless" (t: ^Thread) {
 	ready(t)
 }
 
+// clear_note consumes a thread's note flag. Delivery calls it -- the door
+// or the tick, whichever hands the note to a ring 3 handler first. A note
+// that stayed set through its own delivery would deliver again for ever.
+clear_note :: proc "contextless" (t: ^Thread) {
+	if t != nil {
+		intrinsics.volatile_store(&t.noted, false)
+	}
+}
+
 // thread_noted reports whether a note is waiting for a thread. For the
 // boundary checks, which act where the flag alone cannot.
 thread_noted :: proc "contextless" (t: ^Thread) -> bool {

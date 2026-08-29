@@ -388,6 +388,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_notes(&r)
 
+	// -- And a note a process catches, and survives ----------------------------
+
+	verify_handler(&r)
+
 	// -- And a process that continues from the call site ----------------------
 
 	verify_rfork(&r)
@@ -2023,6 +2027,125 @@ verify_notes :: proc(r: ^Result) {
 			"while a pid that is nobody's child answers ECHILD",
 		)
 		check(r, p.exit.deliberate && p.exit.status == 0, "then exited with nothing to report")
+	}
+	finish(r, p, "and it is taken down")
+}
+
+/*
+verify_handler is the milestone: a note a process catches, and survives.
+
+`catcher` registers a handler and spins, with a magic number parked in a
+register the handler will trash on purpose. The first note lands at the
+tick, mid loop -- the handler counts it, copies the text out, and answers
+NCONT. The second lands while the program loops on `sleep`, which is the
+door. After both, the program writes the register to a cell and exits
+zero. The magic in that cell is the frame restore proven twice: the
+handler zeroed r13, and NCONT put it back, both times.
+
+`dfltnote`'s handler is the other answer. It counts the delivery and says
+NDFLT, and the process ends exactly as a handlerless one does: noted, not
+deliberate. Its own code saw the note first, though. A handler may look at
+a note and still decline it.
+*/
+@(private = "file")
+verify_handler :: proc(r: ^Result) {
+	p, err := load_held("catcher", program_catcher())
+	if !check(r, err == .None && p != nil, "a process is built that will catch a note") {
+		return
+	}
+	r.programs += 1
+	if !check(r, launch(p), "and it launches") {
+		finish(r, p, "and is taken down")
+		return
+	}
+
+	// Registered and spinning before anything is posted. The counter is the
+	// proof of ring 3, the same proof `spin` gives.
+	registered := false
+	for _ in 0 ..< PATIENCE {
+		if cell(p, CATCHER_ROUNDS) > 0 {
+			registered = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, registered, "it registers a handler and spins")
+	check(
+		r,
+		cell(p, CATCHER_EARLY) == refused(vectra9.EINVAL),
+		"a noted with no delivery in flight was refused first",
+	)
+	check(r, cell(p, CATCHER_NOTIFIED) == 0, "and notify answered zero")
+
+	check(r, post_note(p, CATCHER_NOTE), "a note is posted to it, mid spin")
+	handled := false
+	for _ in 0 ..< PATIENCE {
+		if cell(p, CATCHER_HANDLED) >= 1 {
+			handled = true
+			break
+		}
+		sync.delay(1)
+	}
+	if !check(r, handled, "the tick hands the handler the frame it interrupted") {
+		finish(r, p, "and the catcher is taken down")
+		return
+	}
+	check(r, !exit_done(p), "and the process is still alive")
+
+	// Seven characters and the NUL are one cell, byte for byte the kernel's.
+	text := string(CATCHER_NOTE)
+	want := u64(0)
+	for i := len(text) - 1; i >= 0; i -= 1 {
+		want = want << 8 | u64(text[i])
+	}
+	check(r, cell(p, CATCHER_TEXT) == want, "the handler read the note's own text")
+
+	check(r, post_note(p, "again"), "a second note is posted, into its syscall loop")
+	if check(r, wait(p, PATIENCE), "and the program comes back from both") {
+		check(r, cell(p, CATCHER_HANDLED) == 2, "each delivery ran the handler once")
+		check(
+			r,
+			p.exit.deliberate && !p.exit.noted && p.exit.status == 0,
+			"and the exit is the program's own -- a process survived two notes",
+		)
+		check(
+			r,
+			cell(p, CATCHER_MAGIC) == CATCHER_MAGIC_VALUE,
+			"with a register the handler trashed restored, twice, by noted",
+		)
+	}
+	finish(r, p, "and the catcher is taken down")
+
+	// -- The other answer ------------------------------------------------------
+
+	p, err = load_held("dfltnote", program_dfltnote())
+	if !check(r, err == .None && p != nil, "a process is built that will decline one") {
+		return
+	}
+	r.programs += 1
+	if !check(r, launch(p), "and it launches") {
+		finish(r, p, "and is taken down")
+		return
+	}
+
+	moving := false
+	for _ in 0 ..< PATIENCE {
+		if cell(p, DFLTNOTE_ROUNDS) > 0 {
+			moving = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, moving, "it registers and spins")
+
+	check(r, post_note(p, "enough"), "a note is posted")
+	if check(r, wait(p, PATIENCE), "and it ends") {
+		check(r, cell(p, DFLTNOTE_RAN) == 1, "the handler ran first")
+		check(
+			r,
+			p.exit.noted && !p.exit.deliberate,
+			"and NDFLT is the ending the note always was",
+		)
 	}
 	finish(r, p, "and it is taken down")
 }

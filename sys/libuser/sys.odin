@@ -136,11 +136,29 @@ rfork :: proc "contextless" (flags: u64) -> i64 {
 	return raw1(abi.SYS_RFORK, flags)
 }
 
-// note posts a note to one of the caller's own children, which today ends
-// it at its next kernel boundary. The child's wait status is EINTR, which
-// is how a parent tells an ending it asked for from one it did not.
+// note posts a note to one of the caller's own children. With no handler
+// the child ends at its next kernel boundary, and the wait status is
+// EINTR. With a handler the child catches it instead -- see `notify`.
 note :: proc "contextless" (pid: u64, text: string) -> i64 {
 	return raw3(abi.SYS_NOTE, pid, u64(uintptr(raw_data(text))), u64(len(text)))
+}
+
+// notify registers the handler a note is delivered to, or clears it with a
+// zero address. The handler is called with the saved frame and the note's
+// text, and must end with `noted`. Until one is registered, a note is only
+// ever an ending.
+notify :: proc "contextless" (handler: uintptr) -> i64 {
+	return raw1(abi.SYS_NOTIFY, u64(handler))
+}
+
+// noted finishes one delivery. `abi.NCONT` resumes the interrupted program
+// from the frame the handler was handed. `abi.NDFLT` takes the default
+// action, which is the ending the note always was. It does not return on
+// either answer, so the `for` after it is unreachable.
+noted :: proc "contextless" (how: u64) -> ! {
+	_ = raw1(abi.SYS_NOTED, how)
+	for {
+	}
 }
 
 sleep :: proc "contextless" (ticks: u64) -> i64 {

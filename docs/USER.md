@@ -33,6 +33,7 @@ directory. `docs/SPACE.md` built the piece under all nine:
     a runtime     and the server can be a program a compiler built
     a note        and what will not stop can be stopped, from outside
     an rfork      and one process can become two, sharing what they choose
+    a handler     and a note it catches is a signal, not only a kill
 
 The third line is the one Plan 9 is about. Two processes hand the kernel the
 same path and get different files, because the mount table belongs to the
@@ -345,6 +346,33 @@ is a #GP.
 Both are the same lesson from opposite directions. **A control that passes is
 asking whether the test ever reaches the code**, and twice here the answer was
 no.
+
+### The controls for the note handler
+
+Four, and `catcher` is what most of them fail through. It is a process that
+catches two notes and survives, with a magic number a handler trashes and
+`noted` restores.
+
+| Mutation | First failure |
+|---|---|
+| the tick delivers no handler and ends the program | `the tick hands the handler the frame it interrupted` |
+| `deliver_note` never sets `notified`, so `noted` cannot confirm | `and the process is still alive` (6 checks) |
+| `NCONT` resumes without restoring the saved frame | `and the process is still alive` (5 checks) |
+| the door delivers no handler on a parked program's note | `and the program comes back from both` -- the second note, at the door, never lands |
+
+The last is the one that names the door's own boundary. `catcher`'s first
+note arrives at the tick, mid loop. Its second arrives while the program is
+parked in `sleep`, where the tick cannot reach it. The door is the only way
+in, and a door that ignores the handler hangs the program on a note that
+never delivers.
+
+**Two guards an honest handler cannot reach are left uncaught by name.**
+`noted` rebuilds the selectors and masks the resume flags against a handler
+that hands back a kernel CS or a cleared IF. `catcher` hands back the frame
+it was given, already a legal ring 3 frame, so neither guard fires. Reaching
+them needs a hostile handler, which is a POSIX signal test's job the day
+there is one. `docs/TESTING.md` calls a control that cannot be expressed a
+different thing from one that fails to fire.
 
 ## The door: SYSCALL and SYSRET
 
@@ -805,11 +833,51 @@ purpose. A parent that noted its own child expects the one and not the other.
 that is nobody's child answers ECHILD, exactly like a pid that never existed,
 so noting teaches nothing about the table.
 
-What a note does not yet do is anything but end. Plan 9 lets a process
-register a handler and survive its notes. The fields are shaped for that day
--- the text travels and is kept -- but today the only delivery is death. A *faulting* process also still holds its descriptors until
-`destroy`. Both its ways of dying are in interrupt context, where nothing
-may close a file, and only a collector in thread context can.
+A *faulting* process still holds its descriptors until `destroy`. Both its
+ways of dying are in interrupt context, where nothing may close a file, and
+only a collector in thread context can.
+
+## The note handler
+
+The other half of Plan 9's notify, and the thing that turns a note from a
+kill into a signal. A process registers a handler with `notify`. Delivery
+then does not end it. The kernel pushes the interrupted frame and the note's
+text onto the user stack and redirects the program into the handler. The
+handler ends with `noted` -- `NCONT` to resume the frame it was handed,
+`NDFLT` to take the death the note always was. An alarm, a hangup, or an
+interrupt a program means to catch stop being spelled the same as a kill.
+
+**Delivery reuses the two boundaries that delivered the ending.** The tick
+redirects the frame it interrupted, in interrupt context. So `deliver_note`
+takes no lock and checks every stack page before it writes. The mappings it
+writes through are live, because it delivers to the thread running right
+now. The door aborts the call and hands the handler the frame, EINTR in
+`rax`, so `NCONT` resumes into the answer Plan 9 promises. A stack too small
+for the frame is the one case delivery cannot survive, and there the process
+ends, noted, as before.
+
+**`noted` trusts nothing the handler hands back.** The frame returns through
+`copy_in`, and the parts a program must not choose are rebuilt from the
+kernel's own constants. The selectors go back to ring 3's, the flags keep
+only the arithmetic bits, and the resume point must sit in the program's
+half. A handler that hands back garbage dies exactly as a
+program that faulted, one syscall removed. The `iretq` would refuse a bad CS
+anyway, but a guard that leans on the hardware refusing fails later, with
+less to say.
+
+One delivery runs at a time, and `notified` on the process is the interlock.
+A note posted while the handler runs stays flagged on the thread and lands
+at the first boundary after `noted` finishes. `notify` refuses to swap the
+handler mid-delivery, because the frame on the stack belongs to the running
+handler. The self-test's `catcher` takes two notes across two boundaries and
+lives, a register the handler trashes restored each time -- the frame
+round-trip proven, not asserted.
+
+The group fan-out is still missing. `Process.note_group` inherits correctly
+and nothing posts to a group, which is Plan 9's `postnote` to a group rather
+than a pid. And no FPU state crosses a delivery. A handler that computes in
+XMM clobbers what the interrupted code had there. That is `Ureg`'s edge in
+Plan 9 too, named here for the day a program mixes floating point and notes.
 
 ## rfork
 

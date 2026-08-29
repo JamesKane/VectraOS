@@ -37,6 +37,18 @@ SYS_REMOVE :: u64(14)
 SYS_PIPE :: u64(15)
 SYS_NOTE :: u64(16)
 SYS_RFORK :: u64(17)
+SYS_NOTIFY :: u64(18)
+SYS_NOTED :: u64(19)
+
+/*
+What `noted` may answer, Plan 9's numbers for Plan 9's words. NCONT resumes
+the interrupted program from the frame the handler was handed. NDFLT takes
+the default action, which is the death the note always was. The other two
+of Plan 9's four -- NRSTR and NSAVE, for nested handling -- are refused
+until something needs them.
+*/
+NCONT :: u64(1)
+NDFLT :: u64(2)
 
 /*
 The rfork flag word, bit for bit Plan 9's, so a value from its manual means

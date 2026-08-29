@@ -173,8 +173,8 @@ Process :: struct {
 	// Which note group this process is in. Inherited on fork and spawn,
 	// fresh under `RFNOTEG`. Nothing posts to a group yet. The field
 	// arrives with `rfork` because the flag does. The fan-out of a note
-	// to a whole group arrives with the ring 3 note handler. See
-	// `docs/USER.md`.
+	// to a whole group is the half of Plan 9's notify still missing --
+	// the handler half exists now. See `docs/USER.md`.
 	note_group: u64,
 
 	// Where a spawned process's name lives. `load` is handed string literals
@@ -231,10 +231,25 @@ Process :: struct {
 	live:   bool,
 
 	// The note's text, posted before delivery and kept for whoever collects
-	// the exit. Nothing interprets it yet -- the only action is an ending --
-	// but an ending that can say why beats one that cannot.
+	// the exit -- or reads it in a handler. A process with no handler still
+	// only ever hears a note as an ending.
 	note_buf: [NOTE_MAX]u8,
 	note_len: int,
+
+	/*
+	The ring 3 note handler, and the state one delivery is in.
+
+	`handler` is a user address `sys_notify` registered, zero for none.
+	`notified` means a handler frame is on the user stack right now: no
+	second delivery may start, and `sys_noted` is the only way forward.
+	`note_sp` is where that frame sits, for `noted` to read back. Only the
+	process's own thread touches all three -- at the door, at the tick that
+	catches it, or in `sys_notify` -- so they need no lock. See
+	`notify.odin`.
+	*/
+	handler:  uintptr,
+	notified: bool,
+	note_sp:  uintptr,
 }
 
 // The longest note. Plan 9 says ERRMAX for the same field, and the number
@@ -443,14 +458,35 @@ note :: proc "contextless" (p: ^Process) -> string {
 note_trap is the tick's half of delivery: a noted thread caught in ring 3.
 
 Interrupt context, exactly like `on_trap`, and the same rules -- no lock, no
-log, no allocation. The record says a note ended the program, with the frame
-the tick interrupted, and the descriptors stay open until `destroy` closes
-them. That is the fault path's arrangement too, and the same collector
-finishes both.
+log, no allocation. `deliver_note` keeps them. It walks page tables and
+writes user memory through mappings that are live right now, because the
+tick caught this very thread running.
+
+Three ways out. A handler mid-delivery holds the note and resumes, and the
+next boundary after `noted` finishes takes it. A registered handler gets
+the frame the tick interrupted, redirected. And a process with no handler,
+or no stack a frame fits on, ends here. The record says a note did it, and
+the descriptors stay open until `destroy` closes them, which is the fault
+path's arrangement too.
 */
 @(private = "file")
 note_trap :: proc "contextless" (r: arch.Resume) -> arch.Resume {
-	if thread := sched.current(); thread != nil {
+	thread := sched.current()
+	if thread != nil {
+		if p := (^Process)(thread.user); p != nil && p.handler != 0 {
+			if p.notified {
+				// One delivery at a time. The note waits, flagged, for the
+				// boundary after the handler's own `noted`.
+				return r
+			}
+			if deliver_note(p, r.frame) {
+				sched.clear_note(thread)
+				return r
+			}
+		}
+	}
+
+	if thread != nil {
 		if p := (^Process)(thread.user); p != nil {
 			p.exit.ip = uintptr(r.frame.rip)
 			p.exit.sp = uintptr(r.frame.rsp)

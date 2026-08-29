@@ -99,6 +99,8 @@ SYS_REMOVE :: abi.SYS_REMOVE
 SYS_PIPE :: abi.SYS_PIPE
 SYS_NOTE :: abi.SYS_NOTE
 SYS_RFORK :: abi.SYS_RFORK
+SYS_NOTIFY :: abi.SYS_NOTIFY
+SYS_NOTED :: abi.SYS_NOTED
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -206,12 +208,27 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 
 	/*
 	The door is the boundary a note waits at, and the check comes before the
-	call. A noted program's next request is one nothing should honour. This is
-	also the delivery point that can do the whole job -- thread context, where
-	the descriptors can close, which the tick's half cannot.
+	call. A noted program's next request is one nothing should honour. With
+	no handler the program ends here, and with one, the call it was about to
+	make is aborted and the handler gets the frame. That abort is Plan 9's
+	rule for an interrupted call. Its EINTR is written into `rax` before the
+	frame is saved, so NCONT resumes into the answer. A delivery already in
+	flight holds the note instead -- the handler's own calls, `noted` above
+	all, must still work.
 	*/
-	if sched.thread_noted(sched.current()) {
-		note_exit(frame)
+	if thread := sched.current(); sched.thread_noted(thread) {
+		p := current()
+		if p == nil || p.handler == 0 {
+			note_exit(frame)
+		}
+		if !p.notified {
+			frame.rax = transmute(u64)(-i64(vectra9.EINTR))
+			if !deliver_note(p, frame) {
+				note_exit(frame)
+			}
+			sched.clear_note(thread)
+			return
+		}
 	}
 
 	number := frame.rax
@@ -260,6 +277,12 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		// The frame crosses like `SYS_EXIT`'s, and for a bigger reason: the
 		// frame *is* the child's first state. See `rfork.odin`.
 		result = sys_rfork(frame, a0)
+	case SYS_NOTIFY:
+		result = sys_notify(uintptr(a0))
+	case SYS_NOTED:
+		// The frame crosses because NCONT rewrites it: the answer to this
+		// call is the interrupted program's own state. See `notify.odin`.
+		result = sys_noted(frame, a0)
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
 	case SYS_EXIT:
@@ -647,7 +670,7 @@ half, whose interrupt context must leave them for `destroy`. A server noted
 while parked unwinds to ring 3 with EINTR and re-enters on its next call. It
 ends here, with its pipe already hung up for its clients.
 */
-@(private = "file")
+@(private)
 note_exit :: proc(frame: ^arch.Trap_Frame) -> ! {
 	p := current()
 	if p != nil {
@@ -867,7 +890,7 @@ copy_out :: proc "contextless" (addr: uintptr, src: []u8) -> bool {
 	return true
 }
 
-@(private = "file")
+@(private)
 copy_in :: proc "contextless" (addr: uintptr, n: int, dst: []u8) -> bool {
 	if n <= 0 || n > len(dst) {
 		return false
@@ -895,7 +918,7 @@ control aimed at the wrong half of that pair proved it. An address near the top
 of the arithmetic wraps, and the sum comes out small. The first test is the one
 that catches it.
 */
-@(private = "file")
+@(private)
 reachable :: proc "contextless" (addr: uintptr, n: int, need: arch.Page_Flags) -> bool {
 	if n <= 0 {
 		return false
