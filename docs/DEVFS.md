@@ -604,9 +604,11 @@ cannot be expressed is different from a control that fails to fire.
   the natural first tenant.
 - **`/dev/draw`**, which is now a protocol question rather than a memory one.
   `/dev/fb` serves the memory, and `apps/terminal` will want the protocol.
-- **A bulk path for pixels.** `user.COPY_MAX` is 256 bytes, so a ring 3 repaint
-  of the whole frame is about sixteen thousand `write` calls. Fine for a
-  cursor, wrong for a compositor. Either a bigger copy bound or a mapping.
+- **A mapping for pixels.** `read` and `write` now loop, so a ring 3 repaint
+  moves a large buffer in one call rather than one call per chunk. That is
+  enough for a cursor and a fair repaint. A compositor touches the whole frame
+  every round. That one still wants a mapping rather than a copy, which is the
+  step past this.
 - **A worker per blocked request**, or a way for a handler to defer its reply
   without holding a worker. Either one removes the bound this file's worker
   count stands in for.

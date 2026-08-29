@@ -58,6 +58,7 @@ MARK_CATCHER :: u64(0x4354_4348_4354_4348) // CTCHCTCH
 MARK_DFLTNOTE :: u64(0x4446_4C54_4446_4C54) // DFLTDFLT
 MARK_EXECER :: u64(0x4558_4543_4558_4543) // EXECEXEC
 MARK_NOWAITER :: u64(0x4E4F_5741_4E4F_5741) // NOWANOWA
+MARK_BULKIO :: u64(0x4255_4C4B_4255_4C4B) // BULKBULK
 MARK_FORGER :: u64(0x464F_5247_464F_5247) // FORGFORG
 
 /*
@@ -224,6 +225,30 @@ NOWAITER_CHILD_RAN :: 8 // The child's witness cell, byte offset 64
 // immediates in the blob.
 NOWAITER_CHILD_STATUS :: u64(0x5A)
 NOWAITER_FLAGS :: u64(0x10 | 0x40)
+
+/*
+Where `bulkio` keeps its answers -- one cell per call, in call order.
+
+The story is one big transfer in one call. Fill a stack buffer with a byte
+ramp and open `/dev/fb`. Write the whole thing at an offset, seek back, and
+read it all into a second buffer. The write and read counts are what matter.
+Each must be the whole length, not a chunk of it, which is the bulk path's
+point. The length is over the copy chunk, so the write and the read each make
+more than one pass through the loop.
+*/
+BULKIO_OPENED :: 1
+BULKIO_WROTE :: 2
+BULKIO_READ :: 3
+
+// How many bytes `bulkio` moves in one call, and where its buffers sit in the
+// data page. Four thousand is over one `IO_CHUNK` (2048), so both the write
+// and the read make two passes through the loop. It also fits a blob's one
+// data page: the path at byte 32, the buffer at byte 96 through 4096. The
+// framebuffer offset arrives as the program's third argument.
+BULKIO_LEN :: 4000
+BULKIO_PATH :: "/dev/fb"
+BULKIO_PATH_OFF :: 32
+BULKIO_BUF_OFF :: 96
 
 /*
 Where the two programs that reproduce keep their answers.
@@ -531,6 +556,8 @@ foreign {
 	vectra_user_execer_end: byte
 	vectra_user_nowaiter: byte
 	vectra_user_nowaiter_end: byte
+	vectra_user_bulkio: byte
+	vectra_user_bulkio_end: byte
 }
 
 @(private)
@@ -573,6 +600,10 @@ program_dfltnote :: proc "contextless" () -> []u8 {return blob(&vectra_user_dflt
 // child no parent will wait for.
 program_execer :: proc "contextless" () -> []u8 {return blob(&vectra_user_execer, &vectra_user_execer_end)}
 program_nowaiter :: proc "contextless" () -> []u8 {return blob(&vectra_user_nowaiter, &vectra_user_nowaiter_end)}
+
+// And the one that moves a large buffer in one call: the bulk read and write
+// path, over /dev/fb.
+program_bulkio :: proc "contextless" () -> []u8 {return blob(&vectra_user_bulkio, &vectra_user_bulkio_end)}
 
 // And the four that stand alone -- the blobs `/bin` publishes as files.
 // Two reproduce, one publishes a service, and one *answers* one. See
@@ -1828,5 +1859,57 @@ vectra_user_nowaiter:
 	ud2
 .globl vectra_user_nowaiter_end
 vectra_user_nowaiter_end:
+
+.balign 16
+.globl vectra_user_bulkio
+vectra_user_bulkio:
+	movq %rdi, %rbx
+	movq %rsi, %rbp
+	movq %rdx, %r12
+	movabsq $$0x42554C4B42554C4B, %rax
+	movq %rax, (%rbx)
+
+	leaq 32(%rbx), %rdi
+	movq %rbp, %rsi
+	movq $$2, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r13
+
+	movq %r13, %rdi
+	movq %r12, %rsi
+	movq $$9, %rax
+	syscall
+
+	movq %r13, %rdi
+	leaq 96(%rbx), %rsi
+	movq $$4000, %rdx
+	movq $$2, %rax
+	syscall
+	movq %rax, 16(%rbx)
+
+	movq %r13, %rdi
+	movq %r12, %rsi
+	movq $$9, %rax
+	syscall
+
+	movq %r13, %rdi
+	leaq 96(%rbx), %rsi
+	movq $$4000, %rdx
+	movq $$7, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq %r13, %rdi
+	movq $$6, %rax
+	syscall
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_bulkio_end
+vectra_user_bulkio_end:
 `, "~{memory}"}()
 }

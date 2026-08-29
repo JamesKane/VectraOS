@@ -467,7 +467,7 @@ verify_payload :: proc() #no_bounds_check {
 	pcheck(&r, mnt.payload_size(&pay_conn) == SLOT, "each slot carries its share of it")
 	pcheck(
 		&r,
-		mnt.session(&pay_conn).msize == u32(SLOT + vectra9.HEADER_SIZE + 4),
+		mnt.session(&pay_conn).msize == u32(SLOT + vectra9.IOHDRSZ),
 		"and the session's msize is that share plus a header",
 	)
 
@@ -483,7 +483,7 @@ verify_payload :: proc() #no_bounds_check {
 	)
 	pcheck(
 		&r,
-		mnt.session(&pay_conn).msize == u32(SLOT + vectra9.HEADER_SIZE + 4),
+		mnt.session(&pay_conn).msize == u32(SLOT + vectra9.IOHDRSZ),
 		"and negotiation did not talk msize above what a slot holds",
 	)
 

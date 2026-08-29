@@ -272,7 +272,15 @@ chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 	if c == nil {
 		return 0, vectra9.EBADF
 	}
-	request := vectra9.Msg(vectra9.Twrite{fid = c.fid, offset = offset, data = data})
+	// Capped at what one message carries, the way `chan_read` caps its count.
+	// A `Twrite` serialised past the msize is a frame the transport refuses,
+	// so a caller with more than fits sends it in pieces. 9front clamps to
+	// the same `iounit` on both sides of the wire.
+	send := data
+	if cap := max_payload(c.server); cap > 0 && len(send) > cap {
+		send = send[:cap]
+	}
+	request := vectra9.Msg(vectra9.Twrite{fid = c.fid, offset = offset, data = send})
 	reply: vectra9.Msg
 	if e := rpc(c.server, &request, &reply); e != OK {
 		return 0, e
@@ -282,6 +290,17 @@ chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 		return 0, vectra9.EPROTO
 	}
 	return int(answer.count), OK
+}
+
+// chan_iounit is the most data one read or write of this chan moves at once.
+// That is its server's msize less the header a data message reserves. A
+// caller with more loops, a chunk at a time. `Rlopen` reports it, and this is
+// what `kernel/user` chunks a bulk transfer by.
+chan_iounit :: proc "contextless" (c: ^Chan) -> int {
+	if c == nil {
+		return 0
+	}
+	return max_payload(c.server)
 }
 
 /*

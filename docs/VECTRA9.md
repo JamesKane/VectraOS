@@ -193,6 +193,13 @@ whatever it likes. A correct client does not care. It asks the server for the
 `iounit` on open, and reads in chunks no larger than that. That was always the
 real limit.
 
+The `iounit` is the msize less a whole Twrite header. That is what 9front's
+`IOHDRSZ` reserves: `size[4] type[1] tag[2] fid[4] offset[8] count[4]`, twenty
+three bytes rounded to twenty four. A Twrite is the binding case, because its
+header is longer than the Rread that carries a read's data back. Vectra's ring
+3 `read` and `write` chunk at exactly this bound. So one call moves a large
+buffer as a run of full-frame messages, and never serialises past a frame.
+
 ---
 
 ## 3. The message table

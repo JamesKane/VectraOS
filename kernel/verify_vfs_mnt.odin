@@ -533,7 +533,7 @@ verify_vfs_mnt :: proc() #no_bounds_check {
 	mcheck(&r, vfs.server_interruptible(&mserver), "a server with workers can be interrupted")
 	mcheck(
 		&r,
-		r.msize == u32(vfs.DEFAULT_PAYLOAD + vectra9.HEADER_SIZE + 4),
+		r.msize == u32(vfs.DEFAULT_PAYLOAD + vectra9.IOHDRSZ),
 		"and says so in an msize its slots can actually carry",
 	)
 

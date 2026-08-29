@@ -581,14 +581,17 @@ take_payload :: proc "contextless" (buf: []u8, data: []u8) -> int {
 }
 
 /*
-max_payload is the largest payload this server may answer a single request
-with, which is its msize less a header and a count prefix.
+max_payload is the largest payload this server may carry in a single
+request. That is its msize less the room a data message reserves for its
+header -- `vectra9.IOHDRSZ`, Plan 9's number.
 
-A caller sizes its own buffer by this. A server that answers with more than it
-was told there was room for gets refused by the transport rather than allowed
-to overrun. See `deliver` in `kernel/mnt`.
+A caller sizes its own buffer by this, and clamps a read or a write to it,
+the way 9front clamps to `msize - IOHDRSZ`. Reserving only a header and a
+count, as this did before, forgot a `Twrite`'s fid and offset. So a
+full-payload write serialised twelve bytes past the frame. The overshoot
+was latent behind the ring 3 copy bound and came due with the bulk path.
 */
 @(private)
 max_payload :: proc "contextless" (sv: ^Server) -> int {
-	return int(sv.session.msize) - vectra9.HEADER_SIZE - 4
+	return int(sv.session.msize) - vectra9.IOHDRSZ
 }

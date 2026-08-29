@@ -30,6 +30,21 @@ MSIZE_DEFAULT :: 8192
 HEADER_SIZE :: 7
 
 /*
+Room a data-carrying message reserves for its own header, so the largest
+payload that fits an msize is `msize - IOHDRSZ`. Plan 9 calls this number
+IOHDRSZ and sets it to 24. 9front's `<fcall.h>` keeps the same value. This is
+that number, and the reason it is not `HEADER_SIZE`.
+
+A `Twrite` is the binding case. Its fixed fields are size[4] type[1] tag[2]
+fid[4] offset[8] count[4] = 23 bytes before the data, and `Rread`'s are
+size[4] type[1] tag[2] count[4] = 11. Reserving only the smaller of the two
+-- the mistake this constant corrects -- lets a full-payload write serialise
+to twelve bytes past the msize. Twenty-four is 9front's number: the binding
+23, rounded up by one.
+*/
+IOHDRSZ :: 24
+
+/*
 9P caps a walk at sixteen elements, which is the reason `Twalk` can hold its
 names inline and a `Msg` can stay a stack value. Raising this is not a local
 change -- it is the size of every message in the system.

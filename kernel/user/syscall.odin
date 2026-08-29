@@ -108,14 +108,26 @@ SYS_EXEC :: abi.SYS_EXEC
 PATH_MAX :: 128
 
 /*
-How much of a program's memory one call may copy.
+The chunk one `read` or `write` moves per pass, and the buffer that holds it.
 
-A bound rather than a loop, and small. The buffer is on the calling thread's
-kernel stack, and a kernel stack is 32 KiB. A program that asks for more gets a
-short write and the count back. Every write interface in the world already
-makes a caller handle that.
+On the calling thread's kernel stack, which is 32 KiB. `read` and `write` no
+longer stop at one chunk. They loop until the whole count is moved, so a
+program transfers a large buffer in one call rather than one call per chunk.
+
+The loop still bounds each *copy*. A program that hands over a bad pointer
+part-way loses only the tail, and gets the count of what landed. The chunk is
+also clamped to the server's `iounit`, so a 9P message never serialises past
+its frame. See `sys_write` and `sys_read`.
+
+The other `copy_in` callers -- a path, a note -- stay small and single, so
+they keep their own tight bounds rather than this one.
+
+Two kibibytes rather than a page. The buffer then costs half a page of a
+32 KiB kernel stack, and a transfer larger than it makes more than one pass.
+Raising it trades stack for fewer passes, and a program that names a huge
+buffer wants a mapped one anyway rather than this copy.
 */
-COPY_MAX :: 256
+IO_CHUNK :: 2048
 
 // The longest a program may ask to sleep in one call. A program can ask again.
 // What this stops is one call parking a thread past the end of the boot, where
@@ -330,20 +342,43 @@ sys_write :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 		return 0
 	}
 
-	buffer: [COPY_MAX]u8
-	n := min(count, COPY_MAX)
-	if !copy_in(addr, n, buffer[:]) {
-		return -i64(vectra9.EFAULT)
-	}
+	/*
+	The whole count in one call, a chunk at a time. Each pass copies a chunk
+	from the program and writes it. So a large buffer costs one door crossing
+	rather than one per chunk. The chunk is clamped to the server's `iounit`
+	as well, so no `Twrite` serialises past its frame.
 
-	written, err := vfs.chan_write(c, offset, buffer[:n])
-	if err != vfs.OK {
-		return -i64(err)
+	A pass that fails part-way keeps what already landed. A bad pointer or a
+	server error after the first chunk returns the count so far, which every
+	write interface makes a caller handle. Only a failure on the very first
+	chunk is the whole call's error.
+	*/
+	buffer: [IO_CHUNK]u8
+	chunk := min(IO_CHUNK, vfs.chan_iounit(c))
+	if chunk <= 0 {
+		chunk = IO_CHUNK
+	}
+	total := 0
+	for total < count {
+		n := min(count - total, chunk)
+		if !copy_in(addr + uintptr(total), n, buffer[:n]) {
+			return total > 0 ? i64(total) : -i64(vectra9.EFAULT)
+		}
+		written, err := vfs.chan_write(c, offset + u64(total), buffer[:n])
+		if err != vfs.OK {
+			return total > 0 ? i64(total) : -i64(err)
+		}
+		total += written
+		if written < n {
+			// The device took less than offered -- a full ring, an edge. It
+			// will take no more this call.
+			break
+		}
 	}
 	// The cursor is the process's, not the file's, and it moves only if the
 	// descriptor still means this chan. See `fd_advance`.
-	fd_advance(p, fd, c, u64(written))
-	return i64(written)
+	fd_advance(p, fd, c, u64(total))
+	return i64(total)
 }
 
 /*
@@ -372,41 +407,62 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 		return 0
 	}
 
-	buffer: [COPY_MAX]u8
-	n := min(count, COPY_MAX)
+	/*
+	One loop for a stream and a file alike, which is `devmnt`'s in Plan 9. It
+	chunks at the server's iounit and stops on a short chunk. A console read
+	returns the one line it has, because a short chunk breaks the loop. A file
+	read fills the whole count, a full chunk at a time. The distinction is the
+	data, not the server. A stream answers short and a file answers full, and
+	neither has to be labelled.
 
-	got: int
-	err: vfs.Errno
-	if vfs.server_interruptible(c.server) {
-		/*
-		A read that can park for ever, made noteable by refusing to park
-		for ever. The transport can give a read a deadline, so the wait
-		becomes a loop of bounded ones with the note checked between. A
-		flush and a retry every few ticks is the price, and the server's
-		abort hook already knows how to pay it. The pipe's own reads take
-		the other road -- their sleep checks the note itself -- because a
-		synchronous transport has no deadline to lean on.
-		*/
-		for {
-			got, err = vfs.chan_read_for(c, offset, buffer[:n], NOTE_POLL)
-			if err != vectra9.EINTR {
-				break
+	An interruptible server fetches each chunk with a deadline, and checks the
+	note between retries. So a note can end a read that parks. A synchronous
+	server has no deadline to lean on and no worker to park, so its chunk is a
+	plain read. A `copy_out` that fails part-way keeps what already landed, the
+	way the bulk write keeps what it wrote.
+	*/
+	buffer: [IO_CHUNK]u8
+	chunk := min(IO_CHUNK, vfs.chan_iounit(c))
+	if chunk <= 0 {
+		chunk = IO_CHUNK
+	}
+	interruptible := vfs.server_interruptible(c.server)
+	total := 0
+	for total < count {
+		n := min(count - total, chunk)
+		got: int
+		err: vfs.Errno
+		if interruptible {
+			for {
+				got, err = vfs.chan_read_for(c, offset + u64(total), buffer[:n], NOTE_POLL)
+				if err != vectra9.EINTR {
+					break
+				}
+				if sched.thread_noted(sched.current()) {
+					return total > 0 ? i64(total) : -i64(vectra9.EINTR)
+				}
 			}
-			if sched.thread_noted(sched.current()) {
-				return -i64(vectra9.EINTR)
-			}
+		} else {
+			got, err = vfs.chan_read(c, offset + u64(total), buffer[:n])
 		}
-	} else {
-		got, err = vfs.chan_read(c, offset, buffer[:n])
+		if err != vfs.OK {
+			return total > 0 ? i64(total) : -i64(err)
+		}
+		if got == 0 {
+			break
+		}
+		if !copy_out(addr + uintptr(total), buffer[:got]) {
+			return total > 0 ? i64(total) : -i64(vectra9.EFAULT)
+		}
+		total += got
+		if got < n {
+			// A short chunk is a stream answering with what it had, or a file
+			// reaching its end. Either way, no more comes this call.
+			break
+		}
 	}
-	if err != vfs.OK {
-		return -i64(err)
-	}
-	if got > 0 && !copy_out(addr, buffer[:got]) {
-		return -i64(vectra9.EFAULT)
-	}
-	fd_advance(p, fd, c, u64(got))
-	return i64(got)
+	fd_advance(p, fd, c, u64(total))
+	return i64(total)
 }
 
 // Ticks between note checks on a read that waits for a device. Short enough

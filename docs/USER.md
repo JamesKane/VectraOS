@@ -1027,10 +1027,12 @@ the self-test's own processes for it to destroy by name.
 - **Nothing counts a process's calls against it.** `MAX_PROCESSES` bounds how
   many exist and `MAX_FDS` bounds what one holds. Nothing bounds what one asks
   for, and a single process can call `sleep` for ever.
-- **`copy_in` and `copy_out` bound a call at 256 bytes**, on the calling
-  thread's kernel stack. A program that asks for more gets a short answer and
-  the count, which every write interface already makes a caller handle. A page
-  the process pins would be the answer if it ever matters.
+- **`copy_in` and `copy_out` move one `IO_CHUNK` per pass**, on the calling
+  thread's kernel stack, and `read` and `write` loop until the whole count is
+  moved. A program that hands over a bad pointer part-way loses only the tail.
+  It gets the count of what landed, which every write interface already makes a
+  caller handle. A page the process pins would still beat the copy for the
+  largest buffers if it ever matters.
 - **`MAX_PROCESSES` is twelve, from a fixed table.** The same argument
   `mem.spaces` and `srv.MAX_SERVICES` make. This is also the first code in
   Vectra that anything untrusted reaches. A record a program can make the

@@ -317,12 +317,14 @@ init :: proc "contextless" (
 
 	c.session = vectra9.session_from(transport(c))
 	if c.per > 0 {
-		// The header and the count prefix are what a payload shares its message
-		// with. A client that sizes a read by msize therefore asks for exactly
-		// what one slot holds, and no correct server can overrun it.
+		// A slot holds one payload. The msize is that plus the header a data
+		// message reserves -- `IOHDRSZ`, which covers a Twrite's fid and
+		// offset as well as its count. A client sizes a read or a write by
+		// `msize - IOHDRSZ`. It then asks for exactly what one slot holds, and
+		// no correct message serialises past the frame.
 		c.session.msize = min(
 			vectra9.MSIZE_DEFAULT,
-			u32(vectra9.HEADER_SIZE + 4 + c.per),
+			u32(vectra9.IOHDRSZ + c.per),
 		)
 	}
 	return true

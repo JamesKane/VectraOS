@@ -368,6 +368,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// -- And a process that reaches the hardware -----------------------------
 
 	verify_painter(&r)
+	verify_bulkio(&r)
 	verify_scancode_reader(&r)
 
 	// -- And a process that starts another one -------------------------------
@@ -1137,6 +1138,84 @@ pixel_word :: proc "contextless" (bytes: []u8) -> u32 #no_bounds_check {
 		v = v << 8 | u32(bytes[i])
 	}
 	return v
+}
+
+/*
+verify_bulkio is the bulk path: a large read and write, each in one call.
+
+`bulkio` writes `BULKIO_LEN` bytes to `/dev/fb` in a single `write`, then reads
+them back in a single `read`. The counts are the proof. Before this milestone
+a `write` stopped at 256 bytes and made the program loop. Now the kernel loops
+for it, so one call moves the whole buffer. `BULKIO_LEN` is over one
+`IO_CHUNK`, so each direction makes more than one pass. The framebuffer holds
+all of it, which says the passes joined up rather than the first landing and
+the rest falling on the floor.
+
+The pattern is a byte ramp, staged into the program's data page. The kernel
+saves the framebuffer region first and puts it back after, so the test paints
+nothing a person keeps.
+*/
+@(private = "file")
+verify_bulkio :: proc(r: ^Result) #no_bounds_check {
+	s := devfs.raw_surface()
+	if !check(r, s != nil && s.pixels != nil, "the raw framebuffer is behind /dev/fb") {
+		return
+	}
+	fboff := (s.height - 4) * s.pitch
+	if !check(r, u64(fboff) + BULKIO_LEN <= u64(s.height) * u64(s.pitch), "the bulk region fits the frame") {
+		return
+	}
+
+	p, err := load_held("bulkio", program_bulkio())
+	if !check(r, err == .None && p != nil, "a process is built to move a large buffer") {
+		return
+	}
+	r.programs += 1
+
+	// The path and a byte ramp, staged into the program's data page.
+	check(r, set_bytes(p, BULKIO_PATH_OFF, bytes_of(BULKIO_PATH)), "with a path and a pattern in its page")
+	pattern: [BULKIO_LEN]u8
+	for i in 0 ..< BULKIO_LEN {
+		pattern[i] = u8(i)
+	}
+	check(r, set_bytes(p, BULKIO_BUF_OFF, pattern[:]), "and a pattern larger than the copy chunk")
+
+	// The region the write lands in, saved to be restored.
+	saved: [BULKIO_LEN]u8
+	for i in 0 ..< BULKIO_LEN {
+		saved[i] = s.pixels[fboff + i]
+	}
+
+	check(r, launch(p, u64(len(BULKIO_PATH)), u64(fboff)), "and it launches, staged")
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_BULKIO, "having reached its first instruction")
+		check(r, cell(p, BULKIO_OPENED) == 3, "the framebuffer opened")
+		check(
+			r,
+			cell(p, BULKIO_WROTE) == BULKIO_LEN,
+			"a write of the whole buffer returned the whole count, not a chunk of it",
+		)
+		check(
+			r,
+			cell(p, BULKIO_READ) == BULKIO_LEN,
+			"and a read of the whole buffer filled it in one call",
+		)
+
+		landed := true
+		for i in 0 ..< BULKIO_LEN {
+			if s.pixels[fboff + i] != u8(i) {
+				landed = false
+				break
+			}
+		}
+		check(r, landed, "and every byte of the write is on the screen, passes joined")
+	}
+
+	// Put the framebuffer back the way it was found.
+	for i in 0 ..< BULKIO_LEN {
+		s.pixels[fboff + i] = saved[i]
+	}
+	finish(r, p, "and the process is taken down")
 }
 
 /*

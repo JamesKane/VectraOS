@@ -268,7 +268,7 @@ code it explains.
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
-[  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
+[  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4120, a read gave up after 10 ticks
 [  ok  ] vfs 34 concurrency checks passed -- 1785 namespace operations across 5 threads, 281 rebinds under them in 1001 ms, nothing serialised, heap balanced
 [  ok  ] devfs #c bound at /dev, 8 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/consX 
@@ -506,9 +506,11 @@ loop's shape, which is why the first two below sit ahead of the port.
 
 1. **More of the userland devfs.** `kbdfs` is the first tenant, over
    `/dev/scancode`. The obvious next ones are a serial server over
-   `/dev/eia0` and a `/dev/draw` over `/dev/fb`. A ring 3 repaint still costs
-   one `write` per 256 bytes -- `user.COPY_MAX` -- so `/dev/draw` wants a bulk
-   path first. Fine for a cursor as it stands, wrong for a compositor.
+   `/dev/eia0` and a `/dev/draw` over `/dev/fb`. A ring 3 repaint now moves a
+   large buffer in one `read` or `write`. The call loops at `user.IO_CHUNK`
+   until the whole count is through. So `/dev/draw` is a protocol question, not
+   a copy one. A compositor touches the whole frame every round, and that one
+   still wants a mapping rather than a copy.
 
 2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
