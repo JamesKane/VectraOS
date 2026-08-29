@@ -25,12 +25,13 @@ libposix, Vectra9), `servers/` (devfs, netfs, intuition), `apps/` (terminal,
 filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
 `aarch64` and `riscv64`.
 
-**`servers/` has three residents.** `servers/ramfs` serves a file tree.
+**`servers/` has four residents.** `servers/ramfs` serves a file tree.
 `servers/consrv` is a console server that *forks* and waits on the keyboard
-and its clients at once. `servers/kbdfs` is the new one: the kernel's
-keyboard translation, rebuilt as a program over `/dev/scancode`. The runtime
-under all three -- `sys/abi`, `sys/libuser`, the VECTRA02 format, the loader
--- is `docs/RUNTIME.md`'s.
+and its clients at once. `servers/kbdfs` is the kernel's keyboard
+translation, rebuilt as a program over `/dev/scancode`. `servers/eiafs` is
+the new one: the serial port served both ways, and the first server whose
+`Twrite` reaches hardware. The runtime under all four -- `sys/abi`,
+`sys/libuser`, the VECTRA02 format, the loader -- is `docs/RUNTIME.md`'s.
 
 `rfork` exists now, by Plan 9's rules. One process becomes two at the call
 site, each with its own page tables. Text is shared, and writable data is
@@ -51,7 +52,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1140 checks against itself and idles.
+1170 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -106,9 +107,9 @@ child at birth, a dying parent reparents its children to the kernel, and
 `reap_orphans` collects a detached process once it ends. `docs/USER.md` owns
 both.
 
-**Vectra runs processes, and now a process can become two.** Thirty-four
-enter ring 3 during the boot, and another process started nine of them, by
-`spawn` and by `rfork`. One of them then replaced itself with `exec`. A
+**Vectra runs processes, and now a process can become two.** Thirty-seven
+enter ring 3 during the boot, and another process started fourteen of them,
+by `spawn` and by `rfork`. One of them then replaced itself with `exec`. A
 forked child continues from the instruction after its parent's `syscall`,
 on a private copy of the stack. It answers zero where its parent hears a
 pid.
@@ -142,6 +143,14 @@ reply the client gave up on, about one boot in three. Both device-read loops
 check the flush first now. `docs/RUNTIME.md` owns the server, `docs/DEVFS.md`
 the fix.
 
+**And the port is served both ways now.** `servers/eiafs` opens `/dev/eia0`,
+which diverts the wire's bytes to it, and serves them raw on `/eia0`. A
+write through the mount goes down the shared descriptor and out the port --
+the first userland `Twrite` to reach hardware. The teardown control found
+the pattern's hang. A parent that skips the note strands its reader, whose
+shared descriptor group keeps the posted pipe open for ever.
+`docs/RUNTIME.md` owns the server.
+
 ```
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
@@ -172,9 +181,9 @@ The flag word is Plan 9's bit for bit. `RFPROC`, `RFMEM`, `RFFDG`,
 The rest are refused EINVAL rather than skipped. Without `RFPROC` the
 namespace and descriptor flags act on the caller in place.
 
-About 43,400 lines of Odin. The linked image is ~1437 KB debug and ~796 KB
-release, ~107 KB of both being the two embedded user images (`ramfs`,
-`consrv`).
+About 44,400 lines of Odin. The linked image is ~1467 KB debug and ~833 KB
+release, ~214 KB of both being the four embedded user images (`ramfs`,
+`consrv`, `kbdfs`, `eiafs`).
 
 **What exists, and which document says why:**
 
@@ -234,6 +243,8 @@ of them could have come earlier:
                             worker per request that parks, the rest inline
     a kbdfs                 and a kernel driver runs as a program: raw
                             scancodes in a file, translated in ring 3
+    an eiafs                and the port answers both ways: a ring 3 write
+                            through a mount reaches the hardware behind it
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -294,7 +305,8 @@ code it explains.
 -- a process answered this line
 these bytes live in a program's own segments
 -- a process started this one
-[  ok  ] user 500 userland checks passed -- 35 processes, 12 started by another process, 4478137 preempted rounds, 411 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
+-- these bytes went through a ring 3 server to the wire
+[  ok  ] user 533 userland checks passed -- 37 processes, 14 started by another process, 4628923 preempted rounds, 483 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
 [  ok  ] boot complete -- idling
 ```
 
@@ -504,13 +516,12 @@ loop's shape, which is why the first two below sit ahead of the port.
 
 **Next, in order:**
 
-1. **More of the userland devfs.** `kbdfs` is the first tenant, over
-   `/dev/scancode`. The obvious next ones are a serial server over
-   `/dev/eia0` and a `/dev/draw` over `/dev/fb`. A ring 3 repaint now moves a
-   large buffer in one `read` or `write`. The call loops at `user.IO_CHUNK`
-   until the whole count is through. So `/dev/draw` is a protocol question, not
-   a copy one. A compositor touches the whole frame every round, and that one
-   still wants a mapping rather than a copy.
+1. **A `/dev/draw` over `/dev/fb`.** `kbdfs` and `eiafs` cover the input
+   streams now, so the framebuffer is the userland devfs's next tenant. A
+   ring 3 repaint now moves a large buffer in one `read` or `write`. The call
+   loops at `user.IO_CHUNK` until the whole count is through. So `/dev/draw`
+   is a protocol question, not a copy one. A compositor touches the whole
+   frame every round, and that one still wants a mapping rather than a copy.
 
 2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
@@ -779,7 +790,7 @@ kernel/
                         reaper that collects a detached orphan
     program.odin        The twenty-five programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 500 checks -- one process preempted
+    verify.odin         The boot self-test: 533 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that
@@ -791,8 +802,9 @@ kernel/
                         one that declines, one that replaces itself, one that
                         forks a child no parent waits for, four that fork, a
                         console server whose /line read parks in a worker,
-                        and a keyboard translator that turns raw scancodes
-                        into characters over a mount
+                        a keyboard translator that turns raw scancodes
+                        into characters over a mount, and a serial server
+                        that puts a ring 3 write on the wire
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled
     wait.odin           Wait queues, scheduler hooks, priority-ordered service
@@ -827,6 +839,9 @@ servers/
   kbdfs/main.odin       The keyboard translator: an rfork'd reader on
                         /dev/scancode, the kernel's scancode state machine
                         rebuilt in ring 3, and /kbd served cooked
+  eiafs/main.odin       The serial server: an rfork'd reader on /dev/eia0,
+                        the raw bytes served on /eia0, and the first Twrite
+                        that reaches hardware
 apps/                   Empty
 tools/
   genfont.py            TTF -> font_data.odin

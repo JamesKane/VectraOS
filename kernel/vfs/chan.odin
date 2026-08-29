@@ -275,9 +275,9 @@ chan_interruptible :: proc "contextless" (c: ^Chan) -> bool {
 }
 
 // chan_write writes `data` at `offset`, one message's worth at most. A caller
-// with more than `chan_iounit` sends it in pieces -- a `Twrite` serialised
-// past the msize is a frame the transport refuses, loudly, which is better
-// than a silent short count for the caller that forgot to chunk.
+// with more than `chan_iounit` sends it in pieces. A `Twrite` serialised past
+// the msize is a frame the transport refuses. That loud refusal beats a
+// silent short count for a caller that forgot to chunk.
 chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 	if c == nil {
 		return 0, vectra9.EBADF
@@ -294,10 +294,11 @@ chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 	return int(answer.count), OK
 }
 
-// chan_iounit is the most data one read or write of this chan moves at once:
-// the iounit the server promised at open, or its msize less the header a data
-// message reserves when it promised nothing. A caller with more loops, a
-// chunk at a time. This is what `kernel/user` chunks a bulk transfer by.
+// chan_iounit is the most data one read or write of this chan moves at once.
+// That is the iounit the server promised at open. When it promised nothing,
+// it is the msize less the header a data message reserves. A caller with
+// more loops, a chunk at a time. This is what `kernel/user` chunks a bulk
+// transfer by.
 chan_iounit :: proc "contextless" (c: ^Chan) -> int {
 	if c == nil {
 		return 0

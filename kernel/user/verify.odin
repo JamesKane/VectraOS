@@ -416,6 +416,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_kbdfs(&r)
 
+	// -- And the port itself, served from ring 3 ------------------------------
+
+	verify_eiafs(&r)
+
 	// -- What is left ---------------------------------------------------------
 
 	r.traps = arch.user_trap_count() - before_traps
@@ -2549,8 +2553,8 @@ One read of a mounted file, on a thread, and what it came back with.
 
 A read that parks cannot run on the boot thread -- a read that never returns
 would print nothing after it. `done` goes true when the read returns, watched
-from the boot thread with a bound. Shared by the two servers whose reads
-park, `consrv` and `kbdfs`.
+from the boot thread with a bound. Shared by the three servers whose reads
+park, `consrv`, `kbdfs` and `eiafs`.
 */
 @(private = "file")
 Mount_Reader :: struct {
@@ -2910,6 +2914,171 @@ verify_kbdfs :: proc(r: ^Result) {
 		sync.delay(1)
 	}
 	check(r, pinned == 0, "and the translator's wire comes back whole")
+	r.pinned += pinned
+}
+
+// The bytes the kernel puts on the raw serial stream, through the producer's
+// own seam. The newline matters: it comes back as a newline, because the
+// diverted stream passes no line discipline that could cook it.
+@(private = "file")
+EIAFS_SENT :: "eia0 raw\n"
+
+/*
+verify_eiafs is the userland devfs's second tenant, and the first server
+whose Twrite reaches hardware.
+
+`eiafs` opens `/dev/eia0`, which diverts the port's bytes to it, and serves
+them raw on `/eia0`. There is no translator: the port's bytes are already
+the content, and the proof is the newline coming back uncooked. The write
+half is the new ground. A write through the mount goes down the server's
+shared descriptor and out the wire. The console's own write count does not
+move -- the bytes took the raw path, not the cooked one.
+
+The whole check stands behind `input_started`. A machine whose port failed
+its probe answers ENXIO to the server's open. A server with nothing to
+serve is not a reason to fail the boot.
+*/
+@(private = "file")
+verify_eiafs :: proc(r: ^Result) {
+	if !devfs.input_started() {
+		return
+	}
+
+	count0 := srv.count()
+	sched.reap()
+	pin_before := live_objects(mem.heap_stats())
+
+	p, serr := spawn_path(nil, "/bin/eiafs", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "the loader starts the serial server") {
+		return
+	}
+	r.programs += 1
+
+	posted := false
+	for _ in 0 ..< PATIENCE {
+		if srv.lookup("eiafs") != nil {
+			posted = true
+			break
+		}
+		sync.delay(1)
+	}
+	if !check(r, posted, "it forks its reader, opens /dev/eia0, and posts /srv/eiafs") {
+		return
+	}
+	check(
+		r,
+		srv.mount(vfs.boot_namespace, "/srv/eiafs", "/mnt") == vfs.OK,
+		"the kernel mounts it",
+	)
+
+	ec, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/eia0", vfs.O_RDWR)
+	if !check(r, oerr == vfs.OK, "and opens the port file through the mount") {
+		return
+	}
+
+	// The read parks: the wire is silent, and the served ring is empty. On a
+	// thread, because a parked read never returns.
+	mount_reader = Mount_Reader{c = ec}
+	if !check(r, sched.spawn("eiafs-read", mount_read_thread, nil) != nil, "a thread to read /eia0") {
+		return
+	}
+	parked := true
+	for _ in 0 ..< 20 {
+		sync.delay(1)
+		if intrinsics.volatile_load(&mount_reader.done) {
+			parked = false
+			break
+		}
+	}
+	check(r, parked, "a read of /eia0 parks until the wire speaks, rather than answering empty")
+
+	// Opening /dev/eia0 diverted the port's bytes to eiafs. The kernel's own
+	// line discipline sees nothing now, which is what the diversion is for.
+	check(r, devfs.tap_active(&devfs.tree().serial), "opening the file diverted the port's bytes to it")
+
+	// The kernel puts bytes on the stream at the poller's level. `eiafs`'s
+	// reader child drains them from /dev/eia0, uncooked.
+	sent := EIAFS_SENT
+	for i in 0 ..< len(sent) {
+		devfs.serial_deliver(&devfs.tree().cons, sent[i])
+	}
+	drained := false
+	for _ in 0 ..< PATIENCE {
+		if !devfs.tap_available(&devfs.tree().serial) {
+			drained = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, drained, "and its reader child drains them from the raw stream")
+
+	woke := false
+	for _ in 0 ..< PATIENCE {
+		if intrinsics.volatile_load(&mount_reader.done) {
+			woke = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, woke, "the parked read wakes when the wire speaks")
+	check(
+		r,
+		mount_reader.err == vfs.OK &&
+		string(mount_reader.buf[:mount_reader.n]) == EIAFS_SENT,
+		"carrying the port's bytes unchanged, newline and all",
+	)
+
+	// -- The new ground: a write that reaches hardware ------------------------
+
+	/*
+	The bytes go through the mount, down the server's shared descriptor, and
+	out the wire -- the first userland Twrite that reaches a device. The
+	console's own count stands still, which is the proof the bytes took the
+	raw path. The line itself lands in a captured boot log, the way the devfs
+	test's wire line does.
+	*/
+	writes_before := devfs.tree().cons.writes
+	line := "-- these bytes went through a ring 3 server to the wire\n"
+	wn, werr := vfs.chan_write(ec, 0, transmute([]u8)line)
+	check(r, werr == vfs.OK && wn == len(line), "a write through the mount takes every byte, out the wire")
+	check(r, devfs.tree().cons.writes == writes_before, "without touching the console's own count")
+
+	// -- Teardown, the same arc consrv taught ---------------------------------
+
+	check(r, vfs.chan_remove(ec) == vfs.OK, "a remove is answered, and is the stop")
+	vfs.chan_close(ec)
+
+	if check(r, wait(p, PATIENCE), "the serial server exits") {
+		check(
+			r,
+			p.exit.deliberate && p.exit.status == 0,
+			"with zero -- its noted reader unwound a parked port read",
+		)
+	}
+
+	check(r, srv.remove("eiafs") == vfs.OK, "the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+
+	finish(r, p, "and the serial server is taken down")
+
+	pipe.quiesce()
+	check(
+		r,
+		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
+		"the mount of the dead server comes down",
+	)
+
+	pinned := 0
+	for _ in 0 ..< PATIENCE {
+		reap_orphans()
+		sched.reap()
+		pinned = live_objects(mem.heap_stats()) - pin_before
+		if pinned == 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, pinned == 0, "and the serial server's wire comes back whole")
 	r.pinned += pinned
 }
 

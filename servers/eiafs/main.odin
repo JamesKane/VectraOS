@@ -1,0 +1,548 @@
+/*
+eiafs -- the serial port, served from ring 3.
+
+`kbdfs` proved a kernel driver can stand one privilege level out: raw
+scancodes in, a translation, characters served on a file. The port asks a
+smaller and a larger question at once. Smaller, because serial bytes need
+no translation -- what arrives on the wire is already the content, so the
+child pushes what it reads and nothing more. Larger, because `/dev/eia0`
+is the first raw device a program may also *write*. So this is the first
+userland server whose `Twrite` reaches hardware: a write to the served
+file goes down the shared descriptor and out the wire.
+
+The shape is `consrv`'s, byte for byte where it can be:
+
+    the child    reads /dev/eia0 -- a device read that genuinely parks --
+                 and pushes what arrives into the ring
+    the parent   posts /srv/eiafs and serves 9P; a read of /eia0 drains
+                 the ring, and a write of /eia0 goes out the wire
+
+The open takes `O_RDWR` and comes before the fork, so both halves hold
+the one descriptor: the child reads it for its whole life, and the
+parent's handler writes it. A write never parks -- the UART takes bytes
+as fast as its FIFO drains -- so the serve loop answers a `Twrite`
+inline, and only a read of `/eia0` goes to a worker.
+
+Two properties of the wire are the kernel's, not this server's, and a
+client should know both. The device expands LF to CRLF on the way out,
+so a byte stream through `/eia0` is a terminal's, not a modem's. And the
+kernel log writes the same wire unserialised -- the ordering of a log
+line against a served write is undefined, which `kernel/devfs` documents
+as the deliberate cost of a log that cannot park.
+
+Teardown is strictly child-first, and by note, exactly as `consrv` does
+it. A `Tremove` stops the serve loop; the parent notes its reader out of
+the parked device read, collects the EINTR that says the ending was
+asked for, and only then exits.
+*/
+package eiafs
+
+import "base:intrinsics"
+import "base:runtime"
+
+import "vsys:abi"
+import "vsys:libuser"
+import "vsys:vectra9"
+
+NODE_ROOT :: i32(0)
+NODE_EIA :: i32(1)
+
+// The meeting point: bytes off the wire, waiting to be served. The
+// counters are monotonic and the difference is the content, so full and
+// empty cannot be confused. Shared under RFMEM, like every global here.
+RING :: 256
+ring: [RING]u8
+head: u64
+tail: u64
+
+// The child's read buffer. In the shared bss like everything else, and
+// touched by the child alone -- the stack would be private, but a buffer a
+// syscall fills is clearer with a name.
+chunk: [64]u8
+
+// The device descriptor, shared by the fork. The child reads it, and the
+// parent's Twrite case writes it. Neither half closes it -- the process
+// exit is the close.
+eia_fd: int
+
+MAX_FIDS :: 16
+
+Fid_Slot :: struct {
+	fid:  vectra9.Fid,
+	node: i32,
+	used: bool,
+}
+
+fids: [MAX_FIDS]Fid_Slot
+
+FRAME :: 1200
+frame_in: [FRAME]u8
+frame_out: [FRAME]u8
+payload: [1024]u8
+
+/*
+The two locks and the shutdown flag, all in shared bss.
+
+`wlock` serialises pipe writes, held only for the length of a write.
+`state_lock` guards the fid table and the ring's consumer end, held only for
+a lookup or a drain -- never across the poll a parked read spins on. `stopping`
+is set at teardown so a worker parked on an empty ring leaves instead of
+polling for a byte that will never come.
+*/
+wlock: libuser.Spin
+state_lock: libuser.Spin
+stopping: bool
+
+/*
+The worker pool: three parked reads at once, and a fourth stalls the loop.
+
+The same bound `kernel/devfs` documents for its four threads, moved to
+userland and raised by adding a slot rather than a thread. Three is enough
+for a port, where one client reads `/eia0` at a time. Each slot carries
+its own request, reply and payload buffers, because a worker reads and writes
+them while the main loop and other workers use theirs.
+*/
+SLOTS :: 3
+slot_frame: [SLOTS][FRAME]u8
+slot_out: [SLOTS][FRAME]u8
+slot_payload: [SLOTS][1024]u8
+slots: [SLOTS]libuser.Mux_Slot
+
+// How long a parked read sleeps between looks at the ring. One tick, which is
+// the port poller's own cadence. A worker off every run queue in between.
+POLL_TICKS :: 1
+
+/*
+_start opens the port, forks the reader, and serves.
+
+The open comes first because the descriptor table is shared by default: one
+open, and both processes hold the number. It takes `O_RDWR` because the two
+halves want different directions -- the child reads the descriptor for its
+whole life, and the parent writes it on a client's behalf. An open that
+fails is also the portless machine: a port that failed its probe answers
+ENXIO, and this server has nothing to serve.
+*/
+@(export, link_name = "_start")
+start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
+	context = {}
+	#force_no_inline runtime._startup_runtime()
+
+	fd := libuser.open("/dev/eia0", abi.O_RDWR)
+	if fd < 0 {
+		libuser.exit(0x74)
+	}
+	eia_fd = int(fd)
+
+	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)
+	if pid < 0 {
+		libuser.exit(0x73)
+	}
+	if pid == 0 {
+		reader(eia_fd)
+	}
+
+	sfd, perr := libuser.post("/srv/eiafs")
+	if perr < 0 {
+		_ = stop_reader(u64(pid))
+		libuser.exit(0x71)
+	}
+
+	for i in 0 ..< SLOTS {
+		slots[i] = libuser.Mux_Slot {
+			frame   = slot_frame[i][:],
+			out     = slot_out[i][:],
+			payload = slot_payload[i][:],
+		}
+	}
+	mux := libuser.Mux {
+		fd      = sfd,
+		handler = handler,
+		blocks  = blocks,
+		frame   = frame_in[:],
+		out     = frame_out[:],
+		payload = payload[:],
+		wlock   = &wlock,
+		slots   = slots[:],
+	}
+
+	_, why := libuser.serve_mux(&mux)
+
+	// The stop is set for whatever workers are still parked on the ring, so
+	// they leave rather than poll for a byte the released port cannot
+	// send. See `handler`'s Tread case.
+	intrinsics.volatile_store(&stopping, true)
+
+	if why != .Removed {
+		_ = stop_reader(u64(pid))
+		libuser.exit(0x72)
+	}
+	// Status zero is the whole teardown arc succeeding: the note landed, the
+	// parked read unwound, and the wait heard EINTR -- the kernel's word for
+	// an ending this parent asked for.
+	libuser.exit(stop_reader(u64(pid)) ? 0 : 0x75)
+}
+
+/*
+blocks reports whether a request might park, which is the one thing the
+serve loop cannot work out for itself.
+
+Only a read of `/eia0` parks. A write goes straight to the device and comes
+back -- the UART takes bytes at its own pace and never holds the caller
+across a wait the scheduler can see. So the loop forks a worker for exactly
+the reads that wait for the wire, and answers the rest inline.
+*/
+blocks :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
+	_ = state
+	#partial switch m in request^ {
+	case vectra9.Tread:
+		return fid_lookup(m.fid) == NODE_EIA
+	}
+	return false
+}
+
+/*
+reader is the child's whole life: park on the port, publish what comes.
+
+A failed read is not a loop to break out of. A noted process's read answers
+EINTR, and its next system call is the boundary the note ends it at -- so
+asking again *is* the teardown protocol, not a bug's retry.
+*/
+reader :: proc "contextless" (port: int) -> ! {
+	for {
+		n := libuser.read(port, chunk[:])
+		if n <= 0 {
+			continue
+		}
+		for i in 0 ..< int(n) {
+			push(chunk[i])
+		}
+	}
+}
+
+// stop_reader is the teardown: note the child out of its parked read, and
+// collect the EINTR that proves the ending was the one asked for.
+stop_reader :: proc "contextless" (pid: u64) -> bool {
+	if libuser.note(pid, "stop") != 0 {
+		return false
+	}
+	return libuser.wait(pid) == -i64(vectra9.EINTR)
+}
+
+// push is the producer's half of the ring: bytes first, then the counter,
+// so the consumer never reads a seat the byte has not taken. A full ring
+// drops the byte -- a port that is not being served is not a place to
+// park the wire behind.
+push :: proc "contextless" (b: u8) #no_bounds_check {
+	h := intrinsics.volatile_load(&head)
+	t := intrinsics.volatile_load(&tail)
+	if h - t >= RING {
+		return
+	}
+	ring[h % RING] = b
+	intrinsics.volatile_store(&head, h + 1)
+}
+
+// drain is the consumer's half: read the producer's counter once, take what
+// it covers, then publish the new tail. Under `state_lock`, because several
+// workers may drain at once now -- the ring has one producer and many
+// consumers. Only the byte-moving is inside the lock, never the poll.
+drain :: proc "contextless" (buf: []u8) -> int #no_bounds_check {
+	libuser.lock(&state_lock)
+	t := intrinsics.volatile_load(&tail)
+	h := intrinsics.volatile_load(&head)
+	n := min(int(h - t), len(buf))
+	for i in 0 ..< n {
+		buf[i] = ring[(t + u64(i)) % RING]
+	}
+	intrinsics.volatile_store(&tail, t + u64(n))
+	libuser.unlock(&state_lock)
+	return n
+}
+
+// available reports the bytes waiting, for a getattr's size field.
+available :: proc "contextless" () -> u64 {
+	return intrinsics.volatile_load(&head) - intrinsics.volatile_load(&tail)
+}
+
+// -- Fids, the same sixteen slots ramfs keeps ---------------------------------
+
+// All three take `state_lock`, because the main loop binds and releases fids
+// while workers look them up. The table is small and every operation is a
+// scan, so the lock is held for a handful of comparisons and never across a
+// wait.
+
+fid_lookup :: proc "contextless" (fid: vectra9.Fid) -> i32 #no_bounds_check {
+	libuser.lock(&state_lock)
+	defer libuser.unlock(&state_lock)
+	for i in 0 ..< MAX_FIDS {
+		if fids[i].used && fids[i].fid == fid {
+			return fids[i].node
+		}
+	}
+	return -1
+}
+
+fid_bind :: proc "contextless" (fid: vectra9.Fid, node: i32) -> bool #no_bounds_check {
+	libuser.lock(&state_lock)
+	defer libuser.unlock(&state_lock)
+	for i in 0 ..< MAX_FIDS {
+		if fids[i].used && fids[i].fid == fid {
+			fids[i].node = node
+			return true
+		}
+	}
+	for i in 0 ..< MAX_FIDS {
+		if !fids[i].used {
+			fids[i] = Fid_Slot{fid = fid, node = node, used = true}
+			return true
+		}
+	}
+	return false
+}
+
+fid_release :: proc "contextless" (fid: vectra9.Fid) #no_bounds_check {
+	libuser.lock(&state_lock)
+	defer libuser.unlock(&state_lock)
+	for i in 0 ..< MAX_FIDS {
+		if fids[i].used && fids[i].fid == fid {
+			fids[i] = Fid_Slot{}
+			return
+		}
+	}
+}
+
+// -- The tree ----------------------------------------------------------------
+
+qid_of :: proc "contextless" (node: i32) -> vectra9.Qid {
+	kind: vectra9.Qid_Flags
+	if node == NODE_ROOT {
+		kind = {.Dir}
+	}
+	return vectra9.Qid{kind = kind, path = u64(node) + 1}
+}
+
+step :: proc "contextless" (from: i32, name: string) -> i32 {
+	switch name {
+	case ".":
+		return from
+	case "..":
+		return NODE_ROOT
+	}
+	if from == NODE_ROOT && name == "eia0" {
+		return NODE_EIA
+	}
+	return -1
+}
+
+// -- The handler -------------------------------------------------------------
+
+creates :: proc "contextless" (k: vectra9.Kind) -> bool {
+	#partial switch k {
+	case .Tlcreate, .Tmkdir, .Tmknod, .Tsymlink, .Tlink, .Trename, .Trenameat:
+		return true
+	}
+	return false
+}
+
+handler :: proc "contextless" (
+	state: rawptr,
+	s: ^vectra9.Session,
+	tag: vectra9.Tag,
+	request: ^vectra9.Msg,
+	reply: ^vectra9.Msg,
+	buf: []u8,
+) #no_bounds_check {
+	_ = state
+	_ = s
+	_ = tag
+
+	if creates(vectra9.kind(request^)) {
+		reply^ = vectra9.error_reply(vectra9.EPERM)
+		return
+	}
+	reply^ = vectra9.error_reply(vectra9.EOPNOTSUPP)
+
+	#partial switch m in request^ {
+	case vectra9.Tversion:
+		if m.version != vectra9.VERSION {
+			reply^ = vectra9.Rversion{msize = m.msize, version = "unknown"}
+			return
+		}
+		reply^ = vectra9.Rversion{msize = min(m.msize, FRAME), version = vectra9.VERSION}
+
+	case vectra9.Tattach:
+		if !fid_bind(m.fid, NODE_ROOT) {
+			reply^ = vectra9.error_reply(vectra9.ENFILE)
+			return
+		}
+		reply^ = vectra9.Rattach{qid = qid_of(NODE_ROOT)}
+
+	case vectra9.Twalk:
+		walk(m, reply)
+
+	case vectra9.Tlopen:
+		node := fid_lookup(m.fid)
+		if node < 0 {
+			reply^ = vectra9.error_reply(vectra9.EBADF)
+			return
+		}
+		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
+
+	case vectra9.Tread:
+		node := fid_lookup(m.fid)
+		if node < 0 {
+			reply^ = vectra9.error_reply(vectra9.EBADF)
+			return
+		}
+		if node == NODE_ROOT {
+			reply^ = vectra9.error_reply(vectra9.EISDIR)
+			return
+		}
+		/*
+		A read of `/eia0` parks until a byte arrives, which is what a read of
+		a device does. This runs in a worker, so parking here holds no other
+		client -- the whole point of `serve_mux`. The offset is ignored: this
+		file is what has arrived, and a drain consumes it.
+
+		Two ways out besides a byte. The shutdown flag, set at teardown, lets
+		a parked read leave with an empty answer rather than poll for a byte
+		the released port will never send. And a zero `count`, which asks
+		for nothing and gets it.
+		*/
+		room := min(len(buf), int(m.count))
+		if room <= 0 {
+			reply^ = vectra9.Rread{data = nil}
+			return
+		}
+		for {
+			got := drain(buf[:room])
+			if got > 0 {
+				reply^ = vectra9.Rread{data = buf[:got]}
+				return
+			}
+			if intrinsics.volatile_load(&stopping) {
+				reply^ = vectra9.Rread{data = nil}
+				return
+			}
+			_ = libuser.sleep(POLL_TICKS)
+		}
+
+	case vectra9.Twrite:
+		/*
+		The half neither `consrv` nor `kbdfs` has: a write that reaches
+		hardware. The bytes go down the shared descriptor and out the wire,
+		on the serve loop itself -- the device takes a write without parking,
+		so no worker is spent on it. The device's count is the answer, and a
+		device error is the client's error.
+		*/
+		node := fid_lookup(m.fid)
+		if node < 0 {
+			reply^ = vectra9.error_reply(vectra9.EBADF)
+			return
+		}
+		if node == NODE_ROOT {
+			reply^ = vectra9.error_reply(vectra9.EISDIR)
+			return
+		}
+		n := libuser.write(eia_fd, m.data)
+		if n < 0 {
+			reply^ = vectra9.error_reply(vectra9.Errno(u32(-n)))
+			return
+		}
+		reply^ = vectra9.Rwrite{count = u32(n)}
+
+	case vectra9.Treaddir:
+		readdir(m, reply, buf)
+
+	case vectra9.Tgetattr:
+		node := fid_lookup(m.fid)
+		if node < 0 {
+			reply^ = vectra9.error_reply(vectra9.EBADF)
+			return
+		}
+		dir := node == NODE_ROOT
+		reply^ = vectra9.Rgetattr {
+			valid   = m.request_mask & 0x000007FF,
+			qid     = qid_of(node),
+			mode    = dir ? 0o040555 : 0o100666,
+			nlink   = dir ? 2 : 1,
+			size    = dir ? 0 : available(),
+			blksize = 512,
+		}
+
+	case vectra9.Tclunk:
+		fid_release(m.fid)
+		reply^ = vectra9.Rclunk{}
+
+	case vectra9.Tremove:
+		fid_release(m.fid)
+		reply^ = vectra9.Rremove{}
+
+	case vectra9.Tflush:
+		_ = m
+		reply^ = vectra9.Rflush{}
+	}
+}
+
+walk :: proc "contextless" (m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
+	from := fid_lookup(m.fid)
+	if from < 0 {
+		reply^ = vectra9.error_reply(vectra9.EBADF)
+		return
+	}
+
+	answer: vectra9.Rwalk
+	cur := from
+	for i in 0 ..< m.count {
+		next := step(cur, m.names[i])
+		if next < 0 {
+			if i == 0 {
+				reply^ = vectra9.error_reply(vectra9.ENOENT)
+				return
+			}
+			break
+		}
+		cur = next
+		answer.qids[answer.count] = qid_of(cur)
+		answer.count += 1
+	}
+
+	if answer.count == m.count {
+		if !fid_bind(m.newfid, cur) {
+			reply^ = vectra9.error_reply(vectra9.ENFILE)
+			return
+		}
+	}
+	reply^ = answer
+}
+
+readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
+	node := fid_lookup(m.fid)
+	if node < 0 {
+		reply^ = vectra9.error_reply(vectra9.EBADF)
+		return
+	}
+	if node != NODE_ROOT {
+		reply^ = vectra9.error_reply(vectra9.ENOTDIR)
+		return
+	}
+
+	room := min(len(buf), int(m.count))
+	c := vectra9.cursor_from(buf[:room])
+	if m.offset < 1 && vectra9.remaining(&c) >= vectra9.dirent_size("eia0") {
+		vectra9.put_dirent(
+			&c,
+			vectra9.Dirent {
+				qid = qid_of(NODE_EIA),
+				offset = 1,
+				type = vectra9.DT_REG,
+				name = "eia0",
+			},
+		)
+	}
+	if c.err != .None {
+		reply^ = vectra9.error_reply(vectra9.EIO)
+		return
+	}
+	reply^ = vectra9.Rreaddir{data = vectra9.written(&c)}
+}

@@ -213,6 +213,37 @@ Three things this proved about the runtime:
   the client had already given up on, and `kernel/mnt` dropped it. Both
   device-read loops check the flush first now. `docs/DEVFS.md` owns the fix.
 
+## `servers/eiafs`: the port, served both ways
+
+The userland devfs's second tenant, and the first server whose `Twrite`
+reaches hardware. `eiafs` opens `/dev/eia0`, which diverts the port's bytes
+to it, and serves them raw on `/eia0`. There is no translator, because the
+wire's bytes are already the content. `kbdfs` proved the read side. This
+one proves the write side: a client writes the served file, and the bytes
+go down the shared descriptor and out the port.
+
+The shape is `consrv`'s with one divergence. The open takes `O_RDWR`, and
+the shared descriptor table splits the directions. The child reads the one
+descriptor for its whole life, and the parent's handler writes it on a
+client's behalf. A write never parks, because the UART drains its FIFO at
+its own pace. So the serve loop answers a `Twrite` inline and spends no
+worker on it. `blocks` stays what it was, true only for a read of the
+served file.
+
+Three things this proved about the runtime:
+
+- **The raw device files work in both directions from ring 3.** `kbdfs`
+  read a tap. `eiafs` reads one and writes the device behind it, through
+  the same descriptor, and the kernel's console count never moves.
+- **The shared descriptor table is load-bearing, not a convenience.** One
+  open before the fork hands both halves the number. Each half uses its own
+  direction, and neither closes it -- the exit is the close.
+- **The teardown protocol has a hang behind it, and the control found it.**
+  A parent that leaves without noting its reader strands the child parked
+  in a device read. The orphan holds the shared descriptor group, the
+  posted pipe never hangs up, and the boot hangs at `pipe.quiesce`. The
+  child-first rule is not a courtesy. It is what lets the machine finish.
+
 ## The build, and where the image goes
 
 `build.odin` compiles each entry in `user_programs` with the kernel's own
@@ -223,13 +254,14 @@ kernel for exactly that reason: what `/bin` serves is what was just built.
 
 A tree checked before the image was ever built still compiles. The `#exists`
 fallback publishes one fewer file, the boot line counts honestly, and the
-self-test fails loudly on the absence. `make check` also checks
-`servers/ramfs` on its own, so the user side keeps the kernel's vets.
+self-test fails loudly on the absence. `make check` also checks every
+`servers/` package on its own, so the user side keeps the kernel's vets.
 
 ## The controls
 
-Nine mutations and one flake, each observed on a real boot. Three are the
-concurrent serve loop and two are `kbdfs`'s translation. The copy-before-fork
+Twelve mutations and one flake, each observed on a real boot. Three are the
+concurrent serve loop, two are `kbdfs`'s translation, and three are
+`eiafs`'s port. The copy-before-fork
 invariant is not among them. A single-client test leaves too wide a gap
 before the next request for a worker to lose the race. That one is argued
 rather than tripped, the distinction `docs/TESTING.md` draws between a control
@@ -246,6 +278,9 @@ that cannot be expressed and one that fails to fire.
 | the worker never writes its reply | caught -- `the parked read wakes when the line is typed`, which it never does |
 | `kbdfs` ignores shift | caught -- `carrying the characters the state machine made`, because the shifted `1` reads back as `1` not `!` |
 | `kbdfs`'s reader pushes the raw scancode | caught -- the same check, because a make code is not the character it names |
+| `eiafs`'s Twrite forward dropped, the refusal restored | caught -- `a write through the mount takes every byte, out the wire`, the one check no earlier server has |
+| `eiafs`'s `drain` reads the producer's counter as its own | caught -- `the parked read wakes when the wire speaks`, which it never does |
+| `eiafs`'s parent exits without noting its reader | **the boot hangs** at `pipe.quiesce` -- the orphaned child holds the shared descriptor group, so the posted pipe never hangs up. The third hang-as-finding, and the reason teardown is child-first |
 
 And the flake: a one-in-twenty boot printed a program's line half-staged,
 with zeroes for a tail. `load` started the thread, and the self-tests staged

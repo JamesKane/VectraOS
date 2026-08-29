@@ -123,13 +123,12 @@ The other `copy_in` callers -- a path, a note -- stay small and single, so
 they keep their own tight bounds rather than this one.
 
 A page, which is also exactly one `devfs` payload slot. The buffer costs an
-eighth of a 32 KiB kernel stack, and a chunk fills the largest frame the
-bulk-heavy server offers, so the iounit rather than this bound is what
-binds -- 9front's client chunks by iounit alone, and this is as close as a
-stack buffer gets. The pipe wire's 1 KiB slots remain the real ceiling for
-a userland server. Raising this further buys nothing until an msize grows,
-and a program that names a huge buffer wants a mapped one anyway rather
-than this copy.
+eighth of a 32 KiB kernel stack. A chunk now fills the largest frame the
+bulk-heavy server offers, so the iounit is what binds -- 9front's client
+chunks by iounit alone. The pipe wire's 1 KiB slots remain the real ceiling
+for a userland server. Raising this buys nothing until an msize grows. A
+program that names a huge buffer wants a mapped one anyway rather than
+this copy.
 */
 IO_CHUNK :: 4096
 
@@ -372,7 +371,7 @@ sys_write :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 
 	A pass that fails part-way keeps what already landed -- see `partial`.
 	The buffer is uninitialised because `copy_in` fills every byte a pass
-	hands on; zeroing it would cost each call an `IO_CHUNK` memset.
+	hands on. Zeroing it would cost each call an `IO_CHUNK` memset.
 	*/
 	buffer: [IO_CHUNK]u8 = ---
 	chunk := io_chunk(c)

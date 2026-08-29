@@ -361,7 +361,9 @@ driver stays as ignorant of devfs as its `Sink` always was. It resets its
 modifier state when a diversion ends, because a shift released into the
 tap would otherwise leave the console shifted for ever. The serial side
 needs no seam at all: `cons_input` is this package's own thread, and
-`serial_deliver` is the one call it makes per byte.
+`serial_deliver` is the one call it makes per byte. Both taps have their
+ring 3 tenants now -- `servers/kbdfs` on the keyboard's, `servers/eiafs`
+on the wire's.
 
 Writes are asymmetric on purpose. `/dev/eia0` writes raw bytes out the
 wire — under `Cons.out`, so a console line cannot be torn — and draws no
