@@ -125,7 +125,7 @@ Result :: struct {
 	rounds:        u64, // Times `spin` went round its loop in ring 3
 	calls:         int, // System calls the programs made
 	answered:      u64, // 9P requests a process served over a wire
-	pinned:        int, // Heap objects the wire keeps on purpose
+	pinned:        int, // Heap objects the wires still pin -- zero since the counted release
 	leaked:        int, // Heap objects the run did not give back
 }
 
@@ -1449,18 +1449,22 @@ verify_posting :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^
 }
 
 /*
-What a wire deliberately keeps, counted in heap objects.
+What a wire pins while it lives, and the zero the release settles it to.
 
-Two pipe rings, the wire's arena, the `Wire`, the `Server`, and the
-`Wire_End` the io callbacks close over. The seventh is one reference's worth
-of chan on the posted end. All seven stay until a posted service can be
-released, which is the reference count `docs/SRV.md` names as future work.
-
-A constant rather than a measurement, so the check below breaks when the pin
-grows. A pin that can grow silently is a leak with a title.
+Seven objects. Two pipe rings, the wire's arena, the `Wire`, the `Server`,
+and the `Wire_End` the io callbacks close over. The seventh is one
+reference's worth of chan on the posted end. They stay pinned exactly as
+long as the name or a
+mount holds the connection. Each flow below removes the name, brings the
+last mount down, and then demands the heap got every one of them back. A
+release that kept even one shows here as a number rather than a suspicion.
 */
+
+// What `/bin/ramfs` exits with when the counted release hangs up on it,
+// written here and as the `.Hangup` arm in `servers/ramfs/main.odin`. The
+// two have to agree, and the check fails loudly when they drift.
 @(private = "file")
-WIRE_PIN :: 7
+RAMFS_HANGUP :: u64(0x68)
 
 /*
 verify_service_answered is the milestone: a process answers 9P.
@@ -1587,16 +1591,20 @@ verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int
 	after the scheduler switches off it for good, and two threads just died --
 	the server's and the wire reader's. The bound turns `not yet` into `never`,
 	and the check after the loop still demands the exact number.
+
+	The number is zero now. The name went and the last mount just came down.
+	The unmount's own thread therefore ran the counted release on the way
+	through: hang-up, join, and every one of the seven pinned objects back.
 	*/
 	for _ in 0 ..< PATIENCE {
 		sched.reap()
 		r.pinned = live_objects(mem.heap_stats()) - pin_before
-		if r.pinned == WIRE_PIN {
+		if r.pinned == 0 {
 			break
 		}
 		sync.delay(1)
 	}
-	check(r, r.pinned == WIRE_PIN, "what stays is the wire's pin, to the object")
+	check(r, r.pinned == 0, "and everything the wire pinned comes back, to the object")
 }
 
 /*
@@ -1850,18 +1858,45 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 			vfs.chan_close(dc)
 		}
 
-		check(r, vfs.chan_remove(nc) == vfs.OK, "a remove is answered, and is the stop")
 		vfs.chan_close(nc)
 	}
 
-	// -- The teardown, in the order the wire taught -----------------------
+	// -- The name goes first, and the service does not stop --------------------
 
-	if check(r, wait(p, PATIENCE), "the server exits") {
-		check(r, p.exit.deliberate && p.exit.status == 0, "deliberately, with nothing to report")
+	check(r, srv.remove("ramfs") == vfs.OK, "the kernel takes the name away while the mount lives")
+	check(r, srv.count() == count0, "and /srv holds exactly what it held before")
+
+	if hc2, herr2 := vfs.open_path(vfs.boot_namespace, "/mnt/hello", vfs.O_RDONLY); herr2 == vfs.OK {
+		n, rerr := vfs.chan_read(hc2, 0, buf[:])
+		check(
+			r,
+			rerr == vfs.OK && string(buf[:n]) == RAMFS_HELLO,
+			"and the mount still answers -- removal does not stop a service",
+		)
+		vfs.chan_close(hc2)
 	}
 
-	check(r, srv.remove("ramfs") == vfs.OK, "the kernel takes the name away")
-	check(r, srv.count() == count0, "and /srv holds exactly what it held before")
+	// -- The release is the stop ------------------------------------------------
+
+	/*
+	Nobody told this server to end. Its serve loop is parked in a pipe read,
+	healthy. The unmount drops the connection's last chans, and the counted
+	release runs on the unmount's own thread. Its hang-up is what the server
+	hears: a read of zero bytes, `.Hangup` out of `libuser.serve`, and an
+	exit that names it. The first server Vectra stops by releasing it.
+	*/
+	check(
+		r,
+		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
+		"the last mount comes down, and the release rides the unmount",
+	)
+	if check(r, wait(p, PATIENCE), "the server ends with nobody telling it to") {
+		check(
+			r,
+			p.exit.deliberate && p.exit.status == RAMFS_HANGUP,
+			"deliberately, and its status says the hang-up was the reason",
+		)
+	}
 
 	finish(r, p, "and the process is taken down")
 	check(
@@ -1870,23 +1905,16 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 		"with every segment frame given back, first and last by name",
 	)
 
-	pipe.quiesce()
-	check(
-		r,
-		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
-		"the mount of the dead server comes down",
-	)
-
 	pinned := 0
 	for _ in 0 ..< PATIENCE {
 		sched.reap()
 		pinned = live_objects(mem.heap_stats()) - pin_before
-		if pinned == WIRE_PIN {
+		if pinned == 0 {
 			break
 		}
 		sync.delay(1)
 	}
-	check(r, pinned == WIRE_PIN, "and what stays is one more wire's pin, to the object")
+	check(r, pinned == 0, "and one more wire's pin comes back whole")
 	r.pinned += pinned
 }
 
@@ -2321,12 +2349,12 @@ verify_consrv :: proc(r: ^Result) {
 	for _ in 0 ..< PATIENCE {
 		sched.reap()
 		pinned = live_objects(mem.heap_stats()) - pin_before
-		if pinned == WIRE_PIN {
+		if pinned == 0 {
 			break
 		}
 		sync.delay(1)
 	}
-	check(r, pinned == WIRE_PIN, "and what stays is one more wire's pin, to the object")
+	check(r, pinned == 0, "and the forked server's wire comes back whole")
 	r.pinned += pinned
 }
 

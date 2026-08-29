@@ -379,7 +379,10 @@ remove :: proc(name: string) -> vfs.Errno #no_bounds_check {
 	if retired != nil {
 		// Outside the lock, because a close may clunk a fid, and a clunk is a
 		// message. The service does not stop -- a wire built from this chan
-		// holds its own reference. See `pipe.server_for`.
+		// holds its own reference. What the removal does release is the
+		// name's *stake* on that wire: with the last mount also gone, the
+		// connection comes down here. See `pipe.unpost`.
+		pipe.unpost(retired)
 		vfs.chan_close(retired)
 	}
 	return found ? vfs.OK : vectra9.ENOENT
@@ -448,6 +451,7 @@ mount :: proc(
 		return err
 	}
 
+	pinned: ^vfs.Server
 	if endpoint != nil {
 		/*
 		A posted connection rather than a kernel service. For a pipe end this is
@@ -460,9 +464,20 @@ mount :: proc(
 		defer vfs.chan_close(endpoint)
 		if wired := pipe.server_for(endpoint); wired != nil {
 			server = wired
+			pinned = wired
 		} else {
 			server = endpoint.server
 		}
+	}
+	/*
+	`server_for` handed the wire over pinned, and the pin comes off when this
+	mount's fate is settled. Registered before the chan-closing defers, so it
+	runs after them. On success the mount table holds chans by then, and
+	nothing fires. On failure this unpin is the last stake of a mount that
+	never was. With the name also gone, it is what tears the wire down.
+	*/
+	defer if pinned != nil {
+		vfs.server_unpin(pinned)
 	}
 
 	source: ^vfs.Chan
@@ -636,7 +651,9 @@ srv_handler :: proc "contextless" (
 	if retired != nil {
 		// After the dispatch released the table lock, because a close may
 		// clunk a fid and a clunk is a message. The service behind the chan
-		// does not stop with the name. See `remove`.
+		// does not stop with the name -- but the name's stake on a wired
+		// connection goes with it. See `remove`.
+		pipe.unpost(retired)
 		vfs.chan_close(retired)
 	}
 }

@@ -111,7 +111,13 @@ opened.
 
 **Removal is a file operation too**, because it needs no descriptor.
 `Tremove` on `/srv/foo` takes the name away, and `srv.remove` is the same
-operation from inside the kernel.
+operation from inside the kernel. Both halves of a removal run outside the
+table lock, because both may send a message. The entry's chan closes, and
+`pipe.unpost` releases the name's stake on a wired connection.
+
+The service does not stop with the name. But when the last mount is also
+gone, the stake was the last hold on the wire, and the counted release
+brings the connection down. `docs/PIPE.md` owns that design.
 
 What a posting publishes is the *connection*, not the file the descriptor was
 open on. A process that opens `/dev/cons` and posts descriptor 3 posts the
@@ -308,12 +314,6 @@ all exactly that shape — see `docs/TESTING.md`.
   two milestones. What it proved out is written up in `docs/PIPE.md` and
   `docs/TRANSPORT.md`, and what it opens is `servers/devfs` — a kernel
   service rebuilt as a program.
-- **A reference count on a posted service.** The entry references its chan
-  now, and a wire references it again — so the *chan* survives correctly.
-  What still never comes back is the wire itself. The reader thread, the arena
-  and the server record stay pinned for the life of the machine. The user
-  self-test counts that pin to the object. A counted release —
-  connection down when the last mount goes — is the remaining half.
 - **A caller identity that survives a queue.** The fd resolver answers for
   the *current* thread, which is right only while `#s` is synchronous. See
   `Fd_Resolver`.

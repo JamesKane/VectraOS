@@ -124,6 +124,26 @@ is the interrupt flag held across a search.
 The counter replaces the lock. A search that finds nothing counts only if the
 list is the same one it started on.
 
+## A server that can come down
+
+Every kernel server outlives every chan on it, so a `^Server` in a `Chan`
+was a borrow that could not dangle. A posted pipe's server broke that: it is
+built at mount time and deserves to die when nothing can reach it. So
+`Server` carries a count now, and `chan_alloc` and `chan_close` keep it.
+Every live chan is counted in and counted out, under the same lock as the
+chan references themselves.
+
+`pins` beside it holds the stakes that are not chans, and `release` is the
+hook that runs when both reach zero. For every kernel server the hook is nil
+and the counts are bookkeeping nobody reads. For a wired pipe they are the
+lifetime, and `docs/PIPE.md` owns what the release does.
+`server_release_confirm` is the second look that keeps the fire decision
+safe against a mount that revives the server in between.
+
+The decrement comes after the Tclunk goes out, because the clunk still uses
+the server's session. The hook runs outside the lock, because a release
+tears a connection down, and that parks.
+
 ## What the lock cost, measured
 
 `kernel/verify_vfs.odin` runs five threads against two servers for a fixed

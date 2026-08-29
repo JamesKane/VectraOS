@@ -86,8 +86,24 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 		libuser.exit(0x71)
 	}
 
+	/*
+	Three endings, each with its own number, and only one is a fault. A
+	Tremove answered and obeyed is the client's stop, and exits zero. A
+	stream that ends is the kernel's stop -- the counted release closed the
+	posted end because the last mount and the name are both gone -- and 0x68
+	says the hang-up did it. Torn framing is the one that means a bug, and
+	0x72 stays its number. `kernel/user/verify.odin` matches the middle one
+	by value, and the two have to agree.
+	*/
 	_, why := libuser.serve(fd, handler, nil, frame_in[:], frame_out[:], payload[:])
-	libuser.exit(why == .Removed ? 0 : 0x72)
+	switch why {
+	case .Removed:
+		libuser.exit(0)
+	case .Hangup:
+		libuser.exit(0x68)
+	case .Broken:
+		libuser.exit(0x72)
+	}
 }
 
 // -- Fids --------------------------------------------------------------------

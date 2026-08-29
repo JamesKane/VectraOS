@@ -83,6 +83,14 @@ chan_alloc :: proc(sv: ^Server, fid: vectra9.Fid, qid: vectra9.Qid) -> ^Chan {
 	// is exactly right.
 	c.tree_root = qid
 	c.refs = 1
+
+	// The server's side of the count. A released server is one no chan
+	// names, so every chan is counted in and counted out. See `Server`.
+	if sv != nil {
+		g := sync.acquire(&object_lock)
+		sv.chans += 1
+		sync.release(&object_lock, g)
+	}
 	return c
 }
 
@@ -138,7 +146,25 @@ chan_close :: proc(c: ^Chan) {
 		// Loop rather than recurse: mount nesting is unbounded and this runs
 		// on a 16 KiB fault stack's worth of assumptions about depth.
 		parent := c.mounted_over
+		sv := c.server
 		free(c)
+
+		/*
+		The server's count comes down after the clunk above went out, because
+		the clunk still used the server's session. The last chan off a server
+		nothing pins is what fires the release. It runs outside the lock,
+		because a release tears a connection down, and that parks.
+		*/
+		if sv != nil {
+			g2 := sync.acquire(&object_lock)
+			sv.chans -= 1
+			fire := server_should_release(sv)
+			release := sv.release
+			sync.release(&object_lock, g2)
+			if fire {
+				release(sv)
+			}
+		}
 		c = parent
 	}
 }

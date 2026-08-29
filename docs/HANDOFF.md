@@ -76,6 +76,14 @@ reads eight raw scancodes into its own page during the boot. The keyboard
 driver's half of the seam is one anonymous function pointer with first
 refusal.
 
+**A posted service's connection comes down now.** The wire behind a mounted
+`/srv` name pinned seven heap objects for the life of the machine, counted
+exactly. `vfs.Server` counts its chans and its stakes now. When the last
+mount and the name are both gone, the release runs on whichever thread
+dropped the last piece. Its hang-up ends the far server through its own
+serve loop, and all seven objects come back, measured to zero.
+`docs/PIPE.md` owns the design.
+
 **Vectra runs processes, and now a process can become two.** Twenty-nine
 enter ring 3 during the boot, and another process started eight of them --
 four by `spawn`, four by `rfork`. A forked child continues from the
@@ -121,7 +129,7 @@ The flag word is Plan 9's bit for bit. `RFPROC`, `RFMEM`, `RFFDG`,
 The rest are refused EINVAL rather than skipped. Without `RFPROC` the
 namespace and descriptor flags act on the caller in place.
 
-About 40,900 lines of Odin. The linked image is ~1320 KB debug and ~700 KB
+About 41,200 lines of Odin. The linked image is ~1326 KB debug and ~700 KB
 release, ~107 KB of both being the two embedded user images (`ramfs`,
 `consrv`).
 
@@ -173,6 +181,8 @@ of them could have come earlier:
                             an offset a process may seek
     a tap                   and a stream is owned rather than copied: whoever
                             holds the file stands where the kernel stood
+    a release               and what a posting built comes down whole, when
+                            the last mount and the name are both gone
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -185,12 +195,12 @@ code it explains.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x0000000019a1a000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x0000000019a16000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 33 entries spanning 12.7 GiB
-[  ok  ] usable 458.8 MiB, reclaimable 45.9 MiB
-[  --  ] largest usable region 386.6 MiB at 0x0000000001780000
-[  ok  ] pmm 117455 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
+[  ok  ] usable 458.7 MiB, reclaimable 45.9 MiB
+[  --  ] largest usable region 386.5 MiB at 0x0000000001780000
+[  ok  ] pmm 117451 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
 [  ok  ] vmm root 0x0000000000005000, mapped 516.0 MiB in 274 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
@@ -201,14 +211,14 @@ code it explains.
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] ioapic version 0x20, 24 lines, all masked
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62537 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (9179317-9241017 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 841 acquisitions, 805 parked and handed back, decayed to 1
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.6 MHz measured against the PIT, 62625 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (8921970-9262925 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 356 acquisitions, 341 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 1799 namespace operations across 5 threads, 280 rebinds under them in 1001 ms, nothing serialised, heap balanced
+[  ok  ] vfs 34 concurrency checks passed -- 1691 namespace operations across 5 threads, 263 rebinds under them in 1001 ms, nothing serialised, heap balanced
 [  ok  ] devfs #c bound at /dev, 8 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/consX 
 -- these bytes went straight out the wire
@@ -222,7 +232,7 @@ code it explains.
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] kbd 55 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
 [  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 4 CR3 reloads, one address two meanings
-[  ok  ] syscall armed -- entry at 0xffffffff800269a0, /dev/cons is descriptor 1
+[  ok  ] syscall armed -- entry at 0xffffffff80025e60, /dev/cons is descriptor 1
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
 -- this line went to /dev/null
@@ -232,7 +242,7 @@ code it explains.
 -- this line went through a posted service
 -- a process answered this line
 these bytes live in a program's own segments
-[  ok  ] user 433 userland checks passed -- 29 processes, 8 started by another process, 4453605 preempted rounds, 280 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
+[  ok  ] user 433 userland checks passed -- 29 processes, 8 started by another process, 4576700 preempted rounds, 305 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
 [  ok  ] boot complete -- idling
 ```
 
@@ -275,9 +285,10 @@ Parking the Tread would starve the serve loop's other clients. One serve
 loop still answers one request at a time, and two processes must not
 `serve` one descriptor.
 
-The older ground stands too. A ring 3 program still has no allocator, and
-a posted service, once mounted, never comes down. One process still cannot
-wait on two descriptors -- it forks instead, which is Plan 9's answer.
+The older ground stands too, one entry shorter. A ring 3 program still has
+no allocator. One process still cannot wait on two descriptors -- it forks
+instead, which is Plan 9's answer. A posted service comes down now, when
+the last mount and the name are both gone.
 
 From the milestones before: the seam is cut on the creating side only,
 and there is no `exec` that replaces a running image. The note still lands
@@ -433,48 +444,42 @@ deadline, and a request can be left pending and flushed. Milestones 10 through
 12 spent all of it. Every primitive a driver needs is not only present but used
 by something that is not a self-test.
 
-Processes reproduce two ways now, and the console's hardware is all served
-raw -- the screen, the scancodes, the wire. Nothing blocks the `servers/`
-devfs port any more. What stands between here and running it well is the
-serve loop's shape and the pinned teardown. That is why the first two
-below come before the port itself.
+Processes reproduce two ways now, the console's hardware is all served
+raw, and a posted service's connection comes down when nothing holds it.
+Nothing blocks the `servers/` devfs port any more, and its teardown story
+is written. What stands between here and running it well is the serve
+loop's shape, which is why the first two below sit ahead of the port.
 
 **Next, in order:**
 
-1. **A counted release for a posted service.** The wire, its arena, its
-   reader and a chan reference are pinned per posted pipe -- seven heap
-   objects the user self-test counts exactly, three times now. The note
-   unblocked the teardown: a wire's reader can now be ended rather than
-   waited for. When the last mount and the name are both gone, the
-   connection should come down.
-
-2. **A note handler in ring 3.** The other half of Plan 9's notify: a handler
+1. **A note handler in ring 3.** The other half of Plan 9's notify: a handler
    a process registers, a frame the kernel pushes onto the user stack, and a
    `noted` that resumes or dies. It is what turns the note from a kill into a
    signal. The text already travels for it, and `Process.note_group` now
    waits for it too -- `RFNOTEG` records a group nothing yet posts to.
 
-3. **exec, and the seam's other half.** `rfork` cut the creating side out
+2. **exec, and the seam's other half.** `rfork` cut the creating side out
    of `spawn`, and a shell wants the replacing side next. A program that
    replaces itself needs its syscall frame rewritten under it, and its old
    segments released for new ones. Both are short now that segments own
    the frames. `RFNOWAIT` and reparenting belong to the same milestone: an
    rfork orphan is currently an honest leak no `wait` can collect.
 
-4. **A concurrent serve loop.** `libuser.serve` answers one request at a
+3. **A concurrent serve loop.** `libuser.serve` answers one request at a
    time, so `consrv`'s `/line` answers empty rather than parking, and a slow
    file would hold every client. A process per request -- rfork is there now
    -- or a request queue inside one process. This is also what retires the
    worker-per-blocked-request bound `devfs` documents. Three files can park
    a read now, so three single-reader clients fill that bound exactly.
 
-5. **The userland devfs itself.** Every raw half it needs is a file, and
-   `consrv` is the server shape. A `kbdfs` over `/dev/scancode` is the
-   natural first tenant, and the port is what makes items 1 and 4 urgent
-   rather than tidy. A ring 3 repaint also still costs a `write` per 256
-   bytes -- `user.COPY_MAX` -- fine for a cursor, wrong for a compositor.
+4. **The userland devfs itself.** Every raw half it needs is a file, its
+   connection releases cleanly, and `consrv` is the server shape. A `kbdfs`
+   over `/dev/scancode` is the natural first tenant, and the port is what
+   makes the serve loop above urgent rather than tidy. A ring 3 repaint
+   also still costs a `write` per 256 bytes -- `user.COPY_MAX` -- fine for
+   a cursor, wrong for a compositor.
 
-6. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
+5. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
    two becomes a reason rather than a tidiness.
 
@@ -640,9 +645,11 @@ kernel/
                         every one of them shares
   vfs/
     lock.odin           What guards what, in what order, and the lock that went
-    vfs.odin            Server on either transport, the #name device table, rpc
+    vfs.odin            Server on either transport, the #name device table,
+                        rpc, and the counted release a server can carry
     chan.odin           Chan, refcounting, open/create/read/write/remove/stat/
-                        clone, and a read with a deadline
+                        clone, a read with a deadline, and the server's own
+                        count of the chans that name it
     mount.odin          The mount table, bind/unmount, union member lists
     namespace.odin      Namespace, rfork semantics, teardown
     walk.odin           attach, walk1, cross_mounts, `..`, resolve,
@@ -679,7 +686,8 @@ kernel/
     pipe.odin           Two ends, a byte ring per direction, blocking reads
                         and writes, and the ends as chans
     serve9.odin         A posted pipe end turned into a mountable server: the
-                        wire build, the handshake deadline, and the pin
+                        wire build, the handshake deadline, the pin, and the
+                        counted release that gives all of it back
     verify.odin         The boot self-test: 37 checks -- bytes across, a
                         reader and a writer parked and woken, EOF and EPIPE
                         out the right sides
@@ -702,8 +710,9 @@ kernel/
                         and both streams diverted and given back
   srv/
     srv.odin            `#s` at /srv: the table, post and remove, mounting by
-                        name, the id a fid binds instead of a slot, and the
-                        posted chan a mount turns into a server
+                        name, the id a fid binds instead of a slot, the
+                        posted chan a mount turns into a server, and the
+                        name's stake a removal releases
     verify.odin         The boot self-test: 82 checks -- a service published,
                         mounted, removed under its own mount, a listing paced
                         across a removal, and a pending name refused

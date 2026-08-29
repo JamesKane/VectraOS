@@ -77,11 +77,48 @@ Three decisions in that glue, each with its reason:
   stop. Plan 9's rule — removal ends the name, not the service — costs
   exactly one incref here.
 
-The pin is a deliberate leak, and it is visible rather than absorbed. The pipe
-stays in `count`, and the reader thread stays in the scheduler. The user
-self-test measures the pin **to the object** — seven, named in
-`kernel/user/verify.odin`. It comes back the day a posted service carries a
-reference count, which `docs/SRV.md` already lists as the next lifetime step.
+## The counted release
+
+The pin was a deliberate leak for two milestones, measured to the object —
+seven — and it is a lifetime now. `vfs.Server` counts every live chan that
+names it, and carries `pins` for the two stakes that are not chans. The
+`/srv` name's stake is taken at the build, and `unpost` releases it when
+the name goes. A mount's stake is `server_for`'s caller's, held until its
+attach owns chans. When both counts are zero, `wire_release` runs on
+whichever thread dropped the last piece. The last mount and the name are
+both gone, which is the only sentence that means nobody can ever reach the
+connection again.
+
+**The release is a hang-up through the front door.** It closes the pinned
+chan, the posted end clunks, and both flows end. The far process's next
+read answers zero bytes, and `libuser.serve` returns `.Hangup`. A healthy
+server ends without a note — the first server Vectra stops by releasing it.
+The wire's reader sees the same EOF, and `wire_join` collects it. All seven
+objects go back: the arena, the `Wire`, the `Server`, the `Wire_End`, the
+chan reference, and the pipe's two rings on the final close.
+
+**Closing an end now hands EOF to that end's own readers**, and the first
+boot of the release is what demanded it. `read` answered EOF only when the
+*peer* closed. A wire reader parked on the end being clunked therefore
+parked for ever, and the release hung the machine behind it. `close_end`
+marks the closing end's own flow closed too. Bytes already in the ring
+still drain first — EOF stays something a reader reaches.
+
+One edge is accepted and named: two `/srv` names can post one chan, and the
+connection carries one name-stake. The first removal spends it, so the
+second name can outlive the connection, and a mount of it rebuilds the wire
+with a fresh handshake.
+
+### The release's controls
+
+Four mutations, one at a time, each observed on a real boot:
+
+| Mutation | Result |
+|---|---|
+| a removal keeps the name's stake | 12 checks, first `and everything the wire pinned comes back, to the object` |
+| a mount keeps its caller stake | the same 12, from the same first check |
+| `chan_close` never tells the server a chan left | the same again — three ways to hold a stake, one sentence when any is held for ever |
+| the release skips `server_release_confirm` | **not caught** — the revival needs a mount to land between the fire decision and the release's lock, and a single-core boot never schedules one there. The window is closed by the confirm's reasoning, the same family as the voluntary-switch rule in `docs/TESTING.md` |
 
 ## The self-test, and its controls
 

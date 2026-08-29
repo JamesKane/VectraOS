@@ -23,19 +23,35 @@ misses it gets its connection torn down: the end closes, the reader leaves,
 and everything built here goes back to the heap. The mount that asked fails
 with ENXIO, which is `/srv`'s sentence for a name whose service is not there.
 
-## What is pinned, and what that costs
+## What is pinned, and what releases it
 
-A successful build pins three things for the life of the machine. Those are
-the wire and its arena, the server record, and one reference on the posted
-chan. The reference is the load-bearing one. Removing a `/srv` name closes
-the entry's chan. Without this reference, that close would reach the pipe
-and poison the wire under every existing mount. Plan 9's rule is that
-removal does not stop a service, and the reference is what keeps it here.
+A successful build pins three things: the wire and its arena, the server
+record, and one reference on the posted chan. The reference is the
+load-bearing one. Removing a `/srv` name closes the entry's chan. Without
+this reference, that close would reach the pipe and poison the wire under
+every existing mount. Plan 9's rule is that removal does not stop a
+service, and the reference is what keeps it here.
 
-None of the three can come back until a posted service can be released, which
-is the reference count `docs/SRV.md` already names as future work. The leak is
-deliberate and visible: the pipe stays in `count`, and the wire's thread
-stays in the scheduler's.
+**The pin is counted now, and the count is the `Server`'s.** `kernel/vfs`
+counts every live chan on the server, and `pins` carries the two stakes
+that are not chans. One is the `/srv` name's, taken at the build. The other
+is a mount still being built, taken by `server_for` for its caller. When
+the last mount is gone and the name is gone, both counts are zero, and
+`wire_release` runs on whichever thread dropped the last piece.
+
+The release is the hang-up. Closing the pinned chan clunks the posted end,
+which ends both flows. The far process's next read answers zero bytes, and
+`libuser.serve` returns `.Hangup`. A server that outlives its last client
+ends through its own front door, with no note needed. The wire's reader
+sees the same EOF and leaves, `wire_join` collects it, and everything the
+build allocated goes back to the heap. The pipe itself reclaims on the
+final close, exactly as an unposted pipe always did.
+
+A revived server is the race worth naming. Between the decision to fire
+and the release's own lock, a new mount of a still-posted name can pin the
+server back. The release re-checks under `Pipe_Table.build`, which every
+build and reuse also holds, and walks away if anything took a stake. See
+`vfs.server_release_confirm`.
 */
 package pipe
 
@@ -109,7 +125,14 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		return nil
 	}
 	if existing != nil {
-		return wired_end == end ? existing : nil
+		if wired_end != end {
+			return nil
+		}
+		// The caller's stake, released by `srv.mount` once the attach holds
+		// chans of its own. It is what stops a racing removal from tearing
+		// the wire down under the mount that just found it.
+		vfs.server_pin(existing)
+		return existing
 	}
 
 	we := new(Wire_End)
@@ -152,17 +175,135 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		return nil
 	}
 
+	/*
+	The hook and the stakes go on before the server is findable. No drop to
+	zero can then miss the hook, and no concurrent drop can fire it early.
+	Two stakes: the /srv name's, released by `unpost` when the name goes,
+	and the calling mount's, released by `srv.mount` after its attach. No
+	lock, because nothing can reach `sv` yet.
+	*/
+	sv.release = wire_release
+	sv.pins = 2
+
 	g2 := sync.acquire(&t.lock)
 	p.server9 = sv
 	p.wire_end = end
-	sync.release(&t.lock, g2)
-
+	p.wire_arena = arena
 	// The pin described in the file comment. Without this reference, removing
 	// the /srv name would close the chan and the close would reach the pipe.
 	// The wire would then poison under every mount the removal was not allowed
-	// to stop.
-	_ = vfs.chan_incref(c)
+	// to stop. `wire_release` is what closes it, last of all.
+	p.pinned = vfs.chan_incref(c)
+	p.staked = true
+	sync.release(&t.lock, g2)
 	return sv
+}
+
+/*
+unpost releases the `/srv` name's stake on a posted pipe's connection.
+
+`kernel/srv` calls this when a name is removed, with the entry's chan still
+referenced and no lock of its own held. Nothing happens for a chan that is
+not a wired pipe end, or for a connection whose stake already went. Two
+names can post one chan, and the first removal spends the only stake. The
+document calls that edge by name.
+
+The unpin runs outside every pipe lock, because it may fire the release,
+and the release takes `build` itself.
+*/
+unpost :: proc(c: ^vfs.Chan) {
+	t := &pipes
+	p, end := chan_pipe(c)
+	if p == nil {
+		return
+	}
+
+	sv: ^vfs.Server
+	g := sync.acquire(&t.lock)
+	if live(p) && u64(node_of(p.id, end)) == c.qid.path &&
+	   p.server9 != nil && p.wire_end == end && p.staked {
+		p.staked = false
+		sv = p.server9
+	}
+	sync.release(&t.lock, g)
+
+	if sv != nil {
+		vfs.server_unpin(sv)
+	}
+}
+
+/*
+wire_release gives back everything `server_for` built, and is the counted
+release the handoff promised.
+
+Runs on whichever thread dropped the server's last chan or last pin --
+an unmount, a process teardown, a failed mount, a removal. All of those are
+contexts where a message may park, and this parks twice: once to hang up,
+once to join the reader.
+
+`build` serialises this against a build or a reuse, and the confirm is what
+makes the race with a reviving mount safe. Everything after the confirm is
+single-handed: the server is unfindable the moment `server9` clears, so
+nothing can take a new stake on it.
+*/
+@(private = "file")
+wire_release :: proc(sv: ^vfs.Server) {
+	t := &pipes
+	sync.mutex_lock(&t.build)
+
+	g := sync.acquire(&t.lock)
+	p: ^Pipe
+	for i in 0 ..< MAX_PIPES {
+		if t.table[i].server9 == sv {
+			p = &t.table[i]
+			break
+		}
+	}
+	if p == nil {
+		// Released already, by whoever beat this thread to `build`. The
+		// pointer was compared and never followed.
+		sync.release(&t.lock, g)
+		sync.mutex_unlock(&t.build)
+		return
+	}
+	sync.release(&t.lock, g)
+
+	if !vfs.server_release_confirm(sv) {
+		// A mount revived the server between the fire decision and here.
+		// The confirm cleared the once-guard, and a later last-drop decides
+		// again.
+		sync.mutex_unlock(&t.build)
+		return
+	}
+
+	g2 := sync.acquire(&t.lock)
+	w := cast(^mnt.Wire)sv.session.transport.data
+	arena := p.wire_arena
+	pinned := p.pinned
+	p.server9 = nil
+	p.wire_end = 0
+	p.wire_arena = nil
+	p.pinned = nil
+	p.staked = false
+	sync.release(&t.lock, g2)
+
+	/*
+	The hang-up, through the front door. The last reference on the posted
+	end clunks it, and both flows end. Two readers notice: the far process
+	answers zero bytes out of its serve loop, and the wire's own reader
+	leaves. The pipe reclaims on this close if the far side is already gone,
+	and on the far side's close if it is not.
+	*/
+	vfs.chan_close(pinned)
+	mnt.wire_join(w)
+
+	we := cast(^Wire_End)w.io.data
+	free(we)
+	delete(arena)
+	free(w)
+	free(sv)
+
+	sync.mutex_unlock(&t.build)
 }
 
 /*

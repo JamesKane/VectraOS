@@ -97,6 +97,85 @@ Server :: struct {
 	*/
 	conn:      ^mnt.Conn,
 	arena:     []u8,
+
+	/*
+	The counted release, for a server that can come down.
+
+	`chans` is how many live chans name this server, kept by `chan_alloc`
+	and `chan_close` under the chan lock. `pins` is every stake that is not
+	a chan: a `/srv` name holding a connection, and a mount still being
+	built. When both reach zero and `release` is set, the release runs once,
+	on the thread that dropped the last piece. That thread is in a context
+	where a message may park.
+
+	Nil `release` is a kernel server, which is never released, and for
+	which the counts are bookkeeping nobody reads. `releasing` is the
+	once-guard: set with the decision to fire, cleared by
+	`server_release_confirm` if something took a new stake in between.
+	*/
+	chans:     int,
+	pins:      int,
+	releasing: bool,
+	release:   proc(sv: ^Server),
+}
+
+// server_pin takes a non-chan stake on a server: a name that holds it, or a
+// mount partway through being built. `server_unpin` is the other half.
+server_pin :: proc "contextless" (sv: ^Server) {
+	if sv == nil {
+		return
+	}
+	g := sync.acquire(&object_lock)
+	sv.pins += 1
+	sync.release(&object_lock, g)
+}
+
+// server_unpin releases one stake, and fires the release when nothing else
+// holds the server. May park: the release tears a connection down.
+server_unpin :: proc(sv: ^Server) {
+	if sv == nil {
+		return
+	}
+	g := sync.acquire(&object_lock)
+	sv.pins -= 1
+	fire := server_should_release(sv)
+	release := sv.release
+	sync.release(&object_lock, g)
+	if fire {
+		release(sv)
+	}
+}
+
+/*
+server_release_confirm is the release's second look, taken under its own
+serialisation.
+
+Between the decision to fire and the release's lock, a new mount can pin
+the server back to life. The release calls this once it holds whatever
+excludes new stakes. True keeps the decision. False means something revived
+the server: the once-guard clears, the release walks away, and a later
+last-drop decides again.
+*/
+server_release_confirm :: proc "contextless" (sv: ^Server) -> bool {
+	g := sync.acquire(&object_lock)
+	defer sync.release(&object_lock, g)
+	if sv.chans <= 0 && sv.pins <= 0 {
+		return true
+	}
+	sv.releasing = false
+	return false
+}
+
+// server_should_release is the fire decision, made under `object_lock` by
+// whoever dropped the last chan or the last pin. The caller runs the hook
+// outside the lock.
+@(private)
+server_should_release :: proc "contextless" (sv: ^Server) -> bool {
+	if sv.chans > 0 || sv.pins > 0 || sv.release == nil || sv.releasing {
+		return false
+	}
+	sv.releasing = true
+	return true
 }
 
 /*
