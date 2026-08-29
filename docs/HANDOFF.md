@@ -416,6 +416,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/KBD.md` | `kernel/drivers/kbd/` — scancodes, the I/O APIC, and why a handler splits in two | Adding a device that interrupts, routing a line, or wondering why the polling thread is still there |
 | `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention, the raw framebuffer | Adding a device file, adding a `ctl` file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
+| `docs/DRAW.md` | The `/dev/draw` protocol design, written before its code | Building the draw server, its client library, or the fb mapping |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
@@ -517,11 +518,11 @@ loop's shape, which is why the first two below sit ahead of the port.
 **Next, in order:**
 
 1. **A `/dev/draw` over `/dev/fb`.** `kbdfs` and `eiafs` cover the input
-   streams now, so the framebuffer is the userland devfs's next tenant. A
-   ring 3 repaint now moves a large buffer in one `read` or `write`. The call
-   loops at `user.IO_CHUNK` until the whole count is through. So `/dev/draw`
-   is a protocol question, not a copy one. A compositor touches the whole
-   frame every round, and that one still wants a mapping rather than a copy.
+   streams now, so the framebuffer is the userland devfs's next tenant. The
+   protocol question is answered: `docs/DRAW.md` fixes six verbs on a data
+   file, served from `servers/intuition`'s first half, with the mapping
+   deferred and its shape written down. What remains is the code that
+   answers to it.
 
 2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
@@ -877,6 +878,9 @@ docs/
                         line discipline, the ctl convention, the raw
                         framebuffer and streams, and the twenty-nine
                         controls the self-test was measured against
+  DRAW.md               The /dev/draw design: six verbs over a data file,
+                        flush as visibility, and the mapping deferred with
+                        its shape written down
   TESTING.md            The self-test discipline, and the negative controls
   STYLE.md              ASD-STE100: the two modes, the checked rules, and the
                         project dictionary
