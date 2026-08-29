@@ -98,6 +98,17 @@ RING_MASK :: RING_BYTES - 1
 Sink :: #type proc "contextless" (b: u8)
 
 /*
+First refusal on every scancode, before translation.
+
+True consumes the scancode: something raw wants the stream -- `kernel/devfs`
+wires this to `/dev/scancode` -- and this driver must not translate it.
+False means the scancode is this driver's, exactly as before the hook
+existed. The same anonymity rule as `Sink`: nothing here knows what is on
+the other end.
+*/
+Raw :: #type proc "contextless" (code: u8) -> bool
+
+/*
 Everything one keyboard is.
 
 `head` and `tail` are monotonic and the index is the counter masked. That is
@@ -117,6 +128,7 @@ Keyboard :: struct {
 	ready: sync.Rendez,
 
 	sink: Sink,
+	raw:  Raw,
 
 	// The modifier state, which belongs to the bottom half alone. The top half
 	// never looks at it, so it needs no lock.
@@ -125,12 +137,17 @@ Keyboard :: struct {
 	ctrl:     bool,
 	extended: bool, // The last scancode was the 0xE0 prefix
 
+	// Whether the last scancode was consumed raw. The transition back is
+	// what resets the modifier state -- see `deliver`.
+	diverting: bool,
+
 	// Counters, reported at boot and checked by the self-test.
 	interrupts: u64, // Times the top half ran
 	scancodes:  u64, // Bytes it put in the ring
 	dropped:    u64, // ...and bytes it could not, because the ring was full
 	delivered:  u64, // Bytes the bottom half handed to the sink
 	ignored:    u64, // Scancodes that produce no byte: releases, modifiers
+	diverted:   u64, // Scancodes the raw hook consumed before translation
 }
 
 @(private)
@@ -150,12 +167,13 @@ portable kernel rather than to a driver. `sink` is where a translated byte goes.
 Fails if there is no I/O APIC to route through. There is no fallback to the
 8259, deliberately: see `kernel/arch/amd64/ioapic.odin`.
 */
-init :: proc(vector: int, sink: Sink) -> bool {
+init :: proc(vector: int, sink: Sink, raw: Raw = nil) -> bool {
 	if sink == nil || !arch.irq_attached() || !arch.irq_available() {
 		return false
 	}
 
 	kbd.sink = sink
+	kbd.raw = raw
 	kbd.head = 0
 	kbd.tail = 0
 
@@ -200,6 +218,7 @@ Stats :: struct {
 	dropped:    u64,
 	delivered:  u64,
 	ignored:    u64,
+	diverted:   u64,
 }
 
 stats :: proc "contextless" () -> Stats {
@@ -211,6 +230,7 @@ stats :: proc "contextless" () -> Stats {
 		dropped = kbd.dropped,
 		delivered = intrinsics.volatile_load(&kbd.delivered),
 		ignored = intrinsics.volatile_load(&kbd.ignored),
+		diverted = intrinsics.volatile_load(&kbd.diverted),
 	}
 }
 
@@ -354,9 +374,32 @@ Split out from the loop above so the self-test can drive it with no interrupt
 and no thread. What a keyboard does with a scancode is a pure question about
 the scancode and the modifier state. A check that has to press a key to ask it
 is a check nobody writes.
+
+The raw hook gets first refusal, before the state machine sees anything. A
+consumed scancode is diverted whole, modifiers included. The far side is a
+driver with a translation of its own, and needs the presses and the
+releases both.
+
+**The first scancode back resets the modifier state.** A shift pressed
+before a diversion and released into it would otherwise leave this state
+machine shifted for ever. The modifiers are unknowable after a diversion,
+and cleared is the only honest value for unknowable.
 */
 @(private)
 deliver :: proc "contextless" (k: ^Keyboard, code: u8) {
+	if k.raw != nil && k.raw(code) {
+		k.diverting = true
+		bump(&k.diverted)
+		return
+	}
+	if k.diverting {
+		k.diverting = false
+		k.shift = false
+		k.caps = false
+		k.ctrl = false
+		k.extended = false
+	}
+
 	b, produced := step(k, code)
 	if !produced {
 		bump(&k.ignored)

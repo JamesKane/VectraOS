@@ -365,6 +365,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// -- And a process that reaches the hardware -----------------------------
 
 	verify_painter(&r)
+	verify_scancode_reader(&r)
 
 	// -- And a process that starts another one -------------------------------
 
@@ -768,6 +769,7 @@ check below says so rather than leaves it to be discovered.
 @(private = "file") PATH_NULL :: "/dev/null"
 @(private = "file") PATH_MISSING :: "/dev/nope"
 @(private = "file") PATH_FB :: "/dev/fb"
+@(private = "file") PATH_SCANCODE :: "/dev/scancode"
 
 @(private = "file") NAMED :: "-- a process opened this file by name"
 @(private = "file") REDIRECTED :: "-- this line went to /dev/null"
@@ -1042,6 +1044,68 @@ verify_painter :: proc(r: ^Result) {
 		s.pixels[int(offset) + i] = saved[i]
 	}
 	finish(r, p, "and the process is taken down")
+}
+
+/*
+verify_scancode_reader is the tap from ring 3: the raw keyboard, read by a
+process.
+
+The kernel holds `/dev/scancode` open across the whole run. The stream is
+therefore already diverted when `reader` opens it, and stays diverted until
+after the process is gone. Sixteen scancodes wait in the ring before the
+launch. Eight are for the read that lands in the program's page, and eight
+for the read aimed at refused memory. That second read consumes its bytes
+before it fails, because `copy_out` runs after the device gives them up.
+A tap with nothing left would park it for ever.
+
+Release codes on purpose. A release translates to nothing, so a broken
+diversion would still not scribble on the console. The leak itself is the
+devfs checks' to catch. This proof is about a process holding raw hardware
+bytes in its own page.
+*/
+@(private = "file")
+verify_scancode_reader :: proc(r: ^Result) {
+	held, herr := vfs.open_path(vfs.boot_namespace, PATH_SCANCODE, vfs.O_RDONLY)
+	if !check(r, herr == vfs.OK && held != nil, "the kernel takes /dev/scancode, diverting the stream") {
+		return
+	}
+
+	staged := true
+	for i in 0 ..< 16 {
+		staged = devfs.scancode_tap(u8(0x81 + i)) && staged
+	}
+	check(r, staged, "sixteen release codes wait in the ring, all consumed by the tap")
+
+	p, perr := load_held("scanread", program_reader())
+	if !check(r, perr == .None && p != nil, "a process is built to read them") {
+		vfs.chan_close(held)
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_SCANCODE)), "with the path in its page")
+	check(r, launch(p, u64(len(PATH_SCANCODE))), "and it launches, staged")
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_READER, "having reached its first instruction")
+		check(r, cell(p, READER_OPENED) == 3, "the raw keyboard opened as a file")
+		check(r, cell(p, READER_READ) == 8, "the read answered eight raw scancodes")
+		check(
+			r,
+			cell(p, READER_BUFFER) == 0x8887_8685_8483_8281,
+			"in arrival order, untranslated, in the program's own page",
+		)
+		check(
+			r,
+			cell(p, READER_REFUSED) == refused(vectra9.EFAULT),
+			"a read into refused memory still answers EFAULT",
+		)
+		check(r, cell(p, READER_CLOSED) == 0, "and the close was accepted")
+	}
+	finish(r, p, "the process is taken down")
+
+	vfs.chan_close(held)
+	t := devfs.tree()
+	check(r, t.scan_opens == 0, "and the last close gives the keyboard back")
+	check(r, !devfs.tap_available(&t.scancode), "with nothing left in the ring")
 }
 
 // pixel_word builds the value `fb.get_raw` answers from the bytes a program

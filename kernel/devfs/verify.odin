@@ -5,12 +5,14 @@ Everything here runs against the boot namespace, over the real mount at `/dev`,
 through the real transport with four workers on it. There is no fixture. A check
 that passes here is a check that the machine's own `/dev/cons` passes.
 
-Seven claims, in the order they are checked:
+Eight claims, in the order they are checked:
 
   - `/dev` lists every device in the table and `/dev/cons` is first
   - a write to `/dev/cons` reaches the framebuffer and the serial port
   - `/dev/fb` is the screen at an offset, `/dev/fbctl` reports its geometry,
     and the boundary follows `fbdev.odin`'s three rules
+  - `/dev/scancode` and `/dev/eia0` own their streams while held open, and
+    the last close gives each stream back
   - a read of `/dev/cons` with nothing typed **parks**, stays parked through a
     character, and finishes on the newline after it
   - the line under construction can be edited, and `^D` ends the file
@@ -335,6 +337,10 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 
 	verify_fb(&r, t, ns)
 
+	// -- /dev/scancode and /dev/eia0 -------------------------------------------
+
+	verify_taps(&r, t, ns)
+
 	// -- What a directory refuses --------------------------------------------
 
 	dev, dev_err := vfs.resolve(ns, "/dev")
@@ -371,6 +377,8 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 	check(&r, t.cons.dropped == 0, "no typed byte was dropped for want of ring")
 	check(&r, !cons_available(&t.cons), "and the ring is empty again")
 	check(&r, t.cons.edit_len == 0, "with no half-typed line left in the editor")
+	check(&r, !tap_active(&t.scancode) && !tap_active(&t.serial), "both taps are closed again")
+	check(&r, !tap_available(&t.scancode) && !tap_available(&t.serial), "with nothing left in either ring")
 
 	// One fid is still out, and it is the `cons` chan this frame holds. The
 	// deferred close above releases it after this check runs, which is why the
@@ -819,6 +827,119 @@ verify_fb :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bound
 	// The screen goes back the way it was found, through the same file.
 	_, _ = vfs.chan_write(fbc, limit - 2, edge[:])
 	_, _ = vfs.chan_write(fbc, o, saved[:span])
+}
+
+/*
+verify_taps is the two raw input streams, and the diversion that defines
+them.
+
+The claim with the machinery in it is ownership. While something holds
+`/dev/scancode`, a fed scancode is consumed -- the driver would not
+translate it -- and the console sees nothing. While something holds
+`/dev/eia0`, a byte off the port goes to the file rather than the line
+discipline. And the last close gives each stream back, which is the
+`consctl` revert again. A program that takes the keyboard and dies must
+not keep it.
+
+Both taps are fed through the same entry points their producers use.
+`scancode_tap` is what `kernel/drivers/kbd` calls, and `serial_deliver` is
+what `cons_input` calls, so the seam under test is the seam in use. The
+keyboard driver itself is not up yet at this point in the boot, and does
+not need to be. Its half of the contract is checked in `kbd/verify.odin`.
+*/
+@(private = "file")
+verify_taps :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bounds_check {
+	got: [16]u8
+
+	// -- The scancode stream, closed -------------------------------------------
+
+	drain_cons(t)
+	check(r, !scancode_tap(0x9C), "a scancode fed while nobody holds the file is the driver's")
+	check(r, !tap_available(&t.scancode), "and no closed tap kept it")
+
+	// -- ...and open ------------------------------------------------------------
+
+	sc, sc_err := vfs.open_path(ns, "/dev/scancode", vfs.O_RDONLY)
+	if !check(r, sc_err == vfs.OK, "/dev/scancode opens") {
+		return
+	}
+	check(r, t.scan_opens == 1, "and the server counted the open")
+	check(r, tap_active(&t.scancode), "and the stream now belongs to the file")
+
+	check(r, scancode_tap(0x81), "a scancode fed while it is held is consumed")
+	check(r, !cons_available(&t.cons), "and the console saw nothing of it")
+	n, err := read_now(sc, got[:])
+	check(r, err == vfs.OK && n == 1 && got[0] == 0x81, "a read gets the raw byte, untranslated")
+
+	// A parked read, finished by one byte. No line discipline stands between
+	// a tap and its reader, so there is nothing to wait for past the byte.
+	if check(r, start_read(sc, 0), "a thread to read an empty tap") {
+		check(r, settled(), "a read of an empty tap does not answer")
+		check(r, scancode_tap(0x82), "one scancode arrives")
+		if check(r, watch(reader_returned, nil), "and the parked read comes back") {
+			check(r, reader.err == vfs.OK && same(reader.got[:], reader.n, "\x82"), "carrying it alone")
+		}
+	}
+
+	// A read that gives up, which is the abort hook waking a tap's rendez
+	// rather than the console's.
+	if check(r, start_read(sc, GIVE_UP_TICKS), "a thread to give up on one") {
+		if check(r, watch(reader_returned, nil), "a tap read that outlives its deadline comes back") {
+			check(r, reader.err == vectra9.EINTR, "and reports EINTR")
+		} else {
+			_ = scancode_tap(0x83)
+			_ = watch(reader_returned, nil)
+		}
+	}
+
+	// -- The last close gives the stream back -----------------------------------
+
+	check(r, scancode_tap(0x84), "a byte is captured and never read")
+	vfs.chan_close(sc)
+	check(r, t.scan_opens == 0, "the last close of /dev/scancode is counted")
+	check(r, !tap_active(&t.scancode), "and the stream is the console's again")
+	check(r, !tap_available(&t.scancode), "with the unread capture thrown away, owed to nobody")
+	check(r, !scancode_tap(0x9C), "and a fresh scancode is the driver's to translate")
+
+	// -- The serial stream -------------------------------------------------------
+
+	if t.cons.port == nil || !t.cons.port.present {
+		// No port probed on this machine. The open must say so, and the rest
+		// of this section has no hardware to be about.
+		_, ne := vfs.open_path(ns, "/dev/eia0", vfs.O_RDWR)
+		check(r, ne == vectra9.ENXIO, "/dev/eia0 refuses to open where no port answered the probe")
+		return
+	}
+
+	eia, eia_err := vfs.open_path(ns, "/dev/eia0", vfs.O_RDWR)
+	if !check(r, eia_err == vfs.OK, "/dev/eia0 opens") {
+		return
+	}
+	check(r, t.eia_opens == 1, "and the server counted the open")
+
+	// Raw bytes out: the port moves, the screen does not.
+	WIRE :: "-- these bytes went straight out the wire\n"
+	writes_before := t.cons.writes
+	col_before := kcon_col(t)
+	wn, werr := vfs.chan_write(eia, 0, transmute([]u8)string(WIRE))
+	check(r, werr == vfs.OK && wn == len(WIRE), "a write to /dev/eia0 takes every byte")
+	check(r, t.cons.writes == writes_before, "without passing through the console")
+	check(r, kcon_col(t) == col_before, "and without drawing a glyph")
+
+	// Raw bytes in: the producer's own seam, diverted and then given back.
+	serial_deliver(&t.cons, 'R')
+	n, err = read_now(eia, got[:])
+	check(r, err == vfs.OK && n == 1 && got[0] == 'R', "a byte off the port reaches the file raw")
+	check(r, !cons_available(&t.cons) && t.cons.edit_len == 0, "and the line discipline saw nothing")
+
+	vfs.chan_close(eia)
+	check(r, t.eia_opens == 0, "the last close of /dev/eia0 is counted")
+
+	drain_cons(t)
+	cons_set_mode(&t.cons, .Cooked, false)
+	serial_deliver(&t.cons, 'x')
+	check(r, t.cons.edit_len == 1, "and a byte off the port is the line discipline's again")
+	drain_cons(t)
 }
 
 // assemble builds the pixel word `fb.get_raw` answers from the bytes a

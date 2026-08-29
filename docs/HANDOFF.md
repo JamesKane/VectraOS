@@ -38,18 +38,19 @@ the descriptor group is shared unless `RFFDG` copies it. Under it, frames
 got an owner that can be shared -- the refcounted *segment* -- and the fd
 table became a refcounted group. `docs/USER.md` owns the design.
 
-`kernel/devfs` still lives in the kernel, but the gap its move waited on
-is half closed: a user process can reach hardware now. `/dev/fb` serves
-the raw framebuffer, and the `painter` program paints through it from ring
-3. What the move still wants is the other two raw halves -- the UART's
-byte stream and the scancode stream. See section 6.
+`kernel/devfs` still lives in the kernel, and nothing blocks its move any
+more. Every piece of hardware behind `#c` is a file now: `/dev/fb` serves
+the screen's memory, `/dev/scancode` the untranslated keyboard, and
+`/dev/eia0` the serial port's bytes. A raw stream is *owned* while held
+open -- the kernel's own line discipline steps aside -- and given back on
+the last close. The port is work now rather than a wait. See section 6.
 
 ## 2. Where things stand
 
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1020 checks against itself and idles.
+1070 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -66,7 +67,16 @@ system call was needed: `seek` and the 9P offset already carried the position,
 and the new ground is a device that honours it. `docs/DEVFS.md` owns the
 design.
 
-**Vectra runs processes, and now a process can become two.** Twenty-eight
+**So are the input streams.** `/dev/scancode` is the keyboard before
+translation and `/dev/eia0` is the serial port before the line discipline,
+both Plan 9's names. A tap *diverts* its stream while open, because a copy
+would leave two line disciplines fighting one keyboard. The last close
+gives it back, which is `consctl`'s revert rule again. A ring 3 process
+reads eight raw scancodes into its own page during the boot. The keyboard
+driver's half of the seam is one anonymous function pointer with first
+refusal.
+
+**Vectra runs processes, and now a process can become two.** Twenty-nine
 enter ring 3 during the boot, and another process started eight of them --
 four by `spawn`, four by `rfork`. A forked child continues from the
 instruction after its parent's `syscall`, on a private copy of the stack.
@@ -111,7 +121,7 @@ The flag word is Plan 9's bit for bit. `RFPROC`, `RFMEM`, `RFFDG`,
 The rest are refused EINVAL rather than skipped. Without `RFPROC` the
 namespace and descriptor flags act on the caller in place.
 
-About 40,200 lines of Odin. The linked image is ~1302 KB debug and ~692 KB
+About 40,900 lines of Odin. The linked image is ~1320 KB debug and ~700 KB
 release, ~107 KB of both being the two embedded user images (`ramfs`,
 `consrv`).
 
@@ -127,7 +137,7 @@ release, ~107 KB of both being the two embedded user images (`ramfs`,
 | `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings | `docs/NAMESPACE.md` |
 | `kernel/mnt/` | A 9P connection with several requests in flight, `Tflush` over it, and the wire whose far side is bytes | `docs/TRANSPORT.md` |
 | `kernel/pipe/` | Two ends, a byte ring per direction, and the glue that makes a posted end a server | `docs/PIPE.md` |
-| `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl`, and the raw framebuffer | `docs/DEVFS.md` |
+| `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl`, and the raw hardware -- framebuffer, scancodes, wire | `docs/DEVFS.md` |
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, now from ring 3 too | `docs/SRV.md` |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, and a top half that may not park | `docs/KBD.md` |
 | `kernel/mem/space.odin` | An address space per process, sharing one kernel half | `docs/SPACE.md` |
@@ -161,6 +171,8 @@ of them could have come earlier:
                             choose -- so a server can wait on two things at once
     a raw device            and the hardware itself is a file: the screen at
                             an offset a process may seek
+    a tap                   and a stream is owned rather than copied: whoever
+                            holds the file stands where the kernel stood
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -173,12 +185,12 @@ code it explains.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x0000000019a21000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x0000000019a1a000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 33 entries spanning 12.7 GiB
 [  ok  ] usable 458.8 MiB, reclaimable 45.9 MiB
 [  --  ] largest usable region 386.6 MiB at 0x0000000001780000
-[  ok  ] pmm 117462 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
+[  ok  ] pmm 117455 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
 [  ok  ] vmm root 0x0000000000005000, mapped 516.0 MiB in 274 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
@@ -189,17 +201,18 @@ code it explains.
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] ioapic version 0x20, 24 lines, all masked
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.6 MHz measured against the PIT, 62606 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (8331705-8642499 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 785 acquisitions, 748 parked and handed back, decayed to 1
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62537 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (9179317-9241017 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 841 acquisitions, 805 parked and handed back, decayed to 1
 [  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4107, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 1706 namespace operations across 5 threads, 263 rebinds under them in 1000 ms, nothing serialised, heap balanced
-[  ok  ] devfs #c bound at /dev, 6 devices on 4 workers, cooked console, input live
+[  ok  ] vfs 34 concurrency checks passed -- 1799 namespace operations across 5 threads, 280 rebinds under them in 1001 ms, nothing serialised, heap balanced
+[  ok  ] devfs #c bound at /dev, 8 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/consX 
-[  ok  ] devfs 102 device checks passed -- 6 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 11 ticks
+-- these bytes went straight out the wire
+[  ok  ] devfs 134 device checks passed -- 8 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 10 ticks
 [  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
 [  ok  ] srv 82 service checks passed -- 35 posted, 6 listed across 6 passes with one removed under them, 1 mounted, 1 name reserved pending, heap balanced
 [  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
@@ -207,9 +220,9 @@ code it explains.
 [  ok  ] wire 46 checks passed -- 18 frames answered by a thread the kernel cannot call, 9 flushed, 1 stale reply dropped, 2 wires poisoned on purpose
 [  ok  ] bin #b bound at /bin, 8 programs as files, formats VECTRA01 and 02
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
-[  ok  ] kbd 48 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
+[  ok  ] kbd 55 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
 [  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 4 CR3 reloads, one address two meanings
-[  ok  ] syscall armed -- entry at 0xffffffff80026750, /dev/cons is descriptor 1
+[  ok  ] syscall armed -- entry at 0xffffffff800269a0, /dev/cons is descriptor 1
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
 -- this line went to /dev/null
@@ -219,7 +232,7 @@ code it explains.
 -- this line went through a posted service
 -- a process answered this line
 these bytes live in a program's own segments
-[  ok  ] user 418 userland checks passed -- 28 processes, 8 started by another process, 4544172 preempted rounds, 278 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
+[  ok  ] user 433 userland checks passed -- 29 processes, 8 started by another process, 4453605 preempted rounds, 280 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
 [  ok  ] boot complete -- idling
 ```
 
@@ -420,48 +433,46 @@ deadline, and a request can be left pending and flushed. Milestones 10 through
 12 spent all of it. Every primitive a driver needs is not only present but used
 by something that is not a self-test.
 
-Processes reproduce two ways now, and a forked pair can hold two parked
-reads between them -- the primitive the `servers/devfs` port was missing.
-That port now waits on exactly one thing, and it is the first below.
+Processes reproduce two ways now, and the console's hardware is all served
+raw -- the screen, the scancodes, the wire. Nothing blocks the `servers/`
+devfs port any more. What stands between here and running it well is the
+serve loop's shape and the pinned teardown. That is why the first two
+below come before the port itself.
 
 **Next, in order:**
 
-1. **The other raw halves: the UART and the scancode stream.** The
-   framebuffer half closed this milestone -- `/dev/fb` and `/dev/fbctl`
-   serve the screen's memory and geometry, and a ring 3 program paints
-   through them. The shape is set: a row in `DEV_NODES`, a case in two
-   switches, `fbdev.odin` as the worked example. The serial byte stream
-   and the raw scancodes are what a userland devfs still cannot reach,
-   and `consrv` is the server shape waiting for them. A repaint from ring
-   3 also costs a `write` per 256 bytes -- `user.COPY_MAX` -- which is
-   fine for a cursor and wrong for a compositor. The bulk path belongs to
-   whichever milestone first needs one.
-
-2. **A counted release for a posted service.** The wire, its arena, its
+1. **A counted release for a posted service.** The wire, its arena, its
    reader and a chan reference are pinned per posted pipe -- seven heap
    objects the user self-test counts exactly, three times now. The note
    unblocked the teardown: a wire's reader can now be ended rather than
    waited for. When the last mount and the name are both gone, the
    connection should come down.
 
-3. **A note handler in ring 3.** The other half of Plan 9's notify: a handler
+2. **A note handler in ring 3.** The other half of Plan 9's notify: a handler
    a process registers, a frame the kernel pushes onto the user stack, and a
    `noted` that resumes or dies. It is what turns the note from a kill into a
    signal. The text already travels for it, and `Process.note_group` now
    waits for it too -- `RFNOTEG` records a group nothing yet posts to.
 
-4. **exec, and the seam's other half.** `rfork` cut the creating side out
+3. **exec, and the seam's other half.** `rfork` cut the creating side out
    of `spawn`, and a shell wants the replacing side next. A program that
    replaces itself needs its syscall frame rewritten under it, and its old
    segments released for new ones. Both are short now that segments own
    the frames. `RFNOWAIT` and reparenting belong to the same milestone: an
    rfork orphan is currently an honest leak no `wait` can collect.
 
-5. **A concurrent serve loop.** `libuser.serve` answers one request at a
+4. **A concurrent serve loop.** `libuser.serve` answers one request at a
    time, so `consrv`'s `/line` answers empty rather than parking, and a slow
    file would hold every client. A process per request -- rfork is there now
    -- or a request queue inside one process. This is also what retires the
-   worker-per-blocked-request bound `devfs` documents.
+   worker-per-blocked-request bound `devfs` documents. Three files can park
+   a read now, so three single-reader clients fill that bound exactly.
+
+5. **The userland devfs itself.** Every raw half it needs is a file, and
+   `consrv` is the server shape. A `kbdfs` over `/dev/scancode` is the
+   natural first tenant, and the port is what makes items 1 and 4 urgent
+   rather than tidy. A ring 3 repaint also still costs a `write` per 256
+   bytes -- `user.COPY_MAX` -- fine for a cursor, wrong for a compositor.
 
 6. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
@@ -651,10 +662,11 @@ kernel/
     verify.odin         The boot self-test: cooperative half and preemptive half
   drivers/kbd/
     kbd.odin            PS/2 scancodes: the top half that may not park, the
-                        ring, the bottom half that may, and set 1 for a US
-                        layout
-    verify.odin         The boot self-test: 44 checks -- the state machine on
-                        its own, and one interrupt the 8042 was asked to raise
+                        ring, the bottom half that may, set 1 for a US
+                        layout, and the raw hook with first refusal
+    verify.odin         The boot self-test: 55 checks -- the state machine on
+                        its own, the raw hook and its stale-shift arc, and
+                        one interrupt the 8042 was asked to raise
   mnt/
     mnt.odin            A 9P connection with several requests in flight: the
                         tag pool, the payload buffer per slot, the work queue,
@@ -680,10 +692,14 @@ kernel/
     fbdev.odin          The raw framebuffer: /dev/fb as the screen's memory
                         at an offset, /dev/fbctl as its geometry, and the
                         three boundary rules of the first device with a size
-    verify.odin         The boot self-test: 102 checks over the real /dev --
+    tap.odin            The raw input streams: /dev/scancode and /dev/eia0,
+                        each owning its stream while held open and giving
+                        it back on the last close
+    verify.odin         The boot self-test: 134 checks over the real /dev --
                         a read that parks through a character, a line edited,
-                        a mode that reverts when its file closes, and pixels
-                        written through the mount and read off the screen
+                        a mode that reverts when its file closes, pixels
+                        written through the mount and read off the screen,
+                        and both streams diverted and given back
   srv/
     srv.odin            `#s` at /srv: the table, post and remove, mounting by
                         name, the id a fid binds instead of a slot, and the
@@ -713,10 +729,11 @@ kernel/
                         inherits, and the wait that parks for it by pid
     program.odin        The twenty-one programs the assembler bakes into the
                         image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 418 checks -- one process preempted
+    verify.odin         The boot self-test: 433 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
-                        pixels on the screen through /dev/fb, a parent that
+                        pixels on the screen through /dev/fb, a reader that
+                        holds raw scancodes in its own page, a parent that
                         raises two children, a poster that publishes a
                         service, a niner the kernel talks to as a 9P client,
                         a compiled ramfs serving its own segments back, three
@@ -783,8 +800,8 @@ docs/
                         the constraint that splits a handler in two
   DEVFS.md              kernel/devfs: #c at /dev, the console device, the
                         line discipline, the ctl convention, the raw
-                        framebuffer, and the twenty-four controls the
-                        self-test was measured against
+                        framebuffer and streams, and the twenty-eight
+                        controls the self-test was measured against
   TESTING.md            The self-test discipline, and the negative controls
   STYLE.md              ASD-STE100: the two modes, the checked rules, and the
                         project dictionary

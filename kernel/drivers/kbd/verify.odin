@@ -194,6 +194,10 @@ verify :: proc() -> Verify_Result #no_bounds_check {
 
 	verify_ring(&r)
 
+	// -- The raw hook ---------------------------------------------------------
+
+	verify_raw_hook(&r)
+
 	// -- The live keyboard ---------------------------------------------------
 
 	verify_route(&r)
@@ -235,6 +239,75 @@ verify_ring :: proc(r: ^Verify_Result) #no_bounds_check {
 	_, empty := take(&k)
 	check(r, !empty, "an empty ring hands back nothing")
 	check(r, push(&k, 1), "and takes a scancode again once it has drained")
+}
+
+// The recording raw hook, and the gate the checks flip. Package state
+// rather than a closure, because a "contextless" proc captures nothing.
+@(private = "file")
+raw_caught: [8]u8
+@(private = "file")
+raw_len: int
+@(private = "file")
+raw_on: bool
+
+@(private = "file")
+raw_take :: proc "contextless" (code: u8) -> bool #no_bounds_check {
+	if !raw_on {
+		return false
+	}
+	if raw_len < len(raw_caught) {
+		raw_caught[raw_len] = code
+		raw_len += 1
+	}
+	return true
+}
+
+/*
+verify_raw_hook is the driver's half of the `/dev/scancode` contract.
+
+Three claims. A consumed scancode reaches the hook untranslated and the
+sink never hears of it. A hook that declines changes nothing. And the
+first scancode after a diversion finds the modifier state reset. The check
+makes that state stale on purpose: shift goes down cooked, comes up
+diverted, and the next letter must still be lower case.
+
+On a keyboard of the test's own, through `deliver`, which is exactly what
+the bottom half runs.
+*/
+@(private = "file")
+verify_raw_hook :: proc(r: ^Verify_Result) #no_bounds_check {
+	k: Keyboard
+	k.sink = catch_byte
+	k.raw = raw_take
+
+	caught_len = 0
+	raw_len = 0
+	raw_on = true
+
+	deliver(&k, SC_A)
+	check(r, raw_len == 1 && raw_caught[0] == SC_A, "a consumed scancode reaches the raw hook whole")
+	check(r, caught_len == 0, "and the sink never hears of it")
+	check(r, k.diverted == 1, "and the driver counts the diversion")
+
+	raw_on = false
+	deliver(&k, SC_2)
+	check(r, caught_len == 1 && caught[0] == '2', "a hook that declines leaves translation alone")
+
+	// The stale-shift arc: down cooked, up diverted, next letter cooked.
+	deliver(&k, SC_LSHIFT)
+	check(r, k.shift, "shift goes down in cooked hands")
+	raw_on = true
+	deliver(&k, SC_LSHIFT | SC_RELEASE)
+	check(r, raw_len == 2 && raw_caught[1] == (SC_LSHIFT | SC_RELEASE), "and its release is diverted whole")
+	raw_on = false
+
+	caught_len = 0
+	deliver(&k, SC_A)
+	check(
+		r,
+		caught_len == 1 && caught[0] == 'a',
+		"the first scancode back finds the modifiers reset, not the stale shift",
+	)
 }
 
 /*

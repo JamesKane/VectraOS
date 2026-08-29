@@ -148,6 +148,24 @@ set. The arrows want somewhere to go, which is the cursor-in-a-line that
 belongs in a file somebody can replace. That is a `/dev` entry and a format, and
 it is worth doing when there is a second layout to want.
 
+## The raw hook, and who owns a scancode
+
+`/dev/scancode` serves this keyboard untranslated, and the driver's part of
+that is one function pointer. The raw hook gets first refusal on every
+scancode, before the state machine sees it. True consumes the scancode
+whole — modifiers and releases included, because the far side is a driver
+doing its own translation. False means nobody holds the file, and the
+scancode is this driver's, exactly as before the hook existed. The hook has
+`Sink`'s anonymity rule: nothing here knows `kernel/devfs` is on the other
+end.
+
+**The first scancode back resets the modifier state.** A shift pressed
+before a diversion and released into it would otherwise leave this state
+machine shifted for ever. The modifiers are unknowable after a diversion,
+and cleared is the only honest value for unknowable. The self-test makes
+the shift stale on purpose — down cooked, up diverted — and the next letter
+must still be lower case.
+
 ## The self-test, and an interrupt nobody typed
 
 Two halves, matching the driver's.
@@ -173,7 +191,7 @@ wakes it.
 
 ### The controls
 
-Seven mutations, one at a time, each observed on a real boot:
+Nine mutations, one at a time, each observed on a real boot:
 
 | Mutation | First failure |
 |---|---|
@@ -184,6 +202,8 @@ Seven mutations, one at a time, each observed on a real boot:
 | the top half does not read the data port | `and it arrives too, so the port really was read` |
 | the top half acknowledges nothing | `and it arrives too, so the port really was read` |
 | the top half delivers straight to the sink | `an interrupt really did arrive` (2 checks) |
+| `deliver` ignores the raw hook | `a consumed scancode reaches the raw hook whole` (5 checks) |
+| a diversion ends and the modifiers keep their state | `the first scancode back finds the modifiers reset, not the stale shift` |
 
 **Two of those failed nothing the first time round**, and both taught something
 the driver alone would not have.

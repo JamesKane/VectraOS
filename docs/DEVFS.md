@@ -1,7 +1,7 @@
 # devfs: the first server whose files are devices
 
 `kernel/devfs/` — `#c` bound at `/dev`, with `cons`, `consctl`, `null`,
-`zero`, `fb` and `fbctl` in it.
+`zero`, `fb`, `fbctl`, `scancode` and `eia0` in it.
 
 Everything before this in Vectra could name a file. Nothing before it could name
 a piece of hardware. `devfs` closes that gap, and the line it prints during the
@@ -320,12 +320,59 @@ because nothing about this hardware can be set yet. Every write is
 therefore EINVAL, which is rule 2 with no rows in its table. The day a mode
 can change, `size` becomes a command and rule 3 starts to hold for it.
 
+## The taps: the input streams, served raw
+
+`tap.odin` — `/dev/scancode` is the keyboard before translation, and
+`/dev/eia0` is the serial port before the line discipline. Both names are
+Plan 9's, and its `kbdfs` is the program these files exist for. A userland
+driver reads the raw stream, does its own translation, and serves the
+cooked result back as files of its own. With `/dev/fb` these close the
+handoff item — every piece of hardware behind `#c` is now a file a process
+can open.
+
+**A tap diverts the stream, and that is the design decision in this
+milestone.** While something holds `/dev/scancode` open, the kernel's own
+translation sees nothing. While something holds `/dev/eia0`, the line
+discipline hears nothing from the port. A *copy* of the stream would leave
+two line disciplines fighting over one keyboard, and every keystroke would
+act twice. Ownership is what `a process stands where the kernel's handler
+stands` has to mean.
+
+The last close gives the stream back, which is `consctl`'s revert again.
+A program that takes the keyboard and faults must not leave a machine
+nobody can type at. Unread bytes drain at that moment — captured under
+rules that no longer apply, they belong to nobody.
+
+The keyboard side crosses one seam. `kernel/drivers/kbd` gained a second
+function pointer: a raw hook with first refusal on every scancode. The
+driver stays as ignorant of devfs as its `Sink` always was. It resets its
+modifier state when a diversion ends, because a shift released into the
+tap would otherwise leave the console shifted for ever. The serial side
+needs no seam at all: `cons_input` is this package's own thread, and
+`serial_deliver` is the one call it makes per byte.
+
+Writes are asymmetric on purpose. `/dev/eia0` writes raw bytes out the
+wire — under `Cons.out`, so a console line cannot be torn — and draws no
+glyph. This file is the port, and `/dev/cons` is the screen.
+`/dev/scancode` refuses writes with EPERM: nobody writes a keyboard.
+
+A tap read parks like a console read, minus two cases. No line discipline
+stands between a tap and its reader, so any byte answers. And there is no
+`^D`, so nothing here ever answers zero bytes. Park, byte, or flush is the
+whole state space.
+
 ## The worker count is a bound on blocked readers
 
 `WORKERS` is 4, so **at most three reads may park at once**. The fourth worker
 is what serves the `Tflush` that unsticks one of them. It is exactly one
 because a flush never parks. It marks the request, calls the abort hook, and
 returns.
+
+Three files can park a read now — `cons` and the two taps — so three
+single-reader clients fill the bound exactly. The flush worker stays free.
+That is the userland-devfs shape: one server per stream, one parked read
+each. A fourth parked read stalls the connection, and the bound wants
+raising the first time something legitimate hits it.
 
 `kernel/mnt` states this rule where the number is chosen, and says it cannot
 check it. How many of a server's requests can block is the server's own
@@ -339,15 +386,15 @@ the fix when threads are cheaper than they are today.
 
 ## What a device answers, and what it refuses
 
-| Message | `/dev` | `cons` | `consctl` | `null` | `zero` | `fb` | `fbctl` |
-|---|---|---|---|---|---|---|---|
-| `Tlopen` write | EISDIR | ok | ok, and counted | ok | ok | ok | ok |
-| `Tread` | EISDIR | parks until a line | the state | 0 bytes | zeroes, for ever | pixels at the offset | the geometry |
-| `Twrite` | EISDIR | draws, and sends | one command | count | count | pixels, may be short | EINVAL |
-| `Treaddir` | six entries | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR |
-| `Tclunk` | — | — | may revert the mode | — | — | — | — |
-| `Tgetattr` size | 0 | 0 | 0 | 0 | 0 | height × pitch | 0 |
-| `Tlcreate`, `Tmkdir`, `Tremove` | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM |
+| Message | `/dev` | `cons` | `consctl` | `null` | `zero` | `fb` | `fbctl` | `scancode` | `eia0` |
+|---|---|---|---|---|---|---|---|---|---|
+| `Tlopen` write | EISDIR | ok | ok, and counted | ok | ok | ok | ok | ok, diverts | ok, diverts (ENXIO with no port) |
+| `Tread` | EISDIR | parks until a line | the state | 0 bytes | zeroes, for ever | pixels at the offset | the geometry | parks until a scancode | parks until a byte |
+| `Twrite` | EISDIR | draws, and sends | one command | count | count | pixels, may be short | EINVAL | EPERM | raw, out the wire |
+| `Treaddir` | eight entries | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR |
+| `Tclunk` | — | — | may revert the mode | — | — | — | — | may give the stream back | may give the stream back |
+| `Tgetattr` size | 0 | 0 | 0 | 0 | 0 | height × pitch | 0 | 0 | 0 |
+| `Tlcreate`, `Tmkdir`, `Tremove` | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM |
 
 Two of those rows are decisions rather than defaults.
 
@@ -391,10 +438,11 @@ it stops being correct the day `/dev` means something different in two
 namespaces.
 
 **No `/dev/random`, `/dev/draw`, `/dev/mouse` or `/dev/kbd`.** Each is a row in
-`DEV_NODES` and a case in two switches, which is the path `fb` and `fbctl`
-walked. `kbd` is the interesting one, because it is what turns `cons_input`
-from a poll into an interrupt. `draw` is now a protocol question rather than a
-memory question, because `/dev/fb` already serves the memory.
+`DEV_NODES` and a case in two switches, which is the path `fb`, `fbctl`,
+`scancode` and `eia0` walked. `draw` is now a protocol question rather than a
+memory question, because `/dev/fb` already serves the memory. And `kbd` —
+Plan 9's *cooked* keyboard file, runes with modifiers spelled out — is a
+userland `kbdfs`'s to serve over `/dev/scancode`, not this server's to grow.
 
 ## The self-test, and what it costs to make honest
 
@@ -434,9 +482,11 @@ shadow right.
 
 ### The controls
 
-Twenty-four mutations, one at a time, each observed on a real boot. The first
-eleven are the device server, the next nine the line discipline and the `ctl`
-file, and the last four the raw framebuffer.
+Twenty-eight mutations, one at a time, each observed on a real boot. The first
+eleven are the device server, and the next nine the line discipline and the
+`ctl` file. Four more are the raw framebuffer, and the last four the taps.
+Two more tap controls live on the driver's side of the seam, in
+`docs/KBD.md`.
 
 | Mutation | First failure |
 |---|---|
@@ -464,6 +514,10 @@ file, and the last four the raw framebuffer.
 | `fb_read` loses its past-the-end guard | a `#PF` on the boot, at the first byte past the frame — see below |
 | the geometry report says depth in bytes | `reporting the geometry of the surface the server holds` |
 | `fb` reports a size of zero | `with a real length, the first device that has one` |
+| `tap_feed` consumes with the gate closed | `a scancode fed while nobody holds the file is the driver's` (5 checks) — and the *live* keyboard fails its injection check, one suite later |
+| the last close does not stop the tap | `and the stream is the console's again` (6 checks) — and the live keyboard again, stuck diverted |
+| the abort hook forgets the tap rendezvous | `a tap read that outlives its deadline comes back` |
+| `serial_deliver` bypasses the tap | `a byte off the port reaches the file raw` (2 checks) |
 
 **The last two only fail because the checks were rewritten to make them.** Both
 came back clean the first time, and neither was a narrow window — they were
@@ -508,6 +562,12 @@ the kernel with a number. The checks still earn their place. A subtler wrong
 arrangement — a partial clamp, a guard at the wrong comparison — corrupts an
 answer without leaving the frame, and fails a check instead.
 
+**Both ownership controls were caught twice, and the second catch was free.**
+Each broke the tap contract, and each also failed the keyboard's own injection
+check a suite later. The diverted-or-stuck stream swallowed the live
+keystroke the 8042 was asked to raise. That is two independent suites agreeing
+about one seam, which is the cheapest corroboration a control ever buys.
+
 **Both uncaught mutations are uncaught for the same reason, and it is not the
 usual one.** Neither is a narrow window. `Cons.out` guards against two threads
 interleaving inside one line, and this test writes from one thread. The EPERM on
@@ -525,9 +585,10 @@ cannot be expressed is different from a control that fails to fire.
   and deletes the poll. `cons_feed` is the entry point it already has.
 - **`^W` and a cursor in the line**, which is word erase and the arrow keys. A
   larger edit buffer and a position inside it, rather than a new idea.
-- **The other raw halves: the UART's byte stream and the scancode stream.**
-  `/dev/fb` set the shape — a row in the table, a case in two switches — and
-  they are what a userland devfs still cannot reach.
+- **The userland devfs itself.** Every raw half is served now — the screen,
+  the scancodes, the wire — so the port stops being blocked and starts being
+  work. `consrv` is the server shape, and a `kbdfs` over `/dev/scancode` is
+  the natural first tenant.
 - **`/dev/draw`**, which is now a protocol question rather than a memory one.
   `/dev/fb` serves the memory, and `apps/terminal` will want the protocol.
 - **A bulk path for pixels.** `user.COPY_MAX` is 256 bytes, so a ring 3 repaint

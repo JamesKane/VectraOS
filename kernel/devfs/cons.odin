@@ -628,7 +628,10 @@ cons_input :: proc "contextless" (arg: rawptr) {
 			if !got {
 				break
 			}
-			_ = cons_feed(c, b)
+			// Through the tap seam, not straight to the line discipline. A
+			// byte belongs to `/dev/eia0` while something holds it open.
+			// See `tap.odin`.
+			serial_deliver(c, b)
 		}
 		sync.delay(POLL_TICKS)
 	}

@@ -80,6 +80,8 @@ Dev_Kind :: enum u8 {
 	Zero, // Writes vanish, reads are zeroes and never end
 	Fb, // The raw framebuffer: pixel bytes at an offset. See `fbdev.odin`
 	Fbctl, // The framebuffer's geometry: reads report, nothing to command yet
+	Scancode, // The keyboard before translation, diverted while open. See `tap.odin`
+	Eia0, // The serial port's bytes, raw in and raw out. See `tap.odin`
 }
 
 Dev_Node :: struct {
@@ -99,6 +101,10 @@ ten lines and both are files a POSIX layer will need on its first day.
 `fb` and `fbctl` are the console's raw half: the screen's memory as a file,
 and the geometry beside it. The first device a user process reaches for the
 hardware rather than for the line discipline. See `fbdev.odin`.
+
+`scancode` and `eia0` are the input streams the same way: the keyboard
+before translation, and the serial port before the line discipline. Each
+is diverted from the console while something holds it open. See `tap.odin`.
 */
 @(private)
 DEV_NODES := [?]Dev_Node {
@@ -109,6 +115,8 @@ DEV_NODES := [?]Dev_Node {
 	{name = "zero", parent = 0, kind = .Zero},
 	{name = "fb", parent = 0, kind = .Fb},
 	{name = "fbctl", parent = 0, kind = .Fbctl},
+	{name = "scancode", parent = 0, kind = .Scancode},
+	{name = "eia0", parent = 0, kind = .Eia0},
 }
 
 // How many devices this server publishes, not counting its own root. Reported
@@ -139,6 +147,11 @@ one wait per slot by construction.
 Read_Wait :: struct {
 	tree: ^Dev_Tree,
 	tag:  vectra9.Tag,
+
+	// Which stream this request waits on: a tap, or nil for the console.
+	// Written by every request that parks, because the slot is reused and a
+	// stale stream would have a reader test the wrong ring.
+	tap:  ^Tap,
 }
 
 Dev_Tree :: struct {
@@ -150,6 +163,11 @@ Dev_Tree :: struct {
 	// console is one tenant. See `fbdev.odin`.
 	raw:    ^fb.Surface,
 
+	// The two raw input streams, each diverted from the console while its
+	// file is open. See `tap.odin`.
+	scancode: Tap,
+	serial:   Tap,
+
 	// Client fids, and the one thing in here that several workers write. See
 	// `kernel/vfs/fidtab.odin`.
 	fids:   vfs.Fid_Table,
@@ -157,12 +175,18 @@ Dev_Tree :: struct {
 	waits:  [mnt.MAX_REQUESTS]Read_Wait,
 
 	/*
-	How many fids have `/dev/consctl` open right now.
+	How many fids hold each file whose open state *means* something.
 
-	Under `lock`, with the fid table it is counted from. When it reaches zero
-	the console goes back to cooked mode with echo on. See `consctl_close`.
+	Under `lock`, with the fid table they are counted from. `/dev/consctl`
+	at zero puts the console back in cooked mode -- see `consctl_close`.
+	The two taps at zero give their streams back to the console -- see
+	`tap.odin`. The handler moves the tap's own `open` flag across on the
+	first open and the last close. The producers that read that flag must
+	never touch this lock.
 	*/
-	ctl_opens: int,
+	ctl_opens:  int,
+	scan_opens: int,
+	eia_opens:  int,
 }
 
 /*
@@ -332,38 +356,55 @@ node_of :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> i32 {
 }
 
 /*
-mark_open records an open, and counts it when the file is `/dev/consctl`.
+mark_open records an open, counts it when the file's open state means
+something, and reports whether this was the first.
 
-`ctl` says whether this fid is one of the console's owners, rather than the
-handler working it out again. The two facts move together and one lock covers
-both.
+`first` is what the handler acts on outside this lock: the first open of a
+tap is the moment the stream diverts. The count and the fid's open flag
+move together, and one lock covers both. What the count *causes* -- a tap
+gate, a console mode -- happens elsewhere, because the rule in this
+package is one lock at a time.
 */
 @(private = "file")
-mark_open :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid, ctl: bool) {
+mark_open :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_Kind, first: bool) {
 	g := sync.acquire(&t.lock)
 	defer sync.release(&t.lock, g)
 
-	if !vfs.fidtab_set_open(&t.fids, fid, true) {
-		return
+	node := vfs.fidtab_node(&t.fids, fid)
+	if node < 0 || !vfs.fidtab_set_open(&t.fids, fid, true) {
+		return .Dir, false
 	}
-	if ctl {
+
+	kind = DEV_NODES[node].kind
+	#partial switch kind {
+	case .Consctl:
 		t.ctl_opens += 1
+		return kind, t.ctl_opens == 1
+	case .Scancode:
+		t.scan_opens += 1
+		return kind, t.scan_opens == 1
+	case .Eia0:
+		t.eia_opens += 1
+		return kind, t.eia_opens == 1
 	}
+	return kind, false
 }
 
 /*
-drop_fid releases a fid and reports whether it was an open `/dev/consctl`.
+drop_fid releases a fid and reports whether it was the last open holder of
+a file whose open state means something.
 
-The report is what the caller acts on, and it has to come from in here. Whether
-the fid was open, and what it was bound to, are both gone the instant the slot
-goes back on the free list.
+The report is what the caller acts on, and it has to come from in here.
+Whether the fid was open, and what it was bound to, are both gone the
+instant the slot goes back on the free list.
 
-The console is *not* reverted under this lock. `cons_set_mode` takes the
-console's own lock, and two spinlocks nested is an order to get right rather
-than a thing to do by accident. The rule in this package is one at a time.
+Nothing is reverted under this lock. `cons_set_mode` takes the console's
+lock and `tap_stop` takes the tap's. Two spinlocks nested is an order to
+get right rather than a thing to do by accident. The rule in this package
+is one at a time.
 */
 @(private = "file")
-drop_fid :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (was_ctl_open: bool) {
+drop_fid :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_Kind, last: bool) {
 	g := sync.acquire(&t.lock)
 	defer sync.release(&t.lock, g)
 
@@ -371,11 +412,23 @@ drop_fid :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (was_ctl_open
 	open := vfs.fidtab_is_open(&t.fids, fid)
 	_ = vfs.fidtab_release(&t.fids, fid)
 
-	if !open || node < 0 || DEV_NODES[node].kind != .Consctl {
-		return false
+	if !open || node < 0 {
+		return .Dir, false
 	}
-	t.ctl_opens -= 1
-	return t.ctl_opens <= 0
+
+	kind = DEV_NODES[node].kind
+	#partial switch kind {
+	case .Consctl:
+		t.ctl_opens -= 1
+		return kind, t.ctl_opens <= 0
+	case .Scancode:
+		t.scan_opens -= 1
+		return kind, t.scan_opens <= 0
+	case .Eia0:
+		t.eia_opens -= 1
+		return kind, t.eia_opens <= 0
+	}
+	return kind, false
 }
 
 // live_fids is what this server has out. A self-test that opens and closes in
@@ -588,6 +641,8 @@ devfs_abort :: proc "contextless" (server: rawptr, tag: vectra9.Tag) {
 	t := cast(^Dev_Tree)server
 	_ = tag
 	sync.wakeup_all(&t.cons.ready)
+	sync.wakeup_all(&t.scancode.ready)
+	sync.wakeup_all(&t.serial.ready)
 }
 
 /*
@@ -600,7 +655,11 @@ condition is allowed to do and nothing else: two loads and a comparison.
 @(private = "file")
 read_ready :: proc "contextless" (arg: rawptr) -> bool {
 	w := cast(^Read_Wait)arg
-	if cons_available(&w.tree.cons) {
+	if w.tap != nil {
+		if tap_available(w.tap) {
+			return true
+		}
+	} else if cons_available(&w.tree.cons) {
 		return true
 	}
 	return vfs.server_flushed(&w.tree.server, w.tag)
@@ -701,10 +760,25 @@ devfs_handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 			return
 		}
+		// A port that failed its loopback probe is a device that is not
+		// there. A refusal at the open beats a read that parks for ever on
+		// hardware nothing feeds.
+		if DEV_NODES[node].kind == .Eia0 && (t.cons.port == nil || !t.cons.port.present) {
+			reply^ = vectra9.error_reply(vectra9.ENXIO)
+			return
+		}
 		// The open is recorded, not merely allowed. `/dev/consctl` owns the
-		// console's rules for as long as somebody holds it open, and the count
-		// of who does is kept here. See `consctl_close`.
-		mark_open(t, m.fid, DEV_NODES[node].kind == .Consctl)
+		// console's rules while held, and a tap owns its stream. The first
+		// open of a tap is the moment the stream diverts.
+		kind, first := mark_open(t, m.fid)
+		if first {
+			#partial switch kind {
+			case .Scancode:
+				tap_start(&t.scancode)
+			case .Eia0:
+				tap_start(&t.serial)
+			}
+		}
 		reply^ = vectra9.Rlopen{qid = node_qid(node), iounit = 0}
 
 	case vectra9.Tread:
@@ -754,8 +828,16 @@ devfs_handler :: proc "contextless" (
 		// Clunking a fid this server never bound is not worth an error. The
 		// client wanted it gone and it is gone. A refusal would only ever break
 		// a cleanup path.
-		if drop_fid(t, m.fid) {
-			consctl_close(t)
+		kind, last := drop_fid(t, m.fid)
+		if last {
+			#partial switch kind {
+			case .Consctl:
+				consctl_close(t)
+			case .Scancode:
+				tap_stop(&t.scancode)
+			case .Eia0:
+				tap_stop(&t.serial)
+			}
 		}
 		reply^ = vectra9.Rclunk{}
 
@@ -887,6 +969,7 @@ devfs_read :: proc "contextless" (
 		w := &t.waits[int(tag)]
 		w.tree = t
 		w.tag = tag
+		w.tap = nil
 
 		for {
 			if n := cons_take(&t.cons, buf[:room]); n > 0 {
@@ -908,6 +991,33 @@ devfs_read :: proc "contextless" (
 			}
 			cons_note_block(&t.cons)
 			sync.sleep(&t.cons.ready, read_ready, w)
+		}
+
+	case .Scancode, .Eia0:
+		// The console's loop with two lines gone. A tap has no line
+		// discipline, so any byte answers, and no `^D`, so nothing here ever
+		// answers zero bytes. Park, byte, or flush is the whole state space.
+		tp := DEV_NODES[node].kind == .Scancode ? &t.scancode : &t.serial
+		if int(tag) >= mnt.MAX_REQUESTS {
+			reply^ = vectra9.error_reply(vectra9.EIO)
+			return
+		}
+		w := &t.waits[int(tag)]
+		w.tree = t
+		w.tag = tag
+		w.tap = tp
+
+		for {
+			if n := tap_take(tp, buf[:room]); n > 0 {
+				reply^ = vectra9.Rread{data = buf[:n]}
+				return
+			}
+			if vfs.server_flushed(&t.server, tag) {
+				reply^ = vectra9.error_reply(vectra9.EINTR)
+				return
+			}
+			tap_note_block(tp)
+			sync.sleep(&tp.ready, read_ready, w)
 		}
 
 	case .Dir:
@@ -971,6 +1081,17 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 			return
 		}
 		reply^ = vectra9.Rwrite{count = 0}
+
+	case .Scancode:
+		// Nobody writes the keyboard. The operation exists and is refused,
+		// which is what EPERM says. EINVAL would blame the bytes, and no
+		// bytes would have done better.
+		reply^ = vectra9.error_reply(vectra9.EPERM)
+
+	case .Eia0:
+		// Raw bytes out the wire, and no glyph anywhere. A caller that wants
+		// a screen has `/dev/cons`. See `tap.odin`.
+		reply^ = vectra9.Rwrite{count = u32(eia0_write(t, m.data))}
 
 	case .Null, .Zero:
 		// Accepted and discarded, which is what both mean. A write that failed

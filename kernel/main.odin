@@ -1336,7 +1336,7 @@ what makes the line discipline one implementation rather than two.
 */
 init_keyboard :: proc() -> bool {
 	vector := arch.VECTOR_IRQ_BASE + kbd.KBD_IRQ
-	if !kbd.init(vector, devfs.keyboard_sink) {
+	if !kbd.init(vector, devfs.keyboard_sink, devfs.scancode_tap) {
 		log_line(&klog, .Warn, "no keyboard; console input is the serial line only")
 		return false
 	}
