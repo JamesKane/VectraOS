@@ -50,6 +50,47 @@ A server stops two ways, and the result says which. One is a `Tremove`
 answered and then obeyed, which is `niner`'s rule kept. The other is a pipe
 that ended.
 
+## `serve_mux`: a worker per request that parks
+
+`serve` answers one request at a time, so a read that parks holds every
+other client behind it. That was `consrv`'s wart for two milestones: a read
+of `/line` had to answer empty rather than wait, because waiting would freeze
+the loop. `serve_mux` is the fix, and it is Plan 9's shape -- a process per
+blocking request.
+
+The caller supplies one thing the loop cannot know: a `blocks` predicate,
+true for a request that might park. The loop reads a request. If `blocks`
+says so, it copies the request into a free worker slot and forks a worker to
+own it -- `RFPROC | RFMEM | RFNOWAIT`. The main loop reads the next request at
+once. A request that does not park is answered inline, exactly as `serve`
+does, and a pool with no free slot answers inline too. That bounds the
+workers the way `kernel/devfs`'s threads bound its parked readers, in
+userland, and raised by adding a slot rather than a thread.
+
+**Three shared things the concurrency needs, and each is a decision:**
+
+- **The copy before the fork.** The worker shares memory with the parent, so
+  the request bytes it decodes are the ones the parent wrote -- but only if
+  they are copied into the worker's slot first. The instant the fork returns,
+  the main loop may overwrite its own frame with the next request. A worker
+  that read the parent's frame would then decode whatever arrived next. The
+  copy is what makes the borrow rule survive a second reader.
+- **The write lock.** Two workers, or a worker and the main loop, can finish
+  two replies at once. A pipe write is not atomic across a full ring, so two
+  interleaved replies are a frame of garbage the wire cannot resynchronise. A
+  `Spin` held for the length of each write serialises them. It is the first
+  lock ring 3 has, over `lock cmpxchg` -- the one instruction that makes a
+  read-modify-write atomic without a privilege.
+- **`RFNOWAIT`, so nobody waits.** A worker is the kernel's to reap the
+  moment it exits. A serve loop that had to `wait` each worker would be
+  serial again. The reaping is lazy. `reap_orphans` runs whenever a process
+  wants a slot, so a server that forks a worker per request never fills the
+  table with the dead ones.
+
+`Spin` may never be held across a park. A worker parked in a device read with
+the write lock held would stop every other reply. The rule is `kernel/sync`'s,
+kept by hand where ring 3 has no `can_sleep` to check it.
+
 ## VECTRA02: segments, because compilers make shapes
 
 VECTRA01 says `one page of text`, and the blobs are exactly that. A linked
@@ -121,19 +162,24 @@ here is what it proved about the runtime:
   function, no stack juggling, no allocator.
 - **Shared bss is a real meeting point.** The child parks reading
   `/dev/cons` and publishes bytes into a producer-consumer ring of two
-  monotonic counters. The parent drains it from its serve loop.
-  `intrinsics.volatile_load`/`store` order the counter against its bytes,
-  and each side owns exactly one counter. That is the only concurrency
-  discipline ring 3 has, and enough for this shape.
+  monotonic counters. Workers drain it from their reads.
+  `intrinsics.volatile_load`/`store` order the counter against its bytes.
+  The producer stays lockless, because the child is the only writer of
+  `head`. The consumer end is under a lock now, because `serve_mux` gives the
+  ring many readers where it once had one.
 - **The note is a teardown a program can drive.** On `Tremove` the parent
   notes its reader out of a parked device read, and exits zero only if the
   wait answered EINTR. `libuser` grew `rfork` and `note` wrappers for it.
 
-A read of `/line` with nothing arrived answers zero bytes, which a client
-cannot tell from EOF. The wart is deliberate: parking the Tread would hold
-the serve loop's one request while the keyboard is silent, starving every
-other client. A serve loop with a thread per request is the fix, and the
-argument for the next milestone.
+**`consrv` reads `/line` with a parked read now**, through `serve_mux`. A
+read with nothing typed waits in a worker of its own, and the main loop
+answers another client while it waits. The zero-bytes wart is gone.
+
+What consrv adds on top of the library is two locks and a flag. The write
+lock `serve_mux` needs, and a state lock over the fid table and the ring's
+consumer end. The flag is for shutdown. A worker parked on an empty ring at
+teardown reads it and leaves, rather than polling for a byte the torn-down
+console will never send.
 
 ## The build, and where the image goes
 
@@ -150,7 +196,12 @@ self-test fails loudly on the absence. `make check` also checks
 
 ## The controls
 
-Four mutations and one flake, each observed on a real boot:
+Seven mutations and one flake, each observed on a real boot. The last three
+are the concurrent serve loop. The copy-before-fork invariant is not among
+them. A single-client test leaves too wide a gap before the next request for
+a worker to lose the race. That one is argued rather than tripped, the
+distinction `docs/TESTING.md` draws between a control that cannot be
+expressed and one that fails to fire.
 
 | Mutation | Result |
 |---|---|
@@ -158,6 +209,9 @@ Four mutations and one flake, each observed on a real boot:
 | `read_full` made one call | caught -- `a note longer than one copy bound lands whole`. **The first run hung the boot instead**, and the hang was the finding: an exited server's descriptors stayed open until `destroy`, so its client parked on a quiet pipe. `sys_exit` closes descriptors now, and the same mutation fails fast |
 | an executable segment mapped writable | caught -- `the entry's page executes and refuses a write`, asked of the page tables directly |
 | segment pages not zeroed | **not caught** -- the free list happened to hold clean frames, so the bss check passes whether or not the loader zeroes. The same shape as the freed-slab note in `docs/HANDOFF.md` section 5: reuse has to be forced before absence is visible |
+| the `/line` read answers empty rather than parking | caught -- `the read parks on the empty line, rather than answering empty` |
+| `blocks` never defers, so the read runs inline | **the boot hangs** -- the inline read polls forever and freezes the serve loop, so the concurrent stat is never answered. The hang is the finding, the way `read_full`'s was |
+| the worker never writes its reply | caught -- `the parked read wakes when the line is typed`, which it never does |
 
 And the flake: a one-in-twenty boot printed a program's line half-staged,
 with zeroes for a tail. `load` started the thread, and the self-tests staged
@@ -175,13 +229,17 @@ ordering beats the same rule kept by luck.
 - **`_start` is each program's own three lines.** The runtime start, the
   post, the serve call. A shared crt-style entry wants arguments and an
   environment to justify it, and nothing passes either yet.
-- **One request at a time, by design.** `serve` answers in order, so a slow
-  file holds the connection the way any synchronous server does. The wire's
-  deadline and flush cover the client side. `rfork` gave a server more
-  processes, and `consrv` waits on two things with two. One *serve loop*
-  still answers one request at a time. Two processes must not `serve` one
-  descriptor, because `read_full` is not atomic. A concurrent serve loop
-  is its own milestone.
+- **`serve` still answers one request at a time**, and it is the right loop
+  for a server whose every answer is a table lookup, like `ramfs`. A server
+  with a request that parks reaches for `serve_mux` instead. Only the main
+  loop reads the pipe under either, so `read_full`'s non-atomic read is
+  never raced -- the workers write, they do not read.
+- **A flushed worker keeps polling.** `serve_mux` forks a worker for a read
+  that parks, and a client's `Tflush` cancels the request on the wire but
+  not the worker behind it. The worker polls until its data arrives or the
+  server shuts down. `kernel/mnt` has the same shape for a moment on the
+  kernel side, and Plan 9's simple servers do too. Flush that reaches the
+  worker is a later refinement.
 - **The converter trusts `ld.lld` about overlap.** It refuses misalignment
   itself, and the loader's judge re-checks everything else. A malicious
   image never reaches further than the judge, which the crafted-table

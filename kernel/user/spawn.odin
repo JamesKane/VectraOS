@@ -106,6 +106,10 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 		return nil, vectra9.EINVAL
 	}
 
+	// Collect any detached orphan whose record is still held, so a spawn is
+	// never refused for a slot a dead worker is sitting on. See `reap_orphans`.
+	reap_orphans()
+
 	p := free_slot()
 	if p == nil {
 		// The table is full, which is a resource the caller can wait for

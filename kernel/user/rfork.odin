@@ -163,6 +163,12 @@ into the middle of whatever is not finished.
 */
 @(private = "file")
 rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64 {
+	// A detached worker that ended holds a slot until something collects it.
+	// A concurrent server forks one per blocking request, so the moment a new
+	// fork wants a slot is the moment to reap the dead ones. See
+	// `reap_orphans`.
+	reap_orphans()
+
 	child := free_slot()
 	if child == nil {
 		return -i64(vectra9.EAGAIN)

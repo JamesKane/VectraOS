@@ -18,12 +18,20 @@ The ring is single-producer single-consumer on purpose: the child owns
 after the bytes it covers are in place. Two writers would need a lock, and
 ring 3 has no lock to give them yet.
 
-A read of `/line` with nothing arrived answers zero bytes, which a client
-cannot tell from an end of file. The wart is real and stays: parking the
-Tread instead would hold this serve loop's one request for as long as the
-keyboard is silent, which starves every other client. The fix is a serve
-loop with a thread per request, and that is the next milestone's argument,
-not this one's.
+A read of `/line` **parks now** until a byte arrives, which is what a read of
+a device should do. It does not hold the connection while it waits, because
+`serve_mux` hands it to a worker process of its own. The main loop reads the
+next request at once, and a `getattr` or a walk from another client is
+answered while the read is still parked. The wart this file owned for two
+milestones -- a read of empty `/line` answering zero bytes, which a client
+could not tell from an end of file -- is gone. See `sys/libuser/serve.odin`.
+
+Three things the concurrency needs, and each is here. A worker per parked
+read, forked `RFNOWAIT` so the kernel reaps it. A write lock, so a worker's
+reply and the main loop's never interleave on the pipe. And a state lock,
+because the fid table and the ring's consumer end are now touched by the main
+loop and every worker at once. The ring's *producer* stays lockless: the
+child is still the only writer of `head`.
 
 Teardown is strictly child-first, and by note. A `Tremove` stops the serve
 loop; the parent notes its reader -- parked deep in a device read, which is
@@ -73,6 +81,38 @@ frame_out: [FRAME]u8
 payload: [1024]u8
 
 /*
+The two locks and the shutdown flag, all in shared bss.
+
+`wlock` serialises pipe writes, held only for the length of a write.
+`state_lock` guards the fid table and the ring's consumer end, held only for
+a lookup or a drain -- never across the poll a parked read spins on. `stopping`
+is set at teardown so a worker parked on an empty ring leaves instead of
+polling for a byte that will never come.
+*/
+wlock: libuser.Spin
+state_lock: libuser.Spin
+stopping: bool
+
+/*
+The worker pool: three parked reads at once, and a fourth stalls the loop.
+
+The same bound `kernel/devfs` documents for its four threads, moved to
+userland and raised by adding a slot rather than a thread. Three is enough
+for a console, where one client reads `/line` at a time. Each slot carries
+its own request, reply and payload buffers, because a worker reads and writes
+them while the main loop and other workers use theirs.
+*/
+SLOTS :: 3
+slot_frame: [SLOTS][FRAME]u8
+slot_out: [SLOTS][FRAME]u8
+slot_payload: [SLOTS][1024]u8
+slots: [SLOTS]libuser.Mux_Slot
+
+// How long a parked read sleeps between looks at the ring. One tick, which is
+// the console's own poll cadence. A worker off every run queue in between.
+POLL_TICKS :: 1
+
+/*
 _start opens the console, forks the reader, and serves.
 
 The open comes first because the descriptor table is shared by default: one
@@ -104,7 +144,31 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 		libuser.exit(0x71)
 	}
 
-	_, why := libuser.serve(fd, handler, nil, frame_in[:], frame_out[:], payload[:])
+	for i in 0 ..< SLOTS {
+		slots[i] = libuser.Mux_Slot {
+			frame   = slot_frame[i][:],
+			out     = slot_out[i][:],
+			payload = slot_payload[i][:],
+		}
+	}
+	mux := libuser.Mux {
+		fd      = fd,
+		handler = handler,
+		blocks  = blocks,
+		frame   = frame_in[:],
+		out     = frame_out[:],
+		payload = payload[:],
+		wlock   = &wlock,
+		slots   = slots[:],
+	}
+
+	_, why := libuser.serve_mux(&mux)
+
+	// The stop is set for whatever workers are still parked on the ring, so
+	// they leave rather than poll for a byte the torn-down console cannot
+	// send. See `handler`'s Tread case.
+	intrinsics.volatile_store(&stopping, true)
+
 	if why != .Removed {
 		_ = stop_reader(u64(pid))
 		libuser.exit(0x72)
@@ -113,6 +177,23 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	// parked read unwound, and the wait heard EINTR -- the kernel's word for
 	// an ending this parent asked for.
 	libuser.exit(stop_reader(u64(pid)) ? 0 : 0x75)
+}
+
+/*
+blocks reports whether a request might park, which is the one thing the
+serve loop cannot work out for itself.
+
+Only a read of `/line` parks. A read of the root is EISDIR at once, and every
+other message is a table lookup. So the loop forks a worker for exactly the
+reads that wait for a keystroke, and answers the rest inline.
+*/
+blocks :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
+	_ = state
+	#partial switch m in request^ {
+	case vectra9.Tread:
+		return fid_lookup(m.fid) == NODE_LINE
+	}
+	return false
 }
 
 /*
@@ -158,8 +239,11 @@ push :: proc "contextless" (b: u8) #no_bounds_check {
 }
 
 // drain is the consumer's half: read the producer's counter once, take what
-// it covers, then publish the new tail. Only the parent calls it.
+// it covers, then publish the new tail. Under `state_lock`, because several
+// workers may drain at once now -- the ring has one producer and many
+// consumers. Only the byte-moving is inside the lock, never the poll.
 drain :: proc "contextless" (buf: []u8) -> int #no_bounds_check {
+	libuser.lock(&state_lock)
 	t := intrinsics.volatile_load(&tail)
 	h := intrinsics.volatile_load(&head)
 	n := min(int(h - t), len(buf))
@@ -167,6 +251,7 @@ drain :: proc "contextless" (buf: []u8) -> int #no_bounds_check {
 		buf[i] = ring[(t + u64(i)) % RING]
 	}
 	intrinsics.volatile_store(&tail, t + u64(n))
+	libuser.unlock(&state_lock)
 	return n
 }
 
@@ -177,7 +262,14 @@ available :: proc "contextless" () -> u64 {
 
 // -- Fids, the same sixteen slots ramfs keeps ---------------------------------
 
+// All three take `state_lock`, because the main loop binds and releases fids
+// while workers look them up. The table is small and every operation is a
+// scan, so the lock is held for a handful of comparisons and never across a
+// wait.
+
 fid_lookup :: proc "contextless" (fid: vectra9.Fid) -> i32 #no_bounds_check {
+	libuser.lock(&state_lock)
+	defer libuser.unlock(&state_lock)
 	for i in 0 ..< MAX_FIDS {
 		if fids[i].used && fids[i].fid == fid {
 			return fids[i].node
@@ -187,6 +279,8 @@ fid_lookup :: proc "contextless" (fid: vectra9.Fid) -> i32 #no_bounds_check {
 }
 
 fid_bind :: proc "contextless" (fid: vectra9.Fid, node: i32) -> bool #no_bounds_check {
+	libuser.lock(&state_lock)
+	defer libuser.unlock(&state_lock)
 	for i in 0 ..< MAX_FIDS {
 		if fids[i].used && fids[i].fid == fid {
 			fids[i].node = node
@@ -203,6 +297,8 @@ fid_bind :: proc "contextless" (fid: vectra9.Fid, node: i32) -> bool #no_bounds_
 }
 
 fid_release :: proc "contextless" (fid: vectra9.Fid) #no_bounds_check {
+	libuser.lock(&state_lock)
+	defer libuser.unlock(&state_lock)
 	for i in 0 ..< MAX_FIDS {
 		if fids[i].used && fids[i].fid == fid {
 			fids[i] = Fid_Slot{}
@@ -298,12 +394,34 @@ handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 			return
 		}
-		// The offset is ignored: this file is what has arrived, and a
-		// drain consumes it. Empty answers zero bytes -- the wart the
-		// file comment owns up to.
+		/*
+		A read of `/line` parks until a byte arrives, which is what a read of
+		a device does. This runs in a worker, so parking here holds no other
+		client -- the whole point of `serve_mux`. The offset is ignored: this
+		file is what has arrived, and a drain consumes it.
+
+		Two ways out besides a byte. The shutdown flag, set at teardown, lets
+		a parked read leave with an empty answer rather than poll for a byte
+		the torn-down console will never send. And a zero `count`, which asks
+		for nothing and gets it.
+		*/
 		room := min(len(buf), int(m.count))
-		got := drain(buf[:room])
-		reply^ = vectra9.Rread{data = buf[:got]}
+		if room <= 0 {
+			reply^ = vectra9.Rread{data = nil}
+			return
+		}
+		for {
+			got := drain(buf[:room])
+			if got > 0 {
+				reply^ = vectra9.Rread{data = buf[:got]}
+				return
+			}
+			if intrinsics.volatile_load(&stopping) {
+				reply^ = vectra9.Rread{data = nil}
+				return
+			}
+			_ = libuser.sleep(POLL_TICKS)
+		}
 
 	case vectra9.Twrite:
 		reply^ = vectra9.error_reply(vectra9.EPERM)

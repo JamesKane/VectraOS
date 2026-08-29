@@ -32,6 +32,9 @@ never crosses:
 */
 package user
 
+import "base:intrinsics"
+import "base:runtime"
+
 import "kernel:arch"
 import "kernel:devfs"
 import "kernel:drivers/fb"
@@ -2459,6 +2462,34 @@ verify_rfork :: proc(r: ^Result) {
 CONSRV_TYPED :: "vectra lives\n"
 
 /*
+One read of `/line`, on a thread, and what it came back with.
+
+The read parks now, so it cannot run on the boot thread -- a read that never
+returns would print nothing after it. `done` goes true when the read returns,
+watched from the boot thread with a bound.
+*/
+@(private = "file")
+Consrv_Reader :: struct {
+	c:    ^vfs.Chan,
+	n:    int,
+	err:  vfs.Errno,
+	done: bool,
+	buf:  [64]u8,
+}
+
+@(private = "file")
+consrv_reader: Consrv_Reader
+
+@(private = "file")
+consrv_read_thread :: proc "contextless" (arg: rawptr) {
+	context = runtime.default_context()
+	context.allocator = mem.allocator()
+	_ = arg
+	consrv_reader.n, consrv_reader.err = vfs.chan_read(consrv_reader.c, 0, consrv_reader.buf[:])
+	intrinsics.volatile_store(&consrv_reader.done, true)
+}
+
+/*
 verify_consrv is the milestone's showpiece: a server that waits on two
 things at once, which is the sentence `docs/HANDOFF.md` kept for three
 milestones.
@@ -2537,11 +2568,43 @@ verify_consrv :: proc(r: ^Result) {
 		return
 	}
 
-	line: [64]u8
-	n0, e0 := vfs.chan_read(nc, 0, line[:])
-	check(r, e0 == vfs.OK && n0 == 0, "a read before any keystroke answers empty")
+	// -- A read parks, and the connection serves others while it does ---------
 
-	// -- A line is typed, and comes back through the mount --------------------
+	/*
+	The wart is gone: a read of `/line` with nothing typed **parks** now,
+	rather than answering empty. The read runs on a thread of its own, because
+	a read that never returns on the boot thread would print nothing after it.
+	`serve_mux` hands it to a worker, so the server can answer other requests
+	while it waits -- which the getattr below proves.
+	*/
+	consrv_reader = Consrv_Reader{c = nc}
+	if !check(r, sched.spawn("consrv-read", consrv_read_thread, nil) != nil, "a thread to read /line") {
+		return
+	}
+
+	// It stays parked. A read that answered empty would come back at once.
+	parked := true
+	for _ in 0 ..< 20 {
+		sync.delay(1)
+		if intrinsics.volatile_load(&consrv_reader.done) {
+			parked = false
+			break
+		}
+	}
+	check(r, parked, "the read parks on the empty line, rather than answering empty")
+
+	// And the server answers another request while that read is parked. The
+	// getattr is inline in the main loop, the read off in a worker.
+	if root, rerr := vfs.resolve(vfs.boot_namespace, "/mnt"); rerr == vfs.OK {
+		_, aerr := vfs.chan_stat(root)
+		// The getattr runs inline in the main loop while the read waits off in
+		// a worker, which is the whole point of the mux.
+		check(r, aerr == vfs.OK, "and a stat is answered while the read still parks")
+		check(r, !intrinsics.volatile_load(&consrv_reader.done), "which did not wake the parked read")
+		vfs.chan_close(root)
+	}
+
+	// -- A line is typed, and wakes the parked read ---------------------------
 
 	ctl, cerr := vfs.open_path(vfs.boot_namespace, "/dev/consctl", vfs.O_WRONLY)
 	if check(r, cerr == vfs.OK, "the kernel takes the echo off first") {
@@ -2554,22 +2617,20 @@ verify_consrv :: proc(r: ^Result) {
 		devfs.keyboard_sink(typed[i])
 	}
 
-	got := 0
+	woke := false
 	for _ in 0 ..< PATIENCE {
-		n, e := vfs.chan_read(nc, 0, line[got:])
-		if e == vfs.OK && n > 0 {
-			got += n
-			if got >= len(CONSRV_TYPED) {
-				break
-			}
-			continue
+		if intrinsics.volatile_load(&consrv_reader.done) {
+			woke = true
+			break
 		}
 		sync.delay(1)
 	}
+	check(r, woke, "the parked read wakes when the line is typed")
 	check(
 		r,
-		got == len(CONSRV_TYPED) && string(line[:got]) == CONSRV_TYPED,
-		"and the typed line comes back: keyboard, reader, shared ring, server, wire",
+		consrv_reader.err == vfs.OK &&
+		string(consrv_reader.buf[:consrv_reader.n]) == CONSRV_TYPED,
+		"carrying the whole line: keyboard, reader, shared ring, worker, wire",
 	)
 
 	if ctl != nil {
@@ -2601,8 +2662,12 @@ verify_consrv :: proc(r: ^Result) {
 		"the mount of the dead server comes down",
 	)
 
+	// The concurrent serve loop forked a worker per parked read, each
+	// detached and left for the kernel. Collect them before measuring, the
+	// way a live server would when its next fork wanted a slot.
 	pinned := 0
 	for _ in 0 ..< PATIENCE {
+		reap_orphans()
 		sched.reap()
 		pinned = live_objects(mem.heap_stats()) - pin_before
 		if pinned == 0 {
