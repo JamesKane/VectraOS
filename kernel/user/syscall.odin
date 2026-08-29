@@ -101,6 +101,7 @@ SYS_NOTE :: abi.SYS_NOTE
 SYS_RFORK :: abi.SYS_RFORK
 SYS_NOTIFY :: abi.SYS_NOTIFY
 SYS_NOTED :: abi.SYS_NOTED
+SYS_EXEC :: abi.SYS_EXEC
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -283,6 +284,10 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		// The frame crosses because NCONT rewrites it: the answer to this
 		// call is the interrupted program's own state. See `notify.odin`.
 		result = sys_noted(frame, a0)
+	case SYS_EXEC:
+		// The frame crosses because exec rewrites it in place: on success
+		// the door returns into a new program. See `exec.odin`.
+		result = sys_exec(frame, uintptr(a0), int(a1))
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
 	case SYS_EXIT:

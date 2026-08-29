@@ -56,6 +56,8 @@ MARK_REFUSER :: u64(0x5245_4655_5245_4655) // REFUREFU
 MARK_PAINTER :: u64(0x5041_494E_5041_494E) // PAINPAIN
 MARK_CATCHER :: u64(0x4354_4348_4354_4348) // CTCHCTCH
 MARK_DFLTNOTE :: u64(0x4446_4C54_4446_4C54) // DFLTDFLT
+MARK_EXECER :: u64(0x4558_4543_4558_4543) // EXECEXEC
+MARK_NOWAITER :: u64(0x4E4F_5741_4E4F_5741) // NOWANOWA
 MARK_FORGER :: u64(0x464F_5247_464F_5247) // FORGFORG
 
 /*
@@ -190,6 +192,38 @@ CATCHER_NOTE :: "signal!"
 DFLTNOTE_NOTIFIED :: 1
 DFLTNOTE_ROUNDS :: 2
 DFLTNOTE_RAN :: 3
+
+/*
+Where `execer` keeps its answers, and the path it replaces itself with.
+
+The story is the seam's other half. Write a mark to cell 0, then exec
+`/bin/child`. On success the process is `child` from there on. It reaches
+cell 0 with `child`'s own mark, and exits with `child`'s status, all under
+`execer`'s pid. exec returns only on failure, and then cell 1 holds the
+errno. The path rides in `execer`'s own text, like every string a blob
+carries.
+*/
+EXECER_FAILED :: 1 // Only written when exec returns, which is only on failure
+EXECER_PATH :: "/bin/child"
+
+/*
+Where `nowaiter` keeps its answers.
+
+The story is a child no parent waits for. Fork with `RFNOWAIT`, and the
+child is the kernel's from birth. The parent records the child's pid, tries
+to `wait` for it, and hears ECHILD -- a detached child is nobody's to
+collect from ring 3. The child writes a witness and exits, for
+`reap_orphans` to find.
+*/
+NOWAITER_PID :: 1
+NOWAITER_WAITED :: 2
+NOWAITER_CHILD_RAN :: 8 // The child's witness cell, byte offset 64
+
+// What `nowaiter`'s child exits with, and the flags the fork takes:
+// RFPROC to make a child, RFNOWAIT to detach it. Written twice, here and as
+// immediates in the blob.
+NOWAITER_CHILD_STATUS :: u64(0x5A)
+NOWAITER_FLAGS :: u64(0x10 | 0x40)
 
 /*
 Where the two programs that reproduce keep their answers.
@@ -493,6 +527,10 @@ foreign {
 	vectra_user_catcher_end: byte
 	vectra_user_dfltnote: byte
 	vectra_user_dfltnote_end: byte
+	vectra_user_execer: byte
+	vectra_user_execer_end: byte
+	vectra_user_nowaiter: byte
+	vectra_user_nowaiter_end: byte
 }
 
 @(private)
@@ -530,6 +568,11 @@ program_painter :: proc "contextless" () -> []u8 {return blob(&vectra_user_paint
 // takes the default anyway.
 program_catcher :: proc "contextless" () -> []u8 {return blob(&vectra_user_catcher, &vectra_user_catcher_end)}
 program_dfltnote :: proc "contextless" () -> []u8 {return blob(&vectra_user_dfltnote, &vectra_user_dfltnote_end)}
+
+// And the two for the seam's other half: one replaces itself, one forks a
+// child no parent will wait for.
+program_execer :: proc "contextless" () -> []u8 {return blob(&vectra_user_execer, &vectra_user_execer_end)}
+program_nowaiter :: proc "contextless" () -> []u8 {return blob(&vectra_user_nowaiter, &vectra_user_nowaiter_end)}
 
 // And the four that stand alone -- the blobs `/bin` publishes as files.
 // Two reproduce, one publishes a service, and one *answers* one. See
@@ -1732,5 +1775,58 @@ vectra_user_dfltnote:
 	ud2
 .globl vectra_user_dfltnote_end
 vectra_user_dfltnote_end:
+
+.balign 16
+.globl vectra_user_execer
+vectra_user_execer:
+	movq %rdi, %rbx
+	movabsq $$0x4558454345584543, %rax
+	movq %rax, (%rbx)
+
+	leaq 50f(%rip), %rdi
+	movq $$10, %rsi
+	movq $$20, %rax
+	syscall
+
+	movq %rax, 8(%rbx)
+	movq $$0x66, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+50:
+	.ascii "/bin/child"
+.globl vectra_user_execer_end
+vectra_user_execer_end:
+
+.balign 16
+.globl vectra_user_nowaiter
+vectra_user_nowaiter:
+	movq %rdi, %rbx
+	movabsq $$0x4E4F57414E4F5741, %rax
+	movq %rax, (%rbx)
+
+	movq $$0x50, %rdi
+	movq $$17, %rax
+	syscall
+	testq %rax, %rax
+	jnz 51f
+
+	movq $$1, 64(%rbx)
+	movq $$0x5A, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+51:
+	movq %rax, 8(%rbx)
+	movq %rax, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 16(%rbx)
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_nowaiter_end
+vectra_user_nowaiter_end:
 `, "~{memory}"}()
 }

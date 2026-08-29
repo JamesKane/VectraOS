@@ -213,6 +213,36 @@ thread_user_init :: proc "contextless" (
 }
 
 /*
+frame_enter_user rewrites a live syscall frame to enter a fresh program.
+
+This is `exec` on the amd64 side. The calling thread crossed the door, its
+frame is on its own kernel stack, and the whole of it is replaced. The
+door's return then lands in a new image rather than back in the old one.
+Every register is cleared but the three arguments, so the new program
+inherits nothing the old one held.
+
+The selectors are ring 3's and RFLAGS is 0x202, for the reasons
+`thread_user_init` states. The syscall return reads `rip`, `rflags` and
+`rsp` back out of this frame, and forces the selectors from `STAR`. Those
+three fields steer the return and must be right. The rest is hygiene the new
+program is entitled to.
+*/
+frame_enter_user :: proc "contextless" (frame: ^Trap_Frame, entry: uintptr, sp: uintptr, arg0: u64) {
+	if frame == nil {
+		return
+	}
+	frame^ = Trap_Frame {
+		vector = frame.vector, // The door's own number, kept so the tail still knows the frame
+		rdi    = arg0,
+		rip    = u64(entry),
+		cs     = u64(USER_CODE_RING3),
+		rflags = 0x202,
+		rsp    = u64(sp),
+		ss     = u64(USER_DATA_RING3),
+	}
+}
+
+/*
 thread_user_clone lays out a thread that continues where another one is.
 
 The same geometry as `thread_user_init`, with the contents copied rather

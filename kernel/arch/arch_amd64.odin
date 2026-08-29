@@ -119,6 +119,7 @@ User_Trap_Handler :: amd64.User_Trap_Handler
 
 thread_user_init :: amd64.thread_user_init
 thread_user_clone :: amd64.thread_user_clone
+frame_enter_user :: amd64.frame_enter_user
 syscall_frame_fpu :: amd64.syscall_frame_fpu
 kernel_stack_top :: amd64.kernel_stack_top
 set_kernel_stack :: amd64.set_kernel_stack

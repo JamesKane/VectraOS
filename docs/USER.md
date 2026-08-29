@@ -21,8 +21,8 @@ another process from a file it names:
 -- a process answered this line
 ```
 
-Nine milestones live in this document, because they live in the same
-directory. `docs/SPACE.md` built the piece under all nine:
+Ten milestones live in this document, because they live in the same
+directory. `docs/SPACE.md` built the piece under all of them:
 
     ring 3        a thread can run somewhere it cannot damage the kernel
     a syscall     it can ask for something anyway
@@ -34,6 +34,7 @@ directory. `docs/SPACE.md` built the piece under all nine:
     a note        and what will not stop can be stopped, from outside
     an rfork      and one process can become two, sharing what they choose
     a handler     and a note it catches is a signal, not only a kill
+    an exec       and a process can become another program, in place
 
 The third line is the one Plan 9 is about. Two processes hand the kernel the
 same path and get different files, because the mount table belongs to the
@@ -374,6 +375,25 @@ them needs a hostile handler, which is a POSIX signal test's job the day
 there is one. `docs/TESTING.md` calls a control that cannot be expressed a
 different thing from one that fails to fire.
 
+### The controls for exec and the orphan
+
+Five. `execer` replaces itself with `/bin/child`, and `nowaiter` forks a
+child no parent waits for. The console moving and a record collected are what
+the mutations break.
+
+| Mutation | First failure |
+|---|---|
+| exec does not rewrite the syscall frame | `the mark is the new program's, not the old one's` (5 checks) |
+| exec skips the CR3 switch after the space swap | `the mark is the new program's` -- the process faults into the space it no longer has |
+| `RFNOWAIT` does not detach the child | `the child stands alone, detached to the kernel` (leaked 13) |
+| a dying parent does not reparent its children | `the parent's going reparented the child to the kernel` |
+| `reap_orphans` collects nothing | `reap_orphans collects it -- the orphan leak retired` (leaked 8) |
+
+The two leaks in that table are the point being made in one number. A child
+nothing detaches, or nothing reaps, stays in `stats().live`, and the run's
+own heap bracket counts it. The leak was the milestone's whole reason, and
+its retirement is a count that goes back to where it started.
+
 ## The door: SYSCALL and SYSRET
 
 An interrupt is the expensive way in. The CPU reads a descriptor, switches
@@ -478,10 +498,10 @@ running. Now a program can say so.
 **`bind` is what makes this a Plan 9 system.** Every other call has a Unix
 twin. This one does not, because in Unix the mount table belongs to the machine.
 
-Three are still missing. `create` waits on `vfs.chan_create`. `stat` waits on
-something that needs it. `mount` waits on a descriptor that can carry a
-connection. All three are the same shape as the eight above, and none of them
-is a design question.
+These are the mechanism's first calls. The interface grew past them since,
+and each later call is written up where its milestone lives. Only `stat` is
+still absent, and it is the same shape as the calls above rather than a
+design question.
 
 ### The record is written with interrupts off, and that is not tidiness
 
@@ -632,19 +652,14 @@ of whoever asked**. A process whose `/bin` is rebound loads something else.
 That is not a hole. It is the namespace doing its job. It is also how a test
 harness will one day substitute a program without the program knowing.
 
-### Spawn is fork and exec with the seam not yet cut
+### Spawn is fork and exec, and both halves are cut now
 
 Plan 9 starts a process with `rfork` then `exec`, and the seam between them
-is where a shell rearranges the child before replacing the program. Vectra
-will want the seam the day it has a shell. What it needs today is the whole
-arc: a new process, running a named file, inheriting what its parent chose.
-`spawn` is that arc as one call.
-
-Cutting it in two later is removal rather than redesign. The namespace flags
-are `vfs.ns_fork`'s three cases taken one for one. The descriptor rule is
-already `rfork`'s default. What a separate `rfork` adds is a child that
-continues from the call site, which is a copied trap frame and copied user
-pages. That work is deferred, not decided against.
+is where a shell rearranges the child before replacing the program. `spawn`
+is still the whole arc as one call, for a caller that wants it whole. But the
+two halves it fused both stand on their own now. `rfork` is the creating half
+-- two processes from one call. `exec` is the replacing half -- one program
+becomes another, in place.
 
 What a child inherits, each by its own rule:
 
@@ -916,24 +931,16 @@ the table before publishing the exit record. `unload` releases only what
 is still attached, and the chans close when the last holder leaves.
 
 The flag word is Plan 9's bit for bit. The unimplemented bits -- `RFENVG`,
-`RFCENVG`, `RFNOWAIT`, `RFREND`, `RFNOMNT` -- are refused with EINVAL
-rather than skipped, so each can come to mean its whole self later.
-`RFNOTEG` is accepted and recorded. The note group field exists and
-inherits correctly, and nothing posts to a group until notes can be more
-than endings. Without `RFPROC` the namespace and descriptor flags act on
-the caller in place, which is how a process unshares later than it forked.
+`RFCENVG`, `RFREND`, `RFNOMNT` -- are refused with EINVAL rather than
+skipped, so each can come to mean its whole self later. `RFNOTEG` is
+accepted and recorded. `RFNOWAIT` is implemented now, below. Without
+`RFPROC` the namespace and descriptor flags act on the caller in place,
+which is how a process unshares later than it forked.
 
-Two consequences worth knowing before using it:
-
-- **An orphan is a leak, and an honest one.** A parent that exits before
-  its child leaves a process no `wait` can reach -- pids never reuse and
-  nothing reparents. It stays in `stats().live`. `consrv` tears down
-  child-first for exactly this reason. Reparenting arrives with `RFNOWAIT`.
-- **`copy_in`'s check-then-read window is still unreachable.** Two
-  processes can now share writable pages, but the window needs the *page*
-  to go away mid-copy, and nothing -- still -- can unmap anything. The
-  answer stays the same for the day something can: fault the read and
-  recover.
+**`copy_in`'s check-then-read window is still unreachable.** Two processes
+can now share writable pages, but the window needs the *page* to go away
+mid-copy, and nothing -- still -- can unmap anything. The answer stays the
+same for the day something can: fault the read and recover.
 
 `servers/consrv` is the milestone as a program, and `docs/RUNTIME.md` owns
 it. A proto console server: the `RFMEM` child parks reading `/dev/cons`,
@@ -943,6 +950,69 @@ server that waits on two things at once. Its teardown is the note doing
 the job it was built for. The parent notes its reader out of a parked
 device read, collects EINTR, and exits zero only if it heard it.
 
+## exec, and the orphan the seam left
+
+`exec` is the replacing half of the seam `rfork` cut. A process names a
+file, and the program running becomes that file's: same pid, same
+descriptors, same namespace, new text, new data, new stack. Before it, a
+shell arranges the child -- a redirect, a bind -- and then replaces the
+program under everything it arranged.
+Keeping the descriptors and the namespace is the whole reason the two are
+separate calls. The one piece of process state exec must drop is the note
+handler, an address in text that no longer exists.
+
+**The correctness is all in the order.** The new image is built in a *fresh*
+space first, before anything of the old one is touched. A file that is not a
+program then leaves the caller running, unharmed, with the errno.
+`load_program` writes its space, segments and aliases into whatever record
+it is handed. A stack-local scratch then holds exactly what a commit moves
+and a failure releases.
+
+Only once the new image is whole does exec commit, and past that point
+nothing may fail. It releases the old segments, moves the new space in,
+loads its CR3, frees the old space, and rewrites the syscall frame.
+
+That last step is the milestone's one new piece of machinery,
+`arch.frame_enter_user`. The call crossed the door, so the door's return is
+a `sysretq`, which reads `rip`, `rflags` and `rsp` back out of the frame.
+Setting those three to the new program's entry is what makes the return land
+in a new image rather than back in the old one. Every other register is
+cleared, so nothing of the old program leaks across. `exec` therefore
+returns only on failure, exactly as `SYS_EXIT` and `SYS_RFORK` take the
+frame and do not return the ordinary way.
+
+The self-test's `execer` writes its own mark, execs `/bin/child`, and the
+console moving is the proof. `execer` never opened `/dev/cons`. The standard
+descriptors it was born with are what `child` writes through, which is the
+redirect a shell sets up before it execs.
+
+## The orphan, collected at last
+
+An rfork child whose parent exits first was an honest leak for a milestone.
+No `wait` could reach it, because pids never reuse and nothing reparented.
+Two mechanisms retire it, and both end at `reap_orphans`.
+
+`RFNOWAIT` is the flag that chooses it up front. A child forked with it is
+the kernel's from birth, parent zero and `detached` set. Its own parent
+cannot `wait` for it, and hears ECHILD like a stranger's pid. Plan 9's
+detached child, exactly.
+
+Reparenting is the safety net for the child that did not choose it.
+`reparent_children` runs in `unload`, before the dying process's pid is
+zeroed, and hands every live child of it to the kernel with `detached` set.
+That is Plan 9's reparent-to-init, with the kernel standing in for init. A
+child that outlives its parent stops being a dangling pointer to a pid nobody
+holds.
+
+`reap_orphans` is where a detached process's record finally comes back. It
+collects every detached process whose `exit.done` is set, and leaves the
+still-running ones for a later pass. It runs where a slot is wanted and where
+the self-test measures, rather than from a timer. Collection stays
+deterministic, so nothing vanishes between two of a check's assertions. An
+idle-time trigger is `docs/HANDOFF.md`'s reaper, a separate and smaller
+thing. A kernel-launched process is never `detached`, so the reaper leaves
+the self-test's own processes for it to destroy by name.
+
 ## What is missing, and named where it lives
 
 - **`destroy` still refuses a running process**, and rightly: its thread is
@@ -950,14 +1020,6 @@ device read, collects EINTR, and exits zero only if it heard it.
   answer now. Post a note, wait on the exit, then destroy -- the arc
   `wait_pid` walks for parents and the kernel can walk for itself. The
   honest leak is a choice now rather than a fact.
-- **No `exec` in place.** `rfork` cut the seam from the creating side, and
-  the replacing side stays fused inside `spawn`. A program that replaces
-  itself needs its syscall frame rewritten under it, and its old segments
-  released for new ones. The segment layer makes that mechanism short now,
-  and a shell is what will demand it.
-- **An rfork orphan is uncollectable from ring 3.** Nothing reparents, and
-  `wait` answers ECHILD for a dead parent's child. The child stays in
-  `stats().live`, visibly. Reparenting and `RFNOWAIT` are one milestone.
 - **No `stat` behind the door.** `vfs.chan_stat` exists and nothing in ring 3
   needs it yet. It is the same shape as every call above and not a design
   question. `create` and `mount` were on this line for four milestones, and

@@ -396,6 +396,14 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_rfork(&r)
 
+	// -- And a process that replaces itself -----------------------------------
+
+	verify_exec(&r, column)
+
+	// -- And a child no parent waits for --------------------------------------
+
+	verify_reap(&r)
+
 	// -- And a server that waits on two things at once -------------------------
 
 	verify_consrv(&r)
@@ -2151,6 +2159,122 @@ verify_handler :: proc(r: ^Result) {
 }
 
 /*
+verify_exec is the seam's other half: a program that replaces itself.
+
+`execer` writes its own mark, then execs `/bin/child`. If exec works, the
+process is `child` from there on -- same pid, same descriptors, same
+namespace -- and three things say so. Its mark cell holds `child`'s mark,
+not `execer`'s, because the data page it wrote first is gone with the old
+image. `child`'s line reaches the console through a descriptor `execer`
+opened and `child` inherited. And the exit status collected on `execer`'s
+pid is `child`'s own.
+
+The console moving is the end-to-end proof. `execer` never opened
+`/dev/cons`. The standard descriptors it was born with are what `child`
+writes through, which is exactly the redirect a shell sets up before it
+execs.
+*/
+@(private = "file")
+verify_exec :: proc(r: ^Result, column: proc "contextless" () -> int) {
+	p, err := load_held("execer", program_execer())
+	if !check(r, err == .None && p != nil, "a process is built that will replace itself") {
+		return
+	}
+	r.programs += 1
+	pid_before := p.pid
+
+	before := column()
+	if !check(r, launch(p), "and it launches") {
+		finish(r, p, "and is taken down")
+		return
+	}
+	if check(r, wait(p, PATIENCE), "and comes back, having become another program") {
+		after := column()
+
+		check(r, p.pid == pid_before, "under the pid it started with -- exec keeps the process")
+		check(r, cell(p, CELL_MARK) == MARK_CHILD, "the mark is the new program's, not the old one's")
+		check(
+			r,
+			cell(p, CHILD_OPENED) == 3,
+			"the new program opened a fourth descriptor beside the three it inherited",
+		)
+		check(r, cell(p, CHILD_WROTE) == u64(len(CHILD_LINE)), "and wrote its line from its own text")
+		check(r, after - before == len(CHILD_LINE), "which reached the console through an inherited descriptor")
+		check(
+			r,
+			p.exit.deliberate && p.exit.status == CHILD_STATUS,
+			"and it exits with the new program's status",
+		)
+	}
+	cons_finish()
+	finish(r, p, "and the replaced process is taken down")
+}
+
+/*
+verify_reap is a child no parent waits for, and the leak that used to be.
+
+`nowaiter` forks with `RFNOWAIT`, which hands the child to the kernel at
+birth. The parent records the child's pid and tries to `wait` it, and hears
+ECHILD -- a detached child is nobody's to collect from ring 3. The child
+runs to its own exit under no parent, and `reap_orphans` is what finally
+takes its record back. Before this milestone that record was an honest
+leak, visible in `stats().live` and collectable by nothing.
+*/
+@(private = "file")
+verify_reap :: proc(r: ^Result) {
+	p, err := load_held("nowaiter", program_nowaiter())
+	if !check(r, err == .None && p != nil, "a process is built that forks a detached child") {
+		return
+	}
+	r.programs += 1
+	if !check(r, launch(p), "and it launches") {
+		finish(r, p, "and is taken down")
+		return
+	}
+	if !check(r, wait(p, PATIENCE), "the parent comes back") {
+		finish(r, p, "and is taken down")
+		return
+	}
+
+	childpid := cell(p, NOWAITER_PID)
+	check(r, childpid > 0, "it forked a child, RFPROC and RFNOWAIT")
+	check(
+		r,
+		cell(p, NOWAITER_WAITED) == refused(vectra9.ECHILD),
+		"and could not wait for it -- a detached child is the kernel's",
+	)
+
+	finish(r, p, "the parent is taken down")
+	r.programs += 1 // The detached child is a process too, counted where it is collected.
+
+	// The child is the kernel's now: parent zero, detached, its own to run.
+	child := find_child(0, childpid)
+	if !check(r, child != nil && child.detached, "the child stands alone, detached to the kernel") {
+		return
+	}
+
+	done := false
+	for _ in 0 ..< PATIENCE {
+		if exit_done(child) {
+			done = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, done, "it runs to its own end with nobody watching")
+	check(
+		r,
+		child.exit.deliberate && child.exit.status == NOWAITER_CHILD_STATUS,
+		"with the status it chose",
+	)
+
+	before := stats().live
+	collected := reap_orphans()
+	check(r, collected >= 1, "and reap_orphans collects it -- the orphan leak retired")
+	check(r, stats().live < before, "so the machine holds one process fewer")
+}
+
+/*
 verify_rfork holds the fork to Plan 9's rules, one blob per claim.
 
 The four claims, in order. Two processes return from one call, and a copied
@@ -2231,6 +2355,15 @@ verify_rfork :: proc(r: ^Result) {
 	check(r, destroy(p), "the parent is collected while the child runs")
 	check(r, !mem.frame_is_free(shared_text), "and the shared text stays mapped")
 	check(r, segment_stats().live > segs0.live, "held by the segments the child keeps")
+
+	// The parent's teardown reparented the child, so a pid that will never
+	// call `wait` no longer dangles at the front of it. The kernel is the
+	// child's now, and `reap_orphans` is what its record answers to.
+	check(
+		r,
+		child.parent == 0 && child.detached,
+		"and the parent's going reparented the child to the kernel",
+	)
 
 	// The witness crossed the shared page, and the stop goes back the same
 	// way. It is written through what was the parent's data alias, now

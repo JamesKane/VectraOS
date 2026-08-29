@@ -81,7 +81,7 @@ RFNOMNT :: abi.RFNOMNT
 // The bits this kernel implements. Everything else in the word is refused,
 // including bits Plan 9 has and Vectra does not yet honour.
 @(private = "file")
-RFORK_KNOWN :: RFPROC | RFMEM | RFFDG | RFCFDG | RFNAMEG | RFCNAMEG | RFNOTEG
+RFORK_KNOWN :: RFPROC | RFMEM | RFFDG | RFCFDG | RFNAMEG | RFCNAMEG | RFNOTEG | RFNOWAIT
 
 /*
 sys_rfork is the call, dispatched with the frame because the frame is the
@@ -106,7 +106,8 @@ sys_rfork :: proc(frame: ^arch.Trap_Frame, flags: u64) -> i64 {
 		return -i64(vectra9.EINVAL)
 	}
 	if flags & RFPROC == 0 {
-		if flags & RFMEM != 0 {
+		// `RFNOWAIT` detaches a child, and there is no child to detach.
+		if flags & (RFMEM | RFNOWAIT) != 0 {
 			return -i64(vectra9.EINVAL)
 		}
 		return rfork_self(p, flags)
@@ -175,7 +176,12 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 		space      = space,
 		live       = true,
 		pid        = next_pid,
-		parent     = parent.pid,
+		// `RFNOWAIT` hands the child to the kernel at birth: no parent to
+		// wait for it, and `reap_orphans` collects it when it ends. Plan 9's
+		// detached child, and the answer to the orphan leak from the side
+		// that chooses it up front.
+		parent     = flags & RFNOWAIT != 0 ? 0 : parent.pid,
+		detached   = flags & RFNOWAIT != 0,
 		note_group = flags & RFNOTEG != 0 ? next_pid : parent.note_group,
 	}
 	next_pid += 1

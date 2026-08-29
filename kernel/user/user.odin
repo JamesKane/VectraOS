@@ -170,6 +170,16 @@ Process :: struct {
 	pid:    u64,
 	parent: u64,
 
+	/*
+	Whether this process is the kernel's to reap rather than a parent's to
+	wait for. True for a child forked `RFNOWAIT`, and for one reparented
+	when its own parent went. A detached process answers no `wait` -- its
+	parent is zero -- and `reap_orphans` collects it once it ends. False for
+	a kernel-launched test process, which the self-test destroys by name and
+	the reaper must leave alone.
+	*/
+	detached: bool,
+
 	// Which note group this process is in. Inherited on fork and spawn,
 	// fresh under `RFNOTEG`. Nothing posts to a group yet. The field
 	// arrives with `rfork` because the flag does. The fan-out of a note
@@ -740,8 +750,66 @@ set_bytes :: proc "contextless" (p: ^Process, offset: int, data: []u8) -> bool {
 	return true
 }
 
+/*
+reparent_children detaches every live child of a process about to go.
+
+A child's `parent` is a pid, and a pid never reuses. Once the parent's slot
+is gone, the child names a parent that will never call `wait`. It dangles
+uncollectable then, the honest leak the handoff named beside `RFNOWAIT`. So
+the teardown hands its children to the kernel: `parent` zero, `detached` set,
+and `reap_orphans` collects each when it ends. This is Plan 9's
+reparent-to-init with the kernel standing in for init.
+
+Runs before the record is zeroed, off `p.pid`. A process the kernel built
+has a zero parent already, so its children are no one else's to wait for.
+*/
+@(private = "file")
+reparent_children :: proc "contextless" (dying_pid: u64) #no_bounds_check {
+	if dying_pid == 0 {
+		return
+	}
+	for i in 0 ..< MAX_PROCESSES {
+		c := &processes[i]
+		if c.live && c.parent == dying_pid {
+			c.parent = 0
+			c.detached = true
+		}
+	}
+}
+
+/*
+reap_orphans collects every detached process that ended, and reports how
+many.
+
+The counterpart to `wait_pid` for a process no parent will wait for. A
+detached process is the kernel's, so the kernel gives its record back. But
+only once its thread is gone, which `exit.done` reports and `destroy`
+re-checks. A detached process still running is left for a later pass.
+
+Called where a slot is wanted and where the self-test measures, rather than
+from a timer. That keeps collection deterministic: nothing vanishes out from
+under a check between two of its assertions. An idle-time trigger is the
+`docs/HANDOFF.md` reaper, a separate and smaller thing.
+*/
+reap_orphans :: proc() -> (collected: int) #no_bounds_check {
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if p.live && p.detached && intrinsics.volatile_load(&p.exit.done) {
+			if destroy(p) {
+				collected += 1
+			}
+		}
+	}
+	return collected
+}
+
 @(private)
 unload :: proc(p: ^Process) {
+	// Children first, before the pid this reparenting keys on is zeroed. A
+	// process that outlives its parent becomes the kernel's to reap rather
+	// than a dangling pointer to a pid nobody holds. See `reparent_children`.
+	reparent_children(p.pid)
+
 	// The descriptors first, and the namespace after them. A chan holds a
 	// reference to the server it came from, and the mount table holds
 	// references to the chans it was built out of. The order is deliberate.

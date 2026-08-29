@@ -136,6 +136,15 @@ rfork :: proc "contextless" (flags: u64) -> i64 {
 	return raw1(abi.SYS_RFORK, flags)
 }
 
+// exec replaces this program with the one at `path`, resolved in this
+// process's own namespace. The descriptors and the namespace survive, and
+// the text, data and stack are the new program's. It returns only on
+// failure, because on success the old program is gone. The answer is then
+// the errno that says why the new program could not load.
+exec :: proc "contextless" (path: string) -> i64 {
+	return raw2(abi.SYS_EXEC, u64(uintptr(raw_data(path))), u64(len(path)))
+}
+
 // note posts a note to one of the caller's own children. With no handler
 // the child ends at its next kernel boundary, and the wait status is
 // EINTR. With a handler the child catches it instead -- see `notify`.
