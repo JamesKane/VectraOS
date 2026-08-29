@@ -519,7 +519,7 @@ loop's shape, which is why the first two below sit ahead of the port.
 
 1. **A `/dev/draw` over `/dev/fb`.** `kbdfs` and `eiafs` cover the input
    streams now, so the framebuffer is the userland devfs's next tenant. The
-   protocol question is answered: `docs/DRAW.md` fixes six verbs on a data
+   protocol question is answered. `docs/DRAW.md` fixes six verbs on a data
    file, served from `servers/intuition`'s first half, with the mapping
    deferred and its shape written down. What remains is the code that
    answers to it.
