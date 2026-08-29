@@ -122,12 +122,34 @@ its frame. See `sys_write` and `sys_read`.
 The other `copy_in` callers -- a path, a note -- stay small and single, so
 they keep their own tight bounds rather than this one.
 
-Two kibibytes rather than a page. The buffer then costs half a page of a
-32 KiB kernel stack, and a transfer larger than it makes more than one pass.
-Raising it trades stack for fewer passes, and a program that names a huge
-buffer wants a mapped one anyway rather than this copy.
+A page, which is also exactly one `devfs` payload slot. The buffer costs an
+eighth of a 32 KiB kernel stack, and a chunk fills the largest frame the
+bulk-heavy server offers, so the iounit rather than this bound is what
+binds -- 9front's client chunks by iounit alone, and this is as close as a
+stack buffer gets. The pipe wire's 1 KiB slots remain the real ceiling for
+a userland server. Raising this further buys nothing until an msize grows,
+and a program that names a huge buffer wants a mapped one anyway rather
+than this copy.
 */
-IO_CHUNK :: 2048
+IO_CHUNK :: 4096
+
+// io_chunk is the most one pass of a bulk loop moves: the kernel's copy
+// buffer, or the server's iounit when that is smaller. A degenerate iounit
+// falls back to the copy bound and leaves an unframeable chunk to the
+// transport, whose refusal names the broken session.
+@(private = "file")
+io_chunk :: proc "contextless" (c: ^vfs.Chan) -> int {
+	chunk := min(IO_CHUNK, vfs.chan_iounit(c))
+	return chunk > 0 ? chunk : IO_CHUNK
+}
+
+// partial resolves a bulk pass that failed. What already moved is the call's
+// answer, which every read and write interface makes a caller handle. Only a
+// failure on the very first pass is the whole call's error.
+@(private = "file")
+partial :: proc "contextless" (total: int, err: vfs.Errno) -> i64 {
+	return total > 0 ? i64(total) : -i64(err)
+}
 
 // The longest a program may ask to sleep in one call. A program can ask again.
 // What this stops is one call parking a thread past the end of the boot, where
@@ -348,25 +370,21 @@ sys_write :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 	rather than one per chunk. The chunk is clamped to the server's `iounit`
 	as well, so no `Twrite` serialises past its frame.
 
-	A pass that fails part-way keeps what already landed. A bad pointer or a
-	server error after the first chunk returns the count so far, which every
-	write interface makes a caller handle. Only a failure on the very first
-	chunk is the whole call's error.
+	A pass that fails part-way keeps what already landed -- see `partial`.
+	The buffer is uninitialised because `copy_in` fills every byte a pass
+	hands on; zeroing it would cost each call an `IO_CHUNK` memset.
 	*/
-	buffer: [IO_CHUNK]u8
-	chunk := min(IO_CHUNK, vfs.chan_iounit(c))
-	if chunk <= 0 {
-		chunk = IO_CHUNK
-	}
+	buffer: [IO_CHUNK]u8 = ---
+	chunk := io_chunk(c)
 	total := 0
 	for total < count {
 		n := min(count - total, chunk)
 		if !copy_in(addr + uintptr(total), n, buffer[:n]) {
-			return total > 0 ? i64(total) : -i64(vectra9.EFAULT)
+			return partial(total, vectra9.EFAULT)
 		}
 		written, err := vfs.chan_write(c, offset + u64(total), buffer[:n])
 		if err != vfs.OK {
-			return total > 0 ? i64(total) : -i64(err)
+			return partial(total, err)
 		}
 		total += written
 		if written < n {
@@ -419,13 +437,11 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 	note between retries. So a note can end a read that parks. A synchronous
 	server has no deadline to lean on and no worker to park, so its chunk is a
 	plain read. A `copy_out` that fails part-way keeps what already landed, the
-	way the bulk write keeps what it wrote.
+	way the bulk write keeps what it wrote. The buffer is uninitialised for the
+	same reason the write's is: only bytes a read landed are ever handed on.
 	*/
-	buffer: [IO_CHUNK]u8
-	chunk := min(IO_CHUNK, vfs.chan_iounit(c))
-	if chunk <= 0 {
-		chunk = IO_CHUNK
-	}
+	buffer: [IO_CHUNK]u8 = ---
+	chunk := io_chunk(c)
 	interruptible := vfs.server_interruptible(c.server)
 	total := 0
 	for total < count {
@@ -439,20 +455,17 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 					break
 				}
 				if sched.thread_noted(sched.current()) {
-					return total > 0 ? i64(total) : -i64(vectra9.EINTR)
+					return partial(total, vectra9.EINTR)
 				}
 			}
 		} else {
 			got, err = vfs.chan_read(c, offset + u64(total), buffer[:n])
 		}
 		if err != vfs.OK {
-			return total > 0 ? i64(total) : -i64(err)
+			return partial(total, err)
 		}
-		if got == 0 {
-			break
-		}
-		if !copy_out(addr + uintptr(total), buffer[:got]) {
-			return total > 0 ? i64(total) : -i64(vectra9.EFAULT)
+		if got > 0 && !copy_out(addr + uintptr(total), buffer[:got]) {
+			return partial(total, vectra9.EFAULT)
 		}
 		total += got
 		if got < n {

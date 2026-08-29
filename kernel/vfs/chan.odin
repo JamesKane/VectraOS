@@ -55,6 +55,10 @@ Chan :: struct {
 	union_head: ^Mount_Point,
 	refs:       int,
 	opened:     bool,
+
+	// The server's chunk bound from `Rlopen`/`Rlcreate`, or zero for "no
+	// promise". `chan_iounit` folds it into what a bulk caller chunks by.
+	iounit: u32,
 }
 
 // Linux open flags, as 9P2000.L carries them. Only the ones a Vectra server
@@ -174,9 +178,10 @@ chan_close :: proc(c: ^Chan) {
 /*
 chan_open marks a chan open for reading or writing.
 
-`iounit` is discarded because nothing chunks by it yet. When a transport exists
-that can fragment a large write, this is the number it must chunk by. It is not
-msize, which bounds the message rather than the operation.
+`iounit` is kept, because a bulk transfer chunks by it. It is the server's own
+promise about one operation, not msize, which bounds the message. Zero means
+the server made no promise, and `chan_iounit` answers with the frame bound
+instead.
 */
 chan_open :: proc(c: ^Chan, flags: u32) -> Errno {
 	if c == nil {
@@ -192,6 +197,7 @@ chan_open :: proc(c: ^Chan, flags: u32) -> Errno {
 		return vectra9.EPROTO
 	}
 	c.qid = answer.qid
+	c.iounit = answer.iounit
 	c.opened = true
 	return OK
 }
@@ -268,19 +274,15 @@ chan_interruptible :: proc "contextless" (c: ^Chan) -> bool {
 	return c != nil && server_interruptible(c.server)
 }
 
+// chan_write writes `data` at `offset`, one message's worth at most. A caller
+// with more than `chan_iounit` sends it in pieces -- a `Twrite` serialised
+// past the msize is a frame the transport refuses, loudly, which is better
+// than a silent short count for the caller that forgot to chunk.
 chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 	if c == nil {
 		return 0, vectra9.EBADF
 	}
-	// Capped at what one message carries, the way `chan_read` caps its count.
-	// A `Twrite` serialised past the msize is a frame the transport refuses,
-	// so a caller with more than fits sends it in pieces. 9front clamps to
-	// the same `iounit` on both sides of the wire.
-	send := data
-	if cap := max_payload(c.server); cap > 0 && len(send) > cap {
-		send = send[:cap]
-	}
-	request := vectra9.Msg(vectra9.Twrite{fid = c.fid, offset = offset, data = send})
+	request := vectra9.Msg(vectra9.Twrite{fid = c.fid, offset = offset, data = data})
 	reply: vectra9.Msg
 	if e := rpc(c.server, &request, &reply); e != OK {
 		return 0, e
@@ -292,15 +294,19 @@ chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno) {
 	return int(answer.count), OK
 }
 
-// chan_iounit is the most data one read or write of this chan moves at once.
-// That is its server's msize less the header a data message reserves. A
-// caller with more loops, a chunk at a time. `Rlopen` reports it, and this is
-// what `kernel/user` chunks a bulk transfer by.
+// chan_iounit is the most data one read or write of this chan moves at once:
+// the iounit the server promised at open, or its msize less the header a data
+// message reserves when it promised nothing. A caller with more loops, a
+// chunk at a time. This is what `kernel/user` chunks a bulk transfer by.
 chan_iounit :: proc "contextless" (c: ^Chan) -> int {
 	if c == nil {
 		return 0
 	}
-	return max_payload(c.server)
+	unit := max_payload(c.server)
+	if c.iounit > 0 && int(c.iounit) < unit {
+		unit = int(c.iounit)
+	}
+	return unit
 }
 
 /*
@@ -333,6 +339,7 @@ chan_create :: proc(c: ^Chan, name: string, flags: u32, mode: u32) -> Errno {
 		return vectra9.EPROTO
 	}
 	c.qid = answer.qid
+	c.iounit = answer.iounit
 	c.opened = true
 	return OK
 }
