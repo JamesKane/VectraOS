@@ -44,6 +44,7 @@ import "kernel:sched"
 import "kernel:srv"
 import "kernel:sync"
 import "kernel:vfs"
+import "vsys:libdraw"
 import "vsys:vectra9"
 
 /*
@@ -419,6 +420,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// -- And the port itself, served from ring 3 ------------------------------
 
 	verify_eiafs(&r)
+
+	// -- And the screen, spoken to in verbs -----------------------------------
+
+	verify_draw(&r)
 
 	// -- What is left ---------------------------------------------------------
 
@@ -3079,6 +3084,232 @@ verify_eiafs :: proc(r: ^Result) {
 		sync.delay(1)
 	}
 	check(r, pinned == 0, "and the serial server's wire comes back whole")
+	r.pinned += pinned
+}
+
+// glass_u32 reads one pixel back off the screen's own memory, the readback
+// the painter test taught. Little-endian, the way the draw server wrote it.
+@(private = "file")
+glass_u32 :: proc "contextless" (s: ^fb.Surface, x: int, y: int) -> u32 #no_bounds_check {
+	o := y * s.pitch + x * 4
+	return u32(s.pixels[o]) | u32(s.pixels[o + 1]) << 8 |
+		u32(s.pixels[o + 2]) << 16 | u32(s.pixels[o + 3]) << 24
+}
+
+/*
+verify_draw is the draw server against its own design document.
+
+`intuition`'s first half serves `docs/DRAW.md`'s six verbs over the screen.
+The test speaks them through a mount and checks the glass, the way the
+painter test taught. What a command stream claims to draw must read back
+from the framebuffer's own memory. One write carries the whole batch,
+which is the property the protocol exists for.
+
+The rules get one check each. A fill past the edge clips rather than
+errors. A malformed command fails its whole write, and what stood before
+it already drew. A free answers once and refuses twice. And a clunk gives
+a session's images back, proved by a pool filled, closed, and refilled.
+*/
+@(private = "file")
+verify_draw :: proc(r: ^Result) #no_bounds_check {
+	s := devfs.raw_surface()
+	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
+		return
+	}
+
+	count0 := srv.count()
+	sched.reap()
+	pin_before := live_objects(mem.heap_stats())
+
+	p, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "the loader starts the draw server") {
+		return
+	}
+	r.programs += 1
+
+	posted := false
+	for _ in 0 ..< PATIENCE {
+		if srv.lookup("draw") != nil {
+			posted = true
+			break
+		}
+		sync.delay(1)
+	}
+	if !check(r, posted, "it reads the screen's shape and posts /srv/draw") {
+		return
+	}
+	check(
+		r,
+		srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK,
+		"the kernel mounts it",
+	)
+
+	ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/ctl", vfs.O_RDONLY)
+	if !check(r, cerr == vfs.OK, "and opens its ctl file") {
+		return
+	}
+	geo: [8]u8
+	gn, gerr := vfs.chan_read(ctl, 0, geo[:])
+	check(
+		r,
+		gerr == vfs.OK && gn >= 5 && string(geo[:5]) == "size ",
+		"whose read answers the geometry /dev/fbctl reports",
+	)
+
+	dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
+	if !check(r, oerr == vfs.OK, "and the command file opens for writing") {
+		return
+	}
+
+	// The region the test paints, saved to be restored. Four rows of 48
+	// pixels on the left, and eight pixels at the right edge of the first.
+	y0 := s.height - 16
+	edge_x := s.width - 8
+	saved_a: [4 * 48 * 4]u8
+	for line in 0 ..< 4 {
+		o := (y0 + line) * s.pitch
+		for i in 0 ..< 48 * 4 {
+			saved_a[line * 192 + i] = s.pixels[o + i]
+		}
+	}
+	saved_b: [8 * 4]u8
+	for i in 0 ..< 8 * 4 {
+		saved_b[i] = s.pixels[y0 * s.pitch + edge_x * 4 + i]
+	}
+
+	// -- One write, five verbs, and the glass answers -------------------------
+
+	C1 :: u32(0x00336699)
+	C3 :: u32(0x00CC2200)
+	pat: [128]u8
+	for i in 0 ..< 32 {
+		v := u32(0x00400000) | u32(i)
+		pat[i * 4] = u8(v)
+		pat[i * 4 + 1] = u8(v >> 8)
+		pat[i * 4 + 2] = u8(v >> 16)
+		pat[i * 4 + 3] = u8(v >> 24)
+	}
+
+	buf: [512]u8
+	at := libdraw.put_fill(buf[:], 0, 0, 8, u32(y0), 16, 4, C1)
+	at = libdraw.put_alloc(buf[:], at, 1, 8, 4)
+	at = libdraw.put_load(buf[:], at, 1, 0, 0, 8, 4, pat[:])
+	at = libdraw.put_blit(buf[:], at, 0, 32, u32(y0), 1, 0, 0, 8, 4)
+	at = libdraw.put_flush(buf[:], at)
+	wn, werr := vfs.chan_write(dc, 0, buf[:at])
+	check(
+		r,
+		at > 0 && werr == vfs.OK && wn == at,
+		"one write carries a fill, an image, a load, a blit, and a flush",
+	)
+	check(
+		r,
+		glass_u32(s, 8, y0) == C1 && glass_u32(s, 23, y0 + 3) == C1,
+		"the fill landed on the glass, corner to corner",
+	)
+	blitted := true
+	for line in 0 ..< 4 {
+		for i in 0 ..< 8 {
+			if glass_u32(s, 32 + i, y0 + line) != (u32(0x00400000) | u32(line * 8 + i)) {
+				blitted = false
+			}
+		}
+	}
+	check(r, blitted, "and the blit landed the loaded pixels beside it")
+
+	// -- The rules, one check each --------------------------------------------
+
+	/*
+	The spill a dropped clip makes is not a refused write. The file is
+	offset-addressed over the whole frame, so an unclipped edge fill wraps
+	onto the next row's left edge instead of failing. The pixel watched
+	here is that landing spot, which is what makes this check strong. The
+	first cut watched only the painted edge, and the control walked past it.
+	*/
+	spill_before := glass_u32(s, 0, y0 + 1)
+	at = libdraw.put_fill(buf[:], 0, 0, u32(edge_x), u32(y0), 16, 1, C1)
+	_, werr = vfs.chan_write(dc, 0, buf[:at])
+	check(r, werr == vfs.OK, "a fill past the edge clips rather than errors")
+	check(r, glass_u32(s, s.width - 1, y0) == C1, "and paints up to the last pixel")
+	check(r, glass_u32(s, 0, y0 + 1) == spill_before, "and spills nothing onto the row below")
+
+	at = libdraw.put_fill(buf[:], 0, 0, 8, u32(y0), 4, 1, C3)
+	buf[at] = 4
+	buf[at + 1] = 0
+	buf[at + 2] = 9
+	buf[at + 3] = 0
+	_, werr = vfs.chan_write(dc, 0, buf[:at + 4])
+	check(r, werr != vfs.OK, "a malformed command fails the whole write")
+	check(r, glass_u32(s, 8, y0) == C3, "and what stood before it already drew")
+
+	at = libdraw.put_free(buf[:], 0, 1)
+	_, werr = vfs.chan_write(dc, 0, buf[:at])
+	check(r, werr == vfs.OK, "a free is answered once")
+	_, werr = vfs.chan_write(dc, 0, buf[:at])
+	check(r, werr != vfs.OK, "and refused twice")
+
+	at = 0
+	for id in 1 ..= 8 {
+		at = libdraw.put_alloc(buf[:], at, u32(id), 8, 4)
+	}
+	_, werr = vfs.chan_write(dc, 0, buf[:at])
+	check(r, werr == vfs.OK, "a session fills the whole image pool")
+	vfs.chan_close(dc)
+	dc2, o2 := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
+	if check(r, o2 == vfs.OK, "the command file opens again") {
+		at = libdraw.put_alloc(buf[:], 0, 1, 8, 4)
+		_, werr = vfs.chan_write(dc2, 0, buf[:at])
+		check(r, werr == vfs.OK, "and the clunk gave the session's images back")
+		vfs.chan_close(dc2)
+	}
+
+	// Put the glass back the way it was found.
+	for line in 0 ..< 4 {
+		o := (y0 + line) * s.pitch
+		for i in 0 ..< 48 * 4 {
+			s.pixels[o + i] = saved_a[line * 192 + i]
+		}
+	}
+	for i in 0 ..< 8 * 4 {
+		s.pixels[y0 * s.pitch + edge_x * 4 + i] = saved_b[i]
+	}
+
+	// -- Teardown, the arc every tenant obeys ---------------------------------
+
+	check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove is answered, and is the stop")
+	vfs.chan_close(ctl)
+
+	if check(r, wait(p, PATIENCE), "the draw server exits") {
+		check(
+			r,
+			p.exit.deliberate && p.exit.status == 0,
+			"with zero -- the remove was the stop it obeyed",
+		)
+	}
+
+	check(r, srv.remove("draw") == vfs.OK, "the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+
+	finish(r, p, "and the draw server is taken down")
+
+	pipe.quiesce()
+	check(
+		r,
+		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
+		"the mount of the dead server comes down",
+	)
+
+	pinned := 0
+	for _ in 0 ..< PATIENCE {
+		reap_orphans()
+		sched.reap()
+		pinned = live_objects(mem.heap_stats()) - pin_before
+		if pinned == 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, pinned == 0, "and the draw server's wire comes back whole")
 	r.pinned += pinned
 }
 

@@ -82,6 +82,12 @@ close :: proc "contextless" (fd: int) -> i64 {
 	return raw1(abi.SYS_CLOSE, u64(fd))
 }
 
+// seek moves a descriptor's cursor to an absolute offset. There is no
+// whence, which is the kernel's rule rather than an omission here.
+seek :: proc "contextless" (fd: int, offset: u64) -> i64 {
+	return raw2(abi.SYS_SEEK, u64(fd), offset)
+}
+
 create :: proc "contextless" (path: string, flags: u64, mode: u64) -> i64 {
 	return raw4(abi.SYS_CREATE, u64(uintptr(raw_data(path))), u64(len(path)), flags, mode)
 }

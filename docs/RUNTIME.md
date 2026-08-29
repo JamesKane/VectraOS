@@ -244,6 +244,36 @@ Three things this proved about the runtime:
   posted pipe never hangs up, and the boot hangs at `pipe.quiesce`. The
   child-first rule is not a courtesy. It is what lets the machine finish.
 
+## `servers/intuition`: the six verbs, served over the screen
+
+The draw server `docs/DRAW.md` designed, and the first server built to a
+document written before its code. It serves `data` and `ctl` under
+`/srv/draw`. A client writes command batches: alloc, load, fill, blit,
+free, flush. The server draws them through `/dev/fb`, one seek and one
+write per touched row. `ctl` answers with the geometry `/dev/fbctl`
+reports, read once at start.
+
+The tenant shape is `ramfs`'s, not `consrv`'s, because nothing here
+parks. One serve loop answers everything inline, with no fork, no worker
+and no lock. `sys/libdraw` owns the encoding, linked by the server, the
+self-test and every client to come. So a disagreement about a byte is a
+build error rather than a protocol drift.
+
+Three things this proved about the runtime:
+
+- **A server can be a client.** The draw server holds `/dev/fb` and
+  `/dev/fbctl` open through its own namespace and drives them by seek
+  and write, the way `painter` did by hand. `libuser` grew `seek` for it.
+- **A session is a fid.** Images belong to the fid that allocated them,
+  and a clunk gives them back. The self-test proves it by filling the
+  pool, closing, and filling it again.
+- **The glass is the test.** Every claim the protocol makes reads back
+  from the framebuffer's own memory. The first clipping check watched
+  the painted edge, and a dropped clip walked past it. The spill wraps
+  onto the next row rather than failing the write. The check watches the
+  landing spot now, which is `docs/TESTING.md`'s weak-check rule caught
+  in the act.
+
 ## The build, and where the image goes
 
 `build.odin` compiles each entry in `user_programs` with the kernel's own
@@ -259,9 +289,9 @@ self-test fails loudly on the absence. `make check` also checks every
 
 ## The controls
 
-Twelve mutations and one flake, each observed on a real boot. Three are the
-concurrent serve loop, two are `kbdfs`'s translation, and three are
-`eiafs`'s port. The copy-before-fork
+Fifteen mutations and one flake, each observed on a real boot. Three are the
+concurrent serve loop, two are `kbdfs`'s translation, three are `eiafs`'s
+port, and three are the draw server's. The copy-before-fork
 invariant is not among them. A single-client test leaves too wide a gap
 before the next request for a worker to lose the race. That one is argued
 rather than tripped, the distinction `docs/TESTING.md` draws between a control
@@ -281,6 +311,9 @@ that cannot be expressed and one that fails to fire.
 | `eiafs`'s Twrite forward dropped, the refusal restored | caught -- `a write through the mount takes every byte, out the wire`, the one check no earlier server has |
 | `eiafs`'s `drain` reads the producer's counter as its own | caught -- `the parked read wakes when the wire speaks`, which it never does |
 | `eiafs`'s parent exits without noting its reader | **the boot hangs** at `pipe.quiesce` -- the orphaned child holds the shared descriptor group, so the posted pipe never hangs up. The third hang-as-finding, and the reason teardown is child-first |
+| the draw server's clip dropped | caught -- `and spills nothing onto the row below`. **The first run passed instead**: an unclipped edge fill wraps onto the next row, refused by nothing, and the check watched only the painted edge. It watches the landing spot now |
+| an unknown verb skipped as if it were nothing | caught -- `a malformed command fails the whole write` |
+| the clunk keeps a session's images | caught -- `and the clunk gave the session's images back`, because the refilled pool has no room |
 
 And the flake: a one-in-twenty boot printed a program's line half-staged,
 with zeroes for a tail. `load` started the thread, and the self-tests staged

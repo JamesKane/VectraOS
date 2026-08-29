@@ -56,6 +56,7 @@ user_programs := [?]User_Program {
 	{name = "consrv", path = "servers/consrv"},
 	{name = "kbdfs", path = "servers/kbdfs"},
 	{name = "eiafs", path = "servers/eiafs"},
+	{name = "intuition", path = "servers/intuition"},
 }
 
 Arch :: enum {

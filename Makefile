@@ -53,3 +53,6 @@ check:
 	odin check servers/eiafs -collection:vsys=sys \
 		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
 		-vet -strict-style
+	odin check servers/intuition -collection:vsys=sys \
+		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
+		-vet -strict-style

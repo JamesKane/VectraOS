@@ -304,14 +304,22 @@ when #exists("../../build/user/eiafs.vx") {
 	EIAFS_IMAGE: []u8
 }
 
+when #exists("../../build/user/intuition.vx") {
+	@(private = "file")
+	INTUITION_IMAGE := #load("../../build/user/intuition.vx")
+} else {
+	@(private = "file")
+	INTUITION_IMAGE: []u8
+}
+
 @(private = "file")
-bin_nodes: [11]vfs.Static_Node
+bin_nodes: [12]vfs.Static_Node
 
 // The rows `/bin` actually publishes -- `bin_nodes` less any compiled image
 // a fresh tree has not built yet. Package-scope, because `static_init`
 // borrows the slice for the life of the machine.
 @(private = "file")
-bin_live: [11]vfs.Static_Node
+bin_live: [12]vfs.Static_Node
 
 @(private = "file")
 bin_tree: vfs.Static_Tree
@@ -361,6 +369,7 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 		{name = "ramfs", parent = 0, data = string(RAMFS_IMAGE)},
 		{name = "kbdfs", parent = 0, data = string(KBDFS_IMAGE)},
 		{name = "eiafs", parent = 0, data = string(EIAFS_IMAGE)},
+		{name = "intuition", parent = 0, data = string(INTUITION_IMAGE)},
 	}
 
 	/*
