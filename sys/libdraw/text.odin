@@ -30,10 +30,11 @@ Atlas :: struct {
 	count:          int,
 }
 
-// atlas_cell names the strip and column a glyph lives in. The uploader
-// and the blitter both go through this, so the layout has one owner and
-// the two cannot drift. Pixels loaded into one cell and blitted from
-// another is a failure only a boot's pixel test would catch.
+// atlas_cell names the strip and column a glyph lives in. `put_text`
+// blits by it, and an uploader walking pixels runs the same Atlas
+// fields in reverse. The layout is described once, in the struct both
+// read -- cells loaded and blitted from different places is a failure
+// only a boot's pixel test would catch.
 atlas_cell :: proc "contextless" (a: Atlas, idx: int) -> (image: u32, sx: u32) {
 	return a.first_image_id + u32(idx / a.per_image), u32((idx % a.per_image) * a.cell_w)
 }

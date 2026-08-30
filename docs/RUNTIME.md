@@ -166,7 +166,8 @@ here is what it proved about the runtime:
   `intrinsics.volatile_load`/`store` order the counter against its bytes.
   The producer stays lockless, because the child is the only writer of
   `head`. The consumer end is under a lock now, because `serve_mux` gives the
-  ring many readers where it once had one.
+  ring many readers where it once had one. The ring lives in
+  `sys/libuser` today, one copy for the three servers that fork a reader.
 - **The note is a teardown a program can drive.** On `Tremove` the parent
   notes its reader out of a parked device read, and exits zero only if the
   wait answered EINTR. `libuser` grew `rfork` and `note` wrappers for it.

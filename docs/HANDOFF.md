@@ -846,8 +846,11 @@ sys/
     session.odin        Session, Transport, Handler; in-process and loopback
     verify.odin         The boot self-test
   libuser/
-    sys.odin            The calls from ring 3: one wrapper each, and the two
-                        loop helpers every byte-moving caller needs
+    sys.odin            The calls from ring 3: one wrapper each, the loop
+                        helpers every byte-moving caller needs, and the
+                        child-first teardown a forked reader ends by
+    ring.odin           The byte ring a forked reader publishes through,
+                        once a private copy in each of three servers
     serve.odin          post and serve: a 9P server as a loop a program
                         calls, around a vectra9.Handler; serve_mux, the
                         concurrent loop with a worker per parked request;

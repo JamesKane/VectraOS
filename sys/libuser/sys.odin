@@ -23,6 +23,7 @@ call may read or write a buffer the program also touches.
 package libuser
 
 import "vsys:abi"
+import "vsys:vectra9"
 
 @(private)
 raw1 :: proc "contextless" (nr: u64, a0: u64) -> i64 {
@@ -224,4 +225,14 @@ write_full :: proc "contextless" (fd: int, data: []u8) -> bool {
 		sent += int(n)
 	}
 	return true
+}
+
+// stop_child is the forked reader's teardown. Note the child out of its
+// parked read, and collect the EINTR that proves the ending was the one
+// asked for. Every parent of a reader ends its child through this.
+stop_child :: proc "contextless" (pid: u64) -> bool {
+	if note(pid, "stop") != 0 {
+		return false
+	}
+	return wait(pid) == -i64(vectra9.EINTR)
 }

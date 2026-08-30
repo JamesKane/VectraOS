@@ -56,9 +56,8 @@ NODE_LINE :: i32(1)
 // counters are monotonic and the difference is the content, so full and
 // empty cannot be confused. Shared under RFMEM, like every global here.
 RING :: 256
-ring: [RING]u8
-head: u64
-tail: u64
+ring_store: [RING]u8
+ring: libuser.Ring
 
 // The child's read buffer. In the shared bss like everything else, and
 // touched by the child alone -- the stack would be private, but a buffer a
@@ -125,6 +124,9 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
+	// The ring's frame, built before the fork so both halves hold it.
+	ring = libuser.Ring{buf = ring_store[:]}
+
 	cons := libuser.open("/dev/cons", abi.O_RDONLY)
 	if cons < 0 {
 		libuser.exit(0x74)
@@ -140,7 +142,7 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 
 	fd, perr := libuser.post("/srv/consrv")
 	if perr < 0 {
-		_ = stop_reader(u64(pid))
+		_ = libuser.stop_child(u64(pid))
 		libuser.exit(0x71)
 	}
 
@@ -170,13 +172,13 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	intrinsics.volatile_store(&stopping, true)
 
 	if why != .Removed {
-		_ = stop_reader(u64(pid))
+		_ = libuser.stop_child(u64(pid))
 		libuser.exit(0x72)
 	}
 	// Status zero is the whole teardown arc succeeding: the note landed, the
 	// parked read unwound, and the wait heard EINTR -- the kernel's word for
 	// an ending this parent asked for.
-	libuser.exit(stop_reader(u64(pid)) ? 0 : 0x75)
+	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
 }
 
 /*
@@ -210,54 +212,9 @@ reader :: proc "contextless" (cons: int) -> ! {
 			continue
 		}
 		for i in 0 ..< int(n) {
-			push(chunk[i])
+			libuser.ring_push(&ring, chunk[i])
 		}
 	}
-}
-
-// stop_reader is the teardown: note the child out of its parked read, and
-// collect the EINTR that proves the ending was the one asked for.
-stop_reader :: proc "contextless" (pid: u64) -> bool {
-	if libuser.note(pid, "stop") != 0 {
-		return false
-	}
-	return libuser.wait(pid) == -i64(vectra9.EINTR)
-}
-
-// push is the producer's half of the ring: bytes first, then the counter,
-// so the consumer never reads a seat the byte has not taken. A full ring
-// drops the byte -- a console that is not being served is not a place to
-// park the keyboard behind.
-push :: proc "contextless" (b: u8) #no_bounds_check {
-	h := intrinsics.volatile_load(&head)
-	t := intrinsics.volatile_load(&tail)
-	if h - t >= RING {
-		return
-	}
-	ring[h % RING] = b
-	intrinsics.volatile_store(&head, h + 1)
-}
-
-// drain is the consumer's half: read the producer's counter once, take what
-// it covers, then publish the new tail. Under `state_lock`, because several
-// workers may drain at once now -- the ring has one producer and many
-// consumers. Only the byte-moving is inside the lock, never the poll.
-drain :: proc "contextless" (buf: []u8) -> int #no_bounds_check {
-	libuser.lock(&state_lock)
-	t := intrinsics.volatile_load(&tail)
-	h := intrinsics.volatile_load(&head)
-	n := min(int(h - t), len(buf))
-	for i in 0 ..< n {
-		buf[i] = ring[(t + u64(i)) % RING]
-	}
-	intrinsics.volatile_store(&tail, t + u64(n))
-	libuser.unlock(&state_lock)
-	return n
-}
-
-// available reports the bytes waiting, for a getattr's size field.
-available :: proc "contextless" () -> u64 {
-	return intrinsics.volatile_load(&head) - intrinsics.volatile_load(&tail)
 }
 
 // -- Fids, the same sixteen slots ramfs keeps ---------------------------------
@@ -403,7 +360,7 @@ handler :: proc "contextless" (
 			return
 		}
 		for {
-			got := drain(buf[:room])
+			got := libuser.ring_drain(&ring, buf[:room], &state_lock)
 			if got > 0 {
 				reply^ = vectra9.Rread{data = buf[:got]}
 				return
@@ -433,7 +390,7 @@ handler :: proc "contextless" (
 			qid     = qid_of(node),
 			mode    = dir ? 0o040555 : 0o100444,
 			nlink   = dir ? 2 : 1,
-			size    = dir ? 0 : available(),
+			size    = dir ? 0 : libuser.ring_available(&ring),
 			blksize = 512,
 		}
 

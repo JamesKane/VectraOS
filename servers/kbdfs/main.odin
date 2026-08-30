@@ -42,9 +42,8 @@ NODE_KBD :: i32(1)
 // shared under RFMEM. The child owns `head`, the consumers own `tail`, and
 // the counters are monotonic so full and empty never look alike.
 RING :: 256
-ring: [RING]u8
-head: u64
-tail: u64
+ring_store: [RING]u8
+ring: libuser.Ring
 
 // The child's scancode buffer. In the shared bss with everything else, and
 // touched by the child alone.
@@ -95,6 +94,9 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
+	// The ring's frame, built before the fork so both halves hold it.
+	ring = libuser.Ring{buf = ring_store[:]}
+
 	raw := libuser.open("/dev/scancode", abi.O_RDONLY)
 	if raw < 0 {
 		libuser.exit(0x74)
@@ -110,7 +112,7 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 
 	fd, perr := libuser.post("/srv/kbdfs")
 	if perr < 0 {
-		_ = stop_reader(u64(pid))
+		_ = libuser.stop_child(u64(pid))
 		libuser.exit(0x71)
 	}
 
@@ -137,10 +139,10 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	intrinsics.volatile_store(&stopping, true)
 
 	if why != .Removed {
-		_ = stop_reader(u64(pid))
+		_ = libuser.stop_child(u64(pid))
 		libuser.exit(0x72)
 	}
-	libuser.exit(stop_reader(u64(pid)) ? 0 : 0x75)
+	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
 }
 
 // blocks is true for exactly the read that waits on a key: a read of /kbd.
@@ -171,54 +173,13 @@ reader :: proc "contextless" (raw: int) -> ! {
 		for i in 0 ..< int(n) {
 			b, produced := step(chunk[i])
 			if produced {
-				push(b)
+				libuser.ring_push(&ring, b)
 			}
 		}
 	}
 }
 
-// stop_reader notes the child out of its parked read and collects the EINTR
-// that proves the ending was the one asked for.
-stop_reader :: proc "contextless" (pid: u64) -> bool {
-	if libuser.note(pid, "stop") != 0 {
-		return false
-	}
-	return libuser.wait(pid) == -i64(vectra9.EINTR)
-}
-
 // -- The ring ----------------------------------------------------------------
-
-// push is the producer's half: byte first, then the counter, so a consumer
-// never sees a seat its byte has not taken. A full ring drops the character,
-// which is what a translator with nowhere to put one does.
-push :: proc "contextless" (b: u8) #no_bounds_check {
-	h := intrinsics.volatile_load(&head)
-	t := intrinsics.volatile_load(&tail)
-	if h - t >= RING {
-		return
-	}
-	ring[h % RING] = b
-	intrinsics.volatile_store(&head, h + 1)
-}
-
-// drain is the consumer's half, under `state_lock` because `serve_mux` gives
-// the ring many readers. Only the byte-moving is inside the lock.
-drain :: proc "contextless" (buf: []u8) -> int #no_bounds_check {
-	libuser.lock(&state_lock)
-	t := intrinsics.volatile_load(&tail)
-	h := intrinsics.volatile_load(&head)
-	n := min(int(h - t), len(buf))
-	for i in 0 ..< n {
-		buf[i] = ring[(t + u64(i)) % RING]
-	}
-	intrinsics.volatile_store(&tail, t + u64(n))
-	libuser.unlock(&state_lock)
-	return n
-}
-
-available :: proc "contextless" () -> u64 {
-	return intrinsics.volatile_load(&head) - intrinsics.volatile_load(&tail)
-}
 
 // -- The scancode state machine, the kernel's byte for byte -------------------
 //
@@ -467,7 +428,7 @@ handler :: proc "contextless" (
 			return
 		}
 		for {
-			got := drain(buf[:room])
+			got := libuser.ring_drain(&ring, buf[:room], &state_lock)
 			if got > 0 {
 				reply^ = vectra9.Rread{data = buf[:got]}
 				return
@@ -497,7 +458,7 @@ handler :: proc "contextless" (
 			qid     = qid_of(node),
 			mode    = dir ? 0o040555 : 0o100444,
 			nlink   = dir ? 2 : 1,
-			size    = dir ? 0 : available(),
+			size    = dir ? 0 : libuser.ring_available(&ring),
 			blksize = 512,
 		}
 

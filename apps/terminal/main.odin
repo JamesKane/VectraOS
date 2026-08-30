@@ -17,9 +17,9 @@ batch of them. `sys/libfont` carries the table and `sys/libdraw`'s
 
 One number rules every batch: the posted-pipe wire moves at most 1000
 payload bytes per write, and a command split across two writes is a
-frame the server refuses. So the command buffer stays under that bound,
-one glyph load goes per write, and `put_text`'s consumed-count return is
-what lets a long line pump through in batches.
+frame the server refuses. So the command buffer is sized to that bound,
+the font uploads in bands as wide as one write carries, and `put_text`'s
+consumed-count return is what lets a long line pump through in batches.
 
 The kernel's console owns the echo of typed bytes, and this program does
 not want two renderers on one line. So it writes `echooff` to
@@ -85,8 +85,11 @@ kernel cuts the wire's arena from, so the two cannot drift apart.
 CMD_CAP :: vectra9.WIRE_SLOT - vectra9.IOHDRSZ
 cmd: [CMD_CAP]u8
 
-// One glyph expanded to pixels: 8x16 cells, four bytes each.
-rowbuf: [libfont.FONT_WIDTH * libfont.FONT_HEIGHT * 4]u8
+// One load's worth of pixels: a band as wide as one write can carry,
+// derived from the wire bound rather than chosen. Fifteen columns today.
+BAND :: (CMD_CAP - libdraw.HEADER - 20) / (libfont.FONT_HEIGHT * 4)
+STRIP_W :: PER_STRIP * libfont.FONT_WIDTH
+band: [BAND * libfont.FONT_HEIGHT * 4]u8
 
 line: [256]u8
 geo: [160]u8
@@ -178,29 +181,39 @@ send :: proc "contextless" (at: int) {
 
 /*
 upload_font pays the once-per-life cost: six allocs in one write, then
-one load per glyph, one write each. A glyph's load is 536 bytes -- two
-would cross the wire bound -- so the loop is 95 small writes, and every
-blit afterwards is 36. That trade is the design's whole argument.
+each strip in bands as wide as one write carries. A band crosses cell
+boundaries, so a pixel finds its glyph by the atlas arithmetic run
+backwards -- column over cell width, through the same `ATLAS` fields
+`put_text` blits by -- and a cell past the last glyph loads as
+background. Fifty-five writes move the whole set, and every blit
+afterwards is 36 bytes. That trade is the design's whole argument.
 */
 upload_font :: proc "contextless" () #no_bounds_check {
 	at := 0
 	for s in 0 ..< STRIPS {
-		at = libdraw.put_alloc(cmd[:], at, u32(1 + s), PER_STRIP * libfont.FONT_WIDTH, libfont.FONT_HEIGHT)
+		at = libdraw.put_alloc(cmd[:], at, u32(1 + s), STRIP_W, libfont.FONT_HEIGHT)
 	}
 	send(at)
 
-	for g in 0 ..< GLYPHS {
-		for y in 0 ..< libfont.FONT_HEIGHT {
-			bits := libfont.font_8x16[g][y]
-			for x in 0 ..< libfont.FONT_WIDTH {
-				v := bits & (0x80 >> u8(x)) != 0 ? FG : BG
-				libdraw.put_u32(rowbuf[:], (y * libfont.FONT_WIDTH + x) * 4, v)
+	for s in 0 ..< STRIPS {
+		for bx := 0; bx < STRIP_W; bx += BAND {
+			bw := min(BAND, STRIP_W - bx)
+			for y in 0 ..< libfont.FONT_HEIGHT {
+				for i in 0 ..< bw {
+					px := bx + i
+					g := s * ATLAS.per_image + px / ATLAS.cell_w
+					v := BG
+					if g < GLYPHS {
+						bits := libfont.font_8x16[g][y]
+						if bits & (0x80 >> u8(px % ATLAS.cell_w)) != 0 {
+							v = FG
+						}
+					}
+					libdraw.put_u32(band[:], (y * bw + i) * 4, v)
+				}
 			}
+			send(libdraw.put_load(cmd[:], 0, u32(1 + s), u32(bx), 0, u32(bw), libfont.FONT_HEIGHT, band[:bw * libfont.FONT_HEIGHT * 4]))
 		}
-		// The cell comes from the same arithmetic `put_text` blits by, so
-		// the uploader and the blitter cannot disagree about the layout.
-		image, sx := libdraw.atlas_cell(ATLAS, g)
-		send(libdraw.put_load(cmd[:], 0, image, sx, 0, libfont.FONT_WIDTH, libfont.FONT_HEIGHT, rowbuf[:]))
 	}
 }
 
