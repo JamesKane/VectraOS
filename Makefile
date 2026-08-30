@@ -34,8 +34,7 @@ clean:
 	$(BUILD) clean
 
 font:
-	python3 tools/genfont.py > kernel/drivers/console/font_data.odin
-	python3 tools/genfont.py --package libfont > sys/libfont/font_data.odin
+	python3 tools/genfont.py > sys/libfont/font_data.odin
 
 check:
 	odin check kernel -collection:kernel=kernel -collection:vsys=sys \

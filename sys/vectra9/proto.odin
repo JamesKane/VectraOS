@@ -45,6 +45,16 @@ to twelve bytes past the msize. Twenty-four is 9front's number: the binding
 IOHDRSZ :: 24
 
 /*
+Bytes one posted-service frame slot holds, on the pipe wire behind `/srv`.
+
+The kernel's wire divides its arena by this number, the slot becomes the
+session's msize, and a mounted client's iounit is therefore `WIRE_SLOT -
+IOHDRSZ`. A ring 3 client has no iounit call to ask, so this constant is
+the one place both sides read the bound from.
+*/
+WIRE_SLOT :: 1024
+
+/*
 9P caps a walk at sixteen elements, which is the reason `Twalk` can hold its
 names inline and a `Msg` can stay a stack value. Raising this is not a local
 change -- it is the size of every message in the system.
@@ -711,6 +721,17 @@ inline array. Fix that rather than raise the bound. Every message in the system
 is this size, whether it needs to be or not.
 */
 #assert(size_of(Msg) <= 320)
+
+// creates reports whether a message kind would make, rename or link a
+// file. A read-only server refuses all of them with one guard, and every
+// server here is one. Five used to carry private copies of this switch.
+creates :: proc "contextless" (k: Kind) -> bool {
+	#partial switch k {
+	case .Tlcreate, .Tmkdir, .Tmknod, .Tsymlink, .Tlink, .Trename, .Trenameat:
+		return true
+	}
+	return false
+}
 
 /*
 kind reports which message a Msg holds.

@@ -401,14 +401,6 @@ step_name :: proc "contextless" (from: i32, name: string) -> i32 {
 
 // -- The handler -------------------------------------------------------------
 
-creates :: proc "contextless" (k: vectra9.Kind) -> bool {
-	#partial switch k {
-	case .Tlcreate, .Tmkdir, .Tmknod, .Tsymlink, .Tlink, .Trename, .Trenameat:
-		return true
-	}
-	return false
-}
-
 handler :: proc "contextless" (
 	state: rawptr,
 	s: ^vectra9.Session,
@@ -421,7 +413,7 @@ handler :: proc "contextless" (
 	_ = s
 	_ = tag
 
-	if creates(vectra9.kind(request^)) {
+	if vectra9.creates(vectra9.kind(request^)) {
 		reply^ = vectra9.error_reply(vectra9.EPERM)
 		return
 	}

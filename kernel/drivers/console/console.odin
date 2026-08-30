@@ -6,12 +6,20 @@ sequences, no scrollback, no reflow. `apps/terminal` will do all of that in
 userland against /dev/fb. What lives here is what a panic handler is allowed
 to depend on.
 
-Glyphs come from `font_data.odin`, which `tools/genfont.py` bakes into the
-image -- there is no font loading at boot.
+Glyphs come from `sys/libfont`, the one table `tools/genfont.py` bakes.
+There is no font loading at boot, and ring 3 links the same table. The
+aliases below keep this package's names for the callers that size things
+by them.
 */
 package console
 
 import "kernel:drivers/fb"
+import "vsys:libfont"
+
+FONT_WIDTH :: libfont.FONT_WIDTH
+FONT_HEIGHT :: libfont.FONT_HEIGHT
+FONT_FIRST :: libfont.FONT_FIRST
+FONT_LAST :: libfont.FONT_LAST
 
 /*
 Text is drawn embossed by default: a dark copy one pixel down-right, then the
@@ -77,7 +85,7 @@ draw_glyph :: proc "contextless" (s: ^fb.Surface, px, py: int, ch: u8, color: fb
 	if ch < FONT_FIRST || ch > FONT_LAST {
 		return
 	}
-	rows := font_8x16[ch - FONT_FIRST]
+	rows := libfont.font_8x16[ch - FONT_FIRST]
 	for y in 0 ..< FONT_HEIGHT {
 		bits := rows[y]
 		if bits == 0 {

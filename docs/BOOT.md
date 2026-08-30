@@ -37,9 +37,9 @@ everything that can afford to fail loudly.
   Surfaces. A bevel drawn at boot and one on a titlebar are therefore the same
   code. `kernel/drivers/fb/palette.odin` is the single source of colour truth.
 - **Console font is host-rasterised.** `tools/genfont.py` bakes PTMono at 13px
-  (exactly 8×16) into `kernel/drivers/console/font_data.odin`. It is
-  serviceable. A hand-drawn bitmap face is the right long-term answer for the
-  amber terminal.
+  (exactly 8×16) into `sys/libfont/font_data.odin`, the one table the console
+  imports and ring 3 links. It is serviceable. A hand-drawn bitmap face is the
+  right long-term answer for the amber terminal.
 - **The logger replays.** A static buffer of 16 × 128 bytes holds the lines
   that arrive before the framebuffer exists. `attach_screen()` draws them when
   the console attaches, so screen and serial agree line-for-line.

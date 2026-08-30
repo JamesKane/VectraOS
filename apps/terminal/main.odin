@@ -39,6 +39,7 @@ import "vsys:abi"
 import "vsys:libdraw"
 import "vsys:libfont"
 import "vsys:libuser"
+import "vsys:vectra9"
 
 // The terminal's two colors, in the 32-bit format `/dev/fbctl` reports.
 FG :: u32(0x00FFB028)
@@ -76,12 +77,12 @@ MAX_COLS :: 42
 field_y: u32
 
 /*
-The command buffer, sized under the wire. The posted-pipe session moves
-1000 payload bytes per write, and `sys_write` splits anything larger at
-that boundary -- which would tear a command in half. 992 holds a fill, a
-line's worth of blits in two batches, or one glyph load with room over.
+The command buffer, sized to exactly what one posted-pipe write carries.
+`sys_write` splits anything larger at this boundary -- which would tear
+a command in half -- and the bound is derived from the same constant the
+kernel cuts the wire's arena from, so the two cannot drift apart.
 */
-CMD_CAP :: 992
+CMD_CAP :: vectra9.WIRE_SLOT - vectra9.IOHDRSZ
 cmd: [CMD_CAP]u8
 
 // One glyph expanded to pixels: 8x16 cells, four bytes each.
@@ -128,8 +129,11 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	}
 	n := libuser.read(int(ctl), geo[:])
 	_ = libuser.close(int(ctl))
-	h := parse_height(geo[:max(int(n), 0)])
-	if h < 56 {
+	// Only the height steers the layout. The width goes unused because
+	// the field is fixed and the server clips, and the depth is the
+	// server's own refusal.
+	_, h, _, _, gok := libdraw.parse_geometry(geo[:max(int(n), 0)])
+	if !gok || h < 56 {
 		libuser.exit(0x76)
 	}
 	field_y = u32(h - 40)
@@ -163,31 +167,6 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	}
 }
 
-// parse_height takes the second number in the geometry report, which is
-// the screen's height. The first is its width, unused: server-side
-// clipping makes a narrow screen safe, and the field's width is fixed.
-parse_height :: proc "contextless" (report: []u8) -> int #no_bounds_check {
-	found := 0
-	at := 0
-	for at < len(report) && found < 2 {
-		c := report[at]
-		if c < '0' || c > '9' {
-			at += 1
-			continue
-		}
-		v := 0
-		for at < len(report) && report[at] >= '0' && report[at] <= '9' {
-			v = v * 10 + int(report[at] - '0')
-			at += 1
-		}
-		found += 1
-		if found == 2 {
-			return v
-		}
-	}
-	return 0
-}
-
 // send puts one finished batch on the wire, whole. A refusal or an
 // encode failure is the same exit: a terminal that cannot draw has
 // nothing left to say.
@@ -215,15 +194,12 @@ upload_font :: proc "contextless" () #no_bounds_check {
 			bits := libfont.font_8x16[g][y]
 			for x in 0 ..< libfont.FONT_WIDTH {
 				v := bits & (0x80 >> u8(x)) != 0 ? FG : BG
-				o := (y * libfont.FONT_WIDTH + x) * 4
-				rowbuf[o] = u8(v)
-				rowbuf[o + 1] = u8(v >> 8)
-				rowbuf[o + 2] = u8(v >> 16)
-				rowbuf[o + 3] = u8(v >> 24)
+				libdraw.put_u32(rowbuf[:], (y * libfont.FONT_WIDTH + x) * 4, v)
 			}
 		}
-		image := u32(1 + g / PER_STRIP)
-		sx := u32((g % PER_STRIP) * libfont.FONT_WIDTH)
+		// The cell comes from the same arithmetic `put_text` blits by, so
+		// the uploader and the blitter cannot disagree about the layout.
+		image, sx := libdraw.atlas_cell(ATLAS, g)
 		send(libdraw.put_load(cmd[:], 0, image, sx, 0, libfont.FONT_WIDTH, libfont.FONT_HEIGHT, rowbuf[:]))
 	}
 }
@@ -243,10 +219,7 @@ fit; `put_text`'s consumed count pumps the rest through in more batches;
 the flush rides the last one.
 */
 render :: proc "contextless" (text: string) {
-	shown := text
-	if len(shown) > MAX_COLS {
-		shown = shown[:MAX_COLS]
-	}
+	shown := text[:min(len(text), MAX_COLS)]
 
 	at := libdraw.put_fill(cmd[:], 0, 0, INPUT_X, field_y, FIELD_W - (INPUT_X - FIELD_X), FIELD_H, BG)
 	done := 0
@@ -265,11 +238,8 @@ render :: proc "contextless" (text: string) {
 			send(libdraw.put_flush(cmd[:], nat))
 			return
 		}
-		if put == 0 && at == 0 {
-			// An empty buffer that takes nothing is an encode failure,
-			// not a batch boundary.
-			libuser.exit(0x78)
-		}
+		// A batch boundary: write what fits and continue. A buffer that
+		// takes nothing would arrive here as zero, and `send` names it.
 		send(nat)
 		at = 0
 	}

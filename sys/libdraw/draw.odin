@@ -51,7 +51,9 @@ put_u16 :: proc "contextless" (b: []u8, at: int, v: u16) #no_bounds_check {
 	b[at + 1] = u8(v >> 8)
 }
 
-@(private)
+// put_u32 stores one little-endian word, the protocol's byte order. It is
+// public because a pixel is the same word. Whoever expands a bitmap into
+// `load` payload bytes writes this exact layout, best written in one place.
 put_u32 :: proc "contextless" (b: []u8, at: int, v: u32) #no_bounds_check {
 	b[at] = u8(v)
 	b[at + 1] = u8(v >> 8)
@@ -73,15 +75,23 @@ put_header :: proc "contextless" (b: []u8, at: int, size: int, verb: u8) -> int 
 	return at + HEADER
 }
 
-put_alloc :: proc "contextless" (b: []u8, at: int, id: u32, w: u32, h: u32) -> int #no_bounds_check {
-	body := put_header(b, at, HEADER + 12, ALLOC)
+// put_cmd is the one body every fixed-field verb shares: a header, the
+// fields in order, and the offset after them. The size and offset
+// arithmetic lives here alone, so a new verb cannot miscount it.
+@(private)
+put_cmd :: proc "contextless" (b: []u8, at: int, verb: u8, fields: ..u32) -> int #no_bounds_check {
+	body := put_header(b, at, HEADER + len(fields) * 4, verb)
 	if body < 0 {
 		return -1
 	}
-	put_u32(b, body, id)
-	put_u32(b, body + 4, w)
-	put_u32(b, body + 8, h)
-	return body + 12
+	for f, i in fields {
+		put_u32(b, body + i * 4, f)
+	}
+	return body + len(fields) * 4
+}
+
+put_alloc :: proc "contextless" (b: []u8, at: int, id: u32, w: u32, h: u32) -> int {
+	return put_cmd(b, at, ALLOC, id, w, h)
 }
 
 put_load :: proc "contextless" (
@@ -116,18 +126,8 @@ put_fill :: proc "contextless" (
 	w: u32,
 	h: u32,
 	color: u32,
-) -> int #no_bounds_check {
-	body := put_header(b, at, HEADER + 24, FILL)
-	if body < 0 {
-		return -1
-	}
-	put_u32(b, body, id)
-	put_u32(b, body + 4, x)
-	put_u32(b, body + 8, y)
-	put_u32(b, body + 12, w)
-	put_u32(b, body + 16, h)
-	put_u32(b, body + 20, color)
-	return body + 24
+) -> int {
+	return put_cmd(b, at, FILL, id, x, y, w, h, color)
 }
 
 put_blit :: proc "contextless" (
@@ -141,35 +141,49 @@ put_blit :: proc "contextless" (
 	sy: u32,
 	sw: u32,
 	sh: u32,
-) -> int #no_bounds_check {
-	body := put_header(b, at, HEADER + 32, BLIT)
-	if body < 0 {
-		return -1
-	}
-	put_u32(b, body, dst)
-	put_u32(b, body + 4, dx)
-	put_u32(b, body + 8, dy)
-	put_u32(b, body + 12, src)
-	put_u32(b, body + 16, sx)
-	put_u32(b, body + 20, sy)
-	put_u32(b, body + 24, sw)
-	put_u32(b, body + 28, sh)
-	return body + 32
+) -> int {
+	return put_cmd(b, at, BLIT, dst, dx, dy, src, sx, sy, sw, sh)
 }
 
-put_free :: proc "contextless" (b: []u8, at: int, id: u32) -> int #no_bounds_check {
-	body := put_header(b, at, HEADER + 4, FREE)
-	if body < 0 {
-		return -1
-	}
-	put_u32(b, body, id)
-	return body + 4
+put_free :: proc "contextless" (b: []u8, at: int, id: u32) -> int {
+	return put_cmd(b, at, FREE, id)
 }
 
-put_flush :: proc "contextless" (b: []u8, at: int) -> int #no_bounds_check {
-	body := put_header(b, at, HEADER, FLUSH)
-	if body < 0 {
-		return -1
+put_flush :: proc "contextless" (b: []u8, at: int) -> int {
+	return put_cmd(b, at, FLUSH)
+}
+
+// -- The ctl report -----------------------------------------------------------
+
+/*
+parse_geometry reads the numbers a draw server's `ctl` file answers with,
+which are `/dev/fbctl`'s: width, height, pitch, and depth, in that order.
+
+One decoder for the report both sides of the protocol handle. The server
+reads it from the device and serves it on, and a client reads it back.
+Two hand-rolled scanners of one format fail differently when a field
+moves.
+*/
+parse_geometry :: proc "contextless" (report: []u8) -> (w: int, h: int, pitch: int, depth: int, ok: bool) #no_bounds_check {
+	nums: [4]int
+	found := 0
+	at := 0
+	for at < len(report) && found < 4 {
+		c := report[at]
+		if c < '0' || c > '9' {
+			at += 1
+			continue
+		}
+		v := 0
+		for at < len(report) && report[at] >= '0' && report[at] <= '9' {
+			v = v * 10 + int(report[at] - '0')
+			at += 1
+		}
+		nums[found] = v
+		found += 1
 	}
-	return body
+	if found < 4 {
+		return 0, 0, 0, 0, false
+	}
+	return nums[0], nums[1], nums[2], nums[3], true
 }

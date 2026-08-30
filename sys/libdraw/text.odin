@@ -30,6 +30,14 @@ Atlas :: struct {
 	count:          int,
 }
 
+// atlas_cell names the strip and column a glyph lives in. The uploader
+// and the blitter both go through this, so the layout has one owner and
+// the two cannot drift. Pixels loaded into one cell and blitted from
+// another is a failure only a boot's pixel test would catch.
+atlas_cell :: proc "contextless" (a: Atlas, idx: int) -> (image: u32, sx: u32) {
+	return a.first_image_id + u32(idx / a.per_image), u32((idx % a.per_image) * a.cell_w)
+}
+
 /*
 put_text packs one blit per character of `text` at (x, y) on `dst`, until
 the buffer refuses the next one. Returns the new offset and how many
@@ -54,8 +62,7 @@ put_text :: proc "contextless" (
 	for put < len(text) {
 		idx := int(text[put]) - int(a.first_char)
 		if idx >= 0 && idx < a.count {
-			image := a.first_image_id + u32(idx / a.per_image)
-			sx := u32((idx % a.per_image) * a.cell_w)
+			image, sx := atlas_cell(a, idx)
 			next := put_blit(
 				b,
 				nat,

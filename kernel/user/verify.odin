@@ -37,7 +37,6 @@ import "base:runtime"
 
 import "kernel:arch"
 import "kernel:devfs"
-import "kernel:drivers/console"
 import "kernel:drivers/fb"
 import "kernel:mem"
 import "kernel:pipe"
@@ -46,6 +45,7 @@ import "kernel:srv"
 import "kernel:sync"
 import "kernel:vfs"
 import "vsys:libdraw"
+import "vsys:libfont"
 import "vsys:vectra9"
 
 /*
@@ -1608,14 +1608,7 @@ verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int
 	// The posting is the process's own doing, so the kernel waits for the
 	// name rather than races it. `lookup` answers nil until the descriptor
 	// write lands.
-	posted := false
-	for _ in 0 ..< PATIENCE {
-		if srv.lookup("niner") != nil {
-			posted = true
-			break
-		}
-		sync.delay(1)
-	}
+	posted := await_posted("niner")
 	check(r, posted, "which posts /srv/niner while the kernel watches")
 
 	line: [16]u8
@@ -1870,14 +1863,7 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 		"the stack's page is the reverse",
 	)
 
-	posted := false
-	for _ in 0 ..< PATIENCE {
-		if srv.lookup("ramfs") != nil {
-			posted = true
-			break
-		}
-		sync.delay(1)
-	}
+	posted := await_posted("ramfs")
 	check(r, posted, "and it posts /srv/ramfs through the library")
 
 	check(
@@ -2094,14 +2080,7 @@ verify_notes :: proc(r: ^Result) {
 	}
 	r.programs += 1
 
-	posted := false
-	for _ in 0 ..< PATIENCE {
-		if srv.lookup("ramfs") != nil {
-			posted = true
-			break
-		}
-		sync.delay(1)
-	}
+	posted := await_posted("ramfs")
 	check(r, posted, "and it posts, then parks with nothing to serve")
 
 	check(r, post_note(p, "enough"), "a note is posted to the parked server")
@@ -2552,6 +2531,38 @@ verify_rfork :: proc(r: ^Result) {
 	check(r, fdt_stats() == tables0, "and every descriptor group")
 }
 
+// await_posted polls /srv for the name a spawned server should post, with
+// the suite's patience. Bounded, because a hang says nothing.
+@(private = "file")
+await_posted :: proc(name: string) -> bool {
+	for _ in 0 ..< PATIENCE {
+		if srv.lookup(name) != nil {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+// drain_pinned collects orphans and dead threads until the heap reads
+// level with the bracket's opening, then checks it got there. The tail
+// every server test ends on, written once.
+@(private = "file")
+drain_pinned :: proc(r: ^Result, pin_before: int, what: string) {
+	pinned := 0
+	for _ in 0 ..< PATIENCE {
+		reap_orphans()
+		sched.reap()
+		pinned = live_objects(mem.heap_stats()) - pin_before
+		if pinned == 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, pinned == 0, what)
+	r.pinned += pinned
+}
+
 // The line the kernel types at the console server, byte by byte through the
 // keyboard sink, exactly as IRQ 1's bottom half would deliver it. The
 // newline is what the cooked discipline releases a line on.
@@ -2644,14 +2655,7 @@ verify_consrv :: proc(r: ^Result) {
 	}
 	r.programs += 1
 
-	posted := false
-	for _ in 0 ..< PATIENCE {
-		if srv.lookup("consrv") != nil {
-			posted = true
-			break
-		}
-		sync.delay(1)
-	}
+	posted := await_posted("consrv")
 	if !check(r, posted, "it forks its reader and posts /srv/consrv") {
 		return
 	}
@@ -2763,18 +2767,7 @@ verify_consrv :: proc(r: ^Result) {
 	// The concurrent serve loop forked a worker per parked read, each
 	// detached and left for the kernel. Collect them before measuring, the
 	// way a live server would when its next fork wanted a slot.
-	pinned := 0
-	for _ in 0 ..< PATIENCE {
-		reap_orphans()
-		sched.reap()
-		pinned = live_objects(mem.heap_stats()) - pin_before
-		if pinned == 0 {
-			break
-		}
-		sync.delay(1)
-	}
-	check(r, pinned == 0, "and the forked server's wire comes back whole")
-	r.pinned += pinned
+	drain_pinned(r, pin_before, "and the forked server's wire comes back whole")
 }
 
 // The scancodes the kernel injects into `/dev/scancode`, and the characters
@@ -2814,14 +2807,7 @@ verify_kbdfs :: proc(r: ^Result) {
 	}
 	r.programs += 1
 
-	posted := false
-	for _ in 0 ..< PATIENCE {
-		if srv.lookup("kbdfs") != nil {
-			posted = true
-			break
-		}
-		sync.delay(1)
-	}
+	posted := await_posted("kbdfs")
 	if !check(r, posted, "it forks its reader, opens /dev/scancode, and posts /srv/kbdfs") {
 		return
 	}
@@ -2913,18 +2899,7 @@ verify_kbdfs :: proc(r: ^Result) {
 		"the mount of the dead translator comes down",
 	)
 
-	pinned := 0
-	for _ in 0 ..< PATIENCE {
-		reap_orphans()
-		sched.reap()
-		pinned = live_objects(mem.heap_stats()) - pin_before
-		if pinned == 0 {
-			break
-		}
-		sync.delay(1)
-	}
-	check(r, pinned == 0, "and the translator's wire comes back whole")
-	r.pinned += pinned
+	drain_pinned(r, pin_before, "and the translator's wire comes back whole")
 }
 
 // The bytes the kernel puts on the raw serial stream, through the producer's
@@ -2964,14 +2939,7 @@ verify_eiafs :: proc(r: ^Result) {
 	}
 	r.programs += 1
 
-	posted := false
-	for _ in 0 ..< PATIENCE {
-		if srv.lookup("eiafs") != nil {
-			posted = true
-			break
-		}
-		sync.delay(1)
-	}
+	posted := await_posted("eiafs")
 	if !check(r, posted, "it forks its reader, opens /dev/eia0, and posts /srv/eiafs") {
 		return
 	}
@@ -3078,27 +3046,7 @@ verify_eiafs :: proc(r: ^Result) {
 		"the mount of the dead server comes down",
 	)
 
-	pinned := 0
-	for _ in 0 ..< PATIENCE {
-		reap_orphans()
-		sched.reap()
-		pinned = live_objects(mem.heap_stats()) - pin_before
-		if pinned == 0 {
-			break
-		}
-		sync.delay(1)
-	}
-	check(r, pinned == 0, "and the serial server's wire comes back whole")
-	r.pinned += pinned
-}
-
-// glass_u32 reads one pixel back off the screen's own memory, the readback
-// the painter test taught. Little-endian, the way the draw server wrote it.
-@(private = "file")
-glass_u32 :: proc "contextless" (s: ^fb.Surface, x: int, y: int) -> u32 #no_bounds_check {
-	o := y * s.pitch + x * 4
-	return u32(s.pixels[o]) | u32(s.pixels[o + 1]) << 8 |
-		u32(s.pixels[o + 2]) << 16 | u32(s.pixels[o + 3]) << 24
+	drain_pinned(r, pin_before, "and the serial server's wire comes back whole")
 }
 
 /*
@@ -3132,14 +3080,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	}
 	r.programs += 1
 
-	posted := false
-	for _ in 0 ..< PATIENCE {
-		if srv.lookup("draw") != nil {
-			posted = true
-			break
-		}
-		sync.delay(1)
-	}
+	posted := await_posted("draw")
 	if !check(r, posted, "it reads the screen's shape and posts /srv/draw") {
 		return
 	}
@@ -3173,14 +3114,10 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	saved_a: [4 * 48 * 4]u8
 	for line in 0 ..< 4 {
 		o := (y0 + line) * s.pitch
-		for i in 0 ..< 48 * 4 {
-			saved_a[line * 192 + i] = s.pixels[o + i]
-		}
+		copy(saved_a[line * 192:][:192], s.pixels[o:o + 192])
 	}
 	saved_b: [8 * 4]u8
-	for i in 0 ..< 8 * 4 {
-		saved_b[i] = s.pixels[y0 * s.pitch + edge_x * 4 + i]
-	}
+	copy(saved_b[:], s.pixels[y0 * s.pitch + edge_x * 4:][:8 * 4])
 
 	// -- One write, five verbs, and the glass answers -------------------------
 
@@ -3188,11 +3125,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	C3 :: u32(0x00CC2200)
 	pat: [128]u8
 	for i in 0 ..< 32 {
-		v := u32(0x00400000) | u32(i)
-		pat[i * 4] = u8(v)
-		pat[i * 4 + 1] = u8(v >> 8)
-		pat[i * 4 + 2] = u8(v >> 16)
-		pat[i * 4 + 3] = u8(v >> 24)
+		libdraw.put_u32(pat[:], i * 4, u32(0x00400000) | u32(i))
 	}
 
 	buf: [512]u8
@@ -3209,13 +3142,13 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	)
 	check(
 		r,
-		glass_u32(s, 8, y0) == C1 && glass_u32(s, 23, y0 + 3) == C1,
+		fb.get_raw(s, 8, y0) == C1 && fb.get_raw(s, 23, y0 + 3) == C1,
 		"the fill landed on the glass, corner to corner",
 	)
 	blitted := true
 	for line in 0 ..< 4 {
 		for i in 0 ..< 8 {
-			if glass_u32(s, 32 + i, y0 + line) != (u32(0x00400000) | u32(line * 8 + i)) {
+			if fb.get_raw(s, 32 + i, y0 + line) != (u32(0x00400000) | u32(line * 8 + i)) {
 				blitted = false
 			}
 		}
@@ -3231,12 +3164,12 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	here is that landing spot, which is what makes this check strong. The
 	first cut watched only the painted edge, and the control walked past it.
 	*/
-	spill_before := glass_u32(s, 0, y0 + 1)
+	spill_before := fb.get_raw(s, 0, y0 + 1)
 	at = libdraw.put_fill(buf[:], 0, 0, u32(edge_x), u32(y0), 16, 1, C1)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr == vfs.OK, "a fill past the edge clips rather than errors")
-	check(r, glass_u32(s, s.width - 1, y0) == C1, "and paints up to the last pixel")
-	check(r, glass_u32(s, 0, y0 + 1) == spill_before, "and spills nothing onto the row below")
+	check(r, fb.get_raw(s, s.width - 1, y0) == C1, "and paints up to the last pixel")
+	check(r, fb.get_raw(s, 0, y0 + 1) == spill_before, "and spills nothing onto the row below")
 
 	at = libdraw.put_fill(buf[:], 0, 0, 8, u32(y0), 4, 1, C3)
 	buf[at] = 4
@@ -3245,7 +3178,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	buf[at + 3] = 0
 	_, werr = vfs.chan_write(dc, 0, buf[:at + 4])
 	check(r, werr != vfs.OK, "a malformed command fails the whole write")
-	check(r, glass_u32(s, 8, y0) == C3, "and what stood before it already drew")
+	check(r, fb.get_raw(s, 8, y0) == C3, "and what stood before it already drew")
 
 	at = libdraw.put_free(buf[:], 0, 1)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
@@ -3271,13 +3204,9 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	// Put the glass back the way it was found.
 	for line in 0 ..< 4 {
 		o := (y0 + line) * s.pitch
-		for i in 0 ..< 48 * 4 {
-			s.pixels[o + i] = saved_a[line * 192 + i]
-		}
+		copy(s.pixels[o:o + 192], saved_a[line * 192:][:192])
 	}
-	for i in 0 ..< 8 * 4 {
-		s.pixels[y0 * s.pitch + edge_x * 4 + i] = saved_b[i]
-	}
+	copy(s.pixels[y0 * s.pitch + edge_x * 4:][:8 * 4], saved_b[:])
 
 	// -- Teardown, the arc every tenant obeys ---------------------------------
 
@@ -3304,18 +3233,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 		"the mount of the dead server comes down",
 	)
 
-	pinned := 0
-	for _ in 0 ..< PATIENCE {
-		reap_orphans()
-		sched.reap()
-		pinned = live_objects(mem.heap_stats()) - pin_before
-		if pinned == 0 {
-			break
-		}
-		sync.delay(1)
-	}
-	check(r, pinned == 0, "and the draw server's wire comes back whole")
-	r.pinned += pinned
+	drain_pinned(r, pin_before, "and the draw server's wire comes back whole")
 }
 
 // The terminal's two colors, duplicated as fixtures. A test that read
@@ -3331,24 +3249,22 @@ TERM_BG :: u32(0x00181F28)
 term_saved: [16 * 352 * 4]u8
 
 /*
-glyph_on_glass compares one 8x16 cell on the screen against the kernel's
-own font table, pixel for pixel, in the terminal's colors.
+glyph_on_glass compares one 8x16 cell on the screen against the one font
+table, pixel for pixel, in the terminal's colors.
 
 The comparison is deliberately exact rather than any-lit-pixel. The
 controls that swap the atlas arithmetic or invert the bit expansion still
 light pixels -- the wrong ones. Only an exact cell tells a right glyph
-from a wrong one. It also proves the generated `sys/libfont` twin never
-drifted from the console's table, since the terminal drew from one and
-this compares against the other.
+from a wrong one.
 */
 @(private = "file")
 glyph_on_glass :: proc "contextless" (s: ^fb.Surface, x: int, y: int, ch: u8) -> bool #no_bounds_check {
-	rows := &console.font_8x16[int(ch) - console.FONT_FIRST]
-	for line in 0 ..< console.FONT_HEIGHT {
+	rows := &libfont.font_8x16[int(ch) - libfont.FONT_FIRST]
+	for line in 0 ..< libfont.FONT_HEIGHT {
 		bits := rows[line]
-		for i in 0 ..< console.FONT_WIDTH {
+		for i in 0 ..< libfont.FONT_WIDTH {
 			want := bits & (0x80 >> u8(i)) != 0 ? TERM_FG : TERM_BG
-			if glass_u32(s, x + i, y + line) != want {
+			if fb.get_raw(s, x + i, y + line) != want {
 				return false
 			}
 		}
@@ -3386,14 +3302,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	}
 	r.programs += 1
 
-	posted := false
-	for _ in 0 ..< PATIENCE {
-		if srv.lookup("draw") != nil {
-			posted = true
-			break
-		}
-		sync.delay(1)
-	}
+	posted := await_posted("draw")
 	if !check(r, posted, "it posts /srv/draw for a client to find") {
 		return
 	}
@@ -3402,9 +3311,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	y0 := s.height - 40
 	for line in 0 ..< 16 {
 		o := (y0 + line) * s.pitch + 8 * 4
-		for i in 0 ..< 352 * 4 {
-			term_saved[line * 1408 + i] = s.pixels[o + i]
-		}
+		copy(term_saved[line * 1408:][:1408], s.pixels[o:o + 1408])
 	}
 
 	pt, terr := spawn_path(nil, "/bin/terminal", SPAWN_NS_COPY)
@@ -3471,9 +3378,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	// Put the field back the way it was found.
 	for line in 0 ..< 16 {
 		o := (y0 + line) * s.pitch + 8 * 4
-		for i in 0 ..< 352 * 4 {
-			s.pixels[o + i] = term_saved[line * 1408 + i]
-		}
+		copy(s.pixels[o:o + 1408], term_saved[line * 1408:][:1408])
 	}
 
 	// The pool proof: the terminal held six strip images, and its exit
@@ -3484,6 +3389,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK,
 		"the kernel mounts the draw server",
 	)
+	refilled := false
 	if dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY); oerr == vfs.OK {
 		pool: [160]u8
 		at := 0
@@ -3491,15 +3397,14 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 			at = libdraw.put_alloc(pool[:], at, u32(id), 8, 4)
 		}
 		_, werr := vfs.chan_write(dc, 0, pool[:at])
-		check(
-			r,
-			werr == vfs.OK,
-			"a fresh session allocates the whole pool -- the dead terminal's images came back",
-		)
+		refilled = werr == vfs.OK
 		vfs.chan_close(dc)
-	} else {
-		check(r, false, "a fresh session allocates the whole pool -- the dead terminal's images came back")
 	}
+	check(
+		r,
+		refilled,
+		"a fresh session allocates the whole pool -- the dead terminal's images came back",
+	)
 
 	// -- Teardown, the draw server's half -------------------------------------
 
@@ -3530,18 +3435,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		"the mount of the dead server comes down",
 	)
 
-	pinned := 0
-	for _ in 0 ..< PATIENCE {
-		reap_orphans()
-		sched.reap()
-		pinned = live_objects(mem.heap_stats()) - pin_before
-		if pinned == 0 {
-			break
-		}
-		sync.delay(1)
-	}
-	check(r, pinned == 0, "and the first app's wire comes back whole")
-	r.pinned += pinned
+	drain_pinned(r, pin_before, "and the first app's wire comes back whole")
 }
 
 // live_objects counts what the heap is holding. The same arithmetic

@@ -39,8 +39,7 @@ clean:
 
 # Regenerate the baked-in console font from the host's PTMono.
 font:
-    python3 tools/genfont.py > kernel/drivers/console/font_data.odin
-    python3 tools/genfont.py --package libfont > sys/libfont/font_data.odin
+    python3 tools/genfont.py > sys/libfont/font_data.odin
 
 # Type-check every package without emitting anything.
 check:

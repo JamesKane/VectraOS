@@ -112,7 +112,7 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	}
 	n := libuser.read(int(ctl), geo[:])
 	_ = libuser.close(int(ctl))
-	if n <= 0 || !parse_geometry(geo[:int(n)]) {
+	if n <= 0 || !read_geometry(geo[:int(n)]) {
 		libuser.exit(0x76)
 	}
 	geo_len = int(n)
@@ -134,35 +134,19 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 }
 
 /*
-parse_geometry takes the four numbers the report leads with: width,
-height, pitch, depth, in the order `/dev/fbctl` prints them. The channel
-lines after them are not read -- one pixel format is the v1 rule, and a
-depth other than 32 is refused at start rather than mid-draw.
+read_geometry takes what `libdraw.parse_geometry` decodes and keeps only
+a shape this server can draw on. The channel lines after the numbers are
+not read -- one pixel format is the v1 rule, and a depth other than 32
+is refused at start rather than mid-draw.
 */
-parse_geometry :: proc "contextless" (report: []u8) -> bool #no_bounds_check {
-	nums: [4]int
-	found := 0
-	at := 0
-	for at < len(report) && found < 4 {
-		c := report[at]
-		if c < '0' || c > '9' {
-			at += 1
-			continue
-		}
-		v := 0
-		for at < len(report) && report[at] >= '0' && report[at] <= '9' {
-			v = v * 10 + int(report[at] - '0')
-			at += 1
-		}
-		nums[found] = v
-		found += 1
-	}
-	if found < 4 || nums[3] != 32 {
+read_geometry :: proc "contextless" (report: []u8) -> bool {
+	w, h, pitch, depth, ok := libdraw.parse_geometry(report)
+	if !ok || depth != 32 {
 		return false
 	}
-	scr_w = nums[0]
-	scr_h = nums[1]
-	scr_pitch = nums[2]
+	scr_w = w
+	scr_h = h
+	scr_pitch = pitch
 	return scr_w > 0 && scr_h > 0 && scr_pitch >= scr_w * 4 && scr_w * 4 <= ROW_CAP
 }
 
@@ -208,23 +192,15 @@ image_free_all :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 
 // -- The screen ---------------------------------------------------------------
 
-// screen_rows writes `h` rows of prepared bytes at (x, y), one seek and
-// one write per row. The caller clipped already, so a refusal from the
-// file is a real error rather than a boundary case.
-screen_rows :: proc "contextless" (x: int, y: int, w: int, h: int, from: proc "contextless" (line: int) -> bool) -> bool {
-	for line in 0 ..< h {
-		if !from(line) {
-			return false
-		}
-		offset := u64(y + line) * u64(scr_pitch) + u64(x) * 4
-		if libuser.seek(fb_fd, offset) < 0 {
-			return false
-		}
-		if !libuser.write_full(fb_fd, row[:w * 4]) {
-			return false
-		}
+// screen_row writes one prepared row of `w` pixels at (x, y): a seek and
+// a write. The caller clipped already, so a refusal from the file is a
+// real error rather than a boundary case.
+screen_row :: proc "contextless" (x: int, y: int, w: int) -> bool {
+	offset := u64(y) * u64(scr_pitch) + u64(x) * 4
+	if libuser.seek(fb_fd, offset) < 0 {
+		return false
 	}
-	return true
+	return libuser.write_full(fb_fd, row[:w * 4])
 }
 
 // clip trims a rectangle to a destination's bounds, moving a source
@@ -250,35 +226,6 @@ clip :: proc "contextless" (x: ^int, y: ^int, w: ^int, h: ^int, sx: ^int, sy: ^i
 }
 
 // -- The verbs ----------------------------------------------------------------
-
-// fill_color and blit_src carry one command's fields to the row builder,
-// which cannot capture them: a "contextless" proc has no closure, so the
-// arguments travel through the shared bss instead.
-fill_color: u32
-blit_src: int
-blit_sx: int
-blit_sy: int
-
-fill_row :: proc "contextless" (line: int) -> bool #no_bounds_check {
-	_ = line
-	return true
-}
-
-blit_row :: proc "contextless" (line: int) -> bool #no_bounds_check {
-	src := &pixels[blit_src]
-	base := (blit_sy + line) * images[blit_src].w + blit_sx
-	count := blit_w
-	for i in 0 ..< count {
-		v := src[base + i]
-		row[i * 4] = u8(v)
-		row[i * 4 + 1] = u8(v >> 8)
-		row[i * 4 + 2] = u8(v >> 16)
-		row[i * 4 + 3] = u8(v >> 24)
-	}
-	return true
-}
-
-blit_w: int
 
 /*
 run_commands walks one write's worth of the stream and executes each
@@ -360,12 +307,14 @@ run_load :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 	if len(body) - 20 != w * h * 4 {
 		return vectra9.EINVAL
 	}
+	// The wire and the one build target are both little-endian, so a row
+	// of payload is byte-identical to the pixel words. One copy per row,
+	// no per-pixel decode.
 	for line in 0 ..< h {
 		base := (y + line) * img.w + x
 		src := 20 + line * w * 4
-		for i in 0 ..< w {
-			pixels[slot][base + i] = libdraw.get_u32(body, src + i * 4)
-		}
+		dst := ([^]u8)(raw_data(pixels[slot][base:]))
+		copy(dst[:w * 4], body[src:src + w * 4])
 	}
 	return vectra9.Errno(0)
 }
@@ -388,13 +337,12 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 			return vectra9.Errno(0)
 		}
 		for i in 0 ..< w {
-			row[i * 4] = u8(color)
-			row[i * 4 + 1] = u8(color >> 8)
-			row[i * 4 + 2] = u8(color >> 16)
-			row[i * 4 + 3] = u8(color >> 24)
+			libdraw.put_u32(row[:], i * 4, color)
 		}
-		if !screen_rows(x, y, w, h, fill_row) {
-			return vectra9.EIO
+		for line in 0 ..< h {
+			if !screen_row(x, y + line, w) {
+				return vectra9.EIO
+			}
 		}
 		return vectra9.Errno(0)
 	}
@@ -447,12 +395,14 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		if !clip(&dx, &dy, &sw, &sh, &sx, &sy, scr_w, scr_h) {
 			return vectra9.Errno(0)
 		}
-		blit_src = sslot
-		blit_sx = sx
-		blit_sy = sy
-		blit_w = sw
-		if !screen_rows(dx, dy, sw, sh, blit_row) {
-			return vectra9.EIO
+		for line in 0 ..< sh {
+			base := (sy + line) * simg.w + sx
+			// Pixel words are already the row's bytes -- see `run_load`.
+			bytes := ([^]u8)(raw_data(pixels[sslot][base:]))
+			copy(row[:sw * 4], bytes[:sw * 4])
+			if !screen_row(dx, dy + line, sw) {
+				return vectra9.EIO
+			}
 		}
 		return vectra9.Errno(0)
 	}
@@ -569,14 +519,6 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 
 // -- The handler --------------------------------------------------------------
 
-creates :: proc "contextless" (k: vectra9.Kind) -> bool {
-	#partial switch k {
-	case .Tlcreate, .Tmkdir, .Tmknod, .Tsymlink, .Tlink, .Trename, .Trenameat:
-		return true
-	}
-	return false
-}
-
 handler :: proc "contextless" (
 	state: rawptr,
 	s: ^vectra9.Session,
@@ -589,7 +531,7 @@ handler :: proc "contextless" (
 	_ = s
 	_ = tag
 
-	if creates(vectra9.kind(request^)) {
+	if vectra9.creates(vectra9.kind(request^)) {
 		reply^ = vectra9.error_reply(vectra9.EPERM)
 		return
 	}

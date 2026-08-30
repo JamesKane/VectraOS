@@ -61,9 +61,11 @@ import "kernel:vfs"
 import "vsys:vectra9"
 
 // Bytes for the wire's arena: one reply buffer per request slot plus the
-// transmit buffer. What one slot holds becomes the connection's msize.
+// transmit buffer. What one slot holds becomes the connection's msize. The
+// slot size is the protocol's `WIRE_SLOT`, so a ring 3 client sizes its
+// writes by the number this arena is cut from.
 @(private = "file")
-WIRE_ARENA :: 1024 * (mnt.MAX_REQUESTS + 1)
+WIRE_ARENA :: vectra9.WIRE_SLOT * (mnt.MAX_REQUESTS + 1)
 
 // Ticks the Tversion answer may take before the connection is torn down. Half
 // a second of a parked server that has only to read seven bytes and echo them.

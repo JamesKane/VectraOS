@@ -702,7 +702,7 @@ kernel/
     fb/fb.odin          Surface, clipping, bevels, gradients, brushed fill
     fb/palette.odin     The system palette — single source of colour truth
     console/console.odin  Framebuffer text console
-    console/font_data.odin GENERATED — do not hand-edit
+    console/               draws from sys/libfont, the one font table
   mem/
     mem.odin            Region/Boot_Memory types, HHDM, alignment, mem.init
     pmm.odin            Bitmap physical page allocator
@@ -860,8 +860,8 @@ sys/
   libdraw/text.odin     Text as a library over blit: the atlas layout, and
                         put_text with its consumed-count return that pumps
                         a long line through in batches
-  libfont/font_data.odin  GENERATED -- the console's 8x16 table under a
-                        second package name, for ring 3 to draw from
+  libfont/font_data.odin  GENERATED -- the one 8x16 font table, imported
+                        by the kernel console and linked by ring 3 alike
   libposix/             Empty
 servers/
   ramfs/main.odin       The first compiled server: two files, one writable,

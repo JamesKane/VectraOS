@@ -279,10 +279,10 @@ Three things this proved about the runtime:
 The other side of the economy every section above built: a program that
 consumes services rather than serving one. The terminal reads lines from
 `/dev/cons` and draws them through `/srv/draw` -- which it mounts itself,
-the tree's first ring 3 mount. Its font is `sys/libfont`, the console's
-own table generated a second time under another package name, and its
-rendering is `sys/libdraw`'s `put_text`: one 36-byte blit per character,
-out of six strip images uploaded once at start.
+the tree's first ring 3 mount. Its font is `sys/libfont`, the same table
+the kernel console draws from -- one owner, both rings. Its rendering is
+`sys/libdraw`'s `put_text`: one 36-byte blit per character, out of six
+strip images uploaded once at start.
 
 Three things this proved about the runtime:
 
