@@ -37,6 +37,7 @@ import "base:runtime"
 
 import "kernel:arch"
 import "kernel:devfs"
+import "kernel:drivers/console"
 import "kernel:drivers/fb"
 import "kernel:mem"
 import "kernel:pipe"
@@ -424,6 +425,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// -- And the screen, spoken to in verbs -----------------------------------
 
 	verify_draw(&r)
+
+	// -- And the first app, a client of that server ---------------------------
+
+	verify_terminal(&r, column)
 
 	// -- What is left ---------------------------------------------------------
 
@@ -3310,6 +3315,232 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 		sync.delay(1)
 	}
 	check(r, pinned == 0, "and the draw server's wire comes back whole")
+	r.pinned += pinned
+}
+
+// The terminal's two colors, duplicated as fixtures. A test that read
+// them from the code under test would agree with itself.
+@(private = "file")
+TERM_FG :: u32(0x00FFB028)
+@(private = "file")
+TERM_BG :: u32(0x00181F28)
+
+// What the terminal paints over, saved to be restored: 16 rows of 352
+// pixels. In the bss, because 22 KiB does not belong on a kernel stack.
+@(private = "file")
+term_saved: [16 * 352 * 4]u8
+
+/*
+glyph_on_glass compares one 8x16 cell on the screen against the kernel's
+own font table, pixel for pixel, in the terminal's colors.
+
+The comparison is deliberately exact rather than any-lit-pixel. The
+controls that swap the atlas arithmetic or invert the bit expansion still
+light pixels -- the wrong ones. Only an exact cell tells a right glyph
+from a wrong one. It also proves the generated `sys/libfont` twin never
+drifted from the console's table, since the terminal drew from one and
+this compares against the other.
+*/
+@(private = "file")
+glyph_on_glass :: proc "contextless" (s: ^fb.Surface, x: int, y: int, ch: u8) -> bool #no_bounds_check {
+	rows := &console.font_8x16[int(ch) - console.FONT_FIRST]
+	for line in 0 ..< console.FONT_HEIGHT {
+		bits := rows[line]
+		for i in 0 ..< console.FONT_WIDTH {
+			want := bits & (0x80 >> u8(i)) != 0 ? TERM_FG : TERM_BG
+			if glass_u32(s, x + i, y + line) != want {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+/*
+verify_terminal is the first program in apps/, run against both services
+it consumes.
+
+The terminal is the tree's first ring 3 mounter. The kernel leaves /mnt
+alone until it exits, so the mount it draws through is its own work. The
+prompt poll waits for the exact `>` glyph, which makes it double as the
+font-fidelity check. The echo bracket types three bytes with no newline
+and reads the console cursor before and after. Echo runs synchronously
+on this thread, so an unmoved cursor is proof, not a race. The typed
+`exit` is the teardown's first half, and the draw server's remove is the
+second, child-first as every tenant taught.
+*/
+@(private = "file")
+verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bounds_check {
+	s := devfs.raw_surface()
+	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
+		return
+	}
+
+	count0 := srv.count()
+	sched.reap()
+	pin_before := live_objects(mem.heap_stats())
+
+	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && ps != nil, "the loader starts the draw server") {
+		return
+	}
+	r.programs += 1
+
+	posted := false
+	for _ in 0 ..< PATIENCE {
+		if srv.lookup("draw") != nil {
+			posted = true
+			break
+		}
+		sync.delay(1)
+	}
+	if !check(r, posted, "it posts /srv/draw for a client to find") {
+		return
+	}
+
+	// The field the terminal will paint, saved before it exists.
+	y0 := s.height - 40
+	for line in 0 ..< 16 {
+		o := (y0 + line) * s.pitch + 8 * 4
+		for i in 0 ..< 352 * 4 {
+			term_saved[line * 1408 + i] = s.pixels[o + i]
+		}
+	}
+
+	pt, terr := spawn_path(nil, "/bin/terminal", SPAWN_NS_COPY)
+	if !check(r, terr == vfs.OK && pt != nil, "the loader starts the terminal") {
+		return
+	}
+	r.programs += 1
+
+	// The prompt lands only after the terminal mounts the server, reads
+	// the geometry, and uploads ninety-five glyphs. The poll waits for
+	// the exact glyph, so a wrong atlas never satisfies it.
+	prompted := false
+	for _ in 0 ..< PATIENCE {
+		if glyph_on_glass(s, 8, y0, '>') {
+			prompted = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, prompted, "the terminal mounts the server itself and paints its prompt")
+	check(r, glyph_on_glass(s, 16, y0, ' '), "whose glyphs match the kernel's own font, pixel for pixel")
+
+	// Three bytes, no newline. Echo runs synchronously on this thread,
+	// so the cursor comparison needs no settle loop.
+	col0 := column()
+	devfs.keyboard_sink('h')
+	devfs.keyboard_sink('i')
+	devfs.keyboard_sink('!')
+	check(r, column() == col0, "three typed bytes move the console cursor nowhere -- the echo is off")
+
+	devfs.keyboard_sink('\n')
+	// The poll waits for the line's LAST glyph. The server paints the
+	// batch left to right, so the first glyph says only that the batch
+	// began. A poll of it once raced the two behind it.
+	rendered := false
+	for _ in 0 ..< PATIENCE {
+		if glyph_on_glass(s, 40, y0, '!') {
+			rendered = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, rendered, "the newline completes the line and the terminal renders it")
+	check(
+		r,
+		glyph_on_glass(s, 24, y0, 'h') && glyph_on_glass(s, 32, y0, 'i'),
+		"every glyph out of the uploaded atlas, pixel for pixel",
+	)
+	check(r, glyph_on_glass(s, 48, y0, ' '), "and the cell after the text is background")
+
+	// The typed stop, and the terminal's own exit.
+	stop := "exit\n"
+	for i in 0 ..< len(stop) {
+		devfs.keyboard_sink(stop[i])
+	}
+	if check(r, wait(pt, PATIENCE), "the typed exit stops the terminal") {
+		check(
+			r,
+			pt.exit.deliberate && pt.exit.status == 0,
+			"with zero -- the exit was the terminal's own choice",
+		)
+	}
+
+	// Put the field back the way it was found.
+	for line in 0 ..< 16 {
+		o := (y0 + line) * s.pitch + 8 * 4
+		for i in 0 ..< 352 * 4 {
+			s.pixels[o + i] = term_saved[line * 1408 + i]
+		}
+	}
+
+	// The pool proof: the terminal held six strip images, and its exit
+	// clunked them away. A fresh session that allocates all eight shows
+	// nothing leaked.
+	check(
+		r,
+		srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK,
+		"the kernel mounts the draw server",
+	)
+	if dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY); oerr == vfs.OK {
+		pool: [160]u8
+		at := 0
+		for id in 1 ..= 8 {
+			at = libdraw.put_alloc(pool[:], at, u32(id), 8, 4)
+		}
+		_, werr := vfs.chan_write(dc, 0, pool[:at])
+		check(
+			r,
+			werr == vfs.OK,
+			"a fresh session allocates the whole pool -- the dead terminal's images came back",
+		)
+		vfs.chan_close(dc)
+	} else {
+		check(r, false, "a fresh session allocates the whole pool -- the dead terminal's images came back")
+	}
+
+	// -- Teardown, the draw server's half -------------------------------------
+
+	ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/ctl", vfs.O_RDONLY)
+	if check(r, cerr == vfs.OK, "and opens its ctl file") {
+		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove is answered, and is the stop")
+		vfs.chan_close(ctl)
+	}
+
+	if check(r, wait(ps, PATIENCE), "the draw server exits") {
+		check(
+			r,
+			ps.exit.deliberate && ps.exit.status == 0,
+			"with zero -- the remove was the stop it obeyed",
+		)
+	}
+
+	check(r, srv.remove("draw") == vfs.OK, "the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+
+	finish(r, pt, "and the terminal is taken down")
+	finish(r, ps, "and the draw server is taken down")
+
+	pipe.quiesce()
+	check(
+		r,
+		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
+		"the mount of the dead server comes down",
+	)
+
+	pinned := 0
+	for _ in 0 ..< PATIENCE {
+		reap_orphans()
+		sched.reap()
+		pinned = live_objects(mem.heap_stats()) - pin_before
+		if pinned == 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, pinned == 0, "and the first app's wire comes back whole")
 	r.pinned += pinned
 }
 

@@ -25,7 +25,8 @@ defers that deliberately, with its shape written down.
 
 `apps/terminal` is the first client, and its needs list is short. Upload a
 glyph set once, blit it thousands of times, fill a rectangle, scroll one,
-place a cursor. Small commands, pixels resident on the server's side.
+place a cursor. Small commands, pixels resident on the server's side. That
+client stands now, and the six verbs carried it without an addition.
 
 `servers/intuition`, the compositor, is the second. It touches the whole
 frame every round, and no command stream makes that cheap. It wants the

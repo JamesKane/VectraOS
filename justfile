@@ -40,6 +40,7 @@ clean:
 # Regenerate the baked-in console font from the host's PTMono.
 font:
     python3 tools/genfont.py > kernel/drivers/console/font_data.odin
+    python3 tools/genfont.py --package libfont > sys/libfont/font_data.odin
 
 # Type-check every package without emitting anything.
 check:
@@ -60,5 +61,8 @@ check:
         -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
         -vet -strict-style
     odin check servers/intuition -collection:vsys=sys \
+        -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
+        -vet -strict-style
+    odin check apps/terminal -collection:vsys=sys \
         -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
         -vet -strict-style

@@ -274,6 +274,31 @@ Three things this proved about the runtime:
   landing spot now, which is `docs/TESTING.md`'s weak-check rule caught
   in the act.
 
+## `apps/terminal`: the first app, and the first ring 3 mount
+
+The other side of the economy every section above built: a program that
+consumes services rather than serving one. The terminal reads lines from
+`/dev/cons` and draws them through `/srv/draw` -- which it mounts itself,
+the tree's first ring 3 mount. Its font is `sys/libfont`, the console's
+own table generated a second time under another package name, and its
+rendering is `sys/libdraw`'s `put_text`: one 36-byte blit per character,
+out of six strip images uploaded once at start.
+
+Three things this proved about the runtime:
+
+- **A namespace is a process's own to arrange.** `libuser.mount` had no
+  caller until now. The terminal names `/srv/draw`, mounts it over its
+  private `/mnt`, and draws through the result.
+- **The wire bound is a client concern too.** The posted-pipe session
+  moves 1000 payload bytes per write, and a command split across two
+  writes is a frame the server refuses. `put_text` returns the count it
+  consumed, so a long line pumps through in batches. The arithmetic
+  lives in one loop rather than in every client.
+- **The echo has one owner at a time.** Typed bytes echo onto the kernel
+  console, so a program that draws its own text writes `echooff` first
+  and holds `/dev/consctl` for its whole life. The mode reverts when the
+  descriptor closes, which is exit.
+
 ## The build, and where the image goes
 
 `build.odin` compiles each entry in `user_programs` with the kernel's own
@@ -289,9 +314,10 @@ self-test fails loudly on the absence. `make check` also checks every
 
 ## The controls
 
-Fifteen mutations and one flake, each observed on a real boot. Three are the
+Eighteen mutations and one flake, each observed on a real boot. Three are the
 concurrent serve loop, two are `kbdfs`'s translation, three are `eiafs`'s
-port, and three are the draw server's. The copy-before-fork
+port, three are the draw server's, and three are the terminal's. The
+copy-before-fork
 invariant is not among them. A single-client test leaves too wide a gap
 before the next request for a worker to lose the race. That one is argued
 rather than tripped, the distinction `docs/TESTING.md` draws between a control
@@ -314,6 +340,9 @@ that cannot be expressed and one that fails to fire.
 | the draw server's clip dropped | caught -- `and spills nothing onto the row below`. **The first run passed instead**: an unclipped edge fill wraps onto the next row, refused by nothing, and the check watched only the painted edge. It watches the landing spot now |
 | an unknown verb skipped as if it were nothing | caught -- `a malformed command fails the whole write` |
 | the clunk keeps a session's images | caught -- `and the clunk gave the session's images back`, because the refilled pool has no room |
+| the terminal's strip arithmetic swapped | caught -- `the terminal mounts the server itself and paints its prompt`, because the poll waits for the exact glyph and a wrong atlas never satisfies it |
+| the terminal's bit expansion inverted | caught -- the same exact-glyph poll. A lit-pixels-anywhere poll would have passed both this and the swap, which is why the poll is pixel-exact |
+| the terminal never turns the echo off | caught -- `three typed bytes move the console cursor nowhere`. Echo runs synchronously on the injecting thread, so the cursor comparison needs no settle loop |
 
 And the flake: a one-in-twenty boot printed a program's line half-staged,
 with zeroes for a tail. `load` started the thread, and the self-tests staged

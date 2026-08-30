@@ -35,6 +35,7 @@ clean:
 
 font:
 	python3 tools/genfont.py > kernel/drivers/console/font_data.odin
+	python3 tools/genfont.py --package libfont > sys/libfont/font_data.odin
 
 check:
 	odin check kernel -collection:kernel=kernel -collection:vsys=sys \
@@ -54,5 +55,8 @@ check:
 		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
 		-vet -strict-style
 	odin check servers/intuition -collection:vsys=sys \
+		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
+		-vet -strict-style
+	odin check apps/terminal -collection:vsys=sys \
 		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
 		-vet -strict-style

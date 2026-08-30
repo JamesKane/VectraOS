@@ -53,7 +53,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1200 checks against itself and idles.
+1220 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -108,8 +108,8 @@ child at birth, a dying parent reparents its children to the kernel, and
 `reap_orphans` collects a detached process once it ends. `docs/USER.md` owns
 both.
 
-**Vectra runs processes, and now a process can become two.** Thirty-eight
-enter ring 3 during the boot, and another process started fourteen of them,
+**Vectra runs processes, and now a process can become two.** Forty enter
+ring 3 during the boot, and another process started fourteen of them,
 by `spawn` and by `rfork`. One of them then replaced itself with `exec`. A
 forked child continues from the instruction after its parent's `syscall`,
 on a private copy of the stack. It answers zero where its parent hears a
@@ -160,6 +160,14 @@ fill, an image, a load, a blit and a flush, and every claim read back off
 the glass. A session is a fid, and a clunk gives its images back.
 `sys/libdraw` owns the encoding, and `libuser` grew `seek`.
 
+**And `apps/` has its first resident.** `apps/terminal` consumes two
+services at once: lines in from `/dev/cons`, glyphs out through
+`/srv/draw`, which it mounts itself -- the tree's first ring 3 mount. It
+uploads the console's own font once, from `sys/libfont`. A typed line
+comes back as blits out of that atlas, pixel-identical to the kernel's
+rendering. The kernel types at it during the boot and reads the glass. A
+typed `exit` ends it, and its clunked session gives the image pool back.
+
 ```
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
@@ -190,9 +198,9 @@ The flag word is Plan 9's bit for bit. `RFPROC`, `RFMEM`, `RFFDG`,
 The rest are refused EINVAL rather than skipped. Without `RFPROC` the
 namespace and descriptor flags act on the caller in place.
 
-About 45,600 lines of Odin. The linked image is ~1540 KB debug and ~897 KB
-release. The five embedded user images (`ramfs`, `consrv`, `kbdfs`,
-`eiafs`, `intuition`) are ~270 KB of both.
+About 46,300 lines of Odin. The linked image is ~1550 KB debug and ~913 KB
+release. The six embedded user images (`ramfs`, `consrv`, `kbdfs`,
+`eiafs`, `intuition`, `terminal`) are ~275 KB of both.
 
 **What exists, and which document says why:**
 
@@ -256,6 +264,8 @@ of them could have come earlier:
                             through a mount reaches the hardware behind it
     a draw server           and the screen speaks in verbs: a command
                             stream in a file, checked against the glass
+    a terminal              and a program consumes both: typed lines come
+                            back as glyphs a mount of its own arranged
 
 Everything else about how it got here is in the documents above, beside the
 code it explains.
@@ -301,7 +311,7 @@ code it explains.
 [  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
 [  ok  ] pipe 37 checks passed -- 8227 bytes crossed, 2 threads parked and woken, heap balanced
 [  ok  ] wire 46 checks passed -- 18 frames answered by a thread the kernel cannot call, 9 flushed, 1 stale reply dropped, 2 wires poisoned on purpose
-[  ok  ] bin #b bound at /bin, 11 programs as files, formats VECTRA01 and 02
+[  ok  ] bin #b bound at /bin, 12 programs as files, formats VECTRA01 and 02
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] kbd 55 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
 [  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 132 CR3 reloads, one address two meanings
@@ -317,7 +327,7 @@ code it explains.
 these bytes live in a program's own segments
 -- a process started this one
 -- these bytes went through a ring 3 server to the wire
-[  ok  ] user 560 userland checks passed -- 38 processes, 14 started by another process, 5384174 preempted rounds, 593 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
+[  ok  ] user 583 userland checks passed -- 40 processes, 14 started by another process, 4655876 preempted rounds, 1317 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
 [  ok  ] boot complete -- idling
 ```
 
@@ -468,9 +478,10 @@ binary after the script and drops `./build` directly on top of the `build/`
 output directory. This bit once already.
 
 Verified toolchain on this machine: Odin `dev-2026-08:8412dc37a`, LLD 21.0.0
-(from `~/.swiftly/bin`), QEMU 11.1.0, Python 3 with Pillow (font generation
-only). No `just` installed — use `make`. No `xorriso`, no loop devices, no
-`sudo` required.
+(from `~/.swiftly/bin`), QEMU 11.1.0. No `just` installed — use `make`. No
+`xorriso`, no loop devices, no `sudo` required. Pillow is **not** currently
+installed, so `make font` will not run until it is. The two generated font
+files are checked in, and nothing else needs Python.
 
 **UEFI firmware comes from QEMU's own edk2 images now.** The neighbouring
 `odin-os` checkout that used to lend `ovmf_x64.fd` is gone from this machine.
@@ -528,12 +539,12 @@ loop's shape, which is why the first two below sit ahead of the port.
 
 **Next, in order:**
 
-1. **A first client for `/dev/draw`.** The server stands and its six verbs
-   are checked against the glass, so the design's next sentence is due:
-   `apps/terminal`, a glyph set loaded once and blitted per character over
-   `/srv/draw`. Text stays a client library over `blit`, which is where
-   `sys/libdraw` grows next. The fb mapping stays deferred until intuition
-   composites whole frames -- `docs/DRAW.md` section 7 holds its shape.
+1. **Intuition's second half: compositing.** The draw server and its first
+   client both stand, so image zero can stop being the screen. A window
+   per client, `flush` as the damage mark, dirty rects the server already
+   computes. The fb mapping lands here as its own milestone, whose kernel
+   cost `docs/DRAW.md` section 7 itemises. The protocol was written so
+   none of this changes it.
 
 2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
@@ -802,7 +813,7 @@ kernel/
                         reaper that collects a detached orphan
     program.odin        The twenty-five programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 560 checks -- one process preempted
+    verify.odin         The boot self-test: 583 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that
@@ -816,8 +827,9 @@ kernel/
                         console server whose /line read parks in a worker,
                         a keyboard translator that turns raw scancodes
                         into characters over a mount, a serial server
-                        that puts a ring 3 write on the wire, and a draw
-                        server whose verbs read back off the glass
+                        that puts a ring 3 write on the wire, a draw
+                        server whose verbs read back off the glass, and
+                        a terminal typed at through the keyboard sink
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled
     wait.odin           Wait queues, scheduler hooks, priority-ordered service
@@ -845,6 +857,11 @@ sys/
   libdraw/draw.odin     The draw protocol's encoding, owned once: the six
                         verbs, the put half a client batches with, and the
                         get half the server decodes with
+  libdraw/text.odin     Text as a library over blit: the atlas layout, and
+                        put_text with its consumed-count return that pumps
+                        a long line through in batches
+  libfont/font_data.odin  GENERATED -- the console's 8x16 table under a
+                        second package name, for ring 3 to draw from
   libposix/             Empty
 servers/
   ramfs/main.odin       The first compiled server: two files, one writable,
@@ -861,7 +878,10 @@ servers/
   intuition/main.odin   The draw server, the compositor's first half: six
                         verbs on a data file, a session per fid, and every
                         draw clipped before it touches /dev/fb
-apps/                   Empty
+apps/
+  terminal/main.odin    The first app: lines in from /dev/cons, glyphs out
+                        through a /srv/draw mount of its own, the first
+                        ring 3 mount in the tree
 tools/
   genfont.py            TTF -> font_data.odin
   ste-lint.py           The ASD-STE100 checker; `build.odin -- lint` runs it
