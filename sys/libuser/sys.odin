@@ -152,6 +152,31 @@ exec :: proc "contextless" (path: string) -> i64 {
 	return raw2(abi.SYS_EXEC, u64(uintptr(raw_data(path))), u64(len(path)))
 }
 
+/*
+segattach maps the device behind an open descriptor into this process, and
+answers with the address it landed at.
+
+The one call in this library that hands back memory rather than bytes. It is
+for a server that *is* a device's cooked side. `/dev/fb` opened, attached, and
+then written to at memory speed instead of a `Twrite` per row.
+
+**The namespace decides.** A process that cannot open the file cannot attach
+it, and one whose namespace binds something else over that name attaches the
+something else. A file that is a stream answers `ENODEV`, which is almost
+every file there is.
+
+The mapping is writable, never executable, and lasts as long as the process.
+Nothing releases one, because nothing needs to yet: a server that attaches a
+card holds it until it exits.
+*/
+segattach :: proc "contextless" (fd: int) -> (addr: uintptr, err: i64) {
+	r := raw1(abi.SYS_SEGATTACH, u64(fd))
+	if r < 0 {
+		return 0, r
+	}
+	return uintptr(r), 0
+}
+
 // note posts a note to one of the caller's own children. With no handler
 // the child ends at its next kernel boundary, and the wait status is
 // EINTR. With a handler the child catches it instead -- see `notify`.

@@ -24,6 +24,12 @@ Writable data is shared only under `RFMEM`. A stack is always a private
 copy at the same address. Writability alone cannot say which writable
 segment is the stack, so the loader says it at birth.
 
+**Device is the fourth kind and the one that owns nothing.** It is the
+framebuffer, or whatever `vfs.chan_device` answers for next: memory this
+allocator never handed out and must never hand back. Every fork shares it, for
+the reason no other kind is shared unconditionally. There is one piece of
+hardware, and a private copy of it is a contradiction.
+
 The pool is fixed, like `mem.spaces` and every other table a program could
 make the kernel grow. One package spinlock guards the count, rather than a
 bare increment, for the reason `Chan.refs` has a lock. An incref racing the
@@ -40,13 +46,32 @@ Segment_Kind :: enum {
 	Text, // Read-only or executable: shared by every fork
 	Data, // Writable, not a stack: shared under RFMEM, copied otherwise
 	Stack, // Writable, and always a private copy
+	Device, // Memory this allocator never owned: shared, and never freed
 }
 
+/*
+One contiguous mapping's frames, under one reference count.
+
+**A device segment is described differently, and that is `MAX_PROGRAM_FRAMES`
+talking.** Sixty-four frame numbers is a program. The framebuffer is about a
+thousand pages, and a list cannot hold it. So a device segment carries `base`
+and `pages` instead, and `frames` stays empty.
+
+The two shapes could have been two types. They are one because everything
+above this line treats them identically. A process holds a list of segments, a
+fork walks it, and a teardown releases each. Only `segment_release` looks at
+`kind`, and only to decide whether there is anything to free.
+*/
 Segment :: struct {
 	refs:   int,
 	va:     uintptr,
 	pages:  int,
 	frames: [MAX_PROGRAM_FRAMES]uintptr,
+
+	// Where the device's memory starts, for `.Device` alone. Zero for every
+	// other kind, which carry their frames one at a time above.
+	base:   uintptr,
+
 	flags:  arch.Page_Flags,
 	kind:   Segment_Kind,
 }
@@ -131,6 +156,26 @@ segment_new :: proc "contextless" (
 	return nil
 }
 
+/*
+segment_frame is which frame backs a segment's nth page, whichever shape the
+segment has.
+
+One question, two answers. An ordinary segment kept a list, because its frames
+came from the allocator one at a time and in no particular order. A device
+segment is contiguous by construction, so it keeps a base and does the
+arithmetic. Callers that map do not care which, and this is why.
+*/
+@(private)
+segment_frame :: proc "contextless" (s: ^Segment, page: int) -> uintptr #no_bounds_check {
+	if s == nil || page < 0 || page >= s.pages {
+		return 0
+	}
+	if s.kind == .Device {
+		return s.base + uintptr(page) * uintptr(arch.PAGE_SIZE)
+	}
+	return s.frames[page]
+}
+
 // segment_add_frame records one more frame as this segment's to free. False
 // means the segment is at the format bound, and the caller unwinds.
 @(private)
@@ -177,7 +222,17 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 		return
 	}
 
-	pages := s.pages
+	/*
+	Device memory goes back to nobody, because it came from nobody.
+
+	The frames behind a `.Device` segment are a card's, and the physical
+	allocator never had them. On this machine they sit above every tracked
+	frame, so a free of them is silent rather than fatal. That silence is
+	exactly what makes the mistake worth guarding against here.
+	`mem.free_pages` counts an untracked free now, so a control that removes
+	this line raises a number instead of nothing at all.
+	*/
+	pages := s.kind == .Device ? 0 : s.pages
 	frames: [MAX_PROGRAM_FRAMES]uintptr = s.frames
 	for i in 0 ..< MAX_SEGMENTS {
 		if &segments[i].seg == s {

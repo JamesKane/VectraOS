@@ -22,10 +22,19 @@ allocator. The pool is eight images of 2048 pixels each, which is a
 cursor and a glyph set's worth. The pool is a cap to raise, not a design:
 a fid owns what it allocates, and a clunk gives it back.
 
-The screen is reached the way `painter` reached it: `/dev/fb` at an
-offset, one seek and one write per touched row. Every draw is clipped to
-its destination first, so the file's own boundary rules are never the
-error path a client sees.
+**The screen is memory, not a file this server writes to.** `/dev/fb` is
+opened for the namespace's sake and attached with `segattach`, and every
+draw after that is a store. `docs/DRAW.md` section 7 argued the mapping a
+milestone before it existed, and named its trigger: the day this server
+touches whole frames every round.
+
+That is the one privilege this process has over its clients, and section 2
+is why it is not a feature the protocol owes them. A client sends commands.
+The server, which *is* the compositor, holds the glass.
+
+Every draw is still clipped to its destination first, so a client's mistake
+is an answer rather than a store past the end of the screen. The bound is
+this server's arithmetic now, where it used to be the file's.
 */
 package intuition
 
@@ -56,10 +65,16 @@ Image :: struct {
 images: [MAX_IMAGES]Image
 pixels: [MAX_IMAGES][IMG_PIXELS]u32
 
-// One row of screen bytes under construction. Sized for a 2048-pixel row,
-// which covers every mode the framebuffer reports today.
-ROW_CAP :: 8192
-row: [ROW_CAP]u8
+/*
+The screen itself, once `segattach` answers.
+
+A `[^]u32` rather than bytes, because every mode this server accepts is 32
+bits per pixel and `read_geometry` refuses anything else at start. The pitch
+is in bytes and is divided down once, so the per-row arithmetic is an index
+rather than a multiply and a cast.
+*/
+glass: [^]u32
+glass_stride: int
 
 // The geometry, read from /dev/fbctl once at start. The bytes are served
 // back on /ctl verbatim, and the four numbers steer every screen draw.
@@ -69,7 +84,8 @@ scr_w: int
 scr_h: int
 scr_pitch: int
 
-// The framebuffer descriptor, open for the server's whole life.
+// The framebuffer descriptor. Open for the server's whole life, because the
+// attach is a claim on the file rather than a copy of it.
 fb_fd: int
 
 
@@ -86,8 +102,9 @@ _start opens the screen, learns its shape, and serves.
 
 The exits each name their failure. 0x74 is a framebuffer that would not
 open, 0x76 a geometry this server cannot draw on -- fewer than four
-numbers, or a depth other than 32 -- and 0x71 a post that failed. The
-serve loop's three endings are `ramfs`'s, numbers and all.
+numbers, or a depth other than 32 -- 0x77 a screen that would not map,
+and 0x71 a post that failed. The serve loop's three endings are `ramfs`'s,
+numbers and all.
 */
 @(export, link_name = "_start")
 start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
@@ -110,6 +127,17 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 		libuser.exit(0x76)
 	}
 	geo_len = int(n)
+
+	// The mapping, and the reason this server has no write path left. A
+	// failure here is fatal rather than a fallback: a second path to the same
+	// pixels would be a second thing to keep correct, and the self-test could
+	// not tell which one drew.
+	base, aerr := libuser.segattach(fb_fd)
+	if aerr < 0 {
+		libuser.exit(0x77)
+	}
+	glass = ([^]u32)(base)
+	glass_stride = scr_pitch / 4
 
 	sfd, perr := libuser.post("/srv/draw")
 	if perr < 0 {
@@ -141,7 +169,7 @@ read_geometry :: proc "contextless" (report: []u8) -> bool {
 	scr_w = w
 	scr_h = h
 	scr_pitch = pitch
-	return scr_w > 0 && scr_h > 0 && scr_pitch >= scr_w * 4 && scr_w * 4 <= ROW_CAP
+	return scr_w > 0 && scr_h > 0 && scr_pitch >= scr_w * 4 && scr_pitch % 4 == 0
 }
 
 // -- The images ---------------------------------------------------------------
@@ -186,15 +214,10 @@ image_free_all :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 
 // -- The screen ---------------------------------------------------------------
 
-// screen_row writes one prepared row of `w` pixels at (x, y): a seek and
-// a write. The caller clipped already, so a refusal from the file is a
-// real error rather than a boundary case.
-screen_row :: proc "contextless" (x: int, y: int, w: int) -> bool {
-	offset := u64(y) * u64(scr_pitch) + u64(x) * 4
-	if libuser.seek(fb_fd, offset) < 0 {
-		return false
-	}
-	return libuser.write_full(fb_fd, row[:w * 4])
+// screen_at is where row `y` starts in the mapped screen. The caller clipped
+// already, so this never has a boundary to check.
+screen_at :: proc "contextless" (y: int) -> [^]u32 #no_bounds_check {
+	return glass[y * glass_stride:]
 }
 
 // clip trims a rectangle to a destination's bounds, moving a source
@@ -330,12 +353,10 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		if !clip(&x, &y, &w, &h, &sx, &sy, scr_w, scr_h) {
 			return vectra9.Errno(0)
 		}
-		for i in 0 ..< w {
-			libdraw.put_u32(row[:], i * 4, color)
-		}
 		for line in 0 ..< h {
-			if !screen_row(x, y + line, w) {
-				return vectra9.EIO
+			dst := screen_at(y + line)
+			for i in 0 ..< w {
+				dst[x + i] = color
 			}
 		}
 		return vectra9.Errno(0)
@@ -391,11 +412,9 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		}
 		for line in 0 ..< sh {
 			base := (sy + line) * simg.w + sx
-			// Pixel words are already the row's bytes -- see `run_load`.
-			bytes := ([^]u8)(raw_data(pixels[sslot][base:]))
-			copy(row[:sw * 4], bytes[:sw * 4])
-			if !screen_row(dx, dy + line, sw) {
-				return vectra9.EIO
+			out := screen_at(dy + line)
+			for i in 0 ..< sw {
+				out[dx + i] = pixels[sslot][base + i]
 			}
 		}
 		return vectra9.Errno(0)

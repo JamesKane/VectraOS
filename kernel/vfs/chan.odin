@@ -452,3 +452,23 @@ chan_clone :: proc(c: ^Chan) -> (^Chan, Errno) {
 	nc.union_head = mount_point_incref(c.union_head)
 	return nc, OK
 }
+
+/*
+chan_device asks what physical memory this file is, and gets a refusal for
+almost every file.
+
+The kernel's half of `docs/DRAW.md` section 7. A caller with a chan learns
+whether the thing behind it is memory, and where, without sending anything and
+without knowing which server it holds.
+
+**The namespace is what says yes.** A process that cannot open `/dev/fb` cannot
+ask this, and a process whose namespace binds something else over `/dev/fb`
+asks about that instead. That is the permission story, and it came free with
+putting the question on a chan rather than on a name in a kernel table.
+*/
+chan_device :: proc "contextless" (c: ^Chan) -> (phys: uintptr, bytes: u64, ok: bool) {
+	if c == nil || c.server == nil || c.server.device == nil {
+		return 0, 0, false
+	}
+	return c.server.device(c.server, c.qid)
+}

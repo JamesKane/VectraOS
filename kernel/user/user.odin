@@ -211,6 +211,19 @@ Process :: struct {
 	segs:      [MAX_PROC_SEGS]^Segment,
 	seg_count: int,
 
+	/*
+	Where the next device mapping goes, bumped by each one's extent.
+
+	A bump rather than a fixed address, because a process may attach twice and
+	two devices cannot share a page. It never comes back down: a process that
+	attaches and releases leaks address space rather than risks handing the
+	same numbers to a second card. Address space is the one resource a
+	47-bit half has plenty of.
+
+	Zero until the first attach, which is what `DEVICE_BASE` means.
+	*/
+	device_next: uintptr,
+
 	// The bounds of the thread's kernel stack, copied at load time. Copied
 	// rather than read back through `thread`, because the next `spawn` frees a
 	// dead thread's record and the answer is wanted after that.

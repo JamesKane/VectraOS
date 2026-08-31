@@ -28,6 +28,7 @@ import "base:intrinsics"
 @(private = "file") frame_usable: int // Frames that were ever free
 @(private = "file") frame_free: int
 @(private = "file") double_frees: int
+@(private = "file") untracked_frees: int
 @(private = "file") frame_peak: int // High-water mark of frames in use
 @(private = "file") bitmap_frame: int // Where the bitmap put itself
 @(private = "file") bitmap_frames: int
@@ -38,6 +39,7 @@ Pmm_Stats :: struct {
 	usable_frames: int,
 	free_frames:   int,
 	double_frees:  int, // Frames released while already free -- always a bug
+	untracked_frees: int, // Frees of an address outside the bitmap -- see `free_pages`
 	peak_frames:   int,
 	bitmap_bytes:  int,
 	bitmap_phys:   uintptr,
@@ -49,6 +51,7 @@ pmm_stats :: proc "contextless" () -> Pmm_Stats {
 		usable_frames = frame_usable,
 		free_frames   = frame_free,
 		double_frees  = double_frees,
+		untracked_frees = untracked_frees,
 		peak_frames   = frame_peak,
 		bitmap_bytes  = len(bitmap),
 		bitmap_phys   = uintptr(u64(bitmap_frame) * PAGE_SIZE),
@@ -290,12 +293,31 @@ alloc_page_zeroed :: proc "contextless" () -> (phys: uintptr, ok: bool) {
 	return
 }
 
+/*
+free_pages hands a run of frames back, and counts the ones that were never
+this allocator's.
+
+**A frame past the bitmap is not an error this can act on, and it is always a
+bug in the caller.** The framebuffer lives above every usable region on this
+machine, so a free of device memory lands here, changes nothing, and says
+nothing. A double free was that quiet until `docs/SPACE.md` made it count, and
+this hides the same class of mistake. A teardown walking frames that were never
+its to walk.
+
+Counted rather than refused, because this is the physical allocator and the
+panic screen it would reach for needs frames of its own. A self-test that
+brackets this sees a number that should be zero. `kernel/user/segment.odin`
+is the caller that must never raise it, and `docs/DRAW.md` section 7 named the
+hazard a milestone before the code arrived.
+*/
 free_pages :: proc "contextless" (phys: uintptr, count: int) {
 	frame := int(u64(phys) / PAGE_SIZE)
 	for i in 0 ..< count {
 		f := frame + i
 		if f < frame_total {
 			release(f)
+		} else {
+			untracked_frees += 1
 		}
 	}
 	// Freed frames are the cheapest thing to allocate next. Aim the search at

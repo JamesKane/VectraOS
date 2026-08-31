@@ -418,6 +418,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_draw(&r)
 
+	// -- And the memory the draw server draws through ------------------------
+
+	verify_mapping(&r)
+
 	// -- And the first app, a client of that server ---------------------------
 
 	verify_terminal(&r, column)
@@ -782,11 +786,11 @@ Every one of these is nine bytes, which is why one register carries the length
 for both paths in `binder`. That is a convenience the blobs depend on, and the
 check below says so rather than leaves it to be discovered.
 */
+@(private = "file") PATH_FB :: "/dev/fb"
 @(private = "file") PATH_CONS :: "/dev/cons"
 @(private = "file") PATH_ZERO :: "/dev/zero"
 @(private = "file") PATH_NULL :: "/dev/null"
 @(private = "file") PATH_MISSING :: "/dev/nope"
-@(private = "file") PATH_FB :: "/dev/fb"
 @(private = "file") PATH_SCANCODE :: "/dev/scancode"
 
 @(private = "file") NAMED :: "-- a process opened this file by name"
@@ -3430,3 +3434,149 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	drain_pinned(r, pin_before, "and the first app's wire comes back whole")
 }
 
+/*
+verify_mapping attaches the framebuffer to a process and checks what that
+costs and what it does not.
+
+**The mapping is already load-bearing before this runs.** `servers/intuition`
+has no write path left, so every check in `verify_draw` above goes through a
+store to mapped memory.
+
+This adds the four things that path cannot show. Which files may be attached.
+What the pages carry. Whether a second attach is a second address. And whether
+a process ending gives the card back to nobody.
+
+`docs/DRAW.md` section 7 itemised all four a milestone before the code.
+*/
+@(private = "file")
+verify_mapping :: proc(r: ^Result) {
+	check(r, len(PATH_FB) == 7 && len(PATH_CONS) == 9, "the two paths are the lengths the program assumes")
+
+	surface := devfs.raw_surface()
+	if !check(r, surface != nil && surface.pixels != nil, "the screen is a surface the kernel can name") {
+		return
+	}
+
+	// -- What the namespace says a file is ------------------------------------
+
+	fbc, ferr := vfs.open_path(vfs.boot_namespace, PATH_FB, vfs.O_WRONLY)
+	if !check(r, ferr == vfs.OK, "/dev/fb opens") {
+		return
+	}
+	phys, bytes, is_device := vfs.chan_device(fbc)
+	check(r, is_device, "and answers that it is memory rather than a stream")
+	check(
+		r,
+		phys == mem.virt_to_phys(rawptr(surface.pixels)),
+		"at the physical address the surface's direct-map pointer means",
+	)
+	check(r, bytes >= u64(surface.height * surface.pitch), "for every scanline it has")
+	vfs.chan_close(fbc)
+
+	cc, cerr := vfs.open_path(vfs.boot_namespace, PATH_CONS, vfs.O_WRONLY)
+	if check(r, cerr == vfs.OK, "/dev/cons opens too") {
+		_, _, cons_device := vfs.chan_device(cc)
+		check(r, !cons_device, "and answers that it is a stream, which almost every file is")
+		vfs.chan_close(cc)
+	}
+
+	// -- A process attaches it -------------------------------------------------
+
+	/*
+	Where the program stores its one pixel, as a byte offset into the screen.
+
+	The bottom-right corner. The chassis paints it once at boot and nothing
+	repaints it. A magenta pixel there at the end of this procedure came from a
+	program in ring 3 and from nothing else.
+	*/
+	corner := (surface.height - 1) * surface.pitch + (surface.width - 1) * 4
+	before := fb.get_raw(surface, surface.width - 1, surface.height - 1)
+
+	frames_before := mem.pmm_stats().free_frames
+	untracked_before := mem.pmm_stats().untracked_frees
+	segs_before := segment_stats().live
+
+	p, err := load("mapper", program_mapper(), u64(corner))
+	if !check(r, err == .None && p != nil, "a process is loaded that asks for memory") {
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_FB)), "with the screen's name in its page")
+	check(r, set_bytes(p, SLOT_B, bytes_of(PATH_CONS)), "and a stream's name beside it")
+
+	if check(r, wait(p, PATIENCE), "and it comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_MAPPER, "having reached its first instruction")
+		check(r, cell(p, MAPPER_FD) < u64(MAX_FDS), "the screen opened as an ordinary descriptor")
+
+		addr := uintptr(cell(p, MAPPER_ADDR))
+		check(r, addr >= mem.USER_MIN && addr < mem.USER_MAX, "and attached at an address in its own half")
+
+		/*
+		And the store went to the glass.
+
+		Read through `fb.get_raw`, which is the kernel's own view of the same
+		physical memory through the direct map. Two mappings, two privilege
+		levels, one card. That is the whole milestone in one pixel.
+		*/
+		after := fb.get_raw(surface, surface.width - 1, surface.height - 1)
+		check(r, after != before, "a store through it changed the screen")
+
+		/*
+		A second attach is a second address, and the check has to say *address*.
+
+		The first version asked only whether the number was larger than the
+		first. A control that removed the bump made the second attach fail
+		instead. A negative errno reads back as an enormous unsigned number,
+		which is larger. The check passed for a reason that had nothing to do
+		with what it claimed. See `docs/TESTING.md`.
+		*/
+		again := uintptr(cell(p, MAPPER_AGAIN))
+		check(
+			r,
+			again >= mem.USER_MIN && again < mem.USER_MAX && again != addr,
+			"a second attach is a second address, because two devices cannot share a page",
+		)
+		check(
+			r,
+			cell(p, MAPPER_BAD_FD) == refused(vectra9.EBADF),
+			"a descriptor nobody opened is refused",
+		)
+		check(
+			r,
+			cell(p, MAPPER_STREAM) == refused(vectra9.ENODEV),
+			"and a file that is a stream is refused by name rather than mapped",
+		)
+
+		perms, perm_ok := mem.permissions(p.space, addr)
+		check(r, perm_ok && .User in perms && .Write in perms, "the pages carry user and write")
+		check(r, perm_ok && .No_Execute in perms, "and never execute, because no card is code")
+	}
+
+	check(r, destroy(p), "the process is taken down")
+
+	/*
+	And the card went back to nobody.
+
+	`segment_release` frees a `.Device` segment's frames to no allocator,
+	because no allocator ever had them. Two numbers, because two machines.
+
+	On a machine where the framebuffer is *inside* the tracked range, a release
+	returns a thousand frames at once, and the free count says so. The
+	bound is the screen's own page count against a handful of page tables the
+	teardown legitimately gives back. That is three orders of magnitude of
+	margin rather than an exact figure.
+
+	On *this* machine the screen sits above every tracked frame, so that free
+	would be silent. `mem.free_pages` counts an untracked free for exactly this
+	reason, and that number is the one with no confounder in it.
+	*/
+	fb_pages := int(bytes / u64(arch.PAGE_SIZE))
+	returned := mem.pmm_stats().free_frames - frames_before
+	check(r, returned < fb_pages, "and the allocator did not get a screen's worth of frames back")
+	check(
+		r,
+		mem.pmm_stats().untracked_frees == untracked_before,
+		"with nothing offered back that it never owned",
+	)
+	check(r, segment_stats().live == segs_before, "every segment it held was released")
+}

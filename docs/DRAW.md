@@ -96,25 +96,55 @@ same promise without a copy. In v1 the screen is drawn directly and
 `flush` is nearly a no-op. When image zero becomes a window, `flush` is
 the damage mark.
 
-## 7. The mapping, deferred with its shape written down
+## 7. The mapping, and what it cost
 
-v1 changes the kernel not at all, which is the scope cut the handoff
-asked for. The mapping lands as the compositor's own milestone, and it
-costs exactly this:
+Deferred once with its shape written down, then built when its trigger
+arrived. The four costs this section listed before the code are the four
+things that changed, and the list was right:
 
-- A `Segment_Kind` for device memory, carried as base and extent. A frame
-  list cannot express it: `MAX_PROGRAM_FRAMES` is 64 and the framebuffer
-  is about a thousand pages.
-- `segment_release` must not free device frames to the PMM. Today it
-  unconditionally does, which would free live MMIO on the last release.
-- The framebuffer's physical address, plumbed through. `fb.Surface` holds
-  only Limine's HHDM pointer, and the physical base is that less the
-  offset.
-- A syscall in the segattach shape. A syscall is not a 9P message, so the
-  wire rule of `docs/VECTRA9.md` stands untouched.
+- **A `Segment_Kind` for device memory**, carried as base and extent. A frame
+  list cannot express it: `MAX_PROGRAM_FRAMES` is 64 and the framebuffer is
+  about a thousand pages. `Segment` carries a `base` for that kind alone, and
+  `segment_frame` is the one question both shapes answer.
+- **`segment_release` must not free device frames to the PMM.** It does not.
+  The framebuffer sits above every tracked frame on this machine, so a free of
+  it would have been *silent*. `mem.free_pages` counts an untracked free now,
+  which is the move `docs/SPACE.md` made for the double free. That counter is
+  what the control fails on.
+- **The framebuffer's physical address, plumbed through.** One subtraction:
+  Limine puts the screen in the direct map, so `mem.virt_to_phys` of the
+  surface's pointer is the answer.
+- **A syscall in the segattach shape.** `SYS_SEGATTACH`. A syscall is not a 9P
+  message, so the wire rule of `docs/VECTRA9.md` stands untouched.
 
-The trigger is named: the day intuition composites whole frames every
-round, not before.
+### The descriptor is what names the device
+
+The one decision this section did not settle in advance. `segattach` takes an
+open descriptor, not a class string out of a kernel table.
+
+**The namespace is then what says which device, and whether this process may
+have it.** A process that cannot open `/dev/fb` cannot attach it. A process
+whose namespace binds something else over that name attaches the something
+else. That is the permission story, and it came free rather than needing an
+answer of its own.
+
+The kernel asks the chan through `vfs.Server.device`, a second thing a server
+may offer the *kernel*, beside `release`. `kernel/devfs` sets it and answers
+for `/dev/fb` alone. Every other file is a stream, `/dev/fbctl` included.
+Geometry is a report in text, and a text report is a stream however close it
+sits to the pixels.
+
+### What the server lost
+
+`servers/intuition` has no write path left. It opens `/dev/fb` for the
+namespace's sake, attaches it, and every draw after that is a store. Exit code
+0x77 is a screen that would not map, and there is no fallback on purpose. **Two
+paths to the same pixels would be two things to keep correct, and the self-test
+could not say which one drew.**
+
+The measurable effect is in the boot log. The system call count fell by about
+a quarter, which is the seek and write per touched row that used to cross the
+door.
 
 ## 8. The self-test
 
@@ -133,10 +163,56 @@ Two limits recorded rather than hidden. Tearing and flush timing are
 invisible to a readback. And a text check is pixel-exact only against the
 baked font, so v1 checks rectangles and blits, not glyphs.
 
+### The controls for the mapping
+
+Seven mutations, each on a real boot.
+
+| Mutation | Result |
+|---|---|
+| the teardown gives a device's memory back | 1 check, `with nothing offered back that it never owned` |
+| every file in `#c` answers that it is memory | 2 checks, first `and answers that it is a stream` |
+| a second attach lands on top of the first | 1 check, `a second attach is a second address` |
+| the device mapping is executable | 1 check, `and never execute, because no card is code` |
+| the device mapping carries no user bit | **the boot stops**, and the reason is below |
+| `rfork` copies a device segment | **not caught**, and the mutation is inert |
+
+**The uncaught one is inert for a stated reason.** Nothing forks a process that
+holds a device segment. `intuition` does not fork and `consrv` has no card. It
+becomes a real mutation the day the compositor forks a worker, which is
+compositing's own milestone.
+
+### What a control found that the checks did not
+
+Two things, and both are worth more than the mutation that exposed them.
+
+**A check passed for the wrong reason.** The second-attach check asked only
+whether the second address was *larger* than the first. Removing the bump made
+the second attach fail instead, and a negative errno reads back as an enormous
+unsigned number, which is larger. The check now asks whether the answer is an
+address at all.
+
+**A ring 3 server that faults mid-request leaves its client parked.** The
+no-user-bit control kills `intuition` inside a `Twrite`, and the boot stops
+rather than failing a check. The wire poisons on hangup, so the client should
+get `EIO`. What stops it is that a killed process's descriptors wait for a
+reap, and `reap_orphans` runs only from `spawn_path`. Nothing spawns again
+during that test, so the pipe never hangs up.
+
+That is a gap this milestone made reachable rather than created: before the
+mapping, `intuition` could not fault. It is named in `docs/HANDOFF.md` section
+6, and the fix is a process's descriptors closing when it stops running rather
+than when somebody collects it.
+
 ## 9. Staging
 
-v1: the server in `servers/intuition/`, three files, six verbs, direct
-paint through `/dev/fb`, a thin `sys/libdraw` encoder, the readback
-self-test. Deferred, each with its trigger: the mapping (whole-frame
-compositing), refresh events (windows), font verbs (never -- they stay a
-library), window-backed images (intuition's second half).
+v1: the server in `servers/intuition/`, three files, six verbs, direct paint
+through `/dev/fb`, a thin `sys/libdraw` encoder, the readback self-test.
+
+v2: the mapping, section 7. The server paints through memory, and the protocol
+did not change -- which was the test this topology was chosen to pass.
+
+Deferred, each with its trigger: refresh events (windows), font verbs (never,
+they stay a library), and window-backed images. That last one is what remains
+of intuition's second half. Image zero stops being the screen and becomes the
+client's window. `flush` becomes the damage mark, and the compositor walks
+dirty rectangles into the memory it now holds.

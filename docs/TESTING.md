@@ -230,6 +230,7 @@ nothing else in common.
 | Ring 3 | `docs/USER.md` | 6 checked, 3 machine failures, 1 uncaught |
 | The system call door | `docs/USER.md` | 3 checked, 3 machine failures, 2 uncaught |
 | A process | `docs/USER.md` | 4 checked, 1 machine failure, 1 inert |
+| The screen, mapped | `docs/DRAW.md` | 4 checked, 1 machine failure, 1 inert |
 | rfork | `docs/USER.md` | 4 checked, 1 uncaught by design |
 | The runtime and its servers | `docs/RUNTIME.md` | 15 caught, 2 hangs, 1 inert |
 
@@ -340,6 +341,25 @@ it for free.
 **A control tells you two things: whether the checks notice, and which ones
 did.** The second is the half that finds bugs the mutation was not about.
 
+## An allocator that shrugs is a check that cannot fail
+
+Twice now, and the second time makes it a rule.
+
+`docs/SPACE.md` found the first. A teardown that freed frames it did not own
+passed everything, because a second release finds the bit already clear and
+changes no count. Double frees are counted now.
+
+`docs/DRAW.md` found the second, and it is the same silence from the other
+side. The framebuffer sits *above* every frame the bitmap covers. A free of
+device memory is therefore not a double free. It is an address the allocator
+does not recognise at all, and `free_pages` skipped it without a word.
+
+**Both are the allocator being tolerant of a caller that is wrong.** A physical
+allocator cannot refuse, because the panic screen it would reach for needs
+frames of its own. So it counts, and a self-test brackets the count. Two
+counters, two silences, one rule: **where a layer cannot say no, make it say
+how often.**
+
 ## Bracket what the thing under test actually holds
 
 `kernel/user/verify.odin` counts frames *and* heap objects, and it needs both.
@@ -387,6 +407,17 @@ lands there. Both mutations fail now.
 **So the four answers a clean control gives have a fifth in front of them: does
 the test reach the code at all?** Ask that first. It is the cheapest to check
 and the most embarrassing to miss.
+
+**It happened a third time, in `docs/DRAW.md`, and the shape was new.** A check
+asked whether a second device mapping landed at a *larger* address than the
+first. The control removed the bump that makes it larger, and the second attach
+failed instead of repeating itself. A negative errno reads back in an unsigned
+register as an enormous number, which is larger, so the check passed.
+
+The lesson is narrower than the section above and worth keeping separate.
+**When a call answers with either an address or an error in the same register,
+a comparison is not a test.** The check asks whether the answer is an address
+at all now, and only then whether it is a different one.
 
 ## See also
 

@@ -117,6 +117,26 @@ Server :: struct {
 	pins:      int,
 	releasing: bool,
 	release:   proc(sv: ^Server),
+
+	/*
+	What physical memory a file *is*, for the one kind of file that is memory
+	rather than a stream.
+
+	**Not a 9P message, and that is the whole point.** `docs/VECTRA9.md` opens
+	with the rule that nothing is added to the wire. A mapping cannot be a
+	message, because no reply carries an address space. So this is a second
+	thing a server may offer the *kernel*, beside `release` above, and no
+	client can reach it.
+
+	`kernel/devfs` sets it and answers for `/dev/fb` alone. Every other server
+	leaves it nil, which is the honest answer to `this file is a stream`. The
+	qid is what says which file, because one server serves several and only one
+	of them is memory.
+
+	See `docs/DRAW.md` section 7, which itemised this a milestone before it
+	existed.
+	*/
+	device:    proc "contextless" (sv: ^Server, qid: vectra9.Qid) -> (phys: uintptr, bytes: u64, ok: bool),
 }
 
 // server_pin takes a non-chan stake on a server: a name that holds it, or a

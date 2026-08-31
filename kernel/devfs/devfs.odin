@@ -62,6 +62,7 @@ import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mnt"
 import "kernel:sync"
+import "kernel:mem"
 import "kernel:vfs"
 import "vsys:vectra9"
 
@@ -233,6 +234,10 @@ init :: proc(ns: ^vfs.Namespace, screen: ^console.Console, port: ^uart.Port, raw
 	cons_init(&t.cons, screen, port)
 	t.raw = raw
 
+	// The one file in this tree that is memory rather than a stream. See
+	// `vfs.Server.device`, and `devfs_device` below.
+	t.server.device = devfs_device
+
 	if err := vfs.server_init(&t.server, "c", devfs_handler, t); err != .None {
 		vfs.fidtab_destroy(&t.fids)
 		return vectra9.EPROTO
@@ -262,6 +267,35 @@ init :: proc(ns: ^vfs.Namespace, screen: ^console.Console, port: ^uart.Port, raw
 // self-test and the boot log are the two, and both only read.
 tree :: proc "contextless" () -> ^Dev_Tree {
 	return &dev_tree
+}
+
+/*
+devfs_device answers what physical memory a file is, which is `/dev/fb` and
+nothing else.
+
+The kernel asks this, never a client. `docs/DRAW.md` section 7 named the four
+things a mapping costs, and this is the third: the framebuffer's physical
+address, plumbed through. It is one subtraction, because Limine puts the
+framebuffer in the direct map and `fb.Surface` holds the pointer into it.
+
+Every other node answers false, including `/dev/fbctl`. Geometry is a report
+in text, and a text report is a stream however close it sits to the pixels.
+*/
+@(private = "file")
+devfs_device :: proc "contextless" (
+	sv: ^vfs.Server,
+	qid: vectra9.Qid,
+) -> (phys: uintptr, bytes: u64, ok: bool) #no_bounds_check {
+	_ = sv
+	node := i32(qid.path) - 1
+	if node < 0 || int(node) >= len(DEV_NODES) || DEV_NODES[node].kind != .Fb {
+		return 0, 0, false
+	}
+	raw := dev_tree.raw
+	if raw == nil || raw.pixels == nil {
+		return 0, 0, false
+	}
+	return mem.virt_to_phys(rawptr(raw.pixels)), fb_size(raw), true
 }
 
 // raw_surface is the screen `/dev/fb` serves, for a self-test that has to

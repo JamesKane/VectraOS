@@ -102,6 +102,7 @@ SYS_RFORK :: abi.SYS_RFORK
 SYS_NOTIFY :: abi.SYS_NOTIFY
 SYS_NOTED :: abi.SYS_NOTED
 SYS_EXEC :: abi.SYS_EXEC
+SYS_SEGATTACH :: abi.SYS_SEGATTACH
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -321,6 +322,9 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		// The frame crosses because exec rewrites it in place: on success
 		// the door returns into a new program. See `exec.odin`.
 		result = sys_exec(frame, uintptr(a0), int(a1))
+	case SYS_SEGATTACH:
+		result = sys_segattach(int(a0))
+
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
 	case SYS_EXIT:
@@ -844,6 +848,98 @@ sys_seek :: proc(fd: int, offset: u64) -> i64 {
 		return -i64(vectra9.EBADF)
 	}
 	return i64(offset)
+}
+
+/*
+Where a process's first device mapping lands, and how far apart they sit.
+
+High in the lower half, clear of everything a loader places. Text, data and
+stack come out of the image's own addresses, and no format this kernel reads
+asks for anything above a few megabytes.
+*/
+DEVICE_BASE :: uintptr(0x1000_0000)
+
+/*
+sys_segattach maps the device behind an open descriptor into this process.
+
+**The namespace is what says which device, and whether this process may have
+it.** A process that cannot open `/dev/fb` cannot ask, and a process whose
+namespace binds something else over that name asks about the something else.
+That permission story came free with taking a descriptor rather than a name
+out of a kernel table. `docs/DRAW.md` section 7 is where the shape was
+argued.
+
+A syscall rather than a 9P message, because there is no reply that can carry
+an address space. The wire rule of `docs/VECTRA9.md` is untouched. Nothing was
+added to 9P, and `vfs.chan_device` is a second thing a server offers the kernel
+rather than a seventh verb on a file.
+
+The mapping is writable and never executable. A framebuffer a program can jump
+into is one a program can be tricked into jumping into. No device this will ever
+answer for is code.
+
+Returns the address, or `-errno`. `ENODEV` is the honest answer for a file
+that is a stream, which is almost all of them.
+*/
+@(private = "file")
+sys_segattach :: proc(fd: int) -> i64 {
+	p := current()
+	c, _, held := fd_take(p, fd)
+	if !held {
+		return -i64(vectra9.EBADF)
+	}
+	defer vfs.chan_close(c)
+
+	phys, bytes, ok := vfs.chan_device(c)
+	if !ok || bytes == 0 {
+		return -i64(vectra9.ENODEV)
+	}
+
+	// Whole pages, both ends. A device that ends mid-page still owns the rest
+	// of it, and a mapping cannot be finer than the hardware page it lands in.
+	pages := int((bytes + u64(arch.PAGE_SIZE) - 1) / u64(arch.PAGE_SIZE))
+	if pages <= 0 {
+		return -i64(vectra9.ENODEV)
+	}
+
+	if p.device_next == 0 {
+		p.device_next = DEVICE_BASE
+	}
+	va := p.device_next
+	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
+	if va + span >= mem.USER_MAX {
+		return -i64(vectra9.ENOMEM)
+	}
+
+	seg := segment_new(va, {.Write, .No_Execute}, .Device)
+	if seg == nil {
+		return -i64(vectra9.ENOMEM)
+	}
+	seg.base = phys
+	seg.pages = pages
+	if !proc_add_segment(p, seg) {
+		return -i64(vectra9.ENOMEM)
+	}
+
+	/*
+	One page at a time, and a failure part-way leaves the segment on the
+	process's list.
+
+	That is deliberate rather than lazy. `unload` releases every segment a
+	process holds, and a `.Device` release frees nothing, so the half-built
+	mapping costs page tables the space teardown already walks. Unwinding by
+	hand would be a second teardown path for the same frames.
+	*/
+	for i in 0 ..< pages {
+		at := va + uintptr(i) * uintptr(arch.PAGE_SIZE)
+		frame := phys + uintptr(i) * uintptr(arch.PAGE_SIZE)
+		if mem.map_user(p.space, at, frame, {.Write, .No_Execute}, 1) != .None {
+			return -i64(vectra9.ENOMEM)
+		}
+	}
+
+	p.device_next = va + span
+	return i64(va)
 }
 
 @(private = "file")

@@ -264,7 +264,13 @@ the isolation checks read.
 fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 	for i in 0 ..< parent.seg_count {
 		s := parent.segs[i]
-		shared := s.kind == .Text || (s.kind == .Data && share)
+		/*
+		Device memory is shared whatever the flags say, and it is the one kind
+		with no other option. There is one framebuffer. A private copy of a
+		card is a contradiction, and `RFMEM` is a question about a program's
+		own writable pages rather than about hardware.
+		*/
+		shared := s.kind == .Text || s.kind == .Device || (s.kind == .Data && share)
 
 		if shared {
 			segment_incref(s)
@@ -273,10 +279,15 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 			}
 			for j in 0 ..< s.pages {
 				va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
-				if mem.map_user(child.space, va, s.frames[j], s.flags, 1) != .None {
+				frame := segment_frame(s, j)
+				if mem.map_user(child.space, va, frame, s.flags, 1) != .None {
 					return false
 				}
-				alias_frame(child, parent, s.frames[j], s.frames[j])
+				// A device segment is a thousand pages and the alias table
+				// holds a handful. Nothing stages through a card in any case.
+				if s.kind != .Device {
+					alias_frame(child, parent, frame, frame)
+				}
 			}
 			continue
 		}

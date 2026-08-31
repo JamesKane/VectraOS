@@ -44,6 +44,7 @@ MARK_SHADOW :: u64(0x5348_4144_5348_4144) // SHADSHAD
 MARK_NAMER :: u64(0x4E41_4D45_4E41_4D45) // NAMENAME
 MARK_READER :: u64(0x5245_4144_5245_4144) // READREAD
 MARK_BINDER :: u64(0x4249_4E44_4249_4E44) // BINDBIND
+MARK_MAPPER :: u64(0x4D41_5050_4D41_5050) // MAPPMAPP
 MARK_PARENT :: u64(0x5052_4E54_5052_4E54) // PRNTPRNT
 MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
 MARK_POSTER :: u64(0x504F_5354_504F_5354) // POSTPOST
@@ -130,6 +131,12 @@ READER_READ :: 2
 READER_REFUSED :: 3
 READER_CLOSED :: 4
 READER_BUFFER :: 8 // Byte offset 64, which is where the read lands
+
+MAPPER_FD :: 1
+MAPPER_ADDR :: 2
+MAPPER_AGAIN :: 3
+MAPPER_BAD_FD :: 4
+MAPPER_STREAM :: 5
 
 BINDER_BOUND :: 1
 BINDER_OPENED :: 2
@@ -528,6 +535,8 @@ foreign {
 	vectra_user_reader_end: byte
 	vectra_user_binder: byte
 	vectra_user_binder_end: byte
+	vectra_user_mapper: byte
+	vectra_user_mapper_end: byte
 	vectra_user_parent: byte
 	vectra_user_parent_end: byte
 	vectra_user_child: byte
@@ -586,6 +595,9 @@ program_shadow :: proc "contextless" () -> []u8 {return blob(&vectra_user_shadow
 program_namer :: proc "contextless" () -> []u8 {return blob(&vectra_user_namer, &vectra_user_namer_end)}
 program_reader :: proc "contextless" () -> []u8 {return blob(&vectra_user_reader, &vectra_user_reader_end)}
 program_binder :: proc "contextless" () -> []u8 {return blob(&vectra_user_binder, &vectra_user_binder_end)}
+
+// The one that asks for memory rather than for bytes.
+program_mapper :: proc "contextless" () -> []u8 {return blob(&vectra_user_mapper, &vectra_user_mapper_end)}
 
 // And the one that reaches hardware: pixels through /dev/fb, at an offset
 // it chose with `seek`.
@@ -1911,5 +1923,58 @@ vectra_user_bulkio:
 	ud2
 .globl vectra_user_bulkio_end
 vectra_user_bulkio_end:
+
+.balign 16
+.globl vectra_user_mapper
+vectra_user_mapper:
+	movq %rdi, %rbx
+	movq %rsi, %rbp
+	movabsq $$0x4D4150504D415050, %rax
+	movq %rax, (%rbx)
+
+	leaq 128(%rbx), %rdi
+	movq $$7, %rsi
+	movq $$1, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r13
+
+	movq %r13, %rdi
+	movq $$21, %rax
+	syscall
+	movq %rax, 16(%rbx)
+	movq %rax, %r12
+
+	movl $$0x00FF00FF, (%r12,%rbp,1)
+
+	movq %r13, %rdi
+	movq $$21, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq $$99, %rdi
+	movq $$21, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	leaq 192(%rbx), %rdi
+	movq $$9, %rsi
+	movq $$1, %rdx
+	movq $$5, %rax
+	syscall
+	movq %rax, %r14
+
+	movq %r14, %rdi
+	movq $$21, %rax
+	syscall
+	movq %rax, 40(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_mapper_end
+vectra_user_mapper_end:
 `, "~{memory}"}()
 }
