@@ -6,7 +6,7 @@ on top.
 
 ## Status
 
-**Processes can be ended now, and everything else still runs.** The kernel
+**A client draws into a window now, and everything else still runs.** The kernel
 comes up under Limine on `x86_64` with descriptor tables, page tables and a
 heap of its own. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin` over 9P2000.L. It preempts on the local APIC and takes keyboard
@@ -33,38 +33,24 @@ processes can hand the kernel one path and get different files. The mount
 table belongs to the process rather than to the machine, and a child resolves
 its paths in the world its parent arranged.
 
-```
-[  --  ] Vectra 0.1.0-pre (amd64) entering kmain
-[  ok  ] base revision 6 as requested
-[  ok  ] traps: cs 0x8, tr 0x30, 256 vectors, #BP round-trip ok
-[  ok  ] framebuffer 1280x800 @ 32bpp, pitch 5120 -> 0xffff800080000000
-[  ok  ] pmm 117616 frames free of 122210 tracked, bitmap 14.9 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 515.7 MiB in 274 tables (1.0 MiB)
-[  ok  ] heap online -- context.allocator is live
-[  ok  ] vectra9 9P2000.L: 57 message kinds round-trip, both transports agree
-[  ok  ] namespace: #/ attached as /, 8 conventional directories
-[  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT
-[  ok  ] devfs #c bound at /dev, 4 devices on 4 workers, cooked console, input live
-[  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
-[  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
-[  ok  ] bin #b bound at /bin, 7 programs as files, formats VECTRA01 and 02
-[  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
-[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half
-[  ok  ] syscall armed -- entry at 0xffffffff80020410, /dev/cons is descriptor 1
--- a program in ring 3 wrote this line
--- a process opened this file by name
--- this line went to /dev/null
--- a process started this one
--- this line went through a posted service
--- a process answered this line
-these bytes live in a program's own segments
-[  ok  ] user 332 userland checks passed -- 21 processes, 3 started by another process, 194 system calls, a file tree served by a compiled program
-[  ok  ] boot complete -- idling
-```
+**The screen is memory a process holds.** `servers/intuition` opens `/dev/fb`,
+attaches it as a device segment, and paints the glass through stores rather
+than through a write per row.
 
-That is an abridged log. The full one is about forty lines and every one of
-them is a self-test.
+Image zero is the session's *window*, not the screen. Every draw moves by the
+window's origin and clips to its extent, so two clients hold the same
+coordinates and mean two places. The draw protocol did not change to make that
+true.
+
+![Vectra at the end of a boot](docs/userland-boot.png)
+
+The second half of a boot, on the machine's own framebuffer, drawn by the
+console this kernel owns. The tagged lines are self-tests. The untagged ones
+are programs in ring 3, writing through `/dev/cons`.
+
+The log is about forty lines and every one of them is a self-test. The screen
+holds thirty-six, so the picture starts partway down. `docs/HANDOFF.md` has the
+whole thing in text, where it can be searched and diffed.
 
 ### Seven of those lines are worth explaining
 

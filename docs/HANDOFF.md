@@ -961,4 +961,6 @@ docs/
   milestone0-boot.png   Milestone 0 screenshot -- it boots
   milestone1-memory.png Milestone 1 screenshot -- PMM, VMM, heap
   panic-screen.png      Milestone 2 screenshot -- a deliberate #PF, reported
+  userland-boot.png     The boot the README leads with: the userland half of
+                        the log, and the lines a ring 3 program printed
 ```

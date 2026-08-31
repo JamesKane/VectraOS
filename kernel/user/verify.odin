@@ -3526,6 +3526,18 @@ verify_mapping :: proc(r: ^Result) {
 	corner := (surface.height - 1) * surface.pitch + (surface.width - 1) * 4
 	before := fb.get_raw(surface, surface.width - 1, surface.height - 1)
 
+	/*
+	The four bytes under that pixel, saved and put back at the end.
+
+	Every other test in this file restores what it paints, and this one did
+	not. The pixel is the last of the screen, which is where nothing repaints
+	over a mistake and where a screenshot would keep it for ever. Found by
+	taking one.
+	*/
+	corner_saved: [4]u8
+	copy(corner_saved[:], surface.pixels[corner:corner + 4])
+	defer copy(surface.pixels[corner:corner + 4], corner_saved[:])
+
 	frames_before := mem.pmm_stats().free_frames
 	untracked_before := mem.pmm_stats().untracked_frees
 	segs_before := segment_stats().live
