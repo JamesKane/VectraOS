@@ -422,6 +422,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_mapping(&r)
 
+	// -- And memory no file serves, which a window's pixels will be ----------
+
+	verify_anon(&r)
+
 	// -- And the first app, a client of that server ---------------------------
 
 	verify_terminal(&r, column)
@@ -3625,6 +3629,182 @@ verify_mapping :: proc(r: ^Result) {
 		"with nothing offered back that it never owned",
 	)
 	check(r, segment_stats().live == segs_before, "every segment it held was released")
+}
+
+/*
+verify_anon is the memory a program asks for rather than owns at birth.
+
+**This is the milestone `docs/DRAW.md` section 10 named a milestone before it
+existed.** A 640 by 800 window is two megabytes. `MAX_PROGRAM_FRAMES` bounds a
+whole program at a quarter of one, and static `bss` was all a program had. So
+a window with pixels of its own was never a graphics question. It was a
+segment described by a base and an extent, and a call to ask for one.
+
+Six claims, and each is a different kind of claim:
+
+    the address    a run lands in the program's own half
+    the zero       and arrives clean, because the frames came back from a
+                   program that ended
+    the far end    a store half a megabyte in comes back, so the run is
+                   mapped whole and not only at its first page
+    the arithmetic the caller's errno refuses nothing and too-much
+    the fork       a child's store lands in the child's copy
+    the frames     and both runs go back to the allocator by name
+
+The last one is the one with no confounder in it. `mem.frame_is_free` asks
+about the exact frame the segment held. A total would hide a leak inside
+whatever a thread stack allocated in between. `docs/TESTING.md` argues that
+distinction at length, and this is the shape it argues for.
+*/
+@(private = "file")
+verify_anon :: proc(r: ^Result) {
+	pages := int(ANON_BYTES / u64(arch.PAGE_SIZE))
+	check(r, pages > MAX_PROGRAM_FRAMES, "the run asked for is longer than a frame list holds")
+
+	frames_before := mem.pmm_stats().free_frames
+	untracked_before := mem.pmm_stats().untracked_frees
+	segs_before := segment_stats()
+
+	p, err := load("anon", program_anon(), ANON_BYTES)
+	if !check(r, err == .None && p != nil, "a process is loaded that asks for memory nobody serves") {
+		return
+	}
+	r.programs += 1
+
+	if !check(r, wait(p, PATIENCE), "and it comes back") {
+		finish(r, p, "and is taken down")
+		return
+	}
+	check(r, cell(p, CELL_MARK) == MARK_ANON, "having reached its first instruction")
+
+	addr := uintptr(cell(p, ANON_ADDR))
+	check(
+		r,
+		addr >= mem.USER_MIN && addr < mem.USER_MAX,
+		"the run landed at an address in the program's own half",
+	)
+	check(
+		r,
+		cell(p, ANON_ZERO) == 0,
+		"and arrived zero, because a page the last program wrote is not this one's to read",
+	)
+	check(
+		r,
+		cell(p, ANON_BACK) == ANON_PATTERN,
+		"a store half a megabyte in came back, so the run is mapped end to end",
+	)
+
+	/*
+	A second ask is a second address, and the check says *address* on purpose.
+
+	`verify_mapping` learned this the hard way one milestone ago. A check that
+	asks only whether the second number is larger passes when the second call
+	*fails*. A negative errno reads back as an enormous unsigned number. So
+	this asks the bound at both ends, and asks for the span between them as
+	well.
+	*/
+	again := uintptr(cell(p, ANON_AGAIN))
+	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
+	check(
+		r,
+		again >= mem.USER_MIN && again < mem.USER_MAX && again >= addr + span,
+		"a second ask is a second address, clear of the first run's whole extent",
+	)
+
+	check(
+		r,
+		cell(p, ANON_HUGE) == refused(vectra9.EINVAL),
+		"a gigabyte is refused, because a resource with no bound is not a bounded resource",
+	)
+	check(r, cell(p, ANON_NONE) == refused(vectra9.EINVAL), "and so is a request for nothing at all")
+
+	/*
+	And a fork copied it.
+
+	`RFPROC` alone, so `RFMEM` is clear and anonymous memory answers that flag
+	the way data does. The child stored its own word over the first one and
+	exited. What the parent reads is the fork rule in one word. The two values
+	differ, so a wrong answer says which process wrote last.
+
+	The status carries the child's own claim, which the parent cannot make.
+	A child inherits its parent's address space and the mark above it. So the
+	run it asks for after the fork has to land clear of the runs it already
+	holds. It checked that before it wrote anything, and `ANON_CHILD_REFUSED`
+	is that check failing. See `Process.map_next`.
+	*/
+	check(
+		r,
+		cell(p, ANON_STATUS) == ANON_CHILD_STATUS,
+		"a forked child got a run of its own that did not land on one it inherited",
+	)
+	check(
+		r,
+		cell(p, ANON_KEPT) == ANON_PATTERN,
+		"and the parent's run still holds the parent's word, because a fork without RFMEM copies",
+	)
+
+	/*
+	The frames the two runs held, taken by name before the teardown.
+
+	`p.segs` is this package's own, which is why this check can be sharper
+	than a total. This asks about every `.Anon` segment the process holds, one
+	at a time, after `destroy`. So a release that frees the first page and
+	forgets the rest fails here, rather than hiding inside a heap that always
+	allocates.
+	*/
+	held: [MAX_PROC_SEGS]uintptr
+	spans: [MAX_PROC_SEGS]int
+	runs := 0
+	for i in 0 ..< p.seg_count {
+		if p.segs[i].kind == .Anon {
+			held[runs] = p.segs[i].base
+			spans[runs] = p.segs[i].pages
+			runs += 1
+		}
+	}
+	check(r, runs == 2, "the process holds two anonymous segments and no more")
+	check(
+		r,
+		segment_stats().frames - segs_before.frames >= 2 * pages,
+		"and the segment table counts every page of them",
+	)
+
+	check(r, destroy(p), "the process is taken down")
+
+	back := 0
+	for i in 0 ..< runs {
+		for j in 0 ..< spans[i] {
+			if mem.frame_is_free(held[i] + uintptr(j) * uintptr(arch.PAGE_SIZE)) {
+				back += 1
+			}
+		}
+	}
+	check(r, back == 2 * pages, "and every frame of both runs went back to the allocator, by name")
+	check(
+		r,
+		mem.pmm_stats().untracked_frees == untracked_before,
+		"to the allocator that owned them, and not past the end of its bitmap",
+	)
+
+	/*
+	And the total agrees, as loosely as a total honestly can.
+
+	The frame count is not back where it started and should not be checked as
+	if it were. A forked child's thread stack came out of the heap while this
+	ran. The heap takes runs from this allocator and does not give them back.
+
+	So the claim here is only that the shortfall is smaller than one run. No
+	leak of a run can satisfy that, and every thread stack in the machine does.
+	The check above is the sharp one. This is the one that would catch a
+	release that freed the wrong address entirely.
+
+	`verify_mapping` reaches for the same shape one page up, for the same
+	reason. `docs/TESTING.md` calls the sharp form the one to prefer, and this
+	is what the loose form is still worth.
+	*/
+	short := frames_before - mem.pmm_stats().free_frames
+	check(r, short < pages, "with the machine less than one run poorer than it was")
+	check(r, segment_stats().live == segs_before.live, "every segment it held was released")
 }
 
 /*

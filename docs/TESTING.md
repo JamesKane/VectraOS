@@ -231,6 +231,7 @@ nothing else in common.
 | The system call door | `docs/USER.md` | 3 checked, 3 machine failures, 2 uncaught |
 | A process | `docs/USER.md` | 4 checked, 1 machine failure, 1 inert |
 | The screen, mapped | `docs/DRAW.md` | 4 checked, 1 machine failure, 1 inert |
+| Memory a program asks for | `docs/USER.md` | 8 checked, 2 machine failures |
 | Windows | `docs/DRAW.md` | 6 of 6 |
 | rfork | `docs/USER.md` | 4 checked, 1 uncaught by design |
 | The runtime and its servers | `docs/RUNTIME.md` | 15 caught, 2 hangs, 1 inert |

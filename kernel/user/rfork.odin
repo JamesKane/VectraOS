@@ -29,6 +29,8 @@ private stack.
 
     RFPROC     make a child -- without it the flags act on the caller
     RFMEM      share writable data segments rather than copy them
+               -- data and anonymous memory alike, which are the same
+               question in two shapes
     RFFDG      copy the descriptor group rather than share it
     RFCFDG     a clean descriptor group, holding nothing
     RFNAMEG    copy the namespace rather than share it
@@ -189,6 +191,11 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 		parent     = flags & RFNOWAIT != 0 ? 0 : parent.pid,
 		detached   = flags & RFNOWAIT != 0,
 		note_group = flags & RFNOTEG != 0 ? next_pid : parent.note_group,
+		// The address space the child inherits is the parent's, so the mark
+		// above it has to be the parent's too. A child that started its bump
+		// at `MAPPING_BASE` would place its first `segalloc` on top of a
+		// mapping it already holds. See `Process.map_next`.
+		map_next   = parent.map_next,
 	}
 	next_pid += 1
 
@@ -269,8 +276,14 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 		with no other option. There is one framebuffer. A private copy of a
 		card is a contradiction, and `RFMEM` is a question about a program's
 		own writable pages rather than about hardware.
+
+		Anonymous memory is the opposite case, and answers `RFMEM` like data,
+		because that is what it is. A program that asked the kernel for a run
+		of pages holds writable memory of its own. Only the shape it carries
+		makes it something other than a `.Data` segment.
 		*/
-		shared := s.kind == .Text || s.kind == .Device || (s.kind == .Data && share)
+		writable_data := s.kind == .Data || s.kind == .Anon
+		shared := s.kind == .Text || s.kind == .Device || (writable_data && share)
 
 		if shared {
 			segment_incref(s)
@@ -283,10 +296,39 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 				if mem.map_user(child.space, va, frame, s.flags, 1) != .None {
 					return false
 				}
-				// A device segment is a thousand pages and the alias table
-				// holds a handful. Nothing stages through a card in any case.
-				if s.kind != .Device {
+				// A run segment is hundreds of pages and the alias table
+				// holds a handful. Nothing stages through a card or through
+				// memory a program asked for after it started, in any case.
+				if !segment_is_run(s.kind) {
 					alias_frame(child, parent, frame, frame)
+				}
+			}
+			continue
+		}
+
+		/*
+		A private copy of a run is one allocation and one walk, because a run
+		is contiguous at both ends.
+
+		The frames come out zeroed and then take a complete overwrite, which is
+		a wasted pass this deliberately keeps. `segment_run` is the one place
+		that builds this shape. A second constructor that skipped the zeroing
+		would be the one a later caller reaches for by mistake.
+		*/
+		if segment_is_run(s.kind) {
+			fresh := segment_run(s.va, s.pages, s.flags, s.kind)
+			if fresh == nil || !proc_add_segment(child, fresh) {
+				return false
+			}
+			for j in 0 ..< s.pages {
+				src := (cast([^]u8)mem.phys_to_virt(segment_frame(s, j)))[:arch.PAGE_SIZE]
+				dst := (cast([^]u8)mem.phys_to_virt(segment_frame(fresh, j)))[:arch.PAGE_SIZE]
+				for k in 0 ..< arch.PAGE_SIZE {
+					dst[k] = src[k]
+				}
+				va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
+				if mem.map_user(child.space, va, segment_frame(fresh, j), s.flags, 1) != .None {
+					return false
 				}
 			}
 			continue

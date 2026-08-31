@@ -30,6 +30,20 @@ allocator never handed out and must never hand back. Every fork shares it, for
 the reason no other kind is shared unconditionally. There is one piece of
 hardware, and a private copy of it is a contradiction.
 
+**Anon is the fifth, and it is the device's shape with the ownership put
+back.** It is memory a process asked for by the page rather than by the file.
+A base and an extent describe it, for the reason a device needs them. A run of
+a thousand frames does not fit a frame list.
+
+It is the process's own, so the last release frees it. It is ordinary writable
+memory, so `rfork` treats it as Data. `docs/DRAW.md` section 10 named the
+trigger a milestone before the code. A window with pixels of its own is two
+megabytes, and static `bss` was all a program had.
+
+The two of them are the *run* shape, and `segment_is_run` is the one question
+that separates the shapes from the kinds. Everything above this line treats
+all five identically.
+
 The pool is fixed, like `mem.spaces` and every other table a program could
 make the kernel grow. One package spinlock guards the count, rather than a
 bare increment, for the reason `Chan.refs` has a lock. An incref racing the
@@ -47,20 +61,38 @@ Segment_Kind :: enum {
 	Data, // Writable, not a stack: shared under RFMEM, copied otherwise
 	Stack, // Writable, and always a private copy
 	Device, // Memory this allocator never owned: shared, and never freed
+	Anon, // A run this allocator did own: asked for by the page, and freed
+}
+
+/*
+segment_is_run is which of the two shapes a segment has.
+
+A base and an extent, or a list of frames. Device and Anon answer the first
+way, because both are contiguous by construction and both can be larger than
+`MAX_PROGRAM_FRAMES` will hold. Everything else answers the second, because
+its frames arrived from the allocator one at a time and in no order.
+
+Three places care: the frame question, the release, and the fork. The
+predicate exists so each asks in one word, rather than naming the two kinds
+again. A sixth kind then joins the right shape in one edit.
+*/
+@(private)
+segment_is_run :: proc "contextless" (kind: Segment_Kind) -> bool {
+	return kind == .Device || kind == .Anon
 }
 
 /*
 One contiguous mapping's frames, under one reference count.
 
-**A device segment is described differently, and that is `MAX_PROGRAM_FRAMES`
+**A run segment is described differently, and that is `MAX_PROGRAM_FRAMES`
 talking.** Sixty-four frame numbers is a program. The framebuffer is about a
-thousand pages, and a list cannot hold it. So a device segment carries `base`
-and `pages` instead, and `frames` stays empty.
+thousand pages and a window is five hundred, and a list holds neither. So a
+run segment carries `base` and `pages` instead, and `frames` stays empty.
 
 The two shapes could have been two types. They are one because everything
 above this line treats them identically. A process holds a list of segments, a
 fork walks it, and a teardown releases each. Only `segment_release` looks at
-`kind`, and only to decide whether there is anything to free.
+`kind`, and only to decide what there is to free and how.
 */
 Segment :: struct {
 	refs:   int,
@@ -68,8 +100,8 @@ Segment :: struct {
 	pages:  int,
 	frames: [MAX_PROGRAM_FRAMES]uintptr,
 
-	// Where the device's memory starts, for `.Device` alone. Zero for every
-	// other kind, which carry their frames one at a time above.
+	// Where the run starts, for the run shape alone -- see `segment_is_run`.
+	// Zero for every other kind, which carry their frames one at a time above.
 	base:   uintptr,
 
 	flags:  arch.Page_Flags,
@@ -161,16 +193,16 @@ segment_frame is which frame backs a segment's nth page, whichever shape the
 segment has.
 
 One question, two answers. An ordinary segment kept a list, because its frames
-came from the allocator one at a time and in no particular order. A device
-segment is contiguous by construction, so it keeps a base and does the
-arithmetic. Callers that map do not care which, and this is why.
+came from the allocator one at a time and in no particular order. A run segment
+is contiguous by construction, so it keeps a base and does the arithmetic.
+Callers that map do not care which, and this is why.
 */
 @(private)
 segment_frame :: proc "contextless" (s: ^Segment, page: int) -> uintptr #no_bounds_check {
 	if s == nil || page < 0 || page >= s.pages {
 		return 0
 	}
-	if s.kind == .Device {
+	if segment_is_run(s.kind) {
 		return s.base + uintptr(page) * uintptr(arch.PAGE_SIZE)
 	}
 	return s.frames[page]
@@ -223,16 +255,27 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	}
 
 	/*
-	Device memory goes back to nobody, because it came from nobody.
+	Three answers, one per kind of ownership, and the middle one is the trap.
 
-	The frames behind a `.Device` segment are a card's, and the physical
-	allocator never had them. On this machine they sit above every tracked
-	frame, so a free of them is silent rather than fatal. That silence is
-	exactly what makes the mistake worth guarding against here.
-	`mem.free_pages` counts an untracked free now, so a control that removes
-	this line raises a number instead of nothing at all.
+	Device memory goes back to nobody, because it came from nobody. The frames
+	behind a `.Device` segment are a card's, and the physical allocator never
+	had them. On this machine they sit above every tracked frame, so a free of
+	them is silent rather than fatal. That silence is exactly what makes the
+	mistake worth guarding against here. `mem.free_pages` counts an untracked
+	free now, so a control that removes this line raises a number instead of
+	nothing at all.
+
+	An `.Anon` segment shares the device's *shape* and none of that. It is a
+	run this allocator handed out, so it goes back as a run, in one call. One
+	control gives it back the device's way, which is to say not at all. That
+	one fails the balance check by a page count rather than by a counter.
+
+	Everything else frees its frames one at a time, because that is how they
+	arrived.
 	*/
-	pages := s.kind == .Device ? 0 : s.pages
+	kind := s.kind
+	base := s.base
+	pages := s.pages
 	frames: [MAX_PROGRAM_FRAMES]uintptr = s.frames
 	for i in 0 ..< MAX_SEGMENTS {
 		if &segments[i].seg == s {
@@ -243,9 +286,53 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	live_segments -= 1
 	sync.release(&seg_lock, guard)
 
-	for i in 0 ..< pages {
-		mem.free_page(frames[i])
+	switch kind {
+	case .Device:
+		// Nothing. See above -- this is the branch with a control on it.
+	case .Anon:
+		mem.free_pages(base, pages)
+	case .Text, .Data, .Stack:
+		for i in 0 ..< pages {
+			mem.free_page(frames[i])
+		}
 	}
+}
+
+/*
+segment_run builds the run shape: one contiguous allocation of zeroed frames,
+recorded as a base and an extent.
+
+The zeroing is `mem.alloc_pages_zeroed`'s and is not optional. These frames
+came back from a process that ended and go out to one that has not started.
+
+Failure frees nothing, because a failure here allocated nothing. The caller
+maps, and a caller that cannot map releases -- which is the same road every
+other segment's failure takes.
+*/
+@(private)
+segment_run :: proc "contextless" (
+	va: uintptr,
+	pages: int,
+	flags: arch.Page_Flags,
+	kind: Segment_Kind,
+) -> ^Segment {
+	if pages <= 0 || !segment_is_run(kind) {
+		return nil
+	}
+	base, got := mem.alloc_pages_zeroed(pages)
+	if !got {
+		return nil
+	}
+	s := segment_new(va, flags, kind)
+	if s == nil {
+		mem.free_pages(base, pages)
+		return nil
+	}
+	// Both before any caller can fail, so a release finds the whole run to
+	// give back rather than half of one.
+	s.base = base
+	s.pages = pages
+	return s
 }
 
 /*

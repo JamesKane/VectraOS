@@ -212,17 +212,22 @@ Process :: struct {
 	seg_count: int,
 
 	/*
-	Where the next device mapping goes, bumped by each one's extent.
+	Where the next mapping this process asks for goes, bumped by its extent.
 
-	A bump rather than a fixed address, because a process may attach twice and
-	two devices cannot share a page. It never comes back down: a process that
+	A bump rather than a fixed address, because a process may ask twice and two
+	mappings cannot share a page. It never comes back down: a process that
 	attaches and releases leaks address space rather than risks handing the
 	same numbers to a second card. Address space is the one resource a
 	47-bit half has plenty of.
 
-	Zero until the first attach, which is what `DEVICE_BASE` means.
+	**One bump for both kinds, and that is what makes them provably disjoint.**
+	`segattach` takes a device and `segalloc` takes a run of anonymous memory.
+	Two regions with two bumps would need an argument about which one grows
+	into the other. One region has none to make.
+
+	Zero until the first ask, which is what `MAPPING_BASE` means.
 	*/
-	device_next: uintptr,
+	map_next: uintptr,
 
 	// The bounds of the thread's kernel stack, copied at load time. Copied
 	// rather than read back through `thread`, because the next `spawn` frees a

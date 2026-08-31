@@ -177,6 +177,31 @@ segattach :: proc "contextless" (fd: int) -> (addr: uintptr, err: i64) {
 	return uintptr(r), 0
 }
 
+/*
+segalloc asks the kernel for a run of anonymous memory, and answers with the
+address it landed at.
+
+**This is how a program holds something bigger than its own image.** Static
+`bss` is all the format gives it, and the whole of a program is bounded at a
+quarter of a megabyte. A window's pixels are two megabytes, so a program that
+wants its own are a `segalloc` away and were unreachable before.
+
+The memory is zero, writable, never executable, and lasts as long as the
+process. Nothing releases one, for the same reason `segattach` has no other
+half: a program that asks for a backing store holds it until it exits.
+
+`EINVAL` is a request of nothing or one past the kernel's bound. `ENOMEM` is
+the machine having no run that long left, or this process holding as many
+segments as it may.
+*/
+segalloc :: proc "contextless" (bytes: int) -> (addr: uintptr, err: i64) {
+	r := raw1(abi.SYS_SEGALLOC, u64(bytes))
+	if r < 0 {
+		return 0, r
+	}
+	return uintptr(r), 0
+}
+
 // note posts a note to one of the caller's own children. With no handler
 // the child ends at its next kernel boundary, and the wait status is
 // EINTR. With a handler the child catches it instead -- see `notify`.

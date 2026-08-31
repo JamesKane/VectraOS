@@ -285,11 +285,28 @@ something used before does not. Zeroing goes through the direct map, which is
 why the PMM may only ever hand out frames from HHDM-mapped regions.
 */
 alloc_page_zeroed :: proc "contextless" () -> (phys: uintptr, ok: bool) {
-	phys, ok = alloc_pages(1)
+	return alloc_pages_zeroed(1)
+}
+
+/*
+alloc_pages_zeroed is the same promise over a run.
+
+**A run handed to ring 3 has to be zero, and that is not tidiness.** The frames
+come back from a program that ended and go out to one that has not started.
+Whatever the last one wrote is still in them. `kernel/user/segment.odin` is the
+caller, and the check that reads the first word of a fresh anonymous segment is
+what would see the leak.
+
+The zeroing goes through the direct map, which is why this allocator may only
+ever hand out frames from HHDM-mapped regions. That was already true of one
+page and is no more true of a thousand.
+*/
+alloc_pages_zeroed :: proc "contextless" (count: int) -> (phys: uintptr, ok: bool) {
+	phys, ok = alloc_pages(count)
 	if !ok {
 		return
 	}
-	intrinsics.mem_zero(phys_to_virt(phys), int(PAGE_SIZE))
+	intrinsics.mem_zero(phys_to_virt(phys), count * int(PAGE_SIZE))
 	return
 }
 

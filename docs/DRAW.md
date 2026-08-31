@@ -281,24 +281,44 @@ that nothing yet needs.
 the first's pixels. It is a cap to raise rather than a design. A third session
 is refused at `Tlopen`, before it draws anything it would have to take back.
 
-### What a backing store would cost, and why it is not here
+### What a backing store cost, and what it did not
 
 A window with pixels of its own turns `flush` into the damage mark and stacking
 into occlusion. It also makes a resize a repaint the client does not have to
-make. It needs memory the server cannot have:
+make -- Plan 9's `segbrk`, which `docs/USER.md` records as missing. It needed
+memory the server could not have:
 
 - A 640 by 800 window is 2 MB.
-- `MAX_PROGRAM_FRAMES` is 64, so one segment is at most 256 KB.
-- `MAX_PROC_SEGS` is 6, so a whole process is at most 1.5 MB.
+- `MAX_PROGRAM_FRAMES` is 64, so one segment was at most 256 KB.
+- `MAX_PROC_SEGS` is 6, so a whole process was at most 1.5 MB.
 
-**A ring 3 program cannot hold one window**, let alone two. Static `bss` is all
-a program has, and the image format bounds it. So the trigger is named, and it
-is not a graphics question. It is a segment of anonymous memory described by
-base and extent, the way section 7's device segment already is. The PMM
-allocates contiguous runs, so what is missing is a syscall and a kind rather
-than an allocator.
+**A ring 3 program could not hold one window**, let alone two. Static `bss` was
+all a program had, and the image format bounds it. So the trigger was named
+here, and the thing it named was not a graphics question. It was a segment of
+anonymous memory described by base and extent, the way section 7's device
+segment already is. The PMM allocates contiguous runs, so what was missing was
+a syscall and a kind rather than an allocator.
 
-Until then a window is a clip, an occluded client's draws are simply lost, and
-there is no expose event to tell it to repaint. Two clients that do not overlap
-never notice. Two that do would, which is why the placement above does not let
-them.
+**Both arrived, and the prediction was exact.** `SYS_SEGALLOC` and
+`Segment_Kind.Anon` are the whole of it, and neither is a graphics object.
+`docs/USER.md` owns the call. Two sentences from that milestone are worth
+carrying back here:
+
+- The kind is the device's shape with the ownership put back. One predicate,
+  `segment_is_run`, separates the two shapes from the five kinds, and the
+  release, the frame question and the fork each ask it in one word.
+- The call reuses `segattach`'s bump, so a device mapping and a run of memory
+  cannot be handed the same addresses. One counter has no argument to make
+  about which region grows into the other.
+
+**What remains is the graphics half, and it is now only that.** A window is
+still a clip. `run_fill` and `run_blit` still store into the glass through the
+window's origin. An occluded client's draws are still lost, and there is still
+no expose event.
+
+The next milestone points those stores at a run the server asked for. `flush`
+becomes the damage mark that walks the run onto the glass. The placement policy
+then stops being the thing that keeps two clients from overlapping.
+
+Two windows at 640 by 800 is 4 MB, which is `SEGALLOC_MAX` twice over.
+`MAX_WINDOWS` and that bound are the two numbers that move together.

@@ -1013,6 +1013,205 @@ idle-time trigger is `docs/HANDOFF.md`'s reaper, a separate and smaller
 thing. A kernel-launched process is never `detached`, so the reaper leaves
 the self-test's own processes for it to destroy by name.
 
+## Memory a program asks for
+
+`SYS_SEGALLOC`, and `Segment_Kind.Anon` behind it. A program hands over a byte
+count and gets back an address. `docs/DRAW.md` section 10 named this call a
+milestone before it existed, and named it correctly as a memory question rather
+than a graphics one:
+
+- A 640 by 800 window is 2 MB.
+- `MAX_PROGRAM_FRAMES` is 64, so one segment was at most 256 KB.
+- `MAX_PROC_SEGS` is 6, so a whole process was at most 1.5 MB.
+
+Static `bss` was all a program had, and the image format bounds it. So a
+compositor could not hold one window's pixels. Neither could anything else that
+wanted memory in proportion to its work rather than to its source.
+
+**The kind is the device's shape with the ownership put back.** A device
+segment already carried a base and an extent, because a thousand frames do not
+fit a frame list of sixty-four. An anonymous segment is the same description of
+memory this allocator *did* hand out, so the last release hands it in.
+`segment_is_run` is the one predicate that separates the two shapes from the
+five kinds. Three places care: `segment_frame`, `segment_release` and
+`fork_segments`. Each asks in one word, and a sixth kind joins the right shape
+in one edit.
+
+**One bump for both calls, and that is what makes them disjoint.** `segattach`
+and `segalloc` take their addresses from the same `Process.map_next`. Two
+regions with two bumps would need an argument about which one grows into the
+other, and one region has none to make.
+
+A child inherits its parent's mark along with its parent's address space. A
+child that started at `MAPPING_BASE` would place its first `segalloc` on top of
+a run it already holds.
+
+**`rfork` treats it as data, because that is what it is.** Text is shared,
+device memory is shared unconditionally, and a run of anonymous memory answers
+`RFMEM` the way a writable data segment does. A private copy is one allocation
+and one walk rather than a page at a time, because a run is contiguous at both
+ends. The only thing that made it not a `.Data` segment was the shape it is
+described in.
+
+The pages are zero, writable and never executable. Zero because the frames came
+back from a program that ended, which `mem.alloc_pages_zeroed` is now the one
+place to say. Never executable for the reason a framebuffer is not: memory a
+program fills is memory a program can be tricked into jumping into.
+
+**There is a bound, and there had to be.** `SEGALLOC_MAX` is 4 MB, which is two
+of that window. `MAX_PROC_SEGS` limits how many segments a process may hold,
+and this limits how large each one is. A resource with only one of those two is
+not a bounded resource. Both are caps to raise rather than designs.
+
+Nothing releases a run before the process ends. The reason is `segattach`'s
+own: a program that asks for a backing store holds it until it exits. The
+subsection below names what Plan 9 has there and Vectra does not.
+
+### Where this leaves Plan 9
+
+Read against 9front's `sys/src/9/port/segment.c` and `sysproc.c`, because the
+call above is the first one in this kernel that answers with memory rather than
+with bytes.
+
+**The fork rule is Plan 9's, to the line.** `dupseg` puts `SG_TEXT`,
+`SG_SHARED` and `SG_PHYSICAL` in the group that increments a reference and
+shares. `SG_STACK` always makes a new segment. `SG_BSS` reads:
+
+    case SG_BSS:            /* Just copy on write */
+        if(share) goto sameseg;
+        n = newseg(s->type, s->base, s->size);
+
+That is `.Anon` under `RFMEM`, and it is where the rule in `fork_segments`
+came from. Two more agree without an edit. `mapphys` addresses a physical
+segment as `s->pseg->pa + (addr - s->base)`, which is `segment_frame`'s
+`.Device` arithmetic. And a faulted `SG_BSS` page is `fillpage(new, 0)`, so
+zeroed anonymous memory is Plan 9's promise too. Vectra zeroes at the call and
+Plan 9 zeroes at the fault. That is one machine's answer about paging, rather
+than a difference about what a program may read.
+
+**`segalloc` exists as the price of the descriptor.** In Plan 9 there is one
+call for this. `segattach(attr, class, va, len)` looks `class` up in a fixed
+kernel table. The table is seeded with `"shared"` and `"memory"`, and drivers
+extend it at run time. `addvgaseg` registers the framebuffer as a named class
+carrying `SG_PHYSICAL|SG_DEVICE|SG_NOEXEC`. So anonymous memory is `"memory"`,
+the screen is `"vgascreen"`, and both go through one door.
+
+`docs/DRAW.md` section 7 refused that table and gave the reason. A kernel table
+of class names is a permission story a namespace cannot overrule, and this
+kernel already has a better one. **That refusal is the more Plan 9 answer, and
+it has a bill, which is this call.** A descriptor names a device because a
+device is a file, and nothing is the file for memory that no server has.
+
+So a second call was the only way to ask for it. Anyone reading `segalloc` as
+an independent design decision has it backwards. It is the second half of one
+decision made a milestone earlier.
+
+**Three calls Plan 9 has here, and Vectra has none of them.**
+
+| Plan 9 | What it does | What it would answer here |
+|---|---|---|
+| `segfree(va, len)` | frees the pages under a range, keeps the segment | a window that shrinks its backing store |
+| `segdetach(addr)` | takes the whole segment out of the process | a client that gives its window back before it exits |
+| `segbrk(addr, top)` | grows or shrinks a segment in place | a window that resizes |
+
+`segbrk` is the interesting one. `syssegbrk` refuses `SG_TEXT`, `SG_DATA`,
+`SG_STACK`, `SG_PHYSICAL`, `SG_FIXED` and `SG_STICKY` by name, and answers for
+`SG_BSS` and `SG_SHARED` alone. So Plan 9 says out loud that in-place resize is
+a question only anonymous memory may be asked. `docs/DRAW.md` section 10 names
+a resize as a thing a backing store makes cheap, and `segbrk` is the call that
+sentence needs.
+
+**And one type.** Plan 9's `"shared"` class is `SG_SHARED`, which `dupseg`
+shares whatever the flags say and `exec` inherits. Vectra has no equivalent:
+`.Anon` is shared under `RFMEM` or copied, and there is no third answer. A
+compositor that forks a worker to paint wants exactly that third answer, and
+it is a fork rule rather than a new shape.
+
+**Smaller divergences, each recorded rather than argued.**
+
+- **A program cannot ask where its memory goes.** Plan 9's `segattach` takes a
+  `va`. Zero means find a hole, which it does by searching *down* from the
+  stack segment with `isoverlap` as the guard. Vectra bumps *up* from
+  `MAPPING_BASE` and ignores the caller. Two consequences: no segment at an
+  address two programs agreed on in advance, and a bump that never comes back
+  down. Plan 9's search reuses freed space because it is a search.
+- **`exec` drops everything.** Plan 9 detaches only the segments carrying
+  `SG_CEXEC` and inherits the rest. Vectra's `exec` releases every segment a
+  process holds, which is `SG_CEXEC` behaviour for all of them.
+- **No `attr` argument at all.** `SG_RONLY` and `SG_CEXEC` are what Plan 9's
+  first argument carries. A read-only run has no way to ask here.
+- **The copy at fork is eager.** `dupseg`'s comment says copy on write and
+  means it: it copies page table entries and lets the fault handler do the
+  work. `fork_segments` copies the bytes. For a 4 MB window that is 4 MB per
+  fork, which is the compositor's own milestone paying for this one.
+- **The bound is three orders of magnitude smaller.** `SEGMAXSIZE` is about
+  1.94 GB per class. `SEGALLOC_MAX` is 4 MB.
+
+**The deepest one is upstream of this file.** Plan 9 has no `.Data` and
+`.Anon` split. `SG_BSS` is the loader's bss *and* the memory `segattach`
+hands out, one type for both. `Segment` carries a growable `Pte **map` with a
+`mapsize`, so one shape serves a four-kilobyte segment and a two-gigabyte one.
+
+Vectra needed two kinds only because `MAX_PROGRAM_FRAMES` is a fixed array of
+sixty-four. That is what forced the run shape, and `segment_is_run` is the seam
+it left. A growable frame list would retire the predicate, the second kind, and
+this paragraph.
+
+### The self-test, and its controls
+
+`verify_anon` loads a program that asks for half a megabyte. That is twice
+`MAX_PROGRAM_FRAMES`, so a run that comes back whole is a claim about the shape
+and not only about the call.
+
+It reads the first word before it writes anything. Then it stores a pattern at
+both ends, asks twice more with arithmetic the kernel must refuse, and forks.
+The child asks for a run of its own. It checks that the one it inherited still
+reads as its parent left it, writes over that copy, and exits.
+
+Ten mutations, each on a real boot. Eight are caught.
+
+| Mutation | Result |
+|---|---|
+| the teardown gives a run back the way it gives a device back | 2 checks, first `and every frame of both runs went back to the allocator, by name` |
+| a run alone is handed out unzeroed | 1 check, `and arrived zero, because a page the last program wrote is not this one's to read` |
+| a run is one page however much was asked for | 9 checks, first `a store half a megabyte in came back, so the run is mapped end to end` |
+| the address bump does not move | 3 checks, first `a second attach is a second address` |
+| `rfork` shares a run the way it shares a card | 1 check, `and the parent's run still holds the parent's word` |
+| a run answers the frame list rather than its base | 1 check, `and the parent's run still holds the parent's word` |
+| there is no bound on what one call may ask for | 1 check, `a gigabyte is refused` |
+| a child starts its bump at `MAPPING_BASE` | 1 check, `a forked child got a run of its own that did not land on one it inherited` |
+| *every* fresh run is handed out unzeroed | **the boot stops**, on a page table |
+| the run mapping drops every page but the first | **the boot stops**, for a reason that is not this code's |
+
+**The bump control is the interesting catch.** It fails `segattach`'s
+second-attach check first and `segalloc`'s second-ask check after it. One
+counter, one mutation, two callers -- which is the argument for one counter,
+made by the test rather than by this paragraph.
+
+**Two machine failures, and only one of them is about this code.** Removing the
+zeroing from `mem.alloc_pages_zeroed` kills the machine long before ring 3.
+Page tables are the other caller, and a page table that is not zero reads as
+512 entries that are all present. The mutation had to narrow to `segment_run`
+to say anything. Narrowed, one check catches it.
+
+The other is a gap this milestone did not create. Truncating `map_run` breaks
+the framebuffer's mapping as well as a run's. So `servers/intuition` faults
+inside a `Twrite` and its client parks for ever. That is the hang
+`docs/DRAW.md` section 8 found with a different mutation, and `docs/HANDOFF.md`
+section 6 still names it. A killed process holds its descriptors until
+something reaps it. The narrowed form, a run of one page, reaches the checks
+and fails nine.
+
+**What a control found that the checks did not.** The frame-list mutation makes
+every page of a run answer physical frame zero. The zero check and the far-end
+check both still pass, because a run that is entirely one frame agrees with
+itself. The pattern at the far end comes back from the frame it went to.
+
+Only the fork catches it, and only because two processes then share what a copy
+should have separated. A readback through one mapping cannot tell a correct
+mapping from a constant one. That is worth knowing before the next test that
+goes through a mapping.
+
 ## What is missing, and named where it lives
 
 - **`destroy` still refuses a running process**, and rightly: its thread is
@@ -1026,7 +1225,9 @@ the self-test's own processes for it to destroy by name.
   posting is what pulled them through.
 - **Nothing counts a process's calls against it.** `MAX_PROCESSES` bounds how
   many exist and `MAX_FDS` bounds what one holds. Nothing bounds what one asks
-  for, and a single process can call `sleep` for ever.
+  for, and a single process can call `sleep` for ever. `segalloc` is bounded
+  per call and per process and by nothing across processes, which is the same
+  gap one table down.
 - **`copy_in` and `copy_out` move one `IO_CHUNK` per pass**, on the calling
   thread's kernel stack, and `read` and `write` loop until the whole count is
   moved. A program that hands over a bad pointer part-way loses only the tail.

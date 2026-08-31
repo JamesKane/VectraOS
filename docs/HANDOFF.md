@@ -53,7 +53,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1220 checks against itself and idles.
+1280 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -108,8 +108,8 @@ child at birth, a dying parent reparents its children to the kernel, and
 `reap_orphans` collects a detached process once it ends. `docs/USER.md` owns
 both.
 
-**Vectra runs processes, and now a process can become two.** Forty enter
-ring 3 during the boot, and another process started fourteen of them,
+**Vectra runs processes, and now a process can become two.** Forty-two enter
+ring 3 during the boot, and another process started fifteen of them,
 by `spawn` and by `rfork`. One of them then replaced itself with `exec`. A
 forked child continues from the instruction after its parent's `syscall`,
 on a private copy of the stack. It answers zero where its parent hears a
@@ -167,6 +167,33 @@ uploads the console's own font once, from `sys/libfont`. A typed line
 comes back as blits out of that atlas, pixel-identical to the kernel's
 rendering. The kernel types at it during the boot and reads the glass. A
 typed `exit` ends it, and its clunked session gives the image pool back.
+
+**And a program can hold more than its own image.** `segalloc` is the call and
+`Segment_Kind.Anon` is what it makes. A run of zeroed, writable, never
+executable pages, described by a base and an extent the way a device mapping
+already was.
+
+Static `bss` used to be all a program had. The image format bounds a whole
+process at 1.5 MB, which is less than one window's pixels. `docs/DRAW.md`
+section 10 named this call a milestone before it existed, and named it a memory
+question rather than a graphics one. It was.
+
+`segattach` and `segalloc` share one address bump, so a card and a run can
+never take the same pages. A forked child inherits the mark along with the
+space. `rfork` treats a run as data. It shares one under `RFMEM`, and otherwise
+makes a private copy in one allocation, because a run is contiguous at both
+ends. That last rule is `dupseg`'s `SG_BSS` case to the line.
+
+**Plan 9 asks for both through one call, and Vectra asks through two.**
+9front's `segattach` takes a class name out of a kernel table. `"memory"` is
+anonymous, and a driver registers the framebuffer under a name of its own.
+`docs/DRAW.md` section 7 refused that table a milestone ago, because a kernel
+table of names is a permission story a namespace cannot overrule. A descriptor
+names a device because a device is a file, and nothing is the file for memory
+no server has. So the second call is that refusal's bill rather than a design
+of its own.
+
+`docs/USER.md` owns the design, the controls, and what else Plan 9 has here.
 
 ```
 -- a program in ring 3 wrote this line
@@ -547,24 +574,34 @@ shape and never the glass's. Two clients hold the same coordinates and mean two
 places. **The protocol did not change to make that true**, which is the test
 `docs/DRAW.md` section 3 chose the topology to pass.
 
+**And a program can hold more memory than its own image.** `segalloc` answers
+with a run of zeroed pages, described by a base and an extent the way a device
+mapping already was. That was the piece a window's pixels waited on, and
+`docs/DRAW.md` section 10 called it correctly a milestone early: it was not a
+graphics question. `docs/USER.md` owns the call.
+
 **Next, in order:**
 
-1. **A window with pixels of its own.** Image zero is the client's window now,
-   translated and clipped, and two clients cannot reach each other's pixels.
-   What it has not got is a backing store. `docs/DRAW.md` section 10 has the
-   arithmetic. A 640 by 800 window is 2 MB, one segment is at most 256 KB, and
-   a whole process is at most 1.5 MB. **A ring 3 program cannot hold one
-   window.**
+1. **The graphics half of a window with pixels of its own.** The memory arrived
+   and nothing draws into it yet. `servers/intuition` still stores through the
+   window's origin straight onto the glass. So an occluded client's draws are
+   still lost, and there is still no expose event.
 
-   So the next piece is not a graphics one. It is a segment of anonymous
-   memory described by base and extent, the way the device segment already is.
-   That, and a syscall to ask for it. The PMM allocates contiguous runs, so
-   what is missing is a kind and a call rather than an allocator.
+   What that milestone is, now that the memory is not in the way. Each window
+   gets a run of its own from `segalloc`. `run_fill` and `run_blit` store into
+   that run rather than into the glass. `flush` becomes the damage mark that
+   walks the dirty rectangles onto the screen. Stacking then becomes occlusion,
+   and a covered client gets told to repaint. The placement policy stops being
+   the thing that keeps two clients from overlapping at all.
 
-   With it, `flush` becomes the damage mark and stacking becomes occlusion, and
-   a covered client gets told to repaint. Without it a window is a clip and an
-   occluded client's draws are lost. The placement policy is what keeps two
-   clients from overlapping at all.
+   Two numbers move together when it happens. `MAX_WINDOWS` is two and
+   `SEGALLOC_MAX` is 4 MB, which is exactly two 640 by 800 windows. A third
+   window is a raise of both.
+
+   One uncaught mutation belongs to this milestone rather than to the last two.
+   `docs/DRAW.md` section 8 records that `rfork` copying a device segment is
+   inert because nothing forks a process holding one. It stops being inert the
+   day the compositor forks a worker.
 
 2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
@@ -618,6 +655,17 @@ rather than something absent. All are named in the code they live in.
   hangup itself.
   A control in `docs/DRAW.md` found it by stopping a boot, and it is the one
   gap here that turns a failed check into a hang.
+- **Three of Plan 9's segment calls are missing, and they are one gap.**
+  `segfree(va, len)` frees the pages under a range and keeps the segment.
+  `segdetach(addr)` takes the segment out of the process. `segbrk(addr, top)`
+  grows or shrinks one in place, and 9front's `syssegbrk` answers for `SG_BSS`
+  and `SG_SHARED` alone, refusing every other type by name.
+
+  So Vectra gives a run back at exit and at no other moment, and the address
+  bump never comes down either. That is address space rather than memory, and
+  the cheaper of the two to leak. `segbrk` is the one with a named trigger: a
+  window that resizes. See `docs/USER.md`, which reads the three against
+  9front.
 - **A free list for fids, `/srv` ids, and now pids.** All three counters are
   monotonic and therefore finite: four billion opens per session, two billion
   posts, and a pid space nothing recycles. One fix retires all of them, and
@@ -732,7 +780,8 @@ kernel/
     console/               draws from sys/libfont, the one font table
   mem/
     mem.odin            Region/Boot_Memory types, HHDM, alignment, mem.init
-    pmm.odin            Bitmap physical page allocator
+    pmm.odin            Bitmap physical page allocator, and the zeroed run a
+                        segment of anonymous memory is cut from
     vmm.odin            Page table walk, kernel address space, translate
     heap.odin           Slab allocator + Odin's context.allocator
     space.odin          One page table tree per process, and the kernel half
@@ -816,13 +865,15 @@ kernel/
                         from the kernel's, a descriptor group, and the
                         fault handler that ends one rather than the machine
     segment.odin        The frames behind one mapping, refcounted -- what
-                        lets rfork map one segment into two spaces
+                        lets rfork map one segment into two spaces, in two
+                        shapes: a frame list, and a base with an extent for
+                        a card or a run of anonymous memory
     fdtable.odin        The fd table as a refcounted group: the take/advance
                         borrow discipline, and the release-once exit rule
     rfork.odin          Plan 9's fork: the flag word, the per-kind segment
                         copy rule, and the child built before it can run
     syscall.odin        What is behind the door: the calling convention, the
-                        twenty-one calls, the note check the door runs first
+                        twenty-two calls, the note check the door runs first
                         -- deliver a handler or end -- the two copies that
                         judge a pointer from ring 3, and the resolver that
                         answers /srv's descriptor question
@@ -838,9 +889,9 @@ kernel/
     spawn.odin          A process that starts another one: what a child
                         inherits, the wait that parks for it by pid, and the
                         reaper that collects a detached orphan
-    program.odin        The twenty-five programs the assembler bakes into
+    program.odin        The twenty-eight programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 583 checks -- one process preempted
+    verify.odin         The boot self-test: 644 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that
@@ -855,7 +906,9 @@ kernel/
                         a keyboard translator that turns raw scancodes
                         into characters over a mount, a serial server
                         that puts a ring 3 write on the wire, a draw
-                        server whose verbs read back off the glass, and
+                        server whose verbs read back off the glass, one
+                        that asks for half a megabyte of memory no file
+                        serves and forks to see whose copy is whose, and
                         a terminal typed at through the keyboard sink
   sync/
     spin.odin           The lock that masks: the interrupt flag, nesting handled

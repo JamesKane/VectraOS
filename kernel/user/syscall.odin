@@ -103,6 +103,7 @@ SYS_NOTIFY :: abi.SYS_NOTIFY
 SYS_NOTED :: abi.SYS_NOTED
 SYS_EXEC :: abi.SYS_EXEC
 SYS_SEGATTACH :: abi.SYS_SEGATTACH
+SYS_SEGALLOC :: abi.SYS_SEGALLOC
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -324,6 +325,8 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = sys_exec(frame, uintptr(a0), int(a1))
 	case SYS_SEGATTACH:
 		result = sys_segattach(int(a0))
+	case SYS_SEGALLOC:
+		result = sys_segalloc(a0)
 
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
@@ -851,13 +854,62 @@ sys_seek :: proc(fd: int, offset: u64) -> i64 {
 }
 
 /*
-Where a process's first device mapping lands, and how far apart they sit.
+Where a process's first mapping lands, and how far apart they sit.
 
 High in the lower half, clear of everything a loader places. Text, data and
 stack come out of the image's own addresses, and no format this kernel reads
 asks for anything above a few megabytes.
+
+Both calls that hand out address space start here. See `Process.map_next` for
+why there is one bump and not two.
 */
-DEVICE_BASE :: uintptr(0x1000_0000)
+MAPPING_BASE :: uintptr(0x1000_0000)
+
+/*
+map_reserve takes the next span of a process's address space, without mapping
+anything into it.
+
+The bump happens here rather than after the mapping succeeds, and that is the
+same decision `map_next` records. A half-built mapping keeps its numbers. The
+alternative hands the next caller an address the failed one may still have page
+tables under.
+*/
+@(private = "file")
+map_reserve :: proc "contextless" (p: ^Process, pages: int) -> (va: uintptr, ok: bool) {
+	if p == nil || pages <= 0 {
+		return 0, false
+	}
+	if p.map_next == 0 {
+		p.map_next = MAPPING_BASE
+	}
+	va = p.map_next
+	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
+	if va + span >= mem.USER_MAX || va + span < va {
+		return 0, false
+	}
+	p.map_next = va + span
+	return va, true
+}
+
+/*
+map_run maps one run segment's frames into a process, page by page.
+
+The two calls below differ in where the frames came from and agree on
+everything after. A failure part-way leaves the segment on the process's list
+on purpose. `unload` releases every segment a process holds. So the half-built
+mapping costs page tables the space teardown already walks. Unwinding by hand
+would be a second teardown path for the same frames.
+*/
+@(private = "file")
+map_run :: proc "contextless" (p: ^Process, s: ^Segment) -> bool {
+	for i in 0 ..< s.pages {
+		at := s.va + uintptr(i) * uintptr(arch.PAGE_SIZE)
+		if mem.map_user(p.space, at, segment_frame(s, i), s.flags, 1) != .None {
+			return false
+		}
+	}
+	return true
+}
 
 /*
 sys_segattach maps the device behind an open descriptor into this process.
@@ -902,12 +954,8 @@ sys_segattach :: proc(fd: int) -> i64 {
 		return -i64(vectra9.ENODEV)
 	}
 
-	if p.device_next == 0 {
-		p.device_next = DEVICE_BASE
-	}
-	va := p.device_next
-	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
-	if va + span >= mem.USER_MAX {
+	va, room := map_reserve(p, pages)
+	if !room {
 		return -i64(vectra9.ENOMEM)
 	}
 
@@ -920,25 +968,82 @@ sys_segattach :: proc(fd: int) -> i64 {
 	if !proc_add_segment(p, seg) {
 		return -i64(vectra9.ENOMEM)
 	}
+	if !map_run(p, seg) {
+		return -i64(vectra9.ENOMEM)
+	}
+	return i64(va)
+}
 
-	/*
-	One page at a time, and a failure part-way leaves the segment on the
-	process's list.
+/*
+The most memory one `segalloc` may ask for, and why there is a bound at all.
 
-	That is deliberate rather than lazy. `unload` releases every segment a
-	process holds, and a `.Device` release frees nothing, so the half-built
-	mapping costs page tables the space teardown already walks. Unwinding by
-	hand would be a second teardown path for the same frames.
-	*/
-	for i in 0 ..< pages {
-		at := va + uintptr(i) * uintptr(arch.PAGE_SIZE)
-		frame := phys + uintptr(i) * uintptr(arch.PAGE_SIZE)
-		if mem.map_user(p.space, at, frame, {.Write, .No_Execute}, 1) != .None {
-			return -i64(vectra9.ENOMEM)
-		}
+Four megabytes is two of `docs/DRAW.md` section 10's windows, which is the
+thing this call is for. A program that asks for more made an arithmetic
+mistake. A bound turns that into an errno, rather than into a machine with no
+frames left for the process that asks next.
+
+It is a cap to raise rather than a design, the way `MAX_WINDOWS` is. What it
+must never become is unbounded. `MAX_PROC_SEGS` limits how many segments a
+process may hold, and this limits how large each one is. A resource with only
+one of those two is not bounded.
+*/
+SEGALLOC_MAX :: u64(4) << 20
+
+/*
+sys_segalloc gives a process a run of anonymous memory, and answers with the
+address it landed at.
+
+**This is the call that lets a program hold something bigger than its own
+image.** Static `bss` was all it had, and `MAX_PROGRAM_FRAMES` bounds a whole
+program at 256 KB. `docs/DRAW.md` section 10 did the arithmetic that named this
+call a milestone before it existed. A 640 by 800 window is two megabytes. So a
+window with pixels of its own was a memory question, not a graphics one.
+
+The shape is `segattach`'s, deliberately. A base, an extent, one segment, one
+mapping, one bump of the same counter. Only the source of the frames differs,
+and therefore where they go back to. The allocator handed these out, so the
+last release hands them in.
+
+The pages are zero, writable, and never executable. Zero because the frames
+came back from a program that ended -- see `mem.alloc_pages_zeroed`. Never
+executable for the reason a framebuffer is not: memory a program fills is
+memory a program can be tricked into jumping into.
+
+`EINVAL` is a request of nothing or a request past the bound, which are both
+the caller's arithmetic. `ENOMEM` is the machine's answer and can mean the
+segment pool, the process's own list, or no run of that many frames left.
+*/
+@(private = "file")
+sys_segalloc :: proc(bytes: u64) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ESRCH)
+	}
+	if bytes == 0 || bytes > SEGALLOC_MAX {
+		return -i64(vectra9.EINVAL)
 	}
 
-	p.device_next = va + span
+	// Whole pages, up. A program that asks for one byte past a page gets the
+	// whole page. A mapping cannot be finer than the hardware page it is in.
+	pages := int((bytes + u64(arch.PAGE_SIZE) - 1) / u64(arch.PAGE_SIZE))
+
+	va, room := map_reserve(p, pages)
+	if !room {
+		return -i64(vectra9.ENOMEM)
+	}
+
+	seg := segment_run(va, pages, {.Write, .No_Execute}, .Anon)
+	if seg == nil {
+		return -i64(vectra9.ENOMEM)
+	}
+	// From here the frames are the segment's, so every failure below is a
+	// release rather than a free. `proc_add_segment` releases for us.
+	if !proc_add_segment(p, seg) {
+		return -i64(vectra9.ENOMEM)
+	}
+	if !map_run(p, seg) {
+		return -i64(vectra9.ENOMEM)
+	}
 	return i64(va)
 }
 

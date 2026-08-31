@@ -61,6 +61,7 @@ MARK_EXECER :: u64(0x4558_4543_4558_4543) // EXECEXEC
 MARK_NOWAITER :: u64(0x4E4F_5741_4E4F_5741) // NOWANOWA
 MARK_BULKIO :: u64(0x4255_4C4B_4255_4C4B) // BULKBULK
 MARK_FORGER :: u64(0x464F_5247_464F_5247) // FORGFORG
+MARK_ANON :: u64(0x414E_4F4E_414E_4F4E) // ANONANON
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -131,6 +132,58 @@ READER_READ :: 2
 READER_REFUSED :: 3
 READER_CLOSED :: 4
 READER_BUFFER :: 8 // Byte offset 64, which is where the read lands
+
+/*
+Where `anon` keeps its answers, and what each one is a claim about.
+
+Eight cells, in the order the program fills them. `ZERO` and `BACK` are the
+two that read memory rather than a return value. The first says the run
+arrived clean. The second says the far end is mapped, and not only the near
+one. `KEPT` is the fork rule, read after the parent waits for the child that
+overwrote its own copy.
+
+`ANON_PATTERN` is what the parent stores and `ANON_CHILD_MARK` is what the
+child stores over it. Two values rather than one, so a `KEPT` that is wrong
+says which process wrote last.
+*/
+ANON_ADDR :: 1
+ANON_ZERO :: 2
+ANON_BACK :: 3
+ANON_AGAIN :: 4
+ANON_HUGE :: 5
+ANON_NONE :: 6
+ANON_KEPT :: 7
+ANON_STATUS :: 8
+
+ANON_PATTERN :: u64(0x5749_4E44_5749_4E44) // WINDWIND
+ANON_CHILD_MARK :: u64(0x0BAD_0BAD_0BAD_0BAD)
+
+/*
+What the child exits with, so the parent's `wait` answers a number no fault
+and no errno could produce.
+
+Two statuses, and the second is the whole reason the child asks for memory at
+all. A forked child inherits its parent's address space *and* its parent's
+mark above it. A child that started its bump at `MAPPING_BASE` would place its
+first `segalloc` on top of a run it already holds. The word it inherited would
+be gone.
+
+So the child asks, writes into what it got, and looks at the run it inherited
+before it trusts either. `ANON_CHILD_REFUSED` is that path failing, whichever
+way it failed.
+*/
+ANON_CHILD_STATUS :: u64(7)
+ANON_CHILD_REFUSED :: u64(8)
+
+// What `anon` asks for, and why it is that number. A hundred and twenty-eight
+// pages is half a megabyte, which is twice `MAX_PROGRAM_FRAMES` worth. A frame
+// list cannot describe it, so a run that comes back whole is a claim about the
+// shape and not only about the call.
+ANON_BYTES :: u64(128 * 4096)
+
+// And what it asks for that it must not get. A gigabyte is past
+// `SEGALLOC_MAX` by two orders of magnitude, and past this machine's memory.
+ANON_TOO_MUCH :: u64(1) << 30
 
 MAPPER_FD :: 1
 MAPPER_ADDR :: 2
@@ -567,6 +620,8 @@ foreign {
 	vectra_user_nowaiter_end: byte
 	vectra_user_bulkio: byte
 	vectra_user_bulkio_end: byte
+	vectra_user_anon: byte
+	vectra_user_anon_end: byte
 }
 
 @(private)
@@ -598,6 +653,10 @@ program_binder :: proc "contextless" () -> []u8 {return blob(&vectra_user_binder
 
 // The one that asks for memory rather than for bytes.
 program_mapper :: proc "contextless" () -> []u8 {return blob(&vectra_user_mapper, &vectra_user_mapper_end)}
+
+// And the one that asks for memory nobody serves. A run of anonymous pages,
+// written at both ends, and forked to see whose copy is whose.
+program_anon :: proc "contextless" () -> []u8 {return blob(&vectra_user_anon, &vectra_user_anon_end)}
 
 // And the one that reaches hardware: pixels through /dev/fb, at an offset
 // it chose with `seek`.
@@ -662,6 +721,17 @@ it asks for anything. That handshake is the same one `spin` uses in the other
 direction. It exists because the kernel has to map that address after the
 program is already running. The wait is bounded, and a program that runs out
 exits with a status that says so.
+
+`anon` is the one that reaches memory no file serves. It asks for half a
+megabyte and reads the first word before it writes anything. Then it stores a
+pattern at both ends of the run. Then it asks twice more, with arithmetic the
+kernel must refuse. Then it forks.
+
+The child asks for a run of its own and writes into it. Then it checks that the
+run it *inherited* still reads as its parent left it. That is the claim that a
+child's bump starts where its parent's stopped. Only then does it write over
+the inherited copy and exit with `ANON_CHILD_STATUS`. The parent waits, then
+reads its own first word. That is the fork rule in one word.
 
 `.balign 16` between them is for readability in a disassembly rather than for
 correctness. Unlike the interrupt stubs, nothing indexes these by multiplying.
@@ -1976,5 +2046,88 @@ vectra_user_mapper:
 	ud2
 .globl vectra_user_mapper_end
 vectra_user_mapper_end:
+
+.balign 16
+.globl vectra_user_anon
+vectra_user_anon:
+	movq %rdi, %rbx
+	movq %rsi, %rbp
+	movabsq $$0x414E4F4E414E4F4E, %rax
+	movq %rax, (%rbx)
+
+	movq %rbp, %rdi
+	movq $$22, %rax
+	syscall
+	movq %rax, 8(%rbx)
+	movq %rax, %r12
+
+	movq (%r12), %rax
+	movq %rax, 16(%rbx)
+
+	movabsq $$0x57494E4457494E44, %rax
+	movq %rbp, %rcx
+	movq %rax, (%r12)
+	movq %rax, -8(%r12,%rcx,1)
+	movq -8(%r12,%rcx,1), %rax
+	movq %rax, 24(%rbx)
+
+	movq %rbp, %rdi
+	movq $$22, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	movq $$0x40000000, %rdi
+	movq $$22, %rax
+	syscall
+	movq %rax, 40(%rbx)
+
+	xorl %edi, %edi
+	movq $$22, %rax
+	syscall
+	movq %rax, 48(%rbx)
+
+	movq $$0x10, %rdi
+	movq $$17, %rax
+	syscall
+	testq %rax, %rax
+	jnz 52f
+
+	movq %rbp, %rdi
+	movq $$22, %rax
+	syscall
+	testq %rax, %rax
+	js 53f
+	movq %rax, %r13
+	movabsq $$0x0BAD0BAD0BAD0BAD, %rax
+	movq %rax, (%r13)
+	movabsq $$0x57494E4457494E44, %rcx
+	cmpq %rcx, (%r12)
+	jne 53f
+	movabsq $$0x0BAD0BAD0BAD0BAD, %rax
+	movq %rax, (%r12)
+	movq $$7, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+53:
+	movq $$8, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+52:
+	movq %rax, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 64(%rbx)
+
+	movq (%r12), %rax
+	movq %rax, 56(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+.globl vectra_user_anon_end
+vectra_user_anon_end:
 `, "~{memory}"}()
 }
