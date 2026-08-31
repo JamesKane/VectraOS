@@ -278,13 +278,13 @@ code it explains.
 [  --  ] console 149 cols x 36 rows
 [  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
 [  ok  ] paging 4-level
-[  --  ] kernel phys 0x0000000019eab000 virt 0xffffffff80000000
+[  --  ] kernel phys 0x0000000019ea5000 virt 0xffffffff80000000
 [  --  ] hhdm offset 0xffff800000000000
 [  --  ] memory map: 32 entries spanning 12.7 GiB
-[  ok  ] usable 465.1 MiB, reclaimable 40.5 MiB
+[  ok  ] usable 465.0 MiB, reclaimable 40.5 MiB
 [  --  ] largest usable region 392.6 MiB at 0x0000000001600000
-[  ok  ] pmm 119068 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 516.2 MiB in 271 tables (1.0 MiB)
+[  ok  ] pmm 119062 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
+[  ok  ] vmm root 0x0000000000005000, mapped 516.3 MiB in 271 tables (1.0 MiB)
 [  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
 [  ok  ] heap online -- context.allocator is live
 [  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
@@ -294,14 +294,14 @@ code it explains.
 [  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
 [  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
 [  ok  ] ioapic version 0x20, 24 lines, all masked
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62556 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (19563653-19575289 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 2385 acquisitions, 2275 parked and handed back, decayed to 1
-[  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 26 in 2 switches
+[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62525 counts per tick
+[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (17722552-17875335 rounds), decayed to 5, 3 fpu accumulators intact
+[  ok  ] sync 14 sleeping lock checks passed -- 2266 acquisitions, 2162 parked and handed back, decayed to 1
+[  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
 [  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
 [  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
 [  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4120, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 4652 namespace operations across 5 threads, 746 rebinds under them in 1000 ms, nothing serialised, heap balanced
+[  ok  ] vfs 34 concurrency checks passed -- 4506 namespace operations across 5 threads, 720 rebinds under them in 1000 ms, nothing serialised, heap balanced
 [  ok  ] devfs #c bound at /dev, 8 devices on 4 workers, cooked console, input live
 -- this line reached the screen through /dev/consX 
 -- these bytes went straight out the wire
@@ -314,8 +314,8 @@ code it explains.
 [  ok  ] bin #b bound at /bin, 12 programs as files, formats VECTRA01 and 02
 [  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
 [  ok  ] kbd 55 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
-[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 131 CR3 reloads, one address two meanings
-[  ok  ] syscall armed -- entry at 0xffffffff80026d60, /dev/cons is descriptor 1
+[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 133 CR3 reloads, one address two meanings
+[  ok  ] syscall armed -- entry at 0xffffffff800272b0, /dev/cons is descriptor 1
 -- a program in ring 3 wrote this line
 -- a process opened this file by name
 -- this line went to /dev/null
@@ -327,7 +327,7 @@ code it explains.
 these bytes live in a program's own segments
 -- a process started this one
 -- these bytes went through a ring 3 server to the wire
-[  ok  ] user 608 userland checks passed -- 41 processes, 14 started by another process, 7952687 preempted rounds, 923 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
+[  ok  ] user 625 userland checks passed -- 41 processes, 14 started by another process, 7467632 preempted rounds, 979 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
 [  ok  ] boot complete -- idling
 ```
 
@@ -536,22 +536,35 @@ raw, and a posted service's connection comes down when nothing holds it.
 Nothing blocks the `servers/` devfs port any more, and its teardown story
 is written.
 
-**The screen is memory a process holds.** `servers/intuition` opens `/dev/fb`,
-attaches it with `segattach`, and every draw after that is a store rather than
-a seek and a write. The namespace is what says which device, and whether a
-process may have it. That came free with taking a descriptor rather than a name
-out of a kernel table. See `docs/DRAW.md` section 7.
+**The screen is memory a process holds, and a client draws into a window.**
+`servers/intuition` opens `/dev/fb`, attaches it with `segattach`, and every
+draw after that is a store rather than a seek and a write. The namespace is
+what says which device, and whether a process may have it.
+
+Image zero is the session's window rather than the screen. Every draw moves by
+the window's origin and clips to its extent, and `ctl` reports the window's
+shape and never the glass's. Two clients hold the same coordinates and mean two
+places. **The protocol did not change to make that true**, which is the test
+`docs/DRAW.md` section 3 chose the topology to pass.
 
 **Next, in order:**
 
-1. **Intuition's second half: compositing.** The mapping is built, so the
-   server paints the glass through memory and its write path is gone.
-   `docs/DRAW.md` section 7 records what it cost, and section 9 what is left.
+1. **A window with pixels of its own.** Image zero is the client's window now,
+   translated and clipped, and two clients cannot reach each other's pixels.
+   What it has not got is a backing store. `docs/DRAW.md` section 10 has the
+   arithmetic. A 640 by 800 window is 2 MB, one segment is at most 256 KB, and
+   a whole process is at most 1.5 MB. **A ring 3 program cannot hold one
+   window.**
 
-   What remains is windows. Image zero stops being the screen and becomes the
-   client's window. `flush` becomes the damage mark, and the compositor walks
-   dirty rectangles into the memory it now holds. The protocol does not change,
-   which is the test the topology was chosen to pass.
+   So the next piece is not a graphics one. It is a segment of anonymous
+   memory described by base and extent, the way the device segment already is.
+   That, and a syscall to ask for it. The PMM allocates contiguous runs, so
+   what is missing is a kind and a call rather than an allocator.
+
+   With it, `flush` becomes the damage mark and stacking becomes occlusion, and
+   a covered client gets told to repaint. Without it a window is a clip and an
+   occluded client's draws are lost. The placement policy is what keeps two
+   clients from overlapping at all.
 
 2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those

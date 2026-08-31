@@ -231,6 +231,7 @@ nothing else in common.
 | The system call door | `docs/USER.md` | 3 checked, 3 machine failures, 2 uncaught |
 | A process | `docs/USER.md` | 4 checked, 1 machine failure, 1 inert |
 | The screen, mapped | `docs/DRAW.md` | 4 checked, 1 machine failure, 1 inert |
+| Windows | `docs/DRAW.md` | 6 of 6 |
 | rfork | `docs/USER.md` | 4 checked, 1 uncaught by design |
 | The runtime and its servers | `docs/RUNTIME.md` | 15 caught, 2 hangs, 1 inert |
 
@@ -408,7 +409,17 @@ lands there. Both mutations fail now.
 the test reach the code at all?** Ask that first. It is the cheapest to check
 and the most embarrassing to miss.
 
-**It happened a third time, in `docs/DRAW.md`, and the shape was new.** A check
+**It happened a fourth time, in `docs/DRAW.md`, and the answer was the same
+one.** A control removed the window origin from the draw server's blit, and
+every check passed. Every blit in that file came from window zero, where
+translating by the origin is translating by nothing. A second session blits
+now, from half a screen across.
+
+**Three of the four had this answer.** When a control comes back clean, the
+first question is not whether the check is weak. It is whether the test runs
+the line at all.
+
+**One of the four was something else, in `docs/DRAW.md` again.** A check
 asked whether a second device mapping landed at a *larger* address than the
 first. The control removed the bump that makes it larger, and the second attach
 failed instead of repeating itself. A negative errno reads back in an unsigned

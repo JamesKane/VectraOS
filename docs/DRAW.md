@@ -17,9 +17,9 @@ file that takes those sentences.
 
 Three things it is not. It is not a new 9P message -- the wire stays
 9P2000.L, and every verb below is the body of an ordinary `Twrite`. It is
-not the compositor -- windows, damage and stacking come later, and the
-protocol must merely not block them. And it is not a mapping -- section 7
-defers that deliberately, with its shape written down.
+not a mapping -- section 7 has that, and it is a private arrangement
+between the server and the kernel. And it is not a *whole* compositor:
+windows are here, and stacking and damage wait on section 10.
 
 ## 2. The two clients
 
@@ -44,21 +44,29 @@ serves the raw resource, ring 3 serves the cooked one. The server opens
 command costs one extra hop, which is tolerable while pixels live
 server-side and only commands cross per frame.
 
-When compositing arrives, it grows inside the same process. Image zero
-stops being the screen and becomes the client's window. Nothing in the
-protocol changes, and that is the test that chose this topology.
+Compositing grew inside the same process, exactly as this said it would.
+Image zero stopped being the screen and became the client's window.
+**Nothing in the protocol changed** -- not a verb, not a body, not a rule.
+A client written against v1 draws into a window without an edit. That was
+the test this topology was chosen to pass, and it passed.
 
 ## 4. The file set
 
 The server serves three files. `data` takes the command stream. `ctl`
 takes text lines, the `/dev/consctl` convention, and answers a read with
-the geometry `/dev/fbctl` reports. `draw` as a directory holds both.
+a geometry. `draw` as a directory holds both.
+
+**The geometry `ctl` reports is the window's, not the screen's.** Every
+window is the same size, so one report answers for all of them. A client
+learns how big it is and nothing about the glass, which is the second half
+of a client not knowing where it is. The first half is that no verb reaches
+past its window's edge.
 
 A client session is a fid on `data`. 9P gives per-fid state for free, and
-a clunk is the teardown: every image the session allocated is freed. Two
-clients hold two fids and never see each other's ids. This is simpler than
-Plan 9's numbered directories, and it can grow into them without a wire
-change.
+a clunk is the teardown: every image the session allocated is freed, and
+the window goes back. Two clients hold two fids, never see each other's
+ids, and cannot reach each other's pixels. This is simpler than Plan 9's
+numbered directories, and it can grow into them without a wire change.
 
 ## 5. The six verbs
 
@@ -75,7 +83,7 @@ One 4 KiB write carries dozens of commands, which is what dissolves the
 | `free` | id | the image goes, the id may be reused |
 | `flush` | none | what was drawn becomes visible |
 
-Image zero is the screen, never allocated and never freed. Ids are the
+Image zero is the session's window, never allocated and never freed. Ids are the
 client's to choose, devdraw's rule, so no answer carries an allocation
 back. Rectangles clip to their destination. Text, lines and fonts are a
 client library over `blit`, not verbs. The six cover the terminal's whole
@@ -92,9 +100,13 @@ command already drew.
 how it got there. It does not mean the server observed a write, and the
 protocol nowhere assumes the server sees pixels only through `data`. That
 one sentence keeps section 7 compatible: a mapped compositor satisfies the
-same promise without a copy. In v1 the screen is drawn directly and
-`flush` is nearly a no-op. When image zero becomes a window, `flush` is
-the damage mark.
+same promise without a copy.
+
+**It is still nearly a no-op, and section 10 says why.** A draw goes
+straight to the glass through the window's clip, so the promise is kept
+before the verb arrives. `flush` becomes the damage mark the day a window
+has pixels of its own to be damaged. What stands between here and there is a
+memory bound rather than a protocol question.
 
 ## 7. The mapping, and what it cost
 
@@ -181,6 +193,25 @@ holds a device segment. `intuition` does not fork and `consrv` has no card. It
 becomes a real mutation the day the compositor forks a worker, which is
 compositing's own milestone.
 
+### The controls for windows
+
+Six more, and all six are caught.
+
+| Mutation | Result |
+|---|---|
+| a fill is not translated by the window's origin | 4 checks, first `the first landed at the screen's origin` |
+| a fill clips to the screen rather than the window | 1 check, `and nothing at all past it` |
+| a blit is not translated | 2 checks, first `which lands inside its own window` |
+| a clunk does not give the window back | 2 checks, first `a clunk gives the window back` |
+| `ctl` reports the screen instead of the window | 4 checks, first `and is narrower than the screen it does not name` |
+| every session draws into window zero | 21 checks |
+
+**The one-check catch is the interesting one.** The old edge test asked whether
+a fill past the edge painted up to the last column. That passes whether the
+bound is the window or the glass, because the window's last column is a real
+column either way. The check that fails is the one added with this milestone,
+and it watches the *first pixel a client may not have*.
+
 ### What a control found that the checks did not
 
 Two things, and both are worth more than the mutation that exposed them.
@@ -203,6 +234,16 @@ mapping, `intuition` could not fault. It is named in `docs/HANDOFF.md` section
 6, and the fix is a process's descriptors closing when it stops running rather
 than when somebody collects it.
 
+**A third time, with windows, and the same shape.** The control that removed
+the origin from `run_blit` passed everything. Every blit in the file came from
+window zero, where translating by the origin is translating by nothing. The
+second session blits now, from half a screen across, and the same mutation
+fails two checks.
+
+That is three for three: each time a control came back clean, the answer was
+that the test never reached the code. `docs/TESTING.md` has it as the first
+question to ask.
+
 ## 9. Staging
 
 v1: the server in `servers/intuition/`, three files, six verbs, direct paint
@@ -216,3 +257,48 @@ they stay a library), and window-backed images. That last one is what remains
 of intuition's second half. Image zero stops being the screen and becomes the
 client's window. `flush` becomes the damage mark, and the compositor walks
 dirty rectangles into the memory it now holds.
+
+## 10. Windows, and what a backing store would cost
+
+Image zero is the session's window. A `Tlopen` on `data` takes one and a clunk
+gives it back. Every draw to image zero moves by the window's origin and clips
+to its extent. That is the whole of the isolation, and it is two lines in
+`run_fill` and two in `run_blit`.
+
+**The clip is in window coordinates, and the order matters.** Clipping against
+the screen and then translating would let a client past its own edge and into
+the window beside it. The control that swaps the order fails exactly one
+check, and it is the check that watches the first pixel a client may not have.
+
+### Placement is the server's, and says so
+
+Two windows, side by side, full height. A client cannot choose, cannot ask
+where it is, and cannot ask for another. Section 5 names scope creep as the
+failure mode the verb table guards. A window a client places is a `ctl` line
+that nothing yet needs.
+
+`MAX_WINDOWS` is two because two is what proves a second client cannot reach
+the first's pixels. It is a cap to raise rather than a design. A third session
+is refused at `Tlopen`, before it draws anything it would have to take back.
+
+### What a backing store would cost, and why it is not here
+
+A window with pixels of its own turns `flush` into the damage mark and stacking
+into occlusion. It also makes a resize a repaint the client does not have to
+make. It needs memory the server cannot have:
+
+- A 640 by 800 window is 2 MB.
+- `MAX_PROGRAM_FRAMES` is 64, so one segment is at most 256 KB.
+- `MAX_PROC_SEGS` is 6, so a whole process is at most 1.5 MB.
+
+**A ring 3 program cannot hold one window**, let alone two. Static `bss` is all
+a program has, and the image format bounds it. So the trigger is named, and it
+is not a graphics question. It is a segment of anonymous memory described by
+base and extent, the way section 7's device segment already is. The PMM
+allocates contiguous runs, so what is missing is a syscall and a kind rather
+than an allocator.
+
+Until then a window is a clip, an occluded client's draws are simply lost, and
+there is no expose event to tell it to repaint. Two clients that do not overlap
+never notice. Two that do would, which is why the placement above does not let
+them.

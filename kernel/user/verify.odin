@@ -3090,13 +3090,27 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	if !check(r, cerr == vfs.OK, "and opens its ctl file") {
 		return
 	}
-	geo: [8]u8
+	// Wide enough for the whole report, because the test parses it now rather
+	// than glancing at its first word.
+	geo: [64]u8
 	gn, gerr := vfs.chan_read(ctl, 0, geo[:])
 	check(
 		r,
 		gerr == vfs.OK && gn >= 5 && string(geo[:5]) == "size ",
-		"whose read answers the geometry /dev/fbctl reports",
+		"whose read answers a geometry",
 	)
+
+	/*
+	And the geometry is a *window's*, not the screen's.
+
+	A client that could read the screen's width could tell how much of it it
+	was not being given. `/ctl` answers with the tile every session gets, which
+	is all a client needs to lay itself out and all it may know.
+	*/
+	win_w, win_h, _, _, geo_ok := libdraw.parse_geometry(geo[:max(gn, 0)])
+	check(r, geo_ok, "which parses as four numbers")
+	check(r, win_w > 0 && win_w < s.width, "and is narrower than the screen it does not name")
+	check(r, win_h == s.height, "at the screen's full height, which is the placement policy")
 
 	dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
 	if !check(r, oerr == vfs.OK, "and the command file opens for writing") {
@@ -3106,7 +3120,10 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	// The region the test paints, saved to be restored. Four rows of 48
 	// pixels on the left, and eight pixels at the right edge of the first.
 	y0 := s.height - 16
-	edge_x := s.width - 8
+	// Eight pixels short of the *window's* right edge, so a fill of sixteen
+	// runs past it. The coordinate is the client's, and a client's
+	// coordinates start at its own origin.
+	edge_x := win_w - 8
 	saved_a: [4 * 48 * 4]u8
 	for line in 0 ..< 4 {
 		o := (y0 + line) * s.pitch
@@ -3161,11 +3178,22 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	first cut watched only the painted edge, and the control walked past it.
 	*/
 	spill_before := fb.get_raw(s, 0, y0 + 1)
+	beyond_before := fb.get_raw(s, win_w, y0)
 	at = libdraw.put_fill(buf[:], 0, 0, u32(edge_x), u32(y0), 16, 1, C1)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr == vfs.OK, "a fill past the edge clips rather than errors")
-	check(r, fb.get_raw(s, s.width - 1, y0) == C1, "and paints up to the last pixel")
+	check(r, fb.get_raw(s, win_w - 1, y0) == C1, "and paints up to its window's last pixel")
 	check(r, fb.get_raw(s, 0, y0 + 1) == spill_before, "and spills nothing onto the row below")
+	/*
+	And nothing one pixel further, which is the window's edge rather than the
+	screen's.
+
+	The check above would pass on a server that clipped to the glass, because
+	the window's last column is a real column either way. This one is what says
+	the *window* is the bound. It watches the first pixel a client may not
+	have.
+	*/
+	check(r, fb.get_raw(s, win_w, y0) == beyond_before, "and nothing at all past it")
 
 	at = libdraw.put_fill(buf[:], 0, 0, 8, u32(y0), 4, 1, C3)
 	buf[at] = 4
@@ -3181,6 +3209,12 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	check(r, werr == vfs.OK, "a free is answered once")
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr != vfs.OK, "and refused twice")
+
+	// -- Two sessions, two windows -------------------------------------------
+	//
+	// While `dc` is still open, because the claim is about two windows held at
+	// once. The image-pool test below closes it.
+	verify_windows(r, s, win_w, y0 - 2, dc)
 
 	at = 0
 	for id in 1 ..= 8 {
@@ -3579,4 +3613,128 @@ verify_mapping :: proc(r: ^Result) {
 		"with nothing offered back that it never owned",
 	)
 	check(r, segment_stats().live == segs_before, "every segment it held was released")
+}
+
+/*
+One screen row, saved while the window checks paint over it.
+
+Static because a kernel self-test has a heap and should not put five kilobytes
+through it to look at pixels. The same reason `term_saved` above is static.
+*/
+@(private = "file")
+row_saved: [8192]u8
+
+/*
+verify_windows is the milestone's sentence: **two clients hold the same
+coordinates and mean two places.**
+
+`first` is a session already open, holding window zero. This opens a second,
+which gets window one, and then asks both of them to draw at the origin. The
+readback is two different pixels, half a screen apart.
+
+The second half is the stronger claim. The second client asks for a rectangle
+wider than the whole screen, and gets its window. A pixel one column *left* of
+its origin is the first client's, and it does not move.
+
+The glass is put back before this returns. One row, saved whole, because the
+checks below paint across most of its width.
+*/
+@(private = "file")
+verify_windows :: proc(
+	r: ^Result,
+	s: ^fb.Surface,
+	win_w: int,
+	y: int,
+	first: ^vfs.Chan,
+) #no_bounds_check {
+	span := s.width * 4
+	if span > len(row_saved) || y <= 0 {
+		return
+	}
+	copy(row_saved[:span], s.pixels[y * s.pitch:][:span])
+
+	second, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
+	if !check(r, oerr == vfs.OK, "a second client opens the command file") {
+		return
+	}
+
+	/*
+	And a third is refused, because there are two windows.
+
+	A cap rather than a design, and the refusal is the honest form of it. A
+	client that cannot have a window learns so at open, before it draws
+	anything it would have to take back.
+	*/
+	third, terr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
+	check(r, terr != vfs.OK, "and a third is refused, because a window is what a session is")
+	if terr == vfs.OK {
+		vfs.chan_close(third)
+	}
+
+	A :: u32(0x0011AA33)
+	B :: u32(0x00AA1133)
+	MARK :: u32(0x00205020)
+	buf: [128]u8
+
+	at := libdraw.put_fill(buf[:], 0, 0, 0, u32(y), 8, 1, A)
+	_, aerr := vfs.chan_write(first, 0, buf[:at])
+	check(r, aerr == vfs.OK, "the first client fills at its own origin")
+
+	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), 8, 1, B)
+	_, berr := vfs.chan_write(second, 0, buf[:at])
+	check(r, berr == vfs.OK, "and the second fills at the same coordinates")
+
+	check(r, fb.get_raw(s, 0, y) == A, "the first landed at the screen's origin")
+	check(
+		r,
+		fb.get_raw(s, win_w, y) == B,
+		"and the second half a screen away, which is what a window is",
+	)
+
+	/*
+	Now the whole world, asked for by the client that may not have it.
+
+	A rectangle wider than the screen, from the second session. It clips to
+	that session's window. The last column of the glass is then its own, and
+	the column before its origin is still the first client's.
+	*/
+	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(s.width * 2), 1, B)
+	_, werr := vfs.chan_write(second, 0, buf[:at])
+	check(r, werr == vfs.OK, "the second asks for a rectangle wider than the screen")
+	check(r, fb.get_raw(s, s.width - 1, y) == B, "and gets its window, out to the last column")
+	check(
+		r,
+		fb.get_raw(s, win_w - 1, y) != B,
+		"and not one pixel of the window beside it",
+	)
+
+	/*
+	And a blit, which is the only way to prove the *other* translation.
+
+	A control that removed the origin from `run_blit` passed everything, and
+	the reason was that every blit in this file came from window zero. There,
+	translating by the origin is translating by nothing. This one comes from
+	the session half a screen across.
+	*/
+	pat: [8 * 4]u8
+	for i in 0 ..< 8 {
+		libdraw.put_u32(pat[:], i * 4, MARK)
+	}
+	at = libdraw.put_alloc(buf[:], 0, 1, 8, 1)
+	at = libdraw.put_load(buf[:], at, 1, 0, 0, 8, 1, pat[:])
+	at = libdraw.put_blit(buf[:], at, 0, 16, u32(y), 1, 0, 0, 8, 1)
+	_, blerr := vfs.chan_write(second, 0, buf[:at])
+	check(r, blerr == vfs.OK, "the second client loads an image and blits it")
+	check(r, fb.get_raw(s, win_w + 16, y) == MARK, "which lands inside its own window")
+	check(r, fb.get_raw(s, 16, y) != MARK, "and not in the window beside it")
+
+	vfs.chan_close(second)
+
+	// The window comes back with the fid, so a client can open again.
+	again, aerr2 := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
+	if check(r, aerr2 == vfs.OK, "a clunk gives the window back") {
+		vfs.chan_close(again)
+	}
+
+	copy(s.pixels[y * s.pitch:][:span], row_saved[:span])
 }

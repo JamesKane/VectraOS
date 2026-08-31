@@ -1,11 +1,16 @@
 /*
-intuition, first half -- the draw server `docs/DRAW.md` designed.
+intuition -- the draw server `docs/DRAW.md` designed, with windows.
 
-The compositor this directory is named for does not exist yet. What
-stands here is the file it will one day serve from the inside: `/dev/draw`
-as a protocol, six verbs on a `data` file, image zero the screen. When
-compositing arrives it grows in this process, image zero quietly becomes
-a window, and the protocol does not change. That test chose this home.
+**Image zero is the session's window, not the screen.** That sentence was
+the test this topology was chosen to pass, and it cost the protocol
+nothing: the six verbs, their bodies and their rules are what they were,
+and a client that drew to image zero before this milestone draws to its
+own window now without changing a line.
+
+A client cannot name the screen. It has no verb that reaches past its
+window's edge, no way to learn where its window sits, and no way to ask
+for another. That is the whole of the isolation, and it is one
+translation and one clip in `run_fill` and `run_blit`.
 
 The tenant shape is `ramfs`'s, not `consrv`'s, because nothing here
 parks. A draw command runs to completion -- the framebuffer takes a write
@@ -14,8 +19,13 @@ everything inline, and the server needs no fork, no worker, and no lock.
 
 The tree is `docs/DRAW.md` section 4's:
 
-    /data    the command stream, one session per fid
-    /ctl     text lines in, the geometry /dev/fbctl reports out
+    /data    the command stream, one session per fid, one window per session
+    /ctl     text lines in, the geometry of a window out
+
+**`ctl` reports the window rather than the screen**, and that is the second
+half of a client not knowing where it is. Every window is the same size, so
+one report answers for all of them, and a client that reads it learns how
+big it is and nothing about the glass.
 
 A session's images live in a static pool, because ring 3 has no
 allocator. The pool is eight images of 2048 pixels each, which is a
@@ -49,8 +59,37 @@ NODE_ROOT :: i32(0)
 NODE_DATA :: i32(1)
 NODE_CTL :: i32(2)
 
-// The image pool. Image zero is the screen and lives nowhere; these are
-// the client's images, owned by the fid that allocated each.
+/*
+The windows, and the placement policy that hands them out.
+
+Two, side by side, full height. A session gets one when it opens `data` and
+gives it back when the fid goes, which makes the assignment as automatic as
+the image pool's and needs no protocol for it.
+
+**A client cannot choose.** `docs/DRAW.md` section 5 names scope creep as the
+failure mode the verb table guards, and a window a client places is a verb or a
+`ctl` line that nothing yet needs. The day something does, it is a line on
+`ctl` and not a seventh verb.
+
+`MAX_WINDOWS` is a cap to raise rather than a design. Two is what the self-test
+needs to prove that a second client cannot reach the first's pixels, which is
+the only claim this file makes about isolation.
+*/
+MAX_WINDOWS :: 2
+
+Window :: struct {
+	owner: vectra9.Fid,
+	x:     int,
+	y:     int,
+	w:     int,
+	h:     int,
+	used:  bool,
+}
+
+windows: [MAX_WINDOWS]Window
+
+// The image pool. Image zero is the session's window and lives nowhere; these
+// are the client's own images, owned by the fid that allocated each.
 MAX_IMAGES :: 8
 IMG_PIXELS :: 2048
 
@@ -76,13 +115,22 @@ rather than a multiply and a cast.
 glass: [^]u32
 glass_stride: int
 
-// The geometry, read from /dev/fbctl once at start. The bytes are served
-// back on /ctl verbatim, and the four numbers steer every screen draw.
+/*
+The screen's geometry, read from `/dev/fbctl` once at start, and the window
+geometry served on `/ctl` in its place.
+
+Two reports, and the second is the only one a client sees. `/dev/fbctl` says
+how big the glass is, which is what the placement arithmetic below needs.
+`/ctl` says how big a window is, which is all a client needs and all it may
+know.
+*/
 geo: [160]u8
 geo_len: int
 scr_w: int
 scr_h: int
 scr_pitch: int
+win_w: int
+win_h: int
 
 // The framebuffer descriptor. Open for the server's whole life, because the
 // attach is a claim on the file rather than a copy of it.
@@ -126,7 +174,10 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	if n <= 0 || !read_geometry(geo[:int(n)]) {
 		libuser.exit(0x76)
 	}
-	geo_len = int(n)
+
+	// What `/ctl` answers from here on: the window's shape, not the screen's.
+	// The screen's numbers stay in `scr_*`, where the placement uses them.
+	geo_len = window_report(geo[:])
 
 	// The mapping, and the reason this server has no write path left. A
 	// failure here is fatal rather than a fallback: a second path to the same
@@ -169,7 +220,126 @@ read_geometry :: proc "contextless" (report: []u8) -> bool {
 	scr_w = w
 	scr_h = h
 	scr_pitch = pitch
-	return scr_w > 0 && scr_h > 0 && scr_pitch >= scr_w * 4 && scr_pitch % 4 == 0
+	if scr_w <= 0 || scr_h <= 0 || scr_pitch < scr_w * 4 || scr_pitch % 4 != 0 {
+		return false
+	}
+
+	// Columns, full height. Integer division leaves at most `MAX_WINDOWS - 1`
+	// columns of pixels at the right edge unowned, which nothing draws to and
+	// nothing may.
+	win_w = scr_w / MAX_WINDOWS
+	win_h = scr_h
+	return win_w > 0
+}
+
+/*
+window_report writes the geometry a client reads off `/ctl`.
+
+The same four numbers `/dev/fbctl` uses, so `libdraw.parse_geometry` reads
+either. The pitch is the window's own row in bytes, which is a number a client
+never needs and would be wrong to act on: nothing here lets a client address
+its window by offset.
+*/
+window_report :: proc "contextless" (out: []u8) -> int #no_bounds_check {
+	at := 0
+	at = put_report(out, at, "size ")
+	at = put_number(out, at, win_w)
+	at = put_report(out, at, " ")
+	at = put_number(out, at, win_h)
+	at = put_report(out, at, " ")
+	at = put_number(out, at, win_w * 4)
+	at = put_report(out, at, " 32\n")
+	return at
+}
+
+@(private = "file")
+put_report :: proc "contextless" (out: []u8, at: int, text: string) -> int #no_bounds_check {
+	n := at
+	for i in 0 ..< len(text) {
+		if n >= len(out) {
+			return n
+		}
+		out[n] = text[i]
+		n += 1
+	}
+	return n
+}
+
+@(private = "file")
+put_number :: proc "contextless" (out: []u8, at: int, value: int) -> int #no_bounds_check {
+	digits: [20]u8
+	n := 0
+	v := u64(value)
+	if v == 0 {
+		digits[0] = '0'
+		n = 1
+	}
+	for v > 0 {
+		digits[n] = u8('0' + v % 10)
+		v /= 10
+		n += 1
+	}
+	out_at := at
+	for i := n - 1; i >= 0; i -= 1 {
+		if out_at >= len(out) {
+			return out_at
+		}
+		out[out_at] = digits[i]
+		out_at += 1
+	}
+	return out_at
+}
+
+// -- The windows --------------------------------------------------------------
+
+/*
+window_open gives this fid a window, or reports that there is none free.
+
+Placement is the whole policy: column `i` of `MAX_WINDOWS`, full height. A
+session that already holds one gets it back rather than a second, because a
+second `Tlopen` on one fid is a client re-opening what it has.
+*/
+window_open :: proc "contextless" (owner: vectra9.Fid) -> bool #no_bounds_check {
+	for i in 0 ..< MAX_WINDOWS {
+		if windows[i].used && windows[i].owner == owner {
+			return true
+		}
+	}
+	for i in 0 ..< MAX_WINDOWS {
+		if !windows[i].used {
+			windows[i] = Window {
+				owner = owner,
+				x     = i * win_w,
+				y     = 0,
+				w     = win_w,
+				h     = win_h,
+				used  = true,
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// window_close gives one back, and is the other half of the session rule the
+// image pool already keeps.
+window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
+	for i in 0 ..< MAX_WINDOWS {
+		if windows[i].used && windows[i].owner == owner {
+			windows[i] = Window{}
+		}
+	}
+}
+
+// window_of is which window a session draws into. Nil is a fid that opened
+// nothing, which cannot reach a draw and is checked anyway.
+window_of :: proc "contextless" (owner: vectra9.Fid) -> ^Window #no_bounds_check {
+	for i in 0 ..< MAX_WINDOWS {
+		if windows[i].used && windows[i].owner == owner {
+			return &windows[i]
+		}
+	}
+	return nil
 }
 
 // -- The images ---------------------------------------------------------------
@@ -277,9 +447,11 @@ run_commands :: proc "contextless" (owner: vectra9.Fid, data: []u8) -> vectra9.E
 		case libdraw.FREE:
 			err = run_free(owner, body)
 		case libdraw.FLUSH:
-			// Flush promises visibility. Every draw above went straight to
-			// the glass, so the promise is already kept. When image zero
-			// becomes a window, this verb becomes the damage mark.
+			// Flush promises visibility, and every draw above went straight
+			// to the glass through the window's clip. The promise is kept
+			// before the verb arrives. It becomes the damage mark the day a
+			// window has pixels of its own to be damaged -- see
+			// `docs/DRAW.md` section 7 for the memory bound that is.
 			if len(body) != 0 {
 				err = vectra9.EINVAL
 			}
@@ -350,13 +522,19 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 	sx := 0
 	sy := 0
 	if id == 0 {
-		if !clip(&x, &y, &w, &h, &sx, &sy, scr_w, scr_h) {
+		win := window_of(owner)
+		if win == nil {
+			return vectra9.EBADF
+		}
+		// Clip in the window's own coordinates, then translate. The other
+		// order would clip against the screen and let a client past its edge.
+		if !clip(&x, &y, &w, &h, &sx, &sy, win.w, win.h) {
 			return vectra9.Errno(0)
 		}
 		for line in 0 ..< h {
-			dst := screen_at(y + line)
+			dst := screen_at(win.y + y + line)
 			for i in 0 ..< w {
-				dst[x + i] = color
+				dst[win.x + x + i] = color
 			}
 		}
 		return vectra9.Errno(0)
@@ -392,8 +570,9 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 	sw := int(libdraw.get_u32(body, 24))
 	sh := int(libdraw.get_u32(body, 28))
 
-	// The screen is a destination, never a source. Reading the glass back
-	// is /dev/fb's job, and no client in the needs list wants it here.
+	// A window is a destination, never a source. Reading pixels back is
+	// /dev/fb's job, and a client that could read image zero could read
+	// whatever a window above it last drew there.
 	if src == 0 {
 		return vectra9.EINVAL
 	}
@@ -407,14 +586,18 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 	}
 
 	if dst == 0 {
-		if !clip(&dx, &dy, &sw, &sh, &sx, &sy, scr_w, scr_h) {
+		win := window_of(owner)
+		if win == nil {
+			return vectra9.EBADF
+		}
+		if !clip(&dx, &dy, &sw, &sh, &sx, &sy, win.w, win.h) {
 			return vectra9.Errno(0)
 		}
 		for line in 0 ..< sh {
 			base := (sy + line) * simg.w + sx
-			out := screen_at(dy + line)
+			out := screen_at(win.y + dy + line)
 			for i in 0 ..< sw {
-				out[dx + i] = pixels[sslot][base + i]
+				out[win.x + dx + i] = pixels[sslot][base + i]
 			}
 		}
 		return vectra9.Errno(0)
@@ -454,10 +637,11 @@ run_free :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 // fid_release is also the session teardown: a data fid takes its images
 // with it, `docs/DRAW.md` section 4's rule.
 fid_release :: proc "contextless" (fid: vectra9.Fid) {
-	// The images before the slot. A fid on `data` owns whatever it allocated,
+	// The images and the window before the slot. A fid on `data` owns both,
 	// and the table is what says which fid that was.
 	if libuser.fid_lookup(&fids, fid) == NODE_DATA {
 		image_free_all(fid)
+		window_close(fid)
 	}
 	libuser.fid_release(&fids, fid)
 }
@@ -532,6 +716,13 @@ handler :: proc "contextless" (
 	case vectra9.Tlopen:
 		node, ok := libuser.node_of(&fids, m.fid, reply)
 		if !ok {
+			return
+		}
+		// A session is a fid on `data`, and a session is a window. There is
+		// nowhere else for the assignment to happen: the fid exists from the
+		// walk, and the first draw may be the next message.
+		if node == NODE_DATA && !window_open(m.fid) {
+			reply^ = vectra9.error_reply(vectra9.ENOSPC)
 			return
 		}
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
