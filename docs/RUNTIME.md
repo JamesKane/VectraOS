@@ -250,9 +250,17 @@ Three things this proved about the runtime:
 The draw server `docs/DRAW.md` designed, and the first server built to a
 document written before its code. It serves `data` and `ctl` under
 `/srv/draw`. A client writes command batches: alloc, load, fill, blit,
-free, flush. The server draws them through `/dev/fb`, one seek and one
-write per touched row. `ctl` answers with the geometry `/dev/fbctl`
-reports, read once at start.
+free, flush. `ctl` answers with the geometry of a window, which is not the
+geometry of the screen.
+
+It is the compositor now as well. It attaches `/dev/fb` with `segattach`
+rather than writing to it, and buys each window a run of anonymous memory
+with `segalloc`. A draw is a store into a window's own pixels, and `flush`
+composites the damage onto the glass, back to front.
+
+**It is the process that spends the most segments in this system.** That is
+what `MAX_PROC_SEGS` counts up to eight for: three image rows, a stack, the
+screen, and one run per window.
 
 The tenant shape is `ramfs`'s, not `consrv`'s, because nothing here
 parks. One serve loop answers everything inline, with no fork, no worker
@@ -274,6 +282,10 @@ Three things this proved about the runtime:
   onto the next row rather than failing the write. The check watches the
   landing spot now, which is `docs/TESTING.md`'s weak-check rule caught
   in the act.
+- **Both calls that answer with memory have one caller here.** `segattach`
+  takes the screen and `segalloc` takes the windows, and this is the only
+  process in the tree that makes either call. A compositor was the trigger
+  named for both, one and two milestones before each existed.
 
 ## `apps/terminal`: the first app, and the first ring 3 mount
 

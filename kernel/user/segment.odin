@@ -108,9 +108,20 @@ Segment :: struct {
 	kind:   Segment_Kind,
 }
 
-// The most segments a process can hold: four image rows and a stack. One
-// spare keeps the count a decision rather than an accident.
-MAX_PROC_SEGS :: 6
+/*
+The most segments a process can hold.
+
+Four image rows and a stack was the whole list while a program's memory came
+only from its file. Two calls widened it. `servers/intuition` is the process
+that spends the most: three image rows, a stack, the framebuffer it attaches,
+and one run of anonymous memory per window. That is seven at `MAX_WINDOWS` of
+two, and the eighth is the spare that keeps this a decision rather than an
+accident.
+
+It is a cap to raise, and the thing to watch when raising it is that a window
+costs a segment. `MAX_WINDOWS` and this number move together.
+*/
+MAX_PROC_SEGS :: 8
 
 // The pool. Twelve processes of five segments is sixty at the ceiling, and
 // the self-tests run mostly one program at a time. A full pool is ENOMEM to

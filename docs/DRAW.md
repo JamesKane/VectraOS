@@ -18,8 +18,8 @@ file that takes those sentences.
 Three things it is not. It is not a new 9P message -- the wire stays
 9P2000.L, and every verb below is the body of an ordinary `Twrite`. It is
 not a mapping -- section 7 has that, and it is a private arrangement
-between the server and the kernel. And it is not a *whole* compositor:
-windows are here, and stacking and damage wait on section 10.
+between the server and the kernel. And it was not a *whole* compositor
+until section 10's second half: windows, then stacking and damage.
 
 ## 2. The two clients
 
@@ -102,11 +102,16 @@ protocol nowhere assumes the server sees pixels only through `data`. That
 one sentence keeps section 7 compatible: a mapped compositor satisfies the
 same promise without a copy.
 
-**It is still nearly a no-op, and section 10 says why.** A draw goes
-straight to the glass through the window's clip, so the promise is kept
-before the verb arrives. `flush` becomes the damage mark the day a window
-has pixels of its own to be damaged. What stands between here and there is a
-memory bound rather than a protocol question.
+**It is the damage mark now, and that is the whole of section 10's second
+half.** It was nearly a no-op for two milestones: a draw went straight to the
+glass, so the promise was kept before the verb arrived. A window has pixels of
+its own now. A draw lands in them, and this is what walks the damage onto the
+screen.
+
+**Not one client changed.** A client that already flushed was already correct,
+which is what this section was written to guarantee. One that never flushed was
+always wrong by this text and only now finds out. `apps/terminal` flushed from
+the day it was written and needed no edit.
 
 ## 7. The mapping, and what it cost
 
@@ -272,13 +277,21 @@ check, and it is the check that watches the first pixel a client may not have.
 
 ### Placement is the server's, and says so
 
-Two windows, side by side, full height. A client cannot choose, cannot ask
-where it is, and cannot ask for another. Section 5 names scope creep as the
-failure mode the verb table guards. A window a client places is a `ctl` line
-that nothing yet needs.
+Two windows, and they overlap. A client cannot choose, cannot ask where it is,
+and cannot ask for another. Section 5 names scope creep as the failure mode the
+verb table guards. A window a client places is a `ctl` line that nothing yet
+needs.
 
-`MAX_WINDOWS` is two because two is what proves a second client cannot reach
-the first's pixels. It is a cap to raise rather than a design. A third session
+**They did not overlap while a window was a clip, and the placement was what
+stopped them.** Two clients on one pixel would have taken turns destroying each
+other's work, so the policy had to keep them apart. A window with pixels of its
+own removed the reason, and the cascade below is what put the new rule under a
+check. Window `i` sits half a window right of window `i-1`, and a higher slot
+is higher in the stack.
+
+`MAX_WINDOWS` is two for two reasons now. Two proves a second client cannot
+reach the first's pixels. Two also proves that one client's pixels outlive the
+other covering them. It is a cap to raise rather than a design. A third session
 is refused at `Tlopen`, before it draws anything it would have to take back.
 
 ### What a backing store cost, and what it did not
@@ -311,14 +324,110 @@ carrying back here:
   cannot be handed the same addresses. One counter has no argument to make
   about which region grows into the other.
 
-**What remains is the graphics half, and it is now only that.** A window is
-still a clip. `run_fill` and `run_blit` still store into the glass through the
-window's origin. An occluded client's draws are still lost, and there is still
-no expose event.
+**Both arrived, and the prediction was exact.** `SYS_SEGALLOC` and
+`Segment_Kind.Anon` are the whole of the memory half, and neither is a graphics
+object. `docs/USER.md` owns the call.
 
-The next milestone points those stores at a run the server asked for. `flush`
-becomes the damage mark that walks the run onto the glass. The placement policy
-then stops being the thing that keeps two clients from overlapping.
+## 11. The graphics half, and what a backing store turned out to retire
+
+Each window holds a run of `win_w * win_h * 4` bytes. `run_fill` and `run_blit`
+store into it, and the translation by the window's origin *left* those two
+procedures. It lives in `composite` now, which is the only code that knows
+where a window sits. A draw is one clip against the window's own bounds and
+nothing else.
+
+`flush` is the damage mark section 6 promised. It composites what this client
+drew since it last asked, out of every window, back to front. Slot order is
+stacking order, so a covered window paints first and the cover paints over it.
+That sentence is all of occlusion -- there is no depth test and no per-pixel
+owner.
+
+**The event this design deferred was retired rather than built.** Section 9
+listed refresh events with windows as their trigger. The trigger arrived and
+answered the question the event was going to ask. A covered client is never
+told it is covered, because it has nothing to redraw. Its pixels were its own
+the whole time they were invisible, and the compositor puts them back from
+memory it held.
+
+A window that closes gives back what it was sitting on, and the client
+underneath draws nothing to earn that. **That is what a backing store is**, and
+it is the one check this milestone exists for.
+
+### `CLEAR`, and the chassis that is still on the screen
+
+One value out of sixteen million says a window has not been drawn on, and
+`composite` does not put it on the glass. So a window covers what its client
+drew and nothing else.
+
+The other choice was available and is the more principled one. A window owns
+its whole rectangle, and a compositor with a desktop beneath it paints all of
+one, black included.
+
+There is no desktop here. What lies under a window is the kernel's own boot
+chassis. Painting 640 by 800 of black over it at the first `Tlopen` would be
+correct by a rule nothing else in this system follows yet.
+
+The cost is a colour. A client that fills with `0x00000000` gets transparency
+where it asked for black. The format has no alpha channel to spend, so the
+convention is spent on a value. A desktop retires it, and then a window can own
+its rectangle and this becomes an opaque black like any other.
+
+It buys exactness as well as the chassis. Damage is a bounding box, so a flush
+copies pixels the client did not touch on this pass. Each of those either holds
+what the client drew before, or holds `CLEAR` and is skipped. So a coarse
+rectangle costs time and never a wrong pixel. A rectangle list is the
+refinement, and nothing yet needs it.
+
+### The controls for the compositor
+
+Nine mutations, each on a real boot. All nine are caught.
+
+| Mutation | Result |
+|---|---|
+| `flush` does not composite | 18 checks, first `the fill landed on the glass, corner to corner` |
+| a fill marks no damage | 12 checks, first the same |
+| the stack is walked front to back | 4 checks, first `half a window across, which is where the second window is` |
+| the windows do not overlap | 4 checks, first the same |
+| a window that closes repaints nothing | 2 checks, first `a window that closes gives back the pixels it covered` |
+| a flush composites only the window that asked | 1 check, `without lifting one pixel of it over the window on top` |
+| the composite paints pixels a client never drew | 1 check, `a pixel under both windows that neither drew is still the chassis` |
+| a slot handed on keeps the last session's pixels | 1 check, `the damage between them shows the window below` |
+| a fill is not clipped to the window | covered by the edge checks section 10 already had |
+
+**The one-check catches are the three that were designed for.** Each watches a
+rule that every other check in the file is blind to.
+
+The flush-one-window mutation passes everything about coordinates and clipping.
+It fails only the check that draws from *underneath* a window and then asks
+whether the cover survived it. The `CLEAR` mutation passes everything about
+what a client drew, and fails only the pixel nobody drew.
+
+**And the slot-reuse control came back clean the first time.** A run outlives
+the session it was lent to, because nothing gives a run back, so a slot handed
+on must be cleared. Removing the clearing failed nothing at all. The reason was
+the one `docs/TESTING.md` names first: the test never reached the code. Nothing
+reopened a window and displayed a region it had not drawn.
+
+The check that reaches it uses damage rather than a draw. Two pixels at
+opposite ends of a window make one bounding box, and the composite walks the
+whole of it out of the store. So whatever the last session left in the middle
+goes straight to the glass. Drawing the middle would have hidden exactly the
+bug. That is four for four on this question across three milestones.
+
+### What is left
+
+- **A rectangle list instead of a bounding box.** Two far-apart pixels cost the
+  span between them. `CLEAR` makes that slow rather than wrong.
+- **A desktop.** It retires `CLEAR`, and lets a window own its whole rectangle.
+- **Nothing gives a run back.** A window's memory belongs to the slot rather
+  than to the session, and a slot is never released. `segfree` is the Plan 9
+  call that changes it, and `docs/USER.md` names it with the other two.
+- **A pixel under two windows is written twice.** At two windows that is
+  cheaper than the arithmetic to avoid it. Front-to-back with subtraction is
+  the answer, which is the rectangle list again.
+- **Placement is still fixed.** A window a client can move or resize is a `ctl`
+  line, and `segbrk` is what a resize would need underneath it.
 
 Two windows at 640 by 800 is 4 MB, which is `SEGALLOC_MAX` twice over.
-`MAX_WINDOWS` and that bound are the two numbers that move together.
+`MAX_WINDOWS`, that bound, and `MAX_PROC_SEGS` are the three numbers that move
+together, because a window costs a segment.

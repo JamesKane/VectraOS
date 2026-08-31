@@ -53,7 +53,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1280 checks against itself and idles.
+1290 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -194,6 +194,23 @@ no server has. So the second call is that refusal's bill rather than a design
 of its own.
 
 `docs/USER.md` owns the design, the controls, and what else Plan 9 has here.
+
+**And a window has pixels of its own.** Each of `intuition`'s windows holds a
+run of anonymous memory, and a draw is a store into that rather than onto the
+glass. `flush` is the damage mark now, which is the promise `docs/DRAW.md`
+section 6 made two milestones before it could keep it. Not one client changed:
+a client that already flushed was already correct.
+
+Three things followed. The windows **overlap**, because placement only kept
+them apart while a window was a clip. Slot order is stacking order, and
+`composite` paints back to front, which is the whole of occlusion. And a
+covered client is never told, because it has nothing to redraw.
+
+**The refresh event this design deferred was retired rather than built.** A
+window that closes gives back what it was sitting on, out of the store below
+it. The client underneath draws nothing to earn that. That is what a backing
+store is for, and it answers the question an expose event was going to ask.
+`docs/DRAW.md` section 11 owns the compositor and its nine controls.
 
 ```
 -- a program in ring 3 wrote this line
@@ -580,32 +597,41 @@ mapping already was. That was the piece a window's pixels waited on, and
 `docs/DRAW.md` section 10 called it correctly a milestone early: it was not a
 graphics question. `docs/USER.md` owns the call.
 
+**And the compositor holds them.** A draw is a store into a window's own run,
+`flush` walks the damage onto the glass, and slot order is stacking order. Two
+windows overlap and neither can reach the other's pixels. A window that closes
+gives back what it covered, and the client under it draws nothing to earn that.
+The expose event `docs/DRAW.md` section 9 deferred is retired instead of built.
+
 **Next, in order:**
 
-1. **The graphics half of a window with pixels of its own.** The memory arrived
-   and nothing draws into it yet. `servers/intuition` still stores through the
-   window's origin straight onto the glass. So an occluded client's draws are
-   still lost, and there is still no expose event.
+1. **A rectangle list, and then a desktop.** Damage is a bounding box, so two
+   far-apart pixels cost the span between them. `CLEAR` is what keeps that slow
+   rather than wrong. A pixel a client never drew is skipped, so the boot
+   chassis is still on the screen under an empty window.
 
-   What that milestone is, now that the memory is not in the way. Each window
-   gets a run of its own from `segalloc`. `run_fill` and `run_blit` store into
-   that run rather than into the glass. `flush` becomes the damage mark that
-   walks the dirty rectangles onto the screen. Stacking then becomes occlusion,
-   and a covered client gets told to repaint. The placement policy stops being
-   the thing that keeps two clients from overlapping at all.
+   A desktop is what retires `CLEAR`. With something to paint underneath, a
+   window owns its whole rectangle, black included, and `0x00000000` goes back
+   to being an ordinary colour. The rectangle list is worth doing first. Front
+   to back with subtraction is the same change that stops a pixel under two
+   windows from taking two writes.
 
-   Two numbers move together when it happens. `MAX_WINDOWS` is two and
-   `SEGALLOC_MAX` is 4 MB, which is exactly two 640 by 800 windows. A third
-   window is a raise of both.
+2. **A window a client can move, resize, or raise.** Placement is fixed and a
+   client cannot ask. Each of those is a `ctl` line rather than a seventh verb,
+   the distinction section 5 of `docs/DRAW.md` guards. A resize also wants
+   `segbrk` underneath it, which is one of the three Plan 9 segment calls this
+   kernel does not have.
 
-   One uncaught mutation belongs to this milestone rather than to the last two.
-   `docs/DRAW.md` section 8 records that `rfork` copying a device segment is
-   inert because nothing forks a process holding one. It stops being inert the
-   day the compositor forks a worker.
-
-2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
+3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
    two becomes a reason rather than a tidiness.
+
+**One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
+that `rfork` copying a device segment is inert, because nothing forks a process
+that holds one. The compositor is the process that would, and a worker per
+window is the shape that would make it fork. It also pays 4 MB per window at
+that moment, because `fork_segments` copies a run eagerly where Plan 9 copies
+on write.
 
 **Standing gaps.** Each of these is something that exists and is incomplete,
 rather than something absent. All are named in the code they live in.
@@ -891,7 +917,7 @@ kernel/
                         reaper that collects a detached orphan
     program.odin        The twenty-eight programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 644 checks -- one process preempted
+    verify.odin         The boot self-test: 659 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that
@@ -906,7 +932,8 @@ kernel/
                         a keyboard translator that turns raw scancodes
                         into characters over a mount, a serial server
                         that puts a ring 3 write on the wire, a draw
-                        server whose verbs read back off the glass, one
+                        server whose windows hold their own pixels and
+                        give them back when the window above closes, one
                         that asks for half a megabyte of memory no file
                         serves and forks to see whose copy is whose, and
                         a terminal typed at through the keyboard sink
@@ -964,9 +991,11 @@ servers/
   eiafs/main.odin       The serial server: an rfork'd reader on /dev/eia0,
                         the raw bytes served on /eia0, and the first Twrite
                         that reaches hardware
-  intuition/main.odin   The draw server, the compositor's first half: six
-                        verbs on a data file, a session per fid, and every
-                        draw clipped before it touches /dev/fb
+  intuition/main.odin   The draw server and the compositor: six verbs on a
+                        data file, a session per fid and a window per
+                        session, each window's pixels a run of its own,
+                        and a flush that walks the damage onto the glass
+                        back to front
 apps/
   terminal/main.odin    The first app: lines in from /dev/cons, glyphs out
                         through a /srv/draw mount of its own, the first

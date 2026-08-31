@@ -3184,6 +3184,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	spill_before := fb.get_raw(s, 0, y0 + 1)
 	beyond_before := fb.get_raw(s, win_w, y0)
 	at = libdraw.put_fill(buf[:], 0, 0, u32(edge_x), u32(y0), 16, 1, C1)
+	at = libdraw.put_flush(buf[:], at)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr == vfs.OK, "a fill past the edge clips rather than errors")
 	check(r, fb.get_raw(s, win_w - 1, y0) == C1, "and paints up to its window's last pixel")
@@ -3199,6 +3200,18 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	*/
 	check(r, fb.get_raw(s, win_w, y0) == beyond_before, "and nothing at all past it")
 
+	/*
+	A malformed command fails its whole write, and what stood before it drew
+	anyway. That rule did not change. What changed is where `drew` happens.
+
+	A draw lands in the window's own memory now, so the claim cannot be read
+	off the glass in the same write. The command that would have made it
+	visible is the one that failed.
+
+	So the test makes the claim the way the protocol makes it. The glass must
+	*not* have the fill, and a flush of its own must then produce it. Two checks
+	where there was one, and the pair says what the single check could not.
+	*/
 	at = libdraw.put_fill(buf[:], 0, 0, 8, u32(y0), 4, 1, C3)
 	buf[at] = 4
 	buf[at + 1] = 0
@@ -3206,7 +3219,15 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	buf[at + 3] = 0
 	_, werr = vfs.chan_write(dc, 0, buf[:at + 4])
 	check(r, werr != vfs.OK, "a malformed command fails the whole write")
-	check(r, fb.get_raw(s, 8, y0) == C3, "and what stood before it already drew")
+	check(
+		r,
+		fb.get_raw(s, 8, y0) != C3,
+		"and nothing of it reached the glass, because the flush was in the write that failed",
+	)
+	at = libdraw.put_flush(buf[:], 0)
+	_, werr = vfs.chan_write(dc, 0, buf[:at])
+	check(r, werr == vfs.OK, "a flush of its own is answered")
+	check(r, fb.get_raw(s, 8, y0) == C3, "and shows what stood before the bad command, which already drew")
 
 	at = libdraw.put_free(buf[:], 0, 1)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
@@ -3817,16 +3838,29 @@ through it to look at pixels. The same reason `term_saved` above is static.
 row_saved: [8192]u8
 
 /*
-verify_windows is the milestone's sentence: **two clients hold the same
-coordinates and mean two places.**
+verify_windows is two milestones' sentences, one row of the glass at a time.
 
-`first` is a session already open, holding window zero. This opens a second,
-which gets window one, and then asks both of them to draw at the origin. The
-readback is two different pixels, half a screen apart.
+The first was **two clients hold the same coordinates and mean two places**.
+The second is **a window has pixels of its own**, and it changes what that row
+can be asked. Windows overlap now, because a window is a store rather than a
+clip and placement no longer has to keep clients apart.
 
-The second half is the stronger claim. The second client asks for a rectangle
-wider than the whole screen, and gets its window. A pixel one column *left* of
-its origin is the first client's, and it does not move.
+Five claims, in the order the row is painted:
+
+    the origin     each client's coordinates start at its own window
+    occlusion      where two windows meet, the top one is what the glass has
+    the order      a covered client's flush repaints what it owns, and does
+                   not lift it over the window on top
+    the clip       a rectangle wider than the screen still stops at a
+                   window's edge
+    the uncover    a window that closes gives back what it was covering, and
+                   the client underneath draws nothing to make that happen
+
+**The last one is what a backing store is.** Nothing asks the first client to
+repaint. Its pixels were its own for the whole time they were invisible, and
+the compositor puts them back from memory it held. That is also why this
+server has no expose event: the event exists to ask a client for pixels the
+compositor did not keep.
 
 The glass is put back before this returns. One row, saved whole, because the
 checks below paint across most of its width.
@@ -3844,6 +3878,29 @@ verify_windows :: proc(
 		return
 	}
 	copy(row_saved[:span], s.pixels[y * s.pitch:][:span])
+
+	/*
+	Where the second window sits, as a fixture rather than as a question.
+
+	The server cascades by half a window, and no verb would tell a client so.
+	A test that could ask the server where it put things would be agreeing with
+	the code under test. `docs/TESTING.md` names that as the way a check passes
+	for the wrong reason.
+	*/
+	second_x := win_w / 2
+
+	/*
+	A pixel inside both windows that neither client ever draws.
+
+	It is the sensor for `CLEAR`, the convention that says a window puts on
+	the glass what its client drew and nothing else. A compositor that copied
+	whole rectangles would paint this black. That is correct by a rule with a
+	desktop under it, and wrong here, where what is under a window is the
+	kernel's own chassis. Four rows above the row every check below paints.
+	*/
+	untouched_x := second_x + 8
+	untouched_y := y - 4
+	untouched := fb.get_raw(s, untouched_x, untouched_y)
 
 	second, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
 	if !check(r, oerr == vfs.OK, "a second client opens the command file") {
@@ -3864,41 +3921,97 @@ verify_windows :: proc(
 	}
 
 	A :: u32(0x0011AA33)
+	A2 :: u32(0x00119933)
 	B :: u32(0x00AA1133)
 	MARK :: u32(0x00205020)
 	buf: [128]u8
 
-	at := libdraw.put_fill(buf[:], 0, 0, 0, u32(y), 8, 1, A)
+	// -- Each client's coordinates are its own --------------------------------
+
+	at := libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(win_w), 1, A)
+	at = libdraw.put_flush(buf[:], at)
 	_, aerr := vfs.chan_write(first, 0, buf[:at])
-	check(r, aerr == vfs.OK, "the first client fills at its own origin")
+	check(r, aerr == vfs.OK, "the first client fills its whole width from its own origin")
+	check(r, fb.get_raw(s, 0, y) == A, "which lands at the screen's origin, where its window is")
 
 	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), 8, 1, B)
+	at = libdraw.put_flush(buf[:], at)
 	_, berr := vfs.chan_write(second, 0, buf[:at])
 	check(r, berr == vfs.OK, "and the second fills at the same coordinates")
-
-	check(r, fb.get_raw(s, 0, y) == A, "the first landed at the screen's origin")
 	check(
 		r,
-		fb.get_raw(s, win_w, y) == B,
-		"and the second half a screen away, which is what a window is",
+		fb.get_raw(s, second_x, y) == B,
+		"half a window across, which is where the second window is",
 	)
+	check(
+		r,
+		fb.get_raw(s, second_x - 1, y) == A,
+		"and the pixel before it is still the first client's",
+	)
+
+	// -- Where they overlap, the top window is what the glass has -------------
+
+	/*
+	The claim placement used to make, made by the compositor instead.
+
+	Before this milestone two windows could not overlap. A draw went straight
+	to the glass, so two clients on one pixel would have taken turns destroying
+	each other. The store removed the reason, and the placement moved the
+	windows on top of each other to put the new rule under a check. Slot order
+	is stacking order, and the second window is the higher slot.
+	*/
+	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(win_w), 1, B)
+	at = libdraw.put_flush(buf[:], at)
+	_, werr := vfs.chan_write(second, 0, buf[:at])
+	check(r, werr == vfs.OK, "the second client fills its whole width too")
+	check(
+		r,
+		fb.get_raw(s, win_w - 1, y) == B,
+		"and the glass where they overlap is the window on top",
+	)
+	check(
+		r,
+		fb.get_raw(s, second_x - 1, y) == A,
+		"and the window underneath still has the part nothing covers",
+	)
+
+	/*
+	And the covered client draws again, which is the check that watches the
+	*order* rather than the arithmetic.
+
+	A flush composites the damage out of every window, back to front, not out
+	of the one that asked. A server that simply copied the flushing client's
+	pixels onto the glass would pass every check above. It fails this one, by
+	lifting a covered window over the one on top of it.
+	*/
+	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(win_w), 1, A2)
+	at = libdraw.put_flush(buf[:], at)
+	_, a2err := vfs.chan_write(first, 0, buf[:at])
+	check(r, a2err == vfs.OK, "the covered client fills its width a second time")
+	check(r, fb.get_raw(s, second_x - 1, y) == A2, "and its flush repaints what it owns")
+	check(
+		r,
+		fb.get_raw(s, win_w - 1, y) == B,
+		"without lifting one pixel of it over the window on top",
+	)
+
+	// -- The clip is still the window's ---------------------------------------
 
 	/*
 	Now the whole world, asked for by the client that may not have it.
 
 	A rectangle wider than the screen, from the second session. It clips to
-	that session's window. The last column of the glass is then its own, and
-	the column before its origin is still the first client's.
+	that session's window, so its last column is its own and the column past
+	it belongs to nobody.
 	*/
+	edge := second_x + win_w
+	beyond_before := fb.get_raw(s, edge, y)
 	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(s.width * 2), 1, B)
-	_, werr := vfs.chan_write(second, 0, buf[:at])
+	at = libdraw.put_flush(buf[:], at)
+	_, werr = vfs.chan_write(second, 0, buf[:at])
 	check(r, werr == vfs.OK, "the second asks for a rectangle wider than the screen")
-	check(r, fb.get_raw(s, s.width - 1, y) == B, "and gets its window, out to the last column")
-	check(
-		r,
-		fb.get_raw(s, win_w - 1, y) != B,
-		"and not one pixel of the window beside it",
-	)
+	check(r, fb.get_raw(s, edge - 1, y) == B, "and gets its window, out to its last column")
+	check(r, fb.get_raw(s, edge, y) == beyond_before, "and not one pixel past it")
 
 	/*
 	And a blit, which is the only way to prove the *other* translation.
@@ -3906,7 +4019,7 @@ verify_windows :: proc(
 	A control that removed the origin from `run_blit` passed everything, and
 	the reason was that every blit in this file came from window zero. There,
 	translating by the origin is translating by nothing. This one comes from
-	the session half a screen across.
+	the session half a window across.
 	*/
 	pat: [8 * 4]u8
 	for i in 0 ..< 8 {
@@ -3915,16 +4028,74 @@ verify_windows :: proc(
 	at = libdraw.put_alloc(buf[:], 0, 1, 8, 1)
 	at = libdraw.put_load(buf[:], at, 1, 0, 0, 8, 1, pat[:])
 	at = libdraw.put_blit(buf[:], at, 0, 16, u32(y), 1, 0, 0, 8, 1)
+	at = libdraw.put_flush(buf[:], at)
 	_, blerr := vfs.chan_write(second, 0, buf[:at])
 	check(r, blerr == vfs.OK, "the second client loads an image and blits it")
-	check(r, fb.get_raw(s, win_w + 16, y) == MARK, "which lands inside its own window")
+	check(r, fb.get_raw(s, second_x + 16, y) == MARK, "which lands inside its own window")
 	check(r, fb.get_raw(s, 16, y) != MARK, "and not in the window beside it")
 
+	// -- The uncover, which is the milestone ----------------------------------
+
+	/*
+	The second session goes, and the first client is not told and does not
+	draw. What comes back is what it put in its own memory, before it was
+	ever covered.
+
+	The pixel watched is one the second window was sitting on. A server
+	without a store has nothing to put there, and the only honest thing it
+	could do is ask the client to repaint. That request is the expose event
+	`docs/DRAW.md` section 9 deferred, and this is the check that retires it.
+	*/
 	vfs.chan_close(second)
+	check(
+		r,
+		fb.get_raw(s, win_w - 1, y) == A2,
+		"a window that closes gives back the pixels it covered, out of the store below it",
+	)
+	check(
+		r,
+		fb.get_raw(s, second_x, y) == A2,
+		"across the whole overlap, and the client under it drew nothing to earn that",
+	)
+
+	check(
+		r,
+		fb.get_raw(s, untouched_x, untouched_y) == untouched,
+		"and a pixel under both windows that neither drew is still the chassis under them",
+	)
 
 	// The window comes back with the fid, so a client can open again.
 	again, aerr2 := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
 	if check(r, aerr2 == vfs.OK, "a clunk gives the window back") {
+		/*
+		And it comes back empty, which took a check the first cut did not have.
+
+		A slot's memory outlives the session it was lent to, because nothing
+		gives a run back. So a slot handed on has to be cleared, or the next
+		client shows the last one's drawing without ever asking for it. The
+		control that removes the clearing passed every check here until this
+		one existed. `docs/TESTING.md` has that as the first question to ask of
+		a control that comes back clean. This is the fourth time the answer was
+		that the test never reached the code.
+
+		**The reveal is damage rather than a draw.** Damage is a bounding box.
+		Two pixels at opposite ends of a window make one wide rectangle, and
+		the composite walks the whole of it out of the store. Whatever the last
+		session left in the middle would go straight to the glass. Drawing the
+		middle would hide exactly the bug.
+		*/
+		D :: u32(0x00445566)
+		at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), 1, 1, D)
+		at = libdraw.put_fill(buf[:], at, 0, u32(win_w - 1), u32(y), 1, 1, D)
+		at = libdraw.put_flush(buf[:], at)
+		_, derr := vfs.chan_write(again, 0, buf[:at])
+		check(r, derr == vfs.OK, "and a new session draws one pixel at each end of it")
+		check(r, fb.get_raw(s, second_x, y) == D, "which land where the last session's window was")
+		check(
+			r,
+			fb.get_raw(s, second_x + 100, y) == A2,
+			"and the damage between them shows the window below, not what the last session left",
+		)
 		vfs.chan_close(again)
 	}
 

@@ -9,8 +9,30 @@ own window now without changing a line.
 
 A client cannot name the screen. It has no verb that reaches past its
 window's edge, no way to learn where its window sits, and no way to ask
-for another. That is the whole of the isolation, and it is one
-translation and one clip in `run_fill` and `run_blit`.
+for another. That is the whole of the isolation, and it is one clip in
+`run_fill` and `run_blit`.
+
+**And now a window has pixels of its own.** Each one holds a run of
+anonymous memory from `segalloc`, and a draw is a store into that rather
+than onto the glass. `flush` is what walks the damage onto the screen,
+which is the promise `docs/DRAW.md` section 6 made without saying how.
+
+Three things follow, and the third is the one worth the milestone:
+
+    windows overlap    placement kept them apart because a window was a
+                       clip. It is a store now, so the overlap is this
+                       server's arithmetic
+    slots stack        slot order is stacking order, and `composite`
+                       paints back to front. That is all of occlusion
+    nobody repaints    a covered client is never told, because it has
+                       nothing to redraw. Its pixels were its own the
+                       whole time it was hidden
+
+**There is no expose event, and a backing store is the reason there is
+none.** `docs/DRAW.md` section 9 deferred refresh events with windows as
+their trigger. The trigger arrived and retired the feature instead: a
+compositor that holds the pixels answers the question the event was going
+to ask.
 
 The tenant shape is `ramfs`'s, not `consrv`'s, because nothing here
 parks. A draw command runs to completion -- the framebuffer takes a write
@@ -43,7 +65,7 @@ is why it is not a feature the protocol owes them. A client sends commands.
 The server, which *is* the compositor, holds the glass.
 
 Every draw is still clipped to its destination first, so a client's mistake
-is an answer rather than a store past the end of the screen. The bound is
+is an answer rather than a store past the end of its window. The bound is
 this server's arithmetic now, where it used to be the file's.
 */
 package intuition
@@ -62,9 +84,21 @@ NODE_CTL :: i32(2)
 /*
 The windows, and the placement policy that hands them out.
 
-Two, side by side, full height. A session gets one when it opens `data` and
-gives it back when the fid goes, which makes the assignment as automatic as
-the image pool's and needs no protocol for it.
+Two, and they **overlap**. A session gets one when it opens `data` and gives it
+back when the fid goes, which makes the assignment as automatic as the image
+pool's and needs no protocol for it.
+
+**They did not overlap before this milestone, and the placement was what
+stopped them.** A window was a clip onto the glass, so two clients on the same
+pixel would have taken turns destroying each other's work. Placement had to
+keep them apart. A window with pixels of its own removes that reason: the
+overlap is the compositor's arithmetic now, and a covered client is not even
+told, because it has nothing to redraw.
+
+So the policy is a cascade. Window `i` sits half a window to the right of
+window `i-1`, and **a higher slot is higher in the stack**. Slot order is
+stacking order, which is the simplest rule that has an answer for every pixel
+and is what makes occlusion testable at all.
 
 **A client cannot choose.** `docs/DRAW.md` section 5 names scope creep as the
 failure mode the verb table guards, and a window a client places is a verb or a
@@ -72,18 +106,96 @@ failure mode the verb table guards, and a window a client places is a verb or a
 `ctl` and not a seventh verb.
 
 `MAX_WINDOWS` is a cap to raise rather than a design. Two is what the self-test
-needs to prove that a second client cannot reach the first's pixels, which is
-the only claim this file makes about isolation.
+needs to prove that a second client cannot reach the first's pixels, and now
+that one client's pixels survive being covered by the other.
 */
 MAX_WINDOWS :: 2
 
+/*
+A half-open rectangle. One per window, and it is the damage.
+
+`dmg` is what a client drew since its last `flush`, and it is what `flush`
+walks onto the glass. It is a union rather than a list, so a client that draws
+two far-apart pixels gets one rectangle covering both. A rectangle list is the
+refinement, and `CLEAR` below is why the coarseness costs nothing but time.
+*/
+Rect :: struct {
+	x0: int,
+	y0: int,
+	x1: int,
+	y1: int,
+}
+
+rect_empty :: proc "contextless" (r: Rect) -> bool {
+	return r.x0 >= r.x1 || r.y0 >= r.y1
+}
+
+// rect_add unions one rectangle into another, and an empty target takes the
+// new one whole rather than a union with a zero corner it never held.
+rect_add :: proc "contextless" (r: ^Rect, x: int, y: int, w: int, h: int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	if rect_empty(r^) {
+		r^ = Rect{x, y, x + w, y + h}
+		return
+	}
+	r.x0 = min(r.x0, x)
+	r.y0 = min(r.y0, y)
+	r.x1 = max(r.x1, x + w)
+	r.y1 = max(r.y1, y + h)
+}
+
+/*
+The pixel a window has not been drawn on, and the one thing in this file that
+is a convention rather than a mechanism.
+
+**A store starts as this value, and `composite` does not put it on the glass.**
+So a window covers what its client has drawn and nothing else, and the boot
+chassis under an empty window is still on the screen.
+
+That is a choice, and the other one was available. A window owns its whole
+rectangle in principle, and a compositor with a desktop beneath it would paint
+all of one, black included. There is no desktop here. What lies under a window
+is the kernel's own chassis, and painting 640 by 800 of black over it at the
+first `Tlopen` would be correct by a rule nothing else in this system follows
+yet.
+
+The cost is one value out of sixteen million. A client that fills with
+`0x00000000` gets transparency where it asked for black, and must reach for
+`0x00000001` instead. The format has no alpha channel to spend, so the
+convention is spent on a colour. A desktop retires it: with something to paint
+underneath, a window can own its whole rectangle and this becomes an opaque
+black like any other.
+
+The other thing it buys is exactness. Damage is a bounding box, so a flush
+copies pixels the client did not touch on this pass -- and every one of those
+either holds what the client drew before, or holds this, and is skipped. A
+coarse rectangle therefore costs time and never a wrong pixel.
+*/
+CLEAR :: u32(0)
+
+/*
+One window: where it sits, the memory behind it, and what is owed to the glass.
+
+`pixels` is a run of anonymous memory from `segalloc`, `w * h` words of it,
+and **it belongs to the slot rather than to the session**. A clunk gives the
+slot back and keeps the run, because there is no call that gives a run back.
+`docs/USER.md` names the three Plan 9 has and Vectra does not, and `segfree` is
+the one this line is waiting for.
+
+A slot handed to a new session is cleared to `CLEAR`, so a client never opens
+onto the last client's drawing.
+*/
 Window :: struct {
-	owner: vectra9.Fid,
-	x:     int,
-	y:     int,
-	w:     int,
-	h:     int,
-	used:  bool,
+	owner:  vectra9.Fid,
+	x:      int,
+	y:      int,
+	w:      int,
+	h:      int,
+	pixels: [^]u32,
+	dmg:    Rect,
+	used:   bool,
 }
 
 windows: [MAX_WINDOWS]Window
@@ -150,7 +262,8 @@ _start opens the screen, learns its shape, and serves.
 
 The exits each name their failure. 0x74 is a framebuffer that would not
 open, 0x76 a geometry this server cannot draw on -- fewer than four
-numbers, or a depth other than 32 -- 0x77 a screen that would not map,
+numbers, a depth other than 32, or a cascade that would not fit -- 0x77 a
+screen that would not map, 0x78 a window that could not buy its pixels,
 and 0x71 a post that failed. The serve loop's three endings are `ramfs`'s,
 numbers and all.
 */
@@ -190,6 +303,13 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	glass = ([^]u32)(base)
 	glass_stride = scr_pitch / 4
 
+	// And the windows' own memory, which is the other call that answers with
+	// an address rather than with bytes. Fatal for the reason the mapping is:
+	// a window without a store is a window this server cannot serve.
+	if !windows_init() {
+		libuser.exit(0x78)
+	}
+
 	sfd, perr := libuser.post("/srv/draw")
 	if perr < 0 {
 		libuser.exit(0x71)
@@ -224,12 +344,26 @@ read_geometry :: proc "contextless" (report: []u8) -> bool {
 		return false
 	}
 
-	// Columns, full height. Integer division leaves at most `MAX_WINDOWS - 1`
-	// columns of pixels at the right edge unowned, which nothing draws to and
-	// nothing may.
+	/*
+	Columns, full height, cascaded by half a window.
+
+	The width is still the screen over `MAX_WINDOWS`, so a window is the size
+	it always was and every client reads the same `ctl` report it read before.
+	What changed is where the second one goes: half a window right of the
+	first, so the two overlap by half. `windows_init` does the placement, and
+	this only has to prove it fits.
+
+	The last window ends at `(MAX_WINDOWS - 1) * win_w / 2 + win_w`. At two
+	windows on this screen that is 960 of 1280. A cascade that ran off the
+	right edge would be a placement policy this server cannot honour, and a
+	geometry it cannot draw on is what it already refuses at start.
+	*/
 	win_w = scr_w / MAX_WINDOWS
 	win_h = scr_h
-	return win_w > 0
+	if win_w <= 0 {
+		return false
+	}
+	return (MAX_WINDOWS - 1) * (win_w / 2) + win_w <= scr_w
 }
 
 /*
@@ -293,11 +427,52 @@ put_number :: proc "contextless" (out: []u8, at: int, value: int) -> int #no_bou
 // -- The windows --------------------------------------------------------------
 
 /*
+windows_init places every window and buys its pixels, once, at start.
+
+**The run is asked for here rather than at `Tlopen`, and that is what having
+no `segfree` means.** A slot's memory cannot go back, so it must not be tied to
+a session that comes and goes. It is bought once, for the life of the server,
+and lent to whichever session holds the slot. A failure here is a server that
+does not start, which is the honest place for it: the alternative is a
+`Tlopen` that fails for a reason the client cannot act on.
+
+`MAX_WINDOWS` runs of `win_w * win_h * 4` bytes each. At 640 by 800 that is
+just under two megabytes apiece, which is the arithmetic `docs/DRAW.md`
+section 10 wrote down a milestone before this call existed.
+
+False is no memory. The caller exits, and says so with a number.
+*/
+windows_init :: proc "contextless" () -> bool #no_bounds_check {
+	for i in 0 ..< MAX_WINDOWS {
+		base, err := libuser.segalloc(win_w * win_h * 4)
+		if err < 0 {
+			return false
+		}
+		windows[i] = Window {
+			x      = i * (win_w / 2),
+			y      = 0,
+			w      = win_w,
+			h      = win_h,
+			pixels = ([^]u32)(base),
+		}
+	}
+	return true
+}
+
+/*
 window_open gives this fid a window, or reports that there is none free.
 
-Placement is the whole policy: column `i` of `MAX_WINDOWS`, full height. A
-session that already holds one gets it back rather than a second, because a
-second `Tlopen` on one fid is a client re-opening what it has.
+The slot carries its placement and its pixels already, so this claims rather
+than builds. A session that already holds one gets it back rather than a
+second, because a second `Tlopen` on one fid is a client re-opening what it
+has.
+
+**The store is cleared, and that is the isolation the slot's reuse would
+otherwise cost.** A run outlives the session it was lent to, so a session that
+opened onto an un-cleared slot would open onto the last client's drawing. No
+verb reads a window back, so this was never a way to *learn* another client's
+pixels. It would have been a way to display them, which is the same mistake one
+step further on.
 */
 window_open :: proc "contextless" (owner: vectra9.Fid) -> bool #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
@@ -307,13 +482,12 @@ window_open :: proc "contextless" (owner: vectra9.Fid) -> bool #no_bounds_check 
 	}
 	for i in 0 ..< MAX_WINDOWS {
 		if !windows[i].used {
-			windows[i] = Window {
-				owner = owner,
-				x     = i * win_w,
-				y     = 0,
-				w     = win_w,
-				h     = win_h,
-				used  = true,
+			win := &windows[i]
+			win.owner = owner
+			win.used = true
+			win.dmg = Rect{}
+			for j in 0 ..< win.w * win.h {
+				win.pixels[j] = CLEAR
 			}
 			return true
 		}
@@ -321,14 +495,107 @@ window_open :: proc "contextless" (owner: vectra9.Fid) -> bool #no_bounds_check 
 	return false
 }
 
-// window_close gives one back, and is the other half of the session rule the
-// image pool already keeps.
+/*
+window_close gives the slot back, keeps its memory, and repaints what it was
+covering.
+
+The composite at the end is the visible half of the milestone. A window below
+this one had its pixels the whole time it was hidden, so the glass can have
+them back without anything asking its client to redraw. **That is what a
+backing store is for**, and it is why this server has no expose event and does
+not need one.
+
+What no remaining window covers is left exactly as it was. This server owns the
+pixels inside a window and nothing else -- see `CLEAR` for why the boot chassis
+is still on the screen -- so a window that closes over bare glass leaves its
+last drawing there. A desktop is what would paint over it, and there is none.
+*/
 window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
-		if windows[i].used && windows[i].owner == owner {
-			windows[i] = Window{}
+		win := &windows[i]
+		if !win.used || win.owner != owner {
+			continue
+		}
+		x0 := win.x
+		y0 := win.y
+		x1 := win.x + win.w
+		y1 := win.y + win.h
+
+		// The slot first, so the composite below walks the windows that are
+		// left rather than the one that is going.
+		win.owner = 0
+		win.used = false
+		win.dmg = Rect{}
+
+		composite(x0, y0, x1, y1)
+	}
+}
+
+/*
+composite paints one screen rectangle out of the windows that own it, back to
+front.
+
+Slot order is stacking order, so the last window to write a pixel is the
+topmost one that has it. That single sentence is the whole of occlusion, and it
+needs no depth test: a covered window paints first and the cover paints over
+it.
+
+The one test in the inner loop is `CLEAR`, which is a window saying it has
+nothing here. Its file comment argues the convention. Together the two rules
+mean a window contributes exactly the pixels its client drew, in exactly the
+order the stack says.
+
+A pixel under two windows is written twice, once per window. At two windows
+that is cheaper than the arithmetic to avoid it. The day it is not, the answer
+is to walk front to back and subtract, which is a rectangle list rather than a
+new idea.
+*/
+composite :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bounds_check {
+	for i in 0 ..< MAX_WINDOWS {
+		win := &windows[i]
+		if !win.used {
+			continue
+		}
+		x0 := max(max(sx0, win.x), 0)
+		y0 := max(max(sy0, win.y), 0)
+		x1 := min(min(sx1, win.x + win.w), scr_w)
+		y1 := min(min(sy1, win.y + win.h), scr_h)
+		if x0 >= x1 || y0 >= y1 {
+			continue
+		}
+		for y in y0 ..< y1 {
+			dst := screen_at(y)
+			src := win.pixels[(y - win.y) * win.w:]
+			for x in x0 ..< x1 {
+				if v := src[x - win.x]; v != CLEAR {
+					dst[x] = v
+				}
+			}
 		}
 	}
+}
+
+/*
+window_flush is `flush`'s whole body: what this client drew since it last
+asked, walked onto the glass.
+
+The damage is this window's, and the composite is every window's. A client that
+flushes while another sits on top of it repaints its own pixels and then the
+cover's, in that order, and the glass ends up right. So a client never has to
+know it is covered, which is the second half of not knowing where it is.
+*/
+window_flush :: proc "contextless" (win: ^Window) {
+	if rect_empty(win.dmg) {
+		return
+	}
+	composite(win.x + win.dmg.x0, win.y + win.dmg.y0, win.x + win.dmg.x1, win.y + win.dmg.y1)
+	win.dmg = Rect{}
+}
+
+// window_mark records one drawn rectangle, in window coordinates: what the
+// next flush owes the glass.
+window_mark :: proc "contextless" (win: ^Window, x: int, y: int, w: int, h: int) {
+	rect_add(&win.dmg, x, y, w, h)
 }
 
 // window_of is which window a session draws into. Nil is a fid that opened
@@ -447,14 +714,27 @@ run_commands :: proc "contextless" (owner: vectra9.Fid, data: []u8) -> vectra9.E
 		case libdraw.FREE:
 			err = run_free(owner, body)
 		case libdraw.FLUSH:
-			// Flush promises visibility, and every draw above went straight
-			// to the glass through the window's clip. The promise is kept
-			// before the verb arrives. It becomes the damage mark the day a
-			// window has pixels of its own to be damaged -- see
-			// `docs/DRAW.md` section 7 for the memory bound that is.
+			/*
+			**Flush is the damage mark now, and this is the milestone in one
+			verb.** Every draw above landed in the window's own memory and
+			nothing reached the glass. This is what makes it visible, and it
+			composites only what the client drew since it last asked.
+
+			`docs/DRAW.md` section 6 promised exactly this and promised nothing
+			about how it happened. A client written against v1 needed no edit,
+			because a client that already flushed was already correct. One
+			that never flushed was always wrong and only now finds out.
+			*/
 			if len(body) != 0 {
 				err = vectra9.EINVAL
+				break
 			}
+			win := window_of(owner)
+			if win == nil {
+				err = vectra9.EBADF
+				break
+			}
+			window_flush(win)
 		case:
 			err = vectra9.EINVAL
 		}
@@ -526,17 +806,26 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		if win == nil {
 			return vectra9.EBADF
 		}
-		// Clip in the window's own coordinates, then translate. The other
-		// order would clip against the screen and let a client past its edge.
+		/*
+		The clip is the window's, and the translation is gone.
+
+		It used to be two lines here: clip in window coordinates, then move by
+		the window's origin, in that order, because the other order let a
+		client past its own edge into the window beside it. The store now lands
+		in the window's own memory, where a client's coordinates already mean
+		what they say. The origin moved to `composite`, which is the only code
+		left that knows where a window sits.
+		*/
 		if !clip(&x, &y, &w, &h, &sx, &sy, win.w, win.h) {
 			return vectra9.Errno(0)
 		}
 		for line in 0 ..< h {
-			dst := screen_at(win.y + y + line)
+			dst := win.pixels[(y + line) * win.w:]
 			for i in 0 ..< w {
-				dst[win.x + x + i] = color
+				dst[x + i] = color
 			}
 		}
+		window_mark(win, x, y, w, h)
 		return vectra9.Errno(0)
 	}
 
@@ -595,11 +884,12 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		}
 		for line in 0 ..< sh {
 			base := (sy + line) * simg.w + sx
-			out := screen_at(win.y + dy + line)
+			out := win.pixels[(dy + line) * win.w:]
 			for i in 0 ..< sw {
-				out[win.x + dx + i] = pixels[sslot][base + i]
+				out[dx + i] = pixels[sslot][base + i]
 			}
 		}
+		window_mark(win, dx, dy, sw, sh)
 		return vectra9.Errno(0)
 	}
 
