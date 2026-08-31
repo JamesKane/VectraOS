@@ -44,6 +44,7 @@ at it.
 */
 package devfs
 
+import "vsys:libodin"
 import "base:intrinsics"
 import "base:runtime"
 
@@ -56,9 +57,7 @@ import "kernel:vfs"
 import "vsys:vectra9"
 
 Verify_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	listed:        int, // Names `/dev` reported
 	written:       int, // Bytes `/dev/cons` accepted from a write
 	delivered:     int, // Bytes a parked read handed back
@@ -70,14 +69,7 @@ Verify_Result :: struct {
 
 @(private = "file")
 check :: proc "contextless" (r: ^Verify_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 /*
@@ -117,18 +109,6 @@ verify_context :: proc "contextless" () -> runtime.Context {
 	return ctx
 }
 
-// watch waits for `cond` and reports whether it came true inside `PATIENCE`.
-// It bounds every wait in this file, for the reason the file comment gives.
-@(private = "file")
-watch :: proc "contextless" (cond: sync.Condition, arg: rawptr) -> bool {
-	for _ in 0 ..< PATIENCE {
-		if cond(arg) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return false
-}
 
 // -- The reader thread -------------------------------------------------------
 
@@ -488,7 +468,7 @@ verify_parked_read :: proc(r: ^Verify_Result, cons: ^vfs.Chan) #no_bounds_check 
 	check(r, settled(), "and the read still does not answer, because a character is not a line")
 
 	check(r, cons_feed(&t.cons, '\n'), "the newline after it arrives")
-	if !check(r, watch(reader_returned, nil), "and the parked read comes back") {
+	if !check(r, sync.await(reader_returned, nil, PATIENCE), "and the parked read comes back") {
 		return
 	}
 
@@ -665,11 +645,11 @@ verify_give_up :: proc(r: ^Verify_Result, cons: ^vfs.Chan) #no_bounds_check {
 	if !check(r, start_read(cons, GIVE_UP_TICKS), "a thread to do the giving up") {
 		return
 	}
-	if !check(r, watch(reader_returned, nil), "a read that outlives its deadline comes back at all") {
+	if !check(r, sync.await(reader_returned, nil, PATIENCE), "a read that outlives its deadline comes back at all") {
 		// It is still inside the handler. Feed it, or the checks below run
 		// against a device with a thread parked in it.
 		type_in(&t.cons, "x\n")
-		_ = watch(reader_returned, nil)
+		_ = sync.await(reader_returned, nil, PATIENCE)
 		return
 	}
 
@@ -876,7 +856,7 @@ verify_taps :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bou
 	if check(r, start_read(sc, 0), "a thread to read an empty tap") {
 		check(r, settled(), "a read of an empty tap does not answer")
 		check(r, scancode_tap(0x82), "one scancode arrives")
-		if check(r, watch(reader_returned, nil), "and the parked read comes back") {
+		if check(r, sync.await(reader_returned, nil, PATIENCE), "and the parked read comes back") {
 			check(r, reader.err == vfs.OK && same(reader.got[:], reader.n, "\x82"), "carrying it alone")
 		}
 	}
@@ -884,11 +864,11 @@ verify_taps :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bou
 	// A read that gives up, which is the abort hook waking a tap's rendez
 	// rather than the console's.
 	if check(r, start_read(sc, GIVE_UP_TICKS), "a thread to give up on one") {
-		if check(r, watch(reader_returned, nil), "a tap read that outlives its deadline comes back") {
+		if check(r, sync.await(reader_returned, nil, PATIENCE), "a tap read that outlives its deadline comes back") {
 			check(r, reader.err == vectra9.EINTR, "and reports EINTR")
 		} else {
 			_ = scancode_tap(0x83)
-			_ = watch(reader_returned, nil)
+			_ = sync.await(reader_returned, nil, PATIENCE)
 		}
 	}
 

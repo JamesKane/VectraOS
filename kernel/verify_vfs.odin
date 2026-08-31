@@ -554,9 +554,7 @@ verify_live :: proc "contextless" (s: mem.Heap_Stats) -> int {
 
 @(private = "file")
 Vfs_Threads :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	operations:    int, // Namespace operations the workers completed
 	rebinds:       int,
 	ticks:         u64, // What the run cost the boot, in timer ticks
@@ -575,14 +573,7 @@ all_workers_done :: proc "contextless" (arg: rawptr) -> bool {
 
 @(private = "file")
 tcheck :: proc "contextless" (r: ^Vfs_Threads, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 /*
@@ -853,7 +844,7 @@ report_vfs_threads :: proc(r: ^Vfs_Threads) {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "vfs ")
 	libodin.put_uint(&sink, u64(r.checks))
-	if r.failures == 0 && r.checks > 0 {
+	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " concurrency checks passed -- ")
 		libodin.put_uint(&sink, u64(r.operations))
 		libodin.put_str(&sink, " namespace operations across 5 threads, ")

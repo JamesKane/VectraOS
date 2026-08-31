@@ -18,26 +18,18 @@ like a working one from anywhere else.
 */
 package vfs
 
+import "vsys:libodin"
 import "vsys:vectra9"
 
 Verify_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string, // What went wrong first, for a one-line log
+	using tally:   libodin.Tally,
 	union_entries: int, // Names a union directory listed, duplicates included
 	mounts:        int, // Mount points the test namespace ended up with
 }
 
 @(private = "file")
 check :: proc(r: ^Verify_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 // -- Fixtures ----------------------------------------------------------------

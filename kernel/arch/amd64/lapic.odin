@@ -23,7 +23,6 @@ import "base:intrinsics"
 
 MSR_APIC_BASE :: u32(0x1B)
 
-APIC_BASE_BSP :: u64(1) << 8 // This core is the bootstrap processor
 APIC_BASE_ENABLE :: u64(1) << 11 // The hardware global enable, below the SVR one
 APIC_BASE_ADDRESS :: u64(0xF_FFFF_F000)
 
@@ -77,10 +76,6 @@ lapic_available :: proc "contextless" () -> bool {
 // occasionally does.
 lapic_physical_base :: proc "contextless" () -> uintptr {
 	return uintptr(read_msr(MSR_APIC_BASE) & APIC_BASE_ADDRESS)
-}
-
-lapic_is_bsp :: proc "contextless" () -> bool {
-	return read_msr(MSR_APIC_BASE) & APIC_BASE_BSP != 0
 }
 
 /*

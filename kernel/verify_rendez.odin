@@ -168,9 +168,7 @@ timeout_worker :: proc "contextless" (arg: rawptr) {
 
 @(private = "file")
 Rendez_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	nap:           u64, // Ticks a NAP_TICKS delay actually took
 	switches:      u64, // Switches the machine made while it napped
 	slept:         u64,
@@ -179,14 +177,7 @@ Rendez_Result :: struct {
 
 @(private = "file")
 rcheck :: proc "contextless" (r: ^Rendez_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 // wait_parked spins the boot thread down onto the clock until `want` threads
@@ -393,7 +384,7 @@ report_sleep_queue :: proc(r: ^Rendez_Result) {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "sync ")
 	libodin.put_uint(&sink, u64(r.checks))
-	if r.failures == 0 && r.checks > 0 {
+	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " sleep queue checks passed -- ")
 		libodin.put_uint(&sink, r.slept)
 		libodin.put_str(&sink, " parked, ")

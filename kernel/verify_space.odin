@@ -53,23 +53,14 @@ PATIENCE :: 400
 
 @(private = "file")
 Space_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	switches:      u64, // Context switches that reloaded CR3
 	frames:        int, // Frames the two spaces spent on page tables
 }
 
 @(private = "file")
 scheck :: proc "contextless" (r: ^Space_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 /*
@@ -134,16 +125,6 @@ occupy :: proc "contextless" (arg: rawptr) {
 	intrinsics.volatile_store(&o.done, true)
 }
 
-@(private = "file")
-watch_space :: proc "contextless" (cond: sync.Condition, arg: rawptr) -> bool {
-	for _ in 0 ..< PATIENCE {
-		if cond(arg) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return false
-}
 
 /*
 verify_space builds two address spaces, runs a thread in each, and takes them
@@ -279,7 +260,7 @@ verify_space :: proc() {
 	}
 	scheck(&r, started == 2, "a thread runs in each")
 
-	if started == 2 && scheck(&r, watch_space(both_done, nil), "and both come back") {
+	if started == 2 && scheck(&r, sync.await(both_done, nil, PATIENCE), "and both come back") {
 		r.switches = sched.stats().space_switches - sw_before
 
 		scheck(&r, occupants[0].saw == MARKS[0], "the first saw its own mark")
@@ -406,7 +387,7 @@ cleanup :: proc(
 
 @(private = "file")
 report_space :: proc(r: ^Space_Result) {
-	ok := r.failures == 0 && r.checks > 0
+	ok := libodin.passed(r.tally)
 
 	sink := begin(&klog)
 	libodin.put_str(&sink, "space ")

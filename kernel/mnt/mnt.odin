@@ -401,11 +401,6 @@ flush_partner :: proc "contextless" (c: ^Conn, r: ^Rpc) -> ^Rpc #no_bounds_check
 	return &c.pool[int(r.tag) + MAX_REQUESTS]
 }
 
-@(private = "file")
-state_of :: proc "contextless" (r: ^Rpc) -> Rpc_State {
-	return intrinsics.volatile_load(&r.state)
-}
-
 // enqueue puts a filled-in slot on the work queue. The lock is the caller's.
 @(private = "file")
 enqueue :: proc "contextless" (c: ^Conn, r: ^Rpc) {

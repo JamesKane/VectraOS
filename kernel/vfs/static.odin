@@ -234,16 +234,7 @@ static_handler :: proc "contextless" (
 
 	#partial switch m in request^ {
 	case vectra9.Tversion:
-		// A refused dialect gets a different version string in the answer, which is
-		// what a client checks. Never an Rlerror.
-		if m.version != vectra9.VERSION {
-			reply^ = vectra9.Rversion{msize = m.msize, version = "unknown"}
-			return
-		}
-		reply^ = vectra9.Rversion {
-			msize   = min(m.msize, vectra9.MSIZE_DEFAULT),
-			version = vectra9.VERSION,
-		}
+		vectra9.version_reply(m, reply)
 
 	case vectra9.Tattach:
 		if !fidtab_bind(&t.fids, m.fid, 0) {

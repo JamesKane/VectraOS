@@ -234,16 +234,6 @@ all_read :: proc "contextless" (arg: rawptr) -> bool {
 
 // -- Waiting, without competing ------------------------------------------------
 
-@(private = "file")
-pay_watch :: proc "contextless" (cond: sync.Condition, arg: rawptr) -> bool {
-	for _ in 0 ..< PAY_PATIENCE {
-		if cond(arg) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return false
-}
 
 /*
 run_readers puts one reader on every slot and reports how many got their own
@@ -274,7 +264,7 @@ run_readers :: proc() -> int #no_bounds_check {
 			return -1
 		}
 	}
-	if !pay_watch(all_read, nil) {
+	if !sync.await(all_read, nil, PAY_PATIENCE) {
 		return -1
 	}
 
@@ -407,9 +397,7 @@ known_name :: proc "contextless" (name: string) -> bool #no_bounds_check {
 
 @(private = "file")
 Payload_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	corrupted:     int, // Readers the shared buffer spoiled, in the control
 	bytes:         u64, // Payload copied out of slots into clients
 	listings:      int, // Concurrent directory listings that came back whole
@@ -417,14 +405,7 @@ Payload_Result :: struct {
 
 @(private = "file")
 pcheck :: proc "contextless" (r: ^Payload_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 verify_payload :: proc() #no_bounds_check {
@@ -631,7 +612,7 @@ verify_concurrent_listing :: proc(r: ^Payload_Result) -> bool #no_bounds_check {
 			return false
 		}
 	}
-	if !pay_watch(all_listed, nil) {
+	if !sync.await(all_listed, nil, PAY_PATIENCE) {
 		return false
 	}
 
@@ -650,7 +631,7 @@ report_payload :: proc(r: ^Payload_Result) {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "9p ")
 	libodin.put_uint(&sink, u64(r.checks))
-	if r.failures == 0 && r.checks > 0 {
+	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " payload checks passed -- ")
 		libodin.put_uint(&sink, u64(SLOT))
 		libodin.put_str(&sink, " bytes per slot, ")

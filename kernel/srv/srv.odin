@@ -677,14 +677,7 @@ srv_dispatch :: proc(
 
 	#partial switch m in request^ {
 	case vectra9.Tversion:
-		if m.version != vectra9.VERSION {
-			reply^ = vectra9.Rversion{msize = m.msize, version = "unknown"}
-			return
-		}
-		reply^ = vectra9.Rversion {
-			msize   = min(m.msize, vectra9.MSIZE_DEFAULT),
-			version = vectra9.VERSION,
-		}
+		vectra9.version_reply(m, reply)
 
 	case vectra9.Tattach:
 		if !vfs.fidtab_bind(&t.fids, m.fid, ROOT_ID) {

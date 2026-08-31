@@ -39,9 +39,7 @@ import "vsys:vectra9"
 
 @(private = "file")
 Wire_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	served:        int, // Frames the scripted server answered
 	flushed:       int, // Requests the client gave up on
 	stale:         u64, // Unsolicited replies the wire drained
@@ -49,14 +47,7 @@ Wire_Result :: struct {
 
 @(private = "file")
 wcheck :: proc "contextless" (r: ^Wire_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 // The offset a client sends when it wants the server to sit on the request.
@@ -506,7 +497,7 @@ verify_wire :: proc() {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "wire ")
 	libodin.put_uint(&sink, u64(result.checks))
-	if result.failures == 0 && result.checks > 0 {
+	if libodin.passed(result.tally) {
 		libodin.put_str(&sink, " checks passed -- ")
 		libodin.put_uint(&sink, u64(result.served))
 		libodin.put_str(&sink, " frames answered by a thread the kernel cannot call, ")

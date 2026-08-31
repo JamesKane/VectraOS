@@ -843,15 +843,13 @@ verify_namespace :: proc() {
 	Every allocation the self-test makes is also released by it, so the only
 	correct answer is zero.
 	*/
-	before := live_objects(mem.heap_stats())
+	before := mem.live_objects(mem.heap_stats())
 	result := vfs.verify(scratch)
-	leaked := live_objects(mem.heap_stats()) - before
+	leaked := mem.live_objects(mem.heap_stats()) - before
 
-	ok := result.failures == 0 && result.checks > 0 && leaked == 0
+	ok := libodin.passed(result.tally) && leaked == 0
 
-	sink := begin(&klog)
-	libodin.put_str(&sink, "vfs ")
-	libodin.put_uint(&sink, u64(result.checks))
+	sink := report_begin("vfs", result.checks)
 	if ok {
 		libodin.put_str(&sink, " namespace checks passed -- union of ")
 		libodin.put_uint(&sink, u64(result.union_entries))
@@ -866,33 +864,7 @@ verify_namespace :: proc() {
 		return
 	}
 
-	libodin.put_str(&sink, " checks, ")
-	if result.failures > 0 {
-		libodin.put_uint(&sink, u64(result.failures))
-		libodin.put_str(&sink, " FAILED -- first: ")
-		libodin.put_str(&sink, result.first_failure)
-	} else {
-		libodin.put_str(&sink, "all passed but ")
-		libodin.put_int(&sink, i64(leaked))
-		libodin.put_str(&sink, " objects LEAKED")
-	}
-	emit(&klog, .Fault, &sink)
-}
-
-/*
-live_objects counts what the heap is currently handing out.
-
-Slab classes report what they carved and what is on their free lists, so the
-difference is what a caller still holds. Large blocks are counted whole -- they
-have no free list to be on.
-*/
-@(private = "file")
-live_objects :: proc "contextless" (s: mem.Heap_Stats) -> int {
-	live := s.large_blocks
-	for i in 0 ..< len(s.class_total) {
-		live += s.class_total[i] - s.class_free[i]
-	}
-	return live
+	report_failed(&sink, result.tally, leaked)
 }
 
 /*
@@ -1023,6 +995,53 @@ verify_preemption :: proc() {
 	})
 }
 
+/*
+report_begin opens a self-test line: the subsystem's name and its check count.
+
+Eight callers wrote these three statements, and the eight failure tails below
+them drifted into four spellings of one sentence, and one lost its colon. A
+reader goes down a boot log by eye, in a column. A line that words itself
+differently reads as a different kind of event.
+*/
+report_begin :: proc(label: string, checks: int) -> libodin.Sink {
+	sink := begin(&klog)
+	libodin.put_str(&sink, label)
+	libodin.put_byte(&sink, ' ')
+	libodin.put_uint(&sink, u64(checks))
+	return sink
+}
+
+/*
+report_failed writes the tail of a self-test line that did not pass, and emits
+it.
+
+Two failures, and they are not the same failure. A check that failed has a name
+worth printing, and `docs/TESTING.md` explains why it is the *first* name. A run
+where every check passed and the heap did not come back has no name at all.
+Saying `0 FAILED` about that would be worse than saying nothing.
+
+So the count decides which sentence this is. A run that did both gets the check
+and the leak, because the leak is usually what the failed check was about.
+*/
+report_failed :: proc(sink: ^libodin.Sink, t: libodin.Tally, leaked := 0) {
+	libodin.put_str(sink, " checks, ")
+	if t.failures > 0 {
+		libodin.put_uint(sink, u64(t.failures))
+		libodin.put_str(sink, " FAILED -- first: ")
+		libodin.put_str(sink, t.first_failure)
+		if leaked != 0 {
+			libodin.put_str(sink, " (leaked ")
+			libodin.put_int(sink, i64(leaked))
+			libodin.put_str(sink, ")")
+		}
+	} else {
+		libodin.put_str(sink, "all passed but ")
+		libodin.put_int(sink, i64(leaked))
+		libodin.put_str(sink, " objects LEAKED")
+	}
+	emit(&klog, .Fault, sink)
+}
+
 // report_sched prints one self-test result. The success wording differs
 // between the two halves, and the failure wording does not. That is the whole
 // reason this takes a procedure, rather than a format string there is no
@@ -1032,23 +1051,16 @@ report_sched :: proc(
 	label: string,
 	success: proc(sink: ^libodin.Sink, r: sched.Verify_Result),
 ) {
-	ok := r.failures == 0 && r.checks > 0
+	ok := libodin.passed(r.tally)
 
-	sink := begin(&klog)
-	libodin.put_str(&sink, label)
-	libodin.put_byte(&sink, ' ')
-	libodin.put_uint(&sink, u64(r.checks))
+	sink := report_begin(label, r.checks)
 	if ok {
 		success(&sink, r)
 		emit(&klog, .Ok, &sink)
 		return
 	}
 
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, r.tally)
 }
 
 /*
@@ -1100,11 +1112,9 @@ verify_devfs :: proc() {
 	defer delete(scratch)
 
 	result := devfs.verify(scratch)
-	ok := result.failures == 0 && result.checks > 0
+	ok := libodin.passed(result.tally)
 
-	sink := begin(&klog)
-	libodin.put_str(&sink, "devfs ")
-	libodin.put_uint(&sink, u64(result.checks))
+	sink := report_begin("devfs", result.checks)
 	if ok {
 		libodin.put_str(&sink, " device checks passed -- ")
 		libodin.put_uint(&sink, u64(result.listed))
@@ -1123,11 +1133,7 @@ verify_devfs :: proc() {
 		return
 	}
 
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(result.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, result.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, result.tally)
 }
 
 /*
@@ -1175,15 +1181,13 @@ verify_srv :: proc() {
 	}
 	defer delete(scratch)
 
-	before := live_objects(mem.heap_stats())
+	before := mem.live_objects(mem.heap_stats())
 	result := srv.verify(scratch)
-	leaked := live_objects(mem.heap_stats()) - before
+	leaked := mem.live_objects(mem.heap_stats()) - before
 
-	ok := result.failures == 0 && result.checks > 0 && leaked == 0
+	ok := libodin.passed(result.tally) && leaked == 0
 
-	sink := begin(&klog)
-	libodin.put_str(&sink, "srv ")
-	libodin.put_uint(&sink, u64(result.checks))
+	sink := report_begin("srv", result.checks)
 	if ok {
 		libodin.put_str(&sink, " service checks passed -- ")
 		libodin.put_uint(&sink, u64(result.posted))
@@ -1200,16 +1204,7 @@ verify_srv :: proc() {
 		return
 	}
 
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(result.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, result.first_failure)
-	if leaked != 0 {
-		libodin.put_str(&sink, " (leaked ")
-		libodin.put_int(&sink, i64(leaked))
-		libodin.put_str(&sink, ")")
-	}
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, result.tally, leaked)
 }
 
 /*
@@ -1249,15 +1244,13 @@ verify_pipe :: proc() {
 	// Threads earlier suites left dead are heap objects `pipe.verify`'s own
 	// reap would otherwise free inside the measured window.
 	sched.reap()
-	before := live_objects(mem.heap_stats())
+	before := mem.live_objects(mem.heap_stats())
 	result := pipe.verify(scratch)
-	leaked := live_objects(mem.heap_stats()) - before
+	leaked := mem.live_objects(mem.heap_stats()) - before
 
-	ok := result.failures == 0 && result.checks > 0 && leaked == 0
+	ok := libodin.passed(result.tally) && leaked == 0
 
-	sink := begin(&klog)
-	libodin.put_str(&sink, "pipe ")
-	libodin.put_uint(&sink, u64(result.checks))
+	sink := report_begin("pipe", result.checks)
 	if ok {
 		libodin.put_str(&sink, " checks passed -- ")
 		libodin.put_uint(&sink, u64(result.moved))
@@ -1268,16 +1261,7 @@ verify_pipe :: proc() {
 		return
 	}
 
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(result.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, result.first_failure)
-	if leaked != 0 {
-		libodin.put_str(&sink, " (leaked ")
-		libodin.put_int(&sink, i64(leaked))
-		libodin.put_str(&sink, ")")
-	}
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, result.tally, leaked)
 }
 
 /*
@@ -1360,11 +1344,9 @@ deliver a byte as though somebody typed it. See `kernel/drivers/kbd/verify.odin`
 */
 verify_keyboard :: proc() {
 	result := kbd.verify()
-	ok := result.failures == 0 && result.checks > 0
+	ok := libodin.passed(result.tally)
 
-	sink := begin(&klog)
-	libodin.put_str(&sink, "kbd ")
-	libodin.put_uint(&sink, u64(result.checks))
+	sink := report_begin("kbd", result.checks)
 	if ok {
 		s := kbd.stats()
 		libodin.put_str(&sink, " keyboard checks passed -- ")
@@ -1376,11 +1358,7 @@ verify_keyboard :: proc() {
 		return
 	}
 
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(result.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, result.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, result.tally)
 }
 
 /*
@@ -1461,11 +1439,9 @@ something running to enforce it against.
 */
 verify_user :: proc() {
 	result := user.verify(console_column)
-	ok := result.failures == 0 && result.checks > 0
+	ok := libodin.passed(result.tally)
 
-	sink := begin(&klog)
-	libodin.put_str(&sink, "user ")
-	libodin.put_uint(&sink, u64(result.checks))
+	sink := report_begin("user", result.checks)
 	if ok {
 		libodin.put_str(&sink, " userland checks passed -- ")
 		libodin.put_uint(&sink, u64(result.programs))
@@ -1485,14 +1461,5 @@ verify_user :: proc() {
 		return
 	}
 
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(result.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, result.first_failure)
-	if result.leaked != 0 {
-		libodin.put_str(&sink, " (leaked ")
-		libodin.put_int(&sink, i64(result.leaked))
-		libodin.put_str(&sink, ")")
-	}
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, result.tally, result.leaked)
 }

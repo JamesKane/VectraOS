@@ -22,6 +22,7 @@ entitled to hoist the load, and spin forever.
 */
 package sched
 
+import "vsys:libodin"
 import "base:intrinsics"
 
 WORKER_COUNT :: 3
@@ -39,9 +40,7 @@ MAX_WAIT_YIELDS :: 4096
 PREEMPT_TICKS :: 120
 
 Verify_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 
 	// Reported at boot, not asserted on: what the run actually did.
 	switches:      u64,
@@ -54,14 +53,7 @@ Verify_Result :: struct {
 
 @(private = "file")
 check :: proc(r: ^Verify_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 // -- Shared state ------------------------------------------------------------

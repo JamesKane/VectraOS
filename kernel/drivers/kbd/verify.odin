@@ -20,6 +20,7 @@ grows a character nobody typed.
 */
 package kbd
 
+import "vsys:libodin"
 import "base:intrinsics"
 
 import "kernel:arch"
@@ -27,9 +28,7 @@ import "kernel:sched"
 import "kernel:sync"
 
 Verify_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	translated:    int, // Scancodes run through the state machine
 	injected:      int, // Bytes the controller delivered as though typed
 	vector:        int, // What IRQ 1 is routed to
@@ -37,14 +36,7 @@ Verify_Result :: struct {
 
 @(private = "file")
 check :: proc "contextless" (r: ^Verify_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 // Scancode set 1 make codes this test names rather than spells as hex.

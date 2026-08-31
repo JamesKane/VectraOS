@@ -21,13 +21,12 @@ rather than a lookup. The fifth is what a directory that mutates costs, and
 */
 package srv
 
+import "vsys:libodin"
 import "kernel:vfs"
 import "vsys:vectra9"
 
 Verify_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	posted:        int, // Services this test published
 	reserved:      int, // Names it created and never completed
 	listed:        int, // Names it read back out of /srv
@@ -37,14 +36,7 @@ Verify_Result :: struct {
 
 @(private = "file")
 check :: proc "contextless" (r: ^Verify_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 // -- Fixtures ----------------------------------------------------------------

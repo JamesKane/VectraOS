@@ -416,3 +416,35 @@ wait_on :: proc "contextless" (
 		timer_remove(&node)
 	}
 }
+
+/*
+await polls `cond` until it comes true, up to a bound in ticks.
+
+Six callers wrote this loop before it lived here, and the argument for each of
+them is in `docs/TESTING.md`. **A self-test may never do the blocking thing on
+the thread that reports.** It spawns the worker, watches it with a bound, and
+treats the bound running out as the failure it is. What that buys is a failure
+that names itself, in the place hardest to attach a debugger to.
+
+A poll rather than a `sleep_for`, and the difference is the point. `sleep_for`
+parks on a rendezvous that the thing being watched has to know about and has to
+wake. `await` watches something that promised nothing, which is what an observer
+is for.
+
+Returns false when the bound runs out. That is a failure the caller has to have
+an opinion about, exactly as `sleep_for`'s is.
+
+**One caller does not use this, and the reason is worth knowing.**
+`kernel/drivers/kbd/verify.odin` counts yields instead, because the failure it
+watches for is the failure that stops the clock this counts in. See
+`docs/KBD.md`, and `docs/TESTING.md` on bounds a failure can destroy.
+*/
+await :: proc "contextless" (cond: Condition, arg: rawptr, patience: int) -> bool {
+	for _ in 0 ..< patience {
+		if cond(arg) {
+			return true
+		}
+		delay(1)
+	}
+	return cond(arg)
+}

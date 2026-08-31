@@ -101,8 +101,16 @@ threads wait, and it is Plan 9's `Rendez` down to the name.
 sync.sleep(&r, cond, arg)               // until cond is true
 sync.sleep_for(&r, cond, arg, ticks)    // ...or the deadline; reports which
 sync.delay(ticks)                       // give the core up and come back
+sync.await(cond, arg, patience)         // poll for something that promised nothing
 sync.wakeup(&r) / sync.wakeup_all(&r)   // safe from an interrupt handler
 ```
+
+**`await` is the odd one, and the difference is worth naming.** Every other call
+above parks on a rendezvous that whoever makes the condition true has to know
+about and has to wake. `await` polls, because it watches something that promised
+nothing. Five self-tests wrote that loop before it lived here. `docs/TESTING.md`
+has the rule behind all five: a self-test may never do the blocking thing on the
+thread that reports.
 
 **The condition is a procedure, and that is the whole trick.** The obvious API
 is `put me on this queue and stop me`. It has a race the caller cannot fix from

@@ -283,9 +283,7 @@ patient_client :: proc "contextless" (arg: rawptr) #no_bounds_check {
 
 @(private = "file")
 Flush_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	flushes:       u64,
 	aborted:       u64,
 	stale:         u64,
@@ -295,14 +293,7 @@ Flush_Result :: struct {
 
 @(private = "file")
 fcheck :: proc "contextless" (r: ^Flush_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 @(private = "file")
@@ -681,7 +672,7 @@ report_flush :: proc(r: ^Flush_Result) {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "9p ")
 	libodin.put_uint(&sink, u64(r.checks))
-	if r.failures == 0 && r.checks > 0 {
+	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " Tflush checks passed -- ")
 		libodin.put_uint(&sink, r.requests)
 		libodin.put_str(&sink, " requests, ")

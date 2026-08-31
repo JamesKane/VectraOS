@@ -726,16 +726,7 @@ devfs_handler :: proc "contextless" (
 
 	#partial switch m in request^ {
 	case vectra9.Tversion:
-		// A refused dialect gets a different version string, never an Rlerror.
-		// That is what a client checks.
-		if m.version != vectra9.VERSION {
-			reply^ = vectra9.Rversion{msize = m.msize, version = "unknown"}
-			return
-		}
-		reply^ = vectra9.Rversion {
-			msize   = min(m.msize, vectra9.MSIZE_DEFAULT),
-			version = vectra9.VERSION,
-		}
+		vectra9.version_reply(m, reply)
 
 	case vectra9.Tattach:
 		if !bind_fid(t, m.fid, 0) {

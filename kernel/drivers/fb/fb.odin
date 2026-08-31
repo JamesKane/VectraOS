@@ -213,16 +213,6 @@ gradient_v :: proc "contextless" (s: ^Surface, r: Rect, top, bottom: RGB) {
 	}
 }
 
-gradient_h :: proc "contextless" (s: ^Surface, r: Rect, left, right: RGB) {
-	if r.w <= 0 {
-		return
-	}
-	for col in 0 ..< r.w {
-		t := r.w == 1 ? u8(0) : u8(col * 255 / (r.w - 1))
-		vline(s, r.x + col, r.y, r.h, mix(left, right, t))
-	}
-}
-
 // -- Bevels ------------------------------------------------------------------
 
 Bevel :: enum {

@@ -365,9 +365,7 @@ count_entries :: proc "contextless" (payload: []u8) -> int #no_bounds_check {
 
 @(private = "file")
 Mnt_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	reads:         int,
 	listings:      int,
 	msize:         u32,
@@ -377,26 +375,9 @@ Mnt_Result :: struct {
 
 @(private = "file")
 mcheck :: proc "contextless" (r: ^Mnt_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
-@(private = "file")
-mnt_watch :: proc "contextless" (cond: sync.Condition, arg: rawptr) -> bool {
-	for _ in 0 ..< MNT_PATIENCE {
-		if cond(arg) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return false
-}
 
 @(private = "file")
 one_blocked :: proc "contextless" (arg: rawptr) -> bool {
@@ -631,7 +612,7 @@ run_readers :: proc(r: ^Mnt_Result) #no_bounds_check {
 	if !mcheck(r, spawned == MNT_READERS, "a reader for every path") {
 		return
 	}
-	if !mcheck(r, mnt_watch(all_read, nil), "and every one of them came back") {
+	if !mcheck(r, sync.await(all_read, nil, MNT_PATIENCE), "and every one of them came back") {
 		return
 	}
 
@@ -691,13 +672,13 @@ verify_give_up :: proc(r: ^Mnt_Result) #no_bounds_check {
 		return
 	}
 
-	came_back := mnt_watch(give_up_returned, nil)
+	came_back := sync.await(give_up_returned, nil, MNT_PATIENCE)
 	if !mcheck(r, came_back, "a read that outlives its deadline comes back at all") {
 		// It did not, so it is still inside the server. Let it finish, or the
 		// teardown below pulls the tree out from under a live thread.
 		intrinsics.volatile_store(&slow.open, true)
 		sync.wakeup_all(&slow.gate)
-		_ = mnt_watch(give_up_returned, nil)
+		_ = sync.await(give_up_returned, nil, MNT_PATIENCE)
 		return
 	}
 	r.gave_up = give_up.ticks
@@ -710,7 +691,7 @@ verify_give_up :: proc(r: ^Mnt_Result) #no_bounds_check {
 		intrinsics.volatile_load(&slow.aborts) > aborts_before,
 		"and the server was told which request to abandon",
 	)
-	mcheck(r, mnt_watch(none_blocked, nil), "which left no handler parked behind it")
+	mcheck(r, sync.await(none_blocked, nil, MNT_PATIENCE), "which left no handler parked behind it")
 
 	// The connection is a connection afterwards. A give-up that poisoned the
 	// session would show up here rather than at the next boot.
@@ -727,7 +708,7 @@ report_vfs_mnt :: proc(r: ^Mnt_Result) {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "vfs ")
 	libodin.put_uint(&sink, u64(r.checks))
-	if r.failures == 0 && r.checks > 0 {
+	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " transport checks passed -- ")
 		libodin.put_uint(&sink, u64(r.reads))
 		libodin.put_str(&sink, " reads and ")

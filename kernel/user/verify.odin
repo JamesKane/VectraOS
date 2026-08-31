@@ -32,6 +32,7 @@ never crosses:
 */
 package user
 
+import "vsys:libodin"
 import "base:intrinsics"
 import "base:runtime"
 
@@ -121,9 +122,7 @@ does it. This package has no logger and should not grow one: it is the layer a
 fault handler runs in.
 */
 Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	programs:      int,
 	spawned:       int, // Of those, started by another process
 	traps:         u64, // Returns from ring 3 while the checks ran
@@ -136,14 +135,7 @@ Result :: struct {
 
 @(private = "file")
 check :: proc "contextless" (r: ^Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 /*
@@ -245,7 +237,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	can go negative is not measuring what it says.
 	*/
 	sched.reap()
-	before_heap := live_objects(mem.heap_stats())
+	before_heap := mem.live_objects(mem.heap_stats())
 	before_tables := mem.space_stats()
 	before_doubles := mem.pmm_stats().double_frees
 	before_traps := arch.user_trap_count()
@@ -471,7 +463,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	`sched.reap` runs above it, because a dead thread's stack is a heap object
 	too and nothing gives it back until something asks.
 	*/
-	r.leaked = live_objects(mem.heap_stats()) - before_heap - r.pinned
+	r.leaked = mem.live_objects(mem.heap_stats()) - before_heap - r.pinned
 	check(&r, r.leaked == 0, "and every namespace and open file beyond the wire's deliberate pin")
 
 	after_tables := mem.space_stats()
@@ -587,14 +579,6 @@ the same split `kernel/devfs/verify.odin` makes for the same reason.
 @(private = "file")
 MESSAGE :: "-- a program in ring 3 wrote this line"
 
-// The message as bytes, which is what a write takes. A string constant has no
-// address until something gives it one.
-@(private = "file")
-message_bytes :: proc "contextless" () -> []u8 {
-	text := MESSAGE
-	return raw_data(text)[:len(text)]
-}
-
 /*
 verify_syscalls runs the two programs that ask the kernel for something.
 
@@ -619,7 +603,7 @@ verify_syscalls :: proc(r: ^Result, column: proc "contextless" () -> int, held: 
 		return
 	}
 	r.programs += 1
-	check(r, set_bytes(p, MESSAGE_OFFSET, message_bytes()), "with a line in its data page")
+	check(r, set_bytes(p, MESSAGE_OFFSET, bytes_of(MESSAGE)), "with a line in its data page")
 
 	before := column()
 	// Staged, and only now a thread. A launch before the staging is a race
@@ -1597,7 +1581,7 @@ verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int
 	count0 := srv.count()
 
 	sched.reap()
-	pin_before := live_objects(mem.heap_stats())
+	pin_before := mem.live_objects(mem.heap_stats())
 
 	p, serr := spawn_path(nil, "/bin/niner", SPAWN_NS_COPY)
 	if !check(r, serr == vfs.OK && p != nil, "a process is started that will answer 9P") {
@@ -1703,7 +1687,7 @@ verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int
 	*/
 	for _ in 0 ..< PATIENCE {
 		sched.reap()
-		r.pinned = live_objects(mem.heap_stats()) - pin_before
+		r.pinned = mem.live_objects(mem.heap_stats()) - pin_before
 		if r.pinned == 0 {
 			break
 		}
@@ -1724,6 +1708,42 @@ RAMFS_HELLO :: "these bytes live in a program's own segments\n"
 
 @(private = "file")
 RAMFS_NOTE :: "kept in a ring 3 bss page"
+
+/*
+image_header reads the first sixteen bytes of a program in `/bin` and checks
+what they say.
+
+Two sections wrote this out. The magic is the same question both times, and the
+entry point is the answer only one of them wants.
+
+Returns false when the file is missing or the header is wrong, which is a
+caller with nothing left to test. Every caller returns on it.
+*/
+@(private = "file")
+image_header :: proc(r: ^Result, path: string, what: string) -> (entry: uintptr, ok: bool) {
+	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
+	if err != vfs.OK {
+		check(r, false, what)
+		return 0, false
+	}
+	defer vfs.chan_close(c)
+
+	header: [16]u8
+	n, _ := vfs.chan_read(c, 0, header[:])
+	if !check(r, n == 16, what) {
+		return 0, false
+	}
+
+	word :: proc "contextless" (b: []u8) -> u64 {
+		v := u64(0)
+		for i in 0 ..< 8 {
+			v |= u64(b[i]) << (8 * u64(i))
+		}
+		return v
+	}
+	check(r, word(header[:]) == IMAGE2_MAGIC, "and its header says VECTRA02")
+	return uintptr(word(header[8:])), true
+}
 
 /*
 verify_runtime is the milestone: a compiled program, served from `/bin`,
@@ -1799,27 +1819,12 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 	verify_image2(r)
 
 	sched.reap()
-	pin_before := live_objects(mem.heap_stats())
+	pin_before := mem.live_objects(mem.heap_stats())
 
 	// -- The image is a file, and says which format it is ---------------------
 
-	header: [16]u8
-	image_entry := uintptr(0)
-	if bc, berr := vfs.open_path(vfs.boot_namespace, "/bin/ramfs", vfs.O_RDONLY); berr == vfs.OK {
-		n, _ := vfs.chan_read(bc, 0, header[:])
-		check(r, n == 16, "/bin serves the compiled image")
-		word :: proc "contextless" (b: []u8) -> u64 {
-			v := u64(0)
-			for i in 0 ..< 8 {
-				v |= u64(b[i]) << (8 * u64(i))
-			}
-			return v
-		}
-		check(r, word(header[:]) == IMAGE2_MAGIC, "and its header says VECTRA02")
-		image_entry = uintptr(word(header[8:]))
-		vfs.chan_close(bc)
-	} else {
-		check(r, false, "/bin serves the compiled image")
+	image_entry, image_ok := image_header(r, "/bin/ramfs", "/bin serves the compiled image")
+	if !image_ok {
 		return
 	}
 
@@ -2006,7 +2011,7 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 	pinned := 0
 	for _ in 0 ..< PATIENCE {
 		sched.reap()
-		pinned = live_objects(mem.heap_stats()) - pin_before
+		pinned = mem.live_objects(mem.heap_stats()) - pin_before
 		if pinned == 0 {
 			break
 		}
@@ -2553,7 +2558,7 @@ drain_pinned :: proc(r: ^Result, pin_before: int, what: string) {
 	for _ in 0 ..< PATIENCE {
 		reap_orphans()
 		sched.reap()
-		pinned = live_objects(mem.heap_stats()) - pin_before
+		pinned = mem.live_objects(mem.heap_stats()) - pin_before
 		if pinned == 0 {
 			break
 		}
@@ -2625,25 +2630,12 @@ teardown that ended some other way.
 verify_consrv :: proc(r: ^Result) {
 	count0 := srv.count()
 	sched.reap()
-	pin_before := live_objects(mem.heap_stats())
+	pin_before := mem.live_objects(mem.heap_stats())
 
 	// -- The image is served, and is the second format ------------------------
 
-	header: [16]u8
-	if bc, berr := vfs.open_path(vfs.boot_namespace, "/bin/consrv", vfs.O_RDONLY); berr == vfs.OK {
-		n, _ := vfs.chan_read(bc, 0, header[:])
-		check(r, n == 16, "/bin serves the console server's image")
-		word :: proc "contextless" (b: []u8) -> u64 {
-			v := u64(0)
-			for i in 0 ..< 8 {
-				v |= u64(b[i]) << (8 * u64(i))
-			}
-			return v
-		}
-		check(r, word(header[:]) == IMAGE2_MAGIC, "and its header says VECTRA02")
-		vfs.chan_close(bc)
-	} else {
-		check(r, false, "/bin serves the console server's image")
+	if _, image_ok := image_header(r, "/bin/consrv", "/bin serves the console server's image");
+	   !image_ok {
 		return
 	}
 
@@ -2799,7 +2791,7 @@ machine makes -- shift included, since one of them is shifted.
 verify_kbdfs :: proc(r: ^Result) {
 	count0 := srv.count()
 	sched.reap()
-	pin_before := live_objects(mem.heap_stats())
+	pin_before := mem.live_objects(mem.heap_stats())
 
 	p, serr := spawn_path(nil, "/bin/kbdfs", SPAWN_NS_COPY)
 	if !check(r, serr == vfs.OK && p != nil, "the loader starts the keyboard translator") {
@@ -2931,7 +2923,7 @@ verify_eiafs :: proc(r: ^Result) {
 
 	count0 := srv.count()
 	sched.reap()
-	pin_before := live_objects(mem.heap_stats())
+	pin_before := mem.live_objects(mem.heap_stats())
 
 	p, serr := spawn_path(nil, "/bin/eiafs", SPAWN_NS_COPY)
 	if !check(r, serr == vfs.OK && p != nil, "the loader starts the serial server") {
@@ -3072,7 +3064,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 
 	count0 := srv.count()
 	sched.reap()
-	pin_before := live_objects(mem.heap_stats())
+	pin_before := mem.live_objects(mem.heap_stats())
 
 	p, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
 	if !check(r, serr == vfs.OK && p != nil, "the loader starts the draw server") {
@@ -3294,7 +3286,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 
 	count0 := srv.count()
 	sched.reap()
-	pin_before := live_objects(mem.heap_stats())
+	pin_before := mem.live_objects(mem.heap_stats())
 
 	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
 	if !check(r, serr == vfs.OK && ps != nil, "the loader starts the draw server") {
@@ -3438,14 +3430,3 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	drain_pinned(r, pin_before, "and the first app's wire comes back whole")
 }
 
-// live_objects counts what the heap is holding. The same arithmetic
-// `kernel/main.odin` does for the namespace and service self-tests, repeated
-// here because this package cannot reach into that one.
-@(private = "file")
-live_objects :: proc "contextless" (s: mem.Heap_Stats) -> int {
-	live := s.large_blocks
-	for i in 0 ..< len(s.class_total) {
-		live += s.class_total[i] - s.class_free[i]
-	}
-	return live
-}

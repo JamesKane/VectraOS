@@ -417,3 +417,23 @@ allocator_proc :: proc(
 	}
 	return nil, .Mode_Not_Implemented
 }
+
+/*
+live_objects counts what the heap is currently handing out.
+
+Slab classes report what they carved and what is on their free lists, so the
+difference is what a caller still holds. Large blocks are counted whole,
+because they have no free list to be on.
+
+**Here rather than in a self-test, because three of them wanted it.** A frame
+count says nothing about a chan, a namespace or a thread record. Every bracket
+that has to notice one of those asks this instead. It is arithmetic over a
+struct this package owns, which is what makes this the one place it can live.
+*/
+live_objects :: proc "contextless" (s: Heap_Stats) -> int {
+	live := s.large_blocks
+	for i in 0 ..< len(s.class_total) {
+		live += s.class_total[i] - s.class_free[i]
+	}
+	return live
+}

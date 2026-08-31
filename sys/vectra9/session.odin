@@ -277,6 +277,30 @@ negotiate :: proc "contextless" (s: ^Session, msize: u32 = MSIZE_DEFAULT) -> Err
 // -- In-process transport ----------------------------------------------------
 
 /*
+version_reply answers a `Tversion` the way every server in this tree answers it.
+
+The server half of `negotiate` above, and the two belong together because they
+are one exchange. Eight servers wrote this out, three in the kernel and five in
+ring 3. The wording of a refusal is the part that must not drift.
+
+**A refused dialect is a different version string, never an `Rlerror`.** That is
+what a client checks, and it is what lets a client that speaks two versions try
+the other one. An error reply would end the session over something that is not
+an error.
+
+`msize` is the server's own ceiling, and the answer is the smaller of that and
+what the client offered. A server that answered with more than it can hold
+would be inviting a frame it has nowhere to put.
+*/
+version_reply :: proc "contextless" (m: Tversion, reply: ^Msg, msize: u32 = MSIZE_DEFAULT) {
+	if m.version != VERSION {
+		reply^ = Rversion{msize = m.msize, version = "unknown"}
+		return
+	}
+	reply^ = Rversion{msize = min(m.msize, msize), version = VERSION}
+}
+
+/*
 The fast path: no encoding at all.
 
 The request struct is handed to the handler by pointer and the reply comes back

@@ -19,6 +19,7 @@ shape `kernel/devfs` uses for a console read.
 */
 package pipe
 
+import "vsys:libodin"
 import "base:intrinsics"
 
 import "kernel:sched"
@@ -26,23 +27,14 @@ import "kernel:sync"
 import "kernel:vfs"
 
 Verify_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	moved:         int, // Bytes this test pushed through pipes
 	parked:        int, // Helper threads observed parked before their wake
 }
 
 @(private = "file")
 check :: proc "contextless" (r: ^Verify_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 // How long a bounded wait spins before calling the condition failed. Fifty

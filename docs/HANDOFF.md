@@ -838,7 +838,10 @@ kernel/
 sys/
   abi/abi.odin          The system call ABI: numbers, flags and packings,
                         included by both sides of the door
-  libodin/format.odin   Allocation-free formatting (Sink)
+  libodin/
+    format.odin         Allocation-free formatting (Sink)
+    tally.odin          Checks counted and the first failure kept, which
+                        seventeen self-tests had each written out
   vectra9/
     proto.odin          Message kinds, Qid, the 57 bodies, the Msg union
     codec.odin          Encode/decode over a bounds-checked cursor; dirents
@@ -855,6 +858,9 @@ sys/
                         calls, around a vectra9.Handler; serve_mux, the
                         concurrent loop with a worker per parked request;
                         and Spin, the first ring 3 lock
+    fid.odin            The fid table five servers had each written, with a
+                        lock all of them now have, plus the walk, the
+                        attach and the EBADF guard that went with it
     link_user.ld        The layout of a ring 3 program, aligned so every
                         change of permission gets its own page
   libdraw/draw.odin     The draw protocol's encoding, owned once: the six

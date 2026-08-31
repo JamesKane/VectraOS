@@ -49,15 +49,9 @@ ring: libuser.Ring
 // touched by the child alone.
 chunk: [64]u8
 
-MAX_FIDS :: 16
 
-Fid_Slot :: struct {
-	fid:  vectra9.Fid,
-	node: i32,
-	used: bool,
-}
 
-fids: [MAX_FIDS]Fid_Slot
+fids: libuser.Fid_Table
 
 FRAME :: 1200
 frame_in: [FRAME]u8
@@ -151,7 +145,7 @@ blocks :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
 	_ = state
 	#partial switch m in request^ {
 	case vectra9.Tread:
-		return fid_lookup(m.fid) == NODE_KBD
+		return libuser.fid_lookup(&fids, m.fid) == NODE_KBD
 	}
 	return false
 }
@@ -295,47 +289,6 @@ step :: proc "contextless" (code: u8) -> (b: u8, produced: bool) #no_bounds_chec
 	return b, true
 }
 
-// -- Fids, the same sixteen slots consrv keeps, under the same lock -----------
-
-fid_lookup :: proc "contextless" (fid: vectra9.Fid) -> i32 #no_bounds_check {
-	libuser.lock(&state_lock)
-	defer libuser.unlock(&state_lock)
-	for i in 0 ..< MAX_FIDS {
-		if fids[i].used && fids[i].fid == fid {
-			return fids[i].node
-		}
-	}
-	return -1
-}
-
-fid_bind :: proc "contextless" (fid: vectra9.Fid, node: i32) -> bool #no_bounds_check {
-	libuser.lock(&state_lock)
-	defer libuser.unlock(&state_lock)
-	for i in 0 ..< MAX_FIDS {
-		if fids[i].used && fids[i].fid == fid {
-			fids[i].node = node
-			return true
-		}
-	}
-	for i in 0 ..< MAX_FIDS {
-		if !fids[i].used {
-			fids[i] = Fid_Slot{fid = fid, node = node, used = true}
-			return true
-		}
-	}
-	return false
-}
-
-fid_release :: proc "contextless" (fid: vectra9.Fid) #no_bounds_check {
-	libuser.lock(&state_lock)
-	defer libuser.unlock(&state_lock)
-	for i in 0 ..< MAX_FIDS {
-		if fids[i].used && fids[i].fid == fid {
-			fids[i] = Fid_Slot{}
-			return
-		}
-	}
-}
 
 // -- The tree ----------------------------------------------------------------
 
@@ -374,42 +327,30 @@ handler :: proc "contextless" (
 	_ = s
 	_ = tag
 
-	if vectra9.creates(vectra9.kind(request^)) {
-		reply^ = vectra9.error_reply(vectra9.EPERM)
+	if !libuser.default_reply(request, reply) {
 		return
 	}
-	reply^ = vectra9.error_reply(vectra9.EOPNOTSUPP)
 
 	#partial switch m in request^ {
 	case vectra9.Tversion:
-		if m.version != vectra9.VERSION {
-			reply^ = vectra9.Rversion{msize = m.msize, version = "unknown"}
-			return
-		}
-		reply^ = vectra9.Rversion{msize = min(m.msize, FRAME), version = vectra9.VERSION}
+		vectra9.version_reply(m, reply, FRAME)
 
 	case vectra9.Tattach:
-		if !fid_bind(m.fid, NODE_ROOT) {
-			reply^ = vectra9.error_reply(vectra9.ENFILE)
-			return
-		}
-		reply^ = vectra9.Rattach{qid = qid_of(NODE_ROOT)}
+		libuser.attach(&fids, m, reply, NODE_ROOT, qid_of)
 
 	case vectra9.Twalk:
-		walk(m, reply)
+		libuser.walk(&fids, m, reply, step_name, qid_of)
 
 	case vectra9.Tlopen:
-		node := fid_lookup(m.fid)
-		if node < 0 {
-			reply^ = vectra9.error_reply(vectra9.EBADF)
+		node, ok := libuser.node_of(&fids, m.fid, reply)
+		if !ok {
 			return
 		}
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
 
 	case vectra9.Tread:
-		node := fid_lookup(m.fid)
-		if node < 0 {
-			reply^ = vectra9.error_reply(vectra9.EBADF)
+		node, ok := libuser.node_of(&fids, m.fid, reply)
+		if !ok {
 			return
 		}
 		if node == NODE_ROOT {
@@ -447,9 +388,8 @@ handler :: proc "contextless" (
 		readdir(m, reply, buf)
 
 	case vectra9.Tgetattr:
-		node := fid_lookup(m.fid)
-		if node < 0 {
-			reply^ = vectra9.error_reply(vectra9.EBADF)
+		node, ok := libuser.node_of(&fids, m.fid, reply)
+		if !ok {
 			return
 		}
 		dir := node == NODE_ROOT
@@ -463,11 +403,11 @@ handler :: proc "contextless" (
 		}
 
 	case vectra9.Tclunk:
-		fid_release(m.fid)
+		libuser.fid_release(&fids, m.fid)
 		reply^ = vectra9.Rclunk{}
 
 	case vectra9.Tremove:
-		fid_release(m.fid)
+		libuser.fid_release(&fids, m.fid)
 		reply^ = vectra9.Rremove{}
 
 	case vectra9.Tflush:
@@ -476,42 +416,9 @@ handler :: proc "contextless" (
 	}
 }
 
-walk :: proc "contextless" (m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
-	from := fid_lookup(m.fid)
-	if from < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-
-	answer: vectra9.Rwalk
-	cur := from
-	for i in 0 ..< m.count {
-		next := step_name(cur, m.names[i])
-		if next < 0 {
-			if i == 0 {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			break
-		}
-		cur = next
-		answer.qids[answer.count] = qid_of(cur)
-		answer.count += 1
-	}
-
-	if answer.count == m.count {
-		if !fid_bind(m.newfid, cur) {
-			reply^ = vectra9.error_reply(vectra9.ENFILE)
-			return
-		}
-	}
-	reply^ = answer
-}
-
 readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
-	node := fid_lookup(m.fid)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
+	node, ok := libuser.node_of(&fids, m.fid, reply)
+	if !ok {
 		return
 	}
 	if node != NODE_ROOT {

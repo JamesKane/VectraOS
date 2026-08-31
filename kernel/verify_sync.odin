@@ -144,9 +144,7 @@ contend_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
 
 @(private = "file")
 Sync_Result :: struct {
-	checks:        int,
-	failures:      int,
-	first_failure: string,
+	using tally:   libodin.Tally,
 	takes:         int,
 	slept:         u64,
 	handoffs:      u64,
@@ -155,14 +153,7 @@ Sync_Result :: struct {
 
 @(private = "file")
 scheck :: proc "contextless" (r: ^Sync_Result, ok: bool, what: string) -> bool {
-	r.checks += 1
-	if !ok {
-		r.failures += 1
-		if r.first_failure == "" {
-			r.first_failure = what
-		}
-	}
-	return ok
+	return libodin.tally(&r.tally, ok, what)
 }
 
 /*
@@ -276,7 +267,7 @@ report_sleep_lock :: proc(r: ^Sync_Result) {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "sync ")
 	libodin.put_uint(&sink, u64(r.checks))
-	if r.failures == 0 && r.checks > 0 {
+	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " sleeping lock checks passed -- ")
 		libodin.put_uint(&sink, u64(r.takes))
 		libodin.put_str(&sink, " acquisitions, ")
