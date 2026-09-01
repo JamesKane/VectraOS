@@ -104,6 +104,7 @@ SYS_NOTED :: abi.SYS_NOTED
 SYS_EXEC :: abi.SYS_EXEC
 SYS_SEGATTACH :: abi.SYS_SEGATTACH
 SYS_SEGALLOC :: abi.SYS_SEGALLOC
+SYS_SEGBRK :: abi.SYS_SEGBRK
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -327,6 +328,8 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = sys_segattach(int(a0))
 	case SYS_SEGALLOC:
 		result = sys_segalloc(a0)
+	case SYS_SEGBRK:
+		result = sys_segbrk(uintptr(a0), uintptr(a1))
 
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
@@ -974,6 +977,8 @@ sys_segattach :: proc(fd: int) -> i64 {
 	return i64(va)
 }
 
+
+
 /*
 The most memory one `segalloc` may ask for, and why there is a bound at all.
 
@@ -1045,6 +1050,238 @@ sys_segalloc :: proc(bytes: u64) -> i64 {
 		return -i64(vectra9.ENOMEM)
 	}
 	return i64(va)
+}
+
+/*
+sys_segbrk moves the top of a run a process already holds, which is Plan 9's
+`segbrk` and the call `docs/USER.md` named with the other two.
+
+**`syssegbrk` refuses every segment type but two, by name.** `SG_TEXT`,
+`SG_DATA`, `SG_STACK`, `SG_PHYSICAL`, `SG_FIXED` and `SG_STICKY` all answer
+`Ebadarg`. Only `SG_BSS` and `SG_SHARED` are asked. So Plan 9 says out loud
+that in-place resize is a question only anonymous memory may be asked, and this
+answers for `.Anon` alone. A `.Device` run is the framebuffer, whose extent is
+the hardware's. `.Text`, `.Data` and `.Stack` are an image's shape.
+
+`top` of zero answers the run's base rather than moving anything, which is
+`ibrk`'s query form -- a caller that knows an address inside a run can ask
+where the run starts.
+
+**A shared run may not shrink**, which is `ibrk`'s `Einuse`. Another process
+maps the same frames, and the ones about to go back to the allocator may
+already be somewhere in that process's kernel. Plan 9 refuses on `s->ref > 1`
+and so does this.
+
+**Growing copies, and Plan 9 does not have to.** Its segments are a page map
+that a fault fills in, so `ibrk` extends the map and nothing moves. A `.Anon`
+run here is one physically contiguous block described by a base and an extent,
+which is what makes `segment_frame` arithmetic rather than a lookup. Growing
+one means a bigger block, the old contents copied into it, and the old block
+released -- the virtual address a client holds does not move, which is the part
+that matters to it.
+
+The overlap check is `ibrk`'s: a grow that would run into another of this
+process's segments is refused rather than allowed to collide. In practice that
+means the last run may grow and an earlier one may not, which is the same
+answer Plan 9 gives for the same reason.
+*/
+sys_segbrk :: proc(addr: uintptr, top: uintptr) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ESRCH)
+	}
+
+	seg := proc_segment_at(p, addr)
+	if seg == nil || seg.kind != .Anon {
+		return -i64(vectra9.EINVAL)
+	}
+	if top == 0 {
+		return i64(seg.va)
+	}
+
+	page := uintptr(arch.PAGE_SIZE)
+	newtop := (top + page - 1) &~ (page - 1)
+	if newtop <= seg.va {
+		return -i64(vectra9.EINVAL)
+	}
+	want := int((newtop - seg.va) / page)
+	if want == seg.pages {
+		return 0
+	}
+	// The bound `segalloc` uses, because it is the same question. A run is a
+	// base and an extent and never touches a frame list, so
+	// `MAX_PROGRAM_FRAMES` is not what caps one -- asking it here refused
+	// every window this call exists to grow.
+	if u64(want) * u64(arch.PAGE_SIZE) > SEGALLOC_MAX {
+		return -i64(vectra9.ENOMEM)
+	}
+	if want < seg.pages {
+		/*
+		A shared run may not shrink, which is `ibrk`'s `Einuse`.
+
+		Another process maps the same frames, and the ones about to go back to
+		the allocator may already have been handed to that process's kernel and
+		be past the point where an address is checked. Plan 9 refuses on
+		`s->ref > 1` and so does this.
+
+		Growing has no such rule, here or there: it takes pages nobody had.
+		*/
+		if seg.refs > 1 {
+			return -i64(vectra9.EBUSY)
+		}
+		return segment_shrink(p, seg, want)
+	}
+	if newtop >= mem.USER_MAX || proc_span_taken(p, seg, newtop) {
+		return -i64(vectra9.ENOMEM)
+	}
+	return segment_grow(p, seg, want, newtop)
+}
+
+/*
+segment_shrink gives the tail of a run back and takes it out of the process's
+half, in that order's opposite.
+
+**Unreachable before freed, always.** The mapping goes first, so there is no
+instant where ring 3 can reach a frame the allocator has handed to somebody
+else. `mem.unmap_user` is the call that made this possible and did not exist
+until `segbrk` needed it.
+
+`mem.free_pages` releases frame by frame, so a tail is as freeable as a whole
+run. The base does not move, which is what lets the client keep the address it
+was given.
+*/
+segment_shrink :: proc(p: ^Process, s: ^Segment, want: int) -> i64 {
+	page := uintptr(arch.PAGE_SIZE)
+	gone := s.pages - want
+	at := s.va + uintptr(want) * page
+
+	if mem.unmap_user(p.space, at, gone) != .None {
+		return -i64(vectra9.EINVAL)
+	}
+
+	/*
+	The pages come off the end, piece by piece.
+
+	A run that never grew is one piece and this is the tail of it, which is
+	what `free_pages` releasing frame by frame makes possible. A run that grew
+	gives back whole added pieces first, and then trims the first one -- so
+	shrinking a grown run back to its birth size leaves exactly the block
+	`segalloc` made.
+	*/
+	left := gone
+	for left > 0 && s.more_n > 0 {
+		piece := &s.more[s.more_n - 1]
+		if piece.pages > left {
+			mem.free_pages(piece.base + uintptr(piece.pages - left) * page, left)
+			piece.pages -= left
+			left = 0
+			break
+		}
+		mem.free_pages(piece.base, piece.pages)
+		left -= piece.pages
+		s.more_n -= 1
+	}
+	if left > 0 {
+		first := s.pages
+		for i in 0 ..< s.more_n {
+			first -= s.more[i].pages
+		}
+		mem.free_pages(s.base + uintptr(first - left) * page, left)
+	}
+	s.pages = want
+	return 0
+}
+
+/*
+segment_grow makes a run bigger by adding a piece to the end of it.
+
+**Nothing moves, and that is the whole point.** The first cut allocated a
+bigger block, copied, and released the old one -- which is correct for a run
+one process holds and wrong for one shared under `RFMEM`: the sharer maps the
+old frames in its own space, and nothing reachable from here can remap that
+space. `servers/intuition` forks a reader child, so every window run it holds
+is shared, and a moving grow refused every one of them.
+
+A piece bolted on the end takes pages nobody had. A sharer's mapping stays as
+true as it was and simply does not include the new tail, which is the honest
+answer: it never asked for it.
+
+Plan 9 needs none of this. Its segments are a page map a fault fills in, so
+`ibrk` extends the map and the question never comes up. This is the same idea
+with the pieces bigger, and `MAX_RUN_PIECES` is how many times one run may be
+asked.
+
+The new pages are mapped before the extent is published, so a failure leaves
+the segment exactly the size it was.
+*/
+segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i64 {
+	if s.more_n >= MAX_RUN_PIECES {
+		return -i64(vectra9.ENOMEM)
+	}
+	page := uintptr(arch.PAGE_SIZE)
+	added := want - s.pages
+
+	base, got := mem.alloc_pages_zeroed(added)
+	if !got {
+		return -i64(vectra9.ENOMEM)
+	}
+
+	// Published first, because `segment_frame` is what the mapping below reads
+	// the new frames out of. A failure puts it straight back.
+	s.more[s.more_n] = Run_Piece{base = base, pages = added}
+	s.more_n += 1
+	s.pages = want
+
+	at := s.va + uintptr(want - added) * page
+	if mem.map_user(p.space, at, base, s.flags, added) != .None {
+		s.more_n -= 1
+		s.pages = want - added
+		mem.free_pages(base, added)
+		return -i64(vectra9.ENOMEM)
+	}
+
+	// And the bump moves with it, so the next `segalloc` starts above the run
+	// that just grew rather than inside it.
+	if newtop > p.map_next {
+		p.map_next = newtop
+	}
+	return 0
+}
+
+// proc_segment_at is the segment holding one address, or nil. `syssegbrk`
+// walks `up->seg` the same way and for the same reason: a client names an
+// address inside a run rather than the run.
+@(private)
+proc_segment_at :: proc "contextless" (p: ^Process, addr: uintptr) -> ^Segment #no_bounds_check {
+	for i in 0 ..< p.seg_count {
+		s := p.segs[i]
+		if s == nil || !segment_is_run(s.kind) {
+			continue
+		}
+		span := uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
+		if addr >= s.va && addr < s.va + span {
+			return s
+		}
+	}
+	return nil
+}
+
+// proc_span_taken reports whether growing `seg` to `newtop` would run into
+// another of this process's segments. `ibrk`'s `Esoverlap`, which is the check
+// that makes growing the last run the only one that can succeed.
+@(private)
+proc_span_taken :: proc "contextless" (p: ^Process, seg: ^Segment, newtop: uintptr) -> bool #no_bounds_check {
+	for i in 0 ..< p.seg_count {
+		o := p.segs[i]
+		if o == nil || o == seg {
+			continue
+		}
+		span := uintptr(o.pages) * uintptr(arch.PAGE_SIZE)
+		if newtop > o.va && seg.va < o.va + span {
+			return true
+		}
+	}
+	return false
 }
 
 @(private = "file")

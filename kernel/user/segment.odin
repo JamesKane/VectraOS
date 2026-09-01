@@ -56,6 +56,21 @@ import "kernel:arch"
 import "kernel:mem"
 import "kernel:sync"
 
+/*
+One contiguous piece of a run, past the first.
+
+Four is the cap, and it is a cap on how many times a run may *grow* rather
+than on how big it gets: each `segbrk` that adds pages adds one piece. A window
+that resizes a fifth time is refused, which is a number to raise rather than a
+design.
+*/
+MAX_RUN_PIECES :: 4
+
+Run_Piece :: struct {
+	base:  uintptr,
+	pages: int,
+}
+
 Segment_Kind :: enum {
 	Text, // Read-only or executable: shared by every fork
 	Data, // Writable, not a stack: shared under RFMEM, copied otherwise
@@ -103,6 +118,29 @@ Segment :: struct {
 	// Where the run starts, for the run shape alone -- see `segment_is_run`.
 	// Zero for every other kind, which carry their frames one at a time above.
 	base:   uintptr,
+
+	/*
+	And the rest of the run, for a run that grew.
+
+	**A run is a *list* of contiguous pieces, and almost always one.**
+	`segalloc` makes it in a single allocation and `segattach` maps a card
+	that is one by construction, so `base` and `pages` are the whole story
+	until something calls `segbrk`.
+
+	Growing is what needs the second piece. The physical block behind a run
+	cannot be extended in place -- the allocator has no promise to give --
+	and *moving* it is worse than a list: another process may share this
+	segment under `RFMEM`, mapping the old frames in its own space, and
+	nothing here can reach that space to remap it. A new piece bolted on the
+	end takes pages nobody had, so a sharer's mapping stays exactly as true
+	as it was.
+
+	Plan 9 needs none of this: its segments are a page map a fault fills in,
+	so `ibrk` extends the map and nothing moves. This is the same idea with
+	the pieces bigger.
+	*/
+	more:   [MAX_RUN_PIECES]Run_Piece,
+	more_n: int,
 
 	flags:  arch.Page_Flags,
 	kind:   Segment_Kind,
@@ -214,7 +252,25 @@ segment_frame :: proc "contextless" (s: ^Segment, page: int) -> uintptr #no_boun
 		return 0
 	}
 	if segment_is_run(s.kind) {
-		return s.base + uintptr(page) * uintptr(arch.PAGE_SIZE)
+		// The first piece holds `s.pages - <the rest>`, and almost always all
+		// of it. A run that never grew takes the first branch and is the same
+		// arithmetic it always was.
+		at := page
+		first := s.pages
+		for i in 0 ..< s.more_n {
+			first -= s.more[i].pages
+		}
+		if at < first {
+			return s.base + uintptr(at) * uintptr(arch.PAGE_SIZE)
+		}
+		at -= first
+		for i in 0 ..< s.more_n {
+			if at < s.more[i].pages {
+				return s.more[i].base + uintptr(at) * uintptr(arch.PAGE_SIZE)
+			}
+			at -= s.more[i].pages
+		}
+		return 0
 	}
 	return s.frames[page]
 }
@@ -287,6 +343,8 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	kind := s.kind
 	base := s.base
 	pages := s.pages
+	more: [MAX_RUN_PIECES]Run_Piece = s.more
+	more_n := s.more_n
 	frames: [MAX_PROGRAM_FRAMES]uintptr = s.frames
 	for i in 0 ..< MAX_SEGMENTS {
 		if &segments[i].seg == s {
@@ -301,7 +359,16 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	case .Device:
 		// Nothing. See above -- this is the branch with a control on it.
 	case .Anon:
-		mem.free_pages(base, pages)
+		// The first piece is what is left of `pages` once the others are
+		// accounted for, which is how `segment_frame` reads it too.
+		first := pages
+		for i in 0 ..< more_n {
+			first -= more[i].pages
+		}
+		mem.free_pages(base, first)
+		for i in 0 ..< more_n {
+			mem.free_pages(more[i].base, more[i].pages)
+		}
 	case .Text, .Data, .Stack:
 		for i in 0 ..< pages {
 			mem.free_page(frames[i])

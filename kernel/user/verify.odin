@@ -4563,6 +4563,47 @@ wait_for_size :: proc(c: ^vfs.Chan, want: u64) -> bool {
 // typed_runes is `typed_reads` for keys written as runes. Odin encodes the
 // string literal, so the bytes that go on the wire come from the compiler
 // rather than from the encoder under test.
+// put_report_bytes and put_number_bytes build one `ctl` line into a buffer.
+// `bytes_of` takes a literal and these take a number, which is what a size the
+// test computes needs.
+@(private = "file")
+put_report_bytes :: proc "contextless" (out: []u8, at: int, text: string) -> int #no_bounds_check {
+	n := at
+	for i in 0 ..< len(text) {
+		if n >= len(out) {
+			return n
+		}
+		out[n] = text[i]
+		n += 1
+	}
+	return n
+}
+
+@(private = "file")
+put_number_bytes :: proc "contextless" (out: []u8, at: int, value: int) -> int #no_bounds_check {
+	digits: [20]u8
+	n := 0
+	v := value
+	if v == 0 {
+		digits[0] = '0'
+		n = 1
+	}
+	for v > 0 {
+		digits[n] = u8('0' + v % 10)
+		v /= 10
+		n += 1
+	}
+	out_at := at
+	for i := n - 1; i >= 0; i -= 1 {
+		if out_at >= len(out) {
+			return out_at
+		}
+		out[out_at] = digits[i]
+		out_at += 1
+	}
+	return out_at
+}
+
 @(private = "file")
 typed_runes :: proc(r: ^Result, cons: ^vfs.Chan, keys: string, want: string, what: string) {
 	typed_reads(r, cons, transmute([]u8)keys, want, what)
@@ -4845,8 +4886,57 @@ verify_ctl :: proc(
 	ground has to come back there too. It comes out of the same `desk_paint` a
 	close would do, over the part the window gave up.
 	*/
+	/*
+	And first it grows past the size its slot was born with, which is the
+	sentence `segbrk` was built for.
+
+	**A run used to be fixed at its one `segalloc`**, so `window_size` refused
+	anything taller than the window it was handed and `docs/DRAW.md` recorded
+	that as `segbrk`'s absence speaking. The call exists now, and this is the
+	client asking for it without knowing: a `ctl` line names a client area, and
+	the server turns that into a run that has to get bigger.
+
+	The frames are counted across it, because a grow that answered without
+	allocating would pass a geometry check and leak nothing but truth.
+	*/
+	grew_from := mem.pmm_stats().free_frames
+	tall := win_h + 256
+	big: [32]u8
+	bn := 0
+	bn = put_report_bytes(big[:], bn, "size 200 ")
+	bn = put_number_bytes(big[:], bn, tall)
+	bn = put_report_bytes(big[:], bn, "\n")
+	_, gerr3 := vfs.chan_write(cfd, 0, big[:bn])
+	check(r, gerr3 == vfs.OK, "a client asks for a window taller than the one its slot was born with")
+
+	geo3: [64]u8
+	gn3, ge3 := vfs.chan_read(cfd, 0, geo3[:])
+	_, gh3, _, _, gok3 := libdraw.parse_geometry(geo3[:max(gn3, 0)])
+	check(
+		r,
+		ge3 == vfs.OK && gok3 && gh3 == tall,
+		"and gets it, which no run fixed at one segalloc could have answered",
+	)
+	check(
+		r,
+		mem.pmm_stats().free_frames < grew_from,
+		"and the machine is poorer for it, so the pages are real",
+	)
+
+	/*
+	And smaller again, which the run does not follow.
+
+	**A shared run may not shrink**, which is `ibrk`'s `Einuse` and
+	`docs/USER.md`'s reason: another process maps the same frames and the ones
+	about to go back may already be somewhere in its kernel. The draw server
+	forked a reader child, so every window run it holds is shared.
+
+	The window still gets smaller. Keeping the pages is what a refused shrink
+	costs, and refusing the *client* is not -- which is the distinction
+	`window_size` makes and this checks.
+	*/
 	_, serr := vfs.chan_write(cfd, 0, bytes_of("size 200 100\n"))
-	check(r, serr == vfs.OK, "and makes it smaller")
+	check(r, serr == vfs.OK, "and makes it smaller, which a shared run does not have to follow")
 	check(r, is_desk(s, far_x, far_y), "which gives back the ground it was covering")
 
 	gn2, gerr2 := vfs.chan_read(cfd, 0, geo[:])

@@ -847,6 +847,11 @@ Window :: struct {
 	// the Plan 9 call that would lift that -- see `docs/USER.md`.
 	pixels: [^]u32,
 
+	// How many rows the run behind `pixels` actually holds. It starts at the
+	// birth height and `segbrk` moves it, which is what lets a window grow
+	// past the size its slot was born with.
+	rows:   int,
+
 	dmg:    Region,
 	used:   bool,
 
@@ -1088,6 +1093,12 @@ reader :: proc "contextless" (cons: int) -> ! {
 			type_at(w, kbd_chunk[i])
 		}
 	}
+}
+
+// win_h_at is how many rows this window's run holds. `win_h` is the height a
+// slot is born with; `segbrk` can move a window's own above it.
+win_h_at :: proc "contextless" (win: ^Window) -> int {
+	return win.rows > 0 ? win.rows : win_h
 }
 
 // stack_add puts a new window on top. stack_drop takes one out and closes the
@@ -1705,6 +1716,7 @@ windows_init :: proc "contextless" () -> bool #no_bounds_check {
 			y      = 0,
 			w      = win_w,
 			h      = win_h,
+			rows   = win_h,
 			pixels = ([^]u32)(base),
 		}
 	}
@@ -1927,8 +1939,45 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 		return vectra9.EINVAL
 	}
 	nw, nh := frame_window(ncw, nch)
-	if nw > win_w || nh > win_h {
+	/*
+	And the run grows to hold it, which is `segbrk`.
+
+	**A window used to be capped at the size it was born**, because a run was
+	fixed at its one `segalloc` and nothing in this kernel could grow one. That
+	is the sentence `docs/DRAW.md` section 10 wrote as "`segbrk`'s absence
+	speaking", and the call exists now.
+
+	The stride is the run's width and stays `win_w`, so a window's shape is its
+	rows. What `segbrk` is asked for is exactly the rows this window is about
+	to have -- **both ways**. A window that shrinks gives the pages back rather
+	than sitting on them, which is the half of `segbrk` that is about memory
+	rather than about a cap.
+	*/
+	if nw > win_w {
 		return vectra9.EINVAL
+	}
+	if nh != win_h_at(win) {
+		/*
+		**Growing must work and shrinking is best effort.**
+
+		A run this server shares with its reader child cannot shrink -- Plan 9
+		refuses that on `s->ref > 1` and `docs/USER.md` says why: the pages
+		about to go back may already be somewhere in the sharer's kernel. This
+		process forked for the keyboard, so every window run is shared and
+		every shrink is refused.
+
+		That is a reason to keep the pages, not to refuse the client. A window
+		that gets smaller and keeps its run is a window that works; a window
+		that cannot get bigger is the cap this call exists to lift.
+		*/
+		need := uintptr(win_w) * uintptr(nh) * 4
+		err := libuser.segbrk(uintptr(win.pixels), uintptr(win.pixels) + need)
+		if err < 0 && nh > win_h_at(win) {
+			return vectra9.ENOSPC
+		}
+		if err >= 0 {
+			win.rows = nh
+		}
 	}
 	if nw == win.w && nh == win.h {
 		return vectra9.Errno(0)

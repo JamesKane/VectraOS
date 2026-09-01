@@ -387,6 +387,61 @@ map_at :: proc "contextless" (
 }
 
 /*
+unmap_at takes one page's translation away, and is `map_at`'s inverse to the
+line: the same walk, and a clear where the other installs.
+
+**Nothing in this kernel could unmap until now**, which `kernel/user`'s own
+comment said out loud while explaining why a window a client gave back stayed
+unreachable rather than reused. `segbrk` is the call that needed it: a run that
+shrinks has to stop being reachable *before* its frames go back to the
+allocator, or ring 3 keeps a mapping to memory somebody else is about to own.
+
+**A page that was never mapped is not an error.** The walk stops at the first
+level that is not there and answers `.None`, because unmapping what is already
+unmapped is the state the caller asked for.
+
+The tables themselves stay. An empty page table is four kilobytes and freeing
+one means proving no other entry in it is live, which is a walk of its own and
+a lock this procedure does not take. `space_destroy` frees the whole tree at
+exit, which is where a process's tables were always going to go.
+
+The flush is unconditional. A translation cached for a page whose frame has
+been handed to somebody else is the one thing this must not leave behind, and
+`flush_page` on a space that is not current is a wasted instruction rather
+than a wrong one.
+*/
+unmap_at :: proc "contextless" (space: ^Address_Space, virt: uintptr, level: int) -> Error {
+	if space == nil || !arch.is_canonical(virt) {
+		return .Not_Canonical
+	}
+
+	table := cast(^arch.Page_Table)phys_to_virt(space.root)
+	for l := arch.TABLE_LEVELS; l > level; l -= 1 {
+		index := arch.table_index(virt, l)
+		entry := table[index]
+		if !arch.entry_present(entry) {
+			// Nothing below this, so nothing to take away.
+			return .None
+		}
+		if arch.entry_is_leaf(entry, l) {
+			// A larger page than the caller named. Clearing it would unmap
+			// more than was asked for, which is a bug in the caller rather
+			// than a thing to do quietly.
+			return .Mapping_Conflict
+		}
+		table = cast(^arch.Page_Table)phys_to_virt(arch.entry_address(entry))
+	}
+
+	index := arch.table_index(virt, level)
+	if !arch.entry_present(table[index]) {
+		return .None
+	}
+	table[index] = 0
+	arch.flush_page(virt)
+	return .None
+}
+
+/*
 map_mmio brings a device's register page into the direct map.
 
 Mapped at its natural HHDM address rather than somewhere arbitrary.

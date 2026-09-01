@@ -231,6 +231,37 @@ map_user :: proc "contextless" (
 	return .None
 }
 
+/*
+unmap_user takes a run of pages out of a process's half, and is `map_user`'s
+inverse over the same bounds.
+
+The bounds are checked the same way and for the same reason: a caller that
+could name the kernel's half could unmap the kernel out from under itself.
+
+**It does not free anything.** What the pages were is the caller's to know --
+`kernel/user`'s segments own their frames and give them back through the
+allocator. This makes them unreachable, which is the half that has to happen
+first.
+*/
+unmap_user :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages: int) -> Error {
+	if space == nil || pages <= 0 {
+		return .Not_Canonical
+	}
+
+	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
+	if virt < USER_MIN || virt >= USER_MAX || virt + span > USER_MAX {
+		return .Not_Canonical
+	}
+
+	for i in 0 ..< pages {
+		step := uintptr(i) * uintptr(arch.PAGE_SIZE)
+		if err := unmap_at(space, virt + step, 1); err != .None {
+			return err
+		}
+	}
+	return .None
+}
+
 // -- Where the records live --------------------------------------------------
 //
 // An `Address_Space` is sixteen bytes and there will be one per process. The

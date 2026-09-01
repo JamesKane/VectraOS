@@ -202,6 +202,23 @@ segalloc :: proc "contextless" (bytes: int) -> (addr: uintptr, err: i64) {
 	return uintptr(r), 0
 }
 
+/*
+segbrk moves the top of a run this process already holds, which is Plan 9's
+call of the same name.
+
+`addr` is any address inside the run and `top` is where it should end. A `top`
+of zero answers the run's base instead of moving anything, which is `ibrk`'s
+query form.
+
+**The address does not move.** A run that grows keeps its base and what was in
+it, with zeroed pages above; a run that shrinks keeps its base and gives the
+tail back. Only anonymous memory may be asked, which is what Plan 9's
+`syssegbrk` refuses every other segment type by name to say.
+*/
+segbrk :: proc "contextless" (addr: uintptr, top: uintptr) -> i64 {
+	return raw2(abi.SYS_SEGBRK, u64(addr), u64(top))
+}
+
 // note posts a note to one of the caller's own children. With no handler
 // the child ends at its next kernel boundary, and the wait status is
 // EINTR. With a handler the child catches it instead -- see `notify`.

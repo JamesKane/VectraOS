@@ -1107,13 +1107,13 @@ So a second call was the only way to ask for it. Anyone reading `segalloc` as
 an independent design decision has it backwards. It is the second half of one
 decision made a milestone earlier.
 
-**Three calls Plan 9 has here, and Vectra has none of them.**
+**Three calls Plan 9 has here. Vectra has one of them now.**
 
-| Plan 9 | What it does | What it would answer here |
+| Plan 9 | What it does | Here |
 |---|---|---|
-| `segfree(va, len)` | frees the pages under a range, keeps the segment | a window that shrinks its backing store |
-| `segdetach(addr)` | takes the whole segment out of the process | a client that gives its window back before it exits |
-| `segbrk(addr, top)` | grows or shrinks a segment in place | a window that resizes |
+| `segbrk(addr, top)` | grows or shrinks a segment in place | **built** -- see below |
+| `segfree(va, len)` | frees the pages under a range, keeps the segment | still missing |
+| `segdetach(addr)` | takes the whole segment out of the process | still missing |
 
 `segbrk` is the interesting one. `syssegbrk` refuses `SG_TEXT`, `SG_DATA`,
 `SG_STACK`, `SG_PHYSICAL`, `SG_FIXED` and `SG_STICKY` by name, and answers for
@@ -1121,6 +1121,107 @@ decision made a milestone earlier.
 a question only anonymous memory may be asked. `docs/DRAW.md` section 10 names
 a resize as a thing a backing store makes cheap, and `segbrk` is the call that
 sentence needs.
+
+## segbrk, and the unmap nothing had
+
+**Nothing in this kernel could unmap a page.** `map_user` installed and
+`space_destroy` tore down a whole tree at exit, and in between there was no way
+to take one translation away -- `kernel/user/syscall.odin` said so out loud
+while explaining why a window a client gave back stayed unreachable rather than
+reused.
+
+`mem.unmap_at` is `map_at`'s inverse to the line: the same walk, and a clear
+where the other installs. A page that was never mapped is not an error, and the
+tables themselves stay -- freeing an empty one means proving no other entry in
+it is live, which is a walk of its own. `space_destroy` was always where a
+process's tables were going to go.
+
+The flush is unconditional. A translation cached for a frame that has gone back
+to the allocator is the one thing this must not leave behind.
+
+**Unreachable before freed, always.** A shrink unmaps and then frees, in that
+order, so there is no instant where ring 3 can reach a frame somebody else
+owns.
+
+### What Plan 9 refuses, and what this refuses on top
+
+`syssegbrk` refuses every segment type but `SG_BSS` and `SG_SHARED`, by name.
+This answers for `.Anon` alone, which is the same sentence: in-place resize is
+a question only anonymous memory may be asked. A `.Device` run is the
+framebuffer, whose extent is the hardware's.
+
+A `top` of zero answers the run's base rather than moving anything, which is
+`ibrk`'s query form.
+
+**A shared run may not shrink**, which is `ibrk`'s `Einuse`: another process
+maps the same frames and the ones about to go back may already be somewhere in
+that process's kernel, past the point where an address was checked. Growing has
+no such rule, here or there, because it takes pages nobody had.
+
+### A run is a list of pieces now, and that was forced
+
+The first cut grew a run by allocating a bigger block, copying, and releasing
+the old one. That is correct for a run one process holds and **wrong for one
+shared under `RFMEM`**: the sharer maps the old frames in its own space, and
+nothing reachable from the growing process can remap that space.
+
+It is not a theoretical case. `servers/intuition` forks a reader child for the
+keyboard, so every window run it holds is shared, and a moving grow refused
+every single one -- which is to say it refused the only caller the milestone
+was built for.
+
+So a run is a base, an extent, and up to `MAX_RUN_PIECES` more of the same. A
+grow bolts a piece on the end, takes pages nobody had, and leaves a sharer's
+mapping exactly as true as it was: that process simply does not have the new
+tail, which it never asked for.
+
+Plan 9 needs none of this. Its segments are a page map a fault fills in, so
+`ibrk` extends the map and nothing moves. This is the same idea with the pieces
+bigger, and the cap is on how many times one run may grow rather than on how
+big it gets.
+
+### What it bought
+
+`servers/intuition`'s `window_size` refused anything taller than the window its
+slot was born with, and `docs/DRAW.md` recorded that as this call's absence
+speaking. A client asks for a client area and the server grows the run under
+it now.
+
+**Growing must work and shrinking is best effort.** A shared run cannot
+shrink. That is a reason to keep the pages rather than to refuse the client. A
+window that gets smaller and keeps its run works. A window that cannot get
+bigger is the cap this call exists to lift.
+
+### The controls
+
+| Mutation | Result |
+|---|---|
+| `segbrk` answers success without allocating | **breaks the machine** |
+| the new pages are never mapped | **breaks the machine** |
+| `segbrk` answers for any segment kind | **inert**, and see below |
+| a grown run reads every page out of its first piece | **inert**, and see below |
+
+The first two stop the boot rather than failing a check, and that is the shape
+a grow has: the draw server asks for rows, is told it has them, and writes into
+memory that is not there. A window that grows on a lie faults on its next
+paint.
+
+**The kind check has no caller to test it with.** Nothing in ring 3 asks
+`segbrk` of a segment that is not anonymous. `servers/intuition` asks about
+its own window runs and about nothing else, and it never resizes the
+framebuffer it holds as a `.Device` run.
+
+Catching it wants a program written to ask the wrong question. That is assembly
+in `kernel/user/program.odin` rather than a line in a server that exists only
+to be checked. The rule is Plan 9's and it is written down. Nothing watches it.
+
+**And a grown run's new pages are below the screen.** A window is born as tall
+as the glass, so every row `segbrk` adds is off the bottom and `composite`
+clips it away. The frames-dropped check says the pages were allocated and
+nothing reads them back, so a `segment_frame` that answered out of the first
+piece would alias the tail onto pages that are mapped and pass. What would
+catch it is a window born shorter than the screen, whose growth lands where the
+glass can be read.
 
 **And one type.** Plan 9's `"shared"` class is `SG_SHARED`, which `dupseg`
 shares whatever the flags say and `exec` inherits. Vectra has no equivalent:

@@ -145,6 +145,8 @@ them could have come earlier:
                             at the end, with a caret under it saying where
     a rune                  and a key with no character can arrive at all,
                             which is what the arrow keys were waiting for
+    an unmap                and a page can stop being reachable, so a run can
+                            change size and a window grow past its birth
 
 ### Reading a boot log
 
@@ -341,12 +343,20 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **A font with more than 128 glyphs, so a rune can be *stored*.** Runes
-   arrive now, and `sys/libedit` drops every one it does not act on, because
-   `sys/libfont` is an 8x16 table of 7-bit characters and a line holding
-   something with no glyph would be a line no caller can draw. What it takes
-   is a wider table and a `put_text` that advances by rune rather than by
-   byte. See `docs/DRAW.md` section 17.
+2. **`segbrk`, and the two segment calls beside it.** See the standing gap
+   below, promoted because it has a trigger already in the tree:
+   `servers/intuition`'s `window_size` refuses to grow a window past the run
+   it was born with, and `docs/DRAW.md` says in as many words that this is
+   `segbrk`'s absence speaking.
+
+**Deferred, with the reason written down: a font with more than 128 glyphs.**
+`sys/libedit` drops every rune it does not act on, because `sys/libfont` is an
+8x16 table of 7-bit characters. This file used to say the fix was "a wider
+table", and that is not Plan 9's shape: a `.font` there is a text file of rune
+ranges pointing at separate subfont files, loaded lazily and LRU-cached. The
+real work is a file format, a loader, and the first data this system reads at
+runtime rather than bakes into its image. Nothing in the tree needs a
+non-ASCII glyph yet, so it waits for something that does.
 
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
@@ -403,16 +413,13 @@ design question attached to each.
   group of anything whose thread has gone, so a faulted server hangs up and the
   client parked on it is answered. The record stays for a parent's `wait`,
   which is Plan 9's `pexit`. See `docs/USER.md`.
-- **Three of Plan 9's segment calls are missing, and they are one gap.**
-  `segfree(va, len)` frees the pages under a range and keeps the segment.
-  `segdetach(addr)` takes the segment out of the process. `segbrk(addr, top)`
-  grows or shrinks one in place, and 9front's `syssegbrk` answers for `SG_BSS`
-  and `SG_SHARED` alone, refusing every other type by name.
+- **Two of Plan 9's segment calls are still missing.** `segfree(va, len)` frees
+  the pages under a range and keeps the segment. `segdetach(addr)` takes the
+  segment out of the process. `segbrk` is built -- see `docs/USER.md`.
 
-  So Vectra gives a run back at exit and at no other moment, and the address
-  bump never comes down. That is address space rather than memory, and the
-  cheaper of the two to leak. `segbrk` is the one with a named trigger: a window
-  that resizes. `docs/USER.md` reads the three against 9front.
+  So a run can change size now and still cannot be given back whole before
+  exit, and the address bump never comes down. That is address space rather
+  than memory, and the cheaper of the two to leak.
 - **A free list for fids, `/srv` ids, and now pids.** All three counters are
   monotonic and therefore finite: four billion opens per session, two billion
   posts, and a pid space nothing recycles. One fix retires all of them, and
