@@ -700,7 +700,9 @@ readbacks by the frame's own constants for one milestone, which put a server's
 layout in `sys/libdraw` and made the test agree with the code under test: no
 mutation of a frame's *geometry* could fail a check. A client fills the area it
 was promised now and the glass says where that landed, anchored against the
-window's own edges so a scan cannot simply follow a wrong answer. Two mutations
+window's own edges so a scan cannot simply follow a wrong answer. The desktop
+those discoveries stand on is measured off a bare screen rather than restated,
+so a restyled desktop no longer fails a frame's checks. Two mutations
 that were invisible are caught, two that are only a look are correctly inert,
 and `FRAME_EDGE` and its two friends live in the one process that has any
 business knowing them. `docs/DRAW.md` section 12 owns it.

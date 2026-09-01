@@ -682,10 +682,23 @@ deeper border and a taller bar are inert, because the report moves with them
 and the test finds what it needs. That is a look rather than a fault, and a
 test that failed on it would be over-specifying the design.
 
-The same idea runs twice more. `verify_terminal` finds its window by the slate
-of the well it is sunk into, and waits for the window's *last* row rather than
-its first -- composites walk top to bottom, so a scan can otherwise catch a
-window half arrived. `find_bar` finds a title bar by its copper.
+**And the desktop underneath is measured too.** The first cut restated
+`desk_paint`'s own arithmetic -- the step, the phase, the two colours -- which
+put the desktop's look back into the test at the moment the frame's was taken
+out. A restyled desktop would then have failed the *frame's* anchor checks. The
+draw server paints the whole desktop before it posts `/srv/draw`, so the glass
+at that instant is a desktop with nothing on it: one run of one row gives the
+ground, the grid and the step between grid lines. A flat desktop is now caught
+by the one check that measures it rather than by six that stand on it.
+
+The same idea runs twice more. `verify_terminal` finds its window as the first
+run of not-desktop across a low row, and accepts it only when the client area
+it then measures is as far up from the screen's bottom as it is in from the
+side -- the same symmetry `verify_draw` anchors on. A half-composited window
+fails that and the poll goes round again, which is self-validating where an
+earlier cut assumed `paint_window` walks rows top to bottom. And a title bar is
+read as the band between a window's top edge and its client area, rather than
+looked up by its copper and then asked whether it is copper.
 
 ### The controls for chrome
 
@@ -700,6 +713,7 @@ Six mutations, each on a real boot. All six are caught.
 | a draw is not moved into the client area | 11 checks, first `inside a border, and further below a title bar, neither of which it is told about` |
 | a draw is moved one pixel further in than the report accounts for | 6 checks, first `the same depth in from both of its window's edges` |
 | `frame_client` and `frame_window` disagree by four columns | 2 checks, first the same |
+| the desktop loses its grid | 9 checks, first `has painted a desktop, ground and grid, over the whole screen` |
 | a deeper border | **inert**, and correctly so |
 | a taller title bar | **inert**, and correctly so |
 | the name is drawn in the bar's own colour | 2 checks, first `and the bar says so, in the font the draw server has and never gave a verb to` |

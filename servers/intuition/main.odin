@@ -327,15 +327,11 @@ LAMP :: 12
 LAMP_GAP :: 6
 LAMP_INSET :: 20
 
-// desk_at is the desktop's colour at one screen pixel. Positional rather than
-// stored, so any rectangle of it can be repainted exactly, in any order, with
-// nothing to keep between.
-desk_at :: proc "contextless" (x: int, y: int) -> u32 {
-	if x % DESK_STEP == 0 || y % DESK_STEP == 0 {
-		return DESK_GRID
-	}
-	return DESK_GROUND
-}
+// `desk_at` used to sit here: the desktop's colour at one screen pixel, ground
+// with a grid every `DESK_STEP`. It kept no callers once `desk_paint` hoisted
+// that test out of its inner loop and into one per row, and a control found it
+// by mutating it and changing nothing. The rule it stated is still the
+// desktop's, and `desk_paint` below is where it is written now.
 
 /*
 desk_paint puts the desktop on one screen rectangle.
@@ -584,14 +580,12 @@ window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int
 		return 0
 	}
 	n += frame_bar(out[n:], x, y, w)
-	return n + libdraw.well(
-		out[n:],
-		x + FRAME_EDGE,
-		y + FRAME_EDGE + FRAME_TITLE,
-		w - 2 * FRAME_EDGE,
-		h - 2 * FRAME_EDGE - FRAME_TITLE,
-		FRAME_WELL,
-	)
+
+	// The well starts where the bar ends and is as wide as it, which is one
+	// fact rather than three: `frame_bar_at` is where the bar is, and this
+	// asks it rather than deriving the same numbers a second time.
+	bx, by, bw, bh := frame_bar_at(x, y, w)
+	return n + libdraw.well(out[n:], bx, by + bh, bw, h - (by - y) - bh - FRAME_EDGE, FRAME_WELL)
 }
 
 /*

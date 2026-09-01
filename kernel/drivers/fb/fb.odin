@@ -118,28 +118,12 @@ get_raw :: proc "contextless" (s: ^Surface, x, y: int) -> u32 #no_bounds_check {
 	return 0
 }
 
-/*
-span is `count` pixels of row `y`, as bytes, or nothing at all when any of the
-run would be off the surface.
-
-`get_raw` bounds one pixel. This bounds a run of them, which is what a caller
-that saves and restores a rectangle of the glass is really doing -- and it does
-it today with a raw slice of `pixels`, which Odin does not check at all. A row
-derived from a geometry that some server *reported* can leave the screen, and a
-walk past the framebuffer is a fault rather than a failed check.
-
-An off-surface run answers empty, so a save and its restore copy the same
-nothing and the pair stays balanced. `kernel/user/verify.odin` is the caller,
-and `docs/TESTING.md` argues why a self-test's own sensors should not be the
-thing that ends the boot.
-*/
-span :: proc "contextless" (s: ^Surface, x, y, count: int) -> []u8 #no_bounds_check {
-	if count <= 0 || x < 0 || y < 0 || y >= s.height || x + count > s.width {
-		return nil
-	}
-	at := y * s.pitch + x * s.bytes_pp
-	return s.pixels[at:at + count * s.bytes_pp]
-}
+// `span` used to sit here: a run of pixels bounded the way `get_raw` bounds
+// one, for a caller that saved and restored rectangles of the glass with raw
+// slices of `pixels`. `kernel/user/verify.odin` was the only caller, and it
+// stopped saving anything at all -- the compositor and `devfs.screen_revert`
+// put the glass back without being asked. A procedure with no caller is a
+// procedure no control can reach.
 
 put_pixel :: proc "contextless" (s: ^Surface, x, y: int, c: RGB) {
 	if x < 0 || y < 0 || x >= s.width || y >= s.height {
