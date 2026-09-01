@@ -53,7 +53,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1295 checks against itself and idles.
+1310 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -258,7 +258,7 @@ release. The six embedded user images (`ramfs`, `consrv`, `kbdfs`,
 | `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings | `docs/NAMESPACE.md` |
 | `kernel/mnt/` | A 9P connection with several requests in flight, `Tflush` over it, and the wire whose far side is bytes | `docs/TRANSPORT.md` |
 | `kernel/pipe/` | Two ends, a byte ring per direction, and the glue that makes a posted end a server | `docs/PIPE.md` |
-| `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl`, and the raw hardware -- framebuffer, scancodes, wire | `docs/DEVFS.md` |
+| `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl`, and the raw hardware -- framebuffer, scancodes, wire, each diverting the kernel's own handler while held | `docs/DEVFS.md` |
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, now from ring 3 too | `docs/SRV.md` |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, and a top half that may not park | `docs/KBD.md` |
 | `kernel/mem/space.odin` | An address space per process, sharing one kernel half | `docs/SPACE.md` |
@@ -479,7 +479,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/SPACE.md` | `kernel/mem/space.odin` — a space per process, and the half of it that is shared | Building a process, mapping something a program may reach, or wondering what the scheduler reloads |
 | `docs/USER.md` | `kernel/user/` — ring 3, `syscall`/`sysret`, the per-CPU record behind GS, a process and its namespace | Entering ring 3, adding a system call, copying a pointer in from a program, or wondering what a program may not do |
 | `docs/KBD.md` | `kernel/drivers/kbd/` — scancodes, the I/O APIC, and why a handler splits in two | Adding a device that interrupts, routing a line, or wondering why the polling thread is still there |
-| `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention, the raw framebuffer | Adding a device file, adding a `ctl` file, writing a server whose reads park, or wondering why `/dev/cons` has two locks |
+| `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention, the raw framebuffer and the screen's divert | Adding a device file, adding a `ctl` file, writing a server whose reads park, wondering why `/dev/cons` has two locks, or asking who owns the glass |
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
 | `docs/DRAW.md` | The `/dev/draw` protocol design, written before its code | Building the draw server, its client library, or the fb mapping |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
@@ -611,29 +611,31 @@ zero and the compositor used to skip zero, which cost a client the ability to
 paint black. That question lives in a region now, and a two megabyte memset per
 `Tlopen` went with it.
 
+**And the console no longer paints the glass.** `/dev/fb` diverts it the
+way `/dev/scancode` diverts the keyboard. While something holds the screen the
+console draws into a copy of it, and the last close blits that copy back over
+the whole frame. So a compositor and the boot log no longer fight over one
+piece of memory, which is the thing a desktop was waiting for.
+
+The console needed no scrollback for it. A shadow surface carries what a grid
+of cells could not: the boot chassis, which the console never drew.
+
 **Next, in order:**
 
-1. **The console has to stop painting the glass.** This is the desktop's
-   blocker, traced rather than assumed, and it is a devfs milestone wearing a
-   compositor's clothes.
+1. **A desktop, which is now only a graphics question.** A window still does
+   not own its whole rectangle. The `covered` region is what keeps the boot
+   chassis on the screen under an empty one. A desktop retires it: with
+   something to paint underneath, a window owns its rectangle, black included.
 
-   Two things paint the framebuffer: the kernel console draws the boot log
-   into it, and `servers/intuition` draws through `segattach`. A compositor
-   that owned the screen would paint over the log and the log would paint over
-   the windows. So a window does not own its whole rectangle, and what keeps
-   the chassis on the screen under an empty one is the `covered` region.
+   The blocker went with the divert. `servers/intuition` holds `/dev/fb` for
+   its whole life, so it already owns the glass for as long as it runs. What is
+   left is for it to say so -- paint a background over the screen at start, and
+   let a window's rectangle be the window's.
 
-   The idiom is one device away and already written. `/dev/scancode` and
-   `/dev/eia0` **divert**: while a process holds one open, the kernel's own
-   handler sees nothing, and the last close gives it back. `/dev/fb` does not.
-
-   What makes it more than a line is the revert. The console scrolls by moving
-   pixels, so it holds no text to repaint from -- `kernel/log.odin` keeps
-   sixteen early lines and nothing else. A screen handed back is a screen
-   nobody can redraw. So this wants a console with a scrollback, or a saved
-   copy of the glass to hand back, before the divert is safe.
-
-   With it, a desktop follows and a window owns its rectangle.
+   The one thing to decide is what happens to the log while a compositor owns
+   the screen. It goes to the serial port and comes back on the console's
+   revert, which is what happens today. A desktop makes that visible rather
+   than theoretical.
 
 2. **A window a client can move, resize, or raise.** Placement is fixed and a
    client cannot ask. Each of those is a `ctl` line rather than a seventh verb,
@@ -889,16 +891,20 @@ kernel/
     cons.odin           The console device: two sinks out, a line discipline
                         and a ring in, and two locks of different kinds
     fbdev.odin          The raw framebuffer: /dev/fb as the screen's memory
-                        at an offset, /dev/fbctl as its geometry, and the
-                        three boundary rules of the first device with a size
+                        at an offset, /dev/fbctl as its geometry, the three
+                        boundary rules of the first device with a size, and
+                        the shadow surface the console draws into while
+                        something else holds the glass
     tap.odin            The raw input streams: /dev/scancode and /dev/eia0,
                         each owning its stream while held open and giving
                         it back on the last close
-    verify.odin         The boot self-test: 134 checks over the real /dev --
+    verify.odin         The boot self-test: 152 checks over the real /dev --
                         a read that parks through a character, a line edited,
                         a mode that reverts when its file closes, pixels
                         written through the mount and read off the screen,
-                        and both streams diverted and given back
+                        both streams diverted and given back, and the screen
+                        itself diverted while a line goes to the console
+                        that the glass must not show until the last close
   srv/
     srv.odin            `#s` at /srv: the table, post and remove, mounting by
                         name, the id a fid binds instead of a slot, the
@@ -939,7 +945,7 @@ kernel/
                         reaper that collects a detached orphan
     program.odin        The twenty-eight programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 661 checks -- one process preempted
+    verify.odin         The boot self-test: 664 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that

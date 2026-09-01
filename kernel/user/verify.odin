@@ -1023,6 +1023,26 @@ verify_painter :: proc(r: ^Result) {
 		saved[i] = s.pixels[int(offset) + i]
 	}
 
+	/*
+	The kernel holds the screen for as long as it means to look at it.
+
+	`/dev/fb` diverts the console now, the way `/dev/scancode` diverts the
+	keyboard. The last close gives the glass back **with what the console drew
+	in the meantime on it**. The painter's own descriptor is otherwise the only
+	holder. So the console takes back the pixel this test is about the moment
+	the program exits, before a check can read it.
+
+	So the checker takes a hold of its own and keeps it across the checks. That
+	is not a workaround. It is what holding the screen now means, and a test
+	that reads the glass is a thing that holds the screen. See
+	`kernel/devfs/fbdev.odin`.
+	*/
+	hold, herr := vfs.open_path(vfs.boot_namespace, PATH_FB, vfs.O_RDONLY)
+	check(r, herr == vfs.OK, "the checker takes the screen, so the console does not reclaim it")
+	defer if herr == vfs.OK {
+		vfs.chan_close(hold)
+	}
+
 	p, err := load_held("painter", program_painter())
 	if !check(r, err == .None && p != nil, "a process is built to reach it") {
 		return
@@ -1170,6 +1190,15 @@ verify_bulkio :: proc(r: ^Result) #no_bounds_check {
 	fboff := (s.height - 4) * s.pitch
 	if !check(r, u64(fboff) + BULKIO_LEN <= u64(s.height) * u64(s.pitch), "the bulk region fits the frame") {
 		return
+	}
+
+	// The checker holds the screen across the checks, for `verify_painter`'s
+	// reason. The program's own descriptor is the last one, and its close
+	// hands the glass back to the console with the console's drawing on it.
+	hold, herr := vfs.open_path(vfs.boot_namespace, PATH_FB, vfs.O_RDONLY)
+	check(r, herr == vfs.OK, "the checker takes the screen for the length of the checks")
+	defer if herr == vfs.OK {
+		vfs.chan_close(hold)
 	}
 
 	p, err := load_held("bulkio", program_bulkio())
@@ -3602,6 +3631,19 @@ verify_mapping :: proc(r: ^Result) {
 	corner_saved: [4]u8
 	copy(corner_saved[:], surface.pixels[corner:corner + 4])
 	defer copy(surface.pixels[corner:corner + 4], corner_saved[:])
+
+	/*
+	And the checker holds the screen across the checks, for `verify_painter`'s
+	reason one page up. The mapper's own descriptor closes when it exits. The
+	last close of `/dev/fb` hands the glass back to the console, with the
+	console's own drawing on it. The magenta pixel would be gone before anyone
+	looked at it.
+	*/
+	hold, herr := vfs.open_path(vfs.boot_namespace, PATH_FB, vfs.O_RDONLY)
+	check(r, herr == vfs.OK, "the checker takes the screen for the length of the checks")
+	defer if herr == vfs.OK {
+		vfs.chan_close(hold)
+	}
 
 	frames_before := mem.pmm_stats().free_frames
 	untracked_before := mem.pmm_stats().untracked_frees

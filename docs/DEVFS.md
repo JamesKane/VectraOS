@@ -332,6 +332,101 @@ because nothing about this hardware can be set yet. Every write is
 therefore EINVAL, which is rule 2 with no rows in its table. The day a mode
 can change, `size` becomes a command and rule 3 starts to hold for it.
 
+## The screen diverts too, and that is what a desktop was waiting for
+
+`/dev/scancode` and `/dev/eia0` divert: while a process holds one open, the
+kernel's own handler sees nothing, and the last close gives it back.
+**`/dev/fb` does the same thing now**, and it is the answer to a question a
+graphics milestone asked and could not settle for itself.
+
+`docs/DRAW.md` section 11 recorded the problem exactly. Two things paint one
+screen. `servers/intuition` attaches the framebuffer and composites windows
+into it, while this console writes the boot log into the same memory. Whichever
+ran last won, and neither knew about the other. So a window could not own its
+whole rectangle. What kept the boot chassis on the screen under an empty one
+was a region the compositor carried to hold itself back.
+
+### The console draws into a copy, and the revert is a blit
+
+While something holds the screen, `Console.surface` points at a shadow. The
+same geometry, four megabytes of contiguous frames, seeded from the glass at
+the divert. The console keeps writing at its own pace. Nothing is lost, nothing
+serialises, and no caller of `console.write_string` knows.
+
+The last close copies the shadow back over the whole frame.
+
+**That is why the console needed no scrollback.** The first design here was a
+grid of cells for the console to repaint from, which is a terminal's answer and
+a large one. A shadow is smaller and says more. The console draws with the code
+it always had, and coming back is one copy. The copy also carries what a cell
+grid could not. That is the boot chassis, which the console never drew.
+
+**The seed is what makes it whole.** A console that started on a blank shadow
+would give the screen back with no chassis and no earlier log, because it never
+drew either. The control that removes the seed fails two checks. It does so
+only after the self-test moved to run *before* anything else opens the screen,
+which is below.
+
+**The revert is the frame, not the well.** Whoever held the screen may have
+painted any of it, and a compositor's windows are most of it. A revert that
+restored only the console's own region would hand back a screen with the last
+holder's work still on two thirds of it. The control that halves it fails two
+checks.
+
+### What it costs, and what happens when it cannot be paid
+
+Four megabytes of contiguous frames, bought once and never given back.
+
+Once rather than per divert, because a divert happens whenever anything opens
+`/dev/fb`. A self-test, a painter, the compositor. Asking the physical
+allocator for a thousand contiguous frames on each of those is a way to fail
+late for no reason.
+
+A machine too tight for it keeps two writers on one screen, which is what every
+milestone before this one ran. The self-test asserts the divert happened, so
+such a machine reports it by failing a check rather than by drawing strangely.
+
+### A test that reads the glass is a thing that holds the screen
+
+Three self-tests in `kernel/user` broke on this, and all three broke the same
+way. A program opens `/dev/fb`, paints, and exits. The kernel then reads the
+pixel back. The program's descriptor was the only holder, so its exit was the
+last close. The console reclaimed the glass before a check could look at it.
+
+That is the new rule working, not a regression. `verify_painter`,
+`verify_bulkio` and `verify_mapping` each take a hold of `/dev/fb` of their own
+now and keep it across the checks. **A test that reads the glass is a thing
+that holds the screen**, which is a sentence that had no meaning one milestone
+ago.
+
+### The controls
+
+Six mutations, each on a real boot. All six are caught.
+
+| Mutation | Result |
+|---|---|
+| the first open does not divert the console | 1 check, `the console steps off the glass while it is held` |
+| the last close does not give the screen back | 4 checks, first `the console has the glass, with nothing holding the screen` |
+| the copy is not seeded from the glass | 2 checks, first `the chassis it never drew still there` |
+| the revert puts back only the top half of the frame | 2 checks, first `with the line it wrote while it was away now on it` |
+| every open of the screen diverts, not only the first | 1 check, `with the line it wrote while it was away now on it` |
+| a console write reaches the glass while it is held | covered by `changed nothing at all on the glass` |
+
+**Two of them came back clean first, and both for reasons worth keeping.**
+
+The seed control passed because `verify_fb` opened `/dev/fb` before the divert
+test did. An unseeded copy had therefore already painted the screen once, and
+the check compared damage against damage. The self-test runs first now, and the
+comment above its call says why. `docs/TESTING.md`'s first question again, in
+its subtlest form yet: the test reached the code and measured after the damage.
+
+The second-open control passed because the invariant had two holders.
+`mark_open` reports the first open, and `screen_divert` also refused a second
+call. Removing either one alone changed nothing. `tap_start` sets the
+precedent, doing no such check and relying on `first`. So the gate is
+`mark_open`'s alone now, and the mutation fails a check. That is the second
+time in two milestones that a duplicated guard turned out to be no guard.
+
 ## The taps: the input streams, served raw
 
 `tap.odin` — `/dev/scancode` is the keyboard before translation, and

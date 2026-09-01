@@ -313,6 +313,19 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 		vfs.chan_close(zero)
 	}
 
+	/*
+	-- The screen the console steps off, before anything else holds it -------
+
+	Ahead of `verify_fb` on purpose, and a control is why. This procedure is
+	the one that asks whether the copy behind the divert is seeded from the
+	glass. An earlier holder of `/dev/fb` diverts and reverts once before this
+	runs. An unseeded copy therefore paints the screen before this can sample
+	it, and the check then compares damage against damage and passes. The first
+	thing to hold the screen has to be the thing that asks.
+	*/
+
+	verify_screen(&r, t, ns)
+
 	// -- /dev/fb and /dev/fbctl ----------------------------------------------
 
 	verify_fb(&r, t, ns)
@@ -664,6 +677,165 @@ verify_give_up :: proc(r: ^Verify_Result, cons: ^vfs.Chan) #no_bounds_check {
 	got: [8]u8
 	n, e := read_now(cons, got[:])
 	check(r, e == vfs.OK && same(got[:], n, "ok\n"), "and the same fid reads normally afterwards")
+}
+
+
+/*
+verify_screen is the divert, and the divert is what a desktop was waiting for.
+
+**Two things cannot paint one screen.** `servers/intuition` composites windows
+into the framebuffer and this console writes the boot log into the same memory.
+`/dev/fb` now diverts the console the way `/dev/scancode` diverts the keyboard.
+While something holds it the console draws into a copy. The last close gives
+the glass back, with everything it drew in the meantime on it.
+
+Three claims, and the middle one is the milestone:
+
+    the divert     opening the screen puts the console somewhere else
+    the silence    a console write changes nothing on the glass while it is
+                   held, which no counter can fake
+    the revert     the last close puts it back, and what the console wrote
+                   while it was away is on it
+
+The sensor is the glass, sampled across the console's own region rather than
+at a pixel this test would have to predict. A console line lands where the
+cursor is, which is a place a self-test has no business knowing. A sample that
+is equal before and after is the claim either way.
+*/
+@(private = "file")
+verify_screen :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bounds_check {
+	s := t.raw
+	if s == nil || s.pixels == nil {
+		return
+	}
+	check(r, !screen_diverted(), "the console has the glass, with nothing holding the screen")
+
+	before := screen_sample(s, 0, s.height)
+
+	/*
+	And the chassis, sampled on its own.
+
+	The console never draws in the top rows -- its well is inset inside the
+	bevel `kernel/splash.odin` painted once at boot. So this is the part of the
+	frame that must come back *unchanged*. It is what says the copy was seeded
+	from the glass rather than started blank. A revert that blitted a shadow
+	nobody filled would pass every other check here, and hand back a screen with
+	no chassis on it.
+	*/
+	chrome := screen_sample(s, 0, 24)
+
+	fbc, ferr := vfs.open_path(ns, "/dev/fb", vfs.O_RDWR)
+	if !check(r, ferr == vfs.OK, "/dev/fb opens") {
+		return
+	}
+	/*
+	A machine that cannot buy the copy keeps two writers on one screen, which
+	is what every milestone before this one ran. This check says the divert
+	happened, and on a machine too tight for four megabytes it says so by
+	failing, which is the honest report.
+	*/
+	if !check(r, screen_diverted(), "and the console steps off the glass while it is held") {
+		vfs.chan_close(fbc)
+		return
+	}
+	check(r, t.cons.screen.surface != s, "drawing into a copy with the same shape instead")
+
+	// The line that proves the silence. It goes to the console the ordinary
+	// way, through the file every other write in this test uses.
+	cons, cerr := vfs.open_path(ns, "/dev/cons", vfs.O_WRONLY)
+	if check(r, cerr == vfs.OK, "/dev/cons opens while the screen is held") {
+		line := "-- this line was written while the screen was somebody else's\n"
+		n, werr := vfs.chan_write(cons, 0, transmute([]u8)line)
+		check(r, werr == vfs.OK && n == len(line), "and takes a line")
+		r.written += n
+		vfs.chan_close(cons)
+	}
+	check(r, screen_sample(s, 0, s.height) == before, "which changed nothing at all on the glass")
+
+	/*
+	A second holder changes nothing, and the line above is what proves it.
+
+	The screen is already somebody else's, so the first open is the only one
+	that moves the console. A second that seeded the copy again would throw away
+	everything the console drew into it. The only way to see that is to draw
+	something first, so the order of this procedure is the check.
+	*/
+	second, serr := vfs.open_path(ns, "/dev/fb", vfs.O_RDONLY)
+	if check(r, serr == vfs.OK, "a second holder opens the screen too") {
+		check(r, screen_diverted(), "and the console is no further away than it was")
+		vfs.chan_close(second)
+		check(r, screen_diverted(), "and its close is not the last one")
+	}
+	check(r, screen_sample(s, 0, s.height) == before, "and the glass is still untouched")
+
+	/*
+	And the holder paints, far from anywhere the console goes.
+
+	This is what says the revert puts back the *frame* rather than the
+	console's own well. Whoever holds the screen may paint any of it, and a
+	compositor's windows are most of it. A revert that restored only the
+	console's region would hand back a screen with the last holder's work still
+	on two thirds of it.
+
+	The bottom corner, which is the far side of the glass from the log.
+	*/
+	far_x := s.width - 10
+	far_y := s.height - 10
+	far_was := fb.get_raw(s, far_x, far_y)
+	paint: [8]u8
+	for i in 0 ..< s.bytes_pp {
+		paint[i] = 0xC0 + u8(i) * 5
+	}
+	far_off := u64(far_y * s.pitch + far_x * s.bytes_pp)
+	pn, perr := vfs.chan_write(fbc, far_off, paint[:s.bytes_pp])
+	check(r, perr == vfs.OK && pn == s.bytes_pp, "the holder paints a corner of the glass itself")
+	check(r, fb.get_raw(s, far_x, far_y) != far_was, "which lands, because the holder has the screen")
+
+	vfs.chan_close(fbc)
+	check(r, !screen_diverted(), "the last close gives the screen back")
+	check(r, t.cons.screen.surface == s, "and the console draws on it again")
+	check(
+		r,
+		screen_sample(s, 0, s.height) != before,
+		"with the line it wrote while it was away now on it",
+	)
+	check(
+		r,
+		screen_sample(s, 0, 24) == chrome,
+		"and the chassis it never drew still there, because the copy was seeded from the glass",
+	)
+	check(
+		r,
+		fb.get_raw(s, far_x, far_y) == far_was,
+		"and the corner the holder painted put back, because the revert is the whole frame",
+	)
+}
+
+/*
+screen_sample adds up a spread of a band of the frame, as one number to
+compare.
+
+Every eighth pixel of every fourth row, which is enough that a line of text
+cannot miss all of them. A sum rather than a copy. A self-test that wanted
+four megabytes to hold a screen would be the second thing in this kernel that
+did.
+
+Sampled rather than exact on purpose. The claims are `nothing changed` and
+`something changed`, and neither one needs to say which pixel.
+
+The band is what lets one procedure ask two questions of one frame. The whole
+of it for what the console wrote, and the top of it for what the console never
+touches.
+*/
+@(private = "file")
+screen_sample :: proc "contextless" (s: ^fb.Surface, from: int, to: int) -> u64 #no_bounds_check {
+	sum := u64(0)
+	for y := from; y < min(to, s.height); y += 4 {
+		for x := 0; x < s.width; x += 8 {
+			sum = sum * 31 + u64(fb.get_raw(s, x, y))
+		}
+	}
+	return sum
 }
 
 /*

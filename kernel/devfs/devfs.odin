@@ -188,6 +188,9 @@ Dev_Tree :: struct {
 	ctl_opens:  int,
 	scan_opens: int,
 	eia_opens:  int,
+	// How many fids hold the screen. While it is above zero the console draws
+	// into a copy instead of onto the glass -- see `fbdev.odin`.
+	fb_opens:   int,
 }
 
 /*
@@ -420,6 +423,9 @@ mark_open :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_K
 	case .Eia0:
 		t.eia_opens += 1
 		return kind, t.eia_opens == 1
+	case .Fb:
+		t.fb_opens += 1
+		return kind, t.fb_opens == 1
 	}
 	return kind, false
 }
@@ -461,6 +467,9 @@ drop_fid :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_Ki
 	case .Eia0:
 		t.eia_opens -= 1
 		return kind, t.eia_opens <= 0
+	case .Fb:
+		t.fb_opens -= 1
+		return kind, t.fb_opens <= 0
 	}
 	return kind, false
 }
@@ -802,6 +811,10 @@ devfs_handler :: proc "contextless" (
 				tap_start(&t.scancode)
 			case .Eia0:
 				tap_start(&t.serial)
+			case .Fb:
+				// And the screen diverts the same way the streams do. The
+				// console draws into a copy until the last of these goes.
+				screen_divert(t.cons.screen, t.raw)
 			}
 		}
 		reply^ = vectra9.Rlopen{qid = node_qid(node), iounit = 0}
@@ -862,6 +875,10 @@ devfs_handler :: proc "contextless" (
 				tap_stop(&t.scancode)
 			case .Eia0:
 				tap_stop(&t.serial)
+			case .Fb:
+				// And the screen comes back, with everything the console drew
+				// while it was away on it.
+				screen_revert(t.cons.screen, t.raw)
 			}
 		}
 		reply^ = vectra9.Rclunk{}

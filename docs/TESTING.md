@@ -224,6 +224,7 @@ nothing else in common.
 | The payload buffer per request slot | `docs/TRANSPORT.md` | 3 of 4 |
 | The namespace over a transport with workers | `docs/NAMESPACE.md` | 4 of 6 |
 | The first device server | `docs/DEVFS.md` | 18 of 20 |
+| The screen's divert | `docs/DEVFS.md` | 6 of 6 |
 | Services published by name | `docs/SRV.md` | 9 of 9 |
 | The first device that interrupts | `docs/KBD.md` | 7 of 7 |
 | Address spaces | `docs/SPACE.md` | 3 checked, 2 faults, 1 inert |

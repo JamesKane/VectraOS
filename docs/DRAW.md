@@ -394,7 +394,22 @@ the field fill in front of the glyphs already contains them.
 kernel's own boot chassis, and `covered` is what leaves it there. That is the
 piece a desktop would change, and the next section is why there is not one.
 
-### The desktop, and what it is actually waiting for
+### The desktop, and what it was waiting for
+
+**The blocker is gone.** `/dev/fb` diverts the console now, so a process that
+holds the screen owns it. The console draws into a copy and gets the glass back
+on the last close. `servers/intuition` holds `/dev/fb` for its whole life, so
+it already owns the glass for as long as it runs. `docs/DEVFS.md` owns that
+mechanism and its controls.
+
+What is left for a desktop is a graphics decision rather than an ownership one.
+Paint a background at start, and let a window's rectangle be the window's,
+black included. `covered` then goes the way `CLEAR` went.
+
+The section below is what the blocker was, kept because it is why this took
+two milestones rather than one.
+
+### What the blocker was
 
 A desktop makes a window own its rectangle: black where the client has not
 drawn, and no `covered` needed to hold the compositor back. It was the second
