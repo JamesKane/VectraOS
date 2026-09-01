@@ -4008,6 +4008,177 @@ verify_mapping :: proc(r: ^Result) {
 
 
 /*
+verify_cons is the keyboard reaching the window in front, which is what a
+focused title bar was reporting before anything was actually sent there.
+
+**The shape is `rio`'s.** A window system does not translate scancodes: 9front's
+`rio` opens `/dev/cons`, and prefers `/dev/kbd` when it exists, both of them
+served by `kbdfs` one process further out. So `servers/intuition` reads a
+cooked keyboard through the same file every other program reads, and what it
+diverts is still only the glass.
+
+**A line goes to the window in front, and focus is read when the line
+arrives.** `verify_ctl` has just raised window zero, so window zero is the one
+listening and window one is the control -- the same line must not be in it.
+
+Four claims:
+
+    the arrival    a line typed at the keyboard reaches the focused window's
+                   own `cons`, through a server that never saw a scancode
+    the routing    and reaches only that one, which is what focus is for
+    the exclusion  one fid at a time holds a window's keyboard, because two
+                   readers would each get part of every line
+    the drain      and a line read once is gone, the way a queue is
+
+The poll is because the delivery crosses a process. The draw server's reader
+child is parked on `/dev/cons` in a process of its own, so a line typed here is
+in the kernel's line discipline before it is in a window's ring, and the two
+are not the same instant.
+
+**What is polled is the size, not the file**, and the first cut of this got it
+wrong in a way worth keeping written down. A read with a deadline looked like
+the way to ask an empty queue whether anything was there. It is not: the
+deadline flushes the request on the wire and `serve_mux`'s worker never hears
+it -- `docs/HANDOFF.md` section 6 names that gap -- so each abandoned read left
+a worker polling a ring for ever, and the server wedged once every slot was
+spent. `cons` answers its size with the bytes waiting, the way `kbdfs` does, so
+the queue can be asked without being read from.
+*/
+@(private = "file")
+verify_cons :: proc(r: ^Result, zero_ctl: ^vfs.Chan, one_ctl: ^vfs.Chan) #no_bounds_check {
+	zero, zerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/cons", vfs.O_RDONLY)
+	if !check(r, zerr == vfs.OK, "the window in front has a cons file of its own") {
+		return
+	}
+	defer vfs.chan_close(zero)
+
+	/*
+	And one holder of it, which is `data`'s rule and `ctl`'s.
+
+	Two readers of one keyboard would each get part of every line, and which
+	part is a race. It is the same protection a window's other two files have
+	and it is worth exactly as much: a window whose client never opens its
+	`cons` leaves it for whoever asks.
+	*/
+	rival, rverr := vfs.open_path(vfs.boot_namespace, "/mnt/0/cons", vfs.O_RDONLY)
+	check(r, rverr != vfs.OK, "and one reader of it, the way its data and its ctl are")
+	if rverr == vfs.OK {
+		vfs.chan_close(rival)
+	}
+
+	one, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/cons", vfs.O_RDONLY)
+	if !check(r, oerr == vfs.OK, "and so does the window behind it") {
+		return
+	}
+	defer vfs.chan_close(one)
+
+	// `verify_ctl` has just raised window zero, so window zero is listening.
+	typed_to(r, zero, one, "hi", "a line typed at the keyboard arrives in the window in front")
+
+	/*
+	And again the other way round, which is the half the first cut of this
+	did not have.
+
+	**A control that sent every line to window zero was inert**, because
+	window zero is the one `verify_ctl` raised and the two answers agreed.
+	`docs/TESTING.md` names agreeing by accident as the way a check passes for
+	the wrong reason, and one direction of a routing rule is exactly that. So
+	the front moves and the same claim is made about the other window.
+	*/
+	_, rerr := vfs.chan_write(one_ctl, 0, bytes_of("raise\n"))
+	check(r, rerr == vfs.OK, "the window behind asks to come to the front")
+	typed_to(r, one, zero, "yo", "and the keyboard follows it, which is what focus is for")
+
+	// And the front goes back where the rest of this procedure expects it.
+	_, berr := vfs.chan_write(zero_ctl, 0, bytes_of("raise\n"))
+	check(r, berr == vfs.OK, "and the first window takes the front back")
+}
+
+/*
+typed_to types one line at the keyboard and checks it reached `want` and not
+`other`.
+
+Three claims per call, and the pair of calls is what makes them a routing rule
+rather than a coincidence:
+
+    the arrival    the line is in the window that has the focus
+    the routing    and in no other, read before the drain below could hide it
+    the drain      and reading it empties the queue, which a file would not
+
+**What is polled is the size, not the file**, and the first cut of this got it
+wrong in a way worth keeping written down. A read with a deadline looked like
+the way to ask an empty queue whether anything was there. It is not: the
+deadline flushes the request on the wire and `serve_mux`'s worker never hears
+it -- `docs/HANDOFF.md` section 6 names that gap -- so each abandoned read left
+a worker polling a ring for ever, and the server wedged once every slot was
+spent. `cons` answers its size with the bytes waiting, the way `kbdfs` does, so
+a queue can be asked without being read from.
+
+The poll is because the delivery crosses a process. The draw server's reader
+child is parked on `/dev/cons` in a process of its own, so a line typed here is
+in the kernel's line discipline before it is in a window's ring, and the two
+are not the same instant.
+*/
+@(private = "file")
+typed_to :: proc(r: ^Result, want: ^vfs.Chan, other: ^vfs.Chan, text: string, what: string) #no_bounds_check {
+	// The newline is what makes the kernel's line discipline hand the line
+	// over. Until it lands there is nothing for any window to be given.
+	for c in transmute([]u8)text {
+		devfs.keyboard_sink(c)
+	}
+	devfs.keyboard_sink('\n')
+
+	waiting := u64(0)
+	for _ in 0 ..< PATIENCE {
+		if attr, err := vfs.chan_stat(want); err == vfs.OK && attr.size > 0 {
+			waiting = attr.size
+			break
+		}
+		sync.delay(1)
+	}
+
+	// The other window, read before the drain below, because a routing bug
+	// that put the line in both would otherwise be hidden by it.
+	rest, oserr := vfs.chan_stat(other)
+	check(
+		r,
+		oserr == vfs.OK && rest.size == 0,
+		"and in no other window, because a line belongs to the one in front",
+	)
+
+	/*
+	The line itself, which is what the size was only promising.
+
+	**Gated on the size, so a delivery that never happened fails a check
+	rather than stopping the boot.** An ordinary read of an empty queue parks
+	until something arrives, and for a window nobody is typing at that is for
+	ever. `docs/TESTING.md` names a hang as the worst way for a check to
+	report, and the gap that makes one reachable here is a standing one.
+	*/
+	got: [64]u8
+	n := 0
+	rerr := vfs.Errno(vfs.OK)
+	if waiting > 0 {
+		n, rerr = vfs.chan_read(want, 0, got[:])
+	}
+	check(
+		r,
+		waiting >= u64(len(text)) && rerr == vfs.OK && n >= len(text) &&
+		string(got[:len(text)]) == text,
+		what,
+	)
+
+	// And the queue gave it up. A file would answer the same bytes twice.
+	if attr, aerr := vfs.chan_stat(want); aerr == vfs.OK {
+		check(
+			r,
+			attr.size == 0,
+			"and a line read once is gone, the way a queue empties and a file would not",
+		)
+	}
+}
+
+/*
 verify_ctl is the three lines a client may say about its own window.
 
     move X Y     put it somewhere else
@@ -4152,6 +4323,8 @@ verify_ctl :: proc(
 		fb.get_raw(s, ox + 8, bar_y) == lit && fb.get_raw(s, one_x, bar_y) == dark,
 		"and takes the focus with it, because the front is the whole of what focus is",
 	)
+
+	verify_cons(r, first_ctl, cfd)
 
 	// -- move -----------------------------------------------------------------
 
@@ -4965,6 +5138,30 @@ verify_windows :: proc(
 	check(r, fb.get_raw(s, second_ox + 16, sy) == MARK, "which lands inside its own window")
 	check(r, fb.get_raw(s, ox + 16, sy) != MARK, "and not in the window beside it")
 
+	/*
+	And a line typed at the second window, left in its queue and never read.
+
+	The slot is about to change hands, and what it must not carry across is
+	checked below. Waiting for the line to land rather than typing and moving
+	on: the delivery crosses a process, and a line still in flight when the
+	window closes would arrive in whatever window the focus fell to and spoil
+	a later check rather than this one.
+	*/
+	stale_cons, scerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/cons", vfs.O_RDONLY)
+	if check(r, scerr == vfs.OK, "the second window's keyboard opens") {
+		for c in transmute([]u8)string("zz") {
+			devfs.keyboard_sink(c)
+		}
+		devfs.keyboard_sink('\n')
+		for _ in 0 ..< PATIENCE {
+			if attr, e := vfs.chan_stat(stale_cons); e == vfs.OK && attr.size > 0 {
+				break
+			}
+			sync.delay(1)
+		}
+		vfs.chan_close(stale_cons)
+	}
+
 	// -- The uncover, which is the milestone ----------------------------------
 
 	/*
@@ -5046,6 +5243,26 @@ verify_windows :: proc(
 			fresh == fb.pack(s, fb.SLATE),
 			"and the window's own ground is the well it is sunk into, not the plinth around it",
 		)
+
+		/*
+		And with an empty keyboard, which is the pixels' rule one file along.
+
+		A slot's key ring outlives the session it was lent to exactly the way
+		its store does, and a line typed at the last client and never read is
+		still sitting in it. A new session's first read would answer with what
+		somebody else was typed. The store is cleared by the frame that paints
+		over it, and the queue has to be cleared on purpose.
+		*/
+		fresh_cons, fcerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/cons", vfs.O_RDONLY)
+		if check(r, fcerr == vfs.OK, "and its keyboard opens for the new session") {
+			attr, cerr2 := vfs.chan_stat(fresh_cons)
+			check(
+				r,
+				cerr2 == vfs.OK && attr.size == 0,
+				"with nothing in it, because a slot does not carry the last client's keystrokes either",
+			)
+			vfs.chan_close(fresh_cons)
+		}
 
 		A3 :: u32(0x00117733)
 		at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(win_w), 1, A3)

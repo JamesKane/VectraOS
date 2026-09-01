@@ -201,26 +201,75 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	_ = libuser.write(int(ctl), transmute([]u8)title)
 	_ = libuser.close(int(ctl))
 
+	/*
+	And this window's own `/dev`, which is how a program reads the keyboard
+	it was typed at.
+
+	**This is `rio`'s `filsysmount`, one bind shorter.** `rio` mounts its
+	per-window file set at `/mnt/wsys` with the window's id as the attach
+	`aname`, then binds that over `/dev` before everything else, so a program
+	in a window opens plain `/dev/cons` and gets the window's. The draw server
+	here already serves a directory per window, so the mount is done and the
+	bind is of that directory.
+
+	`ORDER_BEFORE` and not `ORDER_REPLACE`: `/dev/consctl`, `/dev/fb` and
+	every other device still have to resolve behind it. Only the names this
+	window serves -- `cons` among them -- are taken over.
+
+	The descriptor comes after the bind, because a bind does not move a file
+	somebody already holds open. Descriptor zero is still the kernel's console
+	from before this program started, and this is the one that replaces it.
+	*/
+	if libuser.bind(libdraw.win_dir(path_buf[:], "/mnt", mine), "/dev", abi.ORDER_BEFORE) < 0 {
+		libuser.exit(0x78)
+	}
+	cons := libuser.open("/dev/cons", abi.O_RDONLY)
+	if cons < 0 {
+		libuser.exit(0x78)
+	}
+
 	upload_font()
 	prompt()
 
 	for {
-		got := libuser.read(0, line[:])
+		got := libuser.read(int(cons), line[:])
 		if got <= 0 {
 			libuser.exit(0x79)
 		}
-		// The discipline hands over whole lines. Up to the first newline
-		// is this line, and a second one queued behind it can wait for
-		// the next read.
-		end := 0
-		for end < int(got) && line[end] != '\n' {
-			end += 1
+		/*
+		**One read can carry several lines, so this renders all of them.**
+
+		The line discipline hands over whole lines, but never fewer than it
+		has: `cons_take` empties its ring into whatever buffer it is given,
+		and a window's own queue does the same. So two lines typed while this
+		program was busy drawing the first one arrive together, and a loop
+		that rendered up to the first newline and read again would throw the
+		second away.
+
+		Drawing a line takes long enough to make that reachable. The comment
+		here used to promise the opposite and was wrong before the keyboard
+		came through a window -- what changed is that a queue of its own
+		makes it easy to hit.
+		*/
+		at := 0
+		for at < int(got) {
+			end := at
+			for end < int(got) && line[end] != '\n' {
+				end += 1
+			}
+			// A tail with no newline is a partial line. Nothing in this
+			// system produces one, and rendering half a line would be worse
+			// than waiting for the rest.
+			if end >= int(got) {
+				break
+			}
+			text := string(line[at:end])
+			if text == "exit" {
+				libuser.exit(0)
+			}
+			render(text)
+			at = end + 1
 		}
-		text := string(line[:end])
-		if text == "exit" {
-			libuser.exit(0)
-		}
-		render(text)
 	}
 }
 

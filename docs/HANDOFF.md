@@ -48,7 +48,7 @@ preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 | Services | `/srv` names a running service, mountable anywhere in a namespace, postable from ring 3, and its connection comes down when the last mount and the name are both gone | `SRV.md`, `PIPE.md` |
 | Processes | ring 3, a namespace and a descriptor group of its own, `spawn`, `rfork` by Plan 9's flag word, `exec` in place, notes a handler catches, `segalloc` for memory no file serves | `USER.md` |
 | Ring 3 servers | five of them, on a runtime with a serve loop, a concurrent one with a worker per parked request, and the tree's first ring 3 lock | `RUNTIME.md` |
-| The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, and four `ctl` lines | `DRAW.md` |
+| The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` per window that the keyboard reaches through the one in front | `DRAW.md` |
 
 **The screen is the part with the most recent work in it.**
 `servers/intuition` holds `/dev/fb` and maps it with `segattach`. It owns every
@@ -65,6 +65,15 @@ A window is a raised plinth with a sunken screen in it. The chrome vocabulary
 is `sys/libdraw` and the palette is `sys/libpal`, and ring 0 and ring 3 both
 read them. `move`, `size`, `raise` and `name` are `ctl` lines rather than verbs.
 The window in front wears the lit copper.
+
+**And the keyboard reaches the window in front.** A window serves a `cons`. A
+client binds its own window's directory over `/dev` before everything else, so
+it opens plain `/dev/cons` and gets the window's. That is `rio`'s
+`filsysmount`, one bind shorter.
+
+It is also why the draw server does not touch `/dev/scancode`. `rio` reads a
+cooked keyboard too, and the translation belongs to `servers/kbdfs`, one
+process further out.
 
 `docs/DRAW.md` owns all of it, section by section, with the controls each claim
 was measured against.
@@ -108,6 +117,8 @@ them could have come earlier:
     segalloc                and a program holds memory no file serves
     a compositor            and a window's pixels are its own, and survive
                             being covered
+    a window's cons         and the keyboard reaches the window in front,
+                            through a namespace rather than a protocol
 
 ### Reading a boot log
 
@@ -148,8 +159,12 @@ gap with a design question attached is work rather than orientation.
   to a pid. `RFNOTEG` is recorded and inert for the same reason, and it is the
   one flag in `rfork`'s word that is. No FPU state crosses a delivery.
 - **No flush that reaches a worker.** `serve_mux` forks a worker per parked
-  read. A `Tflush` cancels the request on the wire but not the worker, which
-  polls until its byte arrives or the server shuts down.
+  read, and a `Tflush` cancels the request on the wire but not the worker. It
+  has teeth now, and `docs/DRAW.md` section 13 has the boot that found them.
+  A read with a deadline abandons a worker per attempt, and abandoned ones
+  accumulate until the pool is spent. A flushed worker also still replies,
+  carrying the flushed tag, which the wire drops and counts. A client that
+  reused that tag first would not. The cancel belongs in `sys/libuser`.
 - **No allocator in ring 3**, and no way for one process to wait on two
   descriptors — it forks instead, which is Plan 9's answer.
 - **No ACPI.** The I/O APIC's address and the ISA-to-GSI mapping are assumed
@@ -300,13 +315,14 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **Keyboard to the focused window.** A title bar reports which client the
-   machine is listening to, and the machine is not listening to it. `/dev/cons`
-   is the console's, and a window has no way to be given a keystroke. A
-   read-only event file on `/N/` is the shape, which grows `docs/DRAW.md`
-   section 4's file set rather than section 5's verbs. It is the first thing on
-   this screen that would want `/dev/scancode` diverted the way `/dev/fb`
-   already is.
+2. **A line discipline per window.** `/dev/cons` stays cooked, so the editing
+   state, the echo and the erase are the kernel's and every window shares one.
+   A line half-typed when the focus moves is delivered whole to the window that
+   has it when the newline lands. `rio` writes `rawon` and edits per window for
+   exactly this reason, and the fix is its shape. Take the keyboard raw, and
+   give every window its own editing state and its own `consctl`. That moves
+   the line discipline out of `kernel/devfs`, which is a milestone rather than
+   a patch. `docs/DRAW.md` section 13 names the defect.
 
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process

@@ -681,11 +681,7 @@ say. A lamp says a window has a session. The bar says which one is in front.
 it with. All three exist as `ctl` lines already, so what is missing is a
 pointer, and there is no pointing device in this system yet.
 
-**Nothing is routed by focus.** The front window is drawn as the one being
-listened to and nothing is actually being sent to it, because there is no input
-to send: the keyboard is `/dev/cons` and the console owns it. A keyboard event
-file on a window's directory is what would make the colour mean something the
-client can act on, and it is a protocol question rather than a chrome one.
+**Focus routes the keyboard now**, which is section 13.
 
 ### How the test knows where a window is
 
@@ -885,12 +881,6 @@ first time the answer was that the test was asking the wrong process.
   rectangles exists to avoid. An opaque window is what finally makes it
   correct, so this is the first milestone where it *could* be done. Worth it at
   more windows than two.
-- **Nothing is routed by the focus a bar now reports.** The front window wears
-  the lit copper and is not actually being sent anything, because there is
-  nothing to send: the keyboard is `/dev/cons` and the console owns it. A
-  read-only event file on `/N/` is the shape, which grows section 4's file set
-  rather than section 5's verbs, and it wants `/dev/scancode` diverted the way
-  `/dev/fb` already is.
 - **Nothing on a frame can be pressed.** No close, no resize handle, no drag.
   Every one of those is a `ctl` line already, so what is missing is a pointing
   device, which this system does not have.
@@ -908,3 +898,194 @@ Two windows at 640 by 800 is 4 MB, which is `SEGALLOC_MAX` twice over.
 together, because a window costs a segment. A frame costs none of it: the
 border, the bar and the well are pixels inside the run a window already had,
 and what they take is out of the client's area rather than out of memory.
+
+## 13. The keyboard, and the window in front
+
+A focused title bar reported which client the machine was listening to while
+nothing was being sent there. This is the other half: **a window has a `cons`,
+and a line typed at the keyboard goes to the window in front.**
+
+### What 9front does, and what this server is therefore not
+
+The design question was where the keystrokes come from, and `rio` answers it
+plainly. `rio`'s `kbdproc` opens `/dev/cons`, writes `rawon` to `/dev/consctl`,
+and prefers `/dev/kbd` when that exists. **It never opens `/dev/scancode.`**
+
+`kbdfs` serves both of the files it does open, one process further out. That
+program holds the raw stream and runs the state machine.
+
+So a window system is not a keyboard driver, and this server does not become
+one. What it diverts is still only `/dev/fb`. The scancode divert already
+exists one tenant along, in `servers/kbdfs`, and the translation is written
+once there rather than a third time here.
+
+That corrects what the handoff predicted. It read the focus milestone as
+wanting `/dev/scancode` diverted the way `/dev/fb` is. It does not: the glass
+has one owner and the keyboard has a cooked file, and those are different
+relationships with the hardware.
+
+### The file, and the bind that makes it `/dev/cons`
+
+`rio` serves a flat file set per window -- `cons`, `consctl`, `kbd`, `mouse`,
+`label`, `wctl`, `winid` -- and `filsysmount` puts it in the client's
+namespace with two calls:
+
+```c
+mount(fs->cfd, -1, "/mnt/wsys", MREPL, buf);   /* buf is the window's id */
+bind("/mnt/wsys", "/dev", MBEFORE);
+```
+
+**The namespace picks the window, and the program reads plain `/dev/cons`.**
+That is the whole idea, and it is why `rio` needs no cooperation from the
+programs it runs. A window's id travels as the attach `aname`, because `rio`'s
+file server has no directory per window to walk to.
+
+This server does. Section 4's numbered directories are `devdraw`'s shape --
+`Qtopdir`, `Qnew`, and `Q3rd` per client -- and they were already here. So a
+walk names the window, and the bind is of that directory:
+
+    bind /mnt/N /dev before
+
+One bind shorter than `rio`'s and the same end state. `ORDER_BEFORE` rather
+than replace, so `/dev/consctl`, `/dev/fb` and every other device still resolve
+behind it, and only the names a window serves are taken over.
+
+A window's directory therefore holds three files now:
+
+    /N/data    the command stream, and the claim on window N
+    /N/ctl     window N's geometry out, and its control lines in
+    /N/cons    what was typed at window N, when window N was in front
+
+`cons` is exclusive the way the other two are. Two readers of one window's
+keyboard would each get part of every line, and which part is a race.
+
+**A slot does not carry a queue across sessions**, which is the store's rule
+one file along. A window's key ring outlives the session it was lent to exactly
+as its pixels do, and a line typed at a client that never read it is still
+sitting there. `window_open` drops the tail on the head, beside the frame that
+paints over the last client's pixels, and the two are the same sentence about
+two kinds of memory. The exclusive files go back at the same moment, so a
+window's own client is never refused its own `cons` because somebody walked to
+it while the slot was free.
+
+The residual is the one `ctl` already had: a fid opened while another session
+held the window keeps working after the slot changes hands. Nothing server-side
+can revoke a fid, and users are what Plan 9 puts in that gap.
+
+**Its size is what is waiting in it**, which `kbdfs` answers the same way. That
+is what lets a queue be asked whether anything is there without reading from
+it, and section 8 records what happens to a test that asks the other way.
+
+### The cost: a second process, and a loop that can park
+
+`libuser.serve` cannot park, and this server's own note said so -- one loop,
+inline, nothing waits. A read of `cons` has to wait for a keystroke, so the
+loop is `serve_mux` now, with a reader child forked over `RFMEM`, which is
+`servers/consrv`'s shape and `servers/kbdfs`'s.
+
+    the child    parks reading /dev/cons, and pushes each line into the
+                 ring of whatever window is in front when it arrives
+    the parent   serves 9P. A read of /N/cons drains that window's ring,
+                 parking in a worker until a line is typed
+
+**One loop still draws.** `blocks` claims exactly one message -- a read of a
+window's `cons` -- so every message that moves a pixel is still answered
+inline, in order, by the loop that owns `scratch` and the glass. A worker
+touches its window's ring and the fid table, and neither a window's store nor
+the framebuffer is reachable from it.
+
+**And the loop refuses to park, which took a count to arrange.** `serve_mux`
+answers inline when no slot is free, and that is right for every message here
+except the one that waits. An inline `cons` read parks the loop that paints --
+and `Tremove` is inline too, so a server stuck that way cannot even be stopped.
+It is reachable: a worker whose client died polls a ring nobody will fill, so
+abandoned reads accumulate until the pool is spent.
+
+`cons_parked` is what makes the inline case identifiable from inside the
+handler. At most `SLOTS` workers exist, so a `cons` read arriving with `SLOTS`
+already parked is the inline one, and it answers `EAGAIN` instead of waiting.
+`EAGAIN` rather than a short read, because a read of nothing means end of file
+to every client in this tree.
+
+**Focus is read when the line arrives**, not when the read was posted. That is
+the honest rule for cooked lines: a line belongs to whoever had the focus at
+the instant it completed, because that is the only instant the whole line
+existed. `focus_win` reads the stack the way a second process must -- each half
+once, and every answer bounds-checked -- because the parent moves the stack
+between any two of the child's instructions. A torn read costs a line to the
+window that was in front a moment earlier, which is inside the rule rather than
+outside it.
+
+### The defect this shape has, named rather than hidden
+
+**There is one editing state and it is the kernel's.** `/dev/cons` stays
+cooked, so the line discipline, the echo and the erase all belong to
+`kernel/devfs`, and every window shares one.
+
+`rio` writes `rawon` and edits per window for exactly this reason. The
+consequence here is that **a line half-typed when the focus moves goes whole to
+the window that has the focus when the newline lands**. The window it was being
+typed into never sees the part it was owed. There
+is also no per-window `consctl`. `apps/terminal`'s `echooff` turns the
+kernel's echo off for everyone.
+
+Neither is a thing a client can work around, and both go the same way: take the
+keyboard raw, and give every window its own editing state and its own
+`consctl`. That moves the line discipline out of `kernel/devfs` and into this
+server, per window, which is a milestone rather than a patch.
+
+### What a client had to change
+
+`apps/terminal` grew two calls -- the bind, and an open of `/dev/cons` after it
+-- and its read loop changed which descriptor it names.
+
+**The open is the part that is not free**, and it is worth knowing why. A bind
+does not move a file somebody already holds open. Descriptor zero is the
+console this program was *born* holding, from `open_standard`, so the bind
+cannot reach it and the program has to open the name again to get the window's.
+`rio`'s children are spawned into the new namespace and never hold the old one,
+which is why `rio` needs no equivalent.
+
+### The controls
+
+| Mutation | Result |
+|---|---|
+| the reader drops every line | boot **hangs**, and see below |
+| every line goes to window zero rather than the one in front | 2 checks, first `and in no other window, because a line belongs to the one in front` |
+| a line goes to every window rather than the one in front | 3 checks, first the same |
+| `cons` is not exclusive | 1 check, `and one reader of it, the way its data and its ctl are` |
+| a slot keeps the last client's keystrokes | 3 checks, first `with nothing in it, because a slot does not carry the last client's keystrokes either` |
+
+**One of those was inert on the first cut, and the fix was the test's.** A
+server that sent every line to window zero passed every check, because window
+zero is the window `verify_ctl` raises and the two answers agreed. A routing
+rule checked in one direction is a rule agreeing with itself. `verify_cons`
+raises the other window and makes the same claim again, so the second call
+catches what the first cannot.
+
+**The first one is the standing gap, not a missing check.** `verify_cons`
+fails its own checks and does not hang. The read of a window's queue is gated
+on the size, so a delivery that never happened fails rather than parks.
+
+What hangs is `verify_terminal` afterwards. `apps/terminal` parks on a read
+that will never answer, and the test then types `exit` at a program that cannot
+hear it. `docs/HANDOFF.md` section 6 names the reason: a killed process holds
+its descriptors until something reaps it, so nothing hangs up the pipe. It is
+the same gap a control in section 8 found, from a different direction.
+
+**A flushed read still answers, and that is not fixed here.** `Tflush` is
+answered inline while the worker holding the flushed `Tread` stays parked, and
+its `Rread` goes out later carrying the flushed tag. 9P wants no reply after
+`Rflush`. The kernel's wire drops a reply naming no request in flight and
+counts it, so the damage today is a wasted reply rather than a desync -- but a
+client that reuses the tag first would take the stale `Rread` as the answer to
+whatever it asked next. The cancel has to reach the worker, which is
+`sys/libuser`'s to add and is the same standing gap the paragraph below is
+about. `servers/kbdfs` and `servers/consrv` answer `Tflush` the same way.
+
+**And one control was the test's own first cut.** Asking an empty queue with a
+deadline read looked right and is not. The deadline flushes the request on the
+wire and `serve_mux`'s worker never hears it, so every abandoned read left a
+worker polling a ring for ever, and the server wedged once every slot was
+spent. Three deadline reads is all it took. The size field is the way to ask,
+and that is why `cons` answers one.

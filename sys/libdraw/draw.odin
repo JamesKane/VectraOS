@@ -254,6 +254,27 @@ win_name :: proc "contextless" (n: int) -> string #no_bounds_check {
 }
 
 /*
+win_dir builds `<mnt>/N` into the caller's buffer: a window's own directory,
+with no file named inside it.
+
+What a client binds over `/dev` to make its window's `cons` the console it
+reads. `win_path` with an empty leaf would leave a trailing slash, and a
+directory is a name rather than a prefix.
+*/
+win_dir :: proc "contextless" (buf: []u8, mnt: string, n: int) -> string #no_bounds_check {
+	name := win_name(n)
+	need := len(mnt) + 1 + len(name)
+	if name == "" || need > len(buf) {
+		return ""
+	}
+	at := copy(buf, mnt)
+	buf[at] = '/'
+	at += 1
+	at += copy(buf[at:], name)
+	return string(buf[:at])
+}
+
+/*
 win_path builds `<mnt>/N/<leaf>` into the caller's buffer.
 
 The caller's buffer rather than a static one. A program with no allocator that

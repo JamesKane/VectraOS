@@ -82,6 +82,7 @@ this server's arithmetic now, where it used to be the file's.
 */
 package intuition
 
+import "base:intrinsics"
 import "base:runtime"
 
 import "vsys:abi"
@@ -116,12 +117,13 @@ same answer it would get from any other allocator this server could write.
 NODE_ROOT :: i32(0)
 NODE_NEW :: i32(1)
 
-// A window's three nodes, in one block apiece after the two fixed ones.
+// A window's four nodes, in one block apiece after the two fixed ones.
 NODE_BASE :: i32(2)
-NODE_PER :: i32(3)
+NODE_PER :: i32(4)
 PART_DIR :: i32(0)
 PART_DATA :: i32(1)
 PART_CTL :: i32(2)
+PART_CONS :: i32(3)
 
 // A window's directory name is `libdraw.win_name`, which both this server and
 // its clients read so the tree's layout is stated once. One digit per window,
@@ -856,6 +858,11 @@ Window :: struct {
 	// a window's controls, so two clients cannot both move one window.
 	ctl_fid:  vectra9.Fid,
 	ctl_held: bool,
+
+	// And `cons` the same way, for the same reason one step along: two
+	// readers of one window's keyboard would each get part of every line.
+	cons_fid:  vectra9.Fid,
+	cons_held: bool,
 }
 
 /*
@@ -919,6 +926,92 @@ refocus :: proc "contextless" (was: int) #no_bounds_check {
 	}
 }
 
+/*
+The keyboard, and which window is listening to it.
+
+**This server does not translate scancodes, and Plan 9's does not either.**
+`rio` opens `/dev/cons`, writes `rawon` to `/dev/consctl`, and prefers
+`/dev/kbd` when it exists -- and both of those are served by `kbdfs`, one
+process further out. `rio` never opens `/dev/scancode`. So the divert this
+server does hold is `/dev/fb`'s, and the keyboard arrives already cooked,
+through the same file every other program reads.
+
+**A line goes to the window in front, and focus is read when the line
+arrives.** That is the honest rule for cooked lines: a line belongs to whoever
+had the focus at the moment it completed, because that is the only instant the
+whole line existed at once.
+
+**The editing state is the kernel's, and there is one of it.** `rio` writes
+`rawon` and edits per window for exactly this reason, and this server does
+not, which is a defect rather than a simplification -- see `docs/DRAW.md`
+section 13. A line half-typed when the focus moves is delivered whole to the
+window that has it when the newline lands, and the window that was being typed
+into never sees the part it was owed.
+
+One ring per window, because two parked readers must not race for one queue.
+The child is the only producer and each window's worker is its only consumer,
+which is the discipline `libuser.Ring` is written to.
+*/
+KBD_RING :: 256
+kbd_store: [MAX_WINDOWS][KBD_RING]u8
+kbd: [MAX_WINDOWS]libuser.Ring
+
+// The child's own read buffer, in the bss both halves share and touched by
+// the child alone.
+kbd_chunk: [128]u8
+
+/*
+focus_win is `stack_top` as the reader child may read it.
+
+The child runs in its own process against shared memory, and the parent
+mutates the stack between two of its instructions whenever a window opens,
+closes or is raised. `stack_top` would index with a count it read a moment
+ago. This reads each half once and refuses anything that is not a window.
+
+**A torn read costs a line, not a fault.** The worst answer this can give is
+the window that had the focus an instant earlier, which is inside the rule the
+file comment above states.
+*/
+focus_win :: proc "contextless" () -> int #no_bounds_check {
+	n := int(intrinsics.volatile_load(&stack_n))
+	if n <= 0 || n > MAX_WINDOWS {
+		return -1
+	}
+	w := intrinsics.volatile_load(&stack[n - 1])
+	if w < 0 || w >= MAX_WINDOWS || !windows[w].used {
+		return -1
+	}
+	return w
+}
+
+/*
+reader is the child's whole life: read the console, give each line to the
+window in front.
+
+A failed read is not a loop to break out of. A noted process's read answers
+EINTR, and its next system call is the boundary the note ends it at, so asking
+again *is* the teardown protocol. `servers/kbdfs` and `servers/consrv` have
+the same shape over different devices.
+
+**A line nobody is listening to is dropped**, which is what no window in front
+means. `rio` has nowhere to put one either.
+*/
+reader :: proc "contextless" (cons: int) -> ! {
+	for {
+		n := libuser.read(cons, kbd_chunk[:])
+		if n <= 0 {
+			continue
+		}
+		w := focus_win()
+		if w < 0 {
+			continue
+		}
+		for i in 0 ..< int(n) {
+			libuser.ring_push(&kbd[w], kbd_chunk[i])
+		}
+	}
+}
+
 // stack_add puts a new window on top. stack_drop takes one out and closes the
 // gap, which keeps the order of everything under it.
 stack_add :: proc "contextless" (win: int) #no_bounds_check {
@@ -948,8 +1041,13 @@ stack_drop :: proc "contextless" (win: int) #no_bounds_check {
 Where a composite builds the screen-coordinate region it is about to paint.
 
 A package variable rather than a local, because a `Region` is half a kilobyte
-and this server's stack is a program's. Safe as a single variable for the
-reason this file has no lock: one serve loop, inline, nothing parks.
+and this server's stack is a program's.
+
+**Safe as a single variable because one loop draws.** `serve_mux` forks a
+worker only for a request `blocks` claims, and `blocks` claims exactly one: a
+read of a window's `cons`, which touches that window's key ring and nothing
+else. Every message that moves a pixel is still answered inline, in order, by
+the one loop that owns this.
 */
 scratch: Region
 
@@ -1011,6 +1109,45 @@ frame_in: [FRAME]u8
 frame_out: [FRAME]u8
 payload: [1024]u8
 
+// The write lock `serve_mux` serialises replies with, and a state lock over
+// the consumer end of a window's key ring. `stopping` releases a worker
+// parked on an empty one at teardown. See `servers/kbdfs`, which this is the
+// shape of, and `sys/libuser/serve.odin`.
+wlock: libuser.Spin
+state_lock: libuser.Spin
+stopping: bool
+
+// One worker per window that may have a read parked on its `cons`, and one
+// spare so a client that opens a second window is never the request that
+// stalls the loop.
+SLOTS :: MAX_WINDOWS + 1
+slot_frame: [SLOTS][FRAME]u8
+slot_out: [SLOTS][FRAME]u8
+slot_payload: [SLOTS][1024]u8
+slots: [SLOTS]libuser.Mux_Slot
+
+// One tick between looks at a key ring, for a read parked waiting on a line.
+POLL_TICKS :: 1
+
+/*
+How many `cons` reads are parked, and the reason this server counts them.
+
+**`serve_mux` answers inline when no slot is free**, which is right for every
+message this server has except one. A `cons` read waits for a keystroke, so an
+inline one parks the loop that draws -- and `Tremove` is inline too, so a
+server wedged that way cannot even be stopped. Three abandoned reads is all it
+takes, because a worker whose client died polls a ring nobody will fill.
+
+The count is what makes the inline case identifiable from inside the handler.
+`serve_mux` forks at most `SLOTS` workers, so a `cons` read that arrives with
+`SLOTS` already parked is the inline one, and it is refused instead of waiting.
+The loop that owns the glass therefore never parks, whatever a client does.
+
+`EAGAIN` rather than an empty read, because a short read means end of file to
+every client in this tree and a client that should try again is not at one.
+*/
+cons_parked: u32
+
 /*
 _start opens the screen, learns its shape, and serves.
 
@@ -1066,20 +1203,86 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	// descriptor above is open, so nothing else is painting.
 	desk_paint(0, 0, scr_w, scr_h)
 
+	/*
+	And the keyboard, which is a file like everything else.
+
+	`/dev/cons` rather than `/dev/scancode`, because `rio` reads a cooked
+	keyboard and so does this. The translation is `kbdfs`'s and the divert
+	behind it is `/dev/scancode`'s, one process further out. What this server
+	diverts is the glass.
+
+	The rings are framed before the fork, so both halves hold the same
+	structure rather than each initialising its own copy.
+	*/
+	for i in 0 ..< MAX_WINDOWS {
+		kbd[i] = libuser.Ring{buf = kbd_store[i][:]}
+	}
+	cons := libuser.open("/dev/cons", abi.O_RDONLY)
+	if cons < 0 {
+		libuser.exit(0x79)
+	}
+
+	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)
+	if pid < 0 {
+		libuser.exit(0x73)
+	}
+	if pid == 0 {
+		reader(int(cons))
+	}
+
 	sfd, perr := libuser.post("/srv/draw")
 	if perr < 0 {
+		_ = libuser.stop_child(u64(pid))
 		libuser.exit(0x71)
 	}
 
-	_, why := libuser.serve(sfd, handler, nil, frame_in[:], frame_out[:], payload[:])
-	switch why {
-	case .Removed:
-		libuser.exit(0)
-	case .Hangup:
-		libuser.exit(0x68)
-	case .Broken:
-		libuser.exit(0x72)
+	for i in 0 ..< SLOTS {
+		slots[i] = libuser.Mux_Slot {
+			frame   = slot_frame[i][:],
+			out     = slot_out[i][:],
+			payload = slot_payload[i][:],
+		}
 	}
+	mux := libuser.Mux {
+		fd      = sfd,
+		handler = handler,
+		blocks  = blocks,
+		frame   = frame_in[:],
+		out     = frame_out[:],
+		payload = payload[:],
+		wlock   = &wlock,
+		slots   = slots[:],
+	}
+
+	_, why := libuser.serve_mux(&mux)
+
+	// The flag first, so a worker parked on an empty ring leaves before the
+	// child it was waiting on is noted out of its console read.
+	intrinsics.volatile_store(&stopping, true)
+
+	if why != .Removed {
+		_ = libuser.stop_child(u64(pid))
+		libuser.exit(why == .Hangup ? 0x68 : 0x72)
+	}
+	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
+}
+
+/*
+blocks is true for exactly the read that waits on a keystroke: a read of a
+window's `cons`.
+
+**Everything that draws is false here**, which is what keeps one loop painting.
+A worker answers a `cons` read and touches that window's key ring and the fid
+table, and neither the glass nor a window's store nor `scratch` is reachable
+from it.
+*/
+blocks :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
+	_ = state
+	#partial switch m in request^ {
+	case vectra9.Tread:
+		return node_part(libuser.fid_lookup(&fids, m.fid)) == PART_CONS
+	}
+	return false
 }
 
 /*
@@ -1417,6 +1620,25 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_boun
 	win.h = win_h
 	win.title_n = 0
 	region_clear(&win.dmg)
+	/*
+	And the keystrokes, which is the same rule as the pixels one line up.
+
+	**A slot outlives the session it was lent to**, and its key ring is as
+	much a part of that slot as its store is. A window nobody was reading
+	fills one to its cap, so a new session's first read would answer with what
+	the last client was typed and never took. The frame clears the pixels and
+	this clears the queue, for the reason `window_open`'s own comment gives.
+
+	Dropping the tail on the head empties it without disturbing the producer's
+	end, which is the only end the child owns.
+	*/
+	intrinsics.volatile_store(&kbd[at].tail, intrinsics.volatile_load(&kbd[at].head))
+	// And the exclusive files go back with the slot. `fid_release` gives them
+	// up when the fid that held them is clunked, and a session that ends
+	// without clunking -- or a fid opened on a window somebody else then
+	// claimed -- would otherwise deny a window's own client its own files.
+	win.ctl_held = false
+	win.cons_held = false
 	// New windows arrive on top, which is the only placement rule a client
 	// gets without asking. Before the frame rather than after it, because the
 	// frame's bar is drawn lit or dark by where this window stands, and this
@@ -2102,12 +2324,15 @@ fid_release :: proc "contextless" (fid: vectra9.Fid) {
 		image_free_all(fid)
 		window_close(fid)
 	}
-	if w := node_win(node); w >= 0 && node_part(node) == PART_CTL {
-		// The controls are exclusive, so the fid that held them gives them
-		// back. A window whose client never opened its `ctl` leaves it for
-		// whoever asks, which is what having no users yet costs.
-		if windows[w].ctl_held && windows[w].ctl_fid == fid {
+	if w := node_win(node); w >= 0 {
+		// The exclusive files are given back by the fid that held them. A
+		// window whose client never opened its `ctl` leaves it for whoever
+		// asks, which is what having no users yet costs.
+		if node_part(node) == PART_CTL && windows[w].ctl_held && windows[w].ctl_fid == fid {
 			windows[w].ctl_held = false
+		}
+		if node_part(node) == PART_CONS && windows[w].cons_held && windows[w].cons_fid == fid {
+			windows[w].cons_held = false
 		}
 	}
 	libuser.fid_release(&fids, fid)
@@ -2138,6 +2363,8 @@ name_of :: proc "contextless" (node: i32) -> string #no_bounds_check {
 		return "data"
 	case PART_CTL:
 		return "ctl"
+	case PART_CONS:
+		return "cons"
 	}
 	return ""
 }
@@ -2174,6 +2401,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 		return node_of(w, PART_DATA)
 	case "ctl":
 		return node_of(w, PART_CTL)
+	case "cons":
+		return node_of(w, PART_CONS)
 	}
 	return -1
 }
@@ -2217,7 +2446,9 @@ handler :: proc "contextless" (
 		walk, and the first draw may be the next message.
 
 		`ctl` is exclusive the same way. One fid at a time holds a window's
-		controls, so two clients cannot both move one window.
+		controls, so two clients cannot both move one window. `cons` is
+		exclusive for the reason one step along: two readers of one window's
+		keyboard would each get part of every line.
 		*/
 		w := node_win(node)
 		switch node_part(node) {
@@ -2237,6 +2468,17 @@ handler :: proc "contextless" (
 			}
 			windows[w].ctl_held = true
 			windows[w].ctl_fid = m.fid
+		case PART_CONS:
+			if w < 0 {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			if windows[w].cons_held && windows[w].cons_fid != m.fid {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			windows[w].cons_held = true
+			windows[w].cons_fid = m.fid
 		}
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
 
@@ -2254,6 +2496,44 @@ handler :: proc "contextless" (
 			// drew is on the glass, and the glass is /dev/fb's to answer.
 			reply^ = vectra9.error_reply(vectra9.EPERM)
 			return
+		}
+
+		/*
+		A read of a window's `cons` parks until a line is typed at it, off in
+		a worker of its own -- `blocks` sent it here, and it is the only
+		message in this server that leaves the serve loop.
+
+		The shutdown flag lets a parked read leave at teardown rather than
+		wait for a keystroke a torn-down console will never deliver. A zero
+		count asks for nothing and gets it.
+		*/
+		if w := node_win(node); w >= 0 && node_part(node) == PART_CONS {
+			room := min(len(buf), int(m.count))
+			if room <= 0 {
+				reply^ = vectra9.Rread{data = nil}
+				return
+			}
+			// The inline case, refused rather than waited out. See
+			// `cons_parked`: this is the read the serve loop would have
+			// parked on, and the serve loop is what paints.
+			if intrinsics.atomic_load(&cons_parked) >= u32(len(slots)) {
+				reply^ = vectra9.error_reply(vectra9.EAGAIN)
+				return
+			}
+			intrinsics.atomic_add(&cons_parked, 1)
+			defer intrinsics.atomic_sub(&cons_parked, 1)
+			for {
+				got := libuser.ring_drain(&kbd[w], buf[:room], &state_lock)
+				if got > 0 {
+					reply^ = vectra9.Rread{data = buf[:got]}
+					return
+				}
+				if intrinsics.volatile_load(&stopping) {
+					reply^ = vectra9.Rread{data = nil}
+					return
+				}
+				_ = libuser.sleep(POLL_TICKS)
+			}
 		}
 
 		/*
@@ -2294,6 +2574,10 @@ handler :: proc "contextless" (
 				return
 			}
 			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+		case PART_CONS:
+			// Typed at, never written to. `data`'s read is refused the same
+			// way, and neither is a directory.
+			reply^ = vectra9.error_reply(vectra9.EPERM)
 		case PART_CTL:
 			if err := run_ctl(node_win(node), m.data); err != vectra9.Errno(0) {
 				reply^ = vectra9.error_reply(err)
@@ -2313,12 +2597,27 @@ handler :: proc "contextless" (
 			return
 		}
 		dir := node == NODE_ROOT || node_part(node) == PART_DIR
+		// `cons` answers how much is waiting, which is what a size means for
+		// a file whose contents are a queue. `kbdfs` answers the same way.
+		size := u64(0)
+		if w := node_win(node); w >= 0 && node_part(node) == PART_CONS {
+			size = libuser.ring_available(&kbd[w])
+		}
+		mode := u32(0o100644)
+		switch {
+		case dir:
+			mode = 0o040555
+		case node_part(node) == PART_DATA:
+			mode = 0o100222
+		case node_part(node) == PART_CONS:
+			mode = 0o100444
+		}
 		reply^ = vectra9.Rgetattr {
 			valid   = m.request_mask & 0x000007FF,
 			qid     = qid_of(node),
-			mode    = dir ? 0o040555 : (node_part(node) == PART_DATA ? 0o100222 : 0o100644),
+			mode    = mode,
 			nlink   = dir ? 2 : 1,
-			size    = 0,
+			size    = size,
 			blksize = 512,
 		}
 
@@ -2357,7 +2656,7 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 		return
 	}
 
-	count := root ? 1 + MAX_WINDOWS : 2
+	count := root ? 1 + MAX_WINDOWS : 3
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
 	for i := int(m.offset); i < count; i += 1 {
@@ -2371,7 +2670,7 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 				kind = vectra9.DT_DIR
 			}
 		} else {
-			child = node_of(w, i == 0 ? PART_DATA : PART_CTL)
+			child = node_of(w, PART_DATA + i32(i))
 		}
 		if vectra9.remaining(&c) < vectra9.dirent_size(name_of(child)) {
 			break
