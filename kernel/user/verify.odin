@@ -3174,22 +3174,21 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	the drift the vocabulary exists to stop, so neither computes it.
 	*/
 	fw, fh := libdraw.frame_window(win_w, win_h)
-	ox, oy, _, _ := libdraw.frame_client(fw, fh)
+	ox, oy := libdraw.FRAME_INSET_X, libdraw.FRAME_INSET_Y
 	/*
-	The first of these is a gate as well as a check, and that is what a control
-	found. Every row this procedure reads is derived from the report, so a
-	server that answered with the *window* rather than the client area walks
-	the readbacks below off the bottom of the screen. The mutation is caught
-	here and then faults, and a check that has already failed should not go on
-	to fault.
+	The first of these was a gate as well as a check for one milestone, and a
+	control is what put it back. Every row this procedure reads is derived from
+	the report, so a server that answered with the *window* rather than the
+	client area sends the readbacks below off the bottom of the screen. That
+	used to walk a raw slice past the framebuffer and stop the boot, so the
+	check had to return.
+
+	It does not any more. `fb.span` bounds a run of pixels the way `fb.get_raw`
+	already bounded one, so every save and restore in this file answers nothing
+	off the surface rather than faulting. The mutation fails checks and the boot
+	carries on, which is what a self-test owes a mutation.
 	*/
-	if !check(
-		r,
-		fh == s.height,
-		"whose window is the screen's full height, which is the placement policy",
-	) {
-		return
-	}
+	check(r, fh == s.height, "whose window is the screen's full height, which is the placement policy")
 	check(r, ox > 0 && oy > ox, "and whose client area starts inside a border and below a title bar")
 
 	dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/data", vfs.O_WRONLY)
@@ -3214,11 +3213,10 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	edge_x := win_w - 8
 	saved_a: [4 * 48 * 4]u8
 	for line in 0 ..< 4 {
-		o := (sy + line) * s.pitch
-		copy(saved_a[line * 192:][:192], s.pixels[o:o + 192])
+		copy(saved_a[line * 192:][:192], fb.span(s, 0, sy + line, 48))
 	}
 	saved_b: [8 * 4]u8
-	copy(saved_b[:], s.pixels[sy * s.pitch + (ox + edge_x) * 4:][:8 * 4])
+	copy(saved_b[:], fb.span(s, ox + edge_x, sy, 8))
 
 	// The two pixels the region check below paints, at opposite ends of a row
 	// nothing else touches. Restored with the rest at the end, because a
@@ -3226,8 +3224,8 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	gap_y := y0 - 8
 	sgap := oy + gap_y
 	saved_gap: [2][4]u8
-	copy(saved_gap[0][:], s.pixels[sgap * s.pitch + ox * 4:][:4])
-	copy(saved_gap[1][:], s.pixels[sgap * s.pitch + (ox + win_w - 1) * 4:][:4])
+	copy(saved_gap[0][:], fb.span(s, ox, sgap, 1))
+	copy(saved_gap[1][:], fb.span(s, ox + win_w - 1, sgap, 1))
 
 	/*
 	And the window is standing in a frame, which is the milestone and had no
@@ -3393,7 +3391,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	//
 	// While `dc` is still open, because the claim is about two windows held at
 	// once. The image-pool test below closes it.
-	verify_windows(r, s, win_w, win_h, fw, ox, oy, y0 - 2, dc, ctl)
+	verify_windows(r, s, win_w, win_h, y0 - 2, dc, ctl)
 
 	at = 0
 	for id in 1 ..= 8 {
@@ -3412,12 +3410,11 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 
 	// Put the glass back the way it was found.
 	for line in 0 ..< 4 {
-		o := (sy + line) * s.pitch
-		copy(s.pixels[o:o + 192], saved_a[line * 192:][:192])
+		copy(fb.span(s, 0, sy + line, 48), saved_a[line * 192:][:192])
 	}
-	copy(s.pixels[sy * s.pitch + (ox + edge_x) * 4:][:8 * 4], saved_b[:])
-	copy(s.pixels[sgap * s.pitch + ox * 4:][:4], saved_gap[0][:])
-	copy(s.pixels[sgap * s.pitch + (ox + win_w - 1) * 4:][:4], saved_gap[1][:])
+	copy(fb.span(s, ox + edge_x, sy, 8), saved_b[:])
+	copy(fb.span(s, ox, sgap, 1), saved_gap[0][:])
+	copy(fb.span(s, ox + win_w - 1, sgap, 1), saved_gap[1][:])
 
 	// -- Teardown, the arc every tenant obeys ---------------------------------
 
@@ -3527,15 +3524,13 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	its stores by, and this test reads that inset out of `sys/libdraw` rather
 	than working it out twice.
 
-	The width handed to `frame_client` is window zero's, which is the cascade
-	as a fixture the way `verify_windows` treats it. Only `ox`, `oy` and the
-	client height come out of it, and none of those three depends on it.
+	The inset is a constant; only the client's height depends on the screen.
 	*/
-	ox, oy, _, ch := libdraw.frame_client(s.width / 2, s.height)
+	ox, oy := libdraw.FRAME_INSET_X, libdraw.FRAME_INSET_Y
+	_, _, _, ch := libdraw.frame_client(s.width, s.height)
 	y0 := oy + ch - 40
 	for line in 0 ..< 16 {
-		o := (y0 + line) * s.pitch + (ox + 8) * 4
-		copy(term_saved[line * 1408:][:1408], s.pixels[o:o + 1408])
+		copy(term_saved[line * 1408:][:1408], fb.span(s, ox + 8, y0 + line, 352))
 	}
 
 	pt, terr := spawn_path(nil, "/bin/terminal", SPAWN_NS_COPY)
@@ -3638,8 +3633,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 
 	// Put the field back the way it was found.
 	for line in 0 ..< 16 {
-		o := (y0 + line) * s.pitch + (ox + 8) * 4
-		copy(s.pixels[o:o + 1408], term_saved[line * 1408:][:1408])
+		copy(fb.span(s, ox + 8, y0 + line, 352), term_saved[line * 1408:][:1408])
 	}
 
 	// The pool proof: the terminal held six strip images, and its exit
@@ -3895,7 +3889,6 @@ verify_ctl :: proc(
 	s: ^fb.Surface,
 	win_w: int,
 	win_h: int,
-	ox: int,
 	sy: int,
 	far_x: int,
 	far_y: int,
@@ -3906,6 +3899,8 @@ verify_ctl :: proc(
 	A3: u32,
 	first_ctl: ^vfs.Chan,
 ) #no_bounds_check {
+	ox := libdraw.FRAME_INSET_X
+
 	cfd, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/ctl", vfs.O_RDWR)
 	if !check(r, cerr == vfs.OK, "a window's own ctl file opens") {
 		return
@@ -4312,13 +4307,17 @@ verify_windows :: proc(
 	s: ^fb.Surface,
 	win_w: int,
 	win_h: int,
-	fw: int,
-	ox: int,
-	oy: int,
 	y: int,
 	first: ^vfs.Chan,
 	first_ctl: ^vfs.Chan,
 ) #no_bounds_check {
+	// The frame, derived rather than passed. A window's whole width is its
+	// client area plus two insets, so handing this procedure both would be
+	// handing it one fact twice -- and a wrong one at the call site would be
+	// invisible here.
+	fw, _ := libdraw.frame_window(win_w, win_h)
+	ox, oy := libdraw.FRAME_INSET_X, libdraw.FRAME_INSET_Y
+
 	// `y` is a client row, and this is where it lands on the glass. Every
 	// command below is written in the first client's coordinates and read back
 	// in the screen's.
@@ -4327,7 +4326,7 @@ verify_windows :: proc(
 	if span > len(row_saved) || sy <= 0 {
 		return
 	}
-	copy(row_saved[:span], s.pixels[sy * s.pitch:][:span])
+	copy(row_saved[:span], fb.span(s, 0, sy, s.width))
 
 	/*
 	Where the second window sits, as a fixture rather than as a question.
@@ -4672,9 +4671,9 @@ verify_windows :: proc(
 			"and are covered where they meet a window whose session drew nothing at all",
 		)
 
-		verify_ctl(r, s, win_w, win_h, ox, sy, far_x, far_y, far, ground_x, ground_y, ground, A3, first_ctl)
+		verify_ctl(r, s, win_w, win_h, sy, far_x, far_y, far, ground_x, ground_y, ground, A3, first_ctl)
 		vfs.chan_close(again)
 	}
 
-	copy(s.pixels[sy * s.pitch:][:span], row_saved[:span])
+	copy(fb.span(s, 0, sy, s.width), row_saved[:span])
 }

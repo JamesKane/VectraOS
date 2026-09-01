@@ -118,6 +118,29 @@ get_raw :: proc "contextless" (s: ^Surface, x, y: int) -> u32 #no_bounds_check {
 	return 0
 }
 
+/*
+span is `count` pixels of row `y`, as bytes, or nothing at all when any of the
+run would be off the surface.
+
+`get_raw` bounds one pixel. This bounds a run of them, which is what a caller
+that saves and restores a rectangle of the glass is really doing -- and it does
+it today with a raw slice of `pixels`, which Odin does not check at all. A row
+derived from a geometry that some server *reported* can leave the screen, and a
+walk past the framebuffer is a fault rather than a failed check.
+
+An off-surface run answers empty, so a save and its restore copy the same
+nothing and the pair stays balanced. `kernel/user/verify.odin` is the caller,
+and `docs/TESTING.md` argues why a self-test's own sensors should not be the
+thing that ends the boot.
+*/
+span :: proc "contextless" (s: ^Surface, x, y, count: int) -> []u8 #no_bounds_check {
+	if count <= 0 || x < 0 || y < 0 || y >= s.height || x + count > s.width {
+		return nil
+	}
+	at := y * s.pitch + x * s.bytes_pp
+	return s.pixels[at:at + count * s.bytes_pp]
+}
+
 put_pixel :: proc "contextless" (s: ^Surface, x, y: int, c: RGB) {
 	if x < 0 || y < 0 || x >= s.width || y >= s.height {
 		return
@@ -242,13 +265,11 @@ bevel_edges :: proc "contextless" (s: ^Surface, r: Rect, style: Bevel, light, da
 	paint(s, pieces[:n])
 }
 
-// bevel_box fills `r` with `face` and then chisels its edges. One face and its
-// two shades, which is `libdraw.panel` with the shading done for the caller.
-bevel_box :: proc "contextless" (s: ^Surface, r: Rect, style: Bevel, face: RGB, depth := 1) {
-	pieces: [libdraw.MAX_PIECES]Piece
-	n := libdraw.panel(pieces[:], r.x, r.y, r.w, r.h, style, face, shade(face, +48), shade(face, -34), depth)
-	paint(s, pieces[:n])
-}
+// `bevel_box` used to sit here: a face and its two shades, which is
+// `libdraw.panel` with the shading done for the caller. Nothing in the kernel
+// ever called it, and a procedure with no caller is a procedure no control can
+// reach. `libdraw.panel` through `paint` is the two lines anything that wants
+// one would write.
 
 // inset_of returns the usable interior of a `depth`-beveled box.
 inset_of :: proc "contextless" (r: Rect, depth := 1) -> Rect {

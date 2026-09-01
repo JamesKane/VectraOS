@@ -499,8 +499,7 @@ bootloader actually set.
 
 **That third painter is the kernel, and it is `fb.paint`.** Five lines walking
 a `[]Piece` through `fill_rect`, which is the whole of what ring 0 had to grow.
-`fb.bevel_edges` and `fb.bevel_box` are `libdraw.edges` and `libdraw.panel`
-painted. `splash`'s console well is `libdraw.well`, the same call
+`fb.bevel_edges` is `libdraw.edges` painted. `splash`'s console well is `libdraw.well`, the same call
 `apps/terminal` sinks its field with through a pipe. `splash.draw_lamp` is
 `libdraw.lamp`. The kernel's copy is gone rather than agreed with, and an unlit
 jewel is `mix(colour, VOID, 200)` in one place.
@@ -591,12 +590,25 @@ window beside it. It moves a rectangle into the client area now, and the wrong
 order lets a client onto its own border. Clip first, then move, for the same
 reason and with a smaller consequence.
 
-**And the frame is what clears a slot.** The plinth's face covers the window's
-whole rectangle before anything is chiselled onto it, and the well's covers the
-client area. That retired the two megabyte `memset` at every `Tlopen` and the
-band clear at every `size`, both of which existed because there was nothing
+**And the frame is what clears a slot.** Its three parts tile the window
+between them -- the plinth's edges take the border ring, the bar takes the rows
+under it, and the well takes the rest -- so painting a frame writes every pixel
+of the rectangle. That retired the two megabyte `memset` at every `Tlopen` and
+the band clear at every `size`, both of which existed because there was nothing
 else writing those pixels. A control confirms it: removing the frame from
-`window_open` now fails the stale-slot check as well as the two frame checks.
+`window_open` fails the stale-slot check as well as the frame ones.
+
+The part that matters for disclosure is the *well's* face, and it is the part
+that cannot come loose. The border and the bar sit strictly outside the client
+area at every size a window can take, so nothing a previous session drew is
+ever under them. A future bar that is a gradient rather than a rectangle would
+stop tiling and would still not leak a pixel.
+
+**The plinth has no face at all.** At `FRAME_EDGE` deep its three nested rings
+are the whole border, so a face under them was half a megabyte of stores per
+window that nothing ever saw. That is what `edges` exists apart from `panel`
+for, and an assertion that the two depths agree is what keeps the tiling from
+opening a gap.
 
 ### The name, and the font the server did not have
 
@@ -634,11 +646,10 @@ Six mutations, each on a real boot. All six are caught.
 | Mutation | Result |
 |---|---|
 | a window's store gets no frame when it opens | 4 checks, first `the window stands in a raised border, lit at its left edge like every panel in the chassis` |
-| the client area is not sunk into a well | 1 check, `the window's own ground is the well it is sunk into, not the plinth around it` |
+| the client area is not sunk into a well | 2 checks, first `the window's own ground is the well it is sunk into, not the plinth around it` |
 | a resize does not move the frame with the edge | 1 check, `and its frame moved to the new edge, over what the old one left in the run` |
-| `ctl` reports the window rather than the client area | 20 checks, first `whose window is the screen's full height` -- which is a gate as well, for the reason below |
-| a draw is not moved into the client area | 17 checks, first `the fill landed on the glass, corner to corner, inset by the frame it never sees` |
-| a blit is not moved into the client area | 5 checks, first `and the blit landed the loaded pixels beside it` |
+| `ctl` reports the window rather than the client area | 29 checks, first `whose window is the screen's full height` |
+| a draw is not moved into the client area | 22 checks, first `the fill landed on the glass, corner to corner, inset by the frame it never sees` |
 | the name is drawn in the bar's own colour | 2 checks, first `and the bar says so, in the font the draw server has and never gave a verb to` |
 | a rename draws over the bar rather than repainting it | 1 check, `and takes the old one off with it` |
 | a lamp does not light when its window opens | 1 check, `its lamp is lit, in the phosphor both sides of the door read from one table` |
@@ -662,13 +673,25 @@ at column zero, the bar's copper face, the well's slate ground. Each of those
 is a colour out of `sys/libpal` that neither a client's fill nor the desktop
 below could produce.
 
-**And one mutation had to be caught by a gate rather than by a check.** Every
-row `verify_draw` reads is derived from the geometry `ctl` answered with, so a
-server that reported the *window* walked the readbacks off the bottom of the
-screen and faulted the boot. The check that catches it now returns as well as
-fails. A check that has already failed should not go on to fault, which is a
-rule this file had not needed until a test's own sensors moved with the thing
-under test.
+**And one mutation stopped the boot rather than failing a check.** Every row
+`verify_draw` reads is derived from the geometry `ctl` answered with, so a
+server that reported the *window* sent the readbacks off the bottom of the
+screen. `fb.get_raw` has always bounded one pixel, but a save and restore of a
+rectangle is a raw slice of `Surface.pixels`, and Odin does not check those at
+all.
+
+The first fix was a gate: the check returned as well as failed. That is the
+wrong altitude, because the next sensor added above it is unprotected again.
+`fb.span` is the right one -- a run of pixels bounded the way `get_raw` bounds
+one, answering nothing off the surface so a save and its restore stay balanced.
+With it the check is an ordinary check again, and the mutation fails 29 of them
+with the boot intact and the teardown run.
+
+**A mutation went away entirely, which is what one of the fixes was for.** A
+blit that was not moved into the client area used to be its own row here. A
+fill and a blit now make the same `client_clip` call, which clips and then
+translates in that order because there is no way to ask for the other one. The
+two can no longer disagree, so there is nothing left to mutate apart.
 
 ### The controls for the compositor
 

@@ -667,7 +667,7 @@ sunk into a well sent as ordinary fills. There is no chrome verb, and
 **And ring 0 wears the chrome vocabulary.** `fb.paint` is the third painter
 `Piece.color` carried an `RGB` for: five lines walking a `[]Piece` through
 `fill_rect`, packing against whatever mode the bootloader set. `bevel_edges`
-and `bevel_box` are `libdraw.edges` and `libdraw.panel` painted, the chassis's
+is `libdraw.edges` painted, the chassis's
 console well is `libdraw.well`, and `draw_lamp` is `libdraw.lamp`. The kernel's
 copy of the arithmetic is gone rather than agreed with by hand.
 
@@ -695,9 +695,11 @@ coordinate the self-test hardcoded moved with it, which is what the last
 handoff said this would cost, and `sys/libdraw` owns the arithmetic so neither
 side computes it twice.
 
-**And the frame is what clears a slot now.** The plinth's face covers a
-window's whole rectangle before anything is chiselled onto it. That retired the
-two megabyte `memset` at every `Tlopen` and the band clear at every `size`.
+**And the frame is what clears a slot now.** Its edges, its bar and its well
+tile a window's rectangle between them, so painting one writes every pixel.
+That retired the two megabyte `memset` at every `Tlopen` and the band clear at
+every `size`, and the plinth's face with them -- three nested rings are the
+whole of a three-pixel border, so a face under them was never seen.
 
 **A fourth `ctl` line names a window**, and the bar says it. The server draws
 the letters out of `sys/libfont`, which is the font `docs/DRAW.md` said it did

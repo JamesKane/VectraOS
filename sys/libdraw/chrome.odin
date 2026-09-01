@@ -65,14 +65,17 @@ MAX_DEPTH :: 4
 MAX_PIECES :: 1 + 4 * MAX_DEPTH + 1
 
 /*
-And what a `frame` makes, which is three panels: the border, the bar on it,
-and the well the client area is sunk into.
+And what a `frame` makes: a bevel's edges, and two panels.
+
+Written against the three depths a frame is actually made of rather than
+against `MAX_DEPTH`, which no part of a frame uses. Raising `FRAME_EDGE` is
+what should grow this array, and against `MAX_DEPTH` it would not have.
 
 Its own bound rather than a larger `MAX_PIECES`, because a caller that draws
 no frames should keep the smaller array. `fb.bevel_edges` puts one on a kernel
 stack that a panic walks.
 */
-MAX_FRAME_PIECES :: 3 * (1 + 4 * MAX_DEPTH)
+MAX_FRAME_PIECES :: 4 * FRAME_EDGE + (1 + 4) + (1 + 4 * FRAME_WELL)
 
 /*
 The window frame's three numbers, and the only three a window's chassis has.
@@ -93,6 +96,19 @@ computing one inset by hand is the drift this file exists to stop.
 FRAME_EDGE :: 3
 FRAME_TITLE :: 20
 FRAME_WELL :: 2
+
+// `edges` and `panel` clamp to `MAX_DEPTH`, and a clamped frame would leave a
+// band of the window that `frame` below does not tile. The tiling is what
+// clears a reused slot, so the clamp is a compile error rather than a gap.
+#assert(FRAME_EDGE <= MAX_DEPTH)
+#assert(FRAME_WELL <= MAX_DEPTH)
+
+// Where the client area begins inside a window, which is the one piece of
+// frame arithmetic that does not depend on the window's size. A caller that
+// wants only the origin reads these rather than inventing a width to hand
+// `frame_client`.
+FRAME_INSET_X :: FRAME_EDGE + FRAME_WELL
+FRAME_INSET_Y :: FRAME_EDGE + FRAME_TITLE + FRAME_WELL
 
 // What the bar keeps clear around its text. The bar is `FRAME_TITLE` tall and
 // a glyph is sixteen, so the vertical half of this is what centres one.
@@ -204,9 +220,21 @@ is a copper gradient there and flat here, for the reason the file comment
 gives: neither a pattern nor a ramp is a rectangle.
 
 **The well's face is the client area's ground**, so a client that draws nothing
-gets the sunken slate field rather than the plinth it is standing on. A window
-covers its whole rectangle either way; this is the difference between covering
-it correctly and covering it.
+gets the sunken slate field rather than the plinth it is standing on. It is
+also the only face a reused slot needs: the border and the bar sit strictly
+outside the client area at every size a window can take, so nothing a previous
+session drew is ever under them. That is what lets `window_open` clear a slot
+by painting a frame on it.
+
+**The plinth has no face, because at `FRAME_EDGE` deep its edges are the whole
+of it.** Three nested one-pixel rings tile a three-pixel border exactly, so a
+face under them would be written and completely overpainted -- half a megabyte
+of stores per window on this screen, for nothing. That is what `edges` exists
+apart from `panel` for, and the assertion above is what keeps the two depths
+from drifting into a gap.
+
+The three parts tile the window between them: the edges take the border ring,
+the bar takes the rows under it, and the well takes the rest.
 
 The name on the bar is not here either. A glyph is not a rectangle, and the
 painter that has a font is the one that draws it.
@@ -216,18 +244,7 @@ passes (0, 0). Answers how many pieces it wrote; size the array by
 `MAX_FRAME_PIECES`.
 */
 frame :: proc "contextless" (out: []Piece, x: int, y: int, w: int, h: int) -> int #no_bounds_check {
-	n := panel(
-		out,
-		x,
-		y,
-		w,
-		h,
-		.Raised,
-		libpal.MAGNESIUM,
-		libpal.MAGNESIUM_HOT,
-		libpal.MAGNESIUM_DARK,
-		FRAME_EDGE,
-	)
+	n := edges(out, x, y, w, h, .Raised, libpal.MAGNESIUM_HOT, libpal.MAGNESIUM_DARK, FRAME_EDGE)
 	if n == 0 {
 		return 0
 	}
@@ -274,16 +291,14 @@ It is the well's *interior*, so the recess is chrome the client cannot draw on,
 the way the border and the bar are.
 */
 frame_client :: proc "contextless" (w: int, h: int) -> (x: int, y: int, cw: int, ch: int) {
-	in_x := FRAME_EDGE + FRAME_WELL
-	in_y := FRAME_EDGE + FRAME_TITLE + FRAME_WELL
-	return in_x, in_y, w - 2 * in_x, h - in_y - FRAME_EDGE - FRAME_WELL
+	return FRAME_INSET_X, FRAME_INSET_Y, w - 2 * FRAME_INSET_X, h - FRAME_INSET_Y - FRAME_INSET_X
 }
 
 // frame_window is the inverse: the window a client area of `cw` by `ch` needs
 // around it. A `size` line names a client area, because a `ctl` read answers
 // one, and this is what turns that into a window.
 frame_window :: proc "contextless" (cw: int, ch: int) -> (w: int, h: int) {
-	return cw + 2 * (FRAME_EDGE + FRAME_WELL), ch + 2 * (FRAME_EDGE + FRAME_WELL) + FRAME_TITLE
+	return cw + 2 * FRAME_INSET_X, ch + FRAME_INSET_Y + FRAME_INSET_X
 }
 
 /*

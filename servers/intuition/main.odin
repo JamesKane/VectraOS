@@ -449,22 +449,45 @@ lamp_at :: proc "contextless" (i: int) -> (int, int) {
 	return scr_w - LAMP_INSET - LAMP, LAMP_INSET + i * (LAMP + LAMP_GAP)
 }
 
-// desk_pieces stores a run of chrome onto the glass, each rectangle clipped to
-// the region being repainted and to the screen.
-desk_pieces :: proc "contextless" (pieces: []libdraw.Piece, sx0: int, sy0: int, sx1: int, sy1: int) #no_bounds_check {
+/*
+pieces_into stores a run of chrome into a strided surface, clipped to one box.
+
+**The one place that turns a `Piece` into a pixel on this side of the door.**
+`desk_pieces` and `win_pieces` below are this with a destination and a clip
+box filled in, and they were the same six lines twice until the two parameters
+were lifted out. `fb.paint` is the third painter and cannot be folded in here:
+it goes through `fill_rect`, which packs against the channel shifts the
+bootloader set rather than against the one depth `/srv/draw` accepts. That
+split is what `Piece.color` carrying an `RGB` is for.
+*/
+pieces_into :: proc "contextless" (
+	dst: [^]u32,
+	stride: int,
+	pieces: []libdraw.Piece,
+	bx0: int,
+	by0: int,
+	bx1: int,
+	by1: int,
+) #no_bounds_check {
 	for p in pieces {
-		x0 := max(max(p.x, sx0), 0)
-		y0 := max(max(p.y, sy0), 0)
-		x1 := min(min(p.x + p.w, sx1), scr_w)
-		y1 := min(min(p.y + p.h, sy1), scr_h)
+		x0 := max(p.x, bx0)
+		y0 := max(p.y, by0)
+		x1 := min(p.x + p.w, bx1)
+		y1 := min(p.y + p.h, by1)
 		word := libpal.xrgb(p.color)
 		for y in y0 ..< y1 {
-			dst := screen_at(y)
+			row := dst[y * stride:]
 			for x in x0 ..< x1 {
-				dst[x] = word
+				row[x] = word
 			}
 		}
 	}
+}
+
+// desk_pieces stores a run of chrome onto the glass, each rectangle clipped to
+// the region being repainted and to the screen.
+desk_pieces :: proc "contextless" (pieces: []libdraw.Piece, sx0: int, sy0: int, sx1: int, sy1: int) {
+	pieces_into(glass, glass_stride, pieces, max(sx0, 0), max(sy0, 0), min(sx1, scr_w), min(sy1, scr_h))
 }
 
 /*
@@ -493,28 +516,11 @@ MAX_TITLE :: 24
 // three cannot otherwise contain, which is what makes it a sensor.
 TITLE_FG :: u32(libpal.SLATE_DEEP[0]) << 16 | u32(libpal.SLATE_DEEP[1]) << 8 | u32(libpal.SLATE_DEEP[2])
 
-/*
-win_pieces stores a run of chrome into one window's own memory.
-
-`fb.paint`'s opposite number and `desk_pieces`'s sibling: three painters for
-one vocabulary, which is the whole of `sys/libdraw/chrome.odin`'s design. This
-one clips to the window rather than to the screen, because a window's store is
-the only memory it may touch.
-*/
-win_pieces :: proc "contextless" (win: ^Window, pieces: []libdraw.Piece) #no_bounds_check {
-	for p in pieces {
-		x0 := max(p.x, 0)
-		y0 := max(p.y, 0)
-		x1 := min(p.x + p.w, win.w)
-		y1 := min(p.y + p.h, win.h)
-		word := libpal.xrgb(p.color)
-		for y in y0 ..< y1 {
-			row := win.pixels[y * win_w:]
-			for x in x0 ..< x1 {
-				row[x] = word
-			}
-		}
-	}
+// win_pieces stores a run of chrome into one window's own memory, clipped to
+// the window rather than to the screen, because a window's store is the only
+// memory it may touch. The stride is the run's birth width and not `win.w`.
+win_pieces :: proc "contextless" (win: ^Window, pieces: []libdraw.Piece) {
+	pieces_into(win.pixels, win_w, pieces, 0, 0, win.w, win.h)
 }
 
 /*
@@ -525,61 +531,67 @@ Called when a window opens and when it changes shape, and never per draw. The
 frame is memory like everything else in the run, so it survives being covered
 the way a client's pixels do.
 */
-window_chrome :: proc "contextless" (win: ^Window) #no_bounds_check {
+window_chrome :: proc "contextless" (win: ^Window) {
 	pieces: [libdraw.MAX_FRAME_PIECES]libdraw.Piece
 	win_pieces(win, pieces[:libdraw.frame(pieces[:], 0, 0, win.w, win.h)])
-	title_paint(win)
+	title_text(win)
 }
 
 /*
-title_paint repaints one bar and the name on it.
+title_paint repaints one bar and the name on it, which is what a rename needs.
 
-Apart from `window_chrome` because a `name` line changes the bar and nothing
-around it. The bar is laid down first every time, which is how a name that
-grew shorter loses its tail.
+`window_chrome` does not call this: `libdraw.frame` already carries the bar,
+so a whole-frame repaint lays it down once and goes straight to the letters.
+This is the path that has to lay it down itself, and laying it down first is
+how a name that grew shorter loses its tail.
 */
-title_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
+title_paint :: proc "contextless" (win: ^Window) {
 	pieces: [libdraw.MAX_PIECES]libdraw.Piece
 	win_pieces(win, pieces[:libdraw.frame_bar(pieces[:], 0, 0, win.w)])
+	title_text(win)
+}
 
-	/*
-	And the glyphs, out of `sys/libfont` -- the one 8x16 table the kernel
-	console and every ring 3 program already link.
+/*
+title_text draws the name across the bar, out of `sys/libfont` -- the one 8x16
+table the kernel console and every ring 3 program already link.
 
-	**This is the font `docs/DRAW.md` said the server had none of, and it did
-	not make one a protocol question.** A client still uploads its own glyphs
-	as images and blits them, which is section 5's answer to a font verb and
-	stays the answer. A title is the *server's* text about a client's window,
-	drawn into memory no client can reach, so it needs no verb at all.
+**This is the font `docs/DRAW.md` said the server had none of, and it did not
+make one a protocol question.** A client still uploads its own glyphs as images
+and blits them, which is section 5's answer to a font verb and stays the
+answer. A title is the *server's* text about a client's window, drawn into
+memory no client can reach, so it needs no verb at all.
 
-	Clipped to the bar in both directions, so a name wider than the window is
-	cut rather than refused.
-	*/
+It paints no bar of its own, so both callers lay one down exactly once:
+`window_chrome` gets it out of `libdraw.frame`, and `title_paint` out of
+`libdraw.frame_bar`.
+
+The clip is per glyph rather than per pixel. A name runs off the bar's right
+edge at a whole character, so the first one that will not fit ends the whole
+loop, and the column range is settled before the rows are walked. The bar is
+taller than a glyph by `FRAME_PAD`, so no row of one can leave it.
+*/
+title_text :: proc "contextless" (win: ^Window) #no_bounds_check {
 	bx, by, bw, bh := libdraw.frame_bar_at(0, 0, win.w)
 	tx := bx + libdraw.FRAME_PAD
 	ty := by + (bh - libfont.FONT_HEIGHT) / 2
 	right := bx + bw - libdraw.FRAME_PAD
 	for i in 0 ..< win.title_n {
+		gx := tx + i * libfont.FONT_WIDTH
+		if gx >= right {
+			return
+		}
 		ch := win.title[i]
 		if ch < libfont.FONT_FIRST || ch > libfont.FONT_LAST {
 			continue
 		}
 		rows := &libfont.font_8x16[int(ch) - libfont.FONT_FIRST]
-		gx := tx + i * libfont.FONT_WIDTH
+		wide := min(libfont.FONT_WIDTH, right - gx)
 		for line in 0 ..< libfont.FONT_HEIGHT {
-			y := ty + line
-			if y < by || y >= by + bh {
-				continue
-			}
 			bits := rows[line]
-			dst := win.pixels[y * win_w:]
-			for c in 0 ..< libfont.FONT_WIDTH {
-				x := gx + c
-				if x < bx || x >= right || x >= win.w {
-					continue
-				}
+			dst := win.pixels[(ty + line) * win_w:]
+			for c in 0 ..< wide {
 				if bits & (0x80 >> u8(c)) != 0 {
-					dst[x] = TITLE_FG
+					dst[gx + c] = TITLE_FG
 				}
 			}
 		}
@@ -589,27 +601,18 @@ title_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
 /*
 window_name is the `name` line: what the bar across a window's top says.
 
-The rest of the line after the verb, with its surrounding space and its
-newline taken off. An empty rest is a legal name and clears the bar, which is
-what makes the bar's repaint testable in both directions.
+`ctl_rest` has already taken the space and the newline off, so what arrives is
+the name. An empty one is legal and clears the bar, which is what makes the
+bar's repaint testable in both directions.
 
 Only the bar's own rectangle goes back to the glass. `composite` walks the
 whole stack over it, so a window renamed under another one repaints nothing
 anybody can see.
 */
-window_name :: proc "contextless" (win: ^Window, rest: []u8) -> vectra9.Errno #no_bounds_check {
-	from := 0
-	for from < len(rest) && (rest[from] == ' ' || rest[from] == '\t') {
-		from += 1
-	}
-	to := len(rest)
-	for to > from &&
-	    (rest[to - 1] == '\n' || rest[to - 1] == '\r' || rest[to - 1] == ' ' || rest[to - 1] == '\t') {
-		to -= 1
-	}
-	n := min(to - from, MAX_TITLE)
+window_name :: proc "contextless" (win: ^Window, name: []u8) -> vectra9.Errno #no_bounds_check {
+	n := min(len(name), MAX_TITLE)
 	for i in 0 ..< n {
-		win.title[i] = rest[from + i]
+		win.title[i] = name[i]
 	}
 	win.title_n = n
 
@@ -984,9 +987,9 @@ run_ctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bou
 		window_raise(win, win_at)
 		return vectra9.Errno(0)
 	case "name":
-		// The one line whose operand is not a number, so `ctl_end` has
-		// nothing to say about it: every byte left is the name.
-		return window_name(win, data[at:])
+		// The one line whose operand is not a number, so `ctl_rest` takes it
+		// where the other two ask `ctl_end` whether anything is left.
+		return window_name(win, ctl_rest(data, at))
 	}
 	return vectra9.EINVAL
 }
@@ -995,11 +998,11 @@ run_ctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bou
 @(private = "file")
 ctl_word :: proc "contextless" (data: []u8, from: int) -> (string, int) #no_bounds_check {
 	at := from
-	for at < len(data) && (data[at] == ' ' || data[at] == '\t') {
+	for at < len(data) && ctl_space(data[at]) {
 		at += 1
 	}
 	start := at
-	for at < len(data) && data[at] != ' ' && data[at] != '\t' && data[at] != '\n' {
+	for at < len(data) && !ctl_space(data[at]) {
 		at += 1
 	}
 	return string(data[start:at]), at
@@ -1026,11 +1029,41 @@ ctl_pair :: proc "contextless" (data: []u8, at: ^int) -> (int, int, bool) {
 @(private = "file")
 ctl_end :: proc "contextless" (data: []u8, from: int) -> bool #no_bounds_check {
 	for i in from ..< len(data) {
-		if data[i] != ' ' && data[i] != '\t' && data[i] != '\n' && data[i] != '\r' {
+		if !ctl_space(data[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+/*
+ctl_rest is everything after the verb, with the space either side of it taken
+off. The operand of a line that does not take numbers.
+
+It lives here with `ctl_word` and `ctl_end` because it is the third of one
+file's three ideas about where a word begins and ends, and `ctl_space` is now
+the only place that says what a space is.
+
+**A `ctl` write is one line**, which `ctl_end` has assumed since there were
+three lines and which this makes explicit: everything to the end of the write
+belongs to this line, so a second line behind it would be part of the name.
+*/
+@(private = "file")
+ctl_rest :: proc "contextless" (data: []u8, from: int) -> []u8 #no_bounds_check {
+	start := from
+	for start < len(data) && ctl_space(data[start]) {
+		start += 1
+	}
+	end := len(data)
+	for end > start && ctl_space(data[end - 1]) {
+		end -= 1
+	}
+	return data[start:end]
+}
+
+@(private = "file")
+ctl_space :: proc "contextless" (c: u8) -> bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 @(private = "file")
@@ -1514,6 +1547,39 @@ screen_at :: proc "contextless" (y: int) -> [^]u32 #no_bounds_check {
 	return glass[y * glass_stride:]
 }
 
+/*
+client_clip trims one of a client's rectangles to its client area and then
+moves it into the store, in that order.
+
+**The order is the whole point, and this is why it is one call.** Clipping
+against the client area and then adding the inset keeps a client inside its own
+rectangle. Adding the inset first and clipping against the window would let a
+client past its own edge -- onto its border in this milestone, and into the
+window beside it in the one where a client's rectangle used to land on the
+glass. `run_fill` and `run_blit` are the two callers and a control once caught
+them disagreeing, so neither writes the sequence out any more.
+
+Answers whether anything is left, with `x` and `y` already in the store's
+coordinates. `window_mark` takes them as they come back.
+*/
+client_clip :: proc "contextless" (
+	win: ^Window,
+	x: ^int,
+	y: ^int,
+	w: ^int,
+	h: ^int,
+	sx: ^int,
+	sy: ^int,
+) -> bool {
+	cx, cy, cw, ch := libdraw.frame_client(win.w, win.h)
+	if !clip(x, y, w, h, sx, sy, cw, ch) {
+		return false
+	}
+	x^ += cx
+	y^ += cy
+	return true
+}
+
 // clip trims a rectangle to a destination's bounds, moving a source
 // origin by the same trim. Reports whether anything is left.
 clip :: proc "contextless" (x: ^int, y: ^int, w: ^int, h: ^int, sx: ^int, sy: ^int, bw: int, bh: int) -> bool {
@@ -1678,17 +1744,16 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		`composite` still owns the other translation, and is still the only
 		code that knows where a window sits on the screen.
 		*/
-		cx, cy, cw, ch := libdraw.frame_client(win.w, win.h)
-		if !clip(&x, &y, &w, &h, &sx, &sy, cw, ch) {
+		if !client_clip(win, &x, &y, &w, &h, &sx, &sy) {
 			return vectra9.Errno(0)
 		}
 		for line in 0 ..< h {
-			dst := win.pixels[(cy + y + line) * win_w:]
+			dst := win.pixels[(y + line) * win_w:]
 			for i in 0 ..< w {
-				dst[cx + x + i] = color
+				dst[x + i] = color
 			}
 		}
-		window_mark(win, cx + x, cy + y, w, h)
+		window_mark(win, x, y, w, h)
 		return vectra9.Errno(0)
 	}
 
@@ -1742,22 +1807,19 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		if win == nil {
 			return vectra9.EBADF
 		}
-		// The client area's, exactly as `run_fill` above. A blit is the
-		// other half of the translation and has always had to agree with it:
-		// a control that fixed one and not the other is how the origin got a
-		// check of its own.
-		cx, cy, cw, ch := libdraw.frame_client(win.w, win.h)
-		if !clip(&dx, &dy, &sw, &sh, &sx, &sy, cw, ch) {
+		// The same call `run_fill` makes, which is why a blit and a fill
+		// cannot disagree about the client area any more.
+		if !client_clip(win, &dx, &dy, &sw, &sh, &sx, &sy) {
 			return vectra9.Errno(0)
 		}
 		for line in 0 ..< sh {
 			base := (sy + line) * simg.w + sx
-			out := win.pixels[(cy + dy + line) * win_w:]
+			out := win.pixels[(dy + line) * win_w:]
 			for i in 0 ..< sw {
-				out[cx + dx + i] = pixels[sslot][base + i]
+				out[dx + i] = pixels[sslot][base + i]
 			}
 		}
-		window_mark(win, cx + dx, cy + dy, sw, sh)
+		window_mark(win, dx, dy, sw, sh)
 		return vectra9.Errno(0)
 	}
 
