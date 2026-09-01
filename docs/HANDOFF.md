@@ -682,18 +682,28 @@ specular pixel on, and ring 3's lamps are flat. `docs/DRAW.md` section 12 owns
 all of it.
 
 **And a window is a raised plinth with a sunken screen in it**, which is the
-chassis in one sentence. `libdraw.frame` decomposes it into three panels -- the
-border, the copper bar across its top, and the well the client area is sunk
-into -- and the draw server stores them into the window's own run. The
-compositor never learns there is a frame: a window is still one opaque
-rectangle backed by one segment.
+chassis in one sentence. `window_frame` decomposes it into a bevel's edges and
+two panels -- the border, the copper bar across its top, and the well the
+client area is sunk into -- and the draw server stores them into the window's
+own run. The compositor never learns there is a frame: a window is still one
+opaque rectangle backed by one segment. The decomposition is `sys/libdraw`'s
+and the numbers are the server's.
 
 **The client area is the well's interior, and that was the cost.** A client's
 (0, 0) moved in by the border, the bar and the recess. `ctl` reports the client
 area, `size` names it, and the verbs clip to it and move into it. Every
-coordinate the self-test hardcoded moved with it, which is what the last
-handoff said this would cost, and `sys/libdraw` owns the arithmetic so neither
-side computes it twice.
+coordinate the self-test hardcoded moved with it, which is what the handoff
+before this one said it would cost.
+
+**And the self-test finds a window rather than computing one.** It insets its
+readbacks by the frame's own constants for one milestone, which put a server's
+layout in `sys/libdraw` and made the test agree with the code under test: no
+mutation of a frame's *geometry* could fail a check. A client fills the area it
+was promised now and the glass says where that landed, anchored against the
+window's own edges so a scan cannot simply follow a wrong answer. Two mutations
+that were invisible are caught, two that are only a look are correctly inert,
+and `FRAME_EDGE` and its two friends live in the one process that has any
+business knowing them. `docs/DRAW.md` section 12 owns it.
 
 **And the frame is what clears a slot now.** Its edges, its bar and its well
 tile a window's rectangle between them, so painting one writes every pixel.
@@ -1075,8 +1085,9 @@ sys/
                         put_text with its consumed-count return that pumps
                         a long line through in batches
   libdraw/chrome.odin   The chassis vocabulary as rectangles, worn by both
-                        rings: a bevel's edges, a panel, a well, a lamp, a
-                        window frame, and the fills a client sends to wear them
+                        rings: a bevel's edges, a panel, a well, a lamp, and
+                        the fills a client sends to wear them. What composes
+                        them -- a chassis, a window frame -- is the caller's
   libpal/palette.odin   The system palette, once, for both privilege levels
   libfont/font_data.odin  GENERATED -- the one 8x16 font table, imported
                         by the kernel console and linked by ring 3 alike

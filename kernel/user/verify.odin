@@ -3160,41 +3160,117 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	check(r, geo_ok, "which parses as four numbers")
 	check(r, win_w > 0 && win_w < s.width, "and is narrower than the screen it does not name")
 
-	/*
-	And it is the *client area*, which is the window with its frame taken off.
-
-	A window wears a raised border with a title bar across it now, and the
-	client area is inside both. So the number a client reads is smaller than
-	the window and smaller still than the screen, and its own (0, 0) is neither
-	of theirs.
-
-	`sys/libdraw` owns that arithmetic, and both sides of the door read it from
-	there. The server insets every store by it; this test has to know where on
-	the glass those stores landed. Two places computing one inset by hand is
-	the drift the vocabulary exists to stop, so neither computes it.
-	*/
-	fw, fh := libdraw.frame_window(win_w, win_h)
-	ox, oy := libdraw.FRAME_INSET_X, libdraw.FRAME_INSET_Y
-	/*
-	The first of these was a gate as well as a check for one milestone, and a
-	control is what put it back. Every row this procedure reads is derived from
-	the report, so a server that answered with the *window* rather than the
-	client area sends the readbacks below off the bottom of the screen. That
-	used to walk a raw slice past the framebuffer and stop the boot, so the
-	check had to return.
-
-	It does not any more. `fb.span` bounds a run of pixels the way `fb.get_raw`
-	already bounded one, so every save and restore in this file answers nothing
-	off the surface rather than faulting. The mutation fails checks and the boot
-	carries on, which is what a self-test owes a mutation.
-	*/
-	check(r, fh == s.height, "whose window is the screen's full height, which is the placement policy")
-	check(r, ox > 0 && oy > ox, "and whose client area starts inside a border and below a title bar")
-
 	dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/data", vfs.O_WRONLY)
 	if !check(r, oerr == vfs.OK, "and the command file opens for writing") {
 		return
 	}
+
+	// -- Where the client area actually is ------------------------------------
+
+	/*
+	The report says how big. This finds out *where*, by asking the client to
+	fill every pixel it was told it has and then reading the glass back.
+
+	**Nothing here computes the frame.** The test used to inset by the same
+	`sys/libdraw` constants `servers/intuition` lays a window out with, which
+	made the two agree by construction: no mutation of the frame's geometry
+	could fail a check, only a server that stopped drawing a frame at all. The
+	frame is a sensor now, and `libdraw` no longer carries a window's layout at
+	all -- see `docs/DRAW.md` section 12.
+
+	`PROBE` is a colour nothing else on this screen makes, so its bounding box
+	is the client area and nothing else. The column scanned is the middle of
+	the reported width, which is inside the client area for any frame shallower
+	than half a window.
+
+	Window zero sits at the screen's origin. That is placement policy and stays
+	a fixture, the way the cascade below it is: no verb would tell a client
+	where it was put.
+	*/
+	PROBE :: u32(0x0059315B)
+	probe: [64]u8
+	pat_at := libdraw.put_fill(probe[:], 0, 0, 0, 0, u32(win_w), u32(win_h), PROBE)
+	pat_at = libdraw.put_flush(probe[:], pat_at)
+	_, perr := vfs.chan_write(dc, 0, probe[:pat_at])
+	if !check(r, perr == vfs.OK, "the client fills every pixel of the area it was told it has") {
+		return
+	}
+
+	oy, y_end := scan_col(s, win_w / 2, PROBE, 0, s.height)
+	if !check(r, oy >= 0, "which the glass shows, so the test can be told where it landed") {
+		return
+	}
+	ox, x_end := scan_row(s, (oy + y_end) / 2, PROBE, 0, s.width)
+	ch := y_end - oy + 1
+	cw := x_end - ox + 1
+
+	/*
+	Three claims, and the first is the one the report cannot make about itself.
+
+	A server that answers with the *window* rather than the client area is
+	giving a client a number it cannot use, and the fill it provokes is clipped
+	to the smaller area it really has. That is a mismatch here rather than a
+	readback walking off the screen, which is what it used to be.
+	*/
+	check(
+		r,
+		cw == win_w && ch == win_h,
+		"and gets exactly the area it was promised, which is the report answering for itself",
+	)
+	check(
+		r,
+		ox > 0 && oy > ox,
+		"inside a border, and further below a title bar, neither of which it is told about",
+	)
+	check(
+		r,
+		fb.get_raw(s, ox - 1, oy) != PROBE && fb.get_raw(s, ox, oy - 1) != PROBE,
+		"and not one pixel onto the frame around it, which is the server's and not the client's",
+	)
+
+	/*
+	And the window's own right edge, found the same way: walk right out of the
+	client area until the desktop begins again.
+
+	**A window is opaque over its whole rectangle** is the sentence three
+	milestones were spent reaching, and this is the first check that reads it
+	directly rather than through a client's pixels. Everything between the
+	client area and the ground is frame.
+
+	`fw` is the cascade's step, so the placement fixture below is expressed in
+	a number the glass gave up rather than one `libdraw` was asked for.
+	*/
+	fw := win_right(s, oy + ch / 2, ox + cw)
+	check(r, fw > ox + cw && fw < s.width, "the window is opaque out to a border, and the desktop begins where it ends")
+
+	/*
+	And the client area sits the same depth in from both edges of it.
+
+	**The discovery above follows a client wherever its pixels went, so it
+	cannot on its own say they went to the wrong place.** A server that
+	translated one pixel too far would be found one pixel further along and
+	every check after would agree with it. This is the anchor: the border is a
+	border, so it is the same depth on the left and the right, and window zero
+	sits at the screen's origin and runs its full height.
+
+	Neither says how deep. A deeper border or a taller bar moves the report and
+	moves these together, which is a look and not a fault.
+	*/
+	check(
+		r,
+		fw - (ox + cw) == ox,
+		"which is the same depth in from both of its window's edges, because a border is a border",
+	)
+	check(
+		r,
+		s.height - (oy + ch) == ox,
+		"and the same depth up from the bottom as it is in from the side, the bar being the top's own",
+	)
+	check(
+		r,
+		!is_desk(s, win_w / 2, s.height - 1),
+		"and stands the screen's full height, which is the placement policy",
+	)
 
 	/*
 	The region the test paints, saved to be restored. Four rows of 48 pixels
@@ -3245,7 +3321,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	side of the door reads, and neither is anything a client's fill or the
 	desktop below could produce.
 	*/
-	bx0, by0, _, _ := libdraw.frame_bar_at(0, 0, fw)
+	bx0, by0, _, _ := find_bar(s, 0, win_w / 2)
 	check(
 		r,
 		fb.get_raw(s, 0, sy) == fb.pack(s, fb.MAGNESIUM_HOT),
@@ -3391,7 +3467,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	//
 	// While `dc` is still open, because the claim is about two windows held at
 	// once. The image-pool test below closes it.
-	verify_windows(r, s, win_w, win_h, y0 - 2, dc, ctl)
+	verify_windows(r, s, win_w, win_h, ox, oy, fw, y0 - 2, dc, ctl)
 
 	at = 0
 	for id in 1 ..= 8 {
@@ -3450,11 +3526,6 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 TERM_FG :: u32(0x00FFB028)
 @(private = "file")
 TERM_BG :: u32(0x00181F28)
-
-// What the terminal paints over, saved to be restored: 16 rows of 352
-// pixels. In the bss, because 22 KiB does not belong on a kernel stack.
-@(private = "file")
-term_saved: [16 * 352 * 4]u8
 
 /*
 glyph_on_glass compares one 8x16 cell on the screen against the one font
@@ -3515,29 +3586,61 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		return
 	}
 
-	/*
-	The field the terminal will paint, saved before it exists.
-
-	The terminal lays itself out in the *client area* its `ctl` read answered
-	with, which is its window inside the border and below the title bar. So
-	every coordinate it draws at is moved by the same inset the server insets
-	its stores by, and this test reads that inset out of `sys/libdraw` rather
-	than working it out twice.
-
-	The inset is a constant; only the client's height depends on the screen.
-	*/
-	ox, oy := libdraw.FRAME_INSET_X, libdraw.FRAME_INSET_Y
-	_, _, _, ch := libdraw.frame_client(s.width, s.height)
-	y0 := oy + ch - 40
-	for line in 0 ..< 16 {
-		copy(term_saved[line * 1408:][:1408], fb.span(s, ox + 8, y0 + line, 352))
-	}
-
 	pt, terr := spawn_path(nil, "/bin/terminal", SPAWN_NS_COPY)
 	if !check(r, terr == vfs.OK && pt != nil, "the loader starts the terminal") {
 		return
 	}
 	r.programs += 1
+
+	/*
+	Where the terminal's window is, found rather than computed.
+
+	The terminal lays itself out in the *client area* its `ctl` read answered
+	with, and that area's ground is the face of the well a window is sunk into
+	-- `SLATE`, which is neither the copper above it nor the desktop beside it.
+	So the first slate down a column inside the window is the client's top row,
+	and the run of slate along a row is the client's own columns.
+
+	`COL` is a column inside window zero and past the terminal's own field, so
+	the run under it is unbroken from the client's first row to its last. The
+	window has to exist before any of that is true, which is what the first
+	poll waits for: the terminal opens its window before it uploads a glyph.
+
+	This read `sys/libdraw`'s frame arithmetic until this milestone, which
+	agreed with the server rather than watching it. See `scan_col`.
+	*/
+	COL :: 400
+	/*
+	**The wait is for the window's *last* row, not its first.** Nothing
+	synchronises this thread with the terminal's `Tlopen`, and `paint_window`
+	copies a store to the glass a row at a time, so a scan can catch a window
+	half arrived and read a client area that stops in the middle of the screen.
+	Composites run top to bottom, so a covered bottom row means the whole
+	column has landed.
+
+	It is also the placement policy stated as a pixel: window zero is the
+	screen's full height, so its own frame is the only thing between its client
+	area and the last row.
+	*/
+	arrived := false
+	for _ in 0 ..< PATIENCE {
+		if !is_desk(s, COL, s.height - 4) {
+			arrived = true
+			break
+		}
+		sync.delay(1)
+	}
+	if !check(r, arrived, "the terminal opens a window of its own, the full height of the screen") {
+		return
+	}
+
+	slate := fb.pack(s, fb.SLATE)
+	oy, cy_end := scan_col(s, COL, slate, 0, s.height)
+	if !check(r, oy >= 0, "whose ground is the sunken well every window is") {
+		return
+	}
+	ox, _ := scan_row(s, oy + 40, slate, 0, s.width)
+	y0 := oy + (cy_end - oy + 1) - 40
 
 	// The prompt lands only after the terminal mounts the server, reads
 	// the geometry, and uploads ninety-five glyphs. The poll waits for
@@ -3580,10 +3683,10 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	the glass the bar already carries the name -- drawn by the *server*, out of
 	the same font table this program uploads its own copy of.
 
-	The colour is the chassis's engraved wordmark, and the bar is where
-	`libdraw.frame_bar_at` says it is for window zero at the screen's origin.
+	The colour is the chassis's engraved wordmark, and the bar is found by its
+	copper the way the client area above was found by its slate.
 	*/
-	bx, by, bw, bh := libdraw.frame_bar_at(0, 0, s.width / 2)
+	bx, by, bw, bh := find_bar(s, 0, COL)
 	check(
 		r,
 		bar_has(s, bx, by, bw, bh, fb.pack(s, fb.SLATE_DEEP)),
@@ -3631,10 +3734,11 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		)
 	}
 
-	// Put the field back the way it was found.
-	for line in 0 ..< 16 {
-		copy(fb.span(s, ox + 8, y0 + line, 352), term_saved[line * 1408:][:1408])
-	}
+	// What the field was painted over does not have to be put back. The
+	// terminal's window closed when it exited, and `window_close` repaints the
+	// desktop across the whole rectangle it covered. The save and restore that
+	// used to sit here predate a compositor that owns the ground, and the
+	// buffer went with them.
 
 	// The pool proof: the terminal held six strip images, and its exit
 	// clunked them away. A fresh session that allocates all eight shows
@@ -3889,6 +3993,7 @@ verify_ctl :: proc(
 	s: ^fb.Surface,
 	win_w: int,
 	win_h: int,
+	ox: int,
 	sy: int,
 	far_x: int,
 	far_y: int,
@@ -3899,8 +4004,6 @@ verify_ctl :: proc(
 	A3: u32,
 	first_ctl: ^vfs.Chan,
 ) #no_bounds_check {
-	ox := libdraw.FRAME_INSET_X
-
 	cfd, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/ctl", vfs.O_RDWR)
 	if !check(r, cerr == vfs.OK, "a window's own ctl file opens") {
 		return
@@ -4022,11 +4125,17 @@ verify_ctl :: proc(
 
 	`.Raised` puts the shadow on the right, so this is `MAGNESIUM_DARK` and not
 	the highlight the left edge carries.
+
+	Where that edge *is* comes from `win_right`, which walks out of the window
+	until the desktop begins. The window's new width was computed from
+	`libdraw`'s frame arithmetic until this milestone, and a resize that moved
+	the client area without moving the border would have moved this sensor with
+	it.
 	*/
-	fwin, _ := libdraw.frame_window(200, 100)
+	wr := win_right(s, 7, 700)
 	check(
 		r,
-		fb.get_raw(s, 700 + fwin - 1, 7) == fb.pack(s, fb.MAGNESIUM_DARK),
+		fb.get_raw(s, wr - 1, 7) == fb.pack(s, fb.MAGNESIUM_DARK),
 		"and its frame moved to the new edge, over what the old one left in the run",
 	)
 
@@ -4042,8 +4151,7 @@ verify_ctl :: proc(
 	`sys/libfont` -- the same 8x16 table the kernel console draws with -- and
 	stores the letters into memory the client cannot reach.
 
-	The sensor is the bar's own rectangle, out of `libdraw.frame_bar_at` so the
-	test and the server cannot disagree about where it is. The colour is
+	The sensor is the bar's own rectangle, found by its copper. The letters are
 	`SLATE_DEEP`, which is `kernel/splash.odin`'s engraved wordmark and the one
 	colour a bar drawn out of the copper three cannot otherwise contain.
 
@@ -4051,8 +4159,11 @@ verify_ctl :: proc(
 	that goes away has to take its pixels with it, and only a server that
 	repaints the bar can do that.
 	*/
-	bx, by, bw, bh := libdraw.frame_bar_at(700, 0, fwin)
+	bx, by, bw, bh := find_bar(s, 700, 800)
 	ink := fb.pack(s, fb.SLATE_DEEP)
+	if !check(r, bx > 700, "the window it moved and resized wears a copper bar across its top") {
+		return
+	}
 	check(r, !bar_has(s, bx, by, bw, bh, ink), "a window is born nameless, and its bar is copper and nothing else")
 
 	_, nerr := vfs.chan_write(cfd, 0, bytes_of("name VECTRA\n"))
@@ -4070,6 +4181,109 @@ verify_ctl :: proc(
 		!bar_has(s, bx, by, bw, bh, ink),
 		"and takes the old one off with it, because the bar is repainted and not drawn over",
 	)
+}
+
+/*
+scan_col and scan_row answer the first and last place `want` appears down one
+column, or along one row, of the glass. Both answer (-1, -1) when the colour is
+not there at all.
+
+**This is how the test learns where a client's pixels actually landed.** It
+used to compute that from `sys/libdraw`'s frame constants -- the same constants
+`servers/intuition` lays a window out with -- and `docs/TESTING.md` names
+agreeing with the code under test as the way a check passes for the wrong
+reason. An inset both sides read from one table is exactly that agreement, and
+it made every mutation of the frame's *geometry* unobservable: only a server
+that stopped calling `libdraw` at all could fail.
+
+So a client fills the rectangle it was told it has, and the glass says where
+that rectangle is. What comes back is a sensor rather than a restatement.
+*/
+@(private = "file")
+scan_col :: proc "contextless" (s: ^fb.Surface, x: int, want: u32, y0: int, y1: int) -> (first: int, last: int) {
+	first, last = -1, -1
+	for y in y0 ..< y1 {
+		if fb.get_raw(s, x, y) == want {
+			if first < 0 {
+				first = y
+			}
+			last = y
+		}
+	}
+	return
+}
+
+@(private = "file")
+scan_row :: proc "contextless" (s: ^fb.Surface, y: int, want: u32, x0: int, x1: int) -> (first: int, last: int) {
+	first, last = -1, -1
+	for x in x0 ..< x1 {
+		if fb.get_raw(s, x, y) == want {
+			if first < 0 {
+				first = x
+			}
+			last = x
+		}
+	}
+	return
+}
+
+/*
+is_desk asks whether one pixel is the desktop rather than a window on it.
+
+**The desktop is positional**, which is what makes this answerable. `desk_at`
+in `servers/intuition` is ground with a grid engraved every `DESK_STEP` columns
+and rows, so the test can name the colour at any coordinate instead of sampling
+one and hoping. That is what lets a window's own edge be *found*: the first
+pixel right of a window that is desktop again is where the window stops.
+
+The step is a fixture, the way the cascade is. No verb would tell a client what
+the ground behind it looks like.
+*/
+@(private = "file")
+DESK_STEP :: 32
+
+@(private = "file")
+is_desk :: proc "contextless" (s: ^fb.Surface, x: int, y: int) -> bool {
+	ground := (x % DESK_STEP == 0 || y % DESK_STEP == 0) ? fb.VOID : fb.SLATE_DEEP
+	return fb.get_raw(s, x, y) == fb.pack(s, ground)
+}
+
+// win_right walks right along one row from inside a window to the first pixel
+// that is desktop again, which is where that window's rectangle ends. A window
+// is opaque over the whole of it, so nothing in between can answer true.
+@(private = "file")
+win_right :: proc "contextless" (s: ^fb.Surface, y: int, from: int) -> int {
+	x := from
+	for x < s.width && !is_desk(s, x, y) {
+		x += 1
+	}
+	return x
+}
+
+/*
+find_bar answers the title bar's rectangle on the glass, for a window whose
+left edge is at `wx` and that is known to cover column `probe_x`.
+
+Found by its copper, which is a colour nothing else on this screen makes. The
+face is what the scan lands on -- the bar's own one-pixel bevel is
+`COPPER_LIT` and `COPPER_DARK` -- so the rectangle answered is a little inside
+the bar, which is what a sensor for the letters on it wants.
+
+Computed from `libdraw`'s frame arithmetic until this milestone, which is the
+agreement `scan_col` above exists to end.
+*/
+@(private = "file")
+find_bar :: proc "contextless" (s: ^fb.Surface, wx: int, probe_x: int) -> (x: int, y: int, w: int, h: int) {
+	copper := fb.pack(s, fb.COPPER)
+	top, bot := scan_col(s, probe_x, copper, 0, s.height)
+	if top < 0 {
+		return -1, -1, 0, 0
+	}
+	left, right := scan_row(s, (top + bot) / 2, copper, wx, s.width)
+	if left < 0 {
+		return -1, -1, 0, 0
+	}
+	return left, top, right - left + 1, bot - top + 1
 }
 
 // bar_has reports whether one colour appears anywhere in a rectangle of the
@@ -4268,7 +4482,7 @@ verify_anon :: proc(r: ^Result) {
 One screen row, saved while the window checks paint over it.
 
 Static because a kernel self-test has a heap and should not put five kilobytes
-through it to look at pixels. The same reason `term_saved` above is static.
+through it to look at pixels: five kilobytes is not a kernel stack's to lend.
 */
 @(private = "file")
 row_saved: [8192]u8
@@ -4307,17 +4521,13 @@ verify_windows :: proc(
 	s: ^fb.Surface,
 	win_w: int,
 	win_h: int,
+	ox: int,
+	oy: int,
+	fw: int,
 	y: int,
 	first: ^vfs.Chan,
 	first_ctl: ^vfs.Chan,
 ) #no_bounds_check {
-	// The frame, derived rather than passed. A window's whole width is its
-	// client area plus two insets, so handing this procedure both would be
-	// handing it one fact twice -- and a wrong one at the call site would be
-	// invisible here.
-	fw, _ := libdraw.frame_window(win_w, win_h)
-	ox, oy := libdraw.FRAME_INSET_X, libdraw.FRAME_INSET_Y
-
 	// `y` is a client row, and this is where it lands on the glass. Every
 	// command below is written in the first client's coordinates and read back
 	// in the screen's.
@@ -4671,7 +4881,7 @@ verify_windows :: proc(
 			"and are covered where they meet a window whose session drew nothing at all",
 		)
 
-		verify_ctl(r, s, win_w, win_h, sy, far_x, far_y, far, ground_x, ground_y, ground, A3, first_ctl)
+		verify_ctl(r, s, win_w, win_h, ox, sy, far_x, far_y, far, ground_x, ground_y, ground, A3, first_ctl)
 		vfs.chan_close(again)
 	}
 

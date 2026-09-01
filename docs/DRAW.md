@@ -570,11 +570,17 @@ is the whole point of a vocabulary made of rectangles. The app draws the same
 object the kernel draws, through a protocol that never learned what a bevel is.
 
 **And a window is a raised plinth with a sunken screen in it**, which is the
-chassis in one sentence. `libdraw.frame` decomposes that into three panels: the
-border, the copper bar across its top, and the well the client area is sunk
-into. The draw server stores them into the window's own run, so the compositor
-never learns there is a frame -- a window is still one opaque rectangle backed
-by one segment.
+chassis in one sentence. `window_frame` decomposes that into a bevel's edges
+and two panels: the border, the copper bar across its top, and the well the
+client area is sunk into. The draw server stores them into the window's own
+run, so the compositor never learns there is a frame -- a window is still one
+opaque rectangle backed by one segment.
+
+**The decomposition is `sys/libdraw`'s; the numbers are the server's.**
+`FRAME_EDGE`, `FRAME_TITLE` and `FRAME_WELL` sat in `libdraw` for one
+milestone, which is a story about the test rather than about the vocabulary --
+see "How the test knows where a window is" below. A window's border depth is
+one server's layout, and no ring 3 client ever read it.
 
 **The client area is the well's interior, and that is the whole cost.** A
 client's (0, 0) moved in by the border, the bar and the recess. `ctl` reports
@@ -639,17 +645,63 @@ repaint rather than a mechanism.
 it with. All three exist as `ctl` lines already, so what is missing is a
 pointer, and there is no pointing device in this system yet.
 
+### How the test knows where a window is
+
+**It scans for it.** `verify_draw` asks a client to fill every pixel of the
+area it was told it has, and reads the bounding box of that fill off the glass.
+That box is the client area: where it starts is the frame's inset, and how big
+it is is what the server actually gave.
+
+**It used to compute the same thing from the server's own constants**, which is
+why they were in `sys/libdraw` -- the kernel's self-test cannot import
+`servers/`. `docs/TESTING.md` names agreeing with the code under test as the way
+a check passes for the wrong reason, and this was exactly that: an inset both
+sides read from one table made every mutation of a frame's *geometry*
+unobservable. Only a server that stopped drawing a frame at all could fail.
+
+Three things follow, and the third is the one that took a second pass:
+
+    the report      a client fills what it was promised and gets exactly
+                    that, which is the report answering for itself rather
+                    than being restated
+    the frame       the fill starts inside a border and further below a
+                    title bar, and reaches neither
+    the anchor      and it sits the same depth in from both of its
+                    window's edges, because a border is a border
+
+**The anchor is the one a discovery cannot do without.** A scan follows a
+client's pixels wherever they went, so on its own it cannot say they went to
+the wrong place: a server that translated one pixel too far is simply found one
+pixel further along, and every check after it agrees. The window's own edges do
+not move, and `win_right` finds them by walking out until the desktop begins.
+That is also the first check to read **a window is opaque over its whole
+rectangle** directly rather than through a client's pixels.
+
+None of the three says how *deep* a frame is, and two mutations confirm it: a
+deeper border and a taller bar are inert, because the report moves with them
+and the test finds what it needs. That is a look rather than a fault, and a
+test that failed on it would be over-specifying the design.
+
+The same idea runs twice more. `verify_terminal` finds its window by the slate
+of the well it is sunk into, and waits for the window's *last* row rather than
+its first -- composites walk top to bottom, so a scan can otherwise catch a
+window half arrived. `find_bar` finds a title bar by its copper.
+
 ### The controls for chrome
 
 Six mutations, each on a real boot. All six are caught.
 
 | Mutation | Result |
 |---|---|
-| a window's store gets no frame when it opens | 4 checks, first `the window stands in a raised border, lit at its left edge like every panel in the chassis` |
-| the client area is not sunk into a well | 2 checks, first `the window's own ground is the well it is sunk into, not the plinth around it` |
+| a window's store gets no frame when it opens | 12 checks, first `the window stands in a raised border, lit at its left edge like every panel in the chassis` |
+| the client area is not sunk into a well | 10 checks, first `the window's own ground is the well it is sunk into, not the plinth around it` |
 | a resize does not move the frame with the edge | 1 check, `and its frame moved to the new edge, over what the old one left in the run` |
-| `ctl` reports the window rather than the client area | 29 checks, first `whose window is the screen's full height` |
-| a draw is not moved into the client area | 22 checks, first `the fill landed on the glass, corner to corner, inset by the frame it never sees` |
+| `ctl` reports the window rather than the client area | 29 checks, first `gets exactly the area it was promised, which is the report answering for itself` |
+| a draw is not moved into the client area | 11 checks, first `inside a border, and further below a title bar, neither of which it is told about` |
+| a draw is moved one pixel further in than the report accounts for | 6 checks, first `the same depth in from both of its window's edges` |
+| `frame_client` and `frame_window` disagree by four columns | 2 checks, first the same |
+| a deeper border | **inert**, and correctly so |
+| a taller title bar | **inert**, and correctly so |
 | the name is drawn in the bar's own colour | 2 checks, first `and the bar says so, in the font the draw server has and never gave a verb to` |
 | a rename draws over the bar rather than repainting it | 1 check, `and takes the old one off with it` |
 | a lamp does not light when its window opens | 1 check, `its lamp is lit, in the phosphor both sides of the door read from one table` |
@@ -673,19 +725,25 @@ at column zero, the bar's copper face, the well's slate ground. Each of those
 is a colour out of `sys/libpal` that neither a client's fill nor the desktop
 below could produce.
 
-**And one mutation stopped the boot rather than failing a check.** Every row
-`verify_draw` reads is derived from the geometry `ctl` answered with, so a
-server that reported the *window* sent the readbacks off the bottom of the
-screen. `fb.get_raw` has always bounded one pixel, but a save and restore of a
-rectangle is a raw slice of `Surface.pixels`, and Odin does not check those at
-all.
+**And one mutation went through three answers before it got a right one.** A
+server that reported the *window* rather than the client area sent every
+readback off the bottom of the screen, because every row `verify_draw` read was
+derived from that report. `fb.get_raw` has always bounded one pixel, but a save
+and restore of a rectangle is a raw slice of `Surface.pixels`, and Odin does not
+check those at all, so the boot faulted.
 
-The first fix was a gate: the check returned as well as failed. That is the
-wrong altitude, because the next sensor added above it is unprotected again.
-`fb.span` is the right one -- a run of pixels bounded the way `get_raw` bounds
-one, answering nothing off the surface so a save and its restore stay balanced.
-With it the check is an ordinary check again, and the mutation fails 29 of them
-with the boot intact and the teardown run.
+The first answer was a gate: the check returned as well as failed. Wrong
+altitude -- the next sensor added above it is unprotected again. The second was
+`fb.span`, a run of pixels bounded the way `get_raw` bounds one, which is right
+and stands. The third is that the check itself was the wrong check: `fh ==
+s.height` only ever compared the server's arithmetic with itself. What catches
+it now is a client filling what it was promised and the glass saying it got
+something smaller.
+
+**Two mutations were unobservable until that landed**, and both are in the
+table above: a draw moved one pixel too far in, and a report that disagrees with
+the store by four columns. Neither changes whether a frame is drawn, which is
+all the old checks could see.
 
 **A mutation went away entirely, which is what one of the fixes was for.** A
 blit that was not moved into the client area used to be its own row here. A

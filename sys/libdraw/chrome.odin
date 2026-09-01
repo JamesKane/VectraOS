@@ -4,9 +4,15 @@ The chrome vocabulary: bevels, wells and lamps, as rectangles.
 `kernel/splash.odin` paints the boot chassis and says of itself that
 `intuition`'s window frames should be recognisably the same object. That could
 not happen while the vocabulary was a set of surface painters in ring 0. This
-is that vocabulary with the painting taken out of it, and `frame` is the
-sentence itself: a window's border and title bar, out of the same names the
-chassis's plinth and copper bar come from.
+is that vocabulary with the painting taken out of it.
+
+**What is here is the vocabulary; what composes it is not.** The kernel builds
+a chassis out of these calls and `servers/intuition` builds a window frame out
+of them, and each keeps its own numbers. A window's border depth and the height
+of its title bar are one server's layout, and they lived here for a milestone
+only because the kernel's self-test read them too. That test finds a window's
+client area by scanning the glass for it now, so nothing outside the draw
+server has any business knowing how deep a frame is.
 
 **A piece of chrome is a list of coloured rectangles, and that is the whole
 design.** The kernel walks a `[]Piece` through `fb.paint`, straight onto a
@@ -65,64 +71,16 @@ MAX_DEPTH :: 4
 MAX_PIECES :: 1 + 4 * MAX_DEPTH + 1
 
 /*
-And what a `frame` makes: a bevel's edges, and two panels.
-
-Written against the three depths a frame is actually made of rather than
-against `MAX_DEPTH`, which no part of a frame uses. Raising `FRAME_EDGE` is
-what should grow this array, and against `MAX_DEPTH` it would not have.
-
-Its own bound rather than a larger `MAX_PIECES`, because a caller that draws
-no frames should keep the smaller array. `fb.bevel_edges` puts one on a kernel
-stack that a panic walks.
-*/
-MAX_FRAME_PIECES :: 4 * FRAME_EDGE + (1 + 4) + (1 + 4 * FRAME_WELL)
-
-/*
-The window frame's three numbers, and the only three a window's chassis has.
-
-`FRAME_EDGE` is the raised border a window stands up out of the desktop with.
-`FRAME_TITLE` is the bar across the top of it, inside that border.
-`FRAME_WELL` is the recess the client area is sunk into, which is what makes a
-window the same object as the chassis: a raised plinth with a sunken screen in
-it. Everything else about a frame is arithmetic over those three, and all of it
-is below.
-
-**They are here rather than in the draw server because a frame moves the
-client area, and more than the server has to know where it went.** The server
-insets every client store by it. `kernel/user/verify.odin` reads back pixels a
-client drew and has to know where on the glass they landed. Two places
-computing one inset by hand is the drift this file exists to stop.
-*/
-FRAME_EDGE :: 3
-FRAME_TITLE :: 20
-FRAME_WELL :: 2
-
-// `edges` and `panel` clamp to `MAX_DEPTH`, and a clamped frame would leave a
-// band of the window that `frame` below does not tile. The tiling is what
-// clears a reused slot, so the clamp is a compile error rather than a gap.
-#assert(FRAME_EDGE <= MAX_DEPTH)
-#assert(FRAME_WELL <= MAX_DEPTH)
-
-// Where the client area begins inside a window, which is the one piece of
-// frame arithmetic that does not depend on the window's size. A caller that
-// wants only the origin reads these rather than inventing a width to hand
-// `frame_client`.
-FRAME_INSET_X :: FRAME_EDGE + FRAME_WELL
-FRAME_INSET_Y :: FRAME_EDGE + FRAME_TITLE + FRAME_WELL
-
-// What the bar keeps clear around its text. The bar is `FRAME_TITLE` tall and
-// a glyph is sixteen, so the vertical half of this is what centres one.
-FRAME_PAD :: 4
-
-/*
 edges decomposes a bevelled border into its four sides, per level of depth,
 from the outside in.
 
 **The face is not here**, because what a border gets chiselled around is often
 not a rectangle. The chassis's plinth is `brushed` and its copper bar is
-`gradient_v`. The desktop is ground with a grid engraved in it. `fb.bevel_edges`
-and `intuition`'s `desk_chrome` are the two callers, and `panel` below is this
-with a face put in front of it.
+`gradient_v`. The desktop is ground with a grid engraved in it. And a window's
+border is nothing but edges: three nested rings tile a three-pixel frame
+exactly, so a face under them would never be seen. `fb.bevel_edges`,
+`intuition`'s `desk_chrome` and its `window_frame` are the three callers, and
+`panel` below is this with a face put in front of it.
 
 `depth` is clamped to `MAX_DEPTH`. A bevel deeper than the box it is on is
 arithmetic nobody wants to debug at a call site. Returns how many pieces it
@@ -205,100 +163,6 @@ into its own window are one call apart.
 */
 well :: proc "contextless" (out: []Piece, x: int, y: int, w: int, h: int, depth := 2) -> int {
 	return panel(out, x, y, w, h, .Recessed, libpal.SLATE, libpal.MAGNESIUM_LIT, libpal.VOID, depth)
-}
-
-/*
-frame decomposes a window's chassis: a raised border, with a copper bar across
-the top of it.
-
-**The same three surfaces the boot chassis is made of, one privilege level
-out.** `kernel/splash.odin` says its window frames should be recognisably the
-same object as the screen the kernel painted, and this is the call that makes
-them so: a raised plinth, a copper bar across its top, and a well sunk into
-what is left. The plinth is brushed magnesium there and flat here, and the bar
-is a copper gradient there and flat here, for the reason the file comment
-gives: neither a pattern nor a ramp is a rectangle.
-
-**The well's face is the client area's ground**, so a client that draws nothing
-gets the sunken slate field rather than the plinth it is standing on. It is
-also the only face a reused slot needs: the border and the bar sit strictly
-outside the client area at every size a window can take, so nothing a previous
-session drew is ever under them. That is what lets `window_open` clear a slot
-by painting a frame on it.
-
-**The plinth has no face, because at `FRAME_EDGE` deep its edges are the whole
-of it.** Three nested one-pixel rings tile a three-pixel border exactly, so a
-face under them would be written and completely overpainted -- half a megabyte
-of stores per window on this screen, for nothing. That is what `edges` exists
-apart from `panel` for, and the assertion above is what keeps the two depths
-from drifting into a gap.
-
-The three parts tile the window between them: the edges take the border ring,
-the bar takes the rows under it, and the well takes the rest.
-
-The name on the bar is not here either. A glyph is not a rectangle, and the
-painter that has a font is the one that draws it.
-
-Coordinates are the window's own, so a server painting into a window's store
-passes (0, 0). Answers how many pieces it wrote; size the array by
-`MAX_FRAME_PIECES`.
-*/
-frame :: proc "contextless" (out: []Piece, x: int, y: int, w: int, h: int) -> int #no_bounds_check {
-	n := edges(out, x, y, w, h, .Raised, libpal.MAGNESIUM_HOT, libpal.MAGNESIUM_DARK, FRAME_EDGE)
-	if n == 0 {
-		return 0
-	}
-	n += frame_bar(out[n:], x, y, w)
-	return n + well(
-		out[n:],
-		x + FRAME_EDGE,
-		y + FRAME_EDGE + FRAME_TITLE,
-		w - 2 * FRAME_EDGE,
-		h - 2 * FRAME_EDGE - FRAME_TITLE,
-		FRAME_WELL,
-	)
-}
-
-/*
-frame_bar decomposes the title bar alone: copper trim, out of the same three
-names the chassis's own bar is drawn from.
-
-Apart from `frame` because a window that is renamed repaints its bar and
-nothing else, and the bar is what an old name has to be erased off.
-*/
-frame_bar :: proc "contextless" (out: []Piece, x: int, y: int, w: int) -> int {
-	bx, by, bw, bh := frame_bar_at(x, y, w)
-	return panel(out, bx, by, bw, bh, .Raised, libpal.COPPER, libpal.COPPER_LIT, libpal.COPPER_DARK, 1)
-}
-
-// frame_bar_at is where that bar sits, inside a window at (x, y) that is `w`
-// across. The painter that draws the name needs it, and so does whatever
-// repaints one bar's worth of glass.
-frame_bar_at :: proc "contextless" (x: int, y: int, w: int) -> (int, int, int, int) {
-	return x + FRAME_EDGE, y + FRAME_EDGE, w - 2 * FRAME_EDGE, FRAME_TITLE
-}
-
-/*
-frame_client is where a window's client area is, and how big, inside a window
-`w` by `h`.
-
-**This is the whole cost of a frame**, and `docs/DRAW.md` section 12 named it
-a milestone before there was one: the client area is no longer the window's
-rectangle. A client's (0, 0) is here, and the origin is a constant because a
-frame is the same depth whatever size the window is.
-
-It is the well's *interior*, so the recess is chrome the client cannot draw on,
-the way the border and the bar are.
-*/
-frame_client :: proc "contextless" (w: int, h: int) -> (x: int, y: int, cw: int, ch: int) {
-	return FRAME_INSET_X, FRAME_INSET_Y, w - 2 * FRAME_INSET_X, h - FRAME_INSET_Y - FRAME_INSET_X
-}
-
-// frame_window is the inverse: the window a client area of `cw` by `ch` needs
-// around it. A `size` line names a client area, because a `ctl` read answers
-// one, and this is what turns that into a window.
-frame_window :: proc "contextless" (cw: int, ch: int) -> (w: int, h: int) {
-	return cw + 2 * FRAME_INSET_X, ch + FRAME_INSET_Y + FRAME_INSET_X
 }
 
 /*

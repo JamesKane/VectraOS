@@ -299,7 +299,7 @@ attention to itself. A darker one reads as engraved, which is the same trick
 like metal.
 
 A window's own ground is not here. It is the face of the well
-`libdraw.frame` sinks the client area into, which is `SLATE` out of the same
+`window_frame` sinks the client area into, which is `SLATE` out of the same
 table -- a window is a sunken panel in this idiom, and a client that draws
 nothing gets one because the frame painted one.
 */
@@ -490,6 +490,152 @@ desk_pieces :: proc "contextless" (pieces: []libdraw.Piece, sx0: int, sy0: int, 
 	pieces_into(glass, glass_stride, pieces, max(sx0, 0), max(sy0, 0), min(sx1, scr_w), min(sy1, scr_h))
 }
 
+// -- The window frame --------------------------------------------------------
+
+/*
+And what a `frame` makes: a bevel's edges, and two panels.
+
+Written against the three depths a frame is actually made of rather than
+against `MAX_DEPTH`, which no part of a frame uses. Raising `FRAME_EDGE` is
+what should grow this array, and against `MAX_DEPTH` it would not have.
+
+Its own bound rather than `libdraw.MAX_PIECES`, which is what one panel makes.
+*/
+MAX_FRAME_PIECES :: 4 * FRAME_EDGE + (1 + 4) + (1 + 4 * FRAME_WELL)
+
+/*
+The window frame's three numbers, and the only three a window's chassis has.
+
+`FRAME_EDGE` is the raised border a window stands up out of the desktop with.
+`FRAME_TITLE` is the bar across the top of it, inside that border.
+`FRAME_WELL` is the recess the client area is sunk into, which is what makes a
+window the same object as the chassis: a raised plinth with a sunken screen in
+it. Everything else about a frame is arithmetic over those three, and all of it
+is below.
+
+**They are this server's alone, and that took a milestone to get right.**
+They sat in `sys/libdraw` first, because the kernel's self-test insets its
+readbacks by the same amount and could not import `servers/`. That made the
+test agree with the code under test: no mutation of a frame's geometry could
+fail a check. The test finds a window's client area by scanning the glass for
+it now, so these are layout policy in the one process that has any.
+*/
+FRAME_EDGE :: 3
+FRAME_TITLE :: 20
+FRAME_WELL :: 2
+
+// `libdraw.edges` and `libdraw.panel` clamp to `MAX_DEPTH`, and a clamped frame
+// would leave a band of the window that `window_frame` below does not tile. The
+// tiling is what clears a reused slot, so the clamp is a compile error rather
+// than a gap.
+#assert(FRAME_EDGE <= libdraw.MAX_DEPTH)
+#assert(FRAME_WELL <= libdraw.MAX_DEPTH)
+
+// Where the client area begins inside a window, which is the one piece of
+// frame arithmetic that does not depend on the window's size. A caller that
+// wants only the origin reads these rather than inventing a width to hand
+// `frame_client`.
+FRAME_INSET_X :: FRAME_EDGE + FRAME_WELL
+FRAME_INSET_Y :: FRAME_EDGE + FRAME_TITLE + FRAME_WELL
+
+// What the bar keeps clear around its text. The bar is `FRAME_TITLE` tall and
+// a glyph is sixteen, so the vertical half of this is what centres one.
+FRAME_PAD :: 4
+
+/*
+window_frame decomposes a window's chassis: a raised border, with a copper bar across
+the top of it.
+
+**The same three surfaces the boot chassis is made of, one privilege level
+out.** `kernel/splash.odin` says its window frames should be recognisably the
+same object as the screen the kernel painted, and this is the call that makes
+them so: a raised plinth, a copper bar across its top, and a well sunk into
+what is left. The plinth is brushed magnesium there and flat here, and the bar
+is a copper gradient there and flat here, for the reason the file comment
+gives: neither a pattern nor a ramp is a rectangle.
+
+**The well's face is the client area's ground**, so a client that draws nothing
+gets the sunken slate field rather than the plinth it is standing on. It is
+also the only face a reused slot needs: the border and the bar sit strictly
+outside the client area at every size a window can take, so nothing a previous
+session drew is ever under them. That is what lets `window_open` clear a slot
+by painting a frame on it.
+
+**The plinth has no face, because at `FRAME_EDGE` deep its edges are the whole
+of it.** Three nested one-pixel rings tile a three-pixel border exactly, so a
+face under them would be written and completely overpainted -- half a megabyte
+of stores per window on this screen, for nothing. That is what `edges` exists
+apart from `panel` for, and the assertion above is what keeps the two depths
+from drifting into a gap.
+
+The three parts tile the window between them: the edges take the border ring,
+the bar takes the rows under it, and the well takes the rest.
+
+The name on the bar is not here either. A glyph is not a rectangle, and the
+painter that has a font is the one that draws it.
+
+Coordinates are the window's own, so a server painting into a window's store
+passes (0, 0). Answers how many pieces it wrote; size the array by
+`MAX_FRAME_PIECES`.
+*/
+window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, h: int) -> int #no_bounds_check {
+	n := libdraw.edges(out, x, y, w, h, .Raised, libpal.MAGNESIUM_HOT, libpal.MAGNESIUM_DARK, FRAME_EDGE)
+	if n == 0 {
+		return 0
+	}
+	n += frame_bar(out[n:], x, y, w)
+	return n + libdraw.well(
+		out[n:],
+		x + FRAME_EDGE,
+		y + FRAME_EDGE + FRAME_TITLE,
+		w - 2 * FRAME_EDGE,
+		h - 2 * FRAME_EDGE - FRAME_TITLE,
+		FRAME_WELL,
+	)
+}
+
+/*
+frame_bar decomposes the title bar alone: copper trim, out of the same three
+names the chassis's own bar is drawn from.
+
+Apart from `window_frame` because a window that is renamed repaints its bar and
+nothing else, and the bar is what an old name has to be erased off.
+*/
+frame_bar :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int) -> int {
+	bx, by, bw, bh := frame_bar_at(x, y, w)
+	return libdraw.panel(out, bx, by, bw, bh, .Raised, libpal.COPPER, libpal.COPPER_LIT, libpal.COPPER_DARK, 1)
+}
+
+// frame_bar_at is where that bar sits, inside a window at (x, y) that is `w`
+// across. The painter that draws the name needs it, and so does whatever
+// repaints one bar's worth of glass.
+frame_bar_at :: proc "contextless" (x: int, y: int, w: int) -> (int, int, int, int) {
+	return x + FRAME_EDGE, y + FRAME_EDGE, w - 2 * FRAME_EDGE, FRAME_TITLE
+}
+
+/*
+frame_client is where a window's client area is, and how big, inside a window
+`w` by `h`.
+
+**This is the whole cost of a frame**, and `docs/DRAW.md` section 12 named it
+a milestone before there was one: the client area is no longer the window's
+rectangle. A client's (0, 0) is here, and the origin is a constant because a
+frame is the same depth whatever size the window is.
+
+It is the well's *interior*, so the recess is chrome the client cannot draw on,
+the way the border and the bar are.
+*/
+frame_client :: proc "contextless" (w: int, h: int) -> (x: int, y: int, cw: int, ch: int) {
+	return FRAME_INSET_X, FRAME_INSET_Y, w - 2 * FRAME_INSET_X, h - FRAME_INSET_Y - FRAME_INSET_X
+}
+
+// frame_window is the inverse: the window a client area of `cw` by `ch` needs
+// around it. A `size` line names a client area, because a `ctl` read answers
+// one, and this is what turns that into a window.
+frame_window :: proc "contextless" (cw: int, ch: int) -> (w: int, h: int) {
+	return cw + 2 * FRAME_INSET_X, ch + FRAME_INSET_Y + FRAME_INSET_X
+}
+
 /*
 The window frame, and the font the draw server did not have.
 
@@ -501,7 +647,7 @@ copies a window's rectangle to the glass and never learns which of those
 pixels a client drew.
 
 **A client cannot reach them.** Its coordinates start at the client area,
-which `libdraw.frame_client` puts inside the border and below the bar, and
+which `frame_client` puts inside the border and below the bar, and
 every store it makes is clipped to that extent first. A frame is the one part
 of a window that is the server's, and the clip is what says so.
 
@@ -532,22 +678,22 @@ frame is memory like everything else in the run, so it survives being covered
 the way a client's pixels do.
 */
 window_chrome :: proc "contextless" (win: ^Window) {
-	pieces: [libdraw.MAX_FRAME_PIECES]libdraw.Piece
-	win_pieces(win, pieces[:libdraw.frame(pieces[:], 0, 0, win.w, win.h)])
+	pieces: [MAX_FRAME_PIECES]libdraw.Piece
+	win_pieces(win, pieces[:window_frame(pieces[:], 0, 0, win.w, win.h)])
 	title_text(win)
 }
 
 /*
 title_paint repaints one bar and the name on it, which is what a rename needs.
 
-`window_chrome` does not call this: `libdraw.frame` already carries the bar,
+`window_chrome` does not call this: `window_frame` already carries the bar,
 so a whole-frame repaint lays it down once and goes straight to the letters.
 This is the path that has to lay it down itself, and laying it down first is
 how a name that grew shorter loses its tail.
 */
 title_paint :: proc "contextless" (win: ^Window) {
 	pieces: [libdraw.MAX_PIECES]libdraw.Piece
-	win_pieces(win, pieces[:libdraw.frame_bar(pieces[:], 0, 0, win.w)])
+	win_pieces(win, pieces[:frame_bar(pieces[:], 0, 0, win.w)])
 	title_text(win)
 }
 
@@ -562,8 +708,8 @@ answer. A title is the *server's* text about a client's window, drawn into
 memory no client can reach, so it needs no verb at all.
 
 It paints no bar of its own, so both callers lay one down exactly once:
-`window_chrome` gets it out of `libdraw.frame`, and `title_paint` out of
-`libdraw.frame_bar`.
+`window_chrome` gets it out of `window_frame`, and `title_paint` out of
+`frame_bar`.
 
 The clip is per glyph rather than per pixel. A name runs off the bar's right
 edge at a whole character, so the first one that will not fit ends the whole
@@ -571,10 +717,10 @@ loop, and the column range is settled before the rows are walked. The bar is
 taller than a glyph by `FRAME_PAD`, so no row of one can leave it.
 */
 title_text :: proc "contextless" (win: ^Window) #no_bounds_check {
-	bx, by, bw, bh := libdraw.frame_bar_at(0, 0, win.w)
-	tx := bx + libdraw.FRAME_PAD
+	bx, by, bw, bh := frame_bar_at(0, 0, win.w)
+	tx := bx + FRAME_PAD
 	ty := by + (bh - libfont.FONT_HEIGHT) / 2
-	right := bx + bw - libdraw.FRAME_PAD
+	right := bx + bw - FRAME_PAD
 	for i in 0 ..< win.title_n {
 		gx := tx + i * libfont.FONT_WIDTH
 		if gx >= right {
@@ -617,7 +763,7 @@ window_name :: proc "contextless" (win: ^Window, name: []u8) -> vectra9.Errno #n
 	win.title_n = n
 
 	title_paint(win)
-	bx, by, bw, bh := libdraw.frame_bar_at(win.x, win.y, win.w)
+	bx, by, bw, bh := frame_bar_at(win.x, win.y, win.w)
 	repaint(bx, by, bw, bh)
 	return vectra9.Errno(0)
 }
@@ -636,7 +782,7 @@ region a window keeps now.
 
 **A window owns its whole rectangle, and part of it is not the client's.** The
 border and the title bar live in this same run, painted by `window_chrome`,
-and `libdraw.frame_client` is where the client area begins inside them. Every
+and `frame_client` is where the client area begins inside them. Every
 store a verb makes is clipped to that and moved into it, so a frame costs the
 compositor nothing: a window is still one opaque rectangle backed by one run.
 
@@ -899,7 +1045,7 @@ read_geometry :: proc "contextless" (report: []u8) -> bool {
 	// And a window has to have room for a client area inside its frame. A
 	// screen too small for one is a geometry this server cannot draw on,
 	// which is the refusal it already makes for a depth it cannot pack.
-	_, _, cw, ch := libdraw.frame_client(win_w, win_h)
+	_, _, cw, ch := frame_client(win_w, win_h)
 	if cw <= 0 || ch <= 0 {
 		return false
 	}
@@ -922,7 +1068,7 @@ here. A `size` line names this same rectangle, so what a client reads back is
 in the units it writes.
 */
 window_report :: proc "contextless" (out: []u8, win: ^Window) -> int #no_bounds_check {
-	_, _, cw, ch := libdraw.frame_client(win.w, win.h)
+	_, _, cw, ch := frame_client(win.w, win.h)
 	at := 0
 	at = put_report(out, at, "size ")
 	at = put_number(out, at, cw)
@@ -1297,7 +1443,7 @@ window_size changes what a window is, inside the run it was born with.
 
 **The numbers are the client area**, the same rectangle `window_report`
 answers with, and the frame this server puts around it is what the two differ
-by. `libdraw.frame_window` is that arithmetic, and the bound is checked
+by. `frame_window` is that arithmetic, and the bound is checked
 against the window it produces rather than against what was asked.
 
 **A window cannot grow past its allocation, and that is `segbrk`'s absence
@@ -1323,7 +1469,7 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 	if ncw <= 0 || nch <= 0 {
 		return vectra9.EINVAL
 	}
-	nw, nh := libdraw.frame_window(ncw, nch)
+	nw, nh := frame_window(ncw, nch)
 	if nw > win_w || nh > win_h {
 		return vectra9.EINVAL
 	}
@@ -1571,7 +1717,7 @@ client_clip :: proc "contextless" (
 	sx: ^int,
 	sy: ^int,
 ) -> bool {
-	cx, cy, cw, ch := libdraw.frame_client(win.w, win.h)
+	cx, cy, cw, ch := frame_client(win.w, win.h)
 	if !clip(x, y, w, h, sx, sy, cw, ch) {
 		return false
 	}
