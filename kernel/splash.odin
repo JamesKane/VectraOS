@@ -16,6 +16,7 @@ package kernel
 
 import "kernel:drivers/console"
 import "kernel:drivers/fb"
+import "vsys:libdraw"
 
 BEZEL      :: 22 // Gap between screen edge and chassis
 TITLE_H    :: 30
@@ -77,10 +78,14 @@ draw_chassis :: proc "contextless" (s: ^fb.Surface, title, subtitle: string) -> 
 	c.strip = fb.Rect{inner.x + PAD, inner.y + inner.h - PAD - LAMP, inner.w - 2 * PAD, LAMP}
 
 	// -- Console well: sunken, dark, with an inner shadow line --------------
+	//
+	// `libdraw.well` is the whole of it, face and edges, and it is the same
+	// call `apps/terminal` sinks its field with through a pipe. Three
+	// milestones of vocabulary so that this line and that one are one line.
 	well_top := c.title.y + c.title.h + PAD
 	c.well = fb.Rect{inner.x + PAD, well_top, inner.w - 2 * PAD, c.strip.y - PAD - well_top}
-	fb.fill_rect(s, c.well, fb.SLATE)
-	fb.bevel_edges(s, c.well, .Recessed, fb.MAGNESIUM_LIT, fb.VOID, WELL_D)
+	pieces: [libdraw.MAX_PIECES]fb.Piece
+	fb.paint(s, pieces[:libdraw.well(pieces[:], c.well.x, c.well.y, c.well.w, c.well.h, WELL_D)])
 
 	return c
 }
@@ -112,21 +117,25 @@ unlit jewel in it.
 
 An unlit lamp is a dark version of its own colour, rather than a neutral grey.
 A bank of lamps with none of them on therefore still reads as three of the same
-kind of thing.
+kind of thing. That rule is `libdraw.lamp`'s now, and the desktop's lamps obey
+it because they are the same call.
 */
 draw_lamp :: proc "contextless" (s: ^fb.Surface, x, y: int, color: fb.RGB, lit: bool) {
-	socket := fb.Rect{x, y, LAMP, LAMP}
-	fb.fill_rect(s, socket, fb.MAGNESIUM_DARK)
-	fb.bevel_edges(s, socket, .Recessed, fb.MAGNESIUM_LIT, fb.VOID, 1)
-
-	jewel := fb.inset_of(socket, 2)
-	if lit {
-		fb.gradient_v(s, jewel, fb.mix(color, fb.AMBER_HOT, 70), color)
-		// A single lit pixel at the top-left sells it as glass.
-		fb.put_pixel(s, jewel.x, jewel.y, fb.AMBER_HOT)
-	} else {
-		fb.fill_rect(s, jewel, fb.mix(color, fb.VOID, 200))
+	pieces: [libdraw.MAX_PIECES]fb.Piece
+	fb.paint(s, pieces[:libdraw.lamp(pieces[:], x, y, LAMP, color, lit)])
+	if !lit {
+		return
 	}
+
+	// A lit jewel is the one place the chassis has more than the vocabulary
+	// can carry, so it paints the extra over the rectangle rather than instead
+	// of it. A gradient is a colour per row and the specular corner is one
+	// pixel, and a `Piece` is neither. `intuition`'s lamps are flat for that
+	// reason, and are otherwise this lamp exactly.
+	jewel := fb.inset_of(fb.Rect{x, y, LAMP, LAMP}, 2)
+	fb.gradient_v(s, jewel, fb.mix(color, fb.AMBER_HOT, 70), color)
+	// A single lit pixel at the top-left sells it as glass.
+	fb.put_pixel(s, jewel.x, jewel.y, fb.AMBER_HOT)
 }
 
 // draw_lamp_row lays a labelled bank of lamps along the indicator strip.

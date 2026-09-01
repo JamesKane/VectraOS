@@ -411,21 +411,21 @@ Both are `pieces` walked through one clipped fill.
 desk_chrome :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bounds_check {
 	pieces: [libdraw.MAX_PIECES]libdraw.Piece
 
-	n := libdraw.panel(
+	// The face is the ground `desk_paint` already laid, grid and all, so this
+	// is `edges` rather than `panel`. The chassis chisels around a brushed
+	// plinth for the same reason.
+	n := libdraw.edges(
 		pieces[:],
 		0,
 		0,
 		scr_w,
 		scr_h,
 		.Recessed,
-		libpal.SLATE_DEEP,
 		libpal.MAGNESIUM_LIT,
 		libpal.VOID,
 		DESK_EDGE,
 	)
-	// The face is the ground `desk_paint` already laid, grid and all. Only the
-	// edges are this call's, so the first piece is skipped.
-	desk_pieces(pieces[1:n], sx0, sy0, sx1, sy1)
+	desk_pieces(pieces[:n], sx0, sy0, sx1, sy1)
 
 	for i in 0 ..< MAX_WINDOWS {
 		x, y := lamp_at(i)

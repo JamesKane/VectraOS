@@ -4,33 +4,31 @@ The chrome vocabulary: bevels, wells and lamps, as rectangles.
 `kernel/splash.odin` paints the boot chassis and says of itself that
 `intuition`'s window frames should be recognisably the same object. That could
 not happen while the vocabulary was a set of surface painters in ring 0. This
-is the same vocabulary one privilege level out.
-
-**Ring 0 has not been moved onto it, and until it is there are two copies.**
-`fb.bevel_edges` and `splash.draw_lamp` still paint the chassis. What that
-costs is drift, so the arithmetic here is deliberately the kernel's own. The
-edge walk is `fb.bevel_edges`'s inset-per-depth loop, and an unlit jewel is
-`mix(colour, VOID, 200)` because that is what `splash.draw_lamp` makes.
-
-The move is one surface painter away: `fb` walking a `[]Piece` through
-`fill_rect`. `Piece.color` carries an `RGB` rather than a packed word so that
-painter can pack against the mode the bootloader actually set.
+is that vocabulary with the painting taken out of it.
 
 **A piece of chrome is a list of coloured rectangles, and that is the whole
-design.** The kernel paints its chassis straight onto a surface. The draw
-server paints into a window's store or onto the glass. A client sends `fill`
-commands down a pipe. Those are three different painters, and the one thing
-they agree about is a rectangle with a colour in it. So this decomposes and
-paints nothing.
+design.** The kernel walks a `[]Piece` through `fb.paint`, straight onto a
+surface. The draw server paints into a window's store or onto the glass. A
+client sends `fill` commands down a pipe. Those are three different painters,
+and the one thing they agree about is a rectangle with a colour in it. So this
+decomposes and paints nothing.
+
+**Both privilege levels wear it**, which is what `Piece.color` being an `RGB`
+rather than a packed pixel word bought. `fb.paint` packs against the mode the
+bootloader actually set, and ring 3 packs with `libpal.xrgb` because
+`/srv/draw` accepts one depth. There is no copy of the arithmetic left to
+drift.
 
 What the rectangle model does not carry is the chassis's two richest surfaces.
 `gradient_v` is a colour per row and `brushed` is a pattern per pixel, and
-neither is a rectangle. A client that wants a gradient sends one fill per row
-today. A gradient verb would be the seventh verb `docs/DRAW.md` section 5
-guards against, and a row of fills is what a client library is for.
+neither is a rectangle. The chassis keeps both by painting them *over* the
+rectangles this file decomposes it into, which is what a lit jewel does. Ring 3
+has no verb for either. A client that wants a gradient sends one fill per row.
+A gradient verb would be the seventh verb `docs/DRAW.md` section 5 guards
+against, and a row of fills is what a client library is for.
 
 The light source is fixed at the top-left, as it was on every machine this look
-is quoting, and as `fb.bevel_edges` already had it.
+is quoting, and as `fb.bevel_edges` had it before the walk moved here.
 */
 package libdraw
 
@@ -41,9 +39,9 @@ One rectangle of chrome, in whatever coordinates the caller is working in.
 
 The colour is an `RGB` rather than a packed pixel word, so a painter packs it
 for the mode it is drawing on. Ring 3 packs with `libpal.xrgb`, because
-`/srv/draw` accepts one depth. The kernel would pack with `fb.pack`, which
-reads the channel shifts the bootloader set -- which is the whole reason this
-type cannot carry a `u32`.
+`/srv/draw` accepts one depth. The kernel packs with `fb.pack`, which reads the
+channel shifts the bootloader set -- which is the whole reason this type cannot
+carry a `u32`.
 */
 Piece :: struct {
 	x:     int,
@@ -65,20 +63,67 @@ MAX_DEPTH :: 4
 MAX_PIECES :: 1 + 4 * MAX_DEPTH + 1
 
 /*
-panel decomposes a bevelled box into its face and its edges.
+edges decomposes a bevelled border into its four sides, per level of depth,
+from the outside in.
 
-The face first, then the edges from the outside in. A painter that walks the
-list in order draws exactly what a painter that nests them would. Returns how
-many pieces it wrote, and writes nothing at all for a box too small to have an
-interior.
+**The face is not here**, because what a border gets chiselled around is often
+not a rectangle. The chassis's plinth is `brushed` and its copper bar is
+`gradient_v`. The desktop is ground with a grid engraved in it. `fb.bevel_edges`
+and `intuition`'s `desk_chrome` are the two callers, and `panel` below is this
+with a face put in front of it.
 
 `depth` is clamped to `MAX_DEPTH`. A bevel deeper than the box it is on is
-arithmetic nobody wants to debug at a call site.
+arithmetic nobody wants to debug at a call site. Returns how many pieces it
+wrote, and stops early rather than overrunning the array it was given.
+*/
+edges :: proc "contextless" (
+	out: []Piece,
+	x: int,
+	y: int,
+	w: int,
+	h: int,
+	style: Bevel,
+	light: libpal.RGB,
+	dark: libpal.RGB,
+	depth: int,
+) -> int #no_bounds_check {
+	if w <= 0 || h <= 0 {
+		return 0
+	}
+	d := clamp(depth, 0, MAX_DEPTH)
 
-**Nothing passes `.Raised` yet.** Nothing in this system stands up off the
-ground. The desktop is a well, a lamp socket is a well, and a window has no
-frame. The frame is what will exercise it. The wrapper naming a face and its
-two shades belongs with that caller rather than ahead of it.
+	tl := style == .Raised ? light : dark
+	br := style == .Raised ? dark : light
+
+	n := 0
+	for i in 0 ..< d {
+		ix := x + i
+		iy := y + i
+		iw := w - 2 * i
+		ih := h - 2 * i
+		if iw <= 0 || ih <= 0 || n + 4 > len(out) {
+			break
+		}
+		out[n] = Piece{ix, iy, iw, 1, tl}
+		out[n + 1] = Piece{ix, iy, 1, ih, tl}
+		out[n + 2] = Piece{ix, iy + ih - 1, iw, 1, br}
+		out[n + 3] = Piece{ix + iw - 1, iy, 1, ih, br}
+		n += 4
+	}
+	return n
+}
+
+/*
+panel decomposes a bevelled box into its face and its edges.
+
+The face first, then `edges`. A painter that walks the list in order draws
+exactly what a painter that nests them would. Returns how many pieces it wrote,
+and writes nothing at all for a box too small to have an interior.
+
+`.Raised` is what the chassis's plinth and its copper bar are, and `.Recessed`
+is every well below. A window frame is the next wearer of the first, and the
+wrapper naming a face and its two shades belongs with that caller rather than
+ahead of it.
 */
 panel :: proc "contextless" (
 	out: []Piece,
@@ -95,30 +140,8 @@ panel :: proc "contextless" (
 	if w <= 0 || h <= 0 || len(out) < 1 {
 		return 0
 	}
-	d := clamp(depth, 0, MAX_DEPTH)
-
-	n := 0
 	out[0] = Piece{x, y, w, h, face}
-	n = 1
-
-	tl := style == .Raised ? light : dark
-	br := style == .Raised ? dark : light
-
-	for i in 0 ..< d {
-		ix := x + i
-		iy := y + i
-		iw := w - 2 * i
-		ih := h - 2 * i
-		if iw <= 0 || ih <= 0 || n + 4 > len(out) {
-			break
-		}
-		out[n] = Piece{ix, iy, iw, 1, tl}
-		out[n + 1] = Piece{ix, iy, 1, ih, tl}
-		out[n + 2] = Piece{ix, iy + ih - 1, iw, 1, br}
-		out[n + 3] = Piece{ix + iw - 1, iy, 1, ih, br}
-		n += 4
-	}
-	return n
+	return 1 + edges(out[1:], x, y, w, h, style, light, dark, depth)
 }
 
 /*
@@ -144,10 +167,10 @@ lamp :: proc "contextless" (out: []Piece, x: int, y: int, size: int, color: libp
 	if n == 0 || n >= len(out) {
 		return n
 	}
-	// The same arithmetic `splash.draw_lamp` uses, so the two lamps make the
-	// same pixels for as long as there are two of them. A lit jewel there also
-	// carries a gradient and a specular corner. Those are a colour per row and
-	// one pixel, and neither is a rectangle. See the file comment.
+	// A lit jewel is flat here, and the chassis paints a gradient and a
+	// specular corner over it. Those are a colour per row and one pixel, and
+	// neither is a rectangle. See the file comment. An unlit one is the whole
+	// rule, which is why it is the state with a check on it.
 	jewel := lit ? color : libpal.mix(color, libpal.VOID, 200)
 	out[n] = Piece{x + 2, y + 2, size - 4, size - 4, jewel}
 	return n + 1

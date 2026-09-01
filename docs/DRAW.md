@@ -494,21 +494,31 @@ client sends `fill` commands down a pipe. A `Piece` carries an `RGB` rather
 than a packed pixel word, so a third painter can pack against the mode the
 bootloader actually set.
 
-**That third painter is the kernel, and it is not written yet.** `fb` still has
-its own `bevel_edges` and `splash` its own `draw_lamp`, so the chassis and the
-desktop are two copies of one idiom. The arithmetic here is deliberately the
-kernel's, down to `mix(colour, VOID, 200)` for an unlit jewel. The two make the
-same pixels while there are two.
+**That third painter is the kernel, and it is `fb.paint`.** Five lines walking
+a `[]Piece` through `fill_rect`, which is the whole of what ring 0 had to grow.
+`fb.bevel_edges` and `fb.bevel_box` are `libdraw.edges` and `libdraw.panel`
+painted. `splash`'s console well is `libdraw.well`, the same call
+`apps/terminal` sinks its field with through a pipe. `splash.draw_lamp` is
+`libdraw.lamp`. The kernel's copy is gone rather than agreed with, and an unlit
+jewel is `mix(colour, VOID, 200)` in one place.
 
-The move is one procedure: `fb` walking a `[]Piece` through `fill_rect`. Until
-it lands, this is a vocabulary ring 3 uses and ring 0 agrees with by hand.
+**The face and the edges had to come apart to do it.** `panel` wrote a face and
+then chiselled it, and two callers want the chiselling without the face. The
+chassis draws its plinth with `brushed` and its copper bar with `gradient_v`,
+and the desktop draws ground with a grid engraved in it. None of those three is
+a rectangle. So `edges` is the walk and `panel` is a face in front of it, which
+is also the honest version of what `desk_chrome` was doing when it asked for a
+face and skipped the first piece.
 
 What the rectangle model does not carry is the chassis's two richest surfaces.
 `gradient_v` is a colour per row and `brushed` is a pattern per pixel, and
-neither is a rectangle. A lit lamp's jewel loses its gradient and its specular
-corner for the same reason. A client that wants a gradient sends one fill per
-row. **A gradient verb would be the seventh verb section 5 guards against**,
-and a row of fills is what a client library is for.
+neither is a rectangle. **The chassis keeps both by painting them over the
+decomposition rather than instead of it.** A lit jewel is a flat `Piece` that
+`draw_lamp` then ramps and puts a specular pixel on. Ring 3 has neither and its
+lamps are flat, and the state the rule is actually about -- an unlit lamp dark
+in its own colour -- is a rectangle in both rings. A client that wants a
+gradient sends one fill per row. **A gradient verb would be the seventh verb
+section 5 guards against**, and a row of fills is what a client library is for.
 
 ### One table, both rings
 
@@ -532,6 +542,12 @@ the literals behind.
 
 ### What is wearing it
 
+**The boot chassis.** The console well, the plinth's bevel, the copper bar's,
+and every lamp in the indicator strip. It is the caller the vocabulary was
+built for and the last one to arrive, and what it proves is the thing
+`Piece.color` being an `RGB` was for: the same list of rectangles packs against
+a 16-bit mode in ring 0 and against `/srv/draw`'s one depth in ring 3.
+
 **The desktop is a recessed well.** The screen has the same two-pixel bevel
 the chassis sinks its console into. The ground reads as sunk into a machine
 rather than as a colour somebody chose.
@@ -552,9 +568,6 @@ is the whole point of a vocabulary made of rectangles. The app draws the same
 object the kernel draws, through a protocol that never learned what a bevel is.
 
 ### What is not wearing it yet
-
-**Ring 0.** See above: the kernel is the painter this vocabulary was built for
-and the one that still has its own copy.
 
 **A window has no frame and no title bar.** That is the obvious next use and
 it is not free. A frame means the client area is no longer the window's whole
@@ -655,10 +668,10 @@ first time the answer was that the test was asking the wrong process.
   rectangles exists to avoid. An opaque window is what finally makes it
   correct, so this is the first milestone where it *could* be done. Worth it at
   more windows than two.
-- **The grid is decoration and the desktop has nothing else on it.** No wells,
-  no lamps, no title bars on the windows. `kernel/splash.odin` draws all of
-  those for the chassis, in ring 0, against a surface. A ring 3 `libdraw` that
-  drew bevels would be the same code one privilege level out.
+- **The desktop wears the vocabulary and the windows on it do not.** No frame,
+  no title bar. It is the next wearer and the first one that is not free, for
+  the reason "What is not wearing it yet" gives: a frame moves the client area
+  in off the window's own origin.
 - **Nothing gives a run back.** A window's memory belongs to the slot rather
   than to the session, and a slot is never released. `segfree` is the Plan 9
   call that changes it, and `docs/USER.md` names it with the other two.

@@ -654,8 +654,7 @@ could not happen while bevels were surface painters in ring 0.
 
 `sys/libdraw` decomposes a panel, a well and a lamp into coloured rectangles
 and paints nothing. So the draw server and a client through a pipe draw the
-same object two different ways. Ring 0 is the third painter and still has its
-own copy, which `docs/DRAW.md` section 12 names.
+same object two different ways, and the kernel is the third painter below.
 
 **And the palette is one table both privilege levels read.** It promised that
 of itself and had three copies. `sys/libpal` holds it, `fb` aliases every name,
@@ -664,26 +663,35 @@ its right edge, lit when that window has a session. `apps/terminal`'s field is
 sunk into a well sent as ordinary fills. There is no chrome verb, and
 `docs/DRAW.md` section 5 is why there is not.
 
+**And ring 0 wears the chrome vocabulary.** `fb.paint` is the third painter
+`Piece.color` carried an `RGB` for: five lines walking a `[]Piece` through
+`fill_rect`, packing against whatever mode the bootloader set. `bevel_edges`
+and `bevel_box` are `libdraw.edges` and `libdraw.panel` painted, the chassis's
+console well is `libdraw.well`, and `draw_lamp` is `libdraw.lamp`. The kernel's
+copy of the arithmetic is gone rather than agreed with by hand.
+
+`panel` had to come apart to do it. Three callers want the chiselling without a
+face, because what they chisel around is `brushed`, or `gradient_v`, or ground
+with a grid engraved in it, and none of those three is a rectangle. So `edges`
+is the walk and `panel` is a face in front of it.
+
+The chassis keeps what a rectangle cannot carry by painting it *over* the
+decomposition. A lit jewel is a flat `Piece` that ring 0 then ramps and puts a
+specular pixel on, and ring 3's lamps are flat. `docs/DRAW.md` section 12 owns
+all of it.
+
 **Next, in order:**
 
-1. **Move ring 0 onto the chrome vocabulary.** `fb.bevel_edges` and
-   `splash.draw_lamp` are a second copy of `sys/libdraw`'s. The two agree by
-   hand today, down to the arithmetic for an unlit jewel, and will drift on the
-   first tweak. What it needs is one surface painter -- `fb` walking a
-   `[]Piece` through `fill_rect` -- and then `bevel_edges`, `bevel_box` and
-   `draw_lamp` re-expressed over it. `Piece.color` is already an `RGB` so that
-   painter can pack against the mode the bootloader set.
-
-2. **A window frame, and the title bar on it.** The obvious next wearer of the
-   vocabulary, and the one with a cost. A frame means the client area is no
-   longer the window's whole rectangle. A window's origin moves in by the
+1. **A window frame, and the title bar on it.** The obvious next wearer of the
+   vocabulary, and the first one with a cost. A frame means the client area is
+   no longer the window's whole rectangle. A window's origin moves in by the
    frame's depth, and every coordinate the self-test hardcodes moves with it.
 
    A title also wants two things that do not exist. A font in the draw server,
    which has none because clients upload their own, and a `ctl` line to set a
    name.
 
-3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
+2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
    two becomes a reason rather than a tidiness.
 
@@ -861,8 +869,10 @@ kernel/
     markers.odin        Base revision tag + request delimiters
   drivers/
     uart/uart.odin      16550 serial, polled
-    fb/fb.odin          Surface, clipping, bevels, gradients, brushed fill
-    fb/palette.odin     The system palette — single source of colour truth
+    fb/fb.odin          Surface, clipping, gradients, brushed fill, and the
+                        painter that walks libdraw's chrome onto a surface
+    fb/palette.odin     The kernel's aliases for sys/libpal, so nothing in
+                        the kernel had to learn where the colours went
     console/console.odin  Framebuffer text console
     console/               draws from sys/libfont, the one font table
   mem/
@@ -1041,9 +1051,9 @@ sys/
   libdraw/text.odin     Text as a library over blit: the atlas layout, and
                         put_text with its consumed-count return that pumps
                         a long line through in batches
-  libdraw/chrome.odin   The chassis vocabulary as rectangles: a bevelled
-                        panel, a well, a lamp, and the fills a client sends
-                        to wear them
+  libdraw/chrome.odin   The chassis vocabulary as rectangles, worn by both
+                        rings: a bevel's edges, a panel, a well, a lamp, and
+                        the fills a client sends to wear them
   libpal/palette.odin   The system palette, once, for both privilege levels
   libfont/font_data.odin  GENERATED -- the one 8x16 font table, imported
                         by the kernel console and linked by ring 3 alike

@@ -14,6 +14,7 @@ Every primitive clips to the surface. Nothing here allocates.
 package fb
 
 import "kernel:boot/limine"
+import "vsys:libdraw"
 
 Surface :: struct {
 	pixels:   [^]u8,
@@ -195,11 +196,32 @@ gradient_v :: proc "contextless" (s: ^Surface, r: Rect, top, bottom: RGB) {
 	}
 }
 
-// -- Bevels ------------------------------------------------------------------
+// -- Chrome ------------------------------------------------------------------
+//
+// The bevel walk used to live here, as a pair of surface painters. It is
+// `sys/libdraw`'s now, one privilege level out, decomposed into rectangles that
+// paint nothing. `paint` is the kernel's half of that split, and the reason
+// `libdraw.Piece` carries an `RGB` rather than a packed pixel word: this
+// painter packs against whatever mode the bootloader set, and ring 3's packs
+// against the one depth `/srv/draw` accepts.
+//
+// So a bevel drawn at boot and a bevel drawn on a window by a program that
+// cannot touch this memory are one list of rectangles, walked twice.
 
-Bevel :: enum {
-	Raised,   // A button or panel standing proud of its background
-	Recessed, // A well: text fields, screens, sunken separators
+Piece :: libdraw.Piece
+Bevel :: libdraw.Bevel
+
+/*
+paint walks a run of chrome onto a surface.
+
+The kernel's painter for `sys/libdraw`'s vocabulary, and the whole of what ring
+0 had to grow to wear it. Every piece goes through `fill_rect`, so each one
+clips and packs against the mode the bootloader set.
+*/
+paint :: proc "contextless" (s: ^Surface, pieces: []Piece) {
+	for p in pieces {
+		fill_rect(s, Rect{p.x, p.y, p.w, p.h}, p.color)
+	}
 }
 
 /*
@@ -209,27 +231,23 @@ the face.
 The light source is fixed at the top-left, as it was on every machine this
 look is quoting. Nesting a Recessed edge inside a Raised one at depth 2 is the
 canonical Vectra control: a raised plinth with a sunken screen in it.
+
+A face is what the chassis's richest surfaces are -- `brushed` for the plinth,
+`gradient_v` for the copper bar -- and neither is a rectangle. That is why
+`libdraw.edges` exists apart from `libdraw.panel`, and this is its caller.
 */
 bevel_edges :: proc "contextless" (s: ^Surface, r: Rect, style: Bevel, light, dark: RGB, depth := 1) {
-	tl := style == .Raised ? light : dark
-	br := style == .Raised ? dark : light
-
-	for i in 0 ..< depth {
-		inset := Rect{r.x + i, r.y + i, r.w - 2 * i, r.h - 2 * i}
-		if inset.w <= 0 || inset.h <= 0 {
-			return
-		}
-		hline(s, inset.x, inset.y, inset.w, tl)
-		vline(s, inset.x, inset.y, inset.h, tl)
-		hline(s, inset.x, inset.y + inset.h - 1, inset.w, br)
-		vline(s, inset.x + inset.w - 1, inset.y, inset.h, br)
-	}
+	pieces: [libdraw.MAX_PIECES]Piece
+	n := libdraw.edges(pieces[:], r.x, r.y, r.w, r.h, style, light, dark, depth)
+	paint(s, pieces[:n])
 }
 
-// bevel_box fills `r` with `face` and then chisels its edges.
+// bevel_box fills `r` with `face` and then chisels its edges. One face and its
+// two shades, which is `libdraw.panel` with the shading done for the caller.
 bevel_box :: proc "contextless" (s: ^Surface, r: Rect, style: Bevel, face: RGB, depth := 1) {
-	fill_rect(s, r, face)
-	bevel_edges(s, r, style, shade(face, +48), shade(face, -34), depth)
+	pieces: [libdraw.MAX_PIECES]Piece
+	n := libdraw.panel(pieces[:], r.x, r.y, r.w, r.h, style, face, shade(face, +48), shade(face, -34), depth)
+	paint(s, pieces[:n])
 }
 
 // inset_of returns the usable interior of a `depth`-beveled box.
