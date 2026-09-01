@@ -53,7 +53,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1315 checks against itself and idles.
+1330 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -631,24 +631,31 @@ window. Both existed because what lay under a window was the kernel's boot
 chassis. The blocker was never a graphics one, which is the lesson
 `docs/DRAW.md` section 11 keeps.
 
+**And a client can move, resize, and raise its own window.** Three `ctl` lines
+rather than three verbs, which is the distinction `docs/DRAW.md` section 5
+guards. A verb is about pixels, and a window is not a pixel.
+
+They cost a tree rather than a verb. `ctl` could report a geometry every window
+shared, but it could not say *which* window a line was about. So the draw
+server grew Plan 9's numbered directories: `/new`, `/N/data` and `/N/ctl`.
+Section 4 predicted that growth and called it free on the wire, and it was.
+They are ordinary walks of ordinary names.
+
+`raise` is why stacking became a list of its own. A window's index is where its
+memory is, and its place in the stack is where it is on the screen. `move` is
+the first thing that damages two rectangles far apart. `size` moves a window's
+edges inside the run it was born with and never past it, which is `segbrk`'s
+absence speaking.
+
 **Next, in order:**
 
-1. **A window a client can move, resize, or raise.** Placement is fixed and a
-   client cannot ask. Each of those is a `ctl` line rather than a seventh verb,
-   the distinction section 5 of `docs/DRAW.md` guards. A resize also wants
-   `segbrk` underneath it, which is one of the three Plan 9 segment calls this
-   kernel does not have.
-
-   A move is also the first thing that damages two rectangles far apart, which
-   is the case `MAX_RECTS` was sized for and nothing yet reaches.
-
-2. **Chrome, and the bevels the chassis already knows how to draw.** The
+1. **Chrome, and the bevels the chassis already knows how to draw.** The
    desktop has a grid on it and nothing else. No wells, no lamps, no title bar
    on a window. `kernel/splash.odin` draws all of those against a surface in
    ring 0. A `libdraw` that drew them would be the same code one privilege
    level out. It is what `apps/` needs before it has a second app.
 
-3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
+2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
    two becomes a reason rather than a tidiness.
 
@@ -947,7 +954,7 @@ kernel/
                         reaper that collects a detached orphan
     program.odin        The twenty-eight programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 668 checks -- one process preempted
+    verify.odin         The boot self-test: 684 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that
@@ -1021,12 +1028,13 @@ servers/
   eiafs/main.odin       The serial server: an rfork'd reader on /dev/eia0,
                         the raw bytes served on /eia0, and the first Twrite
                         that reaches hardware
-  intuition/main.odin   The draw server and the compositor: six verbs on a
-                        data file, a session per fid and a window per
-                        session, a desktop under them, each window's pixels
+  intuition/main.odin   The draw server and the compositor: /new and a
+                        numbered directory per window, six verbs on each
+                        window's data file, a session per fid, a desktop under them, each window's pixels
                         a run of its own and opaque over its whole
-                        rectangle, and a flush that walks a region of
-                        damage onto the glass back to front
+                        rectangle, a flush that walks a region of damage
+                        onto the glass back to front, and three ctl lines
+                        that move, resize and raise a window
 apps/
   terminal/main.odin    The first app: lines in from /dev/cons, glyphs out
                         through a /srv/draw mount of its own, the first

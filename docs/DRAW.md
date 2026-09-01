@@ -56,17 +56,41 @@ The server serves three files. `data` takes the command stream. `ctl`
 takes text lines, the `/dev/consctl` convention, and answers a read with
 a geometry. `draw` as a directory holds both.
 
-**The geometry `ctl` reports is the window's, not the screen's.** Every
-window is the same size, so one report answers for all of them. A client
-learns how big it is and nothing about the glass, which is the second half
-of a client not knowing where it is. The first half is that no verb reaches
-past its window's edge.
+**The geometry `ctl` reports is the window's, not the screen's.** A client
+learns how big it is and nothing about the glass, which is the second half of a
+client not knowing where it is. The first half is that no verb reaches past its
+window's edge.
+
+The report is built when it is asked rather than once at start, because a
+client can change its own shape now. Reading it back is the only confirmation a
+`ctl` line gets, and the only one it needs.
 
 A client session is a fid on `data`. 9P gives per-fid state for free, and
 a clunk is the teardown: every image the session allocated is freed, and
 the window goes back. Two clients hold two fids, never see each other's
-ids, and cannot reach each other's pixels. This is simpler than Plan 9's
-numbered directories, and it can grow into them without a wire change.
+ids, and cannot reach each other's pixels.
+
+**It grew into Plan 9's numbered directories, and the wire did not change.**
+That prediction held. The tree is `/new` and a directory per window, and every
+step of it is an ordinary walk of an ordinary name.
+
+    /new       read it, and it answers which window has no session
+    /N/data    the command stream, and the claim on window N
+    /N/ctl     window N's geometry out, and its control lines in
+
+The trigger was section 11's `ctl` lines. A flat tree could say how big a
+window was, because every window was the same size. It could not say *which*
+window a line was about, and a line that moves one has to.
+
+`new` is advice rather than an allocation. It answers the lowest window with no
+session, and the claim is the `Tlopen` of that window's `data`. A client that
+loses the race between the two gets a refusal by name. Any allocator this
+server could write would give the same answer.
+
+`data` and `ctl` are both exclusive, one fid at a time. That is the whole of a
+window's protection, and it is not much. A window whose client never opens its
+own `ctl` leaves the controls for whoever asks. Users are what Plan 9 puts in
+that gap, and there are none here.
 
 ## 5. The six verbs
 
@@ -421,10 +445,45 @@ So the graphics half of this section is four constants and a paint. Everything
 that made it *look* hard belonged to another subsystem, and finding that out
 was the work.
 
+### Three lines, and the tree that had to grow first
+
+    move X Y     put a window somewhere else
+    size W H     make it another shape, inside the run it was born with
+    raise        bring it to the front
+
+**Three `ctl` lines rather than three verbs.** Section 5 guards that
+distinction, and did so from the milestone there were six verbs and nothing
+else. A verb is about pixels, and a window is not a pixel. What the lines cost
+was not a verb but a tree, and section 4 has the numbered directories they
+needed.
+
+`raise` is why the stack became a list. Slot order was stacking order for two
+milestones. That is the simplest rule with an answer for every pixel, and it
+cannot also be a client's to change. A window's index is where its memory is.
+Its place in the stack is where it is on the screen.
+
+`move` is **the first thing in this server that damages two rectangles far
+apart**. That is the case `MAX_RECTS` was sized for, and nothing reached it
+until now. The old place and the new one are two entries in one region rather
+than one box around both.
+
+`size` moves a window's edges inside the run it holds and never past it. The
+store is one `segalloc` run fixed at the birth size, and nothing in this kernel
+grows a run in place. `docs/USER.md` names `segbrk` with the other two Plan 9
+segment calls Vectra does not have. The stride does not move with the width, so
+a pixel a client drew at `(x, y)` is still at `(x, y)` afterwards. Shrinking
+loses the edges, growing brings back the band that was there before the last
+shrink, and that band is cleared to ground.
+
+**No event tells a client any of this happened, and none is needed: the client
+asked.** A `ctl` read answers the new shape for anything that wants to be sure.
+That is the third time a backing store retired an event this design once
+expected to build.
+
 ### The controls for the compositor
 
-Nineteen mutations across the three milestones this section covers, each on a
-real boot. Eighteen are caught.
+Twenty-six mutations across the milestones this section covers, each on a real
+boot. Twenty-three are caught, two are inert, and one breaks the machine.
 
 | Mutation | Result |
 |---|---|
@@ -440,18 +499,31 @@ real boot. Eighteen are caught.
 | a window that closes does not put the ground back | 1 check, the same |
 | a slot handed on keeps the last session's pixels | 1 check, `covered where they meet a window whose session drew nothing` |
 | the desktop has no grid on it | 1 check, `a grid engraved in it, a step apart from its ground` |
+| `raise` does not change the stacking order | 1 check, `puts its own pixels over the window that was above it` |
+| `composite` walks the slots rather than the stack | 1 check, the same |
+| a move leaves the ground it was covering | 1 check, `leaves the ground behind where it was standing` |
+| a window's `ctl` is not exclusive | 1 check, `a second holder of one window's controls is refused` |
+| a session may claim a window another session holds | 13 checks, first `a window another session holds is refused to a third` |
 | `region_add` never merges two rectangles into one | **inert**, and it is a speed mutation |
+| a move damages one rectangle around both places | **inert**, for the reason below |
+| a `size` may ask for more than the run holds | **the boot stops**, and that is the honest result |
 
 **The one-check catches are the ones that were designed for.** Each watches a
 rule every other check in the file is blind to. The flush-one-window mutation
 passes everything about coordinates and clipping. It fails only the check that
 draws from *underneath* a window and asks whether the cover survived it.
 
-**The inert one is inert honestly.** Merging rectangles changes how many a
-region holds and never which pixels it means. Nothing a readback can see
-distinguishes one rectangle from four covering the same band. It is in the
-table because a speed mutation that failed a check would mean a check was
-watching the wrong thing.
+**Both inert ones are inert honestly, and they are the same fact twice.** A
+region is a *bag*, and `composite` paints windows and nothing else. So a
+coarser region paints the same windows over more ground, which costs time and
+never a pixel. Merging rectangles cannot be caught, and neither can boxing a
+move's two places into one. Both are in the table because a speed mutation that
+failed a check would mean a check was watching the wrong thing.
+
+**And one mutation is not a check's to catch.** Removing `size`'s bound against
+the allocation lets a client write past its own `segalloc` run. The boot stops
+rather than failing a check, and that is the right answer. The bound is memory
+safety, and the thing that reports it is the fault handler.
 
 ### What two controls found that the checks did not
 
@@ -488,10 +560,11 @@ first time the answer was that the test was asking the wrong process.
 - **Nothing gives a run back.** A window's memory belongs to the slot rather
   than to the session, and a slot is never released. `segfree` is the Plan 9
   call that changes it, and `docs/USER.md` names it with the other two.
-- **Placement is still fixed.** A window a client can move, resize, or raise is
-  a `ctl` line, and `segbrk` is what a resize would need underneath it. A move
-  is also the first thing that damages two rectangles far apart, which is the
-  case `MAX_RECTS` was sized for and nothing yet reaches.
+- **A window cannot grow past the run it was born with.** `segbrk` is the Plan
+  9 call that would lift it, and `docs/USER.md` names it with the other two.
+- **A window's `ctl` is exclusive and nothing else guards it.** A client that
+  never opens its own controls leaves them for whoever walks to them. Users are
+  the answer, and there are none.
 
 Two windows at 640 by 800 is 4 MB, which is `SEGALLOC_MAX` twice over.
 `MAX_WINDOWS`, that bound, and `MAX_PROC_SEGS` are the three numbers that move

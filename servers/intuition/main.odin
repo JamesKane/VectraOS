@@ -82,9 +82,64 @@ import "vsys:libdraw"
 import "vsys:libuser"
 import "vsys:vectra9"
 
+/*
+The tree, and the numbered directories `docs/DRAW.md` section 4 said it would
+grow into.
+
+    /new       read it, and it answers which window has no session
+    /N/data    the command stream, and the claim on window N
+    /N/ctl     window N's geometry out, and its control lines in
+
+**A flat tree could not say which window a `ctl` line was about.** A session
+was a fid on `data`, and a `ctl` fid opened from the root belonged to nobody.
+That was fine while `ctl` only reported a geometry every window shared. A line
+that moves a window has to name one.
+
+Plan 9's `/dev/draw` is numbered directories for this reason, and section 4
+recorded the growth as a thing that would cost the wire nothing. It did not:
+these are ordinary walks of ordinary names.
+
+`new` is advice rather than an allocation. It answers the lowest window with no
+session, and the *claim* is the `Tlopen` of that window's `data`. A client that
+loses a race opens a window somebody else took and is refused, which is the
+same answer it would get from any other allocator this server could write.
+*/
 NODE_ROOT :: i32(0)
-NODE_DATA :: i32(1)
-NODE_CTL :: i32(2)
+NODE_NEW :: i32(1)
+
+// A window's three nodes, in one block apiece after the two fixed ones.
+NODE_BASE :: i32(2)
+NODE_PER :: i32(3)
+PART_DIR :: i32(0)
+PART_DATA :: i32(1)
+PART_CTL :: i32(2)
+
+// The directory names, as text, because a server with no allocator does not
+// format numbers into names it hands out on every listing.
+WIN_NAMES := [8]string{"0", "1", "2", "3", "4", "5", "6", "7"}
+
+node_of :: proc "contextless" (win: int, part: i32) -> i32 {
+	return NODE_BASE + i32(win) * NODE_PER + part
+}
+
+// node_win is which window a node belongs to, or -1 for the two fixed ones.
+node_win :: proc "contextless" (node: i32) -> int {
+	if node < NODE_BASE {
+		return -1
+	}
+	w := int((node - NODE_BASE) / NODE_PER)
+	if w >= MAX_WINDOWS {
+		return -1
+	}
+	return w
+}
+
+node_part :: proc "contextless" (node: i32) -> i32 {
+	if node < NODE_BASE {
+		return -1
+	}
+	return (node - NODE_BASE) % NODE_PER
+}
 
 /*
 The windows, and the placement policy that hands them out.
@@ -306,9 +361,59 @@ Window :: struct {
 	y:      int,
 	w:      int,
 	h:      int,
-	pixels: [^]u32,
+
+	// What the run behind `pixels` holds, and the row stride inside it. The
+	// store is allocated once at the birth size and never grows, so `w` and
+	// `h` move inside it and the stride does not. A `size` line past the
+	// allocation is refused, and `segbrk` is the Plan 9 call that would lift
+	// that -- see `docs/USER.md`.
+	alloc_w: int,
+	alloc_h: int,
+	pixels:  [^]u32,
+
 	dmg:    Region,
 	used:   bool,
+
+	// The `ctl` file is exclusive the way `data` is. One fid at a time holds
+	// a window's controls, so two clients cannot both move one window.
+	ctl_fid:  vectra9.Fid,
+	ctl_held: bool,
+}
+
+/*
+The stacking order, bottom to top, as window indices.
+
+Slot order was stacking order until a client could ask to be raised. It cannot
+be both, so the stack is its own list now: `raise` lifts one entry to the end
+and `composite` walks it in order. A window's index is where its memory is, and
+its place in here is where it is on the screen.
+*/
+stack: [MAX_WINDOWS]int
+stack_n: int
+
+// stack_add puts a new window on top. stack_drop takes one out and closes the
+// gap, which keeps the order of everything under it.
+stack_add :: proc "contextless" (win: int) #no_bounds_check {
+	stack_drop(win)
+	stack[stack_n] = win
+	stack_n += 1
+}
+
+stack_drop :: proc "contextless" (win: int) #no_bounds_check {
+	at := -1
+	for i in 0 ..< stack_n {
+		if stack[i] == win {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return
+	}
+	for i in at ..< stack_n - 1 {
+		stack[i] = stack[i + 1]
+	}
+	stack_n -= 1
 }
 
 /*
@@ -354,12 +459,11 @@ The screen's geometry, read from `/dev/fbctl` once at start, and the window
 geometry served on `/ctl` in its place.
 
 Two reports, and the second is the only one a client sees. `/dev/fbctl` says
-how big the glass is, which is what the placement arithmetic below needs.
-`/ctl` says how big a window is, which is all a client needs and all it may
-know.
+how big the glass is, which is what the placement arithmetic below needs. A
+window's own `/N/ctl` says how big *that* window is, built when it is asked
+because a client can change it. See `window_report`.
 */
 geo: [160]u8
-geo_len: int
 scr_w: int
 scr_h: int
 scr_pitch: int
@@ -410,9 +514,6 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 		libuser.exit(0x76)
 	}
 
-	// What `/ctl` answers from here on: the window's shape, not the screen's.
-	// The screen's numbers stay in `scr_*`, where the placement uses them.
-	geo_len = window_report(geo[:])
 
 	// The mapping, and the reason this server has no write path left. A
 	// failure here is fatal rather than a fallback: a second path to the same
@@ -501,16 +602,129 @@ either. The pitch is the window's own row in bytes, which is a number a client
 never needs and would be wrong to act on: nothing here lets a client address
 its window by offset.
 */
-window_report :: proc "contextless" (out: []u8) -> int #no_bounds_check {
+window_report :: proc "contextless" (out: []u8, win: ^Window) -> int #no_bounds_check {
 	at := 0
 	at = put_report(out, at, "size ")
-	at = put_number(out, at, win_w)
+	at = put_number(out, at, win.w)
 	at = put_report(out, at, " ")
-	at = put_number(out, at, win_h)
+	at = put_number(out, at, win.h)
 	at = put_report(out, at, " ")
-	at = put_number(out, at, win_w * 4)
+	at = put_number(out, at, win.w * 4)
 	at = put_report(out, at, " 32\n")
 	return at
+}
+
+/*
+The control lines, and the whole of what a client may say about its window.
+
+    move X Y     put it somewhere else
+    size W H     make it another shape, inside the run it was born with
+    raise        bring it to the front
+
+Three lines rather than three verbs, which is the distinction `docs/DRAW.md`
+section 5 has guarded since there were six verbs and nothing else. A verb is
+about pixels. A window is not a pixel.
+
+**A line is refused unless the window has a session.** A `ctl` fid outlives
+nothing, but a window with no client is not a window, and moving one would be
+moving furniture in an empty room.
+
+Unknown lines are `EINVAL`, and a malformed number is the same answer. There is
+no partial application: a line either happens or does not.
+*/
+run_ctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bounds_check {
+	if win_at < 0 || win_at >= MAX_WINDOWS {
+		return vectra9.EINVAL
+	}
+	win := &windows[win_at]
+	if !win.used {
+		return vectra9.EBADF
+	}
+
+	verb, at := ctl_word(data, 0)
+	switch verb {
+	case "move":
+		x, ok1 := ctl_number(data, &at)
+		y, ok2 := ctl_number(data, &at)
+		if !ok1 || !ok2 || !ctl_end(data, at) {
+			return vectra9.EINVAL
+		}
+		return window_move(win, x, y)
+	case "size":
+		w, ok1 := ctl_number(data, &at)
+		h, ok2 := ctl_number(data, &at)
+		if !ok1 || !ok2 || !ctl_end(data, at) {
+			return vectra9.EINVAL
+		}
+		return window_size(win, w, h)
+	case "raise":
+		if !ctl_end(data, at) {
+			return vectra9.EINVAL
+		}
+		window_raise(win, win_at)
+		return vectra9.Errno(0)
+	}
+	return vectra9.EINVAL
+}
+
+// ctl_word takes the next run of non-space bytes, and answers where it ended.
+@(private = "file")
+ctl_word :: proc "contextless" (data: []u8, from: int) -> (string, int) #no_bounds_check {
+	at := from
+	for at < len(data) && (data[at] == ' ' || data[at] == '\t') {
+		at += 1
+	}
+	start := at
+	for at < len(data) && data[at] != ' ' && data[at] != '\t' && data[at] != '\n' {
+		at += 1
+	}
+	return string(data[start:at]), at
+}
+
+/*
+ctl_number takes the next decimal, and reports whether there was one.
+
+Signed, because a window may hang off the left or top edge and a client that
+puts it there says so with a minus. No other line takes a negative, and each
+one checks its own range.
+*/
+@(private = "file")
+ctl_number :: proc "contextless" (data: []u8, at: ^int) -> (int, bool) #no_bounds_check {
+	i := at^
+	for i < len(data) && (data[i] == ' ' || data[i] == '\t') {
+		i += 1
+	}
+	neg := false
+	if i < len(data) && data[i] == '-' {
+		neg = true
+		i += 1
+	}
+	start := i
+	value := 0
+	for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+		value = value * 10 + int(data[i] - '0')
+		if value > 1 << 24 {
+			return 0, false
+		}
+		i += 1
+	}
+	at^ = i
+	if i == start {
+		return 0, false
+	}
+	return neg ? -value : value, true
+}
+
+// ctl_end reports whether what is left is nothing but space and one newline.
+// A line with a word too many is a line this server did not understand.
+@(private = "file")
+ctl_end :: proc "contextless" (data: []u8, from: int) -> bool #no_bounds_check {
+	for i in from ..< len(data) {
+		if data[i] != ' ' && data[i] != '\t' && data[i] != '\n' && data[i] != '\r' {
+			return false
+		}
+	}
+	return true
 }
 
 @(private = "file")
@@ -576,75 +790,91 @@ windows_init :: proc "contextless" () -> bool #no_bounds_check {
 			return false
 		}
 		windows[i] = Window {
-			x      = i * (win_w / 2),
-			y      = 0,
-			w      = win_w,
-			h      = win_h,
-			pixels = ([^]u32)(base),
+			x       = i * (win_w / 2),
+			y       = 0,
+			w       = win_w,
+			h       = win_h,
+			alloc_w = win_w,
+			alloc_h = win_h,
+			pixels  = ([^]u32)(base),
 		}
 	}
 	return true
 }
 
 /*
-window_open gives this fid a window, or reports that there is none free.
+window_free is which window has no session, for `new` to answer with.
 
-The slot carries its placement and its pixels already, so this claims rather
-than builds. A session that already holds one gets it back rather than a
-second, because a second `Tlopen` on one fid is a client re-opening what it
-has.
-
-**The store is cleared, and a window owning its rectangle is why it must be.**
-A run outlives the session it was lent to, so the last client's drawing is
-still in it, and every pixel of a window is on the screen now. An uncleared
-slot would put the last client's work on the glass under the new client's name.
-
-The milestone before this one skipped the clear, because a `covered` region
-said which pixels were the window's and the rest were nobody's. A desktop
-retired that region and brought the memset back with it. Two megabytes at each
-`Tlopen`, which is the price of a window that is a window rather than a stencil.
-
-The composite at the end is the window appearing. It walks every window, so one
-that opens underneath another shows up occluded rather than on top.
+Advice rather than an allocation. Nothing is reserved by asking, and the claim
+is the `Tlopen` below. A client that loses the race between the two is refused
+by name, which is the honest answer and the only one this server could give
+without a lease.
 */
-window_open :: proc "contextless" (owner: vectra9.Fid) -> bool #no_bounds_check {
-	for i in 0 ..< MAX_WINDOWS {
-		if windows[i].used && windows[i].owner == owner {
-			return true
-		}
-	}
+window_free :: proc "contextless" () -> int #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
 		if !windows[i].used {
-			win := &windows[i]
-			win.owner = owner
-			win.used = true
-			region_clear(&win.dmg)
-			for j in 0 ..< win.w * win.h {
-				win.pixels[j] = WIN_GROUND
-			}
-			region_clear(&scratch)
-			region_add(&scratch, win.x, win.y, win.w, win.h)
-			composite(&scratch)
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
+}
+
+/*
+window_open claims window `at` for this fid, or reports that somebody has it.
+
+**The claim is by index now, because the tree is numbered.** A session used to
+be handed whichever window was free, and could not be told which. It walks to
+one by name and takes it, so a `ctl` line has something to be about.
+
+The store is cleared, and a window owning its rectangle is why it must be. A
+run outlives the session it was lent to, so the last client's drawing is still
+in it, and every pixel of a window is on the screen. An uncleared slot would
+put the last client's work on the glass under the new client's name.
+
+The whole allocation is cleared rather than the current size, because a `size`
+line can grow a window back into the part this one never used.
+
+The composite at the end is the window appearing. It walks the stack, so a
+window that opens under another shows up occluded rather than on top.
+*/
+window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_bounds_check {
+	if at < 0 || at >= MAX_WINDOWS {
+		return false
+	}
+	win := &windows[at]
+	if win.used {
+		return win.owner == owner
+	}
+
+	win.owner = owner
+	win.used = true
+	win.w = win.alloc_w
+	win.h = win.alloc_h
+	region_clear(&win.dmg)
+	for j in 0 ..< win.alloc_w * win.alloc_h {
+		win.pixels[j] = WIN_GROUND
+	}
+	// New windows arrive on top, which is the only placement rule a client
+	// gets without asking.
+	stack_add(at)
+
+	region_clear(&scratch)
+	region_add(&scratch, win.x, win.y, win.w, win.h)
+	composite(&scratch)
+	return true
 }
 
 /*
 window_close gives the slot back, keeps its memory, and repaints what it was
 covering.
 
-The composite at the end is the visible half of the milestone. A window below
-this one had its pixels the whole time it was hidden, so the glass can have
-them back without anything asking its client to redraw. **That is what a
-backing store is for**, and it is why this server has no expose event and does
-not need one.
+The composite at the end is the visible half of the backing store. A window
+below this one had its pixels the whole time it was hidden, so the glass can
+have them back without anything asking its client to redraw. **That is what a
+backing store is for**, and it is why this server has no expose event.
 
-**What no remaining window covers becomes desktop again**, which is the half of
-this that needed a desktop to exist. A window that closed used to leave its
-last drawing on the glass, because there was nothing to put there instead and
-the boot chassis underneath was not this server's to repaint.
+**What no remaining window covers becomes desktop again**, which is the half
+that needed a desktop to exist.
 */
 window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
@@ -657,29 +887,119 @@ window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 		x1 := win.x + win.w
 		y1 := win.y + win.h
 
-		/*
-		The slot first, so the composite below walks the windows that are left
-		rather than the one that is going.
-
-		**Its regions are not cleared here, and a control is why.** They were,
-		and `window_open` clears them too, so neither clear was load-bearing:
-		the mutation that removed the one at open changed nothing, because the
-		one at close had already run. Two places holding the same invariant
-		means no place holds it. `used` is the gate every reader passes, so a
-		closed slot's regions are unreachable until the session that reopens it
-		empties them.
-		*/
+		// The slot first, so the composite below walks the windows that are
+		// left rather than the one that is going. Its regions are not cleared
+		// here: `used` is the gate every reader passes, and a control found
+		// that clearing in two places meant neither place held it.
 		win.owner = 0
 		win.used = false
-		region_clear(&win.dmg)
+		stack_drop(i)
 
-		// The ground first, then whatever is still standing on it. A window
-		// below this one paints over the desktop it just got back.
 		desk_paint(x0, y0, x1, y1)
 		region_clear(&scratch)
 		region_add(&scratch, x0, y0, x1 - x0, y1 - y0)
 		composite(&scratch)
 	}
+}
+
+/*
+window_move puts a window somewhere else, and repaints both places.
+
+**This is the first thing in this server that damages two rectangles far
+apart**, which is the case `MAX_RECTS` was sized for and nothing reached until
+now. The old place and the new one are two entries in one region, and a window
+that moves a long way pays for the ground between them exactly once: not at
+all.
+
+A window may hang off the edge. `composite` and `desk_paint` both clip, so
+partly off-screen is a picture rather than a special case. Entirely off-screen
+is refused, because a window nobody can see is a client that has lost its own
+output with no verb to get it back.
+*/
+window_move :: proc "contextless" (win: ^Window, nx: int, ny: int) -> vectra9.Errno {
+	if nx + win.w <= 0 || nx >= scr_w || ny + win.h <= 0 || ny >= scr_h {
+		return vectra9.EINVAL
+	}
+	if nx == win.x && ny == win.y {
+		return vectra9.Errno(0)
+	}
+	ox, oy := win.x, win.y
+	win.x = nx
+	win.y = ny
+
+	// The ground where it was, then every window over both places. A window
+	// that overlapped the old spot repaints itself out of its own store.
+	desk_paint(ox, oy, ox + win.w, oy + win.h)
+	region_clear(&scratch)
+	region_add(&scratch, ox, oy, win.w, win.h)
+	region_add(&scratch, nx, ny, win.w, win.h)
+	composite(&scratch)
+	return vectra9.Errno(0)
+}
+
+/*
+window_size changes what a window is, inside the run it was born with.
+
+**A window cannot grow past its allocation, and that is `segbrk`'s absence
+speaking.** The store is one `segalloc` run, fixed at the birth size, and
+nothing in this kernel grows a run in place. `docs/USER.md` names `segbrk` with
+the other two Plan 9 segment calls Vectra does not have. So `size` moves a
+window's edges inside the memory it already holds, and asks for no more.
+
+The stride does not move with the width. A pixel a client drew at (x, y) is at
+(x, y) afterwards, so shrinking loses the edges and growing brings back
+whatever was there before the last shrink. That stale band is cleared to
+ground, which is the one thing a resize has to do to the store.
+
+**No event tells the client.** None is needed: the client asked. A `ctl` read
+answers the new size for anything that wants to confirm it.
+*/
+window_size :: proc "contextless" (win: ^Window, nw: int, nh: int) -> vectra9.Errno #no_bounds_check {
+	if nw <= 0 || nh <= 0 || nw > win.alloc_w || nh > win.alloc_h {
+		return vectra9.EINVAL
+	}
+	if nw == win.w && nh == win.h {
+		return vectra9.Errno(0)
+	}
+	ow, oh := win.w, win.h
+
+	// The bands this grows into hold whatever stood there before a shrink.
+	for y in 0 ..< nh {
+		row := win.pixels[y * win.alloc_w:]
+		from := y < oh ? ow : 0
+		for x in from ..< nw {
+			row[x] = WIN_GROUND
+		}
+	}
+
+	win.w = nw
+	win.h = nh
+	region_clear(&win.dmg)
+
+	// The ground under everything it gave up, then every window over the union
+	// of what it was and what it is.
+	desk_paint(win.x, win.y, win.x + max(ow, nw), win.y + max(oh, nh))
+	region_clear(&scratch)
+	region_add(&scratch, win.x, win.y, max(ow, nw), max(oh, nh))
+	composite(&scratch)
+	return vectra9.Errno(0)
+}
+
+/*
+window_raise brings one to the front.
+
+The stack is a list and this is a move to its end, so everything under it keeps
+its order. Only the window's own rectangle can have changed, so that is all
+that is repainted.
+*/
+window_raise :: proc "contextless" (win: ^Window, at: int) #no_bounds_check {
+	if stack_n > 0 && stack[stack_n - 1] == at {
+		return
+	}
+	stack_add(at)
+	region_clear(&scratch)
+	region_add(&scratch, win.x, win.y, win.w, win.h)
+	composite(&scratch)
 }
 
 /*
@@ -711,8 +1031,8 @@ and cost a rectangle split, and an opaque window is what would finally make it
 correct. It is the trade to revisit at more windows than two.
 */
 composite :: proc "contextless" (area: ^Region) #no_bounds_check {
-	for i in 0 ..< MAX_WINDOWS {
-		win := &windows[i]
+	for si in 0 ..< stack_n {
+		win := &windows[stack[si]]
 		if !win.used {
 			continue
 		}
@@ -729,7 +1049,7 @@ composite :: proc "contextless" (area: ^Region) #no_bounds_check {
 			}
 			for y in y0 ..< y1 {
 				dst := screen_at(y)
-				src := win.pixels[(y - win.y) * win.w:]
+				src := win.pixels[(y - win.y) * win.alloc_w:]
 				for x in x0 ..< x1 {
 					dst[x] = src[x - win.x]
 				}
@@ -992,7 +1312,7 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 			return vectra9.Errno(0)
 		}
 		for line in 0 ..< h {
-			dst := win.pixels[(y + line) * win.w:]
+			dst := win.pixels[(y + line) * win.alloc_w:]
 			for i in 0 ..< w {
 				dst[x + i] = color
 			}
@@ -1056,7 +1376,7 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		}
 		for line in 0 ..< sh {
 			base := (sy + line) * simg.w + sx
-			out := win.pixels[(dy + line) * win.w:]
+			out := win.pixels[(dy + line) * win.alloc_w:]
 			for i in 0 ..< sw {
 				out[dx + i] = pixels[sslot][base + i]
 			}
@@ -1101,9 +1421,18 @@ run_free :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 fid_release :: proc "contextless" (fid: vectra9.Fid) {
 	// The images and the window before the slot. A fid on `data` owns both,
 	// and the table is what says which fid that was.
-	if libuser.fid_lookup(&fids, fid) == NODE_DATA {
+	node := libuser.fid_lookup(&fids, fid)
+	if node_part(node) == PART_DATA {
 		image_free_all(fid)
 		window_close(fid)
+	}
+	if w := node_win(node); w >= 0 && node_part(node) == PART_CTL {
+		// The controls are exclusive, so the fid that held them gives them
+		// back. A window whose client never opened its `ctl` leaves it for
+		// whoever asks, which is what having no users yet costs.
+		if windows[w].ctl_held && windows[w].ctl_fid == fid {
+			windows[w].ctl_held = false
+		}
 	}
 	libuser.fid_release(&fids, fid)
 }
@@ -1112,37 +1441,65 @@ fid_release :: proc "contextless" (fid: vectra9.Fid) {
 
 qid_of :: proc "contextless" (node: i32) -> vectra9.Qid {
 	kind: vectra9.Qid_Flags
-	if node == NODE_ROOT {
+	if node == NODE_ROOT || node_part(node) == PART_DIR {
 		kind = {.Dir}
 	}
 	return vectra9.Qid{kind = kind, path = u64(node) + 1}
 }
 
-name_of :: proc "contextless" (node: i32) -> string {
-	switch node {
-	case NODE_DATA:
+name_of :: proc "contextless" (node: i32) -> string #no_bounds_check {
+	if node == NODE_NEW {
+		return "new"
+	}
+	w := node_win(node)
+	if w < 0 {
+		return ""
+	}
+	switch node_part(node) {
+	case PART_DIR:
+		return WIN_NAMES[w]
+	case PART_DATA:
 		return "data"
-	case NODE_CTL:
+	case PART_CTL:
 		return "ctl"
 	}
 	return ""
 }
 
-step :: proc "contextless" (from: i32, name: string) -> i32 {
-	switch name {
-	case ".":
+step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
+	if name == "." {
 		return from
-	case "..":
+	}
+	if name == ".." {
+		// A window's files step up to its own directory, and everything else
+		// to the root. Two levels is the whole depth.
+		if w := node_win(from); w >= 0 && node_part(from) != PART_DIR {
+			return node_of(w, PART_DIR)
+		}
 		return NODE_ROOT
 	}
-	if from != NODE_ROOT {
+
+	if from == NODE_ROOT {
+		if name == "new" {
+			return NODE_NEW
+		}
+		for i in 0 ..< MAX_WINDOWS {
+			if name == WIN_NAMES[i] {
+				return node_of(i, PART_DIR)
+			}
+		}
+		return -1
+	}
+
+	w := node_win(from)
+	if w < 0 || node_part(from) != PART_DIR {
 		return -1
 	}
 	switch name {
 	case "data":
-		return NODE_DATA
+		return node_of(w, PART_DATA)
 	case "ctl":
-		return NODE_CTL
+		return node_of(w, PART_CTL)
 	}
 	return -1
 }
@@ -1180,12 +1537,32 @@ handler :: proc "contextless" (
 		if !ok {
 			return
 		}
-		// A session is a fid on `data`, and a session is a window. There is
-		// nowhere else for the assignment to happen: the fid exists from the
-		// walk, and the first draw may be the next message.
-		if node == NODE_DATA && !window_open(m.fid) {
-			reply^ = vectra9.error_reply(vectra9.ENOSPC)
-			return
+		/*
+		A session is a fid on a window's `data`, and a session is that window.
+		There is nowhere else for the claim to happen: the fid exists from the
+		walk, and the first draw may be the next message.
+
+		`ctl` is exclusive the same way. One fid at a time holds a window's
+		controls, so two clients cannot both move one window.
+		*/
+		w := node_win(node)
+		switch node_part(node) {
+		case PART_DATA:
+			if w < 0 || !window_open(m.fid, w) {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+		case PART_CTL:
+			if w < 0 {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			if windows[w].ctl_held && windows[w].ctl_fid != m.fid {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			windows[w].ctl_held = true
+			windows[w].ctl_fid = m.fid
 		}
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
 
@@ -1194,24 +1571,41 @@ handler :: proc "contextless" (
 		if !ok {
 			return
 		}
-		if node == NODE_ROOT {
+		if node == NODE_ROOT || node_part(node) == PART_DIR {
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 			return
 		}
-		if node == NODE_DATA {
+		if node_part(node) == PART_DATA {
 			// The command stream is written, never read. What a session
 			// drew is on the glass, and the glass is /dev/fb's to answer.
 			reply^ = vectra9.error_reply(vectra9.EPERM)
 			return
 		}
-		report := geo[:geo_len]
-		if m.offset >= u64(len(report)) {
+
+		/*
+		`new` answers which window has no session, and `ctl` answers a
+		geometry. Both are built into the reply buffer at the moment they are
+		asked, because both are answers about right now.
+
+		The geometry is this window's own size rather than the one every
+		window shares. A client that resized itself reads back what it asked
+		for, which is the only confirmation a `ctl` line gets.
+		*/
+		line: [160]u8
+		n := 0
+		if node == NODE_NEW {
+			n = put_number(line[:], 0, window_free())
+			n = put_report(line[:], n, "\n")
+		} else if w := node_win(node); w >= 0 {
+			n = window_report(line[:], &windows[w])
+		}
+		if m.offset >= u64(n) {
 			reply^ = vectra9.Rread{data = nil}
 			return
 		}
 		start_at := int(m.offset)
-		end := min(len(report), start_at + min(len(buf), int(m.count)))
-		copy(buf[:end - start_at], report[start_at:end])
+		end := min(n, start_at + min(len(buf), int(m.count)))
+		copy(buf[:end - start_at], line[start_at:end])
 		reply^ = vectra9.Rread{data = buf[:end - start_at]}
 
 	case vectra9.Twrite:
@@ -1219,17 +1613,19 @@ handler :: proc "contextless" (
 		if !ok {
 			return
 		}
-		switch node {
-		case NODE_DATA:
+		switch node_part(node) {
+		case PART_DATA:
 			if err := run_commands(m.fid, m.data); err != vectra9.Errno(0) {
 				reply^ = vectra9.error_reply(err)
 				return
 			}
 			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
-		case NODE_CTL:
-			// The ctl convention holds the file open for the lines a later
-			// milestone defines. None exist yet, so every line is unknown.
-			reply^ = vectra9.error_reply(vectra9.EINVAL)
+		case PART_CTL:
+			if err := run_ctl(node_win(node), m.data); err != vectra9.Errno(0) {
+				reply^ = vectra9.error_reply(err)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 		case:
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 		}
@@ -1242,13 +1638,13 @@ handler :: proc "contextless" (
 		if !ok {
 			return
 		}
-		dir := node == NODE_ROOT
+		dir := node == NODE_ROOT || node_part(node) == PART_DIR
 		reply^ = vectra9.Rgetattr {
 			valid   = m.request_mask & 0x000007FF,
 			qid     = qid_of(node),
-			mode    = dir ? 0o040555 : (node == NODE_DATA ? 0o100222 : 0o100644),
+			mode    = dir ? 0o040555 : (node_part(node) == PART_DATA ? 0o100222 : 0o100644),
 			nlink   = dir ? 2 : 1,
-			size    = node == NODE_CTL ? u64(geo_len) : 0,
+			size    = 0,
 			blksize = 512,
 		}
 
@@ -1266,19 +1662,43 @@ handler :: proc "contextless" (
 	}
 }
 
+/*
+readdir lists the root or one window's directory, whichever the fid names.
+
+Two levels, so two shapes. The root holds `new` and a directory per window.
+A window's directory holds `data` and `ctl`. The cookie is an index into
+whichever list this is, which is the position-based listing `docs/SRV.md`
+argues against and this tree can afford: nothing here is ever rebound, and the
+names are fixed at start.
+*/
 readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
 	node, ok := libuser.node_of(&fids, m.fid, reply)
 	if !ok {
 		return
 	}
-	if node != NODE_ROOT {
+	root := node == NODE_ROOT
+	w := node_win(node)
+	if !root && (w < 0 || node_part(node) != PART_DIR) {
 		reply^ = vectra9.error_reply(vectra9.ENOTDIR)
 		return
 	}
 
+	count := root ? 1 + MAX_WINDOWS : 2
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
-	for child := i32(m.offset) + 1; child <= NODE_CTL; child += 1 {
+	for i := int(m.offset); i < count; i += 1 {
+		child: i32
+		kind := vectra9.DT_REG
+		if root {
+			if i == 0 {
+				child = NODE_NEW
+			} else {
+				child = node_of(i - 1, PART_DIR)
+				kind = vectra9.DT_DIR
+			}
+		} else {
+			child = node_of(w, i == 0 ? PART_DATA : PART_CTL)
+		}
 		if vectra9.remaining(&c) < vectra9.dirent_size(name_of(child)) {
 			break
 		}
@@ -1286,8 +1706,8 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 			&c,
 			vectra9.Dirent {
 				qid = qid_of(child),
-				offset = u64(child),
-				type = vectra9.DT_REG,
+				offset = u64(i + 1),
+				type = kind,
 				name = name_of(child),
 			},
 		)

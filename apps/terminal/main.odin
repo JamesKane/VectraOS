@@ -94,6 +94,50 @@ band: [BAND * libfont.FONT_HEIGHT * 4]u8
 line: [256]u8
 geo: [160]u8
 
+// Where `win_path` builds `/mnt/N/data` and `/mnt/N/ctl`. A fixed buffer
+// because a program with no allocator that needs one path at a time needs one
+// buffer, and the window number is a single digit while `MAX_WINDOWS` is.
+path_buf: [16]u8
+
+/*
+win_path names a file inside this client's own window directory.
+
+`MAX_WINDOWS` is single-digit, so the number is one byte. A second digit is a
+loop here and nothing else, and the server's own name table has the same bound.
+*/
+win_path :: proc "contextless" (win: int, leaf: string) -> string #no_bounds_check {
+	at := 0
+	for c in transmute([]u8)string("/mnt/") {
+		path_buf[at] = c
+		at += 1
+	}
+	path_buf[at] = u8('0' + win % 10)
+	at += 1
+	path_buf[at] = '/'
+	at += 1
+	for i in 0 ..< len(leaf) {
+		path_buf[at] = leaf[i]
+		at += 1
+	}
+	return string(path_buf[:at])
+}
+
+// first_number reads the leading decimal of a report, which is all `new`
+// answers with. Failure is a report this client cannot act on.
+first_number :: proc "contextless" (text: []u8) -> (int, bool) #no_bounds_check {
+	at := 0
+	for at < len(text) && (text[at] == ' ' || text[at] == '\t') {
+		at += 1
+	}
+	start := at
+	value := 0
+	for at < len(text) && text[at] >= '0' && text[at] <= '9' {
+		value = value * 10 + int(text[at] - '0')
+		at += 1
+	}
+	return value, at > start
+}
+
 data_fd: int
 
 /*
@@ -126,7 +170,34 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 		libuser.exit(0x74)
 	}
 
-	ctl := libuser.open("/mnt/ctl", abi.O_RDONLY)
+	/*
+	Which window is this one's, and then the claim on it.
+
+	The draw server's tree is a directory per window now, so a client asks
+	`/mnt/new` which one has no session and then opens that one's `data`.
+	Reading `new` reserves nothing: the claim is the open, and a client that
+	loses the race between the two is refused and would have to ask again.
+	One app cannot lose it, and the day two do is the day this loop is worth
+	writing.
+	*/
+	nfd := libuser.open("/mnt/new", abi.O_RDONLY)
+	if nfd < 0 {
+		libuser.exit(0x74)
+	}
+	nn := libuser.read(int(nfd), geo[:])
+	_ = libuser.close(int(nfd))
+	mine, mok := first_number(geo[:max(int(nn), 0)])
+	if !mok {
+		libuser.exit(0x76)
+	}
+
+	fd := libuser.open(win_path(mine, "data"), abi.O_WRONLY)
+	if fd < 0 {
+		libuser.exit(0x75)
+	}
+	data_fd = int(fd)
+
+	ctl := libuser.open(win_path(mine, "ctl"), abi.O_RDONLY)
 	if ctl < 0 {
 		libuser.exit(0x75)
 	}
@@ -140,12 +211,6 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 		libuser.exit(0x76)
 	}
 	field_y = u32(h - 40)
-
-	fd := libuser.open("/mnt/data", abi.O_WRONLY)
-	if fd < 0 {
-		libuser.exit(0x75)
-	}
-	data_fd = int(fd)
 
 	upload_font()
 	prompt()

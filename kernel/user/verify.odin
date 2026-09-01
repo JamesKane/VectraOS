@@ -3119,7 +3119,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 		"the kernel mounts it",
 	)
 
-	ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/ctl", vfs.O_RDONLY)
+	ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/ctl", vfs.O_RDWR)
 	if !check(r, cerr == vfs.OK, "and opens its ctl file") {
 		return
 	}
@@ -3145,7 +3145,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	check(r, win_w > 0 && win_w < s.width, "and is narrower than the screen it does not name")
 	check(r, win_h == s.height, "at the screen's full height, which is the placement policy")
 
-	dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
+	dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/data", vfs.O_WRONLY)
 	if !check(r, oerr == vfs.OK, "and the command file opens for writing") {
 		return
 	}
@@ -3306,7 +3306,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	//
 	// While `dc` is still open, because the claim is about two windows held at
 	// once. The image-pool test below closes it.
-	verify_windows(r, s, win_w, y0 - 2, dc)
+	verify_windows(r, s, win_w, y0 - 2, dc, ctl)
 
 	at = 0
 	for id in 1 ..= 8 {
@@ -3315,7 +3315,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr == vfs.OK, "a session fills the whole image pool")
 	vfs.chan_close(dc)
-	dc2, o2 := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
+	dc2, o2 := vfs.open_path(vfs.boot_namespace, "/mnt/0/data", vfs.O_WRONLY)
 	if check(r, o2 == vfs.OK, "the command file opens again") {
 		at = libdraw.put_alloc(buf[:], 0, 1, 8, 4)
 		_, werr = vfs.chan_write(dc2, 0, buf[:at])
@@ -3514,7 +3514,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		"the kernel mounts the draw server",
 	)
 	refilled := false
-	if dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY); oerr == vfs.OK {
+	if dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/data", vfs.O_WRONLY); oerr == vfs.OK {
 		pool: [160]u8
 		at := 0
 		for id in 1 ..= 8 {
@@ -3532,7 +3532,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 
 	// -- Teardown, the draw server's half -------------------------------------
 
-	ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/ctl", vfs.O_RDONLY)
+	ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/ctl", vfs.O_RDONLY)
 	if check(r, cerr == vfs.OK, "and opens its ctl file") {
 		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove is answered, and is the stop")
 		vfs.chan_close(ctl)
@@ -3732,6 +3732,150 @@ verify_mapping :: proc(r: ^Result) {
 		"with nothing offered back that it never owned",
 	)
 	check(r, segment_stats().live == segs_before, "every segment it held was released")
+}
+
+
+/*
+verify_ctl is the three lines a client may say about its own window.
+
+    move X Y     put it somewhere else
+    size W H     make it another shape, inside the run it was born with
+    raise        bring it to the front
+
+**Three `ctl` lines rather than three verbs**, which is the distinction
+`docs/DRAW.md` section 5 guards. A verb is about pixels, and a window is not a
+pixel. The lines needed a tree that could name a window, which is what the
+numbered directories are for.
+
+The two windows arrive here as `docs/DRAW.md` section 10's cascade left them.
+Window zero at the origin holds `A3` across one row. Window one sits half a
+window across with nothing drawn in it. Every check below reads the glass.
+*/
+@(private = "file")
+verify_ctl :: proc(
+	r: ^Result,
+	s: ^fb.Surface,
+	win_w: int,
+	win_h: int,
+	y: int,
+	far_x: int,
+	far_y: int,
+	far: u32,
+	ground_x: int,
+	ground_y: int,
+	ground: u32,
+	A3: u32,
+	first_ctl: ^vfs.Chan,
+) #no_bounds_check {
+	cfd, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/ctl", vfs.O_RDWR)
+	if !check(r, cerr == vfs.OK, "a window's own ctl file opens") {
+		return
+	}
+	defer vfs.chan_close(cfd)
+
+	/*
+	And it is exclusive, the way `data` is.
+
+	One fid at a time holds a window's controls, so two clients cannot both
+	move one window. It is the whole of the protection a `ctl` line has, and it
+	is not much. A window whose client never opens its own controls leaves them
+	for whoever asks. Users are what Plan 9 puts in that gap, and there are none
+	here.
+	*/
+	rival, rerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/ctl", vfs.O_RDWR)
+	check(r, rerr != vfs.OK, "and a second holder of one window's controls is refused")
+	if rerr == vfs.OK {
+		vfs.chan_close(rival)
+	}
+
+	geo: [64]u8
+	gn, gerr := vfs.chan_read(cfd, 0, geo[:])
+	cw, ch, _, _, gok := libdraw.parse_geometry(geo[:max(gn, 0)])
+	check(
+		r,
+		gerr == vfs.OK && gok && cw == win_w && ch == win_h,
+		"and reads back this window's own shape, which is what it was born with",
+	)
+
+	// -- The lines it refuses -------------------------------------------------
+
+	_, uerr := vfs.chan_write(cfd, 0, bytes_of("wiggle\n"))
+	check(r, uerr != vfs.OK, "a line this server does not know is refused")
+	_, perr := vfs.chan_write(cfd, 0, bytes_of("move 4\n"))
+	check(r, perr != vfs.OK, "and a line missing one of its numbers")
+	_, xerr := vfs.chan_write(cfd, 0, bytes_of("move 4 5 6\n"))
+	check(r, xerr != vfs.OK, "and a line carrying one too many")
+	_, berr := vfs.chan_write(cfd, 0, bytes_of("size 9000 9000\n"))
+	check(
+		r,
+		berr != vfs.OK,
+		"and a size past the run the window was born with, which is segbrk's absence",
+	)
+
+	// -- raise ----------------------------------------------------------------
+
+	/*
+	The first client comes to the front, and the overlap changes hands.
+
+	Slot order was stacking order until this line existed. It cannot be both,
+	so the stack is a list of its own and this moves one entry to its end. The
+	pixel watched is one the second window sat on from the moment it opened.
+	*/
+	/*
+	The first client already holds its own controls, and that is the point of
+	the check above rather than a convenience here. It opened `/mnt/0/ctl` for
+	the geometry before it ever drew, and a second holder would be refused the
+	same way this window's was.
+	*/
+	_, werr := vfs.chan_write(first_ctl, 0, bytes_of("raise\n"))
+	check(r, werr == vfs.OK, "the first client asks its own controls to raise it")
+	check(
+		r,
+		fb.get_raw(s, win_w - 1, y) == A3,
+		"which puts its own pixels over the window that was above it",
+	)
+
+	// -- move -----------------------------------------------------------------
+
+	/*
+	**The first thing in this server that damages two rectangles far apart.**
+	The old place and the new one go into one region as two entries rather than
+	one box around both. That is the case `MAX_RECTS` was sized for, and nothing
+	reached it until this line.
+
+	The two checks below watch the move rather than the region. A coarser damage
+	record would still be *right* here, because `composite` paints only windows
+	and there is no window in the gap. So the mutation that boxes the two
+	together is inert, and `docs/DRAW.md` records it that way. What these watch
+	is that the window arrives, and that the ground it left comes back.
+	*/
+	_, merr := vfs.chan_write(cfd, 0, bytes_of("move 700 0\n"))
+	check(r, merr == vfs.OK, "the second client moves its window")
+	check(r, fb.get_raw(s, far_x, far_y) != far, "which arrives where it was sent")
+	check(
+		r,
+		fb.get_raw(s, ground_x, ground_y) == ground,
+		"and leaves the ground behind where it was standing",
+	)
+
+	// -- size -----------------------------------------------------------------
+
+	/*
+	And it shrinks, inside the run it holds. `far` is past the new edge, so the
+	ground has to come back there too. It comes out of the same `desk_paint` a
+	close would do, over the part the window gave up.
+	*/
+	_, serr := vfs.chan_write(cfd, 0, bytes_of("size 200 100\n"))
+	check(r, serr == vfs.OK, "and makes it smaller")
+	check(r, fb.get_raw(s, far_x, far_y) == far, "which gives back the ground it was covering")
+
+	gn2, gerr2 := vfs.chan_read(cfd, 0, geo[:])
+	nw, nh, _, _, gok2 := libdraw.parse_geometry(geo[:max(gn2, 0)])
+	check(
+		r,
+		gerr2 == vfs.OK && gok2 && nw == 200 && nh == 100,
+		"and reads back the shape it asked for, which is the only answer a ctl line gets",
+	)
 }
 
 /*
@@ -3954,6 +4098,7 @@ verify_windows :: proc(
 	win_w: int,
 	y: int,
 	first: ^vfs.Chan,
+	first_ctl: ^vfs.Chan,
 ) #no_bounds_check {
 	span := s.width * 4
 	if span > len(row_saved) || y <= 0 {
@@ -3990,6 +4135,13 @@ verify_windows :: proc(
 	ground_y := y - 4
 	ground := fb.get_raw(s, ground_x, ground_y)
 
+	// And one further out still, past where either window ever sits. It is
+	// the sensor for `move`: a window has to arrive there and the ground has
+	// to come back where it left.
+	far_x := s.width - 280
+	far_y := 50
+	far := fb.get_raw(s, far_x, far_y)
+
 	/*
 	And one pixel of the desktop's grid, beside one of its ground.
 
@@ -4005,22 +4157,35 @@ verify_windows :: proc(
 		"the desktop has a grid engraved in it, a step apart from its ground",
 	)
 
-	second, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
-	if !check(r, oerr == vfs.OK, "a second client opens the command file") {
+	/*
+	The second client opens the second window *by name*.
+
+	The tree is a directory per window now. A session is a fid on a *named*
+	window's `data`, rather than on whichever one the server had spare. That is
+	what lets a `ctl` line be about something. `docs/DRAW.md` section 4 called this
+	growth free on the wire, and it was. These are ordinary walks.
+	*/
+	second, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/data", vfs.O_WRONLY)
+	if !check(r, oerr == vfs.OK, "a second client opens the second window by name") {
 		return
 	}
 
 	/*
-	And a third is refused, because there are two windows.
+	And two refusals, which used to be one.
 
-	A cap rather than a design, and the refusal is the honest form of it. A
-	client that cannot have a window learns so at open, before it draws
-	anything it would have to take back.
+	A window somebody holds is refused, which is the claim that makes a
+	directory a session. And a window that does not exist is refused a step
+	earlier, at the walk, which is the cap `MAX_WINDOWS` sets.
 	*/
-	third, terr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
-	check(r, terr != vfs.OK, "and a third is refused, because a window is what a session is")
+	third, terr := vfs.open_path(vfs.boot_namespace, "/mnt/0/data", vfs.O_WRONLY)
+	check(r, terr != vfs.OK, "a window another session holds is refused to a third")
 	if terr == vfs.OK {
 		vfs.chan_close(third)
+	}
+	fourth, ferr := vfs.open_path(vfs.boot_namespace, "/mnt/2/data", vfs.O_WRONLY)
+	check(r, ferr != vfs.OK, "and a window that does not exist has no name to walk to")
+	if ferr == vfs.OK {
+		vfs.chan_close(fourth)
 	}
 
 	check(
@@ -4174,7 +4339,7 @@ verify_windows :: proc(
 
 
 	// The window comes back with the fid, so a client can open again.
-	again, aerr2 := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
+	again, aerr2 := vfs.open_path(vfs.boot_namespace, "/mnt/1/data", vfs.O_WRONLY)
 	if check(r, aerr2 == vfs.OK, "a clunk gives the window back") {
 		/*
 		And it comes back with a rectangle of its own, and nothing of the last
@@ -4211,6 +4376,8 @@ verify_windows :: proc(
 			fb.get_raw(s, win_w - 1, y) == fresh,
 			"and are covered where they meet a window whose session drew nothing at all",
 		)
+
+		verify_ctl(r, s, win_w, s.height, y, far_x, far_y, far, ground_x, ground_y, ground, A3, first_ctl)
 		vfs.chan_close(again)
 	}
 
