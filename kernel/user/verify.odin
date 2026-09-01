@@ -3159,35 +3159,105 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	win_w, win_h, _, _, geo_ok := libdraw.parse_geometry(geo[:max(gn, 0)])
 	check(r, geo_ok, "which parses as four numbers")
 	check(r, win_w > 0 && win_w < s.width, "and is narrower than the screen it does not name")
-	check(r, win_h == s.height, "at the screen's full height, which is the placement policy")
+
+	/*
+	And it is the *client area*, which is the window with its frame taken off.
+
+	A window wears a raised border with a title bar across it now, and the
+	client area is inside both. So the number a client reads is smaller than
+	the window and smaller still than the screen, and its own (0, 0) is neither
+	of theirs.
+
+	`sys/libdraw` owns that arithmetic, and both sides of the door read it from
+	there. The server insets every store by it; this test has to know where on
+	the glass those stores landed. Two places computing one inset by hand is
+	the drift the vocabulary exists to stop, so neither computes it.
+	*/
+	fw, fh := libdraw.frame_window(win_w, win_h)
+	ox, oy, _, _ := libdraw.frame_client(fw, fh)
+	/*
+	The first of these is a gate as well as a check, and that is what a control
+	found. Every row this procedure reads is derived from the report, so a
+	server that answered with the *window* rather than the client area walks
+	the readbacks below off the bottom of the screen. The mutation is caught
+	here and then faults, and a check that has already failed should not go on
+	to fault.
+	*/
+	if !check(
+		r,
+		fh == s.height,
+		"whose window is the screen's full height, which is the placement policy",
+	) {
+		return
+	}
+	check(r, ox > 0 && oy > ox, "and whose client area starts inside a border and below a title bar")
 
 	dc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/data", vfs.O_WRONLY)
 	if !check(r, oerr == vfs.OK, "and the command file opens for writing") {
 		return
 	}
 
-	// The region the test paints, saved to be restored. Four rows of 48
-	// pixels on the left, and eight pixels at the right edge of the first.
-	y0 := s.height - 16
-	// Eight pixels short of the *window's* right edge, so a fill of sixteen
-	// runs past it. The coordinate is the client's, and a client's
+	/*
+	The region the test paints, saved to be restored. Four rows of 48 pixels
+	on the left, and eight pixels at the right edge of the first.
+
+	`y0` is a *client* row near the bottom of the client area, and `sy` is
+	where that row lands on the glass. Every coordinate below is one or the
+	other and never both: what goes into a command is the client's, and what
+	comes back out of `fb.get_raw` is the screen's.
+	*/
+	y0 := win_h - 16
+	sy := oy + y0
+	// Eight pixels short of the *client area's* right edge, so a fill of
+	// sixteen runs past it. The coordinate is the client's, and a client's
 	// coordinates start at its own origin.
 	edge_x := win_w - 8
 	saved_a: [4 * 48 * 4]u8
 	for line in 0 ..< 4 {
-		o := (y0 + line) * s.pitch
+		o := (sy + line) * s.pitch
 		copy(saved_a[line * 192:][:192], s.pixels[o:o + 192])
 	}
 	saved_b: [8 * 4]u8
-	copy(saved_b[:], s.pixels[y0 * s.pitch + edge_x * 4:][:8 * 4])
+	copy(saved_b[:], s.pixels[sy * s.pitch + (ox + edge_x) * 4:][:8 * 4])
 
 	// The two pixels the region check below paints, at opposite ends of a row
 	// nothing else touches. Restored with the rest at the end, because a
 	// composite later in this procedure may repaint them out of the store.
 	gap_y := y0 - 8
+	sgap := oy + gap_y
 	saved_gap: [2][4]u8
-	copy(saved_gap[0][:], s.pixels[gap_y * s.pitch:][:4])
-	copy(saved_gap[1][:], s.pixels[gap_y * s.pitch + (win_w - 1) * 4:][:4])
+	copy(saved_gap[0][:], s.pixels[sgap * s.pitch + ox * 4:][:4])
+	copy(saved_gap[1][:], s.pixels[sgap * s.pitch + (ox + win_w - 1) * 4:][:4])
+
+	/*
+	And the window is standing in a frame, which is the milestone and had no
+	check until a control said so.
+
+	Both mutations that removed the frame from a window's store were inert.
+	Every other check here reads a pixel a client drew or a pixel a client did
+	not, and a window with no border is neither. So these two read the frame
+	itself, at the two pixels that say which surface it is.
+
+	The border is `.Raised`, so its top and left edges carry the light. Column
+	zero of window zero is that highlight, on a row far from the corner where
+	the shadow edge crosses it. The bar's face is copper, read a few pixels in
+	from its own bevel.
+
+	Both colours come out of `sys/libpal` through `fb`, which is the table this
+	side of the door reads, and neither is anything a client's fill or the
+	desktop below could produce.
+	*/
+	bx0, by0, _, _ := libdraw.frame_bar_at(0, 0, fw)
+	check(
+		r,
+		fb.get_raw(s, 0, sy) == fb.pack(s, fb.MAGNESIUM_HOT),
+		"the window stands in a raised border, lit at its left edge like every panel in the chassis",
+	)
+	check(
+		r,
+		fb.get_raw(s, bx0 + 4, by0 + 4) == fb.pack(s, fb.COPPER),
+		"with a copper bar across the top of it, which is the chassis's own trim",
+	)
 
 	// -- One write, five verbs, and the glass answers -------------------------
 
@@ -3212,13 +3282,13 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	)
 	check(
 		r,
-		fb.get_raw(s, 8, y0) == C1 && fb.get_raw(s, 23, y0 + 3) == C1,
-		"the fill landed on the glass, corner to corner",
+		fb.get_raw(s, ox + 8, sy) == C1 && fb.get_raw(s, ox + 23, sy + 3) == C1,
+		"the fill landed on the glass, corner to corner, inset by the frame it never sees",
 	)
 	blitted := true
 	for line in 0 ..< 4 {
 		for i in 0 ..< 8 {
-			if fb.get_raw(s, 32 + i, y0 + line) != (u32(0x00400000) | u32(line * 8 + i)) {
+			if fb.get_raw(s, ox + 32 + i, sy + line) != (u32(0x00400000) | u32(line * 8 + i)) {
 				blitted = false
 			}
 		}
@@ -3234,24 +3304,25 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	here is that landing spot, which is what makes this check strong. The
 	first cut watched only the painted edge, and the control walked past it.
 	*/
-	spill_before := fb.get_raw(s, 0, y0 + 1)
-	beyond_before := fb.get_raw(s, win_w, y0)
+	spill_before := fb.get_raw(s, ox, sy + 1)
+	beyond_before := fb.get_raw(s, ox + win_w, sy)
 	at = libdraw.put_fill(buf[:], 0, 0, u32(edge_x), u32(y0), 16, 1, C1)
 	at = libdraw.put_flush(buf[:], at)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr == vfs.OK, "a fill past the edge clips rather than errors")
-	check(r, fb.get_raw(s, win_w - 1, y0) == C1, "and paints up to its window's last pixel")
-	check(r, fb.get_raw(s, 0, y0 + 1) == spill_before, "and spills nothing onto the row below")
+	check(r, fb.get_raw(s, ox + win_w - 1, sy) == C1, "and paints up to its client area's last pixel")
+	check(r, fb.get_raw(s, ox, sy + 1) == spill_before, "and spills nothing onto the row below")
 	/*
-	And nothing one pixel further, which is the window's edge rather than the
-	screen's.
+	And nothing one pixel further, which is the client area's edge rather than
+	the screen's.
 
 	The check above would pass on a server that clipped to the glass, because
-	the window's last column is a real column either way. This one is what says
-	the *window* is the bound. It watches the first pixel a client may not
-	have.
+	the client area's last column is a real column either way. This one is what
+	says the *client area* is the bound. It watches the first pixel a client may
+	not have -- which since this milestone is its own window's border, so the
+	same check now also says a client cannot draw on its own frame.
 	*/
-	check(r, fb.get_raw(s, win_w, y0) == beyond_before, "and nothing at all past it")
+	check(r, fb.get_raw(s, ox + win_w, sy) == beyond_before, "and nothing at all past it")
 
 	/*
 	A malformed command fails its whole write, and what stood before it drew
@@ -3274,13 +3345,13 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	check(r, werr != vfs.OK, "a malformed command fails the whole write")
 	check(
 		r,
-		fb.get_raw(s, 8, y0) != C3,
+		fb.get_raw(s, ox + 8, sy) != C3,
 		"and nothing of it reached the glass, because the flush was in the write that failed",
 	)
 	at = libdraw.put_flush(buf[:], 0)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr == vfs.OK, "a flush of its own is answered")
-	check(r, fb.get_raw(s, 8, y0) == C3, "and shows what stood before the bad command, which already drew")
+	check(r, fb.get_raw(s, ox + 8, sy) == C3, "and shows what stood before the bad command, which already drew")
 
 	at = libdraw.put_free(buf[:], 0, 1)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
@@ -3301,7 +3372,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	region retired. A magic pixel value used to carry this, and a client paid
 	for it by not being able to paint black.
 	*/
-	mid_before := fb.get_raw(s, win_w / 2, gap_y)
+	mid_before := fb.get_raw(s, ox + win_w / 2, sgap)
 	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(gap_y), 1, 1, C1)
 	at = libdraw.put_fill(buf[:], at, 0, u32(win_w - 1), u32(gap_y), 1, 1, C1)
 	at = libdraw.put_flush(buf[:], at)
@@ -3309,12 +3380,12 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	check(r, werr == vfs.OK, "a client draws one pixel at each end of a row")
 	check(
 		r,
-		fb.get_raw(s, 0, gap_y) == C1 && fb.get_raw(s, win_w - 1, gap_y) == C1,
+		fb.get_raw(s, ox, sgap) == C1 && fb.get_raw(s, ox + win_w - 1, sgap) == C1,
 		"and both of them land",
 	)
 	check(
 		r,
-		fb.get_raw(s, win_w / 2, gap_y) == mid_before,
+		fb.get_raw(s, ox + win_w / 2, sgap) == mid_before,
 		"and the span between them is untouched, because damage is a region and not a box",
 	)
 
@@ -3322,7 +3393,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	//
 	// While `dc` is still open, because the claim is about two windows held at
 	// once. The image-pool test below closes it.
-	verify_windows(r, s, win_w, y0 - 2, dc, ctl)
+	verify_windows(r, s, win_w, win_h, fw, ox, oy, y0 - 2, dc, ctl)
 
 	at = 0
 	for id in 1 ..= 8 {
@@ -3341,12 +3412,12 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 
 	// Put the glass back the way it was found.
 	for line in 0 ..< 4 {
-		o := (y0 + line) * s.pitch
+		o := (sy + line) * s.pitch
 		copy(s.pixels[o:o + 192], saved_a[line * 192:][:192])
 	}
-	copy(s.pixels[y0 * s.pitch + edge_x * 4:][:8 * 4], saved_b[:])
-	copy(s.pixels[gap_y * s.pitch:][:4], saved_gap[0][:])
-	copy(s.pixels[gap_y * s.pitch + (win_w - 1) * 4:][:4], saved_gap[1][:])
+	copy(s.pixels[sy * s.pitch + (ox + edge_x) * 4:][:8 * 4], saved_b[:])
+	copy(s.pixels[sgap * s.pitch + ox * 4:][:4], saved_gap[0][:])
+	copy(s.pixels[sgap * s.pitch + (ox + win_w - 1) * 4:][:4], saved_gap[1][:])
 
 	// -- Teardown, the arc every tenant obeys ---------------------------------
 
@@ -3447,10 +3518,23 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		return
 	}
 
-	// The field the terminal will paint, saved before it exists.
-	y0 := s.height - 40
+	/*
+	The field the terminal will paint, saved before it exists.
+
+	The terminal lays itself out in the *client area* its `ctl` read answered
+	with, which is its window inside the border and below the title bar. So
+	every coordinate it draws at is moved by the same inset the server insets
+	its stores by, and this test reads that inset out of `sys/libdraw` rather
+	than working it out twice.
+
+	The width handed to `frame_client` is window zero's, which is the cascade
+	as a fixture the way `verify_windows` treats it. Only `ox`, `oy` and the
+	client height come out of it, and none of those three depends on it.
+	*/
+	ox, oy, _, ch := libdraw.frame_client(s.width / 2, s.height)
+	y0 := oy + ch - 40
 	for line in 0 ..< 16 {
-		o := (y0 + line) * s.pitch + 8 * 4
+		o := (y0 + line) * s.pitch + (ox + 8) * 4
 		copy(term_saved[line * 1408:][:1408], s.pixels[o:o + 1408])
 	}
 
@@ -3465,14 +3549,14 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	// the exact glyph, so a wrong atlas never satisfies it.
 	prompted := false
 	for _ in 0 ..< PATIENCE {
-		if glyph_on_glass(s, 8, y0, '>') {
+		if glyph_on_glass(s, ox + 8, y0, '>') {
 			prompted = true
 			break
 		}
 		sync.delay(1)
 	}
 	check(r, prompted, "the terminal mounts the server itself and paints its prompt")
-	check(r, glyph_on_glass(s, 16, y0, ' '), "whose glyphs match the kernel's own font, pixel for pixel")
+	check(r, glyph_on_glass(s, ox + 16, y0, ' '), "whose glyphs match the kernel's own font, pixel for pixel")
 
 	/*
 	And the field sits in a well now.
@@ -3489,8 +3573,26 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	*/
 	check(
 		r,
-		fb.get_raw(s, 4, y0) == fb.pack(s, fb.VOID),
+		fb.get_raw(s, ox + 4, y0) == fb.pack(s, fb.VOID),
 		"and its field is sunk into a well, out of the chassis's own vocabulary",
+	)
+
+	/*
+	And the bar across the top of its window says whose window it is.
+
+	The first program in the tree to use the fourth `ctl` line. It sends
+	`name terminal` before it uploads a glyph, so by the time the prompt is on
+	the glass the bar already carries the name -- drawn by the *server*, out of
+	the same font table this program uploads its own copy of.
+
+	The colour is the chassis's engraved wordmark, and the bar is where
+	`libdraw.frame_bar_at` says it is for window zero at the screen's origin.
+	*/
+	bx, by, bw, bh := libdraw.frame_bar_at(0, 0, s.width / 2)
+	check(
+		r,
+		bar_has(s, bx, by, bw, bh, fb.pack(s, fb.SLATE_DEEP)),
+		"and the bar across its window carries the name the program gave itself",
 	)
 
 	// Three bytes, no newline. Echo runs synchronously on this thread,
@@ -3507,7 +3609,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	// began. A poll of it once raced the two behind it.
 	rendered := false
 	for _ in 0 ..< PATIENCE {
-		if glyph_on_glass(s, 40, y0, '!') {
+		if glyph_on_glass(s, ox + 40, y0, '!') {
 			rendered = true
 			break
 		}
@@ -3516,10 +3618,10 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	check(r, rendered, "the newline completes the line and the terminal renders it")
 	check(
 		r,
-		glyph_on_glass(s, 24, y0, 'h') && glyph_on_glass(s, 32, y0, 'i'),
+		glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i'),
 		"every glyph out of the uploaded atlas, pixel for pixel",
 	)
-	check(r, glyph_on_glass(s, 48, y0, ' '), "and the cell after the text is background")
+	check(r, glyph_on_glass(s, ox + 48, y0, ' '), "and the cell after the text is background")
 
 	// The typed stop, and the terminal's own exit.
 	stop := "exit\n"
@@ -3536,7 +3638,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 
 	// Put the field back the way it was found.
 	for line in 0 ..< 16 {
-		o := (y0 + line) * s.pitch + 8 * 4
+		o := (y0 + line) * s.pitch + (ox + 8) * 4
 		copy(s.pixels[o:o + 1408], term_saved[line * 1408:][:1408])
 	}
 
@@ -3774,13 +3876,14 @@ verify_mapping :: proc(r: ^Result) {
 verify_ctl is the three lines a client may say about its own window.
 
     move X Y     put it somewhere else
-    size W H     make it another shape, inside the run it was born with
+    size W H     make its client area another shape, inside the run it holds
     raise        bring it to the front
+    name TEXT    what the bar across its top says
 
-**Three `ctl` lines rather than three verbs**, which is the distinction
+**Four `ctl` lines rather than four verbs**, which is the distinction
 `docs/DRAW.md` section 5 guards. A verb is about pixels, and a window is not a
-pixel. The lines needed a tree that could name a window, which is what the
-numbered directories are for.
+pixel -- and neither is its name. The lines needed a tree that could name a
+window, which is what the numbered directories are for.
 
 The two windows arrive here as `docs/DRAW.md` section 10's cascade left them.
 Window zero at the origin holds `A3` across one row. Window one sits half a
@@ -3792,7 +3895,8 @@ verify_ctl :: proc(
 	s: ^fb.Surface,
 	win_w: int,
 	win_h: int,
-	y: int,
+	ox: int,
+	sy: int,
 	far_x: int,
 	far_y: int,
 	far: u32,
@@ -3829,7 +3933,7 @@ verify_ctl :: proc(
 	check(
 		r,
 		gerr == vfs.OK && gok && cw == win_w && ch == win_h,
-		"and reads back this window's own shape, which is what it was born with",
+		"and reads back this window's own client area, which is what it was born with",
 	)
 
 	// -- The lines it refuses -------------------------------------------------
@@ -3866,7 +3970,7 @@ verify_ctl :: proc(
 	check(r, werr == vfs.OK, "the first client asks its own controls to raise it")
 	check(
 		r,
-		fb.get_raw(s, win_w - 1, y) == A3,
+		fb.get_raw(s, ox + win_w - 1, sy) == A3,
 		"which puts its own pixels over the window that was above it",
 	)
 
@@ -3909,8 +4013,84 @@ verify_ctl :: proc(
 	check(
 		r,
 		gerr2 == vfs.OK && gok2 && nw == 200 && nh == 100,
-		"and reads back the shape it asked for, which is the only answer a ctl line gets",
+		"and reads back the client area it asked for, which is the only answer a ctl line gets",
 	)
+
+	/*
+	And the frame came with it, which a control found nothing watching.
+
+	A window's border lives in its store beside the client's pixels, so a
+	resize that moved the edges and left the frame where it was would leave the
+	old bar's copper standing where the new right border belongs. The pixel
+	watched is that border, on a row above the client area and outside the
+	bar's own columns.
+
+	`.Raised` puts the shadow on the right, so this is `MAGNESIUM_DARK` and not
+	the highlight the left edge carries.
+	*/
+	fwin, _ := libdraw.frame_window(200, 100)
+	check(
+		r,
+		fb.get_raw(s, 700 + fwin - 1, 7) == fb.pack(s, fb.MAGNESIUM_DARK),
+		"and its frame moved to the new edge, over what the old one left in the run",
+	)
+
+	// -- name -----------------------------------------------------------------
+
+	/*
+	And the bar across the top of it says what the client called it.
+
+	**The one `ctl` line whose operand is not a number**, and the one thing on
+	this screen the *server* draws about a client's window. A client uploads
+	its own glyphs and blits them, which is section 5's answer to a font verb.
+	A title is not the client's text, so it needed no verb: the server links
+	`sys/libfont` -- the same 8x16 table the kernel console draws with -- and
+	stores the letters into memory the client cannot reach.
+
+	The sensor is the bar's own rectangle, out of `libdraw.frame_bar_at` so the
+	test and the server cannot disagree about where it is. The colour is
+	`SLATE_DEEP`, which is `kernel/splash.odin`'s engraved wordmark and the one
+	colour a bar drawn out of the copper three cannot otherwise contain.
+
+	Both directions, because a bar is laid down before its letters are. A name
+	that goes away has to take its pixels with it, and only a server that
+	repaints the bar can do that.
+	*/
+	bx, by, bw, bh := libdraw.frame_bar_at(700, 0, fwin)
+	ink := fb.pack(s, fb.SLATE_DEEP)
+	check(r, !bar_has(s, bx, by, bw, bh, ink), "a window is born nameless, and its bar is copper and nothing else")
+
+	_, nerr := vfs.chan_write(cfd, 0, bytes_of("name VECTRA\n"))
+	check(r, nerr == vfs.OK, "the client names its own window")
+	check(
+		r,
+		bar_has(s, bx, by, bw, bh, ink),
+		"and the bar says so, in the font the draw server has and never gave a verb to",
+	)
+
+	_, eerr := vfs.chan_write(cfd, 0, bytes_of("name\n"))
+	check(r, eerr == vfs.OK, "a name of nothing is a name")
+	check(
+		r,
+		!bar_has(s, bx, by, bw, bh, ink),
+		"and takes the old one off with it, because the bar is repainted and not drawn over",
+	)
+}
+
+// bar_has reports whether one colour appears anywhere in a rectangle of the
+// glass. The title checks want a letter somewhere on a bar rather than a
+// letter at a place, because where a name starts is the server's padding and
+// not a rule worth freezing into a test.
+@(private = "file")
+bar_has :: proc "contextless" (s: ^fb.Surface, x: int, y: int, w: int, h: int, want: u32) -> bool {
+	for row in 0 ..< h {
+		for col in 0 ..< w {
+			if fb.get_raw(s, x + col, y + row) == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 /*
@@ -4131,25 +4311,42 @@ verify_windows :: proc(
 	r: ^Result,
 	s: ^fb.Surface,
 	win_w: int,
+	win_h: int,
+	fw: int,
+	ox: int,
+	oy: int,
 	y: int,
 	first: ^vfs.Chan,
 	first_ctl: ^vfs.Chan,
 ) #no_bounds_check {
+	// `y` is a client row, and this is where it lands on the glass. Every
+	// command below is written in the first client's coordinates and read back
+	// in the screen's.
+	sy := oy + y
 	span := s.width * 4
-	if span > len(row_saved) || y <= 0 {
+	if span > len(row_saved) || sy <= 0 {
 		return
 	}
-	copy(row_saved[:span], s.pixels[y * s.pitch:][:span])
+	copy(row_saved[:span], s.pixels[sy * s.pitch:][:span])
 
 	/*
 	Where the second window sits, as a fixture rather than as a question.
 
-	The server cascades by half a window, and no verb would tell a client so.
-	A test that could ask the server where it put things would be agreeing with
-	the code under test. `docs/TESTING.md` names that as the way a check passes
-	for the wrong reason.
+	The server cascades by half a *window*, frame included, and no verb would
+	tell a client so. A test that could ask the server where it put things would
+	be agreeing with the code under test. `docs/TESTING.md` names that as the way
+	a check passes for the wrong reason.
+
+	Three x coordinates come out of it, and keeping them apart is most of what
+	a frame cost this procedure. `second_x` is where the second *window*
+	begins. `second_ox` is where its client's own (0, 0) lands, a border
+	further in. `under_x` is the last pixel of the first window that the second
+	one does not cover -- which used to be `second_ox - 1` and is not, because
+	the pixel before a client's origin is now that client's own border.
 	*/
-	second_x := win_w / 2
+	second_x := fw / 2
+	second_ox := second_x + ox
+	under_x := second_x - 1
 
 	/*
 	A pixel inside the second window's rectangle and outside the first's, on a
@@ -4166,8 +4363,8 @@ verify_windows :: proc(
 	client drew, so this had to stay exactly as found. The boot chassis, showing
 	through a window with no ground of its own.
 	*/
-	ground_x := win_w + 8
-	ground_y := y - 4
+	ground_x := fw + 8
+	ground_y := sy - 4
 	ground := fb.get_raw(s, ground_x, ground_y)
 
 	// And one further out still, past where either window ever sits. It is
@@ -4224,7 +4421,7 @@ verify_windows :: proc(
 	nothing a check could see until the two are read together. The column is a
 	multiple of the step and the one beside it is not, on a row that is neither.
 	*/
-	grid_x := ((win_w + 40) / 32) * 32
+	grid_x := ((fw + 40) / 32) * 32
 	check(
 		r,
 		fb.get_raw(s, grid_x, ground_y) != ground,
@@ -4280,7 +4477,11 @@ verify_windows :: proc(
 	at = libdraw.put_flush(buf[:], at)
 	_, aerr := vfs.chan_write(first, 0, buf[:at])
 	check(r, aerr == vfs.OK, "the first client fills its whole width from its own origin")
-	check(r, fb.get_raw(s, 0, y) == A, "which lands at the screen's origin, where its window is")
+	check(
+		r,
+		fb.get_raw(s, ox, sy) == A,
+		"which lands inside its window's frame, where its client area is and the screen's origin is not",
+	)
 
 	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), 8, 1, B)
 	at = libdraw.put_flush(buf[:], at)
@@ -4288,8 +4489,8 @@ verify_windows :: proc(
 	check(r, berr == vfs.OK, "and the second fills at the same coordinates")
 	check(
 		r,
-		fb.get_raw(s, second_x, y) == B,
-		"half a window across, which is where the second window is",
+		fb.get_raw(s, second_ox, sy) == B,
+		"half a window across and a border further in, which is where the second client area is",
 	)
 	check(
 		r,
@@ -4298,8 +4499,8 @@ verify_windows :: proc(
 	)
 	check(
 		r,
-		fb.get_raw(s, second_x - 1, y) == A,
-		"and the pixel before it is still the first client's",
+		fb.get_raw(s, under_x, sy) == A,
+		"and the pixel before that window begins is still the first client's",
 	)
 
 	// -- Where they overlap, the top window is what the glass has -------------
@@ -4319,12 +4520,12 @@ verify_windows :: proc(
 	check(r, werr == vfs.OK, "the second client fills its whole width too")
 	check(
 		r,
-		fb.get_raw(s, win_w - 1, y) == B,
+		fb.get_raw(s, ox + win_w - 1, sy) == B,
 		"and the glass where they overlap is the window on top",
 	)
 	check(
 		r,
-		fb.get_raw(s, second_x - 1, y) == A,
+		fb.get_raw(s, under_x, sy) == A,
 		"and the window underneath still has the part nothing covers",
 	)
 
@@ -4341,10 +4542,10 @@ verify_windows :: proc(
 	at = libdraw.put_flush(buf[:], at)
 	_, a2err := vfs.chan_write(first, 0, buf[:at])
 	check(r, a2err == vfs.OK, "the covered client fills its width a second time")
-	check(r, fb.get_raw(s, second_x - 1, y) == A2, "and its flush repaints what it owns")
+	check(r, fb.get_raw(s, under_x, sy) == A2, "and its flush repaints what it owns")
 	check(
 		r,
-		fb.get_raw(s, win_w - 1, y) == B,
+		fb.get_raw(s, ox + win_w - 1, sy) == B,
 		"without lifting one pixel of it over the window on top",
 	)
 
@@ -4357,14 +4558,14 @@ verify_windows :: proc(
 	that session's window, so its last column is its own and the column past
 	it belongs to nobody.
 	*/
-	edge := second_x + win_w
-	beyond_before := fb.get_raw(s, edge, y)
+	edge := second_ox + win_w
+	beyond_before := fb.get_raw(s, edge, sy)
 	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(s.width * 2), 1, B)
 	at = libdraw.put_flush(buf[:], at)
 	_, werr = vfs.chan_write(second, 0, buf[:at])
 	check(r, werr == vfs.OK, "the second asks for a rectangle wider than the screen")
-	check(r, fb.get_raw(s, edge - 1, y) == B, "and gets its window, out to its last column")
-	check(r, fb.get_raw(s, edge, y) == beyond_before, "and not one pixel past it")
+	check(r, fb.get_raw(s, edge - 1, sy) == B, "and gets its window, out to its last column")
+	check(r, fb.get_raw(s, edge, sy) == beyond_before, "and not one pixel past it")
 
 	/*
 	And a blit, which is the only way to prove the *other* translation.
@@ -4384,8 +4585,8 @@ verify_windows :: proc(
 	at = libdraw.put_flush(buf[:], at)
 	_, blerr := vfs.chan_write(second, 0, buf[:at])
 	check(r, blerr == vfs.OK, "the second client loads an image and blits it")
-	check(r, fb.get_raw(s, second_x + 16, y) == MARK, "which lands inside its own window")
-	check(r, fb.get_raw(s, 16, y) != MARK, "and not in the window beside it")
+	check(r, fb.get_raw(s, second_ox + 16, sy) == MARK, "which lands inside its own window")
+	check(r, fb.get_raw(s, ox + 16, sy) != MARK, "and not in the window beside it")
 
 	// -- The uncover, which is the milestone ----------------------------------
 
@@ -4402,12 +4603,12 @@ verify_windows :: proc(
 	vfs.chan_close(second)
 	check(
 		r,
-		fb.get_raw(s, win_w - 1, y) == A2,
+		fb.get_raw(s, ox + win_w - 1, sy) == A2,
 		"a window that closes gives back the pixels it covered, out of the store below it",
 	)
 	check(
 		r,
-		fb.get_raw(s, second_x, y) == A2,
+		fb.get_raw(s, second_ox, sy) == A2,
 		"across the whole overlap, and the client under it drew nothing to earn that",
 	)
 	check(
@@ -4440,6 +4641,20 @@ verify_windows :: proc(
 		*/
 		fresh := fb.get_raw(s, ground_x, ground_y)
 		check(r, fresh != ground, "a window is there again, over the ground it uncovered")
+		/*
+		And what it covers that ground with is a *well*.
+
+		A window is a raised plinth with a sunken screen in it, which is the
+		chassis in one sentence, and the well's own face is what a client that
+		has drawn nothing gets. A frame whose client area was left as the
+		plinth it stands on covers exactly as much glass and reads as the wrong
+		object, and nothing here could tell until this named the colour.
+		*/
+		check(
+			r,
+			fresh == fb.pack(s, fb.SLATE),
+			"and the window's own ground is the well it is sunk into, not the plinth around it",
+		)
 
 		A3 :: u32(0x00117733)
 		at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(win_w), 1, A3)
@@ -4448,18 +4663,18 @@ verify_windows :: proc(
 		check(r, a3err == vfs.OK, "and the client below repaints across where the new window sits")
 		check(
 			r,
-			fb.get_raw(s, second_x - 1, y) == A3,
+			fb.get_raw(s, under_x, sy) == A3,
 			"whose pixels stand where nothing covers them",
 		)
 		check(
 			r,
-			fb.get_raw(s, win_w - 1, y) == fresh,
+			fb.get_raw(s, ox + win_w - 1, sy) == fresh,
 			"and are covered where they meet a window whose session drew nothing at all",
 		)
 
-		verify_ctl(r, s, win_w, s.height, y, far_x, far_y, far, ground_x, ground_y, ground, A3, first_ctl)
+		verify_ctl(r, s, win_w, win_h, ox, sy, far_x, far_y, far, ground_x, ground_y, ground, A3, first_ctl)
 		vfs.chan_close(again)
 	}
 
-	copy(s.pixels[y * s.pitch:][:span], row_saved[:span])
+	copy(s.pixels[sy * s.pitch:][:span], row_saved[:span])
 }

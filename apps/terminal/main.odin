@@ -168,20 +168,38 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	}
 	data_fd = int(fd)
 
-	ctl := libuser.open(libdraw.win_path(path_buf[:], "/mnt", mine, "ctl"), abi.O_RDONLY)
+	/*
+	The controls, opened both ways: the geometry comes out and a name goes
+	in.
+
+	The geometry is this program's *client area*, which is the window with
+	its border and title bar taken off. A client is never told there is a
+	frame, and this one does not need to be: it lays itself out in the
+	rectangle it was given and the server puts it where it goes.
+
+	Only the height steers the layout. The width goes unused because the
+	field is fixed and the server clips, and the depth is the server's own
+	refusal.
+	*/
+	ctl := libuser.open(libdraw.win_path(path_buf[:], "/mnt", mine, "ctl"), abi.O_RDWR)
 	if ctl < 0 {
 		libuser.exit(0x75)
 	}
 	n := libuser.read(int(ctl), geo[:])
-	_ = libuser.close(int(ctl))
-	// Only the height steers the layout. The width goes unused because
-	// the field is fixed and the server clips, and the depth is the
-	// server's own refusal.
 	_, h, _, _, gok := libdraw.parse_geometry(geo[:max(int(n), 0)])
 	if !gok || h < 56 {
+		_ = libuser.close(int(ctl))
 		libuser.exit(0x76)
 	}
 	field_y = u32(h - 40)
+
+	// And the bar across the top says whose window it is. The first thing in
+	// the tree to use the fourth `ctl` line, and the whole of what a program
+	// has to do to be named. The descriptor goes after, because a `ctl` fid
+	// held for life would deny the controls to anything else.
+	title := "name terminal"
+	_ = libuser.write(int(ctl), transmute([]u8)title)
+	_ = libuser.close(int(ctl))
 
 	upload_font()
 	prompt()

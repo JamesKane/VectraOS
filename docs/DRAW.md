@@ -403,8 +403,11 @@ There is ground under a window now, so neither is needed.
 
 **The memset came back.** A slot handed to a new session has to be cleared.
 Every pixel of a window is on the screen whether the client drew it or not.
-That is two megabytes at each `Tlopen`, which `covered` bought its way out of.
+That was two megabytes at each `Tlopen`, which `covered` bought its way out of.
 A window that is a window rather than a stencil is what it buys.
+
+*It went again in section 12.* A window frame paints its plinth's face over the
+whole rectangle before it chisels anything, so the frame is the clear.
 
 ### A region, and what is left of it
 
@@ -567,14 +570,62 @@ the part with a check on it.
 is the whole point of a vocabulary made of rectangles. The app draws the same
 object the kernel draws, through a protocol that never learned what a bevel is.
 
+**And a window is a raised plinth with a sunken screen in it**, which is the
+chassis in one sentence. `libdraw.frame` decomposes that into three panels: the
+border, the copper bar across its top, and the well the client area is sunk
+into. The draw server stores them into the window's own run, so the compositor
+never learns there is a frame -- a window is still one opaque rectangle backed
+by one segment.
+
+**The client area is the well's interior, and that is the whole cost.** A
+client's (0, 0) moved in by the border, the bar and the recess. `ctl` reports
+the client area rather than the window, `size` names the same rectangle, and
+`run_fill` and `run_blit` clip to it and then move into it. A client is never
+told there is a frame and no coordinate it sends means anything outside the
+area it was given.
+
+The translation this brought back is the one a backing store retired a
+milestone ago, one level in. It used to move a client's rectangle onto the
+glass, and got a check of its own because the wrong order let a client into the
+window beside it. It moves a rectangle into the client area now, and the wrong
+order lets a client onto its own border. Clip first, then move, for the same
+reason and with a smaller consequence.
+
+**And the frame is what clears a slot.** The plinth's face covers the window's
+whole rectangle before anything is chiselled onto it, and the well's covers the
+client area. That retired the two megabyte `memset` at every `Tlopen` and the
+band clear at every `size`, both of which existed because there was nothing
+else writing those pixels. A control confirms it: removing the frame from
+`window_open` now fails the stale-slot check as well as the two frame checks.
+
+### The name, and the font the server did not have
+
+A fourth `ctl` line: `name TEXT`, and the bar says it.
+
+**It is the one thing on this screen the server draws about a client's
+window.** A client uploads its own glyphs as images and blits them, which is
+section 5's answer to a font verb and stays the answer. A title is not the
+client's text. So the server links `sys/libfont` -- the same 8x16 table the
+kernel console draws with -- and stores the letters into memory no client can
+reach. **No verb, and no font in the protocol.**
+
+The line's operand is not a number, which makes it the only one `ctl_end` has
+nothing to say about: every byte after the verb is the name, trimmed of space
+and its newline. An empty name is a legal name and clears the bar.
+
+`apps/terminal` sends `name terminal` before it uploads a glyph, and is the
+first program in the tree to use the line.
+
 ### What is not wearing it yet
 
-**A window has no frame and no title bar.** That is the obvious next use and
-it is not free. A frame means the client area is no longer the window's whole
-rectangle, so a window's origin moves in by the frame's depth. Every coordinate
-the self-test hardcodes moves with it, and it hardcodes many, because a
-readback names a screen pixel. A title also wants a font in the server, which
-the server does not have, and a `ctl` line to set a name.
+**A window does not know which of it has the focus.** Every bar is the same
+copper whether or not that window is in front, and `raise` exists. That is the
+next thing a title bar is actually for, and it is one more colour and one more
+repaint rather than a mechanism.
+
+**A window has no buttons on its frame** -- nothing to close, shade or resize
+it with. All three exist as `ctl` lines already, so what is missing is a
+pointer, and there is no pointing device in this system yet.
 
 ### The controls for chrome
 
@@ -582,6 +633,14 @@ Six mutations, each on a real boot. All six are caught.
 
 | Mutation | Result |
 |---|---|
+| a window's store gets no frame when it opens | 4 checks, first `the window stands in a raised border, lit at its left edge like every panel in the chassis` |
+| the client area is not sunk into a well | 1 check, `the window's own ground is the well it is sunk into, not the plinth around it` |
+| a resize does not move the frame with the edge | 1 check, `and its frame moved to the new edge, over what the old one left in the run` |
+| `ctl` reports the window rather than the client area | 20 checks, first `whose window is the screen's full height` -- which is a gate as well, for the reason below |
+| a draw is not moved into the client area | 17 checks, first `the fill landed on the glass, corner to corner, inset by the frame it never sees` |
+| a blit is not moved into the client area | 5 checks, first `and the blit landed the loaded pixels beside it` |
+| the name is drawn in the bar's own colour | 2 checks, first `and the bar says so, in the font the draw server has and never gave a verb to` |
+| a rename draws over the bar rather than repainting it | 1 check, `and takes the old one off with it` |
 | a lamp does not light when its window opens | 1 check, `its lamp is lit, in the phosphor both sides of the door read from one table` |
 | a lamp does not go out when its session does | 1 check, `its lamp goes out with its session` |
 | an unlit lamp is a neutral grey | 1 check, `dark in its own colour, which is what an unlit lamp is` |
@@ -589,11 +648,27 @@ Six mutations, each on a real boot. All six are caught.
 | a recessed bevel is lit from the top left | 1 check, the same |
 | the terminal's field is a plain fill again | 1 check, the same |
 
-**Every one is a single check, and that is the shape chrome has.** There is no
-arithmetic here for a readback to catch sideways. Each rule puts one colour at
-one place, so each mutation moves exactly one pixel the test names. The
-interesting one is the neutral grey, the only rule in the set that is a
-judgement rather than a consequence.
+**The lamp mutations are single checks, and that is the shape flat chrome has.**
+There is no arithmetic in a lamp for a readback to catch sideways. Each rule
+puts one colour at one place, so each mutation moves exactly one pixel the test
+names. The interesting one is the neutral grey, the only rule in the set that
+is a judgement rather than a consequence.
+
+**A frame is not that shape, and three of its mutations found it.** Two were
+inert on the first cut, because every other check in the file reads a pixel a
+client drew or a pixel a client did not, and a window with no border is
+neither. The frame needed sensors that name a *surface*: the border's highlight
+at column zero, the bar's copper face, the well's slate ground. Each of those
+is a colour out of `sys/libpal` that neither a client's fill nor the desktop
+below could produce.
+
+**And one mutation had to be caught by a gate rather than by a check.** Every
+row `verify_draw` reads is derived from the geometry `ctl` answered with, so a
+server that reported the *window* walked the readbacks off the bottom of the
+screen and faulted the boot. The check that catches it now returns as well as
+fails. A check that has already failed should not go on to fault, which is a
+rule this file had not needed until a test's own sensors moved with the thing
+under test.
 
 ### The controls for the compositor
 
@@ -668,10 +743,12 @@ first time the answer was that the test was asking the wrong process.
   rectangles exists to avoid. An opaque window is what finally makes it
   correct, so this is the first milestone where it *could* be done. Worth it at
   more windows than two.
-- **The desktop wears the vocabulary and the windows on it do not.** No frame,
-  no title bar. It is the next wearer and the first one that is not free, for
-  the reason "What is not wearing it yet" gives: a frame moves the client area
-  in off the window's own origin.
+- **A window's bar does not say whether that window has the focus.** `raise`
+  exists and every bar is the same copper. One more colour and one more
+  repaint, and it is the next thing a title bar is for.
+- **Nothing on a frame can be pressed.** No close, no resize handle, no drag.
+  Every one of those is a `ctl` line already, so what is missing is a pointing
+  device, which this system does not have.
 - **Nothing gives a run back.** A window's memory belongs to the slot rather
   than to the session, and a slot is never released. `segfree` is the Plan 9
   call that changes it, and `docs/USER.md` names it with the other two.
@@ -683,4 +760,6 @@ first time the answer was that the test was asking the wrong process.
 
 Two windows at 640 by 800 is 4 MB, which is `SEGALLOC_MAX` twice over.
 `MAX_WINDOWS`, that bound, and `MAX_PROC_SEGS` are the three numbers that move
-together, because a window costs a segment.
+together, because a window costs a segment. A frame costs none of it: the
+border, the bar and the well are pixels inside the run a window already had,
+and what they take is out of the client's area rather than out of memory.

@@ -610,7 +610,8 @@ client drew since its last flush, and another for everything it drew at all.
 The second one retired a magic pixel value. A window's store used to begin as
 zero and the compositor used to skip zero, which cost a client the ability to
 paint black. That question lives in a region now, and a two megabyte memset per
-`Tlopen` went with it.
+`Tlopen` went with it -- and came back, and went again when a window grew a
+frame that writes every pixel of its own rectangle.
 
 **And the console no longer paints the glass.** `/dev/fb` diverts it the
 way `/dev/scancode` diverts the keyboard. While something holds the screen the
@@ -680,20 +681,40 @@ decomposition. A lit jewel is a flat `Piece` that ring 0 then ramps and puts a
 specular pixel on, and ring 3's lamps are flat. `docs/DRAW.md` section 12 owns
 all of it.
 
+**And a window is a raised plinth with a sunken screen in it**, which is the
+chassis in one sentence. `libdraw.frame` decomposes it into three panels -- the
+border, the copper bar across its top, and the well the client area is sunk
+into -- and the draw server stores them into the window's own run. The
+compositor never learns there is a frame: a window is still one opaque
+rectangle backed by one segment.
+
+**The client area is the well's interior, and that was the cost.** A client's
+(0, 0) moved in by the border, the bar and the recess. `ctl` reports the client
+area, `size` names it, and the verbs clip to it and move into it. Every
+coordinate the self-test hardcoded moved with it, which is what the last
+handoff said this would cost, and `sys/libdraw` owns the arithmetic so neither
+side computes it twice.
+
+**And the frame is what clears a slot now.** The plinth's face covers a
+window's whole rectangle before anything is chiselled onto it. That retired the
+two megabyte `memset` at every `Tlopen` and the band clear at every `size`.
+
+**A fourth `ctl` line names a window**, and the bar says it. The server draws
+the letters out of `sys/libfont`, which is the font `docs/DRAW.md` said it did
+not have -- and it stayed out of the protocol, because a title is the server's
+text about a client's window rather than the client's own. `apps/terminal`
+sends `name terminal` and is the first program to use the line.
+
 **Next, in order:**
 
-1. **A window frame, and the title bar on it.** The obvious next wearer of the
-   vocabulary, and the first one with a cost. A frame means the client area is
-   no longer the window's whole rectangle. A window's origin moves in by the
-   frame's depth, and every coordinate the self-test hardcodes moves with it.
-
-   A title also wants two things that do not exist. A font in the draw server,
-   which has none because clients upload their own, and a `ctl` line to set a
-   name.
-
-2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
+1. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
    two becomes a reason rather than a tidiness.
+
+2. **Focus, and what a title bar is for.** `raise` exists and every bar is the
+   same copper whether or not its window is in front. One more colour and one
+   more repaint rather than a mechanism, and the first thing on this screen
+   that would report which client the machine is listening to.
 
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
@@ -1052,8 +1073,8 @@ sys/
                         put_text with its consumed-count return that pumps
                         a long line through in batches
   libdraw/chrome.odin   The chassis vocabulary as rectangles, worn by both
-                        rings: a bevel's edges, a panel, a well, a lamp, and
-                        the fills a client sends to wear them
+                        rings: a bevel's edges, a panel, a well, a lamp, a
+                        window frame, and the fills a client sends to wear them
   libpal/palette.odin   The system palette, once, for both privilege levels
   libfont/font_data.odin  GENERATED -- the one 8x16 font table, imported
                         by the kernel console and linked by ring 3 alike

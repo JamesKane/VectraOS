@@ -17,6 +17,13 @@ anonymous memory from `segalloc`, and a draw is a store into that rather
 than onto the glass. `flush` is what walks the damage onto the screen,
 which is the promise `docs/DRAW.md` section 6 made without saying how.
 
+**And a window wears the chassis.** A raised border with a copper bar across
+its top, out of `sys/libdraw`'s vocabulary, painted into the window's own run
+so the compositor never learns there is one. The client area is inside it, and
+a client's (0, 0) is there. The name on the bar comes off a `ctl` line and is
+drawn from `sys/libfont` -- the server's own text about a client's window,
+which is why it needed no verb.
+
 **And under them, a desktop.** This server owns every pixel of the screen
 while it runs, because `/dev/fb` diverts the kernel's console for as long
 as it holds the descriptor. So a window is opaque over its whole rectangle,
@@ -47,12 +54,12 @@ everything inline, and the server needs no fork, no worker, and no lock.
 The tree is `docs/DRAW.md` section 4's:
 
     /data    the command stream, one session per fid, one window per session
-    /ctl     text lines in, the geometry of a window out
+    /ctl     text lines in, the geometry of a client area out
 
-**`ctl` reports the window rather than the screen**, and that is the second
-half of a client not knowing where it is. Every window is the same size, so
-one report answers for all of them, and a client that reads it learns how
-big it is and nothing about the glass.
+**`ctl` reports the client area rather than the screen**, and that is the
+second half of a client not knowing where it is. It learns how much room it
+has to draw in, and nothing about the glass, the frame around it, or the
+window beside it.
 
 A session's images live in a static pool, because ring 3 has no
 allocator. The pool is eight images of 2048 pixels each, which is a
@@ -79,6 +86,7 @@ import "base:runtime"
 
 import "vsys:abi"
 import "vsys:libdraw"
+import "vsys:libfont"
 import "vsys:libpal"
 import "vsys:libuser"
 import "vsys:vectra9"
@@ -290,13 +298,14 @@ attention to itself. A darker one reads as engraved, which is the same trick
 `console.Style.Engraved` plays on text and the reason the whole chassis looks
 like metal.
 
-`WIN_GROUND` is `SLATE`, the palette's recessed well. A window is a sunken
-panel in this idiom, and a client that draws nothing gets one.
+A window's own ground is not here. It is the face of the well
+`libdraw.frame` sinks the client area into, which is `SLATE` out of the same
+table -- a window is a sunken panel in this idiom, and a client that draws
+nothing gets one because the frame painted one.
 */
 DESK_GROUND :: u32(libpal.SLATE_DEEP[0]) << 16 | u32(libpal.SLATE_DEEP[1]) << 8 | u32(libpal.SLATE_DEEP[2])
 DESK_GRID :: u32(libpal.VOID[0]) << 16 | u32(libpal.VOID[1]) << 8 | u32(libpal.VOID[2])
 DESK_STEP :: 32
-WIN_GROUND :: u32(libpal.SLATE[0]) << 16 | u32(libpal.SLATE[1]) << 8 | u32(libpal.SLATE[2])
 
 /*
 The desktop's own chrome: the edge it is sunk into, and a lamp per window.
@@ -459,6 +468,158 @@ desk_pieces :: proc "contextless" (pieces: []libdraw.Piece, sx0: int, sy0: int, 
 }
 
 /*
+The window frame, and the font the draw server did not have.
+
+**`sys/libdraw`'s `frame` is the vocabulary; this is the painter.** A window's
+border and title bar are the same two surfaces the boot chassis is made of,
+decomposed into rectangles one privilege level out, and stored into the
+window's own run. So a frame is ordinary pixels in the store: `composite`
+copies a window's rectangle to the glass and never learns which of those
+pixels a client drew.
+
+**A client cannot reach them.** Its coordinates start at the client area,
+which `libdraw.frame_client` puts inside the border and below the bar, and
+every store it makes is clipped to that extent first. A frame is the one part
+of a window that is the server's, and the clip is what says so.
+
+`MAX_TITLE` is a cap on the name rather than on the bar. A longer name is cut
+at the bar's own edge as it is drawn, because a window narrower than its name
+is a picture and not an error.
+*/
+MAX_TITLE :: 24
+
+// The name's colour on the bar: dark on copper, which is the chassis's
+// engraved wordmark. It is also the one colour a bar drawn out of the copper
+// three cannot otherwise contain, which is what makes it a sensor.
+TITLE_FG :: u32(libpal.SLATE_DEEP[0]) << 16 | u32(libpal.SLATE_DEEP[1]) << 8 | u32(libpal.SLATE_DEEP[2])
+
+/*
+win_pieces stores a run of chrome into one window's own memory.
+
+`fb.paint`'s opposite number and `desk_pieces`'s sibling: three painters for
+one vocabulary, which is the whole of `sys/libdraw/chrome.odin`'s design. This
+one clips to the window rather than to the screen, because a window's store is
+the only memory it may touch.
+*/
+win_pieces :: proc "contextless" (win: ^Window, pieces: []libdraw.Piece) #no_bounds_check {
+	for p in pieces {
+		x0 := max(p.x, 0)
+		y0 := max(p.y, 0)
+		x1 := min(p.x + p.w, win.w)
+		y1 := min(p.y + p.h, win.h)
+		word := libpal.xrgb(p.color)
+		for y in y0 ..< y1 {
+			row := win.pixels[y * win_w:]
+			for x in x0 ..< x1 {
+				row[x] = word
+			}
+		}
+	}
+}
+
+/*
+window_chrome paints a window's whole frame into its store: the border, the
+bar, and the name on it.
+
+Called when a window opens and when it changes shape, and never per draw. The
+frame is memory like everything else in the run, so it survives being covered
+the way a client's pixels do.
+*/
+window_chrome :: proc "contextless" (win: ^Window) #no_bounds_check {
+	pieces: [libdraw.MAX_FRAME_PIECES]libdraw.Piece
+	win_pieces(win, pieces[:libdraw.frame(pieces[:], 0, 0, win.w, win.h)])
+	title_paint(win)
+}
+
+/*
+title_paint repaints one bar and the name on it.
+
+Apart from `window_chrome` because a `name` line changes the bar and nothing
+around it. The bar is laid down first every time, which is how a name that
+grew shorter loses its tail.
+*/
+title_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
+	pieces: [libdraw.MAX_PIECES]libdraw.Piece
+	win_pieces(win, pieces[:libdraw.frame_bar(pieces[:], 0, 0, win.w)])
+
+	/*
+	And the glyphs, out of `sys/libfont` -- the one 8x16 table the kernel
+	console and every ring 3 program already link.
+
+	**This is the font `docs/DRAW.md` said the server had none of, and it did
+	not make one a protocol question.** A client still uploads its own glyphs
+	as images and blits them, which is section 5's answer to a font verb and
+	stays the answer. A title is the *server's* text about a client's window,
+	drawn into memory no client can reach, so it needs no verb at all.
+
+	Clipped to the bar in both directions, so a name wider than the window is
+	cut rather than refused.
+	*/
+	bx, by, bw, bh := libdraw.frame_bar_at(0, 0, win.w)
+	tx := bx + libdraw.FRAME_PAD
+	ty := by + (bh - libfont.FONT_HEIGHT) / 2
+	right := bx + bw - libdraw.FRAME_PAD
+	for i in 0 ..< win.title_n {
+		ch := win.title[i]
+		if ch < libfont.FONT_FIRST || ch > libfont.FONT_LAST {
+			continue
+		}
+		rows := &libfont.font_8x16[int(ch) - libfont.FONT_FIRST]
+		gx := tx + i * libfont.FONT_WIDTH
+		for line in 0 ..< libfont.FONT_HEIGHT {
+			y := ty + line
+			if y < by || y >= by + bh {
+				continue
+			}
+			bits := rows[line]
+			dst := win.pixels[y * win_w:]
+			for c in 0 ..< libfont.FONT_WIDTH {
+				x := gx + c
+				if x < bx || x >= right || x >= win.w {
+					continue
+				}
+				if bits & (0x80 >> u8(c)) != 0 {
+					dst[x] = TITLE_FG
+				}
+			}
+		}
+	}
+}
+
+/*
+window_name is the `name` line: what the bar across a window's top says.
+
+The rest of the line after the verb, with its surrounding space and its
+newline taken off. An empty rest is a legal name and clears the bar, which is
+what makes the bar's repaint testable in both directions.
+
+Only the bar's own rectangle goes back to the glass. `composite` walks the
+whole stack over it, so a window renamed under another one repaints nothing
+anybody can see.
+*/
+window_name :: proc "contextless" (win: ^Window, rest: []u8) -> vectra9.Errno #no_bounds_check {
+	from := 0
+	for from < len(rest) && (rest[from] == ' ' || rest[from] == '\t') {
+		from += 1
+	}
+	to := len(rest)
+	for to > from &&
+	    (rest[to - 1] == '\n' || rest[to - 1] == '\r' || rest[to - 1] == ' ' || rest[to - 1] == '\t') {
+		to -= 1
+	}
+	n := min(to - from, MAX_TITLE)
+	for i in 0 ..< n {
+		win.title[i] = rest[from + i]
+	}
+	win.title_n = n
+
+	title_paint(win)
+	bx, by, bw, bh := libdraw.frame_bar_at(win.x, win.y, win.w)
+	repaint(bx, by, bw, bh)
+	return vectra9.Errno(0)
+}
+
+/*
 One window: where it sits, the memory behind it, and the damage it owes.
 
 `pixels` is a run of anonymous memory from `segalloc`, `w * h` words of it,
@@ -470,8 +631,13 @@ the one this line is waiting for.
 `dmg` is what this client drew since its last `flush`, and it is the only
 region a window keeps now.
 
-**A window owns its whole rectangle.** That sentence took three milestones and
-cost two mechanisms on the way. First a magic pixel value said which pixels a
+**A window owns its whole rectangle, and part of it is not the client's.** The
+border and the title bar live in this same run, painted by `window_chrome`,
+and `libdraw.frame_client` is where the client area begins inside them. Every
+store a verb makes is clipped to that and moved into it, so a frame costs the
+compositor nothing: a window is still one opaque rectangle backed by one run.
+
+That sentence took three milestones and cost two mechanisms on the way. First a magic pixel value said which pixels a
 window had drawn on, and a client paid for it by not being able to paint black.
 Then a `covered` region said the same thing without the colour. Both existed
 because there was nothing underneath a window: what lay under one was the
@@ -503,6 +669,12 @@ Window :: struct {
 
 	dmg:    Region,
 	used:   bool,
+
+	// What the bar across the top says, set by a `name` line and nothing
+	// else. A window is born nameless, because a slot outlives the session it
+	// was lent to and the last client's name is not this one's.
+	title:   [MAX_TITLE]u8,
+	title_n: int,
 
 	// The `ctl` file is exclusive the way `data` is. One fid at a time holds
 	// a window's controls, so two clients cannot both move one window.
@@ -721,6 +893,13 @@ read_geometry :: proc "contextless" (report: []u8) -> bool {
 	if win_w <= 0 {
 		return false
 	}
+	// And a window has to have room for a client area inside its frame. A
+	// screen too small for one is a geometry this server cannot draw on,
+	// which is the refusal it already makes for a depth it cannot pack.
+	_, _, cw, ch := libdraw.frame_client(win_w, win_h)
+	if cw <= 0 || ch <= 0 {
+		return false
+	}
 	return (MAX_WINDOWS - 1) * (win_w / 2) + win_w <= scr_w
 }
 
@@ -731,15 +910,23 @@ The same four numbers `/dev/fbctl` uses, so `libdraw.parse_geometry` reads
 either. The pitch is the window's own row in bytes, which is a number a client
 never needs and would be wrong to act on: nothing here lets a client address
 its window by offset.
+
+**It is the client area rather than the window**, which is what a frame did to
+this report. A client draws on the inside of the border and below the bar, and
+the extent it is told is the extent it may use. It is never told there is a
+frame, and no coordinate it sends means anything outside the area reported
+here. A `size` line names this same rectangle, so what a client reads back is
+in the units it writes.
 */
 window_report :: proc "contextless" (out: []u8, win: ^Window) -> int #no_bounds_check {
+	_, _, cw, ch := libdraw.frame_client(win.w, win.h)
 	at := 0
 	at = put_report(out, at, "size ")
-	at = put_number(out, at, win.w)
+	at = put_number(out, at, cw)
 	at = put_report(out, at, " ")
-	at = put_number(out, at, win.h)
+	at = put_number(out, at, ch)
 	at = put_report(out, at, " ")
-	at = put_number(out, at, win.w * 4)
+	at = put_number(out, at, cw * 4)
 	at = put_report(out, at, " 32\n")
 	return at
 }
@@ -748,12 +935,17 @@ window_report :: proc "contextless" (out: []u8, win: ^Window) -> int #no_bounds_
 The control lines, and the whole of what a client may say about its window.
 
     move X Y     put it somewhere else
-    size W H     make it another shape, inside the run it was born with
+    size W H     make its client area another shape, inside the run it holds
     raise        bring it to the front
+    name TEXT    what the bar across its top says
 
-Three lines rather than three verbs, which is the distinction `docs/DRAW.md`
+Four lines rather than four verbs, which is the distinction `docs/DRAW.md`
 section 5 has guarded since there were six verbs and nothing else. A verb is
-about pixels. A window is not a pixel.
+about pixels. A window is not a pixel, and neither is its name.
+
+`size` and the report `ctl` answers are both the *client area*, never the
+window around it. A client is not told it has a frame and could not act on the
+number if it were.
 
 **A line is refused unless the window has a session.** A `ctl` fid outlives
 nothing, but a window with no client is not a window, and moving one would be
@@ -791,6 +983,10 @@ run_ctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bou
 		}
 		window_raise(win, win_at)
 		return vectra9.Errno(0)
+	case "name":
+		// The one line whose operand is not a number, so `ctl_end` has
+		// nothing to say about it: every byte left is the name.
+		return window_name(win, data[at:])
 	}
 	return vectra9.EINVAL
 }
@@ -934,13 +1130,17 @@ window_open claims window `at` for this fid, or reports that somebody has it.
 be handed whichever window was free, and could not be told which. It walks to
 one by name and takes it, so a `ctl` line has something to be about.
 
-The store is cleared, and a window owning its rectangle is why it must be. A
-run outlives the session it was lent to, so the last client's drawing is still
-in it, and every pixel of a window is on the screen. An uncleared slot would
-put the last client's work on the glass under the new client's name.
+**The frame is what clears the store, and that retired a two megabyte
+memset.** A run outlives the session it was lent to, so the last client's
+drawing is still in it, and every pixel of a window is on the screen. An
+uncleared slot would put the last client's work on the glass under the new
+client's name.
 
-The whole allocation is cleared rather than the current size, because a `size`
-line can grow a window back into the part this one never used.
+That used to be a `WIN_GROUND` over the whole allocation. `window_chrome`
+paints the plinth's *face* over the window's whole rectangle before it chisels
+anything, and the well's face over the whole client area after, so every pixel
+a session can see is written by the frame. The window opens at its birth size,
+so the whole run is covered.
 
 The composite at the end is the window appearing. It walks the stack, so a
 window that opens under another shows up occluded rather than on top.
@@ -958,10 +1158,13 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_boun
 	win.used = true
 	win.w = win_w
 	win.h = win_h
+	win.title_n = 0
 	region_clear(&win.dmg)
-	for j in 0 ..< win_w * win_h {
-		win.pixels[j] = WIN_GROUND
-	}
+	// The frame, nameless until a `name` line says otherwise. A slot outlives
+	// the session it was lent to, so the last client's name goes with the last
+	// client's pixels -- and so do the pixels, because this writes every one
+	// of them.
+	window_chrome(win)
 	// New windows arrive on top, which is the only placement rule a client
 	// gets without asking.
 	stack_add(at)
@@ -1059,6 +1262,11 @@ window_move :: proc "contextless" (win: ^Window, nx: int, ny: int) -> vectra9.Er
 /*
 window_size changes what a window is, inside the run it was born with.
 
+**The numbers are the client area**, the same rectangle `window_report`
+answers with, and the frame this server puts around it is what the two differ
+by. `libdraw.frame_window` is that arithmetic, and the bound is checked
+against the window it produces rather than against what was asked.
+
 **A window cannot grow past its allocation, and that is `segbrk`'s absence
 speaking.** The store is one `segalloc` run, fixed at the birth size, and
 nothing in this kernel grows a run in place. `docs/USER.md` names `segbrk` with
@@ -1066,15 +1274,24 @@ the other two Plan 9 segment calls Vectra does not have. So `size` moves a
 window's edges inside the memory it already holds, and asks for no more.
 
 The stride does not move with the width. A pixel a client drew at (x, y) is at
-(x, y) afterwards, so shrinking loses the edges and growing brings back
-whatever was there before the last shrink. That stale band is cleared to
-ground, which is the one thing a resize has to do to the store.
+(x, y) afterwards, so shrinking loses the edges and growing keeps whatever this
+session drew there before its last shrink.
+
+**And the frame is what takes the stale band, the way it takes a new slot.**
+`window_chrome` writes every pixel of the new window rectangle: the plinth's
+face over all of it and the well's over the client area. So a window that grew
+gets ground under the band it grew into, and the old border that was standing
+just outside the old client area is written over rather than cleared first.
 
 **No event tells the client.** None is needed: the client asked. A `ctl` read
 answers the new size for anything that wants to confirm it.
 */
-window_size :: proc "contextless" (win: ^Window, nw: int, nh: int) -> vectra9.Errno #no_bounds_check {
-	if nw <= 0 || nh <= 0 || nw > win_w || nh > win_h {
+window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.Errno #no_bounds_check {
+	if ncw <= 0 || nch <= 0 {
+		return vectra9.EINVAL
+	}
+	nw, nh := libdraw.frame_window(ncw, nch)
+	if nw > win_w || nh > win_h {
 		return vectra9.EINVAL
 	}
 	if nw == win.w && nh == win.h {
@@ -1082,17 +1299,9 @@ window_size :: proc "contextless" (win: ^Window, nw: int, nh: int) -> vectra9.Er
 	}
 	ow, oh := win.w, win.h
 
-	// The bands this grows into hold whatever stood there before a shrink.
-	for y in 0 ..< nh {
-		row := win.pixels[y * win_w:]
-		from := y < oh ? ow : 0
-		for x in from ..< nw {
-			row[x] = WIN_GROUND
-		}
-	}
-
 	win.w = nw
 	win.h = nh
+	window_chrome(win)
 	region_clear(&win.dmg)
 
 	// The ground under what it gave up and nothing else. A window that grew
@@ -1222,9 +1431,9 @@ flushes while another sits on top of it repaints its own pixels and then the
 cover's, in that order, and the glass ends up right. So a client never has to
 know it is covered, which is the second half of not knowing where it is.
 
-The translation to screen coordinates happens once, here, into `scratch`. A
-region of damage in window coordinates is what the verbs record, because that
-is the only frame a client has.
+The translation to screen coordinates happens once, here, into `scratch`. The
+damage is in the store's own coordinates, which is what a window's origin
+means, so this adds the window's place on the screen and nothing else.
 */
 window_flush :: proc "contextless" (win: ^Window) #no_bounds_check {
 	if win.dmg.n == 0 {
@@ -1239,8 +1448,9 @@ window_flush :: proc "contextless" (win: ^Window) #no_bounds_check {
 	region_clear(&win.dmg)
 }
 
-// window_mark records one drawn rectangle, in window coordinates: what the
-// next flush owes the glass.
+// window_mark records one drawn rectangle, in the store's coordinates: what
+// the next flush owes the glass. The caller has already moved a client's
+// rectangle in by the frame, because the store is where a frame lives too.
 window_mark :: proc "contextless" (win: ^Window, x: int, y: int, w: int, h: int) {
 	region_add(&win.dmg, x, y, w, h)
 }
@@ -1454,25 +1664,31 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 			return vectra9.EBADF
 		}
 		/*
-		The clip is the window's, and the translation is gone.
+		The clip is the client area's, and the translation is back -- one
+		level in.
 
 		It used to be two lines here: clip in window coordinates, then move by
-		the window's origin, in that order, because the other order let a
-		client past its own edge into the window beside it. The store now lands
-		in the window's own memory, where a client's coordinates already mean
-		what they say. The origin moved to `composite`, which is the only code
-		left that knows where a window sits.
+		the window's origin onto the glass, in that order, because the other
+		order let a client past its own edge into the window beside it. A store
+		into the window's own memory retired that, and a frame brings it back
+		as the inset the client area sits at. Clip first, then move, for the
+		same reason and with a smaller consequence: an unclipped store now
+		lands in this window's own border rather than in the window beside it.
+
+		`composite` still owns the other translation, and is still the only
+		code that knows where a window sits on the screen.
 		*/
-		if !clip(&x, &y, &w, &h, &sx, &sy, win.w, win.h) {
+		cx, cy, cw, ch := libdraw.frame_client(win.w, win.h)
+		if !clip(&x, &y, &w, &h, &sx, &sy, cw, ch) {
 			return vectra9.Errno(0)
 		}
 		for line in 0 ..< h {
-			dst := win.pixels[(y + line) * win_w:]
+			dst := win.pixels[(cy + y + line) * win_w:]
 			for i in 0 ..< w {
-				dst[x + i] = color
+				dst[cx + x + i] = color
 			}
 		}
-		window_mark(win, x, y, w, h)
+		window_mark(win, cx + x, cy + y, w, h)
 		return vectra9.Errno(0)
 	}
 
@@ -1526,17 +1742,22 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		if win == nil {
 			return vectra9.EBADF
 		}
-		if !clip(&dx, &dy, &sw, &sh, &sx, &sy, win.w, win.h) {
+		// The client area's, exactly as `run_fill` above. A blit is the
+		// other half of the translation and has always had to agree with it:
+		// a control that fixed one and not the other is how the origin got a
+		// check of its own.
+		cx, cy, cw, ch := libdraw.frame_client(win.w, win.h)
+		if !clip(&dx, &dy, &sw, &sh, &sx, &sy, cw, ch) {
 			return vectra9.Errno(0)
 		}
 		for line in 0 ..< sh {
 			base := (sy + line) * simg.w + sx
-			out := win.pixels[(dy + line) * win_w:]
+			out := win.pixels[(cy + dy + line) * win_w:]
 			for i in 0 ..< sw {
-				out[dx + i] = pixels[sslot][base + i]
+				out[cx + dx + i] = pixels[sslot][base + i]
 			}
 		}
-		window_mark(win, dx, dy, sw, sh)
+		window_mark(win, cx + dx, cy + dy, sw, sh)
 		return vectra9.Errno(0)
 	}
 
