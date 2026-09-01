@@ -570,16 +570,19 @@ the bar takes the rows under it, and the well takes the rest.
 The name on the bar is not here either. A glyph is not a rectangle, and the
 painter that has a font is the one that draws it.
 
+`lit` is whether this window has the focus, which only the bar reads. See
+`frame_bar`.
+
 Coordinates are the window's own, so a server painting into a window's store
 passes (0, 0). Answers how many pieces it wrote; size the array by
 `MAX_FRAME_PIECES`.
 */
-window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, h: int) -> int #no_bounds_check {
+window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, h: int, lit: bool) -> int #no_bounds_check {
 	n := libdraw.edges(out, x, y, w, h, .Raised, libpal.MAGNESIUM_HOT, libpal.MAGNESIUM_DARK, FRAME_EDGE)
 	if n == 0 {
 		return 0
 	}
-	n += frame_bar(out[n:], x, y, w)
+	n += frame_bar(out[n:], x, y, w, lit)
 
 	// The well starts where the bar ends and is as wide as it, which is one
 	// fact rather than three: `frame_bar_at` is where the bar is, and this
@@ -593,11 +596,23 @@ frame_bar decomposes the title bar alone: copper trim, out of the same three
 names the chassis's own bar is drawn from.
 
 Apart from `window_frame` because a window that is renamed repaints its bar and
-nothing else, and the bar is what an old name has to be erased off.
+nothing else, and the bar is what an old name has to be erased off. A window
+that gains or loses the focus repaints the same rectangle for the same reason.
+
+**`lit` is the whole of what focus looks like.** The window in front wears the
+chassis's copper. Every other bar is the same trim one step down the same
+table: `COPPER_DARK` for its face, with `COPPER` above it and `VOID` below. It
+is the lamp's rule again -- a dark version of its own colour rather than a
+neutral grey -- and for the lamp's reason: a row of windows with one of them
+in front still has to read as several of the same kind of thing. `libpal` has
+both faces already, so this is a choice between two names and not a new colour.
 */
-frame_bar :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int) -> int {
+frame_bar :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, lit: bool) -> int {
 	bx, by, bw, bh := frame_bar_at(x, y, w)
-	return libdraw.panel(out, bx, by, bw, bh, .Raised, libpal.COPPER, libpal.COPPER_LIT, libpal.COPPER_DARK, 1)
+	if lit {
+		return libdraw.panel(out, bx, by, bw, bh, .Raised, libpal.COPPER, libpal.COPPER_LIT, libpal.COPPER_DARK, 1)
+	}
+	return libdraw.panel(out, bx, by, bw, bh, .Raised, libpal.COPPER_DARK, libpal.COPPER, libpal.VOID, 1)
 }
 
 // frame_bar_at is where that bar sits, inside a window at (x, y) that is `w`
@@ -654,6 +669,10 @@ MAX_TITLE :: 24
 // The name's colour on the bar: dark on copper, which is the chassis's
 // engraved wordmark. It is also the one colour a bar drawn out of the copper
 // three cannot otherwise contain, which is what makes it a sensor.
+//
+// **One ink, focused or not.** An engraved wordmark is engraved whichever
+// window the machine is listening to; what changes under it is the metal. So
+// focus costs the bar one colour and costs the name none.
 TITLE_FG :: u32(libpal.SLATE_DEEP[0]) << 16 | u32(libpal.SLATE_DEEP[1]) << 8 | u32(libpal.SLATE_DEEP[2])
 
 // win_pieces stores a run of chrome into one window's own memory, clipped to
@@ -673,22 +692,40 @@ the way a client's pixels do.
 */
 window_chrome :: proc "contextless" (win: ^Window) {
 	pieces: [MAX_FRAME_PIECES]libdraw.Piece
-	win_pieces(win, pieces[:window_frame(pieces[:], 0, 0, win.w, win.h)])
+	win_pieces(win, pieces[:window_frame(pieces[:], 0, 0, win.w, win.h, focused(win))])
 	title_text(win)
 }
 
 /*
-title_paint repaints one bar and the name on it, which is what a rename needs.
+title_paint repaints one bar and the name on it, which is what a rename needs,
+and what a change of focus needs for the same reason.
 
 `window_chrome` does not call this: `window_frame` already carries the bar,
 so a whole-frame repaint lays it down once and goes straight to the letters.
 This is the path that has to lay it down itself, and laying it down first is
 how a name that grew shorter loses its tail.
+
+The bar it lays down is the one this window's place in the stack calls for.
+Both of its reasons to run are reasons the bar's own pixels changed, so neither
+caller has to say which.
 */
 title_paint :: proc "contextless" (win: ^Window) {
 	pieces: [libdraw.MAX_PIECES]libdraw.Piece
-	win_pieces(win, pieces[:frame_bar(pieces[:], 0, 0, win.w)])
+	win_pieces(win, pieces[:frame_bar(pieces[:], 0, 0, win.w, focused(win))])
 	title_text(win)
+}
+
+/*
+bar_show repaints one window's bar into its store and sends that rectangle to
+the glass, which is the whole of what a rename and a change of focus each do.
+
+Only the bar's own rectangle goes back. `composite` walks the whole stack over
+it, so a bar under another window repaints nothing anybody can see.
+*/
+bar_show :: proc "contextless" (win: ^Window) {
+	title_paint(win)
+	bx, by, bw, bh := frame_bar_at(win.x, win.y, win.w)
+	repaint(bx, by, bw, bh)
 }
 
 /*
@@ -745,9 +782,7 @@ window_name is the `name` line: what the bar across a window's top says.
 the name. An empty one is legal and clears the bar, which is what makes the
 bar's repaint testable in both directions.
 
-Only the bar's own rectangle goes back to the glass. `composite` walks the
-whole stack over it, so a window renamed under another one repaints nothing
-anybody can see.
+`bar_show` is the repaint, and it is the same one a change of focus makes.
 */
 window_name :: proc "contextless" (win: ^Window, name: []u8) -> vectra9.Errno #no_bounds_check {
 	n := min(len(name), MAX_TITLE)
@@ -756,9 +791,7 @@ window_name :: proc "contextless" (win: ^Window, name: []u8) -> vectra9.Errno #n
 	}
 	win.title_n = n
 
-	title_paint(win)
-	bx, by, bw, bh := frame_bar_at(win.x, win.y, win.w)
-	repaint(bx, by, bw, bh)
+	bar_show(win)
 	return vectra9.Errno(0)
 }
 
@@ -835,6 +868,56 @@ its place in here is where it is on the screen.
 */
 stack: [MAX_WINDOWS]int
 stack_n: int
+
+/*
+Which window has the focus, and it is a reading of the stack rather than a
+variable beside it.
+
+**The window in front is the one the machine is listening to.** There is no
+pointer in this system and no keystroke to route yet, so front is the whole of
+what focus can mean, and the stack already says which window is in front.
+Nothing here can therefore disagree with the stacking order, and `raise` needs
+no second call to move the focus with it.
+
+What it costs is a colour on a title bar and a repaint of two bars per stack
+move. See `frame_bar` for the colour and `refocus` for the repaint.
+*/
+stack_top :: proc "contextless" () -> int {
+	return stack_n > 0 ? stack[stack_n - 1] : -1
+}
+
+focused :: proc "contextless" (win: ^Window) -> bool #no_bounds_check {
+	at := stack_top()
+	return at >= 0 && &windows[at] == win
+}
+
+/*
+refocus repaints the bars that a stack move just changed hands between.
+
+**At most two windows change**, whatever the move was: the one that was in
+front and the one that is now. Every other bar is drawn the same either way, so
+a screen full of windows costs the same as a screen with two.
+
+`was` is `stack_top()` read before the move. A caller that did not move the
+stack has nothing to call this with, which is the shape rather than a rule:
+`window_open`, `window_close` and `window_raise` are the three, and they are
+the three that touch `stack`.
+
+The old front may be gone -- that is `window_close` -- so it is checked for a
+session before its bar is drawn. The new front cannot be: it is in the stack.
+*/
+refocus :: proc "contextless" (was: int) #no_bounds_check {
+	now := stack_top()
+	if now == was {
+		return
+	}
+	if was >= 0 && windows[was].used {
+		bar_show(&windows[was])
+	}
+	if now >= 0 {
+		bar_show(&windows[now])
+	}
+}
 
 // stack_add puts a new window on top. stack_drop takes one out and closes the
 // gap, which keeps the order of everything under it.
@@ -1079,7 +1162,7 @@ The control lines, and the whole of what a client may say about its window.
 
     move X Y     put it somewhere else
     size W H     make its client area another shape, inside the run it holds
-    raise        bring it to the front
+    raise        bring it to the front, and take the focus with it
     name TEXT    what the bar across its top says
 
 Four lines rather than four verbs, which is the distinction `docs/DRAW.md`
@@ -1327,20 +1410,25 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_boun
 		return win.owner == owner
 	}
 
+	was := stack_top()
 	win.owner = owner
 	win.used = true
 	win.w = win_w
 	win.h = win_h
 	win.title_n = 0
 	region_clear(&win.dmg)
+	// New windows arrive on top, which is the only placement rule a client
+	// gets without asking. Before the frame rather than after it, because the
+	// frame's bar is drawn lit or dark by where this window stands, and this
+	// is the line that puts it in front.
+	stack_add(at)
 	// The frame, nameless until a `name` line says otherwise. A slot outlives
 	// the session it was lent to, so the last client's name goes with the last
 	// client's pixels -- and so do the pixels, because this writes every one
 	// of them.
 	window_chrome(win)
-	// New windows arrive on top, which is the only placement rule a client
-	// gets without asking.
-	stack_add(at)
+	// And the window it arrived over gives up the focus.
+	refocus(was)
 
 	repaint_top(win)
 	// And the lamp for it. A lamp is opaque over its own square and sits
@@ -1378,9 +1466,13 @@ window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 		// left rather than the one that is going. Its regions are not cleared
 		// here: `used` is the gate every reader passes, and a control found
 		// that clearing in two places meant neither place held it.
+		was := stack_top()
 		win.owner = 0
 		win.used = false
 		stack_drop(i)
+		// And the window under a closing one comes to the front, which is the
+		// one case where focus arrives at a window that did nothing to ask.
+		refocus(was)
 
 		desk_paint(x0, y0, x1, y1)
 		repaint(x0, y0, x1 - x0, y1 - y0)
@@ -1491,17 +1583,23 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 }
 
 /*
-window_raise brings one to the front.
+window_raise brings one to the front, and the front is what has the focus.
 
 The stack is a list and this is a move to its end, so everything under it keeps
-its order. Only the window's own rectangle can have changed, so that is all
-that is repainted.
+its order. Two rectangles can have changed: this window's, and the title bar of
+whatever was in front before it. `refocus` is the second, and it is a bar
+rather than a window because a bar is all that focus is drawn as.
 */
 window_raise :: proc "contextless" (win: ^Window, at: int) #no_bounds_check {
-	if stack_n > 0 && stack[stack_n - 1] == at {
+	was := stack_top()
+	if was == at {
 		return
 	}
 	stack_add(at)
+	// The front is what focus is, so this line moved it. Both bars are
+	// repainted before the composite below, which then covers one of them
+	// again with the rest of the window it belongs to.
+	refocus(was)
 	repaint_top(win)
 }
 

@@ -4097,7 +4097,36 @@ verify_ctl :: proc(
 		"and a size past the run the window was born with, which is segbrk's absence",
 	)
 
-	// -- raise ----------------------------------------------------------------
+	// -- raise, and the focus that rides on it --------------------------------
+
+	/*
+	Which window the machine is listening to, read before the raise and after
+	it.
+
+	**Focus is the front**, so `raise` is the whole mechanism and a title bar's
+	colour is the whole of what it looks like. The window in front wears the
+	chassis's copper and every other bar wears `COPPER_DARK`, which is the
+	lamp's dark-in-its-own-colour rule applied to a surface.
+
+	**Both windows are read in both states**, which is what makes this an
+	anchor rather than a colour somebody expected: a server that painted every
+	bar alike fails one window's pair of readings, and a server with the sense
+	inverted fails the other's.
+
+	Neither pixel can be covered by the other window. Window zero's bar is read
+	near its left edge, well left of where window one begins, and window one's
+	past `fw`, which is where window zero ends. The row is inside the bar for
+	both, the bar being much the tallest part of the band above a client area.
+	*/
+	bar_y := oy / 2
+	one_x := fw + 8
+	lit := fb.pack(s, fb.COPPER)
+	dark := fb.pack(s, fb.COPPER_DARK)
+	check(
+		r,
+		fb.get_raw(s, one_x, bar_y) == lit && fb.get_raw(s, ox + 8, bar_y) == dark,
+		"the window that opened last is the one in front, and the bar below it is dark",
+	)
 
 	/*
 	The first client comes to the front, and the overlap changes hands.
@@ -4105,12 +4134,11 @@ verify_ctl :: proc(
 	Slot order was stacking order until this line existed. It cannot be both,
 	so the stack is a list of its own and this moves one entry to its end. The
 	pixel watched is one the second window sat on from the moment it opened.
-	*/
-	/*
+
 	The first client already holds its own controls, and that is the point of
-	the check above rather than a convenience here. It opened `/mnt/0/ctl` for
-	the geometry before it ever drew, and a second holder would be refused the
-	same way this window's was.
+	the exclusion check above rather than a convenience here. It opened
+	`/mnt/0/ctl` for the geometry before it ever drew, and a second holder
+	would be refused the same way this window's was.
 	*/
 	_, werr := vfs.chan_write(first_ctl, 0, bytes_of("raise\n"))
 	check(r, werr == vfs.OK, "the first client asks its own controls to raise it")
@@ -4118,6 +4146,11 @@ verify_ctl :: proc(
 		r,
 		fb.get_raw(s, ox + win_w - 1, sy) == A3,
 		"which puts its own pixels over the window that was above it",
+	)
+	check(
+		r,
+		fb.get_raw(s, ox + 8, bar_y) == lit && fb.get_raw(s, one_x, bar_y) == dark,
+		"and takes the focus with it, because the front is the whole of what focus is",
 	)
 
 	// -- move -----------------------------------------------------------------
@@ -4786,6 +4819,29 @@ verify_windows :: proc(
 		"the second window covers ground no client has drawn on, because it owns its rectangle",
 	)
 
+	/*
+	And the window that arrived took the front, which the bar under it says.
+
+	**Focus is which window is in front**, and nothing else on this screen
+	could mean anything else: there is no pointer and no keystroke to route.
+	So it is a reading of the stacking order rather than a second thing to keep
+	in step with it, and one colour on a title bar is the whole of what it
+	looks like.
+
+	This pixel is window zero's bar, and `verify_draw` read it as `COPPER` when
+	that window was the only one on the screen. Nothing has touched window zero
+	since. So this is the *transition*: a bar that is no longer in front wears
+	`COPPER_DARK`, the same trim one step down the same table, which is the
+	lamp's dark-in-its-own-colour rule applied to a surface.
+
+	Window one begins half a window across, so it covers none of this.
+	*/
+	check(
+		r,
+		fb.get_raw(s, ox + 8, oy / 2) == fb.pack(s, fb.COPPER_DARK),
+		"and the front with it, so the bar of the window it covered goes dark",
+	)
+
 	A :: u32(0x0011AA33)
 	A2 :: u32(0x00119933)
 	B :: u32(0x00AA1133)
@@ -4938,6 +4994,20 @@ verify_windows :: proc(
 		"and where no window is left, the desktop is back",
 	)
 	check(r, fb.get_raw(s, lamp_x, lamp_y) == lamp_dark, "and its lamp goes out with its session")
+	/*
+	And the front goes to what is left, which is the one path where focus
+	arrives at a window that did nothing to ask for it.
+
+	`raise` is a client saying so and an open is a client arriving. This is
+	neither: the window below is simply the one in front now, and it is not
+	told. The bar is read at the same pixel as the two checks above it, so the
+	three together are one window's bar lit, dark, and lit again.
+	*/
+	check(
+		r,
+		fb.get_raw(s, ox + 8, oy / 2) == fb.pack(s, fb.COPPER),
+		"and the window under it comes to the front, which nothing had to ask for",
+	)
 
 
 	// The window comes back with the fid, so a client can open again.

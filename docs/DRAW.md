@@ -634,16 +634,58 @@ and its newline. An empty name is a legal name and clears the bar.
 `apps/terminal` sends `name terminal` before it uploads a glyph, and is the
 first program in the tree to use the line.
 
-### What is not wearing it yet
+### Focus, and what a title bar is for
 
-**A window does not know which of it has the focus.** Every bar is the same
-copper whether or not that window is in front, and `raise` exists. That is the
-next thing a title bar is actually for, and it is one more colour and one more
-repaint rather than a mechanism.
+**The window in front has the focus, and its bar is the lit copper.** Every
+other bar is `COPPER_DARK` with `COPPER` above it and `VOID` below: the same
+trim one step down the same table. It is the lamp's rule about an unlit
+indicator applied to a surface, and for the lamp's reason -- a row of windows
+with one of them in front still has to read as several of the same kind of
+thing.
+
+**Focus is not state.** It is `stack_top()`, which the stacking order already
+answers, so there is nothing here for a second mechanism to fall out of step
+with. `raise` moves the front and therefore moves the focus, with no second
+call and no field to set. That is the whole of why this was one milestone's
+smallest piece: the thing that would have been hard is a *policy* about which
+window should be listened to, and there is only one policy a system with no
+pointing device can have.
+
+**What it cost is a repaint of two bars per stack move**, which is `refocus`.
+At most two windows change whatever the move was -- the one that was in front
+and the one that is now -- so a screen full of windows costs what a screen with
+two costs. Three callers move the stack and all three call it: a window opens
+over the front, a window closes and hands the front back, and a window is
+raised.
+
+**The close is the interesting one**, because it is the only path where focus
+arrives at a window that did nothing to ask for it and is not told. The client
+under a closing window was already drawing into its own store; it gets the
+front, and its bar relights, and it is not consulted. That is the same property
+the backing store has, one level up.
+
+**The name did not change colour.** `TITLE_FG` is `SLATE_DEEP` on a lit bar
+and on a dark one. An engraved wordmark is engraved whichever window the
+machine is listening to, and what changes under it is the metal. So focus costs
+the bar one colour and costs the name none -- and the sensor the name checks
+read stayed put across the milestone, which is what a look that is layered
+rather than substituted buys.
+
+The first thing on this screen that reports **which client the machine is
+listening to**, which is what a title bar is for and what the lamps could not
+say. A lamp says a window has a session. The bar says which one is in front.
+
+### What is not wearing it yet
 
 **A window has no buttons on its frame** -- nothing to close, shade or resize
 it with. All three exist as `ctl` lines already, so what is missing is a
 pointer, and there is no pointing device in this system yet.
+
+**Nothing is routed by focus.** The front window is drawn as the one being
+listened to and nothing is actually being sent to it, because there is no input
+to send: the keyboard is `/dev/cons` and the console owns it. A keyboard event
+file on a window's directory is what would make the colour mean something the
+client can act on, and it is a protocol question rather than a chrome one.
 
 ### How the test knows where a window is
 
@@ -718,6 +760,11 @@ Six mutations, each on a real boot. All six are caught.
 | a taller title bar | **inert**, and correctly so |
 | the name is drawn in the bar's own colour | 2 checks, first `and the bar says so, in the font the draw server has and never gave a verb to` |
 | a rename draws over the bar rather than repainting it | 1 check, `and takes the old one off with it` |
+| every bar is the lit copper, focus or no focus | 3 checks, first `so the bar of the window it covered goes dark` |
+| the focused bar is the dark copper and every other one lit | 5 checks, first `with a copper bar across the top of it, which is the chassis's own trim` |
+| a window that opens does not take the focus | 2 checks, first `so the bar of the window it covered goes dark` |
+| a window that closes does not hand the focus back | 1 check, `and the window under it comes to the front, which nothing had to ask for` |
+| a raise does not take the focus with it | 1 check, `and takes the focus with it, because the front is the whole of what focus is` |
 | a lamp does not light when its window opens | 1 check, `its lamp is lit, in the phosphor both sides of the door read from one table` |
 | a lamp does not go out when its session does | 1 check, `its lamp goes out with its session` |
 | an unlit lamp is a neutral grey | 1 check, `dark in its own colour, which is what an unlit lamp is` |
@@ -838,9 +885,12 @@ first time the answer was that the test was asking the wrong process.
   rectangles exists to avoid. An opaque window is what finally makes it
   correct, so this is the first milestone where it *could* be done. Worth it at
   more windows than two.
-- **A window's bar does not say whether that window has the focus.** `raise`
-  exists and every bar is the same copper. One more colour and one more
-  repaint, and it is the next thing a title bar is for.
+- **Nothing is routed by the focus a bar now reports.** The front window wears
+  the lit copper and is not actually being sent anything, because there is
+  nothing to send: the keyboard is `/dev/cons` and the console owns it. A
+  read-only event file on `/N/` is the shape, which grows section 4's file set
+  rather than section 5's verbs, and it wants `/dev/scancode` diverted the way
+  `/dev/fb` already is.
 - **Nothing on a frame can be pressed.** No close, no resize handle, no drag.
   Every one of those is a `ctl` line already, so what is missing is a pointing
   device, which this system does not have.
