@@ -53,7 +53,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1310 checks against itself and idles.
+1315 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -620,24 +620,20 @@ piece of memory, which is the thing a desktop was waiting for.
 The console needed no scrollback for it. A shadow surface carries what a grid
 of cells could not: the boot chassis, which the console never drew.
 
+**And there is a desktop under the windows.** `servers/intuition` paints deep
+slate with an engraved grid over the whole screen at start. It owns every pixel
+of the glass for as long as it holds `/dev/fb`. A window is opaque over its
+whole rectangle, and what a window uncovers is ground.
+
+That retired the last of two mechanisms built to keep a window from painting
+its own blank rectangle. First a magic pixel value, then a `covered` region per
+window. Both existed because what lay under a window was the kernel's boot
+chassis. The blocker was never a graphics one, which is the lesson
+`docs/DRAW.md` section 11 keeps.
+
 **Next, in order:**
 
-1. **A desktop, which is now only a graphics question.** A window still does
-   not own its whole rectangle. The `covered` region is what keeps the boot
-   chassis on the screen under an empty one. A desktop retires it: with
-   something to paint underneath, a window owns its rectangle, black included.
-
-   The blocker went with the divert. `servers/intuition` holds `/dev/fb` for
-   its whole life, so it already owns the glass for as long as it runs. What is
-   left is for it to say so -- paint a background over the screen at start, and
-   let a window's rectangle be the window's.
-
-   The one thing to decide is what happens to the log while a compositor owns
-   the screen. It goes to the serial port and comes back on the console's
-   revert, which is what happens today. A desktop makes that visible rather
-   than theoretical.
-
-2. **A window a client can move, resize, or raise.** Placement is fixed and a
+1. **A window a client can move, resize, or raise.** Placement is fixed and a
    client cannot ask. Each of those is a `ctl` line rather than a seventh verb,
    the distinction section 5 of `docs/DRAW.md` guards. A resize also wants
    `segbrk` underneath it, which is one of the three Plan 9 segment calls this
@@ -645,6 +641,12 @@ of cells could not: the boot chassis, which the console never drew.
 
    A move is also the first thing that damages two rectangles far apart, which
    is the case `MAX_RECTS` was sized for and nothing yet reaches.
+
+2. **Chrome, and the bevels the chassis already knows how to draw.** The
+   desktop has a grid on it and nothing else. No wells, no lamps, no title bar
+   on a window. `kernel/splash.odin` draws all of those against a surface in
+   ring 0. A `libdraw` that drew them would be the same code one privilege
+   level out. It is what `apps/` needs before it has a second app.
 
 3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
@@ -945,7 +947,7 @@ kernel/
                         reaper that collects a detached orphan
     program.odin        The twenty-eight programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 664 checks -- one process preempted
+    verify.odin         The boot self-test: 668 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that
@@ -1021,10 +1023,10 @@ servers/
                         that reaches hardware
   intuition/main.odin   The draw server and the compositor: six verbs on a
                         data file, a session per fid and a window per
-                        session, each window's pixels a run of its own,
-                        a region for what it drew and a region for what it
-                        owes, and a flush that walks the second onto the
-                        glass back to front
+                        session, a desktop under them, each window's pixels
+                        a run of its own and opaque over its whole
+                        rectangle, and a flush that walks a region of
+                        damage onto the glass back to front
 apps/
   terminal/main.odin    The first app: lines in from /dev/cons, glyphs out
                         through a /srv/draw mount of its own, the first

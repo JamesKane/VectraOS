@@ -17,6 +17,11 @@ anonymous memory from `segalloc`, and a draw is a store into that rather
 than onto the glass. `flush` is what walks the damage onto the screen,
 which is the promise `docs/DRAW.md` section 6 made without saying how.
 
+**And under them, a desktop.** This server owns every pixel of the screen
+while it runs, because `/dev/fb` diverts the kernel's console for as long
+as it holds the descriptor. So a window is opaque over its whole rectangle,
+and what a window uncovers is ground rather than whatever was there before.
+
 Three things follow, and the third is the one worth the milestone:
 
     windows overlap    placement kept them apart because a window was a
@@ -215,8 +220,59 @@ region_add :: proc "contextless" (r: ^Region, x: int, y: int, w: int, h: int) #n
 }
 
 /*
-One window: where it sits, the memory behind it, and the two regions that say
-what of it counts.
+The desktop, and the three colours this server owns.
+
+**`kernel/drivers/fb/palette.odin` named `SLATE_DEEP` the desktop ground a
+milestone before there was a desktop.** These are that palette, written out as
+pixel words because a ring 3 server cannot import the kernel's own. A colour
+that drifts from the kernel's is a colour that looks wrong beside the chassis,
+which is the only check this can have.
+
+The grid is `VOID`, which is *darker* than the ground. A lighter grid draws
+attention to itself. A darker one reads as engraved, which is the same trick
+`console.Style.Engraved` plays on text and the reason the whole chassis looks
+like metal.
+
+`WIN_GROUND` is `SLATE`, the palette's recessed well. A window is a sunken
+panel in this idiom, and a client that draws nothing gets one.
+*/
+DESK_GROUND :: u32(0x000E131A)
+DESK_GRID :: u32(0x0007090C)
+DESK_STEP :: 32
+WIN_GROUND :: u32(0x00181F28)
+
+// desk_at is the desktop's colour at one screen pixel. Positional rather than
+// stored, so any rectangle of it can be repainted exactly, in any order, with
+// nothing to keep between.
+desk_at :: proc "contextless" (x: int, y: int) -> u32 {
+	if x % DESK_STEP == 0 || y % DESK_STEP == 0 {
+		return DESK_GRID
+	}
+	return DESK_GROUND
+}
+
+/*
+desk_paint puts the desktop on one screen rectangle.
+
+Called for the whole screen once at start, and for what a window uncovers when
+it closes. Never per flush: nothing else paints the glass while this server
+holds it, so the desktop under a window that has not moved is still there.
+*/
+desk_paint :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bounds_check {
+	x0 := max(sx0, 0)
+	y0 := max(sy0, 0)
+	x1 := min(sx1, scr_w)
+	y1 := min(sy1, scr_h)
+	for y in y0 ..< y1 {
+		dst := screen_at(y)
+		for x in x0 ..< x1 {
+			dst[x] = desk_at(x, y)
+		}
+	}
+}
+
+/*
+One window: where it sits, the memory behind it, and the damage it owes.
 
 `pixels` is a run of anonymous memory from `segalloc`, `w * h` words of it,
 and **it belongs to the slot rather than to the session**. A clunk gives the
@@ -224,37 +280,35 @@ slot back and keeps the run, because there is no call that gives a run back.
 `docs/USER.md` names the three Plan 9 has and Vectra does not, and `segfree` is
 the one this line is waiting for.
 
-`dmg` is what this client drew since its last `flush`. `covered` is everything
-it has drawn since it opened, and it is the more interesting of the two.
+`dmg` is what this client drew since its last `flush`, and it is the only
+region a window keeps now.
 
-**`covered` is what a window owns, and it replaced a magic pixel value.** The
-milestone before this one spent a colour on the question: a store began as
-zero, and `composite` skipped zero, so a window put on the glass only what its
-client had drawn. That worked, and it cost a client the ability to paint
-`0x00000000`. The information belongs in a region rather than in a pixel, and
-here it is. Black is an ordinary colour again.
+**A window owns its whole rectangle.** That sentence took three milestones and
+cost two mechanisms on the way. First a magic pixel value said which pixels a
+window had drawn on, and a client paid for it by not being able to paint black.
+Then a `covered` region said the same thing without the colour. Both existed
+because there was nothing underneath a window: what lay under one was the
+kernel's own boot chassis, and painting over it was worse than holding back.
 
-It also means a slot handed on needs no clearing. A new session covers nothing,
-so nothing of the last session's drawing can reach the glass however long it
-stays in the run. Two megabytes of memset per `Tlopen` went with the magic
-value.
+There is a desktop under one now, so a window is opaque and the question is
+gone. `docs/DEVFS.md` has what actually unblocked it, and it was not a graphics
+change: `/dev/fb` diverts the console, so this server owns the glass for as long
+as it holds the screen.
 
-**A window still does not own its whole rectangle.** What lies under one is the
-kernel's own boot chassis, and `covered` is what leaves it there. A compositor
-with a desktop beneath it would own the rectangle and paint all of one, black
-included, and `docs/DRAW.md` section 11 records what stands between here and
-that.
+The cost came back the other way. A store handed to a new session must be
+cleared, because every pixel of it is on the screen now whether the client drew
+it or not. That is two megabytes at each `Tlopen`, which `covered` had bought
+its way out of and a desktop buys back.
 */
 Window :: struct {
-	owner:   vectra9.Fid,
-	x:       int,
-	y:       int,
-	w:       int,
-	h:       int,
-	pixels:  [^]u32,
-	dmg:     Region,
-	covered: Region,
-	used:    bool,
+	owner:  vectra9.Fid,
+	x:      int,
+	y:      int,
+	w:      int,
+	h:      int,
+	pixels: [^]u32,
+	dmg:    Region,
+	used:   bool,
 }
 
 /*
@@ -377,6 +431,11 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	if !windows_init() {
 		libuser.exit(0x78)
 	}
+
+	// And the ground everything stands on. From here this server owns every
+	// pixel of the screen: `/dev/fb` diverts the console for as long as the
+	// descriptor above is open, so nothing else is painting.
+	desk_paint(0, 0, scr_w, scr_h)
 
 	sfd, perr := libuser.post("/srv/draw")
 	if perr < 0 {
@@ -535,15 +594,18 @@ than builds. A session that already holds one gets it back rather than a
 second, because a second `Tlopen` on one fid is a client re-opening what it
 has.
 
-**Nothing is cleared, and `covered` is why that is safe.** A run outlives the
-session it was lent to, so the last client's drawing is still in it. An empty
-`covered` says this session has drawn nothing, and `composite` paints only what
-a window covers, so none of it can reach the glass. No verb reads a window
-back, so it was never a way to *learn* another client's pixels either.
+**The store is cleared, and a window owning its rectangle is why it must be.**
+A run outlives the session it was lent to, so the last client's drawing is
+still in it, and every pixel of a window is on the screen now. An uncleared
+slot would put the last client's work on the glass under the new client's name.
 
-The milestone before this one cleared two megabytes here instead, because the
-question lived in the pixels. Moving it into a region made the memset dead
-work.
+The milestone before this one skipped the clear, because a `covered` region
+said which pixels were the window's and the rest were nobody's. A desktop
+retired that region and brought the memset back with it. Two megabytes at each
+`Tlopen`, which is the price of a window that is a window rather than a stencil.
+
+The composite at the end is the window appearing. It walks every window, so one
+that opens underneath another shows up occluded rather than on top.
 */
 window_open :: proc "contextless" (owner: vectra9.Fid) -> bool #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
@@ -557,7 +619,12 @@ window_open :: proc "contextless" (owner: vectra9.Fid) -> bool #no_bounds_check 
 			win.owner = owner
 			win.used = true
 			region_clear(&win.dmg)
-			region_clear(&win.covered)
+			for j in 0 ..< win.w * win.h {
+				win.pixels[j] = WIN_GROUND
+			}
+			region_clear(&scratch)
+			region_add(&scratch, win.x, win.y, win.w, win.h)
+			composite(&scratch)
 			return true
 		}
 	}
@@ -574,11 +641,10 @@ them back without anything asking its client to redraw. **That is what a
 backing store is for**, and it is why this server has no expose event and does
 not need one.
 
-What no remaining window covers is left exactly as it was. This server owns the
-pixels a client drew and nothing else -- see `Window.covered` for why the boot
-chassis is still on the screen -- so a window that closes over bare glass
-leaves its last drawing there. A desktop is what would paint over it, and there
-is none.
+**What no remaining window covers becomes desktop again**, which is the half of
+this that needed a desktop to exist. A window that closed used to leave its
+last drawing on the glass, because there was nothing to put there instead and
+the boot chassis underneath was not this server's to repaint.
 */
 window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
@@ -605,7 +671,11 @@ window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 		*/
 		win.owner = 0
 		win.used = false
+		region_clear(&win.dmg)
 
+		// The ground first, then whatever is still standing on it. A window
+		// below this one paints over the desktop it just got back.
+		desk_paint(x0, y0, x1, y1)
 		region_clear(&scratch)
 		region_add(&scratch, x0, y0, x1 - x0, y1 - y0)
 		composite(&scratch)
@@ -621,18 +691,24 @@ topmost one that has it. That single sentence is the whole of occlusion, and it
 needs no depth test: a covered window paints first and the cover paints over
 it.
 
-The inner pair of loops is a region against a region. Every rectangle of the
-area asked for meets every rectangle a window covers, and the overlap is what
-gets copied. There is no per-pixel test left. A window contributes the pixels
-its client drew, in the order the stack says, and the arithmetic never visits
-the rest.
+**A window is opaque over its whole rectangle now, and that is the whole of
+what a desktop bought.** The inner loop used to meet the area against a second
+region -- the pixels a client had actually drawn -- because a window that
+painted its own blank rectangle would have painted over the boot chassis. There
+is a desktop under one now, so a window is a rectangle and this is a rectangle
+intersection.
+
+The desktop is not painted here. Nothing else writes the glass while this
+server holds the screen, so the ground under a window that has not moved is
+still there. `desk_paint` runs at start and where a window uncovers, and
+nowhere else.
 
 A pixel under two windows is written twice, once per window, and a region that
 says a rectangle twice writes it twice again. Both are copies of the same value
 to the same address, which is why `Region` may be a bag rather than a
 partition. Walking front to back and subtracting would spend each pixel once
-and cost a rectangle split, which is the trade to revisit when there are more
-windows than two.
+and cost a rectangle split, and an opaque window is what would finally make it
+correct. It is the trade to revisit at more windows than two.
 */
 composite :: proc "contextless" (area: ^Region) #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
@@ -642,24 +718,20 @@ composite :: proc "contextless" (area: ^Region) #no_bounds_check {
 		}
 		for ai in 0 ..< area.n {
 			a := area.rects[ai]
-			for ci in 0 ..< win.covered.n {
-				c := win.covered.rects[ci]
-				// `covered` is in window coordinates. This is the one place
-				// that knows where a window sits, which is why `run_fill` and
-				// `run_blit` no longer do.
-				x0 := max(max(a.x0, c.x0 + win.x), 0)
-				y0 := max(max(a.y0, c.y0 + win.y), 0)
-				x1 := min(min(a.x1, c.x1 + win.x), scr_w)
-				y1 := min(min(a.y1, c.y1 + win.y), scr_h)
-				if x0 >= x1 || y0 >= y1 {
-					continue
-				}
-				for y in y0 ..< y1 {
-					dst := screen_at(y)
-					src := win.pixels[(y - win.y) * win.w:]
-					for x in x0 ..< x1 {
-						dst[x] = src[x - win.x]
-					}
+			// This is the one place that knows where a window sits, which is
+			// why `run_fill` and `run_blit` no longer do.
+			x0 := max(max(a.x0, win.x), 0)
+			y0 := max(max(a.y0, win.y), 0)
+			x1 := min(min(a.x1, win.x + win.w), scr_w)
+			y1 := min(min(a.y1, win.y + win.h), scr_h)
+			if x0 >= x1 || y0 >= y1 {
+				continue
+			}
+			for y in y0 ..< y1 {
+				dst := screen_at(y)
+				src := win.pixels[(y - win.y) * win.w:]
+				for x in x0 ..< x1 {
+					dst[x] = src[x - win.x]
 				}
 			}
 		}
@@ -692,12 +764,10 @@ window_flush :: proc "contextless" (win: ^Window) #no_bounds_check {
 	region_clear(&win.dmg)
 }
 
-// window_mark records one drawn rectangle, in window coordinates. It is owed
-// to the glass at the next flush, and it is this window's for as long as the
-// session lasts.
+// window_mark records one drawn rectangle, in window coordinates: what the
+// next flush owes the glass.
 window_mark :: proc "contextless" (win: ^Window, x: int, y: int, w: int, h: int) {
 	region_add(&win.dmg, x, y, w, h)
-	region_add(&win.covered, x, y, w, h)
 }
 
 // window_of is which window a session draws into. Nil is a fid that opened

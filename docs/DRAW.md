@@ -353,35 +353,44 @@ A window that closes gives back what it was sitting on, and the client
 underneath draws nothing to earn that. **That is what a backing store is**, and
 it is the one check this milestone exists for.
 
-### A region, and the magic pixel it retired
+### A window owns its rectangle, and what that took
 
-Each window keeps two regions. `dmg` is what its client drew since its last
-`flush`. `covered` is everything it drew since it opened, and it is what says
-which pixels of a window are the window's.
+**A desktop.** `DESK_GROUND` is `SLATE_DEEP`, and
+`kernel/drivers/fb/palette.odin` comments that entry `Desktop ground` a
+milestone before there was one. The grid is `VOID`, darker than the ground. A
+lighter grid draws attention to itself and a darker one reads as engraved. That
+is the trick `console.Style.Engraved` plays on text, and the reason the chassis
+looks like metal. A window's own ground is `SLATE`, the palette's recessed well,
+which is what a window is in this idiom.
 
-**`covered` replaced a colour.** The milestone before this one spent a pixel
-value on the question. A store began as zero and `composite` skipped zero, so a
-window put on the glass only what its client drew. That worked, and it cost a
-client the ability to paint `0x00000000`. The information belongs in a region
-rather than in a pixel, and moving it there gave black back.
+A window is opaque over its whole rectangle now, so `composite` is a rectangle
+intersection. The desktop is painted at start and where a window uncovers,
+never per flush. Nothing else writes the glass while this server holds the
+screen, so ground under a window that has not moved is still there.
 
-It also retired a memset. A slot's run outlives the session it was lent to,
-because nothing gives a run back. So the last client's drawing is still sitting
-in it, and clearing two megabytes at every `Tlopen` was how that stayed off the
-glass. An empty `covered` says the same thing for nothing. A session that drew
-nothing owns none of its window.
+**Two mechanisms died to get here, and both existed for one reason.** The first
+was a magic pixel value. A store began at zero and `composite` skipped zero, so
+a client paid by not being able to paint black. The second was a `covered` region
+per window, which said the same thing without spending a colour. Each was a way
+for a window to *not* paint its own blank rectangle, because what lay under one
+was the kernel's boot chassis. Painting over it was worse than holding back.
 
-**A region is a bag of rectangles, not a partition.** Overlaps are allowed, and
-that is the simplification the rest rests on. A region of disjoint rectangles
-needs a subtract, a subtract needs a split, and a split is where rectangle
-algebra goes wrong. Nothing here needs disjointness, because everything a
-region drives is idempotent. Painting a pixel out of a window's store twice
-puts the same value there twice.
+There is ground under a window now, so neither is needed.
 
-`MAX_RECTS` is sixteen, and a full region collapses to its bounding box. That
-is exactly what this file did one milestone ago, so the degradation is to the
-last behaviour rather than to a wrong answer. A region is never smaller than
-the truth, which is what makes the collapse safe.
+**The memset came back.** A slot handed to a new session has to be cleared.
+Every pixel of a window is on the screen whether the client drew it or not.
+That is two megabytes at each `Tlopen`, which `covered` bought its way out of.
+A window that is a window rather than a stencil is what it buys.
+
+### A region, and what is left of it
+
+Damage is still a region: a bag of rectangles whose union is what it means,
+overlaps allowed, because everything it drives is idempotent. Painting a pixel
+out of a window's store twice puts the same value there twice.
+
+`MAX_RECTS` is sixteen, and a full region collapses to its bounding box, which
+is what this file did two milestones ago. A region is never smaller than the
+truth, which is what makes the collapse safe.
 
 `region_add` tries three cheaper answers before it appends: contained already,
 side by side in the same band, or stacked in the same columns. The merge is
@@ -390,68 +399,47 @@ blits one image per glyph, forty-two across a line, each landing beside the
 last with the same top and bottom. Its whole render is one rectangle, because
 the field fill in front of the glyphs already contains them.
 
-**A window still does not own its whole rectangle.** What lies under one is the
-kernel's own boot chassis, and `covered` is what leaves it there. That is the
-piece a desktop would change, and the next section is why there is not one.
+The second region went with `covered`. What a window covers is its rectangle.
 
-### The desktop, and what it was waiting for
+### The blocker was not a graphics one, and that is the whole lesson
 
-**The blocker is gone.** `/dev/fb` diverts the console now, so a process that
-holds the screen owns it. The console draws into a copy and gets the glass back
-on the last close. `servers/intuition` holds `/dev/fb` for its whole life, so
-it already owns the glass for as long as it runs. `docs/DEVFS.md` owns that
-mechanism and its controls.
+A desktop was named as this milestone's second half, and it took two more to
+arrive. Not because painting a background is hard, but because **two things
+painted the glass.** The kernel console drew the boot log straight into the
+framebuffer while this server drew into the same memory through `segattach`. A
+compositor that owned the screen would have painted over the log, and the log
+would have painted over the windows.
 
-What is left for a desktop is a graphics decision rather than an ownership one.
-Paint a background at start, and let a window's rectangle be the window's,
-black included. `covered` then goes the way `CLEAR` went.
+The idiom that settled it was one device away and already written.
+`/dev/scancode` and `/dev/eia0` divert: while a process holds one open, the
+kernel's own handler sees nothing, and the last close gives it back. `/dev/fb`
+does the same now, and `docs/DEVFS.md` owns the mechanism and its controls.
+What made it small is that the console needed no scrollback. It draws into a
+shadow of the glass, and coming back is one blit.
 
-The section below is what the blocker was, kept because it is why this took
-two milestones rather than one.
-
-### What the blocker was
-
-A desktop makes a window own its rectangle: black where the client has not
-drawn, and no `covered` needed to hold the compositor back. It was the second
-half of this milestone as `docs/HANDOFF.md` had it, and it is not here.
-
-**The blocker is not graphics. It is that two things paint the glass.** The
-kernel console draws the boot log straight into the framebuffer, and
-`servers/intuition` draws into the same memory through `segattach`. A
-compositor that owned the screen would paint over the log, and the log would
-paint over the windows.
-
-The idiom that settles it already exists one device away. `/dev/scancode` and
-`/dev/eia0` **divert**: while a process holds one open, the kernel's own
-handler sees nothing, and the last close gives it back. `/dev/fb` does not, and
-that is the missing line. A compositor holding the screen open would own it,
-and the console falls back to the serial port for as long as that lasts.
-
-What stops that being a small change is the revert. The console scrolls by
-moving pixels, so it holds no text to repaint from -- `kernel/log.odin` keeps
-sixteen early lines and nothing more. A screen given back is a screen nobody
-can redraw. So the desktop wants one of two things first: a console with a
-scrollback, or a saved copy of the glass to hand back. **That is a devfs and
-console milestone wearing a compositor's clothes.** `docs/HANDOFF.md` section 6
-names it as its own item rather than as this one's tail.
+So the graphics half of this section is four constants and a paint. Everything
+that made it *look* hard belonged to another subsystem, and finding that out
+was the work.
 
 ### The controls for the compositor
 
-Fourteen mutations across the two halves of this milestone, each on a real
-boot. Thirteen are caught.
+Nineteen mutations across the three milestones this section covers, each on a
+real boot. Eighteen are caught.
 
 | Mutation | Result |
 |---|---|
 | `flush` does not composite | 20 checks, first `the fill landed on the glass, corner to corner` |
-| a draw is owned but never owed | 20 checks, first the same |
-| a draw is owed to the glass but never owned | 23 checks, first the same |
+| a draw is owed to the glass but never marked | 23 checks, first the same |
 | the stack is walked front to back | 5 checks, first `half a window across, which is where the second window is` |
 | the windows do not overlap | 5 checks, first the same |
 | a region is a bounding box, the way damage used to be | 3 checks, first `the span between them is untouched` |
+| a window does not appear until its client draws | 3 checks, first `the second window covers ground no client has drawn on` |
 | a window that closes repaints nothing | 2 checks, first `a window that closes gives back the pixels it covered` |
 | a flush composites only the window that asked | 1 check, `without lifting one pixel of it over the window on top` |
-| a window covers its whole rectangle from the moment it opens | 1 check, `a pixel under both windows that neither drew is still the chassis` |
-| a slot handed on keeps what the last session covered | 1 check, `a session that has drawn nothing covers nothing` |
+| the desktop is never painted | 1 check, `where no window is left, the desktop is back` |
+| a window that closes does not put the ground back | 1 check, the same |
+| a slot handed on keeps the last session's pixels | 1 check, `covered where they meet a window whose session drew nothing` |
+| the desktop has no grid on it | 1 check, `a grid engraved in it, a step apart from its ground` |
 | `region_add` never merges two rectangles into one | **inert**, and it is a speed mutation |
 
 **The one-check catches are the ones that were designed for.** Each watches a
@@ -488,10 +476,15 @@ first time the answer was that the test was asking the wrong process.
 
 ### What is left
 
-- **A desktop**, and the console divert it waits on. See above.
 - **A pixel under two windows is written twice.** Front to back with
   subtraction spends each once, and needs the rectangle split a bag of
-  rectangles exists to avoid. Worth it at more windows than two.
+  rectangles exists to avoid. An opaque window is what finally makes it
+  correct, so this is the first milestone where it *could* be done. Worth it at
+  more windows than two.
+- **The grid is decoration and the desktop has nothing else on it.** No wells,
+  no lamps, no title bars on the windows. `kernel/splash.odin` draws all of
+  those for the chassis, in ring 0, against a surface. A ring 3 `libdraw` that
+  drew bevels would be the same code one privilege level out.
 - **Nothing gives a run back.** A window's memory belongs to the slot rather
   than to the session, and a slot is never released. `segfree` is the Plan 9
   call that changes it, and `docs/USER.md` names it with the other two.

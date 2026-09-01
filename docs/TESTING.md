@@ -234,7 +234,7 @@ nothing else in common.
 | The screen, mapped | `docs/DRAW.md` | 4 checked, 1 machine failure, 1 inert |
 | Memory a program asks for | `docs/USER.md` | 8 checked, 2 machine failures |
 | Windows | `docs/DRAW.md` | 6 of 6 |
-| The compositor | `docs/DRAW.md` | 13 caught, 1 inert |
+| The compositor | `docs/DRAW.md` | 18 caught, 1 inert |
 | rfork | `docs/USER.md` | 4 checked, 1 uncaught by design |
 | The runtime and its servers | `docs/RUNTIME.md` | 15 caught, 2 hangs, 1 inert |
 

@@ -3972,17 +3972,38 @@ verify_windows :: proc(
 	second_x := win_w / 2
 
 	/*
-	A pixel inside both windows that neither client ever draws.
+	A pixel inside the second window's rectangle and outside the first's, on a
+	row no check below paints.
 
-	It is the sensor for `Window.covered`, the region that says what a window
-	puts on the glass. A compositor that copied whole rectangles would paint
-	this black. That is correct by a rule with a desktop under it, and wrong
-	here, where what is under a window is the kernel's own chassis. Four rows
-	above the row every check below paints.
+	It is the sensor for the desktop, and for the sentence three milestones
+	were spent reaching: **a window owns its whole rectangle**. Right now it is
+	desktop, because only the first client has a window and this is past its
+	edge. When the second window opens it must stop being desktop, without any
+	client having drawn there. When that window closes it must be desktop
+	again.
+
+	The pixel used to watch the opposite claim. A window covered only what its
+	client drew, so this had to stay exactly as found. The boot chassis, showing
+	through a window with no ground of its own.
 	*/
-	untouched_x := second_x + 8
-	untouched_y := y - 4
-	untouched := fb.get_raw(s, untouched_x, untouched_y)
+	ground_x := win_w + 8
+	ground_y := y - 4
+	ground := fb.get_raw(s, ground_x, ground_y)
+
+	/*
+	And one pixel of the desktop's grid, beside one of its ground.
+
+	The grid is decoration and `desk_at` is arithmetic, and this is the
+	difference. A control that flattens the desktop to one colour changes
+	nothing a check could see until the two are read together. The column is a
+	multiple of the step and the one beside it is not, on a row that is neither.
+	*/
+	grid_x := ((win_w + 40) / 32) * 32
+	check(
+		r,
+		fb.get_raw(s, grid_x, ground_y) != ground,
+		"the desktop has a grid engraved in it, a step apart from its ground",
+	)
 
 	second, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
 	if !check(r, oerr == vfs.OK, "a second client opens the command file") {
@@ -4001,6 +4022,12 @@ verify_windows :: proc(
 	if terr == vfs.OK {
 		vfs.chan_close(third)
 	}
+
+	check(
+		r,
+		fb.get_raw(s, ground_x, ground_y) != ground,
+		"the second window covers ground no client has drawn on, because it owns its rectangle",
+	)
 
 	A :: u32(0x0011AA33)
 	A2 :: u32(0x00119933)
@@ -4139,35 +4166,36 @@ verify_windows :: proc(
 		fb.get_raw(s, second_x, y) == A2,
 		"across the whole overlap, and the client under it drew nothing to earn that",
 	)
-
 	check(
 		r,
-		fb.get_raw(s, untouched_x, untouched_y) == untouched,
-		"and a pixel under both windows that neither drew is still the chassis under them",
+		fb.get_raw(s, ground_x, ground_y) == ground,
+		"and where no window is left, the desktop is back",
 	)
+
 
 	// The window comes back with the fid, so a client can open again.
 	again, aerr2 := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
 	if check(r, aerr2 == vfs.OK, "a clunk gives the window back") {
 		/*
-		And it comes back covering nothing, which took two tries to check.
+		And it comes back with a rectangle of its own, and nothing of the last
+		session's in it.
 
-		A slot's memory outlives the session it was lent to, because nothing
-		gives a run back. So the last client's drawing is still sitting in the
-		run. `covered` is what keeps it off the glass. A session that drew
-		nothing owns none of its window.
+		Two claims in one pixel, and the second is why the store is cleared at
+		`Tlopen` again. A slot's memory outlives the session it was lent to,
+		because nothing gives a run back. The last client's drawing is still
+		sitting in the run, and every pixel of a window reaches the screen now.
+		An uncleared slot would put the last client's work on the glass under
+		this one's name.
 
-		**The reveal has to come from the window below, and the first cut of
-		this check did not know that.** It asked the new session to draw two
-		far-apart pixels and looked between them, which cannot fail whatever
-		`covered` holds. A flush paints damage, damage is what *this* session
-		drew, and the store under it is therefore always fresh. The control
-		came back clean and said so.
-
-		What a stale `covered` actually does is let a window that drew nothing
-		paint over the window beneath it. So the client underneath is what has
-		to ask the question.
+		`fresh` is this window's own ground, read where no client ever drew.
+		The pixel the covered client repaints has to become equal to it. Covered,
+		because a window that drew nothing still owns its rectangle. And
+		*ground* rather than the last session's blue, because the slot was
+		cleared.
 		*/
+		fresh := fb.get_raw(s, ground_x, ground_y)
+		check(r, fresh != ground, "a window is there again, over the ground it uncovered")
+
 		A3 :: u32(0x00117733)
 		at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(win_w), 1, A3)
 		at = libdraw.put_flush(buf[:], at)
@@ -4175,8 +4203,13 @@ verify_windows :: proc(
 		check(r, a3err == vfs.OK, "and the client below repaints across where the new window sits")
 		check(
 			r,
-			fb.get_raw(s, win_w - 1, y) == A3,
-			"whose pixels stand, because a session that has drawn nothing covers nothing",
+			fb.get_raw(s, second_x - 1, y) == A3,
+			"whose pixels stand where nothing covers them",
+		)
+		check(
+			r,
+			fb.get_raw(s, win_w - 1, y) == fresh,
+			"and are covered where they meet a window whose session drew nothing at all",
 		)
 		vfs.chan_close(again)
 	}
