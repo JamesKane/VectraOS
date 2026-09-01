@@ -336,13 +336,12 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **A dead process gives its descriptors back.** This is the standing gap
-   below that turns a failed check into a hang, promoted because it has now
-   done so twice in one session's controls. `reap_orphans` runs only from
-   `spawn_path`, so a ring 3 server that faults mid-request never hangs up its
-   pipe and the client parked on it waits for ever. The wire already poisons on
-   hangup; what is missing is the hangup. Plan 9 releases the descriptor group
-   in `pexit`, and a pipe with no peer answers rather than parks.
+2. **A cursor inside the line under construction**, which is the arrow keys.
+   `sys/libedit` grows a position and both ring 3 callers get it at once: the
+   draw server's per-window discipline and the terminal's echo. `rio` has it
+   (`^A`, `^E`, left, right) and 9front's `aux/kbdfs` does not, so it is rio's
+   shape rather than a shared one. It is the last of the two things
+   `docs/HANDOFF.md` has listed as what a person wants next.
 
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
@@ -394,12 +393,11 @@ design question attached to each.
   almost never lands in a four-instruction window. It is the one entry in
   `docs/TESTING.md`'s uncaught cluster that a second CPU has nothing to do
   with.
-- **A killed process holds its descriptors until something reaps it.**
-  `reap_orphans` runs only from `spawn_path`. A ring 3 server that faults
-  mid-request therefore never hangs up its pipe, and the client parked on it
-  stays parked. The wire already poisons on hangup, so what is missing is the
-  hangup itself. A control in `docs/DRAW.md` found it by stopping a boot, and
-  it is the one gap here that turns a failed check into a hang.
+- ~~**A killed process holds its descriptors until something reaps it.**~~
+  Retired. A reaper thread parked on `exit_rendez` releases the descriptor
+  group of anything whose thread has gone, so a faulted server hangs up and the
+  client parked on it is answered. The record stays for a parent's `wait`,
+  which is Plan 9's `pexit`. See `docs/USER.md`.
 - **Three of Plan 9's segment calls are missing, and they are one gap.**
   `segfree(va, len)` frees the pages under a range and keeps the segment.
   `segdetach(addr)` takes the segment out of the process. `segbrk(addr, top)`
@@ -454,10 +452,12 @@ where they live:
   on an unopened one. `vfs.Fid_Table` carries the flag and no server checks it.
   `chan_clone` walks a fid that may already be open, so this has a blast radius
   and wants a milestone rather than a patch.
-- An idle-time reaper. `reap` only runs from `spawn` and from the self-tests, so
-  a dead thread's stack comes back at the next spawn rather than when it exits.
-  That is fine now. Both concurrency self-tests have to call `sched.reap()` by
-  hand before measuring the heap, which is the smell.
+- An idle-time reaper for *threads*. `sched.reap` still runs only from `spawn`
+  and from the self-tests, so a dead thread's stack comes back at the next
+  spawn rather than when it exits. A process's descriptors come back on their
+  own now, and its record and its stack do not. Both concurrency self-tests
+  have to call `sched.reap()` by hand before measuring the heap, which is the
+  smell.
 - Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging, trap and scheduling
   interfaces. `cpu_class` is the one that pays off immediately — a big.LITTLE
   part reporting three classes makes the capacity arithmetic do real work.

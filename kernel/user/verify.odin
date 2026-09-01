@@ -293,6 +293,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	witness := uintptr(rawptr(&kernel_witness))
 	was := kernel_witness
 
+	// What the descriptor tables looked like before a process that will fault
+	// took one. See the hangup check below, which reads it again.
+	fdt_before := fdt_stats()
+
 	p := run_program(&r, "poke-kernel", program_poke(), MARK_POKE, u64(witness), "a program writes to the kernel")
 	if p != nil && p.exit.done {
 		check(&r, p.exit.kind == .Page_Fault, "and takes a page fault")
@@ -306,6 +310,45 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		check(&r, kernel_witness == was, "and the kernel's own word is what it was")
 		check(&r, in_text(p, program_poke()), "with the program counter still on its own instruction")
 	}
+
+	/*
+	And its descriptors come back with nobody asking, which is the hangup a
+	faulting server never used to perform.
+
+	**`sys_exit` releases the group and `on_trap` cannot.** A trap handler runs
+	with interrupts off, and `fdt_release` closes chans, and a clunk is a
+	message that may park -- `fdtable.odin` says so in as many words. So a
+	process that *faulted* kept its descriptors until something called
+	`destroy`, and `destroy` ran only from `spawn_path`.
+
+	The cost was a hang rather than a leak: a ring 3 server that faults
+	mid-request never hung up its pipe, so a client parked on it waited for a
+	reply from a process that no longer existed. Two controls in this session
+	stopped a boot that way rather than failing a check.
+
+	**Nothing here calls a collector.** `finish` below is what destroys the
+	record, and it has not run yet. The only thing that can have released this
+	table is the reaper, woken by the ending itself.
+	*/
+	hung_up := false
+	for _ in 0 ..< PATIENCE {
+		if fdt_stats() == fdt_before {
+			hung_up = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(&r, hung_up, "and its descriptors come back with nothing asking, which is the hangup")
+
+	/*
+	And the record is still there, which is the other half.
+
+	Plan 9's `pexit` closes the file group and leaves the proc record for a
+	parent to `wait` on. Releasing the descriptors is not reaping the process,
+	and a collector that took both would answer a parent's wait with nothing.
+	*/
+	check(&r, p != nil && p.live, "while the record itself waits for whoever asks how it ended")
+
 	finish(&r, p, "the program is taken down")
 
 	// -- Nor to read ---------------------------------------------------------

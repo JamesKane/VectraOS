@@ -65,6 +65,7 @@ process with a note. That is the missing piece by its proper name.
 package user
 
 import "base:intrinsics"
+import "base:runtime"
 
 import "kernel:arch"
 import "kernel:mem"
@@ -377,6 +378,11 @@ ring 3 again, which is the fault. See `syscall.odin`.
 init :: proc(ns: ^vfs.Namespace) -> bool {
 	arch.set_user_trap_handler(on_trap)
 	sched.set_note_trap(note_trap)
+	// The collector before the door opens, so no process can end without one
+	// running. See `hangup_dead`.
+	if !reaper_start() {
+		return false
+	}
 	return syscall_init(ns)
 }
 
@@ -809,6 +815,95 @@ from a timer. That keeps collection deterministic: nothing vanishes out from
 under a check between two of its assertions. An idle-time trigger is the
 `docs/HANDOFF.md` reaper, a separate and smaller thing.
 */
+/*
+hangup_dead gives back the descriptors of every process whose thread has gone,
+and reports how many tables it released.
+
+**This is the hangup a faulting server never performed.** `sys_exit` releases
+the descriptor group before it publishes the exit record, so a process that
+ends deliberately hangs up its pipes on the way out. `on_trap` cannot: it is a
+trap handler with interrupts off, and `fdt_release` closes chans, and a clunk
+is a message that may park. So a process that *faulted* kept its descriptors
+until something called `destroy`, and `destroy` ran only from `spawn_path`.
+
+The consequence was not a leak but a **hang**. A ring 3 server that faults
+mid-request never hangs up its pipe, so the client parked on it waits for a
+reply from a process that no longer exists. `docs/TESTING.md` names a hang as
+the worst way for a check to report, and this is the one gap in the tree that
+turns a failed check into one.
+
+**The record stays.** Only the descriptors go, which is Plan 9's `pexit`
+closing the file group while the proc record waits for its parent. A parent
+parked in `wait` still gets its child's exit status, and `reap_orphans` still
+owns the question of when a *record* goes away.
+
+The exchange is atomic because three paths race for the same pointer -- this
+one, `sys_exit` on another thread, and `unload` from a collector. Whoever wins
+releases, and the losers find nil. That is the "one release per holder,
+whichever paths ran" rule `unload` already states, made true rather than
+argued.
+*/
+hangup_dead :: proc() -> (released: int) #no_bounds_check {
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if !p.live || !intrinsics.volatile_load(&p.exit.done) {
+			continue
+		}
+		if t := intrinsics.atomic_exchange(&p.fdt, nil); t != nil {
+			fdt_release(t)
+			released += 1
+		}
+	}
+	return released
+}
+
+// dead_holds_descriptors is the reaper's wake condition: some process has
+// ended and is still holding a descriptor group open.
+@(private = "file")
+dead_holds_descriptors :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if p.live && intrinsics.volatile_load(&p.exit.done) && p.fdt != nil {
+			return true
+		}
+	}
+	return false
+}
+
+/*
+The reaper thread, which is what makes the release above happen without
+anybody asking.
+
+It parks on `exit_rendez`, the rendezvous every ending already wakes -- the
+deliberate exit, the note, and the fault. So the trigger costs nothing and no
+death path grew a line.
+
+The deadline is a backstop rather than a schedule. Every ending wakes this,
+and a wake that finds nothing goes straight back to sleep, so the timeout only
+matters if a wake were ever missed.
+*/
+REAP_PATIENCE :: 50
+
+@(private = "file")
+reaper :: proc "contextless" (arg: rawptr) {
+	// A clunk crossing to a ring 3 server runs a codec on this stack, and a
+	// codec may allocate. `kernel/mnt`'s worker takes a context for the same
+	// reason and in the same words.
+	ctx := runtime.default_context()
+	ctx.allocator = mem.allocator()
+	context = ctx
+
+	for {
+		_ = sync.sleep_for(&exit_rendez, dead_holds_descriptors, nil, REAP_PATIENCE)
+		hangup_dead()
+	}
+}
+
+// reaper_start puts the collector on the scheduler. Called once, from init.
+reaper_start :: proc() -> bool {
+	return sched.spawn("reaper", reaper) != nil
+}
+
 reap_orphans :: proc() -> (collected: int) #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]

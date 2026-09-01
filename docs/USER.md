@@ -848,9 +848,10 @@ purpose. A parent that noted its own child expects the one and not the other.
 that is nobody's child answers ECHILD, exactly like a pid that never existed,
 so noting teaches nothing about the table.
 
-A *faulting* process still holds its descriptors until `destroy`. Both its
-ways of dying are in interrupt context, where nothing may close a file, and
-only a collector in thread context can.
+A faulting process gives its descriptors back too, and that took a thread.
+Both of its ways of dying are in interrupt context, where nothing may close a
+file, so the release could not happen where the death does. See **The hangup a
+fault could not perform** below.
 
 ## The note handler
 
@@ -1196,11 +1197,11 @@ to say anything. Narrowed, one check catches it.
 
 The other is a gap this milestone did not create. Truncating `map_run` breaks
 the framebuffer's mapping as well as a run's. So `servers/intuition` faults
-inside a `Twrite` and its client parks for ever. That is the hang
-`docs/DRAW.md` section 8 found with a different mutation, and `docs/HANDOFF.md`
-section 6 still names it. A killed process holds its descriptors until
-something reaps it. The narrowed form, a run of one page, reaches the checks
-and fails nine.
+inside a `Twrite` and its client parks for ever. That was the hang
+`docs/DRAW.md` section 8 found with a different mutation, and it is what the
+reaper below retires: a faulted server hangs up now, so a client parked on it
+is answered rather than left. The narrowed form, a run of one page, reaches the
+checks and fails nine.
 
 **What a control found that the checks did not.** The frame-list mutation makes
 every page of a run answer physical frame zero. The zero check and the far-end
@@ -1211,6 +1212,63 @@ Only the fork catches it, and only because two processes then share what a copy
 should have separated. A readback through one mapping cannot tell a correct
 mapping from a constant one. That is worth knowing before the next test that
 goes through a mapping.
+
+## The hangup a fault could not perform
+
+**`sys_exit` releases the descriptor group and `on_trap` cannot.** The
+deliberate exit detaches the table and releases it before it publishes the exit
+record, so a process that ends on purpose hangs up its pipes on the way out. A
+fault runs in a trap handler with interrupts off, and `fdt_release` closes
+chans, and a clunk is a message that may park. `fdtable.odin` states the rule:
+thread context only, and a fault handler never touches a table.
+
+So a process that *faulted* kept its descriptors until something called
+`destroy`, and `destroy` ran only from `spawn_path`.
+
+**The cost was a hang, not a leak.** A ring 3 server that faults mid-request
+never hung up its pipe, so the client parked on it waited for a reply from a
+process that no longer existed. `docs/TESTING.md` names a hang as the worst way
+for a check to report, and this was the one gap in the tree that turned a
+failed check into one. It stopped two boots in the session that fixed it.
+
+### The reaper
+
+A kernel thread parked on `exit_rendez` -- the rendezvous every ending already
+wakes, the deliberate exit and the note and the fault alike. So the trigger
+cost nothing and no death path grew a line. `hangup_dead` walks the table and
+releases the descriptor group of anything whose thread has gone.
+
+The deadline is a backstop rather than a schedule. Every ending wakes it, and a
+wake that finds nothing goes back to sleep.
+
+**The record stays, and only the descriptors go.** That is Plan 9's `pexit`
+closing the file group while the proc record waits for its parent's `wait`.
+Releasing a process's files is not reaping the process, and a collector that
+took both would answer a parent with nothing. `reap_orphans` still owns the
+question of when a *record* goes away, and still runs only where a slot is
+wanted or a check measures.
+
+**The exchange is atomic**, because three paths race for one pointer: the
+reaper, `sys_exit` on another thread, and `unload` from a collector. Whoever
+wins releases and the losers find nil. `unload` already claimed "one release
+per holder, whichever paths ran", and this is what makes that true rather than
+argued.
+
+### The controls
+
+| Mutation | Result |
+|---|---|
+| no reaper at all, which is where this started | 1 check, `and its descriptors come back with nothing asking, which is the hangup` |
+| the reaper runs and releases nothing | 1 check, the same |
+| the reaper takes the record as well as the descriptors | **breaks the machine** |
+
+**The third one is why the record stays.** A collector that destroys anything
+whose thread has gone takes the record a parent is parked in `wait` on, and the
+boot stops rather than failing a check. The `p.live` check beside the hangup one
+is written for that mutation and never gets to run, because the machine is gone
+before it is reached. It is the same shape as `docs/DRAW.md` section 11's one
+breaking mutation: a control that removes a property everything else stands on
+does not report, it stops.
 
 ## What is missing, and named where it lives
 
