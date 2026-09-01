@@ -1016,23 +1016,12 @@ between any two of the child's instructions. A torn read costs a line to the
 window that was in front a moment earlier, which is inside the rule rather than
 outside it.
 
-### The defect this shape has, named rather than hidden
+### The defect this shape had, and section 14
 
-**There is one editing state and it is the kernel's.** `/dev/cons` stays
-cooked, so the line discipline, the echo and the erase all belong to
-`kernel/devfs`, and every window shares one.
-
-`rio` writes `rawon` and edits per window for exactly this reason. The
-consequence here is that **a line half-typed when the focus moves goes whole to
-the window that has the focus when the newline lands**. The window it was being
-typed into never sees the part it was owed. There
-is also no per-window `consctl`. `apps/terminal`'s `echooff` turns the
-kernel's echo off for everyone.
-
-Neither is a thing a client can work around, and both go the same way: take the
-keyboard raw, and give every window its own editing state and its own
-`consctl`. That moves the line discipline out of `kernel/devfs` and into this
-server, per window, which is a milestone rather than a patch.
+The first cut left the editing state in `kernel/devfs`, shared by every
+window, so a line half-typed when the focus moved went whole to the window
+that had it when the newline landed. Section 14 is that fixed, the way `rio`
+fixes it.
 
 ### What a client had to change
 
@@ -1089,3 +1078,143 @@ wire and `serve_mux`'s worker never hears it, so every abandoned read left a
 worker polling a ring for ever, and the server wedged once every slot was
 spent. Three deadline reads is all it took. The size field is the way to ask,
 and that is why `cons` answers one.
+
+## 14. A line discipline per window
+
+Section 13 left one editing state and it was the kernel's. **A line half-typed
+when the focus moved went whole to the window that had the focus when the
+newline landed**, and the window it was being typed into never saw the part it
+was owed. This is that fixed, and the fix is `rio`'s.
+
+### rawon, and what the kernel keeps
+
+`rio` writes `rawon` to `/dev/consctl` and takes single characters. So does
+this server now, and for the same reason: **a window system that cooks per
+window has to be given the characters.**
+
+`kernel/devfs` keeps its own discipline and still cooks `/dev/cons` for
+everything that has not diverted the console. Nothing moved out of the kernel.
+What moved is *which* discipline a window's client is behind, and the kernel's
+`consctl_close` puts the console back when the draw server's descriptor goes --
+so the mode is held for the server's life, the way `apps/terminal` holds its
+own.
+
+Raw mode turns the kernel's echo off with it, which is what `apps/terminal` was
+writing `echooff` to do by hand. That write is now belt and braces: it happens
+before the program mounts anything, so it still reaches `kernel/devfs`, and it
+is no longer the thing that turns the echo off.
+
+### The keys, which are `rio`'s
+
+`rio`'s `wbswidth` decides how far back an erase goes, and it has three
+answers. `erase_back` is that procedure:
+
+    ^H, DEL     one character
+    ^U          the whole line
+    ^W          one word: the letters and digits before the cursor, and any
+                spaces between them and it
+
+**`^W` is the one the kernel never had.** `docs/HANDOFF.md` lists word erase
+and the arrow keys as the two a person misses next. A window has the first of
+them now, and `/dev/cons` still does not -- which is what moving a discipline
+rather than copying one looks like.
+
+A newline finishes a line, and nothing else does. `^D` is `kernel/devfs`'s
+end-of-transmission and this does not answer it: a partial line delivered with
+no newline would break the one-line-per-read rule below, and an empty one has
+to mean end of file, which is a claim about a window's life rather than about
+its keyboard.
+
+### One read, one line
+
+`rio`'s cons drain copies from the window's output point and **breaks at the
+newline**, so a program gets one line however many are queued behind it.
+`ring_drain_line` is that rule, and it retired a defect a review found in
+section 13's code: the server emptied its queue into one buffer, and
+`apps/terminal` took the first line and dropped the rest.
+
+The client-side workaround went with it. `apps/terminal` finds one newline
+again, because the server's contract is back.
+
+### The focus is read per character
+
+Section 13 read it once per line, which was the bug. It is read once per
+*character* now -- not once per chunk either, because a chunk carries whatever
+arrived since the last read and the front can move between two of its bytes.
+
+That is the whole of the fix. A character joins the line under construction in
+the window that has the focus at that instant, and only a completed line
+reaches a window's queue.
+
+### A window's own consctl
+
+`rio` serves a `consctl` per window and so does this. `/N/consctl` takes the
+two words `/dev/consctl` takes, for the same two meanings:
+
+    rawon     no line discipline: every character, the moment it arrives
+    rawoff    the discipline above, and whole lines out
+
+A read reports the mode as the word that would set it, which is
+`docs/DEVFS.md`'s convention. The mode reverts to cooked when the fid that set
+it closes, which is `/dev/consctl`'s rule kept: a client that died in raw mode
+would otherwise hand the next one a window with no line discipline.
+
+**Echo is not here**, because nothing in this server echoes. The kernel's
+console draws typed bytes on glass it no longer owns, and a window's client
+draws its own text out of glyphs it uploaded. There is nothing for an
+`echoon` to turn on, which is why a window's `consctl` takes two words where
+the kernel's takes four.
+
+Switching mode drops the line under construction. Half a line edited under one
+discipline is not a line under the other.
+
+### The fence the test needed, and why it is not a delay
+
+`verify_split` asserts what happens *between* two typed characters: `ab` at one
+window, the front moves, `cd` at another. A self-test types into
+`devfs.keyboard_sink` and the process reading it is somewhere else, so typing
+and moving on races the draw server's child.
+
+**A race here does not produce a wrong answer. It produces the old one** --
+`abcd` arriving at one window, which is exactly what this milestone exists to
+reject. So the first cut failed three checks for a reason that had nothing to
+do with the code under test.
+
+`devfs.cons_takes` is the fence: one of the counters `Cons` already keeps for
+the boot report, exposed rather than added. `type_settled` types and waits
+until the console says a reader consumed that many bytes. It is the only thing
+in the system that says so, and `docs/TESTING.md` has nothing good to say about
+the alternative.
+
+### The controls
+
+| Mutation | Result |
+|---|---|
+| one editing state for every window, which is what section 13 had | 3 checks, first `the window that took the front gets what was typed after it, and not before` |
+| a read empties the queue rather than stopping at one line | 2 checks, first `and a read answers the first of them and stops at its newline` |
+| `^W` is an ordinary character | 2 checks, first `and ^W takes one word, which the kernel's console never had` |
+| a window's `consctl` does not revert when its fid goes | 1 check, `and the mode went back to cooked with the fid that set it` |
+| the focus is read once per chunk rather than per character | **inert**, and see below |
+
+**The first one is the milestone.** It is section 13's defect written out as a
+mutation: one line buffer shared by every window, so `ab` typed at one and
+`cd` at another come back as `abcd` to whichever finished the line.
+
+**The inert one is inert because the test cannot reach it.** Reading the focus
+once per chunk and once per character agree on everything a check can observe,
+because `type_settled` waits for the child to consume a chunk before the front
+moves -- and without that wait the check races and reports the old answer for
+the wrong reason. To tell the two apart, a chunk boundary would have to
+straddle a focus change, and nothing in a self-test can arrange that: the
+chunk boundary is the child's read timing and the focus change is a 9P write
+from another process.
+
+Per character is kept because it is the finer of two answers that agree
+wherever they can be compared, and because a raise arriving from another
+process mid-chunk is real even when it is not reachable from here. That is the
+same reasoning section 12 uses for a deeper border: inert, and correctly so.
+
+**And one control used to hang instead of failing.** Emptying the queue leaves
+the second read of a two-line check with nothing, and an ordinary read of an
+empty queue parks for ever. That read is gated on the size now, so the control
+reports as a failure. It is the same lesson section 13 learned one file along.

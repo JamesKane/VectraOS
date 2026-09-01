@@ -324,6 +324,25 @@ keyboard_sink :: proc "contextless" (b: u8) {
 	_ = cons_feed(&dev_tree.cons, b)
 }
 
+/*
+cons_takes reports the count of bytes this console gave to readers.
+
+**A fence for a test that has to know a reader caught up.** `/dev/cons` is
+asynchronous by construction. A self-test types a character into the sink here,
+and the process reading it is somewhere else entirely.
+
+A check about what happens *between* two typed characters -- which window a
+half-typed line belongs to when the focus moves -- has to know the reader took
+the first before the focus moved. Nothing else in this system says so.
+
+It is one of the counters `Cons` already keeps for the boot report, exposed
+rather than added. A delay would have been the alternative, and
+`docs/TESTING.md` has nothing good to say about those.
+*/
+cons_takes :: proc "contextless" () -> u64 {
+	return dev_tree.cons.takes
+}
+
 // input_started reports whether the producer thread is on the port. False on a
 // machine with no serial port, where `/dev/cons` writes and never reads.
 input_started :: proc "contextless" () -> bool {

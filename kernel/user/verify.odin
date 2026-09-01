@@ -4092,6 +4092,239 @@ verify_cons :: proc(r: ^Result, zero_ctl: ^vfs.Chan, one_ctl: ^vfs.Chan) #no_bou
 	// And the front goes back where the rest of this procedure expects it.
 	_, berr := vfs.chan_write(zero_ctl, 0, bytes_of("raise\n"))
 	check(r, berr == vfs.OK, "and the first window takes the front back")
+
+	verify_edit(r, zero)
+	verify_split(r, zero, one, one_ctl, zero_ctl)
+	verify_rawmode(r, zero)
+}
+
+/*
+verify_edit is the line discipline this server took over, per window.
+
+**`kernel/devfs` still cooks `/dev/cons`**, and this is the same job done one
+privilege level out for a window that has the focus. The keys are `rio`'s
+`wbswidth`: a character, a line, a word.
+
+`^W` is the one worth naming. `docs/HANDOFF.md` lists word erase and the arrow
+keys as the two a person misses next, and a window has the first of them now
+while `/dev/cons` still does not.
+
+And one line per read, which is `rio`'s drain rule and was the defect a review
+found: the server used to empty its queue into one buffer, so a client that
+read while two lines were waiting saw one and lost the other.
+*/
+@(private = "file")
+verify_edit :: proc(r: ^Result, cons: ^vfs.Chan) #no_bounds_check {
+	BS :: u8(0x08)
+	KILL :: u8(0x15)
+	WORD :: u8(0x17)
+
+	typed_reads(r, cons, {'a', 'b', 'c', BS, 'd', '\n'}, "abd\n",
+		"a backspace takes off the character before it, in the window's own discipline")
+	typed_reads(r, cons, {'a', 'b', 'c', KILL, 'z', '\n'}, "z\n",
+		"and ^U takes the whole line, which is the kill the kernel's console has")
+	typed_reads(r, cons, {'l', 's', ' ', 'f', 'o', 'o', WORD, '\n'}, "ls \n",
+		"and ^W takes one word, which the kernel's console never had")
+	typed_reads(r, cons, {'a', ' ', ' ', WORD, '\n'}, "\n",
+		"and eats the spaces before it on the way, which is what a word erase is")
+
+	/*
+	And two lines typed together come back one at a time.
+
+	The queue holds both before either is read, so a drain that emptied it
+	would answer with the pair and leave the client to find the boundary.
+	*/
+	pair := [8]u8{'o', 'n', 'e', '\n', 't', 'w', 'o', '\n'}
+	if !type_settled(pair[:]) || !wait_for_size(cons, 8) {
+		check(r, false, "two lines typed together both reach the window")
+		return
+	}
+	check(r, true, "two lines typed together both reach the window")
+	got: [64]u8
+	n1, e1 := vfs.chan_read(cons, 0, got[:])
+	check(
+		r,
+		e1 == vfs.OK && n1 == 4 && string(got[:4]) == "one\n",
+		"and a read answers the first of them and stops at its newline",
+	)
+	/*
+	And the second is still there to be read.
+
+	**Gated, because a server that emptied its queue leaves nothing here** and
+	an ordinary read of an empty queue parks for ever. A control that does
+	exactly that used to hang the boot rather than fail this check, which
+	`docs/TESTING.md` names as the worst way for one to report.
+	*/
+	if !wait_for_size(cons, 4) {
+		check(r, false, "and the next read answers the second, which a client would have lost")
+		return
+	}
+	n2, e2 := vfs.chan_read(cons, 0, got[:])
+	check(
+		r,
+		e2 == vfs.OK && n2 == 4 && string(got[:4]) == "two\n",
+		"and the next read answers the second, which a client would have lost",
+	)
+}
+
+/*
+verify_split is the defect this milestone exists to retire.
+
+**A line half-typed when the focus moves used to go whole to the wrong
+window.** The editing state was the kernel's and there was one of it, so the
+front at the instant of the *newline* decided where every character of the line
+went. There is one per window now, so the front at the instant of each
+*character* decides, and a window keeps what was typed into it.
+
+Three windows' worth of claim in one sequence: `ab` at the first window, then
+the front moves and `cd` is typed, then the front moves back and `e` finishes
+the line the first window was in the middle of.
+*/
+@(private = "file")
+verify_split :: proc(r: ^Result, zero: ^vfs.Chan, one: ^vfs.Chan, one_ctl: ^vfs.Chan, zero_ctl: ^vfs.Chan) #no_bounds_check {
+	half := [2]u8{'a', 'b'}
+	if !check(r, type_settled(half[:]), "half a line is typed at the front window and reaches it") {
+		return
+	}
+
+	_, rerr := vfs.chan_write(one_ctl, 0, bytes_of("raise\n"))
+	check(r, rerr == vfs.OK, "and then the front moves")
+
+	// The second window finishes a line of its own, and gets only its own.
+	typed_reads(r, one, {'c', 'd', '\n'}, "cd\n",
+		"the window that took the front gets what was typed after it, and not before")
+
+	// And nothing landed in the first window, whose line is still unfinished.
+	if attr, aerr := vfs.chan_stat(zero); check(r, aerr == vfs.OK, "the first window's queue answers") {
+		check(
+			r,
+			attr.size == 0,
+			"and the half-typed line has not been delivered, because it is not a line yet",
+		)
+	}
+
+	_, berr := vfs.chan_write(zero_ctl, 0, bytes_of("raise\n"))
+	check(r, berr == vfs.OK, "and the front goes back to the first window")
+	typed_reads(r, zero, {'e', '\n'}, "abe\n",
+		"which finishes the line it was in the middle of, with what it was typed before the front moved")
+}
+
+/*
+verify_rawmode is a window's own `consctl`, which is what `rio` serves one per
+window for.
+
+Raw is `there is no line discipline`, the sentence `kernel/devfs` puts on the
+same distinction. A client that asked for it gets every character as it
+arrives, editing keys and all, and no newline is needed to make a read answer.
+*/
+@(private = "file")
+verify_rawmode :: proc(r: ^Result, cons: ^vfs.Chan) #no_bounds_check {
+	cc, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/consctl", vfs.O_RDWR)
+	if !check(r, cerr == vfs.OK, "a window has a consctl of its own") {
+		return
+	}
+	buf: [32]u8
+	n, rerr := vfs.chan_read(cc, 0, buf[:])
+	check(
+		r,
+		rerr == vfs.OK && n >= 6 && string(buf[:6]) == "rawoff",
+		"which reports the mode as the word that would set it, the consctl convention",
+	)
+
+	_, werr := vfs.chan_write(cc, 0, bytes_of("rawon"))
+	check(r, werr == vfs.OK, "and takes rawon")
+	n2, r2 := vfs.chan_read(cc, 0, buf[:])
+	check(
+		r,
+		r2 == vfs.OK && n2 >= 5 && string(buf[:5]) == "rawon",
+		"and says so afterwards",
+	)
+
+	// No newline, and the read still answers -- which is the whole of what raw
+	// means to a client.
+	rawkeys := [2]u8{'x', 'y'}
+	if !type_settled(rawkeys[:]) || !wait_for_size(cons, 2) {
+		check(r, false, "a character typed in raw mode arrives with no newline behind it")
+	} else {
+		got: [16]u8
+		k, kerr := vfs.chan_read(cons, 0, got[:])
+		check(
+			r,
+			kerr == vfs.OK && k == 2 && string(got[:2]) == "xy",
+			"a character typed in raw mode arrives with no newline behind it",
+		)
+	}
+
+	// And the mode goes back with the fid, which is /dev/consctl's rule.
+	vfs.chan_close(cc)
+	back, berr := vfs.open_path(vfs.boot_namespace, "/mnt/0/consctl", vfs.O_RDWR)
+	if check(r, berr == vfs.OK, "its consctl opens again") {
+		n3, r3 := vfs.chan_read(back, 0, buf[:])
+		check(
+			r,
+			r3 == vfs.OK && n3 >= 6 && string(buf[:6]) == "rawoff",
+			"and the mode went back to cooked with the fid that set it",
+		)
+		vfs.chan_close(back)
+	}
+}
+
+/*
+type_settled types keys and waits until the console has handed them to a
+reader, which is the draw server's child.
+
+**The fence a claim about half a line needs.** `verify_split` asserts what
+happens between two typed characters, so it has to know the first reached the
+window it was meant for before the front moved. Typing and moving on races the
+child, and a race here does not produce a wrong answer -- it produces the *old*
+answer, which is the one the check exists to reject.
+
+`devfs.cons_takes` is the only thing in the system that says a reader consumed.
+*/
+@(private = "file")
+type_settled :: proc(keys: []u8) -> bool #no_bounds_check {
+	before := devfs.cons_takes()
+	for c in keys {
+		devfs.keyboard_sink(c)
+	}
+	for _ in 0 ..< PATIENCE {
+		if devfs.cons_takes() >= before + u64(len(keys)) {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+// wait_for_size polls a window's queue until it holds at least `want` bytes.
+// The delivery crosses a process, so a line typed here is in the kernel's
+// discipline before it is in a window's ring.
+@(private = "file")
+wait_for_size :: proc(c: ^vfs.Chan, want: u64) -> bool {
+	for _ in 0 ..< PATIENCE {
+		if attr, err := vfs.chan_stat(c); err == vfs.OK && attr.size >= want {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+// typed_reads types a run of keys and checks what one read of `cons` answers.
+// The keys are raw: the control characters are the point of most callers.
+@(private = "file")
+typed_reads :: proc(r: ^Result, cons: ^vfs.Chan, keys: []u8, want: string, what: string) #no_bounds_check {
+	if !type_settled(keys) {
+		check(r, false, what)
+		return
+	}
+	if !wait_for_size(cons, u64(len(want))) {
+		check(r, false, what)
+		return
+	}
+	got: [64]u8
+	n, err := vfs.chan_read(cons, 0, got[:])
+	check(r, err == vfs.OK && n == len(want) && string(got[:n]) == want, what)
 }
 
 /*

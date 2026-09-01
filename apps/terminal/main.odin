@@ -27,6 +27,12 @@ not want two renderers on one line. So it writes `echooff` to
 reverts when the descriptor closes, which is exit. What a person types
 appears once, drawn by this program, when the line completes.
 
+That write reaches `kernel/devfs`, because it happens before this program
+mounts anything. The draw server holds the same file *raw* for its own
+reasons, and raw mode turns the echo off with it, so this is belt and braces
+now rather than the thing that turns it off. A window's own `consctl` is a
+different file and this program has no reason to write to it.
+
 A line of `exit` ends it, status zero. The line discipline hands over
 whole lines, so the loop is: read descriptor zero, strip the newline,
 render or obey.
@@ -237,39 +243,28 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 			libuser.exit(0x79)
 		}
 		/*
-		**One read can carry several lines, so this renders all of them.**
+		One read, one line, which is the server's contract and not this
+		program's caution.
 
-		The line discipline hands over whole lines, but never fewer than it
-		has: `cons_take` empties its ring into whatever buffer it is given,
-		and a window's own queue does the same. So two lines typed while this
-		program was busy drawing the first one arrive together, and a loop
-		that rendered up to the first newline and read again would throw the
-		second away.
+		`rio`'s cons drain breaks at the newline, so a program in a window
+		gets one line however many are queued behind it, and a window's `cons`
+		here does the same. This loop briefly did the boundary-finding itself,
+		because the server was emptying its queue into one buffer and a client
+		that looked only at the first line lost the rest. That belonged in the
+		server, and it is there.
 
-		Drawing a line takes long enough to make that reachable. The comment
-		here used to promise the opposite and was wrong before the keyboard
-		came through a window -- what changed is that a queue of its own
-		makes it easy to hit.
+		The newline is still on the end, because it is what the reader stopped
+		at and what `/dev/cons` always delivered.
 		*/
-		at := 0
-		for at < int(got) {
-			end := at
-			for end < int(got) && line[end] != '\n' {
-				end += 1
-			}
-			// A tail with no newline is a partial line. Nothing in this
-			// system produces one, and rendering half a line would be worse
-			// than waiting for the rest.
-			if end >= int(got) {
-				break
-			}
-			text := string(line[at:end])
-			if text == "exit" {
-				libuser.exit(0)
-			}
-			render(text)
-			at = end + 1
+		end := 0
+		for end < int(got) && line[end] != '\n' {
+			end += 1
 		}
+		text := string(line[:end])
+		if text == "exit" {
+			libuser.exit(0)
+		}
+		render(text)
 	}
 }
 

@@ -48,7 +48,7 @@ preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 | Services | `/srv` names a running service, mountable anywhere in a namespace, postable from ring 3, and its connection comes down when the last mount and the name are both gone | `SRV.md`, `PIPE.md` |
 | Processes | ring 3, a namespace and a descriptor group of its own, `spawn`, `rfork` by Plan 9's flag word, `exec` in place, notes a handler catches, `segalloc` for memory no file serves | `USER.md` |
 | Ring 3 servers | five of them, on a runtime with a serve loop, a concurrent one with a worker per parked request, and the tree's first ring 3 lock | `RUNTIME.md` |
-| The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` per window that the keyboard reaches through the one in front | `DRAW.md` |
+| The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` and `consctl` per window with a line discipline of its own | `DRAW.md` |
 
 **The screen is the part with the most recent work in it.**
 `servers/intuition` holds `/dev/fb` and maps it with `segattach`. It owns every
@@ -74,6 +74,12 @@ it opens plain `/dev/cons` and gets the window's. That is `rio`'s
 It is also why the draw server does not touch `/dev/scancode`. `rio` reads a
 cooked keyboard too, and the translation belongs to `servers/kbdfs`, one
 process further out.
+
+**And each window cooks its own lines.** The draw server writes `rawon` and
+takes the characters. So the erase keys and the line under construction belong
+to a window rather than to the machine. `^W` is there, which `/dev/cons` still
+does not have. A window has a `consctl` of its own for the raw mode a client
+may want instead.
 
 `docs/DRAW.md` owns all of it, section by section, with the controls each claim
 was measured against.
@@ -119,6 +125,9 @@ them could have come earlier:
                             being covered
     a window's cons         and the keyboard reaches the window in front,
                             through a namespace rather than a protocol
+    a line per window       and the editing belongs to a window rather than
+                            to the machine, so a moving focus cannot steal
+                            half a line
 
 ### Reading a boot log
 
@@ -315,14 +324,17 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **A line discipline per window.** `/dev/cons` stays cooked, so the editing
-   state, the echo and the erase are the kernel's and every window shares one.
-   A line half-typed when the focus moves is delivered whole to the window that
-   has it when the newline lands. `rio` writes `rawon` and edits per window for
-   exactly this reason, and the fix is its shape. Take the keyboard raw, and
-   give every window its own editing state and its own `consctl`. That moves
-   the line discipline out of `kernel/devfs`, which is a milestone rather than
-   a patch. `docs/DRAW.md` section 13 names the defect.
+2. **A window that echoes what is typed into it.** A person types into a
+   window's own discipline and sees nothing until the line completes. Nothing
+   echoes: the kernel's console draws on glass it no longer owns, and
+   `apps/terminal` renders only finished lines. `rio` has no such gap, because
+   a `rio` window *is* the text it shows.
+
+   Here the server holds the line and the client draws. An echo therefore
+   means telling the client what the line holds so far. A read that answers a
+   partial line would do it, and so would an event a client draws from. It is
+   the first thing on this screen that needs the two halves to agree about
+   text.
 
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
@@ -425,9 +437,11 @@ where they live:
 - A stack backtrace on the panic screen. Everything else a fault report wants to
   say is already there.
 - Make `check_base_revision()` a hard stop rather than a warning.
-- `^W` and a cursor inside the line under construction, which is word erase and
-  the arrow keys. A larger edit buffer and a position in it, rather than a new
-  idea. See `docs/DEVFS.md`.
+- `^W` and a cursor inside the line under construction, for `/dev/cons`. A
+  window's own discipline has the word erase now and the kernel's console does
+  not, which is a difference nobody meant. The cursor is missing from both, and
+  it is a larger edit buffer and a position in it rather than a new idea. See
+  `docs/DEVFS.md` and `docs/DRAW.md` section 14.
 - Enforce the `open` flag on a fid. 9P forbids a walk on an open fid and a read
   on an unopened one. `vfs.Fid_Table` carries the flag and no server checks it.
   `chan_clone` walks a fid that may already be open, so this has a blast radius

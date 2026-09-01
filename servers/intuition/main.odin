@@ -117,13 +117,14 @@ same answer it would get from any other allocator this server could write.
 NODE_ROOT :: i32(0)
 NODE_NEW :: i32(1)
 
-// A window's four nodes, in one block apiece after the two fixed ones.
+// A window's five nodes, in one block apiece after the two fixed ones.
 NODE_BASE :: i32(2)
-NODE_PER :: i32(4)
+NODE_PER :: i32(5)
 PART_DIR :: i32(0)
 PART_DATA :: i32(1)
 PART_CTL :: i32(2)
 PART_CONS :: i32(3)
+PART_CONSCTL :: i32(4)
 
 // A window's directory name is `libdraw.win_name`, which both this server and
 // its clients read so the tree's layout is stated once. One digit per window,
@@ -863,6 +864,15 @@ Window :: struct {
 	// readers of one window's keyboard would each get part of every line.
 	cons_fid:  vectra9.Fid,
 	cons_held: bool,
+
+	// What this window's `consctl` says. Raw is `there is no line
+	// discipline`, the same sentence `kernel/devfs` uses, and it reverts to
+	// cooked when the last `consctl` fid closes -- which is `/dev/consctl`'s
+	// own rule, kept because a client that dies holding a mode should not
+	// leave the next one with it.
+	cons_raw:     bool,
+	consctl_fid:  vectra9.Fid,
+	consctl_held: bool,
 }
 
 /*
@@ -941,12 +951,11 @@ arrives.** That is the honest rule for cooked lines: a line belongs to whoever
 had the focus at the moment it completed, because that is the only instant the
 whole line existed at once.
 
-**The editing state is the kernel's, and there is one of it.** `rio` writes
-`rawon` and edits per window for exactly this reason, and this server does
-not, which is a defect rather than a simplification -- see `docs/DRAW.md`
-section 13. A line half-typed when the focus moves is delivered whole to the
-window that has it when the newline lands, and the window that was being typed
-into never sees the part it was owed.
+**The editing state is this server's, and there is one per window**, which is
+what `rio` writes `rawon` for. A character joins the line under construction in
+the window that has the focus *now*, and only a completed line reaches a
+window's queue. So a line half-typed when the focus moves stays where it was
+being typed, and the window that gains the focus starts its own.
 
 One ring per window, because two parked readers must not race for one queue.
 The child is the only producer and each window's worker is its only consumer,
@@ -959,6 +968,117 @@ kbd: [MAX_WINDOWS]libuser.Ring
 // The child's own read buffer, in the bss both halves share and touched by
 // the child alone.
 kbd_chunk: [128]u8
+
+/*
+The line under construction, one per window, and the characters that edit it.
+
+**This is `kernel/devfs`'s line discipline, one privilege level out and one per
+window**, which is what moving it was for. The kernel's is still there and
+still cooks `/dev/cons` for everything that has not diverted it. This server
+writes `rawon` and takes the characters, so the editing that used to be shared
+by every window belongs to each.
+
+The set is `rio`'s. `wbswidth` decides how far back an erase goes, and these
+are its three answers:
+
+    ^H, DEL     one character
+    ^U          the whole line
+    ^W          one word: the run of letters and digits before the cursor,
+                and any spaces between it and the cursor
+
+**`^W` is the one the kernel never had.** `docs/HANDOFF.md` names word erase
+and the arrow keys as the two a person misses next, and a window gets the first
+of them here. `/dev/cons` still does not have it.
+
+A line is finished by a newline and by nothing else. `^D` is the kernel's
+end-of-transmission and this does not answer it: a partial line delivered with
+no newline would break the one-line-per-read rule `ring_drain_line` keeps, and
+an empty one has to mean end of file, which is a claim about a window's life
+rather than about its keyboard.
+*/
+EDIT_MAX :: 128
+edit: [MAX_WINDOWS][EDIT_MAX]u8
+edit_n: [MAX_WINDOWS]int
+
+CH_BACKSPACE :: u8(0x08)
+CH_KILL :: u8(0x15) // ^U
+CH_WORD :: u8(0x17) // ^W
+CH_DEL :: u8(0x7F)
+
+// alnum is `rio`'s `isalnum` for the one place a word's edge is decided.
+alnum :: proc "contextless" (b: u8) -> bool {
+	return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+/*
+erase_back is `rio`'s `wbswidth`: how many bytes one erase key takes off the
+line under construction.
+
+A character is one. A kill is all of it. A word skips whatever is not a letter
+or a digit, then takes the run that is -- so erasing a word from `ls -l foo `
+leaves `ls -l `, and again leaves `ls -`.
+*/
+erase_back :: proc "contextless" (line: []u8, key: u8) -> int #no_bounds_check {
+	n := len(line)
+	if n == 0 {
+		return 0
+	}
+	switch key {
+	case CH_KILL:
+		return n
+	case CH_WORD:
+		q := n
+		for q > 0 && !alnum(line[q - 1]) {
+			q -= 1
+		}
+		for q > 0 && alnum(line[q - 1]) {
+			q -= 1
+		}
+		return n - q
+	}
+	return 1
+}
+
+/*
+type_at gives one character to a window's line discipline.
+
+**Raw mode is `there is no line discipline`**, which is the sentence
+`kernel/devfs` puts on the same distinction. A window in raw mode gets every
+character the moment it arrives, editing keys included, because a client that
+asked for raw is the one doing the editing.
+
+Cooked mode answers the three erase keys, drops what will not fit, and hands
+the whole line over on a newline. A line longer than `EDIT_MAX` loses its tail
+rather than the front of it: the beginning of a command is the part somebody
+meant.
+*/
+type_at :: proc "contextless" (w: int, b: u8) #no_bounds_check {
+	if windows[w].cons_raw {
+		libuser.ring_push(&kbd[w], b)
+		return
+	}
+	switch b {
+	case CH_BACKSPACE, CH_DEL, CH_KILL, CH_WORD:
+		edit_n[w] -= erase_back(edit[w][:edit_n[w]], b)
+		return
+	case '\n':
+		// The newline goes with the line, because it is what a reader
+		// stops at and what `/dev/cons` always delivered.
+		if edit_n[w] < EDIT_MAX {
+			edit[w][edit_n[w]] = '\n'
+			edit_n[w] += 1
+		}
+		for i in 0 ..< edit_n[w] {
+			libuser.ring_push(&kbd[w], edit[w][i])
+		}
+		edit_n[w] = 0
+		return
+	}
+	if edit_n[w] < EDIT_MAX - 1 {
+		edit[w][edit_n[w]] = b
+		edit_n[w] += 1
+	}
+}
 
 /*
 focus_win is `stack_top` as the reader child may read it.
@@ -993,8 +1113,14 @@ EINTR, and its next system call is the boundary the note ends it at, so asking
 again *is* the teardown protocol. `servers/kbdfs` and `servers/consrv` have
 the same shape over different devices.
 
-**A line nobody is listening to is dropped**, which is what no window in front
-means. `rio` has nowhere to put one either.
+**A character nobody is listening to is dropped**, which is what no window in
+front means. `rio` has nowhere to put one either.
+
+**The focus is read per character, not per read.** A chunk carries whatever
+arrived since the last one, and the front can move between two of its bytes.
+Reading it once per chunk would put a whole burst in one window, which is the
+defect this milestone exists to retire -- one level finer than the one it
+started at.
 */
 reader :: proc "contextless" (cons: int) -> ! {
 	for {
@@ -1002,12 +1128,12 @@ reader :: proc "contextless" (cons: int) -> ! {
 		if n <= 0 {
 			continue
 		}
-		w := focus_win()
-		if w < 0 {
-			continue
-		}
 		for i in 0 ..< int(n) {
-			libuser.ring_push(&kbd[w], kbd_chunk[i])
+			w := focus_win()
+			if w < 0 {
+				continue
+			}
+			type_at(w, kbd_chunk[i])
 		}
 	}
 }
@@ -1222,6 +1348,28 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 		libuser.exit(0x79)
 	}
 
+	/*
+	And raw, because the line discipline is this server's now.
+
+	`rio` writes exactly this and for exactly this reason: a window system
+	that cooks per window must be given the characters. The kernel's own
+	discipline is still there for everything that has not diverted the
+	console, and `consctl_close` puts it back when this descriptor goes --
+	so it is held for the server's whole life, the way `apps/terminal` holds
+	its own.
+
+	Raw mode turns the kernel's echo off with it, which is what `echooff`
+	was doing by hand. A window's text is drawn by its client.
+	*/
+	cons_ctl := libuser.open("/dev/consctl", abi.O_WRONLY)
+	if cons_ctl < 0 {
+		libuser.exit(0x79)
+	}
+	raw := "rawon"
+	if libuser.write(int(cons_ctl), transmute([]u8)raw) != i64(len(raw)) {
+		libuser.exit(0x79)
+	}
+
 	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)
 	if pid < 0 {
 		libuser.exit(0x73)
@@ -1418,6 +1566,51 @@ run_ctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bou
 		return window_name(win, ctl_rest(data, at))
 	}
 	return vectra9.EINVAL
+}
+
+/*
+run_consctl is a window's own `consctl`, and it takes the two words
+`/dev/consctl` takes for the same two meanings.
+
+    rawon     no line discipline: every character, the moment it arrives
+    rawoff    the line discipline above, and whole lines out
+
+**A client asks its own window rather than the machine.** `apps/terminal`
+writes `echooff` to `/dev/consctl` before it mounts anything, and that is a
+statement about the kernel's console. This is the same idea scoped to a
+window, which is what `rio` serves a `consctl` per window for.
+
+Echo is not here, because nothing in this server echoes. The kernel's console
+draws typed bytes on the glass it no longer owns, and a window's text is drawn
+by its client out of glyphs the client uploaded. There is nothing for an
+`echoon` to turn on.
+
+Switching mode drops the line under construction. Half a line edited under one
+discipline is not a line under the other, and carrying it across would be a
+guess about what the client meant.
+*/
+run_consctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bounds_check {
+	if win_at < 0 || win_at >= MAX_WINDOWS {
+		return vectra9.EINVAL
+	}
+	win := &windows[win_at]
+	if !win.used {
+		return vectra9.EBADF
+	}
+	verb, at := ctl_word(data, 0)
+	if !ctl_end(data, at) {
+		return vectra9.EINVAL
+	}
+	switch verb {
+	case "rawon":
+		win.cons_raw = true
+	case "rawoff":
+		win.cons_raw = false
+	case:
+		return vectra9.EINVAL
+	}
+	edit_n[win_at] = 0
+	return vectra9.Errno(0)
 }
 
 // ctl_word takes the next run of non-space bytes, and answers where it ended.
@@ -1639,6 +1832,9 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_boun
 	// claimed -- would otherwise deny a window's own client its own files.
 	win.ctl_held = false
 	win.cons_held = false
+	win.consctl_held = false
+	win.cons_raw = false
+	edit_n[at] = 0
 	// New windows arrive on top, which is the only placement rule a client
 	// gets without asking. Before the frame rather than after it, because the
 	// frame's bar is drawn lit or dark by where this window stands, and this
@@ -2334,6 +2530,14 @@ fid_release :: proc "contextless" (fid: vectra9.Fid) {
 		if node_part(node) == PART_CONS && windows[w].cons_held && windows[w].cons_fid == fid {
 			windows[w].cons_held = false
 		}
+		// And the mode goes back to cooked with the fid that set it, which
+		// is `/dev/consctl`'s rule. A client that died in raw mode would
+		// otherwise hand the next one a window with no line discipline.
+		if node_part(node) == PART_CONSCTL && windows[w].consctl_held && windows[w].consctl_fid == fid {
+			windows[w].consctl_held = false
+			windows[w].cons_raw = false
+			edit_n[w] = 0
+		}
 	}
 	libuser.fid_release(&fids, fid)
 }
@@ -2365,6 +2569,8 @@ name_of :: proc "contextless" (node: i32) -> string #no_bounds_check {
 		return "ctl"
 	case PART_CONS:
 		return "cons"
+	case PART_CONSCTL:
+		return "consctl"
 	}
 	return ""
 }
@@ -2403,6 +2609,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 		return node_of(w, PART_CTL)
 	case "cons":
 		return node_of(w, PART_CONS)
+	case "consctl":
+		return node_of(w, PART_CONSCTL)
 	}
 	return -1
 }
@@ -2479,6 +2687,17 @@ handler :: proc "contextless" (
 			}
 			windows[w].cons_held = true
 			windows[w].cons_fid = m.fid
+		case PART_CONSCTL:
+			if w < 0 {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			if windows[w].consctl_held && windows[w].consctl_fid != m.fid {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			windows[w].consctl_held = true
+			windows[w].consctl_fid = m.fid
 		}
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
 
@@ -2523,7 +2742,25 @@ handler :: proc "contextless" (
 			intrinsics.atomic_add(&cons_parked, 1)
 			defer intrinsics.atomic_sub(&cons_parked, 1)
 			for {
-				got := libuser.ring_drain(&kbd[w], buf[:room], &state_lock)
+				/*
+				One line per read in cooked mode, which is `rio`'s drain rule.
+
+				`rio` copies from a window's output point and breaks at the
+				newline, so a program that reads gets one line however many are
+				queued behind it. A drain that emptied the ring would hand a
+				client two lines in one buffer, and a client that looked only
+				at the first would lose the rest silently -- which is what
+				`apps/terminal` was doing until this landed.
+
+				Raw mode takes whatever is there. A client that asked for raw
+				is the one deciding where a line ends.
+				*/
+				got := 0
+				if windows[w].cons_raw {
+					got = libuser.ring_drain(&kbd[w], buf[:room], &state_lock)
+				} else {
+					got = libuser.ring_drain_line(&kbd[w], buf[:room], '\n', &state_lock)
+				}
 				if got > 0 {
 					reply^ = vectra9.Rread{data = buf[:got]}
 					return
@@ -2545,6 +2782,21 @@ handler :: proc "contextless" (
 		window shares. A client that resized itself reads back what it asked
 		for, which is the only confirmation a `ctl` line gets.
 		*/
+		if w := node_win(node); w >= 0 && node_part(node) == PART_CONSCTL {
+			// The state as the command that would restore it, which is
+			// `/dev/consctl`'s convention and `docs/DEVFS.md`'s.
+			report := windows[w].cons_raw ? "rawon\n" : "rawoff\n"
+			if m.offset >= u64(len(report)) {
+				reply^ = vectra9.Rread{data = nil}
+				return
+			}
+			from := int(m.offset)
+			upto := min(len(report), from + min(len(buf), int(m.count)))
+			copy(buf[:upto - from], transmute([]u8)report[from:upto])
+			reply^ = vectra9.Rread{data = buf[:upto - from]}
+			return
+		}
+
 		line: [160]u8
 		n := 0
 		if node == NODE_NEW {
@@ -2578,6 +2830,12 @@ handler :: proc "contextless" (
 			// Typed at, never written to. `data`'s read is refused the same
 			// way, and neither is a directory.
 			reply^ = vectra9.error_reply(vectra9.EPERM)
+		case PART_CONSCTL:
+			if err := run_consctl(node_win(node), m.data); err != vectra9.Errno(0) {
+				reply^ = vectra9.error_reply(err)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 		case PART_CTL:
 			if err := run_ctl(node_win(node), m.data); err != vectra9.Errno(0) {
 				reply^ = vectra9.error_reply(err)
@@ -2656,7 +2914,7 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 		return
 	}
 
-	count := root ? 1 + MAX_WINDOWS : 3
+	count := root ? 1 + MAX_WINDOWS : 4
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
 	for i := int(m.offset); i < count; i += 1 {
