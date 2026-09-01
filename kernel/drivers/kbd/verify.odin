@@ -85,6 +85,19 @@ every release, every modifier, and every position with no character on it.
 */
 @(private = "file")
 typed :: proc "contextless" (r: ^Verify_Result, k: ^Keyboard, code: u8) -> (u8, bool) {
+	// A rune down to the byte these checks are written in. Everything this
+	// procedure is asked about is ASCII, where the two are the same number,
+	// and `typed_rune` is what asks about the rest.
+	key, produced := typed_rune(r, k, code)
+	if !produced || key > 0x7F {
+		return 0, false
+	}
+	return u8(key), true
+}
+
+// typed_rune is the same, for the keys that have no byte. See `extended_rune`.
+@(private = "file")
+typed_rune :: proc "contextless" (r: ^Verify_Result, k: ^Keyboard, code: u8) -> (rune, bool) {
 	r.translated += 1
 	return step(k, code)
 }
@@ -181,6 +194,34 @@ verify :: proc() -> Verify_Result #no_bounds_check {
 	check(&r, !k.extended, "the prefix applies to one key only")
 	b, ok = pressed(&r, &k, SC_ENTER)
 	check(&r, ok && b == '\n', "and the next ordinary key is ordinary again")
+
+	/*
+	And the arrow keys, which answer a rune where they used to answer nothing.
+
+	**A key with no character still has to say something**, and Plan 9's answer
+	is a rune in the private space above `0x7F` -- `sys/include/keyboard.h`'s
+	numbers, which `sys/libkey` writes down for this tree. The values are
+	restated here rather than read from that package, because a check that
+	imported the table would agree with it whatever it said.
+
+	The byte a key with a character answers is unchanged, which is the claim
+	`0xEF` and the two behind it must not disturb: `deliver` encodes, and one
+	byte of ASCII still leaves as one byte.
+	*/
+	_, ok = typed(&r, &k, SC_EXTENDED)
+	check(&r, !ok && k.extended, "the prefix is swallowed again")
+	left, lok := typed_rune(&r, &k, 0x4B)
+	check(&r, lok && left == 0xF011, "and the key behind it is a left arrow, as the rune Plan 9 names")
+	_, ok = typed(&r, &k, 0x4B | 0x80)
+	check(&r, !ok, "whose release produces nothing, the way every release does")
+
+	_, ok = typed(&r, &k, SC_EXTENDED)
+	right, rok := typed_rune(&r, &k, 0x4D)
+	check(&r, rok && right == 0xF012, "the right arrow answers the rune beside it")
+
+	_, ok = typed(&r, &k, SC_EXTENDED)
+	_, uok := typed_rune(&r, &k, 0x38)
+	check(&r, !uok, "and an extended key with no rune still answers nothing at all")
 
 	// -- The ring ------------------------------------------------------------
 

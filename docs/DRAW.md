@@ -1409,3 +1409,115 @@ That is the third mutation in this document to report that way, and the shape
 is always the same: a control that removes a property everything else stands on
 does not report, it stops. A clamp in `put` would make it fail politely and
 would also make the invariant untrue, so there is none.
+
+## 17. Runes, so a key that is not a character can arrive
+
+Section 16 gave a line a cursor and could not give it the arrow keys, because
+an arrow produces no byte. `kernel/drivers/kbd` consumed the `0xE0` prefix and
+dropped the key, and its own comment said why: an extended scancode shares its
+second byte with an ordinary one, so translating it would make an arrow type a
+letter.
+
+`docs/KBD.md` listed "anything above 7-bit" and "the arrow keys, once there is
+a cursor in the line under construction for them to move" as two of its
+absences. The cursor arrived in section 16. This is both of them.
+
+### The encoding is what lets a keyboard say more than a byte
+
+**Plan 9's answer is that such a key is a rune.**
+`sys/include/keyboard.h` sets `KF = 0xF000` -- the beginning of the private
+Unicode space -- and gives every non-character key a value in it. `Kleft` is
+`KF|0x11`, which is U+F011.
+
+Every one of those is above `0x7F`, which is the whole trick: a stream carrying
+UTF-8 carries them, and **no byte of ASCII can ever be mistaken for one**. The
+encoding is not decoration on top of the keyboard. It is the thing that lets a
+keyboard say something a byte cannot.
+
+**The arithmetic is not this project's.** `core:unicode/utf8` is UTF-8, it is
+`proc "contextless"` throughout, it allocates nothing, and it compiles under
+the kernel's freestanding flags. A hand-written `chartorune` was a second copy
+of a solved problem, and the first cut of this milestone had one.
+
+`sys/libkey` is what a standard library cannot have: which numbers Plan 9 gives
+to which keys. Seven constants out of `keyboard.h`, because they are a wire
+format and both sides of `/dev/cons` have to agree about them.
+
+### What the console had to be told after all
+
+**The sink's contract changed under `kernel/devfs`, and the first cut did not
+notice.** The console's line discipline refuses a control character -- `b <
+0x20` -- and stored everything else. An arrow's bytes are `EF 80 91`, all above
+`0x20`, so it stored three of them and echoed three glyphs nobody typed.
+
+Nothing in that file had changed, which is exactly why it was easy to miss: the
+*invariant* it relied on was retired instead. A byte from the sink used to be a
+printable character or a control code, and now it can be a third of a key.
+
+It refuses anything above 7-bit now, for the reason it refuses a bell: a
+discipline over a 7-bit font should not store what it cannot spell. A
+discipline that wants those keys decodes them, and `sys/libedit` is that one.
+This is the console before any of it exists.
+
+### Nothing else between the two ends learned anything
+
+`kernel/drivers/kbd` encodes and `sys/libedit` decodes. In between, `step`
+answers a rune where it used to answer a byte, and `deliver` pushes the bytes
+that carry it.
+
+**The sink stayed byte-wide.** ASCII is one byte and still arrives as one, on
+the same branch it always took. A key with no character arrives as the three
+its rune needs. The line discipline, the ring, `/dev/cons`, the window's `cons` and
+`libuser.Ring` all carry them without knowing.
+
+### Where the decoding has to live
+
+`put` takes one byte at a time, so a rune above `0x7F` arrives across two or
+three calls. The `Line` holds what it has in `pend` and answers `.Pending`
+until the sequence is whole -- and every caller already had a branch for a byte
+that changed nothing.
+
+`utf8.full_rune_in_bytes` is what answers "is it whole yet", and it is the
+right question to have asked someone else: it calls an *invalid* lead byte
+full, so a stream that started mid-rune resolves to `RUNE_ERROR` here rather
+than waiting for bytes that can never make it well-formed.
+
+That is why the decoding is in `sys/libedit` and not in either caller: both
+would otherwise need the same partial-sequence buffer, and one of them is a
+server cooking two windows at once.
+
+### Only ASCII is stored, and that is a cost rather than a rule
+
+**A rune the line does not act on is dropped.** `sys/libfont` is an 8x16 table
+of 7-bit characters, so there is no glyph for anything else -- a line that
+stored one would hold bytes no caller can draw, and a caller that invented a
+glyph would be inventing the layout with it.
+
+So this milestone carries the runes a keyboard makes and not the ones a
+language needs. What it would take to store them is a font with more than 128
+entries and a `put_text` that advances by rune rather than by byte, and neither
+is a keyboard question.
+
+### The controls
+
+| Mutation | Result |
+|---|---|
+| the driver drops extended keys again | 2 checks, first `and the key behind it is a left arrow, as the rune Plan 9 names` |
+| a left arrow moves the cursor right | 2 checks, first `a left arrow moves the cursor one character, and it arrives as a rune` |
+| a rune with no meaning is stored rather than dropped | 1 check, `a rune the line has no use for leaves nothing behind, because it has no glyph either` |
+| the console stores what it cannot spell | 1 check, `an arrow key's rune is refused rather than stored as the bytes that carry it` |
+| the driver stops taking the ASCII branch | **inert**, and correctly so |
+
+**The inert one is a pure optimisation.** `utf8.encode_rune` answers the same
+single byte for ASCII that the branch in front of it does, so removing the
+branch changes what the keyboard costs and not what it says. A check that
+failed on it would be measuring the shape of the code rather than its
+behaviour.
+
+**One control retired with the code it tested.** The first cut rejected
+overlong encodings by hand and nothing could observe the rule: every rune this
+line acts on is `KF|n`, at least `0xF00D`, which needs three bytes in its
+*shortest* form -- so no overlong spelling of one exists, and an overlong
+sequence always decodes to a rune the line drops anyway. The rule now belongs
+to `core:unicode/utf8`, which is the right place for a property that is about
+the encoding rather than about this system.

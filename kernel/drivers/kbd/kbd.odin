@@ -58,6 +58,9 @@ package kbd
 import "base:intrinsics"
 
 import "kernel:arch"
+import "core:unicode/utf8"
+
+import "vsys:libkey"
 import "kernel:sched"
 import "kernel:sync"
 
@@ -400,14 +403,30 @@ deliver :: proc "contextless" (k: ^Keyboard, code: u8) {
 		k.extended = false
 	}
 
-	b, produced := step(k, code)
+	r, produced := step(k, code)
 	if !produced {
 		bump(&k.ignored)
 		return
 	}
 	bump(&k.delivered)
-	if k.sink != nil {
-		k.sink(b)
+	if k.sink == nil {
+		return
+	}
+	/*
+	One rune, as the bytes that carry it.
+
+	The sink stays byte-wide. ASCII is one byte and takes the path it always
+	took, and a key with no character arrives as the three its rune needs --
+	which is what `sys/libkey` means by the encoding being the thing that lets
+	a keyboard say more than a byte can.
+	*/
+	if r < 0x80 {
+		k.sink(u8(r))
+		return
+	}
+	buf, n := utf8.encode_rune(r)
+	for i in 0 ..< n {
+		k.sink(buf[i])
 	}
 }
 
@@ -476,16 +495,23 @@ step advances the modifier state and reports the byte a scancode produced.
 key release, every modifier in both directions, and every position with no
 character on it.
 
-**The 0xE0 prefix is consumed and its key is dropped.** An extended code shares
-its second byte with an ordinary key. Keypad Enter is 0xE0 0x1C, and so is the
-main Enter without the prefix. Ignoring the prefix would make an arrow key
-type a letter, which is worse than an arrow key doing nothing.
+**The 0xE0 prefix is consumed, and the keys behind it answer runes.** An
+extended code shares its second byte with an ordinary key: keypad Enter is
+0xE0 0x1C and so is the main Enter without the prefix, so the prefix has to be
+remembered or an arrow would type a letter.
 
-That is also where the arrow keys will be picked up, when there is something for
-them to mean. `docs/KBD.md` says what that needs.
+**An arrow has no byte, so it answers a rune instead.** That is Plan 9's
+arrangement: `sys/include/keyboard.h` puts every key that is not a character in
+the private Unicode space above `0x7F`, where a stream of UTF-8 carries it and
+no byte of ASCII can be mistaken for one. `sys/libkey` names them and
+`deliver` is what turns one into the bytes of UTF-8. What this answers is the
+rune.
+
+An extended code with nothing in `EXTENDED` still produces nothing, which is
+every extended key this system has no meaning for yet.
 */
 @(private)
-step :: proc "contextless" (k: ^Keyboard, code: u8) -> (b: u8, produced: bool) #no_bounds_check {
+step :: proc "contextless" (k: ^Keyboard, code: u8) -> (r: rune, produced: bool) #no_bounds_check {
 	if code == SC_EXTENDED {
 		k.extended = true
 		return 0, false
@@ -515,11 +541,21 @@ step :: proc "contextless" (k: ^Keyboard, code: u8) -> (b: u8, produced: bool) #
 		return 0, false
 	}
 
-	if released || was_extended || int(make_code) >= len(PLAIN) {
+	if released {
+		return 0, false
+	}
+	// The extended keys, which are the ones with a rune and no byte.
+	if was_extended {
+		if key, ok := extended_rune(make_code); ok {
+			return key, true
+		}
+		return 0, false
+	}
+	if int(make_code) >= len(PLAIN) {
 		return 0, false
 	}
 
-	b = k.shift ? SHIFTED[make_code] : PLAIN[make_code]
+	b := k.shift ? SHIFTED[make_code] : PLAIN[make_code]
 	if b == 0 {
 		return 0, false
 	}
@@ -554,9 +590,40 @@ step :: proc "contextless" (k: ^Keyboard, code: u8) -> (b: u8, produced: bool) #
 			u -= 32
 		}
 		if u >= 'A' && u <= 'Z' {
-			return u - 'A' + 1, true
+			return rune(u - 'A' + 1), true
 		}
 		return 0, false
 	}
-	return b, true
+	return rune(b), true
+}
+
+/*
+extended_rune is the second half of an extended scancode, as the rune Plan 9
+gives that key.
+
+Six of them, which are the ones a line under construction has a use for. The
+numbers on the left are set 1's. The names on the right are
+`sys/include/keyboard.h`'s, and `sys/libkey` is where this tree writes them
+down.
+
+Everything else behind the prefix -- the keypad, the right-hand modifiers,
+print screen -- answers nothing, exactly as every extended key did before.
+*/
+@(private)
+extended_rune :: proc "contextless" (make_code: u8) -> (rune, bool) {
+	switch make_code {
+	case 0x47:
+		return libkey.KHOME, true
+	case 0x48:
+		return libkey.KUP, true
+	case 0x4B:
+		return libkey.KLEFT, true
+	case 0x4D:
+		return libkey.KRIGHT, true
+	case 0x4F:
+		return libkey.KEND, true
+	case 0x50:
+		return libkey.KDOWN, true
+	}
+	return 0, false
 }

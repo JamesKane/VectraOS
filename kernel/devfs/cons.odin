@@ -558,10 +558,24 @@ cons_accept :: proc "contextless" (
 		return .Nothing, 0, sent, sent
 	}
 
-	if b < 0x20 {
-		// Every other control character is refused rather than stored. A line
-		// discipline that puts a bell or a form feed in the buffer hands a
-		// reader a byte it has no way to interpret.
+	if b < 0x20 || b > 0x7F {
+		/*
+		Every other control character is refused rather than stored. A line
+		discipline that puts a bell or a form feed in the buffer hands a reader
+		a byte it has no way to interpret.
+
+		**And anything above 7-bit, for the same reason one layer along.** The
+		keyboard emits a rune for a key that has no character -- an arrow is
+		`KF|0x11` and three bytes of UTF-8, see `sys/libkey` -- and this
+		discipline is a byte discipline over a 7-bit font. Storing those three
+		would put an arrow key in the line as three glyphs nobody typed, and
+		echo them.
+
+		A discipline that wants those keys decodes them, which is what
+		`sys/libedit` does for a window. This one is the console before any of
+		that exists, and refusing is the honest answer for a layer that cannot
+		spell them.
+		*/
 		return .Nothing, 0, false, false
 	}
 

@@ -27,23 +27,40 @@ over letters and digits. A discipline belongs to the layer that serves a
 So this package is what ring 3 shares, and `kernel/devfs` keeps its own for the
 console it serves before any of this exists.
 
-**There is a cursor, and the arrow keys are not what moves it.** In Plan 9 an
-arrow is a *rune* in the private Unicode space -- `Kleft` is `KF|0x11`, which
-is U+F011 and three bytes of UTF-8 -- and there is no rune anywhere in this
-tree. `kernel/drivers/kbd` consumes the `0xE0` prefix and drops the key on
-purpose, because an extended code shares its second byte with a letter.
+**There is a cursor, and both kinds of key move it.** `rio` moves by a whole
+line with two ordinary control bytes, and by one character with the arrows --
+which in Plan 9 are *runes* in the private Unicode space rather than bytes.
+`core:unicode/utf8` is that encoding and `kernel/drivers/kbd` is what emits them, so
+both kinds arrive down the same `/dev/cons` and this is where they are told
+apart:
 
-`rio` moves by a whole line with two ordinary control bytes, and those work
-here exactly as they do there:
-
-    ^A          to the beginning of the line
-    ^E          to the end of it
+    ^A, Khome       to the beginning of the line
+    ^E, Kend        to the end of it
+    Kleft, Kright   one character
 
 A character is inserted *at* the cursor and an erase takes what is before it,
-which is `winsert` and `wdelete` in one line's worth of buffer. Moving by a
-single character is what still wants the arrows, and the arrows want runes.
+which is `winsert` and `wdelete` in one line's worth of buffer.
+
+**Decoding happens here because a caller feeds this one byte at a time.** A
+rune above `0x7F` arrives as two or three, so `put` holds the ones it has and
+answers `.Pending` until the sequence is whole. Every caller already has a
+branch for a byte that changed nothing.
+
+The arithmetic is `core:unicode/utf8`'s, which compiles freestanding and is
+allocator-free. What `sys/libkey` adds is the half a standard library cannot
+have: which numbers Plan 9 gives to which keys.
+
+**Only ASCII is ever stored.** A rune this line does not act on is dropped
+rather than inserted: `sys/libfont` is an 8x16 table of 7-bit characters, so
+there is no glyph for anything else and a caller that drew one would draw a
+question mark of its own invention. What that costs is named in
+`docs/DRAW.md` section 17.
 */
 package libedit
+
+import "core:unicode/utf8"
+
+import "vsys:libkey"
 
 // The three keys, named because `0x17` in a switch is a number somebody has to
 // look up. `kernel/devfs` names the same bytes for the same reason.
@@ -53,7 +70,8 @@ KILL :: u8(0x15) // ^U
 WORD :: u8(0x17) // ^W
 
 // And the two that move rather than erase, which are `rio`'s `Ksoh` and
-// `Kenq` and carry those values there too.
+// `Kenq` and carry those values there too. The arrows are runes and live in
+// `sys/libkey`, beside the rest of what `keyboard.h` names.
 HOME :: u8(0x01) // ^A
 END :: u8(0x05)  // ^E
 
@@ -115,6 +133,7 @@ Result :: enum {
 	Edited,
 	Done,
 	Full,
+	Pending,
 }
 
 /*
@@ -133,6 +152,12 @@ Line :: struct {
 	buf: []u8,
 	n:   int,
 	pos: int,
+
+	// The bytes of a rune that has not finished arriving. `put` takes one
+	// byte at a time and a rune above `0x7F` is two or three, so the ones
+	// already in hand wait here. Never longer than one rune.
+	pend:   [utf8.UTF_MAX]u8,
+	pend_n: int,
 }
 
 /*
@@ -143,6 +168,17 @@ because `/dev/cons` always delivered one and a reader stops at it -- appends it
 to `text` itself. A caller that draws the line does not.
 */
 put :: proc "contextless" (l: ^Line, b: u8) -> Result #no_bounds_check {
+	/*
+	A rune first, because a byte above `0x7F` is part of one.
+
+	Everything below this deals in ASCII, where a byte and a rune are the same
+	number. A sequence that is still arriving waits in `pend`. A whole one is
+	either motion or something with no glyph, and neither reaches the buffer.
+	*/
+	if b > 0x7F || l.pend_n > 0 {
+		return put_rune_byte(l, b)
+	}
+
 	switch b {
 	case HOME:
 		l.pos = 0
@@ -181,6 +217,62 @@ put :: proc "contextless" (l: ^Line, b: u8) -> Result #no_bounds_check {
 	return .Edited
 }
 
+/*
+put_rune_byte collects one byte of a rune and acts on it once it is whole.
+
+**A rune that is not motion is dropped**, which is the honest answer while
+`sys/libfont` is an 8x16 table of 7-bit characters. Storing one would put bytes
+in a line that no caller can draw, and a caller that invented a glyph for it
+would be inventing the layout too. `docs/DRAW.md` section 17 owns the cost.
+
+A byte that cannot start or continue a sequence resets the collector and is
+dropped with it. That is `chartorune` answering `Runeerror` and moving on: a
+stream this cannot read is one to make progress through rather than stall on.
+*/
+@(private)
+put_rune_byte :: proc "contextless" (l: ^Line, b: u8) -> Result #no_bounds_check {
+	if l.pend_n >= len(l.pend) {
+		// Longer than any rune, so what is held cannot become one.
+		l.pend_n = 0
+	}
+	l.pend[l.pend_n] = b
+	l.pend_n += 1
+
+	/*
+	`full_rune_in_bytes` answers the whole question, including the one a
+	streaming decoder actually needs: it calls an *invalid* lead byte full, so
+	a stream that started mid-rune resolves to `RUNE_ERROR` here rather than
+	waiting for bytes that will never make it well-formed.
+	*/
+	if !utf8.full_rune_in_bytes(l.pend[:l.pend_n]) {
+		return .Pending
+	}
+	r, _ := utf8.decode_rune_in_bytes(l.pend[:l.pend_n])
+	l.pend_n = 0
+
+	switch r {
+	case libkey.KHOME:
+		l.pos = 0
+		return .Edited
+	case libkey.KEND:
+		l.pos = l.n
+		return .Edited
+	case libkey.KLEFT:
+		if l.pos > 0 {
+			l.pos -= 1
+		}
+		return .Edited
+	case libkey.KRIGHT:
+		if l.pos < l.n {
+			l.pos += 1
+		}
+		return .Edited
+	}
+	// Every other rune, including the ones a keyboard has and this line has no
+	// use for. Nothing changed, so nothing has to be drawn again.
+	return .Pending
+}
+
 // text is the line so far, and clear empties it.
 text :: proc "contextless" (l: ^Line) -> string #no_bounds_check {
 	return string(l.buf[:l.n])
@@ -194,4 +286,6 @@ cursor :: proc "contextless" (l: ^Line) -> int {
 clear :: proc "contextless" (l: ^Line) {
 	l.n = 0
 	l.pos = 0
+	// And half a rune goes with the line it was arriving into.
+	l.pend_n = 0
 }

@@ -4339,6 +4339,44 @@ verify_edit :: proc(r: ^Result, cons: ^vfs.Chan) #no_bounds_check {
 		"while at the end it takes the last character, the way it always did")
 
 	/*
+	And the arrow keys, which arrive as runes rather than bytes.
+
+	**The compiler encodes them, which is what keeps this independent.**
+	`\uF011` is `Kleft` -- `KF|0x11` out of `sys/include/keyboard.h` -- and
+	Odin emits the UTF-8 for it. So the bytes on the wire come from an encoder
+	that has never heard of `sys/libkey` or of `core:unicode/utf8`'s use here,
+	which is what a check of an encoding needs: an oracle that is not the code
+	under test.
+
+	The keyboard driver is what turns an extended scancode into one of these;
+	`kernel/drivers/kbd` has that end. This end is what a line does when three
+	bytes that are not characters arrive in it.
+	*/
+	typed_runes(r, cons, "abc\uF011z\n", "abzc\n",
+		"a left arrow moves the cursor one character, and it arrives as a rune")
+	typed_runes(r, cons, "abc\uF011\uF011\uF012z\n", "abzc\n",
+		"and a right arrow moves it back, one character at a time")
+	typed_runes(r, cons, "abc\uF00Dz\n", "zabc\n",
+		"Khome does what ^A does, because they are the same key twice")
+	typed_runes(r, cons, "abc\uF00D\uF018z\n", "abcz\n",
+		"and Kend what ^E does")
+
+	/*
+	And a rune with no glyph does not reach the line.
+
+	`sys/libfont` is an 8x16 table of 7-bit characters, so there is nothing to
+	draw for anything else and nothing that stores it could be shown. `Kup` is
+	a real key that this line has no use for, and it leaves no trace.
+	*/
+	typed_runes(r, cons, "a\uF00Eb\n", "ab\n",
+		"a rune the line has no use for leaves nothing behind, because it has no glyph either")
+
+	// And a byte that cannot begin a rune is dropped rather than stored, which
+	// is `chartorune` answering Runeerror and making progress.
+	typed_reads(r, cons, {'a', 0x80, 'b', '\n'}, "ab\n",
+		"and a byte that cannot start a rune goes the same way")
+
+	/*
 	And two lines typed together come back one at a time.
 
 	The queue holds both before either is read, so a drain that emptied it
@@ -4522,6 +4560,14 @@ wait_for_size :: proc(c: ^vfs.Chan, want: u64) -> bool {
 
 // typed_reads types a run of keys and checks what one read of `cons` answers.
 // The keys are raw: the control characters are the point of most callers.
+// typed_runes is `typed_reads` for keys written as runes. Odin encodes the
+// string literal, so the bytes that go on the wire come from the compiler
+// rather than from the encoder under test.
+@(private = "file")
+typed_runes :: proc(r: ^Result, cons: ^vfs.Chan, keys: string, want: string, what: string) {
+	typed_reads(r, cons, transmute([]u8)keys, want, what)
+}
+
 @(private = "file")
 typed_reads :: proc(r: ^Result, cons: ^vfs.Chan, keys: []u8, want: string, what: string) #no_bounds_check {
 	if !type_settled(keys) {

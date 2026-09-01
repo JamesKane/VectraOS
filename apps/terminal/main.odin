@@ -331,6 +331,9 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 			case .Edited:
 				dirty = true
 			case .Full:
+			case .Pending:
+				// Half a rune, or a whole one this line has no use for.
+				// Nothing changed, so nothing is redrawn.
 			}
 		}
 		if dirty {

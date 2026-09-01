@@ -49,7 +49,8 @@ preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 | Processes | ring 3, a namespace and a descriptor group of its own, `spawn`, `rfork` by Plan 9's flag word, `exec` in place, notes a handler catches, `segalloc` for memory no file serves | `USER.md` |
 | Ring 3 servers | five of them, on a runtime with a serve loop, a concurrent one with a worker per parked request, and the tree's first ring 3 lock | `RUNTIME.md` |
 | The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` and `consctl` per window with a line discipline of its own | `DRAW.md` |
-| Typing | one discipline (`sys/libedit`) worn by the server that cooks a window's lines and by the program that draws them and echoes, with a cursor `^A` and `^E` move | `DRAW.md` |
+| Typing | one discipline (`sys/libedit`) worn by the server that cooks a window's lines and by the program that draws them and echoes, with a cursor the arrow keys and `^A`/`^E` move | `DRAW.md` |
+| Runes | a key with no character arrives as Plan 9's private-space rune in UTF-8 (`sys/libkey` names them, `core:unicode/utf8` encodes them) through a `/dev/cons` that stayed bytes | `DRAW.md`, `KBD.md` |
 
 **The screen is the part with the most recent work in it.**
 `servers/intuition` holds `/dev/fb` and maps it with `segattach`. It owns every
@@ -142,6 +143,8 @@ them could have come earlier:
                             show a character before it is a line
     a cursor                and a character goes in where it is rather than
                             at the end, with a caret under it saying where
+    a rune                  and a key with no character can arrive at all,
+                            which is what the arrow keys were waiting for
 
 ### Reading a boot log
 
@@ -338,15 +341,12 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **Runes, so an arrow key can arrive at all.** The cursor exists and `^A`
-   and `^E` move it, which is what `rio` does with ordinary control bytes. The
-   arrows themselves are not a line-editing question: in Plan 9 an arrow is a
-   rune in the private Unicode space -- `Kleft` is U+F011 -- delivered as
-   UTF-8 through the same stream a letter is. Nothing here speaks runes, and
-   `kernel/drivers/kbd` drops the `0xE0` extended keys on purpose because
-   their second byte is a letter's. So this is a keyboard that emits runes, a
-   `/dev/cons` that carries them, and a decoder in every reader. See
-   `docs/DRAW.md` section 16.
+2. **A font with more than 128 glyphs, so a rune can be *stored*.** Runes
+   arrive now, and `sys/libedit` drops every one it does not act on, because
+   `sys/libfont` is an 8x16 table of 7-bit characters and a line holding
+   something with no glyph would be a line no caller can draw. What it takes
+   is a wider table and a `put_text` that advances by rune rather than by
+   byte. See `docs/DRAW.md` section 17.
 
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
@@ -448,9 +448,9 @@ where they live:
 - A stack backtrace on the panic screen. Everything else a fault report wants to
   say is already there.
 - Make `check_base_revision()` a hard stop rather than a warning.
-- Nothing from the "word erase and the arrow keys" pair is left here. A window
-  has `^W`, and a line has a cursor `^A` and `^E` move. The arrow keys became
-  a rune question rather than an editing one -- see item 2 above.
+- `servers/kbdfs` has its own copy of the scancode translation and it answers
+  bytes, so the arrow keys reach `/dev/cons` and not `/kbd`. Nothing consumes
+  `/kbd` for them yet, which is why this is a note rather than an item.
 - Enforce the `open` flag on a fid. 9P forbids a walk on an open fid and a read
   on an unopened one. `vfs.Fid_Table` carries the flag and no server checks it.
   `chan_clone` walks a fid that may already be open, so this has a blast radius

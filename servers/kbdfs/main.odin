@@ -17,11 +17,20 @@ a worker while the parent answers other clients.
     the parent   posts /srv/kbdfs and serves 9P; a read of /kbd drains the
                  ring, parking until a key is translated
 
-What crossed the privilege boundary is the state machine, byte for byte the
-kernel's: the two US-layout tables, shift, caps, control, the extended
-prefix, and the rule that a release makes no character. A scancode the kernel
-would have turned into a byte on `/dev/cons` this program turns into a byte on
-`/kbd`, and nothing but the address space it runs in is different.
+What crossed the privilege boundary is the state machine: the two US-layout
+tables, shift, caps, control, the extended prefix, and the rule that a release
+makes no character.
+
+**It was the kernel's byte for byte and now it is not.** `kernel/drivers/kbd`
+answers a *rune* for the extended keys -- an arrow is `KF|0x11`, encoded as
+UTF-8 into the byte sink, see `sys/libkey` -- and this copy still drops them
+the way both did before. So a program reading `/kbd` gets no arrow keys, and
+one reading `/dev/cons` does.
+
+Nothing consumes `/kbd` for them yet, which is why this is written down rather
+than fixed. The fix is not a second copy of the new table: it is the scancode
+translation becoming a package both rings call, which is what having two of it
+has been asking for since this file was written.
 
 Teardown is `consrv`'s: on `Tremove` the parent notes its reader out of the
 parked scancode read, collects the EINTR, and exits zero only if it heard it.

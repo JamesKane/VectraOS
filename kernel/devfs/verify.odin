@@ -513,6 +513,27 @@ verify_line_editing :: proc(r: ^Verify_Result, t: ^Dev_Tree, cons: ^vfs.Chan) #n
 	check(r, err == vfs.OK && same(got[:], n, "ac\n"), "a backspace takes the last character off the line")
 	check(r, t.cons.erased == erased_before + 1, "and says so")
 
+	/*
+	And a key that has no character does not become three that do.
+
+	`kernel/drivers/kbd` answers a *rune* for the extended keys, encoded as
+	UTF-8 into this sink -- an arrow is `KF|0x11`, which is `EF 80 91`. Every
+	one of those bytes is above `0x20`, so the control-character refusal above
+	does not catch them, and a discipline that stored them would put three
+	glyphs nobody typed into the line and echo them.
+
+	This one is the console before a window system exists, over a 7-bit font.
+	It refuses what it cannot spell, and `sys/libedit` is the discipline that
+	decodes them instead.
+	*/
+	type_in(&t.cons, "a\xEF\x80\x91b\n")
+	n, err = read_now(cons, got[:])
+	check(
+		r,
+		err == vfs.OK && same(got[:], n, "ab\n"),
+		"an arrow key's rune is refused rather than stored as the bytes that carry it",
+	)
+
 	killed_before := t.cons.killed
 	type_in(&t.cons, "xy")
 	_ = cons_feed(&t.cons, CTRL_U)

@@ -134,15 +134,25 @@ is 1 through `^Z` is 26, which is the whole convention and the reason `^D` and
 the same one off the serial line. That is what makes the line discipline one
 implementation rather than two.
 
-**The `0xE0` prefix is consumed and its key dropped.** An extended code shares
+**The `0xE0` prefix is consumed, and six of the keys behind it answer runes.**
+An arrow has no character, so it answers a value out of Plan 9's private
+Unicode space instead -- `Kleft` is `KF|0x11` -- and `deliver` encodes it into
+the byte sink through `core:unicode/utf8`, and `sys/libkey` is where the
+numbers live. `docs/DRAW.md` section 17 has the whole
+argument. What follows is why the prefix has to be remembered at all.
+
+**An extended code shares
 its second byte with an ordinary key — keypad Enter is `0xE0 0x1C`, and so is
 the main Enter without the prefix. Ignoring the prefix would make an arrow key
 type a letter, which is worse than an arrow key doing nothing.
 
-Absent: key repeat rates, the LEDs, anything above 7-bit, and the arrow keys
-themselves. The first two want a `ctl` file, on the convention `/dev/consctl`
-set. The arrows want somewhere to go, which is the cursor-in-a-line that
-`docs/DEVFS.md` lists as the next thing a person misses.
+Absent: key repeat rates and the LEDs, which want a `ctl` file on the
+convention `/dev/consctl` set.
+
+The arrows are here now. They wanted somewhere to go, which was the
+cursor-in-a-line, and `sys/libedit` has one. Above 7-bit is here too, for the
+keys that have no character -- what a rune cannot yet do is be *stored*, which
+wants a font with more than 128 glyphs rather than anything from this driver.
 
 **The layout is a table in a driver, which is the wrong place for it.** A layout
 belongs in a file somebody can replace. That is a `/dev` entry and a format, and
@@ -259,8 +269,8 @@ as a gap rather than this milestone carrying it as a patch.
 
 - **A MADT parse**, which retires both of the I/O APIC's assumptions and hands
   SMP the core list it will need.
-- **The arrow keys**, once there is a cursor in the line under construction for
-  them to move. `docs/DEVFS.md` has the other half.
+- **The keypad and the right-hand modifiers**, which are the extended keys
+  still answering nothing. They want a meaning before they want a rune.
 - **A layout in a file** rather than a table in a driver.
 - **The LEDs and the repeat rate**, behind a `ctl` file on the convention
   `/dev/consctl` set.
