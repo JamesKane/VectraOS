@@ -3309,11 +3309,18 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	translated one pixel too far would be found one pixel further along and
 	every check after would agree with it. This is the anchor: the border is a
 	border, so it is the same depth on the left and the right, and window zero
-	sits at the screen's origin and runs its full height.
+	sits at the screen's origin.
 
 	Neither says how deep. A deeper border or a taller bar moves the report and
 	moves these together, which is a look and not a fault.
+
+	**The bottom edge is found, not assumed.** It used to be the screen's,
+	because a window was born as tall as the glass. A window is born shorter
+	than the glass now -- `rio`'s `goodrect` refuses a rectangle that contains
+	the whole screen -- so `win_bottom` walks down out of the window the way
+	`win_right` walks out of it sideways.
 	*/
+	fb_bottom := win_bottom(s, win_w / 2, oy + ch)
 	check(
 		r,
 		fw - (ox + cw) == ox,
@@ -3321,13 +3328,21 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	)
 	check(
 		r,
-		s.height - (oy + ch) == ox,
-		"and the same depth up from the bottom as it is in from the side, the bar being the top's own",
+		fb_bottom - (oy + ch) == ox,
+		"and the same depth up from its own bottom as it is in from the side, the bar being the top's own",
 	)
+	/*
+	And the glass goes on below it, which is the placement policy.
+
+	Read a little below the window rather than at the screen's last row: the
+	desktop is sunk into a recess two pixels deep, so the bottom row is that
+	bevel and not ground. `desk_measure` avoids the same recess for the same
+	reason.
+	*/
 	check(
 		r,
-		!is_desk(s, win_w / 2, s.height - 1),
-		"and stands the screen's full height, which is the placement policy",
+		fb_bottom < s.height - 16 && is_desk(s, win_w / 2, fb_bottom + 8),
+		"and does not fill the glass, which is the placement policy and what lets one grow",
 	)
 
 	/*
@@ -3749,10 +3764,15 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		either, and a scan of the whole width answers a run that spans from the
 		left bevel to the right one. The *first* run rather than the outermost
 		pair, for the same reason.
+
+		A third of the way down rather than four rows off the bottom. A window
+		used to be as tall as the glass and a low row was certainly inside one;
+		a window is born shorter than that now, and the bottom of the screen is
+		where the desktop shows through.
 		*/
 		lo, hi := -1, -1
 		for x in 8 ..< s.width - 8 {
-			if !is_desk(s, x, s.height - 4) {
+			if !is_desk(s, x, s.height / 3) {
 				if lo < 0 {
 					lo = x
 				}
@@ -3766,7 +3786,11 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 			oy, cy_end = scan_col(s, col, slate, 0, s.height)
 			if oy >= 0 {
 				ox, _ = scan_row(s, oy + (cy_end - oy) / 2, slate, 0, s.width)
-				if ox >= 0 && s.height - (cy_end + 1) == ox {
+				// The window's own bottom, not the screen's. A window is born
+				// shorter than the glass now, so the symmetry is against the
+				// edge `win_bottom` finds -- the same one `verify_draw`
+				// anchors on.
+				if ox >= 0 && win_bottom(s, col, cy_end + 1) - (cy_end + 1) == ox {
 					break
 				}
 			}
@@ -4859,6 +4883,19 @@ verify_ctl :: proc(
 	allocating would pass a geometry check and leak nothing but truth.
 	*/
 	grew_from := mem.pmm_stats().free_frames
+
+	/*
+	Where this window's bottom edge is before it grows.
+
+	**This is what a window born shorter than the glass buys.** While every
+	window was as tall as the screen, the rows a grow added fell below it and
+	`composite` clipped them away, so `segbrk` had a frames-dropped check and
+	nothing that could see the result. The edge is on the glass now, and
+	`win_bottom` walks down to it out of the window `move` put at 700.
+	*/
+	grew_col := 700 + ox + 8
+	bottom_before := win_bottom(s, grew_col, 0)
+
 	// Eight rows, not two hundred: the claim is that a window grows past the
 	// height its slot was born with, and eight proves it as well as any. The
 	// larger number cost 640 KB and a full-height repaint the checks never
@@ -4886,6 +4923,22 @@ verify_ctl :: proc(
 		r,
 		mem.pmm_stats().free_frames < grew_from,
 		"and the machine is poorer for it, so the pages are real",
+	)
+
+	/*
+	And the window stands that much taller on the glass, which is the claim a
+	frame count cannot make.
+
+	A grow that allocated pages and mapped them somewhere else drops frames
+	exactly the same way. What says the run got bigger *where the client was
+	promised* is the bottom edge moving by the rows asked for, with the
+	compositor reading them out of the store to put them there.
+	*/
+	bottom_after := win_bottom(s, grew_col, 0)
+	check(
+		r,
+		bottom_after - bottom_before == tall - win_h,
+		"and stands that much taller on the glass, which no frame count could say",
 	)
 
 	/*
@@ -5138,6 +5191,20 @@ win_right :: proc "contextless" (s: ^fb.Surface, y: int, from: int) -> int {
 		x += 1
 	}
 	return x
+}
+
+// win_bottom walks down one column from inside a window to the first pixel
+// that is desktop again, which is where that window's rectangle ends. The
+// vertical twin of `win_right`, and it exists because a window is no longer
+// as tall as the glass -- the screen's bottom edge used to stand in for a
+// window's own, and now it cannot.
+@(private = "file")
+win_bottom :: proc "contextless" (s: ^fb.Surface, x: int, from: int) -> int {
+	y := from
+	for y < s.height && !is_desk(s, x, y) {
+		y += 1
+	}
+	return y
 }
 
 /*

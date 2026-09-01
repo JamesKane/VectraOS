@@ -343,11 +343,15 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **`segbrk`, and the two segment calls beside it.** See the standing gap
-   below, promoted because it has a trigger already in the tree:
-   `servers/intuition`'s `window_size` refuses to grow a window past the run
-   it was born with, and `docs/DRAW.md` says in as many words that this is
-   `segbrk`'s absence speaking.
+2. **An invariant sweep: every frame a process maps belongs to one of its
+   segments.** A window is born shorter than the glass now, so a grown one is
+   measured on the glass -- and `segbrk`'s aliasing control stayed inert
+   anyway, for a reason worth knowing. `map_run` installs whatever
+   `segment_frame` answers, and the server reads and writes the same
+   addresses, so a wrong mapping is wrong for the write and the read alike and
+   every pixel comes back from where it was put. What it breaks is frames it
+   does not own, which no readback can see. That wants a sweep, which is the
+   shape of a leak check rather than a pixel one. See `docs/USER.md`.
 
 **Deferred, with the reason written down: a font with more than 128 glyphs.**
 `sys/libedit` drops every rune it does not act on, because `sys/libfont` is an

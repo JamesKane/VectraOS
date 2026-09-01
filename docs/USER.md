@@ -1200,6 +1200,7 @@ bigger is the cap this call exists to lift.
 | the new pages are never mapped | **breaks the machine** |
 | `segbrk` answers for any segment kind | **inert**, and see below |
 | a grown run reads every page out of its first piece | **inert**, and see below |
+| a grown window is not taller on the glass | 1 check, `and stands that much taller on the glass, which no frame count could say` |
 
 The first two stop the boot rather than failing a check, and that is the shape
 a grow has: the draw server asks for rows, is told it has them, and writes into
@@ -1215,13 +1216,26 @@ Catching it wants a program written to ask the wrong question. That is assembly
 in `kernel/user/program.odin` rather than a line in a server that exists only
 to be checked. The rule is Plan 9's and it is written down. Nothing watches it.
 
-**And a grown run's new pages are below the screen.** A window is born as tall
-as the glass, so every row `segbrk` adds is off the bottom and `composite`
-clips it away. The frames-dropped check says the pages were allocated and
-nothing reads them back, so a `segment_frame` that answered out of the first
-piece would alias the tail onto pages that are mapped and pass. What would
-catch it is a window born shorter than the screen, whose growth lands where the
-glass can be read.
+**And a wrong mapping for a grown run is self-consistent.** This was first
+written up as "the new pages are below the screen, so nothing reads them
+back", and a window born shorter than the glass was supposed to fix it. That
+landed -- a window is three quarters of the screen now and a grown one is
+measured on the glass, which is a check no frame count could make -- and the
+control stayed inert. The reason was the other one.
+
+`map_run` installs whatever `segment_frame` answers, and the server reads and
+writes the same virtual addresses. A `segment_frame` that answers the wrong
+frame answers it for the write *and* the read, so every pixel comes back from
+exactly where it was put. The window looks right because it is internally
+right.
+
+What the mutation actually breaks is memory it does not own: the grown pages
+land past the end of the first block, on frames the allocator gave to somebody
+else. That is a safety fault rather than a functional one, and no readback can
+see it. Catching it wants an invariant sweep -- every frame a process maps
+belongs to one of its segments -- which is the shape of a leak check rather
+than of a pixel check, and is the honest thing to build if this rule is to be
+watched.
 
 **And one type.** Plan 9's `"shared"` class is `SG_SHARED`, which `dupseg`
 shares whatever the flags say and `exec` inherits. Vectra has no equivalent:

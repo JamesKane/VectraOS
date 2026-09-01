@@ -326,6 +326,21 @@ which is the one column of desktop two half-screen windows never cover, and
 each says whether that window has a session. A compositor knows that and has
 nothing else worth a lamp yet.
 */
+/*
+How much of the glass a window is born covering, as a percentage of its
+height.
+
+`rio` has no equivalent because `rio` has a mouse: a window is the rectangle
+somebody swept, and `goodrect` only says which rectangles are allowed --
+at least one line of text tall, no more than `BIG` times the screen, and never
+big enough to contain the whole screen. This is the same idea where there is
+nobody to ask.
+
+Three quarters leaves a quarter of the glass below a window, which is where a
+grown one goes and where the desktop shows through.
+*/
+WIN_FILL :: 75
+
 DESK_EDGE :: 2
 LAMP :: 12
 LAMP_GAP :: 6
@@ -1428,9 +1443,22 @@ read_geometry :: proc "contextless" (report: []u8) -> bool {
 	windows on this screen that is 960 of 1280. A cascade that ran off the
 	right edge would be a placement policy this server cannot honour, and a
 	geometry it cannot draw on is what it already refuses at start.
+
+	**A window is born shorter than the glass, and `rio` is why.** `goodrect`
+	refuses a rectangle that contains the whole screen -- "must have some
+	screen and border visible so we can move it out of the way" -- and `rio`
+	invents no rectangle at all: a window's size comes from a sweep or from an
+	explicit `wctl` rect. Nothing there is ever born filling the display.
+
+	Vectra has no pointer, so the size is a policy rather than a gesture, and
+	`WIN_FILL` is that policy. What it buys beyond looking right is that a
+	window can *grow* somewhere the glass can be read: while a window was born
+	as tall as the screen, every row `segbrk` added fell below it and
+	`composite` clipped it away, so two of that call's controls had nothing to
+	watch. See `docs/USER.md`.
 	*/
 	win_w = scr_w / MAX_WINDOWS
-	win_h = scr_h
+	win_h = scr_h * WIN_FILL / 100
 	if win_w <= 0 {
 		return false
 	}
