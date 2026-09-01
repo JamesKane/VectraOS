@@ -480,6 +480,89 @@ asked.** A `ctl` read answers the new shape for anything that wants to be sure.
 That is the third time a backing store retired an event this design once
 expected to build.
 
+## 12. Chrome, and one palette for both privilege levels
+
+`kernel/splash.odin` paints the boot chassis. It says of itself that
+`intuition`'s window frames should be recognisably the same object as the
+screen the kernel painted before there was a compositor. That could not happen
+while the vocabulary was a set of surface painters in ring 0.
+
+**A piece of chrome is a list of coloured rectangles, and that is the whole
+design.** `sys/libdraw`'s `panel`, `well`, `raised` and `lamp` decompose and
+paint nothing. The kernel paints its chassis onto a surface. The draw server
+paints into a window's store or onto the glass. A client sends `fill` commands
+down a pipe. Three painters, and the one thing they agree about is a rectangle
+with a colour in it.
+
+What the rectangle model does not carry is the chassis's two richest surfaces.
+`gradient_v` is a colour per row and `brushed` is a pattern per pixel, and
+neither is a rectangle. A client that wants a gradient sends one fill per row.
+**A gradient verb would be the seventh verb section 5 guards against**, and a
+row of fills is what a client library is for.
+
+### One table, both rings
+
+The palette lived in `kernel/drivers/fb/palette.odin`. It promised there that
+`intuition` would expose the same table. The boot splash, the panic screen and
+the desktop are meant to be visibly the same machine. By the time there was a desktop,
+three places had their own copy. The kernel's, the draw server's three
+constants, and the terminal's two.
+
+It is `sys/libpal` now, in the tree both privilege levels already import. `fb`
+aliases every name, so nothing in the kernel had to learn where the colours
+went. Ring 3 reads them through `xrgb`, or through the shift written against
+the table when it needs a constant. `libpal` records that second shape rather
+than leaving each call site to rediscover it.
+
+### What is wearing it
+
+**The desktop is a recessed well.** The screen has the same two-pixel bevel
+the chassis sinks its console into. The ground reads as sunk into a machine
+rather than as a colour somebody chose.
+
+**A lamp per window, down the right edge**, which is the one column of desktop
+two half-screen windows never cover. Lit when that window has a session. A
+compositor knows that and has nothing else worth a lamp yet. It is also the
+first thing on this screen that reports state rather than draws pixels.
+
+An unlit lamp is a dark version of its own colour rather than a neutral grey.
+That sentence is `kernel/splash.odin`'s and so is the reason. A bank of lamps
+with none of them on still reads as several of the same kind of thing. It is
+the one part of the idiom that is a judgement rather than an arithmetic, and so
+the part with a check on it.
+
+**`apps/terminal`'s field is sunk into a well**, sent as ordinary fills. That
+is the whole point of a vocabulary made of rectangles. The app draws the same
+object the kernel draws, through a protocol that never learned what a bevel is.
+
+### What is not wearing it yet
+
+**A window has no frame and no title bar.** That is the obvious next use and
+it is not free. A frame means the client area is no longer the window's whole
+rectangle, so a window's origin moves in by the frame's depth. Every coordinate
+the self-test hardcodes moves with it, and it hardcodes many, because a
+readback names a screen pixel. A title also wants a font in the server, which
+the server does not have, and a `ctl` line to set a name.
+
+### The controls for chrome
+
+Six mutations, each on a real boot. All six are caught.
+
+| Mutation | Result |
+|---|---|
+| a lamp does not light when its window opens | 1 check, `its lamp is lit, in the phosphor both sides of the door read from one table` |
+| a lamp does not go out when its session does | 1 check, `its lamp goes out with its session` |
+| an unlit lamp is a neutral grey | 1 check, `dark in its own colour, which is what an unlit lamp is` |
+| a panel has a face and no edges | 1 check, `its field is sunk into a well` |
+| a recessed bevel is lit from the top left | 1 check, the same |
+| the terminal's field is a plain fill again | 1 check, the same |
+
+**Every one is a single check, and that is the shape chrome has.** There is no
+arithmetic here for a readback to catch sideways. Each rule puts one colour at
+one place, so each mutation moves exactly one pixel the test names. The
+interesting one is the neutral grey, the only rule in the set that is a
+judgement rather than a consequence.
+
 ### The controls for the compositor
 
 Twenty-six mutations across the milestones this section covers, each on a real

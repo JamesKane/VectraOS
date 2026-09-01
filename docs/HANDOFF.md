@@ -53,7 +53,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1330 checks against itself and idles.
+1335 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -254,6 +254,7 @@ release. The six embedded user images (`ramfs`, `consrv`, `kbdfs`,
 | `kernel/mem/` | PMM, VMM, and a heap behind `context.allocator` | `docs/MEMORY.md` |
 | `kernel/sched/` | Threads, priorities, decay, and the LAPIC tick that preempts | `docs/SCHED.md` |
 | `kernel/sync/` | The lock that masks, the lock that parks, and waiting for a condition | `docs/SYNC.md` |
+| `sys/libpal/` | The system palette: one table the kernel and ring 3 both read | `docs/DRAW.md` |
 | `sys/vectra9/` | The 9P2000.L message set, its codec, and the session and transport boundary | `docs/VECTRA9.md` |
 | `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings | `docs/NAMESPACE.md` |
 | `kernel/mnt/` | A 9P connection with several requests in flight, `Tflush` over it, and the wire whose far side is bytes | `docs/TRANSPORT.md` |
@@ -647,13 +648,31 @@ the first thing that damages two rectangles far apart. `size` moves a window's
 edges inside the run it was born with and never past it, which is `segbrk`'s
 absence speaking.
 
+**And the chassis's vocabulary reaches ring 3.** `kernel/splash.odin` said its
+window frames should be the same object as the screen the kernel painted. That
+could not happen while bevels were surface painters in ring 0.
+
+`sys/libdraw` decomposes a panel, a well and a lamp into coloured rectangles
+and paints nothing. So the kernel, the draw server and a client through a pipe
+all draw the same object three different ways.
+
+**And the palette is one table both privilege levels read.** It promised that
+of itself and had three copies. `sys/libpal` holds it, `fb` aliases every name,
+and ring 3 packs it. The desktop is a recessed well with a lamp per window down
+its right edge, lit when that window has a session. `apps/terminal`'s field is
+sunk into a well sent as ordinary fills. There is no chrome verb, and
+`docs/DRAW.md` section 5 is why there is not.
+
 **Next, in order:**
 
-1. **Chrome, and the bevels the chassis already knows how to draw.** The
-   desktop has a grid on it and nothing else. No wells, no lamps, no title bar
-   on a window. `kernel/splash.odin` draws all of those against a surface in
-   ring 0. A `libdraw` that drew them would be the same code one privilege
-   level out. It is what `apps/` needs before it has a second app.
+1. **A window frame, and the title bar on it.** The obvious next wearer of the
+   vocabulary, and the one with a cost. A frame means the client area is no
+   longer the window's whole rectangle. A window's origin moves in by the
+   frame's depth, and every coordinate the self-test hardcodes moves with it.
+
+   A title also wants two things that do not exist. A font in the draw server,
+   which has none because clients upload their own, and a `ctl` line to set a
+   name.
 
 2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
@@ -954,7 +973,7 @@ kernel/
                         reaper that collects a detached orphan
     program.odin        The twenty-eight programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 684 checks -- one process preempted
+    verify.odin         The boot self-test: 689 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that
@@ -1013,6 +1032,10 @@ sys/
   libdraw/text.odin     Text as a library over blit: the atlas layout, and
                         put_text with its consumed-count return that pumps
                         a long line through in batches
+  libdraw/chrome.odin   The chassis vocabulary as rectangles: a bevelled
+                        panel, a well, a lamp, and the fills a client sends
+                        to wear them
+  libpal/palette.odin   The system palette, once, for both privilege levels
   libfont/font_data.odin  GENERATED -- the one 8x16 font table, imported
                         by the kernel console and linked by ring 3 alike
   libposix/             Empty

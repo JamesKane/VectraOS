@@ -1,44 +1,49 @@
 /*
-The Vectra system palette -- "Cyberpunk Workstation 1994".
+The Vectra system palette, as the kernel sees it.
 
-These are the only colours the kernel-side chrome is allowed to invent.
-`intuition` will expose the same table through /ws/screen/palette so that the
-boot splash, the panic screen, and the desktop are visibly the same machine.
+**The table itself lives in `sys/libpal` now, and both privilege levels read
+it.** This file promised that `intuition` would expose the same table, so the
+boot splash, the panic screen and the desktop are visibly the same machine. By
+the time there was a desktop, three places had their own copy of it. Moving
+the constants one directory sideways -- into the tree the kernel and ring 3
+both already import -- is that promise kept rather than restated.
 
-Surfaces are brushed dark magnesium over deep slate. Accents are the three
-phosphor colours a CRT of that era could actually make bloom.
+Every name below is the same name it always was, so nothing in the kernel had
+to learn where the colours went. What is here is the aliasing and nothing else.
 */
 package fb
 
-RGB :: [3]u8
+import "vsys:libpal"
+
+RGB :: libpal.RGB
 
 // -- Structural surfaces -----------------------------------------------------
 
-VOID           :: RGB{0x07, 0x09, 0x0C} // Behind everything; true backdrop
-SLATE_DEEP     :: RGB{0x0E, 0x13, 0x1A} // Desktop ground
-SLATE          :: RGB{0x18, 0x1F, 0x28} // Recessed wells, sunken panels
-MAGNESIUM_DARK :: RGB{0x22, 0x2A, 0x34} // Bevel shadow edge
-MAGNESIUM      :: RGB{0x3C, 0x45, 0x51} // Face of a raised control
-MAGNESIUM_LIT  :: RGB{0x60, 0x6C, 0x7A} // Bevel highlight edge
-MAGNESIUM_HOT  :: RGB{0x84, 0x92, 0xA2} // Specular top edge on tall bevels
+VOID :: libpal.VOID
+SLATE_DEEP :: libpal.SLATE_DEEP
+SLATE :: libpal.SLATE
+MAGNESIUM_DARK :: libpal.MAGNESIUM_DARK
+MAGNESIUM :: libpal.MAGNESIUM
+MAGNESIUM_LIT :: libpal.MAGNESIUM_LIT
+MAGNESIUM_HOT :: libpal.MAGNESIUM_HOT
 
 // -- Copper trim -------------------------------------------------------------
 
-COPPER_DARK :: RGB{0x5E, 0x33, 0x16}
-COPPER      :: RGB{0xB4, 0x6C, 0x32}
-COPPER_LIT  :: RGB{0xE6, 0xA6, 0x62}
+COPPER_DARK :: libpal.COPPER_DARK
+COPPER :: libpal.COPPER
+COPPER_LIT :: libpal.COPPER_LIT
 
 // -- Phosphor accents --------------------------------------------------------
 
-AMBER      :: RGB{0xFF, 0xB0, 0x28} // Primary text; the terminal's own colour
-AMBER_DIM  :: RGB{0x8A, 0x5C, 0x14} // Inactive labels, embossed shadow
-AMBER_HOT  :: RGB{0xFF, 0xDC, 0x9A} // Highlighted / focused text
+AMBER :: libpal.AMBER
+AMBER_DIM :: libpal.AMBER_DIM
+AMBER_HOT :: libpal.AMBER_HOT
 
-CYAN       :: RGB{0x38, 0xE0, 0xE8} // Data, values, links
-CYAN_DIM   :: RGB{0x1A, 0x6E, 0x74}
+CYAN :: libpal.CYAN
+CYAN_DIM :: libpal.CYAN_DIM
 
-PHOSPHOR   :: RGB{0x6C, 0xFF, 0x8A} // Healthy status, "OK"
-PHOSPHOR_DIM :: RGB{0x2C, 0x74, 0x3C}
+PHOSPHOR :: libpal.PHOSPHOR
+PHOSPHOR_DIM :: libpal.PHOSPHOR_DIM
 
-ALERT      :: RGB{0xF2, 0x46, 0x3A} // Faults, panics
-ALERT_DIM  :: RGB{0x7A, 0x1E, 0x18}
+ALERT :: libpal.ALERT
+ALERT_DIM :: libpal.ALERT_DIM

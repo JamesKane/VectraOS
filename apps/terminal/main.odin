@@ -38,12 +38,21 @@ import "base:runtime"
 import "vsys:abi"
 import "vsys:libdraw"
 import "vsys:libfont"
+import "vsys:libpal"
 import "vsys:libuser"
 import "vsys:vectra9"
 
 // The terminal's two colors, in the 32-bit format `/dev/fbctl` reports.
-FG :: u32(0x00FFB028)
-BG :: u32(0x00181F28)
+// The two colours, out of the one table both privilege levels read. They were
+// written out as pixel words here until `sys/libpal` existed, which is one of
+// the three copies that file's own comment promised to retire.
+FG :: u32(libpal.AMBER[0]) << 16 | u32(libpal.AMBER[1]) << 8 | u32(libpal.AMBER[2])
+BG :: u32(libpal.SLATE[0]) << 16 | u32(libpal.SLATE[1]) << 8 | u32(libpal.SLATE[2])
+
+// The well the field sits in: `kernel/splash.odin`'s console well, one
+// privilege level out and a few hundred pixels across. The padding is what
+// keeps the bevel clear of the text, so no glyph lands on an edge.
+WELL_PAD :: 4
 
 // The atlas: six strips of sixteen 8x16 cells, ids 1..6, holding the
 // font's 95 glyphs. Strip six carries fifteen and its last cell stays
@@ -282,10 +291,25 @@ upload_font :: proc "contextless" () #no_bounds_check {
 	}
 }
 
-// prompt paints the field once: background, the two prompt cells, and a
-// flush. One write carries all of it.
+/*
+prompt paints the field once: the well it sits in, the two prompt cells, and a
+flush. One write carries all of it.
+
+The well's face is `SLATE`, which is what `BG` already was, so the text lands
+on it with nothing between. Its edges are `libdraw`'s decomposition sent down
+the wire as ordinary fills -- there is no chrome verb, and section 5 of
+`docs/DRAW.md` is why there is not.
+*/
 prompt :: proc "contextless" () {
-	at := libdraw.put_fill(cmd[:], 0, 0, FIELD_X, field_y, FIELD_W, FIELD_H, BG)
+	pieces: [libdraw.MAX_PIECES]libdraw.Piece
+	n := libdraw.well(
+		pieces[:],
+		FIELD_X - WELL_PAD,
+		int(field_y) - WELL_PAD,
+		FIELD_W + 2 * WELL_PAD,
+		FIELD_H + 2 * WELL_PAD,
+	)
+	at := libdraw.put_pieces(cmd[:], 0, 0, pieces[:n])
 	at, _ = libdraw.put_text(cmd[:], at, ATLAS, 0, FIELD_X, field_y, PROMPT)
 	send(libdraw.put_flush(cmd[:], at))
 }

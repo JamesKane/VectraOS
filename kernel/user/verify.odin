@@ -74,6 +74,22 @@ refused :: proc "contextless" (e: vectra9.Errno) -> u64 {
 	return u64(value)
 }
 
+/*
+channel pulls one colour out of a pixel word, through the surface's own shifts.
+
+A self-test that assumed XRGB8888 would agree with itself on this machine and
+be wrong on the next one. `fb.pack` goes the other way and reads the same
+fields. That is what makes a check comparing a pixel to a palette entry mean
+anything.
+*/
+@(private = "file")
+channel :: proc "contextless" (s: ^fb.Surface, value: u32, shift: u8, size: u8) -> u32 {
+	if size == 0 {
+		return 0
+	}
+	return (value >> shift) & ((u32(1) << size) - 1)
+}
+
 @(private = "file") PF_PRESENT :: u64(1) << 0
 @(private = "file") PF_WRITE :: u64(1) << 1
 @(private = "file") PF_USER :: u64(1) << 2
@@ -3458,6 +3474,25 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	check(r, prompted, "the terminal mounts the server itself and paints its prompt")
 	check(r, glyph_on_glass(s, 16, y0, ' '), "whose glyphs match the kernel's own font, pixel for pixel")
 
+	/*
+	And the field sits in a well now.
+
+	`kernel/splash.odin` sinks the console into one and says its vocabulary
+	should reach `intuition`'s clients. It does: `sys/libdraw` decomposes a
+	well into rectangles and `apps/terminal` sends them as ordinary fills.
+	There is no chrome verb, which is what section 5 of `docs/DRAW.md` guards.
+
+	The pixel watched is on the well's own edge, four columns left of the
+	first glyph. A recessed bevel puts the shadow on the top and left, so this
+	is `VOID`. That is the darkest thing in the palette, and nothing the
+	terminal's own two colours could produce.
+	*/
+	check(
+		r,
+		fb.get_raw(s, 4, y0) == fb.pack(s, fb.VOID),
+		"and its field is sunk into a well, out of the chassis's own vocabulary",
+	)
+
 	// Three bytes, no newline. Echo runs synchronously on this thread,
 	// so the cursor comparison needs no settle loop.
 	col0 := column()
@@ -4143,6 +4178,45 @@ verify_windows :: proc(
 	far := fb.get_raw(s, far_x, far_y)
 
 	/*
+	The second window's indicator lamp, at the middle of its jewel.
+
+	A fixture, like the cascade above it. The draw server puts one lamp per
+	window down the right edge, which is the one column of desktop two
+	half-screen windows never cover. A client has no verb that would tell this
+	test so.
+
+	It is chrome out of `sys/libdraw` and colour out of `sys/libpal`, which is
+	the table this side of the door reads through `fb`. So the check can name
+	the colour rather than compare two pixels and hope.
+	*/
+	LAMP :: 12
+	LAMP_GAP :: 6
+	LAMP_INSET :: 20
+	lamp_x := s.width - LAMP_INSET - LAMP + LAMP / 2
+	lamp_y := LAMP_INSET + (LAMP + LAMP_GAP) + LAMP / 2
+	lamp_dark := fb.get_raw(s, lamp_x, lamp_y)
+	check(
+		r,
+		lamp_dark != fb.pack(s, fb.PHOSPHOR),
+		"the second window's lamp is dark, because nothing holds that window",
+	)
+	/*
+	And dark in its own colour rather than in grey.
+
+	`kernel/splash.odin` states the rule and the reason. A bank of lamps with
+	none of them on still has to read as several of the same kind of thing. It
+	is the one part of the chassis idiom that is a judgement rather than an
+	arithmetic, so it is the part worth a check.
+
+	The channels come out through the surface's own shifts. The kernel draws on
+	whatever mode the bootloader set, and this test may not assume one.
+	*/
+	dr := channel(s, lamp_dark, s.red_shift, s.red_size)
+	dg := channel(s, lamp_dark, s.green_shift, s.green_size)
+	db := channel(s, lamp_dark, s.blue_shift, s.blue_size)
+	check(r, dg > dr && dg > db, "and dark in its own colour, which is what an unlit lamp is")
+
+	/*
 	And one pixel of the desktop's grid, beside one of its ground.
 
 	The grid is decoration and `desk_at` is arithmetic, and this is the
@@ -4216,6 +4290,11 @@ verify_windows :: proc(
 		r,
 		fb.get_raw(s, second_x, y) == B,
 		"half a window across, which is where the second window is",
+	)
+	check(
+		r,
+		fb.get_raw(s, lamp_x, lamp_y) == fb.pack(s, fb.PHOSPHOR),
+		"and its lamp is lit, in the phosphor both sides of the door read from one table",
 	)
 	check(
 		r,
@@ -4336,6 +4415,7 @@ verify_windows :: proc(
 		fb.get_raw(s, ground_x, ground_y) == ground,
 		"and where no window is left, the desktop is back",
 	)
+	check(r, fb.get_raw(s, lamp_x, lamp_y) == lamp_dark, "and its lamp goes out with its session")
 
 
 	// The window comes back with the fid, so a client can open again.

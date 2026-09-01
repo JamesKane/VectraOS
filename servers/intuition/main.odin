@@ -79,6 +79,7 @@ import "base:runtime"
 
 import "vsys:abi"
 import "vsys:libdraw"
+import "vsys:libpal"
 import "vsys:libuser"
 import "vsys:vectra9"
 
@@ -296,6 +297,26 @@ DESK_GRID :: u32(0x0007090C)
 DESK_STEP :: 32
 WIN_GROUND :: u32(0x00181F28)
 
+/*
+The desktop's own chrome: the edge it is sunk into, and a lamp per window.
+
+**This is `kernel/splash.odin`'s vocabulary one privilege level out.** The
+chassis file says its window frames should be recognisably the same object as
+the screen the kernel painted, and that could not happen while bevels were
+surface painters in ring 0. `sys/libdraw`'s `panel`, `well` and `lamp` are that
+vocabulary as rectangles, and this is a server drawing with it.
+
+The screen is a recessed well, so the desktop reads as sunk into a machine
+rather than as a colour somebody chose. The lamps sit down the right edge,
+which is the one column of desktop two half-screen windows never cover, and
+each says whether that window has a session. A compositor knows that and has
+nothing else worth a lamp yet.
+*/
+DESK_EDGE :: 2
+LAMP :: 12
+LAMP_GAP :: 6
+LAMP_INSET :: 20
+
 // desk_at is the desktop's colour at one screen pixel. Positional rather than
 // stored, so any rectangle of it can be repainted exactly, in any order, with
 // nothing to keep between.
@@ -322,6 +343,73 @@ desk_paint :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bo
 		dst := screen_at(y)
 		for x in x0 ..< x1 {
 			dst[x] = desk_at(x, y)
+		}
+	}
+	desk_chrome(x0, y0, x1, y1)
+}
+
+/*
+desk_chrome paints the parts of the desktop that are not ground: the edge the
+screen is sunk into, and the lamps.
+
+Clipped to the rectangle asked for, like everything else here, so the same call
+serves the whole screen at start and the strip a window uncovers when it moves.
+Both are `pieces` walked through one clipped fill.
+*/
+desk_chrome :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bounds_check {
+	pieces: [libdraw.MAX_PIECES]libdraw.Piece
+
+	n := libdraw.panel(
+		pieces[:],
+		0,
+		0,
+		scr_w,
+		scr_h,
+		.Recessed,
+		libpal.SLATE_DEEP,
+		libpal.MAGNESIUM_LIT,
+		libpal.VOID,
+		DESK_EDGE,
+	)
+	// The face is the ground `desk_paint` already laid, grid and all. Only the
+	// edges are this call's, so the first piece is skipped.
+	desk_pieces(pieces[1:n], sx0, sy0, sx1, sy1)
+
+	for i in 0 ..< MAX_WINDOWS {
+		x, y := lamp_at(i)
+		ln := libdraw.lamp(pieces[:], x, y, LAMP, libpal.PHOSPHOR, windows[i].used)
+		desk_pieces(pieces[:ln], sx0, sy0, sx1, sy1)
+	}
+}
+
+// lamp_at is where window `i`'s indicator sits: down the right edge, in the
+// one column of desktop two half-screen windows never reach.
+lamp_at :: proc "contextless" (i: int) -> (int, int) {
+	return scr_w - LAMP_INSET - LAMP, LAMP_INSET + i * (LAMP + LAMP_GAP)
+}
+
+// desk_lamp repaints one window's indicator, for the moments its state
+// changes and nothing else about the desktop does.
+desk_lamp :: proc "contextless" (i: int) #no_bounds_check {
+	pieces: [libdraw.MAX_PIECES]libdraw.Piece
+	x, y := lamp_at(i)
+	n := libdraw.lamp(pieces[:], x, y, LAMP, libpal.PHOSPHOR, windows[i].used)
+	desk_pieces(pieces[:n], 0, 0, scr_w, scr_h)
+}
+
+// desk_pieces stores a run of chrome onto the glass, each rectangle clipped to
+// the region being repainted and to the screen.
+desk_pieces :: proc "contextless" (pieces: []libdraw.Piece, sx0: int, sy0: int, sx1: int, sy1: int) #no_bounds_check {
+	for p in pieces {
+		x0 := max(max(p.x, sx0), 0)
+		y0 := max(max(p.y, sy0), 0)
+		x1 := min(min(p.x + p.w, sx1), scr_w)
+		y1 := min(min(p.y + p.h, sy1), scr_h)
+		for y in y0 ..< y1 {
+			dst := screen_at(y)
+			for x in x0 ..< x1 {
+				dst[x] = p.color
+			}
 		}
 	}
 }
@@ -861,6 +949,9 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_boun
 	region_clear(&scratch)
 	region_add(&scratch, win.x, win.y, win.w, win.h)
 	composite(&scratch)
+	// And the lamp for it, which is outside every window's rectangle and so
+	// outside every composite.
+	desk_lamp(at)
 	return true
 }
 
@@ -899,6 +990,7 @@ window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 		region_clear(&scratch)
 		region_add(&scratch, x0, y0, x1 - x0, y1 - y0)
 		composite(&scratch)
+		desk_lamp(i)
 	}
 }
 
