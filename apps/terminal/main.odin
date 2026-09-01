@@ -90,6 +90,17 @@ PROMPT :: "> "
 INPUT_X :: FIELD_X + 2 * libfont.FONT_WIDTH
 MAX_COLS :: 42
 
+// The caret is an underline this thick, under the cell the cursor is in. An
+// underline rather than a block, because a block over a character hides the
+// character and this field has one line to show.
+CARET_H :: 2
+
+// cell_x is the left edge of one input column. The glyphs and the caret have
+// to land on the same grid, so the arithmetic is written once.
+cell_x :: proc "contextless" (col: int) -> u32 {
+	return u32(INPUT_X + col * libfont.FONT_WIDTH)
+}
+
 field_y: u32
 
 /*
@@ -293,17 +304,37 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 		arrived, and the next character clears it anyway -- `render` fills the
 		field before it draws.
 		*/
+		/*
+		**One draw per read, not one per character.**
+
+		A read of a raw window drains the whole queue, so a burst arrives
+		together -- and every `render` is a blocking round trip to the draw
+		server carrying a fill, a blit per glyph and a flush that composites
+		the window. Drawing each intermediate state would put ten round trips
+		on the wire to show the tenth.
+
+		The line finishing is the one point that has to draw before it is
+		read, because `clear` is about to empty what the field is showing.
+		*/
+		dirty := false
 		for i in 0 ..< int(got) {
 			switch libedit.put(&edit, line[i]) {
 			case .Done:
+				// The finished line stays on the glass, which is what this
+				// field has instead of scrollback.
+				render(libedit.text(&edit), libedit.cursor(&edit))
+				dirty = false
 				if libedit.text(&edit) == "exit" {
 					libuser.exit(0)
 				}
 				libedit.clear(&edit)
 			case .Edited:
-				render(libedit.text(&edit))
+				dirty = true
 			case .Full:
 			}
+		}
+		if dirty {
+			render(libedit.text(&edit), libedit.cursor(&edit))
 		}
 	}
 }
@@ -384,7 +415,13 @@ field. The first batch carries the background fill and as many blits as
 fit; `put_text`'s consumed count pumps the rest through in more batches;
 the flush rides the last one.
 */
-render :: proc "contextless" (text: string) {
+/*
+render draws the line, and `caret` says which column the cursor sits in.
+
+A caret past the last glyph is the ordinary case rather than an edge one: it
+is where the next character goes, and that is what a person needs to see.
+*/
+render :: proc "contextless" (text: string, caret: int) {
 	shown := text[:min(len(text), MAX_COLS)]
 
 	at := libdraw.put_fill(cmd[:], 0, 0, INPUT_X, field_y, FIELD_W - (INPUT_X - FIELD_X), FIELD_H, BG)
@@ -395,13 +432,13 @@ render :: proc "contextless" (text: string) {
 			at,
 			ATLAS,
 			0,
-			u32(INPUT_X + done * libfont.FONT_WIDTH),
+			cell_x(done),
 			field_y,
 			shown[done:],
 		)
 		done += put
 		if done >= len(shown) {
-			send(libdraw.put_flush(cmd[:], nat))
+			send(libdraw.put_flush(cmd[:], put_caret(nat, caret)))
 			return
 		}
 		// A batch boundary: write what fits and continue. A buffer that
@@ -409,4 +446,28 @@ render :: proc "contextless" (text: string) {
 		send(nat)
 		at = 0
 	}
+}
+
+/*
+put_caret adds the underline to a batch. Answers where the batch now ends.
+
+**The clip is the field's, which is the same one the text above obeys.** A
+line is shown to `MAX_COLS` columns, so column `MAX_COLS` is the first one
+outside -- and a caret drawn there would sit past the rectangle `render`
+clears, where nothing would ever rub it out again.
+*/
+put_caret :: proc "contextless" (at: int, caret: int) -> int {
+	if caret >= MAX_COLS {
+		return at
+	}
+	return libdraw.put_fill(
+		cmd[:],
+		at,
+		0,
+		cell_x(caret),
+		field_y + u32(FIELD_H - CARET_H),
+		u32(libfont.FONT_WIDTH),
+		CARET_H,
+		FG,
+	)
 }

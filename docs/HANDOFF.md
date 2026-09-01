@@ -49,7 +49,7 @@ preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 | Processes | ring 3, a namespace and a descriptor group of its own, `spawn`, `rfork` by Plan 9's flag word, `exec` in place, notes a handler catches, `segalloc` for memory no file serves | `USER.md` |
 | Ring 3 servers | five of them, on a runtime with a serve loop, a concurrent one with a worker per parked request, and the tree's first ring 3 lock | `RUNTIME.md` |
 | The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` and `consctl` per window with a line discipline of its own | `DRAW.md` |
-| Typing | one discipline (`sys/libedit`) worn by the server that cooks a window's lines and by the program that draws them and echoes | `DRAW.md` |
+| Typing | one discipline (`sys/libedit`) worn by the server that cooks a window's lines and by the program that draws them and echoes, with a cursor `^A` and `^E` move | `DRAW.md` |
 
 **The screen is the part with the most recent work in it.**
 `servers/intuition` holds `/dev/fb` and maps it with `segattach`. It owns every
@@ -140,6 +140,8 @@ them could have come earlier:
     an echo                 and the half that draws is the half that holds
                             the line, which is the only arrangement that can
                             show a character before it is a line
+    a cursor                and a character goes in where it is rather than
+                            at the end, with a caret under it saying where
 
 ### Reading a boot log
 
@@ -336,12 +338,15 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **A cursor inside the line under construction**, which is the arrow keys.
-   `sys/libedit` grows a position and both ring 3 callers get it at once: the
-   draw server's per-window discipline and the terminal's echo. `rio` has it
-   (`^A`, `^E`, left, right) and 9front's `aux/kbdfs` does not, so it is rio's
-   shape rather than a shared one. It is the last of the two things
-   `docs/HANDOFF.md` has listed as what a person wants next.
+2. **Runes, so an arrow key can arrive at all.** The cursor exists and `^A`
+   and `^E` move it, which is what `rio` does with ordinary control bytes. The
+   arrows themselves are not a line-editing question: in Plan 9 an arrow is a
+   rune in the private Unicode space -- `Kleft` is U+F011 -- delivered as
+   UTF-8 through the same stream a letter is. Nothing here speaks runes, and
+   `kernel/drivers/kbd` drops the `0xE0` extended keys on purpose because
+   their second byte is a letter's. So this is a keyboard that emits runes, a
+   `/dev/cons` that carries them, and a decoder in every reader. See
+   `docs/DRAW.md` section 16.
 
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
@@ -443,11 +448,9 @@ where they live:
 - A stack backtrace on the panic screen. Everything else a fault report wants to
   say is already there.
 - Make `check_base_revision()` a hard stop rather than a warning.
-- A cursor inside the line under construction, which is the arrow keys. It is
-  a position in `sys/libedit` and both ring 3 callers get it at once. `^W` is
-  no longer on this list: a window has it, `/dev/cons` does not, and 9front's
-  two disciplines disagree about what a word is on purpose. See `docs/DRAW.md`
-  section 15.
+- Nothing from the "word erase and the arrow keys" pair is left here. A window
+  has `^W`, and a line has a cursor `^A` and `^E` move. The arrow keys became
+  a rune question rather than an editing one -- see item 2 above.
 - Enforce the `open` flag on a fid. 9P forbids a walk on an open fid and a read
   on an unopened one. `vfs.Fid_Table` carries the flag and no server checks it.
   `chan_clone` walks a fid that may already be open, so this has a blast radius

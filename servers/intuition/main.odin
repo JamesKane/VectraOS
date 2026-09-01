@@ -979,19 +979,19 @@ still cooks `/dev/cons` for everything that has not diverted it. This server
 writes `rawon` and takes the characters, so the editing that used to be shared
 by every window belongs to each.
 
-The set is `rio`'s. `wbswidth` decides how far back an erase goes, and these
-are its three answers:
+**The rules are `sys/libedit`'s and are not restated here.** That package is
+`rio`'s `wbswidth` and `winsert`, worn by this server and by `apps/terminal`,
+and one of the two is enough places to write down what `^W` means.
 
-    ^H, DEL     one character
-    ^U          the whole line
-    ^W          one word: the run of letters and digits before the cursor,
-                and any spaces between it and the cursor
+**A cooked window has a cursor and cannot show it.** `^A` and `^E` move it, so
+a character goes in where it is rather than at the end. Nothing in this server
+echoes -- see `run_consctl` -- so a client that wants a person to *see* the
+cursor draws its own, which is what `apps/terminal` takes `rawon` for. The two
+control bytes stop reaching a cooked client, which is `rio`'s arrangement
+exactly: they are motion there too, and a client that wants them literally asks
+for raw.
 
-**`^W` is the one the kernel never had.** `docs/HANDOFF.md` names word erase
-and the arrow keys as the two a person misses next, and a window gets the first
-of them here. `/dev/cons` still does not have it.
-
-A line is finished by a newline and by nothing else. `^D` is the kernel's
+A newline finishes a line, and nothing else does. `^D` is the kernel's
 end-of-transmission and this does not answer it: a partial line delivered with
 no newline would break the one-line-per-read rule `ring_drain_line` keeps, and
 an empty one has to mean end of file, which is a claim about a window's life

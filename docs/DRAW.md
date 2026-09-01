@@ -1316,3 +1316,96 @@ and passes everything else.
 `sys/libedit` and the checks it fails are `verify_cons`'s -- the *server's*
 side, in a procedure that never goes near `apps/terminal`. One package, two
 callers, and a control that reaches both from either end.
+
+## 16. A cursor in the line, and what the arrow keys actually need
+
+`docs/HANDOFF.md` named word erase and the arrow keys as the two things a
+person wants next, and did so before there was a window. Section 14 gave a window
+`^W`. This is the other one, and reading 9front changed what it is.
+
+### The arrow keys are runes, and there are none here
+
+In Plan 9 an arrow key is **a rune in the private Unicode space**.
+`sys/include/keyboard.h` sets `KF = 0xF000` and `Kleft = KF|0x11`, so a left
+arrow is U+F011 and arrives as three bytes of UTF-8 through the same stream a
+letter does. `rio` reads it with `chartorune` and switches on the rune.
+
+**Nothing in this tree speaks runes.** There is no UTF-8 anywhere in the
+kernel or in `sys/`, and `kernel/drivers/kbd` consumes the `0xE0` prefix and
+drops the key on purpose -- its own comment says ignoring the prefix "would
+make the arrow keys type letters", because an extended code shares its second
+byte with an ordinary one.
+
+So the arrow keys are not a line-editing question at all. They are a rune
+question, and that is a milestone of its own: a keyboard that emits runes, a
+`/dev/cons` that carries them, and a decoder in every reader.
+
+### What `rio` does with ordinary bytes
+
+`rio` moves by a whole line with two control characters, and those are plain
+single bytes there as here:
+
+    ^A    Ksoh, 0x01, to the beginning of the line
+    ^E    Kenq, 0x05, to the end of it
+
+`sys/libedit` has both, with rio's values. A `Line` grew a `pos`, a character
+goes in **at** the cursor rather than at the end, and an erase takes what is
+**before** it -- which is `winsert` and `wdelete` over one line's worth of
+buffer instead of a window's whole text.
+
+An erase at the front of a line therefore takes nothing, because nothing is
+behind the cursor. `rio` answers the same way: `wbswidth` is only ever called
+after `if(w->q0==0 || w->q0==w->qh) return`.
+
+**Both callers got it from one edit.** `servers/intuition` cooks a window's
+line with a cursor now and needed no change at all. `apps/terminal` needed one,
+because it draws.
+
+### The caret, and what it cost the checks
+
+**A caret is two pixels under a cell**, in the amber the glyphs are drawn in.
+An underline rather than a block, because a block over a character hides the
+character and this field has one line to show. A caret past the last glyph is
+the ordinary case: it is where the next one goes.
+
+That broke two checks, and the break was real rather than incidental. Both
+compared a cell against a blank glyph, pixel for pixel, at a column the caret
+now sits in. A caret *is* pixels in that cell.
+
+So the test grew two readers. `caret_at` reads the bottom row of a cell and
+asks whether it is all foreground. `cell_body_blank` reads the rows above the
+caret's band and asks whether they hold a letter. The two checks that broke
+became four that say more: no letter here, and the caret is here.
+
+**`CARET_BAND` is deliberately looser than the caret is thick.** The test says
+where the caret is and not how tall, so a thicker caret stays inert -- the same
+choice section 12 makes for a deeper window border, and for the same reason.
+
+### The controls
+
+| Mutation | Result |
+|---|---|
+| a character appends rather than going in at the cursor | 1 check, `^A puts the cursor at the front, and a character goes in where it is` |
+| `^E` does not move the cursor back | 7 checks, first `and ^E puts it back at the end, which is where it was born` |
+| the terminal draws no caret | 8 checks, first `and the caret comes back with it, to where the next one goes` |
+| an erase takes from the end rather than from before the cursor | 7 checks, first `and an erase at the front of a line takes nothing, because nothing is behind it` |
+
+**The last one is the invariant, seen from outside.** `erase_back` never
+answers more than the slice it gets, and the caller gives it `buf[:pos]`, so
+what it answers can never exceed the cursor and the splice index can never go
+negative.
+
+**What that mutation does is not defined**, and it is worth saying so. Handing
+`erase_back` the whole line makes `^A` then a backspace ask to move bytes from
+in front of index zero, which under `#no_bounds_check` is undefined rather than
+wrong. It stopped one boot outright and failed seven checks on another, from
+the same mutation on either side of a cleanup that did not touch the arithmetic.
+A control whose answer is undefined behaviour reports whatever the layout gives
+it that day, and the checks above are what actually hold the invariant.
+Hand it `buf[:n]` instead and `^A` followed by a backspace asks to remove one
+byte from in front of position zero. The boot does not fail a check, it stops.
+
+That is the third mutation in this document to report that way, and the shape
+is always the same: a control that removes a property everything else stands on
+does not report, it stops. A clamp in `put` would make it fail politely and
+would also make the invariant untrue, so there is none.

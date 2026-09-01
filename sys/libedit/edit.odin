@@ -27,9 +27,21 @@ over letters and digits. A discipline belongs to the layer that serves a
 So this package is what ring 3 shares, and `kernel/devfs` keeps its own for the
 console it serves before any of this exists.
 
-There is no cursor here, and so no arrow keys. A line is edited at its end,
-which is what both callers do and what `docs/HANDOFF.md` lists as the other
-half of what a person wants next.
+**There is a cursor, and the arrow keys are not what moves it.** In Plan 9 an
+arrow is a *rune* in the private Unicode space -- `Kleft` is `KF|0x11`, which
+is U+F011 and three bytes of UTF-8 -- and there is no rune anywhere in this
+tree. `kernel/drivers/kbd` consumes the `0xE0` prefix and drops the key on
+purpose, because an extended code shares its second byte with a letter.
+
+`rio` moves by a whole line with two ordinary control bytes, and those work
+here exactly as they do there:
+
+    ^A          to the beginning of the line
+    ^E          to the end of it
+
+A character is inserted *at* the cursor and an erase takes what is before it,
+which is `winsert` and `wdelete` in one line's worth of buffer. Moving by a
+single character is what still wants the arrows, and the arrows want runes.
 */
 package libedit
 
@@ -39,6 +51,11 @@ BACKSPACE :: u8(0x08)
 DEL :: u8(0x7F)
 KILL :: u8(0x15) // ^U
 WORD :: u8(0x17) // ^W
+
+// And the two that move rather than erase, which are `rio`'s `Ksoh` and
+// `Kenq` and carry those values there too.
+HOME :: u8(0x01) // ^A
+END :: u8(0x05)  // ^E
 
 // is_erase reports whether a byte edits the line rather than joining it.
 is_erase :: proc "contextless" (b: u8) -> bool {
@@ -101,14 +118,21 @@ Result :: enum {
 }
 
 /*
-Line is a fixed buffer and how much of it is in use.
+Line is a fixed buffer, how much of it is in use, and where the cursor is.
 
 The storage is the caller's, because neither caller has an allocator and both
 already own static space. `put` never grows it.
+
+`pos` is an index into `buf` and is always between zero and `n`. A caller that
+draws reads it to put a caret somewhere. A caller that does not still has a
+cursor and cannot show one, so `^A` and `^E` move something its client cannot
+see -- which is `rio`'s arrangement, where a program that wants those bytes
+literally asks for raw.
 */
 Line :: struct {
 	buf: []u8,
 	n:   int,
+	pos: int,
 }
 
 /*
@@ -119,18 +143,41 @@ because `/dev/cons` always delivered one and a reader stops at it -- appends it
 to `text` itself. A caller that draws the line does not.
 */
 put :: proc "contextless" (l: ^Line, b: u8) -> Result #no_bounds_check {
-	if is_erase(b) {
-		l.n -= erase_back(l.buf[:l.n], b)
+	switch b {
+	case HOME:
+		l.pos = 0
 		return .Edited
-	}
-	if b == '\n' {
+	case END:
+		l.pos = l.n
+		return .Edited
+	case '\n':
 		return .Done
 	}
+
+	/*
+	An erase takes what is before the cursor, which is `rio`'s `wdelete` over
+	`wbswidth` of the text behind it. At the beginning of a line there is
+	nothing behind it, `erase_back` answers zero, and the moves below are all
+	empty -- so the case needs no branch of its own.
+	*/
+	if is_erase(b) {
+		d := erase_back(l.buf[:l.pos], b)
+		copy(l.buf[l.pos - d:], l.buf[l.pos:l.n])
+		l.n -= d
+		l.pos -= d
+		return .Edited
+	}
+
 	if l.n >= len(l.buf) {
 		return .Full
 	}
-	l.buf[l.n] = b
+	// And a character goes in *at* the cursor, which is `winsert`. Odin's
+	// `copy` is documented to allow its two slices to overlap, so opening a
+	// byte of room is the same call the erase above closes one with.
+	copy(l.buf[l.pos + 1:l.n + 1], l.buf[l.pos:l.n])
+	l.buf[l.pos] = b
 	l.n += 1
+	l.pos += 1
 	return .Edited
 }
 
@@ -139,6 +186,12 @@ text :: proc "contextless" (l: ^Line) -> string #no_bounds_check {
 	return string(l.buf[:l.n])
 }
 
+// cursor is where the next character goes, as an index into `text`.
+cursor :: proc "contextless" (l: ^Line) -> int {
+	return l.pos
+}
+
 clear :: proc "contextless" (l: ^Line) {
 	l.n = 0
+	l.pos = 0
 }

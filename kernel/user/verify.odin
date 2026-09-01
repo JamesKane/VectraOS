@@ -3582,9 +3582,15 @@ light pixels -- the wrong ones. Only an exact cell tells a right glyph
 from a wrong one.
 */
 @(private = "file")
-glyph_on_glass :: proc "contextless" (s: ^fb.Surface, x: int, y: int, ch: u8) -> bool #no_bounds_check {
+glyph_on_glass :: proc "contextless" (
+	s: ^fb.Surface,
+	x: int,
+	y: int,
+	ch: u8,
+	height := libfont.FONT_HEIGHT,
+) -> bool #no_bounds_check {
 	rows := &libfont.font_8x16[int(ch) - libfont.FONT_FIRST]
-	for line in 0 ..< libfont.FONT_HEIGHT {
+	for line in 0 ..< height {
 		bits := rows[line]
 		for i in 0 ..< libfont.FONT_WIDTH {
 			want := bits & (0x80 >> u8(i)) != 0 ? TERM_FG : TERM_BG
@@ -3594,6 +3600,59 @@ glyph_on_glass :: proc "contextless" (s: ^fb.Surface, x: int, y: int, ch: u8) ->
 		}
 	}
 	return true
+}
+
+/*
+The caret the terminal draws under the cell its cursor is in.
+
+**Read as `the bottom row of a cell is all foreground`**, which does not depend
+on how thick the caret is. `CARET_BAND` is deliberately looser than the two
+pixels `apps/terminal` draws, so the test says where the caret is and not how
+tall, the way `docs/DRAW.md` section 12 leaves a deeper window border inert.
+
+**The looseness has a bound, and it is this number.** A caret thicker than
+`CARET_BAND` reaches into the rows `cell_body_blank` reads and every
+blank-cell check fails. Four pixels of a sixteen-pixel cell is the room the
+terminal has to restyle its caret in without touching this file.
+*/
+@(private = "file")
+CARET_BAND :: 4
+
+/*
+await_caret waits for the caret to be at `at` and gone from `was`.
+
+Both halves, because a poll for the caret's arrival alone would pass on the
+frame before the old one is rubbed out -- and the terminal draws a whole field
+at a time, so the two always land together or not at all. The delivery crosses
+a process, which is what makes it a poll rather than a read.
+*/
+@(private = "file")
+await_caret :: proc(s: ^fb.Surface, at: int, was: int, y: int) -> bool {
+	for _ in 0 ..< PATIENCE {
+		if caret_at(s, at, y) && !caret_at(s, was, y) {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+@(private = "file")
+caret_at :: proc "contextless" (s: ^fb.Surface, x: int, y: int) -> bool #no_bounds_check {
+	for i in 0 ..< libfont.FONT_WIDTH {
+		if fb.get_raw(s, x + i, y + libfont.FONT_HEIGHT - 1) != TERM_FG {
+			return false
+		}
+	}
+	return true
+}
+
+// cell_body_blank reports that a cell holds no glyph, ignoring the band the
+// caret may sit in. It is `glyph_on_glass` against a space, stopped short of
+// the caret, rather than a second copy of that comparison.
+@(private = "file")
+cell_body_blank :: proc "contextless" (s: ^fb.Surface, x: int, y: int) -> bool {
+	return glyph_on_glass(s, x, y, ' ', libfont.FONT_HEIGHT - CARET_BAND)
 }
 
 /*
@@ -3822,7 +3881,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	devfs.keyboard_sink(0x08)
 	erased := false
 	for _ in 0 ..< PATIENCE {
-		if glyph_on_glass(s, ox + 40, y0, ' ') {
+		if cell_body_blank(s, ox + 40, y0) {
 			erased = true
 			break
 		}
@@ -3834,6 +3893,32 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		glyph_on_glass(s, ox + 32, y0, 'i'),
 		"and leaves the rest of the line where it was",
 	)
+	// And the caret came back with it, which is the cursor this milestone
+	// gave the line. It sits where the next character goes.
+	check(r, caret_at(s, ox + 40, y0), "and the caret comes back with it, to where the next one goes")
+
+	/*
+	And `^A` moves it to the front of the line, where a person can see it.
+
+	The cell it lands on already holds a letter, so this reads the caret alone
+	rather than the whole cell: a glyph and an underline share a cell and the
+	exact comparison would fail on the one it is testing for.
+	*/
+	devfs.keyboard_sink(0x01)
+	check(
+		r,
+		await_caret(s, ox + 24, ox + 40, y0),
+		"^A moves the caret to the front of the line, under the first letter",
+	)
+	check(r, glyph_on_glass(s, ox + 32, y0, 'i'), "and the line it is in is untouched")
+
+	devfs.keyboard_sink(0x05)
+	check(
+		r,
+		await_caret(s, ox + 40, ox + 24, y0),
+		"and ^E takes it back to where the next character goes",
+	)
+
 	devfs.keyboard_sink('!')
 
 	devfs.keyboard_sink('\n')
@@ -3854,7 +3939,11 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i'),
 		"every glyph out of the uploaded atlas, pixel for pixel",
 	)
-	check(r, glyph_on_glass(s, ox + 48, y0, ' '), "and the cell after the text is background")
+	check(
+		r,
+		cell_body_blank(s, ox + 48, y0) && caret_at(s, ox + 48, y0),
+		"and the cell after the text holds no letter and the caret, which is where the next one goes",
+	)
 
 	// The typed stop, and the terminal's own exit.
 	stop := "exit\n"
@@ -4225,6 +4314,29 @@ verify_edit :: proc(r: ^Result, cons: ^vfs.Chan) #no_bounds_check {
 		"and ^W takes one word, which the kernel's console never had")
 	typed_reads(r, cons, {'a', ' ', ' ', WORD, '\n'}, "\n",
 		"and eats the spaces before it on the way, which is what a word erase is")
+
+	/*
+	And the line has a cursor, which `^A` and `^E` move.
+
+	**Those two are `rio`'s `Ksoh` and `Kenq`, and they are ordinary control
+	bytes.** The arrow keys are not: in Plan 9 an arrow is a rune in the
+	private Unicode space -- `Kleft` is U+F011 -- and nothing in this tree
+	speaks runes. So a line moves by whole ends here, and moving by one
+	character is what still wants them.
+
+	A character goes in *at* the cursor and an erase takes what is before it,
+	which is `winsert` and `wdelete` over one line's worth of buffer.
+	*/
+	HOME :: u8(0x01)
+	END :: u8(0x05)
+	typed_reads(r, cons, {'a', 'b', 'c', HOME, 'z', '\n'}, "zabc\n",
+		"^A puts the cursor at the front, and a character goes in where it is")
+	typed_reads(r, cons, {'a', 'b', 'c', HOME, END, 'z', '\n'}, "abcz\n",
+		"and ^E puts it back at the end, which is where it was born")
+	typed_reads(r, cons, {'a', 'b', 'c', HOME, BS, '\n'}, "abc\n",
+		"and an erase at the front of a line takes nothing, because nothing is behind it")
+	typed_reads(r, cons, {'a', 'b', 'c', HOME, END, BS, '\n'}, "ab\n",
+		"while at the end it takes the last character, the way it always did")
 
 	/*
 	And two lines typed together come back one at a time.
