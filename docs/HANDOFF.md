@@ -53,7 +53,7 @@ the last close. The port is work now rather than a wait. See section 6.
 The machine boots, and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1290 checks against itself and idles.
+1295 checks against itself and idles.
 
 `/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
 port is edited, echoed, and handed to a reader that parked waiting for it. A
@@ -603,24 +603,46 @@ windows overlap and neither can reach the other's pixels. A window that closes
 gives back what it covered, and the client under it draws nothing to earn that.
 The expose event `docs/DRAW.md` section 9 deferred is retired instead of built.
 
+**And damage is a region.** Each window keeps a bag of rectangles for what its
+client drew since its last flush, and another for everything it drew at all.
+
+The second one retired a magic pixel value. A window's store used to begin as
+zero and the compositor used to skip zero, which cost a client the ability to
+paint black. That question lives in a region now, and a two megabyte memset per
+`Tlopen` went with it.
+
 **Next, in order:**
 
-1. **A rectangle list, and then a desktop.** Damage is a bounding box, so two
-   far-apart pixels cost the span between them. `CLEAR` is what keeps that slow
-   rather than wrong. A pixel a client never drew is skipped, so the boot
-   chassis is still on the screen under an empty window.
+1. **The console has to stop painting the glass.** This is the desktop's
+   blocker, traced rather than assumed, and it is a devfs milestone wearing a
+   compositor's clothes.
 
-   A desktop is what retires `CLEAR`. With something to paint underneath, a
-   window owns its whole rectangle, black included, and `0x00000000` goes back
-   to being an ordinary colour. The rectangle list is worth doing first. Front
-   to back with subtraction is the same change that stops a pixel under two
-   windows from taking two writes.
+   Two things paint the framebuffer: the kernel console draws the boot log
+   into it, and `servers/intuition` draws through `segattach`. A compositor
+   that owned the screen would paint over the log and the log would paint over
+   the windows. So a window does not own its whole rectangle, and what keeps
+   the chassis on the screen under an empty one is the `covered` region.
+
+   The idiom is one device away and already written. `/dev/scancode` and
+   `/dev/eia0` **divert**: while a process holds one open, the kernel's own
+   handler sees nothing, and the last close gives it back. `/dev/fb` does not.
+
+   What makes it more than a line is the revert. The console scrolls by moving
+   pixels, so it holds no text to repaint from -- `kernel/log.odin` keeps
+   sixteen early lines and nothing else. A screen handed back is a screen
+   nobody can redraw. So this wants a console with a scrollback, or a saved
+   copy of the glass to hand back, before the divert is safe.
+
+   With it, a desktop follows and a window owns its rectangle.
 
 2. **A window a client can move, resize, or raise.** Placement is fixed and a
    client cannot ask. Each of those is a `ctl` line rather than a seventh verb,
    the distinction section 5 of `docs/DRAW.md` guards. A resize also wants
    `segbrk` underneath it, which is one of the three Plan 9 segment calls this
    kernel does not have.
+
+   A move is also the first thing that damages two rectangles far apart, which
+   is the case `MAX_RECTS` was sized for and nothing yet reaches.
 
 3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
@@ -917,7 +939,7 @@ kernel/
                         reaper that collects a detached orphan
     program.odin        The twenty-eight programs the assembler bakes into
                         the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 659 checks -- one process preempted
+    verify.odin         The boot self-test: 661 checks -- one process preempted
                         while the kernel works, four refused, four that ask,
                         three that open files by name, a painter that puts
                         pixels on the screen through /dev/fb, a reader that
@@ -994,8 +1016,9 @@ servers/
   intuition/main.odin   The draw server and the compositor: six verbs on a
                         data file, a session per fid and a window per
                         session, each window's pixels a run of its own,
-                        and a flush that walks the damage onto the glass
-                        back to front
+                        a region for what it drew and a region for what it
+                        owes, and a flush that walks the second onto the
+                        glass back to front
 apps/
   terminal/main.odin    The first app: lines in from /dev/cons, glyphs out
                         through a /srv/draw mount of its own, the first

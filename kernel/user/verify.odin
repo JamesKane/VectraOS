@@ -3136,6 +3136,14 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	saved_b: [8 * 4]u8
 	copy(saved_b[:], s.pixels[y0 * s.pitch + edge_x * 4:][:8 * 4])
 
+	// The two pixels the region check below paints, at opposite ends of a row
+	// nothing else touches. Restored with the rest at the end, because a
+	// composite later in this procedure may repaint them out of the store.
+	gap_y := y0 - 8
+	saved_gap: [2][4]u8
+	copy(saved_gap[0][:], s.pixels[gap_y * s.pitch:][:4])
+	copy(saved_gap[1][:], s.pixels[gap_y * s.pitch + (win_w - 1) * 4:][:4])
+
 	// -- One write, five verbs, and the glass answers -------------------------
 
 	C1 :: u32(0x00336699)
@@ -3235,6 +3243,36 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr != vfs.OK, "and refused twice")
 
+	/*
+	And a flush paints what a client drew, not the box around it.
+
+	Damage is a region rather than a bounding box. Two pixels at opposite ends
+	of a row are two rectangles, and the span between them is neither. The
+	pixel watched is in that span. No window covers it, so a flush has to leave
+	it exactly as it was found.
+
+	**This is the only check in the file a coarser damage record breaks**, and
+	it is the reason the region exists. It also stands in for the wart the
+	region retired. A magic pixel value used to carry this, and a client paid
+	for it by not being able to paint black.
+	*/
+	mid_before := fb.get_raw(s, win_w / 2, gap_y)
+	at = libdraw.put_fill(buf[:], 0, 0, 0, u32(gap_y), 1, 1, C1)
+	at = libdraw.put_fill(buf[:], at, 0, u32(win_w - 1), u32(gap_y), 1, 1, C1)
+	at = libdraw.put_flush(buf[:], at)
+	_, werr = vfs.chan_write(dc, 0, buf[:at])
+	check(r, werr == vfs.OK, "a client draws one pixel at each end of a row")
+	check(
+		r,
+		fb.get_raw(s, 0, gap_y) == C1 && fb.get_raw(s, win_w - 1, gap_y) == C1,
+		"and both of them land",
+	)
+	check(
+		r,
+		fb.get_raw(s, win_w / 2, gap_y) == mid_before,
+		"and the span between them is untouched, because damage is a region and not a box",
+	)
+
 	// -- Two sessions, two windows -------------------------------------------
 	//
 	// While `dc` is still open, because the claim is about two windows held at
@@ -3262,6 +3300,8 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 		copy(s.pixels[o:o + 192], saved_a[line * 192:][:192])
 	}
 	copy(s.pixels[y0 * s.pitch + edge_x * 4:][:8 * 4], saved_b[:])
+	copy(s.pixels[gap_y * s.pitch:][:4], saved_gap[0][:])
+	copy(s.pixels[gap_y * s.pitch + (win_w - 1) * 4:][:4], saved_gap[1][:])
 
 	// -- Teardown, the arc every tenant obeys ---------------------------------
 
@@ -3892,11 +3932,11 @@ verify_windows :: proc(
 	/*
 	A pixel inside both windows that neither client ever draws.
 
-	It is the sensor for `CLEAR`, the convention that says a window puts on
-	the glass what its client drew and nothing else. A compositor that copied
-	whole rectangles would paint this black. That is correct by a rule with a
-	desktop under it, and wrong here, where what is under a window is the
-	kernel's own chassis. Four rows above the row every check below paints.
+	It is the sensor for `Window.covered`, the region that says what a window
+	puts on the glass. A compositor that copied whole rectangles would paint
+	this black. That is correct by a rule with a desktop under it, and wrong
+	here, where what is under a window is the kernel's own chassis. Four rows
+	above the row every check below paints.
 	*/
 	untouched_x := second_x + 8
 	untouched_y := y - 4
@@ -4068,33 +4108,33 @@ verify_windows :: proc(
 	again, aerr2 := vfs.open_path(vfs.boot_namespace, "/mnt/data", vfs.O_WRONLY)
 	if check(r, aerr2 == vfs.OK, "a clunk gives the window back") {
 		/*
-		And it comes back empty, which took a check the first cut did not have.
+		And it comes back covering nothing, which took two tries to check.
 
 		A slot's memory outlives the session it was lent to, because nothing
-		gives a run back. So a slot handed on has to be cleared, or the next
-		client shows the last one's drawing without ever asking for it. The
-		control that removes the clearing passed every check here until this
-		one existed. `docs/TESTING.md` has that as the first question to ask of
-		a control that comes back clean. This is the fourth time the answer was
-		that the test never reached the code.
+		gives a run back. So the last client's drawing is still sitting in the
+		run. `covered` is what keeps it off the glass. A session that drew
+		nothing owns none of its window.
 
-		**The reveal is damage rather than a draw.** Damage is a bounding box.
-		Two pixels at opposite ends of a window make one wide rectangle, and
-		the composite walks the whole of it out of the store. Whatever the last
-		session left in the middle would go straight to the glass. Drawing the
-		middle would hide exactly the bug.
+		**The reveal has to come from the window below, and the first cut of
+		this check did not know that.** It asked the new session to draw two
+		far-apart pixels and looked between them, which cannot fail whatever
+		`covered` holds. A flush paints damage, damage is what *this* session
+		drew, and the store under it is therefore always fresh. The control
+		came back clean and said so.
+
+		What a stale `covered` actually does is let a window that drew nothing
+		paint over the window beneath it. So the client underneath is what has
+		to ask the question.
 		*/
-		D :: u32(0x00445566)
-		at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), 1, 1, D)
-		at = libdraw.put_fill(buf[:], at, 0, u32(win_w - 1), u32(y), 1, 1, D)
+		A3 :: u32(0x00117733)
+		at = libdraw.put_fill(buf[:], 0, 0, 0, u32(y), u32(win_w), 1, A3)
 		at = libdraw.put_flush(buf[:], at)
-		_, derr := vfs.chan_write(again, 0, buf[:at])
-		check(r, derr == vfs.OK, "and a new session draws one pixel at each end of it")
-		check(r, fb.get_raw(s, second_x, y) == D, "which land where the last session's window was")
+		_, a3err := vfs.chan_write(first, 0, buf[:at])
+		check(r, a3err == vfs.OK, "and the client below repaints across where the new window sits")
 		check(
 			r,
-			fb.get_raw(s, second_x + 100, y) == A2,
-			"and the damage between them shows the window below, not what the last session left",
+			fb.get_raw(s, win_w - 1, y) == A3,
+			"whose pixels stand, because a session that has drawn nothing covers nothing",
 		)
 		vfs.chan_close(again)
 	}

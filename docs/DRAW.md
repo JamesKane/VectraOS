@@ -353,80 +353,137 @@ A window that closes gives back what it was sitting on, and the client
 underneath draws nothing to earn that. **That is what a backing store is**, and
 it is the one check this milestone exists for.
 
-### `CLEAR`, and the chassis that is still on the screen
+### A region, and the magic pixel it retired
 
-One value out of sixteen million says a window has not been drawn on, and
-`composite` does not put it on the glass. So a window covers what its client
-drew and nothing else.
+Each window keeps two regions. `dmg` is what its client drew since its last
+`flush`. `covered` is everything it drew since it opened, and it is what says
+which pixels of a window are the window's.
 
-The other choice was available and is the more principled one. A window owns
-its whole rectangle, and a compositor with a desktop beneath it paints all of
-one, black included.
+**`covered` replaced a colour.** The milestone before this one spent a pixel
+value on the question. A store began as zero and `composite` skipped zero, so a
+window put on the glass only what its client drew. That worked, and it cost a
+client the ability to paint `0x00000000`. The information belongs in a region
+rather than in a pixel, and moving it there gave black back.
 
-There is no desktop here. What lies under a window is the kernel's own boot
-chassis. Painting 640 by 800 of black over it at the first `Tlopen` would be
-correct by a rule nothing else in this system follows yet.
+It also retired a memset. A slot's run outlives the session it was lent to,
+because nothing gives a run back. So the last client's drawing is still sitting
+in it, and clearing two megabytes at every `Tlopen` was how that stayed off the
+glass. An empty `covered` says the same thing for nothing. A session that drew
+nothing owns none of its window.
 
-The cost is a colour. A client that fills with `0x00000000` gets transparency
-where it asked for black. The format has no alpha channel to spend, so the
-convention is spent on a value. A desktop retires it, and then a window can own
-its rectangle and this becomes an opaque black like any other.
+**A region is a bag of rectangles, not a partition.** Overlaps are allowed, and
+that is the simplification the rest rests on. A region of disjoint rectangles
+needs a subtract, a subtract needs a split, and a split is where rectangle
+algebra goes wrong. Nothing here needs disjointness, because everything a
+region drives is idempotent. Painting a pixel out of a window's store twice
+puts the same value there twice.
 
-It buys exactness as well as the chassis. Damage is a bounding box, so a flush
-copies pixels the client did not touch on this pass. Each of those either holds
-what the client drew before, or holds `CLEAR` and is skipped. So a coarse
-rectangle costs time and never a wrong pixel. A rectangle list is the
-refinement, and nothing yet needs it.
+`MAX_RECTS` is sixteen, and a full region collapses to its bounding box. That
+is exactly what this file did one milestone ago, so the degradation is to the
+last behaviour rather than to a wrong answer. A region is never smaller than
+the truth, which is what makes the collapse safe.
+
+`region_add` tries three cheaper answers before it appends: contained already,
+side by side in the same band, or stacked in the same columns. The merge is
+what keeps a line of glyphs from costing a rectangle apiece. `apps/terminal`
+blits one image per glyph, forty-two across a line, each landing beside the
+last with the same top and bottom. Its whole render is one rectangle, because
+the field fill in front of the glyphs already contains them.
+
+**A window still does not own its whole rectangle.** What lies under one is the
+kernel's own boot chassis, and `covered` is what leaves it there. That is the
+piece a desktop would change, and the next section is why there is not one.
+
+### The desktop, and what it is actually waiting for
+
+A desktop makes a window own its rectangle: black where the client has not
+drawn, and no `covered` needed to hold the compositor back. It was the second
+half of this milestone as `docs/HANDOFF.md` had it, and it is not here.
+
+**The blocker is not graphics. It is that two things paint the glass.** The
+kernel console draws the boot log straight into the framebuffer, and
+`servers/intuition` draws into the same memory through `segattach`. A
+compositor that owned the screen would paint over the log, and the log would
+paint over the windows.
+
+The idiom that settles it already exists one device away. `/dev/scancode` and
+`/dev/eia0` **divert**: while a process holds one open, the kernel's own
+handler sees nothing, and the last close gives it back. `/dev/fb` does not, and
+that is the missing line. A compositor holding the screen open would own it,
+and the console falls back to the serial port for as long as that lasts.
+
+What stops that being a small change is the revert. The console scrolls by
+moving pixels, so it holds no text to repaint from -- `kernel/log.odin` keeps
+sixteen early lines and nothing more. A screen given back is a screen nobody
+can redraw. So the desktop wants one of two things first: a console with a
+scrollback, or a saved copy of the glass to hand back. **That is a devfs and
+console milestone wearing a compositor's clothes.** `docs/HANDOFF.md` section 6
+names it as its own item rather than as this one's tail.
 
 ### The controls for the compositor
 
-Nine mutations, each on a real boot. All nine are caught.
+Fourteen mutations across the two halves of this milestone, each on a real
+boot. Thirteen are caught.
 
 | Mutation | Result |
 |---|---|
-| `flush` does not composite | 18 checks, first `the fill landed on the glass, corner to corner` |
-| a fill marks no damage | 12 checks, first the same |
-| the stack is walked front to back | 4 checks, first `half a window across, which is where the second window is` |
-| the windows do not overlap | 4 checks, first the same |
+| `flush` does not composite | 20 checks, first `the fill landed on the glass, corner to corner` |
+| a draw is owned but never owed | 20 checks, first the same |
+| a draw is owed to the glass but never owned | 23 checks, first the same |
+| the stack is walked front to back | 5 checks, first `half a window across, which is where the second window is` |
+| the windows do not overlap | 5 checks, first the same |
+| a region is a bounding box, the way damage used to be | 3 checks, first `the span between them is untouched` |
 | a window that closes repaints nothing | 2 checks, first `a window that closes gives back the pixels it covered` |
 | a flush composites only the window that asked | 1 check, `without lifting one pixel of it over the window on top` |
-| the composite paints pixels a client never drew | 1 check, `a pixel under both windows that neither drew is still the chassis` |
-| a slot handed on keeps the last session's pixels | 1 check, `the damage between them shows the window below` |
-| a fill is not clipped to the window | covered by the edge checks section 10 already had |
+| a window covers its whole rectangle from the moment it opens | 1 check, `a pixel under both windows that neither drew is still the chassis` |
+| a slot handed on keeps what the last session covered | 1 check, `a session that has drawn nothing covers nothing` |
+| `region_add` never merges two rectangles into one | **inert**, and it is a speed mutation |
 
-**The one-check catches are the three that were designed for.** Each watches a
-rule that every other check in the file is blind to.
+**The one-check catches are the ones that were designed for.** Each watches a
+rule every other check in the file is blind to. The flush-one-window mutation
+passes everything about coordinates and clipping. It fails only the check that
+draws from *underneath* a window and asks whether the cover survived it.
 
-The flush-one-window mutation passes everything about coordinates and clipping.
-It fails only the check that draws from *underneath* a window and then asks
-whether the cover survived it. The `CLEAR` mutation passes everything about
-what a client drew, and fails only the pixel nobody drew.
+**The inert one is inert honestly.** Merging rectangles changes how many a
+region holds and never which pixels it means. Nothing a readback can see
+distinguishes one rectangle from four covering the same band. It is in the
+table because a speed mutation that failed a check would mean a check was
+watching the wrong thing.
 
-**And the slot-reuse control came back clean the first time.** A run outlives
-the session it was lent to, because nothing gives a run back, so a slot handed
-on must be cleared. Removing the clearing failed nothing at all. The reason was
-the one `docs/TESTING.md` names first: the test never reached the code. Nothing
-reopened a window and displayed a region it had not drawn.
+### What two controls found that the checks did not
 
-The check that reaches it uses damage rather than a draw. Two pixels at
-opposite ends of a window make one bounding box, and the composite walks the
-whole of it out of the store. So whatever the last session left in the middle
-goes straight to the glass. Drawing the middle would have hidden exactly the
-bug. That is four for four on this question across three milestones.
+**Two places cleared the same state, so neither one held it.** `covered` was
+emptied at `window_close` and again at `window_open`. Removing the one at open
+changed nothing, because the one at close had already run. A mutation that
+changes nothing is either inert or a duplicate, and this was the second. The
+close-side clears are gone. `used` is the gate every reader passes, so a closed
+slot's regions are out of reach until the session that reopens it empties them.
+
+**And a check could not fail, for a reason that is worth more than the check.**
+The first cut asked a reopened session to draw two far-apart pixels and looked
+between them. It cannot fail whatever `covered` holds. A flush paints damage,
+damage is what *this* session drew, and the store under it is therefore always
+fresh. A stale `covered` is invisible from the window that has it.
+
+What a stale `covered` actually does is let a window that drew nothing paint
+over the window beneath it. So the client underneath is what has to ask
+the question, and the check reads a pixel the window below repaints across the
+overlap. That is five for five on `docs/TESTING.md`'s first question, and the
+first time the answer was that the test was asking the wrong process.
 
 ### What is left
 
-- **A rectangle list instead of a bounding box.** Two far-apart pixels cost the
-  span between them. `CLEAR` makes that slow rather than wrong.
-- **A desktop.** It retires `CLEAR`, and lets a window own its whole rectangle.
+- **A desktop**, and the console divert it waits on. See above.
+- **A pixel under two windows is written twice.** Front to back with
+  subtraction spends each once, and needs the rectangle split a bag of
+  rectangles exists to avoid. Worth it at more windows than two.
 - **Nothing gives a run back.** A window's memory belongs to the slot rather
   than to the session, and a slot is never released. `segfree` is the Plan 9
   call that changes it, and `docs/USER.md` names it with the other two.
-- **A pixel under two windows is written twice.** At two windows that is
-  cheaper than the arithmetic to avoid it. Front-to-back with subtraction is
-  the answer, which is the rectangle list again.
-- **Placement is still fixed.** A window a client can move or resize is a `ctl`
-  line, and `segbrk` is what a resize would need underneath it.
+- **Placement is still fixed.** A window a client can move, resize, or raise is
+  a `ctl` line, and `segbrk` is what a resize would need underneath it. A move
+  is also the first thing that damages two rectangles far apart, which is the
+  case `MAX_RECTS` was sized for and nothing yet reaches.
 
 Two windows at 640 by 800 is 4 MB, which is `SEGALLOC_MAX` twice over.
 `MAX_WINDOWS`, that bound, and `MAX_PROC_SEGS` are the three numbers that move
