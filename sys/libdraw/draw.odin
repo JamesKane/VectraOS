@@ -169,15 +169,13 @@ parse_geometry :: proc "contextless" (report: []u8) -> (w: int, h: int, pitch: i
 	found := 0
 	at := 0
 	for at < len(report) && found < 4 {
-		c := report[at]
-		if c < '0' || c > '9' {
+		if report[at] < '0' || report[at] > '9' {
 			at += 1
 			continue
 		}
-		v := 0
-		for at < len(report) && report[at] >= '0' && report[at] <= '9' {
-			v = v * 10 + int(report[at] - '0')
-			at += 1
+		v, got := scan_int(report, &at)
+		if !got {
+			break
 		}
 		nums[found] = v
 		found += 1
@@ -186,4 +184,95 @@ parse_geometry :: proc "contextless" (report: []u8) -> (w: int, h: int, pitch: i
 		return 0, 0, 0, 0, false
 	}
 	return nums[0], nums[1], nums[2], nums[3], true
+}
+
+// -- The tree, and the one scanner that reads it -----------------------------
+
+/*
+scan_int takes the next decimal from a report, and says whether there was one.
+
+**One scanner for one convention.** `parse_geometry` above had the digit loop
+inline. `servers/intuition` grew a second for its `ctl` lines, and
+`apps/terminal` a third for `new`'s answer. Three scanners of one text format
+is the failure `parse_geometry`'s own comment names, and this is that loop
+once.
+
+Leading space is skipped and a leading `-` is taken. A window may sit off the
+left edge, and a client says so with a minus. The cap keeps a long run of
+digits from wrapping into a number nobody meant. A caller that cares about
+range checks its own.
+*/
+scan_int :: proc "contextless" (data: []u8, at: ^int) -> (int, bool) #no_bounds_check {
+	i := at^
+	for i < len(data) && (data[i] == ' ' || data[i] == '\t') {
+		i += 1
+	}
+	neg := false
+	if i < len(data) && data[i] == '-' {
+		neg = true
+		i += 1
+	}
+	start := i
+	value := 0
+	for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+		value = value * 10 + int(data[i] - '0')
+		if value > 1 << 24 {
+			return 0, false
+		}
+		i += 1
+	}
+	at^ = i
+	if i == start {
+		return 0, false
+	}
+	return neg ? -value : value, true
+}
+
+/*
+The draw server's tree, named once for both sides of it.
+
+    /new       read it, and it answers which window has no session
+    /N/data    the command stream, and the claim on window N
+    /N/ctl     window N's geometry out, and its control lines in
+
+The server walks these names and a client builds them, so the layout was in two
+places the moment the tree grew. A digit table in `servers/intuition`, and a
+path builder in `apps/terminal` that a second app would copy. `libdraw` already
+owns both directions of this wire, which makes it where the shape belongs.
+*/
+@(private = "file")
+WIN_DIGITS := "0123456789"
+
+// win_name is window `n`'s directory name. One digit, which is the bound the
+// server's `MAX_WINDOWS` has to stay inside -- and does, by an assert at the
+// one place that raises it.
+win_name :: proc "contextless" (n: int) -> string #no_bounds_check {
+	if n < 0 || n >= len(WIN_DIGITS) {
+		return ""
+	}
+	return WIN_DIGITS[n:n + 1]
+}
+
+/*
+win_path builds `<mnt>/N/<leaf>` into the caller's buffer.
+
+The caller's buffer rather than a static one. A program with no allocator that
+needs two paths at once should not have to know this one keeps state. Answers
+the empty string for a buffer too small, which a caller treats the way it
+treats a failed open.
+*/
+win_path :: proc "contextless" (buf: []u8, mnt: string, n: int, leaf: string) -> string #no_bounds_check {
+	name := win_name(n)
+	need := len(mnt) + 1 + len(name) + 1 + len(leaf)
+	if name == "" || need > len(buf) {
+		return ""
+	}
+	at := copy(buf, mnt)
+	buf[at] = '/'
+	at += 1
+	at += copy(buf[at:], name)
+	buf[at] = '/'
+	at += 1
+	at += copy(buf[at:], leaf)
+	return string(buf[:at])
 }

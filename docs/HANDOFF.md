@@ -653,8 +653,9 @@ window frames should be the same object as the screen the kernel painted. That
 could not happen while bevels were surface painters in ring 0.
 
 `sys/libdraw` decomposes a panel, a well and a lamp into coloured rectangles
-and paints nothing. So the kernel, the draw server and a client through a pipe
-all draw the same object three different ways.
+and paints nothing. So the draw server and a client through a pipe draw the
+same object two different ways. Ring 0 is the third painter and still has its
+own copy, which `docs/DRAW.md` section 12 names.
 
 **And the palette is one table both privilege levels read.** It promised that
 of itself and had three copies. `sys/libpal` holds it, `fb` aliases every name,
@@ -665,7 +666,15 @@ sunk into a well sent as ordinary fills. There is no chrome verb, and
 
 **Next, in order:**
 
-1. **A window frame, and the title bar on it.** The obvious next wearer of the
+1. **Move ring 0 onto the chrome vocabulary.** `fb.bevel_edges` and
+   `splash.draw_lamp` are a second copy of `sys/libdraw`'s. The two agree by
+   hand today, down to the arithmetic for an unlit jewel, and will drift on the
+   first tweak. What it needs is one surface painter -- `fb` walking a
+   `[]Piece` through `fill_rect` -- and then `bevel_edges`, `bevel_box` and
+   `draw_lamp` re-expressed over it. `Piece.color` is already an `RGB` so that
+   painter can pack against the mode the bootloader set.
+
+2. **A window frame, and the title bar on it.** The obvious next wearer of the
    vocabulary, and the one with a cost. A frame means the client area is no
    longer the window's whole rectangle. A window's origin moves in by the
    frame's depth, and every coordinate the self-test hardcodes moves with it.
@@ -674,7 +683,7 @@ sunk into a well sent as ordinary fills. There is no chrome verb, and
    which has none because clients upload their own, and a `ctl` line to set a
    name.
 
-2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
+3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
    table lists the cores SMP will need to start. Worth doing when one of those
    two becomes a reason rather than a tidiness.
 

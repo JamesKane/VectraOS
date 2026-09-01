@@ -66,28 +66,10 @@ pack :: proc "contextless" (s: ^Surface, c: RGB) -> u32 {
 	return r << s.red_shift | g << s.green_shift | b << s.blue_shift
 }
 
-/*
-mix blends `a` toward `b` by `t` in 1/256ths.
-
-Used for gradients, and to derive bevel edges from a face colour. A control
-tinted at runtime therefore still bevels correctly, and needs no three
-hand-picked palette entries.
-*/
-mix :: proc "contextless" (a, b: RGB, t: u8) -> RGB {
-	blend :: proc "contextless" (x, y, t: u8) -> u8 {
-		return u8((u32(x) * u32(255 - t) + u32(y) * u32(t)) / 255)
-	}
-	return RGB{blend(a[0], b[0], t), blend(a[1], b[1], t), blend(a[2], b[2], t)}
-}
-
-// shade lightens (positive) or darkens (negative) a colour by 1/256ths.
-shade :: proc "contextless" (c: RGB, amount: i16) -> RGB {
-	adjust :: proc "contextless" (v: u8, amount: i16) -> u8 {
-		x := i16(v) + amount
-		return u8(clamp(x, 0, 255))
-	}
-	return RGB{adjust(c[0], amount), adjust(c[1], amount), adjust(c[2], amount)}
-}
+// `mix` and `shade` used to sit here. They are the palette's own arithmetic
+// rather than the surface's, so they moved to `sys/libpal` with the table.
+// `palette.odin` aliases them back under these names. `pack` stayed, because
+// packing is the one part that depends on the mode the bootloader set.
 
 // -- Pixel access ------------------------------------------------------------
 

@@ -4,8 +4,17 @@ The chrome vocabulary: bevels, wells and lamps, as rectangles.
 `kernel/splash.odin` paints the boot chassis and says of itself that
 `intuition`'s window frames should be recognisably the same object. That could
 not happen while the vocabulary was a set of surface painters in ring 0. This
-is the same vocabulary one privilege level out, and both sides of the door use
-it.
+is the same vocabulary one privilege level out.
+
+**Ring 0 has not been moved onto it, and until it is there are two copies.**
+`fb.bevel_edges` and `splash.draw_lamp` still paint the chassis. What that
+costs is drift, so the arithmetic here is deliberately the kernel's own. The
+edge walk is `fb.bevel_edges`'s inset-per-depth loop, and an unlit jewel is
+`mix(colour, VOID, 200)` because that is what `splash.draw_lamp` makes.
+
+The move is one surface painter away: `fb` walking a `[]Piece` through
+`fill_rect`. `Piece.color` carries an `RGB` rather than a packed word so that
+painter can pack against the mode the bootloader actually set.
 
 **A piece of chrome is a list of coloured rectangles, and that is the whole
 design.** The kernel paints its chassis straight onto a surface. The draw
@@ -27,13 +36,21 @@ package libdraw
 
 import "vsys:libpal"
 
-// One rectangle of chrome, in whatever coordinates the caller is working in.
+/*
+One rectangle of chrome, in whatever coordinates the caller is working in.
+
+The colour is an `RGB` rather than a packed pixel word, so a painter packs it
+for the mode it is drawing on. Ring 3 packs with `libpal.xrgb`, because
+`/srv/draw` accepts one depth. The kernel would pack with `fb.pack`, which
+reads the channel shifts the bootloader set -- which is the whole reason this
+type cannot carry a `u32`.
+*/
 Piece :: struct {
 	x:     int,
 	y:     int,
 	w:     int,
 	h:     int,
-	color: u32,
+	color: libpal.RGB,
 }
 
 Bevel :: enum {
@@ -42,9 +59,10 @@ Bevel :: enum {
 }
 
 // The most rectangles any one call below produces: a face and four edges per
-// level of depth. A caller sizes its array by this and never counts.
-MAX_PIECES :: 1 + 4 * 4
+// level of depth, and one jewel. A caller sizes its array by this and never
+// counts. Written against `MAX_DEPTH` so the two cannot drift.
 MAX_DEPTH :: 4
+MAX_PIECES :: 1 + 4 * MAX_DEPTH + 1
 
 /*
 panel decomposes a bevelled box into its face and its edges.
@@ -56,6 +74,11 @@ interior.
 
 `depth` is clamped to `MAX_DEPTH`. A bevel deeper than the box it is on is
 arithmetic nobody wants to debug at a call site.
+
+**Nothing passes `.Raised` yet.** Nothing in this system stands up off the
+ground. The desktop is a well, a lamp socket is a well, and a window has no
+frame. The frame is what will exercise it. The wrapper naming a face and its
+two shades belongs with that caller rather than ahead of it.
 */
 panel :: proc "contextless" (
 	out: []Piece,
@@ -75,11 +98,11 @@ panel :: proc "contextless" (
 	d := clamp(depth, 0, MAX_DEPTH)
 
 	n := 0
-	out[0] = Piece{x, y, w, h, libpal.xrgb(face)}
+	out[0] = Piece{x, y, w, h, face}
 	n = 1
 
-	tl := libpal.xrgb(style == .Raised ? light : dark)
-	br := libpal.xrgb(style == .Raised ? dark : light)
+	tl := style == .Raised ? light : dark
+	br := style == .Raised ? dark : light
 
 	for i in 0 ..< d {
 		ix := x + i
@@ -110,24 +133,6 @@ well :: proc "contextless" (out: []Piece, x: int, y: int, w: int, h: int, depth 
 }
 
 /*
-raised is the other half: a magnesium face that stands up off the ground.
-
-Its two edges come out of the face rather than the palette. That is what lets
-a caller raise a control in any colour and get a bevel belonging to it.
-*/
-raised :: proc "contextless" (
-	out: []Piece,
-	x: int,
-	y: int,
-	w: int,
-	h: int,
-	face := libpal.MAGNESIUM,
-	depth := 2,
-) -> int {
-	return panel(out, x, y, w, h, .Raised, face, libpal.shade(face, +48), libpal.shade(face, -34), depth)
-}
-
-/*
 lamp is one indicator: a recessed socket with a jewel in it.
 
 **An unlit lamp is a dark version of its own colour, rather than a neutral
@@ -139,15 +144,13 @@ lamp :: proc "contextless" (out: []Piece, x: int, y: int, size: int, color: libp
 	if n == 0 || n >= len(out) {
 		return n
 	}
-	jewel := lit ? color : libpal.shade(color, -110)
-	out[n] = Piece{x + 2, y + 2, size - 4, size - 4, libpal.xrgb(jewel)}
+	// The same arithmetic `splash.draw_lamp` uses, so the two lamps make the
+	// same pixels for as long as there are two of them. A lit jewel there also
+	// carries a gradient and a specular corner. Those are a colour per row and
+	// one pixel, and neither is a rectangle. See the file comment.
+	jewel := lit ? color : libpal.mix(color, libpal.VOID, 200)
+	out[n] = Piece{x + 2, y + 2, size - 4, size - 4, jewel}
 	return n + 1
-}
-
-// inset is the usable interior of a box with a bevel of `depth` on it. The
-// same arithmetic `fb.inset_of` does, for callers on this side of the door.
-inset :: proc "contextless" (x: int, y: int, w: int, h: int, depth := 1) -> (int, int, int, int) {
-	return x + depth, y + depth, w - 2 * depth, h - 2 * depth
 }
 
 /*
@@ -167,7 +170,7 @@ put_pieces :: proc "contextless" (buf: []u8, at: int, id: u32, pieces: []Piece) 
 		if p.w <= 0 || p.h <= 0 {
 			continue
 		}
-		next := put_fill(buf, n, id, u32(p.x), u32(p.y), u32(p.w), u32(p.h), p.color)
+		next := put_fill(buf, n, id, u32(p.x), u32(p.y), u32(p.w), u32(p.h), libpal.xrgb(p.color))
 		if next == n {
 			return at
 		}

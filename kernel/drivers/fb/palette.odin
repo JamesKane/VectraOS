@@ -47,3 +47,14 @@ PHOSPHOR_DIM :: libpal.PHOSPHOR_DIM
 
 ALERT :: libpal.ALERT
 ALERT_DIM :: libpal.ALERT_DIM
+
+// -- And the two arithmetics that go with them -------------------------------
+//
+// A bevel gets its edges out of a face with `shade`. An indicator gets its lit
+// and unlit states out of one colour with `mix`. Both are the table's own
+// arithmetic rather than the surface's, so both moved with it. `pack` stayed
+// behind, because packing is the one thing that depends on the mode the
+// bootloader set -- see `libpal.xrgb` for the other side of that.
+
+mix :: libpal.mix
+shade :: libpal.shade

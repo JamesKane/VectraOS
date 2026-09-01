@@ -78,6 +78,20 @@ site.
 */
 
 /*
+mix blends two colours, `t` of the way from the first to the second.
+
+A dim indicator is its own colour most of the way to `VOID`. A lit one is its
+own colour a little of the way to `AMBER_HOT`. Both are this, and the kernel's
+chassis drew them this way before there was a ring 3 to share it with.
+*/
+mix :: proc "contextless" (a: RGB, b: RGB, t: u8) -> RGB {
+	blend :: proc "contextless" (x: u8, y: u8, t: u8) -> u8 {
+		return u8((u32(x) * u32(255 - t) + u32(y) * u32(t)) / 255)
+	}
+	return RGB{blend(a[0], b[0], t), blend(a[1], b[1], t), blend(a[2], b[2], t)}
+}
+
+/*
 shade lightens or darkens one colour, which is how a bevel gets its two edges
 out of one face.
 

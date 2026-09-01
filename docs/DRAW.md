@@ -488,17 +488,27 @@ screen the kernel painted before there was a compositor. That could not happen
 while the vocabulary was a set of surface painters in ring 0.
 
 **A piece of chrome is a list of coloured rectangles, and that is the whole
-design.** `sys/libdraw`'s `panel`, `well`, `raised` and `lamp` decompose and
-paint nothing. The kernel paints its chassis onto a surface. The draw server
-paints into a window's store or onto the glass. A client sends `fill` commands
-down a pipe. Three painters, and the one thing they agree about is a rectangle
-with a colour in it.
+design.** `sys/libdraw`'s `panel`, `well` and `lamp` decompose and paint
+nothing. The draw server paints into a window's store or onto the glass, and a
+client sends `fill` commands down a pipe. A `Piece` carries an `RGB` rather
+than a packed pixel word, so a third painter can pack against the mode the
+bootloader actually set.
+
+**That third painter is the kernel, and it is not written yet.** `fb` still has
+its own `bevel_edges` and `splash` its own `draw_lamp`, so the chassis and the
+desktop are two copies of one idiom. The arithmetic here is deliberately the
+kernel's, down to `mix(colour, VOID, 200)` for an unlit jewel. The two make the
+same pixels while there are two.
+
+The move is one procedure: `fb` walking a `[]Piece` through `fill_rect`. Until
+it lands, this is a vocabulary ring 3 uses and ring 0 agrees with by hand.
 
 What the rectangle model does not carry is the chassis's two richest surfaces.
 `gradient_v` is a colour per row and `brushed` is a pattern per pixel, and
-neither is a rectangle. A client that wants a gradient sends one fill per row.
-**A gradient verb would be the seventh verb section 5 guards against**, and a
-row of fills is what a client library is for.
+neither is a rectangle. A lit lamp's jewel loses its gradient and its specular
+corner for the same reason. A client that wants a gradient sends one fill per
+row. **A gradient verb would be the seventh verb section 5 guards against**,
+and a row of fills is what a client library is for.
 
 ### One table, both rings
 
@@ -509,10 +519,16 @@ three places had their own copy. The kernel's, the draw server's three
 constants, and the terminal's two.
 
 It is `sys/libpal` now, in the tree both privilege levels already import. `fb`
-aliases every name, so nothing in the kernel had to learn where the colours
-went. Ring 3 reads them through `xrgb`, or through the shift written against
-the table when it needs a constant. `libpal` records that second shape rather
-than leaving each call site to rediscover it.
+aliases every name, and `mix` and `shade` with them. Those two are the table's
+own arithmetic rather than the surface's. `pack` stayed behind, because packing
+is the one part that depends on the mode. Ring 3 reads the colours
+through `xrgb`, or through the shift written against the table when it needs a
+constant. `libpal` records that second shape rather than leaving each
+call site to rediscover it.
+
+All three copies are gone. The terminal's two, the kernel's, and the draw
+server's three, which took a second pass: the first moved the table and left
+the literals behind.
 
 ### What is wearing it
 
@@ -536,6 +552,9 @@ is the whole point of a vocabulary made of rectangles. The app draws the same
 object the kernel draws, through a protocol that never learned what a bevel is.
 
 ### What is not wearing it yet
+
+**Ring 0.** See above: the kernel is the painter this vocabulary was built for
+and the one that still has its own copy.
 
 **A window has no frame and no title bar.** That is the obvious next use and
 it is not free. A frame means the client area is no longer the window's whole

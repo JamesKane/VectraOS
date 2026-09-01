@@ -115,9 +115,10 @@ PART_DIR :: i32(0)
 PART_DATA :: i32(1)
 PART_CTL :: i32(2)
 
-// The directory names, as text, because a server with no allocator does not
-// format numbers into names it hands out on every listing.
-WIN_NAMES := [8]string{"0", "1", "2", "3", "4", "5", "6", "7"}
+// A window's directory name is `libdraw.win_name`, which both this server and
+// its clients read so the tree's layout is stated once. One digit per window,
+// which is the bound `MAX_WINDOWS` has to stay inside.
+#assert(MAX_WINDOWS <= 10)
 
 node_of :: proc "contextless" (win: int, part: i32) -> i32 {
 	return NODE_BASE + i32(win) * NODE_PER + part
@@ -278,11 +279,11 @@ region_add :: proc "contextless" (r: ^Region, x: int, y: int, w: int, h: int) #n
 /*
 The desktop, and the three colours this server owns.
 
-**`kernel/drivers/fb/palette.odin` named `SLATE_DEEP` the desktop ground a
-milestone before there was a desktop.** These are that palette, written out as
-pixel words because a ring 3 server cannot import the kernel's own. A colour
-that drifts from the kernel's is a colour that looks wrong beside the chassis,
-which is the only check this can have.
+**`sys/libpal` named `SLATE_DEEP` the desktop ground a milestone before there
+was a desktop.** These are that table, packed at compile time -- the shift is
+written out because `xrgb` is a procedure and a procedure cannot be the
+right-hand side of a constant. `libpal` records that shape rather than leaving
+each call site to work it out.
 
 The grid is `VOID`, which is *darker* than the ground. A lighter grid draws
 attention to itself. A darker one reads as engraved, which is the same trick
@@ -292,10 +293,10 @@ like metal.
 `WIN_GROUND` is `SLATE`, the palette's recessed well. A window is a sunken
 panel in this idiom, and a client that draws nothing gets one.
 */
-DESK_GROUND :: u32(0x000E131A)
-DESK_GRID :: u32(0x0007090C)
+DESK_GROUND :: u32(libpal.SLATE_DEEP[0]) << 16 | u32(libpal.SLATE_DEEP[1]) << 8 | u32(libpal.SLATE_DEEP[2])
+DESK_GRID :: u32(libpal.VOID[0]) << 16 | u32(libpal.VOID[1]) << 8 | u32(libpal.VOID[2])
 DESK_STEP :: 32
-WIN_GROUND :: u32(0x00181F28)
+WIN_GROUND :: u32(libpal.SLATE[0]) << 16 | u32(libpal.SLATE[1]) << 8 | u32(libpal.SLATE[2])
 
 /*
 The desktop's own chrome: the edge it is sunk into, and a lamp per window.
@@ -339,13 +340,64 @@ desk_paint :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bo
 	y0 := max(sy0, 0)
 	x1 := min(sx1, scr_w)
 	y1 := min(sy1, scr_h)
+	/*
+	The row test is hoisted out of the column loop, because it is the same
+	answer for every pixel of a row.
+
+	A grid row is one colour across. Any other row is ground with a stripe
+	every `DESK_STEP` columns, so the columns are strided rather than tested.
+	Two modulo operations per pixel became one per row, over a loop that runs a
+	million times at start and half that on every close, move and resize.
+	*/
 	for y in y0 ..< y1 {
 		dst := screen_at(y)
+		if y % DESK_STEP == 0 {
+			for x in x0 ..< x1 {
+				dst[x] = DESK_GRID
+			}
+			continue
+		}
 		for x in x0 ..< x1 {
-			dst[x] = desk_at(x, y)
+			dst[x] = DESK_GROUND
+		}
+		for x := ((x0 + DESK_STEP - 1) / DESK_STEP) * DESK_STEP; x < x1; x += DESK_STEP {
+			dst[x] = DESK_GRID
 		}
 	}
 	desk_chrome(x0, y0, x1, y1)
+}
+
+/*
+desk_band lays ground on the part of one rectangle a second one of the same
+size does not cover.
+
+Two rectangles of equal extent overlap in at most one rectangle, so what the
+first one frees is at most two bands: a vertical one where they do not share
+columns, and a horizontal one where they do not share rows. Each is skipped
+when it is empty, so a window that does not move paints nothing.
+*/
+desk_band :: proc "contextless" (ox: int, oy: int, w: int, h: int, nx: int, ny: int) {
+	dx := nx - ox
+	dy := ny - oy
+	if dx >= w || -dx >= w || dy >= h || -dy >= h {
+		// Nothing shared: the whole of it is freed.
+		desk_paint(ox, oy, ox + w, oy + h)
+		return
+	}
+	if dx > 0 {
+		desk_paint(ox, oy, ox + dx, oy + h)
+	} else if dx < 0 {
+		desk_paint(ox + w + dx, oy, ox + w, oy + h)
+	}
+	// The horizontal band, clipped to the columns the vertical one did not
+	// already take, so a diagonal move pays for each pixel once.
+	kx0 := dx > 0 ? ox + dx : ox
+	kx1 := dx < 0 ? ox + w + dx : ox + w
+	if dy > 0 {
+		desk_paint(kx0, oy, kx1, oy + dy)
+	} else if dy < 0 {
+		desk_paint(kx0, oy + h + dy, kx1, oy + h)
+	}
 }
 
 /*
@@ -388,15 +440,6 @@ lamp_at :: proc "contextless" (i: int) -> (int, int) {
 	return scr_w - LAMP_INSET - LAMP, LAMP_INSET + i * (LAMP + LAMP_GAP)
 }
 
-// desk_lamp repaints one window's indicator, for the moments its state
-// changes and nothing else about the desktop does.
-desk_lamp :: proc "contextless" (i: int) #no_bounds_check {
-	pieces: [libdraw.MAX_PIECES]libdraw.Piece
-	x, y := lamp_at(i)
-	n := libdraw.lamp(pieces[:], x, y, LAMP, libpal.PHOSPHOR, windows[i].used)
-	desk_pieces(pieces[:n], 0, 0, scr_w, scr_h)
-}
-
 // desk_pieces stores a run of chrome onto the glass, each rectangle clipped to
 // the region being repainted and to the screen.
 desk_pieces :: proc "contextless" (pieces: []libdraw.Piece, sx0: int, sy0: int, sx1: int, sy1: int) #no_bounds_check {
@@ -405,10 +448,11 @@ desk_pieces :: proc "contextless" (pieces: []libdraw.Piece, sx0: int, sy0: int, 
 		y0 := max(max(p.y, sy0), 0)
 		x1 := min(min(p.x + p.w, sx1), scr_w)
 		y1 := min(min(p.y + p.h, sy1), scr_h)
+		word := libpal.xrgb(p.color)
 		for y in y0 ..< y1 {
 			dst := screen_at(y)
 			for x in x0 ..< x1 {
-				dst[x] = p.color
+				dst[x] = word
 			}
 		}
 	}
@@ -450,14 +494,12 @@ Window :: struct {
 	w:      int,
 	h:      int,
 
-	// What the run behind `pixels` holds, and the row stride inside it. The
-	// store is allocated once at the birth size and never grows, so `w` and
-	// `h` move inside it and the stride does not. A `size` line past the
-	// allocation is refused, and `segbrk` is the Plan 9 call that would lift
-	// that -- see `docs/USER.md`.
-	alloc_w: int,
-	alloc_h: int,
-	pixels:  [^]u32,
+	// The store. Every window's run is `win_w` by `win_h`, allocated once at
+	// the birth size and never grown, so those two globals are the stride and
+	// the bound and this struct does not carry a second copy of them. `w` and
+	// `h` move inside that. A `size` line past it is refused, and `segbrk` is
+	// the Plan 9 call that would lift that -- see `docs/USER.md`.
+	pixels: [^]u32,
 
 	dmg:    Region,
 	used:   bool,
@@ -732,16 +774,14 @@ run_ctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bou
 	verb, at := ctl_word(data, 0)
 	switch verb {
 	case "move":
-		x, ok1 := ctl_number(data, &at)
-		y, ok2 := ctl_number(data, &at)
-		if !ok1 || !ok2 || !ctl_end(data, at) {
+		x, y, ok := ctl_pair(data, &at)
+		if !ok {
 			return vectra9.EINVAL
 		}
 		return window_move(win, x, y)
 	case "size":
-		w, ok1 := ctl_number(data, &at)
-		h, ok2 := ctl_number(data, &at)
-		if !ok1 || !ok2 || !ctl_end(data, at) {
+		w, h, ok := ctl_pair(data, &at)
+		if !ok {
 			return vectra9.EINVAL
 		}
 		return window_size(win, w, h)
@@ -770,37 +810,19 @@ ctl_word :: proc "contextless" (data: []u8, from: int) -> (string, int) #no_boun
 }
 
 /*
-ctl_number takes the next decimal, and reports whether there was one.
+ctl_pair takes the two numbers every line here carries, and the end of the
+line with them.
 
-Signed, because a window may hang off the left or top edge and a client that
-puts it there says so with a minus. No other line takes a negative, and each
-one checks its own range.
+Both lines that take operands take exactly two, and neither wants half of a
+malformed one. `libdraw.scan_int` is the digit loop, shared with the report
+`parse_geometry` reads and with the client that reads `new` -- one scanner for
+one text convention, which is the rule `parse_geometry`'s own comment sets.
 */
 @(private = "file")
-ctl_number :: proc "contextless" (data: []u8, at: ^int) -> (int, bool) #no_bounds_check {
-	i := at^
-	for i < len(data) && (data[i] == ' ' || data[i] == '\t') {
-		i += 1
-	}
-	neg := false
-	if i < len(data) && data[i] == '-' {
-		neg = true
-		i += 1
-	}
-	start := i
-	value := 0
-	for i < len(data) && data[i] >= '0' && data[i] <= '9' {
-		value = value * 10 + int(data[i] - '0')
-		if value > 1 << 24 {
-			return 0, false
-		}
-		i += 1
-	}
-	at^ = i
-	if i == start {
-		return 0, false
-	}
-	return neg ? -value : value, true
+ctl_pair :: proc "contextless" (data: []u8, at: ^int) -> (int, int, bool) {
+	a, ok1 := libdraw.scan_int(data, at)
+	b, ok2 := libdraw.scan_int(data, at)
+	return a, b, ok1 && ok2 && ctl_end(data, at^)
 }
 
 // ctl_end reports whether what is left is nothing but space and one newline.
@@ -878,13 +900,11 @@ windows_init :: proc "contextless" () -> bool #no_bounds_check {
 			return false
 		}
 		windows[i] = Window {
-			x       = i * (win_w / 2),
-			y       = 0,
-			w       = win_w,
-			h       = win_h,
-			alloc_w = win_w,
-			alloc_h = win_h,
-			pixels  = ([^]u32)(base),
+			x      = i * (win_w / 2),
+			y      = 0,
+			w      = win_w,
+			h      = win_h,
+			pixels = ([^]u32)(base),
 		}
 	}
 	return true
@@ -936,22 +956,22 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_boun
 
 	win.owner = owner
 	win.used = true
-	win.w = win.alloc_w
-	win.h = win.alloc_h
+	win.w = win_w
+	win.h = win_h
 	region_clear(&win.dmg)
-	for j in 0 ..< win.alloc_w * win.alloc_h {
+	for j in 0 ..< win_w * win_h {
 		win.pixels[j] = WIN_GROUND
 	}
 	// New windows arrive on top, which is the only placement rule a client
 	// gets without asking.
 	stack_add(at)
 
-	region_clear(&scratch)
-	region_add(&scratch, win.x, win.y, win.w, win.h)
-	composite(&scratch)
-	// And the lamp for it, which is outside every window's rectangle and so
-	// outside every composite.
-	desk_lamp(at)
+	repaint_top(win)
+	// And the lamp for it. A lamp is opaque over its own square and sits
+	// outside every window's rectangle, so the desktop's own repaint over that
+	// square is exactly the lamp -- there is no second painter for one.
+	lx, ly := lamp_at(at)
+	desk_paint(lx, ly, lx + LAMP, ly + LAMP)
 	return true
 }
 
@@ -987,10 +1007,9 @@ window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 		stack_drop(i)
 
 		desk_paint(x0, y0, x1, y1)
-		region_clear(&scratch)
-		region_add(&scratch, x0, y0, x1 - x0, y1 - y0)
-		composite(&scratch)
-		desk_lamp(i)
+		repaint(x0, y0, x1 - x0, y1 - y0)
+		lx, ly := lamp_at(i)
+		desk_paint(lx, ly, lx + LAMP, ly + LAMP)
 	}
 }
 
@@ -1019,9 +1038,17 @@ window_move :: proc "contextless" (win: ^Window, nx: int, ny: int) -> vectra9.Er
 	win.x = nx
 	win.y = ny
 
-	// The ground where it was, then every window over both places. A window
-	// that overlapped the old spot repaints itself out of its own store.
-	desk_paint(ox, oy, ox + win.w, oy + win.h)
+	/*
+	The ground the move actually frees, then every window over both places.
+
+	Only the part of the old rectangle the new one does not cover needs ground
+	under it -- the rest is about to be this window again. Painting the whole
+	old rectangle would write up to a screen's worth of desktop and then cover
+	all of it, which for a one-column move is every pixel but a column.
+
+	The two are the same size, so the difference is at most two bands.
+	*/
+	desk_band(ox, oy, win.w, win.h, nx, ny)
 	region_clear(&scratch)
 	region_add(&scratch, ox, oy, win.w, win.h)
 	region_add(&scratch, nx, ny, win.w, win.h)
@@ -1047,7 +1074,7 @@ ground, which is the one thing a resize has to do to the store.
 answers the new size for anything that wants to confirm it.
 */
 window_size :: proc "contextless" (win: ^Window, nw: int, nh: int) -> vectra9.Errno #no_bounds_check {
-	if nw <= 0 || nh <= 0 || nw > win.alloc_w || nh > win.alloc_h {
+	if nw <= 0 || nh <= 0 || nw > win_w || nh > win_h {
 		return vectra9.EINVAL
 	}
 	if nw == win.w && nh == win.h {
@@ -1057,7 +1084,7 @@ window_size :: proc "contextless" (win: ^Window, nw: int, nh: int) -> vectra9.Er
 
 	// The bands this grows into hold whatever stood there before a shrink.
 	for y in 0 ..< nh {
-		row := win.pixels[y * win.alloc_w:]
+		row := win.pixels[y * win_w:]
 		from := y < oh ? ow : 0
 		for x in from ..< nw {
 			row[x] = WIN_GROUND
@@ -1068,12 +1095,16 @@ window_size :: proc "contextless" (win: ^Window, nw: int, nh: int) -> vectra9.Er
 	win.h = nh
 	region_clear(&win.dmg)
 
-	// The ground under everything it gave up, then every window over the union
-	// of what it was and what it is.
-	desk_paint(win.x, win.y, win.x + max(ow, nw), win.y + max(oh, nh))
-	region_clear(&scratch)
-	region_add(&scratch, win.x, win.y, max(ow, nw), max(oh, nh))
-	composite(&scratch)
+	// The ground under what it gave up and nothing else. A window that grew
+	// frees none, and the composite below is about to own every pixel of the
+	// new rectangle anyway.
+	if nw < ow {
+		desk_paint(win.x + nw, win.y, win.x + ow, win.y + oh)
+	}
+	if nh < oh {
+		desk_paint(win.x, win.y + nh, win.x + max(ow, nw), win.y + oh)
+	}
+	repaint(win.x, win.y, max(ow, nw), max(oh, nh))
 	return vectra9.Errno(0)
 }
 
@@ -1089,9 +1120,7 @@ window_raise :: proc "contextless" (win: ^Window, at: int) #no_bounds_check {
 		return
 	}
 	stack_add(at)
-	region_clear(&scratch)
-	region_add(&scratch, win.x, win.y, win.w, win.h)
-	composite(&scratch)
+	repaint_top(win)
 }
 
 /*
@@ -1124,30 +1153,64 @@ correct. It is the trade to revisit at more windows than two.
 */
 composite :: proc "contextless" (area: ^Region) #no_bounds_check {
 	for si in 0 ..< stack_n {
-		win := &windows[stack[si]]
-		if !win.used {
+		paint_window(&windows[stack[si]], area)
+	}
+}
+
+/*
+paint_window puts one window's pixels on the glass, clipped to a region.
+
+`composite`'s body, named, because two callers know they are the top of the
+stack and can skip the walk. A window that has just opened or just been raised
+is topmost over its own rectangle by construction, so nothing under it could
+survive the pass anyway -- painting the whole stack there copies every window
+below it to the glass and then covers all of it.
+
+This is the one place that knows where a window sits, which is why `run_fill`
+and `run_blit` no longer do.
+*/
+paint_window :: proc "contextless" (win: ^Window, area: ^Region) #no_bounds_check {
+	if !win.used {
+		return
+	}
+	for ai in 0 ..< area.n {
+		a := area.rects[ai]
+		x0 := max(max(a.x0, win.x), 0)
+		y0 := max(max(a.y0, win.y), 0)
+		x1 := min(min(a.x1, win.x + win.w), scr_w)
+		y1 := min(min(a.y1, win.y + win.h), scr_h)
+		if x0 >= x1 || y0 >= y1 {
 			continue
 		}
-		for ai in 0 ..< area.n {
-			a := area.rects[ai]
-			// This is the one place that knows where a window sits, which is
-			// why `run_fill` and `run_blit` no longer do.
-			x0 := max(max(a.x0, win.x), 0)
-			y0 := max(max(a.y0, win.y), 0)
-			x1 := min(min(a.x1, win.x + win.w), scr_w)
-			y1 := min(min(a.y1, win.y + win.h), scr_h)
-			if x0 >= x1 || y0 >= y1 {
-				continue
-			}
-			for y in y0 ..< y1 {
-				dst := screen_at(y)
-				src := win.pixels[(y - win.y) * win.alloc_w:]
-				for x in x0 ..< x1 {
-					dst[x] = src[x - win.x]
-				}
+		for y in y0 ..< y1 {
+			dst := screen_at(y)
+			src := win.pixels[(y - win.y) * win_w:]
+			for x in x0 ..< x1 {
+				dst[x] = src[x - win.x]
 			}
 		}
 	}
+}
+
+/*
+repaint composites one rectangle out of every window, and `repaint_top` out of
+the one window that is standing over it.
+
+The `region_clear` / `region_add` / `composite` trio was written out at five
+sites, four of which also converted between the corner pair `desk_paint` takes
+and the extent pair `region_add` takes. One helper each, and the conversion
+happens once.
+*/
+repaint :: proc "contextless" (x: int, y: int, w: int, h: int) {
+	region_clear(&scratch)
+	region_add(&scratch, x, y, w, h)
+	composite(&scratch)
+}
+
+repaint_top :: proc "contextless" (win: ^Window) {
+	region_clear(&scratch)
+	region_add(&scratch, win.x, win.y, win.w, win.h)
+	paint_window(win, &scratch)
 }
 
 /*
@@ -1404,7 +1467,7 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 			return vectra9.Errno(0)
 		}
 		for line in 0 ..< h {
-			dst := win.pixels[(y + line) * win.alloc_w:]
+			dst := win.pixels[(y + line) * win_w:]
 			for i in 0 ..< w {
 				dst[x + i] = color
 			}
@@ -1468,7 +1531,7 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		}
 		for line in 0 ..< sh {
 			base := (sy + line) * simg.w + sx
-			out := win.pixels[(dy + line) * win.alloc_w:]
+			out := win.pixels[(dy + line) * win_w:]
 			for i in 0 ..< sw {
 				out[dx + i] = pixels[sslot][base + i]
 			}
@@ -1549,7 +1612,7 @@ name_of :: proc "contextless" (node: i32) -> string #no_bounds_check {
 	}
 	switch node_part(node) {
 	case PART_DIR:
-		return WIN_NAMES[w]
+		return libdraw.win_name(w)
 	case PART_DATA:
 		return "data"
 	case PART_CTL:
@@ -1575,10 +1638,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 		if name == "new" {
 			return NODE_NEW
 		}
-		for i in 0 ..< MAX_WINDOWS {
-			if name == WIN_NAMES[i] {
-				return node_of(i, PART_DIR)
-			}
+		if len(name) == 1 && name[0] >= '0' && name[0] < '0' + u8(MAX_WINDOWS) {
+			return node_of(int(name[0] - '0'), PART_DIR)
 		}
 		return -1
 	}
