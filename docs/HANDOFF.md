@@ -49,6 +49,7 @@ preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 | Processes | ring 3, a namespace and a descriptor group of its own, `spawn`, `rfork` by Plan 9's flag word, `exec` in place, notes a handler catches, `segalloc` for memory no file serves | `USER.md` |
 | Ring 3 servers | five of them, on a runtime with a serve loop, a concurrent one with a worker per parked request, and the tree's first ring 3 lock | `RUNTIME.md` |
 | The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` and `consctl` per window with a line discipline of its own | `DRAW.md` |
+| Typing | one discipline (`sys/libedit`) worn by the server that cooks a window's lines and by the program that draws them and echoes | `DRAW.md` |
 
 **The screen is the part with the most recent work in it.**
 `servers/intuition` holds `/dev/fb` and maps it with `segattach`. It owns every
@@ -80,6 +81,14 @@ takes the characters. So the erase keys and the line under construction belong
 to a window rather than to the machine. `^W` is there, which `/dev/cons` still
 does not have. A window has a `consctl` of its own for the raw mode a client
 may want instead.
+
+**And the window that draws is the one that echoes.** `apps/terminal` takes its
+own window raw and cooks the line itself, because a person has to see the
+characters as they arrive and only the half that owns the pixels can show them.
+That is every Plan 9 program that draws its own text -- `vt`, `con`, `ssh`,
+`sam` all write `rawon` -- and it is why there is no read anywhere that answers
+a line which is not finished. `sys/libedit` is the one set of rules both halves
+wear.
 
 `docs/DRAW.md` owns all of it, section by section, with the controls each claim
 was measured against.
@@ -128,6 +137,9 @@ them could have come earlier:
     a line per window       and the editing belongs to a window rather than
                             to the machine, so a moving focus cannot steal
                             half a line
+    an echo                 and the half that draws is the half that holds
+                            the line, which is the only arrangement that can
+                            show a character before it is a line
 
 ### Reading a boot log
 
@@ -324,17 +336,13 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **A window that echoes what is typed into it.** A person types into a
-   window's own discipline and sees nothing until the line completes. Nothing
-   echoes: the kernel's console draws on glass it no longer owns, and
-   `apps/terminal` renders only finished lines. `rio` has no such gap, because
-   a `rio` window *is* the text it shows.
-
-   Here the server holds the line and the client draws. An echo therefore
-   means telling the client what the line holds so far. A read that answers a
-   partial line would do it, and so would an event a client draws from. It is
-   the first thing on this screen that needs the two halves to agree about
-   text.
+2. **A dead process gives its descriptors back.** This is the standing gap
+   below that turns a failed check into a hang, promoted because it has now
+   done so twice in one session's controls. `reap_orphans` runs only from
+   `spawn_path`, so a ring 3 server that faults mid-request never hangs up its
+   pipe and the client parked on it waits for ever. The wire already poisons on
+   hangup; what is missing is the hangup. Plan 9 releases the descriptor group
+   in `pexit`, and a pipe with no peer answers rather than parks.
 
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
@@ -437,11 +445,11 @@ where they live:
 - A stack backtrace on the panic screen. Everything else a fault report wants to
   say is already there.
 - Make `check_base_revision()` a hard stop rather than a warning.
-- `^W` and a cursor inside the line under construction, for `/dev/cons`. A
-  window's own discipline has the word erase now and the kernel's console does
-  not, which is a difference nobody meant. The cursor is missing from both, and
-  it is a larger edit buffer and a position in it rather than a new idea. See
-  `docs/DEVFS.md` and `docs/DRAW.md` section 14.
+- A cursor inside the line under construction, which is the arrow keys. It is
+  a position in `sys/libedit` and both ring 3 callers get it at once. `^W` is
+  no longer on this list: a window has it, `/dev/cons` does not, and 9front's
+  two disciplines disagree about what a word is on purpose. See `docs/DRAW.md`
+  section 15.
 - Enforce the `open` flag on a fid. 9P forbids a walk on an open fid and a read
   on an unopened one. `vfs.Fid_Table` carries the flag and no server checks it.
   `chan_clone` walks a fid that may already be open, so this has a blast radius

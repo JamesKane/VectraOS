@@ -3730,13 +3730,68 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		"and the bar across its window carries the name the program gave itself",
 	)
 
-	// Three bytes, no newline. Echo runs synchronously on this thread,
-	// so the cursor comparison needs no settle loop.
+	// Three bytes, no newline. The kernel's console echo is off, and this is
+	// what says so: the console cursor does not move for a typed byte.
 	col0 := column()
 	devfs.keyboard_sink('h')
 	devfs.keyboard_sink('i')
 	devfs.keyboard_sink('!')
 	check(r, column() == col0, "three typed bytes move the console cursor nowhere -- the echo is off")
+
+	/*
+	And yet they are on the glass, drawn by the program that owns it.
+
+	**This is the check that tells an echo from no echo**, and until this
+	milestone nothing here could: every other glyph check in this procedure
+	reads the field *after* a newline, where a terminal that only ever drew
+	finished lines looks exactly the same.
+
+	No newline has been sent. The characters are on the screen because
+	`apps/terminal` took its own window's keyboard raw and drew them as they
+	arrived, which is what `rio` does in the window itself and what every
+	Plan 9 program that draws its own text does for itself.
+
+	The last glyph is polled rather than the first. The server paints a batch
+	left to right, so the first says only that the batch began.
+	*/
+	echoed := false
+	for _ in 0 ..< PATIENCE {
+		if glyph_on_glass(s, ox + 40, y0, '!') {
+			echoed = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, echoed, "and yet appear on the glass, because the window that draws them holds the line")
+	check(
+		r,
+		glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i'),
+		"every one of them, before any newline says the line is finished",
+	)
+
+	/*
+	And a backspace takes one back, which is `libedit` seen through the glass.
+
+	The same procedure `servers/intuition` cooks a window's lines with, run
+	here by the program that draws instead. One set of rules about what the
+	keys mean, and two callers with different reasons to hold a line.
+	*/
+	devfs.keyboard_sink(0x08)
+	erased := false
+	for _ in 0 ..< PATIENCE {
+		if glyph_on_glass(s, ox + 40, y0, ' ') {
+			erased = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, erased, "a backspace takes the last character off the field it was drawn in")
+	check(
+		r,
+		glyph_on_glass(s, ox + 32, y0, 'i'),
+		"and leaves the rest of the line where it was",
+	)
+	devfs.keyboard_sink('!')
 
 	devfs.keyboard_sink('\n')
 	// The poll waits for the line's LAST glyph. The server paints the

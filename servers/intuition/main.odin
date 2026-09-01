@@ -87,6 +87,7 @@ import "base:runtime"
 
 import "vsys:abi"
 import "vsys:libdraw"
+import "vsys:libedit"
 import "vsys:libfont"
 import "vsys:libpal"
 import "vsys:libuser"
@@ -997,47 +998,8 @@ an empty one has to mean end of file, which is a claim about a window's life
 rather than about its keyboard.
 */
 EDIT_MAX :: 128
-edit: [MAX_WINDOWS][EDIT_MAX]u8
-edit_n: [MAX_WINDOWS]int
-
-CH_BACKSPACE :: u8(0x08)
-CH_KILL :: u8(0x15) // ^U
-CH_WORD :: u8(0x17) // ^W
-CH_DEL :: u8(0x7F)
-
-// alnum is `rio`'s `isalnum` for the one place a word's edge is decided.
-alnum :: proc "contextless" (b: u8) -> bool {
-	return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
-}
-
-/*
-erase_back is `rio`'s `wbswidth`: how many bytes one erase key takes off the
-line under construction.
-
-A character is one. A kill is all of it. A word skips whatever is not a letter
-or a digit, then takes the run that is -- so erasing a word from `ls -l foo `
-leaves `ls -l `, and again leaves `ls -`.
-*/
-erase_back :: proc "contextless" (line: []u8, key: u8) -> int #no_bounds_check {
-	n := len(line)
-	if n == 0 {
-		return 0
-	}
-	switch key {
-	case CH_KILL:
-		return n
-	case CH_WORD:
-		q := n
-		for q > 0 && !alnum(line[q - 1]) {
-			q -= 1
-		}
-		for q > 0 && alnum(line[q - 1]) {
-			q -= 1
-		}
-		return n - q
-	}
-	return 1
-}
+edit_store: [MAX_WINDOWS][EDIT_MAX]u8
+edit: [MAX_WINDOWS]libedit.Line
 
 /*
 type_at gives one character to a window's line discipline.
@@ -1057,27 +1019,17 @@ type_at :: proc "contextless" (w: int, b: u8) #no_bounds_check {
 		libuser.ring_push(&kbd[w], b)
 		return
 	}
-	switch b {
-	case CH_BACKSPACE, CH_DEL, CH_KILL, CH_WORD:
-		edit_n[w] -= erase_back(edit[w][:edit_n[w]], b)
-		return
-	case '\n':
-		// The newline goes with the line, because it is what a reader
-		// stops at and what `/dev/cons` always delivered.
-		if edit_n[w] < EDIT_MAX {
-			edit[w][edit_n[w]] = '\n'
-			edit_n[w] += 1
-		}
-		for i in 0 ..< edit_n[w] {
-			libuser.ring_push(&kbd[w], edit[w][i])
-		}
-		edit_n[w] = 0
+	if libedit.put(&edit[w], b) != .Done {
 		return
 	}
-	if edit_n[w] < EDIT_MAX - 1 {
-		edit[w][edit_n[w]] = b
-		edit_n[w] += 1
+	for c in libedit.text(&edit[w]) {
+		libuser.ring_push(&kbd[w], u8(c))
 	}
+	// The newline goes with the line, because it is what a reader stops at
+	// and what `/dev/cons` always delivered. `libedit` does not store it,
+	// because the other caller draws the line and would have to strip it.
+	libuser.ring_push(&kbd[w], '\n')
+	libedit.clear(&edit[w])
 }
 
 /*
@@ -1342,6 +1294,7 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	*/
 	for i in 0 ..< MAX_WINDOWS {
 		kbd[i] = libuser.Ring{buf = kbd_store[i][:]}
+		edit[i] = libedit.Line{buf = edit_store[i][:]}
 	}
 	cons := libuser.open("/dev/cons", abi.O_RDONLY)
 	if cons < 0 {
@@ -1609,7 +1562,7 @@ run_consctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no
 	case:
 		return vectra9.EINVAL
 	}
-	edit_n[win_at] = 0
+	libedit.clear(&edit[win_at])
 	return vectra9.Errno(0)
 }
 
@@ -1834,7 +1787,7 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_boun
 	win.cons_held = false
 	win.consctl_held = false
 	win.cons_raw = false
-	edit_n[at] = 0
+	libedit.clear(&edit[at])
 	// New windows arrive on top, which is the only placement rule a client
 	// gets without asking. Before the frame rather than after it, because the
 	// frame's bar is drawn lit or dark by where this window stands, and this
@@ -2536,7 +2489,7 @@ fid_release :: proc "contextless" (fid: vectra9.Fid) {
 		if node_part(node) == PART_CONSCTL && windows[w].consctl_held && windows[w].consctl_fid == fid {
 			windows[w].consctl_held = false
 			windows[w].cons_raw = false
-			edit_n[w] = 0
+			libedit.clear(&edit[w])
 		}
 	}
 	libuser.fid_release(&fids, fid)

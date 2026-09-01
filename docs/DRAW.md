@@ -1114,10 +1114,11 @@ answers. `erase_back` is that procedure:
     ^W          one word: the letters and digits before the cursor, and any
                 spaces between them and it
 
-**`^W` is the one the kernel never had.** `docs/HANDOFF.md` lists word erase
-and the arrow keys as the two a person misses next. A window has the first of
-them now, and `/dev/cons` still does not -- which is what moving a discipline
-rather than copying one looks like.
+**`^W` is the one the kernel never had**, and a window has it now. That is not
+a divergence to go and close: 9front's kernel does no line editing at all, and
+its two userland disciplines disagree on purpose -- `aux/kbdfs` erases back to
+whitespace and `rio` erases back over letters and digits. A discipline belongs
+to the layer that serves a `cons`, and this is one.
 
 A newline finishes a line, and nothing else does. `^D` is `kernel/devfs`'s
 end-of-transmission and this does not answer it: a partial line delivered with
@@ -1218,3 +1219,100 @@ same reasoning section 12 uses for a deeper border: inert, and correctly so.
 the second read of a two-line check with nothing, and an ordinary read of an
 empty queue parks for ever. That read is gated on the size now, so the control
 reports as a failure. It is the same lesson section 13 learned one file along.
+
+## 15. The echo, and which half holds the line
+
+Section 14 gave every window a line discipline, and left a person typing into
+one with nothing to look at until the line completed. **Nothing echoed.** The
+kernel's console draws on glass it no longer owns, and `apps/terminal` drew
+only finished lines.
+
+### What Plan 9 does, and what this is not
+
+The handoff predicted a read that answers a partial line, or an event a client
+draws from. **Both are wrong**, and `rio` says so twice.
+
+`rio`'s cons read gate scans from the window's output point for a `'\n'` and
+sends nothing until it finds one. There is no partial-line read in Plan 9, and
+there is nothing shaped like one.
+
+The reason is that `rio` never needs it: **a `rio` window echoes because the
+window is the text.** `wkeyctl` inserts the character into the window's own
+buffer and the frame draws it. The program in the window reads finished lines
+and draws nothing.
+
+So the question is not how a server tells a client about a half-typed line. It
+is **which half holds the line**, and Plan 9's answer is: whichever one draws.
+Every program there that draws its own text takes the keyboard raw and edits
+for itself -- `vt`, `con`, `ssh`, `sam` all write `rawon` and none of them ask
+anybody what is in the line so far.
+
+### So the terminal holds it
+
+`apps/terminal` writes `rawon` to its own window's `consctl` and cooks the
+line itself. It is the program that owns the pixels, so it is the one that can
+show a character as it arrives.
+
+**`/dev/consctl` is a different file than it was ten lines earlier in the same
+program.** The `echooff` it writes at start reaches `kernel/devfs`, because it
+happens before the bind. The `rawon` reaches its own window, because it happens
+after. That is the namespace doing exactly what section 13 bound it for, and it
+is worth reading twice.
+
+**The server's discipline is not wasted by this.** Cooked is what a window's
+`cons` is by default, and a client that only wants lines -- which is most of
+them, and would be an `rc` here -- gets them without asking. The terminal is
+the special case, exactly as `vi` is in a `rio` window. Section 14's split fix
+holds either way, because the focus is read per character before the mode is
+consulted at all.
+
+### One discipline, two reasons to hold a line
+
+`sys/libedit` is `rio`'s `wbswidth` as a package, and both callers wear it.
+`servers/intuition` cooks a window's line because that is what a `cons` is.
+`apps/terminal` cooks its own because it draws. Those are different reasons and
+one set of rules, which is the same shape `sys/libpal` and `sys/libdraw` have.
+
+    ^H, DEL     one character
+    ^U          the whole line
+    ^W          one word
+
+`put` answers `Edited`, `Done` or `Full`. `Edited` covers an inserted character
+and an erased one alike, because both mean the same thing to a program that
+echoes: draw the line again. The newline is not stored, because the caller that
+delivers a line wants one on the end and the caller that draws it does not.
+
+**`kernel/devfs` keeps its own copy**, and that is the right answer rather than
+a job left undone. 9front's kernel does no line editing -- `devcons.c` reads a
+queue -- and the two disciplines it does have, in `aux/kbdfs` and in `rio`, do
+not agree about what a word is. A discipline belongs to the layer that serves a
+`cons`. The kernel serves one before any of this exists, and ring 3 serves two
+that share these rules because they are one layer apart rather than two.
+
+### What the echo looks like
+
+`render` already filled the field before drawing, so an echo is that call on
+every edit. A finished line leaves the field showing it: there is no scrollback
+here, and clearing on Enter would take the answer away at the moment it
+arrived. The next character clears it anyway.
+
+### The check that could tell
+
+**Every glyph check in `verify_terminal` read the field after a newline**,
+where a terminal that only ever drew finished lines looks exactly like one that
+echoes. The new checks read it *before* one, which is the whole difference, and
+a control confirms it: a terminal that draws nothing on `.Edited` fails them
+and passes everything else.
+
+### The controls
+
+| Mutation | Result |
+|---|---|
+| the terminal draws nothing until a line is finished | 8 checks, first `and yet appear on the glass, because the window that draws them holds the line` |
+| the terminal asks for cooked rather than raw | 8 checks, first the same |
+| `erase_back` forgets the word rule | 2 checks, first `and ^W takes one word, which the kernel's console never had` |
+
+**The last one is what says the discipline is shared.** It mutates
+`sys/libedit` and the checks it fails are `verify_cons`'s -- the *server's*
+side, in a procedure that never goes near `apps/terminal`. One package, two
+callers, and a control that reaches both from either end.

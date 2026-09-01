@@ -43,6 +43,7 @@ import "base:runtime"
 
 import "vsys:abi"
 import "vsys:libdraw"
+import "vsys:libedit"
 import "vsys:libfont"
 import "vsys:libpal"
 import "vsys:libuser"
@@ -107,6 +108,11 @@ STRIP_W :: PER_STRIP * libfont.FONT_WIDTH
 band: [BAND * libfont.FONT_HEIGHT * 4]u8
 
 line: [256]u8
+
+// The line under construction, which this program holds because it is the one
+// that draws. `MAX_COLS` is what the field shows; a longer line keeps its
+// beginning, which is the part somebody meant.
+editing: [MAX_COLS]u8
 geo: [160]u8
 
 // Where the two paths into this client's own window directory are built.
@@ -234,37 +240,71 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 		libuser.exit(0x78)
 	}
 
+	/*
+	And this window's keyboard raw, because this program is the one that
+	draws.
+
+	**A person has to see the characters as they are typed**, and the only
+	thing that can show them is whatever owns the pixels. In `rio` that is the
+	window itself, which is why a `rio` window echoes and the program in it
+	never has to. Here the draw server holds the line and this program holds
+	the glass, so the two cannot both be right -- and the one that draws is
+	the one that must hold the line.
+
+	Every Plan 9 program that draws its own text does this. `vt`, `con`,
+	`ssh` and `sam` all write `rawon` and edit for themselves, because there
+	is no read that answers a line that is not finished yet.
+
+	**`/dev/consctl` is a different file than it was ten lines ago.** The
+	`echooff` above went to `kernel/devfs`, because it happened before the
+	bind. This one resolves through the window's own directory, so it is that
+	window's mode and nobody else's. That is the namespace doing exactly what
+	it is for.
+	*/
+	wctl := libuser.open("/dev/consctl", abi.O_WRONLY)
+	if wctl < 0 {
+		libuser.exit(0x78)
+	}
+	raw := "rawon"
+	if libuser.write(int(wctl), transmute([]u8)raw) != i64(len(raw)) {
+		libuser.exit(0x78)
+	}
+
 	upload_font()
 	prompt()
 
+	edit := libedit.Line{buf = editing[:]}
 	for {
 		got := libuser.read(int(cons), line[:])
 		if got <= 0 {
 			libuser.exit(0x79)
 		}
 		/*
-		One read, one line, which is the server's contract and not this
-		program's caution.
+		Characters now, not lines, and this program cooks them.
 
-		`rio`'s cons drain breaks at the newline, so a program in a window
-		gets one line however many are queued behind it, and a window's `cons`
-		here does the same. This loop briefly did the boundary-finding itself,
-		because the server was emptying its queue into one buffer and a client
-		that looked only at the first line lost the rest. That belonged in the
-		server, and it is there.
+		`libedit` is the same discipline `servers/intuition` runs for a window
+		that has not asked for raw -- one set of rules about what the erase
+		keys mean, worn by both sides of a window's `cons`. What this side
+		adds is the echo: every edit redraws the field, so a person sees the
+		line while it is still a line.
 
-		The newline is still on the end, because it is what the reader stopped
-		at and what `/dev/cons` always delivered.
+		A finished line leaves the field showing it. There is no scrollback
+		here, so clearing on Enter would take the answer away at the moment it
+		arrived, and the next character clears it anyway -- `render` fills the
+		field before it draws.
 		*/
-		end := 0
-		for end < int(got) && line[end] != '\n' {
-			end += 1
+		for i in 0 ..< int(got) {
+			switch libedit.put(&edit, line[i]) {
+			case .Done:
+				if libedit.text(&edit) == "exit" {
+					libuser.exit(0)
+				}
+				libedit.clear(&edit)
+			case .Edited:
+				render(libedit.text(&edit))
+			case .Full:
+			}
 		}
-		text := string(line[:end])
-		if text == "exit" {
-			libuser.exit(0)
-		}
-		render(text)
 	}
 }
 
