@@ -2,8 +2,11 @@
 
 Read this first when you pick the project up in a new session. It records what
 the code cannot tell you on its own. That is where things stand, how to build
-and run it, what the toolchain costs, and what to do next. **The reasoning
-behind each subsystem lives in its own document. Section 3 is the index.**
+and run it, what the toolchain costs, and what to do next.
+
+**It does not explain any subsystem.** The reasoning behind each one lives in
+its own document, beside the code. Section 3 is the index, and a claim made
+here that wants a *why* is a pointer to one of them.
 
 ---
 
@@ -20,255 +23,55 @@ A modular operating system in Odin. Two ideas define it:
   magnesium over deep slate, amber/cyan/phosphor accents, copper trim, a
   software dirty-rect compositor, and tracker-synthesised relay clicks.
 
-Target layout — `kernel/` (arch, mem, sched, vfs, drivers), `sys/` (libodin,
-libposix, Vectra9), `servers/` (devfs, netfs, intuition), `apps/` (terminal,
-filemgr, tracker). Primary arch `x86_64` via Limine, with clean abstractions for
-`aarch64` and `riscv64`.
+Layout — `kernel/` (arch, mem, sched, vfs, drivers), `sys/` (libodin, libuser,
+libdraw, vectra9), `servers/` (ramfs, consrv, kbdfs, eiafs, intuition), `apps/`
+(terminal). Primary arch `x86_64` via Limine, with stubs for `aarch64` and
+`riscv64`.
 
-**`servers/` has five residents.** `servers/ramfs` serves a file tree.
-`servers/consrv` is a console server that *forks* and waits on the keyboard
-and its clients at once. `servers/kbdfs` is the kernel's keyboard
-translation rebuilt over `/dev/scancode`, and `servers/eiafs` is the serial
-port served both ways. `servers/intuition` is the new one: the draw server
-`docs/DRAW.md` designed, six verbs over the screen, and the compositor's
-future home. The runtime under all five -- `sys/abi`, `sys/libuser`, the
-VECTRA02 format, the loader -- is `docs/RUNTIME.md`'s.
-
-`rfork` exists now, by Plan 9's rules. One process becomes two at the call
-site, each with its own page tables. Text is shared, and writable data is
-shared under `RFMEM`. The stack is a private copy at the same address, and
-the descriptor group is shared unless `RFFDG` copies it. Under it, frames
-got an owner that can be shared -- the refcounted *segment* -- and the fd
-table became a refcounted group. `docs/USER.md` owns the design.
-
-`kernel/devfs` still lives in the kernel, and nothing blocks its move any
-more. Every piece of hardware behind `#c` is a file now: `/dev/fb` serves
-the screen's memory, `/dev/scancode` the untranslated keyboard, and
-`/dev/eia0` the serial port's bytes. A raw stream is *owned* while held
-open -- the kernel's own line discipline steps aside -- and given back on
-the last close. The port is work now rather than a wait. See section 6.
+About 50,700 lines of Odin. The linked kernel is ~1.6 MB debug, and the six
+embedded user images are ~300 KB.
 
 ## 2. Where things stand
 
-The machine boots, and brings up memory, a namespace, a scheduler and a
+The machine boots and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
-`/bin`, and holds a pipe server ready behind `sys_pipe`. It then runs about
-1335 checks against itself and idles.
+`/bin`. It then runs about 1370 checks against itself and idles.
 
-`/dev/cons` is a real terminal. A line typed at the keyboard or over the serial
-port is edited, echoed, and handed to a reader that parked waiting for it. A
-keystroke gets there by raising IRQ 1, which is the first interrupt Vectra
-receives rather than arms. `/srv` is a directory of running services, and a name
-posted there can be mounted anywhere in a namespace.
+**What it can do**, and which document says why:
 
-**The screen itself is a file now.** `/dev/fb` is the raw framebuffer -- the
-first device with contents and a size -- and `/dev/fbctl` reports its
-geometry. A ring 3 program named `painter` proves the sentence this milestone
-was for. It opens `/dev/fb` by name, seeks to a pixel, writes it, and reads
-it back, and the self-test checks the glass rather than a counter. No new
-system call was needed: `seek` and the 9P offset already carried the position,
-and the new ground is a device that honours it. `docs/DEVFS.md` owns the
-design.
-
-**So are the input streams.** `/dev/scancode` is the keyboard before
-translation and `/dev/eia0` is the serial port before the line discipline,
-both Plan 9's names. A tap *diverts* its stream while open, because a copy
-would leave two line disciplines fighting one keyboard. The last close
-gives it back, which is `consctl`'s revert rule again. A ring 3 process
-reads eight raw scancodes into its own page during the boot. The keyboard
-driver's half of the seam is one anonymous function pointer with first
-refusal.
-
-**A posted service's connection comes down now.** The wire behind a mounted
-`/srv` name pinned seven heap objects for the life of the machine, counted
-exactly. `vfs.Server` counts its chans and its stakes now. When the last
-mount and the name are both gone, the release runs on whichever thread
-dropped the last piece. Its hang-up ends the far server through its own
-serve loop, and all seven objects come back, measured to zero.
-`docs/PIPE.md` owns the design.
-
-**A note is a signal now, not only a kill.** A process registers a handler
-with `notify`, and delivery pushes the interrupted frame and the note's
-text onto its stack rather than ending it. The handler ends with `noted` --
-`NCONT` resumes where the note struck, `NDFLT` takes the death the note
-always was. The tick and the door delivered an ending before, and deliver
-the handler now. A ring 3 program catches two notes across those boundaries
-during the boot and lives, and only the group fan-out is missing.
-`docs/USER.md` owns the design.
-
-**A program can replace itself, and an orphan is collected at last.** `exec`
-is the seam's other half. A process names a file and becomes that program,
-keeping its pid, its descriptors and its namespace, and dropping its old
-text, data and stack. The new image is built in a fresh space before the old
-one is touched, so a bad file leaves the caller running. On success the
-syscall frame is rewritten and the door returns into the new program.
-
-The orphan the handoff kept naming is retired too. `RFNOWAIT` detaches a
-child at birth, a dying parent reparents its children to the kernel, and
-`reap_orphans` collects a detached process once it ends. `docs/USER.md` owns
-both.
-
-**Vectra runs processes, and now a process can become two.** Forty-two enter
-ring 3 during the boot, and another process started fifteen of them,
-by `spawn` and by `rfork`. One of them then replaced itself with `exec`. A
-forked child continues from the instruction after its parent's `syscall`,
-on a private copy of the stack. It answers zero where its parent hears a
-pid.
-
-The showpiece is `servers/consrv`, and it is the sentence this file kept
-for three milestones: **a server that waits on two things at once**. Its
-`RFMEM` child parks reading `/dev/cons`, a real device read, while the
-parent serves 9P from `/srv/consrv`. The two meet in a producer-consumer
-ring in the bss they share. The kernel types a line into the keyboard sink
-and reads it back through the mount. Teardown is the note doing the job it
-was built for. The parent notes its reader out of the parked read,
-collects EINTR, and exits zero only if it heard it.
-
-**A userland server answers concurrently now.** `libuser.serve_mux` forks a
-worker per request that would park. So `consrv`'s read of `/line` waits in a
-worker of its own, while the main loop answers a walk or a getattr from
-another client. The zero-bytes wart is gone: a read of empty `/line` parks
-like a device read should. It takes the first lock ring 3 has -- a spinlock
-over `lock cmpxchg` -- to serialise the pipe writes, and `RFNOWAIT` reaps
-each worker. `docs/RUNTIME.md` owns the design.
-
-**A kernel service runs as a program now.** `servers/kbdfs` reads the raw
-scancodes `/dev/scancode` serves, runs `kernel/drivers/kbd`'s translation
-byte for byte, and serves the characters it makes on `/kbd`. It is the
-userland devfs's first tenant, and it stands where the kernel's keyboard
-driver stood, one privilege level out.
-
-Building it found a real bug. A device read drained its bytes before it
-checked the flush. A flush racing a keystroke then consumed the byte into a
-reply the client gave up on, about one boot in three. Both device-read loops
-check the flush first now. `docs/RUNTIME.md` owns the server, `docs/DEVFS.md`
-the fix.
-
-**And the port is served both ways now.** `servers/eiafs` opens `/dev/eia0`,
-which diverts the wire's bytes to it, and serves them raw on `/eia0`. A
-write through the mount goes down the shared descriptor and out the port --
-the first userland `Twrite` to reach hardware. The teardown control found
-the pattern's hang. A parent that skips the note strands its reader, whose
-shared descriptor group keeps the posted pipe open for ever.
-`docs/RUNTIME.md` owns the server.
-
-**And the screen speaks in verbs.** `servers/intuition`'s first half is the
-draw server, built to `docs/DRAW.md` -- the first document here written
-before its code. A client writes a command batch to `/srv/draw`'s `data`
-file, and the six verbs draw through `/dev/fb`. One boot write carried a
-fill, an image, a load, a blit and a flush, and every claim read back off
-the glass. A session is a fid, and a clunk gives its images back.
-`sys/libdraw` owns the encoding, and `libuser` grew `seek`.
-
-**And `apps/` has its first resident.** `apps/terminal` consumes two
-services at once: lines in from `/dev/cons`, glyphs out through
-`/srv/draw`, which it mounts itself -- the tree's first ring 3 mount. It
-uploads the console's own font once, from `sys/libfont`. A typed line
-comes back as blits out of that atlas, pixel-identical to the kernel's
-rendering. The kernel types at it during the boot and reads the glass. A
-typed `exit` ends it, and its clunked session gives the image pool back.
-
-**And a program can hold more than its own image.** `segalloc` is the call and
-`Segment_Kind.Anon` is what it makes. A run of zeroed, writable, never
-executable pages, described by a base and an extent the way a device mapping
-already was.
-
-Static `bss` used to be all a program had. The image format bounds a whole
-process at 1.5 MB, which is less than one window's pixels. `docs/DRAW.md`
-section 10 named this call a milestone before it existed, and named it a memory
-question rather than a graphics one. It was.
-
-`segattach` and `segalloc` share one address bump, so a card and a run can
-never take the same pages. A forked child inherits the mark along with the
-space. `rfork` treats a run as data. It shares one under `RFMEM`, and otherwise
-makes a private copy in one allocation, because a run is contiguous at both
-ends. That last rule is `dupseg`'s `SG_BSS` case to the line.
-
-**Plan 9 asks for both through one call, and Vectra asks through two.**
-9front's `segattach` takes a class name out of a kernel table. `"memory"` is
-anonymous, and a driver registers the framebuffer under a name of its own.
-`docs/DRAW.md` section 7 refused that table a milestone ago, because a kernel
-table of names is a permission story a namespace cannot overrule. A descriptor
-names a device because a device is a file, and nothing is the file for memory
-no server has. So the second call is that refusal's bill rather than a design
-of its own.
-
-`docs/USER.md` owns the design, the controls, and what else Plan 9 has here.
-
-**And a window has pixels of its own.** Each of `intuition`'s windows holds a
-run of anonymous memory, and a draw is a store into that rather than onto the
-glass. `flush` is the damage mark now, which is the promise `docs/DRAW.md`
-section 6 made two milestones before it could keep it. Not one client changed:
-a client that already flushed was already correct.
-
-Three things followed. The windows **overlap**, because placement only kept
-them apart while a window was a clip. Slot order is stacking order, and
-`composite` paints back to front, which is the whole of occlusion. And a
-covered client is never told, because it has nothing to redraw.
-
-**The refresh event this design deferred was retired rather than built.** A
-window that closes gives back what it was sitting on, out of the store below
-it. The client underneath draws nothing to earn that. That is what a backing
-store is for, and it answers the question an expose event was going to ask.
-`docs/DRAW.md` section 11 owns the compositor and its nine controls.
-
-```
--- a program in ring 3 wrote this line
--- a process opened this file by name
--- this line went to /dev/null
--- a process started this one
--- this line went through a posted service
--- a process answered this line
-these bytes live in a program's own segments
-```
-
-Three objects carry the milestone, all in `kernel/user`. A **segment**
-owns the frames behind one mapping, refcounted. Text and `RFMEM` data
-therefore map into two spaces with one owner, which is the answer
-`mem/space.odin`'s file comment waited for.
-
-An **fd table** is a refcounted group now, shared by default the way Plan
-9's fork shares it. Its two invariants are in `fdtable.odin`. A syscall
-*takes* a chan reference rather than borrowing a slot. An exit *releases*
-the group rather than closing a sibling's files.
-
-The third object is `arch.thread_user_clone`, which copies the door's
-saved frame. The door already saved every register in the resumable
-layout, so continuing from the call site is a copy with `rax` answered
-zero.
-
-The flag word is Plan 9's bit for bit. `RFPROC`, `RFMEM`, `RFFDG`,
-`RFCFDG`, `RFNAMEG` and `RFCNAMEG` work. `RFNOTEG` is recorded and inert.
-The rest are refused EINVAL rather than skipped. Without `RFPROC` the
-namespace and descriptor flags act on the caller in place.
-
-About 46,300 lines of Odin. The linked image is ~1550 KB debug and ~913 KB
-release. The six embedded user images (`ramfs`, `consrv`, `kbdfs`,
-`eiafs`, `intuition`, `terminal`) are ~275 KB of both.
-
-**What exists, and which document says why:**
-
-| Subsystem | What it is | Read |
+| | What works | Read |
 |---|---|---|
-| `boot/`, `kernel/arch/` | Limine, descriptor tables, traps, the panic screen | `docs/BOOT.md` |
-| `kernel/mem/` | PMM, VMM, and a heap behind `context.allocator` | `docs/MEMORY.md` |
-| `kernel/sched/` | Threads, priorities, decay, and the LAPIC tick that preempts | `docs/SCHED.md` |
-| `kernel/sync/` | The lock that masks, the lock that parks, and waiting for a condition | `docs/SYNC.md` |
-| `sys/libpal/` | The system palette: one table the kernel and ring 3 both read | `docs/DRAW.md` |
-| `sys/vectra9/` | The 9P2000.L message set, its codec, and the session and transport boundary | `docs/VECTRA9.md` |
-| `kernel/vfs/` | The namespace: chans, the mount table, walking, union listings | `docs/NAMESPACE.md` |
-| `kernel/mnt/` | A 9P connection with several requests in flight, `Tflush` over it, and the wire whose far side is bytes | `docs/TRANSPORT.md` |
-| `kernel/pipe/` | Two ends, a byte ring per direction, and the glue that makes a posted end a server | `docs/PIPE.md` |
-| `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl`, and the raw hardware -- framebuffer, scancodes, wire, each diverting the kernel's own handler while held | `docs/DEVFS.md` |
-| `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, now from ring 3 too | `docs/SRV.md` |
-| `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, and a top half that may not park | `docs/KBD.md` |
-| `kernel/mem/space.odin` | An address space per process, sharing one kernel half | `docs/SPACE.md` |
-| `kernel/user/` | Ring 3, the door back in, a process that owns what it opens, the spawn that makes more, the rfork that makes two, the note a handler catches, and the exec that replaces one | `docs/USER.md` |
-| `sys/abi`, `sys/libuser`, `servers/` | The shared call numbers, the ring 3 library and serve loop, and the two compiled servers | `docs/RUNTIME.md` |
+| The wire | 9P2000.L, in-process and over bytes, several requests in flight, `Tflush` | `VECTRA9.md`, `TRANSPORT.md` |
+| The namespace | bind/mount with before/after/replace, unions, a private table per process | `NAMESPACE.md` |
+| The console | `/dev/cons` is a real terminal: a line typed at the keyboard or the serial port is edited, echoed, and handed to a parked reader | `DEVFS.md` |
+| The hardware | every device behind `#c` is a file — `/dev/fb` the screen's memory, `/dev/scancode` the untranslated keyboard, `/dev/eia0` the port. A raw stream is *diverted* while held, and given back on the last close | `DEVFS.md` |
+| Services | `/srv` names a running service, mountable anywhere in a namespace, postable from ring 3, and its connection comes down when the last mount and the name are both gone | `SRV.md`, `PIPE.md` |
+| Processes | ring 3, a namespace and a descriptor group of its own, `spawn`, `rfork` by Plan 9's flag word, `exec` in place, notes a handler catches, `segalloc` for memory no file serves | `USER.md` |
+| Ring 3 servers | five of them, on a runtime with a serve loop, a concurrent one with a worker per parked request, and the tree's first ring 3 lock | `RUNTIME.md` |
+| The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, and four `ctl` lines | `DRAW.md` |
 
-**The order they arrived in matters in exactly one way**, and it is worth
-knowing before reading any of them. Each of these unblocked the next, and none
-of them could have come earlier:
+**The screen is the part with the most recent work in it.**
+`servers/intuition` holds `/dev/fb` and maps it with `segattach`. It owns every
+pixel while it does, so the console draws into a shadow copy and blits that back
+on the last close.
+
+Each window is a run of anonymous memory from `segalloc`. A draw is therefore a
+store, and `flush` is the damage mark that walks it onto the glass. Windows
+overlap, and stacking order is a list of its own. A window that closes gives
+back what it covered out of the store below, which is why there is no expose
+event.
+
+A window is a raised plinth with a sunken screen in it. The chrome vocabulary
+is `sys/libdraw` and the palette is `sys/libpal`, and ring 0 and ring 3 both
+read them. `move`, `size`, `raise` and `name` are `ctl` lines rather than verbs.
+The window in front wears the lit copper.
+
+`docs/DRAW.md` owns all of it, section by section, with the controls each claim
+was measured against.
+
+**The order these arrived in matters in exactly one way**, and it is worth
+knowing before reading any document. Each one unblocked the next, and none of
+them could have come earlier:
 
     a heap                  a namespace can allocate a chan
     a scheduler             a server can have threads of its own
@@ -289,167 +92,84 @@ of them could have come earlier:
     the wire                and 9P down one, so a process can answer it
     a runtime               and the answerer can be a program a compiler built
     a note                  and what will not stop can be stopped, from outside
-    an rfork                and one process can become two, sharing what they
-                            choose -- so a server can wait on two things at once
-    a raw device            and the hardware itself is a file: the screen at
-                            an offset a process may seek
+    an rfork                and one process can become two -- so a server can
+                            wait on two things at once
+    a raw device            and the hardware itself is a file: the screen at an
+                            offset a process may seek
     a tap                   and a stream is owned rather than copied: whoever
                             holds the file stands where the kernel stood
-    a release               and what a posting built comes down whole, when
-                            the last mount and the name are both gone
-    a note handler          and a note is a signal rather than a kill: the
-                            kernel pushes a frame, the program catches it
-    an exec                 and a process becomes another program in place,
-                            keeping its descriptors -- the seam's other half
-    a serve mux             and a userland server answers concurrently: a
-                            worker per request that parks, the rest inline
-    a kbdfs                 and a kernel driver runs as a program: raw
-                            scancodes in a file, translated in ring 3
-    an eiafs                and the port answers both ways: a ring 3 write
-                            through a mount reaches the hardware behind it
-    a draw server           and the screen speaks in verbs: a command
-                            stream in a file, checked against the glass
-    a terminal              and a program consumes both: typed lines come
-                            back as glyphs a mount of its own arranged
+    a release               and what a posting built comes down whole
+    a note handler          and a note is a signal rather than a kill
+    an exec                 and a process becomes another program in place
+    a serve mux             and a userland server answers concurrently
+    a kbdfs, an eiafs       and a kernel driver runs as a program, both ways
+    a draw server           and the screen speaks in verbs, checked on the glass
+    a terminal              and a program consumes two services at once
+    segalloc                and a program holds memory no file serves
+    a compositor            and a window's pixels are its own, and survive
+                            being covered
 
-Everything else about how it got here is in the documents above, beside the
-code it explains.
+### Reading a boot log
 
-```
-[  --  ] Vectra 0.1.0-pre (amd64) entering kmain
-[  ok  ] base revision 6 as requested
-[  ok  ] traps: cs 0x8, tr 0x30, 256 vectors, #BP round-trip ok
-[  ok  ] framebuffer 1280x800 @ 32bpp, pitch 5120 -> 0xffff800080000000
-[  --  ] console 149 cols x 36 rows
-[  --  ] booted by Limine 12.6.1 via UEFI (64-bit)
-[  ok  ] paging 4-level
-[  --  ] kernel phys 0x0000000019ea5000 virt 0xffffffff80000000
-[  --  ] hhdm offset 0xffff800000000000
-[  --  ] memory map: 32 entries spanning 12.7 GiB
-[  ok  ] usable 465.0 MiB, reclaimable 40.5 MiB
-[  --  ] largest usable region 392.6 MiB at 0x0000000001600000
-[  ok  ] pmm 119062 frames free of 123848 tracked, bitmap 15.1 KiB at 0x0000000000001000
-[  ok  ] vmm root 0x0000000000005000, mapped 516.3 MiB in 271 tables (1.0 MiB)
-[  --  ] vmm nx on, global pages on, largest leaf 2.0 MiB
-[  ok  ] heap online -- context.allocator is live
-[  ok  ] memory self-test passed -- 1 slab pages, 0 large blocks live
-[  ok  ] vectra9 9P2000.L: 57 message kinds round-trip, both transports agree
-[  ok  ] namespace: #/ attached as /, 8 conventional directories
-[  ok  ] vfs 51 namespace checks passed -- union of 4 names over two servers, 1 mount point, heap balanced
-[  ok  ] sched cpu0 performance, capacity 1024/1024, slice 10 ticks, 16 priority levels
-[  ok  ] sched 21 scheduler checks passed -- 132 switches, round-robin and priority verified
-[  ok  ] ioapic version 0x20, 24 lines, all masked
-[  ok  ] lapic timer 1000 Hz -- bus clock 62.5 MHz measured against the PIT, 62525 counts per tick
-[  ok  ] sched preemption 11 checks passed -- 3 threads preempted, none starved (17722552-17875335 rounds), decayed to 5, 3 fpu accumulators intact
-[  ok  ] sync 14 sleeping lock checks passed -- 2266 acquisitions, 2162 parked and handed back, decayed to 1
-[  ok  ] sync 20 sleep queue checks passed -- 12 parked, 12 woken, 25-tick delay took 25 in 2 switches
-[  ok  ] 9p 35 Tflush checks passed -- 34 requests, 11 flushed (10 in flight, 1 stale), Rflush held 40 ticks for a stubborn server
-[  ok  ] 9p 23 payload checks passed -- 1024 bytes per slot, 4096 delivered to 8 readers, 7 spoiled by a shared buffer, 4 listings at once
-[  ok  ] vfs 41 transport checks passed -- 160 reads and 160 listings across 4 threads on 4 workers, msize 4120, a read gave up after 10 ticks
-[  ok  ] vfs 34 concurrency checks passed -- 4506 namespace operations across 5 threads, 720 rebinds under them in 1000 ms, nothing serialised, heap balanced
-[  ok  ] devfs #c bound at /dev, 8 devices on 4 workers, cooked console, input live
--- this line reached the screen through /dev/consX 
--- these bytes went straight out the wire
-[  ok  ] devfs 134 device checks passed -- 8 files under /dev, 49 bytes written to cons, 6 lines cooked over 4 edits, 2 reads parked, a read gave up after 10 ticks
-[  ok  ] srv #s bound at /srv, 0 services posted, 32 slots
-[  ok  ] srv 82 service checks passed -- 35 posted, 6 listed across 6 passes with one removed under them, 1 mounted, 1 name reserved pending, heap balanced
-[  ok  ] pipe #| ready, 8 slots, 2048 bytes per direction
-[  ok  ] pipe 37 checks passed -- 8227 bytes crossed, 2 threads parked and woken, heap balanced
-[  ok  ] wire 46 checks passed -- 18 frames answered by a thread the kernel cannot call, 9 flushed, 1 stale reply dropped, 2 wires poisoned on purpose
-[  ok  ] bin #b bound at /bin, 12 programs as files, formats VECTRA01 and 02
-[  ok  ] kbd ps/2 on irq 1 -> vector 0x31, scancode set 1, us layout
-[  ok  ] kbd 55 keyboard checks passed -- 48 scancodes translated, 2 interrupts taken, an injected key reached the sink
-[  ok  ] space 33 address space checks passed -- 2 spaces sharing one kernel half, 8 tables between them, 133 CR3 reloads, one address two meanings
-[  ok  ] syscall armed -- entry at 0xffffffff800272b0, /dev/cons is descriptor 1
--- a program in ring 3 wrote this line
--- a process opened this file by name
--- this line went to /dev/null
--- a process opened this file by name
--- a process started this one
--- a process started this one
--- this line went through a posted service
--- a process answered this line
-these bytes live in a program's own segments
--- a process started this one
--- these bytes went through a ring 3 server to the wire
-[  ok  ] user 625 userland checks passed -- 41 processes, 14 started by another process, 7467632 preempted rounds, 979 system calls, 11 9P requests answered by a process, a typed line served by a process that forked
-[  ok  ] boot complete -- idling
-```
+`just run` prints one `[ ok ]` line per subsystem, each a self-test on the
+machine that will run it. `docs/TESTING.md` is the discipline behind them.
+Three things about a boot are worth knowing before you read one:
 
-**Every line of that is a self-test on the machine that will run it**, and
-`docs/TESTING.md` is the discipline behind them. Three of them are worth
-knowing about before reading a boot:
+- **Some numbers move on every run, and that is the design.** The LAPIC
+  calibration, the preemption round counts, the lock acquisitions, and the
+  operation count under a fixed tick budget are measured rather than asserted.
+  `just release` does the same thousand ticks of work and reports about fifty
+  thousand operations. `docs/TESTING.md` says why measuring in ticks is the
+  right way round.
+- **`9p ... payload checks` reports readers spoiled by a shared buffer, and
+  that is a pass.** It is a control that runs every boot: the wrong arrangement
+  is still expressible, and a failure to corrupt would be the failure.
+- **Untagged lines are output, not status.** They are the self-tests writing
+  through the paths they are testing — a line to `/dev/cons`, a line a ring 3
+  program printed, bytes that went out the wire. The console echo leaves an
+  erase sequence after one of them that a terminal consumes and a file capture
+  keeps.
 
-- The untagged line is the devfs self-test writing to `/dev/cons`, which is the
-  shortest proof that path exists. The echo checks leave an erase sequence after
-  it that a terminal consumes and a file capture keeps.
-- **Four of those lines carry numbers that move on every run**, and that is the
-  design rather than noise. The LAPIC calibration, the preemption round counts,
-  the lock acquisitions, and the operation count under a fixed tick budget are
-  all measured rather than asserted. `just release` does the same thousand ticks
-  of work and reports about fifty thousand operations. `docs/TESTING.md` says
-  why measuring in ticks is the right way round.
-- `9p 23 payload checks` reports **7 readers spoiled by a shared buffer**, and
-  that is a pass. It is a control that runs every boot: the wrong arrangement is
-  still expressible, and a failure to corrupt would be the failure.
-
-**What still does not exist.**
+### What does not exist
 
 The one that shapes everything after it:
 
 - **No SMP.** `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 ever
-  starts. There is no IPI, no AP trampoline and no lock word.
+  starts. There is no IPI, no AP trampoline and no lock word. Section 6 has
+  what it would take.
 
-And on the note, half-finished by design:
+And the rest, each named in the code it is missing from. **Something that
+exists and is merely incomplete is not here.** Section 6 has those, because a
+gap with a design question attached is work rather than orientation.
 
-- **A note reaches a handler now**, but not a group. `notify` registers one
-  and `noted` resumes or dies, so a note is a signal rather than only a
-  kill. The missing half is the fan-out. `Process.note_group` inherits and
-  nothing posts to a group, which is Plan 9's `postnote` to a group rather
-  than a pid. And no FPU state crosses a delivery.
+- **No group fan-out for notes.** `notify` registers a handler and `noted`
+  resumes or dies, so a note is a signal. `Process.note_group` inherits and
+  nothing posts to a group, which is Plan 9's `postnote` to a group rather than
+  to a pid. `RFNOTEG` is recorded and inert for the same reason, and it is the
+  one flag in `rfork`'s word that is. No FPU state crosses a delivery.
+- **No flush that reaches a worker.** `serve_mux` forks a worker per parked
+  read. A `Tflush` cancels the request on the wire but not the worker, which
+  polls until its byte arrives or the server shuts down.
+- **No allocator in ring 3**, and no way for one process to wait on two
+  descriptors — it forks instead, which is Plan 9's answer.
+- **No ACPI.** The I/O APIC's address and the ISA-to-GSI mapping are assumed
+  rather than read from a MADT. Both are right on every PC and neither is
+  discovered.
+- **No interrupt on the serial line.** `devfs.cons_input` polls it once a tick,
+  and the keyboard shows the shape a replacement takes.
+- **No condition variable as such**, because `sync.Rendez` is one. Do not go
+  looking for a second thing.
+- **No halt.** `kmain` ends with `sched.exit`, so the machine idles.
 
-And on the new ground itself. `serve_mux` forks a worker per parked read.
-A `Tflush` cancels the request on the wire but not the worker, so the worker
-polls until its byte arrives or the server shuts down. Flush that reaches the
-worker is a refinement, not here yet. A read served inline when the pool is
-full parks the main loop -- the stall `kernel/devfs`'s worker count
-documents, moved to a userland pool size.
+**A note still lands with bounded lag** rather than instantly. A loop or a
+parked sleep costs a tick, and a read waiting on a device costs up to
+`NOTE_POLL` ticks. A *faulting* process holds its descriptors until `destroy`
+collects it.
 
-The older ground stands too. A ring 3 program still has no allocator. One
-process still cannot wait on two descriptors -- it forks
-instead, which is Plan 9's answer. A posted service comes down now, when
-the last mount and the name are both gone.
+### Three decisions that shape everything downstream
 
-From the milestones before: the seam is cut on the creating side only,
-and there is no `exec` that replaces a running image. The note still lands
-with bounded lag rather than instantly. A loop or a parked sleep costs a
-tick, and a read waiting on a device costs up to `NOTE_POLL` ticks. A
-*faulting* process still holds its descriptors until `destroy` collects
-it.
-
-And the smaller ones, each named where it lives:
-
-- No ACPI. The I/O APIC's address and the ISA-to-GSI mapping are assumed rather
-  than read from a MADT. Both are right on every PC and neither is discovered.
-- No interrupt on the serial line. `devfs.cons_input` still polls it once a
-  tick, and the keyboard shows the shape a replacement takes.
-- Nothing stops a handler from taking a sleeping lock. `sync.can_sleep` counts
-  spinlocks and an interrupt handler holds none, so the rule that a top half may
-  not park is argued in prose rather than checked. See `docs/KBD.md`.
-- No word erase and no cursor inside a line. `^W` and the arrow keys are the two
-  a person misses next.
-- No read/write sleeping lock, which is the piece `Mount_Point.generation`
-  stands in for.
-- No enforcement of the `open` flag `vfs.Fid_Table` carries. 9P forbids a walk
-  on an open fid and a read on an unopened one, and no server here refuses
-  either.
-- No condition variable as such, because `sync.Rendez` is one.
-- `kmain` ends with a call to `sched.exit`, so the machine idles rather than
-  halts.
-
-**The design is written down in `docs/VECTRA9.md`, and it is the thing to read
-before touching the protocol or the namespace.** Three decisions in it shape
-everything downstream, all three taken deliberately:
+All three are argued in `docs/VECTRA9.md`, which is the thing to read before
+touching the protocol or the namespace.
 
 1. **The wire is 9P2000.L and nothing is added to it.** No new message, no extra
    field, no private version string. When a service needs an operation 9P does
@@ -463,8 +183,9 @@ everything downstream, all three taken deliberately:
 
 ## 3. The design documents
 
-This file is orientation. Everything that explains *why* a subsystem is the
-shape it is lives beside the code it describes, one document per directory:
+This file is orientation, and it explains nothing. Everything that says *why* a
+subsystem is the shape it is lives beside the code it describes, one document
+per directory:
 
 | Document | Covers | Read it when |
 |---|---|---|
@@ -482,7 +203,7 @@ shape it is lives beside the code it describes, one document per directory:
 | `docs/KBD.md` | `kernel/drivers/kbd/` — scancodes, the I/O APIC, and why a handler splits in two | Adding a device that interrupts, routing a line, or wondering why the polling thread is still there |
 | `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention, the raw framebuffer and the screen's divert | Adding a device file, adding a `ctl` file, writing a server whose reads park, wondering why `/dev/cons` has two locks, or asking who owns the glass |
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
-| `docs/DRAW.md` | The `/dev/draw` protocol design, written before its code | Building the draw server, its client library, or the fb mapping |
+| `docs/DRAW.md` | The draw protocol, written before its code, and everything the screen grew after it: the window, the compositor, the chrome vocabulary and the one palette (`sys/libdraw`, `sys/libpal`) | Building the draw server, its client library, the fb mapping, or anything that draws in either ring |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
@@ -570,165 +291,22 @@ a copy of `base:runtime` that must track the compiler. Current Odin ships
 
 ## 6. Where to go next
 
-The scheduler was the thing that blocked everything else. What it exposed is now
-locked and the session lock parks. A thread can wait for a condition or a
-deadline, and a request can be left pending and flushed. Milestones 10 through
-12 spent all of it. Every primitive a driver needs is not only present but used
-by something that is not a self-test.
-
-Processes reproduce two ways now, the console's hardware is all served
-raw, and a posted service's connection comes down when nothing holds it.
-Nothing blocks the `servers/` devfs port any more, and its teardown story
-is written.
-
-**The screen is memory a process holds, and a client draws into a window.**
-`servers/intuition` opens `/dev/fb`, attaches it with `segattach`, and every
-draw after that is a store rather than a seek and a write. The namespace is
-what says which device, and whether a process may have it.
-
-Image zero is the session's window rather than the screen. Every draw moves by
-the window's origin and clips to its extent, and `ctl` reports the window's
-shape and never the glass's. Two clients hold the same coordinates and mean two
-places. **The protocol did not change to make that true**, which is the test
-`docs/DRAW.md` section 3 chose the topology to pass.
-
-**And a program can hold more memory than its own image.** `segalloc` answers
-with a run of zeroed pages, described by a base and an extent the way a device
-mapping already was. That was the piece a window's pixels waited on, and
-`docs/DRAW.md` section 10 called it correctly a milestone early: it was not a
-graphics question. `docs/USER.md` owns the call.
-
-**And the compositor holds them.** A draw is a store into a window's own run,
-`flush` walks the damage onto the glass, and slot order is stacking order. Two
-windows overlap and neither can reach the other's pixels. A window that closes
-gives back what it covered, and the client under it draws nothing to earn that.
-The expose event `docs/DRAW.md` section 9 deferred is retired instead of built.
-
-**And damage is a region.** Each window keeps a bag of rectangles for what its
-client drew since its last flush, and another for everything it drew at all.
-
-The second one retired a magic pixel value. A window's store used to begin as
-zero and the compositor used to skip zero, which cost a client the ability to
-paint black. That question lives in a region now, and a two megabyte memset per
-`Tlopen` went with it -- and came back, and went again when a window grew a
-frame that writes every pixel of its own rectangle.
-
-**And the console no longer paints the glass.** `/dev/fb` diverts it the
-way `/dev/scancode` diverts the keyboard. While something holds the screen the
-console draws into a copy of it, and the last close blits that copy back over
-the whole frame. So a compositor and the boot log no longer fight over one
-piece of memory, which is the thing a desktop was waiting for.
-
-The console needed no scrollback for it. A shadow surface carries what a grid
-of cells could not: the boot chassis, which the console never drew.
-
-**And there is a desktop under the windows.** `servers/intuition` paints deep
-slate with an engraved grid over the whole screen at start. It owns every pixel
-of the glass for as long as it holds `/dev/fb`. A window is opaque over its
-whole rectangle, and what a window uncovers is ground.
-
-That retired the last of two mechanisms built to keep a window from painting
-its own blank rectangle. First a magic pixel value, then a `covered` region per
-window. Both existed because what lay under a window was the kernel's boot
-chassis. The blocker was never a graphics one, which is the lesson
-`docs/DRAW.md` section 11 keeps.
-
-**And a client can move, resize, and raise its own window.** Three `ctl` lines
-rather than three verbs, which is the distinction `docs/DRAW.md` section 5
-guards. A verb is about pixels, and a window is not a pixel.
-
-They cost a tree rather than a verb. `ctl` could report a geometry every window
-shared, but it could not say *which* window a line was about. So the draw
-server grew Plan 9's numbered directories: `/new`, `/N/data` and `/N/ctl`.
-Section 4 predicted that growth and called it free on the wire, and it was.
-They are ordinary walks of ordinary names.
-
-`raise` is why stacking became a list of its own. A window's index is where its
-memory is, and its place in the stack is where it is on the screen. `move` is
-the first thing that damages two rectangles far apart. `size` moves a window's
-edges inside the run it was born with and never past it, which is `segbrk`'s
-absence speaking.
-
-**And the chassis's vocabulary reaches ring 3.** `kernel/splash.odin` said its
-window frames should be the same object as the screen the kernel painted. That
-could not happen while bevels were surface painters in ring 0.
-
-`sys/libdraw` decomposes a panel, a well and a lamp into coloured rectangles
-and paints nothing. So the draw server and a client through a pipe draw the
-same object two different ways, and the kernel is the third painter below.
-
-**And the palette is one table both privilege levels read.** It promised that
-of itself and had three copies. `sys/libpal` holds it, `fb` aliases every name,
-and ring 3 packs it. The desktop is a recessed well with a lamp per window down
-its right edge, lit when that window has a session. `apps/terminal`'s field is
-sunk into a well sent as ordinary fills. There is no chrome verb, and
-`docs/DRAW.md` section 5 is why there is not.
-
-**And ring 0 wears the chrome vocabulary.** `fb.paint` is the third painter
-`Piece.color` carried an `RGB` for: five lines walking a `[]Piece` through
-`fill_rect`, packing against whatever mode the bootloader set. `bevel_edges`
-is `libdraw.edges` painted, the chassis's
-console well is `libdraw.well`, and `draw_lamp` is `libdraw.lamp`. The kernel's
-copy of the arithmetic is gone rather than agreed with by hand.
-
-`panel` had to come apart to do it. Three callers want the chiselling without a
-face, because what they chisel around is `brushed`, or `gradient_v`, or ground
-with a grid engraved in it, and none of those three is a rectangle. So `edges`
-is the walk and `panel` is a face in front of it.
-
-The chassis keeps what a rectangle cannot carry by painting it *over* the
-decomposition. A lit jewel is a flat `Piece` that ring 0 then ramps and puts a
-specular pixel on, and ring 3's lamps are flat. `docs/DRAW.md` section 12 owns
-all of it.
-
-**And a window is a raised plinth with a sunken screen in it**, which is the
-chassis in one sentence. `window_frame` decomposes it into a bevel's edges and
-two panels -- the border, the copper bar across its top, and the well the
-client area is sunk into -- and the draw server stores them into the window's
-own run. The compositor never learns there is a frame: a window is still one
-opaque rectangle backed by one segment. The decomposition is `sys/libdraw`'s
-and the numbers are the server's.
-
-**The client area is the well's interior, and that was the cost.** A client's
-(0, 0) moved in by the border, the bar and the recess. `ctl` reports the client
-area, `size` names it, and the verbs clip to it and move into it. Every
-coordinate the self-test hardcoded moved with it, which is what the handoff
-before this one said it would cost.
-
-**And the self-test finds a window rather than computing one.** It insets its
-readbacks by the frame's own constants for one milestone, which put a server's
-layout in `sys/libdraw` and made the test agree with the code under test: no
-mutation of a frame's *geometry* could fail a check. A client fills the area it
-was promised now and the glass says where that landed, anchored against the
-window's own edges so a scan cannot simply follow a wrong answer. The desktop
-those discoveries stand on is measured off a bare screen rather than restated,
-so a restyled desktop no longer fails a frame's checks. Two mutations
-that were invisible are caught, two that are only a look are correctly inert,
-and `FRAME_EDGE` and its two friends live in the one process that has any
-business knowing them. `docs/DRAW.md` section 12 owns it.
-
-**And the frame is what clears a slot now.** Its edges, its bar and its well
-tile a window's rectangle between them, so painting one writes every pixel.
-That retired the two megabyte `memset` at every `Tlopen` and the band clear at
-every `size`, and the plinth's face with them -- three nested rings are the
-whole of a three-pixel border, so a face under them was never seen.
-
-**A fourth `ctl` line names a window**, and the bar says it. The server draws
-the letters out of `sys/libfont`, which is the font `docs/DRAW.md` said it did
-not have -- and it stayed out of the protocol, because a title is the server's
-text about a client's window rather than the client's own. `apps/terminal`
-sends `name terminal` and is the first program to use the line.
+**This section is only forward.** What was built and why is in section 2 and in
+the documents it points at.
 
 **Next, in order:**
 
-1. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the same
-   table lists the cores SMP will need to start. Worth doing when one of those
-   two becomes a reason rather than a tidiness.
+1. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the
+   same table lists the cores SMP will need to start. Worth doing when one of
+   those two becomes a reason rather than a tidiness.
 
-2. **Focus, and what a title bar is for.** `raise` exists and every bar is the
-   same copper whether or not its window is in front. One more colour and one
-   more repaint rather than a mechanism, and the first thing on this screen
-   that would report which client the machine is listening to.
+2. **Keyboard to the focused window.** A title bar reports which client the
+   machine is listening to, and the machine is not listening to it. `/dev/cons`
+   is the console's, and a window has no way to be given a keystroke. A
+   read-only event file on `/N/` is the shape, which grows `docs/DRAW.md`
+   section 4's file set rather than section 5's verbs. It is the first thing on
+   this screen that would want `/dev/scancode` diverted the way `/dev/fb`
+   already is.
 
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
@@ -737,42 +315,44 @@ window is the shape that would make it fork. It also pays 4 MB per window at
 that moment, because `fork_segments` copies a run eagerly where Plan 9 copies
 on write.
 
-**Standing gaps.** Each of these is something that exists and is incomplete,
-rather than something absent. All are named in the code they live in.
+### Standing gaps
 
-- **A read/write sleeping lock.** `Mount_Point.generation` exists only because a
-  read lock could not be held across a union search. Plan 9 holds one, because
-  its locks sleep. Now that Vectra's can, the retry loop in `walk1_ex` could
-  become a read lock and the generation counter could go.
+Each of these exists and is incomplete, rather than absent, and each is named
+in the code it lives in. What makes them work rather than orientation is the
+design question attached to each.
 
-  `Wait_Queue` is the right foundation, and the reader/writer policy is the only
-  new thinking. Which of two waiting kinds should `take_best` prefer? Does a
-  waiting writer block an arriving reader?
+- **A read/write sleeping lock.** `Mount_Point.generation` exists only because
+  a read lock could not be held across a union search. Plan 9 holds one,
+  because its locks sleep. Now that Vectra's can, the retry loop in `walk1_ex`
+  could become a read lock and the counter could go. `Wait_Queue` is the right
+  foundation, and the policy is the only new thinking. Which of two waiting
+  kinds should `take_best` prefer? Does a waiting writer block an arriving
+  reader?
 - **Priority inheritance.** A lock or a rendezvous goes to the best *waiter*,
-  but a low-priority *holder* still delays a high-priority waiter for as long as
-  it holds. It has not bitten, because nothing runs at realtime. It will the
-  moment something does. Plan 9 never had it either, which is an argument about
-  cost rather than about correctness.
+  but a low-priority *holder* still delays a high-priority waiter for as long
+  as it holds. It has not bitten, because nothing runs at realtime. Plan 9
+  never had it either, which is an argument about cost rather than about
+  correctness.
 - **A worker per blocked request.** `devfs` holds a worker for the length of
   every parked read, so at most three reads of `/dev/cons` may park at once. A
   fourth stalls the connection until a byte arrives. Plan 9 gives every request
   a thread. See `docs/DEVFS.md`.
 - **A union listing whose cookie is not a position.** `readdir` over a union is
-  still index-based, and still documented as undefined if something rebinds
-  part-way through. `kernel/srv` is the worked example of the fix: a monotonic
-  id, and a cookie that means `resume after this one` however the table moved.
-  See `docs/SRV.md`.
+  index-based, and documented as undefined if something rebinds part-way
+  through. `kernel/srv` is the worked example of the fix: a monotonic id, and a
+  cookie that means `resume after this one` however the table moved. See
+  `docs/SRV.md`.
 - **An interrupt context `sync.can_sleep` knows about.** A top half may hold a
   spinlock and may not hold anything that parks. `can_sleep` counts spinlocks
   and a bare handler holds none, so the rule is argued where it should be
   checked. A depth counter the trap dispatcher brackets a handler with would
-  turn it into a named stop, the way the spinlock rule already is. It touches
-  the scheduler's hot path, so it wants a milestone rather than a patch.
-- **A process that cannot be stopped from outside.** It can end itself now, and
-  the kernel still cannot end it. `user.destroy` refuses a process that is
-  still running, because its thread is translating through the space and
-  writing to the frames. The leak is honest rather than absorbed, and
-  `user.stats().live` reports it. See `docs/USER.md`.
+  make it a named stop, the way the spinlock rule already is. It touches the
+  scheduler's hot path, so it wants a milestone rather than a patch.
+- **A process that cannot be stopped from outside.** It can end itself, and the
+  kernel still cannot end it. `user.destroy` refuses a process that is still
+  running, because its thread is translating through the space and writing to
+  the frames. The leak is honest rather than absorbed, and `user.stats().live`
+  reports it. See `docs/USER.md`.
 - **A system call with `IF` still set for four instructions.** `SFMASK` clears
   it, and a control that leaves it set is not caught, because an interrupt
   almost never lands in a four-instruction window. It is the one entry in
@@ -782,9 +362,8 @@ rather than something absent. All are named in the code they live in.
   `reap_orphans` runs only from `spawn_path`. A ring 3 server that faults
   mid-request therefore never hangs up its pipe, and the client parked on it
   stays parked. The wire already poisons on hangup, so what is missing is the
-  hangup itself.
-  A control in `docs/DRAW.md` found it by stopping a boot, and it is the one
-  gap here that turns a failed check into a hang.
+  hangup itself. A control in `docs/DRAW.md` found it by stopping a boot, and
+  it is the one gap here that turns a failed check into a hang.
 - **Three of Plan 9's segment calls are missing, and they are one gap.**
   `segfree(va, len)` frees the pages under a range and keeps the segment.
   `segdetach(addr)` takes the segment out of the process. `segbrk(addr, top)`
@@ -792,19 +371,20 @@ rather than something absent. All are named in the code they live in.
   and `SG_SHARED` alone, refusing every other type by name.
 
   So Vectra gives a run back at exit and at no other moment, and the address
-  bump never comes down either. That is address space rather than memory, and
-  the cheaper of the two to leak. `segbrk` is the one with a named trigger: a
-  window that resizes. See `docs/USER.md`, which reads the three against
-  9front.
+  bump never comes down. That is address space rather than memory, and the
+  cheaper of the two to leak. `segbrk` is the one with a named trigger: a window
+  that resizes. `docs/USER.md` reads the three against 9front.
 - **A free list for fids, `/srv` ids, and now pids.** All three counters are
   monotonic and therefore finite: four billion opens per session, two billion
   posts, and a pid space nothing recycles. One fix retires all of them, and
-  pids have the strongest claim on never-reuse, so it wants a generation
-  rather than a reset.
+  pids have the strongest claim on never-reuse, so it wants a generation rather
+  than a reset.
 
-**SMP, when it is wanted.** The shapes are already right. `Cpu` is per-core,
-`Resume` is per-thread and lives on that thread's stack, and every mount-table,
-namespace and heap mutation is inside a `sync.Spinlock`.
+### SMP, when it is wanted
+
+The shapes are already right. `Cpu` is per-core, `Resume` is per-thread and
+lives on that thread's stack, and every mount-table, namespace and heap
+mutation is inside a `sync.Spinlock`.
 
 What is missing is a lock word in that struct, an AP trampoline, IPIs, and a
 placement policy for `enqueue`. That last is where `eligible` and the class and
@@ -824,7 +404,7 @@ where they live:
    carried, held by the caller across both the condition test and the wake-up.
    The API has its present shape partly so that change will not alter it.
 
-**Smaller things worth doing when convenient:**
+### Smaller things worth doing when convenient
 
 - A stack backtrace on the panic screen. Everything else a fault report wants to
   say is already there.
@@ -846,39 +426,34 @@ where they live:
 
 ## 7. File map
 
+One line per file, and only what the name does not say. The `docs/` tree is
+section 3's table and is not repeated here.
+
 ```
 build.odin              Build driver: user programs, kernel, ESP, QEMU, and
                         the ELF-to-VECTRA02 converter
 justfile / Makefile     Thin wrappers over build.odin
 boot/
-  limine.conf           Limine config (new-style), staged to /EFI/BOOT/
-  limine/               Vendored Limine 12.6.1 UEFI binaries + VERSION + README
+  limine.conf           Limine config, staged to /EFI/BOOT/
+  limine/               Vendored Limine 12.6.1 UEFI binaries
 kernel/
   main.odin             kmain, Limine requests, boot survey, memory bring-up
-  verify_sync.odin      The sleeping lock on its own terms: 14 checks, 2 threads
-  verify_rendez.odin    The sleep queue: 20 checks -- the clock, the park, the
-                        condition, the order
-  verify_flush.odin     Tflush: 35 checks, against a server that will not finish
-                        -- abortable and stubborn, and the stubborn one is the
-                        test
-  verify_payload.odin   A payload buffer per request slot: 23 checks, and a
-                        shared-buffer control that runs on every boot and has to
-                        corrupt
-  verify_vfs_mnt.odin   The namespace over a transport with workers: 41 checks,
-                        four threads on one namespace, and a read given up from
-                        a path
-  verify_vfs.odin       The namespace under five threads: 34 checks, two servers
-  verify_space.odin     Address spaces: 33 checks -- two threads, one address,
-                        two meanings, and a teardown that stops at the halfway
-                        index
-  verify_wire.odin      The wire against a scripted server across a real pipe:
-                        46 checks -- out-of-order replies, a full pool
-                        flushing out, a stale reply, a hangup and a poisoning
   splash.odin           Boot chassis: plinth, copper bar, well, lamps
   log.odin              Kernel log; serial + screen, with early-line replay
   panic.odin            The panic screen, and the trap handler behind it
   link_amd64.ld         Static-PIE layout; orders .limine_requests, exports
                         the __text/__rodata/__data segment bounds
+  verify_sync.odin      The sleeping lock on its own terms
+  verify_rendez.odin    The sleep queue: the clock, the park, the condition
+  verify_flush.odin     Tflush against a server that will not finish -- the
+                        stubborn one is the test
+  verify_payload.odin   A payload buffer per request slot, with a shared-buffer
+                        control that has to corrupt
+  verify_vfs_mnt.odin   The namespace over a transport with workers
+  verify_vfs.odin       The namespace under five threads, two servers
+  verify_space.odin     Address spaces: one address, two meanings
+  verify_wire.odin      The wire against a scripted server across a real pipe:
+                        out-of-order replies, a stale reply, a poisoning
   arch/
     arch_amd64.odin     The architecture interface, bound to amd64
     arch_arm64.odin     Stub
@@ -888,32 +463,29 @@ kernel/
     amd64/gdt.odin      GDT, TSS, and the interrupt stack table
     amd64/idt.odin      IDT, the 256 entry stubs, dispatch, fault reporting
     amd64/pic.odin      Legacy 8259s: remapped clear of the exceptions, masked
-    amd64/ioapic.odin   The I/O APIC: the register window, and one redirection
-                        entry per line
+    amd64/ioapic.odin   The register window, and one redirection entry per line
     amd64/lapic.odin    Local APIC, the timer that preempts, EOI
     amd64/pit.odin      Channel 2 as a ruler, to measure the LAPIC against
-    amd64/context.odin  A new thread's first saved state, in ring 0 or ring 3,
-                        and what class a core is
-    amd64/percpu.odin   What one core keeps behind GS, and the two MSRs that
-                        say where it is
-    amd64/syscall.odin  SYSCALL and SYSRET: the four registers that arm them,
-                        and the naked stub that finds a stack with nothing to
-                        trust
-  boot/limine/
-    limine.odin         Protocol bindings (v12.6.1)
-    markers.odin        Base revision tag + request delimiters
+    amd64/context.odin  A new thread's first saved state, and a core's class
+    amd64/percpu.odin   What one core keeps behind GS, and the two MSRs
+    amd64/syscall.odin  SYSCALL/SYSRET: the four registers that arm them, and
+                        the naked stub that finds a stack with nothing to trust
+  boot/limine/          Protocol bindings, base revision tag, request delimiters
   drivers/
     uart/uart.odin      16550 serial, polled
     fb/fb.odin          Surface, clipping, gradients, brushed fill, and the
                         painter that walks libdraw's chrome onto a surface
-    fb/palette.odin     The kernel's aliases for sys/libpal, so nothing in
-                        the kernel had to learn where the colours went
-    console/console.odin  Framebuffer text console
-    console/               draws from sys/libfont, the one font table
+    fb/palette.odin     The kernel's aliases for sys/libpal
+    console/            Framebuffer text console, drawing from sys/libfont
+    kbd/kbd.odin        PS/2 scancodes: the top half that may not park, the
+                        ring, the bottom half that may, and the raw hook with
+                        first refusal
+    kbd/verify.odin     The state machine, the raw hook's stale-shift arc, and
+                        one interrupt the 8042 was asked to raise
   mem/
     mem.odin            Region/Boot_Memory types, HHDM, alignment, mem.init
-    pmm.odin            Bitmap physical page allocator, and the zeroed run a
-                        segment of anonymous memory is cut from
+    pmm.odin            Bitmap physical page allocator, and the zeroed run an
+                        anonymous segment is cut from
     vmm.odin            Page table walk, kernel address space, translate
     heap.odin           Slab allocator + Odin's context.allocator
     space.odin          One page table tree per process, and the kernel half
@@ -922,244 +494,143 @@ kernel/
     lock.odin           What guards what, in what order, and the lock that went
     vfs.odin            Server on either transport, the #name device table,
                         rpc, and the counted release a server can carry
-    chan.odin           Chan, refcounting, open/create/read/write/remove/stat/
-                        clone, a read with a deadline, and the server's own
-                        count of the chans that name it
+    chan.odin           Chan and its refcounting, the file operations, a read
+                        with a deadline
     mount.odin          The mount table, bind/unmount, union member lists
     namespace.odin      Namespace, rfork semantics, teardown
-    walk.odin           attach, walk1, cross_mounts, `..`, resolve,
-                        open_path and create_path
-    readdir.odin        Union directory reads and the member-index cookie
-                        that kernel/srv shows how to retire
-    fidtab.odin         The fid table every server here uses: fid to i32 plus
-                        an open flag, and no lock
+    walk.odin           attach, walk1, cross_mounts, `..`, resolve, open_path
+    readdir.odin        Union directory reads, and the member-index cookie
+                        kernel/srv shows how to retire
+    fidtab.odin         The fid table every server here uses, and no lock
     static.odin         A read-only server over a node table
     root.odin           `#/`, an instance of it, and the boot namespace
-    verify.odin         The boot self-test: 51 checks, two real servers
+    verify.odin         Two real servers, and a union over them
   sched/
     thread.odin         Thread, Cpu, priorities, decay and boost, slice scaling
     queue.odin          Per-level FIFOs and the pick
-    sched.odin          init, spawn, block/ready/unpark, reschedule, the tick
-                        that also drains sync's deadlines
-    verify.odin         The boot self-test: cooperative half and preemptive half
-  drivers/kbd/
-    kbd.odin            PS/2 scancodes: the top half that may not park, the
-                        ring, the bottom half that may, set 1 for a US
-                        layout, and the raw hook with first refusal
-    verify.odin         The boot self-test: 55 checks -- the state machine on
-                        its own, the raw hook and its stale-shift arc, and
-                        one interrupt the 8042 was asked to raise
+    sched.odin          init, spawn, block/ready/unpark, reschedule, and the
+                        tick that also drains sync's deadlines
+    verify.odin         A cooperative half and a preemptive half
+  sync/
+    spin.odin           The lock that masks: the interrupt flag, nesting handled
+    wait.odin           Wait queues, scheduler hooks, priority-ordered service
+    sleep.odin          The lock that parks: Mutex, handoff rather than retry
+    rendez.odin         Waiting for a condition, with or without a deadline
   mnt/
     mnt.odin            A 9P connection with several requests in flight: the
-                        tag pool, the payload buffer per slot, the work queue,
-                        and the client's flush
+                        tag pool, the payload buffer per slot, the work queue
     serve.odin          The workers, and where Rflush's ordering rule lives
     wire.odin           The same client over bytes: frames down a Wire_IO,
-                        replies matched by tag, and the poison that answers a
-                        server that breaks framing
+                        replies matched by tag, and the poison for a server
+                        that breaks framing
   pipe/
-    pipe.odin           Two ends, a byte ring per direction, blocking reads
-                        and writes, and the ends as chans
-    serve9.odin         A posted pipe end turned into a mountable server: the
-                        wire build, the handshake deadline, the pin, and the
+    pipe.odin           Two ends, a byte ring per direction, and the ends as
+                        chans that park
+    serve9.odin         A posted end turned into a mountable server: the wire
+                        build, the handshake deadline, the pin, and the
                         counted release that gives all of it back
-    verify.odin         The boot self-test: 37 checks -- bytes across, a
-                        reader and a writer parked and woken, EOF and EPIPE
-                        out the right sides
+    verify.odin         Bytes across, a reader and a writer parked and woken,
+                        EOF and EPIPE out the right sides
   devfs/
     devfs.odin          `#c` at /dev: the node table, the handler, the abort
                         hook, /dev/consctl, and the worker count that bounds
                         parked readers
     cons.odin           The console device: two sinks out, a line discipline
                         and a ring in, and two locks of different kinds
-    fbdev.odin          The raw framebuffer: /dev/fb as the screen's memory
-                        at an offset, /dev/fbctl as its geometry, the three
-                        boundary rules of the first device with a size, and
-                        the shadow surface the console draws into while
-                        something else holds the glass
-    tap.odin            The raw input streams: /dev/scancode and /dev/eia0,
-                        each owning its stream while held open and giving
-                        it back on the last close
-    verify.odin         The boot self-test: 152 checks over the real /dev --
-                        a read that parks through a character, a line edited,
-                        a mode that reverts when its file closes, pixels
-                        written through the mount and read off the screen,
-                        both streams diverted and given back, and the screen
-                        itself diverted while a line goes to the console
-                        that the glass must not show until the last close
+    fbdev.odin          /dev/fb as the screen's memory at an offset, /dev/fbctl
+                        as its geometry, and the shadow surface the console
+                        draws into while something else holds the glass
+    tap.odin            /dev/scancode and /dev/eia0: each owns its stream while
+                        held open, and gives it back on the last close
+    verify.odin         The real /dev: a read that parks through a character, a
+                        line edited, a mode that reverts with its file, pixels
+                        read off the screen, and each stream diverted and
+                        given back
   srv/
     srv.odin            `#s` at /srv: the table, post and remove, mounting by
-                        name, the id a fid binds instead of a slot, the
-                        posted chan a mount turns into a server, and the
+                        name, the id a fid binds instead of a slot, and the
                         name's stake a removal releases
-    verify.odin         The boot self-test: 82 checks -- a service published,
-                        mounted, removed under its own mount, a listing paced
-                        across a removal, and a pending name refused
-                        everything but removal
+    verify.odin         Published, mounted, removed under its own mount, and a
+                        listing paced across a removal
   user/
-    user.odin           A process: a space, segments, a namespace forked
-                        from the kernel's, a descriptor group, and the
-                        fault handler that ends one rather than the machine
-    segment.odin        The frames behind one mapping, refcounted -- what
-                        lets rfork map one segment into two spaces, in two
-                        shapes: a frame list, and a base with an extent for
-                        a card or a run of anonymous memory
+    user.odin           A process: a space, segments, a namespace forked from
+                        the kernel's, a descriptor group, and the fault handler
+                        that ends one rather than the machine
+    segment.odin        The frames behind one mapping, refcounted, in two
+                        shapes: a frame list, and a base with an extent
     fdtable.odin        The fd table as a refcounted group: the take/advance
                         borrow discipline, and the release-once exit rule
-    rfork.odin          Plan 9's fork: the flag word, the per-kind segment
-                        copy rule, and the child built before it can run
-    syscall.odin        What is behind the door: the calling convention, the
-                        twenty-two calls, the note check the door runs first
-                        -- deliver a handler or end -- the two copies that
-                        judge a pointer from ring 3, and the resolver that
-                        answers /srv's descriptor question
-    notify.odin         The ring 3 note handler: the frame delivery pushes
-                        onto the user stack, and the noted that resumes or
-                        dies -- what turns a note into a signal
-    exec.odin           A process replaces itself: a new image built in a
-                        fresh space, committed only when whole, and the
-                        syscall frame rewritten to return into it
-    image.odin          Both image formats, the segment judge, the loader
-                        that builds either shape of process, and `#b` at
-                        /bin serving blobs and compiled images alike
-    spawn.odin          A process that starts another one: what a child
-                        inherits, the wait that parks for it by pid, and the
-                        reaper that collects a detached orphan
-    program.odin        The twenty-eight programs the assembler bakes into
-                        the image, and the marks they write to say they ran
-    verify.odin         The boot self-test: 689 checks -- one process preempted
-                        while the kernel works, four refused, four that ask,
-                        three that open files by name, a painter that puts
-                        pixels on the screen through /dev/fb, a reader that
-                        holds raw scancodes in its own page, a parent that
-                        raises two children, a poster that publishes a
-                        service, a niner the kernel talks to as a 9P client,
-                        a compiled ramfs serving its own segments back, three
-                        processes ended by notes, one that catches two and
-                        one that declines, one that replaces itself, one that
-                        forks a child no parent waits for, four that fork, a
-                        console server whose /line read parks in a worker,
-                        a keyboard translator that turns raw scancodes
-                        into characters over a mount, a serial server
-                        that puts a ring 3 write on the wire, a draw
-                        server whose windows hold their own pixels and
-                        give them back when the window above closes, one
-                        that asks for half a megabyte of memory no file
-                        serves and forks to see whose copy is whose, and
-                        a terminal typed at through the keyboard sink
-  sync/
-    spin.odin           The lock that masks: the interrupt flag, nesting handled
-    wait.odin           Wait queues, scheduler hooks, priority-ordered service
-    sleep.odin          The lock that parks: Mutex, and handoff rather than retry
-    rendez.odin         Waiting for a condition, with or without a deadline
+    rfork.odin          Plan 9's fork: the flag word, the per-kind segment copy
+                        rule, and the child built before it can run
+    syscall.odin        Behind the door: the calling convention, the calls, the
+                        note check the door runs first, and the two copies that
+                        judge a pointer from ring 3
+    notify.odin         The note handler: the frame pushed onto the user stack,
+                        and the noted that resumes or dies
+    exec.odin           A new image built in a fresh space, committed only when
+                        whole, and the syscall frame rewritten to return into it
+    image.odin          Both image formats, the segment judge, the loader, and
+                        `#b` at /bin
+    spawn.odin          What a child inherits, the wait that parks by pid, and
+                        the reaper that collects a detached orphan
+    program.odin        The programs the assembler bakes into the image, and
+                        the marks they write to say they ran
+    verify.odin         The largest self-test in the tree, and the one the boot
+                        log's untagged lines come from. Every claim in section
+                        2's process and screen rows is checked here
 sys/
-  abi/abi.odin          The system call ABI: numbers, flags and packings,
-                        included by both sides of the door
-  libodin/
-    format.odin         Allocation-free formatting (Sink)
-    tally.odin          Checks counted and the first failure kept, which
-                        seventeen self-tests had each written out
+  abi/abi.odin          The system call ABI, included by both sides of the door
+  libodin/format.odin   Allocation-free formatting (Sink)
+  libodin/tally.odin    Checks counted and the first failure kept
   vectra9/
     proto.odin          Message kinds, Qid, the 57 bodies, the Msg union
     codec.odin          Encode/decode over a bounds-checked cursor; dirents
     errors.odin         Codec Error and protocol Errno, kept separate
     session.odin        Session, Transport, Handler; in-process and loopback
-    verify.odin         The boot self-test
+    verify.odin         Both transports agree, and every kind round-trips
   libuser/
-    sys.odin            The calls from ring 3: one wrapper each, the loop
-                        helpers every byte-moving caller needs, and the
-                        child-first teardown a forked reader ends by
-    ring.odin           The byte ring a forked reader publishes through,
-                        once a private copy in each of three servers
-    serve.odin          post and serve: a 9P server as a loop a program
-                        calls, around a vectra9.Handler; serve_mux, the
-                        concurrent loop with a worker per parked request;
-                        and Spin, the first ring 3 lock
+    sys.odin            The calls from ring 3, the loop helpers every
+                        byte-moving caller needs, and the child-first teardown
+    ring.odin           The byte ring a forked reader publishes through
+    serve.odin          post and serve; serve_mux, the concurrent loop with a
+                        worker per parked request; and Spin, the first ring 3
+                        lock
     fid.odin            The fid table five servers had each written, with a
-                        lock all of them now have, plus the walk, the
-                        attach and the EBADF guard that went with it
-    link_user.ld        The layout of a ring 3 program, aligned so every
-                        change of permission gets its own page
-  libdraw/draw.odin     The draw protocol's encoding, owned once: the six
-                        verbs, the put half a client batches with, and the
-                        get half the server decodes with
-  libdraw/text.odin     Text as a library over blit: the atlas layout, and
-                        put_text with its consumed-count return that pumps
-                        a long line through in batches
+                        lock, a walk, an attach and an EBADF guard
+    link_user.ld        A ring 3 program's layout, aligned so every change of
+                        permission gets its own page
+  libdraw/draw.odin     The draw protocol's encoding: the six verbs, the put
+                        half a client batches with, the get half the server
+                        decodes with
+  libdraw/text.odin     Text as a library over blit: the atlas layout, and the
+                        consumed-count return that pumps a long line through
   libdraw/chrome.odin   The chassis vocabulary as rectangles, worn by both
-                        rings: a bevel's edges, a panel, a well, a lamp, and
-                        the fills a client sends to wear them. What composes
-                        them -- a chassis, a window frame -- is the caller's
+                        rings. What composes them is the caller's
   libpal/palette.odin   The system palette, once, for both privilege levels
-  libfont/font_data.odin  GENERATED -- the one 8x16 font table, imported
-                        by the kernel console and linked by ring 3 alike
+  libfont/font_data.odin  GENERATED -- the one 8x16 font table
   libposix/             Empty
 servers/
   ramfs/main.odin       The first compiled server: two files, one writable,
                         serving this program's own segments back
-  consrv/main.odin      The console server: an rfork'd reader parked on
-                        /dev/cons, a concurrent serve loop whose /line reads
-                        park in workers, and a shared ring under two locks
-  kbdfs/main.odin       The keyboard translator: an rfork'd reader on
-                        /dev/scancode, the kernel's scancode state machine
-                        rebuilt in ring 3, and /kbd served cooked
-  eiafs/main.odin       The serial server: an rfork'd reader on /dev/eia0,
-                        the raw bytes served on /eia0, and the first Twrite
+  consrv/main.odin      An rfork'd reader parked on /dev/cons, a concurrent
+                        serve loop, and a shared ring under two locks
+  kbdfs/main.odin       The kernel's scancode state machine rebuilt in ring 3
+                        over /dev/scancode, served cooked on /kbd
+  eiafs/main.odin       /dev/eia0 served raw both ways, and the first Twrite
                         that reaches hardware
-  intuition/main.odin   The draw server and the compositor: /new and a
-                        numbered directory per window, six verbs on each
-                        window's data file, a session per fid, a desktop under them, each window's pixels
-                        a run of its own and opaque over its whole
-                        rectangle, a flush that walks a region of damage
-                        onto the glass back to front, and three ctl lines
-                        that move, resize and raise a window
+  intuition/main.odin   The draw server and the compositor: /new and a numbered
+                        directory per window, six verbs on each window's data
+                        file, a desktop, a frame, and four ctl lines
 apps/
-  terminal/main.odin    The first app: lines in from /dev/cons, glyphs out
-                        through a /srv/draw mount of its own, the first
-                        ring 3 mount in the tree
+  terminal/main.odin    Lines in from /dev/cons, glyphs out through a /srv/draw
+                        mount of its own -- the tree's first ring 3 mount
 tools/
   genfont.py            TTF -> font_data.odin
   ste-lint.py           The ASD-STE100 checker; `build.odin -- lint` runs it
 .claude/skills/
   asd-ste100/           The controlled-language skill this tree writes under
 docs/
-  HANDOFF.md            This file: status, build, roadmap, and the index below
-  VECTRA9.md            The protocol and namespace design, and what
-                        sys/vectra9/ decided while implementing it
-  BOOT.md               Limine, arch, traps, the panic screen, the console
-  MEMORY.md             PMM, VMM, heap
-  SCHED.md              The switch, priorities, decay and boost, the tick
-  SYNC.md               Spinlock, sleeping lock, sleep queue, deadlines
-  NAMESPACE.md          kernel/vfs: what guards what, and the borrow rule
-  TRANSPORT.md          kernel/mnt: the tag pool, the workers, Tflush, and
-                        the wire over bytes
-  PIPE.md               kernel/pipe: the byte rings, the ends as chans, and a
-                        posted end becoming a server
-  RUNTIME.md            The userland runtime: sys/abi, sys/libuser, the
-                        VECTRA02 format, and servers/ramfs
-  SRV.md                kernel/srv: #s at /srv, what a posted service is, and
-                        the two decisions a directory that changes needs
-  SPACE.md              kernel/mem/space.odin: a space per process, what it
-                        owns, and the comparison the scheduler grew
-  USER.md               kernel/user: ring 3, the door back in, a process and
-                        its own namespace, the note handler, the confused
-                        deputy, the exec that replaces a process, and the
-                        thirty-four controls
-  KBD.md                kernel/drivers/kbd: scancodes, the I/O APIC route, and
-                        the constraint that splits a handler in two
-  DEVFS.md              kernel/devfs: #c at /dev, the console device, the
-                        line discipline, the ctl convention, the raw
-                        framebuffer and streams, and the twenty-nine
-                        controls the self-test was measured against
-  DRAW.md               The /dev/draw design: six verbs over a data file,
-                        flush as visibility, and the mapping deferred with
-                        its shape written down
-  TESTING.md            The self-test discipline, and the negative controls
-  STYLE.md              ASD-STE100: the two modes, the checked rules, and the
-                        project dictionary
-  milestone0-boot.png   Milestone 0 screenshot -- it boots
-  milestone1-memory.png Milestone 1 screenshot -- PMM, VMM, heap
-  panic-screen.png      Milestone 2 screenshot -- a deliberate #PF, reported
-  userland-boot.png     The boot the README leads with: the userland half of
-                        the log, and the lines a ring 3 program printed
+  *.md                  Section 3's table
+  *.png                 Milestone screenshots, and the boot the README leads
+                        with
 ```
