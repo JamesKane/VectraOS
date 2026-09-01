@@ -1098,7 +1098,7 @@ reader :: proc "contextless" (cons: int) -> ! {
 // win_h_at is how many rows this window's run holds. `win_h` is the height a
 // slot is born with; `segbrk` can move a window's own above it.
 win_h_at :: proc "contextless" (win: ^Window) -> int {
-	return win.rows > 0 ? win.rows : win_h
+	return win.rows
 }
 
 // stack_add puts a new window on top. stack_drop takes one out and closes the
@@ -1908,18 +1908,17 @@ window_move :: proc "contextless" (win: ^Window, nx: int, ny: int) -> vectra9.Er
 }
 
 /*
-window_size changes what a window is, inside the run it was born with.
+window_size changes what a window is, and grows its run to hold it.
 
 **The numbers are the client area**, the same rectangle `window_report`
 answers with, and the frame this server puts around it is what the two differ
 by. `frame_window` is that arithmetic, and the bound is checked
 against the window it produces rather than against what was asked.
 
-**A window cannot grow past its allocation, and that is `segbrk`'s absence
-speaking.** The store is one `segalloc` run, fixed at the birth size, and
-nothing in this kernel grows a run in place. `docs/USER.md` names `segbrk` with
-the other two Plan 9 segment calls Vectra does not have. So `size` moves a
-window's edges inside the memory it already holds, and asks for no more.
+**A window grows its own run now, which is `segbrk`.** The store began as one
+`segalloc` and `size` was capped at the birth height because nothing could
+change a run. `docs/USER.md` has the call. What is still fixed is the *width*:
+the stride is the run's and a window's shape is its rows.
 
 The stride does not move with the width. A pixel a client drew at (x, y) is at
 (x, y) afterwards, so shrinking loses the edges and growing keeps whatever this
@@ -1972,10 +1971,14 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 		*/
 		need := uintptr(win_w) * uintptr(nh) * 4
 		err := libuser.segbrk(uintptr(win.pixels), uintptr(win.pixels) + need)
-		if err < 0 && nh > win_h_at(win) {
-			return vectra9.ENOSPC
-		}
-		if err >= 0 {
+		if err < 0 {
+			// Only a grow has to work. A refused shrink costs the pages and
+			// nothing else, and this server's runs are shared for its whole
+			// life, so every shrink is refused.
+			if nh > win_h_at(win) {
+				return vectra9.ENOSPC
+			}
+		} else {
 			win.rows = nh
 		}
 	}

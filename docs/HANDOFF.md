@@ -403,6 +403,12 @@ design question attached to each.
   running, because its thread is translating through the space and writing to
   the frames. The leak is honest rather than absorbed, and `user.stats().live`
   reports it. See `docs/USER.md`.
+- **A flaky heap check in the draw server's teardown.** `drain_pinned` after
+  `verify_draw` reported `leaked 1` once in five boots and passed the other
+  four, with nothing between the runs but timing. A check that fails
+  intermittently costs more than one that cannot fail, because it teaches
+  people to re-run. It wants finding before the next thing that leans on that
+  drain.
 - **A system call with `IF` still set for four instructions.** `SFMASK` clears
   it, and a control that leaves it set is not caught, because an interrupt
   almost never lands in a four-instruction window. It is the one entry in

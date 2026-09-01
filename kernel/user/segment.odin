@@ -59,10 +59,10 @@ import "kernel:sync"
 /*
 One contiguous piece of a run, past the first.
 
-Four is the cap, and it is a cap on how many times a run may *grow* rather
-than on how big it gets: each `segbrk` that adds pages adds one piece. A window
-that resizes a fifth time is refused, which is a number to raise rather than a
-design.
+Four is the cap, and it is a cap on how many pieces a run may be in at once
+rather than on how big it gets. A `segbrk` that adds pages adds a piece and one
+that gives them back takes pieces away, so a run that grows and shrinks and
+grows again stays inside it. It is a number to raise rather than a design.
 */
 MAX_RUN_PIECES :: 4
 
@@ -115,17 +115,14 @@ Segment :: struct {
 	pages:  int,
 	frames: [MAX_PROGRAM_FRAMES]uintptr,
 
-	// Where the run starts, for the run shape alone -- see `segment_is_run`.
-	// Zero for every other kind, which carry their frames one at a time above.
-	base:   uintptr,
-
 	/*
-	And the rest of the run, for a run that grew.
+	The run, for the run shape alone -- see `segment_is_run`. Empty for every
+	other kind, which carry their frames one at a time above.
 
-	**A run is a *list* of contiguous pieces, and almost always one.**
+	**A run is a list of contiguous pieces, and almost always one.**
 	`segalloc` makes it in a single allocation and `segattach` maps a card
-	that is one by construction, so `base` and `pages` are the whole story
-	until something calls `segbrk`.
+	that is one by construction, so `piece_n` is one until something calls
+	`segbrk`.
 
 	Growing is what needs the second piece. The physical block behind a run
 	cannot be extended in place -- the allocator has no promise to give --
@@ -138,9 +135,15 @@ Segment :: struct {
 	Plan 9 needs none of this: its segments are a page map a fault fills in,
 	so `ibrk` extends the map and nothing moves. This is the same idea with
 	the pieces bigger.
+
+	**The first piece is one of them.** An earlier cut kept it in a `base`
+	field of its own, which made "how long is the first piece" a subtraction
+	from `s.pages` written out at three call sites -- and the third got it
+	wrong, deriving from a total one of its own loops had already invalidated.
+	A uniform array cannot be got wrong that way.
 	*/
-	more:   [MAX_RUN_PIECES]Run_Piece,
-	more_n: int,
+	pieces:  [MAX_RUN_PIECES]Run_Piece,
+	piece_n: int,
 
 	flags:  arch.Page_Flags,
 	kind:   Segment_Kind,
@@ -252,23 +255,14 @@ segment_frame :: proc "contextless" (s: ^Segment, page: int) -> uintptr #no_boun
 		return 0
 	}
 	if segment_is_run(s.kind) {
-		// The first piece holds `s.pages - <the rest>`, and almost always all
-		// of it. A run that never grew takes the first branch and is the same
-		// arithmetic it always was.
+		// One loop over the pieces, which for a run that never grew is one
+		// iteration and the same arithmetic it always was.
 		at := page
-		first := s.pages
-		for i in 0 ..< s.more_n {
-			first -= s.more[i].pages
-		}
-		if at < first {
-			return s.base + uintptr(at) * uintptr(arch.PAGE_SIZE)
-		}
-		at -= first
-		for i in 0 ..< s.more_n {
-			if at < s.more[i].pages {
-				return s.more[i].base + uintptr(at) * uintptr(arch.PAGE_SIZE)
+		for i in 0 ..< s.piece_n {
+			if at < s.pieces[i].pages {
+				return s.pieces[i].base + uintptr(at) * uintptr(arch.PAGE_SIZE)
 			}
-			at -= s.more[i].pages
+			at -= s.pieces[i].pages
 		}
 		return 0
 	}
@@ -341,10 +335,9 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	arrived.
 	*/
 	kind := s.kind
-	base := s.base
 	pages := s.pages
-	more: [MAX_RUN_PIECES]Run_Piece = s.more
-	more_n := s.more_n
+	pieces: [MAX_RUN_PIECES]Run_Piece = s.pieces
+	piece_n := s.piece_n
 	frames: [MAX_PROGRAM_FRAMES]uintptr = s.frames
 	for i in 0 ..< MAX_SEGMENTS {
 		if &segments[i].seg == s {
@@ -359,15 +352,8 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	case .Device:
 		// Nothing. See above -- this is the branch with a control on it.
 	case .Anon:
-		// The first piece is what is left of `pages` once the others are
-		// accounted for, which is how `segment_frame` reads it too.
-		first := pages
-		for i in 0 ..< more_n {
-			first -= more[i].pages
-		}
-		mem.free_pages(base, first)
-		for i in 0 ..< more_n {
-			mem.free_pages(more[i].base, more[i].pages)
+		for i in 0 ..< piece_n {
+			mem.free_pages(pieces[i].base, pieces[i].pages)
 		}
 	case .Text, .Data, .Stack:
 		for i in 0 ..< pages {
@@ -408,7 +394,8 @@ segment_run :: proc "contextless" (
 	}
 	// Both before any caller can fail, so a release finds the whole run to
 	// give back rather than half of one.
-	s.base = base
+	s.pieces[0] = Run_Piece{base = base, pages = pages}
+	s.piece_n = 1
 	s.pages = pages
 	return s
 }

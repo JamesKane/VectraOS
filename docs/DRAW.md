@@ -451,7 +451,7 @@ was the work.
 ### Three lines, and the tree that had to grow first
 
     move X Y     put a window somewhere else
-    size W H     make it another shape, inside the run it was born with
+    size W H     make it another shape, and grow its run to hold one
     raise        bring it to the front
 
 **Three `ctl` lines rather than three verbs.** Section 5 guards that
@@ -470,10 +470,13 @@ apart**. That is the case `MAX_RECTS` was sized for, and nothing reached it
 until now. The old place and the new one are two entries in one region rather
 than one box around both.
 
-`size` moves a window's edges inside the run it holds and never past it. The
-store is one `segalloc` run fixed at the birth size, and nothing in this kernel
-grows a run in place. `docs/USER.md` names `segbrk` with the other two Plan 9
-segment calls Vectra does not have. The stride does not move with the width, so
+`size` moves a window's edges and grows the run under them. The store began as
+one `segalloc` and was capped at the birth height until `segbrk` existed --
+`docs/USER.md` has that call, and the two Plan 9 segment calls still missing
+beside it. Growing must work and shrinking is best effort, because a run this
+server shares with its reader child cannot give pages back.
+
+The stride does not move with the width, so
 a pixel a client drew at `(x, y)` is still at `(x, y)` afterwards. Shrinking
 loses the edges, growing brings back the band that was there before the last
 shrink, and that band is cleared to ground.

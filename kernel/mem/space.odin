@@ -195,6 +195,22 @@ space_root :: proc "contextless" (space: ^Address_Space) -> uintptr {
 }
 
 /*
+user_span_ok is where a run of pages has to be for a process to name it.
+
+One statement of the rule, because `map_user` and `unmap_user` both need it and
+a caller that could name the kernel's half could map or unmap the kernel out
+from under itself. Two copies of that test are two chances for one to drift.
+*/
+@(private)
+user_span_ok :: proc "contextless" (virt: uintptr, pages: int) -> bool {
+	if pages <= 0 {
+		return false
+	}
+	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
+	return virt >= USER_MIN && virt < USER_MAX && virt + span <= USER_MAX
+}
+
+/*
 map_user installs a mapping a program may reach.
 
 `.User` is added rather than expected. A caller that forgot it would produce a
@@ -216,8 +232,7 @@ map_user :: proc "contextless" (
 		return .Not_Canonical
 	}
 
-	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
-	if virt < USER_MIN || virt >= USER_MAX || virt + span > USER_MAX {
+	if !user_span_ok(virt, pages) {
 		return .Not_Canonical
 	}
 
@@ -235,8 +250,10 @@ map_user :: proc "contextless" (
 unmap_user takes a run of pages out of a process's half, and is `map_user`'s
 inverse over the same bounds.
 
-The bounds are checked the same way and for the same reason: a caller that
-could name the kernel's half could unmap the kernel out from under itself.
+`unmap_page` is the walk, and it was already here -- written when the page
+tables were, and left without a caller until `segbrk` wanted one. A page that
+was never mapped answers false, and this does not care: unmapping what is
+already unmapped is the state the caller asked for.
 
 **It does not free anything.** What the pages were is the caller's to know --
 `kernel/user`'s segments own their frames and give them back through the
@@ -244,20 +261,11 @@ allocator. This makes them unreachable, which is the half that has to happen
 first.
 */
 unmap_user :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages: int) -> Error {
-	if space == nil || pages <= 0 {
+	if space == nil || !user_span_ok(virt, pages) {
 		return .Not_Canonical
 	}
-
-	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
-	if virt < USER_MIN || virt >= USER_MAX || virt + span > USER_MAX {
-		return .Not_Canonical
-	}
-
 	for i in 0 ..< pages {
-		step := uintptr(i) * uintptr(arch.PAGE_SIZE)
-		if err := unmap_at(space, virt + step, 1); err != .None {
-			return err
-		}
+		unmap_page(space, virt + uintptr(i) * uintptr(arch.PAGE_SIZE))
 	}
 	return .None
 }

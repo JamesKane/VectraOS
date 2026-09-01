@@ -4563,47 +4563,6 @@ wait_for_size :: proc(c: ^vfs.Chan, want: u64) -> bool {
 // typed_runes is `typed_reads` for keys written as runes. Odin encodes the
 // string literal, so the bytes that go on the wire come from the compiler
 // rather than from the encoder under test.
-// put_report_bytes and put_number_bytes build one `ctl` line into a buffer.
-// `bytes_of` takes a literal and these take a number, which is what a size the
-// test computes needs.
-@(private = "file")
-put_report_bytes :: proc "contextless" (out: []u8, at: int, text: string) -> int #no_bounds_check {
-	n := at
-	for i in 0 ..< len(text) {
-		if n >= len(out) {
-			return n
-		}
-		out[n] = text[i]
-		n += 1
-	}
-	return n
-}
-
-@(private = "file")
-put_number_bytes :: proc "contextless" (out: []u8, at: int, value: int) -> int #no_bounds_check {
-	digits: [20]u8
-	n := 0
-	v := value
-	if v == 0 {
-		digits[0] = '0'
-		n = 1
-	}
-	for v > 0 {
-		digits[n] = u8('0' + v % 10)
-		v /= 10
-		n += 1
-	}
-	out_at := at
-	for i := n - 1; i >= 0; i -= 1 {
-		if out_at >= len(out) {
-			return out_at
-		}
-		out[out_at] = digits[i]
-		out_at += 1
-	}
-	return out_at
-}
-
 @(private = "file")
 typed_runes :: proc(r: ^Result, cons: ^vfs.Chan, keys: string, want: string, what: string) {
 	typed_reads(r, cons, transmute([]u8)keys, want, what)
@@ -4900,13 +4859,19 @@ verify_ctl :: proc(
 	allocating would pass a geometry check and leak nothing but truth.
 	*/
 	grew_from := mem.pmm_stats().free_frames
-	tall := win_h + 256
+	// Eight rows, not two hundred: the claim is that a window grows past the
+	// height its slot was born with, and eight proves it as well as any. The
+	// larger number cost 640 KB and a full-height repaint the checks never
+	// looked at.
+	tall := win_h + 8
+	// `libodin`'s formatter, which is what this tree writes numbers with. A
+	// fourth hand-rolled digit loop was two of them ago.
 	big: [32]u8
-	bn := 0
-	bn = put_report_bytes(big[:], bn, "size 200 ")
-	bn = put_number_bytes(big[:], bn, tall)
-	bn = put_report_bytes(big[:], bn, "\n")
-	_, gerr3 := vfs.chan_write(cfd, 0, big[:bn])
+	sink := libodin.sink_from(big[:])
+	libodin.put_str(&sink, "size 200 ")
+	libodin.put_uint(&sink, u64(tall))
+	libodin.put_str(&sink, "\n")
+	_, gerr3 := vfs.chan_write(cfd, 0, libodin.bytes(&sink))
 	check(r, gerr3 == vfs.OK, "a client asks for a window taller than the one its slot was born with")
 
 	geo3: [64]u8
@@ -5336,7 +5301,7 @@ verify_anon :: proc(r: ^Result) {
 	runs := 0
 	for i in 0 ..< p.seg_count {
 		if p.segs[i].kind == .Anon {
-			held[runs] = p.segs[i].base
+			held[runs] = p.segs[i].pieces[0].base
 			spans[runs] = p.segs[i].pages
 			runs += 1
 		}

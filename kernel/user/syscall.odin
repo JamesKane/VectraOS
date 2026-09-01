@@ -966,7 +966,8 @@ sys_segattach :: proc(fd: int) -> i64 {
 	if seg == nil {
 		return -i64(vectra9.ENOMEM)
 	}
-	seg.base = phys
+	seg.pieces[0] = Run_Piece{base = phys, pages = pages}
+	seg.piece_n = 1
 	seg.pages = pages
 	if !proc_add_segment(p, seg) {
 		return -i64(vectra9.ENOMEM)
@@ -976,8 +977,6 @@ sys_segattach :: proc(fd: int) -> i64 {
 	}
 	return i64(va)
 }
-
-
 
 /*
 The most memory one `segalloc` may ask for, and why there is a bound at all.
@@ -1072,13 +1071,12 @@ maps the same frames, and the ones about to go back to the allocator may
 already be somewhere in that process's kernel. Plan 9 refuses on `s->ref > 1`
 and so does this.
 
-**Growing copies, and Plan 9 does not have to.** Its segments are a page map
-that a fault fills in, so `ibrk` extends the map and nothing moves. A `.Anon`
-run here is one physically contiguous block described by a base and an extent,
-which is what makes `segment_frame` arithmetic rather than a lookup. Growing
-one means a bigger block, the old contents copied into it, and the old block
-released -- the virtual address a client holds does not move, which is the part
-that matters to it.
+**Growing adds a piece, and Plan 9 does not have to.** Its segments are a page
+map that a fault fills in, so `ibrk` extends the map and nothing moves. A
+`.Anon` run here is a short list of contiguous pieces, and a grow bolts one on
+the end -- see `segment_grow`, which explains why moving the run instead was
+wrong. The virtual address a client holds does not change either way, which is
+the part that matters to it.
 
 The overlap check is `ibrk`'s: a grow that would run into another of this
 process's segments is refused rather than allowed to collide. In practice that
@@ -1100,7 +1098,7 @@ sys_segbrk :: proc(addr: uintptr, top: uintptr) -> i64 {
 	}
 
 	page := uintptr(arch.PAGE_SIZE)
-	newtop := (top + page - 1) &~ (page - 1)
+	newtop := uintptr(mem.align_up(u64(top), u64(arch.PAGE_SIZE)))
 	if newtop <= seg.va {
 		return -i64(vectra9.EINVAL)
 	}
@@ -1162,31 +1160,22 @@ segment_shrink :: proc(p: ^Process, s: ^Segment, want: int) -> i64 {
 	/*
 	The pages come off the end, piece by piece.
 
-	A run that never grew is one piece and this is the tail of it, which is
-	what `free_pages` releasing frame by frame makes possible. A run that grew
-	gives back whole added pieces first, and then trims the first one -- so
-	shrinking a grown run back to its birth size leaves exactly the block
-	`segalloc` made.
+	`free_pages` releases frame by frame, so the tail of a piece is as
+	freeable as a whole one -- which is what lets this be one loop rather than
+	a case for a whole piece and a case for part of one. A run that grew gives
+	its added pieces back first and then trims the one `segalloc` made, and a
+	run that never grew has only that one.
 	*/
 	left := gone
-	for left > 0 && s.more_n > 0 {
-		piece := &s.more[s.more_n - 1]
-		if piece.pages > left {
-			mem.free_pages(piece.base + uintptr(piece.pages - left) * page, left)
-			piece.pages -= left
-			left = 0
-			break
+	for left > 0 && s.piece_n > 0 {
+		piece := &s.pieces[s.piece_n - 1]
+		take := min(left, piece.pages)
+		mem.free_pages(piece.base + uintptr(piece.pages - take) * page, take)
+		piece.pages -= take
+		left -= take
+		if piece.pages == 0 {
+			s.piece_n -= 1
 		}
-		mem.free_pages(piece.base, piece.pages)
-		left -= piece.pages
-		s.more_n -= 1
-	}
-	if left > 0 {
-		first := s.pages
-		for i in 0 ..< s.more_n {
-			first -= s.more[i].pages
-		}
-		mem.free_pages(s.base + uintptr(first - left) * page, left)
 	}
 	s.pages = want
 	return 0
@@ -1215,7 +1204,7 @@ The new pages are mapped before the extent is published, so a failure leaves
 the segment exactly the size it was.
 */
 segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i64 {
-	if s.more_n >= MAX_RUN_PIECES {
+	if s.piece_n >= MAX_RUN_PIECES {
 		return -i64(vectra9.ENOMEM)
 	}
 	page := uintptr(arch.PAGE_SIZE)
@@ -1228,13 +1217,13 @@ segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i6
 
 	// Published first, because `segment_frame` is what the mapping below reads
 	// the new frames out of. A failure puts it straight back.
-	s.more[s.more_n] = Run_Piece{base = base, pages = added}
-	s.more_n += 1
+	s.pieces[s.piece_n] = Run_Piece{base = base, pages = added}
+	s.piece_n += 1
 	s.pages = want
 
 	at := s.va + uintptr(want - added) * page
 	if mem.map_user(p.space, at, base, s.flags, added) != .None {
-		s.more_n -= 1
+		s.piece_n -= 1
 		s.pages = want - added
 		mem.free_pages(base, added)
 		return -i64(vectra9.ENOMEM)
