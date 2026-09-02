@@ -186,13 +186,6 @@ gap with a design question attached is work rather than orientation.
   signal a whole job can be sent. `RFNOTEG` acts now: a child forked with it
   is a group of one. What a delivery still does not carry is floating-point
   state, which is `Ureg`'s edge in Plan 9 too. See `docs/USER.md`.
-- **No flush that reaches a worker.** `serve_mux` forks a worker per parked
-  read, and a `Tflush` cancels the request on the wire but not the worker. It
-  has teeth now, and `docs/DRAW.md` section 13 has the boot that found them.
-  A read with a deadline abandons a worker per attempt, and abandoned ones
-  accumulate until the pool is spent. A flushed worker also still replies,
-  carrying the flushed tag, which the wire drops and counts. A client that
-  reused that tag first would not. The cancel belongs in `sys/libuser`.
 - **No allocator in ring 3**, and no way for one process to wait on two
   descriptors — it forks instead, which is Plan 9's answer.
 - **No ACPI.** The I/O APIC's address and the ISA-to-GSI mapping are assumed
@@ -616,8 +609,8 @@ sys/
                         byte-moving caller needs, and the child-first teardown
     ring.odin           The byte ring a forked reader publishes through
     serve.odin          post and serve; serve_mux, the concurrent loop with a
-                        worker per parked request; and Spin, the first ring 3
-                        lock
+                        worker per parked request, and the Tflush that reaches
+                        that worker; and Spin, the first ring 3 lock
     fid.odin            The fid table five servers had each written, with a
                         lock, a walk, an attach and an EBADF guard
     link_user.ld        A ring 3 program's layout, aligned so every change of

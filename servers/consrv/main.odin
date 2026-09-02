@@ -101,6 +101,10 @@ slot_out: [SLOTS][FRAME]u8
 slot_payload: [SLOTS][1024]u8
 slots: [SLOTS]libuser.Mux_Slot
 
+// The serve loop's state, in shared bss rather than on `_start`'s stack, so a
+// worker can ask `libuser.flushed` through it. Its stack is its own copy.
+mux: libuser.Mux
+
 // How long a parked read sleeps between looks at the ring. One tick, which is
 // the console's own poll cadence. A worker off every run queue in between.
 POLL_TICKS :: 1
@@ -147,7 +151,7 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 			payload = slot_payload[i][:],
 		}
 	}
-	mux := libuser.Mux {
+	mux = libuser.Mux {
 		fd      = fd,
 		handler = handler,
 		blocks  = blocks,
@@ -249,7 +253,6 @@ handler :: proc "contextless" (
 ) #no_bounds_check {
 	_ = state
 	_ = s
-	_ = tag
 
 	if !libuser.default_reply(request, reply) {
 		return
@@ -288,7 +291,9 @@ handler :: proc "contextless" (
 		client -- the whole point of `serve_mux`. The offset is ignored: this
 		file is what has arrived, and a drain consumes it.
 
-		Two ways out besides a byte. The shutdown flag, set at teardown, lets
+		Three ways out besides a byte. A flush, when the client gave up on this
+		read: the worker leaves and its answer is never sent, which is
+		`libuser.flushed`'s contract. The shutdown flag, set at teardown, lets
 		a parked read leave with an empty answer rather than poll for a byte
 		the torn-down console will never send. And a zero `count`, which asks
 		for nothing and gets it.
@@ -299,6 +304,14 @@ handler :: proc "contextless" (
 			return
 		}
 		for {
+			// The flush is checked before the drain, and the order keeps a byte
+			// from being lost to a flush that raced its arrival. A flushed
+			// request's reply is dropped, so a drain into one would consume the
+			// bytes and hand them to nobody. See `libuser.flushed`.
+			if libuser.flushed(&mux, tag) {
+				reply^ = vectra9.error_reply(vectra9.EINTR)
+				return
+			}
 			got := libuser.ring_drain(&ring, buf[:room], &state_lock)
 			if got > 0 {
 				reply^ = vectra9.Rread{data = buf[:got]}

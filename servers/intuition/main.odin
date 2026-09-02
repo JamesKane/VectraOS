@@ -1229,6 +1229,10 @@ slot_out: [SLOTS][FRAME]u8
 slot_payload: [SLOTS][1024]u8
 slots: [SLOTS]libuser.Mux_Slot
 
+// The serve loop's state, in shared bss rather than on `_start`'s stack, so a
+// worker can ask `libuser.flushed` through it. Its stack is its own copy.
+mux: libuser.Mux
+
 // One tick between looks at a key ring, for a read parked waiting on a line.
 POLL_TICKS :: 1
 
@@ -1238,8 +1242,10 @@ How many `cons` reads are parked, and the reason this server counts them.
 **`serve_mux` answers inline when no slot is free**, which is right for every
 message this server has except one. A `cons` read waits for a keystroke, so an
 inline one parks the loop that draws -- and `Tremove` is inline too, so a
-server wedged that way cannot even be stopped. Three abandoned reads is all it
-takes, because a worker whose client died polls a ring nobody will fill.
+server wedged that way cannot even be stopped. Three abandoned reads was all
+it took while a flushed worker never left. A flush reaches the worker now,
+through `libuser.flushed`, so what spends the pool today is three live
+readers of windows nobody types at, and that is still three.
 
 The count is what makes the inline case identifiable from inside the handler.
 `serve_mux` forks at most `SLOTS` workers, so a `cons` read that arrives with
@@ -1366,7 +1372,7 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 			payload = slot_payload[i][:],
 		}
 	}
-	mux := libuser.Mux {
+	mux = libuser.Mux {
 		fd      = sfd,
 		handler = handler,
 		blocks  = blocks,
@@ -2676,7 +2682,6 @@ handler :: proc "contextless" (
 ) #no_bounds_check {
 	_ = state
 	_ = s
-	_ = tag
 
 	if !libuser.default_reply(request, reply) {
 		return
@@ -2776,6 +2781,8 @@ handler :: proc "contextless" (
 		a worker of its own -- `blocks` sent it here, and it is the only
 		message in this server that leaves the serve loop.
 
+		A flush, when the client gave up on the read, lets the worker leave
+		with an answer nobody sends, which is `libuser.flushed`'s contract.
 		The shutdown flag lets a parked read leave at teardown rather than
 		wait for a keystroke a torn-down console will never deliver. A zero
 		count asks for nothing and gets it.
@@ -2809,6 +2816,14 @@ handler :: proc "contextless" (
 				Raw mode takes whatever is there. A client that asked for raw
 				is the one deciding where a line ends.
 				*/
+				// The flush is checked before the drain, and the order keeps a
+				// line from being lost to a flush that raced its arrival. A
+				// flushed request's reply is dropped, so a drain into one would
+				// consume the line and hand it to nobody. See `libuser.flushed`.
+				if libuser.flushed(&mux, tag) {
+					reply^ = vectra9.error_reply(vectra9.EINTR)
+					return
+				}
 				got := 0
 				if windows[w].cons_raw {
 					got = libuser.ring_drain(&kbd[w], buf[:room], &state_lock)

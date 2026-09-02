@@ -342,6 +342,13 @@ leaves a moment later. A self-test that measures the heap cannot ignore that
 moment, because a leaving thread's stack is a heap object until it is
 reaped. Healthy wires are not waited on. Their readers are parked on
 purpose, for as long as the service lives.
+
+The wait has a bound, because not every broken wire's reader is leaving. A
+wire poisoned by a flush the far side never answered has a live far side
+and a reader parked on it for as long as that side stays open. A self-test
+that finds one has a wedged server to report, and it reports that by failing
+the checks that follow, not by waiting here for ever. `QUIET_TICKS` is many
+times the moment a leaving reader takes.
 */
 quiesce :: proc "contextless" () {
 	t := &pipes
@@ -352,10 +359,16 @@ quiesce :: proc "contextless" () {
 		}
 		w := cast(^mnt.Wire)p.server9.session.transport.data
 		if mnt.wire_broken(w) {
-			mnt.wire_join(w)
+			_ = mnt.wire_join_for(w, QUIET_TICKS)
 		}
 	}
 }
+
+// How long `quiesce` gives a dead wire's reader to leave. A reader whose
+// stream ended leaves within a tick or two; one whose far side is still open
+// never will, and this is what keeps that from being a hang.
+@(private = "file")
+QUIET_TICKS :: 50
 
 // handshake is `vectra9.negotiate` with a deadline. Same clamps, same refusal
 // of any version but the one asked for.

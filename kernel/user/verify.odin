@@ -40,6 +40,7 @@ import "kernel:arch"
 import "kernel:devfs"
 import "kernel:drivers/fb"
 import "kernel:mem"
+import "kernel:mnt"
 import "kernel:pipe"
 import "kernel:sched"
 import "kernel:srv"
@@ -2873,6 +2874,15 @@ drain_pinned :: proc(r: ^Result, pin_before: int, what: string) {
 @(private = "file")
 CONSRV_TYPED :: "vectra lives\n"
 
+// A deadline long enough that a read is genuinely parked in a worker before
+// the wire gives up on it, and how many such reads `verify_consrv` abandons.
+// Three, with a fourth parked beside them, is one more than a pool of three
+// slots holds if a flushed worker never leaves.
+@(private = "file")
+GIVE_UP_TICKS :: 10
+@(private = "file")
+GIVE_UP_READS :: 3
+
 /*
 One read of a mounted file, on a thread, and what it came back with.
 
@@ -2996,6 +3006,60 @@ verify_consrv :: proc(r: ^Result) {
 		check(r, !intrinsics.volatile_load(&mount_reader.done), "which did not wake the parked read")
 		vfs.chan_close(root)
 	}
+
+	// -- A read given up on lets its worker go --------------------------------
+
+	/*
+	The wire flushes a read whose deadline passes, and the flush used to stop
+	at the wire. `serve_mux`'s worker never heard it, so every abandoned read
+	left a worker polling the ring for ever, and three were enough to spend
+	the pool and park the loop in the fourth. `docs/DRAW.md` section 13 has
+	the boot that found it, and `sys/libuser/serve.odin` has the cancel that
+	reaches the worker now.
+
+	Three deadline reads, one after another, with the reader above still
+	parked in a slot of its own. Each leaves within a tick of its flush. The
+	wire's own counters are the witness. A discard per flush, because the
+	flushed reply was never sent. No stale reply, because nothing wrote under
+	a flushed tag after its Rflush. The stat afterwards is the pool not spent,
+	and the line typed below reaching the first reader whole is the flushed
+	workers having drained nothing on their way out.
+
+	With the cancel removed, the third read is answered inline by a loop that
+	then parks. Its flush is never read, and the wire poisons itself after
+	its own patience, which is what bounds this phase either way.
+	*/
+	wire := cast(^mnt.Wire)nc.server.session.transport.data
+	before := mnt.wire_stats(wire)
+	given_up := 0
+	for _ in 0 ..< GIVE_UP_READS {
+		scratch: [16]u8
+		if _, e := vfs.chan_read_for(nc, 0, scratch[:], GIVE_UP_TICKS); e == vectra9.EINTR {
+			given_up += 1
+		}
+	}
+	check(r, given_up == GIVE_UP_READS, "three reads with a deadline each give up on the empty line")
+
+	// A flushed worker leaves at its next poll, a tick on. Give the last a few.
+	sync.delay(4)
+	after := mnt.wire_stats(wire)
+	// First, because a wire that poisoned itself is the wedge by name: a
+	// flush nobody read, waited out. Every count after it is then wrong too.
+	check(r, !after.poisoned, "the wire stands: every flush was answered")
+	check(r, after.flushes == before.flushes + GIVE_UP_READS, "each deadline sent a Tflush")
+	check(
+		r,
+		after.discards == before.discards + GIVE_UP_READS,
+		"the server discarded every flushed read rather than answering it",
+	)
+	check(r, after.stale == before.stale, "and no reply went out under a flushed tag")
+
+	if root, rerr := vfs.resolve(vfs.boot_namespace, "/mnt"); rerr == vfs.OK {
+		_, aerr := vfs.chan_stat(root)
+		check(r, aerr == vfs.OK, "a stat is still answered: the flushed workers gave their slots back")
+		vfs.chan_close(root)
+	}
+	check(r, !intrinsics.volatile_load(&mount_reader.done), "and the first read is still parked")
 
 	// -- A line is typed, and wakes the parked read ---------------------------
 
@@ -4480,11 +4544,13 @@ are not the same instant.
 **What is polled is the size, not the file**, and the first cut of this got it
 wrong in a way worth keeping written down. A read with a deadline looked like
 the way to ask an empty queue whether anything was there. It is not: the
-deadline flushes the request on the wire and `serve_mux`'s worker never hears
-it -- `docs/HANDOFF.md` section 6 names that gap -- so each abandoned read left
-a worker polling a ring for ever, and the server wedged once every slot was
-spent. `cons` answers its size with the bytes waiting, the way `kbdfs` does, so
-the queue can be asked without being read from.
+deadline flushed the request on the wire and `serve_mux`'s worker never heard
+it, so each abandoned read left a worker polling a ring for ever, and the
+server wedged once every slot was spent. The cancel reaches the worker now,
+and `verify_consrv` abandons three reads a boot to prove it, but a read is
+still a claim on the next line and a poll should not make one. `cons` answers
+its size with the bytes waiting, the way `kbdfs` does, so the queue can be
+asked without being read from.
 */
 @(private = "file")
 verify_cons :: proc(r: ^Result, zero_ctl: ^vfs.Chan, one_ctl: ^vfs.Chan) #no_bounds_check {
@@ -4852,11 +4918,13 @@ rather than a coincidence:
 **What is polled is the size, not the file**, and the first cut of this got it
 wrong in a way worth keeping written down. A read with a deadline looked like
 the way to ask an empty queue whether anything was there. It is not: the
-deadline flushes the request on the wire and `serve_mux`'s worker never hears
-it -- `docs/HANDOFF.md` section 6 names that gap -- so each abandoned read left
-a worker polling a ring for ever, and the server wedged once every slot was
-spent. `cons` answers its size with the bytes waiting, the way `kbdfs` does, so
-a queue can be asked without being read from.
+deadline flushed the request on the wire and `serve_mux`'s worker never heard
+it, so each abandoned read left a worker polling a ring for ever, and the
+server wedged once every slot was spent. The cancel reaches the worker now,
+and `verify_consrv` abandons three reads a boot to prove it, but a read is
+still a claim on the next line and a poll should not make one. `cons` answers
+its size with the bytes waiting, the way `kbdfs` does, so a queue can be
+asked without being read from.
 
 The poll is because the delivery crosses a process. The draw server's reader
 child is parked on `/dev/cons` in a process of its own, so a line typed here is

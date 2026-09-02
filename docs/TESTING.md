@@ -180,6 +180,18 @@ turn, rendezvous condition and all. A progress line per procedure through
 `devfs.cons_write`, which reaches the serial port whatever holds `/dev/fb`,
 said which procedure. The walk said which line, and what it was waiting for.
 
+**The third one hung in the teardown, not the test.** The control for the
+ring 3 flush cancel -- `serve_mux` marking nothing, so a flushed worker never
+leaves -- wedged `consrv` exactly as intended, and the boot then stopped
+printing. The phase itself was bounded: the wire gave up on its unanswered
+`Tflush` after its own patience and poisoned itself. What was not bounded was
+`pipe.quiesce`, which joined the reader of every broken wire so a heap
+measurement would not count a leaving thread's stack. A wire poisoned by a
+timeout has a reader still parked on a pipe whose far side is alive, and that
+reader leaves only when the server does. `quiesce` now waits a bounded number
+of ticks, which is many times the moment a leaving reader actually takes, and
+the control fails eighteen checks instead of saying nothing.
+
 ## A control that runs on every boot
 
 `kernel/verify_payload.odin` does something the tables above do not, and it is

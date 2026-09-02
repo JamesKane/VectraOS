@@ -91,6 +91,46 @@ userland, and raised by adding a slot rather than a thread.
 the write lock held would stop every other reply. The rule is `kernel/sync`'s,
 kept by hand where ring 3 has no `can_sleep` to check it.
 
+### The flush reaches the worker
+
+A client that gives up on a read flushes it, and for two milestones the
+flush stopped at the wire. The handler answered `Rflush` inline while the
+worker holding the flushed `Tread` stayed parked, polling a ring for a byte
+its client would never collect. Each abandoned read cost a worker for ever,
+and three spent a pool of three. The fourth read was then answered inline,
+by the loop that would have served the next flush. `docs/DRAW.md` section 13
+has the boot that found it, and `verify_consrv` now abandons three reads on
+every boot to keep it found.
+
+`serve_mux` owns `Tflush` now, and a handler never sees one. The loop knows
+which slot holds the request a flush names. It marks that slot and records
+the flush's own tag as the slot's `partner`, and reads the next request. It
+does not answer. The worker's handler asks `libuser.flushed` at each poll --
+before the drain, so a flush that raced a byte's arrival leaves the byte for
+the read that follows -- and gives up when the mark is there. Its reply is
+then never written. The worker writes `Rflush` in its place, under the tag
+the slot recorded, and exits.
+
+That is `kernel/mnt`'s rule with the same inside-out shape: **Rflush is sent
+after the flushed request's fate is decided**, and the one code path that
+decides the fate is the one that writes it. A flush naming no live slot is
+answered by the loop at once, because the request was either answered
+already or never deferred. Both decisions are under the write lock, which the
+worker holds across its own decision and its write, so `still running` and
+`become its partner` are one step.
+
+The tag is released before the Rflush goes out. A flushed worker frees its
+slot and then writes, so the client cannot reuse the tag while a slot still
+claims it. That ordering is what lets a handler ask by tag, which is the only
+name a handler has for its own request, and it is why the `Mux` moved into
+each server's shared bss: a worker's stack is its own copy, and the handler
+reaches the slots through the `Mux`.
+
+What a flush still cannot reach is a request the pool had no room for. That
+one was answered inline, by the loop, and the loop is parked in it. A slot is
+the fix, and `intuition` refuses that read with `EAGAIN` rather than let the
+loop that paints park.
+
 ## VECTRA02: segments, because compilers make shapes
 
 VECTRA01 says `one page of text`, and the blobs are exactly that. A linked

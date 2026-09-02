@@ -214,6 +214,19 @@ wire_join :: proc "contextless" (w: ^Wire) {
 	sync.sleep(&w.quiet, reader_gone, w)
 }
 
+/*
+wire_join_for is `wire_join` with a bound, and reports whether the reader left.
+
+For a caller that cannot make the stream end. A wire poisoned by its own
+patience -- a flush the far side never answered -- has a reader still parked
+in a read of a pipe whose far end is open, and that reader leaves only when
+the far side does. Waiting on it without a bound is a self-test that hangs
+where a server wedged, and a self-test that hangs says nothing.
+*/
+wire_join_for :: proc "contextless" (w: ^Wire, ticks: u64) -> bool {
+	return sync.sleep_for(&w.quiet, reader_gone, w, ticks)
+}
+
 @(private = "file")
 reader_gone :: proc "contextless" (arg: rawptr) -> bool {
 	return !intrinsics.volatile_load(&(cast(^Wire)arg).reader_live)

@@ -1003,8 +1003,9 @@ the framebuffer is reachable from it.
 answers inline when no slot is free, and that is right for every message here
 except the one that waits. An inline `cons` read parks the loop that paints --
 and `Tremove` is inline too, so a server stuck that way cannot even be stopped.
-It is reachable: a worker whose client died polls a ring nobody will fill, so
-abandoned reads accumulate until the pool is spent.
+It was reachable by accident when this was written, because a flushed worker
+never left. It is reachable on purpose still: three clients each holding a
+read of a `cons` nobody types at is a pool of three spent by live readers.
 
 `cons_parked` is what makes the inline case identifiable from inside the
 handler. At most `SLOTS` workers exist, so a `cons` read arriving with `SLOTS`
@@ -1067,22 +1068,27 @@ hear it. `docs/HANDOFF.md` section 6 names the reason: a killed process holds
 its descriptors until something reaps it, so nothing hangs up the pipe. It is
 the same gap a control in section 8 found, from a different direction.
 
-**A flushed read still answers, and that is not fixed here.** `Tflush` is
-answered inline while the worker holding the flushed `Tread` stays parked, and
-its `Rread` goes out later carrying the flushed tag. 9P wants no reply after
-`Rflush`. The kernel's wire drops a reply naming no request in flight and
-counts it, so the damage today is a wasted reply rather than a desync -- but a
-client that reuses the tag first would take the stale `Rread` as the answer to
-whatever it asked next. The cancel has to reach the worker, which is
-`sys/libuser`'s to add and is the same standing gap the paragraph below is
-about. `servers/kbdfs` and `servers/consrv` answer `Tflush` the same way.
+**A flushed read used to answer anyway, and this milestone is where that was
+found.** `Tflush` was answered inline while the worker holding the flushed
+`Tread` stayed parked, and its `Rread` went out later carrying the flushed
+tag. 9P wants no reply after `Rflush`. The kernel's wire drops a reply naming
+no request in flight and counts it, so the damage was a wasted reply rather
+than a desync -- but a client that reused the tag first would have taken the
+stale `Rread` as the answer to whatever it asked next. The cancel has since
+reached the worker, in `sys/libuser` where it belonged, and `docs/RUNTIME.md`
+argues the shape. A worker asks `libuser.flushed` before each drain and the
+`Rflush` goes out in place of its reply, from the worker, after the fate is
+decided. `servers/kbdfs`, `servers/consrv` and `servers/eiafs` poll the same
+mark.
 
 **And one control was the test's own first cut.** Asking an empty queue with a
-deadline read looked right and is not. The deadline flushes the request on the
-wire and `serve_mux`'s worker never hears it, so every abandoned read left a
-worker polling a ring for ever, and the server wedged once every slot was
-spent. Three deadline reads is all it took. The size field is the way to ask,
-and that is why `cons` answers one.
+deadline read looked right and was not, then. The deadline flushed the request
+on the wire and `serve_mux`'s worker never heard it, so every abandoned read
+left a worker polling a ring for ever, and the server wedged once every slot
+was spent. Three deadline reads is all it took, and `verify_consrv` abandons
+three on every boot now so the fix stays proven. The size field is still the
+way to ask a queue whether anything is there, and that is why `cons` answers
+one: a read is a claim on the next line, whether or not the reader keeps it.
 
 ## 14. A line discipline per window
 

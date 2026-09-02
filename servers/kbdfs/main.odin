@@ -81,6 +81,10 @@ slot_out: [SLOTS][FRAME]u8
 slot_payload: [SLOTS][1024]u8
 slots: [SLOTS]libuser.Mux_Slot
 
+// The serve loop's state, in shared bss rather than on `_start`'s stack, so a
+// worker can ask `libuser.flushed` through it. Its stack is its own copy.
+mux: libuser.Mux
+
 // One tick between looks at the ring, for a read parked waiting on a key.
 POLL_TICKS :: 1
 
@@ -126,7 +130,7 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 			payload = slot_payload[i][:],
 		}
 	}
-	mux := libuser.Mux {
+	mux = libuser.Mux {
 		fd      = fd,
 		handler = handler,
 		blocks  = blocks,
@@ -334,7 +338,6 @@ handler :: proc "contextless" (
 ) #no_bounds_check {
 	_ = state
 	_ = s
-	_ = tag
 
 	if !libuser.default_reply(request, reply) {
 		return
@@ -369,7 +372,9 @@ handler :: proc "contextless" (
 		}
 		/*
 		A read of /kbd parks until a key is translated, off in a worker of its
-		own -- `blocks` sent it here. The shutdown flag lets a parked read leave
+		own -- `blocks` sent it here. A flush, when the client gave up on the
+		read, lets the worker leave with an answer nobody sends, which is
+		`libuser.flushed`'s contract. The shutdown flag lets a parked read leave
 		at teardown rather than poll for a key the torn-down keyboard will never
 		send. A zero count asks for nothing and gets it.
 		*/
@@ -379,6 +384,14 @@ handler :: proc "contextless" (
 			return
 		}
 		for {
+			// The flush is checked before the drain, and the order keeps a byte
+			// from being lost to a flush that raced its arrival. A flushed
+			// request's reply is dropped, so a drain into one would consume the
+			// bytes and hand them to nobody. See `libuser.flushed`.
+			if libuser.flushed(&mux, tag) {
+				reply^ = vectra9.error_reply(vectra9.EINTR)
+				return
+			}
 			got := libuser.ring_drain(&ring, buf[:room], &state_lock)
 			if got > 0 {
 				reply^ = vectra9.Rread{data = buf[:got]}
