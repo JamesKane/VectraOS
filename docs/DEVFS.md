@@ -17,7 +17,7 @@ from a self-test.
 
 | What it uses | Built in | Reached from a path here |
 |---|---|---|
-| Worker threads on a 9P connection | `kernel/mnt` | Four workers behind `#c` |
+| Worker threads on a 9P connection | `kernel/mnt` | A worker per request slot behind `#c` |
 | A payload buffer per request slot | `kernel/mnt` | Every `Rread` from `/dev/cons` |
 | A read with a deadline, and `Tflush` | `kernel/vfs` | `chan_read_for` on `/dev/cons` |
 | A thread that waits for a condition | `kernel/sync` | A read of an empty console |
@@ -470,28 +470,32 @@ stands between a tap and its reader, so any byte answers. And there is no
 `^D`, so nothing here ever answers zero bytes. Park, byte, or flush is the
 whole state space.
 
-## The worker count is a bound on blocked readers
+## A worker for every request, and one to serve the flush
 
-`WORKERS` is 4, so **at most three reads may park at once**. The fourth worker
-is what serves the `Tflush` that unsticks one of them. It is exactly one
-because a flush never parks. It marks the request, calls the abort hook, and
-returns.
+`WORKERS` is `mnt.MAX_REQUESTS + 1`. The transport carries at most
+`MAX_REQUESTS` requests at once, so a worker for every slot means **every read
+can park without waiting for a worker**. The one beyond that serves the `Tflush`
+that unsticks a parked read. It is exactly one because a flush never parks. It
+marks the request, calls the abort hook, and returns.
 
-Three files can park a read now — `cons` and the two taps — so three
-single-reader clients fill the bound exactly. The flush worker stays free.
-That is the userland-devfs shape: one server per stream, one parked read
-each. A fourth parked read stalls the connection, and the bound wants
-raising the first time something legitimate hits it.
+This is Plan 9's thread of its own for every request. The file used to carry a
+smaller number and the stall that came with it. The argument was that a thread
+was too dear to spend one per slot. It is nine threads over an eight-slot
+transport, at 32 KB of stack each. That is cheap, and the number is now the one
+that cannot stall.
 
-`kernel/mnt` states this rule where the number is chosen, and says it cannot
-check it. How many of a server's requests can block is the server's own
-business. Exceed it here and nothing corrupts. It *stops*: every worker waits for
-a key, and the flush that would release one waits behind them for a worker. A
-byte typed at the port frees the whole thing, which makes it a stall rather than
-a deadlock, and does not make it acceptable.
+The stall it retires was real. `WORKERS` was 4, so a fourth read of `/dev/cons`
+waited on a worker that a third read held parked. The flush that would free one
+waited behind them for a worker too. A byte typed at the port freed the whole
+chain -- a stall rather than a deadlock, and not acceptable. `kernel/mnt` still states the rule where the number is chosen, and
+says it cannot check it. How many of a server's requests can block is the
+server's own business, and `verify_worker_bound` is where this server answers.
 
-Plan 9 avoids the question by giving every request a thread of its own. That is
-the fix when threads are cheaper than they are today.
+`MAX_REQUESTS` is the true ceiling, not `WORKERS`. A ninth request has no slot,
+so it waits for a tag long before it could want a worker. The only thing that
+can arrive while all eight slots are full is a `Tflush`, which carries its own
+slot in the pool's upper half. So one spare worker is all the ninth thread is
+ever for.
 
 ## What a device answers, and what it refuses
 
@@ -591,11 +595,19 @@ shadow right.
 
 ### The controls
 
-Twenty-nine mutations, one at a time, each observed on a real boot. The first
-eleven are the device server, and the next nine the line discipline and the
+Thirty-one mutations, one at a time, each observed on a real boot. The first
+thirteen are the device server, and the next nine the line discipline and the
 `ctl` file. Four more are the raw framebuffer, four the taps, and the last the
 flush-order fix `kbdfs` demanded. Two more tap controls live on the driver's
 side of the seam, in `docs/KBD.md`.
+
+The two worker-pool controls are the milestone that gave every request a worker.
+A pool smaller than the request ceiling leaves the eighth read waiting for a
+worker rather than parked. So `eight reads park at once` never reaches its
+count. A pool with no spare leaves the flush waiting behind the parked reads, so
+the read that gives up is never answered. Both fail cleanly rather than hanging,
+because `verify_worker_bound` drains every reader before its handles close,
+one line per freed worker.
 
 | Mutation | First failure |
 |---|---|
@@ -610,6 +622,8 @@ side of the seam, in `docs/KBD.md`.
 | the ring's read cursor never advances | `and exactly the one byte there was` (7 checks) |
 | a write to cons takes no lock | **not caught** |
 | creating a file in `/dev` is not refused | **not caught** |
+| the worker pool is smaller than the request ceiling | `eight reads park at once, one per request slot` |
+| the worker pool keeps no spare for the flush | `the read that gives up is answered, so a worker was free for its flush` |
 | cooked mode delivers each character as it arrives | `and the read still does not answer, because a character is not a line` (9 checks) |
 | a backspace does not shorten the line | `and takes the character off the line as well` |
 | a kill does not clear the line | `a kill throws the whole line away` |

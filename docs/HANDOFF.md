@@ -404,10 +404,13 @@ design question attached to each.
   as it holds. It has not bitten, because nothing runs at realtime. Plan 9
   never had it either, which is an argument about cost rather than about
   correctness.
-- **A worker per blocked request.** `devfs` holds a worker for the length of
-  every parked read, so at most three reads of `/dev/cons` may park at once. A
-  fourth stalls the connection until a byte arrives. Plan 9 gives every request
-  a thread. See `docs/DEVFS.md`.
+- ~~**A worker per blocked request.**~~ Retired. `devfs`'s `WORKERS` is
+  `mnt.MAX_REQUESTS + 1`, a worker for every request slot and one spare for the
+  flush. Every read can park without waiting for a worker, and the eighth read
+  no longer stalls behind the seventh. It is Plan 9's thread per request, made
+  cheap by a transport that bounds requests to eight. `verify_worker_bound`
+  fills every slot and proves both halves, and two controls fail it. See
+  `docs/DEVFS.md`.
 - ~~**A union listing whose cookie is not a position.**~~ Retired. Each
   member carries a monotonic id assigned at `bind`, and the cookie names the
   id rather than the position, which is `kernel/srv`'s treatment. A member

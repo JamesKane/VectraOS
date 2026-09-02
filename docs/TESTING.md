@@ -250,7 +250,7 @@ nothing else in common.
 | `Tflush` and its transport | `docs/TRANSPORT.md` | 5 of 6 |
 | The payload buffer per request slot | `docs/TRANSPORT.md` | 3 of 4 |
 | The namespace over a transport with workers | `docs/NAMESPACE.md` | 4 of 6 |
-| The first device server | `docs/DEVFS.md` | 18 of 20 |
+| The first device server | `docs/DEVFS.md` | 20 of 22 |
 | The screen's divert | `docs/DEVFS.md` | 6 of 6 |
 | Services published by name | `docs/SRV.md` | 9 of 9 |
 | The posted end's parks | `docs/PIPE.md` | 3 of 3, two real parks and one review false alarm |

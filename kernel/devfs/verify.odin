@@ -2,10 +2,11 @@
 The devfs self-test: the path from a name to a byte on a screen, checked.
 
 Everything here runs against the boot namespace, over the real mount at `/dev`,
-through the real transport with four workers on it. There is no fixture. A check
-that passes here is a check that the machine's own `/dev/cons` passes.
+through the real transport with a worker for every request slot. There is no
+fixture. A check that passes here is a check that the machine's own `/dev/cons`
+passes.
 
-Eight claims, in the order they are checked:
+Nine claims, in the order they are checked:
 
   - `/dev` lists every device in the table and `/dev/cons` is first
   - a write to `/dev/cons` reaches the framebuffer and the serial port
@@ -15,6 +16,8 @@ Eight claims, in the order they are checked:
     the last close gives each stream back
   - a read of `/dev/cons` with nothing typed **parks**, stays parked through a
     character, and finishes on the newline after it
+  - **every request slot can hold a parked read at once**, and the one that
+    gives up under that load is still answered by a spare worker
   - the line under construction can be edited, and `^D` ends the file
   - `/dev/consctl` moves the console to raw mode, and reads back the commands
     that would restore it
@@ -51,6 +54,7 @@ import "base:runtime"
 import "kernel:drivers/console"
 import "kernel:drivers/fb"
 import "kernel:mem"
+import "kernel:mnt"
 import "kernel:sched"
 import "kernel:sync"
 import "kernel:vfs"
@@ -190,6 +194,90 @@ and a broken one comes back as EINTR instead of never.
 @(private = "file")
 read_now :: proc(c: ^vfs.Chan, buf: []u8) -> (int, vfs.Errno) {
 	return vfs.chan_read_for(c, 0, buf, READ_NOW_TICKS)
+}
+
+// -- Many readers at once ----------------------------------------------------
+
+/*
+As many parked reads as the transport has request slots.
+
+`mnt.MAX_REQUESTS` is the most requests in flight on the connection at once. So
+it is the most reads that can park at once, and `verify_worker_bound` fills every
+one of them.
+*/
+@(private = "file")
+MANY :: mnt.MAX_REQUESTS
+
+/*
+One reader on its own thread and its own handle.
+
+Its own handle, because two threads reading one fid share a request slot and
+would serialise. A separate handle per reader is what puts one read in every
+slot. A `deadline` of zero blocks until a line arrives, and anything else gives
+up after that many ticks, the way `Reader` does.
+*/
+@(private = "file")
+Many_Reader :: struct {
+	c:        ^vfs.Chan,
+	deadline: u64,
+	got:      [16]u8,
+	n:        int,
+	err:      vfs.Errno,
+	returned: bool,
+}
+
+@(private = "file")
+many: [MANY]Many_Reader
+
+// The console's park count before the readers start, so `all_parked` can tell
+// this test's parks from every earlier one.
+@(private = "file")
+many_base: u64
+
+@(private = "file")
+many_read_thread :: proc "contextless" (arg: rawptr) {
+	context = verify_context()
+	mr := cast(^Many_Reader)arg
+	if mr.deadline == 0 {
+		mr.n, mr.err = vfs.chan_read(mr.c, 0, mr.got[:])
+	} else {
+		mr.n, mr.err = vfs.chan_read_for(mr.c, 0, mr.got[:], mr.deadline)
+	}
+	intrinsics.volatile_store(&mr.returned, true)
+}
+
+// all_parked reports whether every reader parked, which the console's own count
+// shows by rising one per reader.
+@(private = "file")
+all_parked :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.volatile_load(&dev_tree.cons.blocks) - many_base >= u64(MANY)
+}
+
+// many_done reports whether one reader is back, or every reader when `arg`
+// is nil.
+@(private = "file")
+many_done :: proc "contextless" (arg: rawptr) -> bool {
+	if arg != nil {
+		return intrinsics.volatile_load(&(cast(^Many_Reader)arg).returned)
+	}
+	for i in 0 ..< MANY {
+		if !intrinsics.volatile_load(&many[i].returned) {
+			return false
+		}
+	}
+	return true
+}
+
+// many_returned_count is how many readers are back so far.
+@(private = "file")
+many_returned_count :: proc "contextless" () -> int {
+	n := 0
+	for i in 0 ..< MANY {
+		if intrinsics.volatile_load(&many[i].returned) {
+			n += 1
+		}
+	}
+	return n
 }
 
 // same reports whether a read returned exactly `want`.
@@ -361,6 +449,10 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 	// -- A read that gives up ------------------------------------------------
 
 	verify_give_up(&r, cons)
+
+	// -- Every request slot parks at once ------------------------------------
+
+	verify_worker_bound(&r, ns)
 
 	// -- Nothing left behind -------------------------------------------------
 
@@ -698,6 +790,122 @@ verify_give_up :: proc(r: ^Verify_Result, cons: ^vfs.Chan) #no_bounds_check {
 	got: [8]u8
 	n, e := read_now(cons, got[:])
 	check(r, e == vfs.OK && same(got[:], n, "ok\n"), "and the same fid reads normally afterwards")
+}
+
+/*
+verify_worker_bound is the milestone: a parked read holds no worker anyone else
+needs.
+
+`WORKERS` is `mnt.MAX_REQUESTS + 1`, so every request slot on the connection can
+hold a parked read and one worker still remains. That worker serves the `Tflush`
+that unsticks one. This test fills every slot and proves both halves at once.
+
+Seven reads block, and the eighth is given a deadline. All eight park, which
+takes a worker for every slot. When the eighth outlives its deadline its client
+sends a `Tflush`, which only the spare worker can serve, because the other seven
+hold theirs parked. A pool sized to the parked reads alone would leave that
+flush waiting behind them, and the give-up would never come back.
+
+Everything blocking is on a thread of its own, and every wait here has a bound.
+A pool too small leaves the last reads in the queue, and `all_parked` never
+reaches the count. The check fails and the feed at the end still drains every
+thread, because a freed worker dequeues a waiting read.
+*/
+@(private = "file")
+verify_worker_bound :: proc(r: ^Verify_Result, ns: ^vfs.Namespace) #no_bounds_check {
+	t := &dev_tree
+	drain_cons(t)
+
+	opened := 0
+	for i in 0 ..< MANY {
+		c, e := vfs.open_path(ns, "/dev/cons", vfs.O_RDONLY)
+		if e != vfs.OK {
+			break
+		}
+		many[i] = Many_Reader {
+			c = c,
+		}
+		opened += 1
+	}
+	if !check(r, opened == MANY, "a handle on /dev/cons for every request slot") {
+		for i in 0 ..< opened {
+			vfs.chan_close(many[i].c)
+		}
+		return
+	}
+	defer for i in 0 ..< MANY {
+		vfs.chan_close(many[i].c)
+	}
+
+	// The eighth reader gives up on a deadline. The other seven wait for a line.
+	many[0].deadline = GIVE_UP_TICKS
+
+	many_base = intrinsics.volatile_load(&t.cons.blocks)
+	spawned := 0
+	for i in 0 ..< MANY {
+		if sched.spawn("devfs-many", many_read_thread, &many[i]) == nil {
+			break
+		}
+		spawned += 1
+	}
+	if !check(r, spawned == MANY, "a thread for each of them") {
+		// Wake whatever parked, so the deferred close is not against a live read.
+		for _ in 0 ..< MANY {
+			type_in(&t.cons, "V\n")
+		}
+		_ = sync.await(many_done, nil, PATIENCE)
+		return
+	}
+
+	// Every slot fills with a parked read. A worker for every slot means none of
+	// them waits for a worker, and a smaller pool leaves the last reads queued.
+	parked := sync.await(all_parked, nil, PATIENCE)
+	check(r, parked, "eight reads park at once, one per request slot")
+	if parked {
+		check(r, many_returned_count() == 0, "and none has answered, because none has a line")
+	}
+
+	// The eighth outlives its deadline, and its flush needs the spare worker.
+	if check(
+		r,
+		sync.await(many_done, &many[0], PATIENCE),
+		"the read that gives up is answered, so a worker was free for its flush",
+	) {
+		check(r, many[0].err == vectra9.EINTR, "and reports EINTR, the way a lone give-up does")
+	}
+
+	// The seven that waited each get a line of their own, one at a time. A read
+	// takes as much as its buffer holds, so a second line in the ring would go
+	// to the same reader and strand another. Feeding only when the ring is empty
+	// keeps it one line, one reader. The eighth comes back on its flush instead,
+	// as a freed worker serves it.
+	//
+	// This is also the cleanup, and it must leave no read parked. The deferred
+	// close is a Tclunk, which is itself a request. A pool with a read still
+	// parked in it cannot serve one, and the close would wait for a worker that
+	// never comes. So a short pool drains here the same way, one reader as each
+	// worker frees, and only then does the close run.
+	release_by := sched.ticks() + PATIENCE
+	for !many_done(nil) && sched.ticks() < release_by {
+		if !cons_available(&t.cons) {
+			type_in(&t.cons, "V\n")
+		}
+		sync.delay(2)
+	}
+	if !check(r, many_done(nil), "and every waiting read comes back once its line arrives") {
+		return
+	}
+	delivered := true
+	for i in 1 ..< MANY {
+		if many[i].err != vfs.OK || !same(many[i].got[:], many[i].n, "V\n") {
+			delivered = false
+		}
+	}
+	check(r, delivered, "each carrying a whole line")
+
+	// A give-up may have left a line with no reader to take it. The ring goes
+	// back empty, the way the next test and the person at the keyboard expect.
+	drain_cons(t)
 }
 
 

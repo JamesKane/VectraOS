@@ -39,19 +39,19 @@ through `vfs.server_flushed`. That bit goes clear when a slot is claimed. A
 flag of this server's own would need the same clearing, at a moment this server
 cannot see.
 
-## The worker count is a bound on blocked readers
+## A worker for every request, and one more to serve the flush
 
-`WORKERS` is 4, and at most three reads may park at once. The fourth worker is
-what serves the `Tflush` that unsticks one of them. A worker inside a parked
-read is a worker not serving anything. `kernel/mnt` says so plainly where the
-number is chosen, and cannot check it for itself.
+`WORKERS` is `mnt.MAX_REQUESTS + 1`. The transport carries at most
+`MAX_REQUESTS` requests at once, so a worker for every slot lets every read park
+without ever waiting for a worker. The one beyond that serves the `Tflush` that
+unsticks a parked read, and a flush never parks. It marks the request, calls the
+abort hook, and returns.
 
-Exceed it and the connection does not corrupt anything. It stops: every worker
-waits for a key, and the flush that would release one waits behind them for a
-worker. A byte typed at the port frees the whole thing, which makes it a stall
-rather than a deadlock, and does not make it acceptable. Plan 9 avoids the
-question. It gives every request a thread of its own, and that is the fix when
-threads are cheaper than they are today.
+This is Plan 9's thread of its own for every request. It was too many threads to
+want when this server was first written. The file comment said so. Nine threads
+over an eight-slot transport is cheap. The stall it retires had a fourth read of
+`/dev/cons` wait on a worker that a third read held parked. A byte at the port
+freed the whole chain at once.
 */
 package devfs
 
@@ -194,13 +194,14 @@ Dev_Tree :: struct {
 }
 
 /*
-Four workers, and therefore three reads that may park at once.
+A worker for every request slot, and one more.
 
-See the file comment. The spare one serves flushes, and it is exactly one
+See the file comment. Every one of the `MAX_REQUESTS` slots can hold a parked
+read, and the spare serves the flush that unsticks one. The spare is exactly one
 because a flush never parks: it marks the request, calls the abort hook, and
 returns.
 */
-WORKERS :: 4
+WORKERS :: mnt.MAX_REQUESTS + 1
 
 // Fids this server will hand out at once. A ceiling rather than a guess -- see
 // `vfs.fidtab_init`. Four files means a client would have to clone the same
