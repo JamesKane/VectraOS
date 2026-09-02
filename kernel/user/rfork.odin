@@ -193,12 +193,11 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 		parent     = flags & RFNOWAIT != 0 ? 0 : parent.pid,
 		detached   = flags & RFNOWAIT != 0,
 		note_group = flags & RFNOTEG != 0 ? next_pid : parent.note_group,
-		// The address space the child inherits is the parent's, so the mark
-		// above it has to be the parent's too. A child that started its bump
-		// at `MAPPING_BASE` would place its first `segalloc` on top of a
-		// mapping it already holds. See `Process.map_next`.
-		map_next   = parent.map_next,
 	}
+	// The child inherits the parent's runs as its own segment list, below, so
+	// its first `segalloc` searches those and lands clear of them. There is no
+	// high-water mark to carry over: the list is the map, and the child has a
+	// copy of it the moment `fork_segments` returns.
 	next_pid += 1
 
 	// The parent's name, copied home like a spawned path. Two processes of

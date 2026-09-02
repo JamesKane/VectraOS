@@ -5652,10 +5652,11 @@ verify_anon :: proc(r: ^Result) {
 	differ, so a wrong answer says which process wrote last.
 
 	The status carries the child's own claim, which the parent cannot make.
-	A child inherits its parent's address space and the mark above it. So the
+	A child inherits its parent's address space and its list of runs. So the
 	run it asks for after the fork has to land clear of the runs it already
-	holds. It checked that before it wrote anything, and `ANON_CHILD_REFUSED`
-	is that check failing. See `Process.map_next`.
+	holds. `map_reserve` searches that list, so the fresh run lands in the
+	first hole clear of them. It checked that before it wrote anything, and
+	`ANON_CHILD_REFUSED` is that check failing.
 	*/
 	check(
 		r,
@@ -5696,6 +5697,23 @@ verify_anon :: proc(r: ^Result) {
 	check(r, third >= mem.USER_MIN && third < mem.USER_MAX, "a third run was asked for, one page, to give back")
 	check(r, i64(cell(p, ANON_DETACHED)) == 0, "and detached whole")
 	check(r, proc_segment_at(p, third) == nil, "so no segment of the process covers its address now")
+
+	/*
+	And the address the detach freed comes back to the next ask.
+
+	The third run had a fourth just above it, and only the third went back. So
+	the hole it left has a live run over it. That is what makes this a real
+	test, rather than the top of the heap handed back. `map_reserve` searches
+	from the bottom and finds that hole, so `ANON_REUSE` is the third run's
+	address again. The bump this replaced would have stepped over the run above
+	and answered higher, and this would read a different number. Both extra
+	runs went back, so nothing here is left holding the address.
+	*/
+	check(
+		r,
+		uintptr(cell(p, ANON_REUSE)) == third,
+		"and the next ask of that size lands back in the hole below a live run, because the search reuses it",
+	)
 	check(
 		r,
 		cell(p, ANON_DETACH_TEXT) == refused(vectra9.EINVAL),

@@ -1051,14 +1051,17 @@ five kinds. Three places care: `segment_frame`, `segment_release` and
 `fork_segments`. Each asks in one word, and a sixth kind joins the right shape
 in one edit.
 
-**One bump for both calls, and that is what makes them disjoint.** `segattach`
-and `segalloc` take their addresses from the same `Process.map_next`. Two
-regions with two bumps would need an argument about which one grows into the
-other, and one region has none to make.
+**One search over both calls, and that is what makes them disjoint.**
+`segattach` and `segalloc` both take their addresses from `map_reserve`, which
+searches the process's own segment list for the lowest free span. The list is
+the record of what is taken, so a range `segdetach` freed is a hole the next
+call lands in. Two regions with two searches would need an argument about which
+one grows into the other, and one region has none to make.
 
-A child inherits its parent's mark along with its parent's address space. A
-child that started at `MAPPING_BASE` would place its first `segalloc` on top of
-a run it already holds.
+A child inherits its parent's runs as its own list along with its address
+space. So its first `segalloc` searches those and lands clear of them. There is
+no mark to carry over: the list is the map, and the child has a copy of it the
+moment `fork_segments` returns.
 
 **`rfork` treats it as data, because that is what it is.** Text is shared,
 device memory is shared unconditionally, and a run of anonymous memory answers
@@ -1407,18 +1410,22 @@ Ten mutations, each on a real boot. Eight are caught.
 | the teardown gives a run back the way it gives a device back | 2 checks, first `and every frame of both runs went back to the allocator, by name` |
 | a run alone is handed out unzeroed | 1 check, `and arrived zero, because a page the last program wrote is not this one's to read` |
 | a run is one page however much was asked for | 9 checks, first `a store half a megabyte in came back, so the run is mapped end to end` |
-| the address bump does not move | 3 checks, first `a second attach is a second address` |
+| `map_reserve` hands out a span a live run already holds | 3 checks, first `a second attach is a second address` |
+| `map_reserve` bumps above every run instead of the lowest hole | 1 check, `and the next ask of that size lands back in the hole below a live run` |
 | `rfork` shares a run the way it shares a card | 1 check, `and the parent's run still holds the parent's word` |
 | a run answers the frame list rather than its base | 1 check, `and the parent's run still holds the parent's word` |
 | there is no bound on what one call may ask for | 1 check, `a gigabyte is refused` |
-| a child starts its bump at `MAPPING_BASE` | 1 check, `a forked child got a run of its own that did not land on one it inherited` |
+| a child's list omits the runs it inherited | 1 check, `a forked child got a run of its own that did not land on one it inherited` |
 | *every* fresh run is handed out unzeroed | **the boot stops**, on a page table |
 | the run mapping drops every page but the first | **the boot stops**, for a reason that is not this code's |
 
-**The bump control is the interesting catch.** It fails `segattach`'s
-second-attach check first and `segalloc`'s second-ask check after it. One
-counter, one mutation, two callers -- which is the argument for one counter,
-made by the test rather than by this paragraph.
+**The two search controls are the interesting catches.** The first hands out a
+taken span and fails `segattach`'s second-attach check and `segalloc`'s
+second-ask check both, from one mutation across two callers. The second bumps
+above every run rather than filling the lowest hole, which is the leak the old
+`map_next` was. It reaches the reuse check alone, because that check detaches a
+run with a live one above it. A bump steps over the run above and answers
+higher, and only a search comes back for the hole.
 
 **Two machine failures, and only one of them is about this code.** Removing the
 zeroing from `mem.alloc_pages_zeroed` kills the machine long before ring 3.
@@ -1465,10 +1472,11 @@ that reads a frame the allocator handed on. So the rule is `segbrk`'s. Only
 the run kinds may be asked, and `.Device` and `.Anon` are exactly the two a
 program asked for by a call.
 
-**The address bump does not come down.** A detached run's addresses are
-never handed out again. `Process.map_next` chose that leak on purpose when
-it chose a bump over a search, and this call does not change the choice. What
-goes back is memory, which is the expensive one.
+**The address comes back with the run.** `map_reserve` searches the segment
+list, so the hole a detach leaves is one the next `segalloc` of that size or
+less lands in. `Process.map_next` is gone: it was a bump that never came down,
+and the search that replaced it reads the list rather than a high-water mark.
+Memory goes back the same way, which was always the expensive half.
 
 ### segfree, deferred with its reason
 

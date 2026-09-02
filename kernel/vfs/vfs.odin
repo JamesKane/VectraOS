@@ -565,9 +565,11 @@ arrangement allocated a fid and sent the request without letting go of the
 session. `alloc_fid` was a plain increment, and two threads could read the
 counter before either wrote it.
 
-`alloc_fid` is an atomic increment now, so the number is this thread's the
-moment it comes back. Nothing has to be held around the message that carries
-it. See `sys/vectra9/session.odin`.
+`alloc_fid` is an atomic compare-and-swap now, so the number is this thread's
+the moment it comes back. Nothing has to be held around the message that carries
+it. It returns `NOFID` when the session's fid space is spent. Every caller turns
+that into `EMFILE` rather than sending a message with no fid in it. See
+`sys/vectra9/session.odin`.
 */
 @(private)
 new_fid :: proc "contextless" (sv: ^Server) -> vectra9.Fid {

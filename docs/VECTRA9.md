@@ -636,7 +636,7 @@ taken before either still names its file afterwards.
 `Server.lock` did not narrow. It went. It made `one request in flight` true,
 which is what made a borrowed reply safe, and it made `alloc_fid` mean
 something. A reply borrows the caller now, and `alloc_fid` is an atomic
-increment. See `docs/NAMESPACE.md`.
+compare-and-swap. See `docs/NAMESPACE.md`.
 
 ### 7.4 Union create goes to the first member flagged Create, and stops there
 
@@ -732,7 +732,9 @@ asynchronous transport's are in `docs/TRANSPORT.md`.
   of order. `kernel/verify_flush.odin`'s server is the first that deliberately
   will not finish, and it found nothing. That is a statement about how little
   anything asked of the layer, not about how solid it is.
-- **`Session.alloc_fid` is a monotonic counter.** It runs out after four billion
-  opens without ever reusing one. The right fix is a free list fed by `Tclunk`,
-  not a wider counter.
+- **`Session.alloc_fid` is a monotonic counter that refuses at its ceiling.** It
+  runs out after four billion opens and returns `NOFID` rather than wrapping
+  onto a fid still in use, because a fid names an identity. Every caller turns
+  the refusal into `EMFILE`. The right fix that raises the ceiling is a free
+  list fed by `Tclunk`, not a wider counter.
 

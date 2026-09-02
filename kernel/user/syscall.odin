@@ -928,35 +928,60 @@ High in the lower half, clear of everything a loader places. Text, data and
 stack come out of the image's own addresses, and no format this kernel reads
 asks for anything above a few megabytes.
 
-Both calls that hand out address space start here. See `Process.map_next` for
-why there is one bump and not two.
+Both calls that hand out address space start here, and `map_reserve` searches
+up from it. `segattach` and `segalloc` share the one region, so there is one
+search and not two.
 */
 MAPPING_BASE :: uintptr(0x1000_0000)
 
 /*
-map_reserve takes the next span of a process's address space, without mapping
-anything into it.
+map_reserve finds a span of a process's address space, without mapping anything
+into it.
 
-The bump happens here rather than after the mapping succeeds, and that is the
-same decision `map_next` records. A half-built mapping keeps its numbers. The
-alternative hands the next caller an address the failed one may still have page
-tables under.
+A search over the process's own segment list, not a bump. The list is the map
+of what is taken, so a range a `segdetach` freed is a hole this finds and hands
+back. First fit from `MAPPING_BASE`, stepping past every segment it collides
+with, so the lowest free range wins and a detached run's addresses come back.
+
+The search is what closes the window the bump left open. A reservation that
+fails to become a mapping leaves its segment in the list, occupied. So the next
+call steps past it rather than hand out an address with stale page tables under
+it. A reservation that fails before the segment is added mapped nothing, so its
+range is free to hand out again.
+
+The whole thing rests on one process at a time changing its own segments. That
+is the same rule `proc_add_segment` and every walk of `p.segs` already keep. A
+second core makes this a lock, named in `docs/HANDOFF.md` with the others.
 */
 @(private = "file")
-map_reserve :: proc "contextless" (p: ^Process, pages: int) -> (va: uintptr, ok: bool) {
+map_reserve :: proc "contextless" (p: ^Process, pages: int) -> (va: uintptr, ok: bool) #no_bounds_check {
 	if p == nil || pages <= 0 {
 		return 0, false
 	}
-	if p.map_next == 0 {
-		p.map_next = MAPPING_BASE
-	}
-	va = p.map_next
 	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
-	if va + span >= mem.USER_MAX || va + span < va {
-		return 0, false
+
+	cand := MAPPING_BASE
+	for {
+		if cand + span > mem.USER_MAX || cand + span < cand {
+			return 0, false
+		}
+		moved := false
+		for i in 0 ..< p.seg_count {
+			s := p.segs[i]
+			if s == nil {
+				continue
+			}
+			s_end := s.va + uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
+			// [cand, cand+span) overlaps [s.va, s_end)? Step past the segment.
+			if cand < s_end && cand + span > s.va {
+				cand = s_end
+				moved = true
+			}
+		}
+		if !moved {
+			return cand, true
+		}
 	}
-	p.map_next = va + span
-	return va, true
 }
 
 /*
@@ -1324,11 +1349,8 @@ segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i6
 		return -i64(vectra9.ENOMEM)
 	}
 
-	// And the bump moves with it, so the next `segalloc` starts above the run
-	// that just grew rather than inside it.
-	if newtop > p.map_next {
-		p.map_next = newtop
-	}
+	// Nothing to record. The grown segment carries its new size, and the next
+	// `map_reserve` searches the list and steps past it like any other.
 	return 0
 }
 
@@ -1356,9 +1378,10 @@ was. Plan 9's `putseg` is the same decrement.
 
 The list closes over the hole rather than leaving one. Everything that walks
 `segs` walks it to `seg_count`, and a nil in the middle is a case none of
-them has. The address bump does not come down. A detached run's addresses
-are never handed out again, which is the leak `Process.map_next` chose on
-purpose.
+them has. The address comes back with the range: the hole this leaves is one
+`map_reserve` searches over, so a later `segalloc` of that size or less lands
+in it. The list is the only record of what is taken, and a range no segment
+covers is a range free to hand out.
 
 `EINVAL` is an address no segment covers, or one inside a segment this
 process was born with.

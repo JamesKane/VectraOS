@@ -434,6 +434,11 @@ chan_clone :: proc(c: ^Chan) -> (^Chan, Errno) {
 	}
 
 	newfid := new_fid(c.server)
+	if newfid == vectra9.NOFID {
+		// The session's fid space is spent. It refuses rather than wraps onto
+		// a fid still in use. See `sys/vectra9/session.odin`.
+		return nil, vectra9.EMFILE
+	}
 	request := vectra9.Msg(vectra9.Twalk{fid = c.fid, newfid = newfid, count = 0})
 	reply: vectra9.Msg
 	if e := rpc(c.server, &request, &reply); e != OK {

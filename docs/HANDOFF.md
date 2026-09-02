@@ -491,19 +491,21 @@ design question attached to each.
   group of anything whose thread has gone, so a faulted server hangs up and the
   client parked on it is answered. The record stays for a parent's `wait`,
   which is Plan 9's `pexit`. See `docs/USER.md`.
-- **The address bump never comes down.** `segbrk` and `segdetach` are built,
-  so a run can change size and go back whole. A detached run's addresses are
-  never handed out again, because `Process.map_next` is a bump rather than a
-  search. That is address space rather than memory, and the cheaper of the
-  two to leak. `segfree` is deferred above, with its reason.
-- **Counters that are finite, and never-reuse the reason they must be.** The
-  kernel-client `next_fid` is four billion opens per session, and `/srv`'s
-  `next_id` is two billion posts. A free list was the shape this once wanted,
-  and it is the wrong shape. An id names an identity. A fid on a removed service, or a listing cookie on an unbound union member, must not follow a
-  reused number onto a new tenant. So the treatment is never-reuse, refusing
-  at exhaustion, which pids, `/srv` ids, and now union member ids all do. What
-  is left is only `next_fid`, and a session that opens four billion fids is not
-  a real number.
+- ~~**The address bump never comes down.**~~ Retired: `map_reserve` searches
+  the process's own segment list for the lowest free span rather than bumping a
+  counter. A range `segdetach` freed is then a hole the next `segalloc` of that
+  size or less lands in. `Process.map_next` is gone, and the list is the only
+  record of what is taken. `verify_anon` detaches a run with a live run above it
+  and requires the next ask back in the hole, which a bump would step over. See
+  `docs/USER.md`, and note `segfree` is still deferred above with its reason.
+- ~~**Counters that are finite, and never-reuse the reason they must be.**~~
+  Retired. `next_fid` was the last one that wrapped, and it refuses at the
+  ceiling now, the way pids, `/srv` ids and union member ids do. A fid names an
+  identity, so a wrap would hand a new file the fid of one still in use.
+  `alloc_fid` is a compare-and-swap that stops at the last fid and returns
+  `NOFID`, and every caller turns that into `EMFILE`. `kernel/vfs/verify.odin`
+  winds a session to the ceiling and requires the refusal and the `EMFILE`. See
+  `sys/vectra9/session.odin`.
 
 ### SMP, when it is wanted
 

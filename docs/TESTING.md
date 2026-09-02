@@ -260,7 +260,8 @@ nothing else in common.
 | The system call door | `docs/USER.md` | 3 checked, 3 machine failures, 2 uncaught |
 | A process | `docs/USER.md` | 4 checked, 1 machine failure, 1 inert |
 | The screen, mapped | `docs/DRAW.md` | 4 checked, 1 machine failure, 1 inert |
-| Memory a program asks for | `docs/USER.md` | 8 checked, 2 machine failures, and see `segbrk`'s table |
+| Memory a program asks for | `docs/USER.md` | 9 checked, 2 machine failures, and see `segbrk`'s table |
+| The fid space at its ceiling | `sys/vectra9/session.odin` | 1 of 1 |
 | Windows | `docs/DRAW.md` | 6 of 6 |
 | The compositor | `docs/DRAW.md` | 23 caught, 2 inert, 1 machine failure |
 | Chrome | `docs/DRAW.md` | 6 of 6 |

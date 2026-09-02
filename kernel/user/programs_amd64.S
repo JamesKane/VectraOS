@@ -1474,14 +1474,41 @@ vectra_user_anon:
 	syscall
 	movq %rax, 88(%rbx)
 
+	# A one-page run X, and a second one-page run Y just above it. r10 keeps X
+	# and r15 keeps Y, across the syscalls that clobber only rax, rcx and r11.
 	movq $0x1000, %rdi
 	movq $22, %rax
 	syscall
 	movq %rax, 104(%rbx)
-	movq %rax, %rdi
+	movq %rax, %r10
+
+	movq $0x1000, %rdi
+	movq $22, %rax
+	syscall
+	movq %rax, %r15
+
+	# Detach X, the lower of the two, and leave Y holding the ground above the
+	# hole. A monotonic bump would step over Y and never come back for the hole.
+	movq %r10, %rdi
 	movq $24, %rax
 	syscall
 	movq %rax, 112(%rbx)
+
+	# Ask again at the same size. First fit finds X's hole below Y and hands it
+	# back, so ANON_REUSE equals ANON_THIRD. A bump would answer above Y.
+	movq $0x1000, %rdi
+	movq $22, %rax
+	syscall
+	movq %rax, 136(%rbx)
+	movq %rax, %r10
+
+	# Give Y and the reused run back, so the frame accounting below nets to zero.
+	movq %r15, %rdi
+	movq $24, %rax
+	syscall
+	movq %r10, %rdi
+	movq $24, %rax
+	syscall
 
 	movq $0x400000, %rdi
 	movq $24, %rax

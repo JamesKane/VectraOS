@@ -162,12 +162,21 @@ alloc_tag :: proc "contextless" (s: ^Session) -> Tag {
 }
 
 /*
-alloc_fid hands out the next fid.
+alloc_fid hands out the next fid, or `NOFID` when the space is spent.
 
-Monotonic, and therefore finite: this runs out after four billion opens without
-ever reusing one. That is a real limit, and a wider counter is the wrong fix. A
-session should hand fids back on `Tclunk`, and take them from a free list.
-Deferred until there is a client that opens enough files to care.
+Monotonic, and therefore finite: this runs out after four billion opens. It
+**refuses rather than wraps**, which is the whole point. A fid names an identity,
+so a wrap would hand a new file the fid of one still in use. A tag may wrap,
+because it only has to be unique among outstanding requests. A fid may not,
+because it is a capability that outlives its request. So `alloc_tag` loops past
+its sentinel and this stops at the ceiling, the way `/srv`'s id and a pid do.
+
+A free list fed by `Tclunk` is the fix that raises the ceiling. It waits for a
+client that opens enough files to reach it.
+
+The compare-and-swap is what makes the refusal hold. A plain add would carry the
+counter past `NOFID` and wrap it. A reader after the ceiling would then see a
+low number that looks free. The swap never moves the counter past the last fid.
 
 A fid stays a *number* on both transports. That includes the in-process one,
 where there is no wire, and a pointer to the server's file object would be
@@ -183,9 +192,14 @@ See docs/VECTRA9.md section 7.1.
 */
 alloc_fid :: proc "contextless" (s: ^Session) -> Fid {
 	for {
-		next := Fid(intrinsics.atomic_add(cast(^u32)&s.next_fid, 1)) + 1
-		if next != NOFID {
-			return next
+		old := intrinsics.atomic_load(cast(^u32)&s.next_fid)
+		if old >= u32(NOFID) - 1 {
+			// The next number would be NOFID or a wrap onto a live fid. The
+			// space is spent, and a fid is not a thing to reuse.
+			return NOFID
+		}
+		if _, ok := intrinsics.atomic_compare_exchange_strong(cast(^u32)&s.next_fid, old, old + 1); ok {
+			return Fid(old + 1)
 		}
 	}
 }

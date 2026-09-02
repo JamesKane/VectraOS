@@ -61,6 +61,9 @@ attach :: proc(sv: ^Server, aname: string = "", uname: string = "vectra") -> (^C
 	}
 
 	fid := new_fid(sv)
+	if fid == vectra9.NOFID {
+		return nil, vectra9.EMFILE
+	}
 	request := vectra9.Msg(
 		vectra9.Tattach {
 			fid = fid,
@@ -143,6 +146,9 @@ server_walk1 :: proc(from: ^Chan, name: string) -> (^Chan, Errno) #no_bounds_che
 	}
 
 	newfid := new_fid(from.server)
+	if newfid == vectra9.NOFID {
+		return nil, vectra9.EMFILE
+	}
 	t := vectra9.Twalk {
 		fid    = from.fid,
 		newfid = newfid,

@@ -212,24 +212,6 @@ Process :: struct {
 	segs:      [MAX_PROC_SEGS]^Segment,
 	seg_count: int,
 
-	/*
-	Where the next mapping this process asks for goes, bumped by its extent.
-
-	A bump rather than a fixed address, because a process may ask twice and two
-	mappings cannot share a page. It never comes back down: a process that
-	attaches and releases leaks address space rather than risks handing the
-	same numbers to a second card. Address space is the one resource a
-	47-bit half has plenty of.
-
-	**One bump for both kinds, and that is what makes them provably disjoint.**
-	`segattach` takes a device and `segalloc` takes a run of anonymous memory.
-	Two regions with two bumps would need an argument about which one grows
-	into the other. One region has none to make.
-
-	Zero until the first ask, which is what `MAPPING_BASE` means.
-	*/
-	map_next: uintptr,
-
 	// The bounds of the thread's kernel stack, copied at load time. Copied
 	// rather than read back through `thread`, because the next `spawn` frees a
 	// dead thread's record and the answer is wanted after that.

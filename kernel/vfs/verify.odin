@@ -189,9 +189,41 @@ verify :: proc(buf: []u8) -> Verify_Result {
 	verify_dotdot(&r, ns)
 	verify_forks(&r, ns, buf)
 	verify_protocol_rules(&r)
+	verify_fid_exhaustion(&r)
 
 	r.mounts = ns.mount_count
 	return r
+}
+
+/*
+verify_fid_exhaustion is the fid counter refusing at its ceiling.
+
+A fid names an identity, so its counter may not wrap: a wrapped number would
+name a file still in use. `alloc_fid` refuses at the ceiling instead, and every
+caller turns the refusal into `EMFILE` rather than a message with no fid.
+
+The session is wound to one below the last usable fid. The last one is handed
+out, the next is refused, and it stays refused. Then `attach`, the first fid a
+session ever takes, comes back `EMFILE`. The session is put back as it was, and
+the refused calls spent no fid, so nothing here is left changed.
+*/
+@(private = "file")
+verify_fid_exhaustion :: proc(r: ^Verify_Result) {
+	sv := &alpha_server
+
+	saved := sv.session.next_fid
+	defer sv.session.next_fid = saved
+
+	// One below the last usable number: NOFID is the sentinel, NOFID-1 the last.
+	sv.session.next_fid = vectra9.Fid(0xFFFF_FFFD)
+	check(r, new_fid(sv) == vectra9.Fid(0xFFFF_FFFE), "the last fid below the ceiling is handed out")
+	check(r, new_fid(sv) == vectra9.NOFID, "and the next is refused rather than wrapped")
+	check(r, new_fid(sv) == vectra9.NOFID, "and it stays refused, not coming round again")
+
+	// The refusal reaches a caller as EMFILE. `attach` takes a fid before it
+	// sends anything, so a spent session stops it here.
+	c, e := attach(sv)
+	check(r, c == nil && e == vectra9.EMFILE, "an attach on a spent session is EMFILE, not a walk with no fid")
 }
 
 @(private = "file")
