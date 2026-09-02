@@ -418,12 +418,12 @@ design question attached to each.
   through. `kernel/srv` is the worked example of the fix: a monotonic id, and a
   cookie that means `resume after this one` however the table moved. See
   `docs/SRV.md`.
-- **An interrupt context `sync.can_sleep` knows about.** A top half may hold a
-  spinlock and may not hold anything that parks. `can_sleep` counts spinlocks
-  and a bare handler holds none, so the rule is argued where it should be
-  checked. A depth counter the trap dispatcher brackets a handler with would
-  make it a named stop, the way the spinlock rule already is. It touches the
-  scheduler's hot path, so it wants a milestone rather than a patch.
+- ~~**An interrupt context `sync.can_sleep` knows about.**~~ Retired. The trap
+  dispatcher brackets every top half with an interrupt-depth counter, `arch`
+  exposes it as `in_interrupt`, and `can_sleep` reads both it and the spinlock
+  count. A park in an interrupt handler is a named stop now, not a silent hang.
+  `kernel/verify_sync.odin` raises a probe interrupt and checks `can_sleep` is
+  false on its stack. See `docs/SYNC.md`.
 - ~~**A process that cannot be stopped from outside.**~~ Retired. `user.end`
   sets Plan 9's `procctl` word on the process and wakes it. The door and the
   tick both read the word before any handler, so the process ends at its
@@ -473,11 +473,11 @@ design question attached to each.
   tenants. `hangup_dead` puts a table it took from a newborn
   straight back. On one core nothing runs between the two exchanges, which is the
   sentence a second core retires. See `docs/USER.md`.
-- **A system call with `IF` still set for four instructions.** `SFMASK` clears
-  it, and a control that leaves it set is not caught, because an interrupt
-  almost never lands in a four-instruction window. It is the one entry in
-  `docs/TESTING.md`'s uncaught cluster that a second CPU has nothing to do
-  with.
+- ~~**A system call with `IF` still set for four instructions.**~~ Retired.
+  `arch.syscall_masks_interrupts` reads `SFMASK` and confirms `IF` is one of
+  the bits it clears, and the syscall self-test checks it. The control that removed `IF` from `SFMASK` fails the check, and on one boot
+  it doubled into a `#DF`, the bug the check guards against. See
+  `docs/TESTING.md`.
 - ~~**A killed process holds its descriptors until something reaps it.**~~
   Retired. A reaper thread parked on `exit_rendez` releases the descriptor
   group of anything whose thread has gone, so a faulted server hangs up and the
@@ -519,8 +519,12 @@ where they live:
 
 ### Smaller things worth doing when convenient
 
-- A stack backtrace on the panic screen. Everything else a fault report wants to
-  say is already there.
+- ~~A stack backtrace on the panic screen.~~ Retired. The kernel keeps no
+  frame pointer, so there is no `rbp` chain to follow. The panic screen scans
+  the stack for values in the kernel's own text and prints them as probable
+  return addresses, each line marked `maybe`. `kernel/verify_sync.odin` scans
+  the live stack from a chain of calls and checks it finds them, because the
+  display itself only shows on a real fault. See `kernel/panic.odin`.
 - Make `check_base_revision()` a hard stop rather than a warning.
 - `servers/kbdfs` has its own copy of the scancode translation and it answers
   bytes, so the arrow keys reach `/dev/cons` and not `/kbd`. Nothing consumes

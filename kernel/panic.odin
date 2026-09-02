@@ -130,8 +130,85 @@ panic_trap :: proc "contextless" (t: ^arch.Trap) -> bool {
 		emit(&klog, .Trace, &sink)
 	}
 
+	report_backtrace(t)
+
 	log_line(&klog, .Fault, "halted")
 	return false
+}
+
+/*
+report_backtrace scans the kernel stack for return addresses and prints them.
+
+The registers say where the fault was. A backtrace says how it got there, which
+a fault report was missing. This kernel keeps no frame pointer -- `rbp` is a
+callee-saved register, not a frame link -- so there is no chain to follow.
+
+The honest alternative is a scan. It reads the stack upward from the fault's
+`rsp`. Every eight-byte slot whose value lands in the kernel's own text is a
+probable return address. It over-reports, because a code pointer pushed as data reads the
+same as a return address, and it says so by calling the line `maybe`.
+
+**Every slot is validated before it is read.** A scan that ran off the mapped
+stack would fault into the panic path, where a second fault truncates the
+report the `panicking` guard protects. So `mem.translate` gates each read, and
+the scan stops at the first unmapped slot or after `SCAN_SLOTS`.
+*/
+@(private = "file")
+SCAN_SLOTS :: 256
+
+@(private = "file")
+BACKTRACE_MAX :: 16
+
+@(private = "file")
+report_backtrace :: proc "contextless" (t: ^arch.Trap) {
+	if !memory_online {
+		return
+	}
+	_ = scan_stack(t.sp, mem.kernel_address_space(), true)
+}
+
+/*
+scan_stack reads up to `SCAN_SLOTS` eight-byte slots from `sp`, prints the ones
+in kernel text when `show`, and answers how many it printed. `backtrace_depth`
+is the same scan without the printing, for a self-test that has no fault to
+provoke.
+*/
+@(private = "file")
+scan_stack :: proc "contextless" (sp: uintptr, space: ^mem.Address_Space, show: bool) -> int {
+	lo, hi := mem.kernel_text_range()
+	at := sp & ~uintptr(7)
+	found := 0
+	for _ in 0 ..< SCAN_SLOTS {
+		if found >= BACKTRACE_MAX {
+			break
+		}
+		if _, ok := mem.translate(space, at); !ok {
+			break
+		}
+		v := uintptr((^u64)(rawptr(at))^)
+		if v >= lo && v < hi {
+			if show {
+				sink := begin(&klog)
+				libodin.put_str(&sink, found == 0 ? "maybe " : "      ")
+				libodin.put_hex(&sink, u64(v), 16)
+				emit(&klog, .Trace, &sink)
+			}
+			found += 1
+		}
+		at += 8
+	}
+	return found
+}
+
+// backtrace_depth scans the live stack from `sp` and reports how many probable
+// return addresses it found, without printing. A self-test hands it
+// `arch.current_sp` from inside a chain of calls and checks the scan finds
+// them. See `kernel/verify_sync.odin`.
+backtrace_depth :: proc "contextless" (sp: u64) -> int {
+	if !memory_online {
+		return 0
+	}
+	return scan_stack(uintptr(sp), mem.kernel_address_space(), false)
 }
 
 /*

@@ -243,6 +243,7 @@ nothing else in common.
 |---|---|---|
 | The namespace under five threads | above | 5 of 8 |
 | A union listing's cookie across a rebind | `docs/NAMESPACE.md` | 1 of 1 |
+| The trap path: interrupt bracket, SFMASK, backtrace | `docs/SYNC.md`, `docs/USER.md` | 3 of 3 |
 | The sleep queue | `docs/SYNC.md` | 6 of 8 |
 | The read/write lock | `docs/SYNC.md` | 3 of 3, and one wrong mutation |
 | `Tflush` and its transport | `docs/TRANSPORT.md` | 5 of 6 |
@@ -300,11 +301,14 @@ One is a fid slot read and written. One is a program record written the
 instruction after the thread that needs it becomes runnable. One is a program's
 exit recorded a switch before the thread leaves the core.
 
-**One of them is not a second-CPU problem, and it is the newest.** A system
+**One of them was not a second-CPU problem, and it is caught now.** A system
 call that leaves `IF` set for the four instructions before it has a kernel
-stack is wrong on one core. What makes it unreachable is that an interrupt
-almost never lands in a four-instruction window, not that only one core exists.
-A control confirmed that nothing notices.
+stack is wrong on one core. An interrupt almost never lands in a
+four-instruction window, so a control that removed `IF` from `SFMASK` was long
+recorded here as uncaught. `arch.syscall_masks_interrupts` reads the mask
+directly now, and the syscall self-test checks it. The control fails the
+check. On the boot that ran it an interrupt landed in the window and doubled
+into a `#DF`, the bug the check stands in front of.
 
 Only a second CPU makes the rest of them easy to reach.
 

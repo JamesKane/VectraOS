@@ -88,12 +88,19 @@ So every sleeping wait checks this first, and `kernel/vfs` checks it before it
 sends a 9P message. See `rpc_begin`. One counter rather than one per CPU,
 because there is one CPU. It becomes per-CPU state at the same moment `Spinlock`
 grows a word, and for the same reason.
+
+A spinlock is not the only thing that forbids a park. A top half holds none and still may not sleep. It runs on a thread it does not
+own, and cannot be the thing put to sleep. That half of the answer is `arch.in_interrupt`, which
+the trap dispatcher brackets a handler with, and `can_sleep` reads both.
 */
 @(private)
 critical_depth: int
 
-// can_sleep reports whether the caller is free to block. False inside any
-// spinlock, including one taken several frames up by somebody else.
+// can_sleep reports whether the caller is free to block. It is false inside any
+// spinlock, and false inside a top half, which holds no spinlock and still may
+// not park. The
+// interrupt half of the answer is `arch`'s, because the trap dispatcher is
+// where an interrupt is entered and left. See `arch.in_interrupt`.
 can_sleep :: proc "contextless" () -> bool {
-	return critical_depth == 0
+	return critical_depth == 0 && !arch.in_interrupt()
 }

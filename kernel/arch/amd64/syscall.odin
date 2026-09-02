@@ -112,6 +112,22 @@ syscall_armed :: proc "contextless" () -> bool {
 	return read_efer() & EFER_SCE != 0 && read_msr(MSR_LSTAR) == u64(uintptr(&vectra_syscall_entry))
 }
 
+/*
+syscall_masks_interrupts reports whether `SFMASK` clears `IF` on entry.
+
+The stub's first four instructions run on the program's stack, before it
+swaps in a kernel one. An interrupt there would push onto that stack and run with
+the program's `GS`. That is the four-instruction window `docs/TESTING.md`
+records as uncaught.
+
+An interrupt almost never lands in it, so a control that left `IF` out of
+`SFMASK` failed nothing. This makes the mask a check. `IF` is
+bit nine, and it must be one of the bits the CPU clears.
+*/
+syscall_masks_interrupts :: proc "contextless" () -> bool {
+	return read_msr(MSR_SFMASK) & (u64(1) << 9) != 0
+}
+
 // syscall_entry_address is where `LSTAR` should point, so a self-test can
 // compare the MSR against the symbol rather than against itself.
 syscall_entry_address :: proc "contextless" () -> uintptr {

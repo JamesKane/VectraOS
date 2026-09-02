@@ -225,6 +225,20 @@ a loop that waits for it to move.
 */
 @(private = "file") user_traps: u64
 
+// How deep in interrupt handlers this CPU is. A top half a stub dispatched to
+// runs with this above zero, which is what `in_interrupt` reports and
+// `kernel/sync/can_sleep` refuses to park inside. One counter, one CPU, and it
+// becomes per-CPU state the day `Cpu` grows a lock word. Not volatile: it is
+// only ever read and written on the core it belongs to, with interrupts off.
+@(private = "file") interrupt_depth: int
+
+// in_interrupt reports whether the code running now is a top half a trap
+// dispatched to. `kernel/sync/can_sleep` consults it, because a spinlock count
+// of zero is not the whole of `may this park`.
+in_interrupt :: proc "contextless" () -> bool {
+	return interrupt_depth > 0
+}
+
 user_trap_count :: proc "contextless" () -> u64 {
 	return intrinsics.volatile_load(&user_traps)
 }
@@ -245,6 +259,14 @@ there rather than from anywhere else is what makes it unforgeable. The
 interrupt wrote that value out of the segment register, before any of this code
 ran.
 */
+// current_sp is this frame's stack pointer, where the panic screen's stack
+// scan starts. The kernel keeps no frame pointer here. `rbp` is a callee-saved
+// register, not a frame link, so the backtrace scans the stack for return
+// addresses rather than following a chain. See `kernel/panic.odin`.
+current_sp :: proc "contextless" () -> u64 {
+	return asm() -> (r: u64) [#volatile] { lea r, [%rsp] }()
+}
+
 frame_is_user :: proc "contextless" (frame: ^Trap_Frame) -> bool {
 	return frame != nil && u16(frame.cs) & 3 == RING_USER
 }
@@ -445,7 +467,16 @@ trap_dispatch :: proc "sysv" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no
 
 	if frame.vector < VECTOR_COUNT {
 		if h := vectors[frame.vector]; h != nil {
+			// The one bracket that makes `in_interrupt` true. A top half runs
+			// here, on the interrupted thread's stack, and may not park: if it
+			// left the CPU nothing would return to it. `kernel/sync`'s
+			// `can_sleep` reads this so the rule is a check rather than a
+			// comment. Balanced within the call. The handler returns a
+			// `Resume`, and a scheduler switch is a different frame handed
+			// back rather than a non-return, so the decrement always runs.
+			interrupt_depth += 1
 			out^ = h(out^)
+			interrupt_depth -= 1
 			return
 		}
 	}
@@ -511,6 +542,19 @@ fpu_init :: proc "contextless" (area: rawptr) {
 // reason it is an `int` and not a call.
 yield_trap :: proc "contextless" () {
 	asm() [#volatile, #clobber memory] { int 0x81 }()
+}
+
+// The vector a self-test raises to observe the interrupt bracket from inside a
+// top half. Nothing else uses it, and no handler is registered on it but the
+// one the test installs.
+VECTOR_TEST :: 0x82
+
+// raise_test_interrupt fires `VECTOR_TEST`, so a self-test can check that
+// `in_interrupt` is true on the stack of a handler and `can_sleep` therefore
+// false. A software interrupt executes at once, so the handler runs before this
+// returns.
+raise_test_interrupt :: proc "contextless" () {
+	asm() [#volatile, #clobber memory] { int 0x82 }()
 }
 
 // -- Reporting ---------------------------------------------------------------

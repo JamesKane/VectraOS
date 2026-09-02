@@ -80,6 +80,15 @@ vmm_stats :: proc "contextless" () -> Vmm_Stats {
 // from `kernel_address_space` because `space_new` copies out of the table
 // rather than out of the record. A pointer to the record would say the wrong
 // thing about what is shared.
+// kernel_text_range is where the kernel's executable image lives, low and
+// high. The panic screen's stack-scan backtrace reads it: a value on the
+// stack that lands in this range is a probable return address. The bounds are
+// the linker's own `__text_start` and `__text_end`, the same symbols
+// `map_kernel_image` maps the segment between.
+kernel_text_range :: proc "contextless" () -> (lo: uintptr, hi: uintptr) {
+	return uintptr(rawptr(&__text_start)), uintptr(rawptr(&__text_end))
+}
+
 @(private)
 kernel_root :: proc "contextless" () -> uintptr {
 	return kernel_space.root

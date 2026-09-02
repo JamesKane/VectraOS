@@ -32,6 +32,7 @@ package kernel
 import "base:intrinsics"
 import "base:runtime"
 
+import "kernel:arch"
 import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
@@ -82,6 +83,36 @@ contend_over: sync.Rendez
 // before deciding one of them is stuck.
 @(private = "file")
 PATIENCE :: 200
+
+// Three nested calls, so the stack carries at least three return addresses
+// for `backtrace_depth` to find. `#no_inline`, or the compiler folds them and
+// the scan has fewer to see.
+@(private = "file")
+backtrace_a :: proc "contextless" () -> int {
+	return backtrace_b()
+}
+@(private = "file")
+backtrace_b :: proc "contextless" () -> int {
+	return backtrace_c()
+}
+@(private = "file")
+backtrace_c :: proc "contextless" () -> int {
+	return backtrace_depth(arch.current_sp())
+}
+
+// What `interrupt_probe` saw of `can_sleep`, for the check in `verify_sleep_lock`.
+@(private = "file")
+probe_slept: bool
+
+// interrupt_probe runs as a top half on `VECTOR_TEST` and records whether the
+// code there believes it may park. It must not: it holds no spinlock, and the
+// interrupt bracket is the only thing that says so. Resumes the interrupted
+// instruction unchanged.
+@(private = "file")
+interrupt_probe :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	intrinsics.volatile_store(&probe_slept, sync.can_sleep())
+	return r
+}
 
 @(private = "file")
 both_done :: proc "contextless" (arg: rawptr) -> bool {
@@ -343,6 +374,31 @@ verify_sleep_lock :: proc() #no_bounds_check {
 		scheck(&r, !inside, "a thread inside one may not")
 	}
 	scheck(&r, sync.can_sleep(), "and may again once it is out")
+
+	/*
+	And the other half of the rule, from inside a top half. A spinlock count of zero is not the whole of `may this park`. An interrupt
+	handler holds no lock and still may not sleep, because it runs on a thread it
+	cannot be the one put to sleep. The probe records `can_sleep` on the stack of a handler
+	the trap dispatcher bracketed, and it has to read false. A control that
+	drops the bracket reads true, which is the hang this makes a check.
+	*/
+	intrinsics.volatile_store(&probe_slept, true)
+	arch.set_interrupt_handler(arch.VECTOR_TEST, interrupt_probe)
+	arch.raise_test_interrupt()
+	arch.set_interrupt_handler(arch.VECTOR_TEST, nil)
+	scheck(&r, !intrinsics.volatile_load(&probe_slept), "a top half may not park, though it holds no spinlock")
+	scheck(&r, sync.can_sleep(), "and the bracket is gone once the handler returns")
+
+	/*
+	And the panic screen's backtrace walks the live stack. The walk only
+	shows on a real fault, which halts, so this proves it here instead. Three
+	nested calls deep, `backtrace_depth` scans the stack and has to find at
+	least those three return addresses. The scan over-reports rather
+	than under-reports, so the bar is low and the point is that the scan
+	terminates rather than faults or loops.
+	*/
+	depth := backtrace_a()
+	scheck(&r, depth >= 3, "the panic backtrace walks the live frame-pointer chain")
 
 	intrinsics.volatile_store(&contend_done, 0)
 	intrinsics.volatile_store(&contend_violations, 0)

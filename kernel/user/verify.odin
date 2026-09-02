@@ -278,6 +278,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		"and a program with no address space of its own is refused",
 	)
 	check(&r, arch.syscall_armed(), "the syscall instruction is armed and points at the stub")
+	check(&r, arch.syscall_masks_interrupts(), "and clears IF on entry, so no interrupt lands before the kernel stack does")
 	check(
 		&r,
 		arch.percpu_id() == 0,

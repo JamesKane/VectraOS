@@ -697,10 +697,24 @@ verify_posted_run :: proc(r: ^Posted_Result) {
 		pipe.close_end(s.p, 1)
 	}
 
-	pipe.quiesce()
-	sched.reap()
+	// Settle before measuring. A wire's reader leaves a moment after its far
+	// side hangs up, and its stack is a heap object until `sched.reap` takes
+	// it. A single reap can run before the last reader has left, which timing
+	// alone decides, so the drain loops until the heap reads level or the
+	// patience runs out. `drain_pinned` in `kernel/user/verify.odin` is the
+	// same shape and the same reason.
+	settled := false
+	for _ in 0 ..< 200 {
+		pipe.quiesce()
+		sched.reap()
+		if pipe.count() == pipes_before && mem.live_objects(mem.heap_stats()) == heap_before {
+			settled = true
+			break
+		}
+		sync.delay(1)
+	}
 	pcheck(r, pipe.count() == pipes_before, "every pipe went back")
-	pcheck(r, mem.live_objects(mem.heap_stats()) == heap_before, "and the heap is where it was")
+	pcheck(r, settled, "and the heap settled back to where it was")
 }
 
 verify_posted :: proc() {

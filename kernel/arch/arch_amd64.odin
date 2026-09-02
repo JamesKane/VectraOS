@@ -21,6 +21,15 @@ enable_interrupts :: amd64.sti
 wait_for_interrupt :: amd64.hlt
 spin_hint :: amd64.pause
 
+// Whether a top half is running right now. `kernel/sync/can_sleep` reads it,
+// so a park in an interrupt handler is a named stop rather than a silent hang.
+in_interrupt :: amd64.in_interrupt
+
+// The self-test hook for the interrupt bracket: a spare vector and the call
+// that raises it. See `amd64.raise_test_interrupt`.
+VECTOR_TEST :: amd64.VECTOR_TEST
+raise_test_interrupt :: amd64.raise_test_interrupt
+
 // The scheduler's preemption self-test holds vector registers live across a
 // preemption with this. Which registers is the architecture's business, and
 // so is the assembly. See `amd64/fpu.odin`.
@@ -149,6 +158,8 @@ VECTOR_SYSCALL :: amd64.VECTOR_SYSCALL
 syscall_available :: amd64.syscall_available
 syscall_init :: amd64.syscall_init
 syscall_armed :: amd64.syscall_armed
+syscall_masks_interrupts :: amd64.syscall_masks_interrupts
+current_sp :: amd64.current_sp
 syscall_entry_address :: amd64.syscall_entry_address
 percpu_kernel_stack :: amd64.percpu_kernel_stack
 percpu_id :: amd64.percpu_id
