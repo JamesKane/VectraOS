@@ -157,6 +157,29 @@ back below the limit, so a run the safety net ended is a run that fails.
 the thing being observed.** That is the last version of this rule, because
 there is nowhere further to put it.
 
+**The fifth time was a pipe, and no bound was missing.** The draw server's
+teardown parked one boot in forty, with nothing printed, with and without
+host load. The wait for the server's exit had its bound. What parked was the
+unmount after it, in `wire_join`, behind a wire reader the last close had
+woken -- and then, before the reader ran, the same close reclaimed the pipe
+and zeroed the flag the reader had been woken to re-read. It parked again on
+a slot that no longer existed. See `docs/PIPE.md`. A bound on the unmount
+would have turned the hang into a failed check, and would have said nothing
+about why.
+
+What found it is worth writing down, because it is the answer to "the place
+hardest to attach a debugger to". QEMU's `-s` opens a gdb stub whether or not
+anything attaches, so a boot loop runs with it open and leaves a wedged
+machine standing. `lldb build/vectra.elf -o 'gdb-remote localhost:1234'`
+reads it with symbols. The CPU sits in the idle loop, and the scheduler keeps
+no list of parked threads -- but every thread is a heap object beside the
+idle thread's, with its name at a fixed offset and its saved `Trap_Frame`
+holding the `rip` and `rsp` it parked with. Writing those into the stopped
+CPU's registers and asking for a backtrace unwinds each parked thread in
+turn, rendezvous condition and all. A progress line per procedure through
+`devfs.cons_write`, which reaches the serial port whatever holds `/dev/fb`,
+said which procedure. The walk said which line, and what it was waiting for.
+
 ## A control that runs on every boot
 
 `kernel/verify_payload.odin` does something the tables above do not, and it is

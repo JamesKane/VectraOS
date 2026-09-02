@@ -291,14 +291,25 @@ wire_up :: proc(r: ^Wire_Result, s: ^Script, w: ^mnt.Wire, arena: []u8) -> bool 
 	return wcheck(r, sched.spawn("wire-script", script_server, s) != nil, "the scripted server starts")
 }
 
-// wire_down ends a test's server and wire, in the order that lets both leave:
-// the server's end closes first, which is EOF to the reader.
+/*
+wire_down ends a test's server and wire, in the order that lets both leave.
+
+The server's end closes first, which is EOF to the reader and to the script
+alike. Both are joined before the second end closes, because the second
+close is the last one on an unpinned pipe and reclaims the slot. A close
+wakes a parked reader, and the reader learns why only when it next runs, by
+re-reading a flag the reclaim clears. Closing both ends back to back left
+the script's thread parked for ever on a zeroed slot, one thread and its
+stack per boot, and the discarded wait said nothing. Reports false when
+either did not leave, which a caller checks.
+*/
 @(private = "file")
-wire_down :: proc(s: ^Script, w: ^mnt.Wire) {
+wire_down :: proc(s: ^Script, w: ^mnt.Wire) -> bool {
 	pipe.close_end(s.p, 0)
-	pipe.close_end(s.p, 1)
 	mnt.wire_join(w)
-	_ = wire_wait(&s.done)
+	left := wire_wait(&s.done)
+	pipe.close_end(s.p, 1)
+	return left
 }
 
 @(private = "file")
@@ -444,7 +455,7 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 	wcheck(r, vectra9.call(session, &request, &reply, buf[:]) == .Transport_Failed, "a call after the death fails at once")
 
 	r.served = script.served
-	wire_down(&script, &wire)
+	wcheck(r, wire_down(&script, &wire), "the scripted server and the reader both leave")
 
 	// -- A server that breaks framing -----------------------------------------
 
@@ -479,7 +490,7 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 	request = vectra9.Msg(vectra9.Tattach{fid = 2, afid = vectra9.NOFID})
 	wcheck(r, vectra9.call(session2, &request, &reply, buf[:]) == .Transport_Failed, "and every later call fails")
 
-	wire_down(&script2, &wire2)
+	wcheck(r, wire_down(&script2, &wire2), "the scripted server leaves the poisoned wire")
 	sched.reap()
 }
 

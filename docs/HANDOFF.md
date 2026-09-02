@@ -267,7 +267,7 @@ Three rules run through all of them and are worth knowing before opening any:
 ```sh
 just run          # build, stage ESP, boot headless, serial on stdio
 just gui          # same, with a QEMU window
-just debug        # boot halted; `just gdb` in another shell
+just debug        # boot halted; `just gdb` in another shell (no gdb here: see below)
 just release      # -o:speed, bounds checks off
 just check        # type-check everything, emit nothing
 just font         # regenerate the baked console font
@@ -282,6 +282,12 @@ driver directly as:
 odin run build.odin -file -out:.vectra-build -- run --gfx
 ```
 
+**There is no gdb on this machine, and lldb attaches fine.** `lldb
+build/vectra.elf -o 'gdb-remote localhost:1234'` reaches a `just debug` boot
+with symbols and line numbers. QEMU's `-s` flag opens the same stub without
+halting, so a boot loop can run with it open and leave a wedged machine
+standing to be read. `docs/TESTING.md` describes reading one.
+
 **The explicit `-out:` is mandatory.** Without it `odin run` names the driver
 binary after the script and drops `./build` directly on top of the `build/`
 output directory. This bit once already.
@@ -292,9 +298,9 @@ Verified toolchain on this machine: Odin `dev-2026-08:8412dc37a`, LLD 21.0.0
 installed, so `make font` will not run until it is. The two generated font
 files are checked in, and nothing else needs Python.
 
-**UEFI firmware comes from QEMU's own edk2 images now.** The neighbouring
-`odin-os` checkout that used to lend `ovmf_x64.fd` is gone from this machine.
-`run_qemu` looks for a combined OVMF image first. Failing that, it loads the
+**UEFI firmware is the neighbouring `odin-os` checkout's `ovmf_x64.fd` when
+it is there, and it is there again as of September 2026.** `run_qemu` looks
+for that combined image first. Failing that, it loads the
 split `edk2-x86_64-code.fd` + `edk2-i386-vars.fd` pair beside the QEMU
 install as two pflash devices. The vars image is copied to
 `build/edk2-vars.fd` because UEFI writes it. The i386 name is not a mistake —
@@ -407,12 +413,50 @@ design question attached to each.
   running, because its thread is translating through the space and writing to
   the frames. The leak is honest rather than absorbed, and `user.stats().live`
   reports it. See `docs/USER.md`.
-- **A flaky heap check in the draw server's teardown.** `drain_pinned` after
-  `verify_draw` reported `leaked 1` once in five boots and passed the other
-  four, with nothing between the runs but timing. A check that fails
-  intermittently costs more than one that cannot fail, because it teaches
-  people to re-run. It wants finding before the next thing that leans on that
-  drain.
+- ~~**A flaky heap check in the draw server's teardown.**~~ Retired. The
+  `leaked 1` was a `Mount_Point` from a dead process's namespace, and the
+  draw server's teardown was only where timing first put it. `unload` took a
+  process's descriptor table with a test-then-release while the reaper thread
+  took it with an exchange, so a process that faulted or was noted could have
+  its table released twice: the second release, running after the first had
+  given the pool slot back, closed the chans of whichever process had been
+  handed that slot since. `unload` now takes the table with the same
+  exchange. Found by looping the boot under host load with a per-procedure
+  heap reading, which is the shape of hunt `docs/TESTING.md` argues for; the
+  race took one boot in forty here, and hung the machine outright when its
+  window was widened on purpose. `heap_stats` also reads under the heap lock
+  now, because a snapshot taken class by class with interrupts on could
+  report a heap that never existed.
+- ~~**A boot that stops in the draw server's tests, one in thirty or so.**~~
+  Retired. The wire's reader thread parked for ever on a pipe the counted
+  release had already zeroed. `wire_release` cleared the pipe's pin before
+  closing the posted end, so when the far process was already gone that
+  close was the last one and reclaimed the slot -- after waking the reader,
+  but before the reader ran to re-read the flag the wake was about. It
+  parked again on a pipe that looked open, and the test's `unmount_path`
+  parked in `wire_join` behind it. The pin now outlives the close, and
+  `unpin` reclaims after the join, when nothing parked is left to wake. See
+  `docs/PIPE.md`. Found by looping the boot under host load with QEMU's gdb
+  stub open, then walking every kernel thread's saved trap frame from lldb
+  once a boot wedged; `docs/TESTING.md` describes the walk. The wire
+  self-test had the same shape and parked its scripted server's thread on
+  every boot, unreported; `wire_down` joins before its last close now.
+- **Three more parks with no bound, of the shape above, found by review and
+  not yet reproduced.** A `srv.remove` of a live server that was mounted and
+  then unmounted fires `wire_release` on the removing thread while that
+  thread still holds the entry's own chan, so the close is not the last, the
+  reader stays, and `wire_join` parks holding `Pipe_Table.build`. A
+  handshake that times out flushes, and `wire_flush` parks on the flush's
+  reply with no deadline, so a far side that never reads holds the mounting
+  thread and the build lock. And the handshake-failure path closes the
+  posted end while other chans still hold it, so its reclaim can zero a slot
+  the posting process is parked on. Each wants a self-test that reaches it
+  before a fix, in the order `docs/TESTING.md` argues.
+- **The reaper's test-then-exchange.** `hangup_dead` checks `live` and
+  `exit.done`, then exchanges the table, and a tick between the two lets the
+  slot be freed and reborn, so the exchange takes the new process's table.
+  The exchange closes the same-pointer double release and not this one. A
+  generation on the slot, re-checked after the exchange, is the shape.
 - **A system call with `IF` still set for four instructions.** `SFMASK` clears
   it, and a control that leaves it set is not caught, because an interrupt
   almost never lands in a four-instruction window. It is the one entry in

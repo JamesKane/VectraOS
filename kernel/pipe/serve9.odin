@@ -44,8 +44,10 @@ which ends both flows. The far process's next read answers zero bytes, and
 `libuser.serve` returns `.Hangup`. A server that outlives its last client
 ends through its own front door, with no note needed. The wire's reader
 sees the same EOF and leaves, `wire_join` collects it, and everything the
-build allocated goes back to the heap. The pipe itself reclaims on the
-final close, exactly as an unposted pipe always did.
+build allocated goes back to the heap. The pipe's slot goes back last of
+all, through `unpin` after the join, because the reader the close wakes has
+to have left before the slot is zeroed. `reclaim` in `pipe.odin` owns that
+argument.
 
 A revived server is the race worth naming. Between the decision to fire
 and the release's own lock, a new mount of a still-posted name can pin the
@@ -166,10 +168,17 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		/*
 		The server never said 9P2000.L, so the connection comes down. Closing
 		the wire's end is what unparks the reader -- it sees EOF and leaves --
-		and `wire_join` is what makes the frees below safe.
+		and `wire_join` is what makes the frees below safe. The pin goes on
+		first, for the reason `wire_release` gives: a far side that already
+		went would make this close the last, and the slot must outlive the
+		reader parked on it.
 		*/
+		g3 := sync.acquire(&t.lock)
+		p.server9 = sv
+		sync.release(&t.lock, g3)
 		close_end(p, end)
 		mnt.wire_join(w)
+		unpin(p)
 		free(we)
 		delete(arena)
 		free(w)
@@ -245,7 +254,7 @@ once to join the reader.
 
 `build` serialises this against a build or a reuse, and the confirm is what
 makes the race with a reviving mount safe. Everything after the confirm is
-single-handed: the server is unfindable the moment `server9` clears, so
+single-handed: the server is unfindable the moment `staked` clears, so
 nothing can take a new stake on it.
 */
 @(private = "file")
@@ -282,7 +291,6 @@ wire_release :: proc(sv: ^vfs.Server) {
 	w := cast(^mnt.Wire)sv.session.transport.data
 	arena := p.wire_arena
 	pinned := p.pinned
-	p.server9 = nil
 	p.wire_end = 0
 	p.wire_arena = nil
 	p.pinned = nil
@@ -293,11 +301,21 @@ wire_release :: proc(sv: ^vfs.Server) {
 	The hang-up, through the front door. The last reference on the posted
 	end clunks it, and both flows end. Two readers notice: the far process
 	answers zero bytes out of its serve loop, and the wire's own reader
-	leaves. The pipe reclaims on this close if the far side is already gone,
-	and on the far side's close if it is not.
+	leaves.
+
+	`server9` stays set across the close, because it is what keeps
+	`close_end` from reclaiming the slot. The wire's reader is parked on
+	this end, the close is what wakes it, and it re-reads the pipe's flags
+	only when it next runs. This used to clear the pin first, so a far side
+	that was already gone made this close the last one and the slot was
+	zeroed under the reader. It woke to a pipe that looked open, parked
+	again on a slot that no longer existed, and `wire_join` parked behind
+	it for ever -- one boot in forty, at the draw server's teardown. `unpin`
+	reclaims after the join, when there is nobody left to wake.
 	*/
 	vfs.chan_close(pinned)
 	mnt.wire_join(w)
+	unpin(p)
 
 	we := cast(^Wire_End)w.io.data
 	free(we)

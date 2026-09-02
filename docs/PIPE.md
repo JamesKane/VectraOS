@@ -104,6 +104,17 @@ parked for ever, and the release hung the machine behind it. `close_end`
 marks the closing end's own flow closed too. Bytes already in the ring
 still drain first — EOF stays something a reader reaches.
 
+**And the slot stays until the reader has been joined.** The rings and the
+slot go back on the last close, and when the far process is already gone
+the last close is the release's own. That close wakes the reader, and the
+reader learns why only when it next runs, by re-reading the flow's flags.
+Zeroing the slot in between wiped those flags, so a reader that ran late
+parked again on a pipe that no longer existed, with `wire_join` parked
+behind it for ever — one boot in forty, at the draw server's teardown. The
+wire's pin, `server9`, therefore outlives the close: `close_end` leaves a
+pinned slot standing, and `wire_release` reclaims it through `unpin` after
+the join, when nothing parked is left to wake.
+
 One edge is accepted and named: two `/srv` names can post one chan, and the
 connection carries one name-stake. The first removal spends it, so the
 second name can outlive the connection, and a mount of it rebuilds the wire

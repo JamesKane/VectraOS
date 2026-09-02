@@ -87,10 +87,13 @@ established. Slots are reused, and a fid bound to a slot would name whatever
 took it next. A fid binds the id, a qid carries it, and a lookup is a scan.
 
 `server9` is the wire-backed `vfs.Server` built the first time a posted end is
-mounted, or nil. Once set it pins the pipe: the wire's reader thread and every
-mount of the service reach through it, so the slot never goes back. That is
-the same honest leak `docs/SRV.md` records for posted services, and the same
-fix -- a reference count -- retires both.
+mounted, or nil. While it is set the slot stays whatever the ends do, because
+the wire's reader may still be parked on it: `close_end` leaves a pinned pipe
+standing, and `unpin`, after `wire_join`, reclaims it. The fields below it
+are zero when it is nil, and zero again before the release's two parks --
+across that window `server9` alone means `a reader may still be here`.
+`Pipe_Table.build` is held for the whole of it, which is what lets
+`server_for` and `quiesce` read the field as `a wire is here`.
 */
 Pipe :: struct {
 	id:       i32,
@@ -353,9 +356,9 @@ The flow toward the peer stops accepting bytes and reports EOF once drained.
 The flow toward this end reports EPIPE to the peer's writes. Every parked
 thread on the pipe is woken to re-read those flags.
 
-When the second end goes and no wire was built, the rings go back to the heap
-and the slot clears. A pipe with a wire stays, because the wire's reader
-thread and every chan a mount handed out still reach through it.
+When the second end goes and no wire pins the pipe, the rings go back to the
+heap and the slot clears. A pinned pipe stays until `unpin`, for the reason
+`reclaim` gives.
 */
 close_end :: proc(p: ^Pipe, end: int) {
 	t := &pipes
@@ -377,13 +380,11 @@ close_end :: proc(p: ^Pipe, end: int) {
 	// on an end that no longer exists.
 	p.flows[e].closed = true
 
-	last := !p.open[0] && !p.open[1]
-	reclaim := last && p.server9 == nil
-	a, b: []u8
-	if reclaim {
-		a = p.flows[0].buf
-		b = p.flows[1].buf
-	}
+	// Decided under this hold rather than a second one, because the common
+	// close is a first end's and takes no second lock. Stable across the
+	// release: both chans are clunked, so nothing can reopen an end, and a
+	// pin is only ever set on a live open pipe.
+	last := !p.open[0] && !p.open[1] && p.server9 == nil
 	sync.release(&t.lock, g)
 
 	for i in 0 ..< 2 {
@@ -391,18 +392,57 @@ close_end :: proc(p: ^Pipe, end: int) {
 		sync.wakeup_all(&p.flows[i].w)
 	}
 
-	if reclaim {
-		// Nothing can name the pipe now. Both chans are clunked, so no reader or
-		// writer can arrive. The woken threads re-check the flags through the
-		// rendez conditions, which read flags and not the rings.
-		g2 := sync.acquire(&t.lock)
-		p^ = Pipe{}
-		t.count -= 1
-		t.freed += 1
-		sync.release(&t.lock, g2)
-		delete(a)
-		delete(b)
+	if last {
+		reclaim(p)
 	}
+}
+
+/*
+reclaim gives a pipe's slot and rings back once nothing can reach them: both
+ends closed, and no wire pinning it. Both chans are clunked by then, so no
+reader or writer can arrive.
+
+The pin is why this is its own decision rather than a branch of `close_end`.
+The close wakes every thread parked on the pipe, and each learns why only
+when it next runs, by re-reading the flow's flags through its rendez
+condition. The zeroing below clears those flags. A woken thread that has not
+run yet would therefore find a pipe that looks open and park again, on a
+slot that no longer exists. A wire's reader is exactly that thread: it parks
+on the posted end, and the counted release closes that end under it. While
+`server9` is set the close leaves the slot standing, and `unpin` reclaims it
+after `wire_join`, when there is nobody left to wake.
+*/
+@(private = "file")
+reclaim :: proc(p: ^Pipe) {
+	t := &pipes
+	g := sync.acquire(&t.lock)
+	if !live(p) || p.open[0] || p.open[1] || p.server9 != nil {
+		sync.release(&t.lock, g)
+		return
+	}
+	a := p.flows[0].buf
+	b := p.flows[1].buf
+	p^ = Pipe{}
+	t.count -= 1
+	t.freed += 1
+	sync.release(&t.lock, g)
+	delete(a)
+	delete(b)
+}
+
+/*
+unpin drops the wire's hold on a pipe and reclaims the slot if both ends are
+already closed. `serve9.odin` calls it after `wire_join`, which is the only
+moment the order is safe: the reader has left, so nothing parked can re-read
+a flag the reclaim clears.
+*/
+@(private)
+unpin :: proc(p: ^Pipe) {
+	t := &pipes
+	g := sync.acquire(&t.lock)
+	p.server9 = nil
+	sync.release(&t.lock, g)
+	reclaim(p)
 }
 
 // -- The ends as chans -------------------------------------------------------
