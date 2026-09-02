@@ -35,7 +35,7 @@ embedded user images are ~300 KB.
 
 The machine boots and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
-`/bin`. It then runs about 1540 checks against itself and idles.
+`/bin`. It then runs about 1550 checks against itself and idles.
 
 **What it can do**, and which document says why:
 
@@ -181,11 +181,11 @@ And the rest, each named in the code it is missing from. **Something that
 exists and is merely incomplete is not here.** Section 6 has those, because a
 gap with a design question attached is work rather than orientation.
 
-- **No group fan-out for notes.** `notify` registers a handler and `noted`
-  resumes or dies, so a note is a signal. `Process.note_group` inherits and
-  nothing posts to a group, which is Plan 9's `postnote` to a group rather than
-  to a pid. `RFNOTEG` is recorded and inert for the same reason, and it is the
-  one flag in `rfork`'s word that is. No FPU state crosses a delivery.
+- **No FPU state across a note delivery.** `notify` registers a handler,
+  `noted` resumes or dies, and `notepg` posts to a note group, so a note is a
+  signal a whole job can be sent. `RFNOTEG` acts now: a child forked with it
+  is a group of one. What a delivery still does not carry is floating-point
+  state, which is `Ureg`'s edge in Plan 9 too. See `docs/USER.md`.
 - **No flush that reaches a worker.** `serve_mux` forks a worker per parked
   read, and a `Tflush` cancels the request on the wire but not the worker. It
   has teeth now, and `docs/DRAW.md` section 13 has the boot that found them.
@@ -206,8 +206,9 @@ gap with a design question attached is work rather than orientation.
 
 **A note still lands with bounded lag** rather than instantly. A loop or a
 parked sleep costs a tick, and a read waiting on a device costs up to
-`NOTE_POLL` ticks. A *faulting* process holds its descriptors until `destroy`
-collects it.
+`NOTE_POLL` ticks. A *faulting* process hangs up its own descriptors now. A
+reaper thread releases the group of anything whose thread left, so a client
+parked on a server that faulted is answered rather than abandoned.
 
 ### Three decisions that shape everything downstream
 
@@ -357,11 +358,12 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **A union listing whose cookie is not a position.** One `readdir` call
-   holds the mount head for reading now, so the list holds still inside a
-   call. Between two calls the cookie still names a position in a list a
-   `bind` may have moved. `kernel/srv` is the worked example of the fix. See
-   the standing gap below.
+2. **Enforce the `open` flag on a fid.** 9P forbids a walk on an open fid
+   and a read on an unopened one. `vfs.Fid_Table` carries the flag, `Tlopen`
+   does not set it, and no server checks it. Every server's `Tlopen` would
+   set it, its `Twalk` would refuse an open fid, and its `Tread` an unopened
+   one. The audit is `chan_clone`, which walks `c.fid`. Enforcing the walk rule means no caller may hand it an open chan, which is the blast radius
+   that makes this a milestone. See the standing gap below.
 
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The
@@ -413,11 +415,17 @@ design question attached to each.
   every parked read, so at most three reads of `/dev/cons` may park at once. A
   fourth stalls the connection until a byte arrives. Plan 9 gives every request
   a thread. See `docs/DEVFS.md`.
-- **A union listing whose cookie is not a position.** `readdir` over a union is
-  index-based, and documented as undefined if something rebinds part-way
-  through. `kernel/srv` is the worked example of the fix: a monotonic id, and a
-  cookie that means `resume after this one` however the table moved. See
-  `docs/SRV.md`.
+- ~~**A union listing whose cookie is not a position.**~~ Retired. Each
+  member carries a monotonic id assigned at `bind`, and the cookie names the
+  id rather than the position, which is `kernel/srv`'s treatment. A member
+  removed mid-listing no longer shifts the ones after it. The id follows the
+  never-reuse rule below, refusing a `bind` at exhaustion rather than
+  wrapping. `kernel/verify_vfs.odin` removes a member mid-listing and requires
+  every remaining name. See `docs/NAMESPACE.md`.
+- **Enforce the `open` flag on a fid.** 9P forbids a walk on an open fid and a
+  read on an unopened one. `vfs.Fid_Table` carries the flag, `Tlopen` does not
+  set it, and no server checks it. Every server's `Tlopen` would set it, its
+  `Twalk` would refuse an open fid, and its `Tread` an unopened one. The audit is `chan_clone`, which walks `c.fid`. Enforcing the walk rule means no caller may hand it an open chan, so this has a blast radius and wants a milestone.
 - ~~**An interrupt context `sync.can_sleep` knows about.**~~ Retired. The trap
   dispatcher brackets every top half with an interrupt-depth counter, `arch`
   exposes it as `in_interrupt`, and `can_sleep` reads both it and the spinlock
@@ -488,10 +496,14 @@ design question attached to each.
   never handed out again, because `Process.map_next` is a bump rather than a
   search. That is address space rather than memory, and the cheaper of the
   two to leak. `segfree` is deferred above, with its reason.
-- **A free list for fids and `/srv` ids.** Both counters are monotonic and
-  therefore finite: four billion opens per session, two billion posts. Pids left this list. They are 64-bit, never reused on purpose, and
-  now the generation every collector checks against, so a reset is exactly
-  what they must never get.
+- **Counters that are finite, and never-reuse the reason they must be.** The
+  kernel-client `next_fid` is four billion opens per session, and `/srv`'s
+  `next_id` is two billion posts. A free list was the shape this once wanted,
+  and it is the wrong shape. An id names an identity. A fid on a removed service, or a listing cookie on an unbound union member, must not follow a
+  reused number onto a new tenant. So the treatment is never-reuse, refusing
+  at exhaustion, which pids, `/srv` ids, and now union member ids all do. What
+  is left is only `next_fid`, and a session that opens four billion fids is not
+  a real number.
 
 ### SMP, when it is wanted
 
