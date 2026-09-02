@@ -454,6 +454,11 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	*/
 	verify_stop(&r)
 
+	/*
+	And a note posted to a group, which is the fan-out half of the note.
+	*/
+	verify_notepg(&r)
+
 	// -- And a process that continues from the call site ----------------------
 
 	verify_rfork(&r)
@@ -2447,6 +2452,47 @@ verify_stop :: proc(r: ^Result) {
 	check(r, cell(p, CATCHER_HANDLED) == 1, "and its handler ran once, for the note, and not for the word")
 	check(r, stop(p, PATIENCE), "and it is collected")
 	check(r, stats().live == before, "leaving the machine as it was")
+}
+
+/*
+verify_notepg is the note group doing something, which `RFNOTEG` recorded for
+four milestones and nothing acted on.
+
+`grouper` forks one child into its own group and one, with `RFNOTEG`, into a
+group of one, both counting in cells the parent shares. It notes its own
+group and expects exactly one process to hear it. The first child ends,
+noted, and the second's counter keeps moving across a sleep. Then a note by
+pid ends the second, which is the only way into a group of one from
+outside. Every claim is a cell the program filled in, and the kernel reads
+them after it exits.
+*/
+@(private = "file")
+verify_notepg :: proc(r: ^Result) {
+	before := stats().live
+	p, err := load("grouper", program_grouper())
+	if !check(r, err == .None && p != nil, "a program forks two children into two note groups") {
+		return
+	}
+	r.programs += 1
+	r.spawned += 2
+	if !check(r, wait(p, PATIENCE), "and comes back") {
+		finish(r, p, "and is taken down")
+		return
+	}
+	check(r, cell(p, CELL_MARK) == MARK_GROUPER, "having reached its first instruction")
+	check(r, i64(cell(p, GROUPER_A)) > 0 && i64(cell(p, GROUPER_B)) > 0, "both children were made")
+	check(r, i64(cell(p, GROUPER_POSTED)) == 1, "a note to its own group reached exactly one process: the child in it, and not the poster")
+	check(
+		r,
+		cell(p, GROUPER_A_WAIT) == refused(vectra9.EINTR),
+		"and that child ended noted, which is what its parent's wait says",
+	)
+	check(r, i64(cell(p, GROUPER_B_MOVED)) > 0, "while the child in a group of its own kept counting")
+	check(r, i64(cell(p, GROUPER_B_NOTE)) == 0, "until a note by pid reached it")
+	check(r, cell(p, GROUPER_B_WAIT) == refused(vectra9.EINTR), "and it ended noted too")
+	check(r, p.exit.deliberate && p.exit.status == 0, "and the parent, never noted, left on its own terms")
+	finish(r, p, "and is taken down")
+	check(r, stats().live == before, "with both children collected by its waits")
 }
 
 /*

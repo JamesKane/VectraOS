@@ -49,9 +49,9 @@ handler that computes in XMM clobbers what the interrupted code had there.
 Plan 9's `Ureg` has the same shape and the same edge. It matters the day a
 program mixes floating point and notes, and it is named here for that day.
 
-No group fan-out yet. `Process.note_group` still waits for a post that
-addresses a group rather than a pid, which is the remaining half of Plan
-9's `postnote`.
+The group fan-out is `sys_notepg`, in `syscall.odin`. It posts to every
+process in a note group but the poster, which is Plan 9's `postnotepg` and
+the other half of its `postnote`.
 */
 package user
 

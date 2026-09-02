@@ -50,6 +50,7 @@ MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
 MARK_POSTER :: u64(0x504F_5354_504F_5354) // POSTPOST
 MARK_NINER :: u64(0x4E49_4E45_4E49_4E45) // NINENINE
 MARK_NOTER :: u64(0x4E4F_5452_4E4F_5452) // NOTRNOTR
+MARK_GROUPER :: u64(0x4752_5550_4752_5550) // GRUPGRUP
 MARK_FORKER :: u64(0x464F_524B_464F_524B) // FORKFORK
 MARK_MEMFORK :: u64(0x4D45_4D46_4D45_4D46) // MEMFMEMF
 MARK_FDFORKER :: u64(0x4644_464B_4644_464B) // FDFKFDFK
@@ -449,6 +450,32 @@ NOTER_WAITED :: 3
 NOTER_STRANGER :: 4
 
 /*
+Where `grouper` keeps its answers, which is the note group's arc from ring 3.
+
+Two children, both sharing the data page under `RFMEM` so their counters
+are the parent's to read. `A` is forked into the parent's own group. `B` is
+forked with `RFNOTEG` into a group of one. Both count in a cell, for ever
+or until a note ends them.
+
+The parent notes its own group and expects one process to hear it. `A`
+ends, noted, and `B`'s counter keeps moving across a sleep. Then a note by
+pid ends `B`, which is how a group of one is reached at all.
+
+`POSTED` is what `notepg` answered, and the claim is one, not two and not
+zero. A fan-out that counted the poster, or that ignored the group, or that
+reached nobody, each fails a different cell.
+*/
+GROUPER_A :: 1
+GROUPER_B :: 2
+GROUPER_POSTED :: 3
+GROUPER_A_WAIT :: 4
+GROUPER_B_MOVED :: 5
+GROUPER_B_NOTE :: 6
+GROUPER_B_WAIT :: 7
+GROUPER_COUNT_A :: 8 // Byte offset 64
+GROUPER_COUNT_B :: 9 // Byte offset 72
+
+/*
 Where the four rfork blobs keep their answers -- one cell per claim.
 
 `forker` is the call-site continuation and the copy. It seeds a cell
@@ -642,6 +669,8 @@ foreign {
 	vectra_user_noter: byte
 	vectra_user_noter_end: byte
 	vectra_user_forker: byte
+	vectra_user_grouper: byte
+	vectra_user_grouper_end: byte
 	vectra_user_forker_end: byte
 	vectra_user_memfork: byte
 	vectra_user_memfork_end: byte
@@ -729,6 +758,7 @@ program_noter :: proc "contextless" () -> []u8 {return blob(&vectra_user_noter, 
 // And the four that reproduce *without* a file: two processes return from
 // each one's rfork, and the cells say what the copies and shares did.
 program_forker :: proc "contextless" () -> []u8 {return blob(&vectra_user_forker, &vectra_user_forker_end)}
+program_grouper :: proc "contextless" () -> []u8 {return blob(&vectra_user_grouper, &vectra_user_grouper_end)}
 program_memfork :: proc "contextless" () -> []u8 {return blob(&vectra_user_memfork, &vectra_user_memfork_end)}
 program_fdforker :: proc "contextless" () -> []u8 {return blob(&vectra_user_fdforker, &vectra_user_fdforker_end)}
 program_refuser :: proc "contextless" () -> []u8 {return blob(&vectra_user_refuser, &vectra_user_refuser_end)}
@@ -1619,6 +1649,94 @@ vectra_user_noter:
 	.ascii "stop"
 .globl vectra_user_noter_end
 vectra_user_noter_end:
+
+.balign 16
+.globl vectra_user_grouper
+vectra_user_grouper:
+	movq %rdi, %rbx
+	movabsq $$0x4752555047525550, %rax
+	movq %rax, (%rbx)
+
+	movq $$0x30, %rdi
+	movq $$17, %rax
+	syscall
+	testq %rax, %rax
+	jnz 60f
+	movq $$400000000, %rcx
+61:
+	incq 64(%rbx)
+	decq %rcx
+	jnz 61b
+	movq $$0x7C, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+60:
+	movq %rax, 8(%rbx)
+	movq %rax, %r12
+
+	movq $$0x38, %rdi
+	movq $$17, %rax
+	syscall
+	testq %rax, %rax
+	jnz 62f
+	movq $$400000000, %rcx
+63:
+	incq 72(%rbx)
+	decq %rcx
+	jnz 63b
+	movq $$0x7D, %rdi
+	movq $$4, %rax
+	syscall
+	ud2
+62:
+	movq %rax, 16(%rbx)
+	movq %rax, %r13
+
+	movq $$2, %rdi
+	movq $$3, %rax
+	syscall
+
+	xorl %edi, %edi
+	leaq 64f(%rip), %rsi
+	movq $$3, %rdx
+	movq $$25, %rax
+	syscall
+	movq %rax, 24(%rbx)
+
+	movq %r12, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 32(%rbx)
+
+	movq 72(%rbx), %r14
+	movq $$2, %rdi
+	movq $$3, %rax
+	syscall
+	movq 72(%rbx), %r15
+	subq %r14, %r15
+	movq %r15, 40(%rbx)
+
+	movq %r13, %rdi
+	leaq 64f(%rip), %rsi
+	movq $$3, %rdx
+	movq $$16, %rax
+	syscall
+	movq %rax, 48(%rbx)
+
+	movq %r13, %rdi
+	movq $$11, %rax
+	syscall
+	movq %rax, 56(%rbx)
+
+	xorl %edi, %edi
+	movq $$4, %rax
+	syscall
+	ud2
+64:
+	.ascii "die"
+.globl vectra_user_grouper_end
+vectra_user_grouper_end:
 
 .balign 16
 .globl vectra_user_forker

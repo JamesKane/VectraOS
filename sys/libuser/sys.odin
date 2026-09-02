@@ -244,6 +244,23 @@ note :: proc "contextless" (pid: u64, text: string) -> i64 {
 	return raw3(abi.SYS_NOTE, pid, u64(uintptr(raw_data(text))), u64(len(text)))
 }
 
+/*
+notepg posts a note to every process in a note group but the caller, which
+is a write to Plan 9's `/proc/n/notepg`.
+
+`pid` names the group: zero for the caller's own, or one of the caller's
+children for that child's group. A child forked without `RFNOTEG` is in its
+parent's group, and one forked with it is in a group of one. So a program
+forks a job's first process into its own group and the rest without the
+flag, and the job is one note.
+
+The answer is how many processes were noted, which is zero for a group with
+nobody else in it. `ECHILD` is a pid that is not the caller's child.
+*/
+notepg :: proc "contextless" (pid: u64, text: string) -> i64 {
+	return raw3(abi.SYS_NOTEPG, pid, u64(uintptr(raw_data(text))), u64(len(text)))
+}
+
 // notify registers the handler a note is delivered to, or clears it with a
 // zero address. The handler is called with the saved frame and the note's
 // text, and must end with `noted`. Until one is registered, a note is only

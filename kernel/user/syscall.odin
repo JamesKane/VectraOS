@@ -106,6 +106,7 @@ SYS_SEGATTACH :: abi.SYS_SEGATTACH
 SYS_SEGALLOC :: abi.SYS_SEGALLOC
 SYS_SEGBRK :: abi.SYS_SEGBRK
 SYS_SEGDETACH :: abi.SYS_SEGDETACH
+SYS_NOTEPG :: abi.SYS_NOTEPG
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -335,6 +336,8 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = sys_segbrk(uintptr(a0), uintptr(a1))
 	case SYS_SEGDETACH:
 		result = sys_segdetach(uintptr(a0))
+	case SYS_NOTEPG:
+		result = sys_notepg(a0, uintptr(a1), int(a2))
 
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
@@ -746,6 +749,63 @@ sys_note :: proc(pid: u64, addr: uintptr, length: int) -> i64 {
 		return -i64(vectra9.ESRCH)
 	}
 	return 0
+}
+
+/*
+sys_notepg posts a note to every process in a note group but the caller,
+which is Plan 9's `postnotepg`, the fan-out half of `postnote`.
+
+**A pid names the group, the way `/proc/n/notepg` names it.** Zero is
+the caller's own group. Any other pid has to be the caller's child, by the
+same authority rule as `note` and `wait`, and the group is that child's.
+
+A child forked without `RFNOTEG` is in its parent's group. So a parent that
+notes its own group notes every child it did not fork apart. One forked with
+the flag is in a group of one, and only a note aimed at its pid reaches it.
+
+**The poster is skipped, to the line.** `postnotepg` walks `proctab` and
+`continue`s on `p == up`, so a process that notes its own group does not end
+itself. A kernel process is skipped there too, and here every process in
+the table is a program, so nothing stands in for `p->kp`.
+
+The answer is how many were noted. A group with nobody else in it answers
+zero, which is not an error: the note went to everyone it was for.
+*/
+@(private = "file")
+sys_notepg :: proc(pid: u64, addr: uintptr, length: int) -> i64 #no_bounds_check {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ECHILD)
+	}
+	if length < 0 || length > NOTE_MAX {
+		return -i64(vectra9.EINVAL)
+	}
+
+	text: [NOTE_MAX]u8
+	if length > 0 && !copy_in(addr, length, text[:]) {
+		return -i64(vectra9.EFAULT)
+	}
+
+	group := p.note_group
+	if pid != 0 {
+		child := find_child(p.pid, pid)
+		if child == nil {
+			return -i64(vectra9.ECHILD)
+		}
+		group = child.note_group
+	}
+
+	noted := 0
+	for i in 0 ..< MAX_PROCESSES {
+		q := &processes[i]
+		if q == p || !q.live || q.note_group != group {
+			continue
+		}
+		if post_note(q, string(text[:length])) {
+			noted += 1
+		}
+	}
+	return i64(noted)
 }
 
 /*

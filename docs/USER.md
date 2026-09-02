@@ -889,9 +889,23 @@ handler. The self-test's `catcher` takes two notes across two boundaries and
 lives, a register the handler trashes restored each time -- the frame
 round-trip proven, not asserted.
 
-The group fan-out is still missing. `Process.note_group` inherits correctly
-and nothing posts to a group, which is Plan 9's `postnote` to a group rather
-than a pid. And no FPU state crosses a delivery. A handler that computes in
+**The group fan-out is `notepg`**, a post to every process in a note group
+but the poster. That is a write to Plan 9's `/proc/n/notepg`, and its
+`postnotepg` to the line: the poster is skipped, and so would a kernel
+process be. A pid names the group, under the authority rule `note` and `wait` share.
+Zero is the caller's own group, and a child's pid is that child's. `RFNOTEG` stopped being a recorded flag the same day.
+
+`grouper` forks one child into its own group and one into a group of one,
+notes its own group, and exactly one of them ends. Three controls, each on
+a real boot:
+
+| Mutation | Result |
+|---|---|
+| the poster is noted too | 14 checks, first `a note to its own group reached exactly one process`, and the parent's leak |
+| the group is ignored, and every child hears it | 2 checks, first the same |
+| the note reaches nobody | 10 checks, first `and comes back`, because the parent waits for a child that never ends |
+
+And no FPU state crosses a delivery. A handler that computes in
 XMM clobbers what the interrupted code had there. That is `Ureg`'s edge in
 Plan 9 too, named here for the day a program mixes floating point and notes.
 

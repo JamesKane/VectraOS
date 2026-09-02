@@ -43,8 +43,10 @@ which is Plan 9's fork and not `spawn`'s. Two processes advancing one
 cursor is a coordination tool, and `fdtable.odin` is what made it safe to
 hold.
 
-`RFNOTEG` is recorded and not yet acted on: notes are endings today, and a
-group-wide note arrives with the note handler milestone. The rest --
+`RFNOTEG` is a group of one, and `notepg` is what a group is for: a note
+posted to every process in it but the poster. A child forked without the
+flag hears its parent's group notes, and one forked with it does not. The
+rest --
 `RFENVG`, `RFCENVG`, `RFNOWAIT`, `RFREND`, `RFNOMNT` -- name machinery
 Vectra does not have (environment groups, rendezvous groups, mount
 control, dissociation). They are refused rather than skipped. A flag
