@@ -152,6 +152,49 @@ Both partial catches end in a hang rather than a tidy count, and that is
 recorded rather than smoothed over. A parked thread nothing will wake is what
 these bugs *are*.
 
+## The three parks, reached and closed
+
+`docs/HANDOFF.md` carried three parks with no bound in the posted end's
+teardown, found by review and never reproduced. Each wanted a self-test that
+reached it before a fix. `kernel/verify_wire.odin`'s posted scenes are those
+tests. A pipe's far side is a scripted kernel thread. The end is posted
+under a `/srv` name by `srv.post_chan`, and every wait runs on a watched
+thread with a bound.
+
+**The removal.** A name removed after its last mount fires the connection's
+release on the removing thread, and that thread still held the entry's own
+chan. The release's hang-up
+closes the pinned chan, and that close is the last one on the posted end
+only if the remover's reference is gone.
+It was not, so the end stayed open, the wire's reader stayed parked on it,
+and `wire_join` parked for ever holding `Pipe_Table.build`. The first run of
+the scene stopped the boot in the user tests, behind that lock, which is the
+review's prediction. `unpost` hands the server back now, the
+remover closes its chan, and only then drops the stake.
+
+**The deaf side.** A far side that never reads times the handshake out, and
+the flush that follows waited for `Rflush` with no bound. `wire_flush` gives
+it `FLUSH_TICKS` and then poisons the wire, which settles every slot. The
+mount comes back with `ENXIO`, which the doc always claimed and `srv.mount`
+now says itself. The pipe device behind an unwired end answered `ENOENT`,
+and a caller could not tell a missing service from a missing file.
+
+**The dialect.** A far side that answers the wrong version has the posted
+end closed under the chans that still hold it. The review feared the reclaim
+could zero a slot the posting side was parked on, and the scene reaches that
+path and finds no park. Lookups are by id, so a chan naming a reclaimed slot
+finds nothing rather than a stranger. The reclaim waits for the far end's
+own close.
+
+A second mount of the name after the failure is refused again rather than
+parked. That one was a review false alarm, and the scene is what says so.
+
+| Mutation | Result |
+|---|---|
+| the stake drops before the remover's close | 2 checks, first `and the removal comes back, which fires the connection's release` |
+| the flush waits with no bound | 2 checks, first `and comes back inside the handshake's deadline and the flush's` |
+| a pipe end with no wire falls through to its device | 3 checks, first `with /srv's sentence for a service that is not there` |
+
 ## Known warts
 
 - **One chan per end is a contract, not a check.** `open_end` is kernel-only

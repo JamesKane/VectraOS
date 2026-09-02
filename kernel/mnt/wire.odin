@@ -411,11 +411,15 @@ walks away, because the tag and the buffer are not the caller's again until
 `Rflush` says so. The flush frame goes out from the request's reserved
 partner slot, so a full pool cannot stop it.
 
-The one new case is a server that never answers the flush either. That wait
-is uninterruptible, exactly as it is on `Conn` -- what ends it here is the
-wire breaking, which settles every slot. A server that neither answers nor
-hangs up holds the caller for as long as it likes. That is the runaway
-`docs/HANDOFF.md` already names, and the note is what ends it, not the wire.
+The one new case is a server that never answers the flush either. On
+`Conn` that wait is uninterruptible, and a kernel server always answers.
+Here the far side is a program, and one that never reads holds the flush as
+long as it held the request. `wire_flush` gives it `FLUSH_TICKS` and then
+poisons the wire, which settles every slot at once. A server that neither
+answers nor hangs up left the protocol, and a poisoned wire is what that
+is called. The mounting thread that found this parked in the flush for
+ever, holding the pipe table's build lock. That was the second of the three
+parks `docs/PIPE.md` records.
 */
 wire_call_for :: proc "contextless" (
 	w: ^Wire,
@@ -441,12 +445,20 @@ wire_call_for :: proc "contextless" (
 	return .Interrupted
 }
 
+// Ticks a Tflush answer may take before the wire is declared broken. A
+// server that is there has only to read seven bytes and echo a tag. So this
+// is generous, and it is the whole bound on a caller that flushes.
+FLUSH_TICKS :: 200
+
 /*
-wire_flush sends Tflush for an abandoned request and waits for the answer.
+wire_flush sends Tflush for an abandoned request and waits for the answer,
+with a bound.
 
 When it returns, the server has spoken for the tag -- or the wire has broken,
 which speaks for every tag at once. Either way nothing will write into the
-slot again, and the caller may release it.
+slot again, and the caller may release it. A flush nobody answers inside
+`FLUSH_TICKS` breaks the wire itself. A server that answers neither a
+request nor its flush is not one this wire can wait for.
 */
 @(private = "file")
 wire_flush :: proc "contextless" (w: ^Wire, r: ^Rpc) #no_bounds_check {
@@ -473,7 +485,10 @@ wire_flush :: proc "contextless" (w: ^Wire, r: ^Rpc) #no_bounds_check {
 	if !sent {
 		poison(w, false)
 	}
-	sync.sleep(&f.settled, is_done, f)
+	if !sync.sleep_for(&f.settled, is_done, f, FLUSH_TICKS) {
+		poison(w, false)
+		sync.sleep(&f.settled, is_done, f)
+	}
 
 	g2 := sync.acquire(&w.lock)
 	if r.state != .Done {

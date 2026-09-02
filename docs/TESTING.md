@@ -250,6 +250,7 @@ nothing else in common.
 | The first device server | `docs/DEVFS.md` | 18 of 20 |
 | The screen's divert | `docs/DEVFS.md` | 6 of 6 |
 | Services published by name | `docs/SRV.md` | 9 of 9 |
+| The posted end's parks | `docs/PIPE.md` | 3 of 3, two real parks and one review false alarm |
 | The first device that interrupts | `docs/KBD.md` | 7 of 7 |
 | Address spaces | `docs/SPACE.md` | 3 checked, 2 faults, 1 inert |
 | Ring 3 | `docs/USER.md` | 6 checked, 3 machine failures, 1 uncaught |

@@ -200,6 +200,7 @@ kmain :: proc "sysv" () {
 			if init_pipe() {
 				verify_pipe()
 				verify_wire()
+				verify_posted()
 			}
 
 			// The programs become files here, after the namespace has its

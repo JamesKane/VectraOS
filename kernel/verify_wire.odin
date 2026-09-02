@@ -29,11 +29,15 @@ half transport and half border control, and the checks below are the border.
 package kernel
 
 import "base:intrinsics"
+import "base:runtime"
 
+import "kernel:mem"
 import "kernel:mnt"
 import "kernel:pipe"
 import "kernel:sched"
+import "kernel:srv"
 import "kernel:sync"
+import "kernel:vfs"
 import "vsys:libodin"
 import "vsys:vectra9"
 
@@ -72,6 +76,7 @@ Script :: struct {
 	swap_pair:  bool, // Hold the next request, answer the one after it first
 	stale_next: bool, // After the next answer, also send a reply nobody asked for
 	quit_next:  bool, // Swallow the next request and leave
+	wrong_dialect: bool, // Answer Tversion with a version nothing here speaks
 
 	served:     int,
 	stalled:    u32, // Bitmask of tags being sat on, one bit per pool slot
@@ -118,6 +123,9 @@ script_answer :: proc "contextless" (s: ^Script, tag: vectra9.Tag, msg: ^vectra9
 	payload: [64]u8
 	#partial switch m in msg^ {
 	case vectra9.Tversion:
+		if s.wrong_dialect {
+			return script_send(s, tag, vectra9.Rversion{msize = m.msize, version = "9P2000"})
+		}
 		return script_send(s, tag, vectra9.Rversion{msize = m.msize, version = m.version})
 	case vectra9.Tattach:
 		return script_send(s, tag, vectra9.Rattach{qid = {kind = {.Dir}, path = 1}})
@@ -138,6 +146,15 @@ script_answer :: proc "contextless" (s: ^Script, tag: vectra9.Tag, msg: ^vectra9
 		return script_send(s, tag, vectra9.Rflush{})
 	case vectra9.Tclunk:
 		return script_send(s, tag, vectra9.Rclunk{})
+	case vectra9.Twalk:
+		// A clone, or a walk to directories that all exist. A mount clones
+		// the attached chan on its way into the table, which is the one walk
+		// the posted-end scenes below need answered.
+		walked := vectra9.Rwalk{count = m.count}
+		for i in 0 ..< m.count {
+			walked.qids[i] = {kind = {.Dir}, path = u64(2 + i)}
+		}
+		return script_send(s, tag, walked)
 	}
 	return script_send(s, tag, vectra9.error_reply(vectra9.EOPNOTSUPP))
 }
@@ -246,6 +263,19 @@ wire_client :: proc "contextless" (arg: rawptr) {
 @(private = "file")
 wire_wait :: proc "contextless" (flag: ^bool) -> bool {
 	for _ in 0 ..< 200 {
+		if intrinsics.volatile_load(flag) {
+			return true
+		}
+		sync.delay(1)
+	}
+	return intrinsics.volatile_load(flag)
+}
+
+// wire_wait_for is `wire_wait` with the bound as a parameter, for a wait that
+// has a handshake's deadline inside it.
+@(private = "file")
+wire_wait_for :: proc "contextless" (flag: ^bool, ticks: int) -> bool {
+	for _ in 0 ..< ticks {
 		if intrinsics.volatile_load(flag) {
 			return true
 		}
@@ -520,6 +550,171 @@ verify_wire :: proc() {
 		return
 	}
 
+	libodin.put_str(&sink, " checks, ")
+	libodin.put_uint(&sink, u64(result.failures))
+	libodin.put_str(&sink, " FAILED -- first: ")
+	libodin.put_str(&sink, result.first_failure)
+	emit(&klog, .Fault, &sink)
+}
+
+// -- The posted end's parks ----------------------------------------------------
+
+/*
+The three parks `docs/HANDOFF.md` found by review in the posted end's
+teardown, each reached by a scene before it was fixed. `docs/TESTING.md`
+argues that order: a self-test that reaches a hang is worth more than a fix
+nothing can reach.
+
+    the removal    a name removed after its last mount fires the release on
+                   the removing thread, which still holds the entry's chan
+    the deaf side  a far side that never reads times the handshake out, and
+                   the flush that follows waited with no bound
+    the dialect    a far side that answers the wrong version has the posted
+                   end closed under it, with other chans still holding it
+
+Every wait here is bounded and runs on a thread that is not the one that
+reports, so a park is a failed check. What a park held was `Pipe_Table.build`,
+and everything that mounts a pipe after it hangs. That is why the first run
+of this file stopped the boot rather than failed a line.
+*/
+@(private = "file")
+Posted_Result :: struct {
+	using tally: libodin.Tally,
+}
+
+@(private = "file")
+pcheck :: proc "contextless" (r: ^Posted_Result, ok: bool, what: string) -> bool {
+	return libodin.tally(&r.tally, ok, what)
+}
+
+// One kernel call made on a watched thread: which, its answer, and whether it
+// came back at all.
+@(private = "file")
+Posted_Step :: struct {
+	name:   string,
+	target: string,
+	err:    vfs.Errno,
+	done:   bool,
+}
+
+@(private = "file")
+posted_remove_worker :: proc "contextless" (arg: rawptr) {
+	st := cast(^Posted_Step)arg
+	ctx := runtime.default_context()
+	ctx.allocator = mem.allocator()
+	context = ctx
+	st.err = srv.remove(st.name)
+	intrinsics.volatile_store(&st.done, true)
+}
+
+@(private = "file")
+posted_mount_worker :: proc "contextless" (arg: rawptr) {
+	st := cast(^Posted_Step)arg
+	ctx := runtime.default_context()
+	ctx.allocator = mem.allocator()
+	context = ctx
+	st.err = srv.mount(vfs.boot_namespace, st.name, st.target)
+	intrinsics.volatile_store(&st.done, true)
+}
+
+// Ticks a mount of a deaf far side may take: the handshake's own deadline,
+// the flush's, and room to spare.
+@(private = "file")
+DEAF_PATIENCE :: 1200
+
+@(private = "file")
+verify_posted_run :: proc(r: ^Posted_Result) {
+	ns := vfs.boot_namespace
+	sched.reap()
+	heap_before := mem.live_objects(mem.heap_stats())
+	pipes_before := pipe.count()
+
+	// -- The removal, after the last mount is gone ----------------------------
+
+	{
+		s := Script{end = 1}
+		s.p = pipe.create()
+		if !pcheck(r, s.p != nil, "a pipe for a posted service comes up") {
+			return
+		}
+		c0, e0 := pipe.open_end(s.p, 0)
+		pcheck(r, e0 == vfs.OK, "and its posted end is a chan")
+		pcheck(r, srv.post_chan("park-a", c0) == vfs.OK, "which the kernel posts under a name")
+		vfs.chan_close(c0)
+		pcheck(r, sched.spawn("park-a-script", script_server, &s) != nil, "a scripted far side reads the other end")
+
+		merr := srv.mount(ns, "/srv/park-a", "/mnt")
+		pcheck(r, merr == vfs.OK, "a mount of the name builds the wire and the far side answers the handshake")
+		pcheck(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "and the mount comes down")
+
+		st := Posted_Step{name = "park-a"}
+		pcheck(r, sched.spawn("park-a-remove", posted_remove_worker, &st) != nil, "the name is removed on a watched thread")
+		pcheck(r, wire_wait_for(&st.done, 400), "and the removal comes back, which fires the connection's release")
+		pcheck(r, st.err == vfs.OK, "having found the name")
+		pcheck(r, wire_wait_for(&s.done, 200), "the far side's read answers EOF and its serve loop leaves")
+		pipe.close_end(s.p, 1)
+	}
+
+	// -- The deaf far side ----------------------------------------------------
+
+	{
+		p := pipe.create()
+		if !pcheck(r, p != nil, "a second pipe comes up") {
+			return
+		}
+		c0, e0 := pipe.open_end(p, 0)
+		c1, e1 := pipe.open_end(p, 1)
+		pcheck(r, e0 == vfs.OK && e1 == vfs.OK, "with both ends as chans and nobody reading the far one")
+		pcheck(r, srv.post_chan("park-b", c0) == vfs.OK, "the posted end goes under a name")
+		vfs.chan_close(c0)
+
+		st := Posted_Step{name = "/srv/park-b", target = "/mnt"}
+		pcheck(r, sched.spawn("park-b-mount", posted_mount_worker, &st) != nil, "a mount of it runs on a watched thread")
+		pcheck(r, wire_wait_for(&st.done, DEAF_PATIENCE), "and comes back inside the handshake's deadline and the flush's")
+		pcheck(r, st.err == vectra9.ENXIO, "with /srv's sentence for a service that is not there")
+		pcheck(r, srv.remove("park-b") == vfs.OK, "the name is removed")
+		vfs.chan_close(c1)
+	}
+
+	// -- The wrong dialect ----------------------------------------------------
+
+	{
+		s := Script{end = 1, wrong_dialect = true}
+		s.p = pipe.create()
+		if !pcheck(r, s.p != nil, "a third pipe comes up") {
+			return
+		}
+		c0, e0 := pipe.open_end(s.p, 0)
+		pcheck(r, e0 == vfs.OK, "and its posted end is a chan")
+		pcheck(r, srv.post_chan("park-c", c0) == vfs.OK, "posted under a name")
+		vfs.chan_close(c0)
+		pcheck(r, sched.spawn("park-c-script", script_server, &s) != nil, "with a far side that answers the wrong dialect")
+
+		pcheck(r, srv.mount(ns, "/srv/park-c", "/mnt") == vectra9.ENXIO, "a mount is refused, because the handshake failed")
+		pcheck(r, wire_wait_for(&s.done, 200), "and the far side's serve loop leaves, because the connection came down")
+		pcheck(r, srv.mount(ns, "/srv/park-c", "/mnt") == vectra9.ENXIO, "a second mount of the name is refused again rather than parks")
+		pcheck(r, srv.remove("park-c") == vfs.OK, "and the name is removed")
+		pipe.close_end(s.p, 1)
+	}
+
+	pipe.quiesce()
+	sched.reap()
+	pcheck(r, pipe.count() == pipes_before, "every pipe went back")
+	pcheck(r, mem.live_objects(mem.heap_stats()) == heap_before, "and the heap is where it was")
+}
+
+verify_posted :: proc() {
+	result: Posted_Result
+	verify_posted_run(&result)
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "posted ")
+	libodin.put_uint(&sink, u64(result.checks))
+	if libodin.passed(result.tally) {
+		libodin.put_str(&sink, " checks passed -- a name removed after its last mount, a far side that never read, and one that spoke the wrong dialect, each let go of inside its bound")
+		emit(&klog, .Ok, &sink)
+		return
+	}
 	libodin.put_str(&sink, " checks, ")
 	libodin.put_uint(&sink, u64(result.failures))
 	libodin.put_str(&sink, " FAILED -- first: ")

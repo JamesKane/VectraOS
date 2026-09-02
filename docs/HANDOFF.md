@@ -35,7 +35,7 @@ embedded user images are ~300 KB.
 
 The machine boots and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
-`/bin`. It then runs about 1510 checks against itself and idles.
+`/bin`. It then runs about 1540 checks against itself and idles.
 
 **What it can do**, and which document says why:
 
@@ -458,17 +458,15 @@ design question attached to each.
   once a boot wedged; `docs/TESTING.md` describes the walk. The wire
   self-test had the same shape and parked its scripted server's thread on
   every boot, unreported; `wire_down` joins before its last close now.
-- **Three more parks with no bound, of the shape above, found by review and
-  not yet reproduced.** A `srv.remove` of a live server that was mounted and
-  then unmounted fires `wire_release` on the removing thread while that
-  thread still holds the entry's own chan, so the close is not the last, the
-  reader stays, and `wire_join` parks holding `Pipe_Table.build`. A
-  handshake that times out flushes, and `wire_flush` parks on the flush's
-  reply with no deadline, so a far side that never reads holds the mounting
-  thread and the build lock. And the handshake-failure path closes the
-  posted end while other chans still hold it, so its reclaim can zero a slot
-  the posting process is parked on. Each wants a self-test that reaches it
-  before a fix, in the order `docs/TESTING.md` argues.
+- ~~**Three more parks with no bound, of the shape above, found by review
+  and not yet reproduced.**~~ Retired. `kernel/verify_wire.odin`'s posted
+  scenes reach all three from a scripted far side. Two were real and are
+  fixed. `remove` closes its own chan before it drops the name's stake, and
+  `wire_flush` waits with a bound and poisons the wire when it runs out. The
+  third was a review false alarm, and the scene says so.
+
+  `srv.mount` also answers `ENXIO` for a pipe end with no wire now, which
+  the document claimed and the pipe device never did. See `docs/PIPE.md`.
 - ~~**The reaper's test-then-exchange.**~~ Retired. The pid is the
   generation. Every collector names the process it saw. `collect` reads the
   pid again after its claim, and gives back a claim on a slot that changed

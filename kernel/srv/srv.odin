@@ -351,6 +351,56 @@ post :: proc "contextless" (name: string, server: ^vfs.Server) -> vfs.Errno #no_
 }
 
 /*
+post_chan publishes a connection under a name, from the kernel.
+
+The same entry `Tlcreate` and a `Twrite` of a descriptor make from ring 3,
+in one step for a caller that holds the chan already. The self-test is that
+caller. It posts a pipe end whose far side is a kernel thread. That is the
+only way to reach the posted end's teardown paths without a process. The
+reference is the posting, taken here, and `remove` is what gives it back.
+*/
+post_chan :: proc(name: string, c: ^vfs.Chan) -> vfs.Errno #no_bounds_check {
+	if c == nil || !valid_name(name) {
+		return vectra9.EINVAL
+	}
+
+	t := &srv_tree
+	g := sync.acquire(&t.lock)
+	defer sync.release(&t.lock, g)
+
+	free := -1
+	for i in 0 ..< MAX_SERVICES {
+		if !live(&t.table[i]) {
+			if free < 0 {
+				free = i
+			}
+			continue
+		}
+		if name_of(&t.table[i]) == name {
+			return vectra9.EEXIST
+		}
+	}
+	if free < 0 || t.next_id <= 0 {
+		return vectra9.ENOSPC
+	}
+
+	s := &t.table[free]
+	s^ = Service {
+		endpoint = vfs.chan_incref(c),
+		id       = t.next_id,
+		len      = len(name),
+	}
+	for i in 0 ..< len(name) {
+		s.name[i] = name[i]
+	}
+
+	t.next_id += 1
+	t.count += 1
+	t.posts += 1
+	return vfs.OK
+}
+
+/*
 remove takes a name away, and does not stop the service.
 
 That is Plan 9's behaviour and it is the useful one. A mount made before the
@@ -381,9 +431,16 @@ remove :: proc(name: string) -> vfs.Errno #no_bounds_check {
 		// message. The service does not stop -- a wire built from this chan
 		// holds its own reference. What the removal does release is the
 		// name's *stake* on that wire: with the last mount also gone, the
-		// connection comes down here. See `pipe.unpost`.
-		pipe.unpost(retired)
+		// connection comes down here.
+		//
+		// The close goes first. The release's own close has to be the last
+		// one on the posted end. This reference would otherwise keep the end
+		// open under the wire's reader. See `pipe.unpost`.
+		staked := pipe.unpost(retired)
 		vfs.chan_close(retired)
+		if staked != nil {
+			vfs.server_unpin(staked)
+		}
 	}
 	return found ? vfs.OK : vectra9.ENOENT
 }
@@ -465,6 +522,14 @@ mount :: proc(
 		if wired := pipe.server_for(endpoint); wired != nil {
 			server = wired
 			pinned = wired
+		} else if p, _ := pipe.chan_pipe(endpoint); p != nil {
+			// A pipe end whose wire could not be built: the far side missed
+			// the handshake, spoke another dialect, or the end is already
+			// spoken for. The pipe device behind the chan answers nothing a
+			// mount can use. This is `/srv`'s sentence for a name whose
+			// service is not there, said here rather than left to the
+			// device's ENOENT.
+			return vectra9.ENXIO
 		} else {
 			server = endpoint.server
 		}
@@ -652,9 +717,12 @@ srv_handler :: proc "contextless" (
 		// After the dispatch released the table lock, because a close may
 		// clunk a fid and a clunk is a message. The service behind the chan
 		// does not stop with the name -- but the name's stake on a wired
-		// connection goes with it. See `remove`.
-		pipe.unpost(retired)
+		// connection goes with it, after this reference. See `remove`.
+		staked := pipe.unpost(retired)
 		vfs.chan_close(retired)
+		if staked != nil {
+			vfs.server_unpin(staked)
+		}
 	}
 }
 

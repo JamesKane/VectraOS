@@ -211,22 +211,33 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 }
 
 /*
-unpost releases the `/srv` name's stake on a posted pipe's connection.
+unpost takes the `/srv` name's stake off a posted pipe's connection, and
+hands the caller the server to drop it on.
 
 `kernel/srv` calls this when a name is removed, with the entry's chan still
-referenced and no lock of its own held. Nothing happens for a chan that is
-not a wired pipe end, or for a connection whose stake already went. Two
-names can post one chan, and the first removal spends the only stake. The
-document calls that edge by name.
+referenced and no lock of its own held. Nil for a chan that is not a wired
+pipe end, or for a connection whose stake already went. Two names can post
+one chan, and the first removal spends the only stake. The document calls
+that edge by name.
 
-The unpin runs outside every pipe lock, because it may fire the release,
-and the release takes `build` itself.
+**The caller closes its chan before it drops the stake, which is the first
+of the three parks.** The stake's drop may be the last one, and the release
+it fires hangs the connection up by closing the pinned chan. That close is
+the last reference on the posted end only if the remover's own reference is
+already gone. 
+`unpost` used to drop the stake itself, with the entry's chan still held by
+the thread it ran on. The end stayed open and the wire's reader stayed
+parked on it. `wire_join` parked for ever holding `Pipe_Table.build`, with
+every later mount of a pipe behind it.
+
+So this returns the server, the caller closes what it holds, and then calls
+`vfs.server_unpin`, outside every lock because the release takes `build`.
 */
-unpost :: proc(c: ^vfs.Chan) {
+unpost :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	t := &pipes
 	p, end := chan_pipe(c)
 	if p == nil {
-		return
+		return nil
 	}
 
 	sv: ^vfs.Server
@@ -237,10 +248,7 @@ unpost :: proc(c: ^vfs.Chan) {
 		sv = p.server9
 	}
 	sync.release(&t.lock, g)
-
-	if sv != nil {
-		vfs.server_unpin(sv)
-	}
+	return sv
 }
 
 /*
