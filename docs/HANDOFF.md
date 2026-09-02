@@ -349,10 +349,26 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **`segfree` and `segdetach`**, the two segment calls still missing -- see
-   the standing gap below. `segbrk` built the unmap they both need, and the
-   sweep built the check that would notice either one giving back a frame it
-   still maps. What is left is the two calls and a program that asks.
+2. **A worker per blocked request that gives its segments back when it
+   ends.** `segbrk` reaps orphans before it believes a reference count,
+   because a dead `RFNOWAIT` worker keeps its segments until the next fork
+   collects it. That is the right fix for one caller and the wrong shape for
+   the next. Every count a dead process still holds is a count some other
+   call will read. The reaper thread already hangs up a dead process's
+   descriptors, and a detached process's segments and space could go the
+   same way. See `docs/USER.md`.
+
+**Deferred, with the reason written down: `segfree`.** The last of Plan 9's
+three segment calls frees the pages under a range and keeps the segment. The
+pages read as zero on the next touch, which is demand paging. Vectra zeroes
+at the call, and a run is a short list of contiguous pieces. A fault in a
+program ends the program, which `docs/USER.md` argues at length.
+
+A hole a touch refills changes the fault rule and the run's shape. A hole a
+touch faults on is a contract nothing wants. Nothing calls it, on Plan 9 or
+here, and `segbrk` and `segdetach` cover every give-back a caller today can
+act on. So it waits for a caller that needs the pages back and the addresses
+kept.
 
 **Deferred, with the reason written down: a font with more than 128 glyphs.**
 `sys/libedit` drops every rune it does not act on, because `sys/libfont` is an
@@ -462,13 +478,11 @@ design question attached to each.
   group of anything whose thread has gone, so a faulted server hangs up and the
   client parked on it is answered. The record stays for a parent's `wait`,
   which is Plan 9's `pexit`. See `docs/USER.md`.
-- **Two of Plan 9's segment calls are still missing.** `segfree(va, len)` frees
-  the pages under a range and keeps the segment. `segdetach(addr)` takes the
-  segment out of the process. `segbrk` is built -- see `docs/USER.md`.
-
-  So a run can change size now and still cannot be given back whole before
-  exit, and the address bump never comes down. That is address space rather
-  than memory, and the cheaper of the two to leak.
+- **The address bump never comes down.** `segbrk` and `segdetach` are built,
+  so a run can change size and go back whole. A detached run's addresses are
+  never handed out again, because `Process.map_next` is a bump rather than a
+  search. That is address space rather than memory, and the cheaper of the
+  two to leak. `segfree` is deferred above, with its reason.
 - **A free list for fids, `/srv` ids, and now pids.** All three counters are
   monotonic and therefore finite: four billion opens per session, two billion
   posts, and a pid space nothing recycles. One fix retires all of them, and

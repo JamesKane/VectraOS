@@ -1112,8 +1112,8 @@ decision made a milestone earlier.
 | Plan 9 | What it does | Here |
 |---|---|---|
 | `segbrk(addr, top)` | grows or shrinks a segment in place | **built** -- see below |
-| `segfree(va, len)` | frees the pages under a range, keeps the segment | still missing |
-| `segdetach(addr)` | takes the whole segment out of the process | still missing |
+| `segfree(va, len)` | frees the pages under a range, keeps the segment | **deferred** -- see `segdetach` below |
+| `segdetach(addr)` | takes the whole segment out of the process | **built** -- see below |
 
 `segbrk` is the interesting one. `syssegbrk` refuses `SG_TEXT`, `SG_DATA`,
 `SG_STACK`, `SG_PHYSICAL`, `SG_FIXED` and `SG_STICKY` by name, and answers for
@@ -1191,6 +1191,15 @@ it now.
 shrink. That is a reason to keep the pages rather than to refuse the client. A
 window that gets smaller and keeps its run works. A window that cannot get
 bigger is the cap this call exists to lift.
+
+The server's runs stopped being shared when `segdetach` arrived and they
+became the session's, and the first shrink was still refused. The runtime
+forks a worker per parked request under `RFMEM`. A worker that answered and
+exited keeps its segments until the next fork collects it. Three dead
+workers from the keyboard's checks each still counted as a holder. So
+`segbrk` collects the orphans before it believes the count, the way `rfork`
+does before it wants a slot. A shrink is refused only for a sharer that is
+alive.
 
 ### The controls
 
@@ -1421,6 +1430,97 @@ Only the fork catches it, and only because two processes then share what a copy
 should have separated. A readback through one mapping cannot tell a correct
 mapping from a constant one. That is worth knowing before the next test that
 goes through a mapping.
+
+## segdetach, and the run that goes back
+
+**A process may detach what it attached and what it allocated, and not the
+image it was born with.** `SYS_SEGDETACH` takes an address, finds the
+segment covering it, unmaps the whole extent, takes the segment off the
+process's list, and releases it. The last holder's release frees the frames.
+A run shared under `RFMEM` is not freed by this at all. The release finds
+another holder, which is Plan 9's `putseg` doing the same decrement.
+
+### What Plan 9 refuses, and what this refuses on top
+
+`syssegdetach` refuses one segment by name, the stack, and would let a
+program detach its own text and die on its next instruction. Vectra refuses
+the text and the data beside the stack as well, and the reason is the
+kernel's rather than the program's. The kernel holds staging aliases to a
+blob's three frames and reads the data page through the direct map for every
+check in `verify.odin`. A data segment gone under those aliases is a kernel
+that reads a frame the allocator handed on. So the rule is `segbrk`'s. Only
+the run kinds may be asked, and `.Device` and `.Anon` are exactly the two a
+program asked for by a call.
+
+**The address bump does not come down.** A detached run's addresses are
+never handed out again. `Process.map_next` chose that leak on purpose when
+it chose a bump over a search, and this call does not change the choice. What
+goes back is memory, which is the expensive one.
+
+### segfree, deferred with its reason
+
+The last of Plan 9's three frees the pages under a range and keeps the
+segment. The pages read as zero on the next touch, which is demand paging,
+and this kernel has none. Vectra zeroes at the call, and a run is a short
+list of contiguous pieces with no page map. A fault in a program ends the
+program, which this file argues at length above.
+
+Two contracts were possible and neither was wanted. A hole a page fault
+refills with a zeroed page is Plan 9's, and it changes the fault rule and the
+run's shape both. A hole a touch faults on is cheap, and it is a promise no
+caller would want to be given. Nothing calls `segfree`, on Plan 9 or here.
+`segbrk` gives the tail back and `segdetach` gives the whole back, and
+between them every give-back a caller today can act on is covered. So it
+waits for a caller that needs the pages back and the addresses kept, and
+that caller decides which contract it is.
+
+### What it bought
+
+`servers/intuition` bought every window's run once, at start. A run could
+not go back, so it could not be tied to a session that comes and goes. That
+was two megabytes apiece, held whether or not anyone was drawing. The runs
+were also shared with the reader child forked after them, so no window could
+ever shrink.
+
+A run is the session's now. `Tlopen` buys it and the clunk detaches it, and a
+slot between sessions holds no memory at all. Two things followed for free.
+
+The run arrives zero from the kernel. The frame that clears a store is no
+longer the only thing between one client's pixels and the next. And a run
+bought after the fork is the server's alone. A `size` line that shrinks a
+window gives its pages back, where every shrink was refused before.
+
+The one thing that moved the wrong way is where a failure lands. A machine
+with no run left refuses the `Tlopen` with `ENOMEM`, which is at least a
+reason the client can report.
+
+### The self-test, and its controls
+
+`anon` asks for one page more and detaches it whole. Then it asks the call
+to refuse two things: its own text, and an address no segment covers.
+`mapper` detaches the second of its two attaches of the card.
+
+Each half of a detach has a check that sees it alone. A detach that released
+the segment and left the mapping is a stray leaf in the sweep. One that
+unmapped and never released is a live segment after the teardown. And a card
+detached the allocator's way is an untracked free.
+
+Five mutations, each on a real boot. All five are caught, and the first
+failure names a different check each time.
+
+| Mutation | Result |
+|---|---|
+| a detach releases the segment and leaves the mapping | 5 checks, first `every page the server maps is inside a segment it holds` |
+| a detach unmaps and takes the segment off the list, and never releases it | 4 checks, first `every segment it held was released` |
+| a detach answers for any kind | 8 checks, first `a gigabyte is refused`, because `anon` detached its own text and died on the next instruction |
+| the draw server keeps a run at the clunk | 1 check, `the command file opens again`, because the eighth segment is the last one a process may hold |
+| a shrink believes a dead worker is a sharer | 1 check, `and the machine is richer for it, because a run nobody shares may shrink` |
+
+The first is the sweep on a live server, which is the first time a sweep
+caught a mutation nothing else saw. The fourth is `MAX_PROC_SEGS` speaking.
+A server that never gives a run back holds eight segments after its fourth
+session, and the fifth session is refused. The fifth was not a control but the
+tree as first built, and `segbrk`'s section above records it.
 
 ## The hangup a fault could not perform
 

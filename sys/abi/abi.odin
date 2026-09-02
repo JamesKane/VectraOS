@@ -43,6 +43,7 @@ SYS_EXEC :: u64(20)
 SYS_SEGATTACH :: u64(21)
 SYS_SEGALLOC :: u64(22)
 SYS_SEGBRK :: u64(23)
+SYS_SEGDETACH :: u64(24)
 
 /*
 What `noted` may answer, Plan 9's numbers for Plan 9's words. NCONT resumes

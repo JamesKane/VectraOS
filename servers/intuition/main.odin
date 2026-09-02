@@ -818,10 +818,9 @@ window_name :: proc "contextless" (win: ^Window, name: []u8) -> vectra9.Errno #n
 One window: where it sits, the memory behind it, and the damage it owes.
 
 `pixels` is a run of anonymous memory from `segalloc`, `w * h` words of it,
-and **it belongs to the slot rather than to the session**. A clunk gives the
-slot back and keeps the run, because there is no call that gives a run back.
-`docs/USER.md` names the three Plan 9 has and Vectra does not, and `segfree` is
-the one this line is waiting for.
+and **it belongs to the session**. `Tlopen` buys it and the clunk gives it
+back with `segdetach`, which is the call this line waited two milestones
+for. A slot between sessions holds no memory at all.
 
 `dmg` is what this client drew since its last `flush`, and it is the only
 region a window keeps now.
@@ -855,11 +854,11 @@ Window :: struct {
 	w:      int,
 	h:      int,
 
-	// The store. Every window's run is `win_w` by `win_h`, allocated once at
-	// the birth size and never grown, so those two globals are the stride and
-	// the bound and this struct does not carry a second copy of them. `w` and
-	// `h` move inside that. A `size` line past it is refused, and `segbrk` is
-	// the Plan 9 call that would lift that -- see `docs/USER.md`.
+	// The store. Every window's run is `win_w` wide, bought at the birth
+	// height when a session opens `data` and detached when it clunks. So
+	// `win_w` is the stride and this struct does not carry a second copy of
+	// it. `w` and `h` move inside that, and `segbrk` moves `rows`. Nil
+	// between sessions, and `used` is the gate every reader passes first.
 	pixels: [^]u32,
 
 	// How many rows the run behind `pixels` actually holds. It starts at the
@@ -1258,8 +1257,8 @@ _start opens the screen, learns its shape, and serves.
 The exits each name their failure. 0x74 is a framebuffer that would not
 open, 0x76 a geometry this server cannot draw on -- fewer than four
 numbers, a depth other than 32, or a cascade that would not fit -- 0x77 a
-screen that would not map, 0x78 a window that could not buy its pixels,
-and 0x71 a post that failed. The serve loop's three endings are `ramfs`'s,
+screen that would not map, and 0x71 a post that failed. 0x78 was a window
+that could not buy its pixels, retired when a run became the session's. The serve loop's three endings are `ramfs`'s,
 numbers and all.
 */
 @(export, link_name = "_start")
@@ -1295,12 +1294,9 @@ start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
 	glass = ([^]u32)(base)
 	glass_stride = scr_pitch / 4
 
-	// And the windows' own memory, which is the other call that answers with
-	// an address rather than with bytes. Fatal for the reason the mapping is:
-	// a window without a store is a window this server cannot serve.
-	if !windows_init() {
-		libuser.exit(0x78)
-	}
+	// And the windows' places. Their memory is bought per session now, at
+	// `Tlopen`, so nothing here can fail for want of it.
+	windows_init()
 
 	// And the ground everything stands on. From here this server owns every
 	// pixel of the screen: `/dev/fb` diverts the console for as long as the
@@ -1718,37 +1714,30 @@ put_number :: proc "contextless" (out: []u8, at: int, value: int) -> int #no_bou
 // -- The windows --------------------------------------------------------------
 
 /*
-windows_init places every window and buys its pixels, once, at start.
+windows_init places every window, once, at start. It buys nothing.
 
-**The run is asked for here rather than at `Tlopen`, and that is what having
-no `segfree` means.** A slot's memory cannot go back, so it must not be tied to
-a session that comes and goes. It is bought once, for the life of the server,
-and lent to whichever session holds the slot. A failure here is a server that
-does not start, which is the honest place for it: the alternative is a
-`Tlopen` that fails for a reason the client cannot act on.
+**The run used to be bought here rather than at `Tlopen`, and that was what
+having no `segdetach` meant.** A slot's memory could not go back, so it could
+not be tied to a session that comes and goes. It was bought once, for the
+life of the server, and lent to whichever session held the slot. That was
+two megabytes apiece at 640 by 800, held whether or not anyone was drawing.
 
-`MAX_WINDOWS` runs of `win_w * win_h * 4` bytes each. At 640 by 800 that is
-just under two megabytes apiece, which is the arithmetic `docs/DRAW.md`
-section 10 wrote down a milestone before this call existed.
-
-False is no memory. The caller exits, and says so with a number.
+`window_open` buys the run now and `window_close` gives it back. A session
+costs memory for as long as it lasts and no longer, which is what a session
+is. The one thing that moved the wrong way is where a failure lands. A
+machine with no run left refuses the `Tlopen` with `ENOMEM`, which is a
+reason the client can at least report.
 */
-windows_init :: proc "contextless" () -> bool #no_bounds_check {
+windows_init :: proc "contextless" () #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
-		base, err := libuser.segalloc(win_w * win_h * 4)
-		if err < 0 {
-			return false
-		}
 		windows[i] = Window {
-			x      = i * (win_w / 2),
-			y      = 0,
-			w      = win_w,
-			h      = win_h,
-			rows   = win_h,
-			pixels = ([^]u32)(base),
+			x    = i * (win_w / 2),
+			y    = 0,
+			w    = win_w,
+			h    = win_h,
+			rows = win_h,
 		}
 	}
-	return true
 }
 
 /*
@@ -1769,39 +1758,49 @@ window_free :: proc "contextless" () -> int #no_bounds_check {
 }
 
 /*
-window_open claims window `at` for this fid, or reports that somebody has it.
+window_open claims window `at` for this fid, buys its run, or reports why not.
 
 **The claim is by index now, because the tree is numbered.** A session used to
 be handed whichever window was free, and could not be told which. It walks to
 one by name and takes it, so a `ctl` line has something to be about.
 
-**The frame is what clears the store, and that retired a two megabyte
-memset.** A run outlives the session it was lent to, so the last client's
-drawing is still in it, and every pixel of a window is on the screen. An
-uncleared slot would put the last client's work on the glass under the new
-client's name.
+**The run is the session's, bought here and detached at the clunk.** It
+arrives zero from the kernel, and the frame writes every pixel of it anyway.
+`window_chrome` paints the plinth's *face* over the window's whole rectangle
+before it chisels anything, and the well's face over the whole client area
+after, so every pixel a session can see is written by the frame. The window
+opens at its birth size, so the whole run is covered. That is what retired a
+two megabyte memset when a run still outlived its session. It is still what
+puts the frame on the glass.
 
-That used to be a `WIN_GROUND` over the whole allocation. `window_chrome`
-paints the plinth's *face* over the window's whole rectangle before it chisels
-anything, and the well's face over the whole client area after, so every pixel
-a session can see is written by the frame. The window opens at its birth size,
-so the whole run is covered.
+A run bought after the fork is this process's alone. The reader child was
+forked at start and holds none of these. So a `size` line may shrink one as
+well as grow it -- see `window_size`.
 
 The composite at the end is the window appearing. It walks the stack, so a
 window that opens under another shows up occluded rather than on top.
+
+`ENOSPC` is a window somebody else holds, or no window at all. `ENOMEM` is a
+machine with no run left, which is the one refusal a client can report.
 */
-window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_bounds_check {
+window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno #no_bounds_check {
 	if at < 0 || at >= MAX_WINDOWS {
-		return false
+		return vectra9.ENOSPC
 	}
 	win := &windows[at]
 	if win.used {
-		return win.owner == owner
+		return win.owner == owner ? vectra9.Errno(0) : vectra9.ENOSPC
+	}
+	base, err := libuser.segalloc(win_w * win_h * 4)
+	if err < 0 {
+		return vectra9.ENOMEM
 	}
 
 	was := stack_top()
 	win.owner = owner
 	win.used = true
+	win.pixels = ([^]u32)(base)
+	win.rows = win_h
 	win.w = win_w
 	win.h = win_h
 	win.title_n = 0
@@ -1847,12 +1846,19 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> bool #no_boun
 	// square is exactly the lamp -- there is no second painter for one.
 	lx, ly := lamp_at(at)
 	desk_paint(lx, ly, lx + LAMP, ly + LAMP)
-	return true
+	return vectra9.Errno(0)
 }
 
 /*
-window_close gives the slot back, keeps its memory, and repaints what it was
-covering.
+window_close gives the slot back, gives its memory back, and repaints what it
+was covering.
+
+**The run goes back with `segdetach`, after the composite.** The window
+below this one had its pixels the whole time it was hidden. `stack_drop`
+runs before the repaint, so nothing reads the closing window's pixels once
+the slot is free. The detach is last anyway, so that no reader of `pixels`
+runs after it. `pixels` is nil after it, so a reader that did would fault by
+name rather than read a run the kernel handed on.
 
 The composite at the end is the visible half of the backing store. A window
 below this one had its pixels the whole time it was hidden, so the glass can
@@ -1889,6 +1895,13 @@ window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 		repaint(x0, y0, x1 - x0, y1 - y0)
 		lx, ly := lamp_at(i)
 		desk_paint(lx, ly, lx + LAMP, ly + LAMP)
+
+		// And the memory, last. A detach that fails leaves the run held
+		// until the server exits. That is the leak this server lived with
+		// for two milestones, and the honest answer to a kernel that says no.
+		if win.pixels != nil && libuser.segdetach(uintptr(win.pixels)) == 0 {
+			win.pixels = nil
+		}
 	}
 }
 
@@ -1987,22 +2000,25 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 		/*
 		**Growing must work and shrinking is best effort.**
 
-		A run this server shares with its reader child cannot shrink -- Plan 9
-		refuses that on `s->ref > 1` and `docs/USER.md` says why: the pages
-		about to go back may already be somewhere in the sharer's kernel. This
-		process forked for the keyboard, so every window run is shared and
-		every shrink is refused.
+		A run shared with another process cannot shrink -- Plan 9 refuses
+		that on `s->ref > 1` and `docs/USER.md` says why: the pages about to
+		go back may already be somewhere in the sharer's kernel. This server's
+		runs were shared with its reader child while they were bought at
+		start, before the fork, and every shrink was refused. A run is bought
+		at `Tlopen` now, after the fork. It is this process's alone, and a
+		shrink gives the pages back.
 
-		That is a reason to keep the pages, not to refuse the client. A window
-		that gets smaller and keeps its run is a window that works; a window
-		that cannot get bigger is the cap this call exists to lift.
+		The rule stays as written, because it is about the kernel's answer
+		rather than about this server's history. A refused shrink is a reason
+		to keep the pages, not to refuse the client. A window that gets smaller
+		and keeps its run is a window that works; a window that cannot get
+		bigger is the cap this call exists to lift.
 		*/
 		need := uintptr(win_w) * uintptr(nh) * 4
 		err := libuser.segbrk(uintptr(win.pixels), uintptr(win.pixels) + need)
 		if err < 0 {
 			// Only a grow has to work. A refused shrink costs the pages and
-			// nothing else, and this server's runs are shared for its whole
-			// life, so every shrink is refused.
+			// nothing else.
 			if nh > win_h_at(win) {
 				return vectra9.ENOSPC
 			}
@@ -2694,8 +2710,12 @@ handler :: proc "contextless" (
 		w := node_win(node)
 		switch node_part(node) {
 		case PART_DATA:
-			if w < 0 || !window_open(m.fid, w) {
+			if w < 0 {
 				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			if oerr := window_open(m.fid, w); oerr != 0 {
+				reply^ = vectra9.error_reply(oerr)
 				return
 			}
 		case PART_CTL:

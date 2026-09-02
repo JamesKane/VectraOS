@@ -148,6 +148,11 @@ it back, and gives two of the four pages back. What that leaves is a run of
 two pieces, which is the shape `sweep` exists to check. The store into the
 tail is the one line that faults if the grow lied.
 
+`THIRD` and the three after it are `segdetach`. The program asks for one more
+page and gives it back whole. Then it asks the two questions the call must
+refuse: its own text, which is an image's shape, and an address no segment
+covers.
+
 `GO` is the kernel's, and the program waits on it between the second ask and
 the grow. The allocator hands out adjacent runs, so a grow that follows an
 ask with nothing between lands on the frames right after the run's block. A
@@ -172,6 +177,10 @@ ANON_GROWN :: 9
 ANON_TAIL :: 10
 ANON_SHRUNK :: 11
 ANON_GO :: 12
+ANON_THIRD :: 13
+ANON_DETACHED :: 14
+ANON_DETACH_TEXT :: 15
+ANON_DETACH_NONE :: 16
 
 ANON_PATTERN :: u64(0x5749_4E44_5749_4E44) // WINDWIND
 ANON_CHILD_MARK :: u64(0x0BAD_0BAD_0BAD_0BAD)
@@ -213,6 +222,10 @@ MAPPER_STREAM :: 5
 // caller to test it, and this is the program written to ask the wrong
 // question.
 MAPPER_BRK :: 6
+// And `segdetach` of the same attach, which a card may answer. The mapping
+// goes and the card's memory goes back to nobody, which `untracked_frees`
+// is what would say otherwise.
+MAPPER_DETACH :: 7
 
 BINDER_BOUND :: 1
 BINDER_OPENED :: 2
@@ -748,8 +761,11 @@ exits with a status that says so.
 `anon` is the one that reaches memory no file serves. It asks for half a
 megabyte and reads the first word before it writes anything. Then it stores a
 pattern at both ends of the run. Then it asks again, grows that second run by
-four pages, writes the last word of the tail, and gives two pages back. Then it
-asks twice more, with arithmetic the kernel must refuse. Then it forks.
+four pages, writes the last word of the tail, and gives two pages back.
+
+It asks for one page more and detaches it whole. Then it asks to detach its
+own text and an address nothing covers. Then it asks twice more, with
+arithmetic the kernel must refuse. Then it forks.
 
 The child asks for a run of its own and writes into it. Then it checks that the
 run it *inherited* still reads as its parent left it. That is the claim that a
@@ -2054,6 +2070,11 @@ vectra_user_mapper:
 	syscall
 	movq %rax, 48(%rbx)
 
+	movq %r15, %rdi
+	movq $$24, %rax
+	syscall
+	movq %rax, 56(%rbx)
+
 	movq $$99, %rdi
 	movq $$21, %rax
 	syscall
@@ -2132,6 +2153,25 @@ vectra_user_anon:
 	movq $$23, %rax
 	syscall
 	movq %rax, 88(%rbx)
+
+	movq $$0x1000, %rdi
+	movq $$22, %rax
+	syscall
+	movq %rax, 104(%rbx)
+	movq %rax, %rdi
+	movq $$24, %rax
+	syscall
+	movq %rax, 112(%rbx)
+
+	movq $$0x400000, %rdi
+	movq $$24, %rax
+	syscall
+	movq %rax, 120(%rbx)
+
+	movq $$0x1000, %rdi
+	movq $$24, %rax
+	syscall
+	movq %rax, 128(%rbx)
 
 	movq $$0x40000000, %rdi
 	movq $$22, %rax

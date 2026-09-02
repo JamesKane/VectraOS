@@ -186,9 +186,9 @@ address it landed at.
 quarter of a megabyte. A window's pixels are two megabytes, so a program that
 wants its own are a `segalloc` away and were unreachable before.
 
-The memory is zero, writable, never executable, and lasts as long as the
-process. Nothing releases one, for the same reason `segattach` has no other
-half: a program that asks for a backing store holds it until it exits.
+The memory is zero, writable, never executable, and lasts until the process
+exits or `segdetach` gives it back. That call is the other half of this one
+and of `segattach` alike.
 
 `EINVAL` is a request of nothing or one past the kernel's bound. `ENOMEM` is
 the machine having no run that long left, or this process holding as many
@@ -217,6 +217,24 @@ tail back. Only anonymous memory may be asked, which is what Plan 9's
 */
 segbrk :: proc "contextless" (addr: uintptr, top: uintptr) -> i64 {
 	return raw2(abi.SYS_SEGBRK, u64(addr), u64(top))
+}
+
+/*
+segdetach takes a segment out of this process, which is Plan 9's call of the
+same name and the other half of `segattach` and `segalloc`.
+
+`addr` is any address inside the segment. The whole segment goes. Its pages
+are unreachable when this returns. The memory behind them goes back to
+whoever owned it: the allocator for a run of anonymous memory, nobody for a
+card. A process may detach what it attached and what it allocated, and not
+the image it was born with. Plan 9 refuses the stack by name, and this refuses
+the text and data beside it for a reason `docs/USER.md` gives.
+
+`EINVAL` is an address no segment covers, or one in a segment that may not
+go.
+*/
+segdetach :: proc "contextless" (addr: uintptr) -> i64 {
+	return raw1(abi.SYS_SEGDETACH, u64(addr))
 }
 
 // note posts a note to one of the caller's own children. With no handler

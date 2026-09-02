@@ -887,11 +887,13 @@ first time the answer was that the test was asking the wrong process.
 - **Nothing on a frame can be pressed.** No close, no resize handle, no drag.
   Every one of those is a `ctl` line already, so what is missing is a pointing
   device, which this system does not have.
-- **Nothing gives a run back.** A window's memory belongs to the slot rather
-  than to the session, and a slot is never released. `segfree` is the Plan 9
-  call that changes it, and `docs/USER.md` names it with the other two.
-- **A window cannot grow past the run it was born with.** `segbrk` is the Plan
-  9 call that would lift it, and `docs/USER.md` names it with the other two.
+- ~~**Nothing gives a run back.**~~ Retired. A window's memory belongs to the
+  session now: `Tlopen` buys it and the clunk gives it back with `segdetach`,
+  which `docs/USER.md` owns. A slot between sessions holds no memory. A run
+  bought after the server's fork is its own, so a window may shrink as well
+  as grow.
+- ~~**A window cannot grow past the run it was born with.**~~ Retired.
+  `segbrk` is built, and `docs/USER.md` owns it.
 - **A window's `ctl` is exclusive and nothing else guards it.** A client that
   never opens its own controls leaves them for whoever walks to them. Users are
   the answer, and there are none.

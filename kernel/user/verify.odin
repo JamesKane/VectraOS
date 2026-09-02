@@ -4235,6 +4235,18 @@ verify_mapping :: proc(r: ^Result) {
 			cell(p, MAPPER_BRK) == refused(vectra9.EINVAL),
 			"and a card cannot be resized, because its extent is the hardware's",
 		)
+
+		// But it can be given back, and the second attach was. What is left
+		// on the list is one device segment, and `untracked_frees` after the
+		// teardown says the release handed the card's memory to nobody.
+		check(r, i64(cell(p, MAPPER_DETACH)) == 0, "and the second attach was detached whole")
+		cards := 0
+		for i in 0 ..< p.seg_count {
+			if p.segs[i] != nil && p.segs[i].kind == .Device {
+				cards += 1
+			}
+		}
+		check(r, cards == 1, "leaving one card on the process's list")
 	}
 
 	// The sweep, over a process whose segments are a card's frames. Ownership
@@ -5010,10 +5022,12 @@ verify_ctl :: proc(
 	record does: those frames are in no piece.
 
 	The server is parked between requests, which is what holds it still for
-	the walk. Its reader child shares the run and never received the grow.
-	So the child is short of exactly the pages the server's run gained, read
-	off the second piece of the server's record. `segment_grow` says why the
-	tail is the grower's alone.
+	the walk. Its reader child holds none of the window runs. They are bought
+	at `Tlopen` now, after the fork, and given back at the clunk with
+	`segdetach`. So the child is short of nothing, and maps nothing past what
+	it was given. While the runs were bought at start and shared, the child
+	was short of exactly the pages the server's run gained after the fork.
+	`segment_grow` says why.
 	*/
 	grown := 0
 	for i in 0 ..< server.seg_count {
@@ -5035,23 +5049,32 @@ verify_ctl :: proc(
 			child_swept.stray == 0 && child_swept.borrowed == 0,
 			"and maps the shared run's frames, and none past the end it was given",
 		)
-		check(r, child_swept.short == grown, "short of exactly the pages the server's run gained after the fork")
+		check(r, child_swept.short == 0, "and holds no window run at all, because those are bought after the fork")
 	}
 
 	/*
-	And smaller again, which the run does not follow.
+	And smaller again, and the run follows now.
 
 	**A shared run may not shrink**, which is `ibrk`'s `Einuse` and
 	`docs/USER.md`'s reason: another process maps the same frames and the ones
-	about to go back may already be somewhere in its kernel. The draw server
-	forked a reader child, so every window run it holds is shared.
+	about to go back may already be somewhere in its kernel. Every window run
+	was shared while the server bought them at start, before its fork. This
+	line used to say the run did not have to follow. A run is bought at
+	`Tlopen` now, after the fork, so it is the server's alone and the pages go
+	back. The frames say so below.
 
-	The window still gets smaller. Keeping the pages is what a refused shrink
-	costs, and refusing the *client* is not -- which is the distinction
-	`window_size` makes and this checks.
+	The window gets smaller either way. Keeping the pages is what a refused
+	shrink costs, and refusing the *client* is not -- which is the
+	distinction `window_size` makes and this checks.
 	*/
+	shrink_from := mem.pmm_stats().free_frames
 	_, serr := vfs.chan_write(cfd, 0, bytes_of("size 200 100\n"))
-	check(r, serr == vfs.OK, "and makes it smaller, which a shared run does not have to follow")
+	check(r, serr == vfs.OK, "and makes it smaller, and a run the server holds alone follows")
+	check(
+		r,
+		mem.pmm_stats().free_frames > shrink_from,
+		"and the machine is richer for it, because a run nobody shares may shrink",
+	)
 	check(r, is_desk(s, far_x, far_y), "which gives back the ground it was covering")
 
 	gn2, gerr2 := vfs.chan_read(cfd, 0, geo[:])
@@ -5495,6 +5518,31 @@ verify_anon :: proc(r: ^Result) {
 	check(r, i64(cell(p, ANON_GROWN)) == 0, "the second run grew by four pages when asked")
 	check(r, cell(p, ANON_TAIL) == ANON_PATTERN, "and a word stored at the new end came back")
 	check(r, i64(cell(p, ANON_SHRUNK)) == 0, "and it gave two of the four back")
+
+	/*
+	And a third run went back whole, which is `segdetach`.
+
+	The mapping and the segment both have to go, and each half has a check
+	that sees it alone. A detach that released the segment and left the
+	mapping is a stray leaf in the sweep below. One that unmapped and never
+	released is a live segment after the teardown, in the balance check at
+	the end. The two refusals are the rule `sys_segdetach` states: a run may
+	go, an image's shape may not, and an address nothing covers is nothing.
+	*/
+	third := uintptr(cell(p, ANON_THIRD))
+	check(r, third >= mem.USER_MIN && third < mem.USER_MAX, "a third run was asked for, one page, to give back")
+	check(r, i64(cell(p, ANON_DETACHED)) == 0, "and detached whole")
+	check(r, proc_segment_at(p, third) == nil, "so no segment of the process covers its address now")
+	check(
+		r,
+		cell(p, ANON_DETACH_TEXT) == refused(vectra9.EINVAL),
+		"while the text a program was born with is refused by kind",
+	)
+	check(
+		r,
+		cell(p, ANON_DETACH_NONE) == refused(vectra9.EINVAL),
+		"and an address no segment covers is refused by name",
+	)
 
 	// The wedge did its work: the grown piece does not start where the first
 	// piece ends. Without this the sweep's ownership question has one answer

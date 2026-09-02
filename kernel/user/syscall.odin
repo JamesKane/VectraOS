@@ -105,6 +105,7 @@ SYS_EXEC :: abi.SYS_EXEC
 SYS_SEGATTACH :: abi.SYS_SEGATTACH
 SYS_SEGALLOC :: abi.SYS_SEGALLOC
 SYS_SEGBRK :: abi.SYS_SEGBRK
+SYS_SEGDETACH :: abi.SYS_SEGDETACH
 
 // The longest path a program may name in one call. Long enough for anything
 // in the tree, short enough to sit on a kernel stack beside the copy buffer.
@@ -330,6 +331,8 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = sys_segalloc(a0)
 	case SYS_SEGBRK:
 		result = sys_segbrk(uintptr(a0), uintptr(a1))
+	case SYS_SEGDETACH:
+		result = sys_segdetach(uintptr(a0))
 
 	case SYS_SLEEP:
 		result = sys_sleep(a0)
@@ -1132,7 +1135,22 @@ sys_segbrk :: proc(addr: uintptr, top: uintptr) -> i64 {
 		`s->ref > 1` and so does this.
 
 		Growing has no such rule, here or there: it takes pages nobody had.
+
+		**A holder that is dead is not a sharer, and the dead are collected
+		here before the count is believed.** A concurrent server forks a
+		worker per parked request under `RFMEM` and `RFNOWAIT`. A worker that
+		answered and exited keeps its segments until `reap_orphans` collects
+		it, which `rfork` does at the moment it wants a slot.
+
+		The draw server's first shrink was refused for exactly that. Three
+		dead workers from the keyboard's checks each still counted as a holder
+		of every window run. So this collects at the moment it wants a sole
+		holder, the way `rfork` does, and only then refuses. A worker still
+		parked on a read is a live sharer and is refused as before.
 		*/
+		if seg.refs > 1 {
+			reap_orphans()
+		}
 		if seg.refs > 1 {
 			return -i64(vectra9.EBUSY)
 		}
@@ -1202,7 +1220,9 @@ is shared, and a moving grow refused every one of them.
 
 A piece bolted on the end takes pages nobody had. A sharer's mapping stays as
 true as it was and simply does not include the new tail, which is the honest
-answer: it never asked for it.
+answer: it never asked for it. The draw server's runs are its own now, bought
+after its fork and given back with `segdetach`. The rule stays for the next
+process that shares one.
 
 Plan 9 needs none of this. Its segments are a page map a fault fills in, so
 `ibrk` extends the map and the question never comes up. This is the same idea
@@ -1245,6 +1265,73 @@ segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i6
 	if newtop > p.map_next {
 		p.map_next = newtop
 	}
+	return 0
+}
+
+/*
+sys_segdetach takes a segment out of the process, which is Plan 9's call of
+the same name and the other half of `segattach` and `segalloc`.
+
+**A process may detach what it attached and what it allocated, and not the
+image it was born with.** `syssegdetach` refuses one segment by name, the
+stack, and would let a program detach its own text and die on the next
+instruction. This refuses the text and the data beside the stack, and the
+reason is not the program's. The kernel holds staging aliases to a blob's
+three frames, `Process.text`, `data` and `stack`. It reads the data page
+through the direct map for every check in `verify.odin`. A data segment gone
+under those aliases is a kernel that reads a frame the allocator handed on.
+
+So the rule is the one `segbrk` already draws. Only the run kinds may be
+asked, and the image's shape gets a refusal by name.
+
+**Unreachable before freed, the way a shrink is.** The mapping goes first,
+then the segment leaves the list, then the last holder's release frees the
+frames. A run shared under `RFMEM` is not freed by this at all. The release
+finds another holder, and the sharer's mapping stays exactly as true as it
+was. Plan 9's `putseg` is the same decrement.
+
+The list closes over the hole rather than leaving one. Everything that walks
+`segs` walks it to `seg_count`, and a nil in the middle is a case none of
+them has. The address bump does not come down. A detached run's addresses
+are never handed out again, which is the leak `Process.map_next` chose on
+purpose.
+
+`EINVAL` is an address no segment covers, or one inside a segment this
+process was born with.
+*/
+sys_segdetach :: proc(addr: uintptr) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ESRCH)
+	}
+	at := -1
+	for i in 0 ..< p.seg_count {
+		s := p.segs[i]
+		if s == nil {
+			continue
+		}
+		span := uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
+		if addr >= s.va && addr < s.va + span {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return -i64(vectra9.EINVAL)
+	}
+	s := p.segs[at]
+	if !segment_is_run(s.kind) {
+		return -i64(vectra9.EINVAL)
+	}
+	if mem.unmap_user(p.space, s.va, s.pages) != .None {
+		return -i64(vectra9.EINVAL)
+	}
+	for i in at ..< p.seg_count - 1 {
+		p.segs[i] = p.segs[i + 1]
+	}
+	p.seg_count -= 1
+	p.segs[p.seg_count] = nil
+	segment_release(s)
 	return 0
 }
 
