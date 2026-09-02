@@ -16,11 +16,13 @@ and not as a boot that hangs.
 package kernel
 
 import "base:intrinsics"
+import "base:runtime"
 
 import "kernel:arch"
 import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
+import "kernel:user"
 import "vsys:libodin"
 
 // Workers per phase: two per core on the largest machine this kernel counts. A
@@ -67,6 +69,7 @@ Smp_Result :: struct {
 	delays:      u64, // Deadlines the parking workers slept through
 	kick_ticks:  u64, // Ticks fifty kicked wakes took, all told
 	kicks:       u64, // Kicks the boot core sent while they ran
+	claims:      int, // Process slots claimed and given back, across cores
 }
 
 @(private = "file")
@@ -103,6 +106,61 @@ delay_worker :: proc "contextless" (arg: rawptr) {
 	core := sched.cpu().id
 	intrinsics.volatile_store(&worker_where[i], core)
 	intrinsics.volatile_store(&worker_done[i], true)
+}
+
+// The claimers: each takes a process slot through the real path, with a space,
+// a namespace and a descriptor group. It gives the slot back and writes down
+// every pid it was handed. Four of them at once on four cores is the race the
+// table lock exists for. A full table is a round that did not happen rather
+// than a failure. The ring 3 servers hold slots of their own after boot.
+@(private = "file")
+CLAIMERS :: 4
+@(private = "file")
+CLAIM_ROUNDS :: 24
+@(private = "file")
+claim_pids: [CLAIMERS][CLAIM_ROUNDS]u64
+@(private = "file")
+claim_code: [16]u8
+
+@(private = "file")
+claim_worker :: proc "contextless" (arg: rawptr) {
+	context = runtime.default_context()
+	context.allocator = mem.allocator()
+	i := int(uintptr(arg))
+	for round in 0 ..< CLAIM_ROUNDS {
+		p, err := user.load_held("smp-claim", claim_code[:])
+		if err != .None {
+			continue
+		}
+		claim_pids[i][round] = user.pid_of(p)
+		_ = user.destroy(p)
+	}
+	intrinsics.volatile_store(&worker_done[i], true)
+}
+
+// distinct_pids reports how many pids the claimers wrote down, and whether
+// any two of them were the same. Two claimers handed one pid is two claimers
+// handed one slot, which is the thing the lock forbids.
+@(private = "file")
+distinct_pids :: proc "contextless" () -> (claims: int, unique: bool) {
+	unique = true
+	for i in 0 ..< CLAIMERS {
+		for r in 0 ..< CLAIM_ROUNDS {
+			a := claim_pids[i][r]
+			if a == 0 {
+				continue
+			}
+			claims += 1
+			for j in 0 ..< CLAIMERS {
+				for s in 0 ..< CLAIM_ROUNDS {
+					if (j != i || s != r) && claim_pids[j][s] == a {
+						unique = false
+					}
+				}
+			}
+		}
+	}
+	return
 }
 
 @(private = "file")
@@ -281,6 +339,34 @@ verify_smp :: proc() {
 	}
 	scheck(&r, received >= u64(KICK_ROUNDS), "and the kicks arrived on the other cores")
 
+	// -- Two cores claim a process slot at once ---------------------------------
+
+	/*
+	Four claimers, each taking and giving back a process record through the
+	real path, at once. A claim finds a slot that is not live and makes it
+	live. Two cores that did that unlocked would both find the same slot and
+	both write a pid into it. Every pid handed out is written down, and one pid
+	in two places is the failure. The live count and the heap say the records
+	all came back.
+	*/
+	for i in 0 ..< CLAIMERS {
+		for r in 0 ..< CLAIM_ROUNDS {
+			claim_pids[i][r] = 0
+		}
+	}
+	live_before := user.stats().live
+	claim_heap := mem.live_objects(mem.heap_stats())
+	if run_workers(&r, "smp-claim", claim_worker, CLAIMERS, "every claimer finished inside the bound") {
+		unique: bool
+		r.claims, unique = distinct_pids()
+		scheck(&r, r.claims >= CLAIMERS * CLAIM_ROUNDS / 2, "the claimers were handed process records, most rounds")
+		scheck(&r, unique, "and no two claimers were handed one record")
+		scheck(&r, user.stats().live == live_before, "and every record they took was given back")
+		_ = sync.await(nothing_to_reap, nil, PATIENCE)
+		sched.reap()
+		scheck(&r, mem.live_objects(mem.heap_stats()) == claim_heap, "with the heap where it was")
+	}
+
 	// -- Nothing left behind --------------------------------------------------
 
 	// Each worker's stack comes back on the core it died on, when that core's
@@ -310,7 +396,9 @@ report_smp :: proc(r: ^Smp_Result) {
 		libodin.put_uint(&sink, u64(KICK_ROUNDS))
 		libodin.put_str(&sink, " kicked wakes in ")
 		libodin.put_uint(&sink, r.kick_ticks)
-		libodin.put_str(&sink, " ticks, heap balanced")
+		libodin.put_str(&sink, " ticks, ")
+		libodin.put_uint(&sink, u64(r.claims))
+		libodin.put_str(&sink, " process slots claimed across cores, heap balanced")
 		emit(&klog, .Ok, &sink)
 		return
 	}

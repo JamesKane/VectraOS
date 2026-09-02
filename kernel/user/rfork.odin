@@ -173,32 +173,29 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 	// `reap_orphans`.
 	reap_orphans()
 
-	child := free_slot()
+	// `RFNOWAIT` hands the child to the kernel at birth: no parent to wait
+	// for it, and `reap_orphans` collects it when it ends. Plan 9's detached
+	// child, and the answer to the orphan leak from the side that chooses
+	// it up front. `RFNOTEG` is a note group of the child's own.
+	child := claim_slot(
+		parent = flags & RFNOWAIT != 0 ? 0 : parent.pid,
+		detached = flags & RFNOWAIT != 0,
+		note_group = flags & RFNOTEG != 0 ? 0 : parent.note_group,
+	)
 	if child == nil {
 		return -i64(vectra9.EAGAIN)
 	}
 
 	space, merr := mem.space_new()
 	if merr != .None {
+		unload(child)
 		return -i64(vectra9.ENOMEM)
 	}
-	child^ = Process {
-		space      = space,
-		live       = true,
-		pid        = next_pid,
-		// `RFNOWAIT` hands the child to the kernel at birth: no parent to
-		// wait for it, and `reap_orphans` collects it when it ends. Plan 9's
-		// detached child, and the answer to the orphan leak from the side
-		// that chooses it up front.
-		parent     = flags & RFNOWAIT != 0 ? 0 : parent.pid,
-		detached   = flags & RFNOWAIT != 0,
-		note_group = flags & RFNOTEG != 0 ? next_pid : parent.note_group,
-	}
+	child.space = space
 	// The child inherits the parent's runs as its own segment list, below, so
 	// its first `segalloc` searches those and lands clear of them. There is no
 	// high-water mark to carry over: the list is the map, and the child has a
 	// copy of it the moment `fork_segments` returns.
-	next_pid += 1
 
 	// The parent's name, copied home like a spawned path. Two processes of
 	// one name tell a boot log less than they might. The pid is the field

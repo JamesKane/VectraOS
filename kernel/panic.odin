@@ -23,6 +23,8 @@ Three rules the code has to keep and the comments have to justify:
 */
 package kernel
 
+import "base:intrinsics"
+
 import "kernel:arch"
 import "kernel:drivers/console"
 import "kernel:drivers/fb"
@@ -43,7 +45,33 @@ comes back here, finds the flag, and stops with one line on the serial port.
 That covers an unmapped framebuffer, and a console whose bounds no longer fit.
 Without the flag it would recurse until the stack ran out.
 */
-@(private = "file") panicking: bool
+// The core that is reporting a fault, as its id plus one, or zero. A claim,
+// because two cores can fault at once. The second to arrive is a second
+// reporter, not a fault inside the panic handler, and it halts. Only the core
+// that holds the claim writes the screen and the serial line.
+@(private = "file") panic_core: u32
+
+// claim_panic takes the report for this core. It answers true when this core
+// already holds it, which is the panic path faulting inside itself. It halts
+// when another core holds it, because one report is enough.
+@(private = "file")
+claim_panic :: proc "contextless" () -> (nested: bool) {
+	me := u32(arch.percpu_id()) + 1
+	if _, won := intrinsics.atomic_compare_exchange_strong(&panic_core, 0, me); won {
+		return false
+	}
+	if intrinsics.atomic_load(&panic_core) == me {
+		return true
+	}
+	arch.halt_forever()
+}
+
+// panicking reports whether any core holds the report, for the handlers that
+// stop the other cores.
+@(private = "file")
+panicking :: proc "contextless" () -> bool {
+	return intrinsics.atomic_load(&panic_core) != 0
+}
 
 /*
 Set by the boot self-test around a deliberate `int3`.
@@ -76,15 +104,14 @@ panic_trap :: proc "contextless" (t: ^arch.Trap) -> bool {
 		return true
 	}
 
-	if panicking {
-		// Second time through: the panic path itself faulted. Say so on the
-		// one sink that cannot be the cause and stop.
+	if claim_panic() {
+		// Second time through on this core: the panic path itself faulted.
+		// Say so on the one sink that cannot be the cause and stop.
 		if serial.present {
 			uart.write_string(&serial, "\n[ FAIL ] fault inside the panic handler -- halting\n")
 		}
 		arch.halt_forever()
 	}
-	panicking = true
 	stop_other_cores()
 
 	open_panic_screen(t.name)
@@ -269,10 +296,9 @@ fatal as a fault and deserves the same screen. Separate from `panic_trap` only
 because there is no register state to report.
 */
 panic_stop :: proc "contextless" (reason: string) -> ! {
-	if panicking {
+	if claim_panic() {
 		arch.halt_forever()
 	}
-	panicking = true
 	stop_other_cores()
 
 	open_panic_screen("SYSTEM FAULT")
@@ -355,7 +381,7 @@ an NMI. One is then hardware reporting something this kernel does not handle,
 and that is a panic of its own.
 */
 on_nmi :: proc "contextless" (r: arch.Resume) -> arch.Resume {
-	if panicking {
+	if panicking() {
 		arch.halt_forever()
 	}
 	panic_stop("unexpected non-maskable interrupt")

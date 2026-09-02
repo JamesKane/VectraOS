@@ -110,7 +110,11 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 	// never refused for a slot a dead worker is sitting on. See `reap_orphans`.
 	reap_orphans()
 
-	p := free_slot()
+	p := claim_slot(
+		parent = parent != nil ? parent.pid : 0,
+		detached = false,
+		note_group = parent != nil ? parent.note_group : 0,
+	)
 	if p == nil {
 		// The table is full, which is a resource the caller can wait for
 		// rather than a request that can never work.
@@ -119,16 +123,10 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 
 	space, merr := mem.space_new()
 	if merr != .None {
+		unload(p)
 		return nil, vectra9.ENOMEM
 	}
-	p^ = Process {
-		space      = space,
-		live       = true,
-		pid        = next_pid,
-		parent     = parent != nil ? parent.pid : 0,
-		note_group = parent != nil ? parent.note_group : next_pid,
-	}
-	next_pid += 1
+	p.space = space
 
 	// The path, copied home. The caller's string may live on a syscall
 	// stack, and this record outlives that stack by the child's lifetime.
@@ -253,6 +251,8 @@ lies about which tenant answered.
 */
 @(private)
 find_child :: proc "contextless" (caller_pid: u64, pid: u64) -> ^Process #no_bounds_check {
+	guard := sync.acquire(&table_lock)
+	defer sync.release(&table_lock, guard)
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]
 		if p.live && p.pid == pid && p.parent == caller_pid {

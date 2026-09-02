@@ -187,11 +187,35 @@ is, on the NMI's own stack. Nothing else in this kernel sends an NMI. One that
 arrives with the flag clear is hardware reporting something unhandled, and
 that is a panic of its own.
 
+## The process table
+
+`kernel/user` claimed a slot by finding one that was not live and making it
+live, and released one by zeroing it. Two cores that claimed at once would both
+find the same slot, and a release on one core could wipe a newborn on another.
+Both windows are an instruction wide. `table_lock` covers the claim, the pid
+counter, the release, the collector's claim and every scan of the table. What
+it does not cover is the teardown that can park: closing a descriptor group, a
+namespace, a space.
+
+Those run on a record already claimed for collection under the lock, so
+nothing else will reach for it. The pid re-check `collect` used to make after
+its claim is the lock now.
+
+Four claimers on four cores take and give back a record twenty-four times each,
+through the real path. Every pid handed out is written down. One pid in two
+places is the failure. The control that claims unlocked hands two claimers one
+slot within the first rounds.
+
+What the control showed is worth a line. Two cores handed one slot both
+faulted and both reported. The reports interleaved on the serial line,
+because `panicking` was a flag two cores could set. It is a claim by core now.
+The second core to fault halts, and one core writes the report.
+
 ## What the self-test proves
 
 `verify_smp` runs after the cores are up. The boot thread never parks on
 anything a missing core would have to end, and every wait has a bound.
-Seventeen checks:
+Twenty-three checks:
 
 - every core the bootloader listed is online, and there is more than one
 - every core's tick count moves over twenty ticks of the boot core's clock
@@ -206,6 +230,9 @@ Seventeen checks:
   boot thread spins, each ran and reported. A core kicked for each.
   The fifty together cost fewer ticks than half of them would have waited,
   and the kicks arrived on the other cores
+- four claimers took and gave back process records through the real path
+  at once, most rounds succeeded, no pid was handed out twice, every record
+  came back, and the heap is where it was
 - every core reaps its own dead, and the heap is balanced afterwards
 
 The ring 3 servers that `verify_user` leaves running -- the console, the
@@ -222,9 +249,6 @@ check.
 - **The log has no lock.** Only the boot core logs, by discipline. A panic on
   any core stops every other core first, so one core writes the fault report.
   An ordinary log line from a second core would interleave.
-- **The process table has no lock.** `kernel/user` claims a slot by finding
-  one that is not live. Two `rfork` calls on two cores can find the same one.
-  The ring 3 servers running after boot have not tripped it. It is next.
 - **`cpu_class` is still one class.** Every core reports `.Performance` at
   full capacity, so the placement policy spreads by load alone. The three
   tiers `docs/SCHED.md` argues wait for an arm64 `cpu_class`.

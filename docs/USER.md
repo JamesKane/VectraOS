@@ -265,8 +265,8 @@ still translating through.
 
 **On one core that ordering is safe and the argument is narrow.** The store and
 the switch are inside the same handler, with interrupts off, so no observer can
-run between them. It stops being safe on a second core, and it goes on the same
-list as `Chan.refs`.
+run between them. On a second core the scheduler lock is held across the
+switch, and `docs/SMP.md` says why that closes the same window.
 
 `SYS_EXIT` arrived one milestone later with the same shape and none of the
 protection, because a dispatcher runs with interrupts on. It masks by hand. The
@@ -1603,10 +1603,10 @@ the collector never looked at, whose thread has not run. It passes the
 
 `collect` takes the claim and then reads the pid again, and gives a claim
 on a slot that changed tenants back untouched. The pid is the generation: monotonic, never reused, the
-number `wait` already leans on. `hangup_dead` does the same with its
-exchange, and puts a table it took from a newborn straight back. On one core
-nothing runs between the two exchanges, and that is the sentence a second
-core retires.
+number `wait` already leans on. `hangup_dead` does its
+exchange under the table lock now, and so does `collect`'s claim. The pid is
+still the identity across the teardown that the lock cannot cover, and
+`docs/SMP.md` records what the lock is for.
 
 A self-test that wants to look at a detached process has to hold it alive to
 do so. `nowaiter`'s child and `memfork`'s orphan both wait for a word from

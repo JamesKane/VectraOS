@@ -318,6 +318,24 @@ MAX_PROCESSES :: 12
 @(private)
 processes: [MAX_PROCESSES]Process
 
+/*
+The lock over the table: who holds a slot, and which tenant it holds.
+
+A claim finds a slot that is not live and makes it live, and a release zeroes
+it. Two cores that do the first at once would both find the same slot, and one
+core zeroing while another claims would wipe a newborn. Both are one
+instruction wide and both are real on a second core. So the claim, the release,
+the pid counter and every scan of the table are under this lock.
+
+What is not under it is anything that can park: closing a descriptor group, a
+namespace, a space. Those run on a record that is already claimed for
+collection, with `collecting` set under the lock. Nothing else will touch it,
+and the lock is let go of before they begin. The pid is still the identity
+across that gap, which is what `collect` re-checks on the far side.
+*/
+@(private)
+table_lock: sync.Spinlock
+
 @(private)
 loaded: int
 @(private = "file")
@@ -345,11 +363,13 @@ Stats :: struct {
 
 stats :: proc "contextless" () -> Stats {
 	live := 0
+	guard := sync.acquire(&table_lock)
 	for i in 0 ..< MAX_PROCESSES {
 		if processes[i].live {
 			live += 1
 		}
 	}
+	sync.release(&table_lock, guard)
 	return Stats {
 		live = live,
 		loaded = loaded,
@@ -630,23 +650,18 @@ load_held :: proc(name: string, code: []u8) -> (^Process, mem.Error) {
 		return nil, .Not_Canonical
 	}
 
-	p := free_slot()
+	p := claim_slot(parent = 0, detached = false, note_group = 0)
 	if p == nil {
 		return nil, .Out_Of_Memory
 	}
 
 	space, err := mem.space_new()
 	if err != .None {
+		unload(p)
 		return nil, err
 	}
-	p^ = Process {
-		name       = name,
-		space      = space,
-		live       = true,
-		pid        = next_pid,
-		note_group = next_pid,
-	}
-	next_pid += 1
+	p.name = name
+	p.space = space
 
 	p.ns = vfs.ns_fork(vfs.boot_namespace, {.Copy})
 	if p.ns == nil {
@@ -821,21 +836,23 @@ tenants is given back untouched. The loser answers false, which is the answer
 it would get from a record that was already gone.
 */
 collect :: proc(p: ^Process, pid: u64) -> bool {
-	if p == nil || !p.live || p.pid != pid {
+	if p == nil {
 		return false
 	}
-	if p.thread != nil && !intrinsics.volatile_load(&p.exit.done) {
-		return false
+	// The check and the claim are one step under the table lock, so a slot
+	// cannot change tenants between them. One collector: the reaper takes a
+	// detached process the moment it ends, and a fork or a self-test may reach
+	// for the same record a tick later. The second finds `collecting` set.
+	guard := sync.acquire(&table_lock)
+	ok := p.live && p.pid == pid && !p.collecting
+	if ok && p.thread != nil && !intrinsics.volatile_load(&p.exit.done) {
+		ok = false
 	}
-	// One collector. The reaper takes a detached process the moment it ends,
-	// and a fork or a self-test may reach for the same record a tick later.
-	if _, won := intrinsics.atomic_compare_exchange_strong(&p.collecting, false, true); !won {
-		return false
+	if ok {
+		p.collecting = true
 	}
-	if p.pid != pid {
-		// Reborn between the check and the claim. The claim is the newborn's
-		// now, and it goes back before anything else is touched.
-		intrinsics.volatile_store(&p.collecting, false)
+	sync.release(&table_lock, guard)
+	if !ok {
 		return false
 	}
 	unload(p)
@@ -882,6 +899,8 @@ reparent_children :: proc "contextless" (dying_pid: u64) #no_bounds_check {
 	if dying_pid == 0 {
 		return
 	}
+	guard := sync.acquire(&table_lock)
+	defer sync.release(&table_lock, guard)
 	for i in 0 ..< MAX_PROCESSES {
 		c := &processes[i]
 		if c.live && c.parent == dying_pid {
@@ -940,21 +959,16 @@ argued.
 hangup_dead :: proc() -> (released: int) #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]
-		pid := p.pid
-		if !p.live || !intrinsics.volatile_load(&p.exit.done) {
-			continue
+		// The check and the exchange are one step under the table lock, so
+		// the table taken is the dead tenant's and never a newborn's. The
+		// release is outside it, because closing a descriptor can park.
+		guard := sync.acquire(&table_lock)
+		t: ^Fd_Table
+		if p.live && intrinsics.volatile_load(&p.exit.done) {
+			t = intrinsics.atomic_exchange(&p.fdt, nil)
 		}
-		if t := intrinsics.atomic_exchange(&p.fdt, nil); t != nil {
-			if p.pid != pid {
-				// The slot changed tenants between the check and the
-				// exchange, and the table taken is a newborn's. It goes
-				// straight back. On one core nothing ran between the two
-				// exchanges, so the newborn never saw its table gone. The
-				// day a second core makes that window real, this is the
-				// line that has to become a lock. See `collect`.
-				intrinsics.atomic_store(&p.fdt, t)
-				continue
-			}
+		sync.release(&table_lock, guard)
+		if t != nil {
 			fdt_release(t)
 			released += 1
 		}
@@ -1025,11 +1039,14 @@ reaper_start :: proc() -> bool {
 reap_orphans :: proc() -> (collected: int) #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]
+		// The candidate is read under the lock and named by pid, and
+		// `collect` checks the name again under the lock before it claims.
+		guard := sync.acquire(&table_lock)
 		pid := p.pid
-		if p.live && p.detached && intrinsics.volatile_load(&p.exit.done) {
-			if collect(p, pid) {
-				collected += 1
-			}
+		due := p.live && p.detached && intrinsics.volatile_load(&p.exit.done)
+		sync.release(&table_lock, guard)
+		if due && collect(p, pid) {
+			collected += 1
 		}
 	}
 	return collected
@@ -1078,15 +1095,43 @@ unload :: proc(p: ^Process) {
 	for i in 0 ..< p.seg_count {
 		segment_release(p.segs[i])
 	}
+	// The release, under the lock, so a claim on another core sees the slot
+	// whole and free rather than half zeroed and live.
+	guard := sync.acquire(&table_lock)
 	p^ = Process{}
+	sync.release(&table_lock, guard)
 }
 
+/*
+claim_slot takes a free slot and makes it live, with its pid, in one step.
+
+Everything a second core could race on is written here: `live`, the pid,
+the parent, and the note group, with the pid counter advanced under the same
+hold. The caller fills in the rest of the record on a slot that is already
+its own. A claim that fails later -- no space, no namespace -- is given back
+through `unload`, which is what a record with nothing in it needs.
+
+`note_group` of zero means `the new pid`. A process with no parent wants that,
+and so does a child forked into a group of its own.
+*/
 @(private)
-free_slot :: proc "contextless" () -> ^Process #no_bounds_check {
+claim_slot :: proc "contextless" (parent: u64, detached: bool, note_group: u64) -> ^Process #no_bounds_check {
+	guard := sync.acquire(&table_lock)
+	defer sync.release(&table_lock, guard)
 	for i in 0 ..< MAX_PROCESSES {
-		if !processes[i].live {
-			return &processes[i]
+		p := &processes[i]
+		if p.live {
+			continue
 		}
+		p^ = Process {
+			live       = true,
+			pid        = next_pid,
+			parent     = parent,
+			detached   = detached,
+			note_group = note_group == 0 ? next_pid : note_group,
+		}
+		next_pid += 1
+		return p
 	}
 	return nil
 }
@@ -1125,4 +1170,10 @@ open_standard :: proc(p: ^Process) {
 			return
 		}
 	}
+}
+
+// pid_of is a process's pid, for a caller outside this package that holds a
+// record and wants the identity rather than the slot.
+pid_of :: proc "contextless" (p: ^Process) -> u64 {
+	return p == nil ? 0 : p.pid
 }

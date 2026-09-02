@@ -795,7 +795,10 @@ sys_notepg :: proc(pid: u64, addr: uintptr, length: int) -> i64 #no_bounds_check
 		group = child.note_group
 	}
 
+	// Under the table lock, so the group is read whole. A member that ended or
+	// was born half way through the scan is either in it or not.
 	noted := 0
+	guard := sync.acquire(&table_lock)
 	for i in 0 ..< MAX_PROCESSES {
 		q := &processes[i]
 		if q == p || !q.live || q.note_group != group {
@@ -805,6 +808,7 @@ sys_notepg :: proc(pid: u64, addr: uintptr, length: int) -> i64 #no_bounds_check
 			noted += 1
 		}
 	}
+	sync.release(&table_lock, guard)
 	return i64(noted)
 }
 
