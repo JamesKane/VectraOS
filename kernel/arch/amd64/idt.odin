@@ -352,7 +352,7 @@ idt_init :: proc "contextless" () {
 		limit = u16(size_of(idt) - 1),
 		base  = u64(uintptr(&idt[0])),
 	}
-	asm(rawptr){"lidt ($0)", "r,~{memory}"}(&idtr)
+	asm(p: rawptr) [#volatile, #clobber memory] { lidt [p] }(&idtr)
 }
 
 @(private = "file")
@@ -372,12 +372,12 @@ set_gate :: proc "contextless" (vector: int, entry: uintptr, ist: u8) #no_bounds
 // resume from. That makes it the only end-to-end test of this file that does
 // not crash on purpose.
 breakpoint :: proc "contextless" () {
-	asm(){"int3", "~{memory}"}()
+	asm() [#volatile, #clobber memory] { int3 }()
 }
 
 read_idt_limit :: proc "contextless" () -> u16 {
 	pointer: Descriptor_Pointer
-	asm(rawptr){"sidt ($0)", "r,~{memory}"}(&pointer)
+	asm(p: rawptr) [#volatile, #clobber memory] { sidt [p] }(&pointer)
 	return pointer.limit
 }
 
@@ -510,7 +510,7 @@ fpu_init :: proc "contextless" (area: rawptr) {
 // voluntary switch takes the same path a preemption does, which is the whole
 // reason it is an `int` and not a call.
 yield_trap :: proc "contextless" () {
-	asm(){"int $$0x81", "~{memory}"}()
+	asm() [#volatile, #clobber memory] { int 0x81 }()
 }
 
 // -- Reporting ---------------------------------------------------------------
@@ -657,14 +657,15 @@ describe_error :: proc "contextless" (s: ^libodin.Sink, t: ^Trap) {
 // -- The entry stubs ---------------------------------------------------------
 
 /*
-Two hundred and fifty-six entry points and the tail they share, emitted by the
-assembler.
+Two hundred and fifty-six entry points and the tail they share, in `isr.S`.
 
-`proc "naked"`, because there must be no prologue. The CPU already pushed an
-interrupt frame, and anything the compiler adds before the first instruction
-corrupts it. Nothing ever calls this procedure -- it is a container for the
-symbols the blob defines, and the `retq` the compiler puts after it is
-unreachable.
+Assembly in a file rather than a template, for three reasons the template
+form cannot meet. The stubs are two hundred and fifty-six copies of one
+sequence with a vector number baked in, which is `.rept`. The error-code
+list is an assembler `.if`. And the whole thing defines two global symbols
+this file names with `foreign`, where a template's labels are its own.
+clang assembles it and the kernel link takes the object, which `build.odin`
+arranges.
 
 The tail saves the general-purpose registers *and* the x87 and SSE state. It is
 also the only code in Vectra that reloads `rsp` from something other than a
@@ -698,83 +699,3 @@ so every crossing swaps exactly once. The privilege comes out of the CS the CPU
 pushed. That is offset 24 on the way in, and offset 8 once the vector and the
 error code come off. See `percpu.odin`, which has the one hazard this leaves.
 */
-@(export)
-vectra_isr_blob :: proc "naked" () {
-	asm(){`
-.balign 16
-.globl vectra_isr_common
-vectra_isr_common:
-	cld
-	testb $$3, 24(%rsp)
-	jz 1f
-	swapgs
-1:
-	pushq %rax
-	pushq %rbx
-	pushq %rcx
-	pushq %rdx
-	pushq %rsi
-	pushq %rdi
-	pushq %rbp
-	pushq %r8
-	pushq %r9
-	pushq %r10
-	pushq %r11
-	pushq %r12
-	pushq %r13
-	pushq %r14
-	pushq %r15
-
-	movq %rsp, %rdi
-	subq $$528, %rsp
-	andq $$-16, %rsp
-	fxsave (%rsp)
-	movq %rsp, %rsi
-
-	subq $$16, %rsp
-	movq %rsp, %rdx
-	movq %rsp, %r12
-	call vectra_trap_dispatch
-
-	movq 8(%r12), %rax
-	fxrstor (%rax)
-	movq 0(%r12), %rsp
-
-	popq %r15
-	popq %r14
-	popq %r13
-	popq %r12
-	popq %r11
-	popq %r10
-	popq %r9
-	popq %r8
-	popq %rbp
-	popq %rdi
-	popq %rsi
-	popq %rdx
-	popq %rcx
-	popq %rbx
-	popq %rax
-	addq $$16, %rsp
-	testb $$3, 8(%rsp)
-	jz 2f
-	swapgs
-2:
-	iretq
-
-.balign 16
-.globl vectra_isr_stubs
-vectra_isr_stubs:
-.set vector, 0
-.rept 256
-	.balign 16
-	.if (vector==8)||(vector==10)||(vector==11)||(vector==12)||(vector==13)||(vector==14)||(vector==17)||(vector==21)||(vector==29)||(vector==30)
-	.else
-	pushq $$0
-	.endif
-	pushq $$vector
-	jmp vectra_isr_common
-.set vector, vector + 1
-.endr
-`, "~{memory}"}()
-}

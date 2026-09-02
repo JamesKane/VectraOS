@@ -35,6 +35,7 @@ BUILD_DIR :: "build"
 ESP_DIR :: "build/esp"
 KERNEL_ELF :: "build/vectra.elf"
 KERNEL_OBJ :: "build/vectra.o"
+
 USER_DIR :: "build/user"
 
 /*
@@ -75,11 +76,39 @@ silently linking an amd64 script into an arm64 image.
 */
 Arch_Config :: struct {
 	odin_target:   string,
+	clang_target:  string,   // What clang assembles the `.S` files for
+	asm_sources:   []string, // The `.S` files the kernel links, this arch's own
 	ld_emulation:  string,
 	link_script:   string,
 	qemu:          string,
 	qemu_machine:  []string,
 	efi_boot_name: string,
+}
+
+/*
+The assembly the kernel links beside its own object, per architecture. The
+interrupt stubs, the syscall entry, the GDT reload, the FPU hold the
+scheduler's self-test spins in, and the ring 3 program blobs.
+
+**These are files rather than `asm` blocks because a block cannot define a
+symbol.** Odin's inline assembly is a template since `dev-2026-09`, checked
+against the target's encoding tables, with labels that never leave it. The
+CPU enters the stubs, the programs are bytes under global names, and the GDT
+reload needs the address of its own landing label. clang assembles each into
+an ELF object and `ld.lld` takes them with `vectra.o`. The `.S` files keep
+the AT&T syntax the blocks always had, `$` and all.
+
+Every one of them is the architecture's, which is why the list is a row of
+this table. A port writes its own and names them here. The files carry the
+`_amd64` suffix or live under `arch/amd64`, so nothing generic holds machine
+code.
+*/
+asm_amd64 := [?]string{
+	"kernel/arch/amd64/isr.S",
+	"kernel/arch/amd64/syscall_entry.S",
+	"kernel/arch/amd64/gdt.S",
+	"kernel/arch/amd64/fpu_hold.S",
+	"kernel/user/programs_amd64.S",
 }
 
 // Machine lines live at package scope: a slice of a compound literal built
@@ -93,6 +122,8 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 	case .amd64:
 		return {
 			odin_target   = "freestanding_amd64_sysv",
+			clang_target  = "x86_64-unknown-elf",
+			asm_sources   = asm_amd64[:],
 			ld_emulation  = "elf_x86_64",
 			link_script   = "kernel/link_amd64.ld",
 			qemu          = "qemu-system-x86_64",
@@ -102,6 +133,7 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 	case .arm64:
 		return {
 			odin_target   = "freestanding_arm64",
+			clang_target  = "aarch64-unknown-elf",
 			ld_emulation  = "aarch64elf",
 			link_script   = "kernel/link_arm64.ld",
 			qemu          = "qemu-system-aarch64",
@@ -111,6 +143,7 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 	case .riscv64:
 		return {
 			odin_target   = "freestanding_riscv64",
+			clang_target  = "riscv64-unknown-elf",
 			ld_emulation  = "elf64lriscv",
 			link_script   = "kernel/link_riscv64.ld",
 			qemu          = "qemu-system-riscv64",
@@ -242,9 +275,21 @@ build_kernel :: proc(opts: Options) {
 	}
 	run(compile[:])
 
+	// The assembly, one object each. `-target` names the ELF the kernel is
+	// and not the host clang runs on. That is what lets a macOS clang
+	// assemble for this link at all.
+	objects := [dynamic]string{KERNEL_OBJ}
+	for src in cfg.asm_sources {
+		obj := fmt.tprintf("%s/%s.o", BUILD_DIR, filepath_stem(src))
+		step("assembling %s", src)
+		run({"clang", "-target", cfg.clang_target, "-c", src, "-o", obj})
+		append(&objects, obj)
+	}
+
 	step("linking %s", KERNEL_ELF)
-	run({
-		"ld.lld", KERNEL_OBJ,
+	link := [dynamic]string{"ld.lld"}
+	append(&link, ..objects[:])
+	append(&link,
 		"-o", KERNEL_ELF,
 		"-m", cfg.ld_emulation,
 		"-T", cfg.link_script,
@@ -254,7 +299,8 @@ build_kernel :: proc(opts: Options) {
 		"--no-dynamic-linker",
 		"-z", "text",
 		"-z", "max-page-size=0x1000",
-	})
+	)
+	run(link[:])
 
 	if info, err := os.stat(KERNEL_ELF, context.allocator); err == nil {
 		step("kernel image is %d bytes", info.size)
@@ -540,6 +586,20 @@ clean :: proc() {
 }
 
 // -- Process and file helpers ------------------------------------------------
+
+// filepath_stem is a path's last component without its extension, which is
+// what an object file is named after: `kernel/user/programs.S` assembles to
+// `build/programs.o`.
+filepath_stem :: proc(path: string) -> string {
+	name := path
+	if i := strings.last_index_byte(name, '/'); i >= 0 {
+		name = name[i + 1:]
+	}
+	if i := strings.last_index_byte(name, '.'); i > 0 {
+		name = name[:i]
+	}
+	return name
+}
 
 run :: proc(command: []string) {
 	desc := os.Process_Desc {

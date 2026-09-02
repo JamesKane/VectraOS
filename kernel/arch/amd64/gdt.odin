@@ -252,40 +252,40 @@ come from MSRs in long mode, and per-CPU state will live behind GS. On Intel, a
 non-null selector loaded into either one *clears* the corresponding base MSR.
 Null keeps that from being a surprise the day GS starts meaning something.
 */
+/*
+load_gdt is `vectra_load_gdt` in `gdt.S`: `lgdt`, a far return that reloads
+CS, and the data selectors after it.
+
+Assembly in a file rather than a template. The far return needs the
+address of its own landing label, and a template's labels are jump targets
+only. It takes the pointer, the code selector and the data selector in the
+System V argument registers. That is the one calling convention this kernel
+and clang agree on.
+*/
+foreign {
+	vectra_load_gdt :: proc "sysv" (pointer: ^Descriptor_Pointer, code: u64, data: u64) ---
+}
+
 @(private = "file")
 load_gdt :: proc "contextless" (pointer: ^Descriptor_Pointer) {
-	asm(rawptr, u64, u64){`
-		lgdt ($0)
-		pushq $1
-		leaq 1f(%rip), %rax
-		pushq %rax
-		lretq
-	1:
-		movw $2, %ax
-		movw %ax, %ds
-		movw %ax, %es
-		movw %ax, %ss
-		xorw %ax, %ax
-		movw %ax, %fs
-		movw %ax, %gs
-	`, "r,i,i,~{rax},~{memory}"}(pointer, u64(KERNEL_CODE_SEL), u64(KERNEL_DATA_SEL))
+	vectra_load_gdt(pointer, u64(KERNEL_CODE_SEL), u64(KERNEL_DATA_SEL))
 }
 
 // load_tr points the CPU at our TSS. Marks the descriptor busy as a side
 // effect, which is why gdt_init must not be run twice against the same table.
 @(private = "file")
 load_tr :: proc "contextless" (selector: u16) {
-	asm(u16){"ltr $0", "r,~{memory}"}(selector)
+	asm(s: u16) [#volatile, #clobber memory] { ltr s }(selector)
 }
 
 // read_cs and read_tr exist so the boot self-test can confirm the reload took,
 // rather than assuming it because nothing crashed.
 read_cs :: proc "contextless" () -> u16 {
-	return asm() -> u16 {"movw %cs, $0", "=r"}()
+	return asm() -> (r: u16) [#volatile] { mov r, %cs }()
 }
 
 read_tr :: proc "contextless" () -> u16 {
-	return asm() -> u16 {"str $0", "=r"}()
+	return asm() -> (r: u16) [#volatile] { str r }()
 }
 
 /*

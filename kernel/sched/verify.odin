@@ -25,6 +25,7 @@ package sched
 import "vsys:libodin"
 import "base:intrinsics"
 
+import "kernel:arch"
 import "kernel:mem"
 import "kernel:sync"
 
@@ -90,42 +91,12 @@ recognisably somebody else's.
 sums: [WORKER_COUNT]f64
 
 /*
-fpu_hold loads four XMM registers, spins until `flag`, and sums them back.
-
-    xmm0 = v    xmm1 = 2v    xmm2 = 3v    xmm3 = 4v    ->  out = 10v
-
-The spin is in here rather than in Odin around it, because that is the whole
-point. Between the fill and the sum there must be no instruction the compiler
-chose. Given one, it will use these registers for something of its own, and
-destroy the thing under measurement. The same loop increments `counter`, so
-progress and the FPU check come out of the same spin.
-
-All four registers are declared clobbered, so nothing of the compiler's is
-living in them across the call either.
+fpu_hold is `arch.fpu_hold`: four vector registers filled, held across every
+preemption in a spin the flag ends, and summed back. The assembly is the
+architecture's, in `kernel/arch/amd64/fpu_hold.S`, and `docs/TESTING.md`
+records why it has to be assembly at all.
 */
-@(private = "file")
-fpu_hold :: proc "contextless" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) {
-	asm(rawptr, rawptr, rawptr, rawptr) {
-		`
-	movsd ($0), %xmm0
-	movapd %xmm0, %xmm1
-	addsd %xmm0, %xmm1
-	movapd %xmm1, %xmm2
-	addsd %xmm0, %xmm2
-	movapd %xmm2, %xmm3
-	addsd %xmm0, %xmm3
-1:
-	incq ($3)
-	cmpb $$0, ($1)
-	je 1b
-	addsd %xmm1, %xmm0
-	addsd %xmm3, %xmm2
-	addsd %xmm2, %xmm0
-	movsd %xmm0, ($2)
-`,
-		"r,r,r,r,~{xmm0},~{xmm1},~{xmm2},~{xmm3},~{memory}",
-	}(rawptr(value), rawptr(flag), rawptr(out), rawptr(counter))
-}
+fpu_hold :: arch.fpu_hold
 @(private = "file")
 order: [4]int
 @(private = "file")

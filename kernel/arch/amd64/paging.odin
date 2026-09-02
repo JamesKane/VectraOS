@@ -284,7 +284,7 @@ current_address_space :: proc "contextless" () -> uintptr {
 // flush_page drops one page's translation. The memory clobber keeps the
 // compiler from moving the stores that changed the entry past it.
 flush_page :: proc "contextless" (virt: uintptr) {
-	asm(uintptr){"invlpg ($0)", "r,~{memory}"}(virt)
+	asm(v: uintptr) [#volatile, #clobber memory] { invlpg [v] }(virt)
 }
 
 /*
@@ -308,5 +308,5 @@ flush_all :: proc "contextless" () {
 // read_cr2 returns the faulting address recorded by the last page fault. Only
 // meaningful inside a #PF handler, and only before interrupts are re-enabled.
 read_cr2 :: proc "contextless" () -> uintptr {
-	return uintptr(asm() -> u64 {"movq %cr2, $0", "=r"}())
+	return uintptr(asm() -> (r: u64) [#volatile] { mov r, %cr2 }())
 }

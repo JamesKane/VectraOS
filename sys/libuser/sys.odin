@@ -25,45 +25,8 @@ package libuser
 import "vsys:abi"
 import "vsys:vectra9"
 
-@(private)
-raw1 :: proc "contextless" (nr: u64, a0: u64) -> i64 {
-	return asm(u64, u64) -> i64 {
-		"syscall",
-		"={rax},{rax},{rdi},~{rcx},~{r11},~{memory}",
-	}(nr, a0)
-}
-
-@(private)
-raw2 :: proc "contextless" (nr: u64, a0: u64, a1: u64) -> i64 {
-	return asm(u64, u64, u64) -> i64 {
-		"syscall",
-		"={rax},{rax},{rdi},{rsi},~{rcx},~{r11},~{memory}",
-	}(nr, a0, a1)
-}
-
-@(private)
-raw3 :: proc "contextless" (nr: u64, a0: u64, a1: u64, a2: u64) -> i64 {
-	return asm(u64, u64, u64, u64) -> i64 {
-		"syscall",
-		"={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}",
-	}(nr, a0, a1, a2)
-}
-
-@(private)
-raw4 :: proc "contextless" (nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) -> i64 {
-	return asm(u64, u64, u64, u64, u64) -> i64 {
-		"syscall",
-		"={rax},{rax},{rdi},{rsi},{rdx},{r10},~{rcx},~{r11},~{memory}",
-	}(nr, a0, a1, a2, a3)
-}
-
-@(private)
-raw5 :: proc "contextless" (nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> i64 {
-	return asm(u64, u64, u64, u64, u64, u64) -> i64 {
-		"syscall",
-		"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},~{rcx},~{r11},~{memory}",
-	}(nr, a0, a1, a2, a3, a4)
-}
+// The five raw doors -- `raw1` to `raw5` -- are the architecture's, in
+// `sys_amd64.odin`. Everything below is what a program asks through them.
 
 // -- The calls ---------------------------------------------------------------
 

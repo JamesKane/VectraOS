@@ -21,6 +21,11 @@ enable_interrupts :: amd64.sti
 wait_for_interrupt :: amd64.hlt
 spin_hint :: amd64.pause
 
+// The scheduler's preemption self-test holds vector registers live across a
+// preemption with this. Which registers is the architecture's business, and
+// so is the assembly. See `amd64/fpu.odin`.
+fpu_hold :: amd64.fpu_hold
+
 /*
 -- Paging ---------------------------------------------------------------------
 

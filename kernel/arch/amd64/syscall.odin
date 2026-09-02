@@ -119,11 +119,13 @@ syscall_entry_address :: proc "contextless" () -> uintptr {
 }
 
 /*
-The entry stub.
+The entry stub, in `syscall_entry.S`.
 
-`proc "naked"` for the reason every stub in this tree is: there must be no
-prologue. `syscall` arrives with the program's RSP still live, and anything the
-compiler emits first would write to it.
+Assembly in a file rather than a template. It defines the global symbol
+`syscall_init` hands to `LSTAR`, and the CPU enters it rather than calls
+it. `syscall` arrives with the program's RSP still live, and nothing may run
+before the first instruction. A file of assembly guarantees that, and a
+template inside a procedure cannot.
 
 The sequence, and the two places it looks arbitrary and is not:
 
@@ -147,75 +149,6 @@ are read out of the frame after the pops, rather than left as the pops found
 them. It also faults in ring 0 if RCX is not canonical. Nothing here writes
 `frame.rip`, and anything that ever does has to check.
 */
-@(export)
-vectra_syscall_blob :: proc "naked" () {
-	asm(){`
-.balign 16
-.globl vectra_syscall_entry
-vectra_syscall_entry:
-	swapgs
-	movq %rsp, %gs:16
-	movq %gs:8, %rsp
-
-	pushq $$0x23
-	pushq %gs:16
-	pushq %r11
-	pushq $$0x2B
-	pushq %rcx
-	pushq $$0
-	pushq $$0x100
-
-	pushq %rax
-	pushq %rbx
-	pushq %rcx
-	pushq %rdx
-	pushq %rsi
-	pushq %rdi
-	pushq %rbp
-	pushq %r8
-	pushq %r9
-	pushq %r10
-	pushq %r11
-	pushq %r12
-	pushq %r13
-	pushq %r14
-	pushq %r15
-
-	subq $$512, %rsp
-	fxsave (%rsp)
-
-	cld
-	leaq 512(%rsp), %rdi
-	sti
-	call vectra_syscall_dispatch
-	cli
-
-	fxrstor (%rsp)
-	addq $$512, %rsp
-
-	popq %r15
-	popq %r14
-	popq %r13
-	popq %r12
-	popq %r11
-	popq %r10
-	popq %r9
-	popq %r8
-	popq %rbp
-	popq %rdi
-	popq %rsi
-	popq %rdx
-	popq %rcx
-	popq %rbx
-	popq %rax
-
-	movq 16(%rsp), %rcx
-	movq 32(%rsp), %r11
-	movq 40(%rsp), %rsp
-	swapgs
-	sysretq
-`, "~{memory}"}()
-}
 
 /*
 syscall_frame_fpu names the FXSAVE image the stub above parked with a frame.

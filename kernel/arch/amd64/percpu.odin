@@ -115,7 +115,7 @@ percpu_init :: proc "contextless" (id: int) #no_bounds_check {
 // the self-test wants: it answers with what the CPU thinks, not with what this
 // file remembers.
 this_cpu :: proc "contextless" () -> ^Percpu {
-	base := asm() -> u64 {"movq %gs:0, $0", "=r"}()
+	base := asm() -> (r: u64) [#volatile] { mov r, [%gs:0] }()
 	return (^Percpu)(uintptr(base))
 }
 
