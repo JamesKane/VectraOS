@@ -113,6 +113,7 @@ panic_trap :: proc "contextless" (t: ^arch.Trap) -> bool {
 		arch.halt_forever()
 	}
 	stop_other_cores()
+	seize_log(&klog)
 
 	open_panic_screen(t.name)
 
@@ -300,6 +301,7 @@ panic_stop :: proc "contextless" (reason: string) -> ! {
 		arch.halt_forever()
 	}
 	stop_other_cores()
+	seize_log(&klog)
 
 	open_panic_screen("SYSTEM FAULT")
 	log_line(&klog, .Fault, reason)

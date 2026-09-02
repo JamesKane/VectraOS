@@ -118,6 +118,18 @@ percpu_init :: proc "contextless" (id: int) #no_bounds_check {
 	p.cpu_id = u64(id)
 	write_msr(MSR_GS_BASE, p.self)
 	write_msr(MSR_KERNEL_GS_BASE, 0)
+	ready = true
+}
+
+// Whether any core has a record behind `GS` yet. Before the first
+// `percpu_init` the base is zero and `this_cpu` would read address zero. The
+// few things that run that early, the log among them, ask here first and act
+// as core 0 until it is true.
+@(private = "file")
+ready: bool
+
+percpu_ready :: proc "contextless" () -> bool {
+	return ready
 }
 
 // this_cpu returns the record `GS` currently points at, by reading offset zero

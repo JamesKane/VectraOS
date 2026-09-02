@@ -23,6 +23,8 @@ package mem
 
 import "base:intrinsics"
 
+import "kernel:sync"
+
 @(private = "file") bitmap: []u8
 @(private = "file") frame_total: int // Frames the bitmap covers, holes included
 @(private = "file") frame_usable: int // Frames that were ever free
@@ -238,6 +240,24 @@ pmm_reclaim :: proc "contextless" (b: ^Boot_Memory) -> (frames: int) {
 // -- Allocation --------------------------------------------------------------
 
 /*
+The lock over the bitmap, the hint and the counts.
+
+The bitmap was written with no lock, because one core cannot race itself and an
+interrupt handler never allocates a frame. A second core can. Two cores that
+scanned at once found the same free frame and both took it. The frame then held
+two page tables, or a page table and a program's stack. The fault that found it
+was a read through the direct map, on the fourth core of a claim test, one boot
+in four.
+
+Held for the scan and the take, and for a free. The zeroing a caller does
+after is outside it, because the frame is that caller's by then. Nested
+under the heap lock when the heap grows, which is the one order those two
+are ever taken in.
+*/
+@(private = "file")
+pmm_lock: sync.Spinlock
+
+/*
 alloc_pages finds `count` contiguous free frames and takes them.
 
 The search starts at the last allocation and wraps once. A run of allocations
@@ -247,6 +267,9 @@ fallback for it, and the VMM turns it into a `mem.Error`. A physical allocator
 that halts the machine is not one a page fault handler can call.
 */
 alloc_pages :: proc "contextless" (count: int) -> (phys: uintptr, ok: bool) {
+	guard := sync.acquire(&pmm_lock)
+	defer sync.release(&pmm_lock, guard)
+
 	if count <= 0 || count > frame_free {
 		return 0, false
 	}
@@ -328,6 +351,9 @@ is the caller that must never raise it, and `docs/DRAW.md` section 7 named the
 hazard a milestone before the code arrived.
 */
 free_pages :: proc "contextless" (phys: uintptr, count: int) {
+	guard := sync.acquire(&pmm_lock)
+	defer sync.release(&pmm_lock, guard)
+
 	frame := int(u64(phys) / PAGE_SIZE)
 	for i in 0 ..< count {
 		f := frame + i

@@ -67,8 +67,8 @@ can answer.
 ## What had to become true first
 
 The handoff named four things that become urgent the moment a second core
-runs. Three are done, one turned out to be done already, and a fifth was
-found on the way.
+runs. Three are done, one turned out to be done already, and two more were
+found on the way: the clock, and the physical allocator.
 
 ### The lock word
 
@@ -160,6 +160,20 @@ application processor's tick is preemption and nothing else. `sched.ticks`
 reads the boot core's count wherever it is called. A thread that read its own
 core's count would read a different clock every time it moved.
 
+### The physical allocator
+
+`kernel/mem/pmm.odin` had no lock. One core cannot race itself and no interrupt
+handler allocates a frame, so the bitmap, the search hint and the counts were
+written bare. Four cores taking and giving back process records at once found
+it. Two scans found the same free frame, both took it, and the frame held two
+page tables.
+
+The fault was a read through the direct map, one boot in four. It arrived
+during the log lock's own test, which is how a lock on the log found a lock
+the allocator needed. `pmm_lock` covers the scan, the take and the free. The
+zeroing a caller does after is outside it, because the frame is that caller's
+by then.
+
 ## The kick, and the stop
 
 A thread placed on an idle core used to wait for that core's next reschedule.
@@ -211,11 +225,26 @@ faulted and both reported. The reports interleaved on the serial line,
 because `panicking` was a flag two cores could set. It is a claim by core now.
 The second core to fault halts, and one core writes the report.
 
+## The log
+
+The log had one line buffer and no lock. Two cores that logged at once would
+format into one buffer and write two sinks in pieces. The buffer is per core
+now. A line is built on the caller's own core with no lock held. The lock is
+taken for the length of the write to the serial port, the screen, or the early
+buffer. Two cores logging at once produce two whole lines in some order.
+
+The panic path does not take that lock. It stops every other core first, and
+one of them may have stopped inside the lock. So it seizes the lock instead:
+`sync.seize` clears the word, and the report is written the ordinary way after.
+The check for all of this is four writers filling a sinkless logger's early
+buffer at once. That is sixteen long lines, each one writer's from its first
+byte to its last.
+
 ## What the self-test proves
 
 `verify_smp` runs after the cores are up. The boot thread never parks on
 anything a missing core would have to end, and every wait has a bound.
-Twenty-three checks:
+Twenty-seven checks:
 
 - every core the bootloader listed is online, and there is more than one
 - every core's tick count moves over twenty ticks of the boot core's clock
@@ -233,6 +262,8 @@ Twenty-three checks:
 - four claimers took and gave back process records through the real path
   at once, most rounds succeeded, no pid was handed out twice, every record
   came back, and the heap is where it was
+- four writers logged sixteen long lines at once into a logger with no
+  sinks, every line was kept, and each is one writer's, whole
 - every core reaps its own dead, and the heap is balanced afterwards
 
 The ring 3 servers that `verify_user` leaves running -- the console, the
@@ -246,9 +277,6 @@ check.
   process reloads CR3, which flushes every non-global entry. That is what
   makes it safe today. The day a process has two threads on two cores, an
   unmap on one has to reach the other, and `lapic_send` is how.
-- **The log has no lock.** Only the boot core logs, by discipline. A panic on
-  any core stops every other core first, so one core writes the fault report.
-  An ordinary log line from a second core would interleave.
 - **`cpu_class` is still one class.** Every core reports `.Performance` at
   full capacity, so the placement policy spreads by load alone. The three
   tiers `docs/SCHED.md` argues wait for an arm64 `cpu_class`.

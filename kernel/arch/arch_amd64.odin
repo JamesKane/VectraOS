@@ -164,6 +164,7 @@ syscall_entry_address :: amd64.syscall_entry_address
 percpu_kernel_stack :: amd64.percpu_kernel_stack
 percpu_id :: amd64.percpu_id
 percpu_critical_depth :: amd64.percpu_critical_depth
+percpu_ready :: amd64.percpu_ready
 
 /*
 -- Scheduling -----------------------------------------------------------------

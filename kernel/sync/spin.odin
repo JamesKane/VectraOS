@@ -4,8 +4,8 @@ The lock that masks, as opposed to the lock that sleeps.
 A critical section on one core is `interrupts off`. On two cores it is
 `interrupts off` *and* a word the other core cannot take. `Spinlock` is both,
 with the nesting handled. `acquire` reports what the interrupt flag was and
-`release` puts it back, so a lock taken inside a handler that was already
-masked does not turn interrupts on when it finishes.
+`release` puts it back. A lock taken inside a handler that was already masked
+therefore does not turn interrupts on when it finishes.
 
 `Mutex` in `sleep.odin` is the other one, and the two are not interchangeable.
 This one may be held anywhere, and must be released within a few instructions.
@@ -15,17 +15,18 @@ That one may be held across a wait, and must never be taken inside this one.
 ## The word, and who it names
 
 `owner` is the core that holds the lock, as its id plus one, or zero for free.
-A core rather than a thread, because a thread inside a spinlock has interrupts
-masked and cannot leave the core, so the two are the same thing. It has to be
-the core for one more reason: the scheduler takes its lock on one thread and
-lets go of it on the next, after the switch, and only a core is there for the
-whole of that. See `sched.switch_done`.
+A core rather than a thread. A thread inside a spinlock has interrupts masked
+and cannot leave the core, so the two are the same thing.
+
+It has to be the core for one more reason. The scheduler takes its lock on one thread and lets go of
+it on the next, after the switch. Only a core is there for the whole of that.
+See `sched.switch_done`.
 
 The same core may take a lock it already holds. `resize` calls `alloc`, and
 both take the heap lock, so `depth` counts the nesting and only the outermost
 release clears the word. A different core waits, with interrupts off, until the
-word is clear. That wait is bounded by the rule above: the holder is inside a
-few instructions and cannot park.
+word is clear. The rule above bounds that wait: the holder is inside a few
+instructions and cannot park.
 
     lock := sync.acquire(&heap_lock)
     defer sync.release(&heap_lock, lock)
@@ -47,8 +48,8 @@ Spinlock :: struct {
 	// atomic between cores.
 	owner: u32,
 
-	// How many times the holding core has taken it. `held` stays honest
-	// through a re-entrant acquire, and only the last release clears `owner`.
+	// How many times the holding core took it. `held` stays honest through a
+	// re-entrant acquire, and only the last release clears `owner`.
 	depth: int,
 }
 
@@ -96,8 +97,8 @@ release :: proc "contextless" (l: ^Spinlock, g: Guard) {
 	arch.irq_restore(g.interrupts_were_on)
 }
 
-// held reports whether a lock is currently taken by anybody, for an assertion
-// in code that must run inside one.
+// held reports whether anybody holds a lock, for an assertion in code that
+// must run inside one.
 held :: proc "contextless" (l: ^Spinlock) -> bool {
 	return intrinsics.atomic_load(&l.owner) != 0
 }
@@ -114,20 +115,35 @@ release_all lets go of a lock this core holds at any depth, and leaves the
 interrupt flag alone.
 
 For exactly one caller, `sched.switch_done`. The scheduler takes its lock
-before it switches threads, possibly twice -- once in `block`, once in
-`reschedule` -- and the release has to happen after the switch, on the
-incoming thread's stack. That release cannot restore an interrupt flag: the
-frame the trap tail is about to `iretq` into carries the incoming thread's
-own, and that is the one that must win.
+before it switches threads, possibly twice, once in `block` and once in
+`reschedule`. The release has to happen after the switch, on the incoming
+thread's stack. That release cannot restore an interrupt flag. The frame the
+trap tail is about to `iretq` into carries the incoming thread's own, and that
+is the one that must win.
 
-The critical depth comes down by the whole nesting, because every acquire
-that went into it was this core's and none of them will see a release.
+The critical depth comes down by the whole nesting. Every acquire that went
+into it was this core's, and none of them will see a release.
 */
 release_all :: proc "contextless" (l: ^Spinlock) {
 	depth := l.depth
 	l.depth = 0
 	intrinsics.atomic_store(&l.owner, 0)
 	arch.percpu_critical_depth()^ -= i64(depth)
+}
+
+/*
+seize takes a lock away from whoever holds it, without waiting.
+
+For the panic path and nothing else. A core that is reporting a fault stopped
+every other core where it stood. One of them may have stood inside the log's
+lock. That core is never coming back to release it, and the report has to be
+written. So the word is cleared, and the reporting core takes the lock the
+ordinary way afterwards. The halted holder's depth is left alone: it is a count
+on a core that no longer counts.
+*/
+seize :: proc "contextless" (l: ^Spinlock) {
+	l.depth = 0
+	intrinsics.atomic_store(&l.owner, 0)
 }
 
 /*

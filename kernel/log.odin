@@ -1,14 +1,24 @@
 /*
 The kernel log.
 
-One writer, two sinks. The serial port works before the framebuffer, and after
-a compositor crash.
+Any core may write, and two sinks. The serial port works before the
+framebuffer, and after a compositor crash.
 
 The on-screen console is the only sink a user with no serial cable can read.
 Both are best-effort. Neither may block boot.
 
-Formatting goes through a fixed 512-byte line buffer. Nothing here allocates,
-so this is safe to call from a fault handler.
+Formatting goes through a fixed 512-byte line buffer per core. Nothing here
+allocates, so this is safe to call from a fault handler. A line is built on the
+caller's own core, with no lock held. The lock is taken for the length of the
+write to the sinks. Two cores that log at once therefore produce two whole
+lines in some order, and never one line made of both.
+
+The buffer is per core rather than per caller, because a caller that has a `Sink` has nowhere else to
+keep it. It is per core rather than shared, because a shared one is exactly
+what a second core would write into.
+
+Before the first core has a record behind `GS` there is one core, and it
+formats into core 0's buffer. See `begin`.
 
 A replay buffer holds the lines logged before the framebuffer exists, and
 redraws them when the console attaches. The screen therefore shows the whole
@@ -17,9 +27,12 @@ them live.
 */
 package kernel
 
+import "kernel:arch"
 import "kernel:drivers/console"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
+import "kernel:sched"
+import "kernel:sync"
 import "vsys:libodin"
 
 Log_Level :: enum {
@@ -51,7 +64,12 @@ Early_Line :: struct {
 Logger :: struct {
 	serial: ^uart.Port,
 	screen: ^console.Console,
-	line:   [512]u8,
+	line:   [sched.MAX_CPUS][512]u8,
+
+	// Over the sinks and the early buffer, never over the formatting. Held
+	// for one line's writes. The panic path seizes it rather than takes it,
+	// because the holder may be a core the panic just stopped.
+	lock:   sync.Spinlock,
 
 	// Replay buffer for lines emitted before `screen` was attached.
 	early:          [EARLY_LINES_MAX]Early_Line,
@@ -78,8 +96,12 @@ The two-step begin and emit shape lets a caller build a line out of mixed
 strings and numbers, with no varargs formatter. A formatter would need an
 allocator, and there is none this early.
 */
-begin :: proc "contextless" (l: ^Logger) -> libodin.Sink {
-	return libodin.sink_from(l.line[:])
+begin :: proc "contextless" (l: ^Logger) -> libodin.Sink #no_bounds_check {
+	id := 0
+	if arch.percpu_ready() {
+		id = arch.percpu_id()
+	}
+	return libodin.sink_from(l.line[id][:])
 }
 
 /*
@@ -92,6 +114,13 @@ screen-only concern, so it is looked up in `draw_line` rather than here.
 emit :: proc "contextless" (l: ^Logger, level: Log_Level, s: ^libodin.Sink) {
 	tag, _ := log_tag(level)
 	body := libodin.str(s)
+
+	// The lock names its holder by core, and a core has no name until its
+	// record is behind `GS`. The first lines of the boot are logged before
+	// that, by the only core there is, so they go unlocked. The first
+	// `sync.acquire` of any kind in this kernel is here.
+	guard, taken := lock_log(l)
+	defer unlock_log(l, guard, taken)
 
 	if l.serial != nil {
 		uart.write_string(l.serial, "[")
@@ -161,21 +190,48 @@ leave everything logged before the framebuffer visible only on serial. That is
 exactly the half of the boot a user with no serial cable most wants.
 */
 attach_screen :: proc "contextless" (l: ^Logger, con: ^console.Console) #no_bounds_check {
+	guard, taken := lock_log(l)
 	l.screen = con
 
 	for i in 0 ..< l.early_count {
 		slot := &l.early[i]
 		draw_line(l, slot.level, string(slot.text[:slot.len]), slot.truncated)
 	}
-
-	if l.early_overflow {
-		log_line(l, .Warn, "early log replay buffer overflowed; some boot lines are serial-only")
-	}
+	overflowed := l.early_overflow
 
 	// The buffer did its job. Reset it so a later re-attach -- a panic screen
 	// taking over, say -- does not redraw the whole boot again.
 	l.early_count = 0
 	l.early_overflow = false
+	unlock_log(l, guard, taken)
+
+	if overflowed {
+		log_line(l, .Warn, "early log replay buffer overflowed; some boot lines are serial-only")
+	}
+}
+
+// lock_log and unlock_log are the log's lock, taken only once a core has a
+// record to name itself by. Before that there is one core and nothing to
+// exclude, and a lock that asked the core's name would read address zero.
+@(private = "file")
+lock_log :: proc "contextless" (l: ^Logger) -> (guard: sync.Guard, taken: bool) {
+	if !arch.percpu_ready() {
+		return {}, false
+	}
+	return sync.acquire(&l.lock), true
+}
+
+@(private = "file")
+unlock_log :: proc "contextless" (l: ^Logger, guard: sync.Guard, taken: bool) {
+	if taken {
+		sync.release(&l.lock, guard)
+	}
+}
+
+// seize_log takes the log away from a core the panic path stopped, so the
+// report can be written. Only that path calls it. See `sync.seize`.
+seize_log :: proc "contextless" (l: ^Logger) {
+	sync.seize(&l.lock)
 }
 
 // log_line is the common case: a level and one fixed string.

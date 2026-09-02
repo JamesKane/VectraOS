@@ -70,6 +70,7 @@ Smp_Result :: struct {
 	kick_ticks:  u64, // Ticks fifty kicked wakes took, all told
 	kicks:       u64, // Kicks the boot core sent while they ran
 	claims:      int, // Process slots claimed and given back, across cores
+	lines:       int, // Log lines four cores wrote at once, all of them whole
 }
 
 @(private = "file")
@@ -157,6 +158,65 @@ distinct_pids :: proc "contextless" () -> (claims: int, unique: bool) {
 						unique = false
 					}
 				}
+			}
+		}
+	}
+	return
+}
+
+// The writers: each logs four long lines into a logger with no sinks, so the
+// lines land in its early buffer, whole or not. The body is the writer's own
+// mark repeated. A line built out of two cores' formatting is one whose bytes
+// disagree with its first byte. Sixteen lines fill the buffer exactly.
+@(private = "file")
+LOG_WRITERS :: 4
+@(private = "file")
+LOG_LINES :: EARLY_LINES_MAX / LOG_WRITERS
+@(private = "file")
+LOG_BODY :: EARLY_LINE_MAX - 8
+@(private = "file")
+probe_log: Logger
+
+// How many writers are at the start line. Each waits for all of them before it
+// writes. The four then format at the same instant, rather than one after
+// another as the spawns landed. A spawn takes longer than a writer's whole
+// run, and without this the writers never overlapped.
+@(private = "file")
+log_arrived: u32
+
+@(private = "file")
+log_worker :: proc "contextless" (arg: rawptr) {
+	i := int(uintptr(arg))
+	mark := u8('a') + u8(i)
+	intrinsics.atomic_add(&log_arrived, 1)
+	for intrinsics.atomic_load(&log_arrived) < LOG_WRITERS {
+		arch.spin_hint()
+	}
+	for _ in 0 ..< LOG_LINES {
+		sink := begin(&probe_log)
+		for _ in 0 ..< LOG_BODY {
+			libodin.put_str(&sink, string([]u8{mark}))
+		}
+		emit(&probe_log, .Info, &sink)
+	}
+	intrinsics.volatile_store(&worker_done[i], true)
+}
+
+// whole_lines counts the lines in the probe logger's early buffer, and reports
+// whether every byte of every line is the byte the line starts with.
+@(private = "file")
+whole_lines :: proc "contextless" () -> (lines: int, whole: bool) #no_bounds_check {
+	whole = true
+	for i in 0 ..< probe_log.early_count {
+		slot := &probe_log.early[i]
+		lines += 1
+		if slot.len != LOG_BODY || slot.truncated {
+			whole = false
+			continue
+		}
+		for j in 0 ..< slot.len {
+			if slot.text[j] != slot.text[0] {
+				whole = false
 			}
 		}
 	}
@@ -367,6 +427,25 @@ verify_smp :: proc() {
 		scheck(&r, mem.live_objects(mem.heap_stats()) == claim_heap, "with the heap where it was")
 	}
 
+	// -- Four cores log at once ----------------------------------------------
+
+	/*
+	Four writers, each formatting long lines and emitting them into a logger
+	that has no sinks, at once. A line is built in a buffer per core, and the
+	early buffer takes it under the lock. Every line that lands is therefore
+	one writer's, whole. A shared buffer would hand one writer's line to
+	another half way through, and the byte check finds that. Sixteen lines fill
+	the early buffer exactly, so nothing was dropped either.
+	*/
+	probe_log = Logger{}
+	intrinsics.atomic_store(&log_arrived, 0)
+	if run_workers(&r, "smp-log", log_worker, LOG_WRITERS, "every log writer finished inside the bound") {
+		whole: bool
+		r.lines, whole = whole_lines()
+		scheck(&r, r.lines == EARLY_LINES_MAX, "every line four cores logged at once was kept")
+		scheck(&r, whole, "and each is one writer's, whole")
+	}
+
 	// -- Nothing left behind --------------------------------------------------
 
 	// Each worker's stack comes back on the core it died on, when that core's
@@ -398,7 +477,9 @@ report_smp :: proc(r: ^Smp_Result) {
 		libodin.put_uint(&sink, r.kick_ticks)
 		libodin.put_str(&sink, " ticks, ")
 		libodin.put_uint(&sink, u64(r.claims))
-		libodin.put_str(&sink, " process slots claimed across cores, heap balanced")
+		libodin.put_str(&sink, " process slots claimed across cores, ")
+		libodin.put_uint(&sink, u64(r.lines))
+		libodin.put_str(&sink, " log lines whole, heap balanced")
 		emit(&klog, .Ok, &sink)
 		return
 	}

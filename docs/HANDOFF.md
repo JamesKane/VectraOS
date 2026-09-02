@@ -412,16 +412,14 @@ in "Next, in order" at the top and in "Smaller things" below.
 
 The cores run. The bootloader starts them, `kernel/smp.odin` brings each one
 through the same steps `kmain` took, a wake kicks an idle core awake, a panic
-stops every core, the process table has a lock, and `verify_smp` proves
-twenty-three things about them on every boot. The four items this section carried are closed, and
+stops every core, the process table has a lock, the log has one too, the
+physical allocator has the one it always needed, and `verify_smp` proves
+twenty-seven things about them on every boot. The four items this section carried are closed, and
 `docs/SMP.md` records how each closed and which one had been closed already.
 That document also names what is still one core's, and this is the order to
 take it in:
 
-1. **A lock on the log.** Only the boot core logs today, by discipline rather
-   than by a lock. A panic stops the other cores before it writes, so the
-   fault report is safe; an ordinary line from a second core is not.
-2. **A TLB shootdown**, the day a process has two threads on two cores. The
+1. **A TLB shootdown**, the day a process has two threads on two cores. The
    interrupt is `arch.ipi_send`, which the wake already uses.
 
 The one-core flake is still there. About one boot in eight at `--smp=4`
