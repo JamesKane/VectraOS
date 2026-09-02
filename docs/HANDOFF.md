@@ -525,10 +525,6 @@ where they live:
 - `servers/kbdfs` has its own copy of the scancode translation and it answers
   bytes, so the arrow keys reach `/dev/cons` and not `/kbd`. Nothing consumes
   `/kbd` for them yet, which is why this is a note rather than an item.
-- Enforce the `open` flag on a fid. 9P forbids a walk on an open fid and a read
-  on an unopened one. `vfs.Fid_Table` carries the flag and no server checks it.
-  `chan_clone` walks a fid that may already be open, so this has a blast radius
-  and wants a milestone rather than a patch.
 - ~~An idle-time reaper for *threads*.~~ Retired. The idle thread reaps, so a
   dead thread's stack comes back within a tick of its exit with nothing
   spawning. The self-tests still call `sched.reap()` by hand before a heap

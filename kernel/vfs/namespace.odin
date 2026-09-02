@@ -197,6 +197,11 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 			copy_mp.server = mp.server
 			copy_mp.path = mp.path
 			copy_mp.refs = 1
+			// The member-id counter and the members' own ids cross the fork.
+			// A listing cookie stays valid, and the next `bind` in the child
+			// hands out a fresh id rather than reading a zeroed counter as
+			// exhausted. See `Mount.id`.
+			copy_mp.next_member_id = mp.next_member_id
 			copy_mp.next = child.mounts[bucket]
 			child.mounts[bucket] = copy_mp
 			child.mount_count += 1
@@ -211,6 +216,7 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 				}
 				copy_m.chan = chan_incref(m.chan)
 				copy_m.flags = m.flags
+				copy_m.id = m.id
 				if tail == nil {
 					copy_mp.members = copy_m
 				} else {

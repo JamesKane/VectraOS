@@ -21,17 +21,27 @@ import "kernel:sync"
 import "vsys:vectra9"
 
 /*
-    cookie = member_index << 56 | member_offset
+    cookie = member_id << 32 | member_offset
 
-Eight bits of member index, fifty-six of the member's own cookie. A union of
-more than 256 trees would break this, and a server whose own cookies exceed
-2^56 would too. Neither is a real number. Both are checked rather than assumed,
-because an offset that silently wraps reads the wrong directory rather than
-fails.
+The high half is the member's id, the low half its own cookie. **The id is
+not the member's position.** A position shifts when a `bind` or an `unmount`
+between two `readdir` calls adds or removes an earlier member. The client
+then resumes reading the wrong tree.
+
+An id is monotonic and never reused, so `resume after this member` means the
+same member however the list moved. `kernel/srv` is the directory this
+treatment was written for, and its document argues it. `docs/NAMESPACE.md`
+named the union as the place that could have it, and now does.
+
+The split gives each half thirty-two bits. A mount point rebound more than
+four billion times over its life runs its member id out. A `bind` then
+answers `ENOSPC` rather than reuse one, which is `kernel/srv`'s rule for its
+own id. A member server whose own cookie needs more than thirty-two bits is
+refused too, with `EPROTO`. Neither is a real number for the servers this
+tree has: every one numbers its entries by a small ordinal.
 */
-UNION_MEMBER_SHIFT :: 56
+UNION_MEMBER_SHIFT :: 32
 UNION_OFFSET_MASK :: (u64(1) << UNION_MEMBER_SHIFT) - 1
-MAX_UNION_MEMBERS :: 1 << (64 - UNION_MEMBER_SHIFT)
 
 /*
 readdir fills `buf` with directory entries starting at `offset`.
@@ -119,17 +129,26 @@ readdir_union :: proc(
 	offset: u64,
 	buf: []u8,
 ) -> (n: int, err: Errno) {
-	idx := int(offset >> UNION_MEMBER_SHIFT)
+	resume_id := u32(offset >> UNION_MEMBER_SHIFT)
 	member_offset := offset & UNION_OFFSET_MASK
 
 	out := vectra9.cursor_from(buf)
 
-	for ; idx < MAX_UNION_MEMBERS; idx += 1 {
-		member, _, present := member_ref_at(mp, idx)
+	// The member the cookie named, then every member with a higher id, in id
+	// order. `min_id` walks up. The first pass resumes the named member at its
+	// own cookie, and each spent member hands the next its whole listing from
+	// the start.
+	min_id := resume_id
+	for {
+		member, _, id, present := member_at_or_after(mp, min_id)
 		if !present {
-			break // Past the last member: the union is exhausted.
+			break // No member at that id or above: the union is exhausted.
 		}
 		defer chan_close(member)
+
+		// The member the cookie named resumes at its own offset. Every member
+		// past it is one this listing has not reached, and starts at zero.
+		start := id == resume_id ? member_offset : 0
 
 		/*
 		The caller's chan is already open on whichever member `cross_mounts`
@@ -137,7 +156,7 @@ readdir_union :: proc(
 		time. Matched by (server, qid.path), rather than assumed to be member zero.
 		The assumption is true today, and is exactly the kind that stops being true
 		quietly. A listing would then read one member's entries under another
-		member's index.
+		member's id.
 		*/
 		src := c
 		borrowed := true
@@ -154,7 +173,7 @@ readdir_union :: proc(
 		}
 
 		wrote: int
-		wrote, err = union_pass(src, idx, member_offset, &out)
+		wrote, err = union_pass(src, id, start, &out)
 		if !borrowed {
 			chan_close(src)
 		}
@@ -165,9 +184,9 @@ readdir_union :: proc(
 			return out.pos, OK
 		}
 
-		// This member is spent. Move to the next one *within this call*, so a
-		// caller never sees a zero-length read that is not the end.
-		member_offset = 0
+		// This member is spent. Move to the next id up *within this call*, so
+		// a caller never sees a zero-length read that is not the end.
+		min_id = id + 1
 	}
 
 	return out.pos, OK
@@ -193,7 +212,7 @@ answer fits.
 @(private)
 union_pass :: proc(
 	src: ^Chan,
-	idx: int,
+	member_id: u32,
 	member_offset: u64,
 	out: ^vectra9.Cursor,
 ) -> (wrote: int, err: Errno) {
@@ -240,7 +259,7 @@ union_pass :: proc(
 			return 0, vectra9.EPROTO
 		}
 		patch := vectra9.cursor_from(landing[at + vectra9.QID_WIRE_SIZE:])
-		vectra9.put_u64(&patch, u64(idx) << UNION_MEMBER_SHIFT | entry.offset)
+		vectra9.put_u64(&patch, u64(member_id) << UNION_MEMBER_SHIFT | entry.offset)
 		if patch.err != .None {
 			return 0, vectra9.EPROTO
 		}

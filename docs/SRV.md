@@ -190,9 +190,9 @@ thing however the table moved underneath, and a removed entry is simply not
 found on the way past.
 
 **This is the treatment `docs/NAMESPACE.md` says a union listing could have if
-it ever mattered.** Here it matters, so here it is. The union listing still uses
-an index, and is still documented as undefined if something rebinds part-way
-through.
+it ever mattered.** Here it mattered first, so here it landed first. The union listing has it now too. Each member carries a monotonic id, and the
+cookie names that id rather than the member's position. A member removed
+between two calls no longer shifts the ones after it. See `docs/NAMESPACE.md`.
 
 The self-test paces a listing one entry at a time over six names, and removes
 one in the middle. It removes a name the listing already passed. Six names

@@ -210,12 +210,13 @@ watched thread now, so a read that does not come back is a check that fails.
   any message. What is missing is somewhere to put the answer to `which of the
   eight walks I just did was the one that hung`. That question belongs to a
   process, and there are none yet.
-- **`readdir` over a union is still index-based** between calls. One call
-  holds the mount head for reading now, so a listing sees one list. The
-  cookie it hands back still names a position, and a rebind between two
-  calls moves what that position means. `kernel/srv` is the worked example
-  of the fix, a cookie that means `resume after this one` however the list
-  moved.
+- ~~**`readdir` over a union is still index-based** between calls.~~ Retired.
+  Each member carries a monotonic id assigned at `bind`. The cookie names that
+  id in its high half, and a listing resumes at the member with that id rather
+  than at a position. A member removed between two calls no longer shifts the
+  ones after it, so a survivor is never skipped. `kernel/srv` is the directory
+  this was written for, and `docs/SRV.md` argues it. `kernel/verify_vfs.odin`
+  removes a member mid-listing and requires every remaining name.
 - **No current directory.** `resolve` takes absolute paths and `#name` specs
   only, because a relative path needs a process to be relative to.
 

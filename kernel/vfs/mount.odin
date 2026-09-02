@@ -55,6 +55,13 @@ Mount :: struct {
 	chan:  ^Chan, // The root of the mounted tree
 	flags: Mount_Flags,
 	next:  ^Mount,
+
+	// A monotonic id, assigned at `bind` from the mount point's counter and
+	// never reused. It is what a union listing's cookie names, so a member
+	// removed between two `readdir` calls does not shift the ones after it.
+	// `kernel/srv` established this for its own directory, and this is the
+	// treatment `docs/NAMESPACE.md` said a union could have if it mattered.
+	id:    u32,
 }
 
 /*
@@ -95,6 +102,12 @@ Mount_Point :: struct {
 	the lock now, which is the design the counter was an apology for.
 	*/
 	lock:    sync.RW_Lock,
+
+	// The next member id to hand out, monotonic and never reset. A `bind`
+	// takes it under `lock` for writing. See `Mount.id`. Zero would be a
+	// listing cookie's `start from the beginning`, so ids begin at one.
+	next_member_id: u32,
+
 	next:    ^Mount_Point, // Hash chain
 }
 
@@ -194,6 +207,7 @@ mount_head_create :: proc(ns: ^Namespace, c: ^Chan) -> ^Mount_Point #no_bounds_c
 	mp.server = c.server
 	mp.path = c.qid.path
 	mp.refs = 1
+	mp.next_member_id = 1
 
 	bucket := mount_hash(c.server, c.qid.path)
 	mp.next = ns.mounts[bucket]
@@ -297,6 +311,18 @@ bind :: proc(
 	}
 
 	sync.wlock(&mp.lock)
+	if mp.next_member_id == 0 {
+		// The counter ran out rather than wrapped. A wrap would hand a new
+		// member the id of a removed one, which is exactly the aliasing the
+		// id exists to prevent. `kernel/srv` refuses the same way.
+		sync.wunlock(&mp.lock)
+		sync.wunlock(&ns.lock)
+		chan_close(member_chan)
+		free(m)
+		return vectra9.ENOSPC
+	}
+	m.id = mp.next_member_id
+	mp.next_member_id += 1
 	switch order {
 	case .Replace:
 		displaced = mp.members
@@ -461,6 +487,40 @@ member_ref_at :: proc(mp: ^Mount_Point, idx: int) -> (c: ^Chan, flags: Mount_Fla
 		i += 1
 	}
 	return nil, {}, false
+}
+
+/*
+member_at_or_after returns the live member with the smallest id at or above
+`min_id`, for a union listing that resumes by id rather than by position.
+
+**The caller holds `mp.lock` for reading**, like `member_ref_at`. The listing walks members in id order, which is not mount order, and that is
+sound. `readdir` concatenates and does not filter, so the order between two
+members is cosmetic, where a walk's is not. So a member removed between two `readdir`
+calls does not shift the id of the one the cookie named. The scan for the
+minimum is `kernel/srv`'s `next_after`, quadratic in the member count and
+harmless at a union's size.
+
+`ok` is false when no member has an id that high, which is the end of the
+listing. The caller closes what it gets.
+*/
+@(private)
+member_at_or_after :: proc(mp: ^Mount_Point, min_id: u32) -> (c: ^Chan, flags: Mount_Flags, id: u32, ok: bool) {
+	if mp == nil {
+		return nil, {}, 0, false
+	}
+	best: ^Mount
+	for m := mp.members; m != nil; m = m.next {
+		if m.id < min_id {
+			continue
+		}
+		if best == nil || m.id < best.id {
+			best = m
+		}
+	}
+	if best == nil {
+		return nil, {}, 0, false
+	}
+	return chan_incref(best.chan), best.flags, best.id, true
 }
 
 /*

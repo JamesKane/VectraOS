@@ -323,7 +323,11 @@ walk1_ex :: proc(ns: ^Namespace, c: ^Chan, name: string, cross: bool) -> (^Chan,
 	}
 
 	last := Errno(vectra9.ENOENT)
-	for idx := 0; idx < MAX_UNION_MEMBERS; idx += 1 {
+	// By index and in mount order, because a walk takes the first member that
+	// has the name and mount order is the precedence. The listing walks by id
+	// instead, for the reason `member_at_or_after` gives. The scan stops when
+	// there is no member at the next index.
+	for idx := 0; ; idx += 1 {
 		member, _, present := member_ref_at(mp, idx)
 		if !present {
 			break

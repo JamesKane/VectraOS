@@ -140,6 +140,21 @@ TREE_U_NODES := [?]vfs.Static_Node {
 @(private = "file")
 DIR_ENTRIES :: 6
 
+// A third tree, for the union-cookie test alone. It keeps the union at two
+// members after one is removed. The listing then stays on the union path
+// rather than falling back to a single member's chan.
+@(private = "file")
+TREE_V_NODES := [?]vfs.Static_Node {
+	{name = "/", parent = -1, dir = true},
+	{name = "v0", parent = 0, data = "v0 data\n"},
+	{name = "v1", parent = 0, data = "v1 data\n"},
+	{name = "v2", parent = 0, data = "v2 data\n"},
+}
+@(private = "file")
+tree_v: vfs.Static_Tree
+@(private = "file")
+server_v: vfs.Server
+
 @(private = "file")
 tree_t: vfs.Static_Tree
 @(private = "file")
@@ -577,6 +592,108 @@ tcheck :: proc "contextless" (r: ^Vfs_Threads, ok: bool, what: string) -> bool {
 }
 
 /*
+verify_union_cookie is the union listing whose cookie survives a rebind, which
+`docs/HANDOFF.md` carried and `docs/SRV.md` argued for its own directory.
+
+A union of `#t` and `#u` at `/mnt`: `#t`'s root lists `a` and `b`, `#u`'s
+lists `u0`, `u1`, `u2`. The listing is paced one entry at a time. Once it crosses into `#u`,
+`#t` is unmounted, a member the listing already passed. Every one of `#u`'s names must still come back.
+
+**An ordinal cookie fails this and an id cookie passes it.** With `#t` gone,
+`#u` was member one and is member zero. A cookie that named position one
+resumes past `#u` and the client never sees `u1` or `u2`. A cookie that names
+`#u`'s id finds it wherever the list put it. The check is the count of `u`
+names: three, or the bug.
+
+Single-threaded, and its own bind and unbind, so the heap bracket around the
+threaded run below still means what it says.
+*/
+@(private = "file")
+verify_union_cookie :: proc(r: ^Vfs_Threads) #no_bounds_check {
+	ns := vfs.boot_namespace
+	if !tcheck(r, vfs.mount_device(ns, "#t", "/mnt") == vfs.OK, "a union's first member binds at /mnt") {
+		return
+	}
+	if !tcheck(r, vfs.mount_device(ns, "#u", "/mnt", .After) == vfs.OK, "and a second member joins it") {
+		_ = vfs.unmount_path(ns, "", "/mnt")
+		return
+	}
+	if !tcheck(r, vfs.mount_device(ns, "#v", "/mnt", .After) == vfs.OK, "and a third, so a removal still leaves a union") {
+		_ = vfs.unmount_path(ns, "", "/mnt")
+		return
+	}
+
+	dir, oerr := vfs.resolve(ns, "/mnt")
+	if !tcheck(r, oerr == vfs.OK, "the union opens") {
+		_ = vfs.unmount_path(ns, "", "/mnt")
+		return
+	}
+	if !tcheck(r, vfs.chan_open(dir, vfs.O_RDONLY | vfs.O_DIRECTORY) == vfs.OK, "as a directory") {
+		vfs.chan_close(dir)
+		_ = vfs.unmount_path(ns, "", "/mnt")
+		return
+	}
+
+	// One entry's room, so a member answers one name a call and the listing
+	// is paced. `next_dirent`'s cookie is what the next call is handed back.
+	buf: [40]u8
+	u_seen := 0
+	v_seen := 0
+	t_seen := 0
+	removed := false
+	offset := u64(0)
+	overran := false
+
+	for _ in 0 ..< 32 {
+		n, rerr := vfs.readdir(dir, offset, buf[:])
+		if rerr != vfs.OK {
+			tcheck(r, false, "each paced read of the union comes back")
+			break
+		}
+		if n == 0 {
+			break // The end of the union.
+		}
+		cur := vectra9.cursor_from(buf[:n])
+		saw := false
+		for {
+			e, more := vectra9.next_dirent(&cur)
+			if !more {
+				break
+			}
+			saw = true
+			offset = e.offset
+			switch {
+			case len(e.name) > 0 && e.name[0] == 'u':
+				u_seen += 1
+			case len(e.name) > 0 && e.name[0] == 'v':
+				v_seen += 1
+			case:
+				t_seen += 1
+			}
+			// The removal, once the listing crossed into `#u`. The first member
+			// is unmounted after a name from the second is in hand.
+			if !removed && len(e.name) > 0 && e.name[0] == 'u' {
+				tcheck(r, vfs.unmount_path(ns, "#t", "/mnt") == vfs.OK, "the first member is removed mid-listing")
+				removed = true
+			}
+		}
+		if !saw {
+			overran = true
+			break
+		}
+	}
+
+	vfs.chan_close(dir)
+	tcheck(r, !overran, "the listing terminates rather than spins")
+	tcheck(r, removed, "the listing reached the second member and the first was removed")
+	tcheck(r, u_seen == 3, "and every name of the member the listing was in still came back")
+	tcheck(r, v_seen == 3, "and every name of the member past it, which an ordinal cookie would have skipped")
+	tcheck(r, t_seen == 2, "with the first member's names, seen before it went")
+
+	tcheck(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "the union comes down")
+}
+
+/*
 verify_vfs_threads runs the whole thing and reports.
 
 Heap stats bracket it, as they do the single-threaded self-test, and for a
@@ -605,6 +722,12 @@ verify_vfs_threads :: proc() {
 	tcheck(&r, vfs.server_init(&server_u, "u", vfs.static_handler, &tree_u) == .None, "#u Tversion")
 	tcheck(&r, vfs.register_device(&server_t), "#t registered")
 	tcheck(&r, vfs.register_device(&server_u), "#u registered")
+	tcheck(&r, vfs.static_init(&tree_v, "v", TREE_V_NODES[:]), "#v server tables")
+	tcheck(&r, vfs.server_init(&server_v, "v", vfs.static_handler, &tree_v) == .None, "#v Tversion")
+	tcheck(&r, vfs.register_device(&server_v), "#v registered")
+
+	verify_union_cookie(&r)
+	vfs.static_destroy(&tree_v)
 
 	before := verify_live(mem.heap_stats())
 

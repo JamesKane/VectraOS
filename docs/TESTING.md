@@ -242,6 +242,7 @@ nothing else in common.
 | Subsystem | Table | Caught |
 |---|---|---|
 | The namespace under five threads | above | 5 of 8 |
+| A union listing's cookie across a rebind | `docs/NAMESPACE.md` | 1 of 1 |
 | The sleep queue | `docs/SYNC.md` | 6 of 8 |
 | The read/write lock | `docs/SYNC.md` | 3 of 3, and one wrong mutation |
 | `Tflush` and its transport | `docs/TRANSPORT.md` | 5 of 6 |
