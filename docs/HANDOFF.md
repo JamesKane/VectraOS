@@ -349,14 +349,12 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **A worker per blocked request that gives its segments back when it
-   ends.** `segbrk` reaps orphans before it believes a reference count,
-   because a dead `RFNOWAIT` worker keeps its segments until the next fork
-   collects it. That is the right fix for one caller and the wrong shape for
-   the next. Every count a dead process still holds is a count some other
-   call will read. The reaper thread already hangs up a dead process's
-   descriptors, and a detached process's segments and space could go the
-   same way. See `docs/USER.md`.
+2. **A process that cannot be stopped from outside.** It can end itself,
+   and the kernel still cannot end it -- see the standing gap below. The
+   reaper collects a detached process whole the moment it ends now. The
+   record a running process holds is the last thing the kernel cannot take
+   back on its own. Post a note, wait on the exit, then collect is the arc
+   `wait_pid` already walks, and the kernel could walk it for itself.
 
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The

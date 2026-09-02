@@ -2444,30 +2444,51 @@ verify_reap :: proc(r: ^Result) {
 	r.programs += 1 // The detached child is a process too, counted where it is collected.
 
 	// The child is the kernel's now: parent zero, detached, its own to run.
+	// It holds still on a word from here. The reaper takes a detached
+	// process back the moment it ends, and there would otherwise be nothing
+	// left to look at.
 	child := find_child(0, childpid)
 	if !check(r, child != nil && child.detached, "the child stands alone, detached to the kernel") {
 		return
 	}
-
-	done := false
+	ran := false
 	for _ in 0 ..< PATIENCE {
-		if exit_done(child) {
-			done = true
+		if cell(child, NOWAITER_CHILD_RAN) == 1 {
+			ran = true
 			break
 		}
 		sync.delay(1)
 	}
-	check(r, done, "it runs to its own end with nobody watching")
-	check(
-		r,
-		child.exit.deliberate && child.exit.status == NOWAITER_CHILD_STATUS,
-		"with the status it chose",
-	)
+	check(r, ran, "it runs with nobody watching, and waits for the kernel's word")
 
+	/*
+	And the kernel takes its record back on its own, which is the reaper.
+
+	`reap_orphans` used to be the only collector, and it ran only where a
+	fork wanted a slot. A detached process that ended held its record and
+	every count in it until then. Its status is nobody's to read now, the way
+	a detached child's is nobody's to `wait` for. So this watches the record
+	go rather than reads it.
+	*/
 	before := stats().live
-	collected := reap_orphans()
-	check(r, collected >= 1, "and reap_orphans collects it -- the orphan leak retired")
+	set_cell(child, NOWAITER_CHILD_STOP, 1)
+	check(r, await_collected(child, childpid), "and when it ends the reaper takes its record back, with nothing asking")
 	check(r, stats().live < before, "so the machine holds one process fewer")
+	check(r, reap_orphans() == 0, "and the collector at the next fork finds nothing left to do")
+}
+
+// await_collected waits for a detached process's record to go. It asks by
+// slot and pid together, because the slot may already hold a newer process
+// by the time this looks.
+@(private = "file")
+await_collected :: proc(p: ^Process, pid: u64) -> bool {
+	for _ in 0 ..< PATIENCE {
+		if !p.live || p.pid != pid {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
 }
 
 /*
@@ -2582,15 +2603,12 @@ verify_rfork :: proc(r: ^Result) {
 	swept := sweep(child)
 	check(r, swept.stray == 0 && swept.borrowed == 0, "and every page the child maps is a frame its own segments hold")
 
+	// The kernel's write releases the orphan, and the reaper collects it the
+	// moment it ends. Its status is nobody's to read, so what is watched is
+	// the record going, and then the frame the last release frees.
+	childpid := child.pid
 	set_cell(child, MEMFORK_STOP, 1)
-	if check(r, wait(child, PATIENCE), "the kernel's write releases the orphan") {
-		check(
-			r,
-			child.exit.deliberate && child.exit.status == 0,
-			"and it leaves on its own terms",
-		)
-	}
-	finish(r, child, "the orphan is taken down")
+	check(r, await_collected(child, childpid), "the kernel's write releases the orphan, and the reaper takes it back unasked")
 	check(r, mem.frame_is_free(shared_text), "and the last release frees the shared text")
 
 	// -- A shared descriptor group spends a close once ------------------------

@@ -1139,14 +1139,16 @@ sys_segbrk :: proc(addr: uintptr, top: uintptr) -> i64 {
 		**A holder that is dead is not a sharer, and the dead are collected
 		here before the count is believed.** A concurrent server forks a
 		worker per parked request under `RFMEM` and `RFNOWAIT`. A worker that
-		answered and exited keeps its segments until `reap_orphans` collects
-		it, which `rfork` does at the moment it wants a slot.
+		answered and exited kept its segments until `reap_orphans` collected
+		it, which only `rfork` did, at the moment it wanted a slot.
 
 		The draw server's first shrink was refused for exactly that. Three
 		dead workers from the keyboard's checks each still counted as a holder
-		of every window run. So this collects at the moment it wants a sole
-		holder, the way `rfork` does, and only then refuses. A worker still
-		parked on a read is a live sharer and is refused as before.
+		of every window run. The reaper thread collects a detached process
+		the moment it ends now. This collects again at the moment it wants a
+		sole holder, because the reaper is a thread and its turn can come
+		later. A worker still parked on a read is a live sharer and is
+		refused as before.
 		*/
 		if seg.refs > 1 {
 			reap_orphans()

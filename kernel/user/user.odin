@@ -259,6 +259,13 @@ Process :: struct {
 	exit:   Exit,
 	live:   bool,
 
+	// Claimed by whichever collector reaches a dead process first. The
+	// reaper, a fork that wants a slot, and a self-test that destroys by name
+	// can all arrive at one record. `unload` run twice releases twice.
+	// `destroy` takes this with a compare-and-swap, and `unload`'s final
+	// zeroing of the record clears it with `live`.
+	collecting: bool,
+
 	// The note's text, posted before delivery and kept for whoever collects
 	// the exit -- or reads it in a handler. A process with no handler still
 	// only ever hears a note as an ending.
@@ -748,6 +755,13 @@ destroy :: proc(p: ^Process) -> bool {
 	if p.thread != nil && !intrinsics.volatile_load(&p.exit.done) {
 		return false
 	}
+	// One collector. The reaper takes a detached process the moment it ends,
+	// and a fork or a self-test may reach for the same record a tick later.
+	// The loser answers false and walks away with nothing released, which is
+	// the answer it would get from a record that was already gone.
+	if _, won := intrinsics.atomic_compare_exchange_strong(&p.collecting, false, true); !won {
+		return false
+	}
 	unload(p)
 	return true
 }
@@ -810,10 +824,13 @@ detached process is the kernel's, so the kernel gives its record back. But
 only once its thread is gone, which `exit.done` reports and `destroy`
 re-checks. A detached process still running is left for a later pass.
 
-Called where a slot is wanted and where the self-test measures, rather than
-from a timer. That keeps collection deterministic: nothing vanishes out from
-under a check between two of its assertions. An idle-time trigger is the
-`docs/HANDOFF.md` reaper, a separate and smaller thing.
+Called from the reaper at every ending now, and still where a slot is wanted
+and where a count is about to be believed. The reaper is what makes a
+detached process go back on its own. The other callers make it go back
+*before* a decision that depends on it. The reaper is a thread, and a thread
+runs when the scheduler gets to it. A self-test that wants to
+look at a detached process has to hold it alive to do so, and `verify_reap`
+does.
 */
 /*
 hangup_dead gives back the descriptors of every process whose thread has gone,
@@ -832,10 +849,11 @@ reply from a process that no longer exists. `docs/TESTING.md` names a hang as
 the worst way for a check to report, and this is the one gap in the tree that
 turns a failed check into one.
 
-**The record stays.** Only the descriptors go, which is Plan 9's `pexit`
-closing the file group while the proc record waits for its parent. A parent
-parked in `wait` still gets its child's exit status, and `reap_orphans` still
-owns the question of when a *record* goes away.
+**The record stays for a parent.** Only the descriptors go here, which is
+Plan 9's `pexit` closing the file group while the proc record waits for its
+parent. A parent parked in `wait` still gets its child's exit status. A
+record nobody will wait for is a different case, and the reaper collects it
+whole through `reap_orphans` one call later -- see the thread below.
 
 The exchange is atomic because three paths race for the same pointer -- this
 one, `sys_exit` on another thread, and `unload` from a collector. Whoever wins
@@ -857,13 +875,14 @@ hangup_dead :: proc() -> (released: int) #no_bounds_check {
 	return released
 }
 
-// dead_holds_descriptors is the reaper's wake condition: some process has
-// ended and is still holding a descriptor group open.
+// dead_needs_collecting is the reaper's wake condition. Some process ended
+// and still holds a descriptor group, or is nobody's and still holds a
+// record.
 @(private = "file")
-dead_holds_descriptors :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
+dead_needs_collecting :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]
-		if p.live && intrinsics.volatile_load(&p.exit.done) && p.fdt != nil {
+		if p.live && intrinsics.volatile_load(&p.exit.done) && (p.fdt != nil || p.detached) {
 			return true
 		}
 	}
@@ -872,11 +891,22 @@ dead_holds_descriptors :: proc "contextless" (arg: rawptr) -> bool #no_bounds_ch
 
 /*
 The reaper thread, which is what makes the release above happen without
-anybody asking.
+anybody asking, and takes a detached process's record back the same way.
 
 It parks on `exit_rendez`, the rendezvous every ending already wakes -- the
 deliberate exit, the note, and the fault. So the trigger costs nothing and no
 death path grew a line.
+
+**A detached process goes whole, and the moment it ends.** It used to wait
+for the next fork, because `reap_orphans` ran only where a slot was wanted.
+That left every count a dead process still held standing until then. A
+concurrent server's worker, forked `RFNOWAIT` per parked request, kept its
+segments after it answered and exited. `segbrk` counted three dead ones as
+sharers of every window run. The general shape of that fix is this thread.
+
+A process nobody will wait for is the kernel's, and the kernel collects it
+when it ends, which is init reaping on Plan 9. A process a parent may still
+`wait` for keeps its record, as before.
 
 The deadline is a backstop rather than a schedule. Every ending wakes this,
 and a wake that finds nothing goes straight back to sleep, so the timeout only
@@ -894,8 +924,9 @@ reaper :: proc "contextless" (arg: rawptr) {
 	context = ctx
 
 	for {
-		_ = sync.sleep_for(&exit_rendez, dead_holds_descriptors, nil, REAP_PATIENCE)
+		_ = sync.sleep_for(&exit_rendez, dead_needs_collecting, nil, REAP_PATIENCE)
 		hangup_dead()
+		reap_orphans()
 	}
 }
 

@@ -1007,12 +1007,11 @@ holds.
 
 `reap_orphans` is where a detached process's record finally comes back. It
 collects every detached process whose `exit.done` is set, and leaves the
-still-running ones for a later pass. It runs where a slot is wanted and where
-the self-test measures, rather than from a timer. Collection stays
-deterministic, so nothing vanishes between two of a check's assertions. An
-idle-time trigger is `docs/HANDOFF.md`'s reaper, a separate and smaller
-thing. A kernel-launched process is never `detached`, so the reaper leaves
-the self-test's own processes for it to destroy by name.
+still-running ones for a later pass. The reaper thread calls it at every
+ending now, so a detached process goes back the moment it ends. A fork that
+wants a slot and a `segbrk` about to believe a count still call it first. A kernel-launched process is never `detached`, so the reaper leaves
+the self-test's own processes for it to destroy by name. See the reaper's
+own section below.
 
 ## Memory a program asks for
 
@@ -1550,12 +1549,34 @@ releases the descriptor group of anything whose thread has gone.
 The deadline is a backstop rather than a schedule. Every ending wakes it, and a
 wake that finds nothing goes back to sleep.
 
-**The record stays, and only the descriptors go.** That is Plan 9's `pexit`
-closing the file group while the proc record waits for its parent's `wait`.
-Releasing a process's files is not reaping the process, and a collector that
-took both would answer a parent with nothing. `reap_orphans` still owns the
-question of when a *record* goes away, and still runs only where a slot is
-wanted or a check measures.
+**The record stays for a parent, and only the descriptors go.** That is Plan
+9's `pexit` closing the file group while the proc record waits for its
+parent's `wait`. Releasing a process's files is not reaping the process, and
+a collector that took both would answer a parent with nothing.
+
+**A record nobody will wait for goes whole, and the moment it ends.** The
+reaper calls `reap_orphans` after the hangup. So the kernel collects a
+detached process when it ends, which is init reaping on Plan 9. It used to
+wait for the next fork, because `reap_orphans` ran only where a slot was
+wanted. That left every count a dead process still held standing until then,
+and `segbrk` found it. Three dead workers of the draw server, forked
+`RFNOWAIT` per parked read, each still counted as a sharer of every window
+run.
+
+`rfork` and `segbrk` still collect at the moment they are about to believe
+a count. The reaper is a thread, and its turn can come later.
+
+**One collector per record.** The reaper, a fork that wants a slot, and a
+self-test that destroys by name can all reach one dead record. `unload` run
+twice releases twice. `destroy` claims a record with a compare-and-swap
+on `Process.collecting` before it unloads, and the loser walks away with
+nothing released. That is the answer it would get from a record that was
+already gone.
+
+A self-test that wants to look at a detached process has to hold it alive to
+do so. `nowaiter`'s child and `memfork`'s orphan both wait for a word from
+the kernel. The checks watch the record go rather than read a status nobody
+was left to collect.
 
 **The exchange is atomic**, because three paths race for one pointer: the
 reaper, `sys_exit` on another thread, and `unload` from a collector. Whoever
@@ -1570,10 +1591,26 @@ argued.
 | no reaper at all, which is where this started | 1 check, `and its descriptors come back with nothing asking, which is the hangup` |
 | the reaper runs and releases nothing | 1 check, the same |
 | the reaper takes the record as well as the descriptors | **breaks the machine** |
+| the reaper leaves a detached record for the next fork, which is where this started | 5 checks, first `the kernel's write releases the orphan, and the reaper takes it back unasked` |
+| two collectors may unload one record | **breaks the machine** |
+| `segbrk` believes a count before the reaper's turn | **inert**, and see below |
 
-**The third one is why the record stays.** A collector that destroys anything
-whose thread has gone takes the record a parent is parked in `wait` on, and the
-boot stops rather than failing a check. The `p.live` check beside the hangup one
+**The fifth is the claim earning its place.** Without it the boot stops with
+nothing printed. The reaper and a collector at a fork or a check reach one
+dead record within a tick of each other. The second `unload` releases what
+the first already gave back. `docs/TESTING.md`'s cluster of narrow
+windows has one member that is not narrow after all.
+
+**The sixth is inert here, and stays.** With `segbrk`'s own collection
+removed, every boot passed, because the reaper had its turn between a
+worker's exit and the next request every time. That is a scheduling order
+and not a rule. The collect at the count is what makes it a rule. A control
+that comes back clean because the window did not open is the kind
+`docs/TESTING.md` records rather than deletes.
+
+**The third one is why a parent's record stays.** A collector that destroys
+anything whose thread has gone takes the record a parent is parked in `wait`
+on, and the boot stops rather than failing a check. The `p.live` check beside the hangup one
 is written for that mutation and never gets to run, because the machine is gone
 before it is reached. It is the same shape as `docs/DRAW.md` section 11's one
 breaking mutation: a control that removes a property everything else stands on

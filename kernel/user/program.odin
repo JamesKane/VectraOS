@@ -315,6 +315,11 @@ collect from ring 3. The child writes a witness and exits, for
 NOWAITER_PID :: 1
 NOWAITER_WAITED :: 2
 NOWAITER_CHILD_RAN :: 8 // The child's witness cell, byte offset 64
+// The kernel's word to the child, byte offset 72. The child holds still on
+// it after its witness. The reaper collects a detached process the moment
+// it ends now. A test that wants to look at one has to ask it to wait.
+// Bounded the way `spin`'s is.
+NOWAITER_CHILD_STOP :: 9
 
 // What `nowaiter`'s child exits with, and the flags the fork takes:
 // RFPROC to make a child, RFNOWAIT to detach it. Written twice, here and as
@@ -1965,6 +1970,13 @@ vectra_user_nowaiter:
 	jnz 51f
 
 	movq $$1, 64(%rbx)
+	movq $$400000000, %rcx
+56:
+	cmpq $$0, 72(%rbx)
+	jne 57f
+	decq %rcx
+	jnz 56b
+57:
 	movq $$0x5A, %rdi
 	movq $$4, %rax
 	syscall
