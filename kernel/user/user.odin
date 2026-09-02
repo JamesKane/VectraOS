@@ -285,6 +285,15 @@ Process :: struct {
 	*/
 	handler:  uintptr,
 	notified: bool,
+
+	/*
+	Whether the kernel decided this process ends at its next boundary,
+	whatever handler it registered. Plan 9's `procctl` set to `Proc_exitme`,
+	which `killproc` sets and `procctl()` answers with `pexit("Killed")`
+	before any note is looked at. `end` sets it. The door and the tick read
+	it before they read the note, which is what makes it unconditional.
+	*/
+	stopping: bool,
 	note_sp:  uintptr,
 }
 
@@ -487,6 +496,61 @@ post_note :: proc "contextless" (p: ^Process, text: string) -> bool {
 	return true
 }
 
+/*
+end stops a process from outside, and waits for it to be gone.
+
+**This is the kill the kernel did not have.** A note is a request a handler
+may decline, and `destroy` refuses a process whose thread still translates
+through the space. So a process that caught every note and never exited was
+the kernel's to keep for ever. `docs/HANDOFF.md` carried it as the honest
+leak for four milestones.
+
+Plan 9's `killproc` is the shape. It sets `procctl` to `Proc_exitme` and
+pushes a "sys: killed" note beside it. The note is what wakes a parked
+process and what the exit record carries. The word is what makes the ending
+unconditional. `procctl()` runs before `notify` looks at any note or any
+handler, and answers `pexit("Killed")`.
+
+Here `stopping` is the word and `sched.note_thread` is the wake. The door
+and the tick both read the word before the handler. So a process ends at its
+next boundary whether or not it registered one, and whether or not a
+delivery is in flight.
+
+The wait is bounded, the way every wait in this tree is. A process that
+reaches no boundary inside `patience` ticks is still running when this
+returns false, and is still the caller's to leave alone. Nothing here can
+end a thread that never crosses back into the kernel, and a tick is a
+boundary, so nothing runs that long.
+
+True means the process ended, noted, and its record is still there for the
+caller to read. `stop` is this and the collection.
+*/
+end :: proc(p: ^Process, patience: int) -> bool {
+	if p == nil || !p.live || p.thread == nil {
+		return false
+	}
+	if intrinsics.volatile_load(&p.exit.done) {
+		return true
+	}
+	text := "sys: killed"
+	for i in 0 ..< len(text) {
+		p.note_buf[i] = text[i]
+	}
+	p.note_len = len(text)
+	intrinsics.volatile_store(&p.stopping, true)
+	sched.note_thread(p.thread)
+	return wait(p, patience)
+}
+
+// stop is `end` and the collection, which is the whole arc `wait_pid` walks
+// for a parent, walked by the kernel for itself.
+stop :: proc(p: ^Process, patience: int) -> bool {
+	if !end(p, patience) {
+		return false
+	}
+	return destroy(p)
+}
+
 // note reports the text an ending carried, empty when nothing was posted.
 note :: proc "contextless" (p: ^Process) -> string {
 	if p == nil {
@@ -514,7 +578,8 @@ path's arrangement too.
 note_trap :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	thread := sched.current()
 	if thread != nil {
-		if p := (^Process)(thread.user); p != nil && p.handler != 0 {
+		// The kernel's word first, before any handler. See `end`.
+		if p := (^Process)(thread.user); p != nil && p.handler != 0 && !intrinsics.volatile_load(&p.stopping) {
 			if p.notified {
 				// One delivery at a time. The note waits, flagged, for the
 				// boundary after the handler's own `noted`.

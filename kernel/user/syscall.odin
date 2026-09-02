@@ -256,7 +256,9 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 	*/
 	if thread := sched.current(); sched.thread_noted(thread) {
 		p := current()
-		if p == nil || p.handler == 0 {
+		// The kernel's word first, before any handler and before a delivery
+		// in flight. See `end`.
+		if p == nil || p.handler == 0 || intrinsics.volatile_load(&p.stopping) {
 			note_exit(frame)
 		}
 		if !p.notified {

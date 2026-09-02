@@ -35,7 +35,7 @@ embedded user images are ~300 KB.
 
 The machine boots and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
-`/bin`. It then runs about 1450 checks against itself and idles.
+`/bin`. It then runs about 1480 checks against itself and idles.
 
 **What it can do**, and which document says why:
 
@@ -349,12 +349,10 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **A process that cannot be stopped from outside.** It can end itself,
-   and the kernel still cannot end it -- see the standing gap below. The
-   reaper collects a detached process whole the moment it ends now. The
-   record a running process holds is the last thing the kernel cannot take
-   back on its own. Post a note, wait on the exit, then collect is the arc
-   `wait_pid` already walks, and the kernel could walk it for itself.
+2. **A note posted to a group.** `Process.note_group` is inherited on fork
+   and fresh under `RFNOTEG`, and nothing posts to a group yet. That is the
+   fan-out half of Plan 9's `postnote`, and `end` is the word it would fan
+   out beside. See `docs/USER.md`.
 
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The
@@ -417,11 +415,12 @@ design question attached to each.
   checked. A depth counter the trap dispatcher brackets a handler with would
   make it a named stop, the way the spinlock rule already is. It touches the
   scheduler's hot path, so it wants a milestone rather than a patch.
-- **A process that cannot be stopped from outside.** It can end itself, and the
-  kernel still cannot end it. `user.destroy` refuses a process that is still
-  running, because its thread is translating through the space and writing to
-  the frames. The leak is honest rather than absorbed, and `user.stats().live`
-  reports it. See `docs/USER.md`.
+- ~~**A process that cannot be stopped from outside.**~~ Retired. `user.end`
+  sets Plan 9's `procctl` word on the process and wakes it. The door and the
+  tick both read the word before any handler, so the process ends at its
+  next boundary whatever it registered. `user.stop` is that and the
+  collection. `destroy` still refuses a running process, and rightly. See
+  `docs/USER.md`.
 - ~~**A flaky heap check in the draw server's teardown.**~~ Retired. The
   `leaked 1` was a `Mount_Point` from a dead process's namespace, and the
   draw server's teardown was only where timing first put it. `unload` took a

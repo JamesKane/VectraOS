@@ -449,6 +449,11 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_handler(&r)
 
+	/*
+	And a process the kernel ends from outside, handler or not.
+	*/
+	verify_stop(&r)
+
 	// -- And a process that continues from the call site ----------------------
 
 	verify_rfork(&r)
@@ -2352,6 +2357,96 @@ verify_handler :: proc(r: ^Result) {
 		)
 	}
 	finish(r, p, "and it is taken down")
+}
+
+/*
+verify_stop is the kernel ending a process that would catch anything else.
+
+`catcher` registers a handler and spins on its first note, and `verify_handler`
+just showed that handler answering NCONT and the program surviving. The same
+program is the target here, because a stop that a handler could decline is a
+note with a longer name. The check that matters is the handler's own count,
+which has to stay at zero: the process ended without its handler ever running.
+
+The record is read before it is collected, which is why `end` and `stop` are
+two calls. Then `stop` on a process that already ended is the collection alone,
+which is the arc `wait_pid` walks for a parent.
+*/
+@(private = "file")
+verify_stop :: proc(r: ^Result) {
+	before := stats().live
+	p, err := load_held("catcher", program_catcher())
+	if !check(r, err == .None && p != nil, "a process is built that catches every note") {
+		return
+	}
+	r.programs += 1
+	if !check(r, launch(p), "and it launches") {
+		finish(r, p, "and is taken down")
+		return
+	}
+
+	// Spinning, with its handler registered, before the kernel acts. A stop
+	// before the handler exists would prove nothing about handlers.
+	armed := false
+	for _ in 0 ..< PATIENCE {
+		if cell(p, CATCHER_NOTIFIED) == 0 && cell(p, CATCHER_ROUNDS) > 0 {
+			armed = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, armed, "it registers its handler and spins")
+	check(r, !destroy(p), "and the kernel cannot take it down while it runs, as before")
+
+	check(r, end(p, PATIENCE), "the kernel ends it, and it is gone inside the patience")
+	check(r, p.exit.noted && !p.exit.deliberate, "noted, and not on its own terms")
+	check(r, note(p) == "sys: killed", "with Plan 9's word for it")
+	check(r, cell(p, CATCHER_HANDLED) == 0, "and its handler never ran, because the kernel's word comes first")
+	check(r, stop(p, PATIENCE), "and the collection is the rest of the arc")
+	check(r, stats().live == before, "so the machine holds no more processes than before")
+
+	/*
+	And a second one at the other boundary.
+
+	A spinning target dies at the tick. So a door that looked at the handler
+	first was never asked, and the control on it came back clean. This target
+	is past its first note and looping on `sleep`, which is the door, with
+	its handler registered and one delivery already behind it. The kernel's
+	word has to end it at the next call, and the handler's count has to stay
+	at one.
+	*/
+	p, err = load_held("catcher", program_catcher())
+	if !check(r, err == .None && p != nil, "a second catcher is built") {
+		return
+	}
+	r.programs += 1
+	if !check(r, launch(p), "and it launches") {
+		finish(r, p, "and is taken down")
+		return
+	}
+	armed = false
+	for _ in 0 ..< PATIENCE {
+		if cell(p, CATCHER_NOTIFIED) == 0 && cell(p, CATCHER_ROUNDS) > 0 {
+			armed = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, armed && post_note(p, CATCHER_NOTE), "it spins, and an ordinary note is posted to it")
+	sleeping := false
+	for _ in 0 ..< PATIENCE {
+		if cell(p, CATCHER_HANDLED) == 1 {
+			sleeping = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, sleeping, "which its handler catches, and it moves on to loop on sleep")
+	check(r, end(p, PATIENCE), "the kernel ends it there, at the door, inside the patience")
+	check(r, p.exit.noted && note(p) == "sys: killed", "noted, with the same word")
+	check(r, cell(p, CATCHER_HANDLED) == 1, "and its handler ran once, for the note, and not for the word")
+	check(r, stop(p, PATIENCE), "and it is collected")
+	check(r, stats().live == before, "leaving the machine as it was")
 }
 
 /*

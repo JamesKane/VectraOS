@@ -1616,13 +1616,72 @@ before it is reached. It is the same shape as `docs/DRAW.md` section 11's one
 breaking mutation: a control that removes a property everything else stands on
 does not report, it stops.
 
+## Stopped from outside
+
+**A note is a request a handler may decline, and `destroy` refuses a process
+whose thread still runs.** So a process that caught every note and never
+exited was the kernel's to keep for ever. `docs/HANDOFF.md` carried it as
+the honest leak for four milestones. `end` is the kill the kernel did not
+have, and `stop` is `end` and the collection.
+
+**Plan 9's `killproc` is the shape, to the line.** It does two things. It
+sets `procctl` to `Proc_exitme`, and it pushes a "sys: killed" note beside
+it. The note is what wakes a parked process and what the exit record
+carries. The word is what makes the ending unconditional. `procctl()` runs
+before `notify` looks at any note or any handler, and answers
+`pexit("Killed")`.
+
+Here `Process.stopping` is the word and `sched.note_thread` is the wake. The
+door and the tick both read the word before the handler. So a process ends
+at its next boundary whether or not it registered one, and whether or not a
+delivery is in flight.
+
+The wait is bounded, the way every wait in this tree is. A process that
+reaches no boundary inside the patience is still running when `end` returns
+false, and is still the caller's to leave alone. A tick is a boundary, so
+nothing runs that long.
+
+### The self-test, and its controls
+
+`verify_stop` loads `catcher`, the program `verify_handler` just showed
+catching a note and surviving, and ends it while it spins with its handler
+registered. The check that matters is the handler's own count, which stays
+at zero: the process ended without its handler ever running. The record is
+read before it is collected, which is why `end` and `stop` are two calls.
+
+Three mutations, each on a real boot.
+
+| Mutation | Result |
+|---|---|
+| the door looks at the handler before the word | 2 checks, first `noted, with the same word` |
+| the tick looks at the handler before the word | 3 checks, first `the kernel ends it, and it is gone inside the patience` |
+| `end` sets the word and wakes nothing | 11 checks, first the same, and 13 objects leaked |
+
+**The first came back clean the first time.** The only target spun in ring
+3, and the tick ended it before the door was ever asked. That is
+`docs/TESTING.md`'s first question, whether the test reaches the code, and
+the answer was no. A second target is past its first note and loops on
+`sleep` now, so the door is the boundary it dies at. With the handler first,
+that target caught the word as a note and answered NCONT. It exited on its
+own terms two notes later, which is the deliberate ending the check refuses.
+
+**The second is the tick's half of the same rule**, and it fails on the
+patience. The handler catches the word and the program moves to its `sleep`
+loop. The door then finds a thread whose note flag the delivery already
+consumed. The word stays set and nothing reads it, so the process sleeps out
+its two thousand rounds. That is why the door and the tick each read the
+word themselves, rather than trusting the note flag to carry it.
+
+**The third is the leak coming back.** A process nobody wakes never reaches
+a boundary, so `end` runs out its patience and `destroy` refuses. The record
+and everything it holds stay until the machine stops.
+
 ## What is missing, and named where it lives
 
 - **`destroy` still refuses a running process**, and rightly: its thread is
-  translating through the space. What changed is that the refusal has an
-  answer now. Post a note, wait on the exit, then destroy -- the arc
-  `wait_pid` walks for parents and the kernel can walk for itself. The
-  honest leak is a choice now rather than a fact.
+  translating through the space. `stop` is the answer, and it is the arc
+  `wait_pid` walks for parents, walked by the kernel for itself. See the
+  section above.
 - **No `stat` behind the door.** `vfs.chan_stat` exists and nothing in ring 3
   needs it yet. It is the same shape as every call above and not a design
   question. `create` and `mount` were on this line for four milestones, and
