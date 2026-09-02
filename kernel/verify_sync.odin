@@ -142,6 +142,166 @@ contend_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	sync.wakeup(&contend_over)
 }
 
+/*
+The read/write lock, held to Plan 9's three rules by a scripted scenario.
+
+Two contenders racing would show exclusion and nothing else. What the lock
+promises is about *order*, so this is a script rather than a race. The boot
+thread reads, a writer arrives and waits, and a second reader arrives and
+waits behind the writer. The first reader leaves and the writer goes first,
+and the writer leaving admits the reader. Every step is bounded, and every
+"waits" is a check that the thread parked rather than got in.
+*/
+@(private = "file")
+rw: sync.RW_Lock
+@(private = "file")
+rw_writer_in: bool
+@(private = "file")
+rw_writer_done: bool
+@(private = "file")
+rw_reader_in: bool
+@(private = "file")
+rw_reader_done: bool
+@(private = "file")
+rw_release_writer: bool
+@(private = "file")
+rw_step: sync.Rendez
+
+@(private = "file")
+rw_writer_may_go :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.volatile_load(&rw_release_writer)
+}
+
+@(private = "file")
+rw_writer_worker :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	sync.wlock(&rw)
+	intrinsics.volatile_store(&rw_writer_in, true)
+	sync.wakeup(&rw_step)
+	sync.sleep(&rw_step, rw_writer_may_go)
+	intrinsics.volatile_store(&rw_writer_in, false)
+	sync.wunlock(&rw)
+	intrinsics.volatile_store(&rw_writer_done, true)
+	sync.wakeup(&rw_step)
+}
+
+@(private = "file")
+rw_reader_worker :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	sync.rlock(&rw)
+	intrinsics.volatile_store(&rw_reader_in, true)
+	sync.wakeup(&rw_step)
+	sync.runlock(&rw)
+	intrinsics.volatile_store(&rw_reader_done, true)
+	sync.wakeup(&rw_step)
+}
+
+// await parks the boot thread a tick at a time until `flag` is set, or
+// gives up after the patience. A wait with no bound would be a hang with
+// no name, which `docs/TESTING.md` forbids.
+@(private = "file")
+await :: proc(flag: ^bool) -> bool {
+	for _ in 0 ..< PATIENCE {
+		if intrinsics.volatile_load(flag) {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+/*
+await_parked reports whether a thread this test spawned is parked. That is
+how the boot thread sees that it queued on the lock rather than got in.
+
+The thread's own state, and not the package's sleep counter. The first
+version counted sleeps, and a control that let a reader pass a queued writer
+came back clean. The boot thread's own one-tick delays park too, so the
+count moved whether or not the spawned thread did. A sensor the checker
+itself moves is a check that cannot fail. `docs/TESTING.md` has that lesson,
+under observing the effect rather than the bookkeeping beside it.
+*/
+@(private = "file")
+await_parked :: proc(t: ^sched.Thread) -> bool {
+	for _ in 0 ..< PATIENCE {
+		if intrinsics.volatile_load(&t.state) == .Blocked {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+
+verify_rw_lock :: proc() {
+	r: Sync_Result
+
+	scheck(&r, sync.rw_readers(&rw) == 0 && !sync.rw_writer(&rw), "a fresh read/write lock is free")
+	sync.rlock(&rw)
+	sync.rlock(&rw)
+	scheck(&r, sync.rw_readers(&rw) == 2, "and two readers share it")
+	sync.runlock(&rw)
+	scheck(&r, sync.rw_readers(&rw) == 1, "one leaves and one remains")
+
+		// A writer arrives while a reader holds the lock, and waits.
+	writer := sched.spawn("rw-writer", rw_writer_worker)
+	if !scheck(&r, writer != nil, "a writer is spawned") {
+		sync.runlock(&rw)
+		report_rw_lock(&r)
+		return
+	}
+	scheck(&r, await_parked(writer), "and parks behind the reader")
+	scheck(&r, !intrinsics.volatile_load(&rw_writer_in), "rather than getting in beside it")
+
+	// A second reader arrives behind the queued writer, and waits too. This
+	// is the rule that stops readers starving a writer, and the one a
+	// simpler lock gets wrong.
+		reader := sched.spawn("rw-reader", rw_reader_worker)
+	if !scheck(&r, reader != nil, "a second reader is spawned") {
+		sync.runlock(&rw)
+		report_rw_lock(&r)
+		return
+	}
+	scheck(&r, await_parked(reader), "and parks behind the waiting writer")
+	scheck(&r, !intrinsics.volatile_load(&rw_reader_in), "rather than joining the reader that holds the lock")
+
+		// The first reader leaves, and the writer goes first. The queue is in
+	// arrival order, and the last reader out starts the writer at its head.
+	handoffs := sync.sleep_stats().handoffs
+	sync.runlock(&rw)
+	scheck(&r, await(&rw_writer_in), "the last reader out starts the writer")
+	scheck(&r, sync.rw_writer(&rw) && sync.rw_readers(&rw) == 0, "which holds the lock alone")
+	scheck(&r, !intrinsics.volatile_load(&rw_reader_in), "while the reader behind it still waits")
+
+	// The writer leaves, and the reader at the head of the queue goes in.
+	intrinsics.volatile_store(&rw_release_writer, true)
+	sync.wakeup(&rw_step)
+	scheck(&r, await(&rw_reader_in), "the writer leaving admits the reader at the head")
+	scheck(&r, await(&rw_reader_done) && await(&rw_writer_done), "and both finish")
+	scheck(&r, sync.rw_readers(&rw) == 0 && !sync.rw_writer(&rw), "leaving the lock free")
+	scheck(&r, sync.sleep_stats().handoffs - handoffs == 2, "with two handoffs, one per waiter, and no release to nobody")
+	sched.reap()
+
+	report_rw_lock(&r)
+}
+
+@(private = "file")
+report_rw_lock :: proc(r: ^Sync_Result) {
+	sink := begin(&klog)
+	libodin.put_str(&sink, "sync ")
+	libodin.put_uint(&sink, u64(r.checks))
+	if libodin.passed(r.tally) {
+		libodin.put_str(&sink, " read/write lock checks passed -- a writer waited behind a reader, a reader behind the writer, and each was handed the lock in turn")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	libodin.put_str(&sink, " read/write lock checks, ")
+	libodin.put_uint(&sink, u64(r.failures))
+	libodin.put_str(&sink, " FAILED -- first: ")
+	libodin.put_str(&sink, r.first_failure)
+	emit(&klog, .Fault, &sink)
+}
+
 @(private = "file")
 Sync_Result :: struct {
 	using tally:   libodin.Tally,

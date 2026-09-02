@@ -24,7 +24,9 @@ Namespace :: struct {
 	refs:        int,
 
 	/*
-	Guards every field above it.
+	Guards the root and the table, and is Plan 9's `pg->ns`: a read/write
+	lock that sleeps. A lookup reads it and a `bind` writes it, and a `bind`
+	waits for every lookup in flight.
 
 	Per namespace, because a namespace is the object processes choose to share.
 	`rfork` with no flags hands the child this same pointer, so a `bind` in either
@@ -33,10 +35,12 @@ Namespace :: struct {
 	makes the granularity worth having.
 
 	What it does not guard is anything reachable from a namespace other than
-	this one -- chan reference counts, mount point member lists. Those are
-	`object_lock`'s, and `lock.odin` says why.
+	this one. A chan's count and a mount point's count are `object_lock`'s, and
+	a mount point's member list is the mount point's own lock's. `lock.odin`
+	says why. `refs` is `object_lock`'s too, because a count wants a spinlock
+	and a lock that sleeps is not one.
 	*/
-	lock:        sync.Spinlock,
+	lock:        sync.RW_Lock,
 }
 
 /*
@@ -71,9 +75,9 @@ ns_incref :: proc(ns: ^Namespace) -> ^Namespace {
 	if ns == nil {
 		return nil
 	}
-	g := sync.acquire(&ns.lock)
+	g := sync.acquire(&object_lock)
 	ns.refs += 1
-	sync.release(&ns.lock, g)
+	sync.release(&object_lock, g)
 	return ns
 }
 
@@ -101,10 +105,10 @@ ns_set_root :: proc(ns: ^Namespace, c: ^Chan) -> Errno {
 		return err
 	}
 
-	g := sync.acquire(&ns.lock)
+	sync.wlock(&ns.lock)
 	old := ns.root
 	ns.root = root
-	sync.release(&ns.lock, g)
+	sync.wunlock(&ns.lock)
 
 	chan_close(old)
 	return OK
@@ -123,8 +127,8 @@ ns_root_ref :: proc(ns: ^Namespace) -> ^Chan {
 	if ns == nil {
 		return nil
 	}
-	g := sync.acquire(&ns.lock)
-	defer sync.release(&ns.lock, g)
+	sync.rlock(&ns.lock)
+	defer sync.runlock(&ns.lock)
 	return chan_incref(ns.root)
 }
 
@@ -160,9 +164,9 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 	`ns.root` is read under the parent's lock and a reference taken, so a
 	concurrent `ns_set_root` cannot free it between the read and the clone.
 	*/
-	gr := sync.acquire(&ns.lock)
+	sync.rlock(&ns.lock)
 	parent_root := chan_incref(ns.root)
-	sync.release(&ns.lock, gr)
+	sync.runlock(&ns.lock)
 
 	if parent_root != nil {
 		err := ns_set_root(child, parent_root)
@@ -174,13 +178,13 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 	}
 
 	/*
-	The table copy holds the parent's lock throughout, and may. It allocates and
-	increments counts, and does neither of the two things a lock here must not do.
-	It sends no message, and it never takes the child's lock -- the child is not
-	published until this returns, so nothing else can reach it.
+	The table copy reads the parent's table under its read lock throughout.
+	Each member list is read under that mount point's read lock, which is
+	`pgrpcpy`'s shape. It allocates and increments counts, and sends no
+	message. It never takes the child's lock -- the child is not published
+	until this returns, so nothing else can reach it.
 	*/
-	gl := sync.acquire(&ns.lock)
-	go := sync.acquire(&object_lock)
+	sync.rlock(&ns.lock)
 	ok := true
 
 	copy_loop: for bucket in 0 ..< MOUNT_BUCKETS {
@@ -198,11 +202,12 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 			child.mount_count += 1
 
 			tail: ^Mount
+			sync.rlock(&mp.lock)
 			for m := mp.members; m != nil; m = m.next {
 				copy_m := new(Mount)
 				if copy_m == nil {
 					ok = false
-					break copy_loop
+					break
 				}
 				copy_m.chan = chan_incref(m.chan)
 				copy_m.flags = m.flags
@@ -213,11 +218,14 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 				}
 				tail = copy_m
 			}
+			sync.runlock(&mp.lock)
+			if !ok {
+				break copy_loop
+			}
 		}
 	}
 
-	sync.release(&object_lock, go)
-	sync.release(&ns.lock, gl)
+	sync.runlock(&ns.lock)
 
 	if !ok {
 		// Whatever the copy produced is a well-formed namespace. To tear it down is
@@ -236,10 +244,10 @@ ns_close :: proc(ns: ^Namespace) #no_bounds_check {
 	if ns == nil {
 		return
 	}
-	g := sync.acquire(&ns.lock)
+	g := sync.acquire(&object_lock)
 	ns.refs -= 1
 	last := ns.refs <= 0
-	sync.release(&ns.lock, g)
+	sync.release(&object_lock, g)
 	if !last {
 		return
 	}
@@ -250,9 +258,10 @@ ns_close :: proc(ns: ^Namespace) #no_bounds_check {
 	clunks a fid, and a mount point that outlives the table still needs its
 	reference dropped, which may free it.
 
-	`object_lock` is still taken for the member lists themselves. A chan that
-	holds one of these mount points through `union_head` can outlive the
-	namespace, and go on reading them.
+	Each mount point's own lock is still taken for its member list. A chan
+	that holds one of these mount points through `union_head` can outlive the
+	namespace. It goes on reading it under a read lock, across a message,
+	which is exactly what the write lock here waits for.
 	*/
 	for bucket in 0 ..< MOUNT_BUCKETS {
 		mp := ns.mounts[bucket]
@@ -261,10 +270,12 @@ ns_close :: proc(ns: ^Namespace) #no_bounds_check {
 			next := mp.next
 			mp.next = nil
 
-			go := sync.acquire(&object_lock)
+			sync.wlock(&mp.lock)
 			members := mp.members
 			mp.members = nil
-			members_changed(mp)
+			sync.wunlock(&mp.lock)
+
+			go := sync.acquire(&object_lock)
 			mp.refs -= 1
 			orphaned := mp.refs <= 0
 			sync.release(&object_lock, go)

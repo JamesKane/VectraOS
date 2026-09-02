@@ -220,6 +220,82 @@ of that deliberate redundancy:
 | only the timer skips the unlink | **not caught** — the sleeper covers it |
 | only the waker skips the timer removal | **not caught** — the sleeper covers it |
 
+## The read/write lock, which is Plan 9's
+
+`kernel/sync/rwlock.odin` is `port/qlock.c`'s `RWlock`, rule for rule. A union search reads a mount point's member list and sends a message per
+member. It must see the same list at the end that it saw at the start. Many
+searches may run at once, and a `bind` has to wait for all of them and then
+have the list to itself. That is a reader/writer lock held across messages,
+which only a lock that sleeps can be. `Mount_Point.generation` was the
+counter that stood in for it while the only lock was the interrupt flag.
+
+The rules, in Plan 9's order. `rlock` goes straight in when there is no
+writer and nobody queued, and otherwise queues behind whoever is there.
+`runlock`'s last reader out starts the writer at the head of the queue.
+`wlock` takes the lock when nothing holds it and otherwise queues. `wunlock`
+hands over to a writer at the head, or admits every reader at the head up to
+the first writer.
+
+Two consequences are the whole policy. A reader arriving behind a queued
+writer waits, so readers cannot starve a writer. The queue is served in
+arrival order, so a writer cannot starve readers.
+
+**Arrival order, and not the mutex's priority handoff, on purpose.** A mutex
+queue holds one kind of waiter, and `wait.odin` argues why the best-first
+scan is right for it. This queue holds two kinds, and its rules are
+statements about position. A best-first scan would have to decide whether a
+high-priority reader may pass a queued writer, which is a policy Plan 9
+never needed. The first draft of this lock invented one. It was thrown away for the
+design that ran every Plan 9 kernel since 1992.
+
+The wake is still `unpark`, because that distinction is the scheduler's and
+not the lock's.
+
+**Where it is held.** `Namespace.lock` is `pg->ns` and `Mount_Point.lock` is
+`Mhead.lock`, and `kernel/vfs` takes them where `chan.c` does. A lookup
+reads the namespace and then the mount head, which is `findmount`. A union
+walk and a union listing read the mount head across the whole search, which
+is `walk`. A `bind` and an `unmount` write the namespace and then the mount
+head, which is `cmount` and `cunmount`. Reference counts stayed under
+`object_lock`, because a count wants a spinlock.
+
+The walk lets its read lock go before it crosses into the next mount point.
+So read locks on two mount points never nest. A writer queued on one cannot
+wait for a reader that is waiting on the other.
+
+`kernel/verify_sync.odin` holds the lock to its rules with a script rather
+than a race, because the rules are about order. A reader holds the lock, a
+writer arrives and parks, and a second reader arrives and parks behind the
+writer. The first reader leaves and the writer goes first, and the writer
+leaving admits the reader. Each "parks" is a check that the thread slept
+rather than got in.
+
+Four controls, each on a real boot:
+
+| Mutation | Result |
+|---|---|
+| a reader goes in past a queued writer | 4 checks, first `and parks behind the waiting writer` |
+| the last reader out starts nobody | 5 checks, first `the last reader out starts the writer` |
+| `bind` inserts under a read lock | **inert**, and the wrong mutation |
+| `unmount` removes under a read lock | 1 check, `a file read the same under a moving mount table` |
+
+**The first came back clean the first time**, and the reason was the
+sensor. "Parked" was the package's sleep counter, and the boot thread's own
+one-tick delays park too, so the count moved whether or not the spawned
+thread did. The check watches the spawned thread's own state now, which is
+`docs/TESTING.md`'s rule about observing the effect rather than the
+bookkeeping beside it.
+
+**The third is inert because it is the wrong mutation.** An insertion at
+the front of the list under a shared lock shifts every index up. A walker
+that resumes visits a member twice, which no check can see and no file is
+lost to. The failure `Mount_Point.generation` was born from was a
+*removal* shifting members down, and the fourth control is that one. It
+fails the five-thread namespace run on the first boot, on the check that
+found the counter's bug. That is the lock doing the counter's job, and the
+control that says so.
+
+
 ## Decisions, and what would reverse them
 
 - **Two lock types, and the rule between them is checked.** `sync.Spinlock`
@@ -246,6 +322,10 @@ of that deliberate redundancy:
   because the state lives in the condition and never in the queue. It is also
   what will survive SMP unchanged, where a spinlock held across both replaces
   the mask.
+- **The read/write lock is served in arrival order, and the mutex is not.**
+  Two kinds of waiter make the rules about position, and Plan 9's rules are
+  the ones kept. A reader that arrives behind a queued writer waits. A
+  reversal here is a reader stream that starves every `bind`.
 - **`sync.sleep` loops. `mutex_unlock` does not.** A mutex transfers the thing
   being waited for, so a woken thread has nothing to re-check. A rendezvous
   transfers nothing, so a wake is only ever a hint and `sleep` re-tests the

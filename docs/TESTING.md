@@ -243,6 +243,7 @@ nothing else in common.
 |---|---|---|
 | The namespace under five threads | above | 5 of 8 |
 | The sleep queue | `docs/SYNC.md` | 6 of 8 |
+| The read/write lock | `docs/SYNC.md` | 3 of 3, and one wrong mutation |
 | `Tflush` and its transport | `docs/TRANSPORT.md` | 5 of 6 |
 | The payload buffer per request slot | `docs/TRANSPORT.md` | 3 of 4 |
 | The namespace over a transport with workers | `docs/NAMESPACE.md` | 4 of 6 |

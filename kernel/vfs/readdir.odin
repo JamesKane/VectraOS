@@ -16,6 +16,8 @@ member it is partway through in the high bits.
 */
 package vfs
 
+import "kernel:sync"
+
 import "vsys:vectra9"
 
 /*
@@ -53,6 +55,14 @@ readdir :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 	}
 
 	mp := c.union_head
+	if mp == nil {
+		return readdir_one(c, offset, buf)
+	}
+	// Held across the whole listing, the way a walk holds it across the
+	// whole search. A union that loses a member mid-call is a listing that
+	// counted the wrong entries, and the write lock waits for this instead.
+	sync.rlock(&mp.lock)
+	defer sync.runlock(&mp.lock)
 	if member_count(mp) < 2 {
 		return readdir_one(c, offset, buf)
 	}

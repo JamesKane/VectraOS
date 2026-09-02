@@ -111,18 +111,24 @@ Mount points are reference counted now, and `unmount` dissolves rather than
 deletes. The members go. The struct survives until the last chan releases it. A chan that
 holds an empty mount point behaves like one that was never in a union.
 
-The second is `Mount_Point.generation`, and it is the one the self-test found on
-its own. Remove a member from the *front* of a union, and every later member
-shifts down. A walker that resumes at index 1 then skips the entry that used to
-be there, so a file that never moved comes back `ENOENT`.
+The second was `Mount_Point.generation`, and it is the one the self-test
+found on its own. Remove a member from the *front* of a union, and every
+later member shifts down. A walker that resumes at index 1 then skips the
+entry that used to be there, so a file that never moved comes back `ENOENT`.
 
-Plan 9 does not have this problem, because it read-locks the mount head for the
-whole union search. It can do that, because the lock it holds sleeps. The one
-guarding a mount table here is a spinlock, and a spinlock held across a search
-is the interrupt flag held across a search.
+Plan 9 does not have this problem, because it read-locks the mount head for
+the whole union search. It can do that, because the lock it holds sleeps.
+The one guarding a mount table here was a spinlock, and a spinlock held
+across a search is the interrupt flag held across a search. So a counter
+stood in for the lock: a search that found nothing counted only if the list
+was the same one it started on.
 
-The counter replaces the lock. A search that finds nothing counts only if the
-list is the same one it started on.
+The lock is Plan 9's now. `Namespace.lock` and `Mount_Point.lock` are
+read/write locks that sleep, `kernel/sync/rwlock.odin`, taken where `chan.c`
+takes `pg->ns` and `Mhead.lock`. A search holds the mount head for reading
+across every message it sends, a `bind` holds it for writing and waits for
+every search in flight, and the counter is gone. `docs/SYNC.md` has the
+lock.
 
 ## A server that can come down
 
@@ -198,20 +204,18 @@ watched thread now, so a read that does not come back is a check that fails.
 
 ## Known gaps
 
-- **`Mount_Point.generation` exists because a read lock could not be held across
-  a union search.** Plan 9 holds one, because its locks sleep. Vectra's can now
-  too. The retry loop in `walk1_ex` could become a read lock, and the
-  generation counter could go. See `docs/SYNC.md` for what is missing.
 - **Only a read can be given up on.** `chan_read_for` is the one operation with
   a deadline. A walk, an open or a listing against a server that never answers
   still waits forever. Nothing is missing to fix that, because `rpc_for` takes
   any message. What is missing is somewhere to put the answer to `which of the
   eight walks I just did was the one that hung`. That question belongs to a
   process, and there are none yet.
-- **`readdir` over a union is still index-based**, and is still undefined if
-  something rebinds the union part-way through. The cookie names a position in
-  a list that moved. `walk` no longer has that property, thanks to
-  `Mount_Point.generation`.
+- **`readdir` over a union is still index-based** between calls. One call
+  holds the mount head for reading now, so a listing sees one list. The
+  cookie it hands back still names a position, and a rebind between two
+  calls moves what that position means. `kernel/srv` is the worked example
+  of the fix, a cookie that means `resume after this one` however the list
+  moved.
 - **No current directory.** `resolve` takes absolute paths and `#name` specs
   only, because a relative path needs a process to be relative to.
 

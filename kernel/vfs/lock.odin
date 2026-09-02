@@ -6,26 +6,33 @@ one thread, so a reference count was a plain increment and the mount table was
 never half-modified. Both of those stopped being true the day a timer could
 land between two instructions.
 
-Every lock here is a `sync.Spinlock`. Each guards pointers and counts, is held
-for a handful of instructions, and is **never** held across a 9P message. There
-is no second kind and no exception.
+Two kinds of lock, and the split is Plan 9's. A `sync.Spinlock` guards a
+pointer or a count, is held for a handful of instructions, and is **never**
+held across a 9P message. A `sync.RW_Lock` sleeps, and is held across
+messages on purpose. A union search reads a mount point for the whole of its
+search, and a `bind` waits for every search in flight before it writes.
 
 ## Who guards what
 
-    Namespace.lock    ns.root, ns.mounts[], ns.mount_count, ns.refs
-    object_lock       Chan.refs, Mount_Point.refs, Mount_Point.members
+    Namespace.lock    ns.root, ns.mounts[], ns.mount_count  -- read/write, sleeps
+    Mount_Point.lock  Mount_Point.members                    -- read/write, sleeps
+    object_lock       Chan.refs, Mount_Point.refs, Namespace.refs
     Static_Tree.lock  one server's own fid table
     device_lock       the `#name` table
 
-Lock order is `Namespace.lock` -> `object_lock`, and nothing takes a namespace
-lock while holding an object lock.
+Lock order is `Namespace.lock` -> `Mount_Point.lock` -> `object_lock`, which
+is `chan.c`'s `pg->ns` -> `Mhead.lock` -> the counts. A read lock on one
+mount point is never held while another is taken: `walk1_ex` lets go before
+it crosses. Nothing takes a namespace lock while holding an object lock.
 
 ## The one rule
 
-**No lock in this package may be held across a message.** A `sync.Spinlock` is
-the interrupt flag, and a message can park the thread that sends it. On
-`kernel/mnt` it always does, until a worker answers. A thread that leaves the
-CPU with interrupts masked leaves nothing to turn them back on.
+**No spinlock in this package may be held across a message.** A
+`sync.Spinlock` is the interrupt flag, and a message can park the thread
+that sends it. On `kernel/mnt` it always does, until a worker answers. A
+thread that leaves the CPU with interrupts masked leaves nothing to turn
+them back on. A read/write lock is the opposite case, and is held across a
+message *because* it sleeps, which is what `docs/SYNC.md` argues.
 
 `rpc_ready` checks that rather than trusts it, and refuses with `EDEADLK`. The
 check is `sync.can_sleep`, which counts every spinlock on the CPU rather than

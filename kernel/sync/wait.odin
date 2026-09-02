@@ -186,6 +186,7 @@ Wait_Node :: struct {
 	waiter:   Waiter,
 	queue:    ^Wait_Queue, // The queue it is on, nil once it is off
 	next:     ^Wait_Node, // Link within that queue
+	writing:  bool, // On a read/write lock's queue, which kind. See `rwlock.odin`.
 
 	deadline: u64, // Absolute tick it is due at
 	timed:    bool, // On the timer list; see `rendez.odin`

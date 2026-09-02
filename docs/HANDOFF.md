@@ -35,7 +35,7 @@ embedded user images are ~300 KB.
 
 The machine boots and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
-`/bin`. It then runs about 1490 checks against itself and idles.
+`/bin`. It then runs about 1510 checks against itself and idles.
 
 **What it can do**, and which document says why:
 
@@ -357,10 +357,11 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **A read/write sleeping lock.** The first standing gap below, and the
-   one with a design question attached. `Mount_Point.generation` exists
-   only because a read lock could not be held across a union search, and
-   Vectra's locks sleep now.
+2. **A union listing whose cookie is not a position.** One `readdir` call
+   holds the mount head for reading now, so the list holds still inside a
+   call. Between two calls the cookie still names a position in a list a
+   `bind` may have moved. `kernel/srv` is the worked example of the fix. See
+   the standing gap below.
 
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The
@@ -396,13 +397,13 @@ Each of these exists and is incomplete, rather than absent, and each is named
 in the code it lives in. What makes them work rather than orientation is the
 design question attached to each.
 
-- **A read/write sleeping lock.** `Mount_Point.generation` exists only because
-  a read lock could not be held across a union search. Plan 9 holds one,
-  because its locks sleep. Now that Vectra's can, the retry loop in `walk1_ex`
-  could become a read lock and the counter could go. `Wait_Queue` is the right
-  foundation, and the policy is the only new thinking. Which of two waiting
-  kinds should `take_best` prefer? Does a waiting writer block an arriving
-  reader?
+- ~~**A read/write sleeping lock.**~~ Retired. `kernel/sync/rwlock.odin` is
+  Plan 9's `RWlock` rule for rule, served in arrival order, and
+  `Namespace.lock` and `Mount_Point.lock` are it, taken where `chan.c` takes
+  `pg->ns` and `Mhead.lock`. A union search holds the mount head for reading
+  across its messages, a `bind` waits for it, and `Mount_Point.generation` is
+  gone. The design questions had Plan 9's answers: arrival order, and yes, a
+  waiting writer blocks an arriving reader. See `docs/SYNC.md`.
 - **Priority inheritance.** A lock or a rendezvous goes to the best *waiter*,
   but a low-priority *holder* still delays a high-priority waiter for as long
   as it holds. It has not bitten, because nothing runs at realtime. Plan 9

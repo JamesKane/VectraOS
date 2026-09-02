@@ -41,17 +41,6 @@ not a symlink was involved, which is what Linux does too.
 */
 MAX_PATH_ELEMENTS :: 64
 
-/*
-How many times a union search will start over because the union changed.
-
-More than one only when something rebinds the same mount point in the middle of
-somebody else's walk. That is rare, and is meant to be. The bound is there so
-that a namespace rearranged in a loop cannot hold a walk forever.
-
-ENOENT after eight attempts is honest. By then the name genuinely was not in
-the namespace at any point the walker managed to look.
-*/
-UNION_WALK_ATTEMPTS :: 8
 
 /*
 attach opens a server's tree and returns a chan on its root.
@@ -215,16 +204,18 @@ cross_mounts :: proc(ns: ^Namespace, c: ^Chan) -> (^Chan, Errno) {
 	first: ^Chan
 	mp: ^Mount_Point
 
-	gl := sync.acquire(&ns.lock)
+	// `findmount`'s two read locks, in its order: the namespace to find the
+	// head, the head to read its first member.
+	sync.rlock(&ns.lock)
 	if head := mount_head(ns, c); head != nil {
-		go := sync.acquire(&object_lock)
+		sync.rlock(&head.lock)
 		if head.members != nil {
 			first = chan_incref(head.members.chan)
 			mp = mount_point_incref(head)
 		}
-		sync.release(&object_lock, go)
+		sync.runlock(&head.lock)
 	}
-	sync.release(&ns.lock, gl)
+	sync.runlock(&ns.lock)
 
 	if first == nil {
 		return c, OK
@@ -288,7 +279,7 @@ walk1_ex :: proc(ns: ^Namespace, c: ^Chan, name: string, cross: bool) -> (^Chan,
 	// comes from whichever member provided it. A search of the others for its
 	// children would join trees the namespace never joined.
 	mp := c.union_head
-	if mp == nil || member_count(mp) == 0 {
+	if mp == nil {
 		nc, err := server_walk1(c, name)
 		if err != OK {
 			return nil, err
@@ -300,45 +291,57 @@ walk1_ex :: proc(ns: ^Namespace, c: ^Chan, name: string, cross: bool) -> (^Chan,
 	}
 
 	/*
+	The union search, under the mount point's read lock for the whole of it.
+
+	This is `walk()` in Plan 9's `chan.c`: `rlock(&mh->lock)`, one walk per
+	member, `runlock` after. The lock sleeps, so a message under it is
+	ordinary. A `bind` that wants the list waits for this search to end
+	rather than shifting members under it. A counter used to say whether the
+	list moved, and the search ran again if it did. The lock is the
+	design that counter stood in for.
+
+	The lock goes before `cross_mounts`, which takes other locks of its own.
+	Holding this one across it would nest read locks on two mount points. A
+	writer queued on the second would then wait for a reader that is waiting
+	on the first.
+
 	ENOENT until something more specific happens. A member that answers EACCES
-	told us something worth reporting. A member that simply does not have the file
-	told us nothing, and must not stop the search.
-
-	Members are taken one at a time by index, rather than by a walk of the list.
-	Each attempt is a Twalk, and a lock cannot hold the list across one. See
-	`member_ref_at`.
+	told us something worth reporting. A member that simply does not have the
+	file told us nothing, and must not stop the search.
 	*/
-	last := Errno(vectra9.ENOENT)
-	for _ in 0 ..< UNION_WALK_ATTEMPTS {
-		generation := mount_point_generation(mp)
-		last = vectra9.ENOENT
-
-		for idx := 0; idx < MAX_UNION_MEMBERS; idx += 1 {
-			member, _, present := member_ref_at(mp, idx)
-			if !present {
-				break
-			}
-			nc, err := server_walk1(member, name)
-			chan_close(member)
-			if err == OK {
-				if !cross {
-					return nc, OK
-				}
-				return cross_mounts(ns, nc)
-			}
-			if err != vectra9.ENOENT {
-				last = err
-			}
+	sync.rlock(&mp.lock)
+	if member_count(mp) == 0 {
+		sync.runlock(&mp.lock)
+		nc, err := server_walk1(c, name)
+		if err != OK {
+			return nil, err
 		}
+		if !cross {
+			return nc, OK
+		}
+		return cross_mounts(ns, nc)
+	}
 
-		// A hit is a hit whenever it happens -- the file was there. A miss is only a
-		// miss if the list did not move during the search. Otherwise the search
-		// skipped past whatever shifted. The right answer is then to look again,
-		// rather than to say the name is not there.
-		if mount_point_generation(mp) == generation {
-			return nil, last
+	last := Errno(vectra9.ENOENT)
+	for idx := 0; idx < MAX_UNION_MEMBERS; idx += 1 {
+		member, _, present := member_ref_at(mp, idx)
+		if !present {
+			break
+		}
+		nc, err := server_walk1(member, name)
+		chan_close(member)
+		if err == OK {
+			sync.runlock(&mp.lock)
+			if !cross {
+				return nc, OK
+			}
+			return cross_mounts(ns, nc)
+		}
+		if err != vectra9.ENOENT {
+			last = err
 		}
 	}
+	sync.runlock(&mp.lock)
 	return nil, last
 }
 
