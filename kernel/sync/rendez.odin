@@ -25,17 +25,20 @@ call into the queue, the condition can become true and the wake-up can happen.
 The thread then parks to wait for something that already occurred. Nothing in
 the queue can see that, and nothing will wake the thread again.
 
-So the queue takes the test rather than the answer, and runs it itself with
-interrupts already masked. The check and the park are then one step, and the
-window has nowhere left to be. This is why `sleep` takes a procedure, and why
-the procedure is `contextless`. It runs in the moment where the machine is not
-taking interrupts. So it must not allocate, must not log, must not take a
-sleeping lock, and must not be long.
+So the queue takes the test rather than the answer, and runs it itself, after
+the thread is already on the queue. A wake that lands after the test finds
+the node, and one that landed before it made the condition the test finds.
+The window has nowhere left to be. This is why `sleep` takes a procedure, and
+why the procedure is `contextless`. It runs between a registration and a
+park, on a thread that may be preempted, and with no lock of this package
+held. So it must not allocate, must not log, must not take a sleeping lock,
+and must not be long. It may take a spinlock, which is what lets a condition
+read a device's state under the device's own lock.
 
-On a second core a mask stops being exclusion. `Rendez` then grows the
-`^Spinlock` that Plan 9's carries, held by the caller across both the test and
-the wake-up. The shape of the API does not change. That is most of why it has
-this shape now.
+Plan 9 gives each `Rendez` a lock the caller holds across both the test and
+the wake, and this file once expected to grow the same. It did not, and
+`wait.odin` says why one lock over every list, held across neither, was the
+better answer on a second core. The shape of the API did not change.
 
 ## Waking is a hint, not a promise
 
@@ -76,10 +79,9 @@ package sync
 
 import "base:intrinsics"
 
-import "kernel:arch"
 
-// A condition, tested by the queue rather than by the caller. Runs with
-// interrupts masked: short, no allocation, no sleeping lock.
+// A condition, tested by the queue rather than by the caller. Runs with no
+// lock of this package held: short, no allocation, no sleeping lock.
 Condition :: #type proc "contextless" (arg: rawptr) -> bool
 
 // A place to wait. Nothing in it needs initialising, which is what lets one
@@ -141,8 +143,13 @@ tick :: proc "contextless" (now: u64) -> int {
 	intrinsics.volatile_store(&running, true)
 
 	started := 0
-	for timers != nil && timers.deadline <= now {
+	for {
+		g := acquire(&wait_lock)
 		n := timers
+		if n == nil || n.deadline > now {
+			release(&wait_lock, g)
+			break
+		}
 		timers = n.timer
 		n.timer = nil
 		n.timed = false
@@ -150,10 +157,15 @@ tick :: proc "contextless" (now: u64) -> int {
 		// It is very likely also on a rendezvous queue. Off both before
 		// anything can look at it running.
 		unlink(n)
+		w := n.waiter
+		release(&wait_lock, g)
 
-		if have_sched && n.waiter != nil {
+		// The wake is outside the list lock, because it takes the
+		// scheduler's, and that order -- lists, then scheduler -- is the
+		// only one this package uses.
+		if have_sched && w != nil {
 			wakeups += 1
-			hooks.ready(n.waiter)
+			hooks.ready(w)
 		}
 		started += 1
 	}
@@ -275,14 +287,15 @@ Reports whether it found anybody. Safe from an interrupt handler -- it masks,
 unlinks and calls `ready`, and takes no lock this package owns.
 */
 wakeup :: proc "contextless" (r: ^Rendez) -> bool {
-	was_on := arch.irq_save()
-	defer arch.irq_restore(was_on)
-
+	g := acquire(&wait_lock)
 	n := take_best(&r.queue)
 	if n == nil {
+		release(&wait_lock, g)
 		return false
 	}
-	start(n)
+	w := detach(n)
+	release(&wait_lock, g)
+	start(w)
 	return true
 }
 
@@ -295,41 +308,62 @@ can have is the thundering herd. The loop in `sleep` makes that correct, and
 does not make it a good idea.
 */
 wakeup_all :: proc "contextless" (r: ^Rendez) -> int {
-	was_on := arch.irq_save()
-	defer arch.irq_restore(was_on)
-
 	started := 0
 	for {
+		g := acquire(&wait_lock)
 		n := take_first(&r.queue)
 		if n == nil {
+			release(&wait_lock, g)
 			return started
 		}
-		start(n)
+		w := detach(n)
+		release(&wait_lock, g)
+		start(w)
 		started += 1
 	}
 }
 
-// start unlinks a node from the timer list too, and makes its thread runnable.
-// The unlink comes first in every path that wakes anybody. See `wait.odin`.
+// detach takes a node the queue already let go of off the timer list too, and
+// answers with its thread. Under `wait_lock`. After this the node belongs to
+// its thread again, and nothing here reads it: the thread may be awake and
+// gone from the frame the node lived in before `start` runs.
 @(private = "file")
-start :: proc "contextless" (n: ^Wait_Node) {
+detach :: proc "contextless" (n: ^Wait_Node) -> Waiter {
 	timer_remove(n)
-	if have_sched && n.waiter != nil {
+	return n.waiter
+}
+
+// start makes a thread runnable, with no list lock held. The unlink came
+// first, in every path that wakes anybody -- see `wait.odin`. The scheduler's
+// lock is taken inside `ready`, after `wait_lock` is gone, which is the one
+// order this package uses.
+@(private = "file")
+start :: proc "contextless" (w: Waiter) {
+	if have_sched && w != nil {
 		wakeups += 1
-		hooks.ready(n.waiter)
+		hooks.ready(w)
 	}
 }
 
 /*
 The wait itself.
 
-Interrupts stay masked for the whole of it, including across the park. That is
-not a critical section in the `Spinlock` sense, and deliberately does not count
-as one. The mask travels with the thread through the switch, because it is a bit
-in the flags that the trap frame restores. The thread that runs next therefore
-gets its own interrupt state, and this thread gets its mask back when it
-resumes. The rule this enforces on *callers* is the opposite one, and the first
-line checks it.
+Register, then test, then park. The node goes on the lists first, under
+`wait_lock`. The condition is tested second, with no lock held, because a
+condition may take the spinlock of the thing it reads and a waker may hold
+that same spinlock while it wakes. The park comes last, and only if the node
+is still registered: `block` reads the node's `queue` under the scheduler's
+lock and parks only when a waker has not already taken it.
+
+That order is what makes a wake that arrives at any moment safe. Before the
+registration, the condition it made true is found by the test. After it, the
+waker finds the node. Between the test and the park, the waker has cleared
+the node and the park does not happen. On one core the mask used to make all
+of this one step, and the order was free. On two it is the order that does
+the work.
+
+The condition also runs with interrupts on, which it did not before. It
+therefore may not assume it cannot be interrupted, and none in the tree did.
 */
 @(private = "file")
 wait_on :: proc "contextless" (
@@ -347,58 +381,65 @@ wait_on :: proc "contextless" (
 		fail("slept on a rendezvous with no condition and no deadline")
 	}
 
-	was_on := arch.irq_save()
-	defer arch.irq_restore(was_on)
-
 	deadline: u64
 	if timed {
 		if !intrinsics.volatile_load(&running) {
 			// Nothing will ever advance the clock, so this would not be a
 			// wait, it would be a stop.
-			arch.irq_restore(was_on)
 			fail("timed wait before the clock is running")
 		}
 		deadline = intrinsics.volatile_load(&now_ticks) + ticks
 	}
 
-	for {
-		if cond != nil && cond(arg) {
-			return true
-		}
-		if timed && intrinsics.volatile_load(&now_ticks) >= deadline {
-			timeouts += 1
-			return false
-		}
-		if interruptible && have_sched && hooks.interrupted != nil &&
-		   hooks.interrupted(hooks.current()) {
-			// A note outranks the wait. The condition had its chance above,
-			// so a wake that raced the note still answers true.
-			return false
-		}
-		if !have_sched {
-			// One thread cannot wait for itself to make something true.
-			arch.irq_restore(was_on)
-			fail("slept on a rendezvous before there is a scheduler to park on")
-		}
+	// A test before any registration, so a wait that need not wait costs no
+	// lock and no node. That is the common case for a `sleep_for` that
+	// polls, and for a `wakeup` that ran ahead of its `sleep`.
+	if cond != nil && cond(arg) {
+		return true
+	}
+	if !have_sched {
+		// One thread cannot wait for itself to make something true.
+		fail("slept on a rendezvous before there is a scheduler to park on")
+	}
 
+	for {
 		node := Wait_Node {
 			waiter   = hooks.current(),
 			deadline = deadline,
 		}
+		g := acquire(&wait_lock)
 		push(&r.queue, &node)
 		if timed {
 			timer_add(&node)
 		}
-		sleeps += 1
+		release(&wait_lock, g)
 
-		hooks.block()
+		done := false
+		met := false
+		if cond != nil && cond(arg) {
+			done, met = true, true
+		} else if timed && intrinsics.volatile_load(&now_ticks) >= deadline {
+			timeouts += 1
+			done = true
+		} else if interruptible && hooks.interrupted != nil && hooks.interrupted(node.waiter) {
+			// A note outranks the wait. The condition had its chance above,
+			// so a wake that raced the note still answers true.
+			done = true
+		}
+
+		if !done {
+			sleeps += 1
+			hooks.block(cast(^rawptr)&node.queue)
+		}
 
 		/*
 		Off both lists, again.
 
 		Whoever woke us already did this. `wakeup` and `tick` both unlink
 		before they wake, without exception, so in a working kernel these
-		are two loads of nil.
+		are two loads of nil. A wait that ended in the test above rather
+		than in a wake is the exception, and this is where its node comes
+		off.
 
 		The pair is deliberately redundant, and the redundancy turned out
 		to be exactly measurable. A mutation of either side on its own
@@ -412,8 +453,16 @@ wait_on :: proc "contextless" (
 		frame from leaving a pointer to itself in a list. That holds
 		whoever woke it, and for whatever reason.
 		*/
+		g = acquire(&wait_lock)
 		unlink(&node)
 		timer_remove(&node)
+		release(&wait_lock, g)
+
+		if done {
+			return met
+		}
+		// Woken, and nothing above said why. Round again: the condition,
+		// the deadline and the note each get another look, on a fresh node.
 	}
 }
 

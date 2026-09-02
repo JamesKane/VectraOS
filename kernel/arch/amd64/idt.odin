@@ -225,18 +225,12 @@ a loop that waits for it to move.
 */
 @(private = "file") user_traps: u64
 
-// How deep in interrupt handlers this CPU is. A top half a stub dispatched to
-// runs with this above zero, which is what `in_interrupt` reports and
-// `kernel/sync/can_sleep` refuses to park inside. One counter, one CPU, and it
-// becomes per-CPU state the day `Cpu` grows a lock word. Not volatile: it is
-// only ever read and written on the core it belongs to, with interrupts off.
-@(private = "file") interrupt_depth: int
-
 // in_interrupt reports whether the code running now is a top half a trap
 // dispatched to. `kernel/sync/can_sleep` consults it, because a spinlock count
-// of zero is not the whole of `may this park`.
+// of zero is not the whole of `may this park`. The depth is this core's, kept
+// behind `GS` -- see `Percpu` -- because a second core has a depth of its own.
 in_interrupt :: proc "contextless" () -> bool {
-	return interrupt_depth > 0
+	return this_cpu().interrupt_depth > 0
 }
 
 user_trap_count :: proc "contextless" () -> u64 {
@@ -374,6 +368,13 @@ idt_init :: proc "contextless" () {
 		limit = u16(size_of(idt) - 1),
 		base  = u64(uintptr(&idt[0])),
 	}
+	idt_load()
+}
+
+// idt_load points this core at the one table. The table is the machine's and
+// is built once. The register is the core's and every core loads it, which is
+// what an application processor calls after `gdt_init`.
+idt_load :: proc "contextless" () {
 	asm(p: rawptr) [#volatile, #clobber memory] { lidt [p] }(&idtr)
 }
 
@@ -474,9 +475,9 @@ trap_dispatch :: proc "sysv" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no
 			// comment. Balanced within the call. The handler returns a
 			// `Resume`, and a scheduler switch is a different frame handed
 			// back rather than a non-return, so the decrement always runs.
-			interrupt_depth += 1
+			this_cpu().interrupt_depth += 1
 			out^ = h(out^)
-			interrupt_depth -= 1
+			this_cpu().interrupt_depth -= 1
 			return
 		}
 	}

@@ -99,6 +99,24 @@ paging_mode_request := limine.Paging_Mode_Request {
 	min_mode = limine.X86_64_PAGING_4LVL,
 }
 
+/*
+Ask for the other cores.
+
+The request's presence is what starts them. Without it the bootloader leaves
+every application processor wherever firmware left it, and there is no
+protocol-level way to reach one afterwards. With it, each core is parked on
+its own `goto_address`, in the bootstrap processor's machine state, and a
+single store releases it. No x2APIC: the LAPIC driver is xAPIC, and a
+bootloader that cannot turn x2APIC off refuses to boot rather than hand over
+a mode nothing here can speak. See `docs/SMP.md`.
+*/
+@(export, link_section = ".limine_requests")
+mp_request := limine.MP_Request {
+	id       = limine.MP_REQUEST,
+	revision = 0,
+	flags    = 0,
+}
+
 // -- Global kernel state -----------------------------------------------------
 //
 // Statically allocated because there is no allocator yet, and reachable from a
@@ -151,6 +169,7 @@ kmain :: proc "sysv" () {
 	}
 
 	report_bootloader()
+	report_cpus()
 	report_paging_mode()
 	report_kernel_layout()
 
@@ -221,6 +240,13 @@ kmain :: proc "sysv" () {
 			// and a fault path with somewhere to report to.
 			init_user()
 			verify_user()
+
+			// Last of all, the other cores. Every self-test above was written
+			// for one core and says so wherever it counts something, so they
+			// all run before a second core can change what they count.
+			if init_smp() {
+				verify_smp()
+			}
 		}
 	}
 
@@ -416,6 +442,39 @@ report_bootloader :: proc "contextless" () {
 		case .SBI:      libodin.put_str(&sink, "SBI")
 		case:           libodin.put_str(&sink, "unknown firmware")
 		}
+	}
+	emit(&klog, .Info, &sink)
+}
+
+/*
+report_cpus says how many cores the bootloader parked, and which one this is.
+
+Reported here rather than when they start, because the count is a fact about
+the machine and the start is a decision the kernel makes much later, after
+every self-test that assumes one core has run. A machine with one core still
+answers, with a list of one. A bootloader without the feature answers nothing,
+and that is a warning rather than a fault: the kernel runs on one core either
+way.
+*/
+report_cpus :: proc "contextless" () {
+	mp := mp_request.response
+	if mp == nil {
+		log_line(&klog, .Warn, "bootloader lists no cores; running on one")
+		return
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "cpus: ")
+	libodin.put_uint(&sink, mp.cpu_count)
+	libodin.put_str(&sink, mp.cpu_count == 1 ? " core, bsp lapic " : " cores, bsp lapic ")
+	libodin.put_uint(&sink, u64(mp.bsp_lapic_id))
+	libodin.put_str(&sink, ", lapic ids")
+	for i in 0 ..< int(mp.cpu_count) {
+		libodin.put_str(&sink, " ")
+		libodin.put_uint(&sink, u64(mp.cpus[i].lapic_id))
+	}
+	if mp.flags & u32(limine.MP_X2APIC) != 0 {
+		libodin.put_str(&sink, ", x2apic on")
 	}
 	emit(&klog, .Info, &sink)
 }

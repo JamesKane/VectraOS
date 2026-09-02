@@ -44,7 +44,6 @@ and the scheduler comes through `hooks`, all as `wait.odin` says.
 */
 package sync
 
-import "kernel:arch"
 
 RW_Lock :: struct {
 	readers: int,
@@ -65,20 +64,20 @@ rlock :: proc "contextless" (l: ^RW_Lock) {
 	if !can_sleep() {
 		fail("read lock taken inside a spinlock")
 	}
-	was_on := arch.irq_save()
+	g := acquire(&wait_lock)
 
 	if !l.writer && !waiting(&l.queue) {
 		l.readers += 1
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		return
 	}
 	if !have_sched {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("read lock contended before there is a scheduler to park on")
 	}
 	me := hooks.current()
 	if l.writer && me != nil && l.owner == me {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("read lock taken by the thread that holds it for writing")
 	}
 
@@ -88,12 +87,12 @@ rlock :: proc "contextless" (l: ^RW_Lock) {
 	}
 	push(&l.queue, &node)
 	sleeps += 1
+	release(&wait_lock, g)
 
-	hooks.block()
-
-	// Whoever woke this thread counted it as a reader before the wake, so
-	// there is nothing to re-check. See `wunlock`.
-	arch.irq_restore(was_on)
+	// Park unless the wake came first. Whoever woke this thread counted it
+	// as a reader before the wake, so there is nothing to re-check. See
+	// `wunlock`.
+	hooks.block(cast(^rawptr)&node.queue)
 }
 
 /*
@@ -105,28 +104,29 @@ that writer directly, the way `mutex_unlock` hands a mutex over, and the
 writer wakes owning it.
 */
 runlock :: proc "contextless" (l: ^RW_Lock) {
-	was_on := arch.irq_save()
+	g := acquire(&wait_lock)
 
 	if l.readers <= 0 {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("read lock released while free")
 	}
 	l.readers -= 1
 	if l.readers > 0 || !waiting(&l.queue) {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		return
 	}
 
 	n := take_first(&l.queue)
 	if !n.writing {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("a reader was queued behind no writer")
 	}
+	w := n.waiter
 	l.writer = true
-	l.owner = n.waiter
+	l.owner = w
 	handoffs += 1
-	hooks.unpark(n.waiter)
-	arch.irq_restore(was_on)
+	release(&wait_lock, g)
+	hooks.unpark(w)
 }
 
 // wlock takes the lock for writing: alone, after every reader and writer
@@ -135,22 +135,22 @@ wlock :: proc "contextless" (l: ^RW_Lock) {
 	if !can_sleep() {
 		fail("write lock taken inside a spinlock")
 	}
-	was_on := arch.irq_save()
+	g := acquire(&wait_lock)
 
 	me := have_sched ? hooks.current() : nil
 
 	if l.readers == 0 && !l.writer {
 		l.writer = true
 		l.owner = me
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		return
 	}
 	if have_sched && me != nil && l.writer && l.owner == me {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("write lock taken twice by the same thread")
 	}
 	if !have_sched {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("write lock contended before there is a scheduler to park on")
 	}
 
@@ -160,12 +160,12 @@ wlock :: proc "contextless" (l: ^RW_Lock) {
 	}
 	push(&l.queue, &node)
 	sleeps += 1
-
-	hooks.block()
+	release(&wait_lock, g)
 
 	// Handed over, as a reader is: `runlock` or `wunlock` set `writer` and
-	// `owner` before the wake.
-	arch.irq_restore(was_on)
+	// `owner` before the wake, so a park that the wake beat is skipped and
+	// a park it did not is ended by it.
+	hooks.block(cast(^rawptr)&node.queue)
 }
 
 /*
@@ -178,10 +178,10 @@ readers is what Plan 9's `wunlock` loop wakes, `while(q->head != nil &&
 q->head->state == QueueingR)`.
 */
 wunlock :: proc "contextless" (l: ^RW_Lock) {
-	was_on := arch.irq_save()
+	g := acquire(&wait_lock)
 
 	if !l.writer {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("write lock released while free")
 	}
 
@@ -189,28 +189,38 @@ wunlock :: proc "contextless" (l: ^RW_Lock) {
 	if head == nil {
 		l.writer = false
 		l.owner = nil
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		return
 	}
 
 	if head.writing {
 		n := take_first(&l.queue)
-		l.owner = n.waiter
+		w := n.waiter
+		l.owner = w
 		handoffs += 1
-		hooks.unpark(n.waiter)
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
+		hooks.unpark(w)
 		return
 	}
 
+	// Every reader at the head goes in together. They are counted under the
+	// list lock and started outside it, one at a time, because a start takes
+	// the scheduler's lock and this package takes that one last.
 	l.writer = false
 	l.owner = nil
-	for l.queue.head != nil && !l.queue.head.writing {
+	for {
+		if l.queue.head == nil || l.queue.head.writing {
+			release(&wait_lock, g)
+			return
+		}
 		n := take_first(&l.queue)
+		w := n.waiter
 		l.readers += 1
 		handoffs += 1
-		hooks.unpark(n.waiter)
+		release(&wait_lock, g)
+		hooks.unpark(w)
+		g = acquire(&wait_lock)
 	}
-	arch.irq_restore(was_on)
 }
 
 // rw_readers and rw_writer report the lock's state, for checks in code that

@@ -187,3 +187,19 @@ lapic_timer_stop :: proc "contextless" () {
 	lapic_write(LAPIC_TIMER_INITIAL, 0)
 	lapic_write(LAPIC_LVT_TIMER, LVT_MASKED)
 }
+
+/*
+lapic_attach_here brings up the local APIC of the core that calls it, on the
+register page the boot core already mapped.
+
+Every core's APIC sits at the same physical address, so one mapping serves
+them all. What is per core is the enable bit in the MSR and the register
+state behind it, and that is what `lapic_attach` writes. An application
+processor therefore calls this once, after its `GS` is live and before its
+timer, and never `lapic_attach` itself.
+*/
+lapic_attach_here :: proc "contextless" () {
+	if mmio != nil {
+		lapic_attach(mmio)
+	}
+}

@@ -173,9 +173,11 @@ Three things about a boot are worth knowing before you read one:
 
 The one that shapes everything after it:
 
-- **No SMP.** `Cpu` is per-core and `MAX_CPUS` is 8, but only core 0 ever
-  starts. There is no IPI, no AP trampoline and no lock word. Section 6 has
-  what it would take.
+- **No IPI.** Every core the bootloader lists runs now, and `docs/SMP.md` is
+  the account. What a core cannot do is prod another. A thread woken for an
+  idle core waits for that core's next tick, a panic on one core halts only
+  that core, and an unmap on one core cannot reach another's TLB. All three
+  are the same LAPIC register, and section 6 has the order.
 
 And the rest, each named in the code it is missing from. **Something that
 exists and is merely incomplete is not here.** Section 6 has those, because a
@@ -229,7 +231,8 @@ per directory:
 | `docs/VECTRA9.md` | The 9P2000.L dialect, the namespace model, `sys/vectra9/` | Touching the protocol, a server, or the mount model. **Read this before anything else.** |
 | `docs/BOOT.md` | `boot/`, `kernel/arch/`, traps, the panic screen, the console | Changing the boot order, a descriptor table, or anything the fault path uses |
 | `docs/MEMORY.md` | `kernel/mem/` — PMM, VMM, heap | Allocating, mapping, or wondering where 1 MiB went |
-| `docs/SCHED.md` | `kernel/sched/` — the switch, priorities, the tick | Adding a thread state, a priority rule, or a second core |
+| `docs/SCHED.md` | `kernel/sched/` — the switch, priorities, the tick, placement | Adding a thread state, a priority rule, or a core class |
+| `docs/SMP.md` | `kernel/smp.odin`, the lock words, the per-core state, the switch that holds a lock across itself | Touching a lock, a wait, the trap tail, or anything a second core changes the meaning of |
 | `docs/SYNC.md` | `kernel/sync/` — spinlocks, sleeping locks, the sleep queue | Taking any lock, or making anything wait |
 | `docs/NAMESPACE.md` | `kernel/vfs/` — what guards what, the two transports, and the lock that went | Walking, binding, adding a server, or giving up on a read |
 | `docs/TRANSPORT.md` | `kernel/mnt/` — the tag pool, the workers, `Tflush`, the payload buffer, and the wire over bytes | Writing a transport, making a request interruptible, or wondering who owns a reply's bytes |
@@ -275,6 +278,12 @@ driver directly as:
 ```sh
 odin run build.odin -file -out:.vectra-build -- run --gfx
 ```
+
+**QEMU presents four cores by default, and the kernel starts every one.**
+`--smp=N` changes the count, and `--smp=1` is the uniprocessor control: the
+same boot, with `smp: one core` where the bring-up and its checks would be.
+The one-core boot is the one every self-test before `verify_smp` was written
+against, so a check that fails only at `--smp=4` is a check the cores broke.
 
 **There is no gdb on this machine, and lldb attaches fine.** `lldb
 build/vectra.elf -o 'gdb-remote localhost:1234'` reaches a `just debug` boot
@@ -325,7 +334,7 @@ ways whose error messages do not point back here.
 | Segment bounds come from `link_amd64.ld`, not from Odin | `__text_start` … `__data_end` are declared in a bare `foreign { }` block in `kernel/mem/vmm.odin`. They are defined *inside* their output sections in the linker script on purpose: written between sections they become orphans, and ld is free to attach an orphan to whichever segment it likes. |
 | `intrinsics` has `mem_zero` and `mem_copy`, but no `mem_set` | There is no fill-with-a-byte intrinsic. The PMM's bitmap fill is a plain loop. `memset`/`memcpy`/`memmove` *are* provided by stock `base:runtime`, which is why the link has no undefined symbols. |
 | Inline `asm` is a template, checked against encoding tables | Since Odin `dev-2026-09` an `asm` block is `asm(params) -> (results) [bindings] { instructions }`: Intel operand order, `%reg` for a physical register, `[base + disp]:T` for memory, labels local to the block. The compiler type-checks every instruction, and refuses a block that reads an input no instruction names or leaves an output unwritten. Three consequences are written where they bite. `in`, `out`, `hlt` and `syscall` are `#byte` sequences, because the assembler has no operand form for the first two and models the last two as never falling through. An input a byte sequence consumes is tied to a dropped output, which is the one use that costs no instruction. And anything that defines a symbol, needs its own label's address, or is entered by the CPU is a `.S` file, not a block. |
-| The stubs, the FPU hold and the program blobs are `.S` files clang assembles | `arch/amd64/isr.S`, `syscall_entry.S`, `gdt.S`, `fpu_hold.S` and `user/programs_amd64.S` keep the AT&T text the blocks had, with a single `$` for an immediate now that no template substitutes operands. `build.odin` assembles each with `clang -target x86_64-unknown-elf -c` and links the objects beside `vectra.o`. The list is a row of the per-arch table. A `.globl` there is a `foreign` declaration in Odin, unchanged. A template's label reaches LLVM without its colon in this compiler, so a loop in a template assembles to nothing: that is why the FPU hold is a file. |
+| The stubs, the FPU hold and the program blobs are `.S` files clang assembles | `arch/amd64/isr.S`, `syscall_entry.S`, `gdt.S`, `fpu_hold.S`, `ap.S` and `user/programs_amd64.S` keep the AT&T text the blocks had, with a single `$` for an immediate now that no template substitutes operands. `build.odin` assembles each with `clang -target x86_64-unknown-elf -c` and links the objects beside `vectra.o`. The list is a row of the per-arch table. A `.globl` there is a `foreign` declaration in Odin, unchanged. A template's label reaches LLVM without its colon in this compiler, so a loop in a template assembles to nothing: that is why the FPU hold is a file. |
 | The error-code vector list is written twice | Once as an assembler `.if` in `isr.S` and once as `vector_has_error_code` in `idt.odin`. They cannot share a definition — one is consumed at build time, the other at run time — and if they disagree every field in `Trap_Frame` reads as the one next door. `idt.odin` says so beside the Odin half. |
 | An unoptimised build spills every temporary | Debug builds keep nothing in a register across an instruction boundary. This is not a curiosity: a test written to verify that FXSAVE preserves XMM passed with the FXSAVE removed, because the values it was checking were on the stack the whole time. Anything that must observe *register* state has to pin it with inline asm and hold it there — see `fpu_hold` in `kernel/sched/verify.odin`. |
 | A missing EOI stops the timer silently | The local APIC delivers nothing further at or below that priority. There is no error, no fault, and no bit anywhere saying so — it looks exactly like a timer that was never armed. Any loop waiting on the tick count needs a liveness bound, or a one-line bug hangs the boot with the last line printed being the timer coming up successfully. |
@@ -400,33 +409,32 @@ belong on a forward list, so the retirements were pruned rather than struck thro
 the `See ...` pointer each one left behind are the record. What is left to do is
 in "Next, in order" at the top and in "Smaller things" below.
 
-### SMP, when it is wanted
+### SMP, what is left of it
 
-The shapes are already right. `Cpu` is per-core, `Resume` is per-thread and
-lives on that thread's stack, and every mount-table, namespace and heap
-mutation is inside a `sync.Spinlock`.
+The cores run. The bootloader starts them, `kernel/smp.odin` brings each one
+through the same steps `kmain` took, and `verify_smp` proves thirteen things
+about them on every boot. The four items this section carried are closed, and
+`docs/SMP.md` records how each closed and which one had been closed already.
+That document also names what is still one core's, and this is the order to
+take it in:
 
-What is missing is a lock word in that struct, an AP trampoline, and IPIs. The
-placement policy is already built: `sched.pick_cpu` chooses a core by affinity,
-class and per-capacity load, and `spawn` and every wake go through it. On one
-core it resolves to that core. So it is inert until a second core of a different
-class boots. `docs/SCHED.md` argues it against a fabricated three-class machine.
-`eligible` and the class and capacity fields stopped being orientation the day
-it landed.
+1. **An IPI.** The wake to an idle core is late by up to a tick, a panic on one
+   core stops only that core, and there is no TLB shootdown. All three want
+   the same interrupt command register, and the wake is the one with a check
+   waiting for it: a thread woken for an idle core should run before that
+   core's next tick, and `verify_smp` can measure that.
+2. **A lock over the process table.** `kernel/user` claims a slot by finding
+   one that is not live, and two `rfork` calls on two cores can find the same
+   one. The ring 3 servers that run after boot have not tripped it. A test
+   that forks from two cores at once would.
+3. **A lock on the log.** Only the boot core logs today, by discipline rather
+   than by a lock, and a panic on another core writes the screen under nobody's
+   exclusion.
 
-Four things become urgent the moment a second core runs, and all four are named
-where they live:
-
-1. `Chan.refs` and `Mount_Point.refs` want atomic increments rather than a
-   global lock.
-2. `sync.critical_depth` has to become per-CPU state.
-3. `sync.Mutex` needs the scheduler to drop its guard *after* the switch. A
-   parked thread currently relies on the interrupt mask that travels with it
-   through the trap frame.
-4. A mask is what stands in for a lock on every wait list, so `Wait_Queue` needs
-   a real lock word. `Rendez` then grows the `^Spinlock` that Plan 9's always
-   carried, held by the caller across both the condition test and the wake-up.
-   The API has its present shape partly so that change will not alter it.
+The one-core flake is still there. About one boot in eight at `--smp=4`
+fails a userland heap bracket by one object, before the cores start, in the
+way the notes in `docs/TESTING.md` describe for a detached worker collected
+late. It was not seen at `--smp=1` this session and was not chased.
 
 ### Smaller things worth doing when convenient
 
@@ -470,6 +478,9 @@ kernel/
   verify_space.odin     Address spaces: one address, two meanings
   verify_wire.odin      The wire against a scripted server across a real pipe:
                         out-of-order replies, a stale reply, a poisoning
+  smp.odin              The other cores: the release, the arrival, and kmain
+                        again from where a core diverges
+  verify_smp.odin       Every core ticks, work spreads, a wake crosses cores
   arch/
     arch_amd64.odin     The architecture interface, bound to amd64
     arch_arm64.odin     Stub

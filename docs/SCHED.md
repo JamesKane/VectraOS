@@ -99,9 +99,10 @@ fails exactly the check its rule is behind.
 `nothing else can run` and `interrupts are off` are the same statement.
 `Spinlock` is therefore a name for the interrupt flag, with the nesting handled.
 
-There is no lock *word* yet, and that is deliberate. A second core needs one,
-and this tree already found and wrapped every site that will need it. `alloc`,
-`free` and `resize` take it. `resize` calls `alloc`, which is why it nests.
+The lock has a word now, the id of the core that holds it, because a second
+core runs. Every site that needed it was already wrapped, which was the point
+of wrapping them. `alloc`, `free` and `resize` take it. `resize` calls
+`alloc`, which is why it nests. `docs/SMP.md` has what else changed.
 
 **`kernel/vfs` has one now too. It has five, and the interesting part is that
 they do not all behave the same way.** See the next section.

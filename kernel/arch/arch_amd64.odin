@@ -163,6 +163,7 @@ current_sp :: amd64.current_sp
 syscall_entry_address :: amd64.syscall_entry_address
 percpu_kernel_stack :: amd64.percpu_kernel_stack
 percpu_id :: amd64.percpu_id
+percpu_critical_depth :: amd64.percpu_critical_depth
 
 /*
 -- Scheduling -----------------------------------------------------------------
@@ -192,6 +193,7 @@ set_interrupt_handler :: amd64.set_interrupt_handler
 inb :: amd64.inb
 outb :: amd64.outb
 thread_resume_init :: amd64.thread_resume_init
+ap_switch :: amd64.ap_switch
 cpu_class :: amd64.cpu_class
 
 // yield_now raises the software interrupt the scheduler listens on, so that a
@@ -217,6 +219,7 @@ LAPIC_MMIO_SIZE :: amd64.LAPIC_MMIO_SIZE
 timer_available :: amd64.lapic_available
 timer_physical_base :: amd64.lapic_physical_base
 timer_attach :: amd64.lapic_attach
+timer_attach_here :: amd64.lapic_attach_here
 timer_attached :: amd64.lapic_attached
 timer_calibrate :: amd64.lapic_calibrate
 timer_periodic :: amd64.lapic_timer_periodic
@@ -262,7 +265,7 @@ static. This is therefore what makes memory bring-up debuggable, rather than
 something that has to wait for it.
 */
 init_traps :: proc "contextless" () {
-	amd64.gdt_init()
+	amd64.gdt_init(0)
 	// After the GDT, because `gdt_init` loads a null selector into GS and a
 	// selector load clears the base MSR on Intel. Before everything else,
 	// because the storage is static and a per-CPU record costs nothing to have
@@ -270,6 +273,15 @@ init_traps :: proc "contextless" () {
 	amd64.percpu_init(0)
 	amd64.idt_init()
 	amd64.pic_disable()
+}
+
+// init_traps_ap is `init_traps` for a core that is not the first. The GDT and
+// the TSS are that core's own, the IDT is the one table every core loads,
+// and the PIC was silenced by the boot core before this core existed.
+init_traps_ap :: proc "contextless" (id: int) {
+	amd64.gdt_init(id)
+	amd64.percpu_init(id)
+	amd64.idt_load()
 }
 
 /*

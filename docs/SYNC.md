@@ -346,10 +346,12 @@ control that says so.
   it holds. It has not bitten, because nothing runs at realtime. It will the
   moment something does. Plan 9 never had it either, which is an argument about
   cost rather than about correctness.
-- **A mask is what stands in for a lock.** On a second CPU the wait lists need a
-  real lock word. `Rendez` then grows the `^Spinlock` that Plan 9's always
-  carried, held by the caller across both the condition test and the wake-up.
-  The API has its present shape partly so that change will not alter it.
+- **One lock over every wait list, and none over the condition.** `wait_lock`
+  guards every queue and the timer list together, and a condition is tested
+  with it released, after the thread has registered. `docs/SMP.md` argues why
+  that beat the per-`Rendez` lock Plan 9 carries. What is still missing is
+  any measurement of contention on that one lock, because nothing contends for
+  it yet.
 
 ## The interruptible sleep
 

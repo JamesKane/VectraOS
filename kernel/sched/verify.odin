@@ -158,7 +158,10 @@ order_worker :: proc "contextless" (arg: rawptr) {
 @(private = "file")
 blocking_worker :: proc "contextless" (arg: rawptr) {
 	_ = arg
-	block()
+	// A park with nothing to check: the pending word stands in for a wait
+	// node nobody will take, so the park always happens.
+	pending := rawptr(&woke)
+	block(&pending)
 	intrinsics.volatile_store(&woke, true)
 }
 
@@ -248,6 +251,11 @@ verify_placement :: proc(r: ^Verify_Result) #no_bounds_check {
 	pool[1].capacity = arch.CAPACITY_FULL / 2
 	pool[2].class = .Prime
 	pool[2].capacity = arch.CAPACITY_FULL
+	// Online, because a fabricated core that never came up is a core the
+	// placement rightly ignores, and that is not what this test asks.
+	for i in 0 ..< len(pool) {
+		pool[i].online = true
+	}
 
 	little := &pool[0]
 	big := &pool[2]
@@ -281,6 +289,8 @@ verify_placement :: proc(r: ^Verify_Result) #no_bounds_check {
 	absent[0].capacity = arch.CAPACITY_FULL / 2
 	absent[1].class = .Prime
 	absent[1].capacity = arch.CAPACITY_FULL
+	absent[0].online = true
+	absent[1].online = true
 	check(r, pick_cpu({.Efficiency}, absent[:]) == &absent[0], "a thread pinned to a class no core has falls back to the boot core")
 
 	// The pure decision agrees with the wiring: on the live machine's real cores,

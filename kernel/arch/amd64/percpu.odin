@@ -55,12 +55,22 @@ uses, because `syscall` does not consult the TSS at all.
 
 `user_rsp` is scratch, and it is scratch that has to live somewhere other than
 a register. The stub has none to spare between `swapgs` and the stack switch.
+
+The two depths are the other reason this record exists. `interrupt_depth` is
+how many trap handlers this core is inside, and `critical_depth` is how many
+spinlocks. Both used to be one global each, which was one core's truth stated
+as the machine's. A second core has its own answer to `may the code running
+here park`, and the answer has to come from the core that asks. Neither is
+volatile: each is read and written only on the core it belongs to, with
+interrupts off.
 */
 Percpu :: struct {
-	self:       u64,
-	kernel_rsp: u64,
-	user_rsp:   u64,
-	cpu_id:     u64,
+	self:            u64,
+	kernel_rsp:      u64,
+	user_rsp:        u64,
+	cpu_id:          u64,
+	interrupt_depth: i64,
+	critical_depth:  i64,
 }
 
 /*
@@ -128,4 +138,12 @@ percpu_kernel_stack :: proc "contextless" () -> uintptr {
 
 percpu_id :: proc "contextless" () -> int {
 	return int(this_cpu().cpu_id)
+}
+
+// percpu_critical_depth is this core's spinlock count, by address, for
+// `kernel/sync` to keep. The count is the core's rather than the package's
+// because the question it answers -- may the code running here park -- is
+// asked of a core.
+percpu_critical_depth :: proc "contextless" () -> ^i64 {
+	return &this_cpu().critical_depth
 }

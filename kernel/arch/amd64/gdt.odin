@@ -127,13 +127,18 @@ IST_DOUBLE_FAULT :: 1
 IST_NMI :: 2
 IST_MACHINE_CHECK :: 3
 
-@(private = "file") double_fault_stack: [FAULT_STACK_SIZE]u8
-@(private = "file") nmi_stack: [FAULT_STACK_SIZE]u8
-@(private = "file") machine_check_stack: [FAULT_STACK_SIZE]u8
+// One of everything per core. A TSS names the stacks a core switches to, so
+// two cores sharing one would land their faults on the same stack. The GDT
+// holds the TSS descriptor, which `ltr` marks busy, so two cores cannot share
+// that either. Indexed by the core id `percpu_init` records, and static
+// because the first core loads its own before there is an allocator.
+@(private = "file") double_fault_stack: [PERCPU_MAX][FAULT_STACK_SIZE]u8
+@(private = "file") nmi_stack: [PERCPU_MAX][FAULT_STACK_SIZE]u8
+@(private = "file") machine_check_stack: [PERCPU_MAX][FAULT_STACK_SIZE]u8
 
-@(private = "file") gdt: [GDT_SLOTS]u64
-@(private = "file") tss: TSS
-@(private = "file") gdtr: Descriptor_Pointer
+@(private = "file") gdt: [PERCPU_MAX][GDT_SLOTS]u64
+@(private = "file") tss: [PERCPU_MAX]TSS
+@(private = "file") gdtr: [PERCPU_MAX]Descriptor_Pointer
 
 /*
 stack_top returns a 16-byte-aligned top-of-stack for a static array.
@@ -173,7 +178,14 @@ may not even exist in this table. CS in particular cannot be assigned. Only a
 control transfer changes it, which is why the loader below returns through a
 far pointer it pushes itself.
 */
-gdt_init :: proc "contextless" () {
+gdt_init :: proc "contextless" (id: int) #no_bounds_check {
+	if id < 0 || id >= PERCPU_MAX {
+		return
+	}
+	gdt := &gdt[id]
+	tss := &tss[id]
+	gdtr := &gdtr[id]
+
 	gdt[0] = 0
 	gdt[1] = segment_descriptor(
 		ACCESS_PRESENT | ACCESS_SEGMENT | ACCESS_EXECUTE | ACCESS_RW,
@@ -196,20 +208,20 @@ gdt_init :: proc "contextless" () {
 		FLAG_GRANULARITY | FLAG_LONG,
 	)
 
-	tss = TSS {
+	tss^ = TSS {
 		iomap_base = size_of(TSS), // Past the end: no I/O permission bitmap
 	}
-	tss.ist[IST_DOUBLE_FAULT - 1] = stack_top(double_fault_stack[:])
-	tss.ist[IST_NMI - 1] = stack_top(nmi_stack[:])
-	tss.ist[IST_MACHINE_CHECK - 1] = stack_top(machine_check_stack[:])
+	tss.ist[IST_DOUBLE_FAULT - 1] = stack_top(double_fault_stack[id][:])
+	tss.ist[IST_NMI - 1] = stack_top(nmi_stack[id][:])
+	tss.ist[IST_MACHINE_CHECK - 1] = stack_top(machine_check_stack[id][:])
 
-	install_tss_descriptor(&gdt[6], &tss)
+	install_tss_descriptor(&gdt[6], tss)
 
-	gdtr = Descriptor_Pointer {
-		limit = u16(size_of(gdt) - 1),
+	gdtr^ = Descriptor_Pointer {
+		limit = u16(size_of(gdt^) - 1),
 		base  = u64(uintptr(&gdt[0])),
 	}
-	load_gdt(&gdtr)
+	load_gdt(gdtr)
 	load_tr(TSS_SEL)
 }
 
@@ -310,13 +322,14 @@ an interrupt from ring 3 uses. `Percpu.kernel_rsp` is what `syscall` uses,
 because `syscall` does not consult the TSS at all. One writer, so they cannot
 drift.
 */
-set_kernel_stack :: proc "contextless" (top: uintptr) {
-	tss.rsp[0] = u64(top)
-	this_cpu().kernel_rsp = u64(top)
+set_kernel_stack :: proc "contextless" (top: uintptr) #no_bounds_check {
+	me := this_cpu()
+	tss[me.cpu_id].rsp[0] = u64(top)
+	me.kernel_rsp = u64(top)
 }
 
 // kernel_stack reads the slot back, so a self-test can say the scheduler wrote
 // it rather than assume it from the absence of a triple fault.
-kernel_stack :: proc "contextless" () -> uintptr {
-	return uintptr(tss.rsp[0])
+kernel_stack :: proc "contextless" () -> uintptr #no_bounds_check {
+	return uintptr(tss[this_cpu().cpu_id].rsp[0])
 }

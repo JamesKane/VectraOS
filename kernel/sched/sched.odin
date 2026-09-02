@@ -39,17 +39,20 @@ next_id: int
 /*
 The scheduler lock.
 
-Every mutation of a run queue happens either inside an interrupt handler, where
-interrupts are already off, or under this. On one core that is the same thing
-twice. On two it is a lock word away from still being true. See `kernel/sync`.
+Every mutation of a run queue happens under this, and so does the switch. A
+handler that reschedules takes it, and `switch_done` lets go of it after the
+trap tail has moved off the outgoing stack -- see `block`, `reschedule` and
+`docs/SMP.md` for why the release is on the far side of the switch.
 */
 @(private)
 lock: sync.Spinlock
 
-// cpu returns the core this code is running on. One core today, and the
-// indirection is the point: every caller already asks rather than assuming.
-cpu :: proc "contextless" () -> ^Cpu {
-	return &cpus[0]
+// cpu returns the core this code is running on, by the id `arch` keeps behind
+// the segment base. A caller that reads it and then parks may wake on another
+// core, so the answer is good for as long as interrupts stay off, and every
+// caller that keeps it takes the scheduler lock first.
+cpu :: proc "contextless" () -> ^Cpu #no_bounds_check {
+	return &cpus[arch.percpu_id()]
 }
 
 current :: proc "contextless" () -> ^Thread {
@@ -57,7 +60,12 @@ current :: proc "contextless" () -> ^Thread {
 }
 
 /*
-ticks is the count of timer interrupts this core took.
+ticks is the machine's clock: the count of timer interrupts the boot core took.
+
+The boot core's rather than this core's, because every core has a timer and
+only one of them is the clock. `sync.tick` advances on the boot core alone,
+and a deadline is a number on that count. A thread that read its own core's
+count would read a different clock every time it moved.
 
 Volatile, because an interrupt handler writes it and ordinary code reads it,
 usually in a loop that waits for a change. The compiler is entitled to hoist a
@@ -66,7 +74,7 @@ most confusing way for a scheduler to fail, because everything about it looks
 correct in the source.
 */
 ticks :: proc "contextless" () -> u64 {
-	return intrinsics.volatile_load(&cpu().ticks)
+	return intrinsics.volatile_load(&cpus[0].ticks)
 }
 
 // -- Bring-up ----------------------------------------------------------------
@@ -93,6 +101,7 @@ init :: proc() -> bool {
 	c.id = 0
 	c.class = class
 	c.capacity = capacity
+	c.online = true
 	cpu_count = 1
 
 	boot := new(Thread)
@@ -585,24 +594,57 @@ reap :: proc() {
 // -- Blocking and waking -----------------------------------------------------
 
 /*
-block takes the caller off every queue until someone calls `ready` on it.
+block takes the caller off every queue until someone calls `ready` on it,
+unless the wait it is parking for is already over.
 
-Interrupts stay masked from the state change through the yield, and that is what
-closes the window. A tick that landed between `I am blocked` and the switch
-would find a Running thread marked Blocked. It would leave that thread off the
-queue, with nothing scheduled to put it back. The mask makes the two one step.
+`pending` is the waiting node's `queue` field, which a waker clears when it
+takes the node. It is read under the scheduler lock, and the state change is
+made under the same hold. A waker readies a thread under that lock too, so
+the two orders are the only two: the park sees the node taken and does not
+happen, or the ready sees a parked thread and starts it. See `sync.Scheduler`.
 
-There is no lost wake-up in the other direction. Say `ready` runs on another
-thread before this one reaches the `int`. It sets the state back to Ready and
-enqueues the thread, and the yield then finds an ordinary runnable thread.
+The lock is held from here *through the switch*. `reschedule` takes it again,
+nested, and neither lets go. `switch_done` does, on the incoming thread's
+stack, once this thread's frame is written and nothing on this core will read
+its stack again. That is what stops a second core from running this thread
+while this core is still leaving it. The interrupt flag comes back here, from
+the guard, when this thread next runs -- wherever that is.
 */
-block :: proc "contextless" () {
-	was_on := arch.irq_save()
+block :: proc "contextless" (pending: ^rawptr) {
+	g := sync.acquire(&lock)
+	if intrinsics.volatile_load(pending) == nil {
+		// Taken already. The wake beat the park, and there is nothing to
+		// wait for.
+		sync.release(&lock, g)
+		return
+	}
 	if t := current(); t != nil {
 		t.state = .Blocked
 	}
 	arch.yield_now()
-	arch.irq_restore(was_on)
+	arch.irq_restore(g.interrupts_were_on)
+}
+
+/*
+switch_done is the trap tail's last call before it restores a thread, and it
+runs on that thread's stack.
+
+If this core carried the scheduler lock across the switch, this is where it
+lets go. Every path that switches holds it: `block` and then `reschedule`, or
+`reschedule` alone from a tick or a yield. Every path that did not switch
+also comes through here, holding nothing, and does nothing. The interrupt
+flag is not touched. The `iretq` a few instructions on restores the incoming
+thread's own.
+
+Named from `isr.S`, which is why it is exported under a C name. See
+`sync.release_all` for why the release is by the core rather than by the
+thread that took the lock.
+*/
+@(export, link_name = "vectra_switch_done")
+switch_done :: proc "sysv" () {
+	if sync.held_here(&lock) {
+		sync.release_all(&lock)
+	}
 }
 
 /*
@@ -733,7 +775,13 @@ on_tick :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	now := c.ticks + 1
 	intrinsics.volatile_store(&c.ticks, now)
 
-	woken := sync.tick(now)
+	// The boot core's tick is the clock, and only it starts deadlines. Every
+	// other core's tick is preemption alone. Two clocks would each start the
+	// other's sleepers early or late by whatever the two counts differ by.
+	woken := 0
+	if c.id == 0 {
+		woken = sync.tick(now)
+	}
 
 	// A noted thread caught in ring 3 dies here, because here is the one
 	// boundary it cannot help crossing. The frame is the interrupted
@@ -789,6 +837,19 @@ consumed -- see `Thread.ticks_left`.
 */
 @(private)
 reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Resume {
+	/*
+	The scheduler lock, taken here and let go of by `switch_done`.
+
+	Nested under `block`'s hold when the switch is a park, and fresh when it
+	is a tick or a yield. Never released in this procedure: the outgoing
+	thread's stack is what this core stands on until the trap tail has moved
+	off it, and a second core that took the thread before then would run it
+	on a stack this core is still reading. The guard is dropped rather than
+	kept, because the release does not restore an interrupt flag. The frame
+	the tail restores carries the incoming thread's own.
+	*/
+	_ = sync.acquire(&lock)
+
 	c := cpu()
 	prev := c.current
 
@@ -982,4 +1043,148 @@ stats :: proc "contextless" () -> Stats {
 		capacity    = c.capacity,
 		slice       = slice_ticks(c),
 	}
+}
+
+// -- The other cores ---------------------------------------------------------
+
+/*
+init_ap is `init` for a core that is not the first: it adopts the context the
+core arrived on as a thread, and gives the core an idle thread.
+
+The adopted thread is the core's arrival, on the stack the boot core gave it,
+and its whole life is this procedure and the `exit` that follows. It owns
+that stack, so the reap gives the stack back the moment the core's idle
+thread runs. The idle thread is made here rather than lazily for the reason
+`init` gives: a `reschedule` that could fail would fail at the one moment it
+must not.
+
+Placed on nobody's list yet. The core is not `online` until `cpu_online`
+says so, and until then `pick_cpu` does not know it, so nothing can be
+queued on a core that cannot yet dispatch.
+*/
+init_ap :: proc(id: int, stack: []u8) -> bool #no_bounds_check {
+	if id <= 0 || id >= MAX_CPUS {
+		return false
+	}
+	c := &cpus[id]
+	if c.idle != nil {
+		return true
+	}
+
+	class, capacity := arch.cpu_class()
+	c.id = id
+	c.class = class
+	c.capacity = capacity
+
+	boot := new(Thread)
+	if boot == nil {
+		return false
+	}
+	guard := sync.acquire(&lock)
+	boot.name = "ap-boot"
+	boot.id = next_id
+	next_id += 1
+	sync.release(&lock, guard)
+	boot.state = .Running
+	boot.base = PRIORITY_NORMAL
+	boot.prio = PRIORITY_NORMAL
+	boot.cpu = c
+	boot.ticks_left = slice_ticks(c)
+	boot.stack = stack
+	boot.owns_stack = true
+	c.current = boot
+
+	idle := spawn_at(c, "idle", idle_loop, nil, PRIORITY_IDLE, ANY_CLASS, IDLE_STACK_SIZE)
+	if idle == nil {
+		return false
+	}
+	remove(c, idle)
+	c.idle = idle
+	idle.state = .Ready
+	return true
+}
+
+/*
+cpu_online publishes the calling core to `pick_cpu`.
+
+The last step of a core's bring-up, after its idle thread and its timer, so
+that the first thread placed on it finds a core that dispatches. Under the
+scheduler lock, because `cpu_count` bounds the pool every placement scans.
+*/
+cpu_online :: proc "contextless" () {
+	guard := sync.acquire(&lock)
+	c := cpu()
+	c.online = true
+	if c.id + 1 > cpu_count {
+		cpu_count = c.id + 1
+	}
+	sync.release(&lock, guard)
+}
+
+/*
+start_timer_here arms the calling core's timer at the rate the boot core
+measured, and lets interrupts in on this core for the first time.
+
+No calibration: every core's timer runs from the same bus clock, and the
+count `start_timer` found holds for all of them. False before the boot
+core's timer runs, because there is then no count to arm with.
+*/
+start_timer_here :: proc "contextless" () -> bool {
+	if timer_count == 0 {
+		return false
+	}
+	arch.timer_periodic(u8(arch.VECTOR_TIMER), timer_count)
+	arch.enable_interrupts()
+	return true
+}
+
+// online_count is how many cores dispatch. One until `cpu_online` is called
+// from a second.
+online_count :: proc "contextless" () -> int {
+	n := 0
+	for i in 0 ..< cpu_count {
+		if cpus[i].online {
+			n += 1
+		}
+	}
+	return n
+}
+
+Cpu_Stats :: struct {
+	online:      bool,
+	ticks:       u64,
+	switches:    u64,
+	preemptions: u64,
+	ready:       int,
+}
+
+// cpu_stats reads one core's counters, for the self-test that watches the
+// other cores from the first. Volatile, because the core it describes is
+// writing them.
+cpu_stats :: proc "contextless" (id: int) -> Cpu_Stats #no_bounds_check {
+	if id < 0 || id >= MAX_CPUS {
+		return {}
+	}
+	c := &cpus[id]
+	return Cpu_Stats {
+		online      = intrinsics.volatile_load(&c.online),
+		ticks       = intrinsics.volatile_load(&c.ticks),
+		switches    = intrinsics.volatile_load(&c.switches),
+		preemptions = intrinsics.volatile_load(&c.preemptions),
+		ready       = ready_count(c),
+	}
+}
+
+// reap_pending_all is `reap_pending` summed over every core, for a heap
+// bracket that has to wait for every core's idle thread rather than this one's.
+reap_pending_all :: proc "contextless" () -> int {
+	guard := sync.acquire(&lock)
+	defer sync.release(&lock, guard)
+	n := 0
+	for i in 0 ..< cpu_count {
+		for t := cpus[i].reap; t != nil; t = t.next {
+			n += 1
+		}
+	}
+	return n
 }

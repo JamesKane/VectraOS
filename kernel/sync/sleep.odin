@@ -50,7 +50,6 @@ thread that matters, and Plan 9 never had it either.
 */
 package sync
 
-import "kernel:arch"
 
 /*
 A mutual exclusion lock that parks the loser instead of masking interrupts.
@@ -69,37 +68,36 @@ Mutex :: struct {
 /*
 mutex_lock takes the lock, and parks the caller if somebody else has it.
 
-This procedure masks interrupts for the bookkeeping, and keeps them masked
-across the park. That is not a critical section in the `Spinlock` sense, and
-deliberately does not count as one. The mask travels with the thread through
-the switch, because it is a bit in the flags that the trap frame restores. The
-thread that runs next therefore gets its own interrupt state, and this thread
-gets its mask back when it resumes. The rule this enforces on *callers* is the
-opposite one, and the first line checks it: no sleeping lock inside a spinlock.
+The bookkeeping is under `wait_lock`, and the park is not. A node is queued
+under the lock, the lock is let go of, and `block` parks only if the node is
+still queued when the scheduler looks -- see `wait.odin` for the order that
+makes a wake at any moment safe. The rule this enforces on *callers* is the
+opposite one, and the first line checks it: no sleeping lock inside a
+spinlock.
 */
 mutex_lock :: proc "contextless" (m: ^Mutex) {
 	if !can_sleep() {
 		fail("sleeping lock taken inside a spinlock")
 	}
-	was_on := arch.irq_save()
+	g := acquire(&wait_lock)
 
 	me := have_sched ? hooks.current() : nil
 
 	if !m.held {
 		m.held = true
 		m.owner = me
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		return
 	}
 
 	if have_sched && me != nil && m.owner == me {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("sleeping lock taken twice by the same thread")
 	}
 	if !have_sched {
 		// One thread cannot contend with itself, so this is either the case
 		// above with no scheduler to name it, or a lock released by nobody.
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("sleeping lock contended before there is a scheduler to park on")
 	}
 
@@ -108,28 +106,29 @@ mutex_lock :: proc "contextless" (m: ^Mutex) {
 	}
 	push(&m.queue, &node)
 	sleeps += 1
+	release(&wait_lock, g)
 
-	hooks.block()
-
-	// Only `mutex_unlock` wakes this thread, and it handed the lock over
-	// before it made the thread runnable. `m.held` is already true and
-	// `m.owner` is already us. There is nothing to re-check and no loop,
-	// which is the point of handoff.
-	arch.irq_restore(was_on)
+	// Park unless `mutex_unlock` already took the node, in which case the
+	// lock is already ours. Only `mutex_unlock` wakes this thread, and it
+	// handed the lock over before it made the thread runnable. `m.held` is
+	// already true and `m.owner` is already us. There is nothing to re-check
+	// and no loop, which is the point of handoff.
+	hooks.block(cast(^rawptr)&node.queue)
 }
 
 /*
 mutex_unlock releases the lock, or hands it to whoever the scheduler would
 have picked.
 
-The wake comes last, after the queue and the ownership are already consistent,
-so the woken thread sees a finished lock however soon it runs.
+The wake comes last, after the queue and the ownership are already consistent
+and the list lock is gone, so the woken thread sees a finished lock however
+soon it runs.
 */
 mutex_unlock :: proc "contextless" (m: ^Mutex) {
-	was_on := arch.irq_save()
+	g := acquire(&wait_lock)
 
 	if !m.held {
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		fail("sleeping lock released while free")
 	}
 
@@ -137,18 +136,19 @@ mutex_unlock :: proc "contextless" (m: ^Mutex) {
 	if best == nil {
 		m.held = false
 		m.owner = nil
-		arch.irq_restore(was_on)
+		release(&wait_lock, g)
 		return
 	}
 
-	m.owner = best.waiter
+	w := best.waiter
+	m.owner = w
 	handoffs += 1
+	release(&wait_lock, g)
 
 	// `unpark`, not `ready`: a thread that queued for a lock waited on
 	// nothing outside itself, so the scheduler does not give its priority
 	// back. See `Scheduler`.
-	hooks.unpark(best.waiter)
-	arch.irq_restore(was_on)
+	hooks.unpark(w)
 }
 
 // mutex_held reports whether anyone holds the lock. Use it for assertions in

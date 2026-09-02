@@ -17,6 +17,7 @@ Options:
     --release                    Optimise, otherwise a debug build
     --serial=stdio|file          Where QEMU's COM1 goes (default: stdio)
     --gfx                        Open a QEMU window, otherwise headless
+    --smp=N                      Cores QEMU presents (default: 4)
 
 An Odin program rather than a shell script, for one reason. The flag handling,
 the arch table and the link line will all grow per-architecture.
@@ -29,6 +30,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 
 BUILD_DIR :: "build"
@@ -108,6 +110,7 @@ asm_amd64 := [?]string{
 	"kernel/arch/amd64/syscall_entry.S",
 	"kernel/arch/amd64/gdt.S",
 	"kernel/arch/amd64/fpu_hold.S",
+	"kernel/arch/amd64/ap.S",
 	"kernel/user/programs_amd64.S",
 }
 
@@ -160,6 +163,7 @@ Options :: struct {
 	release: bool,
 	serial:  string,
 	gfx:     bool,
+	smp:     int,
 
 	// Everything after the target, handed to the target untouched. Only
 	// `lint` reads it, so that `build lint --show docs` reaches the checker.
@@ -171,6 +175,7 @@ main :: proc() {
 		target = "kernel",
 		arch   = .amd64,
 		serial = "stdio",
+		smp    = 4,
 	}
 
 	positional_seen := false
@@ -189,6 +194,12 @@ main :: proc() {
 			}
 		case strings.has_prefix(arg, "--serial="):
 			opts.serial = arg[len("--serial="):]
+		case strings.has_prefix(arg, "--smp="):
+			n, ok := strconv.parse_int(arg[len("--smp="):])
+			if !ok || n < 1 {
+				die("bad --smp=%s (want a core count of 1 or more)", arg[len("--smp="):])
+			}
+			opts.smp = n
 		case arg == "--release":
 			opts.release = true
 		case arg == "--gfx":
@@ -558,6 +569,10 @@ run_qemu :: proc(opts: Options, debug: bool) {
 
 	append(&args, "-drive", fmt.tprintf("format=raw,file=fat:rw:%s", ESP_DIR))
 	append(&args, "-net", "none")
+	// More than one core, because the kernel starts every core the
+	// bootloader lists and the self-tests run across them. `--smp=1` is
+	// the uniprocessor control.
+	append(&args, "-smp", fmt.tprintf("%d", opts.smp))
 
 	switch opts.serial {
 	case "stdio": append(&args, "-serial", "stdio")

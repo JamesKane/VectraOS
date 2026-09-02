@@ -185,9 +185,10 @@ Thread :: struct {
 /*
 One core.
 
-Vectra has one, and the struct is per-core anyway. The alternative is a
-scheduler written against globals, which somebody has to unpick the first time a
-second core starts. Run queues, the current thread, the idle thread and the tick
+There is one of these per core that came up, and the boot core's is the
+first. Run queues, the current thread, the idle thread and the tick count
+are all properties of a core, and none are properties of the machine, which
+is what let a second core start without a scheduler rewrite. Run queues, the current thread, the idle thread and the tick
 count are all properties of a core. None of them are properties of the machine.
 
 `class` and `capacity` come from `arch.cpu_class`. On amd64 that is always
@@ -198,6 +199,11 @@ Cpu :: struct {
 	id:       int,
 	class:    arch.Cpu_Class,
 	capacity: int,
+
+	// Whether this core dispatches. A core is placed on only once it has an
+	// idle thread and a timer, and `cpu_online` is what says so. A thread
+	// queued on a core before then would wait for a dispatch that never comes.
+	online:   bool,
 
 	current: ^Thread,
 	idle:    ^Thread,

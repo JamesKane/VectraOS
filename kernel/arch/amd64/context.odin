@@ -295,3 +295,34 @@ thread_user_clone :: proc "contextless" (
 
 	return Resume{frame = frame, fpu = rawptr(fpu)}, true
 }
+
+// -- Another core's first steps ----------------------------------------------
+
+/*
+ap_switch is `vectra_ap_switch` in `ap.S`: a core moves onto its own stack
+and the kernel's page tables, and calls `entry` there. It never returns.
+
+An application processor arrives from the bootloader on a stack and a set of
+tables the bootloader owns. Nothing the kernel does later may depend on
+either, so the first thing the core does is leave both, and that is two
+register writes no Odin procedure can make about its own frame. `entry` runs
+on the new stack with `rbp` cleared, so a backtrace from it ends where the
+kernel began for this core.
+*/
+foreign {
+	vectra_ap_switch :: proc "sysv" (
+		stack_top: uintptr,
+		root: u64,
+		entry: proc "sysv" (arg: rawptr) -> !,
+		arg: rawptr,
+	) -> ! ---
+}
+
+ap_switch :: proc "contextless" (
+	stack_top: uintptr,
+	root: uintptr,
+	entry: proc "sysv" (arg: rawptr) -> !,
+	arg: rawptr,
+) -> ! {
+	vectra_ap_switch(stack_top, u64(root), entry, arg)
+}

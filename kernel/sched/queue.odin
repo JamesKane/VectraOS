@@ -188,7 +188,7 @@ pick_cpu :: proc "contextless" (affinity: Cpu_Classes, pool: []Cpu) -> ^Cpu #no_
 	best: ^Cpu
 	for i in 0 ..< len(pool) {
 		c := &pool[i]
-		if !class_allowed(affinity, c.class) {
+		if !c.online || !class_allowed(affinity, c.class) {
 			continue
 		}
 		if best == nil || better_host(c, best) {

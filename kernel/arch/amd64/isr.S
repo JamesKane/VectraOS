@@ -39,9 +39,30 @@ vectra_isr_common:
 	movq %rsp, %r12
 	call vectra_trap_dispatch
 
-	movq 8(%r12), %rax
-	fxrstor (%rax)
-	movq 0(%r12), %rsp
+	/*
+	 * The switch, and the hook after it. Both halves of the Resume are read
+	 * into callee-saved registers first, because the hook lets go of the
+	 * scheduler lock, and after that another core may run the thread whose
+	 * stack %r12 points into. Nothing below reads that stack again.
+	 *
+	 * The hook runs on the incoming thread's stack, below both the frame
+	 * and the FXSAVE area, whichever is lower. An interrupted thread has its
+	 * FXSAVE area below its frame, and a fresh one has it above, and the
+	 * hook's own frame must land under both: fxrstor reads the area after
+	 * the hook returns, and the hook is Odin, which may use SSE and does
+	 * use the stack. What is below both is the dead space the dispatch call
+	 * stood on, or a fresh thread's unused stack.
+	 */
+	movq 8(%r12), %rbx
+	movq 0(%r12), %rbp
+	movq %rbx, %rsp
+	cmpq %rbp, %rsp
+	cmovaq %rbp, %rsp
+	subq $16, %rsp
+	andq $-16, %rsp
+	call vectra_switch_done
+	movq %rbp, %rsp
+	fxrstor (%rbx)
 
 	popq %r15
 	popq %r14

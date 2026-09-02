@@ -68,18 +68,43 @@ arrival would hand out turns on the strength of what the scheduler thought
 several slices ago. It is a scan of the threads that contend for one object, and
 that number stays small for the same reason contention does.
 
-## Interrupts, and what stands in for a lock
+## One lock over every list
 
-Every procedure here requires interrupts to be masked, and none of them mask on
-their own behalf. The callers do, because the caller's decision and the queue
-operation have to be one step. The mask is the exclusion, on one core. It is
-also the thing that has to change first on a second core. These lists then need
-a real lock word, and `Rendez` grows the `^Spinlock` that Plan 9's `Rendez`
-always carried.
+Every procedure here requires `wait_lock` to be held, and none of them take
+it on their own behalf. The callers do, because the caller's decision and the
+queue operation have to be one step. One lock for every queue and the timer
+list together, rather than one per `Rendez` as Plan 9 has, and the choice is
+about order. A thread with a deadline is on a queue and on the timer list at
+once, and a wake may start from either side. Two locks would have to be taken
+in both orders, and one lock has no order to get wrong.
+
+What the lock does *not* cover is the condition. `wait_on` tests a condition
+with no lock held, and that is deliberate: a condition may take the spinlock
+of the thing it reads, and a waker may hold that same spinlock while it calls
+`wakeup`. A condition under `wait_lock` would take the two in the other order,
+and on two cores that is a deadlock. So a waiter registers first, under the
+lock, and tests second, with none. Whoever makes the condition true and then
+wakes will find the node, or the waiter will find the condition. See
+`wait_on`.
+
+## Registered, then tested, then parked
+
+That order leaves one window: a waker that found the node and readied the
+thread before the thread had parked. The scheduler closes it. `block` takes
+a pointer to the node's `queue` field, and parks only if that is still set,
+under the scheduler's own lock. A waker unlinks the node, under `wait_lock`,
+and then readies the thread, under the scheduler's lock. Either the park sees
+the unlink and does not happen, or the ready sees a parked thread and starts
+it. There is no third order, because the scheduler's lock serialises the two.
 */
 package sync
 
 import "kernel:arch"
+
+// The lock over every wait list in this package. See the file comment for why
+// it is one lock rather than one per queue, and what it does not cover.
+@(private)
+wait_lock: Spinlock
 
 // A thread, as far as this package is concerned: something the scheduler can
 // stop and start, identified by a pointer it chose.
@@ -89,10 +114,12 @@ Waiter :: rawptr
 What a sleeping wait needs from a scheduler, and nothing more.
 
 `block` takes the calling thread off every run queue until something starts it
-again. This package masks interrupts before it calls that. The mask is what
-makes `record that I am waiting` and `stop running` a single step. A wake-up
-that landed between them would find a running thread marked blocked, and leave
-it that way.
+again, unless the wait is already over. `pending` points at the waiting node's
+`queue` field, which a waker clears when it takes the node. The scheduler reads
+it under its own lock and parks only if it is still set. That is what makes
+`record that I am waiting` and `stop running` a single step across two cores.
+A wake that landed between them finds either a node still registered, and
+takes it, or a thread already parked, and starts it.
 
 `unpark` and `ready` are the same act with different consequences for priority.
 They are two hooks rather than one flag, because the difference is about *what
@@ -119,7 +146,7 @@ number beyond a comparison of two of them.
 */
 Scheduler :: struct {
 	current:     proc "contextless" () -> Waiter,
-	block:       proc "contextless" (),
+	block:       proc "contextless" (pending: ^rawptr),
 	unpark:      proc "contextless" (w: Waiter),
 	ready:       proc "contextless" (w: Waiter),
 	priority:    proc "contextless" (w: Waiter) -> int,
@@ -205,7 +232,7 @@ waiting :: proc "contextless" (q: ^Wait_Queue) -> bool {
 	return q.head != nil
 }
 
-// push adds a node at the back. Interrupts must already be masked.
+// push adds a node at the back. `wait_lock` must already be held.
 @(private)
 push :: proc "contextless" (q: ^Wait_Queue, n: ^Wait_Node) {
 	n.next = nil
