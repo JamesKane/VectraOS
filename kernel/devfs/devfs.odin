@@ -928,6 +928,10 @@ devfs_walk :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twalk, reply: ^vectra
 		reply^ = vectra9.error_reply(vectra9.EBADF)
 		return
 	}
+	if vfs.fidtab_is_open(&t.fids, m.fid) {
+		reply^ = vectra9.error_reply(vectra9.EBUSY)
+		return
+	}
 
 	answer: vectra9.Rwalk
 	cur := node
@@ -981,6 +985,10 @@ devfs_read :: proc "contextless" (
 	node := node_of(t, m.fid)
 	if node < 0 {
 		reply^ = vectra9.error_reply(vectra9.EBADF)
+		return
+	}
+	if !vfs.fidtab_is_open(&t.fids, m.fid) {
+		reply^ = vectra9.error_reply(vectra9.EINVAL)
 		return
 	}
 	if DEV_NODES[node].kind == .Dir {
@@ -1196,6 +1204,10 @@ devfs_readdir :: proc "contextless" (
 	node := node_of(t, m.fid)
 	if node < 0 {
 		reply^ = vectra9.error_reply(vectra9.EBADF)
+		return
+	}
+	if !vfs.fidtab_is_open(&t.fids, m.fid) {
+		reply^ = vectra9.error_reply(vectra9.EINVAL)
 		return
 	}
 	if DEV_NODES[node].kind != .Dir {

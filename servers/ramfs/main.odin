@@ -185,10 +185,11 @@ handler :: proc "contextless" (
 		if !ok {
 			return
 		}
+		libuser.fid_open(&fids, m.fid)
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
 
 	case vectra9.Tread:
-		node, ok := libuser.node_of(&fids, m.fid, reply)
+		node, ok := libuser.open_node(&fids, m.fid, reply)
 		if !ok {
 			return
 		}
@@ -267,7 +268,7 @@ handler :: proc "contextless" (
 }
 
 readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
-	node, ok := libuser.node_of(&fids, m.fid, reply)
+	node, ok := libuser.open_node(&fids, m.fid, reply)
 	if !ok {
 		return
 	}

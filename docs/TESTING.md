@@ -243,6 +243,7 @@ nothing else in common.
 |---|---|---|
 | The namespace under five threads | above | 5 of 8 |
 | A union listing's cookie across a rebind | `docs/NAMESPACE.md` | 1 of 1 |
+| The open flag on a fid | `docs/NAMESPACE.md` | 2 of 2 |
 | The trap path: interrupt bracket, SFMASK, backtrace | `docs/SYNC.md`, `docs/USER.md` | 3 of 3 |
 | The sleep queue | `docs/SYNC.md` | 6 of 8 |
 | The read/write lock | `docs/SYNC.md` | 3 of 3, and one wrong mutation |

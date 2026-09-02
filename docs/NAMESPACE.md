@@ -178,6 +178,8 @@ mutations against the move, four caught:
 | `take_payload` never copies | caught — four here, one in the concurrency run |
 | `chan_read_for` ignores its deadline | caught — `a read that outlives its deadline comes back at all` |
 | `union_pass` leaves a member cookie unstamped | caught — by the union worker |
+| `static_walk` drops its open-fid refusal | caught — the clone of the open fid is refused |
+| `Tread` drops its unopened refusal | caught — the read before `Tlopen` is refused |
 | remove `Static_Tree.lock` | **not caught** |
 | remove `rpc`'s `can_sleep` refusal | **not caught**, and correctly so |
 
@@ -201,6 +203,32 @@ defect in the test rather than a result. `chan_read_for` with its deadline
 ignored never returns, and the check ran on the boot thread. It runs on a
 watched thread now, so a read that does not come back is a check that fails.
 `docs/TESTING.md` has the standing version of that lesson.
+
+## The open flag on a fid
+
+9P has two rules a server enforces on a fid's state, and every Vectra server
+enforces both now. A walk on a fid opened for I/O is refused, because a walk
+rebinds the fid and a reader holds it. A read of a fid before its `Tlopen` is
+refused, because there is no access mode to read under yet. The first is
+Plan 9's `Ebadusefd`, and Vectra returns `EBUSY`. The second returns `EINVAL`.
+
+`vfs.Fid_Table` and `libuser`'s copy both carry an `open` flag per slot. Every
+`Tlopen` sets it, every `Twalk` refuses a set one, and every `Tread` and
+`Treaddir` requires it. A pipe end is the one exception the other way. It is
+born open at `Tattach`, the way Plan 9's `pipe()` returns two open descriptors,
+so a read of it never needed a `Tlopen`.
+
+**The audit was `chan_clone`, which walks `c.fid`.** Enforcing the walk rule
+means no caller may hand it an open chan. Nothing in the kernel does. A walk
+happens during resolution, before the open. `readdir` over a union clones each
+member fresh and opens the clone, and reads the already-open union chan without
+cloning it. So the rule catches a client-discipline bug and breaks no correct
+path.
+
+`kernel/verify_vfs.odin` mounts `#t` at `/mnt` and checks both refusals from the
+client side. A resolve leaves a fid bound but unopened, and a read of it comes
+back `EINVAL`. A second fid opened as a directory refuses its clone with
+`EBUSY`.
 
 ## Known gaps
 

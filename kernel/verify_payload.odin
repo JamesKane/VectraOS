@@ -350,6 +350,17 @@ lister :: proc "contextless" (arg: rawptr) #no_bounds_check {
 		return
 	}
 
+	// Opened before it is read, which 9P requires and the static server
+	// enforces now. A directory fid answers Treaddir only after Tlopen.
+	open_msg := vectra9.Msg(vectra9.Tlopen{fid = fid, flags = 0})
+	if mnt.call(&dir_conn, &open_msg, &reply, nil) != .None {
+		ls.err = vectra9.EIO
+		intrinsics.volatile_store(&ls.returned, true)
+		pay_bump(&lister_returns)
+		sync.wakeup_all(&pay_done)
+		return
+	}
+
 	request := vectra9.Msg(
 		vectra9.Treaddir{fid = fid, offset = 0, count = u32(len(ls.buf))},
 	)

@@ -257,12 +257,18 @@ static_handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.EROFS)
 			return
 		}
+		fidtab_set_open(&t.fids, m.fid, true)
 		reply^ = vectra9.Rlopen{qid = node_qid(t, node), iounit = 0}
 
 	case vectra9.Tread:
 		node := fidtab_node(&t.fids, m.fid)
 		if node < 0 {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
+			return
+		}
+		if !fidtab_is_open(&t.fids, m.fid) {
+			// 9P forbids a read of a fid before Tlopen.
+			reply^ = vectra9.error_reply(vectra9.EINVAL)
 			return
 		}
 		if t.nodes[node].dir {
@@ -348,6 +354,11 @@ static_walk :: proc "contextless" (t: ^Static_Tree, m: vectra9.Twalk, reply: ^ve
 		reply^ = vectra9.error_reply(vectra9.EBADF)
 		return
 	}
+	if fidtab_is_open(&t.fids, m.fid) {
+		// 9P forbids a walk on a fid opened for I/O. EBUSY is `Ebadusefd`.
+		reply^ = vectra9.error_reply(vectra9.EBUSY)
+		return
+	}
 
 	answer: vectra9.Rwalk
 	cur := node
@@ -384,6 +395,10 @@ static_readdir :: proc "contextless" (
 	node := fidtab_node(&t.fids, m.fid)
 	if node < 0 {
 		reply^ = vectra9.error_reply(vectra9.EBADF)
+		return
+	}
+	if !fidtab_is_open(&t.fids, m.fid) {
+		reply^ = vectra9.error_reply(vectra9.EINVAL)
 		return
 	}
 	if !t.nodes[node].dir {

@@ -42,6 +42,12 @@ Fid_Slot :: struct {
 	fid:  vectra9.Fid,
 	node: i32,
 	used: bool,
+
+	// Whether the client opened this fid. 9P forbids a walk on an open fid and
+	// a read on an unopened one, and this is what a server checks to enforce
+	// it. `kernel/vfs/fidtab.odin` carries the same flag on the other side of
+	// the boundary. See `walk`, `fid_open`, and `open_node`.
+	open: bool,
 }
 
 /*
@@ -89,7 +95,12 @@ fid_bind :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid, node: i32) -> b
 	defer unlock(&t.lock)
 	for i in 0 ..< MAX_FIDS {
 		if t.slots[i].used && t.slots[i].fid == fid {
+			// A rebind is a fresh binding. Whatever the fid was open on, it
+			// is not open on this. A server that enforces the walk rule never
+			// reaches a rebind with `open` set. Clearing it keeps the flag
+			// honest for a server that has not adopted the check yet.
 			t.slots[i].node = node
+			t.slots[i].open = false
 			return true
 		}
 	}
@@ -97,6 +108,34 @@ fid_bind :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid, node: i32) -> b
 		if !t.slots[i].used {
 			t.slots[i] = Fid_Slot{fid = fid, node = node, used = true}
 			return true
+		}
+	}
+	return false
+}
+
+// fid_open records that a client opened this fid, so a later `walk` on it is
+// refused and a `read` of it is allowed. `open_node` is the read side. Answers
+// false for a fid this server never bound.
+fid_open :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid) -> bool #no_bounds_check {
+	lock(&t.lock)
+	defer unlock(&t.lock)
+	for i in 0 ..< MAX_FIDS {
+		if t.slots[i].used && t.slots[i].fid == fid {
+			t.slots[i].open = true
+			return true
+		}
+	}
+	return false
+}
+
+// fid_is_open reports whether a client opened this fid. False for one this
+// server never bound, which is the answer a caller wants either way.
+fid_is_open :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid) -> bool #no_bounds_check {
+	lock(&t.lock)
+	defer unlock(&t.lock)
+	for i in 0 ..< MAX_FIDS {
+		if t.slots[i].used && t.slots[i].fid == fid {
+			return t.slots[i].open
 		}
 	}
 	return false
@@ -143,6 +182,12 @@ walk :: proc "contextless" (
 	from := fid_lookup(t, m.fid)
 	if from < 0 {
 		reply^ = vectra9.error_reply(vectra9.EBADF)
+		return
+	}
+	// 9P forbids a walk on an open fid: a fid opened for I/O is not a fid to
+	// walk forward. `EBUSY` is Plan 9's `Ebadusefd` in this tree's error set.
+	if fid_is_open(t, m.fid) {
+		reply^ = vectra9.error_reply(vectra9.EBUSY)
 		return
 	}
 
@@ -211,6 +256,29 @@ node_of :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid, reply: ^vectra9.
 	node := fid_lookup(t, fid)
 	if node < 0 {
 		reply^ = vectra9.error_reply(vectra9.EBADF)
+		return -1, false
+	}
+	return node, true
+}
+
+/*
+open_node is `node_of` for a message that requires the fid opened first: a
+`Tread` or a `Treaddir`. 9P forbids reading a fid before `Tlopen`, and this is
+where a server refuses it. `EINVAL` is the answer, because the fid is bound and
+the request is the thing that is out of order.
+
+    node, ok := libuser.open_node(&fids, m.fid, reply)
+    if !ok {
+        return
+    }
+*/
+open_node :: proc "contextless" (t: ^Fid_Table, fid: vectra9.Fid, reply: ^vectra9.Msg) -> (i32, bool) {
+	node, ok := node_of(t, fid, reply)
+	if !ok {
+		return -1, false
+	}
+	if !fid_is_open(t, fid) {
+		reply^ = vectra9.error_reply(vectra9.EINVAL)
 		return -1, false
 	}
 	return node, true

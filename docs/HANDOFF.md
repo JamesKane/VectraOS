@@ -358,13 +358,6 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **Enforce the `open` flag on a fid.** 9P forbids a walk on an open fid
-   and a read on an unopened one. `vfs.Fid_Table` carries the flag, `Tlopen`
-   does not set it, and no server checks it. Every server's `Tlopen` would
-   set it, its `Twalk` would refuse an open fid, and its `Tread` an unopened
-   one. The audit is `chan_clone`, which walks `c.fid`. Enforcing the walk rule means no caller may hand it an open chan, which is the blast radius
-   that makes this a milestone. See the standing gap below.
-
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The
 pages read as zero on the next touch, which is demand paging. Vectra zeroes
@@ -422,10 +415,14 @@ design question attached to each.
   never-reuse rule below, refusing a `bind` at exhaustion rather than
   wrapping. `kernel/verify_vfs.odin` removes a member mid-listing and requires
   every remaining name. See `docs/NAMESPACE.md`.
-- **Enforce the `open` flag on a fid.** 9P forbids a walk on an open fid and a
-  read on an unopened one. `vfs.Fid_Table` carries the flag, `Tlopen` does not
-  set it, and no server checks it. Every server's `Tlopen` would set it, its
-  `Twalk` would refuse an open fid, and its `Tread` an unopened one. The audit is `chan_clone`, which walks `c.fid`. Enforcing the walk rule means no caller may hand it an open chan, so this has a blast radius and wants a milestone.
+- ~~**Enforce the `open` flag on a fid.**~~ Retired. Every server's `Tlopen`
+  sets the flag, its `Twalk` refuses a set one with `EBUSY`, and its `Tread`
+  and `Treaddir` require it with `EINVAL`. A pipe end is born open at
+  `Tattach`. The audit was `chan_clone`, which walks `c.fid`, and nothing in
+  the kernel clones an open chan, so the walk rule broke no correct path. Two
+  test sites that read a fid without opening it were the only callers it
+  caught. `kernel/verify_vfs.odin` checks both refusals, and `docs/NAMESPACE.md`
+  argues it.
 - ~~**An interrupt context `sync.can_sleep` knows about.**~~ Retired. The trap
   dispatcher brackets every top half with an interrupt-depth counter, `arch`
   exposes it as `in_interrupt`, and `can_sleep` reads both it and the spinlock

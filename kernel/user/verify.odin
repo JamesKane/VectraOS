@@ -2066,6 +2066,9 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 
 		if dc, derr := vfs.resolve(vfs.boot_namespace, "/mnt"); derr == vfs.OK {
 			names: [64]u8
+			// Opened before it is read, which 9P requires and every server
+			// enforces now. A resolve alone leaves the fid unopened.
+			_ = vfs.chan_open(dc, vfs.O_RDONLY | vfs.O_DIRECTORY)
 			ln, lerr := vfs.readdir(dc, 0, names[:])
 			seen_hello := false
 			seen_note := false

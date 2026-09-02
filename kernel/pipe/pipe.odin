@@ -623,6 +623,10 @@ pipe_handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.ENFILE)
 			return
 		}
+		// A pipe end is born open, the way Plan 9's `pipe()` returns two open
+		// fds. So the read rule below finds it open with no `Tlopen` sent, and
+		// `sys_pipe` hands a ready descriptor rather than a fid to open first.
+		vfs.fidtab_set_open(&t.fids, m.fid, true)
 		sync.release(&t.lock, g)
 		reply^ = vectra9.Rattach{qid = qid_of(id, end)}
 
@@ -638,6 +642,10 @@ pipe_handler :: proc "contextless" (
 		node := locked_node(t, m.fid)
 		if node < 0 {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
+			return
+		}
+		if !vfs.fidtab_is_open(&t.fids, m.fid) {
+			reply^ = vectra9.error_reply(vectra9.EINVAL)
 			return
 		}
 		p, end, ok := end_of(t, node)

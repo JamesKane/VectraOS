@@ -870,6 +870,7 @@ srv_dispatch :: proc(
 			reply^ = vectra9.error_reply(vectra9.ENOENT)
 			return
 		}
+		vfs.fidtab_set_open(&t.fids, m.fid, true)
 		reply^ = vectra9.Rlopen{qid = qid_of_id(id), iounit = 0}
 
 	case vectra9.Tread:
@@ -1011,6 +1012,10 @@ srv_walk :: proc "contextless" (t: ^Srv_Tree, m: vectra9.Twalk, reply: ^vectra9.
 		reply^ = vectra9.error_reply(vectra9.EBADF)
 		return
 	}
+	if vfs.fidtab_is_open(&t.fids, m.fid) {
+		reply^ = vectra9.error_reply(vectra9.EBUSY)
+		return
+	}
 
 	answer: vectra9.Rwalk
 	cur := id
@@ -1129,6 +1134,10 @@ srv_read :: proc "contextless" (
 		reply^ = vectra9.error_reply(vectra9.EBADF)
 		return
 	}
+	if !vfs.fidtab_is_open(&t.fids, m.fid) {
+		reply^ = vectra9.error_reply(vectra9.EINVAL)
+		return
+	}
 	if id == ROOT_ID {
 		// 9P2000.L reads a directory with Treaddir. Tread on one is the client
 		// using the wrong message.
@@ -1183,6 +1192,10 @@ srv_readdir :: proc "contextless" (
 	id := vfs.fidtab_node(&t.fids, m.fid)
 	if id < 0 {
 		reply^ = vectra9.error_reply(vectra9.EBADF)
+		return
+	}
+	if !vfs.fidtab_is_open(&t.fids, m.fid) {
+		reply^ = vectra9.error_reply(vectra9.EINVAL)
 		return
 	}
 	if id != ROOT_ID {

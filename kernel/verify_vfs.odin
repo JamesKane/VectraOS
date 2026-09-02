@@ -592,6 +592,47 @@ tcheck :: proc "contextless" (r: ^Vfs_Threads, ok: bool, what: string) -> bool {
 }
 
 /*
+verify_fid_discipline is 9P's two fid rules, enforced by every server now.
+A walk on an open fid is refused. A read on an unopened one is refused.
+
+`docs/HANDOFF.md` carried this as a gap for milestones. `vfs.Fid_Table` held
+the flag and no server checked it. The audit is `chan_clone`, which walks
+`c.fid`. Nothing in the kernel clones an open chan, so enforcing the walk rule
+breaks no correct path. This checks the enforcement from the client side.
+
+`#t` is mounted at `/mnt`. A resolve leaves a fid bound but unopened, and a
+read of it is refused with `EINVAL`. Opening it and then cloning it -- a walk
+of the open fid -- is refused with `EBUSY`, which is Plan 9's `Ebadusefd`.
+*/
+@(private = "file")
+verify_fid_discipline :: proc(r: ^Vfs_Threads) #no_bounds_check {
+	ns := vfs.boot_namespace
+	if !tcheck(r, vfs.mount_device(ns, "#t", "/mnt") == vfs.OK, "a static server binds at /mnt") {
+		return
+	}
+
+	// A read before the open is refused.
+	unopened, uerr := vfs.resolve(ns, "/mnt")
+	if tcheck(r, uerr == vfs.OK, "the root resolves to a bound but unopened fid") {
+		buf: [8]u8
+		_, rerr := vfs.chan_read(unopened, 0, buf[:])
+		tcheck(r, rerr == vectra9.EINVAL, "and a read of it before Tlopen is refused")
+		vfs.chan_close(unopened)
+	}
+
+	// A walk of an open fid is refused, which `chan_clone` is.
+	opened, oerr := vfs.resolve(ns, "/mnt")
+	if tcheck(r, oerr == vfs.OK, "a second fid resolves the root") {
+		tcheck(r, vfs.chan_open(opened, vfs.O_RDONLY | vfs.O_DIRECTORY) == vfs.OK, "and opens as a directory")
+		_, cerr := vfs.chan_clone(opened)
+		tcheck(r, cerr == vectra9.EBUSY, "a clone of the open fid is refused, because a walk of an open fid is")
+		vfs.chan_close(opened)
+	}
+
+	tcheck(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "the static server comes down")
+}
+
+/*
 verify_union_cookie is the union listing whose cookie survives a rebind, which
 `docs/HANDOFF.md` carried and `docs/SRV.md` argued for its own directory.
 
@@ -728,6 +769,8 @@ verify_vfs_threads :: proc() {
 
 	verify_union_cookie(&r)
 	vfs.static_destroy(&tree_v)
+
+	verify_fid_discipline(&r)
 
 	before := verify_live(mem.heap_stats())
 
