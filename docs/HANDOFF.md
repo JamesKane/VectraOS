@@ -349,11 +349,10 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **The reaper's test-then-exchange.** See the standing gap below. Every
-   collector now claims a record with a compare-and-swap before it unloads,
-   which closes the same-pointer double release. The slot reborn between a
-   check and the exchange is still open, and a generation on the slot,
-   re-checked after the exchange, is the shape.
+2. **A read/write sleeping lock.** The first standing gap below, and the
+   one with a design question attached. `Mount_Point.generation` exists
+   only because a read lock could not be held across a union search, and
+   Vectra's locks sleep now.
 
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The
@@ -461,11 +460,12 @@ design question attached to each.
   posted end while other chans still hold it, so its reclaim can zero a slot
   the posting process is parked on. Each wants a self-test that reaches it
   before a fix, in the order `docs/TESTING.md` argues.
-- **The reaper's test-then-exchange.** `hangup_dead` checks `live` and
-  `exit.done`, then exchanges the table, and a tick between the two lets the
-  slot be freed and reborn, so the exchange takes the new process's table.
-  The exchange closes the same-pointer double release and not this one. A
-  generation on the slot, re-checked after the exchange, is the shape.
+- ~~**The reaper's test-then-exchange.**~~ Retired. The pid is the
+  generation. Every collector names the process it saw. `collect` reads the
+  pid again after its claim, and gives back a claim on a slot that changed
+  tenants. `hangup_dead` puts a table it took from a newborn
+  straight back. On one core nothing runs between the two exchanges, which is the
+  sentence a second core retires. See `docs/USER.md`.
 - **A system call with `IF` still set for four instructions.** `SFMASK` clears
   it, and a control that leaves it set is not caught, because an interrupt
   almost never lands in a four-instruction window. It is the one entry in
@@ -481,11 +481,10 @@ design question attached to each.
   never handed out again, because `Process.map_next` is a bump rather than a
   search. That is address space rather than memory, and the cheaper of the
   two to leak. `segfree` is deferred above, with its reason.
-- **A free list for fids, `/srv` ids, and now pids.** All three counters are
-  monotonic and therefore finite: four billion opens per session, two billion
-  posts, and a pid space nothing recycles. One fix retires all of them, and
-  pids have the strongest claim on never-reuse, so it wants a generation rather
-  than a reset.
+- **A free list for fids and `/srv` ids.** Both counters are monotonic and
+  therefore finite: four billion opens per session, two billion posts. Pids left this list. They are 64-bit, never reused on purpose, and
+  now the generation every collector checks against, so a reset is exactly
+  what they must never get.
 
 ### SMP, when it is wanted
 
@@ -523,12 +522,11 @@ where they live:
   on an unopened one. `vfs.Fid_Table` carries the flag and no server checks it.
   `chan_clone` walks a fid that may already be open, so this has a blast radius
   and wants a milestone rather than a patch.
-- An idle-time reaper for *threads*. `sched.reap` still runs only from `spawn`
-  and from the self-tests, so a dead thread's stack comes back at the next
-  spawn rather than when it exits. A process's descriptors come back on their
-  own now, and its record and its stack do not. Both concurrency self-tests
-  have to call `sched.reap()` by hand before measuring the heap, which is the
-  smell.
+- ~~An idle-time reaper for *threads*.~~ Retired. The idle thread reaps, so a
+  dead thread's stack comes back within a tick of its exit with nothing
+  spawning. The self-tests still call `sched.reap()` by hand before a heap
+  reading, on purpose. A bracket that depends on the idle thread's turn is
+  not a bracket. `kernel/sched/verify.odin` says so beside the check.
 - Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging, trap and scheduling
   interfaces. `cpu_class` is the one that pays off immediately — a big.LITTLE
   part reporting three classes makes the capacity arithmetic do real work.

@@ -23,6 +23,7 @@ out of memory at the one moment it must not.
 package sched
 
 import "base:intrinsics"
+import "base:runtime"
 
 import "kernel:arch"
 import "kernel:mem"
@@ -149,10 +150,34 @@ waiter_interrupted :: proc "contextless" (w: sync.Waiter) -> bool {
 IDLE_STACK_SIZE :: 8 * 1024
 DEFAULT_STACK_SIZE :: 32 * 1024
 
+/*
+idle_loop is what the core does with nothing to run, and the one thing it
+does is give dead threads' stacks back.
+
+**The reap used to run only from `spawn`.** A dead thread still stands on
+its stack at the moment it leaves the core. So the free has to wait for
+something else to be running, and `spawn` was the only something. A stack
+therefore came back at the next spawn rather than when its thread exited.
+Every self-test that brackets the heap had to call `reap` by hand before it
+measured.
+
+The idle thread is the something else that is always there. It runs exactly
+when nothing else can, which is the moment after the last runnable thread
+parked or died. So a stack comes back within a tick of its thread's exit
+with nobody asking.
+
+The context is the reap's: `free` and `delete` want an allocator, and a
+thread's entry is contextless. The reaper in `kernel/user` sets its own the
+same way and for the same reason.
+*/
 @(private = "file")
 idle_loop :: proc "contextless" (arg: rawptr) {
 	_ = arg
+	ctx := runtime.default_context()
+	ctx.allocator = mem.allocator()
+	context = ctx
 	for {
+		reap()
 		// Interrupts are on in this thread's frame, so the halt ends at the
 		// next tick and the scheduler gets another chance to find work. A
 		// `pause` loop would burn the core to reach the same place.
@@ -166,9 +191,9 @@ idle_loop :: proc "contextless" (arg: rawptr) {
 spawn creates a runnable thread.
 
 Allocates two things, the `Thread` and its stack, and does so from the caller's
-context, never from the scheduler's. The reap happens here too, which is why a
-dead thread's stack comes back at the next spawn rather than at the moment it
-exits. A free of a stack requires something else to be standing on.
+context, never from the scheduler's. The reap happens here too, and in the
+idle thread, which is what makes a dead thread's stack come back when nothing
+is spawning. A free of a stack requires something else to be standing on.
 */
 spawn :: proc(
 	name: string,
@@ -509,6 +534,20 @@ exit :: proc "contextless" () -> ! {
 	for {
 		arch.yield_now()
 	}
+}
+
+// reap_pending is how many dead threads are waiting for their stacks to be
+// given back. A sensor for the self-test that checks the idle thread reaps
+// them with nobody asking.
+reap_pending :: proc "contextless" () -> int {
+	c := cpu()
+	guard := sync.acquire(&lock)
+	defer sync.release(&lock, guard)
+	n := 0
+	for t := c.reap; t != nil; t = t.next {
+		n += 1
+	}
+	return n
 }
 
 /*

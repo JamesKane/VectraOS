@@ -235,10 +235,11 @@ wait_pid :: proc(caller_pid: u64, pid: u64, patience: int) -> i64 {
 		answer = -i64(vectra9.EIO)
 	}
 
-	// The child ended and this thread saw it end, which is what `destroy`
+	// The child ended and this thread saw it end, which is what `collect`
 	// demands. On one core the dying thread left for good before anything
-	// else ran. `destroy` re-checks the record all the same.
-	_ = destroy(child)
+	// else ran. `collect` re-checks the record all the same, by the pid this
+	// caller named rather than by the slot.
+	_ = collect(child, pid)
 	return answer
 }
 

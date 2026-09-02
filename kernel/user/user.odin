@@ -814,7 +814,32 @@ That refusal is a leak, and it is the honest kind: it is visible in
 comment.
 */
 destroy :: proc(p: ^Process) -> bool {
-	if p == nil || !p.live {
+	if p == nil {
+		return false
+	}
+	return collect(p, p.pid)
+}
+
+/*
+collect is `destroy` for a collector that saw the record a moment ago, and
+names the process it saw.
+
+**A slot is not an identity, and a pid is.** The reaper, a fork that wants a
+slot, and a parent's `wait` each read a record, decide it is dead, and reach
+for it. A tick between the two lets the slot be freed and reborn. The claim
+below then lands on a process the caller never looked at, a newborn whose
+thread has not run. It passes the "ended" test for the wrong reason. The
+compare-and-swap on `collecting` closes the double release on one record and
+says nothing about two records in one slot.
+
+The pid is the generation. It is monotonic and never reused, which is what
+`kernel/srv` keeps an id for and `wait` already leans on. So the claim is
+taken and then the pid is read again, and a claim on a slot that changed
+tenants is given back untouched. The loser answers false, which is the answer
+it would get from a record that was already gone.
+*/
+collect :: proc(p: ^Process, pid: u64) -> bool {
+	if p == nil || !p.live || p.pid != pid {
 		return false
 	}
 	if p.thread != nil && !intrinsics.volatile_load(&p.exit.done) {
@@ -822,9 +847,13 @@ destroy :: proc(p: ^Process) -> bool {
 	}
 	// One collector. The reaper takes a detached process the moment it ends,
 	// and a fork or a self-test may reach for the same record a tick later.
-	// The loser answers false and walks away with nothing released, which is
-	// the answer it would get from a record that was already gone.
 	if _, won := intrinsics.atomic_compare_exchange_strong(&p.collecting, false, true); !won {
+		return false
+	}
+	if p.pid != pid {
+		// Reborn between the check and the claim. The claim is the newborn's
+		// now, and it goes back before anything else is touched.
+		intrinsics.volatile_store(&p.collecting, false)
 		return false
 	}
 	unload(p)
@@ -929,10 +958,21 @@ argued.
 hangup_dead :: proc() -> (released: int) #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]
+		pid := p.pid
 		if !p.live || !intrinsics.volatile_load(&p.exit.done) {
 			continue
 		}
 		if t := intrinsics.atomic_exchange(&p.fdt, nil); t != nil {
+			if p.pid != pid {
+				// The slot changed tenants between the check and the
+				// exchange, and the table taken is a newborn's. It goes
+				// straight back. On one core nothing ran between the two
+				// exchanges, so the newborn never saw its table gone. The
+				// day a second core makes that window real, this is the
+				// line that has to become a lock. See `collect`.
+				intrinsics.atomic_store(&p.fdt, t)
+				continue
+			}
 			fdt_release(t)
 			released += 1
 		}
@@ -1003,8 +1043,9 @@ reaper_start :: proc() -> bool {
 reap_orphans :: proc() -> (collected: int) #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]
+		pid := p.pid
 		if p.live && p.detached && intrinsics.volatile_load(&p.exit.done) {
-			if destroy(p) {
+			if collect(p, pid) {
 				collected += 1
 			}
 		}

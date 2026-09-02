@@ -1587,6 +1587,19 @@ on `Process.collecting` before it unloads, and the loser walks away with
 nothing released. That is the answer it would get from a record that was
 already gone.
 
+**And a slot is not an identity, so the claim names a pid.** A collector
+reads a record, decides it is dead, and reaches for it. A tick between the
+two lets the slot be freed and reborn. The claim then lands on a newborn
+the collector never looked at, whose thread has not run. It passes the
+"ended" test for the wrong reason.
+
+`collect` takes the claim and then reads the pid again, and gives a claim
+on a slot that changed tenants back untouched. The pid is the generation: monotonic, never reused, the
+number `wait` already leans on. `hangup_dead` does the same with its
+exchange, and puts a table it took from a newborn straight back. On one core
+nothing runs between the two exchanges, and that is the sentence a second
+core retires.
+
 A self-test that wants to look at a detached process has to hold it alive to
 do so. `nowaiter`'s child and `memfork`'s orphan both wait for a word from
 the kernel. The checks watch the record go rather than read a status nobody
@@ -1608,6 +1621,8 @@ argued.
 | the reaper leaves a detached record for the next fork, which is where this started | 5 checks, first `the kernel's write releases the orphan, and the reaper takes it back unasked` |
 | two collectors may unload one record | **breaks the machine** |
 | `segbrk` believes a count before the reaper's turn | **inert**, and see below |
+| `collect` never reads the pid again after its claim | **inert**, the same window |
+| `hangup_dead` keeps a table it took from a newborn | **inert**, the same window |
 
 **The fifth is the claim earning its place.** Without it the boot stops with
 nothing printed. The reaper and a collector at a fork or a check reach one
@@ -1621,6 +1636,21 @@ worker's exit and the next request every time. That is a scheduling order
 and not a rule. The collect at the count is what makes it a rule. A control
 that comes back clean because the window did not open is the kind
 `docs/TESTING.md` records rather than deletes.
+
+**The seventh and eighth are the same window, from both sides.** `collect`
+reads the pid again after its claim, and `hangup_dead` reads it again after
+its exchange. The control that removes either read came back clean. A tick
+has to land between a collector's check and its claim. In that tick another
+thread has to collect the same dead process, and a fork has to move into
+the slot. That never lined up.
+
+It is the cluster `docs/TESTING.md` names: two or three instructions wide,
+not at a lock boundary, and a second core's to reach. The re-read stays,
+because the pid is what makes the claim mean a process rather than a slot.
+
+The first run of the eighth did not compile, because the mutation left the
+pid unread and `-vet` refused it. A control that does not build is not a
+control, and this table says what the second run said.
 
 **The third one is why a parent's record stays.** A collector that destroys
 anything whose thread has gone takes the record a parent is parked in `wait`

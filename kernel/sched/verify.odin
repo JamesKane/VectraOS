@@ -25,6 +25,9 @@ package sched
 import "vsys:libodin"
 import "base:intrinsics"
 
+import "kernel:mem"
+import "kernel:sync"
+
 WORKER_COUNT :: 3
 COOP_ROUNDS :: 32
 
@@ -454,6 +457,47 @@ verify_preemption :: proc(r: ^Verify_Result) {
 	)
 
 	reap()
+}
+
+/*
+verify_idle_reap is the idle thread giving a dead thread's stack back, with
+nothing spawning and nothing asking.
+
+A thread that returns at once is dead within a tick. The checker parks for
+two, which is what lets the idle thread run at all: idle runs only when
+nothing else can. Then the reap list has to be empty and the heap has to be
+where it was. Neither `spawn` nor `reap` was called between the two
+readings.
+
+Every other self-test that brackets the heap still calls `reap` by hand
+first. A reading taken before the idle thread's turn would be wrong for a
+reason that is not a leak. A bracket that depends on timing is not a
+bracket.
+*/
+verify_idle_reap :: proc(r: ^Verify_Result) {
+	reap()
+	before := mem.live_objects(mem.heap_stats())
+	t := spawn("brief", brief_worker)
+	if !check(r, t != nil, "a thread that returns at once is spawned") {
+		return
+	}
+	check(r, mem.live_objects(mem.heap_stats()) > before, "and costs the heap a record and a stack")
+
+	// Parked, so the worker runs and dies, and then the idle thread runs
+	// because nothing else can. `yield` would not do: a checker that spins
+	// is a thread that is always runnable, and idle would never get a turn.
+	sync.delay(2)
+	check(r, reap_pending() == 0, "two ticks later nothing waits on the reap list")
+	check(
+		r,
+		mem.live_objects(mem.heap_stats()) == before,
+		"and the heap has its record and stack back, with no spawn and no reap asked for",
+	)
+}
+
+@(private = "file")
+brief_worker :: proc "contextless" (arg: rawptr) {
+	_ = arg
 }
 
 /*

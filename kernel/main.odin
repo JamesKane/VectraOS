@@ -980,6 +980,9 @@ that did not preempt, the first one dispatched would still be running.
 verify_preemption :: proc() {
 	result: sched.Verify_Result
 	sched.verify_preemption(&result)
+	// And the idle thread's reap, which needs the timer for the same reason:
+	// the checker has to park for idle to run at all.
+	sched.verify_idle_reap(&result)
 	report_sched(result, "sched preemption", proc(sink: ^libodin.Sink, r: sched.Verify_Result) {
 		libodin.put_str(sink, " checks passed -- ")
 		libodin.put_uint(sink, u64(r.preempted))
