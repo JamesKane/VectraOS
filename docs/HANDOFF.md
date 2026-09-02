@@ -379,6 +379,18 @@ real work is a file format, a loader, and the first data this system reads at
 runtime rather than bakes into its image. Nothing in the tree needs a
 non-ASCII glyph yet, so it waits for something that does.
 
+**Deferred, with the reason written down: priority inheritance.** A lock hands
+off to the best *waiter*. But a low-priority *holder* still delays a
+high-priority waiter while it holds. This only matters under a realtime thread,
+and Vectra runs none.
+
+9front does not do it either: its QLocks are strict FIFO, and its EDF
+scheduler's one "inherited deadline" field is dead code. Vectra already has more
+than 9front here. Its `Mutex` hands off to the best waiter rather than in
+arrival order, and a woken thread gets Plan 9's decay boost. Decay bounds the
+inversion window rather than leaving it open. It waits for a realtime scheduler,
+and `docs/SCHED.md` records the 9front model.
+
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
 that holds one. The compositor is the process that would, and a worker per
@@ -388,20 +400,12 @@ on write.
 
 ### Standing gaps
 
-One live gap is left here. It exists and is incomplete rather than absent, and
-is named in the code it lives in. What makes it work rather than orientation is
-the design question attached to it.
-
-- **Priority inheritance.** A lock or a rendezvous goes to the best *waiter*,
-  but a low-priority *holder* still delays a high-priority waiter for as long
-  as it holds. It has not bitten, because nothing runs at realtime. Plan 9
-  never had it either, which is an argument about cost rather than about
-  correctness.
-
-The gaps this section used to carry are closed. Fourteen retirements were
-pruned from here. A closed gap belongs in the design doc that argues the fix
-and in the commit that made it, not on a forward list. `git log` and the
-`See ...` pointer each retirement left behind are the record.
+None are left. This section carried fifteen at its fullest, and each is now
+either closed or deferred with a reason above. A closed gap belongs in the
+design doc that argues the fix and in the commit that made it. It does not
+belong on a forward list, so the retirements were pruned rather than struck through. `git log` and
+the `See ...` pointer each one left behind are the record. What is left to do is
+in "Next, in order" at the top and in "Smaller things" below.
 
 ### SMP, when it is wanted
 
@@ -409,9 +413,13 @@ The shapes are already right. `Cpu` is per-core, `Resume` is per-thread and
 lives on that thread's stack, and every mount-table, namespace and heap
 mutation is inside a `sync.Spinlock`.
 
-What is missing is a lock word in that struct, an AP trampoline, IPIs, and a
-placement policy for `enqueue`. That last is where `eligible` and the class and
-capacity fields stop being inert.
+What is missing is a lock word in that struct, an AP trampoline, and IPIs. The
+placement policy is already built: `sched.pick_cpu` chooses a core by affinity,
+class and per-capacity load, and `spawn` and every wake go through it. On one
+core it resolves to that core. So it is inert until a second core of a different
+class boots. `docs/SCHED.md` argues it against a fabricated three-class machine.
+`eligible` and the class and capacity fields stopped being orientation the day
+it landed.
 
 Four things become urgent the moment a second core runs, and all four are named
 where they live:
@@ -434,8 +442,10 @@ where they live:
   bytes, so the arrow keys reach `/dev/cons` and not `/kbd`. Nothing consumes
   `/kbd` for them yet, which is why this is a note rather than an item.
 - Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging, trap and scheduling
-  interfaces. `cpu_class` is the one that pays off immediately — a big.LITTLE
-  part reporting three classes makes the capacity arithmetic do real work.
+  interfaces. `cpu_class` is the one that pays off immediately. The placement
+  policy and the capacity-scaled slice are built and tested. An arm64
+  `cpu_class` that reads the three tiers from the core-id registers is all that
+  stands between them and real work.
 
 ## 7. File map
 

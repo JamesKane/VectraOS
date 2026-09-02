@@ -18,6 +18,8 @@ already means -- see `kernel/sync`.
 */
 package sched
 
+import "kernel:arch"
+
 Queue :: struct {
 	head:  ^Thread,
 	tail:  ^Thread,
@@ -151,4 +153,77 @@ clamp_priority :: proc "contextless" (p: Priority) -> int {
 // will read: how many threads are waiting for this core right now.
 ready_count :: proc "contextless" (c: ^Cpu) -> int {
 	return c.runq.ready
+}
+
+/*
+Which core a newly-runnable thread should land on.
+
+The heterogeneous half of the scheduler, and the one place the `class` and
+`capacity` fields on a `Cpu` do real work. `enqueue` puts a thread on a named
+core. `pick_cpu` names it, at the two moments a thread arrives on the ready side
+from nowhere: a `spawn`, and a wake. A thread the timer re-queues stays where it
+ran. Moving it would throw away its warm cache and its half-spent slice.
+
+The rule is two comparisons, in order:
+
+  1. `affinity` is a hard filter. A thread that named a set of classes runs on
+     one of them. If none is online, it runs on the boot core, which always
+     dispatches. So a thread is never stranded on a class not here yet.
+  2. Among the cores it may use, the least loaded wins, where load is per unit of
+     capacity. A core at twice the capacity carries twice the threads before it
+     is as loaded. That sends steady work to the big cores and keeps the little
+     ones for the overflow. A tie goes to the faster core, so an idle machine
+     uses its best core first.
+
+On one core this returns that core every time, which is why it changed no
+behaviour the day it landed. It earns its keep when a second core of a
+different class comes online. `docs/SCHED.md` argues the policy, and
+`kernel/sched/verify.odin` drives it against a fabricated three-class machine.
+*/
+pick_cpu :: proc "contextless" (affinity: Cpu_Classes, pool: []Cpu) -> ^Cpu #no_bounds_check {
+	if len(pool) == 0 {
+		return nil
+	}
+
+	best: ^Cpu
+	for i in 0 ..< len(pool) {
+		c := &pool[i]
+		if !class_allowed(affinity, c.class) {
+			continue
+		}
+		if best == nil || better_host(c, best) {
+			best = c
+		}
+	}
+
+	// An affinity nothing online satisfies still has to run somewhere. The boot
+	// core always dispatches, so it is the honest fallback until the class the
+	// thread asked for is actually present. See `docs/SCHED.md`.
+	if best == nil {
+		return &pool[0]
+	}
+	return best
+}
+
+// better_host reports whether `a` is a better landing than `b`: less loaded per
+// unit of capacity, and a tie to the faster core. See `pick_cpu`.
+@(private = "file")
+better_host :: proc "contextless" (a, b: ^Cpu) -> bool {
+	la := load_ratio(a)
+	lb := load_ratio(b)
+	if la != lb {
+		return la < lb
+	}
+	return a.capacity > b.capacity
+}
+
+// load_ratio is a core's ready count scaled to a common capacity, so two cores
+// of different speeds compare on the same axis. A core with no capacity yet --
+// a zero-value slot -- reads as fully loaded rather than as infinitely fast.
+@(private = "file")
+load_ratio :: proc "contextless" (c: ^Cpu) -> int {
+	if c.capacity <= 0 {
+		return max(int)
+	}
+	return c.runq.ready * arch.CAPACITY_FULL / c.capacity
 }

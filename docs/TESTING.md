@@ -262,6 +262,7 @@ nothing else in common.
 | The screen, mapped | `docs/DRAW.md` | 4 checked, 1 machine failure, 1 inert |
 | Memory a program asks for | `docs/USER.md` | 9 checked, 2 machine failures, and see `segbrk`'s table |
 | The fid space at its ceiling | `sys/vectra9/session.odin` | 1 of 1 |
+| The heterogeneous placement policy | `docs/SCHED.md` | 3 of 3 |
 | Windows | `docs/DRAW.md` | 6 of 6 |
 | The compositor | `docs/DRAW.md` | 23 caught, 2 inert, 1 machine failure |
 | Chrome | `docs/DRAW.md` | 6 of 6 |

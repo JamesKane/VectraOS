@@ -51,6 +51,48 @@ It is there now for two reasons. A retrofit of capacity-awareness into a
 scheduler is a rewrite, and a number added to a struct is not. And arm64 will
 report three classes.
 
+## Placement, the other half of the class
+
+The slice arithmetic uses a core's capacity once a thread is on it. `pick_cpu`
+is what decides *which* core, and it is where `class`, `capacity` and the
+affinity a thread carries stop being inert. It runs at the two moments a thread
+arrives on the ready side from nowhere: a `spawn`, and a wake from a block. A
+thread the timer re-queues stays where it ran, because moving a thread mid-round
+throws away its warm cache and its half-spent slice for nothing.
+
+The rule is two comparisons, in order:
+
+1. **Affinity is a hard filter.** A thread that named a set of classes runs on
+   one of them. If none is present, it falls back to the boot core rather than
+   stranding on a class that does not exist yet. On amd64 every core is
+   `.Performance`, so a thread pinned to anything else takes this fallback, and
+   there is one core to take it.
+2. **Least loaded wins, per unit of capacity.** Load is a core's ready count
+   scaled to a common capacity, so a core at twice the speed carries twice the
+   threads before it counts as equally loaded. That is what sends steady work to
+   the big cores and keeps the little ones for the overflow. A tie goes to the
+   faster core, so an idle machine uses its best core first.
+
+**On one core this returns that core every time, and it changed no behaviour the
+day it landed.** That is what lets it be built now. The decision is a pure
+function of the cores and the thread. So `kernel/sched/verify.odin` drives it
+against a fabricated three-class machine, without waiting for a second real core
+to boot. The machine is a little, a middle and a big core at one, two and four
+units of capacity.
+
+Seven checks cover it. The idle machine takes its fastest core. Affinity filters
+both ways. A big core holding three threads is still less loaded than a little
+core holding one. The overflow spills down. A class no core has falls back.
+
+The last check ties the pure decision to the live wiring. On this machine's real
+cores, every placement is this one core.
+
+Three controls, each breaking one rule. Drop the affinity filter and the
+efficiency-pinned thread lands on the big core. Measure load by head count
+rather than per capacity and the busier big core loses a race it should win.
+Break the capacity tie and the idle machine picks the little core first. Each
+fails exactly the check its rule is behind.
+
 ## What preemption cost elsewhere
 
 **The heap has a lock.** `kernel/sync` is that lock. On one core with no SMP,

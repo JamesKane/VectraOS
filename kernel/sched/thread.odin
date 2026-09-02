@@ -223,10 +223,17 @@ MAX_CPUS :: 8
 // eligible reports whether `t` may run on `c`. An empty affinity is no
 // constraint. Anything else is a whitelist of core classes.
 eligible :: proc "contextless" (t: ^Thread, c: ^Cpu) -> bool {
-	if t.affinity == ANY_CLASS {
+	return class_allowed(t.affinity, c.class)
+}
+
+// class_allowed is `eligible` without a core: whether `affinity` admits a core
+// of `class`. `pick_cpu` asks it before a thread exists to be placed. An empty
+// affinity is no constraint, which is by far the common case.
+class_allowed :: proc "contextless" (affinity: Cpu_Classes, class: arch.Cpu_Class) -> bool {
+	if affinity == ANY_CLASS {
 		return true
 	}
-	return c.class in t.affinity
+	return class in affinity
 }
 
 /*

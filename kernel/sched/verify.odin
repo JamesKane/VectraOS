@@ -215,9 +215,77 @@ verify :: proc() -> Verify_Result {
 
 	verify_priority_order(&r)
 	verify_block_and_boost(&r)
+	verify_placement(&r)
 
 	reap()
 	return r
+}
+
+/*
+verify_placement is the heterogeneous scheduler, on a machine that does not
+exist yet.
+
+`pick_cpu` is a pure decision: given the cores and a thread's affinity, which
+core. So this drives it against a fabricated three-class machine rather than a
+second real core. A little, a middle and a big core sit at one, two and four
+units of capacity, and nothing runs on them. Only the `class`, `capacity` and
+ready-count fields reach the decision, and this sets those by hand.
+
+Five claims. The idle machine uses its best core. Affinity is a hard filter both
+ways. Load counts per capacity, not by head. The overflow spills to the little
+core. A class no core has falls back rather than stranding the thread.
+
+The last check ties the pure decision to the live wiring. On this one-core
+machine every placement is this core, which is why nothing changed when
+`pick_cpu` landed.
+*/
+@(private = "file")
+verify_placement :: proc(r: ^Verify_Result) #no_bounds_check {
+	pool: [3]Cpu
+	pool[0].class = .Efficiency
+	pool[0].capacity = arch.CAPACITY_FULL / 4
+	pool[1].class = .Performance
+	pool[1].capacity = arch.CAPACITY_FULL / 2
+	pool[2].class = .Prime
+	pool[2].capacity = arch.CAPACITY_FULL
+
+	little := &pool[0]
+	big := &pool[2]
+
+	// An idle machine uses its best core first. Every load ratio is zero, so the
+	// tie goes to the highest capacity.
+	check(r, pick_cpu(ANY_CLASS, pool[:]) == big, "an unpinned thread on an idle machine takes the fastest core")
+
+	// Affinity is a hard filter, both ways.
+	check(r, pick_cpu({.Efficiency}, pool[:]) == little, "a thread pinned to the efficiency class lands on the little core")
+	check(r, pick_cpu({.Prime, .Performance}, pool[:]) != little, "a thread that excludes the efficiency class never lands on it")
+
+	// Load is per capacity. The big core holds three threads and the little core
+	// holds one, and the big core is still the less loaded of the two.
+	pool[0].runq.ready = 1
+	pool[1].runq.ready = 8
+	pool[2].runq.ready = 3
+	check(r, pick_cpu(ANY_CLASS, pool[:]) == big, "the busier big core still wins, because load is per capacity")
+
+	// Until the big core is fuller per capacity than the little one, and then the
+	// overflow spills down.
+	pool[0].runq.ready = 1
+	pool[1].runq.ready = 100
+	pool[2].runq.ready = 5
+	check(r, pick_cpu(ANY_CLASS, pool[:]) == little, "and the overflow spills to the little core when the big one is fuller per capacity")
+
+	// A class no core has falls back to the boot core rather than stranding the
+	// thread, which is the one-core reality.
+	absent: [2]Cpu
+	absent[0].class = .Performance
+	absent[0].capacity = arch.CAPACITY_FULL / 2
+	absent[1].class = .Prime
+	absent[1].capacity = arch.CAPACITY_FULL
+	check(r, pick_cpu({.Efficiency}, absent[:]) == &absent[0], "a thread pinned to a class no core has falls back to the boot core")
+
+	// The pure decision agrees with the wiring: on the live machine's real cores,
+	// every placement is this one core.
+	check(r, pick_cpu(ANY_CLASS, cpus[:cpu_count]) == cpu(), "on the live one-core machine every placement is this core")
 }
 
 /*

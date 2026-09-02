@@ -205,7 +205,9 @@ spawn :: proc(
 	space: ^mem.Address_Space = nil,
 ) -> ^Thread {
 	reap()
-	return spawn_at(cpu(), name, entry, arg, priority, affinity, stack_size, space)
+	// pick_cpu chooses the core by class and load rather than assuming this
+	// one. On one core it is this one. See `pick_cpu`.
+	return spawn_at(pick_cpu(affinity, cpus[:cpu_count]), name, entry, arg, priority, affinity, stack_size, space)
 }
 
 @(private)
@@ -317,7 +319,8 @@ spawn_user :: proc(
 	}
 	reap()
 
-	c := cpu()
+	// A user thread names no class, so load alone places it. See `pick_cpu`.
+	c := pick_cpu(ANY_CLASS, cpus[:cpu_count])
 	t := new(Thread)
 	if t == nil {
 		return nil
@@ -384,7 +387,8 @@ spawn_user_clone :: proc(
 	}
 	reap()
 
-	c := cpu()
+	// A user thread names no class, so load alone places it. See `pick_cpu`.
+	c := pick_cpu(ANY_CLASS, cpus[:cpu_count])
 	t := new(Thread)
 	if t == nil {
 		return nil
@@ -650,7 +654,9 @@ wake :: proc "contextless" (t: ^Thread, boosted: bool) {
 	} else {
 		t.wakeups += 1
 	}
-	enqueue(cpu(), t)
+	// Placed afresh, not put back on the waker's core: a wake is an arrival,
+	// and `pick_cpu` may find it a better home. See `pick_cpu`.
+	enqueue(pick_cpu(t.affinity, cpus[:cpu_count]), t)
 }
 
 /*
