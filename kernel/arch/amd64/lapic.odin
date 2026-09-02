@@ -203,3 +203,51 @@ lapic_attach_here :: proc "contextless" () {
 		lapic_attach(mmio)
 	}
 }
+
+// -- Interprocessor interrupts -----------------------------------------------
+
+LAPIC_ICR_LOW :: uintptr(0x300)
+LAPIC_ICR_HIGH :: uintptr(0x310)
+
+ICR_DELIVERY_FIXED :: u32(0b000) << 8
+ICR_DELIVERY_NMI :: u32(0b100) << 8
+ICR_PENDING :: u32(1) << 12 // Delivery status: the last command is still in flight
+ICR_ASSERT :: u32(1) << 14
+ICR_ALL_BUT_SELF :: u32(0b11) << 18
+
+/*
+lapic_send delivers `vector` to the core whose APIC id is `dest`.
+
+The xAPIC's command register is two words. The high one names the destination,
+so it goes first, and the write to the low word is what sends. The pending bit
+is waited out beforehand, because a command written over one still in flight is
+a command lost. The hardware bounds that wait, and nothing here does.
+Interrupts need not be off. A caller that holds the scheduler lock has them off
+anyway.
+*/
+lapic_send :: proc "contextless" (dest: u32, vector: u8) {
+	for lapic_read(LAPIC_ICR_LOW) & ICR_PENDING != 0 {
+		pause()
+	}
+	lapic_write(LAPIC_ICR_HIGH, dest << 24)
+	lapic_write(LAPIC_ICR_LOW, ICR_DELIVERY_FIXED | ICR_ASSERT | u32(vector))
+}
+
+/*
+lapic_nmi_others sends a non-maskable interrupt to every core but this one.
+
+For a panic, which has to stop cores that may have interrupts off. An NMI
+arrives regardless, on the stack `IST_NMI` names, and the handler decides what
+it means. The shorthand in the command word makes it one write rather than one
+per core. That matters on the path that is not allowed to know how many cores
+there are.
+*/
+lapic_nmi_others :: proc "contextless" () {
+	if mmio == nil {
+		return
+	}
+	for lapic_read(LAPIC_ICR_LOW) & ICR_PENDING != 0 {
+		pause()
+	}
+	lapic_write(LAPIC_ICR_LOW, ICR_ALL_BUT_SELF | ICR_DELIVERY_NMI | ICR_ASSERT)
+}

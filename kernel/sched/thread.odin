@@ -205,6 +205,10 @@ Cpu :: struct {
 	// queued on a core before then would wait for a dispatch that never comes.
 	online:   bool,
 
+	// The core's local APIC id, which is its address for an interrupt another
+	// core sends. Read from the core's own APIC when it comes up.
+	lapic:    u32,
+
 	current: ^Thread,
 	idle:    ^Thread,
 	runq:    Run_Queue,
@@ -216,6 +220,12 @@ Cpu :: struct {
 	// fraction is the point: two kernel threads cost none.
 	space_switches: u64,
 	preemptions: u64,
+
+	// Wakes sent to other cores from this one, and wakes this core received.
+	// A kick is sent when a thread is placed on a core that is idle, so the
+	// core leaves its halt now rather than at its next tick.
+	kicks: u64,
+	ipis:  u64,
 
 	// Threads that exited, and that wait for somebody in thread context to
 	// give their stacks back. A stack freed inside the timer interrupt would

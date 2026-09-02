@@ -185,6 +185,8 @@ VECTOR_IRQ_BASE :: amd64.VECTOR_IRQ_BASE
 VECTOR_IRQ_COUNT :: amd64.VECTOR_IRQ_COUNT
 VECTOR_YIELD :: amd64.VECTOR_YIELD
 VECTOR_SPURIOUS :: amd64.VECTOR_SPURIOUS
+VECTOR_WAKE :: amd64.VECTOR_WAKE
+VECTOR_NMI :: amd64.VECTOR_NMI
 
 set_interrupt_handler :: amd64.set_interrupt_handler
 
@@ -251,6 +253,8 @@ irq_masked :: amd64.ioapic_masked
 irq_vector_of :: amd64.ioapic_vector_of
 irq_ack :: amd64.lapic_eoi
 cpu_lapic_id :: amd64.lapic_id
+ipi_send :: amd64.lapic_send
+ipi_stop_others :: amd64.lapic_nmi_others
 
 /*
 init_traps replaces the bootloader's tables with our own.

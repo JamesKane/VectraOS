@@ -85,6 +85,7 @@ panic_trap :: proc "contextless" (t: ^arch.Trap) -> bool {
 		arch.halt_forever()
 	}
 	panicking = true
+	stop_other_cores()
 
 	open_panic_screen(t.name)
 
@@ -272,6 +273,7 @@ panic_stop :: proc "contextless" (reason: string) -> ! {
 		arch.halt_forever()
 	}
 	panicking = true
+	stop_other_cores()
 
 	open_panic_screen("SYSTEM FAULT")
 	log_line(&klog, .Fault, reason)
@@ -326,4 +328,35 @@ open_panic_screen :: proc "contextless" (headline: string) {
 		{fb.PHOSPHOR, fb.CYAN, fb.AMBER, fb.PHOSPHOR, fb.ALERT},
 		{true, true, serial.present, memory_online, true},
 	)
+}
+
+/*
+stop_other_cores halts every core but the one that is panicking.
+
+A non-maskable interrupt to each, because a core may have interrupts off, and a
+panic is not a thing to wait for. `on_nmi` is what the other cores run when it
+lands: they see `panicking` set and halt where they are. The screen and the
+serial line have no lock, so a core that kept running while this one painted
+the fault could write over it. A core that kept running could also make the
+fault worse. Nothing after this line has a second core to contend with.
+*/
+@(private = "file")
+stop_other_cores :: proc "contextless" () {
+	arch.ipi_stop_others()
+}
+
+/*
+on_nmi is a non-maskable interrupt arriving on any core.
+
+Two meanings and one flag between them. With `panicking` set, another core is
+reporting a fault and this core is told to stop. It halts, on the NMI's own
+stack, holding whatever it held. Without the flag, nothing in this kernel sends
+an NMI. One is then hardware reporting something this kernel does not handle,
+and that is a panic of its own.
+*/
+on_nmi :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	if panicking {
+		arch.halt_forever()
+	}
+	panic_stop("unexpected non-maskable interrupt")
 }

@@ -23,9 +23,9 @@ import "kernel:sched"
 import "kernel:sync"
 import "vsys:libodin"
 
-// Workers per phase: two per core on the largest machine this kernel counts,
-// so that a core with nothing to do is a core the placement chose to leave
-// idle rather than one the count could not reach.
+// Workers per phase: two per core on the largest machine this kernel counts. A
+// core with nothing to do is then a core the placement chose to leave idle,
+// and not one the count could not reach.
 @(private = "file")
 SMP_WORKERS :: 2 * sched.MAX_CPUS
 
@@ -43,11 +43,30 @@ DELAY_ROUNDS :: 40
 @(private = "file")
 PATIENCE :: 400
 
+// How many times the kick is measured. A wake without a kick waits for the
+// idle core's next tick, half a tick on average, so fifty of them cost about
+// twenty-five ticks. Fifty with a kick cost a handful.
+@(private = "file")
+KICK_ROUNDS :: 50
+
+// A short worker: it writes down where it ran and ends. The boot thread spins
+// rather than parks while it waits for one. The boot core stays busy, and the
+// placement sends the worker to a core that is not.
+@(private = "file")
+brief_worker :: proc "contextless" (arg: rawptr) {
+	i := int(uintptr(arg))
+	core := sched.cpu().id
+	intrinsics.volatile_store(&worker_where[i], core)
+	intrinsics.volatile_store(&worker_done[i], true)
+}
+
 Smp_Result :: struct {
 	using tally: libodin.Tally,
 	cores:       int, // Online, the boot core included
 	spread:      int, // Distinct cores the spinning workers ended on
 	delays:      u64, // Deadlines the parking workers slept through
+	kick_ticks:  u64, // Ticks fifty kicked wakes took, all told
+	kicks:       u64, // Kicks the boot core sent while they ran
 }
 
 @(private = "file")
@@ -101,6 +120,18 @@ all_done :: proc "contextless" (arg: rawptr) -> bool {
 nothing_to_reap :: proc "contextless" (arg: rawptr) -> bool {
 	_ = arg
 	return sched.reap_pending_all() == 0
+}
+
+// kicks_sent sums the kicks every core sent. Every core, because the boot
+// thread is a thread like any other. It may itself be placed on another core
+// between two spawns, and its kicks are then that core's.
+@(private = "file")
+kicks_sent :: proc "contextless" (cores: int) -> u64 {
+	n: u64
+	for i in 0 ..< cores {
+		n += sched.cpu_stats(i).kicks
+	}
+	return n
 }
 
 // spread counts the distinct cores the first `n` workers ended on.
@@ -173,7 +204,7 @@ verify_smp :: proc() {
 	Twice as many spinning workers as cores, each holding a core for three
 	slices. `pick_cpu` sends each new one to the least loaded core, so on a
 	machine with a second core the second worker lands there. The core each
-	ended on is what it wrote down, and more than one core in that list is the
+	ended on is what it wrote down. More than one core in that list is the
 	placement doing what `docs/SCHED.md` says it does.
 	*/
 	if run_workers(&r, "smp-spin", spin_worker, SMP_WORKERS, "every spinning worker finished inside the bound") {
@@ -195,8 +226,9 @@ verify_smp :: proc() {
 	core's clock, and the boot core's tick is what readies the thread, wherever
 	it parked. `ready` places it afresh, so a thread that parked on one core
 	may run its next round on another. Every round is therefore a wait list
-	written from two cores, a scheduler lock taken from two, and a switch that
-	let go of a thread one core was leaving so another could take it.
+	written from two cores and a scheduler lock taken from two. It is also a
+	switch that let go of a thread one core was leaving so another could take
+	it.
 	*/
 	stats_before := sync.sleep_stats()
 	if run_workers(&r, "smp-park", delay_worker, SMP_WORKERS, "every parking worker finished inside the bound") {
@@ -208,6 +240,46 @@ verify_smp :: proc() {
 		)
 		scheck(&r, spread(SMP_WORKERS) >= 2, "the parking workers woke on more than one core")
 	}
+
+	// -- A wake reaches an idle core now ----------------------------------------
+
+	/*
+	Every other core is idle, halted with interrupts on. The boot thread spawns
+	a worker, which lands on one of them, and spins until it reports. Without a
+	kick that core finds the worker at its next tick, so fifty rounds cost
+	about twenty-five ticks. With one they cost almost none. The bound on the
+	spin is the same patience every other wait here has. A kick counter says a
+	core sent them rather than got lucky.
+	*/
+	kicks_before := kicks_sent(r.cores)
+	start := sched.ticks()
+	rounds := 0
+	for round in 0 ..< KICK_ROUNDS {
+		intrinsics.volatile_store(&worker_done[0], false)
+		if sched.spawn("smp-brief", brief_worker, rawptr(uintptr(0))) == nil {
+			break
+		}
+		for !intrinsics.volatile_load(&worker_done[0]) {
+			if sched.ticks() - start > PATIENCE {
+				break
+			}
+			arch.spin_hint()
+		}
+		if !intrinsics.volatile_load(&worker_done[0]) {
+			break
+		}
+		rounds = round + 1
+	}
+	r.kick_ticks = sched.ticks() - start
+	r.kicks = kicks_sent(r.cores) - kicks_before
+	scheck(&r, rounds == KICK_ROUNDS, "fifty brief workers each ran on an idle core and reported")
+	scheck(&r, r.kicks >= u64(KICK_ROUNDS), "and a core kicked an idle core for each of them")
+	scheck(&r, r.kick_ticks < KICK_ROUNDS / 2, "and the fifty wakes together cost less than the ticks they would have waited for")
+	received: u64
+	for i in 1 ..< r.cores {
+		received += sched.cpu_stats(i).ipis
+	}
+	scheck(&r, received >= u64(KICK_ROUNDS), "and the kicks arrived on the other cores")
 
 	// -- Nothing left behind --------------------------------------------------
 
@@ -234,7 +306,11 @@ report_smp :: proc(r: ^Smp_Result) {
 		libodin.put_uint(&sink, u64(r.spread))
 		libodin.put_str(&sink, ", ")
 		libodin.put_uint(&sink, r.delays)
-		libodin.put_str(&sink, " deadlines fired across them, heap balanced")
+		libodin.put_str(&sink, " deadlines fired across them, ")
+		libodin.put_uint(&sink, u64(KICK_ROUNDS))
+		libodin.put_str(&sink, " kicked wakes in ")
+		libodin.put_uint(&sink, r.kick_ticks)
+		libodin.put_str(&sink, " ticks, heap balanced")
 		emit(&klog, .Ok, &sink)
 		return
 	}

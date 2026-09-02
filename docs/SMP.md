@@ -160,11 +160,38 @@ application processor's tick is preemption and nothing else. `sched.ticks`
 reads the boot core's count wherever it is called. A thread that read its own
 core's count would read a different clock every time it moved.
 
+## The kick, and the stop
+
+A thread placed on an idle core used to wait for that core's next reschedule.
+The core was halted with interrupts on, and the tick was the only interrupt
+it would get. The idle thread has a slice like any other, so that could be
+ten ticks away.
+
+`sched.place` sends one now. It queues the thread under the scheduler lock, which is what makes `the
+core is idle` a fact. Then it writes the core's APIC id and `VECTOR_WAKE`
+into the interrupt command register. The
+core leaves its halt, `on_wake` acknowledges and reschedules, and the thread
+runs. Fifty such wakes cost eight ticks on QEMU. The control that sends no kick
+fails the check, and fails the workers themselves, because some wait out a
+whole idle slice.
+
+The placement had to learn one thing first. Load was the ready count, and a
+core with nothing queued and a thread running tied with a halted one. The
+tie went to the first core, which was the busy one. A running thread that is
+not the idle thread counts as load now, so the wake goes where the halt is.
+
+A panic stops the other cores the same way, with a non-maskable interrupt to
+every core but the one reporting. Maskable would not do: a core inside a
+spinlock has interrupts off. `on_nmi` sees `panicking` set and halts where it
+is, on the NMI's own stack. Nothing else in this kernel sends an NMI. One that
+arrives with the flag clear is hardware reporting something unhandled, and
+that is a panic of its own.
+
 ## What the self-test proves
 
 `verify_smp` runs after the cores are up. The boot thread never parks on
 anything a missing core would have to end, and every wait has a bound.
-Thirteen checks:
+Seventeen checks:
 
 - every core the bootloader listed is online, and there is more than one
 - every core's tick count moves over twenty ticks of the boot core's clock
@@ -175,6 +202,10 @@ Thirteen checks:
   one core. That is a wait list written from several cores, and a scheduler
   lock taken from several. It is also a thread let go of by one core and
   taken by another, six hundred times
+- fifty brief workers, spawned one at a time onto an idle core while the
+  boot thread spins, each ran and reported. A core kicked for each.
+  The fifty together cost fewer ticks than half of them would have waited,
+  and the kicks arrived on the other cores
 - every core reaps its own dead, and the heap is balanced afterwards
 
 The ring 3 servers that `verify_user` leaves running -- the console, the
@@ -184,17 +215,13 @@ check.
 
 ## What is still one core's
 
-- **No IPI.** A thread woken for an idle core waits for that core's next tick,
-  up to a millisecond. Placement is right and delivery is late. An IPI on wake
-  is the fix. A TLB shootdown and a panic broadcast need the same LAPIC
-  register, so all three arrive together.
 - **No TLB shootdown.** A process has one thread, and a core switching to a
   process reloads CR3, which flushes every non-global entry. That is what
   makes it safe today. The day a process has two threads on two cores, an
-  unmap on one has to reach the other.
-- **The log has no lock.** Only the boot core logs. A panic on another core
-  writes the screen and the serial line under nobody's exclusion and halts
-  only itself. A broadcast stop is an IPI, above.
+  unmap on one has to reach the other, and `lapic_send` is how.
+- **The log has no lock.** Only the boot core logs, by discipline. A panic on
+  any core stops every other core first, so one core writes the fault report.
+  An ordinary log line from a second core would interleave.
 - **The process table has no lock.** `kernel/user` claims a slot by finding
   one that is not live. Two `rfork` calls on two cores can find the same one.
   The ring 3 servers running after boot have not tripped it. It is next.

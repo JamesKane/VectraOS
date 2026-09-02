@@ -116,6 +116,13 @@ VECTOR_TIMER :: 0x20
 VECTOR_YIELD :: 0x81
 VECTOR_SPURIOUS :: 0xFF
 
+// The wake another core sends, so an idle core leaves its halt now rather than
+// at its next tick. Beside the yield, because it is answered the same way:
+// a reschedule that charges nobody. Vector 2 is the NMI, which the panic path
+// sends to every other core and nothing else sends at all.
+VECTOR_WAKE :: 0x83
+VECTOR_NMI :: 2
+
 /*
 Where a device interrupt lands: `VECTOR_IRQ_BASE` plus the ISA line.
 

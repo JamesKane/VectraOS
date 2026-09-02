@@ -173,11 +173,10 @@ Three things about a boot are worth knowing before you read one:
 
 The one that shapes everything after it:
 
-- **No IPI.** Every core the bootloader lists runs now, and `docs/SMP.md` is
-  the account. What a core cannot do is prod another. A thread woken for an
-  idle core waits for that core's next tick, a panic on one core halts only
-  that core, and an unmap on one core cannot reach another's TLB. All three
-  are the same LAPIC register, and section 6 has the order.
+- **No TLB shootdown.** Every core the bootloader lists runs now, a wake
+  kicks an idle core, and a panic stops every other core. `docs/SMP.md` is
+  the account. What is left is an unmap on one core reaching another's TLB,
+  which nothing needs until a process has two threads.
 
 And the rest, each named in the code it is missing from. **Something that
 exists and is merely incomplete is not here.** Section 6 has those, because a
@@ -412,24 +411,22 @@ in "Next, in order" at the top and in "Smaller things" below.
 ### SMP, what is left of it
 
 The cores run. The bootloader starts them, `kernel/smp.odin` brings each one
-through the same steps `kmain` took, and `verify_smp` proves thirteen things
-about them on every boot. The four items this section carried are closed, and
+through the same steps `kmain` took, a wake kicks an idle core awake, a panic
+stops every core, and `verify_smp` proves seventeen things about them on
+every boot. The four items this section carried are closed, and
 `docs/SMP.md` records how each closed and which one had been closed already.
 That document also names what is still one core's, and this is the order to
 take it in:
 
-1. **An IPI.** The wake to an idle core is late by up to a tick, a panic on one
-   core stops only that core, and there is no TLB shootdown. All three want
-   the same interrupt command register, and the wake is the one with a check
-   waiting for it: a thread woken for an idle core should run before that
-   core's next tick, and `verify_smp` can measure that.
-2. **A lock over the process table.** `kernel/user` claims a slot by finding
+1. **A lock over the process table.** `kernel/user` claims a slot by finding
    one that is not live, and two `rfork` calls on two cores can find the same
    one. The ring 3 servers that run after boot have not tripped it. A test
    that forks from two cores at once would.
-3. **A lock on the log.** Only the boot core logs today, by discipline rather
-   than by a lock, and a panic on another core writes the screen under nobody's
-   exclusion.
+2. **A lock on the log.** Only the boot core logs today, by discipline rather
+   than by a lock. A panic stops the other cores before it writes, so the
+   fault report is safe; an ordinary line from a second core is not.
+3. **A TLB shootdown**, the day a process has two threads on two cores. The
+   interrupt is `arch.ipi_send`, which the wake already uses.
 
 The one-core flake is still there. About one boot in eight at `--smp=4`
 fails a userland heap bracket by one object, before the cores start, in the

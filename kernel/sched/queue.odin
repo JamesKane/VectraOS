@@ -217,13 +217,21 @@ better_host :: proc "contextless" (a, b: ^Cpu) -> bool {
 	return a.capacity > b.capacity
 }
 
-// load_ratio is a core's ready count scaled to a common capacity, so two cores
-// of different speeds compare on the same axis. A core with no capacity yet --
-// a zero-value slot -- reads as fully loaded rather than as infinitely fast.
+// load_ratio is a core's load scaled to a common capacity, so two cores of
+// different speeds compare on the same axis. The load is the ready count plus
+// one for a thread on the core that is not the idle thread: a core with
+// nothing queued and something running is busier than an idle one, and a wake
+// placed by queue length alone would land beside a running thread while a
+// core sat halted. A core with no capacity yet -- a zero-value slot -- reads
+// as fully loaded rather than as infinitely fast.
 @(private = "file")
 load_ratio :: proc "contextless" (c: ^Cpu) -> int {
 	if c.capacity <= 0 {
 		return max(int)
 	}
-	return c.runq.ready * arch.CAPACITY_FULL / c.capacity
+	busy := 0
+	if c.current != nil && c.current != c.idle {
+		busy = 1
+	}
+	return (c.runq.ready + busy) * arch.CAPACITY_FULL / c.capacity
 }

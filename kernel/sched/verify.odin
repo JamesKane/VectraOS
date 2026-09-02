@@ -282,6 +282,16 @@ verify_placement :: proc(r: ^Verify_Result) #no_bounds_check {
 	pool[2].runq.ready = 5
 	check(r, pick_cpu(ANY_CLASS, pool[:]) == little, "and the overflow spills to the little core when the big one is fuller per capacity")
 
+	// A running thread is load too. With nothing queued anywhere and a thread on
+	// the big core, the middle core is the idle one, and a wake goes there.
+	busy: Thread
+	pool[0].runq.ready = 0
+	pool[1].runq.ready = 0
+	pool[2].runq.ready = 0
+	pool[2].current = &busy
+	check(r, pick_cpu(ANY_CLASS, pool[:]) == &pool[1], "a core with a thread running and nothing queued is busier than an idle one")
+	pool[2].current = nil
+
 	// A class no core has falls back to the boot core rather than stranding the
 	// thread, which is the one-core reality.
 	absent: [2]Cpu

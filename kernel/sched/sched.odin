@@ -40,16 +40,16 @@ next_id: int
 The scheduler lock.
 
 Every mutation of a run queue happens under this, and so does the switch. A
-handler that reschedules takes it, and `switch_done` lets go of it after the
-trap tail has moved off the outgoing stack -- see `block`, `reschedule` and
-`docs/SMP.md` for why the release is on the far side of the switch.
+handler that reschedules takes it. `switch_done` lets go of it once the trap
+tail is off the outgoing stack. See `block`, `reschedule` and `docs/SMP.md` for
+why the release is on the far side of the switch.
 */
 @(private)
 lock: sync.Spinlock
 
 // cpu returns the core this code is running on, by the id `arch` keeps behind
 // the segment base. A caller that reads it and then parks may wake on another
-// core, so the answer is good for as long as interrupts stay off, and every
+// core. The answer is good for as long as interrupts stay off, and every
 // caller that keeps it takes the scheduler lock first.
 cpu :: proc "contextless" () -> ^Cpu #no_bounds_check {
 	return &cpus[arch.percpu_id()]
@@ -130,6 +130,7 @@ init :: proc() -> bool {
 	idle.state = .Ready
 
 	arch.set_interrupt_handler(arch.VECTOR_YIELD, on_yield)
+	arch.set_interrupt_handler(arch.VECTOR_WAKE, on_wake)
 	arch.set_interrupt_handler(arch.VECTOR_SPURIOUS, on_spurious)
 
 	// Last, because it publishes a working scheduler to `kernel:sync`: from
@@ -285,7 +286,7 @@ spawn_at :: proc(
 	t.space = space
 
 	guard := sync.acquire(&lock)
-	enqueue(c, t)
+	place(c, t)
 	sync.release(&lock, guard)
 	return t
 }
@@ -600,7 +601,7 @@ unless the wait it is parking for is already over.
 `pending` is the waiting node's `queue` field, which a waker clears when it
 takes the node. It is read under the scheduler lock, and the state change is
 made under the same hold. A waker readies a thread under that lock too, so
-the two orders are the only two: the park sees the node taken and does not
+there are two orders and no third. The park sees the node taken and does not
 happen, or the ready sees a parked thread and starts it. See `sync.Scheduler`.
 
 The lock is held from here *through the switch*. `reschedule` takes it again,
@@ -698,7 +699,38 @@ wake :: proc "contextless" (t: ^Thread, boosted: bool) {
 	}
 	// Placed afresh, not put back on the waker's core: a wake is an arrival,
 	// and `pick_cpu` may find it a better home. See `pick_cpu`.
-	enqueue(pick_cpu(t.affinity, cpus[:cpu_count]), t)
+	place(pick_cpu(t.affinity, cpus[:cpu_count]), t)
+}
+
+/*
+place queues a thread on a core, and kicks the core if it is idle.
+
+Under the scheduler lock, which is what makes `the core is idle` a fact rather
+than a guess: `reschedule` changes `current` under the same lock. An idle
+core is halted with interrupts on, and would find the thread at its next
+reschedule, up to an idle slice away. The kick is an interrupt that ends the
+halt now, and `on_wake` is a reschedule that charges nobody. This core needs no kick: whatever queued the
+thread is running here and will reschedule at its own next boundary.
+*/
+@(private)
+place :: proc "contextless" (c: ^Cpu, t: ^Thread) {
+	enqueue(c, t)
+	me := cpu()
+	if c != me && c.online && c.current == c.idle {
+		me.kicks += 1
+		arch.ipi_send(c.lapic, u8(arch.VECTOR_WAKE))
+	}
+}
+
+// on_wake is the kick arriving. The idle thread was halted, the interrupt
+// ended the halt, and a reschedule finds what was queued. Acknowledged first,
+// as every APIC interrupt is, so the next one can arrive.
+@(private = "file")
+on_wake :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	arch.timer_ack()
+	c := cpu()
+	intrinsics.volatile_store(&c.ipis, c.ipis + 1)
+	return reschedule(r, spent_slice = false)
 }
 
 /*
@@ -840,13 +872,13 @@ reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Res
 	/*
 	The scheduler lock, taken here and let go of by `switch_done`.
 
-	Nested under `block`'s hold when the switch is a park, and fresh when it
-	is a tick or a yield. Never released in this procedure: the outgoing
-	thread's stack is what this core stands on until the trap tail has moved
-	off it, and a second core that took the thread before then would run it
-	on a stack this core is still reading. The guard is dropped rather than
-	kept, because the release does not restore an interrupt flag. The frame
-	the tail restores carries the incoming thread's own.
+	Nested under `block`'s hold when the switch is a park, and fresh when it is
+	a tick or a yield. Never released in this procedure. The outgoing thread's
+	stack is what this core stands on until the trap tail is off it. A second
+	core that took the thread before then would run it on a stack this core is
+	still reading. The guard is dropped rather than kept, because the release
+	does not restore an interrupt flag. The frame the tail restores carries the
+	incoming thread's own.
 	*/
 	_ = sync.acquire(&lock)
 
@@ -992,6 +1024,10 @@ start_timer :: proc "contextless" (hz: u64 = 1000) -> bool {
 
 	timer_hz = hz
 	timer_count = u32(min(count, u64(max(u32))))
+	// The boot core learns its own APIC id here rather than in `init`, because
+	// `init` runs before the APIC is mapped. Another core learns its own in
+	// `init_ap`, which runs after.
+	cpu().lapic = arch.cpu_lapic_id()
 
 	arch.set_interrupt_handler(arch.VECTOR_TIMER, on_tick)
 	arch.timer_periodic(u8(arch.VECTOR_TIMER), timer_count)
@@ -1048,19 +1084,18 @@ stats :: proc "contextless" () -> Stats {
 // -- The other cores ---------------------------------------------------------
 
 /*
-init_ap is `init` for a core that is not the first: it adopts the context the
+init_ap is `init` for a core that is not the first. It adopts the context the
 core arrived on as a thread, and gives the core an idle thread.
 
-The adopted thread is the core's arrival, on the stack the boot core gave it,
-and its whole life is this procedure and the `exit` that follows. It owns
-that stack, so the reap gives the stack back the moment the core's idle
-thread runs. The idle thread is made here rather than lazily for the reason
-`init` gives: a `reschedule` that could fail would fail at the one moment it
-must not.
+The adopted thread is the core's arrival, on the stack the boot core gave it.
+Its whole life is this procedure and the `exit` that follows. It owns that
+stack, so the reap gives the stack back the moment the core's idle thread runs.
+The idle thread is made here rather than lazily, for the reason `init` gives. A
+`reschedule` that could fail would fail at the one moment it must not.
 
-Placed on nobody's list yet. The core is not `online` until `cpu_online`
-says so, and until then `pick_cpu` does not know it, so nothing can be
-queued on a core that cannot yet dispatch.
+Placed on nobody's list yet. The core is not `online` until `cpu_online` says
+so, and until then `pick_cpu` does not know it. Nothing can be queued on a core
+that cannot yet dispatch.
 */
 init_ap :: proc(id: int, stack: []u8) -> bool #no_bounds_check {
 	if id <= 0 || id >= MAX_CPUS {
@@ -1075,6 +1110,7 @@ init_ap :: proc(id: int, stack: []u8) -> bool #no_bounds_check {
 	c.id = id
 	c.class = class
 	c.capacity = capacity
+	c.lapic = arch.cpu_lapic_id()
 
 	boot := new(Thread)
 	if boot == nil {
@@ -1107,8 +1143,8 @@ init_ap :: proc(id: int, stack: []u8) -> bool #no_bounds_check {
 /*
 cpu_online publishes the calling core to `pick_cpu`.
 
-The last step of a core's bring-up, after its idle thread and its timer, so
-that the first thread placed on it finds a core that dispatches. Under the
+The last step of a core's bring-up, after its idle thread and its timer. The
+first thread placed on it then finds a core that dispatches. Under the
 scheduler lock, because `cpu_count` bounds the pool every placement scans.
 */
 cpu_online :: proc "contextless" () {
@@ -1156,6 +1192,8 @@ Cpu_Stats :: struct {
 	switches:    u64,
 	preemptions: u64,
 	ready:       int,
+	kicks:       u64,
+	ipis:        u64,
 }
 
 // cpu_stats reads one core's counters, for the self-test that watches the
@@ -1172,6 +1210,8 @@ cpu_stats :: proc "contextless" (id: int) -> Cpu_Stats #no_bounds_check {
 		switches    = intrinsics.volatile_load(&c.switches),
 		preemptions = intrinsics.volatile_load(&c.preemptions),
 		ready       = ready_count(c),
+		kicks       = intrinsics.volatile_load(&c.kicks),
+		ipis        = intrinsics.volatile_load(&c.ipis),
 	}
 }
 

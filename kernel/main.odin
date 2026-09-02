@@ -322,6 +322,7 @@ that cannot report faults is still worth a boot far enough to say so.
 init_traps :: proc "contextless" () {
 	arch.init_traps()
 	arch.set_trap_handler(panic_trap)
+	arch.set_interrupt_handler(arch.VECTOR_NMI, on_nmi)
 
 	arm_breakpoint_test()
 	arch.breakpoint()

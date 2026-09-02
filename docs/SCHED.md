@@ -67,8 +67,9 @@ The rule is two comparisons, in order:
    stranding on a class that does not exist yet. On amd64 every core is
    `.Performance`, so a thread pinned to anything else takes this fallback, and
    there is one core to take it.
-2. **Least loaded wins, per unit of capacity.** Load is a core's ready count
-   scaled to a common capacity, so a core at twice the speed carries twice the
+2. **Least loaded wins, per unit of capacity.** Load is a core's ready count,
+   plus one for a running thread that is not the idle thread, scaled to a
+   common capacity, so a core at twice the speed carries twice the
    threads before it counts as equally loaded. That is what sends steady work to
    the big cores and keeps the little ones for the overflow. A tie goes to the
    faster core, so an idle machine uses its best core first.
