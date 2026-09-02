@@ -1198,8 +1198,9 @@ bigger is the cap this call exists to lift.
 |---|---|
 | `segbrk` answers success without allocating | **breaks the machine** |
 | the new pages are never mapped | **breaks the machine** |
-| `segbrk` answers for any segment kind | **inert**, and see below |
-| a grown run reads every page out of its first piece | **inert**, and see below |
+| `segbrk` answers for any segment kind | 2 checks, first `and a card cannot be resized, because its extent is the hardware's` |
+| a grown run reads every page out of its first piece | **breaks the machine**, on the third try -- see below |
+| a shrink frees the tail and forgets to unmap it | 1 check, `every mapped page is inside a segment the process holds` |
 | a grown window is not taller on the glass | 1 check, `and stands that much taller on the glass, which no frame count could say` |
 
 The first two stop the boot rather than failing a check, and that is the shape
@@ -1207,21 +1208,20 @@ a grow has: the draw server asks for rows, is told it has them, and writes into
 memory that is not there. A window that grows on a lie faults on its next
 paint.
 
-**The kind check has no caller to test it with.** Nothing in ring 3 asks
-`segbrk` of a segment that is not anonymous. `servers/intuition` asks about
-its own window runs and about nothing else, and it never resizes the
-framebuffer it holds as a `.Device` run.
+**The kind check has a caller now.** For two milestones nothing in ring 3
+asked `segbrk` of a segment that was not anonymous. This file said the rule
+was Plan 9's, written down, and watched by nothing. `mapper` asks it of
+the card it attached, and the answer has to be `EINVAL`. A kernel that
+answers instead shrinks the framebuffer, and the second failure is the
+untracked free that follows.
 
-Catching it wants a program written to ask the wrong question. That is assembly
-in `kernel/user/program.odin` rather than a line in a server that exists only
-to be checked. The rule is Plan 9's and it is written down. Nothing watches it.
-
-**And a wrong mapping for a grown run is self-consistent.** This was first
-written up as "the new pages are below the screen, so nothing reads them
-back", and a window born shorter than the glass was supposed to fix it. That
-landed -- a window is three quarters of the screen now and a grown one is
-measured on the glass, which is a check no frame count could make -- and the
-control stayed inert. The reason was the other one.
+**And a wrong mapping for a grown run is self-consistent, which is what the
+sweep is for.** This was first written up as "the new pages are below the
+screen, so nothing reads them back", and a window born shorter than the glass
+was supposed to fix it. That landed -- a window is three quarters of the
+screen now and a grown one is measured on the glass, which is a check no
+frame count could make -- and the control stayed inert. The reason was the
+other one.
 
 `map_run` installs whatever `segment_frame` answers, and the server reads and
 writes the same virtual addresses. A `segment_frame` that answers the wrong
@@ -1232,10 +1232,99 @@ right.
 What the mutation actually breaks is memory it does not own: the grown pages
 land past the end of the first block, on frames the allocator gave to somebody
 else. That is a safety fault rather than a functional one, and no readback can
-see it. Catching it wants an invariant sweep -- every frame a process maps
-belongs to one of its segments -- which is the shape of a leak check rather
-than of a pixel check, and is the honest thing to build if this rule is to be
-watched.
+see it. It wanted an invariant sweep, which is the shape of a leak check
+rather than of a pixel check. The next section is that sweep.
+
+### The sweep
+
+**Every frame a process maps belongs to one of its segments.** `user.sweep`
+walks a process's page tables through `mem.walk_user`, which is the
+teardown's walk with the leaf case inverted. It judges every leaf it finds
+against the segment records. Three numbers come back, each a different way
+for the rule to be broken:
+
+    stray      a leaf at an address no segment covers. A shrink that freed
+               and forgot to unmap, or a mapping made behind the segments'
+               back.
+    borrowed   a leaf inside a segment's extent whose frame the segment does
+               not own. A `segment_frame` that answered the wrong frame, or
+               a copy at fork that mapped the parent's frames as the child's.
+    short      a segment page with no leaf under it. A run mapped part-way,
+               or a sharer that never received a grow.
+
+**The question is ownership, and deliberately not position.** The sharper
+check asks whether page n holds the frame `segment_frame` answers for page n.
+It agrees with itself whatever `segment_frame` does, because `map_run`
+installed exactly what `segment_frame` said. So the sweep reads `pieces` and `frames`
+and never calls `segment_frame`. What the mutation cannot fake is the record.
+
+**It runs five times a boot**, where a process holds something worth asking
+about. `anon` after its runs grew and shrank. `mapper` with two attaches of
+the card. The draw server after the window grew, and its reader child, which
+shares the run and never received the grow. And the orphan in
+`verify_rfork`, holding two shared segments and a stack of its own.
+
+The reader child is `short` by exactly the pages the server's run gained,
+read off the second piece of the server's record. `segment_grow` says why
+the tail is the grower's alone.
+
+**And twice more as the controls that run on every boot**, one per number a
+mutation cannot reach alive. `verify_shadow` maps a page no segment covers,
+on purpose, and the sweep there has to find exactly one stray leaf and
+nothing borrowed. `verify_anon`, once its program ended, points one page of a
+run at a frame the kernel holds, behind the record's back. The sweep has
+to name exactly one borrowed frame, and then the page goes back. A sweep that
+found nothing everywhere would be one that cannot fail. `docs/TESTING.md` has
+the pattern.
+
+**The first sweep of the `segment_frame` control came back clean, twice,
+for two reasons that were not the check.** `docs/TESTING.md` says to ask
+whether the test reaches the code before asking whether the check is weak,
+and both answers were that kind.
+
+The first is the allocator. `mem.alloc_pages` hands out adjacent runs. A grow
+that follows the ask with nothing between lands on the frames right after
+the run's block. A `segment_frame` that reads the tail out of the first piece
+then answers the right frames by luck. The draw server's grow is one of
+those, and stays one. Nothing takes the frame after a window's block between
+its birth and the client's `size`.
+
+So `anon` stops after its second ask and waits for the kernel's word. The
+test takes one frame -- the one the allocator would have handed the grow --
+and then says go. The grown piece cannot be adjacent now, and a check says
+so. The wait is bounded the way `spin`'s is. A kernel that never answers ends
+the program rather than the boot.
+
+What the wedge buys is a run of two disjoint blocks. The ownership question
+and the release by name are both asked over pieces rather than over one
+span. The wedge frame is what the every-boot control above points a page at.
+
+The second was the code. `segment_grow` mapped its new piece from the base it
+had just allocated, and never asked `segment_frame` at all. Its own comment
+said the mapping read the frames out of the accessor. A wrong answer for a
+grown run's tail reached no mapping, because the one mapping of that tail
+never asked.
+
+`map_run` maps a grow now, from the first new page to the end.
+So every mapping of a run reads the record through one accessor, and the
+sweep is what checks the accessor.
+
+**With both fixed, the control stops the boot.** The draw server's window
+grow runs long before `anon` does. It maps the new rows onto the frames after
+the window's block, which are somebody else's. The compositor writes
+rows there, and the machine wedges with nothing printed.
+
+That is the failure
+`docs/USER.md` predicted when it first recorded this control as inert. The
+sweep would name it in `anon`, with the wedge, and never gets the chance. So
+the number it would have raised has the every-boot control above instead.
+
+**A fifth control stops the boot before any sweep runs.** A copy at fork that
+maps the parent's frames as the child's gives the two processes one stack.
+`forker` is the first program to fork, and the boot ends there with nothing
+printed. The sweep in `verify_rfork` would have named it, and never gets the
+chance. That is the shape `docs/TESTING.md` calls a machine failure, and
+records rather than counts.
 
 **And one type.** Plan 9's `"shared"` class is `SG_SHARED`, which `dupseg`
 shares whatever the flags say and `exec` inherits. Vectra has no equivalent:
@@ -1280,9 +1369,14 @@ this paragraph.
 and not only about the call.
 
 It reads the first word before it writes anything. Then it stores a pattern at
-both ends, asks twice more with arithmetic the kernel must refuse, and forks.
-The child asks for a run of its own. It checks that the one it inherited still
+both ends and asks again. It waits for the kernel's word, grows that second
+run by four pages, stores the last word of the tail, and gives two pages back.
+Then it asks twice more with arithmetic the kernel must refuse, and forks. The
+child asks for a run of its own. It checks that the one it inherited still
 reads as its parent left it, writes over that copy, and exits.
+
+The kernel sweeps the parent's tables before the teardown, and then walks the
+frames of every piece of both runs by name after it.
 
 Ten mutations, each on a real boot. Eight are caught.
 

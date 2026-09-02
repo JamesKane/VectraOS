@@ -255,7 +255,7 @@ nothing else in common.
 | The system call door | `docs/USER.md` | 3 checked, 3 machine failures, 2 uncaught |
 | A process | `docs/USER.md` | 4 checked, 1 machine failure, 1 inert |
 | The screen, mapped | `docs/DRAW.md` | 4 checked, 1 machine failure, 1 inert |
-| Memory a program asks for | `docs/USER.md` | 8 checked, 2 machine failures |
+| Memory a program asks for | `docs/USER.md` | 8 checked, 2 machine failures, and see `segbrk`'s table |
 | Windows | `docs/DRAW.md` | 6 of 6 |
 | The compositor | `docs/DRAW.md` | 23 caught, 2 inert, 1 machine failure |
 | Chrome | `docs/DRAW.md` | 6 of 6 |
@@ -411,6 +411,27 @@ more than it took.
 runs before the opening reading now. `kernel/verify_space.odin` reached the
 same conclusion from the other side, by finding a phase with no threads in it
 at all.
+
+## A bracket counts, and some errors keep every count even
+
+`docs/USER.md` found the case a bracket cannot see, and it is worth a rule of
+its own. A run that grew onto frames it does not own maps them, writes them,
+reads them back, and releases exactly the frames its record names. The frame
+count balances. The segment count balances. The pixels are right, because the
+write and the read went to the same wrong place. The frames that belonged to
+somebody else were never in any total.
+
+**What a count cannot say, a walk can.** `user.sweep` reads a process's page
+tables leaf by leaf and asks the segment records whether each frame is theirs.
+It asks the record directly, and not the procedure that installed the mapping,
+because that procedure agrees with the mapping by construction. The control
+that was inert for two milestones fails on the first sweep.
+
+A walk needs a control of its own, and `verify_shadow` is it. That test maps
+a page no segment covers, on purpose, so the sweep there must find exactly one
+stray leaf. A sweep that found nothing everywhere would be one that cannot
+fail. This is the pattern of `kernel/verify_payload.odin` again: the wrong
+arrangement is expressible, so it runs on every boot.
 
 ## A control that passes may be asking whether the test reaches the code
 

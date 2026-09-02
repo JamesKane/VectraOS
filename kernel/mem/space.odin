@@ -270,6 +270,72 @@ unmap_user :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages: i
 	return .None
 }
 
+/*
+A leaf the walk found: where it is, what it names, and how big it is.
+
+`level` is the page size, the way `translate` reads it. A run of one page is
+level 1. Nothing in the lower half installs anything larger. A visitor that
+sees another level found a mapping no caller of this file made.
+*/
+Leaf_Visitor :: #type proc "contextless" (arg: rawptr, virt: uintptr, phys: uintptr, level: int)
+
+/*
+walk_user visits every present leaf in a space's lower half, and answers how
+many there were.
+
+**This is `free_subtree`'s walk with the leaf case inverted.** The teardown
+steps over a leaf and frees the branches. This steps over nothing and frees
+nothing, so it can be run against a live process. The tables are read through
+the direct map, the way every walk in this package reads them.
+
+It exists for one caller, a self-test with a question the reference counts
+cannot answer. Not `did every segment come back`, but `does this process
+reach a frame no segment of its own holds`. A count balances whatever the
+mapping says. Only the mapping says where a wrong frame went.
+See `kernel/user/segment.odin`.
+
+The lower half only, for the reason `space_destroy` stops there. The upper
+half is the kernel's, the same in every space, and a leaf found in it says
+nothing about the process.
+*/
+walk_user :: proc "contextless" (space: ^Address_Space, arg: rawptr, visit: Leaf_Visitor) -> int {
+	if space == nil || space.root == 0 {
+		return 0
+	}
+	table := cast(^arch.Page_Table)phys_to_virt(space.root)
+	found := 0
+	for i in 0 ..< arch.TABLE_ENTRIES / 2 {
+		virt := uintptr(i) * arch.level_size(arch.TABLE_LEVELS)
+		found += walk_subtree(table[i], arch.TABLE_LEVELS, virt, arg, visit)
+	}
+	return found
+}
+
+// walk_subtree is one entry's tree, leaf by leaf. `virt` is where this entry
+// starts, and each level down adds its index times the size of what it names.
+@(private = "file")
+walk_subtree :: proc "contextless" (
+	entry: arch.Page_Table_Entry,
+	level: int,
+	virt: uintptr,
+	arg: rawptr,
+	visit: Leaf_Visitor,
+) -> int {
+	if !arch.entry_present(entry) {
+		return 0
+	}
+	if arch.entry_is_leaf(entry, level) {
+		visit(arg, virt, arch.entry_address(entry), level)
+		return 1
+	}
+	found := 0
+	table := cast(^arch.Page_Table)phys_to_virt(arch.entry_address(entry))
+	for i in 0 ..< arch.TABLE_ENTRIES {
+		found += walk_subtree(table[i], level - 1, virt + uintptr(i) * arch.level_size(level - 1), arg, visit)
+	}
+	return found
+}
+
 // -- Where the records live --------------------------------------------------
 //
 // An `Address_Space` is sixteen bytes and there will be one per process. The

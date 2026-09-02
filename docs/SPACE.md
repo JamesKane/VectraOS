@@ -57,6 +57,16 @@ too. Or frames grow a count, which is the question `Chan.refs` and
 Until then the caller frees what it mapped, and a control that makes the space
 free leaves instead shows exactly what goes wrong.
 
+**The walk can be read as well as torn down.** `walk_user` visits every
+present leaf in the lower half and hands each to a caller, and it is
+`free_subtree`'s walk with the leaf case inverted. It frees nothing, so it can
+run against a live process.
+
+It exists for `kernel/user`'s `sweep`, which asks
+whether every frame a process maps is one of its segments' own. A count of
+frames balances whatever the mapping says. Only the mapping says where a wrong
+frame went, and this is how a self-test reads it. See `docs/USER.md`.
+
 **The teardown walk stops at the halfway index, and that is the whole
 correctness argument.** Entries 256 and above name tables the kernel is still
 using and every other space still points at. Freeing one takes the kernel down

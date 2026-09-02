@@ -839,6 +839,22 @@ verify_shadow :: proc(r: ^Result, held: ^[3]uintptr) {
 		!mem.frame_is_free(held[0]) && !mem.frame_is_free(held[1]) && !mem.frame_is_free(held[2]),
 		"a program holds three frames while it exists",
 	)
+
+	/*
+	And the sweep sees the shadow page, which is the control that runs on
+	every boot.
+
+	The page above is a mapping no segment covers, made on purpose. Every
+	other sweep in this file checks that it finds nothing. This one checks
+	that it *can* find something: one stray leaf, at the shadow's address,
+	and nothing borrowed. The frame under it is the stack's, at a second
+	address. A sweep that reported zero here would be one that cannot fail,
+	and `docs/TESTING.md` is where the shape comes from.
+	*/
+	swept := sweep(p)
+	check(r, swept.stray == 1, "and the sweep finds the shadow page, a mapping no segment covers")
+	check(r, swept.borrowed == 0, "and nothing else, because the frame under it is the stack's own")
+
 	finish(r, p, "and is taken down")
 }
 
@@ -2559,6 +2575,13 @@ verify_rfork :: proc(r: ^Result) {
 	check(r, saw, "the child's write arrived through the shared frame")
 	check(r, child.data == shared_data, "which is the frame the parent's alias named")
 
+	// The child's tables, while it holds two shared segments and a stack of
+	// its own. A copy at fork that mapped the parent's stack frame as the
+	// child's would pass the pointer checks above. Here it would be a leaf
+	// whose frame the child's stack segment does not own.
+	swept := sweep(child)
+	check(r, swept.stray == 0 && swept.borrowed == 0, "and every page the child maps is a frame its own segments hold")
+
 	set_cell(child, MEMFORK_STOP, 1)
 	if check(r, wait(child, PATIENCE), "the kernel's write releases the orphan") {
 		check(
@@ -2630,6 +2653,23 @@ verify_rfork :: proc(r: ^Result) {
 
 	check(r, segment_stats().live == segs0.live, "every fork's segments came back")
 	check(r, fdt_stats() == tables0, "and every descriptor group")
+}
+
+// forked_child is the live process a server forked, found by parentage.
+// `find_child` wants the pid, which only the server knows. One child is
+// what every forking server in the tree has, and the first is the answer.
+@(private = "file")
+forked_child :: proc "contextless" (parent: ^Process) -> ^Process #no_bounds_check {
+	if parent == nil {
+		return nil
+	}
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if p.live && p != parent && p.parent == parent.pid {
+			return p
+		}
+	}
+	return nil
 }
 
 // await_posted polls /srv for the name a spawned server should post, with
@@ -3535,7 +3575,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	//
 	// While `dc` is still open, because the claim is about two windows held at
 	// once. The image-pool test below closes it.
-	verify_windows(r, s, win_w, win_h, ox, oy, fw, y0 - 2, dc, ctl)
+	verify_windows(r, s, win_w, win_h, ox, oy, fw, y0 - 2, dc, ctl, p)
 
 	at = 0
 	for id in 1 ..= 8 {
@@ -4186,7 +4226,23 @@ verify_mapping :: proc(r: ^Result) {
 		perms, perm_ok := mem.permissions(p.space, addr)
 		check(r, perm_ok && .User in perms && .Write in perms, "the pages carry user and write")
 		check(r, perm_ok && .No_Execute in perms, "and never execute, because no card is code")
+
+		// A card's extent is the hardware's, and `syssegbrk` refuses every
+		// kind but anonymous memory by name. This is the program written to
+		// ask, which `docs/USER.md` said the rule was waiting for.
+		check(
+			r,
+			cell(p, MAPPER_BRK) == refused(vectra9.EINVAL),
+			"and a card cannot be resized, because its extent is the hardware's",
+		)
 	}
+
+	// The sweep, over a process whose segments are a card's frames. Ownership
+	// of device memory is arithmetic over the piece, the same as a run's.
+	// This is the one process in the file that holds two of them.
+	swept := sweep(p)
+	check(r, swept.stray == 0 && swept.borrowed == 0, "every page it maps is a frame one of its segments holds")
+	check(r, swept.short == 0, "and every page of both attaches is mapped")
 
 	check(r, destroy(p), "the process is taken down")
 
@@ -4720,6 +4776,7 @@ verify_ctl :: proc(
 	fw: int,
 	A3: u32,
 	first_ctl: ^vfs.Chan,
+	server: ^Process,
 ) #no_bounds_check {
 	/*
 	The two sensors this procedure watches, derived rather than handed over.
@@ -4940,6 +4997,46 @@ verify_ctl :: proc(
 		bottom_after - bottom_before == tall - win_h,
 		"and stands that much taller on the glass, which no frame count could say",
 	)
+
+	/*
+	And every frame the server maps is one its segments own, which is the
+	claim the glass cannot make either.
+
+	This is the sweep `docs/USER.md` asked for. A `segment_frame` that reads
+	a grown run's tail out of its first piece maps frames past that piece's
+	end. The server writes the new rows there and the compositor reads them
+	back from there. So the window stands exactly as tall as it should, on
+	memory the allocator gave to somebody else. No readback sees it. The
+	record does: those frames are in no piece.
+
+	The server is parked between requests, which is what holds it still for
+	the walk. Its reader child shares the run and never received the grow.
+	So the child is short of exactly the pages the server's run gained, read
+	off the second piece of the server's record. `segment_grow` says why the
+	tail is the grower's alone.
+	*/
+	grown := 0
+	for i in 0 ..< server.seg_count {
+		if seg := server.segs[i]; seg != nil && seg.kind == .Anon {
+			for j in 1 ..< seg.piece_n {
+				grown += seg.pieces[j].pages
+			}
+		}
+	}
+	check(r, grown > 0, "the server holds a run with a second piece, which is what a grow leaves")
+	swept := sweep(server)
+	check(r, swept.stray == 0, "every page the server maps is inside a segment it holds")
+	check(r, swept.borrowed == 0, "and every frame under one is that segment's own, the grown tail included")
+	check(r, swept.short == 0, "and every page of every run it holds is mapped, the grown tail included")
+	if reader := forked_child(server); check(r, reader != nil, "the server's reader child is in the table") {
+		child_swept := sweep(reader)
+		check(
+			r,
+			child_swept.stray == 0 && child_swept.borrowed == 0,
+			"and maps the shared run's frames, and none past the end it was given",
+		)
+		check(r, child_swept.short == grown, "short of exactly the pages the server's run gained after the fork")
+	}
 
 	/*
 	And smaller again, which the run does not follow.
@@ -5282,7 +5379,38 @@ verify_anon :: proc(r: ^Result) {
 	}
 	r.programs += 1
 
+	/*
+	The wedge, and why the program waits for it.
+
+	The allocator hands out adjacent runs. A grow that follows the ask with
+	nothing between lands on the frames right after the run's block. A
+	`segment_frame` that reads a grown run's tail out of its first piece then
+	answers the right frames by luck. The sweep below has nothing to see.
+	That control came back clean once for exactly this reason.
+
+	So the program stops after its second ask and waits for a word. The
+	kernel takes one frame, which is the one the allocator would have handed
+	to the grow, and only then says go. The grown piece cannot be adjacent
+	now, and the control fails where it should. The frame goes back after
+	the teardown, before the totals are read.
+	*/
+	asked := false
+	for _ in 0 ..< PATIENCE {
+		if cell(p, ANON_AGAIN) != 0 {
+			asked = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, asked, "the program asked twice and waits for the kernel's word before it grows")
+	wedge, wedged := mem.alloc_page()
+	check(r, wedged, "and the kernel takes the frame the allocator would have handed the grow")
+	set_cell(p, ANON_GO, 1)
+
 	if !check(r, wait(p, PATIENCE), "and it comes back") {
+		if wedged {
+			mem.free_page(wedge)
+		}
 		finish(r, p, "and is taken down")
 		return
 	}
@@ -5355,25 +5483,114 @@ verify_anon :: proc(r: ^Result) {
 	)
 
 	/*
+	And the second run grew, was written at its new end, and shrank part-way
+	back.
+
+	This is `segbrk` asked by a program rather than by the draw server. It
+	is here for what it leaves behind: a run of two pieces, one of them
+	trimmed. The store into the tail is the check that the grow was real. A
+	grow that answered without mapping faults on that line and the program
+	never comes back.
+	*/
+	check(r, i64(cell(p, ANON_GROWN)) == 0, "the second run grew by four pages when asked")
+	check(r, cell(p, ANON_TAIL) == ANON_PATTERN, "and a word stored at the new end came back")
+	check(r, i64(cell(p, ANON_SHRUNK)) == 0, "and it gave two of the four back")
+
+	// The wedge did its work: the grown piece does not start where the first
+	// piece ends. Without this the sweep's ownership question has one answer
+	// whatever `segment_frame` does, and the control it exists for is inert.
+	grown_run := proc_segment_at(p, uintptr(cell(p, ANON_AGAIN)))
+	check(r, grown_run != nil && grown_run.piece_n == 2, "the second run is two pieces now")
+	check(
+		r,
+		grown_run != nil &&
+		grown_run.piece_n == 2 &&
+		grown_run.pieces[1].base != grown_run.pieces[0].base + uintptr(grown_run.pieces[0].pages) * uintptr(arch.PAGE_SIZE),
+		"and the second piece is not adjacent to the first, because the kernel took the frame between them",
+	)
+
+	/*
+	And the sweep can see a borrowed frame, which is the control for its
+	second number and runs on every boot.
+
+	No mutation reaches this number alive. A `segment_frame` that answers the
+	wrong frame for a grown run's tail stops the boot in the draw server. Its
+	window grow writes rows onto memory the run does not own, long before
+	this process exists.
+
+	So the test makes the wrong arrangement by hand, where it is expressible.
+	It points one page of the run at the kernel's wedge frame behind the
+	record's back. The sweep has to name exactly that, and then the page goes
+	back. The program ended. Nothing translates through these tables while
+	they lie.
+	*/
+	if grown_run != nil && wedged {
+		page_va := grown_run.va
+		was, had := mem.translate(p.space, page_va)
+		swapped :=
+			had &&
+			mem.unmap_user(p.space, page_va, 1) == .None &&
+			mem.map_user(p.space, page_va, wedge, grown_run.flags, 1) == .None
+		check(r, swapped, "one page of the run is pointed at the kernel's wedge frame, behind the record's back")
+		tampered := sweep(p)
+		check(
+			r,
+			tampered.borrowed == 1 && tampered.stray == 0 && tampered.short == 0,
+			"and the sweep names it: one frame under a segment that the segment does not own, and nothing else",
+		)
+		restored :=
+			mem.unmap_user(p.space, page_va, 1) == .None &&
+			mem.map_user(p.space, page_va, was, grown_run.flags, 1) == .None
+		check(r, restored, "and the page is put back where the record says it is")
+	}
+
+	/*
+	Every frame the process maps belongs to one of its segments.
+
+	This is the check `docs/USER.md` said no readback could make. A grown run
+	whose `segment_frame` reads every page out of its first piece maps frames
+	past that piece's end. It writes them, reads them back, and releases the
+	frames its record names. Every total balances, and the pixels are right,
+	because the write and the read went to the same wrong place. The walk
+	over the tables is the only witness. It asks the record which frames are
+	the segment's, rather than asking `segment_frame` where page n went.
+
+	`short` is zero here and not in every sweep. Nothing shares a run with
+	this process, so every page of every segment it holds is its own to map.
+	*/
+	swept := sweep(p)
+	check(r, swept.leaves > 2 * pages, "the sweep walked the process's tables and found its runs")
+	check(r, swept.stray == 0, "every mapped page is inside a segment the process holds")
+	check(r, swept.borrowed == 0, "and every frame under one is a frame that segment owns")
+	check(r, swept.short == 0, "and every page of every segment is mapped")
+
+	/*
 	The frames the two runs held, taken by name before the teardown.
 
 	`p.segs` is this package's own, which is why this check can be sharper
-	than a total. This asks about every `.Anon` segment the process holds, one
-	at a time, after `destroy`. So a release that frees the first page and
-	forgets the rest fails here, rather than hiding inside a heap that always
-	allocates.
+	than a total. This asks about every `.Anon` segment the process holds,
+	piece by piece, after `destroy`. So a release that frees the first page
+	and forgets the rest fails here, rather than hiding inside a heap that
+	always allocates. The second run is two pieces now, so the walk is over
+	pieces rather than from one base.
 	*/
-	held: [MAX_PROC_SEGS]uintptr
-	spans: [MAX_PROC_SEGS]int
+	held: [MAX_PROC_SEGS * MAX_RUN_PIECES]Run_Piece
+	held_n := 0
+	held_pages := 0
 	runs := 0
 	for i in 0 ..< p.seg_count {
 		if p.segs[i].kind == .Anon {
-			held[runs] = p.segs[i].pieces[0].base
-			spans[runs] = p.segs[i].pages
 			runs += 1
+			for j in 0 ..< p.segs[i].piece_n {
+				held[held_n] = p.segs[i].pieces[j]
+				held_pages += held[held_n].pages
+				held_n += 1
+			}
 		}
 	}
 	check(r, runs == 2, "the process holds two anonymous segments and no more")
+	check(r, held_n == 3, "in three pieces, because one of them grew")
+	check(r, held_pages == 2 * pages + 2, "which together are the two runs and the two pages kept")
 	check(
 		r,
 		segment_stats().frames - segs_before.frames >= 2 * pages,
@@ -5381,16 +5598,19 @@ verify_anon :: proc(r: ^Result) {
 	)
 
 	check(r, destroy(p), "the process is taken down")
+	if wedged {
+		mem.free_page(wedge)
+	}
 
 	back := 0
-	for i in 0 ..< runs {
-		for j in 0 ..< spans[i] {
-			if mem.frame_is_free(held[i] + uintptr(j) * uintptr(arch.PAGE_SIZE)) {
+	for i in 0 ..< held_n {
+		for j in 0 ..< held[i].pages {
+			if mem.frame_is_free(held[i].base + uintptr(j) * uintptr(arch.PAGE_SIZE)) {
 				back += 1
 			}
 		}
 	}
-	check(r, back == 2 * pages, "and every frame of both runs went back to the allocator, by name")
+	check(r, back == held_pages, "and every frame of both runs went back to the allocator, by name")
 	check(
 		r,
 		mem.pmm_stats().untracked_frees == untracked_before,
@@ -5458,6 +5678,7 @@ verify_windows :: proc(
 	y: int,
 	first: ^vfs.Chan,
 	first_ctl: ^vfs.Chan,
+	server: ^Process,
 ) #no_bounds_check {
 	/*
 	`y` is a client row, and this is where it lands on the glass. Every command
@@ -5891,7 +6112,7 @@ verify_windows :: proc(
 			"and are covered where they meet a window whose session drew nothing at all",
 		)
 
-		verify_ctl(r, s, win_w, win_h, ox, oy, sy, fw, A3, first_ctl)
+		verify_ctl(r, s, win_w, win_h, ox, oy, sy, fw, A3, first_ctl, server)
 		vfs.chan_close(again)
 	}
 

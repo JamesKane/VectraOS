@@ -207,6 +207,150 @@ segment_stats :: proc "contextless" () -> Segment_Stats {
 }
 
 /*
+What a sweep of one process's mappings found.
+
+`segment_stats` is a count, and a count balances whatever the mapping says.
+A run that grew onto frames it does not own maps them, writes them, reads
+them back, and releases exactly the frames its record names. Every total
+comes out even, and the frames that were somebody else's were never in any
+of them. `docs/USER.md` recorded that as a control no check could see. This
+is the check.
+
+Three numbers, each a different way for the rule to be broken:
+
+    stray      a leaf at an address no segment of the process covers. A
+               shrink that freed and forgot to unmap, or a mapping made
+               behind the segments' back.
+    borrowed   a leaf inside a segment's extent whose frame the segment does
+               not own. A `segment_frame` that answered the wrong frame, or
+               a copy at fork that mapped the parent's frames as the child's.
+    short      a segment page with no leaf under it. A run mapped part-way,
+               or a sharer that never received a grow -- which is not a
+               fault, and is why the caller decides what to make of it.
+
+`leaves` is the walk's own count, kept so a caller can see that the sweep
+looked at anything at all.
+*/
+Sweep :: struct {
+	leaves:  int,
+	stray:   int,
+	borrowed: int,
+	short:   int,
+}
+
+/*
+sweep asks whether every frame a process maps belongs to one of its
+segments, and answers by counting the ways it does not.
+
+**The question is ownership, and deliberately not position.** A sharper
+check asks whether page n holds the frame `segment_frame` answers for page
+n. That check agrees with itself whatever `segment_frame` does, because
+`map_run` installed exactly what `segment_frame` said.
+
+The mutation this exists to catch is a `segment_frame` that reads every page
+of a grown run out of its first piece. Under it, the mapping and the answer
+are wrong together, and a position check passes. What that mutation cannot
+fake is the record. The frames past the first piece's end are not in any
+piece, and asking the pieces directly says so. So this reads `pieces` and
+`frames` and never calls `segment_frame`.
+
+**The caller holds the process still.** The walk takes no lock. The tables
+and the segment list belong to the thread that runs the process. A lock that
+thread does not take would not stop it.
+
+A process that ended holds still by itself. A server parked between requests
+holds still for as long as nobody sends one. Those are the two states the
+self-tests sweep in.
+
+`short` is the one number a healthy process may report. A run shared under
+`RFMEM` and then grown by one holder maps its new tail in that holder's space
+alone. The sharer never asked for it, and `segment_grow` says why nothing
+here could reach the sharer's tables.
+*/
+sweep :: proc "contextless" (p: ^Process) -> Sweep #no_bounds_check {
+	if p == nil {
+		return Sweep{}
+	}
+	scan := Sweep_Scan{p = p}
+	scan.found.leaves = mem.walk_user(p.space, &scan, sweep_leaf)
+
+	covered := 0
+	for i in 0 ..< p.seg_count {
+		if p.segs[i] != nil {
+			covered += p.segs[i].pages
+		}
+	}
+	// Every leaf inside some segment's extent counts against that extent,
+	// whether or not the frame under it was the right one. What is left is
+	// the pages no leaf reached.
+	scan.found.short = covered - (scan.found.leaves - scan.found.stray)
+	return scan.found
+}
+
+@(private = "file")
+Sweep_Scan :: struct {
+	p:     ^Process,
+	found: Sweep,
+}
+
+// sweep_leaf is one mapping, judged. Anything that is not one page is stray
+// on its face, because nothing in this package installs a larger leaf.
+@(private = "file")
+sweep_leaf :: proc "contextless" (arg: rawptr, virt: uintptr, phys: uintptr, level: int) {
+	scan := cast(^Sweep_Scan)arg
+	s := segment_covering(scan.p, virt)
+	if s == nil || level != 1 {
+		scan.found.stray += 1
+		return
+	}
+	if !segment_owns(s, phys) {
+		scan.found.borrowed += 1
+	}
+}
+
+// segment_covering is the segment whose extent holds an address, of any
+// kind. `proc_segment_at` asks the same question of the run kinds alone,
+// because `segbrk` may only be asked of those. A sweep has to answer for a
+// stack page too.
+@(private = "file")
+segment_covering :: proc "contextless" (p: ^Process, virt: uintptr) -> ^Segment #no_bounds_check {
+	for i in 0 ..< p.seg_count {
+		s := p.segs[i]
+		if s == nil {
+			continue
+		}
+		span := uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
+		if virt >= s.va && virt < s.va + span {
+			return s
+		}
+	}
+	return nil
+}
+
+// segment_owns is whether a frame is one the segment's record would free.
+// The pieces for a run and the list for everything else, read directly --
+// see `sweep` for why not `segment_frame`.
+@(private = "file")
+segment_owns :: proc "contextless" (s: ^Segment, phys: uintptr) -> bool #no_bounds_check {
+	if segment_is_run(s.kind) {
+		for i in 0 ..< s.piece_n {
+			piece := s.pieces[i]
+			span := uintptr(piece.pages) * uintptr(arch.PAGE_SIZE)
+			if phys >= piece.base && phys < piece.base + span {
+				return true
+			}
+		}
+		return false
+	}
+	for i in 0 ..< s.pages {
+		if s.frames[i] == phys {
+			return true
+		}
+	}
+	return false
+}
+
+/*
 segment_new claims a slot with one reference and no frames yet.
 
 Frames arrive one at a time through `segment_add_frame`, the moment each is

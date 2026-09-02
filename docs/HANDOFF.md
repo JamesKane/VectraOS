@@ -35,7 +35,7 @@ embedded user images are ~300 KB.
 
 The machine boots and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
-`/bin`. It then runs about 1370 checks against itself and idles.
+`/bin`. It then runs about 1450 checks against itself and idles.
 
 **What it can do**, and which document says why:
 
@@ -349,15 +349,10 @@ the documents it points at.
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
-2. **An invariant sweep: every frame a process maps belongs to one of its
-   segments.** A window is born shorter than the glass now, so a grown one is
-   measured on the glass -- and `segbrk`'s aliasing control stayed inert
-   anyway, for a reason worth knowing. `map_run` installs whatever
-   `segment_frame` answers, and the server reads and writes the same
-   addresses, so a wrong mapping is wrong for the write and the read alike and
-   every pixel comes back from where it was put. What it breaks is frames it
-   does not own, which no readback can see. That wants a sweep, which is the
-   shape of a leak check rather than a pixel one. See `docs/USER.md`.
+2. **`segfree` and `segdetach`**, the two segment calls still missing -- see
+   the standing gap below. `segbrk` built the unmap they both need, and the
+   sweep built the check that would notice either one giving back a frame it
+   still maps. What is left is the two calls and a program that asks.
 
 **Deferred, with the reason written down: a font with more than 128 glyphs.**
 `sys/libedit` drops every rune it does not act on, because `sys/libfont` is an

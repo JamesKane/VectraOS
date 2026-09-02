@@ -895,17 +895,26 @@ map_reserve :: proc "contextless" (p: ^Process, pages: int) -> (va: uintptr, ok:
 }
 
 /*
-map_run maps one run segment's frames into a process, page by page.
+map_run maps a run segment's frames into a process, page by page, from
+page `from` to the end.
 
 The two calls below differ in where the frames came from and agree on
 everything after. A failure part-way leaves the segment on the process's list
 on purpose. `unload` releases every segment a process holds. So the half-built
 mapping costs page tables the space teardown already walks. Unwinding by hand
 would be a second teardown path for the same frames.
+
+**Every mapping of a run reads the record through `segment_frame`, and this
+is the one place that reads it.** `segment_grow` used to map its new piece
+from the base it had just allocated, which is the same frames by a shorter
+road. It was also the reason a control on `segment_frame` came back clean.
+A wrong answer for a grown run's tail reached no mapping, because the one
+mapping of that tail never asked. It asks now, so the record and the tables
+agree through one accessor, and `sweep` is what checks the accessor.
 */
 @(private = "file")
-map_run :: proc "contextless" (p: ^Process, s: ^Segment) -> bool {
-	for i in 0 ..< s.pages {
+map_run :: proc "contextless" (p: ^Process, s: ^Segment, from: int = 0) -> bool {
+	for i in from ..< s.pages {
 		at := s.va + uintptr(i) * uintptr(arch.PAGE_SIZE)
 		if mem.map_user(p.space, at, segment_frame(s, i), s.flags, 1) != .None {
 			return false
@@ -1216,13 +1225,15 @@ segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i6
 	}
 
 	// Published first, because `segment_frame` is what the mapping below reads
-	// the new frames out of. A failure puts it straight back.
+	// the new frames out of. A failure puts it straight back. It also unmaps
+	// whatever part of the tail `map_run` installed before it stopped, so no
+	// table entry names a frame the free below hands on.
 	s.pieces[s.piece_n] = Run_Piece{base = base, pages = added}
 	s.piece_n += 1
 	s.pages = want
 
-	at := s.va + uintptr(want - added) * page
-	if mem.map_user(p.space, at, base, s.flags, added) != .None {
+	if !map_run(p, s, want - added) {
+		_ = mem.unmap_user(p.space, s.va + uintptr(want - added) * page, added)
 		s.piece_n -= 1
 		s.pages = want - added
 		mem.free_pages(base, added)

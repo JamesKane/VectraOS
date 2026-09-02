@@ -136,11 +136,25 @@ READER_BUFFER :: 8 // Byte offset 64, which is where the read lands
 /*
 Where `anon` keeps its answers, and what each one is a claim about.
 
-Eight cells, in the order the program fills them. `ZERO` and `BACK` are the
+Eleven cells, in the order the program fills them. `ZERO` and `BACK` are the
 two that read memory rather than a return value. The first says the run
 arrived clean. The second says the far end is mapped, and not only the near
 one. `KEPT` is the fork rule, read after the parent waits for the child that
 overwrote its own copy.
+
+`GROWN`, `TAIL` and `SHRUNK` are `segbrk`, asked of the second run. The run
+grows by four pages. The program stores the last word of the new tail, reads
+it back, and gives two of the four pages back. What that leaves is a run of
+two pieces, which is the shape `sweep` exists to check. The store into the
+tail is the one line that faults if the grow lied.
+
+`GO` is the kernel's, and the program waits on it between the second ask and
+the grow. The allocator hands out adjacent runs, so a grow that follows an
+ask with nothing between lands on the frames right after the run's block. A
+`segment_frame` that reads the tail out of the first piece is then right by
+luck. The test takes one frame while the program waits, so the grown piece
+cannot be adjacent and the luck runs out. The wait is bounded the way `spin`'s
+is, so a kernel that never answers ends the program rather than the boot.
 
 `ANON_PATTERN` is what the parent stores and `ANON_CHILD_MARK` is what the
 child stores over it. Two values rather than one, so a `KEPT` that is wrong
@@ -154,6 +168,10 @@ ANON_HUGE :: 5
 ANON_NONE :: 6
 ANON_KEPT :: 7
 ANON_STATUS :: 8
+ANON_GROWN :: 9
+ANON_TAIL :: 10
+ANON_SHRUNK :: 11
+ANON_GO :: 12
 
 ANON_PATTERN :: u64(0x5749_4E44_5749_4E44) // WINDWIND
 ANON_CHILD_MARK :: u64(0x0BAD_0BAD_0BAD_0BAD)
@@ -190,6 +208,11 @@ MAPPER_ADDR :: 2
 MAPPER_AGAIN :: 3
 MAPPER_BAD_FD :: 4
 MAPPER_STREAM :: 5
+// `segbrk` asked of the second attach, which is a card and not a run of
+// anonymous memory. `docs/USER.md` recorded the kind check as a rule with no
+// caller to test it, and this is the program written to ask the wrong
+// question.
+MAPPER_BRK :: 6
 
 BINDER_BOUND :: 1
 BINDER_OPENED :: 2
@@ -724,8 +747,9 @@ exits with a status that says so.
 
 `anon` is the one that reaches memory no file serves. It asks for half a
 megabyte and reads the first word before it writes anything. Then it stores a
-pattern at both ends of the run. Then it asks twice more, with arithmetic the
-kernel must refuse. Then it forks.
+pattern at both ends of the run. Then it asks again, grows that second run by
+four pages, writes the last word of the tail, and gives two pages back. Then it
+asks twice more, with arithmetic the kernel must refuse. Then it forks.
 
 The child asks for a run of its own and writes into it. Then it checks that the
 run it *inherited* still reads as its parent left it. That is the claim that a
@@ -2022,6 +2046,13 @@ vectra_user_mapper:
 	movq $$21, %rax
 	syscall
 	movq %rax, 24(%rbx)
+	movq %rax, %r15
+
+	leaq 0x2000(%r15), %rsi
+	movq %r15, %rdi
+	movq $$23, %rax
+	syscall
+	movq %rax, 48(%rbx)
 
 	movq $$99, %rdi
 	movq $$21, %rax
@@ -2075,6 +2106,32 @@ vectra_user_anon:
 	movq $$22, %rax
 	syscall
 	movq %rax, 32(%rbx)
+	movq %rax, %r14
+
+	movq $$400000000, %rcx
+54:
+	cmpq $$0, 96(%rbx)
+	jne 55f
+	decq %rcx
+	jnz 54b
+55:
+	leaq 0x4000(%r14,%rbp,1), %rsi
+	movq %r14, %rdi
+	movq $$23, %rax
+	syscall
+	movq %rax, 72(%rbx)
+
+	leaq 0x4000(%r14,%rbp,1), %rcx
+	movabsq $$0x57494E4457494E44, %rax
+	movq %rax, -8(%rcx)
+	movq -8(%rcx), %rax
+	movq %rax, 80(%rbx)
+
+	leaq 0x2000(%r14,%rbp,1), %rsi
+	movq %r14, %rdi
+	movq $$23, %rax
+	syscall
+	movq %rax, 88(%rbx)
 
 	movq $$0x40000000, %rdi
 	movq $$22, %rax
