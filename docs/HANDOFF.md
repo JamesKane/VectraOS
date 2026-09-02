@@ -388,124 +388,20 @@ on write.
 
 ### Standing gaps
 
-Each of these exists and is incomplete, rather than absent, and each is named
-in the code it lives in. What makes them work rather than orientation is the
-design question attached to each.
+One live gap is left here. It exists and is incomplete rather than absent, and
+is named in the code it lives in. What makes it work rather than orientation is
+the design question attached to it.
 
-- ~~**A read/write sleeping lock.**~~ Retired. `kernel/sync/rwlock.odin` is
-  Plan 9's `RWlock` rule for rule, served in arrival order, and
-  `Namespace.lock` and `Mount_Point.lock` are it, taken where `chan.c` takes
-  `pg->ns` and `Mhead.lock`. A union search holds the mount head for reading
-  across its messages, a `bind` waits for it, and `Mount_Point.generation` is
-  gone. The design questions had Plan 9's answers: arrival order, and yes, a
-  waiting writer blocks an arriving reader. See `docs/SYNC.md`.
 - **Priority inheritance.** A lock or a rendezvous goes to the best *waiter*,
   but a low-priority *holder* still delays a high-priority waiter for as long
   as it holds. It has not bitten, because nothing runs at realtime. Plan 9
   never had it either, which is an argument about cost rather than about
   correctness.
-- ~~**A worker per blocked request.**~~ Retired. `devfs`'s `WORKERS` is
-  `mnt.MAX_REQUESTS + 1`, a worker for every request slot and one spare for the
-  flush. Every read can park without waiting for a worker, and the eighth read
-  no longer stalls behind the seventh. It is Plan 9's thread per request, made
-  cheap by a transport that bounds requests to eight. `verify_worker_bound`
-  fills every slot and proves both halves, and two controls fail it. See
-  `docs/DEVFS.md`.
-- ~~**A union listing whose cookie is not a position.**~~ Retired. Each
-  member carries a monotonic id assigned at `bind`, and the cookie names the
-  id rather than the position, which is `kernel/srv`'s treatment. A member
-  removed mid-listing no longer shifts the ones after it. The id follows the
-  never-reuse rule below, refusing a `bind` at exhaustion rather than
-  wrapping. `kernel/verify_vfs.odin` removes a member mid-listing and requires
-  every remaining name. See `docs/NAMESPACE.md`.
-- ~~**Enforce the `open` flag on a fid.**~~ Retired. Every server's `Tlopen`
-  sets the flag, its `Twalk` refuses a set one with `EBUSY`, and its `Tread`
-  and `Treaddir` require it with `EINVAL`. A pipe end is born open at
-  `Tattach`. The audit was `chan_clone`, which walks `c.fid`, and nothing in
-  the kernel clones an open chan, so the walk rule broke no correct path. Two
-  test sites that read a fid without opening it were the only callers it
-  caught. `kernel/verify_vfs.odin` checks both refusals, and `docs/NAMESPACE.md`
-  argues it.
-- ~~**An interrupt context `sync.can_sleep` knows about.**~~ Retired. The trap
-  dispatcher brackets every top half with an interrupt-depth counter, `arch`
-  exposes it as `in_interrupt`, and `can_sleep` reads both it and the spinlock
-  count. A park in an interrupt handler is a named stop now, not a silent hang.
-  `kernel/verify_sync.odin` raises a probe interrupt and checks `can_sleep` is
-  false on its stack. See `docs/SYNC.md`.
-- ~~**A process that cannot be stopped from outside.**~~ Retired. `user.end`
-  sets Plan 9's `procctl` word on the process and wakes it. The door and the
-  tick both read the word before any handler, so the process ends at its
-  next boundary whatever it registered. `user.stop` is that and the
-  collection. `destroy` still refuses a running process, and rightly. See
-  `docs/USER.md`.
-- ~~**A flaky heap check in the draw server's teardown.**~~ Retired. The
-  `leaked 1` was a `Mount_Point` from a dead process's namespace, and the
-  draw server's teardown was only where timing first put it. `unload` took a
-  process's descriptor table with a test-then-release while the reaper thread
-  took it with an exchange, so a process that faulted or was noted could have
-  its table released twice: the second release, running after the first had
-  given the pool slot back, closed the chans of whichever process had been
-  handed that slot since. `unload` now takes the table with the same
-  exchange. Found by looping the boot under host load with a per-procedure
-  heap reading, which is the shape of hunt `docs/TESTING.md` argues for; the
-  race took one boot in forty here, and hung the machine outright when its
-  window was widened on purpose. `heap_stats` also reads under the heap lock
-  now, because a snapshot taken class by class with interrupts on could
-  report a heap that never existed.
-- ~~**A boot that stops in the draw server's tests, one in thirty or so.**~~
-  Retired. The wire's reader thread parked for ever on a pipe the counted
-  release had already zeroed. `wire_release` cleared the pipe's pin before
-  closing the posted end, so when the far process was already gone that
-  close was the last one and reclaimed the slot -- after waking the reader,
-  but before the reader ran to re-read the flag the wake was about. It
-  parked again on a pipe that looked open, and the test's `unmount_path`
-  parked in `wire_join` behind it. The pin now outlives the close, and
-  `unpin` reclaims after the join, when nothing parked is left to wake. See
-  `docs/PIPE.md`. Found by looping the boot under host load with QEMU's gdb
-  stub open, then walking every kernel thread's saved trap frame from lldb
-  once a boot wedged; `docs/TESTING.md` describes the walk. The wire
-  self-test had the same shape and parked its scripted server's thread on
-  every boot, unreported; `wire_down` joins before its last close now.
-- ~~**Three more parks with no bound, of the shape above, found by review
-  and not yet reproduced.**~~ Retired. `kernel/verify_wire.odin`'s posted
-  scenes reach all three from a scripted far side. Two were real and are
-  fixed. `remove` closes its own chan before it drops the name's stake, and
-  `wire_flush` waits with a bound and poisons the wire when it runs out. The
-  third was a review false alarm, and the scene says so.
 
-  `srv.mount` also answers `ENXIO` for a pipe end with no wire now, which
-  the document claimed and the pipe device never did. See `docs/PIPE.md`.
-- ~~**The reaper's test-then-exchange.**~~ Retired. The pid is the
-  generation. Every collector names the process it saw. `collect` reads the
-  pid again after its claim, and gives back a claim on a slot that changed
-  tenants. `hangup_dead` puts a table it took from a newborn
-  straight back. On one core nothing runs between the two exchanges, which is the
-  sentence a second core retires. See `docs/USER.md`.
-- ~~**A system call with `IF` still set for four instructions.**~~ Retired.
-  `arch.syscall_masks_interrupts` reads `SFMASK` and confirms `IF` is one of
-  the bits it clears, and the syscall self-test checks it. The control that removed `IF` from `SFMASK` fails the check, and on one boot
-  it doubled into a `#DF`, the bug the check guards against. See
-  `docs/TESTING.md`.
-- ~~**A killed process holds its descriptors until something reaps it.**~~
-  Retired. A reaper thread parked on `exit_rendez` releases the descriptor
-  group of anything whose thread has gone, so a faulted server hangs up and the
-  client parked on it is answered. The record stays for a parent's `wait`,
-  which is Plan 9's `pexit`. See `docs/USER.md`.
-- ~~**The address bump never comes down.**~~ Retired: `map_reserve` searches
-  the process's own segment list for the lowest free span rather than bumping a
-  counter. A range `segdetach` freed is then a hole the next `segalloc` of that
-  size or less lands in. `Process.map_next` is gone, and the list is the only
-  record of what is taken. `verify_anon` detaches a run with a live run above it
-  and requires the next ask back in the hole, which a bump would step over. See
-  `docs/USER.md`, and note `segfree` is still deferred above with its reason.
-- ~~**Counters that are finite, and never-reuse the reason they must be.**~~
-  Retired. `next_fid` was the last one that wrapped, and it refuses at the
-  ceiling now, the way pids, `/srv` ids and union member ids do. A fid names an
-  identity, so a wrap would hand a new file the fid of one still in use.
-  `alloc_fid` is a compare-and-swap that stops at the last fid and returns
-  `NOFID`, and every caller turns that into `EMFILE`. `kernel/vfs/verify.odin`
-  winds a session to the ceiling and requires the refusal and the `EMFILE`. See
-  `sys/vectra9/session.odin`.
+The gaps this section used to carry are closed. Fourteen retirements were
+pruned from here. A closed gap belongs in the design doc that argues the fix
+and in the commit that made it, not on a forward list. `git log` and the
+`See ...` pointer each retirement left behind are the record.
 
 ### SMP, when it is wanted
 
@@ -533,21 +429,10 @@ where they live:
 
 ### Smaller things worth doing when convenient
 
-- ~~A stack backtrace on the panic screen.~~ Retired. The kernel keeps no
-  frame pointer, so there is no `rbp` chain to follow. The panic screen scans
-  the stack for values in the kernel's own text and prints them as probable
-  return addresses, each line marked `maybe`. `kernel/verify_sync.odin` scans
-  the live stack from a chain of calls and checks it finds them, because the
-  display itself only shows on a real fault. See `kernel/panic.odin`.
 - Make `check_base_revision()` a hard stop rather than a warning.
 - `servers/kbdfs` has its own copy of the scancode translation and it answers
   bytes, so the arrow keys reach `/dev/cons` and not `/kbd`. Nothing consumes
   `/kbd` for them yet, which is why this is a note rather than an item.
-- ~~An idle-time reaper for *threads*.~~ Retired. The idle thread reaps, so a
-  dead thread's stack comes back within a tick of its exit with nothing
-  spawning. The self-tests still call `sched.reap()` by hand before a heap
-  reading, on purpose. A bracket that depends on the idle thread's turn is
-  not a bracket. `kernel/sched/verify.odin` says so beside the check.
 - Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging, trap and scheduling
   interfaces. `cpu_class` is the one that pays off immediately — a big.LITTLE
   part reporting three classes makes the capacity arithmetic do real work.
