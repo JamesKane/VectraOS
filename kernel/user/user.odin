@@ -930,9 +930,21 @@ unload :: proc(p: ^Process) {
 	// mount table with one reference left and no way to reach it. A process
 	// that exited deliberately already detached its table, and this release
 	// finds nothing -- one release per holder, whichever paths ran.
-	if p.fdt != nil {
-		fdt_release(p.fdt)
-		p.fdt = nil
+	//
+	// Taken with an exchange, not a test, because the reaper thread takes it
+	// the same way and the two race for real. A process that faulted or was
+	// noted still holds its table when its ending wakes both this collector
+	// and the reaper. The reaper usually gets there first. When it does not,
+	// a test-then-release here left the pointer standing for as long as the
+	// closes took, and the reaper found it and released the table a second
+	// time. The first release had already given the pool slot back, so the
+	// second closed whichever process had been handed that slot since --
+	// three chans out from under a live process, and a namespace mount point
+	// whose count never came back to zero. It showed up as one 64-byte
+	// object leaked, one boot in twenty or so, first in the draw server's
+	// teardown and then wherever timing put it.
+	if t := intrinsics.atomic_exchange(&p.fdt, nil); t != nil {
+		fdt_release(t)
 	}
 	if p.ns != nil {
 		vfs.ns_close(p.ns)

@@ -100,6 +100,13 @@ Heap_Stats :: struct {
 }
 
 heap_stats :: proc "contextless" () -> Heap_Stats {
+	// Under the lock, so the snapshot is of one moment. Every class's count
+	// is read separately, and an allocation on another thread landing between
+	// two of those reads -- a tick is enough -- would report a heap that never
+	// existed, one object off in either direction.
+	guard := sync.acquire(&heap_lock)
+	defer sync.release(&heap_lock, guard)
+
 	s: Heap_Stats
 	for c, i in classes {
 		s.class_sizes[i] = c.object_size
