@@ -305,11 +305,39 @@ fork_node :: proc(sh: ^Shell, n: ^Node) -> i64 {
 		return pid
 	}
 	if pid == 0 {
-		sh.interactive = false
-		run(sh, n)
-		libuser.exits(status(sh))
+		run_in_child(sh, n)
 	}
 	return pid
+}
+
+/*
+run_in_child is a forked child's whole life: run the node, say the status.
+
+A node that is one program -- `sleep 100 &`, a pipeline's stage, a
+backquote's body -- is exec'd in this process rather than forked a second
+time, as Plan 9's rc does. The pid the parent holds is then the program's
+own, so `kill $apid` reaches it, and a pipeline of n stages is n processes
+rather than 2n.
+*/
+run_in_child :: proc(sh: ^Shell, n: ^Node) -> ! {
+	sh.interactive = false
+	set_pid(sh)
+	if n != nil && n.kind == .Simple {
+		argv := eval_args(sh, n.list[:])
+		if !sh.flag_error && len(argv) > 0 && argv[0] != "exec" && !is_builtin(argv[0]) && find_fn(sh, argv[0]) < 0 {
+			if !apply_redirs(sh, n.redirs[:]) {
+				libuser.exits("redirection")
+			}
+			if sh.flags['x'] {
+				libfmt.fprint(2, "%s\n", join(sh, argv, " "))
+			}
+			exec_program(sh, argv)
+			libuser.exits("exec")
+		}
+		sh.flag_error = false
+	}
+	run(sh, n)
+	libuser.exits(status(sh))
 }
 
 /*
@@ -333,18 +361,14 @@ run_pipe :: proc(sh: ^Shell, n: ^Node) {
 		libuser.dup(w, n.pipe_left)
 		libuser.close(r)
 		libuser.close(w)
-		sh.interactive = false
-		run(sh, n.a)
-		libuser.exits(status(sh))
+		run_in_child(sh, n.a)
 	}
 	right := libuser.rfork(FORK_FLAGS)
 	if right == 0 {
 		libuser.dup(r, n.pipe_right)
 		libuser.close(r)
 		libuser.close(w)
-		sh.interactive = false
-		run(sh, n.b)
-		libuser.exits(status(sh))
+		run_in_child(sh, n.b)
 	}
 	libuser.close(r)
 	libuser.close(w)
@@ -375,9 +399,7 @@ backquote :: proc(sh: ^Shell, body: ^Node) -> []string {
 		libuser.dup(w, 1)
 		libuser.close(r)
 		libuser.close(w)
-		sh.interactive = false
-		run(sh, body)
-		libuser.exits(status(sh))
+		run_in_child(sh, body)
 	}
 	libuser.close(w)
 	out := make([dynamic]u8, 0, 256, sh.temp)

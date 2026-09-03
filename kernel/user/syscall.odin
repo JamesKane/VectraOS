@@ -109,6 +109,7 @@ SYS_CREATE :: abi.SYS_CREATE
 SYS_MOUNT :: abi.SYS_MOUNT
 SYS_REMOVE :: abi.SYS_REMOVE
 SYS_UNMOUNT :: abi.SYS_UNMOUNT
+SYS_GETPID :: abi.SYS_GETPID
 SYS_PIPE :: abi.SYS_PIPE
 SYS_NOTE :: abi.SYS_NOTE
 SYS_RFORK :: abi.SYS_RFORK
@@ -329,6 +330,12 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		result = sys_remove(uintptr(a0), int(a1))
 	case SYS_UNMOUNT:
 		result = sys_unmount(uintptr(a0), int(a1), uintptr(a2), int(a3))
+	case SYS_GETPID:
+		if p := current(); p != nil {
+			result = i64(p.pid)
+		} else {
+			result = -i64(vectra9.ESRCH)
+		}
 	case SYS_PIPE:
 		result = sys_pipe()
 	case SYS_NOTE:

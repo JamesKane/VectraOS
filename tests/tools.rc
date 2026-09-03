@@ -61,6 +61,11 @@ rm /srv/memfs
 check bind /mnt/tests `{bind /lib /mnt && ls /mnt && unmount /lib /mnt}
 check mount refused `{mount /srv/nope /mnt || echo refused}
 check sleep woke `{sleep 0 && echo woke}
+check ns '#b /bin' `{ns | grep '^bind #b /bin' | sed 's/^bind //'}
+
+# -- Processes, through /proc -------------------------------------------------
+check ps rc `{ps | grep ' rc$' | tail -n 1 | sed 's/.* //'}
+check kill 'sys: killed' `{sleep 100 & kill $apid; wait $apid; echo $status}
 
 if(~ $#bad 0) exit $#ok' ok'
 exit 'failed '^$"bad

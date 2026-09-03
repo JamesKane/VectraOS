@@ -116,6 +116,7 @@ other would be the failure.
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, from ring 3 too |
 | `kernel/env/` | `#e` at `/env`: a process's environment as a directory of variables, copied or shared by `rfork` |
 | `servers/memfs/` | The in-memory filesystem the tools work in until the disk |
+| `kernel/procfs/` | `#p` at `/proc`: a directory per process, for `ps`, `kill` and `ns` |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, a top half that may not park |
 | `kernel/user/` | Ring 3, `syscall`/`sysret`, a process that owns what it opens, and the spawn that makes more |
 | `sys/abi`, `sys/libuser` | The call numbers both sides include, and the ring 3 library: syscalls and a 9P serve loop |
@@ -260,6 +261,7 @@ kernel/
   devfs/                `#c` at /dev
   srv/                  `#s` at /srv
   env/                  `#e` at /env
+  procfs/               `#p` at /proc
   user/                 Ring 3, the system calls, a process, the image
                         loader, and `#b` at /bin
 sys/
@@ -278,7 +280,8 @@ apps/
   rc/                   Plan 9's shell, in Odin; docs/RC.md
 cmd/                    The tools: echo cat ls pwd mkdir rm cp mv cmp wc tee
                         tail grep sed sort uniq tr basename cleanname test
-                        seq sleep read env bind mount unmount; docs/CMD.md
+                        seq sleep read env bind mount unmount ps kill ns;
+                        docs/CMD.md
 docs/                   One document per subsystem, plus HANDOFF and TESTING
 tools/
   genfont.py            Bakes a host TTF into the console font

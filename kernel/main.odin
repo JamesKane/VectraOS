@@ -28,6 +28,7 @@ import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mem"
 import "kernel:pipe"
+import "kernel:procfs"
 import "kernel:sched"
 import "kernel:srv"
 import "kernel:sync"
@@ -244,8 +245,10 @@ kmain :: proc "c" () {
 				verify_srv()
 			}
 			// The environment device holds nothing until a process writes
-			// it; the user suite is what exercises it, from ring 3.
+			// it; the user suite is what exercises it, from ring 3. The
+			// process device is exercised the same way, by ps, kill and ns.
 			init_env()
+			init_proc()
 
 			// The pipe needs nothing above the scheduler, and the wire needs
 			// the pipe. Both come before userland, because a posted pipe is
@@ -1313,6 +1316,20 @@ init_env :: proc() -> bool {
 	libodin.put_uint(&sink, u64(env.VALUE_MAX))
 	libodin.put_str(&sink, " bytes")
 	emit(&klog, .Ok, &sink)
+	return true
+}
+
+// init_proc brings up `#p` and binds it at `/proc`: a directory per live
+// process, with status, ns, note and ctl in it. See `docs/PROC.md`.
+init_proc :: proc() -> bool {
+	if err := procfs.init(vfs.boot_namespace); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "proc: #p would not come up -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
+	log_line(&klog, .Ok, "proc #p bound at /proc, a directory per process: status, ns, note, ctl")
 	return true
 }
 

@@ -51,10 +51,24 @@ Mount_Flag :: enum {
 
 Mount_Flags :: bit_set[Mount_Flag]
 
+// How much of a bind's two names a member keeps, for `/proc/n/ns`. Longer
+// names are cut, and the line printed says so with a trailing `...`.
+MOUNT_NAME_MAX :: 96
+
 Mount :: struct {
 	chan:  ^Chan, // The root of the mounted tree
 	flags: Mount_Flags,
 	next:  ^Mount,
+
+	// The two names the bind was made with, as given, and whether it was a
+	// `mount` of a served connection rather than a `bind` of a name. Kept
+	// only so `ns_describe` can write the line back out; nothing resolves
+	// through them.
+	source:     [MOUNT_NAME_MAX]u8,
+	source_len: u8,
+	target:     [MOUNT_NAME_MAX]u8,
+	target_len: u8,
+	mounted:    bool,
 
 	// A monotonic id, assigned at `bind` from the mount point's counter and
 	// never reused. It is what a union listing's cookie names, so a member
@@ -236,6 +250,9 @@ bind :: proc(
 	over: ^Chan,
 	order: Mount_Order = .Replace,
 	flags: Mount_Flags = {},
+	source_name := "",
+	target_name := "",
+	mounted := false,
 ) -> Errno {
 	if ns == nil || source == nil || over == nil {
 		return vectra9.EINVAL
@@ -283,6 +300,9 @@ bind :: proc(
 	}
 	m.chan = member_chan
 	m.flags = flags
+	m.source_len = u8(copy(m.source[:], source_name))
+	m.target_len = u8(copy(m.target[:], target_name))
+	m.mounted = mounted
 
 	/*
 	Everything above this point sent messages. Nothing below it does.
@@ -638,7 +658,7 @@ bind_path :: proc(
 	}
 	defer chan_close(over)
 
-	return bind(ns, source, over, order, flags)
+	return bind(ns, source, over, order, flags, source_path, target_path)
 }
 
 /*
@@ -668,7 +688,64 @@ mount_device :: proc(
 	}
 	defer chan_close(over)
 
-	return bind(ns, source, over, order, flags)
+	return bind(ns, source, over, order, flags, spec, target_path)
+}
+
+/*
+ns_describe writes a namespace as the `bind` and `mount` lines that would
+rebuild it, one member per line, into `out`, and answers the length. The
+first member of a mount point is a plain `bind`, the rest `bind -a`, so
+replaying the lines in order gives the same union in the same order.
+`-c` follows for a member that may create. A name longer than a member
+kept ends in `...`.
+*/
+ns_describe :: proc(ns: ^Namespace, out: []u8) -> int #no_bounds_check {
+	if ns == nil {
+		return 0
+	}
+	n := 0
+	put :: proc "contextless" (out: []u8, n: int, s: string) -> int #no_bounds_check {
+		n := n
+		for i in 0 ..< len(s) {
+			if n >= len(out) {
+				return n
+			}
+			out[n] = s[i]
+			n += 1
+		}
+		return n
+	}
+	sync.rlock(&ns.lock)
+	for bucket in 0 ..< MOUNT_BUCKETS {
+		for mp := ns.mounts[bucket]; mp != nil; mp = mp.next {
+			sync.rlock(&mp.lock)
+			first := true
+			for m := mp.members; m != nil; m = m.next {
+				n = put(out, n, m.mounted ? "mount" : "bind")
+				if !first {
+					n = put(out, n, " -a")
+				}
+				if .Create in m.flags {
+					n = put(out, n, " -c")
+				}
+				n = put(out, n, " ")
+				n = put(out, n, string(m.source[:m.source_len]))
+				if int(m.source_len) == MOUNT_NAME_MAX {
+					n = put(out, n, "...")
+				}
+				n = put(out, n, " ")
+				n = put(out, n, string(m.target[:m.target_len]))
+				if int(m.target_len) == MOUNT_NAME_MAX {
+					n = put(out, n, "...")
+				}
+				n = put(out, n, "\n")
+				first = false
+			}
+			sync.runlock(&mp.lock)
+		}
+	}
+	sync.runlock(&ns.lock)
+	return n
 }
 
 // unmount_path removes one member from a mount point, or every member when

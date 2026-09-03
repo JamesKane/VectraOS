@@ -101,7 +101,7 @@ clone :: proc(s: string) -> string {
 @(private = "file")
 exportable :: proc(name: string) -> bool {
 	switch name {
-	case "*", "0", "status", "apid", "bqstatus":
+	case "*", "0", "status", "apid", "bqstatus", "pid":
 		return false
 	}
 	if _, numeric := atoi(name); numeric {

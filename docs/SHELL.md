@@ -136,12 +136,17 @@ program.
 
 ### Step 4: `#p`
 
-`kernel/proc`, about 600 lines. `/proc/n/status` (name, pid, state, the
+`kernel/procfs`, about 600 lines. `/proc/n/status` (name, pid, state, the
 cells of the process record the self-test already reads), `/proc/n/ns`
 (the mount table as `bind`/`mount` lines, which `ns` prints and a script
 can replay), `/proc/n/note` (a write is `note`, so `kill` is `echo kill >
 /proc/n/note`), `/proc/n/ctl` for `kill` and `stop`. `ps`, `kill` and `ns`
 are then three tools of the ordinary kind.
+
+**Where it stands.** Done, as `docs/PROC.md` describes, less `stop`, which
+wants a stopped state the scheduler does not have. The vfs mount table
+grew the names each bind was made with so `ns` has something to print, and
+`getpid` arrived so `rc` has `$pid`.
 
 ### Step 5: the disk
 

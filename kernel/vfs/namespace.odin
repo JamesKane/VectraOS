@@ -217,6 +217,11 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 				copy_m.chan = chan_incref(m.chan)
 				copy_m.flags = m.flags
 				copy_m.id = m.id
+				copy_m.source = m.source
+				copy_m.source_len = m.source_len
+				copy_m.target = m.target
+				copy_m.target_len = m.target_len
+				copy_m.mounted = m.mounted
 				if tail == nil {
 					copy_mp.members = copy_m
 				} else {

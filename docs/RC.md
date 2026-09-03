@@ -38,6 +38,10 @@ descriptor table, the environment shared. A simple command that names a
 program forks, and the child applies its redirections and execs. A
 pipeline forks a child per stage, and the parent closes both pipe ends
 before it waits, so the reader sees the end when the writer is gone. A
+forked child whose whole node is one program execs it in place rather than
+forking again, as Plan 9's rc does: `sleep 100 &` leaves `$apid` naming
+the sleep itself, so `kill $apid` reaches it, and a pipeline of n stages is
+n processes. A
 backquote forks one child with its output into a pipe, reads the pipe to
 its end, and splits on `$ifs`. `&` forks and does not wait; `$apid` is the
 child. `@` is a subshell.

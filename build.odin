@@ -96,6 +96,9 @@ user_programs := [?]User_Program {
 	{name = "ls", path = "cmd/ls"},
 	{name = "grep", path = "cmd/grep"},
 	{name = "sed", path = "cmd/sed"},
+	{name = "ps", path = "cmd/ps"},
+	{name = "kill", path = "cmd/kill"},
+	{name = "ns", path = "cmd/ns"},
 }
 
 /*

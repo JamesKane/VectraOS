@@ -6694,7 +6694,7 @@ serial log, one `ok name` per tool, and its exit word is `N ok` or
 added to `cmd/` without a line in the script fails this check, which is
 the point.
 */
-TOOLS_EXPECTED :: 27
+TOOLS_EXPECTED :: 30
 
 verify_tools :: proc(r: ^Result) {
 	argv := new(Argv)

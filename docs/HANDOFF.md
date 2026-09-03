@@ -108,6 +108,7 @@ them could have come earlier:
     kernel/srv              a service can be named after the kernel was built
     kernel/env              a process can keep variables where its children find them
     servers/memfs           a program can make a file and find it again
+    kernel/procfs           a process can be seen, and ended, by name
     the I/O APIC            a device can interrupt, rather than only the timer
     an address space        two threads can mean different memory by one name
     ring 3                  a thread can run where it cannot damage the kernel
@@ -251,6 +252,7 @@ per directory:
 | `docs/ENV.md` | `kernel/env/` — `#e` at `/env`, one group per process, the root that means whoever asks | Reading or setting a variable, adding a per-process device, or wondering what `rfork(RFENVG)` copies |
 | `docs/RC.md` | `apps/rc/` — the shell: the grammar by hand, a walked tree, forks that carry on from a node | Adding a builtin, a redirection, or a word form; writing a tool the shell runs; or wondering why a shell script is the slowest line in the user suite |
 | `docs/CMD.md` | `cmd/` — the tools, `servers/memfs`, `sys/libregex`, and the script that checks them | Writing a tool, adding its line to `tests/tools.rc`, or wanting a file to write to before the disk |
+| `docs/PROC.md` | `kernel/procfs/` — `#p` at `/proc`: status, ns, note, ctl, through five doors into the process table | Reading a process from a program, killing one, or printing a namespace |
 | `docs/DRAW.md` | The draw protocol, written before its code, and everything the screen grew after it: the window, the compositor, the chrome vocabulary and the one palette (`sys/libdraw`, `sys/libpal`) | Building the draw server, its client library, the fb mapping, or anything that draws in either ring |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
@@ -655,6 +657,9 @@ kernel/
     env.odin            `#e` at /env: a group of variables per process, the
                         root that resolves to the caller, and what rfork's
                         RFENVG and RFCENVG do to a group
+  procfs/
+    proc.odin           `#p` at /proc: a directory per pid with status, ns,
+                        note and ctl, over kernel/user/procinfo.odin's doors
   user/
     user.odin           A process: a space, segments, a namespace forked from
                         the kernel's, a descriptor group, and the fault handler
@@ -747,7 +752,7 @@ apps/
                         docs/RC.md
 cmd/                    One package per tool, one binary each; docs/CMD.md
   echo cat ls pwd mkdir rm cp mv cmp wc tee tail grep sed sort uniq tr
-  basename cleanname test seq sleep read env bind mount unmount
+  basename cleanname test seq sleep read env bind mount unmount ps kill ns
 tools/
   genfont.py            TTF -> font_data.odin
   ste-lint.py           The ASD-STE100 checker; `build.odin -- lint` runs it

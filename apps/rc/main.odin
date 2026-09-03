@@ -112,6 +112,7 @@ main :: proc(args: []string) {
 	sh.argv = clone_list(rest)
 
 	import_env(sh)
+	set_pid(sh)
 
 	// The defaults, from the file in the image.
 	boot: Input
@@ -179,6 +180,16 @@ run_input :: proc(sh: ^Shell, in_: ^Input) {
 			mem.dynamic_arena_free_all(&sh.arena)
 		}
 	}
+}
+
+// set_pid is `$pid`, this process's own, set at startup and again in every
+// child the shell forks, which is a different process with the same tables.
+set_pid :: proc(sh: ^Shell) {
+	buf: [24]u8
+	one := make([]string, 1, sh.temp)
+	one[0] = itoa(sh, int(libuser.getpid()))
+	_ = buf
+	set_var(sh, "pid", one)
 }
 
 // show_prompt writes `$prompt(which)` for an interactive read.

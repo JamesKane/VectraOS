@@ -105,6 +105,11 @@ mount :: proc "contextless" (source: string, target: string, order: u64) -> i64 
 	)
 }
 
+// getpid is this process's pid, which names it under /proc.
+getpid :: proc "contextless" () -> u64 {
+	return u64(raw1(abi.SYS_GETPID, 0))
+}
+
 // unmount undoes a bind or mount at `target`. An empty `source` undoes every
 // one there.
 unmount :: proc "contextless" (source: string, target: string) -> i64 {

@@ -559,7 +559,7 @@ mount :: proc(
 	}
 	defer vfs.chan_close(over)
 
-	return vfs.bind(ns, source, over, order, flags)
+	return vfs.bind(ns, source, over, order, flags, path, target, true)
 }
 
 /*
