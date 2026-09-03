@@ -151,6 +151,7 @@ Result :: struct {
 	answered:      u64, // 9P requests a process served over a wire
 	pinned:        int, // Heap objects the wires still pin -- zero since the counted release
 	leaked:        int, // Heap objects the run did not give back
+	shell_ticks:   int, // How long the shell took over its script
 }
 
 @(private = "file")
@@ -467,6 +468,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_rfork(&r)
 	verify_abi(&r)
+	verify_rc(&r)
 
 	// -- And a process that replaces itself -----------------------------------
 
@@ -6598,3 +6600,83 @@ verify_abi :: proc(r: ^Result) {
 
 @(private = "file") abi_said: [EXITS_MAX]u8
 @(private = "file") abi_said_len: int
+
+/*
+verify_rc runs the shell on a script and reads what the script says.
+
+The script is `docs/SHELL.md` step 2's proof in one line: a function, a
+`for` over a list, a backquote, a pipeline through two programs, a `while`,
+a `switch`, `~`, `$#` and `$"`, and an `exit` whose word is everything the
+script computed. The word is checked here, so the whole chain -- rc's
+parser, its forks, `echo`, `cat`, the pipe and `await` -- is one line of
+the boot log. What rc writes to the console lands in the serial log
+beside it.
+*/
+RC_SCRIPT :: "fn twice { echo $1 $1 }; x=(); for(i in a b c) x=($x `{twice $i}); " +
+	"y=`{echo hello world | cat}; z=(); while(! ~ $#z 3) z=($z x); " +
+	"switch($#x){ case 6; s=six; case *; s=$#x }; echo rc: $x $y $s $#z; " +
+	"exit $\"x^' '^$\"y^' '^$s^' '^$#z"
+
+RC_EXPECT :: "a a b b c c hello world six 3"
+
+verify_rc :: proc(r: ^Result) {
+	argv := new(Argv)
+	if !check(r, argv != nil, "a record for the shell's arguments") {
+		return
+	}
+	defer free(argv)
+	names := [?]string{"rc", "-c", RC_SCRIPT}
+	check(r, argv_from(argv, names[:]), "holds rc -c and a script")
+
+	p, serr := spawn_path(nil, "/bin/rc", SPAWN_NS_COPY, argv)
+	if !check(r, serr == vfs.OK && p != nil, "the shell starts on a script") {
+		return
+	}
+	r.programs += 1
+	// Twenty forks and execs, each a copy of the shell's memory, on an
+	// emulated core: a few hundred ticks, ten times what one program takes,
+	// and over eight hundred before the ring 3 heap started small.
+	started := sched.ticks()
+	came_back := wait(p, PATIENCE * 25)
+	rc_ticks = int(sched.ticks() - started)
+	r.shell_ticks = rc_ticks
+	if check(r, came_back, "and comes back") {
+		rc_said_len = p.exit.text_len
+		for i in 0 ..< rc_said_len {
+			rc_said[i] = p.exit.text[i]
+		}
+		said := string(rc_said[:rc_said_len])
+		if p.exit.deliberate && said == RC_EXPECT {
+			sink := libodin.sink_from(rc_diag[:])
+			libodin.put_str(&sink, "and a function, a loop, a pipeline, a switch and a while said what they should, in ")
+			libodin.put_uint(&sink, u64(rc_ticks))
+			libodin.put_str(&sink, " ticks")
+			check(r, true, libodin.str(&sink))
+		} else {
+			// Everything the record knows, because a shell that says nothing
+			// has many ways to have got there.
+			sink := libodin.sink_from(rc_diag[:])
+			libodin.put_str(&sink, "rc said `")
+			libodin.put_str(&sink, said)
+			libodin.put_str(&sink, p.exit.deliberate ? "` and exited" : "` and faulted, kind ")
+			if !p.exit.deliberate {
+				libodin.put_uint(&sink, u64(p.exit.kind))
+				libodin.put_str(&sink, " vector ")
+				libodin.put_uint(&sink, p.exit.vector)
+				libodin.put_str(&sink, " ip ")
+				libodin.put_hex(&sink, u64(p.exit.ip))
+				libodin.put_str(&sink, " address ")
+				libodin.put_hex(&sink, u64(p.exit.address))
+				libodin.put_str(&sink, " sp ")
+				libodin.put_hex(&sink, u64(p.exit.sp))
+			}
+			check(r, false, libodin.str(&sink))
+		}
+	}
+	finish(r, p, "and the shell is taken down")
+}
+
+@(private = "file") rc_said: [EXITS_MAX]u8
+@(private = "file") rc_said_len: int
+@(private = "file") rc_diag: [256]u8
+@(private = "file") rc_ticks: int

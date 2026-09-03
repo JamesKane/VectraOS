@@ -25,7 +25,7 @@ A modular operating system in Odin. Two ideas define it:
 
 Layout — `kernel/` (arch, mem, sched, vfs, drivers), `sys/` (libodin, libuser,
 libdraw, vectra9), `servers/` (ramfs, consrv, kbdfs, eiafs, intuition), `apps/`
-(terminal). Three architectures via Limine: `amd64` first and furthest,
+(terminal, rc), `cmd/` (echo, cat). Three architectures via Limine: `amd64` first and furthest,
 `arm64` and `riscv64` booting the same `kmain` on QEMU's `virt` board since
 September 2026. `docs/PORTS.md` says where each port stands.
 
@@ -248,6 +248,7 @@ per directory:
 | `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention, the raw framebuffer and the screen's divert | Adding a device file, adding a `ctl` file, writing a server whose reads park, wondering why `/dev/cons` has two locks, or asking who owns the glass |
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
 | `docs/ENV.md` | `kernel/env/` — `#e` at `/env`, one group per process, the root that means whoever asks | Reading or setting a variable, adding a per-process device, or wondering what `rfork(RFENVG)` copies |
+| `docs/RC.md` | `apps/rc/` — the shell: the grammar by hand, a walked tree, forks that carry on from a node | Adding a builtin, a redirection, or a word form; writing a tool the shell runs; or wondering why a shell script is the slowest line in the user suite |
 | `docs/DRAW.md` | The draw protocol, written before its code, and everything the screen grew after it: the window, the compositor, the chrome vocabulary and the one palette (`sys/libdraw`, `sys/libpal`) | Building the draw server, its client library, the fb mapping, or anything that draws in either ring |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
@@ -732,6 +733,12 @@ servers/
 apps/
   terminal/main.odin    Lines in from /dev/cons, glyphs out through a /srv/draw
                         mount of its own -- the tree's first ring 3 mount
+  rc/                   Plan 9's shell: lex, parse, tree, word, exec, builtin,
+                        var, status, input, main, and rcmain in the image;
+                        docs/RC.md
+cmd/
+  echo/main.odin        The first two tools, because a pipeline needs two ends
+  cat/main.odin
 tools/
   genfont.py            TTF -> font_data.odin
   ste-lint.py           The ASD-STE100 checker; `build.odin -- lint` runs it

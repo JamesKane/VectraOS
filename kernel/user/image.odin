@@ -328,14 +328,38 @@ when #exists("../../build/user/terminal.vx") {
 	TERMINAL_IMAGE: []u8
 }
 
+when #exists("../../build/user/rc.vx") {
+	@(private = "file")
+	RC_IMAGE := #load("../../build/user/rc.vx")
+} else {
+	@(private = "file")
+	RC_IMAGE: []u8
+}
+
+when #exists("../../build/user/echo.vx") {
+	@(private = "file")
+	ECHO_IMAGE := #load("../../build/user/echo.vx")
+} else {
+	@(private = "file")
+	ECHO_IMAGE: []u8
+}
+
+when #exists("../../build/user/cat.vx") {
+	@(private = "file")
+	CAT_IMAGE := #load("../../build/user/cat.vx")
+} else {
+	@(private = "file")
+	CAT_IMAGE: []u8
+}
+
 @(private = "file")
-bin_nodes: [14]vfs.Static_Node
+bin_nodes: [17]vfs.Static_Node
 
 // The rows `/bin` actually publishes -- `bin_nodes` less any compiled image
 // a fresh tree has not built yet. Package-scope, because `static_init`
 // borrows the slice for the life of the machine.
 @(private = "file")
-bin_live: [14]vfs.Static_Node
+bin_live: [17]vfs.Static_Node
 
 @(private = "file")
 bin_tree: vfs.Static_Tree
@@ -388,6 +412,9 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 		{name = "eiafs", parent = 0, data = string(EIAFS_IMAGE)},
 		{name = "intuition", parent = 0, data = string(INTUITION_IMAGE)},
 		{name = "terminal", parent = 0, data = string(TERMINAL_IMAGE)},
+		{name = "rc", parent = 0, data = string(RC_IMAGE)},
+		{name = "echo", parent = 0, data = string(ECHO_IMAGE)},
+		{name = "cat", parent = 0, data = string(CAT_IMAGE)},
 	}
 
 	/*

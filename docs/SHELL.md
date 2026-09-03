@@ -98,6 +98,15 @@ file, in the image first and on the disk after step 5.
 Proves: a script with a pipeline, a loop and a function runs from the boot
 self-test and its output matches.
 
+**Where it stands.** Done, as `docs/RC.md` describes, with `echo` and `cat`
+from step 3 pulled forward because the pipeline check needs two ends. Not
+yet: `<{cmd}`, the `` `` `` backquote, `fn#name` in `/env`, notes, and an
+interactive session, which waits for step 8 to give rc a console. `await`
+grew a pid of zero, any child, for `wait` with nothing named. The user
+stack is sixteen pages, because a shell recursing through `core:fmt` on
+four faulted, and the ring 3 heap starts at 64 KiB rather than 256,
+because every fork copies it.
+
 ### Step 3: the tools
 
 `cmd/`, one package per command, built like the six servers are. The first

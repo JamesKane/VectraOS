@@ -1,0 +1,7 @@
+# rcmain: what rc runs before its first command. In the image now, on the
+# disk later. Every default yields to what /env already held.
+if(~ $#path 0) path=(. /bin)
+if(~ $#home 0) home=/
+if(~ $#ifs 0) ifs=(' ' '	' '
+')
+if(~ $#prompt 0) prompt=('% ' '	')

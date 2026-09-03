@@ -106,7 +106,7 @@ the machine.
 // carries the runtime's type tables, and the first one that did was 300 KiB
 // of text.
 MAX_PROGRAM_FRAMES :: 128
-STACK_PAGES2 :: 4
+STACK_PAGES2 :: 16
 STACK_VA2 :: STACK_TOP - uintptr(STACK_PAGES2 * arch.PAGE_SIZE)
 
 /*

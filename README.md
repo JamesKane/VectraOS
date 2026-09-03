@@ -120,7 +120,7 @@ other would be the failure.
 | `sys/abi`, `sys/libuser` | The call numbers both sides include, and the ring 3 library: syscalls and a 9P serve loop |
 | `servers/ramfs` | The first compiled server: an Odin file tree in ring 3 |
 
-`servers/` has its first resident, and `apps/` is still empty. `kernel/devfs`
+`servers/` has five residents, and `apps/` has the terminal and `rc`. `kernel/devfs`
 stays in the kernel for the moment. A console server must wait on the
 keyboard and its clients at once, and a ring 3 process cannot wait on two
 things yet. The port also wants a note to stop a runaway server, and raw
@@ -270,7 +270,11 @@ sys/
 servers/
   ramfs/                The first compiled server; devfs, netfs, intuition
                         are still to come
-apps/                   terminal, filemgr, tracker — not yet written
+apps/
+  terminal/             Lines in from /dev/cons, drawn through /srv/draw
+  rc/                   Plan 9's shell, in Odin; docs/RC.md
+cmd/
+  echo/ cat/            The first tools
 docs/                   One document per subsystem, plus HANDOFF and TESTING
 tools/
   genfont.py            Bakes a host TTF into the console font

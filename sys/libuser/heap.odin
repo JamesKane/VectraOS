@@ -20,7 +20,9 @@ package libuser
 
 import "base:runtime"
 
-HEAP_START :: 256 * 1024
+// The first run, and the least a program pays to fork: every anonymous
+// page is copied into a child, so the heap starts small and doubles.
+HEAP_START :: 64 * 1024
 
 @(private = "file")
 Block :: struct {

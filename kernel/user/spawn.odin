@@ -274,12 +274,29 @@ note ended gives the note's text, which is the word Plan 9's `await` gives
 too. The record is read before `collect` clears it.
 */
 await_pid :: proc(caller_pid: u64, pid: u64, out: []u8) -> (n: int, err: vfs.Errno) {
-	child := find_child(caller_pid, pid)
-	if child == nil {
-		return 0, vectra9.ECHILD
-	}
-	if !sync.sleep_for(&exit_rendez, exit_done, child, u64(WAIT_PATIENCE)) {
-		return 0, vectra9.EAGAIN
+	child: ^Process
+	if pid == 0 {
+		// Any child, as Plan 9's `await` is: the first that has ended, or a
+		// wait for one to. A shell's `wait` with nothing named is this.
+		if !has_child(caller_pid) {
+			return 0, vectra9.ECHILD
+		}
+		caller := caller_pid
+		if !sync.sleep_for(&exit_rendez, any_child_done, &caller, u64(WAIT_PATIENCE)) {
+			return 0, vectra9.EAGAIN
+		}
+		child = ended_child(caller_pid)
+		if child == nil {
+			return 0, vectra9.EAGAIN
+		}
+	} else {
+		child = find_child(caller_pid, pid)
+		if child == nil {
+			return 0, vectra9.ECHILD
+		}
+		if !sync.sleep_for(&exit_rendez, exit_done, child, u64(WAIT_PATIENCE)) {
+			return 0, vectra9.EAGAIN
+		}
 	}
 
 	// The word first, so the space goes in only when a word follows it: a
@@ -306,8 +323,43 @@ await_pid :: proc(caller_pid: u64, pid: u64, out: []u8) -> (n: int, err: vfs.Err
 		libodin.put_str(&sink, said)
 	}
 	n = len(libodin.str(&sink))
-	_ = collect(child, pid)
+	_ = collect(child, child.pid)
 	return n, vfs.OK
+}
+
+// has_child says whether any live process names `caller_pid` as its parent.
+@(private = "file")
+has_child :: proc "contextless" (caller_pid: u64) -> bool #no_bounds_check {
+	guard := sync.acquire(&table_lock)
+	defer sync.release(&table_lock, guard)
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if p.live && p.parent == caller_pid {
+			return true
+		}
+	}
+	return false
+}
+
+// ended_child is a child of `caller_pid` that has ended, or nil.
+@(private = "file")
+ended_child :: proc "contextless" (caller_pid: u64) -> ^Process #no_bounds_check {
+	guard := sync.acquire(&table_lock)
+	defer sync.release(&table_lock, guard)
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if p.live && p.parent == caller_pid && intrinsics.volatile_load(&p.exit.done) {
+			return p
+		}
+	}
+	return nil
+}
+
+// any_child_done is the rendezvous condition behind `await(0)`: the caller's
+// pid is behind the pointer, and the answer is whether a child of it ended.
+@(private = "file")
+any_child_done :: proc "contextless" (arg: rawptr) -> bool {
+	return ended_child((^u64)(arg)^) != nil
 }
 
 // stack_segment is a process's stack, for the staging of its arguments: the

@@ -67,6 +67,9 @@ user_programs := [?]User_Program {
 	{name = "intuition", path = "servers/intuition"},
 	{name = "terminal", path = "apps/terminal"},
 	{name = "abitest", path = "tests/abi"},
+	{name = "rc", path = "apps/rc"},
+	{name = "echo", path = "cmd/echo"},
+	{name = "cat", path = "cmd/cat"},
 }
 
 /*
