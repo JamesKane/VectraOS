@@ -317,6 +317,12 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 		shared := s.kind == .Text || s.kind == .Device || s.kind == .Shared || (writable_data && share)
 
 		if shared {
+			// A sharer sees the segment's frames as they are, so none of
+			// them may still be a copy-on-write child's too: a write by
+			// either would move the frame out from under the other.
+			if share && !resolve_cow(parent, s) {
+				return false
+			}
 			segment_incref(s)
 			if !proc_add_segment(child, s) {
 				return false
@@ -324,13 +330,16 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 			for j in 0 ..< s.pages {
 				va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
 				frame := segment_frame(s, j)
+				if frame == 0 {
+					continue
+				}
 				if mem.map_user(child.space, va, frame, s.flags, 1) != .None {
 					return false
 				}
 				// A run segment is hundreds of pages and the alias table
 				// holds a handful. Nothing stages through a card or through
 				// memory a program asked for after it started, in any case.
-				if !segment_is_run(s.kind) {
+				if !s.run {
 					alias_frame(child, parent, frame, frame)
 				}
 			}
@@ -338,29 +347,21 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 		}
 
 		/*
-		A private copy of a run is one allocation and one walk, because a run
-		is contiguous at both ends.
+		A segment with one holder is copied on write: the child's record
+		names the parent's frames, both map them read-only, and the first
+		write to any page by either side copies that page and no other.
+		This is Plan 9's `dupseg`, and the reason a fork costs nothing until
+		something is written.
 
-		The frames come out zeroed and then take a complete overwrite, which is
-		a wasted pass this deliberately keeps. `segment_run` is the one place
-		that builds this shape. A second constructor that skipped the zeroing
-		would be the one a later caller reaches for by mistake.
+		A segment with several holders -- shared under `RFMEM` and now
+		forked without it -- is copied eagerly instead. Its holders keep
+		writing through the same frames, and a copy-on-write reference held
+		against frames that change is not a snapshot. That case is rare
+		and the copy is what it always was.
 		*/
-		if segment_is_run(s.kind) {
-			fresh := segment_run(s.va, s.pages, s.flags, s.kind)
-			if fresh == nil || !proc_add_segment(child, fresh) {
+		if s.refs > 1 {
+			if !copy_segment(child, parent, s) {
 				return false
-			}
-			for j in 0 ..< s.pages {
-				src := (cast([^]u8)mem.phys_to_virt(segment_frame(s, j)))[:arch.PAGE_SIZE]
-				dst := (cast([^]u8)mem.phys_to_virt(segment_frame(fresh, j)))[:arch.PAGE_SIZE]
-				for k in 0 ..< arch.PAGE_SIZE {
-					dst[k] = src[k]
-				}
-				va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
-				if mem.map_user(child.space, va, segment_frame(fresh, j), s.flags, 1) != .None {
-					return false
-				}
 			}
 			continue
 		}
@@ -369,25 +370,95 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 		if fresh == nil || !proc_add_segment(child, fresh) {
 			return false
 		}
+		read_only := s.flags - {.Write}
 		for j in 0 ..< s.pages {
-			frame, ok := mem.alloc_page_zeroed()
-			if !ok {
-				return false
-			}
+			frame := segment_frame(s, j)
 			if !segment_add_frame(fresh, frame) {
-				mem.free_page(frame)
 				return false
 			}
-			src := (cast([^]u8)mem.phys_to_virt(s.frames[j]))[:arch.PAGE_SIZE]
-			dst := (cast([^]u8)mem.phys_to_virt(frame))[:arch.PAGE_SIZE]
-			for k in 0 ..< arch.PAGE_SIZE {
-				dst[k] = src[k]
+			if frame == 0 {
+				continue
 			}
+			mem.frame_share(frame)
 			va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
-			if mem.map_user(child.space, va, frame, s.flags, 1) != .None {
+			if mem.map_user(child.space, va, frame, read_only, 1) != .None {
 				return false
 			}
-			alias_frame(child, parent, s.frames[j], frame)
+			if !s.run {
+				alias_frame(child, parent, frame, frame)
+			}
+		}
+		// The parent's own pages go read-only too, and every core that
+		// translates through the parent is told.
+		if mem.protect_user(parent.space, s.va, s.pages, read_only) != .None {
+			return false
+		}
+		mem.shoot(mem.space_root(parent.space), s.va, s.pages)
+		cow_forks += 1
+	}
+	return true
+}
+
+// copy_segment is the eager copy: fresh frames, the bytes moved, the
+// child's mapping made. What every fork did before copy-on-write, kept for
+// the segment several processes already share.
+@(private = "file")
+copy_segment :: proc(child: ^Process, parent: ^Process, s: ^Segment) -> bool {
+	fresh := segment_new(s.va, s.flags, s.kind)
+	if fresh == nil || !proc_add_segment(child, fresh) {
+		return false
+	}
+	for j in 0 ..< s.pages {
+		from := segment_frame(s, j)
+		if from == 0 {
+			if !segment_add_frame(fresh, 0) {
+				return false
+			}
+			continue
+		}
+		frame, ok := mem.alloc_page_zeroed()
+		if !ok {
+			return false
+		}
+		if !segment_add_frame(fresh, frame) {
+			mem.free_page(frame)
+			return false
+		}
+		src := (cast([^]u8)mem.phys_to_virt(from))[:arch.PAGE_SIZE]
+		dst := (cast([^]u8)mem.phys_to_virt(frame))[:arch.PAGE_SIZE]
+		for k in 0 ..< arch.PAGE_SIZE {
+			dst[k] = src[k]
+		}
+		va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
+		if mem.map_user(child.space, va, frame, s.flags, 1) != .None {
+			return false
+		}
+		if !s.run {
+			alias_frame(child, parent, from, frame)
+		}
+	}
+	return true
+}
+
+/*
+resolve_cow makes every page of a segment the process's own, copying the
+ones a copy-on-write child still holds, so a sharer joining now under
+`RFMEM` sees frames that will not move. A run with a shared frame becomes
+a list first, because a run's frames cannot be replaced one at a time.
+*/
+@(private = "file")
+resolve_cow :: proc(p: ^Process, s: ^Segment) -> bool {
+	if s.kind == .Device || s.kind == .Text {
+		return true
+	}
+	for j in 0 ..< s.pages {
+		frame := segment_frame(s, j)
+		if frame == 0 || mem.frame_holders(frame) <= 1 {
+			continue
+		}
+		va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
+		if !cow_copy(p, s, j, va) {
+			return false
 		}
 	}
 	return true

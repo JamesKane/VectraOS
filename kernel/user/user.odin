@@ -476,6 +476,15 @@ on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
 
 	if thread := sched.current(); thread != nil {
 		if p := (^Process)(thread.user); p != nil {
+			// A page fault a program survives: a write to a page it holds
+			// under copy-on-write, or a page of its own that is not mapped
+			// yet. Fixed here, and the same instruction runs again.
+			if t.kind == .Page_Fault && t.user && p.space != nil {
+				bits := arch.fault_bits(t.kind, t.vector, t.error_code, t.user)
+				if fix_fault(p, t.fault_address, .Write in bits) {
+					return r
+				}
+			}
 			p.exit.kind = t.kind
 			p.exit.vector = t.vector
 			p.exit.error_code = t.error_code
@@ -501,6 +510,144 @@ on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
 	// so a woken waiter cannot run before this thread leaves the core.
 	sync.wakeup_all(&exit_rendez)
 	return sched.kill_current(r)
+}
+
+// What the fault handler did, for the boot line: forks that shared rather
+// than copied, pages copied on a write, and pages a process had to itself
+// that only needed the write bit back.
+cow_forks: int
+cow_copies: int
+cow_upgrades: int
+page_refills: int
+
+/*
+fix_fault is Plan 9's `fixfault` in miniature: the one kind of page fault a
+program survives, handled on the faulting thread's own stack in interrupt
+context, with spinlocks only.
+
+The page must be one of the process's segments, and must have a frame. A
+page that is mapped read-only where the segment says writable is a
+copy-on-write page: if the frame has another holder, a fresh frame takes a
+copy of it and the seat in the segment, and the old one loses a holder; if
+this process is the only holder left, the write bit simply comes back. A
+page the tables do not have at all is mapped to the frame the segment
+names. Anything else is a fault that ends the program, and the caller does
+that.
+
+Nothing here reaches another process. A copy-on-write frame is held by
+segments with one holder each -- `fork_segments` copies eagerly otherwise
+and `resolve_cow` runs before a share -- so the only mapping that changes is
+this process's, and it only widens, which no other core need be told.
+*/
+@(private)
+fix_fault :: proc "contextless" (p: ^Process, addr: uintptr, write: bool) -> bool {
+	s := segment_covering(p, addr)
+	if s == nil || s.kind == .Device {
+		return false
+	}
+	page := uintptr(arch.PAGE_SIZE)
+	va := addr & ~(page - 1)
+	j := int((va - s.va) / page)
+	cur := segment_frame(s, j)
+	if cur == 0 {
+		return false
+	}
+	flags, present := mem.permissions(p.space, va)
+	if !present {
+		mapped := s.flags
+		if mem.frame_holders(cur) > 1 {
+			mapped -= {.Write}
+		}
+		page_refills += 1
+		return mem.map_user(p.space, va, cur, mapped, 1) == .None
+	}
+	if !write || .Write not_in s.flags || .Write in flags {
+		return false
+	}
+	if mem.frame_holders(cur) > 1 {
+		return cow_copy(p, s, j, va)
+	}
+	cow_upgrades += 1
+	return mem.protect_user(p.space, va, 1, s.flags) == .None
+}
+
+/*
+cow_copy gives page `j` of segment `s` a frame of this process's own: a
+copy of the shared one, put in its seat and mapped writable, the shared one
+losing a holder. A run becomes a list first. The staging aliases follow the
+frame, so a self-test reading a child's cell reads the child's copy.
+*/
+@(private)
+cow_copy :: proc "contextless" (p: ^Process, s: ^Segment, j: int, va: uintptr) -> bool {
+	cur := segment_frame(s, j)
+	if cur == 0 {
+		return false
+	}
+	if s.run && !segment_make_list(s) {
+		return false
+	}
+	fresh, ok := mem.alloc_page()
+	if !ok {
+		return false
+	}
+	src := (cast([^]u8)mem.phys_to_virt(cur))[:arch.PAGE_SIZE]
+	dst := (cast([^]u8)mem.phys_to_virt(fresh))[:arch.PAGE_SIZE]
+	for k in 0 ..< arch.PAGE_SIZE {
+		dst[k] = src[k]
+	}
+	if mem.remap_user(p.space, va, fresh, s.flags) != .None {
+		mem.free_page(fresh)
+		return false
+	}
+	segment_set_frame(s, j, fresh)
+	if p.data == cur {
+		p.data = fresh
+	}
+	if p.stack == cur {
+		p.stack = fresh
+	}
+	mem.free_page(cur)
+	cow_copies += 1
+	return true
+}
+
+// cow_prepare resolves every copy-on-write page in a range the kernel is
+// about to write on a process's behalf, as the process's own store would.
+@(private)
+cow_prepare :: proc "contextless" (p: ^Process, addr: uintptr, n: int) {
+	if p == nil || p.space == nil || n <= 0 || addr >= mem.USER_MAX {
+		return
+	}
+	page := uintptr(arch.PAGE_SIZE)
+	first := addr & ~(page - 1)
+	last := (addr + uintptr(n) - 1) & ~(page - 1)
+	for va := first; va <= last && va < mem.USER_MAX; va += page {
+		flags, present := mem.permissions(p.space, va)
+		if present && .Write not_in flags {
+			_ = fix_fault(p, va, true)
+		}
+	}
+}
+
+// own_data makes the data page the staging aliases name the process's own
+// before the kernel writes it through the alias.
+@(private)
+own_data :: proc "contextless" (p: ^Process) {
+	if p == nil || p.data == 0 || mem.frame_holders(p.data) <= 1 {
+		return
+	}
+	for i in 0 ..< p.seg_count {
+		s := p.segs[i]
+		if s == nil || s.run {
+			continue
+		}
+		for j in 0 ..< s.pages {
+			if segment_frame(s, j) == p.data {
+				_ = cow_copy(p, s, j, s.va + uintptr(j) * uintptr(arch.PAGE_SIZE))
+				return
+			}
+		}
+	}
 }
 
 /*
@@ -909,6 +1056,7 @@ set_cell :: proc "contextless" (p: ^Process, index: int, value: u64) {
 	if p == nil || p.data == 0 || index < 0 || index >= arch.PAGE_SIZE / size_of(u64) {
 		return
 	}
+	own_data(p)
 	words := cast([^]u64)mem.phys_to_virt(p.data)
 	intrinsics.volatile_store(&words[index], value)
 }
@@ -986,6 +1134,7 @@ set_bytes :: proc "contextless" (p: ^Process, offset: int, data: []u8) -> bool {
 	if p == nil || p.data == 0 || offset < 0 {
 		return false
 	}
+	own_data(p)
 	if offset + len(data) > arch.PAGE_SIZE {
 		return false
 	}

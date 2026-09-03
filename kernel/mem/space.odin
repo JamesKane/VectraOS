@@ -252,6 +252,43 @@ map_user :: proc "contextless" (
 }
 
 /*
+protect_user changes the flags on a run of mapped pages and keeps their
+frames: what a copy-on-write fork does to the parent's writable pages, and
+what a write fault undoes for one of them. The caller shoots when it
+narrowed the flags. A page that is not mapped is skipped, because the
+caller may be walking a segment with holes in it.
+*/
+protect_user :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages: int, flags: arch.Page_Flags) -> Error {
+	if space == nil || !user_span_ok(virt, pages) {
+		return .Not_Canonical
+	}
+	user := flags + {.User}
+	guard := sync.acquire(&space.lock)
+	defer sync.release(&space.lock, guard)
+	for i in 0 ..< pages {
+		va := virt + uintptr(i) * uintptr(arch.PAGE_SIZE)
+		if e := leaf_ptr(space, va); e != nil && arch.entry_present(e^) {
+			_ = reset_leaf(space, va, arch.entry_address(e^), user)
+		}
+	}
+	return .None
+}
+
+// remap_user points one mapped page at another frame with the flags given:
+// the copy a write fault made, put where the shared frame was.
+remap_user :: proc "contextless" (space: ^Address_Space, virt, phys: uintptr, flags: arch.Page_Flags) -> Error {
+	if space == nil || !user_span_ok(virt, 1) {
+		return .Not_Canonical
+	}
+	guard := sync.acquire(&space.lock)
+	defer sync.release(&space.lock, guard)
+	if !reset_leaf(space, virt, phys, flags + {.User}) {
+		return .Mapping_Conflict
+	}
+	return .None
+}
+
+/*
 unmap_user takes a run of pages out of a process's half, and is `map_user`'s
 inverse over the same bounds.
 

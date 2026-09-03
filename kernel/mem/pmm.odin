@@ -26,6 +26,16 @@ import "base:intrinsics"
 import "kernel:sync"
 
 @(private = "file") bitmap: []u8
+
+/*
+How many holders a frame has past the first: zero for a frame nobody
+shares, and one more per copy-on-write reference. A fork that shares a
+writable page rather than copying it adds one; a release takes one away,
+and only the last release gives the frame back. This is Plan 9's
+`Page.ref`, kept beside the bitmap rather than in a `Page` because there
+is no `Page`.
+*/
+@(private = "file") refs: []u16
 @(private = "file") frame_total: int // Frames the bitmap covers, holes included
 @(private = "file") frame_usable: int // Frames that were ever free
 @(private = "file") frame_free: int
@@ -170,7 +180,42 @@ pmm_init :: proc "contextless" (b: ^Boot_Memory) -> Error {
 	take(0)
 
 	hint = 0
+
+	// The share counts, one u16 per frame, in frames taken from the pool
+	// now that there is one. Zero means one holder.
+	ref_frames := int(page_count(u64(frame_total) * 2))
+	ref_home, ref_found := scan(0, frame_total, ref_frames)
+	if !ref_found {
+		return .Bitmap_Wont_Fit
+	}
+	for i in 0 ..< ref_frames {
+		take(ref_home + i)
+	}
+	refs = (cast([^]u16)phys_to_virt(uintptr(u64(ref_home) * PAGE_SIZE)))[:frame_total]
+	for i in 0 ..< frame_total {
+		refs[i] = 0
+	}
 	return .None
+}
+
+// frame_share is one more holder of a frame: a copy-on-write fork that
+// mapped it in a second process.
+frame_share :: proc "contextless" (phys: uintptr) #no_bounds_check {
+	guard := sync.acquire(&pmm_lock)
+	defer sync.release(&pmm_lock, guard)
+	frame := int(u64(phys) / PAGE_SIZE)
+	if frame >= 0 && frame < frame_total && refs != nil {
+		refs[frame] += 1
+	}
+}
+
+// frame_holders is how many hold a frame: one, or one more per share.
+frame_holders :: proc "contextless" (phys: uintptr) -> int #no_bounds_check {
+	frame := int(u64(phys) / PAGE_SIZE)
+	if frame < 0 || frame >= frame_total || refs == nil {
+		return 1
+	}
+	return int(refs[frame]) + 1
 }
 
 /*
@@ -358,6 +403,12 @@ free_pages :: proc "contextless" (phys: uintptr, count: int) {
 	for i in 0 ..< count {
 		f := frame + i
 		if f < frame_total {
+			// A shared frame loses a holder; the last holder's free is the
+			// one that gives it back.
+			if refs != nil && refs[f] > 0 {
+				refs[f] -= 1
+				continue
+			}
 			release(f)
 		} else {
 			untracked_frees += 1

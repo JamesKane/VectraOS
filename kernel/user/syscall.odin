@@ -1201,6 +1201,7 @@ sys_segattach :: proc(fd: int) -> i64 {
 	if seg == nil {
 		return -i64(vectra9.ENOMEM)
 	}
+	seg.run = true
 	seg.pieces[0] = Run_Piece{base = phys, pages = pages}
 	seg.piece_n = 1
 	seg.pages = pages
@@ -1439,6 +1440,18 @@ segment_shrink :: proc(p: ^Process, s: ^Segment, want: int) -> i64 {
 	its added pieces back first and then trims the one `segalloc` made, and a
 	run that never grew has only that one.
 	*/
+	if !s.run {
+		// The list shape: the tail's frames go back one at a time, and a
+		// hole was never anybody's.
+		for i in want ..< s.pages {
+			if f := segment_frame(s, i); f != 0 {
+				mem.free_page(f)
+				segment_set_frame(s, i, 0)
+			}
+		}
+		s.pages = want
+		return 0
+	}
 	left := gone
 	for left > 0 && s.piece_n > 0 {
 		piece := &s.pieces[s.piece_n - 1]
@@ -1479,24 +1492,37 @@ The new pages are mapped before the extent is published, so a failure leaves
 the segment exactly the size it was.
 */
 segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i64 {
-	if s.piece_n >= MAX_RUN_PIECES {
-		return -i64(vectra9.ENOMEM)
-	}
 	page := uintptr(arch.PAGE_SIZE)
 	added := want - s.pages
-
-	base, got := mem.alloc_pages_zeroed(added)
-	if !got {
-		return -i64(vectra9.ENOMEM)
+	base: uintptr
+	if s.run {
+		if s.piece_n >= MAX_RUN_PIECES {
+			return -i64(vectra9.ENOMEM)
+		}
+		got: bool
+		base, got = mem.alloc_pages_zeroed(added)
+		if !got {
+			return -i64(vectra9.ENOMEM)
+		}
+		s.pieces[s.piece_n] = Run_Piece{base = base, pages = added}
+		s.piece_n += 1
+		s.pages = want
+	} else {
+		// The list shape: a frame per page, appended.
+		for i in 0 ..< added {
+			f, got := mem.alloc_page_zeroed()
+			if !got || !segment_add_frame(s, f) {
+				if got {
+					mem.free_page(f)
+				}
+				for _ in 0 ..< i {
+					mem.free_page(segment_frame(s, s.pages - 1))
+					s.pages -= 1
+				}
+				return -i64(vectra9.ENOMEM)
+			}
+		}
 	}
-
-	// Published first, because `segment_frame` is what the mapping below reads
-	// the new frames out of. A failure puts it straight back. It also unmaps
-	// whatever part of the tail was installed before it stopped, so no table
-	// entry names a frame the free below hands on.
-	s.pieces[s.piece_n] = Run_Piece{base = base, pages = added}
-	s.piece_n += 1
-	s.pages = want
 
 	/*
 	Into every holder's tables, not only this process's.
@@ -1533,7 +1559,9 @@ segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i6
 			_ = mem.unmap_user_quiet(mapped[i].space, s.va + uintptr(from) * page, added)
 			roots[i] = mem.space_root(mapped[i].space)
 		}
-		s.piece_n -= 1
+		if s.run {
+			s.piece_n -= 1
+		}
 		s.pages = from
 	}
 	sync.release(&table_lock, guard)
@@ -1541,7 +1569,16 @@ segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i6
 		for i in 0 ..< n {
 			mem.shoot(roots[i], s.va + uintptr(from) * page, added)
 		}
-		mem.free_pages(base, added)
+		if s.run {
+			mem.free_pages(base, added)
+		} else {
+			for i in 0 ..< added {
+				if f := segment_frame(s, from + i); f != 0 {
+					mem.free_page(f)
+					segment_set_frame(s, from + i, 0)
+				}
+			}
+		}
 		return -i64(vectra9.ENOMEM)
 	}
 
@@ -1614,7 +1651,7 @@ sys_segdetach :: proc(addr: uintptr) -> i64 {
 		return -i64(vectra9.EINVAL)
 	}
 	s := p.segs[at]
-	if !segment_is_run(s.kind) {
+	if !segment_is_run(s) {
 		return -i64(vectra9.EINVAL)
 	}
 	if mem.unmap_user(p.space, s.va, s.pages) != .None {
@@ -1636,7 +1673,7 @@ sys_segdetach :: proc(addr: uintptr) -> i64 {
 proc_segment_at :: proc "contextless" (p: ^Process, addr: uintptr) -> ^Segment #no_bounds_check {
 	for i in 0 ..< p.seg_count {
 		s := p.segs[i]
-		if s == nil || !segment_is_run(s.kind) {
+		if s == nil || !segment_is_run(s) {
 			continue
 		}
 		span := uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
@@ -1772,6 +1809,10 @@ That asymmetry is the whole reason these two exist and `set_bytes` does not.
 */
 @(private = "file")
 copy_out :: proc "contextless" (addr: uintptr, src: []u8) -> bool {
+	// A page shared under copy-on-write is read-only in the tables until it
+	// is written, and this is a write. Resolve it first, as ring 3's own
+	// store would have.
+	cow_prepare(current(), addr, len(src))
 	if !reachable(addr, len(src), {.User, .Write}) {
 		return false
 	}

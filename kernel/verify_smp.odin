@@ -452,7 +452,7 @@ verify_smp :: proc() {
 		scheck(&r, mem.live_objects(mem.heap_stats()) == claim_heap, "with the heap where it was")
 	}
 
-	// -- Four cores log at once ----------------------------------------------
+		// -- Four cores log at once ----------------------------------------------
 
 	/*
 	Four writers, each formatting long lines and emitting them into a logger
@@ -494,21 +494,31 @@ verify_smp :: proc() {
 		before := sched.cpu_stats(on).shot
 
 		sent_at := sched.ticks()
+		/*
+		The fault is the proof, and the program survives it now: a page a
+		segment still names is refilled by the fault handler, as Plan 9's
+		`fixfault` would, and the program runs on. What the shootdown
+		reached is therefore counted rather than mourned -- one more fault
+		in ring 3, one more refill -- and the program is taken down after.
+		*/
+		faults_before := user.stats().faults
+		refills_before := user.page_refills
 		scheck(&r, mem.unmap_user(prog.space, user.DATA_VA, 1) == .None, "this core unmapped its data page")
-		faulted := user.wait(prog, PATIENCE)
+		faulted := sync.await(fault_after, &faults_before, PATIENCE)
 		r.shot_ticks = sched.ticks() - sent_at
-		scheck(&r, faulted, "and the program ended inside the bound")
+		scheck(&r, faulted, "and the program faulted inside the bound")
 		scheck(
 			&r,
-			prog.exit.done && prog.exit.from_user && prog.exit.kind == .Page_Fault,
-			"by a page fault in ring 3, on the page this core unmapped",
+			user.page_refills > refills_before && !prog.exit.done,
+			"by a page fault in ring 3 the kernel refilled from its segment, and it ran on",
 		)
 		// Summed over the cores rather than read for `me`: the sender waits
 		// for the answer with interrupts on, and a thread that waits may be
 		// placed afresh on another core, which is what `me` stops naming.
 		scheck(&r, shoots_sent(r.cores) > shot_before, "which a core asked for")
 		scheck(&r, sched.cpu_stats(on).shot > before, "and the other core answered")
-		scheck(&r, user.destroy(prog), "and the program was taken down")
+		scheck(&r, user.end(prog, PATIENCE), "and the program, still running, was ended")
+		scheck(&r, user.destroy(prog), "and taken down")
 	}
 
 	// -- Nothing left behind --------------------------------------------------
@@ -556,4 +566,10 @@ report_smp :: proc(r: ^Smp_Result) {
 	libodin.put_str(&sink, " FAILED -- first: ")
 	libodin.put_str(&sink, r.first_failure)
 	emit(&klog, .Fault, &sink)
+}
+
+// fault_after is whether ring 3 has faulted since the count `arg` names.
+@(private = "file")
+fault_after :: proc "contextless" (arg: rawptr) -> bool {
+	return user.stats().faults > (^int)(arg)^
 }

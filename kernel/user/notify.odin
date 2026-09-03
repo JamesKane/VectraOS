@@ -93,6 +93,7 @@ deliver_note :: proc "contextless" (p: ^Process, frame: ^arch.Trap_Frame) -> boo
 
 	text_va := sp - NOTE_MAX
 	ureg_va := (text_va - size_of(arch.Trap_Frame)) & ~uintptr(15)
+	cow_prepare(p, ureg_va, int(sp - ureg_va))
 	if !reachable(ureg_va, int(sp - ureg_va), {.User, .Write}) {
 		return false
 	}

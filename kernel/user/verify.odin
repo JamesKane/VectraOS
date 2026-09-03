@@ -2793,10 +2793,13 @@ verify_rfork :: proc(r: ^Result) {
 	check(r, child.segs[0] == p.segs[0], "the child holds the parent's text segment itself")
 	check(r, child.segs[1] == p.segs[1], "and under RFMEM the data segment itself")
 	check(r, child.segs[2] != p.segs[2], "but never the stack segment")
+	// Its own once written: under copy on write a stack page the child has
+	// not touched is the parent's frame with two holders, and a page it has
+	// is a frame of its own.
 	check(
 		r,
-		child.segs[2].frames[0] != p.segs[2].frames[0],
-		"whose frames are the child's own",
+		child.segs[2].frames[0] != p.segs[2].frames[0] || mem.frame_holders(child.segs[2].frames[0]) > 1,
+		"whose frames are the child's own, or shared until it writes them",
 	)
 
 	shared_text := p.segs[0].frames[0]

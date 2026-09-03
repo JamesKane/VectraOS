@@ -93,7 +93,14 @@ predicate exists so each asks in one word, rather than naming the two kinds
 again. A sixth kind then joins the right shape in one edit.
 */
 @(private)
-segment_is_run :: proc "contextless" (kind: Segment_Kind) -> bool {
+segment_is_run :: proc "contextless" (s: ^Segment) -> bool {
+	return s != nil && s.run
+}
+
+// run_kind is whether a kind is born as a run: what `segalloc` and
+// `segattach` make. A fork may give the same kind the list shape.
+@(private)
+run_kind :: proc "contextless" (kind: Segment_Kind) -> bool {
 	return kind == .Device || kind == .Anon || kind == .Shared
 }
 
@@ -114,7 +121,13 @@ Segment :: struct {
 	refs:   int,
 	va:     uintptr,
 	pages:  int,
-	frames: [MAX_PROGRAM_FRAMES]uintptr,
+	// The list shape: one frame per page, from the heap, grown as pages
+	// arrive. Zero is a page with no frame yet -- a hole a fault fills.
+	frames: []uintptr,
+	// Which shape this is. A run keeps `pieces`; everything else keeps the
+	// list. A copy-on-write child of a run is a list, because its frames
+	// are the parent's one at a time and replaced one at a time.
+	run:    bool,
 
 	/*
 	The run, for the run shape alone -- see `segment_is_run`. Empty for every
@@ -313,7 +326,7 @@ sweep_leaf :: proc "contextless" (arg: rawptr, virt: uintptr, phys: uintptr, lev
 // kind. `proc_segment_at` asks the same question of the run kinds alone,
 // because `segbrk` may only be asked of those. A sweep has to answer for a
 // stack page too.
-@(private = "file")
+@(private)
 segment_covering :: proc "contextless" (p: ^Process, virt: uintptr) -> ^Segment #no_bounds_check {
 	for i in 0 ..< p.seg_count {
 		s := p.segs[i]
@@ -333,7 +346,7 @@ segment_covering :: proc "contextless" (p: ^Process, virt: uintptr) -> ^Segment 
 // see `sweep` for why not `segment_frame`.
 @(private = "file")
 segment_owns :: proc "contextless" (s: ^Segment, phys: uintptr) -> bool #no_bounds_check {
-	if segment_is_run(s.kind) {
+	if s.run {
 		for i in 0 ..< s.piece_n {
 			piece := s.pieces[i]
 			span := uintptr(piece.pages) * uintptr(arch.PAGE_SIZE)
@@ -343,7 +356,7 @@ segment_owns :: proc "contextless" (s: ^Segment, phys: uintptr) -> bool #no_boun
 		}
 		return false
 	}
-	for i in 0 ..< s.pages {
+	for i in 0 ..< min(s.pages, len(s.frames)) {
 		if s.frames[i] == phys {
 			return true
 		}
@@ -399,7 +412,7 @@ segment_frame :: proc "contextless" (s: ^Segment, page: int) -> uintptr #no_boun
 	if s == nil || page < 0 || page >= s.pages {
 		return 0
 	}
-	if segment_is_run(s.kind) {
+	if s.run {
 		// One loop over the pieces, which for a run that never grew is one
 		// iteration and the same arithmetic it always was.
 		at := page
@@ -411,18 +424,79 @@ segment_frame :: proc "contextless" (s: ^Segment, page: int) -> uintptr #no_boun
 		}
 		return 0
 	}
+	if page >= len(s.frames) {
+		return 0
+	}
 	return s.frames[page]
 }
 
-// segment_add_frame records one more frame as this segment's to free. False
-// means the segment is at the format bound, and the caller unwinds.
+/*
+segment_add_frame records one more frame as this segment's to free, growing
+the list when it is full. Zero records a hole. False means the heap would
+not give the list room, and the caller unwinds.
+
+The list doubles, so a segment that grows a page at a time -- a stack, a
+`segbrk` -- reallocates a logarithmic number of times. The old list is
+freed after the copy, from the heap the kernel runs on.
+*/
 @(private)
 segment_add_frame :: proc "contextless" (s: ^Segment, frame: uintptr) -> bool #no_bounds_check {
-	if s == nil || s.pages >= MAX_PROGRAM_FRAMES {
+	if s == nil || s.run {
 		return false
+	}
+	if s.pages >= len(s.frames) {
+		want := max(16, 2 * len(s.frames))
+		fresh, ok := mem.alloc(want * size_of(uintptr), align_of(uintptr))
+		if !ok {
+			return false
+		}
+		list := (cast([^]uintptr)fresh)[:want]
+		for i in 0 ..< s.pages {
+			list[i] = s.frames[i]
+		}
+		if s.frames != nil {
+			_ = mem.free(raw_data(s.frames))
+		}
+		s.frames = list
 	}
 	s.frames[s.pages] = frame
 	s.pages += 1
+	return true
+}
+
+// segment_set_frame replaces the frame behind one page of a list segment:
+// the copy a write fault made, in the seat the shared frame had.
+@(private)
+segment_set_frame :: proc "contextless" (s: ^Segment, page: int, frame: uintptr) #no_bounds_check {
+	if s != nil && !s.run && page >= 0 && page < len(s.frames) {
+		s.frames[page] = frame
+	}
+}
+
+/*
+segment_make_list turns a run into the list shape over the same frames, so
+one of them can be replaced. A run is contiguous by construction and stays
+so on the disk of the allocator; only the record changes, and every holder's
+mapping is exactly as true as it was. The pieces go back frame by frame at
+release, which `free_pages` does the same way.
+*/
+@(private)
+segment_make_list :: proc "contextless" (s: ^Segment) -> bool #no_bounds_check {
+	if s == nil || !s.run || s.kind == .Device {
+		return false
+	}
+	want := max(16, s.pages)
+	fresh, ok := mem.alloc(want * size_of(uintptr), align_of(uintptr))
+	if !ok {
+		return false
+	}
+	list := (cast([^]uintptr)fresh)[:want]
+	for i in 0 ..< s.pages {
+		list[i] = segment_frame(s, i)
+	}
+	s.frames = list
+	s.run = false
+	s.piece_n = 0
 	return true
 }
 
@@ -480,10 +554,12 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	arrived.
 	*/
 	kind := s.kind
+	run := s.run
 	pages := s.pages
 	pieces: [MAX_RUN_PIECES]Run_Piece = s.pieces
 	piece_n := s.piece_n
-	frames: [MAX_PROGRAM_FRAMES]uintptr = s.frames
+	frames := s.frames
+	s.frames = nil
 	for i in 0 ..< MAX_SEGMENTS {
 		if &segments[i].seg == s {
 			segments[i].used = false
@@ -493,19 +569,27 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	live_segments -= 1
 	sync.release(&seg_lock, guard)
 
-	switch kind {
-	case .Device:
+	if kind == .Device {
 		// Nothing. See above -- this is the branch with a control on it.
-	case .Anon, .Shared:
+		return
+	}
+	if run {
 		// The shared class is a run this allocator owns, like an anonymous
 		// one. What differs is who shares it and when, never who frees it.
 		for i in 0 ..< piece_n {
 			mem.free_pages(pieces[i].base, pieces[i].pages)
 		}
-	case .Text, .Data, .Stack:
-		for i in 0 ..< pages {
+		return
+	}
+	// A frame shared under copy-on-write comes back only from its last
+	// holder; `free_page` counts. A hole was never anybody's.
+	for i in 0 ..< min(pages, len(frames)) {
+		if frames[i] != 0 {
 			mem.free_page(frames[i])
 		}
+	}
+	if frames != nil {
+		_ = mem.free(raw_data(frames))
 	}
 }
 
@@ -527,7 +611,7 @@ segment_run :: proc "contextless" (
 	flags: arch.Page_Flags,
 	kind: Segment_Kind,
 ) -> ^Segment {
-	if pages <= 0 || !segment_is_run(kind) {
+	if pages <= 0 || !run_kind(kind) {
 		return nil
 	}
 	base, got := mem.alloc_pages_zeroed(pages)
@@ -541,6 +625,7 @@ segment_run :: proc "contextless" (
 	}
 	// Both before any caller can fail, so a release finds the whole run to
 	// give back rather than half of one.
+	s.run = true
 	s.pieces[0] = Run_Piece{base = base, pages = pages}
 	s.piece_n = 1
 	s.pages = pages

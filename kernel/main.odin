@@ -2138,6 +2138,11 @@ verify_user :: proc() {
 		libodin.put_uint(&sink, u64(result.tools_ticks))
 		libodin.put_str(&sink, ", a typed line on the glass in ")
 		libodin.put_uint(&sink, u64(result.echo_ticks))
+		libodin.put_str(&sink, ", ")
+		libodin.put_uint(&sink, u64(user.cow_forks))
+		libodin.put_str(&sink, " forks shared their pages and ")
+		libodin.put_uint(&sink, u64(user.cow_copies))
+		libodin.put_str(&sink, " pages were copied on a write")
 		libodin.put_str(
 			&sink,
 			", a typed line served by a process that forked",

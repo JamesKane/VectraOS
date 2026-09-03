@@ -440,6 +440,40 @@ map_mmio :: proc "contextless" (phys: uintptr, size: u64) -> (rawptr, Error) {
 }
 
 /*
+leaf_ptr finds the level-one entry a page is mapped by, or nil when the
+walk ends early: a missing branch, or a larger leaf above.
+*/
+@(private)
+leaf_ptr :: proc "contextless" (space: ^Address_Space, virt: uintptr) -> ^arch.Page_Table_Entry {
+	table := cast(^arch.Page_Table)phys_to_virt(space.root)
+	for l := arch.TABLE_LEVELS; l > 1; l -= 1 {
+		e := table[arch.table_index(virt, l)]
+		if !arch.entry_present(e) || arch.entry_is_leaf(e, l) {
+			return nil
+		}
+		table = cast(^arch.Page_Table)phys_to_virt(arch.entry_address(e))
+	}
+	return &table[arch.table_index(virt, 1)]
+}
+
+/*
+reset_leaf rewrites one page's entry: the same or another frame, with the
+flags given, and drops this core's translation. A caller that narrows the
+flags tells the other cores itself; one that widens them need not, because
+a stale narrower entry only faults again into the same handler.
+*/
+@(private)
+reset_leaf :: proc "contextless" (space: ^Address_Space, virt, phys: uintptr, flags: arch.Page_Flags) -> bool {
+	e := leaf_ptr(space, virt)
+	if e == nil || !arch.entry_present(e^) {
+		return false
+	}
+	e^ = arch.leaf_encode(phys, flags, 1)
+	arch.flush_page(virt)
+	return true
+}
+
+/*
 unmap_page clears one leaf and shoots down its translation.
 
 The tables it walked through are left in place. A free of an emptied table
