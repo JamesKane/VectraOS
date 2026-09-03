@@ -35,10 +35,14 @@ ROOT_NODES := [?]Static_Node {
 	{name = "env", parent = 0, dir = true},
 	{name = "lib", parent = 0, dir = true},
 	{name = "mnt", parent = 0, dir = true},
+	{name = "n", parent = 0, dir = true},
 	{name = "net", parent = 0, dir = true},
 	{name = "proc", parent = 0, dir = true},
 	{name = "srv", parent = 0, dir = true},
 	{name = "ws", parent = 0, dir = true},
+	// Where a mounted filesystem goes, by Plan 9 convention: `/n/esp` is the
+	// disk the machine booted from, once `fatfs` serves it.
+	{name = "esp", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

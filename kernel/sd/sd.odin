@@ -163,7 +163,7 @@ disk.
 @(private = "file")
 read_table :: proc(n: int) {
 	sector: [SECTOR]u8
-	if !read_sectors(n, 0, sector[:]) {
+	if read_bytes(n, 0, dev.disks[n].sectors, 0, sector[:]) != SECTOR {
 		return
 	}
 	if u16(sector[510]) | u16(sector[511]) << 8 != MBR_SIGNATURE {
@@ -219,129 +219,74 @@ le32 :: proc "contextless" (b: []u8) -> u32 #no_bounds_check {
 
 // -- Bytes on and off the disk ------------------------------------------------
 
-// read_sectors reads `len(out)/SECTOR` sectors from `first` into `out`
-// through a bounce page the device can reach. `out` must be sector-sized.
+/*
+transfer moves the sectors covering `[offset, offset+len(data))` of the
+window `[base, base+span)` between the disk and `data`, a page of sectors
+per request through a bounce page the device can reach. A read copies the
+slice out of the covering sectors; a write reads a partial first or last
+sector, changes the slice, and writes the run back, so nothing outside the
+range changes. Answers how many bytes moved, short at the window's end.
+
+A page per request rather than a sector, because a 9P read is eight
+kilobytes and a program loading over this path reads hundreds of them: one
+device round trip per page is eight times fewer than one per sector.
+*/
 @(private = "file")
-read_sectors :: proc(n: int, first: u64, out: []u8) -> bool #no_bounds_check {
+transfer :: proc(n: int, base, span: u64, offset: u64, data: []u8, write: bool) -> int #no_bounds_check {
+	limit := span * SECTOR
+	if offset >= limit || len(data) == 0 {
+		return 0
+	}
+	want := int(min(u64(len(data)), limit - offset))
+
 	phys, ok := mem.alloc_page()
 	if !ok {
-		return false
+		return 0
 	}
 	defer mem.free_page(phys)
 	bounce := (cast([^]u8)mem.phys_to_virt(phys))[:mem.PAGE_SIZE]
+	per_page := mem.PAGE_SIZE / SECTOR
 
 	done := 0
-	sector := first
-	for done < len(out) {
-		chunk := min(len(out) - done, mem.PAGE_SIZE)
-		chunk -= chunk % SECTOR
-		if chunk == 0 {
-			break
-		}
-		if !virtio.read(n, sector, bounce[:chunk]) {
-			return false
-		}
-		copy(out[done:done + chunk], bounce[:chunk])
-		done += chunk
-		sector += u64(chunk / SECTOR)
-	}
-	return done == len(out)
-}
-
-@(private = "file")
-write_sectors :: proc(n: int, first: u64, in_buf: []u8) -> bool #no_bounds_check {
-	phys, ok := mem.alloc_page()
-	if !ok {
-		return false
-	}
-	defer mem.free_page(phys)
-	bounce := (cast([^]u8)mem.phys_to_virt(phys))[:mem.PAGE_SIZE]
-
-	done := 0
-	sector := first
-	for done < len(in_buf) {
-		chunk := min(len(in_buf) - done, mem.PAGE_SIZE)
-		chunk -= chunk % SECTOR
-		if chunk == 0 {
-			break
-		}
-		copy(bounce[:chunk], in_buf[done:done + chunk])
-		if !virtio.write(n, sector, bounce[:chunk]) {
-			return false
-		}
-		done += chunk
-		sector += u64(chunk / SECTOR)
-	}
-	return done == len(in_buf)
-}
-
-/*
-read_bytes reads `len(out)` bytes from byte `offset` of the window `[base,
-base+span)` sectors, the general read a data or partition file wants. It
-reads the covering sectors into a scratch page and copies out the slice, so
-an unaligned offset or count is handled without the caller knowing sectors
-exist. Answers how many bytes it placed, which is short at the window's end.
-*/
-@(private = "file")
-read_bytes :: proc(n: int, base, span: u64, offset: u64, out: []u8) -> int #no_bounds_check {
-	limit := span * SECTOR
-	if offset >= limit {
-		return 0
-	}
-	want := min(u64(len(out)), limit - offset)
-
-	scratch: [SECTOR]u8
-	got := 0
 	pos := offset
-	for u64(got) < want {
+	for done < want {
 		sector := base + pos / SECTOR
 		within := int(pos % SECTOR)
-		if !read_sectors(n, sector, scratch[:]) {
-			break
-		}
-		take := min(SECTOR - within, int(want) - got)
-		copy(out[got:got + take], scratch[within:within + take])
-		got += take
-		pos += u64(take)
-	}
-	return got
-}
-
-/*
-write_bytes writes `len(in_buf)` bytes at byte `offset` of the window,
-read-modify-writing the two end sectors an unaligned range shares with its
-neighbours so nothing outside the range changes. Answers how many bytes it
-wrote, which is short at the window's end.
-*/
-@(private = "file")
-write_bytes :: proc(n: int, base, span: u64, offset: u64, in_buf: []u8) -> int #no_bounds_check {
-	limit := span * SECTOR
-	if offset >= limit {
-		return 0
-	}
-	want := min(u64(len(in_buf)), limit - offset)
-
-	scratch: [SECTOR]u8
-	put := 0
-	pos := offset
-	for u64(put) < want {
-		sector := base + pos / SECTOR
-		within := int(pos % SECTOR)
-		take := min(SECTOR - within, int(want) - put)
-		if within != 0 || take != SECTOR {
-			// A partial sector: read it, change the slice, write it back.
-			if !read_sectors(n, sector, scratch[:]) {
+		left := want - done
+		nsec := min(per_page, (within + left + SECTOR - 1) / SECTOR)
+		run := bounce[:nsec * SECTOR]
+		take := min(nsec * SECTOR - within, left)
+		if write {
+			// A partial sector at either end keeps its other bytes.
+			if within != 0 || take % SECTOR != 0 {
+				if !virtio.read(n, sector, run) {
+					break
+				}
+			}
+			copy(run[within:within + take], data[done:done + take])
+			if !virtio.write(n, sector, run) {
 				break
 			}
+		} else {
+			if !virtio.read(n, sector, run) {
+				break
+			}
+			copy(data[done:done + take], run[within:within + take])
 		}
-		copy(scratch[within:within + take], in_buf[put:put + take])
-		if !write_sectors(n, sector, scratch[:]) {
-			break
-		}
-		put += take
+		done += take
 		pos += u64(take)
 	}
-	return put
+	return done
+}
+
+@(private = "file")
+read_bytes :: proc(n: int, base, span: u64, offset: u64, out: []u8) -> int {
+	return transfer(n, base, span, offset, out, false)
+}
+
+@(private = "file")
+write_bytes :: proc(n: int, base, span: u64, offset: u64, in_buf: []u8) -> int {
+	return transfer(n, base, span, offset, in_buf, true)
 }
 
 // -- Nodes --------------------------------------------------------------------

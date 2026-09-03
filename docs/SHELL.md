@@ -195,6 +195,19 @@ Proves: `ls /n/esp/vectra/bin` names the tools the build staged, a file
 written by a tool is on the host after the machine stops, and the kernel
 image is smaller than it was.
 
+**Where it stands.** Done, as `docs/FATFS.md` describes. `servers/fatfs`
+reads and writes FAT12, FAT16 and FAT32 with long names over any partition
+file `#S` presents; the boot starts it, mounts `/srv/esp` at `/n/esp`, and
+binds `vectra/bin` before `/bin` and `vectra/lib` before `/lib`. The build
+stages every program and the library under `build/esp/vectra/` and the
+kernel's pak keeps only `fatfs` and `rc`: the image went from 3.0 MB to 2.1
+MB. The self-test lists forty programs off the disk and reads the test
+script back byte for byte; the script writes `hello disk` into `tmp/` and
+it is on the host when QEMU exits. Two things assumed `/bin` was one tree:
+`create_path` now honours the union's create member, and the user suite
+counts processes against the servers alive before it. `vvfat`'s partition
+is type 6, so the device is `/dev/sd0/dos`; `/dev/sd0/esp` is tried first.
+
 ### Step 7: a filesystem of Vectra's own
 
 `servers/vfs` -- the name is taken; call it `kfs` after Plan 9's -- on a

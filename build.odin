@@ -72,6 +72,7 @@ user_programs := [?]User_Program {
 	{name = "echo", path = "cmd/echo"},
 	{name = "cat", path = "cmd/cat"},
 	{name = "memfs", path = "servers/memfs"},
+	{name = "fatfs", path = "servers/fatfs"},
 	{name = "pwd", path = "cmd/pwd"},
 	{name = "mkdir", path = "cmd/mkdir"},
 	{name = "rm", path = "cmd/rm"},
@@ -474,17 +475,17 @@ write_pak :: proc() {
 	put_u32 :: proc(out: ^[dynamic]u8, v: u32) {
 		append(out, u8(v), u8(v >> 8), u8(v >> 16), u8(v >> 24))
 	}
-	put_u32(&out, u32(len(user_programs)))
+	put_u32(&out, u32(len(boot_programs)))
 	total := 0
-	for prog in user_programs {
-		img := fmt.tprintf("%s/%s.vx", USER_DIR, prog.name)
+	for name in boot_programs {
+		img := fmt.tprintf("%s/%s.vx", USER_DIR, name)
 		data, rerr := os.read_entire_file_from_path(img, context.allocator)
 		if rerr != nil {
 			die("cannot read %s", img)
 		}
-		put_u32(&out, u32(len(prog.name)))
+		put_u32(&out, u32(len(name)))
 		put_u32(&out, u32(len(data)))
-		append(&out, prog.name)
+		append(&out, name)
 		append(&out, ..data)
 		total += len(data)
 	}
@@ -492,8 +493,17 @@ write_pak :: proc() {
 	if werr := os.write_entire_file(pak, out[:]); werr != nil {
 		die("cannot write %s", pak)
 	}
-	step("%s holds %d programs, %d bytes", pak, len(user_programs), total)
+	step("%s holds %d programs, %d bytes", pak, len(boot_programs), total)
 }
+
+/*
+The programs the kernel carries in its own image: what it takes to reach
+the disk and run a script off it. Everything else in `user_programs` is
+staged into `build/esp/vectra/bin` and comes from the disk, through
+`fatfs`, at `/bin` -- see `docs/SHELL.md` step 6. A tool that only lives on
+the disk is a tool the kernel image does not grow by.
+*/
+boot_programs := [?]string{"fatfs", "rc"}
 
 /*
 The flags every ring 3 compile and check shares: the freestanding contract
@@ -802,6 +812,32 @@ stage_esp :: proc(opts: Options) {
 	// rather than at the volume root, where another limine.conf could shadow it.
 	copy_file("boot/limine.conf", fmt.tprintf("%s/EFI/BOOT/limine.conf", ESP_DIR))
 	copy_file(KERNEL_ELF, fmt.tprintf("%s/vectra.elf", ESP_DIR))
+	stage_vectra()
+}
+
+/*
+stage_vectra puts the programs and the library on the disk, under
+`vectra/`, where `fatfs` serves them and the boot binds them over `/bin`
+and `/lib`. Every program image under `bin/` by its `/bin` name, `rcmain`
+and the test script under `lib/`, and an empty `tmp/` for what a running
+machine writes back to the host.
+*/
+stage_vectra :: proc() {
+	root := fmt.tprintf("%s/vectra", ESP_DIR)
+	ensure_dir(root)
+	ensure_dir(fmt.tprintf("%s/bin", root))
+	ensure_dir(fmt.tprintf("%s/lib", root))
+	ensure_dir(fmt.tprintf("%s/lib/tests", root))
+	// Fresh each build: what the last run wrote there was the last run's
+	// proof, and vvfat leaves a removed directory behind as its short name.
+	run({"rm", "-rf", fmt.tprintf("%s/tmp", root)})
+	ensure_dir(fmt.tprintf("%s/tmp", root))
+	for prog in user_programs {
+		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
+	}
+	copy_file("apps/rc/rcmain", fmt.tprintf("%s/lib/rcmain", root))
+	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
+	step("staged %d programs and the library under %s", len(user_programs), root)
 }
 
 run_qemu :: proc(opts: Options, debug: bool) {

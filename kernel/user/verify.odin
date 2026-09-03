@@ -148,6 +148,7 @@ Result :: struct {
 	traps:         u64, // Returns from ring 3 while the checks ran
 	rounds:        u64, // Times `spin` went round its loop in ring 3
 	calls:         int, // System calls the programs made
+	resident:      int, // Processes alive before the run: the servers the boot started
 	answered:      u64, // 9P requests a process served over a wire
 	pinned:        int, // Heap objects the wires still pin -- zero since the counted release
 	leaked:        int, // Heap objects the run did not give back
@@ -266,6 +267,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	*/
 	sched.reap()
 	before_heap := mem.live_objects(mem.heap_stats())
+	r.resident = stats().live
 	before_tables := mem.space_stats()
 	before_doubles := mem.pmm_stats().double_frees
 	before_traps := arch.user_trap_count()
@@ -523,7 +525,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	s := stats()
 	r.calls = s.calls
 	r.spawned = s.spawned
-	check(&r, s.live == 0, "every program was taken down")
+	check(&r, s.live == r.resident, "every program was taken down")
 	check(&r, s.faults + s.calls >= r.programs, "each of them by a fault or by asking")
 
 	/*
@@ -1558,7 +1560,7 @@ verify_parenthood :: proc(r: ^Result, column: proc "contextless" () -> int, held
 			stats().spawned - spawned_before == 2,
 			"two processes on this machine were started by another process",
 		)
-		check(r, stats().live == 1, "and neither outlived being collected -- the parent waited for both")
+		check(r, stats().live == r.resident + 1, "and neither outlived being collected -- the parent waited for both")
 	}
 	cons_finish()
 
@@ -1594,7 +1596,9 @@ verify_posting :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^
 	// -- Creation is refused where it must be --------------------------------
 
 	_, cerr := vfs.create_path(vfs.boot_namespace, "/bin/nope", vfs.O_WRONLY)
-	check(r, cerr == vectra9.EROFS, "a read-only tree refuses a create")
+	// `/bin` is a union of the disk and `#b` with no member flagged for
+	// creation, which is EPERM; a lone read-only tree would say EROFS.
+	check(r, cerr == vectra9.EPERM || cerr == vectra9.EROFS, "a read-only tree refuses a create")
 
 	// -- A reserved name is not yet a service --------------------------------
 
@@ -6756,7 +6760,7 @@ serial log, one `ok name` per tool, and its exit word is `N ok` or
 `failed` and the names. The count is a constant here, so a check added to
 the script without a change here fails the boot, and says so.
 */
-TOOLS_OK :: "32 ok"
+TOOLS_OK :: "35 ok"
 
 verify_tools :: proc(r: ^Result) {
 	names := [?]string{"rc", "/lib/tests/tools.rc"}

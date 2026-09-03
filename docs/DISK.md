@@ -68,6 +68,9 @@ brought up is a directory under `/dev`:
     /dev/sd0/esp     a partition, when the disk's table names one
     /dev/sd0/dos     its neighbours, one file each
 
+QEMU's `vvfat` gives the ESP a table with one partition of type 6, so on
+this build the volume is `/dev/sd0/dos`, and that is what `fatfs` mounts.
+
 `data` is the disk with nothing interpreted. The partition files are windows
 onto it, read out of the master boot record at sector zero: a file that
 begins where its partition begins and is exactly as long as the partition

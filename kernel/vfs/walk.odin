@@ -590,6 +590,32 @@ create_path :: proc(ns: ^Namespace, path: string, flags: u32, mode: u32 = 0o600)
 		chan_close(c)
 		return nil, vectra9.ENOTDIR
 	}
+
+	/*
+	A union chooses where a new file goes, and the choice is the member
+	flagged `Create`: `union_create_target` says why there is no falling
+	through to whichever member is writable. A mount point with one member
+	is that member, flag or no flag, which is what every ordinary mount
+	expects. The member's chan is shared and a create moves its fid, so the
+	create is sent on a clone.
+	*/
+	if mp := c.union_head; mp != nil {
+		sync.rlock(&mp.lock)
+		members := member_count(mp)
+		sync.runlock(&mp.lock)
+		if members > 1 {
+			target := union_create_target(mp)
+			chan_close(c)
+			if target == nil {
+				return nil, vectra9.EPERM
+			}
+			c, err = chan_clone(target)
+			chan_close(target)
+			if err != OK {
+				return nil, err
+			}
+		}
+	}
 	if mode & DMDIR != 0 {
 		// A directory: Tmkdir on the parent, then a walk to what it made,
 		// because Rmkdir carries a qid and not a fid.

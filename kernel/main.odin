@@ -286,6 +286,13 @@ kmain :: proc "c" () {
 			// in, a scheduler to preempt it, a clock behind the preemption,
 			// and a fault path with somewhere to report to.
 			init_user()
+
+			// The disk's filesystem, served by a program the kernel just
+			// made able to run, and bound over /bin and /lib before the
+			// suite looks for its tools there. See `docs/FATFS.md`.
+			if init_fatfs() {
+				verify_fatfs()
+			}
 			verify_user()
 
 			// Last of all, the other cores. Every self-test above was written
@@ -1768,6 +1775,159 @@ init_user :: proc() -> bool {
 	libodin.put_str(&sink, ", /dev/cons is descriptor 1")
 	emit(&klog, .Ok, &sink)
 	return true
+}
+
+/*
+init_fatfs starts `fatfs` over the disk's FAT partition and mounts it.
+
+Three steps a shell would do in three lines. Start the server, which posts
+`/srv/esp` and exits its parent once the name is there. Mount the name at
+`/n/esp`. Bind the disk's `vectra/bin` before `/bin` and `vectra/lib`
+before `/lib`, so every program the kernel image no longer carries is found
+on the disk, and the same names keep working. The partition is the EFI
+system partition when the table names one, and otherwise the FAT partition
+QEMU's `vvfat` makes.
+
+Reported rather than fatal. A machine with no FAT partition still boots
+with what `#b` carries, which is `fatfs` itself and `rc`, and says so.
+*/
+init_fatfs :: proc() -> bool {
+	ns := vfs.boot_namespace
+	device := ""
+	for candidate in ([]string{"/dev/sd0/esp", "/dev/sd0/dos"}) {
+		if c, err := vfs.open_path(ns, candidate, vfs.O_RDONLY); err == vfs.OK {
+			vfs.chan_close(c)
+			device = candidate
+			break
+		}
+	}
+	if device == "" {
+		log_line(&klog, .Warn, "fatfs: no FAT partition on sd0; only the programs in the kernel image can run")
+		return false
+	}
+
+	names := [?]string{"fatfs", device, "/srv/esp"}
+	word: [64]u8
+	said, ok := user.start_server("/bin/fatfs", names[:], word[:])
+	if !ok {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "fatfs: did not post /srv/esp -- ")
+		libodin.put_str(&sink, said)
+		emit(&klog, .Warn, &sink)
+		return false
+	}
+	if err := srv.mount(ns, "/srv/esp", "/n/esp"); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "fatfs: /srv/esp would not mount at /n/esp -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
+	for pair in ([][2]string{{"/n/esp/vectra/bin", "/bin"}, {"/n/esp/vectra/lib", "/lib"}}) {
+		if err := vfs.bind_path(ns, pair[0], pair[1], .Before); err != vfs.OK {
+			sink := begin(&klog)
+			libodin.put_str(&sink, "fatfs: cannot bind ")
+			libodin.put_str(&sink, pair[0])
+			libodin.put_str(&sink, " before ")
+			libodin.put_str(&sink, pair[1])
+			libodin.put_str(&sink, " -- ")
+			libodin.put_str(&sink, vectra9.errno_name(err))
+			emit(&klog, .Fault, &sink)
+			return false
+		}
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "fatfs /srv/esp mounted at /n/esp from ")
+	libodin.put_str(&sink, device)
+	libodin.put_str(&sink, ", vectra/bin before /bin and vectra/lib before /lib")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+verify_fatfs reads the disk through the filesystem the boot just mounted.
+
+Two claims. The listing of `/n/esp/vectra/bin` names the programs the
+build staged, `echo` and `cleanname` among them -- the second is nine
+letters, which is one more than a short name holds, so it is the long-name
+path being read. And the test script on the disk reads back byte for byte
+as the copy the kernel carries, which is a file of several clusters read
+across its chain. The writes are the shell's to prove, in `tools.rc`,
+because a write that reaches the host is what a tool does.
+*/
+verify_fatfs :: proc() {
+	ns := vfs.boot_namespace
+	result: libodin.Tally
+	programs := 0
+
+	if c, err := vfs.open_path(ns, "/n/esp/vectra/bin", vfs.O_RDONLY); err == vfs.OK {
+		saw_echo, saw_clean := false, false
+		buf: [4096]u8
+		offset: u64
+		for {
+			n, rerr := vfs.readdir(c, offset, buf[:])
+			if rerr != vfs.OK || n == 0 {
+				break
+			}
+			cur := vectra9.cursor_from(buf[:n])
+			for {
+				e, more := vectra9.next_dirent(&cur)
+				if !more {
+					break
+				}
+				programs += 1
+				offset = e.offset
+				switch e.name {
+				case "echo":
+					saw_echo = true
+				case "cleanname":
+					saw_clean = true
+				}
+			}
+		}
+		vfs.chan_close(c)
+		libodin.tally(&result, programs >= 30, "/n/esp/vectra/bin lists the staged programs")
+		libodin.tally(&result, saw_echo && saw_clean, "echo and cleanname among them, the second by its long name")
+	} else {
+		libodin.tally(&result, false, "/n/esp/vectra/bin opens")
+	}
+
+	if f, err := vfs.open_path(ns, "/n/esp/vectra/lib/tests/tools.rc", vfs.O_RDONLY); err == vfs.OK {
+		want := user.TOOLS_RC
+		got := 0
+		same := true
+		chunk: [2048]u8
+		for {
+			n, rerr := vfs.chan_read(f, u64(got), chunk[:])
+			if rerr != vfs.OK {
+				same = false
+				break
+			}
+			if n == 0 {
+				break
+			}
+			if got + n > len(want) || string(chunk[:n]) != string(want[got:got + n]) {
+				same = false
+				break
+			}
+			got += n
+		}
+		vfs.chan_close(f)
+		libodin.tally(&result, same && got == len(want), "the test script reads back byte for byte from the disk")
+	} else {
+		libodin.tally(&result, false, "the test script is on the disk")
+	}
+
+	sink := report_begin("fatfs", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " disk filesystem checks passed -- ")
+		libodin.put_uint(&sink, u64(programs))
+		libodin.put_str(&sink, " programs on the disk, served from ring 3")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
 }
 
 /*
