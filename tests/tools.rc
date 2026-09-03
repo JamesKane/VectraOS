@@ -67,6 +67,7 @@ check ns '/n/esp/vectra/bin /bin' `{ns | grep '^bind /n/esp/vectra/bin' | sed 's
 check fatls cleanname `{ls /n/esp/vectra/bin | grep 'cleanname$' | sed 's,.*/,,'}
 check fatwrite 'hello disk' `{echo hello disk > /n/esp/vectra/tmp/written; cat /n/esp/vectra/tmp/written}
 check fatdir 'made gone' `{mkdir /n/esp/vectra/tmp/d && echo made; rm /n/esp/vectra/tmp/d && echo gone}
+check kfs 'kept home' `{echo kept > $home/t && cat $home/t && rm $home/t && ~ $home /usr/glenda && echo home}
 
 # -- Processes, through /proc -------------------------------------------------
 check ps rc `{ps | grep ' rc$' | tail -n 1 | sed 's/.* //'}

@@ -39,6 +39,7 @@ ROOT_NODES := [?]Static_Node {
 	{name = "net", parent = 0, dir = true},
 	{name = "proc", parent = 0, dir = true},
 	{name = "srv", parent = 0, dir = true},
+	{name = "usr", parent = 0, dir = true},
 	{name = "ws", parent = 0, dir = true},
 	// Where a mounted filesystem goes, by Plan 9 convention: `/n/esp` is the
 	// disk the machine booted from, once `fatfs` serves it.

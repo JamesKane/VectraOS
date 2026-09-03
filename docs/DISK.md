@@ -110,11 +110,13 @@ would today yield one partition of the wrong type rather than the GPT's own.
   reads. Its `vvfat` backend maps writes back to host files, so a raw write
   to a scratch sector of it does not reliably persist -- which is why the
   write proof uses the other disk.
-- **`sd1`, a scratch image**, `build/disk.img`, a plain 2 MiB raw file the
-  build makes once with an MBR naming one FAT partition and a marker at the
-  partition's first sector. It is a real block device: a write to it is still
-  there the next boot, which is the persistence the self-test's round trip
-  rests on.
+- **`sd1`, a scratch image**, `build/disk.img`, a plain 64 MiB raw file the
+  build makes once with an MBR naming two partitions: a small FAT-typed one
+  with a marker at its first sector, for the self-test, and a Plan 9 one
+  from sector 2048 to the end, which `kfs` reams and keeps (`docs/KFS.md`).
+  It is a real block device: a write to it is still there the next boot,
+  which is the persistence the self-test's round trip rests on. An image of
+  an older shape is remade.
 
 ## Checked by
 

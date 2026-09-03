@@ -73,6 +73,7 @@ user_programs := [?]User_Program {
 	{name = "cat", path = "cmd/cat"},
 	{name = "memfs", path = "servers/memfs"},
 	{name = "fatfs", path = "servers/fatfs"},
+	{name = "kfs", path = "servers/kfs"},
 	{name = "pwd", path = "cmd/pwd"},
 	{name = "mkdir", path = "cmd/mkdir"},
 	{name = "rm", path = "cmd/rm"},
@@ -1003,44 +1004,61 @@ Deliberately not a mtime check. A stale kernel.elf on the ESP, that boots as
 though the edit worked, is the single most expensive bug in an OS build system.
 */
 /*
-ensure_scratch_disk writes a small raw disk image for the virtio-blk driver
-to read and write, if one is not there already.
+ensure_scratch_disk writes a raw disk image for the virtio-blk driver to
+read and write, if one of the right shape is not there already.
 
-Two megabytes, with a master boot record at sector zero naming one FAT
-partition that starts at sector 64, and a marker at that sector so the
-kernel's self-test can prove a partition file reaches the partition and not
-the disk. It is left alone once made, so a write the machine does to it is
-still there the next boot -- which is the persistence a real disk has and
-the ESP's vvfat backend does not.
+Sixty-four megabytes, with a master boot record at sector zero naming two
+partitions: a small FAT-typed one at sector 64 with a marker at its first
+sector, so the kernel's self-test can prove a partition file reaches the
+partition and not the disk, and a Plan 9 one from sector 2048 to the end,
+which kfs reams the first time it sees it and keeps after. It is left alone
+once made, so a write the machine does to it is still there the next boot
+-- which is the persistence a real disk has and the ESP's vvfat backend
+does not.
 */
 ensure_scratch_disk :: proc() {
 	if os.exists(SCRATCH_IMG) {
-		return
+		if info, err := os.stat(SCRATCH_IMG, context.allocator); err == nil && info.size == SCRATCH_SECTORS * 512 {
+			return
+		}
+		// A different shape: an image from before this layout. Remade,
+		// because the table and the partitions have moved.
+		step("remaking %s in the current layout", SCRATCH_IMG)
+	} else {
+		step("making a %s scratch disk", SCRATCH_IMG)
 	}
-	step("making a %s scratch disk", SCRATCH_IMG)
-	SECTORS :: 4096 // 2 MiB of 512-byte sectors
-	PART_START :: 64
-	PART_SECTORS :: 256
-	image := make([]u8, SECTORS * 512, context.allocator)
+	image := make([]u8, SCRATCH_SECTORS * 512, context.allocator)
 
-	// The MBR: one partition entry at 446, type 0x0C (FAT32 LBA), and the
-	// 0x55AA signature. The bootstrap area stays zero, so the kernel does
-	// not mistake this for a volume boot record.
+	// The MBR: two entries at 446, the 0x55AA signature, and a bootstrap
+	// area left zero so the kernel does not mistake this for a volume boot
+	// record. The first partition, type 0x0C (FAT32 LBA), is the disk
+	// self-test's window, with a marker at its first sector. The second,
+	// type 0x39 (Plan 9), is the rest of the disk and kfs's.
 	entry := 446
-	image[entry + 0] = 0x00 // Not bootable
-	image[entry + 4] = 0x0C // FAT32 LBA
-	put_le32(image[entry + 8:], PART_START)
-	put_le32(image[entry + 12:], PART_SECTORS)
+	image[entry + 4] = 0x0C
+	put_le32(image[entry + 8:], DOS_PART_START)
+	put_le32(image[entry + 12:], DOS_PART_SECTORS)
+	entry += 16
+	image[entry + 4] = 0x39
+	put_le32(image[entry + 8:], KFS_PART_START)
+	put_le32(image[entry + 12:], SCRATCH_SECTORS - KFS_PART_START)
 	image[510] = 0x55
 	image[511] = 0xAA
 
-	// The marker the self-test looks for, at the partition's first sector.
-	copy(image[PART_START * 512:], transmute([]u8)string("VECTRA-PART0\n"))
+	copy(image[DOS_PART_START * 512:], transmute([]u8)string("VECTRA-PART0\n"))
 
 	if werr := os.write_entire_file(SCRATCH_IMG, image); werr != nil {
 		die("could not write %s: %v", SCRATCH_IMG, werr)
 	}
 }
+
+// The scratch disk's shape: 64 MiB of 512-byte sectors, a small FAT-typed
+// partition for the disk self-test, and a Plan 9 partition for kfs from
+// sector 2048 to the end.
+SCRATCH_SECTORS :: 131072
+DOS_PART_START :: 64
+DOS_PART_SECTORS :: 256
+KFS_PART_START :: 2048
 
 put_le32 :: proc(b: []u8, v: u32) {
 	b[0] = u8(v)

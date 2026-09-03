@@ -117,6 +117,7 @@ other would be the failure.
 | `kernel/env/` | `#e` at `/env`: a process's environment as a directory of variables, copied or shared by `rfork` |
 | `servers/memfs/` | The in-memory filesystem the tools work in until the disk |
 | `servers/fatfs/` | FAT12/16/32 with long names over `/dev/sd0/dos`, mounted at `/n/esp`; the tools live on it |
+| `servers/kfs/` | A filesystem of Vectra's own on `/dev/sd1/plan9`, mounted at `/usr`; permissions, qid versions, `$home` |
 | `kernel/procfs/` | `#p` at `/proc`: a directory per process, for `ps`, `kill` and `ns` |
 | `kernel/drivers/pci/`, `kernel/drivers/virtio/` | The PCI bus, and virtio-blk over it: sectors on and off a disk, polled |
 | `kernel/sd/` | `#S` at `/dev/sd0`: a disk as `data`, `ctl` and its partitions |
@@ -125,7 +126,7 @@ other would be the failure.
 | `sys/abi`, `sys/libuser` | The call numbers both sides include, and the ring 3 library: syscalls and a 9P serve loop |
 | `servers/ramfs` | The first compiled server: an Odin file tree in ring 3 |
 
-`servers/` has seven residents, and `apps/` has the terminal and `rc`. `kernel/devfs`
+`servers/` has eight residents, and `apps/` has the terminal and `rc`. `kernel/devfs`
 stays in the kernel for the moment. A console server must wait on the
 keyboard and its clients at once, and a ring 3 process cannot wait on two
 things yet. The port also wants a note to stop a runaway server, and raw

@@ -194,7 +194,8 @@ read_table :: proc(n: int) {
 }
 
 // part_name gives a partition a Plan 9-ish name from its MBR type: the EFI
-// system partition is `esp`, a FAT type is `dos`, anything else `partN`.
+// system partition is `esp`, a FAT type is `dos`, Plan 9's own type is
+// `plan9`, anything else `partN`.
 @(private = "file")
 part_name :: proc "contextless" (kind: u8, index: int, out: []u8) -> int {
 	name: string
@@ -203,6 +204,8 @@ part_name :: proc "contextless" (kind: u8, index: int, out: []u8) -> int {
 		name = "esp"
 	case 0x0B, 0x0C, 0x01, 0x04, 0x06, 0x0E:
 		name = "dos"
+	case 0x39:
+		name = "plan9"
 	case:
 		sink := libodin.sink_from(out)
 		libodin.put_str(&sink, "part")

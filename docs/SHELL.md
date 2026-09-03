@@ -219,6 +219,18 @@ one level of indirection, write-through, `fsync` on `close`. About 3,000
 lines, and a journal when a crash costs something. `/usr/glenda` lives
 here, and `$home` points at it.
 
+**Where it stands.** Done, as `docs/KFS.md` describes. `servers/kfs` is
+the shape above -- superblock, bitmap, 1024 inodes, 4 KiB blocks, one
+indirect level -- written through in the order that survives a stop
+between writes, with no journal yet. The scratch disk grew to 64 MiB with
+a Plan 9 partition, which kfs reams the first time and keeps after; the
+boot starts it after fatfs, since it is a program on the FAT disk, and
+mounts it at `/usr`; `rcmain` sets `$home` to `/usr/glenda`. The self-test
+keeps a boot count in `/usr/glenda/boots` that the boot line prints and
+that grew from 1 to 4 across the three boards on one image, and checks a
+0600 file stats as 0600 and a qid version moves on write. Not yet: a
+journal, files past 4 MiB, rename, owners, dates.
+
 ### Step 8: boot to a shell
 
 `init`, an `rc` script on the disk, run by the kernel as the first

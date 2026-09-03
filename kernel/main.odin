@@ -292,6 +292,11 @@ kmain :: proc "c" () {
 			// suite looks for its tools there. See `docs/FATFS.md`.
 			if init_fatfs() {
 				verify_fatfs()
+				// And the disk of Vectra's own, whose server is a file on
+				// the first. See `docs/KFS.md`.
+				if init_kfs() {
+					verify_kfs()
+				}
 			}
 			verify_user()
 
@@ -1928,6 +1933,133 @@ verify_fatfs :: proc() {
 		return
 	}
 	report_failed(&sink, result)
+}
+
+/*
+init_kfs starts `kfs` over the scratch disk's Plan 9 partition and mounts
+it at `/usr`. The server is a file on the FAT disk, which is why this runs
+after `init_fatfs`. A first boot reams the partition, which kfs says on the
+console; every boot after finds the volume the last one left.
+*/
+init_kfs :: proc() -> bool {
+	ns := vfs.boot_namespace
+	device := "/dev/sd1/plan9"
+	if c, err := vfs.open_path(ns, device, vfs.O_RDONLY); err == vfs.OK {
+		vfs.chan_close(c)
+	} else {
+		log_line(&klog, .Warn, "kfs: no plan9 partition on sd1; /usr stays empty")
+		return false
+	}
+	names := [?]string{"kfs", device, "/srv/kfs"}
+	word: [64]u8
+	said, ok := user.start_server("/bin/kfs", names[:], word[:])
+	if !ok {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "kfs: did not post /srv/kfs -- ")
+		libodin.put_str(&sink, said)
+		emit(&klog, .Warn, &sink)
+		return false
+	}
+	if err := srv.mount(ns, "/srv/kfs", "/usr"); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "kfs: /srv/kfs would not mount at /usr -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
+	log_line(&klog, .Ok, "kfs /srv/kfs mounted at /usr from /dev/sd1/plan9; /usr/glenda is home")
+	return true
+}
+
+/*
+verify_kfs keeps a count on the disk and reads it back.
+
+`/usr/glenda/boots` holds a number. This reads it, adds one, writes it, and
+reads it again through a fresh open, so the number on the boot line is how
+many times this machine has booted this volume -- the persistence the whole
+step is for, visible across runs. Then the two things FAT could not keep: a
+file made with mode 0600 stats as 0600, and a file's qid version moves when
+it is written.
+*/
+verify_kfs :: proc() {
+	ns := vfs.boot_namespace
+	result: libodin.Tally
+	boots: u64
+
+	if c, err := vfs.open_path(ns, "/usr/glenda", vfs.O_RDONLY); libodin.tally(&result, err == vfs.OK, "/usr/glenda is there") {
+		vfs.chan_close(c)
+
+		digits: [24]u8
+		if f, oerr := vfs.open_path(ns, "/usr/glenda/boots", vfs.O_RDONLY); oerr == vfs.OK {
+			n, _ := vfs.chan_read(f, 0, digits[:])
+			vfs.chan_close(f)
+			for i in 0 ..< n {
+				if digits[i] >= '0' && digits[i] <= '9' {
+					boots = boots * 10 + u64(digits[i] - '0')
+				}
+			}
+		}
+		boots += 1
+		sink := libodin.sink_from(digits[:])
+		libodin.put_uint(&sink, boots)
+		libodin.put_str(&sink, "\n")
+		text := libodin.str(&sink)
+
+		f, werr := vfs.open_path(ns, "/usr/glenda/boots", vfs.O_WRONLY | vfs.O_TRUNC)
+		if werr != vfs.OK {
+			f, werr = vfs.create_path(ns, "/usr/glenda/boots", vfs.O_WRONLY, 0o664)
+		}
+		if libodin.tally(&result, werr == vfs.OK, "the boot count opens for writing") {
+			wn, e := vfs.chan_write(f, 0, transmute([]u8)text)
+			vfs.chan_close(f)
+			libodin.tally(&result, e == vfs.OK && wn == len(text), "and takes the new count")
+		}
+		back: [24]u8
+		got := 0
+		if f2, rerr := vfs.open_path(ns, "/usr/glenda/boots", vfs.O_RDONLY); rerr == vfs.OK {
+			got, _ = vfs.chan_read(f2, 0, back[:])
+			vfs.chan_close(f2)
+		}
+		libodin.tally(&result, got == len(text) && string(back[:got]) == text, "and reads it back through a fresh open")
+
+		// What FAT could not keep.
+		if p, perr := vfs.create_path(ns, "/usr/glenda/private", vfs.O_RDWR, 0o600); perr == vfs.OK {
+			attr, serr := vfs.chan_stat(p)
+			libodin.tally(&result, serr == vfs.OK && attr.mode & 0o777 == 0o600, "a file made 0600 stats as 0600")
+			before := attr.qid.version
+			_, _ = vfs.chan_write(p, 0, transmute([]u8)string("x"))
+			attr, serr = vfs.chan_stat(p)
+			libodin.tally(&result, serr == vfs.OK && attr.qid.version != before, "and its qid version moves when it is written")
+			vfs.chan_close(p)
+			libodin.tally(&result, remove_at(ns, "/usr/glenda/private") == vfs.OK, "and it can be removed")
+		} else if perr == vectra9.EEXIST {
+			libodin.tally(&result, remove_at(ns, "/usr/glenda/private") == vfs.OK, "a leftover from a stopped run is removed")
+		} else {
+			libodin.tally(&result, false, "a file is made in /usr/glenda")
+		}
+	}
+
+	sink := report_begin("kfs", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " home filesystem checks passed -- boot ")
+		libodin.put_uint(&sink, boots)
+		libodin.put_str(&sink, " of this volume")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
+}
+
+// remove_at removes the file a path names: resolve it, send the remove,
+// and close the reference the resolve took, which the remove does not.
+remove_at :: proc(ns: ^vfs.Namespace, path: string) -> vfs.Errno {
+	c, err := vfs.resolve(ns, path)
+	if err != vfs.OK {
+		return err
+	}
+	err = vfs.chan_remove(c)
+	vfs.chan_close(c)
+	return err
 }
 
 /*
