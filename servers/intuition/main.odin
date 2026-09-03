@@ -1036,6 +1036,7 @@ meant.
 type_at :: proc "contextless" (w: int, b: u8) #no_bounds_check {
 	if windows[w].cons_raw {
 		libuser.ring_push(&kbd[w], b)
+		answer_cons(w)
 		return
 	}
 	if libedit.put(&edit[w], b) != .Done {
@@ -1049,6 +1050,58 @@ type_at :: proc "contextless" (w: int, b: u8) #no_bounds_check {
 	// because the other caller draws the line and would have to strip it.
 	libuser.ring_push(&kbd[w], '\n')
 	libedit.clear(&edit[w])
+	answer_cons(w)
+}
+
+// drain_cons takes what window `w`'s ring has for a read: whatever is
+// there in raw mode, one line otherwise. Caller holds `wlock`, or is the
+// loop, which holds it through the handler.
+drain_cons :: proc "contextless" (w: int, buf: []u8) -> int {
+	if windows[w].cons_raw {
+		return libuser.ring_drain(&kbd[w], buf, &state_lock)
+	}
+	return libuser.ring_drain_line(&kbd[w], buf, '\n', &state_lock)
+}
+
+// The window whose held reads `wants_cons` accepts. Set under `wlock` by
+// `answer_cons`, which is the only caller.
+answer_win: int
+
+wants_cons :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
+	_ = state
+	#partial switch m in request^ {
+	case vectra9.Tread:
+		node := libuser.fid_lookup(&fids, m.fid)
+		return node_part(node) == PART_CONS && node_win(node) == answer_win
+	}
+	return false
+}
+
+/*
+answer_cons gives window `w`'s ring to the reads held for it, oldest
+first, from the reader's own process. Under `wlock`, which is what makes
+this and the handler's "empty, hold me" one decision. The reader runs
+against shared memory and this is the one place it writes the wire, which
+the lock is for. See `libuser.serve_mux`.
+*/
+answer_cons :: proc "contextless" (w: int) {
+	libuser.lock(&wlock)
+	answer_win = w
+	for {
+		slot, tag, request, ok := libuser.held(&mux, wants_cons)
+		if !ok {
+			break
+		}
+		m := request.(vectra9.Tread)
+		buf := libuser.slot_payload(&mux, slot)
+		room := min(len(buf), int(m.count))
+		got := drain_cons(w, buf[:room])
+		if got == 0 {
+			break
+		}
+		_ = libuser.respond(&mux, slot, tag, vectra9.Rread{data = buf[:got]})
+	}
+	libuser.unlock(&wlock)
 }
 
 /*
@@ -1213,17 +1266,16 @@ frame_out: [FRAME]u8
 payload: [1024]u8
 
 // The write lock `serve_mux` serialises replies with, and a state lock over
-// the consumer end of a window's key ring. `stopping` releases a worker
+// the consumer end of a window's key ring. a worker once used to be released
 // parked on an empty one at teardown. See `servers/kbdfs`, which this is the
 // shape of, and `sys/libuser/serve.odin`.
 wlock: libuser.Spin
 state_lock: libuser.Spin
-stopping: bool
 
 // One worker per window that may have a read parked on its `cons`, and one
 // spare so a client that opens a second window is never the request that
 // stalls the loop.
-SLOTS :: MAX_WINDOWS + 1
+SLOTS :: 8
 slot_frame: [SLOTS][FRAME]u8
 slot_out: [SLOTS][FRAME]u8
 slot_payload: [SLOTS][1024]u8
@@ -1233,29 +1285,11 @@ slots: [SLOTS]libuser.Mux_Slot
 // worker can ask `libuser.flushed` through it. Its stack is its own copy.
 mux: libuser.Mux
 
-// One tick between looks at a key ring, for a read parked waiting on a line.
-POLL_TICKS :: 1
-
 /*
-How many `cons` reads are parked, and the reason this server counts them.
-
-**`serve_mux` answers inline when no slot is free**, which is right for every
-message this server has except one. A `cons` read waits for a keystroke, so an
-inline one parks the loop that draws -- and `Tremove` is inline too, so a
-server wedged that way cannot even be stopped. Three abandoned reads was all
-it took while a flushed worker never left. A flush reaches the worker now,
-through `libuser.flushed`, so what spends the pool today is three live
-readers of windows nobody types at, and that is still three.
-
-The count is what makes the inline case identifiable from inside the handler.
-`serve_mux` forks at most `SLOTS` workers, so a `cons` read that arrives with
-`SLOTS` already parked is the inline one, and it is refused instead of waiting.
-The loop that owns the glass therefore never parks, whatever a client does.
-
-`EAGAIN` rather than an empty read, because a short read means end of file to
-every client in this tree and a client that should try again is not at one.
+A `cons` read with nothing to give is held, not parked: the loop that
+paints never waits on a keystroke, and the reader child answers the read
+from its own process when the line completes. See `libuser.serve_mux`.
 */
-cons_parked: u32
 
 /*
 _start opens the screen, learns its shape, and serves.
@@ -1388,7 +1422,6 @@ start :: proc "c" (block: ^abi.Args) {
 	mux = libuser.Mux {
 		fd      = sfd,
 		handler = handler,
-		blocks  = blocks,
 		frame   = frame_in[:],
 		out     = frame_out[:],
 		payload = payload[:],
@@ -1398,33 +1431,15 @@ start :: proc "c" (block: ^abi.Args) {
 
 	_, why := libuser.serve_mux(&mux)
 
-	// The flag first, so a worker parked on an empty ring leaves before the
-	// child it was waiting on is noted out of its console read.
-	intrinsics.volatile_store(&stopping, true)
+	// Every held read answered empty, so no client waits on a slot the
+	// stopped server will never fill.
+	libuser.respond_all(&mux, vectra9.Rread{data = nil})
 
 	if why != .Removed {
 		_ = libuser.stop_child(u64(pid))
 		libuser.exit(why == .Hangup ? 0x68 : 0x72)
 	}
 	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
-}
-
-/*
-blocks is true for exactly the read that waits on a keystroke: a read of a
-window's `cons`.
-
-**Everything that draws is false here**, which is what keeps one loop painting.
-A worker answers a `cons` read and touches that window's key ring and the fid
-table, and neither the glass nor a window's store nor `scratch` is reachable
-from it.
-*/
-blocks :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
-	_ = state
-	#partial switch m in request^ {
-	case vectra9.Tread:
-		return node_part(libuser.fid_lookup(&fids, m.fid)) == PART_CONS
-	}
-	return false
 }
 
 /*
@@ -2806,53 +2821,19 @@ handler :: proc "contextless" (
 				reply^ = vectra9.Rread{data = nil}
 				return
 			}
-			// The inline case, refused rather than waited out. See
-			// `cons_parked`: this is the read the serve loop would have
-			// parked on, and the serve loop is what paints.
-			if intrinsics.atomic_load(&cons_parked) >= u32(len(slots)) {
-				reply^ = vectra9.error_reply(vectra9.EAGAIN)
+			/*
+			One line per read in cooked mode, which is `rio`'s drain rule: `rio`
+			copies from a window's output point and breaks at the newline, so a
+			program that reads gets one line however many are queued. Raw mode
+			takes whatever is there. Nothing yet is a hold, and `answer_cons`
+			answers it from the reader when the line completes.
+			*/
+			got := drain_cons(w, buf[:room])
+			if got > 0 {
+				reply^ = vectra9.Rread{data = buf[:got]}
 				return
 			}
-			intrinsics.atomic_add(&cons_parked, 1)
-			defer intrinsics.atomic_sub(&cons_parked, 1)
-			for {
-				/*
-				One line per read in cooked mode, which is `rio`'s drain rule.
-
-				`rio` copies from a window's output point and breaks at the
-				newline, so a program that reads gets one line however many are
-				queued behind it. A drain that emptied the ring would hand a
-				client two lines in one buffer, and a client that looked only
-				at the first would lose the rest silently -- which is what
-				`apps/terminal` was doing until this landed.
-
-				Raw mode takes whatever is there. A client that asked for raw
-				is the one deciding where a line ends.
-				*/
-				// The flush is checked before the drain, and the order keeps a
-				// line from being lost to a flush that raced its arrival. A
-				// flushed request's reply is dropped, so a drain into one would
-				// consume the line and hand it to nobody. See `libuser.flushed`.
-				if libuser.flushed(&mux, tag) {
-					reply^ = vectra9.error_reply(vectra9.EINTR)
-					return
-				}
-				got := 0
-				if windows[w].cons_raw {
-					got = libuser.ring_drain(&kbd[w], buf[:room], &state_lock)
-				} else {
-					got = libuser.ring_drain_line(&kbd[w], buf[:room], '\n', &state_lock)
-				}
-				if got > 0 {
-					reply^ = vectra9.Rread{data = buf[:got]}
-					return
-				}
-				if intrinsics.volatile_load(&stopping) {
-					reply^ = vectra9.Rread{data = nil}
-					return
-				}
-				_ = libuser.sleep(POLL_TICKS)
-			}
+			libuser.hold(&mux)
 		}
 
 		/*

@@ -73,7 +73,6 @@ payload: [1024]u8
 // `sys/libuser/serve.odin`.
 wlock: libuser.Spin
 state_lock: libuser.Spin
-stopping: bool
 
 SLOTS :: 3
 slot_frame: [SLOTS][FRAME]u8
@@ -86,7 +85,6 @@ slots: [SLOTS]libuser.Mux_Slot
 mux: libuser.Mux
 
 // One tick between looks at the ring, for a read parked waiting on a key.
-POLL_TICKS :: 1
 
 /*
 _start opens the raw stream, forks the translator, and serves.
@@ -134,7 +132,6 @@ start :: proc "c" (block: ^abi.Args) {
 	mux = libuser.Mux {
 		fd      = fd,
 		handler = handler,
-		blocks  = blocks,
 		frame   = frame_in[:],
 		out     = frame_out[:],
 		payload = payload[:],
@@ -144,24 +141,13 @@ start :: proc "c" (block: ^abi.Args) {
 
 	_, why := libuser.serve_mux(&mux)
 
-	intrinsics.volatile_store(&stopping, true)
+	libuser.respond_all(&mux, vectra9.Rread{data = nil})
 
 	if why != .Removed {
 		_ = libuser.stop_child(u64(pid))
 		libuser.exit(0x72)
 	}
 	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
-}
-
-// blocks is true for exactly the read that waits on a key: a read of /kbd.
-// Every other message is a table lookup, answered inline.
-blocks :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
-	_ = state
-	#partial switch m in request^ {
-	case vectra9.Tread:
-		return libuser.fid_lookup(&fids, m.fid) == NODE_KBD
-	}
-	return false
 }
 
 /*
@@ -184,7 +170,44 @@ reader :: proc "contextless" (raw: int) -> ! {
 				libuser.ring_push(&ring, b)
 			}
 		}
+		answer_held()
 	}
+}
+
+// wants_read is what a held request has to be for the reader to answer it:
+// a read of the file the ring feeds.
+wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
+	_ = state
+	#partial switch m in request^ {
+	case vectra9.Tread:
+		return libuser.fid_lookup(&fids, m.fid) == NODE_KBD
+	}
+	return false
+}
+
+/*
+answer_held gives what the ring holds to the reads held for it, oldest
+first, from the reader's own process. Under `wlock`, which is what makes
+this and the handler's "empty, hold me" one decision: either the handler
+saw the byte, or this sees the held read. See `libuser.serve_mux`.
+*/
+answer_held :: proc "contextless" () {
+	libuser.lock(&wlock)
+	for {
+		slot, tag, request, ok := libuser.held(&mux, wants_read)
+		if !ok {
+			break
+		}
+		m := request.(vectra9.Tread)
+		buf := libuser.slot_payload(&mux, slot)
+		room := min(len(buf), int(m.count))
+		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		if got == 0 {
+			break
+		}
+		_ = libuser.respond(&mux, slot, tag, vectra9.Rread{data = buf[:got]})
+	}
+	libuser.unlock(&wlock)
 }
 
 // -- The ring ----------------------------------------------------------------
@@ -384,26 +407,14 @@ handler :: proc "contextless" (
 			reply^ = vectra9.Rread{data = nil}
 			return
 		}
-		for {
-			// The flush is checked before the drain, and the order keeps a byte
-			// from being lost to a flush that raced its arrival. A flushed
-			// request's reply is dropped, so a drain into one would consume the
-			// bytes and hand them to nobody. See `libuser.flushed`.
-			if libuser.flushed(&mux, tag) {
-				reply^ = vectra9.error_reply(vectra9.EINTR)
-				return
-			}
-			got := libuser.ring_drain(&ring, buf[:room], &state_lock)
-			if got > 0 {
-				reply^ = vectra9.Rread{data = buf[:got]}
-				return
-			}
-			if intrinsics.volatile_load(&stopping) {
-				reply^ = vectra9.Rread{data = nil}
-				return
-			}
-			_ = libuser.sleep(POLL_TICKS)
+		// What has arrived, or nothing yet: the loop holds the request and
+		// the reader answers it when a byte comes. See `libuser.hold`.
+		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		if got > 0 {
+			reply^ = vectra9.Rread{data = buf[:got]}
+			return
 		}
+		libuser.hold(&mux)
 
 	case vectra9.Twrite:
 		reply^ = vectra9.error_reply(vectra9.EPERM)

@@ -78,7 +78,7 @@ said.
 
 ## What it cost, and what it says
 
-Two shells take thirteen processes:
+Two shells took thirteen processes when this was written:
 
     fatfs, kfs                     one serving process each
     the serial shell               one
@@ -86,15 +86,15 @@ Two shells take thirteen processes:
     intuition                      a server, a reader, and a worker per parked read
     terminal                       a drawer, a typist, and its rc
 
-That is three times what Plan 9 spends on the same picture, and it is the
-cost of one missing thing: a process here cannot wait on two descriptors,
-so every server with two blocking sources forks a reader, and `serve_mux`
-forks a worker for every request that parks. The process table went from
+That was three times what Plan 9 spends on the same picture, and the cost
+of one missing thing: a process here cannot wait on two descriptors, so
+every server with two blocking sources forks a reader, and `serve_mux`
+forked a worker for every request that parked. The process table went from
 twelve to thirty-two for this step and the console's fid table from
 sixty-four to two hundred and fifty-six, because a running system is not a
-self-test. Those numbers are right; the count they hold is not. The next
-document in this series is the process and thread system, revisited to be
-Plan 9's.
+self-test. `docs/PROCS.md` is the process and thread system revisited to be
+Plan 9's; its first step took the workers away, and two shells are ten
+processes -- `ps` from the serial line lists them.
 
 ## Checked by
 

@@ -999,6 +999,12 @@ inline, in order, by the loop that owns `scratch` and the glass. A worker
 touches its window's ring and the fid table, and neither a window's store nor
 the framebuffer is reachable from it.
 
+**Since `docs/PROCS.md` step 1, there is no worker.** A `cons` read with
+nothing to give is held in a slot, and the reader child answers it from its
+own process when the line completes, through `libuser.respond`. The count
+below and the `EAGAIN` it arranged are gone with the worker; the paragraphs
+stay as the record of why the loop must never park.
+
 **And the loop refuses to park, which took a count to arrange.** `serve_mux`
 answers inline when no slot is free, and that is right for every message here
 except the one that waits. An inline `cons` read parks the loop that paints --

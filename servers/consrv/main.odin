@@ -84,7 +84,6 @@ empty ring leaves instead of polling for a byte that will never come.
 */
 wlock: libuser.Spin
 state_lock: libuser.Spin
-stopping: bool
 
 /*
 The worker pool: three parked reads at once, and a fourth stalls the loop.
@@ -107,7 +106,6 @@ mux: libuser.Mux
 
 // How long a parked read sleeps between looks at the ring. One tick, which is
 // the console's own poll cadence. A worker off every run queue in between.
-POLL_TICKS :: 1
 
 /*
 _start opens the console, forks the reader, and serves.
@@ -155,7 +153,6 @@ start :: proc "c" (block: ^abi.Args) {
 	mux = libuser.Mux {
 		fd      = fd,
 		handler = handler,
-		blocks  = blocks,
 		frame   = frame_in[:],
 		out     = frame_out[:],
 		payload = payload[:],
@@ -168,7 +165,7 @@ start :: proc "c" (block: ^abi.Args) {
 	// The stop is set for whatever workers are still parked on the ring, so
 	// they leave rather than poll for a byte the torn-down console cannot
 	// send. See `handler`'s Tread case.
-	intrinsics.volatile_store(&stopping, true)
+	libuser.respond_all(&mux, vectra9.Rread{data = nil})
 
 	if why != .Removed {
 		_ = libuser.stop_child(u64(pid))
@@ -178,23 +175,6 @@ start :: proc "c" (block: ^abi.Args) {
 	// parked read unwound, and the wait heard EINTR -- the kernel's word for
 	// an ending this parent asked for.
 	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
-}
-
-/*
-blocks reports whether a request might park, which is the one thing the
-serve loop cannot work out for itself.
-
-Only a read of `/line` parks. A read of the root is EISDIR at once, and every
-other message is a table lookup. So the loop forks a worker for exactly the
-reads that wait for a keystroke, and answers the rest inline.
-*/
-blocks :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
-	_ = state
-	#partial switch m in request^ {
-	case vectra9.Tread:
-		return libuser.fid_lookup(&fids, m.fid) == NODE_LINE
-	}
-	return false
 }
 
 /*
@@ -213,7 +193,44 @@ reader :: proc "contextless" (cons: int) -> ! {
 		for i in 0 ..< int(n) {
 			libuser.ring_push(&ring, chunk[i])
 		}
+		answer_held()
 	}
+}
+
+// wants_read is what a held request has to be for the reader to answer it:
+// a read of the file the ring feeds.
+wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
+	_ = state
+	#partial switch m in request^ {
+	case vectra9.Tread:
+		return libuser.fid_lookup(&fids, m.fid) == NODE_LINE
+	}
+	return false
+}
+
+/*
+answer_held gives what the ring holds to the reads held for it, oldest
+first, from the reader's own process. Under `wlock`, which is what makes
+this and the handler's "empty, hold me" one decision: either the handler
+saw the byte, or this sees the held read. See `libuser.serve_mux`.
+*/
+answer_held :: proc "contextless" () {
+	libuser.lock(&wlock)
+	for {
+		slot, tag, request, ok := libuser.held(&mux, wants_read)
+		if !ok {
+			break
+		}
+		m := request.(vectra9.Tread)
+		buf := libuser.slot_payload(&mux, slot)
+		room := min(len(buf), int(m.count))
+		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		if got == 0 {
+			break
+		}
+		_ = libuser.respond(&mux, slot, tag, vectra9.Rread{data = buf[:got]})
+	}
+	libuser.unlock(&wlock)
 }
 
 // -- Fids, the same sixteen slots ramfs keeps ---------------------------------
@@ -304,26 +321,14 @@ handler :: proc "contextless" (
 			reply^ = vectra9.Rread{data = nil}
 			return
 		}
-		for {
-			// The flush is checked before the drain, and the order keeps a byte
-			// from being lost to a flush that raced its arrival. A flushed
-			// request's reply is dropped, so a drain into one would consume the
-			// bytes and hand them to nobody. See `libuser.flushed`.
-			if libuser.flushed(&mux, tag) {
-				reply^ = vectra9.error_reply(vectra9.EINTR)
-				return
-			}
-			got := libuser.ring_drain(&ring, buf[:room], &state_lock)
-			if got > 0 {
-				reply^ = vectra9.Rread{data = buf[:got]}
-				return
-			}
-			if intrinsics.volatile_load(&stopping) {
-				reply^ = vectra9.Rread{data = nil}
-				return
-			}
-			_ = libuser.sleep(POLL_TICKS)
+		// What has arrived, or nothing yet: the loop holds the request and
+		// the reader answers it when a byte comes. See `libuser.hold`.
+		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		if got > 0 {
+			reply^ = vectra9.Rread{data = buf[:got]}
+			return
 		}
+		libuser.hold(&mux)
 
 	case vectra9.Twrite:
 		reply^ = vectra9.error_reply(vectra9.EPERM)

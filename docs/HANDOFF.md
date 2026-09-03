@@ -712,9 +712,10 @@ sys/
     sys.odin            The calls from ring 3, the loop helpers every
                         byte-moving caller needs, and the child-first teardown
     ring.odin           The byte ring a forked reader publishes through
-    serve.odin          post and serve; serve_mux, the concurrent loop with a
-                        worker per parked request, and the Tflush that reaches
-                        that worker; and Spin, the first ring 3 lock
+    serve.odin          post and serve; serve_mux, the concurrent loop that
+                        holds a request it cannot answer yet for whoever can,
+                        and answers a Tflush by dropping it; and Spin, the
+                        first ring 3 lock
     fid.odin            The fid table five servers had each written, with a
                         lock, a walk, an attach and an EBADF guard
     sys_<arch>.odin     The door, as its bytes, one per architecture

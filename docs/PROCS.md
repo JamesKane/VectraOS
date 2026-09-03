@@ -93,6 +93,16 @@ and two shells are ten processes. The user suite's `verify_consrv`,
 `verify_kbdfs` and `verify_terminal` pass unchanged, and the boot line
 says how many processes the machine holds at `boot complete`.
 
+**Where it stands.** Done. `serve_mux` keeps a request the handler holds
+in a slot and reads the next frame; `libuser.held` and `libuser.respond`
+let the reader child answer it from its own process; a flush of a held
+request drops it and answers itself. `consrv`, `kbdfs`, `eiafs` and
+`intuition` drain or hold, their readers answer what they hold, and
+`intuition`'s `EAGAIN` count is gone with the worker it counted. The user
+suite passes unchanged on the three boards and forks thirty-six fewer
+processes doing so; `ps` from the serial shell shows two shells as ten
+processes and no worker.
+
 ### Step 2: cheap processes
 
 `kernel/user`, `kernel/mem`, about 1,200 lines.
