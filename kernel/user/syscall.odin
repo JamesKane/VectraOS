@@ -1218,34 +1218,18 @@ sys_segbrk :: proc(addr: uintptr, top: uintptr) -> i64 {
 	}
 	if want < seg.pages {
 		/*
-		A shared run may not shrink, which is `ibrk`'s `Einuse`.
+		A shared run shrinks in every holder at once now.
 
-		Another process maps the same frames, and the ones about to go back to
-		the allocator may already have been handed to that process's kernel and
-		be past the point where an address is checked. Plan 9 refuses on
-		`s->ref > 1` and so does this.
-
-		Growing has no such rule, here or there: it takes pages nobody had.
-
-		**A holder that is dead is not a sharer, and the dead are collected
-		here before the count is believed.** A concurrent server forks a
-		worker per parked request under `RFMEM` and `RFNOWAIT`. A worker that
-		answered and exited kept its segments until `reap_orphans` collected
-		it, which only `rfork` did, at the moment it wanted a slot.
-
-		The draw server's first shrink was refused for exactly that. Three
-		dead workers from the keyboard's checks each still counted as a holder
-		of every window run. The reaper thread collects a detached process
-		the moment it ends now. This collects again at the moment it wants a
-		sole holder, because the reaper is a thread and its turn can come
-		later. A worker still parked on a read is a live sharer and is
-		refused as before.
+		This refused on `s->ref > 1`, which is `ibrk`'s `Einuse`, because the
+		frames about to go back could still be mapped in another holder's
+		space with nothing here able to reach that space. `segment_shrink`
+		reaches every holder now, so the refusal went with the reason. The
+		dead are still collected first: a worker that answered and exited
+		keeps its segments until something collects it, and a collected
+		holder is one fewer space to walk.
 		*/
 		if seg.refs > 1 {
 			reap_orphans()
-		}
-		if seg.refs > 1 {
-			return -i64(vectra9.EBUSY)
 		}
 		return segment_shrink(p, seg, want)
 	}
@@ -1273,8 +1257,37 @@ segment_shrink :: proc(p: ^Process, s: ^Segment, want: int) -> i64 {
 	gone := s.pages - want
 	at := s.va + uintptr(want) * page
 
-	if mem.unmap_user(p.space, at, gone) != .None {
-		return -i64(vectra9.EINVAL)
+	/*
+	Out of every holder's tables, then out of every core's TLB, then back to
+	the allocator, in that order and no other.
+
+	The holders are found under the table lock, which is also what keeps a
+	second resize of this run from running beside this one. The entries come
+	out under it too, quietly: a shootdown waits for other cores, and a wait
+	under a spinlock is the hazard `sync.require_sleepable` names. The roots
+	are kept, the lock is let go of, and each space is then told. A holder that
+	is being collected is skipped. Its space is on its way out under
+	`collect`'s claim, and the segment's count holds the frames it maps until
+	it lets go.
+	*/
+	roots: [MAX_PROCESSES]uintptr
+	n := 0
+	guard := sync.acquire(&table_lock)
+	for i in 0 ..< MAX_PROCESSES {
+		q := &processes[i]
+		if !q.live || q.collecting || q.space == nil || !proc_holds(q, s) {
+			continue
+		}
+		if mem.unmap_user_quiet(q.space, at, gone) != .None {
+			sync.release(&table_lock, guard)
+			return -i64(vectra9.EINVAL)
+		}
+		roots[n] = mem.space_root(q.space)
+		n += 1
+	}
+	sync.release(&table_lock, guard)
+	for i in 0 ..< n {
+		mem.shoot(roots[i], at, gone)
 	}
 
 	/*
@@ -1339,16 +1352,55 @@ segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i6
 
 	// Published first, because `segment_frame` is what the mapping below reads
 	// the new frames out of. A failure puts it straight back. It also unmaps
-	// whatever part of the tail `map_run` installed before it stopped, so no
-	// table entry names a frame the free below hands on.
+	// whatever part of the tail was installed before it stopped, so no table
+	// entry names a frame the free below hands on.
 	s.pieces[s.piece_n] = Run_Piece{base = base, pages = added}
 	s.piece_n += 1
 	s.pages = want
 
-	if !map_run(p, s, want - added) {
-		_ = mem.unmap_user(p.space, s.va + uintptr(want - added) * page, added)
+	/*
+	Into every holder's tables, not only this process's.
+
+	A sharer under `RFMEM` maps the same frames at the same addresses. A tail
+	this process can reach and that one cannot is not a shared run any more.
+	Plan 9 has the same answer for free: its segment is a page map a fault
+	fills in, so `ibrk` extends the map and every proc that shares it faults
+	the new pages in. Here the tables are eager, so the grow walks them. Under
+	the table lock, which finds the holders and keeps a second resize off this
+	run. The walks allocate table frames under it, and that is a spinlock
+	nested, which is the one order those are taken in.
+	*/
+	from := want - added
+	mapped: [MAX_PROCESSES]^Process
+	n := 0
+	ok := true
+	guard := sync.acquire(&table_lock)
+	for i in 0 ..< MAX_PROCESSES {
+		q := &processes[i]
+		if !q.live || q.collecting || q.space == nil || !proc_holds(q, s) {
+			continue
+		}
+		if !map_run(q, s, from) {
+			ok = false
+			break
+		}
+		mapped[n] = q
+		n += 1
+	}
+	roots: [MAX_PROCESSES]uintptr
+	if !ok {
+		for i in 0 ..< n {
+			_ = mem.unmap_user_quiet(mapped[i].space, s.va + uintptr(from) * page, added)
+			roots[i] = mem.space_root(mapped[i].space)
+		}
 		s.piece_n -= 1
-		s.pages = want - added
+		s.pages = from
+	}
+	sync.release(&table_lock, guard)
+	if !ok {
+		for i in 0 ..< n {
+			mem.shoot(roots[i], s.va + uintptr(from) * page, added)
+		}
 		mem.free_pages(base, added)
 		return -i64(vectra9.ENOMEM)
 	}
@@ -1356,6 +1408,17 @@ segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i6
 	// Nothing to record. The grown segment carries its new size, and the next
 	// `map_reserve` searches the list and steps past it like any other.
 	return 0
+}
+
+// proc_holds reports whether a process's segment list names this segment.
+@(private = "file")
+proc_holds :: proc "contextless" (q: ^Process, s: ^Segment) -> bool #no_bounds_check {
+	for i in 0 ..< q.seg_count {
+		if q.segs[i] == s {
+			return true
+		}
+	}
+	return false
 }
 
 /*

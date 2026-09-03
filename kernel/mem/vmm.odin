@@ -23,6 +23,7 @@ tables and riscv64's Sv39/Sv48 just as well.
 package mem
 
 import "kernel:arch"
+import "kernel:sync"
 
 /*
 Linker-defined bounds of the kernel image, one pair per loaded segment.
@@ -43,6 +44,14 @@ foreign {
 
 Address_Space :: struct {
 	root: uintptr, // Physical address of the top-level table
+
+	// Over the walks. A process's own system calls write its space, and so
+	// does another process that grows or shrinks a shared run from another
+	// core. Two walks that both allocate the table for one slot would each
+	// install their own. The second would leak the first's frame and lose its
+	// entries. Held for a walk, never across a shootdown, which waits for
+	// other cores.
+	lock: sync.Spinlock,
 }
 
 @(private = "file") kernel_space: Address_Space

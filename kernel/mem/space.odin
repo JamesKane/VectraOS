@@ -42,6 +42,7 @@ The caller still frees what it mapped -- through its segments now -- and
 package mem
 
 import "kernel:arch"
+import "kernel:sync"
 
 /*
 The range a program may name.
@@ -133,6 +134,7 @@ space_destroy :: proc "contextless" (space: ^Address_Space) {
 		space_switch(kernel_address_space())
 	}
 
+	guard := sync.acquire(&space.lock)
 	table := cast(^arch.Page_Table)phys_to_virt(space.root)
 	for i in 0 ..< arch.TABLE_ENTRIES / 2 {
 		free_subtree(table[i], arch.TABLE_LEVELS)
@@ -142,6 +144,7 @@ space_destroy :: proc "contextless" (space: ^Address_Space) {
 	table_frames -= 1
 	live_spaces -= 1
 	space.root = 0
+	sync.release(&space.lock, guard)
 	free_space_record(space)
 }
 
@@ -237,6 +240,8 @@ map_user :: proc "contextless" (
 	}
 
 	user := flags + {.User}
+	guard := sync.acquire(&space.lock)
+	defer sync.release(&space.lock, guard)
 	for i in 0 ..< pages {
 		step := uintptr(i) * uintptr(arch.PAGE_SIZE)
 		if err := map_at(space, virt + step, phys + step, user, 1); err != .None {
@@ -261,18 +266,43 @@ allocator. This makes them unreachable, which is the half that has to happen
 first.
 */
 unmap_user :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages: int) -> Error {
-	if space == nil || !user_span_ok(virt, pages) {
-		return .Not_Canonical
-	}
-	for i in 0 ..< pages {
-		unmap_page(space, virt + uintptr(i) * uintptr(arch.PAGE_SIZE))
+	if err := unmap_user_quiet(space, virt, pages); err != .None {
+		return err
 	}
 	// This core's translations went with each page. Another core's did not,
 	// and a core running this space still holds them until it is told.
-	if shootdown != nil {
-		shootdown(space.root, virt, pages)
+	shoot(space.root, virt, pages)
+	return .None
+}
+
+/*
+unmap_user_quiet is `unmap_user` without the telling.
+
+For a caller that changes several spaces under one lock and cannot wait for
+other cores while it holds it. It takes the entries out and leaves the
+translations, and the caller calls `shoot` for each space once the lock is
+gone. The frames may not be reused before that: a core that still translates
+through them would read whatever moved in.
+*/
+unmap_user_quiet :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages: int) -> Error {
+	if space == nil || !user_span_ok(virt, pages) {
+		return .Not_Canonical
+	}
+	guard := sync.acquire(&space.lock)
+	defer sync.release(&space.lock, guard)
+	for i in 0 ..< pages {
+		unmap_page(space, virt + uintptr(i) * uintptr(arch.PAGE_SIZE))
 	}
 	return .None
+}
+
+// shoot tells every other core translating through `root` to drop the
+// range. Public for the caller of `unmap_user_quiet`, and a no-op until the
+// scheduler registers a sender, which is for as long as there is one core.
+shoot :: proc "contextless" (root: uintptr, virt: uintptr, pages: int) {
+	if shootdown != nil {
+		shootdown(root, virt, pages)
+	}
 }
 
 /*

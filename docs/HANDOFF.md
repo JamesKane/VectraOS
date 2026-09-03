@@ -173,11 +173,12 @@ Three things about a boot are worth knowing before you read one:
 
 The one that shapes everything after it:
 
-- **No second thread in a process.** Every core the bootloader lists runs, a
-  wake kicks an idle core, a panic stops every other core, and an unmap on
-  one core reaches every other core's TLB. `docs/SMP.md` is the account.
-  What no process can do yet is have two threads, which is the thing all of
-  that was built to carry.
+- **No `SG_SHARED`.** Every core the bootloader lists runs, a wake kicks an
+  idle core, a panic stops every other core, an unmap on one core reaches
+  every other core's TLB, and a run shared under `RFMEM` grows and shrinks
+  in every holder. `docs/SMP.md` is the account. What is still missing from
+  the memory model is Plan 9's third answer to a fork, a segment shared
+  whatever the flags say, which `docs/USER.md` names.
 
 And the rest, each named in the code it is missing from. **Something that
 exists and is merely incomplete is not here.** Section 6 has those, because a
@@ -419,8 +420,9 @@ allocator has the one it always needed. An unmap reaches every core's TLB.
 
 `verify_smp` proves thirty-six things about all of that on every boot.
 `docs/SMP.md` records how each item closed, which one was closed already, and
-which lock came out of a control. What is left to build on them is a second
-thread in a process, which is `docs/USER.md`'s to argue.
+which lock came out of a control. A second thread in a process is a second
+process under `RFMEM` here. It now shares a run as it grows and shrinks, and
+`docs/USER.md` argues that under the run that grows.
 
 The one-core flake is still there. About one boot in eight at `--smp=4`
 fails a userland heap bracket by one object, before the cores start, in the

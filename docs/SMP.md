@@ -14,8 +14,9 @@ processor and parks it, spinning on a word of its own. Each waits in the
 machine state the boot core got. That is long mode, the bootloader's page
 tables, a 64 KiB stack, interrupts off, no IDT and no TSS.
 
-The response lists every core with its LAPIC id. A store of an address to a core's word sends the core
-to that address, with a pointer to its record in `rdi`.
+The response lists every core with its LAPIC id. A store of an address to a
+core's word sends the core to that address, with a pointer to its record in
+`rdi`.
 
 That retires the trampoline the handoff once listed. Vectra needs no real-mode
 stub, no copy of one below a megabyte, and no INIT-SIPI-SIPI sequence of its
@@ -169,8 +170,8 @@ it. Two scans found the same free frame, both took it, and the frame held two
 page tables.
 
 The fault was a read through the direct map, one boot in four. It arrived
-during the log lock's own test, which is how a lock on the log found a lock
-the allocator needed. `pmm_lock` covers the scan, the take and the free. The
+during the log lock's own test, which is how a lock on the log found a lock the
+allocator needed. `pmm_lock` covers the scan, the take and the free. The
 zeroing a caller does after is outside it, because the frame is that caller's
 by then.
 
@@ -181,13 +182,12 @@ The core was halted with interrupts on, and the tick was the only interrupt
 it would get. The idle thread has a slice like any other, so that could be
 ten ticks away.
 
-`sched.place` sends one now. It queues the thread under the scheduler lock, which is what makes `the
-core is idle` a fact. Then it writes the core's APIC id and `VECTOR_WAKE`
-into the interrupt command register. The
-core leaves its halt, `on_wake` acknowledges and reschedules, and the thread
-runs. Fifty such wakes cost eight ticks on QEMU. The control that sends no kick
-fails the check, and fails the workers themselves, because some wait out a
-whole idle slice.
+`sched.place` sends one now. It queues the thread under the scheduler lock,
+which is what makes `the core is idle` a fact. Then it writes the core's APIC
+id and `VECTOR_WAKE` into the interrupt command register. The core leaves its
+halt, `on_wake` acknowledges and reschedules, and the thread runs. Fifty such
+wakes cost eight ticks on QEMU. The control that sends no kick fails the check,
+and fails the workers themselves, because some wait out a whole idle slice.
 
 The placement had to learn one thing first. Load was the ready count, and a
 core with nothing queued and a thread running tied with a halted one. The
@@ -265,6 +265,18 @@ holds that page's translation. The boot core unmaps the page. With the
 shootdown the program's next touch is a page fault, within a tick. The
 control that tells no core lets the program run on through the stale entry
 for the whole of the bound.
+
+## A second thread
+
+The thing every lock above was built to carry is a process with a second thread
+on a second core. In Plan 9's model that is a second process sharing memory
+under `RFMEM`. Vectra had those, with separate tables over shared frames.
+
+What it did not have was sharing that held as the memory changed. A run grown
+in one process was a tail the other never had, and a shared run could not
+shrink. Both reach every holder now, and the shrink is the first caller of the
+shootdown for a mapping a second process holds on another core. `docs/USER.md`
+argues it, under the run that grows.
 
 ## What the self-test proves
 

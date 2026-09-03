@@ -1169,10 +1169,12 @@ framebuffer, whose extent is the hardware's.
 A `top` of zero answers the run's base rather than moving anything, which is
 `ibrk`'s query form.
 
-**A shared run may not shrink**, which is `ibrk`'s `Einuse`: another process
-maps the same frames and the ones about to go back may already be somewhere in
-that process's kernel, past the point where an address was checked. Growing has
-no such rule, here or there, because it takes pages nobody had.
+**A shared run shrinks in every holder at once.** It used to refuse, which is
+`ibrk`'s `Einuse`: another process mapped the same frames, and the ones about
+to go back could be somewhere in that process's kernel, past the point where
+an address was checked. The shrink reaches every holder's tables now, and
+every core running one of them, before a frame goes back. The section on a
+run that is shared as it evolves says how.
 
 ### A run is a list of pieces now, and that was forced
 
@@ -1187,9 +1189,9 @@ every single one -- which is to say it refused the only caller the milestone
 was built for.
 
 So a run is a base, an extent, and up to `MAX_RUN_PIECES` more of the same. A
-grow bolts a piece on the end, takes pages nobody had, and leaves a sharer's
-mapping exactly as true as it was: that process simply does not have the new
-tail, which it never asked for.
+grow bolts a piece on the end and takes pages nobody had. It used to leave a
+sharer's mapping as it was, without the new tail. It reaches every holder's
+tables now, which is the section below.
 
 Plan 9 needs none of this. Its segments are a page map a fault fills in, so
 `ibrk` extends the map and nothing moves. This is the same idea with the pieces
@@ -1203,19 +1205,46 @@ slot was born with, and `docs/DRAW.md` recorded that as this call's absence
 speaking. A client asks for a client area and the server grows the run under
 it now.
 
-**Growing must work and shrinking is best effort.** A shared run cannot
-shrink. That is a reason to keep the pages rather than to refuse the client. A
-window that gets smaller and keeps its run works. A window that cannot get
-bigger is the cap this call exists to lift.
+**Growing must work, and shrinking works too now.** A shared run could not
+shrink, and that was a reason to keep the pages rather than to refuse the
+client. It shrinks in every holder at once now, and the section below says
+how. A window that gets smaller gives its pages back, and a window that cannot
+get bigger is the cap this call exists to lift.
 
 The server's runs stopped being shared when `segdetach` arrived and they
 became the session's, and the first shrink was still refused. The runtime
 forks a worker per parked request under `RFMEM`. A worker that answered and
 exited keeps its segments until the next fork collects it. Three dead
 workers from the keyboard's checks each still counted as a holder. So
-`segbrk` collects the orphans before it believes the count, the way `rfork`
-does before it wants a slot. A shrink is refused only for a sharer that is
-alive.
+`segbrk` collects the orphans before it walks the holders, the way `rfork`
+does before it wants a slot. A dead holder is one fewer space to walk.
+
+### A shared run is shared as it evolves
+
+`RFMEM` shares the frames a run has at the fork, in the sharer's own tables.
+Plan 9's segment is a page map a fault fills in.
+
+A grow by one proc is faulted
+in by every proc that shares the segment, and nothing has to walk anything.
+Vectra's tables are eager, so a resize walks every holder. A grow maps the new
+piece into each holder's space. A shrink takes the tail out of each holder's
+tables, and tells every core running any of them to drop the translations. Only
+then does it give the frames back. That order is what keeps a frame from being
+reused while a core still translates through it.
+
+The holders are found under the process-table lock, which also keeps a second
+resize off the run while one is under way. Each space has a lock of its own
+over its walks. A holder may be mapping something else on another core at the
+same instant. The shootdown is sent after both are let go of, because it waits
+for other cores. A wait under a spinlock is the hazard `sync.require_sleepable`
+names.
+
+The check is `sharer`, in `verify_rfork`. The parent grows a shared run and
+writes a witness into the new page, and the child reads it through its own
+tables. The parent then shrinks the run, and the child's next touch of that
+page is a page fault, on whichever core the child is. The control whose
+shrink reaches only the caller's tables leaves the child reading the page
+after the shrink, and its exit status says so.
 
 ### The controls
 

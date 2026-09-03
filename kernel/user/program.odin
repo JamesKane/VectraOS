@@ -514,6 +514,24 @@ MEMFORK_WITNESS_VALUE :: u64(0xC0FF_EEC0_FFEE)
 MEMFORK_GAVE_UP :: u64(0x99)
 MEMFORK_PARENT_STATUS :: u64(42)
 
+/*
+Where the sharer keeps its answers. The parent takes a two-page run, forks a
+sharer, grows the run by a page and writes a witness in the new page. Then it
+shrinks the run to one page. The child reads the witness through its own tables
+once told the grow happened, and touches the same page again once told the
+shrink did. The second touch is a fault if the shrink reached it and a word in
+`SHARER_SURVIVED` if it did not.
+*/
+MARK_SHARER :: u64(0x5348_4152_5348_4152) // SHARSHAR
+SHARER_BASE :: 1 // The run's address
+SHARER_GROWN :: 2 // The parent says the grow happened
+SHARER_SEEN :: 3 // What the child read through the grown page
+SHARER_SHRUNK :: 4 // The parent says the shrink happened
+SHARER_PID :: 5 // The child's pid
+SHARER_SURVIVED :: 6 // Written by the child only if the shrunk page still answered
+SHARER_WITNESS :: u64(0xBEEF)
+SHARER_PAGES :: 2
+
 FDFORKER_WAITED :: 2
 FDFORKER_CLOSED :: 3
 
@@ -675,6 +693,8 @@ foreign {
 	vectra_user_forker_end: byte
 	vectra_user_memfork: byte
 	vectra_user_memfork_end: byte
+	vectra_user_sharer: byte
+	vectra_user_sharer_end: byte
 	vectra_user_fdforker: byte
 	vectra_user_fdforker_end: byte
 	vectra_user_refuser: byte
@@ -761,6 +781,9 @@ program_noter :: proc "contextless" () -> []u8 {return blob(&vectra_user_noter, 
 program_forker :: proc "contextless" () -> []u8 {return blob(&vectra_user_forker, &vectra_user_forker_end)}
 program_grouper :: proc "contextless" () -> []u8 {return blob(&vectra_user_grouper, &vectra_user_grouper_end)}
 program_memfork :: proc "contextless" () -> []u8 {return blob(&vectra_user_memfork, &vectra_user_memfork_end)}
+// And the one that shares a run and then resizes it. A grow the sharer has to
+// see, and a shrink the sharer has to feel.
+program_sharer :: proc "contextless" () -> []u8 {return blob(&vectra_user_sharer, &vectra_user_sharer_end)}
 program_fdforker :: proc "contextless" () -> []u8 {return blob(&vectra_user_fdforker, &vectra_user_fdforker_end)}
 program_refuser :: proc "contextless" () -> []u8 {return blob(&vectra_user_refuser, &vectra_user_refuser_end)}
 

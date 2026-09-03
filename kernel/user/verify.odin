@@ -2757,6 +2757,56 @@ verify_rfork :: proc(r: ^Result) {
 	check(r, await_collected(child, childpid), "the kernel's write releases the orphan, and the reaper takes it back unasked")
 	check(r, mem.frame_is_free(shared_text), "and the last release frees the shared text")
 
+	// -- A shared run grows and shrinks in every holder -----------------------
+
+	/*
+	`RFMEM` shares the frames a run has at the fork. What it shares after is
+	the question. A grow in one process used to be a tail the other never
+	had, and a shrink was refused while the other lived. Both reach every
+	holder now.
+
+	The parent grows, writes a witness into the new page, and the
+	child reads it through its own tables. The parent then shrinks, and the
+	child's next touch of that page is a fault, on whichever core the child
+	is. That is the shootdown doing its job for a second process, which is
+	what a second thread is here.
+	*/
+	p, err = load("sharer", program_sharer())
+	if !check(r, err == .None && p != nil, "a program that shares a run and resizes it starts") {
+		return
+	}
+	r.programs += 1
+	if !check(r, wait(p, PATIENCE), "the parent grows, waits for the child to see, shrinks, and leaves") {
+		return
+	}
+	check(r, p.exit.deliberate && p.exit.status == 0, "with zero, every call it made answered")
+	check(
+		r,
+		cell(p, SHARER_SEEN) == SHARER_WITNESS,
+		"the child read the witness through the page the parent grew",
+	)
+	sharer := find_child(p.pid, cell(p, SHARER_PID))
+	if check(r, sharer != nil, "the child is still in the table") {
+		base := uintptr(cell(p, SHARER_BASE))
+		check(r, wait(sharer, PATIENCE), "and it ends")
+		check(
+			r,
+			!sharer.exit.deliberate && sharer.exit.kind == .Page_Fault &&
+			sharer.exit.address >= base + uintptr(arch.PAGE_SIZE) &&
+			sharer.exit.address < base + 2 * uintptr(arch.PAGE_SIZE),
+			"by a page fault on the page the parent shrank away, in the child's own tables",
+		)
+		check(r, cell(p, SHARER_SURVIVED) == 0, "and it never read that page after the shrink")
+		left := sweep(sharer)
+		check(
+			r,
+			left.stray == 0 && left.borrowed == 0,
+			"and every page the child still maps is one the run still holds",
+		)
+		check(r, destroy(sharer), "the child is collected")
+	}
+	finish(r, p, "and the sharer's parent is taken down")
+
 	// -- A shared descriptor group spends a close once ------------------------
 
 	p, err = load("fdforker", program_fdforker(), RFPROC)
@@ -2875,7 +2925,7 @@ drain_pinned :: proc(r: ^Result, pin_before: int, what: string) {
 CONSRV_TYPED :: "vectra lives\n"
 
 // A deadline long enough that a read is genuinely parked in a worker before
-// the wire gives up on it, and how many such reads `verify_consrv` abandons.
+// the wire gives up on it. And how many such reads `verify_consrv` abandons.
 // Three, with a fourth parked beside them, is one more than a pool of three
 // slots holds if a flushed worker never leaves.
 @(private = "file")
@@ -3012,18 +3062,20 @@ verify_consrv :: proc(r: ^Result) {
 	/*
 	The wire flushes a read whose deadline passes, and the flush used to stop
 	at the wire. `serve_mux`'s worker never heard it, so every abandoned read
-	left a worker polling the ring for ever, and three were enough to spend
-	the pool and park the loop in the fourth. `docs/DRAW.md` section 13 has
-	the boot that found it, and `sys/libuser/serve.odin` has the cancel that
+	left a worker polling the ring for ever. Three were enough to spend the
+	pool and park the loop in the fourth. `docs/DRAW.md` section 13 has the
+	boot that found it, and `sys/libuser/serve.odin` has the cancel that
 	reaches the worker now.
 
-	Three deadline reads, one after another, with the reader above still
-	parked in a slot of its own. Each leaves within a tick of its flush. The
-	wire's own counters are the witness. A discard per flush, because the
-	flushed reply was never sent. No stale reply, because nothing wrote under
-	a flushed tag after its Rflush. The stat afterwards is the pool not spent,
-	and the line typed below reaching the first reader whole is the flushed
-	workers having drained nothing on their way out.
+	Three deadline reads, one after another, with the reader above still parked
+	in a slot of its own. Each leaves within a tick of its flush. The wire's
+	own counters are the witness.
+
+	A discard per flush, because the flushed reply was never sent. No stale
+	reply, because nothing wrote under a flushed tag after its Rflush. The stat
+	afterwards is the pool not spent. The line typed below reaching the first
+	reader whole is the flushed workers having drained nothing on their way
+	out.
 
 	With the cancel removed, the third read is answered inline by a loop that
 	then parks. Its flush is never read, and the wire poisons itself after
@@ -4543,14 +4595,15 @@ are not the same instant.
 
 **What is polled is the size, not the file**, and the first cut of this got it
 wrong in a way worth keeping written down. A read with a deadline looked like
-the way to ask an empty queue whether anything was there. It is not: the
+the way to ask an empty queue whether anything was there. It is not. The
 deadline flushed the request on the wire and `serve_mux`'s worker never heard
-it, so each abandoned read left a worker polling a ring for ever, and the
-server wedged once every slot was spent. The cancel reaches the worker now,
-and `verify_consrv` abandons three reads a boot to prove it, but a read is
-still a claim on the next line and a poll should not make one. `cons` answers
-its size with the bytes waiting, the way `kbdfs` does, so the queue can be
-asked without being read from.
+it. Each abandoned read left a worker polling a ring for ever, and the server
+wedged once every slot was spent.
+
+The cancel reaches the worker now, and `verify_consrv` abandons three reads a
+boot to prove it. But a read is still a claim on the next line, and a poll
+should not make one. `cons` answers its size with the bytes waiting, the way
+`kbdfs` does, so the queue can be asked without being read from.
 */
 @(private = "file")
 verify_cons :: proc(r: ^Result, zero_ctl: ^vfs.Chan, one_ctl: ^vfs.Chan) #no_bounds_check {
@@ -4917,14 +4970,15 @@ rather than a coincidence:
 
 **What is polled is the size, not the file**, and the first cut of this got it
 wrong in a way worth keeping written down. A read with a deadline looked like
-the way to ask an empty queue whether anything was there. It is not: the
+the way to ask an empty queue whether anything was there. It is not. The
 deadline flushed the request on the wire and `serve_mux`'s worker never heard
-it, so each abandoned read left a worker polling a ring for ever, and the
-server wedged once every slot was spent. The cancel reaches the worker now,
-and `verify_consrv` abandons three reads a boot to prove it, but a read is
-still a claim on the next line and a poll should not make one. `cons` answers
-its size with the bytes waiting, the way `kbdfs` does, so a queue can be
-asked without being read from.
+it. Each abandoned read left a worker polling a ring for ever, and the server
+wedged once every slot was spent.
+
+The cancel reaches the worker now, and `verify_consrv` abandons three reads a
+boot to prove it. But a read is still a claim on the next line, and a poll
+should not make one. `cons` answers its size with the bytes waiting, the way
+`kbdfs` does, so a queue can be asked without being read from.
 
 The poll is because the delivery crosses a process. The draw server's reader
 child is parked on `/dev/cons` in a process of its own, so a line typed here is
@@ -5286,13 +5340,15 @@ verify_ctl :: proc(
 	/*
 	And smaller again, and the run follows now.
 
-	**A shared run may not shrink**, which is `ibrk`'s `Einuse` and
-	`docs/USER.md`'s reason: another process maps the same frames and the ones
-	about to go back may already be somewhere in its kernel. Every window run
-	was shared while the server bought them at start, before its fork. This
-	line used to say the run did not have to follow. A run is bought at
-	`Tlopen` now, after the fork, so it is the server's alone and the pages go
-	back. The frames say so below.
+	**A shared run could not shrink**, which was `ibrk`'s `Einuse`. Another
+	process mapped the same frames. The ones about to go back could already be
+	somewhere in its kernel. Every window run was shared while the server
+	bought them at start, before its fork. This line used to say the run did not have to follow.
+
+	A run is bought at `Tlopen` now, after the fork, so it is the server's
+	alone. And a shared run shrinks in every holder now in any case, which
+	`verify_rfork` checks. The pages go back either way, and the frames say so
+	below.
 
 	The window gets smaller either way. Keeping the pages is what a refused
 	shrink costs, and refusing the *client* is not -- which is the

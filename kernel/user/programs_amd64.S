@@ -1573,3 +1573,104 @@ vectra_user_anon:
 	ud2
 .globl vectra_user_anon_end
 vectra_user_anon_end:
+
+/*
+ * sharer: a run shared under RFMEM, grown and then shrunk by the parent.
+ *
+ * The parent takes two pages, forks a sharer, grows the run to three pages,
+ * writes a witness into the third, and raises a flag in the data page. The
+ * child waits for the flag, reads the witness through its own tables, and
+ * writes what it read. The parent then shrinks the run to one page and
+ * raises a second flag. The child touches the third page again: a page
+ * fault ends it if the shrink reached its tables, and a word in cell 6 says
+ * the mapping survived if it did not. Cells are the data page's, shared.
+ */
+.balign 16
+.globl vectra_user_sharer
+vectra_user_sharer:
+	movq %rdi, %rbx
+	movabsq $0x5348415253484152, %rax
+	movq %rax, (%rbx)
+
+	movq $8192, %rdi
+	movq $22, %rax
+	syscall
+	testq %rax, %rax
+	js 39f
+	movq %rax, %r12
+	movq %rax, 8(%rbx)
+
+	movq $0x30, %rdi
+	movq $17, %rax
+	syscall
+	testq %rax, %rax
+	jnz 35f
+
+	movq $400000000, %rcx
+31:
+	cmpq $0, 16(%rbx)
+	jne 32f
+	decq %rcx
+	jnz 31b
+	movq $0x99, %rdi
+	movq $4, %rax
+	syscall
+32:
+	movq 4096(%r12), %rax
+	movq %rax, 24(%rbx)
+	movq $400000000, %rcx
+33:
+	cmpq $0, 32(%rbx)
+	jne 34f
+	decq %rcx
+	jnz 33b
+	movq $0x9A, %rdi
+	movq $4, %rax
+	syscall
+34:
+	movq 4096(%r12), %rax
+	movq %rax, 48(%rbx)
+	movq $0x9B, %rdi
+	movq $4, %rax
+	syscall
+	ud2
+
+35:
+	js 39f
+	movq %rax, 40(%rbx)
+	movq %r12, %rdi
+	leaq 12288(%r12), %rsi
+	movq $23, %rax
+	syscall
+	testq %rax, %rax
+	jnz 39f
+	movq $0xBEEF, 4096(%r12)
+	movq $1, 16(%rbx)
+	movq $400000000, %rcx
+36:
+	cmpq $0, 24(%rbx)
+	jne 37f
+	decq %rcx
+	jnz 36b
+	movq $0x97, %rdi
+	movq $4, %rax
+	syscall
+37:
+	movq %r12, %rdi
+	leaq 4096(%r12), %rsi
+	movq $23, %rax
+	syscall
+	testq %rax, %rax
+	jnz 39f
+	movq $1, 32(%rbx)
+	xorl %edi, %edi
+	movq $4, %rax
+	syscall
+	ud2
+39:
+	movq $0x98, %rdi
+	movq $4, %rax
+	syscall
+	ud2
+.globl vectra_user_sharer_end
+vectra_user_sharer_end:
