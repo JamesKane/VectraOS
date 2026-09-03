@@ -175,7 +175,16 @@ stack_write :: proc "contextless" (stack: ^Segment, top: uintptr, at: uintptr, d
 		page := int((va - base) / uintptr(arch.PAGE_SIZE))
 		frame := segment_frame(stack, page)
 		if frame == 0 {
-			return false
+			// A hole under the arguments: a long argv reaches below the
+			// top page. It is filled here the way a fault would fill it,
+			// except that the mapping is the caller's to make, as it makes
+			// the top page's.
+			fresh, ok := mem.alloc_page_zeroed()
+			if !ok {
+				return false
+			}
+			segment_set_frame(stack, page, fresh)
+			frame = fresh
 		}
 		dst := cast([^]u8)mem.phys_to_virt(frame)
 		dst[(va - base) % uintptr(arch.PAGE_SIZE)] = data[i]

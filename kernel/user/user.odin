@@ -357,7 +357,7 @@ The same argument `mem.spaces` makes. A record a program can make the kernel
 allocate is a record a program can exhaust the machine through. This is also
 the first code in Vectra that anything untrusted will reach.
 */
-MAX_PROCESSES :: 32
+MAX_PROCESSES :: 256
 
 EXITS_MAX :: abi.EXITS_MAX
 
@@ -519,6 +519,7 @@ cow_forks: int
 cow_copies: int
 cow_upgrades: int
 page_refills: int
+stack_pages_grown: int
 
 /*
 fix_fault is Plan 9's `fixfault` in miniature: the one kind of page fault a
@@ -550,7 +551,22 @@ fix_fault :: proc "contextless" (p: ^Process, addr: uintptr, write: bool) -> boo
 	j := int((va - s.va) / page)
 	cur := segment_frame(s, j)
 	if cur == 0 {
-		return false
+		// A hole: a stack page nothing has reached before. It gets a frame
+		// of zeros now, which is the stack growing.
+		if s.kind != .Stack || s.run {
+			return false
+		}
+		frame, ok := mem.alloc_page_zeroed()
+		if !ok {
+			return false
+		}
+		if mem.map_user(p.space, va, frame, s.flags, 1) != .None {
+			mem.free_page(frame)
+			return false
+		}
+		segment_set_frame(s, j, frame)
+		stack_pages_grown += 1
+		return true
 	}
 	flags, present := mem.permissions(p.space, va)
 	if !present {

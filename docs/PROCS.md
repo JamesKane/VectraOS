@@ -131,26 +131,34 @@ in fewer ticks than before -- the number is on the boot line already --
 and the tool script's exec count costs no copy. Two hundred `sleep 100 &`
 from one shell are two hundred processes at once, and `ps` lists them.
 
-**Where it stands.** Copy on write and the growable frame list are done.
-A fork of a segment with one holder shares its frames read-only in both
-spaces and counts the holders in the physical allocator; the first write
-by either side faults into `fix_fault`, which copies that page into the
-writer's own segment, or gives the write bit back when the writer is the
-last holder. A segment with several holders under `RFMEM` is still copied
-eagerly, and a segment about to be shared has its copy-on-write pages
-resolved first, so the fault handler never reaches another process and
-needs no shootdown. A page a segment names that the tables lack is
-refilled, which is what let the multiprocessor shootdown test watch a
-fault rather than a death. The kernel's own writes into a program --
-`copy_out`, a note's frame, the self-tests' cells -- resolve the page
-first. A segment's frames are a list from the heap now, and a run that
-has a page replaced becomes one; `segbrk` grows and shrinks both shapes.
+**Where it stands.** Done, less the kernel stack. A fork of a segment
+with one holder shares its frames read-only in both spaces and counts the
+holders in the physical allocator; the first write by either side faults
+into `fix_fault`, which copies that page into the writer's own segment, or
+gives the write bit back when the writer is the last holder. A segment
+with several holders under `RFMEM` is still copied eagerly, and a segment
+about to be shared has its copy-on-write pages resolved first, so the
+fault handler never reaches another process and needs no shootdown. A
+page a segment names that the tables lack is refilled, which is what let
+the multiprocessor shootdown test watch a fault rather than a death. The
+kernel's own writes into a program -- `copy_out`, a note's frame, the
+self-tests' cells -- resolve the page first. A segment's frames are a list
+from the heap, grown as pages arrive; a run that has a page replaced
+becomes one, and `segbrk` grows and shrinks both shapes. The stack is one
+frame at the top and holes below it that a fault fills, so a program pays
+for the stack it uses. The process table is two hundred and fifty-six,
+with the spaces, segments, environment groups, descriptor tables and the
+console's fids sized to match; a table rather than a pool sized by memory,
+which is the difference to close the day memory is what runs out.
 
 The user suite passes on the three boards with 636 forks sharing their
-pages and about 780 pages copied on a write. The tool script fell from
-4700 to 3400 ticks on amd64, 4500 to 2600 on arm64, and 6100 to 2900 on
-riscv64; the shell script from 231 to 155 ticks on amd64. The stack that
-grows and the process pool are the two pieces still to come.
+pages, about 780 pages copied on a write and 168 stack pages grown on
+demand. The tool script fell from 4700 to 3400 ticks on amd64, 4500 to
+2400 on arm64, and 6100 to 2900 on riscv64; the shell script from 231 to
+155 ticks on amd64. From the serial shell, `for(i in `{seq 200}) { sleep
+100 & }` leaves two hundred `sleep`s alive at once and `ps` lists 212
+processes. The kernel stack stays at 32 KiB until something measures the
+deepest path; nothing here runs out of it.
 
 ### Step 3: the primitives a library needs
 

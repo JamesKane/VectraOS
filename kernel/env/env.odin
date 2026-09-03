@@ -60,9 +60,9 @@ import "vsys:vectra9"
 
 // How many groups may exist at once. One per process at the ceiling, plus
 // slack for a fork that holds a fresh copy beside the one it copies from.
-// `kernel/user` has thirty-two process slots; this does not import it to say
-// so.
-MAX_GROUPS :: 40
+// `kernel/user` has two hundred and fifty-six process slots; this does not
+// import it to say so.
+MAX_GROUPS :: 260
 
 // How many variables a group holds, and how long a name or a value may be.
 MAX_VARS :: 32

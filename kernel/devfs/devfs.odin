@@ -205,8 +205,8 @@ WORKERS :: mnt.MAX_REQUESTS + 1
 
 // Fids this server will hand out at once. A ceiling rather than a guess -- see
 // `vfs.fidtab_init`. Four files means a client would have to clone the same
-// handle sixty times to reach it.
-DEV_MAX_FIDS :: 256
+// handle hundreds of times to reach it: every process holds three here.
+DEV_MAX_FIDS :: 1024
 
 @(private)
 dev_tree: Dev_Tree

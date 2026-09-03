@@ -428,9 +428,9 @@ and `docs/SCHED.md` records the 9front model.
 **One uncaught mutation is now reachable.** `docs/DRAW.md` section 8 records
 that `rfork` copying a device segment is inert, because nothing forks a process
 that holds one. The compositor is the process that would, and a worker per
-window is the shape that would make it fork. It also pays 4 MB per window at
-that moment, because `fork_segments` copies a run eagerly where Plan 9 copies
-on write.
+window is the shape that would make it fork. It paid 4 MB per window at
+that moment while `fork_segments` copied a run eagerly; it copies on write
+now, `docs/PROCS.md` step 2.
 
 ### The next plan: processes and threads
 

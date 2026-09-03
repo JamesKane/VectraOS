@@ -1409,10 +1409,12 @@ program that never asked for it.
   process holds, which is `SG_CEXEC` behaviour for all of them.
 - **No `attr` argument at all.** `SG_RONLY` and `SG_CEXEC` are what Plan 9's
   first argument carries. A read-only run has no way to ask here.
-- **The copy at fork is eager.** `dupseg`'s comment says copy on write and
-  means it: it copies page table entries and lets the fault handler do the
-  work. `fork_segments` copies the bytes. For a 4 MB window that is 4 MB per
-  fork, which is the compositor's own milestone paying for this one.
+- **The copy at fork was eager, and is not.** `dupseg`'s comment says copy on
+  write and means it: it copies page table entries and lets the fault
+  handler do the work. `fork_segments` copied the bytes for seven
+  milestones. Since `docs/PROCS.md` step 2 it shares the frames read-only,
+  the physical allocator counts their holders, and `fix_fault` copies a
+  page on the first write to it -- `fixfault`'s job, in `user.odin`.
 - **The bound is three orders of magnitude smaller.** `SEGMAXSIZE` is about
   1.94 GB per class. `SEGALLOC_MAX` is 4 MB.
 
@@ -1788,7 +1790,7 @@ and everything it holds stay until the machine stops.
   It gets the count of what landed, which every write interface already makes a
   caller handle. A page the process pins would still beat the copy for the
   largest buffers if it ever matters.
-- **`MAX_PROCESSES` is thirty-two, from a fixed table**, and `docs/PROCS.md` is the plan to make it a pool. The same argument
+- **`MAX_PROCESSES` is two hundred and fifty-six, from a fixed table**, and `docs/PROCS.md` says what would make it a pool. The same argument
   `mem.spaces` and `srv.MAX_SERVICES` make. This is also the first code in
   Vectra that anything untrusted reaches. A record a program can make the
   kernel allocate is a record a program can exhaust the machine through.

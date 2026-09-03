@@ -2005,7 +2005,9 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 		text_ok && .User in text_flags && .Write not_in text_flags && .No_Execute not_in text_flags,
 		"the entry's page executes and refuses a write",
 	)
-	stack_flags, stack_ok := mem.permissions(p.space, STACK_VA2)
+	// The top page, which is the one the loader maps; the rest of the
+	// stack is holes a fault fills as the program grows down into them.
+	stack_flags, stack_ok := mem.permissions(p.space, STACK_TOP - uintptr(arch.PAGE_SIZE))
 	check(
 		r,
 		stack_ok && .User in stack_flags && .Write in stack_flags && .No_Execute in stack_flags,

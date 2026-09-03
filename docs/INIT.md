@@ -92,7 +92,7 @@ every server with two blocking sources forks a reader, and `serve_mux`
 forked a worker for every request that parked. The process table went from
 twelve to thirty-two for this step and the console's fid table from
 sixty-four to two hundred and fifty-six, because a running system is not a
-self-test. `docs/PROCS.md` is the process and thread system revisited to be
+self-test; `docs/PROCS.md` step 2 took both further. `docs/PROCS.md` is the process and thread system revisited to be
 Plan 9's; its first step took the workers away, and two shells are ten
 processes -- `ps` from the serial line lists them.
 

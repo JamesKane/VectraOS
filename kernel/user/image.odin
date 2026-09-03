@@ -594,7 +594,17 @@ load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 	if stack == nil || !proc_add_segment(p, stack) {
 		return 0, 0, 0, vectra9.ENOMEM
 	}
+	// The stack is a segment of STACK_PAGES2 pages with one frame in it,
+	// the top page, where the arguments go and the first frames land. The
+	// rest are holes a fault fills as the stack grows down into them --
+	// `fix_fault`, and Plan 9's stack segment growing on demand.
 	for j in 0 ..< STACK_PAGES2 {
+		if j < STACK_PAGES2 - 1 {
+			if !segment_add_frame(stack, 0) {
+				return 0, 0, 0, vectra9.ENOMEM
+			}
+			continue
+		}
 		frame, ok := mem.alloc_page_zeroed()
 		if !ok {
 			return 0, 0, 0, vectra9.ENOMEM

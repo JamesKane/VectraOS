@@ -442,7 +442,7 @@ walk_subtree :: proc "contextless" (
 // grows on demand is a table a program can exhaust the machine through, which
 // is the argument `vfs.fidtab_init` and `srv.MAX_SERVICES` already make.
 
-MAX_SPACES :: 64
+MAX_SPACES :: 260
 
 @(private = "file")
 Space_Slot :: struct {

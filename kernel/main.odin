@@ -2142,7 +2142,9 @@ verify_user :: proc() {
 		libodin.put_uint(&sink, u64(user.cow_forks))
 		libodin.put_str(&sink, " forks shared their pages and ")
 		libodin.put_uint(&sink, u64(user.cow_copies))
-		libodin.put_str(&sink, " pages were copied on a write")
+		libodin.put_str(&sink, " pages were copied on a write, ")
+		libodin.put_uint(&sink, u64(user.stack_pages_grown))
+		libodin.put_str(&sink, " stack pages grown on demand")
 		libodin.put_str(
 			&sink,
 			", a typed line served by a process that forked",

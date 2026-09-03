@@ -181,7 +181,7 @@ MAX_PROC_SEGS :: 8
 // The pool. Twelve processes of five segments is sixty at the ceiling, and
 // the self-tests run mostly one program at a time. A full pool is ENOMEM to
 // the loader, not a panic.
-MAX_SEGMENTS :: 64
+MAX_SEGMENTS :: 1024
 
 @(private = "file")
 Segment_Slot :: struct {
@@ -288,10 +288,22 @@ sweep :: proc "contextless" (p: ^Process) -> Sweep #no_bounds_check {
 	scan := Sweep_Scan{p = p}
 	scan.found.leaves = mem.walk_user(p.space, &scan, sweep_leaf)
 
+	// A hole -- a stack page nothing has reached -- has no frame and no leaf,
+	// and is short of nothing. A run has a frame under every page.
 	covered := 0
 	for i in 0 ..< p.seg_count {
-		if p.segs[i] != nil {
-			covered += p.segs[i].pages
+		s := p.segs[i]
+		if s == nil {
+			continue
+		}
+		if s.run {
+			covered += s.pages
+			continue
+		}
+		for j in 0 ..< min(s.pages, len(s.frames)) {
+			if s.frames[j] != 0 {
+				covered += 1
+			}
 		}
 	}
 	// Every leaf inside some segment's extent counts against that extent,
