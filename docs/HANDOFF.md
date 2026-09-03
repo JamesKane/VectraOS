@@ -374,7 +374,14 @@ the documents it points at.
 
 **Next, in order:**
 
-1. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the
+1. **A command line, and a disk to keep it on.** `docs/SHELL.md` is the plan:
+   Plan 9's process ABI for programs (arguments, an environment device,
+   `stat`, `dirread`, a current directory, string statuses, a heap in
+   ring 3), then `rc` and the first tools in Odin, `#p`, a `virtio-blk`
+   driver over PCI on every board, a FAT server so the host and the guest
+   share `build/esp`, a filesystem of Vectra's own after it, and an `init`
+   that ends the boot at a prompt.
+2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
 
