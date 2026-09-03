@@ -14,6 +14,8 @@ binding beside it is what makes that so.
 */
 package riscv64
 
+import "kernel:arch/neutral"
+
 // The supervisor status register's bits this package reads and writes.
 SSTATUS_SIE :: u64(1) << 1  // Supervisor interrupts enabled
 SSTATUS_SPIE :: u64(1) << 5 // What SIE becomes on `sret`
@@ -232,13 +234,8 @@ cpu_hart_number :: proc "contextless" () -> u32 {
 
 // -- What kind of core this is ----------------------------------------------------
 
-Cpu_Class :: enum {
-	Efficiency,
-	Performance,
-	Prime,
-}
-
-CAPACITY_FULL :: 1024
+Cpu_Class :: neutral.Cpu_Class
+CAPACITY_FULL :: neutral.CAPACITY_FULL
 
 cpu_class :: proc "contextless" () -> (class: Cpu_Class, capacity: int) {
 	return .Performance, CAPACITY_FULL

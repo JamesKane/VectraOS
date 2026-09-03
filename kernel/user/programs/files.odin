@@ -3,18 +3,19 @@
 // names, and their lengths arrive as the two arguments.
 package programs
 
+import "vsys:abi"
 import "vsys:libuser"
 
 // namer opens a path, writes to it, closes it, writes to the closed
 // descriptor, and opens a path that is not there. Five answers.
 namer :: proc "contextless" (cells: ^Cells, path_len, text_len: u64) -> ! {
 	cells[0] = 0x4E414D454E414D45
-	fd := libuser.open(text(cells, 128, path_len), 1)
+	fd := libuser.open(text(cells, 128, path_len), abi.O_WRONLY)
 	put(cells, 1, fd)
 	put(cells, 2, libuser.write(int(fd), slot(cells, 256, text_len)))
 	put(cells, 3, libuser.close(int(fd)))
 	put(cells, 4, libuser.write(int(fd), slot(cells, 256, text_len)))
-	put(cells, 5, libuser.open(text(cells, 320, path_len), 0))
+	put(cells, 5, libuser.open(text(cells, 320, path_len), abi.O_RDONLY))
 	libuser.exit(0)
 }
 
@@ -24,7 +25,7 @@ namer :: proc "contextless" (cells: ^Cells, path_len, text_len: u64) -> ! {
 reader :: proc "contextless" (cells: ^Cells, path_len: u64) -> ! {
 	cells[0] = 0x5245414452454144
 	cells[8] = ~u64(0)
-	fd := libuser.open(text(cells, 128, path_len), 0)
+	fd := libuser.open(text(cells, 128, path_len), abi.O_RDONLY)
 	put(cells, 1, fd)
 	put(cells, 2, libuser.read(int(fd), slot(cells, 64, 8)))
 	own_text := ([^]u8)(uintptr(0x400000))
@@ -37,8 +38,8 @@ reader :: proc "contextless" (cells: ^Cells, path_len: u64) -> ! {
 // the new name, and then through descriptor 1, which it opened before.
 binder :: proc "contextless" (cells: ^Cells, path_len, text_len: u64) -> ! {
 	cells[0] = 0x42494E4442494E44
-	put(cells, 1, libuser.bind(text(cells, 128, path_len), text(cells, 192, path_len), 0))
-	fd := libuser.open(text(cells, 192, path_len), 1)
+	put(cells, 1, libuser.bind(text(cells, 128, path_len), text(cells, 192, path_len), abi.ORDER_REPLACE))
+	fd := libuser.open(text(cells, 192, path_len), abi.O_WRONLY)
 	put(cells, 2, fd)
 	put(cells, 3, libuser.write(int(fd), slot(cells, 256, text_len)))
 	put(cells, 4, libuser.close(int(fd)))
@@ -50,7 +51,7 @@ binder :: proc "contextless" (cells: ^Cells, path_len, text_len: u64) -> ! {
 // seeks back, and reads what landed.
 painter :: proc "contextless" (cells: ^Cells, path_len, text_len: u64) -> ! {
 	cells[0] = 0x5041494E5041494E
-	fd := libuser.open(text(cells, 128, path_len), 2)
+	fd := libuser.open(text(cells, 128, path_len), abi.O_RDWR)
 	put(cells, 1, fd)
 	offset := cells[24]
 	put(cells, 2, libuser.seek(int(fd), offset))
@@ -66,7 +67,7 @@ painter :: proc "contextless" (cells: ^Cells, path_len, text_len: u64) -> ! {
 // which is more than one call's copy bound.
 bulkio :: proc "contextless" (cells: ^Cells, path_len, offset: u64) -> ! {
 	cells[0] = 0x42554C4B42554C4B
-	fd := libuser.open(text(cells, 32, path_len), 2)
+	fd := libuser.open(text(cells, 32, path_len), abi.O_RDWR)
 	put(cells, 1, fd)
 	_ = libuser.seek(int(fd), offset)
 	put(cells, 2, libuser.write(int(fd), slot(cells, 96, 4000)))

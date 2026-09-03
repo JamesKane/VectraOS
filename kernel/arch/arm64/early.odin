@@ -17,10 +17,12 @@ what a kernel thread's TTBR0 names once the VMM is up -- see `paging.odin`.
 
 The table addresses have to be physical, and the only way to know one before
 there is a memory map is the slide the bootloader reports between where the
-image is and where it was linked. `serial_console` receives it from `kmain`
-and keeps it, because `paging.odin` needs the same number later.
+image is and where it was linked. `set_boot_layout` receives it from `kmain`
+before anything else, and `paging.odin` needs the same number later.
 */
 package arm64
+
+import "kernel:arch/neutral"
 
 // Where the `virt` board's first PL011 is. Assumed rather than read from the
 // device tree, which this file cannot parse before the runtime is up.
@@ -38,8 +40,15 @@ Table :: struct #align(PAGE_SIZE) {
 @(private = "file") window_l3: Table
 
 // The difference between an address in the image and its physical address.
-// Zero until `serial_console` has run.
+// Zero until `set_boot_layout` has run.
 @(private = "file") slide: u64
+
+// set_boot_layout takes the bootloader's word on where memory is. The slide
+// is the one number this architecture needs from it.
+set_boot_layout :: proc "contextless" (hhdm, kernel_phys, kernel_virt: u64) {
+	_ = hhdm
+	slide = kernel_phys - kernel_virt
+}
 
 kernel_slide :: proc "contextless" () -> u64 {
 	return slide
@@ -65,10 +74,7 @@ disable TTBR0 walks. Then the four tables, then the base register, then the
 TLB, in that order, because a translation cached before the tables were
 written would be a translation of nothing.
 */
-serial_console :: proc "contextless" (hhdm, kernel_phys, kernel_virt: u64) -> Serial_Desc {
-	_ = hhdm
-	slide = kernel_phys - kernel_virt
-
+serial_console :: proc "contextless" () -> Serial_Desc {
 	write_mair(read_mair() & 0xFFFF | MAIR_DEVICE << 16)
 	write_tcr(read_tcr() &~ TCR_EPD0)
 	isb()
@@ -89,31 +95,16 @@ serial_console :: proc "contextless" (hhdm, kernel_phys, kernel_virt: u64) -> Se
 	return Serial_Desc{kind = .Pl011, base = UART_PHYS}
 }
 
-// serial_physical says the port above needs a mapping of the kernel's own
-// once the VMM exists, because the window is a lower-half address and a
-// program's address space replaces the lower half.
-serial_physical :: proc "contextless" () -> (uintptr, bool) {
-	return UART_PHYS, true
-}
-
-// The description `serial_console` answers with. The kinds are the ones
-// `kernel/drivers/uart` drives, spelt the same on every architecture.
-Serial_Kind :: enum {
-	None,
-	Port_16550,
-	Mmio_16550,
-	Pl011,
-	Firmware,
-}
-
-Serial_Desc :: struct {
-	kind: Serial_Kind,
-	base: uintptr,
-}
+Serial_Kind :: neutral.Serial_Kind
+Serial_Desc :: neutral.Serial_Desc
 
 // This architecture has no firmware console.
 console_available :: proc "contextless" () -> bool {
 	return false
+}
+
+console_write :: proc "contextless" (bytes: []u8) {
+	_ = bytes
 }
 
 console_write_byte :: proc "contextless" (b: u8) {
@@ -124,10 +115,8 @@ console_read_byte :: proc "contextless" () -> (u8, bool) {
 	return 0, false
 }
 
-// The device tree, kept for the day something here reads it. The timer's
-// rate comes from a register on this architecture, so nothing does yet.
-@(private = "file") device_tree: rawptr
-
+// The device tree, which nothing here reads: the timer's rate is a register
+// on this architecture, and the GIC's address is the `virt` board's.
 set_device_tree :: proc "contextless" (dtb: rawptr) {
-	device_tree = dtb
+	_ = dtb
 }

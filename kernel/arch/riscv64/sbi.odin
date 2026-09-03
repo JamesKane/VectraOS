@@ -48,40 +48,55 @@ sbi_send_ipi :: proc "contextless" (mask: u64, base: u64) {
 
 // -- The console ----------------------------------------------------------------
 
-@(private = "file") console_probed: bool
 @(private = "file") have_dbcn: bool
-@(private = "file") have_legacy: bool
+@(private = "file") have_putchar: bool
+@(private = "file") have_getchar: bool
 
-@(private = "file")
-probe_console :: proc "contextless" () {
-	if console_probed {
-		return
-	}
-	console_probed = true
+// console_available probes the firmware once, for the three calls the
+// console is made of. `kernel/drivers/uart` asks before the first byte and
+// keeps the answer in `Port.present`, so nothing below asks again.
+console_available :: proc "contextless" () -> bool {
 	have_dbcn = sbi_probe(SBI_EXT_DBCN)
-	have_legacy = sbi_probe(SBI_LEGACY_PUTCHAR)
+	have_putchar = sbi_probe(SBI_LEGACY_PUTCHAR)
+	have_getchar = sbi_probe(SBI_LEGACY_GETCHAR)
+	return have_dbcn || have_putchar
 }
 
-console_available :: proc "contextless" () -> bool {
-	probe_console()
-	return have_dbcn || have_legacy
+/*
+console_write puts a run of bytes on the console with one call, where the
+firmware has the debug console, and byte by byte where it has only the
+legacy one. The debug console takes the buffer by physical address, which
+`physical` answers for an address in the image or the direct map; a buffer
+anywhere else goes the byte way.
+*/
+console_write :: proc "contextless" (bytes: []u8) {
+	if len(bytes) == 0 {
+		return
+	}
+	if have_dbcn {
+		if phys := physical(uintptr(raw_data(bytes))); phys != 0 {
+			_, _ = sbi_call(SBI_EXT_DBCN, 0, u64(len(bytes)), phys, 0)
+			return
+		}
+	}
+	for b in bytes {
+		console_write_byte(b)
+	}
 }
 
 console_write_byte :: proc "contextless" (b: u8) {
-	probe_console()
 	if have_dbcn {
 		_, _ = sbi_call(SBI_EXT_DBCN, 2, u64(b), 0, 0)
-	} else if have_legacy {
+	} else if have_putchar {
 		_, _ = sbi_call(SBI_LEGACY_PUTCHAR, 0, u64(b), 0, 0)
 	}
 }
 
 // console_read_byte polls the firmware console. Only the legacy call can
-// answer a byte at a time without a buffer in physical memory, so the
-// debug console's read is not used here.
+// answer a byte at a time without a buffer in physical memory, so the debug
+// console's read is not used here.
 console_read_byte :: proc "contextless" () -> (u8, bool) {
-	probe_console()
-	if !have_legacy || !sbi_probe(SBI_LEGACY_GETCHAR) {
+	if !have_getchar {
 		return 0, false
 	}
 	err, _ := sbi_call(SBI_LEGACY_GETCHAR, 0, 0, 0, 0)

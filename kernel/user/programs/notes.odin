@@ -10,7 +10,7 @@ import "vsys:libuser"
 // notes a pid that is nobody's child.
 noter :: proc "contextless" (cells: ^Cells) -> ! {
 	cells[0] = 0x4E4F54524E4F5452
-	pid := libuser.spawn("/bin/spin", 1)
+	pid := libuser.spawn("/bin/spin", abi.SPAWN_NS_COPY)
 	put(cells, 1, pid)
 	put(cells, 2, libuser.note(u64(pid), "stop"))
 	put(cells, 3, libuser.wait(u64(pid)))

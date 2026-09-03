@@ -98,14 +98,13 @@ vectra_trap_common:
 	str xzr, [sp, #296]
 
 	mrs x2, elr_el1
-	mrs x3, spsr_el1
-	stp x2, x3, [sp, #256]
+	mrs x4, spsr_el1
+	stp x2, x4, [sp, #256]
 	mrs x2, esr_el1
 	mrs x3, far_el1
 	stp x2, x3, [sp, #272]
 
-	mrs x3, spsr_el1
-	and x3, x3, #0xf
+	and x3, x4, #0xf
 	cbz x3, 1f
 	add x2, sp, #304
 	b 2f

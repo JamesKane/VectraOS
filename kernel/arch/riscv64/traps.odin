@@ -26,6 +26,8 @@ architectures report.
 */
 package riscv64
 
+import "kernel:arch/neutral"
+
 import "base:intrinsics"
 
 import "vsys:libodin"
@@ -98,28 +100,7 @@ Resume :: struct {
 	fpu:   rawptr, // 272-byte float image, 16-byte aligned
 }
 
-Trap_Kind :: enum {
-	Unknown,
-	Divide_By_Zero,
-	Debug,
-	Non_Maskable,
-	Breakpoint,
-	Overflow,
-	Bound_Range,
-	Invalid_Instruction,
-	Device_Not_Available,
-	Double_Fault,
-	Invalid_Task_State,
-	Segment_Not_Present,
-	Stack_Fault,
-	Protection_Fault,
-	Page_Fault,
-	Arithmetic_Fault,
-	Alignment_Fault,
-	Machine_Check,
-	Control_Protection,
-	Interrupt,
-}
+Trap_Kind :: neutral.Trap_Kind
 
 Trap :: struct {
 	kind:          Trap_Kind,
@@ -260,7 +241,7 @@ trap_dispatch :: proc "c" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no_bo
 		switch frame.vector {
 		case VECTOR_SOFTWARE_INTERRUPT:
 			clear_sip(SIP_SSIP)
-			pending := intrinsics.atomic_exchange(&this_cpu().ipi, 0)
+			pending := ipi_take()
 			this_cpu().irq = 0
 			for bit in u64(0) ..< 64 {
 				if pending & (u64(1) << bit) != 0 {
@@ -332,24 +313,11 @@ trap_dispatch :: proc "c" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no_bo
 			frame.vector = cause
 		case:
 			trap.name, trap.kind = cause_info(cause)
-			// An illegal instruction whose opcode is SYSTEM is a program
-			// touching a control register it may not, which every other
-			// architecture reports as a privilege violation and so does this.
-			if cause == CAUSE_ILLEGAL && frame.stval & 0x7F == 0x73 {
-				trap.name, trap.kind = "privileged instruction", .Protection_Fault
-			}
 			trap.vector = cause
 			trap.error_code = frame.stval
 			trap.has_error = trap.kind == .Page_Fault || trap.kind == .Protection_Fault || trap.kind == .Alignment_Fault
 			trap.fault_address = uintptr(frame.stval)
 			frame.vector = cause
-			// Whether the page was there is not in the cause, and the tables
-			// that say are the ones loaded now, not the ones a reader of the
-			// record has later. So the walk is made here, and its answer rides
-			// in the top bit of the code, above any address. See `fault_bits`.
-			if trap.kind == .Page_Fault && mapped(uintptr(frame.stval)) {
-				trap.error_code |= FAULT_PRESENT
-			}
 		}
 	}
 
@@ -443,6 +411,6 @@ describe_error :: proc "contextless" (s: ^libodin.Sink, t: ^Trap) {
 	case: libodin.put_str(s, "access")
 	}
 	libodin.put_str(s, " at ")
-	libodin.put_hex(s, t.error_code &~ FAULT_PRESENT, 16)
+	libodin.put_hex(s, t.error_code, 16)
 	libodin.put_str(s, t.user ? ", user" : ", supervisor")
 }

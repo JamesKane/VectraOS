@@ -59,6 +59,8 @@ reads through it.
 */
 @(private)
 sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int) -> i64 {
+	// Returns only on failure, with the errno; on success the answer below
+	// is the new program's and this call is over.
 	p := current()
 	if p == nil || p.ns == nil {
 		return -i64(vectra9.EBADF)
@@ -163,6 +165,11 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int) -> i64 {
 
 	// The door's return now lands in the new program. Every register but the
 	// three arguments is cleared, so nothing of the old image leaks across.
+	// The answer is whatever the frame now holds in the answer register: on
+	// an architecture where that register is also the first argument's, it
+	// is the new program's data page, and the dispatcher writing it back is
+	// what keeps the frame the new program's first state. `noted` makes the
+	// same promise the same way.
 	arch.frame_enter_user(frame, entry, sp, arg0)
-	return 0
+	return arch.syscall_result(frame)
 }

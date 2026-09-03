@@ -8,6 +8,8 @@ is the other side of that agreement.
 */
 package riscv64
 
+import "kernel:arch/neutral"
+
 // Register numbers, for the frame's array.
 REG_RA :: 1
 REG_SP :: 2
@@ -52,26 +54,14 @@ frame_sanitise_user :: proc "contextless" (f: ^Trap_Frame) {
 	f.sstatus = SSTATUS_USER
 }
 
-/*
-What the CPU said about a fault, in words the self-test can compare across
-architectures. The cause says fetch, read or write. It does not say whether
-the page was there -- a missing page and a refused one raise the same
-cause -- so the dispatcher walks the tables the hart was translating
-through at the time and leaves the answer in the code's top bit, above any
-address `stval` can hold.
-*/
-
-FAULT_PRESENT :: u64(1) << 63
-Fault_Bit :: enum {
-	Present,
-	Write,
-	User,
-	Fetch,
-}
-
-Fault_Bits :: bit_set[Fault_Bit]
+// What the CPU said about a fault, in `kernel/arch/neutral`'s words: the
+// cause says fetch, read or write, and the mode says who. Whether the page
+// was there is the VMM's to answer, and `kernel/user` asks it.
+Fault_Bit :: neutral.Fault_Bit
+Fault_Bits :: neutral.Fault_Bits
 
 fault_bits :: proc "contextless" (kind: Trap_Kind, vector: u64, code: u64, user: bool) -> Fault_Bits {
+	_ = code
 	bits: Fault_Bits
 	if kind != .Page_Fault {
 		return bits
@@ -83,28 +73,5 @@ fault_bits :: proc "contextless" (kind: Trap_Kind, vector: u64, code: u64, user:
 	case CAUSE_INSN_PAGE:  bits += {.Fetch}
 	case CAUSE_STORE_PAGE: bits += {.Write}
 	}
-	if code & FAULT_PRESENT != 0 {
-		bits += {.Present}
-	}
 	return bits
-}
-
-// mapped walks the current tables for `virt` and reports whether a leaf
-// covers it. Through the direct map, whose offset `serial_console` kept.
-mapped :: proc "contextless" (virt: uintptr) -> bool #no_bounds_check {
-	if hhdm_offset() == 0 || !is_canonical(virt) {
-		return false
-	}
-	table := (^Page_Table)(uintptr(hhdm_offset()) + current_address_space())
-	for level := TABLE_LEVELS; level >= 1; level -= 1 {
-		e := table[table_index(virt, level)]
-		if !entry_present(e) {
-			return false
-		}
-		if entry_is_leaf(e, level) {
-			return true
-		}
-		table = (^Page_Table)(uintptr(hhdm_offset()) + entry_address(e))
-	}
-	return false
 }

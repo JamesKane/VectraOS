@@ -11,6 +11,8 @@ returned from an interrupt that never happened.
 */
 package amd64
 
+import "kernel:arch/neutral"
+
 /*
 The stack, from the top down.
 
@@ -31,10 +33,7 @@ instruction executes.
 */
 MIN_STACK_SIZE :: 4096
 
-@(private = "file")
-align_down :: proc "contextless" (value: uintptr, align: uintptr) -> uintptr {
-	return value & ~(align - 1)
-}
+align_down :: neutral.align_down
 
 /*
 thread_resume_init writes a new thread's saved state onto its own stack.
@@ -90,29 +89,9 @@ thread_resume_init :: proc "contextless" (
 
 // -- What kind of core this is -----------------------------------------------
 
-/*
-Vectra schedules against a core's *class*, not its number.
-
-amd64 has one class today, and arm64 will have up to three. The vocabulary is
-therefore here rather than in the scheduler.
-
-A big.LITTLE part reports its cores honestly, and the run queues do the right
-thing. The scheduler never learns what a DynamIQ cluster is.
-
-`capacity` is relative work per unit time, normalised so the fastest class on
-the machine is 1024. Linux's capacity-aware scheduler uses the same convention.
-
-It is also why a time slice scales by it. A thread on a slower core needs
-proportionally more ticks for the same work. A scheduler that gave out equal
-*time* would give out unequal *progress*.
-*/
-Cpu_Class :: enum {
-	Efficiency,
-	Performance,
-	Prime,
-}
-
-CAPACITY_FULL :: 1024
+// The classes are `kernel/arch/neutral`'s; amd64 has one of them today.
+Cpu_Class :: neutral.Cpu_Class
+CAPACITY_FULL :: neutral.CAPACITY_FULL
 
 /*
 cpu_class reports what this core is.

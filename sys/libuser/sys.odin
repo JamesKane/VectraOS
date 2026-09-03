@@ -25,8 +25,35 @@ package libuser
 import "vsys:abi"
 import "vsys:vectra9"
 
-// The six raw doors -- `raw1` to `raw6` -- are the architecture's, in
-// `sys_<arch>.odin`. Everything below is what a program asks through them.
+// The raw door, `raw6`, is the architecture's, in `sys_<arch>.odin`: six
+// arguments, which is what the kernel reads. The narrower five below are
+// that door with zeros in the registers a call does not read, and
+// everything after them is what a program asks through them.
+
+@(private)
+raw1 :: proc "contextless" (nr, a0: u64) -> i64 {
+	return raw6(nr, a0, 0, 0, 0, 0, 0)
+}
+
+@(private)
+raw2 :: proc "contextless" (nr, a0, a1: u64) -> i64 {
+	return raw6(nr, a0, a1, 0, 0, 0, 0)
+}
+
+@(private)
+raw3 :: proc "contextless" (nr, a0, a1, a2: u64) -> i64 {
+	return raw6(nr, a0, a1, a2, 0, 0, 0)
+}
+
+@(private)
+raw4 :: proc "contextless" (nr, a0, a1, a2, a3: u64) -> i64 {
+	return raw6(nr, a0, a1, a2, a3, 0, 0)
+}
+
+@(private)
+raw5 :: proc "contextless" (nr, a0, a1, a2, a3, a4: u64) -> i64 {
+	return raw6(nr, a0, a1, a2, a3, a4, 0)
+}
 
 // -- The calls ---------------------------------------------------------------
 

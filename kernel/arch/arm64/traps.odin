@@ -30,6 +30,8 @@ report, so `kernel/panic.odin` and `kernel/user` read one vocabulary.
 */
 package arm64
 
+import "kernel:arch/neutral"
+
 import "base:intrinsics"
 
 import "vsys:libodin"
@@ -96,30 +98,7 @@ Resume :: struct {
 	fpu:   rawptr, // 528-byte vector image, 16-byte aligned
 }
 
-// The neutral vocabulary, the same list on every architecture, because the
-// portable kernel switches over it.
-Trap_Kind :: enum {
-	Unknown,
-	Divide_By_Zero,
-	Debug,
-	Non_Maskable,
-	Breakpoint,
-	Overflow,
-	Bound_Range,
-	Invalid_Instruction,
-	Device_Not_Available,
-	Double_Fault,
-	Invalid_Task_State,
-	Segment_Not_Present,
-	Stack_Fault,
-	Protection_Fault,
-	Page_Fault,
-	Arithmetic_Fault,
-	Alignment_Fault,
-	Machine_Check,
-	Control_Protection,
-	Interrupt,
-}
+Trap_Kind :: neutral.Trap_Kind
 
 Trap :: struct {
 	kind:          Trap_Kind,

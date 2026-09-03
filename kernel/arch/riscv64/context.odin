@@ -14,6 +14,8 @@ where the tail puts one, so `syscall_frame_fpu` has one rule for both.
 */
 package riscv64
 
+import "kernel:arch/neutral"
+
 MIN_STACK_SIZE :: 4096
 
 // f0..f31, then fcsr, rounded to sixteen.
@@ -31,10 +33,7 @@ SSTATUS_KERNEL :: SSTATUS_SPP | SSTATUS_SPIE | SSTATUS_FS_INITIAL | SSTATUS_SUM 
 // on after the return, the float unit on.
 SSTATUS_USER :: SSTATUS_SPIE | SSTATUS_FS_INITIAL | SSTATUS_SUM | u64(2) << 32
 
-@(private = "file")
-align_down :: proc "contextless" (value: uintptr, align: uintptr) -> uintptr {
-	return value & ~(align - 1)
-}
+align_down :: neutral.align_down
 
 kernel_stack_top :: proc "contextless" (stack: []u8) -> uintptr {
 	return align_down(uintptr(raw_data(stack)) + uintptr(len(stack)), 16)

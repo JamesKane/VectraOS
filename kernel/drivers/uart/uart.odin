@@ -119,12 +119,12 @@ reg_write :: proc "contextless" (p: ^Port, reg: uintptr, value: u8) {
 
 @(private = "file")
 pl011_read :: proc "contextless" (p: ^Port, reg: uintptr) -> u32 {
-	return intrinsics.volatile_load(cast(^u32)(p.base + reg))
+	return arch.mmio_read32(rawptr(p.base), reg)
 }
 
 @(private = "file")
 pl011_write :: proc "contextless" (p: ^Port, reg: uintptr, value: u32) {
-	intrinsics.volatile_store(cast(^u32)(p.base + reg), value)
+	arch.mmio_write32(rawptr(p.base), reg, value)
 }
 
 /*
@@ -253,6 +253,23 @@ A terminal emulator at the far end of a serial cable does not do that
 expansion. A log that stair-steps down the screen is a log nobody reads.
 */
 write_string :: proc "contextless" (port: ^Port, text: string) {
+	if port.kind == .Firmware {
+		// The firmware takes a run at a time, so a line goes as its runs
+		// between newlines and a CRLF for each, rather than a call per byte.
+		if !port.present {
+			return
+		}
+		start := 0
+		for i in 0 ..< len(text) {
+			if text[i] == '\n' {
+				arch.console_write(transmute([]u8)text[start:i])
+				arch.console_write(transmute([]u8)string("\r\n"))
+				start = i + 1
+			}
+		}
+		arch.console_write(transmute([]u8)text[start:])
+		return
+	}
 	for i in 0 ..< len(text) {
 		if text[i] == '\n' {
 			write_byte(port, '\r')
@@ -282,12 +299,18 @@ read_byte :: proc "contextless" (port: ^Port) -> (b: u8, ok: bool) {
 	return 0, false
 }
 
-// rebase moves a memory-mapped port to a new virtual address for the same
-// registers. For the console that came up through an early window, once the
-// kernel's own tables map the device.
-rebase :: proc "contextless" (port: ^Port, base: uintptr) {
+// needs_mapping says whether a port's registers are in memory the kernel's
+// own tables have yet to map, and where they are: a console that came up
+// through an early window is at its physical address until the VMM exists.
+needs_mapping :: proc "contextless" (port: ^Port) -> (phys: uintptr, needs: bool) {
 	#partial switch port.kind {
 	case .Mmio_16550, .Pl011:
-		port.base = base
+		return port.base, port.present
 	}
+	return 0, false
+}
+
+// rebase moves such a port to the address the kernel mapped its registers at.
+rebase :: proc "contextless" (port: ^Port, base: uintptr) {
+	port.base = base
 }

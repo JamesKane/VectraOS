@@ -10,18 +10,22 @@ records what each port has and has not got.
 #+build riscv64
 package arch
 
+import "kernel:arch/neutral"
 import "kernel:arch/riscv64"
 
 NAME :: "riscv64"
 
 // -- The console -------------------------------------------------------------
 
-Serial_Kind :: riscv64.Serial_Kind
-Serial_Desc :: riscv64.Serial_Desc
+Serial_Kind :: neutral.Serial_Kind
+Serial_Desc :: neutral.Serial_Desc
 
+set_boot_layout :: riscv64.set_boot_layout
 serial_console :: riscv64.serial_console
-serial_physical :: riscv64.serial_physical
+mmio_read32 :: neutral.mmio_read32
+mmio_write32 :: neutral.mmio_write32
 console_available :: riscv64.console_available
+console_write :: riscv64.console_write
 console_write_byte :: riscv64.console_write_byte
 console_read_byte :: riscv64.console_read_byte
 set_device_tree :: riscv64.set_device_tree
@@ -73,6 +77,7 @@ entry_is_leaf :: riscv64.entry_is_leaf
 entry_address :: riscv64.entry_address
 entry_flags :: riscv64.entry_flags
 
+load_kernel_space :: riscv64.load_address_space
 load_address_space :: riscv64.load_address_space
 current_address_space :: riscv64.current_address_space
 flush_page :: riscv64.flush_page
@@ -94,6 +99,11 @@ breakpoint :: riscv64.breakpoint
 fault_address :: riscv64.read_stval
 
 BREAKPOINT_NAME :: "ebreak"
+
+// A program's privileged instruction is an illegal one here: the hart raises
+// the same cause for a CSR it may not touch as for an opcode it does not
+// have, and this kernel reports what the hart said.
+PRIVILEGED_FAULT :: Trap_Kind.Invalid_Instruction
 describe_traps :: riscv64.describe_traps
 
 frame_ip :: riscv64.frame_ip
@@ -208,26 +218,18 @@ cpu_lapic_id :: riscv64.cpu_hart_number
 ipi_send :: riscv64.ipi_send
 ipi_stop_others :: riscv64.ipi_stop_others
 
-// The boot hart's id, from the bootloader's list. A hart cannot read its own
-// id from supervisor mode, so the boot core is told and every other core is
-// told in `init_traps_ap`.
-@(private = "file") boot_hart: u64
-
-set_boot_cpu_id :: proc "contextless" (id: u64) {
-	boot_hart = id
-}
-
 /*
 init_traps installs the trap entry on the boot hart and gives it a per-core
 record.
 
 Safe to call before `kernel/mem` exists, and meant to be: the entry is in
 the image and the record is static. Every interrupt stays masked in `sie`
-until the timer comes up.
+until the timer comes up. `cpu_id` is the boot hart's id, from the
+bootloader's list, because a hart cannot read its own from supervisor mode.
 */
-init_traps :: proc "contextless" () {
+init_traps :: proc "contextless" (cpu_id: u64) {
 	riscv64.vectors_init()
-	riscv64.percpu_init(0, boot_hart)
+	riscv64.percpu_init(0, cpu_id)
 }
 
 init_traps_ap :: proc "contextless" (id: int, cpu_id: u64) {

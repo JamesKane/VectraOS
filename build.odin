@@ -115,6 +115,14 @@ Arch_Config :: struct {
 	qemu:          string,
 	qemu_machine:  []string,
 	efi_boot_name: string,
+
+	// The UEFI firmware QEMU boots: the code image and the variable store
+	// that ship beside every QEMU install, as edk2 builds them. The vars
+	// image is copied somewhere writable first, because UEFI writes it. The
+	// i386 name on amd64 is not a mistake: QEMU ships one vars image for
+	// both x86 targets, and the arm name on arm64 is the same story.
+	fw_code:       string,
+	fw_vars:       string,
 }
 
 /*
@@ -183,6 +191,8 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 			qemu          = "qemu-system-x86_64",
 			qemu_machine  = qemu_amd64_machine[:],
 			efi_boot_name = "BOOTX64.EFI",
+			fw_code       = "edk2-x86_64-code.fd",
+			fw_vars       = "edk2-i386-vars.fd",
 		}
 	case .arm64:
 		return {
@@ -194,6 +204,8 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 			qemu          = "qemu-system-aarch64",
 			qemu_machine  = qemu_arm64_machine[:],
 			efi_boot_name = "BOOTAA64.EFI",
+			fw_code       = "edk2-aarch64-code.fd",
+			fw_vars       = "edk2-arm-vars.fd",
 		}
 	case .riscv64:
 		return {
@@ -205,6 +217,8 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 			qemu          = "qemu-system-riscv64",
 			qemu_machine  = qemu_riscv64_machine[:],
 			efi_boot_name = "BOOTRISCV64.EFI",
+			fw_code       = "edk2-riscv-code.fd",
+			fw_vars       = "edk2-riscv-vars.fd",
 		}
 	}
 	return {}
@@ -402,38 +416,66 @@ build_user :: proc(opts: Options) {
 		elf := fmt.tprintf("%s/%s.elf", USER_DIR, prog.name)
 		img := fmt.tprintf("%s/%s.vx", USER_DIR, prog.name)
 
-		run({
-			"odin", "build", prog.path,
-			fmt.tprintf("-out:%s", obj),
-			"-build-mode:obj",
-			fmt.tprintf("-target:%s", cfg.odin_target),
-			"-collection:vsys=sys",
-			"-no-crt",
-			"-no-entry-point",
-			"-default-to-nil-allocator",
-			"-disable-red-zone",
-			"-no-thread-local",
-			"-vet",
-			"-strict-style",
-			"-disallow-do",
-			"-o:speed",
-			"-no-bounds-check",
-		})
-		// `-z norelro`, because the linker otherwise carves a read-only
-		// segment for the GOT out of `.data` and starts `.bss` where that
-		// ends, mid-page. The loader maps whole pages, and `link_user.ld`
-		// exists so every segment starts on one.
-		run({
-			"ld.lld", obj,
-			"-o", elf,
-			"-m", cfg.ld_emulation,
-			"-T", "sys/libuser/link_user.ld",
-			"-nostdlib",
-			"-static",
-			"-z", "norelro",
-		})
+		compile_ring3(cfg, prog.path, obj, {})
+		link_ring3(cfg, obj, elf, "sys/libuser/link_user.ld")
 		elf_to_image(elf, img)
 	}
+}
+
+/*
+The flags every ring 3 compile and check shares: the freestanding contract
+and the vets. `ring3_build_flags` adds what only a build takes -- no C
+runtime, no red zone, no thread-local storage, and speed, because a program
+is a file the kernel embeds and nobody debugs one with a host debugger. No
+PIC, because the loader maps every program at the one address its link
+script names, and no single module, because nothing here is relinked by
+anything else.
+*/
+ring3_check_flags := [?]string{
+	"-collection:vsys=sys",
+	"-no-entry-point",
+	"-default-to-nil-allocator",
+	"-vet",
+	"-strict-style",
+	"-disallow-do",
+	"-no-bounds-check",
+}
+
+ring3_build_flags := [?]string{
+	"-no-crt",
+	"-disable-red-zone",
+	"-no-thread-local",
+	"-o:speed",
+}
+
+// compile_ring3 compiles one ring 3 package to an object, with `extra`
+// for the flags one caller adds.
+compile_ring3 :: proc(cfg: Arch_Config, pkg: string, obj: string, extra: []string) {
+	args := [dynamic]string{"odin", "build", pkg, fmt.tprintf("-out:%s", obj), "-build-mode:obj", fmt.tprintf("-target:%s", cfg.odin_target)}
+	append(&args, ..ring3_check_flags[:])
+	append(&args, ..ring3_build_flags[:])
+	append(&args, ..extra)
+	run(args[:])
+}
+
+/*
+link_ring3 links a ring 3 object by the script a caller names.
+
+`-z norelro`, because the linker otherwise carves a read-only segment for
+the GOT out of `.data` and starts `.bss` where that ends, mid-page. The
+loader maps whole pages, and each link script exists so every segment
+starts on one.
+*/
+link_ring3 :: proc(cfg: Arch_Config, obj: string, elf: string, script: string) {
+	run({
+		"ld.lld", obj,
+		"-o", elf,
+		"-m", cfg.ld_emulation,
+		"-T", script,
+		"-nostdlib",
+		"-static",
+		"-z", "norelro",
+	})
 }
 
 /*
@@ -456,33 +498,8 @@ build_programs :: proc(opts: Options) {
 		elf := fmt.tprintf("%s/%s.elf", PROGRAMS_DIR, name)
 		bin := fmt.tprintf("%s/%s.bin", PROGRAMS_DIR, name)
 
-		run({
-			"odin", "build", "kernel/user/programs",
-			fmt.tprintf("-out:%s", obj),
-			"-build-mode:obj",
-			fmt.tprintf("-target:%s", cfg.odin_target),
-			fmt.tprintf("-define:PROGRAM=%s", name),
-			"-collection:vsys=sys",
-			"-no-crt",
-			"-no-entry-point",
-			"-default-to-nil-allocator",
-			"-disable-red-zone",
-			"-no-thread-local",
-			"-vet",
-			"-strict-style",
-			"-disallow-do",
-			"-o:speed",
-			"-no-bounds-check",
-		})
-		run({
-			"ld.lld", obj,
-			"-o", elf,
-			"-m", cfg.ld_emulation,
-			"-T", "kernel/user/programs/link_program.ld",
-			"-nostdlib",
-			"-static",
-			"-z", "norelro",
-		})
+		compile_ring3(cfg, "kernel/user/programs", obj, {fmt.tprintf("-define:PROGRAM=%s", name)})
+		link_ring3(cfg, obj, elf, "kernel/user/programs/link_program.ld")
 		elf_to_blob(elf, bin)
 	}
 }
@@ -497,33 +514,9 @@ that asks for more is refused here, with the reason, rather than loaded
 short or not at all.
 */
 elf_to_blob :: proc(elf_path: string, out_path: string) {
-	data, err := os.read_entire_file_from_path(elf_path, context.allocator)
-	if err != nil {
-		die("cannot read %s", elf_path)
-	}
+	data := read_elf(elf_path)
 	defer delete(data)
 
-	u16le :: proc(b: []u8, at: int) -> u64 {
-		return u64(b[at]) | u64(b[at + 1]) << 8
-	}
-	u32le :: proc(b: []u8, at: int) -> u64 {
-		v := u64(0)
-		for i in 0 ..< 4 {
-			v |= u64(b[at + i]) << (8 * u64(i))
-		}
-		return v
-	}
-	u64le :: proc(b: []u8, at: int) -> u64 {
-		v := u64(0)
-		for i in 0 ..< 8 {
-			v |= u64(b[at + i]) << (8 * u64(i))
-		}
-		return v
-	}
-
-	if len(data) < 64 || data[0] != 0x7F || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
-		die("%s is not an ELF file", elf_path)
-	}
 	phoff := int(u64le(data, 32))
 	phentsize := int(u16le(data, 54))
 	phnum := int(u16le(data, 56))
@@ -564,6 +557,44 @@ elf_to_blob :: proc(elf_path: string, out_path: string) {
 	step("%s is %d bytes", out_path, size)
 }
 
+// read_elf reads a linked program whole and checks it is the ELF the two
+// converters below read: 64-bit, little-endian, and long enough to have a
+// header. The caller frees it.
+read_elf :: proc(path: string) -> []u8 {
+	data, err := os.read_entire_file_from_path(path, context.allocator)
+	if err != nil {
+		die("cannot read %s", path)
+	}
+	if len(data) < 64 || data[0] != 0x7F || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
+		die("%s is not an ELF file", path)
+	}
+	if data[4] != 2 || data[5] != 1 {
+		die("%s is not a little-endian 64-bit ELF", path)
+	}
+	return data
+}
+
+// The little-endian fields an ELF header and its program headers are made of.
+u16le :: proc(b: []u8, at: int) -> u64 {
+	return u64(b[at]) | u64(b[at + 1]) << 8
+}
+
+u32le :: proc(b: []u8, at: int) -> u64 {
+	v := u64(0)
+	for i in 0 ..< 4 {
+		v |= u64(b[at + i]) << (8 * u64(i))
+	}
+	return v
+}
+
+u64le :: proc(b: []u8, at: int) -> u64 {
+	v := u64(0)
+	for i in 0 ..< 8 {
+		v |= u64(b[at + i]) << (8 * u64(i))
+	}
+	return v
+}
+
 // The VECTRA02 constants, written here and in `kernel/user/image.odin`. The
 // two cannot share a definition -- this file builds the image and that one
 // loads it, and neither can import the other -- so they live beside a loud
@@ -588,36 +619,8 @@ segment that starts mid-page shares a page with bytes that want different
 flags, and `link_user.ld` exists so that never links.
 */
 elf_to_image :: proc(elf_path: string, out_path: string) {
-	data, err := os.read_entire_file_from_path(elf_path, context.allocator)
-	if err != nil {
-		die("cannot read %s", elf_path)
-	}
+	data := read_elf(elf_path)
 	defer delete(data)
-
-	u16le :: proc(b: []u8, at: int) -> u64 {
-		return u64(b[at]) | u64(b[at + 1]) << 8
-	}
-	u32le :: proc(b: []u8, at: int) -> u64 {
-		v := u64(0)
-		for i in 0 ..< 4 {
-			v |= u64(b[at + i]) << (8 * u64(i))
-		}
-		return v
-	}
-	u64le :: proc(b: []u8, at: int) -> u64 {
-		v := u64(0)
-		for i in 0 ..< 8 {
-			v |= u64(b[at + i]) << (8 * u64(i))
-		}
-		return v
-	}
-
-	if len(data) < 64 || data[0] != 0x7F || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
-		die("%s is not an ELF file", elf_path)
-	}
-	if data[4] != 2 || data[5] != 1 {
-		die("%s is not a little-endian 64-bit ELF", elf_path)
-	}
 
 	entry := u64le(data, 24)
 	phoff := int(u64le(data, 32))
@@ -728,27 +731,6 @@ stage_esp :: proc(opts: Options) {
 	copy_file(KERNEL_ELF, fmt.tprintf("%s/vectra.elf", ESP_DIR))
 }
 
-/*
-The UEFI firmware QEMU boots, per architecture: the code image and the
-variable store that ship beside every QEMU install, as edk2 builds them.
-The vars image is copied somewhere writable first, because UEFI writes it.
-The i386 name on amd64 is not a mistake: QEMU ships one vars image for both
-x86 targets. The arm name on arm64 is the same story.
-*/
-Firmware :: struct {
-	code: string,
-	vars: string,
-}
-
-firmware_for :: proc(arch: Arch) -> Firmware {
-	switch arch {
-	case .amd64:   return {code = "edk2-x86_64-code.fd", vars = "edk2-i386-vars.fd"}
-	case .arm64:   return {code = "edk2-aarch64-code.fd", vars = "edk2-arm-vars.fd"}
-	case .riscv64: return {code = "edk2-riscv-code.fd", vars = "edk2-riscv-vars.fd"}
-	}
-	return {}
-}
-
 run_qemu :: proc(opts: Options, debug: bool) {
 	cfg := arch_config(opts.arch)
 
@@ -763,27 +745,24 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	if opts.arch == .amd64 && os.exists(combined) {
 		append(&args, "-bios", combined)
 	} else {
-		fw := firmware_for(opts.arch)
 		share := ""
 		for dir in ([]string{"/opt/homebrew/share/qemu", "/usr/local/share/qemu", "/usr/share/qemu"}) {
-			if os.exists(fmt.tprintf("%s/%s", dir, fw.code)) {
+			if os.exists(fmt.tprintf("%s/%s", dir, cfg.fw_code)) {
 				share = dir
 				break
 			}
 		}
 		if share == "" {
-			die("no %s beside QEMU -- UEFI boot needs one", fw.code)
+			die("no %s beside QEMU -- UEFI boot needs one", cfg.fw_code)
 		}
-		vars := fmt.tprintf("%s/%s", BUILD_DIR, fw.vars)
+		vars := fmt.tprintf("%s/%s", BUILD_DIR, cfg.fw_vars)
 		if !os.exists(vars) {
-			copy_file(fmt.tprintf("%s/%s", share, fw.vars), vars)
+			copy_file(fmt.tprintf("%s/%s", share, cfg.fw_vars), vars)
 		}
-		// The `virt` boards number their flash units, and the firmware is
-		// unit 0 by convention. q35 takes them in order.
-		unit := opts.arch == .amd64 ? "" : ",unit=0"
-		append(&args, "-drive", fmt.tprintf("if=pflash,format=raw,readonly=on%s,file=%s/%s", unit, share, fw.code))
-		unit = opts.arch == .amd64 ? "" : ",unit=1"
-		append(&args, "-drive", fmt.tprintf("if=pflash,format=raw%s,file=%s", unit, vars))
+		// Flash unit 0 is the firmware and unit 1 its variables, on every
+		// board alike.
+		append(&args, "-drive", fmt.tprintf("if=pflash,unit=0,format=raw,readonly=on,file=%s/%s", share, cfg.fw_code))
+		append(&args, "-drive", fmt.tprintf("if=pflash,unit=1,format=raw,file=%s", vars))
 	}
 
 	append(&args, "-drive", fmt.tprintf("format=raw,file=fat:rw:%s", ESP_DIR))
@@ -846,15 +825,9 @@ check :: proc(opts: Options) {
 	})
 	for prog in user_programs {
 		step("checking %s for %s", prog.path, cfg.odin_target)
-		run({
-			"odin", "check", prog.path,
-			fmt.tprintf("-target:%s", cfg.odin_target),
-			"-collection:vsys=sys",
-			"-no-entry-point",
-			"-default-to-nil-allocator",
-			"-vet",
-			"-strict-style",
-		})
+		args := [dynamic]string{"odin", "check", prog.path, fmt.tprintf("-target:%s", cfg.odin_target)}
+		append(&args, ..ring3_check_flags[:])
+		run(args[:])
 	}
 }
 

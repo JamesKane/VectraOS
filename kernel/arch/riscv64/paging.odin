@@ -19,26 +19,18 @@ everything.
 */
 package riscv64
 
-PAGE_SHIFT :: 12
-PAGE_SIZE :: 1 << PAGE_SHIFT
+import "kernel:arch/neutral"
 
-TABLE_BITS :: 9
-TABLE_ENTRIES :: 1 << TABLE_BITS
-TABLE_LEVELS :: 4
+PAGE_SHIFT :: neutral.PAGE_SHIFT
+PAGE_SIZE :: neutral.PAGE_SIZE
+TABLE_BITS :: neutral.TABLE_BITS
+TABLE_ENTRIES :: neutral.TABLE_ENTRIES
+TABLE_LEVELS :: neutral.TABLE_LEVELS
 
-Page_Table_Entry :: distinct u64
-Page_Table :: [TABLE_ENTRIES]Page_Table_Entry
-
-Page_Flag :: enum u8 {
-	Write,
-	User,
-	No_Execute,
-	Global,
-	No_Cache,
-	Write_Through,
-}
-
-Page_Flags :: bit_set[Page_Flag; u8]
+Page_Table_Entry :: neutral.Page_Table_Entry
+Page_Table :: neutral.Page_Table
+Page_Flag :: neutral.Page_Flag
+Page_Flags :: neutral.Page_Flags
 
 PTE_VALID :: u64(1) << 0
 PTE_READ :: u64(1) << 1
@@ -87,14 +79,8 @@ max_leaf_level :: proc "contextless" () -> int {
 	return 3
 }
 
-table_index :: proc "contextless" (virt: uintptr, level: int) -> int {
-	shift := uint(PAGE_SHIFT + TABLE_BITS * (level - 1))
-	return int((u64(virt) >> shift) & u64(TABLE_ENTRIES - 1))
-}
-
-level_size :: proc "contextless" (level: int) -> uintptr {
-	return uintptr(1) << uint(PAGE_SHIFT + TABLE_BITS * (level - 1))
-}
+table_index :: neutral.table_index
+level_size :: neutral.level_size
 
 // Bits 63..48 copy bit 47, as under amd64's 4-level paging.
 is_canonical :: proc "contextless" (virt: uintptr) -> bool {

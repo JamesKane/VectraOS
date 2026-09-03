@@ -10,6 +10,8 @@ for, what to answer, and the two rewrites a note delivery needs.
 */
 package amd64
 
+import "kernel:arch/neutral"
+
 // frame_ip and frame_sp are where the interrupted code was, and what stack it
 // stood on. What a process record keeps when a program ends.
 frame_ip :: proc "contextless" (f: ^Trap_Frame) -> uintptr {
@@ -80,28 +82,17 @@ frame_sanitise_user :: proc "contextless" (f: ^Trap_Frame) {
 	f.rflags = f.rflags & 0x0000_0000_0000_0CD5 | 0x202
 }
 
-/*
-What the CPU said about a fault, in words the self-test can compare across
-architectures. amd64's page fault error code carries all four bits; a
-protection fault carries a selector, which is none of them.
-*/
-Fault_Bit :: enum {
-	Present, // The page was mapped, and refused the access
-	Write,
-	User,
-	Fetch,
-}
-
-Fault_Bits :: bit_set[Fault_Bit]
+// What the CPU said about a fault, in `kernel/arch/neutral`'s words. The
+// page fault error code carries all three; whether the page was present is
+// the VMM's to answer, and `kernel/user` asks it.
+Fault_Bit :: neutral.Fault_Bit
+Fault_Bits :: neutral.Fault_Bits
 
 fault_bits :: proc "contextless" (kind: Trap_Kind, vector: u64, code: u64, user: bool) -> Fault_Bits {
 	_, _ = vector, user
 	bits: Fault_Bits
 	if kind != .Page_Fault {
 		return bits
-	}
-	if code & 1 != 0 {
-		bits += {.Present}
 	}
 	if code & 2 != 0 {
 		bits += {.Write}

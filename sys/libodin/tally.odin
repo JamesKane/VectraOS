@@ -29,15 +29,15 @@ Tally :: struct {
 	failures:      int,
 	first_failure: string,
 
-	// The failures after the first, as many as fit. The first is the line;
-	// these are the trace beneath it, for the run where the consequences
-	// are not obvious from the cause. Names only, and never a substitute
-	// for reading the first one.
+	// The next few failures after the first. The first is the line; these
+	// are the trace beneath it, for the run where the consequences are not
+	// obvious from the cause. Few, because every result on a kernel stack
+	// carries them, and names only.
 	later:         [LATER_MAX]string,
 	later_count:   int,
 }
 
-LATER_MAX :: 40
+LATER_MAX :: 8
 
 /*
 tally records one check and reports what it was told.

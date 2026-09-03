@@ -517,6 +517,10 @@ kernel/
     arch_amd64.odin     The architecture interface, bound to amd64
     arch_arm64.odin     The same names, bound to arm64
     arch_riscv64.odin   The same names, bound to riscv64
+    neutral/            What every architecture spells the same way: the trap
+                        kinds, the page flags, the paging constants, the
+                        console kinds, the core classes. One copy, imported by
+                        all three
     amd64/frame.odin    What kernel/user may read out of a frame, and put in
     amd64/cpu.odin      Port I/O, control regs, MSRs, CPUID, EFER, SSE
     amd64/paging.odin   Page table format: entry bits, encode/decode, TLB

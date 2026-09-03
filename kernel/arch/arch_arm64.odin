@@ -11,17 +11,21 @@ records what each port has and has not got.
 package arch
 
 import "kernel:arch/arm64"
+import "kernel:arch/neutral"
 
 NAME :: "arm64"
 
 // -- The console -------------------------------------------------------------
 
-Serial_Kind :: arm64.Serial_Kind
-Serial_Desc :: arm64.Serial_Desc
+Serial_Kind :: neutral.Serial_Kind
+Serial_Desc :: neutral.Serial_Desc
 
+set_boot_layout :: arm64.set_boot_layout
 serial_console :: arm64.serial_console
-serial_physical :: arm64.serial_physical
+mmio_read32 :: neutral.mmio_read32
+mmio_write32 :: neutral.mmio_write32
 console_available :: arm64.console_available
+console_write :: arm64.console_write
 console_write_byte :: arm64.console_write_byte
 console_read_byte :: arm64.console_read_byte
 set_device_tree :: arm64.set_device_tree
@@ -73,6 +77,7 @@ entry_is_leaf :: arm64.entry_is_leaf
 entry_address :: arm64.entry_address
 entry_flags :: arm64.entry_flags
 
+load_kernel_space :: arm64.load_kernel_space
 load_address_space :: arm64.load_address_space
 current_address_space :: arm64.current_address_space
 flush_page :: arm64.flush_page
@@ -94,6 +99,7 @@ breakpoint :: arm64.breakpoint
 fault_address :: arm64.read_far
 
 BREAKPOINT_NAME :: "brk"
+PRIVILEGED_FAULT :: Trap_Kind.Protection_Fault
 describe_traps :: arm64.describe_traps
 
 frame_ip :: arm64.frame_ip
@@ -217,15 +223,10 @@ the image and the record is static. There is no descriptor table to build
 and no controller to silence; every interrupt is masked until the GIC comes
 up, and the GIC comes up masked.
 */
-init_traps :: proc "contextless" () {
+init_traps :: proc "contextless" (cpu_id: u64) {
+	_ = cpu_id
 	arm64.vectors_init()
 	arm64.percpu_init(0)
-}
-
-// set_boot_cpu_id goes unread: a core's number on the GIC is read back out
-// of the GIC.
-set_boot_cpu_id :: proc "contextless" (id: u64) {
-	_ = id
 }
 
 init_traps_ap :: proc "contextless" (id: int, cpu_id: u64) {

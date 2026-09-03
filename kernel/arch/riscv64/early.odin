@@ -15,44 +15,49 @@ at zero, and the timer says it will not calibrate.
 */
 package riscv64
 
-Serial_Kind :: enum {
-	None,
-	Port_16550,
-	Mmio_16550,
-	Pl011,
-	Firmware,
-}
+import "kernel:arch/neutral"
 
-Serial_Desc :: struct {
-	kind: Serial_Kind,
-	base: uintptr,
-}
+Serial_Kind :: neutral.Serial_Kind
+Serial_Desc :: neutral.Serial_Desc
 
-// The direct map's offset, kept for the one walk this package makes on
-// its own: see `fault_bits`.
+// The bootloader's two numbers about where memory is, kept for the one
+// translation this package makes: the firmware's console takes a buffer by
+// physical address. An address in the direct map is `hhdm` above physical,
+// and one in the image is `slide` below it.
 @(private = "file") hhdm: u64
+@(private = "file") slide: u64
+@(private = "file") image_base: u64
 
-hhdm_offset :: proc "contextless" () -> u64 {
-	return hhdm
-}
-
-serial_console :: proc "contextless" (hhdm_base, kernel_phys, kernel_virt: u64) -> Serial_Desc {
-	_, _ = kernel_phys, kernel_virt
+set_boot_layout :: proc "contextless" (hhdm_base, kernel_phys, kernel_virt: u64) {
 	hhdm = hhdm_base
-	return Serial_Desc{kind = .Firmware}
+	slide = kernel_phys - kernel_virt
+	image_base = kernel_virt
 }
 
-serial_physical :: proc "contextless" () -> (uintptr, bool) {
-	return 0, false
+// physical translates a kernel address the console may be handed: the log
+// buffers and strings are in the image, and everything else the kernel
+// holds is in the direct map. Zero for an address in neither, which the
+// caller treats as `not translatable`.
+physical :: proc "contextless" (virt: uintptr) -> u64 {
+	v := u64(virt)
+	if image_base != 0 && v >= image_base {
+		return v + slide
+	}
+	if hhdm != 0 && v >= hhdm {
+		return v - hhdm
+	}
+	return 0
+}
+
+serial_console :: proc "contextless" () -> Serial_Desc {
+	return Serial_Desc{kind = .Firmware}
 }
 
 // -- The device tree ------------------------------------------------------------
 
-@(private = "file") device_tree: rawptr
 @(private = "file") timebase_hz: u64
 
 set_device_tree :: proc "contextless" (dtb: rawptr) {
-	device_tree = dtb
 	timebase_hz = find_timebase(dtb)
 }
 

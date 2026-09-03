@@ -307,7 +307,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		check(&r, p.exit.address == witness, "at the address it named")
 		check(
 			&r,
-			fault_bits(p) >= {.Present, .Write, .User},
+			p.exit.present && fault_bits(p) >= {.Write, .User},
 			"which the CPU reports as a user write to a page that is present",
 		)
 		check(&r, kernel_witness == was, "and the kernel's own word is what it was")
@@ -377,7 +377,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		check(&r, p.exit.address == TEXT_VA, "at the first byte of it")
 		check(
 			&r,
-			fault_bits(p) >= {.Present, .Write},
+			p.exit.present && .Write in fault_bits(p),
 			"which is a write to a present page rather than a missing one",
 		)
 		first := (cast([^]u8)mem.phys_to_virt(p.text))[0]
@@ -390,7 +390,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	before_ticks := sched.ticks()
 	p = run_program(&r, "priv", program_priv(), MARK_PRIV, 0, "a program masks interrupts")
 	if p != nil && p.exit.done {
-		check(&r, p.exit.kind == .Protection_Fault, "and takes a general protection fault")
+		check(&r, p.exit.kind == arch.PRIVILEGED_FAULT, "and is refused the way this architecture refuses one")
 		check(&r, fault_bits(p) == {}, "with nothing to decode, because the fault named no page and no selector")
 		sync.delay(2)
 		check(&r, sched.ticks() > before_ticks, "and the clock is still running, so the mask never took")

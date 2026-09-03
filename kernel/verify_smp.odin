@@ -263,6 +263,7 @@ kicks_sent :: proc "contextless" (cores: int) -> u64 {
 
 // shoots_sent is the same for shootdowns, for a check made by a thread that
 // may not be on the core it started on.
+@(private = "file")
 shoots_sent :: proc "contextless" (cores: int) -> u64 {
 	n: u64
 	for i in 0 ..< cores {

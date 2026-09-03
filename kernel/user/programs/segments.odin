@@ -2,6 +2,7 @@
 package programs
 
 import "base:intrinsics"
+import "vsys:abi"
 import "vsys:libuser"
 
 @(private = "file") WITNESS :: u64(0x57494E4457494E44)
@@ -27,7 +28,7 @@ nobody opened, and a file that is a stream, neither of which attaches.
 */
 mapper :: proc "contextless" (cells: ^Cells, corner: u64) -> ! {
 	cells[0] = 0x4D4150504D415050
-	fd := libuser.open(text(cells, 128, 7), 1)
+	fd := libuser.open(text(cells, 128, 7), abi.O_WRONLY)
 	put(cells, 1, fd)
 	first := attach(int(fd))
 	put(cells, 2, first)
@@ -39,7 +40,7 @@ mapper :: proc "contextless" (cells: ^Cells, corner: u64) -> ! {
 	put(cells, 7, libuser.segdetach(uintptr(second)))
 
 	put(cells, 4, attach(99))
-	stream := libuser.open(text(cells, 192, 9), 1)
+	stream := libuser.open(text(cells, 192, 9), abi.O_WRONLY)
 	put(cells, 5, attach(int(stream)))
 	libuser.exit(0)
 }
@@ -91,7 +92,7 @@ anon :: proc "contextless" (cells: ^Cells, size: u64) -> ! {
 	put(cells, 5, alloc(0x40000000))
 	put(cells, 6, alloc(0))
 
-	pid := libuser.rfork(0x10)
+	pid := libuser.rfork(abi.RFPROC)
 	if pid == 0 {
 		own := alloc(int(size))
 		if own < 0 {
@@ -129,7 +130,7 @@ sharer :: proc "contextless" (cells: ^Cells) -> ! {
 	base := uintptr(run)
 	put(cells, 1, run)
 
-	pid := libuser.rfork(0x30)
+	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)
 	if pid == 0 {
 		if !wait_cell(cells, 2) {
 			libuser.exit(0x99)
@@ -173,7 +174,7 @@ seed untouched in the third.
 */
 sharedseg :: proc "contextless" (cells: ^Cells) -> ! {
 	_ = cells
-	shared := alloc(4096, 1)
+	shared := alloc(4096, abi.SEGSHARED)
 	if shared < 0 {
 		libuser.exit(0x98)
 	}
@@ -184,7 +185,7 @@ sharedseg :: proc "contextless" (cells: ^Cells) -> ! {
 	store64(uintptr(shared), 0x11)
 	store64(uintptr(private), 0x22)
 
-	pid := libuser.rfork(0x10)
+	pid := libuser.rfork(abi.RFPROC)
 	if pid < 0 {
 		libuser.exit(0x98)
 	}

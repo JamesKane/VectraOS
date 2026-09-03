@@ -45,28 +45,18 @@ and TTBR1 is the kernel root everywhere, so nothing is lost.
 */
 package arm64
 
-PAGE_SHIFT :: 12
-PAGE_SIZE :: 1 << PAGE_SHIFT
+import "kernel:arch/neutral"
 
-TABLE_BITS :: 9
-TABLE_ENTRIES :: 1 << TABLE_BITS
-TABLE_LEVELS :: 4
+PAGE_SHIFT :: neutral.PAGE_SHIFT
+PAGE_SIZE :: neutral.PAGE_SIZE
+TABLE_BITS :: neutral.TABLE_BITS
+TABLE_ENTRIES :: neutral.TABLE_ENTRIES
+TABLE_LEVELS :: neutral.TABLE_LEVELS
 
-Page_Table_Entry :: distinct u64
-Page_Table :: [TABLE_ENTRIES]Page_Table_Entry
-
-// The neutral flags, the same six on every architecture. See the amd64 file
-// for why `No_Execute` is spelt as a restriction.
-Page_Flag :: enum u8 {
-	Write,
-	User,
-	No_Execute,
-	Global,
-	No_Cache,
-	Write_Through,
-}
-
-Page_Flags :: bit_set[Page_Flag; u8]
+Page_Table_Entry :: neutral.Page_Table_Entry
+Page_Table :: neutral.Page_Table
+Page_Flag :: neutral.Page_Flag
+Page_Flags :: neutral.Page_Flags
 
 // -- Descriptor bits ----------------------------------------------------------
 
@@ -120,8 +110,7 @@ TCR_EPD0 :: u64(1) << 7
 
 TCR_VALUE :: TCR_T0SZ | TCR_T1SZ | TCR_IRGN0_WB | TCR_ORGN0_WB | TCR_SH0_INNER | TCR_TG0_4K | TCR_IRGN1_WB | TCR_ORGN1_WB | TCR_SH1_INNER | TCR_TG1_4K
 
-// The kernel space's root, learnt on the first `load_address_space`, which
-// the VMM makes with the kernel's own space and makes first. Zero until then.
+// The kernel space's root, which `load_kernel_space` installs once.
 @(private = "file") kernel_root: uintptr
 
 /*
@@ -162,14 +151,8 @@ max_leaf_level :: proc "contextless" () -> int {
 
 // -- Address arithmetic -------------------------------------------------------
 
-table_index :: proc "contextless" (virt: uintptr, level: int) -> int {
-	shift := uint(PAGE_SHIFT + TABLE_BITS * (level - 1))
-	return int((u64(virt) >> shift) & u64(TABLE_ENTRIES - 1))
-}
-
-level_size :: proc "contextless" (level: int) -> uintptr {
-	return uintptr(1) << uint(PAGE_SHIFT + TABLE_BITS * (level - 1))
-}
+table_index :: neutral.table_index
+level_size :: neutral.level_size
 
 /*
 is_canonical reports whether `virt` is a form the two base registers accept.
@@ -285,24 +268,32 @@ ENTRY_EMPTY :: Page_Table_Entry(0)
 // -- Address space switching and TLB --------------------------------------------
 
 /*
-load_address_space makes `root` the space the CPU translates through.
+load_kernel_space installs the kernel's root, once, when the VMM has built
+it. It goes into TTBR1 for good: every kernel address translates through
+it from here on, whatever TTBR0 holds. See the file comment.
+*/
+load_kernel_space :: proc "contextless" (root: uintptr) {
+	kernel_root = root
+	dsb_ish()
+	write_ttbr1(u64(root))
+	isb()
+	load_address_space(root)
+}
 
-The first root loaded is the kernel's, and it goes into TTBR1 for good. Every
-load writes TTBR0: a user root as itself, the kernel root as the early
-window, so that a kernel thread's lower half holds one device page and
-nothing a stray pointer could land on. See the file comment.
+/*
+load_address_space makes `root` the space the CPU translates through, which
+on this architecture means the lower half: TTBR0. A user root goes in as
+itself. The kernel root goes in as the early window, so that a kernel
+thread's lower half holds one device page and nothing a stray pointer could
+land on.
 */
 load_address_space :: proc "contextless" (root: uintptr) {
-	if kernel_root == 0 {
-		kernel_root = root
-	}
 	low := root
 	if root == kernel_root {
 		low = early_window_root()
 	}
 	dsb_ish()
 	write_ttbr0(u64(low))
-	write_ttbr1(u64(kernel_root))
 	isb()
 	tlbi_all()
 }

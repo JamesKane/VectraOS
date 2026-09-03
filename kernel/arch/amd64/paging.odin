@@ -20,38 +20,18 @@ steps remaining. 4 is the PML4. 1 is the PT whose entries are 4 KiB pages.
 */
 package amd64
 
-PAGE_SHIFT :: 12
-PAGE_SIZE :: 1 << PAGE_SHIFT
+import "kernel:arch/neutral"
 
-// Nine bits of virtual address per level, hence 512 entries of 8 bytes. That
-// is one page per table, and it is the property the whole scheme rests on.
-TABLE_BITS :: 9
-TABLE_ENTRIES :: 1 << TABLE_BITS
-TABLE_LEVELS :: 4
+PAGE_SHIFT :: neutral.PAGE_SHIFT
+PAGE_SIZE :: neutral.PAGE_SIZE
+TABLE_BITS :: neutral.TABLE_BITS
+TABLE_ENTRIES :: neutral.TABLE_ENTRIES
+TABLE_LEVELS :: neutral.TABLE_LEVELS
 
-Page_Table_Entry :: distinct u64
-Page_Table :: [TABLE_ENTRIES]Page_Table_Entry
-
-/*
-Neutral permission and caching flags.
-
-Deliberately not a 1:1 mirror of the hardware bits. `Write` and `User` are
-positive here, as they are in the entry.
-
-`No_Execute` reads as a permission the caller must ask to remove. A zero
-`Page_Flags` is therefore the most restrictive mapping, rather than the most
-permissive one.
-*/
-Page_Flag :: enum u8 {
-	Write,
-	User,
-	No_Execute,
-	Global,
-	No_Cache,
-	Write_Through,
-}
-
-Page_Flags :: bit_set[Page_Flag; u8]
+Page_Table_Entry :: neutral.Page_Table_Entry
+Page_Table :: neutral.Page_Table
+Page_Flag :: neutral.Page_Flag
+Page_Flags :: neutral.Page_Flags
 
 // -- Entry bits --------------------------------------------------------------
 
@@ -130,22 +110,8 @@ max_leaf_level :: proc "contextless" () -> int {
 
 // -- Address arithmetic ------------------------------------------------------
 
-/*
-table_index extracts the nine bits of `virt` that select an entry at `level`.
-
-Level 1 reads bits 12..20, level 2 bits 21..29, and so on -- one TABLE_BITS
-stride per level above the page offset.
-*/
-table_index :: proc "contextless" (virt: uintptr, level: int) -> int {
-	shift := uint(PAGE_SHIFT + TABLE_BITS * (level - 1))
-	return int((u64(virt) >> shift) & u64(TABLE_ENTRIES - 1))
-}
-
-// level_size is the span a single entry at `level` covers: 4 KiB, 2 MiB, 1 GiB,
-// 512 GiB.
-level_size :: proc "contextless" (level: int) -> uintptr {
-	return uintptr(1) << uint(PAGE_SHIFT + TABLE_BITS * (level - 1))
-}
+table_index :: neutral.table_index
+level_size :: neutral.level_size
 
 /*
 is_canonical reports whether `virt` is a form the CPU will accept.

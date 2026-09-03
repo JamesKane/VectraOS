@@ -10,47 +10,46 @@ means one new `arch_arm64.odin`, and no edits to call sites in sched/ or mem/.
 package arch
 
 import "kernel:arch/amd64"
+import "kernel:arch/neutral"
 import "vsys:libodin"
 
 NAME :: "amd64"
 
 /*
--- The console --------------------------------------------------------------
+-- The boot layout and the console --------------------------------------------
 
-Where the serial console is, and how it is reached. amd64 has a 16550 at COM1
-behind port I/O, which needs no mapping and no bootloader numbers, so the
-three arguments go unread here. The arm64 binding is the one that reads them.
-`kernel/drivers/uart` drives whatever this names.
+`set_boot_layout` is the bootloader's word on where memory is, handed over
+once before anything else: the direct map's offset and the kernel's two
+bases. amd64 needs none of it this early. arm64 needs the slide to build a
+window onto its console, and riscv64 needs the offset to name a buffer to
+its firmware. `serial_console` then says where the console is, and
+`kernel/drivers/uart` drives whatever it names: a 16550 at COM1 behind port
+I/O here.
 */
 
-Serial_Kind :: enum {
-	None,
-	Port_16550, // A 16550 behind x86 port I/O
-	Mmio_16550, // A 16550 with byte registers in memory
-	Pl011,      // ARM's PrimeCell UART, in memory
-	Firmware,   // The firmware's own console, through `console_write_byte`
-}
+Serial_Kind :: neutral.Serial_Kind
+Serial_Desc :: neutral.Serial_Desc
 
-Serial_Desc :: struct {
-	kind: Serial_Kind,
-	base: uintptr,
-}
-
-serial_console :: proc "contextless" (hhdm, kernel_phys, kernel_virt: u64) -> Serial_Desc {
+set_boot_layout :: proc "contextless" (hhdm, kernel_phys, kernel_virt: u64) {
 	_, _, _ = hhdm, kernel_phys, kernel_virt
+}
+
+serial_console :: proc "contextless" () -> Serial_Desc {
 	return Serial_Desc{kind = .Port_16550, base = 0x3F8}
 }
 
-// serial_physical says whether the console above needs a mapping of the
-// kernel's own once the VMM exists. A port has no address to map.
-serial_physical :: proc "contextless" () -> (uintptr, bool) {
-	return 0, false
-}
+// Device registers in memory, for the drivers above this line.
+mmio_read32 :: neutral.mmio_read32
+mmio_write32 :: neutral.mmio_write32
 
-// The firmware console, which this architecture does not have. The three
+// The firmware console, which this architecture does not have. The four
 // exist so `kernel/drivers/uart` can name them on every architecture.
 console_available :: proc "contextless" () -> bool {
 	return false
+}
+
+console_write :: proc "contextless" (bytes: []u8) {
+	_ = bytes
 }
 
 console_write_byte :: proc "contextless" (b: u8) {
@@ -129,6 +128,10 @@ entry_is_leaf :: amd64.entry_is_leaf
 entry_address :: amd64.entry_address
 entry_flags :: amd64.entry_flags
 
+// load_kernel_space installs the kernel's root when the VMM has built it, and
+// load_address_space switches to any root after. One register holds both
+// halves here, so the two are one act.
+load_kernel_space :: amd64.load_address_space
 load_address_space :: amd64.load_address_space
 current_address_space :: amd64.current_address_space
 flush_page :: amd64.flush_page
@@ -159,6 +162,12 @@ fault_address :: amd64.read_cr2
 // The name of the exception `breakpoint` raises, for the boot line that
 // reports its round trip.
 BREAKPOINT_NAME :: "#BP"
+
+// What a program that runs a privileged instruction is refused with, which
+// the user self-test checks by this name because the answer is the
+// architecture's: a protection fault here and on arm64, an illegal
+// instruction on riscv64.
+PRIVILEGED_FAULT :: Trap_Kind.Protection_Fault
 
 /*
 describe_traps writes the trap tables as this core sees them, and reports
@@ -368,8 +377,13 @@ produce an interrupt. By then there is somewhere for one to land.
 Safe to call before `kernel/mem` exists, and meant to be. The fault stacks are
 static. This is therefore what makes memory bring-up debuggable, rather than
 something that has to wait for it.
+
+`cpu_id` is the boot core's name in the bootloader's list, for the
+architecture that cannot read its own. This one reads its LAPIC id out of the
+APIC, so the number goes unread, here as in `init_traps_ap`.
 */
-init_traps :: proc "contextless" () {
+init_traps :: proc "contextless" (cpu_id: u64) {
+	_ = cpu_id
 	amd64.gdt_init(0)
 	// After the GDT, because `gdt_init` loads a null selector into GS and a
 	// selector load clears the base MSR on Intel. Before everything else,
@@ -378,13 +392,6 @@ init_traps :: proc "contextless" () {
 	amd64.percpu_init(0)
 	amd64.idt_init()
 	amd64.pic_disable()
-}
-
-// set_boot_cpu_id is where an architecture that cannot read its own core id
-// learns it. This one reads its LAPIC id out of the APIC, so the number goes
-// unread.
-set_boot_cpu_id :: proc "contextless" (id: u64) {
-	_ = id
 }
 
 // init_traps_ap is `init_traps` for a core that is not the first. The GDT and

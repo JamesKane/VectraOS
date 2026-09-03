@@ -17,8 +17,8 @@ than files them as gaps.
 
 A run that fails prints the first failed check by name, because later ones
 are almost always its consequences, and then up to forty of the later ones
-as `also:` lines beneath it. The first is still the one to read. The rest
-say how far the consequences reached, which is what the ports needed when
+as `also:` lines beneath it, up to eight. The first is still the one to read.
+The rest say how far the consequences reached, which is what the ports needed when
 one wrong register turned into eighty-seven failed checks with one cause.
 
 ## The self-tests, and what they cost to make honest

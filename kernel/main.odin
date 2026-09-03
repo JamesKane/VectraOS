@@ -161,9 +161,9 @@ kmain :: proc "c" () {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
-	// The architecture says where the console is, and on one of them it has
-	// to map the way to it first. That takes the two numbers below, which
-	// are the bootloader's answers and readable before anything else is.
+	// The bootloader's word on where memory is, handed to the architecture
+	// before anything else: one port has to map the way to its console with
+	// it, and another names buffers to its firmware by physical address.
 	hhdm, kphys, kvirt: u64
 	if r := hhdm_request.response; r != nil {
 		hhdm = r.offset
@@ -171,7 +171,8 @@ kmain :: proc "c" () {
 	if r := executable_address_request.response; r != nil {
 		kphys, kvirt = r.physical_base, r.virtual_base
 	}
-	serial = uart.init(arch.serial_console(hhdm, kphys, kvirt))
+	arch.set_boot_layout(hhdm, kphys, kvirt)
+	serial = uart.init(arch.serial_console())
 	klog.serial = &serial
 	uart.write_string(&serial, "\n\n")
 	log_line(&klog, .Info, "Vectra " + VERSION + " (" + arch.NAME + ") entering kmain")
@@ -180,13 +181,14 @@ kmain :: proc "c" () {
 	if r := dtb_request.response; r != nil {
 		arch.set_device_tree(r.dtb)
 	}
-	// The boot core's name, on the architecture that cannot read its own:
-	// a hart learns its id from whoever started it, and that was the
-	// bootloader.
+	// The boot core's name goes with the tables, for the architecture that
+	// cannot read its own: a hart learns its id from whoever started it, and
+	// that was the bootloader.
+	boot_cpu := u64(0)
 	if mp := mp_request.response; mp != nil {
-		arch.set_boot_cpu_id(limine.mp_bsp_id(mp))
+		boot_cpu = limine.mp_bsp_id(mp)
 	}
-	init_traps()
+	init_traps(boot_cpu)
 
 	// `kernel:sync` sits below the panic screen and cannot call it. A broken
 	// locking rule is not a recoverable condition, so it is given a way to
@@ -348,8 +350,8 @@ and the machine resets before the check below runs.
 If it is merely mis-wired, the check reports it and the boot goes on. A kernel
 that cannot report faults is still worth a boot far enough to say so.
 */
-init_traps :: proc "contextless" () {
-	arch.init_traps()
+init_traps :: proc "contextless" (boot_cpu: u64) {
+	arch.init_traps(boot_cpu)
 	arch.set_trap_handler(panic_trap)
 	arch.set_interrupt_handler(arch.VECTOR_NMI, on_nmi)
 
@@ -766,9 +768,8 @@ init_memory :: proc "contextless" () -> bool {
 	emit(&klog, .Info, &sink)
 
 	// A console reached through a window the bootloader's tables held has
-	// to move onto the kernel's own before the next line is logged. See
-	// `arch.serial_physical`.
-	if phys, needs := arch.serial_physical(); needs {
+	// to move onto the kernel's own before the next line is logged.
+	if phys, needs := uart.needs_mapping(&serial); needs {
 		if virt, err := mem.map_mmio(phys, u64(arch.PAGE_SIZE)); err == .None {
 			uart.rebase(&serial, uintptr(virt))
 		}
@@ -1056,23 +1057,19 @@ init_timer :: proc() -> bool {
 	}
 
 	// A timer reached through registers in memory has a page to map first.
-	// One reached through system registers has none, and says so with a
-	// size of zero.
-	virt: rawptr
-	if arch.TIMER_MMIO_SIZE > 0 {
-		phys := arch.timer_physical_base()
-		err: mem.Error
-		virt, err = mem.map_mmio(phys, arch.TIMER_MMIO_SIZE)
-		if err != .None {
-			sink := begin(&klog)
-			libodin.put_str(&sink, arch.TIMER_NAME)
-			libodin.put_str(&sink, ": cannot map registers at ")
-			libodin.put_hex(&sink, u64(phys), 16)
-			libodin.put_str(&sink, " -- ")
-			libodin.put_str(&sink, mem.describe(err))
-			emit(&klog, .Fault, &sink)
-			return false
-		}
+	// One reached through system registers says so with a size of zero,
+	// which maps nothing and answers an address nothing reads.
+	phys := arch.timer_physical_base()
+	virt, err := mem.map_mmio(phys, arch.TIMER_MMIO_SIZE)
+	if err != .None {
+		sink := begin(&klog)
+		libodin.put_str(&sink, arch.TIMER_NAME)
+		libodin.put_str(&sink, ": cannot map registers at ")
+		libodin.put_hex(&sink, u64(phys), 16)
+		libodin.put_str(&sink, " -- ")
+		libodin.put_str(&sink, mem.describe(err))
+		emit(&klog, .Fault, &sink)
+		return false
 	}
 
 	arch.timer_attach(virt)

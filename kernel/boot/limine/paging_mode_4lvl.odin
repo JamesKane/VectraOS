@@ -1,5 +1,6 @@
-// The x86-64 paging modes, and the one Vectra pins. See `docs/BOOT.md`.
-#+build amd64
+// The paging modes of the two architectures whose modes are 4-level and
+// 5-level, and the one Vectra pins. See `docs/BOOT.md` and `docs/PORTS.md`.
+#+build amd64, arm64
 package limine
 
 PAGING_4LVL :: u64(0)
@@ -12,7 +13,7 @@ PAGING_MODE_PINNED :: PAGING_4LVL
 paging_mode_name :: proc "contextless" (mode: u64) -> string {
 	switch mode {
 	case PAGING_4LVL: return "4-level"
-	case PAGING_5LVL: return "5-level (LA57)"
+	case PAGING_5LVL: return ODIN_ARCH == .amd64 ? "5-level (LA57)" : "5-level"
 	}
 	return ""
 }

@@ -15,6 +15,8 @@ tail puts one, so `syscall_frame_fpu` has one rule for both.
 */
 package arm64
 
+import "kernel:arch/neutral"
+
 MIN_STACK_SIZE :: 4096
 
 // The vector image: q0..q31, then fpsr and fpcr. What the tail saves below
@@ -31,10 +33,7 @@ SPSR_EL1H :: u64(0x345)
 // what `frame_is_user` reads.
 SPSR_EL0 :: u64(0x340)
 
-@(private = "file")
-align_down :: proc "contextless" (value: uintptr, align: uintptr) -> uintptr {
-	return value & ~(align - 1)
-}
+align_down :: neutral.align_down
 
 // kernel_stack_top is the sixteen-byte-aligned end of a stack, which is what
 // SP has to be whenever it is used as a base here.
@@ -198,12 +197,14 @@ foreign {
 ap_switch takes an arriving core off the bootloader's stack and tables.
 
 The tables first, from Odin, which works because the bootloader's stack is
-memory the kernel's tables map too. Then the stack, in `ap.S`, because no
-Odin procedure can change its own. The entry runs on the new stack and never
-returns.
+memory the kernel's tables map too. Both halves: the core arrives with the
+bootloader's upper half in TTBR1, and `root` is the kernel's, so this is
+the kernel space being installed on one more core. Then the stack, in
+`ap.S`, because no Odin procedure can change its own. The entry runs on the
+new stack and never returns.
 */
 ap_switch :: proc "contextless" (stack_top: uintptr, root: uintptr, entry: proc "c" (arg: rawptr) -> !, arg: rawptr) -> ! {
-	load_address_space(root)
+	load_kernel_space(root)
 	vectra_ap_switch(stack_top, entry, arg)
 }
 

@@ -2,6 +2,7 @@
 package programs
 
 import "base:intrinsics"
+import "vsys:abi"
 import "vsys:libuser"
 
 // forker forks a plain child, which bumps a cell in its own copy of the page
@@ -9,7 +10,7 @@ import "vsys:libuser"
 forker :: proc "contextless" (cells: ^Cells) -> ! {
 	cells[0] = 0x464F524B464F524B
 	cells[4] = 10
-	pid := libuser.rfork(0x10)
+	pid := libuser.rfork(abi.RFPROC)
 	if pid == 0 {
 		bump(cells, 4)
 		libuser.exit(intrinsics.volatile_load(&cells[4]))
@@ -23,7 +24,7 @@ forker :: proc "contextless" (cells: ^Cells) -> ! {
 // parent can see, waits for a word from the kernel, and leaves.
 memfork :: proc "contextless" (cells: ^Cells) -> ! {
 	cells[0] = 0x4D454D464D454D46
-	pid := libuser.rfork(0x30)
+	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)
 	if pid == 0 {
 		intrinsics.volatile_store(&cells[2], 0xC0FFEEC0FFEE)
 		if !wait_cell(cells, 3) {
@@ -53,13 +54,13 @@ fdforker :: proc "contextless" (cells: ^Cells, flags: u64) -> ! {
 // refusal.
 refuser :: proc "contextless" (cells: ^Cells) -> ! {
 	cells[0] = 0x5245465552454655
-	put(cells, 1, libuser.rfork(0x2))
-	put(cells, 2, libuser.rfork(0x40))
-	put(cells, 3, libuser.rfork(0x20))
-	put(cells, 4, libuser.rfork(0x1014))
-	put(cells, 5, libuser.rfork(0x4000))
+	put(cells, 1, libuser.rfork(abi.RFENVG))
+	put(cells, 2, libuser.rfork(abi.RFNOWAIT))
+	put(cells, 3, libuser.rfork(abi.RFMEM))
+	put(cells, 4, libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFCFDG))
+	put(cells, 5, libuser.rfork(abi.RFNOMNT))
 	put(cells, 6, libuser.rfork(0))
-	put(cells, 7, libuser.rfork(0x8))
+	put(cells, 7, libuser.rfork(abi.RFNOTEG))
 	libuser.exit(0)
 }
 
@@ -74,7 +75,7 @@ move, and then ends by name.
 */
 grouper :: proc "contextless" (cells: ^Cells) -> ! {
 	cells[0] = 0x4752555047525550
-	first := libuser.rfork(0x30)
+	first := libuser.rfork(abi.RFPROC | abi.RFMEM)
 	if first == 0 {
 		for _ in 0 ..< ROUNDS {
 			bump(cells, 8)
@@ -82,7 +83,7 @@ grouper :: proc "contextless" (cells: ^Cells) -> ! {
 		libuser.exit(0x7C)
 	}
 	put(cells, 1, first)
-	second := libuser.rfork(0x38)
+	second := libuser.rfork(abi.RFPROC | abi.RFMEM | abi.RFNOTEG)
 	if second == 0 {
 		for _ in 0 ..< ROUNDS {
 			bump(cells, 9)
@@ -109,7 +110,7 @@ grouper :: proc "contextless" (cells: ^Cells) -> ! {
 // nothing to collect.
 nowaiter :: proc "contextless" (cells: ^Cells) -> ! {
 	cells[0] = 0x4E4F57414E4F5741
-	pid := libuser.rfork(0x50)
+	pid := libuser.rfork(abi.RFPROC | abi.RFNOWAIT)
 	if pid == 0 {
 		intrinsics.volatile_store(&cells[8], 1)
 		_ = wait_cell(cells, 9)

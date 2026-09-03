@@ -19,6 +19,8 @@ has the same shape and the same proof.
 */
 package arm64
 
+import "kernel:arch/neutral"
+
 // -- Interrupt masking ------------------------------------------------------
 //
 // PSTATE.I is the IRQ mask, bit 7 in the DAIF view. FIQ and SError stay masked
@@ -321,20 +323,10 @@ outb :: proc "contextless" (port: u16, value: u8) {
 
 // -- What kind of core this is --------------------------------------------------
 
-/*
-Vectra schedules against a core's *class*, not its number.
-
-One class for now, at full capacity. A big.LITTLE part reports its cores by
-MIDR part number, and this is where that table will live. The scheduler
-already knows the three tiers.
-*/
-Cpu_Class :: enum {
-	Efficiency,
-	Performance,
-	Prime,
-}
-
-CAPACITY_FULL :: 1024
+// One class for now, at full capacity. A big.LITTLE part reports its cores
+// by MIDR part number, and this is where that table will live.
+Cpu_Class :: neutral.Cpu_Class
+CAPACITY_FULL :: neutral.CAPACITY_FULL
 
 cpu_class :: proc "contextless" () -> (class: Cpu_Class, capacity: int) {
 	return .Performance, CAPACITY_FULL

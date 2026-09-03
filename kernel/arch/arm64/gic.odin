@@ -16,7 +16,8 @@ per core by construction.
 
 The base address is assumed rather than discovered, for the same reason the
 I/O APIC's is on amd64: nothing here parses the tables that would say. The
-device tree does, and `set_device_tree` keeps it for the day this reads it.
+device tree does, and the day something reads it for this is the day the
+bootloader's tree stops being handed straight back.
 */
 package arm64
 

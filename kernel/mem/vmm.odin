@@ -129,7 +129,8 @@ Order is the whole of the correctness argument:
      no-execute. With CR0.WP now on, these are real.
   4. Map the direct map, covering exactly the region kinds base revision 6
      guarantees and nothing else.
-  5. Only then write CR3.
+  5. Only then install the root, through `arch.load_kernel_space`, which
+     is the one call that says which root is the kernel's.
 */
 @(private)
 vmm_init :: proc "contextless" (b: ^Boot_Memory) -> Error {
@@ -152,7 +153,7 @@ vmm_init :: proc "contextless" (b: ^Boot_Memory) -> Error {
 		return err
 	}
 
-	arch.load_address_space(kernel_space.root)
+	arch.load_kernel_space(kernel_space.root)
 	return .None
 }
 

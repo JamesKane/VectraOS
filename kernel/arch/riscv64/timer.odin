@@ -14,6 +14,8 @@ the sender leaves the vector in the receiver's per-CPU record first.
 */
 package riscv64
 
+import "base:intrinsics"
+
 TIMER_MMIO_SIZE :: u64(0)
 
 @(private = "file") tick_count: u64
@@ -100,35 +102,45 @@ timer_ack :: proc "contextless" () {
 
 // -- Interprocessor interrupts ------------------------------------------------------
 
-// The software vectors are 0x80 and up, and the mailbox holds one bit per
-// vector above that base.
+// The software vectors are 0x80 and up, and a hart's mailbox holds one bit
+// per vector above that base. Indexed by hart id, which `plic.odin` already
+// takes to be below `PERCPU_MAX`, and `online_harts` is the set that has a
+// record, for the stop that goes to every hart but this one.
 IPI_VECTOR_BASE :: 0x80
 
-// ipi_send raises `vector` on the hart named, which is a core's id in the
-// firmware's terms.
-ipi_send :: proc "contextless" (hart: u32, vector: u8) {
-	if vector < IPI_VECTOR_BASE {
-		return
-	}
-	for id in 0 ..< PERCPU_MAX {
-		p := percpu_record(id)
-		if p.self != 0 && p.hart == u64(hart) {
-			_ = intrinsics_or(&p.ipi, u64(1) << (vector - IPI_VECTOR_BASE))
-			sbi_send_ipi(1, u64(hart))
-			return
-		}
+@(private = "file") ipi_pending: [PERCPU_MAX]u64
+@(private = "file") online_harts: u64
+
+// ipi_online marks a hart as one that takes interrupts, which `percpu_init`
+// calls for its own.
+ipi_online :: proc "contextless" (hart: u64) {
+	if hart < PERCPU_MAX {
+		intrinsics.atomic_or(&online_harts, u64(1) << hart)
 	}
 }
 
+// ipi_send raises `vector` on the hart named, which is a core's id in the
+// firmware's terms.
+ipi_send :: proc "contextless" (hart: u32, vector: u8) #no_bounds_check {
+	if vector < IPI_VECTOR_BASE || hart >= PERCPU_MAX {
+		return
+	}
+	intrinsics.atomic_or(&ipi_pending[hart], u64(1) << (vector - IPI_VECTOR_BASE))
+	sbi_send_ipi(1, u64(hart))
+}
+
+// ipi_take empties this hart's mailbox, for the software interrupt handler.
+ipi_take :: proc "contextless" () -> u64 #no_bounds_check {
+	return intrinsics.atomic_exchange(&ipi_pending[percpu_hart()], 0)
+}
+
 // ipi_stop_others sends the stop to every hart but this one.
-ipi_stop_others :: proc "contextless" () {
+ipi_stop_others :: proc "contextless" () #no_bounds_check {
 	me := percpu_hart()
-	mask := u64(0)
-	for id in 0 ..< PERCPU_MAX {
-		p := percpu_record(id)
-		if p.self != 0 && p.hart != me {
-			_ = intrinsics_or(&p.ipi, u64(1) << (VECTOR_NMI - IPI_VECTOR_BASE))
-			mask |= u64(1) << p.hart
+	mask := intrinsics.atomic_load(&online_harts) &~ (u64(1) << me)
+	for hart in u64(0) ..< PERCPU_MAX {
+		if mask & (u64(1) << hart) != 0 {
+			intrinsics.atomic_or(&ipi_pending[hart], u64(1) << (VECTOR_NMI - IPI_VECTOR_BASE))
 		}
 	}
 	if mask != 0 {

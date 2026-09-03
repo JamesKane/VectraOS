@@ -124,6 +124,7 @@ Exit :: struct {
 	has_error:  bool,
 	ip:         uintptr,
 	address:    uintptr, // CR2, and meaningful only for a page fault
+	present:    bool,    // Whether a page was mapped there, which the VMM says
 	from_user:  bool,    // The trap was taken in ring 3 rather than in the kernel
 
 	/*
@@ -433,6 +434,12 @@ on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
 			p.exit.has_error = t.has_error
 			p.exit.ip = t.ip
 			p.exit.address = t.fault_address
+			// Whether the page was there, asked of the tables the program
+			// faulted through, now, while they are the ones loaded. A
+			// syndrome may not say; the VMM always can.
+			if t.kind == .Page_Fault && p.space != nil {
+				_, p.exit.present = mem.permissions(p.space, t.fault_address)
+			}
 			p.exit.from_user = t.user
 			p.exit.sp = t.sp
 			p.exit.kstack = uintptr(rawptr(t.frame))

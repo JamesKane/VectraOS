@@ -25,6 +25,8 @@ turns a table of 256 function pointers into one label and a shift.
 */
 package amd64
 
+import "kernel:arch/neutral"
+
 import "base:intrinsics"
 
 import "vsys:libodin"
@@ -139,37 +141,10 @@ would make it matter. Sixteen lines fit, which is every ISA interrupt there is.
 VECTOR_IRQ_BASE :: 0x30
 VECTOR_IRQ_COUNT :: 16
 
-/*
-A neutral description of what went wrong.
-
-`kind` is what the portable kernel branches on. `name` and `error_code` are
-what it prints. Everything architecture-specific stays behind `frame`. Only
-`register_line` and `describe_error` in this file ever look inside it.
-`kernel/panic.odin` therefore reports an amd64 fault with no knowledge that it
-is one.
-*/
-Trap_Kind :: enum {
-	Unknown,
-	Divide_By_Zero,
-	Debug,
-	Non_Maskable,
-	Breakpoint,
-	Overflow,
-	Bound_Range,
-	Invalid_Instruction,
-	Device_Not_Available,
-	Double_Fault,
-	Invalid_Task_State,
-	Segment_Not_Present,
-	Stack_Fault,
-	Protection_Fault,
-	Page_Fault,
-	Arithmetic_Fault,
-	Alignment_Fault,
-	Machine_Check,
-	Control_Protection,
-	Interrupt, // External, vector 32 and above
-}
+// The neutral vocabulary, in `kernel/arch/neutral`. `kernel/panic.odin`
+// therefore reports an amd64 fault with no knowledge that it is one; only
+// `register_line` and `describe_error` here ever look inside `frame`.
+Trap_Kind :: neutral.Trap_Kind
 
 Trap :: struct {
 	kind:          Trap_Kind,

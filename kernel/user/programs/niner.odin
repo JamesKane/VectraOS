@@ -14,7 +14,9 @@ self-test recognises as the wire going wrong.
 */
 package programs
 
+import "vsys:abi"
 import "vsys:libuser"
+import "vsys:vectra9"
 
 @(private = "file") FRAME_MAX :: 256
 @(private = "file") BROKEN :: u64(0x77)
@@ -59,7 +61,7 @@ niner :: proc "contextless" (cells: ^Cells) -> ! {
 	serve := int(ends & 255)
 	client := int(ends >> 8 & 255)
 
-	name := libuser.create("/srv/niner", 1, 384)
+	name := libuser.create("/srv/niner", abi.O_WRONLY, 384)
 	put(cells, 2, name)
 	put(cells, 3, libuser.write(int(name), transmute([]u8)string("4")))
 	put(cells, 4, libuser.close(int(name)))
@@ -81,19 +83,19 @@ niner :: proc "contextless" (cells: ^Cells) -> ! {
 		reply := 0
 		stop := false
 		switch frame[4] {
-		case 100: // Tversion: echo it, as Rversion
-			frame[4] = 101
+		case u8(vectra9.Kind.Tversion): // echo it, as Rversion
+			frame[4] = u8(vectra9.Kind.Rversion)
 			reply = size
-		case 104: // Tattach: a directory qid
+		case u8(vectra9.Kind.Tattach): // a directory qid
 			put32(frame, 0, 20)
-			frame[4] = 105
+			frame[4] = u8(vectra9.Kind.Rattach)
 			frame[7] = 0x80
 			put32(frame, 8, 0)
 			put64(frame, 12, 1)
 			reply = 20
-		case 110: // Twalk: one file qid per name asked for
+		case u8(vectra9.Kind.Twalk): // one file qid per name asked for
 			n := get16(frame, 15)
-			frame[4] = 111
+			frame[4] = u8(vectra9.Kind.Rwalk)
 			put16(frame, 7, n)
 			at := 9
 			for _ in 0 ..< n {
@@ -104,40 +106,40 @@ niner :: proc "contextless" (cells: ^Cells) -> ! {
 			}
 			reply = get16(frame, 7) * 13 + 9
 			put32(frame, 0, reply)
-		case 12: // Tlopen: the file qid, no iounit
+		case u8(vectra9.Kind.Tlopen): // the file qid, no iounit
 			put32(frame, 0, 24)
-			frame[4] = 13
+			frame[4] = u8(vectra9.Kind.Rlopen)
 			frame[7] = 0
 			put32(frame, 8, 0)
 			put64(frame, 12, 2)
 			put32(frame, 20, 0)
 			reply = 24
-		case 118: // Twrite: the payload to the console, the count back
+		case u8(vectra9.Kind.Twrite): // the payload to the console, the count back
 			count := get32(frame, 19)
 			_ = libuser.write(1, frame[23:][:count])
 			put32(frame, 7, count)
 			put32(frame, 0, 11)
-			frame[4] = 119
+			frame[4] = u8(vectra9.Kind.Rwrite)
 			reply = 11
-		case 116: // Tread: our own words
+		case u8(vectra9.Kind.Tread): // our own words
 			put32(frame, 0, 39)
-			frame[4] = 117
+			frame[4] = u8(vectra9.Kind.Rread)
 			put32(frame, 7, 28)
 			copy(frame[11:39], "these bytes came from ring 3")
 			reply = 39
-		case 120: // Tclunk
+		case u8(vectra9.Kind.Tclunk):
 			put32(frame, 0, 7)
-			frame[4] = 121
+			frame[4] = u8(vectra9.Kind.Rclunk)
 			reply = 7
-		case 122: // Tremove: the last request
+		case u8(vectra9.Kind.Tremove): // the last request
 			put32(frame, 0, 7)
-			frame[4] = 123
+			frame[4] = u8(vectra9.Kind.Rremove)
 			reply = 7
 			stop = true
 		case: // Rlerror EOPNOTSUPP
 			put32(frame, 0, 11)
-			frame[4] = 7
-			put32(frame, 7, 95)
+			frame[4] = u8(vectra9.Kind.Rlerror)
+			put32(frame, 7, int(vectra9.EOPNOTSUPP))
 			reply = 11
 		}
 
