@@ -126,6 +126,10 @@ thread_user_init :: riscv64.thread_user_init
 thread_user_clone :: riscv64.thread_user_clone
 frame_enter_user :: riscv64.frame_enter_user
 syscall_frame_fpu :: riscv64.syscall_frame_fpu
+// USER_STACK_TILT is how far below a sixteen-aligned top a program's first
+// stack pointer sits: the procedure call standard wants the stack pointer sixteen-aligned at every call, and a fresh stack is.
+USER_STACK_TILT :: 0
+
 kernel_stack_top :: riscv64.kernel_stack_top
 set_kernel_stack :: riscv64.set_kernel_stack
 kernel_stack :: riscv64.kernel_stack

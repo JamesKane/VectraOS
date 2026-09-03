@@ -72,6 +72,7 @@ import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
 import "kernel:vfs"
+import "vsys:abi"
 
 /*
 Where a program's three pages go.
@@ -100,7 +101,10 @@ which is five of today's `ramfs`, and it is a *format* bound. A program that
 outgrows it asks this constant to move, visibly, rather than quietly taking
 the machine.
 */
-MAX_PROGRAM_FRAMES :: 64
+// 512 KiB per segment, up from 256: a tool that formats through `core:fmt`
+// carries the runtime's type tables, and the first one that did was 300 KiB
+// of text.
+MAX_PROGRAM_FRAMES :: 128
 STACK_PAGES2 :: 4
 STACK_VA2 :: STACK_TOP - uintptr(STACK_PAGES2 * arch.PAGE_SIZE)
 
@@ -139,6 +143,11 @@ Exit :: struct {
 	*/
 	sp:         uintptr,
 	kstack:     uintptr,
+
+	// What the program said with `exits`, for `await` to repeat. Empty for
+	// a program that used the numeric `exit`, whose number is `status`.
+	text:     [EXITS_MAX]u8,
+	text_len: int,
 
 	/*
 	Whether the program asked to stop, and what it said on the way out.
@@ -193,6 +202,11 @@ Process :: struct {
 	// that live in the image. `spawn_path` is handed a path sitting on the
 	// calling thread's syscall stack, which is gone when the call returns.
 	name_buf: [PATH_MAX]u8,
+
+	// The current directory, as a cleaned absolute path, and `/` when empty.
+	// Inherited by a fork and a spawn, changed by `chdir`. See `path.odin`.
+	cwd_buf: [PATH_MAX]u8,
+	cwd_len: int,
 
 	// The frames behind the three blob mappings, as *aliases*. Physical,
 	// because `mem.phys_to_virt` needs them to read the data page back for
@@ -298,7 +312,9 @@ Fd :: struct {
 	offset: u64,
 }
 
-MAX_FDS :: 16
+// Thirty-two, up from sixteen, because a shell holds a few for itself and a
+// pipeline holds two per stage.
+MAX_FDS :: 32
 
 // The three a process starts with, on `/dev/cons`. The numbers are the
 // convention rather than a requirement, and every program in `program.odin`
@@ -315,6 +331,8 @@ allocate is a record a program can exhaust the machine through. This is also
 the first code in Vectra that anything untrusted will reach.
 */
 MAX_PROCESSES :: 12
+
+EXITS_MAX :: abi.EXITS_MAX
 
 @(private)
 processes: [MAX_PROCESSES]Process

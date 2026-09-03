@@ -71,6 +71,15 @@ and as many in the library.
 Proves: a program spawned with three arguments echoes them, changes
 directory, lists it, and exits with a string its parent's `await` repeats.
 
+**Where it stands.** Everything but `#e` landed together: `tests/abi` is the
+program, `/bin/abitest`, and the user suite runs it with three arguments on
+all three architectures. Two details the plan did not have: the numeric
+`exit` and `wait` stay for the kernel's own checks, with `exits` and `await`
+beside them; and `libfmt` is a package apart from `libuser`, because
+importing `core:fmt` makes the runtime emit two kilobytes of arithmetic
+helpers into every program that links the importer, which the page-sized
+test programs cannot afford.
+
 ### Step 2: `rc`
 
 `apps/rc`, about 5,000 lines of Odin against 9front's 6,000 of C. A

@@ -113,8 +113,11 @@ pipe :: proc "contextless" () -> i64 {
 	return raw1(abi.SYS_PIPE, 0)
 }
 
-spawn :: proc "contextless" (path: string, flags: u64) -> i64 {
-	return raw3(abi.SYS_SPAWN, u64(uintptr(raw_data(path))), u64(len(path)), flags)
+// spawn starts a program out of a file, with the arguments it is to see.
+// A program's first argument is its own name by convention, and the caller
+// supplies it: the kernel adds nothing.
+spawn :: proc "contextless" (path: string, flags: u64, argv: []string = nil) -> i64 {
+	return raw5(abi.SYS_SPAWN, u64(uintptr(raw_data(path))), u64(len(path)), flags, u64(uintptr(raw_data(argv))), u64(len(argv)))
 }
 
 wait :: proc "contextless" (pid: u64) -> i64 {
@@ -138,8 +141,70 @@ rfork :: proc "contextless" (flags: u64) -> i64 {
 // the text, data and stack are the new program's. It returns only on
 // failure, because on success the old program is gone. The answer is then
 // the errno that says why the new program could not load.
-exec :: proc "contextless" (path: string) -> i64 {
-	return raw2(abi.SYS_EXEC, u64(uintptr(raw_data(path))), u64(len(path)))
+exec :: proc "contextless" (path: string, argv: []string = nil) -> i64 {
+	return raw4(abi.SYS_EXEC, u64(uintptr(raw_data(path))), u64(len(path)), u64(uintptr(raw_data(argv))), u64(len(argv)))
+}
+
+// -- The calls a shell needs -------------------------------------------------
+
+// stat asks about a file by name, and fstat about an open one. The answer
+// lands in the caller's record; the number is zero or `-errno`.
+stat :: proc "contextless" (path: string, out: ^abi.Stat) -> i64 {
+	return raw3(abi.SYS_STAT, u64(uintptr(raw_data(path))), u64(len(path)), u64(uintptr(out)))
+}
+
+fstat :: proc "contextless" (fd: int, out: ^abi.Stat) -> i64 {
+	return raw2(abi.SYS_FSTAT, u64(fd), u64(uintptr(out)))
+}
+
+// wstat changes what a file says about itself: its mode and its length are
+// the two things a program may change today.
+wstat :: proc "contextless" (path: string, s: ^abi.Stat) -> i64 {
+	return raw3(abi.SYS_WSTAT, u64(uintptr(raw_data(path))), u64(len(path)), u64(uintptr(s)))
+}
+
+// dirread fills entries from an open directory, and answers how many. Zero
+// is the end. The descriptor's offset moves, so the next call continues.
+dirread :: proc "contextless" (fd: int, entries: []abi.Dirent) -> i64 {
+	return raw3(abi.SYS_DIRREAD, u64(fd), u64(uintptr(raw_data(entries))), u64(len(entries)))
+}
+
+// dup makes `new` another name for `old`, closing what `new` was. A `new`
+// of -1 asks for the lowest free descriptor, which is Plan 9's `dup(fd, -1)`.
+dup :: proc "contextless" (old: int, new: int = -1) -> i64 {
+	return raw2(abi.SYS_DUP, u64(old), u64(i64(new)))
+}
+
+chdir :: proc "contextless" (path: string) -> i64 {
+	return raw2(abi.SYS_CHDIR, u64(uintptr(raw_data(path))), u64(len(path)))
+}
+
+// getwd writes the current directory into `buf` and answers its length.
+getwd :: proc "contextless" (buf: []u8) -> i64 {
+	return raw2(abi.SYS_GETWD, u64(uintptr(raw_data(buf))), u64(len(buf)))
+}
+
+pread :: proc "contextless" (fd: int, buf: []u8, offset: u64) -> i64 {
+	return raw4(abi.SYS_PREAD, u64(fd), u64(uintptr(raw_data(buf))), u64(len(buf)), offset)
+}
+
+pwrite :: proc "contextless" (fd: int, data: []u8, offset: u64) -> i64 {
+	return raw4(abi.SYS_PWRITE, u64(fd), u64(uintptr(raw_data(data))), u64(len(data)), offset)
+}
+
+// exits ends the program with a word for whoever waits: empty is success,
+// anything else is what went wrong. `await` on the other side repeats it.
+exits :: proc "contextless" (status: string) -> ! {
+	_ = raw2(abi.SYS_EXITS, u64(uintptr(raw_data(status))), u64(len(status)))
+	for {
+	}
+}
+
+// await collects one ended child and writes `pid status` into `buf`, where
+// the status is what the child said with `exits`, or its number if it used
+// `exit` and the number was not zero. Answers the length, or `-errno`.
+await :: proc "contextless" (pid: u64, buf: []u8) -> i64 {
+	return raw3(abi.SYS_AWAIT, pid, u64(uintptr(raw_data(buf))), u64(len(buf)))
 }
 
 /*
@@ -298,9 +363,9 @@ nop :: proc "contextless" () -> i64 {
 	return raw1(abi.SYS_NOP, 0)
 }
 
-// args is the call that adds its six arguments up, which is the only thing
-// that proves all six arrive.
-args :: proc "contextless" (a0, a1, a2, a3, a4, a5: u64) -> i64 {
+// sum_args is the call that adds its six arguments up, which is the only
+// thing that proves all six arrive.
+sum_args :: proc "contextless" (a0, a1, a2, a3, a4, a5: u64) -> i64 {
 	return raw6(abi.SYS_ARGS, a0, a1, a2, a3, a4, a5)
 }
 

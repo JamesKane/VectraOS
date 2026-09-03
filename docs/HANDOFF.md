@@ -493,6 +493,8 @@ section 3's table and is not repeated here.
 ```
 build.odin              Build driver: user programs, kernel, ESP, QEMU, and
                         the ELF-to-VECTRA02 converter
+tests/abi/              /bin/abitest: the process ABI exercised from ring 3,
+                        which the user suite spawns with three arguments
 justfile / Makefile     Thin wrappers over build.odin
 boot/
   limine.conf           Limine config, staged to /EFI/BOOT/
@@ -666,6 +668,8 @@ kernel/
                         the reaper that collects a detached orphan
     programs/           The ring 3 test programs, one Odin package built once
                         per program into a page-sized blob the kernel embeds
+    path.odin           A process's current directory, and cleanname
+    args.odin           A program's arguments, copied in and staged onto its stack
     program.odin        The programs' marks, cells and blobs, and
                         the marks they write to say they ran
     verify.odin         The largest self-test in the tree, and the one the boot
@@ -690,8 +694,13 @@ sys/
                         that worker; and Spin, the first ring 3 lock
     fid.odin            The fid table five servers had each written, with a
                         lock, a walk, an attach and an EBADF guard
+    sys_<arch>.odin     The door, as its bytes, one per architecture
+    heap.odin           A first-fit heap over segalloc, behind context.allocator
+    main.odin           startup, args, Bio: what a tool starts with
     link_user.ld        A ring 3 program's layout, aligned so every change of
                         permission gets its own page
+  libfmt/print.odin     print, fprint and bio_print over core:fmt, apart from
+                        libuser so a page-sized program never links fmt
   libdraw/draw.odin     The draw protocol's encoding: the six verbs, the put
                         half a client batches with, the get half the server
                         decodes with

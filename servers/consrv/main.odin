@@ -118,7 +118,8 @@ open, and both processes hold the number. The child never returns from
 the console at all.
 */
 @(export, link_name = "_start")
-start :: proc "c" (data: uintptr, arg: u64, arg2: u64) {
+start :: proc "c" (block: ^abi.Args) {
+	_ = block
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 

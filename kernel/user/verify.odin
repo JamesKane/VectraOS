@@ -465,6 +465,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// -- And a process that continues from the call site ----------------------
 
 	verify_rfork(&r)
+	verify_abi(&r)
 
 	// -- And a process that replaces itself -----------------------------------
 
@@ -6552,3 +6553,45 @@ verify_windows :: proc(
 	}
 
 }
+
+/*
+verify_abi runs the program `docs/SHELL.md` step 1 was built for.
+
+`/bin/abitest` is an Odin program with a heap, spawned with three arguments.
+It reads them back, changes directory and opens a file by a relative name,
+stats, reads a directory, duplicates a descriptor, spawns itself with
+arguments of its own and awaits the word it says, forks a child that exits
+with a word, and says `ok` if every step held or the name of the first that
+did not. The kernel's check is that one word, which is what makes the test
+one line here and forty in the program.
+*/
+@(private = "file")
+verify_abi :: proc(r: ^Result) {
+	argv := new(Argv)
+	if !check(r, argv != nil, "a record for the ABI program's arguments") {
+		return
+	}
+	defer free(argv)
+	names := [?]string{"abitest", "one", "two", "three"}
+	check(r, argv_from(argv, names[:]), "holds its four arguments")
+
+	p, serr := spawn_path(nil, "/bin/abitest", SPAWN_NS_COPY, argv)
+	if !check(r, serr == vfs.OK && p != nil, "a program with a heap and three arguments starts") {
+		return
+	}
+	r.programs += 1
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		// Copied out of the record, because the tally keeps the string and
+		// `finish` clears the record before the line is printed.
+		abi_said_len = p.exit.text_len
+		for i in 0 ..< abi_said_len {
+			abi_said[i] = p.exit.text[i]
+		}
+		said := string(abi_said[:abi_said_len])
+		check(r, p.exit.deliberate && said == "ok", said == "ok" ? "and every step of the process ABI held" : said)
+	}
+	finish(r, p, "and the ABI program is taken down")
+}
+
+@(private = "file") abi_said: [EXITS_MAX]u8
+@(private = "file") abi_said_len: int

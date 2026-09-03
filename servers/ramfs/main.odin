@@ -28,6 +28,7 @@ package ramfs
 
 import "base:runtime"
 
+import "vsys:abi"
 import "vsys:libuser"
 import "vsys:vectra9"
 
@@ -71,7 +72,8 @@ one today, and running them anyway is what keeps that sentence from
 becoming a trap for the next program.
 */
 @(export, link_name = "_start")
-start :: proc "c" (data: uintptr, arg: u64, arg2: u64) {
+start :: proc "c" (block: ^abi.Args) {
+	_ = block
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 

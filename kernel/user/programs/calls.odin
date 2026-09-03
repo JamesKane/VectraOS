@@ -26,7 +26,7 @@ interrupt without disturbing.
 probe :: proc "contextless" (cells: ^Cells, text_at: u64) -> ! {
 	cells[0] = 0x50524F4250524F42
 	put(cells, 1, libuser.nop())
-	put(cells, 2, libuser.args(1, 2, 4, 8, 16, 32))
+	put(cells, 2, libuser.sum_args(1, 2, 4, 8, 16, 32))
 	put(cells, 3, libuser.unknown())
 	put(cells, 4, libuser.write(1, ([^]u8)(uintptr(text_at))[:8]))
 	put(cells, 5, libuser.sleep(4))

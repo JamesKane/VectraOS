@@ -206,11 +206,11 @@ way it failed.
 ANON_CHILD_STATUS :: u64(7)
 ANON_CHILD_REFUSED :: u64(8)
 
-// What `anon` asks for, and why it is that number. A hundred and twenty-eight
-// pages is half a megabyte, which is twice `MAX_PROGRAM_FRAMES` worth. A frame
-// list cannot describe it, so a run that comes back whole is a claim about the
-// shape and not only about the call.
-ANON_BYTES :: u64(128 * 4096)
+// What `anon` asks for, and why it is that number: twice `MAX_PROGRAM_FRAMES`
+// worth of pages, a megabyte today. A frame list cannot describe it, so a run
+// that comes back whole is a claim about the shape and not only about the
+// call.
+ANON_BYTES :: u64(2 * MAX_PROGRAM_FRAMES * 4096)
 
 // And what it asks for that it must not get. A gigabyte is past
 // `SEGALLOC_MAX` by two orders of magnitude, and past this machine's memory.

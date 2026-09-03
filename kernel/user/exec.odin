@@ -58,7 +58,7 @@ space is still the one the machine translates through, because `copy_in`
 reads through it.
 */
 @(private)
-sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int) -> i64 {
+sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr: uintptr, argc: int) -> i64 {
 	// Returns only on failure, with the errno; on success the answer below
 	// is the new program's and this call is over.
 	p := current()
@@ -66,8 +66,19 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int) -> i64 {
 		return -i64(vectra9.EBADF)
 	}
 
-	path: [PATH_MAX]u8
-	if length <= 0 || length > PATH_MAX || !copy_in(addr, length, path[:]) {
+	path_buf: [PATH_MAX]u8
+	path, perr := copy_path(p, addr, length, path_buf[:])
+	if perr != vectra9.Errno(0) {
+		return -i64(perr)
+	}
+	// The arguments, copied in before anything is torn down: they live in
+	// the image this call is about to replace.
+	argv := new(Argv)
+	if argv == nil {
+		return -i64(vectra9.ENOMEM)
+	}
+	defer free(argv)
+	if !copy_argv(argv_addr, argc, argv) {
 		return -i64(vectra9.EFAULT)
 	}
 
@@ -85,13 +96,25 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int) -> i64 {
 	scratch: Process
 	scratch.space = space
 
-	entry, sp, arg0, lerr := load_program(&scratch, p.ns, string(path[:length]))
+	entry, sp, arg0, lerr := load_program(&scratch, p.ns, path)
 	if lerr != vfs.OK {
 		for i in 0 ..< scratch.seg_count {
 			segment_release(scratch.segs[i])
 		}
 		mem.space_destroy(space)
 		return -i64(lerr)
+	}
+	if arg0 == 0 {
+		staged_sp, block, staged := stage_args(stack_segment(&scratch), sp, argv)
+		if !staged {
+			for i in 0 ..< scratch.seg_count {
+				segment_release(scratch.segs[i])
+			}
+			mem.space_destroy(space)
+			return -i64(vectra9.E2BIG)
+		}
+		sp = staged_sp
+		arg0 = u64(block)
 	}
 
 	/*
@@ -143,10 +166,10 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int) -> i64 {
 	// The name follows the program, the way Plan 9 keeps `argv[0]`. Copied
 	// home, because the path sits on this call's syscall stack and the record
 	// outlives it.
-	for i in 0 ..< length {
+	for i in 0 ..< len(path) {
 		p.name_buf[i] = path[i]
 	}
-	p.name = string(p.name_buf[:length])
+	p.name = string(p.name_buf[:len(path)])
 
 	// The handler pointed into text that is gone. A note from here on is an
 	// ending again, until the new program registers one of its own.

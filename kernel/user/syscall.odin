@@ -86,6 +86,17 @@ SYS_ARGS :: abi.SYS_ARGS
 SYS_WRITE :: abi.SYS_WRITE
 SYS_SLEEP :: abi.SYS_SLEEP
 SYS_EXIT :: abi.SYS_EXIT
+SYS_STAT :: abi.SYS_STAT
+SYS_FSTAT :: abi.SYS_FSTAT
+SYS_WSTAT :: abi.SYS_WSTAT
+SYS_DIRREAD :: abi.SYS_DIRREAD
+SYS_DUP :: abi.SYS_DUP
+SYS_CHDIR :: abi.SYS_CHDIR
+SYS_GETWD :: abi.SYS_GETWD
+SYS_PREAD :: abi.SYS_PREAD
+SYS_PWRITE :: abi.SYS_PWRITE
+SYS_EXITS :: abi.SYS_EXITS
+SYS_AWAIT :: abi.SYS_AWAIT
 SYS_OPEN :: abi.SYS_OPEN
 SYS_CLOSE :: abi.SYS_CLOSE
 SYS_READ :: abi.SYS_READ
@@ -302,7 +313,7 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	case SYS_SEEK:
 		result = sys_seek(int(a0), a1)
 	case SYS_SPAWN:
-		result = sys_spawn(uintptr(a0), int(a1), a2)
+		result = sys_spawn(uintptr(a0), int(a1), a2, uintptr(a3), int(a4))
 	case SYS_WAIT:
 		result = sys_wait(a0)
 	case SYS_CREATE:
@@ -328,7 +339,7 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	case SYS_EXEC:
 		// The frame crosses because exec rewrites it in place: on success
 		// the door returns into a new program. See `exec.odin`.
-		result = sys_exec(frame, uintptr(a0), int(a1))
+		result = sys_exec(frame, uintptr(a0), int(a1), uintptr(a2), int(a3))
 	case SYS_SEGATTACH:
 		result = sys_segattach(int(a0))
 	case SYS_SEGALLOC:
@@ -344,6 +355,28 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		result = sys_sleep(a0)
 	case SYS_EXIT:
 		sys_exit(frame, a0)
+	case SYS_STAT:
+		result = sys_stat(uintptr(a0), int(a1), uintptr(a2))
+	case SYS_FSTAT:
+		result = sys_fstat(int(a0), uintptr(a1))
+	case SYS_WSTAT:
+		result = sys_wstat(uintptr(a0), int(a1), uintptr(a2))
+	case SYS_DIRREAD:
+		result = sys_dirread(int(a0), uintptr(a1), int(a2))
+	case SYS_DUP:
+		result = sys_dup(int(a0), int(i64(a1)))
+	case SYS_CHDIR:
+		result = sys_chdir(uintptr(a0), int(a1))
+	case SYS_GETWD:
+		result = sys_getwd(uintptr(a0), int(a1))
+	case SYS_PREAD:
+		result = sys_read(int(a0), uintptr(a1), int(a2), a3, false)
+	case SYS_PWRITE:
+		result = sys_write(int(a0), uintptr(a1), int(a2), a3, false)
+	case SYS_EXITS:
+		sys_exits(frame, uintptr(a0), int(a1))
+	case SYS_AWAIT:
+		result = sys_await(a0, uintptr(a1), int(a2))
 	case:
 		result = -i64(vectra9.ENOSYS)
 	}
@@ -368,11 +401,16 @@ current :: proc "contextless" () -> ^Process {
 }
 
 @(private = "file")
-sys_write :: proc(fd: int, addr: uintptr, count: int) -> i64 {
+sys_write :: proc(fd: int, addr: uintptr, count: int, at: u64 = 0, use_cursor := true) -> i64 {
 	p := current()
 	c, offset, ok := fd_take(p, fd)
 	if !ok {
 		return -i64(vectra9.EBADF)
+	}
+	// `pwrite` names its offset and leaves the cursor where it was; the
+	// plain call reads the cursor and moves it.
+	if !use_cursor {
+		offset = at
 	}
 	// The reference, not the slot. A sibling on a shared table may close
 	// this descriptor while the write below is parked. The chan must
@@ -413,7 +451,9 @@ sys_write :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 	}
 	// The cursor is the process's, not the file's, and it moves only if the
 	// descriptor still means this chan. See `fd_advance`.
-	fd_advance(p, fd, c, u64(total))
+	if use_cursor {
+		fd_advance(p, fd, c, u64(total))
+	}
 	return i64(total)
 }
 
@@ -430,11 +470,14 @@ that consumes what it gives, and the right way round for everything else. The
 day `/dev/cons` is read this way, the answer is a buffer the process keeps.
 */
 @(private = "file")
-sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
+sys_read :: proc(fd: int, addr: uintptr, count: int, at: u64 = 0, use_cursor := true) -> i64 {
 	p := current()
 	c, offset, ok := fd_take(p, fd)
 	if !ok {
 		return -i64(vectra9.EBADF)
+	}
+	if !use_cursor {
+		offset = at
 	}
 	// A reference of this call's own, for the same reason `sys_write` takes
 	// one -- a parked read must not have its chan spent under it.
@@ -492,7 +535,9 @@ sys_read :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 			break
 		}
 	}
-	fd_advance(p, fd, c, u64(total))
+	if use_cursor {
+		fd_advance(p, fd, c, u64(total))
+	}
 	return i64(total)
 }
 
@@ -520,12 +565,13 @@ sys_open :: proc(addr: uintptr, length: int, flags: u32) -> i64 {
 		return -i64(vectra9.EBADF)
 	}
 
-	path: [PATH_MAX]u8
-	if length <= 0 || length > PATH_MAX || !copy_in(addr, length, path[:]) {
-		return -i64(vectra9.EFAULT)
+	path_buf: [PATH_MAX]u8
+	path, perr := copy_path(p, addr, length, path_buf[:])
+	if perr != vectra9.Errno(0) {
+		return -i64(perr)
 	}
 
-	c, err := vfs.open_path(p.ns, string(path[:length]), flags)
+	c, err := vfs.open_path(p.ns, path, flags)
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -572,9 +618,11 @@ sys_bind :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order: 
 		return -i64(vectra9.EINVAL)
 	}
 
-	source: [PATH_MAX]u8
-	target: [PATH_MAX]u8
-	if !copy_in(src, src_len, source[:]) || !copy_in(dst, dst_len, target[:]) {
+	source_buf: [PATH_MAX]u8
+	target_buf: [PATH_MAX]u8
+	source, serr := copy_path(p, src, src_len, source_buf[:])
+	target, terr := copy_path(p, dst, dst_len, target_buf[:])
+	if serr != vectra9.Errno(0) || terr != vectra9.Errno(0) {
 		return -i64(vectra9.EFAULT)
 	}
 
@@ -584,7 +632,7 @@ sys_bind :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order: 
 	case 2: how = .After
 	}
 
-	err := vfs.bind_path(p.ns, string(source[:src_len]), string(target[:dst_len]), how)
+	err := vfs.bind_path(p.ns, source, target, how)
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -607,12 +655,13 @@ sys_create :: proc(addr: uintptr, length: int, flags: u32, mode: u32) -> i64 {
 		return -i64(vectra9.EBADF)
 	}
 
-	path: [PATH_MAX]u8
-	if length <= 0 || length > PATH_MAX || !copy_in(addr, length, path[:]) {
-		return -i64(vectra9.EFAULT)
+	path_buf: [PATH_MAX]u8
+	path, perr := copy_path(p, addr, length, path_buf[:])
+	if perr != vectra9.Errno(0) {
+		return -i64(perr)
 	}
 
-	c, err := vfs.create_path(p.ns, string(path[:length]), flags, mode)
+	c, err := vfs.create_path(p.ns, path, flags, mode)
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -643,9 +692,11 @@ sys_mount :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order:
 		return -i64(vectra9.EINVAL)
 	}
 
-	source: [PATH_MAX]u8
-	target: [PATH_MAX]u8
-	if !copy_in(src, src_len, source[:]) || !copy_in(dst, dst_len, target[:]) {
+	source_buf: [PATH_MAX]u8
+	target_buf: [PATH_MAX]u8
+	source, serr := copy_path(p, src, src_len, source_buf[:])
+	target, terr := copy_path(p, dst, dst_len, target_buf[:])
+	if serr != vectra9.Errno(0) || terr != vectra9.Errno(0) {
 		return -i64(vectra9.EFAULT)
 	}
 
@@ -655,7 +706,7 @@ sys_mount :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order:
 	case 2: how = .After
 	}
 
-	err := srv.mount(p.ns, string(source[:src_len]), string(target[:dst_len]), how)
+	err := srv.mount(p.ns, source, target, how)
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -858,12 +909,13 @@ sys_remove :: proc(addr: uintptr, length: int) -> i64 {
 		return -i64(vectra9.EBADF)
 	}
 
-	path: [PATH_MAX]u8
-	if length <= 0 || length > PATH_MAX || !copy_in(addr, length, path[:]) {
-		return -i64(vectra9.EFAULT)
+	path_buf: [PATH_MAX]u8
+	path, perr := copy_path(p, addr, length, path_buf[:])
+	if perr != vectra9.Errno(0) {
+		return -i64(perr)
 	}
 
-	c, err := vfs.resolve(p.ns, string(path[:length]))
+	c, err := vfs.resolve(p.ns, path)
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -885,18 +937,27 @@ shared with the kernel's own launches. The answer is the child's pid, which
 is the name `sys_wait` takes.
 */
 @(private = "file")
-sys_spawn :: proc(addr: uintptr, length: int, flags: u64) -> i64 {
+sys_spawn :: proc(addr: uintptr, length: int, flags: u64, argv_addr: uintptr, argc: int) -> i64 {
 	p := current()
 	if p == nil || p.ns == nil {
 		return -i64(vectra9.EBADF)
 	}
 
-	path: [PATH_MAX]u8
-	if length <= 0 || length > PATH_MAX || !copy_in(addr, length, path[:]) {
+	path_buf: [PATH_MAX]u8
+	path, perr := copy_path(p, addr, length, path_buf[:])
+	if perr != vectra9.Errno(0) {
+		return -i64(perr)
+	}
+	argv := new(Argv)
+	if argv == nil {
+		return -i64(vectra9.ENOMEM)
+	}
+	defer free(argv)
+	if !copy_argv(argv_addr, argc, argv) {
 		return -i64(vectra9.EFAULT)
 	}
 
-	child, err := spawn_path(p, string(path[:length]), flags)
+	child, err := spawn_path(p, path, flags, argv)
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -1732,3 +1793,322 @@ syscall_context :: proc "contextless" () -> runtime.Context {
 	c.allocator = mem.allocator()
 	return c
 }
+
+// -- The calls a shell needs ---------------------------------------------------
+//
+// `docs/SHELL.md` step 1. Each is Plan 9's by shape, over what the vfs
+// already answers.
+
+// linux_to_plan9_mode turns a 9P2000.L mode -- Linux's `S_IF*` and the nine
+// permission bits -- into Plan 9's: the permissions, and `DMDIR` for a
+// directory.
+@(private = "file")
+linux_to_plan9_mode :: proc "contextless" (mode: u32) -> u32 {
+	out := mode & 0o777
+	if mode & 0o170000 == 0o040000 {
+		out |= abi.DMDIR
+	}
+	return out
+}
+
+// fill_stat builds the record a program reads out of what a server said.
+@(private = "file")
+fill_stat :: proc "contextless" (out: ^abi.Stat, c: ^vfs.Chan, attr: vectra9.Rgetattr, name: string) {
+	out^ = {}
+	out.qid_path = c.qid.path
+	out.qid_version = c.qid.version
+	out.qid_kind = transmute(u8)c.qid.kind
+	out.mode = linux_to_plan9_mode(attr.mode)
+	out.length = attr.size
+	out.atime = attr.atime_sec
+	out.mtime = attr.mtime_sec
+	n := min(len(name), abi.NAME_MAX)
+	for i in 0 ..< n {
+		out.name[i] = name[i]
+	}
+	out.name_len = u8(n)
+}
+
+// last_element is the name a path ends in, for `stat`'s answer.
+@(private = "file")
+last_element :: proc "contextless" (path: string) -> string {
+	end := len(path)
+	for end > 1 && path[end - 1] == '/' {
+		end -= 1
+	}
+	start := end
+	for start > 0 && path[start - 1] != '/' {
+		start -= 1
+	}
+	return path[start:end]
+}
+
+// sys_stat asks about a file by name: a walk to it, one `Tgetattr`, and the
+// record copied out. The chan is closed again before the answer.
+@(private = "file")
+sys_stat :: proc(addr: uintptr, length: int, out: uintptr) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+	path_buf: [PATH_MAX]u8
+	path, perr := copy_path(p, addr, length, path_buf[:])
+	if perr != vectra9.Errno(0) {
+		return -i64(perr)
+	}
+	c, err := vfs.resolve(p.ns, path)
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	defer vfs.chan_close(c)
+	attr, serr := vfs.chan_stat(c)
+	if serr != vfs.OK {
+		return -i64(serr)
+	}
+	record: abi.Stat
+	fill_stat(&record, c, attr, last_element(path))
+	if !copy_out(out, (cast([^]u8)&record)[:size_of(abi.Stat)]) {
+		return -i64(vectra9.EFAULT)
+	}
+	return 0
+}
+
+// sys_fstat is `stat` on an open descriptor, whose name the kernel does not
+// keep, so the record's name is empty.
+@(private = "file")
+sys_fstat :: proc(fd: int, out: uintptr) -> i64 {
+	p := current()
+	c, _, ok := fd_take(p, fd)
+	if !ok {
+		return -i64(vectra9.EBADF)
+	}
+	defer vfs.chan_close(c)
+	attr, serr := vfs.chan_stat(c)
+	if serr != vfs.OK {
+		return -i64(serr)
+	}
+	record: abi.Stat
+	fill_stat(&record, c, attr, "")
+	if !copy_out(out, (cast([^]u8)&record)[:size_of(abi.Stat)]) {
+		return -i64(vectra9.EFAULT)
+	}
+	return 0
+}
+
+// sys_wstat changes a file's mode and length, the two things a program may
+// change about one today. The record's other fields are read and ignored.
+@(private = "file")
+sys_wstat :: proc(addr: uintptr, length: int, in_: uintptr) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+	path_buf: [PATH_MAX]u8
+	path, perr := copy_path(p, addr, length, path_buf[:])
+	if perr != vectra9.Errno(0) {
+		return -i64(perr)
+	}
+	record: abi.Stat
+	if !copy_in(in_, size_of(abi.Stat), (cast([^]u8)&record)[:size_of(abi.Stat)]) {
+		return -i64(vectra9.EFAULT)
+	}
+	c, err := vfs.resolve(p.ns, path)
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	defer vfs.chan_close(c)
+	attr := vectra9.Tsetattr {
+		valid = vfs.SETATTR_MODE | vfs.SETATTR_SIZE,
+		mode  = record.mode & 0o777,
+		size  = record.length,
+	}
+	if serr := vfs.chan_setattr(c, attr); serr != vfs.OK {
+		return -i64(serr)
+	}
+	return 0
+}
+
+/*
+sys_dirread fills a program's entries from an open directory.
+
+One `Treaddir` at the descriptor's offset, decoded entry by entry out of the
+wire format -- qid, cookie, type, name -- into the fixed records a program
+reads, as many as it asked for or the reply held. The descriptor's offset
+becomes the last entry's cookie, which is what the next call continues
+from, so entries the program had no room for are read again rather than
+lost. Zero entries is the end.
+*/
+@(private = "file")
+sys_dirread :: proc(fd: int, addr: uintptr, count: int) -> i64 {
+	p := current()
+	c, offset, ok := fd_take(p, fd)
+	if !ok {
+		return -i64(vectra9.EBADF)
+	}
+	defer vfs.chan_close(c)
+	if !vfs.chan_is_dir(c) {
+		return -i64(vectra9.ENOTDIR)
+	}
+	if count <= 0 {
+		return 0
+	}
+
+	buffer: [IO_CHUNK]u8 = ---
+	n, err := vfs.readdir(c, offset, buffer[:])
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	if n == 0 {
+		return 0
+	}
+
+	filled := 0
+	at := 0
+	last_cookie := offset
+	for filled < count && at + 13 + 8 + 1 + 2 <= n {
+		entry: abi.Dirent
+		entry.qid_kind = buffer[at]
+		entry.qid_version = u32(buffer[at + 1]) | u32(buffer[at + 2]) << 8 | u32(buffer[at + 3]) << 16 | u32(buffer[at + 4]) << 24
+		qpath := u64(0)
+		for i in 0 ..< 8 {
+			qpath |= u64(buffer[at + 5 + i]) << (8 * u64(i))
+		}
+		entry.qid_path = qpath
+		cookie := u64(0)
+		for i in 0 ..< 8 {
+			cookie |= u64(buffer[at + 13 + i]) << (8 * u64(i))
+		}
+		name_len := int(buffer[at + 22]) | int(buffer[at + 23]) << 8
+		at += 24
+		if at + name_len > n {
+			break
+		}
+		keep := min(name_len, abi.NAME_MAX)
+		for i in 0 ..< keep {
+			entry.name[i] = buffer[at + i]
+		}
+		entry.name_len = u8(keep)
+		at += name_len
+
+		if !copy_out(addr + uintptr(filled * size_of(abi.Dirent)), (cast([^]u8)&entry)[:size_of(abi.Dirent)]) {
+			return -i64(vectra9.EFAULT)
+		}
+		filled += 1
+		last_cookie = cookie
+	}
+	if filled > 0 {
+		_ = fd_seek(p, fd, last_cookie)
+	}
+	return i64(filled)
+}
+
+// sys_dup makes `new` a second name for `old`: the lowest free descriptor for
+// a `new` below zero, and the one named otherwise, closing what it held.
+@(private = "file")
+sys_dup :: proc(old: int, new: int) -> i64 {
+	p := current()
+	c, _, ok := fd_take(p, old)
+	if !ok {
+		return -i64(vectra9.EBADF)
+	}
+	if new < 0 {
+		fd, opened := fd_open(p, c)
+		if !opened {
+			vfs.chan_close(c)
+			return -i64(vectra9.EMFILE)
+		}
+		return i64(fd)
+	}
+	if new >= MAX_FDS {
+		vfs.chan_close(c)
+		return -i64(vectra9.EBADF)
+	}
+	if !fd_install(p, new, c) {
+		vfs.chan_close(c)
+		return -i64(vectra9.EBADF)
+	}
+	return i64(new)
+}
+
+// sys_chdir makes a directory the one relative paths start from. The path is
+// walked once, to be sure it is there and is a directory, and the cleaned
+// name is what is kept.
+@(private = "file")
+sys_chdir :: proc(addr: uintptr, length: int) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+	path_buf: [PATH_MAX]u8
+	path, perr := copy_path(p, addr, length, path_buf[:])
+	if perr != vectra9.Errno(0) {
+		return -i64(perr)
+	}
+	c, err := vfs.resolve(p.ns, path)
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	is_dir := vfs.chan_is_dir(c)
+	vfs.chan_close(c)
+	if !is_dir {
+		return -i64(vectra9.ENOTDIR)
+	}
+	if !set_directory(p, path) {
+		return -i64(vectra9.ENAMETOOLONG)
+	}
+	return 0
+}
+
+// sys_getwd copies the current directory out and answers its length.
+@(private = "file")
+sys_getwd :: proc(addr: uintptr, count: int) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.EBADF)
+	}
+	cwd := current_directory(p)
+	if len(cwd) > count {
+		return -i64(vectra9.ENAMETOOLONG)
+	}
+	if !copy_out(addr, transmute([]u8)cwd) {
+		return -i64(vectra9.EFAULT)
+	}
+	return i64(len(cwd))
+}
+
+// sys_exits is `exit` with a word for whoever waits. The word is kept in the
+// record before the ending, and `await` repeats it.
+@(private = "file")
+sys_exits :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int) {
+	if p := current(); p != nil && length > 0 && length <= EXITS_MAX {
+		if copy_in(addr, length, p.exit.text[:]) {
+			p.exit.text_len = length
+		}
+	}
+	sys_exit(frame, 0)
+}
+
+// sys_await collects one child and writes `pid status` into the caller's
+// buffer. See `await_pid`.
+@(private = "file")
+sys_await :: proc(pid: u64, addr: uintptr, count: int) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ECHILD)
+	}
+	out: [AWAIT_MAX]u8
+	n, err := await_pid(p.pid, pid, out[:])
+	if err != vfs.OK {
+		return -i64(err)
+	}
+	if n > count {
+		return -i64(vectra9.EINVAL)
+	}
+	if !copy_out(addr, out[:n]) {
+		return -i64(vectra9.EFAULT)
+	}
+	return i64(n)
+}
+
+// The most `await` answers: twenty digits of pid, a space, and the word.
+AWAIT_MAX :: 21 + EXITS_MAX

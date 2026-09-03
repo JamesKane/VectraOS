@@ -60,6 +60,7 @@ import "kernel:sched"
 import "kernel:sync"
 import "kernel:vfs"
 import "vsys:abi"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 /*
@@ -100,7 +101,7 @@ the thread exists, so a bad file costs an empty process record and nothing
 runs. The descriptors are copied before the thread too, because the child's
 first instruction may write to one.
 */
-spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process, vfs.Errno) {
+spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv = nil) -> (^Process, vfs.Errno) {
 	source := parent != nil ? parent.ns : vfs.boot_namespace
 	if source == nil || len(path) == 0 || len(path) > PATH_MAX {
 		return nil, vectra9.EINVAL
@@ -135,6 +136,11 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 	}
 	p.name = string(p.name_buf[:len(path)])
 
+	// The directory follows the parent, as the namespace does.
+	if parent != nil {
+		_ = set_directory(p, current_directory(parent))
+	}
+
 	ns_flags: vfs.Fork_Flags
 	if flags & SPAWN_NS_COPY != 0 {
 		ns_flags += {.Copy}
@@ -157,6 +163,17 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0) -> (^Process,
 	if lerr != vfs.OK {
 		unload(p)
 		return nil, lerr
+	}
+	// A compiled program's arguments go onto its stack, and their address is
+	// its first argument. A blob keeps its data page, and its stack as it was.
+	if arg0 == 0 {
+		staged_sp, block, staged := stage_args(stack_segment(p), sp, argv)
+		if !staged {
+			unload(p)
+			return nil, vectra9.E2BIG
+		}
+		sp = staged_sp
+		arg0 = u64(block)
 	}
 
 	// A table exists whichever flag was passed. Clean means empty, not
@@ -239,6 +256,62 @@ wait_pid :: proc(caller_pid: u64, pid: u64, patience: int) -> i64 {
 	// caller named rather than by the slot.
 	_ = collect(child, pid)
 	return answer
+}
+
+/*
+await_pid is `wait_pid` with the answer as Plan 9 writes it: the pid, a
+space, and what the child said. A child that said nothing and exited zero
+leaves the word empty. One that exited with a number gives the number. One a
+note ended gives the note's text, which is the word Plan 9's `await` gives
+too. The record is read before `collect` clears it.
+*/
+await_pid :: proc(caller_pid: u64, pid: u64, out: []u8) -> (n: int, err: vfs.Errno) {
+	child := find_child(caller_pid, pid)
+	if child == nil {
+		return 0, vectra9.ECHILD
+	}
+	if !sync.sleep_for(&exit_rendez, exit_done, child, u64(WAIT_PATIENCE)) {
+		return 0, vectra9.EAGAIN
+	}
+
+	// The word first, so the space goes in only when a word follows it: a
+	// child that exited zero with nothing to say answers with its pid alone.
+	word: [EXITS_MAX]u8
+	wsink := libodin.sink_from(word[:])
+	switch {
+	case child.exit.noted:
+		libodin.put_str(&wsink, string(child.note_buf[:child.note_len]))
+	case child.exit.text_len > 0:
+		libodin.put_str(&wsink, string(child.exit.text[:child.exit.text_len]))
+	case child.exit.deliberate:
+		if child.exit.status != 0 {
+			libodin.put_uint(&wsink, child.exit.status)
+		}
+	case:
+		libodin.put_str(&wsink, "fault")
+	}
+
+	sink := libodin.sink_from(out)
+	libodin.put_uint(&sink, child.pid)
+	if said := libodin.str(&wsink); len(said) > 0 {
+		libodin.put_byte(&sink, ' ')
+		libodin.put_str(&sink, said)
+	}
+	n = len(libodin.str(&sink))
+	_ = collect(child, pid)
+	return n, vfs.OK
+}
+
+// stack_segment is a process's stack, for the staging of its arguments: the
+// one segment of that kind, or nil for a blob, whose stack is a bare page.
+@(private)
+stack_segment :: proc "contextless" (p: ^Process) -> ^Segment {
+	for i in 0 ..< p.seg_count {
+		if s := p.segs[i]; s != nil && s.kind == .Stack {
+			return s
+		}
+	}
+	return nil
 }
 
 /*

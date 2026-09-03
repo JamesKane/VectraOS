@@ -409,6 +409,30 @@ chan_stat :: proc(c: ^Chan, mask: u64 = GETATTR_BASIC) -> (attr: vectra9.Rgetatt
 	return answer, OK
 }
 
+// The Tsetattr valid bits a client may set. Mode and size are the two
+// `wstat` changes; the rest wait for a clock and for users.
+SETATTR_MODE :: u32(0x0000_0001)
+SETATTR_SIZE :: u32(0x0000_0008)
+
+// chan_setattr changes what a file says about itself, by the bits in
+// `valid`. The inverse of `chan_stat`, and as thin.
+chan_setattr :: proc(c: ^Chan, attr: vectra9.Tsetattr) -> Errno {
+	if c == nil {
+		return vectra9.EBADF
+	}
+	request := attr
+	request.fid = c.fid
+	msg := vectra9.Msg(request)
+	reply: vectra9.Msg
+	if e := rpc(c.server, &msg, &reply); e != OK {
+		return e
+	}
+	if _, ok := reply.(vectra9.Rsetattr); !ok {
+		return vectra9.EPROTO
+	}
+	return OK
+}
+
 // chan_is_dir reads the one qid bit that changes what a caller may do next.
 chan_is_dir :: proc "contextless" (c: ^Chan) -> bool {
 	return c != nil && .Dir in c.qid.kind

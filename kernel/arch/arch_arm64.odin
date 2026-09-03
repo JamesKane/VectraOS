@@ -122,6 +122,10 @@ thread_user_init :: arm64.thread_user_init
 thread_user_clone :: arm64.thread_user_clone
 frame_enter_user :: arm64.frame_enter_user
 syscall_frame_fpu :: arm64.syscall_frame_fpu
+// USER_STACK_TILT is how far below a sixteen-aligned top a program's first
+// stack pointer sits: the procedure call standard wants the stack pointer sixteen-aligned at every call, and a fresh stack is.
+USER_STACK_TILT :: 0
+
 kernel_stack_top :: arm64.kernel_stack_top
 set_kernel_stack :: arm64.set_kernel_stack
 kernel_stack :: arm64.kernel_stack

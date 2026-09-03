@@ -271,6 +271,26 @@ fd_close :: proc(p: ^Process, fd: int) -> bool #no_bounds_check {
 	return true
 }
 
+/*
+fd_install puts a chan at a descriptor the caller chose, closing what was
+there. The other half of `fd_open`, for `dup`: a shell arranging a child's
+descriptors names the slots it wants. Takes the reference it is handed.
+*/
+@(private)
+fd_install :: proc(p: ^Process, fd: int, c: ^vfs.Chan) -> bool #no_bounds_check {
+	if p == nil || p.fdt == nil || fd < 0 || fd >= MAX_FDS || c == nil {
+		return false
+	}
+	guard := sync.acquire(&p.fdt.lock)
+	old := p.fdt.fds[fd].chan
+	p.fdt.fds[fd] = Fd{chan = c}
+	sync.release(&p.fdt.lock, guard)
+	if old != nil {
+		vfs.chan_close(old)
+	}
+	return true
+}
+
 // fd_count reports how many descriptors a process holds, for a self-test
 // that wants to say a close really closed one.
 fd_count :: proc "contextless" (p: ^Process) -> int #no_bounds_check {

@@ -312,6 +312,14 @@ when #exists("../../build/user/intuition.vx") {
 	INTUITION_IMAGE: []u8
 }
 
+when #exists("../../build/user/abitest.vx") {
+	@(private = "file")
+	ABITEST_IMAGE := #load("../../build/user/abitest.vx")
+} else {
+	@(private = "file")
+	ABITEST_IMAGE: []u8
+}
+
 when #exists("../../build/user/terminal.vx") {
 	@(private = "file")
 	TERMINAL_IMAGE := #load("../../build/user/terminal.vx")
@@ -321,13 +329,13 @@ when #exists("../../build/user/terminal.vx") {
 }
 
 @(private = "file")
-bin_nodes: [13]vfs.Static_Node
+bin_nodes: [14]vfs.Static_Node
 
 // The rows `/bin` actually publishes -- `bin_nodes` less any compiled image
 // a fresh tree has not built yet. Package-scope, because `static_init`
 // borrows the slice for the life of the machine.
 @(private = "file")
-bin_live: [13]vfs.Static_Node
+bin_live: [14]vfs.Static_Node
 
 @(private = "file")
 bin_tree: vfs.Static_Tree
@@ -375,6 +383,7 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 		{name = "poster", parent = 0, data = string(poster)},
 		{name = "spin", parent = 0, data = string(spin)},
 		{name = "ramfs", parent = 0, data = string(RAMFS_IMAGE)},
+		{name = "abitest", parent = 0, data = string(ABITEST_IMAGE)},
 		{name = "kbdfs", parent = 0, data = string(KBDFS_IMAGE)},
 		{name = "eiafs", parent = 0, data = string(EIAFS_IMAGE)},
 		{name = "intuition", parent = 0, data = string(INTUITION_IMAGE)},
@@ -517,12 +526,11 @@ load_v2 is the segment shape, now literally: one `Segment` per image row and
 one for the stack. Each frame lands in its segment the moment it exists, so
 a failure anywhere leaves nothing the teardown cannot find.
 
-The stack pointer it answers is `STACK_TOP - 8`, and the eight matter. The
-SysV ABI enters a function with the return address already pushed. Compiled
-code therefore assumes `rsp + 8` is 16-byte aligned, and spills SSE
-registers on that belief. A blob never held the belief, so only this loader
-tilts the stack. There is no return address to pop, and `_start` never
-returns.
+The stack pointer it answers is the stack's top, and the caller lowers it:
+`stage_args` writes the program's arguments there and answers where the
+program starts, with the tilt its architecture's ABI wants. `arg0` is zero,
+and the caller replaces it with the arguments' address, which is the one
+thing a compiled program is handed. A blob keeps its data page there.
 */
 @(private = "file")
 load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64, vectra9.Errno) #no_bounds_check {
@@ -618,5 +626,5 @@ load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 			return 0, 0, 0, vectra9.ENOMEM
 		}
 	}
-	return entry, STACK_TOP - 8, 0, vfs.OK
+	return entry, STACK_TOP, 0, vfs.OK
 }

@@ -231,6 +231,10 @@ thread_user_init :: amd64.thread_user_init
 thread_user_clone :: amd64.thread_user_clone
 frame_enter_user :: amd64.frame_enter_user
 syscall_frame_fpu :: amd64.syscall_frame_fpu
+// USER_STACK_TILT is how far below a sixteen-aligned top a program's first
+// stack pointer sits: the System V ABI enters a function with the return address already pushed, so compiled code believes `rsp + 8` is sixteen-aligned and spills vector registers on that belief.
+USER_STACK_TILT :: 8
+
 kernel_stack_top :: amd64.kernel_stack_top
 set_kernel_stack :: amd64.set_kernel_stack
 kernel_stack :: amd64.kernel_stack

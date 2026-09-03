@@ -143,7 +143,8 @@ geometry this program cannot draw on, 0x78 a draw write refused, 0x79 a
 read of descriptor zero failed. Zero is the typed `exit`.
 */
 @(export, link_name = "_start")
-start :: proc "c" (data: uintptr, arg: u64, arg2: u64) {
+start :: proc "c" (block: ^abi.Args) {
+	_ = block
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 

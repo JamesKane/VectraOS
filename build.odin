@@ -66,6 +66,7 @@ user_programs := [?]User_Program {
 	{name = "eiafs", path = "servers/eiafs"},
 	{name = "intuition", path = "servers/intuition"},
 	{name = "terminal", path = "apps/terminal"},
+	{name = "abitest", path = "tests/abi"},
 }
 
 /*

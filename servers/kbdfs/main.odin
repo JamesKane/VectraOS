@@ -97,7 +97,8 @@ diverts the raw scancodes to this program -- until something holds it open,
 the kernel translates them itself. See `kernel/devfs/tap.odin`.
 */
 @(export, link_name = "_start")
-start :: proc "c" (data: uintptr, arg: u64, arg2: u64) {
+start :: proc "c" (block: ^abi.Args) {
+	_ = block
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 

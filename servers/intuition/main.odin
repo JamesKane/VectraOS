@@ -1268,7 +1268,8 @@ that could not buy its pixels, retired when a run became the session's. The serv
 numbers and all.
 */
 @(export, link_name = "_start")
-start :: proc "c" (data: uintptr, arg: u64, arg2: u64) {
+start :: proc "c" (block: ^abi.Args) {
+	_ = block
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
