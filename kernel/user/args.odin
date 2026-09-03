@@ -24,6 +24,30 @@ import "vsys:abi"
 
 // The copied arguments: the bytes, and where each argument starts and ends
 // in them. `count` is how many.
+// set_args keeps a program's arguments on its record, joined by spaces and
+// cut at ARGS_KEEP, for `/proc/n/args`.
+set_args :: proc "contextless" (p: ^Process, argv: ^Argv) #no_bounds_check {
+	p.args_len = 0
+	if argv == nil {
+		return
+	}
+	start := 0
+	for i in 0 ..< argv.count {
+		if i > 0 && p.args_len < ARGS_KEEP {
+			p.args_buf[p.args_len] = ' '
+			p.args_len += 1
+		}
+		for j in start ..< argv.ends[i] {
+			if p.args_len >= ARGS_KEEP {
+				return
+			}
+			p.args_buf[p.args_len] = argv.bytes[j]
+			p.args_len += 1
+		}
+		start = argv.ends[i]
+	}
+}
+
 Argv :: struct {
 	count: int,
 	ends:  [ARGV_MAX]int, // Exclusive end of each argument in `bytes`

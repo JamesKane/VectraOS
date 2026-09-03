@@ -6,7 +6,9 @@ named by pid, and in each the four files a shell needs.
     /proc/n/status    name pid parent state notegroup held|detached directory
     /proc/n/ns        the mount table, as bind and mount lines
     /proc/n/note      write: post a note; read: the last note posted
-    /proc/n/ctl       write `kill`: end the process at its next boundary
+    /proc/n/ctl       write `kill`: end the process at its next boundary;
+                      `stop`: park it there until `start`
+    /proc/n/args      the arguments it was started with, as one line
 
 `ps` reads `status` for every pid, `ns` reads `ns`, and `kill` writes
 `ctl`, or `note` with `-n`. `rc` sets `$pid` from the new `getpid` call,
@@ -38,9 +40,26 @@ a longer one prints with `...`.
     bind #b /bin
     mount /srv/memfs /mnt
 
+## Stop and start
+
+`stop` parks a process at its next boundary and `start` lets it go, and
+`status` says `Stopped` in between. The boundary is the door or the tick,
+as for a note. At the door the thread sleeps on a rendezvous until the ask
+is withdrawn; a note posted meanwhile waits for the start, and a kill does
+not. A thread the tick catches in ring 3 is parked from interrupt context
+the way `block` parks one -- off every queue, its frame in its record --
+and `start` readies it by hand. The wake that asks for a stop is a note's
+wake, so the record remembers the flag was raised for a stop, and the
+boundary takes it down again rather than deliver a note that was never
+posted.
+
+`args` is what the kernel now keeps of a program's arguments: the words
+joined by spaces, cut at 256 bytes, set when they are staged and copied
+across a fork. `ps -a` shows them.
+
 ## Kill and note
 
-`ctl` takes one word, `kill`, and does what `user.end` does without the
+`ctl` takes `kill` too, and does what `user.end` does without the
 wait: the kernel's word is set, the thread is woken, and the process ends
 at its next boundary whether or not it registered a handler. The note it
 carries is `sys: killed`, which is what its parent's `await` repeats.
@@ -51,13 +70,12 @@ have one.
 
 ## Checked by
 
-Three lines of `tests/tools.rc`: `ps` finds the shell running it, `ns`
-finds `bind #b /bin`, and `kill` ends a `sleep 100 &` whose `wait` then
-answers `sys: killed`.
+Five lines of `tests/tools.rc`: `ps` finds the shell running it, `ns`
+finds `bind #b /bin`, `kill` ends a `sleep 100 &` whose `wait` then
+answers `sys: killed`, `args` reads `sleep 100` back, and `stop` sees the
+sleep `Stopped` and then `Blocked` again after `start`.
 
 ## Not yet
 
-`/proc/n/args`, because the kernel does not keep a program's arguments
-after staging them; `fd`, `segment`, `wait`, `notepg`, `profile`; and
-`stop`/`start` in `ctl`, which want a stopped state the scheduler does not
-have.
+`fd`, `segment`, `wait`, `notepg` and `profile`, each of which waits for a
+tool that wants it.

@@ -175,6 +175,7 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 		}
 		sp = staged_sp
 		arg0 = u64(block)
+		set_args(p, argv)
 	}
 
 	// A table exists whichever flag was passed. Clean means empty, not

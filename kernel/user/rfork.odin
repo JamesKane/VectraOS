@@ -220,6 +220,8 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 		child.name_buf[i] = parent.name[i]
 	}
 	child.name = string(child.name_buf[:len(parent.name)])
+	child.args_buf = parent.args_buf
+	child.args_len = parent.args_len
 	_ = set_directory(child, current_directory(parent))
 
 	ns_how: vfs.Fork_Flags

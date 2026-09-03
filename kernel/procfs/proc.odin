@@ -7,7 +7,9 @@ and files that act on it. This is the four a shell needs:
     /proc/n/status    one line: name, pid, parent, state, note group, directory
     /proc/n/ns        the mount table as bind and mount lines a script can replay
     /proc/n/note      a write posts a note; a read is the last note posted
-    /proc/n/ctl       a write of `kill` ends the process at its next boundary
+    /proc/n/ctl       a write of `kill` ends the process at its next boundary;
+                      `stop` parks it there until `start`
+    /proc/n/args      the arguments it was started with
 
 `ps` reads the first, `ns` the second, and `kill` writes the last. The
 listing of `/proc` is the live pids, in order, with the pid as the cookie:
@@ -39,6 +41,7 @@ File :: enum i32 {
 	Ns,
 	Note,
 	Ctl,
+	Args,
 }
 
 FILE_NAMES := [File]string {
@@ -47,6 +50,7 @@ FILE_NAMES := [File]string {
 	.Ns     = "ns",
 	.Note   = "note",
 	.Ctl    = "ctl",
+	.Args   = "args",
 }
 
 // Pids fit in 28 bits here; a machine that counts past that has outrun a
@@ -202,19 +206,27 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_boun
 			}
 			d.notes += 1
 		case .Ctl:
-			if text != "kill" {
+			did := false
+			switch text {
+			case "kill":
+				did = user.proc_kill(pid)
+				d.kills += 1
+			case "stop":
+				did = user.proc_stop(pid)
+			case "start":
+				did = user.proc_start(pid)
+			case:
 				reply^ = vectra9.error_reply(vectra9.EINVAL)
 				return
 			}
-			if !user.proc_kill(pid) {
+			if !did {
 				reply^ = vectra9.error_reply(vectra9.ESRCH)
 				return
 			}
-			d.kills += 1
 		case .Dir:
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 			return
-		case .Status, .Ns:
+		case .Status, .Ns, .Args:
 			reply^ = vectra9.error_reply(vectra9.EPERM)
 			return
 		}
@@ -239,7 +251,7 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_boun
 		attr := vectra9.Rgetattr {
 			valid   = m.request_mask & vfs.GETATTR_BASIC,
 			qid     = qid_of(node),
-			mode    = f == .Dir ? S_IFDIR | 0o555 : (f == .Status || f == .Ns ? S_IFREG | 0o444 : S_IFREG | 0o222),
+			mode    = f == .Dir ? S_IFDIR | 0o555 : (f == .Note || f == .Ctl ? S_IFREG | 0o222 : S_IFREG | 0o444),
 			nlink   = f == .Dir ? 2 : 1,
 			blksize = 512,
 		}
@@ -333,6 +345,13 @@ render :: proc(pid: u64, f: File, out: []u8) -> int {
 		return len(libodin.str(&sink))
 	case .Ns:
 		return user.proc_namespace(pid, out)
+	case .Args:
+		n := copy(out, info.args)
+		if n < len(out) {
+			out[n] = '\n'
+			n += 1
+		}
+		return n
 	case .Note, .Ctl, .Dir:
 		return 0
 	}
@@ -430,7 +449,7 @@ parse_pid :: proc "contextless" (s: string) -> (v: u64, ok: bool) {
 	return v, true
 }
 
-// readdir lists the root's pids, cookie the pid, or a pid directory's four
+// readdir lists the root's pids, cookie the pid, or a pid directory's five
 // files, cookie the ordinal.
 @(private = "file")
 readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
@@ -476,7 +495,7 @@ readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_
 			reply^ = vectra9.error_reply(vectra9.ESRCH)
 			return
 		}
-		for i := int(m.offset) + 1; i <= int(File.Ctl); i += 1 {
+		for i := int(m.offset) + 1; i <= int(File.Args); i += 1 {
 			kind := File(i)
 			name := FILE_NAMES[kind]
 			if vectra9.remaining(&c) < vectra9.dirent_size(name) {

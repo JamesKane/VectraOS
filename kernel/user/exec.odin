@@ -170,6 +170,7 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 		p.name_buf[i] = path[i]
 	}
 	p.name = string(p.name_buf[:len(path)])
+	set_args(p, argv)
 
 	// The handler pointed into text that is gone. A note from here on is an
 	// ending again, until the new program registers one of its own.

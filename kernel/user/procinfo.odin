@@ -21,12 +21,14 @@ Proc_Info :: struct {
 	parent:     u64,
 	note_group: u64,
 	detached:   bool,
-	state:      string, // Ready, Running, Blocked, Exited, or Faulted
+	state:      string, // Ready, Running, Blocked, Stopped, Exited, or Faulted
 	cwd:        string,
+	args:       string, // the arguments it was started with, as `/proc/n/args` shows them
 }
 
 @(private = "file") info_name: [PATH_MAX]u8
 @(private = "file") info_cwd: [PATH_MAX]u8
+@(private = "file") info_args: [ARGS_KEEP]u8
 
 // proc_info reads one record, or answers false for a pid that is not live.
 proc_info :: proc "contextless" (pid: u64) -> (info: Proc_Info, ok: bool) #no_bounds_check {
@@ -40,6 +42,8 @@ proc_info :: proc "contextless" (pid: u64) -> (info: Proc_Info, ok: bool) #no_bo
 	info.name = string(info_name[:n])
 	c := copy(info_cwd[:], current_directory(p))
 	info.cwd = string(info_cwd[:c])
+	a := copy(info_args[:], p.args_buf[:p.args_len])
+	info.args = string(info_args[:a])
 	info.pid = p.pid
 	info.parent = p.parent
 	info.note_group = p.note_group
@@ -49,6 +53,8 @@ proc_info :: proc "contextless" (pid: u64) -> (info: Proc_Info, ok: bool) #no_bo
 		info.state = p.exit.deliberate || p.exit.noted ? "Exited" : "Faulted"
 	case p.thread == nil:
 		info.state = "Starting"
+	case p.stopped:
+		info.state = "Stopped"
 	case:
 		switch p.thread.state {
 		case .Ready:
@@ -103,6 +109,42 @@ proc_kill :: proc "contextless" (pid: u64) -> bool {
 	p.note_len = len(text)
 	intrinsics.volatile_store(&p.stopping, true)
 	sched.note_thread(p.thread)
+	return true
+}
+
+// proc_stop asks a process to stop at its next boundary. The wake is a
+// note's, and the record remembers it was a stop's, so the boundary parks
+// rather than delivers. See `stop_here`.
+proc_stop :: proc "contextless" (pid: u64) -> bool {
+	guard := sync.acquire(&table_lock)
+	p := live_by_pid(pid)
+	sync.release(&table_lock, guard)
+	if p == nil || p.thread == nil || intrinsics.volatile_load(&p.exit.done) {
+		return false
+	}
+	p.stop_wake = true
+	p.stop_seq = p.note_seq
+	intrinsics.volatile_store(&p.stop_requested, true)
+	sched.note_thread(p.thread)
+	return true
+}
+
+// proc_start lets a stopped process go on: the ask comes down, the door's
+// sleeper wakes, and a thread the tick parked is readied by hand.
+proc_start :: proc "contextless" (pid: u64) -> bool {
+	guard := sync.acquire(&table_lock)
+	p := live_by_pid(pid)
+	sync.release(&table_lock, guard)
+	if p == nil || p.thread == nil {
+		return false
+	}
+	intrinsics.volatile_store(&p.stop_requested, false)
+	sync.wakeup_all(&stop_rendez)
+	if p.stopped_in_tick {
+		p.stopped_in_tick = false
+		p.stopped = false
+		sched.ready(p.thread)
+	}
 	return true
 }
 

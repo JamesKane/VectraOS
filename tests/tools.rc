@@ -66,6 +66,8 @@ check ns '#b /bin' `{ns | grep '^bind #b /bin' | sed 's/^bind //'}
 # -- Processes, through /proc -------------------------------------------------
 check ps rc `{ps | grep ' rc$' | tail -n 1 | sed 's/.* //'}
 check kill 'sys: killed' `{sleep 100 & kill $apid; wait $apid; echo $status}
+check args 'sleep 100' `{sleep 100 & cat /proc/$apid/args; kill $apid; wait $apid}
+check stop 'Stopped Blocked' `{sleep 100 & echo stop > /proc/$apid/ctl; sleep 1; during=`{ps | grep ' sleep$'}; echo start > /proc/$apid/ctl; sleep 1; after=`{ps | grep ' sleep$'}; echo $during(2) $after(2); kill $apid; wait $apid}
 
 if(~ $#bad 0) exit $#ok' ok'
 exit 'failed '^$"bad

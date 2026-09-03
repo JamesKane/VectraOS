@@ -143,10 +143,11 @@ can replay), `/proc/n/note` (a write is `note`, so `kill` is `echo kill >
 /proc/n/note`), `/proc/n/ctl` for `kill` and `stop`. `ps`, `kill` and `ns`
 are then three tools of the ordinary kind.
 
-**Where it stands.** Done, as `docs/PROC.md` describes, less `stop`, which
-wants a stopped state the scheduler does not have. The vfs mount table
-grew the names each bind was made with so `ns` has something to print, and
-`getpid` arrived so `rc` has `$pid`.
+**Where it stands.** Done, as `docs/PROC.md` describes, `stop` and `start`
+and `args` included. The vfs mount table grew the names each bind was made
+with so `ns` has something to print, `getpid` arrived so `rc` has `$pid`,
+and the scheduler can park a thread from a tick, which is what a stop that
+catches a program in ring 3 needs.
 
 ### Step 5: the disk
 

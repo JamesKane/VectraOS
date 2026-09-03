@@ -186,7 +186,13 @@ run_program :: proc(
 	}
 	r.programs += 1
 
-	if !check(r, wait(p, PATIENCE), "and it comes back") {
+	// The program's name in the line, because ten tests share this helper
+	// and a timeout that says only "it" costs a boot to place.
+	sink := libodin.sink_from(helper_line[:])
+	libodin.put_str(&sink, "and ")
+	libodin.put_str(&sink, name)
+	libodin.put_str(&sink, " comes back")
+	if !check(r, wait(p, PATIENCE), libodin.str(&sink)) {
 		return p
 	}
 
@@ -696,7 +702,8 @@ verify_syscalls :: proc(r: ^Result, column: proc "contextless" () -> int, held: 
 	// Staged, and only now a thread. A launch before the staging is a race
 	// the program sometimes wins, and a flake found it winning.
 	check(r, launch(p, u64(len(MESSAGE))), "and it launches")
-	if check(r, wait(p, PATIENCE), "and it comes back") {
+	came_back := comes_back(r, p, "and it comes back")
+	if came_back {
 		after := column()
 
 		check(r, cell(p, CELL_MARK) == MARK_HELLO, "having reached its first instruction")
@@ -939,7 +946,7 @@ verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held:
 
 	before := column()
 	check(r, launch(p, u64(len(PATH_CONS)), u64(len(NAMED))), "and it launches, staged")
-	if check(r, wait(p, PATIENCE), "and it comes back") {
+	if comes_back(r, p, "and it comes back") {
 		after := column()
 
 		check(r, cell(p, CELL_MARK) == MARK_NAMER, "having reached its first instruction")
@@ -1416,7 +1423,7 @@ verify_loading :: proc(r: ^Result, column: proc "contextless" () -> int) {
 	p, serr := spawn_path(nil, "/bin/child", SPAWN_NS_COPY)
 	if check(r, serr == vfs.OK && p != nil, "a process is built from a file rather than from a blob") {
 		r.programs += 1
-		if check(r, wait(p, PATIENCE), "and it comes back") {
+		if comes_back(r, p, "and it comes back") {
 			after := column()
 			check(r, cell(p, CELL_MARK) == MARK_CHILD, "having reached its first instruction")
 			check(
@@ -1632,7 +1639,7 @@ verify_posting :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^
 	}
 	r.programs += 1
 
-	if check(r, wait(p, PATIENCE), "and it comes back") {
+	if comes_back(r, p, "and it comes back") {
 		after := column()
 
 		check(r, cell(p, CELL_MARK) == MARK_POSTER, "having reached its first instruction")
@@ -2239,7 +2246,7 @@ verify_notes :: proc(r: ^Result) {
 	}
 	r.programs += 1
 
-	if check(r, wait(p, PATIENCE), "and it comes back") {
+	if comes_back(r, p, "and it comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_NOTER, "having reached its first instruction")
 		check(r, i64(cell(p, NOTER_SPAWNED)) > 0, "it spawned a child that loops for ever")
 		check(r, cell(p, NOTER_NOTED) == 0, "noted it")
@@ -4534,7 +4541,7 @@ verify_mapping :: proc(r: ^Result) {
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_FB)), "with the screen's name in its page")
 	check(r, set_bytes(p, SLOT_B, bytes_of(PATH_CONS)), "and a stream's name beside it")
 
-	if check(r, wait(p, PATIENCE), "and it comes back") {
+	if comes_back(r, p, "and it comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_MAPPER, "having reached its first instruction")
 		check(r, cell(p, MAPPER_FD) < u64(MAX_FDS), "the screen opened as an ordinary descriptor")
 
@@ -5807,13 +5814,26 @@ verify_anon :: proc(r: ^Result) {
 	check(r, wedged, "and the kernel takes the frame the allocator would have handed the grow")
 	set_cell(p, ANON_GO, 1)
 
-	if !check(r, wait(p, PATIENCE), "and it comes back") {
+	// Two megabyte runs, a grow, and a fork that copies all of it: several
+	// megabytes allocated, zeroed and copied, which on the slowest emulated
+	// board under a busy host is more than one program's patience. The time
+	// is reported, so a slowdown shows as a number before it shows as a
+	// failure.
+	anon_started := sched.ticks()
+	anon_back := wait(p, PATIENCE * 10)
+	anon_ticks = int(sched.ticks() - anon_started)
+	if !anon_back {
 		if wedged {
 			mem.free_page(wedge)
 		}
 		finish(r, p, "and is taken down")
 		return
 	}
+	timing := libodin.sink_from(helper_line[:])
+	libodin.put_str(&timing, "and it comes back, in ")
+	libodin.put_uint(&timing, u64(anon_ticks))
+	libodin.put_str(&timing, " ticks")
+	check(r, anon_ticks < PATIENCE * 10, libodin.str(&timing))
 	check(r, cell(p, CELL_MARK) == MARK_ANON, "having reached its first instruction")
 
 	addr := uintptr(cell(p, ANON_ADDR))
@@ -6587,7 +6607,9 @@ verify_abi :: proc(r: ^Result) {
 		return
 	}
 	r.programs += 1
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	// Seven forks and spawns, each a copy of the program's memory: on the
+	// slowest emulated board that is more than one program's patience.
+	if check(r, wait(p, PATIENCE * 5), "and comes back") {
 		// Copied out of the record, because the tally keeps the string and
 		// `finish` clears the record before the line is printed.
 		abi_said_len = p.exit.text_len
@@ -6600,6 +6622,50 @@ verify_abi :: proc(r: ^Result) {
 	finish(r, p, "and the ABI program is taken down")
 }
 
+@(private = "file") helper_line: [512]u8
+@(private = "file") anon_ticks: int
+
+/*
+comes_back is `wait` as a check, and when it fails the line says everything
+the record knows: a program that printed its line and never came back has
+several ways to have got there, and a bare "it did not" costs a boot to
+place.
+*/
+@(private = "file")
+comes_back :: proc(r: ^Result, p: ^Process, what: string) -> bool {
+	if wait(p, PATIENCE) {
+		return check(r, true, what)
+	}
+	sink := libodin.sink_from(helper_line[:])
+	libodin.put_str(&sink, what)
+	libodin.put_str(&sink, " -- thread ")
+	if p.thread != nil {
+		switch p.thread.state {
+		case .Ready:
+			libodin.put_str(&sink, "Ready")
+		case .Running:
+			libodin.put_str(&sink, "Running")
+		case .Blocked:
+			libodin.put_str(&sink, "Blocked")
+		case .Dead:
+			libodin.put_str(&sink, "Dead")
+		}
+		libodin.put_str(&sink, intrinsics.volatile_load(&p.thread.noted) ? " noted" : " unnoted")
+	} else {
+		libodin.put_str(&sink, "nil")
+	}
+	libodin.put_str(&sink, intrinsics.volatile_load(&p.exit.done) ? ", exit done" : ", exit not done")
+	libodin.put_str(&sink, p.stopped ? ", stopped" : "")
+	libodin.put_str(&sink, p.stop_requested ? ", stop requested" : "")
+	libodin.put_str(&sink, ", mark ")
+	libodin.put_hex(&sink, cell(p, CELL_MARK))
+	libodin.put_str(&sink, ", cells")
+	for i in 1 ..< 18 {
+		libodin.put_str(&sink, " ")
+		libodin.put_hex(&sink, cell(p, i))
+	}
+	return check(r, false, libodin.str(&sink))
+}
 @(private = "file") abi_said: [EXITS_MAX]u8
 @(private = "file") abi_said_len: int
 
@@ -6694,7 +6760,7 @@ serial log, one `ok name` per tool, and its exit word is `N ok` or
 added to `cmd/` without a line in the script fails this check, which is
 the point.
 */
-TOOLS_EXPECTED :: 30
+TOOLS_EXPECTED :: 32
 
 verify_tools :: proc(r: ^Result) {
 	argv := new(Argv)

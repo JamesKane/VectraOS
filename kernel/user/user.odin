@@ -298,6 +298,28 @@ Process :: struct {
 	*/
 	stopping: bool,
 	note_sp:  uintptr,
+
+	/*
+	A stop, from `/proc/n/ctl`. `stop_requested` is the ask; the thread
+	parks at its next boundary -- the door, or the tick that catches it in
+	ring 3 -- and `stopped` says it has. `start` clears the ask and wakes
+	it. The wake for the ask is `sched.note_thread`, the same as a note's,
+	so `stop_wake` and `stop_seq` remember that the flag was raised for a
+	stop and nothing was posted since, and the boundary clears it again
+	rather than treating it as a note. See `stop_here` and `note_trap`.
+	*/
+	stop_requested:  bool,
+	stopped:         bool,
+	stopped_in_tick: bool, // parked by the tick, so `start` readies the thread itself
+	stop_wake:       bool,
+	stop_seq:        u64,
+	note_seq:        u64, // counts `post_note`, so a stop can tell a fresh note from its own wake
+
+	// The arguments the program was started with, joined by spaces and cut
+	// at ARGS_KEEP, for `/proc/n/args`. The kernel stages the real ones onto
+	// the stack and keeps nothing else.
+	args_buf: [ARGS_KEEP]u8,
+	args_len: int,
 }
 
 // The longest note. Plan 9 says ERRMAX for the same field, and the number
@@ -339,6 +361,9 @@ the first code in Vectra that anything untrusted will reach.
 MAX_PROCESSES :: 12
 
 EXITS_MAX :: abi.EXITS_MAX
+
+// How much of a program's arguments the record keeps for `/proc/n/args`.
+ARGS_KEEP :: 256
 
 @(private)
 processes: [MAX_PROCESSES]Process
@@ -491,6 +516,9 @@ machine nothing until an ending wakes it.
 @(private)
 exit_rendez: sync.Rendez
 
+// Where a stopped process's thread waits for `start`.
+stop_rendez: sync.Rendez
+
 @(private)
 exit_done :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&(^Process)(arg).exit.done)
@@ -524,9 +552,34 @@ post_note :: proc "contextless" (p: ^Process, text: string) -> bool {
 		p.note_buf[i] = text[i]
 	}
 	p.note_len = n
+	p.note_seq += 1
 
 	sched.note_thread(p.thread)
 	return true
+}
+
+/*
+stop_here parks the calling thread until `start`, at the door.
+
+Thread context, so the park is an ordinary rendezvous sleep. It ends when
+the ask is withdrawn, or when the process is being killed, which the door
+handles next. A note posted while stopped waits until the start. The door
+then takes down the note flag the stop's own wake raised, if nothing was
+posted since, so it does not deliver a note that was never there.
+*/
+stop_here :: proc(p: ^Process) {
+	p.stopped = true
+	for intrinsics.volatile_load(&p.stop_requested) && !intrinsics.volatile_load(&p.stopping) {
+		sync.sleep_noted(&stop_rendez, stop_lifted, p)
+	}
+	p.stopped = false
+	// The door clears the stop's own wake flag next, once the ask is gone.
+}
+
+@(private = "file")
+stop_lifted :: proc "contextless" (arg: rawptr) -> bool {
+	p := (^Process)(arg)
+	return !intrinsics.volatile_load(&p.stop_requested) || intrinsics.volatile_load(&p.stopping)
 }
 
 /*
@@ -610,6 +663,24 @@ path's arrangement too.
 @(private = "file")
 note_trap :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	thread := sched.current()
+	if thread != nil {
+		// A stop parks the thread here, off every queue, its frame in the
+		// record, until `start` readies it. Resumed, the flag that woke it
+		// is still up: if it was the stop's own and nothing was posted, it
+		// comes off and the thread simply carries on in ring 3.
+		if p := (^Process)(thread.user); p != nil && !intrinsics.volatile_load(&p.stopping) {
+			if intrinsics.volatile_load(&p.stop_requested) {
+				p.stopped = true
+				p.stopped_in_tick = true
+				return sched.park_current(r)
+			}
+			if p.stop_wake && p.stop_seq == p.note_seq {
+				p.stop_wake = false
+				sched.clear_note(thread)
+				return r
+			}
+		}
+	}
 	if thread != nil {
 		// The kernel's word first, before any handler. See `end`.
 		if p := (^Process)(thread.user); p != nil && p.handler != 0 && !intrinsics.volatile_load(&p.stopping) {

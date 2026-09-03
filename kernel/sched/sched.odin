@@ -508,6 +508,16 @@ set_note_trap :: proc "contextless" (h: Note_Trap) {
 	note_trap = h
 }
 
+// park_current takes the interrupted thread off every queue, its frame kept
+// in its record, until `ready` puts it back. `block` from interrupt context,
+// for a stop that catches a thread in ring 3.
+park_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	if t := cpu().current; t != nil {
+		t.state = .Blocked
+	}
+	return reschedule(r, spent_slice = false)
+}
+
 kill_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	if t := cpu().current; t != nil {
 		t.state = .Dead

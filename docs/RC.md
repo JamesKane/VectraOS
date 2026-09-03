@@ -62,7 +62,10 @@ characters travel through evaluation as a mark byte before each unquoted
 `*`, `?` and `[`, as in Plan 9. A simple command's arguments are matched
 against the filesystem, component by component over `dirread`, and a word
 that matches nothing is itself. `~` and `case` match against a string.
-Everywhere else the marks come off.
+Everywhere else the marks come off. A name after `$` is letters, digits,
+`_` and `*`, so `/proc/$pid/status` is a word, a variable and a word,
+joined by the free caret, as in rc; the lexer once let `/` continue the
+name and `$pid/status` was a variable nobody had set.
 
 ## Redirections
 

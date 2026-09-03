@@ -111,6 +111,11 @@ wordchr :: proc(c: u8) -> bool {
 	return true
 }
 
+// idchr says whether a character continues a variable name after `$`.
+idchr :: proc(c: u8) -> bool {
+	return c == '_' || c == '*' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c >= 0x80
+}
+
 starts_word :: proc(c: u8) -> bool {
 	return wordchr(c) || c == '\'' || c == '$' || c == '`' || c == '('
 }
@@ -360,6 +365,11 @@ lex_word :: proc(lx: ^Lexer, line: int) -> Token {
 			break
 		}
 		if !wordchr(c) {
+			break
+		}
+		if lx.afterdol && len(buf) > 0 && !idchr(c) {
+			// A name after `$` is letters, digits, `_` and `*`: `$pid/status`
+			// is the variable and then a word, which the free caret joins.
 			break
 		}
 		getc(in_)

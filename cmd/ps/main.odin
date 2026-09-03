@@ -1,4 +1,5 @@
-// ps -- list the processes, from /proc: pid, state and name, one per line.
+// ps -- list the processes, from /proc: pid, state and name, one per line;
+// -a shows the arguments each was started with instead of the name.
 package ps
 
 import "vsys:abi"
@@ -7,7 +8,8 @@ import "vsys:libuser"
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
-	_ = libuser.args(block)
+	args := libuser.args(block)[1:]
+	show_args := len(args) > 0 && args[0] == "-a"
 	fd := libuser.open("/proc", abi.O_RDONLY)
 	if fd < 0 {
 		libuser.eprint("ps: can't open /proc: ", libuser.errstr(fd), "\n")
@@ -43,6 +45,14 @@ start :: proc "c" (block: ^abi.Args) {
 				// The name is the path the program was started from; the
 				// last element is what a person calls it.
 				libuser.bio_puts(&out, basename(fields[0]))
+				if show_args {
+					copy(path[6 + len(pid):], "/args")
+					if argv, aok := libuser.read_file(string(path[:11 + len(pid)]), context.allocator); aok {
+						libuser.bio_putc(&out, ' ')
+						libuser.bio_write(&out, argv[:max(0, len(argv) - 1)])
+						delete(argv)
+					}
+				}
 				libuser.bio_putc(&out, '\n')
 			}
 			delete(data)

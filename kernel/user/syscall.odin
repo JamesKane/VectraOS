@@ -278,6 +278,22 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	flight holds the note instead -- the handler's own calls, `noted` above
 	all, must still work.
 	*/
+	// A stop asked for through /proc parks the thread here until `start`,
+	// before any note is looked at. See `stop_here`.
+	if p := current(); p != nil {
+		if intrinsics.volatile_load(&p.stop_requested) {
+			stop_here(p)
+		}
+		// The wake that asked for a stop raised the note flag. If the stop
+		// has lifted -- here, or at a tick that parked and a `start` that
+		// readied -- and nothing was posted since, the flag comes off, or
+		// the block below would end a process nobody noted.
+		if p.stop_wake && p.stop_seq == p.note_seq && !intrinsics.volatile_load(&p.stopping) {
+			p.stop_wake = false
+			sched.clear_note(sched.current())
+		}
+	}
+
 	if thread := sched.current(); sched.thread_noted(thread) {
 		p := current()
 		// The kernel's word first, before any handler and before a delivery
