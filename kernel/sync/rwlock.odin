@@ -203,23 +203,53 @@ wunlock :: proc "contextless" (l: ^RW_Lock) {
 		return
 	}
 
-	// Every reader at the head goes in together. They are counted under the
-	// list lock and started outside it, one at a time, because a start takes
-	// the scheduler's lock and this package takes that one last.
+	/*
+	Every reader at the head goes in together. They are counted and taken
+	off the queue under the list lock, all of them in one hold, and started
+	outside it, because a start takes the scheduler's lock and this package
+	takes that one last.
+
+	**One hold, and not one per reader.** The first cut took a reader, let
+	go of the lock, started it, and came back for the next. A reader started
+	in that gap could run its whole read and `runlock` before the writer
+	came back, and find the next reader still at the head with no writer in
+	front of it -- the state `runlock` refuses, because nothing else can
+	produce it. The arm64 and riscv64 ports found it one boot in eight; on
+	amd64 the gap was narrow enough never to have been seen.
+
+	So the run of readers is detached whole, as a chain, with each node's
+	`queue` still set. A reader that reaches `block` before its start sees
+	the queue and parks, and the start wakes it. `queue` is cleared just
+	before each start, and `next` is read before that, because a reader
+	that sees nil returns from `rlock` and its node is stack it is done with.
+	*/
 	l.writer = false
 	l.owner = nil
-	for {
-		if l.queue.head == nil || l.queue.head.writing {
-			release(&wait_lock, g)
-			return
-		}
-		n := take_first(&l.queue)
-		w := n.waiter
-		l.readers += 1
-		handoffs += 1
-		release(&wait_lock, g)
+	run := l.queue.head
+	last: ^Wait_Node
+	started := 0
+	for l.queue.head != nil && !l.queue.head.writing {
+		last = l.queue.head
+		l.queue.head = last.next
+		started += 1
+	}
+	if l.queue.head == nil {
+		l.queue.tail = nil
+	}
+	if last != nil {
+		last.next = nil
+	}
+	l.readers += started
+	handoffs += u64(started)
+	release(&wait_lock, g)
+
+	for node := run; node != nil; {
+		next := node.next
+		w := node.waiter
+		node.next = nil
+		node.queue = nil
 		hooks.unpark(w)
-		g = acquire(&wait_lock)
+		node = next
 	}
 }
 

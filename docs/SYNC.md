@@ -240,6 +240,18 @@ Two consequences are the whole policy. A reader arriving behind a queued
 writer waits, so readers cannot starve a writer. The queue is served in
 arrival order, so a writer cannot starve readers.
 
+**`wunlock` takes the run of readers off the queue in one hold.** It used
+to take one, let go of the list lock to start it, and come back for the
+next. A reader started in that gap could run its read and `runlock` before
+the writer came back, and find the next reader still at the head with no
+writer in front of it. That is the state `runlock` refuses, because the
+rules cannot produce it, and the refusal is a panic. The arm64 and riscv64
+ports hit it one boot in eight in the namespace concurrency test; amd64's
+gap was narrow enough that it was never seen there. The run is detached
+whole now, and each reader is started outside the lock with its node's
+`queue` cleared just before, so a reader that reaches `block` early still
+parks and is still woken.
+
 **Arrival order, and not the mutex's priority handoff, on purpose.** A mutex
 queue holds one kind of waiter, and `wait.odin` argues why the best-first
 scan is right for it. This queue holds two kinds, and its rules are

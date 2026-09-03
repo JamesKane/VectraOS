@@ -25,8 +25,8 @@ package libuser
 import "vsys:abi"
 import "vsys:vectra9"
 
-// The five raw doors -- `raw1` to `raw5` -- are the architecture's, in
-// `sys_amd64.odin`. Everything below is what a program asks through them.
+// The six raw doors -- `raw1` to `raw6` -- are the architecture's, in
+// `sys_<arch>.odin`. Everything below is what a program asks through them.
 
 // -- The calls ---------------------------------------------------------------
 
@@ -259,6 +259,34 @@ exit :: proc "contextless" (status: u64) -> ! {
 	_ = raw1(abi.SYS_EXIT, status)
 	for {
 	}
+}
+
+// -- What only the self-test asks --------------------------------------------
+//
+// Three calls with no use to a program and every use to the kernel's own
+// checks: the door has to carry nothing, six arguments, and a number it
+// does not know, and answer each the right way.
+
+nop :: proc "contextless" () -> i64 {
+	return raw1(abi.SYS_NOP, 0)
+}
+
+// args is the call that adds its six arguments up, which is the only thing
+// that proves all six arrive.
+args :: proc "contextless" (a0, a1, a2, a3, a4, a5: u64) -> i64 {
+	return raw6(abi.SYS_ARGS, a0, a1, a2, a3, a4, a5)
+}
+
+// unknown is a number no call has, and the answer is ENOSYS.
+unknown :: proc "contextless" () -> i64 {
+	return raw1(9999, 0)
+}
+
+// try_noted is `noted` for a program that is not in a handler, where the
+// kernel refuses it and answers. In a handler it does not return, and the
+// answer is the interrupted program's.
+try_noted :: proc "contextless" (how: u64) -> i64 {
+	return raw1(abi.SYS_NOTED, how)
 }
 
 // -- The loops ---------------------------------------------------------------

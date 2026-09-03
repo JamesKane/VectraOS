@@ -1177,6 +1177,23 @@ report_failed :: proc(sink: ^libodin.Sink, t: libodin.Tally, leaked := 0) {
 		libodin.put_str(sink, " objects LEAKED")
 	}
 	emit(&klog, .Fault, sink)
+
+	// The failures after the first, beneath the line, as far as the tally
+	// kept them. The first is still the one to read; these say how far its
+	// consequences reached, and which check ends the run of them.
+	for i in 0 ..< t.later_count {
+		s := begin(&klog)
+		libodin.put_str(&s, "  also: ")
+		libodin.put_str(&s, t.later[i])
+		emit(&klog, .Trace, &s)
+	}
+	if t.failures > t.later_count + 1 {
+		s := begin(&klog)
+		libodin.put_str(&s, "  and ")
+		libodin.put_uint(&s, u64(t.failures - t.later_count - 1))
+		libodin.put_str(&s, " more")
+		emit(&klog, .Trace, &s)
+	}
 }
 
 // report_sched prints one self-test result. The success wording differs

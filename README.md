@@ -10,8 +10,8 @@ on top.
 comes up under Limine on `x86_64` with descriptor tables, page tables and a
 heap of its own. It comes up on `aarch64` and `riscv64` too, on QEMU's
 `virt` board, through the same `kmain`: the ports have their own trap paths,
-page tables, timers and interrupt controllers, and what they lack is the
-assembly test programs. `docs/PORTS.md` has the table. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
+page tables, timers and interrupt controllers, and run one self-test suite,
+ring 3 programs included. `docs/PORTS.md` has the table. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin` over 9P2000.L. It preempts on the local APIC and takes keyboard
 interrupts through the I/O APIC.
 
@@ -19,7 +19,7 @@ Then it starts processes in ring 3 that open files by name and write to the
 console. Those processes spawn children out of files under `/bin`, wait for
 them, and collect their exit status. One posts a service in `/srv` and mounts
 the name it published -- Plan 9's way, create the file and write a descriptor
-into it. One *answers* 9P by hand, in a page of assembler.
+into it. One *answers* 9P by hand, in a page of Odin.
 
 And what runs can now be stopped. A *note*, posted from the kernel or from a
 parent to its own child, ends a process at the next kernel boundary it

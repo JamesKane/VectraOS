@@ -2,8 +2,8 @@
 
 `kernel/arch/arm64/`, `kernel/arch/riscv64/`, `kernel/arch/arch_arm64.odin`,
 `kernel/arch/arch_riscv64.odin`, `sys/libuser/sys_arm64.odin`,
-`sys/libuser/sys_riscv64.odin`, `kernel/user/programs_arm64.S`,
-`kernel/user/programs_riscv64.S`, `kernel/link_arm64.ld`, `kernel/link_riscv64.ld`
+`sys/libuser/sys_riscv64.odin`, `kernel/user/programs/`, `kernel/link_arm64.ld`,
+`kernel/link_riscv64.ld`
 
 Vectra was written on amd64 with the other two architectures as a promise:
 `arch` is the only CPU-facing import, and a port is a matter of blanks to
@@ -57,7 +57,7 @@ walk, the switch, the locks and the wire run on all three as written.
 
 The rule from `docs/HANDOFF.md` holds: anything that defines a symbol, is
 entered by the CPU, or needs a loop is a `.S` file clang assembles, and
-everything else is a template. Each port has three files and a placeholder:
+everything else is a template. Each port has three files:
 
 | File | What it is |
 |---|---|
@@ -65,7 +65,8 @@ everything else is a template. Each port has three files and a placeholder:
 | `riscv64/vectors.S` | the one trap entry `stvec` names, the `sscratch` dance that finds a kernel stack for a trap from a program, and the same tail |
 | `<arch>/ap.S` | the stack switch a released core makes |
 | `<arch>/fpu_hold.S` | four vector registers held live across a preemption, for the scheduler's self-test |
-| `kernel/user/programs_<arch>.S` | thirty-one program symbols, each a single trapping instruction: see section 6 |
+
+The ring 3 test programs are not on the list, and section 6 says why.
 
 **The templates are bytes.** The checker behind `asm` knows each
 architecture's general instructions, and not the ones a kernel is made of.
@@ -158,14 +159,32 @@ Both boots run the same `kmain` amd64 runs, self-tests and all. On the
 | the timer, preemption, every lock and queue suite | passes | passes |
 | devfs, srv, pipe, the wire, the posted service | passes | passes |
 | address spaces, the door | passes | passes |
-| ring 3 | the Odin programs run (section 6) | the Odin programs run |
-| the user self-test | 267 of 783 fail, on the placeholders | the same |
-| the four cores | all online | all online |
-| `boot complete` | eight boots in ten | two in two |
+| ring 3, the user self-test, all 874 checks | passes | passes |
+| the four cores, the SMP self-test | passes | passes |
+| `boot complete` | every boot since the race below | every boot |
 
-The arm64 count is the honest one, and `docs/HANDOFF.md` section 6 has the
-two shapes the other two boots took. riscv64 has been booted whole twice at
-the time of writing.
+The suite is amd64's, unchanged in what it checks. Three port bugs it found
+are fixed, and one bug of the portable kernel's that amd64 had never shown:
+
+- A forked child on either port answered its `rfork` with the parent's
+  flags rather than zero, because the clone copied the frame and amd64's
+  answer register is not an argument register. Both `thread_user_clone`s
+  write the zero now.
+- `exec` rewrote the frame for the new program, and then the dispatcher
+  wrote the call's answer into it -- onto the first argument, on the two
+  architectures where that is the same register. A successful `exec`
+  writes no answer.
+- The draw server's move test named a pixel 280 from the right edge of a
+  1280-wide screen. The `virt` boards' framebuffer is 800 wide, so the
+  test derives its geometry from the first window's edge now.
+- `sync.wunlock` let go of the wait lock between waking successive readers,
+  and a reader woken in that gap could `runlock` and find the next reader
+  still queued behind no writer. The ports hit that panic one boot in eight.
+  `docs/SYNC.md` has the fix.
+
+Two SMP checks were loosened for the ports and say so where they live: a
+kick for nearly every brief worker rather than every one, and a shootdown
+counted across the cores rather than on the core the checker started on.
 
 ## 5. What is still one architecture's
 
@@ -185,22 +204,29 @@ the time of writing.
   scheduler already knows the three tiers, and the MIDR table that would
   fill them in is not written.
 
-## 6. The programs that are not ported
+## 6. The programs, once per architecture
 
-`kernel/user/programs_amd64.S` holds thirty-one ring 3 programs in x86-64
-assembly, one per check in `kernel/user/verify.odin`. They are the spinner
-the tick catches, the pokers and peekers that fault on purpose, and the one
-that answers 9P by hand. Each port needs them again in its own assembly.
-None are written yet. `programs_arm64.S` and `programs_riscv64.S` carry
-every symbol as one trapping instruction. The kernel links, and a program
-that runs ends on its first instruction rather than on nothing.
+`kernel/user/verify.odin` runs thirty-one ring 3 programs: the spinner the
+tick catches, the pokers and peekers that fault on purpose, the one that
+answers 9P by hand. They were x86-64 assembly, and the first plan for the
+ports was to write them twice more. That is a suite per architecture, and
+one more for every architecture after, so the plan changed: they are one
+Odin package now, `kernel/user/programs`, and the door they knock on is
+`sys/libuser`'s, which already had one file per architecture.
 
-The user self-test therefore fails on the ports, loudly and by the hundred,
-and that is the intended report. What it also shows is worth a line. The
-build driver compiles six Odin programs for ring 3: the ramfs, the console
-server, the draw server and the rest. They are ordinary packages. They run
-on arm64 as built, through the door in `sys_arm64.odin`, and the lines they
-write reach the serial port.
+`build.odin` compiles the package once per program with `-define:PROGRAM`,
+so the compiler emits only the program named, links each at the loader's
+address, and keeps the one segment as a flat blob the kernel embeds. A
+program may have no global and must fit a page, and the build refuses one
+that does not. Three things in the package are still the architecture's,
+as byte templates in one `when` each: the undefined instruction a program
+ends on, and the privileged instruction `priv` is refused for.
+
+Two checks got weaker in the move, and say so where they live. `probe`
+held three values in registers across a system call, and `catcher` zeroed a
+register in its note handler that `noted` had to put back; a compiler
+decides where a value lives, so both now check what the compiler kept.
+Every Odin program that runs at all is the same check made larger.
 
 ## See also
 

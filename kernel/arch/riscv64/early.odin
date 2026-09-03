@@ -28,8 +28,17 @@ Serial_Desc :: struct {
 	base: uintptr,
 }
 
-serial_console :: proc "contextless" (hhdm, kernel_phys, kernel_virt: u64) -> Serial_Desc {
-	_, _, _ = hhdm, kernel_phys, kernel_virt
+// The direct map's offset, kept for the one walk this package makes on
+// its own: see `fault_bits`.
+@(private = "file") hhdm: u64
+
+hhdm_offset :: proc "contextless" () -> u64 {
+	return hhdm
+}
+
+serial_console :: proc "contextless" (hhdm_base, kernel_phys, kernel_virt: u64) -> Serial_Desc {
+	_, _ = kernel_phys, kernel_virt
+	hhdm = hhdm_base
 	return Serial_Desc{kind = .Firmware}
 }
 

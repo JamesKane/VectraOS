@@ -121,7 +121,10 @@ thread_user_clone :: proc "contextless" (stack: []u8, src: ^Trap_Frame) -> (resu
 	if !carved {
 		return {}, false
 	}
+	// The copy, with zero in the answer register: that is how the child
+	// learns which of the two it is.
 	frame^ = src^
+	frame.x[REG_A0] = 0
 	from := ([^]u8)(syscall_frame_fpu(src))
 	to := ([^]u8)(fpu)
 	for i in 0 ..< FPU_AREA_SIZE {

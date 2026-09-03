@@ -2,27 +2,29 @@
 The programs -- short blobs of machine code baked into the image.
 
 The first thing ever to run in ring 3 had to come from somewhere the kernel
-already had. There was no loader and no file to load from. The assembler
-emits these the same way it emits the interrupt stubs. `user.load` copies the
-bytes into a frame it maps into a program's space. `image.odin` wraps the two
-that stand alone in the file format the loader reads.
+already had. There was no loader and no file to load from. The blobs are
+Odin now, in `kernel/user/programs`, compiled once per program for the
+kernel's own architecture and embedded whole; they were assembly, and a
+port meant writing every one again. `user.load` copies the bytes into a
+frame it maps into a program's space. `image.odin` wraps the two that stand
+alone in the file format the loader reads.
 
 **The copy is not an accident of having no filesystem.** No `User` bit sits
 anywhere on the path to the kernel image, so a program cannot execute it where
 it lies. A loader would have to copy it into pages a program may reach, whatever
 the source was. That is what this does, minus the part that reads a file.
 
-Every blob is position-independent, because a copy lands at whatever virtual
-address the space maps it to. No blob names an absolute address, and the only
-branches are relative. The two arguments arrive in the registers the frame was
-built with:
+Every blob is linked at `TEXT_VA`, which is the one address a copy lands
+at, and holds its own strings behind its code. The arguments arrive in the
+registers the frame was built with, which `arch.thread_user_init` names:
 
-    rdi   the program's data page, which the kernel can also read
-    rsi   whatever the test wanted this program to touch
+    the first    the program's data page, which the kernel can also read
+    the second   whatever the test wanted this program to touch
+    the third    a second number, for the programs that need two
 
-Each writes a mark to `rdi` before it does anything else. That mark proves the
-program reached its first instruction. It is a different claim from the fault
-that follows, which is about the instruction meant to fault.
+Each writes a mark to its data page before it does anything else. That mark
+proves the program reached its first instruction. It is a different claim
+from the fault that follows, which is about the instruction meant to fault.
 */
 package user
 
@@ -568,12 +570,10 @@ NINER_ECHO_LINE :: "-- a process answered this line"
 The line `child` writes, and the paths the two blobs open.
 
 **Each of these is written twice**: once here for the checks, and once as
-`.ascii` bytes inside the blob that uses it. The pairs have to agree.
-There is no way to share them: the assembler consumes one at build time and
-Odin the other at run time. That is `SPIN_LIMIT`'s problem again, with the
-same answer: the copies live in the same file, and a check fails loudly when
-they drift. The blobs also hard-code each string's length as an immediate,
-which is a third copy of one fact about it.
+a literal inside the program that uses it. The pairs have to agree. There
+is no way to share them: a ring 3 program cannot import the kernel, and the
+kernel cannot import a program. That is `SPIN_LIMIT`'s problem again, with
+the same answer: a check fails loudly when they drift.
 */
 CHILD_LINE :: "-- a process started this one"
 
@@ -643,16 +643,16 @@ be preempted, so nothing else on the core ever runs. No bound the observer holds
 can help, because the observer is not scheduled. A loop that ends on its own is
 the only thing that survives it. See `docs/TESTING.md`.
 
-**The number is written twice**, once here and once as an immediate in the blob
-below, and the two have to agree. There is no way to share it. The assembler
-consumes one at build time and Odin consumes the other at run time. That is the
-problem `vector_has_error_code` has in `kernel/arch/amd64/idt.odin`, and this is
-the same answer: they live in the same file, next to each other.
+**The number is written twice**, once here and once as `ROUNDS` in
+`kernel/user/programs`, and the two have to agree. There is no way to share
+it: a ring 3 program cannot import the kernel. That is the problem
+`vector_has_error_code` has in `kernel/arch/amd64/idt.odin`, with the same
+answer, a check that fails loudly.
 
-They also disagree loudly rather than quietly. `verify_spin` checks that the
-counter came back *below* this, which is the claim that the kernel is what
-stopped the program. A limit smaller than the blob's would fail that check, and
-a limit the program can actually reach fails it too.
+`verify_spin` checks that the counter came back *below* this, which is the
+claim that the kernel is what stopped the program. A limit smaller than the
+program's would fail that check, and a limit the program can actually reach
+fails it too.
 
 Four hundred million rounds is about a second of emulated ring 3. That is about
 fifty times what the program reaches before the kernel tells it to stop.
@@ -660,204 +660,61 @@ fifty times what the program reaches before the kernel tells it to stop.
 SPIN_LIMIT :: 400_000_000
 
 /*
-The blobs, and the symbols that bracket each one.
+The programs, as the bytes the loader copies.
 
-`foreign` with no library, the same way `vectra_isr_stubs` is declared: these
-have an address and no storage, and the address is the value. A start and an
-end for each, because `load` copies a range and nothing else knows how long a
-blob is.
+Each is one Odin program in `kernel/user/programs`, compiled for the kernel's
+own architecture and kept as a flat blob by `build.odin`, which refuses a
+program that does not fit the page or wants a global. `#load` puts the blob
+in the kernel's rodata, so `program_spin` is a slice of the image and copies
+nothing. A build after the programs is what makes them current: the kernel's
+own compile is what consumes the artifact.
+
+The five that end without asking end on an undefined instruction, which is
+what `programs.die` is on every architecture. The rest exit through the
+door, and `parent`, `child` and the others that name a file carry the name
+in their own text, reached relative to the program counter, because nothing
+stages their data pages.
 */
-@(private)
-foreign {
-	vectra_user_spin: byte
-	vectra_user_spin_end: byte
-	vectra_user_poke: byte
-	vectra_user_poke_end: byte
-	vectra_user_peek: byte
-	vectra_user_peek_end: byte
-	vectra_user_priv: byte
-	vectra_user_priv_end: byte
-	vectra_user_jump: byte
-	vectra_user_jump_end: byte
-	vectra_user_hello: byte
-	vectra_user_hello_end: byte
-	vectra_user_probe: byte
-	vectra_user_probe_end: byte
-	vectra_user_shadow: byte
-	vectra_user_shadow_end: byte
-	vectra_user_namer: byte
-	vectra_user_namer_end: byte
-	vectra_user_reader: byte
-	vectra_user_reader_end: byte
-	vectra_user_binder: byte
-	vectra_user_binder_end: byte
-	vectra_user_mapper: byte
-	vectra_user_mapper_end: byte
-	vectra_user_parent: byte
-	vectra_user_parent_end: byte
-	vectra_user_child: byte
-	vectra_user_child_end: byte
-	vectra_user_poster: byte
-	vectra_user_poster_end: byte
-	vectra_user_niner: byte
-	vectra_user_niner_end: byte
-	vectra_user_noter: byte
-	vectra_user_noter_end: byte
-	vectra_user_forker: byte
-	vectra_user_grouper: byte
-	vectra_user_grouper_end: byte
-	vectra_user_forker_end: byte
-	vectra_user_memfork: byte
-	vectra_user_memfork_end: byte
-	vectra_user_sharer: byte
-	vectra_user_sharer_end: byte
-	vectra_user_sharedseg: byte
-	vectra_user_sharedseg_end: byte
-	vectra_user_fdforker: byte
-	vectra_user_fdforker_end: byte
-	vectra_user_refuser: byte
-	vectra_user_refuser_end: byte
-	vectra_user_painter: byte
-	vectra_user_painter_end: byte
-	vectra_user_catcher: byte
-	vectra_user_catcher_end: byte
-	vectra_user_dfltnote: byte
-	vectra_user_dfltnote_end: byte
-	vectra_user_execer: byte
-	vectra_user_execer_end: byte
-	vectra_user_nowaiter: byte
-	vectra_user_nowaiter_end: byte
-	vectra_user_bulkio: byte
-	vectra_user_bulkio_end: byte
-	vectra_user_anon: byte
-	vectra_user_anon_end: byte
-}
+program_spin :: proc "contextless" () -> []u8 {return #load("../../build/programs/spin.bin")}
+program_poke :: proc "contextless" () -> []u8 {return #load("../../build/programs/poke.bin")}
+program_peek :: proc "contextless" () -> []u8 {return #load("../../build/programs/peek.bin")}
+program_priv :: proc "contextless" () -> []u8 {return #load("../../build/programs/priv.bin")}
+program_jump :: proc "contextless" () -> []u8 {return #load("../../build/programs/jump.bin")}
 
-@(private)
-blob :: proc "contextless" (start, end: ^byte) -> []u8 {
-	from := uintptr(start)
-	to := uintptr(end)
-	if to <= from {
-		return nil
-	}
-	return (cast([^]u8)from)[:to - from]
-}
+// The ones that ask the kernel for something rather than have it refuse them.
+program_hello :: proc "contextless" () -> []u8 {return #load("../../build/programs/hello.bin")}
+program_probe :: proc "contextless" () -> []u8 {return #load("../../build/programs/probe.bin")}
+program_shadow :: proc "contextless" () -> []u8 {return #load("../../build/programs/shadow.bin")}
 
-// The five programs, each as the bytes to copy into a text page.
-program_spin :: proc "contextless" () -> []u8 {return blob(&vectra_user_spin, &vectra_user_spin_end)}
-program_poke :: proc "contextless" () -> []u8 {return blob(&vectra_user_poke, &vectra_user_poke_end)}
-program_peek :: proc "contextless" () -> []u8 {return blob(&vectra_user_peek, &vectra_user_peek_end)}
-program_priv :: proc "contextless" () -> []u8 {return blob(&vectra_user_priv, &vectra_user_priv_end)}
-program_jump :: proc "contextless" () -> []u8 {return blob(&vectra_user_jump, &vectra_user_jump_end)}
+// The ones that open files by name, in a namespace of their own.
+program_namer :: proc "contextless" () -> []u8 {return #load("../../build/programs/namer.bin")}
+program_reader :: proc "contextless" () -> []u8 {return #load("../../build/programs/reader.bin")}
+program_binder :: proc "contextless" () -> []u8 {return #load("../../build/programs/binder.bin")}
+program_painter :: proc "contextless" () -> []u8 {return #load("../../build/programs/painter.bin")}
+program_bulkio :: proc "contextless" () -> []u8 {return #load("../../build/programs/bulkio.bin")}
 
-// The two that ask the kernel for something rather than have it refuse them.
-program_hello :: proc "contextless" () -> []u8 {return blob(&vectra_user_hello, &vectra_user_hello_end)}
-program_probe :: proc "contextless" () -> []u8 {return blob(&vectra_user_probe, &vectra_user_probe_end)}
-program_shadow :: proc "contextless" () -> []u8 {return blob(&vectra_user_shadow, &vectra_user_shadow_end)}
+// The ones that hold memory no file serves, or a device's.
+program_mapper :: proc "contextless" () -> []u8 {return #load("../../build/programs/mapper.bin")}
+program_anon :: proc "contextless" () -> []u8 {return #load("../../build/programs/anon.bin")}
+program_sharer :: proc "contextless" () -> []u8 {return #load("../../build/programs/sharer.bin")}
+program_sharedseg :: proc "contextless" () -> []u8 {return #load("../../build/programs/sharedseg.bin")}
 
-// The three that open files by name, in a namespace of their own.
-program_namer :: proc "contextless" () -> []u8 {return blob(&vectra_user_namer, &vectra_user_namer_end)}
-program_reader :: proc "contextless" () -> []u8 {return blob(&vectra_user_reader, &vectra_user_reader_end)}
-program_binder :: proc "contextless" () -> []u8 {return blob(&vectra_user_binder, &vectra_user_binder_end)}
+// The ones that start, are started, become another program, or serve.
+program_parent :: proc "contextless" () -> []u8 {return #load("../../build/programs/parent.bin")}
+program_child :: proc "contextless" () -> []u8 {return #load("../../build/programs/child.bin")}
+program_poster :: proc "contextless" () -> []u8 {return #load("../../build/programs/poster.bin")}
+program_execer :: proc "contextless" () -> []u8 {return #load("../../build/programs/execer.bin")}
+program_niner :: proc "contextless" () -> []u8 {return #load("../../build/programs/niner.bin")}
 
-// The one that asks for memory rather than for bytes.
-program_mapper :: proc "contextless" () -> []u8 {return blob(&vectra_user_mapper, &vectra_user_mapper_end)}
+// The ones that post a note, catch one, or take the default.
+program_noter :: proc "contextless" () -> []u8 {return #load("../../build/programs/noter.bin")}
+program_catcher :: proc "contextless" () -> []u8 {return #load("../../build/programs/catcher.bin")}
+program_dfltnote :: proc "contextless" () -> []u8 {return #load("../../build/programs/dfltnote.bin")}
 
-// And the one that asks for memory nobody serves. A run of anonymous pages,
-// written at both ends, and forked to see whose copy is whose.
-program_anon :: proc "contextless" () -> []u8 {return blob(&vectra_user_anon, &vectra_user_anon_end)}
-
-// And the one that reaches hardware: pixels through /dev/fb, at an offset
-// it chose with `seek`.
-program_painter :: proc "contextless" () -> []u8 {return blob(&vectra_user_painter, &vectra_user_painter_end)}
-
-// And the two that catch notes: one survives two of them, one looks and
-// takes the default anyway.
-program_catcher :: proc "contextless" () -> []u8 {return blob(&vectra_user_catcher, &vectra_user_catcher_end)}
-program_dfltnote :: proc "contextless" () -> []u8 {return blob(&vectra_user_dfltnote, &vectra_user_dfltnote_end)}
-
-// And the two for the seam's other half: one replaces itself, one forks a
-// child no parent will wait for.
-program_execer :: proc "contextless" () -> []u8 {return blob(&vectra_user_execer, &vectra_user_execer_end)}
-program_nowaiter :: proc "contextless" () -> []u8 {return blob(&vectra_user_nowaiter, &vectra_user_nowaiter_end)}
-
-// And the one that moves a large buffer in one call: the bulk read and write
-// path, over /dev/fb.
-program_bulkio :: proc "contextless" () -> []u8 {return blob(&vectra_user_bulkio, &vectra_user_bulkio_end)}
-
-// And the four that stand alone -- the blobs `/bin` publishes as files.
-// Two reproduce, one publishes a service, and one *answers* one. See
-// `image.odin`.
-program_parent :: proc "contextless" () -> []u8 {return blob(&vectra_user_parent, &vectra_user_parent_end)}
-program_child :: proc "contextless" () -> []u8 {return blob(&vectra_user_child, &vectra_user_child_end)}
-program_poster :: proc "contextless" () -> []u8 {return blob(&vectra_user_poster, &vectra_user_poster_end)}
-program_niner :: proc "contextless" () -> []u8 {return blob(&vectra_user_niner, &vectra_user_niner_end)}
-program_noter :: proc "contextless" () -> []u8 {return blob(&vectra_user_noter, &vectra_user_noter_end)}
-
-// And the four that reproduce *without* a file: two processes return from
-// each one's rfork, and the cells say what the copies and shares did.
-program_forker :: proc "contextless" () -> []u8 {return blob(&vectra_user_forker, &vectra_user_forker_end)}
-program_grouper :: proc "contextless" () -> []u8 {return blob(&vectra_user_grouper, &vectra_user_grouper_end)}
-program_memfork :: proc "contextless" () -> []u8 {return blob(&vectra_user_memfork, &vectra_user_memfork_end)}
-// And the one that shares a run and then resizes it. A grow the sharer has to
-// see, and a shrink the sharer has to feel.
-program_sharer :: proc "contextless" () -> []u8 {return blob(&vectra_user_sharer, &vectra_user_sharer_end)}
-// And the one that asks for the shared class. A fork without RFMEM still
-// shares its page, beside a private one it does not, and an exec keeps the
-// shared page and drops the private one.
-program_sharedseg :: proc "contextless" () -> []u8 {return blob(&vectra_user_sharedseg, &vectra_user_sharedseg_end)}
-program_fdforker :: proc "contextless" () -> []u8 {return blob(&vectra_user_fdforker, &vectra_user_fdforker_end)}
-program_refuser :: proc "contextless" () -> []u8 {return blob(&vectra_user_refuser, &vectra_user_refuser_end)}
-
-/*
-The programs, in `programs_amd64.S`, assembled by clang and linked into the
-kernel.
-
-`parent` and `child` are the two with `.ascii` bytes after their code. Their
-strings ride in their own text, reached relative to the instruction pointer,
-because nothing stages their data pages: a file has no side channel. The text
-page is mapped readable, so a string in it is a buffer a system call may
-copy in like any other.
-
-A file of assembly rather than a template, for the reason the interrupt
-stubs are. The programs are bytes under global symbols the `foreign` block
-above names, with `.ascii` strings and numeric labels between them. A
-template's labels are jump targets that never leave it. The file carries the
-architecture's suffix, because these bytes are amd64's and a port brings its
-own.
-
-The first five end in `ud2`, which was the only way out of ring 3 the milestone
-before this one had. A program could not ask to stop, so it did something the
-CPU refuses. `ud2` is the one instruction whose whole purpose is to be refused.
-Four of the five never reach it, because the instruction before it is the fault
-the test is about.
-
-`hello`, `probe` and `shadow` end with `SYS_EXIT` instead, and their `ud2` is
-unreachable padding rather than a plan. Each keeps the data page in `rbx` and
-the second argument in `rbp`, because those two survive a call and the argument
-registers do not.
-
-`shadow` waits for the kernel to publish an address into its data page before
-it asks for anything. That handshake is the same one `spin` uses in the other
-direction. It exists because the kernel has to map that address after the
-program is already running. The wait is bounded, and a program that runs out
-exits with a status that says so.
-
-`anon` is the one that reaches memory no file serves. It asks for half a
-megabyte and reads the first word before it writes anything. Then it stores a
-pattern at both ends of the run. Then it asks again, grows that second run by
-four pages, writes the last word of the tail, and gives two pages back.
-
-It asks for one page more and detaches it whole. Then it asks to detach its
-own text and an address nothing covers. Then it asks twice more, with
-arithmetic the kernel must refuse. Then it forks.
-
-The child asks for a run of its own and writes into it. Then it checks that the
-run it *inherited* still reads as its parent left it. That is the claim that a
-child's bump starts where its parent's stopped. Only then does it write over
-the inherited copy and exit with `ANON_CHILD_STATUS`. The parent waits, then
-reads its own first word. That is the fork rule in one word.
-
-`.balign 16` between them is for readability in a disassembly rather than for
-correctness. Unlike the interrupt stubs, nothing indexes these by multiplying.
-*/
+// The ones that fork, by Plan 9's flag word.
+program_forker :: proc "contextless" () -> []u8 {return #load("../../build/programs/forker.bin")}
+program_memfork :: proc "contextless" () -> []u8 {return #load("../../build/programs/memfork.bin")}
+program_fdforker :: proc "contextless" () -> []u8 {return #load("../../build/programs/fdforker.bin")}
+program_refuser :: proc "contextless" () -> []u8 {return #load("../../build/programs/refuser.bin")}
+program_grouper :: proc "contextless" () -> []u8 {return #load("../../build/programs/grouper.bin")}
+program_nowaiter :: proc "contextless" () -> []u8 {return #load("../../build/programs/nowaiter.bin")}

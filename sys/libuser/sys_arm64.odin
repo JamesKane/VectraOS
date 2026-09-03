@@ -2,7 +2,7 @@
 package libuser
 
 /*
-The door, five widths of it, and the instruction written as its four bytes.
+The door, six widths of it, and the instruction written as its four bytes.
 
 `svc #0` is `0xD4000001`. The checker behind `asm` models the mnemonic as
 one nothing returns from. That is the truth for a kernel and not for a
@@ -44,5 +44,11 @@ raw4 :: proc "contextless" (nr, a0, a1, a2, a3: u64) -> i64 {
 @(private)
 raw5 :: proc "contextless" (nr, a0, a1, a2, a3, a4: u64) -> i64 {
 	r, _, _, _, _, _ := asm(nr, a0, a1, a2, a3, a4: u64) -> (r: i64, n: u64, x1: u64, x2: u64, x3: u64, x4: u64) [nr -> n = %x8, a0 -> r = %x0, a1 -> x1 = %x1, a2 -> x2 = %x2, a3 -> x3 = %x3, a4 -> x4 = %x4, #clobber memory, #volatile] { #byte 0x01, 0x00, 0x00, 0xD4 }(nr, a0, a1, a2, a3, a4)
+	return r
+}
+
+@(private)
+raw6 :: proc "contextless" (nr, a0, a1, a2, a3, a4, a5: u64) -> i64 {
+	r, _, _, _, _, _, _ := asm(nr, a0, a1, a2, a3, a4, a5: u64) -> (r: i64, n: u64, x1: u64, x2: u64, x3: u64, x4: u64, x5: u64) [nr -> n = %x8, a0 -> r = %x0, a1 -> x1 = %x1, a2 -> x2 = %x2, a3 -> x3 = %x3, a4 -> x4 = %x4, a5 -> x5 = %x5, #clobber memory, #volatile] { #byte 0x01, 0x00, 0x00, 0xD4 }(nr, a0, a1, a2, a3, a4, a5)
 	return r
 }

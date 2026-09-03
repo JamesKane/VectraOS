@@ -8,6 +8,7 @@ Run it with:
 Targets:
     kernel   Compile and link kernel/ into build/vectra.elf   (default)
     user     Compile the ring 3 programs into build/user
+    programs Compile the ring 3 test programs into build/programs
     check    Type-check the kernel and the programs, emit nothing
     esp      Stage a bootable EFI system partition in build/esp
     run      esp, then boot it under QEMU
@@ -42,6 +43,7 @@ KERNEL_ELF :: "build/vectra.elf"
 KERNEL_OBJ :: "build/vectra.o"
 
 USER_DIR :: "build/user"
+PROGRAMS_DIR :: "build/programs"
 
 /*
 The ring 3 programs this driver builds before the kernel.
@@ -65,6 +67,31 @@ user_programs := [?]User_Program {
 	{name = "intuition", path = "servers/intuition"},
 	{name = "terminal", path = "apps/terminal"},
 }
+
+/*
+The ring 3 test programs `kernel/user/verify.odin` runs, one per name.
+
+`kernel/user/programs` is one package, compiled once per name with
+`-define:PROGRAM=<name>`, so the compiler emits only the program named.
+Each links at the address the kernel's loader copies a program to, and the
+one segment that comes out is kept as a flat page-sized blob the kernel
+embeds with `#load`. That is what lets one suite serve three architectures.
+*/
+test_programs := [?]string{
+	"spin", "poke", "peek", "priv", "jump",
+	"hello", "probe", "shadow",
+	"namer", "reader", "binder", "painter", "bulkio",
+	"mapper", "anon", "sharer", "sharedseg",
+	"parent", "child", "poster", "execer", "niner",
+	"noter", "catcher", "dfltnote",
+	"forker", "memfork", "fdforker", "refuser", "grouper", "nowaiter",
+}
+
+// The address the loader copies a program to, and the most it copies. The
+// same numbers as `kernel/user/user.odin`'s TEXT_VA and the page, restated
+// here because this file checks them before the kernel ever sees a blob.
+PROGRAM_TEXT_VA :: u64(0x0040_0000)
+PROGRAM_MAX :: 4096
 
 Arch :: enum {
 	amd64,
@@ -92,8 +119,8 @@ Arch_Config :: struct {
 
 /*
 The assembly the kernel links beside its own object, per architecture. The
-interrupt stubs, the syscall entry, the GDT reload, the FPU hold the
-scheduler's self-test spins in, and the ring 3 program blobs.
+interrupt stubs, the syscall entry, the GDT reload, and the FPU hold the
+scheduler's self-test spins in.
 
 **These are files rather than `asm` blocks because a block cannot define a
 symbol.** Odin's inline assembly is a template since `dev-2026-09`, checked
@@ -114,24 +141,20 @@ asm_amd64 := [?]string{
 	"kernel/arch/amd64/gdt.S",
 	"kernel/arch/amd64/fpu_hold.S",
 	"kernel/arch/amd64/ap.S",
-	"kernel/user/programs_amd64.S",
 }
 
-// The vector table and its tail, the AP stack switch, the vector-register
-// hold, and the program blobs -- which on this architecture are placeholders
-// until the programs are written again. See `docs/PORTS.md`.
+// The vector table and its tail, the AP stack switch, and the
+// vector-register hold. See `docs/PORTS.md`.
 asm_arm64 := [?]string{
 	"kernel/arch/arm64/vectors.S",
 	"kernel/arch/arm64/ap.S",
 	"kernel/arch/arm64/fpu_hold.S",
-	"kernel/user/programs_arm64.S",
 }
 
 asm_riscv64 := [?]string{
 	"kernel/arch/riscv64/vectors.S",
 	"kernel/arch/riscv64/ap.S",
 	"kernel/arch/riscv64/fpu_hold.S",
-	"kernel/user/programs_riscv64.S",
 }
 
 // Machine lines live at package scope: a slice of a compound literal built
@@ -254,16 +277,17 @@ main :: proc() {
 	opts.passthrough = rest[:]
 
 	switch opts.target {
-	case "kernel": build_kernel(opts)
-	case "user":   build_user(opts)
-	case "check":  check(opts)
+	case "kernel":   build_kernel(opts)
+	case "user":     build_user(opts)
+	case "programs": build_programs(opts)
+	case "check":    check(opts)
 	case "esp":    stage_esp(opts)
 	case "run":    stage_esp(opts); run_qemu(opts, debug = false)
 	case "debug":  stage_esp(opts); run_qemu(opts, debug = true)
 	case "clean":  clean()
 	case "lint":   lint(opts)
 	case:
-		die("unknown target %q (want kernel, user, check, esp, run, debug, clean, lint)", opts.target)
+		die("unknown target %q (want kernel, user, programs, check, esp, run, debug, clean, lint)", opts.target)
 	}
 }
 
@@ -274,9 +298,11 @@ build_kernel :: proc(opts: Options) {
 	ensure_dir(BUILD_DIR)
 
 	// The programs first, because the kernel's own compile `#load`s their
-	// images into `/bin`. A kernel built after them is a kernel that serves
-	// what was just built, never something stale.
+	// images into `/bin` and the test blobs into its self-test. A kernel
+	// built after them is a kernel that runs what was just built, never
+	// something stale.
 	build_user(opts)
+	build_programs(opts)
 
 	step("compiling kernel for %s", cfg.odin_target)
 
@@ -408,6 +434,134 @@ build_user :: proc(opts: Options) {
 		})
 		elf_to_image(elf, img)
 	}
+}
+
+/*
+build_programs compiles the ring 3 test programs, one blob each.
+
+The same target and vets as the ring 3 programs, with the one program
+selected by `-define`. The link is the test layout, one segment at the
+loader's address, and `elf_to_blob` keeps that segment's bytes and refuses
+anything else: a second segment is a global the program must not have, and
+a segment past a page is a program the loader will not copy.
+*/
+build_programs :: proc(opts: Options) {
+	cfg := arch_config(opts.arch)
+	ensure_dir(BUILD_DIR)
+	ensure_dir(PROGRAMS_DIR)
+
+	for name in test_programs {
+		step("compiling test program %s", name)
+		obj := fmt.tprintf("%s/%s.o", PROGRAMS_DIR, name)
+		elf := fmt.tprintf("%s/%s.elf", PROGRAMS_DIR, name)
+		bin := fmt.tprintf("%s/%s.bin", PROGRAMS_DIR, name)
+
+		run({
+			"odin", "build", "kernel/user/programs",
+			fmt.tprintf("-out:%s", obj),
+			"-build-mode:obj",
+			fmt.tprintf("-target:%s", cfg.odin_target),
+			fmt.tprintf("-define:PROGRAM=%s", name),
+			"-collection:vsys=sys",
+			"-no-crt",
+			"-no-entry-point",
+			"-default-to-nil-allocator",
+			"-disable-red-zone",
+			"-no-thread-local",
+			"-vet",
+			"-strict-style",
+			"-disallow-do",
+			"-o:speed",
+			"-no-bounds-check",
+		})
+		run({
+			"ld.lld", obj,
+			"-o", elf,
+			"-m", cfg.ld_emulation,
+			"-T", "kernel/user/programs/link_program.ld",
+			"-nostdlib",
+			"-static",
+			"-z", "norelro",
+		})
+		elf_to_blob(elf, bin)
+	}
+}
+
+/*
+elf_to_blob keeps a test program's one segment as the bytes the loader
+copies.
+
+One `PT_LOAD`, readable and executable, not writable, with no bytes the
+file does not hold, at the loader's address and inside its page. A program
+that asks for more is refused here, with the reason, rather than loaded
+short or not at all.
+*/
+elf_to_blob :: proc(elf_path: string, out_path: string) {
+	data, err := os.read_entire_file_from_path(elf_path, context.allocator)
+	if err != nil {
+		die("cannot read %s", elf_path)
+	}
+	defer delete(data)
+
+	u16le :: proc(b: []u8, at: int) -> u64 {
+		return u64(b[at]) | u64(b[at + 1]) << 8
+	}
+	u32le :: proc(b: []u8, at: int) -> u64 {
+		v := u64(0)
+		for i in 0 ..< 4 {
+			v |= u64(b[at + i]) << (8 * u64(i))
+		}
+		return v
+	}
+	u64le :: proc(b: []u8, at: int) -> u64 {
+		v := u64(0)
+		for i in 0 ..< 8 {
+			v |= u64(b[at + i]) << (8 * u64(i))
+		}
+		return v
+	}
+
+	if len(data) < 64 || data[0] != 0x7F || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
+		die("%s is not an ELF file", elf_path)
+	}
+	phoff := int(u64le(data, 32))
+	phentsize := int(u16le(data, 54))
+	phnum := int(u16le(data, 56))
+
+	found := 0
+	offset, size := 0, 0
+	for i in 0 ..< phnum {
+		at := phoff + i * phentsize
+		if u32(u32le(data, at)) != ELF_PT_LOAD || u64le(data, at + 40) == 0 {
+			continue
+		}
+		found += 1
+		flags := u32(u32le(data, at + 4))
+		vaddr := u64le(data, at + 16)
+		filesz := u64le(data, at + 32)
+		memsz := u64le(data, at + 40)
+		if flags & ELF_PF_W != 0 || memsz != filesz {
+			die("%s: a writable segment, which is a global a test program may not have", elf_path)
+		}
+		if vaddr != PROGRAM_TEXT_VA {
+			die("%s: segment at %x, and the loader copies to %x", elf_path, vaddr, PROGRAM_TEXT_VA)
+		}
+		if memsz > PROGRAM_MAX {
+			die("%s: %d bytes, and the loader copies one page of %d", elf_path, memsz, PROGRAM_MAX)
+		}
+		offset = int(u64le(data, at + 8))
+		size = int(filesz)
+	}
+	if found != 1 {
+		die("%s: %d loadable segments (want exactly 1)", elf_path, found)
+	}
+	if offset + size > len(data) {
+		die("%s: segment payload runs past the file", elf_path)
+	}
+	if werr := os.write_entire_file(out_path, data[offset:][:size]); werr != nil {
+		die("cannot write %s", out_path)
+	}
+	step("%s is %d bytes", out_path, size)
 }
 
 // The VECTRA02 constants, written here and in `kernel/user/image.odin`. The
@@ -676,6 +830,9 @@ three is a tree where nothing generic holds machine code.
 */
 check :: proc(opts: Options) {
 	cfg := arch_config(opts.arch)
+	// The kernel `#load`s the test blobs, so they have to exist to check
+	// it, and building them is also the check of their package.
+	build_programs(opts)
 	step("checking kernel for %s", cfg.odin_target)
 	run({
 		"odin", "check", "kernel",

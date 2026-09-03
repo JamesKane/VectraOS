@@ -332,11 +332,24 @@ trap_dispatch :: proc "c" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no_bo
 			frame.vector = cause
 		case:
 			trap.name, trap.kind = cause_info(cause)
+			// An illegal instruction whose opcode is SYSTEM is a program
+			// touching a control register it may not, which every other
+			// architecture reports as a privilege violation and so does this.
+			if cause == CAUSE_ILLEGAL && frame.stval & 0x7F == 0x73 {
+				trap.name, trap.kind = "privileged instruction", .Protection_Fault
+			}
 			trap.vector = cause
 			trap.error_code = frame.stval
 			trap.has_error = trap.kind == .Page_Fault || trap.kind == .Protection_Fault || trap.kind == .Alignment_Fault
 			trap.fault_address = uintptr(frame.stval)
 			frame.vector = cause
+			// Whether the page was there is not in the cause, and the tables
+			// that say are the ones loaded now, not the ones a reader of the
+			// record has later. So the walk is made here, and its answer rides
+			// in the top bit of the code, above any address. See `fault_bits`.
+			if trap.kind == .Page_Fault && mapped(uintptr(frame.stval)) {
+				trap.error_code |= FAULT_PRESENT
+			}
 		}
 	}
 
@@ -430,6 +443,6 @@ describe_error :: proc "contextless" (s: ^libodin.Sink, t: ^Trap) {
 	case: libodin.put_str(s, "access")
 	}
 	libodin.put_str(s, " at ")
-	libodin.put_hex(s, t.error_code, 16)
+	libodin.put_hex(s, t.error_code &~ FAULT_PRESENT, 16)
 	libodin.put_str(s, t.user ? ", user" : ", supervisor")
 }

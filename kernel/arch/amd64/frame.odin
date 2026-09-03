@@ -79,3 +79,38 @@ frame_sanitise_user :: proc "contextless" (f: ^Trap_Frame) {
 	f.ss = u64(USER_DATA_RING3)
 	f.rflags = f.rflags & 0x0000_0000_0000_0CD5 | 0x202
 }
+
+/*
+What the CPU said about a fault, in words the self-test can compare across
+architectures. amd64's page fault error code carries all four bits; a
+protection fault carries a selector, which is none of them.
+*/
+Fault_Bit :: enum {
+	Present, // The page was mapped, and refused the access
+	Write,
+	User,
+	Fetch,
+}
+
+Fault_Bits :: bit_set[Fault_Bit]
+
+fault_bits :: proc "contextless" (kind: Trap_Kind, vector: u64, code: u64, user: bool) -> Fault_Bits {
+	_, _ = vector, user
+	bits: Fault_Bits
+	if kind != .Page_Fault {
+		return bits
+	}
+	if code & 1 != 0 {
+		bits += {.Present}
+	}
+	if code & 2 != 0 {
+		bits += {.Write}
+	}
+	if code & 4 != 0 {
+		bits += {.User}
+	}
+	if code & 16 != 0 {
+		bits += {.Fetch}
+	}
+	return bits
+}

@@ -104,6 +104,9 @@ set_syscall_result :: riscv64.set_syscall_result
 syscall_result :: riscv64.syscall_result
 frame_call_handler :: riscv64.frame_call_handler
 frame_sanitise_user :: riscv64.frame_sanitise_user
+Fault_Bit :: riscv64.Fault_Bit
+Fault_Bits :: riscv64.Fault_Bits
+fault_bits :: riscv64.fault_bits
 
 // -- Ring 3 ------------------------------------------------------------------
 

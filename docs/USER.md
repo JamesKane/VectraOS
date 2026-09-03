@@ -129,8 +129,10 @@ default for a privilege level nothing claimed.
 ## Five programs, baked into the image
 
 There is no loader and no file to load from, so the first thing ever to run in
-ring 3 comes from the assembler. `kernel/user/program.odin` emits five blobs
-the same way `kernel/arch/amd64/idt.odin` emits its 256 interrupt stubs.
+ring 3 comes from the kernel's own image. `kernel/user/program.odin` embeds
+the blobs `build.odin` made out of `kernel/user/programs`, one Odin package
+compiled once per program for whichever architecture the kernel is built
+for. They were assembly until the ports made that three suites.
 
 **The copy into a frame is not an accident of having no filesystem.** No `User`
 bit sits anywhere on the path to the kernel image, so a program could not

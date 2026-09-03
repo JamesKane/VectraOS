@@ -132,8 +132,8 @@ thread_user_clone duplicates a running thread's state onto a new stack.
 
 The frame is the caller's own, copied whole, and the vector image is the one
 the tail parked below it. The copy is the child of a fork: same registers,
-same program counter, and whatever answer the caller writes into the frame
-afterwards is what the child wakes up with.
+same program counter, and zero in the answer register, which is how the
+child learns which of the two it is.
 */
 thread_user_clone :: proc "contextless" (stack: []u8, src: ^Trap_Frame) -> (resume: Resume, ok: bool) {
 	if src == nil {
@@ -144,6 +144,7 @@ thread_user_clone :: proc "contextless" (stack: []u8, src: ^Trap_Frame) -> (resu
 		return {}, false
 	}
 	frame^ = src^
+	frame.x[0] = 0
 	from := ([^]u8)(syscall_frame_fpu(src))
 	to := ([^]u8)(fpu)
 	for i in 0 ..< FPU_AREA_SIZE {

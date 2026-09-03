@@ -327,8 +327,15 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		result = sys_noted(frame, a0)
 	case SYS_EXEC:
 		// The frame crosses because exec rewrites it in place: on success
-		// the door returns into a new program. See `exec.odin`.
+		// the door returns into a new program, and the frame is that
+		// program's first state, argument registers included. An answer
+		// written into it would land on the first argument on the two
+		// architectures where the answer's register is also an argument's,
+		// so a success writes nothing. See `exec.odin`.
 		result = sys_exec(frame, uintptr(a0), int(a1))
+		if result == 0 {
+			return
+		}
 	case SYS_SEGATTACH:
 		result = sys_segattach(int(a0))
 	case SYS_SEGALLOC:

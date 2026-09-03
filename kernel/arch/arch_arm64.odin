@@ -104,6 +104,9 @@ set_syscall_result :: arm64.set_syscall_result
 syscall_result :: arm64.syscall_result
 frame_call_handler :: arm64.frame_call_handler
 frame_sanitise_user :: arm64.frame_sanitise_user
+Fault_Bit :: arm64.Fault_Bit
+Fault_Bits :: arm64.Fault_Bits
+fault_bits :: arm64.fault_bits
 
 // -- Ring 3 ------------------------------------------------------------------
 

@@ -46,3 +46,41 @@ frame_call_handler :: proc "contextless" (f: ^Trap_Frame, handler, sp, arg0, arg
 frame_sanitise_user :: proc "contextless" (f: ^Trap_Frame) {
 	f.spsr = SPSR_EL0
 }
+
+/*
+What the CPU said about a fault, in words the self-test can compare across
+architectures. The fault status code says whether the page was there: a
+permission or access-flag fault is on a page that is, a translation fault
+on one that is not. The write bit is an abort's WnR, and the fetch is the
+exception class itself.
+*/
+Fault_Bit :: enum {
+	Present,
+	Write,
+	User,
+	Fetch,
+}
+
+Fault_Bits :: bit_set[Fault_Bit]
+
+fault_bits :: proc "contextless" (kind: Trap_Kind, vector: u64, code: u64, user: bool) -> Fault_Bits {
+	bits: Fault_Bits
+	if kind != .Page_Fault {
+		return bits
+	}
+	if (code & 0x3F) >> 2 >= 2 {
+		bits += {.Present}
+	}
+	if user {
+		bits += {.User}
+	}
+	switch vector {
+	case EC_IABORT, EC_IABORT_LOWER:
+		bits += {.Fetch}
+	case EC_DABORT, EC_DABORT_LOWER:
+		if code & (1 << 6) != 0 {
+			bits += {.Write}
+		}
+	}
+	return bits
+}

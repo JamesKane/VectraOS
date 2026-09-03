@@ -28,7 +28,16 @@ Tally :: struct {
 	checks:        int,
 	failures:      int,
 	first_failure: string,
+
+	// The failures after the first, as many as fit. The first is the line;
+	// these are the trace beneath it, for the run where the consequences
+	// are not obvious from the cause. Names only, and never a substitute
+	// for reading the first one.
+	later:         [LATER_MAX]string,
+	later_count:   int,
 }
+
+LATER_MAX :: 40
 
 /*
 tally records one check and reports what it was told.
@@ -43,6 +52,9 @@ tally :: proc "contextless" (t: ^Tally, ok: bool, what: string) -> bool {
 		t.failures += 1
 		if t.first_failure == "" {
 			t.first_failure = what
+		} else if t.later_count < LATER_MAX {
+			t.later[t.later_count] = what
+			t.later_count += 1
 		}
 	}
 	return ok

@@ -346,7 +346,7 @@ ways whose error messages do not point back here.
 | Segment bounds come from `link_amd64.ld`, not from Odin | `__text_start` … `__data_end` are declared in a bare `foreign { }` block in `kernel/mem/vmm.odin`. They are defined *inside* their output sections in the linker script on purpose: written between sections they become orphans, and ld is free to attach an orphan to whichever segment it likes. |
 | `intrinsics` has `mem_zero` and `mem_copy`, but no `mem_set` | There is no fill-with-a-byte intrinsic. The PMM's bitmap fill is a plain loop. `memset`/`memcpy`/`memmove` *are* provided by stock `base:runtime`, which is why the link has no undefined symbols. |
 | Inline `asm` is a template, checked against encoding tables | Since Odin `dev-2026-09` an `asm` block is `asm(params) -> (results) [bindings] { instructions }`: Intel operand order, `%reg` for a physical register, `[base + disp]:T` for memory, labels local to the block. The compiler type-checks every instruction, and refuses a block that reads an input no instruction names or leaves an output unwritten. Three consequences are written where they bite. `in`, `out`, `hlt` and `syscall` are `#byte` sequences, because the assembler has no operand form for the first two and models the last two as never falling through. An input a byte sequence consumes is tied to a dropped output, which is the one use that costs no instruction. And anything that defines a symbol, needs its own label's address, or is entered by the CPU is a `.S` file, not a block. |
-| The stubs, the FPU hold and the program blobs are `.S` files clang assembles | `arch/amd64/isr.S`, `syscall_entry.S`, `gdt.S`, `fpu_hold.S`, `ap.S` and `user/programs_amd64.S` keep the AT&T text the blocks had, with a single `$` for an immediate now that no template substitutes operands. `build.odin` assembles each with `clang -target x86_64-unknown-elf -c` and links the objects beside `vectra.o`. The list is a row of the per-arch table. A `.globl` there is a `foreign` declaration in Odin, unchanged. A template's label reaches LLVM without its colon in this compiler, so a loop in a template assembles to nothing: that is why the FPU hold is a file. |
+| The stubs and the FPU hold are `.S` files clang assembles | `arch/amd64/isr.S`, `syscall_entry.S`, `gdt.S`, `fpu_hold.S` and `ap.S` keep the AT&T text the blocks had, with a single `$` for an immediate now that no template substitutes operands. `build.odin` assembles each with `clang -target x86_64-unknown-elf -c` and links the objects beside `vectra.o`. The list is a row of the per-arch table. A `.globl` there is a `foreign` declaration in Odin, unchanged. A template's label reaches LLVM without its colon in this compiler, so a loop in a template assembles to nothing: that is why the FPU hold is a file. |
 | The error-code vector list is written twice | Once as an assembler `.if` in `isr.S` and once as `vector_has_error_code` in `idt.odin`. They cannot share a definition — one is consumed at build time, the other at run time — and if they disagree every field in `Trap_Frame` reads as the one next door. `idt.odin` says so beside the Odin half. |
 | An unoptimised build spills every temporary | Debug builds keep nothing in a register across an instruction boundary. This is not a curiosity: a test written to verify that FXSAVE preserves XMM passed with the FXSAVE removed, because the values it was checking were on the stack the whole time. Anything that must observe *register* state has to pin it with inline asm and hold it there — see `fpu_hold` in `kernel/sched/verify.odin`. |
 | A missing EOI stops the timer silently | The local APIC delivers nothing further at or below that priority. There is no error, no fault, and no bit anywhere saying so — it looks exactly like a timer that was never armed. Any loop waiting on the tick count needs a liveness bound, or a one-line bug hangs the boot with the last line printed being the timer coming up successfully. |
@@ -461,17 +461,17 @@ late. It was not seen at `--smp=1` this session and was not chased.
 Both ports boot `kmain` whole, and `docs/PORTS.md` section 4 has the table.
 What is open, in order:
 
-1. **The thirty-one ring 3 test programs** in `kernel/user/programs_amd64.S`
-   have no arm64 or riscv64 text. Each port's `programs_<arch>.S` carries
-   every symbol as one trapping instruction, so `verify_user` fails by the
-   hundred on the ports and says so. The six Odin programs run as built.
-2. **An arm64 flake, two shapes.** Over ten headless boots at `--smp=4`, one
-   stopped with `[ FAIL ] a reader was queued behind no writer` inside
-   `verify_vfs_threads`, and one hung in the user phase. Eight reached
-   `boot complete` with four cores online. The read/write lock's rule is one
-   no interleaving under `wait_lock` should reach, which points at the port's
-   switch or at a stack. `docs/TESTING.md` and the boot-loop notes say how to
-   hunt it.
+1. **The ring 3 test programs are Odin now**, in `kernel/user/programs`,
+   one build per program per architecture, and every port passes all 874
+   of the user suite's checks with them. A check that fails on one port
+   and not another is a port bug with a name, and `docs/PORTS.md` section
+   4 lists the four that were.
+2. **The read/write lock race is closed.** `[ FAIL ] a reader was queued
+   behind no writer` was `sync.wunlock` letting go of the wait lock between
+   readers, and the ports hit it one boot in eight where amd64 never had.
+   `docs/SYNC.md` records it. The one arm64 hang in the user phase seen
+   before the fix has not been seen since, over seventeen boots across the
+   two ports, and is presumed the same bug until it recurs.
 3. **The riscv64 clock rate** comes from the device tree, which the
    firmware publishes only with ACPI off. `build.odin` says so on the QEMU
    line, and a machine that offers only ACPI needs the RHCT read instead.
@@ -653,7 +653,9 @@ kernel/
                         `#b` at /bin
     spawn.odin          What a child inherits, the wait that parks by pid, and
                         the reaper that collects a detached orphan
-    program.odin        The programs the assembler bakes into the image, and
+    programs/           The ring 3 test programs, one Odin package built once
+                        per program into a page-sized blob the kernel embeds
+    program.odin        The programs' marks, cells and blobs, and
                         the marks they write to say they ran
     verify.odin         The largest self-test in the tree, and the one the boot
                         log's untagged lines come from. Every claim in section

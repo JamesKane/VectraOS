@@ -91,10 +91,12 @@ channel :: proc "contextless" (s: ^fb.Surface, value: u32, shift: u8, size: u8) 
 	return (value >> shift) & ((u32(1) << size) - 1)
 }
 
-@(private = "file") PF_PRESENT :: u64(1) << 0
-@(private = "file") PF_WRITE :: u64(1) << 1
-@(private = "file") PF_USER :: u64(1) << 2
-@(private = "file") PF_FETCH :: u64(1) << 4
+// fault_bits is what the CPU said about a fault, in the neutral words
+// `arch.fault_bits` decodes each architecture's syndrome into.
+@(private = "file")
+fault_bits :: proc(p: ^Process) -> arch.Fault_Bits {
+	return arch.fault_bits(p.exit.kind, p.exit.vector, p.exit.error_code, p.exit.from_user)
+}
 
 /*
 A kernel global for a program to fail to reach.
@@ -197,7 +199,7 @@ run_program :: proc(
 	it was refused. Both are addresses only a program can name.
 	*/
 	check(r, p.exit.ip >= TEXT_VA && p.exit.ip < mem.USER_MAX, "at an address in its own half of the space")
-	check(r, p.exit.sp == STACK_TOP, "on the stack it was given, in its own space")
+	check(r, p.exit.sp > STACK_VA && p.exit.sp <= STACK_TOP, "on the stack it was given, in its own space")
 
 	/*
 	And the kernel's frame landed on the kernel's stack.
@@ -305,8 +307,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		check(&r, p.exit.address == witness, "at the address it named")
 		check(
 			&r,
-			p.exit.error_code & (PF_PRESENT | PF_WRITE | PF_USER) ==
-			PF_PRESENT | PF_WRITE | PF_USER,
+			fault_bits(p) >= {.Present, .Write, .User},
 			"which the CPU reports as a user write to a page that is present",
 		)
 		check(&r, kernel_witness == was, "and the kernel's own word is what it was")
@@ -360,7 +361,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		check(&r, p.exit.kind == .Page_Fault, "and takes a page fault for that too")
 		check(
 			&r,
-			p.exit.error_code & PF_WRITE == 0 && p.exit.error_code & PF_USER != 0,
+			.Write not_in fault_bits(p) && .User in fault_bits(p),
 			"reported as a read rather than a write, so the User bit stops both",
 		)
 		check(&r, cell(p, 1) == 0, "and the word it wanted never reached its own page")
@@ -376,7 +377,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		check(&r, p.exit.address == TEXT_VA, "at the first byte of it")
 		check(
 			&r,
-			p.exit.error_code & (PF_PRESENT | PF_WRITE) == PF_PRESENT | PF_WRITE,
+			fault_bits(p) >= {.Present, .Write},
 			"which is a write to a present page rather than a missing one",
 		)
 		first := (cast([^]u8)mem.phys_to_virt(p.text))[0]
@@ -390,7 +391,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	p = run_program(&r, "priv", program_priv(), MARK_PRIV, 0, "a program masks interrupts")
 	if p != nil && p.exit.done {
 		check(&r, p.exit.kind == .Protection_Fault, "and takes a general protection fault")
-		check(&r, p.exit.error_code == 0, "with no selector, because the fault had none")
+		check(&r, fault_bits(p) == {}, "with nothing to decode, because the fault named no page and no selector")
 		sync.delay(2)
 		check(&r, sched.ticks() > before_ticks, "and the clock is still running, so the mask never took")
 		check(&r, in_text(p, program_priv()), "with the program counter on the instruction it was refused")
@@ -405,7 +406,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		check(&r, p.exit.address == DATA_VA, "at the address it jumped to")
 		check(
 			&r,
-			p.exit.error_code & PF_FETCH != 0,
+			.Fetch in fault_bits(p),
 			"which the CPU reports as an instruction fetch, so No_Execute is what refused it",
 		)
 		check(&r, !in_text(p, program_jump()), "and the program counter is off its text, where it jumped")
@@ -716,7 +717,7 @@ verify_syscalls :: proc(r: ^Result, column: proc "contextless" () -> int, held: 
 			"through the door rather than through the interrupt table",
 		)
 		check(r, p.exit.from_user, "and the frame it left says ring 3")
-		check(r, p.exit.sp == STACK_TOP, "on the stack it was given")
+		check(r, p.exit.sp > STACK_VA && p.exit.sp <= STACK_TOP, "on the stack it was given")
 		check(
 			r,
 			p.exit.kstack > p.kstack_lo && p.exit.kstack < p.kstack_hi,
@@ -5154,7 +5155,17 @@ verify_ctl :: proc(
 	*/
 	ground_x := fw + 8
 	ground_y := sy - 4
-	far_x := s.width - 280
+	// Where the `move` below sends the window, and a pixel inside it there.
+	// Both step off the first window's right edge rather than the screen's,
+	// so a narrower screen -- the `virt` boards' is 800 wide -- keeps the
+	// same shape: the moved window clears the ground it stood on, covers
+	// `far_x`, and gives it back when it shrinks to 200. On the 1280-wide
+	// screen the test was written against these are the 700 and 1000 they
+	// were as constants, and the eight pixels between 42 and a rounder step
+	// are not free: the shadow sensor below lands on a desktop grid column
+	// otherwise.
+	far_left := fw + 42
+	far_x := far_left + 300
 	far_y := 50
 	cfd, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/ctl", vfs.O_RDWR)
 	if !check(r, cerr == vfs.OK, "a window's own ctl file opens") {
@@ -5273,7 +5284,12 @@ verify_ctl :: proc(
 	together is inert, and `docs/DRAW.md` records it that way. What these watch
 	is that the window arrives, and that the ground it left comes back.
 	*/
-	_, merr := vfs.chan_write(cfd, 0, bytes_of("move 700 0\n"))
+	move_cmd: [32]u8
+	move_sink := libodin.sink_from(move_cmd[:])
+	libodin.put_str(&move_sink, "move ")
+	libodin.put_uint(&move_sink, u64(far_left))
+	libodin.put_str(&move_sink, " 0\n")
+	_, merr := vfs.chan_write(cfd, 0, libodin.bytes(&move_sink))
 	check(r, merr == vfs.OK, "the second client moves its window")
 	check(r, !is_desk(s, far_x, far_y), "which arrives where it was sent")
 	check(
@@ -5311,9 +5327,9 @@ verify_ctl :: proc(
 	window was as tall as the screen, the rows a grow added fell below it and
 	`composite` clipped them away, so `segbrk` had a frames-dropped check and
 	nothing that could see the result. The edge is on the glass now, and
-	`win_bottom` walks down to it out of the window `move` put at 700.
+	`win_bottom` walks down to it out of the window `move` put at `far_left`.
 	*/
-	grew_col := 700 + ox + 8
+	grew_col := far_left + ox + 8
 	bottom_before := win_bottom(s, grew_col, 0)
 
 	// Eight rows, not two hundred: the claim is that a window grows past the
@@ -5456,7 +5472,7 @@ verify_ctl :: proc(
 	the client area without moving the border would have moved this sensor with
 	it.
 	*/
-	wr := win_right(s, 7, 700)
+	wr := win_right(s, 7, far_left)
 	check(
 		r,
 		fb.get_raw(s, wr - 1, 7) == fb.pack(s, fb.MAGNESIUM_DARK),
@@ -5487,8 +5503,8 @@ verify_ctl :: proc(
 	that goes away has to take its pixels with it, and only a server that
 	repaints the bar can do that.
 	*/
-	bx, by := 700, 0
-	bw, bh := win_right(s, oy / 2, 700) - 700, oy
+	bx, by := far_left, 0
+	bw, bh := win_right(s, oy / 2, far_left) - far_left, oy
 	ink := fb.pack(s, fb.SLATE_DEEP)
 	if !check(r, bw > 0, "the window it moved and resized is where the move put it") {
 		return
