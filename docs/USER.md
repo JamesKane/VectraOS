@@ -1788,7 +1788,7 @@ and everything it holds stay until the machine stops.
   It gets the count of what landed, which every write interface already makes a
   caller handle. A page the process pins would still beat the copy for the
   largest buffers if it ever matters.
-- **`MAX_PROCESSES` is twelve, from a fixed table.** The same argument
+- **`MAX_PROCESSES` is thirty-two, from a fixed table**, and `docs/PROCS.md` is the plan to make it a pool. The same argument
   `mem.spaces` and `srv.MAX_SERVICES` make. This is also the first code in
   Vectra that anything untrusted reaches. A record a program can make the
   kernel allocate is a record a program can exhaust the machine through.

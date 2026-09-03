@@ -432,6 +432,14 @@ window is the shape that would make it fork. It also pays 4 MB per window at
 that moment, because `fork_segments` copies a run eagerly where Plan 9 copies
 on write.
 
+### The next plan: processes and threads
+
+`docs/PROCS.md`, written before its code. Two shells cost thirteen
+processes because a process cannot wait on two things and the serve loop
+forks one per parked request; the plan is Plan 9's answer in four steps --
+answer a request later, copy on write, `rendezvous` and its kin, and
+`libthread`.
+
 ### Standing gaps
 
 None are left. This section carried fifteen at its fullest, and each is now
