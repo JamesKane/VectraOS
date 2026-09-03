@@ -227,6 +227,11 @@ Cpu :: struct {
 	kicks: u64,
 	ipis:  u64,
 
+	// Shootdowns this core sent, and translations it dropped because another
+	// core asked. See `shootdown`.
+	shoots: u64,
+	shot:   u64,
+
 	// Threads that exited, and that wait for somebody in thread context to
 	// give their stacks back. A stack freed inside the timer interrupt would
 	// mean an allocation from an interrupt handler. It would also mean a free

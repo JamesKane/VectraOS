@@ -131,6 +131,8 @@ init :: proc() -> bool {
 
 	arch.set_interrupt_handler(arch.VECTOR_YIELD, on_yield)
 	arch.set_interrupt_handler(arch.VECTOR_WAKE, on_wake)
+	arch.set_interrupt_handler(arch.VECTOR_SHOOT, on_shootdown)
+	mem.set_shootdown(shootdown)
 	arch.set_interrupt_handler(arch.VECTOR_SPURIOUS, on_spurious)
 
 	// Last, because it publishes a working scheduler to `kernel:sync`: from
@@ -1084,6 +1086,115 @@ stats :: proc "contextless" () -> Stats {
 // -- The other cores ---------------------------------------------------------
 
 /*
+The one shootdown in flight, and who still has to answer it.
+
+One at a time, because the request is a single record every receiver reads.
+`busy` is the claim on it, taken by a sender and given back when every receiver
+answered. `pending` is how many have not. A receiver reads the range, drops the
+translations, and counts itself off. A sender that finds the record busy waits
+for the previous sender, with interrupts on. It can then answer a shootdown of
+its own while it waits.
+*/
+@(private = "file")
+Shoot :: struct {
+	virt:    uintptr,
+	pages:   int,
+	pending: u32,
+}
+
+@(private = "file")
+shoot: Shoot
+@(private = "file")
+shoot_busy: u32
+
+/*
+shootdown asks every other core that translates through `root` to drop its
+translations for the range, and waits until each has.
+
+Registered with `kernel/mem`, which calls it from `unmap_user` after the
+local flush. The cores that need telling are the ones whose current thread
+is in that space. A root that is the kernel's is every core, because the
+kernel half is in every space and its entries are global. The list is read
+without the scheduler lock, and that is safe in both directions. A core that
+enters the space after the list is read loads a fresh CR3, which carries no
+stale entry. A core that leaves after the list is read still answers, and
+drops nothing that mattered.
+
+**The caller may hold no spinlock and may not be a handler.** The receivers
+answer from an interrupt, and a receiver spinning for a lock this core holds
+would never take one. That is the same rule a sleep has, and it is checked
+the same way rather than remembered.
+*/
+@(private = "file")
+shootdown :: proc "contextless" (root: uintptr, virt: uintptr, pages: int) #no_bounds_check {
+	me := cpu()
+	kernel_root := mem.space_root(mem.kernel_address_space())
+
+	mask: u64
+	count := 0
+	for i in 0 ..< cpu_count {
+		c := &cpus[i]
+		if c == me || !intrinsics.volatile_load(&c.online) {
+			continue
+		}
+		there := kernel_root
+		if t := intrinsics.volatile_load(&c.current); t != nil && t.space != nil {
+			there = mem.space_root(t.space)
+		}
+		if root == kernel_root || there == root {
+			mask |= u64(1) << uint(i)
+			count += 1
+		}
+	}
+	if count == 0 {
+		return
+	}
+
+	sync.require_sleepable("a shootdown sent from inside a spinlock or a handler")
+
+	for {
+		if _, won := intrinsics.atomic_compare_exchange_strong(&shoot_busy, 0, 1); won {
+			break
+		}
+		arch.spin_hint()
+	}
+	shoot.virt = virt
+	shoot.pages = pages
+	intrinsics.atomic_store(&shoot.pending, u32(count))
+	for i in 0 ..< cpu_count {
+		if mask & (u64(1) << uint(i)) != 0 {
+			arch.ipi_send(cpus[i].lapic, u8(arch.VECTOR_SHOOT))
+		}
+	}
+	me.shoots += 1
+	for intrinsics.atomic_load(&shoot.pending) != 0 {
+		arch.spin_hint()
+	}
+	intrinsics.atomic_store(&shoot_busy, 0)
+}
+
+// on_shootdown is the request arriving. The translations go, and this core
+// counts itself off. No reschedule: the sender is waiting, and nothing about
+// this core's own thread changed.
+@(private = "file")
+on_shootdown :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	arch.timer_ack()
+	c := cpu()
+	intrinsics.volatile_store(&c.shot, c.shot + 1)
+	virt := shoot.virt
+	pages := shoot.pages
+	if pages <= 0 {
+		arch.flush_all()
+	} else {
+		for i in 0 ..< pages {
+			arch.flush_page(virt + uintptr(i) * uintptr(arch.PAGE_SIZE))
+		}
+	}
+	intrinsics.atomic_sub(&shoot.pending, 1)
+	return r
+}
+
+/*
 init_ap is `init` for a core that is not the first. It adopts the context the
 core arrived on as a thread, and gives the core an idle thread.
 
@@ -1194,6 +1305,8 @@ Cpu_Stats :: struct {
 	ready:       int,
 	kicks:       u64,
 	ipis:        u64,
+	shoots:      u64,
+	shot:        u64,
 }
 
 // cpu_stats reads one core's counters, for the self-test that watches the
@@ -1212,6 +1325,8 @@ cpu_stats :: proc "contextless" (id: int) -> Cpu_Stats #no_bounds_check {
 		ready       = ready_count(c),
 		kicks       = intrinsics.volatile_load(&c.kicks),
 		ipis        = intrinsics.volatile_load(&c.ipis),
+		shoots      = intrinsics.volatile_load(&c.shoots),
+		shot        = intrinsics.volatile_load(&c.shot),
 	}
 }
 

@@ -71,6 +71,7 @@ Smp_Result :: struct {
 	kicks:       u64, // Kicks the boot core sent while they ran
 	claims:      int, // Process slots claimed and given back, across cores
 	lines:       int, // Log lines four cores wrote at once, all of them whole
+	shot_ticks:  u64, // Ticks between an unmap here and the fault on the other core
 }
 
 @(private = "file")
@@ -232,6 +233,14 @@ all_done :: proc "contextless" (arg: rawptr) -> bool {
 		}
 	}
 	return true
+}
+
+// The spinning program's counter, read through its data frame from here. The
+// program increments it on every pass. A count that moved is a program that
+// runs, and one that stopped moving is a program that faulted.
+@(private = "file")
+spin_moving :: proc "contextless" (arg: rawptr) -> bool {
+	return user.cell(cast(^user.Process)arg, 1) > 0
 }
 
 @(private = "file")
@@ -446,6 +455,43 @@ verify_smp :: proc() {
 		scheck(&r, whole, "and each is one writer's, whole")
 	}
 
+	// -- An unmap here reaches a translation cached over there -----------------
+
+	/*
+	A program spins on its data page, so the core running it holds the page's
+	translation in its TLB. The boot thread is busy, so the program lands on
+	another core. Then this core unmaps that page. Without a shootdown the
+	other core keeps translating through the entry it cached, and the program
+	runs on for as long as its loop lasts. With one, its next touch of the page
+	is a fault, and the fault is what this waits for.
+	*/
+	if prog, lerr := user.load("smp-spin", user.program_spin(), 0); scheck(&r, lerr == .None, "a spinning program was loaded") {
+		running := sync.await(spin_moving, prog, PATIENCE)
+		scheck(&r, running, "and it runs, counting on its data page")
+		// This thread's own core, read now rather than assumed to be the boot
+		// core. The boot thread parks and is placed afresh like any other, and
+		// nothing between here and the unmap parks it again.
+		me := sched.cpu().id
+		on := prog.thread != nil && prog.thread.cpu != nil ? prog.thread.cpu.id : me
+		scheck(&r, on != me, "on a core that is not this one")
+		shot_before := sched.cpu_stats(me).shoots
+		before := sched.cpu_stats(on).shot
+
+		sent_at := sched.ticks()
+		scheck(&r, mem.unmap_user(prog.space, user.DATA_VA, 1) == .None, "this core unmapped its data page")
+		faulted := user.wait(prog, PATIENCE)
+		r.shot_ticks = sched.ticks() - sent_at
+		scheck(&r, faulted, "and the program ended inside the bound")
+		scheck(
+			&r,
+			prog.exit.done && prog.exit.from_user && prog.exit.kind == .Page_Fault,
+			"by a page fault in ring 3, on the page this core unmapped",
+		)
+		scheck(&r, sched.cpu_stats(me).shoots > shot_before, "which this core asked for")
+		scheck(&r, sched.cpu_stats(on).shot > before, "and the other core answered")
+		scheck(&r, user.destroy(prog), "and the program was taken down")
+	}
+
 	// -- Nothing left behind --------------------------------------------------
 
 	// Each worker's stack comes back on the core it died on, when that core's
@@ -479,7 +525,9 @@ report_smp :: proc(r: ^Smp_Result) {
 		libodin.put_uint(&sink, u64(r.claims))
 		libodin.put_str(&sink, " process slots claimed across cores, ")
 		libodin.put_uint(&sink, u64(r.lines))
-		libodin.put_str(&sink, " log lines whole, heap balanced")
+		libodin.put_str(&sink, " log lines whole, an unmap reached another core's TLB in ")
+		libodin.put_uint(&sink, r.shot_ticks)
+		libodin.put_str(&sink, " ticks, heap balanced")
 		emit(&klog, .Ok, &sink)
 		return
 	}

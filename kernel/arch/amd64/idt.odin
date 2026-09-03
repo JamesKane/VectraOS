@@ -123,6 +123,11 @@ VECTOR_SPURIOUS :: 0xFF
 VECTOR_WAKE :: 0x83
 VECTOR_NMI :: 2
 
+// The shootdown: another core changed a mapping this core may have cached,
+// and asks it to drop the translation. Answered in the handler, with no
+// reschedule, because the core that asked is waiting for the answer.
+VECTOR_SHOOT :: 0x84
+
 /*
 Where a device interrupt lands: `VECTOR_IRQ_BASE` plus the ISA line.
 

@@ -173,10 +173,11 @@ Three things about a boot are worth knowing before you read one:
 
 The one that shapes everything after it:
 
-- **No TLB shootdown.** Every core the bootloader lists runs now, a wake
-  kicks an idle core, and a panic stops every other core. `docs/SMP.md` is
-  the account. What is left is an unmap on one core reaching another's TLB,
-  which nothing needs until a process has two threads.
+- **No second thread in a process.** Every core the bootloader lists runs, a
+  wake kicks an idle core, a panic stops every other core, and an unmap on
+  one core reaches every other core's TLB. `docs/SMP.md` is the account.
+  What no process can do yet is have two threads, which is the thing all of
+  that was built to carry.
 
 And the rest, each named in the code it is missing from. **Something that
 exists and is merely incomplete is not here.** Section 6 has those, because a
@@ -410,17 +411,16 @@ in "Next, in order" at the top and in "Smaller things" below.
 
 ### SMP, what is left of it
 
-The cores run. The bootloader starts them, `kernel/smp.odin` brings each one
-through the same steps `kmain` took, a wake kicks an idle core awake, a panic
-stops every core, the process table has a lock, the log has one too, the
-physical allocator has the one it always needed, and `verify_smp` proves
-twenty-seven things about them on every boot. The four items this section carried are closed, and
-`docs/SMP.md` records how each closed and which one had been closed already.
-That document also names what is still one core's, and this is the order to
-take it in:
+The cores run, and the list this section carried is empty. The bootloader
+starts the cores, and `kernel/smp.odin` brings each one through the same
+steps `kmain` took. A wake kicks an idle core awake, and a panic stops every
+core. The process table has a lock, the log has one too, and the physical
+allocator has the one it always needed. An unmap reaches every core's TLB.
 
-1. **A TLB shootdown**, the day a process has two threads on two cores. The
-   interrupt is `arch.ipi_send`, which the wake already uses.
+`verify_smp` proves thirty-six things about all of that on every boot.
+`docs/SMP.md` records how each item closed, which one was closed already, and
+which lock came out of a control. What is left to build on them is a second
+thread in a process, which is `docs/USER.md`'s to argue.
 
 The one-core flake is still there. About one boot in eight at `--smp=4`
 fails a userland heap bracket by one object, before the cores start, in the

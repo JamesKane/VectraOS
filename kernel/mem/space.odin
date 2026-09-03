@@ -267,7 +267,34 @@ unmap_user :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages: i
 	for i in 0 ..< pages {
 		unmap_page(space, virt + uintptr(i) * uintptr(arch.PAGE_SIZE))
 	}
+	// This core's translations went with each page. Another core's did not,
+	// and a core running this space still holds them until it is told.
+	if shootdown != nil {
+		shootdown(space.root, virt, pages)
+	}
 	return .None
+}
+
+/*
+What a mapping change tells the other cores.
+
+`invlpg` drops a translation on the core that runs it and no other. A core that
+is translating through the same space keeps the old one until it is told. An
+unmap that this core made is then still a mapping on that one. The telling is
+an interrupt. The interrupt needs the cores' addresses, which this package does
+not know. So the scheduler, which does, registers the sender here, and
+`unmap_user` calls it with the root of the space that changed and the range. A
+root that is the kernel's means every core.
+
+Nil until the scheduler runs, which is also for as long as there is one core.
+*/
+Shootdown :: #type proc "contextless" (root: uintptr, virt: uintptr, pages: int)
+
+@(private = "file")
+shootdown: Shootdown
+
+set_shootdown :: proc "contextless" (s: Shootdown) {
+	shootdown = s
 }
 
 /*

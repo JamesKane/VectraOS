@@ -240,11 +240,37 @@ The check for all of this is four writers filling a sinkless logger's early
 buffer at once. That is sixteen long lines, each one writer's from its first
 byte to its last.
 
+## The shootdown
+
+`invlpg` drops a translation on the core that runs it and no other. A core that
+translates through the same space keeps the old entry until it is told. An
+unmap made here is then still a mapping over there. `unmap_user` tells them
+now.
+
+`kernel/mem` does not know the cores, so the scheduler registers the sender.
+It reads which cores' current threads are in the space that changed, or
+every core when the kernel's own space changed, and sends each `VECTOR_SHOOT`.
+The receiver drops the range in its handler and counts itself off, and the
+sender waits for the count to reach zero.
+
+Two rules follow. One shootdown is in flight at a time, because the request is
+one record every receiver reads. A second sender waits for the first with
+interrupts on, so it can answer while it waits. And the sender may hold no
+spinlock and may not be a handler. A receiver spinning for a lock the sender
+holds would never take the interrupt. That is the rule a sleep has, and
+`sync.require_sleepable` checks it the same way.
+
+The check is a program that spins on its data page, so the core running it
+holds that page's translation. The boot core unmaps the page. With the
+shootdown the program's next touch is a page fault, within a tick. The
+control that tells no core lets the program run on through the stale entry
+for the whole of the bound.
+
 ## What the self-test proves
 
 `verify_smp` runs after the cores are up. The boot thread never parks on
 anything a missing core would have to end, and every wait has a bound.
-Twenty-seven checks:
+Thirty-six checks:
 
 - every core the bootloader listed is online, and there is more than one
 - every core's tick count moves over twenty ticks of the boot core's clock
@@ -264,6 +290,9 @@ Twenty-seven checks:
   came back, and the heap is where it was
 - four writers logged sixteen long lines at once into a logger with no
   sinks, every line was kept, and each is one writer's, whole
+- a program spinning on its data page on another core faulted on its next
+  touch once this core unmapped the page, the boot core sent the shootdown,
+  the other core answered it, and the program was taken down
 - every core reaps its own dead, and the heap is balanced afterwards
 
 The ring 3 servers that `verify_user` leaves running -- the console, the
@@ -273,10 +302,6 @@ check.
 
 ## What is still one core's
 
-- **No TLB shootdown.** A process has one thread, and a core switching to a
-  process reloads CR3, which flushes every non-global entry. That is what
-  makes it safe today. The day a process has two threads on two cores, an
-  unmap on one has to reach the other, and `lapic_send` is how.
 - **`cpu_class` is still one class.** Every core reports `.Performance` at
   full capacity, so the placement policy spreads by load alone. The three
   tiers `docs/SCHED.md` argues wait for an arm64 `cpu_class`.

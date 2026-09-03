@@ -167,3 +167,13 @@ the trap dispatcher brackets a handler with, and `can_sleep` reads both.
 can_sleep :: proc "contextless" () -> bool {
 	return arch.percpu_critical_depth()^ == 0 && !arch.in_interrupt()
 }
+
+// require_sleepable stops the machine, with the reason, if the caller could
+// not park. For a wait that is not a sleep but has the same hazard. That is a
+// core waiting for another core's answer while it holds a spinlock the other
+// core may want. It is also a wait from a handler the answer has to interrupt.
+require_sleepable :: proc "contextless" (reason: string) {
+	if !can_sleep() {
+		fail(reason)
+	}
+}
