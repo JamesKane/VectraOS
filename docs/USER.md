@@ -1380,11 +1380,17 @@ printed. The sweep in `verify_rfork` would have named it, and never gets the
 chance. That is the shape `docs/TESTING.md` calls a machine failure, and
 records rather than counts.
 
-**And one type.** Plan 9's `"shared"` class is `SG_SHARED`, which `dupseg`
-shares whatever the flags say and `exec` inherits. Vectra has no equivalent:
-`.Anon` is shared under `RFMEM` or copied, and there is no third answer. A
-compositor that forks a worker to paint wants exactly that third answer, and
-it is a fork rule rather than a new shape.
+**And one type, which is here now.** Plan 9's `"shared"` class is `SG_SHARED`,
+which `dupseg` shares whatever the flags say and `exec` inherits. `.Shared` is
+that class. `segalloc` takes a flag word, and `abi.SEGSHARED` asks for it. A
+fork shares the run whether or not it shares anything else, and an exec adds
+the run to the new image as one more holder before it commits. What frees it is
+what frees an anonymous run: the last holder's release.
+
+`verify_shared_class` seeds a shared page and a private one, forks with `RFPROC` alone, has the child
+write into both, and execs. The shared page holds the child's witness
+afterwards, and the private seed is untouched. The segment is there under a
+program that never asked for it.
 
 **Smaller divergences, each recorded rather than argued.**
 

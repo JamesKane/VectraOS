@@ -173,12 +173,13 @@ Three things about a boot are worth knowing before you read one:
 
 The one that shapes everything after it:
 
-- **No `SG_SHARED`.** Every core the bootloader lists runs, a wake kicks an
-  idle core, a panic stops every other core, an unmap on one core reaches
-  every other core's TLB, and a run shared under `RFMEM` grows and shrinks
-  in every holder. `docs/SMP.md` is the account. What is still missing from
-  the memory model is Plan 9's third answer to a fork, a segment shared
-  whatever the flags say, which `docs/USER.md` names.
+- **No `segattach` by class and address.** Every core the bootloader lists
+  runs, a wake kicks an idle core, and a panic stops every other core. An unmap
+  reaches every core's TLB, a run shared under `RFMEM` grows and shrinks in
+  every holder, and `segalloc` has Plan 9's shared class. `docs/SMP.md` and
+  `docs/USER.md` are the account. What a program still cannot do is ask where
+  its memory goes, which is the first of the divergences `docs/USER.md` lists
+  after the shared class.
 
 And the rest, each named in the code it is missing from. **Something that
 exists and is merely incomplete is not here.** Section 6 has those, because a

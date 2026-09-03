@@ -468,6 +468,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// -- And a process that replaces itself -----------------------------------
 
 	verify_exec(&r, column)
+	verify_shared_class(&r)
 
 	// -- And a child no parent waits for --------------------------------------
 
@@ -2550,6 +2551,71 @@ verify_exec :: proc(r: ^Result, column: proc "contextless" () -> int) {
 	}
 	cons_finish()
 	finish(r, p, "and the replaced process is taken down")
+}
+
+/*
+verify_shared_class is Plan 9's third answer to a fork, `SG_SHARED`.
+
+`.Anon` is shared under `RFMEM` or copied, and that was the only choice. The
+shared class is shared whatever the flags say, and an exec keeps it. The
+program takes one page of each, seeds both, and forks with `RFPROC` alone.
+The child writes into both and exits. The parent then reads both, keeps what
+it read in the shared page, and execs `/bin/child`. The kernel reads the
+shared page afterwards through the segment the exec carried over. The
+child's witness in it says a fork without `RFMEM` shared the page. The
+private seed beside it says the same fork copied the other. And the segment
+being there at all, under a program that never asked for it, says exec kept
+it.
+*/
+@(private = "file")
+verify_shared_class :: proc(r: ^Result) {
+	segs0 := segment_stats()
+
+	p, err := load("sharedseg", program_sharedseg())
+	if !check(r, err == .None && p != nil, "a program that asks for the shared class starts") {
+		return
+	}
+	r.programs += 1
+	if check(r, wait(p, PATIENCE), "and comes back, having forked and become another program") {
+		check(r, cell(p, CELL_MARK) == MARK_CHILD, "the mark is the program it became")
+		check(r, p.exit.deliberate && p.exit.status == CHILD_STATUS, "which exited with its own status")
+
+		shared: ^Segment
+		anon := 0
+		for i in 0 ..< p.seg_count {
+			if p.segs[i] != nil && p.segs[i].kind == .Shared {
+				shared = p.segs[i]
+			}
+			if p.segs[i] != nil && p.segs[i].kind == .Anon {
+				anon += 1
+			}
+		}
+		if check(r, shared != nil, "the shared page crossed the exec with the process") {
+			words := cast([^]u64)mem.phys_to_virt(segment_frame(shared, 0))
+			check(
+				r,
+				words[SHAREDSEG_CHILD_WROTE] == SHAREDSEG_WITNESS,
+				"and holds the witness a child forked without RFMEM wrote into it",
+			)
+			check(
+				r,
+				words[SHAREDSEG_SAW_SHARED] == SHAREDSEG_WITNESS,
+				"which the parent read back through the same page",
+			)
+			check(
+				r,
+				words[SHAREDSEG_SAW_PRIVATE] == SHAREDSEG_PRIVATE_SEED,
+				"while its private page kept the seed, because that fork copied it",
+			)
+			check(r, shared.refs == 1, "and the exec left the process its only holder")
+		}
+		check(r, anon == 0, "and the private page did not cross the exec")
+		left := sweep(p)
+		check(r, left.stray == 0 && left.borrowed == 0, "and every page the new image maps is one its segments hold")
+	}
+	cons_finish()
+	finish(r, p, "and the process is taken down")
+	check(r, segment_stats().live == segs0.live, "and the shared page went back with it")
 }
 
 /*

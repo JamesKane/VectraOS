@@ -92,6 +92,30 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int) -> i64 {
 		return -i64(lerr)
 	}
 
+	/*
+	The shared class crosses. Plan 9's `SG_SHARED` survives an exec, the way a
+	descriptor does, and for the same use. A process arranges memory that a
+	program it is about to become will find. Each such segment is added to the
+	new image as one more holder and mapped at its own address. No image
+	reaches that address, because `MAPPING_BASE` is above every fixed segment.
+	This is before the commit, so a mapping that fails leaves the caller
+	running.
+	*/
+	for i in 0 ..< p.seg_count {
+		s := p.segs[i]
+		if s == nil || s.kind != .Shared {
+			continue
+		}
+		segment_incref(s)
+		if !proc_add_segment(&scratch, s) || !map_run(&scratch, s) {
+			for j in 0 ..< scratch.seg_count {
+				segment_release(scratch.segs[j])
+			}
+			mem.space_destroy(space)
+			return -i64(vectra9.ENOMEM)
+		}
+	}
+
 	// -- The commit. Nothing below here may fail. ----------------------------
 
 	// The old segments go first. Each release drops one holder. The last one

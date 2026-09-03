@@ -77,6 +77,7 @@ Segment_Kind :: enum {
 	Stack, // Writable, and always a private copy
 	Device, // Memory this allocator never owned: shared, and never freed
 	Anon, // A run this allocator did own: asked for by the page, and freed
+	Shared, // A run shared by every fork whatever the flags say, and kept by exec
 }
 
 /*
@@ -93,7 +94,7 @@ again. A sixth kind then joins the right shape in one edit.
 */
 @(private)
 segment_is_run :: proc "contextless" (kind: Segment_Kind) -> bool {
-	return kind == .Device || kind == .Anon
+	return kind == .Device || kind == .Anon || kind == .Shared
 }
 
 /*
@@ -495,7 +496,9 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	switch kind {
 	case .Device:
 		// Nothing. See above -- this is the branch with a control on it.
-	case .Anon:
+	case .Anon, .Shared:
+		// The shared class is a run this allocator owns, like an anonymous
+		// one. What differs is who shares it and when, never who frees it.
 		for i in 0 ..< piece_n {
 			mem.free_pages(pieces[i].base, pieces[i].pages)
 		}

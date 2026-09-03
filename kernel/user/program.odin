@@ -532,6 +532,22 @@ SHARER_SURVIVED :: 6 // Written by the child only if the shrunk page still answe
 SHARER_WITNESS :: u64(0xBEEF)
 SHARER_PAGES :: 2
 
+/*
+Where `sharedseg` keeps its answers: in the shared page itself, because the
+data page does not survive the exec the program ends with. The parent takes a
+shared page and a private one, seeds both, and forks without `RFMEM`. The
+child writes a witness into each and exits. The parent waits, reads both back
+into the shared page, and execs `/bin/child`. The kernel then reads the shared
+page through the segment the exec kept.
+*/
+SHAREDSEG_CHILD_WROTE :: 0 // The child's witness, in the shared page's first word
+SHAREDSEG_SAW_SHARED :: 1 // What the parent read there after the child exited
+SHAREDSEG_SAW_PRIVATE :: 2 // What the parent read in its private page
+SHAREDSEG_SEED :: u64(0x11)
+SHAREDSEG_PRIVATE_SEED :: u64(0x22)
+SHAREDSEG_WITNESS :: u64(0x1111)
+SHAREDSEG_PRIVATE_WITNESS :: u64(0x2222)
+
 FDFORKER_WAITED :: 2
 FDFORKER_CLOSED :: 3
 
@@ -695,6 +711,8 @@ foreign {
 	vectra_user_memfork_end: byte
 	vectra_user_sharer: byte
 	vectra_user_sharer_end: byte
+	vectra_user_sharedseg: byte
+	vectra_user_sharedseg_end: byte
 	vectra_user_fdforker: byte
 	vectra_user_fdforker_end: byte
 	vectra_user_refuser: byte
@@ -784,6 +802,10 @@ program_memfork :: proc "contextless" () -> []u8 {return blob(&vectra_user_memfo
 // And the one that shares a run and then resizes it. A grow the sharer has to
 // see, and a shrink the sharer has to feel.
 program_sharer :: proc "contextless" () -> []u8 {return blob(&vectra_user_sharer, &vectra_user_sharer_end)}
+// And the one that asks for the shared class. A fork without RFMEM still
+// shares its page, beside a private one it does not, and an exec keeps the
+// shared page and drops the private one.
+program_sharedseg :: proc "contextless" () -> []u8 {return blob(&vectra_user_sharedseg, &vectra_user_sharedseg_end)}
 program_fdforker :: proc "contextless" () -> []u8 {return blob(&vectra_user_fdforker, &vectra_user_fdforker_end)}
 program_refuser :: proc "contextless" () -> []u8 {return blob(&vectra_user_refuser, &vectra_user_refuser_end)}
 

@@ -156,9 +156,15 @@ and of `segattach` alike.
 `EINVAL` is a request of nothing or one past the kernel's bound. `ENOMEM` is
 the machine having no run that long left, or this process holding as many
 segments as it may.
+
+`flags` is zero for a run of this process's own, shared under `RFMEM` and
+copied otherwise. `abi.SEGSHARED` asks for Plan 9's shared class instead: a
+run every fork shares whatever its flags say, and every exec keeps. That is
+memory a process arranges for the program it is about to become, or for a
+worker it forks without sharing everything else.
 */
-segalloc :: proc "contextless" (bytes: int) -> (addr: uintptr, err: i64) {
-	r := raw1(abi.SYS_SEGALLOC, u64(bytes))
+segalloc :: proc "contextless" (bytes: int, flags: u64 = 0) -> (addr: uintptr, err: i64) {
+	r := raw2(abi.SYS_SEGALLOC, u64(bytes), flags)
 	if r < 0 {
 		return 0, r
 	}

@@ -1428,6 +1428,7 @@ vectra_user_anon:
 	movq %rax, (%rbx)
 
 	movq %rbp, %rdi
+	xorl %esi, %esi
 	movq $22, %rax
 	syscall
 	movq %rax, 8(%rbx)
@@ -1444,6 +1445,7 @@ vectra_user_anon:
 	movq %rax, 24(%rbx)
 
 	movq %rbp, %rdi
+	xorl %esi, %esi
 	movq $22, %rax
 	syscall
 	movq %rax, 32(%rbx)
@@ -1477,12 +1479,14 @@ vectra_user_anon:
 	# A one-page run X, and a second one-page run Y just above it. r10 keeps X
 	# and r15 keeps Y, across the syscalls that clobber only rax, rcx and r11.
 	movq $0x1000, %rdi
+	xorl %esi, %esi
 	movq $22, %rax
 	syscall
 	movq %rax, 104(%rbx)
 	movq %rax, %r10
 
 	movq $0x1000, %rdi
+	xorl %esi, %esi
 	movq $22, %rax
 	syscall
 	movq %rax, %r15
@@ -1497,6 +1501,7 @@ vectra_user_anon:
 	# Ask again at the same size. First fit finds X's hole below Y and hands it
 	# back, so ANON_REUSE equals ANON_THIRD. A bump would answer above Y.
 	movq $0x1000, %rdi
+	xorl %esi, %esi
 	movq $22, %rax
 	syscall
 	movq %rax, 136(%rbx)
@@ -1521,11 +1526,13 @@ vectra_user_anon:
 	movq %rax, 128(%rbx)
 
 	movq $0x40000000, %rdi
+	xorl %esi, %esi
 	movq $22, %rax
 	syscall
 	movq %rax, 40(%rbx)
 
 	xorl %edi, %edi
+	xorl %esi, %esi
 	movq $22, %rax
 	syscall
 	movq %rax, 48(%rbx)
@@ -1537,6 +1544,7 @@ vectra_user_anon:
 	jnz 52f
 
 	movq %rbp, %rdi
+	xorl %esi, %esi
 	movq $22, %rax
 	syscall
 	testq %rax, %rax
@@ -1593,6 +1601,7 @@ vectra_user_sharer:
 	movq %rax, (%rbx)
 
 	movq $8192, %rdi
+	xorl %esi, %esi
 	movq $22, %rax
 	syscall
 	testq %rax, %rax
@@ -1674,3 +1683,75 @@ vectra_user_sharer:
 	ud2
 .globl vectra_user_sharer_end
 vectra_user_sharer_end:
+
+/*
+ * sharedseg: the shared class, across a fork without RFMEM and an exec.
+ *
+ * Two pages: one asked for with SEGSHARED, one without. Both seeded, then
+ * a fork with RFPROC alone. The child writes a witness into each and exits.
+ * The parent waits, reads both back into the shared page -- the data page
+ * will not survive what comes next -- and execs /bin/child. What the kernel
+ * finds in the shared page afterwards is the whole answer: the child's
+ * witness in the first word, the parent's reading of it in the second, and
+ * the private seed untouched in the third.
+ */
+.balign 16
+.globl vectra_user_sharedseg
+vectra_user_sharedseg:
+	movq %rdi, %rbx
+
+	movq $4096, %rdi
+	movq $1, %rsi
+	movq $22, %rax
+	syscall
+	testq %rax, %rax
+	js 49f
+	movq %rax, %r12
+
+	movq $4096, %rdi
+	xorl %esi, %esi
+	movq $22, %rax
+	syscall
+	testq %rax, %rax
+	js 49f
+	movq %rax, %r13
+
+	movq $0x11, (%r12)
+	movq $0x22, (%r13)
+
+	movq $0x10, %rdi
+	movq $17, %rax
+	syscall
+	testq %rax, %rax
+	js 49f
+	jnz 45f
+
+	movq $0x1111, (%r12)
+	movq $0x2222, (%r13)
+	xorl %edi, %edi
+	movq $4, %rax
+	syscall
+	ud2
+
+45:
+	movq %rax, %rdi
+	movq $11, %rax
+	syscall
+	movq (%r12), %rax
+	movq %rax, 8(%r12)
+	movq (%r13), %rax
+	movq %rax, 16(%r12)
+
+	leaq 50f(%rip), %rdi
+	movq $10, %rsi
+	movq $20, %rax
+	syscall
+49:
+	movq $0x98, %rdi
+	movq $4, %rax
+	syscall
+	ud2
+50:
+	.ascii "/bin/child"
+.globl vectra_user_sharedseg_end
+vectra_user_sharedseg_end:

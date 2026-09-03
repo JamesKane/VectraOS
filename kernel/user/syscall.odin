@@ -331,7 +331,7 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 	case SYS_SEGATTACH:
 		result = sys_segattach(int(a0))
 	case SYS_SEGALLOC:
-		result = sys_segalloc(a0)
+		result = sys_segalloc(a0, a1)
 	case SYS_SEGBRK:
 		result = sys_segbrk(uintptr(a0), uintptr(a1))
 	case SYS_SEGDETACH:
@@ -1006,7 +1006,7 @@ A wrong answer for a grown run's tail reached no mapping, because the one
 mapping of that tail never asked. It asks now, so the record and the tables
 agree through one accessor, and `sweep` is what checks the accessor.
 */
-@(private = "file")
+@(private)
 map_run :: proc "contextless" (p: ^Process, s: ^Segment, from: int = 0) -> bool {
 	for i in from ..< s.pages {
 		at := s.va + uintptr(i) * uintptr(arch.PAGE_SIZE)
@@ -1121,13 +1121,21 @@ the caller's arithmetic. `ENOMEM` is the machine's answer and can mean the
 segment pool, the process's own list, or no run of that many frames left.
 */
 @(private = "file")
-sys_segalloc :: proc(bytes: u64) -> i64 {
+sys_segalloc :: proc(bytes: u64, flags: u64) -> i64 {
 	p := current()
 	if p == nil {
 		return -i64(vectra9.ESRCH)
 	}
-	if bytes == 0 || bytes > SEGALLOC_MAX {
+	if bytes == 0 || bytes > SEGALLOC_MAX || flags &~ abi.SEGSHARED != 0 {
 		return -i64(vectra9.EINVAL)
+	}
+	// Plan 9's third answer to a fork. `SEGSHARED` asks for the class every
+	// fork shares whatever its flags say and every exec keeps, which is
+	// `SG_SHARED`. Without it the run is `.Anon`, shared under `RFMEM` or
+	// copied, and gone at exec.
+	kind := Segment_Kind.Anon
+	if flags & abi.SEGSHARED != 0 {
+		kind = .Shared
 	}
 
 	// Whole pages, up. A program that asks for one byte past a page gets the
@@ -1139,7 +1147,7 @@ sys_segalloc :: proc(bytes: u64) -> i64 {
 		return -i64(vectra9.ENOMEM)
 	}
 
-	seg := segment_run(va, pages, {.Write, .No_Execute}, .Anon)
+	seg := segment_run(va, pages, {.Write, .No_Execute}, kind)
 	if seg == nil {
 		return -i64(vectra9.ENOMEM)
 	}
@@ -1193,7 +1201,7 @@ sys_segbrk :: proc(addr: uintptr, top: uintptr) -> i64 {
 	}
 
 	seg := proc_segment_at(p, addr)
-	if seg == nil || seg.kind != .Anon {
+	if seg == nil || (seg.kind != .Anon && seg.kind != .Shared) {
 		return -i64(vectra9.EINVAL)
 	}
 	if top == 0 {

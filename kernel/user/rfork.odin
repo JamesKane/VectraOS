@@ -281,7 +281,7 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 		makes it something other than a `.Data` segment.
 		*/
 		writable_data := s.kind == .Data || s.kind == .Anon
-		shared := s.kind == .Text || s.kind == .Device || (writable_data && share)
+		shared := s.kind == .Text || s.kind == .Device || s.kind == .Shared || (writable_data && share)
 
 		if shared {
 			segment_incref(s)

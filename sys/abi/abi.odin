@@ -75,6 +75,12 @@ RFCFDG :: u64(1) << 12
 RFREND :: u64(1) << 13
 RFNOMNT :: u64(1) << 14
 
+// The flag word `segalloc` takes. `SEGSHARED` asks for Plan 9's `SG_SHARED`:
+// a run every fork shares whatever its own flags say, and every exec keeps.
+// Without it a run is shared under `RFMEM`, copied otherwise, and gone at
+// exec, like a data segment.
+SEGSHARED :: u64(1) << 0
+
 // The open flags `open` and `create` take, as 9P2000.L carries them.
 O_RDONLY :: u64(0)
 O_WRONLY :: u64(1)
