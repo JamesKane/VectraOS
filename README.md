@@ -8,7 +8,10 @@ on top.
 
 **A client draws into a window now, and everything else still runs.** The kernel
 comes up under Limine on `x86_64` with descriptor tables, page tables and a
-heap of its own. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
+heap of its own. It comes up on `aarch64` and `riscv64` too, on QEMU's
+`virt` board, through the same `kmain`: the ports have their own trap paths,
+page tables, timers and interrupt controllers, and what they lack is the
+assembly test programs. `docs/PORTS.md` has the table. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 `/bin` over 9P2000.L. It preempts on the local APIC and takes keyboard
 interrupts through the I/O APIC.
 

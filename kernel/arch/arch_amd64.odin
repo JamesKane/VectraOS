@@ -10,8 +10,62 @@ means one new `arch_arm64.odin`, and no edits to call sites in sched/ or mem/.
 package arch
 
 import "kernel:arch/amd64"
+import "vsys:libodin"
 
 NAME :: "amd64"
+
+/*
+-- The console --------------------------------------------------------------
+
+Where the serial console is, and how it is reached. amd64 has a 16550 at COM1
+behind port I/O, which needs no mapping and no bootloader numbers, so the
+three arguments go unread here. The arm64 binding is the one that reads them.
+`kernel/drivers/uart` drives whatever this names.
+*/
+
+Serial_Kind :: enum {
+	None,
+	Port_16550, // A 16550 behind x86 port I/O
+	Mmio_16550, // A 16550 with byte registers in memory
+	Pl011,      // ARM's PrimeCell UART, in memory
+	Firmware,   // The firmware's own console, through `console_write_byte`
+}
+
+Serial_Desc :: struct {
+	kind: Serial_Kind,
+	base: uintptr,
+}
+
+serial_console :: proc "contextless" (hhdm, kernel_phys, kernel_virt: u64) -> Serial_Desc {
+	_, _, _ = hhdm, kernel_phys, kernel_virt
+	return Serial_Desc{kind = .Port_16550, base = 0x3F8}
+}
+
+// serial_physical says whether the console above needs a mapping of the
+// kernel's own once the VMM exists. A port has no address to map.
+serial_physical :: proc "contextless" () -> (uintptr, bool) {
+	return 0, false
+}
+
+// The firmware console, which this architecture does not have. The three
+// exist so `kernel/drivers/uart` can name them on every architecture.
+console_available :: proc "contextless" () -> bool {
+	return false
+}
+
+console_write_byte :: proc "contextless" (b: u8) {
+	_ = b
+}
+
+console_read_byte :: proc "contextless" () -> (u8, bool) {
+	return 0, false
+}
+
+// set_device_tree hands over the flattened device tree, on an architecture
+// that has one. amd64 describes itself through ACPI and gets none.
+set_device_tree :: proc "contextless" (dtb: rawptr) {
+	_ = dtb
+}
 
 // -- Execution control -------------------------------------------------------
 
@@ -102,14 +156,47 @@ describe_error :: amd64.describe_error
 breakpoint :: amd64.breakpoint
 fault_address :: amd64.read_cr2
 
-// Selector and table readbacks, so the boot self-test can confirm the tables
-// took rather than inferring it from the absence of a crash.
-code_selector :: amd64.read_cs
-task_selector :: amd64.read_tr
-idt_limit :: amd64.read_idt_limit
+// The name of the exception `breakpoint` raises, for the boot line that
+// reports its round trip.
+BREAKPOINT_NAME :: "#BP"
 
-KERNEL_CODE_SELECTOR :: amd64.KERNEL_CODE_SEL
-TASK_SELECTOR :: amd64.TSS_SEL
+/*
+describe_traps writes the trap tables as this core sees them, and reports
+whether they are the kernel's own.
+
+Selector and table readbacks rather than an inference from the absence of a
+crash. CS has to name the kernel's code descriptor, TR the task state
+segment, and the IDT limit has to count every vector the stubs cover.
+*/
+describe_traps :: proc "contextless" (s: ^libodin.Sink) -> bool {
+	cs := amd64.read_cs()
+	tr := amd64.read_tr()
+	vectors := u64(amd64.read_idt_limit() + 1) / 16
+	libodin.put_str(s, "cs ")
+	libodin.put_hex(s, u64(cs), 0)
+	libodin.put_str(s, ", tr ")
+	libodin.put_hex(s, u64(tr), 0)
+	libodin.put_str(s, ", ")
+	libodin.put_uint(s, vectors)
+	libodin.put_str(s, " vectors")
+	return cs == amd64.KERNEL_CODE_SEL && tr == amd64.TSS_SEL && vectors == amd64.VECTOR_COUNT
+}
+
+/*
+-- The frame's public face -------------------------------------------------
+
+What `kernel/user` may read out of a `Trap_Frame` and put into one, without
+naming a register. See `amd64/frame.odin`.
+*/
+
+frame_ip :: amd64.frame_ip
+frame_sp :: amd64.frame_sp
+frame_vector :: amd64.frame_vector
+syscall_request :: amd64.syscall_request
+set_syscall_result :: amd64.set_syscall_result
+syscall_result :: amd64.syscall_result
+frame_call_handler :: amd64.frame_call_handler
+frame_sanitise_user :: amd64.frame_sanitise_user
 
 /*
 -- Ring 3 ---------------------------------------------------------------------
@@ -125,9 +212,6 @@ machine.
 `user_trap_count` is the one measurement: how many times the machine came back
 out of ring 3, faults and timer preemptions alike.
 */
-
-USER_CODE_SELECTOR :: amd64.USER_CODE_RING3
-USER_DATA_SELECTOR :: amd64.USER_DATA_RING3
 
 User_Trap_Handler :: amd64.User_Trap_Handler
 
@@ -157,6 +241,13 @@ VECTOR_SYSCALL :: amd64.VECTOR_SYSCALL
 
 syscall_available :: amd64.syscall_available
 syscall_init :: amd64.syscall_init
+
+// set_syscall_dispatcher is where a port that has no entry stub of its own
+// learns whom to call. This one has a stub, and the stub names the
+// dispatcher's exported symbol directly, so the pointer goes unread.
+set_syscall_dispatcher :: proc "contextless" (h: proc "c" (frame: ^Trap_Frame)) {
+	_ = h
+}
 syscall_armed :: amd64.syscall_armed
 syscall_masks_interrupts :: amd64.syscall_masks_interrupts
 current_sp :: amd64.current_sp
@@ -218,7 +309,11 @@ register page, and that is `kernel/mem`'s job, above this file. Ask where it
 is, map it, and hand back the virtual address.
 */
 
-LAPIC_MMIO_SIZE :: amd64.LAPIC_MMIO_SIZE
+TIMER_MMIO_SIZE :: amd64.LAPIC_MMIO_SIZE
+
+// How the boot log names the timer, and what its rate was measured against.
+TIMER_NAME :: "lapic"
+TIMER_REFERENCE :: "measured against the PIT"
 
 timer_available :: amd64.lapic_available
 timer_physical_base :: amd64.lapic_physical_base
@@ -241,7 +336,8 @@ that knows the address to map and the register layout behind it.
 first interrupt through, and it is separate so a driver can register its handler
 in between. See `kernel/arch/amd64/ioapic.odin`.
 */
-IOAPIC_MMIO_SIZE :: amd64.IOAPIC_MMIO_SIZE
+IRQ_MMIO_SIZE :: amd64.IOAPIC_MMIO_SIZE
+IRQ_CONTROLLER_NAME :: "ioapic"
 
 irq_available :: amd64.ioapic_available
 irq_physical_base :: amd64.ioapic_physical_base
@@ -281,10 +377,20 @@ init_traps :: proc "contextless" () {
 	amd64.pic_disable()
 }
 
+// set_boot_cpu_id is where an architecture that cannot read its own core id
+// learns it. This one reads its LAPIC id out of the APIC, so the number goes
+// unread.
+set_boot_cpu_id :: proc "contextless" (id: u64) {
+	_ = id
+}
+
 // init_traps_ap is `init_traps` for a core that is not the first. The GDT and
 // the TSS are that core's own, the IDT is the one table every core loads,
 // and the PIC was silenced by the boot core before this core existed.
-init_traps_ap :: proc "contextless" (id: int) {
+// `cpu_id` is the core's name in the bootloader's list, which this
+// architecture reads back out of the APIC instead.
+init_traps_ap :: proc "contextless" (id: int, cpu_id: u64) {
+	_ = cpu_id
 	amd64.gdt_init(id)
 	amd64.percpu_init(id)
 	amd64.idt_load()

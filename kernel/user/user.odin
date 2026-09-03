@@ -596,8 +596,8 @@ note_trap :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 
 	if thread != nil {
 		if p := (^Process)(thread.user); p != nil {
-			p.exit.ip = uintptr(r.frame.rip)
-			p.exit.sp = uintptr(r.frame.rsp)
+			p.exit.ip = arch.frame_ip(r.frame)
+			p.exit.sp = arch.frame_sp(r.frame)
 			p.exit.kstack = uintptr(rawptr(r.frame))
 			p.exit.from_user = true
 			p.exit.noted = true

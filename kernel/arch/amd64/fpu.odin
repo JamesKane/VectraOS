@@ -18,7 +18,7 @@ caller's is living in them across the call either.
 package amd64
 
 foreign {
-	vectra_fpu_hold :: proc "sysv" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) ---
+	vectra_fpu_hold :: proc "c" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) ---
 }
 
 // fpu_hold loads four XMM registers from `value`, spins until `flag` while

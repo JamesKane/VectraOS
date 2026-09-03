@@ -192,6 +192,9 @@ syscall_init :: proc(ns: ^vfs.Namespace) -> bool {
 	// This package owns descriptor tables, so it is the one that can say what
 	// a number in a Twrite to `/srv` means. See `resolve_fd_server`.
 	srv.set_fd_resolver(resolve_fd_chan)
+	// The architecture's door needs to know whom to call. amd64's stub names
+	// `dispatch` by its exported symbol and ignores this; the others keep it.
+	arch.set_syscall_dispatcher(dispatch)
 	return arch.syscall_init()
 }
 
@@ -232,16 +235,19 @@ interrupts already back on. So this may allocate, may take a lock that parks,
 and may send a 9P message and wait for the reply. A syscall that blocks blocks
 the program and nothing else.
 
-The context is built here rather than inherited. A `proc "sysv"` has no
+The context is built here rather than inherited. A `proc "c"` has no
 implicit one, and the thread this runs on was never given a default. That is
 the same three lines every worker thread in the tree starts with.
 
-The answer goes into `frame.rax`, which the pops at the end of the stub deliver
-back to the program. Nothing here returns a value, because there is nowhere for
-a return value to go.
+The answer goes into the frame, through `arch.set_syscall_result`, and the
+pops at the end of the stub deliver it back to the program. Nothing here
+returns a value, because there is nowhere for a return value to go. Which
+register carries the number, which carry the arguments and which the answer
+is the architecture's, and `arch.syscall_request` is the only thing that
+knows.
 */
 @(export, link_name = "vectra_syscall_dispatch")
-dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
+dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	context = syscall_context()
 	calls += 1
 
@@ -250,7 +256,7 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 	call. A noted program's next request is one nothing should honour. With
 	no handler the program ends here, and with one, the call it was about to
 	make is aborted and the handler gets the frame. That abort is Plan 9's
-	rule for an interrupted call. Its EINTR is written into `rax` before the
+	rule for an interrupted call. Its EINTR is written into the frame's answer before the
 	frame is saved, so NCONT resumes into the answer. A delivery already in
 	flight holds the note instead -- the handler's own calls, `noted` above
 	all, must still work.
@@ -263,7 +269,7 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 			note_exit(frame)
 		}
 		if !p.notified {
-			frame.rax = transmute(u64)(-i64(vectra9.EINTR))
+			arch.set_syscall_result(frame, -i64(vectra9.EINTR))
 			if !deliver_note(p, frame) {
 				note_exit(frame)
 			}
@@ -272,13 +278,8 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		}
 	}
 
-	number := frame.rax
-	a0 := frame.rdi
-	a1 := frame.rsi
-	a2 := frame.rdx
-	a3 := frame.r10
-	a4 := frame.r8
-	a5 := frame.r9
+	number, args := arch.syscall_request(frame)
+	a0, a1, a2, a3, a4, a5 := args[0], args[1], args[2], args[3], args[4], args[5]
 
 	result: i64
 	switch number {
@@ -347,7 +348,7 @@ dispatch :: proc "sysv" (frame: ^arch.Trap_Frame) {
 		result = -i64(vectra9.ENOSYS)
 	}
 
-	frame.rax = u64(result)
+	arch.set_syscall_result(frame, result)
 }
 
 /*
@@ -836,8 +837,8 @@ note_exit :: proc(frame: ^arch.Trap_Frame) -> ! {
 
 	arch.disable_interrupts()
 	if p != nil {
-		p.exit.ip = uintptr(frame.rip)
-		p.exit.sp = uintptr(frame.rsp)
+		p.exit.ip = arch.frame_ip(frame)
+		p.exit.sp = arch.frame_sp(frame)
 		p.exit.kstack = uintptr(rawptr(frame))
 		p.exit.from_user = arch.frame_is_user(frame)
 		p.exit.noted = true
@@ -1588,9 +1589,9 @@ sys_exit :: proc(frame: ^arch.Trap_Frame, status: u64) {
 
 	if thread := sched.current(); thread != nil {
 		if p := (^Process)(thread.user); p != nil {
-			p.exit.vector = frame.vector
-			p.exit.ip = uintptr(frame.rip)
-			p.exit.sp = uintptr(frame.rsp)
+			p.exit.vector = arch.frame_vector(frame)
+			p.exit.ip = arch.frame_ip(frame)
+			p.exit.sp = arch.frame_sp(frame)
 			p.exit.kstack = uintptr(rawptr(frame))
 			p.exit.from_user = arch.frame_is_user(frame)
 			p.exit.status = status

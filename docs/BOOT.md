@@ -26,12 +26,13 @@ everything that can afford to fail loudly.
   Support for 5-level should arrive as a deliberate edit to that request.
 - **`arch` is the only CPU-facing import** the portable kernel may use.
   A `#+build` tag selects the per-architecture bindings
-  (`arch_amd64.odin`, `arch_arm64.odin`, `arch_riscv64.odin`). The latter two
-  are stubs, and they exist so that a port fills in blanks rather than edits
-  call sites.
-- **Inline asm, no nasm.** Odin's `asm(...)` with LLVM AT&T templates and
-  register constraints covers port I/O, control registers and MSRs. Verified by
-  disassembly.
+  (`arch_amd64.odin`, `arch_arm64.odin`, `arch_riscv64.odin`). All three bind
+  the same names, and `docs/PORTS.md` records what filling the other two in
+  cost the portable kernel: five names that were amd64's, now neutral.
+- **Inline asm, no nasm.** Odin's `asm(...)` templates cover port I/O,
+  control registers and MSRs on amd64. On the two ports most system
+  instructions are `#byte` sequences, because the checker does not know them.
+  Verified by disassembly, and on the ports produced by it.
 - **The framebuffer `Surface` is the shared drawing type.** The boot splash, the
   future panic screen, and `intuition`'s off-screen window buffers are all
   Surfaces. A bevel drawn at boot and one on a titlebar are therefore the same
@@ -104,17 +105,15 @@ Traps and the panic screen:
   the register state, and it cannot walk the stack. That needs either deliberate
   frame pointers or retained unwind tables. It is the largest single thing
   missing from an otherwise complete fault report.
-- **OVMF is borrowed from `../odin-os/ovmf/ovmf_x64.fd`.** `build.odin`
-  hard-codes that path and dies if it is missing. Vectra should vendor its own
-  firmware. It will also need `AAVMF` and `RISCV_VIRT` equivalents before the
-  other arches can boot.
+- **The firmware is QEMU's.** `build.odin` prefers the OVMF image in
+  `../odin-os/ovmf/` on amd64 when it is there, and otherwise loads the
+  edk2 code and variable images that ship beside every QEMU install, per
+  architecture. Vectra vendors none of them.
 - **QEMU's vvfat is read-write, so OVMF writes `NvVars` into `build/esp/`.** It
   is harmless. It does mean the staged ESP is not byte-reproducible.
-- **`arm64` and `riscv64` are stubs, and are falling further behind.**
-  `build.odin` has their rows filled in and the vendored bootloaders are
-  present. But there are no `link_arm64.ld` or `link_riscv64.ld` scripts. And
-  `arch_amd64.odin` now carries both the paging interface *and* the trap
-  interface that the other two do not declare.
+- **`arm64` and `riscv64` boot, and are behind on ring 3.** Their trap
+  paths, page tables, timers and controllers are theirs; the thirty-one
+  assembly test programs are not yet. `docs/PORTS.md` has the table.
 - **Memory-map entry count varies run to run** (27, 31, 33) with OVMF and vvfat.
   It is not a bug. Do not chase it.
 

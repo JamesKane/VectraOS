@@ -37,25 +37,5 @@ font:
 	python3 tools/genfont.py > sys/libfont/font_data.odin
 
 check:
-	odin check kernel -collection:kernel=kernel -collection:vsys=sys \
-		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-		-vet -strict-style
+	$(BUILD) check $(ARGS)
 	odin check build.odin -file
-	odin check servers/ramfs -collection:vsys=sys \
-		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-		-vet -strict-style
-	odin check servers/consrv -collection:vsys=sys \
-		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-		-vet -strict-style
-	odin check servers/kbdfs -collection:vsys=sys \
-		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-		-vet -strict-style
-	odin check servers/eiafs -collection:vsys=sys \
-		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-		-vet -strict-style
-	odin check servers/intuition -collection:vsys=sys \
-		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-		-vet -strict-style
-	odin check apps/terminal -collection:vsys=sys \
-		-target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-		-vet -strict-style

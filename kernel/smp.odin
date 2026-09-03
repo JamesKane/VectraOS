@@ -3,12 +3,13 @@ The other cores, and how each one arrives.
 
 The bootloader parks every core but the first, each spinning on a word of its
 own. A store to that word sends the core to the address stored, in the
-machine state the first core got: long mode, the bootloader's page tables, a
-bootloader stack, interrupts off, no IDT and no TSS. Everything the first core
+machine state the first core got: the bootloader's page tables, a
+bootloader stack, interrupts off, and no trap tables of the kernel's. Everything the first core
 did in `kmain` before it had a scheduler, this core does in `ap_main`, in the
 same order and for the same reasons. `docs/SMP.md` argues the whole of it.
 
-    ap_entry     on the bootloader's stack and tables: SSE on, then leave both
+    ap_entry     on the bootloader's stack and tables: the vector unit on,
+                 then leave both
     ap_main      on the kernel's: traps, paging bits, syscall, APIC, a
                  scheduler record, a timer, and then exit into idle
 
@@ -67,7 +68,7 @@ to is heap memory only the kernel's tables map, and its address is all this
 side reads.
 */
 @(private = "file")
-ap_entry :: proc "sysv" (info: ^limine.MP_Info) -> ! {
+ap_entry :: proc "c" (info: ^limine.MP_Info) -> ! {
 	arch.early_init()
 	b := &ap_boots[int(info.extra_argument)]
 	arch.ap_switch(
@@ -96,10 +97,10 @@ the idle thread on the core. The exit is the arrival's whole future: the
 stack it stands on goes back to the heap when the idle thread reaps it.
 */
 @(private = "file")
-ap_main :: proc "sysv" (arg: rawptr) -> ! {
+ap_main :: proc "c" (arg: rawptr) -> ! {
 	b := cast(^Ap_Boot)arg
 
-	arch.init_traps_ap(b.id)
+	arch.init_traps_ap(b.id, u64(b.lapic))
 	arch.enable_paging_features()
 	_ = arch.syscall_init()
 	arch.timer_attach_here()
@@ -142,7 +143,7 @@ init_smp :: proc() -> bool {
 	next := 1
 	for i in 0 ..< int(mp.cpu_count) {
 		info := mp.cpus[i]
-		if info.lapic_id == mp.bsp_lapic_id {
+		if limine.mp_cpu_id(info) == limine.mp_bsp_id(mp) {
 			continue
 		}
 		if next >= sched.MAX_CPUS {
@@ -155,7 +156,7 @@ init_smp :: proc() -> bool {
 		b := &ap_boots[next]
 		b.stack = stack
 		b.id = next
-		b.lapic = info.lapic_id
+		b.lapic = u32(limine.mp_cpu_id(info))
 		b.online = false
 		info.extra_argument = u64(next)
 		intrinsics.atomic_store(
@@ -177,10 +178,12 @@ init_smp :: proc() -> bool {
 	libodin.put_uint(&sink, u64(sched.online_count()))
 	libodin.put_str(&sink, " of ")
 	libodin.put_uint(&sink, u64(ap_released + 1))
-	libodin.put_str(&sink, " cores online -- lapic ids")
+	libodin.put_str(&sink, " cores online -- ")
+	libodin.put_str(&sink, limine.MP_ID_NAME)
+	libodin.put_str(&sink, " ids")
 	for i in 0 ..= ap_released {
 		libodin.put_str(&sink, " ")
-		libodin.put_uint(&sink, u64(i == 0 ? mp.bsp_lapic_id : ap_boots[i].lapic))
+		libodin.put_uint(&sink, i == 0 ? limine.mp_bsp_id(mp) : u64(ap_boots[i].lapic))
 		if i > 0 && !intrinsics.volatile_load(&ap_boots[i].online) {
 			libodin.put_str(&sink, "(missing)")
 		}

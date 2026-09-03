@@ -7,10 +7,13 @@ Run it with:
 
 Targets:
     kernel   Compile and link kernel/ into build/vectra.elf   (default)
+    user     Compile the ring 3 programs into build/user
+    check    Type-check the kernel and the programs, emit nothing
     esp      Stage a bootable EFI system partition in build/esp
     run      esp, then boot it under QEMU
     debug    run, but halted and waiting for gdb on :1234
     clean    Remove build/
+    lint     Check the prose against ASD-STE100
 
 Options:
     --arch=amd64|arm64|riscv64   Target architecture (default: amd64)
@@ -114,11 +117,36 @@ asm_amd64 := [?]string{
 	"kernel/user/programs_amd64.S",
 }
 
+// The vector table and its tail, the AP stack switch, the vector-register
+// hold, and the program blobs -- which on this architecture are placeholders
+// until the programs are written again. See `docs/PORTS.md`.
+asm_arm64 := [?]string{
+	"kernel/arch/arm64/vectors.S",
+	"kernel/arch/arm64/ap.S",
+	"kernel/arch/arm64/fpu_hold.S",
+	"kernel/user/programs_arm64.S",
+}
+
+asm_riscv64 := [?]string{
+	"kernel/arch/riscv64/vectors.S",
+	"kernel/arch/riscv64/ap.S",
+	"kernel/arch/riscv64/fpu_hold.S",
+	"kernel/user/programs_riscv64.S",
+}
+
 // Machine lines live at package scope: a slice of a compound literal built
 // inside arch_config would point into that call's stack frame.
+//
+// The two `virt` boards get a `ramfb`, which is the one display device the
+// firmware's GOP drives without a driver of ours, so the bootloader hands
+// over a framebuffer and the chassis console comes up. The GIC is pinned to
+// version 2, which is the one `kernel/arch/arm64/gic.odin` speaks. ACPI is
+// off on riscv64, because the firmware publishes either ACPI tables or the
+// device tree and not both, and the tree is the one word on the clock rate
+// this kernel can read. See `docs/PORTS.md`.
 qemu_amd64_machine := [?]string{"-machine", "q35", "-cpu", "qemu64", "-m", "512M"}
-qemu_arm64_machine := [?]string{"-machine", "virt", "-cpu", "cortex-a72", "-m", "512M"}
-qemu_riscv64_machine := [?]string{"-machine", "virt", "-m", "512M"}
+qemu_arm64_machine := [?]string{"-machine", "virt,gic-version=2", "-cpu", "cortex-a72", "-m", "512M", "-device", "ramfb"}
+qemu_riscv64_machine := [?]string{"-machine", "virt,acpi=off", "-cpu", "rv64", "-m", "512M", "-device", "ramfb"}
 
 arch_config :: proc(arch: Arch) -> Arch_Config {
 	switch arch {
@@ -137,6 +165,7 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 		return {
 			odin_target   = "freestanding_arm64",
 			clang_target  = "aarch64-unknown-elf",
+			asm_sources   = asm_arm64[:],
 			ld_emulation  = "aarch64elf",
 			link_script   = "kernel/link_arm64.ld",
 			qemu          = "qemu-system-aarch64",
@@ -147,6 +176,7 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 		return {
 			odin_target   = "freestanding_riscv64",
 			clang_target  = "riscv64-unknown-elf",
+			asm_sources   = asm_riscv64[:],
 			ld_emulation  = "elf64lriscv",
 			link_script   = "kernel/link_riscv64.ld",
 			qemu          = "qemu-system-riscv64",
@@ -226,13 +256,14 @@ main :: proc() {
 	switch opts.target {
 	case "kernel": build_kernel(opts)
 	case "user":   build_user(opts)
+	case "check":  check(opts)
 	case "esp":    stage_esp(opts)
 	case "run":    stage_esp(opts); run_qemu(opts, debug = false)
 	case "debug":  stage_esp(opts); run_qemu(opts, debug = true)
 	case "clean":  clean()
 	case "lint":   lint(opts)
 	case:
-		die("unknown target %q (want kernel, user, esp, run, debug, clean, lint)", opts.target)
+		die("unknown target %q (want kernel, user, check, esp, run, debug, clean, lint)", opts.target)
 	}
 }
 
@@ -293,7 +324,14 @@ build_kernel :: proc(opts: Options) {
 	for src in cfg.asm_sources {
 		obj := fmt.tprintf("%s/%s.o", BUILD_DIR, filepath_stem(src))
 		step("assembling %s", src)
-		run({"clang", "-target", cfg.clang_target, "-c", src, "-o", obj})
+		assemble := [dynamic]string{"clang", "-target", cfg.clang_target}
+		if opts.arch == .riscv64 {
+			// The assembler needs telling which extensions the `.S` files
+			// use; the compiler already knows for the Odin.
+			append(&assemble, "-march=rv64gc_zihintpause")
+		}
+		append(&assemble, "-c", src, "-o", obj)
+		run(assemble[:])
 		append(&objects, obj)
 	}
 
@@ -355,6 +393,10 @@ build_user :: proc(opts: Options) {
 			"-o:speed",
 			"-no-bounds-check",
 		})
+		// `-z norelro`, because the linker otherwise carves a read-only
+		// segment for the GOT out of `.data` and starts `.bss` where that
+		// ends, mid-page. The loader maps whole pages, and `link_user.ld`
+		// exists so every segment starts on one.
 		run({
 			"ld.lld", obj,
 			"-o", elf,
@@ -362,6 +404,7 @@ build_user :: proc(opts: Options) {
 			"-T", "sys/libuser/link_user.ld",
 			"-nostdlib",
 			"-static",
+			"-z", "norelro",
 		})
 		elf_to_image(elf, img)
 	}
@@ -531,6 +574,27 @@ stage_esp :: proc(opts: Options) {
 	copy_file(KERNEL_ELF, fmt.tprintf("%s/vectra.elf", ESP_DIR))
 }
 
+/*
+The UEFI firmware QEMU boots, per architecture: the code image and the
+variable store that ship beside every QEMU install, as edk2 builds them.
+The vars image is copied somewhere writable first, because UEFI writes it.
+The i386 name on amd64 is not a mistake: QEMU ships one vars image for both
+x86 targets. The arm name on arm64 is the same story.
+*/
+Firmware :: struct {
+	code: string,
+	vars: string,
+}
+
+firmware_for :: proc(arch: Arch) -> Firmware {
+	switch arch {
+	case .amd64:   return {code = "edk2-x86_64-code.fd", vars = "edk2-i386-vars.fd"}
+	case .arm64:   return {code = "edk2-aarch64-code.fd", vars = "edk2-arm-vars.fd"}
+	case .riscv64: return {code = "edk2-riscv-code.fd", vars = "edk2-riscv-vars.fd"}
+	}
+	return {}
+}
+
 run_qemu :: proc(opts: Options, debug: bool) {
 	cfg := arch_config(opts.arch)
 
@@ -541,30 +605,31 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	// via -bios. Otherwise the split edk2 code+vars pair that every QEMU
 	// install ships is loaded as two pflash devices -- the code read-only,
 	// the vars copied somewhere writable first, because UEFI writes them.
-	if opts.arch == .amd64 {
-		combined := "../odin-os/ovmf/ovmf_x64.fd"
-		if os.exists(combined) {
-			append(&args, "-bios", combined)
-		} else {
-			share := ""
-			for dir in ([]string{"/opt/homebrew/share/qemu", "/usr/local/share/qemu", "/usr/share/qemu"}) {
-				if os.exists(fmt.tprintf("%s/edk2-x86_64-code.fd", dir)) {
-					share = dir
-					break
-				}
+	combined := "../odin-os/ovmf/ovmf_x64.fd"
+	if opts.arch == .amd64 && os.exists(combined) {
+		append(&args, "-bios", combined)
+	} else {
+		fw := firmware_for(opts.arch)
+		share := ""
+		for dir in ([]string{"/opt/homebrew/share/qemu", "/usr/local/share/qemu", "/usr/share/qemu"}) {
+			if os.exists(fmt.tprintf("%s/%s", dir, fw.code)) {
+				share = dir
+				break
 			}
-			if share == "" {
-				die("no OVMF firmware at %s and no edk2 images beside QEMU -- UEFI boot needs one", combined)
-			}
-			vars := fmt.tprintf("%s/edk2-vars.fd", BUILD_DIR)
-			if !os.exists(vars) {
-				// The i386 name is not a mistake: QEMU ships one vars image
-				// for both x86 targets.
-				copy_file(fmt.tprintf("%s/edk2-i386-vars.fd", share), vars)
-			}
-			append(&args, "-drive", fmt.tprintf("if=pflash,format=raw,readonly=on,file=%s/edk2-x86_64-code.fd", share))
-			append(&args, "-drive", fmt.tprintf("if=pflash,format=raw,file=%s", vars))
 		}
+		if share == "" {
+			die("no %s beside QEMU -- UEFI boot needs one", fw.code)
+		}
+		vars := fmt.tprintf("%s/%s", BUILD_DIR, fw.vars)
+		if !os.exists(vars) {
+			copy_file(fmt.tprintf("%s/%s", share, fw.vars), vars)
+		}
+		// The `virt` boards number their flash units, and the firmware is
+		// unit 0 by convention. q35 takes them in order.
+		unit := opts.arch == .amd64 ? "" : ",unit=0"
+		append(&args, "-drive", fmt.tprintf("if=pflash,format=raw,readonly=on%s,file=%s/%s", unit, share, fw.code))
+		unit = opts.arch == .amd64 ? "" : ",unit=1"
+		append(&args, "-drive", fmt.tprintf("if=pflash,format=raw%s,file=%s", unit, vars))
 	}
 
 	append(&args, "-drive", fmt.tprintf("format=raw,file=fat:rw:%s", ESP_DIR))
@@ -598,6 +663,42 @@ run_qemu :: proc(opts: Options, debug: bool) {
 clean :: proc() {
 	step("removing %s", BUILD_DIR)
 	run({"rm", "-rf", BUILD_DIR})
+}
+
+/*
+check type-checks the kernel and every ring 3 program for one architecture,
+and emits nothing.
+
+The same target and the same vets the build uses, without the link, so a
+port's compile errors arrive in seconds rather than after six programs are
+built. `--arch` selects the architecture, and a tree that passes for all
+three is a tree where nothing generic holds machine code.
+*/
+check :: proc(opts: Options) {
+	cfg := arch_config(opts.arch)
+	step("checking kernel for %s", cfg.odin_target)
+	run({
+		"odin", "check", "kernel",
+		fmt.tprintf("-target:%s", cfg.odin_target),
+		"-collection:kernel=kernel",
+		"-collection:vsys=sys",
+		"-no-entry-point",
+		"-default-to-nil-allocator",
+		"-vet",
+		"-strict-style",
+	})
+	for prog in user_programs {
+		step("checking %s for %s", prog.path, cfg.odin_target)
+		run({
+			"odin", "check", prog.path,
+			fmt.tprintf("-target:%s", cfg.odin_target),
+			"-collection:vsys=sys",
+			"-no-entry-point",
+			"-default-to-nil-allocator",
+			"-vet",
+			"-strict-style",
+		})
+	}
 }
 
 // -- Process and file helpers ------------------------------------------------

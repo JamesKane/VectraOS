@@ -40,7 +40,7 @@ align_down :: proc "contextless" (value: uintptr, align: uintptr) -> uintptr {
 thread_resume_init writes a new thread's saved state onto its own stack.
 
 `arg` arrives in the first argument register, so an entry procedure is an
-ordinary `proc "sysv" (arg: rawptr)`. `on_return` is where it goes if it
+ordinary `proc "c" (arg: rawptr)`. `on_return` is where it goes if it
 returns. There is no runtime underneath a kernel thread to catch that. A fall
 off the end of one has to land on something the scheduler chose.
 
@@ -310,10 +310,10 @@ on the new stack with `rbp` cleared, so a backtrace from it ends where the
 kernel began for this core.
 */
 foreign {
-	vectra_ap_switch :: proc "sysv" (
+	vectra_ap_switch :: proc "c" (
 		stack_top: uintptr,
 		root: u64,
-		entry: proc "sysv" (arg: rawptr) -> !,
+		entry: proc "c" (arg: rawptr) -> !,
 		arg: rawptr,
 	) -> ! ---
 }
@@ -321,7 +321,7 @@ foreign {
 ap_switch :: proc "contextless" (
 	stack_top: uintptr,
 	root: uintptr,
-	entry: proc "sysv" (arg: rawptr) -> !,
+	entry: proc "c" (arg: rawptr) -> !,
 	arg: rawptr,
 ) -> ! {
 	vectra_ap_switch(stack_top, u64(root), entry, arg)

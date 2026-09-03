@@ -120,7 +120,7 @@ fails is also the portless machine: a port that failed its probe answers
 ENXIO, and this server has nothing to serve.
 */
 @(export, link_name = "_start")
-start :: proc "sysv" (data: uintptr, arg: u64, arg2: u64) {
+start :: proc "c" (data: uintptr, arg: u64, arg2: u64) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 

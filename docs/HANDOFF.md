@@ -25,8 +25,9 @@ A modular operating system in Odin. Two ideas define it:
 
 Layout — `kernel/` (arch, mem, sched, vfs, drivers), `sys/` (libodin, libuser,
 libdraw, vectra9), `servers/` (ramfs, consrv, kbdfs, eiafs, intuition), `apps/`
-(terminal). Primary arch `x86_64` via Limine, with stubs for `aarch64` and
-`riscv64`.
+(terminal). Three architectures via Limine: `amd64` first and furthest,
+`arm64` and `riscv64` booting the same `kmain` on QEMU's `virt` board since
+September 2026. `docs/PORTS.md` says where each port stands.
 
 About 50,700 lines of Odin. The linked kernel is ~1.6 MB debug, and the six
 embedded user images are ~300 KB.
@@ -279,7 +280,16 @@ driver directly as:
 
 ```sh
 odin run build.odin -file -out:.vectra-build -- run --gfx
+odin run build.odin -file -out:.vectra-build -- run --arch=arm64 --serial=file
+odin run build.odin -file -out:.vectra-build -- check --arch=riscv64
 ```
+
+`--arch` selects the architecture for every target, `check` type-checks the
+kernel and the six programs for one architecture without linking, and a
+change to anything under `kernel/arch/` or to `main.odin` wants all three
+checked. The two ports boot the same firmware pair QEMU ships for their
+boards, and the riscv64 firmware prints about twelve hundred lines of its
+own before Limine: `grep -a '^\['` on the serial log finds the kernel's.
 
 **QEMU presents four cores by default, and the kernel starts every one.**
 `--smp=N` changes the count, and `--smp=1` is the uniprocessor control: the
@@ -345,6 +355,12 @@ ways whose error messages do not point back here.
 | A voluntary switch is not a preemption | Making a layer block often does not make its narrow races reachable. A sleeping session lock took `kernel/verify_vfs.odin` from ~1,000 context switches a run to ~110,000, and caught not one additional mutation — every added switch is at a lock boundary, and a two-instruction read-modify-write window is not. Only a timer, or a second core, interleaves two threads at an arbitrary instruction. |
 | Refilling a slice on dispatch is not scheduling | `Thread.ticks_left` reset on every dispatch is indistinguishable from resetting it every slice, right up until something blocks. A thread that parks hundreds of times a second then never reaches the end of a slice, never decays, and outranks the thread doing steady work for ever. Decay has to measure CPU consumed, which means carrying the remainder across a block. |
 | `int $8` is not a double fault | A software interrupt to an error-code vector does **not** push an error code, so it lands on a stub that assumes one was pushed. Never test `#DF` that way. Provoke a real one by faulting on a bad stack. |
+| `proc "sysv"` is amd64's alone | The compiler refuses it on the other two targets. Every procedure the assembly enters or the bootloader calls is `proc "c"`, which is the same convention on amd64 and the native one elsewhere. |
+| The ports' templates are bytes | The checker knows the general instructions and not the system ones. `msr daifset`, the barriers, `tlbi`, `brk`, `svc`, `ecall`, `ebreak`, `sfence.vma` and a read of `sp` are `#byte` sequences with the register pinned to `x0` or `a0`. clang is the oracle: assemble the mnemonic in a scratch `.s`, read the bytes back with `llvm-objdump`. |
+| A `foreign` symbol the image defines is undefined | Declaring `vectra_syscall_dispatch` with `foreign` in an arch package, when `kernel/user` exports it, left the linker with no definition. The ports take the dispatcher as a pointer through `arch.set_syscall_dispatcher`. |
+| `ecall` from supervisor mode never reaches the kernel | It is the SBI's door, and no delegation changes that. The riscv64 yield is an `ebreak` with the vector in `a7`. |
+| riscv64 links need `-z norelro` and the small-data sections placed | `ld.lld` otherwise carves a read-only segment for the GOT out of `.data` and starts `.bss` mid-page, which `build.odin` refuses; and `.sdata`/`.sbss` left unplaced become a segment of their own. |
+| The riscv64 firmware publishes ACPI or a device tree, not both | The clock rate is a device tree property and nothing else says it. `build.odin` boots the `virt` board with `acpi=off`. |
 
 **No vendored runtime shim.** The neighbouring `odin-os` project hand-maintains
 a copy of `base:runtime` that must track the compiler. Current Odin ships
@@ -436,11 +452,31 @@ late. It was not seen at `--smp=1` this session and was not chased.
 - `servers/kbdfs` has its own copy of the scancode translation and it answers
   bytes, so the arrow keys reach `/dev/cons` and not `/kbd`. Nothing consumes
   `/kbd` for them yet, which is why this is a note rather than an item.
-- Teach `arch_arm64.odin` / `arch_riscv64.odin` the paging, trap and scheduling
-  interfaces. `cpu_class` is the one that pays off immediately. The placement
-  policy and the capacity-scaled slice are built and tested. An arm64
-  `cpu_class` that reads the three tiers from the core-id registers is all that
-  stands between them and real work.
+- An arm64 `cpu_class` that reads the three tiers from the core-id registers.
+  The placement policy and the capacity-scaled slice are built and tested,
+  and every core answers `.Performance` until this is written.
+
+### The ports, what is left of them
+
+Both ports boot `kmain` whole, and `docs/PORTS.md` section 4 has the table.
+What is open, in order:
+
+1. **The thirty-one ring 3 test programs** in `kernel/user/programs_amd64.S`
+   have no arm64 or riscv64 text. Each port's `programs_<arch>.S` carries
+   every symbol as one trapping instruction, so `verify_user` fails by the
+   hundred on the ports and says so. The six Odin programs run as built.
+2. **An arm64 flake, two shapes.** Over ten headless boots at `--smp=4`, one
+   stopped with `[ FAIL ] a reader was queued behind no writer` inside
+   `verify_vfs_threads`, and one hung in the user phase. Eight reached
+   `boot complete` with four cores online. The read/write lock's rule is one
+   no interleaving under `wait_lock` should reach, which points at the port's
+   switch or at a stack. `docs/TESTING.md` and the boot-loop notes say how to
+   hunt it.
+3. **The riscv64 clock rate** comes from the device tree, which the
+   firmware publishes only with ACPI off. `build.odin` says so on the QEMU
+   line, and a machine that offers only ACPI needs the RHCT read instead.
+4. **A stop that cannot be masked.** Neither port has an NMI, so a panic's
+   stop reaches a core inside a spinlock late.
 
 ## 7. File map
 
@@ -461,6 +497,8 @@ kernel/
   panic.odin            The panic screen, and the trap handler behind it
   link_amd64.ld         Static-PIE layout; orders .limine_requests, exports
                         the __text/__rodata/__data segment bounds
+  link_arm64.ld         The same layout for aarch64
+  link_riscv64.ld       The same, with the small-data sections placed
   verify_sync.odin      The sleeping lock on its own terms
   verify_rendez.odin    The sleep queue: the clock, the park, the condition
   verify_flush.odin     Tflush against a server that will not finish -- the
@@ -477,8 +515,9 @@ kernel/
   verify_smp.odin       Every core ticks, work spreads, a wake crosses cores
   arch/
     arch_amd64.odin     The architecture interface, bound to amd64
-    arch_arm64.odin     Stub
-    arch_riscv64.odin   Stub
+    arch_arm64.odin     The same names, bound to arm64
+    arch_riscv64.odin   The same names, bound to riscv64
+    amd64/frame.odin    What kernel/user may read out of a frame, and put in
     amd64/cpu.odin      Port I/O, control regs, MSRs, CPUID, EFER, SSE
     amd64/paging.odin   Page table format: entry bits, encode/decode, TLB
     amd64/gdt.odin      GDT, TSS, and the interrupt stack table
@@ -491,9 +530,29 @@ kernel/
     amd64/percpu.odin   What one core keeps behind GS, and the two MSRs
     amd64/syscall.odin  SYSCALL/SYSRET: the four registers that arm them, and
                         the naked stub that finds a stack with nothing to trust
+    arm64/cpu.odin      DAIF, barriers, the system registers, as bytes
+    arm64/vectors.S     The sixteen-entry table and the tail
+    arm64/traps.odin    The dispatcher: GIC ids, svc immediates and classes
+    arm64/paging.odin   Stage 1 tables; two base registers, one root
+    arm64/early.odin    The TTBR0 window onto the PL011, before the VMM
+    arm64/gic.odin      GICv2: distributor, CPU interface, SGIs
+    arm64/timer.odin    The generic timer, re-armed in the acknowledge
+    arm64/context.odin  A new thread's first frame, and the AP switch
+    arm64/percpu.odin   What one core keeps behind TPIDR_EL1
+    arm64/frame.odin    The frame's public face for arm64
+    riscv64/cpu.odin    sstatus, the CSRs by number, ebreak with a vector
+    riscv64/vectors.S   The one entry stvec names, and the sscratch dance
+    riscv64/traps.odin  The dispatcher: causes, PLIC sources, the mailbox
+    riscv64/paging.odin Sv48
+    riscv64/sbi.odin    Timer, IPI and console through the firmware
+    riscv64/early.odin  The firmware console, and the device tree's one word
+    riscv64/plic.odin   Sources, contexts, claim and complete
+    riscv64/timer.odin  The tick through the SBI, and the IPI mailbox
+    riscv64/context.odin, percpu.odin, frame.odin  As arm64's
   boot/limine/          Protocol bindings, base revision tag, request delimiters
   drivers/
-    uart/uart.odin      16550 serial, polled
+    uart/uart.odin      The serial console, polled: a 16550 behind ports or
+                        in memory, a PL011, or the firmware's own
     fb/fb.odin          Surface, clipping, gradients, brushed fill, and the
                         painter that walks libdraw's chrome onto a surface
     fb/palette.odin     The kernel's aliases for sys/libpal

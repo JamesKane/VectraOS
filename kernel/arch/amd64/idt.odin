@@ -464,7 +464,7 @@ allocates, nothing here logs, and nothing here can afford to fault. The handler
 it calls is what does the talking.
 */
 @(export, link_name = "vectra_trap_dispatch")
-trap_dispatch :: proc "sysv" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no_bounds_check {
+trap_dispatch :: proc "c" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no_bounds_check {
 	// Resume where we came from unless something says otherwise. Written first,
 	// so every path below leaves a valid answer behind it. That includes the
 	// paths that do not return.

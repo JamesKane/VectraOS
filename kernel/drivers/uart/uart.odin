@@ -1,28 +1,46 @@
 /*
-16550-compatible UART driver.
+The serial console: four ways to reach one, behind one `Port`.
 
 This is the first thing Vectra starts, and the last thing that still works when
 the framebuffer console is wedged. It therefore depends on no memory
 management, no interrupts, and no scheduler. Transmit is polled.
+
+Which chip, and how it is reached, is the architecture's to say --
+`arch.serial_console` answers with a `Serial_Desc`, and this file drives what
+it names:
+
+    Port_16550   a 16550 behind x86 port I/O, which is every PC's COM1
+    Mmio_16550   the same chip with its registers in memory, one byte apart,
+                 which is what QEMU's riscv64 `virt` board has at 0x10000000
+    Pl011        ARM's PrimeCell UART, a different register file altogether,
+                 which is what the aarch64 `virt` board has at 0x09000000
+    Firmware     no chip at all: the firmware's own console, reached by a
+                 call the architecture supplies. riscv64's SBI is one, and
+                 it is the only console that needs no mapping to reach
+
+The 16550 and the PL011 share nothing but the job, so each has its own
+register table below and its own arm of every switch. What they share is
+`Port`, which is all the logger and `/dev/eia0` ever hold.
 */
 package uart
 
-import "kernel:arch/amd64"
+import "base:intrinsics"
+
+import "kernel:arch"
 import "vsys:libodin"
 
-COM1 :: u16(0x3F8)
-COM2 :: u16(0x2F8)
+// -- The 16550 ---------------------------------------------------------------
 
 // Register offsets from the port base. DLAB in the line-control register
 // re-aims offsets 0 and 1 at the divisor latch, hence the doubled names.
-REG_DATA         :: u16(0) // RX/TX buffer  (DLAB=0)
-REG_INT_ENABLE   :: u16(1) // Interrupt enable (DLAB=0)
-REG_DIVISOR_LO   :: u16(0) // Divisor latch low (DLAB=1)
-REG_DIVISOR_HI   :: u16(1) // Divisor latch high (DLAB=1)
-REG_FIFO_CTRL    :: u16(2)
-REG_LINE_CTRL    :: u16(3)
-REG_MODEM_CTRL   :: u16(4)
-REG_LINE_STATUS  :: u16(5)
+REG_DATA         :: uintptr(0) // RX/TX buffer  (DLAB=0)
+REG_INT_ENABLE   :: uintptr(1) // Interrupt enable (DLAB=0)
+REG_DIVISOR_LO   :: uintptr(0) // Divisor latch low (DLAB=1)
+REG_DIVISOR_HI   :: uintptr(1) // Divisor latch high (DLAB=1)
+REG_FIFO_CTRL    :: uintptr(2)
+REG_LINE_CTRL    :: uintptr(3)
+REG_MODEM_CTRL   :: uintptr(4)
+REG_LINE_STATUS  :: uintptr(5)
 
 LCR_8N1  :: u8(0x03) // 8 data bits, no parity, one stop bit
 LCR_DLAB :: u8(0x80)
@@ -44,55 +62,173 @@ LSR_TX_HOLD_FREE :: u8(0x20)
 // baud.
 BASE_CLOCK :: 115200
 
+// -- The PL011 ---------------------------------------------------------------
+
+PL011_DR    :: uintptr(0x00) // Data
+PL011_FR    :: uintptr(0x18) // Flags
+PL011_IBRD  :: uintptr(0x24) // Integer baud rate divisor
+PL011_FBRD  :: uintptr(0x28) // Fractional baud rate divisor
+PL011_LCR_H :: uintptr(0x2C) // Line control
+PL011_CR    :: uintptr(0x30) // Control
+PL011_IMSC  :: uintptr(0x38) // Interrupt mask
+PL011_ICR   :: uintptr(0x44) // Interrupt clear
+PL011_PID0  :: uintptr(0xFE0) // Peripheral id, byte 0: 0x11 on a PL011
+
+PL011_FR_RXFE :: u32(1) << 4 // Receive FIFO empty
+PL011_FR_TXFF :: u32(1) << 5 // Transmit FIFO full
+
+PL011_LCR_FEN  :: u32(1) << 4 // FIFOs on
+PL011_LCR_WLEN8 :: u32(3) << 5
+
+PL011_CR_UARTEN :: u32(1) << 0
+PL011_CR_TXE    :: u32(1) << 8
+PL011_CR_RXE    :: u32(1) << 9
+
+// The reference clock QEMU's PL011 divides. Real boards differ, and a board
+// that does is a board whose firmware already set the divisor.
+PL011_CLOCK :: 24_000_000
+
 Port :: struct {
-	base:    u16,
+	kind:    arch.Serial_Kind,
+	base:    uintptr, // A port number or a virtual address, by `kind`
 	present: bool,
 }
 
+// -- Register access ---------------------------------------------------------
+//
+// The 16550 is bytes, wherever it is. The PL011 is 32-bit words. Both go
+// through volatile accesses when they are memory, because a status register
+// read in a loop is exactly what the compiler would otherwise hoist.
+
+@(private = "file")
+reg_read :: proc "contextless" (p: ^Port, reg: uintptr) -> u8 {
+	#partial switch p.kind {
+	case .Port_16550: return arch.inb(u16(p.base + reg))
+	case .Mmio_16550: return intrinsics.volatile_load(cast(^u8)(p.base + reg))
+	}
+	return 0xFF
+}
+
+@(private = "file")
+reg_write :: proc "contextless" (p: ^Port, reg: uintptr, value: u8) {
+	#partial switch p.kind {
+	case .Port_16550: arch.outb(u16(p.base + reg), value)
+	case .Mmio_16550: intrinsics.volatile_store(cast(^u8)(p.base + reg), value)
+	}
+}
+
+@(private = "file")
+pl011_read :: proc "contextless" (p: ^Port, reg: uintptr) -> u32 {
+	return intrinsics.volatile_load(cast(^u32)(p.base + reg))
+}
+
+@(private = "file")
+pl011_write :: proc "contextless" (p: ^Port, reg: uintptr, value: u32) {
+	intrinsics.volatile_store(cast(^u32)(p.base + reg), value)
+}
+
 /*
-init configures `base` for 8N1 at `baud` and probes the chip via its own
-loopback mode.
+init brings up the console the architecture named, and probes it.
 
 The probe matters under QEMU as much as on real hardware. If nothing wired the
 port up, `present` stays false, and every later write becomes a no-op.
-
 Without it, a write spins forever on a transmit-holding bit that will never
 set.
+
+A 16550 is probed through its own loopback mode: a byte sent to itself has
+to come back. A PL011 is probed through its peripheral id register, which is
+a constant the chip carries and an unmapped bus does not. The firmware
+console is present whenever the architecture says it has one.
 */
-init :: proc "contextless" (base: u16, baud: u32 = 115200) -> Port {
-	port := Port{base = base}
+init :: proc "contextless" (desc: arch.Serial_Desc, baud: u32 = 115200) -> Port {
+	port := Port{kind = desc.kind, base = desc.base}
+	switch desc.kind {
+	case .None:
+		return port
+	case .Port_16550, .Mmio_16550:
+		init_16550(&port, baud)
+	case .Pl011:
+		init_pl011(&port, baud)
+	case .Firmware:
+		port.present = arch.console_available()
+	}
+	return port
+}
+
+@(private = "file")
+init_16550 :: proc "contextless" (port: ^Port, baud: u32) {
 	divisor := u16(BASE_CLOCK / baud)
 	if divisor == 0 {
 		divisor = 1
 	}
 
-	amd64.outb(base + REG_INT_ENABLE, 0x00) // Mask all UART interrupts
+	reg_write(port, REG_INT_ENABLE, 0x00) // Mask all UART interrupts
 
-	amd64.outb(base + REG_LINE_CTRL, LCR_DLAB)
-	amd64.outb(base + REG_DIVISOR_LO, u8(divisor))
-	amd64.outb(base + REG_DIVISOR_HI, u8(divisor >> 8))
-	amd64.outb(base + REG_LINE_CTRL, LCR_8N1)
+	reg_write(port, REG_LINE_CTRL, LCR_DLAB)
+	reg_write(port, REG_DIVISOR_LO, u8(divisor))
+	reg_write(port, REG_DIVISOR_HI, u8(divisor >> 8))
+	reg_write(port, REG_LINE_CTRL, LCR_8N1)
 
-	amd64.outb(base + REG_FIFO_CTRL, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX | FCR_TRIGGER_14)
+	reg_write(port, REG_FIFO_CTRL, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX | FCR_TRIGGER_14)
 
 	// Loop the transmitter back to the receiver and check a byte survives.
-	amd64.outb(base + REG_MODEM_CTRL, MCR_DTR | MCR_RTS | MCR_LOOPBACK)
-	amd64.outb(base + REG_DATA, 0xAE)
-	if amd64.inb(base + REG_DATA) != 0xAE {
-		return port
+	reg_write(port, REG_MODEM_CTRL, MCR_DTR | MCR_RTS | MCR_LOOPBACK)
+	reg_write(port, REG_DATA, 0xAE)
+	if reg_read(port, REG_DATA) != 0xAE {
+		return
 	}
 
-	amd64.outb(base + REG_MODEM_CTRL, MCR_DTR | MCR_RTS | MCR_OUT2)
+	reg_write(port, REG_MODEM_CTRL, MCR_DTR | MCR_RTS | MCR_OUT2)
 	port.present = true
-	return port
+}
+
+/*
+init_pl011 programs the PrimeCell for 8N1 at `baud`.
+
+The control register is cleared first, because the divisor and the line
+control take effect only while the UART is off, and the interrupts are all
+cleared and masked, because nothing here handles one yet. The divisor is
+written for the clock QEMU's board has. A real board's firmware has already
+set one that suits its own, and this overwrites it. That is the same trade
+the 16550 makes with its 115200 Hz assumption.
+*/
+@(private = "file")
+init_pl011 :: proc "contextless" (port: ^Port, baud: u32) {
+	if pl011_read(port, PL011_PID0) & 0xFF != 0x11 {
+		return
+	}
+	pl011_write(port, PL011_CR, 0)
+	pl011_write(port, PL011_ICR, 0x7FF)
+	pl011_write(port, PL011_IMSC, 0)
+
+	// 16 * baud divides the clock. The integer part, then the fraction in
+	// sixty-fourths, as the chip wants them.
+	div := u32(PL011_CLOCK) * 4 / baud
+	pl011_write(port, PL011_IBRD, div >> 6)
+	pl011_write(port, PL011_FBRD, div & 0x3F)
+	pl011_write(port, PL011_LCR_H, PL011_LCR_WLEN8 | PL011_LCR_FEN)
+	pl011_write(port, PL011_CR, PL011_CR_UARTEN | PL011_CR_TXE | PL011_CR_RXE)
+	port.present = true
 }
 
 tx_ready :: proc "contextless" (port: ^Port) -> bool {
-	return amd64.inb(port.base + REG_LINE_STATUS) & LSR_TX_HOLD_FREE != 0
+	switch port.kind {
+	case .None:                   return false
+	case .Port_16550, .Mmio_16550: return reg_read(port, REG_LINE_STATUS) & LSR_TX_HOLD_FREE != 0
+	case .Pl011:                  return pl011_read(port, PL011_FR) & PL011_FR_TXFF == 0
+	case .Firmware:               return true
+	}
+	return false
 }
 
 rx_ready :: proc "contextless" (port: ^Port) -> bool {
-	return amd64.inb(port.base + REG_LINE_STATUS) & LSR_DATA_READY != 0
+	switch port.kind {
+	case .None:                   return false
+	case .Port_16550, .Mmio_16550: return reg_read(port, REG_LINE_STATUS) & LSR_DATA_READY != 0
+	case .Pl011:                  return pl011_read(port, PL011_FR) & PL011_FR_RXFE == 0
+	case .Firmware:               return true // The firmware answers "nothing" itself
+	}
+	return false
 }
 
 write_byte :: proc "contextless" (port: ^Port, b: u8) {
@@ -100,9 +236,14 @@ write_byte :: proc "contextless" (port: ^Port, b: u8) {
 		return
 	}
 	for !tx_ready(port) {
-		amd64.pause()
+		arch.spin_hint()
 	}
-	amd64.outb(port.base + REG_DATA, b)
+	switch port.kind {
+	case .None:
+	case .Port_16550, .Mmio_16550: reg_write(port, REG_DATA, b)
+	case .Pl011:                  pl011_write(port, PL011_DR, u32(b))
+	case .Firmware:               arch.console_write_byte(b)
+	}
 }
 
 /*
@@ -132,5 +273,21 @@ read_byte :: proc "contextless" (port: ^Port) -> (b: u8, ok: bool) {
 	if !port.present || !rx_ready(port) {
 		return 0, false
 	}
-	return amd64.inb(port.base + REG_DATA), true
+	switch port.kind {
+	case .None:                   return 0, false
+	case .Port_16550, .Mmio_16550: return reg_read(port, REG_DATA), true
+	case .Pl011:                  return u8(pl011_read(port, PL011_DR)), true
+	case .Firmware:               return arch.console_read_byte()
+	}
+	return 0, false
+}
+
+// rebase moves a memory-mapped port to a new virtual address for the same
+// registers. For the console that came up through an early window, once the
+// kernel's own tables map the device.
+rebase :: proc "contextless" (port: ^Port, base: uintptr) {
+	#partial switch port.kind {
+	case .Mmio_16550, .Pl011:
+		port.base = base
+	}
 }

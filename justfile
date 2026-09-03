@@ -41,27 +41,8 @@ clean:
 font:
     python3 tools/genfont.py > sys/libfont/font_data.odin
 
-# Type-check every package without emitting anything.
-check:
-    odin check kernel -collection:kernel=kernel -collection:vsys=sys \
-        -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-        -vet -strict-style
+# Type-check the kernel and every program without emitting anything.
+# `just check --arch=arm64` checks a port.
+check *ARGS:
+    odin run build.odin -file -out:.vectra-build -- check {{ARGS}}
     odin check build.odin -file
-    odin check servers/ramfs -collection:vsys=sys \
-        -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-        -vet -strict-style
-    odin check servers/consrv -collection:vsys=sys \
-        -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-        -vet -strict-style
-    odin check servers/kbdfs -collection:vsys=sys \
-        -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-        -vet -strict-style
-    odin check servers/eiafs -collection:vsys=sys \
-        -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-        -vet -strict-style
-    odin check servers/intuition -collection:vsys=sys \
-        -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-        -vet -strict-style
-    odin check apps/terminal -collection:vsys=sys \
-        -target:freestanding_amd64_sysv -no-entry-point -default-to-nil-allocator \
-        -vet -strict-style

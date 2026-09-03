@@ -3,7 +3,7 @@ Vectra kernel entry point.
 
 Boot order is load-bearing and deliberately short:
 
-  1. arch.early_init  -- SSE on, before any Odin that touches a struct
+  1. arch.early_init  -- the vector unit on, before any Odin that touches a struct
   2. Odin runtime     -- globals initialised, @(init) blocks run
   3. serial           -- a sink that works even if step 4 does not
   4. base revision    -- confirm the bootloader honoured what we asked for
@@ -87,16 +87,26 @@ Pin the paging mode rather than accepting whatever the firmware left on.
 Limine will happily hand over 5-level paging on a machine that supports it.
 That changes the shape of every page table walk, and the position of the
 canonical hole. Vectra's VMM is written for one layout at a time. A request for
-exactly 4-level here makes the day 5-level support arrives a deliberate change
-to this line, rather than a machine-dependent surprise.
+exactly the one mode each architecture pins makes the day another arrives a
+deliberate change to that file, rather than a machine-dependent surprise.
 */
 @(export, link_section = ".limine_requests")
 paging_mode_request := limine.Paging_Mode_Request {
 	id       = limine.PAGING_MODE_REQUEST,
 	revision = 0,
-	mode     = limine.X86_64_PAGING_4LVL,
-	max_mode = limine.X86_64_PAGING_4LVL,
-	min_mode = limine.X86_64_PAGING_4LVL,
+	mode     = limine.PAGING_MODE_PINNED,
+	max_mode = limine.PAGING_MODE_PINNED,
+	min_mode = limine.PAGING_MODE_PINNED,
+}
+
+// The device tree, on the two architectures whose firmware describes the
+// machine that way. x86-64 answers nothing, and the architecture that reads
+// it is the one that needs it -- riscv64's clock rate is in there and nowhere
+// else. See `arch.set_device_tree`.
+@(export, link_section = ".limine_requests")
+dtb_request := limine.DTB_Request {
+	id       = limine.DTB_REQUEST,
+	revision = 0,
 }
 
 /*
@@ -142,7 +152,7 @@ boot_mem: mem.Boot_Memory
 memory_online: bool
 
 @(export, link_name = "_start")
-kmain :: proc "sysv" () {
+kmain :: proc "c" () {
 	arch.early_init()
 
 	// `context` must exist before any Odin call that can touch it. With
@@ -151,12 +161,31 @@ kmain :: proc "sysv" () {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
-	serial = uart.init(uart.COM1)
+	// The architecture says where the console is, and on one of them it has
+	// to map the way to it first. That takes the two numbers below, which
+	// are the bootloader's answers and readable before anything else is.
+	hhdm, kphys, kvirt: u64
+	if r := hhdm_request.response; r != nil {
+		hhdm = r.offset
+	}
+	if r := executable_address_request.response; r != nil {
+		kphys, kvirt = r.physical_base, r.virtual_base
+	}
+	serial = uart.init(arch.serial_console(hhdm, kphys, kvirt))
 	klog.serial = &serial
 	uart.write_string(&serial, "\n\n")
 	log_line(&klog, .Info, "Vectra " + VERSION + " (" + arch.NAME + ") entering kmain")
 
 	check_base_revision()
+	if r := dtb_request.response; r != nil {
+		arch.set_device_tree(r.dtb)
+	}
+	// The boot core's name, on the architecture that cannot read its own:
+	// a hart learns its id from whoever started it, and that was the
+	// bootloader.
+	if mp := mp_request.response; mp != nil {
+		arch.set_boot_cpu_id(limine.mp_bsp_id(mp))
+	}
 	init_traps()
 
 	// `kernel:sync` sits below the panic screen and cannot call it. A broken
@@ -327,21 +356,16 @@ init_traps :: proc "contextless" () {
 	arm_breakpoint_test()
 	arch.breakpoint()
 
-	cs := arch.code_selector()
-	tr := arch.task_selector()
-	vectors := u64(arch.idt_limit() + 1) / 16
-	ok := cs == arch.KERNEL_CODE_SELECTOR && tr == arch.TASK_SELECTOR && breakpoint_test_fired()
-
+	// The tables read back, in the architecture's own words: selectors and a
+	// vector count on amd64, a vector base and an exception level elsewhere.
 	sink := begin(&klog)
-	libodin.put_str(&sink, "traps: cs ")
-	libodin.put_hex(&sink, u64(cs), 0)
-	libodin.put_str(&sink, ", tr ")
-	libodin.put_hex(&sink, u64(tr), 0)
+	libodin.put_str(&sink, "traps: ")
+	took := arch.describe_traps(&sink)
 	libodin.put_str(&sink, ", ")
-	libodin.put_uint(&sink, vectors)
-	libodin.put_str(&sink, " vectors, #BP round-trip ")
+	libodin.put_str(&sink, arch.BREAKPOINT_NAME)
+	libodin.put_str(&sink, " round-trip ")
 	libodin.put_str(&sink, breakpoint_test_fired() ? "ok" : "LOST")
-	emit(&klog, ok ? .Ok : .Fault, &sink)
+	emit(&klog, took && breakpoint_test_fired() ? .Ok : .Fault, &sink)
 }
 
 /*
@@ -467,14 +491,18 @@ report_cpus :: proc "contextless" () {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "cpus: ")
 	libodin.put_uint(&sink, mp.cpu_count)
-	libodin.put_str(&sink, mp.cpu_count == 1 ? " core, bsp lapic " : " cores, bsp lapic ")
-	libodin.put_uint(&sink, u64(mp.bsp_lapic_id))
-	libodin.put_str(&sink, ", lapic ids")
+	libodin.put_str(&sink, mp.cpu_count == 1 ? " core, bsp " : " cores, bsp ")
+	libodin.put_str(&sink, limine.MP_ID_NAME)
+	libodin.put_str(&sink, " ")
+	libodin.put_uint(&sink, limine.mp_bsp_id(mp))
+	libodin.put_str(&sink, ", ")
+	libodin.put_str(&sink, limine.MP_ID_NAME)
+	libodin.put_str(&sink, " ids")
 	for i in 0 ..< int(mp.cpu_count) {
 		libodin.put_str(&sink, " ")
-		libodin.put_uint(&sink, u64(mp.cpus[i].lapic_id))
+		libodin.put_uint(&sink, limine.mp_cpu_id(mp.cpus[i]))
 	}
-	if mp.flags & u32(limine.MP_X2APIC) != 0 {
+	if limine.mp_x2apic(mp) {
 		libodin.put_str(&sink, ", x2apic on")
 	}
 	emit(&klog, .Info, &sink)
@@ -496,10 +524,9 @@ report_paging_mode :: proc "contextless" () {
 
 	sink := begin(&klog)
 	libodin.put_str(&sink, "paging ")
-	switch response.mode {
-	case limine.X86_64_PAGING_4LVL: libodin.put_str(&sink, "4-level")
-	case limine.X86_64_PAGING_5LVL: libodin.put_str(&sink, "5-level (LA57)")
-	case:
+	if name := limine.paging_mode_name(response.mode); name != "" {
+		libodin.put_str(&sink, name)
+	} else {
 		libodin.put_str(&sink, "mode ")
 		libodin.put_uint(&sink, response.mode)
 	}
@@ -526,6 +553,20 @@ report_kernel_layout :: proc "contextless" () {
 		sink := begin(&klog)
 		libodin.put_str(&sink, "hhdm offset ")
 		libodin.put_hex(&sink, hhdm.offset, 16)
+		emit(&klog, .Info, &sink)
+	}
+
+	// The device tree, where there is one. Its size is the second word of
+	// its header, big-endian, which is the one thing worth reading here:
+	// a tree of a few bytes is a tree the firmware did not really pass.
+	if dtb := dtb_request.response; dtb != nil && dtb.dtb != nil {
+		b := cast([^]u8)dtb.dtb
+		size := u64(b[4]) << 24 | u64(b[5]) << 16 | u64(b[6]) << 8 | u64(b[7])
+		sink := begin(&klog)
+		libodin.put_str(&sink, "device tree at ")
+		libodin.put_ptr(&sink, dtb.dtb)
+		libodin.put_str(&sink, ", ")
+		libodin.put_size(&sink, size)
 		emit(&klog, .Info, &sink)
 	}
 }
@@ -723,6 +764,15 @@ init_memory :: proc "contextless" () -> bool {
 	libodin.put_str(&sink, ", largest leaf ")
 	libodin.put_size(&sink, u64(1) << uint(12 + 9 * (vmm.max_leaf - 1)))
 	emit(&klog, .Info, &sink)
+
+	// A console reached through a window the bootloader's tables held has
+	// to move onto the kernel's own before the next line is logged. See
+	// `arch.serial_physical`.
+	if phys, needs := arch.serial_physical(); needs {
+		if virt, err := mem.map_mmio(phys, u64(arch.PAGE_SIZE)); err == .None {
+			uart.rebase(&serial, uintptr(virt))
+		}
+	}
 
 	log_line(&klog, .Ok, "heap online -- context.allocator is live")
 	memory_online = true
@@ -986,45 +1036,67 @@ verify_scheduler :: proc() {
 }
 
 /*
-init_timer maps the local APIC, measures it against the PIT and starts the tick.
+init_timer maps the local timer, calibrates it and starts the tick.
+
+On amd64 that is the local APIC, measured against the PIT. On arm64 the
+generic timer's rate is a register, and on riscv64 it is a line in the device
+tree. `arch.TIMER_REFERENCE` says which on the boot line.
 
 This is where interrupts come on for the first time in Vectra's life. Everything
-before it ran with IF clear from the moment the bootloader handed over.
+before it ran with them masked from the moment the bootloader handed over.
 */
 init_timer :: proc() -> bool {
 	if !arch.timer_available() {
-		log_line(&klog, .Warn, "no local APIC; running without preemption")
+		sink := begin(&klog)
+		libodin.put_str(&sink, "no ")
+		libodin.put_str(&sink, arch.TIMER_NAME)
+		libodin.put_str(&sink, " timer; running without preemption")
+		emit(&klog, .Warn, &sink)
 		return false
 	}
 
-	phys := arch.timer_physical_base()
-	virt, err := mem.map_mmio(phys, arch.LAPIC_MMIO_SIZE)
-	if err != .None {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "lapic: cannot map registers at ")
-		libodin.put_hex(&sink, u64(phys), 16)
-		libodin.put_str(&sink, " -- ")
-		libodin.put_str(&sink, mem.describe(err))
-		emit(&klog, .Fault, &sink)
-		return false
+	// A timer reached through registers in memory has a page to map first.
+	// One reached through system registers has none, and says so with a
+	// size of zero.
+	virt: rawptr
+	if arch.TIMER_MMIO_SIZE > 0 {
+		phys := arch.timer_physical_base()
+		err: mem.Error
+		virt, err = mem.map_mmio(phys, arch.TIMER_MMIO_SIZE)
+		if err != .None {
+			sink := begin(&klog)
+			libodin.put_str(&sink, arch.TIMER_NAME)
+			libodin.put_str(&sink, ": cannot map registers at ")
+			libodin.put_hex(&sink, u64(phys), 16)
+			libodin.put_str(&sink, " -- ")
+			libodin.put_str(&sink, mem.describe(err))
+			emit(&klog, .Fault, &sink)
+			return false
+		}
 	}
 
 	arch.timer_attach(virt)
-	init_ioapic()
+	init_irq_controller()
 	if !sched.start_timer(TICK_HZ) {
-		log_line(&klog, .Fault, "lapic: timer would not calibrate; running without preemption")
+		sink := begin(&klog)
+		libodin.put_str(&sink, arch.TIMER_NAME)
+		libodin.put_str(&sink, ": timer would not calibrate; running without preemption")
+		emit(&klog, .Fault, &sink)
 		return false
 	}
 
 	t := sched.timer_stats()
 	sink := begin(&klog)
-	libodin.put_str(&sink, "lapic timer ")
+	libodin.put_str(&sink, arch.TIMER_NAME)
+	libodin.put_str(&sink, " timer ")
 	libodin.put_uint(&sink, t.hz)
-	libodin.put_str(&sink, " Hz -- bus clock ")
+	libodin.put_str(&sink, " Hz -- clock ")
 	libodin.put_uint(&sink, t.frequency / 1_000_000)
 	libodin.put_str(&sink, ".")
 	libodin.put_uint(&sink, (t.frequency / 100_000) % 10)
-	libodin.put_str(&sink, " MHz measured against the PIT, ")
+	libodin.put_str(&sink, " MHz ")
+	libodin.put_str(&sink, arch.TIMER_REFERENCE)
+	libodin.put_str(&sink, ", ")
 	libodin.put_uint(&sink, u64(t.count))
 	libodin.put_str(&sink, " counts per tick")
 	emit(&klog, .Ok, &sink)
@@ -1330,13 +1402,14 @@ verify_pipe :: proc() {
 }
 
 /*
-init_ioapic maps the I/O APIC and masks every line on it.
+init_irq_controller maps the interrupt controller and masks every line on it.
 
 This is how a device interrupt reaches a core, and until this milestone nothing
-needed one. The LAPIC timer is the only interrupt Vectra had, and the kernel
-armed it rather than receiving it.
+needed one. The timer is the only interrupt Vectra had, and the kernel armed it
+rather than received it. The I/O APIC on amd64, the GIC on arm64, the PLIC on
+riscv64: `arch.IRQ_CONTROLLER_NAME` says which.
 
-Reported rather than fatal. A machine with no I/O APIC still boots, still
+Reported rather than fatal. A machine with no controller still boots, still
 schedules and still has a console over the serial line. What it does not get is
 a keyboard, and `init_keyboard` says so on its own line.
 
@@ -1344,11 +1417,12 @@ The address is assumed rather than discovered, because Vectra parses no ACPI
 tables. `kernel/arch/amd64/ioapic.odin` says exactly which assumption that is
 and what would retire it.
 */
-init_ioapic :: proc() -> bool {
-	virt, err := mem.map_mmio(arch.irq_physical_base(), arch.IOAPIC_MMIO_SIZE)
+init_irq_controller :: proc() -> bool {
+	virt, err := mem.map_mmio(arch.irq_physical_base(), arch.IRQ_MMIO_SIZE)
 	if err != .None {
 		sink := begin(&klog)
-		libodin.put_str(&sink, "ioapic: cannot map registers at ")
+		libodin.put_str(&sink, arch.IRQ_CONTROLLER_NAME)
+		libodin.put_str(&sink, ": cannot map registers at ")
 		libodin.put_hex(&sink, u64(arch.irq_physical_base()), 16)
 		libodin.put_str(&sink, " -- ")
 		libodin.put_str(&sink, mem.describe(err))
@@ -1358,12 +1432,17 @@ init_ioapic :: proc() -> bool {
 
 	arch.irq_attach(virt)
 	if !arch.irq_available() {
-		log_line(&klog, .Warn, "no I/O APIC; running without device interrupts")
+		sink := begin(&klog)
+		libodin.put_str(&sink, "no ")
+		libodin.put_str(&sink, arch.IRQ_CONTROLLER_NAME)
+		libodin.put_str(&sink, "; running without device interrupts")
+		emit(&klog, .Warn, &sink)
 		return false
 	}
 
 	sink := begin(&klog)
-	libodin.put_str(&sink, "ioapic version ")
+	libodin.put_str(&sink, arch.IRQ_CONTROLLER_NAME)
+	libodin.put_str(&sink, " version ")
 	libodin.put_hex(&sink, u64(arch.irq_version()), 2)
 	libodin.put_str(&sink, ", ")
 	libodin.put_uint(&sink, u64(arch.irq_lines()))

@@ -77,15 +77,16 @@ torn stack refuses rather than faults.
 
 The layout, from high to low: the text, NUL-terminated, then the frame
 copy, 16-aligned, which is where the new stack pointer lands. The handler
-gets the frame's address in `rdi` and the text's in `rsi`, and everything
-it pushes goes below both.
+gets the frame's address as its first argument and the text's as its
+second, in whatever registers the architecture's convention names, and
+everything it pushes goes below both.
 
 False means the stack has no room or no mapping, and the caller falls back
 to the ending a note always was.
 */
 @(private)
 deliver_note :: proc "contextless" (p: ^Process, frame: ^arch.Trap_Frame) -> bool {
-	sp := uintptr(frame.rsp)
+	sp := arch.frame_sp(frame)
 	if sp < mem.USER_MIN + NOTE_STACK || sp > mem.USER_MAX {
 		return false
 	}
@@ -104,10 +105,7 @@ deliver_note :: proc "contextless" (p: ^Process, frame: ^arch.Trap_Frame) -> boo
 
 	(cast(^arch.Trap_Frame)ureg_va)^ = frame^
 
-	frame.rip = u64(p.handler)
-	frame.rsp = u64(ureg_va)
-	frame.rdi = u64(ureg_va)
-	frame.rsi = u64(text_va)
+	arch.frame_call_handler(frame, p.handler, ureg_va, ureg_va, text_va)
 
 	p.notified = true
 	p.note_sp = ureg_va
@@ -152,15 +150,16 @@ worth having. Anything Plan 9 does not define is refused because it means
 nothing.
 
 **The restored frame is rebuilt, not believed.** `copy_in` fetches it like
-any user pointer. The selectors come from the kernel's own constants. The
-flags keep only the arithmetic bits a program owns, and the resume point
-must sit in the program's half. The `iretq` would fault on a bad CS anyway,
+any user pointer. The resume point and the stack must sit in the program's
+half, and `arch.frame_sanitise_user` rebuilds the parts a program must not
+choose -- the privilege level, and the flags a program does not own -- from
+the kernel's own constants. The hardware would fault on most of them anyway,
 but a check that leans on the hardware refusing fails elsewhere, later, with
 less to say.
 
-The answer on success is the restored `rax`, because the dispatcher writes
-the result into the frame after every call. Answering anything else would
-overwrite the register the handler meant to hand back.
+The answer on success is the restored frame's own answer, because the
+dispatcher writes the result into the frame after every call. Answering
+anything else would overwrite the register the handler meant to hand back.
 */
 @(private)
 sys_noted :: proc(frame: ^arch.Trap_Frame, how: u64) -> i64 {
@@ -188,20 +187,18 @@ sys_noted :: proc(frame: ^arch.Trap_Frame, how: u64) -> i64 {
 		note_exit(frame)
 	}
 
-	if uintptr(saved.rip) < mem.USER_MIN || uintptr(saved.rip) >= mem.USER_MAX ||
-	   uintptr(saved.rsp) < mem.USER_MIN || uintptr(saved.rsp) > mem.USER_MAX {
+	ip, sp := arch.frame_ip(&saved), arch.frame_sp(&saved)
+	if ip < mem.USER_MIN || ip >= mem.USER_MAX || sp < mem.USER_MIN || sp > mem.USER_MAX {
 		p.notified = false
 		note_exit(frame)
 	}
 
 	// The parts a program must not choose, rebuilt from the kernel's own
-	// truth. IF stays on -- a program that could resume with interrupts
-	// masked would own the machine -- and IOPL stays zero.
-	saved.cs = u64(arch.USER_CODE_SELECTOR)
-	saved.ss = u64(arch.USER_DATA_SELECTOR)
-	saved.rflags = saved.rflags & 0x0000_0000_0000_0CD5 | 0x202
+	// truth. Interrupts stay on -- a program that could resume with them
+	// masked would own the machine -- and the privilege level is ring 3.
+	arch.frame_sanitise_user(&saved)
 
 	frame^ = saved
 	p.notified = false
-	return i64(frame.rax)
+	return arch.syscall_result(frame)
 }

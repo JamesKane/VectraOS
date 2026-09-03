@@ -524,7 +524,7 @@ return from that procedure lands here, rather than jumping to whatever the
 initial frame happened to leave in the return slot.
 */
 @(private = "file")
-thread_start :: proc "sysv" (arg: rawptr) {
+thread_start :: proc "c" (arg: rawptr) {
 	t := cast(^Thread)arg
 	if t != nil && t.entry != nil {
 		t.entry(t.arg)
@@ -644,7 +644,7 @@ Named from `isr.S`, which is why it is exported under a C name. See
 thread that took the lock.
 */
 @(export, link_name = "vectra_switch_done")
-switch_done :: proc "sysv" () {
+switch_done :: proc "c" () {
 	if sync.held_here(&lock) {
 		sync.release_all(&lock)
 	}

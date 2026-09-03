@@ -275,7 +275,7 @@ System V argument registers. That is the one calling convention this kernel
 and clang agree on.
 */
 foreign {
-	vectra_load_gdt :: proc "sysv" (pointer: ^Descriptor_Pointer, code: u64, data: u64) ---
+	vectra_load_gdt :: proc "c" (pointer: ^Descriptor_Pointer, code: u64, data: u64) ---
 }
 
 @(private = "file")

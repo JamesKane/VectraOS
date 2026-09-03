@@ -174,6 +174,13 @@ init :: proc(vector: int, sink: Sink, raw: Raw = nil) -> bool {
 	if sink == nil || !arch.irq_attached() || !arch.irq_available() {
 		return false
 	}
+	// A status register that reads all-ones is no controller. That is what
+	// an absent device answers on a PC's port bus, and what a machine with
+	// no port bus answers for every port. Either way there is nothing here
+	// to drive, and a line routed to it would only ever carry silence.
+	if arch.inb(PORT_STATUS) == 0xFF {
+		return false
+	}
 
 	kbd.sink = sink
 	kbd.raw = raw
