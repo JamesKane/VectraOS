@@ -39,6 +39,7 @@ import "core:strings"
 
 BUILD_DIR :: "build"
 ESP_DIR :: "build/esp"
+SCRATCH_IMG :: "build/disk.img"
 KERNEL_ELF :: "build/vectra.elf"
 KERNEL_OBJ :: "build/vectra.o"
 
@@ -837,7 +838,16 @@ run_qemu :: proc(opts: Options, debug: bool) {
 		append(&args, "-drive", fmt.tprintf("if=pflash,unit=1,format=raw,file=%s", vars))
 	}
 
-	append(&args, "-drive", fmt.tprintf("format=raw,file=fat:rw:%s", ESP_DIR))
+	// The ESP and a scratch disk, both over virtio-blk-pci, on every board.
+	// One transport, one driver: `-device virtio-blk-pci` attaches the drive
+	// to the PCI bus that q35 and the two `virt` boards all have, where the
+	// firmware's UEFI stack finds the ESP and boots it, and `kernel/drivers/
+	// virtio` finds both from the PCI bus itself. See `docs/DISK.md`.
+	ensure_scratch_disk()
+	append(&args, "-drive", fmt.tprintf("if=none,id=esp,format=raw,file=fat:rw:%s", ESP_DIR))
+	append(&args, "-device", "virtio-blk-pci,drive=esp,bootindex=0,disable-legacy=on")
+	append(&args, "-drive", fmt.tprintf("if=none,id=scratch,format=raw,file=%s", SCRATCH_IMG))
+	append(&args, "-device", "virtio-blk-pci,drive=scratch,disable-legacy=on")
 	append(&args, "-net", "none")
 	// More than one core, because the kernel starts every core the
 	// bootloader lists and the self-tests run across them. `--smp=1` is
@@ -956,6 +966,53 @@ copy_file rewrites the destination whole.
 Deliberately not a mtime check. A stale kernel.elf on the ESP, that boots as
 though the edit worked, is the single most expensive bug in an OS build system.
 */
+/*
+ensure_scratch_disk writes a small raw disk image for the virtio-blk driver
+to read and write, if one is not there already.
+
+Two megabytes, with a master boot record at sector zero naming one FAT
+partition that starts at sector 64, and a marker at that sector so the
+kernel's self-test can prove a partition file reaches the partition and not
+the disk. It is left alone once made, so a write the machine does to it is
+still there the next boot -- which is the persistence a real disk has and
+the ESP's vvfat backend does not.
+*/
+ensure_scratch_disk :: proc() {
+	if os.exists(SCRATCH_IMG) {
+		return
+	}
+	step("making a %s scratch disk", SCRATCH_IMG)
+	SECTORS :: 4096 // 2 MiB of 512-byte sectors
+	PART_START :: 64
+	PART_SECTORS :: 256
+	image := make([]u8, SECTORS * 512, context.allocator)
+
+	// The MBR: one partition entry at 446, type 0x0C (FAT32 LBA), and the
+	// 0x55AA signature. The bootstrap area stays zero, so the kernel does
+	// not mistake this for a volume boot record.
+	entry := 446
+	image[entry + 0] = 0x00 // Not bootable
+	image[entry + 4] = 0x0C // FAT32 LBA
+	put_le32(image[entry + 8:], PART_START)
+	put_le32(image[entry + 12:], PART_SECTORS)
+	image[510] = 0x55
+	image[511] = 0xAA
+
+	// The marker the self-test looks for, at the partition's first sector.
+	copy(image[PART_START * 512:], transmute([]u8)string("VECTRA-PART0\n"))
+
+	if werr := os.write_entire_file(SCRATCH_IMG, image); werr != nil {
+		die("could not write %s: %v", SCRATCH_IMG, werr)
+	}
+}
+
+put_le32 :: proc(b: []u8, v: u32) {
+	b[0] = u8(v)
+	b[1] = u8(v >> 8)
+	b[2] = u8(v >> 16)
+	b[3] = u8(v >> 24)
+}
+
 copy_file :: proc(src, dst: string) {
 	data, err := os.read_entire_file_from_path(src, context.allocator)
 	if err != nil {

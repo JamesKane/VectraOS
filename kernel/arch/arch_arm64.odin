@@ -252,3 +252,14 @@ early_init :: proc "contextless" () {
 	arm64.use_kernel_stack_register()
 	arm64.enable_fp()
 }
+
+// -- PCI configuration space -------------------------------------------------
+
+PCI_CONFIG_MMIO_SIZE :: arm64.PCI_CONFIG_MMIO_SIZE
+PCI_CONFIG_NAME :: arm64.PCI_CONFIG_NAME
+
+pci_available :: arm64.pci_available
+pci_config_physical_base :: arm64.pci_config_physical_base
+pci_attach :: arm64.pci_attach
+pci_read32 :: arm64.pci_read32
+pci_write32 :: arm64.pci_write32

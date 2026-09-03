@@ -253,3 +253,14 @@ program needs it and the bootloader leaves it off.
 early_init :: proc "contextless" () {
 	riscv64.enable_fp()
 }
+
+// -- PCI configuration space -------------------------------------------------
+
+PCI_CONFIG_MMIO_SIZE :: riscv64.PCI_CONFIG_MMIO_SIZE
+PCI_CONFIG_NAME :: riscv64.PCI_CONFIG_NAME
+
+pci_available :: riscv64.pci_available
+pci_config_physical_base :: riscv64.pci_config_physical_base
+pci_attach :: riscv64.pci_attach
+pci_read32 :: riscv64.pci_read32
+pci_write32 :: riscv64.pci_write32

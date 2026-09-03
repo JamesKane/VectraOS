@@ -169,6 +169,19 @@ Two kernel devices and a QEMU line, about 1,500 lines.
 Proves: the first 512 bytes of `/dev/sd0/data` are the FAT volume's boot
 sector, and a write to a scratch region reads back after a reboot.
 
+**Where it stands.** Done, as `docs/DISK.md` describes. `kernel/drivers/pci`
+reads configuration space through the two ports on the PC and the ECAM
+window on the boards; `kernel/drivers/virtio` speaks modern virtio-blk over
+it, one request at a time, polled; `kernel/sd` is `#S`, a union member of
+`/dev`. `build.odin` attaches the ESP and a scratch disk over
+`virtio-blk-pci` on all three boards, and makes the scratch image with an
+MBR so the partition path has something to read. The self-test reads `sd0`'s
+boot sector, writes and reads a sector of `sd1`, and reads `sd1`'s DOS
+partition through its window. The reboot half of the write proof is the
+scratch image being a plain file the build leaves alone; the ESP's `vvfat`
+backend is the one whose raw scratch writes do not persist, which is why the
+write goes to `sd1`.
+
 ### Step 6: a filesystem the host can read
 
 `servers/fatfs`, about 2,000 lines: 9front's `dossfs` in Odin, a 9P server

@@ -421,3 +421,14 @@ without it.
 early_init :: proc "contextless" () {
 	amd64.enable_sse()
 }
+
+// -- PCI configuration space -------------------------------------------------
+
+PCI_CONFIG_MMIO_SIZE :: amd64.PCI_CONFIG_MMIO_SIZE
+PCI_CONFIG_NAME :: amd64.PCI_CONFIG_NAME
+
+pci_available :: amd64.pci_available
+pci_config_physical_base :: amd64.pci_config_physical_base
+pci_attach :: amd64.pci_attach
+pci_read32 :: amd64.pci_read32
+pci_write32 :: amd64.pci_write32

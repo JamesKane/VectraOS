@@ -99,16 +99,27 @@ main :: proc(args: []string) {
 		fail("open dev")
 	}
 	entries: [16]abi.Dirent
-	got := libuser.dirread(int(dev), entries[:])
-	if got < 5 {
-		fail("dirread")
-	}
+	// `/dev` is a union of the console device and the disk device, so a
+	// listing comes back a member at a time: read until a call answers zero,
+	// which is the end of the whole union rather than the end of one member.
+	total := 0
 	saw_cons := false
-	for i in 0 ..< got {
-		e := &entries[i]
-		if string(e.name[:e.name_len]) == "cons" {
-			saw_cons = true
+	got: i64
+	for {
+		got = libuser.dirread(int(dev), entries[:])
+		if got <= 0 {
+			break
 		}
+		for i in 0 ..< got {
+			e := &entries[i]
+			if string(e.name[:e.name_len]) == "cons" {
+				saw_cons = true
+			}
+		}
+		total += int(got)
+	}
+	if total < 5 {
+		fail("dirread")
 	}
 	if !saw_cons {
 		fail("dirread cons")

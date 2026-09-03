@@ -29,8 +29,10 @@ import "kernel:drivers/uart"
 import "kernel:mem"
 import "kernel:pipe"
 import "kernel:procfs"
+import "kernel:sd"
 import "kernel:sched"
 import "kernel:srv"
+import "kernel:drivers/virtio"
 import "kernel:sync"
 import "kernel:user"
 import "kernel:vfs"
@@ -270,6 +272,13 @@ kmain :: proc "c" () {
 			// before the first interrupt is let through.
 			if init_keyboard() {
 				verify_keyboard()
+			}
+
+			// The disk, after the console it binds beside and the keyboard
+			// that shares its interrupt controller. A machine with no virtio
+			// disk still boots; `#S` is then an empty directory.
+			if init_disk() {
+				verify_disk()
 			}
 			verify_space()
 
@@ -1595,6 +1604,145 @@ init_bin :: proc() -> bool {
 	libodin.put_str(&sink, " programs as files, formats VECTRA01 and 02; #l at /lib")
 	emit(&klog, .Ok, &sink)
 	return true
+}
+
+/*
+init_disk brings up the PCI bus, the virtio-blk driver and `#S`.
+
+The bus first, because the driver reads configuration space through it; on
+the boards that is a memory window to map, and on the PC it is two ports
+that need no mapping. Then the driver scans for every virtio-blk function
+and brings each up as a disk. Then `#S` reads each disk's partition table
+and binds the tree into `/dev`.
+
+Every step degrades rather than fails. No PCI window still boots. No disk
+still boots, and `#S` is an empty directory. The line says what came up.
+*/
+init_disk :: proc() -> bool {
+	if arch.PCI_CONFIG_MMIO_SIZE > 0 {
+		virt, err := mem.map_mmio(arch.pci_config_physical_base(), arch.PCI_CONFIG_MMIO_SIZE)
+		if err != .None {
+			sink := begin(&klog)
+			libodin.put_str(&sink, "pci: cannot map ")
+			libodin.put_str(&sink, arch.PCI_CONFIG_NAME)
+			libodin.put_str(&sink, " at ")
+			libodin.put_hex(&sink, u64(arch.pci_config_physical_base()), 16)
+			libodin.put_str(&sink, " -- ")
+			libodin.put_str(&sink, mem.describe(err))
+			emit(&klog, .Warn, &sink)
+			return false
+		}
+		arch.pci_attach(virt)
+	}
+	if !arch.pci_available() {
+		log_line(&klog, .Warn, "pci: no configuration access; no disk")
+		return false
+	}
+
+	disks := virtio.init()
+	if err := sd.init(vfs.boot_namespace); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "sd: #S would not come up -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "disk #S bound at /dev, ")
+	libodin.put_uint(&sink, u64(disks))
+	libodin.put_str(&sink, " virtio-blk over ")
+	libodin.put_str(&sink, arch.PCI_CONFIG_NAME)
+	if disks > 0 {
+		libodin.put_str(&sink, ", sd0 ")
+		libodin.put_uint(&sink, virtio.capacity(0))
+		libodin.put_str(&sink, " sectors, ")
+		libodin.put_uint(&sink, u64(sd.part_count()))
+		libodin.put_str(&sink, " partitions in all")
+	}
+	emit(&klog, .Ok, &sink)
+	return disks > 0
+}
+
+/*
+verify_disk reads and writes the machine's own disks.
+
+Three claims. The first sector of `sd0` is a FAT volume boot record, which
+is what the build stages there: bytes 510 and 511 are the boot signature.
+A scratch sector of `sd1` reads back what a write put there, which is the
+block driver's round trip. And a partition file is the window its table
+entry describes: reading `sd1`'s DOS partition reaches the marker the build
+wrote at its first sector, not the disk's.
+*/
+verify_disk :: proc() {
+	ns := vfs.boot_namespace
+	result: libodin.Tally
+
+	sector: [512]u8
+	if c, err := vfs.open_path(ns, "/dev/sd0/data", vfs.O_RDONLY); err == vfs.OK {
+		n, rerr := vfs.chan_read(c, 0, sector[:])
+		vfs.chan_close(c)
+		if libodin.tally(&result, rerr == vfs.OK && n == 512, "sd0 data reads its first sector") {
+			libodin.tally(
+				&result,
+				sector[510] == 0x55 && sector[511] == 0xAA,
+				"and it is a boot sector",
+			)
+		}
+	} else {
+		libodin.tally(&result, false, "sd0 data opens")
+	}
+
+	if virtio.present(1) {
+		pattern: [512]u8
+		for i in 0 ..< 512 {
+			pattern[i] = u8(i * 7 + 3)
+		}
+		back: [512]u8
+		if c, err := vfs.open_path(ns, "/dev/sd1/data", vfs.O_RDWR); err == vfs.OK {
+			// Sector one: past the MBR, clear of the partition the build made.
+			wn, werr := vfs.chan_write(c, 512, pattern[:])
+			rn, rerr := vfs.chan_read(c, 512, back[:])
+			vfs.chan_close(c)
+			ok := werr == vfs.OK && wn == 512 && rerr == vfs.OK && rn == 512
+			if libodin.tally(&result, ok, "sd1 data takes a sector write") {
+				same := true
+				for i in 0 ..< 512 {
+					if back[i] != pattern[i] {
+						same = false
+						break
+					}
+				}
+				libodin.tally(&result, same, "and reads the same bytes back")
+			}
+		} else {
+			libodin.tally(&result, false, "sd1 data opens")
+		}
+
+		if c, err := vfs.open_path(ns, "/dev/sd1/dos", vfs.O_RDONLY); err == vfs.OK {
+			marker: [16]u8
+			n, rerr := vfs.chan_read(c, 0, marker[:])
+			vfs.chan_close(c)
+			want := "VECTRA-PART0"
+			hit := rerr == vfs.OK && n >= len(want) && string(marker[:len(want)]) == want
+			libodin.tally(&result, hit, "sd1 dos partition reads its own first sector")
+		} else {
+			libodin.tally(&result, false, "sd1 dos partition opens")
+		}
+	}
+
+	reads, writes := sd.stats()
+	sink := report_begin("disk", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " disk checks passed -- ")
+		libodin.put_uint(&sink, reads)
+		libodin.put_str(&sink, " reads and ")
+		libodin.put_uint(&sink, writes)
+		libodin.put_str(&sink, " writes through #S")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
 }
 
 /*

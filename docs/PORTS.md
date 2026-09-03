@@ -200,6 +200,10 @@ counted across the cores rather than on the core the checker started on.
 - **The device tree** is parsed for one property. The GIC, the PLIC and
   the UART addresses are the `virt` board's, assumed as the I/O APIC's is
   on amd64.
+- **The PCI ECAM base.** `0x4010000000` on arm64 and `0x30000000` on
+  riscv64, the `virt` boards' own, assumed the same way. The PC reaches
+  configuration space through ports `0xCF8`/`0xCFC` and needs no base.
+  See `docs/DISK.md`.
 - **Big.LITTLE.** `cpu_class` answers `.Performance` for every core. The
   scheduler already knows the three tiers, and the MIDR table that would
   fill them in is not written.

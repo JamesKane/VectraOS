@@ -117,6 +117,8 @@ other would be the failure.
 | `kernel/env/` | `#e` at `/env`: a process's environment as a directory of variables, copied or shared by `rfork` |
 | `servers/memfs/` | The in-memory filesystem the tools work in until the disk |
 | `kernel/procfs/` | `#p` at `/proc`: a directory per process, for `ps`, `kill` and `ns` |
+| `kernel/drivers/pci/`, `kernel/drivers/virtio/` | The PCI bus, and virtio-blk over it: sectors on and off a disk, polled |
+| `kernel/sd/` | `#S` at `/dev/sd0`: a disk as `data`, `ctl` and its partitions |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, a top half that may not park |
 | `kernel/user/` | Ring 3, `syscall`/`sysret`, a process that owns what it opens, and the spawn that makes more |
 | `sys/abi`, `sys/libuser` | The call numbers both sides include, and the ring 3 library: syscalls and a 9P serve loop |
@@ -262,6 +264,9 @@ kernel/
   srv/                  `#s` at /srv
   env/                  `#e` at /env
   procfs/               `#p` at /proc
+  drivers/pci/          The PCI bus
+  drivers/virtio/       virtio-blk over PCI, polled
+  sd/                   `#S` at /dev/sd0: the disk as files
   user/                 Ring 3, the system calls, a process, the image
                         loader, and `#b` at /bin
 sys/
