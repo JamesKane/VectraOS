@@ -37,9 +37,11 @@ Every fork is `rfork(RFPROC|RFFDG)`: a copy of memory, a copy of the
 descriptor table, the environment shared. A simple command that names a
 program forks, and the child applies its redirections and execs. A
 pipeline forks a child per stage, and the parent closes both pipe ends
-before it waits, so the reader sees the end when the writer is gone. A
-forked child whose whole node is one program execs it in place rather than
-forking again, as Plan 9's rc does: `sleep 100 &` leaves `$apid` naming
+before it waits, so the reader sees the end when the writer is gone. What
+a simple command's first word names -- a function, `exec`, a builtin, a
+program -- is decided once, in `classify`, for the shell that runs it and
+the forked child that may exec it. A forked child whose whole node is one
+program execs it in place rather than forking again, as Plan 9's rc does: `sleep 100 &` leaves `$apid` naming
 the sleep itself, so `kill $apid` reaches it, and a pipeline of n stages is
 n processes. A
 backquote forks one child with its output into a pipe, reads the pipe to
@@ -73,17 +75,20 @@ name and `$pid/status` was a variable nobody had set.
 `<<tag` here documents with `$name` substituted unless the tag is quoted.
 A command that runs in a child applies its redirections and does not look
 back. One that runs in the shell -- a builtin, a function, a brace -- has
-them applied and then undone: the descriptor being replaced is parked on a
-number from 20 up and put back after. `exec` is the one whose
+them applied and then undone: the descriptor being replaced is parked on
+the lowest free number with one `dup`, as rc does, and put back after. `exec` is the one whose
 redirections are meant to stay.
 
 ## Variables and `/env`
 
-A variable set is written to `/env/name`, its elements separated by NUL,
-and the table is read back from `/env` at startup, so a program rc starts
-sees what rc set, and an rc a program starts sees what the program's
-environment held. `$*`, `$0`, `$status`, `$apid` and `$n` stay out of the
-file. `x=y cmd` sets `x` for `cmd` and puts the old value back.
+A variable set is marked, and written to `/env/name` -- its elements
+separated by NUL, in one write -- just before the shell next forks, as
+Plan 9's `Updenv` does before an exec; an emptied variable is removed at once. A loop
+that sets its variable a thousand times costs the kernel nothing, and a
+program still sees what the shell set. The table is read back from `/env`
+at startup, so an rc a program starts sees what the program's environment
+held. `$*`, `$0`, `$status`, `$apid`, `$pid` and `$n` stay out of the file.
+`x=y cmd` sets `x` for `cmd` and puts the old value back.
 
 The variables and functions are tables searched by name rather than
 maps. Odin's `map` lost every entry in this build, silently, and a shell

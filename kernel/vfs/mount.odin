@@ -25,6 +25,7 @@ more real than the other.
 package vfs
 
 import "kernel:sync"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 /*
@@ -703,49 +704,38 @@ ns_describe :: proc(ns: ^Namespace, out: []u8) -> int #no_bounds_check {
 	if ns == nil {
 		return 0
 	}
-	n := 0
-	put :: proc "contextless" (out: []u8, n: int, s: string) -> int #no_bounds_check {
-		n := n
-		for i in 0 ..< len(s) {
-			if n >= len(out) {
-				return n
-			}
-			out[n] = s[i]
-			n += 1
-		}
-		return n
-	}
+	sink := libodin.sink_from(out)
 	sync.rlock(&ns.lock)
 	for bucket in 0 ..< MOUNT_BUCKETS {
 		for mp := ns.mounts[bucket]; mp != nil; mp = mp.next {
 			sync.rlock(&mp.lock)
 			first := true
 			for m := mp.members; m != nil; m = m.next {
-				n = put(out, n, m.mounted ? "mount" : "bind")
+				libodin.put_str(&sink, m.mounted ? "mount" : "bind")
 				if !first {
-					n = put(out, n, " -a")
+					libodin.put_str(&sink, " -a")
 				}
 				if .Create in m.flags {
-					n = put(out, n, " -c")
+					libodin.put_str(&sink, " -c")
 				}
-				n = put(out, n, " ")
-				n = put(out, n, string(m.source[:m.source_len]))
+				libodin.put_str(&sink, " ")
+				libodin.put_str(&sink, string(m.source[:m.source_len]))
 				if int(m.source_len) == MOUNT_NAME_MAX {
-					n = put(out, n, "...")
+					libodin.put_str(&sink, "...")
 				}
-				n = put(out, n, " ")
-				n = put(out, n, string(m.target[:m.target_len]))
+				libodin.put_str(&sink, " ")
+				libodin.put_str(&sink, string(m.target[:m.target_len]))
 				if int(m.target_len) == MOUNT_NAME_MAX {
-					n = put(out, n, "...")
+					libodin.put_str(&sink, "...")
 				}
-				n = put(out, n, "\n")
+				libodin.put_str(&sink, "\n")
 				first = false
 			}
 			sync.runlock(&mp.lock)
 		}
 	}
 	sync.runlock(&ns.lock)
-	return n
+	return len(libodin.str(&sink))
 }
 
 // unmount_path removes one member from a mount point, or every member when

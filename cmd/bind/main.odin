@@ -10,17 +10,17 @@ start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)[1:]
 	order := abi.ORDER_REPLACE
-	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' {
-		for i in 1 ..< len(args[0]) {
-			switch args[0][i] {
-			case 'b':
-				order = abi.ORDER_BEFORE
-			case 'a':
-				order = abi.ORDER_AFTER
-			case 'c':
-			}
+	flag_buf: [8]u8
+	letters, rest := libuser.letters(args, flag_buf[:])
+	args = rest
+	for c in transmute([]u8)letters {
+		switch c {
+		case 'b':
+			order = abi.ORDER_BEFORE
+		case 'a':
+			order = abi.ORDER_AFTER
+		case 'c':
 		}
-		args = args[1:]
 	}
 	if len(args) != 2 {
 		libuser.eprint("usage: bind [-abc] new old\n")

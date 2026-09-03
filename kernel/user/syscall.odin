@@ -278,36 +278,36 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	flight holds the note instead -- the handler's own calls, `noted` above
 	all, must still work.
 	*/
-	// A stop asked for through /proc parks the thread here until `start`,
-	// before any note is looked at. See `stop_here`.
-	if p := current(); p != nil {
-		if intrinsics.volatile_load(&p.stop_requested) {
-			stop_here(p)
-		}
-		// The wake that asked for a stop raised the note flag. If the stop
-		// has lifted -- here, or at a tick that parked and a `start` that
-		// readied -- and nothing was posted since, the flag comes off, or
-		// the block below would end a process nobody noted.
-		if p.stop_wake && p.stop_seq == p.note_seq && !intrinsics.volatile_load(&p.stopping) {
-			p.stop_wake = false
-			sched.clear_note(sched.current())
-		}
-	}
-
 	if thread := sched.current(); sched.thread_noted(thread) {
 		p := current()
-		// The kernel's word first, before any handler and before a delivery
-		// in flight. See `end`.
-		if p == nil || p.handler == 0 || intrinsics.volatile_load(&p.stopping) {
-			note_exit(frame)
+		// A stop asked for through /proc raised this flag too, and parks
+		// the thread here until `start`, before any note is looked at. If
+		// the wake was the stop's own -- here, or at a tick that parked and
+		// a `start` that readied -- and nothing was posted since, the flag
+		// comes off, or the block below would end a process nobody noted.
+		if p != nil && !intrinsics.volatile_load(&p.stopping) {
+			if intrinsics.volatile_load(&p.stop_requested) {
+				stop_here(p)
+			}
+			if p.stop_wake {
+				p.stop_wake = false
+				sched.clear_note(thread)
+			}
 		}
-		if !p.notified {
-			arch.set_syscall_result(frame, -i64(vectra9.EINTR))
-			if !deliver_note(p, frame) {
+		// A flag still up is a note. The kernel's word first, before any
+		// handler and before a delivery in flight. See `end`.
+		if sched.thread_noted(thread) {
+			if p == nil || p.handler == 0 || intrinsics.volatile_load(&p.stopping) {
 				note_exit(frame)
 			}
-			sched.clear_note(thread)
-			return
+			if !p.notified {
+				arch.set_syscall_result(frame, -i64(vectra9.EINTR))
+				if !deliver_note(p, frame) {
+					note_exit(frame)
+				}
+				sched.clear_note(thread)
+				return
+			}
 		}
 	}
 
@@ -608,7 +608,7 @@ sys_open :: proc(addr: uintptr, length: int, flags: u32) -> i64 {
 
 	path_buf: [PATH_MAX]u8
 	path, perr := copy_path(p, addr, length, path_buf[:])
-	if perr != vectra9.Errno(0) {
+	if perr != vfs.OK {
 		return -i64(perr)
 	}
 
@@ -663,7 +663,7 @@ sys_bind :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order: 
 	target_buf: [PATH_MAX]u8
 	source, serr := copy_path(p, src, src_len, source_buf[:])
 	target, terr := copy_path(p, dst, dst_len, target_buf[:])
-	if serr != vectra9.Errno(0) || terr != vectra9.Errno(0) {
+	if serr != vfs.OK || terr != vfs.OK {
 		return -i64(vectra9.EFAULT)
 	}
 
@@ -698,7 +698,7 @@ sys_create :: proc(addr: uintptr, length: int, flags: u32, mode: u32) -> i64 {
 
 	path_buf: [PATH_MAX]u8
 	path, perr := copy_path(p, addr, length, path_buf[:])
-	if perr != vectra9.Errno(0) {
+	if perr != vfs.OK {
 		return -i64(perr)
 	}
 
@@ -737,7 +737,7 @@ sys_mount :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order:
 	target_buf: [PATH_MAX]u8
 	source, serr := copy_path(p, src, src_len, source_buf[:])
 	target, terr := copy_path(p, dst, dst_len, target_buf[:])
-	if serr != vectra9.Errno(0) || terr != vectra9.Errno(0) {
+	if serr != vfs.OK || terr != vfs.OK {
 		return -i64(vectra9.EFAULT)
 	}
 
@@ -951,14 +951,14 @@ sys_unmount :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int) -> i
 	}
 	dst_buf: [PATH_MAX]u8
 	target, terr := copy_path(p, dst, dst_len, dst_buf[:])
-	if terr != vectra9.Errno(0) {
+	if terr != vfs.OK {
 		return -i64(terr)
 	}
 	source := ""
 	src_buf: [PATH_MAX]u8
 	if src_len > 0 {
 		s, serr := copy_path(p, src, src_len, src_buf[:])
-		if serr != vectra9.Errno(0) {
+		if serr != vfs.OK {
 			return -i64(serr)
 		}
 		source = s
@@ -981,7 +981,7 @@ sys_remove :: proc(addr: uintptr, length: int) -> i64 {
 
 	path_buf: [PATH_MAX]u8
 	path, perr := copy_path(p, addr, length, path_buf[:])
-	if perr != vectra9.Errno(0) {
+	if perr != vfs.OK {
 		return -i64(perr)
 	}
 
@@ -1015,7 +1015,7 @@ sys_spawn :: proc(addr: uintptr, length: int, flags: u64, argv_addr: uintptr, ar
 
 	path_buf: [PATH_MAX]u8
 	path, perr := copy_path(p, addr, length, path_buf[:])
-	if perr != vectra9.Errno(0) {
+	if perr != vfs.OK {
 		return -i64(perr)
 	}
 	argv := new(Argv)
@@ -1923,7 +1923,7 @@ sys_stat :: proc(addr: uintptr, length: int, out: uintptr) -> i64 {
 	}
 	path_buf: [PATH_MAX]u8
 	path, perr := copy_path(p, addr, length, path_buf[:])
-	if perr != vectra9.Errno(0) {
+	if perr != vfs.OK {
 		return -i64(perr)
 	}
 	c, err := vfs.resolve(p.ns, path)
@@ -1931,16 +1931,7 @@ sys_stat :: proc(addr: uintptr, length: int, out: uintptr) -> i64 {
 		return -i64(err)
 	}
 	defer vfs.chan_close(c)
-	attr, serr := vfs.chan_stat(c)
-	if serr != vfs.OK {
-		return -i64(serr)
-	}
-	record: abi.Stat
-	fill_stat(&record, c, attr, last_element(path))
-	if !copy_out(out, (cast([^]u8)&record)[:size_of(abi.Stat)]) {
-		return -i64(vectra9.EFAULT)
-	}
-	return 0
+	return stat_out(c, last_element(path), out)
 }
 
 // sys_fstat is `stat` on an open descriptor, whose name the kernel does not
@@ -1953,12 +1944,19 @@ sys_fstat :: proc(fd: int, out: uintptr) -> i64 {
 		return -i64(vectra9.EBADF)
 	}
 	defer vfs.chan_close(c)
+	return stat_out(c, "", out)
+}
+
+// stat_out asks the server about a chan and writes Plan 9's Dir for it to
+// the program: what `stat` and `fstat` share once they have the chan.
+@(private = "file")
+stat_out :: proc(c: ^vfs.Chan, name: string, out: uintptr) -> i64 {
 	attr, serr := vfs.chan_stat(c)
 	if serr != vfs.OK {
 		return -i64(serr)
 	}
 	record: abi.Stat
-	fill_stat(&record, c, attr, "")
+	fill_stat(&record, c, attr, name)
 	if !copy_out(out, (cast([^]u8)&record)[:size_of(abi.Stat)]) {
 		return -i64(vectra9.EFAULT)
 	}
@@ -1975,7 +1973,7 @@ sys_wstat :: proc(addr: uintptr, length: int, in_: uintptr) -> i64 {
 	}
 	path_buf: [PATH_MAX]u8
 	path, perr := copy_path(p, addr, length, path_buf[:])
-	if perr != vectra9.Errno(0) {
+	if perr != vfs.OK {
 		return -i64(perr)
 	}
 	record: abi.Stat
@@ -2033,32 +2031,21 @@ sys_dirread :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 	}
 
 	filled := 0
-	at := 0
 	last_cookie := offset
-	for filled < count && at + 13 + 8 + 1 + 2 <= n {
-		entry: abi.Dirent
-		entry.qid_kind = buffer[at]
-		entry.qid_version = u32(buffer[at + 1]) | u32(buffer[at + 2]) << 8 | u32(buffer[at + 3]) << 16 | u32(buffer[at + 4]) << 24
-		qpath := u64(0)
-		for i in 0 ..< 8 {
-			qpath |= u64(buffer[at + 5 + i]) << (8 * u64(i))
-		}
-		entry.qid_path = qpath
-		cookie := u64(0)
-		for i in 0 ..< 8 {
-			cookie |= u64(buffer[at + 13 + i]) << (8 * u64(i))
-		}
-		name_len := int(buffer[at + 22]) | int(buffer[at + 23]) << 8
-		at += 24
-		if at + name_len > n {
+	cursor := vectra9.cursor_from(buffer[:n])
+	for filled < count {
+		// The codec's own decoder, the inverse of the `put_dirent` every
+		// server here writes with.
+		e, eok := vectra9.next_dirent(&cursor)
+		if !eok {
 			break
 		}
-		keep := min(name_len, abi.NAME_MAX)
-		for i in 0 ..< keep {
-			entry.name[i] = buffer[at + i]
-		}
-		entry.name_len = u8(keep)
-		at += name_len
+		entry: abi.Dirent
+		entry.qid_kind = transmute(u8)e.qid.kind
+		entry.qid_version = e.qid.version
+		entry.qid_path = e.qid.path
+		cookie := e.offset
+		entry.name_len = u8(copy(entry.name[:], e.name))
 
 		if !copy_out(addr + uintptr(filled * size_of(abi.Dirent)), (cast([^]u8)&entry)[:size_of(abi.Dirent)]) {
 			return -i64(vectra9.EFAULT)
@@ -2111,7 +2098,7 @@ sys_chdir :: proc(addr: uintptr, length: int) -> i64 {
 	}
 	path_buf: [PATH_MAX]u8
 	path, perr := copy_path(p, addr, length, path_buf[:])
-	if perr != vectra9.Errno(0) {
+	if perr != vfs.OK {
 		return -i64(perr)
 	}
 	c, err := vfs.resolve(p.ns, path)

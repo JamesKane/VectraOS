@@ -329,8 +329,8 @@ addr_matches :: proc(a: ^Addr, line: string, line_no: i64, last: bool) -> bool {
 // matched. `&` in the replacement is the matched text.
 substitute :: proc(cmd: ^Command, pattern: ^[dynamic]u8) -> bool {
 	text := string(pattern[:])
-	out := make([dynamic]u8, 0, len(text) + 16)
-	defer delete(out)
+	out := &subst_scratch
+	clear(out)
 	at := 0
 	any := false
 	for at <= len(text) {
@@ -339,12 +339,12 @@ substitute :: proc(cmd: ^Command, pattern: ^[dynamic]u8) -> bool {
 			break
 		}
 		any = true
-		append(&out, ..transmute([]u8)text[at:start_at])
-		expand(&out, cmd.repl, text[start_at:end])
+		append(out, ..transmute([]u8)text[at:start_at])
+		expand(out, cmd.repl, text[start_at:end])
 		if end == start_at {
 			// An empty match: keep one character so the scan moves.
 			if start_at < len(text) {
-				append(&out, text[start_at])
+				append(out, text[start_at])
 			}
 			at = start_at + 1
 		} else {
@@ -358,12 +358,15 @@ substitute :: proc(cmd: ^Command, pattern: ^[dynamic]u8) -> bool {
 		return false
 	}
 	if at < len(text) {
-		append(&out, ..transmute([]u8)text[at:])
+		append(out, ..transmute([]u8)text[at:])
 	}
 	clear(pattern)
 	append(pattern, ..out[:])
 	return true
 }
+
+// The rewritten line, kept between substitutions rather than made per line.
+subst_scratch: [dynamic]u8
 
 expand :: proc(out: ^[dynamic]u8, repl: string, matched: string) {
 	i := 0

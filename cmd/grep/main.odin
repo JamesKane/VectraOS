@@ -23,22 +23,22 @@ count_only, fold, number, silent, invert: bool
 start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)[1:]
-	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' {
-		for i in 1 ..< len(args[0]) {
-			switch args[0][i] {
-			case 'c':
-				count_only = true
-			case 'i':
-				fold = true
-			case 'n':
-				number = true
-			case 's':
-				silent = true
-			case 'v':
-				invert = true
-			}
+	flag_buf: [8]u8
+	letters, rest := libuser.letters(args, flag_buf[:])
+	args = rest
+	for c in transmute([]u8)letters {
+		switch c {
+		case 'c':
+			count_only = true
+		case 'i':
+			fold = true
+		case 'n':
+			number = true
+		case 's':
+			silent = true
+		case 'v':
+			invert = true
 		}
-		args = args[1:]
 	}
 	if len(args) < 1 {
 		libuser.eprint("usage: grep [-cinsv] pattern [file ...]\n")

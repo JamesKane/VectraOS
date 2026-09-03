@@ -99,26 +99,3 @@ discard_line :: proc(in_: ^Input) {
 		}
 	}
 }
-
-// read_file reads a whole file into a fresh buffer, or answers false.
-read_file :: proc(path: string) -> (data: []u8, ok: bool) {
-	fd := libuser.open(path, 0)
-	if fd < 0 {
-		return nil, false
-	}
-	defer libuser.close(int(fd))
-	buf := make([dynamic]u8, 0, 4096)
-	tmp: [4096]u8
-	for {
-		n := libuser.read(int(fd), tmp[:])
-		if n < 0 {
-			delete(buf)
-			return nil, false
-		}
-		if n == 0 {
-			break
-		}
-		append(&buf, ..tmp[:n])
-	}
-	return buf[:], true
-}

@@ -11,18 +11,18 @@ show_l, show_w, show_c: bool
 start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)[1:]
-	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' {
-		for i in 1 ..< len(args[0]) {
-			switch args[0][i] {
-			case 'l':
-				show_l = true
-			case 'w':
-				show_w = true
-			case 'c':
-				show_c = true
-			}
+	flag_buf: [8]u8
+	letters, rest := libuser.letters(args, flag_buf[:])
+	args = rest
+	for c in transmute([]u8)letters {
+		switch c {
+		case 'l':
+			show_l = true
+		case 'w':
+			show_w = true
+		case 'c':
+			show_c = true
 		}
-		args = args[1:]
 	}
 	if !show_l && !show_w && !show_c {
 		show_l, show_w, show_c = true, true, true

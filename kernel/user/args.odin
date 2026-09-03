@@ -37,13 +37,7 @@ set_args :: proc "contextless" (p: ^Process, argv: ^Argv) #no_bounds_check {
 			p.args_buf[p.args_len] = ' '
 			p.args_len += 1
 		}
-		for j in start ..< argv.ends[i] {
-			if p.args_len >= ARGS_KEEP {
-				return
-			}
-			p.args_buf[p.args_len] = argv.bytes[j]
-			p.args_len += 1
-		}
+		p.args_len += copy(p.args_buf[p.args_len:], argv.bytes[start:argv.ends[i]])
 		start = argv.ends[i]
 	}
 }

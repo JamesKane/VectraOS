@@ -16,33 +16,22 @@ start :: proc "c" (block: ^abi.Args) {
 	}
 	out: libuser.Bio
 	libuser.bio_init(&out, 1)
-	entries: [16]abi.Dirent
 	path: [80]u8
-	copy(path[:], "/env/")
-	for {
-		n := libuser.dirread(int(fd), entries[:])
-		if n <= 0 {
-			break
+	for name in libuser.list_dir(int(fd)) {
+		data, ok := libuser.read_file(libuser.cat_into(path[:], "/env/", name), context.allocator)
+		if !ok {
+			continue
 		}
-		for i in 0 ..< int(n) {
-			e := &entries[i]
-			name := string(e.name[:e.name_len])
-			copy(path[5:], name)
-			data, ok := libuser.read_file(string(path[:5 + len(name)]), context.allocator)
-			if !ok {
-				continue
+		for &c in data {
+			if c == 0 {
+				c = ' '
 			}
-			for &c in data {
-				if c == 0 {
-					c = ' '
-				}
-			}
-			libuser.bio_puts(&out, name)
-			libuser.bio_putc(&out, '=')
-			libuser.bio_write(&out, data)
-			libuser.bio_putc(&out, '\n')
-			delete(data)
 		}
+		libuser.bio_puts(&out, name)
+		libuser.bio_putc(&out, '=')
+		libuser.bio_write(&out, data)
+		libuser.bio_putc(&out, '\n')
+		delete(data)
 	}
 	libuser.close(int(fd))
 	libuser.bio_flush(&out)

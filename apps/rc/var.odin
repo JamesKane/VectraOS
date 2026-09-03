@@ -43,27 +43,54 @@ lookup :: proc(sh: ^Shell, name: string) -> []string {
 	return nil
 }
 
-// set_var replaces a variable with a copy of `list`, on the heap, and
-// writes it to `/env`. An empty list removes the variable, in both places.
+/*
+set_var replaces a variable with a copy of `list`, on the heap. An empty
+list removes it, from `/env` at once; a value waits, marked, for `updenv`
+to write it before the next program starts, as Plan 9's rc does. A loop
+that sets its variable a thousand times then costs the kernel nothing, and
+a program still sees what the shell set.
+*/
 set_var :: proc(sh: ^Shell, name: string, list: []string) {
 	if name == "*" {
 		set_argv(sh, list)
 		return
 	}
-	// The copy before the free: `x=($x more)` names the old value in the new.
+	if set_local(sh, name, list) {
+		export(name, nil)
+	}
+}
+
+// set_local is the table's half of a set: the copy before the free, because
+// `x=($x more)` names the old value in the new, and the removal of an
+// emptied variable. Answers whether a variable was removed.
+set_local :: proc(sh: ^Shell, name: string, list: []string) -> (removed: bool) {
 	fresh := clone_list(list)
 	if i := find_var(sh, name); i >= 0 {
 		free_list(sh.vars[i].list)
 		if len(fresh) > 0 {
 			sh.vars[i].list = fresh
-		} else {
-			delete(sh.vars[i].name)
-			unordered_remove(&sh.vars, i)
+			sh.vars[i].dirty = true
+			return false
 		}
-	} else if len(fresh) > 0 {
-		append(&sh.vars, Var_Entry{name = clone(name), list = fresh})
+		delete(sh.vars[i].name)
+		unordered_remove(&sh.vars, i)
+		return true
 	}
-	export(name, fresh)
+	if len(fresh) > 0 {
+		append(&sh.vars, Var_Entry{name = clone(name), list = fresh, dirty = true})
+	}
+	return false
+}
+
+// updenv writes every variable set since the last time to `/env`, before
+// a program is started that would read it.
+updenv :: proc(sh: ^Shell) {
+	for &e in sh.vars {
+		if e.dirty {
+			export(e.name, e.list)
+			e.dirty = false
+		}
+	}
 }
 
 set_argv :: proc(sh: ^Shell, list: []string) {
@@ -118,32 +145,31 @@ export :: proc(name: string, list: []string) {
 		return
 	}
 	path_buf: [80]u8
-	path := env_path(path_buf[:], name)
+	path := libuser.cat_into(path_buf[:], "/env/", name)
 	if len(list) == 0 {
 		libuser.remove(path)
 		return
 	}
-	fd := libuser.open(path, abi.O_WRONLY | abi.O_TRUNC)
-	if fd < 0 {
-		fd = libuser.create(path, abi.O_WRONLY, 0o666)
-	}
+	fd := libuser.open_or_create(path, abi.O_WRONLY)
 	if fd < 0 {
 		return
 	}
+	// One write: the elements with a NUL between each, built first.
+	total := len(list) - 1
+	for s in list {
+		total += len(s)
+	}
+	value := make([]u8, total, context.temp_allocator)
+	at := 0
 	for s, i in list {
 		if i > 0 {
-			libuser.write_full(int(fd), []u8{0})
+			value[at] = 0
+			at += 1
 		}
-		libuser.write_full(int(fd), transmute([]u8)s)
+		at += copy(value[at:], s)
 	}
+	libuser.write_full(int(fd), value)
 	libuser.close(int(fd))
-}
-
-@(private = "file")
-env_path :: proc(buf: []u8, name: string) -> string {
-	copy(buf, "/env/")
-	n := copy(buf[5:], name)
-	return string(buf[:5 + n])
 }
 
 // import_env reads every variable in `/env` into the table, at startup.
@@ -165,18 +191,13 @@ import_env :: proc(sh: ^Shell) {
 				continue
 			}
 			path_buf: [80]u8
-			data, ok := read_file(env_path(path_buf[:], name))
+			data, ok := libuser.read_file(libuser.cat_into(path_buf[:], "/env/", name), context.allocator)
 			if !ok {
 				continue
 			}
-			list := split_nul(sh, string(data))
+			set_local(sh, name, split_nul(sh, string(data)))
 			if vi := find_var(sh, name); vi >= 0 {
-				free_list(sh.vars[vi].list)
-				delete(sh.vars[vi].name)
-				unordered_remove(&sh.vars, vi)
-			}
-			if len(list) > 0 {
-				append(&sh.vars, Var_Entry{name = clone(name), list = clone_list(list)})
+				sh.vars[vi].dirty = false // it came from /env; nothing to write back
 			}
 			delete(data)
 		}
@@ -192,7 +213,10 @@ split_nul :: proc(sh: ^Shell, data: string) -> []string {
 	start := 0
 	for i in 0 ..= len(data) {
 		if i == len(data) || data[i] == 0 {
-			if i > start || (i == len(data) && i == start && len(out) == 0 && len(data) > 0) {
+			// A trailing NUL ends the last element rather than adding an
+			// empty one; a value that is only a NUL is one empty element.
+			lone_nul := len(data) > 0 && len(out) == 0 && i == len(data) && start == i
+			if i > start || lone_nul {
 				append(&out, data[start:i])
 			}
 			start = i + 1

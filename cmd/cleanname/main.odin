@@ -19,11 +19,7 @@ start :: proc "c" (block: ^abi.Args) {
 	for name in args {
 		path := name
 		if len(dir) > 0 && (len(path) == 0 || path[0] != '/') {
-			joined := make([]u8, len(dir) + 1 + len(path))
-			copy(joined, dir)
-			joined[len(dir)] = '/'
-			copy(joined[len(dir) + 1:], path)
-			path = string(joined)
+			path = libuser.join(dir, path)
 		}
 		libuser.bio_puts(&out, clean(path))
 		libuser.bio_putc(&out, '\n')

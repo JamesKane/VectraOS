@@ -10,18 +10,18 @@ start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)[1:]
 	count, only_dup, only_uniq := false, false, false
-	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' {
-		for i in 1 ..< len(args[0]) {
-			switch args[0][i] {
-			case 'c':
-				count = true
-			case 'd':
-				only_dup = true
-			case 'u':
-				only_uniq = true
-			}
+	flag_buf: [8]u8
+	letters, rest := libuser.letters(args, flag_buf[:])
+	args = rest
+	for c in transmute([]u8)letters {
+		switch c {
+		case 'c':
+			count = true
+		case 'd':
+			only_dup = true
+		case 'u':
+			only_uniq = true
 		}
-		args = args[1:]
 	}
 	fd := 0
 	if len(args) > 0 {

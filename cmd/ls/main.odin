@@ -15,18 +15,18 @@ status := ""
 start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)[1:]
-	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' {
-		for i in 1 ..< len(args[0]) {
-			switch args[0][i] {
-			case 'l':
-				long = true
-			case 'd':
-				dir_itself = true
-			case 'p':
-				plain = true
-			}
+	flag_buf: [8]u8
+	letters, rest := libuser.letters(args, flag_buf[:])
+	args = rest
+	for c in transmute([]u8)letters {
+		switch c {
+		case 'l':
+			long = true
+		case 'd':
+			dir_itself = true
+		case 'p':
+			plain = true
 		}
-		args = args[1:]
 	}
 	out: libuser.Bio
 	libuser.bio_init(&out, 1)
@@ -57,31 +57,11 @@ list :: proc(out: ^libuser.Bio, path: string, bare: bool) {
 		status = "can't open"
 		return
 	}
-	names := make([dynamic]string)
-	entries: [16]abi.Dirent
-	for {
-		n := libuser.dirread(int(fd), entries[:])
-		if n <= 0 {
-			break
-		}
-		for i in 0 ..< int(n) {
-			e := &entries[i]
-			name := make([]u8, int(e.name_len))
-			copy(name, e.name[:e.name_len])
-			append(&names, string(name))
-		}
-	}
+	names := libuser.list_dir(int(fd))
 	libuser.close(int(fd))
-	sort_names(names[:])
+	libuser.sort_strings(names)
 	for name in names {
-		full := name
-		if !bare {
-			joined := make([]u8, len(path) + 1 + len(name))
-			copy(joined, path)
-			joined[len(path)] = '/'
-			copy(joined[len(path) + 1:], name)
-			full = string(joined)
-		}
+		full := bare ? name : libuser.join(path, name)
 		if long {
 			cst: abi.Stat
 			if libuser.stat(full, &cst) == 0 {
@@ -95,7 +75,8 @@ list :: proc(out: ^libuser.Bio, path: string, bare: bool) {
 
 entry :: proc(out: ^libuser.Bio, path: string, st: ^abi.Stat) {
 	if long && st != nil {
-		libuser.bio_puts(out, mode_string(st.mode))
+		mode: [10]u8
+		libuser.bio_puts(out, mode_string(mode[:], st.mode))
 		libuser.bio_putc(out, ' ')
 		num: [24]u8
 		s := libuser.itoa(num[:], i64(st.length))
@@ -105,35 +86,17 @@ entry :: proc(out: ^libuser.Bio, path: string, st: ^abi.Stat) {
 		libuser.bio_puts(out, s)
 		libuser.bio_putc(out, ' ')
 	}
-	name := path
-	if plain {
-		start_at := 0
-		for i in 0 ..< len(path) {
-			if path[i] == '/' && i + 1 < len(path) {
-				start_at = i + 1
-			}
-		}
-		name = path[start_at:]
-	}
-	libuser.bio_puts(out, name)
+	libuser.bio_puts(out, plain ? libuser.basename(path) : path)
 	libuser.bio_putc(out, '\n')
 }
 
-// mode_string is Plan 9's: `d` or `-`, then rwx three times.
-mode_string :: proc(mode: u32) -> string {
-	buf := make([]u8, 10)
+// mode_string is Plan 9's: `d` or `-`, then rwx three times, into the
+// caller's ten bytes.
+mode_string :: proc(buf: []u8, mode: u32) -> string {
 	buf[0] = mode & abi.DMDIR != 0 ? 'd' : '-'
 	bits := "rwxrwxrwx"
 	for i in 0 ..< 9 {
 		buf[1 + i] = mode & (1 << u32(8 - i)) != 0 ? bits[i] : '-'
 	}
-	return string(buf)
-}
-
-sort_names :: proc(list: []string) {
-	for i in 1 ..< len(list) {
-		for j := i; j > 0 && list[j] < list[j - 1]; j -= 1 {
-			list[j], list[j - 1] = list[j - 1], list[j]
-		}
-	}
+	return string(buf[:10])
 }

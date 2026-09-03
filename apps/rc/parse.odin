@@ -157,12 +157,7 @@ parse_pipeline :: proc(p: ^Parser) -> ^Node {
 parse_unit :: proc(p: ^Parser) -> ^Node {
 	// Redirections before the command belong to it: `> x echo hi`.
 	before := make([dynamic]Redir)
-	for !p.err && peek(p.lx).kind == .Redir {
-		r, ok := parse_redir(p)
-		if ok {
-			append(&before, r)
-		}
-	}
+	parse_redirs(p, &before)
 
 	t := peek(p.lx)
 	n: ^Node
@@ -172,12 +167,7 @@ parse_unit :: proc(p: ^Parser) -> ^Node {
 		n = new_node(.Brace, t.line)
 		n.a = parse_seq(p, .RBrace)
 		expect(p, .RBrace, "expected }")
-		for !p.err && peek(p.lx).kind == .Redir {
-			r, ok := parse_redir(p)
-			if ok {
-				append(&n.redirs, r)
-			}
-		}
+		parse_redirs(p, &n.redirs)
 
 	case .Kw_If:
 		next(p.lx)
@@ -233,9 +223,7 @@ parse_unit :: proc(p: ^Parser) -> ^Node {
 		next(p.lx)
 		delete(t.text)
 		n = new_node(.Fn, t.line)
-		for !p.err && is_word_start(peek(p.lx).kind) {
-			append(&n.list, parse_word(p))
-		}
+		parse_word_list(p, &n.list)
 		if peek(p.lx).kind == .LBrace {
 			bt := next(p.lx)
 			body := new_node(.Brace, bt.line)
@@ -249,9 +237,7 @@ parse_unit :: proc(p: ^Parser) -> ^Node {
 		delete(t.text)
 		n = new_node(.Twiddle, t.line)
 		n.a = parse_word(p)
-		for !p.err && is_word_start(peek(p.lx).kind) {
-			append(&n.list, parse_word(p))
-		}
+		parse_word_list(p, &n.list)
 
 	case:
 		if is_word_start(t.kind) {
@@ -274,6 +260,26 @@ parse_unit :: proc(p: ^Parser) -> ^Node {
 	}
 	delete(before)
 	return n
+}
+
+// parse_redirs appends every redirection at the current position.
+@(private = "file")
+parse_redirs :: proc(p: ^Parser, into: ^[dynamic]Redir) {
+	for !p.err && peek(p.lx).kind == .Redir {
+		r, ok := parse_redir(p)
+		if ok {
+			append(into, r)
+		}
+	}
+}
+
+// parse_word_list appends every word at the current position: the names
+// of a fn, the patterns of ~ and case.
+@(private = "file")
+parse_word_list :: proc(p: ^Parser, into: ^[dynamic]^Node) {
+	for !p.err && is_word_start(peek(p.lx).kind) {
+		append(into, parse_word(p))
+	}
 }
 
 // parse_paren_body is `( body )`, the condition of if and while.
@@ -306,9 +312,7 @@ parse_cases :: proc(p: ^Parser, sw: ^Node) {
 		next(p.lx)
 		delete(t.text)
 		c := new_node(.Case, t.line)
-		for !p.err && is_word_start(peek(p.lx).kind) {
-			append(&c.list, parse_word(p))
-		}
+		parse_word_list(p, &c.list)
 		sep := peek(p.lx)
 		if sep.kind == .Semi || sep.kind == .Newline {
 			next(p.lx)
@@ -425,9 +429,7 @@ valid_name :: proc(s: string) -> bool {
 		return false
 	}
 	for i in 0 ..< len(s) {
-		c := s[i]
-		ok := c == '_' || c == '*' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-		if !ok {
+		if !idchr(s[i]) {
 			return false
 		}
 	}

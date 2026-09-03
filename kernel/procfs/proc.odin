@@ -173,11 +173,9 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_boun
 			return
 		}
 		pid, f := split(node)
-		if node != ROOT {
-			if _, ok := user.proc_info(pid); !ok {
-				reply^ = vectra9.error_reply(vectra9.ESRCH)
-				return
-			}
+		if node != ROOT && !user.proc_live(pid) {
+			reply^ = vectra9.error_reply(vectra9.ESRCH)
+			return
 		}
 		if f == .Dir && m.flags & 0o3 != vfs.O_RDONLY {
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
@@ -242,11 +240,9 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_boun
 			return
 		}
 		pid, f := split(node)
-		if node != ROOT {
-			if _, ok := user.proc_info(pid); !ok {
-				reply^ = vectra9.error_reply(vectra9.ESRCH)
-				return
-			}
+		if node != ROOT && !user.proc_live(pid) {
+			reply^ = vectra9.error_reply(vectra9.ESRCH)
+			return
 		}
 		attr := vectra9.Rgetattr {
 			valid   = m.request_mask & vfs.GETATTR_BASIC,
@@ -323,6 +319,10 @@ read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check 
 // a pid that is gone.
 @(private = "file")
 render :: proc(pid: u64, f: File, out: []u8) -> int {
+	if f == .Ns {
+		// Its own door, and its own answer for a pid that is gone.
+		return user.proc_namespace(pid, out)
+	}
 	info, ok := user.proc_info(pid)
 	if !ok {
 		return -1
@@ -344,7 +344,7 @@ render :: proc(pid: u64, f: File, out: []u8) -> int {
 		libodin.put_str(&sink, "\n")
 		return len(libodin.str(&sink))
 	case .Ns:
-		return user.proc_namespace(pid, out)
+		return 0
 	case .Args:
 		n := copy(out, info.args)
 		if n < len(out) {
@@ -419,7 +419,7 @@ step :: proc(from: i32, name: string) -> i32 {
 		if !ok || v >= 1 << PID_BITS {
 			return -1
 		}
-		if _, live := user.proc_info(v); !live {
+		if !user.proc_live(v) {
 			return -1
 		}
 		return node_of(v, .Dir)
@@ -491,7 +491,7 @@ readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_
 			after = next
 		}
 	} else {
-		if _, ok := user.proc_info(pid); !ok {
+		if !user.proc_live(pid) {
 			reply^ = vectra9.error_reply(vectra9.ESRCH)
 			return
 		}

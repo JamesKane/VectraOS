@@ -91,7 +91,6 @@ Var :: struct {
 Group :: struct {
 	refs:    int,
 	vars:    [MAX_VARS]Var,
-	count:   int,
 	next_id: i32,
 }
 
@@ -212,19 +211,7 @@ release :: proc(grp: ^Group) #no_bounds_check {
 	if grp.refs > 0 {
 		return
 	}
-	for i in 0 ..< MAX_VARS {
-		if grp.vars[i].id != 0 {
-			delete(grp.vars[i].data, mem.allocator())
-		}
-	}
-	for i in 0 ..< MAX_GROUPS {
-		if &dev.slots[i].group == grp {
-			dev.slots[i].used = false
-			dev.slots[i].group = Group{}
-			break
-		}
-	}
-	dev.live -= 1
+	release_locked(grp)
 }
 
 /*
@@ -241,12 +228,14 @@ copy_group :: proc(src: ^Group) -> ^Group #no_bounds_check {
 	if fresh == nil || src == nil {
 		return fresh
 	}
+	filled := 0
 	for i in 0 ..< MAX_VARS {
 		s := &src.vars[i]
 		if s.id == 0 {
 			continue
 		}
-		v := &fresh.vars[fresh.count]
+		v := &fresh.vars[filled]
+		filled += 1
 		v^ = Var {
 			id  = fresh.next_id,
 			len = s.len,
@@ -263,12 +252,12 @@ copy_group :: proc(src: ^Group) -> ^Group #no_bounds_check {
 			v.size = s.size
 		}
 		fresh.next_id += 1
-		fresh.count += 1
 	}
 	return fresh
 }
 
-// release_locked is `release` for a caller already under the lock.
+// release_locked frees a group's values and gives its slot back. Under the
+// lock, which `release` holds and `copy_group` holds when its copy fails.
 @(private = "file")
 release_locked :: proc(grp: ^Group) #no_bounds_check {
 	for i in 0 ..< MAX_VARS {
@@ -276,12 +265,9 @@ release_locked :: proc(grp: ^Group) #no_bounds_check {
 			delete(grp.vars[i].data, mem.allocator())
 		}
 	}
-	for i in 0 ..< MAX_GROUPS {
-		if &dev.slots[i].group == grp {
-			dev.slots[i].used = false
-			dev.slots[i].group = Group{}
-			break
-		}
+	if i := slot_of_group(grp); i >= 0 {
+		dev.slots[i].used = false
+		dev.slots[i].group = Group{}
 	}
 	dev.live -= 1
 }
@@ -479,7 +465,6 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 		}
 		copy(v.name[:], m.name)
 		grp.next_id += 1
-		grp.count += 1
 		new_node := node_of(slot_of_group(grp), v.id)
 		_ = vfs.fidtab_bind(&d.fids, m.fid, new_node)
 		vfs.fidtab_set_open(&d.fids, m.fid, true)
@@ -544,19 +529,11 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 			return
 		}
 		end := int(m.offset) + len(m.data)
-		if !reserve(v, end) {
+		if !grow_to(v, max(end, v.size)) {
 			reply^ = vectra9.error_reply(vectra9.ENOMEM)
 			return
 		}
-		// A write past the end zero-fills the gap, as a file would.
-		for i in v.size ..< int(m.offset) {
-			v.data[i] = 0
-		}
 		copy(v.data[m.offset:end], m.data)
-		if end > v.size {
-			v.size = end
-		}
-		v.version += 1
 		d.writes += 1
 		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 
@@ -582,7 +559,6 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 		}
 		delete(v.data)
 		v^ = Var{}
-		dev.slots[int(node >> 16)].group.count -= 1
 		d.removes += 1
 		reply^ = vectra9.Rremove{}
 
@@ -636,16 +612,10 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 				reply^ = vectra9.error_reply(vectra9.ENOSPC)
 				return
 			}
-			want := int(m.size)
-			if !reserve(v, want) {
+			if !grow_to(v, int(m.size)) {
 				reply^ = vectra9.error_reply(vectra9.ENOMEM)
 				return
 			}
-			for i in v.size ..< want {
-				v.data[i] = 0
-			}
-			v.size = want
-			v.version += 1
 		}
 		reply^ = vectra9.Rsetattr{}
 
@@ -654,8 +624,14 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
 		}
-		grp := caller()
-		n := grp == nil ? 0 : grp.count
+		n := 0
+		if grp := caller(); grp != nil {
+			for i in 0 ..< MAX_VARS {
+				if grp.vars[i].id != 0 {
+					n += 1
+				}
+			}
+		}
 		reply^ = vectra9.Rstatfs {
 			type    = 0x0139_9249,
 			bsize   = 512,
@@ -696,6 +672,22 @@ open_var :: proc "contextless" (fid: vectra9.Fid, reply: ^vectra9.Msg) -> (node:
 		}
 	}
 	return node, v, true
+}
+
+// grow_to sets a value's length: the room, zeroes over any gap a write past
+// the end or a wstat opened, and the version. A write and a truncation are
+// the same operation with the copy left to the caller.
+@(private = "file")
+grow_to :: proc(v: ^Var, want: int) -> bool {
+	if !reserve(v, want) {
+		return false
+	}
+	for i in v.size ..< want {
+		v.data[i] = 0
+	}
+	v.size = want
+	v.version += 1
+	return true
 }
 
 /*

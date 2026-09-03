@@ -42,6 +42,13 @@ Regex :: struct {
 	prog:    [dynamic]Inst,
 	classes: [dynamic][256]bool,
 	fold:    bool, // case-insensitive: the text is lowered as it is read
+	// The simulation's two thread lists and its visited marks, sized to the
+	// program once at compile, because a match per line of input that
+	// allocated them would be three heap blocks per line for ever.
+	cur:     []int,
+	nxt:     []int,
+	mark:    []int,
+	generation: int,
 }
 
 // -- Parsing into a program ---------------------------------------------------------
@@ -71,6 +78,10 @@ compile :: proc(pattern: string, fold: bool, allocator: runtime.Allocator) -> (r
 		return nil, false
 	}
 	append(&re.prog, Inst{op = .Match})
+	n := len(re.prog)
+	re.cur = make([]int, n, allocator)
+	re.nxt = make([]int, n, allocator)
+	re.mark = make([]int, n, allocator)
 	return re, true
 }
 
@@ -80,6 +91,9 @@ destroy :: proc(re: ^Regex) {
 	}
 	delete(re.prog)
 	delete(re.classes)
+	delete(re.cur)
+	delete(re.nxt)
+	delete(re.mark)
 	free(re)
 }
 
@@ -97,21 +111,30 @@ parse_alt :: proc(p: ^Parser) {
 	parse_concat(p)
 	for !p.err && p.pos < len(p.pat) && p.pat[p.pos] == '|' {
 		p.pos += 1
-		// Insert a Split before what was emitted, then a Jmp after it.
-		left := p.re.prog[start:]
-		moved := make([]Inst, len(left), context.temp_allocator)
-		copy(moved, left)
-		resize(&p.re.prog, start)
-		split := emit(p, Inst{op = .Split})
-		for ins in moved {
-			append(&p.re.prog, shift(ins, 1, start))
-		}
+		// A Split before what was emitted, then a Jmp after it.
+		split := insert_split(p, start)
 		jmp := emit(p, Inst{op = .Jmp})
-		p.re.prog[split].x = split + 1
 		p.re.prog[split].y = len(p.re.prog)
 		parse_concat(p)
 		p.re.prog[jmp].x = len(p.re.prog)
 	}
+}
+
+// insert_split puts a Split in front of the code emitted since `start`,
+// its first branch the code and its second left for the caller to aim, and
+// shifts the code's own targets by one. The shape `|`, `*` and `?` share.
+@(private = "file")
+insert_split :: proc(p: ^Parser, start: int) -> int {
+	body := p.re.prog[start:]
+	moved := make([]Inst, len(body), context.temp_allocator)
+	copy(moved, body)
+	resize(&p.re.prog, start)
+	split := emit(p, Inst{op = .Split})
+	for ins in moved {
+		append(&p.re.prog, shift(ins, 1, start))
+	}
+	p.re.prog[split].x = split + 1
+	return split
 }
 
 // shift moves an instruction's targets by `by` if they lie at or after `from`.
@@ -156,31 +179,15 @@ parse_repeat :: proc(p: ^Parser) {
 		switch c {
 		case '*':
 			p.pos += 1
-			body := p.re.prog[start:]
-			moved := make([]Inst, len(body), context.temp_allocator)
-			copy(moved, body)
-			resize(&p.re.prog, start)
-			split := emit(p, Inst{op = .Split})
-			for ins in moved {
-				append(&p.re.prog, shift(ins, 1, start))
-			}
+			split := insert_split(p, start)
 			emit(p, Inst{op = .Jmp, x = split})
-			p.re.prog[split].x = split + 1
 			p.re.prog[split].y = len(p.re.prog)
 		case '+':
 			p.pos += 1
 			emit(p, Inst{op = .Split, x = start, y = len(p.re.prog) + 1})
 		case '?':
 			p.pos += 1
-			body := p.re.prog[start:]
-			moved := make([]Inst, len(body), context.temp_allocator)
-			copy(moved, body)
-			resize(&p.re.prog, start)
-			split := emit(p, Inst{op = .Split})
-			for ins in moved {
-				append(&p.re.prog, shift(ins, 1, start))
-			}
-			p.re.prog[split].x = split + 1
+			split := insert_split(p, start)
 			p.re.prog[split].y = len(p.re.prog)
 		case:
 			return
@@ -292,11 +299,9 @@ match :: proc(re: ^Regex, text: string) -> (start, end: int, ok: bool) {
 
 // match_from is `match` starting the search at `from`, for `s///g`.
 match_from :: proc(re: ^Regex, text: string, from: int) -> (start, end: int, ok: bool) {
-	n := len(re.prog)
-	cur := make([]int, n, context.temp_allocator)
-	nxt := make([]int, n, context.temp_allocator)
-	mark := make([]int, n, context.temp_allocator)
-	generation := 0
+	cur, nxt, mark := re.cur, re.nxt, re.mark
+	generation := re.generation
+	defer re.generation = generation
 	for s := from; s <= len(text); s += 1 {
 		ncur := 0
 		generation += 1

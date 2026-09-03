@@ -18,19 +18,15 @@ start :: proc "c" (block: ^abi.Args) {
 		libuser.exits("usage")
 	}
 	path := args[0]
-	end := len(path)
-	for end > 1 && path[end - 1] == '/' {
-		end -= 1
-	}
-	start_at := 0
-	for i in 0 ..< end {
-		if path[i] == '/' {
-			start_at = i + 1
-		}
-	}
-	out := path[start_at:end]
+	out := libuser.basename(path)
 	if dir {
-		out = start_at <= 1 ? (start_at == 1 ? "/" : ".") : path[:start_at - 1]
+		// The directory part: what is left before the last element, `/`
+		// for a name at the root and `.` for a bare one.
+		end := len(path) - len(out)
+		for end > 1 && path[end - 1] == '/' {
+			end -= 1
+		}
+		out = end == 0 ? "." : path[:end]
 	} else if len(args) > 1 {
 		suffix := args[1]
 		if len(suffix) < len(out) && out[len(out) - len(suffix):] == suffix {

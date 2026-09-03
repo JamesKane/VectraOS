@@ -72,13 +72,28 @@ eval_words :: proc(sh: ^Shell, words: []^Node) -> []string {
 
 // eval_plain evaluates a word and strips its marks: a name, a file, a value.
 eval_plain :: proc(sh: ^Shell, n: ^Node) -> []string {
-	list := eval_word(sh, n)
+	return strip_all(sh, eval_word(sh, n))
+}
+
+// strip_all is a list with every word's marks removed, as a new list.
+strip_all :: proc(sh: ^Shell, list: []string) -> []string {
 	out := make([]string, len(list), sh.temp)
 	for s, i in list {
 		out[i] = strip_marks(s)
 	}
 	return out
 }
+
+// search_path is `$path`, or Plan 9's default when nothing set one.
+search_path :: proc(sh: ^Shell) -> []string {
+	path := lookup(sh, "path")
+	if len(path) == 0 {
+		return DEFAULT_PATH[:]
+	}
+	return path
+}
+
+DEFAULT_PATH := [?]string{".", "/bin"}
 
 // eval_args evaluates a simple command's words, matching each against the
 // filesystem where it has pattern characters.
@@ -134,6 +149,9 @@ join :: proc(sh: ^Shell, list: []string, sep: string) -> string {
 	if len(list) == 0 {
 		return ""
 	}
+	if len(list) == 1 {
+		return list[0]
+	}
 	total := 0
 	for s in list {
 		total += len(s)
@@ -154,59 +172,15 @@ join :: proc(sh: ^Shell, list: []string, sep: string) -> string {
 
 itoa :: proc(sh: ^Shell, v: int) -> string {
 	buf: [24]u8
-	n := format_int(buf[:], v)
-	out := make([]u8, n, sh.temp)
-	copy(out, buf[:n])
+	digits := libuser.itoa(buf[:], i64(v))
+	out := make([]u8, len(digits), sh.temp)
+	copy(out, digits)
 	return string(out)
 }
 
-format_int :: proc(buf: []u8, v: int) -> int {
-	if v == 0 {
-		buf[0] = '0'
-		return 1
-	}
-	neg := v < 0
-	x := neg ? -v : v
-	tmp: [24]u8
-	i := 0
-	for x > 0 {
-		tmp[i] = u8('0' + x % 10)
-		x /= 10
-		i += 1
-	}
-	n := 0
-	if neg {
-		buf[0] = '-'
-		n = 1
-	}
-	for i > 0 {
-		i -= 1
-		buf[n] = tmp[i]
-		n += 1
-	}
-	return n
-}
-
 atoi :: proc(s: string) -> (v: int, ok: bool) {
-	if len(s) == 0 {
-		return 0, false
-	}
-	i := 0
-	neg := false
-	if s[0] == '-' {
-		neg = true
-		i = 1
-	}
-	if i >= len(s) {
-		return 0, false
-	}
-	for ; i < len(s); i += 1 {
-		if s[i] < '0' || s[i] > '9' {
-			return 0, false
-		}
-		v = v * 10 + int(s[i] - '0')
-	}
-	return neg ? -v : v, true
+	big, bok := libuser.atoi(s)
+	return int(big), bok
 }
 
 /*
@@ -268,8 +242,7 @@ has_marks :: proc(s: string) -> bool {
 }
 
 // strip_marks removes GLOB marks. Answers the string itself when there
-// are none, and a copy on the temporary arena otherwise -- or, with no
-// shell to hand, in place-sized heap memory the caller owns.
+// are none, and a copy on the temporary arena otherwise.
 strip_marks :: proc(s: string) -> string {
 	if !has_marks(s) {
 		return s
@@ -427,7 +400,7 @@ glob_walk :: proc(sh: ^Shell, prefix: string, rest: string, out: ^[dynamic]strin
 
 	dir := len(prefix) == 0 ? "." : prefix
 	names := list_dir(sh, dir)
-	sort_strings(names)
+	libuser.sort_strings(names, sh.temp)
 	for name in names {
 		if name[0] == '.' && (len(comp) < 2 || comp[0] != '.') {
 			continue
@@ -445,13 +418,7 @@ glob_walk :: proc(sh: ^Shell, prefix: string, rest: string, out: ^[dynamic]strin
 }
 
 path_join :: proc(sh: ^Shell, dir, name: string) -> string {
-	if len(dir) == 0 {
-		return name
-	}
-	if dir[len(dir) - 1] == '/' {
-		return cat2(sh, dir, name)
-	}
-	return cat2(sh, cat2(sh, dir, "/"), name)
+	return libuser.join(dir, name, sh.temp)
 }
 
 exists :: proc(path: string) -> bool {
@@ -461,34 +428,8 @@ exists :: proc(path: string) -> bool {
 
 // list_dir names everything in a directory, on the temporary arena.
 list_dir :: proc(sh: ^Shell, dir: string) -> []string {
-	out := make([dynamic]string, 0, 16, sh.temp)
-	fd := libuser.open(dir, abi.O_RDONLY)
-	if fd < 0 {
-		return out[:]
-	}
-	defer libuser.close(int(fd))
-	entries: [16]abi.Dirent
-	for {
-		n := libuser.dirread(int(fd), entries[:])
-		if n <= 0 {
-			break
-		}
-		for i in 0 ..< int(n) {
-			e := &entries[i]
-			name := make([]u8, int(e.name_len), sh.temp)
-			copy(name, e.name[:e.name_len])
-			append(&out, string(name))
-		}
-	}
-	return out[:]
-}
-
-sort_strings :: proc(list: []string) {
-	for i in 1 ..< len(list) {
-		for j := i; j > 0 && list[j] < list[j - 1]; j -= 1 {
-			list[j], list[j - 1] = list[j - 1], list[j]
-		}
-	}
+	names, _ := libuser.read_dir(dir, sh.temp)
+	return names
 }
 
 // split_ifs breaks command output into words at the characters in $ifs,

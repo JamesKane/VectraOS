@@ -10,6 +10,7 @@ exit answered with.
 */
 package rc
 
+import "vsys:abi"
 import "vsys:libuser"
 import "vsys:vectra9"
 
@@ -33,18 +34,29 @@ ok :: proc(sh: ^Shell) -> bool {
 // every half second so a parked caller can hear a note; a shell that is
 // waiting simply asks again.
 wait_for :: proc(sh: ^Shell, pid: i64) -> string {
-	buf: [128]u8
+	word, _ := await_once(sh, pid)
+	return word
+}
+
+// await_once collects one child -- `pid`, or any with zero -- asking again
+// each time the kernel gives up, and answers its word. False when there is
+// no such child.
+await_once :: proc(sh: ^Shell, pid: i64) -> (word: string, ok: bool) {
+	buf: [AWAIT_MAX]u8
 	for {
 		n := libuser.await(u64(pid), buf[:])
 		if n == -i64(vectra9.EAGAIN) {
 			continue
 		}
 		if n < 0 {
-			return ""
+			return "", false
 		}
-		return word_after_pid(sh, buf[:n])
+		return word_after_pid(sh, buf[:n]), true
 	}
 }
+
+// The most `await` answers: twenty digits of pid, a space, and the word.
+AWAIT_MAX :: 21 + abi.EXITS_MAX
 
 // word_after_pid is the status out of `pid word`, copied to the arena.
 word_after_pid :: proc(sh: ^Shell, answer: []u8) -> string {
@@ -60,14 +72,3 @@ word_after_pid :: proc(sh: ^Shell, answer: []u8) -> string {
 	return string(out)
 }
 
-// pid_of is the pid out of `pid word`.
-pid_of :: proc(answer: []u8) -> i64 {
-	v: i64
-	for c in answer {
-		if c < '0' || c > '9' {
-			break
-		}
-		v = v * 10 + i64(c - '0')
-	}
-	return v
-}

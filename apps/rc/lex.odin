@@ -439,10 +439,10 @@ lex_word :: proc(lx: ^Lexer, line: int) -> Token {
 
 is_word_start :: proc(k: Tok) -> bool {
 	#partial switch k {
-	case .Word, .Dollar, .Count, .Join, .Backquote, .LParen, .Kw_If, .Kw_Not, .Kw_For, .Kw_In, .Kw_While, .Kw_Switch, .Kw_Case, .Kw_Fn, .Kw_Bang, .Kw_Subshell, .Kw_Twiddle:
+	case .Word, .Dollar, .Count, .Join, .Backquote, .LParen:
 		return true
 	}
-	return false
+	return is_keyword(k)
 }
 
 is_keyword :: proc(k: Tok) -> bool {

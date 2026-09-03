@@ -25,6 +25,15 @@ import "vsys:vectra9"
 
 FORK_FLAGS :: abi.RFPROC | abi.RFFDG
 
+// fork_child is every fork the shell makes, with the environment written
+// out first. The group is shared with the child, so a variable written
+// here is what the child's program reads, and the marks come down once, in
+// the one table that keeps them.
+fork_child :: proc(sh: ^Shell) -> i64 {
+	updenv(sh)
+	return libuser.rfork(FORK_FLAGS)
+}
+
 // run walks one node. The result is in `$status`.
 run :: proc(sh: ^Shell, n: ^Node) {
 	if n == nil || sh.exiting {
@@ -33,7 +42,7 @@ run :: proc(sh: ^Shell, n: ^Node) {
 	#partial switch n.kind {
 	case .Nop:
 		saved := push_redirs(sh, n.redirs[:])
-		pop_redirs(sh, saved)
+		pop_redirs(saved)
 
 	case .Simple:
 		run_simple(sh, n)
@@ -41,7 +50,7 @@ run :: proc(sh: ^Shell, n: ^Node) {
 	case .Brace:
 		saved := push_redirs(sh, n.redirs[:])
 		run(sh, n.a)
-		pop_redirs(sh, saved)
+		pop_redirs(saved)
 
 	case .Seq:
 		run(sh, n.a)
@@ -132,10 +141,7 @@ run :: proc(sh: ^Shell, n: ^Node) {
 		}
 
 	case .Fn:
-		names := eval_words(sh, n.list[:])
-		for &name in names {
-			name = strip_marks(name)
-		}
+		names := strip_all(sh, eval_words(sh, n.list[:]))
 		if n.a == nil {
 			for name in names {
 				undefine(sh, name)
@@ -144,8 +150,8 @@ run :: proc(sh: ^Shell, n: ^Node) {
 		}
 		body := n.a
 		n.a = nil // the table owns it now; `free_tree` must not
-		for name, i in names {
-			define(sh, name, body, i > 0)
+		for name in names {
+			define(sh, name, body)
 		}
 
 	case .Twiddle:
@@ -189,55 +195,72 @@ run_simple :: proc(sh: ^Shell, n: ^Node) {
 		set_status(sh, "error")
 		return
 	}
-	if len(argv) == 0 {
-		saved := push_redirs(sh, n.redirs[:])
-		pop_redirs(sh, saved)
-		set_status(sh, "")
-		return
+	run_argv(sh, n, argv)
+}
+
+// What a simple command's first word names. Decided in one place, for the
+// parent that runs it and the forked child that may exec it.
+Command_Kind :: enum {
+	Nothing, // no words: only redirections
+	Function,
+	Exec, // the builtin whose redirections stay
+	Builtin,
+	Program,
+}
+
+classify :: proc(sh: ^Shell, argv: []string) -> Command_Kind {
+	switch {
+	case len(argv) == 0:
+		return .Nothing
+	case find_fn(sh, argv[0]) >= 0:
+		return .Function
+	case argv[0] == "exec":
+		return .Exec
+	case is_builtin(argv[0]):
+		return .Builtin
 	}
-	if sh.flags['x'] {
+	return .Program
+}
+
+// run_argv runs a simple command whose words are already evaluated.
+run_argv :: proc(sh: ^Shell, n: ^Node, argv: []string) {
+	if sh.flags['x'] && len(argv) > 0 {
 		libfmt.fprint(2, "%s\n", join(sh, argv, " "))
 	}
-
-	name := argv[0]
-	if fi := find_fn(sh, name); fi >= 0 {
+	switch classify(sh, argv) {
+	case .Nothing:
 		saved := push_redirs(sh, n.redirs[:])
-		call_function(sh, sh.fns[fi].fn, argv)
-		pop_redirs(sh, saved)
-		return
-	}
-	if name == "exec" {
-		// The one command whose redirections are meant to stay.
+		pop_redirs(saved)
+		set_status(sh, "")
+	case .Function:
+		saved := push_redirs(sh, n.redirs[:])
+		call_function(sh, sh.fns[find_fn(sh, argv[0])].body, argv)
+		pop_redirs(saved)
+	case .Exec:
 		if !apply_redirs(sh, n.redirs[:]) {
 			set_status(sh, "redirection")
 			return
 		}
 		builtin_exec(sh, argv[1:])
-		return
-	}
-	if is_builtin(name) {
+	case .Builtin:
 		saved := push_redirs(sh, n.redirs[:])
 		run_builtin(sh, argv)
-		pop_redirs(sh, saved)
-		return
+		pop_redirs(saved)
+	case .Program:
+		run_program(sh, argv, n.redirs[:])
 	}
-	run_program(sh, argv, n.redirs[:])
 }
 
 // run_program forks, and the child arranges its descriptors and execs.
 run_program :: proc(sh: ^Shell, argv: []string, redirs: []Redir) {
-	pid := libuser.rfork(FORK_FLAGS)
+	pid := fork_child(sh)
 	if pid < 0 {
 		libfmt.fprint(2, "rc: %s: fork failed: %s\n", argv[0], libuser.errstr(pid))
 		set_status(sh, "fork")
 		return
 	}
 	if pid == 0 {
-		if !apply_redirs(sh, redirs) {
-			libuser.exits("redirection")
-		}
-		exec_program(sh, argv)
-		libuser.exits("exec")
+		exec_simple(sh, argv, redirs)
 	}
 	set_status(sh, wait_for(sh, pid))
 	if sh.flags['e'] && !ok(sh) && !sh.interactive {
@@ -265,11 +288,7 @@ exec_program :: proc(sh: ^Shell, argv: []string) {
 		return
 	}
 	last := -i64(vectra9.ENOENT)
-	path := lookup(sh, "path")
-	if len(path) == 0 {
-		path = []string{".", "/bin"}
-	}
-	for dir in path {
+	for dir in search_path(sh) {
 		full := dir == "." ? name : path_join(sh, dir, name)
 		last = libuser.exec(full, argv)
 		if last != -i64(vectra9.ENOENT) {
@@ -284,21 +303,36 @@ exec_program :: proc(sh: ^Shell, argv: []string) {
 }
 
 // call_function runs a function body with `$*` rebound to its arguments.
-call_function :: proc(sh: ^Shell, fn: ^Function, argv: []string) {
-	saved_argv := sh.argv
-	saved_arg0 := sh.arg0
-	sh.argv = clone_list(argv[1:])
-	sh.arg0 = argv[0]
-	run(sh, fn.body)
+call_function :: proc(sh: ^Shell, body: ^Node, argv: []string) {
+	saved := push_args(sh, argv[1:], argv[0])
+	run(sh, body)
+	pop_args(sh, saved)
+}
+
+// push_args rebinds `$*` and `$0` for a function or a `.` file, and answers
+// what `pop_args` puts back.
+Saved_Args :: struct {
+	argv: []string,
+	arg0: string,
+}
+
+push_args :: proc(sh: ^Shell, argv: []string, arg0: string) -> Saved_Args {
+	saved := Saved_Args{argv = sh.argv, arg0 = sh.arg0}
+	sh.argv = clone_list(argv)
+	sh.arg0 = arg0
+	return saved
+}
+
+pop_args :: proc(sh: ^Shell, saved: Saved_Args) {
 	free_list(sh.argv)
-	sh.argv = saved_argv
-	sh.arg0 = saved_arg0
+	sh.argv = saved.argv
+	sh.arg0 = saved.arg0
 }
 
 // fork_node runs a node in a child that then says its status. Answers the
 // pid to the parent; the child never returns.
 fork_node :: proc(sh: ^Shell, n: ^Node) -> i64 {
-	pid := libuser.rfork(FORK_FLAGS)
+	pid := fork_child(sh)
 	if pid < 0 {
 		libfmt.fprint(2, "rc: fork failed: %s\n", libuser.errstr(pid))
 		set_status(sh, "fork")
@@ -323,21 +357,32 @@ run_in_child :: proc(sh: ^Shell, n: ^Node) -> ! {
 	sh.interactive = false
 	set_pid(sh)
 	if n != nil && n.kind == .Simple {
+		// The words once, whichever way the command goes.
 		argv := eval_args(sh, n.list[:])
-		if !sh.flag_error && len(argv) > 0 && argv[0] != "exec" && !is_builtin(argv[0]) && find_fn(sh, argv[0]) < 0 {
-			if !apply_redirs(sh, n.redirs[:]) {
-				libuser.exits("redirection")
-			}
+		if sh.flag_error {
+			libuser.exits("error")
+		}
+		if classify(sh, argv) == .Program {
 			if sh.flags['x'] {
 				libfmt.fprint(2, "%s\n", join(sh, argv, " "))
 			}
-			exec_program(sh, argv)
-			libuser.exits("exec")
+			exec_simple(sh, argv, n.redirs[:])
 		}
-		sh.flag_error = false
+		run_argv(sh, n, argv)
+		libuser.exits(status(sh))
 	}
 	run(sh, n)
 	libuser.exits(status(sh))
+}
+
+// exec_simple is a forked child's end as a program: its redirections for
+// good, its environment written out, and the exec. Returns only by exiting.
+exec_simple :: proc(sh: ^Shell, argv: []string, redirs: []Redir) -> ! {
+	if !apply_redirs(sh, redirs) {
+		libuser.exits("redirection")
+	}
+	exec_program(sh, argv)
+	libuser.exits("exec")
 }
 
 /*
@@ -353,17 +398,16 @@ run_pipe :: proc(sh: ^Shell, n: ^Node) {
 		set_status(sh, "pipe")
 		return
 	}
-	r := int(fds & 0xFF)
-	w := int(fds >> 8)
+	r, w := abi.pipe_ends(fds)
 
-	left := libuser.rfork(FORK_FLAGS)
+	left := fork_child(sh)
 	if left == 0 {
 		libuser.dup(w, n.pipe_left)
 		libuser.close(r)
 		libuser.close(w)
 		run_in_child(sh, n.a)
 	}
-	right := libuser.rfork(FORK_FLAGS)
+	right := fork_child(sh)
 	if right == 0 {
 		libuser.dup(r, n.pipe_right)
 		libuser.close(r)
@@ -372,14 +416,13 @@ run_pipe :: proc(sh: ^Shell, n: ^Node) {
 	}
 	libuser.close(r)
 	libuser.close(w)
-	ls := left > 0 ? clone(wait_for(sh, left)) : clone("fork")
+	ls := left > 0 ? wait_for(sh, left) : "fork"
 	rs := right > 0 ? wait_for(sh, right) : "fork"
 	if len(ls) == 0 && len(rs) == 0 {
 		set_status(sh, "")
 	} else {
 		set_status(sh, cat2(sh, cat2(sh, ls, "|"), rs))
 	}
-	delete(ls)
 }
 
 /*
@@ -392,9 +435,8 @@ backquote :: proc(sh: ^Shell, body: ^Node) -> []string {
 	if fds < 0 {
 		return nil
 	}
-	r := int(fds & 0xFF)
-	w := int(fds >> 8)
-	pid := libuser.rfork(FORK_FLAGS)
+	r, w := abi.pipe_ends(fds)
+	pid := fork_child(sh)
 	if pid == 0 {
 		libuser.dup(w, 1)
 		libuser.close(r)
@@ -446,8 +488,7 @@ push_redirs :: proc(sh: ^Shell, redirs: []Redir) -> []Saved_Fd {
 	return saved[:]
 }
 
-pop_redirs :: proc(sh: ^Shell, saved: []Saved_Fd) {
-	_ = sh
+pop_redirs :: proc(saved: []Saved_Fd) {
 	for i := len(saved) - 1; i >= 0; i -= 1 {
 		s := saved[i]
 		if s.saved >= 0 {
@@ -459,23 +500,11 @@ pop_redirs :: proc(sh: ^Shell, saved: []Saved_Fd) {
 	}
 }
 
-// park copies a descriptor to a free high number and answers it, or -1
-// when the descriptor was not open.
+// park copies a descriptor to the lowest free number and answers it, or -1
+// when the descriptor was not open. One call, as Plan 9's rc does it.
 @(private = "file")
 park :: proc(fd: int) -> int {
-	st: abi.Stat
-	if libuser.fstat(fd, &st) < 0 {
-		return -1
-	}
-	for k := 20; k < 32; k += 1 {
-		if libuser.fstat(k, &st) < 0 {
-			if libuser.dup(fd, k) == i64(k) {
-				return k
-			}
-			return -1
-		}
-	}
-	return -1
+	return int(libuser.dup(fd))
 }
 
 // apply_redirs applies redirections for good, in a child or for `exec`.
@@ -517,25 +546,11 @@ apply_redir :: proc(sh: ^Shell, r: ^Redir) -> bool {
 		case .Read:
 			fd = libuser.open(name, abi.O_RDONLY)
 		case .Write:
-			fd = libuser.open(name, abi.O_WRONLY | abi.O_TRUNC)
-			if fd < 0 {
-				fd = libuser.create(name, abi.O_WRONLY, 0o666)
-			}
+			fd = libuser.open_or_create(name, abi.O_WRONLY)
 		case .Append:
-			fd = libuser.open(name, abi.O_WRONLY)
-			if fd < 0 {
-				fd = libuser.create(name, abi.O_WRONLY, 0o666)
-			} else {
-				st: abi.Stat
-				if libuser.fstat(int(fd), &st) == 0 {
-					libuser.seek(int(fd), st.length)
-				}
-			}
+			fd = libuser.open_append(name)
 		case .Read_Write:
-			fd = libuser.open(name, abi.O_RDWR)
-			if fd < 0 {
-				fd = libuser.create(name, abi.O_RDWR, 0o666)
-			}
+			fd = libuser.open_or_create(name, abi.O_RDWR)
 		case .Here, .Dup, .Close:
 		}
 		if fd < 0 {
@@ -561,13 +576,12 @@ here_pipe :: proc(sh: ^Shell, r: ^Redir) -> i64 {
 	if fds < 0 {
 		return -1
 	}
-	rd := int(fds & 0xFF)
-	wr := int(fds >> 8)
+	rd, wr := abi.pipe_ends(fds)
 	body := r.here.text
 	if !r.here_quoted {
 		body = substitute(sh, r.here.text)
 	}
-	pid := libuser.rfork(FORK_FLAGS)
+	pid := fork_child(sh)
 	if pid == 0 {
 		libuser.close(rd)
 		libuser.write_full(wr, transmute([]u8)body)
@@ -597,7 +611,7 @@ substitute :: proc(sh: ^Shell, text: string) -> string {
 			continue
 		}
 		start := i
-		for i < len(text) && (text[i] == '_' || text[i] == '*' || (text[i] >= 'a' && text[i] <= 'z') || (text[i] >= 'A' && text[i] <= 'Z') || (text[i] >= '0' && text[i] <= '9')) {
+		for i < len(text) && idchr(text[i]) {
 			i += 1
 		}
 		if i == start {

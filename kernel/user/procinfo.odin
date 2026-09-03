@@ -70,6 +70,14 @@ proc_info :: proc "contextless" (pid: u64) -> (info: Proc_Info, ok: bool) #no_bo
 	return info, true
 }
 
+// proc_live says whether a pid names a live process: the existence check
+// the device makes on every walk, open and stat, without a snapshot.
+proc_live :: proc "contextless" (pid: u64) -> bool {
+	guard := sync.acquire(&table_lock)
+	defer sync.release(&table_lock, guard)
+	return live_by_pid(pid) != nil
+}
+
 // proc_after is the smallest live pid greater than `pid`, or zero.
 proc_after :: proc "contextless" (pid: u64) -> u64 #no_bounds_check {
 	guard := sync.acquire(&table_lock)
@@ -99,17 +107,7 @@ proc_kill :: proc "contextless" (pid: u64) -> bool {
 	guard := sync.acquire(&table_lock)
 	p := live_by_pid(pid)
 	sync.release(&table_lock, guard)
-	if p == nil || p.thread == nil || intrinsics.volatile_load(&p.exit.done) {
-		return false
-	}
-	text := "sys: killed"
-	for i in 0 ..< len(text) {
-		p.note_buf[i] = text[i]
-	}
-	p.note_len = len(text)
-	intrinsics.volatile_store(&p.stopping, true)
-	sched.note_thread(p.thread)
-	return true
+	return request_end(p)
 }
 
 // proc_stop asks a process to stop at its next boundary. The wake is a
@@ -123,7 +121,6 @@ proc_stop :: proc "contextless" (pid: u64) -> bool {
 		return false
 	}
 	p.stop_wake = true
-	p.stop_seq = p.note_seq
 	intrinsics.volatile_store(&p.stop_requested, true)
 	sched.note_thread(p.thread)
 	return true

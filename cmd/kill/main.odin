@@ -21,11 +21,7 @@ start :: proc "c" (block: ^abi.Args) {
 	status := ""
 	path: [64]u8
 	for pid in args {
-		copy(path[:], "/proc/")
-		copy(path[6:], pid)
-		file := len(note) > 0 ? "/note" : "/ctl"
-		copy(path[6 + len(pid):], file)
-		name := string(path[:6 + len(pid) + len(file)])
+		name := libuser.cat_into(path[:], "/proc/", pid, len(note) > 0 ? "/note" : "/ctl")
 		fd := libuser.open(name, abi.O_WRONLY)
 		if fd < 0 {
 			libuser.eprint("kill: ", pid, ": ", libuser.errstr(fd), "\n")

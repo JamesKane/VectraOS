@@ -24,7 +24,7 @@ start :: proc "c" (block: ^abi.Args) {
 	for src in sources {
 		dst := target
 		if into_dir {
-			dst = join(target, basename(src))
+			dst = libuser.join(target, libuser.basename(src))
 		}
 		if !copy_file(src, dst) {
 			status = "copy failed"
@@ -40,10 +40,7 @@ copy_file :: proc(src, dst: string) -> bool {
 		return false
 	}
 	defer libuser.close(int(in_fd))
-	out_fd := libuser.open(dst, abi.O_WRONLY | abi.O_TRUNC)
-	if out_fd < 0 {
-		out_fd = libuser.create(dst, abi.O_WRONLY, 0o666)
-	}
+	out_fd := libuser.open_or_create(dst, abi.O_WRONLY)
 	if out_fd < 0 {
 		libuser.eprint("cp: can't create ", dst, ": ", libuser.errstr(out_fd), "\n")
 		return false
@@ -66,24 +63,4 @@ copy_file :: proc(src, dst: string) -> bool {
 	}
 }
 
-basename :: proc(path: string) -> string {
-	end := len(path)
-	for end > 1 && path[end - 1] == '/' {
-		end -= 1
-	}
-	start := 0
-	for i in 0 ..< end {
-		if path[i] == '/' {
-			start = i + 1
-		}
-	}
-	return path[start:end]
-}
 
-join :: proc(dir, name: string) -> string {
-	out := make([]u8, len(dir) + 1 + len(name))
-	copy(out, dir)
-	out[len(dir)] = '/'
-	copy(out[len(dir) + 1:], name)
-	return string(out)
-}

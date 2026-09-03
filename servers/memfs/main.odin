@@ -162,6 +162,44 @@ release_node :: proc(n: ^Node) {
 	free(n)
 }
 
+// new_child is the checks Tlcreate and Tmkdir share -- a live directory, a
+// name that is one, and not there yet -- and then the node. Nil with the
+// error in the reply.
+new_child :: proc(fid: vectra9.Fid, name: string, dir: bool, mode: u32, reply: ^vectra9.Msg) -> ^Node {
+	d := live_node(fid, reply)
+	if d == nil {
+		return nil
+	}
+	if !d.dir {
+		reply^ = vectra9.error_reply(vectra9.ENOTDIR)
+		return nil
+	}
+	if !valid_name(name) {
+		reply^ = vectra9.error_reply(vectra9.EINVAL)
+		return nil
+	}
+	if child_named(d, name) != nil {
+		reply^ = vectra9.error_reply(vectra9.EEXIST)
+		return nil
+	}
+	return make_child(d, name, dir, mode & 0o777)
+}
+
+// grow_file sets a file's length, zero-filling what a write past the end
+// or a wstat opened up, and shrinking otherwise. Growth doubles the
+// capacity, because a copy in eight-kilobyte writes must not copy the
+// whole file per write.
+grow_file :: proc(n: ^Node, want: int) {
+	old := len(n.data)
+	if want > cap(n.data) {
+		reserve(&n.data, max(want, 2 * cap(n.data)))
+	}
+	resize(&n.data, want)
+	for i in old ..< want {
+		n.data[i] = 0
+	}
+}
+
 clone :: proc(s: string) -> string {
 	out := make([]u8, len(s))
 	copy(out, s)
@@ -271,46 +309,20 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 		walk(m, reply)
 
 	case vectra9.Tlcreate:
-		d := live_node(m.fid, reply)
-		if d == nil {
+		n := new_child(m.fid, m.name, false, m.mode, reply)
+		if n == nil {
 			return
 		}
-		if !d.dir {
-			reply^ = vectra9.error_reply(vectra9.ENOTDIR)
-			return
-		}
-		if !valid_name(m.name) {
-			reply^ = vectra9.error_reply(vectra9.EINVAL)
-			return
-		}
-		if child_named(d, m.name) != nil {
-			reply^ = vectra9.error_reply(vectra9.EEXIST)
-			return
-		}
-		n := make_child(d, m.name, false, m.mode & 0o777)
 		// The fid moves to the new file, open, as Tlcreate says.
 		fid_bind(m.fid, n)
 		fid_slot(m.fid).open = true
 		reply^ = vectra9.Rlcreate{qid = qid_of(n), iounit = 0}
 
 	case vectra9.Tmkdir:
-		d := live_node(m.dfid, reply)
-		if d == nil {
+		n := new_child(m.dfid, m.name, true, m.mode, reply)
+		if n == nil {
 			return
 		}
-		if !d.dir {
-			reply^ = vectra9.error_reply(vectra9.ENOTDIR)
-			return
-		}
-		if !valid_name(m.name) {
-			reply^ = vectra9.error_reply(vectra9.EINVAL)
-			return
-		}
-		if child_named(d, m.name) != nil {
-			reply^ = vectra9.error_reply(vectra9.EEXIST)
-			return
-		}
-		n := make_child(d, m.name, true, m.mode & 0o777)
 		reply^ = vectra9.Rmkdir{qid = qid_of(n)}
 
 	case vectra9.Tlopen:
@@ -358,11 +370,7 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 		}
 		end := int(m.offset) + len(m.data)
 		if end > len(n.data) {
-			old := len(n.data)
-			resize(&n.data, end)
-			for i in old ..< int(m.offset) {
-				n.data[i] = 0
-			}
+			grow_file(n, end)
 		}
 		copy(n.data[m.offset:end], m.data)
 		n.version += 1
@@ -420,12 +428,7 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 			n.mode = m.mode & 0o777
 		}
 		if m.valid & 0x8 != 0 && !n.dir {
-			want := int(m.size)
-			old := len(n.data)
-			resize(&n.data, want)
-			for i in old ..< want {
-				n.data[i] = 0
-			}
+			grow_file(n, int(m.size))
 			n.version += 1
 		}
 		reply^ = vectra9.Rsetattr{}
@@ -494,6 +497,8 @@ walk :: proc(m: vectra9.Twalk, reply: ^vectra9.Msg) {
 // readdir lists a directory. The cookie is the child's qid, which never
 // comes back, so a listing paced across a removal neither skips nor
 // repeats -- the rule `kernel/srv` set for a directory that changes.
+// `make_child` appends and `unlink` removes in place, so the list stays in
+// qid order and the cookie is a position found by one scan.
 readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) {
 	d := live_node(m.fid, reply, true)
 	if d == nil {
@@ -505,30 +510,25 @@ readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) {
 	}
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
-	after := m.offset
-	for {
-		best: ^Node
-		for child in d.children {
-			if child.qid > after && (best == nil || child.qid < best.qid) {
-				best = child
-			}
-		}
-		if best == nil {
-			break
-		}
-		if vectra9.remaining(&c) < vectra9.dirent_size(best.name) {
+	// `children` is in qid order -- appended as made, removed in place -- so
+	// the entries after the cookie are a suffix, found once and walked.
+	first := 0
+	for first < len(d.children) && d.children[first].qid <= m.offset {
+		first += 1
+	}
+	for child in d.children[first:] {
+		if vectra9.remaining(&c) < vectra9.dirent_size(child.name) {
 			break
 		}
 		vectra9.put_dirent(
 			&c,
 			vectra9.Dirent {
-				qid = qid_of(best),
-				offset = best.qid,
-				type = best.dir ? vectra9.DT_DIR : vectra9.DT_REG,
-				name = best.name,
+				qid = qid_of(child),
+				offset = child.qid,
+				type = child.dir ? vectra9.DT_DIR : vectra9.DT_REG,
+				name = child.name,
 			},
 		)
-		after = best.qid
 	}
 	if c.err != .None {
 		reply^ = vectra9.error_reply(vectra9.EIO)

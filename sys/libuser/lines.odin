@@ -19,9 +19,6 @@ Reader :: struct {
 	start: int,
 	end:   int,
 	eof:   bool,
-	// A line longer than the buffer is handed out in pieces, and the
-	// caller cannot tell; this says so, for the tool that cares.
-	split: bool,
 }
 
 reader_init :: proc "contextless" (r: ^Reader, fd: int) {
@@ -29,7 +26,6 @@ reader_init :: proc "contextless" (r: ^Reader, fd: int) {
 	r.start = 0
 	r.end = 0
 	r.eof = false
-	r.split = false
 }
 
 /*
@@ -62,7 +58,6 @@ read_line :: proc "contextless" (r: ^Reader) -> (line: string, ok: bool) #no_bou
 		}
 		if r.end == READER_SIZE {
 			// A line longer than the buffer: hand out what there is.
-			r.split = true
 			line = string(r.buf[:r.end])
 			r.start = r.end
 			return line, true

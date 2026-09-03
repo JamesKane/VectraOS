@@ -12,10 +12,7 @@ start :: proc "c" (block: ^abi.Args) {
 	num: [24]u8
 	pid := len(args) > 0 ? args[0] : libuser.itoa(num[:], i64(libuser.getpid()))
 	path: [64]u8
-	copy(path[:], "/proc/")
-	copy(path[6:], pid)
-	copy(path[6 + len(pid):], "/ns")
-	data, ok := libuser.read_file(string(path[:9 + len(pid)]), context.allocator)
+	data, ok := libuser.read_file(libuser.cat_into(path[:], "/proc/", pid, "/ns"), context.allocator)
 	if !ok {
 		libuser.eprint("ns: ", pid, ": can't read namespace\n")
 		libuser.exits("no such process")

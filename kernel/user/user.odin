@@ -304,16 +304,15 @@ Process :: struct {
 	parks at its next boundary -- the door, or the tick that catches it in
 	ring 3 -- and `stopped` says it has. `start` clears the ask and wakes
 	it. The wake for the ask is `sched.note_thread`, the same as a note's,
-	so `stop_wake` and `stop_seq` remember that the flag was raised for a
-	stop and nothing was posted since, and the boundary clears it again
-	rather than treating it as a note. See `stop_here` and `note_trap`.
+	so `stop_wake` remembers that the flag was raised for a stop and nothing
+	else -- a note posted after clears it -- and the boundary takes the flag
+	down again rather than treat it as a note. See `stop_here` and
+	`note_trap`.
 	*/
 	stop_requested:  bool,
 	stopped:         bool,
 	stopped_in_tick: bool, // parked by the tick, so `start` readies the thread itself
-	stop_wake:       bool,
-	stop_seq:        u64,
-	note_seq:        u64, // counts `post_note`, so a stop can tell a fresh note from its own wake
+	stop_wake:       bool, // the note flag is up for a stop and nothing else; a post clears it
 
 	// The arguments the program was started with, joined by spaces and cut
 	// at ARGS_KEEP, for `/proc/n/args`. The kernel stages the real ones onto
@@ -547,13 +546,29 @@ post_note :: proc "contextless" (p: ^Process, text: string) -> bool {
 		return false
 	}
 
-	n := min(len(text), NOTE_MAX)
-	for i in 0 ..< n {
-		p.note_buf[i] = text[i]
-	}
-	p.note_len = n
-	p.note_seq += 1
+	set_note_text(p, text)
+	p.stop_wake = false
+	sched.note_thread(p.thread)
+	return true
+}
 
+// set_note_text is the note's words into the record, cut to what it holds.
+@(private = "file")
+set_note_text :: proc "contextless" (p: ^Process, text: string) {
+	p.note_len = copy(p.note_buf[:], text)
+}
+
+/*
+request_end is `end` without the wait: the kernel's word set, the note
+that names it, and the wake. `end` waits after it; `/proc/n/ctl` does not.
+*/
+request_end :: proc "contextless" (p: ^Process) -> bool {
+	if p == nil || !p.live || p.thread == nil || intrinsics.volatile_load(&p.exit.done) {
+		return false
+	}
+	set_note_text(p, "sys: killed")
+	p.stop_wake = false
+	intrinsics.volatile_store(&p.stopping, true)
 	sched.note_thread(p.thread)
 	return true
 }
@@ -618,13 +633,7 @@ end :: proc(p: ^Process, patience: int) -> bool {
 	if intrinsics.volatile_load(&p.exit.done) {
 		return true
 	}
-	text := "sys: killed"
-	for i in 0 ..< len(text) {
-		p.note_buf[i] = text[i]
-	}
-	p.note_len = len(text)
-	intrinsics.volatile_store(&p.stopping, true)
-	sched.note_thread(p.thread)
+	request_end(p)
 	return wait(p, patience)
 }
 
@@ -674,7 +683,7 @@ note_trap :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 				p.stopped_in_tick = true
 				return sched.park_current(r)
 			}
-			if p.stop_wake && p.stop_seq == p.note_seq {
+			if p.stop_wake {
 				p.stop_wake = false
 				sched.clear_note(thread)
 				return r

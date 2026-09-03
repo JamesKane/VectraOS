@@ -27,10 +27,7 @@ start :: proc "c" (block: ^abi.Args) {
 		for i in 0 ..< int(n) {
 			e := &entries[i]
 			pid := string(e.name[:e.name_len])
-			copy(path[:], "/proc/")
-			copy(path[6:], pid)
-			copy(path[6 + len(pid):], "/status")
-			data, ok := libuser.read_file(string(path[:13 + len(pid)]), context.allocator)
+			data, ok := libuser.read_file(libuser.cat_into(path[:], "/proc/", pid, "/status"), context.allocator)
 			if !ok {
 				continue
 			}
@@ -44,10 +41,9 @@ start :: proc "c" (block: ^abi.Args) {
 				libuser.bio_putc(&out, ' ')
 				// The name is the path the program was started from; the
 				// last element is what a person calls it.
-				libuser.bio_puts(&out, basename(fields[0]))
+				libuser.bio_puts(&out, libuser.basename(fields[0]))
 				if show_args {
-					copy(path[6 + len(pid):], "/args")
-					if argv, aok := libuser.read_file(string(path[:11 + len(pid)]), context.allocator); aok {
+					if argv, aok := libuser.read_file(libuser.cat_into(path[:], "/proc/", pid, "/args"), context.allocator); aok {
 						libuser.bio_putc(&out, ' ')
 						libuser.bio_write(&out, argv[:max(0, len(argv) - 1)])
 						delete(argv)
@@ -61,16 +57,6 @@ start :: proc "c" (block: ^abi.Args) {
 	libuser.close(int(fd))
 	libuser.bio_flush(&out)
 	libuser.exits("")
-}
-
-basename :: proc(path: string) -> string {
-	start_at := 0
-	for i in 0 ..< len(path) {
-		if path[i] == '/' && i + 1 < len(path) {
-			start_at = i + 1
-		}
-	}
-	return path[start_at:]
 }
 
 split_fields :: proc(s: string, out: []string) -> int {

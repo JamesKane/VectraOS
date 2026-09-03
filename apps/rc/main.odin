@@ -28,19 +28,15 @@ import "vsys:abi"
 import "vsys:libfmt"
 import "vsys:libuser"
 
-Function :: struct {
-	body: ^Node,
-	refs: int, // names sharing this body; the last one freed frees it
-}
-
 Var_Entry :: struct {
-	name: string, // on the heap
-	list: []string, // on the heap
+	name:  string, // on the heap
+	list:  []string, // on the heap
+	dirty: bool, // set since `/env` last saw it; `updenv` writes it before an exec
 }
 
 Fn_Entry :: struct {
 	name: string,
-	fn:   ^Function,
+	body: ^Node, // adopted from the line that defined it; never freed
 }
 
 // The variables and functions are tables searched by name. A shell holds
@@ -127,14 +123,13 @@ main :: proc(args: []string) {
 		sh.flags['c'] = true
 		input_from_string(&in_, cat2(sh, command, "\n"))
 	case len(file) > 0:
-		data, ok := read_file(file)
+		data, ok := libuser.read_file(file, context.allocator)
 		if !ok {
 			libfmt.fprint(2, "rc: %s: can't open\n", file)
 			libuser.exits("can't open")
 		}
 		sh.arg0 = file
 		input_from_string(&in_, string(data))
-		sh.interactive = sh.flags['i']
 	case:
 		sh.interactive = true
 		sh.flags['i'] = true
@@ -185,10 +180,8 @@ run_input :: proc(sh: ^Shell, in_: ^Input) {
 // set_pid is `$pid`, this process's own, set at startup and again in every
 // child the shell forks, which is a different process with the same tables.
 set_pid :: proc(sh: ^Shell) {
-	buf: [24]u8
 	one := make([]string, 1, sh.temp)
 	one[0] = itoa(sh, int(libuser.getpid()))
-	_ = buf
 	set_var(sh, "pid", one)
 }
 
@@ -206,13 +199,9 @@ show_prompt :: proc(which: int) {
 
 the_shell: ^Shell
 
-define :: proc(sh: ^Shell, name: string, body: ^Node, shared: bool) {
-	_ = shared
+define :: proc(sh: ^Shell, name: string, body: ^Node) {
 	undefine(sh, name)
-	fn := new(Function)
-	fn.body = body
-	fn.refs = 1
-	append(&sh.fns, Fn_Entry{name = clone(name), fn = fn})
+	append(&sh.fns, Fn_Entry{name = clone(name), body = body})
 }
 
 undefine :: proc(sh: ^Shell, name: string) {
@@ -221,7 +210,6 @@ undefine :: proc(sh: ^Shell, name: string) {
 		return
 	}
 	delete(sh.fns[i].name)
-	free(sh.fns[i].fn)
 	unordered_remove(&sh.fns, i)
 }
 

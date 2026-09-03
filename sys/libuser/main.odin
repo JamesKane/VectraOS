@@ -88,10 +88,7 @@ bio_write :: proc "contextless" (b: ^Bio, data: []u8) -> bool {
 		if b.used == BIO_SIZE && !bio_flush(b) {
 			return false
 		}
-		n := min(len(data) - at, BIO_SIZE - b.used)
-		for i in 0 ..< n {
-			b.buf[b.used + i] = data[at + i]
-		}
+		n := copy(b.buf[b.used:], data[at:])
 		b.used += n
 		at += n
 	}

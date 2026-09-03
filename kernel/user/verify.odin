@@ -5820,8 +5820,8 @@ verify_anon :: proc(r: ^Result) {
 	// is reported, so a slowdown shows as a number before it shows as a
 	// failure.
 	anon_started := sched.ticks()
-	anon_back := wait(p, PATIENCE * 10)
-	anon_ticks = int(sched.ticks() - anon_started)
+	anon_back := comes_back(r, p, "and it comes back", PATIENCE * 10)
+	anon_ticks := int(sched.ticks() - anon_started)
 	if !anon_back {
 		if wedged {
 			mem.free_page(wedge)
@@ -5830,7 +5830,7 @@ verify_anon :: proc(r: ^Result) {
 		return
 	}
 	timing := libodin.sink_from(helper_line[:])
-	libodin.put_str(&timing, "and it comes back, in ")
+	libodin.put_str(&timing, "in ")
 	libodin.put_uint(&timing, u64(anon_ticks))
 	libodin.put_str(&timing, " ticks")
 	check(r, anon_ticks < PATIENCE * 10, libodin.str(&timing))
@@ -6594,36 +6594,72 @@ one line here and forty in the program.
 */
 @(private = "file")
 verify_abi :: proc(r: ^Result) {
+	names := [?]string{"abitest", "one", "two", "three"}
+	// Seven forks and spawns, each a copy of the program's memory: on the
+	// slowest emulated board that is more than one program's patience.
+	said, _, ok := run_script(r, "/bin/abitest", names[:], PATIENCE * 5, abi_said[:], "a program with a heap and three arguments starts")
+	if ok {
+		check(r, said == "ok", said == "ok" ? "and every step of the process ABI held" : said)
+	}
+}
+
+/*
+run_script spawns a program with arguments, waits for it, and answers the
+word it said, copied into `into` because the tally keeps the string and the
+record is cleared before the line is printed. The three programs the shell
+plan checks with -- the ABI test, the shell on a script, the shell on the
+tool script -- are this with different words. `ok` says it came back and
+was taken down; `ticks` is how long it took.
+*/
+@(private = "file")
+run_script :: proc(
+	r: ^Result,
+	path: string,
+	names: []string,
+	patience: int,
+	into: []u8,
+	what: string,
+) -> (said: string, ticks: int, ok: bool) {
 	argv := new(Argv)
-	if !check(r, argv != nil, "a record for the ABI program's arguments") {
+	if !check(r, argv != nil, "a record for the program's arguments") {
 		return
 	}
 	defer free(argv)
-	names := [?]string{"abitest", "one", "two", "three"}
-	check(r, argv_from(argv, names[:]), "holds its four arguments")
+	check(r, argv_from(argv, names), "holds them")
 
-	p, serr := spawn_path(nil, "/bin/abitest", SPAWN_NS_COPY, argv)
-	if !check(r, serr == vfs.OK && p != nil, "a program with a heap and three arguments starts") {
+	p, serr := spawn_path(nil, path, SPAWN_NS_COPY, argv)
+	if !check(r, serr == vfs.OK && p != nil, what) {
 		return
 	}
 	r.programs += 1
-	// Seven forks and spawns, each a copy of the program's memory: on the
-	// slowest emulated board that is more than one program's patience.
-	if check(r, wait(p, PATIENCE * 5), "and comes back") {
-		// Copied out of the record, because the tally keeps the string and
-		// `finish` clears the record before the line is printed.
-		abi_said_len = p.exit.text_len
-		for i in 0 ..< abi_said_len {
-			abi_said[i] = p.exit.text[i]
+	started := sched.ticks()
+	came_back := comes_back(r, p, "and comes back", patience)
+	ticks = int(sched.ticks() - started)
+	if came_back {
+		n := copy(into, p.exit.text[:p.exit.text_len])
+		said = string(into[:n])
+		if !p.exit.deliberate {
+			sink := libodin.sink_from(helper_line[:])
+			libodin.put_str(&sink, "it said `")
+			libodin.put_str(&sink, said)
+			libodin.put_str(&sink, "` and faulted, kind ")
+			libodin.put_uint(&sink, u64(p.exit.kind))
+			libodin.put_str(&sink, " vector ")
+			libodin.put_uint(&sink, p.exit.vector)
+			libodin.put_str(&sink, " ip ")
+			libodin.put_hex(&sink, u64(p.exit.ip))
+			libodin.put_str(&sink, " address ")
+			libodin.put_hex(&sink, u64(p.exit.address))
+			check(r, false, libodin.str(&sink))
+			came_back = false
 		}
-		said := string(abi_said[:abi_said_len])
-		check(r, p.exit.deliberate && said == "ok", said == "ok" ? "and every step of the process ABI held" : said)
 	}
-	finish(r, p, "and the ABI program is taken down")
+	finish(r, p, "and it is taken down")
+	return said, ticks, came_back
 }
 
+@(private = "file") abi_said: [EXITS_MAX]u8
 @(private = "file") helper_line: [512]u8
-@(private = "file") anon_ticks: int
 
 /*
 comes_back is `wait` as a check, and when it fails the line says everything
@@ -6632,8 +6668,8 @@ several ways to have got there, and a bare "it did not" costs a boot to
 place.
 */
 @(private = "file")
-comes_back :: proc(r: ^Result, p: ^Process, what: string) -> bool {
-	if wait(p, PATIENCE) {
+comes_back :: proc(r: ^Result, p: ^Process, what: string, patience := PATIENCE) -> bool {
+	if wait(p, patience) {
 		return check(r, true, what)
 	}
 	sink := libodin.sink_from(helper_line[:])
@@ -6666,8 +6702,6 @@ comes_back :: proc(r: ^Result, p: ^Process, what: string) -> bool {
 	}
 	return check(r, false, libodin.str(&sink))
 }
-@(private = "file") abi_said: [EXITS_MAX]u8
-@(private = "file") abi_said_len: int
 
 /*
 verify_rc runs the shell on a script and reads what the script says.
@@ -6688,66 +6722,29 @@ RC_SCRIPT :: "fn twice { echo $1 $1 }; x=(); for(i in a b c) x=($x `{twice $i});
 RC_EXPECT :: "a a b b c c hello world six 3"
 
 verify_rc :: proc(r: ^Result) {
-	argv := new(Argv)
-	if !check(r, argv != nil, "a record for the shell's arguments") {
-		return
-	}
-	defer free(argv)
 	names := [?]string{"rc", "-c", RC_SCRIPT}
-	check(r, argv_from(argv, names[:]), "holds rc -c and a script")
-
-	p, serr := spawn_path(nil, "/bin/rc", SPAWN_NS_COPY, argv)
-	if !check(r, serr == vfs.OK && p != nil, "the shell starts on a script") {
-		return
-	}
-	r.programs += 1
 	// Twenty forks and execs, each a copy of the shell's memory, on an
 	// emulated core: a few hundred ticks, ten times what one program takes,
 	// and over eight hundred before the ring 3 heap started small.
-	started := sched.ticks()
-	came_back := wait(p, PATIENCE * 25)
-	rc_ticks = int(sched.ticks() - started)
-	r.shell_ticks = rc_ticks
-	if check(r, came_back, "and comes back") {
-		rc_said_len = p.exit.text_len
-		for i in 0 ..< rc_said_len {
-			rc_said[i] = p.exit.text[i]
-		}
-		said := string(rc_said[:rc_said_len])
-		if p.exit.deliberate && said == RC_EXPECT {
-			sink := libodin.sink_from(rc_diag[:])
+	said, ticks, ok := run_script(r, "/bin/rc", names[:], PATIENCE * 25, rc_said[:], "the shell starts on a script")
+	r.shell_ticks = ticks
+	if ok {
+		sink := libodin.sink_from(rc_diag[:])
+		if said == RC_EXPECT {
 			libodin.put_str(&sink, "and a function, a loop, a pipeline, a switch and a while said what they should, in ")
-			libodin.put_uint(&sink, u64(rc_ticks))
+			libodin.put_uint(&sink, u64(ticks))
 			libodin.put_str(&sink, " ticks")
-			check(r, true, libodin.str(&sink))
 		} else {
-			// Everything the record knows, because a shell that says nothing
-			// has many ways to have got there.
-			sink := libodin.sink_from(rc_diag[:])
 			libodin.put_str(&sink, "rc said `")
 			libodin.put_str(&sink, said)
-			libodin.put_str(&sink, p.exit.deliberate ? "` and exited" : "` and faulted, kind ")
-			if !p.exit.deliberate {
-				libodin.put_uint(&sink, u64(p.exit.kind))
-				libodin.put_str(&sink, " vector ")
-				libodin.put_uint(&sink, p.exit.vector)
-				libodin.put_str(&sink, " ip ")
-				libodin.put_hex(&sink, u64(p.exit.ip))
-				libodin.put_str(&sink, " address ")
-				libodin.put_hex(&sink, u64(p.exit.address))
-				libodin.put_str(&sink, " sp ")
-				libodin.put_hex(&sink, u64(p.exit.sp))
-			}
-			check(r, false, libodin.str(&sink))
+			libodin.put_str(&sink, "`")
 		}
+		check(r, said == RC_EXPECT, libodin.str(&sink))
 	}
-	finish(r, p, "and the shell is taken down")
 }
 
 @(private = "file") rc_said: [EXITS_MAX]u8
-@(private = "file") rc_said_len: int
 @(private = "file") rc_diag: [256]u8
-@(private = "file") rc_ticks: int
 
 /*
 verify_tools runs the shell on `/lib/tests/tools.rc`, which checks every
@@ -6756,56 +6753,30 @@ tool in `cmd/` once and says how many held.
 The script starts `memfs`, mounts it, and works in it, so the tools that
 make and remove files have somewhere to do it. Its lines land in the
 serial log, one `ok name` per tool, and its exit word is `N ok` or
-`failed` and the names. The number here is the number of tools, so a tool
-added to `cmd/` without a line in the script fails this check, which is
-the point.
+`failed` and the names. The count is a constant here, so a check added to
+the script without a change here fails the boot, and says so.
 */
-TOOLS_EXPECTED :: 32
+TOOLS_OK :: "32 ok"
 
 verify_tools :: proc(r: ^Result) {
-	argv := new(Argv)
-	if !check(r, argv != nil, "a record for the tool script's arguments") {
-		return
-	}
-	defer free(argv)
 	names := [?]string{"rc", "/lib/tests/tools.rc"}
-	check(r, argv_from(argv, names[:]), "holds rc and the script")
-
-	p, serr := spawn_path(nil, "/bin/rc", SPAWN_NS_COPY, argv)
-	if !check(r, serr == vfs.OK && p != nil, "the shell starts on the tool script") {
-		return
-	}
-	r.programs += 1
-	started := sched.ticks()
-	came_back := wait(p, PATIENCE * 100)
-	r.tools_ticks = int(sched.ticks() - started)
-	if check(r, came_back, "and comes back") {
-		tools_said_len = p.exit.text_len
-		for i in 0 ..< tools_said_len {
-			tools_said[i] = p.exit.text[i]
-		}
-		said := string(tools_said[:tools_said_len])
-		want: [32]u8
-		wsink := libodin.sink_from(want[:])
-		libodin.put_uint(&wsink, u64(TOOLS_EXPECTED))
-		libodin.put_str(&wsink, " ok")
-		if p.exit.deliberate && said == libodin.str(&wsink) {
-			check(r, true, "and every tool did what its line says")
+	said, ticks, ok := run_script(r, "/bin/rc", names[:], PATIENCE * 100, tools_said[:], "the shell starts on the tool script")
+	r.tools_ticks = ticks
+	if ok {
+		sink := libodin.sink_from(tools_diag[:])
+		if said == TOOLS_OK {
+			libodin.put_str(&sink, "and every tool did what its line says")
 		} else {
-			sink := libodin.sink_from(tools_diag[:])
 			libodin.put_str(&sink, "the tool script said `")
 			libodin.put_str(&sink, said)
-			libodin.put_str(&sink, p.exit.deliberate ? "`" : "` and faulted")
-			check(r, false, libodin.str(&sink))
+			libodin.put_str(&sink, "`")
 		}
+		check(r, said == TOOLS_OK, libodin.str(&sink))
 	}
-	finish(r, p, "and the shell is taken down")
-	// The detached memfs the script started ends when its name goes; give
-	// the reaper a moment to notice, so the balance checks after this do
-	// not see it.
+	// The detached memfs the script started ends when its name goes; collect
+	// it now, so the balance checks after this do not see it.
 	reap_orphans()
 }
 
 @(private = "file") tools_said: [EXITS_MAX]u8
-@(private = "file") tools_said_len: int
 @(private = "file") tools_diag: [256]u8

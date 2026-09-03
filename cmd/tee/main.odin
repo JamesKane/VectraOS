@@ -18,21 +18,7 @@ start :: proc "c" (block: ^abi.Args) {
 	append(&fds, 1)
 	status := ""
 	for name in args {
-		fd: i64 = -1
-		if appending {
-			fd = libuser.open(name, abi.O_WRONLY)
-			if fd >= 0 {
-				st: abi.Stat
-				if libuser.fstat(int(fd), &st) == 0 {
-					libuser.seek(int(fd), st.length)
-				}
-			}
-		} else {
-			fd = libuser.open(name, abi.O_WRONLY | abi.O_TRUNC)
-		}
-		if fd < 0 {
-			fd = libuser.create(name, abi.O_WRONLY, 0o666)
-		}
+		fd := appending ? libuser.open_append(name) : libuser.open_or_create(name, abi.O_WRONLY)
 		if fd < 0 {
 			libuser.eprint("tee: can't open ", name, ": ", libuser.errstr(fd), "\n")
 			status = "can't open"

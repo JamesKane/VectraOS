@@ -11,18 +11,18 @@ reverse, numeric, unique: bool
 start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)[1:]
-	for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' {
-		for i in 1 ..< len(args[0]) {
-			switch args[0][i] {
-			case 'r':
-				reverse = true
-			case 'n':
-				numeric = true
-			case 'u':
-				unique = true
-			}
+	flag_buf: [8]u8
+	letters, rest := libuser.letters(args, flag_buf[:])
+	args = rest
+	for c in transmute([]u8)letters {
+		switch c {
+		case 'r':
+			reverse = true
+		case 'n':
+			numeric = true
+		case 'u':
+			unique = true
 		}
-		args = args[1:]
 	}
 	lines := make([dynamic]string)
 	status := ""

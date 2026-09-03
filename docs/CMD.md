@@ -39,7 +39,10 @@ Three lines of ceremony and then the work, with `sys/libuser` for the rest:
 
 `libuser.Reader` and `read_line` for a line at a time, `read_all` and
 `read_file` for the whole thing, `Bio` for output that comes in pieces,
-`eprint` for an error line, `itoa` and `atoi` for the numbers. None of the
+`eprint` for an error line, `itoa` and `atoi` for the numbers, and in
+`path.odin` what every tool did to a path until it was written once:
+`basename`, `join`, `cat_into`, `list_dir`, `read_dir`, `sort_strings`,
+`open_or_create`, `open_append`, and `letters` for the `-abc` flag words. None of the
 tools formats through `core:fmt`: a tool that does is a hundred and fifty
 kilobytes in the image, and one that does not is a few. The exit status is
 a word: empty for success, the reason otherwise, which is what `rc`'s `if`

@@ -8,7 +8,6 @@ package rc
 import "vsys:abi"
 import "vsys:libfmt"
 import "vsys:libuser"
-import "vsys:vectra9"
 
 is_builtin :: proc(name: string) -> bool {
 	switch name {
@@ -73,6 +72,7 @@ builtin_exec :: proc(sh: ^Shell, argv: []string) {
 		set_status(sh, "")
 		return
 	}
+	updenv(sh)
 	exec_program(sh, argv)
 	set_status(sh, "exec")
 }
@@ -112,7 +112,7 @@ builtin_dot :: proc(sh: ^Shell, args_in: []string) {
 	if args[0] == "/dev/cons" || args[0] == "/fd/0" {
 		input_from_fd(&in_, 0, interactive)
 	} else {
-		data, ok := read_file(args[0])
+		data, ok := libuser.read_file(args[0], context.allocator)
 		if !ok {
 			libfmt.fprint(2, "rc: %s: can't open\n", args[0])
 			set_status(sh, "can't open")
@@ -121,17 +121,12 @@ builtin_dot :: proc(sh: ^Shell, args_in: []string) {
 		input_from_string(&in_, string(data))
 		delete(data)
 	}
-	saved_argv := sh.argv
-	saved_arg0 := sh.arg0
+	saved := push_args(sh, args[1:], args[0])
 	saved_interactive := sh.interactive
-	sh.argv = clone_list(args[1:])
-	sh.arg0 = args[0]
 	sh.interactive = interactive
 	run_input(sh, &in_)
-	free_list(sh.argv)
-	sh.argv = saved_argv
-	sh.arg0 = saved_arg0
 	sh.interactive = saved_interactive
+	pop_args(sh, saved)
 	input_free(&in_)
 }
 
@@ -211,17 +206,13 @@ builtin_wait :: proc(sh: ^Shell, args: []string) {
 		set_status(sh, wait_for(sh, i64(pid)))
 		return
 	}
-	buf: [128]u8
 	last := ""
 	for {
-		n := libuser.await(0, buf[:])
-		if n == -i64(vectra9.EAGAIN) {
-			continue
-		}
-		if n < 0 {
+		word, ok := await_once(sh, 0)
+		if !ok {
 			break
 		}
-		last = word_after_pid(sh, buf[:n])
+		last = word
 	}
 	set_status(sh, last)
 }
@@ -241,16 +232,13 @@ builtin_whatis :: proc(sh: ^Shell, args: []string) {
 			libfmt.print("fn %s {...}\n", name)
 			found = true
 		}
-		if is_builtin(name) || name == "exec" {
+		one := []string{name}
+		if k := classify(sh, one); k == .Builtin || k == .Exec {
 			libfmt.print("builtin %s\n", name)
 			found = true
 		}
 		if !found {
-			path := lookup(sh, "path")
-			if len(path) == 0 {
-				path = []string{".", "/bin"}
-			}
-			for dir in path {
+			for dir in search_path(sh) {
 				full := path_join(sh, dir, name)
 				if exists(full) {
 					libfmt.print("%s\n", full)

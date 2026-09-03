@@ -73,15 +73,6 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 	}
 	// The arguments, copied in before anything is torn down: they live in
 	// the image this call is about to replace.
-	argv := new(Argv)
-	if argv == nil {
-		return -i64(vectra9.ENOMEM)
-	}
-	defer free(argv)
-	if !copy_argv(argv_addr, argc, argv) {
-		return -i64(vectra9.EFAULT)
-	}
-
 	/*
 	The new image goes into a scratch record with a space of its own, so a
 	load that fails anywhere leaves the running process untouched.
@@ -103,6 +94,25 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 		}
 		mem.space_destroy(space)
 		return -i64(lerr)
+	}
+	// The arguments come across only now, after the program is known to
+	// load: a shell searching `$path` execs a name that is not there before
+	// the one that is, and the miss should cost a walk and nothing more.
+	argv := new(Argv)
+	if argv == nil {
+		for i in 0 ..< scratch.seg_count {
+			segment_release(scratch.segs[i])
+		}
+		mem.space_destroy(space)
+		return -i64(vectra9.ENOMEM)
+	}
+	defer free(argv)
+	if !copy_argv(argv_addr, argc, argv) {
+		for i in 0 ..< scratch.seg_count {
+			segment_release(scratch.segs[i])
+		}
+		mem.space_destroy(space)
+		return -i64(vectra9.EFAULT)
 	}
 	if arg0 == 0 {
 		staged_sp, block, staged := stage_args(stack_segment(&scratch), sp, argv)
