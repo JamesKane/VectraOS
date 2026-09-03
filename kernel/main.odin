@@ -1564,11 +1564,18 @@ init_bin :: proc() -> bool {
 		emit(&klog, .Fault, &sink)
 		return false
 	}
+	if err := user.lib_init(vfs.boot_namespace); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "lib: #l would not come up -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
 
 	sink := begin(&klog)
 	libodin.put_str(&sink, "bin #b bound at /bin, ")
 	libodin.put_uint(&sink, u64(user.bin_programs()))
-	libodin.put_str(&sink, " programs as files, formats VECTRA01 and 02")
+	libodin.put_str(&sink, " programs as files, formats VECTRA01 and 02; #l at /lib")
 	emit(&klog, .Ok, &sink)
 	return true
 }
@@ -1642,9 +1649,11 @@ verify_user :: proc() {
 		libodin.put_uint(&sink, result.answered)
 		libodin.put_str(&sink, " 9P requests answered by a process, a shell script in ")
 		libodin.put_uint(&sink, u64(result.shell_ticks))
+		libodin.put_str(&sink, " ticks and the tools in ")
+		libodin.put_uint(&sink, u64(result.tools_ticks))
 		libodin.put_str(
 			&sink,
-			" ticks, a typed line served by a process that forked",
+			", a typed line served by a process that forked",
 		)
 		emit(&klog, .Ok, &sink)
 		return

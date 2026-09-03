@@ -105,6 +105,24 @@ mount :: proc "contextless" (source: string, target: string, order: u64) -> i64 
 	)
 }
 
+// unmount undoes a bind or mount at `target`. An empty `source` undoes every
+// one there.
+unmount :: proc "contextless" (source: string, target: string) -> i64 {
+	return raw4(
+		abi.SYS_UNMOUNT,
+		u64(uintptr(raw_data(source))),
+		u64(len(source)),
+		u64(uintptr(raw_data(target))),
+		u64(len(target)),
+	)
+}
+
+// mkdir makes a directory: a create with DMDIR in the mode, which the
+// kernel turns into Tmkdir. Answers a descriptor on the new directory.
+mkdir :: proc "contextless" (path: string, mode: u64 = 0o777) -> i64 {
+	return create(path, abi.O_RDONLY, mode | u64(abi.DMDIR))
+}
+
 remove :: proc "contextless" (path: string) -> i64 {
 	return raw2(abi.SYS_REMOVE, u64(uintptr(raw_data(path))), u64(len(path)))
 }

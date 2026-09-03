@@ -345,6 +345,23 @@ chan_create :: proc(c: ^Chan, name: string, flags: u32, mode: u32) -> Errno {
 	return OK
 }
 
+// chan_mkdir asks the directory this chan names for a subdirectory. The
+// chan stays on the parent; the caller walks to the child if it wants it.
+chan_mkdir :: proc(c: ^Chan, name: string, mode: u32) -> Errno {
+	if c == nil {
+		return vectra9.EBADF
+	}
+	request := vectra9.Msg(vectra9.Tmkdir{dfid = c.fid, name = name, mode = mode})
+	reply: vectra9.Msg
+	if e := rpc(c.server, &request, &reply); e != OK {
+		return e
+	}
+	if _, ok := reply.(vectra9.Rmkdir); !ok {
+		return vectra9.EPROTO
+	}
+	return OK
+}
+
 /*
 chan_remove asks the server to remove the file this chan names.
 

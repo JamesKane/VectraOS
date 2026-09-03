@@ -37,6 +37,16 @@ startup :: proc "c" () -> runtime.Context {
 	return ctx
 }
 
+// heap_context is the context a contextless handler builds when it needs
+// the heap: a server's 9P handler, called from the serve loop. The runtime
+// is already up; this is the allocator alone.
+heap_context :: proc "contextless" () -> runtime.Context {
+	ctx := runtime.default_context()
+	ctx.allocator = allocator()
+	ctx.temp_allocator = allocator()
+	return ctx
+}
+
 // args is the arguments the kernel wrote onto the stack, as a slice. The
 // first is the program's own name, by the caller's convention.
 args :: proc "contextless" (block: ^abi.Args) -> []string {

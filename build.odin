@@ -70,6 +70,32 @@ user_programs := [?]User_Program {
 	{name = "rc", path = "apps/rc"},
 	{name = "echo", path = "cmd/echo"},
 	{name = "cat", path = "cmd/cat"},
+	{name = "memfs", path = "servers/memfs"},
+	{name = "pwd", path = "cmd/pwd"},
+	{name = "mkdir", path = "cmd/mkdir"},
+	{name = "rm", path = "cmd/rm"},
+	{name = "cp", path = "cmd/cp"},
+	{name = "mv", path = "cmd/mv"},
+	{name = "cmp", path = "cmd/cmp"},
+	{name = "wc", path = "cmd/wc"},
+	{name = "tee", path = "cmd/tee"},
+	{name = "tail", path = "cmd/tail"},
+	{name = "basename", path = "cmd/basename"},
+	{name = "cleanname", path = "cmd/cleanname"},
+	{name = "test", path = "cmd/test"},
+	{name = "seq", path = "cmd/seq"},
+	{name = "sleep", path = "cmd/sleep"},
+	{name = "read", path = "cmd/read"},
+	{name = "bind", path = "cmd/bind"},
+	{name = "mount", path = "cmd/mount"},
+	{name = "unmount", path = "cmd/unmount"},
+	{name = "env", path = "cmd/env"},
+	{name = "sort", path = "cmd/sort"},
+	{name = "uniq", path = "cmd/uniq"},
+	{name = "tr", path = "cmd/tr"},
+	{name = "ls", path = "cmd/ls"},
+	{name = "grep", path = "cmd/grep"},
+	{name = "sed", path = "cmd/sed"},
 }
 
 /*
@@ -424,6 +450,45 @@ build_user :: proc(opts: Options) {
 		link_ring3(cfg, obj, elf, "sys/libuser/link_user.ld")
 		elf_to_image(elf, img)
 	}
+	write_pak()
+}
+
+/*
+write_pak gathers every program image into one file the kernel embeds.
+
+    "VPAK" u32 count, then per program: u32 name length, u32 image size,
+    the name, the image
+
+One `#load` in `kernel/user/image.odin` rather than one per program, so a
+new tool is a line in `user_programs` and nothing in the kernel. Little
+endian, unaligned, because the kernel reads the header a byte at a time and
+hands each image to the loader as a slice.
+*/
+write_pak :: proc() {
+	out := make([dynamic]u8, 0, 4 * 1024 * 1024)
+	append(&out, "VPAK")
+	put_u32 :: proc(out: ^[dynamic]u8, v: u32) {
+		append(out, u8(v), u8(v >> 8), u8(v >> 16), u8(v >> 24))
+	}
+	put_u32(&out, u32(len(user_programs)))
+	total := 0
+	for prog in user_programs {
+		img := fmt.tprintf("%s/%s.vx", USER_DIR, prog.name)
+		data, rerr := os.read_entire_file_from_path(img, context.allocator)
+		if rerr != nil {
+			die("cannot read %s", img)
+		}
+		put_u32(&out, u32(len(prog.name)))
+		put_u32(&out, u32(len(data)))
+		append(&out, prog.name)
+		append(&out, ..data)
+		total += len(data)
+	}
+	pak := fmt.tprintf("%s/programs.pak", USER_DIR)
+	if werr := os.write_entire_file(pak, out[:]); werr != nil {
+		die("cannot write %s", pak)
+	}
+	step("%s holds %d programs, %d bytes", pak, len(user_programs), total)
 }
 
 /*

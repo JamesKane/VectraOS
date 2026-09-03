@@ -108,6 +108,7 @@ SYS_WAIT :: abi.SYS_WAIT
 SYS_CREATE :: abi.SYS_CREATE
 SYS_MOUNT :: abi.SYS_MOUNT
 SYS_REMOVE :: abi.SYS_REMOVE
+SYS_UNMOUNT :: abi.SYS_UNMOUNT
 SYS_PIPE :: abi.SYS_PIPE
 SYS_NOTE :: abi.SYS_NOTE
 SYS_RFORK :: abi.SYS_RFORK
@@ -326,6 +327,8 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		result = sys_mount(uintptr(a0), int(a1), uintptr(a2), int(a3), a4)
 	case SYS_REMOVE:
 		result = sys_remove(uintptr(a0), int(a1))
+	case SYS_UNMOUNT:
+		result = sys_unmount(uintptr(a0), int(a1), uintptr(a2), int(a3))
 	case SYS_PIPE:
 		result = sys_pipe()
 	case SYS_NOTE:
@@ -912,6 +915,35 @@ note_exit :: proc(frame: ^arch.Trap_Frame) -> ! {
 	}
 	sync.wakeup_all(&exit_rendez)
 	sched.exit()
+}
+
+// sys_unmount is `unmount(source, target)`: one bind or mount undone, or
+// every one at the target when the source is empty. Both paths are the
+// process's own, relative to its directory like every other.
+@(private = "file")
+sys_unmount :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+	dst_buf: [PATH_MAX]u8
+	target, terr := copy_path(p, dst, dst_len, dst_buf[:])
+	if terr != vectra9.Errno(0) {
+		return -i64(terr)
+	}
+	source := ""
+	src_buf: [PATH_MAX]u8
+	if src_len > 0 {
+		s, serr := copy_path(p, src, src_len, src_buf[:])
+		if serr != vectra9.Errno(0) {
+			return -i64(serr)
+		}
+		source = s
+	}
+	if err := vfs.unmount_path(p.ns, source, target); err != vfs.OK {
+		return -i64(err)
+	}
+	return 0
 }
 
 // sys_remove takes a file away by name, in this process's namespace. The fid

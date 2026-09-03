@@ -20,6 +20,7 @@ handful of binds is how it does.
     /ws/      intuition  screen, palette, windows, input
     /srv/     posted channels
     /env/     environment variables, one file each
+    /lib/     what the kernel ships that is not a program: scripts
     /mnt/     conventional mount area
 */
 package vfs
@@ -32,6 +33,7 @@ ROOT_NODES := [?]Static_Node {
 	{name = "bin", parent = 0, dir = true},
 	{name = "dev", parent = 0, dir = true},
 	{name = "env", parent = 0, dir = true},
+	{name = "lib", parent = 0, dir = true},
 	{name = "mnt", parent = 0, dir = true},
 	{name = "net", parent = 0, dir = true},
 	{name = "proc", parent = 0, dir = true},

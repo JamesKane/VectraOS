@@ -272,94 +272,37 @@ embedded here at build time. The `when` is for a tree checked before the
 image was ever built. The kernel still compiles, `/bin` simply lacks the
 file, and the self-test says so loudly rather than nothing quietly.
 */
-when #exists("../../build/user/ramfs.vx") {
+/*
+The compiled programs arrive as one file, `build/user/programs.pak`, which
+`build.odin` writes after it has converted every image:
+
+    "VPAK" u32 count, then per program: u32 name length, u32 image size,
+    the name, the image
+
+One `#load` rather than one per program, so a new tool is a line in
+`build.odin`'s table and nothing here. The `when` is for a tree checked
+before the pack was ever built: the kernel still compiles, `/bin` carries
+only the page-sized programs, and the self-test says so loudly.
+*/
+when #exists("../../build/user/programs.pak") {
 	@(private = "file")
-	RAMFS_IMAGE := #load("../../build/user/ramfs.vx")
+	PROGRAMS_PAK := #load("../../build/user/programs.pak")
 } else {
 	@(private = "file")
-	RAMFS_IMAGE: []u8
+	PROGRAMS_PAK: []u8
 }
 
-when #exists("../../build/user/consrv.vx") {
-	@(private = "file")
-	CONSRV_IMAGE := #load("../../build/user/consrv.vx")
-} else {
-	@(private = "file")
-	CONSRV_IMAGE: []u8
-}
-
-when #exists("../../build/user/kbdfs.vx") {
-	@(private = "file")
-	KBDFS_IMAGE := #load("../../build/user/kbdfs.vx")
-} else {
-	@(private = "file")
-	KBDFS_IMAGE: []u8
-}
-
-when #exists("../../build/user/eiafs.vx") {
-	@(private = "file")
-	EIAFS_IMAGE := #load("../../build/user/eiafs.vx")
-} else {
-	@(private = "file")
-	EIAFS_IMAGE: []u8
-}
-
-when #exists("../../build/user/intuition.vx") {
-	@(private = "file")
-	INTUITION_IMAGE := #load("../../build/user/intuition.vx")
-} else {
-	@(private = "file")
-	INTUITION_IMAGE: []u8
-}
-
-when #exists("../../build/user/abitest.vx") {
-	@(private = "file")
-	ABITEST_IMAGE := #load("../../build/user/abitest.vx")
-} else {
-	@(private = "file")
-	ABITEST_IMAGE: []u8
-}
-
-when #exists("../../build/user/terminal.vx") {
-	@(private = "file")
-	TERMINAL_IMAGE := #load("../../build/user/terminal.vx")
-} else {
-	@(private = "file")
-	TERMINAL_IMAGE: []u8
-}
-
-when #exists("../../build/user/rc.vx") {
-	@(private = "file")
-	RC_IMAGE := #load("../../build/user/rc.vx")
-} else {
-	@(private = "file")
-	RC_IMAGE: []u8
-}
-
-when #exists("../../build/user/echo.vx") {
-	@(private = "file")
-	ECHO_IMAGE := #load("../../build/user/echo.vx")
-} else {
-	@(private = "file")
-	ECHO_IMAGE: []u8
-}
-
-when #exists("../../build/user/cat.vx") {
-	@(private = "file")
-	CAT_IMAGE := #load("../../build/user/cat.vx")
-} else {
-	@(private = "file")
-	CAT_IMAGE: []u8
-}
+// How many programs `/bin` can hold: the page-sized ones, and the pack.
+MAX_BIN_PROGRAMS :: 64
 
 @(private = "file")
-bin_nodes: [17]vfs.Static_Node
+bin_nodes: [MAX_BIN_PROGRAMS + 1]vfs.Static_Node
 
 // The rows `/bin` actually publishes -- `bin_nodes` less any compiled image
 // a fresh tree has not built yet. Package-scope, because `static_init`
 // borrows the slice for the life of the machine.
 @(private = "file")
-bin_live: [17]vfs.Static_Node
+bin_live: [MAX_BIN_PROGRAMS + 1]vfs.Static_Node
 
 @(private = "file")
 bin_tree: vfs.Static_Tree
@@ -397,41 +340,53 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 		return vectra9.ENOMEM
 	}
 
-	bin_nodes = {
-		{name = "/", parent = -1, dir = true},
-		{name = "child", parent = 0, data = string(child)},
-		{name = "consrv", parent = 0, data = string(CONSRV_IMAGE)},
-		{name = "niner", parent = 0, data = string(niner)},
-		{name = "noter", parent = 0, data = string(noter)},
-		{name = "parent", parent = 0, data = string(parent)},
-		{name = "poster", parent = 0, data = string(poster)},
-		{name = "spin", parent = 0, data = string(spin)},
-		{name = "ramfs", parent = 0, data = string(RAMFS_IMAGE)},
-		{name = "abitest", parent = 0, data = string(ABITEST_IMAGE)},
-		{name = "kbdfs", parent = 0, data = string(KBDFS_IMAGE)},
-		{name = "eiafs", parent = 0, data = string(EIAFS_IMAGE)},
-		{name = "intuition", parent = 0, data = string(INTUITION_IMAGE)},
-		{name = "terminal", parent = 0, data = string(TERMINAL_IMAGE)},
-		{name = "rc", parent = 0, data = string(RC_IMAGE)},
-		{name = "echo", parent = 0, data = string(ECHO_IMAGE)},
-		{name = "cat", parent = 0, data = string(CAT_IMAGE)},
-	}
-
-	/*
-	A tree checked before `build.odin` ever built an image serves what it
-	has. Two images can now be missing independently. The fallback is
-	therefore a filter rather than a slice: every file row with bytes
-	behind it, in order. Dropping a row cannot break a `parent` index, because every file
-	is a child of row zero. The published count says what happened, and
-	`verify_runtime` and `verify_consrv` fail loudly on an absence.
-	*/
-	count := 0
-	for node in bin_nodes {
-		if node.dir || len(node.data) > 0 {
-			bin_live[count] = node
-			count += 1
+	bin_nodes[0] = {name = "/", parent = -1, dir = true}
+	count := 1
+	put :: proc(count: ^int, name: string, data: []u8) {
+		if count^ <= MAX_BIN_PROGRAMS {
+			bin_nodes[count^] = {name = name, parent = 0, data = string(data)}
+			count^ += 1
 		}
 	}
+	put(&count, "child", child)
+	put(&count, "niner", niner)
+	put(&count, "noter", noter)
+	put(&count, "parent", parent)
+	put(&count, "poster", poster)
+	put(&count, "spin", spin)
+
+	// The pack: every compiled program, in `build.odin`'s order.
+	pak := PROGRAMS_PAK
+	if len(pak) >= 8 && string(pak[:4]) == "VPAK" {
+		n := int(u32le(pak[4:]))
+		at := 8
+		for _ in 0 ..< n {
+			if at + 8 > len(pak) {
+				break
+			}
+			name_len := int(u32le(pak[at:]))
+			size := int(u32le(pak[at + 4:]))
+			at += 8
+			if at + name_len + size > len(pak) {
+				break
+			}
+			put(&count, string(pak[at:at + name_len]), pak[at + name_len:at + name_len + size])
+			at += name_len + size
+		}
+	}
+
+	// Every row with bytes behind it, in order: the pack may be missing and
+	// a page-sized program may have failed to build, and either is a
+	// missing file rather than a broken directory. `verify_runtime` and
+	// `verify_consrv` fail loudly on an absence.
+	live := 0
+	for node in bin_nodes[:count] {
+		if node.dir || len(node.data) > 0 {
+			bin_live[live] = node
+			live += 1
+		}
+	}
+	count = live
 	bin_published = count - 1
 
 	if !vfs.static_init(&bin_tree, "bin", bin_live[:count]) {
@@ -654,4 +609,10 @@ load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 		}
 	}
 	return entry, STACK_TOP, 0, vfs.OK
+}
+
+// u32le reads a little-endian 32-bit number from the front of a slice.
+@(private = "file")
+u32le :: proc "contextless" (b: []u8) -> u32 #no_bounds_check {
+	return u32(b[0]) | u32(b[1]) << 8 | u32(b[2]) << 16 | u32(b[3]) << 24
 }

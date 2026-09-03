@@ -124,6 +124,16 @@ kernel does not have.
 Proves: each tool is one line of the boot self-test, run by `rc` against
 the ramfs and the console.
 
+**Where it stands.** Done, as `docs/CMD.md` describes: the twenty-seven
+tools above, `date` excepted, each a line of `tests/tools.rc`, which `rc`
+runs from the boot self-test in a `memfs` it starts and mounts itself.
+`servers/memfs` is the real in-memory filesystem -- the teaching `ramfs`
+keeps its name until the disk retires it. `grep` and `sed` use
+`sys/libregex`, a Thompson matcher in Plan 9's dialect, rather than
+`core:text/regex`, for size. The kernel grew `mkdir`, `unmount`, `/lib`
+served from the image, and one program pack in place of a `#load` per
+program.
+
 ### Step 4: `#p`
 
 `kernel/proc`, about 600 lines. `/proc/n/status` (name, pid, state, the

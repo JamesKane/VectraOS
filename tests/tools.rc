@@ -1,0 +1,66 @@
+# tools.rc: every tool in cmd/, one check each, run by rc from the boot
+# self-test. A check prints `ok name` or `FAIL name` and what it saw, and the
+# exit word is how many held, so the kernel reads one word and a person
+# reads the lines. memfs is the directory the tools that make files use.
+#
+#     check name expected command-output...
+#
+# The output is whatever words follow, joined by spaces, so a command whose
+# output is several words or none still compares as one string.
+ok=()
+bad=()
+fn pass { ok=($ok $1); echo ok $1 }
+fn fail { bad=($bad $1); echo FAIL $1 }
+fn check {
+	name=$1; want=$2; shift 2
+	if(~ $"* $want) pass $name
+	if not { echo '   ' $name : got $"* expected $want; fail $name }
+}
+
+# -- Text through pipes ------------------------------------------------------
+check echo 'one two' `{echo one two}
+check cat piped `{echo piped | cat}
+check wc '2 3' `{{echo a b; echo c} | wc -lw}
+check tr HELLO `{echo hello | tr a-z A-Z}
+check seq '1 2 3' `{seq 3}
+check sort 'a b c' `{{echo c; echo a; echo b} | sort}
+check uniq '2 a 1 b' `{{echo a; echo a; echo b} | uniq -c}
+check tail '4 5' `{seq 5 | tail -n 2}
+check grep '1 11 12' `{seq 12 | grep 1 | grep -v 0}
+check sed 'hell0 w0rld' `{echo hello world | sed 's/o/0/g'}
+check basename c `{basename /a/b/c.txt .txt}
+check cleanname /a/c `{cleanname /a/./b/../c//}
+check read first `{{echo first; echo second} | read}
+check test yes `{if(test 3 -lt 5 -a ! -z x) echo yes}
+
+# -- Files, in memfs ---------------------------------------------------------
+memfs
+mount /srv/memfs /mnt
+cd /mnt
+check pwd /mnt `{pwd}
+mkdir d; mkdir -p d/e/f
+check mkdir d/e/f `{ls -d d/e/f}
+echo alpha > d/one
+cp d/one d/two
+check cp alpha `{cat d/two}
+mv d/two d/e/three
+check mv 'd/e/f d/e/three' `{ls d/e}
+check ls 'e one' `{ls -p d}
+echo alpha > d/four
+check cmp same `{cmp d/one d/four && echo same}
+echo beta | tee d/five > /dev/null
+check tee beta `{cat d/five}
+check env x=marker `{x=marker env | grep '^x='}
+rm -r d
+check rm end `{ls; echo end}
+cd /
+check unmount gone `{unmount /mnt && echo gone}
+rm /srv/memfs
+
+# -- Namespace and time ------------------------------------------------------
+check bind /mnt/tests `{bind /lib /mnt && ls /mnt && unmount /lib /mnt}
+check mount refused `{mount /srv/nope /mnt || echo refused}
+check sleep woke `{sleep 0 && echo woke}
+
+if(~ $#bad 0) exit $#ok' ok'
+exit 'failed '^$"bad

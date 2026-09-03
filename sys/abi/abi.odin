@@ -122,6 +122,7 @@ SYS_PREAD :: u64(33)
 SYS_PWRITE :: u64(34)
 SYS_EXITS :: u64(35)
 SYS_AWAIT :: u64(36)
+SYS_UNMOUNT :: u64(37)
 
 /*
 How a program receives its arguments.

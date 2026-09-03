@@ -25,7 +25,7 @@ A modular operating system in Odin. Two ideas define it:
 
 Layout — `kernel/` (arch, mem, sched, vfs, drivers), `sys/` (libodin, libuser,
 libdraw, vectra9), `servers/` (ramfs, consrv, kbdfs, eiafs, intuition), `apps/`
-(terminal, rc), `cmd/` (echo, cat). Three architectures via Limine: `amd64` first and furthest,
+(terminal, rc), `cmd/` (the tools). Three architectures via Limine: `amd64` first and furthest,
 `arm64` and `riscv64` booting the same `kmain` on QEMU's `virt` board since
 September 2026. `docs/PORTS.md` says where each port stands.
 
@@ -107,6 +107,7 @@ them could have come earlier:
     kernel/devfs            a read can wait for hardware rather than for a test
     kernel/srv              a service can be named after the kernel was built
     kernel/env              a process can keep variables where its children find them
+    servers/memfs           a program can make a file and find it again
     the I/O APIC            a device can interrupt, rather than only the timer
     an address space        two threads can mean different memory by one name
     ring 3                  a thread can run where it cannot damage the kernel
@@ -249,6 +250,7 @@ per directory:
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
 | `docs/ENV.md` | `kernel/env/` — `#e` at `/env`, one group per process, the root that means whoever asks | Reading or setting a variable, adding a per-process device, or wondering what `rfork(RFENVG)` copies |
 | `docs/RC.md` | `apps/rc/` — the shell: the grammar by hand, a walked tree, forks that carry on from a node | Adding a builtin, a redirection, or a word form; writing a tool the shell runs; or wondering why a shell script is the slowest line in the user suite |
+| `docs/CMD.md` | `cmd/` — the tools, `servers/memfs`, `sys/libregex`, and the script that checks them | Writing a tool, adding its line to `tests/tools.rc`, or wanting a file to write to before the disk |
 | `docs/DRAW.md` | The draw protocol, written before its code, and everything the screen grew after it: the window, the compositor, the chrome vocabulary and the one palette (`sys/libdraw`, `sys/libpal`) | Building the draw server, its client library, the fb mapping, or anything that draws in either ring |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
@@ -498,6 +500,7 @@ build.odin              Build driver: user programs, kernel, ESP, QEMU, and
                         the ELF-to-VECTRA02 converter
 tests/abi/              /bin/abitest: the process ABI exercised from ring 3,
                         which the user suite spawns with three arguments
+tests/tools.rc          Every tool once, run by rc from /lib/tests/tools.rc
 justfile / Makefile     Thin wrappers over build.odin
 boot/
   limine.conf           Limine config, staged to /EFI/BOOT/
@@ -706,6 +709,10 @@ sys/
     main.odin           startup, args, Bio: what a tool starts with
     link_user.ld        A ring 3 program's layout, aligned so every change of
                         permission gets its own page
+    lines.odin          Reader and read_line, read_all, eprint, itoa, atoi:
+                        what a tool reads and says without core:fmt
+  libregex/regex.odin   Plan 9's regular expressions as a Thompson simulation,
+                        for grep and sed
   libfmt/print.odin     print, fprint and bio_print over core:fmt, apart from
                         libuser so a page-sized program never links fmt
   libdraw/draw.odin     The draw protocol's encoding: the six verbs, the put
@@ -721,6 +728,8 @@ sys/
 servers/
   ramfs/main.odin       The first compiled server: two files, one writable,
                         serving this program's own segments back
+  memfs/main.odin       A file tree on the heap: create, mkdir, remove,
+                        grow, list; the working filesystem until the disk
   consrv/main.odin      An rfork'd reader parked on /dev/cons, a concurrent
                         serve loop, and a shared ring under two locks
   kbdfs/main.odin       The kernel's scancode state machine rebuilt in ring 3
@@ -736,9 +745,9 @@ apps/
   rc/                   Plan 9's shell: lex, parse, tree, word, exec, builtin,
                         var, status, input, main, and rcmain in the image;
                         docs/RC.md
-cmd/
-  echo/main.odin        The first two tools, because a pipeline needs two ends
-  cat/main.odin
+cmd/                    One package per tool, one binary each; docs/CMD.md
+  echo cat ls pwd mkdir rm cp mv cmp wc tee tail grep sed sort uniq tr
+  basename cleanname test seq sleep read env bind mount unmount
 tools/
   genfont.py            TTF -> font_data.odin
   ste-lint.py           The ASD-STE100 checker; `build.odin -- lint` runs it

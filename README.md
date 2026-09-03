@@ -115,12 +115,13 @@ other would be the failure.
 | `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl` |
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, from ring 3 too |
 | `kernel/env/` | `#e` at `/env`: a process's environment as a directory of variables, copied or shared by `rfork` |
+| `servers/memfs/` | The in-memory filesystem the tools work in until the disk |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, a top half that may not park |
 | `kernel/user/` | Ring 3, `syscall`/`sysret`, a process that owns what it opens, and the spawn that makes more |
 | `sys/abi`, `sys/libuser` | The call numbers both sides include, and the ring 3 library: syscalls and a 9P serve loop |
 | `servers/ramfs` | The first compiled server: an Odin file tree in ring 3 |
 
-`servers/` has five residents, and `apps/` has the terminal and `rc`. `kernel/devfs`
+`servers/` has six residents, and `apps/` has the terminal and `rc`. `kernel/devfs`
 stays in the kernel for the moment. A console server must wait on the
 keyboard and its clients at once, and a ring 3 process cannot wait on two
 things yet. The port also wants a note to stop a runaway server, and raw
@@ -268,13 +269,16 @@ sys/
   vectra9/              9P2000.L message layer: types, codec, sessions
   libposix/             Not yet written
 servers/
-  ramfs/                The first compiled server; devfs, netfs, intuition
-                        are still to come
+  ramfs/                The teaching server: two files, proving the loader
+  memfs/                A file tree in memory, for the tools until the disk
+  consrv/ kbdfs/ eiafs/ intuition/
+                        The console, keyboard, serial and draw servers
 apps/
   terminal/             Lines in from /dev/cons, drawn through /srv/draw
   rc/                   Plan 9's shell, in Odin; docs/RC.md
-cmd/
-  echo/ cat/            The first tools
+cmd/                    The tools: echo cat ls pwd mkdir rm cp mv cmp wc tee
+                        tail grep sed sort uniq tr basename cleanname test
+                        seq sleep read env bind mount unmount; docs/CMD.md
 docs/                   One document per subsystem, plus HANDOFF and TESTING
 tools/
   genfont.py            Bakes a host TTF into the console font

@@ -99,6 +99,7 @@ serve :: proc "contextless" (
 	frame: []u8,
 	out: []u8,
 	payload: []u8,
+	remove_stops := true, // a fixed tree stops on Tremove; a filesystem removes a file
 ) -> (served: u64, why: Serve_End) {
 	session: vectra9.Session
 
@@ -133,7 +134,7 @@ serve :: proc "contextless" (
 		}
 		served += 1
 
-		if is_remove {
+		if is_remove && remove_stops {
 			return served, .Removed
 		}
 	}

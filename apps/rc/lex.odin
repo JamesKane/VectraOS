@@ -333,6 +333,12 @@ lex_word :: proc(lx: ^Lexer, line: int) -> Token {
 			break
 		}
 		if c == '\'' {
+			if len(buf) > 0 {
+				// A quoted string is a token of its own; the free caret joins
+				// it to what came before. `$x'y'` is then `$x^'y'` and not a
+				// variable named `xy`.
+				break
+			}
 			getc(in_)
 			plain = false
 			for {
@@ -351,7 +357,7 @@ lex_word :: proc(lx: ^Lexer, line: int) -> Token {
 				}
 				append(&buf, d)
 			}
-			continue
+			break
 		}
 		if !wordchr(c) {
 			break

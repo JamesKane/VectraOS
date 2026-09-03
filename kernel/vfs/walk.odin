@@ -590,9 +590,23 @@ create_path :: proc(ns: ^Namespace, path: string, flags: u32, mode: u32 = 0o600)
 		chan_close(c)
 		return nil, vectra9.ENOTDIR
 	}
+	if mode & DMDIR != 0 {
+		// A directory: Tmkdir on the parent, then a walk to what it made,
+		// because Rmkdir carries a qid and not a fid.
+		e := chan_mkdir(c, name, mode & 0o777)
+		chan_close(c)
+		if e != OK {
+			return nil, e
+		}
+		return resolve(ns, path)
+	}
 	if e := chan_create(c, name, flags, mode); e != OK {
 		chan_close(c)
 		return nil, e
 	}
 	return c, OK
 }
+
+// DMDIR in a create's mode asks for a directory. Plan 9's bit, which
+// `sys/abi` names for programs.
+DMDIR :: u32(1) << 31

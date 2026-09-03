@@ -152,6 +152,7 @@ Result :: struct {
 	pinned:        int, // Heap objects the wires still pin -- zero since the counted release
 	leaked:        int, // Heap objects the run did not give back
 	shell_ticks:   int, // How long the shell took over its script
+	tools_ticks:   int, // And over the tool script
 }
 
 @(private = "file")
@@ -469,6 +470,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_rfork(&r)
 	verify_abi(&r)
 	verify_rc(&r)
+	verify_tools(&r)
 
 	// -- And a process that replaces itself -----------------------------------
 
@@ -6680,3 +6682,64 @@ verify_rc :: proc(r: ^Result) {
 @(private = "file") rc_said_len: int
 @(private = "file") rc_diag: [256]u8
 @(private = "file") rc_ticks: int
+
+/*
+verify_tools runs the shell on `/lib/tests/tools.rc`, which checks every
+tool in `cmd/` once and says how many held.
+
+The script starts `memfs`, mounts it, and works in it, so the tools that
+make and remove files have somewhere to do it. Its lines land in the
+serial log, one `ok name` per tool, and its exit word is `N ok` or
+`failed` and the names. The number here is the number of tools, so a tool
+added to `cmd/` without a line in the script fails this check, which is
+the point.
+*/
+TOOLS_EXPECTED :: 27
+
+verify_tools :: proc(r: ^Result) {
+	argv := new(Argv)
+	if !check(r, argv != nil, "a record for the tool script's arguments") {
+		return
+	}
+	defer free(argv)
+	names := [?]string{"rc", "/lib/tests/tools.rc"}
+	check(r, argv_from(argv, names[:]), "holds rc and the script")
+
+	p, serr := spawn_path(nil, "/bin/rc", SPAWN_NS_COPY, argv)
+	if !check(r, serr == vfs.OK && p != nil, "the shell starts on the tool script") {
+		return
+	}
+	r.programs += 1
+	started := sched.ticks()
+	came_back := wait(p, PATIENCE * 100)
+	r.tools_ticks = int(sched.ticks() - started)
+	if check(r, came_back, "and comes back") {
+		tools_said_len = p.exit.text_len
+		for i in 0 ..< tools_said_len {
+			tools_said[i] = p.exit.text[i]
+		}
+		said := string(tools_said[:tools_said_len])
+		want: [32]u8
+		wsink := libodin.sink_from(want[:])
+		libodin.put_uint(&wsink, u64(TOOLS_EXPECTED))
+		libodin.put_str(&wsink, " ok")
+		if p.exit.deliberate && said == libodin.str(&wsink) {
+			check(r, true, "and every tool did what its line says")
+		} else {
+			sink := libodin.sink_from(tools_diag[:])
+			libodin.put_str(&sink, "the tool script said `")
+			libodin.put_str(&sink, said)
+			libodin.put_str(&sink, p.exit.deliberate ? "`" : "` and faulted")
+			check(r, false, libodin.str(&sink))
+		}
+	}
+	finish(r, p, "and the shell is taken down")
+	// The detached memfs the script started ends when its name goes; give
+	// the reaper a moment to notice, so the balance checks after this do
+	// not see it.
+	reap_orphans()
+}
+
+@(private = "file") tools_said: [EXITS_MAX]u8
+@(private = "file") tools_said_len: int
+@(private = "file") tools_diag: [256]u8
