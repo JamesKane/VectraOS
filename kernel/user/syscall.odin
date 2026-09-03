@@ -70,6 +70,7 @@ import "base:intrinsics"
 import "base:runtime"
 
 import "kernel:arch"
+import "kernel:env"
 import "kernel:mem"
 import "kernel:pipe"
 import "kernel:sched"
@@ -203,6 +204,9 @@ syscall_init :: proc(ns: ^vfs.Namespace) -> bool {
 	// This package owns descriptor tables, so it is the one that can say what
 	// a number in a Twrite to `/srv` means. See `resolve_fd_server`.
 	srv.set_fd_resolver(resolve_fd_chan)
+	// And it owns environment groups, so it is the one that can say whose
+	// directory a message to `/env` is about.
+	env.set_group_resolver(resolve_env_group)
 	// The architecture's door needs to know whom to call. amd64's stub names
 	// `dispatch` by its exported symbol and ignores this; the others keep it.
 	arch.set_syscall_dispatcher(dispatch)
@@ -391,6 +395,17 @@ One load, through `Thread.user`, which the scheduler carries and never reads.
 Every call below starts here, because every call below is about something a
 process owns. `rfork.odin` starts at the same place, for the same reason.
 */
+// resolve_env_group is the calling process's environment group, for `#e`.
+// Nil off a process, and the device answers as if the directory were empty.
+@(private = "file")
+resolve_env_group :: proc "contextless" () -> ^env.Group {
+	p := current()
+	if p == nil {
+		return nil
+	}
+	return p.env
+}
+
 @(private)
 current :: proc "contextless" () -> ^Process {
 	thread := sched.current()

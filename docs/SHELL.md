@@ -71,9 +71,10 @@ and as many in the library.
 Proves: a program spawned with three arguments echoes them, changes
 directory, lists it, and exits with a string its parent's `await` repeats.
 
-**Where it stands.** Everything but `#e` landed together: `tests/abi` is the
-program, `/bin/abitest`, and the user suite runs it with three arguments on
-all three architectures. Two details the plan did not have: the numeric
+**Where it stands.** Done, in two commits: the ABI, and then `#e`, which
+`docs/ENV.md` describes. `tests/abi` is the program, `/bin/abitest`, and the
+user suite runs it with three arguments on all three architectures. Two
+details the plan did not have: the numeric
 `exit` and `wait` stay for the kernel's own checks, with `exits` and `await`
 beside them; and `libfmt` is a package apart from `libuser`, because
 importing `core:fmt` makes the runtime emit two kilobytes of arithmetic

@@ -21,6 +21,7 @@ import "base:runtime"
 import "kernel:arch"
 import "kernel:boot/limine"
 import "kernel:devfs"
+import "kernel:env"
 import "kernel:drivers/console"
 import "kernel:drivers/kbd"
 import "kernel:drivers/fb"
@@ -242,6 +243,9 @@ kmain :: proc "c" () {
 			if init_srv() {
 				verify_srv()
 			}
+			// The environment device holds nothing until a process writes
+			// it; the user suite is what exercises it, from ring 3.
+			init_env()
 
 			// The pipe needs nothing above the scheduler, and the wire needs
 			// the pipe. Both come before userland, because a posted pipe is
@@ -1285,6 +1289,31 @@ verify_devfs :: proc() {
 	}
 
 	report_failed(&sink, result.tally)
+}
+
+/*
+init_env brings up `#e` and binds it at `/env`. One directory per process,
+and every process's is empty until it or its parent sets something. See
+`docs/ENV.md`.
+*/
+init_env :: proc() -> bool {
+	if err := env.init(vfs.boot_namespace); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "env: #e would not come up -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Fault, &sink)
+		return false
+	}
+	sink := begin(&klog)
+	libodin.put_str(&sink, "env #e bound at /env, ")
+	libodin.put_uint(&sink, u64(env.MAX_GROUPS))
+	libodin.put_str(&sink, " groups of ")
+	libodin.put_uint(&sink, u64(env.MAX_VARS))
+	libodin.put_str(&sink, " variables, values to ")
+	libodin.put_uint(&sink, u64(env.VALUE_MAX))
+	libodin.put_str(&sink, " bytes")
+	emit(&klog, .Ok, &sink)
+	return true
 }
 
 /*

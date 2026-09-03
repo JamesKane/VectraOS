@@ -106,6 +106,7 @@ them could have come earlier:
     kernel/mnt              a request can be left pending, and flushed
     kernel/devfs            a read can wait for hardware rather than for a test
     kernel/srv              a service can be named after the kernel was built
+    kernel/env              a process can keep variables where its children find them
     the I/O APIC            a device can interrupt, rather than only the timer
     an address space        two threads can mean different memory by one name
     ring 3                  a thread can run where it cannot damage the kernel
@@ -246,6 +247,7 @@ per directory:
 | `docs/KBD.md` | `kernel/drivers/kbd/` — scancodes, the I/O APIC, and why a handler splits in two | Adding a device that interrupts, routing a line, or wondering why the polling thread is still there |
 | `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention, the raw framebuffer and the screen's divert | Adding a device file, adding a `ctl` file, writing a server whose reads park, wondering why `/dev/cons` has two locks, or asking who owns the glass |
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
+| `docs/ENV.md` | `kernel/env/` — `#e` at `/env`, one group per process, the root that means whoever asks | Reading or setting a variable, adding a per-process device, or wondering what `rfork(RFENVG)` copies |
 | `docs/DRAW.md` | The draw protocol, written before its code, and everything the screen grew after it: the window, the compositor, the chrome vocabulary and the one palette (`sys/libdraw`, `sys/libpal`) | Building the draw server, its client library, the fb mapping, or anything that draws in either ring |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
@@ -645,6 +647,10 @@ kernel/
                         name's stake a removal releases
     verify.odin         Published, mounted, removed under its own mount, and a
                         listing paced across a removal
+  env/
+    env.odin            `#e` at /env: a group of variables per process, the
+                        root that resolves to the caller, and what rfork's
+                        RFENVG and RFCENVG do to a group
   user/
     user.odin           A process: a space, segments, a namespace forked from
                         the kernel's, a descriptor group, and the fault handler

@@ -51,7 +51,7 @@ fdforker :: proc "contextless" (cells: ^Cells, flags: u64) -> ! {
 }
 
 // refuser asks for every flag word the kernel refuses, and records each
-// refusal.
+// refusal -- and for the words it grants in place, which record zero.
 refuser :: proc "contextless" (cells: ^Cells) -> ! {
 	cells[0] = 0x5245465552454655
 	put(cells, 1, libuser.rfork(abi.RFENVG))

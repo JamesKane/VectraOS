@@ -85,6 +85,7 @@ SEGSHARED :: u64(1) << 0
 O_RDONLY :: u64(0)
 O_WRONLY :: u64(1)
 O_RDWR :: u64(2)
+O_TRUNC :: u64(0o1000)
 
 // What `bind` and `mount` mean by their order argument. Any other value is
 // Replace, which the kernel decides rather than this file.

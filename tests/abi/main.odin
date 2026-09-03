@@ -8,7 +8,9 @@ says `ok` if each held or the name of the first that did not. The kernel's
 self-test spawns it with three arguments and reads the word.
 
 Spawned with `--child` it says so and stops, which is how it checks that a
-program it spawns gets the arguments it named.
+program it spawns gets the arguments it named. Spawned with `--env` it says
+what `/env/abitest` holds, which is how it checks that a spawned program's
+environment is a copy of its parent's.
 */
 package abitest
 
@@ -32,6 +34,13 @@ fail :: proc(what: string) -> ! {
 main :: proc(args: []string) {
 	if len(args) == 2 && args[1] == "--child" {
 		libuser.exits("child saw 2")
+	}
+	if len(args) == 2 && args[1] == "--env" {
+		// What the spawner left in its environment is what this copy holds.
+		word: [abi.EXITS_MAX]u8
+		value: [32]u8
+		n := libuser.read(int(libuser.open("/env/abitest", abi.O_RDONLY)), value[:])
+		libuser.exits(fmt.bprintf(word[:], "env %s", n > 0 ? string(value[:n]) : "unset"))
 	}
 
 	// -- The arguments -------------------------------------------------------
@@ -136,6 +145,44 @@ main :: proc(args: []string) {
 		fail("pwrite")
 	}
 
+	// -- The environment: a directory of variables, one per process --------
+	if libuser.stat("/env/abitest", &st) >= 0 {
+		fail("env clean")
+	}
+	ev := libuser.create("/env/abitest", abi.O_WRONLY, 0o666)
+	if ev < 0 {
+		fail("env create")
+	}
+	if libuser.write(int(ev), transmute([]u8)string("hello")) != 5 || libuser.close(int(ev)) != 0 {
+		fail("env write")
+	}
+	if libuser.create("/env/abitest", abi.O_WRONLY, 0o666) >= 0 {
+		fail("env create twice")
+	}
+	ev = libuser.open("/env/abitest", abi.O_RDONLY)
+	n = libuser.read(int(ev), scratch[:])
+	if ev < 0 || n != 5 || string(scratch[:5]) != "hello" || libuser.close(int(ev)) != 0 {
+		fail("env read")
+	}
+	ev = libuser.open("/env/abitest", abi.O_WRONLY | abi.O_TRUNC)
+	if ev < 0 || libuser.write(int(ev), transmute([]u8)string("there")) != 5 || libuser.close(int(ev)) != 0 {
+		fail("env truncate")
+	}
+	if libuser.stat("/env/abitest", &st) != 0 || st.length != 5 || string(st.name[:st.name_len]) != "abitest" {
+		fail("env stat")
+	}
+	envdir := libuser.open("/env", abi.O_RDONLY)
+	got = libuser.dirread(int(envdir), entries[:])
+	saw_var := false
+	for i in 0 ..< got {
+		if string(entries[i].name[:entries[i].name_len]) == "abitest" {
+			saw_var = true
+		}
+	}
+	if envdir < 0 || !saw_var || libuser.close(int(envdir)) != 0 {
+		fail("env list")
+	}
+
 	// -- A program spawned with arguments, and the word it says ------------
 	argv := [?]string{"abitest", "--child"}
 	pid := libuser.spawn("/bin/abitest", abi.SPAWN_NS_COPY, argv[:])
@@ -147,6 +194,50 @@ main :: proc(args: []string) {
 	want: [64]u8
 	if n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d child saw 2", pid) {
 		fail("await spawn")
+	}
+
+	// -- A spawned program holds a copy of the environment -----------------
+	argv_env := [?]string{"abitest", "--env"}
+	pid = libuser.spawn("/bin/abitest", abi.SPAWN_NS_COPY, argv_env[:])
+	n = libuser.await(u64(pid), said[:])
+	if pid <= 0 || n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d env there", pid) {
+		fail("env spawn")
+	}
+
+	// -- A fork copies it under RFENVG, and starts clean under RFCENVG ------
+	copier := libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFENVG)
+	if copier == 0 {
+		ev = libuser.open("/env/abitest", abi.O_WRONLY | abi.O_TRUNC)
+		_ = libuser.write(int(ev), transmute([]u8)string("changed"))
+		libuser.exits("changed")
+	}
+	n = libuser.await(u64(copier), said[:])
+	if copier < 0 || n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d changed", copier) {
+		fail("env rfork")
+	}
+	ev = libuser.open("/env/abitest", abi.O_RDONLY)
+	n = libuser.read(int(ev), scratch[:])
+	if n != 5 || string(scratch[:5]) != "there" || libuser.close(int(ev)) != 0 {
+		fail("env copy")
+	}
+	cleaner := libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFCENVG)
+	if cleaner == 0 {
+		libuser.exits(libuser.stat("/env/abitest", &st) >= 0 ? "saw" : "clean")
+	}
+	n = libuser.await(u64(cleaner), said[:])
+	if cleaner < 0 || n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d clean", cleaner) {
+		fail("env clean fork")
+	}
+	sharer := libuser.rfork(abi.RFPROC | abi.RFFDG)
+	if sharer == 0 {
+		libuser.exit(libuser.remove("/env/abitest") == 0 ? 0 : 1)
+	}
+	n = libuser.await(u64(sharer), said[:])
+	if sharer < 0 || n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d", sharer) {
+		fail("env share")
+	}
+	if libuser.stat("/env/abitest", &st) >= 0 {
+		fail("env remove")
 	}
 
 	// -- A fork whose child says a word, and one that says nothing --------

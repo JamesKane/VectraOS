@@ -55,6 +55,7 @@ package user
 
 import "base:intrinsics"
 
+import "kernel:env"
 import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
@@ -186,6 +187,13 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 		p.fdt = fdt_new()
 	}
 	if p.fdt == nil {
+		unload(p)
+		return nil, vectra9.ENOMEM
+	}
+	// The environment is a copy for the same reason: a shell's `x=y cmd`
+	// reaches the command and not the shell.
+	p.env = parent != nil ? env.copy_group(parent.env) : env.new_group()
+	if p.env == nil {
 		unload(p)
 		return nil, vectra9.ENOMEM
 	}

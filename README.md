@@ -11,7 +11,7 @@ comes up under Limine on `x86_64` with descriptor tables, page tables and a
 heap of its own. It comes up on `aarch64` and `riscv64` too, on QEMU's
 `virt` board, through the same `kmain`: the ports have their own trap paths,
 page tables, timers and interrupt controllers, and run one self-test suite,
-ring 3 programs included. `docs/PORTS.md` has the table. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
+ring 3 programs included. `docs/PORTS.md` has the table. It publishes `#c` at `/dev`, `#s` at `/srv`, `#e` at `/env` and `#b` at
 `/bin` over 9P2000.L. It preempts on the local APIC and takes keyboard
 interrupts through the I/O APIC.
 
@@ -114,6 +114,7 @@ other would be the failure.
 | `kernel/pipe/` | A pipe: two ends, a byte ring per direction, and a posted end a mount turns into a server |
 | `kernel/devfs/` | `#c` at `/dev`: the console, its line discipline, `/dev/consctl` |
 | `kernel/srv/` | `#s` at `/srv`: services published by name while the machine runs, from ring 3 too |
+| `kernel/env/` | `#e` at `/env`: a process's environment as a directory of variables, copied or shared by `rfork` |
 | `kernel/drivers/kbd/` | PS/2 scancodes, the I/O APIC route, a top half that may not park |
 | `kernel/user/` | Ring 3, `syscall`/`sysret`, a process that owns what it opens, and the spawn that makes more |
 | `sys/abi`, `sys/libuser` | The call numbers both sides include, and the ring 3 library: syscalls and a 9P serve loop |
@@ -257,6 +258,7 @@ kernel/
   pipe/                 Anonymous pipes, and posted ends as servers
   devfs/                `#c` at /dev
   srv/                  `#s` at /srv
+  env/                  `#e` at /env
   user/                 Ring 3, the system calls, a process, the image
                         loader, and `#b` at /bin
 sys/

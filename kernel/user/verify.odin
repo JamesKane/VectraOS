@@ -39,6 +39,7 @@ import "base:runtime"
 import "kernel:arch"
 import "kernel:devfs"
 import "kernel:drivers/fb"
+import "kernel:env"
 import "kernel:mem"
 import "kernel:mnt"
 import "kernel:pipe"
@@ -2725,6 +2726,7 @@ in `docs/TESTING.md` lean on.
 verify_rfork :: proc(r: ^Result) {
 	segs0 := segment_stats()
 	tables0 := fdt_stats()
+	groups0 := env.live()
 
 	// -- Two processes return from one call, and a copy divides them ----------
 
@@ -2915,7 +2917,7 @@ verify_rfork :: proc(r: ^Result) {
 	}
 	r.programs += 1
 	if check(r, wait(p, PATIENCE), "and comes back") {
-		check(r, cell(p, REFUSER_ENVG) == refused(vectra9.EINVAL), "an environment group is refused")
+		check(r, cell(p, REFUSER_ENVG) == 0, "an environment group of its own is granted in place")
 		check(r, cell(p, REFUSER_NOWAIT) == refused(vectra9.EINVAL), "dissociation is refused")
 		check(
 			r,
@@ -2935,6 +2937,7 @@ verify_rfork :: proc(r: ^Result) {
 
 	check(r, segment_stats().live == segs0.live, "every fork's segments came back")
 	check(r, fdt_stats() == tables0, "and every descriptor group")
+	check(r, env.live() == groups0, "and every environment group")
 }
 
 // forked_child is the live process a server forked, found by parentage.

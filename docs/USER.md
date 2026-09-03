@@ -947,12 +947,14 @@ child's death must not close its sibling's files. The exit paths detach
 the table before publishing the exit record. `unload` releases only what
 is still attached, and the chans close when the last holder leaves.
 
-The flag word is Plan 9's bit for bit. The unimplemented bits -- `RFENVG`,
-`RFCENVG`, `RFREND`, `RFNOMNT` -- are refused with EINVAL rather than
-skipped, so each can come to mean its whole self later. `RFNOTEG` is
-accepted and recorded. `RFNOWAIT` is implemented now, below. Without
-`RFPROC` the namespace and descriptor flags act on the caller in place,
-which is how a process unshares later than it forked.
+The flag word is Plan 9's bit for bit. The unimplemented bits -- `RFREND`,
+`RFNOMNT` -- are refused with EINVAL rather than skipped, so each can come
+to mean its whole self later. `RFNOTEG` is accepted and recorded.
+`RFNOWAIT` is implemented now, below. `RFENVG` and `RFCENVG` do to the
+environment group what `RFFDG` and `RFCFDG` do to the descriptor table;
+`docs/ENV.md` has the group. Without `RFPROC` the namespace, descriptor
+and environment flags act on the caller in place, which is how a process
+unshares later than it forked.
 
 **`copy_in`'s check-then-read window is still unreachable.** Two processes
 can now share writable pages, but the window needs the *page* to go away

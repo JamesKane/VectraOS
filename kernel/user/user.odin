@@ -68,6 +68,7 @@ import "base:intrinsics"
 import "base:runtime"
 
 import "kernel:arch"
+import "kernel:env"
 import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
@@ -252,6 +253,11 @@ Process :: struct {
 	whatever is still attached.
 	*/
 	fdt:    ^Fd_Table,
+
+	// The environment group: the directory this process sees at `/env`.
+	// Copied by a spawn, shared by a fork unless `RFENVG` copies or
+	// `RFCENVG` empties it, kept across `exec`. `unload` releases it.
+	env:    ^env.Group,
 
 	exit:   Exit,
 	live:   bool,
@@ -697,6 +703,10 @@ load_held :: proc(name: string, code: []u8) -> (^Process, mem.Error) {
 		unload(p)
 		return nil, .Out_Of_Memory
 	}
+	if p.env = env.new_group(); p.env == nil {
+		unload(p)
+		return nil, .Out_Of_Memory
+	}
 
 	if p.text = segment_one_page(p, TEXT_VA, {}, .Text); p.text == 0 {
 		unload(p)
@@ -1106,6 +1116,10 @@ unload :: proc(p: ^Process) {
 	// teardown and then wherever timing put it.
 	if t := intrinsics.atomic_exchange(&p.fdt, nil); t != nil {
 		fdt_release(t)
+	}
+	if p.env != nil {
+		env.release(p.env)
+		p.env = nil
 	}
 	if p.ns != nil {
 		vfs.ns_close(p.ns)

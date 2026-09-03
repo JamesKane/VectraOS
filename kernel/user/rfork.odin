@@ -36,6 +36,8 @@ private stack.
     RFNAMEG    copy the namespace rather than share it
     RFCNAMEG   a clean namespace, naming nothing
     RFNOTEG    a new note group of one
+    RFENVG     copy the environment group rather than share it
+    RFCENVG    a clean environment group, holding nothing
 
 Text and read-only segments are shared always -- nothing can write them, so
 a copy would buy isolation from nothing. Descriptors default to *shared*,
@@ -46,11 +48,11 @@ hold.
 `RFNOTEG` is a group of one, and `notepg` is what a group is for: a note
 posted to every process in it but the poster. A child forked without the
 flag hears its parent's group notes, and one forked with it does not. The
-rest --
-`RFENVG`, `RFCENVG`, `RFNOWAIT`, `RFREND`, `RFNOMNT` -- name machinery
-Vectra does not have (environment groups, rendezvous groups, mount
-control, dissociation). They are refused rather than skipped. A flag
-that is quietly ignored can never mean anything later.
+environment follows the descriptors' rule exactly: shared unless the word
+says copy or clean, and `kernel/env` is the directory a group is. The
+rest -- `RFREND`, `RFNOMNT` -- name machinery Vectra does not have
+(rendezvous groups, mount control). They are refused rather than skipped.
+A flag that is quietly ignored can never mean anything later.
 
 ## Who collects an rfork child
 
@@ -63,6 +65,7 @@ tears down child-first for exactly that reason, and reparenting is named in
 package user
 
 import "kernel:arch"
+import "kernel:env"
 import "kernel:mem"
 import "kernel:sched"
 import "kernel:vfs"
@@ -85,7 +88,7 @@ RFNOMNT :: abi.RFNOMNT
 // The bits this kernel implements. Everything else in the word is refused,
 // including bits Plan 9 has and Vectra does not yet honour.
 @(private = "file")
-RFORK_KNOWN :: RFPROC | RFMEM | RFFDG | RFCFDG | RFNAMEG | RFCNAMEG | RFNOTEG | RFNOWAIT
+RFORK_KNOWN :: RFPROC | RFMEM | RFFDG | RFCFDG | RFNAMEG | RFCNAMEG | RFENVG | RFCENVG | RFNOTEG | RFNOWAIT
 
 /*
 sys_rfork is the call, dispatched with the frame because the frame is the
@@ -107,6 +110,9 @@ sys_rfork :: proc(frame: ^arch.Trap_Frame, flags: u64) -> i64 {
 		return -i64(vectra9.EINVAL)
 	}
 	if flags & RFNAMEG != 0 && flags & RFCNAMEG != 0 {
+		return -i64(vectra9.EINVAL)
+	}
+	if flags & RFENVG != 0 && flags & RFCENVG != 0 {
 		return -i64(vectra9.EINVAL)
 	}
 	if flags & RFPROC == 0 {
@@ -148,6 +154,16 @@ rfork_self :: proc(p: ^Process, flags: u64) -> i64 {
 		old := p.fdt
 		p.fdt = fresh
 		fdt_release(old)
+	}
+
+	if flags & (RFENVG | RFCENVG) != 0 {
+		fresh := flags & RFCENVG != 0 ? env.new_group() : env.copy_group(p.env)
+		if fresh == nil {
+			return -i64(vectra9.ENOMEM)
+		}
+		old := p.env
+		p.env = fresh
+		env.release(old)
 	}
 
 	if flags & RFNOTEG != 0 {
@@ -229,6 +245,20 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 		child.fdt = parent.fdt
 	}
 	if child.fdt == nil {
+		unload(child)
+		return -i64(vectra9.ENOMEM)
+	}
+
+	switch {
+	case flags & RFCENVG != 0:
+		child.env = env.new_group()
+	case flags & RFENVG != 0:
+		child.env = env.copy_group(parent.env)
+	case:
+		env.incref(parent.env)
+		child.env = parent.env
+	}
+	if child.env == nil {
 		unload(child)
 		return -i64(vectra9.ENOMEM)
 	}
