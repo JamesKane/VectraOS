@@ -239,6 +239,25 @@ window that runs `rc` with the window's console as descriptors 0, 1 and 2.
 The serial line gets an `rc` of its own on `/dev/cons`. `boot complete`
 becomes a prompt.
 
+**Where it stands.** Done, as `docs/INIT.md` describes, and the plan with
+it. `apps/rc/init` is the script, staged as `/lib/init`; the kernel starts
+it after the last check. It starts `kbdfs` and gives the draw server the
+keyboard's file to read, so the kernel's console keeps its discipline for
+the serial shell `init` becomes; `apps/terminal` is a window with `rc` in
+it, two pipes and a typist process. The self-test types at the window's
+shell; the serial one was checked by hand, and `ps` from it shows thirteen
+processes for two shells, which is the number the next document is about.
+
+## The plan is done
+
+Eight steps, eight commits, three boards. What the machine can do that it
+could not when this was written: run a program with arguments, keep an
+environment, shell a script, run twenty-seven tools off a disk the host
+can read, keep a home on a disk of its own, and boot to a prompt. What it
+still cannot do, in the order it should learn: wait on two things in one
+process, which `docs/INIT.md`'s process count is the bill for; take a
+`^C`; open a second window; and know what time it is.
+
 ## 3. Decisions taken here, and what would reverse them
 
 - **Plan 9's ABI, not POSIX's.** `argv` on the stack, an environment that

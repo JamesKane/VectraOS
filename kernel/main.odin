@@ -309,8 +309,36 @@ kmain :: proc "c" () {
 		}
 	}
 
+	// Last of all, the first program: `init`, an rc script on the disk,
+	// which starts the window system and a shell in a window, and becomes
+	// the shell on this console. After every check, so none counts it.
+	init_init()
+
 	log_line(&klog, .Ok, "boot complete -- idling")
 	sched.exit()
+}
+
+/*
+init_init starts `/bin/rc /lib/init`: the script the disk carries, run as
+the first program, with `/dev/cons` as its three descriptors. What it does
+is the script's business -- `docs/INIT.md` -- and this only reports that it
+is running. A machine with no `/lib/init` says so and idles, which is what
+every boot before this one did.
+*/
+init_init :: proc() {
+	ns := vfs.boot_namespace
+	if c, err := vfs.open_path(ns, "/lib/init", vfs.O_RDONLY); err == vfs.OK {
+		vfs.chan_close(c)
+	} else {
+		log_line(&klog, .Warn, "init: no /lib/init on this machine; nothing runs after the boot")
+		return
+	}
+	names := [?]string{"rc", "/lib/init"}
+	if !user.start_program("/bin/rc", names[:]) {
+		log_line(&klog, .Warn, "init: /bin/rc /lib/init would not start")
+		return
+	}
+	log_line(&klog, .Ok, "init /lib/init running: the console is a shell's, and a window is another's")
 }
 
 /*
@@ -2108,6 +2136,8 @@ verify_user :: proc() {
 		libodin.put_uint(&sink, u64(result.shell_ticks))
 		libodin.put_str(&sink, " ticks and the tools in ")
 		libodin.put_uint(&sink, u64(result.tools_ticks))
+		libodin.put_str(&sink, ", a typed line on the glass in ")
+		libodin.put_uint(&sink, u64(result.echo_ticks))
 		libodin.put_str(
 			&sink,
 			", a typed line served by a process that forked",

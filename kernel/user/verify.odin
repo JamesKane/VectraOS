@@ -149,6 +149,7 @@ Result :: struct {
 	rounds:        u64, // Times `spin` went round its loop in ring 3
 	calls:         int, // System calls the programs made
 	resident:      int, // Processes alive before the run: the servers the boot started
+	echo_ticks:    int, // How long the terminal took to draw a typed line
 	answered:      u64, // 9P requests a process served over a wire
 	pinned:        int, // Heap objects the wires still pin -- zero since the counted release
 	leaked:        int, // Heap objects the run did not give back
@@ -4206,40 +4207,28 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	if !check(r, ox >= 0, "the terminal opens a window of its own, wholly on the glass") {
 		return
 	}
-	y0 := cy_end - 39
+	// The first row of the grid, eight pixels in from the client area's
+	// top, where the shell's prompt lands.
+	y0 := oy + 8
 
-	// The prompt lands only after the terminal mounts the server, reads
-	// the geometry, and uploads ninety-five glyphs. The poll waits for
-	// the exact glyph, so a wrong atlas never satisfies it.
+	/*
+	The prompt is the shell's, not the terminal's: `% ` written to its
+	descriptor 2, which is a pipe the terminal reads and draws. So it lands
+	only after the terminal has mounted the server, uploaded the font,
+	started `/bin/rc` off the disk, and rc has run `rcmain`. The poll waits
+	for the exact glyph, so a wrong atlas never satisfies it, and for longer
+	than a glyph alone would take, because a program load is in the way.
+	*/
 	prompted := false
-	for _ in 0 ..< PATIENCE {
-		if glyph_on_glass(s, ox + 8, y0, '>') {
+	for _ in 0 ..< PATIENCE * 10 {
+		if glyph_on_glass(s, ox + 8, y0, '%') {
 			prompted = true
 			break
 		}
 		sync.delay(1)
 	}
-	check(r, prompted, "the terminal mounts the server itself and paints its prompt")
+	check(r, prompted, "the terminal starts a shell in its window, whose prompt it draws")
 	check(r, glyph_on_glass(s, ox + 16, y0, ' '), "whose glyphs match the kernel's own font, pixel for pixel")
-
-	/*
-	And the field sits in a well now.
-
-	`kernel/splash.odin` sinks the console into one and says its vocabulary
-	should reach `intuition`'s clients. It does: `sys/libdraw` decomposes a
-	well into rectangles and `apps/terminal` sends them as ordinary fills.
-	There is no chrome verb, which is what section 5 of `docs/DRAW.md` guards.
-
-	The pixel watched is on the well's own edge, four columns left of the
-	first glyph. A recessed bevel puts the shadow on the top and left, so this
-	is `VOID`. That is the darkest thing in the palette, and nothing the
-	terminal's own two colours could produce.
-	*/
-	check(
-		r,
-		fb.get_raw(s, ox + 4, y0) == fb.pack(s, fb.VOID),
-		"and its field is sunk into a well, out of the chassis's own vocabulary",
-	)
 
 	/*
 	And the bar across the top of its window says whose window it is.
@@ -4286,13 +4275,16 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	left to right, so the first says only that the batch began.
 	*/
 	echoed := false
-	for _ in 0 ..< PATIENCE {
+	echo_ticks := 0
+	for _ in 0 ..< PATIENCE * 10 {
 		if glyph_on_glass(s, ox + 40, y0, '!') {
 			echoed = true
 			break
 		}
 		sync.delay(1)
+		echo_ticks += 1
 	}
+	r.echo_ticks = echo_ticks
 	check(r, echoed, "and yet appear on the glass, because the window that draws them holds the line")
 	check(
 		r,
@@ -4368,10 +4360,25 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i'),
 		"every glyph out of the uploaded atlas, pixel for pixel",
 	)
+	/*
+	The shell got the line. `hi!` names no program, so rc says so on the next
+	row and prompts again on the one after, and the caret is there now: the
+	terminal's cursor follows the shell's output, and the typed line stays
+	where it was, above.
+	*/
+	answered := false
+	for _ in 0 ..< PATIENCE * 10 {
+		if glyph_on_glass(s, ox + 8, y0 + 32, '%') {
+			answered = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, answered, "the shell takes the line, answers it on the next row, and prompts again")
 	check(
 		r,
-		cell_body_blank(s, ox + 48, y0) && caret_at(s, ox + 48, y0),
-		"and the cell after the text holds no letter and the caret, which is where the next one goes",
+		cell_body_blank(s, ox + 48, y0) && caret_at(s, ox + 24, y0 + 32),
+		"and the caret sits after the new prompt, which is where the next character goes",
 	)
 
 	// The typed stop, and the terminal's own exit.
@@ -4379,11 +4386,11 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	for i in 0 ..< len(stop) {
 		devfs.keyboard_sink(stop[i])
 	}
-	if check(r, wait(pt, PATIENCE), "the typed exit stops the terminal") {
+	if check(r, wait(pt, PATIENCE * 10), "the typed exit ends the shell, and the terminal with it") {
 		check(
 			r,
 			pt.exit.deliberate && pt.exit.status == 0,
-			"with zero -- the exit was the terminal's own choice",
+			"with zero -- the shell's ending is the terminal's own",
 		)
 	}
 

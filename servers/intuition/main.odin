@@ -1269,9 +1269,17 @@ numbers and all.
 */
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
-	_ = block
 	context = {}
 	#force_no_inline runtime._startup_runtime()
+
+	// Where the keys come from: `/dev/cons` unless told otherwise. `init`
+	// names `kbdfs`'s file instead, so the serial console keeps its own
+	// discipline for a shell of its own while the keyboard is this server's.
+	args := libuser.args(block)
+	key_source := "/dev/cons"
+	if len(args) > 1 {
+		key_source = args[1]
+	}
 
 	fd := libuser.open("/dev/fb", abi.O_WRONLY)
 	if fd < 0 {
@@ -1325,7 +1333,7 @@ start :: proc "c" (block: ^abi.Args) {
 		kbd[i] = libuser.Ring{buf = kbd_store[i][:]}
 		edit[i] = libedit.Line{buf = edit_store[i][:]}
 	}
-	cons := libuser.open("/dev/cons", abi.O_RDONLY)
+	cons := libuser.open(key_source, abi.O_RDONLY)
 	if cons < 0 {
 		libuser.exit(0x79)
 	}
@@ -1343,13 +1351,17 @@ start :: proc "c" (block: ^abi.Args) {
 	Raw mode turns the kernel's echo off with it, which is what `echooff`
 	was doing by hand. A window's text is drawn by its client.
 	*/
-	cons_ctl := libuser.open("/dev/consctl", abi.O_WRONLY)
-	if cons_ctl < 0 {
-		libuser.exit(0x79)
-	}
-	raw := "rawon"
-	if libuser.write(int(cons_ctl), transmute([]u8)raw) != i64(len(raw)) {
-		libuser.exit(0x79)
+	// Only the kernel's console has a discipline to turn off; a served
+	// keyboard file delivers characters already.
+	if key_source == "/dev/cons" {
+		cons_ctl := libuser.open("/dev/consctl", abi.O_WRONLY)
+		if cons_ctl < 0 {
+			libuser.exit(0x79)
+		}
+		raw := "rawon"
+		if libuser.write(int(cons_ctl), transmute([]u8)raw) != i64(len(raw)) {
+			libuser.exit(0x79)
+		}
 	}
 
 	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)

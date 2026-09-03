@@ -56,3 +56,21 @@ start_server :: proc(path: string, names: []string, into: []u8) -> (said: string
 	_ = destroy(p)
 	return said, ok
 }
+
+/*
+start_program runs `path` with `names` and does not wait: the program is
+the machine's from here on. For `init`, which the boot starts last and
+which becomes the shell on the console. Answers whether it started.
+*/
+start_program :: proc(path: string, names: []string) -> bool {
+	argv := new(Argv)
+	if argv == nil {
+		return false
+	}
+	defer free(argv)
+	if !argv_from(argv, names) {
+		return false
+	}
+	p, serr := spawn_path(nil, path, SPAWN_NS_COPY, argv)
+	return serr == vfs.OK && p != nil
+}

@@ -104,9 +104,10 @@ has dozens of either, which a scan finds faster than a hash would.
 
 `<{cmd}` and `>{cmd}`, which need `/fd`. The `` `` `` backquote with its
 own separators. Functions in `/env` as `fn#name`. Notes, so `^C` does
-nothing yet. `whatis` prints `fn name {...}` rather than the body. The
-prompt and interactive reading are written and not yet exercised: nothing
-gives rc a console until `docs/SHELL.md` step 8.
+nothing yet. `whatis` prints `fn name {...}` rather than the body.
+Interactive reading is exercised now, on the serial line and in a window
+(`docs/INIT.md`); the one thing it wanted was the first prompt back after
+each line, which `run_input` resets.
 
 ## Checked by
 

@@ -1,0 +1,21 @@
+# init: the first program, an rc script the kernel runs after its checks.
+# The disks are mounted already, and this console -- the serial line, and
+# the screen until the draw server takes it -- is descriptors 0, 1 and 2.
+#
+# The keyboard goes to kbdfs, whose file the draw server reads its keys
+# from, so the serial line keeps the kernel's own line discipline for the
+# shell below. A machine with no keyboard still gets the window; only the
+# serial shell can be typed at there.
+kbdfs &
+while(! test -e /srv/kbdfs) sleep 1
+mount /srv/kbdfs /n/kbd
+
+intuition /n/kbd/kbd &
+while(! test -e /srv/draw) sleep 1
+
+# A window with a shell in it, the terminal's own child.
+terminal &
+
+# And this console's shell, which init becomes.
+cd $home
+exec rc -i

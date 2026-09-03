@@ -837,6 +837,7 @@ stage_vectra :: proc() {
 		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
 	}
 	copy_file("apps/rc/rcmain", fmt.tprintf("%s/lib/rcmain", root))
+	copy_file("apps/rc/init", fmt.tprintf("%s/lib/init", root))
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
 	step("staged %d programs and the library under %s", len(user_programs), root)
 }

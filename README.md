@@ -12,7 +12,7 @@ heap of its own. It comes up on `aarch64` and `riscv64` too, on QEMU's
 `virt` board, through the same `kmain`: the ports have their own trap paths,
 page tables, timers and interrupt controllers, and run one self-test suite,
 ring 3 programs included. `docs/PORTS.md` has the table. It publishes `#c` at `/dev`, `#s` at `/srv`, `#e` at `/env` and `#b` at
-`/bin` over 9P2000.L. It preempts on the local APIC and takes keyboard
+`/bin` over 9P2000.L, and boots to an `rc` prompt on the serial line and in a window (`docs/INIT.md`). It preempts on the local APIC and takes keyboard
 interrupts through the I/O APIC.
 
 Then it starts processes in ring 3 that open files by name and write to the

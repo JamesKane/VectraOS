@@ -357,7 +357,7 @@ The same argument `mem.spaces` makes. A record a program can make the kernel
 allocate is a record a program can exhaust the machine through. This is also
 the first code in Vectra that anything untrusted will reach.
 */
-MAX_PROCESSES :: 12
+MAX_PROCESSES :: 32
 
 EXITS_MAX :: abi.EXITS_MAX
 

@@ -44,6 +44,9 @@ ROOT_NODES := [?]Static_Node {
 	// Where a mounted filesystem goes, by Plan 9 convention: `/n/esp` is the
 	// disk the machine booted from, once `fatfs` serves it.
 	{name = "esp", parent = 6, dir = true},
+	// And the keyboard server's, which `init` mounts so the draw server can
+	// read its keys from a file that is not the serial console.
+	{name = "kbd", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

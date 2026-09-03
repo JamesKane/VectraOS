@@ -1,41 +1,47 @@
 /*
-terminal -- the first program in apps/, and the draw server's first client.
+terminal -- a window with a shell in it.
 
-Every server so far stood behind a name and waited. This is the other
-side of the economy: a program that consumes two services at once. It
-reads lines from `/dev/cons`, and it draws them through `/srv/draw` --
-which it mounts itself, the first ring 3 mount in the tree. A namespace
-is a process's own to arrange, and this program is the first to exercise
-that sentence rather than inherit its arrangement.
+`rio` opens a window and runs `rc` in it, and the window is what the shell
+reads from and writes to. This program is that, on the draw server. It
+claims a window, uploads the font, starts `/bin/rc` with two pipes for its
+three descriptors, and from then on it is two things at once: the glass the
+shell's output lands on, and the keyboard the shell's input comes from.
 
-The rendering is `docs/DRAW.md`'s economics in miniature. At start the
-terminal uploads the font once: six strip images of sixteen cells, the
-kernel's own 8x16 ASCII table expanded from one bit to one word per
-pixel. From then on a character costs one 36-byte blit, and a line is a
-batch of them. `sys/libfont` carries the table and `sys/libdraw`'s
-`put_text` owns the arithmetic from a byte to its blit.
+## Two pipes, two processes
 
-One number rules every batch: the posted-pipe wire moves at most 1000
-payload bytes per write, and a command split across two writes is a
-frame the server refuses. So the command buffer is sized to that bound,
-the font uploads in bands as wide as one write carries, and `put_text`'s
-consumed-count return is what lets a long line pump through in batches.
+    rc's descriptor 0   the read end of a pipe this program writes finished
+                        lines into
+    rc's descriptors 1 and 2
+                        the write end of a pipe this program reads and draws
 
-The kernel's console owns the echo of typed bytes, and this program does
-not want two renderers on one line. So it writes `echooff` to
-`/dev/consctl` first and holds that file for its whole life -- the mode
-reverts when the descriptor closes, which is exit. What a person types
-appears once, drawn by this program, when the line completes.
+Reading the shell's output and reading the window's keyboard both park, and
+one process cannot wait on two things. So this program forks the way
+`servers/intuition` and `servers/consrv` do: `rfork(RFPROC | RFMEM)`, two
+processes sharing their memory, each parked on its own thing. The parent
+reads the output pipe and draws what arrives. The child reads the window's
+`cons` raw, edits a line with `libedit`, draws it as it is typed, and hands
+the finished line to the shell. A spinlock in the shared memory keeps the
+two from drawing at once; nothing is held across a read.
 
-That write reaches `kernel/devfs`, because it happens before this program
-mounts anything. The draw server holds the same file *raw* for its own
-reasons, and raw mode turns the echo off with it, so this is belt and braces
-now rather than the thing that turns it off. A window's own `consctl` is a
-different file and this program has no reason to write to it.
+The parent owns the ending. When the output pipe reaches its end the shell
+is gone -- a typed `exit`, or a fault -- and the parent stops its child and
+exits, which closes the window.
 
-A line of `exit` ends it, status zero. The line discipline hands over
-whole lines, so the loop is: read descriptor zero, strip the newline,
-render or obey.
+## The glass
+
+The client area is a grid of cells, as many columns of eight pixels and
+rows of sixteen as fit, with a cursor that the shell's output moves:
+newline, return, backspace and tab mean what a terminal means by them, and
+a line past the last row scrolls the rest up. The line being typed is drawn
+at the cursor, over the row the shell last wrote on, with an underline
+caret where the next character goes -- which is how a person sees the line
+while it is still a line, since the draw server draws nothing and the shell
+has not been given the characters yet.
+
+The rendering is `docs/DRAW.md`'s economics: the font uploaded once as six
+strip images, and every character after that a 36-byte blit. A row is
+redrawn when it changes and a scroll redraws them all, which is what this
+has instead of a scroll verb.
 */
 package terminal
 
@@ -49,21 +55,11 @@ import "vsys:libpal"
 import "vsys:libuser"
 import "vsys:vectra9"
 
-// The terminal's two colors, in the 32-bit format `/dev/fbctl` reports.
-// The two colours, out of the one table both privilege levels read. They were
-// written out as pixel words here until `sys/libpal` existed, which is one of
-// the three copies that file's own comment promised to retire.
 FG :: u32(libpal.AMBER[0]) << 16 | u32(libpal.AMBER[1]) << 8 | u32(libpal.AMBER[2])
 BG :: u32(libpal.SLATE[0]) << 16 | u32(libpal.SLATE[1]) << 8 | u32(libpal.SLATE[2])
 
-// The well the field sits in: `kernel/splash.odin`'s console well, one
-// privilege level out and a few hundred pixels across. The padding is what
-// keeps the bevel clear of the text, so no glyph lands on an edge.
-WELL_PAD :: 4
-
 // The atlas: six strips of sixteen 8x16 cells, ids 1..6, holding the
-// font's 95 glyphs. Strip six carries fifteen and its last cell stays
-// blank. Six of the server's eight images -- a client is a guest here.
+// font's 95 glyphs.
 STRIPS :: 6
 PER_STRIP :: 16
 GLYPHS :: libfont.FONT_LAST - libfont.FONT_FIRST + 1
@@ -77,70 +73,63 @@ ATLAS :: libdraw.Atlas {
 	count          = GLYPHS,
 }
 
-/*
-The field: one line of text at a fixed place near the screen's bottom
-edge, below the kernel console's well. A fixed width rather than the
-screen's, so the self-test's save buffer has a fixed size too. The
-prompt takes the first two cells and the input the other forty-two.
-*/
-FIELD_X :: 8
-FIELD_W :: 352
-FIELD_H :: libfont.FONT_HEIGHT
-PROMPT :: "> "
-INPUT_X :: FIELD_X + 2 * libfont.FONT_WIDTH
-MAX_COLS :: 42
+// The grid's origin inside the client area, and its ceiling. The origin
+// keeps the first column clear of the window's edge; the ceiling bounds
+// the cells kept in memory.
+TEXT_X :: 8
+TEXT_Y :: 8
+MAX_COLS :: 96
+MAX_ROWS :: 32
 
-// The caret is an underline this thick, under the cell the cursor is in. An
-// underline rather than a block, because a block over a character hides the
-// character and this field has one line to show.
 CARET_H :: 2
 
-// cell_x is the left edge of one input column. The glyphs and the caret have
-// to land on the same grid, so the arithmetic is written once.
-cell_x :: proc "contextless" (col: int) -> u32 {
-	return u32(INPUT_X + col * libfont.FONT_WIDTH)
-}
+// The shell, and how a line reaches it.
+SHELL :: "/bin/rc"
+LINE_MAX :: 256
 
-field_y: u32
-
-/*
-The command buffer, sized to exactly what one posted-pipe write carries.
-`sys_write` splits anything larger at this boundary -- which would tear
-a command in half -- and the bound is derived from the same constant the
-kernel cuts the wire's arena from, so the two cannot drift apart.
-*/
 CMD_CAP :: vectra9.WIRE_SLOT - vectra9.IOHDRSZ
+// The font upload's batch buffer, used once before the fork. Every batch
+// after that is built on the drawing process's own stack, because the two
+// halves draw at once.
 cmd: [CMD_CAP]u8
 
-// One load's worth of pixels: a band as wide as one write can carry,
-// derived from the wire bound rather than chosen. Fifteen columns today.
 BAND :: (CMD_CAP - libdraw.HEADER - 20) / (libfont.FONT_HEIGHT * 4)
 STRIP_W :: PER_STRIP * libfont.FONT_WIDTH
 band: [BAND * libfont.FONT_HEIGHT * 4]u8
 
-line: [256]u8
+// Shared between the two processes, which is why all of it is here rather
+// than on a stack.
+cells: [MAX_ROWS][MAX_COLS]u8
+row_dirty: [MAX_ROWS]bool
+cols, rows: int
+crow, ccol: int
 
-// The line under construction, which this program holds because it is the one
-// that draws. `MAX_COLS` is what the field shows; a longer line keeps its
-// beginning, which is the part somebody meant.
-editing: [MAX_COLS]u8
+editing: [LINE_MAX]u8
+edit: libedit.Line
+keys: [256]u8
+out: [1024]u8
+finished: [LINE_MAX + 1]u8
 geo: [160]u8
-
-// Where the two paths into this client's own window directory are built.
-// `libdraw.win_path` owns the layout, because the server walks the same names
-// and a second app would otherwise copy this.
 path_buf: [32]u8
 
+// Two locks. `glass` guards the grid, the cursor and the line being typed,
+// and is held for the length of a copy. `wire` serialises the two halves'
+// batches on the draw stream, and is held across the round trips -- which
+// a waiter survives, because `libuser.lock` yields between tries.
+glass: libuser.Spin
+wire: libuser.Spin
+
 data_fd: int
+to_shell: int // The write end of the shell's descriptor 0
 
 /*
-_start quiets the echo, mounts the draw server, learns the screen,
-uploads the font, and serves a person.
+_start claims a window, starts the shell, and serves it from both sides.
 
-The exits each name their failure: 0x77 the echo would not turn off,
-0x74 the mount was refused, 0x75 a mounted file would not open, 0x76 a
-geometry this program cannot draw on, 0x78 a draw write refused, 0x79 a
-read of descriptor zero failed. Zero is the typed `exit`.
+The exits each name their failure: 0x74 the mount was refused, 0x75 a
+mounted file would not open, 0x76 a geometry this program cannot draw on,
+0x78 a draw write refused or
+the window's own console would not open, 0x79 a read failed, 0x73 a fork
+failed, 0x72 the shell would not start. Zero is the shell ending.
 */
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -148,32 +137,17 @@ start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
-	// First, before anything draws. The write is synchronous, so once the
-	// prompt is on the glass the echo is already off. The descriptor is
-	// held for life -- the mode reverts when it closes, which is exit.
-	consctl := libuser.open("/dev/consctl", abi.O_WRONLY)
-	if consctl < 0 {
-		libuser.exit(0x77)
-	}
-	off := "echooff"
-	if libuser.write(int(consctl), transmute([]u8)off) != i64(len(off)) {
-		libuser.exit(0x77)
-	}
-
+	// The kernel's console is not this program's to touch: it reads the
+	// window's, which the draw server cooks, and the serial line behind the
+	// kernel's console may be a shell of its own that wants its echo. An
+	// earlier terminal wrote `echooff` here, from the days it read the
+	// kernel's console itself.
 	if libuser.mount("/srv/draw", "/mnt", 0) < 0 {
 		libuser.exit(0x74)
 	}
 
-	/*
-	Which window is this one's, and then the claim on it.
-
-	The draw server's tree is a directory per window now, so a client asks
-	`/mnt/new` which one has no session and then opens that one's `data`.
-	Reading `new` reserves nothing: the claim is the open, and a client that
-	loses the race between the two is refused and would have to ask again.
-	One app cannot lose it, and the day two do is the day this loop is worth
-	writing.
-	*/
+	// Which window is this one's, and then the claim on it: `/mnt/new` names
+	// the window with no session, and opening its `data` is the claim.
 	nfd := libuser.open("/mnt/new", abi.O_RDONLY)
 	if nfd < 0 {
 		libuser.exit(0x74)
@@ -192,57 +166,29 @@ start :: proc "c" (block: ^abi.Args) {
 	}
 	data_fd = int(fd)
 
-	/*
-	The controls, opened both ways: the geometry comes out and a name goes
-	in.
-
-	The geometry is this program's *client area*, which is the window with
-	its border and title bar taken off. A client is never told there is a
-	frame, and this one does not need to be: it lays itself out in the
-	rectangle it was given and the server puts it where it goes.
-
-	Only the height steers the layout. The width goes unused because the
-	field is fixed and the server clips, and the depth is the server's own
-	refusal.
-	*/
+	// The client area's geometry decides the grid, and the bar gets a name.
 	ctl := libuser.open(libdraw.win_path(path_buf[:], "/mnt", mine, "ctl"), abi.O_RDWR)
 	if ctl < 0 {
 		libuser.exit(0x75)
 	}
 	n := libuser.read(int(ctl), geo[:])
-	_, h, _, _, gok := libdraw.parse_geometry(geo[:max(int(n), 0)])
-	if !gok || h < 56 {
+	w, h, _, _, gok := libdraw.parse_geometry(geo[:max(int(n), 0)])
+	if !gok || h < 56 || w < 80 {
 		_ = libuser.close(int(ctl))
 		libuser.exit(0x76)
 	}
-	field_y = u32(h - 40)
-
-	// And the bar across the top says whose window it is. The first thing in
-	// the tree to use the fourth `ctl` line, and the whole of what a program
-	// has to do to be named. The descriptor goes after, because a `ctl` fid
-	// held for life would deny the controls to anything else.
+	cols = min((w - 2 * TEXT_X) / libfont.FONT_WIDTH, MAX_COLS)
+	rows = min((h - 2 * TEXT_Y) / libfont.FONT_HEIGHT, MAX_ROWS)
 	title := "name terminal"
 	_ = libuser.write(int(ctl), transmute([]u8)title)
 	_ = libuser.close(int(ctl))
 
 	/*
-	And this window's own `/dev`, which is how a program reads the keyboard
-	it was typed at.
-
-	**This is `rio`'s `filsysmount`, one bind shorter.** `rio` mounts its
-	per-window file set at `/mnt/wsys` with the window's id as the attach
-	`aname`, then binds that over `/dev` before everything else, so a program
-	in a window opens plain `/dev/cons` and gets the window's. The draw server
-	here already serves a directory per window, so the mount is done and the
-	bind is of that directory.
-
-	`ORDER_BEFORE` and not `ORDER_REPLACE`: `/dev/consctl`, `/dev/fb` and
-	every other device still have to resolve behind it. Only the names this
-	window serves -- `cons` among them -- are taken over.
-
-	The descriptor comes after the bind, because a bind does not move a file
-	somebody already holds open. Descriptor zero is still the kernel's console
-	from before this program started, and this is the one that replaces it.
+	This window's own `/dev`, which is `rio`'s `filsysmount` one bind
+	shorter: the window's directory over `/dev`, before everything else, so
+	`/dev/cons` is this window's keyboard. Opened after the bind, because a
+	bind does not move a file already held. Then raw, because this program
+	is the one that draws what is typed.
 	*/
 	if libuser.bind(libdraw.win_dir(path_buf[:], "/mnt", mine), "/dev", abi.ORDER_BEFORE) < 0 {
 		libuser.exit(0x78)
@@ -251,28 +197,6 @@ start :: proc "c" (block: ^abi.Args) {
 	if cons < 0 {
 		libuser.exit(0x78)
 	}
-
-	/*
-	And this window's keyboard raw, because this program is the one that
-	draws.
-
-	**A person has to see the characters as they are typed**, and the only
-	thing that can show them is whatever owns the pixels. In `rio` that is the
-	window itself, which is why a `rio` window echoes and the program in it
-	never has to. Here the draw server holds the line and this program holds
-	the glass, so the two cannot both be right -- and the one that draws is
-	the one that must hold the line.
-
-	Every Plan 9 program that draws its own text does this. `vt`, `con`,
-	`ssh` and `sam` all write `rawon` and edit for themselves, because there
-	is no read that answers a line that is not finished yet.
-
-	**`/dev/consctl` is a different file than it was ten lines ago.** The
-	`echooff` above went to `kernel/devfs`, because it happened before the
-	bind. This one resolves through the window's own directory, so it is that
-	window's mode and nobody else's. That is the namespace doing exactly what
-	it is for.
-	*/
 	wctl := libuser.open("/dev/consctl", abi.O_WRONLY)
 	if wctl < 0 {
 		libuser.exit(0x78)
@@ -282,91 +206,300 @@ start :: proc "c" (block: ^abi.Args) {
 		libuser.exit(0x78)
 	}
 
-	upload_font()
-	prompt()
+	for r in 0 ..< MAX_ROWS {
+		for c in 0 ..< MAX_COLS {
+			cells[r][c] = ' '
+		}
+	}
+	edit = libedit.Line{buf = editing[:]}
 
-	edit := libedit.Line{buf = editing[:]}
+	upload_font()
+	lock_glass()
+	for r in 0 ..< rows {
+		row_dirty[r] = true
+	}
+	unlock_glass()
+	present()
+
+	/*
+	The shell, with the pipes as its three descriptors.
+
+	`rfork(RFPROC | RFFDG)` gives the child a copy of the table to rearrange.
+	It puts the pipes on 0, 1 and 2, closes everything above -- the window's
+	data stream among them, which would otherwise keep the window claimed
+	past this program's life -- and execs. The exec keeps the namespace, so
+	a program the shell runs that opens `/dev/cons` gets this window's.
+	*/
+	in_pipe := libuser.pipe()
+	out_pipe := libuser.pipe()
+	if in_pipe < 0 || out_pipe < 0 {
+		libuser.exit(0x72)
+	}
+	in_r, in_w := abi.pipe_ends(in_pipe)
+	out_r, out_w := abi.pipe_ends(out_pipe)
+
+	shell := libuser.rfork(abi.RFPROC | abi.RFFDG)
+	if shell < 0 {
+		libuser.exit(0x72)
+	}
+	if shell == 0 {
+		_ = libuser.dup(in_r, 0)
+		_ = libuser.dup(out_w, 1)
+		_ = libuser.dup(out_w, 2)
+		for i in 3 ..< 32 {
+			_ = libuser.close(i)
+		}
+		argv := [?]string{"rc"}
+		_ = libuser.exec(SHELL, argv[:])
+		libuser.exit(0x72)
+	}
+	_ = libuser.close(in_r)
+	_ = libuser.close(out_w)
+	to_shell = in_w
+
+	// The keyboard half, sharing this memory.
+	typist := libuser.rfork(abi.RFPROC | abi.RFMEM)
+	if typist < 0 {
+		libuser.exit(0x73)
+	}
+	if typist == 0 {
+		type_loop(int(cons))
+	}
+
+	// The output half, which is this process for the rest of its life.
 	for {
-		got := libuser.read(int(cons), line[:])
+		got := libuser.read(out_r, out[:])
+		if got <= 0 {
+			break
+		}
+		lock_glass()
+		for i in 0 ..< int(got) {
+			put_byte(out[i])
+		}
+		unlock_glass()
+		present()
+	}
+
+	// The shell is gone. Take the typist down and let the window go.
+	_ = libuser.stop_child(u64(typist))
+	libuser.exit(0)
+}
+
+/*
+type_loop is the child: characters off the window's keyboard, edited into a
+line, drawn as they arrive, and handed to the shell when a newline finishes
+them. The finished line is echoed into the grid before it is sent, so it
+stays on the glass above whatever the shell says about it.
+*/
+type_loop :: proc "contextless" (cons: int) -> ! {
+	for {
+		got := libuser.read(cons, keys[:])
 		if got <= 0 {
 			libuser.exit(0x79)
 		}
-		/*
-		Characters now, not lines, and this program cooks them.
-
-		`libedit` is the same discipline `servers/intuition` runs for a window
-		that has not asked for raw -- one set of rules about what the erase
-		keys mean, worn by both sides of a window's `cons`. What this side
-		adds is the echo: every edit redraws the field, so a person sees the
-		line while it is still a line.
-
-		A finished line leaves the field showing it. There is no scrollback
-		here, so clearing on Enter would take the answer away at the moment it
-		arrived, and the next character clears it anyway -- `render` fills the
-		field before it draws.
-		*/
-		/*
-		**One draw per read, not one per character.**
-
-		A read of a raw window drains the whole queue, so a burst arrives
-		together -- and every `render` is a blocking round trip to the draw
-		server carrying a fill, a blit per glyph and a flush that composites
-		the window. Drawing each intermediate state would put ten round trips
-		on the wire to show the tenth.
-
-		The line finishing is the one point that has to draw before it is
-		read, because `clear` is about to empty what the field is showing.
-		*/
-		dirty := false
+		send_line := 0
+		lock_glass()
 		for i in 0 ..< int(got) {
-			switch libedit.put(&edit, line[i]) {
+			switch libedit.put(&edit, keys[i]) {
 			case .Done:
-				// The finished line stays on the glass, which is what this
-				// field has instead of scrollback.
-				render(libedit.text(&edit), libedit.cursor(&edit))
-				dirty = false
-				if libedit.text(&edit) == "exit" {
-					libuser.exit(0)
+				text := libedit.text(&edit)
+				for j in 0 ..< len(text) {
+					put_byte(text[j])
 				}
+				put_byte('\n')
+				send_line = copy(finished[:], text)
+				finished[send_line] = '\n'
+				send_line += 1
 				libedit.clear(&edit)
 			case .Edited:
-				dirty = true
-			case .Full:
-			case .Pending:
-				// Half a rune, or a whole one this line has no use for.
-				// Nothing changed, so nothing is redrawn.
+				row_dirty[crow] = true
+			case .Full, .Pending:
 			}
 		}
-		if dirty {
-			render(libedit.text(&edit), libedit.cursor(&edit))
+		unlock_glass()
+		present()
+		// Outside the lock: the shell may be slow to read, and the other
+		// half must be free to draw meanwhile.
+		if send_line > 0 {
+			_ = libuser.write_full(to_shell, finished[:send_line])
 		}
 	}
 }
 
-// send puts one finished batch on the wire, whole. A refusal or an
-// encode failure is the same exit: a terminal that cannot draw has
-// nothing left to say.
-send :: proc "contextless" (at: int) {
-	if at <= 0 || !libuser.write_full(data_fd, cmd[:at]) {
+lock_glass :: proc "contextless" () {
+	libuser.lock(&glass)
+}
+
+unlock_glass :: proc "contextless" () {
+	libuser.unlock(&glass)
+}
+
+// -- The grid -------------------------------------------------------------------
+
+// put_byte moves the cursor and the cells the way a terminal does. Caller
+// holds the glass.
+put_byte :: proc "contextless" (b: u8) #no_bounds_check {
+	switch b {
+	case '\n':
+		newline()
+	case '\r':
+		ccol = 0
+	case '\b':
+		if ccol > 0 {
+			ccol -= 1
+		}
+	case '\t':
+		next := (ccol + 8) / 8 * 8
+		for ccol < next && ccol < cols {
+			cells[crow][ccol] = ' '
+			ccol += 1
+		}
+		row_dirty[crow] = true
+	case:
+		if b < 0x20 {
+			return
+		}
+		if ccol >= cols {
+			newline()
+		}
+		cells[crow][ccol] = b > 0x7E ? '?' : b
+		ccol += 1
+		row_dirty[crow] = true
+	}
+}
+
+// newline moves to the next row, scrolling when the last is used up.
+newline :: proc "contextless" () #no_bounds_check {
+	ccol = 0
+	if crow + 1 < rows {
+		crow += 1
+		return
+	}
+	for r in 1 ..< rows {
+		cells[r - 1] = cells[r]
+		row_dirty[r - 1] = true
+	}
+	for c in 0 ..< MAX_COLS {
+		cells[rows - 1][c] = ' '
+	}
+	row_dirty[rows - 1] = true
+}
+
+// -- Drawing --------------------------------------------------------------------
+
+send :: proc "contextless" (buf: []u8, at: int) {
+	if at <= 0 || !libuser.write_full(data_fd, buf[:at]) {
 		libuser.exit(0x78)
 	}
 }
 
+cell_x :: proc "contextless" (col: int) -> u32 {
+	return u32(TEXT_X + col * libfont.FONT_WIDTH)
+}
+
+cell_y :: proc "contextless" (row: int) -> u32 {
+	return u32(TEXT_Y + row * libfont.FONT_HEIGHT)
+}
+
+/*
+present draws what changed: every row marked dirty, then the line being
+typed over the cursor's row and the caret after it, and one flush.
+
+The state is read under `glass` and copied out -- which rows, the typed
+line, where the cursor is -- and the drawing happens with `glass` released,
+so the other half is never kept from editing by a round trip to the draw
+server. A row's cells are read as they are drawn; a row the other half is
+changing meanwhile draws mixed, and that half marks it dirty and redraws it
+the moment it is done. The batches go out under `wire`, so the two halves'
+batches never interleave and the newest present is the one on the glass.
+*/
+present :: proc "contextless" () #no_bounds_check {
+	dirty: [MAX_ROWS]bool
+	text_copy: [LINE_MAX]u8
+	lock_glass()
+	dirty = row_dirty
+	for r in 0 ..< MAX_ROWS {
+		row_dirty[r] = false
+	}
+	// The cursor's row carries the typed line, so it is redrawn with it.
+	row := crow
+	col := ccol
+	dirty[row] = true
+	text := libedit.text(&edit)
+	n := copy(text_copy[:], text)
+	caret := col + libedit.cursor(&edit)
+	unlock_glass()
+
+	buf: [CMD_CAP]u8
+	libuser.lock(&wire)
+	at := 0
+	for r in 0 ..< rows {
+		if dirty[r] {
+			at = draw_row(buf[:], at, r)
+		}
+	}
+	shown := string(text_copy[:min(n, max(cols - col, 0))])
+	done := 0
+	for done < len(shown) {
+		nat, put := libdraw.put_text(buf[:], at, ATLAS, 0, cell_x(col + done), cell_y(row), shown[done:])
+		done += put
+		if done < len(shown) {
+			send(buf[:], nat)
+			at = 0
+		} else {
+			at = nat
+		}
+	}
+	if caret < cols {
+		at = libdraw.put_fill(
+			buf[:],
+			at,
+			0,
+			cell_x(caret),
+			cell_y(row) + u32(libfont.FONT_HEIGHT - CARET_H),
+			u32(libfont.FONT_WIDTH),
+			CARET_H,
+			FG,
+		)
+	}
+	send(buf[:], libdraw.put_flush(buf[:], at))
+	libuser.unlock(&wire)
+}
+
+// draw_row fills a row and blits its glyphs, in as many batches as it
+// takes. Answers where the open batch ends.
+draw_row :: proc "contextless" (buf: []u8, start: int, r: int) -> int #no_bounds_check {
+	at := libdraw.put_fill(buf, start, 0, cell_x(0), cell_y(r), u32(cols * libfont.FONT_WIDTH), libfont.FONT_HEIGHT, BG)
+	end := cols
+	for end > 0 && cells[r][end - 1] == ' ' {
+		end -= 1
+	}
+	text := string(cells[r][:end])
+	done := 0
+	for done < len(text) {
+		nat, put := libdraw.put_text(buf, at, ATLAS, 0, cell_x(done), cell_y(r), text[done:])
+		done += put
+		if done < len(text) {
+			send(buf, nat)
+			at = 0
+		} else {
+			at = nat
+		}
+	}
+	return at
+}
+
 /*
 upload_font pays the once-per-life cost: six allocs in one write, then
-each strip in bands as wide as one write carries. A band crosses cell
-boundaries, so a pixel finds its glyph by the atlas arithmetic run
-backwards -- column over cell width, through the same `ATLAS` fields
-`put_text` blits by -- and a cell past the last glyph loads as
-background. Fifty-five writes move the whole set, and every blit
-afterwards is 36 bytes. That trade is the design's whole argument.
+each strip in bands as wide as one write carries. Fifty-five writes move
+the whole set, and every blit afterwards is 36 bytes.
 */
 upload_font :: proc "contextless" () #no_bounds_check {
 	at := 0
 	for s in 0 ..< STRIPS {
 		at = libdraw.put_alloc(cmd[:], at, u32(1 + s), STRIP_W, libfont.FONT_HEIGHT)
 	}
-	send(at)
+	send(cmd[:], at)
 
 	for s in 0 ..< STRIPS {
 		for bx := 0; bx < STRIP_W; bx += BAND {
@@ -385,93 +518,7 @@ upload_font :: proc "contextless" () #no_bounds_check {
 					libdraw.put_u32(band[:], (y * bw + i) * 4, v)
 				}
 			}
-			send(libdraw.put_load(cmd[:], 0, u32(1 + s), u32(bx), 0, u32(bw), libfont.FONT_HEIGHT, band[:bw * libfont.FONT_HEIGHT * 4]))
+			send(cmd[:], libdraw.put_load(cmd[:], 0, u32(1 + s), u32(bx), 0, u32(bw), libfont.FONT_HEIGHT, band[:bw * libfont.FONT_HEIGHT * 4]))
 		}
 	}
-}
-
-/*
-prompt paints the field once: the well it sits in, the two prompt cells, and a
-flush. One write carries all of it.
-
-The well's face is `SLATE`, which is what `BG` already was, so the text lands
-on it with nothing between. Its edges are `libdraw`'s decomposition sent down
-the wire as ordinary fills -- there is no chrome verb, and section 5 of
-`docs/DRAW.md` is why there is not.
-*/
-prompt :: proc "contextless" () {
-	pieces: [libdraw.MAX_PIECES]libdraw.Piece
-	n := libdraw.well(
-		pieces[:],
-		FIELD_X - WELL_PAD,
-		int(field_y) - WELL_PAD,
-		FIELD_W + 2 * WELL_PAD,
-		FIELD_H + 2 * WELL_PAD,
-	)
-	at := libdraw.put_pieces(cmd[:], 0, 0, pieces[:n])
-	at, _ = libdraw.put_text(cmd[:], at, ATLAS, 0, FIELD_X, field_y, PROMPT)
-	send(libdraw.put_flush(cmd[:], at))
-}
-
-/*
-render replaces the input cells with one typed line, truncated to the
-field. The first batch carries the background fill and as many blits as
-fit; `put_text`'s consumed count pumps the rest through in more batches;
-the flush rides the last one.
-*/
-/*
-render draws the line, and `caret` says which column the cursor sits in.
-
-A caret past the last glyph is the ordinary case rather than an edge one: it
-is where the next character goes, and that is what a person needs to see.
-*/
-render :: proc "contextless" (text: string, caret: int) {
-	shown := text[:min(len(text), MAX_COLS)]
-
-	at := libdraw.put_fill(cmd[:], 0, 0, INPUT_X, field_y, FIELD_W - (INPUT_X - FIELD_X), FIELD_H, BG)
-	done := 0
-	for {
-		nat, put := libdraw.put_text(
-			cmd[:],
-			at,
-			ATLAS,
-			0,
-			cell_x(done),
-			field_y,
-			shown[done:],
-		)
-		done += put
-		if done >= len(shown) {
-			send(libdraw.put_flush(cmd[:], put_caret(nat, caret)))
-			return
-		}
-		// A batch boundary: write what fits and continue. A buffer that
-		// takes nothing would arrive here as zero, and `send` names it.
-		send(nat)
-		at = 0
-	}
-}
-
-/*
-put_caret adds the underline to a batch. Answers where the batch now ends.
-
-**The clip is the field's, which is the same one the text above obeys.** A
-line is shown to `MAX_COLS` columns, so column `MAX_COLS` is the first one
-outside -- and a caret drawn there would sit past the rectangle `render`
-clears, where nothing would ever rub it out again.
-*/
-put_caret :: proc "contextless" (at: int, caret: int) -> int {
-	if caret >= MAX_COLS {
-		return at
-	}
-	return libdraw.put_fill(
-		cmd[:],
-		at,
-		0,
-		cell_x(caret),
-		field_y + u32(FIELD_H - CARET_H),
-		u32(libfont.FONT_WIDTH),
-		CARET_H,
-		FG,
-	)
 }

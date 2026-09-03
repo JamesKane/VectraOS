@@ -167,10 +167,14 @@ run_input :: proc(sh: ^Shell, in_: ^Input) {
 			if !sh.interactive {
 				break
 			}
+			in_.prompt = 1
 			continue
 		}
 		run(sh, n)
 		free_tree(n)
+		// A whole line ran: the next read is a new command, which gets the
+		// first prompt again rather than the continuation's.
+		in_.prompt = 1
 		if depth == 0 {
 			mem.dynamic_arena_free_all(&sh.arena)
 		}
