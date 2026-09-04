@@ -15,7 +15,10 @@ its parent's inset, which is what proves the walk recurses.
 package muitest
 
 import "vsys:abi"
+import "vsys:libdraw"
+import "vsys:libfont"
 import "vsys:libmui"
+import "vsys:libpal"
 import "vsys:libuser"
 
 fail :: proc "contextless" (what: string) -> ! {
@@ -27,6 +30,64 @@ main_check :: proc "contextless" (a: int, b: int, what: string) {
 	if a != b {
 		fail(what)
 	}
+}
+
+want :: proc "contextless" (cond: bool, what: string) {
+	if !cond {
+		fail(what)
+	}
+}
+
+// The buffer paint writes its command stream into, and the atlas paint blits
+// labels from. The atlas is `cmd/window`'s, six strips of the 8x16 font.
+paint_buf: [4096]u8
+
+ATLAS :: libdraw.Atlas {
+	first_image_id = 1,
+	per_image      = 16,
+	cell_w         = libfont.FONT_WIDTH,
+	cell_h         = libfont.FONT_HEIGHT,
+	first_char     = libfont.FONT_FIRST,
+	count          = libfont.FONT_LAST - libfont.FONT_FIRST + 1,
+}
+
+// has_fill reports whether the command stream in `b[:end]` holds a fill with
+// this colour. A fill's fields are id, x, y, w, h, colour, so the colour is
+// the sixth word after the header.
+has_fill :: proc "contextless" (b: []u8, end: int, color: u32) -> bool #no_bounds_check {
+	at := 0
+	for at + libdraw.HEADER <= end {
+		size := int(libdraw.get_u16(b, at))
+		if size < libdraw.HEADER {
+			break
+		}
+		verb := b[at + 2]
+		if verb == libdraw.FILL {
+			c := libdraw.get_u32(b, at + libdraw.HEADER + 20)
+			if c == color {
+				return true
+			}
+		}
+		at += size
+	}
+	return false
+}
+
+// count_verb counts commands of one kind in the stream.
+count_verb :: proc "contextless" (b: []u8, end: int, verb: u8) -> int #no_bounds_check {
+	n := 0
+	at := 0
+	for at + libdraw.HEADER <= end {
+		size := int(libdraw.get_u16(b, at))
+		if size < libdraw.HEADER {
+			break
+		}
+		if b[at + 2] == verb {
+			n += 1
+		}
+		at += size
+	}
+	return n
 }
 
 @(export, link_name = "_start")
@@ -113,6 +174,89 @@ start :: proc "c" (block: ^abi.Args) {
 		// axes, which only happens if lay recursed into the group.
 		main_check(inner.first.x, inner.x + t.pad, "the nested child is inset in x")
 		main_check(inner.first.y, inner.y + t.pad, "the nested child is inset in y")
+	}
+
+	// -- The painter draws the tree it laid out, in the theme's colours -------
+	//
+	// A painted button leaves a ground fill behind it, a face fill on it, and
+	// a blit for each letter of its label.
+	{
+		t2 := libmui.default_theme
+		col := libmui.group(false)
+		go := libmui.button("Go")
+		libmui.add(col, go)
+		libmui.fit(col, &t2)
+		libmui.lay(col, 0, 0, 120, 60, &t2)
+
+		end := libmui.paint(paint_buf[:], 0, col, 1, ATLAS, &t2)
+		want(end > 0, "the paint fit the buffer")
+		want(has_fill(paint_buf[:], end, libpal.xrgb(t2.ground)), "the window ground was filled")
+		want(has_fill(paint_buf[:], end, libpal.xrgb(t2.face)), "the button face was filled")
+		want(count_verb(paint_buf[:], end, libdraw.BLIT) >= 2, "the label was blitted")
+	}
+
+	// -- A theme's face line changes every button's fill ----------------------
+	//
+	// Set the face to copper and the same tree paints a copper button, with no
+	// magnesium face left in the stream. This is the whole of what a face does.
+	{
+		t3 := libmui.default_theme
+		t3.face = libpal.COPPER
+		col := libmui.group(false)
+		go := libmui.button("Go")
+		libmui.add(col, go)
+		libmui.fit(col, &t3)
+		libmui.lay(col, 0, 0, 120, 60, &t3)
+
+		end := libmui.paint(paint_buf[:], 0, col, 1, ATLAS, &t3)
+		want(has_fill(paint_buf[:], end, libpal.xrgb(libpal.COPPER)), "the copper face was filled")
+		want(!has_fill(paint_buf[:], end, libpal.xrgb(libpal.MAGNESIUM)), "no magnesium face was left")
+	}
+
+	// -- A click finds the gadget under it, through labels and groups ---------
+	{
+		row := libmui.group(true)
+		name := libmui.text("File")
+		go := libmui.button("Go")
+		go.id = 7
+		libmui.add(row, name)
+		libmui.add(row, go)
+		libmui.fit(row, &t)
+		libmui.lay(row, 0, 0, 300, 40, &t)
+
+		// The centre of the button is a hit. The centre of the label is not.
+		bx := go.x + go.w / 2
+		by := go.y + go.h / 2
+		want(libmui.hit(row, bx, by) == go, "a click on the button found it")
+		nx := name.x + name.w / 2
+		ny := name.y + name.h / 2
+		want(libmui.hit(row, nx, ny) == nil, "a click on a label found nothing")
+		want(libmui.hit(row, -1, -1) == nil, "a click outside found nothing")
+	}
+
+	// -- Return, Escape, and a click each dismiss a requester ----------------
+	{
+		req := libmui.requester("Really?", "OK", "Cancel")
+		libmui.fit(req.root, &t)
+		libmui.lay(req.root, 0, 0, 240, 100, &t)
+
+		// Return chooses the default, id 1. Escape chooses the cancel, id 2.
+		done, id := libmui.req_handle(&req, libmui.Event{kind = .Key, key = '\r'})
+		want(done && id == 1, "Return chose the default button")
+		done, id = libmui.req_handle(&req, libmui.Event{kind = .Key, key = 0x1b})
+		want(done && id == 2, "Escape chose the cancel button")
+
+		// A release over the OK button chooses it. One in blank space does not.
+		ok := req.def
+		ox := ok.x + ok.w / 2
+		oy := ok.y + ok.h / 2
+		done, id = libmui.req_handle(&req, libmui.Event{kind = .Release, x = ox, y = oy})
+		want(done && id == 1, "a click on OK dismissed the requester")
+		done, _ = libmui.req_handle(&req, libmui.Event{kind = .Release, x = ok.x + ok.w + 100, y = oy})
+		want(!done, "a click in blank space left it standing")
+
+		// The message text takes no click.
+		want(libmui.hit(req.root, req.root.first.x + 2, req.root.first.y + 2) == nil, "the message text takes no click")
 	}
 
 	libuser.exits("ok")

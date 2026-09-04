@@ -26,6 +26,7 @@ hand.
 */
 package libmui
 
+import "vsys:libpal"
 import "vsys:libuser"
 
 // A very large extent, the mark of a node that stretches without limit.
@@ -49,9 +50,28 @@ Theme :: struct {
 	hpad:  int, // A button's inset from its edge to its text, left and right
 	vpad:  int, // A button's inset from its edge to its text, top and bottom
 	well:  int, // A string gadget's recess around the text it holds
+	// The palette a painter reads. A theme file's `face` line changes the
+	// first of these, which is how the "Cyberpunk 1994" look is themed.
+	ground: libpal.RGB, // The window behind the gadgets
+	face:   libpal.RGB, // A raised control's face
+	lit:    libpal.RGB, // A raised control's top-left highlight
+	shade:  libpal.RGB, // A raised control's bottom-right shadow
+	ink:    libpal.RGB, // Text, and a lit checkmark
 }
 
-default_theme :: Theme{pad = 4, gap = 4, bevel = 2, hpad = 8, vpad = 4, well = 2}
+default_theme :: Theme {
+	pad    = 4,
+	gap    = 4,
+	bevel  = 2,
+	hpad   = 8,
+	vpad   = 4,
+	well   = 2,
+	ground = libpal.SLATE_DEEP,
+	face   = libpal.MAGNESIUM,
+	lit    = libpal.MAGNESIUM_LIT,
+	shade  = libpal.MAGNESIUM_DARK,
+	ink    = libpal.AMBER,
+}
 
 // -- The object model --------------------------------------------------------
 
