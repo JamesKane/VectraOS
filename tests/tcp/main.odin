@@ -17,6 +17,7 @@ conversation shape is under test as much as the state machine.
 package tcptest
 
 import "vsys:abi"
+import "vsys:libnet"
 import "vsys:libodin"
 import "vsys:libuser"
 
@@ -161,6 +162,51 @@ start :: proc "c" (block: ^abi.Args) {
 	ctl(client, "hangup", "the connected end hangs up")
 	want(holds(text_of(accepted, "status"), "Close_Wait"), "which puts the far end in Close_Wait")
 	want(stream_read(accepted) == "", "and ends its stream")
+
+	// -- The connection server turns two names into an address ---------------
+	{
+		fd := libuser.open("/net/cs", abi.O_RDWR)
+		want(fd >= 0, "the connection server's file opens")
+		q := "tcp!vectra!vtest"
+		want(libuser.write(int(fd), transmute([]u8)q) == i64(len(q)), "and takes a dial string")
+		n := libuser.read(int(fd), read_buf[:])
+		_ = libuser.close(int(fd))
+		want(n > 0, "and answers where to connect")
+		answer := string(read_buf[:int(n)])
+		want(holds(answer, "/net/tcp/clone"), "with the clone file to open")
+		want(holds(answer, "10.0.2.15!1717"), "and the address the database names")
+	}
+
+	// -- Dialling by name, through `cs` and the database ----------------------
+	//
+	// Nothing here writes an address. `tcp!vectra!vtest` is two names, and
+	// `/net/cs` turns them into one by reading `/lib/ndb/local`. What comes
+	// back is a stream like any other.
+	{
+		dir: [128]u8
+		dlen, aok := libnet.announce("tcp!vectra!vtest", dir[:])
+		want(aok, "a conversation announces a service by name")
+		server_dir := string(dir[:dlen])
+
+		fd, dok := libnet.dial("tcp!vectra!vtest")
+		want(dok, "and another dials that same name")
+
+		// The listener hands over what it answered.
+		lp: [160]u8
+		lfd := libuser.open(libnet.join(lp[:], server_dir, "listen"), abi.O_RDONLY)
+		want(lfd >= 0, "the announced conversation's listen opens")
+		got := libuser.read(int(lfd), read_buf[:])
+		_ = libuser.close(int(lfd))
+		want(got > 0, "and answers the conversation it accepted")
+		acc, nok := number(string(read_buf[:int(got)]))
+		want(nok, "which is a number")
+
+		// And the stream carries bytes, dialled end to accepted end.
+		named := "by name"
+		want(libuser.write(fd, transmute([]u8)named) == i64(len(named)), "the dialled stream takes a write")
+		want(stream_read(acc) == named, "and the bytes arrive at the accepted end")
+		_ = libuser.close(fd)
+	}
 
 	libuser.exits("ok")
 }

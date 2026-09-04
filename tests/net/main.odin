@@ -16,6 +16,7 @@ package nettest
 
 import "vsys:abi"
 import "vsys:libnet"
+import "vsys:libndb"
 import "vsys:libuser"
 
 fail :: proc "contextless" (what: string) -> ! {
@@ -225,6 +226,31 @@ start :: proc "c" (block: ^abi.Args) {
 		want(libnet.send_room(0, 400, 1000) == 600, "what is in flight comes off the window")
 		want(libnet.send_room(0, 1000, 1000) == 0, "a full window stops the sender")
 		want(libnet.send_room(0, 1200, 1000) == 0, "and a window smaller than what is in flight is not negative")
+	}
+
+	// -- The network database answers a name and a service -------------------
+	{
+		db := "# the machines here\nsys=vectra ip=10.0.2.15\n\tcputype=amd64\n\nsys=gw ip=10.0.2.2\n\ntcp=echo port=9\ntcp=9fs port=564\n"
+
+		ip, ok := libndb.find(db, "sys", "vectra", "ip")
+		want(ok && ip == "10.0.2.15", "a machine's name answers its address")
+
+		gw, ok2 := libndb.find(db, "sys", "gw", "ip")
+		want(ok2 && gw == "10.0.2.2", "and a second machine's does too")
+
+		// An attribute on a continuation line belongs to the record above it.
+		cpu, ok3 := libndb.find(db, "sys", "vectra", "cputype")
+		want(ok3 && cpu == "amd64", "an indented line continues the record above")
+
+		port, ok4 := libndb.find(db, "tcp", "echo", "port")
+		want(ok4 && port == "9", "a service's name answers its port")
+		port2, ok5 := libndb.find(db, "tcp", "9fs", "port")
+		want(ok5 && port2 == "564", "and so does another in the same file")
+
+		_, miss := libndb.find(db, "sys", "nowhere", "ip")
+		want(!miss, "a name nothing carries answers nothing")
+		_, miss2 := libndb.find(db, "sys", "gw", "cputype")
+		want(!miss2, "and so does an attribute the record does not hold")
 	}
 
 	libuser.exits("ok")

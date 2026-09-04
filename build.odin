@@ -873,6 +873,8 @@ stage_vectra :: proc() {
 	copy_file("servers/intuition/keys", fmt.tprintf("%s/lib/keys", root))
 	copy_file("servers/intuition/workspaces", fmt.tprintf("%s/lib/workspaces", root))
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
+	ensure_dir(fmt.tprintf("%s/lib/ndb", root))
+	copy_file("lib/ndb/local", fmt.tprintf("%s/lib/ndb/local", root))
 	step("staged %d programs and the library under %s", len(user_programs), root)
 }
 

@@ -1,0 +1,20 @@
+# The network database. `docs/FLEET.md` section 3's shape, 9front's format:
+# a record is a run of attr=value pairs, and an indented line continues it.
+#
+# `/net/cs` reads this to turn `tcp!fs!9fs` into an address and a port.
+
+sys=vectra ip=10.0.2.15
+	cputype=amd64
+
+sys=gw ip=10.0.2.2
+
+sys=fs ip=10.0.2.15
+	cputype=amd64
+
+# The services, by the name a dial string uses for them.
+
+tcp=echo port=9
+tcp=vtest port=1717
+tcp=9fs port=564
+tcp=discard port=9
+udp=echo port=7

@@ -69,6 +69,7 @@ conv_node :: proc "contextless" (i: int, kind: i32) -> i32 {
 
 NODE_TCP :: i32(7) // The tcp directory
 NODE_TCLONE :: i32(8) // tcp/clone
+NODE_CS :: i32(9) // The connection server's file
 
 // TCP's conversations are numbered from their own base, far enough past UDP's
 // that the two never decode as each other.
@@ -187,6 +188,9 @@ threadmain :: proc "contextless" (arg: rawptr) {
 		handler = handler,
 		msize   = FRAME,
 	}
+	// The names, before anything can ask for one.
+	cs_load()
+
 	if libthread.threadcreate(ether_thread, nil) < 0 {
 		libthread.threadexitsall("threadcreate")
 	}
@@ -451,6 +455,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 			return NODE_UDP
 		case "tcp":
 			return NODE_TCP
+		case "cs":
+			return NODE_CS
 		}
 	case NODE_ETHER:
 		if name == "addr" {
@@ -582,6 +588,23 @@ handler :: proc "contextless" (
 			return
 		}
 
+		// A read of `cs` answers what this fid's write worked out, whole. The
+		// offset is not consulted: the write that asked the question already
+		// moved it, and this is a reply rather than a window on bytes.
+		if node == NODE_CS {
+			text := cs_read(m.fid)
+			if len(text) == 0 {
+				reply^ = vectra9.Rread{data = nil}
+				return
+			}
+			room := min(min(len(buf), int(m.count)), len(text))
+			for k in 0 ..< room {
+				buf[k] = text[k]
+			}
+			reply^ = vectra9.Rread{data = buf[:room]}
+			return
+		}
+
 		// A read of TCP's `clone` takes a conversation the same way UDP's does.
 		if node == NODE_TCLONE {
 			if m.offset > 0 {
@@ -705,6 +728,22 @@ handler :: proc "contextless" (
 		if !ok {
 			return
 		}
+		if node == NODE_CS {
+			if !cs_write(m.fid, string(m.data)) {
+				reply^ = vectra9.error_reply(vectra9.ENOENT)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+			return
+		}
+		if node == NODE_CS {
+			if !cs_write(m.fid, string(m.data)) {
+				reply^ = vectra9.error_reply(vectra9.ENOENT)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+			return
+		}
 		if i, kind, is_tcp := tconv_of(node); is_tcp {
 			switch kind {
 			case TCONV_CTL:
@@ -770,6 +809,7 @@ handler :: proc "contextless" (
 		}
 
 	case vectra9.Tclunk:
+		cs_forget(m.fid)
 		libuser.fid_release(&fids, m.fid)
 		reply^ = vectra9.Rclunk{}
 
@@ -806,8 +846,8 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 	nodes: []i32
 	switch {
 	case node == NODE_ROOT:
-		names = []string{"ether0", "arp", "icmp", "udp", "tcp"}
-		nodes = []i32{NODE_ETHER, NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP}
+		names = []string{"ether0", "arp", "icmp", "udp", "tcp", "cs"}
+		nodes = []i32{NODE_ETHER, NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_CS}
 	case node == NODE_ETHER:
 		names = []string{"addr"}
 		nodes = []i32{NODE_ADDR}
