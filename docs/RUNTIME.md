@@ -50,52 +50,21 @@ A server stops two ways, and the result says which. One is a `Tremove`
 answered and then obeyed, which is `niner`'s rule kept. The other is a pipe
 that ended.
 
-## `serve_mux`: answer later, from whoever has the answer
+## A server whose reads park is `sys/lib9p`'s
 
 `serve` answers one request at a time, so a read that parks holds every
 other client behind it. That was `consrv`'s wart for two milestones. The
-first `serve_mux` fixed it with a process per blocking request -- a worker
-forked over `RFMEM` to poll a ring until a byte came -- and `docs/INIT.md`
-counted what that cost once a machine ran two shells: a process per parked
-read, on top of the reader every server already forks. This is `lib9p`'s
-shape instead, and it is `docs/PROCS.md`'s first step.
-
-The loop reads a request and calls the handler under `wlock`. A handler
-that has the answer replies, and the loop writes it. One that does not -- a
-read of a keyboard nobody has typed at -- calls `libuser.hold`, and the
-loop copies the request into a free slot and reads the next frame. Nothing
-is forked and nothing parks. When the reader child pushes a byte, it looks
-at the held slots itself: `libuser.held` finds the oldest one whose request
-it can answer, the child drains the ring into the slot's payload, and
-`libuser.respond` writes the reply from the child's own process and frees
-the slot. A server stops with `respond_all`, so no client is left waiting on
-a slot nobody will fill.
-
-**The handler runs under `wlock`, and so does the answerer.** That is what
-makes "the ring was empty, hold me" and "a byte arrived, answer the held
-reads" one decision: either the handler saw the byte, or the child sees the
-held read. A handler may take the server's state lock inside; the child
-takes `wlock` first and the state lock inside, so the order is the same on
-both sides. `wlock` is `Spin`, the ring 3 lock over `lock cmpxchg`, which
-yields between tries; it is held across the pipe write, which is a copy
-into the kernel and never a wait.
-
-A hold with no free slot is answered `EAGAIN`: the client should try again,
-and a slot is the fix. The pool is eight in every server, which is the most
-the kernel's wire has in flight.
-
-### The flush
-
-`Tflush` never reaches the handler. A flush that names a held slot frees
-the slot and answers `Rflush`, in one step under `wlock`: the held request
-is dropped, its reply never written, and the client's tag is its own again.
-A flush naming nothing held was answered already or never held, and is
-answered at once. That keeps `kernel/mnt`'s rule -- **Rflush is sent after
-the flushed request's fate is decided** -- with the decision and the answer
-the same instruction, because nothing is running on the request's behalf.
-The first `serve_mux` needed a partner tag and a poll in the worker for
-this; `verify_consrv` still abandons three reads on every boot, and the pool
-still has three slots free after.
+first answer was `serve_mux`: a process per blocking request, a worker
+forked over `RFMEM` to poll a ring until a byte came, and `docs/INIT.md`
+counted what that cost once a machine ran two shells. The second, `docs/
+PROCS.md` step 1, kept the request in a slot in shared memory and let the
+reader process answer it under a write lock. The third is `sys/lib9p` on
+`sys/libthread`, `docs/PROCS.md` step 4: a reader proc turns frames into
+records on the heap and sends them down a channel, the handler runs in the
+program's own proc of threads, and whichever thread has the answer calls
+`respond`. Nothing in it is locked, because everything in it is one
+proc's. `docs/THREAD.md` section 9 is the argument, and `serve` stays here
+for a server whose every answer is a table lookup.
 
 ## VECTRA02: segments, because compilers make shapes
 
@@ -166,27 +135,24 @@ here is what it proved about the runtime:
   does.** The child continues from the call site on a private copy of the
   stack. An ordinary `if pid == 0` branches the two lives -- no entry
   function, no stack juggling, no allocator.
-- **Shared bss is a real meeting point.** The child parks reading
-  `/dev/cons` and publishes bytes into a producer-consumer ring of two
-  monotonic counters. Workers drain it from their reads.
-  `intrinsics.volatile_load`/`store` order the counter against its bytes.
-  The producer stays lockless, because the child is the only writer of
-  `head`. The consumer end is under a lock now, because `serve_mux` gives the
-  ring many readers where it once had one. The ring lives in
-  `sys/libuser` today, one copy for the three servers that fork a reader.
+- **Shared bss is a real meeting point.** The child parked reading
+  `/dev/cons` and published bytes into a producer-consumer ring of two
+  monotonic counters, with `intrinsics.volatile_load`/`store` ordering
+  the counter against its bytes. The ring is still there, in
+  `sys/libuser`, and it is the queue between a key's arrival and the read
+  that takes it; what crosses between the procs now is a channel.
 - **The note is a teardown a program can drive.** On `Tremove` the parent
-  notes its reader out of a parked device read, and exits zero only if the
-  wait answered EINTR. `libuser` grew `rfork` and `note` wrappers for it.
+  noted its reader out of a parked device read, and exited zero only if the
+  wait answered EINTR. `libuser` grew `rfork` and `note` wrappers for it,
+  and `libthread.threadexitsall` is that arc for every proc a program made.
 
-**`consrv` reads `/line` with a parked read now**, through `serve_mux`. A
-read with nothing typed waits in a worker of its own, and the main loop
-answers another client while it waits. The zero-bytes wart is gone.
-
-What consrv adds on top of the library is two locks and a flag. The write
-lock `serve_mux` needs, and a state lock over the fid table and the ring's
-consumer end. The flag is for shutdown. A worker parked on an empty ring at
-teardown reads it and leaves, rather than polling for a byte the torn-down
-console will never send.
+**`consrv` is on `sys/libthread` now**, `docs/PROCS.md` step 4: a reader
+proc parked on the console sending a read's worth of bytes on a channel,
+a thread that keeps them and answers held reads, and `lib9p`'s serve loop.
+A read of `/line` with nothing typed is held rather than answered empty,
+and the loop answers another client while it is. The two locks and the
+shutdown flag this server once added on top of the library are gone,
+because every thread that touches its state is one proc's.
 
 ## `servers/kbdfs`: a kernel service, rebuilt as a program
 
@@ -199,11 +165,11 @@ release makes no character. A scancode becomes a byte on `/kbd` here, where
 the kernel would have made it one on `/dev/cons`. Nothing but the address
 space it runs in is different.
 
-The shape is `consrv`'s, because the problem is the same. A reader child
-parks on a device that blocks, the parent serves 9P through `serve_mux`, and
-a read of `/kbd` parks in a worker. Opening `/dev/scancode` is what diverts
-the raw stream to the program. Until it does, the kernel translates the
-scancodes itself.
+The shape is `consrv`'s, because the problem is the same. A reader proc
+parks on the device, the characters it makes cross on a channel, and a
+read of `/kbd` with nothing translated is held until a key comes. Opening
+`/dev/scancode` is what diverts the raw stream to the program. Until it
+does, the kernel translates the scancodes itself.
 
 Three things this proved about the runtime:
 
@@ -381,15 +347,13 @@ ordering beats the same rule kept by luck.
   environment to justify it, and nothing passes either yet.
 - **`serve` still answers one request at a time**, and it is the right loop
   for a server whose every answer is a table lookup, like `ramfs`. A server
-  with a request that parks reaches for `serve_mux` instead. Only the main
-  loop reads the pipe under either, so `read_full`'s non-atomic read is
-  never raced -- the workers write, they do not read.
-- **A flushed worker keeps polling.** `serve_mux` forks a worker for a read
-  that parks, and a client's `Tflush` cancels the request on the wire but
-  not the worker behind it. The worker polls until its data arrives or the
-  server shuts down. `kernel/mnt` has the same shape for a moment on the
-  kernel side, and Plan 9's simple servers do too. Flush that reaches the
-  worker is a later refinement.
+  with a request that parks reaches for `sys/lib9p` instead. One proc
+  reads the pipe under either, so `read_full`'s non-atomic read is never
+  raced.
+- **A flush drops a held request.** A client's `Tflush` cancels the
+  request on the wire, and `lib9p` drops the record it held for it and
+  answers `Rflush`, in one step. The worker that once kept polling after a
+  flush went with the workers.
 - **The converter trusts `ld.lld` about overlap.** It refuses misalignment
   itself, and the loader's judge re-checks everything else. A malicious
   image never reaches further than the judge, which the crafted-table

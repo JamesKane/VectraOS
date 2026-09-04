@@ -7,15 +7,18 @@ serves. It is the first tenant of the userland devfs the handoff pointed at:
 a driver that reads a raw device, does its own translation, and serves the
 cooked result back as a file its clients mount.
 
-The shape is `consrv`'s, because the problem is the same one. A reader child
-parks on a device that genuinely blocks, and the parent serves 9P. The two
-meet in a shared ring, and `serve_mux` lets a read of the cooked file park in
-a worker while the parent answers other clients.
+The shape is `consrv`'s on `sys/libthread`, because the problem is the same
+one. A proc of its own parks on the device, which is the one read here
+that genuinely blocks, and the program's own proc is threads that only
+block on each other:
 
-    the child    reads /dev/scancode -- raw make and break codes -- runs the
-                 scancode state machine, and pushes the characters it makes
-    the parent   posts /srv/kbdfs and serves 9P; a read of /kbd drains the
-                 ring, parking until a key is translated
+    the reader     a proc parked in `read` on /dev/scancode -- raw make and
+                   break codes -- running the scancode state machine and
+                   sending the characters it makes on `keys`
+    the key thread receives `keys`, pushes into the ring, and answers any
+                   read of /kbd held for want of a key
+    the serve loop `lib9p.serve`; a read of /kbd with nothing translated
+                   is held rather than answered empty
 
 What crossed the privilege boundary is the state machine: the two US-layout
 tables, shift, caps, control, the extended prefix, and the rule that a release
@@ -32,67 +35,57 @@ than fixed. The fix is not a second copy of the new table: it is the scancode
 translation becoming a package both rings call, which is what having two of it
 has been asking for since this file was written.
 
-Teardown is `consrv`'s: on `Tremove` the parent notes its reader out of the
-parked scancode read, collects the EINTR, and exits zero only if it heard it.
+Teardown is `consrv`'s: on `Tremove` the serve loop stops, every held read
+is answered empty, and `threadexitsall` notes the reader proc out of its
+parked read and waits for it. Status zero is that arc succeeding.
 */
 package kbdfs
 
-import "base:intrinsics"
 import "base:runtime"
 
 import "vsys:abi"
+import "vsys:lib9p"
+import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
 
 NODE_ROOT :: i32(0)
 NODE_KBD :: i32(1)
 
-// The translated characters waiting to be served, a producer-consumer ring
-// shared under RFMEM. The child owns `head`, the consumers own `tail`, and
-// the counters are monotonic so full and empty never look alike.
+// The translated characters waiting to be served, kept by the key thread
+// for the handler.
 RING :: 256
 ring_store: [RING]u8
 ring: libuser.Ring
 
-// The child's scancode buffer. In the shared bss with everything else, and
-// touched by the child alone.
-chunk: [64]u8
+/*
+What the reader proc sends: the characters one read's scancodes made, and how many. A
+read of the served file answers what one read of the device delivered,
+which for a cooked console is a whole line, so the bytes cross together
+rather than one at a time.
+*/
+CHUNK :: 64
 
-
+Chunk :: struct {
+	n:    int,
+	data: [CHUNK]u8,
+}
 
 fids: libuser.Fid_Table
 
 FRAME :: 1200
-frame_in: [FRAME]u8
-frame_out: [FRAME]u8
-payload: [1024]u8
 
-// The write lock `serve_mux` serialises replies with, and a state lock over
-// the fid table and the ring's consumer end. `stopping` releases a worker
-// parked on an empty ring at teardown. See `servers/consrv` and
-// `sys/libuser/serve.odin`.
-wlock: libuser.Spin
-state_lock: libuser.Spin
-
-SLOTS :: 3
-slot_frame: [SLOTS][FRAME]u8
-slot_out: [SLOTS][FRAME]u8
-slot_payload: [SLOTS][1024]u8
-slots: [SLOTS]libuser.Mux_Slot
-
-// The serve loop's state, in shared bss rather than on `_start`'s stack, so a
-// worker can ask `libuser.flushed` through it. Its stack is its own copy.
-mux: libuser.Mux
-
-// One tick between looks at the ring, for a read parked waiting on a key.
+srv: lib9p.Srv
+keys: ^libthread.Chan
+raw_fd: int
 
 /*
-_start opens the raw stream, forks the translator, and serves.
+_start opens the raw stream and hands the process to the thread library.
 
-The open comes first, because the descriptor table is shared by default: one
-open, and both processes hold the number. Opening `/dev/scancode` is also what
-diverts the raw scancodes to this program -- until something holds it open,
-the kernel translates them itself. See `kernel/devfs/tap.odin`.
+The open comes first, because the descriptor table is shared: one open, and
+every proc holds the number. Opening `/dev/scancode` is also what diverts
+the raw scancodes to this program -- until something holds it open, the
+kernel translates them itself. See `kernel/devfs/tap.odin`.
 */
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -100,82 +93,88 @@ start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
-	// The ring's frame, built before the fork so both halves hold it.
 	ring = libuser.Ring{buf = ring_store[:]}
 
 	raw := libuser.open("/dev/scancode", abi.O_RDONLY)
 	if raw < 0 {
 		libuser.exit(0x74)
 	}
+	raw_fd = int(raw)
+	libthread.main(threadmain, nil)
+}
 
-	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)
-	if pid < 0 {
-		libuser.exit(0x73)
+threadmain :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	keys = libthread.chancreate(size_of(Chunk), 4)
+	if keys == nil {
+		libthread.threadexitsall("no memory")
 	}
-	if pid == 0 {
-		reader(int(raw))
+	if libthread.proccreate(reader, nil) < 0 {
+		libthread.threadexitsall("proccreate")
 	}
-
 	fd, perr := libuser.post("/srv/kbdfs")
 	if perr < 0 {
-		_ = libuser.stop_child(u64(pid))
-		libuser.exit(0x71)
+		libthread.threadexitsall("post")
 	}
-
-	for i in 0 ..< SLOTS {
-		slots[i] = libuser.Mux_Slot {
-			frame   = slot_frame[i][:],
-			out     = slot_out[i][:],
-			payload = slot_payload[i][:],
-		}
-	}
-	mux = libuser.Mux {
+	srv = lib9p.Srv {
 		fd      = fd,
 		handler = handler,
-		frame   = frame_in[:],
-		out     = frame_out[:],
-		payload = payload[:],
-		wlock   = &wlock,
-		slots   = slots[:],
+		msize   = FRAME,
+	}
+	if libthread.threadcreate(key_thread, nil) < 0 {
+		libthread.threadexitsall("threadcreate")
 	}
 
-	_, why := libuser.serve_mux(&mux)
+	_, why := lib9p.serve(&srv)
 
-	libuser.respond_all(&mux, vectra9.Rread{data = nil})
-
-	if why != .Removed {
-		_ = libuser.stop_child(u64(pid))
-		libuser.exit(0x72)
-	}
-	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
+	lib9p.respond_all(&srv, vectra9.Rread{data = nil})
+	libthread.threadexitsall(why == .Removed ? "" : "hangup")
 }
 
 /*
-reader is the child's whole life: read scancodes, translate, publish.
+reader is the reader proc's whole life: read scancodes, translate, send.
 
-A failed read is not a loop to break out of. A noted process's read answers
-EINTR, and its next system call is the boundary the note ends it at, so asking
-again *is* the teardown protocol. `consrv`'s reader has the same shape, over a
-different device.
+A failed read is not a loop to break out of. A noted proc's read answers
+EINTR, and its next system call is the boundary the note ends it at, so
+asking again *is* the teardown protocol.
 */
-reader :: proc "contextless" (raw: int) -> ! {
+reader :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	codes: [CHUNK]u8
+	chunk: Chunk
 	for {
-		n := libuser.read(raw, chunk[:])
+		n := libuser.read(raw_fd, codes[:])
 		if n <= 0 {
 			continue
 		}
+		chunk.n = 0
 		for i in 0 ..< int(n) {
-			b, produced := step(chunk[i])
+			b, produced := step(codes[i])
 			if produced {
-				libuser.ring_push(&ring, b)
+				chunk.data[chunk.n] = b
+				chunk.n += 1
 			}
+		}
+		if chunk.n > 0 {
+			libthread.send(keys, &chunk)
+		}
+	}
+}
+
+key_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	chunk: Chunk
+	for {
+		libthread.recv(keys, &chunk)
+		for i in 0 ..< chunk.n {
+			libuser.ring_push(&ring, chunk.data[i])
 		}
 		answer_held()
 	}
 }
 
-// wants_read is what a held request has to be for the reader to answer it:
-// a read of the file the ring feeds.
+// wants_read is what a held request has to be for the key thread to
+// answer it: a read of the file the ring feeds.
 wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
 	_ = state
 	#partial switch m in request^ {
@@ -185,32 +184,23 @@ wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool 
 	return false
 }
 
-/*
-answer_held gives what the ring holds to the reads held for it, oldest
-first, from the reader's own process. Under `wlock`, which is what makes
-this and the handler's "empty, hold me" one decision: either the handler
-saw the byte, or this sees the held read. See `libuser.serve_mux`.
-*/
+// answer_held gives what the ring holds to the reads held for it, oldest
+// first. See `lib9p.held`.
 answer_held :: proc "contextless" () {
-	libuser.lock(&wlock)
 	for {
-		slot, tag, request, ok := libuser.held(&mux, wants_read)
+		req, ok := lib9p.held(&srv, wants_read)
 		if !ok {
 			break
 		}
-		m := request.(vectra9.Tread)
-		buf := libuser.slot_payload(&mux, slot)
-		room := min(len(buf), int(m.count))
-		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		m := req.msg.(vectra9.Tread)
+		room := min(len(req.payload), int(m.count))
+		got := libuser.ring_drain(&ring, req.payload[:room])
 		if got == 0 {
 			break
 		}
-		_ = libuser.respond(&mux, slot, tag, vectra9.Rread{data = buf[:got]})
+		_ = lib9p.respond(req, vectra9.Rread{data = req.payload[:got]})
 	}
-	libuser.unlock(&wlock)
 }
-
-// -- The ring ----------------------------------------------------------------
 
 // -- The scancode state machine, the kernel's byte for byte -------------------
 //
@@ -326,7 +316,6 @@ step :: proc "contextless" (code: u8) -> (b: u8, produced: bool) #no_bounds_chec
 	return b, true
 }
 
-
 // -- The tree ----------------------------------------------------------------
 
 qid_of :: proc "contextless" (node: i32) -> vectra9.Qid {
@@ -395,26 +384,22 @@ handler :: proc "contextless" (
 			return
 		}
 		/*
-		A read of /kbd parks until a key is translated, off in a worker of its
-		own -- `blocks` sent it here. A flush, when the client gave up on the
-		read, lets the worker leave with an answer nobody sends, which is
-		`libuser.flushed`'s contract. The shutdown flag lets a parked read leave
-		at teardown rather than poll for a key the torn-down keyboard will never
-		send. A zero count asks for nothing and gets it.
+		A read of /kbd takes what has been translated, or is held until a
+		key is: the key thread answers it when one comes. A flush, when the
+		client gave up on the read, drops the held record. A zero count
+		asks for nothing and gets it.
 		*/
 		room := min(len(buf), int(m.count))
 		if room <= 0 {
 			reply^ = vectra9.Rread{data = nil}
 			return
 		}
-		// What has arrived, or nothing yet: the loop holds the request and
-		// the reader answers it when a byte comes. See `libuser.hold`.
-		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		got := libuser.ring_drain(&ring, buf[:room])
 		if got > 0 {
 			reply^ = vectra9.Rread{data = buf[:got]}
 			return
 		}
-		libuser.hold(&mux)
+		lib9p.hold(&srv)
 
 	case vectra9.Twrite:
 		reply^ = vectra9.error_reply(vectra9.EPERM)

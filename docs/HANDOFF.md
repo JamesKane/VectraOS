@@ -29,7 +29,7 @@ libdraw, vectra9), `servers/` (ramfs, consrv, kbdfs, eiafs, intuition), `apps/`
 `arm64` and `riscv64` booting the same `kmain` on QEMU's `virt` board since
 September 2026. `docs/PORTS.md` says where each port stands.
 
-About 50,700 lines of Odin. The linked kernel is ~1.6 MB debug, and the six
+About 81,500 lines of Odin. The linked kernel is ~1.6 MB debug, and the six
 embedded user images are ~300 KB.
 
 ## 2. Where things stand
@@ -48,7 +48,8 @@ preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 | The hardware | every device behind `#c` is a file — `/dev/fb` the screen's memory, `/dev/scancode` the untranslated keyboard, `/dev/eia0` the port. A raw stream is *diverted* while held, and given back on the last close | `DEVFS.md` |
 | Services | `/srv` names a running service, mountable anywhere in a namespace, postable from ring 3, and its connection comes down when the last mount and the name are both gone | `SRV.md`, `PIPE.md` |
 | Processes | ring 3, a namespace and a descriptor group of its own, `spawn`, `rfork` by Plan 9's flag word, `exec` in place, notes a handler catches, `segalloc` for memory no file serves | `USER.md` |
-| Ring 3 servers | five of them, on a runtime with a serve loop, a concurrent one with a worker per parked request, and the tree's first ring 3 lock | `RUNTIME.md` |
+| Ring 3 servers | five of them, on a runtime with a serve loop, and `lib9p` for a server whose reads park: a request is held and answered later by whichever thread has the answer | `RUNTIME.md`, `THREAD.md` |
+| Threads | Plan 9's `libthread`: procs for what blocks in the kernel, cooperative threads for what does not, channels and `alt` between them, and a server on it that needs no lock | `THREAD.md` |
 | The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` and `consctl` per window with a line discipline of its own | `DRAW.md` |
 | Typing | one discipline (`sys/libedit`) worn by the server that cooks a window's lines and by the program that draws them and echoes, with a cursor the arrow keys and `^A`/`^E` move | `DRAW.md` |
 | Runes | a key with no character arrives as Plan 9's private-space rune in UTF-8 (`sys/libkey` names them, `core:unicode/utf8` encodes them) through a `/dev/cons` that stayed bytes | `DRAW.md`, `KBD.md` |
@@ -151,6 +152,13 @@ them could have come earlier:
                             which is what the arrow keys were waiting for
     an unmap                and a page can stop being reachable, so a run can
                             change size and a window grow past its birth
+    a held request          and a server answers later, from whoever has the
+                            answer, rather than park a process on it
+    copy on write           and a fork costs a page table rather than a copy
+    a rendezvous, a semaphore
+                            and a program can wait for another with one call
+    a thread                and a program is procs for what blocks and threads
+                            for what does not, and a server holds no lock
 
 ### Reading a boot log
 
@@ -253,6 +261,8 @@ per directory:
 | `docs/RC.md` | `apps/rc/` — the shell: the grammar by hand, a walked tree, forks that carry on from a node | Adding a builtin, a redirection, or a word form; writing a tool the shell runs; or wondering why a shell script is the slowest line in the user suite |
 | `docs/CMD.md` | `cmd/` — the tools, `servers/memfs`, `sys/libregex`, and the script that checks them | Writing a tool, adding its line to `tests/tools.rc`, or wanting a file to write to before the disk |
 | `docs/PROC.md` | `kernel/procfs/` — `#p` at `/proc`: status, ns, note, ctl, through five doors into the process table | Reading a process from a program, killing one, or printing a namespace |
+| `docs/PROCS.md` | The plan for processes and threads, Plan 9's way, and where each of its four steps stands | Wondering why a fork is cheap, what `rendezvous` is for, or what the servers stood on before threads |
+| `docs/THREAD.md` | `sys/libthread`, `sys/lib9p` — procs, threads, channels, `alt`, and a server that holds no lock | Writing a program that waits on two things, a server whose reads park, or anything with a channel in it |
 | `docs/DRAW.md` | The draw protocol, written before its code, and everything the screen grew after it: the window, the compositor, the chrome vocabulary and the one palette (`sys/libdraw`, `sys/libpal`) | Building the draw server, its client library, the fb mapping, or anything that draws in either ring |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
@@ -381,13 +391,11 @@ the documents it points at.
 
 **Next, in order:**
 
-1. **A command line, and a disk to keep it on.** `docs/SHELL.md` is the plan:
-   Plan 9's process ABI for programs (arguments, an environment device,
-   `stat`, `dirread`, a current directory, string statuses, a heap in
-   ring 3), then `rc` and the first tools in Odin, `#p`, a `virtio-blk`
-   driver over PCI on every board, a FAT server so the host and the guest
-   share `build/esp`, a filesystem of Vectra's own after it, and an `init`
-   that ends the boot at a prompt.
+1. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
+   Plan 9's `threadnotify`, so a proc other than the first can end the
+   program and a note can be caught rather than end a proc. A guard page
+   under a thread's stack. The scancode translation as a package both
+   rings call, which `servers/kbdfs` has asked for since it was written.
 2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the
    same table lists the cores SMP will need to start. Worth doing when one of
    those two becomes a reason rather than a tidiness.
@@ -432,13 +440,15 @@ window is the shape that would make it fork. It paid 4 MB per window at
 that moment while `fork_segments` copied a run eagerly; it copies on write
 now, `docs/PROCS.md` step 2.
 
-### The next plan: processes and threads
+### Processes and threads, done
 
-`docs/PROCS.md`, written before its code. Two shells cost thirteen
-processes because a process cannot wait on two things and the serve loop
-forks one per parked request; the plan is Plan 9's answer in four steps --
-answer a request later, copy on write, `rendezvous` and its kin, and
-`libthread`.
+`docs/PROCS.md`, written before its code, and closed in four steps: a
+request answered later, copy on write, `rendezvous` and its kin, and
+`libthread`. `docs/THREAD.md` is the last step's document. What it leaves
+open is small and named there: a note handler in the library, so a proc
+other than the first can end the program; a guard page under a thread's
+stack; and the kernel change that would let a proc of threads read its
+own pipe.
 
 ### Standing gaps
 
@@ -510,6 +520,7 @@ build.odin              Build driver: user programs, kernel, ESP, QEMU, and
                         the ELF-to-VECTRA02 converter
 tests/abi/              /bin/abitest: the process ABI exercised from ring 3,
                         which the user suite spawns with three arguments
+tests/thread/           /bin/threadtest: libthread's claims, from ring 3
 tests/tools.rc          Every tool once, run by rc from /lib/tests/tools.rc
 justfile / Makefile     Thin wrappers over build.odin
 boot/
@@ -712,14 +723,25 @@ sys/
     sys.odin            The calls from ring 3, the loop helpers every
                         byte-moving caller needs, and the child-first teardown
     ring.odin           The byte ring a forked reader publishes through
-    serve.odin          post and serve; serve_mux, the concurrent loop that
-                        holds a request it cannot answer yet for whoever can,
-                        and answers a Tflush by dropping it; and Spin, the
-                        first ring 3 lock
+    serve.odin          post and serve, the one-at-a-time loop; and Spin,
+                        the ring 3 spinlock the heap, the fid table and
+                        libthread's queues take
     fid.odin            The fid table five servers had each written, with a
                         lock, a walk, an attach and an EBADF guard
     sys_<arch>.odin     The door, as its bytes, one per architecture
-    heap.odin           A first-fit heap over segalloc, behind context.allocator
+    heap.odin           A first-fit heap over segalloc, behind context.allocator,
+                        with the one lock a program of several procs needs
+  libthread/
+    thread.odin         Plan 9's libthread: procs, threads, the scheduler
+                        per proc, the rendezvous it sleeps in, the endings
+    chan.odin           Channels and alt, 9front's, under one lock
+    lock.odin           QLock and Rendez, the lock a thread may hold across
+                        a wait and the condition under it
+    label_<arch>.odin   A thread's saved registers, laid out for the switch
+    thread_<arch>.S     The switch, and the fork onto a new stack
+  lib9p/
+    srv.odin            A 9P server on libthread: a reader proc, a Req per
+                        request, hold and respond from any thread
     main.odin           startup, args, Bio: what a tool starts with
     link_user.ld        A ring 3 program's layout, aligned so every change of
                         permission gets its own page

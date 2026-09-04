@@ -474,7 +474,7 @@ than one box around both.
 one `segalloc` and was capped at the birth height until `segbrk` existed --
 `docs/USER.md` has that call, and the two Plan 9 segment calls still missing
 beside it. Growing must work and shrinking is best effort, because a run this
-server shares with its reader child cannot give pages back.
+server shares with its reader procs cannot give pages back.
 
 The stride does not move with the width, so
 a pixel a client drew at `(x, y)` is still at `(x, y)` afterwards. Shrinking
@@ -981,29 +981,31 @@ can revoke a fid, and users are what Plan 9 puts in that gap.
 is what lets a queue be asked whether anything is there without reading from
 it, and section 8 records what happens to a test that asks the other way.
 
-### The cost: a second process, and a loop that can park
+### The cost: a reader proc, and a loop that must not park
 
 `libuser.serve` cannot park, and this server's own note said so -- one loop,
 inline, nothing waits. A read of `cons` has to wait for a keystroke, so the
-loop is `serve_mux` now, with a reader child forked over `RFMEM`, which is
-`servers/consrv`'s shape and `servers/kbdfs`'s.
+server is on `sys/libthread` and `sys/lib9p` now, `docs/PROCS.md` step 4,
+which is `servers/consrv`'s shape and `servers/kbdfs`'s.
 
-    the child    parks reading /dev/cons, and pushes each line into the
-                 ring of whatever window is in front when it arrives
-    the parent   serves 9P. A read of /N/cons drains that window's ring,
-                 parking in a worker until a line is typed
+    the reader      a proc parked reading the keyboard file, sending each
+                    byte on a channel
+    the key thread  hands each byte to the window in front, on that
+                    window's own channel
+    a window thread per slot, cooking bytes into the window's line and
+                    answering a held read of /N/cons when the line completes
+    the serve loop  9P, from a channel a reader proc of the pipe feeds. A
+                    read of /N/cons with nothing to give is held
 
-**One loop still draws.** `blocks` claims exactly one message -- a read of a
-window's `cons` -- so every message that moves a pixel is still answered
-inline, in order, by the loop that owns `scratch` and the glass. A worker
-touches its window's ring and the fid table, and neither a window's store nor
-the framebuffer is reachable from it.
+**One thread still draws.** Every message that moves a pixel is answered
+inline, in order, by the serve loop, which owns `scratch` and the glass,
+and a thread runs until it blocks. A window thread touches its window's
+ring and its line, and nothing that paints. There is no lock in this
+server, and the torn-read argument the reader child once made about the
+focus is gone with the second process that made it.
 
-**Since `docs/PROCS.md` step 1, there is no worker.** A `cons` read with
-nothing to give is held in a slot, and the reader child answers it from its
-own process when the line completes, through `libuser.respond`. The count
-below and the `EAGAIN` it arranged are gone with the worker; the paragraphs
-stay as the record of why the loop must never park.
+**Before step 4, the loop had a worker per parked read, and then a slot.**
+The paragraphs below stay as the record of why the loop must never park.
 
 **And the loop refuses to park, which took a count to arrange.** `serve_mux`
 answers inline when no slot is free, and that is right for every message here
@@ -1082,10 +1084,9 @@ no request in flight and counts it, so the damage was a wasted reply rather
 than a desync -- but a client that reused the tag first would have taken the
 stale `Rread` as the answer to whatever it asked next. The cancel has since
 reached the worker, in `sys/libuser` where it belonged, and `docs/RUNTIME.md`
-argues the shape. A worker asks `libuser.flushed` before each drain and the
-`Rflush` goes out in place of its reply, from the worker, after the fate is
-decided. `servers/kbdfs`, `servers/consrv` and `servers/eiafs` poll the same
-mark.
+argues the shape. `lib9p` drops the held record a flush names and answers
+`Rflush` in the same step, after the fate is decided, and `servers/kbdfs`,
+`servers/consrv` and `servers/eiafs` are on the same loop.
 
 **And one control was the test's own first cut.** Asking an empty queue with a
 deadline read looked right and was not, then. The deadline flushed the request

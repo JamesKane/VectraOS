@@ -128,5 +128,5 @@ riscv64's 5900 is well inside the suite's patience.
   `vvfat`'s reading of the guest's writes, which is why `tmp` is wiped each
   build.
 - **Depth.** One request at a time, on `libuser.serve`. A read that parks
-  on the disk parks every client. `serve_mux` is there for the day it
+  on the disk parks every client. `sys/lib9p` is there for the day it
   matters.

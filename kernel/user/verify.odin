@@ -478,6 +478,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_rfork(&r)
 	verify_abi(&r)
+	verify_threads(&r)
 	verify_rc(&r)
 	verify_tools(&r)
 
@@ -6620,6 +6621,29 @@ verify_abi :: proc(r: ^Result) {
 	said, _, ok := run_script(r, "/bin/abitest", names[:], PATIENCE * 5, abi_said[:], "a program with a heap and three arguments starts")
 	if ok {
 		check(r, said == "ok", said == "ok" ? "and every step of the process ABI held" : said)
+	}
+}
+
+/*
+verify_threads runs the program `docs/PROCS.md` step 4 was built for.
+
+`/bin/threadtest` is a program on `sys/libthread`. It makes threads and
+yields between them, meets and queues on channels, waits on two at once
+with `alt`, makes a proc that parks in the kernel while its own threads
+keep running, hands a `QLock` over in order, wakes a `Rendez`, and ends
+with `threadexitsall` while a proc it made is still parked. The word is
+`ok` or the name of the first step that failed. The check after the word
+is the machine's: the proc it left parked is gone with it, which is what
+`every program was taken down` at the end of this file will also say.
+*/
+@(private = "file")
+verify_threads :: proc(r: ^Result) {
+	names := [?]string{"threadtest"}
+	before := stats().live
+	said, _, ok := run_script(r, "/bin/threadtest", names[:], PATIENCE * 5, abi_said[:], "a program on the thread library starts")
+	if ok {
+		check(r, said == "ok", said == "ok" ? "and every claim the library makes held" : said)
+		check(r, stats().live == before, "and the procs it made went down with it")
 	}
 }
 

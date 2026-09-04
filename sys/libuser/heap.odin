@@ -15,6 +15,13 @@ here needs to be: a tool allocates a few thousand times and exits.
 The run starts at `HEAP_START` bytes and doubles when a request does not
 fit, up to the kernel's bound on a run. `segbrk` keeps the base, so every
 pointer handed out stays good across a grow.
+
+**One lock, because the heap is shared.** A program on `sys/libthread` is
+several processes over one memory, and any of them may allocate: a proc's
+reader takes a request record from the heap while a thread in another proc
+frees one. `heap_lock` is `Spin`, taken for the length of a walk down the
+list and never across a wait. The one call inside it that enters the kernel
+is `segbrk`, which copies nothing and parks nobody.
 */
 package libuser
 
@@ -40,6 +47,8 @@ heap_base: uintptr
 heap_top: uintptr
 @(private = "file")
 heap_first: ^Block
+@(private = "file")
+heap_lock: Spin
 
 /*
 allocator is the heap as `context.allocator` wants it. Nothing here is a
@@ -103,6 +112,24 @@ coalesce :: proc "contextless" (b: ^Block) {
 	}
 }
 
+// heap_alloc takes `size` bytes off the heap, sixteen-aligned, or answers nil.
+// The entry a contextless caller uses: `sys/libthread` takes a thread's stack
+// and a request's record here, with no context to carry an allocator in.
+heap_alloc :: proc "contextless" (size: int) -> rawptr {
+	lock(&heap_lock)
+	p := alloc(size, 16)
+	unlock(&heap_lock)
+	return p
+}
+
+// heap_free gives a block from `heap_alloc` back. Nil is nothing to give.
+heap_free :: proc "contextless" (p: rawptr) {
+	lock(&heap_lock)
+	free(p)
+	unlock(&heap_lock)
+}
+
+// alloc is the walk. Caller holds `heap_lock`.
 @(private = "file")
 alloc :: proc "contextless" (size: int, alignment: int) -> rawptr {
 	// The header is sixteen bytes, so a block's payload is aligned to
@@ -135,6 +162,8 @@ alloc :: proc "contextless" (size: int, alignment: int) -> rawptr {
 	return nil
 }
 
+// free returns a block to the list and merges it with its free neighbours.
+// Caller holds `heap_lock`.
 @(private = "file")
 free :: proc "contextless" (p: rawptr) {
 	if p == nil {
@@ -165,7 +194,9 @@ heap_proc :: proc(
 	_ = loc
 	switch mode {
 	case .Alloc, .Alloc_Non_Zeroed:
+		lock(&heap_lock)
 		p := alloc(size, alignment)
+		unlock(&heap_lock)
 		if p == nil {
 			return nil, .Out_Of_Memory
 		}
@@ -177,7 +208,7 @@ heap_proc :: proc(
 		}
 		return bytes, nil
 	case .Free:
-		free(old_memory)
+		heap_free(old_memory)
 		return nil, nil
 	case .Free_All:
 		return nil, .Mode_Not_Implemented
@@ -189,7 +220,9 @@ heap_proc :: proc(
 		if size <= b.size {
 			return ([^]u8)(old_memory)[:size], nil
 		}
+		lock(&heap_lock)
 		p := alloc(size, alignment)
+		unlock(&heap_lock)
 		if p == nil {
 			return nil, .Out_Of_Memory
 		}
@@ -201,7 +234,7 @@ heap_proc :: proc(
 		for i in old_size ..< size {
 			fresh[i] = 0
 		}
-		free(old_memory)
+		heap_free(old_memory)
 		return fresh, nil
 	case .Query_Features:
 		if set := (^runtime.Allocator_Mode_Set)(old_memory); set != nil {
@@ -217,6 +250,7 @@ heap_proc :: proc(
 // heap_stats reports the run's size and how much of it is free, for a
 // self-test that wants to say the heap gave back what it took.
 heap_stats :: proc "contextless" () -> (total: int, free_bytes: int, blocks: int) {
+	lock(&heap_lock)
 	total = int(heap_top - heap_base)
 	for b := heap_first; b != nil; b = b.next {
 		blocks += 1
@@ -224,5 +258,6 @@ heap_stats :: proc "contextless" () -> (total: int, free_bytes: int, blocks: int
 			free_bytes += b.size
 		}
 	}
+	unlock(&heap_lock)
 	return
 }

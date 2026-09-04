@@ -68,6 +68,7 @@ user_programs := [?]User_Program {
 	{name = "intuition", path = "servers/intuition"},
 	{name = "terminal", path = "apps/terminal"},
 	{name = "abitest", path = "tests/abi"},
+	{name = "threadtest", path = "tests/thread"},
 	{name = "rc", path = "apps/rc"},
 	{name = "echo", path = "cmd/echo"},
 	{name = "cat", path = "cmd/cat"},
@@ -146,6 +147,7 @@ Arch_Config :: struct {
 	odin_target:   string,
 	clang_target:  string,   // What clang assembles the `.S` files for
 	asm_sources:   []string, // The `.S` files the kernel links, this arch's own
+	user_asm:      string,   // The one `.S` every ring 3 program links, `sys/libthread`'s
 	ld_emulation:  string,
 	link_script:   string,
 	qemu:          string,
@@ -201,6 +203,17 @@ asm_riscv64 := [?]string{
 	"kernel/arch/riscv64/fpu_hold.S",
 }
 
+/*
+The one `.S` a ring 3 program links: `sys/libthread`'s thread switch and
+its fork onto a new stack. A file for the reason the kernel's are, and
+linked into every program rather than named per program, because it is a
+hundred bytes and a table column nothing else would use. A program that
+never imports `libthread` carries the two symbols unreferenced.
+*/
+USER_ASM_AMD64 :: "sys/libthread/thread_amd64.S"
+USER_ASM_ARM64 :: "sys/libthread/thread_arm64.S"
+USER_ASM_RISCV64 :: "sys/libthread/thread_riscv64.S"
+
 // Machine lines live at package scope: a slice of a compound literal built
 // inside arch_config would point into that call's stack frame.
 //
@@ -222,6 +235,7 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 			odin_target   = "freestanding_amd64_sysv",
 			clang_target  = "x86_64-unknown-elf",
 			asm_sources   = asm_amd64[:],
+			user_asm      = USER_ASM_AMD64,
 			ld_emulation  = "elf_x86_64",
 			link_script   = "kernel/link_amd64.ld",
 			qemu          = "qemu-system-x86_64",
@@ -235,6 +249,7 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 			odin_target   = "freestanding_arm64",
 			clang_target  = "aarch64-unknown-elf",
 			asm_sources   = asm_arm64[:],
+			user_asm      = USER_ASM_ARM64,
 			ld_emulation  = "aarch64elf",
 			link_script   = "kernel/link_arm64.ld",
 			qemu          = "qemu-system-aarch64",
@@ -248,6 +263,7 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 			odin_target   = "freestanding_riscv64",
 			clang_target  = "riscv64-unknown-elf",
 			asm_sources   = asm_riscv64[:],
+			user_asm      = USER_ASM_RISCV64,
 			ld_emulation  = "elf64lriscv",
 			link_script   = "kernel/link_riscv64.ld",
 			qemu          = "qemu-system-riscv64",
@@ -399,15 +415,7 @@ build_kernel :: proc(opts: Options) {
 	objects := [dynamic]string{KERNEL_OBJ}
 	for src in cfg.asm_sources {
 		obj := fmt.tprintf("%s/%s.o", BUILD_DIR, filepath_stem(src))
-		step("assembling %s", src)
-		assemble := [dynamic]string{"clang", "-target", cfg.clang_target}
-		if opts.arch == .riscv64 {
-			// The assembler needs telling which extensions the `.S` files
-			// use; the compiler already knows for the Odin.
-			append(&assemble, "-march=rv64gc_zihintpause")
-		}
-		append(&assemble, "-c", src, "-o", obj)
-		run(assemble[:])
+		assemble(cfg, opts.arch, src, obj)
 		append(&objects, obj)
 	}
 
@@ -432,6 +440,21 @@ build_kernel :: proc(opts: Options) {
 	}
 }
 
+// assemble turns one `.S` into an object for the arch's ELF. `-target`
+// names the ELF and not the host clang runs on, which is what lets a macOS
+// clang assemble for this link at all.
+assemble :: proc(cfg: Arch_Config, arch: Arch, src: string, obj: string) {
+	step("assembling %s", src)
+	args := [dynamic]string{"clang", "-target", cfg.clang_target}
+	if arch == .riscv64 {
+		// The assembler needs telling which extensions the `.S` files
+		// use; the compiler already knows for the Odin.
+		append(&args, "-march=rv64gc_zihintpause")
+	}
+	append(&args, "-c", src, "-o", obj)
+	run(args[:])
+}
+
 /*
 build_user compiles the ring 3 programs and converts each to a flat image.
 
@@ -446,6 +469,9 @@ build_user :: proc(opts: Options) {
 	ensure_dir(BUILD_DIR)
 	ensure_dir(USER_DIR)
 
+	thread_obj := fmt.tprintf("%s/libthread.o", USER_DIR)
+	assemble(cfg, opts.arch, cfg.user_asm, thread_obj)
+
 	for prog in user_programs {
 		step("compiling %s for ring 3", prog.path)
 		obj := fmt.tprintf("%s/%s.o", USER_DIR, prog.name)
@@ -453,7 +479,7 @@ build_user :: proc(opts: Options) {
 		img := fmt.tprintf("%s/%s.vx", USER_DIR, prog.name)
 
 		compile_ring3(cfg, prog.path, obj, {})
-		link_ring3(cfg, obj, elf, "sys/libuser/link_user.ld")
+		link_ring3(cfg, obj, elf, "sys/libuser/link_user.ld", {thread_obj})
 		elf_to_image(elf, img)
 	}
 	write_pak()
@@ -550,16 +576,18 @@ the GOT out of `.data` and starts `.bss` where that ends, mid-page. The
 loader maps whole pages, and each link script exists so every segment
 starts on one.
 */
-link_ring3 :: proc(cfg: Arch_Config, obj: string, elf: string, script: string) {
-	run({
-		"ld.lld", obj,
+link_ring3 :: proc(cfg: Arch_Config, obj: string, elf: string, script: string, extra: []string = nil) {
+	args := [dynamic]string{"ld.lld", obj}
+	append(&args, ..extra)
+	append(&args,
 		"-o", elf,
 		"-m", cfg.ld_emulation,
 		"-T", script,
 		"-nostdlib",
 		"-static",
 		"-z", "norelro",
-	})
+	)
+	run(args[:])
 }
 
 /*

@@ -1,16 +1,19 @@
 /*
-The byte ring a forked reader publishes through.
+The byte ring a server keeps between a key's arrival and the read that
+takes it.
 
-Three servers share one shape: a child parked on a device read, and a
-parent that serves what arrives. This ring in their shared bss is the
-meeting point. The counters are monotonic and the difference is the
-content, so full and empty cannot be confused. Each program carried a
-private copy of these procs before this file collected them.
+Three servers share one shape: a proc parked on a device, and a proc of
+threads that serves what arrives. The bytes cross between them on a
+channel, and this ring is where the serving proc keeps them until a read
+asks: the thread that receives the channel pushes, and the handler
+drains. The counters are monotonic and the difference is the content, so
+full and empty cannot be confused.
 
-The producer stays lockless, because the child is the only writer of
-`head`. The consumer end takes the caller's lock, because `serve_mux`
-gives the ring many drainers where it once had one. Only the byte moving
-is inside the lock, never a poll.
+Both ends are lockless. The ring once had a lock on its consumer end, for
+the worker processes `serve_mux` forked; every drainer is a thread of one
+proc now, and a thread runs until it blocks. The volatile stores stay,
+because the ring is also correct with a producer in another proc, which
+is how the servers used it before `sys/libthread`.
 */
 package libuser
 
@@ -40,10 +43,8 @@ ring_push :: proc "contextless" (r: ^Ring, b: u8) #no_bounds_check {
 }
 
 // ring_drain is the consumer's half: read the producer's counter once,
-// take what it covers, then publish the new tail. Under the caller's
-// lock, because several workers may drain at once.
-ring_drain :: proc "contextless" (r: ^Ring, out: []u8, l: ^Spin) -> int #no_bounds_check {
-	lock(l)
+// take what it covers, then publish the new tail.
+ring_drain :: proc "contextless" (r: ^Ring, out: []u8) -> int #no_bounds_check {
 	t := intrinsics.volatile_load(&r.tail)
 	h := intrinsics.volatile_load(&r.head)
 	n := min(int(h - t), len(out))
@@ -51,7 +52,6 @@ ring_drain :: proc "contextless" (r: ^Ring, out: []u8, l: ^Spin) -> int #no_boun
 		out[i] = r.buf[(t + u64(i)) % u64(len(r.buf))]
 	}
 	intrinsics.volatile_store(&r.tail, t + u64(n))
-	unlock(l)
 	return n
 }
 
@@ -68,8 +68,7 @@ The whole ring, less the stop byte, is what a caller gets when there is no such
 byte in it -- which for a queue that only ever receives whole lines cannot
 happen, and for one in raw mode is the right answer anyway.
 */
-ring_drain_line :: proc "contextless" (r: ^Ring, out: []u8, stop: u8, l: ^Spin) -> int #no_bounds_check {
-	lock(l)
+ring_drain_line :: proc "contextless" (r: ^Ring, out: []u8, stop: u8) -> int #no_bounds_check {
 	t := intrinsics.volatile_load(&r.tail)
 	h := intrinsics.volatile_load(&r.head)
 	n := min(int(h - t), len(out))
@@ -83,7 +82,6 @@ ring_drain_line :: proc "contextless" (r: ^Ring, out: []u8, stop: u8, l: ^Spin) 
 		}
 	}
 	intrinsics.volatile_store(&r.tail, t + u64(took))
-	unlock(l)
 	return took
 }
 

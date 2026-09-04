@@ -7,7 +7,7 @@ claims a window, uploads the font, starts `/bin/rc` with two pipes for its
 three descriptors, and from then on it is two things at once: the glass the
 shell's output lands on, and the keyboard the shell's input comes from.
 
-## Two pipes, two processes
+## Two pipes, two procs, one drawer
 
     rc's descriptor 0   the read end of a pipe this program writes finished
                         lines into
@@ -15,17 +15,18 @@ shell's output lands on, and the keyboard the shell's input comes from.
                         the write end of a pipe this program reads and draws
 
 Reading the shell's output and reading the window's keyboard both park, and
-one process cannot wait on two things. So this program forks the way
-`servers/intuition` and `servers/consrv` do: `rfork(RFPROC | RFMEM)`, two
-processes sharing their memory, each parked on its own thing. The parent
-reads the output pipe and draws what arrives. The child reads the window's
-`cons` raw, edits a line with `libedit`, draws it as it is typed, and hands
-the finished line to the shell. A spinlock in the shared memory keeps the
-two from drawing at once; nothing is held across a read.
+a proc cannot wait on two things. So this program is `sys/libthread`'s
+shape: a proc per thing that parks, and one thread that draws. The output
+proc reads the shell's pipe and sends what arrives on a channel. The typist
+proc reads the window's `cons` raw and sends the keys on another. The
+drawer, the first thread, waits on both with `alt`: shell output goes into
+the grid, a key goes into the line `libedit` is editing, and either way
+the glass is redrawn. Nothing here is locked, because one thread touches
+the grid, the line and the draw stream, and it runs until it waits.
 
-The parent owns the ending. When the output pipe reaches its end the shell
-is gone -- a typed `exit`, or a fault -- and the parent stops its child and
-exits, which closes the window.
+The drawer owns the ending. When the output pipe reaches its end the shell
+is gone -- a typed `exit`, or a fault -- and `threadexitsall` takes the two
+procs down and exits, which closes the window.
 
 ## The glass
 
@@ -52,6 +53,7 @@ import "vsys:libdraw"
 import "vsys:libedit"
 import "vsys:libfont"
 import "vsys:libpal"
+import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
 
@@ -88,17 +90,15 @@ SHELL :: "/bin/rc"
 LINE_MAX :: 256
 
 CMD_CAP :: vectra9.WIRE_SLOT - vectra9.IOHDRSZ
-// The font upload's batch buffer, used once before the fork. Every batch
-// after that is built on the drawing process's own stack, because the two
-// halves draw at once.
+// The batch buffer, the drawer's alone.
 cmd: [CMD_CAP]u8
 
 BAND :: (CMD_CAP - libdraw.HEADER - 20) / (libfont.FONT_HEIGHT * 4)
 STRIP_W :: PER_STRIP * libfont.FONT_WIDTH
 band: [BAND * libfont.FONT_HEIGHT * 4]u8
 
-// Shared between the two processes, which is why all of it is here rather
-// than on a stack.
+// The grid, the cursor and the line being typed: the drawer's, and
+// nobody else's.
 cells: [MAX_ROWS][MAX_COLS]u8
 row_dirty: [MAX_ROWS]bool
 cols, rows: int
@@ -106,31 +106,42 @@ crow, ccol: int
 
 editing: [LINE_MAX]u8
 edit: libedit.Line
-keys: [256]u8
-out: [1024]u8
 finished: [LINE_MAX + 1]u8
 geo: [160]u8
 path_buf: [32]u8
 
-// Two locks. `glass` guards the grid, the cursor and the line being typed,
-// and is held for the length of a copy. `wire` serialises the two halves'
-// batches on the draw stream, and is held across the round trips -- which
-// a waiter survives, because `libuser.lock` yields between tries.
-glass: libuser.Spin
-wire: libuser.Spin
+/*
+What the two reader procs send: a read's worth of bytes, and how many.
+Zero is the end of the stream, which for the shell's output means the
+shell is gone. The channels carry the whole record, copied once in and
+once out, so a proc never hands the drawer memory it is still filling.
+*/
+CHUNK :: 256
+
+Chunk :: struct {
+	n:    int,
+	data: [CHUNK]u8,
+}
+
+from_shell: ^libthread.Chan
+from_keys: ^libthread.Chan
 
 data_fd: int
+cons_fd: int
+out_fd: int // The read end of the shell's descriptors 1 and 2
 to_shell: int // The write end of the shell's descriptor 0
 shell_pid: u64 // Whose group a typed ^C goes to
 
 /*
-_start claims a window, starts the shell, and serves it from both sides.
+_start claims a window, starts the shell, and hands the process to the
+thread library, whose first thread serves the shell from both sides.
 
 The exits each name their failure: 0x74 the mount was refused, 0x75 a
 mounted file would not open, 0x76 a geometry this program cannot draw on,
-0x78 a draw write refused or
-the window's own console would not open, 0x79 a read failed, 0x73 a fork
-failed, 0x72 the shell would not start. Zero is the shell ending.
+0x78 a draw write refused or the window's own console would not open,
+0x72 the shell would not start. From `threadmain` on a failure is a word:
+`proccreate`, `no memory`, or `read` for a keyboard that ended. Zero is
+the shell ending.
 */
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -215,11 +226,9 @@ start :: proc "c" (block: ^abi.Args) {
 	edit = libedit.Line{buf = editing[:]}
 
 	upload_font()
-	lock_glass()
 	for r in 0 ..< rows {
 		row_dirty[r] = true
 	}
-	unlock_glass()
 	present()
 
 	/*
@@ -260,96 +269,115 @@ start :: proc "c" (block: ^abi.Args) {
 	_ = libuser.close(in_r)
 	_ = libuser.close(out_w)
 	to_shell = in_w
+	out_fd = out_r
+	cons_fd = int(cons)
 
-	// The keyboard half, sharing this memory.
-	typist := libuser.rfork(abi.RFPROC | abi.RFMEM)
-	if typist < 0 {
-		libuser.exit(0x73)
-	}
-	if typist == 0 {
-		type_loop(int(cons))
-	}
-
-	// The output half, which is this process for the rest of its life.
-	for {
-		got := libuser.read(out_r, out[:])
-		if got <= 0 {
-			break
-		}
-		lock_glass()
-		for i in 0 ..< int(got) {
-			put_byte(out[i])
-		}
-		unlock_glass()
-		present()
-	}
-
-	// The shell is gone. Take the typist down and let the window go.
-	_ = libuser.stop_child(u64(typist))
-	libuser.exit(0)
+	libthread.main(threadmain, nil)
 }
 
 /*
-type_loop is the child: characters off the window's keyboard, edited into a
-line, drawn as they arrive, and handed to the shell when a newline finishes
-them. The finished line is echoed into the grid before it is sent, so it
-stays on the glass above whatever the shell says about it.
+threadmain is the drawer: the two reader procs, and then a wait on both
+channels for as long as the shell lives.
+
+A chunk from the shell goes into the grid. A chunk of keys goes through
+the line discipline: a character joins the line `libedit` edits and is
+drawn where it is, a newline finishes the line, which is echoed into the
+grid before it is sent so it stays on the glass above whatever the shell
+says about it, and `^C` is `rio`'s interrupt -- the line goes, and the
+shell's group hears about it. The write to the shell is the one call here
+that can park, when the shell is slow to read, and it parks the drawer
+alone.
 */
-type_loop :: proc "contextless" (cons: int) -> ! {
+threadmain :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	from_shell = libthread.chancreate(size_of(Chunk), 2)
+	from_keys = libthread.chancreate(size_of(Chunk), 2)
+	if from_shell == nil || from_keys == nil {
+		libthread.threadexitsall("no memory")
+	}
+	if libthread.proccreate(read_proc, &from_shell) < 0 || libthread.proccreate(read_proc, &from_keys) < 0 {
+		libthread.threadexitsall("proccreate")
+	}
+
+	shell_chunk, key_chunk: Chunk
+	arms := [2]libthread.Alt {
+		{c = from_shell, v = &shell_chunk, op = .Recv},
+		{c = from_keys, v = &key_chunk, op = .Recv},
+	}
 	for {
-		got := libuser.read(cons, keys[:])
-		if got <= 0 {
-			libuser.exit(0x79)
-		}
-		send_line := 0
-		lock_glass()
-		for i in 0 ..< int(got) {
-			if keys[i] == 0x03 {
-				// `rio`'s interrupt: the line goes, and the shell's group
-				// hears about it.
-				libedit.clear(&edit)
-				row_dirty[crow] = true
-				_ = libuser.notepg(shell_pid, "interrupt")
-				continue
+		switch libthread.alt(arms[:]) {
+		case 0:
+			if shell_chunk.n <= 0 {
+				// The shell is gone. Take the readers down and let the
+				// window go.
+				libthread.threadexitsall("")
 			}
-			switch libedit.put(&edit, keys[i]) {
-			case .Done:
-				text := libedit.text(&edit)
-				for j in 0 ..< len(text) {
-					put_byte(text[j])
+			for i in 0 ..< shell_chunk.n {
+				put_byte(shell_chunk.data[i])
+			}
+			present()
+
+		case 1:
+			if key_chunk.n <= 0 {
+				libthread.threadexitsall("read")
+			}
+			send_line := 0
+			for i in 0 ..< key_chunk.n {
+				b := key_chunk.data[i]
+				if b == 0x03 {
+					libedit.clear(&edit)
+					row_dirty[crow] = true
+					_ = libuser.notepg(shell_pid, "interrupt")
+					continue
 				}
-				put_byte('\n')
-				send_line = copy(finished[:], text)
-				finished[send_line] = '\n'
-				send_line += 1
-				libedit.clear(&edit)
-			case .Edited:
-				row_dirty[crow] = true
-			case .Full, .Pending:
+				switch libedit.put(&edit, b) {
+				case .Done:
+					text := libedit.text(&edit)
+					for j in 0 ..< len(text) {
+						put_byte(text[j])
+					}
+					put_byte('\n')
+					send_line = copy(finished[:], text)
+					finished[send_line] = '\n'
+					send_line += 1
+					libedit.clear(&edit)
+				case .Edited:
+					row_dirty[crow] = true
+				case .Full, .Pending:
+				}
 			}
-		}
-		unlock_glass()
-		present()
-		// Outside the lock: the shell may be slow to read, and the other
-		// half must be free to draw meanwhile.
-		if send_line > 0 {
-			_ = libuser.write_full(to_shell, finished[:send_line])
+			present()
+			if send_line > 0 {
+				_ = libuser.write_full(to_shell, finished[:send_line])
+			}
 		}
 	}
 }
 
-lock_glass :: proc "contextless" () {
-	libuser.lock(&glass)
-}
-
-unlock_glass :: proc "contextless" () {
-	libuser.unlock(&glass)
+/*
+read_proc is a reader proc's whole life: a read of its descriptor, and the
+bytes down its channel, until the descriptor ends, which it sends as a
+chunk of nothing. The argument names the channel, and the channel names
+the descriptor: the shell's output goes on `from_shell`, the window's keys
+on `from_keys`.
+*/
+read_proc :: proc "contextless" (arg: rawptr) {
+	c := (^^libthread.Chan)(arg)^
+	fd := c == from_shell ? out_fd : cons_fd
+	chunk: Chunk
+	for {
+		got := libuser.read(fd, chunk.data[:])
+		chunk.n = int(max(got, 0))
+		libthread.send(c, &chunk)
+		if got <= 0 {
+			return
+		}
+	}
 }
 
 // -- The grid -------------------------------------------------------------------
 
-// put_byte moves the cursor and the cells the way a terminal does. Caller
-// holds the glass.
+// put_byte moves the cursor and the cells the way a terminal does.
 put_byte :: proc "contextless" (b: u8) #no_bounds_check {
 	switch b {
 	case '\n':
@@ -417,18 +445,13 @@ cell_y :: proc "contextless" (row: int) -> u32 {
 present draws what changed: every row marked dirty, then the line being
 typed over the cursor's row and the caret after it, and one flush.
 
-The state is read under `glass` and copied out -- which rows, the typed
-line, where the cursor is -- and the drawing happens with `glass` released,
-so the other half is never kept from editing by a round trip to the draw
-server. A row's cells are read as they are drawn; a row the other half is
-changing meanwhile draws mixed, and that half marks it dirty and redraws it
-the moment it is done. The batches go out under `wire`, so the two halves'
-batches never interleave and the newest present is the one on the glass.
+The drawer is the one thread that touches the grid and the line, so what
+it reads here is what it drew from, and the round trips to the draw
+server keep nobody waiting but the drawer.
 */
 present :: proc "contextless" () #no_bounds_check {
 	dirty: [MAX_ROWS]bool
 	text_copy: [LINE_MAX]u8
-	lock_glass()
 	dirty = row_dirty
 	for r in 0 ..< MAX_ROWS {
 		row_dirty[r] = false
@@ -440,10 +463,8 @@ present :: proc "contextless" () #no_bounds_check {
 	text := libedit.text(&edit)
 	n := copy(text_copy[:], text)
 	caret := col + libedit.cursor(&edit)
-	unlock_glass()
 
 	buf: [CMD_CAP]u8
-	libuser.lock(&wire)
 	at := 0
 	for r in 0 ..< rows {
 		if dirty[r] {
@@ -475,7 +496,6 @@ present :: proc "contextless" () #no_bounds_check {
 		)
 	}
 	send(buf[:], libdraw.put_flush(buf[:], at))
-	libuser.unlock(&wire)
 }
 
 // draw_row fills a row and blits its glyphs, in as many batches as it

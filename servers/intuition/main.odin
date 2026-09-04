@@ -46,10 +46,13 @@ their trigger. The trigger arrived and retired the feature instead: a
 compositor that holds the pixels answers the question the event was going
 to ask.
 
-The tenant shape is `ramfs`'s, not `consrv`'s, because nothing here
-parks. A draw command runs to completion -- the framebuffer takes a write
-at its own pace and never waits for hardware -- so one serve loop answers
-everything inline, and the server needs no fork, no worker, and no lock.
+The tenant shape is `consrv`'s on `sys/libthread`. A draw command runs to
+completion -- the framebuffer takes a write at its own pace and never
+waits for hardware -- so the serve loop answers everything inline but a
+read of a window's `cons`, which is held until a line is typed. The keys
+arrive from a proc of their own, and a thread per window cooks them; see
+"The keyboard" below. Every thread here belongs to one proc, and a thread
+runs until it blocks, which is why this server has no lock.
 
 The tree is `docs/DRAW.md` section 4's:
 
@@ -86,10 +89,12 @@ import "base:intrinsics"
 import "base:runtime"
 
 import "vsys:abi"
+import "vsys:lib9p"
 import "vsys:libdraw"
 import "vsys:libedit"
 import "vsys:libfont"
 import "vsys:libpal"
+import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
 
@@ -977,17 +982,27 @@ the window that has the focus *now*, and only a completed line reaches a
 window's queue. So a line half-typed when the focus moves stays where it was
 being typed, and the window that gains the focus starts its own.
 
-One ring per window, because two parked readers must not race for one queue.
-The child is the only producer and each window's worker is its only consumer,
-which is the discipline `libuser.Ring` is written to.
+**The keys come from a proc and go to a thread per window.** The reader
+proc parks in `read` on the keyboard file and sends each byte on `keys`.
+The key thread receives them and hands each to the window in front, on
+that window's own channel, and the window's thread cooks it into the line
+and answers a held read when the line completes. One ring per window, and
+one queue of keys per window, because a line half-typed when the focus
+moves stays where it was being typed. Every thread here is the one proc's,
+so none of it is locked.
 */
 KBD_RING :: 256
 kbd_store: [MAX_WINDOWS][KBD_RING]u8
 kbd: [MAX_WINDOWS]libuser.Ring
 
-// The child's own read buffer, in the bss both halves share and touched by
-// the child alone.
+// The reader proc's own buffer, touched by that proc alone.
 kbd_chunk: [128]u8
+
+// The bytes off the keyboard, from the reader proc to the key thread, and
+// each window's own queue from the key thread to the window's thread.
+keys: ^libthread.Chan
+win_keys: [MAX_WINDOWS]^libthread.Chan
+WIN_KEYS :: 64
 
 /*
 The line under construction, one per window, and the characters that edit it.
@@ -1054,17 +1069,16 @@ type_at :: proc "contextless" (w: int, b: u8) #no_bounds_check {
 }
 
 // drain_cons takes what window `w`'s ring has for a read: whatever is
-// there in raw mode, one line otherwise. Caller holds `wlock`, or is the
-// loop, which holds it through the handler.
+// there in raw mode, one line otherwise.
 drain_cons :: proc "contextless" (w: int, buf: []u8) -> int {
 	if windows[w].cons_raw {
-		return libuser.ring_drain(&kbd[w], buf, &state_lock)
+		return libuser.ring_drain(&kbd[w], buf)
 	}
-	return libuser.ring_drain_line(&kbd[w], buf, '\n', &state_lock)
+	return libuser.ring_drain_line(&kbd[w], buf, '\n')
 }
 
-// The window whose held reads `wants_cons` accepts. Set under `wlock` by
-// `answer_cons`, which is the only caller.
+// The window whose held reads `wants_cons` accepts. Set by `answer_cons`,
+// which is the only caller, and read before it gives the proc up.
 answer_win: int
 
 wants_cons :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
@@ -1079,49 +1093,31 @@ wants_cons :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool 
 
 /*
 answer_cons gives window `w`'s ring to the reads held for it, oldest
-first, from the reader's own process. Under `wlock`, which is what makes
-this and the handler's "empty, hold me" one decision. The reader runs
-against shared memory and this is the one place it writes the wire, which
-the lock is for. See `libuser.serve_mux`.
+first, from the window's own thread. The handler's "empty, hold me" and
+this are one decision because both run on threads of one proc: either
+the handler saw the line, or this sees the held read. See `lib9p.held`.
 */
 answer_cons :: proc "contextless" (w: int) {
-	libuser.lock(&wlock)
 	answer_win = w
 	for {
-		slot, tag, request, ok := libuser.held(&mux, wants_cons)
+		req, ok := lib9p.held(&srv, wants_cons)
 		if !ok {
 			break
 		}
-		m := request.(vectra9.Tread)
-		buf := libuser.slot_payload(&mux, slot)
-		room := min(len(buf), int(m.count))
-		got := drain_cons(w, buf[:room])
+		m := req.msg.(vectra9.Tread)
+		room := min(len(req.payload), int(m.count))
+		got := drain_cons(w, req.payload[:room])
 		if got == 0 {
 			break
 		}
-		_ = libuser.respond(&mux, slot, tag, vectra9.Rread{data = buf[:got]})
+		_ = lib9p.respond(req, vectra9.Rread{data = req.payload[:got]})
 	}
-	libuser.unlock(&wlock)
 }
 
-/*
-focus_win is `stack_top` as the reader child may read it.
-
-The child runs in its own process against shared memory, and the parent
-mutates the stack between two of its instructions whenever a window opens,
-closes or is raised. `stack_top` would index with a count it read a moment
-ago. This reads each half once and refuses anything that is not a window.
-
-**A torn read costs a line, not a fault.** The worst answer this can give is
-the window that had the focus an instant earlier, which is inside the rule the
-file comment above states.
-*/
+// focus_win is `stack_top` with a window on it, or -1. Read by the key
+// thread, which is the proc's own, so the stack cannot move under it.
 focus_win :: proc "contextless" () -> int #no_bounds_check {
-	n := int(intrinsics.volatile_load(&stack_n))
-	if n <= 0 || n > MAX_WINDOWS {
-		return -1
-	}
-	w := intrinsics.volatile_load(&stack[n - 1])
+	w := stack_top()
 	if w < 0 || w >= MAX_WINDOWS || !windows[w].used {
 		return -1
 	}
@@ -1129,36 +1125,60 @@ focus_win :: proc "contextless" () -> int #no_bounds_check {
 }
 
 /*
-reader is the child's whole life: read the console, give each line to the
-window in front.
+reader is the reader proc's whole life: read the keyboard file, send each
+byte on `keys`.
 
-A failed read is not a loop to break out of. A noted process's read answers
-EINTR, and its next system call is the boundary the note ends it at, so asking
-again *is* the teardown protocol. `servers/kbdfs` and `servers/consrv` have
-the same shape over different devices.
-
-**A character nobody is listening to is dropped**, which is what no window in
-front means. `rio` has nowhere to put one either.
-
-**The focus is read per character, not per read.** A chunk carries whatever
-arrived since the last one, and the front can move between two of its bytes.
-Reading it once per chunk would put a whole burst in one window, which is the
-defect this milestone exists to retire -- one level finer than the one it
-started at.
+A failed read is not a loop to break out of. A noted proc's read answers
+EINTR, and its next system call is the boundary the note ends it at, so
+asking again *is* the teardown protocol. `servers/kbdfs` and
+`servers/consrv` have the same shape over different devices.
 */
-reader :: proc "contextless" (cons: int) -> ! {
+reader :: proc "contextless" (arg: rawptr) {
+	_ = arg
 	for {
-		n := libuser.read(cons, kbd_chunk[:])
+		n := libuser.read(cons_fd, kbd_chunk[:])
 		if n <= 0 {
 			continue
 		}
 		for i in 0 ..< int(n) {
-			w := focus_win()
-			if w < 0 {
-				continue
-			}
-			type_at(w, kbd_chunk[i])
+			libthread.send(keys, &kbd_chunk[i])
 		}
+	}
+}
+
+/*
+key_thread gives each byte to the window in front, by that window's own
+channel, and drops one when no window is in front -- `rio` has nowhere to
+put one either.
+
+**The focus is read per character.** A burst that arrives while the front
+moves is split between the two windows at the character where it moved,
+which is the rule the file comment on the keyboard states. A window's
+queue that is full drops the byte rather than parks this thread, so a
+window nobody reads cannot stop the keyboard for the rest.
+*/
+key_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	for {
+		b: u8
+		libthread.recv(keys, &b)
+		w := focus_win()
+		if w < 0 {
+			continue
+		}
+		_ = libthread.nbsend(win_keys[w], &b)
+	}
+}
+
+// win_thread is a window's line discipline, one thread per slot for the
+// server's life: a byte off the window's queue, into the line, and a
+// completed line to whoever holds a read.
+win_thread :: proc "contextless" (arg: rawptr) {
+	w := int(uintptr(arg))
+	for {
+		b: u8
+		libthread.recv(win_keys[w], &b)
+		type_at(w, b)
 	}
 }
 
@@ -1199,11 +1219,10 @@ Where a composite builds the screen-coordinate region it is about to paint.
 A package variable rather than a local, because a `Region` is half a kilobyte
 and this server's stack is a program's.
 
-**Safe as a single variable because one loop draws.** `serve_mux` forks a
-worker only for a request `blocks` claims, and `blocks` claims exactly one: a
-read of a window's `cons`, which touches that window's key ring and nothing
-else. Every message that moves a pixel is still answered inline, in order, by
-the one loop that owns this.
+**Safe as a single variable because one thread draws.** Every message
+that moves a pixel is answered inline, in order, by the serve loop, and a
+thread runs until it blocks. The window threads touch a window's key ring
+and its line, and nothing that paints.
 */
 scratch: Region
 
@@ -1261,45 +1280,24 @@ fb_fd: int
 fids: libuser.Fid_Table
 
 FRAME :: 1200
-frame_in: [FRAME]u8
-frame_out: [FRAME]u8
-payload: [1024]u8
 
-// The write lock `serve_mux` serialises replies with, and a state lock over
-// the consumer end of a window's key ring. a worker once used to be released
-// parked on an empty one at teardown. See `servers/kbdfs`, which this is the
-// shape of, and `sys/libuser/serve.odin`.
-wlock: libuser.Spin
-state_lock: libuser.Spin
-
-// One worker per window that may have a read parked on its `cons`, and one
-// spare so a client that opens a second window is never the request that
-// stalls the loop.
-SLOTS :: 8
-slot_frame: [SLOTS][FRAME]u8
-slot_out: [SLOTS][FRAME]u8
-slot_payload: [SLOTS][1024]u8
-slots: [SLOTS]libuser.Mux_Slot
-
-// The serve loop's state, in shared bss rather than on `_start`'s stack, so a
-// worker can ask `libuser.flushed` through it. Its stack is its own copy.
-mux: libuser.Mux
+// The server, and the keyboard file it reads. A `cons` read with nothing
+// to give is held, not parked: the loop that paints never waits on a
+// keystroke, and the window's thread answers the read when the line
+// completes. See `lib9p.hold`.
+srv: lib9p.Srv
+cons_fd: int
 
 /*
-A `cons` read with nothing to give is held, not parked: the loop that
-paints never waits on a keystroke, and the reader child answers the read
-from its own process when the line completes. See `libuser.serve_mux`.
-*/
-
-/*
-_start opens the screen, learns its shape, and serves.
+_start opens the screen, learns its shape, opens the keyboard, and hands
+the process to the thread library.
 
 The exits each name their failure. 0x74 is a framebuffer that would not
 open, 0x76 a geometry this server cannot draw on -- fewer than four
 numbers, a depth other than 32, or a cascade that would not fit -- 0x77 a
-screen that would not map, and 0x71 a post that failed. 0x78 was a window
-that could not buy its pixels, retired when a run became the session's. The serve loop's three endings are `ramfs`'s,
-numbers and all.
+screen that would not map, and 0x79 a keyboard that would not open. From
+`threadmain` on, a failure is a word: `post`, `proccreate`, `threadcreate`,
+`hangup`, or `broken` for a pipe that could not be read past.
 */
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -1360,8 +1358,7 @@ start :: proc "c" (block: ^abi.Args) {
 	behind it is `/dev/scancode`'s, one process further out. What this server
 	diverts is the glass.
 
-	The rings are framed before the fork, so both halves hold the same
-	structure rather than each initialising its own copy.
+	The rings and the lines are framed here, before any thread runs.
 	*/
 	for i in 0 ..< MAX_WINDOWS {
 		kbd[i] = libuser.Ring{buf = kbd_store[i][:]}
@@ -1398,48 +1395,60 @@ start :: proc "c" (block: ^abi.Args) {
 		}
 	}
 
-	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)
-	if pid < 0 {
-		libuser.exit(0x73)
+	cons_fd = int(cons)
+	libthread.main(threadmain, nil)
+}
+
+// threadmain is the first thread: the channels, the reader proc, the
+// posting, a thread per window and the key thread, and then the serve
+// loop until something ends it.
+threadmain :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	keys = libthread.chancreate(1, KBD_RING)
+	if keys == nil {
+		libthread.threadexitsall("no memory")
 	}
-	if pid == 0 {
-		reader(int(cons))
+	for i in 0 ..< MAX_WINDOWS {
+		win_keys[i] = libthread.chancreate(1, WIN_KEYS)
+		if win_keys[i] == nil {
+			libthread.threadexitsall("no memory")
+		}
+	}
+	if libthread.proccreate(reader, nil) < 0 {
+		libthread.threadexitsall("proccreate")
 	}
 
 	sfd, perr := libuser.post("/srv/draw")
 	if perr < 0 {
-		_ = libuser.stop_child(u64(pid))
-		libuser.exit(0x71)
+		libthread.threadexitsall("post")
 	}
-
-	for i in 0 ..< SLOTS {
-		slots[i] = libuser.Mux_Slot {
-			frame   = slot_frame[i][:],
-			out     = slot_out[i][:],
-			payload = slot_payload[i][:],
-		}
-	}
-	mux = libuser.Mux {
+	srv = lib9p.Srv {
 		fd      = sfd,
 		handler = handler,
-		frame   = frame_in[:],
-		out     = frame_out[:],
-		payload = payload[:],
-		wlock   = &wlock,
-		slots   = slots[:],
+		msize   = FRAME,
+	}
+	for i in 0 ..< MAX_WINDOWS {
+		if libthread.threadcreate(win_thread, rawptr(uintptr(i))) < 0 {
+			libthread.threadexitsall("threadcreate")
+		}
+	}
+	if libthread.threadcreate(key_thread, nil) < 0 {
+		libthread.threadexitsall("threadcreate")
 	}
 
-	_, why := libuser.serve_mux(&mux)
+	_, why := lib9p.serve(&srv)
 
-	// Every held read answered empty, so no client waits on a slot the
+	// Every held read answered empty, so no client waits on a record the
 	// stopped server will never fill.
-	libuser.respond_all(&mux, vectra9.Rread{data = nil})
-
-	if why != .Removed {
-		_ = libuser.stop_child(u64(pid))
-		libuser.exit(why == .Hangup ? 0x68 : 0x72)
+	lib9p.respond_all(&srv, vectra9.Rread{data = nil})
+	switch why {
+	case .Removed:
+		libthread.threadexitsall("")
+	case .Hangup:
+		libthread.threadexitsall("hangup")
+	case .Broken:
+		libthread.threadexitsall("broken")
 	}
-	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
 }
 
 /*
@@ -1849,7 +1858,7 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	this clears the queue, for the reason `window_open`'s own comment gives.
 
 	Dropping the tail on the head empties it without disturbing the producer's
-	end, which is the only end the child owns.
+	end.
 	*/
 	intrinsics.volatile_store(&kbd[at].tail, intrinsics.volatile_load(&kbd[at].head))
 	// And the exclusive files go back with the slot. `fid_release` gives them
@@ -2805,15 +2814,11 @@ handler :: proc "contextless" (
 		}
 
 		/*
-		A read of a window's `cons` parks until a line is typed at it, off in
-		a worker of its own -- `blocks` sent it here, and it is the only
-		message in this server that leaves the serve loop.
-
-		A flush, when the client gave up on the read, lets the worker leave
-		with an answer nobody sends, which is `libuser.flushed`'s contract.
-		The shutdown flag lets a parked read leave at teardown rather than
-		wait for a keystroke a torn-down console will never deliver. A zero
-		count asks for nothing and gets it.
+		A read of a window's `cons` takes a line if one is typed, and is
+		held until one is otherwise -- the only message in this server
+		that the loop does not answer at once. A flush, when the client
+		gave up on the read, drops the held record. A zero count asks for
+		nothing and gets it.
 		*/
 		if w := node_win(node); w >= 0 && node_part(node) == PART_CONS {
 			room := min(len(buf), int(m.count))
@@ -2833,7 +2838,7 @@ handler :: proc "contextless" (
 				reply^ = vectra9.Rread{data = buf[:got]}
 				return
 			}
-			libuser.hold(&mux)
+			lib9p.hold(&srv)
 		}
 
 		/*

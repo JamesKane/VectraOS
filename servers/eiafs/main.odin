@@ -5,23 +5,24 @@ eiafs -- the serial port, served from ring 3.
 scancodes in, a translation, characters served on a file. The port asks a
 smaller and a larger question at once. Smaller, because serial bytes need
 no translation -- what arrives on the wire is already the content, so the
-child pushes what it reads and nothing more. Larger, because `/dev/eia0`
+reader sends what it reads and nothing more. Larger, because `/dev/eia0`
 is the first raw device a program may also *write*. So this is the first
 userland server whose `Twrite` reaches hardware: a write to the served
 file goes down the shared descriptor and out the wire.
 
-The shape is `consrv`'s, byte for byte where it can be:
+The shape is `consrv`'s on `sys/libthread`, byte for byte where it can be:
 
-    the child    reads /dev/eia0 -- a device read that genuinely parks --
-                 and pushes what arrives into the ring
-    the parent   posts /srv/eiafs and serves 9P; a read of /eia0 drains
-                 the ring, and a write of /eia0 goes out the wire
+    the reader      a proc parked in `read` on /dev/eia0, sending what it
+                    reads on `bytes`
+    the byte thread receives `bytes`, pushes into the ring, and answers
+                    any read of /eia0 held for want of one
+    the serve loop  `lib9p.serve`; a read of /eia0 with nothing arrived is
+                    held, and a write of /eia0 goes out the wire inline
 
-The open takes `O_RDWR` and comes before the fork, so both halves hold
-the one descriptor: the child reads it for its whole life, and the
-parent's handler writes it. A write never parks -- the UART takes bytes
-as fast as its FIFO drains -- so the serve loop answers a `Twrite`
-inline, and only a read of `/eia0` goes to a worker.
+The open takes `O_RDWR` and comes before the fork, so every proc holds the
+one descriptor: the reader reads it for its whole life, and the handler
+writes it. A write never parks -- the UART takes bytes as fast as its
+FIFO drains -- so the serve loop answers a `Twrite` inline.
 
 Two properties of the wire are the kernel's, not this server's, and a
 client should know both. The device expands LF to CRLF on the way out,
@@ -30,92 +31,61 @@ kernel log writes the same wire unserialised -- the ordering of a log
 line against a served write is undefined, which `kernel/devfs` documents
 as the deliberate cost of a log that cannot park.
 
-Teardown is strictly child-first, and by note, exactly as `consrv` does
-it. A `Tremove` stops the serve loop; the parent notes its reader out of
-the parked device read, collects the EINTR that says the ending was
-asked for, and only then exits.
+Teardown is `consrv`'s: on `Tremove` the serve loop stops, every held read
+is answered empty, and `threadexitsall` notes the reader proc out of its
+parked read and waits for it. Status zero is that arc succeeding.
 */
 package eiafs
 
-import "base:intrinsics"
 import "base:runtime"
 
 import "vsys:abi"
+import "vsys:lib9p"
+import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
 
 NODE_ROOT :: i32(0)
 NODE_EIA :: i32(1)
 
-// The meeting point: bytes off the wire, waiting to be served. The
-// counters are monotonic and the difference is the content, so full and
-// empty cannot be confused. Shared under RFMEM, like every global here.
+// The bytes off the wire, waiting to be served, kept by the byte thread
+// for the handler.
 RING :: 256
 ring_store: [RING]u8
 ring: libuser.Ring
 
-// The child's read buffer. In the shared bss like everything else, and
-// touched by the child alone -- the stack would be private, but a buffer a
-// syscall fills is clearer with a name.
-chunk: [64]u8
+/*
+What the reader proc sends: one read's worth of bytes, and how many. A
+read of the served file answers what one read of the device delivered,
+which for a cooked console is a whole line, so the bytes cross together
+rather than one at a time.
+*/
+CHUNK :: 64
 
-// The device descriptor, shared by the fork. The child reads it, and the
-// parent's Twrite case writes it. Neither half closes it -- the process
-// exit is the close.
+Chunk :: struct {
+	n:    int,
+	data: [CHUNK]u8,
+}
+
+// The device descriptor. The reader proc reads it, and the handler's
+// Twrite case writes it. Nobody closes it -- the process exit is the close.
 eia_fd: int
-
-
 
 fids: libuser.Fid_Table
 
 FRAME :: 1200
-frame_in: [FRAME]u8
-frame_out: [FRAME]u8
-payload: [1024]u8
+
+srv: lib9p.Srv
+bytes: ^libthread.Chan
 
 /*
-The two locks and the shutdown flag, all in shared bss.
+_start opens the port and hands the process to the thread library.
 
-`wlock` serialises pipe writes, held only for the length of a write.
-`state_lock` guards the ring's consumer end, held only for a drain and never
-across the poll a parked read spins on. The fid table carries its own lock now,
-in `libuser.Fid_Table`. `stopping` is set at teardown so a worker parked on an
-empty ring leaves instead of polling for a byte that will never come.
-*/
-wlock: libuser.Spin
-state_lock: libuser.Spin
-
-/*
-The worker pool: three parked reads at once, and a fourth stalls the loop.
-
-The same bound `kernel/devfs` documents for its four threads, moved to
-userland and raised by adding a slot rather than a thread. Three is enough
-for a port, where one client reads `/eia0` at a time. Each slot carries
-its own request, reply and payload buffers, because a worker reads and writes
-them while the main loop and other workers use theirs.
-*/
-SLOTS :: 3
-slot_frame: [SLOTS][FRAME]u8
-slot_out: [SLOTS][FRAME]u8
-slot_payload: [SLOTS][1024]u8
-slots: [SLOTS]libuser.Mux_Slot
-
-// The serve loop's state, in shared bss rather than on `_start`'s stack, so a
-// worker can ask `libuser.flushed` through it. Its stack is its own copy.
-mux: libuser.Mux
-
-// How long a parked read sleeps between looks at the ring. One tick, which is
-// the port poller's own cadence. A worker off every run queue in between.
-
-/*
-_start opens the port, forks the reader, and serves.
-
-The open comes first because the descriptor table is shared by default: one
-open, and both processes hold the number. It takes `O_RDWR` because the two
-halves want different directions -- the child reads the descriptor for its
-whole life, and the parent writes it on a client's behalf. An open that
-fails is also the portless machine: a port that failed its probe answers
-ENXIO, and this server has nothing to serve.
+The open comes first because the descriptor table is shared: one open,
+and every proc holds the number. It takes `O_RDWR` because the two sides
+want different directions. An open that fails is also the portless
+machine: a port that failed its probe answers ENXIO, and this server has
+nothing to serve.
 */
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -123,7 +93,6 @@ start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
-	// The ring's frame, built before the fork so both halves hold it.
 	ring = libuser.Ring{buf = ring_store[:]}
 
 	fd := libuser.open("/dev/eia0", abi.O_RDWR)
@@ -131,77 +100,71 @@ start :: proc "c" (block: ^abi.Args) {
 		libuser.exit(0x74)
 	}
 	eia_fd = int(fd)
+	libthread.main(threadmain, nil)
+}
 
-	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)
-	if pid < 0 {
-		libuser.exit(0x73)
+threadmain :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	bytes = libthread.chancreate(size_of(Chunk), 4)
+	if bytes == nil {
+		libthread.threadexitsall("no memory")
 	}
-	if pid == 0 {
-		reader(eia_fd)
+	if libthread.proccreate(reader, nil) < 0 {
+		libthread.threadexitsall("proccreate")
 	}
-
 	sfd, perr := libuser.post("/srv/eiafs")
 	if perr < 0 {
-		_ = libuser.stop_child(u64(pid))
-		libuser.exit(0x71)
+		libthread.threadexitsall("post")
 	}
-
-	for i in 0 ..< SLOTS {
-		slots[i] = libuser.Mux_Slot {
-			frame   = slot_frame[i][:],
-			out     = slot_out[i][:],
-			payload = slot_payload[i][:],
-		}
-	}
-	mux = libuser.Mux {
+	srv = lib9p.Srv {
 		fd      = sfd,
 		handler = handler,
-		frame   = frame_in[:],
-		out     = frame_out[:],
-		payload = payload[:],
-		wlock   = &wlock,
-		slots   = slots[:],
+		msize   = FRAME,
+	}
+	if libthread.threadcreate(byte_thread, nil) < 0 {
+		libthread.threadexitsall("threadcreate")
 	}
 
-	_, why := libuser.serve_mux(&mux)
+	_, why := lib9p.serve(&srv)
 
-	// The stop is set for whatever workers are still parked on the ring, so
-	// they leave rather than poll for a byte the released port cannot
-	// send. See `handler`'s Tread case.
-	libuser.respond_all(&mux, vectra9.Rread{data = nil})
-
-	if why != .Removed {
-		_ = libuser.stop_child(u64(pid))
-		libuser.exit(0x72)
-	}
-	// Status zero is the whole teardown arc succeeding: the note landed, the
-	// parked read unwound, and the wait heard EINTR -- the kernel's word for
-	// an ending this parent asked for.
-	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
+	lib9p.respond_all(&srv, vectra9.Rread{data = nil})
+	libthread.threadexitsall(why == .Removed ? "" : "hangup")
 }
 
 /*
-reader is the child's whole life: park on the port, publish what comes.
+reader is the reader proc's whole life: park on the port, send what comes.
 
-A failed read is not a loop to break out of. A noted process's read answers
+A failed read is not a loop to break out of. A noted proc's read answers
 EINTR, and its next system call is the boundary the note ends it at -- so
 asking again *is* the teardown protocol, not a bug's retry.
 */
-reader :: proc "contextless" (port: int) -> ! {
+reader :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	chunk: Chunk
 	for {
-		n := libuser.read(port, chunk[:])
+		n := libuser.read(eia_fd, chunk.data[:])
 		if n <= 0 {
 			continue
 		}
-		for i in 0 ..< int(n) {
-			libuser.ring_push(&ring, chunk[i])
+		chunk.n = int(n)
+		libthread.send(bytes, &chunk)
+	}
+}
+
+byte_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	chunk: Chunk
+	for {
+		libthread.recv(bytes, &chunk)
+		for i in 0 ..< chunk.n {
+			libuser.ring_push(&ring, chunk.data[i])
 		}
 		answer_held()
 	}
 }
 
-// wants_read is what a held request has to be for the reader to answer it:
-// a read of the file the ring feeds.
+// wants_read is what a held request has to be for the byte thread to
+// answer it: a read of the file the ring feeds.
 wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
 	_ = state
 	#partial switch m in request^ {
@@ -211,33 +174,23 @@ wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool 
 	return false
 }
 
-/*
-answer_held gives what the ring holds to the reads held for it, oldest
-first, from the reader's own process. Under `wlock`, which is what makes
-this and the handler's "empty, hold me" one decision: either the handler
-saw the byte, or this sees the held read. See `libuser.serve_mux`.
-*/
+// answer_held gives what the ring holds to the reads held for it, oldest
+// first. See `lib9p.held`.
 answer_held :: proc "contextless" () {
-	libuser.lock(&wlock)
 	for {
-		slot, tag, request, ok := libuser.held(&mux, wants_read)
+		req, ok := lib9p.held(&srv, wants_read)
 		if !ok {
 			break
 		}
-		m := request.(vectra9.Tread)
-		buf := libuser.slot_payload(&mux, slot)
-		room := min(len(buf), int(m.count))
-		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		m := req.msg.(vectra9.Tread)
+		room := min(len(req.payload), int(m.count))
+		got := libuser.ring_drain(&ring, req.payload[:room])
 		if got == 0 {
 			break
 		}
-		_ = libuser.respond(&mux, slot, tag, vectra9.Rread{data = buf[:got]})
+		_ = lib9p.respond(req, vectra9.Rread{data = req.payload[:got]})
 	}
-	libuser.unlock(&wlock)
 }
-
-// -- Fids, the same sixteen slots ramfs keeps ---------------------------------
-
 
 // -- The tree ----------------------------------------------------------------
 
@@ -307,31 +260,23 @@ handler :: proc "contextless" (
 			return
 		}
 		/*
-		A read of `/eia0` parks until a byte arrives, which is what a read of
-		a device does. This runs in a worker, so parking here holds no other
-		client -- the whole point of `serve_mux`. The offset is ignored: this
-		file is what has arrived, and a drain consumes it.
-
-		Three ways out besides a byte. A flush, when the client gave up on this
-		read: the worker leaves and its answer is never sent, which is
-		`libuser.flushed`'s contract. The shutdown flag, set at teardown, lets
-		a parked read leave with an empty answer rather than poll for a byte
-		the released port will never send. And a zero `count`, which asks
-		for nothing and gets it.
+		A read of `/eia0` takes what has arrived, or is held until something
+		does: the byte thread answers it when the port delivers. The offset
+		is ignored, because this file is what has arrived and a drain
+		consumes it. A flush, when the client gave up on the read, drops the
+		held record. A zero count asks for nothing and gets it.
 		*/
 		room := min(len(buf), int(m.count))
 		if room <= 0 {
 			reply^ = vectra9.Rread{data = nil}
 			return
 		}
-		// What has arrived, or nothing yet: the loop holds the request and
-		// the reader answers it when a byte comes. See `libuser.hold`.
-		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		got := libuser.ring_drain(&ring, buf[:room])
 		if got > 0 {
 			reply^ = vectra9.Rread{data = buf[:got]}
 			return
 		}
-		libuser.hold(&mux)
+		lib9p.hold(&srv)
 
 	case vectra9.Twrite:
 		/*

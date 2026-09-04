@@ -4,116 +4,81 @@ consrv -- the first server that waits on two things at once.
 `ramfs` answers one pipe, and can, because files in memory never park. A
 console server has the problem `docs/HANDOFF.md` kept on its list: the
 keyboard and the clients both park a reader, and one thread cannot wait on
-both. This is `rfork`'s answer, in the shape Plan 9 gives it. One process
-becomes two sharing their data and bss, each parks on its own thing, and a
-ring of bytes in the shared bss is the meeting point:
+both. This is `sys/libthread`'s answer, in the shape Plan 9 gives it. A
+proc of its own reads the console, which is the one read here that
+genuinely parks, and sends what arrives down a channel. The program's own
+proc is two threads that only ever block on each other:
 
-    the child    reads /dev/cons -- a device read that genuinely parks --
-                 and pushes what arrives into the ring
-    the parent   posts /srv/consrv and serves 9P; a read of /line drains
-                 the ring
+    the reader     a proc parked in `read` on /dev/cons, sending what it
+                   reads on `keys`
+    the key thread receives `keys`, pushes into the ring, and answers
+                   any read of /line that was held for want of a byte
+    the serve loop `lib9p.serve`: a request off its channel, the handler,
+                   the reply. A read of /line with nothing to give is held
+                   rather than answered empty.
 
-The ring is single-producer single-consumer on purpose: the child owns
-`head`, the parent owns `tail`, and each advances its own counter only
-after the bytes it covers are in place. Two writers would need a lock, and
-ring 3 has no lock to give them yet.
+**Nothing here is locked.** The ring's consumer end, the fid table and the
+held list are all touched by threads of one proc, and a thread runs until
+it blocks. The server this file replaced kept two spinlocks and a
+shutdown flag for the worker processes it forked per parked read;
+`docs/PROCS.md` counts what those cost.
 
-A read of `/line` **parks now** until a byte arrives, which is what a read of
-a device should do. It does not hold the connection while it waits, because
-`serve_mux` hands it to a worker process of its own. The main loop reads the
-next request at once, and a `getattr` or a walk from another client is
-answered while the read is still parked. The wart this file owned for two
-milestones -- a read of empty `/line` answering zero bytes, which a client
-could not tell from an end of file -- is gone. See `sys/libuser/serve.odin`.
+A read of `/line` parks until a byte arrives, which is what a read of a
+device should do, and holds no other client while it waits: the loop
+answers a `getattr` from another client while the read is held, which
+`verify_consrv` proves.
 
-Three things the concurrency needs, and each is here. A worker per parked
-read, forked `RFNOWAIT` so the kernel reaps it. A write lock, so a worker's
-reply and the main loop's never interleave on the pipe. And a state lock,
-because the fid table and the ring's consumer end are now touched by the main
-loop and every worker at once. The ring's *producer* stays lockless: the
-child is still the only writer of `head`.
-
-Teardown is strictly child-first, and by note. A `Tremove` stops the serve
-loop; the parent notes its reader -- parked deep in a device read, which is
-exactly what the note was built to unwind -- collects the EINTR that says
-the ending was asked for, and only then exits. The other order would orphan
-the child: pids never reuse and nothing reparents, so a child that outlives
-its parent is a leak the machine reports for ever.
+Teardown is `threadexitsall`. A `Tremove` stops the serve loop, every
+held read is answered empty, and the library notes the reader proc out of
+its parked device read and waits for it before this process exits. Status
+zero is that whole arc succeeding.
 */
 package consrv
 
-import "base:intrinsics"
 import "base:runtime"
 
 import "vsys:abi"
+import "vsys:lib9p"
+import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
 
 NODE_ROOT :: i32(0)
 NODE_LINE :: i32(1)
 
-// The meeting point: bytes from the keyboard, waiting to be served. The
-// counters are monotonic and the difference is the content, so full and
-// empty cannot be confused. Shared under RFMEM, like every global here.
+// The bytes that have arrived and not yet been read, kept by the key
+// thread for the handler. A ring rather than the channel's own buffer,
+// because a read takes what is there and a channel gives one element.
 RING :: 256
 ring_store: [RING]u8
 ring: libuser.Ring
 
-// The child's read buffer. In the shared bss like everything else, and
-// touched by the child alone -- the stack would be private, but a buffer a
-// syscall fills is clearer with a name.
-chunk: [64]u8
+/*
+What the reader proc sends: one read's worth of bytes, and how many. A
+read of the served file answers what one read of the device delivered,
+which for a cooked console is a whole line, so the bytes cross together
+rather than one at a time.
+*/
+CHUNK :: 64
 
-
+Chunk :: struct {
+	n:    int,
+	data: [CHUNK]u8,
+}
 
 fids: libuser.Fid_Table
 
 FRAME :: 1200
-frame_in: [FRAME]u8
-frame_out: [FRAME]u8
-payload: [1024]u8
+
+srv: lib9p.Srv
+keys: ^libthread.Chan
+cons_fd: int
 
 /*
-The two locks and the shutdown flag, all in shared bss.
+_start opens the console and hands the process to the thread library.
 
-`wlock` serialises pipe writes, held only for the length of a write.
-`state_lock` guards the ring's consumer end, held only for a drain and never
-across the poll a parked read spins on. The fid table carries its own lock now,
-in `libuser.Fid_Table`. `stopping` is set at teardown so a worker parked on an
-empty ring leaves instead of polling for a byte that will never come.
-*/
-wlock: libuser.Spin
-state_lock: libuser.Spin
-
-/*
-The worker pool: three parked reads at once, and a fourth stalls the loop.
-
-The same bound `kernel/devfs` documents for its four threads, moved to
-userland and raised by adding a slot rather than a thread. Three is enough
-for a console, where one client reads `/line` at a time. Each slot carries
-its own request, reply and payload buffers, because a worker reads and writes
-them while the main loop and other workers use theirs.
-*/
-SLOTS :: 3
-slot_frame: [SLOTS][FRAME]u8
-slot_out: [SLOTS][FRAME]u8
-slot_payload: [SLOTS][1024]u8
-slots: [SLOTS]libuser.Mux_Slot
-
-// The serve loop's state, in shared bss rather than on `_start`'s stack, so a
-// worker can ask `libuser.flushed` through it. Its stack is its own copy.
-mux: libuser.Mux
-
-// How long a parked read sleeps between looks at the ring. One tick, which is
-// the console's own poll cadence. A worker off every run queue in between.
-
-/*
-_start opens the console, forks the reader, and serves.
-
-The open comes first because the descriptor table is shared by default: one
-open, and both processes hold the number. The child never returns from
-`reader` -- its whole life is the read loop -- and the parent never reads
-the console at all.
+The open comes first because the descriptor table is shared: one open,
+and every proc holds the number. 0x74 is a console that would not open.
 */
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -121,84 +86,83 @@ start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
-	// The ring's frame, built before the fork so both halves hold it.
 	ring = libuser.Ring{buf = ring_store[:]}
 
 	cons := libuser.open("/dev/cons", abi.O_RDONLY)
 	if cons < 0 {
 		libuser.exit(0x74)
 	}
+	cons_fd = int(cons)
+	libthread.main(threadmain, nil)
+}
 
-	pid := libuser.rfork(abi.RFPROC | abi.RFMEM)
-	if pid < 0 {
-		libuser.exit(0x73)
+// threadmain is the first thread: the reader proc, the posting, the key
+// thread, and then the serve loop until something ends it.
+threadmain :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	keys = libthread.chancreate(size_of(Chunk), 4)
+	if keys == nil {
+		libthread.threadexitsall("no memory")
 	}
-	if pid == 0 {
-		reader(int(cons))
+	if libthread.proccreate(reader, nil) < 0 {
+		libthread.threadexitsall("proccreate")
 	}
-
 	fd, perr := libuser.post("/srv/consrv")
 	if perr < 0 {
-		_ = libuser.stop_child(u64(pid))
-		libuser.exit(0x71)
+		libthread.threadexitsall("post")
 	}
-
-	for i in 0 ..< SLOTS {
-		slots[i] = libuser.Mux_Slot {
-			frame   = slot_frame[i][:],
-			out     = slot_out[i][:],
-			payload = slot_payload[i][:],
-		}
-	}
-	mux = libuser.Mux {
+	srv = lib9p.Srv {
 		fd      = fd,
 		handler = handler,
-		frame   = frame_in[:],
-		out     = frame_out[:],
-		payload = payload[:],
-		wlock   = &wlock,
-		slots   = slots[:],
+		msize   = FRAME,
+	}
+	if libthread.threadcreate(key_thread, nil) < 0 {
+		libthread.threadexitsall("threadcreate")
 	}
 
-	_, why := libuser.serve_mux(&mux)
+	_, why := lib9p.serve(&srv)
 
-	// The stop is set for whatever workers are still parked on the ring, so
-	// they leave rather than poll for a byte the torn-down console cannot
-	// send. See `handler`'s Tread case.
-	libuser.respond_all(&mux, vectra9.Rread{data = nil})
-
-	if why != .Removed {
-		_ = libuser.stop_child(u64(pid))
-		libuser.exit(0x72)
-	}
-	// Status zero is the whole teardown arc succeeding: the note landed, the
-	// parked read unwound, and the wait heard EINTR -- the kernel's word for
-	// an ending this parent asked for.
-	libuser.exit(libuser.stop_child(u64(pid)) ? 0 : 0x75)
+	// Every held read answered empty, so no client waits on a record the
+	// stopped server will never fill.
+	lib9p.respond_all(&srv, vectra9.Rread{data = nil})
+	libthread.threadexitsall(why == .Removed ? "" : "hangup")
 }
 
 /*
-reader is the child's whole life: park on the keyboard, publish what comes.
-
-A failed read is not a loop to break out of. A noted process's read answers
-EINTR, and its next system call is the boundary the note ends it at -- so
-asking again *is* the teardown protocol, not a bug's retry.
+reader is the reader proc's whole life: park on the console, send what
+comes. A failed read is not a loop to break out of. A noted proc's read
+answers EINTR, and its next system call is the boundary the note ends it
+at -- so asking again *is* the teardown protocol, not a bug's retry.
 */
-reader :: proc "contextless" (cons: int) -> ! {
+reader :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	chunk: Chunk
 	for {
-		n := libuser.read(cons, chunk[:])
+		n := libuser.read(cons_fd, chunk.data[:])
 		if n <= 0 {
 			continue
 		}
-		for i in 0 ..< int(n) {
-			libuser.ring_push(&ring, chunk[i])
+		chunk.n = int(n)
+		libthread.send(keys, &chunk)
+	}
+}
+
+// key_thread takes each chunk off the channel, keeps its bytes, and gives
+// what the ring holds to the reads held for it.
+key_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	chunk: Chunk
+	for {
+		libthread.recv(keys, &chunk)
+		for i in 0 ..< chunk.n {
+			libuser.ring_push(&ring, chunk.data[i])
 		}
 		answer_held()
 	}
 }
 
-// wants_read is what a held request has to be for the reader to answer it:
-// a read of the file the ring feeds.
+// wants_read is what a held request has to be for the key thread to
+// answer it: a read of the file the ring feeds.
 wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
 	_ = state
 	#partial switch m in request^ {
@@ -208,33 +172,23 @@ wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool 
 	return false
 }
 
-/*
-answer_held gives what the ring holds to the reads held for it, oldest
-first, from the reader's own process. Under `wlock`, which is what makes
-this and the handler's "empty, hold me" one decision: either the handler
-saw the byte, or this sees the held read. See `libuser.serve_mux`.
-*/
+// answer_held gives what the ring holds to the reads held for it, oldest
+// first. See `lib9p.held`.
 answer_held :: proc "contextless" () {
-	libuser.lock(&wlock)
 	for {
-		slot, tag, request, ok := libuser.held(&mux, wants_read)
+		req, ok := lib9p.held(&srv, wants_read)
 		if !ok {
 			break
 		}
-		m := request.(vectra9.Tread)
-		buf := libuser.slot_payload(&mux, slot)
-		room := min(len(buf), int(m.count))
-		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		m := req.msg.(vectra9.Tread)
+		room := min(len(req.payload), int(m.count))
+		got := libuser.ring_drain(&ring, req.payload[:room])
 		if got == 0 {
 			break
 		}
-		_ = libuser.respond(&mux, slot, tag, vectra9.Rread{data = buf[:got]})
+		_ = lib9p.respond(req, vectra9.Rread{data = req.payload[:got]})
 	}
-	libuser.unlock(&wlock)
 }
-
-// -- Fids, the same sixteen slots ramfs keeps ---------------------------------
-
 
 // -- The tree ----------------------------------------------------------------
 
@@ -304,31 +258,22 @@ handler :: proc "contextless" (
 			return
 		}
 		/*
-		A read of `/line` parks until a byte arrives, which is what a read of
-		a device does. This runs in a worker, so parking here holds no other
-		client -- the whole point of `serve_mux`. The offset is ignored: this
-		file is what has arrived, and a drain consumes it.
-
-		Three ways out besides a byte. A flush, when the client gave up on this
-		read: the worker leaves and its answer is never sent, which is
-		`libuser.flushed`'s contract. The shutdown flag, set at teardown, lets
-		a parked read leave with an empty answer rather than poll for a byte
-		the torn-down console will never send. And a zero `count`, which asks
-		for nothing and gets it.
+		A read of `/line` takes what has arrived, or is held until
+		something does: the key thread answers it when a byte comes. The
+		offset is ignored, because this file is what has arrived and a
+		drain consumes it. A zero count asks for nothing and gets it.
 		*/
 		room := min(len(buf), int(m.count))
 		if room <= 0 {
 			reply^ = vectra9.Rread{data = nil}
 			return
 		}
-		// What has arrived, or nothing yet: the loop holds the request and
-		// the reader answers it when a byte comes. See `libuser.hold`.
-		got := libuser.ring_drain(&ring, buf[:room], &state_lock)
+		got := libuser.ring_drain(&ring, buf[:room])
 		if got > 0 {
 			reply^ = vectra9.Rread{data = buf[:got]}
 			return
 		}
-		libuser.hold(&mux)
+		lib9p.hold(&srv)
 
 	case vectra9.Twrite:
 		reply^ = vectra9.error_reply(vectra9.EPERM)

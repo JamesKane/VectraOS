@@ -42,18 +42,19 @@ prompt, drawn by a shell that will wait as long as it takes.
 `apps/terminal` is `rio`'s window in miniature. It claims a window, uploads
 the font, starts `/bin/rc` with two pipes for its three descriptors, and is
 from then on two things at once: the glass the shell's output lands on and
-the keyboard its input comes from. Both park, and a process here cannot
-wait on two things, so it forks the way the servers do -- `rfork(RFPROC |
-RFMEM)`, two processes sharing their memory. The parent reads the shell's
-output and draws it. The child reads the window's keys raw, edits a line
-with `libedit`, draws it as it is typed at the cursor, and hands the
-finished line to the shell. A grid of cells with a cursor is what the
-window shows: newline, return, backspace and tab mean what they mean, and
-a line past the bottom scrolls the rest up.
+the keyboard its input comes from. Both park, and a proc cannot wait on
+two things, so it is `sys/libthread`'s shape: a proc reading the shell's
+output, a proc reading the window's keys raw, each sending what it reads
+on a channel, and one thread that waits on both with `alt`. Shell output
+goes into the grid. A key goes through `libedit` into the line, drawn as
+it is typed at the cursor, and a finished line goes to the shell. A grid
+of cells with a cursor is what the window shows: newline, return,
+backspace and tab mean what they mean, and a line past the bottom scrolls
+the rest up.
 
-The parent owns the ending. When the shell's output pipe closes, the shell
-is gone -- a typed `exit`, or a fault -- and the terminal stops its typist
-and exits, which closes the window.
+The drawer owns the ending. When the shell's output pipe closes, the shell
+is gone -- a typed `exit`, or a fault -- and `threadexitsall` takes the two
+readers down and exits, which closes the window.
 
 The window system does not echo, and that is why the terminal draws the
 typed line itself; `docs/DRAW.md` section 14 says why the discipline lives
@@ -92,9 +93,21 @@ every server with two blocking sources forks a reader, and `serve_mux`
 forked a worker for every request that parked. The process table went from
 twelve to thirty-two for this step and the console's fid table from
 sixty-four to two hundred and fifty-six, because a running system is not a
-self-test; `docs/PROCS.md` step 2 took both further. `docs/PROCS.md` is the process and thread system revisited to be
-Plan 9's; its first step took the workers away, and two shells are ten
-processes -- `ps` from the serial line lists them.
+self-test; `docs/PROCS.md` step 2 took both further. `docs/PROCS.md` is the
+process and thread system revisited to be Plan 9's. Its first step took
+the workers away, and two shells were ten processes. Its fourth put the
+servers on `sys/libthread`, and they are thirteen again, differently:
+
+    fatfs, kfs                     one each
+    the serial shell               one
+    kbdfs                          a proc of threads, a reader for its pipe,
+                                   and a reader for the scancodes
+    intuition                      the same three
+    terminal                       the same three, and its rc
+
+The three more are the pipe readers, and they are what no server holding
+a lock cost. `docs/THREAD.md` section 10 is the argument, and `ps` from
+the serial line lists them, every one `Blocked`.
 
 ## Checked by
 

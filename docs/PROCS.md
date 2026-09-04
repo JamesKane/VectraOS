@@ -239,6 +239,33 @@ answered by the keyboard proc; the terminal draws a typed line and a
 shell's output from one process; and the count on the boot line is
 Plan 9's.
 
+**Where it stands.** Done, and `docs/THREAD.md` is the document. About
+1,100 lines in `sys/libthread` and `sys/lib9p` with three `.S` files of a
+hundred bytes each, and the five programs rewritten on them: `procs`
+made by `proccreate` through a fork that moves the child onto its own
+stack before it touches memory, threads switched by one procedure per
+architecture, a proc that finds itself through a word in the stack
+segment and sleeps in `rendezvous` on its own address, 9front's channels
+and `alt` under one lock, `QLock` and `Rendez`, and a `threadexitsall`
+that notes every proc and waits for the ones it made. `lib9p` is a reader
+proc, a channel, a `Req` on the heap, and `respond` from any thread of
+the program's proc. The window threads and the keyboard proc are as
+written above; the terminal's drawer is one thread over an `alt` of two
+channels. No server holds a lock, and the `Mux`, its slots, the write
+locks, the state locks, the shutdown flags and `stop_child`'s arc are
+gone from all five.
+
+The count is not lower. A server is three procs where it was two,
+because the proc of threads cannot park in `read` on its pipe and a
+reader proc does it; two shells are thirteen processes, every one
+parked. `docs/THREAD.md` section 10 argues the price and section 12
+records the kernel change that would fold the pipe reader back in.
+`/bin/threadtest` checks the library's claims from ring 3, and the five
+programs pass the checks they had, on the three architectures, at user
+908. The one bug found outside the suite was a rendezvous group shared
+between two servers started by one shell; `main` takes `RFREND` now, as
+Plan 9's does.
+
 ## 4. Decisions taken here, and what would reverse them
 
 - **Processes are the answer to blocking, as in Plan 9.** Not `select`, not
