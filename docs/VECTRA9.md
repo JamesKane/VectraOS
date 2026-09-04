@@ -527,7 +527,8 @@ that table becomes readable.
   measure would be a guess.
 - **A distributed namespace.** 9P is a network protocol and Vectra9 will
   eventually be spoken over one, but nothing here assumes or provides
-  transparent remote mounting yet.
+  transparent remote mounting yet. `docs/FLEET.md` is the plan for it,
+  and it changes nothing in this document.
 - **Per-file capabilities.** Access control is Unix-shaped — uid, gid, mode —
   because 9P2000.L's `getattr`/`setattr` are. A capability model would be a
   better fit for per-process namespaces and is a much larger design.

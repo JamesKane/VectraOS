@@ -282,8 +282,8 @@ Plan 9's does.
 - **`respond` before `libthread`.** The serve loop's multiplier is one
   procedure, and it does not need a thread library to be removed.
 - **One user, still.** Notes by owner means notes by anyone until
-  `docs/HANDOFF.md`'s authentication milestone. Written down rather than
-  faked with a check that always passes.
+  `docs/FLEET.md` section 4's users. Written down rather than faked with
+  a check that always passes.
 - **No priority inheritance, still**, for `docs/HANDOFF.md`'s reason.
 
 ## 5. Sizes and order of dependence

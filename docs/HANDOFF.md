@@ -12,7 +12,7 @@ here that wants a *why* is a pointer to one of them.
 
 ## 1. What Vectra is
 
-A modular operating system in Odin. Two ideas define it:
+A modular operating system in Odin. Three ideas define it:
 
 - **Plan 9-inspired structure.** Per-process namespaces, private mount tables,
   and a synthetic file protocol, Vectra9 over 9P2000.L. *Every* system service
@@ -22,6 +22,10 @@ A modular operating system in Odin. Two ideas define it:
 - **"Cyberpunk Workstation 1994" UX.** Heavy skeuomorphic bevels, brushed dark
   magnesium over deep slate, amber/cyan/phosphor accents, copper trim, a
   software dirty-rect compositor, and tracker-synthesised relay clicks.
+- **An agent in the shell.** A model is a file server, the ghost acts
+  through the same files a person uses, every application serves a control
+  tree, and a namespace is its sandbox. `docs/GHOST.md` is the plan, and it
+  is not a second-class citizen of the other two.
 
 Layout — `kernel/` (arch, mem, sched, vfs, drivers), `sys/` (libodin, libuser,
 libdraw, vectra9), `servers/` (ramfs, consrv, kbdfs, eiafs, intuition), `apps/`
@@ -266,6 +270,10 @@ per directory:
 | `docs/THREAD.md` | `sys/libthread`, `sys/lib9p` — procs, threads, channels, `alt`, and a server that holds no lock | Writing a program that waits on two things, a server whose reads park, or anything with a channel in it |
 | `docs/DRAW.md` | The draw protocol, written before its code, and everything the screen grew after it: the window, the compositor, the chrome vocabulary and the one palette (`sys/libdraw`, `sys/libpal`) | Building the draw server, its client library, the fb mapping, or anything that draws in either ring |
 | `docs/WORKBENCH.md` | The plan for a desktop, Amiga's way: a mouse, gadgets, chords from a keys file, a MUI-shaped toolkit whose look is a theme file, and Workbench | Starting any of its four steps, or adding a file a window serves |
+| `docs/HARDWARE.md` | The plan for real hardware, the OrangePi 6 Plus: the device tree as files, drivers in ring 3 behind a walker, a device that walks the process's own tables, the GPU and NPU as directories, and the board's facts from the vendor tree | Starting any of its eight steps, adding a driver, or wondering what the kernel does and does not do for a device |
+| `docs/DEVTOOLS.md` | The plan for development tools: C and C++ on the build the tree has, a platform library over files, `/proc` whole, debug information as a flat file, a debugger that is a file server, POSIX as mlibc over the calls, and a compiler on the machine | Starting any of its nine steps, adding a language, a library a C program links, or a file the debugger reads |
+| `docs/FLEET.md` | The plan for several machines, Plan 9's way: `/net` as files, 9P served as well as dialled, users as key pairs with `factotum` and a Noise handshake, roles as init scripts, root over the network, one tree for three architectures, `cpu`, and a queue that is a directory | Starting any of its six steps, adding a network service, touching who may do what to whom, or adding a fast path that must keep a file fallback |
+| `docs/GHOST.md` | The plan for the agent: models as file servers, local and cloud behind one directory, a ghost with seven tools and a namespace for a sandbox, an application contract of three files that `libmui` serves free, the plumber, and MCP both ways | Starting any of its seven steps, making an application scriptable, adding a tool, or touching what the ghost may reach |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
@@ -405,6 +413,32 @@ the documents it points at.
 3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the
    same table lists the cores SMP will need to start. The mouse's IRQ 12 is
    one more line assumed rather than read, and may be the reason.
+4. **Real hardware.** `docs/HARDWARE.md` is the plan, written before its
+   code, for the OrangePi 6 Plus. Its first step needs no board. The
+   device tree becomes files, a GICv3 and the SMMU come up, and a ring 3
+   disk driver runs over `mmio`, `irq` and `dma`. All of that is on
+   QEMU's `virt` board. The board comes second, and the GPU fifth.
+5. **Development tools.** `docs/DEVTOOLS.md` is the plan, written before
+   its code. C and C++ enter the build at the object. A platform library
+   of twenty calls sits over files a program can open itself. `/proc`
+   grows Plan 9's `mem`, `regs` and `startstop`, and a debugger runs as
+   a file server with a window as one client. POSIX is mlibc over the
+   calls, so that `clang` and `odin` run on the machine. Three of its
+   steps need nothing before them.
+6. **The fleet.** `docs/FLEET.md` is the plan, written before its code,
+   and it is the authentication milestone two documents promised. `/net`
+   as files with a listening half, and `exportfs`, `import` and `cpu`.
+   Users are key pairs proved by a Noise handshake through `factotum`.
+   A role is an init script, root comes over the network, one tree
+   serves three architectures, and a queue is a directory. Its bench is two QEMU
+   machines of two architectures on one laptop. Its step 0 takes over
+   the network half of `docs/HARDWARE.md` step 3.
+7. **The ghost.** `docs/GHOST.md` is the plan, written before its code.
+   A model is a file server with a local engine and a cloud backend
+   behind one directory. The ghost runs the API's loop with seven tools
+   over files, in a namespace forked with `RFNOMNT` as its sandbox.
+   Every application serves `ctl`, `dict` and `event`, and `libmui`
+   serves them for free. Its first two steps need nothing but the disk.
 
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The
@@ -777,7 +811,7 @@ sys/
   libkbd/kbd.odin       Scancode set 1 as a state machine both rings call:
                         a position, whether it went down, and what it means
                         under the modifiers now
-  libposix/             Empty
+  libposix/             Empty. docs/DEVTOOLS.md section 8 is the plan
 servers/
   ramfs/main.odin       The first compiled server: two files, one writable,
                         serving this program's own segments back

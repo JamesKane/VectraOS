@@ -275,7 +275,8 @@ process, which `docs/INIT.md`'s process count is the bill for; take a
   thread has something better to do, and the driver is written so the
   swap is one procedure.
 - **No users yet.** One user, `glenda`, everywhere `Dir.uid` is asked for.
-  Authentication is a later milestone with a document of its own.
+  Authentication is a later milestone with a document of its own, and
+  `docs/FLEET.md` section 4 is that document.
 
 ## 4. Sizes and order of dependence
 
