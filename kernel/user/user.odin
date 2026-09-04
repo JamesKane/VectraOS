@@ -68,6 +68,8 @@ import "base:intrinsics"
 import "base:runtime"
 
 import "kernel:arch"
+import "kernel:devfs"
+import "vsys:vectra9"
 import "kernel:env"
 import "kernel:mem"
 import "kernel:sched"
@@ -198,6 +200,11 @@ Process :: struct {
 	// to a whole group is the half of Plan 9's notify still missing --
 	// the handler half exists now. See `docs/USER.md`.
 	note_group: u64,
+	// The rendezvous group, `note_group`'s twin: inherited, and a group of
+	// one under `RFREND`. A tag is private to it.
+	rend_group: u64,
+	// When `alarm` posts its note, as a tick, and zero for no alarm.
+	alarm_at:   u64,
 
 	// Where a spawned process's name lives. `load` is handed string literals
 	// that live in the image. `spawn_path` is handed a path sitting on the
@@ -450,7 +457,264 @@ init :: proc(ns: ^vfs.Namespace) -> bool {
 	if !reaper_start() {
 		return false
 	}
+	// The alarm clock, and the console's two questions: whose group a read
+	// of it belongs to, and where a typed interrupt goes.
+	if sched.spawn("alarms", alarm_loop) == nil {
+		return false
+	}
+	devfs.set_console_owner(console_owner)
+	devfs.set_interrupt_sink(interrupt_group)
 	return syscall_init(ns)
+}
+
+/*
+The alarm clock: one kernel thread that wakes for the soonest alarm any
+process set, posts `alarm` to every process whose time has come, and goes
+back to sleep until the next. `sys_alarm` sets a process's time and pokes
+it. Plan 9 keeps an alarm list the clock interrupt walks; this walks the
+table from a thread, which a table of a few hundred does not notice.
+*/
+@(private = "file")
+alarm_rendez: sync.Rendez
+
+@(private = "file")
+alarm_armed: bool
+
+alarms_fired: int
+
+@(private = "file")
+alarm_set :: proc "contextless" (arg: rawptr) -> bool {
+	_ = arg
+	return intrinsics.volatile_load(&alarm_armed)
+}
+
+@(private = "file")
+alarm_loop :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	for {
+		intrinsics.volatile_store(&alarm_armed, false)
+		now := sched.ticks()
+		soonest := u64(0)
+		guard := sync.acquire(&table_lock)
+		for i in 0 ..< MAX_PROCESSES {
+			p := &processes[i]
+			if !p.live || p.alarm_at == 0 {
+				continue
+			}
+			if p.alarm_at <= now {
+				p.alarm_at = 0
+				if post_note(p, "alarm") {
+					alarms_fired += 1
+				}
+			} else if soonest == 0 || p.alarm_at < soonest {
+				soonest = p.alarm_at
+			}
+		}
+		sync.release(&table_lock, guard)
+		if soonest == 0 {
+			sync.sleep(&alarm_rendez, alarm_set)
+		} else {
+			_ = sync.sleep_for(&alarm_rendez, alarm_set, nil, soonest - now)
+		}
+	}
+}
+
+// alarm_poke tells the clock a process set an alarm sooner than it knew.
+@(private)
+alarm_poke :: proc "contextless" () {
+	intrinsics.volatile_store(&alarm_armed, true)
+	_ = sync.wakeup(&alarm_rendez)
+}
+
+// The note group of the process that last read the console, set by
+// `sys_read`, and asked by `kernel/devfs` so a typed interrupt knows where
+// to go. The device's own handler runs on a worker thread and cannot ask.
+@(private)
+console_group: u64
+
+@(private = "file")
+console_owner :: proc "contextless" () -> u64 {
+	return intrinsics.volatile_load(&console_group)
+}
+
+interrupts_typed: int
+
+// interrupt_group is where a typed `^C` goes: `interrupt` to every process
+// in the group, from the console's own thread.
+@(private = "file")
+interrupt_group :: proc "contextless" (group: u64) {
+	if group == 0 {
+		return
+	}
+	interrupts_typed += 1
+	_ = notepg_kernel(group, "interrupt")
+}
+
+// notepg_kernel posts a note to every live process in a group, and answers
+// how many took it. The kernel's own `notepg`, with no poster to exclude.
+notepg_kernel :: proc "contextless" (group: u64, text: string) -> int #no_bounds_check {
+	noted := 0
+	guard := sync.acquire(&table_lock)
+	for i in 0 ..< MAX_PROCESSES {
+		q := &processes[i]
+		if !q.live || q.note_group != group {
+			continue
+		}
+		if post_note(q, text) {
+			noted += 1
+		}
+	}
+	sync.release(&table_lock, guard)
+	return noted
+}
+
+/*
+Rendezvous: a table of tags with a process asleep on each, Plan 9's
+`rendezvous(2)`. The first caller with a tag takes an entry, leaves its
+value and sleeps; the second finds the entry, swaps its value for the
+sleeper's, marks it matched and wakes the sleeper; each returns with the
+other's value. A tag is private to the callers' rendezvous group. An entry
+whose sleeper was noted goes back unmatched.
+*/
+REND_MAX :: 64
+
+@(private = "file")
+Rend_Entry :: struct {
+	used:    bool,
+	matched: bool,
+	group:   u64,
+	tag:     u64,
+	value:   u64,
+	wake:    sync.Rendez,
+}
+
+@(private = "file")
+rendezvous_table: [REND_MAX]Rend_Entry
+
+@(private = "file")
+rend_lock: sync.Spinlock
+
+rendezvous_met: int
+
+@(private = "file")
+rend_matched :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.volatile_load(&(^Rend_Entry)(arg).matched)
+}
+
+// rendezvous is the call: the partner's value, or `ok` false when a note
+// interrupted the wait or the table is full.
+@(private)
+rendezvous :: proc "contextless" (p: ^Process, tag: u64, value: u64) -> (partner: u64, ok: bool) #no_bounds_check {
+	guard := sync.acquire(&rend_lock)
+	for i in 0 ..< REND_MAX {
+		e := &rendezvous_table[i]
+		if e.used && !e.matched && e.group == p.rend_group && e.tag == tag {
+			partner = e.value
+			e.value = value
+			intrinsics.volatile_store(&e.matched, true)
+			sync.release(&rend_lock, guard)
+			_ = sync.wakeup(&e.wake)
+			rendezvous_met += 1
+			return partner, true
+		}
+	}
+	slot := -1
+	for i in 0 ..< REND_MAX {
+		if !rendezvous_table[i].used {
+			slot = i
+			break
+		}
+	}
+	if slot < 0 {
+		sync.release(&rend_lock, guard)
+		return 0, false
+	}
+	e := &rendezvous_table[slot]
+	e^ = Rend_Entry{used = true, group = p.rend_group, tag = tag, value = value}
+	sync.release(&rend_lock, guard)
+
+	woke := sync.sleep_noted(&e.wake, rend_matched, e)
+	guard = sync.acquire(&rend_lock)
+	met := intrinsics.volatile_load(&e.matched)
+	partner = e.value
+	e.used = false
+	e.matched = false
+	sync.release(&rend_lock, guard)
+	return partner, woke || met
+}
+
+/*
+Semaphores over a word in the caller's memory, 9front's `semacquire` and
+`semrelease`. The word is the count, and the kernel touches it through the
+direct map with the same atomic operations ring 3 would use, so a
+`semrelease` that finds no waiter is one instruction. One rendezvous serves
+every semaphore: a release wakes all waiters and each re-checks its own
+word, which is right for a handful of waiters and wrong for thousands.
+*/
+@(private = "file")
+sema_rendez: sync.Rendez
+
+semaphores_waited: int
+
+@(private = "file")
+sema_positive :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.atomic_load((^i64)(arg)) > 0
+}
+
+// sema_word finds the kernel's view of a process's semaphore word, or nil
+// when the address is not the process's to name.
+@(private)
+sema_word :: proc "contextless" (p: ^Process, addr: uintptr) -> ^i64 {
+	if p == nil || p.space == nil || addr % 8 != 0 {
+		return nil
+	}
+	cow_prepare(p, addr, 8)
+	if !reachable(addr, 8, {.User, .Write}) {
+		return nil
+	}
+	phys, ok := mem.translate(p.space, addr)
+	if !ok {
+		return nil
+	}
+	return (^i64)(mem.phys_to_virt(phys))
+}
+
+@(private)
+semacquire :: proc "contextless" (p: ^Process, addr: uintptr, block: bool) -> i64 {
+	word := sema_word(p, addr)
+	if word == nil {
+		return -i64(vectra9.EFAULT)
+	}
+	for {
+		v := intrinsics.atomic_load(word)
+		if v > 0 {
+			if _, swapped := intrinsics.atomic_compare_exchange_strong(word, v, v - 1); swapped {
+				return 1
+			}
+			continue
+		}
+		if !block {
+			return 0
+		}
+		semaphores_waited += 1
+		if !sync.sleep_noted(&sema_rendez, sema_positive, word) {
+			return -i64(vectra9.EINTR)
+		}
+	}
+}
+
+@(private)
+semrelease :: proc "contextless" (p: ^Process, addr: uintptr, count: i64) -> i64 {
+	word := sema_word(p, addr)
+	if word == nil {
+		return -i64(vectra9.EFAULT)
+	}
+	if count <= 0 {
+		return -i64(vectra9.EINVAL)
+	}
+	intrinsics.atomic_add(word, count)
+	_ = sync.wakeup_all(&sema_rendez)
+	return 0
 }
 
 /*
@@ -1413,6 +1677,7 @@ claim_slot :: proc "contextless" (parent: u64, detached: bool, note_group: u64) 
 			parent     = parent,
 			detached   = detached,
 			note_group = note_group == 0 ? next_pid : note_group,
+			rend_group = next_pid,
 		}
 		next_pid += 1
 		return p

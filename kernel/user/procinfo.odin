@@ -160,7 +160,7 @@ proc_namespace :: proc(pid: u64, out: []u8) -> int {
 	return n
 }
 
-@(private = "file")
+@(private)
 live_by_pid :: proc "contextless" (pid: u64) -> ^Process #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]

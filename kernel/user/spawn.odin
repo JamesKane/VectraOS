@@ -117,6 +117,9 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 		detached = false,
 		note_group = parent != nil ? parent.note_group : 0,
 	)
+	if p != nil && parent != nil {
+		p.rend_group = parent.rend_group
+	}
 	if p == nil {
 		// The table is full, which is a resource the caller can wait for
 		// rather than a request that can never work.

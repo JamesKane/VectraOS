@@ -119,8 +119,10 @@ file that is still there the next boot.
 
 ## What is not here
 
-- **`^C`.** Nothing maps a typed interrupt to a note, and no console knows
-  which process is in front. `docs/RC.md` lists notes among what rc lacks.
+- **`^C` in a window on a machine with no keyboard**, which is every
+  `virt` board: the serial line's `^C` reaches the serial shell, and the
+  window has no keys to carry one. `docs/PROCS.md` step 3 is where `^C`
+  itself arrived.
 - **A second window**, and a way to make one. `MAX_WINDOWS` is two.
 - **A login**, or a user other than glenda.
 - **The draw server on the serial line's terms.** A machine with no

@@ -518,6 +518,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_terminal(&r, column)
 
+	// -- And a typed ^C, which reaches the program reading the console -------
+
+	verify_interrupt(&r)
+
 	// -- What is left ---------------------------------------------------------
 
 	r.traps = arch.user_trap_count() - before_traps
@@ -2264,8 +2268,8 @@ verify_notes :: proc(r: ^Result) {
 		)
 		check(
 			r,
-			cell(p, NOTER_STRANGER) == refused(vectra9.ECHILD),
-			"while a pid that is nobody's child answers ECHILD",
+			cell(p, NOTER_STRANGER) == refused(vectra9.ESRCH),
+			"while a pid that is nobody answers ESRCH -- notes go by owner now, not parenthood",
 		)
 		check(r, p.exit.deliberate && p.exit.status == 0, "then exited with nothing to report")
 	}
@@ -6796,3 +6800,36 @@ verify_tools :: proc(r: ^Result) {
 
 @(private = "file") tools_said: [EXITS_MAX]u8
 @(private = "file") tools_diag: [256]u8
+
+
+/*
+verify_interrupt types `^C` at a program parked reading the console.
+
+`cat` with no arguments reads descriptor zero, which is `/dev/cons`, and
+its read records its note group as the console's owner. A `^C` fed to the
+keyboard then posts `interrupt` to that group, and `cat`, which has no
+handler, ends noted with that word -- `docs/PROCS.md` step 3's last claim.
+*/
+@(private = "file")
+verify_interrupt :: proc(r: ^Result) {
+	argv := new(Argv)
+	if !check(r, argv != nil, "a record for cat's arguments") {
+		return
+	}
+	defer free(argv)
+	check(r, argv_from(argv, []string{"cat"}), "holds them")
+	p, serr := spawn_path(nil, "/bin/cat", SPAWN_NS_COPY, argv)
+	if !check(r, serr == vfs.OK && p != nil, "cat starts, to read the console") {
+		return
+	}
+	r.programs += 1
+	// Long enough to load off the disk and park in its first read.
+	sync.delay(PATIENCE)
+	typed := interrupts_typed
+	devfs.keyboard_sink(0x03)
+	if check(r, wait(p, PATIENCE), "a typed ^C ends it inside the bound") {
+		check(r, p.exit.noted && note(p) == "interrupt", "noted `interrupt`, which is the word ^C posts")
+		check(r, interrupts_typed == typed + 1, "and the console counted one interrupt")
+	}
+	finish(r, p, "and it is taken down")
+}

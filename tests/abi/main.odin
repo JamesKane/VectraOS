@@ -14,11 +14,13 @@ environment is a copy of its parent's.
 */
 package abitest
 
+import "base:intrinsics"
 import "core:fmt"
 
 import "vsys:abi"
 import "vsys:libfmt"
 import "vsys:libuser"
+import "vsys:vectra9"
 
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -272,5 +274,73 @@ main :: proc(args: []string) {
 		fail("await quiet")
 	}
 
+	// -- A sleep past the old cap, and a rendezvous between two processes --
+	if libuser.sleep(150) != 150 {
+		fail("sleep long")
+	}
+	meeter := libuser.rfork(abi.RFPROC | abi.RFFDG)
+	if meeter == 0 {
+		got, rok := libuser.rendezvous(0x5EED, 8)
+		libuser.exits(rok && got == 7 ? "met" : "missed")
+	}
+	partner, rok := libuser.rendezvous(0x5EED, 7)
+	if meeter < 0 || !rok || partner != 8 {
+		fail("rendezvous")
+	}
+	n = libuser.await(u64(meeter), said[:])
+	if n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d met", meeter) {
+		fail("rendezvous child")
+	}
+
+	// -- A semaphore in shared memory, released to a waiting child ---------
+	intrinsics.atomic_store(&gate, 0)
+	waiter := libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFMEM)
+	if waiter == 0 {
+		libuser.exits(libuser.semacquire(&gate, true) == 1 ? "passed" : "blocked")
+	}
+	_ = libuser.sleep(5)
+	if waiter < 0 || libuser.semrelease(&gate, 1) != 0 {
+		fail("semrelease")
+	}
+	n = libuser.await(u64(waiter), said[:])
+	if n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d passed", waiter) {
+		fail("semacquire")
+	}
+	if libuser.semacquire(&gate, false) != 0 {
+		fail("semaphore count")
+	}
+
+	// -- An alarm, which is a note this program catches ----------------------
+	intrinsics.atomic_store(&alarmed, 0)
+	if libuser.notify(uintptr(rawptr(alarm_handler))) != 0 {
+		fail("notify")
+	}
+	if libuser.alarm(20) != 0 {
+		fail("alarm set")
+	}
+	slept := libuser.sleep(500)
+	if slept != -i64(vectra9.EINTR) {
+		fail("alarm sleep")
+	}
+	// The note is delivered at the next boundary, which this call is.
+	_ = libuser.sleep(1)
+	if intrinsics.atomic_load(&alarmed) != 1 {
+		fail("alarm")
+	}
+	_ = libuser.notify(0)
+
 	libuser.exits("ok")
+}
+
+// The semaphore the fork shares, and the alarm's count.
+gate: i64
+alarmed: i64
+
+// alarm_handler counts the note and carries on.
+alarm_handler :: proc "c" (ureg: rawptr, note: cstring) {
+	_ = ureg
+	if string(note) == "alarm" {
+		intrinsics.atomic_add(&alarmed, 1)
+	}
+	libuser.noted(abi.NCONT)
 }

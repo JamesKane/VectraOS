@@ -27,6 +27,7 @@ import "core:mem"
 import "vsys:abi"
 import "vsys:libfmt"
 import "vsys:libuser"
+import "vsys:vectra9"
 
 Var_Entry :: struct {
 	name:  string, // on the heap
@@ -109,6 +110,10 @@ main :: proc(args: []string) {
 
 	import_env(sh)
 	set_pid(sh)
+	// A typed `^C` is `interrupt` to this shell's group. The command it is
+	// running has no handler and ends; the shell has this one and does
+	// not, which is what Plan 9's rc does with its own.
+	_ = libuser.notify(uintptr(rawptr(note_handler)))
 
 	// The defaults, from the file in the image.
 	boot: Input
@@ -189,6 +194,17 @@ set_pid :: proc(sh: ^Shell) {
 	set_var(sh, "pid", one)
 }
 
+// note_handler is what the kernel calls with a note. An interrupt is
+// taken and continued from; anything else takes the default, which ends
+// the shell as it would any program.
+note_handler :: proc "c" (ureg: rawptr, note: cstring) {
+	_ = ureg
+	if string(note) == "interrupt" {
+		libuser.noted(abi.NCONT)
+	}
+	libuser.noted(abi.NDFLT)
+}
+
 // show_prompt writes `$prompt(which)` for an interactive read.
 show_prompt :: proc(which: int) {
 	sh := the_shell
@@ -196,8 +212,21 @@ show_prompt :: proc(which: int) {
 		return
 	}
 	prompt := lookup(sh, "prompt")
-	if which <= len(prompt) {
-		libuser.write_full(2, transmute([]u8)prompt[which - 1])
+	if which > len(prompt) {
+		return
+	}
+	// A note is delivered at the next system call, and after a `^C` that is
+	// this write: it answers EINTR with nothing written, and the prompt is
+	// asked for again.
+	for {
+		text := transmute([]u8)prompt[which - 1]
+		n := libuser.write(2, text)
+		if n != -i64(vectra9.EINTR) {
+			if n > 0 && int(n) < len(text) {
+				_ = libuser.write_full(2, text[n:])
+			}
+			return
+		}
 	}
 }
 

@@ -280,6 +280,13 @@ delay :: proc "contextless" (ticks: u64) {
 	_ = wait_on(&r, nil, nil, ticks, timed = true)
 }
 
+// delay_noted is `delay` a note may cut short. The caller asks the
+// scheduler whether one did; this returns either way.
+delay_noted :: proc "contextless" (ticks: u64) {
+	r: Rendez
+	_ = wait_on(&r, nil, nil, ticks, timed = true, interruptible = true)
+}
+
 /*
 wakeup starts the best waiter, if there is one.
 

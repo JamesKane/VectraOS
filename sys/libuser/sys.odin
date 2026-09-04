@@ -450,3 +450,38 @@ stop_child :: proc "contextless" (pid: u64) -> bool {
 	}
 	return wait(pid) == -i64(vectra9.EINTR)
 }
+
+// -- What a thread library needs, docs/PROCS.md step 3 -----------------------
+
+/*
+rendezvous is Plan 9's: the first caller with a tag sleeps, the second
+exchanges values with it and wakes it, and each gets the other's value. The
+tag is one the callers agree on -- an address in memory they share is the
+usual one -- and is private to a rendezvous group, which `RFREND` makes.
+`ok` is false when a note interrupted the wait.
+*/
+rendezvous :: proc "contextless" (tag: u64, value: u64) -> (partner: u64, ok: bool) {
+	r := raw2(abi.SYS_RENDEZVOUS, tag, value)
+	if r == -i64(vectra9.EINTR) {
+		return 0, false
+	}
+	return u64(r), true
+}
+
+// semacquire waits until the word at `sem` is positive and takes one from
+// it: 1 taken, 0 when `block` is false and there was nothing, and -EINTR
+// when a note interrupted the wait. 9front's, over a word in shared memory.
+semacquire :: proc "contextless" (sem: ^i64, block: bool) -> i64 {
+	return raw2(abi.SYS_SEMACQUIRE, u64(uintptr(sem)), block ? 1 : 0)
+}
+
+// semrelease adds `count` to the word and wakes whoever waits on it.
+semrelease :: proc "contextless" (sem: ^i64, count: i64) -> i64 {
+	return raw2(abi.SYS_SEMRELEASE, u64(uintptr(sem)), u64(count))
+}
+
+// alarm posts the note `alarm` to this process after `ticks`, or cancels the
+// one pending with zero, and answers how long the previous one had left.
+alarm :: proc "contextless" (ticks: u64) -> i64 {
+	return raw1(abi.SYS_ALARM, ticks)
+}

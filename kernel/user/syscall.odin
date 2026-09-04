@@ -407,6 +407,14 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		sys_exits(frame, uintptr(a0), int(a1))
 	case SYS_AWAIT:
 		result = sys_await(a0, uintptr(a1), int(a2))
+	case abi.SYS_RENDEZVOUS:
+		result = sys_rendezvous(a0, a1)
+	case abi.SYS_SEMACQUIRE:
+		result = sys_semacquire(uintptr(a0), a1 != 0)
+	case abi.SYS_SEMRELEASE:
+		result = sys_semrelease(uintptr(a0), i64(a1))
+	case abi.SYS_ALARM:
+		result = sys_alarm(a0)
 	case:
 		result = -i64(vectra9.ENOSYS)
 	}
@@ -525,6 +533,12 @@ sys_read :: proc(fd: int, addr: uintptr, count: int, at: u64 = 0, use_cursor := 
 	defer vfs.chan_close(c)
 	if count <= 0 {
 		return 0
+	}
+	// A read of the console makes this process's group the console's, for
+	// a typed ^C. Recorded here rather than in the device, whose handler
+	// runs on a worker thread that is nobody's process.
+	if c.server != nil && c.server.name == "c" {
+		intrinsics.volatile_store(&console_group, p.note_group)
 	}
 
 	/*
@@ -834,11 +848,10 @@ sys_note :: proc(pid: u64, addr: uintptr, length: int) -> i64 {
 		return -i64(vectra9.EFAULT)
 	}
 
-	child := find_child(p.pid, pid)
-	if child == nil {
-		return -i64(vectra9.ECHILD)
-	}
-	if !post_note(child, string(text[:length])) {
+	// By owner rather than by parenthood, and there is one owner, so any
+	// live process: what `/proc/n/note` already allowed. The day processes
+	// have users, this asks whose.
+	if !proc_note(pid, string(text[:length])) {
 		return -i64(vectra9.ESRCH)
 	}
 	return 0
@@ -881,11 +894,16 @@ sys_notepg :: proc(pid: u64, addr: uintptr, length: int) -> i64 #no_bounds_check
 
 	group := p.note_group
 	if pid != 0 {
-		child := find_child(p.pid, pid)
-		if child == nil {
-			return -i64(vectra9.ECHILD)
+		// Any live process's group, by owner; see `sys_note`.
+		guard := sync.acquire(&table_lock)
+		target := live_by_pid(pid)
+		if target != nil {
+			group = target.note_group
 		}
-		group = child.note_group
+		sync.release(&table_lock, guard)
+		if target == nil {
+			return -i64(vectra9.ESRCH)
+		}
 	}
 
 	// Under the table lock, so the group is read whole. A member that ended or
@@ -1704,13 +1722,61 @@ proc_span_taken :: proc "contextless" (p: ^Process, seg: ^Segment, newtop: uintp
 
 @(private = "file")
 sys_sleep :: proc(ticks: u64) -> i64 {
-	held := min(ticks, SLEEP_MAX)
-	if held == 0 {
+	if ticks == 0 {
 		sched.yield()
 		return 0
 	}
-	sync.delay(held)
-	return i64(held)
+	// Unbounded, and a note cuts it short: the door delivers the note the
+	// moment this returns, and EINTR is what the program sees if it lives.
+	sync.delay_noted(ticks)
+	if t := sched.current(); t != nil && sched.thread_noted(t) {
+		return -i64(vectra9.EINTR)
+	}
+	return i64(ticks)
+}
+
+// sys_rendezvous is Plan 9's: see `rendezvous` in `user.odin`.
+@(private = "file")
+sys_rendezvous :: proc(tag: u64, value: u64) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ESRCH)
+	}
+	partner, ok := rendezvous(p, tag, value)
+	if !ok {
+		return -i64(vectra9.EINTR)
+	}
+	return i64(partner)
+}
+
+@(private = "file")
+sys_semacquire :: proc(addr: uintptr, block: bool) -> i64 {
+	return semacquire(current(), addr, block)
+}
+
+@(private = "file")
+sys_semrelease :: proc(addr: uintptr, count: i64) -> i64 {
+	return semrelease(current(), addr, count)
+}
+
+// sys_alarm sets the tick this process gets `alarm` at, or clears it, and
+// answers what the last alarm had left.
+@(private = "file")
+sys_alarm :: proc(ticks: u64) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ESRCH)
+	}
+	now := sched.ticks()
+	left := u64(0)
+	if p.alarm_at > now {
+		left = p.alarm_at - now
+	}
+	p.alarm_at = ticks == 0 ? 0 : now + ticks
+	if ticks != 0 {
+		alarm_poke()
+	}
+	return i64(left)
 }
 
 /*

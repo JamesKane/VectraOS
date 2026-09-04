@@ -186,6 +186,34 @@ Proves: a self-test program parks in `rendezvous` and is woken by its
 partner; a `sleep 1000` in the tool script is one call; `^C` typed at the
 serial shell ends a `sleep 100` and leaves the shell.
 
+**Where it stands.** Done. Four system calls, 39 to 42: `rendezvous` over
+a table of tags private to a rendezvous group, which `RFREND` makes and
+every fork otherwise inherits; `semacquire` and `semrelease` over a word
+in the caller's memory, touched through the direct map with the atomic
+operations ring 3 would use, one rendezvous waking every waiter to
+re-check its own word; and `alarm`, a tick per process that one kernel
+thread wakes for and posts `alarm` on. `sleep` is unbounded and a note
+cuts it short with `EINTR`. A note goes to any live process by pid, and
+`notepg` to any live process's group, because there is one owner; the
+self-test that expected `ECHILD` for a stranger expects `ESRCH` now.
+
+`^C` is the console's: a typed `0x03` kills the line under construction
+and posts `interrupt` to the note group of the process that last read the
+console, which `sys_read` records because the device's own handler runs on
+a worker thread that is nobody's process. `rc` installs a handler that
+continues from an interrupt and takes the default for anything else, asks
+again when a read or the prompt's write answers `EINTR`, and the command
+it was running has no handler and ends. The terminal forks its shell into
+a note group of its own and posts to it when a `^C` comes through the
+window's keys.
+
+`abitest` parks in a rendezvous with a forked child, waits on a semaphore
+a memory-sharing child releases, sleeps past the old cap, and catches an
+alarm; the user suite types `^C` at a `cat` parked on the console and reads
+`interrupt` off its ending. From the serial line, `^C` ends `sleep 100` and
+`cat` alike with `$status` `interrupt`, and the prompt comes back. Green
+on amd64, arm64 and riscv64 at user 901.
+
 ### Step 4: `libthread`
 
 `sys/libthread`, about 1,500 lines, and the servers rewritten on it.

@@ -9,6 +9,7 @@ knows which.
 package rc
 
 import "vsys:libuser"
+import "vsys:vectra9"
 
 Input :: struct {
 	buf:         [dynamic]u8,
@@ -62,7 +63,19 @@ fill :: proc(in_: ^Input) -> bool {
 		in_.prompt = 2
 	}
 	tmp: [1024]u8
-	n := libuser.read(in_.fd, tmp[:])
+	n: i64
+	for {
+		n = libuser.read(in_.fd, tmp[:])
+		if n != -i64(vectra9.EINTR) {
+			break
+		}
+		// A `^C` cut the read short: the line it was typing is gone and the
+		// console showed a fresh one, so the prompt is shown again.
+		if in_.interactive {
+			show_prompt(1)
+			in_.prompt = 2
+		}
+	}
 	if n <= 0 {
 		in_.eof = true
 		return false

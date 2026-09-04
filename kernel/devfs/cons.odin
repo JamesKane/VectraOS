@@ -127,6 +127,7 @@ CONS_LINE_BYTES :: CONS_INPUT_BYTES / 2
 CTRL_D :: u8(0x04) // End of transmission: send the line, or end the file
 @(private)
 CTRL_U :: u8(0x15) // Kill: the line under construction goes
+CTRL_C :: u8(0x03) // Interrupt: the line goes, and the reader's group is noted
 @(private)
 BACKSPACE :: u8(0x08)
 @(private)
@@ -187,6 +188,16 @@ Cons :: struct {
 	bytes already typed.
 	*/
 	eofs:     int,
+	/*
+	Whose console this is, for a typed interrupt: the note group of the
+	process that last read it cooked, asked of `kernel/user` through
+	`console_owner` at each read. `rio` posts a window's interrupt to the
+	group of the program it started there; the kernel's console has no
+	starter, and the last reader is the program in front of it.
+	*/
+	owner_group: u64,
+	interrupt_pending: bool,
+	interrupts: int,
 
 	// Where a reader with nothing to read parks. Woken by the producer, and by
 	// the abort hook when a Tflush names the read.
@@ -472,7 +483,33 @@ cons_feed :: proc "contextless" (c: ^Cons, b: u8) -> bool {
 	if woke {
 		sync.wakeup(&c.ready)
 	}
+	if c.interrupt_pending {
+		c.interrupt_pending = false
+		if interrupt_sink != nil && c.owner_group != 0 {
+			interrupt_sink(c.owner_group)
+		}
+	}
 	return ok
+}
+
+// The two doors `kernel/user` opens for the console: which group is
+// reading it, and where a typed interrupt goes. Registered at `user.init`;
+// nil until then, and a `^C` before that is a killed line and nothing more.
+Console_Owner :: proc "contextless" () -> u64
+Interrupt_Sink :: proc "contextless" (group: u64)
+
+@(private)
+console_owner: Console_Owner
+
+@(private)
+interrupt_sink: Interrupt_Sink
+
+set_console_owner :: proc "contextless" (r: Console_Owner) {
+	console_owner = r
+}
+
+set_interrupt_sink :: proc "contextless" (sink: Interrupt_Sink) {
+	interrupt_sink = sink
 }
 
 /*
@@ -517,6 +554,14 @@ cons_accept :: proc "contextless" (
 		c.erased += 1
 		return c.echo ? .Erase : .Nothing, 0, true, false
 
+	case CTRL_C:
+		// The line under construction goes with the interrupt, and the
+		// note is posted by `cons_feed` once the lock is dropped: posting
+		// takes the process table's lock, which does not nest under this.
+		c.edit_len = 0
+		c.interrupts += 1
+		c.interrupt_pending = true
+		return c.echo ? .Newline : .Nothing, 0, true, false
 	case CTRL_U:
 		if c.edit_len == 0 {
 			return .Nothing, 0, false, false

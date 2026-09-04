@@ -124,6 +124,11 @@ SYS_EXITS :: u64(35)
 SYS_AWAIT :: u64(36)
 SYS_UNMOUNT :: u64(37)
 SYS_GETPID :: u64(38)
+// docs/PROCS.md step 3: what a thread library needs.
+SYS_RENDEZVOUS :: u64(39) // tag, value -> the partner's value
+SYS_SEMACQUIRE :: u64(40) // address, block -> 1 taken, 0 not, -EINTR noted
+SYS_SEMRELEASE :: u64(41) // address, count
+SYS_ALARM :: u64(42) // ticks -> ticks the last alarm had left
 
 /*
 How a program receives its arguments.

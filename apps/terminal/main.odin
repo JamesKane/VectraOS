@@ -121,6 +121,7 @@ wire: libuser.Spin
 
 data_fd: int
 to_shell: int // The write end of the shell's descriptor 0
+shell_pid: u64 // Whose group a typed ^C goes to
 
 /*
 _start claims a window, starts the shell, and serves it from both sides.
@@ -238,10 +239,13 @@ start :: proc "c" (block: ^abi.Args) {
 	in_r, in_w := abi.pipe_ends(in_pipe)
 	out_r, out_w := abi.pipe_ends(out_pipe)
 
-	shell := libuser.rfork(abi.RFPROC | abi.RFFDG)
+	// A note group of its own, so a typed `^C` reaches the shell and what
+	// it runs, and not this program.
+	shell := libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFNOTEG)
 	if shell < 0 {
 		libuser.exit(0x72)
 	}
+	shell_pid = u64(shell)
 	if shell == 0 {
 		_ = libuser.dup(in_r, 0)
 		_ = libuser.dup(out_w, 1)
@@ -300,6 +304,14 @@ type_loop :: proc "contextless" (cons: int) -> ! {
 		send_line := 0
 		lock_glass()
 		for i in 0 ..< int(got) {
+			if keys[i] == 0x03 {
+				// `rio`'s interrupt: the line goes, and the shell's group
+				// hears about it.
+				libedit.clear(&edit)
+				row_dirty[crow] = true
+				_ = libuser.notepg(shell_pid, "interrupt")
+				continue
+			}
 			switch libedit.put(&edit, keys[i]) {
 			case .Done:
 				text := libedit.text(&edit)

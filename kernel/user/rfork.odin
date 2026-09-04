@@ -88,7 +88,7 @@ RFNOMNT :: abi.RFNOMNT
 // The bits this kernel implements. Everything else in the word is refused,
 // including bits Plan 9 has and Vectra does not yet honour.
 @(private = "file")
-RFORK_KNOWN :: RFPROC | RFMEM | RFFDG | RFCFDG | RFNAMEG | RFCNAMEG | RFENVG | RFCENVG | RFNOTEG | RFNOWAIT
+RFORK_KNOWN :: RFPROC | RFMEM | RFFDG | RFCFDG | RFNAMEG | RFCNAMEG | RFENVG | RFCENVG | RFNOTEG | RFNOWAIT | RFREND
 
 /*
 sys_rfork is the call, dispatched with the frame because the frame is the
@@ -169,6 +169,9 @@ rfork_self :: proc(p: ^Process, flags: u64) -> i64 {
 	if flags & RFNOTEG != 0 {
 		p.note_group = p.pid
 	}
+	if flags & RFREND != 0 {
+		p.rend_group = p.pid
+	}
 	return 0
 }
 
@@ -200,6 +203,11 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 	)
 	if child == nil {
 		return -i64(vectra9.EAGAIN)
+	}
+	// The rendezvous group follows the note group's rule: inherited, or a
+	// group of one under RFREND.
+	if flags & RFREND == 0 {
+		child.rend_group = parent.rend_group
 	}
 
 	space, merr := mem.space_new()

@@ -1040,6 +1040,12 @@ devfs_read :: proc "contextless" (
 		w.tree = t
 		w.tag = tag
 		w.tap = nil
+		// The reader owns the console for a typed interrupt from here on.
+		if console_owner != nil {
+			if group := console_owner(); group != 0 {
+				t.cons.owner_group = group
+			}
+		}
 
 		for {
 			// The flush is checked before the drain, and the order keeps a
