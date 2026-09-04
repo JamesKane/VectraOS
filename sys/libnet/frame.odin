@@ -308,3 +308,115 @@ arp_lookup :: proc "contextless" (t: ^Arp_Table, ip: IP) -> (MAC, bool) #no_boun
 	}
 	return {}, false
 }
+
+// -- UDP ----------------------------------------------------------------------
+
+UDP_HDR :: 8
+
+/*
+sum16 is the running one's-complement sum `checksum` folds. It is exposed
+because a UDP checksum sums two things that are not next to each other. One is
+a pseudo-header built from the IPv4 addresses, and the other the datagram. A
+caller sums each in turn and folds once at the end.
+*/
+sum16 :: proc "contextless" (data: []u8, seed: u32 = 0) -> u32 #no_bounds_check {
+	sum := seed
+	i := 0
+	for i + 1 < len(data) {
+		sum += u32(data[i]) << 8 | u32(data[i + 1])
+		i += 2
+	}
+	if i < len(data) {
+		sum += u32(data[i]) << 8
+	}
+	return sum
+}
+
+// fold carries a running sum down to sixteen bits and complements it, which is
+// the checksum a header carries.
+fold :: proc "contextless" (seed: u32) -> u16 {
+	sum := seed
+	for sum >> 16 != 0 {
+		sum = (sum & 0xFFFF) + (sum >> 16)
+	}
+	return u16(~sum)
+}
+
+/*
+udp_pseudo sums the twelve bytes IPv4 puts in front of a UDP datagram for the
+checksum's sake. They are the two addresses, a zero, the protocol number, and
+the datagram's length. They are summed but never sent.
+*/
+udp_pseudo :: proc "contextless" (src: IP, dst: IP, udp_len: int) -> u32 #no_bounds_check {
+	head: [12]u8
+	for i in 0 ..< 4 {
+		head[i] = src[i]
+		head[4 + i] = dst[i]
+	}
+	head[8] = 0
+	head[9] = IPPROTO_UDP
+	put_be16(head[:], 10, u16(udp_len))
+	return sum16(head[:])
+}
+
+/*
+put_udp writes a UDP header and its payload at `at`, and computes the checksum
+over the pseudo-header and the datagram together. A checksum that comes out zero
+is sent as all ones, because zero means "no checksum" on the wire. Returns the
+offset past the datagram.
+*/
+put_udp :: proc "contextless" (
+	b: []u8,
+	at: int,
+	src: IP,
+	dst: IP,
+	sport: u16,
+	dport: u16,
+	payload: []u8,
+) -> int #no_bounds_check {
+	udp_len := UDP_HDR + len(payload)
+	put_be16(b, at + 0, sport)
+	put_be16(b, at + 2, dport)
+	put_be16(b, at + 4, u16(udp_len))
+	put_be16(b, at + 6, 0) // checksum, zero while summed
+	for i in 0 ..< len(payload) {
+		b[at + UDP_HDR + i] = payload[i]
+	}
+	end := at + udp_len
+	ck := fold(sum16(b[at:end], udp_pseudo(src, dst, udp_len)))
+	if ck == 0 {
+		ck = 0xFFFF
+	}
+	put_be16(b, at + 6, ck)
+	return end
+}
+
+Udp :: struct {
+	sport:   u16,
+	dport:   u16,
+	payload: []u8,
+}
+
+/*
+parse_udp reads a UDP header and answers the ports and the payload inside it. A
+datagram carrying a checksum is checked against the pseudo-header the addresses
+make. One carrying zero is not, because zero means the sender computed none.
+*/
+parse_udp :: proc "contextless" (p: []u8, src: IP, dst: IP) -> (u: Udp, ok: bool) #no_bounds_check {
+	if len(p) < UDP_HDR {
+		return {}, false
+	}
+	udp_len := int(get_be16(p, 4))
+	if udp_len < UDP_HDR || udp_len > len(p) {
+		return {}, false
+	}
+	if get_be16(p, 6) != 0 {
+		if fold(sum16(p[:udp_len], udp_pseudo(src, dst, udp_len))) != 0 {
+			return {}, false
+		}
+	}
+	u.sport = get_be16(p, 0)
+	u.dport = get_be16(p, 2)
+	u.payload = p[UDP_HDR:udp_len]
+	return u, true
+}

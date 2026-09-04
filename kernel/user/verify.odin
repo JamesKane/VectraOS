@@ -7396,6 +7396,32 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 	check(r, net_file_holds(r, "/net/arp", "10.0.2.2"), "the stack resolved the gateway by ARP across the card")
 	check(r, net_file_holds(r, "/net/icmp", "received 1"), "and its echo came back, an IPv4 datagram answered")
 
+	/*
+	And the conversations, driven by a program rather than from here. `udptest`
+	takes two from `/net/udp/clone` and announces a port on one. It connects the
+	other to it, then reads back out of the first what it wrote into the second.
+	That is the loopback path and the whole conversation shape at once, done
+	through the files a program would use.
+	*/
+	{
+		names := [?]string{"udptest"}
+		word, _, uok := run_script(
+			r,
+			"/bin/udptest",
+			names[:],
+			PATIENCE * 5,
+			abi_said[:],
+			"a program takes a udp conversation from /net/udp/clone",
+		)
+		if uok {
+			check(
+				r,
+				word == "ok",
+				word == "ok" ? "and the datagram it sent came back out of the end that announced" : word,
+			)
+		}
+	}
+
 	// -- Teardown, a remove of one of its files -------------------------------
 
 	if c, err := vfs.open_path(vfs.boot_namespace, "/net/icmp", vfs.O_RDONLY); err == vfs.OK {
