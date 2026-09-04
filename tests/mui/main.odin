@@ -90,6 +90,43 @@ count_verb :: proc "contextless" (b: []u8, end: int, verb: u8) -> int #no_bounds
 	return n
 }
 
+// A sink that records the atlas batches into a buffer the test reads back.
+rec_buf: [140000]u8
+rec_len: int
+scratch: [1000]u8
+
+rec_write :: proc "contextless" (user: rawptr, data: []u8) -> bool #no_bounds_check {
+	n := copy(rec_buf[rec_len:], data)
+	rec_len += n
+	return n == len(data)
+}
+
+rec_sink :: proc "contextless" () -> libmui.Sink {
+	rec_len = 0
+	return libmui.Sink{write = rec_write, user = nil}
+}
+
+// blit_from_range reports whether any blit in the stream reads its source from
+// an image id in [lo, hi]. A blit's fields are dst, dx, dy, src, so src is the
+// fourth word after the header.
+blit_from_range :: proc "contextless" (b: []u8, end: int, lo: u32, hi: u32) -> bool #no_bounds_check {
+	at := 0
+	for at + libdraw.HEADER <= end {
+		size := int(libdraw.get_u16(b, at))
+		if size < libdraw.HEADER {
+			break
+		}
+		if b[at + 2] == libdraw.BLIT {
+			src := libdraw.get_u32(b, at + libdraw.HEADER + 12)
+			if src >= lo && src <= hi {
+				return true
+			}
+		}
+		at += size
+	}
+	return false
+}
+
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	_ = block
@@ -188,7 +225,10 @@ start :: proc "c" (block: ^abi.Args) {
 		libmui.fit(col, &t2)
 		libmui.lay(col, 0, 0, 120, 60, &t2)
 
-		end := libmui.paint(paint_buf[:], 0, col, 1, ATLAS, &t2)
+		f2: libmui.Fonts
+		libmui.font_init(&f2, 1)
+		want(libmui.font_prepare(col, &f2, scratch[:], rec_sink(), &t2), "the atlases baked")
+		end := libmui.paint(paint_buf[:], 0, col, 1, &f2, &t2)
 		want(end > 0, "the paint fit the buffer")
 		want(has_fill(paint_buf[:], end, libpal.xrgb(t2.ground)), "the window ground was filled")
 		want(has_fill(paint_buf[:], end, libpal.xrgb(t2.face)), "the button face was filled")
@@ -208,7 +248,10 @@ start :: proc "c" (block: ^abi.Args) {
 		libmui.fit(col, &t3)
 		libmui.lay(col, 0, 0, 120, 60, &t3)
 
-		end := libmui.paint(paint_buf[:], 0, col, 1, ATLAS, &t3)
+		f3: libmui.Fonts
+		libmui.font_init(&f3, 1)
+		want(libmui.font_prepare(col, &f3, scratch[:], rec_sink(), &t3), "the copper atlas baked")
+		end := libmui.paint(paint_buf[:], 0, col, 1, &f3, &t3)
 		want(has_fill(paint_buf[:], end, libpal.xrgb(libpal.COPPER)), "the copper face was filled")
 		want(!has_fill(paint_buf[:], end, libpal.xrgb(libpal.MAGNESIUM)), "no magnesium face was left")
 	}
@@ -257,6 +300,36 @@ start :: proc "c" (block: ^abi.Args) {
 
 		// The message text takes no click.
 		want(libmui.hit(req.root, req.root.first.x + 2, req.root.first.y + 2) == nil, "the message text takes no click")
+	}
+
+	// -- One atlas per colour a label is drawn in, baked once ----------------
+	//
+	// A text label wants ink on the ground and a button label ink on the face,
+	// two colours, so two atlases are baked. A second button of the same face
+	// reuses the first, so the count stays two. The button's label then blits
+	// from the face atlas, ids seven through twelve, not the ground's one to
+	// six.
+	{
+		tf := libmui.default_theme
+		col := libmui.group(false)
+		libmui.add(col, libmui.text("File"))
+		libmui.add(col, libmui.button("Open"))
+		libmui.add(col, libmui.button("Save"))
+		libmui.fit(col, &tf)
+		libmui.lay(col, 0, 0, 200, 120, &tf)
+
+		fonts: libmui.Fonts
+		libmui.font_init(&fonts, 1)
+		sink := rec_sink()
+		want(libmui.font_prepare(col, &fonts, scratch[:], sink, &tf), "the atlases baked")
+		want(fonts.n == 2, "two colours made two atlases")
+		want(count_verb(rec_buf[:], rec_len, libdraw.ALLOC) == 2 * libmui.STRIPS, "each atlas allocated its strips")
+
+		end := libmui.paint(paint_buf[:], 0, col, 1, &fonts, &tf)
+		want(end > 0, "the paint fit the buffer")
+		// The ground atlas took ids 1..6, the face atlas 7..12.
+		want(blit_from_range(paint_buf[:], end, 1, 6), "a label blit from the ground atlas")
+		want(blit_from_range(paint_buf[:], end, 7, 12), "a button label blit from the face atlas")
 	}
 
 	// -- The theme is read from a file, a role at a time ----------------------

@@ -20,17 +20,17 @@ import "vsys:libpal"
 
 /*
 paint writes the commands to draw `root` and its descendants onto image `dst`,
-starting at offset `at` in buffer `b`, with glyphs from `atlas`. It returns the
-new offset, or a negative number if the buffer filled. A caller that overflows
-writes the batch and calls again from the node it stopped on. For the toolkit's
-own windows one batch holds a whole tree, so the simple form is one call.
+starting at offset `at` in buffer `b`. Labels blit from the atlases `f` holds,
+so a caller runs `font_prepare` first to bake them. It returns the new offset,
+or a negative number if the buffer filled. For the toolkit's own windows one
+batch holds a whole tree, so the simple form is one call.
 */
 paint :: proc "contextless" (
 	b: []u8,
 	at: int,
 	root: ^Object,
 	dst: u32,
-	atlas: libdraw.Atlas,
+	f: ^Fonts,
 	t: ^Theme,
 ) -> int {
 	if root == nil {
@@ -47,7 +47,7 @@ paint :: proc "contextless" (
 		u32(root.h),
 		libpal.xrgb(t.ground),
 	)
-	return paint_node(b, nat, root, dst, atlas, t)
+	return paint_node(b, nat, root, dst, f, t)
 }
 
 // paint_node draws one node and then its children. A group draws only its
@@ -57,7 +57,7 @@ paint_node :: proc "contextless" (
 	at: int,
 	o: ^Object,
 	dst: u32,
-	atlas: libdraw.Atlas,
+	f: ^Fonts,
 	t: ^Theme,
 ) -> int {
 	if o == nil || at < 0 {
@@ -70,10 +70,14 @@ paint_node :: proc "contextless" (
 	case .Group:
 	// A container draws nothing of its own.
 	case .Text:
-		nat = label(b, nat, o, o.x, o.y, dst, atlas, t)
+		if a, ok := font_get(f, t.ink, t.ground); ok {
+			nat = label(b, nat, o, o.x, o.y, dst, a, t)
+		}
 	case .Button:
 		nat = raised(b, nat, o, dst, t)
-		nat = label_centered(b, nat, o, dst, atlas, t)
+		if a, ok := font_get(f, t.ink, t.face); ok {
+			nat = label_centered(b, nat, o, dst, a, t)
+		}
 	case .Checkmark:
 		nat = raised(b, nat, o, dst, t)
 		if o.on {
@@ -105,7 +109,7 @@ paint_node :: proc "contextless" (
 		)
 	}
 	for c := o.first; c != nil; c = c.next {
-		nat = paint_node(b, nat, c, dst, atlas, t)
+		nat = paint_node(b, nat, c, dst, f, t)
 	}
 	return nat
 }
