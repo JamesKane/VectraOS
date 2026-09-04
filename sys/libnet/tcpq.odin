@@ -40,8 +40,14 @@ Retx_Entry :: struct {
 	flags:   u8,
 	len:     int,
 	sent_at: u64,
+	tries:   int,
 	data:    [SEG_MAX]u8,
 }
+
+// How many times one segment is sent before the conversation gives up. A
+// stack that never stops asking is not patient, it is stuck. The caller waits
+// on a connection that will never open, and nothing tells it so.
+MAX_TRIES :: 5
 
 Retx :: struct {
 	entries: [RETX_SLOTS]Retx_Entry,
@@ -92,6 +98,7 @@ retx_push :: proc "contextless" (
 		e.flags = flags
 		e.len = len(payload)
 		e.sent_at = now
+		e.tries = 1
 		copy(e.data[:], payload)
 		return true
 	}
@@ -126,7 +133,7 @@ retx_due :: proc "contextless" (q: ^Retx, now: u64, after: u64) -> (int, bool) #
 	best := -1
 	for i in 0 ..< RETX_SLOTS {
 		e := &q.entries[i]
-		if !e.used || now < e.sent_at + after {
+		if !e.used || e.tries >= MAX_TRIES || now < e.sent_at + after {
 			continue
 		}
 		if best < 0 || e.sent_at < q.entries[best].sent_at {
@@ -136,11 +143,27 @@ retx_due :: proc "contextless" (q: ^Retx, now: u64, after: u64) -> (int, bool) #
 	return best, best >= 0
 }
 
-// retx_sent marks a segment as sent again now, so its timer runs from here.
+// retx_sent marks a segment as sent again now, so its timer runs from here, and
+// counts the try against its bound.
 retx_sent :: proc "contextless" (q: ^Retx, i: int, now: u64) #no_bounds_check {
 	if i >= 0 && i < RETX_SLOTS {
 		q.entries[i].sent_at = now
+		q.entries[i].tries += 1
 	}
+}
+
+/*
+retx_lost reports whether a segment went out its last time and no
+acknowledgement followed. A conversation holding one of those is not going to arrive,
+and the caller wants to be told rather than left waiting.
+*/
+retx_lost :: proc "contextless" (q: ^Retx) -> bool #no_bounds_check {
+	for i in 0 ..< RETX_SLOTS {
+		if q.entries[i].used && q.entries[i].tries >= MAX_TRIES {
+			return true
+		}
+	}
+	return false
 }
 
 // retx_count is how many segments are waiting to be acknowledged.

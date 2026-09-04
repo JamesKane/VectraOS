@@ -444,11 +444,36 @@ tcp_tick :: proc "contextless" () #no_bounds_check {
 		}
 		if slot, due := libnet.retx_due(&c.retx, now_round, RETX_AFTER); due {
 			tcp_resend(i, slot)
+			continue
+		}
+		// A segment sent its last time and still unacknowledged means the far
+		// end is not there. The conversation closes, so a caller waiting on it
+		// is told rather than left holding a read for ever.
+		if libnet.retx_lost(&c.retx) {
+			c.state = .Closed
+			c.fin_seen = true
+			wake_tcp_reads(i)
 		}
 	}
 }
 
 // -- The held reads ------------------------------------------------------------
+
+/*
+wake_tcp_reads answers a read held on a conversation that has just given up.
+The stream is over, so the answer is the end of it rather than bytes.
+*/
+wake_tcp_reads :: proc "contextless" (i: int) {
+	// `answer_reads` is for a read with bytes waiting. This one has none and
+	// never will, so the request is answered empty by hand.
+	for {
+		req, ok := lib9p.held(&srv, rawptr(uintptr(i)), wants_tcp)
+		if !ok {
+			return
+		}
+		_ = lib9p.respond(req, vectra9.Rread{data = nil})
+	}
+}
 
 answer_tcp :: proc "contextless" (i: int) {
 	lib9p.answer_reads(&srv, rawptr(uintptr(i)), wants_tcp, drain_tcp)
