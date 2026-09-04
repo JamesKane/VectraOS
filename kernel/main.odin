@@ -287,6 +287,9 @@ kmain :: proc "c" () {
 			if init_disk() {
 				verify_disk()
 			}
+			if init_net() {
+				verify_net()
+			}
 			verify_space()
 
 			// Last, because ring 3 needs everything above it. A space to run
@@ -1952,6 +1955,126 @@ verify_disk :: proc() {
 		libodin.put_str(&sink, " reads and ")
 		libodin.put_uint(&sink, writes)
 		libodin.put_str(&sink, " writes through #S")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
+}
+
+/*
+init_net brings up the virtio-net card, if one is on the bus, and logs the
+address it found. A machine with no card still boots, and `verify_net` is
+skipped. `docs/FLEET.md` step 0's `netfs` is the stack that will drive this from
+ring 3. The kernel owns only the card, the way it owns the disk.
+*/
+init_net :: proc() -> bool {
+	if !arch.pci_available() {
+		return false
+	}
+	cards := virtio.net_init()
+	if cards == 0 {
+		return false
+	}
+	m: [6]u8
+	_ = virtio.mac(0, m[:])
+	sink := begin(&klog)
+	libodin.put_str(&sink, "net virtio-net over ")
+	libodin.put_str(&sink, arch.PCI_CONFIG_NAME)
+	libodin.put_str(&sink, ", ")
+	libodin.put_uint(&sink, u64(cards))
+	libodin.put_str(&sink, " card")
+	if cards != 1 {
+		libodin.put_str(&sink, "s")
+	}
+	libodin.put_str(&sink, ", MAC ")
+	hexd := "0123456789abcdef"
+	for i in 0 ..< 6 {
+		if i > 0 {
+			libodin.put_str(&sink, ":")
+		}
+		pair := [2]u8{hexd[m[i] >> 4], hexd[m[i] & 0xF]}
+		libodin.put_str(&sink, string(pair[:]))
+	}
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+verify_net round-trips one frame through the card. It sends a broadcast ARP for
+the gateway QEMU answers for, then polls for the reply. A reply proves the whole
+path. A frame the driver built left on the transmit queue. A frame the card
+received came back on the receive queue, its header skipped and its bytes
+intact. The bench in `docs/FLEET.md` replaces this one-frame check with two
+machines that ping by name.
+*/
+verify_net :: proc() {
+	result: libodin.Tally
+
+	m: [6]u8
+	if !virtio.mac(0, m[:]) {
+		libodin.tally(&result, false, "the card has a hardware address")
+		sink := report_begin("net", result.checks)
+		report_failed(&sink, result)
+		return
+	}
+
+	// The ARP request: an ethernet header and a 28-byte ARP body. Our address
+	// is 10.0.2.15, QEMU's default guest, and the target is the gateway.
+	spa := [4]u8{10, 0, 2, 15}
+	tpa := [4]u8{10, 0, 2, 2}
+	frame: [42]u8
+	// Ethernet: broadcast destination, our source, ARP ethertype.
+	for i in 0 ..< 6 {
+		frame[i] = 0xFF
+		frame[6 + i] = m[i]
+	}
+	frame[12] = 0x08
+	frame[13] = 0x06
+	// ARP: ethernet over IPv4, a request, our addresses, the target IP.
+	frame[14] = 0x00; frame[15] = 0x01 // htype: ethernet
+	frame[16] = 0x08; frame[17] = 0x00 // ptype: IPv4
+	frame[18] = 6 // hlen
+	frame[19] = 4 // plen
+	frame[20] = 0x00; frame[21] = 0x01 // oper: request
+	for i in 0 ..< 6 {
+		frame[22 + i] = m[i] // sender hardware address
+	}
+	for i in 0 ..< 4 {
+		frame[28 + i] = spa[i] // sender protocol address
+	}
+	// target hardware address left zero
+	for i in 0 ..< 4 {
+		frame[38 + i] = tpa[i] // target protocol address
+	}
+
+	sent := virtio.send(0, frame[:])
+	libodin.tally(&result, sent, "an ARP request left on the transmit queue")
+
+	// Poll for the reply: an ARP frame whose sender is the gateway. Other
+	// frames the network sends are skipped. The bound is generous, because
+	// the reply crosses QEMU's own network stack.
+	got := false
+	buf: [2048]u8
+	if sent {
+		poll: for _ in 0 ..< 2_000_000 {
+			n := virtio.recv(0, buf[:])
+			if n >= 42 && buf[12] == 0x08 && buf[13] == 0x06 {
+				// ARP reply (oper 2) whose sender protocol address is 10.0.2.2.
+				is_reply := buf[20] == 0x00 && buf[21] == 0x02
+				from_gw := buf[28] == 10 && buf[29] == 0 && buf[30] == 2 && buf[31] == 2
+				if is_reply && from_gw {
+					got = true
+					break poll
+				}
+			}
+			arch.spin_hint()
+		}
+	}
+	libodin.tally(&result, got, "and the gateway's ARP reply came back on the receive queue")
+
+	sink := report_begin("net", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " network checks passed -- a frame sent and the gateway answered by ARP")
 		emit(&klog, .Ok, &sink)
 		return
 	}

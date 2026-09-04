@@ -916,7 +916,12 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	append(&args, "-device", "virtio-blk-pci,drive=esp,bootindex=0,disable-legacy=on")
 	append(&args, "-drive", fmt.tprintf("if=none,id=scratch,format=raw,file=%s", SCRATCH_IMG))
 	append(&args, "-device", "virtio-blk-pci,drive=scratch,disable-legacy=on")
-	append(&args, "-net", "none")
+	// A virtio-net card on QEMU's user-mode network. SLIRP answers ARP for the
+	// gateway at 10.0.2.2, which is what the kernel's net self-test round-trips
+	// against. `docs/FLEET.md` step 0's bench replaces this with a socket
+	// network between two machines.
+	append(&args, "-netdev", "user,id=n0")
+	append(&args, "-device", "virtio-net-pci,netdev=n0,disable-legacy=on")
 	// More than one core, because the kernel starts every core the
 	// bootloader lists and the self-tests run across them. `--smp=1` is
 	// the uniprocessor control.
