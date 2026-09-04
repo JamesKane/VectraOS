@@ -81,8 +81,9 @@ Dev_Kind :: enum u8 {
 	Zero, // Writes vanish, reads are zeroes and never end
 	Fb, // The raw framebuffer: pixel bytes at an offset. See `fbdev.odin`
 	Fbctl, // The framebuffer's geometry: reads report, nothing to command yet
-	Scancode, // The keyboard before translation, diverted while open. See `tap.odin`
+		Scancode, // The keyboard before translation, diverted while open. See `tap.odin`
 	Eia0, // The serial port's bytes, raw in and raw out. See `tap.odin`
+	Mouse, // The pointer, one line per movement, one reader. See `mouse.odin`
 }
 
 Dev_Node :: struct {
@@ -116,8 +117,9 @@ DEV_NODES := [?]Dev_Node {
 	{name = "zero", parent = 0, kind = .Zero},
 	{name = "fb", parent = 0, kind = .Fb},
 	{name = "fbctl", parent = 0, kind = .Fbctl},
-	{name = "scancode", parent = 0, kind = .Scancode},
+		{name = "scancode", parent = 0, kind = .Scancode},
 	{name = "eia0", parent = 0, kind = .Eia0},
+	{name = "mouse", parent = 0, kind = .Mouse},
 }
 
 // How many devices this server publishes, not counting its own root. Reported
@@ -149,10 +151,11 @@ Read_Wait :: struct {
 	tree: ^Dev_Tree,
 	tag:  vectra9.Tag,
 
-	// Which stream this request waits on: a tap, or nil for the console.
-	// Written by every request that parks, because the slot is reused and a
-	// stale stream would have a reader test the wrong ring.
-	tap:  ^Tap,
+		// Which stream this request waits on: a tap, the mouse, or the console
+	// when neither. Written by every request that parks, because the slot is
+	// reused and a stale stream would have a reader test the wrong ring.
+	tap:   ^Tap,
+	mouse: ^Mouse_File,
 }
 
 Dev_Tree :: struct {
@@ -164,10 +167,13 @@ Dev_Tree :: struct {
 	// console is one tenant. See `fbdev.odin`.
 	raw:    ^fb.Surface,
 
-	// The two raw input streams, each diverted from the console while its
+		// The two raw input streams, each diverted from the console while its
 	// file is open. See `tap.odin`.
 	scancode: Tap,
 	serial:   Tap,
+
+	// The pointer, one line per movement. See `mouse.odin`.
+	mouse:    Mouse_File,
 
 	// Client fids, and the one thing in here that several workers write. See
 	// `kernel/vfs/fidtab.odin`.
@@ -443,9 +449,12 @@ mark_open :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_K
 	case .Eia0:
 		t.eia_opens += 1
 		return kind, t.eia_opens == 1
-	case .Fb:
+		case .Fb:
 		t.fb_opens += 1
 		return kind, t.fb_opens == 1
+	case .Mouse:
+		t.mouse.opens += 1
+		return kind, t.mouse.opens == 1
 	}
 	return kind, false
 }
@@ -487,9 +496,12 @@ drop_fid :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_Ki
 	case .Eia0:
 		t.eia_opens -= 1
 		return kind, t.eia_opens <= 0
-	case .Fb:
+		case .Fb:
 		t.fb_opens -= 1
 		return kind, t.fb_opens <= 0
+	case .Mouse:
+		t.mouse.opens -= 1
+		return kind, t.mouse.opens <= 0
 	}
 	return kind, false
 }
@@ -703,9 +715,10 @@ waking three threads that will go straight back to sleep.
 devfs_abort :: proc "contextless" (server: rawptr, tag: vectra9.Tag) {
 	t := cast(^Dev_Tree)server
 	_ = tag
-	sync.wakeup_all(&t.cons.ready)
+		sync.wakeup_all(&t.cons.ready)
 	sync.wakeup_all(&t.scancode.ready)
 	sync.wakeup_all(&t.serial.ready)
+	sync.wakeup_all(&t.mouse.ready)
 }
 
 /*
@@ -717,9 +730,13 @@ condition is allowed to do and nothing else: two loads and a comparison.
 */
 @(private = "file")
 read_ready :: proc "contextless" (arg: rawptr) -> bool {
-	w := cast(^Read_Wait)arg
+		w := cast(^Read_Wait)arg
 	if w.tap != nil {
 		if tap_available(w.tap) {
+			return true
+		}
+	} else if w.mouse != nil {
+		if mouse_available(w.mouse) {
 			return true
 		}
 	} else if cons_available(&w.tree.cons) {
@@ -817,9 +834,22 @@ devfs_handler :: proc "contextless" (
 		// A port that failed its loopback probe is a device that is not
 		// there. A refusal at the open beats a read that parks for ever on
 		// hardware nothing feeds.
-		if DEV_NODES[node].kind == .Eia0 && (t.cons.port == nil || !t.cons.port.present) {
+				if DEV_NODES[node].kind == .Eia0 && (t.cons.port == nil || !t.cons.port.present) {
 			reply^ = vectra9.error_reply(vectra9.ENXIO)
 			return
+		}
+				// A mouse that never came up is the same refusal. A pointer has one
+		// owner, so a second open of a held mouse is refused rather than
+		// given half the movements.
+		if DEV_NODES[node].kind == .Mouse {
+			if !t.mouse.present {
+				reply^ = vectra9.error_reply(vectra9.ENXIO)
+				return
+			}
+			if mouse_held(t) {
+				reply^ = vectra9.error_reply(vectra9.EBUSY)
+				return
+			}
 		}
 		// The open is recorded, not merely allowed. `/dev/consctl` owns the
 		// console's rules while held, and a tap owns its stream. The first
@@ -1036,10 +1066,11 @@ devfs_read :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.EIO)
 			return
 		}
-		w := &t.waits[int(tag)]
+				w := &t.waits[int(tag)]
 		w.tree = t
 		w.tag = tag
 		w.tap = nil
+		w.mouse = nil
 		// The reader owns the console for a typed interrupt from here on.
 		if console_owner != nil {
 			if group := console_owner(); group != 0 {
@@ -1082,10 +1113,11 @@ devfs_read :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.EIO)
 			return
 		}
-		w := &t.waits[int(tag)]
+				w := &t.waits[int(tag)]
 		w.tree = t
 		w.tag = tag
 		w.tap = tp
+		w.mouse = nil
 
 		for {
 			/*
@@ -1110,11 +1142,43 @@ devfs_read :: proc "contextless" (
 			sync.sleep(&tp.ready, read_ready, w)
 		}
 
+	case .Mouse:
+		// One line per movement, and a park until there is one newer than
+		// the last line answered. The same flush-first loop as the taps.
+		if int(tag) >= mnt.MAX_REQUESTS {
+			reply^ = vectra9.error_reply(vectra9.EIO)
+			return
+		}
+		w := &t.waits[int(tag)]
+		w.tree = t
+		w.tag = tag
+		w.tap = nil
+		w.mouse = &t.mouse
+		for {
+			if vfs.server_flushed(&t.server, tag) {
+				reply^ = vectra9.error_reply(vectra9.EINTR)
+				return
+			}
+			if n := mouse_line(&t.mouse, buf[:room]); n > 0 {
+				reply^ = vectra9.Rread{data = buf[:n]}
+				return
+			}
+			sync.sleep(&t.mouse.ready, read_ready, w)
+		}
+
 	case .Dir:
 		// Answered above, and named here so the switch is exhaustive rather
 		// than defaulted. A file kind added to the enum should not compile.
 		reply^ = vectra9.error_reply(vectra9.EISDIR)
 	}
+}
+
+// mouse_held says whether a fid holds the pointer right now.
+@(private = "file")
+mouse_held :: proc "contextless" (t: ^Dev_Tree) -> bool {
+	g := sync.acquire(&t.lock)
+	defer sync.release(&t.lock, g)
+	return t.mouse.opens > 0
 }
 
 /*
@@ -1172,10 +1236,10 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 		}
 		reply^ = vectra9.Rwrite{count = 0}
 
-	case .Scancode:
-		// Nobody writes the keyboard. The operation exists and is refused,
-		// which is what EPERM says. EINVAL would blame the bytes, and no
-		// bytes would have done better.
+	case .Scancode, .Mouse:
+		// Nobody writes the keyboard, or the mouse. The operation exists and
+		// is refused, which is what EPERM says. EINVAL would blame the
+		// bytes, and no bytes would have done better.
 		reply^ = vectra9.error_reply(vectra9.EPERM)
 
 	case .Eia0:

@@ -255,6 +255,7 @@ per directory:
 | `docs/SPACE.md` | `kernel/mem/space.odin` — a space per process, and the half of it that is shared | Building a process, mapping something a program may reach, or wondering what the scheduler reloads |
 | `docs/USER.md` | `kernel/user/` — ring 3, `syscall`/`sysret`, the per-CPU record behind GS, a process and its namespace | Entering ring 3, adding a system call, copying a pointer in from a program, or wondering what a program may not do |
 | `docs/KBD.md` | `kernel/drivers/kbd/` — scancodes, the I/O APIC, and why a handler splits in two | Adding a device that interrupts, routing a line, or wondering why the polling thread is still there |
+| `docs/MOUSE.md` | `kernel/drivers/mouse/`, `/dev/mouse` — the packet, the second port, one reader | Reading the pointer, or adding a device on the 8042 |
 | `docs/DEVFS.md` | `kernel/devfs/` — `#c` at `/dev`, the console device, the line discipline, the `ctl` convention, the raw framebuffer and the screen's divert | Adding a device file, adding a `ctl` file, writing a server whose reads park, wondering why `/dev/cons` has two locks, or asking who owns the glass |
 | `docs/SRV.md` | `kernel/srv/` — `#s` at `/srv`, posting, the id that is not a slot | Publishing a service, mounting one by name, or writing a directory that changes |
 | `docs/ENV.md` | `kernel/env/` — `#e` at `/env`, one group per process, the root that means whoever asks | Reading or setting a variable, adding a per-process device, or wondering what `rfork(RFENVG)` copies |
@@ -605,8 +606,12 @@ kernel/
     kbd/kbd.odin        PS/2 scancodes: the top half that may not park, the
                         ring, the bottom half that may, and the raw hook with
                         first refusal
-    kbd/verify.odin     The state machine, the raw hook's stale-shift arc, and
+        kbd/verify.odin     The state machine, the raw hook's stale-shift arc, and
                         one interrupt the 8042 was asked to raise
+    mouse/mouse.odin    PS/2 mouse on the 8042's second port: packets into a
+                        position, rio's buttons, the same two halves
+    mouse/verify.odin   The packet decoder on its own, and a packet the
+                        controller was asked to deliver
   mem/
     mem.odin            Region/Boot_Memory types, HHDM, alignment, mem.init
     pmm.odin            Bitmap physical page allocator, and the zeroed run an
@@ -665,8 +670,10 @@ kernel/
     fbdev.odin          /dev/fb as the screen's memory at an offset, /dev/fbctl
                         as its geometry, and the shadow surface the console
                         draws into while something else holds the glass
-    tap.odin            /dev/scancode and /dev/eia0: each owns its stream while
+        tap.odin            /dev/scancode and /dev/eia0: each owns its stream while
                         held open, and gives it back on the last close
+    mouse.odin          /dev/mouse: the latest movement as rio's line, one
+                        reader, a read parked until the next
     verify.odin         The real /dev: a read that parks through a character, a
                         line edited, a mode that reverts with its file, pixels
                         read off the screen, and each stream diverted and
@@ -766,7 +773,10 @@ sys/
   libdraw/chrome.odin   The chassis vocabulary as rectangles, worn by both
                         rings. What composes them is the caller's
   libpal/palette.odin   The system palette, once, for both privilege levels
-  libfont/font_data.odin  GENERATED -- the one 8x16 font table
+    libfont/font_data.odin  GENERATED -- the one 8x16 font table
+  libkbd/kbd.odin       Scancode set 1 as a state machine both rings call:
+                        a position, whether it went down, and what it means
+                        under the modifiers now
   libposix/             Empty
 servers/
   ramfs/main.odin       The first compiled server: two files, one writable,

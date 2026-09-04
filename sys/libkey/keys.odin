@@ -25,11 +25,38 @@ package libkey
 
 KF :: rune(0xF000) // The beginning of the private space
 
+// The keys that move a cursor.
 KHOME :: KF | 0x0D
 KUP :: KF | 0x0E
+KPGUP :: KF | 0x0F
 KLEFT :: KF | 0x11
 KRIGHT :: KF | 0x12
+KPGDOWN :: KF | 0x13
+KINS :: KF | 0x14
 KEND :: KF | 0x18
 
 // `Kview` in `keyboard.h`, which is what a down arrow is an alias for.
 KDOWN :: rune(0xF800)
+
+// The modifiers, which a `kbd` file reports as keys held and a `cons`
+// file never delivers. `KMOD4` is the key with a flag on it.
+KALT :: KF | 0x15
+KSHIFT :: KF | 0x16
+KCTL :: KF | 0x17
+KCAPS :: KF | 0x64
+KNUM :: KF | 0x65
+KMOD4 :: KF | 0x68
+
+// The keys that are neither. Print screen, scroll lock, and the twelve
+// function keys, `KF1` through `KF12` in order.
+KPRINT :: KF | 0x10
+KSCROLL :: KF | 0x19
+KF1 :: KF | 0x01
+KF12 :: KF | 0x0C
+
+// Three keys that are characters after all, named here because a key
+// table wants a name for every position. Delete is what `keyboard.h`
+// says it is, and escape and backspace are ASCII's.
+KESC :: rune(0x1B)
+KBS :: rune(0x08)
+KDEL :: rune(0x7F)

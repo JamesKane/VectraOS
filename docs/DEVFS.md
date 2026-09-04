@@ -470,6 +470,13 @@ stands between a tap and its reader, so any byte answers. And there is no
 `^D`, so nothing here ever answers zero bytes. Park, byte, or flush is the
 whole state space.
 
+**`/dev/mouse` is the third input file, and it is not a tap.** `mouse.odin`
+keeps the latest movement the driver delivered and a count of them. A
+read parks until the count moves past the last line it answered. One
+line per movement, in `rio`'s widths, and one reader at a time. Nothing
+is diverted, because nothing in the kernel wanted the pointer first.
+`docs/MOUSE.md` is the driver and the file together.
+
 ## A worker for every request, and one to serve the flush
 
 `WORKERS` is `mnt.MAX_REQUESTS + 1`. The transport carries at most
@@ -499,13 +506,13 @@ ever for.
 
 ## What a device answers, and what it refuses
 
-| Message | `/dev` | `cons` | `consctl` | `null` | `zero` | `fb` | `fbctl` | `scancode` | `eia0` |
-|---|---|---|---|---|---|---|---|---|---|
-| `Tlopen` write | EISDIR | ok | ok, and counted | ok | ok | ok | ok | ok, diverts | ok, diverts (ENXIO with no port) |
-| `Tread` | EISDIR | parks until a line | the state | 0 bytes | zeroes, for ever | pixels at the offset | the geometry | parks until a scancode | parks until a byte |
-| `Twrite` | EISDIR | draws, and sends | one command | count | count | pixels, may be short | EINVAL | EPERM | raw, out the wire |
-| `Treaddir` | eight entries | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR |
-| `Tclunk` | — | — | may revert the mode | — | — | — | — | may give the stream back | may give the stream back |
+| Message | `/dev` | `cons` | `consctl` | `null` | `zero` | `fb` | `fbctl` | `scancode` | `eia0` | `mouse` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `Tlopen` write | EISDIR | ok | ok, and counted | ok | ok | ok | ok | ok, diverts | ok, diverts (ENXIO with no port) | ok once (EBUSY held, ENXIO with no mouse) |
+| `Tread` | EISDIR | parks until a line | the state | 0 bytes | zeroes, for ever | pixels at the offset | the geometry | parks until a scancode | parks until a byte | parks until a movement |
+| `Twrite` | EISDIR | draws, and sends | one command | count | count | pixels, may be short | EINVAL | EPERM | raw, out the wire | EPERM |
+| `Treaddir` | nine entries | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR | ENOTDIR |
+| `Tclunk` | — | — | may revert the mode | — | — | — | — | may give the stream back | may give the stream back | frees the pointer |
 | `Tgetattr` size | 0 | 0 | 0 | 0 | 0 | height × pitch | 0 | 0 | 0 |
 | `Tlcreate`, `Tmkdir`, `Tremove` | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM | EPERM |
 

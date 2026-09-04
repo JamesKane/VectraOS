@@ -3,57 +3,100 @@ kbdfs -- a kernel service, rebuilt as a program.
 
 `kernel/drivers/kbd` translates scancodes to characters inside the kernel.
 This is that translation moved to ring 3, over the raw stream `/dev/scancode`
-serves. It is the first tenant of the userland devfs the handoff pointed at:
-a driver that reads a raw device, does its own translation, and serves the
-cooked result back as a file its clients mount.
+serves. It is the first tenant of the userland devfs the handoff pointed
+at. A driver reads a raw device, does its own translation, and serves the
+cooked result back as files its clients mount.
 
-The shape is `consrv`'s on `sys/libthread`, because the problem is the same
-one. Two threads in one proc, and an io proc makes each read that parks:
+The translation is `sys/libkbd`'s, one package both rings call since
+`docs/WORKBENCH.md` step 1. This program carried a second copy of the
+kernel's tables before that. `docs/KBD.md` said a layout in a driver was
+the wrong place for one.
 
-    the key thread reads /dev/scancode through an io proc, raw make and
-                   break codes, and runs the scancode state machine. The
-                   characters it makes go into the ring, and it answers
-                   any read of /kbd held for want of a key.
-    the serve loop `lib9p.serve`. A read of /kbd with nothing translated
-                   is held rather than answered empty.
+## Two files, because a chord is not a character
 
-What crossed the privilege boundary is the state machine: the two US-layout
-tables, shift, caps, control, the extended prefix, and the rule that a release
-makes no character.
+`cons` is the keyboard as a byte stream, the characters typed, cooked by
+the same rule the kernel's `/dev/cons` uses. Every reader that wants a
+byte stream reads it. `kbd` is 9front's, one message per read, for a
+reader that wants the keys:
 
-**It was the kernel's byte for byte and now it is not.** `kernel/drivers/kbd`
-answers a *rune* for the extended keys -- an arrow is `KF|0x11`, encoded as
-UTF-8 into the byte sink, see `sys/libkey` -- and this copy still drops them
-the way both did before. So a program reading `/kbd` gets no arrow keys, and
-one reading `/dev/cons` does.
+    c<runes>    the characters typed, as UTF-8
+    k<runes>    every key held down, after a press
+    K<runes>    every key held down, after a release
 
-Nothing consumes `/kbd` for them yet, which is why this is written down rather
-than fixed. The fix is not a second copy of the new table: it is the scancode
-translation becoming a package both rings call, which is what having two of it
-has been asking for since this file was written.
+A reader of `kbd` sees the alt key go down and the `n` go down beside it,
+which is a chord, and sees the release. That is the whole of what a
+chord needs. It is also why `cons` could never carry one. A key pressed
+with alt held makes no character at all, so a chord is never a letter
+typed at whatever window is in front. The window manager reads `kbd`,
+takes the chords it knows, and passes the rest on.
 
-Teardown is `consrv`'s: on `Tremove` the serve loop stops, every held read
-is answered empty, and `threadexitsall` notes the io procs out of their
-parked reads and waits for them. Status zero is that arc succeeding.
+The shape is `consrv`'s on `sys/libthread`. Two threads in one proc, and
+an io proc makes each read that parks:
+
+        the key thread reads /dev/scancode through an io proc, raw make and
+                   break codes, and runs the state machine. A character
+                   goes into the ring for `cons`. Every change of the keys
+                   held becomes a message for `kbd`. Both answer any read
+                   held for want of one.
+    the serve loop `lib9p.serve`. A read with nothing to give is held
+                   rather than answered empty.
+
+Teardown is `consrv`'s. On `Tremove` the serve loop stops and every held
+read is answered empty. `threadexitsall` then notes the io procs out of
+their parked reads and waits for them. Status zero is that arc succeeding.
 */
 package kbdfs
 
 import "base:runtime"
+import "core:unicode/utf8"
 
 import "vsys:abi"
 import "vsys:lib9p"
+import "vsys:libkbd"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
 
 NODE_ROOT :: i32(0)
-NODE_KBD :: i32(1)
+NODE_CONS :: i32(1)
+NODE_KBD :: i32(2)
 
-// The translated characters waiting to be served, kept by the key thread
+// The characters waiting to be served on `cons`, kept by the key thread
 // for the handler.
 RING :: 256
 ring_store: [RING]u8
 ring: libuser.Ring
+
+/*
+The messages waiting to be served on `kbd`, oldest first. A message is a
+letter and the runes after it, and one read answers one message. The
+queue drops the oldest when full, because a reader that fell that far
+behind wants the keys held now rather than the history.
+*/
+MSG_MAX :: 64
+MSGS :: 32
+
+Msg :: struct {
+	n:    int,
+	data: [MSG_MAX]u8,
+}
+
+msgs: [MSGS]Msg
+msg_head: int
+msg_tail: int
+
+// How many fids hold `kbd`. A message is queued only while somebody
+// does, which is the tap's rule. The keys held before a reader arrived
+// belong to nobody, and its first message is the first change it sees.
+kbd_opens: int
+
+// The keys held, as positions, so the runes they mean can be answered
+// under the modifiers of the moment. Sixteen is more fingers than a
+// person has.
+held: [16]libkbd.Key
+nheld: int
+
+state: libkbd.State
 
 fids: libuser.Fid_Table
 
@@ -109,10 +152,9 @@ threadmain :: proc "contextless" (arg: rawptr) {
 
 /*
 key_thread is the keyboard's whole life: scancodes through an io proc,
-the state machine, the characters into the ring, and the ring to whoever
-holds a read of /kbd. A failed read is not a loop to break out of: a
-noted io proc's read answers EINTR, and its next call is the boundary the
-note ends it at.
+the state machine, and what it makes to whoever holds a read. A failed
+read is not a loop to break out of. A noted io proc's read answers EINTR,
+and its next call is the boundary the note ends it at.
 */
 key_thread :: proc "contextless" (arg: rawptr) {
 	_ = arg
@@ -126,147 +168,143 @@ key_thread :: proc "contextless" (arg: rawptr) {
 		if n <= 0 {
 			continue
 		}
-		made := 0
+		chars, changes := 0, 0
 		for i in 0 ..< int(n) {
-			if b, produced := step(codes[i]); produced {
-				libuser.ring_push(&ring, b)
-				made += 1
-			}
+			c, k := key(codes[i])
+			chars += c
+			changes += k
 		}
-		if made > 0 {
-			lib9p.answer_reads(&srv, nil, wants_read, drain)
+		if chars > 0 {
+			lib9p.answer_reads(&srv, rawptr(uintptr(NODE_CONS)), wants_read, drain_cons)
+		}
+		if changes > 0 {
+			lib9p.answer_reads(&srv, rawptr(uintptr(NODE_KBD)), wants_read, drain_kbd)
 		}
 	}
 }
 
+/*
+key runs one scancode through the state machine and records what it
+made. A character goes into the ring and becomes a `c` message. A `k` or
+`K` message carries every key held after the change. Answers how many
+characters and how many messages it made.
+*/
+key :: proc "contextless" (code: u8) -> (chars: int, messages: int) #no_bounds_check {
+	k, down, ok := libkbd.step(&state, code)
+	if !ok {
+		return 0, 0
+	}
+	if down {
+		hold_key(k)
+		if r, made := libkbd.char_of(&state, k); made {
+			buf, n := utf8.encode_rune(r)
+			for i in 0 ..< n {
+				libuser.ring_push(&ring, buf[i])
+			}
+			msg_push('c', buf[:n])
+			chars = 1
+			messages += 1
+		}
+	} else {
+		release_key(k)
+	}
+	msg_push_held(down ? 'k' : 'K')
+	return chars, messages + 1
+}
+
+@(private = "file")
+hold_key :: proc "contextless" (k: libkbd.Key) #no_bounds_check {
+	for i in 0 ..< nheld {
+		if held[i] == k {
+			return
+		}
+	}
+	if nheld < len(held) {
+		held[nheld] = k
+		nheld += 1
+	}
+}
+
+@(private = "file")
+release_key :: proc "contextless" (k: libkbd.Key) #no_bounds_check {
+	for i in 0 ..< nheld {
+		if held[i] == k {
+			held[i] = held[nheld - 1]
+			nheld -= 1
+			return
+		}
+	}
+}
+
+// msg_push_held queues a `k` or `K` message: the letter, then the rune
+// each held key means under the modifiers now.
+@(private = "file")
+msg_push_held :: proc "contextless" (letter: u8) #no_bounds_check {
+	body: [MSG_MAX]u8
+	n := 0
+	for i in 0 ..< nheld {
+		r, ok := libkbd.rune_of(&state, held[i])
+		if !ok {
+			continue
+		}
+		enc, len := utf8.encode_rune(r)
+		if n + len > MSG_MAX - 1 {
+			break
+		}
+		for j in 0 ..< len {
+			body[n] = enc[j]
+			n += 1
+		}
+	}
+	msg_push(letter, body[:n])
+}
+
+@(private = "file")
+msg_push :: proc "contextless" (letter: u8, body: []u8) #no_bounds_check {
+	if kbd_opens == 0 {
+		return
+	}
+	if msg_head - msg_tail >= MSGS {
+		msg_tail += 1
+	}
+	m := &msgs[msg_head % MSGS]
+	m.data[0] = letter
+	n := copy(m.data[1:], body)
+	m.n = n + 1
+	msg_head += 1
+}
+
+// msg_pop copies the oldest message into `out` and answers its length,
+// or zero when there is none.
+@(private = "file")
+msg_pop :: proc "contextless" (out: []u8) -> int #no_bounds_check {
+	if msg_tail == msg_head {
+		return 0
+	}
+	m := &msgs[msg_tail % MSGS]
+	n := copy(out, m.data[:m.n])
+	msg_tail += 1
+	return n
+}
+
 // wants_read is what a held request has to be for the key thread to
-// answer it: a read of the file the ring feeds.
+// answer it: a read of the file `arg` names.
 wants_read :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
-	_ = arg
 	#partial switch m in request^ {
 	case vectra9.Tread:
-		return libuser.fid_lookup(&fids, m.fid) == NODE_KBD
+		return libuser.fid_lookup(&fids, m.fid) == i32(uintptr(arg))
 	}
 	return false
 }
 
-drain :: proc "contextless" (arg: rawptr, buf: []u8) -> int {
+drain_cons :: proc "contextless" (arg: rawptr, buf: []u8) -> int {
 	_ = arg
 	return libuser.ring_drain(&ring, buf)
 }
 
-// -- The scancode state machine, the kernel's byte for byte -------------------
-//
-// `kernel/drivers/kbd` owns the reasoning behind every line here. This is the
-// same translation, in the address space of a program rather than the kernel.
-
-SC_EXTENDED :: u8(0xE0)
-SC_RELEASE :: u8(0x80)
-SC_LSHIFT :: u8(0x2A)
-SC_RSHIFT :: u8(0x36)
-SC_CTRL :: u8(0x1D)
-SC_CAPS :: u8(0x3A)
-
-// The keyboard as positions, unshifted and shifted. Two tables and no rule,
-// because `2` shifts to `@` and only a picture of the keyboard predicts it.
-// The first initialised tables a program in this tree carries: the compiler
-// puts their bytes in the image, and the loader maps them, so a program can
-// read a static array as readily as the kernel does.
-PLAIN := [0x40]u8 {
-	0, 0, '1', '2', '3', '4', '5', '6',
-	'7', '8', '9', '0', '-', '=', '\b', '\t',
-	'q', 'w', 'e', 'r', 't', 'y', 'u', 'i',
-	'o', 'p', '[', ']', '\n', 0, 'a', 's',
-	'd', 'f', 'g', 'h', 'j', 'k', 'l', ';',
-	'\'', '`', 0, '\\', 'z', 'x', 'c', 'v',
-	'b', 'n', 'm', ',', '.', '/', 0, '*',
-	0, ' ', 0, 0, 0, 0, 0, 0,
-}
-
-SHIFTED := [0x40]u8 {
-	0, 0, '!', '@', '#', '$', '%', '^',
-	'&', '*', '(', ')', '_', '+', '\b', '\t',
-	'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I',
-	'O', 'P', '{', '}', '\n', 0, 'A', 'S',
-	'D', 'F', 'G', 'H', 'J', 'K', 'L', ':',
-	'"', '~', 0, '|', 'Z', 'X', 'C', 'V',
-	'B', 'N', 'M', '<', '>', '?', 0, '*',
-	0, ' ', 0, 0, 0, 0, 0, 0,
-}
-
-// The modifier state. Owned by the child alone, so it needs no lock.
-shift: bool
-caps: bool
-ctrl: bool
-extended: bool
-
-/*
-step advances the modifier state and reports the byte a scancode produced.
-
-`false` is the common case: a release, a modifier in either direction, the
-extended prefix, or a position with no character on it. The one difference
-from the kernel's is where the state lives -- three package globals rather
-than a `Keyboard` struct -- because a program that is only ever one keyboard
-needs no handle to it.
-*/
-step :: proc "contextless" (code: u8) -> (b: u8, produced: bool) #no_bounds_check {
-	if code == SC_EXTENDED {
-		extended = true
-		return 0, false
-	}
-
-	was_extended := extended
-	extended = false
-
-	released := code & SC_RELEASE != 0
-	make_code := code &~ SC_RELEASE
-
-	switch make_code {
-	case SC_LSHIFT, SC_RSHIFT:
-		shift = !released
-		return 0, false
-	case SC_CTRL:
-		ctrl = !released
-		return 0, false
-	case SC_CAPS:
-		if !released {
-			caps = !caps
-		}
-		return 0, false
-	}
-
-	if released || was_extended || int(make_code) >= len(PLAIN) {
-		return 0, false
-	}
-
-	b = shift ? SHIFTED[make_code] : PLAIN[make_code]
-	if b == 0 {
-		return 0, false
-	}
-
-	// Caps lock is not another shift: it flips the case of a letter, after
-	// the table has already answered, and touches nothing else.
-	if caps {
-		if b >= 'a' && b <= 'z' {
-			b -= 32
-		} else if b >= 'A' && b <= 'Z' {
-			b += 32
-		}
-	}
-
-	// Control makes a letter the control character at the same position, `^A`
-	// through `^Z`, which is what makes a typed `^D` reach a line discipline.
-	if ctrl {
-		u := b
-		if u >= 'a' && u <= 'z' {
-			u -= 32
-		}
-		if u >= 'A' && u <= 'Z' {
-			return u - 'A' + 1, true
-		}
-		return 0, false
-	}
-	return b, true
+drain_kbd :: proc "contextless" (arg: rawptr, buf: []u8) -> int {
+	_ = arg
+	return msg_pop(buf)
 }
 
 // -- The tree ----------------------------------------------------------------
@@ -286,23 +324,32 @@ step_name :: proc "contextless" (from: i32, name: string) -> i32 {
 	case "..":
 		return NODE_ROOT
 	}
-	if from == NODE_ROOT && name == "kbd" {
-		return NODE_KBD
+	if from == NODE_ROOT {
+		switch name {
+		case "cons":
+			return NODE_CONS
+		case "kbd":
+			return NODE_KBD
+		}
 	}
 	return -1
+}
+
+name_of :: proc "contextless" (node: i32) -> string {
+	return node == NODE_CONS ? "cons" : "kbd"
 }
 
 // -- The handler -------------------------------------------------------------
 
 handler :: proc "contextless" (
-	state: rawptr,
+	state_: rawptr,
 	s: ^vectra9.Session,
 	tag: vectra9.Tag,
 	request: ^vectra9.Msg,
 	reply: ^vectra9.Msg,
 	buf: []u8,
 ) #no_bounds_check {
-	_ = state
+	_ = state_
 	_ = s
 
 	if !libuser.default_reply(request, reply) {
@@ -319,12 +366,15 @@ handler :: proc "contextless" (
 	case vectra9.Twalk:
 		libuser.walk(&fids, m, reply, step_name, qid_of)
 
-	case vectra9.Tlopen:
+		case vectra9.Tlopen:
 		node, ok := libuser.node_of(&fids, m.fid, reply)
 		if !ok {
 			return
 		}
 		libuser.fid_open(&fids, m.fid)
+		if node == NODE_KBD {
+			kbd_opens += 1
+		}
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
 
 	case vectra9.Tread:
@@ -337,17 +387,17 @@ handler :: proc "contextless" (
 			return
 		}
 		/*
-		A read of /kbd takes what has been translated, or is held until a
-		key is: the key thread answers it when one comes. A flush, when the
-		client gave up on the read, drops the held record. A zero count
-		asks for nothing and gets it.
+		A read of `cons` takes what was typed, and a read of `kbd` takes
+		one message. Either is held until there is something, and the key
+		thread answers it. A flush, when the client gave up on the read,
+		drops the held record. A zero count asks for nothing and gets it.
 		*/
 		room := min(len(buf), int(m.count))
 		if room <= 0 {
 			reply^ = vectra9.Rread{data = nil}
 			return
 		}
-		got := libuser.ring_drain(&ring, buf[:room])
+		got := node == NODE_CONS ? libuser.ring_drain(&ring, buf[:room]) : msg_pop(buf[:room])
 		if got > 0 {
 			reply^ = vectra9.Rread{data = buf[:got]}
 			return
@@ -366,27 +416,46 @@ handler :: proc "contextless" (
 			return
 		}
 		dir := node == NODE_ROOT
+		size: u64
+		switch node {
+		case NODE_CONS:
+			size = libuser.ring_available(&ring)
+		case NODE_KBD:
+			size = u64(msg_head - msg_tail)
+		}
 		reply^ = vectra9.Rgetattr {
 			valid   = m.request_mask & 0x000007FF,
 			qid     = qid_of(node),
 			mode    = dir ? 0o040555 : 0o100444,
 			nlink   = dir ? 2 : 1,
-			size    = dir ? 0 : libuser.ring_available(&ring),
+			size    = size,
 			blksize = 512,
 		}
 
-	case vectra9.Tclunk:
-		libuser.fid_release(&fids, m.fid)
+		case vectra9.Tclunk:
+		kbd_release(m.fid)
 		reply^ = vectra9.Rclunk{}
 
 	case vectra9.Tremove:
-		libuser.fid_release(&fids, m.fid)
+		kbd_release(m.fid)
 		reply^ = vectra9.Rremove{}
 
 	case vectra9.Tflush:
 		_ = m
 		reply^ = vectra9.Rflush{}
 	}
+}
+
+// kbd_release lets a fid go, and when it was the last holder of `kbd`,
+// drops the messages nobody will read.
+kbd_release :: proc "contextless" (fid: vectra9.Fid) {
+	if libuser.fid_lookup(&fids, fid) == NODE_KBD && libuser.fid_is_open(&fids, fid) {
+		kbd_opens -= 1
+		if kbd_opens == 0 {
+			msg_tail = msg_head
+		}
+	}
+	libuser.fid_release(&fids, fid)
 }
 
 readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
@@ -401,14 +470,18 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
-	if m.offset < 1 && vectra9.remaining(&c) >= vectra9.dirent_size("kbd") {
+	for entry in i32(1) ..= i32(2) {
+		name := name_of(entry)
+		if m.offset >= u64(entry) || vectra9.remaining(&c) < vectra9.dirent_size(name) {
+			continue
+		}
 		vectra9.put_dirent(
 			&c,
 			vectra9.Dirent {
-				qid = qid_of(NODE_KBD),
-				offset = 1,
+				qid = qid_of(entry),
+				offset = u64(entry),
 				type = vectra9.DT_REG,
-				name = "kbd",
+				name = name,
 			},
 		)
 	}

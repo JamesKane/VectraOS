@@ -158,28 +158,31 @@ because every thread that touches its state is one proc's.
 
 The userland devfs the handoff pointed at, and its first tenant. `kbdfs`
 reads `/dev/scancode` -- the raw make and break codes the tap serves -- runs
-the scancode state machine, and serves the characters it makes on `/kbd`. The
-translation is `kernel/drivers/kbd`'s, byte for byte. The two US-layout
-tables, shift, caps, control, the extended prefix, and the rule that a
-release makes no character. A scancode becomes a byte on `/kbd` here, where
-the kernel would have made it one on `/dev/cons`. Nothing but the address
-space it runs in is different.
+the scancode state machine, and serves what it makes on two files. `cons`
+is the characters, cooked by the rule the kernel's `/dev/cons` uses. `kbd`
+is 9front's messages, one per read. `c` carries the characters typed. `k`
+and `K` carry every key held after a press and after a release, so a
+reader sees a chord. The translation is `sys/libkbd`'s, one package both rings
+call since `docs/WORKBENCH.md` step 1. This program carried a second copy
+of the kernel's tables before that. Nothing but the address space it runs
+in is different.
 
 The shape is `consrv`'s, because the problem is the same. A key thread
-reads the device through an io proc and translates what arrives, and a
-read of `/kbd` with nothing translated is held until a key comes. Opening
-`/dev/scancode` is what diverts the raw stream to the program. Until it
-does, the kernel translates the scancodes itself.
+reads the device through an io proc and translates what arrives. A read
+of either file with nothing to give is held until a key comes.
+Opening `/dev/scancode` is what diverts the raw stream to the program.
+Until it does, the kernel translates the scancodes itself.
 
 Three things this proved about the runtime:
 
 - **The raw halves are reachable.** `/dev/scancode` opens, diverts, and reads
   from ring 3 like any file. `kbdfs` stands exactly where the kernel's
   keyboard driver stood, one privilege level out.
-- **A program carries an initialised table.** `PLAIN` and `SHIFTED` are the
-  first static arrays a program in this tree relies on. The compiler puts
-  their bytes in the image and the loader maps them, so a program reads one
-  as readily as the kernel does.
+- **A program carries an initialised table.** `sys/libkbd`'s `PLAIN` and
+  `SHIFTED` were the first static arrays a program in this tree relied on,
+  when they were this program's own. The compiler puts their bytes in the
+  image and the loader maps them, so a program reads one as readily as the
+  kernel does.
 - **The flush order was wrong, and `kbdfs` found it.** A device read that
   drained before checking the flush lost a keystroke to a flush racing its
   arrival, about one boot in three. The read consumed the bytes into a reply

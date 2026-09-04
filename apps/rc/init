@@ -10,7 +10,7 @@ kbdfs &
 while(! test -e /srv/kbdfs) sleep 1
 mount /srv/kbdfs /n/kbd
 
-intuition /n/kbd/kbd &
+intuition /n/kbd/cons &
 while(! test -e /srv/draw) sleep 1
 
 # A window with a shell in it, the terminal's own child.

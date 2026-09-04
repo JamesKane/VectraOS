@@ -154,9 +154,18 @@ cursor-in-a-line, and `sys/libedit` has one. Above 7-bit is here too, for the
 keys that have no character -- what a rune cannot yet do is be *stored*, which
 wants a font with more than 128 glyphs rather than anything from this driver.
 
-**The layout is a table in a driver, which is the wrong place for it.** A layout
-belongs in a file somebody can replace. That is a `/dev` entry and a format, and
-it is worth doing when there is a second layout to want.
+**The state machine is `sys/libkbd`'s now, one copy for both rings.**
+`servers/kbdfs` carried a second copy of these tables for a year, and
+`docs/WORKBENCH.md` step 1 moved them into a package the driver and the
+server both call. The package answers a position and whether it went
+down. Apart from that it answers what a position means under the
+modifiers of the moment, because a `kbd` file reports the keys held as
+runes on every change. Every key answers a rune there, the modifiers and
+the function keys included. A key pressed with alt held makes no
+character, because a chord is the window manager's. What this driver
+keeps is the rule for a byte stream. The layout is still a table, in a
+package rather than a driver. A layout in a file is worth doing when
+there is a second layout to want.
 
 ## The raw hook, and who owns a scancode
 
@@ -269,9 +278,10 @@ as a gap rather than this milestone carrying it as a patch.
 
 - **A MADT parse**, which retires both of the I/O APIC's assumptions and hands
   SMP the core list it will need.
-- **The keypad and the right-hand modifiers**, which are the extended keys
-  still answering nothing. They want a meaning before they want a rune.
-- **A layout in a file** rather than a table in a driver.
+- **The keypad's digits**, which still answer nothing until num lock means
+  something. The right-hand modifiers, the function keys, insert, delete
+  and the page keys answer runes since `sys/libkbd`.
+- **A layout in a file** rather than a table in a package.
 - **The LEDs and the repeat rate**, behind a `ctl` file on the convention
   `/dev/consctl` set.
 - **Serial input on an interrupt.** The 16550 can raise one, and `cons_input`

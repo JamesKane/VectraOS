@@ -40,29 +40,28 @@ keystrokes, and that is the difference that mattered.
 
 ## What is translated here, and what is not
 
-Scancode set 1, which is what an 8042 with translation enabled produces and what
-every PC delivers by default. The table maps a *position* on the keyboard to the
-character on a US layout. Anything else is a layout, and a layout belongs in a
-file somebody can replace rather than in a driver nobody can.
-
-Shift, caps lock and control are here because they change which byte the same
-key produces. No layer above could work that out from the byte alone. The
-0xE0 prefix is here because ignoring it would make the arrow keys type letters.
+Scancode set 1, which is what an 8042 with translation enabled produces and
+what every PC delivers by default. The translation is `sys/libkbd`'s, one
+package both rings call, since `docs/WORKBENCH.md` step 1: a position on
+the keyboard to the rune a US layout puts there, with shift, caps lock,
+control and the 0xE0 prefix inside it. What this driver keeps is the rule
+for a byte stream. That is a press and not a release, a character and
+not a modifier, and never a chord.
 
 Everything else a terminal wants is absent: key repeat rates, the LEDs, a
-compose key, anything above 7-bit. `docs/KBD.md` says which of those want a
-`ctl` file and which want a layout.
+compose key. `docs/KBD.md` says which of those want a `ctl` file and which
+want a layout in a file.
 */
 package kbd
 
 import "base:intrinsics"
 
-import "kernel:arch"
 import "core:unicode/utf8"
 
-import "vsys:libkey"
+import "kernel:arch"
 import "kernel:sched"
 import "kernel:sync"
+import "vsys:libkbd"
 
 // The 8042's two ports. Data carries scancodes in and commands out. The second
 // is status when read and command when written.
@@ -133,12 +132,10 @@ Keyboard :: struct {
 	sink: Sink,
 	raw:  Raw,
 
-	// The modifier state, which belongs to the bottom half alone. The top half
-	// never looks at it, so it needs no lock.
-	shift:    bool,
-	caps:     bool,
-	ctrl:     bool,
-	extended: bool, // The last scancode was the 0xE0 prefix
+		// The modifier state, which belongs to the bottom half alone. The top half
+	// never looks at it, so it needs no lock. The state machine that moves
+	// it is `sys/libkbd`'s.
+	state:    libkbd.State,
 
 	// Whether the last scancode was consumed raw. The transition back is
 	// what resets the modifier state -- see `deliver`.
@@ -402,12 +399,9 @@ deliver :: proc "contextless" (k: ^Keyboard, code: u8) {
 		bump(&k.diverted)
 		return
 	}
-	if k.diverting {
+		if k.diverting {
 		k.diverting = false
-		k.shift = false
-		k.caps = false
-		k.ctrl = false
-		k.extended = false
+		k.state = {}
 	}
 
 	r, produced := step(k, code)
@@ -444,193 +438,40 @@ bump :: proc "contextless" (p: ^u64) {
 
 // -- Scancode set 1 ----------------------------------------------------------
 
-// Package-visible rather than file-private, because the self-test has to press
-// them and a check that spelled `0x2A` would be a check nobody could read.
-@(private)
-SC_EXTENDED :: u8(0xE0)
-@(private)
-SC_RELEASE :: u8(0x80) // Set in the code when a key comes back up
-
-@(private)
-SC_LSHIFT :: u8(0x2A)
-@(private)
-SC_RSHIFT :: u8(0x36)
-@(private)
-SC_CTRL :: u8(0x1D)
-@(private)
-SC_CAPS :: u8(0x3A)
-
 /*
-The keyboard as positions, unshifted and shifted.
-
-Two tables rather than one and a rule, because there is no rule. `2` shifts to
-`@` and `'` shifts to `"`, and the only thing that predicts either is a picture
-of the keyboard.
-
-Index is the make code. Zero means the position produces no character: a
-modifier, a function key, or something this driver has not been taught. The
-first 0x40 codes are the ones a US layout puts a character on.
-*/
-@(private = "file")
-PLAIN := [0x40]u8 {
-	0, 0, '1', '2', '3', '4', '5', '6',
-	'7', '8', '9', '0', '-', '=', '\b', '\t',
-	'q', 'w', 'e', 'r', 't', 'y', 'u', 'i',
-	'o', 'p', '[', ']', '\n', 0, 'a', 's',
-	'd', 'f', 'g', 'h', 'j', 'k', 'l', ';',
-	'\'', '`', 0, '\\', 'z', 'x', 'c', 'v',
-	'b', 'n', 'm', ',', '.', '/', 0, '*',
-	0, ' ', 0, 0, 0, 0, 0, 0,
-}
-
-@(private = "file")
-SHIFTED := [0x40]u8 {
-	0, 0, '!', '@', '#', '$', '%', '^',
-	'&', '*', '(', ')', '_', '+', '\b', '\t',
-	'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I',
-	'O', 'P', '{', '}', '\n', 0, 'A', 'S',
-	'D', 'F', 'G', 'H', 'J', 'K', 'L', ':',
-	'"', '~', 0, '|', 'Z', 'X', 'C', 'V',
-	'B', 'N', 'M', '<', '>', '?', 0, '*',
-	0, ' ', 0, 0, 0, 0, 0, 0,
-}
-
-/*
-step advances the modifier state and reports the byte a scancode produced.
-
-`false` means the scancode produced nothing, which is the common case. Every
-key release, every modifier in both directions, and every position with no
-character on it.
-
-**The 0xE0 prefix is consumed, and the keys behind it answer runes.** An
-extended code shares its second byte with an ordinary key: keypad Enter is
-0xE0 0x1C and so is the main Enter without the prefix, so the prefix has to be
-remembered or an arrow would type a letter.
-
-**An arrow has no byte, so it answers a rune instead.** That is Plan 9's
-arrangement: `sys/include/keyboard.h` puts every key that is not a character in
-the private Unicode space above `0x7F`, where a stream of UTF-8 carries it and
-no byte of ASCII can be mistaken for one. `sys/libkey` names them and
-`deliver` is what turns one into the bytes of UTF-8. What this answers is the
-rune.
-
-An extended code with nothing in `EXTENDED` still produces nothing, which is
-every extended key this system has no meaning for yet.
+The state machine is `sys/libkbd`'s, one copy for both rings. What is
+left here is the rule for a byte stream. A press produces the rune the
+position means now, unless the key is a modifier or a chord. A release
+produces nothing. The positions the self-test presses are named there
+too, and aliased here so a check reads as a key rather than a hex
+number.
 */
 @(private)
-step :: proc "contextless" (k: ^Keyboard, code: u8) -> (r: rune, produced: bool) #no_bounds_check {
-	if code == SC_EXTENDED {
-		k.extended = true
-		return 0, false
-	}
-
-	was_extended := k.extended
-	k.extended = false
-
-	released := code & SC_RELEASE != 0
-	make_code := code &~ SC_RELEASE
-
-	// Modifiers first, because they are the codes whose *release* matters. Every
-	// other key is ignored on the way up.
-	switch make_code {
-	case SC_LSHIFT, SC_RSHIFT:
-		k.shift = !released
-		return 0, false
-	case SC_CTRL:
-		k.ctrl = !released
-		return 0, false
-	case SC_CAPS:
-		// On the press only. A lock that toggled on the release as well would
-		// end every keystroke where it started.
-		if !released {
-			k.caps = !k.caps
-		}
-		return 0, false
-	}
-
-	if released {
-		return 0, false
-	}
-	// The extended keys, which are the ones with a rune and no byte.
-	if was_extended {
-		if key, ok := extended_rune(make_code); ok {
-			return key, true
-		}
-		return 0, false
-	}
-	if int(make_code) >= len(PLAIN) {
-		return 0, false
-	}
-
-	b := k.shift ? SHIFTED[make_code] : PLAIN[make_code]
-	if b == 0 {
-		return 0, false
-	}
-
-	/*
-	Caps lock applies to letters and to nothing else.
-
-	It is not another shift, and treating it as one is the classic way to get this
-	wrong. Caps lock plus `2` is `2` on every keyboard anyone ever used, and shift
-	plus `2` is `@`. So the case is flipped after the table has already
-	answered, and only for the range where case means anything.
-	*/
-	if k.caps {
-		if b >= 'a' && b <= 'z' {
-			b -= 32
-		} else if b >= 'A' && b <= 'Z' {
-			b += 32
-		}
-	}
-
-	/*
-	Control makes a letter into the control character at the same position.
-
-	`^A` is 1 through `^Z` is 26, which is the whole convention and the reason
-	`^D` and `^U` mean anything to `kernel/devfs`. A control character typed here
-	is indistinguishable from the same one off the serial line. That is what makes
-	the line discipline one implementation rather than two.
-	*/
-	if k.ctrl {
-		u := b
-		if u >= 'a' && u <= 'z' {
-			u -= 32
-		}
-		if u >= 'A' && u <= 'Z' {
-			return rune(u - 'A' + 1), true
-		}
-		return 0, false
-	}
-	return rune(b), true
-}
+SC_EXTENDED :: libkbd.SC_EXTENDED
+@(private)
+SC_RELEASE :: libkbd.SC_RELEASE
+@(private)
+SC_LSHIFT :: libkbd.SC_LSHIFT
+@(private)
+SC_RSHIFT :: libkbd.SC_RSHIFT
+@(private)
+SC_CTRL :: libkbd.SC_CTRL
+@(private)
+SC_CAPS :: libkbd.SC_CAPS
 
 /*
-extended_rune is the second half of an extended scancode, as the rune Plan 9
-gives that key.
+step advances the modifier state and reports the rune a scancode produced.
 
-Six of them, which are the ones a line under construction has a use for. The
-numbers on the left are set 1's. The names on the right are
-`sys/include/keyboard.h`'s, and `sys/libkey` is where this tree writes them
-down.
-
-Everything else behind the prefix -- the keypad, the right-hand modifiers,
-print screen -- answers nothing, exactly as every extended key did before.
+`false` means the scancode produced nothing, which is the common case.
+That is every key release, every modifier in both directions, and every
+position with no character on it. It is also every key pressed with alt
+held, which is a chord and not a character. See `libkbd.char_of`.
 */
 @(private)
-extended_rune :: proc "contextless" (make_code: u8) -> (rune, bool) {
-	switch make_code {
-	case 0x47:
-		return libkey.KHOME, true
-	case 0x48:
-		return libkey.KUP, true
-	case 0x4B:
-		return libkey.KLEFT, true
-	case 0x4D:
-		return libkey.KRIGHT, true
-	case 0x4F:
-		return libkey.KEND, true
-	case 0x50:
-		return libkey.KDOWN, true
+step :: proc "contextless" (k: ^Keyboard, code: u8) -> (r: rune, produced: bool) {
+	key, down, ok := libkbd.step(&k.state, code)
+	if !ok || !down {
+		return 0, false
 	}
-	return 0, false
+	return libkbd.char_of(&k.state, key)
 }

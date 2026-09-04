@@ -16,6 +16,7 @@ assumed away.
 */
 package kernel
 
+import "base:intrinsics"
 import "base:runtime"
 
 import "kernel:arch"
@@ -24,6 +25,7 @@ import "kernel:devfs"
 import "kernel:env"
 import "kernel:drivers/console"
 import "kernel:drivers/kbd"
+import "kernel:drivers/mouse"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mem"
@@ -270,8 +272,13 @@ kmain :: proc "c" () {
 			// Last of all, because a keystroke needs somewhere to go. The
 			// bottom half hands its bytes to `/dev/cons`, which has to exist
 			// before the first interrupt is let through.
-			if init_keyboard() {
+						if init_keyboard() {
 				verify_keyboard()
+			}
+			// The mouse shares the keyboard's controller and comes after
+			// it, with the screen it is kept inside already measured.
+			if init_mouse() {
+				verify_mouse()
 			}
 
 			// The disk, after the console it binds beside and the keyboard
@@ -1612,6 +1619,172 @@ verify_keyboard :: proc() {
 	}
 
 	report_failed(&sink, result.tally)
+}
+
+/*
+init_mouse routes IRQ 12 and brings the 8042's second port up.
+
+The pointer is kept inside the screen `/dev/fb` serves, and every
+movement becomes a line on `/dev/mouse`. A machine with no controller,
+or one whose second port answers nothing, has no mouse and says so.
+*/
+init_mouse :: proc() -> bool {
+	s := devfs.raw_surface()
+	if s == nil {
+		return false
+	}
+		vector := arch.VECTOR_IRQ_BASE + mouse.MOUSE_IRQ
+	if ok, why := mouse.init(vector, s.width, s.height, devfs.mouse_sink); !ok {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "no mouse: ")
+		libodin.put_str(&sink, why)
+		libodin.put_str(&sink, "; /dev/mouse answers ENXIO")
+		emit(&klog, .Warn, &sink)
+		return false
+	}
+	x, y := mouse.position()
+	devfs.mouse_present(x, y)
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "mouse ps/2 on irq ")
+	libodin.put_uint(&sink, u64(mouse.MOUSE_IRQ))
+	libodin.put_str(&sink, " -> vector ")
+	libodin.put_hex(&sink, u64(vector), 2)
+	libodin.put_str(&sink, ", pointer at ")
+	libodin.put_uint(&sink, u64(x))
+	libodin.put_str(&sink, " ")
+	libodin.put_uint(&sink, u64(y))
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+verify_mouse checks the packet decoder, makes the controller interrupt,
+and then reads the line the movement became on `/dev/mouse`.
+
+The driver's own checks are `kernel/drivers/mouse/verify.odin`. The
+file's is here. A packet injected while a reader is parked on the file
+comes back as one 49-byte line with the position in it. That is the
+whole contract a draw server will read by.
+*/
+verify_mouse :: proc() {
+	result := mouse.verify()
+	ok := libodin.passed(result.tally)
+
+	if ok {
+		verify_mouse_file(&result.tally)
+		ok = libodin.passed(result.tally)
+	}
+
+	sink := report_begin("mouse", result.checks)
+	if ok {
+		s := mouse.stats()
+		libodin.put_str(&sink, " mouse checks passed -- ")
+		libodin.put_uint(&sink, u64(result.decoded))
+		libodin.put_str(&sink, " packets decoded, ")
+		libodin.put_uint(&sink, s.interrupts)
+		libodin.put_str(&sink, " interrupts taken, an injected packet became a line on /dev/mouse")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result.tally)
+}
+
+@(private = "file")
+Mouse_Read :: struct {
+	c:    ^vfs.Chan,
+	buf:  [64]u8,
+	n:    int,
+	err:  vfs.Errno,
+	done: bool,
+}
+
+@(private = "file")
+mouse_read: Mouse_Read
+
+@(private = "file")
+mouse_read_thread :: proc "contextless" (arg: rawptr) {
+	context = runtime.default_context()
+	context.allocator = mem.allocator()
+	_ = arg
+	mouse_read.n, mouse_read.err = vfs.chan_read(mouse_read.c, 0, mouse_read.buf[:])
+	intrinsics.volatile_store(&mouse_read.done, true)
+}
+
+@(private = "file")
+verify_mouse_file :: proc(t: ^libodin.Tally) {
+	c, err := vfs.open_path(vfs.boot_namespace, "/dev/mouse", vfs.O_RDONLY)
+	if !libodin.tally(t, err == vfs.OK && c != nil, "/dev/mouse opens") {
+		return
+	}
+	second, serr := vfs.open_path(vfs.boot_namespace, "/dev/mouse", vfs.O_RDONLY)
+	libodin.tally(t, serr == vectra9.EBUSY && second == nil, "and a second open is refused: a pointer has one owner")
+
+	mouse_read = Mouse_Read{c = c}
+	if !libodin.tally(t, sched.spawn("mouse-read", mouse_read_thread, nil) != nil, "a thread to read it") {
+		vfs.chan_close(c)
+		return
+	}
+	parked := true
+	for _ in 0 ..< 20 {
+		sync.delay(1)
+		if intrinsics.volatile_load(&mouse_read.done) {
+			parked = false
+			break
+		}
+	}
+	libodin.tally(t, parked, "a read parks until the mouse moves")
+
+	x0, y0 := mouse.position()
+	mouse.inject_packet(0x0A, 7, 2)
+	woke := false
+	for _ in 0 ..< 200 {
+		if intrinsics.volatile_load(&mouse_read.done) {
+			woke = true
+			break
+		}
+		sync.delay(1)
+	}
+	libodin.tally(t, woke, "and wakes when a packet arrives")
+	line := string(mouse_read.buf[:max(mouse_read.n, 0)])
+	libodin.tally(t, mouse_read.err == vfs.OK && mouse_read.n == devfs.MOUSE_LINE && line[0] == 'm', "with one line of the width rio reads")
+	x, y, b, parsed := parse_mouse_line(line)
+	libodin.tally(t, parsed && x == x0 + 7 && y == y0 - 2, "carrying the position the packet moved to")
+	libodin.tally(t, parsed && b == 4, "and the right button, as rio numbers it")
+	vfs.chan_close(c)
+}
+
+// parse_mouse_line reads the three numbers after the `m`.
+@(private = "file")
+parse_mouse_line :: proc "contextless" (line: string) -> (x: int, y: int, b: int, ok: bool) {
+	if len(line) < 2 || line[0] != 'm' {
+		return
+	}
+	at := 1
+	x, ok = scan_number(line, &at)
+	if !ok {
+		return
+	}
+	y, ok = scan_number(line, &at)
+	if !ok {
+		return
+	}
+	b, ok = scan_number(line, &at)
+	return
+}
+
+@(private = "file")
+scan_number :: proc "contextless" (line: string, at: ^int) -> (v: int, ok: bool) {
+	for at^ < len(line) && line[at^] == ' ' {
+		at^ += 1
+	}
+	digits := 0
+	for at^ < len(line) && line[at^] >= '0' && line[at^] <= '9' {
+		v = v * 10 + int(line[at^] - '0')
+		at^ += 1
+		digits += 1
+	}
+	return v, digits > 0
 }
 
 /*

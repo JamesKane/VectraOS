@@ -139,24 +139,24 @@ verify :: proc() -> Verify_Result #no_bounds_check {
 
 	// -- Shift ---------------------------------------------------------------
 
-	_, ok = typed(&r, &k, SC_LSHIFT)
+		_, ok = typed(&r, &k, SC_LSHIFT)
 	check(&r, !ok, "shift down produces nothing itself")
-	check(&r, k.shift, "and is held")
+	check(&r, k.state.shift, "and is held")
 
 	b, ok = pressed(&r, &k, SC_A)
 	check(&r, ok && b == 'A', "a letter under shift is upper case")
 	b, ok = pressed(&r, &k, SC_2)
 	check(&r, ok && b == '@', "and a digit is the symbol above it, which no rule predicts")
 
-	_, ok = typed(&r, &k, SC_LSHIFT | 0x80)
-	check(&r, !k.shift, "shift up releases it")
+		_, ok = typed(&r, &k, SC_LSHIFT | 0x80)
+	check(&r, !k.state.shift, "shift up releases it")
 	b, ok = pressed(&r, &k, SC_A)
 	check(&r, ok && b == 'a', "and the next letter is lower case again")
 
 	// -- Caps lock, which is not another shift -------------------------------
 
-	_, ok = pressed(&r, &k, SC_CAPS)
-	check(&r, k.caps, "caps lock latches on the press")
+		_, ok = pressed(&r, &k, SC_CAPS)
+	check(&r, k.state.caps, "caps lock latches on the press")
 
 	b, ok = pressed(&r, &k, SC_A)
 	check(&r, ok && b == 'A', "and a letter under it is upper case")
@@ -168,8 +168,8 @@ verify :: proc() -> Verify_Result #no_bounds_check {
 	check(&r, ok && b == 'a', "and shift under caps lock is lower case, as a keyboard does")
 	_, ok = typed(&r, &k, SC_LSHIFT | 0x80)
 
-	_, ok = pressed(&r, &k, SC_CAPS)
-	check(&r, !k.caps, "a second press latches it off")
+		_, ok = pressed(&r, &k, SC_CAPS)
+	check(&r, !k.state.caps, "a second press latches it off")
 
 	// -- Control -------------------------------------------------------------
 
@@ -187,11 +187,11 @@ verify :: proc() -> Verify_Result #no_bounds_check {
 
 	// -- The extended prefix -------------------------------------------------
 
-	_, ok = typed(&r, &k, SC_EXTENDED)
-	check(&r, !ok && k.extended, "the extended prefix is swallowed and remembered")
-	_, ok = pressed(&r, &k, SC_ENTER)
+		_, ok = typed(&r, &k, SC_EXTENDED)
+	check(&r, !ok && k.state.extended, "the extended prefix is swallowed and remembered")
+	_, ok = pressed(&r, &k, SC_A)
 	check(&r, !ok, "and the key after it produces nothing, so an arrow types no letter")
-	check(&r, !k.extended, "the prefix applies to one key only")
+	check(&r, !k.state.extended, "the prefix applies to one key only")
 	b, ok = pressed(&r, &k, SC_ENTER)
 	check(&r, ok && b == '\n', "and the next ordinary key is ordinary again")
 
@@ -208,8 +208,8 @@ verify :: proc() -> Verify_Result #no_bounds_check {
 	`0xEF` and the two behind it must not disturb: `deliver` encodes, and one
 	byte of ASCII still leaves as one byte.
 	*/
-	_, ok = typed(&r, &k, SC_EXTENDED)
-	check(&r, !ok && k.extended, "the prefix is swallowed again")
+		_, ok = typed(&r, &k, SC_EXTENDED)
+	check(&r, !ok && k.state.extended, "the prefix is swallowed again")
 	left, lok := typed_rune(&r, &k, 0x4B)
 	check(&r, lok && left == 0xF011, "and the key behind it is a left arrow, as the rune Plan 9 names")
 	_, ok = typed(&r, &k, 0x4B | 0x80)
@@ -219,9 +219,21 @@ verify :: proc() -> Verify_Result #no_bounds_check {
 	right, rok := typed_rune(&r, &k, 0x4D)
 	check(&r, rok && right == 0xF012, "the right arrow answers the rune beside it")
 
-	_, ok = typed(&r, &k, SC_EXTENDED)
+		_, ok = typed(&r, &k, SC_EXTENDED)
 	_, uok := typed_rune(&r, &k, 0x38)
-	check(&r, !uok, "and an extended key with no rune still answers nothing at all")
+	check(&r, !uok, "and the right alt behind it is a modifier, which answers nothing here")
+	_, ok = typed(&r, &k, SC_EXTENDED)
+	_, ok = typed(&r, &k, 0x38 | 0x80)
+
+	// And a chord, which is what a byte stream must never carry: alt held,
+	// a letter pressed, and nothing comes out. See `libkbd.char_of`.
+	_, ok = typed(&r, &k, 0x38)
+	check(&r, !ok && k.state.alt, "alt goes down and is held, producing nothing")
+	_, ok = pressed(&r, &k, SC_A)
+	check(&r, !ok, "and a letter under it is a chord, which is no character at all")
+	_, ok = typed(&r, &k, 0x38 | 0x80)
+	b, ok = pressed(&r, &k, SC_A)
+	check(&r, ok && b == 'a', "and the letter comes back once alt is released")
 
 	// -- The ring ------------------------------------------------------------
 
@@ -327,8 +339,8 @@ verify_raw_hook :: proc(r: ^Verify_Result) #no_bounds_check {
 	check(r, caught_len == 1 && caught[0] == '2', "a hook that declines leaves translation alone")
 
 	// The stale-shift arc: down cooked, up diverted, next letter cooked.
-	deliver(&k, SC_LSHIFT)
-	check(r, k.shift, "shift goes down in cooked hands")
+		deliver(&k, SC_LSHIFT)
+	check(r, k.state.shift, "shift goes down in cooked hands")
 	raw_on = true
 	deliver(&k, SC_LSHIFT | SC_RELEASE)
 	check(r, raw_len == 2 && raw_caught[1] == (SC_LSHIFT | SC_RELEASE), "and its release is diverted whole")

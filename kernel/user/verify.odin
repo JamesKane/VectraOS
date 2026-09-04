@@ -3275,13 +3275,21 @@ verify_consrv :: proc(r: ^Result) {
 }
 
 // The scancodes the kernel injects into `/dev/scancode`, and the characters
-// `kbdfs` translates them to. `k b d` are make codes, then a shift press, a
-// `1` that shifts to `!`, a shift release, and Enter. The releases and the
-// shift itself produce nothing, so the cooked stream is five characters.
+// `kbdfs` translates them to. `k b d` are make and break codes. Then a
+// shift press, a `1` that shifts to `!` and its release, a shift release,
+// and Enter with its release. The releases and the shift itself produce
+// nothing, so the cooked stream is five characters. Every key is released,
+// because the `kbd` file reports the keys held and the chord check after
+// this one wants none left.
 @(private = "file")
-KBDFS_CODES :: [?]u8{0x25, 0x30, 0x20, 0x2A, 0x02, 0xAA, 0x1C}
+KBDFS_CODES :: [?]u8{0x25, 0xA5, 0x30, 0xB0, 0x20, 0xA0, 0x2A, 0x02, 0x82, 0xAA, 0x1C, 0x9C}
 @(private = "file")
 KBDFS_COOKED :: "kbd!\n"
+
+// A chord: alt down, `n` down, `n` up, alt up. The cooked file must carry
+// none of it, and the `kbd` file reports every change of the keys held.
+@(private = "file")
+KBDFS_CHORD :: [?]u8{0x38, 0x31, 0xB1, 0xB8}
 
 /*
 verify_kbdfs is the userland devfs's first tenant: a kernel service rebuilt
@@ -3293,7 +3301,7 @@ serves the characters it translates from them on `/kbd`. The translation is
 way the keyboard self-test does, and reads the cooked result back through a
 mount instead.
 
-The read of `/kbd` is held by the server, so it runs on a thread. Between the open
+The server holds the read of `cons`, so it runs on a thread. Between the open
 and the first scancode it waits, which is the proof the file blocks on a key
 rather than answering empty. Then the kernel injects `kbd!` and a newline as
 scancodes. The parked read wakes carrying exactly the characters the state
@@ -3321,7 +3329,7 @@ verify_kbdfs :: proc(r: ^Result) {
 		"the kernel mounts it",
 	)
 
-	kc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/kbd", vfs.O_RDONLY)
+		kc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/cons", vfs.O_RDONLY)
 	if !check(r, oerr == vfs.OK, "and opens the cooked keyboard file") {
 		return
 	}
@@ -3374,9 +3382,44 @@ verify_kbdfs :: proc(r: ^Result) {
 	check(
 		r,
 		mount_reader.err == vfs.OK &&
-		string(mount_reader.buf[:mount_reader.n]) == KBDFS_COOKED,
+				string(mount_reader.buf[:mount_reader.n]) == KBDFS_COOKED,
 		"carrying the characters the state machine made: scancodes, shift and all",
 	)
+
+	// -- The keys, with their modifiers, on the other file --------------------
+
+	/*
+		`kbd` is 9front's file, a message per read. `k` and `K` carry every
+	key held after a press and a release, and `c` the characters typed.
+	An alt and an `n` are a chord. `cons` must never see one as a letter.
+	`kbd` reports it as the alt key held with the `n` beside it, which is
+	what a window manager reads a chord from.
+	*/
+	kb, kerr := vfs.open_path(vfs.boot_namespace, "/mnt/kbd", vfs.O_RDONLY)
+	if check(r, kerr == vfs.OK && kb != nil, "and the kbd file opens beside it") {
+		chord := KBDFS_CHORD
+		for i in 0 ..< len(chord) {
+			devfs.scancode_tap(chord[i])
+		}
+		want := [?]string{"k\xEF\x80\x95", "k\xEF\x80\x95n", "K\xEF\x80\x95", "K"}
+		what := [?]string {
+			"alt going down is a message naming the key held, as Plan 9's rune",
+			"the n beside it joins the keys held",
+			"the n going up leaves alt held",
+			"and alt going up leaves nothing held",
+		}
+		for i in 0 ..< len(want) {
+			if !kbd_read(r, kb, want[i], what[i]) {
+				break
+			}
+		}
+		// And the cooked file carried none of it: the next key typed is the
+		// first byte it answers.
+		devfs.scancode_tap(0x2D)
+		devfs.scancode_tap(0xAD)
+		_ = kbd_read(r, kc, "x", "and the cons file carried none of the chord: the next key typed is its first byte")
+		vfs.chan_close(kb)
+	}
 
 	// -- Teardown, the same arc consrv taught --------------------------------
 
@@ -3404,6 +3447,25 @@ verify_kbdfs :: proc(r: ^Result) {
 	)
 
 	drain_pinned(r, pin_before, "and the translator's wire comes back whole")
+}
+
+// kbd_read reads one message off a kbdfs file on a thread, waits for it,
+// and checks it is `want`. False when the read did not come back.
+@(private = "file")
+kbd_read :: proc(r: ^Result, c: ^vfs.Chan, want: string, what: string) -> bool {
+	mount_reader = Mount_Reader{c = c}
+	if !check(r, sched.spawn("kbdfs-read", mount_read_thread, nil) != nil, "a thread to read the file") {
+		return false
+	}
+	woke := false
+	for _ in 0 ..< PATIENCE {
+		if intrinsics.volatile_load(&mount_reader.done) {
+			woke = true
+			break
+		}
+		sync.delay(1)
+	}
+	return check(r, woke && mount_reader.err == vfs.OK && string(mount_reader.buf[:mount_reader.n]) == want, what)
 }
 
 // The bytes the kernel puts on the raw serial stream, through the producer's

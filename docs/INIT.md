@@ -10,7 +10,7 @@ the bind `docs/FATFS.md` describes.
     kbdfs &                          the keyboard, served as a file
     while(! test -e /srv/kbdfs) sleep 1
     mount /srv/kbdfs /n/kbd
-    intuition /n/kbd/kbd &           the draw server, reading its keys there
+        intuition /n/kbd/cons &          the draw server, reading its keys there
     while(! test -e /srv/draw) sleep 1
     terminal &                       a window with a shell in it
     cd $home

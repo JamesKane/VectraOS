@@ -462,6 +462,24 @@ reads three lines with the positions it sent. `kbd` answers `k` with
 `KALT` and `n` in it for an injected Alt-n, and `cons` answers nothing
 for the same keys.
 
+**Where it stands.** Done. `kernel/drivers/mouse` is the keyboard's
+shape on the 8042's second port, and `docs/MOUSE.md` is its document. A
+packet decoder is checked on its own. An injection through command 0xD3
+takes the whole interrupt path. `/dev/mouse` is in `rio`'s widths, with
+one reader and a read parked until a movement.
+
+`sys/libkbd` is the state machine, called by `kernel/drivers/kbd` and by
+`servers/kbdfs`. It answers a position and what the position means
+apart, so a `kbd` file can report the keys held under the modifiers of
+the moment. Every key answers a rune, and a key pressed with alt held
+makes no character. `kbdfs` serves `cons` and `kbd`, and `init` points
+the draw server at `cons`.
+
+The suite injects alt, `n` and their releases and reads four messages
+off `kbd`. Then it reads one `x` off `cons`, with none of the chord in
+front of it. The mouse's line is checked from the file's side in the
+kernel, because no program reads it until step 2.
+
 ### Step 2: a pointer, gadgets, and chords
 
 `servers/intuition`, `sys/libdraw`, about 1,500 lines.
