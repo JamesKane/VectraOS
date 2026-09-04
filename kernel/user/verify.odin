@@ -481,6 +481,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_abi(&r)
 	verify_threads(&r)
 	verify_mui(&r)
+	verify_netfs(&r)
 	verify_rc(&r)
 	verify_tools(&r)
 
@@ -7303,6 +7304,23 @@ verify_mui :: proc(r: ^Result) {
 	said, _, ok := run_script(r, "/bin/mui", names[:], PATIENCE * 5, abi_said[:], "a program on the toolkit's layout starts")
 	if ok {
 		check(r, said == "ok", said == "ok" ? "and every rectangle matched the weights" : said)
+	}
+}
+
+/*
+verify_netfs runs `tests/net`, which builds and parses the wire formats
+`sys/libnet` gives the network -- an ethernet frame, an ARP packet, an IPv4
+header and an ICMP echo -- and checks a checksum a flipped bit must break. It
+touches no card, so the check is pure protocol arithmetic, the foundation
+`docs/FLEET.md` step 0's stack stands on. The word is `ok` or the name of the
+first step that failed.
+*/
+@(private = "file")
+verify_netfs :: proc(r: ^Result) {
+	names := [?]string{"nettest"}
+	said, _, ok := run_script(r, "/bin/nettest", names[:], PATIENCE * 5, abi_said[:], "a program on the network's wire formats starts")
+	if ok {
+		check(r, said == "ok", said == "ok" ? "and every packet parsed and every checksum held" : said)
 	}
 }
 
