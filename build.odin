@@ -103,6 +103,7 @@ user_programs := [?]User_Program {
 	{name = "ps", path = "cmd/ps"},
 	{name = "kill", path = "cmd/kill"},
 	{name = "ns", path = "cmd/ns"},
+	{name = "window", path = "cmd/window"},
 }
 
 /*

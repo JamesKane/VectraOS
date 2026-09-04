@@ -1315,10 +1315,17 @@ scratch: Region
 windows: [MAX_WINDOWS]Window
 
 // The image pool. Image zero is the session's window and lives nowhere; these
-// are the client's own images, owned by the fid that allocated each. An
-// image's pixels come from the heap when it is allocated and go back
-// when it is freed. Sixty-four of them in the bss put this program past
-// the loader's frame budget, and a heap is what `segalloc` is for.
+// are the client's own images, owned by the fid that allocated each. The
+// pixels come from one segment of their own, `img_pool`, allocated once
+// at start and carved into `MAX_IMAGES` fixed slices.
+//
+// **Not the bss, and not the heap.** Sixty-four images in the bss put
+// this program past the loader's frame budget. The heap would fight the
+// window stores for room to grow. A store is a `segalloc` the allocator
+// places right after the heap, and the heap's next `segbrk` cannot then
+// extend past it, so an image allocated after a window opened would fail
+// with `ENOMEM`. One segment allocated before any window store never
+// grows and never fights.
 MAX_IMAGES :: 64
 IMG_PIXELS :: 2048
 
@@ -1332,6 +1339,7 @@ Image :: struct {
 }
 
 images: [MAX_IMAGES]Image
+img_pool: [^]u32
 
 /*
 The screen itself, once `segattach` answers.
@@ -1448,9 +1456,17 @@ start :: proc "c" (block: ^abi.Args) {
 
 		// And the windows' places. Their memory is bought per session now, at
 	// `Tlopen`, so nothing here can fail for want of it.
-	windows_init()
+		windows_init()
 	current_ws = 1
 	rules_load()
+
+	// The image pool, one segment before any window store, so it is placed
+	// early and never has to grow. See `Image`.
+	if pool, perr := libuser.segalloc(MAX_IMAGES * IMG_PIXELS * 4); perr >= 0 {
+		img_pool = ([^]u32)(pool)
+	} else {
+		libuser.exit(0x77)
+	}
 
 	// And the ground everything stands on. From here this server owns every
 	// pixel of the screen: `/dev/fb` diverts the console for as long as the
@@ -2426,24 +2442,25 @@ image_alloc :: proc "contextless" (owner: vectra9.Fid, id: u32, w: int, h: int) 
 	if image_find(owner, id) >= 0 {
 		return vectra9.EINVAL
 	}
-		for i in 0 ..< MAX_IMAGES {
+			for i in 0 ..< MAX_IMAGES {
 		if !images[i].used {
-			px := ([^]u32)(libuser.heap_alloc(w * h * 4))
-			if px == nil {
-				return vectra9.ENOMEM
+			images[i] = Image {
+				owner  = owner,
+				id     = id,
+				w      = w,
+				h      = h,
+				used   = true,
+				pixels = img_pool[i * IMG_PIXELS:],
 			}
-			images[i] = Image{owner = owner, id = id, w = w, h = h, used = true, pixels = px}
 			return vectra9.Errno(0)
 		}
 	}
 	return vectra9.ENOSPC
 }
 
-// image_drop frees one image's pixels and its slot.
+// image_drop gives one slot back. Its slice of the pool stays put, and
+// the next image in the slot reuses it.
 image_drop :: proc "contextless" (i: int) #no_bounds_check {
-	if images[i].pixels != nil {
-		libuser.heap_free(images[i].pixels)
-	}
 	images[i] = Image{}
 }
 
