@@ -59,8 +59,14 @@ cloud and the machine alike. It is the one a frontier model already
 speaks, and a local engine is written to it.
 
 **From Omarchy.** That an operating system can ship with the agent as
-part of the setup rather than as a download. Taken further, because
-here the agent is a file server and every application is one too.
+part of the setup rather than as a download. Its Quattro release added
+three things worth keeping. The agent's state is shown where a person
+is looking. A crashed program is handed to the agent from the notice
+that says it crashed. And one switch turns all of it off.
+
+Taken further, because here the agent is a file server and every
+application is one too. So the state is a word on `wctl`, and the crash
+is a parked process rather than a core file.
 
 **Not taken.** A chat window as the whole of it, and a plugin API per
 application. A model in the kernel, or a file system that a model indexes.
@@ -230,6 +236,15 @@ rule runs a program, and any tool call in the `admin` class. The window
 shows a `libmui` requester with the tool's input in it, `ask` shows a
 line, and no answer inside a minute is no.
 
+**A parked `confirm` is a lamp.** `apps/ghost` writes `state working`
+to its window's `wctl` when `status` leaves Idle, `state waiting` when
+a read of `confirm` would answer, and `state idle` after. The frame
+shows the lamp and the workspace lamp goes hot, `docs/WORKBENCH.md`
+section 4. A person on another workspace sees that the machine wants a
+yes without finding the window. `ask` on a terminal writes the same
+words to its own window's `wctl` when it has one, and nothing when it
+has not.
+
 **The budget is a line.** `ctl budget 200000` is tokens for the session,
 and `usage` on the model's directory is what counts against it. A wall
 clock deadline is an `alarm`, and `run` has one of its own per call. A
@@ -252,7 +267,9 @@ it with the same model.
 **`cmd/ask` is the line client.** `ask 'what is using the disk'` opens a
 session, writes the prompt, streams the reply to the terminal, and
 answers a requester with a line. `-w dir` names the work directory,
-`-c class` the namespace class, and `-m model` the model. It is a page
+`-c class` the namespace class, and `-m model` the model. `-p pid`
+names a process, and the `debug` class then binds that process's
+`/proc` directory and the debugger's tree, and no other process. It is a page
 of `rc`-shaped code over the files above, and it is what the self-test
 drives.
 
@@ -288,6 +305,18 @@ that wants a typed argument writes `line:int`. A file beside `ctl` that
 answers a read is listed with `read:` and becomes a `read` the ghost
 knows the meaning of.
 
+**An argument that can carry any text is the last on its line.** A
+`ctl` line is split on spaces, and a file name with a space in it, or a
+notice's text, is where that breaks. So a verb takes one such argument,
+last, as the rest of the line, and `open path` reads to the newline. A
+verb that needs two writes them as `rc` quotes them and reads them with
+`rc`'s tokenizer, never with a split of its own. The tool generator
+quotes the same way.
+
+Omarchy's shell built its notices by pasting the text into bash, and a
+video's title ran as a command. A line that is a verb and its rest
+cannot be made to.
+
 **`libmui` serves the contract for free.** A toolkit program's gadgets
 have names, because a hotkey needs a label. The toolkit serves
 `gadgets/<name>` under the application's tree. A read answers a gadget's
@@ -318,6 +347,14 @@ already, and gets a `dict`. The terminal serves `send` for a line typed
 and `text` for the grid. Workbench serves `open`, `run` and `workspace`.
 The debugger is `docs/DEVTOOLS.md` section 7's tree and needs no change,
 so the ghost debugs by writing `break` and reading `bt`.
+
+**A crash is the desktop's notice, and the answer is a click.** `window`
+parks a program that faults and posts the notice, `docs/WORKBENCH.md`
+section 6. The click runs `ask -c debug -p N 'this program faulted'`.
+The ghost attaches, reads `status` and `bt`, opens the top frame's
+`vars`, and says what it found. It writes nothing and files nothing. A
+fix is a second prompt, in the `edit` class, on the source, and the
+requester asks before the first write as it always does.
 
 An editor is the application that most wants a `dict` and does not exist
 yet. `sam`'s command language is its `dict` when it does, and `acme`'s
@@ -471,11 +508,11 @@ Boot line: section 5's gadget, plumb and event checks.
 
 ### Step 3: the window and the chords
 
-`apps/ghost`, the Workbench menu, the chord, `sys/libapp`'s call. About
-1,500 lines. Needs step 2 and `docs/WORKBENCH.md` step 4.
+`apps/ghost`, the Workbench menu, the chord, `sys/libapp`'s call, the
+`state` words, and the fault notice's action. About 1,600 lines. Needs step 2 and `docs/WORKBENCH.md` step 4.
 
-Boot line: the window opens on a session, and a requester answers
-`confirm`.
+Boot line: the window opens on a session, a requester answers
+`confirm`, and the frame's lamp is hot while it waits.
 
 ### Step 4: the cloud
 
@@ -554,13 +591,24 @@ Boot line: section 8's two checks.
 - **Two bridges to MCP, and the ghost cannot tell.** The reversal is a
   protocol the ecosystem drops, and a bridge is a program that stops
   being built.
+- **Off is one file.** `$home/lib/ghost/off` present, and `init` does
+  not start the ghost. The menu item and the chord are absent, and no
+  process parks on a fault. The notice says faulted and nothing more,
+  no lamp lights, and the bar shows no spend. A person who wants none
+  of it gets none of it, and the rest of the desktop does not know the
+  difference. The reversal is none.
+- **A crash is a parked process, not a core file.** Because the machine
+  still has the process, its memory and its registers, and a debugger
+  that reads them. A core file is what a system writes when it cannot
+  keep the process. The reversal is a fault the kernel cannot survive,
+  which is a panic and not a crash.
 
 ## 11. Sizes and order of dependence
 
     step 0  modelfs        modelfs 800, libinfer 4,000, stub 200, tests 200     the disk
     step 1  ghost          ghost 2,200, ask 300, ns files 100, memory 200, tests 200   step 0
     step 2  applications   libmui 800, plumber 800, trees 400, generator 400    step 1, WORKBENCH 3
-    step 3  the window     apps/ghost 1,200, menu 100, libapp 100, tests 100    step 2, WORKBENCH 4
+    step 3  the window     apps/ghost 1,300, menu 100, libapp 100, tests 100    step 2, WORKBENCH 4
     step 4  the cloud      tlsclient 3,500, webfs 1,500, factotum 200,          step 1, FLEET 0 and 2
                            backend 600, router 200, tests 500
     step 5  fleet, accel   import 100, gpu backend 1,200, npu 600, port 600     step 4, FLEET 5, HARDWARE 5

@@ -319,6 +319,11 @@ all exactly that shape — see `docs/TESTING.md`.
   `Fd_Resolver`.
 - **Permissions that mean something.** An entry reports `0600` because a posted
   service is a capability, and there is nobody yet for it to be private *from*.
+  Omarchy's August of disclosures is the argument for keeping that default. A
+  root-owned daemon's socket was writable from every process in a session,
+  because a group membership was a convenience. A posted name is that socket.
+  When there is somebody to be private from, `0600` stays the default, and a
+  server that wants to be shared writes the mode itself.
 - **A free list of ids**, which retires the same limit `vfs.alloc_fid` has.
 
 ## See also

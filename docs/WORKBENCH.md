@@ -60,6 +60,13 @@ There are nine, and a chord switches between them. A program's windows
 land on the workspace a rule names. An overview shows every workspace at
 once, scaled, to pick one. Section 4 has it.
 
+**From Omarchy's Quattro.** A notice with a history, so a toast missed
+is not a toast lost. One searchable line that finds a program, a tool, a
+menu item or a chord by a few of its letters. A personal theme file
+merged over the shipped one, so a tweak of two lines survives a change
+of theme. And the agent's state as a lamp on the chrome, so a person
+sees the machine wants a yes without finding the window.
+
 **Not taken.** The Amiga's screens, for the reason above. AmigaDOS's
 devices and assigns, which a namespace does better. The `.info` file,
 which was a binary icon format with a position in it. The CLI, and
@@ -104,6 +111,8 @@ for in `$home/lib` and then in `/lib`:
                 roles, the font, the spacing, the pointer
     workspaces  one line per rule: a window's name, and the workspace it
                 opens on
+The theme is the exception. Both copies are read, and section 5 says
+why.
 
 ## 3. Input, as files
 
@@ -212,6 +221,22 @@ program's menus, and here the server draws nothing but chrome. A program
 that wants a menu opens a popup where the pointer is on button 3, which
 is `rio`'s way and MUI's `Popmenu`. The screen bar's menus are
 Workbench's popups, opened from the bar.
+
+**A window that wants a person says so on `wctl`.** `state working`,
+`state waiting` and `state idle` are three words a program writes, and
+the frame shows a lamp for them beside the title. Working is lit,
+waiting is hot, and idle is no lamp. The workspace lamp on the screen
+bar goes hot while any window on it is waiting, so a parked question
+is seen from every workspace. The ghost writes the words,
+`docs/GHOST.md` section 4, and a build script can write them too. The
+server knows nothing of what the program waits for, which is why the
+word is on the window and not on the program.
+
+**The snarf buffer is the server's.** `/srv/draw/snarf` is `rio`'s
+`/dev/snarf`, and `window` binds it there. A write replaces it and
+pushes what was there onto `snarf/history`, ten deep, so a thing cut
+over is not lost. An image is a write of a `sys/libdraw` image's bytes,
+and a program that reads one gets pixels back.
 
 **The chords are the server's, and a file says which.** `intuition` reads
 `$home/lib/keys`, and `/lib/keys` when there is none, at start and on a
@@ -366,11 +391,21 @@ injecting packets.
     gap         6                       # between children
     pointer     arrow                   # or a file of pixels
 
-A name on the right is one of `sys/libpal`'s, or six hex digits. The
-theme is read at start and on a note or a chord, and every window lays
-itself out again. `intuition` reads the same file for the frame it draws,
-so a window's chrome and the gadgets inside it are one look. A theme
-that names nothing is the chassis.
+A name on the right is one of `sys/libpal`'s, or six hex digits.
+
+**A theme is merged, not chosen.** `/lib/theme` is read first and
+`$home/lib/theme` after it, and the later line for a role wins. So a
+personal file of two lines, a font and a `gap`, keeps them under every
+theme the shipped file becomes. The first line of the personal file may
+be `use phosphor`, which reads `/lib/themes/phosphor` in place of
+`/lib/theme` and merges the rest over it. `Workbench > Theme...` is a
+`List` of the names under `/lib/themes`, with the well repainted as the
+selection moves, and choosing writes the `use` line.
+
+Both files are read at start and on a note or a chord, and every window
+lays itself out again. `intuition` reads the same two files for the
+frame it draws, so a window's chrome and the gadgets inside it are one
+look. A theme that names nothing is the chassis.
 
 **The toolkit is not the window manager and not the desktop.** It draws
 inside a window it was given. What a program on it looks like is the
@@ -388,8 +423,10 @@ the desktop.
 memory on the right, which is what the Amiga's said. The workspace lamps
 sit between them. The numbers come from a `/dev/sysstat` this step
 adds to `#c`, the frame counts the boot line already prints. The lamps
-are the server's, painted into the bar's strip on every switch. Button 3
-on the bar opens the menus, one popup per title:
+are the server's, painted into the bar's strip on every switch. When a
+ghost is on, its spend for the day sits beside the memory, read off
+`/mnt/model/N/usage`, so a budget is never a surprise. Button 3 on the
+bar opens the menus, one popup per title:
 
         Workbench   About..., Execute Command..., Shell, Overview, Reload,
                 Quit
@@ -421,10 +458,50 @@ project it runs `window view <path>`, or the tool a line in
 A single click selects, and the `Icons` menu acts on the selection. `Information...` is a requester of the file's `stat`.
 `Rename...` and `Delete...` are requesters that ask first.
 
-**`Execute Command...`** is a requester with a `String` gadget and runs
-what is typed in a window. **`Shell`** is `window rc -i`. Both are also
-chords in the keys file, and both are what a person who never touches the
-mouse will use.
+**`Execute Command...`** is a requester with a `String` gadget and a
+`List` above it, and runs what is typed in a window. The list matches
+what is typed against `/bin`, `/lib/wb/tools`, the menu items and the
+chords' actions, by letters in order or by initials. So `ec` finds
+`Execute Command...` and `wrc` finds `window rc -i`. Return runs the
+selected line, and a line that matches nothing runs as typed. It is
+Spotlight's line for a person who knows a name, and the menus stay for
+a person who does not.
+
+**`Shell`** is `window rc -i`. Both are also chords in the keys file,
+and both are what a person who never touches the mouse will use.
+
+**A notice is a line written to a file.** Workbench serves `/mnt/wb`,
+and `notice` is a file in it:
+
+    tracker   Song finished: aurora.mod
+    window    pong faulted: addr=0 pc=0x4021c0	ask -c debug -p 41
+
+The first word is the source, the text follows, and a tab and a verb
+after that is the action. A notice draws as a toast in the bar's corner
+for five seconds, with the machine's frame around it, and a click runs
+the action. `notice/history` is the last ten, and `notice/ctl` takes
+`quiet` and `loud`, so a person giving a talk sees none and reads them
+after. Two notices with one source and one text inside a minute are one
+notice with a count. A build that fails ten times says so once.
+
+The action is a verb Workbench's own `ctl` knows, `open`, `run`, `ask`
+and `workspace`, with the rest of the line as its argument. It is never
+a shell string, and the notice's text is never in it. Omarchy's notices
+were a bash string, and a video's title reached a shell that way. A verb
+whose argument is the rest of the line cannot be made to.
+
+**A fault is a notice, and the process waits for the answer.** `window`
+runs every program the desktop starts, so `window` is what sees one
+die. When the ghost is on, `window` writes `startstop` to its command's
+`ctl`, and a fault parks the process before the note lands,
+`docs/DEVTOOLS.md` section 7. `window` posts the notice with the trap's
+text and `ask -c debug -p N` as the action.
+
+A click hands the parked process to the ghost, which attaches the
+debugger and reads `bt`. A
+notice dismissed, or ten more behind it, lets the note through and the
+program ends as it always did. With the ghost off, the notice says the
+program faulted, and nothing waits.
 
 **Drag and drop is deferred.** Moving an icon from one drawer to another
 is a `cp` and an `rm`. But the pointer crosses from one window to another
@@ -572,12 +649,15 @@ injected click on its button, and answers which. A theme file that names
 - **`view`**, so a project has somewhere to open.
 - **`init` starts Workbench**, and the terminal as a program stays for
   `window`.
+- **Notices**, the list in `Execute Command...`, and the spend on the
+  bar.
 
 Proves, in five checks. The suite starts the desktop and opens `Home` by
 an injected double click. It sees a drawer window with the icons
 `verify_kfs` left there. It opens a Shell from the menu and types at it
 as `verify_terminal` types. It presses the bound chord and counts one
-more shell in `ps`.
+more shell in `ps`. It writes a line to `notice`, reads it back off
+`history`, and sees the toast's pixels in the bar's corner.
 
 From the serial line, `window ls` opens a window with a listing in it.
 Then `ps` shows the desktop as one proc of threads and its io procs.
@@ -593,6 +673,11 @@ Each its own document, in whatever order a reason arrives.
   and a window dragged between tiles in the overview.
 - **Snapshot**, an icon's position kept in `$home/lib/wb`.
 - **Menus on MUI programs**, with the toolkit's `Menu` on button 3.
+- **`state` on `wctl` and the snarf history**, section 4's two late
+  additions to a step that is done.
+- **A theme switcher** over `/lib/themes`, and the `use` line, section 5.
+- **The fault notice**, the day `docs/GHOST.md` step 3 gives the click
+  somewhere to go.
 - **The relay clicks.** `docs/HANDOFF.md` section 1 promises them, and
   there is no audio device in this system. A `virtio-sound` or an AC97
   is the day.
@@ -638,13 +723,25 @@ Each its own document, in whatever order a reason arrives.
   no keyboard and no mouse, and a desktop nobody can type at is a
   picture. `window` from the serial line works on all three.
 - **No drag and drop in step 4**, for section 6's reason.
+- **A notice's action is a verb, not a shell.** The text a notice
+  carries came from somewhere the desktop does not control. A verb
+  whose argument is the rest of the line cannot be made to run it. The
+  reversal is none.
+- **The theme is merged, not chosen.** A personal file that replaced
+  the shipped one wholesale would lose every role the next theme adds.
+  The reversal is a role that must not be overridden, and there is not
+  one.
+- **A state is a word on a window, not a fact about a program.** The
+  server lights a lamp for a word and knows nothing else. A server that
+  knew what a ghost was would be a server that knew what a program
+  was, and `rio` never did.
 
 ## 9. Sizes and order of dependence
 
     step 1  input        kernel 300, libkbd 300 moved, kbdfs 200       nothing before it
         step 2  pointer      intuition 1,600, libdraw 150                  step 1
     step 3  libmui       libmui 2,500, window 150, tests 400           step 2
-    step 4  workbench    workbench 1,500, view 400, init               step 3
+    step 4  workbench    workbench 1,900, view 400, init               step 3
     step 5  the rest     each its own                                  step 4
 
 Step 1's three parts are independent and can proceed at once. Step 3's
