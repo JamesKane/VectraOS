@@ -105,3 +105,53 @@ shade :: proc "contextless" (c: RGB, amount: i16) -> RGB {
 	}
 	return RGB{adjust(c[0], amount), adjust(c[1], amount), adjust(c[2], amount)}
 }
+
+/*
+by_name resolves one of the palette's own names, lower case with an underscore
+where the constant has one, to its colour. It is how a theme file names a role's
+colour in words, as `docs/WORKBENCH.md` section 5 has it. A name the table does
+not carry answers `false`, which a caller reads as "try six hex digits instead".
+*/
+by_name :: proc "contextless" (name: string) -> (RGB, bool) {
+	switch name {
+	case "void":
+		return VOID, true
+	case "slate_deep":
+		return SLATE_DEEP, true
+	case "slate":
+		return SLATE, true
+	case "magnesium_dark":
+		return MAGNESIUM_DARK, true
+	case "magnesium":
+		return MAGNESIUM, true
+	case "magnesium_lit":
+		return MAGNESIUM_LIT, true
+	case "magnesium_hot":
+		return MAGNESIUM_HOT, true
+	case "copper_dark":
+		return COPPER_DARK, true
+	case "copper":
+		return COPPER, true
+	case "copper_lit":
+		return COPPER_LIT, true
+	case "amber":
+		return AMBER, true
+	case "amber_dim":
+		return AMBER_DIM, true
+	case "amber_hot":
+		return AMBER_HOT, true
+	case "cyan":
+		return CYAN, true
+	case "cyan_dim":
+		return CYAN_DIM, true
+	case "phosphor":
+		return PHOSPHOR, true
+	case "phosphor_dim":
+		return PHOSPHOR_DIM, true
+	case "alert":
+		return ALERT, true
+	case "alert_dim":
+		return ALERT_DIM, true
+	}
+	return RGB{}, false
+}

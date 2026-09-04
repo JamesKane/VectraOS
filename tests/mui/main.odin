@@ -259,5 +259,27 @@ start :: proc "c" (block: ^abi.Args) {
 		want(libmui.hit(req.root, req.root.first.x + 2, req.root.first.y + 2) == nil, "the message text takes no click")
 	}
 
+	// -- The theme is read from a file, a role at a time ----------------------
+	//
+	// A file that names a face, a bevel and a hex ground changes those three
+	// and leaves every other role at the chassis default.
+	{
+		src := "# a theme\nface        copper\nbevel       3\nground      0e131a\nnonsense    xyz\n"
+		th: libmui.Theme
+		libmui.parse_theme(&th, src)
+		want(th.face == libpal.COPPER, "the face line set copper")
+		want(th.bevel == 3, "the bevel line set three")
+		want(th.ground == libpal.RGB{0x0e, 0x13, 0x1a}, "the hex ground was read")
+		want(th.pad == libmui.default_theme.pad, "an unnamed role kept the default")
+		want(th.ink == libmui.default_theme.ink, "an unknown role changed nothing")
+	}
+
+	// An empty file is the chassis, every role at its default.
+	{
+		th: libmui.Theme
+		libmui.parse_theme(&th, "")
+		want(th.face == libmui.default_theme.face, "an empty file is the chassis")
+	}
+
 	libuser.exits("ok")
 }
