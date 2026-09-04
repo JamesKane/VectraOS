@@ -264,6 +264,7 @@ per directory:
 | `docs/PROCS.md` | The plan for processes and threads, Plan 9's way, and where each of its four steps stands | Wondering why a fork is cheap, what `rendezvous` is for, or what the servers stood on before threads |
 | `docs/THREAD.md` | `sys/libthread`, `sys/lib9p` — procs, threads, channels, `alt`, and a server that holds no lock | Writing a program that waits on two things, a server whose reads park, or anything with a channel in it |
 | `docs/DRAW.md` | The draw protocol, written before its code, and everything the screen grew after it: the window, the compositor, the chrome vocabulary and the one palette (`sys/libdraw`, `sys/libpal`) | Building the draw server, its client library, the fb mapping, or anything that draws in either ring |
+| `docs/WORKBENCH.md` | The plan for a desktop, Amiga's way: a mouse, gadgets, chords from a keys file, a MUI-shaped toolkit whose look is a theme file, and Workbench | Starting any of its four steps, or adding a file a window serves |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
@@ -391,14 +392,18 @@ the documents it points at.
 
 **Next, in order:**
 
-1. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
+1. **The desktop.** `docs/WORKBENCH.md` is the plan, written before its
+   code. A mouse and the keys with their modifiers as files. A pointer,
+   gadgets and chords in `intuition`. A MUI-shaped toolkit whose look is
+   a theme file, and Workbench itself. Its first step folds in the
+   scancode package `servers/kbdfs` has asked for since it was written.
+2. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
    Plan 9's `threadnotify`, so a proc other than the first can end the
    program and a note can be caught rather than end a proc. A guard page
-   under a thread's stack. The scancode translation as a package both
-   rings call, which `servers/kbdfs` has asked for since it was written.
-2. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the
-   same table lists the cores SMP will need to start. Worth doing when one of
-   those two becomes a reason rather than a tidiness.
+   under a thread's stack.
+3. **A MADT parse.** It retires both of the I/O APIC's assumptions, and the
+   same table lists the cores SMP will need to start. The mouse's IRQ 12 is
+   one more line assumed rather than read, and may be the reason.
 
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The
