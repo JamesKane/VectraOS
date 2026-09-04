@@ -274,6 +274,7 @@ per directory:
 | `docs/DEVTOOLS.md` | The plan for development tools: C and C++ on the build the tree has, a platform library over files, `/proc` whole, debug information as a flat file, a debugger that is a file server, POSIX as mlibc over the calls, and a compiler on the machine | Starting any of its nine steps, adding a language, a library a C program links, or a file the debugger reads |
 | `docs/FLEET.md` | The plan for several machines, Plan 9's way: `/net` as files, 9P served as well as dialled, users as key pairs with `factotum` and a Noise handshake, roles as init scripts, root over the network, one tree for three architectures, `cpu`, and a queue that is a directory | Starting any of its six steps, adding a network service, touching who may do what to whom, or adding a fast path that must keep a file fallback |
 | `docs/GHOST.md` | The plan for the agent: models as file servers, local and cloud behind one directory, a ghost with seven tools and a namespace for a sandbox, an application contract of three files that `libmui` serves free, the plumber, and MCP both ways | Starting any of its seven steps, making an application scriptable, adding a tool, or touching what the ghost may reach |
+| `docs/WEB.md` | The plan for the world beyond the fleet, on the federated protocols people already use: `webfs` and TLS, a store of every body by hash and every link both ways, one message shape for mail, posts, rooms and feeds, a union that is a timeline, `mothra` the reader, mail as the sealed messenger Delta Chat's way, ActivityPub and the AT Protocol, Matrix, and a site from a directory | Starting any of its seven steps, adding a network, touching a key or a token, or wanting the font past 128 glyphs |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
 
@@ -440,17 +441,27 @@ the documents it points at.
    over files, in a namespace forked with `RFNOMNT` as its sandbox.
    Every application serves `ctl`, `dict` and `event`, and `libmui`
    serves them for free. Its first two steps need nothing but the disk.
+8. **The web.** `docs/WEB.md` is the plan, written before its code, and
+   no protocol is invented. Every body fetched goes into a store under
+   its hash, and every link is kept both ways, on this machine. A
+   message is a directory on every network, `upas/fs`'s shape, a union
+   of them is the timeline, and `mothra` reads it all. Mail is the
+   sealed messenger, Delta Chat's way, then ActivityPub and the AT
+   Protocol, then Matrix, then a site from a directory. `webfs` and TLS
+   are built once, for this and the ghost's cloud, and step 1 owns the
+   font past 128 glyphs, which can start today.
 
 ### The plans, and the order that avoids a rewrite
 
-Five plans are open at once now: `docs/WORKBENCH.md`, `docs/HARDWARE.md`,
-`docs/DEVTOOLS.md`, `docs/FLEET.md` and `docs/GHOST.md`. Each lists its
+Six plans are open at once now: `docs/WORKBENCH.md`, `docs/HARDWARE.md`,
+`docs/DEVTOOLS.md`, `docs/FLEET.md`, `docs/GHOST.md` and `docs/WEB.md`.
+Each lists its
 own steps in its own order-of-dependence table. What that table cannot
 show is where one plan's step waits on another's, and those crossings
-are what decide the order. This is the graph, and the four places a naive
+are what decide the order. This is the graph, and the five places a naive
 order builds a thing twice.
 
-**The hubs.** Four pieces are each waited on by steps in more than one
+**The hubs.** Five pieces are each waited on by steps in more than one
 plan, and each is a root that can start now:
 
     sys/libmui           WORKBENCH 3. GHOST 2 and 3 and DEVTOOLS 6 are all
@@ -462,6 +473,10 @@ plan, and each is a root that can start now:
                          and `docs/KFS.md` is written against this.
     /proc, whole         DEVTOOLS 3. `dbgfs` reads it, and it waits on
                          nothing.
+    the font             WEB 1. WORKBENCH 5 lists it deferred, and this
+                         file did too. A reader of the world's pages
+                         cannot drop runes, so WEB owns it, and it waits
+                         on nothing.
 
 **The cross-plan edges**, over and above each plan's own within-itself
 order:
@@ -472,8 +487,13 @@ order:
     GHOST 5   -> FLEET 5, HARDWARE 5   a model on the fleet's accelerators
     DEVTOOLS 6 -> WORKBENCH 3   the debugger's window is a `libmui` client
     FLEET 0   ~= HARDWARE 3     one network stack, not two -- see below
+    WEB 0     ~= GHOST 4        one HTTP client and one TLS, not two -- see below
+    WEB 1     -> WORKBENCH 3    the reader is a `libmui` client
+    WEB 1     -> GHOST 2        a click is a plumb message
+    WEB 3, 4, 5 -> FLEET 2      every key and token lives in `factotum`
+    WEB 6     -> FLEET 1        `httpd` and `gemd` are `listen` services
 
-**The four rewrites to refuse:**
+**The five rewrites to refuse:**
 
 1. **One network stack.** `docs/HARDWARE.md` step 3 and `docs/FLEET.md`
    step 0 both name `etherfs`, `netfs` and `9pserve`, five thousand lines
@@ -498,6 +518,12 @@ order:
       codec. Sound belongs in DEVTOOLS 1 behind a file. The board then
    contributes a codec behind the same file, the way the network is one
    stack and two cards.
+5. **One HTTP client.** `docs/GHOST.md` step 4 and `docs/WEB.md` step 0
+   both name `cmd/tlsclient` and `servers/webfs`, five thousand lines
+   of TLS 1.3, X.509 and HTTP. WEB step 0 builds them, with the store
+   and the jar the reader needs, and the ghost's cloud backend is their
+   second client. A `tlsclient` written for one host first is one
+   written twice.
 
 **The filesystem is not finished, and three plans lean on the parts that
 are missing.** `docs/KFS.md` defers six things, and four of the five
@@ -534,11 +560,12 @@ can start on the read path, and the write path waits on kfs.
 **So the order that costs the least.** The roots first and in parallel:
 WORKBENCH 3 (`libmui`), FLEET 0 (the network), DEVTOOLS 3 (`/proc`),
 DEVTOOLS 0 and 1 (C and the clock), GHOST 0 and 1 (a model as a file, and
-the ghost on today's tree). Then the hubs' dependents: WORKBENCH 4,
-FLEET 1 and 2 (`factotum`), DEVTOOLS 4. Then what those unblock: `dbgfs`
-and its window, the ghost's applications and window, the fleet's roles
-and `cpu`, and the board. The GPU, the NPU and a model on them are last,
-because they wait on the most.
+the ghost on today's tree). The font from WEB 1 is a root too. Then the hubs'
+dependents: WORKBENCH 4, FLEET 1 and 2 (`factotum`), DEVTOOLS 4, WEB 0
+and 1 (the wire and the reader). Then what those unblock: `dbgfs` and
+its window, the ghost's applications and window, the fleet's roles and
+`cpu`, the reader's networks, and the board. The GPU, the NPU and a
+model on them are last, because they wait on the most.
 
 `docs/WORKBENCH.md` step 3 is the single highest-leverage next thing. It
 is a root that three windowed clients across three plans wait behind.
@@ -561,8 +588,8 @@ kept.
 table", and that is not Plan 9's shape: a `.font` there is a text file of rune
 ranges pointing at separate subfont files, loaded lazily and LRU-cached. The
 real work is a file format, a loader, and the first data this system reads at
-runtime rather than bakes into its image. Nothing in the tree needs a
-non-ASCII glyph yet, so it waits for something that does.
+runtime rather than bakes into its image. `docs/WEB.md` step 1 is the
+thing that needs it, a reader of the world's pages, and owns it now.
 
 **Deferred, with the reason written down: priority inheritance.** A lock hands
 off to the best *waiter*. But a low-priority *holder* still delays a
