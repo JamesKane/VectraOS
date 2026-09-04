@@ -135,8 +135,18 @@ cs_translate :: proc "contextless" (query: string, into: []u8) -> int #no_bounds
 		return 0
 	}
 
+	/*
+	`*` is this machine, which is what an announce names its own end with. The
+	address is written out here rather than looked up, because a machine knows
+	its own address and may have no record naming it.
+	*/
+	local: [16]u8
 	ip := host
-	if !dotted(host) {
+	if host == "*" {
+		lsink := libodin.sink_from(local[:])
+		put_ip(&lsink, my_ip)
+		ip = libodin.str(&lsink)
+	} else if !dotted(host) {
 		found, has := libndb.find(ndb(), "sys", host, "ip")
 		if !has {
 			return 0

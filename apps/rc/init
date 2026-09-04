@@ -13,6 +13,15 @@ mount /srv/kbdfs /n/kbd
 intuition /n/kbd/kbd &
 while(! test -e /srv/draw) sleep 1
 
+# The network: the stack over the card the kernel serves as #E, and /net
+# where every program looks for it. A machine with no card has no /srv/net,
+# and the mount is skipped rather than waited on for ever.
+netfs &
+if(test -e /dev/ether/data) {
+	while(! test -e /srv/net) sleep 1
+	mount /srv/net /net
+}
+
 # A window with a shell in it, the terminal's own child.
 terminal &
 

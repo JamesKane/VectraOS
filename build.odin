@@ -110,6 +110,7 @@ user_programs := [?]User_Program {
 	{name = "kill", path = "cmd/kill"},
 	{name = "ns", path = "cmd/ns"},
 	{name = "window", path = "cmd/window"},
+	{name = "netecho", path = "cmd/netecho"},
 	{name = "muidemo", path = "apps/muidemo"},
 }
 
