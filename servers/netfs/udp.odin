@@ -141,30 +141,17 @@ udp_deliver :: proc "contextless" (src: libnet.IP, sport: u16, dport: u16, paylo
 
 /*
 udp_send sends one datagram from conversation `i` to the far end it is connected
-to. A datagram for this machine's own address is delivered here rather than put
-on the card. One for anywhere else is a frame, and it needs the far side's
-hardware address. The ARP table holds that or it does not, and a miss asks for
-it and drops this datagram, the way a stack does.
+to. It builds the datagram and hands it to `ip_output`. That is the one place
+deciding whether a datagram goes on the card or is delivered here.
 */
 udp_send :: proc "contextless" (i: int, payload: []u8) -> bool #no_bounds_check {
 	c := &convs[i]
 	if !c.connected {
 		return false
 	}
-	if c.raddr == MY_IP {
-		udp_deliver(MY_IP, c.lport, c.rport, payload)
-		return true
-	}
-	mac, known := libnet.arp_lookup(&arp_table, c.raddr)
-	if !known {
-		send_arp_request(c.raddr)
-		return false
-	}
-	at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
-	udp_len := libnet.UDP_HDR + len(payload)
-	body := libnet.put_ipv4(out[:], at, MY_IP, c.raddr, libnet.IPPROTO_UDP, udp_len, 0)
-	end := libnet.put_udp(out[:], body, MY_IP, c.raddr, c.lport, c.rport, payload)
-	return libuser.write(ether_fd, out[:end]) == i64(end)
+	dgram: [libnet.UDP_HDR + DG_MAX]u8 = ---
+	end := libnet.put_udp(dgram[:], 0, my_ip, c.raddr, c.lport, c.rport, payload)
+	return ip_output(c.raddr, libnet.IPPROTO_UDP, dgram[:end])
 }
 
 // -- The control file ---------------------------------------------------------
@@ -234,22 +221,38 @@ scan_port :: proc "contextless" (s: string) -> (u16, bool) {
 	return u16(v), true
 }
 
-// scan_addr reads `a.b.c.d!port`, the way a dial string names one end.
-scan_addr :: proc "contextless" (s: string) -> (ip: libnet.IP, port: u16, ok: bool) #no_bounds_check {
-	rest := s
+// scan_ip reads `a.b.c.d` and answers what follows it, so a caller can go on
+// to read a port or check the text ended.
+scan_ip :: proc "contextless" (s: string) -> (ip: libnet.IP, rest: string, ok: bool) #no_bounds_check {
+	rest = s
 	for i in 0 ..< 4 {
 		v, after, got := scan_uint(rest)
 		if !got || v > 255 {
-			return {}, 0, false
+			return {}, s, false
 		}
 		ip[i] = u8(v)
 		rest = after
 		if i < 3 {
 			if len(rest) == 0 || rest[0] != '.' {
-				return {}, 0, false
+				return {}, s, false
 			}
 			rest = rest[1:]
 		}
+	}
+	return ip, rest, true
+}
+
+// address reads a whole `a.b.c.d`, which is what a database record holds.
+address :: proc "contextless" (s: string) -> (libnet.IP, bool) {
+	ip, _, ok := scan_ip(s)
+	return ip, ok
+}
+
+// scan_addr reads `a.b.c.d!port`, the way a dial string names one end.
+scan_addr :: proc "contextless" (s: string) -> (ip: libnet.IP, port: u16, ok: bool) #no_bounds_check {
+	addr, rest, got_ip := scan_ip(s)
+	if !got_ip {
+		return {}, 0, false
 	}
 	if len(rest) == 0 || rest[0] != '!' {
 		return {}, 0, false
@@ -258,7 +261,7 @@ scan_addr :: proc "contextless" (s: string) -> (ip: libnet.IP, port: u16, ok: bo
 	if !got || v > 65535 {
 		return {}, 0, false
 	}
-	return ip, u16(v), true
+	return addr, u16(v), true
 }
 
 // -- The held read, one conversation at a time --------------------------------
@@ -291,7 +294,7 @@ render_conv :: proc "contextless" (sink: ^libodin.Sink, i: int, kind: i32) #no_b
 	c := &convs[i]
 	switch kind {
 	case CONV_LOCAL:
-		put_ip(sink, MY_IP)
+		put_ip(sink, my_ip)
 		libodin.put_str(sink, "!")
 		libodin.put_uint(sink, u64(c.lport))
 		libodin.put_str(sink, "\n")

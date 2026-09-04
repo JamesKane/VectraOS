@@ -3,7 +3,7 @@
 #
 # `/net/cs` reads this to turn `tcp!fs!9fs` into an address and a port.
 
-sys=vectra ip=10.0.2.15
+sys=vectra ip=10.0.2.15 ether=525400123456
 	cputype=amd64
 
 sys=gw ip=10.0.2.2

@@ -184,9 +184,10 @@ tcp_resend :: proc "contextless" (i: int, slot: int) #no_bounds_check {
 }
 
 /*
-tcp_emit builds one segment with the sequence number it is given and sends it. A
-segment for this machine's own address goes straight back into `tcp_input`,
-which is the loopback, and one for anywhere else becomes a frame.
+tcp_emit builds one segment with the sequence number it is given. `ip_output`
+then decides whether it is delivered here or put on the card. The
+segment is built on the stack: a loopback segment is handled inside that call,
+and the shared frame buffer is `ip_output`'s.
 */
 tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) #no_bounds_check {
 	c := &tcps[i]
@@ -200,21 +201,8 @@ tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) #no_
 		window  = u16(TCP_RQ - (c.tail - c.head)),
 		payload = payload,
 	}
-	end := libnet.put_tcp(seg[:], 0, MY_IP, c.raddr, t)
-
-	if c.raddr == MY_IP {
-		tcp_input(MY_IP, seg[:end])
-		return
-	}
-	mac, known := libnet.arp_lookup(&arp_table, c.raddr)
-	if !known {
-		send_arp_request(c.raddr)
-		return
-	}
-	at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
-	body := libnet.put_ipv4(out[:], at, MY_IP, c.raddr, libnet.IPPROTO_TCP, end, 0)
-	copy(out[body:], seg[:end])
-	_ = libuser.write(ether_fd, out[:body + end])
+	end := libnet.put_tcp(seg[:], 0, my_ip, c.raddr, t)
+	_ = ip_output(c.raddr, libnet.IPPROTO_TCP, seg[:end])
 }
 
 // The most a segment this stack builds can be: a header and one MSS.
@@ -229,7 +217,7 @@ listening on makes a new conversation and answers it. Anything else is dropped,
 because a reset is a segment this stack does not send yet.
 */
 tcp_input :: proc "contextless" (src: libnet.IP, seg: []u8) #no_bounds_check {
-	t, ok := libnet.parse_tcp(seg, src, MY_IP)
+	t, ok := libnet.parse_tcp(seg, src, my_ip)
 	if !ok {
 		return
 	}
@@ -561,7 +549,7 @@ render_tconv :: proc "contextless" (sink: ^libodin.Sink, i: int, kind: i32) #no_
 	c := &tcps[i]
 	switch kind {
 	case TCONV_LOCAL:
-		put_ip(sink, MY_IP)
+		put_ip(sink, my_ip)
 		libodin.put_str(sink, "!")
 		libodin.put_uint(sink, u64(c.lport))
 		libodin.put_str(sink, "\n")

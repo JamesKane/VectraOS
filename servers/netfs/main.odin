@@ -34,6 +34,7 @@ import "base:runtime"
 
 import "vsys:abi"
 import "vsys:lib9p"
+import "vsys:libndb"
 import "vsys:libnet"
 import "vsys:libodin"
 import "vsys:libthread"
@@ -117,8 +118,19 @@ FRAME :: 1200
 
 // This machine's address and the gateway it probes, QEMU's user network until
 // a `cmd/ipconfig` asks for one.
-MY_IP :: libnet.IP{10, 0, 2, 15}
-GW_IP :: libnet.IP{10, 0, 2, 2}
+/*
+This machine's address and the gateway it probes. They are variables, not
+constants. `resolve_addresses` looks this machine up in `/lib/ndb/local` by the
+address on its own card. That is how a machine finds itself in a database a
+fleet shares.
+
+**They start at nothing on purpose.** A machine with no record in the database
+has no address, which is true of a real one. It also makes the read provable.
+Every check in the suite speaks to `10.0.2.15`, and none of them could if this
+stayed as it is written here.
+*/
+my_ip := libnet.IP{0, 0, 0, 0}
+gw_ip := libnet.IP{0, 0, 0, 0}
 
 // The identifier this stack puts in the echoes it sends.
 ECHO_ID :: u16(0x5643)
@@ -187,8 +199,10 @@ threadmain :: proc "contextless" (arg: rawptr) {
 		handler = handler,
 		msize   = FRAME,
 	}
-	// The names, before anything can ask for one.
+	// The names, before anything can ask for one, and then this machine's own
+	// address out of them.
 	cs_load()
+	resolve_addresses()
 
 	if libthread.threadcreate(ether_thread, nil) < 0 {
 		libthread.threadexitsall("threadcreate")
@@ -196,7 +210,7 @@ threadmain :: proc "contextless" (arg: rawptr) {
 
 	// Ask who has the gateway. The reply arrives at the ether thread, which
 	// remembers it and sends the echo that follows.
-	send_arp_request(GW_IP)
+	send_arp_request(gw_ip)
 
 	_, why := lib9p.serve(&srv)
 	lib9p.respond_all(&srv, vectra9.Rread{data = nil})
@@ -236,6 +250,78 @@ ether_thread :: proc "contextless" (arg: rawptr) {
 
 // -- The stack ----------------------------------------------------------------
 
+/*
+resolve_addresses finds this machine in the database by the address on its card.
+
+A record carrying `ether=` for this card names the `ip` this machine answers to.
+So a fleet keeps one database, and every machine reads its own line out of it. A machine with no record keeps the fallback, so a tree with no database
+still has a working loopback and a gateway to probe.
+*/
+resolve_addresses :: proc "contextless" () #no_bounds_check {
+	hex: [16]u8
+	sink := libodin.sink_from(hex[:])
+	for i in 0 ..< 6 {
+		libodin.put_uint(&sink, u64(my_mac[i]), 16, 2)
+	}
+	if text, has := libndb.find(ndb(), "ether", libodin.str(&sink), "ip"); has {
+		if ip, ok := address(text); ok {
+			my_ip = ip
+		}
+	}
+	if text, has := libndb.find(ndb(), "sys", "gw", "ip"); has {
+		if ip, ok := address(text); ok {
+			gw_ip = ip
+		}
+	}
+}
+
+/*
+ip_output sends one datagram to `dst`, and is the only place that decides how.
+
+A datagram for this machine's own address is delivered here and never reaches
+the card, which is the loopback. One for anywhere else needs the far side's
+hardware address. The ARP table holds it or it does not, and a miss asks for it
+and drops this datagram, the way a stack does. Every protocol above hands over a
+body and a number, and none of them frames.
+
+This owns `out`. The loopback path does not touch it, so a datagram delivered
+inside this call cannot overwrite a frame being built further up.
+*/
+ip_output :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) -> bool #no_bounds_check {
+	if dst == my_ip {
+		ip_deliver(my_ip, proto, body)
+		return true
+	}
+	mac, known := libnet.arp_lookup(&arp_table, dst)
+	if !known {
+		send_arp_request(dst)
+		return false
+	}
+	at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
+	body_at := libnet.put_ipv4(out[:], at, my_ip, dst, proto, len(body), 0)
+	copy(out[body_at:], body)
+	end := body_at + len(body)
+	return libuser.write(ether_fd, out[:end]) == i64(end)
+}
+
+/*
+ip_deliver hands one datagram's body to the protocol it belongs to. It is the
+demultiplexer both ways in: a datagram off the card arrives here, and so does
+one this machine addressed to itself.
+*/
+ip_deliver :: proc "contextless" (src: libnet.IP, proto: u8, body: []u8) {
+	switch proto {
+	case libnet.IPPROTO_UDP:
+		if u, ok := libnet.parse_udp(body, src, my_ip); ok {
+			udp_deliver(src, u.sport, u.dport, u.payload)
+		}
+	case libnet.IPPROTO_TCP:
+		tcp_input(src, body)
+	case libnet.IPPROTO_ICMP:
+		icmp_in(src, body)
+	}
+}
+
 // take is one received frame, and what this stack makes of it.
 take :: proc "contextless" (frame: []u8) #no_bounds_check {
 	switch libnet.eth_type(frame) {
@@ -264,28 +350,31 @@ take_arp :: proc "contextless" (frame: []u8) #no_bounds_check {
 
 	switch a.op {
 	case libnet.ARP_REQUEST:
-		if a.tpa == MY_IP {
+		if a.tpa == my_ip {
 			at := libnet.put_eth(out[:], a.sha, my_mac, libnet.ETHERTYPE_ARP)
 			at = libnet.put_arp(out[:], at, libnet.Arp{
 				op  = libnet.ARP_REPLY,
 				sha = my_mac,
-				spa = MY_IP,
+				spa = my_ip,
 				tha = a.sha,
 				tpa = a.spa,
 			})
 			_ = libuser.write(ether_fd, out[:at])
 		}
 	case libnet.ARP_REPLY:
-		if a.spa == GW_IP && echo_sent == 0 {
-			send_echo(GW_IP, a.sha)
+		if a.spa == gw_ip && echo_sent == 0 {
+			send_echo(gw_ip)
 		}
 	}
 }
 
 /*
-take_ipv4 answers an ICMP echo addressed to this machine and counts the echo
-replies its own probe asked for. A datagram for another address is not this
-machine's business, and there is no routing here to pass it on.
+take_ipv4 takes one datagram off the card. A datagram for another address is not
+this machine's business, and there is no routing here to pass it on.
+
+Whoever sent it, this machine now knows where they are. An address seen on a
+frame goes into the ARP table, so a reply needs no request first. That is how a
+ping from a machine this one has never spoken to is answered.
 */
 take_ipv4 :: proc "contextless" (frame: []u8) #no_bounds_check {
 	if len(frame) < libnet.ETH_HDR + libnet.IPV4_HDR {
@@ -293,29 +382,23 @@ take_ipv4 :: proc "contextless" (frame: []u8) #no_bounds_check {
 	}
 	pkt := frame[libnet.ETH_HDR:]
 	h, ok := libnet.parse_ipv4(pkt)
-	if !ok || h.dst != MY_IP {
+	if !ok || h.dst != my_ip {
 		return
 	}
 	if h.total > len(pkt) || h.total < h.hdr_len {
 		return
 	}
-	body := pkt[h.hdr_len:h.total]
+	libnet.arp_insert(&arp_table, h.src, libnet.eth_src(frame))
+	ip_deliver(h.src, h.proto, pkt[h.hdr_len:h.total])
+}
 
-	if h.proto == libnet.IPPROTO_UDP {
-		if u, uok := libnet.parse_udp(body, h.src, h.dst); uok {
-			udp_deliver(h.src, u.sport, u.dport, u.payload)
-		}
-		return
-	}
-	if h.proto == libnet.IPPROTO_TCP {
-		tcp_input(h.src, body)
-		return
-	}
-	if h.proto != libnet.IPPROTO_ICMP {
-		return
-	}
-	m, mok := libnet.parse_icmp(body)
-	if !mok {
+/*
+icmp_in counts the replies this machine's own probe asked for, and answers an
+echo so this machine can be pinged.
+*/
+icmp_in :: proc "contextless" (src: libnet.IP, body: []u8) #no_bounds_check {
+	m, ok := libnet.parse_icmp(body)
+	if !ok {
 		return
 	}
 	switch m.kind {
@@ -324,38 +407,41 @@ take_ipv4 :: proc "contextless" (frame: []u8) #no_bounds_check {
 			echo_recv += 1
 		}
 	case libnet.ICMP_ECHO:
-		// Answer it, to whoever sent it, with the payload it carried.
-		src := libnet.eth_src(frame)
+		msg: [ICMP_MAX]u8 = ---
 		payload := body[libnet.ICMP_HDR:]
-		at := libnet.put_eth(out[:], src, my_mac, libnet.ETHERTYPE_IPV4)
-		icmp_len := libnet.ICMP_HDR + len(payload)
-		body_at := libnet.put_ipv4(out[:], at, MY_IP, h.src, libnet.IPPROTO_ICMP, icmp_len, 0)
-		end := libnet.put_icmp_echo(out[:], body_at, libnet.ICMP_ECHOREPLY, m.id, m.seq, payload)
-		_ = libuser.write(ether_fd, out[:end])
+		if len(payload) > ICMP_MAX - libnet.ICMP_HDR {
+			payload = payload[:ICMP_MAX - libnet.ICMP_HDR]
+		}
+		end := libnet.put_icmp_echo(msg[:], 0, libnet.ICMP_ECHOREPLY, m.id, m.seq, payload)
+		_ = ip_output(src, libnet.IPPROTO_ICMP, msg[:end])
 	}
 }
 
+// The most one ICMP message this stack builds carries.
+ICMP_MAX :: 576
+
 // send_arp_request asks who has `who`, as a broadcast.
 send_arp_request :: proc "contextless" (who: libnet.IP) {
-	n := libnet.build_arp_request(out[:], my_mac, MY_IP, who)
+	n := libnet.build_arp_request(out[:], my_mac, my_ip, who)
 	_ = libuser.write(ether_fd, out[:n])
 }
 
-// send_echo sends one ICMP echo request to `ip` at `mac`, and counts it.
-send_echo :: proc "contextless" (ip: libnet.IP, mac: libnet.MAC) #no_bounds_check {
+/*
+send_echo sends one ICMP echo request to `ip` and counts it. The hardware
+address is `ip_output`'s business, not this one's.
+*/
+send_echo :: proc "contextless" (ip: libnet.IP) #no_bounds_check {
 	payload := "vectra"
-	at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
-	icmp_len := libnet.ICMP_HDR + len(payload)
-	body_at := libnet.put_ipv4(out[:], at, MY_IP, ip, libnet.IPPROTO_ICMP, icmp_len, 1)
+	msg: [ICMP_MAX]u8 = ---
 	end := libnet.put_icmp_echo(
-		out[:],
-		body_at,
+		msg[:],
+		0,
 		libnet.ICMP_ECHO,
 		ECHO_ID,
 		u16(echo_sent + 1),
 		transmute([]u8)payload,
 	)
-	if libuser.write(ether_fd, out[:end]) == i64(end) {
+	if ip_output(ip, libnet.IPPROTO_ICMP, msg[:end]) {
 		echo_sent += 1
 	}
 }
