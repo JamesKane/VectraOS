@@ -16,6 +16,9 @@ while(! test -e /srv/draw) sleep 1
 # A window with a shell in it, the terminal's own child.
 terminal &
 
+# A panel of gadgets on sys/libmui, so the desktop shows the toolkit too.
+muidemo &
+
 # And this console's shell, which init becomes.
 cd $home
 exec rc -i

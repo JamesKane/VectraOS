@@ -20,6 +20,7 @@ Options:
     --arch=amd64|arm64|riscv64   Target architecture (default: amd64)
     --release                    Optimise, otherwise a debug build
     --serial=stdio|file          Where QEMU's COM1 goes (default: stdio)
+    --monitor=PATH               A QEMU monitor on a unix socket, for screendump
     --gfx                        Open a QEMU window, otherwise headless
     --smp=N                      Cores QEMU presents (default: 4)
 
@@ -105,6 +106,7 @@ user_programs := [?]User_Program {
 	{name = "kill", path = "cmd/kill"},
 	{name = "ns", path = "cmd/ns"},
 	{name = "window", path = "cmd/window"},
+	{name = "muidemo", path = "apps/muidemo"},
 }
 
 /*
@@ -269,6 +271,7 @@ Options :: struct {
 	arch:    Arch,
 	release: bool,
 	serial:  string,
+	monitor: string,
 	gfx:     bool,
 	smp:     int,
 
@@ -301,6 +304,8 @@ main :: proc() {
 			}
 		case strings.has_prefix(arg, "--serial="):
 			opts.serial = arg[len("--serial="):]
+		case strings.has_prefix(arg, "--monitor="):
+			opts.monitor = arg[len("--monitor="):]
 		case strings.has_prefix(arg, "--smp="):
 			n, ok := strconv.parse_int(arg[len("--smp="):])
 			if !ok || n < 1 {
@@ -921,6 +926,12 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	case "stdio": append(&args, "-serial", "stdio")
 	case "file":  append(&args, "-serial", "file:build/serial.log")
 	case:         die("unknown --serial=%s (want stdio or file)", opts.serial)
+	}
+
+	// A QMP-less monitor on a unix socket, for a host that wants to drive the
+	// machine -- `screendump` for a screenshot, most of all. Off unless asked.
+	if opts.monitor != "" {
+		append(&args, "-monitor", fmt.tprintf("unix:%s,server,nowait", opts.monitor))
 	}
 
 	if !opts.gfx {

@@ -521,6 +521,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_terminal(&r, column)
 	verify_chords(&r)
+	verify_muiwin(&r)
 
 	// -- And a typed ^C, which reaches the program reading the console -------
 
@@ -4547,6 +4548,137 @@ for the desktop to run.
 A machine with no keyboard controller injects into a stream `kbdfs` reads
 all the same, so this runs on the three boards alike.
 */
+/*
+verify_muiwin spawns the toolkit demo and reads its window off the glass.
+
+`apps/muidemo` is the first program on `sys/libmui`. This is the live half of
+the toolkit's proof, the half `tests/mui` cannot make: it opens a real window,
+lays a gadget tree out in it, bakes the per-colour atlases, and paints. The
+checks are the glass's. The focused window wears a copper bar. A button face is
+magnesium, in the middle of the window and below the bar, where no frame edge
+reaches, so it is the client drawing and not the server's frame. A label on that
+face is amber, blitted from an atlas baked for that one colour, which is the
+whole of the "Amiga look" the six-verb protocol is held to for.
+
+The teardown is the terminal's: the server is stopped by a remove of a window's
+ctl, and both processes come down.
+*/
+@(private = "file")
+verify_muiwin :: proc(r: ^Result) #no_bounds_check {
+	s := devfs.raw_surface()
+	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
+		return
+	}
+
+	count0 := srv.count()
+	sched.reap()
+	pin_before := mem.live_objects(mem.heap_stats())
+
+	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && ps != nil, "the loader starts the draw server for the toolkit") {
+		return
+	}
+	r.programs += 1
+	if !check(r, await_posted("draw"), "which posts /srv/draw for the demo to find") {
+		return
+	}
+	if !check(r, desk_measure(s), "and paints a desktop before the demo opens a window") {
+		return
+	}
+
+	pd, derr := spawn_path(nil, "/bin/muidemo", SPAWN_NS_COPY)
+	if !check(r, derr == vfs.OK && pd != nil, "the loader starts the toolkit demo") {
+		return
+	}
+	r.programs += 1
+
+	// The focused window's bar is copper. Wait for it, scanning top down for a
+	// wide run of it, which a title bar is and a stray pixel is not.
+	copper := fb.pack(s, fb.COPPER)
+	bx, by, bw := -1, -1, 0
+	for _ in 0 ..< PATIENCE * 20 {
+		for y in 4 ..< s.height / 2 {
+			first, last := scan_row(s, y, copper, 8, s.width - 8)
+			if first >= 0 && last - first > 100 {
+				bx, by, bw = first, y, last - first + 1
+				break
+			}
+		}
+		if bx >= 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	if !check(r, bx >= 0, "the demo opens a framed window on the toolkit, its title bar copper") {
+		finish(r, pd, "the toolkit demo is taken down")
+		finish(r, ps, "and the draw server is taken down")
+		return
+	}
+
+	// A button face is magnesium, below the bar and inside the window, clear of
+	// the few pixels of magnesium frame at either edge. The client's paint
+	// follows the frame by an atlas upload's worth of writes, so this polls
+	// three interior columns until a run of face appears under one.
+	magnesium := fb.pack(s, fb.MAGNESIUM)
+	gtop, gbot, gx := -1, -1, -1
+	cols := [3]int{bx + bw / 4, bx + bw / 2, bx + 3 * bw / 4}
+	for _ in 0 ..< PATIENCE * 20 {
+		for c in cols {
+			t, b := scan_col(s, c, magnesium, by + 8, s.height)
+			if t > by + 8 && b - t >= libfont.FONT_HEIGHT {
+				gtop, gbot, gx = t, b, c
+				break
+			}
+		}
+		if gtop > 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	face := check(r, gtop > 0, "and paints a button face inside it, which is the client drawing through the toolkit")
+
+	// A label on that face is amber, blitted from the atlas baked for it.
+	if face {
+		amber := fb.pack(s, fb.AMBER)
+		found_label := false
+		for row in gtop ..< gbot {
+			if first, _ := scan_row(s, row, amber, gx - bw / 4, gx + bw / 4); first >= 0 {
+				found_label = true
+				break
+			}
+		}
+		check(r, found_label, "with an amber label on it, blitted from an atlas baked for that one colour")
+	}
+
+	// -- Teardown, the terminal's way -----------------------------------------
+
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the server to stop it") {
+		finish(r, pd, "the toolkit demo is taken down")
+		finish(r, ps, "and the draw server is taken down")
+		return
+	}
+	ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/ctl", vfs.O_RDONLY)
+	if cerr == vfs.OK {
+		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
+		vfs.chan_close(ctl)
+	}
+	if check(r, wait(ps, PATIENCE), "the draw server exits") {
+		check(r, ps.exit.deliberate && ps.exit.status == 0, "with zero -- the remove was the stop it obeyed")
+	}
+	// The demo's cons and mouse are the server's files, so its reads end when
+	// the server does, and it comes down on its own.
+	check(r, wait(pd, PATIENCE), "and the demo comes down with the server, its files gone")
+	check(r, srv.remove("draw") == vfs.OK, "the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+
+	finish(r, pd, "and the toolkit demo is reaped")
+	finish(r, ps, "and the draw server is reaped")
+
+	pipe.quiesce()
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "the mount of the dead server comes down")
+	drain_pinned(r, pin_before, "and the toolkit window's wire comes back whole")
+}
+
 @(private = "file")
 verify_chords :: proc(r: ^Result) #no_bounds_check {
 	count0 := srv.count()
