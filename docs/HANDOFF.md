@@ -402,12 +402,12 @@ the documents it points at.
 
 **Next, in order:**
 
-1. **The desktop.** `docs/WORKBENCH.md` is the plan, and steps 1 and 2
-   are done: a mouse and the keys with their modifiers as files, and a
-   pointer, gadgets, chords and workspaces in `intuition`. Step 3 is
-   next, `sys/libmui` and `cmd/window`, and it is the one other plans
-   wait on most. Step 4 is Workbench itself. See "the order that avoids
-   a rewrite" below.
+1. **The desktop.** `docs/WORKBENCH.md` is the plan, and steps 1, 2 and 3
+   are done. Input is files, `intuition` has the pointer and gadgets, and
+   `sys/libmui` is now live in a window. `apps/muidemo` shows the toolkit
+   on the desktop beside the terminal (`docs/workbench-desktop.png`). Step
+   4 is Workbench itself, and it needs `libmui`'s `List` and `Menu` first.
+   See "the order that avoids a rewrite" below.
 2. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
    Plan 9's `threadnotify`, so a proc other than the first can end the
    program and a note can be caught rather than end a proc. A guard page
@@ -464,8 +464,8 @@ order builds a thing twice.
 **The hubs.** Five pieces are each waited on by steps in more than one
 plan, and each is a root that can start now:
 
-    sys/libmui           WORKBENCH 3. GHOST 2 and 3 and DEVTOOLS 6 are all
-                         windowed clients of it. Build it once, first.
+    sys/libmui           WORKBENCH 3, DONE. GHOST 2 and 3 and DEVTOOLS 6
+                         are all windowed clients of it. The root is built.
     the network          FLEET 0. Every later FLEET step, GHOST 4, and the
                          stack half of HARDWARE 3 read it.
     users and factotum   FLEET 2. GHOST 4 needs an identity, and the
@@ -567,8 +567,24 @@ its window, the ghost's applications and window, the fleet's roles and
 `cpu`, the reader's networks, and the board. The GPU, the NPU and a
 model on them are last, because they wait on the most.
 
-`docs/WORKBENCH.md` step 3 is the single highest-leverage next thing. It
-is a root that three windowed clients across three plans wait behind.
+`docs/WORKBENCH.md` step 3 is done. The root that three windowed clients
+across three plans waited behind is built.
+
+The remaining roots wait on nothing, and each can start now:
+
+    the network        FLEET 0
+    /proc, whole       DEVTOOLS 3
+    the font > 128     WEB 1
+    C and the clock    DEVTOOLS 0 and 1
+    a model, the ghost GHOST 0 and 1
+    kfs large + rename unowned, ahead of GHOST 0's write path and DEVTOOLS 8
+
+Of these the network has the widest fan-out. Every later FLEET step,
+GHOST 4, and the stack half of HARDWARE 3 read it. So it is the next
+highest-leverage root, and building it once in FLEET is the "one network
+stack" rewrite refused. The font is the smallest root that also repays
+the desktop just built. `sys/libedit` drops every rune past 128, so the
+toolkit's `String` field cannot yet show them.
 
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The
