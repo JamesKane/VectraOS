@@ -499,6 +499,38 @@ order:
    contributes a codec behind the same file, the way the network is one
    stack and two cards.
 
+**The filesystem is not finished, and three plans lean on the parts that
+are missing.** `docs/KFS.md` defers six things, and four of the five
+plans reach one of them:
+
+    files past 4 MB    kfs has one indirect level. GHOST 0's model
+                       weights are `a gigabyte on a disk`, and DEVTOOLS 8's
+                       self-hosted `clang` and `odin` write objects and
+                       debug files past the cap. The block is real.
+        owners, dates      FLEET 2 and 3 grow both, and `docs/FLEET.md` says
+                       so. This one is owned. Do not build it twice.
+    rename             `mv` copies and removes. DEVTOOLS 7's `libposix`
+                       and every build that writes a file and moves it
+                       into place want the real thing.
+    a journal, a check anything that must survive a crash mid-write. No
+                       plan's function waits on it, but a fleet's root
+                       disk (FLEET 3) is the first thing that would.
+
+**Two of these are unowned, and that is the finding.** Owners and dates
+are FLEET's. But nothing yet owns *large files* or *rename*, and GHOST 0
+and the DEVTOOLS self-hosting step each stop at one. So kfs growing a
+second and third indirect level, and a `wstat` that renames, is a root
+of its own. It goes ahead of GHOST 0 and DEVTOOLS 8, on the forward
+list rather than inside a plan that assumes it.
+
+**One way to defer the largest of these.** A model's weights are read,
+not written, and `/lib` is bound from the FAT system partition the host
+stages, not from kfs. So `modelfs` reading `/lib/models/*.gguf` off the
+host-staged partition sidesteps the 4 MB cap while kfs is still small.
+What still needs kfs to grow is a file a *program* writes large: a
+fine-tuned model, a self-hosted build's output, a long capture. GHOST 0
+can start on the read path, and the write path waits on kfs.
+
 **So the order that costs the least.** The roots first and in parallel:
 WORKBENCH 3 (`libmui`), FLEET 0 (the network), DEVTOOLS 3 (`/proc`),
 DEVTOOLS 0 and 1 (C and the clock), GHOST 0 and 1 (a model as a file, and
