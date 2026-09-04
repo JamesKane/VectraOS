@@ -35,6 +35,7 @@ import "kernel:sd"
 import "kernel:sched"
 import "kernel:srv"
 import "kernel:drivers/virtio"
+import "kernel:ether"
 import "kernel:sync"
 import "kernel:user"
 import "kernel:vfs"
@@ -1996,6 +1997,11 @@ init_net :: proc() -> bool {
 		libodin.put_str(&sink, string(pair[:]))
 	}
 	emit(&klog, .Ok, &sink)
+
+	// `#E`, the card as files, so ring 3 can send and receive frames.
+	if err := ether.init(vfs.boot_namespace); err != vfs.OK {
+		log_line(&klog, .Warn, "ether: #E would not come up")
+	}
 	return true
 }
 

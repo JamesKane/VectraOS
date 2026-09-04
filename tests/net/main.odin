@@ -113,5 +113,49 @@ start :: proc "c" (block: ^abi.Args) {
 		want(!ok2, "a flipped bit fails the ICMP checksum")
 	}
 
+	// -- A live frame across the card, from ring 3 through `#E` ---------------
+	//
+	// The kernel serves the virtio-net card as `/dev/ether`. This opens it,
+	// reads the card's own address, sends a broadcast ARP for the gateway, and
+	// polls for the reply. It proves the whole ring 3 path the stack will use.
+	// A frame this program built left on the card, and a frame the card received
+	// came back, all through files.
+	{
+		afd := libuser.open("/dev/ether/addr", abi.O_RDONLY)
+		if afd >= 0 {
+			card: [6]u8
+			libuser.read(int(afd), card[:])
+			_ = libuser.close(int(afd))
+			card_mac := libnet.MAC{card[0], card[1], card[2], card[3], card[4], card[5]}
+
+			dfd := libuser.open("/dev/ether/data", abi.O_RDWR)
+			want(dfd >= 0, "the ether data file opens")
+
+			out: [64]u8
+			n := libnet.build_arp_request(out[:], card_mac, mine, gw)
+			want(libuser.write(int(dfd), out[:n]) == i64(n), "the ARP request is written to the card")
+
+			in_buf: [2048]u8
+			got := false
+			for _ in 0 ..< 3000 {
+				rn := libuser.read(int(dfd), in_buf[:])
+				if rn > 0 {
+					frame := in_buf[:int(rn)]
+					if libnet.eth_type(frame) == libnet.ETHERTYPE_ARP && int(rn) >= libnet.ETH_HDR + libnet.ARP_LEN {
+						a, ok := libnet.parse_arp(frame[libnet.ETH_HDR:])
+						if ok && a.op == libnet.ARP_REPLY && a.spa == gw {
+							got = true
+							break
+						}
+					}
+				} else {
+					_ = libuser.sleep(1)
+				}
+			}
+			want(got, "the gateway answered our ARP across the card, from ring 3")
+			_ = libuser.close(int(dfd))
+		}
+	}
+
 	libuser.exits("ok")
 }
