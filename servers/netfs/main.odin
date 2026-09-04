@@ -232,6 +232,7 @@ ether_thread :: proc "contextless" (arg: rawptr) {
 	frame: [2048]u8
 	for {
 		n := libthread.ioread(io, ether_fd, frame[:])
+		drain_wakes()
 		if n <= 0 {
 			/*
 			The read reached its bound with nothing on the card, which is one
@@ -242,9 +243,51 @@ ether_thread :: proc "contextless" (arg: rawptr) {
 			busiest.
 			*/
 			tcp_tick()
+			drain_wakes()
 			continue
 		}
 		take(frame[:int(n)])
+		drain_wakes()
+	}
+}
+
+/*
+Held reads are answered from the ether thread, never from a handler.
+
+A reply must not go out while the serve loop is part way through a request. The
+loopback is where that would happen: a connect's own write drives the accept
+that answers a listen read. The serve loop would then write one reply while
+owing another, into a pipe a held read's note-poll is already filling. Both
+directions can stall.
+
+So a protocol never answers a held read itself. It raises a flag here, and the
+ether thread lowers it between frames. The serve loop is parked in `ioread`
+then, and the reply buffer is no one else's. This is the shape `consrv` and
+`servers/intuition` keep: the thread that reads the device is the one that
+answers what the device's arrivals unblock.
+*/
+wake_udp: [MAX_CONV]bool
+wake_tcp: [MAX_TCP]bool
+wake_listen: [MAX_TCP]bool
+
+// drain_wakes answers every held read a protocol raised a flag for. The ether
+// thread calls it, and nothing else does.
+drain_wakes :: proc "contextless" () #no_bounds_check {
+	for i in 0 ..< MAX_CONV {
+		if wake_udp[i] {
+			wake_udp[i] = false
+			answer_conv(i)
+		}
+	}
+	for i in 0 ..< MAX_TCP {
+		if wake_tcp[i] {
+			wake_tcp[i] = false
+			answer_tcp(i)
+		}
+		if wake_listen[i] {
+			wake_listen[i] = false
+			answer_listen(i)
+		}
 	}
 }
 

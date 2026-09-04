@@ -103,7 +103,7 @@ conv_push :: proc "contextless" (i: int, raddr: libnet.IP, rport: u16, payload: 
 	d.rport = rport
 	copy(d.data[:d.len], payload[:d.len])
 	c.tail += 1
-	answer_conv(i)
+	wake_udp[i] = true
 }
 
 // conv_pop takes the oldest datagram into `out` and answers its length.

@@ -269,7 +269,7 @@ tcp_accept :: proc "contextless" (listener: int, src: libnet.IP, t: libnet.Tcp) 
 		l.backlog[l.btail % BACKLOG] = n
 		l.btail += 1
 	}
-	answer_listen(listener)
+	wake_listen[listener] = true
 
 	tcp_output(n, libnet.TCP_SYN | libnet.TCP_ACK, nil)
 }
@@ -340,7 +340,7 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 				c.rcv_nxt += u32(n)
 			}
 			tcp_output(i, libnet.TCP_ACK, nil)
-			answer_tcp(i)
+			wake_tcp[i] = true
 		} else if libnet.seq_le_u32(c.rcv_nxt, t.seq) {
 			_ = libnet.reseq_insert(&c.reseq, t.seq, t.payload)
 			tcp_output(i, libnet.TCP_ACK, nil)
@@ -362,7 +362,7 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 			c.state = .Time_Wait
 		}
 		tcp_output(i, libnet.TCP_ACK, nil)
-		answer_tcp(i)
+		wake_tcp[i] = true
 	}
 }
 
@@ -452,28 +452,12 @@ tcp_tick :: proc "contextless" () #no_bounds_check {
 		if libnet.retx_lost(&c.retx) {
 			c.state = .Closed
 			c.fin_seen = true
-			wake_tcp_reads(i)
+			wake_tcp[i] = true
 		}
 	}
 }
 
 // -- The held reads ------------------------------------------------------------
-
-/*
-wake_tcp_reads answers a read held on a conversation that has just given up.
-The stream is over, so the answer is the end of it rather than bytes.
-*/
-wake_tcp_reads :: proc "contextless" (i: int) {
-	// `answer_reads` is for a read with bytes waiting. This one has none and
-	// never will, so the request is answered empty by hand.
-	for {
-		req, ok := lib9p.held(&srv, rawptr(uintptr(i)), wants_tcp)
-		if !ok {
-			return
-		}
-		_ = lib9p.respond(req, vectra9.Rread{data = nil})
-	}
-}
 
 answer_tcp :: proc "contextless" (i: int) {
 	lib9p.answer_reads(&srv, rawptr(uintptr(i)), wants_tcp, drain_tcp)
