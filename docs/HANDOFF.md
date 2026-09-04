@@ -401,11 +401,12 @@ the documents it points at.
 
 **Next, in order:**
 
-1. **The desktop.** `docs/WORKBENCH.md` is the plan, written before its
-   code. A mouse and the keys with their modifiers as files. A pointer,
-   gadgets and chords in `intuition`. A MUI-shaped toolkit whose look is
-   a theme file, and Workbench itself. Its first step folds in the
-   scancode package `servers/kbdfs` has asked for since it was written.
+1. **The desktop.** `docs/WORKBENCH.md` is the plan, and steps 1 and 2
+   are done: a mouse and the keys with their modifiers as files, and a
+   pointer, gadgets, chords and workspaces in `intuition`. Step 3 is
+   next, `sys/libmui` and `cmd/window`, and it is the one other plans
+   wait on most. Step 4 is Workbench itself. See "the order that avoids
+   a rewrite" below.
 2. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
    Plan 9's `threadnotify`, so a proc other than the first can end the
    program and a note can be caught rather than end a proc. A guard page
@@ -439,6 +440,76 @@ the documents it points at.
    over files, in a namespace forked with `RFNOMNT` as its sandbox.
    Every application serves `ctl`, `dict` and `event`, and `libmui`
    serves them for free. Its first two steps need nothing but the disk.
+
+### The plans, and the order that avoids a rewrite
+
+Five plans are open at once now: `docs/WORKBENCH.md`, `docs/HARDWARE.md`,
+`docs/DEVTOOLS.md`, `docs/FLEET.md` and `docs/GHOST.md`. Each lists its
+own steps in its own order-of-dependence table. What that table cannot
+show is where one plan's step waits on another's, and those crossings
+are what decide the order. This is the graph, and the four places a naive
+order builds a thing twice.
+
+**The hubs.** Four pieces are each waited on by steps in more than one
+plan, and each is a root that can start now:
+
+    sys/libmui           WORKBENCH 3. GHOST 2 and 3 and DEVTOOLS 6 are all
+                         windowed clients of it. Build it once, first.
+    the network          FLEET 0. Every later FLEET step, GHOST 4, and the
+                         stack half of HARDWARE 3 read it.
+    users and factotum   FLEET 2. GHOST 4 needs an identity, and the
+                         one-user note in `docs/DRAW.md`, `docs/PROCS.md`
+                         and `docs/KFS.md` is written against this.
+    /proc, whole         DEVTOOLS 3. `dbgfs` reads it, and it waits on
+                         nothing.
+
+**The cross-plan edges**, over and above each plan's own within-itself
+order:
+
+    GHOST 2   -> WORKBENCH 3    the application contract is `libmui`'s to serve
+    GHOST 3   -> WORKBENCH 4    the ghost's window is a Workbench window
+    GHOST 4   -> FLEET 0, 2     the cloud needs the network and an identity
+    GHOST 5   -> FLEET 5, HARDWARE 5   a model on the fleet's accelerators
+    DEVTOOLS 6 -> WORKBENCH 3   the debugger's window is a `libmui` client
+    FLEET 0   ~= HARDWARE 3     one network stack, not two -- see below
+
+**The four rewrites to refuse:**
+
+1. **One network stack.** `docs/HARDWARE.md` step 3 and `docs/FLEET.md`
+   step 0 both name `etherfs`, `netfs` and `9pserve`, five thousand lines
+   of the same servers. Build them once in FLEET against `virtio-net` on
+   QEMU, behind an `etherfs` contract a card sits behind. HARDWARE step 3
+   then adds the board's card behind that contract and rewrites nothing
+   above it. FLEET's own table says as much. This is the reminder to do
+   FLEET's network before the board's.
+2. **One user model.** "There are no users" is load-bearing in four
+   places. `docs/DRAW.md`'s window `ctl` is exclusive because there is
+   nobody to own it. `docs/PROCS.md`'s notes go by anybody. `docs/KFS.md`
+   writes every file glenda's, and `docs/GHOST.md`'s sandbox is a
+   namespace rather than a right. `factotum` (FLEET 2) is the one place
+   that ends that. Anything that would fake an owner to move sooner is a
+   thing FLEET 2 makes it rewrite.
+3. **One toolkit.** `sys/libmui` (WORKBENCH 3) is under the ghost's
+   applications, the ghost's window and the debugger's window. A window
+   built before it -- a debugger drawn by hand, an application's gadgets
+   hand-rolled -- is a window built twice.
+4. **One sound path.** `docs/DEVTOOLS.md` step 1 puts the clock, the
+   store and sound together, and `docs/HARDWARE.md` step 7 has a board
+      codec. Sound belongs in DEVTOOLS 1 behind a file. The board then
+   contributes a codec behind the same file, the way the network is one
+   stack and two cards.
+
+**So the order that costs the least.** The roots first and in parallel:
+WORKBENCH 3 (`libmui`), FLEET 0 (the network), DEVTOOLS 3 (`/proc`),
+DEVTOOLS 0 and 1 (C and the clock), GHOST 0 and 1 (a model as a file, and
+the ghost on today's tree). Then the hubs' dependents: WORKBENCH 4,
+FLEET 1 and 2 (`factotum`), DEVTOOLS 4. Then what those unblock: `dbgfs`
+and its window, the ghost's applications and window, the fleet's roles
+and `cpu`, and the board. The GPU, the NPU and a model on them are last,
+because they wait on the most.
+
+`docs/WORKBENCH.md` step 3 is the single highest-leverage next thing. It
+is a root that three windowed clients across three plans wait behind.
 
 **Deferred, with the reason written down: `segfree`.** The last of Plan 9's
 three segment calls frees the pages under a range and keeps the segment. The
