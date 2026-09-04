@@ -216,6 +216,9 @@ ether_thread :: proc "contextless" (arg: rawptr) {
 	frame: [2048]u8
 	for {
 		n := libthread.ioread(io, ether_fd, frame[:])
+		// Every pass is one round of the stack's coarse clock, whether a frame
+		// came or the read reached its bound. A retransmit is due by rounds.
+		tcp_tick()
 		if n <= 0 {
 			continue
 		}

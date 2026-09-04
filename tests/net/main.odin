@@ -158,5 +158,74 @@ start :: proc "c" (block: ^abi.Args) {
 		}
 	}
 
+	// -- The retransmit queue remembers until it is acknowledged --------------
+	{
+		q: libnet.Retx
+		a := "one"
+		b := "two"
+		c := "three"
+		want(libnet.retx_push(&q, 100, libnet.TCP_PSH, transmute([]u8)a, 1), "a segment is remembered")
+		want(libnet.retx_push(&q, 103, libnet.TCP_PSH, transmute([]u8)b, 2), "and a second")
+		want(libnet.retx_push(&q, 106, libnet.TCP_PSH, transmute([]u8)c, 3), "and a third")
+		want(libnet.retx_count(&q) == 3, "all three are waiting")
+
+		// A bare ACK takes no sequence space, so nothing remembers it.
+		want(libnet.retx_push(&q, 111, libnet.TCP_ACK, nil, 4), "a bare ACK is taken")
+		want(libnet.retx_count(&q) == 3, "and is not remembered, having nothing to acknowledge")
+
+		// A SYN takes a sequence number of its own.
+		want(libnet.retx_span(libnet.TCP_SYN, 0) == 1, "a SYN takes one sequence number")
+		want(libnet.retx_span(libnet.TCP_FIN, 4) == 5, "a FIN takes one past its bytes")
+
+		// Acknowledging past the first two drops exactly those.
+		libnet.retx_ack(&q, 106)
+		want(libnet.retx_count(&q) == 1, "an acknowledgement drops what it covers")
+
+		// Nothing is due before its timeout, and the oldest is due after it.
+		_, due := libnet.retx_due(&q, 4, 10)
+		want(!due, "nothing is due before its timeout")
+		i, due2 := libnet.retx_due(&q, 20, 10)
+		want(due2, "and the segment is due after it")
+		libnet.retx_sent(&q, i, 20)
+		_, due3 := libnet.retx_due(&q, 21, 10)
+		want(!due3, "sending it again restarts its timer")
+
+		libnet.retx_ack(&q, 200)
+		want(libnet.retx_count(&q) == 0, "an acknowledgement past everything empties the queue")
+	}
+
+	// -- The resequencer holds what arrived early ----------------------------
+	{
+		r: libnet.Resequencer
+		later := "world"
+		want(libnet.reseq_insert(&r, 110, transmute([]u8)later), "a segment that came early is held")
+		want(libnet.reseq_held(&r) == 1, "and is waiting")
+
+		// Nothing is contiguous at 100, because 100 is what has not arrived.
+		out: [64]u8
+		want(libnet.reseq_take(&r, 100, out[:]) == 0, "nothing is contiguous before the gap is filled")
+
+		// Once the stream reaches 110, the held segment is the next run.
+		n := libnet.reseq_take(&r, 110, out[:])
+		want(n == len(later), "the held segment comes out when its turn arrives")
+		want(string(out[:n]) == later, "with its bytes intact")
+		want(libnet.reseq_held(&r) == 0, "and is no longer held")
+
+		// The same sequence twice is held once.
+		want(libnet.reseq_insert(&r, 200, transmute([]u8)later), "a segment is held")
+		want(libnet.reseq_insert(&r, 200, transmute([]u8)later), "and the same one again is taken")
+		want(libnet.reseq_held(&r) == 1, "but held only once")
+		libnet.reseq_drop(&r)
+		want(libnet.reseq_held(&r) == 0, "a close forgets what was held")
+	}
+
+	// -- The window says how much more may be sent ---------------------------
+	{
+		want(libnet.send_room(0, 0, 1000) == 1000, "an idle conversation may send the whole window")
+		want(libnet.send_room(0, 400, 1000) == 600, "what is in flight comes off the window")
+		want(libnet.send_room(0, 1000, 1000) == 0, "a full window stops the sender")
+		want(libnet.send_room(0, 1200, 1000) == 0, "and a window smaller than what is in flight is not negative")
+	}
+
 	libuser.exits("ok")
 }

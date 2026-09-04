@@ -77,7 +77,21 @@ Tcp_Conv :: struct {
 	backlog:  [BACKLOG]int,
 	bhead:    int,
 	btail:    int,
+	// What a network needs and a loopback does not. The segments sent and not
+	// acknowledged, the ones that came early, and what the far end will take.
+	retx:     libnet.Retx,
+	reseq:    libnet.Resequencer,
+	peer_win: u16,
 }
+
+/*
+The round this stack is on, and how many rounds a segment waits before it is
+sent again. A round is one pass of the ether thread's loop, and the device read bounds it.
+So this is a coarse monotonic clock rather than a tick count.
+`docs/DEVTOOLS.md` step 1 is where a real one arrives.
+*/
+now_round: u64
+RETX_AFTER :: u64(2)
 
 tcps: [MAX_TCP]Tcp_Conv
 next_tcp_port: u16 = EPHEMERAL
@@ -101,6 +115,7 @@ tcp_alloc :: proc "contextless" () -> int #no_bounds_check {
 
 tcp_free :: proc "contextless" (i: int) #no_bounds_check {
 	if i >= 0 && i < MAX_TCP {
+		libnet.reseq_drop(&tcps[i].reseq)
 		tcps[i] = Tcp_Conv{}
 	}
 }
@@ -137,31 +152,55 @@ tcp_pop :: proc "contextless" (i: int, out: []u8) -> int #no_bounds_check {
 // -- Sending -------------------------------------------------------------------
 
 /*
-tcp_output builds one segment and sends it. A segment for this machine's own
-address goes straight back into `tcp_input`, which is the loopback, and one for
-anywhere else becomes a frame. The segment is built on the stack rather than in
-the shared frame buffer. A loopback segment is handled inside this call, and
-would otherwise overwrite the buffer it came from.
+tcp_output sends one new segment: it takes the next sequence numbers, remembers
+the segment for a retransmit, and puts it on the wire. The segment is built on
+the stack rather than in the shared frame buffer. A loopback segment is handled
+inside this call, and would otherwise overwrite the buffer it came from.
 */
 tcp_output :: proc "contextless" (i: int, flags: u8, payload: []u8) #no_bounds_check {
+	c := &tcps[i]
+	seq := c.snd_nxt
+
+	// SYN and FIN each take a sequence number, and so does every byte sent.
+	// The count moves before the segment goes, because a loopback answers
+	// inside the send.
+	c.snd_nxt += libnet.retx_span(flags, len(payload))
+
+	// Remembered before it is sent, so an answer that comes back inside this
+	// call finds it there to acknowledge.
+	_ = libnet.retx_push(&c.retx, seq, flags, payload, now_round)
+	tcp_emit(i, seq, flags, payload)
+}
+
+/*
+tcp_resend puts one remembered segment on the wire again, with the sequence
+number it had the first time. Nothing about the conversation moves: this is the
+same segment, not a new one.
+*/
+tcp_resend :: proc "contextless" (i: int, slot: int) #no_bounds_check {
+	e := &tcps[i].retx.entries[slot]
+	libnet.retx_sent(&tcps[i].retx, slot, now_round)
+	tcp_emit(i, e.seq, e.flags, e.data[:e.len])
+}
+
+/*
+tcp_emit builds one segment with the sequence number it is given and sends it. A
+segment for this machine's own address goes straight back into `tcp_input`,
+which is the loopback, and one for anywhere else becomes a frame.
+*/
+tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) #no_bounds_check {
 	c := &tcps[i]
 	seg: [TCP_HDR_MAX]u8
 	t := libnet.Tcp {
 		sport   = c.lport,
 		dport   = c.rport,
-		seq     = c.snd_nxt,
+		seq     = seq,
 		ack     = c.rcv_nxt,
 		flags   = flags,
 		window  = u16(TCP_RQ - (c.tail - c.head)),
 		payload = payload,
 	}
 	end := libnet.put_tcp(seg[:], 0, MY_IP, c.raddr, t)
-
-	// SYN and FIN each take a sequence number, and so does every byte sent.
-	if flags & libnet.TCP_SYN != 0 || flags & libnet.TCP_FIN != 0 {
-		c.snd_nxt += 1
-	}
-	c.snd_nxt += u32(len(payload))
 
 	if c.raddr == MY_IP {
 		tcp_input(MY_IP, seg[:end])
@@ -257,8 +296,10 @@ it, and would otherwise find a conversation that had not moved yet.
 tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 	c := &tcps[i]
 
+	c.peer_win = t.window
 	if t.flags & libnet.TCP_ACK != 0 && seq_le(c.snd_una, t.ack) {
 		c.snd_una = t.ack
+		libnet.retx_ack(&c.retx, c.snd_una)
 	}
 
 	#partial switch c.state {
@@ -291,12 +332,35 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 		return
 	}
 
-	// The stream, in every state that has one.
-	if len(t.payload) > 0 && t.seq == c.rcv_nxt {
-		tcp_push(i, t.payload)
-		c.rcv_nxt += u32(len(t.payload))
-		tcp_output(i, libnet.TCP_ACK, nil)
-		answer_tcp(i)
+	/*
+	The stream, in every state that has one. A segment that begins where the
+	stream does is taken, and then whatever was held for it. An early segment
+	waits in the resequencer until the one in front of it arrives. A segment
+	that begins past the stream is early, and is held. One that begins before
+	it has already been taken, and is only acknowledged again.
+	*/
+	if len(t.payload) > 0 {
+		if t.seq == c.rcv_nxt {
+			tcp_push(i, t.payload)
+			c.rcv_nxt += u32(len(t.payload))
+			// And the run the arrival just made contiguous.
+			held: [libnet.SEG_MAX]u8
+			for {
+				n := libnet.reseq_take(&c.reseq, c.rcv_nxt, held[:])
+				if n == 0 {
+					break
+				}
+				tcp_push(i, held[:n])
+				c.rcv_nxt += u32(n)
+			}
+			tcp_output(i, libnet.TCP_ACK, nil)
+			answer_tcp(i)
+		} else if seq_le(c.rcv_nxt, t.seq) {
+			_ = libnet.reseq_insert(&c.reseq, t.seq, t.payload)
+			tcp_output(i, libnet.TCP_ACK, nil)
+		} else {
+			tcp_output(i, libnet.TCP_ACK, nil)
+		}
 	}
 
 	// The far side's own close.
@@ -361,11 +425,47 @@ tcp_write :: proc "contextless" (i: int, data: []u8) -> bool #no_bounds_check {
 	}
 	at := 0
 	for at < len(data) {
-		n := min(MSS, len(data) - at)
+		// Only as much as the far end will take, and only while there is
+		// somewhere to remember the segment for a retransmit.
+		room := libnet.send_room(c.snd_una, c.snd_nxt, window_of(c))
+		if room <= 0 || libnet.retx_count(&c.retx) >= libnet.RETX_SLOTS {
+			break
+		}
+		n := min(min(MSS, len(data) - at), room)
+		if n <= 0 {
+			break
+		}
 		tcp_output(i, libnet.TCP_PSH | libnet.TCP_ACK, data[at:at + n])
 		at += n
 	}
-	return true
+	return at > 0
+}
+
+/*
+window_of is the far end's window, or one segment's worth before it names one. A
+conversation the handshake established already knows a window, so this stands in
+only for the moment before that.
+*/
+window_of :: proc "contextless" (c: ^Tcp_Conv) -> u16 {
+	return c.peer_win == 0 ? u16(MSS) : c.peer_win
+}
+
+/*
+tcp_tick is one round of the clock. A conversation whose segment waited too long
+sends that segment again. This is the whole of what makes a
+stream survive a network that drops one.
+*/
+tcp_tick :: proc "contextless" () #no_bounds_check {
+	now_round += 1
+	for i in 0 ..< MAX_TCP {
+		c := &tcps[i]
+		if !c.used || c.state == .Listen || c.state == .Closed {
+			continue
+		}
+		if slot, due := libnet.retx_due(&c.retx, now_round, RETX_AFTER); due {
+			tcp_resend(i, slot)
+		}
+	}
 }
 
 // -- The held reads ------------------------------------------------------------
