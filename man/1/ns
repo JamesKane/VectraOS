@@ -1,0 +1,63 @@
+.TH NS 1
+.SH NAME
+ns \- display name space
+.SH SYNOPSIS
+.B ns
+[
+.I pid
+]
+.SH DESCRIPTION
+.I Ns
+prints the name space of the process named by
+.IR pid ,
+or of itself with none given, as the
+.IR bind (1)
+and
+.B mount
+lines that would rebuild it.
+The output comes from reading
+.BR /proc/ pid /ns
+(see
+.IR proc (3))
+and is unchanged from what the kernel wrote there.
+.PP
+Each mount point is one or more lines: the first member plain, a later
+member of the same union with
+.BR \-a ,
+and either with
+.B \-c
+if it may receive a create.
+Replaying the lines in the order printed rebuilds the same union in the
+same order.
+.SH EXAMPLES
+.IP
+.EX
+ns
+bind #/ /
+bind #c /dev
+bind #b /bin
+mount /srv/memfs /mnt
+.EE
+.SH FILES
+.B /proc/*/ns
+.SH SOURCE
+.B cmd/ns/main.odin
+.SH SEE ALSO
+.IR bind (1),
+.IR ps (1),
+.IR proc (3)
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B "no such process"
+if
+.BI /proc/ pid /ns
+could not be read.
+.SH BUGS
+A name longer than ninety-six bytes is kept truncated, with
+.B ...
+appended.
+Unlike Plan 9's
+.IR ns ,
+this one does not rewrite a network data file's name as its address;
+.B /net
+carries no such files yet.

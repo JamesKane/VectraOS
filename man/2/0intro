@@ -1,0 +1,212 @@
+.TH INTRO 2
+.SH NAME
+intro \- introduction to system calls and libraries
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.SH DESCRIPTION
+Vectra's programs are written in Odin.
+A program under
+.B cmd/
+or
+.B sys/libuser/programs
+begins at
+.BR _start ,
+which the loader calls with a pointer to the arguments the kernel wrote
+onto its stack:
+.IP
+.EX
+@(export, link_name = "_start")
+start :: proc "c" (block: ^abi.Args) {
+	context = libuser.startup()
+	main(libuser.args(block))
+}
+.EE
+.PP
+.I Libuser.startup
+runs the Odin runtime with an empty context, then answers a
+.B runtime.Context
+whose allocator is the program's heap (see below), and whose temporary
+allocator is that same heap, because a program has no separate arena.
+.I Libuser.args
+turns the kernel's record into an Odin
+.B []string ,
+the program's own name first, by the caller's convention: the kernel adds
+nothing to it.
+.PP
+Every package a program imports names a
+.I collection
+called
+.BR vsys: ,
+so
+.B import "vsys:libuser"
+finds
+.B sys/libuser
+wherever the tree is checked out, and the same prefix names every other
+library below.
+.SS Descriptors
+A program starts with descriptors 0, 1 and 2 open on whatever its parent
+arranged, its arguments on its stack, and the namespace and environment its
+parent chose.
+.I Rfork
+makes a second process, sharing or copying each of those by a flag, and
+.I exec
+replaces the running program in place;
+.I spawn
+does both in one call.
+See
+.IR fork (2)
+and
+.IR exec (2).
+.SS Answers and errors
+A system call is one wrapper in
+.B sys/libuser/sys.odin
+around a single instruction.
+Its answer is the kernel's own signed number: zero or more is a result, a
+count or a descriptor, and a negative number is
+.B \-errno
+out of
+.BR sys/vectra9 's
+.B Errno
+table.
+There is no per-process error buffer to swap, as Plan 9's
+.I errstr
+keeps;
+a caller that wants an error's name passes the failed call's own answer to
+.IR errstr (2).
+.PP
+A process ends by calling
+.I exits
+with a string, empty for success and a few words otherwise.
+Its parent collects the string with
+.IR await .
+See
+.IR wait (2).
+.SS The libraries under sys/
+.TP
+.B abi
+the call numbers, flag words and wire records both privilege levels read;
+no page of its own, described where each call uses it
+.TP
+.B lib9p
+a 9P server that answers from a thread of its own while a read parks; see
+.IR 9p (2)
+.TP
+.B libdraw
+the draw protocol client and the window chrome vocabulary; see
+.IR draw (2)
+and
+.IR chrome (2)
+.TP
+.B libedit
+a line under construction and the keys that edit it; see
+.IR edit (2)
+.TP
+.B libfmt
+formatted printing, apart from
+.BR core:fmt 's
+cost; see
+.IR print (2)
+.TP
+.B libfont
+the baked console font; see
+.IR font (2)
+.TP
+.B libkbd
+scancode translation, shared by the kernel's keyboard driver and
+.IR kbdfs (4);
+see
+.IR kbd (2)
+.TP
+.B libkey
+the keys that have no character, in a private range of Unicode; see
+.IR keyboard (6)
+.TP
+.B libmui
+the widget toolkit; see
+.IR mui (2)
+.TP
+.B libnet
+ethernet, ARP, IPv4 and ICMP frame formats; see
+.IR net (2)
+.TP
+.B libodin
+the freestanding core the kernel and userland share; see
+.IR sink (2)
+and
+.IR tally (2)
+.TP
+.B libpal
+the one system palette, read by the kernel and by userland alike; see
+.IR palette (2)
+.TP
+.B libregex
+Plan 9's regular expression dialect; see
+.IR regexp (2)
+.TP
+.B libthread
+threads, procs and channels built over
+.IR rfork ;
+see
+.IR thread (2)
+and
+.IR ioproc (2)
+.TP
+.B libuser
+the ring 3 system call library this section documents
+.TP
+.B vectra9
+the 9P2000.L message layer: encoding, decoding, and the error vocabulary
+.I errstr
+names; see
+.IR vectra9 (2)
+.SS Programs and their means
+Odin's
+.B core:fmt
+carries the runtime's type tables, several hundred kilobytes of text a
+page-sized program cannot afford.
+A program that formats output imports
+.B vsys:libfmt
+instead (see
+.IR print (2)),
+and the smallest programs \(em the kernel's own self-test blobs \(em print
+nothing formatted at all.
+.PP
+A compiled program (a VECTRA02 image) gets a stack of sixteen pages, 64
+KiB, and a budget of 128 page frames, 512 KiB, for its text, data and
+stack together.
+A raw blob (VECTRA01) gets one page, 4 KiB, of stack.
+.PP
+A program's heap, described in
+.IR alloc (2),
+is built on first use: 64 KiB of anonymous memory from
+.IR segalloc ,
+doubled by
+.I segbrk
+when a request does not fit, up to the kernel's bound on one run.
+A server that only posts a service and answers 9P need not touch it.
+.SH SEE ALSO
+.IR open (2),
+.IR read (2),
+.IR seek (2),
+.IR bind (2),
+.IR remove (2),
+.IR fork (2),
+.IR exec (2),
+.IR wait (2),
+.IR notify (2),
+.IR sleep (2),
+.IR segattach (2),
+.IR pipe (2),
+.IR dup (2),
+.IR stat (2),
+.IR chdir (2),
+.IR rendezvous (2),
+.IR semacquire (2),
+.IR errstr (2)
+.SH DIAGNOSTICS
+Every call's answer is the kernel's own: zero or more for success, a
+negative
+.B \-errno
+for failure.
+.IR Errstr (2)
+names the number.

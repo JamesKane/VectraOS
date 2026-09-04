@@ -1,0 +1,165 @@
+.TH MEMORY 9
+.SH NAME
+memory \- the physical allocator, page tables, the kernel heap
+.SH SYNOPSIS
+.B import "kernel:mem"
+.PP
+.nf
+.B "alloc_pages :: proc (count: int) -> (phys: uintptr, ok: bool)"
+.B "alloc_pages_zeroed :: proc (count: int) -> (phys: uintptr, ok: bool)"
+.B "alloc_page :: proc () -> (phys: uintptr, ok: bool)"
+.B "free_pages :: proc (phys: uintptr, count: int)"
+.B "free_page :: proc (phys: uintptr)"
+.B "frame_share :: proc (phys: uintptr)"
+.B "pmm_stats :: proc () -> Pmm_Stats"
+.PP
+.B "map_at :: proc (space: ^Address_Space, virt, phys: uintptr, flags: arch.Page_Flags, level: int) -> Error"
+.B "unmap_page :: proc (space: ^Address_Space, virt: uintptr) -> bool"
+.B "translate :: proc (space: ^Address_Space, virt: uintptr) -> (phys: uintptr, ok: bool)"
+.B "permissions :: proc (space: ^Address_Space, virt: uintptr) -> (arch.Page_Flags, bool)"
+.B "map_mmio :: proc (phys: uintptr, size: u64) -> (rawptr, Error)"
+.B "kernel_address_space :: proc () -> ^Address_Space"
+.B "phys_to_virt :: proc (phys: uintptr) -> rawptr"
+.B "virt_to_phys :: proc (virt: rawptr) -> uintptr"
+.B "vmm_stats :: proc () -> Vmm_Stats"
+.PP
+.B "alloc :: proc (size: int, align: int = MIN_ALIGN, zeroed := true) -> (rawptr, bool)"
+.B "free :: proc (ptr: rawptr) -> bool"
+.B "allocator :: proc () -> runtime.Allocator"
+.B "heap_stats :: proc () -> Heap_Stats"
+.B "live_objects :: proc (s: Heap_Stats) -> int"
+.fi
+.SH DESCRIPTION
+.I Mem
+is three layers, each built on the one below and each usable alone.
+A
+.B uintptr
+in this package is always a physical address; a
+.B rawptr
+or a typed pointer is always virtual.
+.B phys_to_virt
+and
+.B virt_to_phys
+are the only bridge, through the higher-half direct map
+.RB ( HHDM ).
+Nothing in the package knows the boot protocol: a
+.B Boot_Memory
+built by
+.B kernel/main.odin
+out of whatever the bootloader reported is all it is told.
+.SS The physical memory manager
+.B pmm.odin
+is one bit per page frame in a bitmap covering every frame from zero to
+the top of allocatable memory, hole frames included, born taken and never
+freed.
+A bitmap rather than a free list: a free list lives inside the pages it
+tracks, so a fault at the wrong moment corrupts the allocator itself, and
+a contiguous run of frames, which the VMM needs for tables and the heap
+needs for large objects, is a bitmap scan rather than a linear walk.
+.B alloc_pages
+returns a run of
+.I count
+physically contiguous frames;
+.B alloc_page
+is the one-frame case, and the
+.B _zeroed
+variants clear the pages before returning them.
+.B free_pages
+and
+.B free_page
+give frames back.
+.B frame_share
+raises a frame's holder count past one, for a copy-on-write reference; the
+frame returns to the free list only on the last release.
+.B Pmm_Stats
+reports total, usable and free frame counts, a peak, the bitmap's own
+size and location, and two counters that are never supposed to move:
+.B double_frees
+counts a release of an already-free frame, and
+.B untracked_frees
+counts a release of an address outside the bitmap.
+Both are always a caller bug.
+.SS The virtual memory manager
+.B vmm.odin
+is a radix tree of 512-entry page tables, indexed nine bits of virtual
+address per level, with leaves permitted part way up the tree for a large
+mapping.
+The walk is written once, against
+.IR arch (9)'s
+encoding primitives, so it is not amd64-specific.
+An
+.B Address_Space
+holds the physical address of its top-level table and a spinlock that
+guards a walk against a concurrent one from another core; the lock is
+held for one walk and never across a shootdown, which waits for other
+cores.
+.B map_at
+installs one mapping at a given table level;
+.B translate
+and
+.B permissions
+read one back.
+.B unmap_page
+removes a mapping.
+.B map_mmio
+maps a physical range of device registers, uncached, and returns the
+virtual address.
+.B kernel_address_space
+is the space every kernel thread runs in; every process's space maps the
+same kernel half at the same addresses, so a kernel pointer is valid in
+any of them.
+See
+.IR space (9)
+for how a process's own half is built.
+.B Vmm_Stats
+reports the root table's address, how many frames are spent on tables
+across every address space, bytes mapped, whether the no-execute bit and
+global pages are available, and the largest leaf size the hardware
+grants.
+.SS The heap
+.B heap.odin
+is a slab allocator wired into
+.B context.allocator
+through
+.BR allocator ,
+so ordinary Odin
+.B new
+and
+.B make
+work once
+.I kmain
+installs it.
+A small request, up to 2048 bytes, comes out of one of eight size
+classes, each a chain of one-page slabs carved into equal objects
+threaded through their own first eight bytes; allocation and free are a
+pointer push and pop, with no search.
+A larger request goes straight to the physical allocator as a run of
+pages.
+Both paths put a sixteen-byte header immediately before the returned
+pointer, which is what lets
+.B free
+find which path a block came from with no separate lookup, and what
+makes an over-aligned allocation possible: the block is oversized and the
+header records how far in the returned pointer sits.
+Slabs are never returned to the physical allocator; nothing in Vectra's
+kernel heap yet needs the machinery that would prove a slab fully free.
+.B Heap_Stats
+reports each class's object size, free count and total, frames spent on
+slabs, and the frame and block counts of large allocations.
+.B live_objects
+turns a
+.B Heap_Stats
+snapshot into one number: everything currently handed out and not yet
+freed.
+A self-test brackets a scratch allocation with two calls to it, and a
+result other than zero is a leak.
+.SH SOURCE
+.B kernel/mem
+.SH SEE ALSO
+.IR arch (9),
+.IR space (9),
+.IR sync (9),
+.IR testing (9)
+.SH BUGS
+A slab, once grown, is never shrunk, so a class that once held many
+objects keeps its pages even after every object in it is freed.

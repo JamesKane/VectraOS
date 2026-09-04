@@ -1,0 +1,57 @@
+.TH SEQ 1
+.SH NAME
+seq \- print sequences of numbers
+.SH SYNOPSIS
+.B seq
+[
+.I first
+[
+.I incr
+]
+]
+.I last
+.SH DESCRIPTION
+.I Seq
+prints a sequence of integers, one per line, from
+.I first
+(default 1) to as near
+.I last
+as possible, in increments of
+.I incr
+(default 1).
+The loop is:
+.IP
+.EX
+for(val = first; val <= last; val += incr) print val;
+.EE
+.PP
+When
+.I incr
+is negative the sequence counts down and stops at the first value below
+.IR last .
+An
+.I incr
+of zero is an error.
+.SH EXAMPLES
+.TP
+.B seq 3
+Print
+.B "1 2 3"
+(on separate lines).
+.TP
+.B seq 10 -2 4
+Print
+.BR "10 8 6 4" .
+.SH SOURCE
+.B cmd/seq/main.odin
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B usage
+when an argument is not an integer, there are none, or there are more
+than three.
+.SH BUGS
+The numbers are integers.
+There is no
+.B \-w
+and no
+.BR \-f .

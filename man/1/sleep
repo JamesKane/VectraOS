@@ -1,0 +1,41 @@
+.TH SLEEP 1
+.SH NAME
+sleep \- suspend execution for an interval
+.SH SYNOPSIS
+.B sleep
+.I seconds
+.SH DESCRIPTION
+.I Sleep
+suspends execution for
+.I seconds
+seconds.
+.I Seconds
+is a non-negative integer.
+The wait is taken a second at a time,
+so a note ends it within a second.
+.SH EXAMPLES
+Execute a command
+100 seconds hence.
+.IP
+.EX
+{sleep 100; command}&
+.EE
+.PP
+Repeat a command every 30 seconds.
+.IP
+.EX
+while(){
+	command
+	sleep 30
+}
+.EE
+.SH SOURCE
+.B cmd/sleep/main.odin
+.SH SEE ALSO
+.IR sleep (2)
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B usage
+when the argument is missing, is not an integer, or is negative.
+.SH BUGS
+The interval cannot be a fraction of a second.

@@ -1,0 +1,80 @@
+.TH READ 2
+.SH NAME
+read, write, pread, pwrite, read_full, write_full \- read or write a file
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "read :: proc(fd: int, buf: []u8) -> i64"
+.B "write :: proc(fd: int, data: []u8) -> i64"
+.B "pread :: proc(fd: int, buf: []u8, offset: u64) -> i64"
+.B "pwrite :: proc(fd: int, data: []u8, offset: u64) -> i64"
+.B "read_full :: proc(fd: int, buf: []u8) -> bool"
+.B "write_full :: proc(fd: int, data: []u8) -> bool"
+.fi
+.SH DESCRIPTION
+.I Read
+reads up to
+.B len(buf)
+bytes from the descriptor's current offset into
+.IR buf ,
+and answers how many bytes it read; the offset moves by that many.
+It is not guaranteed that the buffer fills: a read of the console answers
+one line, and a read of a pipe answers what is already there.
+Zero is end of file.
+.PP
+.I Write
+writes
+.B len(data)
+bytes from
+.I data
+at the descriptor's current offset, and answers how many bytes landed; the
+offset moves by that many.
+A short write, fewer bytes than
+.IR data 's
+length, should be treated as an error.
+.PP
+.I Pread
+and
+.I pwrite
+read or write at
+.I offset
+without reading the descriptor's own cursor and without moving it
+afterward, so two threads sharing a descriptor may transfer at different
+offsets without disturbing each other.
+.PP
+.I Read_full
+and
+.I write_full
+loop
+.I read
+or
+.I write
+until the whole buffer has moved.
+One call may move less than asked: a kernel copy is bounded to a few
+kilobytes a pass, and a stream may answer short at any point.
+Each answers
+.B false
+if the descriptor ended \(em end of file, or an error \(em before the
+whole buffer crossed.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR dup (2),
+.IR open (2),
+.IR pipe (2),
+.IR seek (2),
+.IR stat (2)
+.SH DIAGNOSTICS
+Each call answers a non-negative count on success and a negative
+.B \-errno
+on failure; see
+.IR errstr (2).
+.B EBADF
+is a descriptor that is not open for the direction asked.
+.SH BUGS
+A read or write cut short by a note may have moved an unknown number of
+bytes, as Plan 9's does.

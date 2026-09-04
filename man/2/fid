@@ -1,0 +1,166 @@
+.TH FID 2
+.SH NAME
+fid_bind, fid_lookup, fid_open, fid_is_open, fid_release, walk, attach, node_of, open_node, default_reply \- a server's fid table and static tree
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "Fid_Table :: struct { slots: [16]Fid_Slot, lock: Spin }"
+.B "fid_lookup :: proc(t: ^Fid_Table, fid: vectra9.Fid) -> i32"
+.B "fid_bind :: proc(t: ^Fid_Table, fid: vectra9.Fid, node: i32) -> bool"
+.B "fid_open :: proc(t: ^Fid_Table, fid: vectra9.Fid) -> bool"
+.B "fid_is_open :: proc(t: ^Fid_Table, fid: vectra9.Fid) -> bool"
+.B "fid_release :: proc(t: ^Fid_Table, fid: vectra9.Fid)"
+.PP
+.B "Step :: #type proc(from: i32, name: string) -> i32"
+.B "Qid_Of :: #type proc(node: i32) -> vectra9.Qid"
+.B "walk :: proc(t: ^Fid_Table, m: vectra9.Twalk, reply: ^vectra9.Msg, step: Step, qid_of: Qid_Of)"
+.B "attach :: proc(t: ^Fid_Table, m: vectra9.Tattach, reply: ^vectra9.Msg, root: i32, qid_of: Qid_Of)"
+.B "node_of :: proc(t: ^Fid_Table, fid: vectra9.Fid, reply: ^vectra9.Msg) -> (i32, bool)"
+.B "open_node :: proc(t: ^Fid_Table, fid: vectra9.Fid, reply: ^vectra9.Msg) -> (i32, bool)"
+.B "default_reply :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg) -> bool"
+.fi
+.SH DESCRIPTION
+A
+.B Fid_Table
+is the table a userland 9P server binds client fids into, holding up to
+sixteen at once.
+Each server's own tree is a small integer, the
+.IR node ,
+and what a node number means is the server's business; the table only
+maps a fid to one.
+.PP
+.I Fid_lookup
+answers the node a fid is bound to, or \-1 for a fid this server never
+saw.
+.I Fid_bind
+points
+.I fid
+at
+.IR node ,
+reusing the slot if
+.I fid
+is already bound, since 9P allows a client to walk a fid onto itself.
+It answers
+.B false
+when the table is full.
+.I Fid_open
+marks a fid as opened by the client, and
+.I fid_is_open
+reports it; 9P forbids a walk on an open fid and a read of one that is
+not.
+.I Fid_release
+forgets a fid, silently if this server never held it.
+.PP
+.I Walk
+answers a
+.B Twalk
+over the tree
+.I step
+and
+.I qid_of
+describe.
+.I Step
+takes a node and a name and answers another node, or \-1.
+.I Qid_of
+names a node on the wire.
+A walk that gets partway answers with the qids it managed and does not
+bind
+.IR newfid ;
+only a walk that fails on the first name is an error, which is the
+partial-walk rule 9P requires.
+.PP
+.I Attach
+binds a client's first fid, in
+.IR m.fid ,
+to
+.IR root .
+It is the one place a fid appears from nothing; every other fid in a
+session comes from a walk off one of these.
+.PP
+.I Node_of
+resolves
+.IR m.fid ,
+and sets
+.I reply
+to
+.B EBADF
+when the fid is not bound.
+.I Open_node
+is the same, and also refuses with
+.B EINVAL
+a fid the client has not opened, for a
+.B Tread
+or
+.BR Treaddir .
+Both are meant to be checked in one line:
+.IP
+.EX
+node, ok := libuser.node_of(&fids, m.fid, reply)
+if !ok {
+	return
+}
+.EE
+.PP
+.I Default_reply
+sets
+.I reply
+before a handler's switch runs, and reports whether the switch should
+run at all.
+A message that would create, rename or link a file answers
+.B EPERM
+without reaching the switch, because none of these servers create files.
+Anything else answers
+.B EOPNOTSUPP
+unless a case in the switch overwrites it, so a message nobody wrote a
+case for is refused rather than answered with whatever the reply buffer
+last held.
+.SH EXAMPLES
+.IR Ramfs (4)'s
+handler is the shape every server here shares:
+.IP
+.EX
+if !libuser.default_reply(request, reply) {
+	return
+}
+#partial switch m in request^ {
+case vectra9.Tattach:
+	libuser.attach(&fids, m, reply, NODE_ROOT, qid_of)
+case vectra9.Twalk:
+	libuser.walk(&fids, m, reply, step, qid_of)
+case vectra9.Tlopen:
+	node, ok := libuser.node_of(&fids, m.fid, reply)
+	if !ok {
+		return
+	}
+	libuser.fid_open(&fids, m.fid)
+	reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
+}
+.EE
+.SH SOURCE
+.B sys/libuser/fid.odin
+.SH SEE ALSO
+.IR serve (2),
+.IR 9p (2),
+.IR vectra9 (2),
+.IR walk (5),
+.IR attach (5),
+.IR error (5)
+.SH DIAGNOSTICS
+.I Walk ,
+.I attach ,
+.I node_of
+and
+.I open_node
+set an
+.B Rlerror
+into
+.I reply
+and answer
+.B false
+on any failure; nothing here panics on a client's mistake.
+.SH BUGS
+Sixteen fids is fixed, and a server that needs more answers
+.B ENFILE
+rather than growing the table: a table a client can grow is a table a
+client can exhaust the machine through.

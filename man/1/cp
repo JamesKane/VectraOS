@@ -1,0 +1,95 @@
+.TH CP 1
+.SH NAME
+cp, mv \- copy, move files
+.SH SYNOPSIS
+.B cp
+.I file1 file2
+.br
+.B cp
+.I file ... directory
+.PP
+.B mv
+.I file1 file2
+.br
+.B mv
+.I file ... directory
+.SH DESCRIPTION
+In the first form
+.I file1
+is any name and
+.I file2
+is any name except an existing directory.
+In the second form the commands
+copy or move one or more
+.I files
+into a
+.I directory
+under their original file names, as if by a sequence of
+commands in the first form.
+Thus
+.B "cp f1 f2 dir"
+is equivalent to
+.BR "cp f1 dir/f1; cp f2 dir/f2" .
+The second form is chosen when the last argument is an existing directory.
+More than one source with a last argument that is not a directory is an error.
+.PP
+.I Cp
+copies the contents of plain
+.I file1
+to
+.IR file2 ,
+in blocks of 8192 bytes.
+If
+.I file2
+exists it is truncated and keeps its mode.
+Otherwise it is created with mode 0666.
+.PP
+.I Mv
+moves
+.I file1
+to
+.IR file2 .
+It reads all of
+.I file1
+into memory, writes it to
+.IR file2 ,
+and removes
+.IR file1 .
+Unlike Plan 9's
+.IR mv ,
+it never renames, because no file server here renames.
+.SH SOURCE
+.B cmd/cp/main.odin
+.br
+.B cmd/mv/main.odin
+.SH SEE ALSO
+.IR cat (1),
+.IR rm (1),
+.IR stat (2)
+.SH DIAGNOSTICS
+The exit status is
+.B usage
+when the arguments are wrong,
+.B "copy failed"
+or
+.B "move failed"
+when any file could not be read, created or written,
+and empty otherwise.
+Each failure is reported on standard error and the rest of the files
+are still copied.
+.SH BUGS
+Neither
+.I cp
+nor
+.I mv
+copies a directory.
+Neither refuses to copy a file onto itself:
+.B cp a a
+empties
+.B a
+and
+.B mv a a
+removes it.
+.I Mv
+holds the whole file in memory, so a file larger than the heap cannot
+be moved.

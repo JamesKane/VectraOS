@@ -1,0 +1,62 @@
+.TH MEMFS 4
+.SH NAME
+memfs \- memory file system
+.SH SYNOPSIS
+.B memfs
+[
+.I srvname
+]
+.SH DESCRIPTION
+.I Memfs
+serves a directory tree of any shape, kept entirely on the heap: files that
+grow as they are written, made and removed by name, listed, and truncated.
+It is what a shell needs from a filesystem before a disk is mounted.
+.PP
+.I Memfs
+posts
+.B /srv/memfs
+.RI ( /srv/ srvname
+when given), forks, and the parent exits once the name is there, so a shell
+that started it can mount on the next line:
+.IP
+.EX
+memfs
+mount /srv/memfs /mnt
+.EE
+.PP
+A file is made with an
+.IR open (5)
+create and removed by naming it in a
+.BR Tremove ;
+unlike the fixed-tree servers in this section,
+.B Tremove
+here removes the file named and does not stop the server.
+A directory must be empty to be removed.
+Permission bits are kept per file; there is no owner and no group, so every
+file is everyone's.
+.PP
+The server ends when its posted name and every mount of it are gone, which
+the kernel turns into a hang-up on the pipe, or on a note it does not
+handle.
+.SH FILES
+.TP
+.BI /srv/ srvname
+the posted service,
+.B memfs
+by default
+.SH SOURCE
+.B servers/memfs
+.SH SEE ALSO
+.IR bind (1),
+.IR serve (2),
+.IR fork (2),
+.IR open (5),
+.IR clunk (5)
+.SH BUGS
+There is no rename.
+.I Cp
+and
+.I mv
+(see
+.IR cp (1))
+copy and remove instead.

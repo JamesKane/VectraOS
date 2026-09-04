@@ -1,0 +1,45 @@
+.TH CMP 1
+.SH NAME
+cmp \- compare two files
+.SH SYNOPSIS
+.B cmp
+[
+.B \-s
+]
+.I file1 file2
+.SH DESCRIPTION
+.I Cmp
+compares the two files byte by byte and prints
+a message on standard error if the contents differ.
+The message gives the position of the first differing byte,
+counted from 1, and the line it is on.
+When one file is a prefix of the other, the message names the shorter
+file and says
+.BR EOF .
+.PP
+The option
+.B \-s
+prints nothing for differing files
+but sets the exit status.
+It is recognised only as the first argument.
+.SH SOURCE
+.B cmd/cmp/main.odin
+.SH DIAGNOSTICS
+If a file is inaccessible or missing, the exit status is
+.BR "can't open" .
+If the files are the same, the exit status is empty (true).
+Otherwise
+.I cmp
+reports the first disagreement, or the end of the shorter file, and the
+exit status is
+.BR differ .
+Unlike Plan 9's
+.IR cmp ,
+a file that is a prefix of the other exits
+.B differ
+and not
+.BR EOF .
+.SH BUGS
+Both files are read whole into memory before they are compared.
+There are no offsets and no
+.BR \-l .

@@ -1,0 +1,116 @@
+.TH PROC 3
+.SH NAME
+proc \- running processes
+.SH SYNOPSIS
+.B bind #p /proc
+.nf
+
+.BI /proc/ n /status
+.BI /proc/ n /ns
+.BI /proc/ n /note
+.BI /proc/ n /ctl
+.BI /proc/ n /args
+.fi
+.SH DESCRIPTION
+The
+.I proc
+device serves a directory of pids, one per live process, and each pid
+directory holds the five files above.
+The listing of
+.B /proc
+is the live pids, and a process that ends between two reads is simply not
+there on the next one.
+.PP
+.B Status
+is one line: the process's name, its pid, its parent's pid, its state, its
+note group, and whether it is
+.B detached
+or
+.BR held ,
+and its working directory, each field followed by a space.
+.IR Ps (1)
+reads it.
+.PP
+.B Ns
+is the process's name space, as
+.I bind
+and
+.I mount
+commands a script could run to build the same one.
+The last line names the process's working directory.
+.IR Ns (1)
+reads it.
+.PP
+Writing to
+.B note
+posts a note to the process (see
+.IR notify (2)):
+a program that registered a handler is given the text and may carry on, and
+one that did not ends with it as its status.
+Reading
+.B note
+answers the oldest note posted and not yet delivered.
+.PP
+Writing to
+.B ctl
+controls the process:
+.TP 8
+.B kill
+end the process at its next crossing into the kernel
+.TP
+.B stop
+suspend the process there
+.TP
+.B start
+resume a stopped process
+.PD
+.PP
+.IR Kill (1)
+writes
+.B kill
+here.
+An unrecognised command fails with
+.BR EINVAL .
+.PP
+.B Args
+holds the arguments the process was given by the
+.I exec
+that started it (see
+.IR exec (2)).
+A process that has never called
+.I exec
+has an empty
+.BR args .
+Writing to
+.B args
+replaces its contents.
+.B Status
+and
+.B ns
+are read-only.
+Writing to either fails with
+.BR EPERM .
+.SH SOURCE
+.B kernel/procfs
+.SH SEE ALSO
+.IR intro (3),
+.IR ps (1),
+.IR ns (1),
+.IR kill (1),
+.IR notify (2),
+.IR exec (2),
+.IR fork (2),
+.IR wait (2)
+.SH DIAGNOSTICS
+Every operation against a pid that has ended, or never existed, fails with
+.BR ESRCH .
+An unrecognised
+.B ctl
+command fails with
+.BR EINVAL .
+A write to
+.B status
+or
+.B ns
+fails with
+.BR EPERM .

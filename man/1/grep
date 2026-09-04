@@ -1,0 +1,81 @@
+.TH GREP 1
+.SH NAME
+grep \- search a file for a pattern
+.SH SYNOPSIS
+.B grep
+[
+.B \-cinsv
+]
+.I pattern
+[
+.I file ...
+]
+.SH DESCRIPTION
+.I Grep
+searches the input
+.I files
+(standard input default)
+for lines that match the
+.IR pattern ,
+a regular expression as defined in
+.IR regexp (6).
+Each line matching the pattern is selected,
+and each selected line is copied to the standard output.
+.PP
+The options are:
+.TP
+.B \-c
+Print only a count of matching lines.
+.TP
+.B \-i
+Ignore alphabetic case distinctions.
+Matched lines are printed in their original form.
+.TP
+.B \-n
+Mark each printed line with its line number counted in its file.
+.TP
+.B \-s
+Say nothing about a file that cannot be opened.
+Selected lines are still printed.
+.TP
+.B \-v
+Reverse: print lines that do not match the pattern.
+.PD
+.PP
+Output lines are tagged by file name when there is more than one
+input file.
+Under
+.B \-c
+the count is tagged the same way.
+.PP
+Care should be taken when
+using the shell metacharacters
+.B $*[^|()=\e
+in
+.IR pattern .
+It is safest to enclose the
+entire expression
+in single quotes.
+.SH SOURCE
+.B cmd/grep/main.odin
+.SH SEE ALSO
+.IR sed (1),
+.IR regexp (6),
+.IR regexp (2)
+.SH DIAGNOSTICS
+The exit status is empty if any lines are selected, and
+.B "no match"
+when none are.
+A file that cannot be opened is reported on standard error
+and does not change the status.
+A pattern that does not compile exits
+.BR "bad pattern" .
+.SH BUGS
+There is no
+.BR \-e ,
+so a pattern that begins with a minus is read as a set of flags.
+A newline in the pattern is not an alternative.
+There is no
+.B \-l
+and no
+.BR \-h .

@@ -1,0 +1,205 @@
+.TH INTRO 5
+.SH NAME
+intro \- introduction to 9P2000.L as Vectra speaks it
+.SH SYNOPSIS
+.nf
+.B size[4] type[1] tag[2] ...
+.fi
+.SH DESCRIPTION
+9P2000.L is the protocol every Vectra service speaks:
+the kernel's own devices, the file servers that run as programs,
+and the draw server behind
+.BR /ws .
+See
+.IR intro (1)
+for what a service is and how it is bound into a name space.
+This page and the rest of section 5 describe the messages on the wire
+between a client and a server.
+.PP
+Vectra adds nothing to 9P2000.L.
+The version string is
+.BR 9P2000.L ,
+unchanged, and no message here carries a private field.
+When a device needs an operation the protocol does not have,
+the operation is a file:
+a
+.B ctl
+file that takes a line of text, or a
+.B status
+file that renders state on a read.
+See
+.IR cons (3)
+for the model.
+.PP
+Most of what runs in Vectra never sees a byte of this.
+A kernel device and its caller both speak decoded messages,
+an Odin union over the message bodies below,
+and the codec that turns one into bytes runs only where an address
+space is actually crossed: over a pipe to a program under
+.BR /srv ,
+or over the network eventually.
+See
+.IR vectra9 (2).
+A read of
+.B /dev/cons
+costs one call and no encoding at all.
+The wire this manual describes is what a program outside the kernel
+actually reads and writes, and what
+.IR mnt (9)
+carries between the kernel and it.
+.SS Encoding
+Every message is
+.B size[4]
+.B type[1]
+.B tag[2]
+followed by a body particular to its kind.
+.I Size
+counts itself: it is the length in bytes of the whole message,
+including the four bytes of the size field.
+Integers are little-endian, least significant byte first.
+A string is
+.I len[2]
+followed by
+.I len
+bytes of UTF-8 text, never NUL-terminated;
+the notation
+.B name[s]
+in a SYNOPSIS means this shape.
+A
+.I qid
+is thirteen bytes on the wire:
+.B type[1]
+.B version[4]
+.BR path[8] .
+.I Path
+is the server's permanent identity for a file,
+and two qids with the same path name the same file for as long as it exists.
+.I Version
+changes when the contents change.
+.SS Message size
+.B Tversion
+negotiates
+.IR msize ,
+the largest single message either side will send.
+8192 bytes is Vectra's default, matching what Linux's
+.I v9fs
+asks for.
+.I Msize
+bounds the wire, not an in-process call, where there is no buffer to
+overflow.
+A client chunks a bulk read or write by
+.IR iounit ,
+the number
+.B Rlopen
+or
+.B Rlcreate
+returns, never by
+.IR msize .
+.I Iounit
+is
+.I msize
+less
+.BR IOHDRSZ ,
+24 bytes: the size of a
+.BR Twrite 's
+fixed fields, fid, offset and count, rounded up by one,
+because a
+.B Twrite
+header is longer than the
+.B Rread
+that carries a read's answer back.
+.SS Fids, tags and qids
+A
+.I fid
+is a client's handle on a file, a 32-bit number the client chooses.
+.B NOFID,
+all bits set, means no fid: an attach with nothing to authenticate
+against.
+A
+.I tag
+names one outstanding request, chosen by the client.
+.B NOTAG,
+all bits set, is legal only on
+.BR Tversion ,
+before a tag space exists.
+A
+.I qid
+is the server's own identity for a file, described above.
+.SS Two rules that are easy to get wrong
+A short
+.B Rwalk
+(fewer qids than the
+.B Twalk
+asked for)
+is a success carrying a partial result, not an error.
+Only a walk that fails on its first element is an error reply, and
+.I newfid
+is bound only when every element in the walk succeeded.
+See
+.IR walk (5).
+.PP
+.B Tflush
+is not a cancellation.
+It is a synchronisation point.
+The server may finish the flushed request or abandon it,
+but
+.B Rflush
+must follow whichever it does,
+and the client must not reuse the tag until
+.B Rflush
+arrives.
+See
+.IR flush (5).
+.SS Errors
+Two error vocabularies exist, and they are not merged.
+A message whose bytes are wrong, too short, of an unknown type,
+or naming more walk elements than the protocol allows,
+has no reply built for it at all: it is a failure of the transport
+carrying it, not an answer from a server.
+A message the server understood and refuses gets
+.BR Rlerror ,
+whose
+.I ecode
+field is a Linux errno.
+See
+.IR error (5).
+.SH SEE ALSO
+.IR intro (1),
+.IR cons (3),
+.IR vectra9 (2),
+.IR version (5),
+.IR attach (5),
+.IR flush (5),
+.IR walk (5),
+.IR open (5),
+.IR read (5),
+.IR getattr (5),
+.IR clunk (5),
+.IR error (5),
+.IR vfs (9),
+.IR mnt (9)
+.SH BUGS
+No server in the tree answers
+.BR Tsymlink ,
+.BR Tmknod ,
+.BR Trename ,
+.BR Treadlink ,
+.BR Txattrwalk ,
+.BR Txattrcreate ,
+.BR Tlock ,
+.BR Tgetlock ,
+.BR Tlink ,
+.B Trenameat
+or
+.B Tunlinkat
+with success.
+Each comes back
+.B Rlerror
+with
+.B EOPNOTSUPP,
+or
+.B EPERM
+where the request would have created or removed a file
+in a tree that does not allow it.
+There is no rename; a caller copies and removes.
+There are no hard or symbolic links, and no advisory locks.

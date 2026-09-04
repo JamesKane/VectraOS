@@ -1,0 +1,41 @@
+.TH ENV 1
+.SH NAME
+env \- print environment
+.SH SYNOPSIS
+.B env
+.SH DESCRIPTION
+.I Env
+prints the process's environment, one variable per line, as
+.IR name = value .
+The names come from
+.BR /env ,
+a directory of one file per variable (see
+.IR env (3)),
+and a value with several elements is printed with a space between
+each, in place of the NUL
+.IR rc (1)
+separates them with in the file.
+There are no arguments and no options.
+.SH EXAMPLES
+.IP
+.EX
+env | grep ^path=
+.EE
+.SH FILES
+.B /env
+.SH SOURCE
+.B cmd/env/main.odin
+.SH SEE ALSO
+.IR rc (1),
+.IR env (3)
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B "can't open"
+if
+.B /env
+could not be opened.
+.SH BUGS
+A value of several elements and a value of one element that happens to
+contain a space print alike, so
+.I env's
+output cannot always be told apart from the file it came from.

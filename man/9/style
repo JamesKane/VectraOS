@@ -1,0 +1,200 @@
+.TH STYLE 9
+.SH NAME
+style \- the prose the tree is written in
+.SH SYNOPSIS
+.B tools/ste-lint.py
+[
+.B \-\-strict
+]
+[
+.B \-\-show
+]
+[
+.B \-\-rule
+.I name
+]
+[
+.I path ...
+]
+.SH DESCRIPTION
+Vectra's comments are its design documents.
+A doc comment often carries the only record of a decision,
+so the tree writes its prose under
+.BR ASD-STE100 ,
+Simplified Technical English,
+a standard built so that a reader cannot misread an instruction.
+.I Style
+names the rules that apply, the ones a program checks, and the ones it does not.
+.SS Strict and STE-flavored
+The standard has a strict mode and a relaxed one.
+Strict applies to the strings the kernel itself prints:
+a
+.B fail
+reason,
+a panic message,
+an
+.B Error
+description,
+the name of a check in a
+.B verify_
+file,
+and every line that reaches
+.IR klog .
+Nobody reads these with the source open,
+so every rule applies, including a 20-word cap on the sentence.
+.PP
+STE-flavored applies to everything else:
+doc comments, line comments, and the markdown under
+.BR docs/ .
+It keeps every structural rule and drops the standard's one-word-one-meaning
+lockdown, because a strict rewrite of a design note reads as a different
+document, not a clearer one.
+The two modes never disagree about a sentence.
+They disagree about how many words a paragraph may spend on one point.
+.SS The checked rules
+.I Tools/ste-lint.py
+checks seven of the standard's fifty-three rules,
+the ones a program can decide with no dictionary and no judgement call.
+.IP
+.EX
+semicolon   rule 8.1 bans the mark outright
+length      20 words for a strict instruction, 25 for description
+perfect     present and past perfect, unless a modal needs the compound
+passive     a be-verb, a past participle, and a "by" phrase naming an
+            actor the sentence could use as its subject
+phrasal     a two-word verb whose meaning the parts do not predict
+marketing   an adjective that claims a quality instead of showing it
+paragraph   one topic, six sentences
+.EE
+.PP
+The checker reads prose, not code:
+block and line comments in
+.B .odin
+files, and the body text of
+.B .md
+files.
+A quoted identifier or a declaration is not a sentence and is skipped.
+A markdown table and the tree's aligned two-column display blocks are a
+layout, so the length and paragraph rules skip them, though a semicolon in
+one still fails rule 8.1.
+.PP
+.B \-\-strict
+also checks the strings the kernel prints.
+.B \-\-show
+prints every finding.
+.B \-\-rule
+limits the run to the named rules.
+The tree is at zero findings.
+A finding is a regression, and the fix is the sentence, not the checker.
+.SS What is not checked
+The standard's lexical rules are the other half of it:
+an approved-word dictionary of about nine hundred words,
+each pinned to one meaning and one part of speech.
+That dictionary is not free to redistribute, so it is not in this tree and
+the checker does not encode it.
+What is left is the principle behind it: pick the plainest word that works,
+and use it the same way every time, applied by hand and checked by reading.
+.PP
+One verb form is worth naming because the checker stays quiet about it.
+STE permits an
+.B \-ing
+word only as a technical noun, never as a verb form, so
+.B "retrying would be shorter"
+wants to be
+.BR "a retry would be shorter" .
+Reliable detection needs a part-of-speech tagger.
+This one is fixed by eye.
+.SS The dictionary
+The standard lets an organization define its own technical terms,
+and this tree uses the allowance for two kinds of entry:
+a word pinned to one meaning, and a pair of words a reader would otherwise
+take for synonyms.
+.IP
+.EX
+check       one assertion in a self-test, and the verb for making it, not
+            "verify", "confirm", "assert" or "ensure"
+park        take a thread off every run queue until something wakes it
+hold        a thread has a lock right now
+slot        one entry in a fixed-size pool, addressed by index
+tick        one timer interrupt, the unit of every deadline
+slice       the run of ticks a thread gets before the scheduler preempts it
+.EE
+.PP
+.B "hand over"
+names a lock moving straight to a waiter without ever being free.
+It stays a two-word verb against the phrasal rule, because it names the
+mechanism.
+.PP
+Three pairs look like synonyms and are not.
+.B Ready
+wakes a thread that waited on something outside itself and gives its
+priority back.
+.B Unpark
+wakes a thread that queued for a lock and does not.
+A
+.B chan
+is this kernel's handle on an open file.
+A
+.B fid
+is the number the 9P server on the other end knows it by.
+One chan holds one fid.
+A
+.B Rendez
+transfers nothing on a wake, so the sleeper loops and re-checks its
+condition.
+A
+.B Mutex
+transfers the thing being waited for, so a woken thread checks nothing.
+A
+.I check
+is an assertion that runs every boot.
+A
+.I control
+is a deliberate mutation of the code, run once by hand,
+to find out whether a check notices.
+.SS Departures
+Three rules are relaxed on purpose, and named rather than left for a reader
+to find and mistake for drift.
+The em dash stays, because the standard bans only the semicolon and a dash
+here usually marks a sentence the length rule would flag anyway.
+Present perfect stays where it carries information the simple past cannot:
+.B "the job has completed"
+and
+.B "the job completed"
+are different claims,
+and a hedge such as
+.B "may have failed"
+keeps its auxiliary because the simple form asserts a failure nothing
+observed.
+Where the tense rule and this modality rule disagree, modality wins.
+A display table is not a sentence, so the length and paragraph rules skip
+one, though not rule 8.1.
+.SS Comments
+A file comment says what the file is and why, in prose, at the top of the
+file.
+It is not a changelog and does not name the commit or the milestone that
+added the file.
+A line or block comment explains a reason a reader could not get from the
+code alone: a constraint, an invariant, or why the obvious approach is
+wrong here.
+It does not restate what a well-named identifier already says.
+.PP
+This manual follows the same prose rules, on top of the
+macro and section rules in
+.IR man (6).
+.SH FILES
+.TP
+.B tools/ste-lint.py
+the checker
+.SH SOURCE
+.B tools/ste-lint.py
+.SH SEE ALSO
+.IR man (6),
+.IR lint (8),
+.IR testing (9)
+.SH BUGS
+The checker has no part-of-speech tagger, so it misses an
+.B \-ing
+word used as a verb.
+The approved-word dictionary is not redistributable and is not checked at
+all.

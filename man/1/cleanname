@@ -1,0 +1,48 @@
+.TH CLEANNAME 1
+.SH NAME
+cleanname \- clean a path name
+.SH SYNOPSIS
+.B cleanname
+[
+.B \-d
+.I pwd
+]
+.I names ...
+.SH DESCRIPTION
+For each file name argument,
+.IR cleanname ,
+by lexical processing only,
+prints the shortest equivalent string that names the same
+(possibly hypothetical) file.
+It eliminates multiple and trailing slashes, and it lexically
+interprets
+.B .
+and
+.B ..
+directory components in the name.
+A
+.B ..
+at the start of a relative name is kept, and one at the root is dropped.
+A name that empties becomes
+.BR . ,
+or
+.B /
+if it was rooted.
+If the
+.B \-d
+option is present,
+unrooted names are prefixed with
+.IB pwd /
+before processing.
+.SH EXAMPLES
+.IP
+.EX
+cleanname /a/./b/../c//
+.EE
+.PP
+prints
+.BR /a/c .
+.SH SOURCE
+.B cmd/cleanname/main.odin
+.SH SEE ALSO
+.IR basename (1)

@@ -1,0 +1,145 @@
+.TH KEYS 6
+.SH NAME
+keys \- chords the draw server acts on
+.SH DESCRIPTION
+.IR Intuition (4)
+reads
+.B $home/lib/keys
+first, or
+.B /lib/keys
+when there is none, at start and again on a
+.B reload
+line written to
+.BR /srv/draw/ctl .
+The file names
+.IR chords :
+a key held down together with alt, control or shift, caught before any
+window sees it, and what each one does.
+Alt is the modifier most lines use, the Amiga key on this look.
+.PP
+Each line is a chord, some space, and an action:
+.IP
+.EX
+chord   action argument ...
+.EE
+.PP
+A
+.B #
+starts a comment that runs to the end of the line, wherever it falls, and
+a blank line is skipped.
+A line whose first word does not parse as a chord, or that names no
+action after it, is skipped as well.
+At most sixty-four chords are kept; a file with more is read only that
+far.
+.PP
+A
+.I chord
+is one or more modifier names, each followed by a hyphen, and then a key:
+.IP
+.EX
+alt\-key
+ctrl\-key   (or control\-key)
+shift\-key
+mod\-mod\-key
+.EE
+.PP
+The
+.I key
+is a single character, taken without regard to shift, or one of the
+names
+.BR tab ", " space ", " esc ", " del ", " up ", " down ", " left ", "
+.BR right ", " home ", " end ", or " f1
+through
+.BR f12 .
+A letter is matched without regard to case, and a digit typed with shift
+held (the symbol above it on a PC keyboard) is matched by the digit's own
+key.
+.PP
+A key held with a modifier this file does not name reaches the window in
+front like an ordinary key, which is what lets a program bind one of its
+own.
+.PP
+The action is everything after the chord, up to sixty-four bytes of it.
+.IR Intuition (4)
+knows these actions itself and does them without help:
+.TP 20
+.B close
+hang up the window in front
+.TP
+.B cycle
+move the focus to the next window on the current workspace
+.TP
+.B zoom
+fill the screen below the bar with the window in front, or return it to
+where it was
+.TP
+.B back
+send the window in front to the back
+.TP
+.BI "move " "dx dy"
+move the window in front by
+.I dx , dy
+pixels
+.TP
+.BI "workspace " n
+switch to workspace
+.I n
+.TP
+.B next
+.TP
+.B prev
+switch to the next or previous workspace, wrapping past nine back to one
+.TP
+.BI "send " n
+move the window in front to workspace
+.I n
+.TP
+.B overview
+open or close the picture of every workspace at once
+.PD
+.PP
+An action this list does not name is not an error.
+It is sent, verbatim and unaltered, as one line on
+.BR /srv/draw/hotkey ,
+which the desktop reads and carries out; a chord bound to
+.B window rc -i
+or
+.B menu
+means whatever the desktop program listening on
+.B hotkey
+takes those words to mean.
+.SH EXAMPLES
+Lines from the file the tree ships:
+.IP
+.EX
+alt\-w        close                 # the window in front
+alt\-tab      cycle                 # the focus to the next window
+alt\-up       move 0 \-16            # nudge the window in front
+alt\-1        workspace 1
+alt\-shift\-1  send 1                # the window in front, to workspace 1
+alt\-space    overview              # every workspace at once
+alt\-n        window rc \-i          # a new shell, which the desktop runs
+.EE
+.SH FILES
+.TP 20
+.B $home/lib/keys
+a user's own chords, read first
+.TP
+.B /lib/keys
+the machine's, read when there is no user file
+.TP
+.B /srv/draw/hotkey
+where an action this file does not know is sent
+.SH SOURCE
+.B servers/intuition/keys.odin
+.br
+.B servers/intuition/keys
+.SH SEE ALSO
+.IR intuition (4),
+.IR workspaces (6),
+.IR kbdfs (4)
+.SH BUGS
+A malformed chord or a line with no action is silently skipped rather than
+reported; there is no way to ask
+.IR intuition (4)
+which lines it kept.

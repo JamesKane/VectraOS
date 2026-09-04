@@ -1,0 +1,57 @@
+.TH EXEC 2
+.SH NAME
+exec \- execute a file
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "exec :: proc(path: string, argv: []string = nil) -> i64"
+.fi
+.SH DESCRIPTION
+.I Exec
+replaces the calling process's program with the one at
+.IR path ,
+resolved in the caller's own name space, and transfers to its entry
+point.
+.I Argv
+is the new program's arguments, its own name first by convention.
+.PP
+The process's pid, its descriptors and its name space survive an
+.IR exec ,
+which is what lets a shell open a file, redirect it onto a descriptor,
+and then
+.I exec
+the command: the redirect outlives the replace.
+The text, data and stack are the new program's; nothing of the old
+program's memory remains, except a segment the caller allocated with
+.B abi.SEGSHARED
+(see
+.IR segattach (2)),
+which crosses into the new image if the new image does not overlap it.
+A note handler registered with
+.I notify
+does not survive: it names an address in text that is gone, so a note
+delivered to a newly exec'ed process is once again only an ending, until
+the new program registers a handler of its own.
+See
+.IR notify (2).
+.PP
+.I Exec
+returns only on failure.
+On success there is no return: the calling image is gone, and the value
+that would have been returned is never read.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/exec.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR fork (2),
+.IR notify (2),
+.IR segattach (2),
+.IR stat (2)
+.SH DIAGNOSTICS
+On failure, answers a negative
+.B \-errno
+and the caller keeps running; see
+.IR errstr (2).

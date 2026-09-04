@@ -1,0 +1,71 @@
+.TH PRINT 2
+.SH NAME
+print, fprint, bio_print \- formatted output
+.SH SYNOPSIS
+.B import "vsys:libfmt"
+.PP
+.nf
+.B "print :: proc(format: string, fargs: ..any) -> i64"
+.B "fprint :: proc(fd: int, format: string, fargs: ..any) -> i64"
+.B "bio_print :: proc(b: ^libuser.Bio, format: string, fargs: ..any) -> bool"
+.fi
+.SH DESCRIPTION
+.I Print
+formats
+.I format
+and
+.I fargs
+through
+.BR core:fmt 's
+buffer formatting and writes the result to descriptor 1 in one call.
+.I Fprint
+does the same to the descriptor
+.IR fd .
+Both answer what
+.IR read (2)
+answered.
+.I Bio_print
+formats into a
+.IR bio (2)
+buffer rather than writing directly, so a tool that prints a piece at a
+time still makes one system call per buffer.
+.PP
+Formatting goes through a 1024-byte stack buffer.
+A line longer than that is cut to fit; nothing is allocated.
+.PP
+This package exists apart from
+.I libuser
+because importing
+.B core:fmt
+pulls in the Odin runtime's 128-bit arithmetic helpers, which cost
+kilobytes no small program wants to pay.
+A tool that formats imports
+.BR libfmt ;
+a program that fits a page does not.
+.SH EXAMPLES
+A server answers a
+.B Tversion
+by formatting nothing at all, because
+.I libfmt
+is for tools, not servers.
+A tool reports a count:
+.IP
+.EX
+libfmt.print("%d lines\en", count)
+.EE
+.SH SOURCE
+.B sys/libfmt/print.odin
+.SH SEE ALSO
+.IR bio (2),
+.IR read (2),
+.IR errstr (2)
+.SH DIAGNOSTICS
+A negative return is the write's error, from
+.IR read (2).
+.SH BUGS
+A message longer than 1024 bytes is silently cut.
+There is no
+.I sprint
+or
+.I smprint
+that allocates a result string.

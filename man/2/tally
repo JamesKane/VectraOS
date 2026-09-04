@@ -1,0 +1,99 @@
+.TH TALLY 2
+.SH NAME
+tally, passed \- count checks
+.SH SYNOPSIS
+.B import "vsys:libodin"
+.PP
+.nf
+.B "Tally :: struct { checks: int, failures: int, first_failure: string, later: [8]string, later_count: int }"
+.B "tally :: proc(t: ^Tally, ok: bool, what: string) -> bool"
+.B "passed :: proc(t: Tally) -> bool"
+.fi
+.SH DESCRIPTION
+A
+.B Tally
+counts the checks a self-test makes and remembers the first one that
+failed.
+.I Tally
+records one check: it increments
+.IR checks ,
+and when
+.I ok
+is
+.BR false ,
+increments
+.I failures
+and keeps
+.I what
+as
+.I first_failure
+if nothing has failed yet, or in
+.I later
+otherwise, up to eight more names.
+It answers
+.I ok
+unchanged, so a call site reads
+.BR "if !tally(&t, ..., \(dq...\(dq) { return }" ,
+which stops the test at the first thing it could not do rather than
+reporting confusing failures downstream of it.
+.PP
+.B The first failure is the one to report.
+Later failures are almost always its consequence: a test that opens a
+file and then reads it should report that the file did not open, not
+that the read came back empty.
+A boot log has room for one name per subsystem, and the first is the
+right one to keep.
+.PP
+.I Passed
+reports whether a run may print as green:
+.I failures
+is zero and
+.I checks
+is greater than zero.
+Zero checks is not a pass; a self-test that returned before it tested
+anything failed at something the failure counter cannot see, and would
+otherwise look identical to a run with nothing to do.
+.PP
+Every self-test's own result struct embeds a
+.B Tally
+with
+.BR using ,
+so
+.I r.checks
+and
+.I r.failures
+read as the result's own fields.
+.SH EXAMPLES
+A kernel self-test's result embeds a
+.B Tally
+and reports it:
+.IP
+.EX
+Result :: struct {
+	using tally: libodin.Tally,
+	operations:  int,
+}
+
+check :: proc(r: ^Result, ok: bool, what: string) -> bool {
+	return libodin.tally(&r.tally, ok, what)
+}
+.EE
+.PP
+and the boot log reads it back:
+.IP
+.EX
+if libodin.passed(r.tally) {
+	libodin.put_str(&sink, " concurrency checks passed")
+} else {
+	libodin.put_str(&sink, " FAILED -- first: ")
+	libodin.put_str(&sink, r.first_failure)
+}
+.EE
+.SH SOURCE
+.B sys/libodin/tally.odin
+.SH SEE ALSO
+.IR sink (2)
+.SH DIAGNOSTICS
+None; a
+.B Tally
+is read directly by its caller rather than through an error value.

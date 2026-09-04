@@ -1,0 +1,172 @@
+.TH VERIFY 8
+.SH NAME
+verify \- the self-tests that run on every boot
+.SH SYNOPSIS
+none
+.SH DESCRIPTION
+Vectra has no host-side test build.
+Every layer proves itself on the machine that will run it, during boot,
+and reports one line.
+This page describes what a line looks like and how to read one that
+failed.
+The discipline behind the self-tests, and what a negative control is
+for, belongs to whoever changes the kernel and is not this page's
+business.
+.SS Reading a line
+A self-test's line begins with a subsystem's name and how many checks
+it made, for example
+.BR "disk 3 checks passed" .
+A line that passed is tagged
+.BR "[  ok  ]" .
+A line that failed is tagged
+.BR "[ FAIL ]"
+and names the first check that failed, because later ones are almost
+always its consequences.
+Up to eight of the later failures follow as indented lines beginning
+.BR "  also:" ,
+tagged
+.BR "[  ??  ]" ,
+and a line saying how many more there were if the count ran past that.
+.PP
+Some numbers in a passing line move on every run and are not a
+mistake: a round count under a fixed tick budget, a calibration, an
+operation count.
+They are measured rather than asserted, because what a self-test wants
+is a timer that interrupts a thread partway through its work often
+enough to find a race, and how much work happens between interrupts is
+not the thing being proved.
+.PP
+One line is a control that reports what looks like a failure as a
+pass.
+The 9P payload check names how many readers a shared buffer spoiled,
+on purpose: the check runs the same eight readers against a server
+that answers out of one buffer for everybody, which is what a 9P
+server looked like before request slots had one each, and the check is
+that they corrupt each other.
+A run where nothing was spoiled would be the check that failed.
+.SS Tagged and untagged lines
+A tagged line, in brackets, is the kernel's own log.
+An untagged line is not status.
+It is a self-test writing through the very path it is testing: a line
+written to
+.BR /dev/cons ,
+a line a ring 3 program printed to its own descriptors, bytes that
+went out over a wire.
+.B tests/tools.rc
+produces untagged lines this way, one
+.B ok
+or
+.B FAIL
+per tool it checks, each written by the shell script itself and not by
+the kernel.
+.SS tests/tools.rc
+Every tool under
+.B cmd/
+is checked once by
+.BR tests/tools.rc ,
+run by
+.IR rc (1)
+as part of the boot.
+Each check is one line of the script:
+.IP
+.EX
+check name expected command-output...
+.EE
+.PP
+.I Name
+is the tool being checked,
+.I expected
+is the words its output should equal once joined by spaces, and the
+rest of the line is the command whose output is compared.
+A check that matches prints
+.BI "ok " name
+and counts toward the total.
+One that does not prints
+.BI "FAIL " name
+and the words it got instead of the words it expected.
+The script's exit word is the count and
+.BR ok ,
+for example
+.BR "36 ok" ,
+or
+.B failed
+followed by the name of every tool that did not match.
+.PP
+The kernel's own self-test starts the script and compares its exit
+word against a constant,
+.B TOOLS_OK
+in
+.BR kernel/user/verify.odin .
+A check added to
+.B tests/tools.rc
+without updating that constant fails the boot's tools line, and names
+the mismatched word, because the count is meant to be kept in step by
+hand rather than trusted to agree with itself.
+.SS The ring 3 test programs
+Four programs, each an ordinary package under
+.BR tests/ ,
+are spawned by the kernel's self-test and checked by the single word
+each exits with:
+.BR ok ,
+or the name of the first step that did not hold.
+.B tests/abi
+exercises the process ABI itself: arguments, the environment, the
+heap.
+.B tests/thread
+exercises
+.BR sys/libthread :
+threads, channels,
+.IR alt ,
+locks, rendezvous.
+.B tests/mui
+lays out a tree of
+.B sys/libmui
+objects and checks the rectangles the toolkit computed, drawing
+nothing.
+.B tests/net
+builds and reads back the wire formats in
+.BR sys/libnet ,
+with no card touched.
+.PP
+.B kernel/user/programs
+is a different shape: one Odin package compiled once per name, so
+each name yields a single-purpose flat image the kernel's own ring 0
+harness runs directly, without a shell.
+Thirty-one names, each one behavior: a program that never yields, one
+that tries a privileged instruction, one that forks, one that maps
+memory, one that catches a note.
+Every one writes a mark before it does anything else, so the harness
+can tell a program that never ran from one that ran and was refused.
+.SH FILES
+.TP
+.B tests/tools.rc
+the tool check script above
+.SH SOURCE
+.B kernel/verify_payload.odin
+.br
+.B kernel/user/verify.odin
+.br
+.B kernel/user/programs
+.br
+.B tests/abi
+.br
+.B tests/thread
+.br
+.B tests/mui
+.br
+.B tests/net
+.br
+.B tests/tools.rc
+.SH SEE ALSO
+.IR boot (8),
+.IR build (8),
+.IR rc (1)
+.SH DIAGNOSTICS
+A boot that hangs rather than fails prints nothing further.
+QEMU's
+.B \-s
+opens a
+.I gdb
+stub whether or not anything attaches, so a hung boot can be left
+running and read afterward with
+.BR "lldb build/vectra.elf -o 'gdb-remote localhost:1234'" .

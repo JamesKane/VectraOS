@@ -1,0 +1,161 @@
+.TH 9P 2
+.SH NAME
+Srv, Req, serve, hold, held, respond, respond_all, answer_reads \- a server whose reads park
+.SH SYNOPSIS
+.B import "vsys:lib9p"
+.PP
+.nf
+.B "Srv :: struct { fd: int, handler: vectra9.Handler, state: rawptr, msize: int, keep_on_remove: bool, ... }"
+.B "Req :: struct { srv: ^Srv, tag: vectra9.Tag, msg: vectra9.Msg, frame: []u8, payload: []u8, held: bool, ... }"
+.B "serve :: proc(srv: ^Srv) -> (served: u64, why: libuser.Serve_End)"
+.B "hold :: proc(srv: ^Srv)"
+.PP
+.B "Wants :: #type proc(arg: rawptr, request: ^vectra9.Msg) -> bool"
+.B "Drain :: #type proc(arg: rawptr, buf: []u8) -> int"
+.B "held :: proc(srv: ^Srv, arg: rawptr, wants: Wants) -> (req: ^Req, ok: bool)"
+.B "answer_reads :: proc(srv: ^Srv, arg: rawptr, wants: Wants, drain: Drain)"
+.B "respond :: proc(req: ^Req, reply: vectra9.Msg) -> bool"
+.B "respond_all :: proc(srv: ^Srv, reply: vectra9.Msg)"
+.fi
+.SH DESCRIPTION
+.I Lib9p
+is a 9P server on
+.IR sys/libthread ,
+answered from whichever thread of the server's own proc has the answer,
+rather than one request at a time on the caller's stack the way
+.IR serve (2)
+is.
+A caller fills in
+.IR fd ,
+.I handler
+and
+.I msize
+in a
+.B Srv
+and calls
+.IR serve .
+The handler is a
+.BR vectra9.Handler ,
+the same signature
+.IR serve (2)
+takes: a server moves its
+.I hold
+and
+.I respond
+calls in and out of this library without changing anything else about
+it.
+.PP
+.I Serve
+reads a frame through an io proc, so the thread that runs it parks and
+the proc does not, decodes it into a
+.B Req
+taken from the heap, and calls the handler.
+A handler that can answer at once leaves its reply in place; one that
+cannot calls
+.I hold
+before it returns, and
+.I serve
+keeps the request on a list rather than answering it, then reads the
+next frame.
+Nothing here is locked: the handler, the held list and the reply buffer
+all belong to one proc, and a thread of that proc runs until it blocks.
+.PP
+.I Held
+finds the oldest held request for which
+.I wants
+answers
+.BR true ,
+so a keyboard thread can answer the read of the window a key was typed
+into and not another's.
+.I Answer_reads
+calls it in a loop: for each held request
+.I wants
+accepts, it takes what
+.I drain
+has to give and calls
+.I respond
+with an
+.BR Rread ,
+stopping when a drain answers nothing or no held request is left.
+Every device-backed server in this tree drives its reads this way.
+.PP
+.I Respond
+answers a request and frees its record, from any thread of the server's
+proc: the loop itself, for a request the handler answered outright, or
+whichever thread later has the answer to one that was held.
+.I Respond_all
+answers every still-held request with
+.IR reply ,
+which a server calls as it stops, so no client is left waiting on a
+record nobody will ever fill.
+.PP
+.B Tflush
+never reaches the handler.
+A flush that names a held request drops it, unanswered, and
+.I serve
+answers
+.B Rflush
+at once; one that names nothing held is answered at once regardless.
+.PP
+The loop ends when the pipe ends, when a frame will not decode, or when
+a
+.B Tremove
+is answered and
+.I keep_on_remove
+is
+.BR false ,
+which is its default.
+.I Why
+in
+.IR serve 's
+answer says which; the values are
+.IR libuser.Serve_End ,
+described in
+.IR serve (2).
+.SH EXAMPLES
+.IR Consrv (4)
+starts the loop after posting, then unblocks every client it still owed
+an answer to:
+.IP
+.EX
+srv = lib9p.Srv{fd = fd, handler = handler, msize = FRAME}
+libthread.threadcreate(key_thread, nil)
+_, why := lib9p.serve(&srv)
+lib9p.respond_all(&srv, vectra9.Rread{data = nil})
+.EE
+.PP
+its handler holds a read that has nothing yet:
+.IP
+.EX
+got := libuser.ring_drain(&ring, buf[:room])
+if got > 0 {
+	reply^ = vectra9.Rread{data = buf[:got]}
+	return
+}
+lib9p.hold(&srv)
+.EE
+.PP
+and its key thread answers held reads as bytes arrive:
+.IP
+.EX
+lib9p.answer_reads(&srv, nil, wants_read, drain)
+.EE
+.SH SOURCE
+.B sys/lib9p/srv.odin
+.SH SEE ALSO
+.IR serve (2),
+.IR fid (2),
+.IR vectra9 (2),
+.IR flush (5),
+.IR consrv (4),
+.IR kbdfs (4)
+.SH DIAGNOSTICS
+.I Respond
+answers
+.B false
+when the pipe refused the write, which the server treats as a hangup.
+.SH BUGS
+A request's record is one heap allocation, sized to
+.IR msize ,
+for every frame read; a server on a busy pipe pays that cost per
+request.

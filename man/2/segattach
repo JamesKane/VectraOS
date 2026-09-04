@@ -1,0 +1,108 @@
+.TH SEGATTACH 2
+.SH NAME
+segattach, segalloc, segbrk, segdetach \- map or allocate memory segments
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "segattach :: proc(fd: int) -> (addr: uintptr, err: i64)"
+.B "segalloc :: proc(bytes: int, flags: u64 = 0) -> (addr: uintptr, err: i64)"
+.B "segbrk :: proc(addr: uintptr, top: uintptr) -> i64"
+.B "segdetach :: proc(addr: uintptr) -> i64"
+.fi
+.SH DESCRIPTION
+.I Segattach
+maps the device behind the open descriptor
+.I fd
+into the caller's address space, and answers the address it landed at.
+The descriptor must name a device the kernel can hand out as memory,
+.B /dev/fb
+being the one in the tree today; a stream, which is almost every other
+file, answers
+.BR ENODEV .
+The mapping is writable and never executable, and lasts as long as the
+descriptor's holder does.
+.PP
+.I Segalloc
+asks the kernel for
+.I bytes
+of anonymous memory, rounded up to whole pages, and answers the address
+it landed at.
+This is how a program holds more than its own image: static data is all
+a compiled program's format gives it, and a window's pixels or a
+program's heap come from here instead.
+The memory is zero, writable and never executable.
+.I Flags
+is zero for a run that is private to the process \(em shared under
+.B RFMEM
+and copied otherwise, like a data segment (see
+.IR fork (2))
+\(em or
+.B abi.SEGSHARED
+for a run that every fork shares regardless of its flags and every
+.I exec
+keeps (see
+.IR exec (2)).
+A request of zero bytes, or of more than the kernel's bound on one run,
+answers
+.BR EINVAL ;
+no room left, on the machine or in the process's own table of segments,
+answers
+.BR ENOMEM .
+.PP
+.I Segbrk
+moves the top of a run the caller already holds from
+.I segalloc .
+.I Addr
+is any address inside the run, and
+.I top
+is where it should end, rounded up to a whole page; a
+.I top
+of zero answers the run's base without moving anything.
+The run's own address never moves: growing keeps what was there and
+zero-fills the new pages, and shrinking gives the tail back.
+Only a run from
+.I segalloc
+may be resized this way; naming any other kind of segment answers
+.BR EINVAL .
+A run shared under
+.B SEGSHARED
+may grow but may not shrink while more than one process holds it.
+.PP
+.I Segdetach
+removes the segment covering
+.I addr
+from the caller's address space; its memory is freed once the last
+holder has detached it.
+A process may detach only what it attached or allocated, never the text,
+data or stack it was given at birth; naming an address outside any
+segment, or inside one of those three, answers
+.BR EINVAL .
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR fork (2),
+.IR exec (2),
+.IR rendezvous (2),
+.IR fb (3)
+.SH DIAGNOSTICS
+.I Segattach
+and
+.I segalloc
+answer the address and a zero error on success, or a zero address and a
+negative
+.B \-errno
+on failure.
+.I Segbrk
+and
+.I segdetach
+answer zero or a negative
+.BR \-errno .
+See
+.IR errstr (2).
+.SH BUGS
+A process may hold at most forty segments, and one run of anonymous
+memory may not exceed four megabytes.

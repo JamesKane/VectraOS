@@ -1,0 +1,149 @@
+.TH TEST 1
+.SH NAME
+test \- set status according to condition
+.SH SYNOPSIS
+.B test
+.I expr
+.SH DESCRIPTION
+.I Test
+evaluates the expression
+.IR expr .
+If the value is true the exit status is empty; otherwise the
+exit status is
+.BR false .
+If there are no arguments the exit status is
+.BR false .
+.PP
+The following primitives are used to construct
+.IR expr .
+.TP 12
+.BI \-e " file"
+True if the file exists.
+.PD 0
+.TP
+.BI \-f " file"
+True if the file exists and is a plain file.
+.TP
+.BI \-d " file"
+True if the file exists and is a directory.
+.TP
+.BI \-s " file"
+True if the file exists and has a size greater than zero.
+.TP
+.IB s1 " = " s2
+True
+if the strings
+.I s1
+and
+.I s2
+are identical.
+.TP
+.IB s1 " != " s2
+True
+if the strings
+.I s1
+and
+.I s2
+are not identical.
+.TP
+.I s1
+True if
+.I s1
+is not the null string.
+.TP
+.BI \-n " s1"
+True if the length of string
+.I s1
+is non-zero.
+.TP
+.BI \-z " s1"
+True if the length of string
+.I s1
+is zero.
+.TP
+.IB n1 " \-eq " n2
+True if the integers
+.I n1
+and
+.I n2
+are arithmetically equal.
+Any of the comparisons
+.BR \-ne ,
+.BR \-gt ,
+.BR \-ge ,
+.BR \-lt ,
+or
+.BR \-le
+may be used in place of
+.BR \-eq .
+The integers are decimal, with an optional sign.
+.PD
+.PP
+These primaries may be combined with the
+following operators:
+.TP 12
+.B !
+unary negation operator
+.PD 0
+.TP
+.B \-o
+binary
+.I or
+operator
+.TP
+.B \-a
+binary
+.I and
+operator; higher precedence than
+.B \-o
+.TP
+.BI "( " expr " )"
+parentheses for grouping.
+.PD
+.PP
+Notice that all the operators and flags are separate
+arguments to
+.IR test .
+Notice also that parentheses and equal signs are meaningful
+to
+.I rc
+and must be enclosed in quotes.
+.SH EXAMPLES
+Test whether
+.B abc
+is in the current directory.
+.IP
+.EX
+test -f abc -o -d abc
+.EE
+.PP
+Test a number and a string in one expression.
+.IP
+.EX
+if(test 3 -lt 5 -a ! -z $x) echo yes
+.EE
+.SH SOURCE
+.B cmd/test/main.odin
+.SH SEE ALSO
+.IR rc (1)
+.SH DIAGNOSTICS
+The exit status is empty when the expression is true and
+.B false
+when it is not.
+It is
+.B usage
+when arguments are left over after the expression,
+or when an operand of a numeric comparison is not a number.
+.SH BUGS
+There is no
+.BR \-r ,
+.B \-w
+or
+.BR \-x ,
+because a file has no owner to check against.
+There is no
+.BR \-t ,
+.B \-nt
+or
+.BR \-ot .
+A missing closing parenthesis is not an error.

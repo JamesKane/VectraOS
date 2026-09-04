@@ -1,0 +1,42 @@
+.TH UNIQ 1
+.SH NAME
+uniq \- report repeated lines in a file
+.SH SYNOPSIS
+.B uniq
+[
+.B \-cdu
+]
+[
+.I file
+]
+.SH DESCRIPTION
+.I Uniq
+copies the input
+.IR file ,
+or the standard input, to the
+standard output, comparing adjacent lines.
+In the normal case, the second and succeeding copies
+of repeated lines are
+removed.
+Repeated lines must be adjacent
+in order to be found.
+.TP
+.B \-u
+Print unique lines.
+.TP
+.B \-d
+Print (one copy of) duplicated lines.
+.TP
+.B \-c
+Prefix a repetition count, right-justified in 4 characters,
+and a space to each output line.
+.SH SOURCE
+.B cmd/uniq/main.odin
+.SH SEE ALSO
+.IR sort (1)
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B "can't open"
+when the file could not be opened.
+.SH BUGS
+There is no way to skip fields or characters before comparing.

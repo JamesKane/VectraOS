@@ -1,0 +1,110 @@
+.TH THEME 6
+.SH NAME
+theme \- the toolkit's look, as a file
+.SH DESCRIPTION
+A theme file names the metrics and colours
+.IR mui (2)
+lays out and paints controls with, a role and a value per line:
+.IP
+.EX
+role   value
+.EE
+.PP
+.B #
+starts a comment that runs to the end of a line, and a blank line is
+skipped.
+A role this build does not know, or a value it cannot read, is skipped as
+well rather than refused, so a file written for a later build still loads
+what it recognises.
+.PP
+.IR Mui (2)'s
+.B parse_theme
+reads a file's text into a
+.B Theme
+that starts at the built-in default, so a file that names nothing changes
+nothing, and one that names a role changes that role alone.
+It touches no file itself: a caller reads a theme file's bytes and hands
+them to
+.BR parse_theme .
+.PP
+The metric roles, each a non-negative number of pixels:
+.TP 12
+.B pad
+a group's inset from its own edge to its children
+.TP
+.B gap
+the space left between two siblings
+.TP
+.B bevel
+the thickness of a raised control's lit and dark edges
+.TP
+.B hpad
+a button's inset from its edge to its text, left and right
+.TP
+.B vpad
+a button's inset from its edge to its text, top and bottom
+.TP
+.B well
+a field's recess around the text it holds
+.PD
+.PP
+The colour roles:
+.TP 12
+.B ground
+the window behind the gadgets
+.TP
+.B face
+a raised control's face
+.TP
+.B face.lit
+a raised control's top-left highlight
+.TP
+.B face.shade
+a raised control's bottom-right shadow
+.TP
+.B text
+the ink a label is drawn in
+.PD
+.PP
+A colour's value is one of
+.IR palette (2)'s
+own names, lower case with an underscore where the name has a space, such
+as
+.B slate_deep
+or
+.BR amber_hot ,
+or six hex digits,
+.BR rrggbb ,
+naming red, green and blue directly.
+.SH EXAMPLES
+.IP
+.EX
+# a theme: copper controls on a near-black ground
+face        copper
+face.lit    copper_lit
+face.shade  copper_dark
+ground      0e131a
+bevel       3
+.EE
+.SH FILES
+No file under this name is read automatically; nothing in this tree yet
+opens a theme file at start.
+A program that wants one reads it itself, the way
+.IR intuition (4)
+reads
+.IR keys (6)
+and
+.IR workspaces (6),
+and calls
+.B parse_theme
+on the bytes before it lays out its first window.
+.SH SOURCE
+.B sys/libmui/theme.odin
+.SH SEE ALSO
+.IR mui (2),
+.IR chrome (2),
+.IR palette (2),
+.IR intuition (4)
+.SH BUGS
+No program in this tree reads a theme file yet; every window opens at the
+built-in default look until one is written that does.

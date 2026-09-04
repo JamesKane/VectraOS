@@ -1,0 +1,81 @@
+.TH LS 1
+.SH NAME
+ls \- list contents of directory
+.SH SYNOPSIS
+.B ls
+[
+.B \-dlp
+] [
+.I file ...
+]
+.SH DESCRIPTION
+For each directory argument,
+.I ls
+lists the contents of the directory.
+For each file argument,
+.I ls
+repeats its name and any other information requested.
+When no argument is given, the current directory is listed.
+The output is sorted by name.
+The name of an entry in a listed directory is the argument joined to
+the entry's name, so
+.B ls /bin
+prints
+.BR /bin/cat .
+.PP
+The options are:
+.TP
+.B \-d
+If the argument is a directory, list it, not its contents.
+.TP
+.B \-l
+List in long format, giving the mode (see below),
+the size in bytes, and the name of each file.
+.TP
+.B \-p
+Print only the final path element of each file name.
+.PD
+.PP
+The mode printed under the
+.B \-l
+option contains 10 characters.
+The first is
+.B d
+if the entry is a directory and
+.B \-
+otherwise.
+The last 9 are three sets of three bits,
+for the owner, the group and everyone else,
+and within each set the characters
+.BR r ,
+.B w
+and
+.B x
+say that the file may be read, written or executed,
+with
+.B \-
+where the permission is absent.
+.PP
+Unlike Plan 9's
+.IR ls ,
+this one prints no owner, no group and no time,
+because the files it lists carry none.
+.SH SOURCE
+.B cmd/ls/main.odin
+.SH SEE ALSO
+.IR stat (2)
+.SH DIAGNOSTICS
+The exit status is empty,
+.B "can't stat"
+when an argument does not exist, or
+.B "can't open"
+when a directory could not be read.
+The other arguments are still listed.
+.SH BUGS
+There is no
+.B \-t
+and no
+.BR \-m ,
+because a file has no time and no owner to sort or print.
+A listing is not quoted for
+.IR rc (1).

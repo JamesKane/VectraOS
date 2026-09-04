@@ -1,0 +1,62 @@
+.TH EIAFS 4
+.SH NAME
+eiafs \- serial port file server
+.SH SYNOPSIS
+.B eiafs
+.SH DESCRIPTION
+.I Eiafs
+opens
+.B /dev/eia0
+(see
+.IR uart (3))
+for reading and writing, which diverts the port's raw stream to it -- while
+it holds the file open, the kernel's own line discipline sees nothing from
+the port -- and serves the wire as one file,
+.BR eia0 ,
+posted at
+.BR /srv/eiafs .
+It takes no arguments.
+.PP
+A read of
+.B eia0
+answers whatever has arrived and not yet been read, and parks when nothing
+has.
+A write of
+.B eia0
+goes down the shared descriptor and out the wire; it never parks, because
+the UART takes bytes as fast as its FIFO drains.
+The device expands a line feed to a carriage return and line feed on the
+way out, so the stream through
+.B eia0
+is a terminal's, not a modem's, and the kernel's own log writes the same
+wire unserialised, so the order of a log line against a served write is
+not defined.
+.PP
+The last close of
+.B /dev/eia0
+gives the port back to the kernel's own line discipline.
+The server stops on the pipe's hang-up, when the last mount and the
+posted name are both gone.
+.SH FILES
+.TP
+.B /srv/eiafs
+the posted service
+.TP
+.B /eia0
+the port, read and written
+.SH SOURCE
+.B servers/eiafs
+.SH SEE ALSO
+.IR bind (1),
+.IR ring (2),
+.IR ioproc (2),
+.IR thread (2),
+.IR uart (3),
+.IR read (2)
+.SH DIAGNOSTICS
+.I Eiafs
+exits with a number rather than the empty-string convention other
+programs use.
+Failing to open
+.B /dev/eia0
+ends it with 116, before it posts anything.

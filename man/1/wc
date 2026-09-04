@@ -1,0 +1,48 @@
+.TH WC 1
+.SH NAME
+wc \- word count
+.SH SYNOPSIS
+.B wc
+[
+.B \-lwc
+]
+[
+.I file ...
+]
+.SH DESCRIPTION
+.I Wc
+counts lines, words and bytes in the named
+.IR files ,
+or in the standard input if no file is named.
+A word is a maximal string of characters
+delimited by spaces, tabs, newlines or carriage returns.
+.PP
+If the optional argument is present,
+just the specified counts (lines, words or bytes)
+are selected by the letters
+.BR l ,
+.BR w ,
+or
+.BR c .
+Otherwise all three
+.RB ( \-lwc )
+are reported.
+Each count is right-justified in a field of 7 characters,
+followed by the file's name when one was given.
+When more than one file is named, a line marked
+.B total
+follows.
+.SH SOURCE
+.B cmd/wc/main.odin
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B "can't open"
+when a file could not be opened.
+The other files are still counted.
+.SH BUGS
+.I Wc
+counts bytes, not runes.
+There is no
+.B \-r
+and no
+.BR \-b .

@@ -1,0 +1,61 @@
+.TH TAIL 1
+.SH NAME
+tail \- deliver the last part of a file
+.SH SYNOPSIS
+.B tail
+[
+.BI + number
+|
+.BI \- number
+|
+.B \-n
+.I number
+]
+[
+.I file
+]
+.SH DESCRIPTION
+.I Tail
+copies the named file to the standard output beginning
+at a designated line.
+If no file is named, the standard input is copied.
+.PP
+Copying begins at line
+.BI + number
+measured from the beginning, or
+.I number
+lines from the end of the input under
+.BI \- number
+or
+.B \-n
+.IR number .
+The default is the last 10 lines.
+Lines from the beginning count from 1.
+.SH EXAMPLES
+.TP
+.B tail file
+Print the last 10 lines of a file.
+.TP
+.B tail +2 file
+Print a file from its second line on.
+.TP
+.B sed 10q file
+Print the first 10 lines of a file.
+.SH SOURCE
+.B cmd/tail/main.odin
+.SH SEE ALSO
+.IR sed (1)
+.SH DIAGNOSTICS
+The exit status is empty,
+.B "can't open"
+when the file could not be opened, or
+.B "read error"
+when it could not be read.
+.SH BUGS
+The whole input is read into memory before anything is printed.
+There is no
+.B \-f
+and no
+.BR \-c .
+.I Tail
+counts lines only.

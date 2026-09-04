@@ -1,0 +1,212 @@
+.TH BOOT 8
+.SH NAME
+boot \- how the machine comes up
+.SH SYNOPSIS
+none
+.SH DESCRIPTION
+Vectra boots UEFI everywhere, under
+.IR limine ,
+on three architectures.
+On amd64 QEMU presents a
+.B q35
+machine.
+On arm64 and riscv64 QEMU presents its
+.B virt
+board.
+There is no BIOS path and no legacy boot on any of the three.
+.SS The boot volume
+.IR Build (8)
+stages an EFI system partition as a plain host directory,
+.BR build/esp ,
+which QEMU's
+.B vvfat
+backend presents to the firmware as a FAT volume.
+There is no disk image to make and no loop device to mount.
+Under
+.BR build/esp/EFI/BOOT
+sit the architecture's Limine executable
+.RB ( BOOTX64.EFI ,
+.B BOOTAA64.EFI
+or
+.BR BOOTRISCV64.EFI ),
+.BR limine.conf ,
+and the kernel,
+.BR vectra.elf .
+Limine looks beside its own executable for its configuration first, so a
+.B limine.conf
+anywhere else on the volume cannot shadow it.
+.PP
+.B boot/limine.conf
+sets a timeout of zero, so the machine boots straight to the one entry
+without a menu, and mirrors Limine's own progress lines to the serial
+port.
+The entry loads
+.B vectra.elf
+from the partition the configuration was read from and asks for a
+1280x800 screen, which is what
+.B q35
+gives under UEFI and what the
+.B virt
+boards' framebuffer device accepts regardless of what is asked.
+.PP
+Firmware is QEMU's.
+On amd64, a combined OVMF image is used when the build finds one beside
+the tree.
+Otherwise, and on the other two architectures always, the split code
+and variable-store images that ship beside the QEMU install are loaded
+as two flash devices, the code read-only and the variables copied
+somewhere writable first, because UEFI writes to them.
+.SS The disks
+Two disks are attached over
+.B virtio-blk-pci
+on every board, the one transport
+.IR sd (3)
+drives regardless of architecture.
+The EFI system partition is
+.BR sd0 ,
+marked as the boot device.
+A second, plain 64 MiB file,
+.BR build/disk.img ,
+is
+.BR sd1 :
+a partition table naming a small FAT-typed partition, which the boot
+self-test writes a marker into, and a Plan 9 partition from sector 2048
+to the end, which
+.IR kfs (4)
+keeps.
+.B sd1
+is a real file.
+A write to it is still there the next boot.
+.B sd0
+is QEMU's
+.B vvfat
+view of
+.BR build/esp ,
+which reflects a guest write back to a host file as it lands and does
+not reliably keep a raw sector write across a boot.
+.SS What the kernel does
+.I Kmain
+brings the machine up in one order, each step reported on a line and
+most followed immediately by a self-test of what just came up.
+The architecture layer first: the trap tables, before anything that
+could fault has anywhere to report to.
+Then the screen, the physical memory survey and the heap.
+Then the scheduler and the timer.
+Then the root device,
+.BR #/ ,
+attached at
+.B /
+to build the name space every later process inherits, and the kernel
+devices bound into it in turn:
+.IP
+.EX
+#c   /dev    the console, the screen, the keyboard
+#s   /srv    posted services
+#e   /env    environment variables
+#p   /proc   running processes
+#b   /bin    the programs the kernel image carries
+#l   /lib    the files the kernel image carries
+.EE
+.PP
+The keyboard and mouse controllers come up next, then
+.BR #S
+at
+.BR /dev ,
+the disks described above, then the network card if the bus has one.
+Ring 3 comes up last of the kernel-only steps, once there is a space to
+run a process in and a clock to preempt it with.
+.PP
+With ring 3 running,
+.IR fatfs (4)
+starts over
+.B sd0
+and is mounted at
+.BR /n/esp .
+.B /n/esp/vectra/bin
+is bound before
+.B /bin
+and
+.B /n/esp/vectra/lib
+before
+.BR /lib ,
+so the programs and files the build staged on the disk are what a name
+in either now reaches, ahead of the handful the kernel image itself
+carries.
+Then
+.IR kfs (4)
+starts over
+.BR sd1 's
+Plan 9 partition and is mounted at
+.BR /usr ,
+where
+.B $home
+is
+.BR /usr/glenda .
+The last thing the kernel does is run
+.BR /bin/rc " " /lib/init
+with the console as its three descriptors, described in
+.IR init (8).
+The boot thread then exits and the machine idles.
+.SS The console
+Every stage of the boot writes to the serial port, and once the
+framebuffer is attached, to the screen as well: the lines from before
+that point are replayed so the two agree.
+A line from the kernel's own log is tagged in brackets:
+.B "[  ok  ]"
+for a step or a self-test that passed,
+.B "[  \-\-  ]"
+for a plain report,
+.B "[  !!  ]"
+for a step that degraded but did not stop the boot, and
+.B "[ FAIL ]"
+for a self-test that did not.
+A failed self-test names the first check that failed, up to eight of
+the later ones as indented
+.B also:
+lines, and a count of any more beyond that.
+An untagged line is not the kernel's log.
+It is a program's own output, reached the same way a user's would be:
+a line to
+.BR /dev/cons ,
+or bytes that went out over 9P.
+The machine's last tagged line is
+.BR "boot complete \-\- idling" ,
+after which
+.B "boot complete"
+is a prompt on the console.
+.SH FILES
+.TP
+.B boot/limine.conf
+the bootloader configuration staged into the ESP
+.TP
+.B build/esp
+the staged EFI system partition
+.TP
+.B build/disk.img
+the scratch disk,
+.B sd1
+.SH SOURCE
+.B boot/limine.conf
+.br
+.B build.odin
+.br
+.B kernel/main.odin
+.br
+.B kernel/vfs/root.odin
+.SH SEE ALSO
+.IR init (8),
+.IR build (8),
+.IR verify (8),
+.IR root (3),
+.IR sd (3),
+.IR fatfs (4),
+.IR kfs (4)
+.SH DIAGNOSTICS
+A machine with no FAT partition on
+.B sd0
+still boots, with only the programs the kernel image carries.
+A machine with no
+.B /lib/init
+logs a warning and idles at
+.BR "boot complete" ,
+with no shell on any console.

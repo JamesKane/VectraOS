@@ -1,0 +1,216 @@
+.TH ARCH 9
+.SH NAME
+arch \- the architecture interface: traps, descriptor tables, paging, the panic screen, per-CPU state
+.SH SYNOPSIS
+.B import "kernel:arch"
+.PP
+.nf
+.B "early_init :: proc ()"
+.B "init_traps :: proc (cpu_id: u64)"
+.B "set_trap_handler :: proc (h: Trap_Handler)"
+.B "set_interrupt_handler :: proc (vector: u8, h: Interrupt_Handler)"
+.B "set_user_trap_handler :: proc (h: User_Trap_Handler)"
+.B "set_syscall_dispatcher :: proc (h: proc ""c"" (frame: ^Trap_Frame))"
+.B "syscall_init :: proc ()"
+.B "timer_available :: proc () -> bool"
+.B "timer_attach :: proc (virt: uintptr)"
+.B "irq_route :: proc (line: int, vector: u8) -> bool"
+.B "load_kernel_space :: proc (root: uintptr)"
+.B "load_address_space :: proc (root: uintptr)"
+.B "current_address_space :: proc () -> uintptr"
+.B "flush_page :: proc (virt: uintptr)"
+.B "leaf_encode :: proc (phys: uintptr, flags: Page_Flags) -> Page_Table_Entry"
+.B "entry_address :: proc (e: Page_Table_Entry) -> uintptr"
+.B "frame_ip :: proc (frame: ^Trap_Frame) -> uintptr"
+.B "frame_sp :: proc (frame: ^Trap_Frame) -> uintptr"
+.B "thread_user_init :: proc (frame: ^Trap_Frame, entry, sp: uintptr, arg0: u64)"
+.B "frame_enter_user :: proc (frame: ^Trap_Frame, entry, sp: uintptr, arg0: u64)"
+.B "percpu_critical_depth :: proc () -> ^int"
+.B "percpu_id :: proc () -> int"
+.B "in_interrupt :: proc () -> bool"
+.B "yield_now :: proc ()"
+.B "ipi_send :: proc (target: u32, vector: u8)"
+.B "cpu_class :: proc () -> Cpu_Class"
+.fi
+.SH DESCRIPTION
+.I Arch
+is the one package the rest of the kernel may import for anything that
+touches the CPU directly.
+It is a name list, not code: each architecture supplies one
+.BI arch_ arch .odin
+file, selected by build tag, that binds every name below to its own
+implementation.
+Adding a port means one new binding file and no changes to a call site in
+.B kernel/sched
+or
+.BR kernel/mem .
+.B kernel/arch/neutral
+holds the vocabulary two or more ports have to agree on byte for byte:
+.BR Trap_Kind ,
+.BR Page_Flag ,
+.BR Serial_Kind ,
+.BR Cpu_Class ,
+the paging constants, and the table-index arithmetic.
+It imports nothing, so every port imports it, and a mismatched copy of one
+of these enums cannot exist.
+Vectra amd64's binding is
+.BR kernel/arch/arch_amd64.odin ,
+which imports
+.B kernel:arch/amd64
+and
+.BR kernel:arch/neutral .
+arm64 and riscv64 bind the same names against their own packages; see
+.IR ports (9).
+.PP
+Each port provides:
+.IP \(bu
+.B early_init
+turns on whatever the first Odin statement after it needs.
+On amd64 that is SSE: Odin's codegen uses XMM registers for a plain
+struct assignment, and Limine base revision 5 and later clears
+.B CR4.OSFXSR
+before the kernel runs.
+.IP \(bu
+.B init_traps
+installs the descriptor tables: the GDT and TSS, then the IDT.
+Safe to call before
+.B kernel:mem
+exists, because the fault stacks are static.
+.IP \(bu
+paging encode and decode:
+.BR leaf_encode ,
+.BR branch_encode ,
+.BR entry_address ,
+.BR entry_flags ,
+.B table_index
+and
+.BR level_size .
+.B kernel/mem/vmm.odin
+owns the page table walk and calls through these only to encode what it
+decided.
+.IP \(bu
+a timer:
+.BR timer_available ,
+.BR timer_physical_base ,
+.BR timer_attach ,
+.B timer_calibrate
+and
+.BR timer_ack .
+amd64's is the local APIC, calibrated against the PIT.
+.IP \(bu
+an interrupt controller:
+.BR irq_available ,
+.BR irq_route ,
+.B irq_set_mask
+and
+.BR irq_ack .
+amd64's is the I/O APIC.
+.IP \(bu
+a per-CPU record, reached through
+.B percpu_id
+and
+.BR percpu_critical_depth ,
+which
+.B sync.can_sleep
+reads to count spinlocks held on the current core; see
+.IR sync (9).
+.IP \(bu
+the system call stub, armed by
+.B syscall_init
+and pointed at the portable dispatcher by
+.BR set_syscall_dispatcher .
+.IP \(bu
+context init and resume:
+.BR thread_resume_init ,
+.B thread_user_init
+and
+.BR frame_enter_user .
+The first two lay out a
+.B Trap_Frame
+and an FXSAVE image on a thread's own kernel stack, in the place the trap
+tail would have left them, so a new thread and a resumed one are entered
+by the same
+.B iretq
+at the end of the same tail.
+.B frame_enter_user
+does the same with the selectors set for ring 3.
+.SS The trap frame
+.B Trap_Frame
+holds the general-purpose registers, pushed by the entry stub, and the five
+words the CPU itself pushed on a privilege change: the vector and error
+code, then
+.BR rip ,
+.BR cs ,
+.BR rflags ,
+.B rsp
+and
+.BR ss .
+Field order is the stub's push order and does not move for tidiness.
+.B rsp
+and
+.B ss
+are the interrupted stack, not the handler's, which is what makes a fault
+on a bad stack reportable at all.
+A
+.B Resume
+pairs a
+.B ^Trap_Frame
+with its FXSAVE image; a thread switch is a switch of which
+.B Resume
+the trap tail resumes.
+.B frame_ip
+and
+.B frame_sp
+read the frame without naming a register, so
+.B kernel:user
+never sees one directly.
+.SS The panic screen
+A trap that reaches
+.B kernel/panic.odin
+with no handler claiming it stops the machine.
+The report renders into the same console chassis the boot splash draws, so
+a panicking machine still looks like the one that booted, then goes to the
+kernel log on both the screen and the serial port.
+Three rules bound the code that builds it.
+Nothing allocates, because the heap may be what broke.
+Nothing can fault twice: a re-entry guard is checked before the framebuffer
+is touched, and a second fault on this core halts directly rather than
+looping.
+Nothing returns except the one recoverable case, the boot self-test's own
+breakpoint.
+The report gives the trap's name and vector, the ring it came from, the
+error code, the faulting address for a page fault, the instruction and
+stack pointers, every register, and a backtrace built by scanning the
+kernel stack for words that land inside the kernel's own text, since
+Vectra keeps no frame pointer to chain.
+Every slot the scanner reads is validated against the page tables first.
+.SS The user trap handler
+.B arch.set_user_trap_handler
+installs a second table, separate from the kernel's own trap handler.
+A fault in the kernel is a bug in this image and reaches the panic screen.
+A fault in a program is an ordinary outcome: the installed handler records
+the fault in the process's own exit record, wakes whatever is waiting on
+it, and ends the thread through
+.BR sched.kill_current .
+It runs in interrupt context, on the faulting thread's kernel stack, with
+interrupts already off, so it allocates nothing, takes no lock and logs
+nothing directly.
+A page fault a program can recover from, a write to a copy-on-write page
+or a page of its own not yet mapped, is fixed in place and the faulting
+instruction runs again; see
+.IR space (9).
+.SH SOURCE
+.B kernel/arch
+.SH SEE ALSO
+.IR memory (9),
+.IR sched (9),
+.IR sync (9),
+.IR space (9),
+.IR user (9),
+.IR ports (9),
+.IR smp (9)
+.SH BUGS
+.B USER_STACK_TILT
+exists because compiled code assumes the System V ABI's stack alignment at
+function entry, and a mismatch there shows up as a vector-register spill
+to an unaligned address rather than a documented error.

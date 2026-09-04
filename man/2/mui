@@ -1,0 +1,261 @@
+.TH MUI 2
+.SH NAME
+Class, Object, Theme, obj, text, button, field, checkmark, group, space,
+add, weigh, fit, lay, paint, window_open, window_paint, window_run, Event,
+Requester, requester, req_handle, parse_theme \- the widget toolkit
+.SH SYNOPSIS
+.B import "vsys:libmui"
+.PP
+.nf
+.B "Class :: enum u8 { Space, Text, Button, Checkmark, String, Group }"
+.B "Object :: struct { class: Class, horiz: bool, label: string, weight: int,"
+.B "    minw, minh, maxw, maxh: int, x, y, w, h: int,"
+.B "    first, next, parent: ^Object, on: bool, id: int }"
+.B "Theme :: struct { pad, gap, bevel, hpad, vpad, well: int,"
+.B "    ground, face, lit, shade, ink: libpal.RGB }"
+.B "default_theme : Theme"
+.PP
+.B "obj :: proc(class: Class) -> ^Object"
+.B "text :: proc(label: string) -> ^Object"
+.B "button :: proc(label: string) -> ^Object"
+.B "field :: proc() -> ^Object"
+.B "checkmark :: proc(on: bool) -> ^Object"
+.B "group :: proc(horiz: bool) -> ^Object"
+.B "space :: proc() -> ^Object"
+.B "add :: proc(parent: ^Object, child: ^Object) -> ^Object"
+.B "weigh :: proc(o: ^Object, w: int) -> ^Object"
+.PP
+.B "fit :: proc(o: ^Object, t: ^Theme)"
+.B "lay :: proc(o: ^Object, x, y, w, h: int, t: ^Theme)"
+.B "paint :: proc(b: []u8, at: int, root: ^Object, dst: u32, f: ^Fonts, t: ^Theme) -> int"
+.PP
+.B "window_open :: proc(win: ^Window, title: string, root: ^Object) -> bool"
+.B "window_paint :: proc(win: ^Window)"
+.B "window_run :: proc(win: ^Window)"
+.PP
+.B "Event :: struct { kind: Event_Kind, x, y: int, buttons: u8, key: u8 }"
+.B "Requester :: struct { root, def, cancel: ^Object }"
+.B "requester :: proc(message, ok_label, cancel_label: string) -> Requester"
+.B "req_handle :: proc(req: ^Requester, ev: Event) -> (done: bool, id: int)"
+.PP
+.B "parse_theme :: proc(t: ^Theme, text: string)"
+.fi
+.SH DESCRIPTION
+.I Libmui
+is a widget toolkit in the manner of the Amiga's MUI: a program builds a
+tree of
+.B Object
+nodes, says which stretch and which stay a fixed size, and the library
+solves for every rectangle.
+No call in this package takes a pixel coordinate from its caller except
+the one that finally hands a laid-out tree a place to sit.
+The look is
+.IR chrome (2)'s
+"Cyberpunk Workstation 1994" vocabulary; a
+.B Theme
+carries the metrics
+.I fit
+and
+.I lay
+read and the colours
+.I paint
+reads, and every window shares
+.BR default_theme " until a "
+.IR theme (6)
+file changes it.
+.SS Building a tree
+.B Obj
+allocates a node of the given class from the ring 3 heap and answers
+.B nil
+on exhaustion, which every other constructor here passes through
+unchanged.
+.BR Text ", " button ", " field ", " checkmark " and " space
+are the leaves:
+.I text
+is a rigid run of characters,
+.I button
+a raised control with a label that stretches both ways,
+.I field
+a recessed one-line text entry that stretches wide,
+.I checkmark
+a rigid square lamp that is on or off, and
+.I space
+blank room that stretches without limit, the glue of a layout.
+.B Group
+is the one container: it lays its children along one axis, left to right
+when
+.I horiz
+is true, top to bottom otherwise.
+.B Add
+links
+.I child
+as the last child of
+.I parent
+and answers
+.I parent ,
+so a tree reads as nested calls.
+.B Weigh
+sets a node's share of the room left over on its parent's axis after
+every sibling's smallest size is met, and answers the node it was given.
+A node whose largest extent equals its smallest never grows and needs no
+weight; every other leaf takes a weight of one unless a caller calls
+.I weigh
+first.
+.PP
+A label may carry one underscore before a letter, stripped when drawn and
+not counted in the label's width, to mark that letter as a hotkey.
+.SS Layout
+.I Fit
+walks a tree once from the leaves up and fills every node's smallest and
+largest width and height from its class and, for a
+.BR Group ,
+from its children.
+.I Lay
+walks once from the root down: it gives
+.I o
+the rectangle
+.RI ( x , " y" ", " w ", " h ),
+and for a group shares the room beyond each child's smallest size out
+along the axis in proportion to weight, tiled so the shares sum to the
+whole with nothing lost to rounding.
+On the other axis each child is offered the group's full inner extent,
+clamped to what it accepts, and centred in what is left over.
+A caller runs
+.I fit
+once and then
+.I lay
+with the outer rectangle it has, in that order; a node's rectangle after
+.I lay
+is read straight off its
+.BR x , " y" , w " and " h
+fields.
+.SS Painting
+.I Paint
+walks a laid-out tree and writes the
+.IR draw (2)
+commands that draw it onto image
+.I dst
+into buffer
+.I b
+at offset
+.IR at ,
+answering the new offset.
+It fills the tree's own ground first, then each node: a button's face and
+bevel from
+.IR chrome (2)'s
+vocabulary, a checkmark's lamp, a field's sunken well, and a label's
+glyphs blit from an atlas
+.I f
+already holds.
+.I Paint
+never uploads a glyph itself; a caller bakes the atlases a tree needs with
+.IR font (2)'s
+.I font_prepare
+before the first paint.
+A group draws nothing of its own, only its children.
+.SS A live window
+.I Window_open
+claims a window from
+.IR intuition (4),
+lays
+.I root
+out in its client area, bakes the atlases the tree needs, and paints it
+once; it answers false at the first step a program cannot have a window
+without, and does not return past that point.
+.I Window_paint
+redraws the whole tree and flushes it.
+.I Window_run
+is the event loop: a thread reads the window's
+.B mouse
+file and the caller's own thread its
+.BR cons ,
+each through an
+.IR ioproc (2),
+until the window ends.
+A press hit-tests the tree and marks the gadget under the pointer; the
+matching release, if it lands on the same gadget, activates it, flips a
+checkmark's state, and calls
+.IR win.handler ,
+a program's own
+.B "proc(win: ^Window, id: int)" ,
+with the gadget's
+.BR id .
+Tab moves the focus among the tree's interactive gadgets, in tree order,
+and wraps past the last back to the first.
+Return or space activates the focused gadget, and Escape calls
+.I win.handler
+with an id of \-1, a program's own signal to cancel.
+.SS Requesters
+A
+.B Requester
+is a small modal tree outside a window's own: a message over a row of
+buttons pushed right by glue, an
+.B OK
+button as its default and, when a label is given, a cancel button.
+.I Requester
+builds this tree and answers it; the caller lays and paints it itself,
+centred in whatever rectangle it chooses.
+.I Req_handle
+applies one
+.B Event
+to it: Return chooses the default, Escape the cancel, and a release over
+a button that button, answering
+.I done
+true with the chosen button's
+.IR id .
+A requester is not wired into
+.IR window_run ;
+a program that opens one drives its own loop over
+.IR req_handle
+for as long as the requester is up.
+.SS The theme
+.I Parse_theme
+reads a role at a time from a
+.IR theme (6)
+file's text into a
+.B Theme
+it starts at
+.BR default_theme ,
+so a file that names nothing is the chassis look and one that names a
+role changes that role alone.
+.SH EXAMPLES
+A row of two buttons in a window:
+.IP
+.EX
+root := libmui.group(true)
+libmui.add(root, libmui.button("_Open"))
+libmui.add(root, libmui.button("_Save"))
+
+win: libmui.Window
+win.handler = proc "contextless" (win: ^libmui.Window, id: int) {
+	if id == -1 {win.done = true}
+}
+if libmui.window_open(&win, "demo", root) {
+	libmui.window_run(&win)
+}
+.EE
+.SH SOURCE
+.B sys/libmui
+.SH SEE ALSO
+.IR draw (2),
+.IR chrome (2),
+.IR font (2),
+.IR ioproc (2),
+.IR theme (6),
+.IR intuition (4),
+.IR muidemo (1)
+.SH DIAGNOSTICS
+.I Window_open
+answers false for any step that leaves a program without a usable
+window: a claim
+.IR intuition (4)
+refuses, a geometry it cannot lay a tree in, or an atlas pool that fills
+before every label is baked.
+Nothing else here reports failure; a tree too large for its buffer is
+.IR paint 's
+own truncation, described in
+.IR draw (2).
+.SH BUGS
+A label's hotkey underscore marks a letter but nothing yet turns a
+keystroke of it into an activation; only Tab, Return, Escape and a click
+move or press a gadget.

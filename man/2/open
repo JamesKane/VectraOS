@@ -1,0 +1,99 @@
+.TH OPEN 2
+.SH NAME
+open, create, close, mkdir \- open, create or make a file
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "open :: proc(path: string, flags: u64) -> i64"
+.B "create :: proc(path: string, flags: u64, mode: u64) -> i64"
+.B "close :: proc(fd: int) -> i64"
+.B "mkdir :: proc(path: string, mode: u64 = 0o777) -> i64"
+.fi
+.SH DESCRIPTION
+.I Open
+resolves
+.I path
+in the caller's own namespace and answers a descriptor, the lowest number
+not already in use.
+.I Flags
+is one of
+.B abi.O_RDONLY
+(0),
+.B O_WRONLY
+(1) or
+.B O_RDWR
+(2), with
+.B O_TRUNC
+(0o1000) added to truncate the file to zero length as it opens.
+Unlike Plan 9, there is no
+.BR OEXEC ,
+.B OCEXEC
+or
+.BR ORCLOSE :
+a program executes a file with
+.I spawn
+or
+.I exec
+(see
+.IR fork (2)
+and
+.IR exec (2)),
+and every descriptor a program holds is closed when it exits, without
+asking.
+.PP
+.I Create
+makes a new file at
+.I path
+or truncates an existing one, opens it as
+.I open
+would with
+.IR flags ,
+and answers a descriptor on it.
+.I Mode
+carries the permission bits described in
+.IR stat (2).
+If
+.B DMDIR
+is set in
+.IR mode ,
+the kernel makes a directory instead of a plain file, and the descriptor
+.I create
+answers is open on the new directory.
+.PP
+.I Mkdir
+is
+.I create
+with
+.B O_RDONLY
+and
+.B DMDIR
+set in the mode:
+.IP
+.EX
+mkdir(path, mode) == create(path, O_RDONLY, mode | DMDIR)
+.EE
+.PP
+.I Close
+closes the descriptor.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR bind (2),
+.IR read (2),
+.IR remove (2),
+.IR stat (2)
+.SH DIAGNOSTICS
+Each call answers a non-negative descriptor on success and a negative
+.B \-errno
+on failure; see
+.IR errstr (2).
+.I Close
+answers
+.B EBADF
+for a descriptor not open, unlike Plan 9's
+.IR close ,
+which never fails.

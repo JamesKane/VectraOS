@@ -1,0 +1,102 @@
+.TH ALLOC 2
+.SH NAME
+allocator, heap_alloc, heap_free, heap_stats, heap_context \- the ring 3 heap
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "allocator :: proc() -> runtime.Allocator"
+.B "heap_alloc :: proc(size: int, alignment := 16) -> rawptr"
+.B "heap_free :: proc(p: rawptr)"
+.B "heap_stats :: proc() -> (total: int, free_bytes: int, blocks: int)"
+.B "heap_context :: proc() -> runtime.Context"
+.fi
+.SH DESCRIPTION
+.I Allocator
+answers the heap as a
+.B runtime.Allocator
+suitable for
+.BR context.allocator .
+.IR Libuser.startup ,
+which every tool calls before its
+.B main
+runs, sets both the allocator and the temporary allocator of the context
+to this: a tool has no arena, and a leak in a short program is a leak
+nobody meets.
+.PP
+The heap is one run of memory taken from
+.I segalloc
+and grown by
+.I segbrk
+when it runs out, starting at 64 kilobytes and doubling; both are
+described in
+.IR segattach (2).
+It is carved into blocks with a header apiece and a first-fit free list.
+A freed block joins its free neighbours.
+Nothing here is fast, and nothing needs to be: a tool allocates a few
+thousand times and exits.
+.PP
+.I Heap_alloc
+and
+.I heap_free
+are the allocator's two calls, for a caller with no context to carry an
+allocator in, such as a server's contextless 9P handler or
+.IR sys/libthread ,
+which takes a thread's stack from here.
+.I Alignment
+above sixteen is refused; nothing in a tool asks for it.
+.PP
+The heap is shared by every process of a program built on
+.IR sys/libthread ,
+so it is guarded by one spinlock, held for the length of a walk down the
+free list and never across a wait.
+.PP
+.I Heap_stats
+reports the run's total size, how many bytes of it are free, and how
+many blocks the list holds, for a self-test that checks the heap gave
+back what it took.
+.PP
+.I Heap_context
+builds a
+.B runtime.Context
+with the heap as its allocator and nothing else, for a contextless
+handler that needs one: a server's 9P handler, called from the serve
+loop with no context of its own.
+.SH EXAMPLES
+A tool takes the ordinary path, through
+.IR startup :
+.IP
+.EX
+context = libuser.startup()
+lines := make([dynamic]string)
+.EE
+.PP
+A handler with no context builds one where it needs the heap:
+.IP
+.EX
+ctx := libuser.heap_context()
+context = ctx
+.EE
+.SH SOURCE
+.B sys/libuser/heap.odin
+.SH SEE ALSO
+.IR segattach (2),
+.IR fork (2)
+.SH DIAGNOSTICS
+.I Heap_alloc
+answers
+.B nil
+when the kernel refuses to grow the run.
+.I Allocator
+reports
+.B .Out_Of_Memory
+from the same cause, through the ordinary
+.B runtime.Allocator
+protocol.
+.SH BUGS
+There is no
+.B Free_All
+and no
+.B Query_Info
+mode; both answer
+.BR .Mode_Not_Implemented .

@@ -1,0 +1,92 @@
+.TH WAIT 2
+.SH NAME
+wait, await, exits, exit, getpid \- wait for a process to end, end a process
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "wait :: proc(pid: u64) -> i64"
+.B "await :: proc(pid: u64, buf: []u8) -> i64"
+.B "exits :: proc(status: string) -> !"
+.B "exit :: proc(status: u64) -> !"
+.B "getpid :: proc() -> u64"
+.fi
+.SH DESCRIPTION
+.I Exits
+ends the calling process with
+.IR status ,
+its exit status: empty for success, a few words otherwise.
+.I Exit
+ends it instead with a number, which
+.I wait
+answers as
+.IR status 's
+low 32 bits and
+.I await
+writes as a decimal word if it is not zero.
+Neither call returns.
+.PP
+.I Wait
+collects one child of the caller, by
+.IR pid ,
+and answers its exit status: the low bits of what it gave
+.I exit
+or
+.IR exits ,
+a note's name turned into
+.B EINTR
+if a note ended it without a handler, or
+.B EIO
+if a fault ended it.
+Only a child of the caller may be named; a
+.I pid
+that belongs to someone else, or to nobody, answers
+.BR ECHILD .
+Collecting a child destroys its record: a second
+.I wait
+on the same
+.I pid
+also answers
+.BR ECHILD .
+A child that has not ended within the kernel's patience answers
+.BR EAGAIN ,
+and the caller may ask again.
+.PP
+.I Await
+is Plan 9's call of the same name: it collects one child and writes
+.RI \(lq pid
+.RI [ word ]\(rq
+into
+.IR buf ,
+where
+.I word
+is the child's exit status if it said anything, or the text of the note
+that ended it, and answers the length written.
+A
+.I pid
+of zero collects any child of the caller that has ended, waiting for one
+to if none has yet.
+.PP
+.I Getpid
+answers the calling process's own pid, the name it is known by under
+.BR /proc .
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/spawn.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR fork (2),
+.IR notify (2)
+.SH DIAGNOSTICS
+.I Wait
+and
+.I await
+answer a negative
+.B \-errno
+on failure; see
+.IR errstr (2).
+.I Getpid
+always succeeds.

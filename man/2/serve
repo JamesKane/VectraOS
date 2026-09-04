@@ -1,0 +1,119 @@
+.TH SERVE 2
+.SH NAME
+post, serve \- post a service and answer it
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "post :: proc(path: string) -> (serve_fd: int, err: i64)"
+.B "serve :: proc(fd: int, handler: vectra9.Handler, state: rawptr, frame: []u8, out: []u8, payload: []u8, remove_stops := true) -> (served: u64, why: Serve_End)"
+.fi
+.SH DESCRIPTION
+.I Post
+makes a pipe, creates
+.I path
+and writes the decimal digits of one end's descriptor into it, then
+closes both descriptors it spent.
+What it answers is the other end, ready for
+.IR serve .
+On any failure along the way, everything already opened is closed again,
+and
+.I err
+is the kernel's errno for the step that refused.
+.PP
+.I Serve
+answers 9P requests read from
+.I fd
+until something ends the loop.
+It reads a frame into
+.IR frame ,
+decodes it, calls
+.I handler
+with
+.I state
+as its own argument and
+.I payload
+as the storage a reply may build its bytes in, encodes the reply into
+.IR out ,
+and writes it back.
+.I Frame
+and
+.I out
+must each hold a whole message; their size is the msize this server
+honours, and the handler's
+.B Tversion
+reply should say no more.
+.PP
+.I Handler
+is a
+.BR vectra9.Handler ,
+described in
+.IR vectra9 (2).
+It is the same signature every kernel server implements, so a handler
+cannot tell whether it answers from ring 0 behind a transport or from
+ring 3 behind this pipe.
+.PP
+.I Serve
+answers one request at a time, on the caller's own stack.
+A handler that cannot answer immediately has nothing to hold the request
+with; a server whose reads must park uses
+.IR 9p (2)
+instead, on the same handler.
+.PP
+A server stops two ways, both reported in
+.IR why .
+A
+.B Tremove
+answered and then obeyed is
+.BR .Removed ,
+the client's own request to stop; the reply goes out before the loop
+returns, so the remover hears yes.
+.I Remove_stops
+is
+.B true
+by default, which fits a fixed tree; a filesystem that removes a file
+rather than stopping on one passes
+.BR false .
+The pipe ending is
+.BR .Hangup .
+A frame no loop can read past, either a size beyond
+.I frame
+or bytes that will not decode, is
+.BR .Broken .
+.SH EXAMPLES
+.IR Ramfs (4)
+posts and serves in three lines:
+.IP
+.EX
+fd, perr := libuser.post("/srv/ramfs")
+if perr < 0 {
+	libuser.exit(0x71)
+}
+_, why := libuser.serve(fd, handler, nil, frame_in[:], frame_out[:], payload[:])
+switch why {
+case .Removed:
+	libuser.exit(0)
+case .Hangup:
+	libuser.exit(0x68)
+case .Broken:
+	libuser.exit(0x72)
+}
+.EE
+.SH SOURCE
+.B sys/libuser/serve.odin
+.SH SEE ALSO
+.IR fid (2),
+.IR 9p (2),
+.IR vectra9 (2),
+.IR bind (2),
+.IR ramfs (4)
+.SH DIAGNOSTICS
+.I Post
+answers a negative
+.I err
+naming the step that failed: the pipe, the create, or the write of the
+descriptor's digits.
+.I Serve
+never answers an error itself; a malformed frame ends the loop with
+.B .Broken
+rather than being reported to the handler.

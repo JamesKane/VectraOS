@@ -1,0 +1,280 @@
+.TH THREAD 2
+.SH NAME
+threadcreate,
+proccreate,
+threadexits,
+threadexitsall,
+yield,
+threadid,
+chancreate,
+chanfree,
+send,
+recv,
+nbsend,
+nbrecv,
+sendp,
+recvp,
+sendul,
+recvul,
+alt,
+qlock,
+qunlock,
+canqlock,
+rsleep,
+rwakeup,
+rwakeupall \- thread and proc management
+.SH SYNOPSIS
+.B import "vsys:libthread"
+.PP
+.nf
+.B "Thread_Fn :: #type proc(arg: rawptr)"
+.B "Chan_Op :: enum { Send, Recv, Noblock }"
+.B "Alt :: struct { c: ^Chan, v: rawptr, op: Chan_Op }"
+.fi
+.PP
+.nf
+.B "threadcreate :: proc(fn: Thread_Fn, arg: rawptr, stacksize := STACK_DEFAULT) -> int"
+.B "proccreate :: proc(fn: Thread_Fn, arg: rawptr, stacksize := STACK_DEFAULT) -> i64"
+.B "yield :: proc()"
+.B "threadid :: proc() -> int"
+.B "threadexits :: proc(status: string) -> !"
+.B "threadexitsall :: proc(status: string) -> !"
+.fi
+.PP
+.nf
+.B "chancreate :: proc(elemsize: int, nbuf: int) -> ^Chan"
+.B "chanfree :: proc(c: ^Chan)"
+.B "send :: proc(c: ^Chan, v: rawptr)"
+.B "recv :: proc(c: ^Chan, v: rawptr)"
+.B "nbsend :: proc(c: ^Chan, v: rawptr) -> bool"
+.B "nbrecv :: proc(c: ^Chan, v: rawptr) -> bool"
+.B "sendp :: proc(c: ^Chan, p: rawptr)"
+.B "recvp :: proc(c: ^Chan) -> rawptr"
+.B "sendul :: proc(c: ^Chan, u: u64)"
+.B "recvul :: proc(c: ^Chan) -> u64"
+.B "alt :: proc(alts: []Alt) -> int"
+.fi
+.PP
+.nf
+.B "qlock :: proc(q: ^QLock)"
+.B "qunlock :: proc(q: ^QLock)"
+.B "canqlock :: proc(q: ^QLock) -> bool"
+.B "rsleep :: proc(r: ^Rendez)"
+.B "rwakeup :: proc(r: ^Rendez) -> bool"
+.B "rwakeupall :: proc(r: ^Rendez) -> int"
+.fi
+.SH DESCRIPTION
+.I Libthread
+gives a program in ring 3 cooperative threads inside one or more
+processes, communicating over channels.
+A
+.I proc
+is a Vectra process made by
+.I proccreate ,
+which shares this one's memory
+.RB ( "rfork RFPROC | RFMEM" ,
+see
+.IR fork (2))
+and nothing else it need not.
+A
+.I thread
+is a coroutine inside a proc, made by
+.IR threadcreate ,
+switched in user space when it blocks on a channel, a lock or
+.IR yield ,
+and never preempted by another thread of its own proc.
+.PP
+A program built on
+.I libthread
+has no
+.B main
+of its own.
+Its
+.B _start
+sets up
+.B context
+(see
+.IR intro (2))
+and calls
+.B libthread.main(fn,
+.BR arg) ,
+which makes the first proc, runs
+.I fn
+as its only thread, and schedules from then on.
+It never returns.
+The program ends through
+.I threadexits
+or
+.IR threadexitsall .
+.SS Scheduling
+The threads of a proc run one at a time, in the order they became ready.
+A thread keeps the processor until it calls
+.IR yield ,
+.IR proccreate ,
+an operation on a channel, or a lock or rendezvous call from this
+library, and only then does another thread of the same proc run.
+Procs are scheduled by the kernel, so threads in different procs may run
+at the same time and must synchronize through a
+.B QLock
+or a channel.
+A system call such as
+.IR read (2)
+blocks the whole proc, and every thread in it.
+.PP
+.I Threadid
+answers the calling thread's id, unique for the life of the program.
+.I Yield
+lets every other ready thread of the calling proc run once.
+.SS Ending
+.I Threadexits
+ends the calling thread with
+.IR status .
+When it was the proc's last thread, the proc ends with that status: the
+first proc waits for every proc it made before it exits, so the
+program's own exit is always the last of its processes, and whoever
+.I awaits
+the program
+.RI ( "see " wait (2))
+finds none of them left.
+A proc other than the first ends at once when its last thread does.
+.PP
+.I Threadexitsall
+ends the whole program with
+.IR status .
+It posts a note to every other proc, waits for the ones it made itself,
+and exits.
+A noted proc with no handler dies at its next kernel boundary, the read
+or the rendezvous it is parked in.
+Only the first proc may call it.
+.SS Channels and alt
+A
+.B Chan
+carries elements of one size, made by
+.I chancreate
+with capacity
+.I nbuf
+and freed by
+.IR chanfree .
+An unbuffered channel,
+.I nbuf
+zero, is a meeting: a send parks until a receive arrives and the element
+passes straight from one to the other.
+A buffered channel is a queue: a send parks only when it is full, a
+receive only when it is empty.
+.PP
+.I Send
+and
+.I recv
+pass one element by address.
+.I Nbsend
+and
+.I nbrecv
+do the same but answer
+.B false
+rather than wait when the channel cannot go at once.
+.IR Sendp ,
+.IR recvp ,
+.I sendul
+and
+.I recvul
+are
+.I send
+and
+.I recv
+for an element the size of a pointer or a
+.BR u64 .
+.PP
+.I Alt
+waits on several channels or sends at once, described by a slice of
+.B Alt
+arms, and executes and answers the index of the first one that can go.
+An arm whose
+.I op
+is
+.B .Noblock
+makes
+.I alt
+answer \-1 instead of waiting when nothing else is ready.
+When several arms can go at once, one is chosen at random, so no
+channel starves another.
+.SS Locks and rendezvous
+A
+.B QLock
+is a lock a thread may hold across a wait: a thread that cannot take it
+parks, and its proc runs its other threads meanwhile, unlike the
+spinlock of
+.IR intro (9),
+which a waiter spins on.
+.I Qlock
+takes it, parking if held;
+.I canqlock
+takes it only if free, answering whether it did; and
+.I qunlock
+releases it, handing it directly to the oldest waiter.
+.PP
+A
+.B Rendez
+is a condition variable held under a
+.BR QLock .
+.I Rsleep
+releases the lock, parks the calling thread until
+.I rwakeup
+or
+.I rwakeupall
+readies it, and takes the lock again before it returns.
+The caller re-checks its condition on return, because a wake is a hint
+rather than a promise that the condition holds.
+.I Rwakeup
+readies the oldest sleeper and answers whether there was one.
+.I Rwakeupall
+readies every sleeper and answers how many there were.
+.SH EXAMPLES
+A program's
+.B _start
+hands control to the library and never gets it back:
+.IP
+.EX
+start :: proc "c" (block: ^abi.Args) {
+	context = libuser.startup()
+	libthread.main(threadmain, nil)
+}
+.EE
+.PP
+A proc reports back on a channel:
+.IP
+.EX
+worker :: proc "contextless" (arg: rawptr) {
+	c := (^libthread.Chan)(arg)
+	libthread.sendul(c, libuser.getpid())
+}
+libthread.proccreate(worker, c, libthread.STACK_DEFAULT)
+pid := libthread.recvul(c)
+.EE
+.SH SOURCE
+.B sys/libthread
+.SH SEE ALSO
+.IR intro (2),
+.IR fork (2),
+.IR wait (2),
+.IR notify (2),
+.IR ioproc (2),
+.IR rendezvous (2)
+.SH BUGS
+There is no
+.I threadnotify
+and no note handler for a thread: a note not caught by
+.I notify
+(see
+.IR notify (2))
+ends the whole proc.
+There is no
+.I threadkill
+and no
+.I threadint
+to stop one thread from outside.
+A thread has no name
+.B /proc
+can show, because a thread is not the kernel's.
+.I Threadexitsall
+may be called only from the first proc; called from any other, it
+notes the first proc and returns without waiting for it.

@@ -1,0 +1,272 @@
+.TH BUILD 8
+.SH NAME
+build \- the build driver
+.SH SYNOPSIS
+.B odin run build.odin -file -out:.vectra-build --
+[
+.I target
+] [
+.I option ...
+]
+.SH DESCRIPTION
+.B build.odin
+compiles Vectra, stages a bootable disk, and starts it under QEMU.
+It is an Odin program rather than a shell script, so the flag handling,
+the per-architecture table and the link line grow in the same language
+and the same type system as the thing they build.
+.B justfile
+and
+.B Makefile
+are thin wrappers over it, named
+.BR kernel ", " esp ", " run ", " gui ", " debug ", " gdb ", " release ", " clean ", " font
+and
+.BR check ,
+for a shell without either.
+This page describes the driver itself.
+.PP
+The
+.B \-out:
+is not cosmetic.
+Without it,
+.B odin run
+names the driver binary after the script and drops
+.B ./build
+directly on top of the
+.B build/
+output directory, destroying what the previous target staged there.
+.SS Targets
+.TP 10
+.B kernel
+Compile and link
+.B kernel/
+into
+.BR build/vectra.elf .
+The default target.
+.TP
+.B user
+Compile the ring 3 programs into
+.BR build/user .
+.TP
+.B programs
+Compile the ring 3 test programs into
+.BR build/programs .
+.TP
+.B check
+Type-check the kernel and every program for one architecture, without
+linking.
+.TP
+.B esp
+Stage a bootable EFI system partition in
+.BR build/esp .
+.TP
+.B run
+.BR esp ,
+then boot it under QEMU.
+.TP
+.B debug
+.BR run ,
+but halted and waiting for
+.I gdb
+on
+.BR :1234 .
+.TP
+.B clean
+Remove
+.BR build/ .
+.TP
+.B lint
+Check the tree's prose against ASD-STE100.
+.PD
+.SS Options
+.TP 20
+.BI \-\-arch= arch
+.BR amd64 ,
+.B arm64
+or
+.BR riscv64 .
+Selects the architecture for every target.
+Default
+.BR amd64 .
+.TP
+.B \-\-release
+Optimise, with bounds checks off.
+Without it every build is a debug build.
+.TP
+.BI \-\-serial= where
+.B stdio
+or
+.BR file .
+Where QEMU's COM1 goes.
+Default
+.BR stdio .
+.B file
+writes
+.BR build/serial.log .
+.TP
+.BI \-\-monitor= path
+Open a QEMU monitor on a Unix socket at
+.IR path ,
+for
+.B screendump
+and the like.
+Off unless given.
+.TP
+.B \-\-gfx
+Open a QEMU window.
+Without it QEMU runs headless, with
+.B \-display none
+-- the framebuffer is still real, only not shown.
+.TP
+.BI \-\-smp= n
+Cores QEMU presents.
+Default 4.
+.B \-\-smp=1
+is the uniprocessor control: the same boot, with one core brought up
+and none of the multicore checks run.
+.PD
+.SS The toolchain
+.BR odin ,
+.BR clang ,
+.BR ld.lld ,
+a
+.B qemu-system-
+binary for the target architecture, and, only to regenerate the
+console font, Python 3 with Pillow.
+.I Clang
+assembles the architecture's
+.B .S
+files.
+Its
+.B \-target
+names the ELF the kernel links for and not the host clang runs on,
+which is what lets a host's clang assemble for a freestanding kernel
+at all.
+.PP
+UEFI firmware is QEMU's.
+On amd64, a combined OVMF image is used when the build finds one beside
+the tree.
+Otherwise the split code and variable-store images that ship beside
+the QEMU install are searched for under
+.BR /opt/homebrew/share/qemu ,
+.B /usr/local/share/qemu
+and
+.BR /usr/share/qemu ,
+in that order, and the driver stops with an error if none is found.
+.SS What gets staged
+.B esp
+copies the architecture's Limine executable and
+.B boot/limine.conf
+under
+.BR build/esp/EFI/BOOT ,
+and the linked kernel to
+.BR build/esp/vectra.elf .
+It then stages every program named in the driver's
+.B user_programs
+table: each compiled image goes to
+.BR build/esp/vectra/bin ,
+under the name the table gives it.
+.B apps/rc/rcmain
+and
+.B apps/rc/init
+go to
+.BR build/esp/vectra/lib ,
+along with the draw server's
+.B keys
+and
+.B workspaces
+files and
+.BR tests/tools.rc ,
+staged under
+.BR build/esp/vectra/lib/tests .
+.B build/esp/vectra/tmp
+is removed and remade empty on every build, because what a previous
+run wrote there was that run's own proof.
+.PP
+A program is added to the build by adding one entry to
+.B user_programs
+in
+.BR build.odin :
+a name and the package directory that builds it.
+The next
+.B esp
+or
+.B run
+compiles it and stages it under its name in
+.BR /bin ,
+with no other change needed.
+.SS Debugging the kernel
+.B just debug
+(or the
+.B debug
+target directly) boots QEMU halted, with
+.B \-s
+and
+.BR \-S ,
+waiting for a debugger on
+.BR localhost:1234 .
+There is no
+.I gdb
+on this machine.
+.I Lldb
+attaches with symbols and line numbers:
+.IP
+.EX
+lldb build/vectra.elf -o 'gdb-remote localhost:1234'
+.EE
+.PP
+QEMU's
+.B \-s
+opens the same stub even on an ordinary
+.BR run ,
+without halting, so a boot that loops can be read the same way,
+mid-loop.
+.SH EXAMPLES
+.IP
+.EX
+just run
+just gui
+just debug
+just release
+just check
+odin run build.odin -file -out:.vectra-build -- run --gfx
+odin run build.odin -file -out:.vectra-build -- run --arch=arm64 --serial=file
+odin run build.odin -file -out:.vectra-build -- check --arch=riscv64
+odin run build.odin -file -out:.vectra-build -- lint --show
+.EE
+.SH FILES
+.TP
+.B build/vectra.elf
+the linked kernel
+.TP
+.B build/esp
+the staged EFI system partition
+.TP
+.B build/disk.img
+the scratch disk, made once and kept
+.TP
+.B build/serial.log
+QEMU's COM1, with
+.B \-\-serial=file
+.TP
+.B build/user
+.TP
+.B build/programs
+compiled ring 3 images, before staging
+.SH SOURCE
+.B build.odin
+.br
+.B justfile
+.br
+.B Makefile
+.SH SEE ALSO
+.IR boot (8),
+.IR verify (8),
+.IR lint (8),
+.IR genfont (8)
+.SH DIAGNOSTICS
+An unrecognised target, an unrecognised
+.BR \-\-arch= ,
+or an
+.B \-\-smp=
+below 1 stops the driver with a message naming what it wanted.
+A missing firmware image stops it before QEMU is started.

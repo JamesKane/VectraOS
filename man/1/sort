@@ -1,0 +1,59 @@
+.TH SORT 1
+.SH NAME
+sort \- sort lines
+.SH SYNOPSIS
+.B sort
+[
+.B \-nru
+]
+[
+.I file ...
+]
+.SH DESCRIPTION
+.I Sort
+sorts
+lines of all the
+.I files
+together and writes the result on
+the standard output.
+If no input files are named, the standard input is sorted.
+.PP
+The sort key is an entire line.
+The ordering is lexicographic by bytes.
+Lines that compare equal come out in the order they went in.
+The options are:
+.TP
+.B \-n
+An initial numeric string,
+consisting of optional blanks,
+an optional minus sign,
+and digits,
+is sorted by arithmetic value.
+A line with no such string sorts as 0.
+Lines whose values are equal are ordered lexicographically.
+.TP
+.B \-r
+Reverse the sense of comparisons.
+.TP
+.B \-u
+Suppress all but one in each
+set of identical lines.
+.SH SOURCE
+.B cmd/sort/main.odin
+.SH SEE ALSO
+.IR uniq (1)
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B "can't open"
+when a file could not be opened.
+The other files are still sorted.
+.SH BUGS
+There are no fields, no
+.BR \-f ,
+no
+.B \-o
+and no
+.BR \-m .
+Under
+.B \-u
+lines are compared byte for byte, whatever the other options.

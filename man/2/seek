@@ -1,0 +1,55 @@
+.TH SEEK 2
+.SH NAME
+seek \- change file offset
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "seek :: proc(fd: int, offset: u64) -> i64"
+.fi
+.SH DESCRIPTION
+.I Seek
+sets the descriptor's cursor to the absolute byte offset
+.IR offset ,
+and answers the new offset.
+.PP
+Unlike Plan 9's
+.IR seek ,
+there is no
+.I whence
+argument: every call names an offset from the start of the file.
+A program that wants to seek relative to the current offset or to the
+file's length asks for those first, with
+.I stat
+(see
+.IR stat (2))
+or by tracking what it has already transferred, and computes the new
+offset before calling
+.IR seek .
+.PP
+The offset is the descriptor's own, not the file's: two descriptors open
+on the same file keep separate cursors, even when they were made with
+.IR dup (2).
+.I Seek
+does not check what kind of file the descriptor names; a directory's
+offset is a cookie from
+.I dirread
+(see
+.IR stat (2))
+rather than a byte count, and a pipe has no notion of position that a seek
+can usefully change.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR open (2),
+.IR read (2)
+.SH DIAGNOSTICS
+Answers the new offset on success and a negative
+.B \-errno
+on failure; see
+.IR errstr (2).
+.B EBADF
+is a descriptor that is not open.

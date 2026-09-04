@@ -1,0 +1,124 @@
+.TH WINDOW 1
+.SH NAME
+window, terminal \- run a command in a window
+.SH SYNOPSIS
+.B window
+[
+.I cmd
+[
+.I arg ...
+]
+]
+.PP
+.B terminal
+.SH DESCRIPTION
+.I Window
+opens a window on the draw server and runs
+.I cmd
+in it, with the window as the command's three descriptors.
+With no
+.IR cmd ,
+it runs
+.BR /bin/rc .
+A name with no
+.B /
+is resolved against
+.B /bin
+only, not
+.BR $path ,
+which is what a person types at a prompt.
+.PP
+.I Terminal
+is the same program with the command fixed to
+.BR /bin/rc ,
+built as its own binary rather than run as
+.BR "window /bin/rc" .
+.IR init (8)
+starts one at boot for the desktop's own shell.
+.PP
+Either one mounts
+.B /srv/draw
+at
+.BR /mnt ,
+claims a new window there, and binds that window's directory over
+.B /dev
+so that
+.B /dev/cons
+is the window's keyboard and
+.B /dev/consctl
+its raw switch (see
+.IR intuition (4)).
+The command runs with a copy of the descriptor table, its standard
+input and output and error replaced by two pipes, and
+.I window
+or
+.I terminal
+then does two things at once: it reads the command's output and draws
+it into the window as a grid of fixed-width cells, and it reads the
+window's keyboard, edits a line at the cursor, and hands each finished
+line to the command's input.
+An interrupt typed in the window
+.RI ( ^C )
+is posted as
+.B interrupt
+to the command's own process group, not to
+.I window
+or
+.IR terminal .
+When the command's output pipe closes, the window closes with it.
+.PP
+The client area is as many eight-pixel columns and sixteen-pixel rows
+as the window's geometry allows, up to ninety-six columns and
+thirty-two rows.
+A newline, a return, a backspace and a tab do what a terminal expects;
+a line past the last row scrolls the rest up.
+.SH FILES
+.B /srv/draw
+.br
+.B /mnt/new
+.br
+.BI /mnt/ n /data
+.br
+.BI /mnt/ n /ctl
+.br
+.BI /mnt/ n /cons
+.br
+.BI /mnt/ n /consctl
+.SH SOURCE
+.B cmd/window/main.odin
+.br
+.B apps/terminal/main.odin
+.SH SEE ALSO
+.IR rc (1),
+.IR muidemo (1),
+.IR intuition (4),
+.IR draw (2)
+.SH DIAGNOSTICS
+Before the command starts,
+.I window
+and
+.I terminal
+end with a number rather than a word: 0x74 if
+.B /srv/draw
+would not mount or a new window would not open, 0x75 if a window file
+would not open, 0x76 for a geometry too small to draw on, 0x78 if a
+draw write was refused or the window's own console would not open, and
+0x72 if the command itself would not start.
+Once the command is running, the exit status is empty, or
+.B ioproc
+or
+.B threadcreate
+if the internal machinery that serves both descriptors at once could
+not be set up, or
+.B read
+if the keyboard ended first.
+.SH BUGS
+The window's title is always set to
+.BR terminal ,
+even when
+.I window
+runs a command other than
+.BR rc .
+Standard input cannot be given to
+.I window
+from a pipe; it is always the new window's keyboard.

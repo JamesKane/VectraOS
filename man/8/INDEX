@@ -1,0 +1,8 @@
+0intro 0intro
+boot boot
+build build
+genfont genfont
+init init
+intro 0intro
+lint lint
+verify verify

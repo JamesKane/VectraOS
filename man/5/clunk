@@ -1,0 +1,73 @@
+.TH CLUNK 5
+.SH NAME
+clunk, remove \- forget about a fid, remove a file
+.SH SYNOPSIS
+.nf
+.B size[4] Tclunk tag[2] fid[4]
+.B size[4] Rclunk tag[2]
+.fi
+.PP
+.nf
+.B size[4] Tremove tag[2] fid[4]
+.B size[4] Rremove tag[2]
+.fi
+.SH DESCRIPTION
+.B Tclunk
+tells the server that
+.I fid
+is no longer needed.
+The file itself is untouched.
+Once a fid is clunked, the same number may be bound again by a fresh
+.B Twalk
+or
+.BR Tattach .
+Clunking a fid the server never bound is not worth an error,
+because the client wanted it gone either way, and every server in
+the tree answers
+.B Rclunk
+regardless.
+.PP
+.B Tremove
+asks the server to remove the file
+.I fid
+names, and clunks
+.I fid
+whether or not the removal succeeds.
+A caller must treat the fid as gone even when
+.B Rremove
+carries an error, and must not retry the removal on the same fid.
+It is correct to think of
+.B Tremove
+as a
+.B Tclunk
+with the side effect of removing the file, when permission allows.
+.PP
+.IR kfs (4),
+.IR fatfs (4)
+and
+.IR memfs (4)
+implement
+.BR Tremove ,
+as does the kernel's
+.B /srv
+registry, where it takes a posted name out rather than touching a
+disk.
+A server over a fixed, read-only tree refuses it with the same
+error
+.B Tlcreate
+gets there.
+.SH SOURCE
+.B sys/vectra9/proto.odin
+.br
+.B kernel/vfs/chan.odin
+.br
+.B kernel/srv/srv.odin
+.SH SEE ALSO
+.IR intro (5),
+.IR walk (5),
+.IR error (5),
+.IR vectra9 (2),
+.IR srv (3),
+.IR kfs (4),
+.IR fatfs (4),
+.IR memfs (4)

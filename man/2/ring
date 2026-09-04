@@ -1,0 +1,94 @@
+.TH RING 2
+.SH NAME
+Ring, ring_push, ring_drain, ring_drain_line, ring_available \- a byte ring between processes
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "Ring :: struct { buf: []u8, head: u64, tail: u64 }"
+.B "ring_push :: proc(r: ^Ring, b: u8)"
+.B "ring_drain :: proc(r: ^Ring, out: []u8) -> int"
+.B "ring_drain_line :: proc(r: ^Ring, out: []u8, stop: u8) -> int"
+.B "ring_available :: proc(r: ^Ring) -> u64"
+.fi
+.SH DESCRIPTION
+A
+.B Ring
+is a byte queue over a caller-supplied buffer,
+.IR buf ,
+and two monotonic counters.
+It is what a server keeps between a byte's arrival and the read that
+takes it: a thread that reads a device pushes what arrives, and the
+handler drains what a client asked for.
+The counters, not a length, say what is queued, so full and empty are
+never confused.
+.PP
+Both ends are lockless.
+.I Ring_push
+is the producer's half: it stores the byte, then publishes the new
+.I head
+with a release store, so a drainer never sees a seat the byte has not
+taken yet.
+A full ring drops the byte; a stream nobody is serving is not a place to
+park a device behind.
+.I Ring_drain
+is the consumer's half: it reads
+.I head
+once, takes what that covers into
+.IR out ,
+and publishes the new
+.IR tail .
+Both answer the number of bytes moved.
+.PP
+.I Ring_drain_line
+is
+.I ring_drain
+that stops after the first
+.I stop
+byte, so one read answers one line however many are queued behind it.
+When
+.I out
+fills, or the ring holds no
+.I stop
+byte, it answers everything there is, unterminated.
+.PP
+.I Ring_available
+reports the bytes waiting, for a
+.B Tgetattr
+reply's size field.
+.PP
+A
+.B Ring
+is built before any process it is shared with forks or is given its
+own thread, so every side holds the same
+.IR buf .
+It works with a producer and a consumer that are two threads of one proc,
+or a producer in one proc and a consumer in another; the loads and
+stores are volatile either way.
+.SH EXAMPLES
+.IR Kbdfs (4)
+pushes from the key thread:
+.IP
+.EX
+for i in 0 ..< int(n) {
+	libuser.ring_push(&ring, chunk[i])
+}
+.EE
+.PP
+and a handler drains it for a held read:
+.IP
+.EX
+got := libuser.ring_drain(&ring, buf[:room])
+if got > 0 {
+	reply^ = vectra9.Rread{data = buf[:got]}
+}
+.EE
+.SH SOURCE
+.B sys/libuser/ring.odin
+.SH SEE ALSO
+.IR 9p (2),
+.IR fid (2),
+.IR fork (2)
+.SH DIAGNOSTICS
+None; a full ring silently drops what does not fit, and an empty drain
+answers zero.

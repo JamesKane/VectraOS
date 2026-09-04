@@ -1,0 +1,107 @@
+.TH OPEN 5
+.SH NAME
+lopen, lcreate, mkdir \- open, create or make a file
+.SH SYNOPSIS
+.nf
+.B size[4] Tlopen tag[2] fid[4] flags[4]
+.B size[4] Rlopen tag[2] qid[13] iounit[4]
+.fi
+.PP
+.nf
+.B size[4] Tlcreate tag[2] fid[4] name[s] flags[4] mode[4] gid[4]
+.B size[4] Rlcreate tag[2] qid[13] iounit[4]
+.fi
+.PP
+.nf
+.B size[4] Tmkdir tag[2] dfid[4] name[s] mode[4] gid[4]
+.B size[4] Rmkdir tag[2] qid[13]
+.fi
+.SH DESCRIPTION
+.B Tlopen
+prepares
+.I fid
+for I/O, and asks the server to check permissions.
+.I Flags
+are Linux's open flags: the access mode in the low bits,
+.BR O_CREAT ,
+.B O_TRUNC
+and the rest above them, exactly as
+.IR open (2)
+takes them.
+A fid that is a directory is opened the same way, and its
+.I flags
+are checked against
+.BR O_RDONLY .
+.PP
+.B Tlcreate
+asks the server to create a file named
+.I name
+in the directory
+.I fid
+names, and requires write permission there.
+On success
+.I fid
+itself becomes the new file, open under
+.IR flags ,
+so a caller that wants to keep a handle on the directory clones its
+fid first.
+See
+.IR walk (5).
+.I Gid
+is carried because the message has it, and is not read back by
+anything in the tree.
+.PP
+.B Tmkdir
+is the same request for a directory, and differs in shape because
+9P2000.L answers it with a
+.I qid
+rather than opening a fid:
+.I dfid
+stays the parent, and a client that wants the new directory walks to
+it by name afterwards.
+.PP
+.I Iounit
+is the largest read or write the server promises to do without
+breaking it into more than one message, or zero for no promise.
+A caller that ignores it and chunks by
+.I msize
+less
+.B IOHDRSZ
+still works; one that honours
+.I iounit
+instead never sends a request larger than the server actually
+promised to answer whole.
+See
+.IR intro (5).
+.PP
+A fid already open for I/O is refused a further
+.B Tlopen
+or
+.BR Tlcreate ,
+answering
+.BR EINVAL .
+A server that serves a fixed, read-only tree refuses
+.B Tlcreate
+and
+.B Tmkdir
+outright, with
+.B EPERM
+where the tree's shape is not the client's to change,
+and refuses
+.B Tlopen
+for anything but
+.B O_RDONLY
+with
+.BR EROFS .
+.SH SOURCE
+.B sys/vectra9/proto.odin
+.br
+.B kernel/vfs/chan.odin
+.br
+.B kernel/vfs/walk.odin
+.SH SEE ALSO
+.IR intro (5),
+.IR walk (5),
+.IR read (5),
+.IR getattr (5),
+.IR vectra9 (2)

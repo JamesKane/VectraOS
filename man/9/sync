@@ -1,0 +1,205 @@
+.TH SYNC 9
+.SH NAME
+sync \- spinlocks, sleeping locks, rendezvous, read/write locks
+.SH SYNOPSIS
+.B import "kernel:sync"
+.PP
+.nf
+.B "acquire :: proc (l: ^Spinlock) -> Guard"
+.B "release :: proc (l: ^Spinlock, g: Guard)"
+.B "held :: proc (l: ^Spinlock) -> bool"
+.B "can_sleep :: proc () -> bool"
+.B "require_sleepable :: proc (reason: string)"
+.PP
+.B "mutex_lock :: proc (m: ^Mutex)"
+.B "mutex_unlock :: proc (m: ^Mutex)"
+.B "mutex_held :: proc (m: ^Mutex) -> bool"
+.PP
+.B "sleep :: proc (r: ^Rendez, cond: Condition, arg: rawptr = nil)"
+.B "sleep_noted :: proc (r: ^Rendez, cond: Condition, arg: rawptr = nil) -> bool"
+.B "sleep_for :: proc (r: ^Rendez, cond: Condition, arg: rawptr, ticks: u64) -> bool"
+.B "delay :: proc (ticks: u64)"
+.B "wakeup :: proc (r: ^Rendez) -> bool"
+.B "wakeup_all :: proc (r: ^Rendez) -> int"
+.PP
+.B "rlock :: proc (l: ^RW_Lock)"
+.B "runlock :: proc (l: ^RW_Lock)"
+.B "wlock :: proc (l: ^RW_Lock)"
+.B "wunlock :: proc (l: ^RW_Lock)"
+.fi
+.SH DESCRIPTION
+.I Sync
+provides two kinds of mutual exclusion and one kind of waiting, distinguished
+by whether a thread may leave the CPU while it holds one.
+.SS Spinlock
+A
+.B Spinlock
+masks interrupts on the current core and, on more than one core, also
+spins on a word the losing core cannot take.
+.I Acquire
+returns a
+.B Guard
+recording whether interrupts were on before the call;
+.I release
+restores that state, so a lock taken inside a handler that was already
+masked does not turn interrupts back on.
+The same core may take a
+.B Spinlock
+it already holds; a nesting count in
+.B depth
+lets only the outermost
+.I release
+clear the lock, which is what lets
+.B heap.odin's
+.B resize
+call
+.B alloc
+while already holding the heap lock.
+A
+.B Spinlock
+may be held anywhere and must be released within a few instructions.
+It may never be held across a wait: a thread that leaves the CPU with
+interrupts masked leaves them masked, because nothing else will unmask
+them.
+.PP
+.B can_sleep
+is how that rule is checked rather than remembered.
+It reports false if the current core is inside any
+.BR Spinlock ,
+counted per core rather than per lock, or if the caller is a top half
+running in interrupt context and so is not a thread that can be the one
+put to sleep.
+.I Rpc
+in
+.B kernel/vfs
+calls it before sending a 9P message that might park, and refuses with
+.B EDEADLK
+rather than risk the hang.
+.B require_sleepable
+stops the machine, naming the reason, if the caller could not have
+parked: the same hazard reaches a core that waits for another core's
+answer while holding a spinlock the other core wants.
+.SS Mutex
+A
+.B Mutex
+parks the loser instead of masking interrupts, for a hold that spans a
+whole 9P message rather than a few instructions.
+.I Mutex_lock
+calls
+.B can_sleep
+first and fails loudly if it is inside a spinlock.
+.B mutex_unlock
+with a thread queued does not simply clear the lock: it hands ownership
+to the best-priority waiter and makes that thread runnable with nothing
+left to check, which is a handoff rather than a retry.
+Put back to first-come-first-served ordering instead of best-priority,
+the tail latency among several session workers grows by an order of
+magnitude, which is why the queue is served by priority and not by
+arrival.
+What a
+.B Mutex
+does not fix is priority inversion: a low-priority holder still delays a
+high-priority waiter for as long as it holds the lock.
+.SS Rendez
+A
+.B Rendez
+is a place to wait for a condition to become true, Plan 9's
+.B Rendez
+by name.
+.I Sleep
+takes a
+.B Condition
+procedure rather than a queue handle, and runs it itself after the
+caller is already registered on the queue, which closes the race between
+testing a condition and being woken for it.
+The condition runs with no lock of this package held, so it must not
+allocate, must not log and must not take a sleeping lock; it may take a
+spinlock, which is what lets a condition read a device's state under the
+device's own lock.
+.PP
+.B wakeup
+makes the best waiter runnable and reports whether it found one;
+.B wakeup_all
+does the same for every waiter.
+Waking is a hint, not a promise: a third thread can make the condition
+false again before the woken one actually runs, so
+.I sleep
+loops, re-testing the condition after every wake and parking again if it
+is still false.
+A caller only ever learns that the condition was true at the moment
+.I sleep
+returned.
+A
+.B wakeup
+that finds nobody waiting does nothing and is not remembered, because
+the condition itself is what carries the state; a thread that arrives
+afterward runs the test, finds it true, and never parks.
+.PP
+.B sleep_noted
+is
+.B sleep
+that also returns if a note arrives for the thread's process, reporting
+false in that case so the caller can unwind toward whatever boundary
+delivers
+.BR EINTR .
+A kernel thread is never noted, so for one this behaves exactly like
+.BR sleep .
+.B sleep_for
+adds a tick deadline, reporting false if it expired first;
+.I ticks
+of zero is a poll that never parks.
+.B delay
+is the degenerate case: a
+.B Rendez
+on the caller's own stack that nothing else can name, ended only by the
+clock.
+Time throughout this package is in scheduler ticks, fed to it by the
+timer interrupt; there is no finer resolution to promise.
+.SS The sleep queue and deadlines
+A waiting thread's node lives on its own stack for the length of the
+wait.
+A thread waiting with a deadline sits on two lists, the condition's
+queue and a deadline list sorted soonest-first on insert; whichever
+fires first unlinks the node from both before waking, so the second
+trigger to arrive finds nothing left to do.
+.SS RW_Lock
+.B RW_Lock
+is Plan 9's reader/writer lock, held across a walk that must see one
+consistent member list from start to end.
+.I Rlock
+takes the lock immediately if there is no writer and nobody already
+queued; otherwise it queues behind whoever is there, so a stream of
+arriving readers cannot starve a queued writer.
+.I Runlock
+starts the writer at the head of the queue if the last reader just left
+and one is waiting.
+.I Wlock
+takes the lock immediately if there are no readers and no writer;
+otherwise it queues.
+.I Wunlock
+hands over to a writer at the head, or admits every reader at the head
+of the queue together, up to the first writer.
+The queue is served strictly in arrival order, not by priority: a
+reader's or writer's position, not its priority, is the policy here.
+The wake used to move a queued thread is
+.B unpark
+rather than
+.BR ready ,
+because a thread queued on this lock was doing exactly what the thread
+ahead of it was doing, and that distinction belongs to the scheduler,
+not the lock.
+.SH SOURCE
+.B kernel/sync
+.SH SEE ALSO
+.IR sched (9),
+.IR arch (9),
+.IR vfs (9),
+.IR mnt (9),
+.IR rendezvous (2),
+.IR semacquire (2)
+.SH BUGS
+A
+.B Mutex
+does not implement priority inheritance.
+A low-priority holder can still delay a high-priority waiter for the
+whole of its hold.

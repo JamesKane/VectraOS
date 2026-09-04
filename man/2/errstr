@@ -1,0 +1,50 @@
+.TH ERRSTR 2
+.SH NAME
+errstr \- the name of an error number
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "errstr :: proc(answer: i64) -> string"
+.fi
+.SH DESCRIPTION
+Every system call answers its result as a signed number: zero or more is
+success, and a negative number is
+.B \-errno ,
+one of the codes
+.B sys/vectra9
+defines as its
+.B Errno
+type.
+.I Errstr
+takes a call's own
+.I answer
+and names the error: a non-negative
+.I answer
+names the empty string, and a negative one names its errno in full
+capitals, such as
+.BR EBADF .
+An errno
+.B sys/vectra9
+does not name prints as
+.BR errno .
+.PP
+Unlike Plan 9's
+.IR errstr ,
+there is no per-process buffer to swap a string into and no
+.I rerrstr
+or
+.I werrstr
+to set one: the number a call answered is the whole of what failed, and
+.I errstr
+is a pure translation of it, called with the number in hand rather than
+read out of hidden state.
+.SH SOURCE
+.B sys/libuser/main.odin
+.br
+.B sys/vectra9/errors.odin
+.SH SEE ALSO
+.IR intro (2)
+.SH DIAGNOSTICS
+.I Errstr
+always succeeds.

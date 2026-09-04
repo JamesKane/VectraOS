@@ -1,0 +1,335 @@
+.TH INTRO 9
+.SH NAME
+intro \- introduction to the kernel
+.SH DESCRIPTION
+This section documents
+.B kernel/
+for a developer who changes it.
+It assumes
+.IR intro (1)
+and
+.IR intro (2):
+what a name space is, what 9P2000.L carries, and what a program expects
+of the system it runs under.
+Nothing here is user-visible by itself.
+A device this code serves is documented in section 3,
+a file server built on it in section 4,
+and the wire protocol in section 5.
+.SS Layout
+The kernel is package
+.BR kernel ,
+built with two import collections,
+.B kernel:
+bound to the
+.B kernel/
+directory and
+.B vsys:
+bound to
+.BR sys/ ,
+so kernel code reaches the ring-3 libraries as
+.BI vsys: name
+and its own packages as
+.BI kernel: name .
+The top level and its packages:
+.IP
+.EX
+kernel/main.odin       kmain: the entry point and boot order, below
+kernel/panic.odin      the panic screen
+kernel/smp.odin        the other cores; smp(9)
+kernel/log.odin        the kernel log, serial and on-screen
+kernel/splash.odin     the boot chassis the console and panic screen share
+kernel/arch            the architecture interface; arch(9)
+kernel/boot/limine     bindings for the Limine boot protocol
+kernel/mem             physical memory, page tables, the heap; memory(9)
+kernel/sched           threads, priorities, the tick; sched(9)
+kernel/sync            spinlocks, sleeping locks, rendezvous; sync(9)
+kernel/vfs             the namespace, chans, mount tables, walking; vfs(9)
+kernel/mnt             the 9P transport: workers, tags, flush; mnt(9)
+kernel/user            the door: syscalls, processes, segments; user(9)
+kernel/drivers         hardware drivers: console, fb, kbd, mouse, pci, uart, virtio
+kernel/devfs           #c: the console device and its raw taps
+kernel/env             #e: the environment device
+kernel/procfs          #p: the process table device
+kernel/srv             #s: posted services
+kernel/sd              #S: storage devices
+kernel/ether           #E: the network card
+kernel/pipe            the kernel-resident pipe every posted service uses
+.EE
+.PP
+.B kernel/mem/space.odin
+and
+.B kernel/user/segment.odin
+are an address space per process; see
+.IR space (9).
+The
+.B verify_*.odin
+files at the top level and one
+.B verify.odin
+per package are the self-tests
+.I kmain
+runs at boot; see
+.IR testing (9).
+.SS Boot order
+.I Kmain
+in
+.B kernel/main.odin
+runs once, on the boot core, in this order:
+.IP \(bu
+.B arch.early_init
+turns on the vector unit before any Odin statement can touch a struct,
+then the Odin runtime starts and
+.B context
+becomes usable.
+.IP \(bu
+the serial port, so a log line reaches somewhere even if every later
+step fails.
+.IP \(bu
+the base revision the bootloader granted is checked against the one asked
+for.
+.IP \(bu
+the framebuffer and the console inside it, if the bootloader handed one
+over.
+.IP \(bu
+a survey of what the bootloader reported: memory map, CPU count, paging
+mode, kernel layout.
+.PP
+From there, each stage depends on the ones before it and is skipped, with
+a logged reason, if its prerequisite failed: physical memory and paging
+.RI ( memory (9)),
+the Vectra9 codec self-test, the root namespace
+.RI ( vfs (9)),
+the scheduler
+.RI ( sched (9)),
+the timer and preemption, the device servers
+.RB ( #c ", " #e ", " #p ", " #s ),
+the pipe layer, the baked-in programs, the keyboard and mouse, the disk
+and its file systems, ring 3
+.RI ( user (9)),
+and last the other cores
+.RI ( smp (9)).
+Every self-test above a stage runs before that stage can change what it
+counts.
+The last thing
+.I kmain
+does is start
+.B /bin/rc /lib/init
+on the console; see
+.IR init (8).
+A stage that finds no hardware to bring up degrades and logs a warning
+rather than stopping the boot.
+.SS Three rules
+Three rules recur through the kernel and are not restated in every page
+that depends on them.
+.PP
+A decoded 9P message borrows its buffer.
+.I Decode
+in
+.B sys/vectra9
+never copies a string or a byte slice out of the wire buffer it read;
+every
+.B Msg
+field points into that buffer.
+The caller keeps the buffer alive for as long as it keeps the
+.BR Msg ,
+and a reply built from borrowed fields is only as good as the storage it
+points into.
+See
+.IR vectra9 (2)
+and
+.IR mnt (9).
+.PP
+A sleeping lock is never taken inside a spinlock.
+.B sync.can_sleep
+checks two things: the per-core count of spinlocks currently held, and
+whether the caller is a top half that cannot be the thread put to sleep.
+A thread holding a
+.B Spinlock
+has interrupts masked, so if it leaves the CPU nothing turns them back
+on.
+.I Rpc
+in
+.B kernel/vfs
+calls
+.B sync.can_sleep
+before it sends a message that might park, and refuses with
+.B EDEADLK
+rather than risk it.
+See
+.IR sync (9).
+.PP
+A self-test that cannot fail proves nothing.
+Every
+.B verify.odin
+runs on the real machine, exercises the actual code path a caller uses,
+and is written so that removing the fix it was written for turns it red.
+See
+.IR testing (9).
+.SS Toolchain constraints
+These bind kernel code specifically, past what
+.IR build (8)
+says about the toolchain generally.
+.IP \(bu
+The build passes
+.B -no-thread-local
+throughout.
+Odin's thread-local variables emit
+.B STT_TLS
+symbols with no
+.B PT_TLS
+segment in a freestanding image, and
+.B ld.lld
+refuses to link one.
+Per-CPU state goes through a segment register, not a thread-local
+variable.
+.IP \(bu
+Linking uses
+.BR ld.lld ,
+because the host's system linker cannot produce an ELF image.
+.IP \(bu
+A bootloader request not placed in the
+.B .limine_requests
+link section is silently ignored.
+Since base revision 2 the section's delimiters are binding, not
+advisory: the request still compiles and links, and its
+.B response
+field stays nil forever.
+.IP \(bu
+.B EFER.NXE
+must be set before the first mapping with the no-execute bit is
+installed.
+Bit 63 of a page table entry is reserved, not ignored, until then, and
+a mapping made first faults on first touch as a reserved-bit page
+fault, far from the code that set the bit.
+.IP \(bu
+The kernel's segment bounds
+.RI ( __text_start
+through
+.IR __data_end )
+come from
+.B kernel/link_amd64.ld
+through a bare
+.B foreign
+block, not from Odin.
+They are declared inside their output sections deliberately: declared
+between sections they become orphans, and the linker is free to attach
+an orphan section to whichever segment it likes.
+.IP \(bu
+Inline
+.B asm
+is a template checked against the compiler's encoding tables, Intel
+operand order, one physical register or memory operand per slot.
+An instruction with no operand form in the checker
+.RB ( in ", " out ", " hlt ", " syscall )
+is written as a
+.B #byte
+sequence instead.
+Code that defines a symbol, takes its own label's address, or is
+entered directly by the CPU is a
+.B .S
+file, assembled by clang, not an
+.B asm
+block.
+.IP \(bu
+The vector list of which interrupts push an error code is written
+twice: once as an assembler
+.B .if
+in
+.B isr.S
+and once as
+.B vector_has_error_code
+in
+.BR idt.odin .
+The two cannot share a definition, one is read at build time and the
+other at run time, and if they disagree every field past the mismatch
+in
+.B Trap_Frame
+reads from the wrong offset.
+.IP \(bu
+An unoptimised build spills every temporary to the stack.
+Code that must observe live register state, such as an FXSAVE check,
+has to pin the value with inline asm and hold it there, or a debug
+build's own spilling makes the check pass regardless of the bug.
+.IP \(bu
+A missing end-of-interrupt on the local APIC delivers nothing further
+at or below that priority, with no fault and no status bit.
+It looks exactly like a timer that was never armed.
+Any loop that waits on the tick count needs a liveness bound.
+.IP \(bu
+A freed slab object still reads as a valid one, because the free-list
+link overwrites only the first field.
+A structure freed one reference early reports the same zeroed members
+a correctly dissolved one does, so a lifetime bug is tested by
+checking a reference count, not by inspecting a freed block's fields.
+.IP \(bu
+The local APIC coalesces ticks it cannot deliver while interrupts are
+masked.
+Code that assumes a preemption rate proportional to timer frequency has
+to account for how much of the time interrupts are actually enabled.
+.IP \(bu
+Every procedure entered by assembly or by the bootloader is declared
+.BR "proc ""c""" ,
+never
+.BR "proc ""sysv""" ,
+which the compiler accepts only on amd64.
+.IP \(bu
+On the arm64 and riscv64 ports, an inline
+.B asm
+template has no operand form for a system instruction
+.RB ( "msr daifset" ,
+the barriers,
+.BR tlbi ,
+.BR brk ,
+.BR svc ,
+.BR ecall ,
+.BR ebreak ,
+.BR sfence.vma ),
+so each is a
+.B #byte
+sequence with its register pinned to
+.B x0
+or
+.BR a0 .
+See
+.IR ports (9).
+.IP \(bu
+riscv64 links pass
+.BR "-z norelro" ,
+because
+.B ld.lld
+otherwise carves a read-only segment for the GOT out of
+.B .data
+and starts
+.B .bss
+mid-page, which the build refuses.
+.IP \(bu
+riscv64 boots QEMU's
+.B virt
+board with
+.BR acpi=off .
+The clock rate is a device tree property and nothing else states it, so
+the port reads the tree rather than ACPI.
+.SH SOURCE
+.B kernel
+.SH SEE ALSO
+.IR arch (9),
+.IR memory (9),
+.IR space (9),
+.IR sched (9),
+.IR sync (9),
+.IR smp (9),
+.IR vfs (9),
+.IR mnt (9),
+.IR user (9),
+.IR ports (9),
+.IR testing (9),
+.IR intro (2),
+.IR vectra9 (2),
+.IR build (8)
+.SH BUGS
+There is no
+.B kernel/dev
+package as such: each device server
+.RB ( devfs ", " env ", " procfs ", " srv ", " sd ", " ether )
+implements the node table and ctl convention on its own.
+.IR dev (9)
+describes the convention, not a shared library that enforces it.

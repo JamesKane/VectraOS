@@ -1,0 +1,92 @@
+.TH BIND 2
+.SH NAME
+bind, mount, unmount \- change name space
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "bind :: proc(source: string, target: string, order: u64) -> i64"
+.B "mount :: proc(source: string, target: string, order: u64) -> i64"
+.B "unmount :: proc(source: string, target: string) -> i64"
+.fi
+.SH DESCRIPTION
+.I Bind
+and
+.I mount
+change the calling process's own name space, and nobody else's.
+After a successful call, evaluating
+.I target
+continues instead at
+.IR source .
+.PP
+.I Bind
+takes both
+.I source
+and
+.I target
+from the caller's current name space.
+.I Mount
+takes
+.I source
+from
+.BR /srv ,
+the posted-service directory (see
+.IR srv (3)):
+.I source
+must be a name mount can resolve to a posted service, and after the call
+the file tree that service answers for is visible with its root at
+.IR target .
+.PP
+.I Order
+says how the new binding joins what is already at
+.IR target .
+.B abi.ORDER_REPLACE
+(0) replaces
+.I target
+with a union of one member, the new one.
+.B ORDER_BEFORE
+(1) and
+.B ORDER_AFTER
+(2) add the new member to the front or the back of the union at
+.IR target ,
+if
+.I target
+is already a union directory; a name is looked up in a union's members in
+order until it is found.
+Any other value is taken as
+.BR ORDER_REPLACE .
+.PP
+A descriptor already open on a file is unaffected by a later bind or
+mount: it names a channel to the file, and a bind changes what a
+.I path
+resolves to.
+.PP
+.I Unmount
+undoes a bind or mount previously made at
+.IR target .
+An empty
+.I source
+undoes everything bound or mounted there; a non-empty one undoes only the
+binding of that particular source.
+.PP
+Unlike Plan 9, there are no
+.B MCREATE
+or
+.B MCACHE
+flags: a create into a union directory always tries each member in walk
+order until one accepts it, and there is no read cache to enable per
+mount.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (1),
+.IR bind (1),
+.IR intro (2),
+.IR srv (3)
+.SH DIAGNOSTICS
+Answers zero on success and a negative
+.B \-errno
+on failure; see
+.IR errstr (2).

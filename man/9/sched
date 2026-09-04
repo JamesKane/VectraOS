@@ -1,0 +1,171 @@
+.TH SCHED 9
+.SH NAME
+sched \- threads, priorities, the tick, placement across cores
+.SH SYNOPSIS
+.B import "kernel:sched"
+.PP
+.nf
+.B "spawn :: proc (name: string, entry: Thread_Proc, arg: rawptr = nil, priority: Priority = PRIORITY_NORMAL, affinity: Cpu_Classes = ANY_CLASS, stack_size: int = DEFAULT_STACK_SIZE, space: ^mem.Address_Space = nil) -> ^Thread"
+.B "spawn_user :: proc (name: string, space: ^mem.Address_Space, entry, sp: uintptr, arg0, arg1, arg2: u64 = 0, record: rawptr = nil, priority: Priority = PRIORITY_NORMAL, stack_size: int = DEFAULT_STACK_SIZE) -> ^Thread"
+.B "current :: proc () -> ^Thread"
+.B "cpu :: proc () -> ^Cpu"
+.B "block :: proc (pending: ^rawptr)"
+.B "ready :: proc (t: ^Thread)"
+.B "unpark :: proc (t: ^Thread)"
+.B "yield :: proc ()"
+.B "exit :: proc () -> !"
+.B "reap :: proc ()"
+.B "kill_current :: proc (r: arch.Resume) -> arch.Resume"
+.B "park_current :: proc (r: arch.Resume) -> arch.Resume"
+.B "reschedule :: proc (r: arch.Resume, spent_slice: bool) -> arch.Resume"
+.B "stats :: proc () -> Stats"
+.B "cpu_stats :: proc (id: int) -> Cpu_Stats"
+.fi
+.SH DESCRIPTION
+.I Sched
+is the kernel thread scheduler.
+One entry point into a context switch,
+.BR reschedule ,
+and one way out of it: a voluntary
+.B yield
+and a timer preemption both arrive as an interrupt and both call it,
+returning a different
+.B arch.Resume
+to the trap tail that resumes whichever thread was chosen.
+.SS Thread
+A
+.B Thread
+has one stack, one saved
+.B arch.Resume
+and, for a thread running a program rather than kernel code, an
+.B ^mem.Address_Space
+in its
+.B space
+field.
+A kernel thread carries nil there, which is what makes a switch between
+two kernel threads cost one pointer comparison and no page table reload.
+Nothing in this package treats a thread running ring 3 code specially:
+the privilege level lives in the saved frame, not in the
+.BR Thread .
+.B Thread_State
+is one of
+.BR Ready ,
+.BR Running ,
+.B Blocked
+or
+.BR Dead .
+.SS Priority and decay
+Sixteen levels,
+.B PRIORITY_IDLE
+at 0 through
+.B PRIORITY_MAX
+at 15.
+Level 0 belongs only to the idle thread.
+.B PRIORITY_REALTIME
+is 13; nothing above it decays, and nothing in Vectra runs there yet.
+.B PRIORITY_NORMAL
+is 8, where a new thread starts.
+A thread has a
+.B base
+priority, set at creation, and a
+.B prio
+it actually runs at.
+.I Decay
+drops
+.B prio
+one level each time the thread consumes a whole slice of CPU without
+blocking, floored at
+.BR PRIORITY_MIN .
+.I Boost
+raises a woken thread back to its
+.B base
+plus one, capped below realtime.
+That is the whole anti-starvation mechanism: a compute-bound thread
+settles near the bottom of the range within a few slices, and an
+interactive one stays near the top, with nothing telling either which it
+is.
+.B ready
+boosts the thread it wakes;
+.B unpark
+does not, because a thread woken only because a lock came free waited on
+nothing outside itself and a boost there would pay it for contention.
+.SS Slice and tick
+.B QUANTUM_TICKS
+is ten ticks at the scheduler's 1 kHz default, the slice a thread gets on
+a full-capacity core.
+.B slice_ticks
+scales that by a core's capacity, so a thread moved to a slower core gets
+proportionally more ticks rather than proportionally less work.
+.B ticks_left
+is refilled only when it reaches zero, never on every dispatch: a thread
+that blocks keeps what is left of its slice and resumes on it, so the
+slice measures CPU actually consumed rather than time between blocks.
+.SS spawn, block, ready
+.I Spawn
+creates a kernel thread, chooses a core by
+.B pick_cpu
+and queues it there.
+.I Spawn_user
+creates a thread whose first instruction is in ring 3: the same
+construction, differing only in the selectors
+.B arch.thread_user_init
+writes into the frame.
+.I Block
+takes the calling thread off every queue until something calls
+.B ready
+or
+.B unpark
+on it, unless the wait it is parking for is already satisfied; the
+scheduler lock is held across the switch itself, released only once the
+incoming thread's frame is written and nothing on this core can read the
+blocked thread's stack again.
+.I Yield
+raises the same software interrupt a preemption would, so a voluntary
+switch and a timer switch share one path; a yielding thread does not
+decay, because it did not burn its slice.
+.I Exit
+marks the calling thread dead and does not return; the next
+.I spawn
+on that core calls
+.I reap
+to give its stack back, because a dead thread's stack cannot be freed
+until something else is running on it.
+.B kill_current
+does the same from a fault handler, on the interrupted thread's own
+.BR arch.Resume .
+.SS Placement and core classes
+.B Cpu_Classes
+is a set of
+.BR arch.Cpu_Class :
+.BR Efficiency ,
+.B Performance
+and
+.BR Prime .
+On amd64 every core is
+.BR .Performance ;
+the vocabulary exists for a port with more than one class.
+An empty
+.B Cpu_Classes
+means no constraint, not the empty set.
+.B pick_cpu
+chooses the least-loaded core, by ready-queue length scaled to the core's
+capacity, among the classes a thread's affinity allows, and falls back to
+the boot core if no online core satisfies the affinity.
+A wake is placed afresh by the same search rather than returned to the
+core it last ran on, since
+.I pick_cpu
+may find it a better home; an idle core chosen this way is kicked with
+.B VECTOR_WAKE
+so it leaves its halt immediately rather than at its next tick.
+.SH SOURCE
+.B kernel/sched
+.SH SEE ALSO
+.IR sync (9),
+.IR arch (9),
+.IR smp (9),
+.IR space (9)
+.SH BUGS
+There is no realtime thread in the tree; the level exists and is never
+used.
+There is no cross-core load balancing once a thread is placed. It moves
+only when it blocks and wakes.

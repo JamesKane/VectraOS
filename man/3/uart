@@ -1,0 +1,68 @@
+.TH UART 3
+.SH NAME
+eia0 \- the serial port, raw
+.SH SYNOPSIS
+.B bind #c /dev
+.nf
+
+.B /dev/eia0
+.fi
+.SH DESCRIPTION
+.B Eia0
+is the serial port's bytes before the console's line discipline sees them.
+It is one of the files the
+.B #c
+device serves.
+See
+.IR cons (3)
+for the rest of the directory.
+.PP
+While nothing has
+.B eia0
+open, every byte off the wire goes to the console's line discipline, the
+same as a byte typed at the local keyboard.
+The first open of
+.B eia0
+diverts the port: from that point the line discipline hears nothing from
+it, and every byte goes to this file instead, until the last fid holding
+it closes.
+A byte that arrived while the file was diverted and nobody read it does
+not queue for the console afterwards.
+The ring is drained both when a fid opens the file and when the last one
+closes it.
+.PP
+A read parks until a byte is available, unless one already is.
+Nothing here is a line discipline: a read answers exactly the bytes that
+arrived, in order, and none of them are echoed or interpreted.
+There is no end of file: a read answers bytes or it parks, and it never
+answers zero bytes.
+.PP
+A write puts its bytes on the wire and nowhere else: unlike
+.BR /dev/cons ,
+a write to
+.B eia0
+draws no glyph on the screen.
+It always takes the whole write, because the hardware behind it has no
+back pressure to report, only a queue it waits for room in.
+.PP
+Opening
+.B eia0
+on a machine with no serial port, or one that failed its self-test at
+boot, fails with
+.BR ENXIO .
+.SH SOURCE
+.B kernel/devfs/tap.odin
+.br
+.B kernel/drivers/uart
+.SH SEE ALSO
+.IR intro (3),
+.IR cons (3),
+.IR kbd (3),
+.IR eiafs (4)
+.SH DIAGNOSTICS
+Opening
+.B eia0
+with no port present fails with
+.BR ENXIO .
+A read that is still unanswered when the connection abandons it fails with
+.BR EINTR .

@@ -1,0 +1,97 @@
+.TH PALETTE 2
+.SH NAME
+xrgb,
+mix,
+shade,
+by_name \- the one palette
+.SH SYNOPSIS
+.B import "vsys:libpal"
+.PP
+.nf
+.B "RGB :: [3]u8"
+.fi
+.PP
+.nf
+.B "xrgb :: proc(c: RGB) -> u32"
+.B "mix :: proc(a: RGB, b: RGB, t: u8) -> RGB"
+.B "shade :: proc(c: RGB, amount: i16) -> RGB"
+.B "by_name :: proc(name: string) -> (RGB, bool)"
+.fi
+.SH DESCRIPTION
+.I Libpal
+is Vectra's one system palette, named "Cyberpunk Workstation 1994": the
+colours of the boot splash, the panic screen and the desktop, so that
+all three are visibly the same machine.
+Both privilege levels read it.
+The kernel's
+.IR fb (3)
+aliases every name here and adds the surface painters a kernel device
+needs.
+A ring 3 program packs a colour into a pixel word with
+.IR xrgb .
+.PP
+An
+.B RGB
+is three bytes, red, green and blue, each from 0 to 255.
+The palette itself is a set of named constants, not procedures: surfaces
+.RB ( VOID ,
+.BR SLATE_DEEP ,
+.BR SLATE ,
+.B MAGNESIUM_DARK
+through
+.BR MAGNESIUM_HOT ),
+copper trim
+.RB ( COPPER_DARK ,
+.BR COPPER ,
+.BR COPPER_LIT ),
+and four phosphor accents, each with a dim and (for amber) a hot
+variant:
+.BR AMBER ,
+.BR CYAN ,
+.BR PHOSPHOR ,
+and
+.BR ALERT .
+.PP
+.I Xrgb
+packs a colour into the 32-bit pixel word ring 3 draws with: the low 8
+bits blue, the next 8 green, the next 8 red.
+.IR Libdraw 's
+command stream and
+.BR /srv/draw
+carry pixels in exactly this layout, and accept no other depth.
+.PP
+.I Mix
+blends two colours,
+.I t
+parts in 255 of the way from
+.I a
+to
+.IR b .
+.I Shade
+lightens or darkens one colour by
+.I amount ,
+saturating rather than wrapping at black or white, which is how a
+bevel's two edges come from one face colour.
+.PP
+.I By_name
+resolves one of the palette's own names, lower case with an underscore
+where the constant has one
+.RI ( "for example" ,
+.BR magnesium_lit ),
+to its
+.BR RGB .
+It answers
+.B false
+for a name the table does not carry, which a caller reads as "try six
+hex digits instead".
+It is how a theme file
+(see
+.IR theme (6))
+names a role's colour in words.
+.SH SOURCE
+.B sys/libpal/palette.odin
+.SH SEE ALSO
+.IR fb (3),
+.IR draw (2),
+.IR theme (6),
+.IR mui (2)

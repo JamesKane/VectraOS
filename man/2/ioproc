@@ -1,0 +1,119 @@
+.TH IOPROC 2
+.SH NAME
+ioproc,
+iocall,
+ioread,
+iowrite,
+ioread_full \- slave I/O processes for threaded programs
+.SH SYNOPSIS
+.B import "vsys:libthread"
+.PP
+.nf
+.B "ioproc :: proc() -> ^Ioproc"
+.B "ioread :: proc(io: ^Ioproc, fd: int, buf: []u8) -> i64"
+.B "iowrite :: proc(io: ^Ioproc, fd: int, data: []u8) -> i64"
+.B "ioread_full :: proc(io: ^Ioproc, fd: int, buf: []u8) -> bool"
+.fi
+.SH DESCRIPTION
+A thread that calls
+.I read
+or
+.I write
+directly
+.RI ( "see " read (2))
+blocks its whole proc, and every other thread of that proc with it.
+An
+.I ioproc
+is a proc whose only job is to make one such call at a time on a
+thread's behalf: the calling
+.I thread
+parks on a channel while the call is made, and the proc it belongs to
+keeps running its other threads.
+.PP
+.I Ioproc
+makes a new proc and returns a pointer to the
+.B Ioproc
+that represents it.
+It calls
+.I exits
+through
+.I proccreate
+(see
+.IR wait (2)
+and
+.IR thread (2))
+rather than return an error when there is no memory for it.
+.PP
+.I Ioread
+and
+.I iowrite
+are
+.I read
+and
+.I write
+.RI ( "see " read (2))
+made in the proc
+.I io
+belongs to.
+The result is the kernel's: a count, or a negative
+.IR errno .
+.I Ioread_full
+calls
+.I ioread
+until
+.I buf
+is full or a call answers zero or less, and answers whether it filled
+the buffer.
+.PP
+One
+.I ioproc
+makes one call at a time.
+Two threads that share one take turns.
+A program gives each thing that can block a proc of its own: a server
+typically has one
+.I ioproc
+for the pipe it serves and one for the device it reads.
+.PP
+.I Iocall
+is the primitive
+.I ioread
+and
+.I iowrite
+are built from.
+It sends a call record to
+.IR io 's
+proc over a channel, and waits on another for the reply.
+The record lives on the calling thread's stack, which is safe because
+the thread is parked until the reply names it.
+.SH EXAMPLES
+A key thread reads a device through an
+.I ioproc
+so the rest of its program's threads keep running:
+.IP
+.EX
+io := libthread.ioproc()
+for {
+	n := libthread.ioread(io, fd, buf[:])
+	if n <= 0 {
+		break
+	}
+	handle(buf[:n])
+}
+.EE
+.SH SOURCE
+.B sys/libthread/io.odin
+.SH SEE ALSO
+.IR thread (2),
+.IR read (2)
+.SH BUGS
+There is no
+.I iointerrupt
+or
+.I ioflush
+to cut a call short from outside: an
+.I ioproc
+parked in a device read stays parked until the read returns.
+There is no
+.I iodial
+or
+.I iosleep .

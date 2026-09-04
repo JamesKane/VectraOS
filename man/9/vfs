@@ -1,0 +1,407 @@
+.TH VFS 9
+.SH NAME
+vfs \- the namespace inside the kernel: chans, mount tables, walking, fid tables, static trees, locks
+.SH SYNOPSIS
+.B import "kernel:vfs"
+.PP
+.nf
+.B "server_init :: proc(sv: ^Server, name: string, handler: vectra9.Handler, state: rawptr) -> vectra9.Error"
+.B "server_start :: proc(sv: ^Server, workers: int, payload: int, abort: proc) -> bool"
+.B "server_stop :: proc(sv: ^Server)"
+.B "register_device :: proc(sv: ^Server) -> bool"
+.fi
+.PP
+.nf
+.B "chan_alloc :: proc(sv: ^Server, fid: vectra9.Fid, qid: vectra9.Qid) -> ^Chan"
+.B "chan_incref :: proc(c: ^Chan) -> ^Chan"
+.B "chan_clone :: proc(c: ^Chan) -> (^Chan, Errno)"
+.B "chan_close :: proc(c: ^Chan)"
+.B "chan_open :: proc(c: ^Chan, flags: u32) -> Errno"
+.B "chan_read :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno)"
+.B "chan_read_for :: proc(c: ^Chan, offset: u64, buf: []u8, ticks: u64) -> (n: int, err: Errno)"
+.B "chan_write :: proc(c: ^Chan, offset: u64, data: []u8) -> (n: int, err: Errno)"
+.fi
+.PP
+.nf
+.B "ns_new :: proc() -> ^Namespace"
+.B "ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags) -> ^Namespace"
+.B "ns_close :: proc(ns: ^Namespace)"
+.fi
+.PP
+.nf
+.B "bind :: proc(ns: ^Namespace, source, over: ^Chan, order: Mount_Order, flags: Mount_Flags) -> Errno"
+.B "bind_path :: proc(ns: ^Namespace, source_path, target_path: string, order: Mount_Order, flags: Mount_Flags) -> Errno"
+.B "mount_device :: proc(ns: ^Namespace, spec, target_path: string, order: Mount_Order, flags: Mount_Flags) -> Errno"
+.B "unmount :: proc(ns: ^Namespace, source, over: ^Chan) -> Errno"
+.fi
+.PP
+.nf
+.B "resolve :: proc(ns: ^Namespace, path: string) -> (^Chan, Errno)"
+.B "resolve_mount_point :: proc(ns: ^Namespace, path: string) -> (^Chan, Errno)"
+.B "open_path :: proc(ns: ^Namespace, path: string, flags: u32) -> (^Chan, Errno)"
+.B "create_path :: proc(ns: ^Namespace, path: string, flags: u32, mode: u32) -> (^Chan, Errno)"
+.B "readdir :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno)"
+.fi
+.PP
+.nf
+.B "fidtab_init :: proc(t: ^Fid_Table, max_fids: int) -> bool"
+.B "fidtab_bind :: proc(t: ^Fid_Table, fid: vectra9.Fid, node: i32) -> bool"
+.B "static_init :: proc(t: ^Static_Tree, label: string, nodes: []Static_Node) -> bool"
+.fi
+.SH DESCRIPTION
+.I Vfs
+is the kernel's own client of 9P2000.L: everything above it names files with
+paths, and everything below it names them with fids.
+There is no global tree.
+.I Resolve
+starts at a
+.B Namespace 's
+root and asks each server in turn, consulting the mount table between every
+element, so two processes can each have a
+.B /dev/mouse
+and the two can be different files.
+.SS Server
+A
+.B Server
+pairs a 9P handler with the session a caller reaches it through.
+It sits on one of two transports and does not know which:
+.I server_init
+wires a handler onto
+.BR vectra9.In_Process ,
+where the handler runs on the caller's own stack with no queue and no copy.
+.I Server_start
+moves it onto
+.IR mnt (9)
+instead, with
+.I workers
+threads answering from a queue, several requests in flight, and an
+.B abort
+hook a caller's deadline can reach through
+.BR Tflush .
+.I Server_stop
+reverses the move.
+A chan that survives it still names a fid the handler knows.
+A handler must be safe under several threads at once and must build any
+payload it answers with in the buffer it is handed.
+It need not know or care which transport it is on.
+.PP
+A
+.B Server
+is released by count, not by a single owner: every
+.B Chan
+that names it holds one count and every non-chan stake
+(a
+.B /srv
+name, a mount in progress) holds another.
+When both reach zero, the
+.B release
+hook set at construction runs once, on the thread that dropped the last
+one.
+.PP
+.B #name
+device servers are a small, fixed table of at most
+.B MAX_DEVICES
+(16), filled once at boot by
+.I register_device
+and read by every
+.B #
+path a caller resolves.
+Duplicate names are refused, not shadowed.
+.SS Chan
+A
+.B Chan
+is a handle on a file in a namespace, as distinct from a fid, which is a
+handle on a file in one session.
+It carries the server, the fid, the qid, and two fields that make
+.B ..
+work across a mount:
+.B tree_root
+(the qid this chan's tree is rooted at) and
+.B mounted_over
+(the chan that tree was mounted onto).
+Chans are reference counted.
+.I Chan_clone
+costs a message (a
+.B Twalk
+with no names, 9P's way to get a second handle).
+It is for a copy that will be opened or walked independently.
+.I Chan_incref
+costs nothing.
+It is for a copy that will not.
+.I Chan_close
+drops a reference and, on the last one, clunks the fid and walks the
+.B mounted_over
+chain, releasing each parent in turn.
+.PP
+.I Chan_read
+and
+.I chan_write
+move at most one message's worth.
+A caller loops, in chunks by
+.IR chan_iounit ,
+the server's own promise from
+.B Rlopen
+folded against the session's msize.
+.I Chan_read_for
+is a read with a deadline, the reason this package sits on
+.IR mnt (9)
+at all: it flushes and returns
+.B EINTR
+rather than leave a caller parked past its patience.
+.SS Namespace
+A
+.B Namespace
+is a root chan plus a mount table, and nothing else -- no current
+directory, no global tree.
+.I Resolve
+takes only absolute paths and
+.B #name
+specs.
+A relative path needs a process to be relative to, and that
+resolution lives in
+.IR user (9).
+.PP
+.I Ns_fork
+gives a child its own namespace, following
+.IR fork (2)'s
+.B Fork_Flag
+bit set.
+.B Share
+(the default, no flag) hands back the same pointer, so a later
+.I bind
+in either process is visible to both.
+.B Copy
+duplicates the mount table and shares the member chans, so the two
+namespaces start identical and then diverge independently.
+.B Clean
+starts with no root and no mounts.
+.B Clean
+with
+.B Copy
+is
+.BR Clean .
+A namespace's own
+.B lock
+is a sleeping read/write lock: a lookup reads it, and a
+.I bind
+or
+.I unmount
+writes it and waits for every lookup in flight.
+.SS The mount table
+A mount point is keyed by
+.RI ( "server identity" ", " qid.path ),
+never by the whole qid, because
+.B qid.version
+changes on every write to the directory and keying on it would unmount a
+tree the moment something wrote into what it covers.
+Each key holds an ordered list of
+.B Mount
+members, searched in list order, which is what a union directory is:
+.I bind
+with
+.RI ( Mount_Order )
+.B Before
+pushes a new member to the front (searched first),
+.B After
+to the back (searched last), and
+.B Replace
+clears the list and becomes its only member.
+A member carries the
+.B Create
+flag to mark where new files are made.
+At most one member should carry it, and
+.I union_create_target
+answers nil, not a fallback, when none does -- a create that lands
+somewhere the namespace did not choose is a bug the caller must see.
+.PP
+.I Bind_path
+and
+.I mount_device
+resolve their two path arguments and call
+.IR bind .
+The difference is only where the source comes from, a name already in the
+namespace or a
+.B #name
+device.
+.I Unmount
+removes one member by
+.RI ( "server, qid.path" )
+identity, or the whole mount point when its
+.B source
+chan is nil.
+It dissolves the mount point rather than freeing it, because
+a chan reached through a union keeps a reference to it through
+.BR Chan.union_head .
+A member's
+.B id
+is a monotonic counter local to its mount point, assigned at
+.I bind
+and never reused.
+It is the cookie a union
+.I readdir
+resumes by, so a member added or removed between two reads does not shift
+the ones after it.
+.SS Walking
+Resolving one path element is two steps.
+.I Walk1
+asks each member of a union in turn for the name, through
+.BR Twalk .
+.I Cross_mounts
+then checks whether the file just reached is itself a mount point and, if
+so, substitutes the first member of what is mounted there.
+A single path element can therefore cross from one server to another, and
+a full path can involve as many servers as it has mount points.
+.I Resolve
+walks a whole path this way, closing every intermediate chan as it moves
+past it, so a failed resolve leaks nothing.
+.I Resolve_mount_point
+is the same walk with the last crossing withheld, which is the chan
+.I bind
+and
+.I unmount
+need: the key a mount is filed under, not what is mounted there.
+.PP
+.B ..
+out of the root of a mounted tree cannot be answered by the server that
+root belongs to -- it does not know it was mounted, or where.
+.I Walk_up
+climbs the
+.B mounted_over
+chain until it stands somewhere with a parent its own server can name,
+which may cross several stacked mounts at once, then asks that server for
+.BR .. .
+At the namespace root,
+.B ..
+is the root: there is nowhere to climb to, which is what makes a
+chroot-equivalent free.
+.PP
+.I Open_path
+is
+.I resolve
+then
+.IR chan_open .
+.I Create_path
+splits a path at its last slash, resolves the parent, and asks the server
+there to create the name.
+What a create under a union lands in is decided
+by
+.I union_create_target
+during the walk, the same as an open.
+.SS Fid_Table
+.RB ( fidtab.odin )
+is one fid table a server binds a client's fid to a small integer node
+index with.
+It exists so a second server does not mean a second implementation of the
+map: one allocation, chained free list, no lock of its own -- a fid table
+is server state, and the server already has a lock for the rest of its
+state.
+9P's two rules about an open fid are the caller's to keep: a walk on an
+already-open fid is refused, and a read before
+.B Tlopen
+is refused, both as
+.B EBUSY
+or
+.B EINVAL
+at the handler that checks
+.B Fid_Slot.open
+before it acts.
+.SS Static_Tree
+.RB ( static.odin )
+is a read-only server over a fixed table of
+.BR Static_Node ,
+each a name, a parent index, and either a directory flag or file data
+living in
+.BR .rodata .
+Its handler never allocates and a read costs no copy: an
+.B Rread
+points straight at the node's string.
+.IR root (3)
+and
+.IR bin (3)
+are each one
+.B Static_Tree
+of their own.
+.SS Locks
+.RB ( lock.odin )
+The rule that governs every other one:
+.B "no spinlock in this package is ever held across a 9P message."
+A spinlock is the interrupt flag.
+A message can park the sending thread,
+and on
+.IR mnt (9)
+it always does.
+.I Rpc
+checks this rather than trusts it --
+.I rpc_ready
+refuses with
+.B EDEADLK
+when a spinlock is held anywhere on the CPU, not only one of this
+package's own.
+.PP
+Two kinds of lock, never confused.
+A
+.B sync.Spinlock
+guards a pointer or a count for a handful of instructions and is never
+held across a message.
+A
+.B sync.RW_Lock
+sleeps and is held across one on purpose, because a union search reads a
+mount point for the whole of its search and a
+.I bind
+must wait for every search in flight rather than race it.
+Lock order is fixed:
+.B Namespace.lock
+before
+.B Mount_Point.lock
+before
+.BR object_lock .
+A read lock on one mount point is never held while a second is taken.
+.B object_lock
+is one global spinlock over every
+.B Chan.refs ,
+.B Mount_Point.refs
+and
+.B Namespace.refs ,
+because those objects outlive the namespace that created them whenever
+another namespace still references them through
+.B ns_fork
+or
+.BR Chan.union_head .
+.B device_lock
+guards the
+.B #name
+table alone.
+.PP
+A
+.B Chan
+itself is not internally synchronised for
+.IR chan_open ,
+.IR chan_read
+or
+.IR chan_write .
+Whoever holds a reference owns it, exactly like a descriptor.
+Two threads sharing one handle have an arrangement of their own to keep.
+.SH FILES
+.TP
+.B #/
+the root server, an ordinary
+.B Static_Tree
+with no special casing in the walker
+.RB ( root.odin ).
+.SH SOURCE
+.B kernel/vfs
+.SH SEE ALSO
+.IR mnt (9),
+.IR dev (9),
+.IR user (9),
+.IR bind (1),
+.IR bind (2),
+.IR root (3),
+.IR srv (3)
+.SH BUGS
+There is no rename.
+A caller removes and recreates a file to give it a new
+name.
+Directory reads of a union do not filter duplicate names across members.
+A name bound twice is listed twice, though an open still resolves to the
+first member that has it.

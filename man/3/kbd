@@ -1,0 +1,70 @@
+.TH KBD 3
+.SH NAME
+scancode \- the raw keyboard
+.SH SYNOPSIS
+.B bind #c /dev
+.nf
+
+.B /dev/scancode
+.fi
+.SH DESCRIPTION
+.B Scancode
+is the keyboard's stream before translation: the bytes the keyboard driver
+would otherwise turn into console input, unread.
+It is one of the files the
+.B #c
+device serves.
+See
+.IR cons (3)
+for the rest of the directory.
+.PP
+While nothing has
+.B scancode
+open, the kernel's own keyboard driver reads every scancode and turns it
+into characters on
+.BR /dev/cons .
+The first open of
+.B scancode
+diverts the stream: from that point the driver sees nothing, and every
+scancode goes to this file instead, until the last fid holding it closes.
+A copy of the stream was rejected in favour of this: two things turning
+scancodes into characters at once would act on every keystroke twice.
+Bytes typed while nothing holds
+.B scancode
+belong to the console, and bytes typed while it is diverted belong to this
+file: neither queues for the other, and the ring is drained both when a fid
+opens the file and when the last one closes it.
+When the last fid closes, the keyboard driver resets its own idea of which
+modifier keys are down, so a shift released while the file was diverted
+does not leave the console stuck as if it were still held.
+.PP
+A read parks until a scancode arrives, unless one is already waiting.
+Nothing here is a line discipline: every byte that arrives answers a read
+exactly as it came off the keyboard, none of it means anything to this
+file, and none of it is echoed.
+There is no end of file: a read answers a scancode or it parks, and it
+never answers zero bytes.
+.B Scancode
+may be opened more than once at a time.
+Every open reads the same stream, and a scancode goes to whichever open
+read comes first.
+.PP
+.B Scancode
+is read-only.
+.SH SOURCE
+.B kernel/devfs/tap.odin
+.br
+.B kernel/drivers/kbd
+.SH SEE ALSO
+.IR intro (3),
+.IR cons (3),
+.IR uart (3),
+.IR kbdfs (4),
+.IR kbd (2)
+.SH DIAGNOSTICS
+A write to
+.B scancode
+fails with
+.BR EPERM .
+A read that is still unanswered when the connection abandons it fails with
+.BR EINTR .

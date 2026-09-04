@@ -1,0 +1,36 @@
+.TH RM 1
+.SH NAME
+rm \- remove files
+.SH SYNOPSIS
+.B rm
+[
+.B \-fr
+]
+.I file ...
+.SH DESCRIPTION
+.I Rm
+removes files or directories.
+A directory is removed only if it is empty.
+The options are
+.TP
+.B \-f
+Don't report files that can't be removed.
+.TP
+.B \-r
+Recursively delete the
+entire contents of a directory
+and the directory itself.
+.SH SOURCE
+.B cmd/rm/main.odin
+.SH SEE ALSO
+.IR remove (2)
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B "can't remove"
+when a file could not be removed and
+.B \-f
+was not given.
+The remaining files are still removed.
+.SH BUGS
+.B \-f
+silences every failure, not only a missing file.

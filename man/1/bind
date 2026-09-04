@@ -1,0 +1,158 @@
+.TH BIND 1
+.SH NAME
+bind, mount, unmount \- change name space
+.SH SYNOPSIS
+.B bind
+[
+.B \-abc
+]
+.I new old
+.PP
+.B mount
+[
+.B \-abc
+]
+.I /srv/service old
+.PP
+.B unmount
+[
+.I new
+]
+.I old
+.SH DESCRIPTION
+.I Bind
+and
+.I mount
+change the file name space of the calling process (see
+.IR fork (2)).
+.I Old
+is a file or directory already reachable in the current name space,
+where the change is made.
+.PP
+For
+.IR bind ,
+.I new
+is another file or directory already reachable in the name space.
+After a successful
+.IR bind ,
+the name
+.I old
+also reaches what
+.I new
+reaches;
+.I new
+still reaches it too, unless the bind hid it.
+.PP
+.I Mount
+opens
+.I /srv/service
+(see
+.IR srv (3))
+and attaches to the connection it names, which is almost always a
+posted service.
+.I New
+below means the root of that service's tree.
+Either both
+.I old
+and
+.I new
+must be directories, or neither must be.
+.PP
+The options say how
+.I old
+is changed:
+.TP 10
+(none)
+Replace
+.I old
+by
+.IR new .
+If they are directories, this is a union of one directory.
+.TP
+.B \-b
+Both must be directories.
+Add
+.I new
+to the front of the union directory
+.I old
+already is, or start one.
+.TP
+.B \-a
+Both must be directories.
+Add
+.I new
+to the back of the union.
+.TP
+.B \-c
+Accepted with any of the above; see BUGS.
+.PD
+.PP
+.I Unmount
+undoes what
+.I bind
+or
+.I mount
+did.
+With two arguments, it undoes the bind or mount made with the same two
+names.
+With one, everything bound or mounted onto
+.I old
+is undone.
+.SH EXAMPLES
+Add a second tree of files ahead of
+.BR /bin ,
+searched first:
+.IP
+.EX
+bind \-b /n/esp/vectra/bin /bin
+.EE
+.PP
+Bring up a served tree and take it down again:
+.IP
+.EX
+mount /srv/memfs /mnt
+ls /mnt
+unmount /srv/memfs /mnt
+.EE
+.SH SOURCE
+.B cmd/bind/main.odin
+.br
+.B cmd/mount/main.odin
+.br
+.B cmd/unmount/main.odin
+.SH SEE ALSO
+.IR intro (1),
+.IR ns (1),
+.IR bind (2),
+.IR srv (3)
+.SH DIAGNOSTICS
+The exit status is empty on success.
+It is
+.BR usage
+for a wrong argument count, and
+.BR "bind failed" ,
+.B "mount failed"
+or
+.B "unmount failed"
+for an error the call answered, with the reason on standard error.
+.SH BUGS
+.B \-c
+on
+.I bind
+and
+.I mount
+is accepted but reaches nothing: the underlying calls carry no creation
+flag, so a union directory of more than one member has no member marked
+to receive a create, and a create in it fails with
+.B EPERM
+no matter which member was bound with
+.BR \-c .
+A directory with exactly one member, the ordinary case, is unaffected.
+.I Mount
+takes no
+.I spec
+argument, so a service that serves more than one tree cannot be asked
+for the second.
+There is no
+.BR \-q ,
+so a failed bind or mount is never silent.

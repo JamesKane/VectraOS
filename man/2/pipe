@@ -1,0 +1,62 @@
+.TH PIPE 2
+.SH NAME
+pipe \- create an interprocess channel
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "pipe :: proc() -> i64"
+.fi
+.SH DESCRIPTION
+.I Pipe
+creates a pipe: two descriptors, each the read end of a byte ring the
+other end writes.
+Data written to one end is read back from the other, in order, with no
+message boundary preserved.
+A read on an empty ring parks until the other end writes or is closed; a
+write on a full ring parks until the other end reads.
+.PP
+The answer packs both descriptors into one number, end 0 in the low byte
+and end 1 in the next; a caller separates them with
+.B abi.pipe_ends
+or the equivalent shift and mask.
+Each end is an ordinary descriptor from there on: it travels to a child
+through
+.IR spawn ,
+closes through
+.IR close ,
+and may be posted under
+.B /srv
+to make the far side of the pipe a service (see
+.IR bind (2)
+and
+.IR srv (3)).
+.PP
+When the writing end is closed or its process ends, a read on the other
+end drains what remains buffered and then answers zero, end of file.
+When the reading end is closed or its process ends, a write on the other
+end fails.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B sys/abi/abi.odin
+.br
+.B kernel/pipe/pipe.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR read (2),
+.IR pipe (3)
+.SH DIAGNOSTICS
+Answers the packed pair of descriptors on success and a negative
+.B \-errno
+on failure; see
+.IR errstr (2).
+.B ENOSPC
+is a machine already holding as many pipes as it may.
+.SH BUGS
+A pipe holds 2048 bytes in each direction, and the machine holds at most
+eight pipes at once.
+If a read or a write of a pipe is cut short by a note, some unknown
+number of bytes may have already been transferred.

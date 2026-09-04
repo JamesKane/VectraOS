@@ -1,0 +1,52 @@
+.TH ETHER 3
+.SH NAME
+ether \- the network card
+.SH SYNOPSIS
+.B bind #E /dev
+.nf
+
+.B /dev/ether/addr
+.B /dev/ether/data
+.fi
+.SH DESCRIPTION
+The
+.I ether
+device serves the virtio network card as two files under
+.BR /dev/ether .
+.PP
+.B Addr
+is the card's hardware address, six bytes, read-only.
+.PP
+.B Data
+carries frames: a read answers one received frame, and a write sends one.
+A read with no frame waiting answers zero bytes rather than parking, so a
+client polls it the way it polls any file that does not block.
+A read is limited to what one reply can carry, under a full ethernet
+frame today, which is enough for an address resolution exchange or a
+ping and not yet enough for a full-sized segment.
+.PP
+.B #E
+comes up only over a card the virtio driver found, and is bound at
+.B /dev
+as a second member, after
+.BR #c .
+A machine with no card gets no
+.B #E
+and no
+.BR /dev/ether ,
+the way one with no disk gets no
+.BR /dev/sd0 .
+.SH SOURCE
+.B kernel/ether/ether.odin
+.SH SEE ALSO
+.IR intro (3),
+.IR cons (3),
+.IR sd (3),
+.IR net (2)
+.SH DIAGNOSTICS
+Writing a frame the card refuses to send fails with
+.BR EIO .
+Writing to
+.B addr
+fails with
+.BR EPERM .

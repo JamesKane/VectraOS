@@ -1,0 +1,267 @@
+.TH MNT 9
+.SH NAME
+mnt \- the 9P transport: tag pool, workers, flush, payload buffers, the wire
+.SH SYNOPSIS
+.B import "kernel:mnt"
+.PP
+.nf
+.B "init :: proc(c: ^Conn, handler: vectra9.Handler, server: rawptr, abort: proc, payload: []u8) -> bool"
+.B "serve_start :: proc(c: ^Conn, n: int) -> bool"
+.B "serve_stop :: proc(c: ^Conn)"
+.B "transport :: proc(c: ^Conn) -> vectra9.Transport"
+.fi
+.PP
+.nf
+.B "call :: proc(c: ^Conn, request, reply: ^vectra9.Msg, buf: []u8) -> vectra9.Error"
+.B "call_for :: proc(c: ^Conn, request, reply: ^vectra9.Msg, ticks: u64, buf: []u8) -> vectra9.Error"
+.B "flushed :: proc(c: ^Conn, tag: vectra9.Tag) -> bool"
+.fi
+.PP
+.nf
+.B "wire_init :: proc(w: ^Wire, io: Wire_IO, arena: []u8) -> bool"
+.B "wire_start :: proc(w: ^Wire) -> bool"
+.B "wire_join :: proc(w: ^Wire)"
+.B "wire_join_for :: proc(w: ^Wire, ticks: u64) -> bool"
+.B "wire_call :: proc(w: ^Wire, request, reply: ^vectra9.Msg, buf: []u8) -> vectra9.Error"
+.B "wire_call_for :: proc(w: ^Wire, request, reply: ^vectra9.Msg, ticks: u64, buf: []u8) -> vectra9.Error"
+.B "wire_broken :: proc(w: ^Wire) -> bool"
+.fi
+.SH DESCRIPTION
+.I Mnt
+is the transport a
+.IR vfs (9)
+.B Server
+moves onto when a synchronous call -- the handler running on the caller's
+own stack -- is not enough: several requests in flight at once, a caller
+that can give up on one, and a handler that answers from another thread.
+.B Conn
+is the in-kernel half, a work queue and a pool of worker threads over a
+handler this package can call directly.
+.B Wire
+is the same mechanism over a byte stream, for a 9P server that is a ring 3
+process at the other end of a pipe.
+.SS Requests in flight
+A connection holds at most
+.B MAX_REQUESTS
+(8) requests at once, and the tag pool
+.I is
+the request pool: slot
+.I i
+carries tag
+.IR i .
+A
+.B Tflush
+names a request by tag, so the pool has to be indexable by tag for a flush
+to find anything.
+The pool is actually
+.B POOL
+(twice
+.BR MAX_REQUESTS ),
+because the upper half is reserved: slot
+.I i
+.B "+ MAX_REQUESTS"
+is the flush partner of slot
+.IR i ,
+and belongs to whoever owns
+.IR i .
+A client stuck on a full pool of ordinary requests still has a flush slot
+of its own to send
+.B Tflush
+from, which is what keeps a full pool from stranding the client that
+would empty it.
+.PP
+An
+.B Rpc
+moves through four states:
+.B Free
+(nobody owns it),
+.B Queued
+(a client owns it and it is on the work queue),
+.B Running
+(a worker is inside the handler), and
+.B Done
+(the reply is written and the client may take it).
+Only the client ever moves a slot back to
+.BR Free ,
+including one that was flushed -- the tag is not free until
+.B Rflush
+arrives, because the only thread that knows when something may reuse it
+is the one that asked for the flush.
+.I Server_flushed
+is the check a handler makes before it decides to abandon its own work:
+true when a
+.B Tflush
+has named this tag, and always false on the synchronous transport, where
+nothing is ever pending to flush.
+.SS Workers
+.I Serve_start
+puts
+.I n
+threads on a connection, each running the same loop: wait for work, take
+the head of the queue, hand it to the connection's handler, publish the
+reply.
+.B n
+must exceed the number of requests that can block inside the handler at
+once, or every worker can end up parked in one and there is nobody left
+to answer the
+.B Tflush
+that would unstick it.
+That arithmetic is a property of the server, not
+of this package, and is not checked here.
+One worker is the exception, and the shape a connection with no payload
+arena is limited to: one request in flight behaves exactly like the
+synchronous transport from the outside.
+.I Serve_stop
+asks the workers to leave and waits until they have, because the caller's
+next act is usually to free the memory they stand on.
+.SS Flush, and where its ordering rule lives
+.B Tflush
+has exactly one requirement: its reply is sent only after the flushed
+request's fate is decided, never before and never instead.
+The obvious implementation -- the worker serving the flush waits for the
+original to finish -- is the wrong one, because that worker is parked
+too, and enough flushes can empty every worker in the pool.
+So the wait is turned inside out.
+A
+.B Tflush
+against a request still running marks that request's
+.B partner
+and returns at once.
+Whoever finishes the original request answers the
+flush as it leaves.
+No worker ever waits for another request, and no code path writes
+.B Rflush
+except the one that just finished the request it names.
+.B Tflush
+is never answered with an error: a tag that names nothing in flight, one
+that already finished, and one still running all end in
+.B Rflush
+by the same rule, because from the client's side all three mean
+.RB " " "the tag is yours again" .
+.PP
+The
+.B abort
+hook, set at
+.IR init ,
+is what a server does when one of its own requests is flushed.
+It is
+optional, and a server without one is still correct, only unable to
+abandon anything, so
+.B Rflush
+waits for that request to finish on its own.
+It is called with no lock of this package held, because waking a thread
+is the server's business.
+.SS The payload buffer per slot
+Each request slot in the lower half owns a buffer, handed to the handler
+as
+.B buf
+to build its reply in.
+That is what makes several workers safe: a reply that borrowed shared
+server storage was only ever good until that server's next message, and
+with several workers the next message is already in progress.
+A handler that answers out of storage of its own -- a string in
+.B .rodata
+-- is untouched.
+Only a reply that points inside its own slot is copied
+out, into the caller's own buffer, before the slot goes back.
+The buffer size is the connection's
+.BR msize ,
+so a caller that sizes its buffer by
+.B Session.msize
+always has room, and a reply that still does not fit is a server bug,
+reported as
+.BR Short_Buffer ,
+never truncated.
+.SS call_for and a deadline
+.I Call
+waits for a reply however long that takes.
+.I Call_for
+is the same request with a bound in ticks.
+On expiry the caller does not
+simply walk away.
+It sends
+.B Tflush
+naming its own tag from its reserved flush slot, so a full pool cannot
+block the flush, and waits for
+.B Rflush
+uninterruptibly, because a flush of a flush has nowhere to end.
+Only once
+.B Rflush
+arrives is the tag the caller's again, and only then is the slot's
+buffer safe for the next request to reuse -- a stubborn handler may still
+be writing into it long after its own client gave up.
+.SS Poisoning
+A connection that finds an ordinary handler bug fails one request.
+A wire that finds a broken frame fails every one, because the frame
+boundary is gone and there is no way to know where the next message
+starts.
+.I Wire_broken
+reports the state.
+Once set, every call on the wire fails at once rather
+than parking, every slot waiting for a reply is settled as a transport
+failure, and its sleeper is woken.
+.B Wire_stats.hangup
+distinguishes an orderly end of the byte stream from a frame that broke
+protocol.
+.SS The wire over a pipe
+.B Wire
+is the client half of a 9P connection to a program: encode a request,
+write the frame, and match the reply that eventually comes back by its
+tag, exactly as
+.B Conn
+does except that the far side is bytes rather than a procedure this
+kernel can call.
+.I Wire_join
+waits for the one reader thread a wire has to leave, which happens when
+the byte stream ends or a frame poisons the wire.
+The caller's part is
+to make one of those happen, ordinarily by closing the far end.
+.I Wire_join_for
+is the same wait with a bound, for a caller that cannot force the stream
+to end.
+.PP
+.I Wire_flush
+is
+.B Tflush
+sent from the reserved flush partner slot for a request abandoned by
+.IR wire_call_for .
+It waits up to
+.B FLUSH_TICKS
+(200) for
+.B Rflush
+and poisons the wire if nothing answers in time, because a server that
+answers neither the request nor its flush has left the protocol.
+The
+.B Tversion
+handshake that opens a session over a wire
+.RB ( sys/vectra9.negotiate )
+is an ordinary call with a deadline, over
+.BR NOTAG ,
+the one tag the protocol obliges a client to use before it has a session
+at all.
+A pipe's posted end becomes a wire's server the first time something
+mounts the name it was posted under.
+.SS The borrow rule
+A handler is given the storage its reply borrows, and nothing else.
+It must be safe against several threads inside it at once once it is
+moved onto workers, and it must build any payload it answers with in the
+buffer it is handed rather than in storage of its own that a second
+caller might reach first.
+Everything above this rule -- the tag pool, the flush partner, the
+per-slot buffer -- exists to make that promise cheap to keep.
+.SH SOURCE
+.B kernel/mnt
+.SH SEE ALSO
+.IR vfs (9),
+.IR dev (9),
+.IR sync (9),
+.IR pipe (2),
+.IR pipe (3),
+.IR vectra9 (2)
+.SH BUGS
+A reply string that borrows a server's own storage rather than the slot
+.RB ( Rreadlink.target ", " Rgetlock.client_id )
+is not copied out by
+.IR deliver .
+No server in the tree returns either today, so the gap is latent rather
+than reachable.

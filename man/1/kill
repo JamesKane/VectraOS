@@ -1,0 +1,74 @@
+.TH KILL 1
+.SH NAME
+kill \- end or note a process
+.SH SYNOPSIS
+.B kill
+[
+.B \-n
+.I note
+]
+.I pid ...
+.SH DESCRIPTION
+.I Kill
+ends each named
+.IR pid ,
+by writing
+.B kill
+to its
+.BI /proc/ pid /ctl
+(see
+.IR proc (3)).
+The process ends at its next boundary whether or not it has a note
+handler, with
+.B "sys: killed"
+as the word its parent's
+.I wait
+collects.
+.PP
+.B \-n
+writes
+.I note
+to
+.BI /proc/ pid /note
+instead, which a process with a handler (see
+.IR notify (2))
+may catch and survive.
+.SH SOURCE
+.B cmd/kill/main.odin
+.SH SEE ALSO
+.IR ps (1),
+.IR ns (1),
+.IR notify (2),
+.IR proc (3)
+.SH DIAGNOSTICS
+The exit status is empty when every
+.I pid
+was reached.
+It is
+.B "no such process"
+when
+.BI /proc/ pid /ctl
+or
+.BI /proc/ pid /note
+could not be opened, and
+.B "can't kill"
+when the write itself failed;
+.I kill
+still tries every
+.I pid
+named.
+.SH BUGS
+There is no way to kill by program name; a
+.I pid
+must be looked up first, with
+.IR ps (1).
+There is no
+.IR stop ,
+though
+.BI /proc/ pid /ctl
+takes
+.B stop
+and
+.B start
+directly (see
+.IR proc (3)).

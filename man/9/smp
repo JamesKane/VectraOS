@@ -1,0 +1,131 @@
+.TH SMP 9
+.SH NAME
+smp \- the other cores
+.SH SYNOPSIS
+.B import "kernel"
+.PP
+.nf
+.B "init_smp :: proc () -> bool"
+.fi
+.SH DESCRIPTION
+.B kernel/smp.odin
+brings up every core the bootloader listed beyond the first, and is the
+last thing
+.I kmain
+does, deliberately: every self-test above it was written for one core and
+counts something that a second core would change, so all of them run
+before a second core exists to change it.
+.SS How a core starts
+The bootloader parks every core but the boot core, each spinning on a
+word of its own in the machine state the bootloader handed over: its own
+page tables, its own stack, interrupts off, and none of the kernel's trap
+tables.
+.B init_smp
+gives each one a kernel stack from the heap, fills in an
+.B Ap_Boot
+record with that stack, an id and the core's local APIC id, then stores
+.B ap_entry's
+address into the core's
+.B goto_address
+atomically, so the core sees the record whole or not at all.
+That store is what releases it; nothing else does.
+.PP
+A released core lands in
+.BR ap_entry ,
+still on the bootloader's stack and tables.
+It turns SSE on, exactly as the boot core's
+.B early_init
+did, then calls
+.B arch.ap_switch
+to move onto its own kernel stack and the kernel's own address space,
+which is the only way off a stack while still standing on it.
+From there
+.B ap_main
+repeats
+.IR kmain 's
+early order for this one core: trap tables, the paging bits the
+bootloader cleared, the syscall MSRs, the local timer, a scheduler
+record, then
+.B cpu_online
+and
+.BR sched.exit .
+A core's arrival thread has no future beyond that exit; its stack goes
+back to the heap when the idle thread reaps it.
+.SS Waiting for the cores
+.B init_smp
+waits for every released core to report online, bounded by
+.B SMP_PATIENCE
+ticks.
+A core that has not set its
+.B online
+flag by then is reported missing, and the machine runs on the cores that
+did arrive; a one-core machine, or a bootloader with no multiprocessor
+feature, is not a fault.
+.B --smp=N
+to
+.IR build (8)
+sets how many cores QEMU presents, four by default.
+.SS Locks that span cores
+.B kernel/sched's
+own lock is held across a context switch, not just around the run
+queue: a thread being parked or readied is a single operation from the
+scheduler lock's own point of view, released only once the incoming
+thread's frame is written and nothing on the departing core can read the
+outgoing thread's stack again.
+An idle core is woken with a kick, an interprocessor interrupt on
+.BR VECTOR_WAKE ,
+sent when a thread is placed on a core whose current thread is that
+core's idle thread; see
+.IR sched (9).
+A change to one address space's page tables that another core may have
+cached is followed by a shootdown, which asks every core running that
+space to drop the range and waits for each to count itself off; see
+.IR space (9)
+for the mechanism and the rule that the sender may hold no spinlock while
+it waits.
+.PP
+The process table's own spinlock,
+.B table_lock
+in
+.BR kernel/user/user.odin ,
+guards the table across every core; nothing that can park runs under it,
+which is why a closing descriptor group or namespace runs against a
+record already marked
+.B collecting
+under the lock and then released before the parking work begins.
+.PP
+The kernel log's
+.B Logger.lock
+is a
+.B Spinlock
+held for the writes of one line, across every sink and never across
+formatting.
+The panic path does not take it: it seizes it, because the holder may be
+a core the panic just stopped and will never release it.
+.SS Stopping the machine
+A fault that reaches the panic screen calls
+.B arch.ipi_stop_others
+first, which sends every other core a non-maskable interrupt.
+A core that receives one while
+.B panicking
+is set halts on the spot, on the NMI's own stack, holding whatever it
+held.
+An NMI that arrives with the flag clear is hardware reporting something
+this kernel does not otherwise handle, and is a panic of its own.
+.SH SOURCE
+.B kernel/smp.odin
+.br
+.B kernel/verify_smp.odin
+.SH SEE ALSO
+.IR sched (9),
+.IR sync (9),
+.IR space (9),
+.IR arch (9),
+.IR build (8)
+.SH BUGS
+.B MAX_CPUS
+is eight.
+A machine with more cores than that runs on the first eight the
+bootloader lists.
+There is no way to bring a core back online once it fails to report; a
+missing core stays missing for the life of the boot.

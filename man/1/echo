@@ -1,0 +1,27 @@
+.TH ECHO 1
+.SH NAME
+echo \- print arguments
+.SH SYNOPSIS
+.B echo
+[
+.B \-n
+]
+[
+.I arg ...
+]
+.SH DESCRIPTION
+.I Echo
+writes its arguments separated by blanks and terminated by
+a newline on the standard output.
+Option
+.B \-n
+suppresses the newline.
+It is recognised only as the first argument.
+.SH SOURCE
+.B cmd/echo/main.odin
+.SH DIAGNOSTICS
+If
+.I echo
+draws an error while writing to standard output, the exit status is
+.BR "write error" .
+Otherwise the exit status is empty.

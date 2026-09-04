@@ -1,0 +1,62 @@
+.TH RENDEZVOUS 2
+.SH NAME
+rendezvous \- user level process synchronization
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "rendezvous :: proc(tag: u64, value: u64) -> (partner: u64, ok: bool)"
+.fi
+.SH DESCRIPTION
+.I Rendezvous
+lets two processes meet at a common
+.I tag
+and exchange a value.
+Together with shared memory (see
+.IR fork (2)
+and
+.IR segattach (2)),
+it lets cooperating processes arrange their own scheduling.
+.PP
+The first process to call
+.I rendezvous
+with a given
+.I tag
+sleeps.
+When a second calls it with the same
+.IR tag ,
+the two
+.I value
+arguments are exchanged: each call answers the other's
+.IR value ,
+with
+.B ok
+true, and both processes wake.
+.PP
+The set of tags two processes may meet on is their
+.I "rendezvous group" ,
+inherited across a fork unless
+.B RFREND
+was set (see
+.IR fork (2)),
+which starts the caller in a group of its own.
+.PP
+.I Ok
+is false when a note interrupted the wait; in that case
+.I partner
+is zero, which a program should therefore avoid using as an ordinary
+value.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/user.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR fork (2),
+.IR segattach (2),
+.IR semacquire (2)
+.SH DIAGNOSTICS
+.I Ok
+is false on a note; there is no other failure.
+.SH BUGS
+At most sixty-four rendezvous are pending across the machine at once.

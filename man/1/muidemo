@@ -1,0 +1,46 @@
+.TH MUIDEMO 1
+.SH NAME
+muidemo \- the toolkit, in a window
+.SH SYNOPSIS
+.B muidemo
+.SH DESCRIPTION
+.I Muidemo
+opens a window on the draw server and lays out a panel built from
+.IR mui (2):
+a title, a row of three buttons, a checkmark and a label, a text
+field with its own label, and a row of
+.B OK
+and
+.B Quit
+buttons.
+It runs the toolkit's own event loop and draws nothing itself; the
+object tree says what the window holds, and the theme (see
+.IR theme (6))
+says what it looks like.
+The window is titled
+.BR Workbench ,
+though this program is a demonstration, not the desktop shell.
+.PP
+A click on a button, or the keyboard reaching the focused one, reaches
+a handler in the program.
+.B Quit
+and
+.B OK
+both close the window and end the program.
+Every other button and the checkmark are for show and do nothing else.
+.SH SOURCE
+.B apps/muidemo/main.odin
+.SH SEE ALSO
+.IR window (1),
+.IR mui (2),
+.IR theme (6)
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B open
+if the window could not be opened.
+.SH BUGS
+Nothing in the panel is wired to a real action; every gadget but
+.B OK
+and
+.B Quit
+is decorative.

@@ -1,0 +1,39 @@
+.TH INTRO 8
+.SH NAME
+intro \- introduction to system administration
+.SH DESCRIPTION
+This section describes how the machine is built, started and checked:
+the tools that turn source into a bootable image, what the kernel does
+between the firmware handing it control and a shell prompt, and the
+checks that run on every boot to say the machine is what it claims to be.
+None of these pages describes a command typed at an
+.IR rc (1)
+prompt.
+They describe the machine itself, from the outside.
+.PP
+The
+.IR build (8)
+driver compiles the kernel and the ring 3 programs, stages a bootable
+disk, and starts it under QEMU.
+.IR Boot (8)
+describes what happens once the firmware gives control to the kernel:
+the order things come up in, the disks, and the name space the first
+program inherits.
+.IR Init (8)
+describes that first program, the shell script that starts the window
+system and becomes the console's shell.
+.IR Verify (8)
+describes the self-tests that run on every boot, and how to read one
+that fails.
+.IR Lint (8)
+checks the prose in comments and documents against a controlled
+subset of English.
+.IR Genfont (8)
+regenerates the bitmap font the console and the toolkit share.
+.SH SEE ALSO
+.IR build (8),
+.IR boot (8),
+.IR init (8),
+.IR verify (8),
+.IR lint (8),
+.IR genfont (8)

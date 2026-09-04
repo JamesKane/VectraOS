@@ -1,0 +1,376 @@
+.TH INTUITION 4
+.SH NAME
+intuition \- draw server, compositor and window manager
+.SH SYNOPSIS
+.B intuition
+[
+.I keysource
+]
+.PP
+.nf
+.B /srv/draw/new
+.B /srv/draw/ctl
+.B /srv/draw/hotkey
+.BI /srv/draw/ n /data
+.BI /srv/draw/ n /ctl
+.BI /srv/draw/ n /cons
+.BI /srv/draw/ n /consctl
+.BI /srv/draw/ n /mouse
+.BI /srv/draw/ n /wctl
+.BI /srv/draw/ n /cursor
+.fi
+.SH DESCRIPTION
+.I Intuition
+posts its service as
+.B draw
+in
+.B /srv
+and serves the tree above on the other end.
+It opens
+.B /dev/fb
+for writing, which diverts the screen away from the kernel's own console for
+as long as the descriptor stays open, and
+.B /dev/fbctl
+to learn the screen's width, height and depth.
+From then on
+.I intuition
+owns every pixel: it is the only compositor and the only window manager, and
+what a window does not cover is desktop.
+.PP
+The optional argument names the file to read keys from, a message file
+served by
+.IR kbdfs (4);
+with none given,
+.I intuition
+reads
+.B /dev/cons
+in raw mode instead, which is what the self-tests use.
+.PP
+Unlike
+.IR rio ,
+each window owns pixels of its own rather than a clipped share of one
+screen image.
+A client's commands land in its own window's memory, never on the glass
+directly, and a window that becomes uncovered is repainted from what it
+already held.
+Nothing is ever told to redraw itself.
+.SS Windows and sessions
+There are room for thirty-two windows at once.
+A window is a rectangle of memory bought from
+.IR segattach (2)
+when a client claims it and given back when the claim ends.
+Reading
+.B /srv/draw/new
+answers the number of a window with no session, as a decimal string, or a
+number past the last window when none is free.
+The claim itself is an
+.I lopen
+of that window's
+.BR data ,
+described in
+.IR open (5);
+a client that loses the race to another finds the window already taken and
+gets
+.BR ENOSPC .
+A window's directory is named by that number, so a client that has claimed
+window
+.I n
+reaches its files under
+.BI /srv/draw/ n .
+.PP
+A window is born with a frame around its client area: a bevelled border
+and a title bar carrying four gadgets at its corners and the name last
+written to
+.BR ctl .
+The close, depth, zoom and size gadgets are the pointer's; see below.
+Three kinds of window wear no frame and answer to no gadget:
+a backdrop, which sits at the back of the stack and never comes forward, a
+bar, which stays at the top of the glass and is never covered, and a
+popup, which is a menu or a list.
+A
+.B wctl
+line makes a window one of these.
+.PP
+A session's data fid is write-only: the commands it carries are a stream
+onto the window's own store, and a client reads its window back through
+.B /dev/fb
+and
+.IR fb (3),
+never through
+.BR data .
+Closing the data fid -- by a clunk or by a hang up -- ends the session, frees
+the window's memory and every image the session allocated, and repaints
+whatever the window had been covering.
+.SS The data protocol
+A session's
+.B data
+file carries the six-verb command stream
+.IR draw (2)
+encodes:
+.BR alloc ,
+.BR load ,
+.BR fill ,
+.BR blit ,
+.BR free
+and
+.BR flush .
+Nothing drawn reaches the glass until a
+.B flush
+command; before that, every store lands only in the window's own memory.
+Image
+.B 0
+means the window's own client area in a
+.B fill
+or a
+.B blit
+destination, and a window can never be a source: reading pixels back is
+.IR fb (3)'s
+job.
+A command past the edge of the client area, or one naming an image the
+session never allocated, is clipped or refused; a malformed command fails
+the write and leaves what came before it already drawn.
+A session may also allocate images of its own, up to 2048 pixels each, out
+of a pool of sixty-four shared by every window on the machine; these hold
+a cursor, a glyph atlas, or anything else a client draws with before it
+blits it into its window.
+.SS The ctl and wctl files
+A window's
+.B ctl
+answers its client area's size on a read, as
+.IR fb (3)'s
+own report:
+.RI "width, height, the row's byte pitch, and the depth (always 32)."
+A write is one of four lines:
+.TP 8
+.BI move " x y"
+put the window at
+.I x , y
+on the screen
+.TP
+.BI size " w h"
+make the client area
+.I w
+by
+.I h ,
+inside the frame the client is never told about
+.TP
+.B raise
+bring the window to the front and give it the focus
+.TP
+.BI name " text"
+set the words on the title bar, truncated at twenty-four characters, and
+apply a
+.IR workspaces (6)
+rule if the new name matches one
+.PD
+.PP
+A window's
+.B wctl
+is a superset of
+.BR ctl :
+.B move
+,
+.B size
+and
+.B raise
+are the same three lines, and a read answers a fuller report,
+.IR rio 's
+own line with a workspace number after it:
+.RI "the window's rectangle on the screen (frame included), " current
+or
+.RI notcurrent , " " hidden
+or
+.IR visible ", and the workspace it is on."
+The rest of what
+.B wctl
+accepts:
+.TP 8
+.B current
+give the window the focus and bring it to the front
+.TP
+.B lower
+send it to the back; the focus follows to whatever is now in front
+.TP
+.B zoom
+fill the screen below the bar, or return to where it was before the
+last zoom
+.TP
+.B hide
+take the window off the glass without ending its session
+.TP
+.B unhide
+put it back
+.TP
+.BI workspace " n"
+move the window to workspace
+.I n
+.TP
+.B backdrop
+.TP
+.B bar
+.TP
+.B popup
+make the window one of the three unframed kinds
+.PD
+.PP
+A
+.B close
+line is refused: there is no way to ask
+.I intuition
+to end a session it did not start.
+A hang up of a window's
+.B cons
+-- what the close gadget does -- is the only way a session ends from
+outside.
+.PP
+A window's
+.B cons
+and
+.B consctl
+are the console files
+.IR cons (3)
+describes, scoped to that window: a line typed at the keyboard while the
+window has the focus is what
+.B cons
+reads, and
+.B consctl
+takes
+.B rawon
+and
+.B rawoff
+for the same two meanings.
+.B mouse
+is a queue of pointer lines in the window's own coordinates, in the same
+forty-nine byte format
+.IR mouse (3)
+uses; a read parks until the pointer moves or a button changes while the
+window has it.
+.B cursor
+takes the seventy-two byte cursor image Plan 9's
+.B /dev/cursor
+does, and the pointer wears it while it sits over that window; an empty
+write goes back to the arrow.
+.PP
+.B /srv/draw/ctl
+is
+.I intuition's
+own, not any window's.
+Reading it answers the current workspace and how many there are.
+Writing it takes
+.BI workspace " n"
+to switch, or
+.B reload
+to read the keys and workspace rules files again.
+.B /srv/draw/hotkey
+carries one line per read, the chords the server matched but did not act
+on itself, verbatim from the keys file; see
+.IR keys (6).
+.SS The pointer
+On a machine with a mouse,
+.I intuition
+reads
+.B /dev/mouse
+and moves a small cursor over the glass, drawn last after every repaint so
+nothing under it has to know it is there.
+A press decides what it landed on: the close, depth, zoom or size gadget,
+the title bar, the bottom right corner, or the client area.
+Anywhere else in a window raises it and gives it the focus.
+A press on the bar begins a move and a press on the corner a resize,
+either ending on release.
+A machine with no mouse runs the same server with no pointer at all.
+.SS Chords, gadgets and workspaces
+A key held with alt, control or shift is a chord, matched against
+.BR $home/lib/keys ,
+or
+.B /lib/keys
+when there is none; see
+.IR keys (6).
+What
+.I intuition
+knows how to do itself it does -- close, lower, zoom, raise or move the
+window in front, cycle the focus, switch or send a window to a
+workspace, open the overview -- and everything else it does not
+recognise is a line on
+.BR hotkey .
+.PP
+A window carries a number from one to nine, its workspace; only the
+current workspace's windows are on the glass.
+.BR $home/lib/workspaces ,
+or
+.B /lib/workspaces
+when there is none, names a workspace a window with a given name opens
+on; see
+.IR workspaces (6).
+.PP
+The overview chord dims the glass and tiles every workspace's windows at
+once, three by three, scaled down from their own stores with no client
+asked to redraw.
+A click on a tile switches to that workspace, and a click on nothing, or
+the chord again, returns to the one showing before.
+.SH FILES
+.TP 12
+.B new
+read it for a free window's number
+.TP
+.B ctl
+the server's own workspace switch and reload
+.TP
+.B hotkey
+the chords the server does not act on
+.TP
+.BI n /data
+the command stream, write-only; opening it claims window
+.I n
+.TP
+.BI n /ctl
+the client area's geometry, and the four lines above
+.TP
+.BI n /cons
+the window's console
+.TP
+.BI n /consctl
+raw or cooked mode for
+.IR cons
+.TP
+.BI n /mouse
+the pointer over the window
+.TP
+.BI n /wctl
+the fuller geometry and the ten window manager lines
+.TP
+.BI n /cursor
+the pointer's image while it is over the window
+.SH SOURCE
+.B servers/intuition
+.SH SEE ALSO
+.IR draw (2),
+.IR chrome (2),
+.IR mui (2),
+.IR keys (6),
+.IR workspaces (6),
+.IR window (1),
+.IR fb (3),
+.IR mouse (3),
+.IR kbdfs (4),
+.IR cons (3)
+.SH DIAGNOSTICS
+A claim on a window already taken, or a request when none is free,
+fails with
+.BR ENOSPC .
+A malformed command or ctl line fails with
+.BR EINVAL .
+A write to a read-only file, such as
+.B mouse
+or a session's own
+.BR data ,
+fails with
+.BR EPERM .
+.SH BUGS
+The image pool of sixty-four slots is shared by every window; a session
+that allocates many images can starve every other window's client of
+.BR ENOSPC .
+There is no way to learn a window's name back once it is set; neither
+.B ctl
+nor
+.B wctl
+reports it.

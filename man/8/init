@@ -1,0 +1,192 @@
+.TH INIT 8
+.SH NAME
+init \- the first program
+.SH SYNOPSIS
+.B /bin/rc /lib/init
+.SH DESCRIPTION
+.I Init
+is the last thing the kernel starts, once every self-test has run.
+It is not a program of its own.
+It is
+.BR apps/rc/init ,
+an ordinary
+.IR rc (1)
+script staged onto the disk by the build and run as
+.BR /bin/rc " " /lib/init ,
+with the console as its three descriptors.
+The kernel does nothing more once it starts: what
+.I init
+does is the script's business.
+.PP
+The script starts the keyboard server, waits for its name to appear,
+and mounts it:
+.IP
+.EX
+kbdfs &
+while(! test -e /srv/kbdfs) sleep 1
+mount /srv/kbdfs /n/kbd
+.EE
+.PP
+.IR Kbdfs (4)
+opens
+.BR /dev/scancode ,
+which diverts the keyboard out of the console's own line discipline
+into a file it translates and serves.
+This is why the step exists.
+The draw server has to read the keyboard raw, and if it read
+.B /dev/cons
+for that, the serial line sharing that console would go raw with it,
+leaving the serial shell below with no line discipline of its own.
+Diverting the keyboard through a file the draw server reads instead
+keeps the console cooked, echoing, and free for the serial shell alone.
+.PP
+The draw server starts next, reading its keys from the file just
+mounted, and the script waits for it to post its name before going on:
+.IP
+.EX
+intuition /n/kbd/kbd &
+while(! test -e /srv/draw) sleep 1
+.EE
+.PP
+Two client programs follow, both left running in the background:
+.IP
+.EX
+terminal &
+muidemo &
+.EE
+.PP
+.I Terminal ,
+described in
+.IR window (1),
+is a window with a shell in it, the one on the screen a user without a
+serial cable gets.
+.I Muidemo
+is a panel of gadgets built on
+.B sys/libmui
+that gives the desktop something drawn with the toolkit besides a
+shell.
+.PP
+The last two lines are
+.I init
+itself:
+.IP
+.EX
+cd $home
+exec rc -i
+.EE
+.PP
+.I Exec
+replaces the script in place, so
+.I init
+becomes an interactive
+.I rc
+on the console rather than starting one as a child.
+This is the serial shell.
+.SS rcmain
+Before its first command, every
+.I rc
+reads
+.BR /lib/rcmain ,
+staged from
+.BR apps/rc/rcmain .
+It sets four variables, each only if the environment did not already
+hold one:
+.IP
+.EX
+path=(. /bin)
+home=/usr/glenda
+ifs=(' ' '\et' '\en')
+prompt=('% ' '\et')
+.EE
+.PP
+Every default yields to what
+.B /env
+already held when the shell started, so a variable set before
+.I rc
+runs is never overwritten.
+.SS Two shells
+The machine ends up with two interactive shells, on two consoles.
+The serial line is
+.IR init 's
+own
+.IR rc ,
+reading and writing
+.BR /dev/cons
+with the kernel's line discipline: backspace erases a character,
+control-U erases the line, control-D ends the line or, on an empty
+line, ends the file.
+The window is
+.IR terminal 's
+child
+.IR rc ,
+reading and writing two pipes that
+.I terminal
+turns into a grid of cells on the screen.
+A window cooks its own lines, in
+.BR sys/libedit ,
+and adds control-W and the arrow keys that the console's own
+discipline does not have.
+.PP
+Each shell is oblivious to the other.
+A command typed at one does not appear on the other, and a fault or an
+.B exit
+in one leaves the other running.
+.SS The process picture
+Bringing up two shells this way costs more processes than Plan 9 spends
+on the same picture, because a Vectra process cannot wait on two
+descriptors at once and forks a reader instead wherever a server has
+two blocking sources.
+.IR Fatfs (4)
+and
+.IR kfs (4)
+are one process each.
+The serial shell is one.
+.IR Kbdfs (4)
+and
+.IR intuition (4)
+are each a proc of threads: a server and an I/O proc for the pipe or
+scancode stream it reads.
+.I Terminal
+is the same shape, plus the
+.I rc
+it starts.
+.SH FILES
+.TP
+.B /lib/init
+the script above, staged from
+.B apps/rc/init
+.TP
+.B /lib/rcmain
+staged from
+.B apps/rc/rcmain
+.TP
+.B /dev/scancode
+the raw keyboard,
+.IR kbdfs (4)'s
+source
+.SH SOURCE
+.B apps/rc/init
+.br
+.B apps/rc/rcmain
+.br
+.B kernel/main.odin
+.SH SEE ALSO
+.IR rc (1),
+.IR window (1),
+.IR muidemo (1),
+.IR boot (8),
+.IR kbdfs (4),
+.IR intuition (4),
+.IR fatfs (4),
+.IR kfs (4)
+.SH DIAGNOSTICS
+A machine with no
+.B /lib/init
+logs a warning and idles with no shell on any console.
+See
+.IR boot (8).
+A machine with no keyboard controller, either
+.B virt
+board, still gets the window, drawn and waiting, but nothing can type
+into it.
+The serial line is that machine's only keyboard.

@@ -1,0 +1,93 @@
+.TH KFS 4
+.SH NAME
+kfs \- Vectra's own file system
+.SH SYNOPSIS
+.B kfs
+[
+.B \-r
+]
+.I device
+[
+.I srvname
+]
+.SH DESCRIPTION
+.I Kfs
+serves a filesystem of Vectra's own on
+.IR device ,
+keeping what
+.IR fatfs (4)
+cannot: an owner-free but real set of permission bits, a qid version that
+moves on every write, and files past FAT32's ceiling, up to a little over
+four megabytes (see
+.IR kfs (6)
+for the shape on the disk).
+It posts
+.I srvname
+.RB ( /srv/kfs
+when not given), then forks: the parent exits once the name is there, and
+the child serves until the last mount and the name are both gone.
+.PP
+The
+.B \-r
+flag reams
+.I device
+first: it lays a fresh, empty volume down over whatever was there, with one
+directory,
+.BR glenda ,
+in the root.
+Without
+.BR \-r ,
+.I device
+must already hold a volume
+.I kfs
+reams itself, once, if it does not, with a line on the console saying so --
+a blank scratch disk is expected the first time a machine boots, and a boot
+that stopped over it would not be one anyone wanted.
+.PP
+The boot mounts the machine's second disk this way, at
+.B /usr
+(see
+.IR intro (1)),
+and
+.B $home
+is
+.BR /usr/glenda .
+.PP
+Every file has Plan 9's permission bits and a directory bit, kept as
+given; there is no owner and no group, so the bits apply to everyone alike.
+A file's qid version is the inode's, which counts every write, so a
+client that cached the file can tell it changed.
+Every change reaches the disk as it is made, in the order that leaves the
+volume consistent if the machine stops between any two writes.
+.PP
+The server stops on the pipe's hang-up, when the last mount and the posted
+name are both gone.
+.SH FILES
+.TP
+.BI /srv/ srvname
+the posted service,
+.B kfs
+by default
+.TP
+.B /usr/glenda
+home, once mounted
+.SH SOURCE
+.B servers/kfs
+.SH SEE ALSO
+.IR bind (1),
+.IR fork (2),
+.IR getattr (5),
+.IR fatfs (4),
+.IR kfs (6),
+.IR sd (3)
+.SH BUGS
+There is no rename.
+.I Cp
+and
+.I mv
+(see
+.IR cp (1))
+copy and remove instead.
+A file cannot pass 4243456 bytes, twelve direct blocks and one indirect
+block of 1024 more, at 4096 bytes each; a second level of indirection
+would raise it and does not exist yet.

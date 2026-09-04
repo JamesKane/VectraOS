@@ -1,0 +1,94 @@
+.TH REGEXP 2
+.SH NAME
+compile,
+destroy,
+match,
+match_from \- regular expression matching
+.SH SYNOPSIS
+.B import "vsys:libregex"
+.PP
+.nf
+.B "compile :: proc(pattern: string, fold: bool, allocator: runtime.Allocator) -> (re: ^Regex, ok: bool)"
+.B "destroy :: proc(re: ^Regex)"
+.B "match :: proc(re: ^Regex, text: string) -> (start, end: int, ok: bool)"
+.B "match_from :: proc(re: ^Regex, text: string, from: int) -> (start, end: int, ok: bool)"
+.fi
+.SH DESCRIPTION
+These procedures compile and run regular expressions in the dialect
+.IR regexp (6)
+describes.
+.PP
+.I Compile
+parses
+.I pattern
+and answers a
+.B Regex
+compiled from it, allocated from
+.IR allocator ,
+and
+.BR ok .
+.B Ok
+is false when
+.I pattern
+does not parse, and
+.I re
+is then nil.
+.I Fold
+makes the match case-insensitive: the pattern and the text are compared
+with letters lowered.
+.I Destroy
+frees a
+.B Regex
+and everything
+.I compile
+allocated for it.
+.PP
+.I Match
+finds the leftmost match of
+.I re
+in
+.I text
+and answers its bounds,
+.I start
+and
+.IR end ,
+as byte offsets, and
+.BR ok .
+When several matches begin at the same leftmost point, the longest is
+the one answered.
+.I Match_from
+is
+.I match
+starting the search at
+.I from
+rather than at the beginning of
+.IR text ,
+for a caller that replaces matches one at a time and must not find the
+one it just replaced again.
+.PP
+There are no captures.
+A match answers only the bounds of the whole pattern, never those of a
+parenthesized subexpression, because neither
+.IR grep (1)
+nor
+.IR sed (1)
+needs one yet.
+.PP
+A pattern is compiled to a small instruction list and run as a Thompson
+simulation: a set of positions in the program advances one character at
+a time, so a match costs time proportional to the length of the pattern
+times the length of the text, and never the exponential time a
+backtracking matcher can take.
+.SH SOURCE
+.B sys/libregex/regex.odin
+.SH SEE ALSO
+.IR grep (1),
+.IR sed (1),
+.IR regexp (6)
+.SH BUGS
+There are no captures, so there is no
+.B \e1
+in a replacement.
+There is no
+.I rregexec
+equivalent for runes: a pattern and its text are both bytes.

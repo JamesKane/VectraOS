@@ -1,0 +1,106 @@
+.TH GETATTR 5
+.SH NAME
+getattr, setattr \- inquire or change file attributes
+.SH SYNOPSIS
+.nf
+.B size[4] Tgetattr tag[2] fid[4] request_mask[8]
+.B size[4] Rgetattr tag[2] valid[8] qid[13] mode[4] uid[4] gid[4]
+.B nlink[8] rdev[8] size[8] blksize[8] blocks[8]
+.B atime_sec[8] atime_nsec[8] mtime_sec[8] mtime_nsec[8]
+.B ctime_sec[8] ctime_nsec[8] btime_sec[8] btime_nsec[8]
+.B gen[8] data_version[8]
+.fi
+.PP
+.nf
+.B size[4] Tsetattr tag[2] fid[4] valid[4] mode[4] uid[4] gid[4] size[8]
+.B atime_sec[8] atime_nsec[8] mtime_sec[8] mtime_nsec[8]
+.B size[4] Rsetattr tag[2]
+.fi
+.SH DESCRIPTION
+.B Tgetattr
+asks for the fields named in
+.IR request_mask ,
+a bit for each field.
+.B GETATTR_BASIC,
+0x7ff, is what every Vectra server answers, and is the mask
+.IR stat (2)
+sends.
+The reply's
+.I valid
+says which fields the server actually filled in,
+and it may be fewer than were asked for:
+a caller that reads a field without checking
+.I valid
+is reading whatever the server happened to leave there.
+.PP
+The fields, once
+.I valid
+says they are there:
+.TP
+.I qid
+the server's identity for the file
+.TP
+.I mode
+Linux's file-type and permission bits
+.TP
+.I uid
+the owner, as a number
+.TP
+.I gid
+the group, as a number
+.TP
+.I nlink
+the number of names the file has
+.TP
+.I size
+length in bytes
+.TP
+.I blksize
+the block size a caller should read or write in
+.TP
+.I blocks
+the file's length in those blocks
+.TP
+.I atime, mtime, ctime, btime
+access, modification, status-change and creation times,
+each a pair of seconds and nanoseconds since the epoch
+.TP
+.I gen
+a generation number
+.TP
+.I data_version
+a version counter, for a caller that wants to notice a file changed
+underneath it
+.PD
+.PP
+.B Tsetattr
+changes the fields named in
+.IR valid ,
+a different, narrower set of bits than
+.BR Tgetattr 's
+.IR request_mask .
+Vectra's servers implement two of them:
+.B SETATTR_MODE
+(0x1) for
+.I mode
+and
+.B SETATTR_SIZE
+(0x8) for
+.I size,
+which truncates or extends the file.
+A bit for a field a server does not implement is refused rather than
+silently ignored.
+.PP
+A server over a fixed, read-only tree refuses
+.B Tsetattr
+outright, with
+.BR EROFS .
+.SH SOURCE
+.B sys/vectra9/proto.odin
+.br
+.B kernel/vfs/chan.odin
+.SH SEE ALSO
+.IR intro (5),
+.IR open (5),
+.IR read (5),
+.IR vectra9 (2)

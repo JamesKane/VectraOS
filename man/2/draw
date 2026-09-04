@@ -1,0 +1,253 @@
+.TH DRAW 2
+.SH NAME
+put_header, put_cmd, put_alloc, put_load, put_fill, put_blit, put_free,
+put_flush, put_text, atlas_cell, parse_geometry, scan_int, win_name,
+win_index, win_dir, win_path \- the draw protocol client
+.SH SYNOPSIS
+.B import "vsys:libdraw"
+.PP
+.nf
+.B "ALLOC :: u8(1)"
+.B "LOAD :: u8(2)"
+.B "FILL :: u8(3)"
+.B "BLIT :: u8(4)"
+.B "FREE :: u8(5)"
+.B "FLUSH :: u8(6)"
+.B "HEADER :: 4"
+.B "put_alloc :: proc(b: []u8, at: int, id: u32, w: u32, h: u32) -> int"
+.B "put_load :: proc(b: []u8, at: int, id: u32, x: u32, y: u32, w: u32, h: u32, pixels: []u8) -> int"
+.B "put_fill :: proc(b: []u8, at: int, id: u32, x: u32, y: u32, w: u32, h: u32, color: u32) -> int"
+.B "put_blit :: proc(b: []u8, at: int, dst: u32, dx: u32, dy: u32, src: u32, sx: u32, sy: u32, sw: u32, sh: u32) -> int"
+.B "put_free :: proc(b: []u8, at: int, id: u32) -> int"
+.B "put_flush :: proc(b: []u8, at: int) -> int"
+.B "put_text :: proc(b: []u8, at: int, a: Atlas, dst: u32, x: u32, y: u32, text: string) -> (nat: int, put: int)"
+.B "Atlas :: struct { first_image_id: u32, per_image: int, cell_w: int, cell_h: int, first_char: u8, count: int }"
+.B "atlas_cell :: proc(a: Atlas, idx: int) -> (image: u32, sx: u32)"
+.B "parse_geometry :: proc(report: []u8) -> (w: int, h: int, pitch: int, depth: int, ok: bool)"
+.B "scan_int :: proc(data: []u8, at: ^int) -> (int, bool)"
+.B "win_name :: proc(n: int) -> string"
+.B "win_index :: proc(name: string) -> int"
+.B "win_dir :: proc(buf: []u8, mnt: string, n: int) -> string"
+.B "win_path :: proc(buf: []u8, mnt: string, n: int, leaf: string) -> string"
+.fi
+.SH DESCRIPTION
+.I Libdraw
+encodes and decodes the command stream a window's
+.B data
+file carries, described in
+.IR intuition (4).
+It writes nothing itself: every
+.I put
+procedure appends one command to a caller's own buffer at offset
+.I at
+and returns the offset just past it, or \-1 when the command would not
+fit.
+A caller collects a batch this way and writes the buffer to
+.B data
+itself, in pieces no larger than one 9P message if the batch is large;
+.IR intuition (4)
+answers each write as a whole and fails the entire write on the first
+malformed command in it.
+.PP
+A command is a four-byte header followed by a body of little-endian
+.B u32
+fields:
+.IP
+.EX
+size[2]   the whole command, header included
+verb[1]   one of the six below
+zero[1]   reserved, and refused when set
+.EE
+.PP
+.B put_header
+writes the header and answers where the body goes;
+.B put_cmd
+is the shared body for every fixed-field verb, writing the header and then
+each of its
+.B u32
+fields in order.
+Both are private to
+.IR libdraw ;
+they exist to keep the size and offset arithmetic in one place, so a new
+verb cannot miscount it, and are documented here because every
+.I put
+procedure below is built from them.
+.PP
+The six verbs, and the fields their bodies carry:
+.TP 10
+.B ALLOC
+.IR id ", " w ", " h
+.TP
+.B LOAD
+.IR id ", " x ", " y ", " w ", " h ", then " w * h * 4
+bytes of pixels, row by row
+.TP
+.B FILL
+.IR id ", " x ", " y ", " w ", " h ", " color
+.TP
+.B BLIT
+.IR "dst id" ", " dx ", " dy ", " "src id" ", " sx ", " sy ", " sw ", " sh
+.TP
+.B FREE
+.I id
+.TP
+.B FLUSH
+no fields
+.PD
+.PP
+.B Put_alloc
+,
+.B put_load
+,
+.B put_fill
+,
+.B put_blit
+,
+.B put_free
+and
+.B put_flush
+each write one command of the matching verb.
+.I Id
+zero means the window's own client area, as both a
+.B fill
+and a
+.B blit
+destination; a window is never a valid
+.B blit
+source.
+A pixel is a 32-bit word, and
+.B put_load's
+.I pixels
+argument is already in that row-major layout.
+.PP
+.B Put_text
+packs one
+.B blit
+per character of
+.I text
+at
+.RI ( x , y )
+on
+.IR dst ,
+stopping at the first character the buffer has no room for.
+It answers the new offset and how many characters it consumed; a count
+short of the whole string is the caller's cue to write what it has and call
+again with the rest, the same rule
+.B put_pieces
+follows in
+.IR chrome (2).
+A character outside the
+.B Atlas
+consumes with no blit, which is why an uploader need not carry a glyph
+for space.
+.PP
+An
+.B Atlas
+describes glyph images already uploaded with
+.BR put_alloc / put_load :
+.I count
+cells of
+.IR cell_w " by " cell_h ,
+.I per_image
+to a strip, starting at character
+.I first_char
+and image id
+.IR first_image_id .
+.B Atlas_cell
+answers which image and column cell
+.I idx
+lives in; a caller baking strips runs the same arithmetic in reverse.
+.PP
+.B Parse_geometry
+reads the four decimal numbers a window's
+.B ctl
+or
+.B /dev/fbctl
+answers with: width, height, the row's byte pitch, and the depth.
+.B Scan_int
+is the digit scanner both that and every other decimal report in this
+system are built from: it skips leading space, reads an optional
+.B \-
+and a run of digits from
+.I data
+starting at
+.IR at^ ,
+advances
+.I at^
+past what it read, and answers false where there was no digit to read.
+.PP
+.B Win_name
+is window
+.IR n 's
+directory name under a mounted
+.BR /srv/draw ,
+the decimal string
+.IR intuition (4)
+also uses; empty past the last window.
+.B Win_index
+is the inverse, the window number a directory name names, or \-1.
+.B Win_dir
+builds
+.BI mnt / n
+into a caller's buffer, the directory a client binds over
+.B /dev
+to make its window's
+.B cons
+and
+.B mouse
+the ones read by name; see
+.IR bind (2).
+.B Win_path
+builds
+.BI mnt / n / leaf
+the same way.
+Both answer the empty string when the buffer is too small.
+.SH EXAMPLES
+Claim a window, upload a filled square as image 1, and blit it into the
+client area:
+.IP
+.EX
+libuser.mount("/srv/draw", "/mnt", 0)
+nfd := libuser.open("/mnt/new", abi.O_RDONLY)
+n := libuser.read(int(nfd), buf[:])
+scan := 0
+win, _ := libdraw.scan_int(buf[:n], &scan)
+
+path: [64]u8
+fd := libuser.open(libdraw.win_path(path[:], "/mnt", win, "data"), abi.O_WRONLY)
+
+at := libdraw.put_alloc(cmd[:], 0, 1, 16, 16)
+at = libdraw.put_fill(cmd[:], at, 1, 0, 0, 16, 16, 0x00ffb028)
+at = libdraw.put_blit(cmd[:], at, 0, 8, 8, 1, 0, 0, 16, 16)
+at = libdraw.put_flush(cmd[:], at)
+libuser.write(int(fd), cmd[:at])
+.EE
+.SH SOURCE
+.B sys/libdraw/draw.odin
+.br
+.B sys/libdraw/text.odin
+.SH SEE ALSO
+.IR intuition (4),
+.IR chrome (2),
+.IR mui (2),
+.IR font (2),
+.IR fb (3),
+.IR bind (2)
+.SH DIAGNOSTICS
+A
+.I put
+procedure answers \-1, or for
+.B put_text
+the offset it was given and zero characters consumed, when the command
+would not fit in the buffer.
+.B Scan_int
+and
+.B parse_geometry
+answer
+.I ok
+false on text that is not the number or numbers expected; neither reports
+which byte was wrong.
+Errors a malformed command draws from
+.IR intuition (4)
+itself are reported over 9P on the write that carried it, not by anything
+in this package.

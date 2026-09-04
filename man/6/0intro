@@ -1,0 +1,47 @@
+.TH INTRO 6
+.SH NAME
+intro \- introduction to file formats
+.SH DESCRIPTION
+This section describes file formats and conventions: the shape of a
+program image on disk, the notation a document is typeset in, the
+chords a keyboard and a mouse produce, and the files that carry a
+convention rather than a service.
+None of these is a device or a program.
+Each is a way of reading bytes that something else writes and
+something else reads back.
+.PP
+.IR Man (6)
+is the macro package this manual is typeset in.
+.IR Vx (6)
+describes
+.B VECTRA01
+and
+.BR VECTRA02 ,
+the two shapes a program image takes on disk and in the kernel's own
+pak.
+.IR Keys (6)
+lists the chords the draw server acts on.
+.IR Workspaces (6)
+describes the file that names a workspace's windows.
+.IR Theme (6)
+describes the toolkit's look as a file, read rather than compiled in.
+.IR Keyboard (6)
+describes what a key delivers at each layer between a scancode and a
+line of text.
+.IR Regexp (6)
+is the regular expression notation
+.B sys/libregex
+matches.
+.IR Kfs (6)
+describes the on-disk shape of
+.IR kfs (4),
+Vectra's own file system.
+.SH SEE ALSO
+.IR man (6),
+.IR vx (6),
+.IR keys (6),
+.IR workspaces (6),
+.IR theme (6),
+.IR keyboard (6),
+.IR regexp (6),
+.IR kfs (6)

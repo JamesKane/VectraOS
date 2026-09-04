@@ -1,0 +1,113 @@
+.TH KBD 2
+.SH NAME
+step,
+is_modifier,
+char_of,
+rune_of,
+extended_rune \- scancode translation
+.SH SYNOPSIS
+.B import "vsys:libkbd"
+.PP
+.nf
+.B "Key :: distinct u16"
+.B "State :: struct { shift, ctrl, alt, caps, extended: bool }"
+.fi
+.PP
+.nf
+.B "step :: proc(s: ^State, code: u8) -> (key: Key, down: bool, ok: bool)"
+.B "is_modifier :: proc(key: Key) -> bool"
+.B "char_of :: proc(s: ^State, key: Key) -> (r: rune, ok: bool)"
+.B "rune_of :: proc(s: ^State, key: Key) -> (r: rune, ok: bool)"
+.B "extended_rune :: proc(make: u8) -> (rune, bool)"
+.fi
+.SH DESCRIPTION
+.I Libkbd
+is the scancode state machine both the kernel's keyboard driver and
+.IR kbdfs (4)
+translate PC scancode set 1 with, in a US layout.
+It is the one copy of the translation both privilege levels call: the
+kernel for
+.BR /dev/cons ,
+.I kbdfs
+for the
+.B cons
+and
+.B kbd
+files it serves (see
+.IR keyboard (6)).
+.PP
+A scancode names a
+.I position
+on the keyboard, a
+.BR Key ,
+not a character: what a position means depends on the modifier state
+held at the moment.
+.I Step
+takes one raw scancode byte and updates
+.IR s ,
+answering the position it names and whether the key went down.
+.B Ok
+is false for the
+.B 0xE0
+extended prefix byte, which names no key on its own; the state
+remembers it for the code that follows and sets the returned
+.IR key 's
+high bit.
+Shift, control and alt move in
+.I s
+on both the press and the release, because their release matters.
+Caps lock latches on the press only.
+.PP
+.I Is_modifier
+answers whether a position is one whose only meaning is what it does to
+the other keys: shift, control, alt, caps lock, num lock and scroll
+lock.
+.PP
+.I Char_of
+is what a cooked byte stream delivers for a press: the rune the position
+means now, unless the key is a modifier or alt is held.
+Both of those answer
+.B ok
+false, because a key pressed with alt held is a chord, and a chord makes
+no character (see
+.IR keyboard (6)).
+.PP
+.I Rune_of
+is what a position means under the modifier state now, whether or not
+alt is held.
+A modifier key answers its own rune, so a reader of
+.B kbd
+sees it among the keys held.
+A key behind the extended prefix answers
+.IR extended_rune 's
+answer.
+A function key answers
+.BR libkey.KF1
+and up.
+A position with a character on it answers the character, shifted,
+cased by caps lock, and then made a control character by control, in
+that order.
+Control combined with anything but a letter answers
+.B ok
+false rather than a byte nobody meant.
+Anything else, including a position this layout gives no meaning,
+answers
+.B ok
+false.
+.PP
+.I Extended_rune
+is the second half of an extended scancode as the rune Plan 9 gives that
+key: the arrow keys, home, end, page up, page down, insert, delete and
+print screen.
+Keypad enter and the keypad slash are the two keys behind the prefix
+that answer a character rather than a rune from
+.IR libkey .
+.SH SOURCE
+.B sys/libkbd/kbd.odin
+.SH SEE ALSO
+.IR keyboard (6),
+.IR kbdfs (4),
+.IR edit (2)
+.SH BUGS
+Only scancode set 1 and a US layout are known.
+There is no way to load another layout.

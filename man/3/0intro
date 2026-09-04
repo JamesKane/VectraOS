@@ -1,0 +1,155 @@
+.TH INTRO 3
+.SH NAME
+intro \- introduction to kernel devices
+.SH DESCRIPTION
+A kernel device is a tree of files answered inside the kernel by procedure
+calls rather than by a program on the far end of a wire.
+It still speaks the same protocol as everything else in the tree,
+9P2000.L, so a client cannot tell a device from a mounted server by the
+messages it sends.
+A device's name is
+.B #
+followed by one character, such as
+.BR #c ,
+and the character after the
+.B #
+picks the device out of a table built at boot.
+.PP
+Access to a device by its
+.B #
+name reaches it with no namespace at all, which is what a device is for.
+A process forked with the
+.B RFCNAMEG
+flag (see
+.IR fork (2))
+has an empty name space and no path to anything, and something has to be
+able to hand it a console.
+.IR root (3)
+is the extreme case: the kernel rebuilds a whole name space from
+.B #/
+after a namespace goes empty, which is the one path back.
+Because it bypasses the name space, a
+.B #
+name is a privilege rather than an ordinary path, and a program is expected
+to reach a device through a bound name in its own tree instead.
+.IR bind (1)
+and
+.IR bind (2)
+put a device at its conventional place.
+.PP
+A device registers itself once, at boot, in a table of sixteen slots.
+Two devices that want the same character is a build-order mistake, and the
+second registration is refused rather than allowed to shadow the first.
+The table is consulted on every
+.B #
+attach and nowhere else, so binding a device where it belongs costs one
+lookup and using it afterwards costs none.
+.PP
+Several files in
+.B /dev
+are served by one device,
+.BR #c .
+.IR cons (3),
+.IR fb (3),
+.IR kbd (3),
+.IR uart (3)
+and
+.IR mouse (3)
+each document part of what
+.B #c
+answers: the console and its control file, the raw screen, the raw scancode
+stream, the raw serial line, and the pointer.
+A single bind of
+.B #c
+at
+.B /dev
+is what makes every one of those files appear together.
+.SS The ctl convention
+When a device needs an operation that 9P has no message for, the answer is a
+file that takes a line of text rather than a new kind of message.
+.B /dev/consctl
+(see
+.IR cons (3))
+is the first of these and sets the shape every later one follows.
+One write is one command, and a command split across two writes is not
+reassembled.
+A command nothing recognises is refused whole, with
+.BR EINVAL ,
+so a client can never believe part of an unrecognised command took effect.
+Where reading a
+.B ctl
+file back is useful, it answers with the commands that would restore the
+state it reports, not a status report in a vocabulary of its own.
+A last close often reverts what a
+.B ctl
+file changed, so a program that set a mode and then ended abnormally does
+not leave a device stuck in it.
+.SS The devices
+.TP 6
+.B #/
+.IR root (3),
+the root of the boot name space
+.TP
+.B #c
+.IR cons (3),
+.IR fb (3),
+.IR kbd (3),
+.IR uart (3)
+and
+.IR mouse (3),
+bound at
+.B /dev
+.TP
+.B #e
+.IR env (3),
+bound at
+.B /env
+.TP
+.B #s
+.IR srv (3),
+bound at
+.B /srv
+.TP
+.B #p
+.IR proc (3),
+bound at
+.B /proc
+.TP
+.B #b
+.IR bin (3),
+bound at
+.B /bin
+.TP
+.B #l
+.IR bin (3),
+bound at
+.B /lib
+.TP
+.B #S
+.IR sd (3),
+bound at
+.B /dev
+as a second member, after
+.B #c
+.TP
+.B #E
+.IR ether (3),
+bound at
+.B /dev
+as a second member, when a network card came up
+.PD
+.PP
+.IR pipe (3)
+is reached a different way: through the
+.I pipe
+system call rather than through a
+.B #
+name, and is documented on its own page.
+.SH SEE ALSO
+.IR intro (1),
+.IR intro (2),
+.IR bind (1),
+.IR bind (2),
+.IR fork (2),
+.IR dev (9),
+.IR vfs (9)

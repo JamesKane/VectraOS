@@ -1,0 +1,135 @@
+.TH FORK 2
+.SH NAME
+rfork, spawn \- manipulate process resources
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "rfork :: proc(flags: u64) -> i64"
+.B "spawn :: proc(path: string, flags: u64, argv: []string = nil) -> i64"
+.fi
+.SH DESCRIPTION
+.I Rfork
+is Plan 9's fork.
+.I Flags
+is the logical OR of some subset of the
+.B RF*
+bits in
+.BR sys/abi ,
+and says which resources of the calling process (the parent) are shared
+by a new process (the child), copied into it, or emptied for it.
+If
+.B RFPROC
+is set, a new process is created; the value answered in the parent is the
+child's pid, and the value answered in the child is zero, both at the
+instruction after the call.
+Without
+.BR RFPROC ,
+the flags act on the caller in place and the answer is zero.
+.TP
+.B RFPROC
+make a child; without it the other flags change the caller instead
+.TP
+.B RFMEM
+the child shares the parent's writable data and anonymous memory rather
+than copying it; refused without
+.B RFPROC
+.TP
+.B RFFDG
+copy the descriptor table rather than share it
+.TP
+.B RFCFDG
+give the child an empty descriptor table; mutually exclusive with
+.B RFFDG
+.TP
+.B RFNAMEG
+copy the name space rather than share it
+.TP
+.B RFCNAMEG
+give the child an empty name space; mutually exclusive with
+.B RFNAMEG
+.TP
+.B RFENVG
+copy the environment rather than share it
+.TP
+.B RFCENVG
+give the child an empty environment; mutually exclusive with
+.B RFENVG
+.TP
+.B RFNOTEG
+put the child in a note group of its own rather than its parent's; see
+.IR notify (2)
+.TP
+.B RFNOWAIT
+detach the child at birth: it has no parent to
+.I wait
+for it, and the kernel collects it when it ends; refused without
+.B RFPROC
+.TP
+.B RFREND
+put the caller (or, with
+.BR RFPROC ,
+the child) in a rendezvous group of its own; see
+.IR rendezvous (2)
+.PD
+.PP
+The text segment and every read-only segment are always shared, because
+nothing can write them.
+The stack is always copied: two processes returning through one stack
+would unwind each other.
+Descriptors and the name space default to
+.IR shared ,
+which is Plan 9's
+.I fork
+and not
+.IR spawn 's.
+A flag bit this kernel does not implement \(em Plan 9's
+.B RFNOMNT
+among them \(em is refused with
+.BR EINVAL ,
+rather than silently ignored.
+.PP
+.I Spawn
+starts a program at
+.I path
+as a new process in one call, fork and exec together rather than
+.I rfork
+followed by
+.IR exec .
+.I Argv
+is the new program's arguments, its own name first by convention: the
+kernel adds nothing to it.
+.I Flags
+is the logical OR of
+.BR abi.SPAWN_NS_COPY ,
+which copies the caller's name space into the child instead of sharing
+it,
+.BR SPAWN_NS_CLEAN ,
+which gives the child an empty name space, and
+.BR SPAWN_FD_CLEAN ,
+which gives the child an empty descriptor table instead of a copy of the
+caller's.
+Zero shares the name space and copies the descriptors, which is Plan 9's
+default for a loaded program.
+The answer is the new process's pid, the name
+.I wait
+takes.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/rfork.odin
+.br
+.B kernel/user/spawn.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR exec (2),
+.IR wait (2),
+.IR notify (2),
+.IR rendezvous (2)
+.SH DIAGNOSTICS
+Answers a pid, zero, or a negative
+.B \-errno
+as described above; see
+.IR errstr (2).
+.B EAGAIN
+is a process table with no room for a child.

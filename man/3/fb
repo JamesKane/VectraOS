@@ -1,0 +1,96 @@
+.TH FB 3
+.SH NAME
+fb, fbctl \- the screen as a file
+.SH SYNOPSIS
+.B bind #c /dev
+.nf
+
+.B /dev/fb
+.B /dev/fbctl
+.fi
+.SH DESCRIPTION
+.B Fb
+is the screen's own memory, addressed as a file.
+A byte at offset
+.RI y " * pitch + " x " * bytes-per-pixel"
+is the low byte of the pixel at column
+.I x
+and row
+.IR y ,
+and a write there changes it.
+.B Fbctl
+beside it reports the geometry a program needs to do that arithmetic, for
+example:
+.IP
+.EX
+size 1280 800
+pitch 5120
+depth 32
+r 8 16
+g 8 8
+b 8 0
+.EE
+.PP
+One fact per line:
+.B size
+in pixels,
+.B pitch
+in bytes per row,
+.B depth
+in bits per pixel, and
+.BR r ,
+.B g
+and
+.B b
+as each colour channel's width in bits and its shift into the pixel word.
+There is nothing yet that can be set about the hardware, so every write to
+.B fbctl
+is refused with
+.BR EINVAL .
+.PP
+Every other file this device serves has no length, because its contents are
+the future.
+.B Fb
+is the exception: it has exactly
+.RI height " * pitch"
+bytes, all of them present at once, and a read or a write names which of
+them with its offset.
+A read at or past the end answers zero bytes, a true end of file.
+A read or a write that straddles the end moves what fits and reports that
+count.
+A write that starts at or past the end is refused with
+.BR ENOSPC ,
+because there is no room at that offset and a count of zero would only
+invite trying again at the same place.
+.PP
+Nothing serialises two writers to
+.BR fb .
+Two programs drawing the same pixels tear the picture, not any state the
+kernel keeps, and the kernel's own console shares the surface on exactly
+those terms.
+.PP
+While any fid holds
+.B fb
+open, the console stops drawing on the glass and draws into a copy instead,
+so a program that opens
+.B fb
+gets the screen to itself.
+The console keeps working at its own pace, and nothing is lost.
+When the last such fid closes, the whole frame -- not only the region the
+console used -- is copied back, so anything the holder painted stays on
+the screen until something draws over it.
+.SH SOURCE
+.B kernel/devfs/fbdev.odin
+.SH SEE ALSO
+.IR intro (3),
+.IR cons (3),
+.IR draw (2)
+.SH DIAGNOSTICS
+A write to
+.B fbctl
+of any bytes at all fails with
+.BR EINVAL .
+A write to
+.B fb
+starting at or past the end of the frame fails with
+.BR ENOSPC .

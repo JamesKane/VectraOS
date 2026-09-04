@@ -1,0 +1,59 @@
+.TH ERROR 5
+.SH NAME
+lerror \- return an error
+.SH SYNOPSIS
+.nf
+.B size[4] Rlerror tag[2] ecode[4]
+.fi
+.SH DESCRIPTION
+.B Rlerror
+is the reply to a request the server understood and refused.
+There is no
+.BR Tlerror ;
+type 6 is reserved and illegal on the wire.
+.B Rlerror
+replaces whatever reply the request would otherwise have carried,
+and its tag is the failing request's own.
+.PP
+9P2000.L's break from plain 9P is here:
+.I ecode
+is a number, not a string.
+It is one of Linux's errno values, because that is what a Linux
+client expects and Vectra's codec is a wire-compatibility layer over
+it, not an endorsement of errno as an error model.
+The names Vectra's servers actually produce, and their numbers:
+.PP
+.nf
+EPERM 1     EACCES 13    ENFILE 23      ENOTEMPTY 39
+ENOENT 2    EFAULT 14    EMFILE 24      ELOOP 40
+ESRCH 3     EBUSY 16     ENOSPC 28      EPROTO 71
+EINTR 4     EEXIST 17    ESPIPE 29      EOPNOTSUPP 95
+EIO 5       EXDEV 18     EROFS 30       ETIMEDOUT 110
+ENXIO 6     ENODEV 19    EMLINK 31      ECONNREFUSED 111
+E2BIG 7     ENOTDIR 20   EPIPE 32
+ENOEXEC 8   EISDIR 21    EDEADLK 35
+EBADF 9     EINVAL 22    ENAMETOOLONG 36
+ECHILD 10                ENOSYS 38
+EAGAIN 11
+ENOMEM 12
+.fi
+.PP
+An unnamed number is still a legal
+.IR ecode ;
+it simply prints as a number rather than a name, both to a client
+and in a kernel log.
+.PP
+This is distinct from a codec failure: a message whose bytes are
+short, malformed, or of a type the server does not recognise has no
+.B Rlerror
+built for it, because the request was never understood well enough
+to answer.
+See
+.IR intro (5).
+.SH SOURCE
+.B sys/vectra9/proto.odin
+.br
+.B sys/vectra9/errors.odin
+.SH SEE ALSO
+.IR intro (5),
+.IR flush (5)

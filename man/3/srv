@@ -1,0 +1,86 @@
+.TH SRV 3
+.SH NAME
+srv \- server registry
+.SH SYNOPSIS
+.B bind #s /srv
+.nf
+
+.BI /srv/ service1
+.BI /srv/ service2
+\&...
+.fi
+.SH DESCRIPTION
+The
+.I srv
+device serves a one-level directory of names, each a service something
+posted while the machine ran.
+Anything that can name
+.B /srv
+can mount what is posted there.
+See
+.IR bind (1)
+and
+.IR bind (2).
+.PP
+Posting is two steps, the way Plan 9's is.
+Creating
+.BI /srv/ name
+reserves the name and makes a
+.IR pending
+entry: nothing serves it yet, and a mount of it fails with
+.BR ENXIO .
+Writing a decimal file descriptor number to the open fid completes it: the
+kernel takes the channel behind that descriptor in the calling process's
+own table, and from then on the name reaches whatever that descriptor was
+open on.
+A write of a descriptor to an entry already completed fails with
+.BR EPERM ,
+because a posted service is not a thing to swap out from under whoever
+already mounted its name.
+.PP
+Removing
+.BI /srv/ name
+takes the name away, pending or completed, and does not stop the service:
+a mount made before the removal keeps working, because it holds the
+channel directly rather than the name.
+What ends is the ability to make a new mount by that name.
+.PP
+Reading
+.BI /srv/ name
+answers one line: the
+.B #
+name of the device serving it, and whether it has worker threads of its
+own or answers directly on the caller's, or the single word
+.B pending
+for an entry nothing has completed yet.
+.SH EXAMPLES
+Posting one end of a pipe as a named service:
+.IP
+.EX
+fd = create("/srv/namedpipe", OWRITE, 0666)
+fprint(fd, "%d", p[0])
+close(fd)
+.EE
+.SH SOURCE
+.B kernel/srv
+.SH SEE ALSO
+.IR intro (3),
+.IR bind (1),
+.IR bind (2),
+.IR pipe (2),
+.IR open (2)
+.SH DIAGNOSTICS
+Creating a name already posted, pending or completed, fails with
+.BR EEXIST .
+Mounting a name whose entry is still pending fails with
+.BR ENXIO .
+Writing a descriptor to an already-completed entry fails with
+.BR EPERM .
+Writing something other than a decimal number fails with
+.BR EINVAL .
+.SH BUGS
+Unlike Plan 9's
+.BR /srv ,
+reading an entry does not hand back the channel itself: there is no
+descriptor to pass through a read, so a read reports the service's
+identity in text instead.

@@ -1,0 +1,77 @@
+.TH MOUSE 3
+.SH NAME
+mouse \- the pointer
+.SH SYNOPSIS
+.B bind #c /dev
+.nf
+
+.B /dev/mouse
+.fi
+.SH DESCRIPTION
+.B Mouse
+reports the pointer's position and buttons, one line per movement.
+It is one of the files the
+.B #c
+device serves.
+See
+.IR cons (3)
+for the rest of the directory.
+.PP
+A read parks until the mouse has moved, or a button has changed, since the
+last line this file answered, and then answers exactly one line: the
+letter
+.BR m ,
+followed by four eleven-character decimal fields, each followed by a
+space:
+.I x
+and
+.I y
+in pixels, the button state as a bitmask with the 1, 2 and 4 bits for the
+left, middle and right buttons, and a timestamp in milliseconds.
+The line is always 49 bytes.
+.PP
+Nothing in the kernel reads this file first.
+Unlike
+.BR scancode " and " eia0
+(see
+.IR kbd (3)
+and
+.IR uart (3)),
+opening
+.B mouse
+does not divert anything away from another consumer, because there is no
+other consumer to divert it from.
+.PP
+.B Mouse
+has one reader at a time.
+An open while another fid already holds it fails with
+.BR EBUSY .
+An open on a machine with no mouse driver fails with
+.BR ENXIO ,
+so a program learns at once rather than parking on a file that will never
+answer.
+.PP
+.B Mouse
+is read-only.
+A write fails with
+.BR EPERM .
+.SH SOURCE
+.B kernel/devfs/mouse.odin
+.br
+.B kernel/drivers/mouse
+.SH SEE ALSO
+.IR intro (3),
+.IR cons (3),
+.IR kbd (3),
+.IR uart (3)
+.SH DIAGNOSTICS
+Opening
+.B mouse
+while it is already held fails with
+.BR EBUSY .
+Opening it with no mouse present fails with
+.BR ENXIO .
+A write fails with
+.BR EPERM .
+A read that is still unanswered when the connection abandons it fails with
+.BR EINTR .

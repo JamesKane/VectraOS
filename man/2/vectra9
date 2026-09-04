@@ -1,0 +1,266 @@
+.TH VECTRA9 2
+.SH NAME
+Msg, Kind, Qid, Fid, Tag, encode, decode, message_size, Session, Transport, Handler, Errno \- the 9P2000.L message layer
+.SH SYNOPSIS
+.B import "vsys:vectra9"
+.PP
+.nf
+.B "Fid :: distinct u32"
+.B "Tag :: distinct u16"
+.B "Qid :: struct { kind: Qid_Flags, version: u32, path: u64 }"
+.B "Kind :: enum u8 { Rlerror = 7, ..., Tremove = 122, Rremove = 123 }"
+.B "Msg :: union { Rlerror, Tversion, Rversion, Tattach, Twalk, Tread, Rread, Twrite, ... }"
+.PP
+.B "kind :: proc(msg: Msg) -> Kind"
+.B "kind_name :: proc(k: Kind) -> string"
+.B "is_request :: proc(kind: Kind) -> bool"
+.B "creates :: proc(k: Kind) -> bool"
+.PP
+.B "encode :: proc(buf: []u8, tag: Tag, msg: Msg) -> (n: int, err: Error)"
+.B "decode :: proc(data: []u8) -> (tag: Tag, msg: Msg, err: Error)"
+.B "message_size :: proc(data: []u8) -> (size: u32, ok: bool)"
+.PP
+.B "Handler :: #type proc(server: rawptr, s: ^Session, tag: Tag, request: ^Msg, reply: ^Msg, buf: []u8)"
+.B "Transport :: struct { data: rawptr, call: proc(...) -> Error, call_for: proc(...) -> Error }"
+.B "Session :: struct { transport: Transport, msize: u32, version: string, next_tag: Tag, next_fid: Fid }"
+.B "session_from :: proc(transport: Transport) -> Session"
+.B "negotiate :: proc(s: ^Session, msize: u32 = 8192) -> Error"
+.B "call :: proc(s: ^Session, request: ^Msg, reply: ^Msg, buf: []u8 = nil) -> Error"
+.PP
+.B "Errno :: distinct u32"
+.B "error_reply :: proc(code: Errno) -> Msg"
+.B "errno_name :: proc(code: Errno) -> string"
+.fi
+.SH DESCRIPTION
+Vectra9 is the message layer of Vectra's file protocol.
+The wire it serialises to, when it serialises at all, is
+.BR 9P2000.L ,
+unmodified: nothing here invents a message, adds a field to one, or
+negotiates a private version string.
+.PP
+.B Msg
+is a decoded message, an Odin tagged union over the fifty-odd 9P2000.L
+bodies, one struct per message such as
+.B Tattach
+or
+.BR Rread .
+Every participant, in the kernel or out of it, produces and consumes
+these; a
+.BR devfs (3)
+read of
+.B /dev/cons
+builds a
+.BR Tread ,
+hands it to a handler, and gets an
+.B Rread
+back, with no buffer, no parse and no copy of the payload.
+.I Kind
+is the wire's own numbering of a message, in
+.IR kind ;
+.I is_request
+reports whether a kind is a
+.B T
+message, and
+.I creates
+reports whether one would make, rename or link a file.
+.PP
+.B "A decoded message borrows its buffer."
+Strings and byte slices inside a
+.B Msg
+point into whatever it was decoded from, or, for a message built by
+hand, into whatever the builder owns.
+They are valid exactly as long as that memory is, and no part of this
+package copies to make that easier.
+This is what lets an
+.B Rread
+of a full buffer cost nothing to pass around, and it is the rule most
+easily broken: a caller that reuses the bytes a
+.B Msg
+still points into has corrupted a live reply.
+The rule holds for one request at a time; a transport that runs several
+at once gives each one storage of its own and passes it as
+.IR buf ,
+so the reply borrows the request rather than a buffer another handler is
+already writing into.
+.PP
+.I Encode
+turns a tagged
+.B Msg
+into wire bytes in
+.IR buf ,
+framed as
+.B size[4] type[1] tag[2]
+then the body, with
+.I size
+counting itself.
+.I Decode
+is the reverse.
+.I Message_size
+reads just the four-byte size prefix of a header, to tell a caller how
+much more to read before calling
+.IR decode .
+Only a transport that crosses an address space calls any of the three;
+an in-process call passes the
+.B Msg
+by pointer and never serialises.
+.PP
+A
+.B Session
+is one client's conversation with one server: a negotiated
+.IR msize ,
+a fid space, a tag space and a
+.BR Transport .
+.I Session_from
+builds one over a transport, and
+.I negotiate
+performs the
+.B Tversion
+handshake, taking the smaller of the offered and the answered
+.IR msize .
+.I Call
+sends one request and waits for its reply, allocating a tag from the
+session.
+A
+.B Handler
+is what a server presents: given a request it always produces a reply,
+even when the answer is no, which is what
+.B Rlerror
+is for.
+.PP
+.B Errno
+is the protocol's own error vocabulary, carried in an
+.B Rlerror
+reply as a Linux errno number rather than the text plain 9P used.
+.I Error_reply
+builds the
+.B Rlerror
+for a given code, and
+.I errno_name
+renders one for a log.
+It is a separate vocabulary from the codec's own
+.B Error
+type: an
+.B Errno
+means the request was well-formed and the answer is no, where a codec
+.B Error
+means the bytes themselves cannot be turned into a reply at all.
+.SS The message table
+All of 9P2000.L, in the encoding every implementation uses:
+.B size[4] type[1] tag[2]
+then the body, with
+.I size
+counting itself.
+A string,
+.BR s ,
+is a two-byte length then that many bytes, never NUL-terminated. A qid
+is thirteen bytes.
+.IP
+.EX
+Rlerror        ecode[4]
+Tstatfs/Rstatfs        fid[4] / type[4] bsize[4] blocks[8] bfree[8] ...
+Tlopen/Rlopen  fid[4] flags[4] / qid[13] iounit[4]
+Tlcreate/Rlcreate      fid[4] name[s] flags[4] mode[4] gid[4] / qid[13] iounit[4]
+Tsymlink/Rsymlink      fid[4] name[s] symtgt[s] gid[4] / qid[13]
+Tmknod/Rmknod  dfid[4] name[s] mode[4] major[4] minor[4] gid[4] / qid[13]
+Trename/Rrename        fid[4] dfid[4] name[s] / \(em
+Treadlink/Rreadlink    fid[4] / target[s]
+Tgetattr/Rgetattr      fid[4] request_mask[8] / valid[8] qid[13] ...
+Tsetattr/Rsetattr      fid[4] valid[4] mode[4] uid[4] gid[4] size[8] ... / \(em
+Txattrwalk/Rxattrwalk  fid[4] newfid[4] name[s] / size[8]
+Txattrcreate/Rxattrcreate      fid[4] name[s] attr_size[8] flags[4] / \(em
+Treaddir/Rreaddir      fid[4] offset[8] count[4] / count[4] data[count]
+Tfsync/Rfsync  fid[4] datasync[4] / \(em
+Tlock/Rlock    fid[4] type[1] flags[4] start[8] length[8] proc_id[4] client_id[s] / status[1]
+Tgetlock/Rgetlock      fid[4] type[1] start[8] length[8] proc_id[4] client_id[s] / same
+Tlink/Rlink    dfid[4] fid[4] name[s] / \(em
+Tmkdir/Rmkdir  dfid[4] name[s] mode[4] gid[4] / qid[13]
+Trenameat/Rrenameat    olddirfid[4] oldname[s] newdirfid[4] newname[s] / \(em
+Tunlinkat/Runlinkat    dirfid[4] name[s] flags[4] / \(em
+Tversion/Rversion      msize[4] version[s] / same
+Tauth/Rauth    afid[4] uname[s] aname[s] n_uname[4] / aqid[13]
+Tattach/Rattach        fid[4] afid[4] uname[s] aname[s] n_uname[4] / qid[13]
+Tflush/Rflush  oldtag[2] / \(em
+Twalk/Rwalk    fid[4] newfid[4] nwname[2] names[s]... / nwqid[2] qids[13]...
+Tread/Rread    fid[4] offset[8] count[4] / count[4] data[count]
+Twrite/Rwrite  fid[4] offset[8] count[4] data[count] / count[4]
+Tclunk/Rclunk  fid[4] / \(em
+Tremove/Rremove        fid[4] / \(em
+.EE
+.PP
+Absent, because 9P2000.L replaced them:
+.BR Topen ,
+.BR Tcreate ,
+.BR Tstat ,
+.BR Twstat ,
+.BR Rerror .
+Semantics for each message are in section 5:
+.IR version (5),
+.IR attach (5),
+.IR flush (5),
+.IR walk (5),
+.IR open (5),
+.IR read (5),
+.IR getattr (5)
+and
+.IR clunk (5).
+Errors are
+.IR error (5).
+.SH EXAMPLES
+A client negotiates over an in-process transport and then calls:
+.IP
+.EX
+session := vectra9.session_from(vectra9.in_process_transport(&direct))
+vectra9.negotiate(&session)
+err := vectra9.call(&session, &request, &reply, buf[:])
+.EE
+.PP
+A server answers a
+.B Tversion
+the way every server in this tree does:
+.IP
+.EX
+case vectra9.Tversion:
+	vectra9.version_reply(m, reply, FRAME)
+.EE
+.SH SOURCE
+.B sys/vectra9/proto.odin
+.br
+.B sys/vectra9/codec.odin
+.br
+.B sys/vectra9/session.odin
+.br
+.B sys/vectra9/errors.odin
+.SH SEE ALSO
+.IR serve (2),
+.IR 9p (2),
+.IR fid (2),
+.IR version (5),
+.IR attach (5),
+.IR flush (5),
+.IR walk (5),
+.IR open (5),
+.IR read (5),
+.IR getattr (5),
+.IR clunk (5),
+.IR error (5)
+.SH DIAGNOSTICS
+.I Encode
+and
+.I decode
+answer a codec
+.B Error
+when the bytes are wrong: a size that disagrees with the buffer, a
+string past the 16-bit length a length prefix can hold, a walk of more
+than sixteen elements, or a type byte that names no message.
+A protocol failure, the request well-formed and the answer no, is an
+.B Errno
+inside an
+.B Rlerror
+reply instead, never a codec
+.BR Error .
+.SH BUGS
+.I Session.next_fid
+is a monotonic counter that refuses at its ceiling rather than wrapping,
+so a session runs out of fids after four billion opens; there is no free
+list yet fed by
+.BR Tclunk .

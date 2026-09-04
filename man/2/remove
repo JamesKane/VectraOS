@@ -1,0 +1,41 @@
+.TH REMOVE 2
+.SH NAME
+remove \- remove a file
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "remove :: proc(path: string) -> i64"
+.fi
+.SH DESCRIPTION
+.I Remove
+resolves
+.I path
+in the caller's name space and removes it from the directory that
+contains it.
+If
+.I path
+is a directory, the server that holds it may refuse unless the directory
+is empty.
+.PP
+The channel to the file is spent whether or not the server agreed to
+remove it: a failed
+.I remove
+still consumes the walk that found the file, exactly as a failed 9P
+.B Tremove
+does.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR open (2)
+.SH DIAGNOSTICS
+Answers zero on success and a negative
+.B \-errno
+on failure; see
+.IR errstr (2).
+.SH BUGS
+There is no rename; a program that wants one copies the file under the
+new name and removes the old one.

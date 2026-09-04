@@ -1,0 +1,141 @@
+.TH BIO 2
+.SH NAME
+Reader, reader_init, read_line, read_all, read_file, Bio, bio_init, bio_write, bio_puts, bio_putc, bio_flush, eprint \- buffered input and output
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "Reader :: struct { fd: int, buf: [8192]u8, start: int, end: int, eof: bool }"
+.B "reader_init :: proc(r: ^Reader, fd: int)"
+.B "read_line :: proc(r: ^Reader) -> (line: string, ok: bool)"
+.B "read_all :: proc(fd: int, allocator: runtime.Allocator) -> (data: []u8, ok: bool)"
+.B "read_file :: proc(path: string, allocator: runtime.Allocator) -> (data: []u8, ok: bool)"
+.B "eprint :: proc(parts: ..string)"
+.PP
+.B "Bio :: struct { fd: int, used: int, buf: [4096]u8 }"
+.B "bio_init :: proc(b: ^Bio, fd: int)"
+.B "bio_write :: proc(b: ^Bio, data: []u8) -> bool"
+.B "bio_puts :: proc(b: ^Bio, s: string) -> bool"
+.B "bio_putc :: proc(b: ^Bio, c: u8) -> bool"
+.B "bio_flush :: proc(b: ^Bio) -> bool"
+.fi
+.SH DESCRIPTION
+.I Reader
+buffers a descriptor, 8192 bytes at a time, and hands out whole lines with
+.IR read_line .
+.I Reader_init
+readies
+.I r
+to read from
+.IR fd .
+.I Read_line
+answers the next line with its newline stripped, or
+.B false
+at the end of the file.
+The last line of a file that does not end in a newline is a line too.
+A line longer than the buffer is handed out whole, unterminated.
+The string
+.I read_line
+answers is valid only until the next call: it aliases
+.IR r 's
+own buffer, and a caller that needs it kept makes a copy.
+.PP
+.I Read_all
+reads a descriptor to its end into memory taken from
+.IR allocator ,
+for a tool that needs the whole input before it can start, such as
+.IR sort (1)
+or
+.IR tail (1).
+.I Read_file
+opens
+.I path
+and is
+.I read_all
+of it.
+Both answer
+.B false
+on any error, and the descriptor
+.I read_file
+opened is closed either way.
+.PP
+.I Eprint
+writes its arguments to descriptor 2, one after another, as a single
+message.
+It does no formatting and no allocation: an error line is a few strings,
+not a format string.
+.PP
+.B Bio
+is a buffered writer, the output half of
+.IR Reader .
+.I Bio_init
+readies
+.I b
+to write to
+.IR fd .
+.I Bio_write ,
+.I bio_puts
+and
+.I bio_putc
+copy bytes, a string or a byte into
+.IR b 's
+4096-byte buffer, flushing it to
+.I fd
+when it fills.
+.I Bio_flush
+writes whatever is buffered and empties it.
+All four answer
+.B false
+when a flush failed, which means the descriptor is gone.
+A program that writes with
+.B Bio
+and does not call
+.I bio_flush
+before it exits loses whatever is still buffered.
+.SH EXAMPLES
+.IR Uniq (1)
+reads lines and writes them buffered:
+.IP
+.EX
+r: libuser.Reader
+libuser.reader_init(&r, fd)
+out: libuser.Bio
+libuser.bio_init(&out, 1)
+for {
+	line, ok := libuser.read_line(&r)
+	if !ok {
+		break
+	}
+	libuser.bio_write(&out, line)
+	libuser.bio_putc(&out, '\en')
+}
+libuser.bio_flush(&out)
+.EE
+.PP
+.IR Tail (1)
+reads a whole file first:
+.IP
+.EX
+data, ok := libuser.read_all(fd, context.allocator)
+if !ok {
+	libuser.exits("read error")
+}
+.EE
+.SH SOURCE
+.B sys/libuser/lines.odin
+.br
+.B sys/libuser/main.odin
+.SH SEE ALSO
+.IR print (2),
+.IR open (2),
+.IR read (2),
+.IR sort (1),
+.IR tail (1),
+.IR uniq (1)
+.SH DIAGNOSTICS
+Every procedure here answers
+.B false
+or an empty result on failure.
+None of them sets an error string; a caller that needs one calls
+.IR errstr (2)
+on the descriptor operation that failed.

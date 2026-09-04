@@ -1,0 +1,136 @@
+.TH LETTERS 2
+.SH NAME
+letters, basename, join, cat_into, list_dir, read_dir, sort_strings, open_or_create, open_append \- what tools share
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "letters :: proc(args: []string, buf: []u8) -> (flags: string, rest: []string)"
+.B "basename :: proc(path: string) -> string"
+.B "join :: proc(dir, name: string, allocator := context.allocator) -> string"
+.B "cat_into :: proc(buf: []u8, parts: ..string) -> string"
+.B "list_dir :: proc(fd: int, allocator := context.allocator) -> []string"
+.B "read_dir :: proc(path: string, allocator := context.allocator) -> (names: []string, ok: bool)"
+.B "sort_strings :: proc(list: []string, allocator := context.allocator)"
+.B "open_or_create :: proc(path: string, flags: u64, mode: u64 = 0o666) -> i64"
+.B "open_append :: proc(path: string, mode: u64 = 0o666) -> i64"
+.fi
+.SH DESCRIPTION
+.I Letters
+takes the leading
+.RI \- abc
+flag words off the front of
+.I args
+and answers their letters as one string in
+.IR buf ,
+with whatever follows.
+A word that is
+.B \-
+alone, or that takes a value of its own, is not a flag word and is left
+for the caller to see in
+.IR rest .
+A tool with only single-letter flags is then a
+.B "for c in letters"
+over a switch.
+.PP
+.I Basename
+is the last element of
+.IR path ,
+trailing slashes ignored:
+.B c
+of
+.BR /a/b/c/ ,
+.B /
+of
+.BR / .
+.I Join
+is
+.IR dir / name ,
+from
+.IR allocator ,
+with no doubled slash; an empty
+.I dir
+answers
+.I name
+unchanged.
+.I Cat_into
+writes its
+.I parts
+into
+.I buf
+one after another and answers what fits, for a path built from a prefix
+and a number without arithmetic on literal lengths.
+.PP
+.I List_dir
+reads an open directory,
+.IR fd ,
+to its end and answers the names, each copied from
+.IR allocator ,
+in the server's order.
+.I Read_dir
+is
+.I list_dir
+of a named directory, opening and closing it; it answers
+.B false
+if
+.I path
+will not open.
+.I Sort_strings
+sorts
+.I list
+in place, a merge sort using one scratch slice from
+.IR allocator .
+.PP
+.I Open_or_create
+opens
+.I path
+for writing, truncated, or makes it if it does not exist: what
+.B >
+means to a shell.
+.I Flags
+is
+.B O_WRONLY
+or
+.BR O_RDWR .
+.I Open_append
+opens
+.I path
+for writing at its current end, or makes it: what
+.B >>
+means.
+.SH EXAMPLES
+.IR Grep (1)
+and most other tools take their flags this way:
+.IP
+.EX
+flag_buf: [8]u8
+letters, rest := libuser.letters(args, flag_buf[:])
+args = rest
+for c in transmute([]u8)letters {
+	switch c {
+	case 'i':
+		fold = true
+	case 'v':
+		invert = true
+	}
+}
+.EE
+.SH SOURCE
+.B sys/libuser/path.odin
+.SH SEE ALSO
+.IR bio (2),
+.IR open (2),
+.IR stat (2),
+.IR basename (1),
+.IR grep (1),
+.IR ls (1),
+.IR sort (1)
+.SH DIAGNOSTICS
+.I Read_dir
+and
+.I open_or_create
+answer
+.B false
+or a negative descriptor on the same errors
+.IR open (2)
+does.

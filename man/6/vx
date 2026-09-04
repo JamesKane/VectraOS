@@ -1,0 +1,113 @@
+.TH VX 6
+.SH NAME
+vx \- program image formats VECTRA01 and VECTRA02
+.SH SYNOPSIS
+.B VECTRA01
+.br
+.B VECTRA02
+.SH DESCRIPTION
+A
+.B .vx
+file is a program the loader in
+.IR user (9)
+can run: not an ELF, but the little that a loader needs from one, behind a
+four-byte magic that names which of the two shapes follows.
+.IR Build (8)
+links every program as an ELF and converts it with
+.B elf_to_image
+before it reaches a
+.B .vx
+file; nothing else writes one.
+.PP
+.B VECTRA01
+is one page of position-bound code, the shape a program written directly
+in the kernel's own tree of blobs takes.
+The header is four eight-byte little-endian words:
+.IP
+.EX
++0   magic      "VECTRA01"
++8   entry      the virtual address of the first instruction
++16  text       how many bytes of code follow the header
++24  reserved   zero, and refused when it is not
+.EE
+.PP
+.I Text
+must be no more than one page and no less than one byte, and
+.I entry
+must fall inside it.
+The bytes after the header are mapped read-only and executable at a fixed
+address, and the program is given one page of writable data and one page
+of stack besides.
+Its first argument is the data page's address, which is the whole of what
+such a program is handed; there is no
+.B abi.Args
+record.
+.PP
+.B VECTRA02
+is a linked program's shape: a segment table, one row per contiguous
+range of memory the program wants at its own permissions.
+The header is the same four words with a different last one:
+.IP
+.EX
++0   magic      "VECTRA02"
++8   entry      the virtual address of the first instruction
++16  nsegs      how many segment rows follow, 1 to 4
++24  reserved   zero, and refused when it is not
+.EE
+.PP
+Each row is thirty-two bytes, and the rows are followed by each segment's
+payload in turn, of
+.I filesz
+bytes:
+.IP
+.EX
++0   vaddr      the segment's virtual address, page-aligned
++8   filesz     bytes of payload that follow, at most memsz
++16  memsz      bytes the segment occupies once mapped
++24  flags      bit 0 write, bit 1 execute
+.EE
+.PP
+The loader refuses a table that breaks any of its rules: a segment must
+start on a page boundary, no segment may set both the write and the
+execute bit, segments must be given in ascending order and must not
+overlap, every segment must fall below the stack, and the entry must lie
+inside a segment that sets the execute bit.
+A segment with fewer file bytes than memory bytes is zero-filled past
+.IR filesz ,
+which is how a program gets writable memory an ELF's linker put in
+.BR .bss .
+.PP
+A
+.B VECTRA02
+program is given a stack of its own besides its segments, sixteen pages
+growing down from the top of the user half of the address space; only the
+top page is backed at first, and the rest are filled in as the stack
+grows.
+Its first argument is zero in the header, and
+.I spawn
+and
+.I exec
+(see
+.IR exec (2))
+fill it in with the address of an
+.B abi.Args
+record they build on the fresh stack, which
+.IR intro (2)
+describes.
+.PP
+Every segment and the stack together must fit within the frames one
+program is allowed, which bounds a
+.B VECTRA02
+program's whole memory image regardless of how many segments it uses.
+.SH SOURCE
+.B kernel/user/image.odin
+.br
+.B build.odin
+.SH SEE ALSO
+.IR build (8),
+.IR user (9),
+.IR intro (2),
+.IR exec (2)
+.SH BUGS
+There is no relocation and no dynamic linking; every address in a segment
+table is absolute, fixed by the link script the program was built with.

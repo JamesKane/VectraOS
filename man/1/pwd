@@ -1,0 +1,21 @@
+.TH PWD 1
+.SH NAME
+pwd \- working directory
+.SH SYNOPSIS
+.B pwd
+.SH DESCRIPTION
+.I Pwd
+prints the path name of the working directory,
+as the kernel records it.
+.SH SOURCE
+.B cmd/pwd/main.odin
+.SH SEE ALSO
+.I cd
+in
+.IR rc (1),
+.IR chdir (2)
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B getwd
+when the kernel cannot supply the name.
+The name is at most 1024 bytes.

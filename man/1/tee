@@ -1,0 +1,30 @@
+.TH TEE 1
+.SH NAME
+tee \- pipe fitting
+.SH SYNOPSIS
+.B tee
+[
+.B \-a
+]
+.I file ...
+.SH DESCRIPTION
+.I Tee
+transcribes the standard input to the standard
+output and makes copies in the
+.IR files .
+Each file is created, or truncated if it exists.
+The option
+.B \-a
+appends the output to the
+.I files
+rather than rewriting them.
+It is recognised only as the first argument.
+.SH SOURCE
+.B cmd/tee/main.odin
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B "can't open"
+when a file could not be opened.
+The input is still copied to the files that could.
+.SH BUGS
+An error writing to a file is not reported.

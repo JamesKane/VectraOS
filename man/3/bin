@@ -1,0 +1,89 @@
+.TH BIN 3
+.SH NAME
+bin, lib \- programs and files the kernel image carries
+.SH SYNOPSIS
+.B bind #b /bin
+.nf
+
+.BI /bin/ program1
+.BI /bin/ program2
+\&...
+.fi
+.PP
+.B bind #l /lib
+.nf
+
+.B /lib/tests/tools.rc
+.fi
+.SH DESCRIPTION
+.I Bin
+and
+.I lib
+each serve a flat, read-only tree of files baked into the kernel image at
+build time: a program in
+.BR bin ,
+a file that is not a program in
+.BR lib .
+Both are what a machine has before any disk is mounted, which is why the
+kernel's first program comes from them:
+.B /bin/rc /lib/init
+(see
+.IR intro (1)).
+.PP
+A file under
+.B /bin
+is a program in the
+.B VECTRA01
+or
+.B VECTRA02
+image format (see
+.IR vx (6)).
+.IR Exec (2)
+reads a file by that format regardless of where it came from, so a program
+under
+.B /bin
+differs from one loaded off a disk only in which file server answered the
+read.
+.PP
+.B /lib/tests/tools.rc
+is the script
+.I verify
+runs the shell against at boot (see
+.IR verify (8)).
+.PP
+Both trees are read-only: creating, removing or renaming a file in either
+fails with
+.BR EPERM .
+The programs and files a machine actually runs come from the boot disk's
+.B /n/esp/vectra/bin
+and
+.B /n/esp/vectra/lib
+instead, bound in front of these two once
+.IR fatfs (4)
+is mounted (see
+.IR intro (1)),
+so a build can change what
+.B /bin
+and
+.B /lib
+mean without a kernel rebuild.
+.SH SOURCE
+.B kernel/user/image.odin
+.br
+.B kernel/user/lib.odin
+.SH SEE ALSO
+.IR intro (3),
+.IR intro (1),
+.IR root (3),
+.IR exec (2),
+.IR fork (2),
+.IR vx (6),
+.IR fatfs (4),
+.IR verify (8)
+.SH DIAGNOSTICS
+Creating, removing or renaming a file under
+.B /bin
+or
+.B /lib
+fails with
+.BR EPERM .

@@ -1,0 +1,99 @@
+.TH KFS 6
+.SH NAME
+kfs \- the on-disk format of kfs
+.SH SYNOPSIS
+.B VKFS0001
+.SH DESCRIPTION
+A
+.IR kfs (4)
+volume is four regions in a row: the superblock, a bitmap, an inode table,
+and data.
+Every number is little-endian and every region is a whole number of
+4096-byte blocks, so a block is the unit of every read and write and
+nothing straddles two.
+.SS The superblock
+Block 0.
+.IP
+.EX
++0   magic          "VKFS0001"
++8   blocksize      4096, and refused when it is not
++12  blocks         blocks in the whole volume
++16  bitmap_start   the bitmap's first block
++20  bitmap_blocks  how many blocks the bitmap takes
++24  inode_start    the inode table's first block
++28  inode_blocks   how many blocks the inode table takes
++32  data_start     the first block the bitmap hands out
++36  inodes         inodes in the table
++40  root           1, the root's inode number, written but not read back
++48  generation     reams of this volume so far
+.EE
+.PP
+A volume is recognised by its magic and its block size; anything else
+wrong in the superblock, or a
+.I blocks
+larger than the device holds, is refused rather than trusted.
+.SS The bitmap
+One bit per block of the whole volume, from block 0, set when the block
+is taken.
+A block's bit sits at the block's number divided by eight bits to the
+byte, counting from
+.IR bitmap_start .
+The blocks that hold the superblock, the bitmap itself and the inode
+table are marked taken when the volume is made, and never freed.
+.SS The inode table
+128 bytes per inode, thirty-two to a block, from
+.IR inode_start .
+Inode 0 is never handed out, so a directory entry naming inode 0 is
+empty, and inode 1 is always the root.
+.IP
+.EX
++0   mode       0 for a free inode; otherwise the permission bits and,
+               for a directory, bit 31 set
++4   version    counts every write; becomes the qid's version
++8   size       bytes, for a file; 4096 for a fresh directory
++16  mtime      always zero; nothing on this machine sets a file's time
++40  direct     twelve 4-byte block numbers, 0 for a hole
++88  indirect   a 4-byte block number of 1024 more, 0 until one is needed
+.EE
+.PP
+The bytes from 24 to 39 and from 92 to 127 are zero and carry nothing.
+Twelve direct blocks and one indirect block of 1024 more make a file of at
+most 4243456 bytes; a block past that is refused.
+.SS Data
+Everything from
+.IR data_start ,
+handed out one block at a time by the bitmap.
+A directory is a file whose blocks hold 128-byte entries:
+.IP
+.EX
++0   ino        a 4-byte inode number, 0 for an empty slot
++4   namelen    the name's length, one byte, at most 123
++5   name       exactly namelen bytes, not NUL-terminated
+.EE
+.PP
+the rest of a used slot, and the whole of an empty one past
+.IR ino ,
+is zero.
+A directory grows by one block, appended and zeroed, when its entries run
+out.
+A read of a file block the volume never wrote answers zeros, which is how
+a truncate that grows, or a write past the old end, opens a hole.
+.SS Order
+There is no journal.
+A block is marked taken in the bitmap before anything on the volume
+points to it, a file's inode is written only after its blocks hold what
+the inode's
+.I size
+will say, and a directory entry is written only after the inode it names
+is whole.
+A crash between two writes therefore loses at most the last operation and
+leaves every earlier one whole.
+.SH SOURCE
+.B servers/kfs/disk.odin
+.SH SEE ALSO
+.IR kfs (4),
+.IR sd (3)
+.SH BUGS
+A block marked taken and never pointed at by an inode, which a crash
+between an allocation and the write that would use it can leave, is
+reclaimed only by reaming the volume.

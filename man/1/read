@@ -1,0 +1,47 @@
+.TH READ 1
+.SH NAME
+read \- read a line
+.SH SYNOPSIS
+.B read
+[
+.B \-m
+]
+.SH DESCRIPTION
+.I Read
+copies to standard output exactly one line from the standard input.
+It is useful in
+.IR rc (1)
+scripts, as
+.BR "x=`{read}" .
+.PP
+The
+.B \-m
+flag causes it to continue reading and writing until end of file.
+.PP
+When reading a line,
+.I read
+takes one byte at a time from its input,
+so it never consumes more than it prints.
+A descriptor shared with the shell is left at the start of the next line,
+whether the input is a console, which hands over whole lines,
+or a pipe, which may not.
+The line is written with its newline, or without one when the input
+ends first.
+.SH SOURCE
+.B cmd/read/main.odin
+.SH SEE ALSO
+.IR cat (1),
+.IR rc (1)
+.SH DIAGNOSTICS
+.I Read
+exits with status
+.B eof
+when there is nothing to read.
+.SH BUGS
+Unlike Plan 9's
+.IR read ,
+this one takes no file arguments and has no
+.BR \-n ,
+.B \-c
+or
+.BR \-r .

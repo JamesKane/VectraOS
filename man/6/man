@@ -1,0 +1,231 @@
+.TH MAN 6
+.SH NAME
+man \- macros to typeset manual
+.SH SYNOPSIS
+.B mandoc -man
+.I file ...
+.SH DESCRIPTION
+These macros are used to lay out the reference pages in this manual.
+They are the
+.B -man
+macros of
+.IR troff ,
+in the dialect Plan 9's manual uses,
+restricted to what
+.I mandoc
+on the host renders.
+A page is a plain text file under
+.BI man/ section / name\fR,
+with no suffix.
+The section directories are:
+.TP 6
+.B 1
+commands a user types at
+.IR rc (1)
+.TP
+.B 2
+system calls, and the libraries under
+.B sys/
+.TP
+.B 3
+kernel devices, reached as
+.BI # letter
+and bound into a namespace
+.TP
+.B 4
+file servers that run as programs and post a name in
+.B /srv
+.TP
+.B 5
+the file protocol, 9P2000.L, one message per page
+.TP
+.B 6
+file formats and conventions
+.TP
+.B 8
+booting, building, and running the machine
+.TP
+.B 9
+the kernel, for those who change it
+.PD
+.SS Layout of a page
+The first line is
+.BI ".TH " NAME " " section\fR,
+with the name in capitals and the section a single digit.
+Then the sections, in this order and with these names,
+omitting any that do not apply:
+.IP
+.EX
+\&.SH NAME
+\&.SH SYNOPSIS
+\&.SH DESCRIPTION
+\&.SH EXAMPLES
+\&.SH FILES
+\&.SH SOURCE
+\&.SH SEE ALSO
+\&.SH DIAGNOSTICS
+\&.SH BUGS
+.EE
+.PP
+.B NAME
+is one line:
+the names the page documents, separated by commas, then
+.BR \e- ,
+then a short lower-case phrase.
+The index of each section is made from these lines.
+.PP
+.B SYNOPSIS
+gives the command line, the procedure signatures, or the file names.
+A command's options are listed in square brackets, with
+.B .B
+for the literal parts and
+.B .I
+for the parts a user supplies.
+A library page lists the
+.B import
+line and then one signature per line inside
+.BR ".nf" / ".fi" ,
+each in
+.BR .B .
+A device page lists the
+.B bind
+that makes it visible and the files it serves.
+.PP
+.B DESCRIPTION
+says what the thing does, in the present tense, in declarative sentences.
+It describes what exists, not what was planned, not what was tried,
+and not the order things were built in.
+Reasons are given where a reader needs them to use the thing correctly,
+in a sentence or two, and not otherwise.
+.PP
+.B EXAMPLES
+shows a use, inside
+.BR ".IP" / ".EX" / ".EE" .
+.B FILES
+names the files a program reads or serves.
+.B SOURCE
+names the directory or file in the tree, relative to its root,
+in
+.BR .B .
+.B SEE ALSO
+lists related pages as
+.BI ".IR " name " (" section ")" ,
+separated by commas,
+and never names a document outside the manual.
+.B DIAGNOSTICS
+says what the exit status is, or what an error looks like.
+.B BUGS
+records what is known to be missing or wrong,
+plainly, in a sentence each.
+.SS Fonts
+.TP
+.B .I
+the name of a command, a system call or a variable in running text,
+and a word that stands for something the user supplies
+.TP
+.B .B
+a file name, a flag, a literal, a keyword,
+and anything typed exactly as shown
+.TP
+.B .IR
+alternating italic and roman, for a cross reference:
+.B ".IR rc (1)"
+.TP
+.B .BR
+alternating bold and roman, for a literal followed by punctuation:
+.B ".BR /dev/cons ,"
+.TP
+.B .BI
+alternating bold and italic, for a file name with a variable part:
+.B ".BI /proc/ n /status"
+.TP
+.B .RI
+alternating roman and italic
+.PD
+.PP
+Punctuation that follows a font change goes on the same line as the
+last word, after a space, so it is set in roman and closed up:
+.B ".IR bind (1),"
+rather than a comma on a line of its own.
+A word is never split across two macro lines.
+The minus sign in a flag is written
+.BR \e- .
+A dash in prose is two hyphens.
+.SS Blocks
+.TP
+.B .PP
+a new paragraph
+.TP
+.B .SS
+a subsection heading
+.TP
+.BI ".TP " width
+a tagged paragraph: the next line is the tag, the lines after it the body.
+The first
+.B .TP
+of a list may give a width in ens.
+A list of tags ends with
+.B .PD
+when it was started with
+.BR ".TP " width\fR,
+so the spacing goes back to normal.
+.TP
+.B ".IP \e(bu"
+a bulleted paragraph
+.TP
+.BR ".EX" / ".EE"
+literal text, in a fixed-width font, indented by a preceding
+.B .IP
+.TP
+.BR ".nf" / ".fi"
+lines kept as written, in the current font
+.TP
+.B .br
+a line break
+.PD
+.PP
+The Plan 9 macros
+.BR .L ,
+.BR .LR ,
+.B .TF
+and
+.B .RL
+are not used, because the host's
+.I mandoc
+does not know them.
+.SS Prose
+Sentences are short and have one idea each.
+The subject is the thing described, and the verb is active.
+There are no semicolons, no parentheses around whole sentences,
+and no exclamation.
+A page addresses nobody:
+it says what a command does, not what you can do with it.
+A term is defined where it is first used, and then used consistently.
+Numbers that a reader has to know are stated exactly.
+Where Vectra departs from Plan 9 in something a Plan 9 reader would assume,
+the page says so in one sentence.
+.SS Checking
+.IP
+.EX
+make -C man check
+.EE
+.PP
+renders every page with
+.I mandoc
+and reports what does not parse,
+then checks that every cross reference names a page that exists
+and that the sections of each page are in order.
+.SH FILES
+.TP
+.B man/lib/checkman.awk
+the cross-reference and ordering check
+.TP
+.BI man/ n /INDEX
+one line per name, made by
+.B make index
+.SH SOURCE
+.B man/Makefile
+.br
+.B man/lib
+.SH SEE ALSO
+.IR intro (1)

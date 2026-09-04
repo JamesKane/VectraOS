@@ -1,0 +1,323 @@
+.TH DEV 9
+.SH NAME
+dev \- writing a kernel device server
+.SH SYNOPSIS
+.B import "kernel:vfs"
+.PP
+.nf
+.B "Handler :: #type proc(server: rawptr, s: ^Session, tag: Tag,"
+.B "    request: ^Msg, reply: ^Msg, buf: []u8)"
+.B "Abort   :: proc(server: rawptr, tag: vectra9.Tag)"
+.PP
+.B "server_init  :: proc(sv: ^Server, name: string, handler: Handler, state: rawptr) -> Error"
+.B "server_start :: proc(sv: ^Server, workers: int, payload: int, abort: Abort) -> bool"
+.B "register_device :: proc(sv: ^Server) -> bool"
+.B "mount_device :: proc(ns: ^Namespace, spec: string, target_path: string) -> Errno"
+.fi
+.SH DESCRIPTION
+A kernel device is a
+.B Server
+(see
+.IR vfs (9))
+whose handler answers out of a table it owns rather than out of a mounted
+tree.
+It registers under a one-letter name and is reached at
+.BI # letter
+before it is bound anywhere.
+.IR cons (3)
+is the worked example below.
+It serves
+.BR /dev :
+.BR cons ,
+.BR consctl ,
+.BR null ,
+.BR zero ,
+.BR fb ,
+.BR fbctl ,
+.B scancode
+and
+.BR eia0 .
+.SS The node table
+A device's files are rows in a fixed array, not a mounted subtree.
+.I Devfs
+keeps a
+.B Dev_Node
+per file:
+a name, a parent index and a
+.B Dev_Kind
+that says what the file
+.I does
+rather than what it contains.
+.B Dev_Kind
+is a separate enum from the node so that a new file is a row in the table
+and a case in the two switches below,
+and nothing about walking, listing or the fid table has to learn a new
+file kind.
+The table is
+.B .rodata
+and needs no lock.
+A qid's path is the node's index plus one, so a zeroed qid never names the
+root by accident.
+.SS The two switches
+.I Devfs_read
+and
+.I devfs_write
+each switch on the node's
+.B Dev_Kind
+once the fid has been resolved to a node index.
+Everything a file
+.I does
+lives in one arm of one of these two switches:
+.B null
+discards writes and reads at end of file,
+.B zero
+discards writes and reads as an endless run of zero bytes,
+.B fb
+reads and writes the framebuffer's bytes at an offset,
+.B cons
+and the taps park.
+Adding a device kind that neither streams nor parks is one row in the
+node table and one case in each switch.
+.SS The fid table and its lock
+A device server shares
+.IR vfs (9)'s
+.B Fid_Table
+the way any server does, and guards it the same way
+.I devfs
+does: one spinlock, held only around a fid lookup, never across a park or
+a write to a framebuffer.
+.B Dev_Tree.lock
+in
+.I devfs
+covers exactly
+.IR fidtab_bind ,
+.I fidtab_node
+and
+.I fidtab_release
+and nothing else.
+A handler that took a spinlock and then called
+.I sync.sleep
+or wrote through a framebuffer pointer would stop every other request on
+the server, and on a single core, the machine.
+Counting how many fids hold a file whose open state means something
+(a
+.B ctl
+file, a tap) is done under this same lock, at the moment the fid table
+changes, so the count and the open flag can never drift apart.
+What the count causes, reverting a mode or releasing a tap, happens
+outside the lock, because that may itself take a lock of the thing being
+reverted.
+.SS A read that parks
+A device whose bytes are not there yet, such as
+.BR /dev/cons ,
+parks its reader on a rendezvous instead of returning early.
+The loop is:
+.IP
+.EX
+for {
+	if vfs.server_flushed(&t.server, tag) {
+		reply^ = vectra9.error_reply(vectra9.EINTR)
+		return
+	}
+	if n := take(source, buf[:room]); n > 0 {
+		reply^ = vectra9.Rread{data = buf[:n]}
+		return
+	}
+	sync.sleep(&source.ready, ready_condition, w)
+}
+.EE
+.PP
+The flush is checked
+.I before
+the drain, on every pass.
+A request the transport is about to abandon has already had its tag
+reclaimed, and a reply built for it is dropped.
+Draining first would consume the bytes into that dropped reply, and the
+next reader would find nothing where a byte had in fact arrived.
+Checking the flush first leaves the bytes for the read that comes after.
+.I Sync.sleep
+loops rather than returning once, because a wake is a hint: one byte can
+wake two parked readers and only one of them will find it, so the other
+has to test its condition again and park again.
+.SS The abort hook
+.I Server_start
+takes an
+.B Abort
+hook, called by
+.IR mnt (9)
+when a
+.B Tflush
+names a request in flight.
+A device with parked readers wakes every one of them, not only the one
+named by the flushed tag: what identifies a parked reader is the
+rendezvous it waits on, not its tag, and re-testing a condition that was
+not flushed is cheaper than keeping a rendezvous per tag.
+Each woken reader re-checks
+.I vfs.server_flushed
+for its own tag.
+The one that was flushed answers EINTR, and the others
+park again.
+The flushed bit lives on the request slot in
+.IR mnt (9)
+and is authoritative: a device's own copy of it would have to be cleared
+at the moment the slot is reused, which is a moment the device cannot
+see.
+.SS The ctl convention
+A file named
+.B ctl
+(or, as with the console,
+.BR consctl )
+is how a device takes an operation 9P has no message for.
+Four rules apply to every
+.B ctl
+file in the tree:
+.TP 4
+1.
+One write is one command.
+Nothing is buffered between writes, and a command may not be split
+across two of them.
+.TP 4
+2.
+A command nothing recognises is
+.BR EINVAL ,
+and the write takes none of it.
+Silence would let a caller believe it changed something.
+.TP 4
+3.
+The file reads back as the writes that would restore its current
+state, not a status report in a different vocabulary.
+A caller may save what it reads and write it back later.
+.TP 4
+4.
+The last close reverts it.
+.PD
+.PP
+.I Consctl_close
+puts the console back into cooked, echoing mode when the last fid
+holding
+.B /dev/consctl
+is clunked, so a program that turns raw mode on and then faults does not
+leave a console nobody can type at.
+.SS Workers
+.I Server_start
+is given a worker count.
+.I Devfs
+uses
+.BR "mnt.MAX_REQUESTS + 1" :
+one worker for every request slot the transport can carry at once, so
+every parked read gets its own thread and never waits behind another
+read that is itself parked, and one more to serve a
+.B Tflush
+that unsticks one, since a flush never parks.
+.SS Streams, offset and creation
+A stream file (a console, a tap, a
+.B ctl
+file) reports size zero from
+.B Tgetattr
+and ignores the offset in
+.B Tread
+and
+.BR Twrite ,
+because a second read at offset zero does not read the same bytes
+again.
+A file backed by real storage, such as
+.BR /dev/fb ,
+reports its true size and honours the offset.
+Creating, removing, renaming or linking anything in a device directory is
+.BR EPERM :
+the shape of the tree is the driver table, and a caller does not get to
+add a row to it.
+.SS Registering and binding
+A device calls
+.I vfs.server_init
+with its handler and a one-letter name, then either
+.I vfs.server_start
+to move onto
+.IR mnt (9)
+with workers, or nothing, to stay on the synchronous transport.
+It then calls
+.I vfs.register_device
+to publish itself at
+.BI # letter
+in the fixed, boot-time device table, and
+.I vfs.mount_device
+to bind that tree at a path in a namespace.
+Order matters:
+.I server_start
+must run before
+.I register_device
+so that nothing can reach the server on a stack it does not yet have,
+and any producer thread that feeds the device (a keyboard poller, a
+serial line) starts last, so it never fills a ring nobody is yet parked
+to drain.
+Duplicate one-letter names are refused rather than shadowed.
+.SS Synchronous devices and devices with workers
+.IR env (3)
+and
+.IR srv (3)
+never call
+.IR server_start .
+Every message either answers a table lookup or, in
+.BR srv 's
+case, attaches to a server found in the table.
+Nothing in either
+waits, so there is nothing for a worker thread to do while a caller
+blocks and nothing for a
+.B Tflush
+to abandon.
+Their whole handler runs under one spinlock, the way
+.I vfs.static_handler
+does.
+.IR cons (3)
+calls
+.I server_start
+because a read of
+.B /dev/cons
+can wait indefinitely for a key, and a caller with a deadline needs a
+request it can give up on.
+.SS Resolver hooks
+A synchronous device that must answer on behalf of the calling process
+registers a resolver hook rather than importing
+.IR user (9)
+directly.
+.IR srv (3)
+registers
+.B Fd_Resolver
+and
+.IR env (3)
+registers
+.BR Group_Resolver .
+Both are supplied by
+.IR user (9)
+at syscall setup, because it alone owns descriptor tables
+and environment groups.
+A resolver runs under the device's own spinlock, on the calling thread,
+because the transport is synchronous and "the current process" is
+therefore well defined.
+A resolver may look up tables of its own and may nest a spinlock, but
+may not send a message or take a lock that can park.
+.SH FILES
+.TP
+.BI # letter
+a registered device, reachable outside every namespace until it is
+bound
+.SH SOURCE
+.B kernel/devfs
+.br
+.B kernel/env
+.br
+.B kernel/srv
+.br
+.B kernel/procfs
+.br
+.B kernel/vfs/vfs.odin
+.SH SEE ALSO
+.IR vfs (9),
+.IR mnt (9),
+.IR cons (3),
+.IR fb (3),
+.IR env (3),
+.IR srv (3),
+.IR proc (3)
+.SH BUGS
+The device table holds sixteen entries and does not grow.

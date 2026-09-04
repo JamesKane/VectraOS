@@ -1,0 +1,73 @@
+.TH RAMFS 4
+.SH NAME
+ramfs \- the teaching file server
+.SH SYNOPSIS
+.B ramfs
+.SH DESCRIPTION
+.I Ramfs
+posts
+.B /srv/ramfs
+and serves a small fixed tree out of its own program segments:
+.IP
+.EX
+hello   read-only text, in this program's rodata
+note    a writable file, in this program's bss
+.EE
+.PP
+A read of
+.B hello
+returns bytes from a page the loader mapped read-only.
+A write to
+.B note
+lands in a page the loader mapped writable, up to 300 bytes;
+a write past that answers
+.BR ENOSPC .
+Neither file can be created, removed or renamed, and no other file can be
+made: the tree
+.I ramfs
+serves never changes shape.
+It takes no arguments, and there is no flag to change the name it posts.
+.PP
+A client sees the tree by mounting
+.B /srv/ramfs
+(see
+.IR bind (1)).
+.I Ramfs
+is the smallest complete file server in the tree: two files, one read-only
+and one writable, in the same handler shape a kernel device uses.
+.PP
+A
+.B Tremove
+on either file is answered and then ends the server.
+The pipe's hang-up -- the last mount and the posted name both gone --
+also ends it.
+Either is a clean stop.
+A frame that does not parse as a 9P message is a fault.
+.SH FILES
+.TP
+.B /srv/ramfs
+the posted service
+.TP
+.B /hello
+read-only, this program's own text about itself
+.TP
+.B /note
+writable, 300 bytes
+.SH SOURCE
+.B servers/ramfs
+.SH SEE ALSO
+.IR bind (1),
+.IR serve (2),
+.IR fid (2),
+.IR vectra9 (2)
+.SH DIAGNOSTICS
+.I Ramfs
+exits with a number rather than the empty-string convention other
+programs use.
+A
+.B Tremove
+ends it with status 0.
+The pipe's hang-up ends it with 104.
+A torn frame ends it with 114, and failing to post
+.B /srv/ramfs
+ends it with 113.

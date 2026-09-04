@@ -1,0 +1,77 @@
+.TH ATOI 2
+.SH NAME
+atoi, itoa \- number conversion
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "atoi :: proc(s: string) -> (v: i64, ok: bool)"
+.B "itoa :: proc(buf: []u8, v: i64) -> string"
+.fi
+.SH DESCRIPTION
+.I Atoi
+parses
+.I s
+as a decimal integer, with an optional leading
+.B +
+or
+.BR \- ,
+and answers the value and
+.BR true .
+Anything else in
+.IR s ,
+including a fraction, an exponent or trailing text, answers
+.B false
+and a value of zero.
+There is no leading white space to skip: a caller that split its
+argument on spaces already removed it.
+.PP
+.I Itoa
+writes
+.I v
+in decimal into
+.I buf
+and answers the digits written, as a string aliasing
+.IR buf .
+.I Buf
+must hold the sign and every digit; twenty-four bytes is enough for any
+.BR i64 .
+.SH EXAMPLES
+.IR Tail (1)
+parses its
+.B \-n
+argument:
+.IP
+.EX
+if v, ok := libuser.atoi(args[1]); ok {
+	last = v
+}
+.EE
+.PP
+.IR Uniq (1)
+prints a repeat count:
+.IP
+.EX
+num: [24]u8
+s := libuser.itoa(num[:], repeats)
+libuser.bio_puts(out, s)
+.EE
+.SH SOURCE
+.B sys/libuser/lines.odin
+.SH SEE ALSO
+.IR bio (2),
+.IR tail (1),
+.IR uniq (1)
+.SH DIAGNOSTICS
+.I Atoi
+answers
+.B false
+for an empty string, a bare sign, or any character that is not a decimal
+digit.
+.SH BUGS
+There is no floating-point conversion, and no base other than ten.
+An
+.I atoi
+that overflows
+.B i64
+wraps rather than reports it.

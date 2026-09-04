@@ -1,0 +1,131 @@
+.TH TESTING 9
+.SH NAME
+testing \- the self-test discipline
+.SH SYNOPSIS
+.nf
+.B "tally :: proc(t: ^Tally, ok: bool, what: string) -> bool"
+.B "passed :: proc(t: Tally) -> bool"
+.fi
+.SH DESCRIPTION
+Vectra has no host-side test build.
+Every subsystem proves itself on the machine that runs it, during boot, and
+reports one line.
+A self-test on real hardware against real page tables finds a different
+class of bug than one on a workstation against a mock, and this tree keeps
+hitting the first class.
+.I Testing
+states the rules a check follows.
+See
+.IR verify (8)
+for the boot-time run and the log a developer reads.
+.SS Writing a check
+A check is one assertion, counted with
+.IR tally (2):
+.BI "tally(&r.tally, " ok ", " "\(dqwhat was claimed\(dq" ) .
+.I Tally
+counts every call, remembers the name given to the first failure, and keeps
+up to eight later failures beside it as a trace.
+.I Passed
+reports true only when every check ran and none failed.
+Zero checks is not a pass:
+a self-test that returns before it tests anything has nothing to say, and a
+run that reports zero checks passed looks exactly like a run with nothing
+to do.
+.PP
+A subsystem's self-test reports one line, tagged
+.B "  ok  "
+or
+.BR " FAIL " .
+A failing line names the first check that failed, because later failures
+are almost always its consequences.
+Up to eight of the later failures print beneath it as
+.B also:
+lines, and a count of how many more if there were.
+The first name is still the one to read.
+.SS A check must be able to fail
+A green line proves nothing by itself.
+It can mean the code is right, or it can mean the check never reaches the
+code, or it can mean a layer underneath forgives the very error the check
+looks for.
+A check earns its place by having a mutation that makes it fail.
+Apply the mutation by hand, one change at a time, and record in a comment
+beside the check which mutations it catches and which it does not.
+An uncaught mutation is not a gap to hide.
+It is a fact about the check, recorded next to it.
+.PP
+A check that always passes is common in three shapes, and each has a fix.
+A field the code under test also maintains agrees with itself whatever else
+is broken, so a check reads the effect instead: not a byte counter but the
+screen it should have drawn to, not a cursor column but the pixels in the
+cell.
+A layer underneath the check can absorb the very error under test, such as
+an allocator that silently ignores a double free, so the layer counts the
+event instead of staying silent, and the check brackets the count.
+A test can fail to exercise the code at all, such as every sample coming
+from window zero where an added offset is indistinguishable from none, so
+the check is widened until it does.
+.SS Bracketing
+A check that measures a resource must bracket every allocator the thing
+under test uses, not only the obvious one.
+A process holds physical frames and heap objects at once, and a leak of one
+without the other passes a check that only counts frames.
+A bracket that can go negative is not measuring what it claims to: an
+opening count taken before earlier self-tests' leftover threads are reaped
+counts objects the closing count does not.
+.SS Measuring concurrency
+A concurrency check that measures work in a fixed round count measures less
+of the machine as the machine gets faster, because an optimized build does
+the same work in fewer ticks and draws fewer preemptions.
+Measure in ticks instead, for a fixed span of wall-clock scheduling, so a
+faster build gets more work done between the same number of interruptions
+rather than a smaller one.
+.SS A blocking check never runs on the thread that reports
+A read, a wait, or any call that can park must not run on the thread whose
+line the boot log is waiting to print.
+A call that never returns then prints nothing, from that point on, in the
+place hardest to attach a debugger to.
+Spawn the blocking call on its own thread and watch it from the reporting
+thread with a bound.
+The bound must be measured in something the failure itself cannot stop:
+a tick count is not safe against a check whose failure is a missing
+end-of-interrupt, because that failure also stops the timer the bound
+counts.
+A yield count is safe, because a yield is a software interrupt that
+executes rather than arrives.
+Where the failure prevents the observer from running at all, such as a
+program that enters with interrupts masked, the bound belongs inside the
+thing under test instead of in the observer: the test ends itself after a
+fixed number of iterations, whatever the kernel does or does not do about
+it, and a run that reaches the end on its own is the failure.
+.SS A control that can stay
+Most mutations are applied once by hand and recorded in prose, which decays
+because nothing re-runs them.
+Where the wrong arrangement can be expressed as a flag rather than a
+deleted line of kernel code, write it as a permanent second path and check
+that the wrong path visibly fails where the right one does not.
+A failure to fail is then a check every boot runs by itself, with nothing
+to revert and nothing to remember.
+.SH FILES
+.TP
+.B kernel/verify_*.odin
+subsystem self-tests that need more than one package
+.TP
+.BI kernel/ pkg /verify.odin
+a package's own self-test
+.TP
+.B sys/vectra9/verify.odin
+the layer under the kernel, tested separately because it runs before the
+kernel exists
+.SH SOURCE
+.B sys/libodin/tally.odin
+.br
+.B kernel/log.odin
+.br
+.B kernel/main.odin
+.SH SEE ALSO
+.IR tally (2),
+.IR verify (8),
+.IR style (9)
+.SH BUGS
+There is no host-side test build.
+Every check runs only on the target machine, at boot.

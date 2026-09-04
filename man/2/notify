@@ -1,0 +1,103 @@
+.TH NOTIFY 2
+.SH NAME
+notify, noted, note, notepg \- handle and post notes
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "notify :: proc(handler: uintptr) -> i64"
+.B "noted :: proc(how: u64) -> !"
+.B "note :: proc(pid: u64, text: string) -> i64"
+.B "notepg :: proc(pid: u64, text: string) -> i64"
+.fi
+.SH DESCRIPTION
+A
+.I note
+is a string posted to a process from outside it.
+With no handler registered, a process that receives a note ends,
+.I wait
+answering
+.B EINTR
+for it.
+.PP
+.I Notify
+registers
+.I handler
+as the address a note is delivered to, replacing any previous handler.
+An address of zero clears the handler, restoring the default action.
+.I Notify
+is refused with
+.B EBUSY
+while a delivery is already in progress.
+.PP
+On delivery, the note's text and a copy of the interrupted machine state
+are pushed onto the program's own stack, and control transfers to
+.I handler
+with the address of the saved state as its first argument and the
+address of the NUL-terminated text as its second.
+The handler runs on the same stack the note interrupted; a stack with no
+room for the delivery ends the process, as if no handler had been
+registered.
+No floating-point state crosses a delivery.
+.PP
+A handler must end by calling
+.IR noted .
+.B abi.NCONT
+restores the saved state and resumes the interrupted program from it,
+after which an interrupted system call answers
+.BR EINTR .
+.B abi.NDFLT
+takes the default action, the ending a note always is.
+Neither value returns to the handler.
+A note posted while a handler is running is held and delivered at the
+first opportunity after
+.I noted
+finishes.
+.PP
+.I Note
+posts
+.I text
+to one of the caller's own children, named by
+.IR pid .
+.I Notepg
+posts
+.I text
+to every process in a note group but the caller: a
+.I pid
+of zero names the caller's own group, and any other
+.I pid
+must be one of the caller's children, whose group is then the target.
+A child forked without
+.B RFNOTEG
+(see
+.IR fork (2))
+is in its parent's group; one forked with the flag is in a group of one.
+.I Notepg
+answers how many processes were posted to, which is zero for a group
+with nobody else in it.
+.PP
+Unlike Plan 9, a program that faults does not receive a note: it ends
+directly, and its parent's
+.I wait
+answers
+.BR EIO .
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/notify.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR fork (2),
+.IR wait (2),
+.IR proc (3)
+.SH DIAGNOSTICS
+Answers zero, or the count posted, or a negative
+.B \-errno ;
+see
+.IR errstr (2).
+.B ECHILD
+is a
+.I pid
+that is not the caller's own child.

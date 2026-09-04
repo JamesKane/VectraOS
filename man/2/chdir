@@ -1,0 +1,51 @@
+.TH CHDIR 2
+.SH NAME
+chdir, getwd \- change or get working directory
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "chdir :: proc(path: string) -> i64"
+.B "getwd :: proc(buf: []u8) -> i64"
+.fi
+.SH DESCRIPTION
+.I Chdir
+changes the calling process's working directory to
+.IR path ,
+resolved in its own name space.
+The working directory is where a name that does not begin with
+.B /
+or
+.B #
+starts evaluation, as
+.IR intro (1)
+describes.
+.I Path
+must resolve to a directory.
+.PP
+.I Getwd
+writes the current working directory into
+.I buf
+and answers its length; a
+.I buf
+too short for it answers
+.BR ENAMETOOLONG .
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (1),
+.IR intro (2),
+.IR bind (2)
+.SH DIAGNOSTICS
+.I Chdir
+answers zero on success; both answer a negative
+.B \-errno
+on failure.
+See
+.IR errstr (2).
+.B ENOTDIR
+is a
+.I path
+that does not resolve to a directory.

@@ -1,0 +1,155 @@
+.TH KEYBOARD 6
+.SH NAME
+keyboard \- what keys deliver: bytes, runes, and the kbd file
+.SH DESCRIPTION
+A key that has a character types it.
+Backspace, tab, escape and control characters are typed the ordinary
+way: control-J is a line feed and control-M a carriage return.
+The key labeled
+.B Enter
+or
+.B Return
+generates a newline
+.RB ( 0x0A ).
+.PP
+A key with no character, an arrow, a function key, or a modifier by
+itself, produces no byte.
+It is encoded instead as a
+.IR rune ,
+in the private Unicode block that begins at
+.B 0xF000
+(see
+.IR kbd (2)
+and
+.IR libkey ).
+That rune's UTF-8 encoding is always three bytes, all of them above
+.BR 0x7F ,
+so no byte of the encoding can ever be mistaken for a character a
+keyboard could otherwise type.
+A left arrow, for instance, is
+.BR U+F011 ,
+and arrives at a reader of
+.B /dev/cons
+or a window's
+.B cons
+as those three bytes in order.
+.I Kbd (2)
+names every such key.
+.PP
+A key held with
+.B Alt
+is a
+.IR chord :
+it produces no character at all, held or not, because a chord is taken
+by the window manager
+.RI ( see
+.IR intuition (4))
+before any window sees it.
+.SS The console's line
+.B /dev/cons
+holds one line under construction and cooks it: a typed character
+appends to the line and echoes, a newline sends the line, and three
+keys edit it:
+.TP 8
+.BR \eb " or " DEL
+erase the last character
+.TP
+.B ^U
+erase the whole line
+.TP
+.B ^D
+send the line with no newline if it holds characters, or end the file
+if it is empty
+.PD
+.PP
+Any other control character is dropped and never reaches a reader.
+.SS A window's line
+A window
+.RI ( see
+.IR window (1))
+takes its keyboard raw and cooks its own line, with the same rules
+(see
+.IR edit (2))
+plus two more:
+.TP 8
+.B ^W
+erase one word: the run of letters and digits before the cursor, and
+any punctuation between them and it
+.TP
+.BR ^A ", " ^E
+move the cursor to the beginning or the end of the line
+.TP
+left and right arrow
+move the cursor one character
+.PD
+.PP
+There is no
+.B ^D
+in a window's line: a window's
+.B cons
+never ends, and a partial line is never delivered without its newline.
+.SS Modifiers
+Shift, control, alt, caps lock, num lock and scroll lock are
+.IR "modifier keys" :
+they change the meaning of the keys held with them and produce no
+character of their own.
+A reader of a
+.B kbd
+file
+(see
+.IR kbdfs (4))
+sees a modifier as a rune among the keys held, the same way it sees any
+other key with no character.
+.SS The kbd file
+.IR Kbdfs (4)
+serves a
+.B kbd
+file, one message per read:
+.IP
+.EX
+c<runes>    the characters typed, as UTF-8
+k<runes>    every key held down, after this change
+K<runes>    every key held down, after this change
+.EE
+.PP
+A
+.B c
+message carries what a press of a plain key would deliver to
+.BR /dev/cons .
+A
+.B k
+message is sent after a key goes down and a
+.B K
+message after one comes up, each carrying the rune every key held means
+under the modifiers of the moment, one after another with no
+separator.
+A reader of
+.B kbd
+sees alt go down and a letter go down beside it, which is a chord, and
+sees it come back up.
+That is what lets a chord reach the window manager when it can never
+reach
+.BR /dev/cons .
+.SH FILES
+.TP
+.B /dev/cons
+the console, cooked
+.TP
+.B /n/kbd/cons
+the characters typed, served by
+.IR kbdfs (4)
+.TP
+.B /n/kbd/kbd
+key events, served by
+.IR kbdfs (4)
+.SH SEE ALSO
+.IR kbd (2),
+.IR edit (2),
+.IR kbdfs (4),
+.IR intuition (4),
+.IR window (1),
+.IR keys (6)
+.SH BUGS
+Only a US layout exists.
+There is no compose key and no way to type a rune outside the private
+block by number.

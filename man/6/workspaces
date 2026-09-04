@@ -1,0 +1,70 @@
+.TH WORKSPACES 6
+.SH NAME
+workspaces \- which workspace a window opens on
+.SH DESCRIPTION
+.IR Intuition (4)
+reads
+.B $home/lib/workspaces
+first, or
+.B /lib/workspaces
+when there is none, at start and again on a
+.B reload
+line written to
+.BR /srv/draw/ctl .
+The file is a set of rules, one per line, naming a workspace a window
+opens on by its title:
+.IP
+.EX
+name   workspace
+.EE
+.PP
+.I Name
+is the exact text a window's title bar carries, the same string a
+.B name
+line writes to the window's
+.IR ctl ,
+described in
+.IR intuition (4).
+.I Workspace
+is a number from one to nine.
+A
+.B #
+starts a comment that runs to the end of the line, and a blank line is
+skipped.
+A line whose second word is not a number in range is skipped as well.
+At most thirty-two rules are kept.
+.PP
+A rule is applied when a window's name is set or changed, never before:
+a window is born on whatever workspace was current when its client
+claimed it, and only a later
+.B name
+line can move it by a rule.
+A window whose name matches no rule stays on the workspace it was born
+on.
+A window moved this way is moved exactly as a
+.BI "wctl workspace " n
+line would move it.
+.SH EXAMPLES
+.IP
+.EX
+# workspaces: a window's name, and the workspace it opens on
+terminal   2
+view       3
+.EE
+.SH FILES
+.TP 20
+.B $home/lib/workspaces
+a user's own rules, read first
+.TP
+.B /lib/workspaces
+the machine's, read when there is no user file
+.SH SOURCE
+.B servers/intuition/workspace.odin
+.br
+.B servers/intuition/workspaces
+.SH SEE ALSO
+.IR intuition (4),
+.IR keys (6)
+.SH BUGS
+A rule names a window by its exact title, so a program whose title
+carries a changing suffix, such as a file name, matches no rule at all.

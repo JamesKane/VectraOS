@@ -1,0 +1,70 @@
+.TH SEMACQUIRE 2
+.SH NAME
+semacquire, semrelease \- user level semaphores
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "semacquire :: proc(sem: ^i64, block: bool) -> i64"
+.B "semrelease :: proc(sem: ^i64, count: i64) -> i64"
+.fi
+.SH DESCRIPTION
+.I Semacquire
+and
+.I semrelease
+schedule between processes sharing memory, arranged with
+.B RFMEM
+(see
+.IR fork (2))
+or
+.IR segattach (2).
+.PP
+The semaphore's value is the eight-byte, eight-byte-aligned word at
+.IR sem .
+.I Semacquire
+waits until that word is positive and then decrements it, answering 1.
+If
+.I block
+is false and the word is not positive, it answers 0 instead of waiting.
+It answers a negative
+.B EINTR
+if a note interrupted the wait, and a negative
+.B EFAULT
+if
+.I sem
+is not an address the caller may reach and write, or is not
+eight-byte aligned.
+.PP
+.I Semrelease
+adds
+.I count
+to the word and wakes every process waiting on it, answering zero.
+.I Count
+must be positive; unlike Plan 9's
+.IR semrelease ,
+the answer is not the semaphore's new value.
+.PP
+.I Semacquire
+and
+.I semrelease
+are meant for coordinating processes, the way
+.IR rendezvous (2)
+is, and not threads within one process; a thread library built over
+.B RFMEM
+uses locks or channels of its own for that (see
+.IR thread (2)).
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/user.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR fork (2),
+.IR rendezvous (2),
+.IR segattach (2),
+.IR thread (2)
+.SH DIAGNOSTICS
+Answers as described above; a negative answer is
+.B \-errno ,
+named by
+.IR errstr (2).

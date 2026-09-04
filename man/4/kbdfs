@@ -1,0 +1,86 @@
+.TH KBDFS 4
+.SH NAME
+kbdfs \- keyboard file server
+.SH SYNOPSIS
+.B kbdfs
+.SH DESCRIPTION
+.I Kbdfs
+opens
+.B /dev/scancode
+(see
+.IR kbd (3)),
+which diverts the keyboard's raw stream to it -- while it holds the file
+open, the kernel's own translation sees nothing -- and serves the
+translation back as two files, posted at
+.BR /srv/kbdfs .
+It takes no arguments.
+.PP
+.B cons
+is the keyboard as a stream of characters, cooked the way
+.B /dev/cons
+is.
+Every reader that wants typed text reads it.
+.B kbd
+is one message per read, for a reader that wants the keys themselves:
+.IP
+.EX
+c<runes>    the characters typed, as UTF-8
+k<runes>    every key held down, after a press
+K<runes>    every key held down, after a release
+.EE
+.PP
+A reader of
+.B kbd
+sees a chord: the alt key held down together with another, which makes no
+character and so never appears on
+.BR cons .
+A window manager reads
+.B kbd
+for the chords it acts on and passes the rest to whoever has the console.
+A read of either file parks until there is something to answer.
+.PP
+.I Init
+(see
+.IR init (8))
+starts
+.I kbdfs
+and mounts it at
+.B /n/kbd
+before starting
+.IR intuition (4),
+which reads
+.B /n/kbd/kbd
+for its own chords.
+.PP
+The last close of
+.B /dev/scancode
+gives the raw stream back to the kernel's own translation.
+The server stops on the pipe's hang-up, when the last mount and the
+posted name are both gone.
+.SH FILES
+.TP
+.B /srv/kbdfs
+the posted service
+.TP
+.B /cons
+the characters typed, as a byte stream
+.TP
+.B /kbd
+one message per read: the keys held, after each change
+.SH SOURCE
+.B servers/kbdfs
+.SH SEE ALSO
+.IR bind (1),
+.IR kbd (2),
+.IR ring (2),
+.IR ioproc (2),
+.IR thread (2),
+.IR kbd (3),
+.IR intuition (4)
+.SH DIAGNOSTICS
+.I Kbdfs
+exits with a number rather than the empty-string convention other
+programs use.
+Failing to open
+.B /dev/scancode
+ends it with 116, before it posts anything.

@@ -1,0 +1,127 @@
+.TH STAT 2
+.SH NAME
+stat, fstat, wstat, dirread \- get and put file status, read directory
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "stat :: proc(path: string, out: ^abi.Stat) -> i64"
+.B "fstat :: proc(fd: int, out: ^abi.Stat) -> i64"
+.B "wstat :: proc(path: string, s: ^abi.Stat) -> i64"
+.B "dirread :: proc(fd: int, entries: []abi.Dirent) -> i64"
+.fi
+.SH DESCRIPTION
+.I Stat
+resolves
+.I path
+in the caller's name space and writes what the file's server says about
+it into
+.IR out .
+.I Fstat
+does the same for an already open descriptor; its
+.B Stat
+carries an empty name, because the kernel keeps no name for an open file.
+Both answer zero on success.
+.PP
+An
+.B abi.Stat
+is:
+.IP
+.EX
+Stat :: struct {
+	qid_path:    u64,
+	qid_version: u32,
+	qid_kind:    u8, // QTDIR and friends, as 9P spells them
+	name_len:    u8,
+	mode:        u32,
+	length:      u64,
+	atime:       u64,
+	mtime:       u64,
+	name:        [NAME_MAX]u8,
+}
+.EE
+.PP
+.B Qid_path
+and
+.B qid_version
+together identify the file: two files with the same
+.B qid_path
+and
+.B qid_version
+are the same file, and
+.B qid_version
+changes each time its content changes.
+.B Qid_kind
+carries
+.BR abi.QTDIR ,
+set when the file is a directory.
+.B Mode
+carries the permission bits, the low nine of Plan 9's
+.BR Dir.mode ,
+with
+.B abi.DMDIR
+set at the top for a directory.
+.B Length
+is the file's size in bytes, zero for a directory.
+.B Atime
+and
+.B mtime
+are seconds since the epoch.
+.B Name
+holds the last element of the path that was asked about, of length
+.BR name_len ,
+up to
+.B abi.NAME_MAX
+(64) bytes.
+.PP
+.I Wstat
+writes
+.IR s 's
+.B mode
+and
+.B length
+back to the file at
+.IR path ,
+which is what a program may change about a file today; the record's
+other fields are read and ignored, unlike Plan 9's convention of
+\(lqdon't care\(rq sentinel values.
+.PP
+.I Dirread
+fills
+.I entries
+from the open directory
+.IR fd ,
+as many as fit or as the directory holds, and answers how many it filled.
+Zero is the end of the directory.
+The descriptor's offset advances by what
+.I dirread
+consumed, so a second call continues where the first left off; an entry
+that did not fit is read again on the next call rather than lost.
+An
+.B abi.Dirent
+carries the same qid and name fields as a
+.BR Stat ,
+and nothing else: anything more about one entry is a further
+.I stat
+away.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B sys/abi/abi.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR open (2),
+.IR seek (2)
+.SH DIAGNOSTICS
+Each call answers zero, or a count for
+.IR dirread ,
+on success, and a negative
+.B \-errno
+on failure; see
+.IR errstr (2).
+.B ENOTDIR
+is
+.I dirread
+on a descriptor that is not a directory.

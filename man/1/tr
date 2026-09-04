@@ -1,0 +1,70 @@
+.TH TR 1
+.SH NAME
+tr \- translate characters
+.SH SYNOPSIS
+.B tr
+.I string1 string2
+.br
+.B tr \-d
+.I string1
+.SH DESCRIPTION
+.I Tr
+copies the standard input to the standard output with
+substitution or deletion of selected bytes.
+Input bytes found in
+.I string1
+are mapped into the corresponding bytes of
+.IR string2 .
+When
+.I string2
+is short it is padded to the length of
+.I string1
+by duplicating its last byte.
+The option
+.B \-d
+deletes from the input all bytes in
+.IR string1 .
+It is recognised only as the first argument.
+.PP
+In either string a sequence
+.IB x - y\fR,
+where
+.I x
+and
+.I y
+are single characters,
+stands for the range of bytes from
+.I x
+through
+.IR y .
+.B \en
+stands for a newline and
+.B \et
+for a tab.
+A
+.B \e
+followed by any other character stands for that character.
+.SH EXAMPLES
+Replace all upper-case
+letters by lower-case.
+.IP
+.EX
+tr A-Z a-z <mixed >lower
+.EE
+.PP
+Drop the carriage returns from a file that has them.
+.IP
+.EX
+tr -d '\er' <crlf >lf
+.EE
+.SH SOURCE
+.B cmd/tr/main.odin
+.SH SEE ALSO
+.IR sed (1)
+.SH BUGS
+.I Tr
+works on bytes, not runes.
+There is no
+.B \-c
+and no
+.BR \-s .

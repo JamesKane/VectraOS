@@ -1,0 +1,142 @@
+.TH CHROME 2
+.SH NAME
+Piece, Bevel, edges, panel, well, lamp, Gadget, gadget, put_pieces \- the
+window chrome vocabulary
+.SH SYNOPSIS
+.B import "vsys:libdraw"
+.PP
+.nf
+.B "Piece :: struct { x: int, y: int, w: int, h: int, color: libpal.RGB }"
+.B "Bevel :: enum { Raised, Recessed }"
+.B "edges :: proc(out: []Piece, x: int, y: int, w: int, h: int, style: Bevel, light: libpal.RGB, dark: libpal.RGB, depth: int) -> int"
+.B "panel :: proc(out: []Piece, x: int, y: int, w: int, h: int, style: Bevel, face: libpal.RGB, light: libpal.RGB, dark: libpal.RGB, depth: int) -> int"
+.B "well :: proc(out: []Piece, x: int, y: int, w: int, h: int, depth := 2) -> int"
+.B "lamp :: proc(out: []Piece, x: int, y: int, size: int, color: libpal.RGB, lit: bool) -> int"
+.B "Gadget :: enum u8 { Close, Depth, Zoom, Size }"
+.B "gadget :: proc(out: []Piece, x: int, y: int, size: int, kind: Gadget, pressed: bool) -> int"
+.B "put_pieces :: proc(buf: []u8, at: int, id: u32, pieces: []Piece) -> int"
+.fi
+.SH DESCRIPTION
+.I Chrome
+decomposes a bevelled control into a list of coloured rectangles, a
+.BR Piece " each."
+It paints nothing itself: the kernel's boot chassis walks the list onto a
+framebuffer surface directly, and
+.IR intuition (4)
+walks the same list with
+.B put_pieces
+into a client's own command batch.
+Both privilege levels read the same shapes because a
+.B Piece's
+colour is an
+.B libpal.RGB
+triple rather than a packed pixel word; each painter packs it for the
+surface it draws on.
+.PP
+Every procedure here writes into
+.I out
+or
+.I buf
+starting at index or offset zero (or
+.I at ,
+for
+.BR put_pieces )
+and answers how many pieces it wrote, or how far the batch now reaches.
+None of them allocates: a caller sizes its own array, at most
+.B MAX_PIECES
+for
+.BR panel " and its callers, or " MAX_GADGET_PIECES
+for
+.BR gadget .
+A box too small to hold an interior, or too small for the bevel depth
+asked for, writes fewer pieces than the maximum, never past the end of
+.IR out .
+.PP
+.B Edges
+decomposes a bevelled border into its four sides, nested
+.I depth
+levels deep from the outside in, without a face: the top and left sides
+take
+.I light
+under
+.BR Raised " and " dark
+under
+.BR Recessed ,
+and the bottom and right sides the other.
+.B Panel
+is
+.B edges
+with a face in front of it, one
+.B Piece
+the size of the whole box, drawn first so a painter that walks the list in
+order gets the face before the edges land on top of it.
+.PP
+.B Well
+is the specific recessed panel every sunken thing in this system uses: a
+slate face with a lit magnesium edge below and a void edge above, two
+levels deep by default.
+.B Lamp
+is a recessed socket of
+.B MAGNESIUM_DARK
+with a jewel inset: the jewel is
+.I color
+when
+.I lit
+is true, and
+.I color
+mixed toward
+.B VOID
+otherwise, so an unlit lamp still reads as the same lamp rather than a
+neutral grey.
+.PP
+A
+.B Gadget
+is one of the four controls a window's title bar wears, and
+.B gadget
+draws one: a one-pixel raised (or, when
+.I pressed
+is true, recessed) square of magnesium from
+.BR panel ,
+with a glyph in amber on top.
+.B Close
+is a filled square, a
+.B Depth
+gadget two squares offset from each other,
+.B Zoom
+a hollow square, and
+.B Size
+two bars meeting at a corner.
+Nothing here knows where a gadget sits on a frame or what pressing it
+does; that placement is
+.IR intuition (4)'s.
+.PP
+.B Put_pieces
+is the one procedure here that knows there is a protocol: it walks
+.I pieces
+and writes one
+.B put_fill
+command, described in
+.IR draw (2),
+per piece into
+.I buf
+at
+.IR at ,
+skipping any with zero width or height.
+It answers the new offset, or the offset it was given if the whole run
+would not fit, the same convention
+.B put_text
+uses in
+.IR draw (2);
+a caller that gets its own offset back sends what it has and calls again.
+.SH SOURCE
+.B sys/libdraw/chrome.odin
+.SH SEE ALSO
+.IR draw (2),
+.IR mui (2),
+.IR intuition (4)
+.SH DIAGNOSTICS
+None.
+A box with no room for its bevel, or an
+.I out
+too short for what a call would write, answers however many pieces did
+fit, including zero.

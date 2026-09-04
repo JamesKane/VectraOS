@@ -1,0 +1,128 @@
+.TH NET 2
+.SH NAME
+MAC,
+IP,
+checksum,
+put_eth,
+put_arp,
+parse_arp,
+build_arp_request,
+put_icmp_echo,
+parse_icmp,
+arp_insert,
+arp_lookup \- ethernet, ARP and ICMP frames
+.SH SYNOPSIS
+.B import "vsys:libnet"
+.PP
+.nf
+.B "MAC :: [6]u8"
+.B "IP :: [4]u8"
+.B "Arp :: struct { op: u16, sha: MAC, spa: IP, tha: MAC, tpa: IP }"
+.B "Icmp :: struct { kind: u8, code: u8, id: u16, seq: u16 }"
+.B "Arp_Table :: struct { entries: [ARP_ENTRIES]Arp_Entry, next: int }"
+.fi
+.PP
+.nf
+.B "checksum :: proc(data: []u8, seed: u32 = 0) -> u16"
+.B "put_eth :: proc(b: []u8, dst: MAC, src: MAC, ethertype: u16) -> int"
+.B "put_arp :: proc(b: []u8, at: int, a: Arp) -> int"
+.B "parse_arp :: proc(p: []u8) -> (a: Arp, ok: bool)"
+.B "build_arp_request :: proc(b: []u8, src: MAC, spa: IP, tpa: IP) -> int"
+.B "put_icmp_echo :: proc(b: []u8, at: int, kind: u8, id: u16, seq: u16, payload: []u8) -> int"
+.B "parse_icmp :: proc(p: []u8) -> (m: Icmp, ok: bool)"
+.B "arp_insert :: proc(t: ^Arp_Table, ip: IP, mac: MAC)"
+.B "arp_lookup :: proc(t: ^Arp_Table, ip: IP) -> (MAC, bool)"
+.fi
+.SH DESCRIPTION
+.I Libnet
+encodes and decodes the wire formats a small IPv4 network is made of: an
+ethernet frame, an ARP packet, and an ICMP message.
+It touches no card and no file; it only reads and writes byte slices,
+which is what lets
+.B tests/net
+prove it against known packets with no network present.
+.PP
+An
+.B IP
+is a four-byte IPv4 address and a
+.B MAC
+a six-byte ethernet address.
+Every multi-byte field on the wire is big-endian, so a caller never
+casts a field in or out: every procedure here does that conversion
+itself.
+.PP
+.I Checksum
+is the internet checksum of
+.I data
+.RI ( "RFC 1071" ),
+folded onto
+.IR seed .
+A header carrying its own correct checksum sums to zero, which is how a
+receiver checks one.
+.I Seed
+lets a caller carry a pseudo-header's partial sum into the sum of what
+follows it.
+.PP
+.I Put_eth
+writes a fourteen-byte ethernet header into
+.I b
+and answers the offset where the payload begins.
+.PP
+.I Put_arp
+writes a 28-byte ARP packet body, ethernet over IPv4, at offset
+.I at
+in
+.IR b ,
+and answers the offset past it.
+.I Parse_arp
+reads one back, refusing anything that is not ethernet-over-IPv4 with
+the lengths those protocols require.
+.I Build_arp_request
+writes a whole broadcast ARP request, ethernet header and body both,
+asking who has
+.IR tpa ,
+and answers the frame's length.
+.PP
+.I Put_icmp_echo
+writes an eight-byte ICMP echo or echo-reply header at
+.I at
+in
+.IR b ,
+followed by
+.IR payload ,
+and computes the checksum over the whole message.
+.I Kind
+is
+.B ICMP_ECHO
+or
+.BR ICMP_ECHOREPLY .
+.I Parse_icmp
+reads one back and refuses a message whose checksum is wrong.
+.PP
+An
+.B Arp_Table
+is a small fixed set of address translations.
+.I Arp_insert
+records
+.IR mac
+for
+.IR ip ,
+replacing an existing entry for the same address or, when there is
+none, the oldest of
+.B ARP_ENTRIES
+(sixteen) slots.
+.I Arp_lookup
+answers the hardware address recorded for
+.IR ip ,
+and whether one was found.
+.SH SOURCE
+.B sys/libnet/frame.odin
+.SH SEE ALSO
+.IR ether (3)
+.SH BUGS
+There is no
+.I dial
+or
+.IR announce .
+This library only builds and reads frames in memory; it opens nothing
+and sends nothing itself.

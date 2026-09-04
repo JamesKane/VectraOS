@@ -1,0 +1,438 @@
+.TH USER 9
+.SH NAME
+user \- the door: syscall entry, processes, the loader, notes, segments
+.SH SYNOPSIS
+.B import "kernel:user"
+.PP
+.nf
+.B "dispatch :: proc(frame: ^arch.Trap_Frame)"
+.B "copy_in  :: proc(addr: uintptr, n: int, dst: []u8) -> bool"
+.B "copy_out :: proc(addr: uintptr, src: []u8) -> bool"
+.fi
+.PP
+.nf
+.B "Process :: struct { space: ^mem.Address_Space, ns: ^vfs.Namespace,"
+.B "    fdt: ^Fd_Table, env: ^env.Group, pid: u64, parent: u64,"
+.B "    segs: [MAX_PROC_SEGS]^Segment, exit: Exit, ... }"
+.B "MAX_PROCESSES :: 256"
+.fi
+.PP
+.nf
+.B "load_program :: proc(p: ^Process, ns: ^vfs.Namespace, path: string) ->"
+.B "    (entry: uintptr, sp: uintptr, arg0: u64, err: vectra9.Errno)"
+.B "load_held :: proc(name: string, code: []u8) -> (^Process, mem.Error)"
+.B "launch    :: proc(p: ^Process, arg: u64 = 0, arg2: u64 = 0) -> bool"
+.B "load      :: proc(name: string, code: []u8, arg: u64 = 0, arg2: u64 = 0) ->"
+.B "    (^Process, mem.Error)"
+.fi
+.PP
+.nf
+.B "spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0,"
+.B "    argv: ^Argv = nil) -> (^Process, vfs.Errno)"
+.B "sys_rfork  :: proc(frame: ^arch.Trap_Frame, flags: u64) -> i64"
+.B "sys_exec   :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int,"
+.B "    argv_addr: uintptr, argc: int) -> i64"
+.fi
+.PP
+.nf
+.B "post_note     :: proc(p: ^Process, text: string) -> bool"
+.B "wait_pid      :: proc(caller_pid: u64, pid: u64, patience: int) -> i64"
+.B "reap_orphans  :: proc() -> (collected: int)"
+.fi
+.SH DESCRIPTION
+.I User
+is the door between ring 3 and the kernel, and everything on the kernel's
+side of it: the process record, the loader, notes, and the segments a
+process's memory is made of.
+.SS The door and the calling convention
+A program enters through
+.B syscall
+and the stub it lands on, described in
+.IR arch (9).
+The call number is
+.BR rax ,
+the first three arguments are
+.BR rdi ", " rsi ", " rdx ,
+and the next three are
+.BR r10 ", " r8 ", " r9 .
+.B r10
+stands in for
+.B rcx
+because
+.B syscall
+puts the return address there before the stub can save it.
+The answer comes back in
+.BR rax :
+zero or more is a result, and a negative number is
+.RI \- errno
+out of
+.IR vectra9 (2).
+Only
+.BR rax ", " rcx
+and
+.B r11
+change.
+Every other register is held across the call in a
+.B Trap_Frame
+the stub builds.
+.I Dispatch
+is where the stub lands, in ordinary thread context with interrupts back
+on.
+It checks for a pending note before it reads
+.B rax
+at all: a note flagged on the thread aborts the call about to run rather
+than letting it start, and the program's answer is
+.BR EINTR .
+.PP
+Adding a system call touches three places: a number in
+.B sys/abi/abi.odin
+.RI ( "SYS_" NAME ),
+a case in
+.IR dispatch 's
+switch that calls a
+.BI sys_ name
+handler, and a wrapper in
+.IR sys/libuser
+that a ring 3 program calls by name.
+The three-argument shape a handler takes is whatever its call needs, not a
+fixed signature: a handler reads its own arguments out of the six the
+convention hands it.
+.SS copy_in, copy_out and the User bit
+A pointer a program hands the kernel is a number until it is checked.
+.I Copy_in
+and
+.I copy_out
+are the only ways a handler reads or writes through one, and both defer to
+.IR reachable ,
+which asks one question in both directions: is every page in the range
+inside the half of the address space a program may name, present, and
+marked
+.B User
+in the page tables.
+A page not marked
+.B User
+is refused exactly as ring 3's own hardware would refuse it, which is what
+makes the check equivalent to letting the program try it itself.
+.I Copy_out
+resolves a copy-on-write page before it writes, since a write is what a
+shared page's read-only mapping exists to catch.
+Every handler that touches program memory goes through one of these two
+calls.
+There is no bypass.
+.SS The process record
+A
+.B Process
+holds an address space, a namespace, a descriptor group, an environment
+group, an exit record, note state, and up to
+.B MAX_PROC_SEGS
+.RI ( "forty" )
+segments.
+The table is
+.B processes
+.RI [ MAX_PROCESSES ] ,
+fixed at
+.B 256
+records, and a live one is claimed from it by
+.IR claim_slot .
+.B pid
+comes from
+.BR next_pid ,
+a counter that only ever increases, so a slot's reuse never hands out a
+pid a live record or a
+.I wait
+still names.
+.B parent
+is zero for a process the kernel started directly, which is what keeps
+.I wait
+from letting ring 3 collect one.
+.B detached
+marks a process the kernel reaps rather than a parent: true for a child
+forked with
+.BR RFNOWAIT ,
+and for one reparented when its own parent went.
+.PP
+.B Exit
+records how a process ended: a fault's
+.BR kind ", " vector " and " error_code ,
+or a deliberate
+.B status
+from
+.BR SYS_EXIT ,
+or the text a program handed
+.BR SYS_EXITS ,
+or that a note ended it.
+.B done
+is set once, and is what
+.I wait_pid
+and
+.I reap_orphans
+both poll for.
+.SS The loader
+.I Load_program
+reads a file through a namespace and builds a process's whole memory
+image from it, in one of two formats.
+.B VECTRA01
+is a single page of position-bound code: a magic, an entry address, and a
+text length, used by the blobs in
+.BR kernel/user/programs .
+.B VECTRA02
+is a segment table, one to four rows of a virtual address, a file size, a
+memory size and permission flags, used by a program a compiler built.
+Every frame the loader allocates is attached to the process record before
+anything can fail, so a partial load is exactly what
+.I unload
+already knows how to give back.
+.PP
+.I Load_held
+does everything short of starting a thread: a new address space, a
+namespace forked from the boot namespace, a descriptor group, an
+environment group, and the three one-page segments a
+.B VECTRA01
+blob needs, with the code copied into the text page.
+.I Launch
+puts a thread on a held program, split out from
+.I load_held
+because staging bytes into a program's memory after its thread exists
+races the program for that memory: nothing may touch the pages once a
+thread can be scheduled.
+.I Load
+is
+.I load_held
+then
+.IR launch ,
+for a caller that has nothing to stage in between.
+.SS spawn, rfork and exec
+.I Spawn_path
+starts a process from a file named in the caller's own namespace: a new
+process with fresh text, data and stack, inheriting the namespace
+(shared, copied, or clean, by flag), a copy of the caller's descriptor
+group, and a fresh environment group.
+This is Plan 9's
+.I rfork
+and
+.I exec
+fused into one call.
+.PP
+.I Sys_rfork
+is the creating half taken back out: a second process returns from the
+same call, at the same instruction, with the trap frame, the FXSAVE image
+and the kernel stack all copied so the child's stack addresses mean what
+the parent's did.
+.B RFPROC
+makes the child.
+Without it the flags act on the caller.
+.B RFMEM
+shares writable data segments instead of copying them.
+A stack is never
+shared regardless of any flag, because two threads resuming through one
+stack would unwind each other.
+.BR RFFDG / RFCFDG ,
+.BR RFNAMEG / RFCNAMEG
+and
+.BR RFENVG / RFCENVG
+copy or clear the descriptor group, the namespace and the environment
+group respectively.
+With none of a pair, the child shares its parent's.
+.B RFNOTEG
+puts the child in a fresh note group of its own.
+.B RFNOWAIT
+detaches the child at birth: its
+.B parent
+is zero and
+.B detached
+is set, so no
+.I wait
+will ever collect it and
+.I reap_orphans
+does instead.
+.PP
+.I Sys_exec
+replaces the calling process's program in place.
+The pid, the descriptors and the namespace survive.
+Text, data and stack
+do not, and a registered note handler is cleared, since it pointed into
+text that no longer exists.
+The new image is built in a fresh address space before anything of the
+old one is touched, so a bad file or a machine out of memory leaves the
+caller running, unchanged, with an error.
+Past the point where the new image is committed nothing may fail.
+.SS Notes
+A note is delivered at one of two boundaries: the door, which aborts the
+call about to run and answers
+.B EINTR
+to the frame beneath it, or the tick, which redirects the interrupted
+frame directly, in interrupt context.
+.I Post_note
+flags a note on a process's thread and returns without waiting for
+delivery.
+A caller that wants the process gone waits on its exit
+separately.
+.I Post_note
+refuses a process that has already ended, since the note would
+outlive its target.
+.PP
+A process with no registered handler ends at whichever boundary catches
+the note, exactly as before notes existed.
+One that called
+.B notify
+gets
+.IR deliver_note :
+the note's text and a copy of the trap frame go onto the program's own
+stack, and the frame is redirected into the handler with both addresses
+as its first two arguments.
+A stack the frame does not fit on ends the process instead, since a
+handler is a promise the program keeps with its own stack.
+.B noted
+with
+.B NCONT
+reads the frame back and resumes it, rebuilding the parts a program must
+not choose (the privilege level, the flags it does not own) from the
+kernel's own constants rather than trusting what came back through
+.IR copy_in .
+.B NDFLT
+takes the default action, which is the ending the note always was.
+One delivery runs at a time.
+A note posted while a handler is running
+stays flagged and lands at the first boundary after
+.B noted
+returns.
+.I Sys_notepg
+fans a note out to every process in a note group but the poster, the
+handler behind
+.BR notepg .
+.SS Wait, exit and the reaper
+A deliberate
+.B SYS_EXIT
+or
+.B SYS_EXITS
+and a fault both end a process the same way from here on: the
+.B Exit
+record is filled in and
+.B done
+is set.
+.I Wait_pid
+is
+.IR wait 's
+kernel half: it collects one ended child by pid, and only a live parent
+may collect its own.
+A detached process (see
+.B RFNOWAIT
+above) has no parent to collect it, so a background reaper thread calls
+.I reap_orphans
+instead, which sweeps the table for every detached, ended process and
+tears each one down.
+.PP
+When a process ends,
+.I reparent_children
+walks the table and hands every one of its live children to the kernel:
+.B parent
+zero,
+.B detached
+true.
+That is reparent-to-init with the kernel standing in for init, and it is
+what keeps a child from naming a parent pid that will never call
+.I wait
+again.
+.SS Segments
+A segment is the frames behind one contiguous mapping, reference
+counted, so a frame mapped into two processes under
+.B RFMEM
+has one owner that outlives neither.
+A process holds up to
+.B MAX_PROC_SEGS
+.RI ( "forty" )
+of them.
+.I Sys_segattach
+maps the device behind an open descriptor (a framebuffer, so far) into
+the caller.
+That segment is shared by every fork unconditionally, since
+there is one piece of hardware behind it.
+.I Sys_segalloc
+gives the caller a fresh run of anonymous memory, up to
+.B SEGALLOC_MAX
+.RI ( "four megabytes" )
+at once, optionally shared across a fork under
+.BR SEGSHARED .
+.I Sys_segbrk
+moves the top of a run the caller already holds, Plan 9's
+.IR brk ,
+and only the most recently allocated run may grow.
+.I Sys_segdetach
+unmaps a run the caller attached or allocated and, at the last release,
+frees its frames.
+The three segments a process was born with (text, data,
+stack) may not be detached this way.
+Text is always shared across a fork.
+Writable data is shared only under
+.BR RFMEM .
+A stack is always a private copy, because writability alone cannot say
+which writable segment is the stack, so the loader marks it at birth.
+.SS Resolver hooks
+Two synchronous devices need to know which process is asking without
+importing this package directly:
+.IR srv (3)
+registers
+.B Fd_Resolver
+with
+.IR resolve_fd_chan ,
+which turns a descriptor number in the calling process's own table into
+the chan behind it, and
+.IR env (3)
+registers
+.B Group_Resolver
+with
+.IR resolve_env_group ,
+which answers the calling process's environment group.
+Both run under the resolving device's own spinlock, on the calling
+thread, and both read
+.IR current ,
+the process behind the thread the scheduler is running right now.
+.SS The ring 3 test programs
+.B kernel/user/programs
+holds a set of small programs, written in Odin with no runtime of their
+own: no context, no allocator, no bounds checks, only the door.
+One is picked per build and linked into a flat blob at
+.BR TEXT_VA .
+.B kernel/user/verify.odin
+loads and runs each one to check what ring 3 can and cannot do: a program
+that spins until the tick catches it, ones that fault on purpose, ones
+that open files, fork, post a service, catch a note, or answer 9P by
+hand.
+What the kernel checks afterward is read from its own side of the
+boundary the program never crosses: the mark a program left in its data
+page, the trap frame's place inside the faulting thread's own kernel
+stack, and a kernel global the program tried and failed to change.
+.SH FILES
+.TP
+.B kernel/user/programs
+the ring 3 test programs
+.SH SOURCE
+.B kernel/user
+.br
+.B kernel/user/programs
+.br
+.B sys/abi/abi.odin
+.SH SEE ALSO
+.IR fork (2),
+.IR exec (2),
+.IR wait (2),
+.IR notify (2),
+.IR segattach (2),
+.IR vectra9 (2),
+.IR proc (3),
+.IR srv (3),
+.IR env (3),
+.IR arch (9),
+.IR vfs (9),
+.IR space (9),
+.IR sched (9)
+.SH BUGS
+.B MAX_PROCESSES
+is fixed at 256 and does not grow.
+.PP
+There is no
+.I rfork
+of the note group.
+A fork either shares the parent's group or, under
+.BR RFNOTEG ,
+starts a group of one.

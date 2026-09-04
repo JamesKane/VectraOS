@@ -1,0 +1,91 @@
+.TH WALK 5
+.SH NAME
+walk \- descend a directory hierarchy
+.SH SYNOPSIS
+.nf
+.B size[4] Twalk tag[2] fid[4] newfid[4] nwname[2] nwname*(wname[s])
+.B size[4] Rwalk tag[2] nwqid[2] nwqid*(wqid[13])
+.fi
+.SH DESCRIPTION
+.B Twalk
+carries an existing
+.I fid
+and a proposed
+.I newfid
+that the client wishes to bind to the result of walking
+.I nwname
+path elements,
+.IR wname ,
+from the file
+.I fid
+names.
+.I Newfid
+must not already be in use unless it is the same as
+.IR fid .
+.I Fid
+must be a directory, unless
+.I nwname
+is zero, and must not have been opened for I/O:
+a walk rebinds a fid, and a fid held open for reading must not move
+under its reader.
+See
+.IR open (5).
+.PP
+The name
+.B ..
+means the parent directory.
+The name
+.B .
+is not sent in a
+.BR Twalk :
+a client that means the current file sends
+.I nwname
+zero, which binds
+.I newfid
+to the same file as
+.I fid
+without a message reaching a server for it.
+.PP
+A short
+.B Rwalk
+(fewer qids than
+.I nwname
+named)
+is a success carrying a partial result, not an error.
+.I Newfid
+is bound only when
+.I nwqid
+equals
+.IR nwname ,
+that is, only when every element walked.
+Only a walk that fails on the first element is an error reply.
+Getting this backwards turns every "no such file" into a protocol
+failure instead of an ordinary
+.BR ENOENT .
+.PP
+Vectra bounds a walk at sixteen elements per message, the constant
+.B MAX_WALK_ELEMENTS
+in
+.IR vectra9 (2).
+A path with more components is walked as more than one
+.BR Twalk .
+.PP
+A walk may cross from one server to another partway through, when an
+element it reaches is a mount point.
+That crossing happens in the namespace layer, not on the wire:
+a single
+.B Twalk
+message never leaves the server it was sent to.
+See
+.IR vfs (9).
+.SH SOURCE
+.B sys/vectra9/proto.odin
+.br
+.B kernel/vfs/walk.odin
+.SH SEE ALSO
+.IR intro (5),
+.IR attach (5),
+.IR open (5),
+.IR clunk (5),
+.IR vectra9 (2),
+.IR vfs (9)

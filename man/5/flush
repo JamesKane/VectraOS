@@ -1,0 +1,68 @@
+.TH FLUSH 5
+.SH NAME
+flush \- abort a message
+.SH SYNOPSIS
+.nf
+.B size[4] Tflush tag[2] oldtag[2]
+.B size[4] Rflush tag[2]
+.fi
+.SH DESCRIPTION
+.B Tflush
+asks a server to abandon a pending request, named by
+.IR oldtag .
+It is not a cancellation.
+It is a synchronisation point: the server may finish the request
+.I oldtag
+names, or abandon it, but either way it answers
+.B Rflush
+only after that request's fate is decided,
+and the reply carries the tag of the
+.B Tflush
+itself, not
+.IR oldtag .
+.PP
+.B Tflush
+can never be answered with an error.
+A server that can neither find nor abort the named request still
+sends
+.BR Rflush ;
+the client only needs to know the tag is free.
+The client must wait for
+.B Rflush
+before it reuses
+.IR oldtag ,
+even if the answer to the original request arrives first.
+A flushed request may still be answered, and the client must accept
+that answer as if the request had never been flushed:
+the request may have already changed the server's state, walked a
+fid into being, or created a file.
+.PP
+This is the one ordering rule in the protocol, and it is what makes a
+blocked read interruptible.
+A transport with only one request outstanding at a time,
+such as a kernel device answering a call directly,
+has nothing pending to flush and answers
+.B Rflush
+at once.
+.IR mnt (9)
+is the transport that can actually leave a request pending:
+it keeps a pool of in-flight requests indexed by tag,
+so a
+.B Tflush
+naming one can find it, mark it, and let whichever thread finishes
+the original write
+.B Rflush
+as it leaves.
+A
+.B Tflush
+naming a tag that is not outstanding is answered
+.B Rflush
+regardless, and counted rather than refused.
+.SH SOURCE
+.B sys/vectra9/proto.odin
+.br
+.B kernel/mnt/mnt.odin
+.SH SEE ALSO
+.IR intro (5),
+.IR read (5),
+.IR mnt (9)

@@ -1,0 +1,58 @@
+.TH GENFONT 8
+.SH NAME
+genfont \- regenerate the console font
+.SH SYNOPSIS
+.B python3 tools/genfont.py
+.RB [ \-\-preview ]
+.SH DESCRIPTION
+.I Genfont
+rasterises a monospace TrueType font on the host into the one bitmap
+font table Vectra has, and writes it to standard output as Odin
+source:
+.IP
+.EX
+python3 tools/genfont.py > sys/libfont/font_data.odin
+.EE
+.PP
+.B sys/libfont
+is imported by the kernel's console and linked by any ring 3 program
+that draws text, so there is one table and nothing to keep in step
+between them.
+Nothing is rasterised at boot.
+.PP
+The source font is
+.BR PTMono.ttc ,
+read from the host's own font directory, rasterised at 13 pixels into
+an 8 by 16 cell: twelve rows above the baseline and four below, which
+is exactly what that face gives at that size.
+Ninety-five glyphs are baked, the printable ASCII range from
+.B 0x20
+to
+.BR 0x7E .
+Each cell is one bit per pixel, one byte per scanline, most
+significant bit leftmost, and a pixel is lit when the rasteriser's
+coverage there passes a fixed threshold.
+.PP
+.B \-\-preview
+renders a handful of glyphs as text art on standard output instead of
+writing the table, for a quick look at the shapes without touching the
+generated file.
+.SH EXAMPLES
+.IP
+.EX
+just font
+python3 tools/genfont.py --preview
+.EE
+.SH FILES
+.TP
+.B sys/libfont/font_data.odin
+generated.
+Not edited by hand.
+.SH SOURCE
+.B tools/genfont.py
+.SH SEE ALSO
+.IR build (8),
+.IR font (2)
+.SH DIAGNOSTICS
+Requires Python 3 with Pillow.
+Nothing else in the tree needs either.

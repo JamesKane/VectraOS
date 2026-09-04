@@ -1,0 +1,50 @@
+.TH SLEEP 2
+.SH NAME
+sleep, alarm \- delay, ask for delayed note
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "sleep :: proc(ticks: u64) -> i64"
+.B "alarm :: proc(ticks: u64) -> i64"
+.fi
+.SH DESCRIPTION
+.I Sleep
+suspends the calling process for
+.I ticks
+of the system clock.
+A
+.I ticks
+of zero gives up the processor if another thread is ready to run, and
+returns at once otherwise.
+A note that arrives during the sleep cuts it short, and the answer is a
+negative
+.BR EINTR .
+.PP
+.I Alarm
+asks for an
+.B alarm
+note (see
+.IR notify (2))
+to be posted to the caller after
+.I ticks
+of the clock.
+A later call to
+.I alarm
+replaces the pending one; a
+.I ticks
+of zero cancels it.
+The answer is how many ticks were left on the alarm that was pending
+before the call, or zero if none was.
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR notify (2)
+.SH DIAGNOSTICS
+Answers zero or more on success and a negative
+.B \-errno
+on failure; see
+.IR errstr (2).

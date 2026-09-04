@@ -1,0 +1,109 @@
+.TH READ 5
+.SH NAME
+read, write, readdir \- transfer data or entries
+.SH SYNOPSIS
+.nf
+.B size[4] Tread tag[2] fid[4] offset[8] count[4]
+.B size[4] Rread tag[2] count[4] data[count]
+.fi
+.PP
+.nf
+.B size[4] Twrite tag[2] fid[4] offset[8] count[4] data[count]
+.B size[4] Rwrite tag[2] count[4]
+.fi
+.PP
+.nf
+.B size[4] Treaddir tag[2] fid[4] offset[8] count[4]
+.B size[4] Rreaddir tag[2] count[4] data[count]
+.fi
+.SH DESCRIPTION
+.B Tread
+asks for
+.I count
+bytes from the file
+.I fid
+names, starting
+.I offset
+bytes into it.
+.I Fid
+must already be open; a read of a fid before
+.B Tlopen
+is refused with
+.BR EINVAL .
+.I Count
+in the reply may be less than what was asked for, and zero bytes
+with no error is the end of the file.
+.PP
+.B Twrite
+asks that
+.I count
+bytes at
+.I data
+be written at
+.I offset
+in the file
+.IR fid
+names, and the reply's
+.I count
+is how many actually were.
+A caller that sends fewer than it meant to has a short write to
+account for; it is not itself an error.
+.PP
+Neither message may serialise past the session's
+.IR msize .
+A bulk caller chunks by
+.IR iounit ,
+described in
+.IR open (5),
+which is never larger than
+.I msize
+less
+.BR IOHDRSZ .
+.PP
+.B Treaddir
+reads directory entries rather than raw bytes, and
+.I fid
+must be open on a directory.
+.I Offset
+is an opaque cookie: it must be zero, or a value an earlier
+.B Rreaddir
+entry returned, never an arbitrary byte position.
+.I Data
+holds as many whole entries as fit in
+.IR count ,
+each shaped
+.BR qid[13] ,
+.BR offset[8] ,
+.BR type[1] ,
+.BR name[s] .
+.I Type
+is a Linux dirent type: 4 for a directory, 8 for a plain file.
+Zero entries with no error is the end of the directory.
+.PP
+A directory presented as a union of several trees, bound together
+under one name, concatenates its members' entries in mount order and
+does not filter duplicates: a name two members share is listed
+twice, though opening it by name reaches only the first.
+Such a union, and
+.BR /srv ,
+hide which member an entry belongs to in the high bits of its
+.I offset
+rather than in a byte position, so a listing resumes at the right
+member even after one earlier in the order was added or removed.
+See
+.IR vfs (9).
+.SH SOURCE
+.B sys/vectra9/proto.odin
+.br
+.B sys/vectra9/codec.odin
+.br
+.B kernel/vfs/chan.odin
+.br
+.B kernel/vfs/readdir.odin
+.SH SEE ALSO
+.IR intro (5),
+.IR open (5),
+.IR flush (5),
+.IR getattr (5),
+.IR vectra9 (2),
+.IR vfs (9)

@@ -1,0 +1,46 @@
+.TH DUP 2
+.SH NAME
+dup \- duplicate an open file descriptor
+.SH SYNOPSIS
+.B import "vsys:libuser"
+.PP
+.nf
+.B "dup :: proc(old: int, new: int = -1) -> i64"
+.fi
+.SH DESCRIPTION
+.I Dup
+makes
+.I new
+a second descriptor for the file
+.I old
+already names, and answers the descriptor used.
+.PP
+If
+.I new
+is \-1, the lowest free descriptor is chosen.
+Otherwise
+.I new
+names the descriptor to use, closing whatever it held first.
+.PP
+A process holds at most thirty-two descriptors, numbered 0 to 31; unlike
+Plan 9, there is no growing the table by naming a higher
+.IR new .
+.SH SOURCE
+.B sys/libuser/sys.odin
+.br
+.B kernel/user/syscall.odin
+.SH SEE ALSO
+.IR intro (2),
+.IR open (2),
+.IR pipe (3)
+.SH DIAGNOSTICS
+Answers the descriptor used on success and a negative
+.B \-errno
+on failure; see
+.IR errstr (2).
+.B EBADF
+is
+.I old
+not open, or
+.I new
+naming a number the descriptor table does not reach.

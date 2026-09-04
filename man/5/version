@@ -1,0 +1,63 @@
+.TH VERSION 5
+.SH NAME
+version \- negotiate protocol version
+.SH SYNOPSIS
+.nf
+.B size[4] Tversion tag[2] msize[4] version[s]
+.B size[4] Rversion tag[2] msize[4] version[s]
+.fi
+.SH DESCRIPTION
+.B Tversion
+negotiates the message size and protocol version for a connection,
+and must be the first message either side sends.
+Its tag is
+.BR NOTAG ,
+because no tag space exists until it succeeds,
+and nothing else may be outstanding while it is.
+.PP
+.I Msize
+is the largest complete message, from the four bytes of
+.I size
+through the end of the body, either side will send or accept.
+The client proposes a ceiling and the server answers with the smaller
+of that and its own.
+Both sides hold to the answer from then on.
+See
+.IR intro (5)
+for
+.IR iounit ,
+the number a bulk transfer is actually chunked by.
+.PP
+Vectra speaks one version,
+.BR 9P2000.L ,
+exactly.
+A
+.B Tversion
+that does not name it gets an
+.B Rversion
+whose
+.I version
+field is the seven characters
+.BR unknown ,
+not an
+.BR Rlerror :
+9P's way to say the dialect is refused, rather than that the request
+failed.
+.PP
+A connection performs this handshake once, when it is built.
+A program that posts a service in
+.B /srv
+answers
+.B Tversion
+before anything else arrives on the pipe;
+the kernel gives it half a second to do so before the connection
+comes down.
+See
+.IR mnt (9).
+.SH SOURCE
+.B sys/vectra9/session.odin
+.SH SEE ALSO
+.IR intro (5),
+.IR attach (5),
+.IR vectra9 (2),
+.IR mnt (9)

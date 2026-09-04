@@ -1,0 +1,112 @@
+.TH SINK 2
+.SH NAME
+Sink, sink_from, bytes, str, reset, put_byte, put_str, put_pad, put_uint, put_int, put_hex, put_ptr, put_size \- format into a fixed buffer
+.SH SYNOPSIS
+.B import "vsys:libodin"
+.PP
+.nf
+.B "Sink :: struct { buf: []u8, len: int, overflowed: bool }"
+.B "sink_from :: proc(buf: []u8) -> Sink"
+.B "bytes :: proc(s: ^Sink) -> []u8"
+.B "str :: proc(s: ^Sink) -> string"
+.B "reset :: proc(s: ^Sink)"
+.B "put_byte :: proc(s: ^Sink, b: u8)"
+.B "put_str :: proc(s: ^Sink, text: string)"
+.B "put_pad :: proc(s: ^Sink, b: u8, count: int)"
+.B "put_uint :: proc(s: ^Sink, value: u64, base: u64 = 10, width: int = 0, upper := false)"
+.B "put_int :: proc(s: ^Sink, value: i64, base: u64 = 10)"
+.B "put_hex :: proc(s: ^Sink, value: u64, width: int = 0)"
+.B "put_ptr :: proc(s: ^Sink, p: rawptr)"
+.B "put_size :: proc(s: ^Sink, bytes_count: u64)"
+.fi
+.SH DESCRIPTION
+A
+.B Sink
+is a fixed byte buffer, given by the caller, plus a write cursor.
+Nothing here allocates: this package is what the kernel and an early
+userland program format text with before an allocator exists, or from
+inside a fault handler, where discovering there is none would itself be
+a fault.
+.PP
+.I Sink_from
+wraps
+.I buf
+with the cursor at its start.
+.I Bytes
+and
+.I str
+answer the portion written so far, as a slice or a string that aliases
+.IR buf ;
+.I reset
+puts the cursor back to the start and clears
+.IR overflowed .
+.PP
+Every
+.B put_
+procedure appends to the sink.
+Writing past the end of
+.I buf
+sets
+.I overflowed
+and drops what does not fit, rather than growing or panicking: a panic
+message that is too long still prints what fits, instead of faulting
+inside the panic path.
+.PP
+.I Put_byte
+and
+.I put_str
+append one byte or a string.
+.I Put_pad
+appends
+.I count
+copies of
+.IR b ,
+and does nothing for a non-positive
+.IR count .
+.I Put_uint
+formats
+.I value
+in
+.I base
+(2 to 16), zero-padded to at least
+.I width
+digits, using upper-case hex letters when
+.I upper
+is set.
+.I Put_int
+is the same for a signed value, writing a leading
+.B \-
+first.
+.I Put_hex
+writes an
+.B 0x
+prefixed value, and
+.I put_ptr
+writes a pointer as sixteen hex digits, so a column of addresses in a
+log lines up.
+.I Put_size
+writes a byte count in the largest binary unit that keeps the integer
+part non-zero, with one fractional digit, so a boot log reads
+.B 3.9 GiB
+rather than a number nobody parses at a glance.
+.SH EXAMPLES
+The kernel's boot log builds each line into a sink before handing it to
+the log:
+.IP
+.EX
+sink := begin(&klog)
+libodin.put_str(&sink, "framebuffer ")
+libodin.put_uint(&sink, u64(screen.width))
+libodin.put_str(&sink, "x")
+libodin.put_uint(&sink, u64(screen.height))
+emit(&klog, .Ok, &sink)
+.EE
+.SH SOURCE
+.B sys/libodin/format.odin
+.SH SEE ALSO
+.IR print (2),
+.IR bio (2)
+.SH DIAGNOSTICS
+.I Overflowed
+is set on the sink itself once a write does not fit; nothing here
+answers an error value.

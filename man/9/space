@@ -1,0 +1,208 @@
+.TH SPACE 9
+.SH NAME
+space \- an address space per process, and the segments that own its frames
+.SH SYNOPSIS
+.B import "kernel:mem"
+.PP
+.nf
+.B "space_new :: proc () -> (^Address_Space, Error)"
+.B "space_destroy :: proc (space: ^Address_Space)"
+.B "space_switch :: proc (space: ^Address_Space)"
+.B "map_user :: proc (space: ^Address_Space, virt, phys: uintptr, flags: arch.Page_Flags, pages: int) -> Error"
+.B "protect_user :: proc (space: ^Address_Space, virt: uintptr, pages: int, flags: arch.Page_Flags) -> Error"
+.B "remap_user :: proc (space: ^Address_Space, virt, phys: uintptr, flags: arch.Page_Flags) -> Error"
+.B "unmap_user :: proc (space: ^Address_Space, virt: uintptr, pages: int) -> Error"
+.B "shoot :: proc (root: uintptr, virt: uintptr, pages: int)"
+.B "space_stats :: proc () -> Space_Stats"
+.fi
+.PP
+.B import "kernel:user"
+.PP
+.nf
+.B "segment_new :: proc (p: ^Process, kind: Segment_Kind, ...) -> ^Segment"
+.B "segment_incref :: proc (s: ^Segment)"
+.B "segment_release :: proc (s: ^Segment)"
+.B "segment_frame :: proc (s: ^Segment, page: int) -> uintptr"
+.B "segment_covering :: proc (p: ^Process, virt: uintptr) -> ^Segment"
+.B "map_reserve :: proc (p: ^Process, pages: int) -> (va: uintptr, ok: bool)"
+.B "segment_stats :: proc () -> Segment_Stats"
+.fi
+.SH DESCRIPTION
+An
+.B Address_Space
+in
+.B kernel/mem/space.odin
+is one page table tree per process.
+Its top-level table has 512 entries; the low 256 are a fresh, empty lower
+half, and the high 256 are a copy, entry for entry, of the kernel's own
+top-level table.
+Because the copy is by entry and every space's high half names the same
+second-level tables, a kernel mapping made after a space is created is
+visible in every space without being replayed into any of them.
+The
+.B User
+permission bit is never set on any of the 256 kernel-half entries, which
+is what seals the kernel from a program at the top of the tree, once,
+rather than by leaving the bit clear on every mapping anyone makes.
+.PP
+.B USER_MIN
+is one page above address zero, so a null pointer always faults rather
+than reading whatever a program put at the bottom of its space.
+.B USER_MAX
+is where the non-canonical hole starts; an address at or above it is
+refused by name rather than by the encoding underneath.
+.SS What a space owns
+A space owns its lower-half page tables and frees them on
+.BR space_destroy .
+It does not own the frames those tables' leaves point at.
+.B space_destroy
+walks only as far as the halfway index and stops: the upper 256 entries
+name tables the kernel and every other space still use, and freeing one
+would take the kernel down with the process that exited.
+.PP
+The frame owner is the
+.I segment
+.RB ( kernel/user/segment.odin ),
+not the space.
+This split exists because a frame mapped into two spaces, as
+.I rfork
+makes possible, has two owners and needs a count.
+The division:
+.IP
+.EX
+the space       owns its page tables, frees them, never touches a leaf
+the segment      owns the frames, frees them at the last release
+the process      holds references to both
+.EE
+.SS Segments
+A
+.B Segment
+is the frames behind one contiguous mapping, refcounted, of one
+.BR Segment_Kind :
+.BR Text ,
+shared by every fork because nothing can write it;
+.BR Data ,
+copied on
+.I rfork
+unless
+.B RFMEM
+shares it;
+.BR Stack ,
+always a private copy at the same address, because the child continues
+its parent's stack;
+.BR Device ,
+memory the allocator never owned and must never free, such as the
+framebuffer, shared unconditionally because there is one piece of
+hardware behind it;
+and
+.BR Anon ,
+memory a process asked for by the page through
+.B segalloc
+rather than by a file, owned and freed like
+.B Data
+and treated as
+.B Data
+by
+.IR rfork .
+.B Shared
+is a sixth kind kept across
+.IR exec .
+A segment is described one of two ways.
+.B Text ,
+.B Data
+and
+.B Stack
+carry a list of frame numbers, one per page, filled in as pages arrive
+and holding zero for a hole a fault fills.
+.B Device
+and
+.B Anon
+carry a base and an extent instead, because a thousand-frame device
+mapping does not fit a list bounded at
+.BR MAX_PROGRAM_FRAMES .
+.B segment_is_run
+is the one predicate that tells the two shapes apart; every other
+operation on a segment treats all kinds alike.
+A process holds at most
+.B MAX_PROC_SEGS
+segments.
+.SS Copy-on-write
+A
+.B Data
+or
+.B Text
+segment shared under
+.I rfork
+without
+.B RFMEM
+is mapped read-only in both processes with its reference count raised by
+.BR segment_incref .
+A write fault to such a page reaches
+.B kernel:user's
+.BR fix_fault :
+if the segment's reference count is still above one, it copies the page,
+calls
+.B remap_user
+to point the faulting process at the copy, and
+.B segment_release
+drops the shared segment's share of that page.
+A write fault to a page the process already owns alone is not copied,
+only reprotected.
+.SS map_reserve
+.B map_reserve
+finds the lowest free span in a process's own segment list without
+mapping anything.
+Both
+.B segattach
+and
+.B segalloc
+take their address from it, so the two calls share one search and their
+ranges cannot overlap.
+A span
+.B segdetach
+frees becomes a hole the next call can land in, and a child inherits its
+parent's list along with its address space, so its first allocation
+after
+.I rfork
+lands clear of everything the parent already held.
+An anonymous segment is bounded by
+.BR SEGALLOC_MAX ,
+four megabytes.
+.SS The shootdown
+.B invlpg
+drops a translation on the core that runs it, and no other.
+A core translating through the same space keeps a stale entry until it
+is told to drop it.
+.B unmap_user
+calls
+.B shoot
+after it changes the tables, which asks every core whose current thread
+runs in the affected space, or every core if the kernel's own space
+changed, to drop the range and count itself off; the caller waits for
+the count to reach zero.
+.B unmap_user_quiet
+takes the entries out without shooting, for a caller that must change
+several spaces under one lock and cannot wait on other cores while
+holding it; that caller calls
+.B shoot
+once for each space after the lock is released, and the frames involved
+may not be reused before that.
+One shootdown is in flight at a time.
+The sender may hold no spinlock and may not be a handler, because a
+receiver spinning on a lock the sender holds would never take the
+interrupt that lets it answer; see
+.IR sync (9).
+.SH SOURCE
+.B kernel/mem/space.odin
+.br
+.B kernel/user/segment.odin
+.SH SEE ALSO
+.IR memory (9),
+.IR sync (9),
+.IR smp (9),
+.IR user (9),
+.IR arch (9),
+.IR segattach (2)
+.SH BUGS
+There is no swap.
+A segment's frames stay resident for the life of the segment.

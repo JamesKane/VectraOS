@@ -1,0 +1,73 @@
+.TH PIPE 3
+.SH NAME
+pipe \- two-way interprocess communication
+.SH SYNOPSIS
+.nf
+.BI #| id .0
+.BI #| id .1
+.fi
+.SH DESCRIPTION
+An attach of this device names one end of a pipe with an argument of the
+form
+.IR id . end .
+.I Id
+picks the pipe, and
+.I end
+is zero or one, picking which of its two ends.
+The two ends are byte streams cross-connected so that what one end
+writes, the other end reads.
+Unlike every other device in this section,
+.B #|
+has no place of its own in the sixteen-slot device table (see
+.IR intro (3)):
+no program ever writes a
+.B #|
+path.
+The
+.I pipe
+system call (see
+.IR pipe (2))
+is the only way to a pipe.
+It makes one with both ends open, attaches to each end itself, and hands
+back two ordinary descriptors.
+From there each end is a file like any other: it travels to a child across
+.I rfork
+or
+.IR spawn ,
+it closes with
+.IR close ,
+and either end may be posted in
+.B /srv
+(see
+.IR srv (3))
+to make the far side of the pipe a service.
+.PP
+Reading and writing carry no framing: what crosses is a stream of bytes,
+not a stream of messages, and a read may return bytes from more than one
+write or only part of one.
+Each direction buffers 2048 bytes.
+A read on an empty ring parks until the other end writes or closes.
+Once the writing end has closed and the ring has drained, a read answers
+zero bytes, an end of file that does not go away.
+A write on a full ring parks until the other end reads enough to make
+room.
+Once the reading end has closed, a write fails with
+.BR EPIPE .
+A write already in progress when the reading end closes returns the count
+that crossed before it did.
+.SH SOURCE
+.B kernel/pipe
+.SH SEE ALSO
+.IR intro (3),
+.IR srv (3),
+.IR pipe (2),
+.IR dup (2)
+.SH DIAGNOSTICS
+A write to a pipe whose reading end has closed fails with
+.BR EPIPE .
+A read interrupted by a note fails with
+.BR EINTR .
+.SH BUGS
+Unlike Plan 9's pipe, this one does not preserve the boundary between one
+write and the next, so a protocol that depends on a read matching a write,
+rather than framing its own messages, will not work across one.

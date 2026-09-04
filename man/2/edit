@@ -1,0 +1,143 @@
+.TH EDIT 2
+.SH NAME
+put,
+erase_back,
+text,
+cursor,
+clear \- a line under construction
+.SH SYNOPSIS
+.B import "vsys:libedit"
+.PP
+.nf
+.B "Line :: struct { buf: []u8, n: int, pos: int }"
+.B "Result :: enum { Edited, Done, Full, Pending }"
+.fi
+.PP
+.nf
+.B "put :: proc(l: ^Line, b: u8) -> Result"
+.B "erase_back :: proc(line: []u8, key: u8) -> int"
+.B "text :: proc(l: ^Line) -> string"
+.B "cursor :: proc(l: ^Line) -> int"
+.B "clear :: proc(l: ^Line)"
+.fi
+.SH DESCRIPTION
+.I Libedit
+is one line discipline, the keys it acts on and what they do, shared by
+every program in ring 3 that holds a line of typed text: a window's
+.B cons
+in
+.IR intuition (4),
+and
+.I window
+and
+.I terminal
+(see
+.IR window (1))
+over their own raw keyboard.
+It is
+.IR rio 's
+.B wbswidth
+as a package.
+.PP
+A
+.B Line
+is a fixed buffer, how much of it holds text, and a cursor position.
+The storage is the caller's:
+.I put
+never grows it.
+.I Pos
+is always between zero and
+.IR n .
+.PP
+.I Put
+gives one byte to
+.I l
+and answers what it did.
+.RB ( ".Edited" )
+covers both an inserted character and an erased one, because both mean
+the same thing to a caller that echoes: draw the line again.
+.RB ( ".Done" )
+is a newline: the line is ready, and the newline itself is not stored,
+because a caller that wants one appends it and a caller that draws the
+line does not.
+.RB ( ".Full" )
+is a character that did not fit.
+.RB ( ".Pending" )
+is a byte that changed nothing, including a byte still arriving as part
+of a multi-byte rune (see
+.IR keyboard (6))
+and a rune this discipline has no use for.
+.PP
+.I Put
+acts on these keys:
+.TP 12
+.BR \eb " or " DEL
+erase one character before the cursor
+.TP
+.B ^U
+erase the whole line
+.TP
+.B ^W
+erase one word: skip any characters before the cursor that are not
+letters or digits, then erase the run of letters and digits behind them
+.TP
+.BR ^A " or " Khome
+move the cursor to the beginning of the line
+.TP
+.BR ^E " or " Kend
+move the cursor to the end of the line
+.TP
+.BR Kleft ", " Kright
+move the cursor one character
+.PD
+.PP
+.BR Khome ,
+.BR Kend ,
+.B Kleft
+and
+.B Kright
+are the rune names
+.IR keyboard (6)
+gives the arrow and home and end keys.
+Every other character is inserted
+.I at
+the cursor, and every other rune, including one this discipline has no
+key binding for, changes nothing: this package holds only 7-bit ASCII,
+because
+.IR font (2)
+has no glyph for anything else.
+.PP
+.I Erase_back
+answers how many bytes one erase key removes from the end of
+.IR line ,
+which is
+.IR put 's
+rule for
+.B \eb
+.RB ( DEL )
+and
+.BR ^W ,
+exposed for a caller that wants it directly.
+It answers zero for an empty line and for a byte that is not an erase
+key.
+.PP
+.I Text
+is the line typed so far.
+.I Cursor
+is where the next character goes, as an index into
+.IR text .
+.I Clear
+empties the line and its cursor, and drops any rune still arriving.
+.SH SOURCE
+.B sys/libedit/edit.odin
+.SH SEE ALSO
+.IR keyboard (6),
+.IR kbd (2),
+.IR font (2),
+.IR window (1)
+.SH BUGS
+Only ASCII is stored.
+A rune above
+.B 0x7F
+that is not one of the four motion keys is silently dropped rather than
+inserted or reported.

@@ -1,0 +1,190 @@
+.TH SED 1
+.SH NAME
+sed \- stream editor
+.SH SYNOPSIS
+.B sed
+[
+.B \-n
+]
+[
+.B \-e
+.I script
+] ...
+[
+.I script
+]
+[
+.I file ...
+]
+.SH DESCRIPTION
+.I Sed
+copies the named
+.I files
+(standard input default) to the standard output,
+edited according to a script of commands.
+Each
+.B \-e
+option adds its
+.I script
+to the whole.
+If there is no
+.B \-e
+option, the first argument after the flags is the script.
+The
+.B \-n
+option suppresses the default output.
+.PP
+A script consists of editing commands,
+separated by newlines or semicolons,
+of the following form:
+.IP
+[\fIaddress\fR [\fB,\fI address\fR] ] [\fB!\fR] \fIfunction\fR
+.PP
+In normal operation
+.I sed
+cyclically copies a line of input into a
+.IR "pattern space" ,
+applies in sequence
+all commands whose
+.I addresses
+select that pattern space,
+and at the end of the script copies the pattern space
+to the standard output (except under
+.BR \-n )
+and deletes the pattern space.
+.PP
+An
+.I address
+is either a decimal number that counts
+input lines, a
+.B $
+that
+addresses the last line of input, or a context address,
+.BI / regular-expression / \fR,
+in the style of
+.IR regexp (6).
+Unlike Plan 9's
+.IR sed ,
+line numbers and
+.B $
+count within each file, not across all of them.
+.PP
+A command with no addresses selects every pattern space.
+.PP
+A command with
+one address selects each pattern space that matches the address.
+.PP
+A command with
+two addresses selects the inclusive range from the first
+pattern space that matches the first address through
+the next pattern space that matches
+the second.
+(If the second address is a number less than or equal
+to the line number first selected, only one
+line is selected.)
+Thereafter the process is repeated, looking again for the
+first address.
+.PP
+A
+.B !
+after the addresses applies the function to the pattern spaces
+the addresses do not select.
+.PP
+The functions are:
+.TP
+.B d
+Delete the pattern space.
+Start the next cycle.
+.TP
+.B p
+Print.
+Copy the pattern space to the standard output.
+.TP
+.B q
+Quit.
+Copy the pattern space to the standard output (except under
+.BR \-n )
+and stop.
+.TP
+.BI s/ regular-expression / replacement / flags
+Substitute the
+.I replacement
+string for instances of the
+.I regular-expression
+in the pattern space.
+Any character may be used instead of
+.BR / ,
+and the delimiter appears in either part as
+.BI \e delimiter\fR.
+.I Flags
+is zero or more of
+.RS
+.TP
+.B g
+Global.
+Substitute for all non-overlapping instances of the
+.I regular expression
+rather than just the
+first one.
+.TP
+.B p
+Print the pattern space if a replacement was made.
+.RE
+.IP
+An ampersand
+.B &
+appearing in the replacement
+is replaced by the string matching the regular expression.
+.B \en
+in the replacement is a newline, and
+.B \e
+before any other character is that character.
+.PD
+.SH EXAMPLES
+.TP
+.B sed 10q file
+Print the first 10 lines of the file.
+.TP
+.B sed '/^$/d'
+Delete empty lines from standard input.
+.TP
+.B sed 's/UNIX/& system/g'
+Replace every instance of
+.B UNIX
+by
+.BR "UNIX system" .
+.TP
+.B sed -n '/^bind/p' file
+Print only the lines that begin with
+.BR bind .
+.SH SOURCE
+.B cmd/sed/main.odin
+.SH SEE ALSO
+.IR grep (1),
+.IR regexp (6)
+.SH DIAGNOSTICS
+The exit status is empty,
+.B "can't open"
+when a file could not be opened,
+.B "bad script"
+when the script does not parse, or
+.BR usage .
+The other files are still edited.
+.SH BUGS
+The functions above are all there are:
+no hold space, no
+.BR a ,
+.BR i ,
+.BR c ,
+.BR y ,
+.BR N ,
+.BR w ,
+.B r
+or branches, and no
+.B \-f
+to read a script from a file.
+Regular expressions have no captures, so
+.B \e1
+in a replacement is the character
+.BR 1 .
+A range that is open when one file ends carries on into the next.

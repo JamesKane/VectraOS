@@ -1,0 +1,158 @@
+.TH CONS 3
+.SH NAME
+cons, consctl, null, zero \- console device
+.SH SYNOPSIS
+.B bind #c /dev
+.nf
+
+.B /dev/cons
+.B /dev/consctl
+.B /dev/null
+.B /dev/zero
+.fi
+.SH DESCRIPTION
+These four files are part of the one-level directory the
+.B #c
+device serves.
+The rest of that directory is described on three other pages:
+.IR fb (3)
+for the raw screen,
+.IR kbd (3)
+for the raw scancode stream, and
+.IR uart (3)
+and
+.IR mouse (3)
+for the serial line and the pointer.
+A single
+.B bind
+of
+.B #c
+at
+.B /dev
+is what puts all of them there together.
+.PP
+A write to
+.B cons
+draws the characters on the screen and sends them out the serial port, and
+always takes the whole write: the console has no back pressure to report.
+A read of
+.B cons
+parks until there is a line to hand back, unless the console is in raw mode,
+in which case any byte answers it.
+Whichever mode is in force,
+.B \er
+is translated to
+.BR \en ,
+because a reader should not have to know what kind of terminal typed at it.
+.PP
+Cooked mode, the default, is a line under construction that a reader never
+sees until it is sent.
+A printable character is appended to the line and echoed where it was typed.
+Backspace and delete take the last character off the line and off the
+screen.
+Control\-U throws the whole line away and starts a fresh one.
+A carriage return or newline sends the line, newline included.
+Control\-D sends the line with no newline when there are characters in it,
+and marks an end of file when there are not: reading
+.B cons
+answers zero bytes exactly then, and nowhere else.
+Every other control character, and every byte outside the printable range,
+is refused rather than stored: the line discipline has no way to show a
+reader a byte it cannot spell as a printable character.
+Control\-C throws the line away and posts
+.B interrupt
+to the process group last known to be reading the console (see
+.IR intro (1)).
+.PP
+Raw mode, reached through
+.BR consctl ,
+is what is left when the line discipline is taken out: every byte reaches a
+reader as it arrives, none of the characters above mean anything, and
+nothing is echoed.
+It is what a program that draws its own input, or reads a password, needs.
+Switching between raw and cooked mode discards whatever line was under
+construction, because those characters were typed under rules that no
+longer apply.
+.PP
+.B Consctl
+takes one command per write.
+.TP 8
+.B rawon
+raw mode, with echo off
+.TP
+.B rawoff
+cooked mode, with echo on
+.TP
+.B echoon
+turn echo on without changing the mode
+.TP
+.B echooff
+turn echo off without changing the mode
+.PD
+.PP
+A command nothing above recognises is refused with
+.BR EINVAL ,
+and none of the write is taken.
+The last
+.B consctl
+fid closed puts the console back in cooked mode with echo on, so a program
+that turns raw mode on and then ends abnormally does not leave a console
+nobody can type at.
+.PP
+Reading
+.B consctl
+answers with the commands that would put the console back in its current
+state, one per line, for example
+.IP
+.EX
+rawoff
+echoon
+.EE
+.PP
+Unlike Plan 9's
+.BR consctl ,
+this file can be read.
+A program can save what it reads and write it back later, and a check has
+something exact to compare its own commands against.
+.PP
+The
+.B null
+file discards whatever is written to it and answers zero bytes on every
+read, which is an end of file.
+The
+.B zero
+file discards whatever is written to it and answers a buffer of zero bytes
+on every read, without limit.
+Both writes always take the whole count.
+.SH SOURCE
+.B kernel/devfs
+.SH SEE ALSO
+.IR intro (3),
+.IR fb (3),
+.IR kbd (3),
+.IR uart (3),
+.IR mouse (3),
+.IR intro (1),
+.IR kill (1),
+.IR read (2),
+.IR notify (2)
+.SH DIAGNOSTICS
+A read of
+.B cons
+that is still unanswered when the connection abandons it fails with
+.BR EINTR .
+Every other operation these four files refuse answers
+.B EPERM
+for an operation they do not have, such as a write to a read\-only file, or
+.B EISDIR
+for a message meant for a directory.
+.SH BUGS
+There is no word erase and no command history: control\-U is the only way
+to take back more than the last character.
+.PP
+There is one console for the whole machine.
+A write to
+.B consctl
+changes cooked or raw mode, and echo, for every reader of
+.B /dev/cons
+at once.

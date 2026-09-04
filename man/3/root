@@ -1,0 +1,73 @@
+.TH ROOT 3
+.SH NAME
+root \- the root file system
+.SH SYNOPSIS
+.B #/
+.nf
+
+.B /bin
+.B /dev
+.B /env
+.B /lib
+.B /mnt
+.B /n
+.B /net
+.B /proc
+.B /srv
+.B /usr
+.B /ws
+.fi
+.SH DESCRIPTION
+The
+.I root
+device serves the one-level tree that becomes
+.B /
+in the name space the kernel builds at boot.
+Almost every name in it is an empty directory, a place to
+.IR bind (2)
+onto rather than a file with contents of its own.
+.PP
+.B #/
+is an ordinary device, registered in the device table like any other (see
+.IR intro (3)),
+and reachable by that name.
+This is unlike Plan 9, where
+.B #/
+is refused outright: here it is how the kernel itself rebuilds a name
+space from nothing, after a fork left one with no root to walk from.
+A process is not expected to attach
+.B #/
+directly.
+The boot name space already has it mounted at
+.BR / .
+.PP
+By convention rather than enforcement, the kernel binds a device or a
+served tree onto each of these names before starting anything: the console
+and disks at
+.BR /dev ,
+posted services at
+.BR /srv ,
+environment variables at
+.BR /env ,
+processes at
+.BR /proc ,
+the boot disk's programs and files under
+.B /bin
+and
+.BR /lib ,
+and the disk the machine started from at
+.BR /n/esp .
+Nothing stops a process from binding something else over any of them.
+.SH SOURCE
+.B kernel/vfs/root.odin
+.SH SEE ALSO
+.IR intro (3),
+.IR intro (1),
+.IR bind (1),
+.IR bind (2),
+.IR cons (3),
+.IR sd (3),
+.IR srv (3),
+.IR env (3),
+.IR proc (3),
+.IR bin (3)

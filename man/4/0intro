@@ -1,0 +1,68 @@
+.TH INTRO 4
+.SH NAME
+intro \- introduction to file servers
+.SH DESCRIPTION
+A
+.I "file server"
+is a program that answers 9P2000.L on a pipe and gives a tree of files to
+whatever mounts it.
+This section describes each one: what it serves, where it is
+conventionally mounted, and how it stops.
+.PP
+A server is started like any program.
+It makes a pipe, posts one end under a name in
+.B /srv
+(see
+.IR srv (3)),
+and its parent exits once the name is there, so a shell that started it
+can go on to mount it on the next line.
+A client reaches the tree with
+.IR mount ,
+which walks the posted pipe and grafts the server's root onto a name in
+the caller's own name space; see
+.IR bind (1)
+and
+.IR bind (2).
+Most servers here stop on the pipe's hang-up, when the last mount and the
+posted name are both gone; a few take a
+.B Tremove
+on a file of their own as their stop instead, and each page says which.
+.PP
+.IR init (8)
+starts
+.IR kbdfs (4)
+and
+.IR intuition (4)
+once the disks are mounted, so a keyboard and a window are the first
+things a booted machine has beyond the console.
+.PP
+The servers:
+.TP 10
+.IR ramfs (4)
+a teaching server: two fixed files, in a program's own segments
+.TP
+.IR memfs (4)
+a file tree of any shape, kept on the heap
+.TP
+.IR fatfs (4)
+the FAT volume the machine booted from
+.TP
+.IR kfs (4)
+the disk of Vectra's own, where home directories live
+.TP
+.IR kbdfs (4)
+the keyboard, translated from scancodes into characters and keys
+.TP
+.IR eiafs (4)
+the serial port, read and written from ring 3
+.TP
+.IR consrv (4)
+the console, served a line at a time
+.TP
+.IR intuition (4)
+the draw server, compositor and window manager
+.PD
+.SH SEE ALSO
+.IR bind (1),
+.IR srv (3),
+.IR init (8)

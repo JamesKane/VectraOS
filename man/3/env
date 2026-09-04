@@ -1,0 +1,78 @@
+.TH ENV 3
+.SH NAME
+env \- environment variables
+.SH SYNOPSIS
+.B bind #e /env
+.nf
+
+.BI /env/ var1
+.BI /env/ var2
+\&...
+.fi
+.SH DESCRIPTION
+The
+.I env
+device serves a one-level directory of files with arbitrary names and
+contents.
+The file name is the name of an environment variable (see
+.IR rc (1)),
+and its content is the variable's current value.
+.PP
+Every process has its own directory, called its
+.IR "environment group" .
+A
+.I fork
+(see
+.IR fork (2))
+gives a new process the same group as its parent, so both see the same
+files and a change made in one is visible in the other.
+.B RFENVG
+splits the group: from then on each side keeps its own copy, and a change
+in one is invisible to the other.
+.B RFCENVG
+splits and starts the copy empty.
+.I Exec
+keeps whichever group a process already has, because the environment
+belongs to the process rather than to the program running in it.
+The last process holding a group frees its variables when it ends.
+.PP
+A value is up to 4096 bytes.
+Creating a name makes it with an empty value.
+A write at an offset overwrites and, past the current length, extends the
+value.
+An open with
+.B OTRUNC
+(see
+.IR open (2))
+empties it first, and a
+.I wstat
+of the length truncates or zero-fills it.
+That is what lets
+.B "echo x >/env/y"
+replace a value and
+.B >>
+append to it, without the device knowing which a shell meant.
+Removing a name unsets the variable.
+.PP
+A read or a write against a name that has been removed, or a fid opened on
+one and then recreated under the same name, refers to nothing: an id is
+never reused within a group, so a stale fid names no variable rather than
+whatever came to occupy the name next.
+.SH SOURCE
+.B kernel/env
+.SH SEE ALSO
+.IR intro (3),
+.IR env (1),
+.IR rc (1),
+.IR fork (2),
+.IR open (2),
+.IR stat (2)
+.SH DIAGNOSTICS
+Creating a name that already exists fails with
+.BR EEXIST .
+A name longer than 64 bytes, or one containing
+.B /
+or a control character, fails with
+.BR EINVAL .
+A write that would put a value past 4096 bytes fails with
+.BR ENOSPC .

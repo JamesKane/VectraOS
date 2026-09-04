@@ -1,0 +1,89 @@
+.TH SD 3
+.SH NAME
+sd \- storage devices
+.SH SYNOPSIS
+.B bind #S /dev
+.nf
+
+.BI /dev/sd n /data
+.BI /dev/sd n /ctl
+.BI /dev/sd n /esp
+.BI /dev/sd n /dos
+\&...
+.fi
+.SH DESCRIPTION
+The
+.I sd
+device serves a two-level directory, one
+.BI sd n
+per disk the virtio block driver found, numbered from zero in the order
+the driver attached them.
+Each disk's directory holds
+.B data
+and
+.BR ctl ,
+and one file per partition the disk's master boot record names.
+.PP
+.B Data
+is the whole disk, byte-addressable, read and write, with no
+interpretation.
+A partition file is a window onto the same bytes: it begins where its
+partition begins and is as long as the partition is, and a read or a write
+against it cannot reach past that range.
+.PP
+The name a partition gets comes from its type byte in the master boot
+record:
+.B esp
+for an EFI system partition,
+.B dos
+for a FAT type,
+.B plan9
+for Plan 9's own type, and
+.BI part N
+for anything else, numbered from one in table order.
+A sector zero that begins with a jump instruction is a FAT boot sector
+rather than a master boot record, and is not read as one.
+A disk with neither gets no partitions, only
+.BR data .
+.PP
+Reading
+.B ctl
+answers one line:
+.IP
+.EX
+geometry 20971520 512
+.EE
+.PP
+the sector count, then the sector size in bytes.
+Writing to
+.B ctl
+fails with
+.BR EPERM :
+there is nothing on this device yet for a client to set.
+.PP
+.B #S
+is bound at
+.B /dev
+as a second member, after
+.BR #c ,
+so a listing of
+.B /dev
+shows every disk's directory beside the console's own files.
+.SH SOURCE
+.B kernel/sd
+.SH SEE ALSO
+.IR intro (3),
+.IR cons (3),
+.IR bind (1),
+.IR stat (2)
+.SH DIAGNOSTICS
+Opening a disk or a partition that is not there fails with
+.BR ENXIO .
+Writing to
+.B ctl
+fails with
+.BR EPERM .
+Reading or writing a directory fails with
+.B EISDIR
+or
+.BR ENOTDIR .

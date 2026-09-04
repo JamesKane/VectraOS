@@ -1,0 +1,280 @@
+.TH INTRO 1
+.SH NAME
+intro \- introduction to Vectra
+.SH DESCRIPTION
+Vectra is an operating system written in Odin.
+Its structure is Plan 9's.
+Every system service is a tree of files behind a message-passing endpoint,
+each process has a name space of its own,
+and the protocol between a process and a service is 9P2000.L, unmodified.
+A user works at a terminal, either the serial line or a window on the
+machine's own screen, and types commands at
+.IR rc (1).
+.SS Name spaces
+Almost every object a program can use is a file.
+The object a name reaches is decided by a mapping called the
+.IR "name space" ,
+and every process has one.
+A process starts with its parent's name space, shared or copied
+(see
+.I rfork
+in
+.IR fork (2)),
+and may then change its own without changing anybody else's.
+Two processes that hand the kernel the same path may get different files.
+.PP
+A name space is a tree.
+A full file name has the form
+.IP
+.RI / e1 / e2 /.../ en
+.PP
+and names a descendant of the root,
+which is the first
+.BR / .
+The tree is assembled from
+.IR services ,
+each of which serves a tree of its own.
+A service is
+.I bound
+or
+.I mounted
+onto a name in the name space so far,
+and from then on a walk that reaches that name continues in the service's tree.
+See
+.IR bind (1)
+and
+.IR bind (2).
+.PP
+Kernel services have names outside the name space:
+a
+.B #
+followed by one character.
+.B #c
+is the console device, and it is conventionally bound at
+.BR /dev .
+Section 3 of this manual describes each one.
+A service that a program provides is posted as a name in
+.BR /srv ,
+and anything that can see the name can mount it.
+Section 4 describes the servers that run as programs.
+.PP
+A directory may be a
+.IR "union directory" :
+several directories bound to one name, searched in order.
+A
+.I bind
+flag says whether a new member goes at the front or the back of the list,
+or replaces it,
+and whether files may be created in it.
+A name is looked up in each member in turn until it is found,
+and a file created in a union goes into the first member
+that was bound with creation allowed.
+.PP
+When a service needs an operation the protocol does not have,
+the operation is a file.
+A
+.B ctl
+file takes a line of text, one command per write,
+refuses a command it does not know,
+and reads back as the commands that would restore its state.
+.B /dev/consctl
+(see
+.IR cons (3))
+is the model.
+.SS The standard name space
+The kernel builds the first name space.
+Its root is a small tree of directories served by
+.IR root (3),
+and the kernel devices are bound into it:
+.IP
+.EX
+#c   /dev     the console, the screen, the keyboard, the mouse; cons(3)
+#S   /dev     the disks, as a second member of /dev; sd(3)
+#s   /srv     posted services; srv(3)
+#e   /env     environment variables; env(3)
+#p   /proc    running processes; proc(3)
+#b   /bin     the programs the kernel image carries; bin(3)
+#l   /lib     the files the kernel image carries; bin(3)
+.EE
+.PP
+The kernel then starts
+.IR fatfs (4)
+on the boot disk's partition and mounts it at
+.BR /n/esp .
+The directories
+.B /n/esp/vectra/bin
+and
+.B /n/esp/vectra/lib
+are bound before
+.B /bin
+and
+.BR /lib ,
+so the programs and files the build staged on the host are what a name
+in either reaches.
+Then it starts
+.IR kfs (4)
+on the second disk and mounts it at
+.BR /usr .
+Home directories live there, and
+.B $home
+is
+.BR /usr/glenda .
+There is one user, and no login.
+.PP
+The last thing the kernel does is run
+.B /bin/rc /lib/init
+with the console as its three descriptors.
+That script, described in
+.IR init (8),
+starts the keyboard server
+.IR kbdfs (4),
+the draw server
+.IR intuition (4),
+a window with a shell in it (see
+.IR window (1)),
+and finally becomes an interactive
+.I rc
+on the console.
+.B boot complete
+is a prompt.
+.SS Processes
+A process is an address space, a name space, an environment,
+and a table of open files.
+A program starts with descriptors 0, 1 and 2 open on its console,
+its arguments on its stack,
+and the name space and environment its parent arranged.
+.I Rfork
+makes a second process, sharing or copying each of those by a flag,
+and
+.I exec
+replaces the program in place.
+.I Spawn
+does both in one call.
+See
+.IR fork (2)
+and
+.IR exec (2).
+.PP
+A process ends by
+.I exits
+with a string, empty for success.
+Its parent collects the string with
+.IR await .
+The string is the exit status
+.IR rc (1)
+keeps in
+.BR $status .
+See
+.IR wait (2).
+.PP
+A process is stopped from outside by a
+.IR note ,
+a string posted to it by its parent, by
+.I kill
+(see
+.IR kill (1)),
+or by a write to its
+.B /proc
+files.
+A process that registered a handler with
+.I notify
+is given the note and may carry on.
+One that did not ends with the note as its status.
+See
+.IR notify (2)
+and
+.IR proc (3).
+.SS Environment
+A process's environment is a directory of files, one per variable, at
+.BR /env .
+.IR Rc (1)
+keeps its variables there before it runs a command,
+so any program can read
+.B /env/path
+with
+.IR cat (1).
+See
+.IR env (3).
+.PP
+The variables set at boot are
+.B $path
+.RB ( ". /bin" ),
+.B $home
+.RB ( /usr/glenda ),
+.BR $ifs ,
+and
+.BR $prompt .
+.IR Rc (1)
+reads them from
+.B /lib/rcmain
+before its first command.
+.SS Using Vectra
+The shell is
+.IR rc (1),
+Plan 9's.
+The commands are Plan 9's, with Plan 9's flags where a flag was worth having,
+and section 1 lists them.
+The line editing of the console is the kernel's:
+backspace erases a character,
+control-U erases the line,
+control-D ends the line without a newline
+or, on an empty line, ends the file.
+A window (see
+.IR window (1))
+cooks its own lines and adds control-W and the arrow keys.
+.PP
+Control-C posts
+.B interrupt
+to the process group of the shell's current command.
+A program that faults ends with a note.
+.I Rc
+prints the status and prompts again.
+.PP
+A program is a file in
+.BR /bin .
+The build stages every program on the boot disk,
+so a program is edited on the host,
+placed under
+.BR build/esp/vectra/bin ,
+and runs in the guest without a kernel rebuild.
+See
+.IR build (8).
+.PP
+Programs are written in Odin against
+.BR sys/libuser ,
+described in
+.IR intro (2).
+A server is a program that makes a pipe,
+posts one end in
+.BR /srv ,
+and answers 9P2000.L on the other.
+.IR ramfs (4)
+is the smallest complete example.
+.SH SEE ALSO
+Section (1) for commands.
+.br
+Section (2) for system calls and libraries.
+.br
+Section (3) for kernel devices, reached by
+.IR bind (1).
+.br
+Section (4) for file servers, reached by
+.IR mount .
+.br
+Section (5) for the file protocol.
+.br
+Section (6) for file formats and conventions.
+.br
+Section (8) for booting, building and running the machine.
+.br
+Section (9) for the kernel's internals.
+.SH DIAGNOSTICS
+On ending, each program returns a string called the
+.IR "exit status" .
+It is the argument of the program's call to
+.IR wait (2)'s
+.IR exits ,
+or the text of the note that ended it.
+The empty string means success.
+A non-empty one says why the program failed,
+in a few words a person can read.

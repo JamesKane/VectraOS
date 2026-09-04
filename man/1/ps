@@ -1,0 +1,80 @@
+.TH PS 1
+.SH NAME
+ps \- process status
+.SH SYNOPSIS
+.B ps
+[
+.B \-a
+]
+.SH DESCRIPTION
+.I Ps
+prints one line per process in
+.BR /proc :
+its process id, its state, and its name, which is the last element of
+the path it was started from.
+.PP
+.B \-a
+appends, after the name, the arguments the process was started with,
+as recorded in
+.BI /proc/ n /args
+(see
+.IR proc (3)).
+.PP
+.BI /proc/ n /status
+holds the state, one of:
+.TP
+.B Starting
+being created, with no thread yet.
+.TP
+.B Ready
+waiting its turn to run.
+.TP
+.B Running
+running.
+.TP
+.B Blocked
+waiting on a lock, a queue, or a call that parks.
+.TP
+.B Stopped
+parked by a stop request until a
+.B start
+(see
+.IR proc (3)).
+.TP
+.B Dead
+its thread has ended; its record is not yet reclaimed.
+.TP
+.B Exited
+ended cleanly, its status waiting for its parent's
+.IR wait .
+.TP
+.B Faulted
+ended by a fault, its status waiting for its parent's
+.IR wait .
+.PD
+.SH FILES
+.B /proc/*/status
+.br
+.B /proc/*/args
+.SH SOURCE
+.B cmd/ps/main.odin
+.SH SEE ALSO
+.IR kill (1),
+.IR ns (1),
+.IR proc (3)
+.SH DIAGNOSTICS
+The exit status is empty, or
+.B "can't open"
+if
+.B /proc
+could not be opened.
+A process that ends between the listing and its
+.B status
+being read is simply left out.
+.SH BUGS
+There is no
+.BR \-n ,
+no user time, no system time and no priority, because a process keeps
+none of them yet.
+There is no
+.IR pstree .

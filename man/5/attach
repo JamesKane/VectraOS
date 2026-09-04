@@ -1,0 +1,66 @@
+.TH ATTACH 5
+.SH NAME
+attach, auth \- messages to establish a connection
+.SH SYNOPSIS
+.nf
+.B size[4] Tauth tag[2] afid[4] uname[s] aname[s] n_uname[4]
+.B size[4] Rauth tag[2] aqid[13]
+.fi
+.PP
+.nf
+.B size[4] Tattach tag[2] fid[4] afid[4] uname[s] aname[s] n_uname[4]
+.B size[4] Rattach tag[2] qid[13]
+.fi
+.SH DESCRIPTION
+.B Tattach
+is a client's introduction to a server.
+It names a user,
+.IR uname ,
+and may select which of several trees to serve,
+.IR aname ,
+though every server in the tree answers the same one regardless of
+what
+.I aname
+names.
+As a result of the transaction the client holds
+.I fid
+on the root of that tree, and
+.I qid
+is the server's identity for it.
+An error is returned if
+.I fid
+is already in use.
+.PP
+.I N_uname
+is 9P2000.L's numeric uid, used in place of
+.I uname
+when it is not
+.BR NONUNAME .
+Nothing in the tree distinguishes the two: there is one user and no
+login, and every server accepts whatever
+.I uname
+a client sends.
+.PP
+.I Afid
+names a fid established by a prior
+.B Tauth
+exchange, or
+.B NOFID
+when the client offers no authentication.
+No server in the tree implements
+.BR Tauth :
+.I attach
+always sends
+.BR NOFID ,
+and a server given anything else is free to refuse it.
+There is no authentication server yet, and every attach succeeds or
+fails on the strength of the name space alone.
+.SH SOURCE
+.B sys/vectra9/proto.odin
+.br
+.B kernel/vfs/walk.odin
+.SH SEE ALSO
+.IR intro (5),
+.IR version (5),
+.IR walk (5),
+.IR vectra9 (2)

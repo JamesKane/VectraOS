@@ -1,0 +1,53 @@
+.TH CAT 1
+.SH NAME
+cat \- concatenate files
+.SH SYNOPSIS
+.B cat
+[
+.I file ...
+]
+.SH DESCRIPTION
+.I Cat
+reads each
+.I file
+in sequence and writes it on the standard output.
+Thus
+.IP
+.EX
+cat file
+.EE
+.PP
+prints a file and
+.IP
+.EX
+cat file1 file2 >file3
+.EE
+.PP
+concatenates the first two files and places the result
+on the third.
+.PP
+If no
+.I file
+is given,
+.I cat
+reads from the standard input.
+Data is copied in blocks of 4096 bytes.
+A file that cannot be opened is reported on standard error
+and the rest are still copied.
+.SH SOURCE
+.B cmd/cat/main.odin
+.SH SEE ALSO
+.IR cp (1),
+.IR read (1)
+.SH DIAGNOSTICS
+The exit status is empty when every file was copied.
+It is
+.B "can't open"
+when a file could not be opened, and
+.B "read error"
+when a read or a write failed.
+.SH BUGS
+.B cat a b >a
+and
+.B cat a b >b
+destroy their input files before reading them.

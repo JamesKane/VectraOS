@@ -1,0 +1,55 @@
+.TH CONSRV 4
+.SH NAME
+consrv \- console line server
+.SH SYNOPSIS
+.B consrv
+.SH DESCRIPTION
+.I Consrv
+opens
+.B /dev/cons
+for reading and serves it as one file,
+.BR line ,
+posted at
+.BR /srv/consrv .
+It takes no arguments.
+.PP
+A read of
+.B line
+answers whatever the console has delivered and not yet been read, and
+parks when nothing has: a cooked console delivers a line at a time, so a
+read of
+.B line
+answers what one read of
+.B /dev/cons
+did.
+Held reads do not block the server from answering another client at the
+same time.
+.B line
+cannot be written; a write answers
+.BR EPERM .
+.PP
+The server stops on the pipe's hang-up, when the last mount and the
+posted name are both gone.
+Every read still held is then answered empty.
+.SH FILES
+.TP
+.B /srv/consrv
+the posted service
+.TP
+.B /line
+the console, a line at a time
+.SH SOURCE
+.B servers/consrv
+.SH SEE ALSO
+.IR bind (1),
+.IR cons (3),
+.IR ring (2),
+.IR ioproc (2),
+.IR thread (2)
+.SH DIAGNOSTICS
+.I Consrv
+exits with a number rather than the empty-string convention other
+programs use.
+Failing to open
+.B /dev/cons
+ends it with 116, before it posts anything.

@@ -1,0 +1,120 @@
+.TH REGEXP 6
+.SH NAME
+regexp \- regular expression notation
+.SH DESCRIPTION
+A
+.I "regular expression"
+specifies a set of strings.
+A member of that set is
+.I matched
+by the expression.
+This is the notation
+.IR grep (1)
+and
+.IR sed (1)
+share, through
+.IR regexp (2).
+The word "character" below means any byte but newline.
+.PP
+The syntax for a regular expression
+.B e0
+is
+.IP
+.EX
+e3:  literal | class | '.' | '^' | '$' | '(' e0 ')'
+
+e2:  e3
+  |  e2 REP
+
+REP: '*' | '+' | '?'
+
+e1:  e2
+  |  e1 e2
+
+e0:  e1
+  |  e0 '|' e1
+.EE
+.PP
+A
+.B literal
+is any character that is not a metacharacter, one of
+.BR .*+?[]()|\e^$ ,
+or a metacharacter preceded by
+.BR \e .
+.PP
+A
+.B class
+is a nonempty string
+.I s
+bracketed
+.BI [ s ]
+(or
+.BI [^ s ]
+for its complement), matching any character in (or not in)
+.IR s .
+A negated class never matches newline.
+A substring
+.IB a - b ,
+with
+.I a
+and
+.I b
+in ascending order, stands for the inclusive range of characters between
+.I a
+and
+.IR b .
+Inside
+.IR s ,
+the metacharacters
+.B \-
+and
+.B ]
+and an initial
+.B ^
+must be preceded by
+.BR \e ;
+other metacharacters have no special meaning there.
+.PP
+A
+.B .
+matches any character but newline.
+A
+.B ^
+matches the beginning of the text or the character after a newline.
+A
+.B $
+matches the end of the text or the character before a newline.
+.PP
+The
+.B REP
+operators match zero or more
+.RB ( * ),
+one or more
+.RB ( + )
+or zero or one
+.RB ( ? )
+instances of the preceding expression
+.BR e2 .
+.PP
+A concatenation
+.B e1 e2
+matches a match to
+.B e1
+followed by a match to
+.BR e2 .
+An alternation
+.B e0|e1
+matches either a match to
+.B e0
+or a match to
+.BR e1 .
+Parentheses group a subexpression without capturing it: there is no way
+in this dialect to refer back to what a group matched.
+.PP
+A match to any part of a pattern extends as far as possible without
+preventing a match to the remainder of the pattern, and among matches
+that begin at the same point, the longest is the one found.
+.SH SEE ALSO
+.IR grep (1),
+.IR sed (1),
+.IR regexp (2)

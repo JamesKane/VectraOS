@@ -1,0 +1,138 @@
+.TH LINT 8
+.SH NAME
+lint \- check the tree's prose against ASD-STE100
+.SH SYNOPSIS
+.B tools/ste-lint.py
+[
+.B \-\-strict
+] [
+.B \-\-show
+] [
+.B \-\-full
+] [
+.BI \-\-rule " name" ...
+] [
+.I path ...
+]
+.SH DESCRIPTION
+.I Lint
+checks comments and documents against the structural rules of
+ASD-STE100, the controlled English the aerospace industry writes
+maintenance manuals in.
+Odin's own syntax is skipped.
+What it reads is prose: the block and line comments in
+.B *.odin
+files, and the body text of
+.B README.md
+and
+.BR docs/*.md .
+With no
+.I path
+given it walks
+.BR README.md ,
+.BR docs ,
+.B kernel
+and
+.BR sys .
+.PP
+The standard has fifty-three rules.
+.I Lint
+checks the seven a program can decide on its own, with no dictionary
+and no judgement call:
+.TP 10
+.B semicolon
+banned outright
+.TP
+.B length
+twenty-five words for descriptive prose, twenty for a string the
+kernel prints
+.TP
+.B perfect
+the present and past perfect tense, unless a modal needs the compound
+form
+.TP
+.B passive
+a be-verb and a past participle, in a sentence that names an actor the
+subject could have been instead
+.TP
+.B phrasal
+a two-word verb whose meaning the parts do not predict
+.TP
+.B marketing
+an adjective that claims a quality instead of showing it
+.TP
+.B paragraph
+more than six sentences on one topic
+.PD
+.PP
+The rest of the standard is lexical: an approved-word dictionary of
+about nine hundred words, each pinned to one meaning and one part of
+speech.
+That dictionary is not redistributable and is not checked here.
+.SS Modes
+Without
+.BR \-\-strict ,
+.I lint
+checks documents and doc comments only, at the twenty-five word cap.
+With
+.BR \-\-strict ,
+it also reads every string literal passed to a call that fails, panics,
+or reports a check
+.RB ( check ,
+.BR vcheck ,
+.BR scheck " and its family, and"
+.BR put_str ),
+at the twenty-word cap that applies to something the kernel actually
+prints.
+.PP
+.B \-\-show
+prints every finding, grouped by file, with the line, the rule and up
+to seventy characters of the sentence.
+.B \-\-full
+prints the whole sentence instead of the first seventy characters.
+.B \-\-rule
+limits the run to the named rules, and may be given more than once.
+Without
+.BR \-\-show ,
+.I lint
+prints only the summary: a count per rule and a total.
+.SH EXAMPLES
+.IP
+.EX
+tools/ste-lint.py
+tools/ste-lint.py --show kernel/sync/sleep.odin
+tools/ste-lint.py --rule semicolon docs
+tools/ste-lint.py --strict kernel sys
+odin run build.odin -file -out:.vectra-build -- lint --show
+.EE
+.SH FILES
+.TP
+.B README.md
+.TP
+.B docs/*.md
+.TP
+.B *.odin
+under
+.B kernel
+and
+.BR sys ,
+the default paths
+.SH SOURCE
+.B tools/ste-lint.py
+.SH SEE ALSO
+.IR build (8)
+.SH DIAGNOSTICS
+.I Lint
+exits with the count of findings, zero when there are none, so it
+works as a build gate.
+The tree is kept at zero findings.
+A finding is a regression, and the fix is the sentence, not the
+checker.
+.SH BUGS
+The lexical rules are not checked, for want of a redistributable copy
+of the approved-word dictionary.
+An
+.B \-ing
+word used as a verb, which the standard also forbids, is not caught.
+Telling a verb from a technical noun needs a part-of-speech tagger
+this program does not have.

@@ -1,0 +1,618 @@
+.TH RC 1
+.SH NAME
+rc, cd, eval, exec, exit, flag, rfork, shift, wait, whatis, builtin, ., ~ \- command language
+.SH SYNOPSIS
+.B rc
+[
+.B \-eixslv
+]
+[
+.B \-c
+.I command
+]
+[
+.I file
+[
+.I arg ...
+]
+]
+.SH DESCRIPTION
+.I Rc
+is Vectra's shell, Plan 9's grammar carried over whole.
+It reads command lines from the string after
+.BR \-c ,
+from
+.IR file ,
+or from descriptor 0, in that order of preference, and runs each as it
+is read.
+With no
+.B \-c
+and no
+.IR file ,
+descriptor 0 is read interactively:
+.B $prompt
+.RI ( 1 )
+is written before a command and
+.B $prompt
+.RI ( 2 )
+before a line that continues it, and a syntax error costs the line, not
+the session.
+.SS Command Lines
+A command line is a sequence of commands separated by ampersands or
+semicolons
+.RB ( &
+or
+.BR ; ),
+terminated by a newline, and run in sequence left to right.
+.I Rc
+does not wait for a command followed by
+.B &
+before starting the next one.
+Whenever such a command starts, its process id is put in
+.BR $apid .
+Whenever a command not followed by
+.B &
+ends, its wait word is put in
+.BR $status ,
+empty for success.
+Unlike Plan 9's
+.IR rc ,
+a trailing backslash does not continue a line onto the next;
+a line continues only inside an unclosed
+.B {
+or
+.BR ( ,
+or after
+.BR && ,
+.BR || ,
+.B |
+or the closing
+.B )
+of
+.BR if ,
+.B for
+or
+.BR while .
+A number sign
+.RB ( # )
+and everything up to the next newline are ignored, except inside quotes.
+.SS Simple Commands
+A simple command is a sequence of arguments interspersed with I/O
+redirections.
+If the first argument is the name of a function or one of
+.IR rc 's
+builtins, it is run by
+.I rc
+itself.
+Otherwise, if the name starts with
+.BR / ,
+it is the path of the program to run.
+A name with no
+.B /
+is searched for along the directories named in
+.BR $path ;
+the first name found is exec'd, and a name that exists but will not
+exec ends the search with its own error rather than trying the rest of
+the path.
+The first word of a simple command cannot be a keyword unless it is
+quoted or otherwise disguised.
+The keywords are
+.EX
+	for in while if not switch fn ~ ! @
+.EE
+.SS Arguments
+Most constructions that stand for an argument are worth a list of
+strings, not a single one.
+The simplest is the unquoted word: a run of characters none of which is
+a blank, a tab, a newline, or one of
+.EX
+	# ; & | ^ $ ` ' { } ( ) < >
+.EE
+An unquoted word holding
+.BR * ,
+.B ?
+or
+.B [
+is a pattern (see Patterns, below).
+A quoted word is a run of characters between single quotes
+.RB ( ' );
+a quote inside one is written twice
+.RB ( '' ).
+Each of the following is an argument.
+.TP
+.BI ( arguments )
+The value is a list made of every argument in the parenthesized sequence.
+.TP
+.BI $ argument
+.TP
+.BI $ argument ( subscript )
+The variable named by
+.I argument
+is substituted, an alias for
+.RI $* ( argument )
+when
+.I argument
+is a number.
+A subscript picks elements by one-based index, singly
+.RI ( "$x(1)" ),
+several at once
+.RI ( "$x(3 1)" ),
+or as a range
+.RI ( "$x(2-4)" ", " "$x(2-)" ", " "$x(-3)" ).
+An index off the end of the list contributes nothing.
+.TP
+.BI $# argument
+The value is the count of elements in the named variable, as one string.
+.TP
+.BI $\(dq argument
+The value is the named variable's elements joined by one space, as one
+string.
+.TP
+.BI ` "{ " command " }"
+.I Rc
+runs
+.I command
+and splits its standard output on the characters in
+.BR $ifs ,
+dropping empty pieces.
+The pid it waited for is left in
+.BR $bqstatus .
+.TP
+.IB argument ^ argument
+The two operands are concatenated.
+Equal-length lists pair off; a list of one against a longer list is
+distributed across it; any other mismatch is an error.
+.PP
+Pattern matching, where it applies, is done after every other
+operation, so
+.B x=/tmp echo $x^/*.c
+matches
+.BR /tmp/*.c ,
+not
+.B /*.c
+prefixed afterwards.
+.SS Free Carets
+.I Rc
+inserts the
+.B ^
+operator between two arguments that touch with no space between them.
+Whenever
+.BR $ ,
+.B '
+or
+.B `
+follows a quoted or unquoted word, or an unquoted word follows a quoted
+one, with nothing between, a caret is inserted.
+If an unquoted word immediately follows
+.B $
+and holds a character that is not a letter, a digit, an underscore or
+.BR * ,
+a caret is inserted before that character, so
+.B /proc/$pid/status
+is the variable
+.B $pid
+and the word
+.B /status
+joined by a free caret, not an unset variable named
+.BR pid/status .
+.SS I/O Redirections
+.BI > file
+redirects standard output (descriptor 1) to
+.IR file ;
+.BI >> file
+appends.
+.BI < file
+redirects standard input (descriptor 0);
+.BI <> file
+opens
+.I file
+once, for reading and writing.
+.BI << tag
+reads a here document: the lines up to one that is exactly
+.I tag
+become standard input, with
+.BI $ name
+substituted unless
+.I tag
+was quoted, and
+.B $$
+standing for one
+.BR $ .
+A redirection may be qualified with a descriptor number in brackets,
+.BR "cc x.c >[2]log" ,
+and one descriptor may be duplicated onto another,
+.BR >[ fd0 = fd1 ],
+.BR <[ fd0 = fd1 ]
+or
+.BR <>[ fd0 = fd1 ],
+or closed,
+.BR >[ fd0 =]
+or
+.BR <[ fd0 =] .
+Redirections take effect left to right, so
+.B cc x.c >/dev/null >[2=1]
+and
+.B cc x.c >[2=1] >/dev/null
+differ.
+A command that runs in a child keeps its redirections; one that runs in
+.I rc
+itself has them undone once it finishes.
+.SS Pipelines
+A pair of commands joined by
+.B |
+is a pipeline: the left's standard output feeds the right's standard
+input.
+.BI |[ fd ]
+connects the pipe to descriptor
+.I fd
+of the left command instead of 1;
+.BI |[ fd0 = fd1 ]
+connects
+.I fd1
+of the left to
+.I fd0
+of the right.
+The status of a pipeline is its stages' statuses joined by
+.BR | .
+.SS Compound Commands
+.PD 0
+.TP
+.BI "if( " list " ) " command
+Runs
+.I command
+if
+.I list
+left
+.B $status
+empty.
+.TP
+.BI "if not " command
+Runs
+.I command
+if the
+.I list
+of the
+.B if
+immediately before it did not.
+.TP
+.BI "for( " name " in " arguments " ) " command
+.TP
+.BI "for( " name " ) " command
+Runs
+.I command
+once per argument, with
+.I name
+bound to it.
+With no
+.I arguments
+list,
+.B $*
+is used.
+.TP
+.BI "while( " list " ) " command
+Runs
+.I command
+each time
+.I list
+leaves
+.B $status
+empty; an empty
+.I list
+counts as empty status.
+.TP
+.BI "switch( " argument "){" cases "}"
+Matches
+.I argument
+against the patterns of each top-level
+.B case
+command in
+.I cases
+and runs the commands up to the next
+.B case
+or the closing brace.
+.TP
+.BI { list }
+Groups a sequence of commands, changing what an operator around it binds.
+.TP
+.BI "fn " name " {" list "}"
+.TP
+.BI "fn " name
+Defines
+.I name
+as a function running
+.IR list ,
+with the remainder of the command's own argument list bound to
+.B $*
+for the duration.
+With no body, removes the definition.
+.TP
+.BI "~ " subject " " patterns ...
+Sets
+.B $status
+empty if
+.I subject
+matches any
+.IR pattern ,
+and to
+.B "no match"
+otherwise.
+.TP
+.BI ! " command"
+Inverts
+.BR $status :
+empty becomes
+.BR false ,
+non-empty becomes empty.
+.TP
+.BI "@ " command
+Runs
+.I command
+in a subshell: a forked
+.I rc
+that ends when it does, and whose status becomes this one's.
+.TP
+.IB name = "argument [command]"
+Sets
+.I name
+to
+.I argument
+for the duration of
+.IR command ,
+restoring the old value after, or for good if
+.I command
+is omitted.
+.PD
+.SS Variables
+Values are lists of strings.
+.I Rc
+keeps a directory entry in
+.B /env
+for every variable whose value is non-empty (see
+.IR env (3)),
+so a program it starts sees what it set; an emptied variable's file is
+removed.
+.BR $* ,
+.BR $0 ,
+.BR $status ,
+.B $apid
+and
+.B $bqstatus
+are
+.IR rc 's
+own and are never written to
+.BR /env .
+Vectra's
+.I rc
+does not yet write a function's body to
+.B /env
+as Plan 9's
+.B fn#name
+does, so a child
+.I rc
+does not inherit its parent's functions.
+.SS Patterns
+An unquoted
+.BR * ,
+.B ?
+or
+.B [
+marks a word as a pattern.
+.B *
+matches any run of characters,
+.B ?
+matches one, and
+.BI [ class ]
+matches one character in
+.IR class ,
+which is negated if its first character is
+.B ~
+and may hold ranges written
+.IB lo - hi .
+Where a pattern names a file, it is matched a path component at a time
+against a directory listing, sorted, skipping names that begin with
+.B .
+unless the pattern's component does too;
+.B /
+must appear in the pattern itself.
+A pattern that matches nothing is not replaced by nothing: it stands
+for itself, so
+.B rm *.tmp
+with no
+.B .tmp
+file says
+.B "no such file"
+rather than removing nothing silently.
+Where a pattern is matched against a string instead of a file, as in
+.B ~
+and
+.BR case ,
+there is no exception for a leading
+.BR . .
+.SS Builtins
+These run inside
+.I rc
+itself because they change its own state.
+.TP
+.BI "." " [\-i] file ..."
+Runs commands from
+.IR file ,
+with
+.B $*
+set to the arguments after it for the duration.
+.B \-i
+makes the run interactive: prompted, and a syntax error does not end it.
+As a special case,
+.B /dev/cons
+and
+.B /fd/0
+name descriptor 0 itself.
+.TP
+.BI "builtin " command " ..."
+Runs
+.I command
+as a builtin even where a function of the same name exists.
+.TP
+.BI "cd [" dir "]"
+Changes directory to
+.IR dir ,
+default
+.BR $home .
+There is no
+.B $cdpath
+search.
+.TP
+.BI "eval [" "arg ..." "]"
+Joins the arguments with spaces and runs the result as input.
+.TP
+.BI "exec [" "command ..." "]"
+Replaces
+.I rc
+with
+.IR command ,
+its redirections kept rather than undone.
+With no
+.IR command ,
+only the redirections take effect, and stay.
+.TP
+.BI "exit [" status "]"
+Ends
+.I rc
+with
+.IR status ,
+default the current
+.BR $status .
+.TP
+.BI "flag " f " [+\-]"
+Sets
+.RB ( + ),
+clears
+.RB ( \- )
+or tests (neither) the single-character flag
+.IR f ,
+one of the command line flags below or any letter a script wants for
+its own use.
+.TP
+.BR "rfork " "[nNeEsfFm]"
+Becomes a new process group with
+.IR fork (2)'s
+.B rfork
+flags by letter:
+.B n
+.RB ( RFNAMEG ),
+.B N
+.RB ( RFCNAMEG ),
+.B e
+.RB ( RFENVG ),
+.B E
+.RB ( RFCENVG ),
+.B s
+.RB ( RFNOTEG ),
+.B f
+.RB ( RFFDG ),
+.B F
+.RB ( RFCFDG ),
+.B m
+.RB ( RFNOMNT ).
+With no letters, the default is
+.BR ens .
+.TP
+.BI "shift [" n "]"
+Removes the first
+.I n
+(default 1) elements of
+.BR $* .
+.TP
+.BI "wait [" pid "]"
+Waits for
+.IR pid ,
+or for every outstanding child when none is given, leaving the last
+one's word in
+.BR $status .
+.TP
+.BI whatis " name ..."
+Prints what
+.I name
+is: an assignment if it is a variable,
+.B "fn name {...}"
+if it is a function, a
+.B builtin
+line if it is a builtin, or the path
+.B $path
+would find.
+.PD
+.SS Notes
+A note not caught ends
+.I rc
+the way it ends any program, with the note as its status.
+.B interrupt
+is the exception: it is continued from, so a prompt or a read it cut
+short is asked for again, and the command it reached is what ends.
+There is no way, yet, to bind a function to a note by name, as Plan 9's
+.BI "fn " note
+does.
+.SS Environment
+.I Rc
+reads
+.B /lib/rcmain
+before its first command, which gives
+.BR $path ,
+.BR $home ,
+.B $ifs
+and
+.B $prompt
+their defaults, each only where
+.B /env
+did not already hold one:
+.B $path
+becomes
+.RB ( ". /bin" ),
+.B $home
+becomes
+.BR /usr/glenda ,
+.B $ifs
+becomes a space, a tab and a newline, and
+.B $prompt
+becomes
+.RB ( "'% ' '\et'" ).
+.SH SOURCE
+.B apps/rc
+.br
+.B apps/rc/rcmain
+.SH SEE ALSO
+.IR intro (1),
+.IR bind (1),
+.IR env (1),
+.IR fork (2),
+.IR wait (2),
+.IR notify (2)
+.SH DIAGNOSTICS
+.B $status
+is empty on success and a reason otherwise.
+A syntax error sets it to
+.BR "syntax error" .
+.B \-e
+makes a non-interactive
+.I rc
+stop at the first simple command whose status is non-empty.
+.B \-x
+writes each simple command to descriptor 2 before it runs.
+.BR \-s ,
+.B \-l
+and
+.B \-v
+are accepted but presently have no effect.
+.SH BUGS
+There is no
+.BI <{ command }
+or
+.BI >{ command }
+form, which need
+.B /fd
+to name a pipe as a file.
+Backquote always splits on
+.BR $ifs ;
+there is no form that names its own separators.
+.I Whatis
+prints
+.B "fn name {...}"
+rather than the function's actual body.

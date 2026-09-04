@@ -1,0 +1,89 @@
+.TH FATFS 4
+.SH NAME
+fatfs \- FAT file system
+.SH SYNOPSIS
+.B fatfs
+.I device
+[
+.I srvname
+]
+.SH DESCRIPTION
+.I Fatfs
+serves a FAT12, FAT16 or FAT32 volume as a 9P tree.
+The kind is decided by the volume's cluster count, as the specification
+says, and not by the label the formatter wrote.
+.I Device
+is opened and read and written at an offset (see
+.IR read (2))
+and may be a partition, a whole disk, or a file in another filesystem;
+.I fatfs
+cannot tell which.
+It posts
+.I srvname
+.RB ( /srv/esp
+when not given), then forks: the parent exits once the name is there, so a
+shell that started it can mount on the next line, and the child serves
+until the last mount and the name are both gone.
+.PP
+The boot mounts the machine's own boot volume this way, at
+.B /n/esp
+(see
+.IR intro (1)).
+.PP
+Every file and directory has a long name, read from the entries FAT keeps
+before the 8.3 one, or the 8.3 name itself when a file has no other.
+A file is created with whatever name it is given: a name that is already a
+valid uppercase 8.3 name keeps it, and any other gets a short name built
+the way Windows builds one -- squeezed, uppercased, cut to six characters,
+and given
+.B ~1
+or the next number free -- alongside the long name that spells it exactly.
+Matching is case-insensitive for ASCII, so
+.B Echo
+and
+.B echo
+name the same file.
+.PP
+Every change reaches the disk as it is made: a directory entry when a size
+changes, a table entry when a cluster is claimed, the data as it is
+written.
+There is no cache the disk does not also hold, because the host is
+watching this volume through QEMU and a change that sits in memory only is
+a change the host may never see.
+.PP
+FAT has no owner, no group, and one permission bit: the read-only
+attribute.
+.I Fatfs
+reports every file as readable and writable by everyone, less the write
+bits when the attribute is set, and a change of mode (see
+.IR getattr (5))
+sets or clears the attribute from whether any write bit was asked for.
+A directory is always searchable.
+.PP
+The server stops on the pipe's hang-up, when the last mount and the posted
+name are both gone.
+.SH FILES
+.TP
+.BI /srv/ srvname
+the posted service,
+.B esp
+by default
+.SH SOURCE
+.B servers/fatfs
+.SH SEE ALSO
+.IR bind (1),
+.IR read (2),
+.IR fork (2),
+.IR getattr (5),
+.IR sd (3)
+.SH BUGS
+There is no rename.
+.I Cp
+and
+.I mv
+(see
+.IR cp (1))
+copy and remove instead.
+A file is limited to
+4294967295
+bytes, FAT32's own ceiling.
