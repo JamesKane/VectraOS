@@ -69,6 +69,7 @@ user_programs := [?]User_Program {
 	{name = "terminal", path = "apps/terminal"},
 	{name = "abitest", path = "tests/abi"},
 	{name = "threadtest", path = "tests/thread"},
+	{name = "mui", path = "tests/mui"},
 	{name = "rc", path = "apps/rc"},
 	{name = "echo", path = "cmd/echo"},
 	{name = "cat", path = "cmd/cat"},

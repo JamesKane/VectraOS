@@ -480,6 +480,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_rfork(&r)
 	verify_abi(&r)
 	verify_threads(&r)
+	verify_mui(&r)
 	verify_rc(&r)
 	verify_tools(&r)
 
@@ -7147,6 +7148,23 @@ verify_threads :: proc(r: ^Result) {
 	if ok {
 		check(r, said == "ok", said == "ok" ? "and every claim the library makes held" : said)
 		check(r, stats().live == before, "and the procs it made went down with it")
+	}
+}
+
+/*
+verify_mui runs `tests/mui`, which builds gadget trees and lays them out with
+`sys/libmui`, then checks the rectangles against the weighting rule worked by
+hand. It draws nothing, so the check is a pure test of the layout arithmetic:
+three buttons sharing a column by weight, a rigid label the glue beside it does
+not shrink, and a nested group laid inside its parent's inset. The word is `ok`
+or the name of the first step that failed.
+*/
+@(private = "file")
+verify_mui :: proc(r: ^Result) {
+	names := [?]string{"mui"}
+	said, _, ok := run_script(r, "/bin/mui", names[:], PATIENCE * 5, abi_said[:], "a program on the toolkit's layout starts")
+	if ok {
+		check(r, said == "ok", said == "ok" ? "and every rectangle matched the weights" : said)
 	}
 }
 
