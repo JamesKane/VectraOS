@@ -59,9 +59,9 @@ forked over `RFMEM` to poll a ring until a byte came, and `docs/INIT.md`
 counted what that cost once a machine ran two shells. The second, `docs/
 PROCS.md` step 1, kept the request in a slot in shared memory and let the
 reader process answer it under a write lock. The third is `sys/lib9p` on
-`sys/libthread`, `docs/PROCS.md` step 4: a reader proc turns frames into
-records on the heap and sends them down a channel, the handler runs in the
-program's own proc of threads, and whichever thread has the answer calls
+`sys/libthread`, `docs/PROCS.md` step 4: the loop reads its pipe through
+an io proc, so the thread parks and the proc does not, keeps a request it
+cannot answer yet on the heap, and whichever thread has the answer calls
 `respond`. Nothing in it is locked, because everything in it is one
 proc's. `docs/THREAD.md` section 9 is the argument, and `serve` stays here
 for a server whose every answer is a table lookup.
@@ -139,16 +139,16 @@ here is what it proved about the runtime:
   `/dev/cons` and published bytes into a producer-consumer ring of two
   monotonic counters, with `intrinsics.volatile_load`/`store` ordering
   the counter against its bytes. The ring is still there, in
-  `sys/libuser`, and it is the queue between a key's arrival and the read
-  that takes it; what crosses between the procs now is a channel.
+    `sys/libuser`, and it is the queue between a key's arrival and the read
+  that takes it. The read itself is an io proc's now, `libthread.ioread`.
 - **The note is a teardown a program can drive.** On `Tremove` the parent
   noted its reader out of a parked device read, and exited zero only if the
   wait answered EINTR. `libuser` grew `rfork` and `note` wrappers for it,
   and `libthread.threadexitsall` is that arc for every proc a program made.
 
-**`consrv` is on `sys/libthread` now**, `docs/PROCS.md` step 4: a reader
-proc parked on the console sending a read's worth of bytes on a channel,
-a thread that keeps them and answers held reads, and `lib9p`'s serve loop.
+**`consrv` is on `sys/libthread` now**, `docs/PROCS.md` step 4: a key
+thread that reads the console through an io proc, keeps what arrives and
+answers held reads, and `lib9p`'s serve loop.
 A read of `/line` with nothing typed is held rather than answered empty,
 and the loop answers another client while it is. The two locks and the
 shutdown flag this server once added on top of the library are gone,
@@ -165,8 +165,8 @@ release makes no character. A scancode becomes a byte on `/kbd` here, where
 the kernel would have made it one on `/dev/cons`. Nothing but the address
 space it runs in is different.
 
-The shape is `consrv`'s, because the problem is the same. A reader proc
-parks on the device, the characters it makes cross on a channel, and a
+The shape is `consrv`'s, because the problem is the same. A key thread
+reads the device through an io proc and translates what arrives, and a
 read of `/kbd` with nothing translated is held until a key comes. Opening
 `/dev/scancode` is what diverts the raw stream to the program. Until it
 does, the kernel translates the scancodes itself.

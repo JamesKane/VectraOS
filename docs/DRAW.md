@@ -474,7 +474,7 @@ than one box around both.
 one `segalloc` and was capped at the birth height until `segbrk` existed --
 `docs/USER.md` has that call, and the two Plan 9 segment calls still missing
 beside it. Growing must work and shrinking is best effort, because a run this
-server shares with its reader procs cannot give pages back.
+server shares with its io procs cannot give pages back.
 
 The stride does not move with the width, so
 a pixel a client drew at `(x, y)` is still at `(x, y)` afterwards. Shrinking
@@ -981,25 +981,22 @@ can revoke a fid, and users are what Plan 9 puts in that gap.
 is what lets a queue be asked whether anything is there without reading from
 it, and section 8 records what happens to a test that asks the other way.
 
-### The cost: a reader proc, and a loop that must not park
+### The cost: an io proc, and a loop that must not park
 
 `libuser.serve` cannot park, and this server's own note said so -- one loop,
 inline, nothing waits. A read of `cons` has to wait for a keystroke, so the
 server is on `sys/libthread` and `sys/lib9p` now, `docs/PROCS.md` step 4,
 which is `servers/consrv`'s shape and `servers/kbdfs`'s.
 
-    the reader      a proc parked reading the keyboard file, sending each
-                    byte on a channel
-    the key thread  hands each byte to the window in front, on that
-                    window's own channel
-    a window thread per slot, cooking bytes into the window's line and
-                    answering a held read of /N/cons when the line completes
-    the serve loop  9P, from a channel a reader proc of the pipe feeds. A
-                    read of /N/cons with nothing to give is held
+        the key thread  reads the keyboard file through an io proc, cooks each
+                    byte into the line of the window in front, and answers
+                    a held read of /N/cons when the line completes
+    the serve loop  9P, read through an io proc of its own. A read of
+                    /N/cons with nothing to give is held
 
 **One thread still draws.** Every message that moves a pixel is answered
 inline, in order, by the serve loop, which owns `scratch` and the glass,
-and a thread runs until it blocks. A window thread touches its window's
+and a thread runs until it blocks. The key thread touches a window's
 ring and its line, and nothing that paints. There is no lock in this
 server, and the torn-read argument the reader child once made about the
 focus is gone with the second process that made it.

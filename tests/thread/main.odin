@@ -79,6 +79,20 @@ spin_thread :: proc "contextless" (arg: rawptr) {
 	}
 }
 
+// A thread that reads one end of a pipe through an io proc. The proc is
+// seen to keep running while the read parks in the kernel.
+io_got: [8]u8
+io_n: i64
+
+io_thread :: proc "contextless" (arg: rawptr) {
+	fd := int(uintptr(arg))
+	io := libthread.ioproc()
+	if io == nil {
+		fail("ioproc")
+	}
+	io_n = libthread.ioread(io, fd, io_got[:])
+}
+
 // A proc that lives until the program ends, parked in a read nobody will
 // answer, so `threadexitsall` has something to take down.
 parked_proc :: proc "contextless" (arg: rawptr) {
@@ -223,6 +237,32 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	}
 	if libthread.proccreate(parked_proc, nil) <= 0 {
 		fail("proccreate parked")
+	}
+
+	// -- A read through an io proc parks the thread and not the proc -------
+	packed := libuser.pipe()
+	if packed < 0 {
+		fail("pipe")
+	}
+	end0, end1 := abi.pipe_ends(packed)
+	if libthread.threadcreate(io_thread, rawptr(uintptr(end0))) < 0 {
+		fail("threadcreate io")
+	}
+	for _ in 0 ..< 20 {
+		libthread.yield()
+	}
+	if io_n != 0 {
+		fail("ioread answered before anything was written")
+	}
+	word := "io"
+	if libuser.write(end1, transmute([]u8)word) != 2 {
+		fail("write to the pipe")
+	}
+	for io_n == 0 {
+		libthread.yield()
+	}
+	if io_n != 2 || string(io_got[:2]) != "io" {
+		fail("ioread")
 	}
 
 	// -- A lock hands over in order ----------------------------------------

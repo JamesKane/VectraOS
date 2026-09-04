@@ -38,9 +38,14 @@ needs no lock. `rio` is a keyboard proc, a mouse proc, a proc reading the
     proc         `proccreate(fn, arg, stacksize)`. A kernel process made by
                  `rfork(RFPROC | RFMEM)`, sharing this program's memory.
                  Its first thread runs `fn`.
-    thread       `threadcreate(fn, arg, stacksize)`. A coroutine in the
+        thread       `threadcreate(fn, arg, stacksize)`. A coroutine in the
                  calling proc, with a stack from the heap. `yield` lets
                  the others run. `threadexits` ends it.
+    io proc      `ioproc()`, and `ioread(io, fd, buf)`: a `read` a thread
+                 may make. A proc of its own makes the call, the thread
+                 parks on a channel, and its proc keeps running. One io
+                 proc makes one call at a time, so each thing that parks
+                 gets its own.
     channel      `chancreate(elemsize, nbuf)`. `send` and `recv` copy one
                  element. A buffer of zero is a meeting, and parks the
                  first side until the second arrives. `nbsend` and `nbrecv`
@@ -138,12 +143,18 @@ proc executes its channel arm between its unlock and its switch. That is
 harmless. The ready queue is the proc's, the proc runs one thread at a
 time, and the scheduler only looks at the queue after the switch.
 
-Thread stacks come from the heap, so a thread that overruns one corrupts
-the heap rather than faults. The word at the bottom of every stack is a
-mark. The scheduler checks it on every switch back, and a changed mark
-ends the program with `thread stack overflow` in its status. That catches
-the plain overrun and not a wild pointer. A guard page is the fix the day
-one is needed.
+Every thread's stack comes from the heap, and none runs on the process's
+own stack, though that one grows on demand and would be free. The stack segment is the one segment `RFMEM` does not share. A thread's
+frames are where a channel's receive buffer and an io call's record live. A
+proc that wrote its answer there would write into its own copy of the
+page, and the thread would wait for ever. The first version put the
+first thread on the process stack, and the first cross-proc send never
+arrived. So the first proc's scheduler is what runs there, and a thread
+that overruns a heap stack corrupts the heap rather than faults. The word
+at the bottom of every stack is a mark. The scheduler checks it on every switch
+back, and a changed mark ends the program with `thread stack overflow` in
+its status. That catches the plain overrun and not a wild pointer. A
+guard page is the fix the day one is needed.
 
 ## 6. Channels and alt
 
@@ -207,16 +218,17 @@ fix, and it waits for a caller.
 memory, and the reader process answered it under the write lock. `lib9p`
 is the same loop in the library's shape:
 
-    the reader   a proc parked in `read` on the pipe. Each frame becomes a
-                 `Req` on the heap -- the bytes, the decoded message, and
-                 `msize` bytes of payload -- and goes down a channel.
-    the loop     a thread in the program's proc. A request off the
-                 channel, the handler, the reply. A handler that cannot
-                 answer yet calls `hold`, and the loop keeps the record
-                 on a list and takes the next.
+        the loop     `serve`, a thread in the program's proc. A frame through
+                 an io proc, so the thread parks and the proc does not.
+                 A `Req` on the heap for it: the bytes, the decoded
+                 message, and `msize` bytes of payload. The handler, then
+                 the reply. A handler that cannot answer yet calls `hold`,
+                 and the loop keeps the record on a list and reads the
+                 next frame.
     the answer   `respond`, from any thread of that proc, when what the
-                 request waited for arrives. `held` finds the oldest
-                 held request a caller can answer.
+                 request waited for arrives. `answer_reads` is the loop
+                 every device thread makes: the oldest held read the
+                 caller can answer, the bytes it has, the reply.
 
 The handler, the held list, the reply buffer and the server's state are
 all one proc's, so none of it is locked. The reply's write is the one
@@ -230,56 +242,53 @@ implements. A server on `lib9p` moved its `hold` and `respond` calls and
 nothing else.
 
 **What it costs.** One proc more than `serve_mux`, and an allocation per
-request. The reader proc exists because the proc of threads cannot park
-in `read` -- every thread of it would park too -- and the alternative,
-the handler running in the reader proc and the device proc answering held
-requests across the proc boundary, is the design with the locks. A
+request. The io proc exists because the proc of threads cannot park in
+`read`, since every thread of it would park too. The alternative puts
+the handler in a proc of its own, with the device's proc answering held
+requests across the boundary. That is the design with the locks. A
 request's record is a few kilobytes from a first-fit heap with one lock,
 which the draw server takes once per batch of commands.
 
 ## 10. The programs
 
-`consrv`, `kbdfs` and `eiafs` are one shape. A reader proc parks on the
-device and sends a read's worth of bytes on a channel. A thread receives
-them into the ring and answers held reads. The serve loop answers the
-rest.
+`consrv`, `kbdfs` and `eiafs` are one shape: two threads in one proc. The
+key thread reads the device through an io proc, pushes what arrives into
+the ring, and answers held reads with `answer_reads`. The serve loop
+answers the rest. A read of the served file answers what one read of the
+device delivered, and for a cooked console that is a whole line. The
+first version sent the bytes one at a time down a channel, and the user
+suite's `carrying the whole line` said so. `ioread` delivers a read whole
+because it *is* the read.
 
-The bytes cross as a chunk rather than one by one. A read of the served
-file answers what one read of the device delivered, and for a cooked
-console that is a whole line. The first version sent bytes, and the user
-suite's `carrying the whole line` said so.
+`intuition` is the same two threads. Its key thread gives each byte to
+the line of the window in front, reading the focus per character in the
+proc that moves it, so the torn-read argument `focus_win` used to make
+is gone with the volatile loads it made it with. The first version had a
+thread per window between the key thread and the line. That bought
+nothing. Cooking a byte never blocks. So the hop was two switches and a
+16 KiB stack per slot, in front of a ring that already drops on full.
 
-`intuition` is the reader proc, a key thread, and a thread per window
-slot. The key thread hands each byte to the window in front, on that
-window's own channel. The window's thread cooks the byte into the
-window's line and answers a held `cons` read when the line completes.
-
-The key thread reads the focus per character, in the proc that moves it. The
-torn-read argument `focus_win` used to make is gone with the volatile
-loads it made it with. A window's queue that is full drops the byte
-rather than parks the key thread. So a window nobody reads cannot stop
-the keyboard for the rest.
-
-The terminal is two reader procs and one thread. The procs read the
-shell's output pipe and the window's `cons`, and send chunks on two
-channels. The thread `alt`s over both and does everything else: the grid,
-the line, the draw stream, and the ending when the shell's chunk is
-empty.
+The terminal is two threads, each reading through an io proc of its own.
+The drawer reads the shell's output pipe and the typist the window's
+`cons`. Both touch the grid and the draw stream, and neither is ever in
+the middle of it when the other runs. The first version was two reader
+procs sending chunks to one thread over an `alt`, which is the same
+picture with a copy in it.
 
 **The count.** Two shells are thirteen processes:
 
     fatfs, kfs        one each
     the serial shell  one
-    kbdfs             a proc of threads, a reader for the pipe, a reader
-                      for the scancodes
+    kbdfs             a proc of threads, an io proc for the pipe, an io
+                      proc for the scancodes
     intuition         the same three
     terminal          the same three, and its rc
 
-Ten after step 1, thirteen now, and the three are the pipe readers. That
-is the shape's price and Plan 9 pays it too: `rio` alone is more procs
-than this whole picture. What changed is what the count buys. No server
-holds a lock, no server forks per request, and the next server with two
-blocking sources is a `proccreate` and a channel.
+Ten after step 1, thirteen now, and the three are the io procs for the
+pipes. That is the shape's price and Plan 9 pays it too: `rio` alone is
+more procs than this whole picture. What changed is what the count buys.
+No server holds a lock, no server forks per request, and the next server
+with two blocking sources is a thread and an `ioread`.
 
 ## 11. Checked by
 
@@ -294,6 +303,8 @@ user suite, and its word is the check. The steps, in order:
   one ready arm. It parks on two arms until a thread fills one.
 - A proc sleeps in the kernel for twenty ticks and then sends its pid,
   while this proc's threads yield a hundred times and more.
+- A thread reads one end of a pipe through an io proc and gets nothing
+  through twenty yields, then the two bytes written to the other end.
 - Three threads queue on a held `QLock` and take it in order.
 - A `Rendez` sleeper stays asleep through two yields and wakes on
   `rwakeup`.
@@ -330,7 +341,7 @@ corrupts the heap in a way no check can name.
   hold.
 - **Stacks from the heap, marked at the bottom.** A stack from `segalloc`
   with a guard page under it faults on overrun rather than corrupts. It
-  costs a segment per thread, and the draw server would hold eleven.
+  costs a segment per thread, and every io proc's loop would hold one.
 - **One `chanlock`.** A lock per channel would let two procs on unrelated
   channels proceed at once. Nothing here contends for it.
 - **No preemption between threads.** A thread that computes for a long
@@ -358,5 +369,5 @@ than the first.
   library needed, and whose `serve` loop is still the one for a server
   whose reads never park.
 - `docs/DRAW.md` -- the draw server's keyboard, sections 13 and 14, which
-  the window threads now carry.
+  the key thread now carries.
 - `docs/INIT.md` -- the process count at the prompt.

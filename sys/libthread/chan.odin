@@ -44,7 +44,6 @@ Chan :: struct {
 }
 
 Chan_Op :: enum u8 {
-	Nop, // Skipped
 	Send,
 	Recv,
 	Noblock, // Answer -1 rather than wait, when nothing can go
@@ -122,7 +121,6 @@ alt :: proc "contextless" (alts: []Alt) -> int #no_bounds_check {
 			}
 		case .Noblock:
 			noblock = true
-		case .Nop:
 		}
 	}
 	if ready > 0 {
@@ -155,10 +153,9 @@ alt :: proc "contextless" (alts: []Alt) -> int #no_bounds_check {
 			enqueue(&a.c.senders, a)
 		case .Recv:
 			enqueue(&a.c.receivers, a)
-		case .Nop, .Noblock:
+		case .Noblock:
 		}
 	}
-	t.state = .Rendez
 	libuser.unlock(&chanlock)
 	block()
 	return t.alt_ret
@@ -248,7 +245,7 @@ alt_wakeup :: proc "contextless" (won: ^Alt) #no_bounds_check {
 			dequeue(&a.c.senders, a)
 		case .Recv:
 			dequeue(&a.c.receivers, a)
-		case .Nop, .Noblock:
+		case .Noblock:
 		}
 	}
 	t.alts = nil

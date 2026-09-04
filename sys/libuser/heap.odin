@@ -112,12 +112,12 @@ coalesce :: proc "contextless" (b: ^Block) {
 	}
 }
 
-// heap_alloc takes `size` bytes off the heap, sixteen-aligned, or answers nil.
-// The entry a contextless caller uses: `sys/libthread` takes a thread's stack
-// and a request's record here, with no context to carry an allocator in.
-heap_alloc :: proc "contextless" (size: int) -> rawptr {
+// heap_alloc takes `size` bytes off the heap, or answers nil. The entry a
+// contextless caller uses: `sys/libthread` takes a thread's stack and a
+// request's record here, with no context to carry an allocator in.
+heap_alloc :: proc "contextless" (size: int, alignment := 16) -> rawptr {
 	lock(&heap_lock)
-	p := alloc(size, 16)
+	p := alloc(size, alignment)
 	unlock(&heap_lock)
 	return p
 }
@@ -194,9 +194,7 @@ heap_proc :: proc(
 	_ = loc
 	switch mode {
 	case .Alloc, .Alloc_Non_Zeroed:
-		lock(&heap_lock)
-		p := alloc(size, alignment)
-		unlock(&heap_lock)
+		p := heap_alloc(size, alignment)
 		if p == nil {
 			return nil, .Out_Of_Memory
 		}
@@ -220,9 +218,7 @@ heap_proc :: proc(
 		if size <= b.size {
 			return ([^]u8)(old_memory)[:size], nil
 		}
-		lock(&heap_lock)
-		p := alloc(size, alignment)
-		unlock(&heap_lock)
+		p := heap_alloc(size, alignment)
 		if p == nil {
 			return nil, .Out_Of_Memory
 		}

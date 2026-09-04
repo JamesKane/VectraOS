@@ -43,10 +43,9 @@ prompt, drawn by a shell that will wait as long as it takes.
 the font, starts `/bin/rc` with two pipes for its three descriptors, and is
 from then on two things at once: the glass the shell's output lands on and
 the keyboard its input comes from. Both park, and a proc cannot wait on
-two things, so it is `sys/libthread`'s shape: a proc reading the shell's
-output, a proc reading the window's keys raw, each sending what it reads
-on a channel, and one thread that waits on both with `alt`. Shell output
-goes into the grid. A key goes through `libedit` into the line, drawn as
+two things, so it is `sys/libthread`'s shape. A thread reads the shell's
+output and a thread reads the window's keys raw, each through an io proc
+of its own, in one proc. Shell output goes into the grid. A key goes through `libedit` into the line, drawn as
 it is typed at the cursor, and a finished line goes to the shell. A grid
 of cells with a cursor is what the window shows: newline, return,
 backspace and tab mean what they mean, and a line past the bottom scrolls
@@ -100,13 +99,13 @@ servers on `sys/libthread`, and they are thirteen again, differently:
 
     fatfs, kfs                     one each
     the serial shell               one
-    kbdfs                          a proc of threads, a reader for its pipe,
-                                   and a reader for the scancodes
+        kbdfs                          a proc of threads, an io proc for its
+                                   pipe, and an io proc for the scancodes
     intuition                      the same three
     terminal                       the same three, and its rc
 
-The three more are the pipe readers, and they are what no server holding
-a lock cost. `docs/THREAD.md` section 10 is the argument, and `ps` from
+The three more are the io procs for the pipes, and they are what no
+server holding a lock cost. `docs/THREAD.md` section 10 is the argument, and `ps` from
 the serial line lists them, every one `Blocked`.
 
 ## Checked by

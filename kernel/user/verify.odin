@@ -3124,8 +3124,8 @@ verify_consrv :: proc(r: ^Result) {
 	The wart is gone: a read of `/line` with nothing typed **parks** now,
 	rather than answering empty. The read runs on a thread of its own, because
 	a read that never returns on the boot thread would print nothing after it.
-	`serve_mux` hands it to a worker, so the server can answer other requests
-	while it waits -- which the getattr below proves.
+	The server holds it and answers other requests while it waits -- which
+	the getattr below proves.
 	*/
 	mount_reader = Mount_Reader{c = nc}
 	if !check(r, sched.spawn("consrv-read", mount_read_thread, nil) != nil, "a thread to read /line") {
@@ -3293,7 +3293,7 @@ serves the characters it translates from them on `/kbd`. The translation is
 way the keyboard self-test does, and reads the cooked result back through a
 mount instead.
 
-The read of `/kbd` parks in a worker, so it runs on a thread. Between the open
+The read of `/kbd` is held by the server, so it runs on a thread. Between the open
 and the first scancode it waits, which is the proof the file blocks on a key
 rather than answering empty. Then the kernel injects `kbd!` and a newline as
 scancodes. The parked read wakes carrying exactly the characters the state

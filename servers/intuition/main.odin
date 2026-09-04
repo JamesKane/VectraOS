@@ -49,10 +49,11 @@ to ask.
 The tenant shape is `consrv`'s on `sys/libthread`. A draw command runs to
 completion -- the framebuffer takes a write at its own pace and never
 waits for hardware -- so the serve loop answers everything inline but a
-read of a window's `cons`, which is held until a line is typed. The keys
-arrive from a proc of their own, and a thread per window cooks them; see
-"The keyboard" below. Every thread here belongs to one proc, and a thread
-runs until it blocks, which is why this server has no lock.
+read of a window's `cons`, which is held until a line is typed. A key
+thread reads the keyboard through an io proc and cooks each byte into
+the line of the window in front; see "The keyboard" below. Both threads
+belong to one proc, and a thread runs until it blocks, which is why this
+server has no lock.
 
 The tree is `docs/DRAW.md` section 4's:
 
@@ -982,27 +983,16 @@ the window that has the focus *now*, and only a completed line reaches a
 window's queue. So a line half-typed when the focus moves stays where it was
 being typed, and the window that gains the focus starts its own.
 
-**The keys come from a proc and go to a thread per window.** The reader
-proc parks in `read` on the keyboard file and sends each byte on `keys`.
-The key thread receives them and hands each to the window in front, on
-that window's own channel, and the window's thread cooks it into the line
-and answers a held read when the line completes. One ring per window, and
-one queue of keys per window, because a line half-typed when the focus
-moves stays where it was being typed. Every thread here is the one proc's,
-so none of it is locked.
+**The keys come through an io proc to one thread.** The key thread reads
+the keyboard file through `libthread.ioread`, so the proc keeps serving
+while the read parks, and gives each byte to the line of the window in
+front. One ring and one line per window, because a line half-typed when
+the focus moves stays where it was being typed. The key thread and the
+serve loop are one proc's, so none of it is locked.
 */
 KBD_RING :: 256
 kbd_store: [MAX_WINDOWS][KBD_RING]u8
 kbd: [MAX_WINDOWS]libuser.Ring
-
-// The reader proc's own buffer, touched by that proc alone.
-kbd_chunk: [128]u8
-
-// The bytes off the keyboard, from the reader proc to the key thread, and
-// each window's own queue from the key thread to the window's thread.
-keys: ^libthread.Chan
-win_keys: [MAX_WINDOWS]^libthread.Chan
-WIN_KEYS :: 64
 
 /*
 The line under construction, one per window, and the characters that edit it.
@@ -1077,108 +1067,60 @@ drain_cons :: proc "contextless" (w: int, buf: []u8) -> int {
 	return libuser.ring_drain_line(&kbd[w], buf, '\n')
 }
 
-// The window whose held reads `wants_cons` accepts. Set by `answer_cons`,
-// which is the only caller, and read before it gives the proc up.
-answer_win: int
-
-wants_cons :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
-	_ = state
+// wants_cons is what a held request has to be for window `arg` to answer
+// it: a read of that window's `cons`, and not another's.
+wants_cons :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
 	#partial switch m in request^ {
 	case vectra9.Tread:
 		node := libuser.fid_lookup(&fids, m.fid)
-		return node_part(node) == PART_CONS && node_win(node) == answer_win
+		return node_part(node) == PART_CONS && node_win(node) == int(uintptr(arg))
 	}
 	return false
 }
 
-/*
-answer_cons gives window `w`'s ring to the reads held for it, oldest
-first, from the window's own thread. The handler's "empty, hold me" and
-this are one decision because both run on threads of one proc: either
-the handler saw the line, or this sees the held read. See `lib9p.held`.
-*/
+drain_for :: proc "contextless" (arg: rawptr, buf: []u8) -> int {
+	return drain_cons(int(uintptr(arg)), buf)
+}
+
+// answer_cons gives window `w`'s ring to the reads held for it, oldest
+// first. The handler's "empty, hold me" and this are one decision because
+// both run on threads of one proc: either the handler saw the line, or
+// this sees the held read. See `lib9p.answer_reads`.
 answer_cons :: proc "contextless" (w: int) {
-	answer_win = w
-	for {
-		req, ok := lib9p.held(&srv, wants_cons)
-		if !ok {
-			break
-		}
-		m := req.msg.(vectra9.Tread)
-		room := min(len(req.payload), int(m.count))
-		got := drain_cons(w, req.payload[:room])
-		if got == 0 {
-			break
-		}
-		_ = lib9p.respond(req, vectra9.Rread{data = req.payload[:got]})
-	}
-}
-
-// focus_win is `stack_top` with a window on it, or -1. Read by the key
-// thread, which is the proc's own, so the stack cannot move under it.
-focus_win :: proc "contextless" () -> int #no_bounds_check {
-	w := stack_top()
-	if w < 0 || w >= MAX_WINDOWS || !windows[w].used {
-		return -1
-	}
-	return w
+	lib9p.answer_reads(&srv, rawptr(uintptr(w)), wants_cons, drain_for)
 }
 
 /*
-reader is the reader proc's whole life: read the keyboard file, send each
-byte on `keys`.
+key_thread is the keyboard's whole life: a read of the keyboard file
+through an io proc, and each byte to the line of the window in front. A
+byte with no window in front is dropped -- `rio` has nowhere to put one
+either.
 
-A failed read is not a loop to break out of. A noted proc's read answers
-EINTR, and its next system call is the boundary the note ends it at, so
-asking again *is* the teardown protocol. `servers/kbdfs` and
-`servers/consrv` have the same shape over different devices.
+**The focus is read per character.** A burst that arrives while the front
+moves is split between the two windows at the character where it moved,
+which is the rule the file comment on the keyboard states. A failed read
+is not a loop to break out of: a noted io proc's read answers EINTR, and
+its next call is the boundary the note ends it at.
 */
-reader :: proc "contextless" (arg: rawptr) {
+key_thread :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	_ = arg
+	io := libthread.ioproc()
+	if io == nil {
+		libthread.threadexitsall("ioproc")
+	}
+	chunk: [128]u8
 	for {
-		n := libuser.read(cons_fd, kbd_chunk[:])
+		n := libthread.ioread(io, cons_fd, chunk[:])
 		if n <= 0 {
 			continue
 		}
 		for i in 0 ..< int(n) {
-			libthread.send(keys, &kbd_chunk[i])
+			w := stack_top()
+			if w < 0 || !windows[w].used {
+				continue
+			}
+			type_at(w, chunk[i])
 		}
-	}
-}
-
-/*
-key_thread gives each byte to the window in front, by that window's own
-channel, and drops one when no window is in front -- `rio` has nowhere to
-put one either.
-
-**The focus is read per character.** A burst that arrives while the front
-moves is split between the two windows at the character where it moved,
-which is the rule the file comment on the keyboard states. A window's
-queue that is full drops the byte rather than parks this thread, so a
-window nobody reads cannot stop the keyboard for the rest.
-*/
-key_thread :: proc "contextless" (arg: rawptr) {
-	_ = arg
-	for {
-		b: u8
-		libthread.recv(keys, &b)
-		w := focus_win()
-		if w < 0 {
-			continue
-		}
-		_ = libthread.nbsend(win_keys[w], &b)
-	}
-}
-
-// win_thread is a window's line discipline, one thread per slot for the
-// server's life: a byte off the window's queue, into the line, and a
-// completed line to whoever holds a read.
-win_thread :: proc "contextless" (arg: rawptr) {
-	w := int(uintptr(arg))
-	for {
-		b: u8
-		libthread.recv(win_keys[w], &b)
-		type_at(w, b)
 	}
 }
 
@@ -1221,7 +1163,7 @@ and this server's stack is a program's.
 
 **Safe as a single variable because one thread draws.** Every message
 that moves a pixel is answered inline, in order, by the serve loop, and a
-thread runs until it blocks. The window threads touch a window's key ring
+thread runs until it blocks. The key thread touches a window's key ring
 and its line, and nothing that paints.
 */
 scratch: Region
@@ -1283,7 +1225,7 @@ FRAME :: 1200
 
 // The server, and the keyboard file it reads. A `cons` read with nothing
 // to give is held, not parked: the loop that paints never waits on a
-// keystroke, and the window's thread answers the read when the line
+// keystroke, and the key thread answers the read when the line
 // completes. See `lib9p.hold`.
 srv: lib9p.Srv
 cons_fd: int
@@ -1296,7 +1238,7 @@ The exits each name their failure. 0x74 is a framebuffer that would not
 open, 0x76 a geometry this server cannot draw on -- fewer than four
 numbers, a depth other than 32, or a cascade that would not fit -- 0x77 a
 screen that would not map, and 0x79 a keyboard that would not open. From
-`threadmain` on, a failure is a word: `post`, `proccreate`, `threadcreate`,
+`threadmain` on, a failure is a word: `post`, `ioproc`, `threadcreate`,
 `hangup`, or `broken` for a pipe that could not be read past.
 */
 @(export, link_name = "_start")
@@ -1399,25 +1341,10 @@ start :: proc "c" (block: ^abi.Args) {
 	libthread.main(threadmain, nil)
 }
 
-// threadmain is the first thread: the channels, the reader proc, the
-// posting, a thread per window and the key thread, and then the serve
-// loop until something ends it.
+// threadmain is the first thread: the posting, the key thread, and then
+// the serve loop until something ends it.
 threadmain :: proc "contextless" (arg: rawptr) {
 	_ = arg
-	keys = libthread.chancreate(1, KBD_RING)
-	if keys == nil {
-		libthread.threadexitsall("no memory")
-	}
-	for i in 0 ..< MAX_WINDOWS {
-		win_keys[i] = libthread.chancreate(1, WIN_KEYS)
-		if win_keys[i] == nil {
-			libthread.threadexitsall("no memory")
-		}
-	}
-	if libthread.proccreate(reader, nil) < 0 {
-		libthread.threadexitsall("proccreate")
-	}
-
 	sfd, perr := libuser.post("/srv/draw")
 	if perr < 0 {
 		libthread.threadexitsall("post")
@@ -1426,11 +1353,6 @@ threadmain :: proc "contextless" (arg: rawptr) {
 		fd      = sfd,
 		handler = handler,
 		msize   = FRAME,
-	}
-	for i in 0 ..< MAX_WINDOWS {
-		if libthread.threadcreate(win_thread, rawptr(uintptr(i))) < 0 {
-			libthread.threadexitsall("threadcreate")
-		}
 	}
 	if libthread.threadcreate(key_thread, nil) < 0 {
 		libthread.threadexitsall("threadcreate")

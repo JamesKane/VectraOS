@@ -115,8 +115,9 @@ serve :: proc "contextless" (
 		if !read_full(fd, header) {
 			return served, .Hangup
 		}
-		size := int(header[0]) | int(header[1]) << 8 | int(header[2]) << 16 | int(header[3]) << 24
-		if size < vectra9.HEADER_SIZE || size > len(frame) {
+		declared, sane := vectra9.message_size(header)
+		size := int(declared)
+		if !sane || size > len(frame) {
 			return served, .Broken
 		}
 		if !read_full(fd, frame[vectra9.HEADER_SIZE:size]) {

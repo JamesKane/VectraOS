@@ -247,18 +247,22 @@ stack before it touches memory, threads switched by one procedure per
 architecture, a proc that finds itself through a word in the stack
 segment and sleeps in `rendezvous` on its own address, 9front's channels
 and `alt` under one lock, `QLock` and `Rendez`, and a `threadexitsall`
-that notes every proc and waits for the ones it made. `lib9p` is a reader
-proc, a channel, a `Req` on the heap, and `respond` from any thread of
-the program's proc. The window threads and the keyboard proc are as
-written above; the terminal's drawer is one thread over an `alt` of two
-channels. No server holds a lock, and the `Mux`, its slots, the write
-locks, the state locks, the shutdown flags and `stop_child`'s arc are
-gone from all five.
+that notes every proc and waits for the ones it made. An io proc makes a
+blocking call for a thread, Plan 9's `ioproc` and `ioread`. Every read
+that parks in the five programs is one. `lib9p` is a thread that reads
+its pipe through an io proc, a `Req` on the heap per frame, and `respond`
+from any thread of the program's proc.
 
-The count is not lower. A server is three procs where it was two,
-because the proc of threads cannot park in `read` on its pipe and a
-reader proc does it; two shells are thirteen processes, every one
-parked. `docs/THREAD.md` section 10 argues the price and section 12
+`intuition`'s keyboard is one thread rather than the proc and the thread
+per window written above. Cooking a byte never blocks, and a hop that
+buys no concurrency is only a copy. The terminal's drawer and typist are
+two threads, each on an io proc. No server holds a lock. The `Mux`, its
+slots, the write locks, the state locks, the shutdown flags and
+`stop_child`'s arc are gone from all five.
+
+The count is not lower. A server is three procs where it was two. The
+proc of threads cannot park in `read` on its pipe, and an io proc does
+it. Two shells are thirteen processes, every one parked. `docs/THREAD.md` section 10 argues the price and section 12
 records the kernel change that would fold the pipe reader back in.
 `/bin/threadtest` checks the library's claims from ring 3, and the five
 programs pass the checks they had, on the three architectures, at user

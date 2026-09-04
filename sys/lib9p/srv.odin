@@ -10,30 +10,24 @@ Step 4 is this file, the same loop in Plan 9's shape.
 
 ## The shape
 
-    the reader   a proc of its own, parked in `read` on the pipe. Each
-                 frame it reads becomes a `Req` on the heap, decoded, and
-                 goes down a channel.
-    the loop     a thread in the program's own proc, `serve`. It takes a
-                 `Req` off the channel, calls the handler, and writes the
-                 reply. A handler that cannot answer yet calls `hold`, and
-                 the loop keeps the record on a list and takes the next.
+    the loop     `serve`, a thread in the program's own proc. It reads a
+                 frame through an io proc, so the thread parks and the
+                 proc does not, decodes the frame into a `Req` on the
+                 heap, calls the handler, and writes the reply. A handler
+                 that cannot answer yet calls `hold`, and the loop keeps
+                 the record on a list and reads the next frame.
     the answer   `respond`, from any thread of the same proc, when
-                 whatever the request waited for arrives. The thread
-                 that reads the keyboard is the usual caller.
+                 whatever the request waited for arrives. The thread that
+                 reads the keyboard is the usual caller, and
+                 `answer_reads` is the loop it makes.
 
 **Nothing here is locked, and that is the point.** The handler, the held
 list, the reply buffer and the server's own state all belong to one proc.
-A thread of that proc runs until it blocks. A read of a device parks a
-proc, so a proc of its own reads the device. What it reads comes over a
-channel, which is the one place two procs meet. The reader of the pipe
-is the same arrangement for the pipe.
-
-The write of a reply is the one call the loop's proc makes into the
-kernel, and a pipe write copies and returns.
-
-A server whose handler must also watch a channel of its own takes the
-request channel by `requests`. It then calls `handle` per request from an
-`alt` of its own. `serve` is that loop with one arm.
+A thread of that proc runs until it blocks. A read of the pipe would park
+the proc, so an io proc makes it, `libthread.ioread`, and the loop's
+thread parks on a channel instead. The write of a reply is the one call
+the loop's proc makes into the kernel, and a pipe write copies and
+returns.
 
 ## The flush
 
@@ -47,7 +41,7 @@ runs on a held request's behalf.
 ## Ending
 
 The loop ends when the pipe does, when a frame will not decode, or when a
-`Tremove` is answered. The reader proc is still parked in `read` then.
+`Tremove` is answered. The io proc is still parked in `read` then.
 `libthread.threadexitsall` is what takes it down. A server calls that
 after `respond_all` answers whatever it still held.
 */
@@ -60,7 +54,7 @@ import "vsys:vectra9"
 Serve_End :: libuser.Serve_End
 
 /*
-One request, on the heap, from the reader proc's frame to the reply.
+One request, on the heap, from the frame to the reply.
 
 `frame` is the request's bytes and `msg` is decoded out of it, so a
 `Twrite`'s data and a `Twalk`'s names point into the record itself.
@@ -73,6 +67,7 @@ Req :: struct {
 	msg:     vectra9.Msg,
 	frame:   []u8,
 	payload: []u8,
+	held:    bool,
 	next:    ^Req, // The held list, oldest first
 }
 
@@ -91,117 +86,118 @@ Srv :: struct {
 	keep_on_remove: bool,
 
 	// The library's.
+	io:             ^libthread.Ioproc,
 	out:            []u8, // Where a reply is encoded before the write
-	reqs:           ^libthread.Chan, // `^Req` from the reader; nil is the end
 	held:           ^Req,
-	held_tail:      ^Req,
-	current:        ^Req, // The request the handler is answering
 	hold:           bool, // Set by `hold`, read by the loop after the handler
-	why:            Serve_End, // Written by the reader before it sends nil
 	served:         u64,
 	session:        vectra9.Session,
-	started:        bool,
 }
 
-// How many requests the reader may run ahead of the loop. The kernel's
-// wire has eight in flight at most.
-REQ_BACKLOG :: 8
+// What a caller of `held` and `answer_reads` supplies: whether a held
+// request is one it can answer, and the bytes for the answer.
+Wants :: #type proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool
+Drain :: #type proc "contextless" (arg: rawptr, buf: []u8) -> int
 
 @(private = "file")
 HEADER :: vectra9.HEADER_SIZE
 
 /*
-start makes the reply buffer and the channel, and forks the reader proc.
-False when there was no memory for them, or no proc. A caller that alts
-over the request channel calls this and then `handle`. `serve` calls it
-itself.
+serve is the loop: a frame off the pipe, the handler, the reply. It ends
+when the pipe ends, a frame will not decode, or a remove is answered, and
+what it answers is why.
 */
-start :: proc "contextless" (srv: ^Srv) -> bool {
-	if srv.started {
-		return true
-	}
+serve :: proc "contextless" (srv: ^Srv) -> (served: u64, why: Serve_End) {
 	if srv.msize < HEADER {
-		return false
+		return 0, .Broken
 	}
 	out := libuser.heap_alloc(srv.msize)
 	if out == nil {
-		return false
-	}
-	srv.out = ([^]u8)(out)[:srv.msize]
-	srv.reqs = libthread.chancreate(size_of(rawptr), REQ_BACKLOG)
-	if srv.reqs == nil {
-		return false
-	}
-	if libthread.proccreate(reader, srv) < 0 {
-		return false
-	}
-	srv.started = true
-	return true
-}
-
-// requests is the channel the reader sends on, for a server that alts
-// over it and channels of its own. Each element is a `^Req`, or nil when
-// the reader stopped, and then `srv.why` says why.
-requests :: proc "contextless" (srv: ^Srv) -> ^libthread.Chan {
-	return srv.reqs
-}
-
-/*
-serve is the loop: a request off the channel, the handler, the reply,
-until the reader stops or a remove is answered. What it answers is why.
-*/
-serve :: proc "contextless" (srv: ^Srv) -> (served: u64, why: Serve_End) {
-	if !start(srv) {
 		return 0, .Broken
 	}
+	srv.out = ([^]u8)(out)[:srv.msize]
+	srv.io = libthread.ioproc()
+	if srv.io == nil {
+		return 0, .Broken
+	}
+
+	header: [HEADER]u8
 	for {
-		req := (^Req)(libthread.recvp(srv.reqs))
-		if req == nil {
-			return srv.served, srv.why
+		if !libthread.ioread_full(srv.io, srv.fd, header[:]) {
+			return srv.served, .Hangup
 		}
-		if handle(srv, req) {
-			return srv.served, srv.why
+		declared, sane := vectra9.message_size(header[:])
+		size := int(declared)
+		if !sane || size > srv.msize {
+			return srv.served, .Broken
+		}
+		req := req_new(srv, size)
+		if req == nil {
+			return srv.served, .Broken
+		}
+		copy(req.frame, header[:])
+		if size > HEADER && !libthread.ioread_full(srv.io, srv.fd, req.frame[HEADER:]) {
+			req_free(req)
+			return srv.served, .Hangup
+		}
+		tag, msg, derr := vectra9.decode(req.frame)
+		if derr != .None {
+			req_free(req)
+			return srv.served, .Broken
+		}
+		req.tag = tag
+		req.msg = msg
+		if stop, end := handle(srv, req); stop {
+			return srv.served, end
 		}
 	}
 }
 
 /*
-handle answers one request, or holds it. True when the loop should stop,
-with `srv.why` saying why: the pipe refused a reply, or a remove was
+handle answers one request, or holds it. `stop` when the loop should end,
+with `why` saying whether the pipe refused a reply or a remove was
 answered and obeyed.
 */
-handle :: proc "contextless" (srv: ^Srv, req: ^Req) -> (stop: bool) {
+@(private = "file")
+handle :: proc "contextless" (srv: ^Srv, req: ^Req) -> (stop: bool, why: Serve_End) {
 	if f, is_flush := req.msg.(vectra9.Tflush); is_flush {
-		return !flush(srv, req, f.oldtag)
+		for r := srv.held; r != nil; r = r.next {
+			if r.tag == f.oldtag {
+				unhold(srv, r)
+				req_free(r)
+				break
+			}
+		}
+		return !respond(req, vectra9.Rflush{}), .Hangup
 	}
 	_, is_remove := req.msg.(vectra9.Tremove)
 
-	srv.current = req
 	srv.hold = false
 	reply: vectra9.Msg
 	srv.handler(srv.state, &srv.session, req.tag, &req.msg, &reply, req.payload)
-	srv.current = nil
 
 	if srv.hold && !is_remove {
+		req.held = true
 		req.next = nil
 		if srv.held == nil {
 			srv.held = req
 		} else {
-			srv.held_tail.next = req
+			last := srv.held
+			for last.next != nil {
+				last = last.next
+			}
+			last.next = req
 		}
-		srv.held_tail = req
 		srv.served += 1
-		return false
+		return false, .Hangup
 	}
 	if !respond(req, reply) {
-		srv.why = .Hangup
-		return true
+		return true, .Hangup
 	}
 	if is_remove && !srv.keep_on_remove {
-		srv.why = .Removed
-		return true
+		return true, .Removed
 	}
-	return false
+	return false, .Hangup
 }
 
 // hold is the handler's word for "not yet": the loop keeps the request,
@@ -211,23 +207,38 @@ hold :: proc "contextless" (srv: ^Srv) {
 	srv.hold = true
 }
 
-/*
-held finds the oldest held request `wants` accepts. `wants` sees the
-decoded request and the server's state. It says whether the caller has
-what the request asks for: a read of the window it just typed a line
-into, and not another's. The record's `payload` is where the answer goes,
-and `respond` sends it.
-*/
-held :: proc "contextless" (
-	srv: ^Srv,
-	wants: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool,
-) -> (req: ^Req, ok: bool) {
+// held finds the oldest held request `wants(arg, request)` accepts: a read
+// of the window a line was just typed into, and not another's. The
+// record's `payload` is where the answer goes, and `respond` sends it.
+held :: proc "contextless" (srv: ^Srv, arg: rawptr, wants: Wants) -> (req: ^Req, ok: bool) {
 	for r := srv.held; r != nil; r = r.next {
-		if wants(srv.state, &r.msg) {
+		if wants(arg, &r.msg) {
 			return r, true
 		}
 	}
 	return nil, false
+}
+
+/*
+answer_reads gives held reads what `drain` has for them, oldest first,
+until a read is answered with nothing or none is left. Every server does
+this when its device delivers. `wants` is the read of the file the bytes
+are for, and `drain` takes them out of the ring for it.
+*/
+answer_reads :: proc "contextless" (srv: ^Srv, arg: rawptr, wants: Wants, drain: Drain) {
+	for {
+		req, ok := held(srv, arg, wants)
+		if !ok {
+			return
+		}
+		m := req.msg.(vectra9.Tread)
+		room := min(len(req.payload), int(m.count))
+		got := drain(arg, req.payload[:room])
+		if got == 0 {
+			return
+		}
+		_ = respond(req, vectra9.Rread{data = req.payload[:got]})
+	}
 }
 
 /*
@@ -240,7 +251,9 @@ it will send itself. False when the pipe refused the write.
 */
 respond :: proc "contextless" (req: ^Req, reply: vectra9.Msg) -> bool {
 	srv := req.srv
-	unhold(srv, req)
+	if req.held {
+		unhold(srv, req)
+	}
 	ok := false
 	if n, err := vectra9.encode(srv.out, req.tag, reply); err == .None {
 		ok = libuser.write_full(srv.fd, srv.out[:n])
@@ -258,94 +271,26 @@ respond_all :: proc "contextless" (srv: ^Srv, reply: vectra9.Msg) {
 	}
 }
 
-// flush serves a Tflush: a held request it names is dropped, and the
-// flush answered either way. Reports whether the wire is still good.
-@(private = "file")
-flush :: proc "contextless" (srv: ^Srv, req: ^Req, oldtag: vectra9.Tag) -> bool {
-	for r := srv.held; r != nil; r = r.next {
-		if r.tag == oldtag {
-			unhold(srv, r)
-			req_free(r)
-			break
-		}
-	}
-	ok := respond(req, vectra9.Rflush{})
-	if !ok {
-		srv.why = .Hangup
-	}
-	return ok
-}
-
-// unhold takes a request off the held list, if it is on it.
+// unhold takes a request off the held list.
 @(private = "file")
 unhold :: proc "contextless" (srv: ^Srv, req: ^Req) {
-	prev: ^Req
+	req.held = false
+	if srv.held == req {
+		srv.held = req.next
+		req.next = nil
+		return
+	}
 	for r := srv.held; r != nil; r = r.next {
-		if r == req {
-			if prev == nil {
-				srv.held = r.next
-			} else {
-				prev.next = r.next
-			}
-			if srv.held_tail == r {
-				srv.held_tail = prev
-			}
-			r.next = nil
+		if r.next == req {
+			r.next = req.next
+			req.next = nil
 			return
 		}
-		prev = r
 	}
 }
 
-// -- The reader proc -------------------------------------------------------------
-
-/*
-reader is the reader proc's whole life: a frame off the pipe, a record
-for it, and the record down the channel. It stops when the pipe ends or
-a frame cannot be read past, says why in `srv.why`, and sends nil.
-
-A record is one block: the struct, the frame's bytes, and `msize` bytes
-of payload after them. The body is read straight into the record, so a
-frame is copied once, by the kernel.
-*/
-@(private = "file")
-reader :: proc "contextless" (arg: rawptr) {
-	srv := (^Srv)(arg)
-	header: [HEADER]u8
-	why := Serve_End.Hangup
-	for {
-		if !libuser.read_full(srv.fd, header[:]) {
-			break
-		}
-		size := int(header[0]) | int(header[1]) << 8 | int(header[2]) << 16 | int(header[3]) << 24
-		if size < HEADER || size > srv.msize {
-			why = .Broken
-			break
-		}
-		req := req_new(srv, size)
-		if req == nil {
-			why = .Broken
-			break
-		}
-		copy(req.frame, header[:])
-		if size > HEADER && !libuser.read_full(srv.fd, req.frame[HEADER:size]) {
-			req_free(req)
-			break
-		}
-		tag, msg, derr := vectra9.decode(req.frame)
-		if derr != .None {
-			req_free(req)
-			why = .Broken
-			break
-		}
-		req.tag = tag
-		req.msg = msg
-		libthread.sendp(srv.reqs, req)
-	}
-	srv.why = why
-	libthread.sendp(srv.reqs, nil)
-}
-
+// A record is one block: the struct, the frame's bytes, and `msize` bytes
+// of payload after them.
 @(private = "file")
 req_new :: proc "contextless" (srv: ^Srv, size: int) -> ^Req {
 	block := libuser.heap_alloc(size_of(Req) + size + srv.msize)

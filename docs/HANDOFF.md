@@ -732,16 +732,18 @@ sys/
     heap.odin           A first-fit heap over segalloc, behind context.allocator,
                         with the one lock a program of several procs needs
   libthread/
-    thread.odin         Plan 9's libthread: procs, threads, the scheduler
+        thread.odin         Plan 9's libthread: procs, threads, the scheduler
                         per proc, the rendezvous it sleeps in, the endings
+    io.odin             An io proc, and ioread: a read a thread may make
     chan.odin           Channels and alt, 9front's, under one lock
     lock.odin           QLock and Rendez, the lock a thread may hold across
                         a wait and the condition under it
     label_<arch>.odin   A thread's saved registers, laid out for the switch
     thread_<arch>.S     The switch, and the fork onto a new stack
   lib9p/
-    srv.odin            A 9P server on libthread: a reader proc, a Req per
-                        request, hold and respond from any thread
+        srv.odin            A 9P server on libthread: the pipe through an io
+                        proc, a Req per request, hold and respond from any
+                        thread
     main.odin           startup, args, Bio: what a tool starts with
     link_user.ld        A ring 3 program's layout, aligned so every change of
                         permission gets its own page

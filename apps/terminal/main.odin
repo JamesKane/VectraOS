@@ -16,16 +16,15 @@ shell's output lands on, and the keyboard the shell's input comes from.
 
 Reading the shell's output and reading the window's keyboard both park, and
 a proc cannot wait on two things. So this program is `sys/libthread`'s
-shape: a proc per thing that parks, and one thread that draws. The output
-proc reads the shell's pipe and sends what arrives on a channel. The typist
-proc reads the window's `cons` raw and sends the keys on another. The
-drawer, the first thread, waits on both with `alt`: shell output goes into
-the grid, a key goes into the line `libedit` is editing, and either way
-the glass is redrawn. Nothing here is locked, because one thread touches
-the grid, the line and the draw stream, and it runs until it waits.
+shape: a thread per thing that parks, each reading through an io proc of
+its own, in one proc. The drawer, the first thread, reads the shell's pipe
+and puts what arrives into the grid. The typist reads the window's `cons`
+raw, puts each key into the line `libedit` is editing, and hands a
+finished line to the shell. Either way the glass is redrawn. Nothing here
+is locked: both threads are one proc's, and a thread runs until it waits.
 
 The drawer owns the ending. When the output pipe reaches its end the shell
-is gone -- a typed `exit`, or a fault -- and `threadexitsall` takes the two
+is gone -- a typed `exit`, or a fault -- and `threadexitsall` takes the io
 procs down and exits, which closes the window.
 
 ## The glass
@@ -106,25 +105,11 @@ crow, ccol: int
 
 editing: [LINE_MAX]u8
 edit: libedit.Line
+keys: [256]u8
+out: [1024]u8
 finished: [LINE_MAX + 1]u8
 geo: [160]u8
 path_buf: [32]u8
-
-/*
-What the two reader procs send: a read's worth of bytes, and how many.
-Zero is the end of the stream, which for the shell's output means the
-shell is gone. The channels carry the whole record, copied once in and
-once out, so a proc never hands the drawer memory it is still filling.
-*/
-CHUNK :: 256
-
-Chunk :: struct {
-	n:    int,
-	data: [CHUNK]u8,
-}
-
-from_shell: ^libthread.Chan
-from_keys: ^libthread.Chan
 
 data_fd: int
 cons_fd: int
@@ -140,8 +125,8 @@ The exits each name their failure: 0x74 the mount was refused, 0x75 a
 mounted file would not open, 0x76 a geometry this program cannot draw on,
 0x78 a draw write refused or the window's own console would not open,
 0x72 the shell would not start. From `threadmain` on a failure is a word:
-`proccreate`, `no memory`, or `read` for a keyboard that ended. Zero is
-the shell ending.
+`ioproc`, `threadcreate`, or `read` for a keyboard that ended. Zero is the
+shell ending.
 */
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -276,101 +261,80 @@ start :: proc "c" (block: ^abi.Args) {
 }
 
 /*
-threadmain is the drawer: the two reader procs, and then a wait on both
-channels for as long as the shell lives.
-
-A chunk from the shell goes into the grid. A chunk of keys goes through
-the line discipline: a character joins the line `libedit` edits and is
-drawn where it is, a newline finishes the line, which is echoed into the
-grid before it is sent so it stays on the glass above whatever the shell
-says about it, and `^C` is `rio`'s interrupt -- the line goes, and the
-shell's group hears about it. The write to the shell is the one call here
-that can park, when the shell is slow to read, and it parks the drawer
-alone.
+threadmain is the drawer: the typist thread, and then the shell's output
+into the grid for as long as the shell lives. The read goes through an io
+proc, so the typist runs while it parks.
 */
 threadmain :: proc "contextless" (arg: rawptr) {
 	_ = arg
-	from_shell = libthread.chancreate(size_of(Chunk), 2)
-	from_keys = libthread.chancreate(size_of(Chunk), 2)
-	if from_shell == nil || from_keys == nil {
-		libthread.threadexitsall("no memory")
+	if libthread.threadcreate(type_thread, nil) < 0 {
+		libthread.threadexitsall("threadcreate")
 	}
-	if libthread.proccreate(read_proc, &from_shell) < 0 || libthread.proccreate(read_proc, &from_keys) < 0 {
-		libthread.threadexitsall("proccreate")
-	}
-
-	shell_chunk, key_chunk: Chunk
-	arms := [2]libthread.Alt {
-		{c = from_shell, v = &shell_chunk, op = .Recv},
-		{c = from_keys, v = &key_chunk, op = .Recv},
+	io := libthread.ioproc()
+	if io == nil {
+		libthread.threadexitsall("ioproc")
 	}
 	for {
-		switch libthread.alt(arms[:]) {
-		case 0:
-			if shell_chunk.n <= 0 {
-				// The shell is gone. Take the readers down and let the
-				// window go.
-				libthread.threadexitsall("")
-			}
-			for i in 0 ..< shell_chunk.n {
-				put_byte(shell_chunk.data[i])
-			}
-			present()
-
-		case 1:
-			if key_chunk.n <= 0 {
-				libthread.threadexitsall("read")
-			}
-			send_line := 0
-			for i in 0 ..< key_chunk.n {
-				b := key_chunk.data[i]
-				if b == 0x03 {
-					libedit.clear(&edit)
-					row_dirty[crow] = true
-					_ = libuser.notepg(shell_pid, "interrupt")
-					continue
-				}
-				switch libedit.put(&edit, b) {
-				case .Done:
-					text := libedit.text(&edit)
-					for j in 0 ..< len(text) {
-						put_byte(text[j])
-					}
-					put_byte('\n')
-					send_line = copy(finished[:], text)
-					finished[send_line] = '\n'
-					send_line += 1
-					libedit.clear(&edit)
-				case .Edited:
-					row_dirty[crow] = true
-				case .Full, .Pending:
-				}
-			}
-			present()
-			if send_line > 0 {
-				_ = libuser.write_full(to_shell, finished[:send_line])
-			}
+		got := libthread.ioread(io, out_fd, out[:])
+		if got <= 0 {
+			// The shell is gone. Take the io procs down and let the
+			// window go.
+			libthread.threadexitsall("")
 		}
+		for i in 0 ..< int(got) {
+			put_byte(out[i])
+		}
+		present()
 	}
 }
 
 /*
-read_proc is a reader proc's whole life: a read of its descriptor, and the
-bytes down its channel, until the descriptor ends, which it sends as a
-chunk of nothing. The argument names the channel, and the channel names
-the descriptor: the shell's output goes on `from_shell`, the window's keys
-on `from_keys`.
+type_thread is the typist: keys off the window's console through an io
+proc, into the line `libedit` edits and drawn where they are, and a
+finished line to the shell. A newline finishes the line, which is echoed
+into the grid before it is sent so it stays on the glass above whatever
+the shell says about it. `^C` is `rio`'s interrupt: the line goes, and
+the shell's group hears about it. The write to the shell is the one call
+here that can park, when the shell is slow to read, and it parks the proc.
 */
-read_proc :: proc "contextless" (arg: rawptr) {
-	c := (^^libthread.Chan)(arg)^
-	fd := c == from_shell ? out_fd : cons_fd
-	chunk: Chunk
+type_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	io := libthread.ioproc()
+	if io == nil {
+		libthread.threadexitsall("ioproc")
+	}
 	for {
-		got := libuser.read(fd, chunk.data[:])
-		chunk.n = int(max(got, 0))
-		libthread.send(c, &chunk)
+		got := libthread.ioread(io, cons_fd, keys[:])
 		if got <= 0 {
-			return
+			libthread.threadexitsall("read")
+		}
+		send_line := 0
+		for i in 0 ..< int(got) {
+			if keys[i] == 0x03 {
+				libedit.clear(&edit)
+				row_dirty[crow] = true
+				_ = libuser.notepg(shell_pid, "interrupt")
+				continue
+			}
+			switch libedit.put(&edit, keys[i]) {
+			case .Done:
+				text := libedit.text(&edit)
+				for j in 0 ..< len(text) {
+					put_byte(text[j])
+				}
+				put_byte('\n')
+				send_line = copy(finished[:], text)
+				finished[send_line] = '\n'
+				send_line += 1
+				libedit.clear(&edit)
+			case .Edited:
+				row_dirty[crow] = true
+			case .Full, .Pending:
+			}
+		}
+		present()
+		if send_line > 0 {
+			_ = libuser.write_full(to_shell, finished[:send_line])
 		}
 	}
 }

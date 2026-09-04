@@ -14,9 +14,12 @@ vocabulary:
               in user space, in one small `.S` per architecture, when it
               blocks on a channel, a lock, or a `yield`. Never preempted
               by another thread of its proc.
-    channel   how threads and procs talk. `send` and `recv` copy one
+        channel   how threads and procs talk. `send` and `recv` copy one
               element and park the caller until the other side arrives, or
               until a buffer has room. `alt` waits on several at once.
+    io proc   a proc that makes a blocking call for a thread, `io.odin`.
+              `ioread` is a `read` a thread may make: the thread parks on a
+              channel and its proc keeps running.
 
 **A proc is the answer to blocking, still.** A thread that reads a device
 parks its whole proc in the kernel, and every other thread of that proc
@@ -66,12 +69,16 @@ where a thread runs.
 
 `threadexits` ends the calling thread, and the proc when it was the last.
 A proc other than the first simply exits. The first proc waits for the
-procs it created before it goes. A parent that exits first leaves an
-orphan the kernel cannot collect, which `kernel/user/rfork.odin` says.
-`threadexitsall` ends the program: it notes every other proc, waits for
-the ones this proc made, and exits with the status. The other procs die
-at their next kernel boundary, which is the read or the rendezvous they
-were parked in.
+procs it created before it goes. So the program's exit is the last of its
+processes, and whoever waits for the program sees none of them left. The
+kernel would collect them on its own a boundary later, through
+`reparent_children`. The wait is what makes that moment the program's
+rather than the reaper's.
+
+`threadexitsall` ends the program: it notes
+every other proc, waits for the ones this proc made, and exits with the
+status. The other procs die at their next kernel boundary, which is the
+read or the rendezvous they were parked in.
 */
 package libthread
 
@@ -86,34 +93,36 @@ import "vsys:vectra9"
 // with `libuser.heap_context` on its first line.
 Thread_Fn :: #type proc "contextless" (arg: rawptr)
 
-// The stacks. A thread's default, the first thread's, and the scheduler's
-// in a proc that is not the first. A thread stack comes from the heap, so
-// a thread that overruns it corrupts the heap rather than faults. The
-// scheduler checks the word at the bottom on every switch back, which
-// catches the plain overflow.
+/*
+The stacks: a thread's default, the first thread's, and the scheduler's in
+a proc that is not the first. A scheduler runs nothing deeper than a lock,
+a rendezvous and a wait.
+
+**No thread runs on the process's own stack**, though it grows on demand
+and would be free. The stack segment is the one segment `RFMEM` does not
+share, and a thread's frames are where a channel's receive buffer and an
+io call's record live. Another proc that wrote its answer there would
+write into its own copy of the page, and this proc would wait for ever.
+So every thread's stack comes from the heap, which every proc shares, and
+the first proc's scheduler is what runs on the process stack. A thread
+that overruns a heap stack corrupts the heap rather than faults. The
+scheduler checks the word at the bottom on every switch back, which
+catches the plain overflow.
+*/
 STACK_DEFAULT :: 16 * 1024
 MAIN_STACK :: 64 * 1024
-SCHED_STACK :: 16 * 1024
+SCHED_STACK :: 8 * 1024
 STACK_MAGIC :: u64(0x5EED_57AC_C0DE_F00D)
-
-Thread_State :: enum u8 {
-	Ready,
-	Running,
-	Rendez, // Parked on a channel, a lock or a rendezvous
-	Exited,
-}
 
 Thread :: struct {
 	id:      int,
-	name:    string,
 	fn:      Thread_Fn,
 	arg:     rawptr,
-	stack:   []u8,
+		stack:   []u8, // From the heap
 	label:   Label,
-	state:   Thread_State,
+	exited:  bool,
 	owner:   ^Proc,
 	next:    ^Thread, // The ready queue, or a lock's or a rendezvous's waiters
-	allnext: ^Thread, // The owner's list of every thread it has
 
 	// What the thread waits on while it does, and what it learnt when the
 	// wait ended. `chan.odin`.
@@ -125,18 +134,15 @@ Proc :: struct {
 	lock:       libuser.Spin, // The ready queue and `asleep`
 	pid:        u64,
 	sched:      Label, // Where the scheduler was when it switched to a thread
-	stack:      []u8, // The scheduler's own, nil for the first proc
+		stack:      []u8, // The scheduler's own, nil for the first proc
 	running:    ^Thread,
 	ready_head: ^Thread,
 	ready_tail: ^Thread,
 	asleep:     bool, // Parked in rendezvous with nothing to run
-	threads:    ^Thread,
 	nthreads:   int,
 	status:     string, // What the last thread to exit said
-	is_main:    bool,
+	creator:    ^Proc, // Nil for the first proc
 	detached:   bool, // Made by a proc other than the first, so nobody waits for it
-	gone:       bool, // Exited, or about to
-	creator:    ^Proc,
 	next:       ^Proc,
 }
 
@@ -173,17 +179,7 @@ threadid :: proc "contextless" () -> int {
 	return self().id
 }
 
-threadpid :: proc "contextless" () -> u64 {
-	return current().pid
-}
 
-threadsetname :: proc "contextless" (name: string) {
-	self().name = name
-}
-
-threadgetname :: proc "contextless" () -> string {
-	return self().name
-}
 
 // -- Starting ------------------------------------------------------------------
 
@@ -195,7 +191,8 @@ then on. It never returns. The program ends through `threadexits` or
 
 `me` is the private word, and this frame is where it lives for the life of
 the program. The scheduler of the first proc runs below it on the same
-stack, which is the process's own and grows on demand.
+stack, which is the process's own. The threads do not, for the reason
+the stacks' comment gives.
 */
 main :: proc "contextless" (fn: Thread_Fn, arg: rawptr, stacksize := MAIN_STACK) -> ! {
 	me: ^Proc
@@ -208,7 +205,6 @@ main :: proc "contextless" (fn: Thread_Fn, arg: rawptr, stacksize := MAIN_STACK)
 		libuser.exits("libthread: no memory for the first proc")
 	}
 	p.pid = libuser.getpid()
-	p.is_main = true
 	me = p
 	if thread_new(p, fn, arg, stacksize) == nil {
 		libuser.exits("libthread: no memory for the first thread")
@@ -216,6 +212,7 @@ main :: proc "contextless" (fn: Thread_Fn, arg: rawptr, stacksize := MAIN_STACK)
 	sched(p)
 }
 
+// proc_new is a record on the list of every proc.
 @(private = "file")
 proc_new :: proc "contextless" () -> ^Proc {
 	p := (^Proc)(libuser.heap_alloc(size_of(Proc)))
@@ -255,8 +252,6 @@ thread_new :: proc "contextless" (p: ^Proc, fn: Thread_Fn, arg: rawptr, stacksiz
 	t.owner = p
 	t.fn = fn
 	t.arg = arg
-	t.allnext = p.threads
-	p.threads = t
 	p.nthreads += 1
 	threadready(t)
 	return t
@@ -301,7 +296,7 @@ proccreate :: proc "contextless" (fn: Thread_Fn, arg: rawptr, stacksize := STACK
 		return -1
 	}
 	p.creator = me
-	p.detached = !me.is_main
+	p.detached = me.creator != nil
 	stack := libuser.heap_alloc(SCHED_STACK)
 	if stack == nil {
 		return -1
@@ -316,7 +311,6 @@ proccreate :: proc "contextless" (fn: Thread_Fn, arg: rawptr, stacksize := STACK
 	}
 	pid := vectra_proc_fork(abi.SYS_RFORK, flags, stack_top(p.stack), proc_entry, p)
 	if pid < 0 {
-		p.gone = true
 		return pid
 	}
 	p.pid = u64(pid)
@@ -347,14 +341,13 @@ sched :: proc "contextless" (p: ^Proc) -> ! {
 	for {
 		t := runthread(p)
 		p.running = t
-		t.state = .Running
 		vectra_thread_switch(&p.sched, &t.label)
 		p.running = nil
-		if (^u64)(raw_data(t.stack))^ != STACK_MAGIC {
+				if (^u64)(raw_data(t.stack))^ != STACK_MAGIC {
 			threadexitsall("libthread: thread stack overflow")
 		}
-		if t.state == .Exited {
-			thread_free(p, t)
+		if t.exited {
+			thread_free(t)
 			if p.nthreads == 0 {
 				proc_end(p)
 			}
@@ -412,7 +405,6 @@ lock passes to the sleeper.
 threadready :: proc "contextless" (t: ^Thread) {
 	p := t.owner
 	libuser.lock(&p.lock)
-	t.state = .Ready
 	t.next = nil
 	if p.ready_head == nil {
 		p.ready_head = t
@@ -444,17 +436,7 @@ yield :: proc "contextless" () {
 }
 
 @(private = "file")
-thread_free :: proc "contextless" (p: ^Proc, t: ^Thread) {
-	if p.threads == t {
-		p.threads = t.allnext
-	} else {
-		for q := p.threads; q != nil; q = q.allnext {
-			if q.allnext == t {
-				q.allnext = t.allnext
-				break
-			}
-		}
-	}
+thread_free :: proc "contextless" (t: ^Thread) {
 	libuser.heap_free(raw_data(t.stack))
 	libuser.heap_free(t)
 }
@@ -468,7 +450,7 @@ threadexits :: proc "contextless" (status: string) -> ! {
 	p := current()
 	t := p.running
 	p.status = status
-	t.state = .Exited
+	t.exited = true
 	p.nthreads -= 1
 	block()
 	for {
@@ -477,14 +459,13 @@ threadexits :: proc "contextless" (status: string) -> ! {
 
 /*
 proc_end is a proc with no threads left. The first proc waits for every
-proc it made, so none is orphaned. Any other exits at once. Its record
-stays on the list, marked gone, so `threadexitsall` neither notes a pid
-that ended nor waits twice.
+proc it made, so its exit is the program's last. Any other exits at once,
+and its record stays on the list. A note to a pid that ended is refused
+and harmless, because a pid never reuses.
 */
 @(private = "file")
 proc_end :: proc "contextless" (p: ^Proc) -> ! {
-	p.gone = true
-	if p.is_main {
+	if p.creator == nil {
 		wait_children(p)
 	}
 	libuser.exits(p.status)
@@ -520,10 +501,9 @@ program hears `status` from a machine that holds nothing of it any more.
 */
 threadexitsall :: proc "contextless" (status: string) -> ! {
 	me := current()
-	me.gone = true
 	libuser.lock(&procs_lock)
 	for q := procs; q != nil; q = q.next {
-		if q != me && !q.gone && q.pid != 0 {
+		if q != me && q.pid != 0 {
 			_ = libuser.note(q.pid, "threadexitsall")
 		}
 	}

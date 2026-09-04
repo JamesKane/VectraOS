@@ -147,7 +147,6 @@ Arch_Config :: struct {
 	odin_target:   string,
 	clang_target:  string,   // What clang assembles the `.S` files for
 	asm_sources:   []string, // The `.S` files the kernel links, this arch's own
-	user_asm:      string,   // The one `.S` every ring 3 program links, `sys/libthread`'s
 	ld_emulation:  string,
 	link_script:   string,
 	qemu:          string,
@@ -203,16 +202,6 @@ asm_riscv64 := [?]string{
 	"kernel/arch/riscv64/fpu_hold.S",
 }
 
-/*
-The one `.S` a ring 3 program links: `sys/libthread`'s thread switch and
-its fork onto a new stack. A file for the reason the kernel's are, and
-linked into every program rather than named per program, because it is a
-hundred bytes and a table column nothing else would use. A program that
-never imports `libthread` carries the two symbols unreferenced.
-*/
-USER_ASM_AMD64 :: "sys/libthread/thread_amd64.S"
-USER_ASM_ARM64 :: "sys/libthread/thread_arm64.S"
-USER_ASM_RISCV64 :: "sys/libthread/thread_riscv64.S"
 
 // Machine lines live at package scope: a slice of a compound literal built
 // inside arch_config would point into that call's stack frame.
@@ -235,7 +224,6 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 			odin_target   = "freestanding_amd64_sysv",
 			clang_target  = "x86_64-unknown-elf",
 			asm_sources   = asm_amd64[:],
-			user_asm      = USER_ASM_AMD64,
 			ld_emulation  = "elf_x86_64",
 			link_script   = "kernel/link_amd64.ld",
 			qemu          = "qemu-system-x86_64",
@@ -249,7 +237,6 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 			odin_target   = "freestanding_arm64",
 			clang_target  = "aarch64-unknown-elf",
 			asm_sources   = asm_arm64[:],
-			user_asm      = USER_ASM_ARM64,
 			ld_emulation  = "aarch64elf",
 			link_script   = "kernel/link_arm64.ld",
 			qemu          = "qemu-system-aarch64",
@@ -263,7 +250,6 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 			odin_target   = "freestanding_riscv64",
 			clang_target  = "riscv64-unknown-elf",
 			asm_sources   = asm_riscv64[:],
-			user_asm      = USER_ASM_RISCV64,
 			ld_emulation  = "elf64lriscv",
 			link_script   = "kernel/link_riscv64.ld",
 			qemu          = "qemu-system-riscv64",
@@ -469,8 +455,14 @@ build_user :: proc(opts: Options) {
 	ensure_dir(BUILD_DIR)
 	ensure_dir(USER_DIR)
 
+	// The one `.S` a ring 3 program links: `sys/libthread`'s thread switch
+	// and its fork onto a new stack, a file for the reason the kernel's
+	// are. Linked into every program rather than named per program,
+	// because it is a hundred bytes and a table column nothing else would
+	// use. A program that never imports `libthread` carries the two
+	// symbols unreferenced.
 	thread_obj := fmt.tprintf("%s/libthread.o", USER_DIR)
-	assemble(cfg, opts.arch, cfg.user_asm, thread_obj)
+	assemble(cfg, opts.arch, fmt.tprintf("sys/libthread/thread_%v.S", opts.arch), thread_obj)
 
 	for prog in user_programs {
 		step("compiling %s for ring 3", prog.path)

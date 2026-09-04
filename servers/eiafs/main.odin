@@ -12,17 +12,16 @@ file goes down the shared descriptor and out the wire.
 
 The shape is `consrv`'s on `sys/libthread`, byte for byte where it can be:
 
-    the reader      a proc parked in `read` on /dev/eia0, sending what it
-                    reads on `bytes`
-    the byte thread receives `bytes`, pushes into the ring, and answers
-                    any read of /eia0 held for want of one
-    the serve loop  `lib9p.serve`; a read of /eia0 with nothing arrived is
-                    held, and a write of /eia0 goes out the wire inline
+    the byte thread reads /dev/eia0 through an io proc, pushes what
+                    arrives into the ring, and answers any read of /eia0
+                    held for want of a byte
+        the serve loop  `lib9p.serve`. A read of /eia0 with nothing arrived is
+                    held, and a write of /eia0 goes out the wire inline.
 
-The open takes `O_RDWR` and comes before the fork, so every proc holds the
-one descriptor: the reader reads it for its whole life, and the handler
-writes it. A write never parks -- the UART takes bytes as fast as its
-FIFO drains -- so the serve loop answers a `Twrite` inline.
+The open takes `O_RDWR` and comes first, so the io proc holds the one
+descriptor. It reads it for its whole life, and the handler writes it. A
+write never parks -- the UART takes bytes as fast as its FIFO drains --
+so the serve loop answers a `Twrite` inline.
 
 Two properties of the wire are the kernel's, not this server's, and a
 client should know both. The device expands LF to CRLF on the way out,
@@ -31,9 +30,9 @@ kernel log writes the same wire unserialised -- the ordering of a log
 line against a served write is undefined, which `kernel/devfs` documents
 as the deliberate cost of a log that cannot park.
 
-Teardown is `consrv`'s: on `Tremove` the serve loop stops, every held read
-is answered empty, and `threadexitsall` notes the reader proc out of its
-parked read and waits for it. Status zero is that arc succeeding.
+Teardown is `consrv`'s. On `Tremove` the serve loop stops and every held
+read is answered empty. `threadexitsall` then notes the io procs out of
+their parked reads and waits for them. Status zero is that arc succeeding.
 */
 package eiafs
 
@@ -54,21 +53,8 @@ RING :: 256
 ring_store: [RING]u8
 ring: libuser.Ring
 
-/*
-What the reader proc sends: one read's worth of bytes, and how many. A
-read of the served file answers what one read of the device delivered,
-which for a cooked console is a whole line, so the bytes cross together
-rather than one at a time.
-*/
-CHUNK :: 64
-
-Chunk :: struct {
-	n:    int,
-	data: [CHUNK]u8,
-}
-
-// The device descriptor. The reader proc reads it, and the handler's
-// Twrite case writes it. Nobody closes it -- the process exit is the close.
+// The device descriptor. The io proc reads it, and the handler's Twrite
+// case writes it. Nobody closes it -- the process exit is the close.
 eia_fd: int
 
 fids: libuser.Fid_Table
@@ -76,13 +62,12 @@ fids: libuser.Fid_Table
 FRAME :: 1200
 
 srv: lib9p.Srv
-bytes: ^libthread.Chan
 
 /*
 _start opens the port and hands the process to the thread library.
 
 The open comes first because the descriptor table is shared: one open,
-and every proc holds the number. It takes `O_RDWR` because the two sides
+and the io proc holds the number. It takes `O_RDWR` because the two sides
 want different directions. An open that fails is also the portless
 machine: a port that failed its probe answers ENXIO, and this server has
 nothing to serve.
@@ -105,13 +90,6 @@ start :: proc "c" (block: ^abi.Args) {
 
 threadmain :: proc "contextless" (arg: rawptr) {
 	_ = arg
-	bytes = libthread.chancreate(size_of(Chunk), 4)
-	if bytes == nil {
-		libthread.threadexitsall("no memory")
-	}
-	if libthread.proccreate(reader, nil) < 0 {
-		libthread.threadexitsall("proccreate")
-	}
 	sfd, perr := libuser.post("/srv/eiafs")
 	if perr < 0 {
 		libthread.threadexitsall("post")
@@ -132,41 +110,34 @@ threadmain :: proc "contextless" (arg: rawptr) {
 }
 
 /*
-reader is the reader proc's whole life: park on the port, send what comes.
-
-A failed read is not a loop to break out of. A noted proc's read answers
-EINTR, and its next system call is the boundary the note ends it at -- so
-asking again *is* the teardown protocol, not a bug's retry.
+byte_thread is the port's whole life: a read through an io proc, what
+arrives into the ring, and the ring to whoever holds a read of /eia0. A
+failed read is not a loop to break out of. A noted io proc's read answers
+EINTR, and its next call is the boundary the note ends it at.
 */
-reader :: proc "contextless" (arg: rawptr) {
+byte_thread :: proc "contextless" (arg: rawptr) {
 	_ = arg
-	chunk: Chunk
+	io := libthread.ioproc()
+	if io == nil {
+		libthread.threadexitsall("ioproc")
+	}
+	chunk: [64]u8
 	for {
-		n := libuser.read(eia_fd, chunk.data[:])
+		n := libthread.ioread(io, eia_fd, chunk[:])
 		if n <= 0 {
 			continue
 		}
-		chunk.n = int(n)
-		libthread.send(bytes, &chunk)
-	}
-}
-
-byte_thread :: proc "contextless" (arg: rawptr) {
-	_ = arg
-	chunk: Chunk
-	for {
-		libthread.recv(bytes, &chunk)
-		for i in 0 ..< chunk.n {
-			libuser.ring_push(&ring, chunk.data[i])
+		for i in 0 ..< int(n) {
+			libuser.ring_push(&ring, chunk[i])
 		}
-		answer_held()
+		lib9p.answer_reads(&srv, nil, wants_read, drain)
 	}
 }
 
 // wants_read is what a held request has to be for the byte thread to
 // answer it: a read of the file the ring feeds.
-wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
-	_ = state
+wants_read :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
+	_ = arg
 	#partial switch m in request^ {
 	case vectra9.Tread:
 		return libuser.fid_lookup(&fids, m.fid) == NODE_EIA
@@ -174,22 +145,9 @@ wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool 
 	return false
 }
 
-// answer_held gives what the ring holds to the reads held for it, oldest
-// first. See `lib9p.held`.
-answer_held :: proc "contextless" () {
-	for {
-		req, ok := lib9p.held(&srv, wants_read)
-		if !ok {
-			break
-		}
-		m := req.msg.(vectra9.Tread)
-		room := min(len(req.payload), int(m.count))
-		got := libuser.ring_drain(&ring, req.payload[:room])
-		if got == 0 {
-			break
-		}
-		_ = lib9p.respond(req, vectra9.Rread{data = req.payload[:got]})
-	}
+drain :: proc "contextless" (arg: rawptr, buf: []u8) -> int {
+	_ = arg
+	return libuser.ring_drain(&ring, buf)
 }
 
 // -- The tree ----------------------------------------------------------------

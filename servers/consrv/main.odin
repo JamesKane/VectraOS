@@ -4,18 +4,16 @@ consrv -- the first server that waits on two things at once.
 `ramfs` answers one pipe, and can, because files in memory never park. A
 console server has the problem `docs/HANDOFF.md` kept on its list: the
 keyboard and the clients both park a reader, and one thread cannot wait on
-both. This is `sys/libthread`'s answer, in the shape Plan 9 gives it. A
-proc of its own reads the console, which is the one read here that
-genuinely parks, and sends what arrives down a channel. The program's own
-proc is two threads that only ever block on each other:
+both. This is `sys/libthread`'s answer, in the shape Plan 9 gives it. The
+program is two threads in one proc, and an io proc makes each read that
+parks:
 
-    the reader     a proc parked in `read` on /dev/cons, sending what it
-                   reads on `keys`
-    the key thread receives `keys`, pushes into the ring, and answers
-                   any read of /line that was held for want of a byte
-    the serve loop `lib9p.serve`: a request off its channel, the handler,
-                   the reply. A read of /line with nothing to give is held
-                   rather than answered empty.
+    the key thread reads /dev/cons through an io proc, pushes what
+                   arrives into the ring, and answers any read of /line
+                   that was held for want of a byte
+    the serve loop `lib9p.serve`: a frame through its own io proc, the
+                   handler, the reply. A read of /line with nothing to
+                   give is held rather than answered empty.
 
 **Nothing here is locked.** The ring's consumer end, the fid table and the
 held list are all touched by threads of one proc, and a thread runs until
@@ -29,8 +27,8 @@ answers a `getattr` from another client while the read is held, which
 `verify_consrv` proves.
 
 Teardown is `threadexitsall`. A `Tremove` stops the serve loop, every
-held read is answered empty, and the library notes the reader proc out of
-its parked device read and waits for it before this process exits. Status
+held read is answered empty, and the library notes the io procs out of
+their parked reads and waits for them before this process exits. Status
 zero is that whole arc succeeding.
 */
 package consrv
@@ -47,38 +45,23 @@ NODE_ROOT :: i32(0)
 NODE_LINE :: i32(1)
 
 // The bytes that have arrived and not yet been read, kept by the key
-// thread for the handler. A ring rather than the channel's own buffer,
-// because a read takes what is there and a channel gives one element.
+// thread for the handler.
 RING :: 256
 ring_store: [RING]u8
 ring: libuser.Ring
-
-/*
-What the reader proc sends: one read's worth of bytes, and how many. A
-read of the served file answers what one read of the device delivered,
-which for a cooked console is a whole line, so the bytes cross together
-rather than one at a time.
-*/
-CHUNK :: 64
-
-Chunk :: struct {
-	n:    int,
-	data: [CHUNK]u8,
-}
 
 fids: libuser.Fid_Table
 
 FRAME :: 1200
 
 srv: lib9p.Srv
-keys: ^libthread.Chan
 cons_fd: int
 
 /*
 _start opens the console and hands the process to the thread library.
 
 The open comes first because the descriptor table is shared: one open,
-and every proc holds the number. 0x74 is a console that would not open.
+and the io proc holds the number. 0x74 is a console that would not open.
 */
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -96,17 +79,10 @@ start :: proc "c" (block: ^abi.Args) {
 	libthread.main(threadmain, nil)
 }
 
-// threadmain is the first thread: the reader proc, the posting, the key
-// thread, and then the serve loop until something ends it.
+// threadmain is the first thread: the posting, the key thread, and then
+// the serve loop until something ends it.
 threadmain :: proc "contextless" (arg: rawptr) {
 	_ = arg
-	keys = libthread.chancreate(size_of(Chunk), 4)
-	if keys == nil {
-		libthread.threadexitsall("no memory")
-	}
-	if libthread.proccreate(reader, nil) < 0 {
-		libthread.threadexitsall("proccreate")
-	}
 	fd, perr := libuser.post("/srv/consrv")
 	if perr < 0 {
 		libthread.threadexitsall("post")
@@ -129,42 +105,36 @@ threadmain :: proc "contextless" (arg: rawptr) {
 }
 
 /*
-reader is the reader proc's whole life: park on the console, send what
-comes. A failed read is not a loop to break out of. A noted proc's read
-answers EINTR, and its next system call is the boundary the note ends it
-at -- so asking again *is* the teardown protocol, not a bug's retry.
+key_thread is the keyboard's whole life: a read of the console through an
+io proc, what arrives into the ring, and the ring to whoever holds a read
+of /line. A read answers what one read of the device delivered, which
+for a cooked console is a whole line. A failed read is not a loop to
+break out of: a noted io proc's read answers EINTR, and its next call is
+the boundary the note ends it at.
 */
-reader :: proc "contextless" (arg: rawptr) {
+key_thread :: proc "contextless" (arg: rawptr) {
 	_ = arg
-	chunk: Chunk
+	io := libthread.ioproc()
+	if io == nil {
+		libthread.threadexitsall("ioproc")
+	}
+	chunk: [64]u8
 	for {
-		n := libuser.read(cons_fd, chunk.data[:])
+		n := libthread.ioread(io, cons_fd, chunk[:])
 		if n <= 0 {
 			continue
 		}
-		chunk.n = int(n)
-		libthread.send(keys, &chunk)
-	}
-}
-
-// key_thread takes each chunk off the channel, keeps its bytes, and gives
-// what the ring holds to the reads held for it.
-key_thread :: proc "contextless" (arg: rawptr) {
-	_ = arg
-	chunk: Chunk
-	for {
-		libthread.recv(keys, &chunk)
-		for i in 0 ..< chunk.n {
-			libuser.ring_push(&ring, chunk.data[i])
+		for i in 0 ..< int(n) {
+			libuser.ring_push(&ring, chunk[i])
 		}
-		answer_held()
+		lib9p.answer_reads(&srv, nil, wants_read, drain)
 	}
 }
 
 // wants_read is what a held request has to be for the key thread to
 // answer it: a read of the file the ring feeds.
-wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool {
-	_ = state
+wants_read :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
+	_ = arg
 	#partial switch m in request^ {
 	case vectra9.Tread:
 		return libuser.fid_lookup(&fids, m.fid) == NODE_LINE
@@ -172,22 +142,9 @@ wants_read :: proc "contextless" (state: rawptr, request: ^vectra9.Msg) -> bool 
 	return false
 }
 
-// answer_held gives what the ring holds to the reads held for it, oldest
-// first. See `lib9p.held`.
-answer_held :: proc "contextless" () {
-	for {
-		req, ok := lib9p.held(&srv, wants_read)
-		if !ok {
-			break
-		}
-		m := req.msg.(vectra9.Tread)
-		room := min(len(req.payload), int(m.count))
-		got := libuser.ring_drain(&ring, req.payload[:room])
-		if got == 0 {
-			break
-		}
-		_ = lib9p.respond(req, vectra9.Rread{data = req.payload[:got]})
-	}
+drain :: proc "contextless" (arg: rawptr, buf: []u8) -> int {
+	_ = arg
+	return libuser.ring_drain(&ring, buf)
 }
 
 // -- The tree ----------------------------------------------------------------

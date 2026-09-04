@@ -57,10 +57,11 @@ A flag that is quietly ignored can never mean anything later.
 ## Who collects an rfork child
 
 Its parent, by `wait`, like any spawned child. A parent that exits first
-leaves an orphan no `wait` can ever reach, because pids never reuse and
-nothing reparents. The leak is honest in `stats().live`. The showpiece server
-tears down child-first for exactly that reason, and reparenting is named in
-`docs/HANDOFF.md` beside `RFNOWAIT`, whose day it shares.
+hands its live children to the kernel, `reparent_children` in `user.odin`,
+and `reap_orphans` collects each when it ends. That is Plan 9's
+reparent-to-init with the kernel standing in for init. A parent that wants
+its exit to be the last of its processes still waits for them first, which
+is what `sys/libthread` does at `threadexitsall`.
 */
 package user
 

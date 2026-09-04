@@ -41,7 +41,6 @@ qlock :: proc "contextless" (q: ^QLock) {
 		q.tail.next = t
 	}
 	q.tail = t
-	t.state = .Rendez
 	libuser.unlock(&q.l)
 	block()
 	// The release made this thread the owner before it readied it.
@@ -93,7 +92,6 @@ rsleep :: proc "contextless" (r: ^Rendez) {
 		r.tail.next = t
 	}
 	r.tail = t
-	t.state = .Rendez
 	qunlock(r.l)
 	block()
 	qlock(r.l)

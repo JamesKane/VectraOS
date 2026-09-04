@@ -441,16 +441,6 @@ write_full :: proc "contextless" (fd: int, data: []u8) -> bool {
 	return true
 }
 
-// stop_child is the forked reader's teardown. Note the child out of its
-// parked read, and collect the EINTR that proves the ending was the one
-// asked for. Every parent of a reader ends its child through this.
-stop_child :: proc "contextless" (pid: u64) -> bool {
-	if note(pid, "stop") != 0 {
-		return false
-	}
-	return wait(pid) == -i64(vectra9.EINTR)
-}
-
 // -- What a thread library needs, docs/PROCS.md step 3 -----------------------
 
 /*
