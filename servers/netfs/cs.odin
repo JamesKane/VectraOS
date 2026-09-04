@@ -181,9 +181,7 @@ cs_write :: proc "contextless" (fid: vectra9.Fid, query: string) -> bool #no_bou
 	e.used = true
 	e.fid = fid
 	e.len = n
-	for i in 0 ..< n {
-		e.text[i] = scratch[i]
-	}
+	copy(e.text[:], scratch[:n])
 	return true
 }
 

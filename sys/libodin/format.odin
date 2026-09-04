@@ -143,3 +143,42 @@ put_size :: proc "contextless" (s: ^Sink, bytes_count: u64) {
 	put_byte(s, ' ')
 	put_str(s, units[unit])
 }
+
+/*
+put_mac writes a hardware address the way every tool prints one, six bytes of
+lower-case hex with colons between:
+
+    52:54:00:12:34:56
+
+It is here rather than beside the network code because three places wanted it.
+Two of them are the kernel, which cannot reach a ring 3 library. `put_uint`
+already zero-pads to a width, so each byte is one call.
+*/
+put_mac :: proc "contextless" (s: ^Sink, mac: []u8) #no_bounds_check {
+	for i in 0 ..< len(mac) {
+		if i > 0 {
+			put_byte(s, ':')
+		}
+		put_uint(s, u64(mac[i]), 16, 2)
+	}
+}
+
+/*
+contains reports whether `text` carries `want` anywhere in it.
+
+The one string search this system has. The kernel's self-tests and two ring 3
+programs each wrote their own, and `libodin` is the only library both privilege
+levels share. Plain, and quadratic in the worst case, which is what a search
+over a line of a file wants.
+*/
+contains :: proc "contextless" (text: string, want: string) -> bool #no_bounds_check {
+	if len(want) > len(text) {
+		return false
+	}
+	for i := 0; i + len(want) <= len(text); i += 1 {
+		if text[i:i + len(want)] == want {
+			return true
+		}
+	}
+	return false
+}

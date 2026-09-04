@@ -190,7 +190,7 @@ which is the loopback, and one for anywhere else becomes a frame.
 */
 tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) #no_bounds_check {
 	c := &tcps[i]
-	seg: [TCP_HDR_MAX]u8
+	seg: [TCP_HDR_MAX]u8 = ---
 	t := libnet.Tcp {
 		sport   = c.lport,
 		dport   = c.rport,
@@ -213,9 +213,7 @@ tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) #no_
 	}
 	at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
 	body := libnet.put_ipv4(out[:], at, MY_IP, c.raddr, libnet.IPPROTO_TCP, end, 0)
-	for k in 0 ..< end {
-		out[body + k] = seg[k]
-	}
+	copy(out[body:], seg[:end])
 	_ = libuser.write(ether_fd, out[:body + end])
 }
 
@@ -297,7 +295,7 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 	c := &tcps[i]
 
 	c.peer_win = t.window
-	if t.flags & libnet.TCP_ACK != 0 && seq_le(c.snd_una, t.ack) {
+	if t.flags & libnet.TCP_ACK != 0 && libnet.seq_le_u32(c.snd_una, t.ack) {
 		c.snd_una = t.ack
 		libnet.retx_ack(&c.retx, c.snd_una)
 	}
@@ -344,7 +342,7 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 			tcp_push(i, t.payload)
 			c.rcv_nxt += u32(len(t.payload))
 			// And the run the arrival just made contiguous.
-			held: [libnet.SEG_MAX]u8
+			held: [libnet.SEG_MAX]u8 = ---
 			for {
 				n := libnet.reseq_take(&c.reseq, c.rcv_nxt, held[:])
 				if n == 0 {
@@ -355,7 +353,7 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 			}
 			tcp_output(i, libnet.TCP_ACK, nil)
 			answer_tcp(i)
-		} else if seq_le(c.rcv_nxt, t.seq) {
+		} else if libnet.seq_le_u32(c.rcv_nxt, t.seq) {
 			_ = libnet.reseq_insert(&c.reseq, t.seq, t.payload)
 			tcp_output(i, libnet.TCP_ACK, nil)
 		} else {
@@ -378,12 +376,6 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 		tcp_output(i, libnet.TCP_ACK, nil)
 		answer_tcp(i)
 	}
-}
-
-// seq_le compares two sequence numbers the way TCP does, on the circle rather
-// than the line. A wrap then does not read as a jump backwards.
-seq_le :: proc "contextless" (a: u32, b: u32) -> bool {
-	return i32(b - a) >= 0
 }
 
 // -- What a conversation is told to do ----------------------------------------
@@ -547,30 +539,22 @@ run_tcp_ctl :: proc "contextless" (i: int, text: string) -> bool #no_bounds_chec
 	return false
 }
 
-tcp_state_name :: proc "contextless" (s: Tcp_State) -> string {
-	switch s {
-	case .Closed:
-		return "Closed"
-	case .Listen:
-		return "Listen"
-	case .Syn_Sent:
-		return "Syn_Sent"
-	case .Syn_Received:
-		return "Syn_Received"
-	case .Established:
-		return "Established"
-	case .Fin_Wait_1:
-		return "Fin_Wait_1"
-	case .Fin_Wait_2:
-		return "Fin_Wait_2"
-	case .Close_Wait:
-		return "Close_Wait"
-	case .Last_Ack:
-		return "Last_Ack"
-	case .Time_Wait:
-		return "Time_Wait"
-	}
-	return "Closed"
+/*
+The name each state answers under `status`. An array over the enum rather than a
+switch, so a state added later fails to compile here instead of quietly
+reporting itself as `Closed`.
+*/
+TCP_STATE_NAME := [Tcp_State]string {
+	.Closed       = "Closed",
+	.Listen       = "Listen",
+	.Syn_Sent     = "Syn_Sent",
+	.Syn_Received = "Syn_Received",
+	.Established  = "Established",
+	.Fin_Wait_1   = "Fin_Wait_1",
+	.Fin_Wait_2   = "Fin_Wait_2",
+	.Close_Wait   = "Close_Wait",
+	.Last_Ack     = "Last_Ack",
+	.Time_Wait    = "Time_Wait",
 }
 
 render_tconv :: proc "contextless" (sink: ^libodin.Sink, i: int, kind: i32) #no_bounds_check {
@@ -589,7 +573,7 @@ render_tconv :: proc "contextless" (sink: ^libodin.Sink, i: int, kind: i32) #no_
 		}
 		libodin.put_str(sink, "\n")
 	case TCONV_STATUS:
-		libodin.put_str(sink, tcp_state_name(c.state))
+		libodin.put_str(sink, TCP_STATE_NAME[c.state])
 		libodin.put_str(sink, " queued ")
 		libodin.put_uint(sink, u64(tcp_queued(i)))
 		libodin.put_str(sink, "\n")

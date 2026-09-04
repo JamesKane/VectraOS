@@ -191,39 +191,39 @@ present :: proc "contextless" (n: int) -> bool {
 	return n >= 0 && n < MAX_DISKS && disks[n].used
 }
 
-// -- Register access ----------------------------------------------------------
+/*
+-- Register access ----------------------------------------------------------
 
-@(private = "file")
+These are package-visible rather than file-private, because `net.odin` drives
+the same virtio-pci registers with the same accessors. They were written twice
+before that, which is the duplication a second device on one transport is
+supposed to retire.
+*/
+
 r8 :: proc "contextless" (base: rawptr, off: uintptr) -> u8 {
 	return intrinsics.volatile_load(cast(^u8)(uintptr(base) + off))
 }
 
-@(private = "file")
 w8 :: proc "contextless" (base: rawptr, off: uintptr, v: u8) {
 	intrinsics.volatile_store(cast(^u8)(uintptr(base) + off), v)
 }
 
-@(private = "file")
 r16 :: proc "contextless" (base: rawptr, off: uintptr) -> u16 {
 	return intrinsics.volatile_load(cast(^u16)(uintptr(base) + off))
 }
 
-@(private = "file")
 w16 :: proc "contextless" (base: rawptr, off: uintptr, v: u16) {
 	intrinsics.volatile_store(cast(^u16)(uintptr(base) + off), v)
 }
 
-@(private = "file")
 r32 :: proc "contextless" (base: rawptr, off: uintptr) -> u32 {
 	return intrinsics.volatile_load(cast(^u32)(uintptr(base) + off))
 }
 
-@(private = "file")
 w32 :: proc "contextless" (base: rawptr, off: uintptr, v: u32) {
 	intrinsics.volatile_store(cast(^u32)(uintptr(base) + off), v)
 }
 
-@(private = "file")
 w64 :: proc "contextless" (base: rawptr, off: uintptr, v: u64) {
 	// Two 32-bit stores, low half first, as the specification requires for a
 	// register a 32-bit transport might split.
@@ -537,7 +537,6 @@ write :: proc "contextless" (n: int, sector: u64, buf: []u8) -> bool {
 // rings are ordinary memory and the device is another bus master, so a
 // store that lands out of order lets the device see an index before the
 // descriptor it points at.
-@(private = "file")
 fence :: proc "contextless" () {
 	intrinsics.atomic_thread_fence(.Seq_Cst)
 }

@@ -30,7 +30,9 @@ SEG_MAX :: 512
 
 // -- The retransmit queue ------------------------------------------------------
 
-RETX_SLOTS :: 8
+// Four segments of `SEG_MAX` is 2048 bytes, which is the largest window this
+// stack ever advertises, so a fifth could never be outstanding.
+RETX_SLOTS :: 4
 
 Retx_Entry :: struct {
 	used:    bool,
@@ -90,9 +92,7 @@ retx_push :: proc "contextless" (
 		e.flags = flags
 		e.len = len(payload)
 		e.sent_at = now
-		for k in 0 ..< len(payload) {
-			e.data[k] = payload[k]
-		}
+		copy(e.data[:], payload)
 		return true
 	}
 	return false
@@ -197,9 +197,7 @@ reseq_insert :: proc "contextless" (r: ^Resequencer, seq: u32, data: []u8) -> bo
 		e.used = true
 		e.seq = seq
 		e.len = len(data)
-		for k in 0 ..< len(data) {
-			e.data[k] = data[k]
-		}
+		copy(e.data[:], data)
 		return true
 	}
 	return false
@@ -218,9 +216,7 @@ reseq_take :: proc "contextless" (r: ^Resequencer, next: u32, out: []u8) -> int 
 			continue
 		}
 		n := min(e.len, len(out))
-		for k in 0 ..< n {
-			out[k] = e.data[k]
-		}
+		copy(out[:n], e.data[:n])
 		e.used = false
 		return n
 	}

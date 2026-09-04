@@ -85,18 +85,6 @@ text_of :: proc "contextless" (n: int, leaf: string) -> string {
 }
 
 // holds reports whether `text` carries `want_text` anywhere in it.
-holds :: proc "contextless" (text: string, want_text: string) -> bool {
-	if len(want_text) > len(text) {
-		return false
-	}
-	for i := 0; i + len(want_text) <= len(text); i += 1 {
-		if text[i:i + len(want_text)] == want_text {
-			return true
-		}
-	}
-	return false
-}
-
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	_ = block
@@ -132,10 +120,10 @@ start :: proc "c" (block: ^abi.Args) {
 	}
 
 	// And the conversation says what it is.
-	want(holds(text_of(server, "local"), "!7"), "the announced end is the port it announced")
-	want(holds(text_of(server, "status"), "Announced"), "and its status says so")
-	want(holds(text_of(client, "remote"), "10.0.2.15!7"), "the connected end names the far side")
-	want(holds(text_of(client, "status"), "Connected"), "and its status says so")
+	want(libodin.contains(text_of(server, "local"), "!7"), "the announced end is the port it announced")
+	want(libodin.contains(text_of(server, "status"), "Announced"), "and its status says so")
+	want(libodin.contains(text_of(client, "remote"), "10.0.2.15!7"), "the connected end names the far side")
+	want(libodin.contains(text_of(client, "status"), "Connected"), "and its status says so")
 
 	// A hangup ends one, and the number stops being a conversation.
 	ctl(client, "hangup", "a conversation hangs up")

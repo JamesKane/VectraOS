@@ -101,9 +101,7 @@ conv_push :: proc "contextless" (i: int, raddr: libnet.IP, rport: u16, payload: 
 	d.len = min(len(payload), DG_MAX)
 	d.raddr = raddr
 	d.rport = rport
-	for k in 0 ..< d.len {
-		d.data[k] = payload[k]
-	}
+	copy(d.data[:d.len], payload[:d.len])
 	c.tail += 1
 	answer_conv(i)
 }
@@ -116,9 +114,7 @@ conv_pop :: proc "contextless" (i: int, out: []u8) -> int #no_bounds_check {
 	}
 	d := &c.q[c.head % DG_SLOTS]
 	n := min(d.len, len(out))
-	for k in 0 ..< n {
-		out[k] = d.data[k]
-	}
+	copy(out[:n], d.data[:n])
 	c.head += 1
 	return n
 }

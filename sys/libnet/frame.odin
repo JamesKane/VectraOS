@@ -65,20 +65,8 @@ result. A header carrying its own correct checksum sums with a seed of zero to
 zero, which is how a receiver checks one. `seed` lets a caller carry a
 pseudo-header's partial sum into the sum of what follows.
 */
-checksum :: proc "contextless" (data: []u8, seed: u32 = 0) -> u16 #no_bounds_check {
-	sum := seed
-	i := 0
-	for i + 1 < len(data) {
-		sum += u32(data[i]) << 8 | u32(data[i + 1])
-		i += 2
-	}
-	if i < len(data) {
-		sum += u32(data[i]) << 8
-	}
-	for sum >> 16 != 0 {
-		sum = (sum & 0xFFFF) + (sum >> 16)
-	}
-	return u16(~sum)
+checksum :: proc "contextless" (data: []u8, seed: u32 = 0) -> u16 {
+	return fold(sum16(data, seed))
 }
 
 // -- Ethernet -----------------------------------------------------------------
@@ -242,9 +230,7 @@ put_icmp_echo :: proc "contextless" (
 	put_be16(b, at + 2, 0) // checksum, zero while summed
 	put_be16(b, at + 4, id)
 	put_be16(b, at + 6, seq)
-	for i in 0 ..< len(payload) {
-		b[at + ICMP_HDR + i] = payload[i]
-	}
+	copy(b[at + ICMP_HDR:], payload)
 	end := at + ICMP_HDR + len(payload)
 	put_be16(b, at + 2, checksum(b[at:end]))
 	return end
@@ -383,9 +369,7 @@ put_udp :: proc "contextless" (
 	put_be16(b, at + 2, dport)
 	put_be16(b, at + 4, u16(udp_len))
 	put_be16(b, at + 6, 0) // checksum, zero while summed
-	for i in 0 ..< len(payload) {
-		b[at + UDP_HDR + i] = payload[i]
-	}
+	copy(b[at + UDP_HDR:], payload)
 	end := at + udp_len
 	ck := fold(sum16(b[at:end], udp_pseudo(src, dst, udp_len)))
 	if ck == 0 {
@@ -468,9 +452,7 @@ put_tcp :: proc "contextless" (
 	put_be16(b, at + 14, t.window)
 	put_be16(b, at + 16, 0) // checksum, zero while summed
 	put_be16(b, at + 18, 0) // urgent pointer
-	for i in 0 ..< len(t.payload) {
-		b[at + TCP_HDR + i] = t.payload[i]
-	}
+	copy(b[at + TCP_HDR:], t.payload)
 	end := at + TCP_HDR + len(t.payload)
 	seg_len := end - at
 	ck := fold(sum16(b[at:end], pseudo(src, dst, IPPROTO_TCP, seg_len)))

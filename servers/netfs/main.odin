@@ -133,7 +133,6 @@ arp_table: libnet.Arp_Table
 // What the probe did, which `/net/icmp` reports and the self-test reads.
 echo_sent: int
 echo_recv: int
-probed: bool // Whether the gateway's address has been asked for once
 
 // One frame out, built here and written to the card. A datagram's payload is
 // the largest thing it carries.
@@ -198,7 +197,6 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	// Ask who has the gateway. The reply arrives at the ether thread, which
 	// remembers it and sends the echo that follows.
 	send_arp_request(GW_IP)
-	probed = true
 
 	_, why := lib9p.serve(&srv)
 	lib9p.respond_all(&srv, vectra9.Rread{data = nil})
@@ -220,10 +218,16 @@ ether_thread :: proc "contextless" (arg: rawptr) {
 	frame: [2048]u8
 	for {
 		n := libthread.ioread(io, ether_fd, frame[:])
-		// Every pass is one round of the stack's coarse clock, whether a frame
-		// came or the read reached its bound. A retransmit is due by rounds.
-		tcp_tick()
 		if n <= 0 {
+			/*
+			The read reached its bound with nothing on the card, which is one
+			round of the stack's coarse clock. The clock is wound only here,
+			never on a pass that carried a frame. A round is then a span the
+			device sets. Winding it on every pass would shrink the round as
+			traffic grew, and fire a retransmit soonest when the network was
+			busiest.
+			*/
+			tcp_tick()
 			continue
 		}
 		take(frame[:int(n)])
@@ -401,17 +405,9 @@ put_ip :: proc "contextless" (sink: ^libodin.Sink, ip: libnet.IP) {
 	}
 }
 
-put_mac :: proc "contextless" (sink: ^libodin.Sink, mac: libnet.MAC) #no_bounds_check {
-	hexd := "0123456789abcdef"
-	pair: [2]u8
-	for i in 0 ..< 6 {
-		if i > 0 {
-			libodin.put_str(sink, ":")
-		}
-		pair[0] = hexd[mac[i] >> 4]
-		pair[1] = hexd[mac[i] & 0xF]
-		libodin.put_str(sink, string(pair[:]))
-	}
+put_mac :: proc "contextless" (sink: ^libodin.Sink, mac: libnet.MAC) {
+	m := mac
+	libodin.put_mac(sink, m[:])
 }
 
 // -- The tree -----------------------------------------------------------------
@@ -598,20 +594,23 @@ handler :: proc "contextless" (
 				return
 			}
 			room := min(min(len(buf), int(m.count)), len(text))
-			for k in 0 ..< room {
-				buf[k] = text[k]
-			}
+			copy(buf[:room], text[:room])
 			reply^ = vectra9.Rread{data = buf[:room]}
 			return
 		}
 
-		// A read of TCP's `clone` takes a conversation the same way UDP's does.
-		if node == NODE_TCLONE {
+		/*
+		A read of either protocol's `clone` takes a conversation and answers
+		its number. It is the only read here with a side effect, and the whole
+		of how a caller gets a conversation. Both protocols answer it the same
+		way, so they answer it in one place.
+		*/
+		if node == NODE_CLONE || node == NODE_TCLONE {
 			if m.offset > 0 {
 				reply^ = vectra9.Rread{data = nil}
 				return
 			}
-			i := tcp_alloc()
+			i := node == NODE_TCLONE ? tcp_alloc() : conv_alloc()
 			if i < 0 {
 				reply^ = vectra9.error_reply(vectra9.ENOSPC)
 				return
@@ -622,9 +621,7 @@ handler :: proc "contextless" (
 			libodin.put_str(&csink, "\n")
 			text := libodin.str(&csink)
 			room := min(min(len(buf), int(m.count)), len(text))
-			for k in 0 ..< room {
-				buf[k] = text[k]
-			}
+			copy(buf[:room], text[:room])
 			reply^ = vectra9.Rread{data = buf[:room]}
 			return
 		}
@@ -665,32 +662,6 @@ handler :: proc "contextless" (
 			}
 		}
 
-		// A read of `clone` takes a conversation and answers its number. It is
-		// the only read here with a side effect, and the whole of how a caller
-		// gets a conversation.
-		if node == NODE_CLONE {
-			if m.offset > 0 {
-				reply^ = vectra9.Rread{data = nil}
-				return
-			}
-			i := conv_alloc()
-			if i < 0 {
-				reply^ = vectra9.error_reply(vectra9.ENOSPC)
-				return
-			}
-			line: [16]u8
-			csink := libodin.sink_from(line[:])
-			libodin.put_uint(&csink, u64(i))
-			libodin.put_str(&csink, "\n")
-			text := libodin.str(&csink)
-			room := min(min(len(buf), int(m.count)), len(text))
-			for k in 0 ..< room {
-				buf[k] = text[k]
-			}
-			reply^ = vectra9.Rread{data = buf[:room]}
-			return
-		}
-
 		// A read of a conversation's `data` takes the oldest datagram, or is
 		// held until one arrives for it.
 		if i, kind, is_conv := conv_of(node); is_conv && kind == CONV_DATA {
@@ -710,7 +681,7 @@ handler :: proc "contextless" (
 
 		// Every other file here is small and made on demand, so a read renders
 		// it whole and answers the window the offset names.
-		whole: [1024]u8
+		whole: [1024]u8 = ---
 		size := render(node, whole[:])
 		off := int(m.offset)
 		if off >= size {
@@ -718,22 +689,12 @@ handler :: proc "contextless" (
 			return
 		}
 		room := min(min(len(buf), int(m.count)), size - off)
-		for i in 0 ..< room {
-			buf[i] = whole[off + i]
-		}
+		copy(buf[:room], whole[off:off + room])
 		reply^ = vectra9.Rread{data = buf[:room]}
 
 	case vectra9.Twrite:
 		node, ok := libuser.open_node(&fids, m.fid, reply)
 		if !ok {
-			return
-		}
-		if node == NODE_CS {
-			if !cs_write(m.fid, string(m.data)) {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 			return
 		}
 		if node == NODE_CS {
@@ -796,7 +757,7 @@ handler :: proc "contextless" (
 		dir := is_dir(node)
 		size := u64(0)
 		if !dir {
-			whole: [1024]u8
+			whole: [1024]u8 = ---
 			size = u64(render(node, whole[:]))
 		}
 		reply^ = vectra9.Rgetattr {

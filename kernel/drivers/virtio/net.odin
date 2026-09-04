@@ -117,47 +117,15 @@ mac :: proc "contextless" (n: int, out: []u8) -> bool #no_bounds_check {
 	return true
 }
 
-// -- Register access, virtio-pci's, the same as the disk's --------------------
-
-@(private = "file")
-n_r8 :: proc "contextless" (base: rawptr, off: uintptr) -> u8 {
-	return intrinsics.volatile_load(cast(^u8)(uintptr(base) + off))
-}
-@(private = "file")
-n_w8 :: proc "contextless" (base: rawptr, off: uintptr, v: u8) {
-	intrinsics.volatile_store(cast(^u8)(uintptr(base) + off), v)
-}
-@(private = "file")
-n_r16 :: proc "contextless" (base: rawptr, off: uintptr) -> u16 {
-	return intrinsics.volatile_load(cast(^u16)(uintptr(base) + off))
-}
-@(private = "file")
-n_w16 :: proc "contextless" (base: rawptr, off: uintptr, v: u16) {
-	intrinsics.volatile_store(cast(^u16)(uintptr(base) + off), v)
-}
-@(private = "file")
-n_r32 :: proc "contextless" (base: rawptr, off: uintptr) -> u32 {
-	return intrinsics.volatile_load(cast(^u32)(uintptr(base) + off))
-}
-@(private = "file")
-n_w32 :: proc "contextless" (base: rawptr, off: uintptr, v: u32) {
-	intrinsics.volatile_store(cast(^u32)(uintptr(base) + off), v)
-}
-@(private = "file")
-n_w64 :: proc "contextless" (base: rawptr, off: uintptr, v: u64) {
-	n_w32(base, off, u32(v))
-	n_w32(base, off + 4, u32(v >> 32))
-}
-
-@(private = "file")
-n_fence :: proc "contextless" () {
-	intrinsics.atomic_thread_fence(.Seq_Cst)
-}
+// -- Register access ----------------------------------------------------------
+//
+// `blk.odin`'s, which are the same registers on the same transport. The disk
+// wrote them first and this driver shares them rather than writing them again.
 
 @(private = "file")
 n_set_status :: proc "contextless" (nic: ^Nic, bit: u8) {
-	now := n_r8(nic.common, COMMON_DEVICE_STATUS)
-	n_w8(nic.common, COMMON_DEVICE_STATUS, now | bit)
+	now := r8(nic.common, COMMON_DEVICE_STATUS)
+	w8(nic.common, COMMON_DEVICE_STATUS, now | bit)
 }
 
 // -- Bring-up -----------------------------------------------------------------
@@ -189,7 +157,7 @@ net_attach :: proc(at: pci.Address) -> bool #no_bounds_check {
 		return false
 	}
 
-	n_w8(nic.common, COMMON_DEVICE_STATUS, 0)
+	w8(nic.common, COMMON_DEVICE_STATUS, 0)
 	n_set_status(nic, STATUS_ACKNOWLEDGE)
 	n_set_status(nic, STATUS_DRIVER)
 
@@ -213,7 +181,7 @@ net_attach :: proc(at: pci.Address) -> bool #no_bounds_check {
 
 	// The card's own address, from device configuration the feature unlocked.
 	for i in 0 ..< 6 {
-		nic.mac[i] = n_r8(nic.device, uintptr(i))
+		nic.mac[i] = r8(nic.device, uintptr(i))
 	}
 
 	n_set_status(nic, STATUS_DRIVER_OK)
@@ -235,13 +203,13 @@ net_fail :: proc "contextless" (nic: ^Nic) {
 net_negotiate :: proc "contextless" (nic: ^Nic) -> bool {
 	// Word 0: the MAC feature. Word 1: VERSION_1. Nothing else is accepted,
 	// so the card runs without checksum or segmentation offload.
-	n_w32(nic.common, COMMON_DRIVER_FEATURE_SELECT, 0)
-	n_w32(nic.common, COMMON_DRIVER_FEATURE, VIRTIO_NET_F_MAC)
-	n_w32(nic.common, COMMON_DRIVER_FEATURE_SELECT, 1)
-	n_w32(nic.common, COMMON_DRIVER_FEATURE, VIRTIO_F_VERSION_1)
+	w32(nic.common, COMMON_DRIVER_FEATURE_SELECT, 0)
+	w32(nic.common, COMMON_DRIVER_FEATURE, VIRTIO_NET_F_MAC)
+	w32(nic.common, COMMON_DRIVER_FEATURE_SELECT, 1)
+	w32(nic.common, COMMON_DRIVER_FEATURE, VIRTIO_F_VERSION_1)
 
 	n_set_status(nic, STATUS_FEATURES_OK)
-	return n_r8(nic.common, COMMON_DEVICE_STATUS) & STATUS_FEATURES_OK != 0
+	return r8(nic.common, COMMON_DEVICE_STATUS) & STATUS_FEATURES_OK != 0
 }
 
 @(private = "file")
@@ -285,11 +253,11 @@ net_read_cap :: proc(nic: ^Nic, cap: u8) {
 
 @(private = "file")
 net_setup_queue :: proc "contextless" (nic: ^Nic, index: u16, q: ^Net_Queue) -> bool {
-	n_w16(nic.common, COMMON_QUEUE_SELECT, index)
-	if n_r16(nic.common, COMMON_QUEUE_SIZE) == 0 {
+	w16(nic.common, COMMON_QUEUE_SELECT, index)
+	if r16(nic.common, COMMON_QUEUE_SIZE) == 0 {
 		return false
 	}
-	n_w16(nic.common, COMMON_QUEUE_SIZE, VIRTQ_SIZE)
+	w16(nic.common, COMMON_QUEUE_SIZE, VIRTQ_SIZE)
 
 	desc_phys, ok1 := mem.alloc_page_zeroed()
 	avail_phys, ok2 := mem.alloc_page_zeroed()
@@ -306,14 +274,14 @@ net_setup_queue :: proc "contextless" (nic: ^Nic, index: u16, q: ^Net_Queue) -> 
 	q.last_used = 0
 	q.avail_idx = 0
 
-	n_w64(nic.common, COMMON_QUEUE_DESC, q.desc_phys)
-	n_w64(nic.common, COMMON_QUEUE_DRIVER, q.avail_phys)
-	n_w64(nic.common, COMMON_QUEUE_DEVICE, q.used_phys)
+	w64(nic.common, COMMON_QUEUE_DESC, q.desc_phys)
+	w64(nic.common, COMMON_QUEUE_DRIVER, q.avail_phys)
+	w64(nic.common, COMMON_QUEUE_DEVICE, q.used_phys)
 
-	notify_off := n_r16(nic.common, COMMON_QUEUE_NOTIFY_OFF)
+	notify_off := r16(nic.common, COMMON_QUEUE_NOTIFY_OFF)
 	q.doorbell = rawptr(uintptr(nic.notify) + uintptr(u32(notify_off) * nic.notify_mult))
 
-	n_w16(nic.common, COMMON_QUEUE_ENABLE, 1)
+	w16(nic.common, COMMON_QUEUE_ENABLE, 1)
 	return true
 }
 
@@ -351,10 +319,10 @@ net_post_all_rx :: proc "contextless" (nic: ^Nic) #no_bounds_check {
 		q.avail[2 + i] = u16(i)
 	}
 	q.avail_idx = u16(NET_RX_BUFS)
-	n_fence()
+	fence()
 	q.avail[1] = q.avail_idx
-	n_fence()
-	n_w16(q.doorbell, 0, NET_QUEUE_RX)
+	fence()
+	w16(q.doorbell, 0, NET_QUEUE_RX)
 }
 
 // -- Sending and receiving ----------------------------------------------------
@@ -380,9 +348,7 @@ send :: proc "contextless" (n: int, frame: []u8) -> bool #no_bounds_check {
 	for i in 0 ..< NET_HDR_LEN {
 		dst[i] = 0
 	}
-	for i in 0 ..< len(frame) {
-		dst[NET_HDR_LEN + i] = frame[i]
-	}
+	copy(dst[NET_HDR_LEN:NET_HDR_LEN + len(frame)], frame)
 
 	q := &nic.tx
 	q.desc[0] = Virtq_Desc {
@@ -393,13 +359,13 @@ send :: proc "contextless" (n: int, frame: []u8) -> bool #no_bounds_check {
 	}
 	q.avail[2 + (q.avail_idx % VIRTQ_SIZE)] = 0
 	q.avail_idx += 1
-	n_fence()
+	fence()
 	q.avail[1] = q.avail_idx
-	n_fence()
-	n_w16(q.doorbell, 0, NET_QUEUE_TX)
+	fence()
+	w16(q.doorbell, 0, NET_QUEUE_TX)
 
 	for {
-		n_fence()
+		fence()
 		if q.used_ring[1] != q.last_used {
 			break
 		}
@@ -424,7 +390,7 @@ recv :: proc "contextless" (n: int, out: []u8) -> int #no_bounds_check {
 	defer sync.release(&nic.lock, g)
 
 	q := &nic.rx
-	n_fence()
+	fence()
 	if q.used_ring[1] == q.last_used {
 		return 0
 	}
@@ -444,18 +410,16 @@ recv :: proc "contextless" (n: int, out: []u8) -> int #no_bounds_check {
 	if frame_len > 0 {
 		src := cast([^]u8)nic.rx_virt[id]
 		copied = min(frame_len, len(out))
-		for i in 0 ..< copied {
-			out[i] = src[NET_HDR_LEN + i]
-		}
+		copy(out[:copied], src[NET_HDR_LEN:NET_HDR_LEN + copied])
 	}
 
 	// Post the buffer again for the next frame.
 	q.avail[2 + (q.avail_idx % VIRTQ_SIZE)] = u16(id)
 	q.avail_idx += 1
-	n_fence()
+	fence()
 	q.avail[1] = q.avail_idx
-	n_fence()
-	n_w16(q.doorbell, 0, NET_QUEUE_RX)
+	fence()
+	w16(q.doorbell, 0, NET_QUEUE_RX)
 
 	q.last_used += 1
 	return copied

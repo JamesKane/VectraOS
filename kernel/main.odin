@@ -1988,14 +1988,7 @@ init_net :: proc() -> bool {
 		libodin.put_str(&sink, "s")
 	}
 	libodin.put_str(&sink, ", MAC ")
-	hexd := "0123456789abcdef"
-	for i in 0 ..< 6 {
-		if i > 0 {
-			libodin.put_str(&sink, ":")
-		}
-		pair := [2]u8{hexd[m[i] >> 4], hexd[m[i] & 0xF]}
-		libodin.put_str(&sink, string(pair[:]))
-	}
+	libodin.put_mac(&sink, m[:])
 	emit(&klog, .Ok, &sink)
 
 	// `#E`, the card as files, so ring 3 can send and receive frames.
@@ -2062,7 +2055,12 @@ verify_net :: proc() {
 	got := false
 	buf: [2048]u8
 	if sent {
-		poll: for _ in 0 ..< 2_000_000 {
+		// A tick at a time rather than a spin: the reply crosses QEMU's own
+		// network stack, and a machine that never answers should wait rather
+		// than burn a core deciding so.
+		// Two hundred ticks is far longer than a reply from the host's own
+		// network stack takes, and short enough that a silent one is not a stall.
+		poll: for _ in 0 ..< 200 {
 			n := virtio.recv(0, buf[:])
 			if n >= 42 && buf[12] == 0x08 && buf[13] == 0x06 {
 				// ARP reply (oper 2) whose sender protocol address is 10.0.2.2.
@@ -2073,7 +2071,7 @@ verify_net :: proc() {
 					break poll
 				}
 			}
-			arch.spin_hint()
+			sync.delay(1)
 		}
 	}
 	libodin.tally(&result, got, "and the gateway's ARP reply came back on the receive queue")

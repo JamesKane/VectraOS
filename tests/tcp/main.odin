@@ -86,18 +86,6 @@ text_of :: proc "contextless" (n: int, leaf: string) -> string {
 	return string(read_buf[:max(int(got), 0)])
 }
 
-holds :: proc "contextless" (text: string, want_text: string) -> bool {
-	if len(want_text) > len(text) {
-		return false
-	}
-	for i := 0; i + len(want_text) <= len(text); i += 1 {
-		if text[i:i + len(want_text)] == want_text {
-			return true
-		}
-	}
-	return false
-}
-
 // stream_write puts bytes into a conversation's data file.
 stream_write :: proc "contextless" (n: int, text: string, what: string) {
 	fd := libuser.open(conv_path(n, "data"), abi.O_WRONLY)
@@ -125,12 +113,12 @@ start :: proc "c" (block: ^abi.Args) {
 	// the whole handshake, because the loopback answers inside the write.
 	server := clone()
 	ctl(server, "announce 9", "a conversation announces a port")
-	want(holds(text_of(server, "status"), "Listen"), "and its status says it is listening")
+	want(libodin.contains(text_of(server, "status"), "Listen"), "and its status says it is listening")
 
 	client := clone()
 	want(client != server, "a second clone is a second conversation")
 	ctl(client, "connect 10.0.2.15!9", "a conversation connects to it")
-	want(holds(text_of(client, "status"), "Established"), "and the handshake left it established")
+	want(libodin.contains(text_of(client, "status"), "Established"), "and the handshake left it established")
 
 	// The listener hands over the conversation it answered with.
 	accepted := 0
@@ -145,8 +133,8 @@ start :: proc "c" (block: ^abi.Args) {
 		accepted = v
 	}
 	want(accepted != server && accepted != client, "the accepted end is a conversation of its own")
-	want(holds(text_of(accepted, "status"), "Established"), "and it is established too")
-	want(holds(text_of(accepted, "local"), "!9"), "on the port that was announced")
+	want(libodin.contains(text_of(accepted, "status"), "Established"), "and it is established too")
+	want(libodin.contains(text_of(accepted, "local"), "!9"), "on the port that was announced")
 
 	// Bytes each way over the stream.
 	out_text := "hello tcp"
@@ -160,7 +148,7 @@ start :: proc "c" (block: ^abi.Args) {
 	// The close: a FIN one way puts the far end into Close_Wait, and its
 	// stream ends rather than waiting for bytes that will not come.
 	ctl(client, "hangup", "the connected end hangs up")
-	want(holds(text_of(accepted, "status"), "Close_Wait"), "which puts the far end in Close_Wait")
+	want(libodin.contains(text_of(accepted, "status"), "Close_Wait"), "which puts the far end in Close_Wait")
 	want(stream_read(accepted) == "", "and ends its stream")
 
 	// -- The connection server turns two names into an address ---------------
@@ -173,8 +161,8 @@ start :: proc "c" (block: ^abi.Args) {
 		_ = libuser.close(int(fd))
 		want(n > 0, "and answers where to connect")
 		answer := string(read_buf[:int(n)])
-		want(holds(answer, "/net/tcp/clone"), "with the clone file to open")
-		want(holds(answer, "10.0.2.15!1717"), "and the address the database names")
+		want(libodin.contains(answer, "/net/tcp/clone"), "with the clone file to open")
+		want(libodin.contains(answer, "10.0.2.15!1717"), "and the address the database names")
 	}
 
 	// -- Dialling by name, through `cs` and the database ----------------------

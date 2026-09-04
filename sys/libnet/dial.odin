@@ -47,15 +47,14 @@ dial :: proc "contextless" (addr: string) -> (int, bool) #no_bounds_check {
 
 	// The conversation, and the directory its files are in.
 	dir: [DIAL_MAX]u8
-	conv, cok := take_conv(clone_path, dir[:])
+	dirlen, cok := take_conv(clone_path, dir[:])
 	if !cok {
 		return -1, false
 	}
-	_ = conv
 
 	// Connect it.
 	path: [DIAL_MAX]u8
-	ctl := libuser.open(join(path[:], string(dir[:conv]), "ctl"), abi.O_WRONLY)
+	ctl := libuser.open(join(path[:], string(dir[:dirlen]), "ctl"), abi.O_WRONLY)
 	if ctl < 0 {
 		return -1, false
 	}
@@ -71,7 +70,7 @@ dial :: proc "contextless" (addr: string) -> (int, bool) #no_bounds_check {
 	}
 
 	// And the stream.
-	data := libuser.open(join(path[:], string(dir[:conv]), "data"), abi.O_RDWR)
+	data := libuser.open(join(path[:], string(dir[:dirlen]), "data"), abi.O_RDWR)
 	if data < 0 {
 		return -1, false
 	}
@@ -190,13 +189,10 @@ take_conv :: proc "contextless" (clone_path: string, dir: []u8) -> (int, bool) #
 	return len(libodin.str(&sink)), true
 }
 
-// join builds `dir/leaf` into `buf` and answers it.
+// join builds `dir/leaf` into `buf` and answers it. `libuser.cat_into` does the
+// concatenation, and this names what the parts are.
 join :: proc "contextless" (buf: []u8, dir: string, leaf: string) -> string {
-	sink := libodin.sink_from(buf)
-	libodin.put_str(&sink, dir)
-	libodin.put_str(&sink, "/")
-	libodin.put_str(&sink, leaf)
-	return libodin.str(&sink)
+	return libuser.cat_into(buf, dir, "/", leaf)
 }
 
 // port_of answers the port out of an `addr!port`.

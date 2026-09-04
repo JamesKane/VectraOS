@@ -7371,14 +7371,7 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 	_ = virtio.mac(0, m[:])
 	want_addr: [32]u8
 	wsink := libodin.sink_from(want_addr[:])
-	hexd := "0123456789abcdef"
-	for i in 0 ..< 6 {
-		if i > 0 {
-			libodin.put_str(&wsink, ":")
-		}
-		pair := [2]u8{hexd[m[i] >> 4], hexd[m[i] & 0xF]}
-		libodin.put_str(&wsink, string(pair[:]))
-	}
+	libodin.put_mac(&wsink, m[:])
 	said := libodin.str(&wsink)
 
 	got: [64]u8
@@ -7470,18 +7463,17 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 net_file_holds :: proc(r: ^Result, path: string, want: string) -> bool #no_bounds_check {
 	_ = r
 	buf: [512]u8
+	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
+	if err != vfs.OK {
+		return false
+	}
+	defer vfs.chan_close(c)
+	// One open, and a read per pass. Opening inside the loop was a walk, an
+	// open and a clunk across the mount for every one of these.
 	for _ in 0 ..< PATIENCE * 4 {
-		if c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY); err == vfs.OK {
-			n, rerr := vfs.chan_read(c, 0, buf[:])
-			vfs.chan_close(c)
-			if rerr == vfs.OK && n > 0 {
-				text := string(buf[:n])
-				for i := 0; i + len(want) <= len(text); i += 1 {
-					if text[i:i + len(want)] == want {
-						return true
-					}
-				}
-			}
+		n, rerr := vfs.chan_read(c, 0, buf[:])
+		if rerr == vfs.OK && n > 0 && libodin.contains(string(buf[:n]), want) {
+			return true
 		}
 		sync.delay(1)
 	}
