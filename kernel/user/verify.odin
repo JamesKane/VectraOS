@@ -7422,6 +7422,33 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 		}
 	}
 
+	/*
+	And TCP, which is the same conversation with a state machine under it.
+	`tcptest` announces a port, connects to it, and takes the conversation the
+	listener answered with off its `listen` file. The connect returns with the
+	handshake already finished, since the loopback answers inside the write.
+	Bytes go each way, and a hangup puts the far end in `Close_Wait` and ends
+	its stream.
+	*/
+	{
+		names := [?]string{"tcptest"}
+		word, _, tok := run_script(
+			r,
+			"/bin/tcptest",
+			names[:],
+			PATIENCE * 5,
+			abi_said[:],
+			"a program takes a tcp conversation and connects it",
+		)
+		if tok {
+			check(
+				r,
+				word == "ok",
+				word == "ok" ? "and the stream carried bytes each way and closed" : word,
+			)
+		}
+	}
+
 	// -- Teardown, a remove of one of its files -------------------------------
 
 	if c, err := vfs.open_path(vfs.boot_namespace, "/net/icmp", vfs.O_RDONLY); err == vfs.OK {

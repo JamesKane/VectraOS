@@ -343,20 +343,24 @@ fold :: proc "contextless" (seed: u32) -> u16 {
 }
 
 /*
-udp_pseudo sums the twelve bytes IPv4 puts in front of a UDP datagram for the
-checksum's sake. They are the two addresses, a zero, the protocol number, and
-the datagram's length. They are summed but never sent.
+pseudo sums the twelve bytes IPv4 puts in front of a UDP datagram or a TCP
+segment for the checksum's sake. They are the two addresses, a zero, the
+protocol number, and the length of what follows. They are summed but never sent.
 */
-udp_pseudo :: proc "contextless" (src: IP, dst: IP, udp_len: int) -> u32 #no_bounds_check {
+pseudo :: proc "contextless" (src: IP, dst: IP, proto: u8, length: int) -> u32 #no_bounds_check {
 	head: [12]u8
 	for i in 0 ..< 4 {
 		head[i] = src[i]
 		head[4 + i] = dst[i]
 	}
 	head[8] = 0
-	head[9] = IPPROTO_UDP
-	put_be16(head[:], 10, u16(udp_len))
+	head[9] = proto
+	put_be16(head[:], 10, u16(length))
 	return sum16(head[:])
+}
+
+udp_pseudo :: proc "contextless" (src: IP, dst: IP, udp_len: int) -> u32 {
+	return pseudo(src, dst, IPPROTO_UDP, udp_len)
 }
 
 /*
@@ -419,4 +423,84 @@ parse_udp :: proc "contextless" (p: []u8, src: IP, dst: IP) -> (u: Udp, ok: bool
 	u.dport = get_be16(p, 2)
 	u.payload = p[UDP_HDR:udp_len]
 	return u, true
+}
+
+// -- TCP ----------------------------------------------------------------------
+
+TCP_HDR :: 20
+
+// The flag bits a segment carries, in the byte after the data offset.
+TCP_FIN :: u8(0x01)
+TCP_SYN :: u8(0x02)
+TCP_RST :: u8(0x04)
+TCP_PSH :: u8(0x08)
+TCP_ACK :: u8(0x10)
+
+Tcp :: struct {
+	sport:   u16,
+	dport:   u16,
+	seq:     u32,
+	ack:     u32,
+	flags:   u8,
+	window:  u16,
+	payload: []u8,
+}
+
+/*
+put_tcp writes a TCP header and its payload at `at`, with no options, so the
+data offset is always five words. The checksum covers the pseudo-header the
+IPv4 addresses make and the segment together, the way UDP's does. Returns the
+offset past the segment.
+*/
+put_tcp :: proc "contextless" (
+	b: []u8,
+	at: int,
+	src: IP,
+	dst: IP,
+	t: Tcp,
+) -> int #no_bounds_check {
+	put_be16(b, at + 0, t.sport)
+	put_be16(b, at + 2, t.dport)
+	put_be32(b, at + 4, t.seq)
+	put_be32(b, at + 8, t.ack)
+	b[at + 12] = 5 << 4 // Data offset: five words, no options
+	b[at + 13] = t.flags
+	put_be16(b, at + 14, t.window)
+	put_be16(b, at + 16, 0) // checksum, zero while summed
+	put_be16(b, at + 18, 0) // urgent pointer
+	for i in 0 ..< len(t.payload) {
+		b[at + TCP_HDR + i] = t.payload[i]
+	}
+	end := at + TCP_HDR + len(t.payload)
+	seg_len := end - at
+	ck := fold(sum16(b[at:end], pseudo(src, dst, IPPROTO_TCP, seg_len)))
+	put_be16(b, at + 16, ck)
+	return end
+}
+
+/*
+parse_tcp reads a segment, checks its checksum against the pseudo-header, and
+answers the fields and the payload past the header. A data offset smaller than
+the header, or larger than the segment, is refused. The options a longer offset
+names are skipped rather than read.
+*/
+parse_tcp :: proc "contextless" (p: []u8, src: IP, dst: IP) -> (t: Tcp, ok: bool) #no_bounds_check {
+	if len(p) < TCP_HDR {
+		return {}, false
+	}
+	if fold(sum16(p, pseudo(src, dst, IPPROTO_TCP, len(p)))) != 0 {
+		return {}, false
+	}
+	off := int(p[12] >> 4) * 4
+	if off < TCP_HDR || off > len(p) {
+		return {}, false
+	}
+	t.sport = get_be16(p, 0)
+	t.dport = get_be16(p, 2)
+	t.seq = get_be32(p, 4)
+	t.ack = get_be32(p, 8)
+	t.flags = p[13]
+	t.window = get_be16(p, 14)
+	t.payload = p[off:]
+	return t, true
 }

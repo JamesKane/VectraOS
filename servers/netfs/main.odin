@@ -67,6 +67,38 @@ conv_node :: proc "contextless" (i: int, kind: i32) -> i32 {
 	return CONV_BASE + i32(i) * CONV_STRIDE + kind
 }
 
+NODE_TCP :: i32(7) // The tcp directory
+NODE_TCLONE :: i32(8) // tcp/clone
+
+// TCP's conversations are numbered from their own base, far enough past UDP's
+// that the two never decode as each other.
+TCONV_BASE :: i32(128)
+TCONV_STRIDE :: i32(8)
+TCONV_DIR :: i32(0)
+TCONV_CTL :: i32(1)
+TCONV_DATA :: i32(2)
+TCONV_LOCAL :: i32(3)
+TCONV_REMOTE :: i32(4)
+TCONV_STATUS :: i32(5)
+TCONV_LISTEN :: i32(6)
+
+tconv_node :: proc "contextless" (i: int, kind: i32) -> i32 {
+	return TCONV_BASE + i32(i) * TCONV_STRIDE + kind
+}
+
+tconv_of :: proc "contextless" (node: i32) -> (i: int, kind: i32, ok: bool) {
+	if node < TCONV_BASE {
+		return 0, 0, false
+	}
+	v := node - TCONV_BASE
+	i = int(v / TCONV_STRIDE)
+	kind = v % TCONV_STRIDE
+	if i >= MAX_TCP || kind > TCONV_LISTEN {
+		return 0, 0, false
+	}
+	return i, kind, true
+}
+
 conv_of :: proc "contextless" (node: i32) -> (i: int, kind: i32, ok: bool) {
 	if node < CONV_BASE {
 		return 0, 0, false
@@ -264,6 +296,10 @@ take_ipv4 :: proc "contextless" (frame: []u8) #no_bounds_check {
 		}
 		return
 	}
+	if h.proto == libnet.IPPROTO_TCP {
+		tcp_input(h.src, body)
+		return
+	}
 	if h.proto != libnet.IPPROTO_ICMP {
 		return
 	}
@@ -340,8 +376,10 @@ render :: proc "contextless" (node: i32, into: []u8) -> int #no_bounds_check {
 		libodin.put_uint(&sink, u64(echo_recv))
 		libodin.put_str(&sink, "\n")
 	case:
-		if i, kind, ok := conv_of(node); ok {
-			render_conv(&sink, i, kind)
+		if i, kind, ok := tconv_of(node); ok {
+			render_tconv(&sink, i, kind)
+		} else if j, k2, ok2 := conv_of(node); ok2 {
+			render_conv(&sink, j, k2)
 		}
 	}
 	return len(libodin.str(&sink))
@@ -372,8 +410,11 @@ put_mac :: proc "contextless" (sink: ^libodin.Sink, mac: libnet.MAC) #no_bounds_
 // -- The tree -----------------------------------------------------------------
 
 is_dir :: proc "contextless" (node: i32) -> bool {
-	if node == NODE_ROOT || node == NODE_ETHER || node == NODE_UDP {
+	if node == NODE_ROOT || node == NODE_ETHER || node == NODE_UDP || node == NODE_TCP {
 		return true
+	}
+	if _, kind, ok := tconv_of(node); ok {
+		return kind == TCONV_DIR
 	}
 	_, kind, ok := conv_of(node)
 	return ok && kind == CONV_DIR
@@ -405,6 +446,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 			return NODE_ICMP
 		case "udp":
 			return NODE_UDP
+		case "tcp":
+			return NODE_TCP
 		}
 	case NODE_ETHER:
 		if name == "addr" {
@@ -422,7 +465,37 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 			}
 		}
 	}
-	// Inside a conversation's directory.
+	if from == NODE_TCP {
+		if name == "clone" {
+			return NODE_TCLONE
+		}
+		if v, _, ok := scan_uint(name); ok {
+			i := int(v)
+			if i < MAX_TCP && tcps[i].used {
+				return tconv_node(i, TCONV_DIR)
+			}
+		}
+		return -1
+	}
+	// Inside a TCP conversation's directory.
+	if i, kind, ok := tconv_of(from); ok && kind == TCONV_DIR {
+		switch name {
+		case "ctl":
+			return tconv_node(i, TCONV_CTL)
+		case "data":
+			return tconv_node(i, TCONV_DATA)
+		case "listen":
+			return tconv_node(i, TCONV_LISTEN)
+		case "local":
+			return tconv_node(i, TCONV_LOCAL)
+		case "remote":
+			return tconv_node(i, TCONV_REMOTE)
+		case "status":
+			return tconv_node(i, TCONV_STATUS)
+		}
+		return -1
+	}
+	// Inside a UDP conversation's directory.
 	if i, kind, ok := conv_of(from); ok && kind == CONV_DIR {
 		switch name {
 		case "ctl":
@@ -447,6 +520,12 @@ parent_of :: proc "contextless" (node: i32) -> i32 {
 	}
 	if node == NODE_CLONE {
 		return NODE_UDP
+	}
+	if node == NODE_TCLONE {
+		return NODE_TCP
+	}
+	if i, kind, ok := tconv_of(node); ok {
+		return kind == TCONV_DIR ? NODE_TCP : tconv_node(i, TCONV_DIR)
 	}
 	if i, kind, ok := conv_of(node); ok {
 		return kind == CONV_DIR ? NODE_UDP : conv_node(i, CONV_DIR)
@@ -498,6 +577,66 @@ handler :: proc "contextless" (
 		if is_dir(node) {
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 			return
+		}
+
+		// A read of TCP's `clone` takes a conversation the same way UDP's does.
+		if node == NODE_TCLONE {
+			if m.offset > 0 {
+				reply^ = vectra9.Rread{data = nil}
+				return
+			}
+			i := tcp_alloc()
+			if i < 0 {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			line: [16]u8
+			csink := libodin.sink_from(line[:])
+			libodin.put_uint(&csink, u64(i))
+			libodin.put_str(&csink, "\n")
+			text := libodin.str(&csink)
+			room := min(min(len(buf), int(m.count)), len(text))
+			for k in 0 ..< room {
+				buf[k] = text[k]
+			}
+			reply^ = vectra9.Rread{data = buf[:room]}
+			return
+		}
+
+		/*
+		A TCP conversation's `data` takes what the stream holds, or is held
+		until some arrives. A stream whose far end closed, with nothing left,
+		answers empty, which is the end of file a reader waits for. `listen` is
+		the same shape over the backlog.
+		*/
+		if i, kind, is_tcp := tconv_of(node); is_tcp {
+			room := min(len(buf), int(m.count))
+			if room <= 0 {
+				reply^ = vectra9.Rread{data = nil}
+				return
+			}
+			if kind == TCONV_DATA {
+				got := tcp_pop(i, buf[:room])
+				if got > 0 {
+					reply^ = vectra9.Rread{data = buf[:got]}
+					return
+				}
+				if tcps[i].fin_seen {
+					reply^ = vectra9.Rread{data = nil}
+					return
+				}
+				lib9p.hold(&srv)
+				return
+			}
+			if kind == TCONV_LISTEN {
+				got := drain_listen(rawptr(uintptr(i)), buf[:room])
+				if got > 0 {
+					reply^ = vectra9.Rread{data = buf[:got]}
+					return
+				}
+				lib9p.hold(&srv)
+				return
+			}
 		}
 
 		// A read of `clone` takes a conversation and answers its number. It is
@@ -561,6 +700,25 @@ handler :: proc "contextless" (
 	case vectra9.Twrite:
 		node, ok := libuser.open_node(&fids, m.fid, reply)
 		if !ok {
+			return
+		}
+		if i, kind, is_tcp := tconv_of(node); is_tcp {
+			switch kind {
+			case TCONV_CTL:
+				if !run_tcp_ctl(i, string(m.data)) {
+					reply^ = vectra9.error_reply(vectra9.EINVAL)
+					return
+				}
+				reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+			case TCONV_DATA:
+				if !tcp_write(i, m.data) {
+					reply^ = vectra9.error_reply(vectra9.EIO)
+					return
+				}
+				reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+			case:
+				reply^ = vectra9.error_reply(vectra9.EPERM)
+			}
 			return
 		}
 		i, kind, is_conv := conv_of(node)
@@ -636,8 +794,8 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 
 	// The udp directory is the one listing that changes: `clone`, and then a
 	// numbered entry per conversation that exists.
-	if node == NODE_UDP {
-		readdir_udp(m, reply, &c)
+	if node == NODE_UDP || node == NODE_TCP {
+		readdir_conv_dir(m, reply, &c, node == NODE_TCP)
 		return
 	}
 
@@ -645,20 +803,32 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 	nodes: []i32
 	switch {
 	case node == NODE_ROOT:
-		names = []string{"ether0", "arp", "icmp", "udp"}
-		nodes = []i32{NODE_ETHER, NODE_ARP, NODE_ICMP, NODE_UDP}
+		names = []string{"ether0", "arp", "icmp", "udp", "tcp"}
+		nodes = []i32{NODE_ETHER, NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP}
 	case node == NODE_ETHER:
 		names = []string{"addr"}
 		nodes = []i32{NODE_ADDR}
 	case:
-		conv, _, _ := conv_of(node)
-		names = []string{"ctl", "data", "local", "remote", "status"}
-		nodes = []i32{
-			conv_node(conv, CONV_CTL),
-			conv_node(conv, CONV_DATA),
-			conv_node(conv, CONV_LOCAL),
-			conv_node(conv, CONV_REMOTE),
-			conv_node(conv, CONV_STATUS),
+		if tconv, _, is_tcp := tconv_of(node); is_tcp {
+			names = []string{"ctl", "data", "listen", "local", "remote", "status"}
+			nodes = []i32{
+				tconv_node(tconv, TCONV_CTL),
+				tconv_node(tconv, TCONV_DATA),
+				tconv_node(tconv, TCONV_LISTEN),
+				tconv_node(tconv, TCONV_LOCAL),
+				tconv_node(tconv, TCONV_REMOTE),
+				tconv_node(tconv, TCONV_STATUS),
+			}
+		} else {
+			conv, _, _ := conv_of(node)
+			names = []string{"ctl", "data", "local", "remote", "status"}
+			nodes = []i32{
+				conv_node(conv, CONV_CTL),
+				conv_node(conv, CONV_DATA),
+				conv_node(conv, CONV_LOCAL),
+				conv_node(conv, CONV_REMOTE),
+				conv_node(conv, CONV_STATUS),
+			}
 		}
 	}
 	for i := int(m.offset); i < len(names); i += 1 {
@@ -679,20 +849,29 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 }
 
 /*
-readdir_udp lists the udp directory: `clone` first, and then one entry per
-conversation that exists, named by its number. The offset counts entries, so
-`clone` is entry zero and conversation `n` is entry `n + 1`.
+readdir_conv_dir lists a protocol's directory: `clone` first, and then one entry
+per conversation that exists, named by its number. The offset counts entries, so
+`clone` is entry zero and conversation `n` is entry `n + 1`. Both protocols have
+the same directory, so both are listed here.
 */
-readdir_udp :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, c: ^vectra9.Cursor) #no_bounds_check {
+readdir_conv_dir :: proc "contextless" (
+	m: vectra9.Treaddir,
+	reply: ^vectra9.Msg,
+	c: ^vectra9.Cursor,
+	is_tcp: bool,
+) #no_bounds_check {
+	clone_node := is_tcp ? NODE_TCLONE : NODE_CLONE
+	last := is_tcp ? MAX_TCP : MAX_CONV
 	if m.offset < 1 && vectra9.remaining(c) >= vectra9.dirent_size("clone") {
 		vectra9.put_dirent(
 			c,
-			vectra9.Dirent{qid = qid_of(NODE_CLONE), offset = 1, type = vectra9.DT_REG, name = "clone"},
+			vectra9.Dirent{qid = qid_of(clone_node), offset = 1, type = vectra9.DT_REG, name = "clone"},
 		)
 	}
 	name: [16]u8
-	for i := max(int(m.offset) - 1, 0); i < MAX_CONV; i += 1 {
-		if !convs[i].used {
+	for i := max(int(m.offset) - 1, 0); i < last; i += 1 {
+		used := is_tcp ? tcps[i].used : convs[i].used
+		if !used {
 			continue
 		}
 		sink := libodin.sink_from(name[:])
@@ -701,14 +880,10 @@ readdir_udp :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, c: 
 		if vectra9.remaining(c) < vectra9.dirent_size(entry) {
 			break
 		}
+		dir_node := is_tcp ? tconv_node(i, TCONV_DIR) : conv_node(i, CONV_DIR)
 		vectra9.put_dirent(
 			c,
-			vectra9.Dirent {
-				qid = qid_of(conv_node(i, CONV_DIR)),
-				offset = u64(i + 2),
-				type = vectra9.DT_DIR,
-				name = entry,
-			},
+			vectra9.Dirent{qid = qid_of(dir_node), offset = u64(i + 2), type = vectra9.DT_DIR, name = entry},
 		)
 	}
 	if c.err != .None {
