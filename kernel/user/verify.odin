@@ -4615,6 +4615,12 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 		return
 	}
 
+	// The bar wears its gadgets: a magnesium face on the copper trim, which a
+	// rename must repaint rather than paint over. A window sets its name at
+	// startup, so a bar that erased its gadgets on rename would show none here.
+	bar_mag := fb.pack(s, fb.MAGNESIUM)
+	check(r, bar_has(s, bx, by, bw, 20, bar_mag), "and the bar keeps its close, depth and zoom gadgets after the name is set")
+
 	// A button face is magnesium, below the bar and inside the window, clear of
 	// the few pixels of magnesium frame at either edge. The client's paint
 	// follows the frame by an atlas upload's worth of writes, so this polls
@@ -5638,12 +5644,12 @@ verify_ctl :: proc(
 	both, the bar being much the tallest part of the band above a client area.
 	*/
 	bar_y := oy / 2
-	one_x := fw + 8
+	one_x := fw + 40
 	lit := fb.pack(s, fb.COPPER)
 	dark := fb.pack(s, fb.COPPER_DARK)
 	check(
 		r,
-		fb.get_raw(s, one_x, bar_y) == lit && fb.get_raw(s, ox + 8, bar_y) == dark,
+		fb.get_raw(s, one_x, bar_y) == lit && fb.get_raw(s, ox + 40, bar_y) == dark,
 		"the window that opened last is the one in front, and the bar below it is dark",
 	)
 
@@ -5668,7 +5674,7 @@ verify_ctl :: proc(
 	)
 	check(
 		r,
-		fb.get_raw(s, ox + 8, bar_y) == lit && fb.get_raw(s, one_x, bar_y) == dark,
+		fb.get_raw(s, ox + 40, bar_y) == lit && fb.get_raw(s, one_x, bar_y) == dark,
 		"and takes the focus with it, because the front is the whole of what focus is",
 	)
 

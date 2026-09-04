@@ -772,12 +772,25 @@ The bar it lays down is the one this window's place in the stack calls for.
 Both of its reasons to run are reasons the bar's own pixels changed, so neither
 caller has to say which.
 */
-title_paint :: proc "contextless" (win: ^Window) {
+title_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
 	if !framed(win) {
 		return
 	}
-	pieces: [libdraw.MAX_PIECES]libdraw.Piece
-	win_pieces(win, pieces[:frame_bar(pieces[:], 0, 0, win.w, focused(win))])
+	// The bar, and then the gadgets that sit on it. A repaint of the bar
+	// alone would paint copper over the close, depth and zoom gadgets, which
+	// live on the bar rather than beside it. The sizing grip is at the corner,
+	// clear of the bar, so it is not among these.
+	pieces: [MAX_FRAME_PIECES]libdraw.Piece
+	n := frame_bar(pieces[:], 0, 0, win.w, focused(win))
+	probe := Window{w = win.w, h = win.h}
+	for g in libdraw.Gadget {
+		if g == .Size {
+			continue
+		}
+		gx, gy, gs := gadget_at(&probe, g)
+		n += libdraw.gadget(pieces[n:], gx, gy, gs, g, false)
+	}
+	win_pieces(win, pieces[:n])
 	title_text(win)
 }
 
