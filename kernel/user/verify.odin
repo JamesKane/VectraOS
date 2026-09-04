@@ -39,6 +39,7 @@ import "base:runtime"
 import "kernel:arch"
 import "kernel:devfs"
 import "kernel:drivers/fb"
+import "kernel:drivers/mouse"
 import "kernel:env"
 import "kernel:mem"
 import "kernel:mnt"
@@ -518,6 +519,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// -- And the first app, a client of that server ---------------------------
 
 	verify_terminal(&r, column)
+	verify_chords(&r)
 
 	// -- And a typed ^C, which reaches the program reading the console -------
 
@@ -3875,7 +3877,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	)
 	check(
 		r,
-		fb.get_raw(s, ox + 8, oy / 2) == fb.pack(s, fb.COPPER),
+		fb.get_raw(s, ox + 8, oy - 4) == fb.pack(s, fb.COPPER),
 		"with a copper bar across the top of it, which is the chassis's own trim",
 	)
 
@@ -4527,6 +4529,177 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	)
 
 	drain_pinned(r, pin_before, "and the first app's wire comes back whole")
+}
+
+/*
+verify_chords is `docs/WORKBENCH.md` step 2's chords, from the keyboard to
+the window manager and the desktop.
+
+The whole init stack, wired the way `init` wires it. `kbdfs` reads the
+raw scancodes. The draw server reads `kbdfs`'s `kbd` file, so a modifier
+held with a key is a message the server can see. The kernel injects the
+scancodes of a chord, and two things follow. `alt-w` is `close` in the
+staged `/lib/keys`, so the window in front hangs up. `alt-n` is `window rc
+-i`, which the server does not know, so it goes out on `/srv/draw/hotkey`
+for the desktop to run.
+
+A machine with no keyboard controller injects into a stream `kbdfs` reads
+all the same, so this runs on the three boards alike.
+*/
+@(private = "file")
+verify_chords :: proc(r: ^Result) #no_bounds_check {
+	count0 := srv.count()
+	sched.reap()
+	pin_before := mem.live_objects(mem.heap_stats())
+
+	// kbdfs on the raw keyboard, mounted where the draw server will read it.
+	pk, kerr := spawn_path(nil, "/bin/kbdfs", SPAWN_NS_COPY)
+	if !check(r, kerr == vfs.OK && pk != nil, "the loader starts the keyboard translator") {
+		return
+	}
+	r.programs += 1
+	if !check(r, await_posted("kbdfs"), "it posts /srv/kbdfs") {
+		return
+	}
+	check(r, srv.mount(vfs.boot_namespace, "/srv/kbdfs", "/n/kbd") == vfs.OK, "the kernel mounts it at /n/kbd, as init does")
+
+	// The draw server, reading `kbdfs`'s `kbd` file, which `init` names too.
+	argv := new(Argv)
+	if !check(r, argv != nil, "a record for the draw server's argument") {
+		return
+	}
+	names := [?]string{"intuition", "/n/kbd/kbd"}
+	check(r, argv_from(argv, names[:]), "holds it")
+	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY, argv)
+	free(argv)
+	if !check(r, serr == vfs.OK && ps != nil, "the draw server starts, reading the kbd file") {
+		return
+	}
+	r.programs += 1
+	if !check(r, await_posted("draw"), "it posts /srv/draw") {
+		return
+	}
+	check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "and the kernel mounts the draw server")
+
+	// A window, which is the one in front.
+	data, derr := vfs.open_path(vfs.boot_namespace, "/mnt/0/data", vfs.O_WRONLY)
+	if !check(r, derr == vfs.OK, "a window is claimed, and is the one in front") {
+		return
+	}
+
+	// -- alt-n reaches the desktop on hotkey ----------------------------------
+
+	hk, herr := vfs.open_path(vfs.boot_namespace, "/mnt/hotkey", vfs.O_RDONLY)
+	if check(r, herr == vfs.OK, "the hotkey file opens") {
+		mount_reader = Mount_Reader{c = hk}
+		if check(r, sched.spawn("hotkey-read", mount_read_thread, nil) != nil, "a thread reads it") {
+			inject_chord(0x11 + 0x20) // 'n' is make 0x31
+			woke := false
+			for _ in 0 ..< PATIENCE {
+				if intrinsics.volatile_load(&mount_reader.done) {
+					woke = true
+					break
+				}
+				sync.delay(1)
+			}
+			line := string(mount_reader.buf[:max(mount_reader.n, 0)])
+			check(r, woke && line == "window rc -i\n", "an alt-n the server does not know reaches the desktop, verbatim")
+		}
+		vfs.chan_close(hk)
+	}
+
+	// -- alt-space opens the overview, and closes it --------------------------
+
+	if s := devfs.raw_surface(); s != nil && s.pixels != nil && s.bytes_pp == 4 {
+		// (0, 0) is the top-left of window zero's frame, a raised
+		// magnesium edge. The overview dims the whole glass first, and its
+		// tiles begin a margin in. So this corner falls to the void under
+		// it, and comes back to the frame when the picture closes.
+		frame := fb.pack(s, fb.MAGNESIUM_HOT)
+		void := fb.pack(s, fb.VOID)
+		inject_chord(0x39) // space is make 0x39
+		dimmed := false
+		for _ in 0 ..< PATIENCE {
+			if fb.get_raw(s, 0, 0) == void {
+				dimmed = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, dimmed, "an alt-space dims the glass to the overview's ground")
+		inject_chord(0x39)
+		closed := false
+		for _ in 0 ..< PATIENCE {
+			if fb.get_raw(s, 0, 0) == frame {
+				closed = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, closed, "and a second alt-space closes it, back to the window it covered")
+	}
+
+	// -- alt-w closes the window in front -------------------------------------
+
+	cons, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/cons", vfs.O_RDONLY)
+	if check(r, cerr == vfs.OK, "the window's keyboard opens") {
+		mount_reader = Mount_Reader{c = cons}
+		if check(r, sched.spawn("chord-cons", mount_read_thread, nil) != nil, "a thread reads it") {
+			inject_chord(0x11) // 'w' is make 0x11
+			ended := false
+			for _ in 0 ..< PATIENCE {
+				if intrinsics.volatile_load(&mount_reader.done) {
+					ended = true
+					break
+				}
+				sync.delay(1)
+			}
+			check(r, ended && mount_reader.n == 0, "an alt-w hangs the window in front up, and its keyboard answers nothing")
+		}
+		vfs.chan_close(cons)
+	}
+	vfs.chan_close(data)
+
+	// -- Teardown, both servers, each by the Tremove it stops on --------------
+
+	if ctl, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/ctl", vfs.O_RDONLY); oerr == vfs.OK {
+		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove stops the draw server")
+		vfs.chan_close(ctl)
+	}
+	check(r, wait(ps, PATIENCE), "the draw server exits")
+	check(r, srv.remove("draw") == vfs.OK, "the kernel takes its name away")
+	pipe.quiesce()
+	_ = vfs.unmount_path(vfs.boot_namespace, "", "/mnt")
+
+	// The draw server held the only fid on kbdfs's tree, so kbdfs's wire is
+	// idle now. A Tremove of one of its files is its stop, the way
+	// `verify_kbdfs` stops it.
+	if kc, oerr := vfs.open_path(vfs.boot_namespace, "/n/kbd/cons", vfs.O_RDONLY); oerr == vfs.OK {
+		check(r, vfs.chan_remove(kc) == vfs.OK, "a remove stops the keyboard translator")
+		vfs.chan_close(kc)
+	}
+	check(r, wait(pk, PATIENCE), "the translator exits")
+	check(r, srv.remove("kbdfs") == vfs.OK, "the kernel takes its name away too")
+
+	finish(r, ps, "and the draw server is taken down")
+	finish(r, pk, "and the translator is taken down")
+	pipe.quiesce()
+	_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/kbd")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+	drain_pinned(r, pin_before, "and both servers' wires come back whole")
+}
+
+/*
+inject_chord presses alt, then the key, then releases both, as the
+scancodes `kbdfs` reads off `/dev/scancode`. Alt is make 0x38, and a key's
+break is its make with 0x80 set.
+*/
+@(private = "file")
+inject_chord :: proc(make: u8) {
+	devfs.scancode_tap(0x38) // alt down
+	devfs.scancode_tap(make) // key down
+	devfs.scancode_tap(make | 0x80) // key up
+	devfs.scancode_tap(0xB8) // alt up
 }
 
 /*
@@ -6278,12 +6451,12 @@ verify_windows :: proc(
 	ground_y := sy - 4
 	check(r, is_desk(s, ground_x, ground_y), "past the first window's edge the desktop is all there is")
 
-	/*
-	The second window's indicator lamp, at the middle of its jewel.
+		/*
+	The second workspace's indicator lamp, at the middle of its jewel.
 
 	A fixture, like the cascade above it. The draw server puts one lamp per
-	window down the right edge, which is the one column of desktop two
-	half-screen windows never cover. A client has no verb that would tell this
+	workspace down the right edge, the one column two half-screen windows
+	never cover. `docs/WORKBENCH.md` section 4 says what each state means. A client has no verb that would tell this
 	test so.
 
 	It is chrome out of `sys/libdraw` and colour out of `sys/libpal`, which is
@@ -6295,11 +6468,12 @@ verify_windows :: proc(
 	LAMP_INSET :: 20
 	lamp_x := s.width - LAMP_INSET - LAMP + LAMP / 2
 	lamp_y := LAMP_INSET + (LAMP + LAMP_GAP) + LAMP / 2
+	lamp_cur_y := LAMP_INSET + LAMP / 2
 	lamp_dark := fb.get_raw(s, lamp_x, lamp_y)
 	check(
 		r,
 		lamp_dark != fb.pack(s, fb.PHOSPHOR),
-		"the second window's lamp is dark, because nothing holds that window",
+		"the second workspace's lamp is dark, because nothing is on it",
 	)
 	/*
 	And dark in its own colour rather than in grey.
@@ -6358,8 +6532,8 @@ verify_windows :: proc(
 	if terr == vfs.OK {
 		vfs.chan_close(third)
 	}
-	fourth, ferr := vfs.open_path(vfs.boot_namespace, "/mnt/2/data", vfs.O_WRONLY)
-	check(r, ferr != vfs.OK, "and a window that does not exist has no name to walk to")
+		fourth, ferr := vfs.open_path(vfs.boot_namespace, "/mnt/99/data", vfs.O_WRONLY)
+	check(r, ferr != vfs.OK, "and a window past the last has no name to walk to")
 	if ferr == vfs.OK {
 		vfs.chan_close(fourth)
 	}
@@ -6379,7 +6553,8 @@ verify_windows :: proc(
 	in step with it, and one colour on a title bar is the whole of what it
 	looks like.
 
-	This pixel is window zero's bar, and `verify_draw` read it as `COPPER` when
+	This pixel is window zero's bar, on the bottom face row below the gadgets
+	and the letters. `verify_draw` read it as `COPPER` when
 	that window was the only one on the screen. Nothing has touched window zero
 	since. So this is the *transition*: a bar that is no longer in front wears
 	`COPPER_DARK`, the same trim one step down the same table, which is the
@@ -6389,7 +6564,7 @@ verify_windows :: proc(
 	*/
 	check(
 		r,
-		fb.get_raw(s, ox + 8, oy / 2) == fb.pack(s, fb.COPPER_DARK),
+		fb.get_raw(s, ox + 8, oy - 4) == fb.pack(s, fb.COPPER_DARK),
 		"and the front with it, so the bar of the window it covered goes dark",
 	)
 
@@ -6420,10 +6595,10 @@ verify_windows :: proc(
 		fb.get_raw(s, second_ox, sy) == B,
 		"half a window across and a border further in, which is where the second client area is",
 	)
-	check(
+		check(
 		r,
-		fb.get_raw(s, lamp_x, lamp_y) == fb.pack(s, fb.PHOSPHOR),
-		"and its lamp is lit, in the phosphor both sides of the door read from one table",
+		fb.get_raw(s, lamp_x, lamp_cur_y) == fb.pack(s, fb.PHOSPHOR),
+		"and the current workspace's lamp is lit, in the phosphor both sides of the door read from one table",
 	)
 	check(
 		r,
@@ -6552,6 +6727,37 @@ verify_windows :: proc(
 	could do is ask the client to repaint. That request is the expose event
 	`docs/DRAW.md` section 9 deferred, and this is the check that retires it.
 	*/
+		/*
+	And a workspace, which is a number on a window and nothing else.
+
+	`wctl workspace 2` takes the second window off the glass, and the
+	first window's pixels under it show through. That is what will happen
+	when it closes below. The second workspace's lamp says something is on it now.
+	A `workspace 2` line to the server's own `ctl` shows that workspace,
+	with the second window's row on it and nothing else. A `workspace 1`
+	line brings this one back. Every check reads the glass.
+	*/
+	wctl, wcerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/wctl", vfs.O_RDWR)
+	sctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/ctl", vfs.O_RDWR)
+	if check(r, wcerr == vfs.OK && cerr == vfs.OK, "the second window's wctl and the server's ctl open") {
+		to_two := "workspace 2\n"
+		_, e1 := vfs.chan_write(wctl, 0, transmute([]u8)to_two)
+		check(r, e1 == vfs.OK, "a window is sent to the second workspace by a wctl line")
+		check(r, fb.get_raw(s, second_ox, sy) == A2, "and leaves the glass, so the store below shows through")
+		lamp_two := fb.get_raw(s, lamp_x, lamp_y)
+		check(r, lamp_two != lamp_dark, "and the second workspace's lamp says something is on it")
+		_, e2 := vfs.chan_write(sctl, 0, transmute([]u8)to_two)
+		check(r, e2 == vfs.OK, "a workspace line to the server's ctl switches to it")
+		check(r, fb.get_raw(s, second_ox, sy) == B, "and the window sent there is on the glass again")
+		check(r, is_desk(s, ox, sy), "with the first window gone from it, and desktop where it was")
+		check(r, fb.get_raw(s, lamp_x, lamp_y) == fb.pack(s, fb.PHOSPHOR), "and its lamp is the lit one now")
+		to_one := "workspace 1\n"
+		_, e3 := vfs.chan_write(sctl, 0, transmute([]u8)to_one)
+		check(r, e3 == vfs.OK && fb.get_raw(s, ox, sy) == A2, "and the first workspace comes back, with its window")
+		vfs.chan_close(wctl)
+		vfs.chan_close(sctl)
+	}
+
 	vfs.chan_close(second)
 	check(
 		r,
@@ -6568,7 +6774,7 @@ verify_windows :: proc(
 		is_desk(s, ground_x, ground_y),
 		"and where no window is left, the desktop is back",
 	)
-	check(r, fb.get_raw(s, lamp_x, lamp_y) == lamp_dark, "and its lamp goes out with its session")
+		check(r, fb.get_raw(s, lamp_x, lamp_y) == lamp_dark, "and the second workspace's lamp goes dark, its last window gone")
 	/*
 	And the front goes to what is left, which is the one path where focus
 	arrives at a window that did nothing to ask for it.
@@ -6580,7 +6786,7 @@ verify_windows :: proc(
 	*/
 	check(
 		r,
-		fb.get_raw(s, ox + 8, oy / 2) == fb.pack(s, fb.COPPER),
+		fb.get_raw(s, ox + 8, oy - 4) == fb.pack(s, fb.COPPER),
 		"and the window under it comes to the front, which nothing had to ask for",
 	)
 
@@ -6658,10 +6864,245 @@ verify_windows :: proc(
 			"and are covered where they meet a window whose session drew nothing at all",
 		)
 
-		verify_ctl(r, s, win_w, win_h, ox, oy, sy, fw, A3, first_ctl, server)
+				verify_ctl(r, s, win_w, win_h, ox, oy, sy, fw, A3, first_ctl, server)
 		vfs.chan_close(again)
+
+		verify_pointer(r, s, fw, ox, oy)
 	}
 
+}
+
+/*
+verify_pointer is `docs/WORKBENCH.md` step 2's pointer, from the driver
+to a window and back.
+
+Every movement here is a packet injected at the 8042. It takes the
+driver's whole path, becomes a line on `/dev/mouse`, and moves the draw
+server's pointer. A fresh window is claimed for it, half a window across
+where the cascade puts a second one.
+
+Three claims follow, each read off the glass or a file. A read of the
+window's `mouse` answers the pointer in the window's own coordinates. A
+press on the bar and a drag moves the window, which `wctl` says. And a
+press on the close gadget hangs the window's keyboard up and takes the
+window off the glass.
+
+A machine with no mouse -- the two `virt` boards -- has nothing to inject
+into, and the block is skipped rather than failed.
+*/
+@(private = "file")
+verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #no_bounds_check {
+	if !devfs.tree().mouse.present {
+		return
+	}
+
+	// -- A window for the pointer to be over -----------------------------------
+
+	data, derr := vfs.open_path(vfs.boot_namespace, "/mnt/1/data", vfs.O_WRONLY)
+	if !check(r, derr == vfs.OK && data != nil, "a window is claimed for the pointer") {
+		return
+	}
+	defer vfs.chan_close(data)
+	second_x := fw / 2
+
+	// -- A window's mouse file answers in the window's coordinates ---------------
+
+	mf, merr := vfs.open_path(vfs.boot_namespace, "/mnt/1/mouse", vfs.O_RDONLY)
+	if !check(r, merr == vfs.OK && mf != nil, "and its mouse file opens") {
+		return
+	}
+	mount_reader = Mount_Reader{c = mf}
+	if !check(r, sched.spawn("mouse-read", mount_read_thread, nil) != nil, "a thread to read it") {
+		vfs.chan_close(mf)
+		return
+	}
+	parked := true
+	for _ in 0 ..< 20 {
+		sync.delay(1)
+		if intrinsics.volatile_load(&mount_reader.done) {
+			parked = false
+			break
+		}
+	}
+	check(r, parked, "a read of it parks until the pointer moves over the window")
+
+		check(r, point_to(second_x + ox + 10, oy + 10), "the pointer is moved into the window's client area")
+	woke := false
+	for _ in 0 ..< PATIENCE {
+		if intrinsics.volatile_load(&mount_reader.done) {
+			woke = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, woke, "and the read wakes")
+	// The parked read caught the first movement into the window, which the
+	// pointer entered part-way to its mark, because it began over this
+	// window. A second read answers where it settled.
+	mount_reader = Mount_Reader{c = mf}
+	if sched.spawn("mouse-read2", mount_read_thread, nil) != nil {
+		for _ in 0 ..< PATIENCE {
+			if intrinsics.volatile_load(&mount_reader.done) {
+				break
+			}
+			// Nudge, so the settled position is newer than the read's mark.
+			cx, cy := mouse.position()
+			_ = inject_move(second_x + ox + 10 - cx, oy + 10 - cy, 0)
+			sync.delay(1)
+		}
+	}
+	mx, my, _, parsed := parse_mouse(mount_reader.buf[:max(mount_reader.n, 0)])
+	check(r, parsed && mx == 10 && my == 10, "carrying the pointer in the window's own coordinates, inside the frame")
+	vfs.chan_close(mf)
+
+	// -- A drag on the bar moves the window -----------------------------------------
+
+	wctl, werr2 := vfs.open_path(vfs.boot_namespace, "/mnt/1/wctl", vfs.O_RDONLY)
+	if !check(r, werr2 == vfs.OK && wctl != nil, "the window's wctl opens") {
+		return
+	}
+	defer vfs.chan_close(wctl)
+	check(r, point_to(second_x + 60, oy - 4), "the pointer is moved onto the bar")
+	check(r, press_and_move(40, 24), "pressed, dragged, and released")
+	moved := false
+	for _ in 0 ..< PATIENCE {
+		x, y, ok := wctl_place(wctl)
+		if ok && x == second_x + 40 && y == 24 {
+			moved = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, moved, "and the window is where the drag left it, which wctl says")
+
+	// -- The close gadget hangs the keyboard up ----------------------------------------
+
+	cons, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/cons", vfs.O_RDONLY)
+	if !check(r, cerr == vfs.OK && cons != nil, "the window's cons opens") {
+		return
+	}
+	probe_x := second_x + 40 + fw - 20
+	probe_y := 24 + oy + 40
+	check(r, fb.get_raw(s, probe_x, probe_y) == fb.pack(s, fb.SLATE), "the window's well is on the glass past the first window's edge")
+	check(r, point_to(second_x + 40 + ox + 8, 24 + oy / 2), "the pointer is moved onto the close gadget")
+	check(r, press_and_move(0, 0), "and pressed")
+	mount_reader = Mount_Reader{c = cons}
+	if check(r, sched.spawn("cons-read", mount_read_thread, nil) != nil, "a thread to read the keyboard") {
+		ended := false
+		for _ in 0 ..< PATIENCE {
+			if intrinsics.volatile_load(&mount_reader.done) {
+				ended = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, ended && mount_reader.err == vfs.OK && mount_reader.n == 0, "the keyboard answers nothing, which is how a program learns its window is gone")
+	}
+	check(r, is_desk(s, probe_x, probe_y), "and the window is off the glass, with the desktop where it was")
+	vfs.chan_close(cons)
+}
+
+// point_to moves the pointer to a screen position by injected packets,
+// waiting for the driver to take each. False when the controller refused
+// a packet or the driver did not follow.
+@(private = "file")
+point_to :: proc(x: int, y: int) -> bool {
+	for _ in 0 ..< 64 {
+		cx, cy := mouse.position()
+		if cx == x && cy == y {
+			return true
+		}
+		dx := clamp(x - cx, -127, 127)
+		dy := clamp(y - cy, -127, 127)
+		if !inject_move(dx, dy, 0) {
+			return false
+		}
+		if !wait_pointer(cx + dx, cy + dy) {
+			return false
+		}
+	}
+	return false
+}
+
+// press_and_move presses the left button, moves by (dx, dy) with it held,
+// and releases, as three packets.
+@(private = "file")
+press_and_move :: proc(dx: int, dy: int) -> bool {
+	cx, cy := mouse.position()
+	if !inject_move(0, 0, 1) || !wait_pointer(cx, cy) {
+		return false
+	}
+	if !inject_move(dx, dy, 1) || !wait_pointer(cx + dx, cy + dy) {
+		return false
+	}
+	sync.delay(2)
+	return inject_move(0, 0, 0) && wait_pointer(cx + dx, cy + dy)
+}
+
+// inject_move is one packet: the movement in screen terms, the button as
+// rio numbers it. The mouse counts Y up, so the sign is turned over here.
+@(private = "file")
+inject_move :: proc(dx: int, dy: int, buttons: u8) -> bool {
+	my := -dy
+	flags := u8(0x08) | (buttons & 1)
+	if dx < 0 {
+		flags |= 0x10
+	}
+	if my < 0 {
+		flags |= 0x20
+	}
+	return mouse.inject_packet(flags, u8(dx & 0xFF), u8(my & 0xFF))
+}
+
+// wait_pointer waits for the driver's position to be (x, y), inside the
+// patience.
+@(private = "file")
+wait_pointer :: proc(x: int, y: int) -> bool {
+	for _ in 0 ..< PATIENCE {
+		cx, cy := mouse.position()
+		if cx == x && cy == y {
+			sync.delay(2)
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+// parse_mouse reads the three numbers after the `m` of a mouse line.
+@(private = "file")
+parse_mouse :: proc "contextless" (line: []u8) -> (x: int, y: int, b: int, ok: bool) {
+	if len(line) < 2 || line[0] != 'm' {
+		return
+	}
+	at := 1
+	x, ok = libdraw.scan_int(line, &at)
+	if !ok {
+		return
+	}
+	y, ok = libdraw.scan_int(line, &at)
+	if !ok {
+		return
+	}
+	b, ok = libdraw.scan_int(line, &at)
+	return
+}
+
+// wctl_place reads a window's wctl and answers where the window is.
+@(private = "file")
+wctl_place :: proc(wctl: ^vfs.Chan) -> (x: int, y: int, ok: bool) {
+	line: [96]u8
+	n, err := vfs.chan_read(wctl, 0, line[:])
+	if err != vfs.OK || n <= 0 {
+		return
+	}
+	at := 0
+	x, ok = libdraw.scan_int(line[:n], &at)
+	if !ok {
+		return
+	}
+	y, ok = libdraw.scan_int(line[:n], &at)
+	return
 }
 
 /*

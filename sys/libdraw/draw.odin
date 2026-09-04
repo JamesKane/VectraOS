@@ -202,6 +202,14 @@ left edge, and a client says so with a minus. The cap keeps a long run of
 digits from wrapping into a number nobody meant. A caller that cares about
 range checks its own.
 */
+// scan_int_str is `scan_int` over a whole word: the number it holds, and
+// whether it held one and nothing else.
+scan_int_str :: proc "contextless" (word: []u8) -> (int, bool) {
+	at := 0
+	v, ok := scan_int(word, &at)
+	return v, ok && at == len(word)
+}
+
 scan_int :: proc "contextless" (data: []u8, at: ^int) -> (int, bool) #no_bounds_check {
 	i := at^
 	for i < len(data) && (data[i] == ' ' || data[i] == '\t') {
@@ -240,17 +248,46 @@ places the moment the tree grew. A digit table in `servers/intuition`, and a
 path builder in `apps/terminal` that a second app would copy. `libdraw` already
 owns both directions of this wire, which makes it where the shape belongs.
 */
+// Every window's directory name, written out, because a program with no
+// allocator cannot format one and a name is a slice of something that
+// stays. `MAX_WINDOW_NAMES` is the bound the server's `MAX_WINDOWS`
+// stays inside, by an assert at the one place that raises it.
 @(private = "file")
-WIN_DIGITS := "0123456789"
+WIN_NAMES := [?]string {
+	"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+	"10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
+	"20", "21", "22", "23", "24", "25", "26", "27", "28", "29",
+	"30", "31",
+}
 
-// win_name is window `n`'s directory name. One digit, which is the bound the
-// server's `MAX_WINDOWS` has to stay inside -- and does, by an assert at the
-// one place that raises it.
+MAX_WINDOW_NAMES :: len(WIN_NAMES)
+
+// win_name is window `n`'s directory name, or empty for one there is no
+// name for.
 win_name :: proc "contextless" (n: int) -> string #no_bounds_check {
-	if n < 0 || n >= len(WIN_DIGITS) {
+	if n < 0 || n >= len(WIN_NAMES) {
 		return ""
 	}
-	return WIN_DIGITS[n:n + 1]
+	return WIN_NAMES[n]
+}
+
+// win_index is the other direction: which window a directory name names,
+// or -1 for a name that is not one.
+win_index :: proc "contextless" (name: string) -> int #no_bounds_check {
+	if len(name) == 0 || len(name) > 2 {
+		return -1
+	}
+	n := 0
+	for i in 0 ..< len(name) {
+		if name[i] < '0' || name[i] > '9' {
+			return -1
+		}
+		n = n * 10 + int(name[i] - '0')
+	}
+	if len(name) == 2 && name[0] == '0' {
+		return -1
+	}
+	return n < len(WIN_NAMES) ? n : -1
 }
 
 /*

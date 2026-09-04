@@ -1,0 +1,9 @@
+# workspaces: a window's name, and the workspace it opens on.
+#
+# The draw server reads this file at start and on a `reload` line to
+# /srv/draw/ctl, from $home/lib/workspaces first and /lib/workspaces
+# second, and applies a rule when a window is named. A window with no rule
+# stays on the workspace it was born on, which is the current one.
+#
+#   terminal   2
+#   view       3

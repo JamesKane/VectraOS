@@ -211,3 +211,70 @@ put_pieces :: proc "contextless" (buf: []u8, at: int, id: u32, pieces: []Piece) 
 	}
 	return n
 }
+
+/*
+The gadgets a window's frame wears, and the glyph on each.
+
+`docs/WORKBENCH.md` step 2. A gadget is a raised square of magnesium with
+a glyph of amber on it, and a pressed one is the same square sunk.
+Nothing here knows where a gadget sits on a frame, which is the server's
+layout, or what pressing one does.
+
+The glyphs are Workbench 2's, as rectangles. A close gadget is a filled
+square. A depth gadget is two squares one behind the other. A zoom gadget
+is a hollow square, and a sizing gadget is a corner made of two bars.
+*/
+Gadget :: enum u8 {
+	Close,
+	Depth,
+	Zoom,
+	Size,
+}
+
+// The most pieces one gadget makes: a panel and up to five for a glyph.
+MAX_GADGET_PIECES :: MAX_PIECES + 5
+
+gadget :: proc "contextless" (out: []Piece, x: int, y: int, size: int, kind: Gadget, pressed: bool) -> int #no_bounds_check {
+	n := panel(
+		out,
+		x,
+		y,
+		size,
+		size,
+		pressed ? .Recessed : .Raised,
+		pressed ? libpal.MAGNESIUM_DARK : libpal.MAGNESIUM,
+		libpal.MAGNESIUM_LIT,
+		libpal.MAGNESIUM_DARK,
+		1,
+	)
+	if n == 0 || size < 8 {
+		return n
+	}
+	ink := libpal.AMBER
+	q := size / 4 // A quarter of the square, which is the glyph's unit
+	switch kind {
+	case .Close:
+		if n < len(out) {
+			out[n] = Piece{x + q, y + q, size - 2 * q, size - 2 * q, ink}
+			n += 1
+		}
+	case .Depth:
+		// The back square, then the front one over its corner.
+		if n + 1 < len(out) {
+			out[n] = Piece{x + q, y + q, size - 2 * q - 1, size - 2 * q - 1, libpal.AMBER_DIM}
+			out[n + 1] = Piece{x + q + 2, y + q + 2, size - 2 * q - 1, size - 2 * q - 1, ink}
+			n += 2
+		}
+	case .Zoom:
+		if n + 3 < len(out) {
+			n += edges(out[n:], x + q, y + q, size - 2 * q, size - 2 * q, .Raised, ink, ink, 1)
+		}
+	case .Size:
+		if n + 1 < len(out) {
+			out[n] = Piece{x + q, y + size - q - 2, size - 2 * q, 2, ink}
+			out[n + 1] = Piece{x + size - q - 2, y + q, 2, size - 2 * q, ink}
+			n += 2
+		}
+	}
+	return n
+}

@@ -1,0 +1,33 @@
+# keys: a chord, and what it does. Alt is the Amiga key.
+#
+# The draw server reads this file at start and on a `reload` line to
+# /srv/draw/ctl, from $home/lib/keys first and /lib/keys second. A chord is
+# a key with alt, ctrl and shift in front of it. The actions the server
+# knows it does itself. Any other action goes out, verbatim, as a line on
+# /srv/draw/hotkey, which the desktop reads.
+
+alt-w        close                 # the window in front
+alt-tab      cycle                 # the focus to the next window
+alt-z        zoom
+alt-b        back
+alt-up       move 0 -16            # nudge the window in front
+alt-down     move 0 16
+alt-left     move -16 0
+alt-right    move 16 0
+alt-1        workspace 1
+alt-2        workspace 2
+alt-3        workspace 3
+alt-4        workspace 4
+alt-5        workspace 5
+alt-6        workspace 6
+alt-7        workspace 7
+alt-8        workspace 8
+alt-9        workspace 9
+alt-shift-1  send 1                # the window in front, to workspace 1
+alt-shift-2  send 2
+alt-shift-3  send 3
+alt-shift-4  send 4
+alt-space    overview              # every workspace at once
+alt-n        window rc -i          # a new shell, which the desktop runs
+alt-e        execute               # Execute Command...
+alt-m        menu                  # the desktop's first menu

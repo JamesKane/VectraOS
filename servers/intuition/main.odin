@@ -88,6 +88,7 @@ package intuition
 
 import "base:intrinsics"
 import "base:runtime"
+import "core:unicode/utf8"
 
 import "vsys:abi"
 import "vsys:lib9p"
@@ -123,20 +124,25 @@ same answer it would get from any other allocator this server could write.
 */
 NODE_ROOT :: i32(0)
 NODE_NEW :: i32(1)
+NODE_CTL :: i32(2) // The server's own: a workspace switch, a reload. See `files.odin`
+NODE_HOTKEY :: i32(3) // The chords the server does not act on, for the desktop
 
-// A window's five nodes, in one block apiece after the two fixed ones.
-NODE_BASE :: i32(2)
-NODE_PER :: i32(5)
+// A window's eight nodes, in one block apiece after the four fixed ones.
+NODE_BASE :: i32(4)
+NODE_PER :: i32(8)
 PART_DIR :: i32(0)
 PART_DATA :: i32(1)
 PART_CTL :: i32(2)
 PART_CONS :: i32(3)
 PART_CONSCTL :: i32(4)
+PART_MOUSE :: i32(5) // The pointer, in the window's coordinates. See `files.odin`
+PART_WCTL :: i32(6) // rio's wctl: the geometry and the workspace out, the lines in
+PART_CURSOR :: i32(7) // The pointer's image over this window
 
 // A window's directory name is `libdraw.win_name`, which both this server and
-// its clients read so the tree's layout is stated once. One digit per window,
-// which is the bound `MAX_WINDOWS` has to stay inside.
-#assert(MAX_WINDOWS <= 10)
+// its clients read so the tree's layout is stated once. The bound is the
+// names `libdraw` has written out.
+#assert(MAX_WINDOWS <= libdraw.MAX_WINDOW_NAMES)
 
 node_of :: proc "contextless" (win: int, part: i32) -> i32 {
 	return NODE_BASE + i32(win) * NODE_PER + part
@@ -185,11 +191,13 @@ failure mode the verb table guards, and a window a client places is a verb or a
 `ctl` line that nothing yet needs. The day something does, it is a line on
 `ctl` and not a seventh verb.
 
-`MAX_WINDOWS` is a cap to raise rather than a design. Two is what the self-test
-needs to prove that a second client cannot reach the first's pixels, and now
-that one client's pixels survive being covered by the other.
+`MAX_WINDOWS` was two while the self-test was the only client. That is
+what it needs, to prove a second client cannot reach the first's pixels.
+A desktop with a drawer open and two shells is five, and nine workspaces
+make more worth having. Thirty-two, and `kernel/user`'s `MAX_PROC_SEGS`
+moved with it, because a window costs a segment.
 */
-MAX_WINDOWS :: 2
+MAX_WINDOWS :: 32
 
 // A half-open rectangle, in whichever coordinates its holder keeps.
 Rect :: struct {
@@ -379,7 +387,7 @@ desk_paint :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bo
 	Two modulo operations per pixel became one per row, over a loop that runs a
 	million times at start and half that on every close, move and resize.
 	*/
-	for y in y0 ..< y1 {
+		for y in y0 ..< y1 {
 		dst := screen_at(y)
 		if y % DESK_STEP == 0 {
 			for x in x0 ..< x1 {
@@ -395,6 +403,7 @@ desk_paint :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bo
 		}
 	}
 	desk_chrome(x0, y0, x1, y1)
+	cursor_show()
 }
 
 /*
@@ -457,15 +466,15 @@ desk_chrome :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_b
 	)
 	desk_pieces(pieces[:n], sx0, sy0, sx1, sy1)
 
-	for i in 0 ..< MAX_WINDOWS {
+		for i in 0 ..< WORKSPACES {
 		x, y := lamp_at(i)
-		ln := libdraw.lamp(pieces[:], x, y, LAMP, libpal.PHOSPHOR, windows[i].used)
+		ln := workspace_lamp(pieces[:], x, y, i + 1)
 		desk_pieces(pieces[:ln], sx0, sy0, sx1, sy1)
 	}
 }
 
-// lamp_at is where window `i`'s indicator sits: down the right edge, in the
-// one column of desktop two half-screen windows never reach.
+// lamp_at is where workspace `i + 1`'s indicator sits: down the right edge,
+// in the one column of desktop two half-screen windows never reach.
 lamp_at :: proc "contextless" (i: int) -> (int, int) {
 	return scr_w - LAMP_INSET - LAMP, LAMP_INSET + i * (LAMP + LAMP_GAP)
 }
@@ -522,7 +531,7 @@ what should grow this array, and against `MAX_DEPTH` it would not have.
 
 Its own bound rather than `libdraw.MAX_PIECES`, which is what one panel makes.
 */
-MAX_FRAME_PIECES :: 4 * FRAME_EDGE + (1 + 4) + (1 + 4 * FRAME_WELL)
+MAX_FRAME_PIECES :: 4 * FRAME_EDGE + (1 + 4) + (1 + 4 * FRAME_WELL) + 4 * libdraw.MAX_GADGET_PIECES
 
 /*
 The window frame's three numbers, and the only three a window's chassis has.
@@ -607,13 +616,22 @@ window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int
 	if n == 0 {
 		return 0
 	}
-	n += frame_bar(out[n:], x, y, w, lit)
+		n += frame_bar(out[n:], x, y, w, lit)
 
 	// The well starts where the bar ends and is as wide as it, which is one
 	// fact rather than three: `frame_bar_at` is where the bar is, and this
 	// asks it rather than deriving the same numbers a second time.
 	bx, by, bw, bh := frame_bar_at(x, y, w)
-	return n + libdraw.well(out[n:], bx, by + bh, bw, h - (by - y) - bh - FRAME_EDGE, FRAME_WELL)
+	n += libdraw.well(out[n:], bx, by + bh, bw, h - (by - y) - bh - FRAME_EDGE, FRAME_WELL)
+	// And the gadgets, over the bar and the corner. `gadget_at` is where
+	// each sits, and `hit_test` asks it too, so a press lands where the
+	// gadget was drawn.
+	probe := Window{w = w, h = h}
+	for g in libdraw.Gadget {
+		gx, gy, gs := gadget_at(&probe, g)
+		n += libdraw.gadget(out[n:], x + gx, y + gy, gs, g, false)
+	}
+	return n
 }
 
 /*
@@ -659,15 +677,28 @@ frame is the same depth whatever size the window is.
 It is the well's *interior*, so the recess is chrome the client cannot draw on,
 the way the border and the bar are.
 */
-frame_client :: proc "contextless" (w: int, h: int) -> (x: int, y: int, cw: int, ch: int) {
-	return FRAME_INSET_X, FRAME_INSET_Y, w - 2 * FRAME_INSET_X, h - FRAME_INSET_Y - FRAME_INSET_X
+frame_client :: proc "contextless" (win: ^Window) -> (x: int, y: int, cw: int, ch: int) {
+	if !framed(win) {
+		return 0, 0, win.w, win.h
+	}
+	return FRAME_INSET_X, FRAME_INSET_Y, win.w - 2 * FRAME_INSET_X, win.h - FRAME_INSET_Y - FRAME_INSET_X
 }
 
 // frame_window is the inverse: the window a client area of `cw` by `ch` needs
 // around it. A `size` line names a client area, because a `ctl` read answers
 // one, and this is what turns that into a window.
-frame_window :: proc "contextless" (cw: int, ch: int) -> (w: int, h: int) {
+frame_window :: proc "contextless" (win: ^Window, cw: int, ch: int) -> (w: int, h: int) {
+	if !framed(win) {
+		return cw, ch
+	}
 	return cw + 2 * FRAME_INSET_X, ch + FRAME_INSET_Y + FRAME_INSET_X
+}
+
+// framed says whether a window wears a frame. The three kinds a desktop
+// needs do not: a backdrop, a bar and a popup are their client's whole
+// rectangle. See `workspace.odin`.
+framed :: proc "contextless" (win: ^Window) -> bool {
+	return win.kind == .Normal
 }
 
 /*
@@ -704,7 +735,7 @@ TITLE_FG :: u32(libpal.SLATE_DEEP[0]) << 16 | u32(libpal.SLATE_DEEP[1]) << 8 | u
 // the window rather than to the screen, because a window's store is the only
 // memory it may touch. The stride is the run's birth width and not `win.w`.
 win_pieces :: proc "contextless" (win: ^Window, pieces: []libdraw.Piece) {
-	pieces_into(win.pixels, win_w, pieces, 0, 0, win.w, win.h)
+	pieces_into(win.pixels, win.stride, pieces, 0, 0, win.w, win.h)
 }
 
 /*
@@ -717,6 +748,13 @@ the way a client's pixels do.
 */
 window_chrome :: proc "contextless" (win: ^Window) {
 	pieces: [MAX_FRAME_PIECES]libdraw.Piece
+	if !framed(win) {
+		// No frame, and the well's face is still what a client that draws
+		// nothing gets, over the whole rectangle.
+		pieces[0] = libdraw.Piece{0, 0, win.w, win.h, libpal.SLATE}
+		win_pieces(win, pieces[:1])
+		return
+	}
 	win_pieces(win, pieces[:window_frame(pieces[:], 0, 0, win.w, win.h, focused(win))])
 	title_text(win)
 }
@@ -735,6 +773,9 @@ Both of its reasons to run are reasons the bar's own pixels changed, so neither
 caller has to say which.
 */
 title_paint :: proc "contextless" (win: ^Window) {
+	if !framed(win) {
+		return
+	}
 	pieces: [libdraw.MAX_PIECES]libdraw.Piece
 	win_pieces(win, pieces[:frame_bar(pieces[:], 0, 0, win.w, focused(win))])
 	title_text(win)
@@ -748,6 +789,9 @@ Only the bar's own rectangle goes back. `composite` walks the whole stack over
 it, so a bar under another window repaints nothing anybody can see.
 */
 bar_show :: proc "contextless" (win: ^Window) {
+	if !framed(win) || win.workspace != current_ws || win.hidden {
+		return
+	}
 	title_paint(win)
 	bx, by, bw, bh := frame_bar_at(win.x, win.y, win.w)
 	repaint(bx, by, bw, bh)
@@ -773,10 +817,12 @@ loop, and the column range is settled before the rows are walked. The bar is
 taller than a glyph by `FRAME_PAD`, so no row of one can leave it.
 */
 title_text :: proc "contextless" (win: ^Window) #no_bounds_check {
-	bx, by, bw, bh := frame_bar_at(0, 0, win.w)
-	tx := bx + FRAME_PAD
+		bx, by, bw, bh := frame_bar_at(0, 0, win.w)
+	// The name starts past the close gadget and stops before the two at
+	// the right.
+	tx := bx + FRAME_PAD + GADGET + 2
 	ty := by + (bh - libfont.FONT_HEIGHT) / 2
-	right := bx + bw - FRAME_PAD
+	right := bx + bw - FRAME_PAD - 2 * GADGET - 4
 	for i in 0 ..< win.title_n {
 		gx := tx + i * libfont.FONT_WIDTH
 		if gx >= right {
@@ -788,9 +834,9 @@ title_text :: proc "contextless" (win: ^Window) #no_bounds_check {
 		}
 		rows := &libfont.font_8x16[int(ch) - libfont.FONT_FIRST]
 		wide := min(libfont.FONT_WIDTH, right - gx)
-		for line in 0 ..< libfont.FONT_HEIGHT {
+				for line in 0 ..< libfont.FONT_HEIGHT {
 			bits := rows[line]
-			dst := win.pixels[(ty + line) * win_w:]
+			dst := win.pixels[(ty + line) * win.stride:]
 			for c in 0 ..< wide {
 				if bits & (0x80 >> u8(c)) != 0 {
 					dst[gx + c] = TITLE_FG
@@ -814,9 +860,13 @@ window_name :: proc "contextless" (win: ^Window, name: []u8) -> vectra9.Errno #n
 	for i in 0 ..< n {
 		win.title[i] = name[i]
 	}
-	win.title_n = n
+		win.title_n = n
 
 	bar_show(win)
+	// And where a window with this name belongs, if a rule says.
+	if ws := rule_for(win.title[:n]); ws > 0 {
+		window_place(win, ws)
+	}
 	return vectra9.Errno(0)
 }
 
@@ -860,17 +910,53 @@ Window :: struct {
 	w:      int,
 	h:      int,
 
-	// The store. Every window's run is `win_w` wide, bought at the birth
-	// height when a session opens `data` and detached when it clunks. So
-	// `win_w` is the stride and this struct does not carry a second copy of
-	// it. `w` and `h` move inside that, and `segbrk` moves `rows`. Nil
-	// between sessions, and `used` is the gate every reader passes first.
+		// The store. A window's run is bought at its own size when a session
+	// opens `data` and detached when it clunks. `stride` is the run's
+	// width, which a `size` line may leave behind. A window grows rows
+	// with `segbrk`, and buys a wider run when it needs one. Nil between
+	// sessions, and `used` is the gate every reader passes first.
 	pixels: [^]u32,
+	stride: int,
 
 	// How many rows the run behind `pixels` actually holds. It starts at the
 	// birth height and `segbrk` moves it, which is what lets a window grow
 	// past the size its slot was born with.
 	rows:   int,
+
+	// Which workspace this window is on, one to `WORKSPACES`. The
+	// compositor paints the current one's windows and no other's. See
+	// `workspace.odin`.
+	workspace: int,
+
+	// What kind of window: an ordinary one with a frame, or one of the
+	// three a desktop needs. See `Window_Kind`.
+	kind:      Window_Kind,
+	hidden:    bool,
+
+	// The pointer's last movement over this window, in the client area's
+	// coordinates, and which one a read of `mouse` last answered. See
+	// `files.odin`.
+	mx:        int,
+	my:        int,
+	mb:        u8,
+	mmsec:     u64,
+	mseq:      u64,
+	mread:     u64,
+		mouse_fid:  vectra9.Fid,
+	mouse_held: bool,
+
+		// Where a zoomed window was, so a second zoom puts it back.
+	zoomed:    bool,
+	zx:        int,
+	zy:        int,
+	zw:        int,
+	zh:        int,
+
+	// The close gadget was pressed: `cons` answers nothing from now on.
+	hangup:     bool,
+	// The pointer's image over this window, from its `cursor` file.
+	cursor:     Cursor,
+	has_cursor: bool,
 
 	dmg:    Region,
 	used:   bool,
@@ -925,8 +1011,14 @@ no second call to move the focus with it.
 What it costs is a colour on a title bar and a repaint of two bars per stack
 move. See `frame_bar` for the colour and `refocus` for the repaint.
 */
-stack_top :: proc "contextless" () -> int {
-	return stack_n > 0 ? stack[stack_n - 1] : -1
+stack_top :: proc "contextless" () -> int #no_bounds_check {
+	for i := stack_n - 1; i >= 0; i -= 1 {
+		w := stack[i]
+		if windows[w].workspace == current_ws && !windows[w].hidden && windows[w].kind != .Bar {
+			return w
+		}
+	}
+	return -1
 }
 
 focused :: proc "contextless" (win: ^Window) -> bool #no_bounds_check {
@@ -1086,7 +1178,18 @@ drain_for :: proc "contextless" (arg: rawptr, buf: []u8) -> int {
 // first. The handler's "empty, hold me" and this are one decision because
 // both run on threads of one proc: either the handler saw the line, or
 // this sees the held read. See `lib9p.answer_reads`.
-answer_cons :: proc "contextless" (w: int) {
+answer_cons :: proc "contextless" (w: int) #no_bounds_check {
+	if windows[w].hangup {
+		// A hung-up window answers every read with nothing, which is the
+		// end of its keyboard and the program's cue to go.
+		for {
+			req, ok := lib9p.held(&srv, rawptr(uintptr(w)), wants_cons)
+			if !ok {
+				return
+			}
+			_ = lib9p.respond(req, vectra9.Rread{data = nil})
+		}
+	}
 	lib9p.answer_reads(&srv, rawptr(uintptr(w)), wants_cons, drain_for)
 }
 
@@ -1114,6 +1217,10 @@ key_thread :: proc "contextless" (arg: rawptr) #no_bounds_check {
 		if n <= 0 {
 			continue
 		}
+		if key_msgs {
+			key_message(chunk[:int(n)])
+			continue
+		}
 		for i in 0 ..< int(n) {
 			w := stack_top()
 			if w < 0 || !windows[w].used {
@@ -1121,6 +1228,43 @@ key_thread :: proc "contextless" (arg: rawptr) #no_bounds_check {
 			}
 			type_at(w, chunk[i])
 		}
+	}
+}
+
+/*
+key_message is one `kbd` message. `c` carries the characters typed, which
+go to the window in front byte for byte. `k` and `K` carry the keys held,
+which are where a chord is caught. A `c` message never carries a chord: a key pressed with a modifier makes
+no character. See `libkbd.char_of`.
+*/
+key_message :: proc "contextless" (msg: []u8) #no_bounds_check {
+	if len(msg) == 0 {
+		return
+	}
+	body := msg[1:]
+	switch msg[0] {
+	case 'c':
+		w := stack_top()
+		if w < 0 || !windows[w].used {
+			return
+		}
+		for b in body {
+			type_at(w, b)
+		}
+	case 'k', 'K':
+		runes: [16]rune
+		nr := 0
+		at := 0
+		for at < len(body) && nr < len(runes) {
+			r, size := utf8.decode_rune(body[at:])
+			if size <= 0 {
+				break
+			}
+			runes[nr] = r
+			nr += 1
+			at += size
+		}
+		keys_update(msg[0] == 'k', runes[:nr])
 	}
 }
 
@@ -1171,8 +1315,11 @@ scratch: Region
 windows: [MAX_WINDOWS]Window
 
 // The image pool. Image zero is the session's window and lives nowhere; these
-// are the client's own images, owned by the fid that allocated each.
-MAX_IMAGES :: 8
+// are the client's own images, owned by the fid that allocated each. An
+// image's pixels come from the heap when it is allocated and go back
+// when it is freed. Sixty-four of them in the bss put this program past
+// the loader's frame budget, and a heap is what `segalloc` is for.
+MAX_IMAGES :: 64
 IMG_PIXELS :: 2048
 
 Image :: struct {
@@ -1181,10 +1328,10 @@ Image :: struct {
 	w:      int,
 	h:      int,
 	used:   bool,
+	pixels: [^]u32,
 }
 
 images: [MAX_IMAGES]Image
-pixels: [MAX_IMAGES][IMG_PIXELS]u32
 
 /*
 The screen itself, once `segattach` answers.
@@ -1221,6 +1368,17 @@ fb_fd: int
 
 fids: libuser.Fid_Table
 
+// fid_node is which node a fid is on, for the other files of this package.
+fid_node :: proc "contextless" (fid: vectra9.Fid) -> i32 {
+	return libuser.fid_lookup(&fids, fid)
+}
+
+// answer_held gives held reads what `drain` has for them. See
+// `lib9p.answer_reads`.
+answer_held :: proc "contextless" (arg: rawptr, wants: lib9p.Wants, drain: lib9p.Drain) {
+	lib9p.answer_reads(&srv, arg, wants, drain)
+}
+
 FRAME :: 1200
 
 // The server, and the keyboard file it reads. A `cons` read with nothing
@@ -1229,6 +1387,11 @@ FRAME :: 1200
 // completes. See `lib9p.hold`.
 srv: lib9p.Srv
 cons_fd: int
+
+// Whether the key source is `kbdfs`'s `kbd` file, one message per read
+// with the modifiers in it, rather than a cooked byte stream. `init`
+// names the message file, and the self-test reads cooked `/dev/cons`.
+key_msgs: bool
 
 /*
 _start opens the screen, learns its shape, opens the keyboard, and hands
@@ -1283,9 +1446,11 @@ start :: proc "c" (block: ^abi.Args) {
 	glass = ([^]u32)(base)
 	glass_stride = scr_pitch / 4
 
-	// And the windows' places. Their memory is bought per session now, at
+		// And the windows' places. Their memory is bought per session now, at
 	// `Tlopen`, so nothing here can fail for want of it.
 	windows_init()
+	current_ws = 1
+	rules_load()
 
 	// And the ground everything stands on. From here this server owns every
 	// pixel of the screen: `/dev/fb` diverts the console for as long as the
@@ -1337,8 +1502,15 @@ start :: proc "c" (block: ^abi.Args) {
 		}
 	}
 
-	cons_fd = int(cons)
+		cons_fd = int(cons)
+	key_msgs = ends_with(key_source, "/kbd")
+	keys_load()
 	libthread.main(threadmain, nil)
+}
+
+// ends_with says whether `s` ends with `suffix`.
+ends_with :: proc "contextless" (s: string, suffix: string) -> bool {
+	return len(s) >= len(suffix) && s[len(s) - len(suffix):] == suffix
 }
 
 // threadmain is the first thread: the posting, the key thread, and then
@@ -1354,7 +1526,12 @@ threadmain :: proc "contextless" (arg: rawptr) {
 		handler = handler,
 		msize   = FRAME,
 	}
-	if libthread.threadcreate(key_thread, nil) < 0 {
+		if libthread.threadcreate(key_thread, nil) < 0 {
+		libthread.threadexitsall("threadcreate")
+	}
+	// The pointer, on a machine that has one. The two `virt` boards have
+	// none, and the server runs without.
+	if pointer_open() && libthread.threadcreate(mouse_thread, nil) < 0 {
 		libthread.threadexitsall("threadcreate")
 	}
 
@@ -1418,7 +1595,7 @@ read_geometry :: proc "contextless" (report: []u8) -> bool {
 	`composite` clipped it away, so two of that call's controls had nothing to
 	watch. See `docs/USER.md`.
 	*/
-	win_w = scr_w / MAX_WINDOWS
+	win_w = scr_w / 2
 	win_h = scr_h * WIN_FILL / 100
 	if win_w <= 0 {
 		return false
@@ -1426,11 +1603,10 @@ read_geometry :: proc "contextless" (report: []u8) -> bool {
 	// And a window has to have room for a client area inside its frame. A
 	// screen too small for one is a geometry this server cannot draw on,
 	// which is the refusal it already makes for a depth it cannot pack.
-	_, _, cw, ch := frame_client(win_w, win_h)
-	if cw <= 0 || ch <= 0 {
+	if win_w <= 2 * FRAME_INSET_X || win_h <= FRAME_INSET_Y + FRAME_INSET_X {
 		return false
 	}
-	return (MAX_WINDOWS - 1) * (win_w / 2) + win_w <= scr_w
+	return win_w <= scr_w
 }
 
 /*
@@ -1449,7 +1625,7 @@ here. A `size` line names this same rectangle, so what a client reads back is
 in the units it writes.
 */
 window_report :: proc "contextless" (out: []u8, win: ^Window) -> int #no_bounds_check {
-	_, _, cw, ch := frame_client(win.w, win.h)
+		_, _, cw, ch := frame_client(win)
 	at := 0
 	at = put_report(out, at, "size ")
 	at = put_number(out, at, cw)
@@ -1638,7 +1814,6 @@ ctl_space :: proc "contextless" (c: u8) -> bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
-@(private = "file")
 put_report :: proc "contextless" (out: []u8, at: int, text: string) -> int #no_bounds_check {
 	n := at
 	for i in 0 ..< len(text) {
@@ -1651,7 +1826,6 @@ put_report :: proc "contextless" (out: []u8, at: int, text: string) -> int #no_b
 	return n
 }
 
-@(private = "file")
 put_number :: proc "contextless" (out: []u8, at: int, value: int) -> int #no_bounds_check {
 	digits: [20]u8
 	n := 0
@@ -1696,13 +1870,28 @@ reason the client can at least report.
 windows_init :: proc "contextless" () #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
 		windows[i] = Window {
-			x    = i * (win_w / 2),
-			y    = 0,
+			x    = cascade_x(i),
+			y    = cascade_y(i),
 			w    = win_w,
 			h    = win_h,
 			rows = win_h,
 		}
 	}
+}
+
+// cascade_x and cascade_y are where slot `i` is born. Half a window
+// right of the slot before it, then back to the left edge and a step
+// down once the right edge is reached. The first two are the fixture the
+// self-test measures, and the rest are where more windows go.
+cascade_x :: proc "contextless" (i: int) -> int {
+	span := max(scr_w - win_w, 1)
+	return (i * (win_w / 2)) % (span + 1)
+}
+
+cascade_y :: proc "contextless" (i: int) -> int {
+	span := max(scr_h - win_h, 1)
+	across := max((scr_w - win_w) / max(win_w / 2, 1) + 1, 1)
+	return ((i / across) * FRAME_TITLE) % (span + 1)
 }
 
 /*
@@ -1756,7 +1945,7 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	if win.used {
 		return win.owner == owner ? vectra9.Errno(0) : vectra9.ENOSPC
 	}
-	base, err := libuser.segalloc(win_w * win_h * 4)
+		base, err := libuser.segalloc(win_w * win_h * 4)
 	if err < 0 {
 		return vectra9.ENOMEM
 	}
@@ -1765,10 +1954,22 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	win.owner = owner
 	win.used = true
 	win.pixels = ([^]u32)(base)
+	win.stride = win_w
 	win.rows = win_h
+	win.x = cascade_x(at)
+	win.y = cascade_y(at)
 	win.w = win_w
 	win.h = win_h
 	win.title_n = 0
+	win.workspace = current_ws
+	win.kind = .Normal
+	win.hidden = false
+		win.mseq = 0
+	win.mread = 0
+	win.mouse_held = false
+	win.hangup = false
+	win.has_cursor = false
+	win.zoomed = false
 	region_clear(&win.dmg)
 	/*
 	And the keystrokes, which is the same rule as the pixels one line up.
@@ -1805,12 +2006,12 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	// And the window it arrived over gives up the focus.
 	refocus(was)
 
-	repaint_top(win)
-	// And the lamp for it. A lamp is opaque over its own square and sits
-	// outside every window's rectangle, so the desktop's own repaint over that
-	// square is exactly the lamp -- there is no second painter for one.
-	lx, ly := lamp_at(at)
-	desk_paint(lx, ly, lx + LAMP, ly + LAMP)
+		repaint_top(win)
+	// And the lamp for its workspace. A lamp is opaque over its own square
+	// and sits outside every window's rectangle, so the desktop's own
+	// repaint over that square is exactly the lamp -- there is no second
+	// painter for one.
+	lamp_show(win.workspace)
 	return vectra9.Errno(0)
 }
 
@@ -1839,10 +2040,12 @@ window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 		if !win.used || win.owner != owner {
 			continue
 		}
-		x0 := win.x
+				x0 := win.x
 		y0 := win.y
 		x1 := win.x + win.w
 		y1 := win.y + win.h
+		ws := win.workspace
+		shown := ws == current_ws && !win.hidden
 
 		// The slot first, so the composite below walks the windows that are
 		// left rather than the one that is going. Its regions are not cleared
@@ -1856,10 +2059,11 @@ window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 		// one case where focus arrives at a window that did nothing to ask.
 		refocus(was)
 
-		desk_paint(x0, y0, x1, y1)
-		repaint(x0, y0, x1 - x0, y1 - y0)
-		lx, ly := lamp_at(i)
-		desk_paint(lx, ly, lx + LAMP, ly + LAMP)
+		if shown {
+			desk_paint(x0, y0, x1, y1)
+			repaint(x0, y0, x1 - x0, y1 - y0)
+		}
+		lamp_show(ws)
 
 		// And the memory, last. A detach that fails leaves the run held
 		// until the server exits. That is the leak this server lived with
@@ -1891,9 +2095,12 @@ window_move :: proc "contextless" (win: ^Window, nx: int, ny: int) -> vectra9.Er
 	if nx == win.x && ny == win.y {
 		return vectra9.Errno(0)
 	}
-	ox, oy := win.x, win.y
+		ox, oy := win.x, win.y
 	win.x = nx
 	win.y = ny
+	if win.workspace != current_ws || win.hidden {
+		return vectra9.Errno(0)
+	}
 
 	/*
 	The ground the move actually frees, then every window over both places.
@@ -1943,7 +2150,7 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 	if ncw <= 0 || nch <= 0 {
 		return vectra9.EINVAL
 	}
-	nw, nh := frame_window(ncw, nch)
+		nw, nh := frame_window(win, ncw, nch)
 	/*
 	And the run grows to hold it, which is `segbrk`.
 
@@ -1958,8 +2165,30 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 	than sitting on them, which is the half of `segbrk` that is about memory
 	rather than about a cap.
 	*/
-	if nw > win_w {
+		if nw > scr_w * 2 || nh > scr_h * 2 {
 		return vectra9.EINVAL
+	}
+	if nw > win.stride {
+		/*
+		**A wider window is a new run.** The stride is the run's, and a run
+		cannot get wider in place: `segbrk` moves the top and nothing else.
+						A window that grows past its birth width buys a run of the new
+		width, copies its rows across, and gives the old one back. What
+		a client drew is at the same (x, y) afterwards. The band it grew
+		into is the frame's to paint, as it is for a taller window.
+		*/
+		base, err := libuser.segalloc(nw * max(nh, win.h) * 4)
+		if err < 0 {
+			return vectra9.ENOSPC
+		}
+		fresh := ([^]u32)(base)
+		for row in 0 ..< min(win.h, nh) {
+			copy(fresh[row * nw:row * nw + win.w], win.pixels[row * win.stride:row * win.stride + win.w])
+		}
+		_ = libuser.segdetach(uintptr(win.pixels))
+		win.pixels = fresh
+		win.stride = nw
+		win.rows = max(nh, win.h)
 	}
 	if nh != win_h_at(win) {
 		/*
@@ -1979,7 +2208,7 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 		and keeps its run is a window that works; a window that cannot get
 		bigger is the cap this call exists to lift.
 		*/
-		need := uintptr(win_w) * uintptr(nh) * 4
+				need := uintptr(win.stride) * uintptr(nh) * 4
 		err := libuser.segbrk(uintptr(win.pixels), uintptr(win.pixels) + need)
 		if err < 0 {
 			// Only a grow has to work. A refused shrink costs the pages and
@@ -1996,10 +2225,13 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 	}
 	ow, oh := win.w, win.h
 
-	win.w = nw
+		win.w = nw
 	win.h = nh
 	window_chrome(win)
 	region_clear(&win.dmg)
+	if win.workspace != current_ws || win.hidden {
+		return vectra9.Errno(0)
+	}
 
 	// The ground under what it gave up and nothing else. A window that grew
 	// frees none, and the composite below is about to own every pixel of the
@@ -2027,12 +2259,14 @@ window_raise :: proc "contextless" (win: ^Window, at: int) #no_bounds_check {
 	if was == at {
 		return
 	}
-	stack_add(at)
+		stack_add(at)
 	// The front is what focus is, so this line moved it. Both bars are
 	// repainted before the composite below, which then covers one of them
 	// again with the rest of the window it belongs to.
 	refocus(was)
-	repaint_top(win)
+	if win.workspace == current_ws && !win.hidden {
+		repaint_top(win)
+	}
 }
 
 /*
@@ -2067,6 +2301,7 @@ composite :: proc "contextless" (area: ^Region) #no_bounds_check {
 	for si in 0 ..< stack_n {
 		paint_window(&windows[stack[si]], area)
 	}
+	cursor_show()
 }
 
 /*
@@ -2082,7 +2317,7 @@ This is the one place that knows where a window sits, which is why `run_fill`
 and `run_blit` no longer do.
 */
 paint_window :: proc "contextless" (win: ^Window, area: ^Region) #no_bounds_check {
-	if !win.used {
+	if !win.used || win.workspace != current_ws || win.hidden {
 		return
 	}
 	for ai in 0 ..< area.n {
@@ -2094,9 +2329,9 @@ paint_window :: proc "contextless" (win: ^Window, area: ^Region) #no_bounds_chec
 		if x0 >= x1 || y0 >= y1 {
 			continue
 		}
-		for y in y0 ..< y1 {
+				for y in y0 ..< y1 {
 			dst := screen_at(y)
-			src := win.pixels[(y - win.y) * win_w:]
+			src := win.pixels[(y - win.y) * win.stride:]
 			for x in x0 ..< x1 {
 				dst[x] = src[x - win.x]
 			}
@@ -2123,6 +2358,7 @@ repaint_top :: proc "contextless" (win: ^Window) {
 	region_clear(&scratch)
 	region_add(&scratch, win.x, win.y, win.w, win.h)
 	paint_window(win, &scratch)
+	cursor_show()
 }
 
 /*
@@ -2190,21 +2426,33 @@ image_alloc :: proc "contextless" (owner: vectra9.Fid, id: u32, w: int, h: int) 
 	if image_find(owner, id) >= 0 {
 		return vectra9.EINVAL
 	}
-	for i in 0 ..< MAX_IMAGES {
+		for i in 0 ..< MAX_IMAGES {
 		if !images[i].used {
-			images[i] = Image{owner = owner, id = id, w = w, h = h, used = true}
+			px := ([^]u32)(libuser.heap_alloc(w * h * 4))
+			if px == nil {
+				return vectra9.ENOMEM
+			}
+			images[i] = Image{owner = owner, id = id, w = w, h = h, used = true, pixels = px}
 			return vectra9.Errno(0)
 		}
 	}
 	return vectra9.ENOSPC
 }
 
+// image_drop frees one image's pixels and its slot.
+image_drop :: proc "contextless" (i: int) #no_bounds_check {
+	if images[i].pixels != nil {
+		libuser.heap_free(images[i].pixels)
+	}
+	images[i] = Image{}
+}
+
 // image_free_all is the clunk's half of the session rule: what a fid
 // allocated goes when the fid does.
 image_free_all :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
-	for i in 0 ..< MAX_IMAGES {
+		for i in 0 ..< MAX_IMAGES {
 		if images[i].used && images[i].owner == owner {
-			images[i] = Image{}
+			image_drop(i)
 		}
 	}
 }
@@ -2241,7 +2489,7 @@ client_clip :: proc "contextless" (
 	sx: ^int,
 	sy: ^int,
 ) -> bool {
-	cx, cy, cw, ch := frame_client(win.w, win.h)
+		cx, cy, cw, ch := frame_client(win)
 	if !clip(x, y, w, h, sx, sy, cw, ch) {
 		return false
 	}
@@ -2375,7 +2623,7 @@ run_load :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 	for line in 0 ..< h {
 		base := (y + line) * img.w + x
 		src := 20 + line * w * 4
-		dst := ([^]u8)(raw_data(pixels[slot][base:]))
+				dst := ([^]u8)(img.pixels[base:])
 		copy(dst[:w * 4], body[src:src + w * 4])
 	}
 	return vectra9.Errno(0)
@@ -2417,8 +2665,8 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		if !client_clip(win, &x, &y, &w, &h, &sx, &sy) {
 			return vectra9.Errno(0)
 		}
-		for line in 0 ..< h {
-			dst := win.pixels[(y + line) * win_w:]
+				for line in 0 ..< h {
+			dst := win.pixels[(y + line) * win.stride:]
 			for i in 0 ..< w {
 				dst[x + i] = color
 			}
@@ -2437,8 +2685,8 @@ run_fill :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 	}
 	for line in 0 ..< h {
 		base := (y + line) * img.w + x
-		for i in 0 ..< w {
-			pixels[slot][base + i] = color
+				for i in 0 ..< w {
+			img.pixels[base + i] = color
 		}
 	}
 	return vectra9.Errno(0)
@@ -2482,11 +2730,11 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 		if !client_clip(win, &dx, &dy, &sw, &sh, &sx, &sy) {
 			return vectra9.Errno(0)
 		}
-		for line in 0 ..< sh {
+				for line in 0 ..< sh {
 			base := (sy + line) * simg.w + sx
-			out := win.pixels[(dy + line) * win_w:]
-			for i in 0 ..< sw {
-				out[dx + i] = pixels[sslot][base + i]
+			out := win.pixels[(dy + line) * win.stride:]
+						for i in 0 ..< sw {
+				out[dx + i] = simg.pixels[base + i]
 			}
 		}
 		window_mark(win, dx, dy, sw, sh)
@@ -2504,8 +2752,8 @@ run_blit :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 	for line in 0 ..< sh {
 		sbase := (sy + line) * simg.w + sx
 		dbase := (dy + line) * dimg.w + dx
-		for i in 0 ..< sw {
-			pixels[dslot][dbase + i] = pixels[sslot][sbase + i]
+				for i in 0 ..< sw {
+			dimg.pixels[dbase + i] = simg.pixels[sbase + i]
 		}
 	}
 	return vectra9.Errno(0)
@@ -2515,11 +2763,11 @@ run_free :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 	if len(body) != 4 {
 		return vectra9.EINVAL
 	}
-	slot := image_find(owner, libdraw.get_u32(body, 0))
+		slot := image_find(owner, libdraw.get_u32(body, 0))
 	if slot < 0 {
 		return vectra9.EINVAL
 	}
-	images[slot] = Image{}
+	image_drop(slot)
 	return vectra9.Errno(0)
 }
 
@@ -2541,8 +2789,11 @@ fid_release :: proc "contextless" (fid: vectra9.Fid) {
 		if node_part(node) == PART_CTL && windows[w].ctl_held && windows[w].ctl_fid == fid {
 			windows[w].ctl_held = false
 		}
-		if node_part(node) == PART_CONS && windows[w].cons_held && windows[w].cons_fid == fid {
+				if node_part(node) == PART_CONS && windows[w].cons_held && windows[w].cons_fid == fid {
 			windows[w].cons_held = false
+		}
+		if node_part(node) == PART_MOUSE && windows[w].mouse_held && windows[w].mouse_fid == fid {
+			windows[w].mouse_held = false
 		}
 		// And the mode goes back to cooked with the fid that set it, which
 		// is `/dev/consctl`'s rule. A client that died in raw mode would
@@ -2567,8 +2818,13 @@ qid_of :: proc "contextless" (node: i32) -> vectra9.Qid {
 }
 
 name_of :: proc "contextless" (node: i32) -> string #no_bounds_check {
-	if node == NODE_NEW {
+	switch node {
+	case NODE_NEW:
 		return "new"
+	case NODE_CTL:
+		return "ctl"
+	case NODE_HOTKEY:
+		return "hotkey"
 	}
 	w := node_win(node)
 	if w < 0 {
@@ -2585,6 +2841,12 @@ name_of :: proc "contextless" (node: i32) -> string #no_bounds_check {
 		return "cons"
 	case PART_CONSCTL:
 		return "consctl"
+	case PART_MOUSE:
+		return "mouse"
+	case PART_WCTL:
+		return "wctl"
+	case PART_CURSOR:
+		return "cursor"
 	}
 	return ""
 }
@@ -2602,12 +2864,17 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 		return NODE_ROOT
 	}
 
-	if from == NODE_ROOT {
-		if name == "new" {
+		if from == NODE_ROOT {
+		switch name {
+		case "new":
 			return NODE_NEW
+		case "ctl":
+			return NODE_CTL
+		case "hotkey":
+			return NODE_HOTKEY
 		}
-		if len(name) == 1 && name[0] >= '0' && name[0] < '0' + u8(MAX_WINDOWS) {
-			return node_of(int(name[0] - '0'), PART_DIR)
+		if w := libdraw.win_index(name); w >= 0 && w < MAX_WINDOWS {
+			return node_of(w, PART_DIR)
 		}
 		return -1
 	}
@@ -2625,6 +2892,12 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 		return node_of(w, PART_CONS)
 	case "consctl":
 		return node_of(w, PART_CONSCTL)
+	case "mouse":
+		return node_of(w, PART_MOUSE)
+	case "wctl":
+		return node_of(w, PART_WCTL)
+	case "cursor":
+		return node_of(w, PART_CURSOR)
 	}
 	return -1
 }
@@ -2715,6 +2988,19 @@ handler :: proc "contextless" (
 			}
 			windows[w].consctl_held = true
 			windows[w].consctl_fid = m.fid
+		case PART_MOUSE:
+			// One reader of a window's pointer, for the reason `/dev/mouse`
+			// has one: two would each get half the movements.
+			if w < 0 {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			if windows[w].mouse_held && windows[w].mouse_fid != m.fid {
+				reply^ = vectra9.error_reply(vectra9.EBUSY)
+				return
+			}
+			windows[w].mouse_held = true
+			windows[w].mouse_fid = m.fid
 		}
 		libuser.fid_open(&fids, m.fid)
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
@@ -2742,9 +3028,9 @@ handler :: proc "contextless" (
 		gave up on the read, drops the held record. A zero count asks for
 		nothing and gets it.
 		*/
-		if w := node_win(node); w >= 0 && node_part(node) == PART_CONS {
+				if w := node_win(node); w >= 0 && node_part(node) == PART_CONS {
 			room := min(len(buf), int(m.count))
-			if room <= 0 {
+			if room <= 0 || windows[w].hangup {
 				reply^ = vectra9.Rread{data = nil}
 				return
 			}
@@ -2772,7 +3058,7 @@ handler :: proc "contextless" (
 		window shares. A client that resized itself reads back what it asked
 		for, which is the only confirmation a `ctl` line gets.
 		*/
-		if w := node_win(node); w >= 0 && node_part(node) == PART_CONSCTL {
+				if w := node_win(node); w >= 0 && node_part(node) == PART_CONSCTL {
 			// The state as the command that would restore it, which is
 			// `/dev/consctl`'s convention and `docs/DEVFS.md`'s.
 			report := windows[w].cons_raw ? "rawon\n" : "rawoff\n"
@@ -2787,13 +3073,39 @@ handler :: proc "contextless" (
 			return
 		}
 
+		// A window's `mouse` and the root's `hotkey` are queues: a read
+		// takes the next line, or is held until there is one.
+		if w := node_win(node); w >= 0 && node_part(node) == PART_MOUSE {
+			room := min(len(buf), int(m.count))
+			if got := mouse_line(&windows[w], buf[:room]); got > 0 {
+				reply^ = vectra9.Rread{data = buf[:got]}
+				return
+			}
+			lib9p.hold(&srv)
+			return
+		}
+		if node == NODE_HOTKEY {
+			room := min(len(buf), int(m.count))
+			if got := hotkey_pop(buf[:room]); got > 0 {
+				reply^ = vectra9.Rread{data = buf[:got]}
+				return
+			}
+			lib9p.hold(&srv)
+			return
+		}
+
 		line: [160]u8
 		n := 0
-		if node == NODE_NEW {
+		switch {
+		case node == NODE_NEW:
 			n = put_number(line[:], 0, window_free())
 			n = put_report(line[:], n, "\n")
-		} else if w := node_win(node); w >= 0 {
-			n = window_report(line[:], &windows[w])
+		case node == NODE_CTL:
+			n = server_report(line[:])
+		case node_part(node) == PART_WCTL:
+			n = wctl_report(line[:], &windows[node_win(node)])
+		case node_win(node) >= 0:
+			n = window_report(line[:], &windows[node_win(node)])
 		}
 		if m.offset >= u64(n) {
 			reply^ = vectra9.Rread{data = nil}
@@ -2804,9 +3116,17 @@ handler :: proc "contextless" (
 		copy(buf[:end - start_at], line[start_at:end])
 		reply^ = vectra9.Rread{data = buf[:end - start_at]}
 
-	case vectra9.Twrite:
+		case vectra9.Twrite:
 		node, ok := libuser.node_of(&fids, m.fid, reply)
 		if !ok {
+			return
+		}
+		if node == NODE_CTL {
+			if err := run_server_ctl(m.data); err != vectra9.Errno(0) {
+				reply^ = vectra9.error_reply(err)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 			return
 		}
 		switch node_part(node) {
@@ -2832,6 +3152,20 @@ handler :: proc "contextless" (
 				return
 			}
 			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+		case PART_WCTL:
+			if err := run_wctl(node_win(node), m.data); err != vectra9.Errno(0) {
+				reply^ = vectra9.error_reply(err)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+		case PART_MOUSE:
+			reply^ = vectra9.error_reply(vectra9.EPERM)
+		case PART_CURSOR:
+			if w := node_win(node); w < 0 || !windows[w].used || !cursor_set(&windows[w], m.data) {
+				reply^ = vectra9.error_reply(vectra9.EINVAL)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 		case:
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 		}
@@ -2851,13 +3185,13 @@ handler :: proc "contextless" (
 		if w := node_win(node); w >= 0 && node_part(node) == PART_CONS {
 			size = libuser.ring_available(&kbd[w])
 		}
-		mode := u32(0o100644)
+				mode := u32(0o100644)
 		switch {
 		case dir:
 			mode = 0o040555
-		case node_part(node) == PART_DATA:
+		case node_part(node) == PART_DATA, node_part(node) == PART_CURSOR:
 			mode = 0o100222
-		case node_part(node) == PART_CONS:
+		case node_part(node) == PART_CONS, node_part(node) == PART_MOUSE, node == NODE_HOTKEY:
 			mode = 0o100444
 		}
 		reply^ = vectra9.Rgetattr {
@@ -2886,8 +3220,9 @@ handler :: proc "contextless" (
 /*
 readdir lists the root or one window's directory, whichever the fid names.
 
-Two levels, so two shapes. The root holds `new` and a directory per window.
-A window's directory holds `data` and `ctl`. The cookie is an index into
+Two levels, so two shapes. The root holds `new`, `ctl`, `hotkey` and a
+directory per window. A window's directory holds its seven files. The
+cookie is an index into
 whichever list this is, which is the position-based listing `docs/SRV.md`
 argues against and this tree can afford: nothing here is ever rebound, and the
 names are fixed at start.
@@ -2904,17 +3239,22 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 		return
 	}
 
-	count := root ? 1 + MAX_WINDOWS : 4
+		count := root ? 3 + MAX_WINDOWS : int(NODE_PER) - 1
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
 	for i := int(m.offset); i < count; i += 1 {
 		child: i32
 		kind := vectra9.DT_REG
 		if root {
-			if i == 0 {
+			switch i {
+			case 0:
 				child = NODE_NEW
-			} else {
-				child = node_of(i - 1, PART_DIR)
+			case 1:
+				child = NODE_CTL
+			case 2:
+				child = NODE_HOTKEY
+			case:
+				child = node_of(i - 3, PART_DIR)
 				kind = vectra9.DT_DIR
 			}
 		} else {

@@ -509,6 +509,39 @@ window was. The `workspace 2` chord brings it back, with the focus on
 it. The overview shows the window's bar scaled by three at the second
 tile's place, and a click there switches.
 
+**Where it stands.** Done. `servers/intuition` grew a `pointer.odin`, a
+`workspace.odin`, a `files.odin`, a `keys.odin` and an `overview.odin`,
+and `sys/libdraw` grew `gadget` and two-digit window names.
+
+The pointer is an io proc on `/dev/mouse`, drawn as the compositor's
+last layer. A press on a gadget closes, lowers or zooms the window under
+it. A press on the bar or the corner is a drag that ends in a `move` or
+a `size`. A press in a window raises it. Each window serves `mouse`,
+`wctl` and `cursor` beside the files it had. A window is `Normal` or one
+of the three kinds a `wctl` word makes: `backdrop`, `bar`, `popup`.
+
+Workspaces are a number on a window, nine of them, with a lamp each on
+the desktop. The overview is the compositor painting every third pixel
+of the stores it holds. The chords come from `$home/lib/keys` or
+`/lib/keys` through the `kbd` file. The window manager's the server acts
+on, the rest it forwards on `/srv/draw/hotkey`, and a `workspaces` file
+places a window by its name.
+
+The server reads the `kbd` file now rather than cooked `cons`, so `init`
+names `/n/kbd/kbd`. A window's run is bought at its own size, the stride
+is the run's, and a wider window buys a new run. `MAX_WINDOWS` is
+thirty-two, and `MAX_PROC_SEGS` moved with it. The image pool is on the
+heap, because sixty-four images in the bss put the program past the
+loader's frame budget.
+
+The checks read the glass and the files. `verify_pointer` drives an
+injected pointer onto a window and reads its `mouse`, its bar drag off
+`wctl`, and its close off `cons`. `verify_chords` wires `kbdfs` and the
+draw server as `init` does, and injects `alt-n`, `alt-w` and `alt-space`
+for the hotkey, the close and the overview. `verify_draw` sends a window
+to another workspace and switches back. Green on amd64, arm64 and
+riscv64 at user 973.
+
 ### Step 3: libmui, and `window`
 
 `sys/libmui`, `cmd/window`, `tests/mui`, about 3,000 lines.

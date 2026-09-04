@@ -858,6 +858,9 @@ stage_vectra :: proc() {
 	}
 	copy_file("apps/rc/rcmain", fmt.tprintf("%s/lib/rcmain", root))
 	copy_file("apps/rc/init", fmt.tprintf("%s/lib/init", root))
+	// The draw server's two files: the chords, and where a window opens.
+	copy_file("servers/intuition/keys", fmt.tprintf("%s/lib/keys", root))
+	copy_file("servers/intuition/workspaces", fmt.tprintf("%s/lib/workspaces", root))
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
 	step("staged %d programs and the library under %s", len(user_programs), root)
 }
