@@ -40,6 +40,8 @@ import "kernel:arch"
 import "kernel:devfs"
 import "kernel:drivers/fb"
 import "kernel:drivers/mouse"
+import "kernel:drivers/virtio"
+import "kernel:ether"
 import "kernel:env"
 import "kernel:mem"
 import "kernel:mnt"
@@ -482,6 +484,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_threads(&r)
 	verify_mui(&r)
 	verify_netfs(&r)
+	verify_netserver(&r)
 	verify_rc(&r)
 	verify_tools(&r)
 
@@ -7322,6 +7325,114 @@ verify_netfs :: proc(r: ^Result) {
 	if ok {
 		check(r, said == "ok", said == "ok" ? "and every packet parsed and every checksum held" : said)
 	}
+}
+
+/*
+verify_netserver runs `servers/netfs`, the IPv4 stack in ring 3, and reads the
+`/net` it serves.
+
+The stack opens the card as `#E`, asks who has the gateway, and pings it. Three
+files say whether that worked, and each is read here rather than inferred.
+`/net/ether0/addr` is the card's own address, which the kernel knows from the
+driver and compares. `/net/arp` holds an address this machine resolved, so the
+gateway appearing there is an ARP that crossed the card and came back. And
+`/net/icmp` counts the echoes, so a reply counted is an IPv4 datagram this stack
+built, sent, and matched to its own request.
+
+That is the whole of `docs/FLEET.md` step 0's first claim: a stack in ring 3
+reaching the world through a file. TCP and the conversations are the steps
+after it.
+*/
+@(private = "file")
+verify_netserver :: proc(r: ^Result) #no_bounds_check {
+	if !ether.present() {
+		return
+	}
+	count0 := srv.count()
+	sched.reap()
+	pin_before := mem.live_objects(mem.heap_stats())
+
+	p, serr := spawn_path(nil, "/bin/netfs", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "the loader starts the network stack") {
+		return
+	}
+	r.programs += 1
+	if !check(r, await_posted("net"), "which posts /srv/net") {
+		finish(r, p, "and the stack is taken down")
+		return
+	}
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/net", "/net") == vfs.OK, "the kernel mounts it at /net") {
+		finish(r, p, "and the stack is taken down")
+		return
+	}
+
+	// The card's own address, which the driver knows and the stack serves.
+	m: [6]u8
+	_ = virtio.mac(0, m[:])
+	want_addr: [32]u8
+	wsink := libodin.sink_from(want_addr[:])
+	hexd := "0123456789abcdef"
+	for i in 0 ..< 6 {
+		if i > 0 {
+			libodin.put_str(&wsink, ":")
+		}
+		pair := [2]u8{hexd[m[i] >> 4], hexd[m[i] & 0xF]}
+		libodin.put_str(&wsink, string(pair[:]))
+	}
+	said := libodin.str(&wsink)
+
+	got: [64]u8
+	if c, err := vfs.open_path(vfs.boot_namespace, "/net/ether0/addr", vfs.O_RDONLY); err == vfs.OK {
+		n, rerr := vfs.chan_read(c, 0, got[:])
+		vfs.chan_close(c)
+		hit := rerr == vfs.OK && int(n) == len(said) + 1 && string(got[:len(said)]) == said
+		check(r, hit, "and /net/ether0/addr is the address the driver read off the card")
+	} else {
+		check(r, false, "and /net/ether0/addr opens")
+	}
+
+	// The gateway resolved by ARP, and the echo it answered. Both are polled,
+	// because the frames cross a card and a server between them.
+	check(r, net_file_holds(r, "/net/arp", "10.0.2.2"), "the stack resolved the gateway by ARP across the card")
+	check(r, net_file_holds(r, "/net/icmp", "received 1"), "and its echo came back, an IPv4 datagram answered")
+
+	// -- Teardown, a remove of one of its files -------------------------------
+
+	if c, err := vfs.open_path(vfs.boot_namespace, "/net/icmp", vfs.O_RDONLY); err == vfs.OK {
+		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of one of its files is the stack's stop")
+		vfs.chan_close(c)
+	}
+	check(r, wait(p, PATIENCE), "the stack exits")
+	check(r, srv.remove("net") == vfs.OK, "the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+	finish(r, p, "and the stack is taken down")
+	pipe.quiesce()
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/net") == vfs.OK, "the mount of the dead stack comes down")
+	drain_pinned(r, pin_before, "and the stack's wire comes back whole")
+}
+
+// net_file_holds polls one of the stack's files until it carries `want`, and
+// answers whether it ever did. The stack fills these as frames arrive.
+@(private = "file")
+net_file_holds :: proc(r: ^Result, path: string, want: string) -> bool #no_bounds_check {
+	_ = r
+	buf: [512]u8
+	for _ in 0 ..< PATIENCE * 4 {
+		if c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY); err == vfs.OK {
+			n, rerr := vfs.chan_read(c, 0, buf[:])
+			vfs.chan_close(c)
+			if rerr == vfs.OK && n > 0 {
+				text := string(buf[:n])
+				for i := 0; i + len(want) <= len(text); i += 1 {
+					if text[i:i + len(want)] == want {
+						return true
+					}
+				}
+			}
+		}
+		sync.delay(1)
+	}
+	return false
 }
 
 /*

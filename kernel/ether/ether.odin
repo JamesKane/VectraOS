@@ -32,13 +32,25 @@ import "vsys:vectra9"
 
 ETHER_MAX_FIDS :: 16
 
+// How long a read of `data` waits for a frame before answering empty, in
+// scheduler ticks. Long enough that a caller is not spinning, short enough
+// that it is still a read that returns.
+ETHER_WAIT_TICKS :: 50
+
 S_IFDIR :: u32(0o040000)
 S_IFREG :: u32(0o100000)
 
-// The three nodes: the root directory and the two files under it.
+/*
+The nodes. The root holds one directory named `ether`, and the two files live
+under it, so the mount at `/dev` gives `/dev/ether/addr` and `/dev/ether/data`.
+A device's root is bound *at* `/dev`. A file directly under the root would be
+`/dev/addr`, which is why `#S` names a directory per disk and this names one for
+the card.
+*/
 ROOT :: i32(0)
-NODE_ADDR :: i32(1)
-NODE_DATA :: i32(2)
+NODE_DIR :: i32(1)
+NODE_ADDR :: i32(2)
+NODE_DATA :: i32(3)
 
 @(private = "file")
 Ether_Device :: struct {
@@ -89,7 +101,7 @@ stats :: proc "contextless" () -> (reads, writes: u64) {
 // -- The node tree ------------------------------------------------------------
 
 node_is_dir :: proc "contextless" (node: i32) -> bool {
-	return node == ROOT
+	return node == ROOT || node == NODE_DIR
 }
 
 qid_of :: proc "contextless" (node: i32) -> vectra9.Qid {
@@ -104,7 +116,15 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 	if name == "." {
 		return from
 	}
-	if from == ROOT {
+	switch from {
+	case ROOT:
+		switch name {
+		case "..":
+			return ROOT
+		case "ether":
+			return NODE_DIR
+		}
+	case NODE_DIR:
 		switch name {
 		case "..":
 			return ROOT
@@ -113,10 +133,10 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 		case "data":
 			return NODE_DATA
 		}
-		return -1
-	}
-	if name == ".." {
-		return ROOT
+	case:
+		if name == ".." {
+			return NODE_DIR
+		}
 	}
 	return -1
 }
@@ -209,9 +229,21 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 		return
 	}
 
-	// NODE_DATA: one received frame, or zero bytes when none is ready yet. The
-	// caller polls, so a zero-length read is "nothing yet", not end of file.
-	n := virtio.recv(0, buf[:room])
+	/*
+	NODE_DATA: one received frame. The card is polled, so this waits for one
+	rather than answering empty at once: a tick at a time, up to a bound. A
+	reader then parks in the kernel instead of spinning in ring 3, and a frame
+	comes back within a tick of arriving. The bound keeps the wait finite, and
+	a reader that gets nothing simply asks again.
+	*/
+	n := 0
+	for _ in 0 ..< ETHER_WAIT_TICKS {
+		n = virtio.recv(0, buf[:room])
+		if n > 0 {
+			break
+		}
+		sync.delay(1)
+	}
 	if n > 0 {
 		g2 := sync.acquire(&d.lock)
 		d.reads += 1
@@ -370,15 +402,23 @@ readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_
 	}
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
-	names := [?]string{"addr", "data"}
-	nodes := [?]i32{NODE_ADDR, NODE_DATA}
+	names: []string
+	nodes: []i32
+	if node == ROOT {
+		names = []string{"ether"}
+		nodes = []i32{NODE_DIR}
+	} else {
+		names = []string{"addr", "data"}
+		nodes = []i32{NODE_ADDR, NODE_DATA}
+	}
 	for i := int(m.offset); i < len(names); i += 1 {
 		if vectra9.remaining(&c) < vectra9.dirent_size(names[i]) {
 			break
 		}
+		t := node_is_dir(nodes[i]) ? vectra9.DT_DIR : vectra9.DT_REG
 		vectra9.put_dirent(
 			&c,
-			vectra9.Dirent{qid = qid_of(nodes[i]), offset = u64(i + 1), type = vectra9.DT_REG, name = names[i]},
+			vectra9.Dirent{qid = qid_of(nodes[i]), offset = u64(i + 1), type = t, name = names[i]},
 		)
 	}
 	if c.err != .None {

@@ -65,6 +65,7 @@ user_programs := [?]User_Program {
 	{name = "ramfs", path = "servers/ramfs"},
 	{name = "consrv", path = "servers/consrv"},
 	{name = "kbdfs", path = "servers/kbdfs"},
+	{name = "netfs", path = "servers/netfs"},
 	{name = "eiafs", path = "servers/eiafs"},
 	{name = "intuition", path = "servers/intuition"},
 	{name = "terminal", path = "apps/terminal"},

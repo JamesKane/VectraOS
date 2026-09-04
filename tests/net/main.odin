@@ -122,7 +122,8 @@ start :: proc "c" (block: ^abi.Args) {
 	// came back, all through files.
 	{
 		afd := libuser.open("/dev/ether/addr", abi.O_RDONLY)
-		if afd >= 0 {
+		want(afd >= 0, "the ether address file opens")
+		{
 			card: [6]u8
 			libuser.read(int(afd), card[:])
 			_ = libuser.close(int(afd))
