@@ -61,6 +61,11 @@ Tcp_State :: enum u8 {
 
 Tcp_Conv :: struct {
 	used:     bool,
+	// How many open descriptors name a file of this conversation. A
+	// conversation is finished for good when it is closed and this is zero, and
+	// its slot is free to serve another. This is Plan 9's `Conv.inuse`, which
+	// ties a conversation's life to the descriptors on it.
+	refs:     int,
 	state:    Tcp_State,
 	lport:    u16,
 	raddr:    libnet.IP,
@@ -99,18 +104,34 @@ next_tcp_port: u16 = EPHEMERAL
 tcp_alloc :: proc "contextless" () -> int #no_bounds_check {
 	for i in 0 ..< MAX_TCP {
 		if !tcps[i].used {
-			tcps[i] = Tcp_Conv {
-				used    = true,
-				state   = .Closed,
-				lport   = next_tcp_port,
-				snd_nxt = ISS_BASE + u32(i) * ISS_STEP,
-				snd_una = ISS_BASE + u32(i) * ISS_STEP,
-			}
-			next_tcp_port += 1
-			return i
+			return tcp_init(i)
+		}
+	}
+	// No free slot. Reclaim one whose conversation is finished and has no
+	// descriptor left on it, the way Plan 9's `Fsprotoclone` reuses an idle
+	// conversation. A `Closed` or `Time_Wait` conversation with `refs` of zero
+	// is done and no descriptor will read it, so its slot can serve a new one.
+	for i in 0 ..< MAX_TCP {
+		c := &tcps[i]
+		if c.refs == 0 && (c.state == .Closed || c.state == .Time_Wait) {
+			libnet.reseq_drop(&c.reseq)
+			return tcp_init(i)
 		}
 	}
 	return -1
+}
+
+// tcp_init makes slot `i` a fresh conversation and answers its number.
+tcp_init :: proc "contextless" (i: int) -> int #no_bounds_check {
+	tcps[i] = Tcp_Conv {
+		used    = true,
+		state   = .Closed,
+		lport   = next_tcp_port,
+		snd_nxt = ISS_BASE + u32(i) * ISS_STEP,
+		snd_una = ISS_BASE + u32(i) * ISS_STEP,
+	}
+	next_tcp_port += 1
+	return i
 }
 
 tcp_free :: proc "contextless" (i: int) #no_bounds_check {

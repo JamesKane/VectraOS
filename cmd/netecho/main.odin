@@ -129,6 +129,9 @@ echo_conversation :: proc "contextless" (lfd: i64, served: string) {
 			break
 		}
 	}
+	// Hang up the accepted conversation, so it closes on both sides and its
+	// slot is reclaimed rather than left holding on the far end's close.
+	libnet.hangup(accepted)
 	_ = libuser.close(int(dfd))
 }
 

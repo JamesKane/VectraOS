@@ -797,6 +797,11 @@ handler :: proc "contextless" (
 			return
 		}
 		libuser.fid_open(&fids, m.fid)
+		// A descriptor on a conversation's file counts against its life, so the
+		// conversation is not reclaimed while a program still holds one.
+		if i, _, is_tcp := tconv_of(node); is_tcp && tcps[i].used {
+			tcps[i].refs += 1
+		}
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
 
 	case vectra9.Tread:
@@ -1001,18 +1006,23 @@ handler :: proc "contextless" (
 		}
 
 	case vectra9.Tclunk:
-		// A listener that the clunked fid held open is freed here. A program
-		// keeps the `listen` file open to hold the accepting role, the way Plan
-		// 9 keeps a conversation open through a file. Clunking it, on purpose or
-		// by exiting, ends the role and frees the conversation, so it no longer
-		// answers SYNs nobody is left to accept.
+		// A descriptor on a conversation's file is going away. It stops counting
+		// against the conversation's life, so a finished one can be reclaimed.
+		// A listener is freed the moment its `listen` file is clunked, on
+		// purpose or by exiting. A program holds that file open to keep the
+		// accepting role, the way Plan 9 holds a conversation open through a
+		// file. Letting it go ends the role, so no conversation is left
+		// answering SYNs that nothing will accept.
 		node := libuser.fid_lookup(&fids, m.fid)
 		held_open := libuser.fid_is_open(&fids, m.fid)
 		cs_forget(m.fid)
 		libuser.fid_release(&fids, m.fid)
 		if held_open {
-			if i, kind, ok := tconv_of(node); ok && kind == TCONV_LISTEN {
-				if tcps[i].used && tcps[i].state == .Listen {
+			if i, kind, ok := tconv_of(node); ok && tcps[i].used {
+				if tcps[i].refs > 0 {
+					tcps[i].refs -= 1
+				}
+				if kind == TCONV_LISTEN && tcps[i].state == .Listen {
 					tcp_release(i)
 				}
 			}
