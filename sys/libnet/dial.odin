@@ -63,16 +63,13 @@ dial :: proc "contextless" (addr: string) -> (int, bool) #no_bounds_check {
 	libodin.put_str(&sink, "connect ")
 	libodin.put_str(&sink, remote)
 	text := libodin.str(&sink)
+	// The `connect` write is synchronous: `netfs` holds it until the handshake
+	// is established, and answers it short if the conversation cannot open. So
+	// a write that returns the whole line is a conversation ready for its
+	// stream, and there is nothing more to wait for here.
 	wrote := libuser.write(int(ctl), transmute([]u8)text) == i64(len(text))
 	_ = libuser.close(int(ctl))
 	if !wrote {
-		return -1, false
-	}
-
-	// Wait for the handshake before handing back a stream. `connect` only sends
-	// the SYN, and a caller that writes before the conversation is established
-	// loses the write.
-	if !await_established(string(dir[:dirlen])) {
 		return -1, false
 	}
 
@@ -125,40 +122,6 @@ announce :: proc "contextless" (addr: string, into: []u8) -> (int, bool) #no_bou
 		return 0, false
 	}
 	return dirlen, true
-}
-
-/*
-await_established polls a conversation's `status` until it is established, or
-gives up when it closes or the wait runs out. The connect is asynchronous, so a
-synchronous `dial` waits for it here.
-*/
-await_established :: proc "contextless" (dir: string) -> bool #no_bounds_check {
-	path: [DIAL_MAX]u8
-	status: [64]u8
-	for _ in 0 ..< 4000 {
-		fd := libuser.open(join(path[:], dir, "status"), abi.O_RDONLY)
-		if fd < 0 {
-			return false
-		}
-		n := libuser.read(int(fd), status[:])
-		_ = libuser.close(int(fd))
-		if n > 0 {
-			text := string(status[:int(n)])
-			if has_word(text, "Established") {
-				return true
-			}
-			if has_word(text, "Closed") {
-				return false
-			}
-		}
-		_ = libuser.sleep(1)
-	}
-	return false
-}
-
-// has_word reports whether `text` begins with `want`, which the status word is.
-has_word :: proc "contextless" (text: string, want: string) -> bool {
-	return len(text) >= len(want) && text[:len(want)] == want
 }
 
 // -- The steps ----------------------------------------------------------------

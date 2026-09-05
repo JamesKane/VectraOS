@@ -309,6 +309,8 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 			c.rcv_nxt = t.seq + 1
 			c.state = .Established
 			tcp_output(i, libnet.TCP_ACK, nil)
+			// The connect that was held on this conversation can return now.
+			wake_connect[i] = true
 		}
 		return
 
@@ -474,6 +476,9 @@ tcp_tick :: proc "contextless" () #no_bounds_check {
 			c.state = .Closed
 			c.fin_seen = true
 			wake_tcp[i] = true
+			// A connect that never got its answer fails here, rather than
+			// leaving the write that started it held for ever.
+			wake_connect[i] = true
 		}
 	}
 }
@@ -497,6 +502,35 @@ wants_tcp :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
 
 drain_tcp :: proc "contextless" (arg: rawptr, buf: []u8) -> int {
 	return tcp_pop(int(uintptr(arg)), buf)
+}
+
+/*
+answer_connect answers the held `connect` write once the conversation settles.
+Established answers the write, which is how a synchronous `dial` learns the
+stream is ready. Anything else is a connect that did not open, and the write
+fails so the caller is told rather than left waiting.
+*/
+answer_connect :: proc "contextless" (i: int) {
+	req, ok := lib9p.held(&srv, rawptr(uintptr(i)), wants_connect)
+	if !ok {
+		return
+	}
+	if m, is_write := req.msg.(vectra9.Twrite); is_write && tcps[i].state == .Established {
+		_ = lib9p.respond(req, vectra9.Rwrite{count = u32(len(m.data))})
+		return
+	}
+	_ = lib9p.respond(req, vectra9.error_reply(vectra9.ETIMEDOUT))
+}
+
+wants_connect :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
+	i := int(uintptr(arg))
+	#partial switch m in request^ {
+	case vectra9.Twrite:
+		node := libuser.fid_lookup(&fids, m.fid)
+		conv, kind, ok := tconv_of(node)
+		return ok && conv == i && kind == TCONV_CTL
+	}
+	return false
 }
 
 answer_listen :: proc "contextless" (i: int) {
@@ -532,29 +566,50 @@ drain_listen :: proc "contextless" (arg: rawptr, buf: []u8) -> int #no_bounds_ch
 
 // -- The control file and the text files --------------------------------------
 
-run_tcp_ctl :: proc "contextless" (i: int, text: string) -> bool #no_bounds_check {
+/*
+The fate of a control line, which decides how the write that carried it is
+answered. `Done` answers at once. `Connecting` holds the write until the
+handshake finishes, so a `connect` is synchronous the way Plan 9's is. The
+write returns when the conversation is established, and fails when it cannot
+be. `Bad` is a line that did not parse or a command that could not run.
+*/
+Tcp_Ctl :: enum {
+	Bad,
+	Done,
+	Connecting,
+}
+
+run_tcp_ctl :: proc "contextless" (i: int, text: string) -> Tcp_Ctl #no_bounds_check {
 	verb, rest := word(text)
 	switch verb {
 	case "announce":
 		port, ok := scan_port(rest)
 		if !ok {
-			return false
+			return .Bad
 		}
 		tcp_announce(i, port)
-		return true
+		return .Done
 	case "connect":
 		addr, _ := word(rest)
 		ip, port, ok := scan_addr(addr)
 		if !ok {
-			return false
+			return .Bad
 		}
 		tcp_connect(i, ip, port)
-		return true
+		// A loopback handshake finishes inside the call. Anything else is still
+		// in flight, and the write waits for it.
+		#partial switch tcps[i].state {
+		case .Established:
+			return .Done
+		case .Closed:
+			return .Bad
+		}
+		return .Connecting
 	case "hangup":
 		tcp_hangup(i)
-		return true
+		return .Done
 	}
-	return false
+	return .Bad
 }
 
 /*

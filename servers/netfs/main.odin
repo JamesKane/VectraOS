@@ -144,11 +144,15 @@ my_mac: libnet.MAC
 arp_table: libnet.Arp_Table
 
 /*
-A datagram whose destination is not in the ARP table waits here while the
-request for that address is out. One slot is enough for a bench, and for the
-common case of a first packet to a fresh peer. When the reply teaches us the
-address, `flush_pending` sends the frame that was waiting.
+A datagram whose destination is not in the ARP table waits in one of these
+slots while the request for that address is out. There is a slot per waiting
+destination, so a first packet to one fresh peer does not evict the one waiting
+on another. One packet waits per destination, the newest, the way a Plan 9
+`Arpent` holds its last block. When the reply teaches us the address,
+`flush_pending` sends what was waiting on it.
 */
+PENDING_SLOTS :: 4
+
 Pending :: struct {
 	have:  bool,
 	dst:   libnet.IP,
@@ -156,7 +160,8 @@ Pending :: struct {
 	blen:  int,
 	body:  [1500]u8,
 }
-pending: Pending
+pending: [PENDING_SLOTS]Pending
+pending_evict: int // The slot a new destination takes when every slot is busy.
 
 // What the probe did, which `/net/icmp` reports and the self-test reads.
 echo_sent: int
@@ -285,6 +290,7 @@ answers what the device's arrivals unblock.
 wake_udp: [MAX_CONV]bool
 wake_tcp: [MAX_TCP]bool
 wake_listen: [MAX_TCP]bool
+wake_connect: [MAX_TCP]bool
 
 // drain_wakes answers every held read a protocol raised a flag for. The ether
 // thread calls it, and nothing else does.
@@ -303,6 +309,10 @@ drain_wakes :: proc "contextless" () #no_bounds_check {
 		if wake_listen[i] {
 			wake_listen[i] = false
 			answer_listen(i)
+		}
+		if wake_connect[i] {
+			wake_connect[i] = false
+			answer_connect(i)
 		}
 	}
 }
@@ -353,13 +363,7 @@ ip_output :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) -> bool 
 	}
 	mac, known := libnet.arp_lookup(&arp_table, dst)
 	if !known {
-		if len(body) <= len(pending.body) {
-			pending.have = true
-			pending.dst = dst
-			pending.proto = proto
-			pending.blen = len(body)
-			copy(pending.body[:], body)
-		}
+		hold_pending(dst, proto, body)
 		send_arp_request(dst)
 		return false
 	}
@@ -371,25 +375,65 @@ ip_output :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) -> bool 
 }
 
 /*
-flush_pending sends the datagram that was waiting on an ARP reply, once the
-reply teaches us the address. It runs after each received frame, so a reply or a
-passively learned address both release the waiter. A miss here means the address
-is still unknown, and the frame keeps waiting.
+hold_pending keeps one datagram for a destination whose address is not yet
+known. A datagram already waiting for that destination is replaced, so the
+newest is the one that goes. When every slot is busy with a different
+destination, the oldest by eviction turn gives way.
+*/
+hold_pending :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) #no_bounds_check {
+	if len(body) > len(pending[0].body) {
+		return
+	}
+	slot := -1
+	for i in 0 ..< PENDING_SLOTS {
+		if pending[i].have && pending[i].dst == dst {
+			slot = i
+			break
+		}
+	}
+	if slot < 0 {
+		for i in 0 ..< PENDING_SLOTS {
+			if !pending[i].have {
+				slot = i
+				break
+			}
+		}
+	}
+	if slot < 0 {
+		slot = pending_evict
+		pending_evict = (pending_evict + 1) % PENDING_SLOTS
+	}
+	p := &pending[slot]
+	p.have = true
+	p.dst = dst
+	p.proto = proto
+	p.blen = len(body)
+	copy(p.body[:], body)
+}
+
+/*
+flush_pending sends the datagrams whose addresses a reply has now taught us. It
+runs after each received frame, so a reply or a passively learned address both
+release whatever was waiting on it. A slot whose destination is still unknown
+keeps waiting.
 */
 flush_pending :: proc "contextless" () #no_bounds_check {
-	if !pending.have {
-		return
+	for i in 0 ..< PENDING_SLOTS {
+		p := &pending[i]
+		if !p.have {
+			continue
+		}
+		mac, known := libnet.arp_lookup(&arp_table, p.dst)
+		if !known {
+			continue
+		}
+		p.have = false
+		at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
+		body_at := libnet.put_ipv4(out[:], at, my_ip, p.dst, p.proto, p.blen, 0)
+		copy(out[body_at:], p.body[:p.blen])
+		end := body_at + p.blen
+		_ = libuser.write(ether_fd, out[:end])
 	}
-	mac, known := libnet.arp_lookup(&arp_table, pending.dst)
-	if !known {
-		return
-	}
-	pending.have = false
-	at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
-	body_at := libnet.put_ipv4(out[:], at, my_ip, pending.dst, pending.proto, pending.blen, 0)
-	copy(out[body_at:], pending.body[:pending.blen])
-	end := body_at + pending.blen
-	_ = libuser.write(ether_fd, out[:end])
 }
 
 /*
@@ -889,11 +933,17 @@ handler :: proc "contextless" (
 		if i, kind, is_tcp := tconv_of(node); is_tcp {
 			switch kind {
 			case TCONV_CTL:
-				if !run_tcp_ctl(i, string(m.data)) {
+				// A `connect` is held until the handshake settles. The write
+				// is then synchronous: it returns when the conversation is
+				// established, and `answer_connect` is what answers it.
+				switch run_tcp_ctl(i, string(m.data)) {
+				case .Connecting:
+					lib9p.hold(&srv)
+				case .Done:
+					reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+				case .Bad:
 					reply^ = vectra9.error_reply(vectra9.EINVAL)
-					return
 				}
-				reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 			case TCONV_DATA:
 				if !tcp_write(i, m.data) {
 					reply^ = vectra9.error_reply(vectra9.EIO)
