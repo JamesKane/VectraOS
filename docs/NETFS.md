@@ -104,6 +104,12 @@ save.
   wants the clock too.
 - **Forwarding.** A datagram for another address is dropped, so a machine with
   two cards does not join its two links. Plan 9's `ipfwd` is the switch.
+- **A flush that reaches the far read.** `cmd/exportfs` answers reads on its
+  serve loop's own thread, so a read that parks in its namespace parks the
+  loop, and a `Tflush` that crosses the wire waits behind the parked read
+  rather than cancelling it. The client's read is cancelled at its own end;
+  the far read is not. Answering reads from threads of their own, as the
+  kernel servers do, is what fixes it.
 
 ### The rest of step 0
 
@@ -132,6 +138,17 @@ Three things say where a frame went, for the day a line does not cross.
 The bench's first card is the link between the machines, with no router on
 it, so the kernel's boot network check and the suite's gateway checks fail
 there by design. The router is on the second card, which `ipconfig` finds.
+
+## Serving 9P, not only dialling it
+
+`docs/FLEET.md` step 1 is 9P the other way: `cmd/exportfs` serves a namespace
+on a stream, `cmd/listen` runs it per connection, and `cmd/srv`, `cmd/import`
+and the `9fs` function mount what another machine serves. The kernel becomes a
+client of a posted stream the same way it is of a posted pipe --
+`kernel/pipe/chanwire.odin` builds an `mnt.Wire` over the conversation's data
+chan, and `vfs.is_device_server` is what keeps a posted device (`/dev/cons`)
+publishing itself rather than being spoken 9P over. `docs/TRANSPORT.md` has
+the wire; this names where the network's own files feed it.
 
 ## See also
 
