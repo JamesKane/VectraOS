@@ -581,6 +581,8 @@ not the last.
 
 ## See also
 
+- `docs/NETFS.md` -- the ring 3 stack step 0 builds, as it stands, and
+  the work on it a later session still has to do.
 - `docs/VECTRA9.md` -- the wire this crosses the network with, unchanged,
   and section 6's line about a distributed namespace, which this
   document retires.
