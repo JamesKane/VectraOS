@@ -2357,7 +2357,7 @@ init_kfs :: proc() -> bool {
 		emit(&klog, .Warn, &sink)
 		return false
 	}
-	if err := srv.mount(ns, "/srv/kfs", "/usr"); err != vfs.OK {
+	if err := srv.mount(ns, "/srv/kfs", "/usr", uname = user.hostowner_name()); err != vfs.OK {
 		sink := begin(&klog)
 		libodin.put_str(&sink, "kfs: /srv/kfs would not mount at /usr -- ")
 		libodin.put_str(&sink, vectra9.errno_name(err))

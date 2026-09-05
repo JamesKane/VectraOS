@@ -22,6 +22,7 @@ Proc_Info :: struct {
 	note_group: u64,
 	detached:   bool,
 	state:      string, // Ready, Running, Blocked, Stopped, Exited, or Faulted
+	user:       string, // Whose process it is
 	cwd:        string,
 	args:       string, // the arguments it was started with, as `/proc/n/args` shows them
 }
@@ -40,6 +41,7 @@ proc_info :: proc "contextless" (pid: u64) -> (info: Proc_Info, ok: bool) #no_bo
 	}
 	n := copy(info_name[:], p.name)
 	info.name = string(info_name[:n])
+	info.user = string(p.user[:p.ulen])
 	c := copy(info_cwd[:], current_directory(p))
 	info.cwd = string(info_cwd[:c])
 	a := copy(info_args[:], p.args_buf[:p.args_len])

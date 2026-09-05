@@ -201,6 +201,7 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 		parent = flags & RFNOWAIT != 0 ? 0 : parent.pid,
 		detached = flags & RFNOWAIT != 0,
 		note_group = flags & RFNOTEG != 0 ? 0 : parent.note_group,
+		inherit = parent,
 	)
 	if child == nil {
 		return -i64(vectra9.EAGAIN)

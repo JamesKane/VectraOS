@@ -55,6 +55,8 @@ Node :: struct {
 	slot:     u32, // Ordinal of its entry in the parent: block * 32 + position
 	removed:  bool,
 	fids:     int,
+	owner:    [OWNER_MAX]u8, // The inode's owner; empty for a file from before owners
+	olen:     int,
 }
 
 root: ^Node
@@ -66,6 +68,11 @@ Fid :: struct {
 	node: ^Node,
 	open: bool,
 	used: bool,
+	// The user the attach named, carried by every fid walked from it. What
+	// an open is checked against, and what a file made through it is
+	// owned by.
+	user: [OWNER_MAX]u8,
+	ulen: int,
 }
 
 fids: [MAX_FIDS]Fid
@@ -126,7 +133,7 @@ start :: proc "c" (block: ^abi.Args) {
 	}
 	if !mounted {
 		// The one directory a fresh volume has: the user's.
-		if !load_children(root) || make_child(root, "glenda", true, 0o775) == nil {
+		if !load_children(root) || make_child(root, "glenda", true, 0o775, "glenda") == nil {
 			libuser.eprint("kfs: cannot make /glenda\n")
 			libuser.exits("ream")
 		}
@@ -172,6 +179,40 @@ refresh :: proc(n: ^Node, in_: ^Inode) {
 	n.size = in_.size
 	n.version = in_.version
 	n.dir = in_.mode & DMDIR != 0
+	n.owner = in_.owner
+	n.olen = in_.olen
+}
+
+// -- Owners and modes ---------------------------------------------------------------
+
+fid_user :: proc(f: ^Fid) -> string {
+	return string(f.user[:f.ulen])
+}
+
+/*
+allowed says whether the user on `f` may do `want` -- a mask of 4 read, 2
+write, 1 execute -- to `n`. The owner is held to the owner's bits and anyone
+else to the world's; groups wait on `/adm/users`. A file with no owner, from
+a volume before owners, belongs to whoever asks: the owner's bits for all,
+which is what a volume before owners meant.
+*/
+allowed :: proc(n: ^Node, f: ^Fid, want: u32) -> bool {
+	bits := n.mode & 0o7
+	if n.olen == 0 || string(n.owner[:n.olen]) == fid_user(f) {
+		bits = (n.mode >> 6) & 0o7
+	}
+	return bits & want == want
+}
+
+// wanted turns 9P open flags into the mask `allowed` checks.
+wanted :: proc(flags: u32) -> u32 {
+	switch flags & 0o3 {
+	case 0o1:
+		return 2
+	case 0o2:
+		return 6
+	}
+	return 4
 }
 
 clone_string :: proc(s: string) -> string {
@@ -347,7 +388,7 @@ and written whole, then the entry that names it, then the node. A
 directory starts with one zeroed block so a listing has something to read.
 Nil when the volume is out of inodes or blocks, with nothing half made.
 */
-make_child :: proc(d: ^Node, name: string, dir: bool, perm: u32) -> ^Node {
+make_child :: proc(d: ^Node, name: string, dir: bool, perm: u32, owner: string) -> ^Node {
 	ino, ok := alloc_inode()
 	if !ok {
 		return nil
@@ -356,6 +397,7 @@ make_child :: proc(d: ^Node, name: string, dir: bool, perm: u32) -> ^Node {
 		mode    = perm & 0o777,
 		version = 1,
 	}
+	in_.olen = copy(in_.owner[:], owner)
 	if dir {
 		in_.mode |= DMDIR
 		block, got := alloc_block(true)
@@ -641,7 +683,12 @@ new_child :: proc(fid: vectra9.Fid, name: string, dir: bool, perm: u32, reply: ^
 		reply^ = vectra9.error_reply(vectra9.EEXIST)
 		return nil
 	}
-	n := make_child(d, name, dir, perm)
+	creator := fid_slot(fid)
+	if !allowed(d, creator, 2) {
+		reply^ = vectra9.error_reply(vectra9.EPERM)
+		return nil
+	}
+	n := make_child(d, name, dir, perm, fid_user(creator))
 	if n == nil {
 		reply^ = vectra9.error_reply(vectra9.ENOSPC)
 	}
@@ -664,6 +711,9 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 			reply^ = vectra9.error_reply(vectra9.ENFILE)
 			return
 		}
+		// The name the attach carries is who every fid from here is.
+		f := fid_slot(m.fid)
+		f.ulen = copy(f.user[:], m.uname)
 		reply^ = vectra9.Rattach{qid = qid_of(root)}
 
 	case vectra9.Twalk:
@@ -694,7 +744,7 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 			return
 		}
-		if !n.dir && m.flags & 0o3 != 0 && n.mode & 0o222 == 0 {
+		if !allowed(n, fid_slot(m.fid), wanted(m.flags)) {
 			reply^ = vectra9.error_reply(vectra9.EPERM)
 			return
 		}
@@ -805,6 +855,10 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 		if n == nil {
 			return
 		}
+		if n.olen > 0 && string(n.owner[:n.olen]) != fid_user(fid_slot(m.fid)) {
+			reply^ = vectra9.error_reply(vectra9.EPERM)
+			return
+		}
 		if m.valid & 0x1 != 0 {
 			in_: Inode
 			if !get_inode(n.ino, &in_) {
@@ -894,10 +948,20 @@ walk :: proc(m: vectra9.Twalk, reply: ^vectra9.Msg) {
 		answer.count += 1
 	}
 	if answer.count == m.count {
+		from := fid_slot(m.fid)
+		user: [OWNER_MAX]u8
+		ulen := 0
+		if from != nil {
+			user = from.user
+			ulen = from.ulen
+		}
 		if !fid_bind(m.newfid, cur) {
 			reply^ = vectra9.error_reply(vectra9.ENFILE)
 			return
 		}
+		nf := fid_slot(m.newfid)
+		nf.user = user
+		nf.ulen = ulen
 	}
 	reply^ = answer
 }

@@ -26,8 +26,13 @@ say :: proc "contextless" (text: string) {
 start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)
+	noauth := false
+	if len(args) >= 2 && args[1] == "-n" {
+		noauth = true
+		args = args[1:]
+	}
 	if len(args) < 3 {
-		say("usage: srv addr name\n")
+		say("usage: srv [-n] addr name\n")
 		libuser.exits("usage")
 	}
 	fd, ok := libnet.dial(args[1])
@@ -40,7 +45,14 @@ start :: proc "c" (block: ^abi.Args) {
 	// The handshake, before anything is posted: the host proves itself by
 	// the key its record carries, and this session proves itself as the
 	// user it runs as. What is posted is the sealed stream.
-	sealed, aerr := authenticate(fd, host_of(args[1]))
+	// `-n` posts the stream in the clear, with no handshake: the far side
+	// then names this session `none`, and what `none` may have is its
+	// decision. It is the control the plan asks for, and nothing else.
+	sealed := fd
+	aerr := ""
+	if !noauth {
+		sealed, aerr = authenticate(fd, host_of(args[1]))
+	}
 	if aerr != "" {
 		say("srv: ")
 		say(aerr)

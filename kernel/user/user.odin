@@ -183,6 +183,15 @@ Process :: struct {
 	*/
 	pid:    u64,
 	parent: u64,
+	/*
+	Whose process this is. Set when the process is made, from its parent
+	or, for one the kernel starts, from the host owner. Only a write of
+	`user` to its own `/proc/n/ctl` changes it after that, and only a
+	process of the host owner's may make that write, which is how a server
+	that proved a client becomes that client. `docs/FLEET.md` section 4.
+	*/
+	user:   [USER_MAX]u8,
+	ulen:   int,
 
 	/*
 	Whether this process is the kernel's to reap rather than a parent's to
@@ -1663,7 +1672,7 @@ through `unload`, which is what a record with nothing in it needs.
 and so does a child forked into a group of its own.
 */
 @(private)
-claim_slot :: proc "contextless" (parent: u64, detached: bool, note_group: u64) -> ^Process #no_bounds_check {
+claim_slot :: proc "contextless" (parent: u64, detached: bool, note_group: u64, inherit: ^Process = nil) -> ^Process #no_bounds_check {
 	guard := sync.acquire(&table_lock)
 	defer sync.release(&table_lock, guard)
 	for i in 0 ..< MAX_PROCESSES {
@@ -1679,11 +1688,95 @@ claim_slot :: proc "contextless" (parent: u64, detached: bool, note_group: u64) 
 			note_group = note_group == 0 ? next_pid : note_group,
 			rend_group = next_pid,
 		}
+		// A child is its parent's user; a process with no parent is the
+		// host owner's, which is who the kernel runs as.
+		if inherit != nil {
+			p.ulen = copy(p.user[:], inherit.user[:inherit.ulen])
+		} else {
+			p.ulen = copy(p.user[:], hostowner[:hostowner_len])
+		}
 		next_pid += 1
 		return p
 	}
 	return nil
 }
+
+// -- Users -----------------------------------------------------------------------
+
+USER_MAX :: 32
+
+/*
+The host owner: the user the machine itself runs as, `glenda` until `init`
+says otherwise by writing `hostowner` to its own ctl file, with the name the
+database gives the machine. Every process the kernel starts is the host
+owner's, and the host owner's processes are the ones that may become
+another user, which is what a server does for a client it has proved.
+*/
+hostowner: [USER_MAX]u8 = {0 = 'g', 1 = 'l', 2 = 'e', 3 = 'n', 4 = 'd', 5 = 'a'}
+hostowner_len: int = 6
+
+user_of :: proc "contextless" (p: ^Process) -> string {
+	if p == nil {
+		return string(hostowner[:hostowner_len])
+	}
+	return string(p.user[:p.ulen])
+}
+
+hostowner_name :: proc "contextless" () -> string {
+	return string(hostowner[:hostowner_len])
+}
+
+is_hostowner :: proc "contextless" (p: ^Process) -> bool {
+	return p != nil && string(p.user[:p.ulen]) == string(hostowner[:hostowner_len])
+}
+
+/*
+proc_set_user makes process `pid` the user `name`: `user` on `/proc/n/ctl`.
+Only the process itself may be changed, and only by a process of the host
+owner's. False is a refusal or a name too long.
+*/
+proc_set_user :: proc "contextless" (pid: u64, name: string) -> bool {
+	caller := current()
+	if caller == nil || caller.pid != pid || !is_hostowner(caller) || len(name) == 0 || len(name) > USER_MAX {
+		return false
+	}
+	caller.ulen = copy(caller.user[:], name)
+	return true
+}
+
+/*
+set_hostowner is `hostowner` on `/proc/n/ctl`: the caller, itself the host
+owner's, names the host and becomes that user. `init` does it once, with the
+name the database gives the machine, before anything else runs as the host.
+*/
+set_hostowner :: proc "contextless" (pid: u64, name: string) -> bool {
+	caller := current()
+	if caller == nil || caller.pid != pid || !is_hostowner(caller) || len(name) == 0 || len(name) > USER_MAX {
+		return false
+	}
+	hostowner_len = copy(hostowner[:], name)
+	caller.ulen = copy(caller.user[:], name)
+	return true
+}
+
+/*
+may_control says whether the calling process may stop, start, kill or note
+process `pid`: its own user's processes, or any as the host owner. A thread
+with no process -- the kernel's own -- may control anything, since it is the
+kernel. `docs/PROC.md`'s line that any process may stop any other retires.
+*/
+may_control :: proc "contextless" (pid: u64) -> bool {
+	caller := current()
+	if caller == nil || is_hostowner(caller) {
+		return true
+	}
+	guard := sync.acquire(&table_lock)
+	target := live_by_pid(pid)
+	same := target == nil || string(target.user[:target.ulen]) == string(caller.user[:caller.ulen])
+	sync.release(&table_lock, guard)
+	return same // A target that is gone is left for the operation to say ESRCH.
+}
+
 
 // -- Descriptors -------------------------------------------------------------
 //

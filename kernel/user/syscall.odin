@@ -761,7 +761,7 @@ sys_mount :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order:
 	case 2: how = .After
 	}
 
-	err := srv.mount(p.ns, source, target, how)
+	err := srv.mount(p.ns, source, target, how, uname = user_of(p))
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -851,6 +851,9 @@ sys_note :: proc(pid: u64, addr: uintptr, length: int) -> i64 {
 	// By owner rather than by parenthood, and there is one owner, so any
 	// live process: what `/proc/n/note` already allowed. The day processes
 	// have users, this asks whose.
+	if !may_control(pid) {
+		return -i64(vectra9.EPERM)
+	}
 	if !proc_note(pid, string(text[:length])) {
 		return -i64(vectra9.ESRCH)
 	}

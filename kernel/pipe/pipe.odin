@@ -113,6 +113,13 @@ Pipe :: struct {
 	wire_arena: []u8,
 	pinned:     ^vfs.Chan,
 	staked:     bool,
+	// A wire is being built over this pipe right now, by a mount that has
+	// released `Pipe_Table.build` to run the handshake without it. A second
+	// mount of the same pipe waits for the flag to clear rather than build a
+	// second wire; a mount of a *different* pipe proceeds, which is what
+	// stops a server that must build its own wire to answer a handshake from
+	// deadlocking against the client whose handshake is in flight.
+	building:   bool,
 }
 
 @(private)

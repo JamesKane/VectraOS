@@ -1,0 +1,5 @@
+# The control: the same tree with no handshake. exportfs names a client
+# that proved nothing `none`, and a private file refuses it while a public
+# one opens. docs/FLEET.md section 4's last proof; not a service to leave
+# on a machine that holds anything.
+exec exportfs -r /

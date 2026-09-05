@@ -126,6 +126,7 @@ user_programs := [?]User_Program {
 	{name = "cryptotest", path = "tests/crypto"},
 	{name = "factotum", path = "servers/factotum"},
 	{name = "authtest", path = "tests/auth"},
+	{name = "chmod", path = "cmd/chmod"},
 	{name = "muidemo", path = "apps/muidemo"},
 }
 
@@ -907,6 +908,7 @@ stage_vectra :: proc(host: string) {
 	// The services `listen` announces: one script per port.
 	ensure_dir(fmt.tprintf("%s/lib/service", root))
 	copy_file("lib/service/tcp564", fmt.tprintf("%s/lib/service/tcp564", root))
+	copy_file("lib/service/tcp565", fmt.tprintf("%s/lib/service/tcp565", root))
 	// /adm: the users and their public keys, one file for the fleet, and
 	// this machine's own host key, the private half only it carries.
 	ensure_dir(fmt.tprintf("%s/adm", root))

@@ -32,6 +32,11 @@ start :: proc "c" (block: ^abi.Args) {
 	args := libuser.args(block)
 	order := abi.ORDER_REPLACE
 	at := 1
+	noauth := false
+	if at < len(args) && args[at] == "-n" {
+		noauth = true
+		at += 1
+	}
 	if at < len(args) && args[at] == "-a" {
 		order = abi.ORDER_AFTER
 		at += 1
@@ -40,7 +45,7 @@ start :: proc "c" (block: ^abi.Args) {
 		at += 1
 	}
 	if len(args) < at + 2 {
-		say("usage: import [-a|-b] host mountpoint\n")
+		say("usage: import [-n] [-a|-b] host mountpoint\n")
 		libuser.exits("usage")
 	}
 	host := args[at]
@@ -54,30 +59,34 @@ start :: proc "c" (block: ^abi.Args) {
 		say("\n")
 		libuser.exits("dial")
 	}
-	who: [128]u8
-	user, dom, wok := libauth.whoami(who[:])
-	if !wok {
-		say("import: no user in the environment: /env/user and /env/dom\n")
-		libuser.exits("auth")
-	}
-	keybuf: [64]u8
-	key, has := libauth.host_key(host, keybuf[:])
-	if !has {
-		say("import: no key= for ")
-		say(host)
-		say(" in /lib/ndb/local\n")
-		libuser.exits("auth")
-	}
-	sess, done := libauth.auth_client(fd, user, dom, key)
-	if !done {
-		say("import: the handshake with ")
-		say(host)
-		say(" failed\n")
-		libuser.exits("auth")
+	stream := fd
+	if !noauth {
+		who: [128]u8
+		user, dom, wok := libauth.whoami(who[:])
+		if !wok {
+			say("import: no user in the environment: /env/user and /env/dom\n")
+			libuser.exits("auth")
+		}
+		keybuf: [64]u8
+		key, has := libauth.host_key(host, keybuf[:])
+		if !has {
+			say("import: no key= for ")
+			say(host)
+			say(" in /lib/ndb/local\n")
+			libuser.exits("auth")
+		}
+		sess, done := libauth.auth_client(fd, user, dom, key)
+		if !done {
+			say("import: the handshake with ")
+			say(host)
+			say(" failed\n")
+			libuser.exits("auth")
+		}
+		stream = sess.fd
 	}
 	path: [96]u8
 	posted := libuser.cat_into(path[:], "/srv/", host)
-	if !post(posted, sess.fd) {
+	if !post(posted, stream) {
 		say("import: cannot post ")
 		say(posted)
 		say("\n")

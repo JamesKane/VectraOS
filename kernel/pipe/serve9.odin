@@ -114,29 +114,52 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		return nil
 	}
 
-	sync.mutex_lock(&t.build)
-	defer sync.mutex_unlock(&t.build)
+	/*
+	Claim the right to build this pipe's wire without holding `build` across
+	the handshake below. Under `build`: an existing wire is returned, a pipe
+	another mount is already building is waited for, and otherwise the
+	`building` flag is set and `build` released. Only slot arithmetic is under
+	the lock. The handshake blocks, and may itself mount another server to
+	answer, so it runs with no global lock held; that is what stops it
+	deadlocking against the client whose handshake is in flight.
+	*/
+	for {
+		sync.mutex_lock(&t.build)
+		g := sync.acquire(&t.lock)
+		alive := live(p) && u64(node_of(p.id, end)) == c.qid.path
+		existing := p.server9
+		wired_end := p.wire_end
+		busy := p.building
+		sync.release(&t.lock, g)
 
-	// Re-read under the build lock: the pipe may have died, or another mount
-	// may have finished the build, while this caller waited its turn.
-	g := sync.acquire(&t.lock)
-	alive := live(p) && u64(node_of(p.id, end)) == c.qid.path
-	existing := p.server9
-	wired_end := p.wire_end
-	sync.release(&t.lock, g)
-
-	if !alive {
-		return nil
-	}
-	if existing != nil {
-		if wired_end != end {
+		if !alive {
+			sync.mutex_unlock(&t.build)
 			return nil
 		}
-		// The caller's stake, released by `srv.mount` once the attach holds
-		// chans of its own. It is what stops a racing removal from tearing
-		// the wire down under the mount that just found it.
-		vfs.server_pin(existing)
-		return existing
+		if existing != nil {
+			sync.mutex_unlock(&t.build)
+			if wired_end != end {
+				return nil
+			}
+			vfs.server_pin(existing)
+			return existing
+		}
+		if busy {
+			sync.mutex_unlock(&t.build)
+			sync.delay(1)
+			continue
+		}
+		g2 := sync.acquire(&t.lock)
+		p.building = true
+		sync.release(&t.lock, g2)
+		sync.mutex_unlock(&t.build)
+		break
+	}
+
+	clear_building :: proc(t: ^Pipe_Table, p: ^Pipe) {
+		g := sync.acquire(&t.lock)
+		p.building = false
+		sync.release(&t.lock, g)
 	}
 
 	we := new(Wire_End)
@@ -148,6 +171,7 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		delete(arena)
 		free(w)
 		free(sv)
+		clear_building(t, p)
 		return nil
 	}
 	we^ = Wire_End{p = p, end = end}
@@ -158,6 +182,7 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		delete(arena)
 		free(w)
 		free(sv)
+		clear_building(t, p)
 		return nil
 	}
 
@@ -167,11 +192,10 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	if !handshake(&sv.session) {
 		/*
 		The server never said 9P2000.L, so the connection comes down. Closing
-		the wire's end is what unparks the reader -- it sees EOF and leaves --
-		and `wire_join` is what makes the frees below safe. The pin goes on
-		first, for the reason `wire_release` gives: a far side that already
-		went would make this close the last, and the slot must outlive the
-		reader parked on it.
+		the wire's end unparks the reader -- it sees EOF and leaves -- and
+		`wire_join` makes the frees safe. `server9` is set across the close so
+		`close_end` does not reclaim the slot under the parked reader, and both
+		it and `building` are cleared after the join.
 		*/
 		g3 := sync.acquire(&t.lock)
 		p.server9 = sv
@@ -179,6 +203,10 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		close_end(p, end)
 		mnt.wire_join(w)
 		unpin(p)
+		g4 := sync.acquire(&t.lock)
+		p.server9 = nil
+		p.building = false
+		sync.release(&t.lock, g4)
 		free(we)
 		delete(arena)
 		free(w)
@@ -186,17 +214,10 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		return nil
 	}
 
-	/*
-	The hook and the stakes go on before the server is findable. No drop to
-	zero can then miss the hook, and no concurrent drop can fire it early.
-	Two stakes: the /srv name's, released by `unpost` when the name goes,
-	and the calling mount's, released by `srv.mount` after its attach. No
-	lock, because nothing can reach `sv` yet.
-	*/
 	sv.release = wire_release
 	sv.pins = 2
 
-	g2 := sync.acquire(&t.lock)
+	g5 := sync.acquire(&t.lock)
 	p.server9 = sv
 	p.wire_end = end
 	p.wire_arena = arena
@@ -206,7 +227,8 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	// to stop. `wire_release` is what closes it, last of all.
 	p.pinned = vfs.chan_incref(c)
 	p.staked = true
-	sync.release(&t.lock, g2)
+	p.building = false
+	sync.release(&t.lock, g5)
 	return sv
 }
 

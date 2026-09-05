@@ -198,6 +198,12 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_boun
 		text := trim_newline(string(m.data))
 		switch f {
 		case .Note:
+			// Another user's process is not this one's to note. The host
+			// owner's processes may note any; see `user.may_control`.
+			if !user.may_control(pid) {
+				reply^ = vectra9.error_reply(vectra9.EPERM)
+				return
+			}
 			if !user.proc_note(pid, text) {
 				reply^ = vectra9.error_reply(vectra9.ESRCH)
 				return
@@ -205,14 +211,36 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_boun
 			d.notes += 1
 		case .Ctl:
 			did := false
-			switch text {
-			case "kill":
-				did = user.proc_kill(pid)
-				d.kills += 1
-			case "stop":
-				did = user.proc_stop(pid)
-			case "start":
-				did = user.proc_start(pid)
+			switch {
+			case text == "kill" || text == "stop" || text == "start":
+				if !user.may_control(pid) {
+					reply^ = vectra9.error_reply(vectra9.EPERM)
+					return
+				}
+				switch text {
+				case "kill":
+					did = user.proc_kill(pid)
+					d.kills += 1
+				case "stop":
+					did = user.proc_stop(pid)
+				case "start":
+					did = user.proc_start(pid)
+				}
+			case len(text) > 5 && text[:5] == "user ":
+				// `user name`: become that user. Only a process of the host
+				// owner's, and only for itself, which is what a server does
+				// for the client it proved. A refusal is EPERM.
+				if !user.proc_set_user(pid, text[5:]) {
+					reply^ = vectra9.error_reply(vectra9.EPERM)
+					return
+				}
+				did = true
+			case len(text) > 10 && text[:10] == "hostowner ":
+				if !user.set_hostowner(pid, text[10:]) {
+					reply^ = vectra9.error_reply(vectra9.EPERM)
+					return
+				}
+				did = true
 			case:
 				reply^ = vectra9.error_reply(vectra9.EINVAL)
 				return
@@ -341,6 +369,10 @@ render :: proc(pid: u64, f: File, out: []u8) -> int {
 		libodin.put_uint(&sink, info.note_group)
 		libodin.put_str(&sink, info.detached ? " detached " : " held ")
 		libodin.put_str(&sink, info.cwd)
+		// The user, last, so a reader that counts fields from the front --
+		// `ps` -- keeps its columns. Plan 9 puts it second.
+		libodin.put_str(&sink, " ")
+		libodin.put_str(&sink, info.user)
 		libodin.put_str(&sink, "\n")
 		return len(libodin.str(&sink))
 	case .Ns:

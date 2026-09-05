@@ -77,7 +77,15 @@ Inode :: struct {
 	mtime:    u64,
 	direct:   [DIRECT]u32,
 	indirect: u32,
+	// Whose file it is: the user that made it, bytes 96 to 123 of the
+	// record, zero-padded. A volume from before owners has zeroes there,
+	// and a file with no owner is open to whoever the mode lets in.
+	owner:    [OWNER_MAX]u8,
+	olen:     int,
 }
+
+OWNER_MAX :: 28
+OWNER_AT :: 96
 
 Volume :: struct {
 	fd:         int,
@@ -433,6 +441,15 @@ get_inode :: proc "contextless" (ino: u32, out: ^Inode) -> bool #no_bounds_check
 		out.direct[i] = le32(e[40 + 4 * i:])
 	}
 	out.indirect = le32(e[88:])
+	out.olen = 0
+	for i in 0 ..< OWNER_MAX {
+		c := e[OWNER_AT + i]
+		if c == 0 {
+			break
+		}
+		out.owner[i] = c
+		out.olen = i + 1
+	}
 	return true
 }
 
@@ -459,6 +476,9 @@ put_inode :: proc "contextless" (ino: u32, in_: ^Inode) -> bool #no_bounds_check
 		put32(e[40 + 4 * i:], in_.direct[i])
 	}
 	put32(e[88:], in_.indirect)
+	for i in 0 ..< OWNER_MAX {
+		e[OWNER_AT + i] = i < in_.olen ? in_.owner[i] : 0
+	}
 	return bwrite(block)
 }
 

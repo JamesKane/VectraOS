@@ -116,6 +116,7 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 		parent = parent != nil ? parent.pid : 0,
 		detached = false,
 		note_group = parent != nil ? parent.note_group : 0,
+		inherit = parent,
 	)
 	if p != nil && parent != nil {
 		p.rend_group = parent.rend_group

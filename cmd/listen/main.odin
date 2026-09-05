@@ -131,7 +131,13 @@ run_service :: proc "contextless" (dir: string, script: string, accepted: string
 	if data < 0 {
 		libuser.exits("data")
 	}
-	pid := libuser.rfork(abi.RFPROC | abi.RFFDG)
+	// A world of its own for the service, as 9front's `listen1` forks it:
+	// `RFFDG|RFPROC|RFMEM|RFENVG|RFNAMEG|RFNOTEG|RFREND`. Vectra has the
+	// namespace, environment and note-group copies of that set. It matters
+	// because an authenticated `exportfs` becomes the client and remounts
+	// `/usr` as them, and writes its user into the environment; neither may
+	// reach the other services or `listen`.
+	pid := libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFNAMEG | abi.RFENVG | abi.RFNOTEG)
 	if pid == 0 {
 		_ = libuser.dup(int(data), 0)
 		_ = libuser.dup(int(data), 1)

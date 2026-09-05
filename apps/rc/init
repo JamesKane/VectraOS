@@ -57,6 +57,10 @@ dom=home
 if(test -e /net/sysname) sysname=`{cat /net/sysname}
 if(~ $#sysname 0) sysname=vectra
 user=$sysname
+# The kernel's word for it: this process and every process after it run
+# as the host, and the host owner's processes are the ones that may become
+# a client they have proved. See /proc/n/ctl in proc(3).
+echo hostowner $sysname > /proc/$pid/ctl
 if(test -e /adm/hostkey) {
 	hostkey=`{cat /adm/hostkey}
 	echo key proto=noise user=$sysname dom=$dom '!private='^$hostkey > /mnt/factotum/ctl

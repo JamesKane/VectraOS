@@ -88,7 +88,10 @@ start :: proc "c" (block: ^abi.Args) {
 		}
 		proven_len = copy(proven[:], libauth.session_name(&sess))
 		serve_fd = sess.fd
+	} else {
+		proven_len = copy(proven[:], libauth.NONE)
 	}
+	become(string(proven[:proven_len]))
 	for i in 0 ..< MAX_FIDS {
 		fids[i].fd = -1
 	}
@@ -520,4 +523,49 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 		return
 	}
 	reply^ = vectra9.Rreaddir{data = vectra9.written(&c)}
+}
+
+/*
+become makes this process the user the handshake proved -- or `none` when
+there was no handshake -- and attaches the writable tree again as that user.
+`/usr` was mounted by the kernel at boot as the host; a fid from that attach
+answers for the host, not the client. A fresh mount from this process, now
+the client's, carries the client's name in Tattach, and every open the tree
+checks is checked against it. That is what makes a private file refuse. A
+process of the host owner's may make the `user` write; anything else stays
+who it is, which the far side then sees in its own status line.
+*/
+become :: proc "contextless" (name: string) {
+	path: [48]u8
+	pid := libuser.getpid()
+	ctl := libuser.open(libuser.cat_into(path[:], "/proc/", pidtext(pid), "/ctl"), abi.O_WRONLY)
+	if ctl < 0 {
+		return
+	}
+	line: [64]u8
+	_ = libuser.write(int(ctl), transmute([]u8)libuser.cat_into(line[:], "user ", name))
+	_ = libuser.close(int(ctl))
+}
+
+@(private = "file")
+pid_buf: [24]u8
+
+@(private = "file")
+pidtext :: proc "contextless" (pid: u64) -> string {
+	n := 0
+	v := pid
+	tmp: [24]u8
+	if v == 0 {
+		tmp[n] = '0'
+		n += 1
+	}
+	for v > 0 {
+		tmp[n] = u8('0' + v % 10)
+		n += 1
+		v /= 10
+	}
+	for i in 0 ..< n {
+		pid_buf[i] = tmp[n - 1 - i]
+	}
+	return string(pid_buf[:n])
 }

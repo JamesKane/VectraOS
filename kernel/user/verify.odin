@@ -485,6 +485,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_mui(&r)
 	verify_netfs(&r)
 	verify_cryptotest(&r)
+	verify_users(&r)
 	verify_factotum(&r)
 	verify_netserver(&r)
 	verify_rc(&r)
@@ -7362,6 +7363,38 @@ verify_factotum :: proc(r: ^Result) {
 	finish(r, p, "and factotum is taken down")
 	pipe.quiesce()
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/factotum") == vfs.OK, "and its mount comes down")
+}
+
+/*
+verify_users is the kernel's part of `docs/FLEET.md` section 4: a process has
+a user, the host owner's by default, which its status line carries; only a
+process of the host owner's may change its own, and a kernel thread with no
+process cannot ask for it at all.
+*/
+@(private = "file")
+verify_users :: proc(r: ^Result) {
+	p, serr := spawn_path(nil, "/bin/echo", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "a program starts as the host owner") {
+		return
+	}
+	r.programs += 1
+	check(r, wait(p, PATIENCE), "and ends")
+	check(r, user_of(p) == hostowner_name(), "with the host owner's name on it")
+	spath: [32]u8
+	ssink := libodin.sink_from(spath[:])
+	libodin.put_str(&ssink, "/proc/")
+	libodin.put_uint(&ssink, p.pid)
+	libodin.put_str(&ssink, "/status")
+	if c, err := vfs.open_path(vfs.boot_namespace, libodin.str(&ssink), vfs.O_RDONLY); err == vfs.OK {
+		line: [256]u8
+		n, _ := vfs.chan_read(c, 0, line[:])
+		vfs.chan_close(c)
+		text := string(line[:n])
+		tail := hostowner_name()
+		check(r, len(text) > len(tail) + 2 && text[len(text) - len(tail) - 1:len(text) - 1] == tail, "which its status line ends with")
+	}
+	check(r, !proc_set_user(p.pid, "alice"), "and no thread without a process can rename it")
+	finish(r, p, "and it is taken down")
 }
 
 /*

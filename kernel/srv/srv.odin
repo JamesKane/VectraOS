@@ -505,6 +505,7 @@ mount :: proc(
 	target: string,
 	order: vfs.Mount_Order = .Replace,
 	flags: vfs.Mount_Flags = {},
+	uname: string = "vectra",
 ) -> vfs.Errno {
 	server, endpoint, err := service_at(ns, path)
 	if err != vfs.OK {
@@ -555,7 +556,9 @@ mount :: proc(
 	}
 
 	source: ^vfs.Chan
-	source, err = vfs.attach(server)
+	// The attach carries the mounting process's user: `uname` in Tattach
+	// is what a server names a client by when nothing else has.
+	source, err = vfs.attach(server, "", uname)
 	if err != vfs.OK {
 		return err
 	}
