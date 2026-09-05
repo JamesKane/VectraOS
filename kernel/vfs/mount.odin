@@ -42,6 +42,11 @@ Mount_Order :: enum {
 	Replace, // Clear the list and become its only member
 	Before, // Push onto the front: searched first
 	After, // Push onto the back: searched last
+	// `Before` and `After` onto a directory with no union yet make the
+	// directory itself the first member, so its own entries stay visible
+	// beside what was mounted. That is Plan 9's bind(2): only MREPL hides
+	// the old directory. A mount point inside it, such as `/mnt/factotum`
+	// under the draw server's windows, is then still reachable.
 }
 
 // Create marks the member new files are made in. Exactly one member should
@@ -322,12 +327,47 @@ bind :: proc(
 	*/
 	displaced: ^Mount
 
+	/*
+	The directory itself, as a member, for a `Before` or `After` onto a
+	directory with no union yet. Cloned here, above the locks, because a
+	clone is a walk. Kept only if the head turns out to be fresh; otherwise
+	it is closed after the locks go, since a close is a clunk.
+	*/
+	self_m: ^Mount
+	if order != .Replace {
+		self_chan, serr := chan_clone(over)
+		if serr != OK {
+			chan_close(member_chan)
+			free(m)
+			return serr
+		}
+		if self_chan.union_head != nil {
+			mount_point_release(self_chan.union_head)
+			self_chan.union_head = nil
+		}
+		self_m = new(Mount)
+		if self_m == nil {
+			chan_close(self_chan)
+			chan_close(member_chan)
+			free(m)
+			return vectra9.ENOMEM
+		}
+		self_m.chan = self_chan
+		self_m.source_len = u8(copy(self_m.source[:], target_name))
+		self_m.target_len = u8(copy(self_m.target[:], target_name))
+	}
+	unused_self: ^Mount
+
 	sync.wlock(&ns.lock)
 	mp := mount_head_create(ns, over)
 	if mp == nil {
 		sync.wunlock(&ns.lock)
 		chan_close(member_chan)
 		free(m)
+		if self_m != nil {
+			chan_close(self_m.chan)
+			free(self_m)
+		}
 		return vectra9.ENOMEM
 	}
 
@@ -344,6 +384,15 @@ bind :: proc(
 	}
 	m.id = mp.next_member_id
 	mp.next_member_id += 1
+	if self_m != nil {
+		if mp.members == nil && mp.next_member_id != 0 {
+			self_m.id = mp.next_member_id
+			mp.next_member_id += 1
+			mp.members = self_m
+		} else {
+			unused_self = self_m
+		}
+	}
 	switch order {
 	case .Replace:
 		displaced = mp.members
@@ -366,6 +415,10 @@ bind :: proc(
 	sync.wunlock(&ns.lock)
 
 	members_free(displaced)
+	if unused_self != nil {
+		chan_close(unused_self.chan)
+		free(unused_self)
+	}
 	return OK
 }
 

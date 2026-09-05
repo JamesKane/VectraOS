@@ -111,6 +111,12 @@ wordchr :: proc(c: u8) -> bool {
 	return true
 }
 
+// next_is_paren says whether the character the lexer stands on opens a list.
+next_is_paren :: proc(in_: ^Input) -> bool {
+	c, ok := peekc(in_)
+	return ok && c == '('
+}
+
 // idchr says whether a character continues a variable name after `$`.
 idchr :: proc(c: u8) -> bool {
 	return c == '_' || c == '*' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c >= 0x80
@@ -397,8 +403,11 @@ lex_word :: proc(lx: ^Lexer, line: int) -> Token {
 	if lx.afterdol {
 		lx.lastdol = true
 		lx.afterdol = false
-	} else if eq >= 0 && eq == len(text) - 1 {
-		// `x=` before `(a b)` or `$y`: the value follows, not a caret.
+	} else if eq >= 0 && eq == len(text) - 1 && next_is_paren(in_) {
+		// `x=` before `(a b)`: the list is the value, not a caret's partner.
+		// Before `$y` or a quoted word the caret goes in, as Plan 9's rc
+		// joins them: `echo p=$x` prints `p=1`, and `x=$y` reaches the
+		// parser as one word, whose leftmost piece `x=` it peels off.
 		lx.lastword = false
 	}
 
