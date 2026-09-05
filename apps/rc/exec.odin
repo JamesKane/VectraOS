@@ -60,6 +60,13 @@ run :: proc(sh: ^Shell, n: ^Node) {
 		pid := fork_node(sh, n.a)
 		if pid > 0 {
 			apid := make([]string, 1, sh.temp)
+			if apid == nil {
+				// The word is lost rather than the shell: an interactive
+				// shell that dies here takes the console with it.
+				libfmt.fprint(2, "rc: out of memory\n")
+				set_status(sh, "out of memory")
+				return
+			}
 			apid[0] = itoa(sh, int(pid))
 			set_var(sh, "apid", apid)
 		}

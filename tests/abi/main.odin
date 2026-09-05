@@ -274,6 +274,45 @@ main :: proc(args: []string) {
 		fail("await quiet")
 	}
 
+	// -- A heap written after a fork still grows ---------------------------
+	/*
+	A fork marks a run copy-on-write, and the parent's first write to it
+	copies that page, which turns the run into the list shape. `segbrk` has
+	to find the segment by what it is, not by its shape, or a shell that
+	forked a program could never grow its heap again. The child sleeps so the
+	parent's write is the one that copies, and then grows its own copy too.
+	*/
+	PAGE :: 4096
+	run, rerr := libuser.segalloc(2 * PAGE)
+	if rerr != 0 {
+		fail("segalloc run")
+	}
+	holder := libuser.rfork(abi.RFPROC | abi.RFFDG)
+	if holder == 0 {
+		_ = libuser.sleep(20)
+		(cast(^u8)run)^ = 2
+		if libuser.segbrk(run, run + 4 * PAGE) != 0 {
+			libuser.exits("child segbrk")
+		}
+		(cast(^u8)(run + 3 * PAGE))^ = 3
+		libuser.exit(0)
+	}
+	if holder < 0 {
+		fail("rfork holder")
+	}
+	(cast(^u8)run)^ = 1
+	if libuser.segbrk(run, run + 4 * PAGE) != 0 {
+		fail("segbrk after fork")
+	}
+	(cast(^u8)(run + 3 * PAGE))^ = 4
+	n = libuser.await(u64(holder), said[:])
+	if n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d", holder) {
+		fail("child segbrk after fork")
+	}
+	if (cast(^u8)run)^ != 1 || libuser.segdetach(run) != 0 {
+		fail("run after fork")
+	}
+
 	// -- A sleep past the old cap, and a rendezvous between two processes --
 	if libuser.sleep(150) != 150 {
 		fail("sleep long")

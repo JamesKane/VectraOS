@@ -190,6 +190,10 @@ run_input :: proc(sh: ^Shell, in_: ^Input) {
 // child the shell forks, which is a different process with the same tables.
 set_pid :: proc(sh: ^Shell) {
 	one := make([]string, 1, sh.temp)
+	if one == nil {
+		libfmt.fprint(2, "rc: out of memory\n")
+		libuser.exits("out of memory")
+	}
 	one[0] = itoa(sh, int(libuser.getpid()))
 	set_var(sh, "pid", one)
 }

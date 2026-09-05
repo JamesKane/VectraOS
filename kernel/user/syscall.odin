@@ -1669,7 +1669,9 @@ sys_segdetach :: proc(addr: uintptr) -> i64 {
 		return -i64(vectra9.EINVAL)
 	}
 	s := p.segs[at]
-	if !segment_is_run(s) {
+	// By kind rather than shape, as `proc_segment_at` answers: a run a fork
+	// turned into a list is still the process's to give back.
+	if !run_kind(s.kind) {
 		return -i64(vectra9.EINVAL)
 	}
 	if mem.unmap_user(p.space, s.va, s.pages) != .None {
@@ -1684,14 +1686,24 @@ sys_segdetach :: proc(addr: uintptr) -> i64 {
 	return 0
 }
 
-// proc_segment_at is the segment holding one address, or nil. `syssegbrk`
-// walks `up->seg` the same way and for the same reason: a client names an
-// address inside a run rather than the run.
+/*
+proc_segment_at is the segment holding one address, or nil. `syssegbrk`
+walks `up->seg` the same way and for the same reason: a client names an
+address inside a run rather than the run.
+
+It answers by kind, not by shape. A run is born contiguous, and a fork's
+copy-on-write turns it into the list shape the moment either side writes a
+page -- see `cow_copy` and `segment_make_list`. The segment is the same
+anonymous memory at the same address, and `segment_grow` and
+`segment_shrink` both handle a list. Answering only a run here left every
+forking program unable to grow its heap after its first write, which a shell
+found: `rc` forked a program, wrote its heap, and its next `segbrk` was EINVAL.
+*/
 @(private)
 proc_segment_at :: proc "contextless" (p: ^Process, addr: uintptr) -> ^Segment #no_bounds_check {
 	for i in 0 ..< p.seg_count {
 		s := p.segs[i]
-		if s == nil || !segment_is_run(s) {
+		if s == nil || !run_kind(s.kind) {
 			continue
 		}
 		span := uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
