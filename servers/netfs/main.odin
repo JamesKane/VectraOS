@@ -1001,8 +1001,22 @@ handler :: proc "contextless" (
 		}
 
 	case vectra9.Tclunk:
+		// A listener that the clunked fid held open is freed here. A program
+		// keeps the `listen` file open to hold the accepting role, the way Plan
+		// 9 keeps a conversation open through a file. Clunking it, on purpose or
+		// by exiting, ends the role and frees the conversation, so it no longer
+		// answers SYNs nobody is left to accept.
+		node := libuser.fid_lookup(&fids, m.fid)
+		held_open := libuser.fid_is_open(&fids, m.fid)
 		cs_forget(m.fid)
 		libuser.fid_release(&fids, m.fid)
+		if held_open {
+			if i, kind, ok := tconv_of(node); ok && kind == TCONV_LISTEN {
+				if tcps[i].used && tcps[i].state == .Listen {
+					tcp_release(i)
+				}
+			}
+		}
 		reply^ = vectra9.Rclunk{}
 
 	case vectra9.Tremove:

@@ -406,6 +406,21 @@ tcp_announce :: proc "contextless" (i: int, port: u16) #no_bounds_check {
 }
 
 // tcp_hangup starts the close from whichever side this end is on.
+/*
+tcp_release frees a listener whose last open `listen` file was clunked. A
+program that stops listening, or exits, then leaves no conversation matching
+SYNs that nothing will accept. This is Plan 9's teardown of a listen
+conversation when its files close: the conversation stops matching, and its slot
+is free again. The wake flags clear first. A flag raised for the old
+conversation must not answer a held read on the one that reuses the slot.
+*/
+tcp_release :: proc "contextless" (i: int) #no_bounds_check {
+	wake_tcp[i] = false
+	wake_listen[i] = false
+	wake_connect[i] = false
+	tcp_free(i)
+}
+
 tcp_hangup :: proc "contextless" (i: int) #no_bounds_check {
 	c := &tcps[i]
 	#partial switch c.state {

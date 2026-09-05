@@ -33,30 +33,45 @@ dial connects to `addr` and answers a descriptor on the conversation's data
 file. The conversation stays open for as long as that descriptor does. A
 failure answers false, and a caller that wants to know which step failed reads
 `/net/cs` itself.
+
+A caller that means to `hangup` when it is done wants `dial_dir`, which also
+answers the conversation's directory. Closing the data descriptor ends this
+program's use of the stream but does not close the conversation, the way a
+`hangup` does.
 */
 dial :: proc "contextless" (addr: string) -> (int, bool) #no_bounds_check {
+	scratch: [DIAL_MAX]u8
+	fd, _, ok := dial_dir(addr, scratch[:])
+	return fd, ok
+}
+
+/*
+dial_dir is `dial` that also answers the conversation's directory, copied into
+`into`. A caller keeps it to `hangup` the conversation, since closing the data
+descriptor does not.
+*/
+dial_dir :: proc "contextless" (addr: string, into: []u8) -> (int, int, bool) #no_bounds_check {
 	line: [DIAL_MAX]u8
 	n := cs_query(addr, line[:])
 	if n <= 0 {
-		return -1, false
+		return -1, 0, false
 	}
 	clone_path, remote, ok := split_answer(string(line[:n]))
 	if !ok {
-		return -1, false
+		return -1, 0, false
 	}
 
 	// The conversation, and the directory its files are in.
-	dir: [DIAL_MAX]u8
-	dirlen, cok := take_conv(clone_path, dir[:])
+	dirlen, cok := take_conv(clone_path, into)
 	if !cok {
-		return -1, false
+		return -1, 0, false
 	}
 
 	// Connect it.
 	path: [DIAL_MAX]u8
-	ctl := libuser.open(join(path[:], string(dir[:dirlen]), "ctl"), abi.O_WRONLY)
+	ctl := libuser.open(join(path[:], string(into[:dirlen]), "ctl"), abi.O_WRONLY)
 	if ctl < 0 {
-		return -1, false
+		return -1, 0, false
 	}
 	cmd: [DIAL_MAX]u8
 	sink := libodin.sink_from(cmd[:])
@@ -70,15 +85,32 @@ dial :: proc "contextless" (addr: string) -> (int, bool) #no_bounds_check {
 	wrote := libuser.write(int(ctl), transmute([]u8)text) == i64(len(text))
 	_ = libuser.close(int(ctl))
 	if !wrote {
-		return -1, false
+		return -1, 0, false
 	}
 
 	// And the stream.
-	data := libuser.open(join(path[:], string(dir[:dirlen]), "data"), abi.O_RDWR)
+	data := libuser.open(join(path[:], string(into[:dirlen]), "data"), abi.O_RDWR)
 	if data < 0 {
-		return -1, false
+		return -1, 0, false
 	}
-	return int(data), true
+	return int(data), dirlen, true
+}
+
+/*
+hangup closes the conversation whose directory is `dir`, by writing `hangup` to
+its control file. A dialer that closes only its data descriptor leaves the
+conversation open, and its far end waiting. This sends the close the far end is
+waiting for.
+*/
+hangup :: proc "contextless" (dir: string) #no_bounds_check {
+	path: [DIAL_MAX]u8
+	ctl := libuser.open(join(path[:], dir, "ctl"), abi.O_WRONLY)
+	if ctl < 0 {
+		return
+	}
+	line: string = "hangup"
+	_ = libuser.write(int(ctl), transmute([]u8)line)
+	_ = libuser.close(int(ctl))
 }
 
 /*

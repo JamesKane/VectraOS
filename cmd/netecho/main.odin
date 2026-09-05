@@ -132,9 +132,11 @@ echo_conversation :: proc "contextless" (lfd: i64, served: string) {
 	_ = libuser.close(int(dfd))
 }
 
-// dial_one dials `spec`, says `word`, and prints what comes back.
+// dial_one dials `spec`, says `word`, and prints what comes back. It hangs up
+// when it is done. The far end then sees the close, and its own read ends
+// rather than waiting for bytes that will not come.
 dial_one :: proc "contextless" (spec: string, word: string) {
-	fd, ok := libnet.dial(spec)
+	fd, dirlen, ok := libnet.dial_dir(spec, dir[:])
 	if !ok {
 		fail("netecho: cannot dial")
 	}
@@ -142,6 +144,7 @@ dial_one :: proc "contextless" (spec: string, word: string) {
 		fail("netecho: cannot write")
 	}
 	got := libuser.read(fd, buf[:])
+	libnet.hangup(string(dir[:dirlen]))
 	_ = libuser.close(fd)
 	if got <= 0 {
 		fail("netecho: nothing came back")

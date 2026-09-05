@@ -454,6 +454,17 @@ wire_call_for :: proc "contextless" (
 	}
 
 	wire_flush(w, r)
+	// The reply may have won the race with the flush. It landed while the
+	// Tflush was in flight, before the flush reached the server. Plan 9's
+	// `mntflushfree` keeps such a reply, marking only a still-unanswered
+	// request as flushed. Keep it too, rather than lose an answer that
+	// arrived to a caller that asked again.
+	if intrinsics.volatile_load(&r.state) == .Done {
+		err = wire_settle(w, r, buf)
+		reply^ = r.reply
+		wire_give_back(w, r)
+		return err
+	}
 	wire_give_back(w, r)
 	return .Interrupted
 }
