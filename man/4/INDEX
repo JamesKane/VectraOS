@@ -1,5 +1,7 @@
 0intro 0intro
 consrv consrv
+cs cs
+dns dns
 eiafs eiafs
 fatfs fatfs
 intro 0intro

@@ -6,7 +6,7 @@
 sys=vectra ip=10.0.2.15 ether=525400123456
 	cputype=amd64
 
-sys=gw ip=10.0.2.2
+sys=gw ip=10.0.2.2 dns=10.0.2.3
 
 # The two-machine bench (docs/FLEET.md step 0). Each finds itself by the card
 # address the `fleet` target gives it.

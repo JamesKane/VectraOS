@@ -69,7 +69,6 @@ conv_node :: proc "contextless" (i: int, kind: i32) -> i32 {
 
 NODE_TCP :: i32(7) // The tcp directory
 NODE_TCLONE :: i32(8) // tcp/clone
-NODE_CS :: i32(9) // The connection server's file
 NODE_LOCAL :: i32(10) // This machine's own address, resolved from ndb
 NODE_ICLONE :: i32(11) // icmp/clone
 NODE_ISTATS :: i32(12) // icmp/stats
@@ -214,7 +213,7 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	}
 	// The names, before anything can ask for one, and then each interface's
 	// own address out of them.
-	cs_load()
+	ndb_load()
 	resolve_addresses()
 
 	for i in 0 ..< ifc_count {
@@ -693,8 +692,6 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 			return NODE_UDP
 		case "tcp":
 			return NODE_TCP
-		case "cs":
-			return NODE_CS
 		case "local":
 			return NODE_LOCAL
 		}
@@ -876,21 +873,6 @@ handler :: proc "contextless" (
 			return
 		}
 
-		// A read of `cs` answers what this fid's write worked out, whole. The
-		// offset is not consulted: the write that asked the question already
-		// moved it, and this is a reply rather than a window on bytes.
-		if node == NODE_CS {
-			text := cs_read(m.fid)
-			if len(text) == 0 {
-				reply^ = vectra9.Rread{data = nil}
-				return
-			}
-			room := min(min(len(buf), int(m.count)), len(text))
-			copy(buf[:room], text[:room])
-			reply^ = vectra9.Rread{data = buf[:room]}
-			return
-		}
-
 		/*
 		A read of any protocol's `clone` takes a conversation and answers
 		its number. It is the only read here with a side effect, and the whole
@@ -995,14 +977,6 @@ handler :: proc "contextless" (
 	case vectra9.Twrite:
 		node, ok := libuser.open_node(&fids, m.fid, reply)
 		if !ok {
-			return
-		}
-		if node == NODE_CS {
-			if !cs_write(m.fid, string(m.data)) {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 			return
 		}
 		if i, kind, is_tcp := tconv_of(node); is_tcp {
@@ -1113,7 +1087,6 @@ handler :: proc "contextless" (
 		// answering SYNs that nothing will accept.
 		node := libuser.fid_lookup(&fids, m.fid)
 		held_open := libuser.fid_is_open(&fids, m.fid)
-		cs_forget(m.fid)
 		libuser.fid_release(&fids, m.fid)
 		if held_open {
 			if i, kind, ok := tconv_of(node); ok && tcps[i].used {
@@ -1160,8 +1133,8 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 	nodes: []i32
 	switch {
 	case node == NODE_ROOT:
-		root_names := [?]string{"ether0", "ether1", "arp", "icmp", "udp", "tcp", "cs", "local", "ipifc", "iproute", "ndb"}
-		root_nodes := [?]i32{ether_node(0, ETHER_DIR), ether_node(1, ETHER_DIR), NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_CS, NODE_LOCAL, NODE_IPIFC, NODE_IPROUTE, NODE_NDB}
+		root_names := [?]string{"ether0", "ether1", "arp", "icmp", "udp", "tcp", "local", "ipifc", "iproute", "ndb"}
+		root_nodes := [?]i32{ether_node(0, ETHER_DIR), ether_node(1, ETHER_DIR), NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_LOCAL, NODE_IPIFC, NODE_IPROUTE, NODE_NDB}
 		// A second card that is not there is not listed.
 		skip := ifc_count < 2 ? 1 : 0
 		names = ifc_count < 2 ? root_names[1:] : root_names[:]

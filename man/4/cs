@@ -1,0 +1,70 @@
+.TH CS 4
+.SH NAME
+cs \- the connection server: a dial string becomes an address
+.SH SYNOPSIS
+.B cs
+.SH DESCRIPTION
+.I Cs
+posts
+.B /srv/cs
+and serves one file,
+.BR cs ,
+which
+.IR init (8)
+mounts after the stack's tree at
+.BR /net .
+A program writes a dial string of the form
+.IB proto ! host ! service
+and reads back the clone file to open and the far end to connect to:
+.IP
+.EX
+% echo tcp!fs!9fs > /net/cs
+/net/tcp/clone 10.0.2.15!564
+.EE
+.PP
+.I Proto
+is
+.BR tcp ,
+.B udp
+or
+.BR icmp .
+A
+.I host
+that is already a dotted address is used as it stands;
+.B *
+is this machine, read from
+.BR /net/local ;
+any other name is looked up in
+.B /lib/ndb/local
+as a
+.B sys=
+record's
+.BR ip ,
+and failing that is asked of
+.IR dns (4).
+A
+.I service
+that is already a number is used as it stands; any other name is the
+port the database gives it under the protocol, as
+.BR tcp=9fs\ port=564 .
+A name neither the database nor the network knows fails the write with
+.BR ENOENT .
+.PP
+The answer belongs to the descriptor that asked, is read whole whatever
+the offset, and is forgotten once read: a second read answers nothing.
+Two programs dialling at once do not see each other's answer.
+.PP
+A
+.B Tremove
+of the file stops the server.
+.SH SOURCE
+.B servers/cs/main.odin
+.SH SEE ALSO
+.IR dns (4),
+.IR net (2),
+.IR ping (1),
+.IR netecho (1)
+.SH BUGS
+The database is read once, at start.
+A dial string names one address; there is no list to walk when the
+first does not answer.

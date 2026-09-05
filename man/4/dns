@@ -1,0 +1,64 @@
+.TH DNS 4
+.SH NAME
+dns \- ask a resolver for a name's address
+.SH SYNOPSIS
+.B dns
+.SH DESCRIPTION
+.I Dns
+posts
+.B /srv/dns
+and serves one file,
+.BR dns ,
+which
+.IR init (8)
+mounts after the stack's tree at
+.BR /net .
+A program writes a name to
+.B /net/dns
+and reads the answer back on the same descriptor:
+.IP
+.EX
+% echo fs.example.com > /net/dns
+fs.example.com ip 10.0.0.2
+.EE
+.PP
+The written line is a name, and a type after it that may only be
+.BR ip .
+A name the resolver does not know fails the write with
+.BR ENOENT .
+The answer belongs to the descriptor that asked, is read whole whatever
+the offset, and is forgotten once read, the way
+.IR cs (4)
+answers.
+.PP
+The resolver asked is the one
+.IR ipconfig (1)
+learned, the
+.B dns=
+in
+.BR /net/ndb ,
+or failing that the
+.B dns=
+on the gateway's record in
+.BR /lib/ndb/local .
+The asking is one datagram each way on a conversation of
+.BR /net/udp ,
+waited on for two seconds and tried twice.
+A name answered once is remembered, so
+.IR cs (4),
+which asks here for every dial of a name, does not ask the network twice.
+.PP
+A
+.B Tremove
+of the file stops the server.
+.SH SOURCE
+.B servers/dns/main.odin
+.SH SEE ALSO
+.IR cs (4),
+.IR ipconfig (1),
+.IR net (2)
+.SH BUGS
+Only addresses are asked for, and only the first in an answer is kept.
+What is remembered is never forgotten, whatever time to live the resolver
+gave it.
+A resolver's answer is trusted as it stands.

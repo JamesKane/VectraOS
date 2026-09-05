@@ -93,6 +93,34 @@ routes: [MAX_ROUTES]Route
 ndb_note: [NDB_TEXT_MAX]u8
 ndb_note_len: int
 
+// The database, read once at start. A machine with no file has an empty one,
+// and an interface then has no address until `ipconfig` asks for one.
+NDB_MAX :: 4096
+ndb_text: [NDB_MAX]u8
+ndb_len: int
+
+// ndb_load reads `/lib/ndb/local` into memory, once, before serving.
+ndb_load :: proc "contextless" () {
+	fd := libuser.open("/lib/ndb/local", abi.O_RDONLY)
+	if fd < 0 {
+		return
+	}
+	at := 0
+	for at < NDB_MAX {
+		n := libuser.read(int(fd), ndb_text[at:])
+		if n <= 0 {
+			break
+		}
+		at += int(n)
+	}
+	_ = libuser.close(int(fd))
+	ndb_len = at
+}
+
+ndb :: proc "contextless" () -> string #no_bounds_check {
+	return string(ndb_text[:ndb_len])
+}
+
 // -- The interfaces -----------------------------------------------------------
 
 /*

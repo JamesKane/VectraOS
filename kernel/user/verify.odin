@@ -7366,6 +7366,66 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 		return
 	}
 
+	/*
+	The names, beside the stack: `dns` asks a resolver and `cs` turns a dial
+	string into an address, out of the database or through `dns`. Each is a
+	server of its own, mounted after the stack at `/net`, so `/net/dns` and
+	`/net/cs` sit in the same directory as the conversations. `dns` is told
+	its resolver is this machine, `dnstest` announces the resolver's port and
+	answers one name, and both files are asked for it: `/net/dns` for the
+	address, `/net/cs` for a dial string the database cannot finish.
+	*/
+	pdns, dnserr := spawn_path(nil, "/bin/dns", SPAWN_NS_COPY)
+	if check(r, dnserr == vfs.OK && pdns != nil, "the loader starts dns") {
+		r.programs += 1
+		check(r, await_posted("dns"), "which posts /srv/dns")
+		check(r, srv.mount(vfs.boot_namespace, "/srv/dns", "/net", .After) == vfs.OK, "and the kernel mounts it after the stack")
+	}
+	pcs, cserr := spawn_path(nil, "/bin/cs", SPAWN_NS_COPY)
+	if check(r, cserr == vfs.OK && pcs != nil, "the loader starts cs") {
+		r.programs += 1
+		check(r, await_posted("cs"), "which posts /srv/cs")
+		check(r, srv.mount(vfs.boot_namespace, "/srv/cs", "/net", .After) == vfs.OK, "and the kernel mounts it after the stack")
+	}
+
+	{
+		// This machine's own address, whatever the database gave this card:
+		// the bench's two machines are not the solo one.
+		local: [32]u8
+		ln := 0
+		if c, err := vfs.open_path(vfs.boot_namespace, "/net/local", vfs.O_RDONLY); err == vfs.OK {
+			n, _ := vfs.chan_read(c, 0, local[:])
+			vfs.chan_close(c)
+			ln = int(n)
+			for ln > 0 && (local[ln - 1] == '\n' || local[ln - 1] == '\r') {
+				ln -= 1
+			}
+		}
+		note_buf: [48]u8
+		nsink := libodin.sink_from(note_buf[:])
+		libodin.put_str(&nsink, "dns=")
+		libodin.put_str(&nsink, string(local[:ln]))
+		libodin.put_str(&nsink, "\n")
+		note := libodin.str(&nsink)
+		check(r, ln > 0 && net_file_write("/net/ndb", note), "the stack's note names this machine as the resolver")
+		ptest, terr := spawn_path(nil, "/bin/dnstest", SPAWN_NS_COPY)
+		if check(r, terr == vfs.OK && ptest != nil, "a resolver of one name starts") {
+			r.programs += 1
+			sync.delay(PATIENCE / 10)
+			got: [128]u8
+			n := net_file_ask("/net/dns", "fs.test", got[:])
+			check(r, n > 0 && string(got[:n]) == "fs.test ip 10.0.0.2\n", "/net/dns asks it and answers the name's address")
+			n = net_file_ask("/net/cs", "tcp!fs.test!9fs", got[:])
+			check(r, n > 0 && string(got[:n]) == "/net/tcp/clone 10.0.0.2!564\n", "and /net/cs finishes a dial string with it")
+			n = net_file_ask("/net/dns", "fs.test", got[:])
+			check(r, n > 0 && string(got[:n]) == "fs.test ip 10.0.0.2\n", "a name asked twice is answered from what dns remembers")
+			check(r, wait(ptest, PATIENCE), "and the resolver, asked once for the three, exits")
+			word := string(ptest.exit.text[:ptest.exit.text_len])
+			check(r, word == "ok", word == "ok" ? "with the question the one expected" : word)
+			finish(r, ptest, "and is taken down")
+		}
+	}
+
 	// The card's own address, which the driver knows and the stack serves.
 	m: [6]u8
 	_ = virtio.mac(0, m[:])
@@ -7475,6 +7535,21 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 
 	// -- Teardown, a remove of one of its files -------------------------------
 
+	// The names first: each stops on a remove of its file, as the stack does.
+	for name in ([?]string{"cs", "dns"}) {
+		which := name == "cs" ? pcs : pdns
+		if which == nil {
+			continue
+		}
+		path := name == "cs" ? "/net/cs" : "/net/dns"
+		if c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY); err == vfs.OK {
+			check(r, vfs.chan_remove(c) == vfs.OK, "a remove of its file is the name server's stop")
+			vfs.chan_close(c)
+		}
+		check(r, wait(which, PATIENCE), "and it exits")
+		check(r, srv.remove(name) == vfs.OK, "and the kernel takes the name away")
+		finish(r, which, "and it is taken down")
+	}
 	if c, err := vfs.open_path(vfs.boot_namespace, "/net/icmp/stats", vfs.O_RDONLY); err == vfs.OK {
 		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of one of its files is the stack's stop")
 		vfs.chan_close(c)
@@ -7486,6 +7561,39 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 	pipe.quiesce()
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/net") == vfs.OK, "the mount of the dead stack comes down")
 	drain_pinned(r, pin_before, "and the stack's wire comes back whole")
+}
+
+// net_file_write writes `text` to one of the stack's files, whole.
+@(private = "file")
+net_file_write :: proc(path: string, text: string) -> bool {
+	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_WRONLY)
+	if err != vfs.OK {
+		return false
+	}
+	defer vfs.chan_close(c)
+	n, werr := vfs.chan_write(c, 0, transmute([]u8)text)
+	return werr == vfs.OK && int(n) == len(text)
+}
+
+// net_file_ask writes a question to a message file and reads the answer back
+// on the same channel, the way a program asks `cs` or `dns`. Answers how many
+// bytes came back, and a negative number for a write that was refused.
+@(private = "file")
+net_file_ask :: proc(path: string, question: string, into: []u8) -> int {
+	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDWR)
+	if err != vfs.OK {
+		return -1
+	}
+	defer vfs.chan_close(c)
+	n, werr := vfs.chan_write(c, 0, transmute([]u8)question)
+	if werr != vfs.OK || int(n) != len(question) {
+		return -1
+	}
+	got, rerr := vfs.chan_read(c, u64(n), into)
+	if rerr != vfs.OK {
+		return -1
+	}
+	return int(got)
 }
 
 // net_file_holds polls one of the stack's files until it carries `want`, and

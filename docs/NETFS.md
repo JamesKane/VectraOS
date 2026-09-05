@@ -32,6 +32,21 @@ conversation reclaim, and the flow control each match that stack. This document
 records what does not yet, so a later session finds it rather than the code
 alone.
 
+## The names, beside the stack
+
+`/net/cs` and `/net/dns` are two more servers, mounted after `netfs` at `/net`
+so their files sit in the stack's directory. `cs` began inside `netfs`, where
+a name was only ever the database's. A name the network must answer is a
+question to another process, and a server cannot ask one from inside its own
+serve loop while the asker waits on it: `netfs` asking `dns` would park the
+loop that `dns` needs to send its datagram. So each asks from a process of
+its own. `dns` reads `/net/ndb` for the resolver `ipconfig` learned, or the
+gateway record's `dns=` in `/lib/ndb/local`, and dials it by address rather
+than through `cs`, since `cs` is what asks it. `init` starts them in that
+order: the stack, then `dns`, then `cs`, each mounted as it posts. The suite
+proves them with `dnstest`, a resolver of one name announced on this
+machine's port 53, asked through both files.
+
 ## Deferred work
 
 Each item names what is here, what 9front does instead, and what it waits on.
@@ -95,7 +110,8 @@ save.
 `docs/FLEET.md` step 0 is more than this stack. The bench's two machines, one
 amd64 and one arm64, ping each other by name and cross a line, and each gets an
 address for its second card from QEMU's router, which is the whole boot line.
-`servers/dns` and `servers/etherfs` are named in the plan and not yet written.
+`servers/etherfs`, the card as a ring 3 driver, is named in the plan and waits
+on `docs/HARDWARE.md`'s files for a device in ring 3.
 
 ## Reading the bench
 

@@ -20,6 +20,14 @@ netfs &
 if(test -e /dev/ether0/data) {
 	while(! test -e /srv/net) sleep 1
 	mount /srv/net /net
+	# The names: dns asks the network, and cs turns a dial string into an
+	# address out of the database or dns. Both sit beside the stack's tree.
+	dns &
+	while(! test -e /srv/dns) sleep 1
+	mount -a /srv/dns /net
+	cs &
+	while(! test -e /srv/cs) sleep 1
+	mount -a /srv/cs /net
 	# An interface the database gave no address asks the network for one.
 	# In the background: a link with no router answers nothing, and the
 	# boot does not wait on it.

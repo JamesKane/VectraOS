@@ -51,9 +51,12 @@ How many pipes may exist at once.
 
 Fixed, like every other table a client can grow -- the argument is
 `srv.MAX_SERVICES`'s. A full table answers nil, and `sys_pipe` turns that into
-ENOSPC.
+ENOSPC. Every posted service is one, and so is every shell pipeline: eight
+filled with five services and a terminal's shell, and the sixth service's
+post failed at boot with nothing to say why. Thirty-two matches the service
+table, at a few kilobytes a pipe.
 */
-MAX_PIPES :: 8
+MAX_PIPES :: 32
 
 // Bytes one direction can buffer. A 9P frame larger than this still crosses,
 // because `write` moves what fits and parks for the rest while the far end

@@ -275,6 +275,57 @@ start :: proc "c" (block: ^abi.Args) {
 		want(!bad, "and a message with no cookie is refused")
 	}
 
+	// -- A DNS question, and an answer that points back at it --------------
+	{
+		q: [libnet.DNS_MAX]u8
+		n := libnet.put_dns_query(q[:], 0xBEEF, "fs.test")
+		want(n == 12 + 9 + 4, "a query for a name is a header, the labels and a question")
+		want(q[12] == 2 && q[13] == 'f' && q[15] == 4 && q[20] == 0, "with the name as labels")
+		asked: [64]u8
+		want(libnet.dns_question(q[:n], asked[:]) == 7 && string(asked[:7]) == "fs.test", "and the question reads back as the name")
+		bad: [libnet.DNS_MAX]u8
+		want(libnet.put_dns_query(bad[:], 1, "a..b") == 0, "an empty label will not encode")
+
+		a: [libnet.DNS_MAX]u8
+		m := libnet.put_dns_answer(a[:], q[:n], libnet.IP{10, 0, 0, 2})
+		want(m == n + 16, "the answer is the question and one record")
+		ip, ok := libnet.parse_dns(a[:m], 0xBEEF, "fs.test")
+		want(ok && ip == libnet.IP{10, 0, 0, 2}, "which resolves the name through the pointer to the question")
+		_, other := libnet.parse_dns(a[:m], 0xBEEE, "fs.test")
+		want(!other, "an answer to another question is refused")
+		_, wrong := libnet.parse_dns(a[:m], 0xBEEF, "other.test")
+		want(!wrong, "and so is a record for another name")
+
+		// A CNAME first, then the address under the new name, as a resolver
+		// hands them back.
+		c: [libnet.DNS_MAX]u8
+		copy(c[:], a[:n])
+		libnet.put_be16(c[:], 2, 0x8180)
+		libnet.put_be16(c[:], 6, 2)
+		at := n
+		c[at] = 0xC0; c[at + 1] = 12
+		libnet.put_be16(c[:], at + 2, libnet.DNS_TYPE_CNAME)
+		libnet.put_be16(c[:], at + 4, libnet.DNS_CLASS_IN)
+		libnet.put_be32(c[:], at + 6, 60)
+		target := libnet.put_dns_name(c[:], at + 12, "real.test") - (at + 12)
+		libnet.put_be16(c[:], at + 10, u16(target))
+		at += 12 + target
+		owner := at
+		c[at] = 0xC0; c[at + 1] = u8(n + 12) // The CNAME's target, by pointer
+		libnet.put_be16(c[:], at + 2, libnet.DNS_TYPE_A)
+		libnet.put_be16(c[:], at + 4, libnet.DNS_CLASS_IN)
+		libnet.put_be32(c[:], at + 6, 60)
+		libnet.put_be16(c[:], at + 10, 4)
+		c[at + 12] = 10; c[at + 13] = 0; c[at + 14] = 0; c[at + 15] = 3
+		at += 16
+		_ = owner
+		ip2, ok2 := libnet.parse_dns(c[:at], 0xBEEF, "fs.test")
+		want(ok2 && ip2 == libnet.IP{10, 0, 0, 3}, "a CNAME leads to the address under the other name")
+		c[owner + 1] = u8(owner) // A pointer at itself
+		_, loop := libnet.parse_dns(c[:at], 0xBEEF, "fs.test")
+		want(!loop, "and a name that points at itself is refused rather than followed")
+	}
+
 	libuser.exits("ok")
 }
 

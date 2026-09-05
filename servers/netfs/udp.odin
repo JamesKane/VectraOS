@@ -119,6 +119,12 @@ conv_push :: proc "contextless" (i: int, raddr: libnet.IP, rport: u16, payload: 
 	d.rport = rport
 	copy(d.data[:d.len], payload[:d.len])
 	c.tail += 1
+	// An announced conversation with no far end answers whoever last spoke
+	// to it, which is what a datagram server does with a question.
+	if !c.connected {
+		c.raddr = raddr
+		c.rport = rport
+	}
 	wake_udp[i] = true
 }
 
@@ -166,7 +172,7 @@ delivered here.
 */
 conv_send :: proc "contextless" (i: int, payload: []u8) -> bool #no_bounds_check {
 	c := &convs[i]
-	if !c.connected {
+	if !c.connected && (c.raddr == ANY || c.proto == .ICMP) {
 		return false
 	}
 	if c.proto == .ICMP {
@@ -338,7 +344,7 @@ render_conv :: proc "contextless" (sink: ^libodin.Sink, i: int, kind: i32) #no_b
 		libodin.put_uint(sink, u64(c.lport))
 		libodin.put_str(sink, "\n")
 	case CONV_REMOTE:
-		if c.connected {
+		if c.connected || c.raddr != ANY {
 			put_ip(sink, c.raddr)
 			libodin.put_str(sink, "!")
 			libodin.put_uint(sink, u64(c.rport))

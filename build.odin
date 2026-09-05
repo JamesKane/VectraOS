@@ -116,6 +116,9 @@ user_programs := [?]User_Program {
 	{name = "netecho", path = "cmd/netecho"},
 	{name = "ping", path = "cmd/ping"},
 	{name = "ipconfig", path = "cmd/ipconfig"},
+	{name = "dns", path = "servers/dns"},
+	{name = "cs", path = "servers/cs"},
+	{name = "dnstest", path = "tests/dns"},
 	{name = "muidemo", path = "apps/muidemo"},
 }
 

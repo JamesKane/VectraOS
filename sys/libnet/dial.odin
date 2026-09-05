@@ -60,7 +60,15 @@ dial_dir :: proc "contextless" (addr: string, into: []u8) -> (int, int, bool) #n
 	if !ok {
 		return -1, 0, false
 	}
+	return dial_addr(clone_path, remote, into)
+}
 
+/*
+dial_addr is `dial_dir` past the connection server: the clone file to take a
+conversation from and the far end to connect it to, already known. `dns`
+dials this way, since it is what `cs` asks and cannot ask `cs` in turn.
+*/
+dial_addr :: proc "contextless" (clone_path: string, remote: string, into: []u8) -> (int, int, bool) #no_bounds_check {
 	// The conversation, and the directory its files are in.
 	dirlen, cok := take_conv(clone_path, into)
 	if !cok {

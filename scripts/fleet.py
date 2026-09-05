@@ -94,6 +94,9 @@ def main():
         print(c.buf[-200:])
         if "10.0.2.15" in st and "2 received" in c.buf: routed+=1
         print(c.cmd("echo status=$status").strip())
+        # dns through the router's resolver; informative only, since it
+        # needs the host's own resolver and the world beyond it.
+        print(c.cmd("echo example.com > /net/dns; echo dns=$status", 6).strip())
         print(c.cmd("cat /net/ether1/stats").strip())
         print(c.cmd("cat /dev/ether1/stats").strip())
     # And a ping by name the other way: machine one pings `two`, which
