@@ -68,10 +68,12 @@ save.
 
 ### The rest of step 0
 
-`docs/FLEET.md` step 0 is more than this stack. The bench crosses a line
-between two machines by name, one amd64 and one arm64, as the boot line wants.
-`cmd/ipconfig`, `servers/dns` and `servers/etherfs` are named in the plan and
-not yet written.
+`docs/FLEET.md` step 0 is more than this stack. The bench's two machines, one
+amd64 and one arm64, ping each other by name and cross a line, as the boot
+line wants. What it still wants is `ipconfig` getting an address from QEMU's
+router, which needs a second, user-mode card on each bench machine and so a
+stack that drives more than one interface. `cmd/ipconfig`, `servers/dns` and
+`servers/etherfs` are named in the plan and not yet written.
 
 ## Reading the bench
 
