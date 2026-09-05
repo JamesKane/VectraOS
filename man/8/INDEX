@@ -5,4 +5,5 @@ genfont genfont
 init init
 intro 0intro
 lint lint
+listen listen
 verify verify

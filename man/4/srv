@@ -1,0 +1,43 @@
+.TH SRV 4
+.SH NAME
+srv \- dial a service and post the connection in /srv
+.SH SYNOPSIS
+.B srv
+.I addr name
+.SH DESCRIPTION
+.I Srv
+dials
+.IR addr ,
+a dial string such as
+.BR tcp!fs!9fs ,
+and posts the stream as
+.BI /srv/ name.
+A mount of that name then makes the kernel a 9P client of whatever answers
+the far end, the way it is of a posted pipe:
+.IP
+.EX
+% srv tcp!fs!9fs fs
+% mount /srv/fs /n/fs
+.EE
+.PP
+The rc function
+.B 9fs
+in
+.B /lib/rcmain
+is the two lines as one:
+.B 9fs fs
+mounts the machine
+.B fs
+at
+.BR /n/fs .
+The conversation outlives
+.IR srv :
+the posting holds it, and removing the name is what ends it.
+.SH SOURCE
+.B cmd/srv/main.odin
+.SH SEE ALSO
+.IR import (4),
+.IR exportfs (4),
+.IR bind (1)
+.SH BUGS
+There is no authentication yet.

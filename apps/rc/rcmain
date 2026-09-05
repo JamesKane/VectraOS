@@ -5,3 +5,7 @@ if(~ $#home 0) home=/usr/glenda
 if(~ $#ifs 0) ifs=(' ' '	' '
 ')
 if(~ $#prompt 0) prompt=('% ' '	')
+
+# 9fs: mount another machine's tree at /n/host, the two lines as one.
+# `srv` dials tcp!host!9fs and posts the stream; `mount` makes it a tree.
+fn 9fs { srv tcp!$1!9fs $1 && mount /srv/$1 /n/$1 }

@@ -437,6 +437,9 @@ remove :: proc(name: string) -> vfs.Errno #no_bounds_check {
 		// one on the posted end. This reference would otherwise keep the end
 		// open under the wire's reader. See `pipe.unpost`.
 		staked := pipe.unpost(retired)
+		if staked == nil {
+			staked = pipe.chan_unpost(retired)
+		}
 		vfs.chan_close(retired)
 		if staked != nil {
 			vfs.server_unpin(staked)
@@ -530,6 +533,12 @@ mount :: proc(
 			// service is not there, said here rather than left to the
 			// device's ENOENT.
 			return vectra9.ENXIO
+		} else if stream := pipe.chan_server_for(endpoint); stream != nil {
+			// A stream: a conversation's data file, posted by `srv` or
+			// `import`. The kernel becomes a client of the far machine's
+			// `exportfs` over it. See `pipe/chanwire.odin`.
+			server = stream
+			pinned = stream
 		} else {
 			server = endpoint.server
 		}

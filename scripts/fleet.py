@@ -121,7 +121,48 @@ def main():
         print(c.cmd("cat /net/iproute").strip())
         print(c.cmd("cat /net/arp").strip())
     two=len(set(arches))==2 and "?" not in arches
-    print("=== VERDICT:", ("LINE CROSSED" if crossed else "NO CROSSING")+", "+("PINGED BY NAME" if pinged else "NO PING")+", "+("ADDRESSES FROM THE ROUTER" if routed==2 else "NO ADDRESS FROM THE ROUTER (%d of 2)" % routed)+", "+("TWO ARCHITECTURES" if two else "NOT TWO ARCHITECTURES"))
+    # -- 9P both ways: machine one imports machine two's tree by name -------
+    # Each machine runs `listen` at boot, serving its namespace on tcp!*!9fs.
+    # `import two /n/two` dials machine two, mounts its root, and `ls`/`cat`
+    # reach across the wire. A process of two's shows in one's `ps` of it.
+    ninep = "NO"
+    crossread = "NO"
+    flushed = "NO"
+    a.buf=""
+    a.send("import two /n/two")
+    a.waitfor("%", 8)
+    imp = a.buf
+    procs = a.cmd("ls /n/two/proc", 8)
+    if "/n/two/proc/" in procs:
+        ninep = "IMPORTED"
+        # A process on machine two, read by name across the wire.
+        names = a.cmd("cat /n/two/proc/*/args", 8)
+        if "netfs" in names or "rc" in names or "listen" in names:
+            crossread = "PROC READ"
+    ndb = a.cmd("cat /n/two/lib/ndb/local", 8)
+    if "sys=two" in ndb:
+        crossread = "FILE READ"
+    print("=== machine one imports two ===")
+    print(imp[-200:]); print(procs[-300:]); print("ndb has sys=two:", "sys=two" in ndb)
+    # A flush across the wire: a read of two's listen file parks on the far
+    # side; interrupt it and the local read returns rather than hanging.
+    a.buf=""
+    a.send("cat /n/two/net/tcp/0/listen &")
+    a.pump(2)
+    a.send("echo flushpid=$apid")
+    a.pump(1)
+    r = a.cmd("kill $apid; wait $apid; echo flushdone=$status", 6)
+    if "flushdone=" in r:
+        flushed = "FLUSH OK"
+    print("=== flush ==="); print(r[-200:])
+
+    print("=== VERDICT:", ", ".join([
+        ("LINE CROSSED" if crossed else "NO CROSSING"),
+        ("PINGED BY NAME" if pinged else "NO PING"),
+        ("ADDRESSES FROM THE ROUTER" if routed==2 else "NO ADDRESS FROM THE ROUTER (%d of 2)" % routed),
+        ("9P: "+ninep+"/"+crossread+"/"+flushed),
+        ("TWO ARCHITECTURES" if two else "NOT TWO ARCHITECTURES"),
+    ]))
     # leave them; caller kills qemu
     return 0
 

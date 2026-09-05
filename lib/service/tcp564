@@ -1,0 +1,5 @@
+# The file service: this machine's tree, served as 9P to whoever dialled.
+# `listen` runs this with the stream as descriptors 0 and 1, and the
+# conversation's directory as $1. What a client sees is this namespace from
+# the root down; a bind here before the exec would narrow it.
+exec exportfs -r /

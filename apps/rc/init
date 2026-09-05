@@ -32,6 +32,10 @@ if(test -e /dev/ether0/data) {
 	# In the background: a link with no router answers nothing, and the
 	# boot does not wait on it.
 	ipconfig &
+	# And this machine serves its tree: `listen` runs `exportfs` for every
+	# connection to a port named in `/lib/service`, so another machine can
+	# import what this one holds. `docs/FLEET.md` step 1.
+	listen &
 }
 
 # A window with a shell in it, the terminal's own child.

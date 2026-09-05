@@ -1,0 +1,53 @@
+.TH IMPORT 4
+.SH NAME
+import \- mount another machine's tree here
+.SH SYNOPSIS
+.B import
+[
+.B -a
+|
+.B -b
+]
+.I host mountpoint
+.SH DESCRIPTION
+.I Import
+dials
+.BI tcp! host !9fs,
+where that machine's
+.IR listen (8)
+runs
+.IR exportfs (4),
+posts the stream as
+.BI /srv/ host,
+and mounts it at
+.IR mountpoint .
+.B -a
+and
+.B -b
+are the mount's order, after or before what is already there.
+It is
+.IR srv (4)
+and
+.B mount
+in one:
+.IP
+.EX
+% import big /n/big
+% ls /n/big/proc
+.EE
+.SH SOURCE
+.B cmd/import/main.odin
+.SH SEE ALSO
+.IR srv (4),
+.IR exportfs (4),
+.IR bind (1)
+.SH BUGS
+Plan 9's
+.I import
+names the far tree as well and asks for it by an attach name; this wire
+has none, so the far side serves what its service script names and this
+end takes all of it.
+A
+.B bind
+after the mount picks the part.
+There is no authentication yet.

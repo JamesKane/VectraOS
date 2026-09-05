@@ -3,10 +3,13 @@ consrv consrv
 cs cs
 dns dns
 eiafs eiafs
+exportfs exportfs
 fatfs fatfs
+import import
 intro 0intro
 intuition intuition
 kbdfs kbdfs
 kfs kfs
 memfs memfs
 ramfs ramfs
+srv srv

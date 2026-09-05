@@ -1,0 +1,40 @@
+.TH LISTEN 8
+.SH NAME
+listen \- announce a service per port, and run its script for each connection
+.SH SYNOPSIS
+.B listen
+[
+.I dir
+]
+.SH DESCRIPTION
+.I Listen
+reads
+.IR dir ,
+.B /lib/service
+by default, and announces a TCP port for every file in it named
+.BI tcp N,
+where
+.I N
+is the port.
+For each connection that arrives it runs the file as an rc script with
+the stream as descriptors 0 and 1 and the conversation's directory as
+.BR $1 .
+.B /lib/service/tcp564
+is
+.BR "exec exportfs -r /" ;
+a new service is a new file.
+.PP
+One process listens per port.
+For each connection it forks a helper, which runs the script and hangs
+the conversation up when the script exits, so a finished service leaves
+no conversation in the stack's table.
+.SH SOURCE
+.B cmd/listen/main.odin
+.SH SEE ALSO
+.IR exportfs (4),
+.IR srv (4),
+.IR import (4)
+.SH BUGS
+The scripts run as whoever started
+.IR listen ,
+which is the machine's one user until there are users.

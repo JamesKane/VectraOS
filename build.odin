@@ -119,6 +119,10 @@ user_programs := [?]User_Program {
 	{name = "dns", path = "servers/dns"},
 	{name = "cs", path = "servers/cs"},
 	{name = "dnstest", path = "tests/dns"},
+	{name = "exportfs", path = "cmd/exportfs"},
+	{name = "listen", path = "cmd/listen"},
+	{name = "srv", path = "cmd/srv"},
+	{name = "import", path = "cmd/import"},
 	{name = "muidemo", path = "apps/muidemo"},
 }
 
@@ -896,6 +900,9 @@ stage_vectra :: proc() {
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
 	ensure_dir(fmt.tprintf("%s/lib/ndb", root))
 	copy_file("lib/ndb/local", fmt.tprintf("%s/lib/ndb/local", root))
+	// The services `listen` announces: one script per port.
+	ensure_dir(fmt.tprintf("%s/lib/service", root))
+	copy_file("lib/service/tcp564", fmt.tprintf("%s/lib/service/tcp564", root))
 	step("staged %d programs and the library under %s", len(user_programs), root)
 }
 

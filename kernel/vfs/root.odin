@@ -47,6 +47,17 @@ ROOT_NODES := [?]Static_Node {
 	// And the keyboard server's, which `init` mounts so the draw server can
 	// read its keys from a file that is not the serial console.
 	{name = "kbd", parent = 6, dir = true},
+	// Where another machine's tree lands: `import` and `9fs` mount at
+	// `/n/host`, and a mount point has to be there first. This root is a
+	// static tree, so the names a fleet uses are here by name -- the ones
+	// `docs/FLEET.md` and `/lib/ndb/local` give its machines, and `remote`
+	// for any other. A `/n` that grows on demand is a later change.
+	{name = "fs", parent = 6, dir = true},
+	{name = "big", parent = 6, dir = true},
+	{name = "desk", parent = 6, dir = true},
+	{name = "one", parent = 6, dir = true},
+	{name = "two", parent = 6, dir = true},
+	{name = "remote", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

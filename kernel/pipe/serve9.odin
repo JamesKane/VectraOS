@@ -66,7 +66,7 @@ import "vsys:vectra9"
 // transmit buffer. What one slot holds becomes the connection's msize. The
 // slot size is the protocol's `WIRE_SLOT`, so a ring 3 client sizes its
 // writes by the number this arena is cut from.
-@(private = "file")
+@(private)
 WIRE_ARENA :: vectra9.WIRE_SLOT * (mnt.MAX_REQUESTS + 1)
 
 // Ticks the Tversion answer may take before the connection is torn down. Half
@@ -367,12 +367,12 @@ quiesce :: proc "contextless" () {
 // How long `quiesce` gives a dead wire's reader to leave. A reader whose
 // stream ended leaves within a tick or two; one whose far side is still open
 // never will, and this is what keeps that from being a hang.
-@(private = "file")
+@(private)
 QUIET_TICKS :: 50
 
 // handshake is `vectra9.negotiate` with a deadline. Same clamps, same refusal
 // of any version but the one asked for.
-@(private = "file")
+@(private)
 handshake :: proc "contextless" (s: ^vectra9.Session) -> bool {
 	request := vectra9.Msg(vectra9.Tversion{msize = s.msize, version = vectra9.VERSION})
 	reply: vectra9.Msg

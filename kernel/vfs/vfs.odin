@@ -421,6 +421,28 @@ register_device :: proc "contextless" (sv: ^Server) -> bool #no_bounds_check {
 }
 
 /*
+is_device_server reports whether `sv` is a kernel device registered with
+`register_device`, as opposed to a mounted file server. `kernel/srv` asks it
+to tell a posted device chan (mount it, and its whole tree appears) from a
+posted connection (speak 9P over it). Both may be worker-backed and
+interruptible, so the transport does not tell them apart; the device table
+does.
+*/
+is_device_server :: proc "contextless" (sv: ^Server) -> bool #no_bounds_check {
+	if sv == nil {
+		return false
+	}
+	g := sync.acquire(&device_lock)
+	defer sync.release(&device_lock, g)
+	for i in 0 ..< device_count {
+		if devices[i] == sv {
+			return true
+		}
+	}
+	return false
+}
+
+/*
 find_device looks a `#name` up.
 
 Locked even though the table is append-only and registration is over before the

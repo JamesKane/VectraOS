@@ -1,0 +1,50 @@
+.TH EXPORTFS 4
+.SH NAME
+exportfs \- serve this namespace as 9P on a stream
+.SH SYNOPSIS
+.B exportfs
+[
+.B -r
+.I path
+]
+.SH DESCRIPTION
+.I Exportfs
+answers 9P on descriptor 0, which is the stream
+.IR listen (8)
+hands a service: the far end of a TCP conversation another machine's
+.IR srv (4)
+or
+.IR import (4)
+dialled.
+Every request becomes the call a program makes on its own files:
+a walk is a
+.BR stat ,
+a read a
+.BR pread ,
+a directory read a listing with a
+.B stat
+per name, a create a
+.BR create .
+What it serves is what its own namespace holds from
+.I path
+down, the root by default, so a
+.B bind
+before it starts decides what a client sees.
+That is the whole access model.
+.PP
+The service script
+.B /lib/service/tcp564
+is
+.BR "exec exportfs -r /" .
+.SH SOURCE
+.B cmd/exportfs/main.odin
+.SH SEE ALSO
+.IR listen (8),
+.IR srv (4),
+.IR import (4)
+.SH BUGS
+Reads and writes are answered on the serve loop's own thread, so a read
+that parks in this namespace parks the loop, and a flush that reaches it
+waits behind the read.
+Rename and setattr are refused.
+There is no authentication yet; a client is whoever dialled.
