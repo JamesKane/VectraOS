@@ -484,6 +484,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_threads(&r)
 	verify_mui(&r)
 	verify_netfs(&r)
+	verify_cryptotest(&r)
 	verify_netserver(&r)
 	verify_rc(&r)
 	verify_tools(&r)
@@ -7324,6 +7325,21 @@ verify_netfs :: proc(r: ^Result) {
 	said, _, ok := run_script(r, "/bin/nettest", names[:], PATIENCE * 5, abi_said[:], "a program on the network's wire formats starts")
 	if ok {
 		check(r, said == "ok", said == "ok" ? "and every packet parsed and every checksum held" : said)
+	}
+}
+
+/*
+verify_cryptotest runs the fleet's cryptography against known answers. A
+handshake is only as sound as its primitives, so `docs/FLEET.md` step 2's
+`sys/libcrypto` is checked before anything is built on it: the AEAD against
+RFC 8439, X25519 against RFC 7748, and BLAKE2s against a fixed digest.
+*/
+@(private = "file")
+verify_cryptotest :: proc(r: ^Result) {
+	names := [?]string{"cryptotest"}
+	said, _, ok := run_script(r, "/bin/cryptotest", names[:], PATIENCE * 5, abi_said[:], "a program on the fleet's cryptography starts")
+	if ok {
+		check(r, said == "ok", said == "ok" ? "and every cipher matched its published vector" : said)
 	}
 }
 

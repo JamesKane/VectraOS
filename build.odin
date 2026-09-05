@@ -123,6 +123,7 @@ user_programs := [?]User_Program {
 	{name = "listen", path = "cmd/listen"},
 	{name = "srv", path = "cmd/srv"},
 	{name = "import", path = "cmd/import"},
+	{name = "cryptotest", path = "tests/crypto"},
 	{name = "muidemo", path = "apps/muidemo"},
 }
 
