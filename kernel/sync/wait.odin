@@ -121,6 +121,13 @@ it under its own lock and parks only if it is still set. That is what makes
 A wake that landed between them finds either a node still registered, and
 takes it, or a thread already parked, and starts it.
 
+`note_wakes` says whether a note may wake this park. A sleep passes true and
+unlinks its own node when it wakes, so a note-driven wake is safe. A sleeping
+lock passes false: its node comes off only by the unlock handoff, and a note
+that woke it would return it from a lock it does not hold. The scheduler
+remembers the bit so `note_thread` can leave a lock waiter alone. See
+`Thread.note_wakes`.
+
 `unpark` and `ready` are the same act with different consequences for priority.
 They are two hooks rather than one flag, because the difference is about *what
 the thread waited for* rather than about the wake:
@@ -146,7 +153,7 @@ number beyond a comparison of two of them.
 */
 Scheduler :: struct {
 	current:     proc "contextless" () -> Waiter,
-	block:       proc "contextless" (pending: ^rawptr),
+	block:       proc "contextless" (pending: ^rawptr, note_wakes: bool),
 	unpark:      proc "contextless" (w: Waiter),
 	ready:       proc "contextless" (w: Waiter),
 	priority:    proc "contextless" (w: Waiter) -> int,

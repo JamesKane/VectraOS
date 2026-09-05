@@ -106,6 +106,23 @@ Thread :: struct {
 	*/
 	noted:  bool,
 
+	/*
+	Whether a note may wake this thread out of its current park.
+
+	Set afresh every time the thread parks, under the scheduler lock that also
+	sets `.Blocked`, so a reader that sees the block sees the right answer. A
+	sleep and a ring-3 stop set it true: a note wakes them, and their own
+	unlink (or their having no queue node at all) makes that safe. A sleeping
+	lock -- `Mutex`, `RW_Lock` -- sets it false. Its waiter has a node on the
+	lock's queue that only the unlock handoff removes, and it returns believing
+	the lock is its. A note that woke it would return it from a lock it does
+	not hold and leave its stack node dangling for the next `take_best` to
+	deref. Plan 9's plain `qlock` is note-proof for exactly this reason, and
+	`procinterrupt` pulls a process out of a lock queue only for the
+	interruptible `eqlock`. See `sched.note_thread` and `sync.mutex_lock`.
+	*/
+	note_wakes: bool,
+
 	base:   Priority, // Where a wake-up restores it to
 	prio:   Priority, // Where it is now, after decay and boost
 

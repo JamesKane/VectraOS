@@ -455,23 +455,61 @@ list, and the next `spawn` gives it back, because the stack this trap is
 standing on is that thread's.
 */
 /*
-note_thread marks a thread noted and makes it runnable if it was parked. The
-flag is the note, as far as this package knows. `ready` is what turns a
-parked thread's note into motion. The thread resumes inside its wait, the
-wait's own unlink takes its node off every list, and an interruptible sleep
-sees the flag and returns. The boundary checks handle a thread that was
-running, at its next system call or its next tick, so `ready` leaves one
-alone.
+note_thread marks a thread noted and makes it runnable if it was parked in a
+wait a note may end. The flag is the note, as far as this package knows.
 
-`ready` already refuses a thread that is Ready, Running or Dead, so this is
-safe whatever the target is doing, including dying.
+A thread parked in a sleep or a ring-3 stop is woken: it resumes inside its
+wait, the wait's own unlink takes its node off every list, and an
+interruptible sleep sees the flag and returns. A thread parked in a sleeping
+lock is *not* woken -- it is note-proof, exactly as Plan 9's plain `qlock`.
+Its stack node comes off the lock's queue only by the unlock handoff; waking
+it would return it from a lock it does not hold and leave that node dangling
+for the next `take_best` to deref. It keeps waiting, acquires by handoff, and
+meets the note at its next boundary. This mirrors `procinterrupt`, which
+pulls a process out of a lock queue only for the interruptible `eqlock`.
+
+The boundary checks handle a thread that was running, at its next system call
+or its next tick, so a note left it alone here. `wake_noted` refuses a thread
+that is Ready, Running or Dead too, so this is safe whatever the target is
+doing, including dying.
 */
 note_thread :: proc "contextless" (t: ^Thread) {
 	if t == nil {
 		return
 	}
 	intrinsics.volatile_store(&t.noted, true)
-	ready(t)
+	wake_noted(t)
+}
+
+/*
+wake_noted starts a thread a note landed on, unless the thread is parked in a
+sleeping lock.
+
+`note_wakes` and `.Blocked` are read under the same lock that `block` sets
+them under, so a note that races a park sees a settled answer: either the
+thread is not yet blocked, and a boundary will deliver the note, or it is, and
+this bit says truthfully whether waking it is safe. A boosted wake, because a
+noted thread coming out of a sleep waited on the world and gets its priority
+back, the same as `ready`.
+*/
+@(private = "file")
+wake_noted :: proc "contextless" (t: ^Thread) {
+	if t == nil {
+		return
+	}
+	guard := sync.acquire(&lock)
+	defer sync.release(&lock, guard)
+
+	if t.state == .Ready || t.state == .Running || t.state == .Dead {
+		return
+	}
+	if !t.note_wakes {
+		// A sleeping lock's waiter. Leave it queued; the handoff wakes it,
+		// and the note waits at the next boundary. See `note_thread`.
+		return
+	}
+	boost(t)
+	place(pick_cpu(t.affinity, cpus[:cpu_count]), t)
 }
 
 // clear_note consumes a thread's note flag. Delivery calls it -- the door
@@ -513,6 +551,11 @@ set_note_trap :: proc "contextless" (h: Note_Trap) {
 // for a stop that catches a thread in ring 3.
 park_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	if t := cpu().current; t != nil {
+		// A ring-3 stop is note-wakeable: a kill of a stopped process must
+		// reach it, and this park holds no wait-queue node to leave
+		// dangling. Written before `.Blocked` so any core that sees the
+		// block sees the right answer. See `Thread.note_wakes`.
+		t.note_wakes = true
 		t.state = .Blocked
 	}
 	return reschedule(r, spent_slice = false)
@@ -623,7 +666,7 @@ its stack again. That is what stops a second core from running this thread
 while this core is still leaving it. The interrupt flag comes back here, from
 the guard, when this thread next runs -- wherever that is.
 */
-block :: proc "contextless" (pending: ^rawptr) {
+block :: proc "contextless" (pending: ^rawptr, note_wakes: bool) {
 	g := sync.acquire(&lock)
 	if intrinsics.volatile_load(pending) == nil {
 		// Taken already. The wake beat the park, and there is nothing to
@@ -632,6 +675,10 @@ block :: proc "contextless" (pending: ^rawptr) {
 		return
 	}
 	if t := current(); t != nil {
+		// Set under the same lock that sets `.Blocked`, so `note_thread`,
+		// which reads both under it, never sees a fresh block with a stale
+		// answer. See `Thread.note_wakes`.
+		t.note_wakes = note_wakes
 		t.state = .Blocked
 	}
 	arch.yield_now()

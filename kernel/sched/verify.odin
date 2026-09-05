@@ -161,7 +161,7 @@ blocking_worker :: proc "contextless" (arg: rawptr) {
 	// A park with nothing to check: the pending word stands in for a wait
 	// node nobody will take, so the park always happens.
 	pending := rawptr(&woke)
-	block(&pending)
+	block(&pending, note_wakes = true)
 	intrinsics.volatile_store(&woke, true)
 }
 

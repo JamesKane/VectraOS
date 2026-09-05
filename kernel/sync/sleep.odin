@@ -113,7 +113,14 @@ mutex_lock :: proc "contextless" (m: ^Mutex) {
 	// handed the lock over before it made the thread runnable. `m.held` is
 	// already true and `m.owner` is already us. There is nothing to re-check
 	// and no loop, which is the point of handoff.
-	hooks.block(cast(^rawptr)&node.queue)
+	//
+	// `note_wakes = false`: this park is note-proof. The node comes off the
+	// queue only by the handoff above, so a note that woke the thread early
+	// would return it from a lock it does not hold and leave `node` dangling
+	// on `m.queue` for the next `take_best`. Plan 9's plain `qlock` is
+	// note-proof for the same reason. A note posted meanwhile stays pending
+	// and is met at the next boundary, after the lock is honestly held.
+	hooks.block(cast(^rawptr)&node.queue, note_wakes = false)
 }
 
 /*

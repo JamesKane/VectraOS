@@ -436,7 +436,11 @@ wait_on :: proc "contextless" (
 
 		if !done {
 			sleeps += 1
-			hooks.block(cast(^rawptr)&node.queue)
+			// `note_wakes` follows `interruptible`: a `sleep_noted` wants a
+			// note to end it, a plain `sleep` does not. Either way the
+			// self-unlink below takes the node off, so a note-driven wake
+			// leaves nothing dangling -- unlike a lock's park.
+			hooks.block(cast(^rawptr)&node.queue, note_wakes = interruptible)
 		}
 
 		/*

@@ -91,8 +91,9 @@ rlock :: proc "contextless" (l: ^RW_Lock) {
 
 	// Park unless the wake came first. Whoever woke this thread counted it
 	// as a reader before the wake, so there is nothing to re-check. See
-	// `wunlock`.
-	hooks.block(cast(^rawptr)&node.queue)
+	// `wunlock`. `note_wakes = false`: a lock handoff, note-proof for the
+	// reason `mutex_lock` is -- the node comes off only by the handoff.
+	hooks.block(cast(^rawptr)&node.queue, note_wakes = false)
 }
 
 /*
@@ -164,8 +165,9 @@ wlock :: proc "contextless" (l: ^RW_Lock) {
 
 	// Handed over, as a reader is: `runlock` or `wunlock` set `writer` and
 	// `owner` before the wake, so a park that the wake beat is skipped and
-	// a park it did not is ended by it.
-	hooks.block(cast(^rawptr)&node.queue)
+	// a park it did not is ended by it. `note_wakes = false`: note-proof, as
+	// `mutex_lock` is -- only the handoff takes the node off the queue.
+	hooks.block(cast(^rawptr)&node.queue, note_wakes = false)
 }
 
 /*
