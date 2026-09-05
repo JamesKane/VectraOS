@@ -15,6 +15,7 @@ not hold.
 package authtest
 
 import "vsys:abi"
+import "vsys:libauth"
 import "vsys:libcrypto"
 import "vsys:libuser"
 
@@ -148,6 +149,67 @@ start :: proc "c" (block: ^abi.Args) {
 	want(len(w1) > 4 && w1[:4] == "msg ", "an initiator aimed at the wrong key still speaks")
 	want(ask(int(d), "start responder user=bob dom=test", bbuf[:]) == "ok", "the responder waits")
 	want(libuser.write(int(d), transmute([]u8)w1) < 0, "and refuses a first message not meant for it")
+	_ = libuser.close(int(c))
+	_ = libuser.close(int(d))
+
+	// -- The library, over a real connection: a pipe, one end each ------------
+	// Bob is the host; alice dials. Bob's keys file names alice by her key.
+	kf := libuser.open("/env/testkeys", abi.O_WRONLY)
+	if kf < 0 {
+		kf = libuser.create("/env/testkeys", abi.O_WRONLY, 0o600)
+	}
+	want(kf >= 0, "a keys file for the test can be made")
+	kline: [160]u8
+	want(libuser.write_full(int(kf), transmute([]u8)libuser.cat_into(kline[:], "# the test's users\nalice ", alicepub, " sys\n")), "and written")
+	_ = libuser.close(int(kf))
+
+	packed := libuser.pipe()
+	want(packed >= 0, "a pipe for the two ends")
+	e0, e1 := abi.pipe_ends(packed)
+	pid := libuser.rfork(abi.RFPROC | abi.RFFDG)
+	want(pid >= 0, "and a process for the host's end")
+	if pid == 0 {
+		_ = libuser.close(e0)
+		sess, ok := libauth.auth_server(e1, "bob", "test", "/env/testkeys")
+		if !ok {
+			libuser.exits("the host's handshake failed")
+		}
+		if libauth.session_name(&sess) != "alice" {
+			libuser.exits(libauth.session_name(&sess))
+		}
+		// Echo one sealed line back, then hang up.
+		got: [64]u8
+		gn := libuser.read(sess.fd, got[:])
+		if gn <= 0 {
+			libuser.exits("nothing came through the sealed stream")
+		}
+		_ = libuser.write_full(sess.fd, got[:gn])
+		_ = libuser.close(sess.fd)
+		libuser.exits("")
+	}
+	_ = libuser.close(e1)
+	sess, ok := libauth.auth_client(e0, "alice", "test", bobpub)
+	want(ok, "the client's handshake completes over the wire")
+	want(libuser.write_full(sess.fd, transmute([]u8)string("sealed hello")), "a line goes in sealed")
+	back: [64]u8
+	nb := libuser.read(sess.fd, back[:])
+	want(nb == 12 && string(back[:12]) == "sealed hello", "and comes back through the far end's carriers")
+	_ = libuser.close(sess.fd)
+	wordbuf: [64]u8
+	for {
+		wn := libuser.await(u64(pid), wordbuf[:])
+		if wn == -i64(11) {continue}
+		if wn < 0 {fail("the host's end cannot be waited for")}
+		said := string(wordbuf[:wn])
+		// `pid` or `pid word`: the word after the space is the host's verdict.
+		for i in 0 ..< len(said) {
+			if said[i] == ' ' {
+				fail(said[i + 1:])
+			}
+		}
+		break
+	}
+
 	_ = libcrypto.TAG_SIZE
 	libuser.exits("ok")
 }
