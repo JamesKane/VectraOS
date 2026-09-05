@@ -1,0 +1,64 @@
+.TH PING 1
+.SH NAME
+ping \- send echo requests to a machine
+.SH SYNOPSIS
+.B ping
+[
+.B -n
+.I count
+]
+.I host
+.SH DESCRIPTION
+.I Ping
+sends ICMP echo requests to
+.I host
+and says which came back.
+.I Host
+is a name or an address;
+.B /net/cs
+turns a name into an address out of
+.BR /lib/ndb/local ,
+so a machine on the bench is pinged by the name the database gives it.
+.PP
+Each request is one write of an ICMP conversation's
+.B data
+file under
+.BR /net/icmp ,
+and each reply is one read of it.
+A request nobody answers within a second is reported as lost,
+and the next is sent a second after the last.
+.PP
+The options are:
+.TP
+.BI -n " count"
+Send
+.I count
+requests.
+The default is three.
+.PP
+There is no clock in ring 3 yet,
+so no round trip time is reported.
+.SH EXAMPLES
+Reach the other machine of the bench by name.
+.IP
+.EX
+% ping -n 2 two
+64 bytes from two: seq=1
+64 bytes from two: seq=2
+2 sent, 2 received
+.EE
+.SH SOURCE
+.B cmd/ping/main.odin
+.SH SEE ALSO
+.IR netecho (1),
+.IR net (2)
+.SH DIAGNOSTICS
+The exit status is empty when at least one reply came back,
+.B lost
+when none did, and
+.B usage
+when the host is missing or the count is not a positive integer.
+.SH BUGS
+A reply is matched to a conversation by the address it came from,
+so two pings of one host from one machine at once may take each
+other's replies.

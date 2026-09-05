@@ -83,8 +83,28 @@ def main():
     print(b.buf[-600:])
     # The word appears once as the echoed command line and once as the reply.
     crossed=b.buf.count("crossing")>=2
+    # And a ping by name the other way: machine one pings `two`, which
+    # `/net/cs` resolves out of ndb, and counts the replies.
+    a.buf=""
+    a.send("ping -n 3 two")
+    a.waitfor("received", 15)
+    print("=== machine one ping ===")
+    print(a.buf[-400:])
+    pinged=a.buf.count("bytes from two")>=2
+    # And the other way, so a failure says which side is deaf.
+    b.buf=""
+    b.send("ping -n 2 one")
+    b.waitfor("received", 12)
+    print("=== machine two ping ===")
+    print(b.buf[-300:])
+    for name,c in (("one",a),("two",b)):
+        print("=== %s icmp stats / arp ===" % name)
+        print(c.cmd("cat /net/icmp/stats").strip())
+        print(c.cmd("cat /net/ether0/stats").strip())
+        print(c.cmd("cat /dev/ether/stats").strip())
+        print(c.cmd("cat /net/arp").strip())
     two=len(set(arches))==2 and "?" not in arches
-    print("=== VERDICT:", ("LINE CROSSED" if crossed else "NO CROSSING")+", "+("TWO ARCHITECTURES" if two else "NOT TWO ARCHITECTURES"))
+    print("=== VERDICT:", ("LINE CROSSED" if crossed else "NO CROSSING")+", "+("PINGED BY NAME" if pinged else "NO PING")+", "+("TWO ARCHITECTURES" if two else "NOT TWO ARCHITECTURES"))
     # leave them; caller kills qemu
     return 0
 

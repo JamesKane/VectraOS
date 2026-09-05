@@ -3,8 +3,9 @@
 `servers/netfs` is the IPv4 and TCP stack, in ring 3, serving `/net`. The card
 is the kernel's, as `#E` at `/dev/ether`. Everything above it is here: ARP,
 IPv4, ICMP, UDP and TCP over `sys/libnet`'s wire formats, and the `/net` files a
-program reads. `docs/FLEET.md` step 0 is the plan it grows under, and
-`cmd/netecho` with `sys/libnet`'s `dial` are what cross a line over it.
+program reads. `docs/FLEET.md` step 0 is the plan it grows under. `cmd/netecho` with
+`sys/libnet`'s `dial` are what cross a line over it, and `cmd/ping` reaches a
+machine by name over the conversations under `/net/icmp`.
 
 Much of the stack was brought in line with 9front's, read side by side. The ARP
 hold, the retransmit, the synchronous connect, the listener close, the
@@ -71,6 +72,26 @@ save.
 between two machines by name, one amd64 and one arm64, as the boot line wants.
 `cmd/ipconfig`, `servers/dns` and `servers/etherfs` are named in the plan and
 not yet written.
+
+## Reading the bench
+
+Three things say where a frame went, for the day a line does not cross.
+
+- **`/dev/ether/stats`** is the card as the kernel saw it: frames handed up
+  and written down, used-ring entries taken, and the ring's two indices.
+- **`/net/ether0/stats`** is the card as the stack saw it: frames each way,
+  datagrams for this machine and for another, and ARP requests asked. A
+  count here below the kernel's is a second reader on `/dev/ether/data`.
+  The card is not multiplexed, and only `netfs` may read it. The suite's
+  live network check once polled it for minutes on a link with no gateway,
+  and the stack lost every other frame to it.
+- **`fleet --pcap`** captures each machine's frames at QEMU's netdev, to
+  `build/net-a.pcap` and `build/net-b.pcap`, for `tcpdump -nn -r`. What one
+  machine sent and the other received is then a question with an answer.
+
+The bench's two machines have no gateway, so the kernel's boot network check
+and the suite's gateway checks fail there by design, until each machine also
+gets a user-mode card as `docs/FLEET.md` section 3 plans.
 
 ## See also
 

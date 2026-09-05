@@ -120,9 +120,14 @@ and whether one was found.
 .SH SEE ALSO
 .IR ether (3)
 .SH BUGS
-There is no
+The UDP and TCP formats in
+.B sys/libnet/frame.odin
+and
+.BR sys/libnet/tcpq.odin ,
+and the
 .I dial
-or
-.IR announce .
-This library only builds and reads frames in memory; it opens nothing
-and sends nothing itself.
+and
+.I announce
+in
+.BR sys/libnet/dial.odin ,
+are not yet on this page.

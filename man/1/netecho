@@ -1,0 +1,60 @@
+.TH NETECHO 1
+.SH NAME
+netecho \- announce an echo service, or dial one and say a word
+.SH SYNOPSIS
+.B netecho announce
+.I service
+.PP
+.B netecho dial
+.I addr word
+.SH DESCRIPTION
+.I Netecho
+is the two halves of one TCP conversation, as two runs of one program.
+A line crossing between two machines then needs nothing else on either.
+.PP
+.B Netecho announce
+announces
+.I service
+on this machine, waits for one connection, and answers every line on it
+with the same line until the far end hangs up.
+It then hangs up its own end and exits, so it is started, used once,
+and gone.
+.I Service
+is a port number, or a name
+.B /lib/ndb/local
+gives one.
+.PP
+.B Netecho dial
+dials
+.IR addr ,
+a dial string such as
+.BR tcp!two!echo ,
+writes
+.IR word ,
+prints what comes back, and hangs up.
+.PP
+Both halves go through
+.IR libnet 's
+.IR dial ,
+so the address is a name and
+.B /net/cs
+resolves it.
+.SH EXAMPLES
+On one machine of the bench, and then on the other:
+.IP
+.EX
+% netecho announce echo &
+% netecho dial tcp!one!echo crossing
+crossing
+.EE
+.SH SOURCE
+.B cmd/netecho/main.odin
+.SH SEE ALSO
+.IR ping (1),
+.IR net (2)
+.SH DIAGNOSTICS
+The exit status is empty, or names the step that failed:
+.B usage
+for a missing argument, or a line beginning
+.B netecho:
+saying what could not be done.

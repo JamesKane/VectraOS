@@ -23,7 +23,9 @@ mkdir mkdir
 mount bind
 muidemo muidemo
 mv cp
+netecho netecho
 ns ns
+ping ping
 ps ps
 pwd pwd
 rc rc

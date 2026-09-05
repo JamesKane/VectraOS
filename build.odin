@@ -25,6 +25,7 @@ Options:
     --monitor=PATH               A QEMU monitor on a unix socket, for screendump
     --gfx                        Open a QEMU window, otherwise headless
     --smp=N                      Cores QEMU presents (default: 4)
+    --pcap                       fleet: capture each machine's frames to build/net-{a,b}.pcap
 
 An Odin program rather than a shell script, for one reason. The flag handling,
 the arch table and the link line will all grow per-architecture.
@@ -113,6 +114,7 @@ user_programs := [?]User_Program {
 	{name = "ns", path = "cmd/ns"},
 	{name = "window", path = "cmd/window"},
 	{name = "netecho", path = "cmd/netecho"},
+	{name = "ping", path = "cmd/ping"},
 	{name = "muidemo", path = "apps/muidemo"},
 }
 
@@ -293,6 +295,7 @@ Options :: struct {
 	monitor: string,
 	gfx:     bool,
 	smp:     int,
+	pcap:    bool, // The fleet's frames, captured at QEMU's netdev
 
 	// Everything after the target, handed to the target untouched. Only
 	// `lint` reads it, so that `build lint --show docs` reaches the checker.
@@ -331,6 +334,8 @@ main :: proc() {
 			opts.release = true
 		case arg == "--gfx":
 			opts.gfx = true
+		case arg == "--pcap":
+			opts.pcap = true
 		case strings.has_prefix(arg, "-"):
 			// An option this script does not know is an error, unless a
 			// target has already claimed the line. Then it belongs to
@@ -1077,6 +1082,12 @@ machine_args :: proc(opts: Options, esp_dir, scratch: string, net: []string, con
 	append(&args, "-drive", fmt.tprintf("if=none,id=scratch,format=raw,file=%s", scratch))
 	append(&args, "-device", "virtio-blk-pci,drive=scratch,disable-legacy=on")
 	append(&args, ..net)
+	if opts.pcap {
+		// Every frame the netdev carries, both ways, as a pcap a host reads
+		// with tcpdump. What one machine sent and the other received is
+		// then a question with an answer.
+		append(&args, "-object", fmt.tprintf("filter-dump,id=dump,netdev=n0,file=%s/net-%s.pcap", BUILD_DIR, path_tag(serial_log)))
+	}
 	append(&args, "-smp", fmt.tprintf("%d", opts.smp))
 	// The guest console is the serial line, on a unix socket a host drives, and
 	// a copy also to a log file. The monitor is not needed here.

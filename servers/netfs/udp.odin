@@ -1,5 +1,6 @@
 /*
-udp -- conversations, `/net/udp`'s half of the stack.
+udp -- conversations, `/net/udp`'s half of the stack, and the shape
+`/net/icmp` shares.
 
 `docs/FLEET.md` section 3 gives every protocol the same shape, and this is the
 first one built to it:
@@ -21,6 +22,10 @@ delivers it to the conversation that announced the port. That is what a loopback
 is, and it lets two conversations here talk to each other. A datagram
 for anywhere else is a frame, and needs the far side's hardware address in the
 ARP table before it can be one.
+
+**The conversations are one pool, and each knows its protocol.** An ICMP
+conversation is this shape with no ports, so `icmp.odin` adds only the
+delivery and the send, and everything from the queue to the held read is here.
 */
 package netfs
 
@@ -45,8 +50,15 @@ Dgram :: struct {
 	data:  [DG_MAX]u8,
 }
 
+// The protocols whose conversations share this pool.
+Proto :: enum u8 {
+	UDP,
+	ICMP,
+}
+
 Conv :: struct {
 	used:      bool,
+	proto:     Proto,
 	announced: bool,
 	connected: bool,
 	lport:     u16,
@@ -61,12 +73,13 @@ Conv :: struct {
 convs: [MAX_CONV]Conv
 next_port: u16 = EPHEMERAL
 
-// conv_alloc takes the first free conversation, or answers -1.
-conv_alloc :: proc "contextless" () -> int #no_bounds_check {
+// conv_alloc takes the first free conversation for `proto`, or answers -1.
+conv_alloc :: proc "contextless" (proto: Proto) -> int #no_bounds_check {
 	for i in 0 ..< MAX_CONV {
 		if !convs[i].used {
 			convs[i] = Conv {
 				used  = true,
+				proto = proto,
 				lport = next_port,
 			}
 			next_port += 1
@@ -128,7 +141,7 @@ means.
 udp_deliver :: proc "contextless" (src: libnet.IP, sport: u16, dport: u16, payload: []u8) #no_bounds_check {
 	for i in 0 ..< MAX_CONV {
 		c := &convs[i]
-		if !c.used || c.lport != dport {
+		if !c.used || c.proto != .UDP || c.lport != dport {
 			continue
 		}
 		if c.connected && (c.raddr != src || c.rport != sport) {
@@ -140,18 +153,23 @@ udp_deliver :: proc "contextless" (src: libnet.IP, sport: u16, dport: u16, paylo
 }
 
 /*
-udp_send sends one datagram from conversation `i` to the far end it is connected
-to. It builds the datagram and hands it to `ip_output`. That is the one place
-deciding whether a datagram goes on the card or is delivered here.
+conv_send sends one datagram from conversation `i` to the far end it is
+connected to, by its protocol. A UDP datagram is built here; an ICMP message
+is the caller's, and `icmp_send` fills in its checksum. Both hand the result
+to `ip_output`, the one place deciding whether it goes on the card or is
+delivered here.
 */
-udp_send :: proc "contextless" (i: int, payload: []u8) -> bool #no_bounds_check {
+conv_send :: proc "contextless" (i: int, payload: []u8) -> bool #no_bounds_check {
 	c := &convs[i]
 	if !c.connected {
 		return false
 	}
+	if c.proto == .ICMP {
+		return icmp_send(i, payload)
+	}
 	dgram: [libnet.UDP_HDR + DG_MAX]u8 = ---
 	end := libnet.put_udp(dgram[:], 0, my_ip, c.raddr, c.lport, c.rport, payload)
-	return ip_output(c.raddr, libnet.IPPROTO_UDP, dgram[:end])
+	return ip_output(c.raddr, libnet.IPPROTO_UDP, dgram[:end]) != .Dropped
 }
 
 // -- The control file ---------------------------------------------------------

@@ -242,7 +242,7 @@ tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) -> b
 		payload = payload,
 	}
 	end := libnet.put_tcp(seg[:], 0, my_ip, c.raddr, t)
-	return ip_output(c.raddr, libnet.IPPROTO_TCP, seg[:end])
+	return ip_output(c.raddr, libnet.IPPROTO_TCP, seg[:end]) == .Sent
 }
 
 /*

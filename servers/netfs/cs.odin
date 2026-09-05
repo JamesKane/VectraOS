@@ -127,7 +127,7 @@ cs_translate :: proc "contextless" (query: string, into: []u8) -> int #no_bounds
 	if !ok {
 		return 0
 	}
-	if proto != "tcp" && proto != "udp" {
+	if proto != "tcp" && proto != "udp" && proto != "icmp" {
 		return 0
 	}
 	host, service, ok2 := cut(rest)

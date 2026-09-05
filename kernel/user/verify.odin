@@ -7336,7 +7336,7 @@ files say whether that worked, and each is read here rather than inferred.
 `/net/ether0/addr` is the card's own address, which the kernel knows from the
 driver and compares. `/net/arp` holds an address this machine resolved, so the
 gateway appearing there is an ARP that crossed the card and came back. And
-`/net/icmp` counts the echoes, so a reply counted is an IPv4 datagram this stack
+`/net/icmp/stats` counts the echoes, so a reply counted is an IPv4 datagram this stack
 built, sent, and matched to its own request.
 
 That is the whole of `docs/FLEET.md` step 0's first claim: a stack in ring 3
@@ -7387,7 +7387,7 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 	// The gateway resolved by ARP, and the echo it answered. Both are polled,
 	// because the frames cross a card and a server between them.
 	check(r, net_file_holds(r, "/net/arp", "10.0.2.2"), "the stack resolved the gateway by ARP across the card")
-	check(r, net_file_holds(r, "/net/icmp", "received 1"), "and its echo came back, an IPv4 datagram answered")
+	check(r, net_file_holds(r, "/net/icmp/stats", "received 1"), "and its echo came back, an IPv4 datagram answered")
 
 	/*
 	And the conversations, driven by a program rather than from here. `udptest`
@@ -7444,7 +7444,7 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 
 	// -- Teardown, a remove of one of its files -------------------------------
 
-	if c, err := vfs.open_path(vfs.boot_namespace, "/net/icmp", vfs.O_RDONLY); err == vfs.OK {
+	if c, err := vfs.open_path(vfs.boot_namespace, "/net/icmp/stats", vfs.O_RDONLY); err == vfs.OK {
 		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of one of its files is the stack's stop")
 		vfs.chan_close(c)
 	}

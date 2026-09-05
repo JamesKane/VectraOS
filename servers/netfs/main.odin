@@ -23,8 +23,9 @@ file. TCP and UDP conversations, `cs` and the rest of the `/net` tree are the
 steps after this one.
 
     /net/ether0/addr   the card's hardware address
+    /net/ether0/stats  frames each way, and what became of them
     /net/arp           the addresses this machine has resolved
-    /net/icmp          echoes sent and echoes answered
+    /net/icmp/         conversations, as udp's, and `stats` for the probe
 
 The address is static, QEMU's guest, until `cmd/ipconfig` asks for one.
 */
@@ -72,6 +73,9 @@ NODE_TCP :: i32(7) // The tcp directory
 NODE_TCLONE :: i32(8) // tcp/clone
 NODE_CS :: i32(9) // The connection server's file
 NODE_LOCAL :: i32(10) // This machine's own address, resolved from ndb
+NODE_ICLONE :: i32(11) // icmp/clone
+NODE_ISTATS :: i32(12) // icmp/stats
+NODE_ESTATS :: i32(13) // ether0/stats
 
 // TCP's conversations are numbered from their own base, far enough past UDP's
 // that the two never decode as each other.
@@ -133,9 +137,6 @@ stayed as it is written here.
 my_ip := libnet.IP{0, 0, 0, 0}
 gw_ip := libnet.IP{0, 0, 0, 0}
 
-// The identifier this stack puts in the echoes it sends.
-ECHO_ID :: u16(0x5643)
-
 fids: libuser.Fid_Table
 srv: lib9p.Srv
 
@@ -163,13 +164,18 @@ Pending :: struct {
 pending: [PENDING_SLOTS]Pending
 pending_evict: int // The slot a new destination takes when every slot is busy.
 
-// What the probe did, which `/net/icmp` reports and the self-test reads.
-echo_sent: int
-echo_recv: int
-
 // One frame out, built here and written to the card. A datagram's payload is
 // the largest thing it carries.
 out: [2048]u8
+
+// What crossed the card, which `/net/ether0/stats` reports: frames each way,
+// datagrams for this machine and for another, and the ARP requests asked.
+frames_in: int
+frames_out: int
+ip_in: int
+ip_not_mine: int
+ip_bad: int
+arp_asked: int
 
 /*
 _start opens the card's files and hands the process to the thread library. The
@@ -350,33 +356,47 @@ resolve_addresses :: proc "contextless" () #no_bounds_check {
 }
 
 /*
+What became of a datagram handed to `ip_output`. `Sent` reached the wire or
+was delivered here. `Held` waits on an ARP reply and goes out when it comes,
+or not at all, which for a datagram is as good as sent. `Dropped` is a card
+that would not take it. TCP counts a retransmit only on `Sent`; UDP and ICMP
+fail a write only on `Dropped`.
+*/
+Output :: enum {
+	Sent,
+	Held,
+	Dropped,
+}
+
+/*
 ip_output sends one datagram to `dst`, and is the only place that decides how.
 
 A datagram for this machine's own address is delivered here and never reaches
 the card, which is the loopback. One for anywhere else needs the far side's
 hardware address. The ARP table holds it or it does not, and a miss asks for it
-and drops this datagram, the way a stack does. Every protocol above hands over a
-body and a number, and none of them frames.
+and holds this datagram for the reply, the way Plan 9's `Arpent` does. Every
+protocol above hands over a body and a number, and none of them frames.
 
 This owns `out`. The loopback path does not touch it, so a datagram delivered
 inside this call cannot overwrite a frame being built further up.
 */
-ip_output :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) -> bool #no_bounds_check {
+ip_output :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) -> Output #no_bounds_check {
 	if dst == my_ip {
 		ip_deliver(my_ip, proto, body)
-		return true
+		return .Sent
 	}
 	mac, known := libnet.arp_lookup(&arp_table, dst)
 	if !known {
 		hold_pending(dst, proto, body)
 		send_arp_request(dst)
-		return false
+		return .Held
 	}
 	at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
 	body_at := libnet.put_ipv4(out[:], at, my_ip, dst, proto, len(body), 0)
 	copy(out[body_at:], body)
 	end := body_at + len(body)
-	return libuser.write(ether_fd, out[:end]) == i64(end)
+	frames_out += 1
+	return libuser.write(ether_fd, out[:end]) == i64(end) ? .Sent : .Dropped
 }
 
 /*
@@ -437,6 +457,7 @@ flush_pending :: proc "contextless" () #no_bounds_check {
 		body_at := libnet.put_ipv4(out[:], at, my_ip, p.dst, p.proto, p.blen, 0)
 		copy(out[body_at:], p.body[:p.blen])
 		end := body_at + p.blen
+		frames_out += 1
 		_ = libuser.write(ether_fd, out[:end])
 	}
 }
@@ -461,6 +482,7 @@ ip_deliver :: proc "contextless" (src: libnet.IP, proto: u8, body: []u8) {
 
 // take is one received frame, and what this stack makes of it.
 take :: proc "contextless" (frame: []u8) #no_bounds_check {
+	frames_in += 1
 	switch libnet.eth_type(frame) {
 	case libnet.ETHERTYPE_ARP:
 		take_arp(frame)
@@ -498,6 +520,7 @@ take_arp :: proc "contextless" (frame: []u8) #no_bounds_check {
 				tha = a.sha,
 				tpa = a.spa,
 			})
+			frames_out += 1
 			_ = libuser.write(ether_fd, out[:at])
 		}
 	case libnet.ARP_REPLY:
@@ -521,68 +544,29 @@ take_ipv4 :: proc "contextless" (frame: []u8) #no_bounds_check {
 	}
 	pkt := frame[libnet.ETH_HDR:]
 	h, ok := libnet.parse_ipv4(pkt)
-	if !ok || h.dst != my_ip {
+	if !ok {
+		ip_bad += 1
+		return
+	}
+	if h.dst != my_ip {
+		ip_not_mine += 1
 		return
 	}
 	if h.total > len(pkt) || h.total < h.hdr_len {
+		ip_bad += 1
 		return
 	}
+	ip_in += 1
 	libnet.arp_insert(&arp_table, h.src, libnet.eth_src(frame))
 	ip_deliver(h.src, h.proto, pkt[h.hdr_len:h.total])
 }
 
-/*
-icmp_in counts the replies this machine's own probe asked for, and answers an
-echo so this machine can be pinged.
-*/
-icmp_in :: proc "contextless" (src: libnet.IP, body: []u8) #no_bounds_check {
-	m, ok := libnet.parse_icmp(body)
-	if !ok {
-		return
-	}
-	switch m.kind {
-	case libnet.ICMP_ECHOREPLY:
-		if m.id == ECHO_ID {
-			echo_recv += 1
-		}
-	case libnet.ICMP_ECHO:
-		msg: [ICMP_MAX]u8 = ---
-		payload := body[libnet.ICMP_HDR:]
-		if len(payload) > ICMP_MAX - libnet.ICMP_HDR {
-			payload = payload[:ICMP_MAX - libnet.ICMP_HDR]
-		}
-		end := libnet.put_icmp_echo(msg[:], 0, libnet.ICMP_ECHOREPLY, m.id, m.seq, payload)
-		_ = ip_output(src, libnet.IPPROTO_ICMP, msg[:end])
-	}
-}
-
-// The most one ICMP message this stack builds carries.
-ICMP_MAX :: 576
-
 // send_arp_request asks who has `who`, as a broadcast.
 send_arp_request :: proc "contextless" (who: libnet.IP) {
 	n := libnet.build_arp_request(out[:], my_mac, my_ip, who)
+	arp_asked += 1
+	frames_out += 1
 	_ = libuser.write(ether_fd, out[:n])
-}
-
-/*
-send_echo sends one ICMP echo request to `ip` and counts it. The hardware
-address is `ip_output`'s business, not this one's.
-*/
-send_echo :: proc "contextless" (ip: libnet.IP) #no_bounds_check {
-	payload := "vectra"
-	msg: [ICMP_MAX]u8 = ---
-	end := libnet.put_icmp_echo(
-		msg[:],
-		0,
-		libnet.ICMP_ECHO,
-		ECHO_ID,
-		u16(echo_sent + 1),
-		transmute([]u8)payload,
-	)
-	if ip_output(ip, libnet.IPPROTO_ICMP, msg[:end]) {
-		echo_sent += 1
-	}
 }
 
 // -- The files ----------------------------------------------------------------
@@ -608,11 +592,33 @@ render :: proc "contextless" (node: i32, into: []u8) -> int #no_bounds_check {
 	case NODE_LOCAL:
 		put_ip(&sink, my_ip)
 		libodin.put_str(&sink, "\n")
-	case NODE_ICMP:
+	case NODE_ESTATS:
+		libodin.put_str(&sink, "in ")
+		libodin.put_uint(&sink, u64(frames_in))
+		libodin.put_str(&sink, " out ")
+		libodin.put_uint(&sink, u64(frames_out))
+		libodin.put_str(&sink, " ip ")
+		libodin.put_uint(&sink, u64(ip_in))
+		libodin.put_str(&sink, " notmine ")
+		libodin.put_uint(&sink, u64(ip_not_mine))
+		libodin.put_str(&sink, " bad ")
+		libodin.put_uint(&sink, u64(ip_bad))
+		libodin.put_str(&sink, " arpasked ")
+		libodin.put_uint(&sink, u64(arp_asked))
+		libodin.put_str(&sink, "\n")
+	case NODE_ISTATS:
 		libodin.put_str(&sink, "sent ")
 		libodin.put_uint(&sink, u64(echo_sent))
 		libodin.put_str(&sink, " received ")
 		libodin.put_uint(&sink, u64(echo_recv))
+		libodin.put_str(&sink, " answered ")
+		libodin.put_uint(&sink, u64(echo_answered))
+		libodin.put_str(&sink, " delivered ")
+		libodin.put_uint(&sink, u64(icmp_delivered))
+		libodin.put_str(&sink, " unclaimed ")
+		libodin.put_uint(&sink, u64(icmp_unclaimed))
+		libodin.put_str(&sink, " bad ")
+		libodin.put_uint(&sink, u64(icmp_bad))
 		libodin.put_str(&sink, "\n")
 	case:
 		if i, kind, ok := tconv_of(node); ok {
@@ -641,7 +647,7 @@ put_mac :: proc "contextless" (sink: ^libodin.Sink, mac: libnet.MAC) {
 // -- The tree -----------------------------------------------------------------
 
 is_dir :: proc "contextless" (node: i32) -> bool {
-	if node == NODE_ROOT || node == NODE_ETHER || node == NODE_UDP || node == NODE_TCP {
+	if node == NODE_ROOT || node == NODE_ETHER || node == NODE_UDP || node == NODE_TCP || node == NODE_ICMP {
 		return true
 	}
 	if _, kind, ok := tconv_of(node); ok {
@@ -688,14 +694,21 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 		if name == "addr" {
 			return NODE_ADDR
 		}
-	case NODE_UDP:
-		if name == "clone" {
-			return NODE_CLONE
+		if name == "stats" {
+			return NODE_ESTATS
 		}
-		// A number names a conversation that exists.
+	case NODE_UDP, NODE_ICMP:
+		proto := from == NODE_UDP ? Proto.UDP : Proto.ICMP
+		if name == "clone" {
+			return from == NODE_UDP ? NODE_CLONE : NODE_ICLONE
+		}
+		if name == "stats" && from == NODE_ICMP {
+			return NODE_ISTATS
+		}
+		// A number names a conversation that exists, of this protocol.
 		if v, _, ok := scan_uint(name); ok {
 			i := int(v)
-			if i < MAX_CONV && convs[i].used {
+			if i < MAX_CONV && convs[i].used && convs[i].proto == proto {
 				return conv_node(i, CONV_DIR)
 			}
 		}
@@ -748,9 +761,14 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 	return -1
 }
 
+// proto_dir is the directory a conversation of `proto` lives under.
+proto_dir :: proc "contextless" (proto: Proto) -> i32 {
+	return proto == .UDP ? NODE_UDP : NODE_ICMP
+}
+
 // parent_of is where `..` goes from any node in the tree.
 parent_of :: proc "contextless" (node: i32) -> i32 {
-	if node == NODE_ADDR {
+	if node == NODE_ADDR || node == NODE_ESTATS {
 		return NODE_ETHER
 	}
 	if node == NODE_CLONE {
@@ -759,11 +777,14 @@ parent_of :: proc "contextless" (node: i32) -> i32 {
 	if node == NODE_TCLONE {
 		return NODE_TCP
 	}
+	if node == NODE_ICLONE || node == NODE_ISTATS {
+		return NODE_ICMP
+	}
 	if i, kind, ok := tconv_of(node); ok {
 		return kind == TCONV_DIR ? NODE_TCP : tconv_node(i, TCONV_DIR)
 	}
 	if i, kind, ok := conv_of(node); ok {
-		return kind == CONV_DIR ? NODE_UDP : conv_node(i, CONV_DIR)
+		return kind == CONV_DIR ? proto_dir(convs[i].proto) : conv_node(i, CONV_DIR)
 	}
 	return NODE_ROOT
 }
@@ -835,17 +856,25 @@ handler :: proc "contextless" (
 		}
 
 		/*
-		A read of either protocol's `clone` takes a conversation and answers
+		A read of any protocol's `clone` takes a conversation and answers
 		its number. It is the only read here with a side effect, and the whole
-		of how a caller gets a conversation. Both protocols answer it the same
+		of how a caller gets a conversation. The protocols answer it the same
 		way, so they answer it in one place.
 		*/
-		if node == NODE_CLONE || node == NODE_TCLONE {
+		if node == NODE_CLONE || node == NODE_TCLONE || node == NODE_ICLONE {
 			if m.offset > 0 {
 				reply^ = vectra9.Rread{data = nil}
 				return
 			}
-			i := node == NODE_TCLONE ? tcp_alloc() : conv_alloc()
+			i := -1
+			switch node {
+			case NODE_TCLONE:
+				i = tcp_alloc()
+			case NODE_CLONE:
+				i = conv_alloc(.UDP)
+			case NODE_ICLONE:
+				i = conv_alloc(.ICMP)
+			}
 			if i < 0 {
 				reply^ = vectra9.error_reply(vectra9.ENOSPC)
 				return
@@ -988,7 +1017,7 @@ handler :: proc "contextless" (
 			}
 			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 		case CONV_DATA:
-			if !udp_send(i, m.data) {
+			if !conv_send(i, m.data) {
 				reply^ = vectra9.error_reply(vectra9.EIO)
 				return
 			}
@@ -1066,10 +1095,10 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
 
-	// The udp directory is the one listing that changes: `clone`, and then a
+	// A protocol's directory is a listing that changes: `clone`, and then a
 	// numbered entry per conversation that exists.
-	if node == NODE_UDP || node == NODE_TCP {
-		readdir_conv_dir(m, reply, &c, node == NODE_TCP)
+	if node == NODE_UDP || node == NODE_TCP || node == NODE_ICMP {
+		readdir_conv_dir(m, reply, &c, node)
 		return
 	}
 
@@ -1080,8 +1109,8 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 		names = []string{"ether0", "arp", "icmp", "udp", "tcp", "cs", "local"}
 		nodes = []i32{NODE_ETHER, NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_CS, NODE_LOCAL}
 	case node == NODE_ETHER:
-		names = []string{"addr"}
-		nodes = []i32{NODE_ADDR}
+		names = []string{"addr", "stats"}
+		nodes = []i32{NODE_ADDR, NODE_ESTATS}
 	case:
 		if tconv, _, is_tcp := tconv_of(node); is_tcp {
 			names = []string{"ctl", "data", "listen", "local", "remote", "status"}
@@ -1123,28 +1152,46 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 }
 
 /*
-readdir_conv_dir lists a protocol's directory: `clone` first, and then one entry
-per conversation that exists, named by its number. The offset counts entries, so
-`clone` is entry zero and conversation `n` is entry `n + 1`. Both protocols have
-the same directory, so both are listed here.
+readdir_conv_dir lists a protocol's directory: `clone` first, `stats` after it
+for icmp, and then one entry per conversation that exists, named by its number.
+The offset counts entries, so the fixed files come first and conversation `n`
+is entry `n` past them. Every protocol has the same directory, so all are
+listed here.
 */
 readdir_conv_dir :: proc "contextless" (
 	m: vectra9.Treaddir,
 	reply: ^vectra9.Msg,
 	c: ^vectra9.Cursor,
-	is_tcp: bool,
+	dir: i32,
 ) #no_bounds_check {
-	clone_node := is_tcp ? NODE_TCLONE : NODE_CLONE
-	last := is_tcp ? MAX_TCP : MAX_CONV
-	if m.offset < 1 && vectra9.remaining(c) >= vectra9.dirent_size("clone") {
+	fixed_names: []string
+	fixed_nodes: []i32
+	switch dir {
+	case NODE_TCP:
+		fixed_names = []string{"clone"}
+		fixed_nodes = []i32{NODE_TCLONE}
+	case NODE_UDP:
+		fixed_names = []string{"clone"}
+		fixed_nodes = []i32{NODE_CLONE}
+	case:
+		fixed_names = []string{"clone", "stats"}
+		fixed_nodes = []i32{NODE_ICLONE, NODE_ISTATS}
+	}
+	fixed := len(fixed_names)
+	for i := int(m.offset); i < fixed; i += 1 {
+		if vectra9.remaining(c) < vectra9.dirent_size(fixed_names[i]) {
+			break
+		}
 		vectra9.put_dirent(
 			c,
-			vectra9.Dirent{qid = qid_of(clone_node), offset = 1, type = vectra9.DT_REG, name = "clone"},
+			vectra9.Dirent{qid = qid_of(fixed_nodes[i]), offset = u64(i + 1), type = vectra9.DT_REG, name = fixed_names[i]},
 		)
 	}
+	is_tcp := dir == NODE_TCP
+	last := is_tcp ? MAX_TCP : MAX_CONV
 	name: [16]u8
-	for i := max(int(m.offset) - 1, 0); i < last; i += 1 {
-		used := is_tcp ? tcps[i].used : convs[i].used
+	for i := max(int(m.offset) - fixed, 0); i < last; i += 1 {
+		used := is_tcp ? tcps[i].used : (convs[i].used && proto_dir(convs[i].proto) == dir)
 		if !used {
 			continue
 		}
@@ -1157,7 +1204,7 @@ readdir_conv_dir :: proc "contextless" (
 		dir_node := is_tcp ? tconv_node(i, TCONV_DIR) : conv_node(i, CONV_DIR)
 		vectra9.put_dirent(
 			c,
-			vectra9.Dirent{qid = qid_of(dir_node), offset = u64(i + 2), type = vectra9.DT_DIR, name = entry},
+			vectra9.Dirent{qid = qid_of(dir_node), offset = u64(i + fixed + 1), type = vectra9.DT_DIR, name = entry},
 		)
 	}
 	if c.err != .None {
