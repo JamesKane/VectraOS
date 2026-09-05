@@ -466,8 +466,13 @@ plan, and each is a root that can start now:
 
     sys/libmui           WORKBENCH 3, DONE. GHOST 2 and 3 and DEVTOOLS 6
                          are all windowed clients of it. The root is built.
-    the network          FLEET 0. Every later FLEET step, GHOST 4, and the
-                         stack half of HARDWARE 3 read it.
+    the network          FLEET 0, DONE but for `etherfs`, which waits on
+                         HARDWARE 0's `mmio` and `irq`. The bench's boot
+                         line holds: two architectures ping by name, a line
+                         crosses, and `ipconfig` gets an address from the
+                         router; `dns` and `cs` stand beside the stack. See
+                         `docs/NETFS.md`. Every later FLEET step, GHOST 4,
+                         and the stack half of HARDWARE 3 read it.
     users and factotum   FLEET 2. GHOST 4 needs an identity, and the
                          one-user note in `docs/DRAW.md`, `docs/PROCS.md`
                          and `docs/KFS.md` is written against this.
