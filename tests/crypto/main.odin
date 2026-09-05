@@ -15,6 +15,7 @@ import "vsys:libcrypto"
 import "vsys:libuser"
 import "core:crypto/x25519"
 import "core:crypto/blake2s"
+import "vsys:libauth"
 
 fail :: proc "contextless" (what: string) -> ! {
 	libuser.exits(what)
@@ -74,6 +75,64 @@ start :: proc "c" (block: ^abi.Args) {
 		blake2s.final(&ctx, h[:])
 		// BLAKE2s-256 of "" begins 69:21:7a:30 ...
 		want(h[0] == 0x69 && h[1] == 0x21 && h[2] == 0x7a && h[3] == 0x30, "BLAKE2s of the empty input is known")
+	}
+
+	// -- A Noise IK handshake, end to end ----------------------------------
+	{
+		// Static keys for the two ends, and an ephemeral each. Any 32 bytes
+		// are a valid X25519 private key; X25519 clamps them.
+		istatic: [32]u8; for i in 0 ..< 32 {istatic[i] = u8(i + 1)}
+		rstatic: [32]u8; for i in 0 ..< 32 {rstatic[i] = u8(0x40 + i)}
+		ieph: [32]u8; for i in 0 ..< 32 {ieph[i] = u8(0x80 + i)}
+		reph: [32]u8; for i in 0 ..< 32 {reph[i] = u8(0xc0 + i)}
+		rpub: [32]u8
+		libauth.public_of(rpub[:], rstatic[:])
+		ipub: [32]u8
+		libauth.public_of(ipub[:], istatic[:])
+
+		hi: libauth.Handshake
+		hr: libauth.Handshake
+		libauth.init_initiator(&hi, istatic[:], rpub[:], ieph[:])
+		libauth.init_responder(&hr, rstatic[:], reph[:])
+
+		msg1: [256]u8
+		n1 := libauth.write_msg1(&hi, msg1[:], transmute([]u8)string("hello"))
+		got1: [64]u8
+		gn1, ok1 := libauth.read_msg1(&hr, msg1[:n1], got1[:])
+		want(ok1 && string(got1[:gn1]) == "hello", "the responder reads the first message")
+		want(hr.rs == ipub, "and learns the initiator's static key, its name for it")
+
+		msg2: [256]u8
+		n2 := libauth.write_msg2(&hr, msg2[:], transmute([]u8)string("world"))
+		got2: [64]u8
+		gn2, ok2 := libauth.read_msg2(&hi, msg2[:n2], got2[:])
+		want(ok2 && string(got2[:gn2]) == "world", "the initiator reads the second message")
+
+		isend, irecv := libauth.split(&hi)
+		rsend, rrecv := libauth.split(&hr)
+		want(isend.k == rrecv.k && irecv.k == rsend.k, "both ends hold the same transport keys")
+
+		// A sealed frame each way, under the direction's key.
+		frame: [64]u8
+		libauth.transport_seal(&isend, frame[:5 + libauth.TAG_SIZE], transmute([]u8)string("first"))
+		out: [64]u8
+		want(libauth.transport_open(&rrecv, out[:], frame[:5 + libauth.TAG_SIZE]) && string(out[:5]) == "first", "a frame from the initiator opens on the responder")
+		libauth.transport_seal(&rsend, frame[:4 + libauth.TAG_SIZE], transmute([]u8)string("back"))
+		want(libauth.transport_open(&irecv, out[:], frame[:4 + libauth.TAG_SIZE]) && string(out[:4]) == "back", "and a frame the other way opens too")
+
+		// A handshake to the wrong responder key fails: the initiator that
+		// thinks the responder is someone else cannot complete es.
+		hw: libauth.Handshake
+		wrong: [32]u8; for i in 0 ..< 32 {wrong[i] = u8(0x11)}
+		wpub: [32]u8; libauth.public_of(wpub[:], wrong[:])
+		libauth.init_initiator(&hw, istatic[:], wpub[:], ieph[:])
+		hr2: libauth.Handshake
+		libauth.init_responder(&hr2, rstatic[:], reph[:])
+		mw: [256]u8
+		nw := libauth.write_msg1(&hw, mw[:], transmute([]u8)string("x"))
+		gw: [64]u8
+		_, okw := libauth.read_msg1(&hr2, mw[:nw], gw[:])
+		want(!okw, "a handshake aimed at the wrong key is refused")
 	}
 
 	libuser.exits("ok")
