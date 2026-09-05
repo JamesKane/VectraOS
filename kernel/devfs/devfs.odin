@@ -58,6 +58,7 @@ package devfs
 import "base:intrinsics"
 
 import "kernel:drivers/console"
+import "kernel:drivers/virtio"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mnt"
@@ -79,6 +80,7 @@ Dev_Kind :: enum u8 {
 	Consctl, // The console's rules: writes command, reads report
 	Null, // Writes vanish, reads are at end of file
 	Zero, // Writes vanish, reads are zeroes and never end
+	Random, // Reads are entropy from virtio-rng; writes vanish
 	Fb, // The raw framebuffer: pixel bytes at an offset. See `fbdev.odin`
 	Fbctl, // The framebuffer's geometry: reads report, nothing to command yet
 		Scancode, // The keyboard before translation, diverted while open. See `tap.odin`
@@ -115,6 +117,7 @@ DEV_NODES := [?]Dev_Node {
 	{name = "consctl", parent = 0, kind = .Consctl},
 	{name = "null", parent = 0, kind = .Null},
 	{name = "zero", parent = 0, kind = .Zero},
+	{name = "random", parent = 0, kind = .Random},
 	{name = "fb", parent = 0, kind = .Fb},
 	{name = "fbctl", parent = 0, kind = .Fbctl},
 		{name = "scancode", parent = 0, kind = .Scancode},
@@ -1046,6 +1049,20 @@ devfs_read :: proc "contextless" (
 		intrinsics.mem_zero(raw_data(buf), room)
 		reply^ = vectra9.Rread{data = buf[:room]}
 
+	case .Random:
+		// Entropy from the virtio generator, a bufferful per device call, so a
+		// larger read is filled by several. A machine with no generator gives
+		// nothing rather than zeroes a caller would mistake for entropy.
+		got := 0
+		for got < room {
+			n := virtio.rng_fill(buf[got:room])
+			if n <= 0 {
+				break
+			}
+			got += n
+		}
+		reply^ = vectra9.Rread{data = buf[:got]}
+
 	case .Consctl:
 		reply^ = vectra9.Rread{data = consctl_report(t, m.offset, buf[:room])}
 
@@ -1247,9 +1264,9 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 		// a screen has `/dev/cons`. See `tap.odin`.
 		reply^ = vectra9.Rwrite{count = u32(eia0_write(t, m.data))}
 
-	case .Null, .Zero:
-		// Accepted and discarded, which is what both mean. A write that failed
-		// would make `/dev/null` useless for the one thing it is for.
+	case .Null, .Zero, .Random:
+		// Accepted and discarded. A write to `/dev/random` could stir the
+		// pool one day; for now the device's own generator is the source.
 		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 	}
 }

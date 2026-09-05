@@ -957,6 +957,10 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	// network between two machines.
 	append(&args, "-netdev", "user,id=n0")
 	append(&args, "-device", "virtio-net-pci,netdev=n0,disable-legacy=on")
+	// A virtio entropy source, the machine's randomness. `/dev/random` reads
+	// it, and `docs/FLEET.md` step 2's handshake needs it for a fresh key.
+	append(&args, "-object", "rng-builtin,id=rng0")
+	append(&args, "-device", "virtio-rng-pci,rng=rng0,disable-legacy=on")
 	// More than one core, because the kernel starts every core the
 	// bootloader lists and the self-tests run across them. `--smp=1` is
 	// the uniprocessor control.
@@ -1101,6 +1105,9 @@ machine_args :: proc(opts: Options, esp_dir, scratch: string, net: []string, con
 	append(&args, "-drive", fmt.tprintf("if=none,id=scratch,format=raw,file=%s", scratch))
 	append(&args, "-device", "virtio-blk-pci,drive=scratch,disable-legacy=on")
 	append(&args, ..net)
+	// The entropy source, on every fleet machine, for the handshake.
+	append(&args, "-object", fmt.tprintf("rng-builtin,id=rng%s", path_tag(serial_log)))
+	append(&args, "-device", fmt.tprintf("virtio-rng-pci,rng=rng%s,disable-legacy=on", path_tag(serial_log)))
 	if opts.pcap {
 		// Every frame the netdev carries, both ways, as a pcap a host reads
 		// with tcpdump. What one machine sent and the other received is

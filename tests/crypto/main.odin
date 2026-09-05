@@ -77,6 +77,23 @@ start :: proc "c" (block: ^abi.Args) {
 		want(h[0] == 0x69 && h[1] == 0x21 && h[2] == 0x7a && h[3] == 0x30, "BLAKE2s of the empty input is known")
 	}
 
+	// -- /dev/random: the entropy a handshake's ephemeral key comes from ----
+	{
+		fd := libuser.open("/dev/random", abi.O_RDONLY)
+		want(fd >= 0, "/dev/random opens")
+		a: [32]u8
+		b: [32]u8
+		want(libuser.read(int(fd), a[:]) == 32, "and fills a request")
+		want(libuser.read(int(fd), b[:]) == 32, "twice")
+		_ = libuser.close(int(fd))
+		zero := true
+		for x in a {
+			if x != 0 {zero = false}
+		}
+		want(!zero, "with bytes that are not all zero")
+		want(a != b, "and a second read differs from the first")
+	}
+
 	// -- A Noise IK handshake, end to end ----------------------------------
 	{
 		// Static keys for the two ends, and an ephemeral each. Any 32 bytes

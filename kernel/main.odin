@@ -288,6 +288,9 @@ kmain :: proc "c" () {
 			if init_disk() {
 				verify_disk()
 			}
+			if init_rng() {
+				verify_rng()
+			}
 			if init_net() {
 				verify_net()
 			}
@@ -1956,6 +1959,54 @@ verify_disk :: proc() {
 		libodin.put_str(&sink, " reads and ")
 		libodin.put_uint(&sink, writes)
 		libodin.put_str(&sink, " writes through #S")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
+}
+
+/*
+init_rng brings up the virtio entropy source, if one is on the bus. It is the
+machine's randomness, which `docs/FLEET.md` step 2's handshake needs for a
+fresh key per session, served to ring 3 as `/dev/random`. A machine with none
+still boots; a program that reads `/dev/random` there simply gets nothing.
+*/
+init_rng :: proc() -> bool {
+	if !arch.pci_available() {
+		return false
+	}
+	if virtio.rng_init() == 0 {
+		return false
+	}
+	log_line(&klog, .Ok, "rng virtio-rng, /dev/random is live")
+	return true
+}
+
+/*
+verify_rng draws two runs of bytes and checks the source is not stuck: a real
+generator does not answer the same bytes twice, nor all zeroes. It is the least
+that says entropy is entropy rather than a buffer nobody filled.
+*/
+verify_rng :: proc() {
+	result: libodin.Tally
+	a: [32]u8
+	b: [32]u8
+	na := virtio.rng_fill(a[:])
+	nb := virtio.rng_fill(b[:])
+	libodin.tally(&result, na == 32 && nb == 32, "the generator fills a request")
+	allzero := true
+	for x in a {
+		if x != 0 {allzero = false}
+	}
+	libodin.tally(&result, !allzero, "with bytes that are not all zero")
+	same := true
+	for i in 0 ..< 32 {
+		if a[i] != b[i] {same = false}
+	}
+	libodin.tally(&result, !same, "and a second run differs from the first")
+	sink := report_begin("rng", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " entropy checks passed -- two runs of random bytes, and they differ")
 		emit(&klog, .Ok, &sink)
 		return
 	}
