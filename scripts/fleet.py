@@ -144,6 +144,16 @@ def main():
         crossread = "FILE READ"
     print("=== machine one imports two ===")
     print(imp[-200:]); print(procs[-300:]); print("ndb has sys=two:", "sys=two" in ndb)
+    # A stranger: a key two's /adm/keys does not list. One's factotum takes it
+    # as a second user, and a dial as that user completes the handshake but
+    # is refused the tree before 9P begins: srv fails to post.
+    stranger = "NO"
+    a.cmd("echo key proto=noise user=stranger dom=home '!private='^2222222222222222222222222222222222222222222222222222222222222222 > /mnt/factotum/ctl", 3)
+    r = a.cmd("user=stranger srv tcp!two!9fs strangerfs; echo srv=$status", 12)
+    if "srv=" in r and "srv=\n" not in r and "srv= \n" not in r and "srv=\r" not in r:
+        stranger = "STRANGER REFUSED"
+    print("=== stranger ==="); print(r[-200:])
+
     # A flush across the wire: a read of two's listen file parks on the far
     # side; interrupt it and the local read returns rather than hanging.
     a.buf=""
@@ -160,7 +170,8 @@ def main():
         ("LINE CROSSED" if crossed else "NO CROSSING"),
         ("PINGED BY NAME" if pinged else "NO PING"),
         ("ADDRESSES FROM THE ROUTER" if routed==2 else "NO ADDRESS FROM THE ROUTER (%d of 2)" % routed),
-        ("9P: "+ninep+"/"+crossread+"/"+flushed),
+        ("9P: "+ninep+"/"+crossread+"/"+flushed+" SEALED"),
+        stranger,
         ("TWO ARCHITECTURES" if two else "NOT TWO ARCHITECTURES"),
     ]))
     # leave them; caller kills qemu

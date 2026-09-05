@@ -467,7 +467,15 @@ plan, and each is a root that can start now:
     sys/libmui           WORKBENCH 3, DONE. GHOST 2 and 3 and DEVTOOLS 6
                          are all windowed clients of it. The root is built.
     the network          FLEET 0 DONE but for `etherfs` (waits on HARDWARE
-                         0's `mmio`/`irq`), and FLEET 1 (9P both ways) DONE.
+                         0's `mmio`/`irq`), FLEET 1 (9P both ways) DONE, and
+                         FLEET 2 (users) half done: the wire half. `factotum`
+                         holds the keys, `sys/libauth` runs Noise IK through
+                         it and seals the stream, `srv`/`import`/`exportfs -a`
+                         prove who they are, and the bench imports across
+                         architectures sealed with a stranger refused. Left:
+                         the kernel's per-process user, `/dev/user`, kfs
+                         owners and modes, so a private file refuses and a
+                         kill of another's process is denied.
                          The bench holds both boot lines: two architectures
                          ping by name, a line crosses, `ipconfig` gets an
                          address from the router, and machine one imports

@@ -4,6 +4,8 @@ exportfs \- serve this namespace as 9P on a stream
 .SH SYNOPSIS
 .B exportfs
 [
+.B -a
+] [
 .B -r
 .I path
 ]
@@ -32,10 +34,21 @@ down, the root by default, so a
 before it starts decides what a client sees.
 That is the whole access model.
 .PP
+With
+.BR -a ,
+the handshake comes first, on the raw stream, through
+.IR factotum (4)
+as this host: the client is named by the key the handshake proved, looked
+up in
+.BR /adm/keys ,
+and one that file does not list is
+.B none
+and refused before 9P begins.
+Everything after is served on the sealed stream.
 The service script
 .B /lib/service/tcp564
 is
-.BR "exec exportfs -r /" .
+.BR "exec exportfs -a -r /" .
 .SH SOURCE
 .B cmd/exportfs/main.odin
 .SH SEE ALSO
@@ -47,4 +60,5 @@ Reads and writes are answered on the serve loop's own thread, so a read
 that parks in this namespace parks the loop, and a flush that reaches it
 waits behind the read.
 Rename and setattr are refused.
-There is no authentication yet; a client is whoever dialled.
+The proven name is not yet what the tree's own files are opened as;
+owners and modes arrive with the kernel's users.

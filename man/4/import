@@ -35,6 +35,18 @@ in one:
 % import big /n/big
 % ls /n/big/proc
 .EE
+Before anything is posted the handshake runs, through
+.IR factotum (4):
+this session proves itself as the user
+.B /env/user
+in
+.BR /env/dom ,
+and the host proves itself by the
+.B key=
+on its record in
+.BR /lib/ndb/local .
+A host with no key cannot be dialled, and there is no falling back to the
+clear; what is posted is the sealed stream.
 .SH SOURCE
 .B cmd/import/main.odin
 .SH SEE ALSO
@@ -50,4 +62,3 @@ end takes all of it.
 A
 .B bind
 after the mount picks the part.
-There is no authentication yet.

@@ -4,6 +4,7 @@ cs cs
 dns dns
 eiafs eiafs
 exportfs exportfs
+factotum factotum
 fatfs fatfs
 import import
 intro 0intro

@@ -1,0 +1,65 @@
+.TH FACTOTUM 4
+.SH NAME
+factotum \- the keys a session holds, and the handshakes run through them
+.SH SYNOPSIS
+.B factotum
+.SH DESCRIPTION
+.I Factotum
+posts
+.B /srv/factotum
+and serves two files, mounted at
+.BR /mnt/factotum .
+A key is a line written to
+.BR ctl :
+.IP
+.EX
+key proto=noise user=glenda dom=home !passphrase=...
+key proto=noise user=one dom=home !private=<64 hex digits>
+.EE
+.PP
+The first derives the private key from the passphrase with argon2id,
+salted with
+.IR user @ dom ,
+and forgets the passphrase; the second takes the key as given, which is
+how
+.IR init (8)
+loads a host's key from
+.BR /adm/hostkey .
+A read of
+.B ctl
+lists every key's public half and no secret.
+.PP
+A conversation on
+.B rpc
+runs one Noise IK handshake a line at a time, hex for every byte string,
+so the program running it holds no key:
+.IP
+.EX
+start initiator user=U dom=D remote=<hex>   ->  msg <hex>
+msg <hex>                                   ->  done <peer> <send> <recv>
+start responder user=U dom=D                ->  ok
+msg <hex>                                   ->  msg <hex>
+finish                                      ->  done <peer> <send> <recv>
+.EE
+.PP
+.B done
+names the far side by its static public key and hands over the two
+transport keys, the initiator's sending key first, which
+.B sys/libauth
+seals the stream with.
+A write that cannot be honoured fails with
+.B EINVAL
+and the next read says why.
+The ephemeral key each handshake needs comes from
+.BR /dev/random .
+.SH SOURCE
+.B servers/factotum/main.odin
+.SH SEE ALSO
+.IR srv (4),
+.IR import (4),
+.IR exportfs (4)
+.SH BUGS
+One factotum per machine, started by
+.IR init ,
+holds the host's key; a person's passphrase goes into the same one.
+Per-session factotums arrive with logins.

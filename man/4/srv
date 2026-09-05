@@ -33,6 +33,18 @@ at
 The conversation outlives
 .IR srv :
 the posting holds it, and removing the name is what ends it.
+Before anything is posted the handshake runs, through
+.IR factotum (4):
+this session proves itself as the user
+.B /env/user
+in
+.BR /env/dom ,
+and the host proves itself by the
+.B key=
+on its record in
+.BR /lib/ndb/local .
+A host with no key cannot be dialled, and there is no falling back to the
+clear; what is posted is the sealed stream.
 .SH SOURCE
 .B cmd/srv/main.odin
 .SH SEE ALSO
@@ -40,4 +52,3 @@ the posting holds it, and removing the name is what ends it.
 .IR exportfs (4),
 .IR bind (1)
 .SH BUGS
-There is no authentication yet.
