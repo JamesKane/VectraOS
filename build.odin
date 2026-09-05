@@ -347,6 +347,7 @@ main :: proc() {
 	case "check":    check(opts)
 	case "esp":    stage_esp(opts)
 	case "run":    stage_esp(opts); run_qemu(opts, debug = false)
+	case "fleet":  stage_esp(opts); run_fleet(opts)
 	case "debug":  stage_esp(opts); run_qemu(opts, debug = true)
 	case "clean":  clean()
 	case "lint":   lint(opts)
@@ -959,6 +960,139 @@ run_qemu :: proc(opts: Options, debug: bool) {
 
 	step("booting %s", cfg.qemu)
 	run(args[:])
+}
+
+/*
+run_fleet boots two machines on one socket network, which is `docs/FLEET.md`
+step 0's bench. One machine listens for the link and the other dials it, so the
+two are wired as if by a crossing cable. Each gets its own copy of the ESP and
+its own scratch disk. Two QEMUs cannot share one `fat:rw` overlay, nor one raw
+image's write lock. Each gets a distinct card address, so `/lib/ndb/local`
+gives each a distinct name and IP -- the whole point of a fleet reading one
+database.
+
+The consoles go to unix sockets a host script drives, and the serial log of
+each also to a file. This launches both and waits. A driver connects to the
+sockets, runs `netecho` on each, and watches a line cross.
+*/
+run_fleet :: proc(opts: Options) {
+
+	// Each machine's own ESP and scratch, copied from the staged originals.
+	esp_a := fmt.tprintf("%s/esp-a", BUILD_DIR)
+	esp_b := fmt.tprintf("%s/esp-b", BUILD_DIR)
+	copy_tree(ESP_DIR, esp_a)
+	copy_tree(ESP_DIR, esp_b)
+	ensure_scratch_disk()
+	scratch_a := fmt.tprintf("%s/disk-a.img", BUILD_DIR)
+	scratch_b := fmt.tprintf("%s/disk-b.img", BUILD_DIR)
+	copy_file(SCRATCH_IMG, scratch_a)
+	copy_file(SCRATCH_IMG, scratch_b)
+
+	PORT :: "17999"
+	a := machine_args(
+		opts, esp_a, scratch_a,
+		{"-netdev", fmt.tprintf("socket,id=n0,listen=127.0.0.1:%s", PORT),
+		 "-device", "virtio-net-pci,netdev=n0,mac=52:54:00:00:00:0a,disable-legacy=on"},
+		fmt.tprintf("%s/console-a.sock", BUILD_DIR),
+		fmt.tprintf("%s/serial-a.log", BUILD_DIR),
+	)
+	b := machine_args(
+		opts, esp_b, scratch_b,
+		{"-netdev", fmt.tprintf("socket,id=n0,connect=127.0.0.1:%s", PORT),
+		 "-device", "virtio-net-pci,netdev=n0,mac=52:54:00:00:00:0b,disable-legacy=on"},
+		fmt.tprintf("%s/console-b.sock", BUILD_DIR),
+		fmt.tprintf("%s/serial-b.log", BUILD_DIR),
+	)
+
+	step("booting machine one, listening for the link on port %s", PORT)
+	pa := spawn_bg(a[:])
+	// Let machine one open its listening socket before machine two dials it.
+	// A socket netdev does not retry, so a dial that races the listen leaves
+	// the two on a dead link with no way back.
+	run({"sleep", "3"})
+	step("booting machine two, dialling the link")
+	pb := spawn_bg(b[:])
+
+	step("fleet up: consoles at %s/console-a.sock and console-b.sock", BUILD_DIR)
+	step("drive it with scripts/fleet.py, or connect a socket to a console")
+
+	// Wait for both to exit. A driver kills them when its checks are done.
+	_, _ = os.process_wait(pa)
+	_, _ = os.process_wait(pb)
+}
+
+/*
+machine_args builds one QEMU command with a given ESP, scratch disk, network,
+console and serial log. It is `run_qemu`'s body with the parts that differ
+between fleet machines lifted out.
+*/
+machine_args :: proc(opts: Options, esp_dir, scratch: string, net: []string, console, serial_log: string) -> [dynamic]string {
+	cfg := arch_config(opts.arch)
+	args := [dynamic]string{cfg.qemu}
+	append(&args, ..cfg.qemu_machine)
+
+	combined := "../odin-os/ovmf/ovmf_x64.fd"
+	if opts.arch == .amd64 && os.exists(combined) {
+		append(&args, "-bios", combined)
+	} else {
+		share := ""
+		for dir in ([]string{"/opt/homebrew/share/qemu", "/usr/local/share/qemu", "/usr/share/qemu"}) {
+			if os.exists(fmt.tprintf("%s/%s", dir, cfg.fw_code)) {
+				share = dir
+				break
+			}
+		}
+		if share == "" {
+			die("no %s beside QEMU -- UEFI boot needs one", cfg.fw_code)
+		}
+		// Each machine needs its own writable copy of the firmware variables.
+		tag := serial_log
+		vars := fmt.tprintf("%s/%s%s.vars", BUILD_DIR, cfg.fw_vars, path_tag(tag))
+		copy_file(fmt.tprintf("%s/%s", share, cfg.fw_vars), vars)
+		append(&args, "-drive", fmt.tprintf("if=pflash,unit=0,format=raw,readonly=on,file=%s/%s", share, cfg.fw_code))
+		append(&args, "-drive", fmt.tprintf("if=pflash,unit=1,format=raw,file=%s", vars))
+	}
+
+	append(&args, "-drive", fmt.tprintf("if=none,id=esp,format=raw,file=fat:rw:%s", esp_dir))
+	append(&args, "-device", "virtio-blk-pci,drive=esp,bootindex=0,disable-legacy=on")
+	append(&args, "-drive", fmt.tprintf("if=none,id=scratch,format=raw,file=%s", scratch))
+	append(&args, "-device", "virtio-blk-pci,drive=scratch,disable-legacy=on")
+	append(&args, ..net)
+	append(&args, "-smp", fmt.tprintf("%d", opts.smp))
+	// The guest console is the serial line, on a unix socket a host drives, and
+	// a copy also to a log file. The monitor is not needed here.
+	append(&args, "-chardev", fmt.tprintf("socket,id=con,path=%s,server=on,wait=off,logfile=%s", console, serial_log))
+	append(&args, "-serial", "chardev:con")
+	append(&args, "-display", "none")
+	return args
+}
+
+// path_tag turns a file path into a short suffix, so two machines name their
+// firmware-variable copies apart.
+path_tag :: proc(s: string) -> string {
+	for i := len(s) - 1; i >= 0; i -= 1 {
+		if s[i] == '-' {
+			return s[i + 1:i + 2]
+		}
+	}
+	return "x"
+}
+
+// spawn_bg starts a process without waiting for it, for the fleet's two
+// machines that must run at once.
+spawn_bg :: proc(command: []string) -> os.Process {
+	desc := os.Process_Desc{command = command, stdout = os.stdout, stderr = os.stderr}
+	process, err := os.process_start(desc)
+	if err != nil {
+		die("could not start %s: %v", command[0], err)
+	}
+	return process
+}
+
+// copy_tree copies a directory recursively, for a per-machine ESP.
+copy_tree :: proc(src, dst: string) {
+	run({"rm", "-rf", dst})
+	run({"cp", "-R", src, dst})
 }
 
 clean :: proc() {

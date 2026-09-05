@@ -17,15 +17,15 @@ listening conversation makes a new one for each SYN it answers, and hands its
 number to whoever reads `listen`. A hangup sends a FIN and follows the states
 down to closed.
 
-**What is not here yet.** A segment is sent once and never again, because
-nothing here keeps a retransmit queue or a timer. A segment that arrives out of
-order is dropped rather than held for the one before it. The window is a number
-this end advertises and does not yet use to hold a sender back. Those three are
-what a real network needs and a loopback does not, and they are the next
-increment. What is here is the sequencing, the states and the stream, which is
-what everything above TCP reads.
+**What a network needs and a loopback does not.** A segment sent and not
+acknowledged is kept and sent again, so one the network drops still arrives. A
+segment that comes early waits in a resequencer until the one before it does. A
+segment whose address is not yet resolved waits in the stack's ARP hold and goes
+out when the reply teaches us where. These live in `sys/libnet`, and the state
+machine here drives them. The window this end advertises is a number the far
+side reads, and does not yet hold a sender of ours back.
 
-`docs/FLEET.md` step 0 wants congestion control among them. This is the state
+`docs/FLEET.md` step 0 wants congestion control on this. This is the state
 machine it stands on.
 */
 package netfs
@@ -169,7 +169,7 @@ tcp_output :: proc "contextless" (i: int, flags: u8, payload: []u8) #no_bounds_c
 	// Remembered before it is sent, so an answer that comes back inside this
 	// call finds it there to acknowledge.
 	_ = libnet.retx_push(&c.retx, seq, flags, payload, now_round)
-	tcp_emit(i, seq, flags, payload)
+	_ = tcp_emit(i, seq, flags, payload)
 }
 
 /*
@@ -179,8 +179,14 @@ same segment, not a new one.
 */
 tcp_resend :: proc "contextless" (i: int, slot: int) #no_bounds_check {
 	e := &tcps[i].retx.entries[slot]
-	libnet.retx_sent(&tcps[i].retx, slot, now_round)
-	tcp_emit(i, e.seq, e.flags, e.data[:e.len])
+	// A send that could not reach the wire, because the far side's hardware
+	// address is not yet known, does not count against the segment's tries.
+	// It waits in the ARP hold and goes out when the reply teaches us the
+	// address. Counting it would spend a connection's whole patience on the
+	// first round-trip that resolves a cold address.
+	if tcp_emit(i, e.seq, e.flags, e.data[:e.len]) {
+		libnet.retx_sent(&tcps[i].retx, slot, now_round)
+	}
 }
 
 /*
@@ -189,7 +195,7 @@ then decides whether it is delivered here or put on the card. The
 segment is built on the stack: a loopback segment is handled inside that call,
 and the shared frame buffer is `ip_output`'s.
 */
-tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) #no_bounds_check {
+tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) -> bool #no_bounds_check {
 	c := &tcps[i]
 	seg: [TCP_HDR_MAX]u8 = ---
 	t := libnet.Tcp {
@@ -202,7 +208,16 @@ tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) #no_
 		payload = payload,
 	}
 	end := libnet.put_tcp(seg[:], 0, my_ip, c.raddr, t)
-	_ = ip_output(c.raddr, libnet.IPPROTO_TCP, seg[:end])
+	return ip_output(c.raddr, libnet.IPPROTO_TCP, seg[:end])
+}
+
+/*
+tcp_emit_synack sends the SYN and ACK again with the sequence number it first
+had, without touching the retransmit timer or its count of tries. It answers a
+SYN that arrived again while this end was still waiting to be acknowledged.
+*/
+tcp_emit_synack :: proc "contextless" (i: int) #no_bounds_check {
+	_ = tcp_emit(i, tcps[i].snd_una, libnet.TCP_SYN | libnet.TCP_ACK, nil)
 }
 
 // The most a segment this stack builds can be: a header and one MSS.
@@ -300,6 +315,12 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 	case .Syn_Received:
 		if t.flags & libnet.TCP_ACK != 0 {
 			c.state = .Established
+		} else if t.flags & libnet.TCP_SYN != 0 {
+			// The far side is still asking, which means our answer was lost or
+			// has not arrived yet. Send it again rather than waiting out the
+			// retransmit timer, so a cold link settles in one round-trip.
+			tcp_emit_synack(i)
+			return
 		}
 		// A SYN and ACK that also carried data falls through to the stream.
 

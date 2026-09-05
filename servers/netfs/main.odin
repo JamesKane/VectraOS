@@ -71,6 +71,7 @@ conv_node :: proc "contextless" (i: int, kind: i32) -> i32 {
 NODE_TCP :: i32(7) // The tcp directory
 NODE_TCLONE :: i32(8) // tcp/clone
 NODE_CS :: i32(9) // The connection server's file
+NODE_LOCAL :: i32(10) // This machine's own address, resolved from ndb
 
 // TCP's conversations are numbered from their own base, far enough past UDP's
 // that the two never decode as each other.
@@ -141,6 +142,21 @@ srv: lib9p.Srv
 ether_fd: int
 my_mac: libnet.MAC
 arp_table: libnet.Arp_Table
+
+/*
+A datagram whose destination is not in the ARP table waits here while the
+request for that address is out. One slot is enough for a bench, and for the
+common case of a first packet to a fresh peer. When the reply teaches us the
+address, `flush_pending` sends the frame that was waiting.
+*/
+Pending :: struct {
+	have:  bool,
+	dst:   libnet.IP,
+	proto: u8,
+	blen:  int,
+	body:  [1500]u8,
+}
+pending: Pending
 
 // What the probe did, which `/net/icmp` reports and the self-test reads.
 echo_sent: int
@@ -337,6 +353,13 @@ ip_output :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) -> bool 
 	}
 	mac, known := libnet.arp_lookup(&arp_table, dst)
 	if !known {
+		if len(body) <= len(pending.body) {
+			pending.have = true
+			pending.dst = dst
+			pending.proto = proto
+			pending.blen = len(body)
+			copy(pending.body[:], body)
+		}
 		send_arp_request(dst)
 		return false
 	}
@@ -345,6 +368,28 @@ ip_output :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) -> bool 
 	copy(out[body_at:], body)
 	end := body_at + len(body)
 	return libuser.write(ether_fd, out[:end]) == i64(end)
+}
+
+/*
+flush_pending sends the datagram that was waiting on an ARP reply, once the
+reply teaches us the address. It runs after each received frame, so a reply or a
+passively learned address both release the waiter. A miss here means the address
+is still unknown, and the frame keeps waiting.
+*/
+flush_pending :: proc "contextless" () #no_bounds_check {
+	if !pending.have {
+		return
+	}
+	mac, known := libnet.arp_lookup(&arp_table, pending.dst)
+	if !known {
+		return
+	}
+	pending.have = false
+	at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
+	body_at := libnet.put_ipv4(out[:], at, my_ip, pending.dst, pending.proto, pending.blen, 0)
+	copy(out[body_at:], pending.body[:pending.blen])
+	end := body_at + pending.blen
+	_ = libuser.write(ether_fd, out[:end])
 }
 
 /*
@@ -373,6 +418,8 @@ take :: proc "contextless" (frame: []u8) #no_bounds_check {
 	case libnet.ETHERTYPE_IPV4:
 		take_ipv4(frame)
 	}
+	// A reply, or an address learned from any frame, may release a waiter.
+	flush_pending()
 }
 
 /*
@@ -509,6 +556,9 @@ render :: proc "contextless" (node: i32, into: []u8) -> int #no_bounds_check {
 			put_mac(&sink, e.mac)
 			libodin.put_str(&sink, "\n")
 		}
+	case NODE_LOCAL:
+		put_ip(&sink, my_ip)
+		libodin.put_str(&sink, "\n")
 	case NODE_ICMP:
 		libodin.put_str(&sink, "sent ")
 		libodin.put_uint(&sink, u64(echo_sent))
@@ -582,6 +632,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 			return NODE_TCP
 		case "cs":
 			return NODE_CS
+		case "local":
+			return NODE_LOCAL
 		}
 	case NODE_ETHER:
 		if name == "addr" {
@@ -936,8 +988,8 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 	nodes: []i32
 	switch {
 	case node == NODE_ROOT:
-		names = []string{"ether0", "arp", "icmp", "udp", "tcp", "cs"}
-		nodes = []i32{NODE_ETHER, NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_CS}
+		names = []string{"ether0", "arp", "icmp", "udp", "tcp", "cs", "local"}
+		nodes = []i32{NODE_ETHER, NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_CS, NODE_LOCAL}
 	case node == NODE_ETHER:
 		names = []string{"addr"}
 		nodes = []i32{NODE_ADDR}

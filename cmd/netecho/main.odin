@@ -64,7 +64,9 @@ announce_one announces a service, waits for one conversation, and answers every
 line on it with the same line until the far end closes.
 
 The read of `listen` parks in the server until a connection arrives, which is
-what makes this a service rather than a poll.
+what makes this a service rather than a poll. It serves one conversation and
+then exits, which is what a bench wants. It is started, it is used once, and it
+goes away rather than needing to be killed.
 */
 announce_one :: proc "contextless" (service: string) {
 	addr: [64]u8
@@ -80,8 +82,16 @@ announce_one :: proc "contextless" (service: string) {
 	if lfd < 0 {
 		fail("netecho: cannot listen")
 	}
+	echo_conversation(lfd, served)
+}
+
+/*
+echo_conversation waits for one connection on `lfd`, then answers every line on
+it with the same line until the far end closes. The `listen` read parks until a
+connection arrives, and answers the number of the conversation it accepted.
+*/
+echo_conversation :: proc "contextless" (lfd: i64, served: string) {
 	n := libuser.read(int(lfd), buf[:])
-	_ = libuser.close(int(lfd))
 	if n <= 0 {
 		fail("netecho: nothing connected")
 	}
