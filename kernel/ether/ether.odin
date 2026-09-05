@@ -1,8 +1,9 @@
 /*
-`#E`: the network card, as files under `/dev/ether`.
+`#E`: the network cards, as files under `/dev/etherN`, one directory a card.
 
-    /dev/ether/addr    the card's hardware address, six bytes, read-only
-    /dev/ether/data    a frame per read, a frame per write
+    /dev/ether0/addr   the card's hardware address, six bytes, read-only
+    /dev/ether0/data   a frame per read, a frame per write
+    /dev/ether0/stats  frames each way, and the receive ring's counts
 
 This is to the virtio-net card what `#S` is to the disk: the join between a
 polled driver and a ring 3 server. `docs/FLEET.md` step 0's `netfs` opens
@@ -42,25 +43,47 @@ S_IFDIR :: u32(0o040000)
 S_IFREG :: u32(0o100000)
 
 /*
-The nodes. The root holds one directory named `ether`, and the two files live
-under it, so the mount at `/dev` gives `/dev/ether/addr` and `/dev/ether/data`.
-A device's root is bound *at* `/dev`. A file directly under the root would be
-`/dev/addr`, which is why `#S` names a directory per disk and this names one for
-the card.
+The nodes. The root holds a directory per card, `ether0` and on, and a card's
+three files live under its directory, so the mount at `/dev` gives
+`/dev/ether0/addr` and `/dev/ether0/data`. A device's root is bound *at*
+`/dev`. A file directly under the root would be `/dev/addr`, which is why `#S`
+names a directory per disk and this names one per card.
+
+A node is a card and a kind in one number, `NODE_BASE` on: the card's
+directory, then its three files. `card_of` reads it back.
 */
 ROOT :: i32(0)
-NODE_DIR :: i32(1)
-NODE_ADDR :: i32(2)
-NODE_DATA :: i32(3)
-NODE_STATS :: i32(4) // ether/stats: frames each way, and the ring's counts
+NODE_BASE :: i32(1)
+NODE_STRIDE :: i32(4)
+KIND_DIR :: i32(0)
+KIND_ADDR :: i32(1)
+KIND_DATA :: i32(2)
+KIND_STATS :: i32(3)
+
+node_of :: proc "contextless" (card: int, kind: i32) -> i32 {
+	return NODE_BASE + i32(card) * NODE_STRIDE + kind
+}
+
+card_of :: proc "contextless" (node: i32) -> (card: int, kind: i32, ok: bool) {
+	if node < NODE_BASE {
+		return 0, 0, false
+	}
+	v := node - NODE_BASE
+	card = int(v / NODE_STRIDE)
+	kind = v % NODE_STRIDE
+	if card >= virtio.net_count() {
+		return 0, 0, false
+	}
+	return card, kind, true
+}
 
 @(private = "file")
 Ether_Device :: struct {
 	fids:   vfs.Fid_Table,
 	lock:   sync.Spinlock,
 	server: vfs.Server,
-	reads:  u64,
-	writes: u64,
+	reads:  [virtio.MAX_NICS]u64,
+	writes: [virtio.MAX_NICS]u64,
 }
 
 @(private = "file")
@@ -94,16 +117,35 @@ present :: proc "contextless" () -> bool {
 	return virtio.net_present(0)
 }
 
-stats :: proc "contextless" () -> (reads, writes: u64) {
+// stats answers what `#E` has done for card `n`: frames handed up and frames
+// written down.
+stats :: proc "contextless" (n: int) -> (reads, writes: u64) {
+	if n < 0 || n >= virtio.MAX_NICS {
+		return
+	}
 	g := sync.acquire(&dev.lock)
 	defer sync.release(&dev.lock, g)
-	return dev.reads, dev.writes
+	return dev.reads[n], dev.writes[n]
+}
+
+// card_name reads `etherN` and answers N, for a card that exists.
+@(private = "file")
+card_name :: proc "contextless" (name: string) -> (int, bool) {
+	if len(name) != 6 || name[:5] != "ether" || name[5] < '0' || name[5] > '9' {
+		return 0, false
+	}
+	n := int(name[5] - '0')
+	return n, n < virtio.net_count()
 }
 
 // -- The node tree ------------------------------------------------------------
 
 node_is_dir :: proc "contextless" (node: i32) -> bool {
-	return node == ROOT || node == NODE_DIR
+	if node == ROOT {
+		return true
+	}
+	_, kind, ok := card_of(node)
+	return ok && kind == KIND_DIR
 }
 
 qid_of :: proc "contextless" (node: i32) -> vectra9.Qid {
@@ -118,29 +160,34 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 	if name == "." {
 		return from
 	}
-	switch from {
-	case ROOT:
-		switch name {
-		case "..":
+	if from == ROOT {
+		if name == ".." {
 			return ROOT
-		case "ether":
-			return NODE_DIR
 		}
-	case NODE_DIR:
+		if n, ok := card_name(name); ok {
+			return node_of(n, KIND_DIR)
+		}
+		return -1
+	}
+	card, kind, ok := card_of(from)
+	if !ok {
+		return -1
+	}
+	if kind == KIND_DIR {
 		switch name {
 		case "..":
 			return ROOT
 		case "addr":
-			return NODE_ADDR
+			return node_of(card, KIND_ADDR)
 		case "data":
-			return NODE_DATA
+			return node_of(card, KIND_DATA)
 		case "stats":
-			return NODE_STATS
+			return node_of(card, KIND_STATS)
 		}
-	case:
-		if name == ".." {
-			return NODE_DIR
-		}
+		return -1
+	}
+	if name == ".." {
+		return node_of(card, KIND_DIR)
 	}
 	return -1
 }
@@ -149,9 +196,10 @@ attr_of :: proc "contextless" (node: i32, mask: u64) -> vectra9.Rgetattr {
 	dir := node_is_dir(node)
 	mode: u32
 	size: u64
+	_, kind, _ := card_of(node)
 	if dir {
 		mode = S_IFDIR | 0o555
-	} else if node == NODE_ADDR {
+	} else if kind == KIND_ADDR {
 		mode = S_IFREG | 0o444
 		size = 6
 	} else {
@@ -215,13 +263,14 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 		return
 	}
 	room := min(len(buf), int(m.count))
+	card, kind, _ := card_of(node)
 
-	if node == NODE_STATS {
+	if kind == KIND_STATS {
 		// The counts, as text, at the offset the read names.
 		text: [160]u8
 		sink := libodin.sink_from(text[:])
-		reads, writes := stats()
-		seen, empty, used_idx, avail_idx := virtio.net_stats(0)
+		reads, writes := stats(card)
+		seen, empty, used_idx, avail_idx := virtio.net_stats(card)
 		libodin.put_str(&sink, "reads ")
 		libodin.put_uint(&sink, reads)
 		libodin.put_str(&sink, " writes ")
@@ -247,10 +296,10 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 		return
 	}
 
-	if node == NODE_ADDR {
+	if kind == KIND_ADDR {
 		// The six-byte hardware address, at the offset the read names.
 		mac: [6]u8
-		_ = virtio.mac(0, mac[:])
+		_ = virtio.mac(card, mac[:])
 		off := int(m.offset)
 		if off >= 6 || room == 0 {
 			reply^ = vectra9.Rread{data = buf[:0]}
@@ -273,7 +322,7 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 	*/
 	n := 0
 	for _ in 0 ..< ETHER_WAIT_TICKS {
-		n = virtio.recv(0, buf[:room])
+		n = virtio.recv(card, buf[:room])
 		if n > 0 {
 			break
 		}
@@ -281,7 +330,7 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 	}
 	if n > 0 {
 		g2 := sync.acquire(&d.lock)
-		d.reads += 1
+		d.reads[card] += 1
 		sync.release(&d.lock, g2)
 	}
 	reply^ = vectra9.Rread{data = buf[:n]}
@@ -302,17 +351,18 @@ do_write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 		reply^ = vectra9.error_reply(vectra9.EINVAL)
 		return
 	}
-	if node != NODE_DATA {
+	card, kind, ok := card_of(node)
+	if !ok || kind != KIND_DATA {
 		// The address is read-only, and a directory takes no write.
 		reply^ = vectra9.error_reply(vectra9.EPERM)
 		return
 	}
-	if !virtio.send(0, m.data) {
+	if !virtio.send(card, m.data) {
 		reply^ = vectra9.error_reply(vectra9.EIO)
 		return
 	}
 	g2 := sync.acquire(&d.lock)
-	d.writes += 1
+	d.writes[card] += 1
 	sync.release(&d.lock, g2)
 	reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 }
@@ -439,12 +489,19 @@ readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_
 	c := vectra9.cursor_from(buf[:room])
 	names: []string
 	nodes: []i32
+	card_names := [?]string{"ether0", "ether1", "ether2", "ether3"}
+	card_nodes: [4]i32
 	if node == ROOT {
-		names = []string{"ether"}
-		nodes = []i32{NODE_DIR}
+		count := min(virtio.net_count(), len(card_names))
+		for i in 0 ..< count {
+			card_nodes[i] = node_of(i, KIND_DIR)
+		}
+		names = card_names[:count]
+		nodes = card_nodes[:count]
 	} else {
+		card, _, _ := card_of(node)
 		names = []string{"addr", "data", "stats"}
-		nodes = []i32{NODE_ADDR, NODE_DATA, NODE_STATS}
+		nodes = []i32{node_of(card, KIND_ADDR), node_of(card, KIND_DATA), node_of(card, KIND_STATS)}
 	}
 	for i := int(m.offset); i < len(names); i += 1 {
 		if vectra9.remaining(&c) < vectra9.dirent_size(names[i]) {

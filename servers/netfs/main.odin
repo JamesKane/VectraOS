@@ -7,7 +7,7 @@ ICMP over `sys/libnet`'s wire formats, and the `/net` files a program reads.
 This is `consrv`'s shape, the one `sys/libthread` gives a server that waits on
 two things:
 
-    the ether thread  reads /dev/ether/data through an io proc, and every
+    the ether thread  reads /dev/ether0/data through an io proc, and every
                       frame that arrives is answered, cached or counted
     the serve loop    `lib9p.serve`: a frame through its own io proc, the
                       handler, the reply
@@ -22,8 +22,9 @@ address and pings it, which proves a stack in ring 3 reaches the world through a
 file. TCP and UDP conversations, `cs` and the rest of the `/net` tree are the
 steps after this one.
 
-    /net/ether0/addr   the card's hardware address
-    /net/ether0/stats  frames each way, and what became of them
+    /net/etherN/addr   a card's hardware address
+    /net/etherN/stats  frames each way on it, and what became of them
+    /net/ipifc/N/      an interface's ctl and status; /net/iproute; /net/ndb
     /net/arp           the addresses this machine has resolved
     /net/icmp/         conversations, as udp's, and `stats` for the probe
 
@@ -35,7 +36,6 @@ import "base:runtime"
 
 import "vsys:abi"
 import "vsys:lib9p"
-import "vsys:libndb"
 import "vsys:libnet"
 import "vsys:libodin"
 import "vsys:libthread"
@@ -44,8 +44,6 @@ import "vsys:vectra9"
 
 // The tree.
 NODE_ROOT :: i32(0)
-NODE_ETHER :: i32(1) // The ether0 directory
-NODE_ADDR :: i32(2) // ether0/addr
 NODE_ARP :: i32(3)
 NODE_ICMP :: i32(4)
 NODE_UDP :: i32(5) // The udp directory
@@ -75,7 +73,58 @@ NODE_CS :: i32(9) // The connection server's file
 NODE_LOCAL :: i32(10) // This machine's own address, resolved from ndb
 NODE_ICLONE :: i32(11) // icmp/clone
 NODE_ISTATS :: i32(12) // icmp/stats
-NODE_ESTATS :: i32(13) // ether0/stats
+NODE_NDB :: i32(13) // What ipconfig learned
+NODE_IPROUTE :: i32(14) // The route table
+NODE_IPIFC :: i32(15) // The ipifc directory; 16 on is CONV_BASE, the conversations
+
+/*
+An interface has two directories: `/net/etherN`, the card with its address
+and counts, and `/net/ipifc/N`, its control and status. Each is numbered from
+its own base, a stride apart, the way the conversations are.
+*/
+ETHER_BASE :: i32(1024)
+ETHER_DIR :: i32(0)
+ETHER_ADDR :: i32(1)
+ETHER_STATS :: i32(2)
+IFC_BASE :: i32(2048)
+IFC_DIR :: i32(0)
+IFC_CTL :: i32(1)
+IFC_STATUS :: i32(2)
+IFC_STRIDE :: i32(4)
+
+ether_node :: proc "contextless" (i: int, kind: i32) -> i32 {
+	return ETHER_BASE + i32(i) * IFC_STRIDE + kind
+}
+
+ether_of :: proc "contextless" (node: i32) -> (i: int, kind: i32, ok: bool) {
+	if node < ETHER_BASE || node >= IFC_BASE {
+		return 0, 0, false
+	}
+	v := node - ETHER_BASE
+	i = int(v / IFC_STRIDE)
+	kind = v % IFC_STRIDE
+	if i >= ifc_count || kind > ETHER_STATS {
+		return 0, 0, false
+	}
+	return i, kind, true
+}
+
+ifc_node :: proc "contextless" (i: int, kind: i32) -> i32 {
+	return IFC_BASE + i32(i) * IFC_STRIDE + kind
+}
+
+ifc_of :: proc "contextless" (node: i32) -> (i: int, kind: i32, ok: bool) {
+	if node < IFC_BASE {
+		return 0, 0, false
+	}
+	v := node - IFC_BASE
+	i = int(v / IFC_STRIDE)
+	kind = v % IFC_STRIDE
+	if i >= ifc_count || kind > IFC_STATUS {
+		return 0, 0, false
+	}
+	return i, kind, true
+}
 
 // TCP's conversations are numbered from their own base, far enough past UDP's
 // that the two never decode as each other.
@@ -121,66 +170,18 @@ conv_of :: proc "contextless" (node: i32) -> (i: int, kind: i32, ok: bool) {
 
 FRAME :: 1200
 
-// This machine's address and the gateway it probes, QEMU's user network until
-// a `cmd/ipconfig` asks for one.
-/*
-This machine's address and the gateway it probes. They are variables, not
-constants. `resolve_addresses` looks this machine up in `/lib/ndb/local` by the
-address on its own card. That is how a machine finds itself in a database a
-fleet shares.
-
-**They start at nothing on purpose.** A machine with no record in the database
-has no address, which is true of a real one. It also makes the read provable.
-Every check in the suite speaks to `10.0.2.15`, and none of them could if this
-stayed as it is written here.
-*/
-my_ip := libnet.IP{0, 0, 0, 0}
-gw_ip := libnet.IP{0, 0, 0, 0}
-
 fids: libuser.Fid_Table
 srv: lib9p.Srv
 
-ether_fd: int
-my_mac: libnet.MAC
-arp_table: libnet.Arp_Table
-
-/*
-A datagram whose destination is not in the ARP table waits in one of these
-slots while the request for that address is out. There is a slot per waiting
-destination, so a first packet to one fresh peer does not evict the one waiting
-on another. One packet waits per destination, the newest, the way a Plan 9
-`Arpent` holds its last block. When the reply teaches us the address,
-`flush_pending` sends what was waiting on it.
-*/
-PENDING_SLOTS :: 4
-
-Pending :: struct {
-	have:  bool,
-	dst:   libnet.IP,
-	proto: u8,
-	blen:  int,
-	body:  [1500]u8,
-}
-pending: [PENDING_SLOTS]Pending
-pending_evict: int // The slot a new destination takes when every slot is busy.
-
-// One frame out, built here and written to the card. A datagram's payload is
+// One frame out, built here and written to a card. A datagram's payload is
 // the largest thing it carries.
 out: [2048]u8
 
-// What crossed the card, which `/net/ether0/stats` reports: frames each way,
-// datagrams for this machine and for another, and the ARP requests asked.
-frames_in: int
-frames_out: int
-ip_in: int
-ip_not_mine: int
-ip_bad: int
-arp_asked: int
 
 /*
-_start opens the card's files and hands the process to the thread library. The
-opens come first because the descriptor table is shared, and an io proc holds
-the number. 0x74 is a card that would not open, which is a machine with no
+_start opens every card's files and hands the process to the thread library.
+The opens come first because the descriptor table is shared, and an io proc
+holds the number. 0x74 is no card that would open, which is a machine with no
 `#E` and so no network for this server to serve.
 */
 @(export, link_name = "_start")
@@ -189,31 +190,16 @@ start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 
-	afd := libuser.open("/dev/ether/addr", abi.O_RDONLY)
-	if afd < 0 {
+	if open_ifcs() == 0 {
 		libuser.exit(0x74)
 	}
-	raw: [6]u8
-	n := libuser.read(int(afd), raw[:])
-	_ = libuser.close(int(afd))
-	if n != 6 {
-		libuser.exit(0x74)
-	}
-	my_mac = libnet.MAC{raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]}
-
-	dfd := libuser.open("/dev/ether/data", abi.O_RDWR)
-	if dfd < 0 {
-		libuser.exit(0x74)
-	}
-	ether_fd = int(dfd)
-
 	libthread.main(threadmain, nil)
 }
 
 /*
-threadmain posts the service, starts the ether thread, asks for the gateway's
-address, and then serves until something stops it. The ARP goes out after the
-ether thread is reading, so the reply has somewhere to land.
+threadmain posts the service, starts an ether thread per interface, asks for
+the gateway's address, and then serves until something stops it. The ARP goes
+out after the ether threads are reading, so the reply has somewhere to land.
 */
 threadmain :: proc "contextless" (arg: rawptr) {
 	_ = arg
@@ -226,18 +212,21 @@ threadmain :: proc "contextless" (arg: rawptr) {
 		handler = handler,
 		msize   = FRAME,
 	}
-	// The names, before anything can ask for one, and then this machine's own
-	// address out of them.
+	// The names, before anything can ask for one, and then each interface's
+	// own address out of them.
 	cs_load()
 	resolve_addresses()
 
-	if libthread.threadcreate(ether_thread, nil) < 0 {
-		libthread.threadexitsall("threadcreate")
+	for i in 0 ..< ifc_count {
+		if libthread.threadcreate(ether_thread, rawptr(uintptr(i))) < 0 {
+			libthread.threadexitsall("threadcreate")
+		}
 	}
 
-	// Ask who has the gateway. The reply arrives at the ether thread, which
-	// remembers it and sends the echo that follows.
-	send_arp_request(gw_ip)
+	// Ask who has the gateway, when a link of ours reaches it. The reply
+	// arrives at that interface's ether thread, which remembers it and sends
+	// the echo that follows.
+	probe_gateway()
 
 	_, why := lib9p.serve(&srv)
 	lib9p.respond_all(&srv, vectra9.Rread{data = nil})
@@ -245,20 +234,21 @@ threadmain :: proc "contextless" (arg: rawptr) {
 }
 
 /*
-ether_thread is the card's whole life: a read of `data` through an io proc, and
-what arrives handed to the stack. The read parks in the kernel until a frame
-comes or its bound passes. An empty answer is a reason to ask again rather than
-a failure.
+ether_thread is one card's whole life: a read of its `data` through an io proc,
+and what arrives handed to the stack. The read parks in the kernel until a
+frame comes or its bound passes. An empty answer is a reason to ask again
+rather than a failure. The first interface's thread is the one that winds the
+clock, so two cards do not make the rounds twice as short.
 */
 ether_thread :: proc "contextless" (arg: rawptr) {
-	_ = arg
+	i := int(uintptr(arg))
 	io := libthread.ioproc()
 	if io == nil {
 		libthread.threadexitsall("ioproc")
 	}
 	frame: [2048]u8
 	for {
-		n := libthread.ioread(io, ether_fd, frame[:])
+		n := libthread.ioread(io, ifcs[i].fd, frame[:])
 		drain_wakes()
 		if n <= 0 {
 			/*
@@ -269,11 +259,13 @@ ether_thread :: proc "contextless" (arg: rawptr) {
 			traffic grew, and fire a retransmit soonest when the network was
 			busiest.
 			*/
-			tcp_tick()
+			if i == 0 {
+				tcp_tick()
+			}
 			drain_wakes()
 			continue
 		}
-		take(frame[:int(n)])
+		take(i, frame[:int(n)])
 		drain_wakes()
 	}
 }
@@ -331,36 +323,11 @@ drain_wakes :: proc "contextless" () #no_bounds_check {
 // -- The stack ----------------------------------------------------------------
 
 /*
-resolve_addresses finds this machine in the database by the address on its card.
-
-A record carrying `ether=` for this card names the `ip` this machine answers to.
-So a fleet keeps one database, and every machine reads its own line out of it. A machine with no record keeps the fallback, so a tree with no database
-still has a working loopback and a gateway to probe.
-*/
-resolve_addresses :: proc "contextless" () #no_bounds_check {
-	hex: [16]u8
-	sink := libodin.sink_from(hex[:])
-	for i in 0 ..< 6 {
-		libodin.put_uint(&sink, u64(my_mac[i]), 16, 2)
-	}
-	if text, has := libndb.find(ndb(), "ether", libodin.str(&sink), "ip"); has {
-		if ip, ok := address(text); ok {
-			my_ip = ip
-		}
-	}
-	if text, has := libndb.find(ndb(), "sys", "gw", "ip"); has {
-		if ip, ok := address(text); ok {
-			gw_ip = ip
-		}
-	}
-}
-
-/*
 What became of a datagram handed to `ip_output`. `Sent` reached the wire or
 was delivered here. `Held` waits on an ARP reply and goes out when it comes,
 or not at all, which for a datagram is as good as sent. `Dropped` is a card
-that would not take it. TCP counts a retransmit only on `Sent`; UDP and ICMP
-fail a write only on `Dropped`.
+that would not take it, or a destination no route covers. TCP counts a
+retransmit only on `Sent`; UDP and ICMP fail a write only on `Dropped`.
 */
 Output :: enum {
 	Sent,
@@ -371,65 +338,85 @@ Output :: enum {
 /*
 ip_output sends one datagram to `dst`, and is the only place that decides how.
 
-A datagram for this machine's own address is delivered here and never reaches
-the card, which is the loopback. One for anywhere else needs the far side's
-hardware address. The ARP table holds it or it does not, and a miss asks for it
+A datagram for one of this machine's own addresses is delivered here and never
+reaches a card, which is the loopback. One for the broadcast address goes to
+every station on the interface it is bound to, `bound`, or the first one, with
+no address to resolve. Anything else takes the route: an interface, and a next
+hop that is the destination on its own link or a gateway otherwise. The ARP
+table holds the hop's hardware address or it does not, and a miss asks for it
 and holds this datagram for the reply, the way Plan 9's `Arpent` does. Every
 protocol above hands over a body and a number, and none of them frames.
 
 This owns `out`. The loopback path does not touch it, so a datagram delivered
 inside this call cannot overwrite a frame being built further up.
 */
-ip_output :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) -> Output #no_bounds_check {
-	if dst == my_ip {
-		ip_deliver(my_ip, proto, body)
+ip_output :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8, bound := -1) -> Output #no_bounds_check {
+	if k := ifc_holding(dst); k >= 0 {
+		ip_deliver(k, dst, dst, proto, body)
 		return .Sent
 	}
-	mac, known := libnet.arp_lookup(&arp_table, dst)
+	if dst == BROADCAST {
+		i := bound >= 0 && bound < ifc_count ? bound : 0
+		return emit(i, BROADCAST_MAC, dst, proto, body)
+	}
+	i, hop, ok := route(dst)
+	if !ok {
+		return .Dropped
+	}
+	mac, known := libnet.arp_lookup(&ifcs[i].arp, hop)
 	if !known {
-		hold_pending(dst, proto, body)
-		send_arp_request(dst)
+		hold_pending(i, hop, dst, proto, body)
+		send_arp_request(i, hop)
 		return .Held
 	}
-	at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
-	body_at := libnet.put_ipv4(out[:], at, my_ip, dst, proto, len(body), 0)
+	return emit(i, mac, dst, proto, body)
+}
+
+// emit frames one datagram from interface `i` to hardware address `mac` and
+// writes it to the card.
+emit :: proc "contextless" (i: int, mac: libnet.MAC, dst: libnet.IP, proto: u8, body: []u8) -> Output #no_bounds_check {
+	f := &ifcs[i]
+	at := libnet.put_eth(out[:], mac, f.mac, libnet.ETHERTYPE_IPV4)
+	body_at := libnet.put_ipv4(out[:], at, f.ip, dst, proto, len(body), 0)
 	copy(out[body_at:], body)
 	end := body_at + len(body)
-	frames_out += 1
-	return libuser.write(ether_fd, out[:end]) == i64(end) ? .Sent : .Dropped
+	f.frames_out += 1
+	return libuser.write(f.fd, out[:end]) == i64(end) ? .Sent : .Dropped
 }
 
 /*
-hold_pending keeps one datagram for a destination whose address is not yet
-known. A datagram already waiting for that destination is replaced, so the
-newest is the one that goes. When every slot is busy with a different
-destination, the oldest by eviction turn gives way.
+hold_pending keeps one datagram for a hop whose address is not yet known. A
+datagram already waiting for that hop is replaced, so the newest is the one
+that goes. When every slot is busy with a different hop, the oldest by
+eviction turn gives way.
 */
-hold_pending :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) #no_bounds_check {
-	if len(body) > len(pending[0].body) {
+hold_pending :: proc "contextless" (i: int, hop, dst: libnet.IP, proto: u8, body: []u8) #no_bounds_check {
+	f := &ifcs[i]
+	if len(body) > len(f.pending[0].body) {
 		return
 	}
 	slot := -1
-	for i in 0 ..< PENDING_SLOTS {
-		if pending[i].have && pending[i].dst == dst {
-			slot = i
+	for k in 0 ..< PENDING_SLOTS {
+		if f.pending[k].have && f.pending[k].hop == hop {
+			slot = k
 			break
 		}
 	}
 	if slot < 0 {
-		for i in 0 ..< PENDING_SLOTS {
-			if !pending[i].have {
-				slot = i
+		for k in 0 ..< PENDING_SLOTS {
+			if !f.pending[k].have {
+				slot = k
 				break
 			}
 		}
 	}
 	if slot < 0 {
-		slot = pending_evict
-		pending_evict = (pending_evict + 1) % PENDING_SLOTS
+		slot = f.pending_evict
+		f.pending_evict = (f.pending_evict + 1) % PENDING_SLOTS
 	}
-	p := &pending[slot]
+	p := &f.pending[slot]
 	p.have = true
+	p.hop = hop
 	p.dst = dst
 	p.proto = proto
 	p.blen = len(body)
@@ -437,68 +424,66 @@ hold_pending :: proc "contextless" (dst: libnet.IP, proto: u8, body: []u8) #no_b
 }
 
 /*
-flush_pending sends the datagrams whose addresses a reply has now taught us. It
-runs after each received frame, so a reply or a passively learned address both
-release whatever was waiting on it. A slot whose destination is still unknown
-keeps waiting.
+flush_pending sends the datagrams whose hops a reply has now taught interface
+`i`. It runs after each received frame, so a reply or a passively learned
+address both release whatever was waiting on it. A slot whose hop is still
+unknown keeps waiting.
 */
-flush_pending :: proc "contextless" () #no_bounds_check {
-	for i in 0 ..< PENDING_SLOTS {
-		p := &pending[i]
+flush_pending :: proc "contextless" (i: int) #no_bounds_check {
+	f := &ifcs[i]
+	for k in 0 ..< PENDING_SLOTS {
+		p := &f.pending[k]
 		if !p.have {
 			continue
 		}
-		mac, known := libnet.arp_lookup(&arp_table, p.dst)
+		mac, known := libnet.arp_lookup(&f.arp, p.hop)
 		if !known {
 			continue
 		}
 		p.have = false
-		at := libnet.put_eth(out[:], mac, my_mac, libnet.ETHERTYPE_IPV4)
-		body_at := libnet.put_ipv4(out[:], at, my_ip, p.dst, p.proto, p.blen, 0)
-		copy(out[body_at:], p.body[:p.blen])
-		end := body_at + p.blen
-		frames_out += 1
-		_ = libuser.write(ether_fd, out[:end])
+		_ = emit(i, mac, p.dst, p.proto, p.body[:p.blen])
 	}
 }
 
 /*
 ip_deliver hands one datagram's body to the protocol it belongs to. It is the
-demultiplexer both ways in: a datagram off the card arrives here, and so does
-one this machine addressed to itself.
+demultiplexer both ways in: a datagram off a card arrives here, and so does one
+this machine addressed to itself. `dst` is what the header named, which a
+transport's checksum covers and a listener may care about.
 */
-ip_deliver :: proc "contextless" (src: libnet.IP, proto: u8, body: []u8) {
+ip_deliver :: proc "contextless" (ifc: int, src, dst: libnet.IP, proto: u8, body: []u8) {
 	switch proto {
 	case libnet.IPPROTO_UDP:
-		if u, ok := libnet.parse_udp(body, src, my_ip); ok {
-			udp_deliver(src, u.sport, u.dport, u.payload)
+		if u, ok := libnet.parse_udp(body, src, dst); ok {
+			udp_deliver(src, dst, u.sport, u.dport, u.payload)
 		}
 	case libnet.IPPROTO_TCP:
-		tcp_input(src, body)
+		tcp_input(src, dst, body)
 	case libnet.IPPROTO_ICMP:
 		icmp_in(src, body)
 	}
+	_ = ifc
 }
 
-// take is one received frame, and what this stack makes of it.
-take :: proc "contextless" (frame: []u8) #no_bounds_check {
-	frames_in += 1
+// take is one received frame on interface `i`, and what this stack makes of it.
+take :: proc "contextless" (i: int, frame: []u8) #no_bounds_check {
+	ifcs[i].frames_in += 1
 	switch libnet.eth_type(frame) {
 	case libnet.ETHERTYPE_ARP:
-		take_arp(frame)
+		take_arp(i, frame)
 	case libnet.ETHERTYPE_IPV4:
-		take_ipv4(frame)
+		take_ipv4(i, frame)
 	}
 	// A reply, or an address learned from any frame, may release a waiter.
-	flush_pending()
+	flush_pending(i)
 }
 
 /*
-take_arp answers a request for this machine's address and remembers what a
-reply tells it. A reply for the gateway is also the cue to send the echo. There is an address
-to send it to now.
+take_arp answers a request for this interface's address and remembers what a
+reply tells it. A reply for the gateway is also the cue to send the echo. There
+is an address to send it to now.
 */
-take_arp :: proc "contextless" (frame: []u8) #no_bounds_check {
+take_arp :: proc "contextless" (i: int, frame: []u8) #no_bounds_check {
 	if len(frame) < libnet.ETH_HDR + libnet.ARP_LEN {
 		return
 	}
@@ -506,67 +491,90 @@ take_arp :: proc "contextless" (frame: []u8) #no_bounds_check {
 	if !ok {
 		return
 	}
+	f := &ifcs[i]
 	// Whoever spoke, we now know their address.
-	libnet.arp_insert(&arp_table, a.spa, a.sha)
+	libnet.arp_insert(&f.arp, a.spa, a.sha)
 
 	switch a.op {
 	case libnet.ARP_REQUEST:
-		if a.tpa == my_ip {
-			at := libnet.put_eth(out[:], a.sha, my_mac, libnet.ETHERTYPE_ARP)
+		if f.ip != ANY && a.tpa == f.ip {
+			at := libnet.put_eth(out[:], a.sha, f.mac, libnet.ETHERTYPE_ARP)
 			at = libnet.put_arp(out[:], at, libnet.Arp{
 				op  = libnet.ARP_REPLY,
-				sha = my_mac,
-				spa = my_ip,
+				sha = f.mac,
+				spa = f.ip,
 				tha = a.sha,
 				tpa = a.spa,
 			})
-			frames_out += 1
-			_ = libuser.write(ether_fd, out[:at])
+			f.frames_out += 1
+			_ = libuser.write(f.fd, out[:at])
 		}
 	case libnet.ARP_REPLY:
-		if a.spa == gw_ip && echo_sent == 0 {
-			send_echo(gw_ip)
+		if gw, has := default_gateway(); has && a.spa == gw && echo_sent == 0 {
+			send_echo(gw)
 		}
 	}
 }
 
 /*
-take_ipv4 takes one datagram off the card. A datagram for another address is not
-this machine's business, and there is no routing here to pass it on.
+take_ipv4 takes one datagram off interface `i`'s card. A datagram for another
+address is not this machine's business, and there is no forwarding here to
+pass it on. An interface with no address yet takes everything the card gives
+it: the answer to its own request for one names an address it does not have.
 
-Whoever sent it, this machine now knows where they are. An address seen on a
+Whoever sent it, this interface now knows where they are. An address seen on a
 frame goes into the ARP table, so a reply needs no request first. That is how a
 ping from a machine this one has never spoken to is answered.
 */
-take_ipv4 :: proc "contextless" (frame: []u8) #no_bounds_check {
+take_ipv4 :: proc "contextless" (i: int, frame: []u8) #no_bounds_check {
 	if len(frame) < libnet.ETH_HDR + libnet.IPV4_HDR {
 		return
 	}
+	f := &ifcs[i]
 	pkt := frame[libnet.ETH_HDR:]
 	h, ok := libnet.parse_ipv4(pkt)
 	if !ok {
-		ip_bad += 1
+		f.ip_bad += 1
 		return
 	}
-	if h.dst != my_ip {
-		ip_not_mine += 1
+	if f.ip != ANY && h.dst != f.ip && h.dst != BROADCAST {
+		f.ip_not_mine += 1
 		return
 	}
 	if h.total > len(pkt) || h.total < h.hdr_len {
-		ip_bad += 1
+		f.ip_bad += 1
 		return
 	}
-	ip_in += 1
-	libnet.arp_insert(&arp_table, h.src, libnet.eth_src(frame))
-	ip_deliver(h.src, h.proto, pkt[h.hdr_len:h.total])
+	f.ip_in += 1
+	libnet.arp_insert(&f.arp, h.src, libnet.eth_src(frame))
+	ip_deliver(i, h.src, h.dst, h.proto, pkt[h.hdr_len:h.total])
 }
 
-// send_arp_request asks who has `who`, as a broadcast.
-send_arp_request :: proc "contextless" (who: libnet.IP) {
-	n := libnet.build_arp_request(out[:], my_mac, my_ip, who)
-	arp_asked += 1
-	frames_out += 1
-	_ = libuser.write(ether_fd, out[:n])
+/*
+probe_gateway asks for the default gateway's hardware address, once, when a
+link of this machine's reaches it. At start, when the database gave an
+interface an address on the gateway's link; otherwise when `ipconfig` or a
+route written by hand makes one. The reply is the cue for the echo that proves
+a datagram crosses.
+*/
+probe_gateway :: proc "contextless" () {
+	if echo_sent != 0 {
+		return
+	}
+	if gw, has := default_gateway(); has {
+		if i := on_link(gw); i >= 0 {
+			send_arp_request(i, gw)
+		}
+	}
+}
+
+// send_arp_request asks interface `i`'s link who has `who`, as a broadcast.
+send_arp_request :: proc "contextless" (i: int, who: libnet.IP) #no_bounds_check {
+	f := &ifcs[i]
+	n := libnet.build_arp_request(out[:], f.mac, f.ip, who)
+	f.arp_asked += 1
+	f.frames_out += 1
+	_ = libuser.write(f.fd, out[:n])
 }
 
 // -- The files ----------------------------------------------------------------
@@ -575,37 +583,15 @@ send_arp_request :: proc "contextless" (who: libnet.IP) {
 render :: proc "contextless" (node: i32, into: []u8) -> int #no_bounds_check {
 	sink := libodin.sink_from(into)
 	switch node {
-	case NODE_ADDR:
-		put_mac(&sink, my_mac)
-		libodin.put_str(&sink, "\n")
 	case NODE_ARP:
-		for i in 0 ..< libnet.ARP_ENTRIES {
-			e := &arp_table.entries[i]
-			if !e.valid {
-				continue
-			}
-			put_ip(&sink, e.ip)
-			libodin.put_str(&sink, " ")
-			put_mac(&sink, e.mac)
-			libodin.put_str(&sink, "\n")
-		}
+		render_arp(&sink)
 	case NODE_LOCAL:
-		put_ip(&sink, my_ip)
+		put_ip(&sink, primary_ip())
 		libodin.put_str(&sink, "\n")
-	case NODE_ESTATS:
-		libodin.put_str(&sink, "in ")
-		libodin.put_uint(&sink, u64(frames_in))
-		libodin.put_str(&sink, " out ")
-		libodin.put_uint(&sink, u64(frames_out))
-		libodin.put_str(&sink, " ip ")
-		libodin.put_uint(&sink, u64(ip_in))
-		libodin.put_str(&sink, " notmine ")
-		libodin.put_uint(&sink, u64(ip_not_mine))
-		libodin.put_str(&sink, " bad ")
-		libodin.put_uint(&sink, u64(ip_bad))
-		libodin.put_str(&sink, " arpasked ")
-		libodin.put_uint(&sink, u64(arp_asked))
-		libodin.put_str(&sink, "\n")
+	case NODE_IPROUTE:
+		render_routes(&sink)
+	case NODE_NDB:
+		libodin.put_str(&sink, string(ndb_note[:ndb_note_len]))
 	case NODE_ISTATS:
 		libodin.put_str(&sink, "sent ")
 		libodin.put_uint(&sink, u64(echo_sent))
@@ -625,6 +611,15 @@ render :: proc "contextless" (node: i32, into: []u8) -> int #no_bounds_check {
 			render_tconv(&sink, i, kind)
 		} else if j, k2, ok2 := conv_of(node); ok2 {
 			render_conv(&sink, j, k2)
+		} else if e, ek, eok := ether_of(node); eok {
+			if ek == ETHER_ADDR {
+				put_mac(&sink, ifcs[e].mac)
+				libodin.put_str(&sink, "\n")
+			} else if ek == ETHER_STATS {
+				render_ether_stats(&sink, e)
+			}
+		} else if f, fk, fok := ifc_of(node); fok && fk == IFC_STATUS {
+			render_ifc_status(&sink, f)
 		}
 	}
 	return len(libodin.str(&sink))
@@ -647,11 +642,17 @@ put_mac :: proc "contextless" (sink: ^libodin.Sink, mac: libnet.MAC) {
 // -- The tree -----------------------------------------------------------------
 
 is_dir :: proc "contextless" (node: i32) -> bool {
-	if node == NODE_ROOT || node == NODE_ETHER || node == NODE_UDP || node == NODE_TCP || node == NODE_ICMP {
+	if node == NODE_ROOT || node == NODE_UDP || node == NODE_TCP || node == NODE_ICMP || node == NODE_IPIFC {
 		return true
 	}
 	if _, kind, ok := tconv_of(node); ok {
 		return kind == TCONV_DIR
+	}
+	if _, kind, ok := ether_of(node); ok {
+		return kind == ETHER_DIR
+	}
+	if _, kind, ok := ifc_of(node); ok {
+		return kind == IFC_DIR
 	}
 	_, kind, ok := conv_of(node)
 	return ok && kind == CONV_DIR
@@ -674,9 +675,16 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 	}
 	switch from {
 	case NODE_ROOT:
+		if i, ok := ether_name(name); ok {
+			return ether_node(i, ETHER_DIR)
+		}
 		switch name {
-		case "ether0":
-			return NODE_ETHER
+		case "ipifc":
+			return NODE_IPIFC
+		case "iproute":
+			return NODE_IPROUTE
+		case "ndb":
+			return NODE_NDB
 		case "arp":
 			return NODE_ARP
 		case "icmp":
@@ -690,12 +698,9 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 		case "local":
 			return NODE_LOCAL
 		}
-	case NODE_ETHER:
-		if name == "addr" {
-			return NODE_ADDR
-		}
-		if name == "stats" {
-			return NODE_ESTATS
+	case NODE_IPIFC:
+		if v, _, ok := scan_uint(name); ok && int(v) < ifc_count {
+			return ifc_node(int(v), IFC_DIR)
 		}
 	case NODE_UDP, NODE_ICMP:
 		proto := from == NODE_UDP ? Proto.UDP : Proto.ICMP
@@ -722,6 +727,25 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 			if i < MAX_TCP && tcps[i].used {
 				return tconv_node(i, TCONV_DIR)
 			}
+		}
+		return -1
+	}
+	// Inside an interface's two directories.
+	if i, kind, ok := ether_of(from); ok && kind == ETHER_DIR {
+		switch name {
+		case "addr":
+			return ether_node(i, ETHER_ADDR)
+		case "stats":
+			return ether_node(i, ETHER_STATS)
+		}
+		return -1
+	}
+	if i, kind, ok := ifc_of(from); ok && kind == IFC_DIR {
+		switch name {
+		case "ctl":
+			return ifc_node(i, IFC_CTL)
+		case "status":
+			return ifc_node(i, IFC_STATUS)
 		}
 		return -1
 	}
@@ -761,6 +785,15 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 	return -1
 }
 
+// ether_name reads `etherN` for an interface this stack has.
+ether_name :: proc "contextless" (name: string) -> (int, bool) {
+	if len(name) != 6 || name[:5] != "ether" || name[5] < '0' || name[5] > '9' {
+		return 0, false
+	}
+	i := int(name[5] - '0')
+	return i, i < ifc_count
+}
+
 // proto_dir is the directory a conversation of `proto` lives under.
 proto_dir :: proc "contextless" (proto: Proto) -> i32 {
 	return proto == .UDP ? NODE_UDP : NODE_ICMP
@@ -768,8 +801,11 @@ proto_dir :: proc "contextless" (proto: Proto) -> i32 {
 
 // parent_of is where `..` goes from any node in the tree.
 parent_of :: proc "contextless" (node: i32) -> i32 {
-	if node == NODE_ADDR || node == NODE_ESTATS {
-		return NODE_ETHER
+	if i, kind, ok := ether_of(node); ok {
+		return kind == ETHER_DIR ? NODE_ROOT : ether_node(i, ETHER_DIR)
+	}
+	if i, kind, ok := ifc_of(node); ok {
+		return kind == IFC_DIR ? NODE_IPIFC : ifc_node(i, IFC_DIR)
 	}
 	if node == NODE_CLONE {
 		return NODE_UDP
@@ -1004,6 +1040,24 @@ handler :: proc "contextless" (
 			}
 			return
 		}
+		// The interface and route controls, and the note ipconfig leaves.
+		if node == NODE_IPROUTE || node == NODE_NDB {
+			ok2 := node == NODE_IPROUTE ? route_ctl(string(m.data)) : ndb_set(m.data)
+			if !ok2 {
+				reply^ = vectra9.error_reply(vectra9.EINVAL)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+			return
+		}
+		if f, fk, fok := ifc_of(node); fok {
+			if fk != IFC_CTL || !ifc_ctl(f, string(m.data)) {
+				reply^ = vectra9.error_reply(fk == IFC_CTL ? vectra9.EINVAL : vectra9.EPERM)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+			return
+		}
 		i, kind, is_conv := conv_of(node)
 		if !is_conv {
 			reply^ = vectra9.error_reply(vectra9.EPERM)
@@ -1106,13 +1160,29 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 	nodes: []i32
 	switch {
 	case node == NODE_ROOT:
-		names = []string{"ether0", "arp", "icmp", "udp", "tcp", "cs", "local"}
-		nodes = []i32{NODE_ETHER, NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_CS, NODE_LOCAL}
-	case node == NODE_ETHER:
-		names = []string{"addr", "stats"}
-		nodes = []i32{NODE_ADDR, NODE_ESTATS}
+		root_names := [?]string{"ether0", "ether1", "arp", "icmp", "udp", "tcp", "cs", "local", "ipifc", "iproute", "ndb"}
+		root_nodes := [?]i32{ether_node(0, ETHER_DIR), ether_node(1, ETHER_DIR), NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_CS, NODE_LOCAL, NODE_IPIFC, NODE_IPROUTE, NODE_NDB}
+		// A second card that is not there is not listed.
+		skip := ifc_count < 2 ? 1 : 0
+		names = ifc_count < 2 ? root_names[1:] : root_names[:]
+		nodes = ifc_count < 2 ? root_nodes[1:] : root_nodes[:]
+		if skip == 1 {
+			names[0] = "ether0"
+			nodes[0] = ether_node(0, ETHER_DIR)
+		}
+	case node == NODE_IPIFC:
+		ifc_names := [?]string{"0", "1"}
+		ifc_nodes := [?]i32{ifc_node(0, IFC_DIR), ifc_node(1, IFC_DIR)}
+		names = ifc_names[:ifc_count]
+		nodes = ifc_nodes[:ifc_count]
 	case:
-		if tconv, _, is_tcp := tconv_of(node); is_tcp {
+		if e, _, is_ether := ether_of(node); is_ether {
+			names = []string{"addr", "stats"}
+			nodes = []i32{ether_node(e, ETHER_ADDR), ether_node(e, ETHER_STATS)}
+		} else if f, _, is_ifc := ifc_of(node); is_ifc {
+			names = []string{"ctl", "status"}
+			nodes = []i32{ifc_node(f, IFC_CTL), ifc_node(f, IFC_STATUS)}
+		} else if tconv, _, is_tcp := tconv_of(node); is_tcp {
 			names = []string{"ctl", "data", "listen", "local", "remote", "status"}
 			nodes = []i32{
 				tconv_node(tconv, TCONV_CTL),

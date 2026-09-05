@@ -115,6 +115,7 @@ user_programs := [?]User_Program {
 	{name = "window", path = "cmd/window"},
 	{name = "netecho", path = "cmd/netecho"},
 	{name = "ping", path = "cmd/ping"},
+	{name = "ipconfig", path = "cmd/ipconfig"},
 	{name = "muidemo", path = "apps/muidemo"},
 }
 
@@ -1013,17 +1014,24 @@ run_fleet :: proc(opts: Options) {
 	copy_file(SCRATCH_IMG, scratch_b)
 
 	PORT :: "17999"
+	// Two cards each: the socket link between the machines is `ether0`, the
+	// first on the bus, and a user-mode network to the host is `ether1`,
+	// where QEMU's router hands out an address and `ipconfig` asks for it.
 	a := machine_args(
 		opts_a, esp_a, scratch_a,
 		{"-netdev", fmt.tprintf("socket,id=n0,listen=127.0.0.1:%s", PORT),
-		 "-device", "virtio-net-pci,netdev=n0,mac=52:54:00:00:00:0a,disable-legacy=on"},
+		 "-device", "virtio-net-pci,netdev=n0,mac=52:54:00:00:00:0a,disable-legacy=on",
+		 "-netdev", "user,id=n1",
+		 "-device", "virtio-net-pci,netdev=n1,mac=52:54:00:00:01:0a,disable-legacy=on"},
 		fmt.tprintf("%s/console-a.sock", BUILD_DIR),
 		fmt.tprintf("%s/serial-a.log", BUILD_DIR),
 	)
 	b := machine_args(
 		opts_b, esp_b, scratch_b,
 		{"-netdev", fmt.tprintf("socket,id=n0,connect=127.0.0.1:%s", PORT),
-		 "-device", "virtio-net-pci,netdev=n0,mac=52:54:00:00:00:0b,disable-legacy=on"},
+		 "-device", "virtio-net-pci,netdev=n0,mac=52:54:00:00:00:0b,disable-legacy=on",
+		 "-netdev", "user,id=n1",
+		 "-device", "virtio-net-pci,netdev=n1,mac=52:54:00:00:01:0b,disable-legacy=on"},
 		fmt.tprintf("%s/console-b.sock", BUILD_DIR),
 		fmt.tprintf("%s/serial-b.log", BUILD_DIR),
 	)

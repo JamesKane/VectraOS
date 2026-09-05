@@ -1,11 +1,30 @@
 # The ring 3 network stack
 
-`servers/netfs` is the IPv4 and TCP stack, in ring 3, serving `/net`. The card
-is the kernel's, as `#E` at `/dev/ether`. Everything above it is here: ARP,
-IPv4, ICMP, UDP and TCP over `sys/libnet`'s wire formats, and the `/net` files a
-program reads. `docs/FLEET.md` step 0 is the plan it grows under. `cmd/netecho` with
-`sys/libnet`'s `dial` are what cross a line over it, and `cmd/ping` reaches a
-machine by name over the conversations under `/net/icmp`.
+`servers/netfs` is the IPv4 and TCP stack, in ring 3, serving `/net`. The cards
+are the kernel's, as `#E` at `/dev/etherN`, one directory a card. Everything
+above them is here: an interface per card with its ARP table, a route table,
+IPv4, ICMP, UDP and TCP over `sys/libnet`'s wire formats, and the `/net` files
+a program reads. `docs/FLEET.md` step 0 is the plan it grows under.
+`cmd/netecho` with `sys/libnet`'s `dial` are what cross a line over it,
+`cmd/ping` reaches a machine by name over the conversations under `/net/icmp`,
+and `cmd/ipconfig` asks a router for an address over `/net/udp` and writes
+what it learns into `/net/ipifc`, `/net/iproute` and `/net/ndb`.
+
+## Interfaces and routes
+
+An interface is a card with an address, a mask, an ARP table and the
+datagrams waiting on it. `/net/ipifc/N/ctl` takes `add ip mask` and `remove`,
+and `status` says what the interface is. `resolve_addresses` gives each one
+the address `/lib/ndb/local` holds for its card, by `ether=`, with `ipmask=`
+or a class C; an interface with no record has none, and `init` runs `ipconfig`
+for it. `/net/iproute` is the route table: `add dst mask gw` and `remove dst
+mask`, and a read lists each route with the interface its gateway is on. An
+interface's own subnet is a route nobody adds. `ip_output` picks the interface
+and the next hop, resolves the hop by ARP on that interface, and holds the
+datagram for the reply. A datagram for the broadcast address leaves the
+interface a conversation is bound to, `bind etherN` on its `ctl`, with no
+address to resolve, and an interface with no address takes every frame its
+card gives it. That pair is what `ipconfig` needs to ask from nothing.
 
 Much of the stack was brought in line with 9front's, read side by side. The ARP
 hold, the retransmit, the synchronous connect, the listener close, the
@@ -65,15 +84,18 @@ save.
 - **UDP conversation reclaim.** A TCP conversation's slot is reclaimed when it
   is finished and unreferenced. A UDP conversation has no finished state to key
   that on, so its slot is not yet reclaimed the same way.
+- **A lease that renews.** `ipconfig` takes an address once and keeps it. A
+  router that hands out short leases will take it back unannounced. Renewal
+  wants the clock too.
+- **Forwarding.** A datagram for another address is dropped, so a machine with
+  two cards does not join its two links. Plan 9's `ipfwd` is the switch.
 
 ### The rest of step 0
 
 `docs/FLEET.md` step 0 is more than this stack. The bench's two machines, one
-amd64 and one arm64, ping each other by name and cross a line, as the boot
-line wants. What it still wants is `ipconfig` getting an address from QEMU's
-router, which needs a second, user-mode card on each bench machine and so a
-stack that drives more than one interface. `cmd/ipconfig`, `servers/dns` and
-`servers/etherfs` are named in the plan and not yet written.
+amd64 and one arm64, ping each other by name and cross a line, and each gets an
+address for its second card from QEMU's router, which is the whole boot line.
+`servers/dns` and `servers/etherfs` are named in the plan and not yet written.
 
 ## Reading the bench
 
@@ -91,9 +113,9 @@ Three things say where a frame went, for the day a line does not cross.
   `build/net-a.pcap` and `build/net-b.pcap`, for `tcpdump -nn -r`. What one
   machine sent and the other received is then a question with an answer.
 
-The bench's two machines have no gateway, so the kernel's boot network check
-and the suite's gateway checks fail there by design, until each machine also
-gets a user-mode card as `docs/FLEET.md` section 3 plans.
+The bench's first card is the link between the machines, with no router on
+it, so the kernel's boot network check and the suite's gateway checks fail
+there by design. The router is on the second card, which `ipconfig` finds.
 
 ## See also
 

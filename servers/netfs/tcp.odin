@@ -67,6 +67,7 @@ Tcp_Conv :: struct {
 	// ties a conversation's life to the descriptors on it.
 	refs:     int,
 	state:    Tcp_State,
+	laddr:    libnet.IP, // This end's address: the SYN's destination, or the route's
 	lport:    u16,
 	raddr:    libnet.IP,
 	rport:    u16,
@@ -241,7 +242,12 @@ tcp_emit :: proc "contextless" (i: int, seq: u32, flags: u8, payload: []u8) -> b
 		window  = u16(TCP_RQ - (c.tail - c.head)),
 		payload = payload,
 	}
-	end := libnet.put_tcp(seg[:], 0, my_ip, c.raddr, t)
+	if c.laddr == ANY {
+		if src, ok := source_for(c.raddr, -1); ok {
+			c.laddr = src
+		}
+	}
+	end := libnet.put_tcp(seg[:], 0, c.laddr, c.raddr, t)
 	return ip_output(c.raddr, libnet.IPPROTO_TCP, seg[:end]) == .Sent
 }
 
@@ -265,8 +271,8 @@ for a conversation that exists goes to it. A SYN for a port something is
 listening on makes a new conversation and answers it. Anything else is dropped,
 because a reset is a segment this stack does not send yet.
 */
-tcp_input :: proc "contextless" (src: libnet.IP, seg: []u8) #no_bounds_check {
-	t, ok := libnet.parse_tcp(seg, src, my_ip)
+tcp_input :: proc "contextless" (src, dst: libnet.IP, seg: []u8) #no_bounds_check {
+	t, ok := libnet.parse_tcp(seg, src, dst)
 	if !ok {
 		return
 	}
@@ -288,7 +294,7 @@ tcp_input :: proc "contextless" (src: libnet.IP, seg: []u8) #no_bounds_check {
 	for i in 0 ..< MAX_TCP {
 		c := &tcps[i]
 		if c.used && c.state == .Listen && c.lport == t.dport {
-			tcp_accept(i, src, t)
+			tcp_accept(i, src, dst, t)
 			return
 		}
 	}
@@ -299,13 +305,14 @@ tcp_accept makes the conversation a listening one answers a SYN with. The new
 conversation goes on the listener's backlog before the SYN and ACK go out.
 Whoever reads `listen` then finds it there, whatever the far side does next.
 */
-tcp_accept :: proc "contextless" (listener: int, src: libnet.IP, t: libnet.Tcp) #no_bounds_check {
+tcp_accept :: proc "contextless" (listener: int, src, dst: libnet.IP, t: libnet.Tcp) #no_bounds_check {
 	n := tcp_alloc()
 	if n < 0 {
 		return
 	}
 	c := &tcps[n]
 	c.state = .Syn_Received
+	c.laddr = dst
 	c.lport = t.dport
 	c.raddr = src
 	c.rport = t.sport
@@ -446,6 +453,9 @@ tcp_connect :: proc "contextless" (i: int, ip: libnet.IP, port: u16) #no_bounds_
 	c := &tcps[i]
 	c.raddr = ip
 	c.rport = port
+	if src, ok := source_for(ip, -1); ok {
+		c.laddr = src
+	}
 	c.state = .Syn_Sent
 	tcp_output(i, libnet.TCP_SYN, nil)
 }
@@ -741,7 +751,7 @@ render_tconv :: proc "contextless" (sink: ^libodin.Sink, i: int, kind: i32) #no_
 	c := &tcps[i]
 	switch kind {
 	case TCONV_LOCAL:
-		put_ip(sink, my_ip)
+		put_ip(sink, c.laddr != ANY ? c.laddr : primary_ip())
 		libodin.put_str(sink, "!")
 		libodin.put_uint(sink, u64(c.lport))
 		libodin.put_str(sink, "\n")

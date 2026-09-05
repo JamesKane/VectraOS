@@ -2008,15 +2008,47 @@ machines that ping by name.
 */
 verify_net :: proc() {
 	result: libodin.Tally
-
+	cards := virtio.net_count()
 	m: [6]u8
-	if !virtio.mac(0, m[:]) {
+	if cards == 0 || !virtio.mac(0, m[:]) {
 		libodin.tally(&result, false, "the card has a hardware address")
 		sink := report_begin("net", result.checks)
 		report_failed(&sink, result)
 		return
 	}
+	// Every card is asked in turn, and the first whose link has the gateway
+	// answers for the machine. The bench's first card is the link between
+	// two machines, with no gateway on it; its second faces QEMU's router.
+	sent := false
+	got := false
+	for card in 0 ..< cards {
+		s, g := arp_gateway(card)
+		sent = sent || s
+		got = got || g
+		if got {
+			break
+		}
+	}
+	libodin.tally(&result, sent, "an ARP request left on the transmit queue")
+	libodin.tally(&result, got, "and the gateway's ARP reply came back on the receive queue")
+	sink := report_begin("net", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " network checks passed -- a frame sent and the gateway answered by ARP")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
+}
 
+/*
+arp_gateway sends a broadcast ARP for QEMU's gateway on one card and polls for
+the reply. Answers whether the frame left and whether the gateway answered.
+*/
+arp_gateway :: proc(card: int) -> (sent, got: bool) {
+	m: [6]u8
+	if !virtio.mac(card, m[:]) {
+		return false, false
+	}
 	// The ARP request: an ethernet header and a 28-byte ARP body. Our address
 	// is 10.0.2.15, QEMU's default guest, and the target is the gateway.
 	spa := [4]u8{10, 0, 2, 15}
@@ -2045,44 +2077,30 @@ verify_net :: proc() {
 	for i in 0 ..< 4 {
 		frame[38 + i] = tpa[i] // target protocol address
 	}
-
-	sent := virtio.send(0, frame[:])
-	libodin.tally(&result, sent, "an ARP request left on the transmit queue")
-
+	sent = virtio.send(card, frame[:])
+	if !sent {
+		return false, false
+	}
 	// Poll for the reply: an ARP frame whose sender is the gateway. Other
-	// frames the network sends are skipped. The bound is generous, because
-	// the reply crosses QEMU's own network stack.
-	got := false
+	// frames the network sends are skipped. A tick at a time rather than a
+	// spin: the reply crosses QEMU's own network stack, and a card whose link
+	// has no gateway should wait rather than burn a core deciding so. Two
+	// hundred ticks is far longer than a reply takes, and short enough that a
+	// silent link is not a stall.
 	buf: [2048]u8
-	if sent {
-		// A tick at a time rather than a spin: the reply crosses QEMU's own
-		// network stack, and a machine that never answers should wait rather
-		// than burn a core deciding so.
-		// Two hundred ticks is far longer than a reply from the host's own
-		// network stack takes, and short enough that a silent one is not a stall.
-		poll: for _ in 0 ..< 200 {
-			n := virtio.recv(0, buf[:])
-			if n >= 42 && buf[12] == 0x08 && buf[13] == 0x06 {
-				// ARP reply (oper 2) whose sender protocol address is 10.0.2.2.
-				is_reply := buf[20] == 0x00 && buf[21] == 0x02
-				from_gw := buf[28] == 10 && buf[29] == 0 && buf[30] == 2 && buf[31] == 2
-				if is_reply && from_gw {
-					got = true
-					break poll
-				}
+	for _ in 0 ..< 200 {
+		n := virtio.recv(card, buf[:])
+		if n >= 42 && buf[12] == 0x08 && buf[13] == 0x06 {
+			// ARP reply (oper 2) whose sender protocol address is 10.0.2.2.
+			is_reply := buf[20] == 0x00 && buf[21] == 0x02
+			from_gw := buf[28] == 10 && buf[29] == 0 && buf[30] == 2 && buf[31] == 2
+			if is_reply && from_gw {
+				return true, true
 			}
-			sync.delay(1)
 		}
+		sync.delay(1)
 	}
-	libodin.tally(&result, got, "and the gateway's ARP reply came back on the receive queue")
-
-	sink := report_begin("net", result.checks)
-	if libodin.passed(result) {
-		libodin.put_str(&sink, " network checks passed -- a frame sent and the gateway answered by ARP")
-		emit(&klog, .Ok, &sink)
-		return
-	}
-	report_failed(&sink, result)
+	return true, false
 }
 
 /*

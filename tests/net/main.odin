@@ -116,51 +116,25 @@ start :: proc "c" (block: ^abi.Args) {
 
 	// -- A live frame across the card, from ring 3 through `#E` ---------------
 	//
-	// The kernel serves the virtio-net card as `/dev/ether`. This opens it,
-	// reads the card's own address, sends a broadcast ARP for the gateway, and
-	// polls for the reply. It proves the whole ring 3 path the stack will use.
-	// A frame this program built left on the card, and a frame the card received
-	// came back, all through files.
+	// The kernel serves each virtio-net card as `/dev/etherN`. This opens the
+	// first, reads its own address, sends a broadcast ARP for the gateway, and
+	// polls for the reply; a card whose link has no gateway, the bench's first,
+	// gives way to the next. It proves the whole ring 3 path the stack will
+	// use. A frame this program built left on the card, and a frame the card
+	// received came back, all through files.
 	{
-		afd := libuser.open("/dev/ether/addr", abi.O_RDONLY)
+		afd := libuser.open("/dev/ether0/addr", abi.O_RDONLY)
 		want(afd >= 0, "the ether address file opens")
-		{
-			card: [6]u8
-			libuser.read(int(afd), card[:])
-			_ = libuser.close(int(afd))
-			card_mac := libnet.MAC{card[0], card[1], card[2], card[3], card[4], card[5]}
-
-			dfd := libuser.open("/dev/ether/data", abi.O_RDWR)
-			want(dfd >= 0, "the ether data file opens")
-
-			out: [64]u8
-			n := libnet.build_arp_request(out[:], card_mac, mine, gw)
-			want(libuser.write(int(dfd), out[:n]) == i64(n), "the ARP request is written to the card")
-
-			// Each empty read parks in the device for its bound, so a few
-			// reads are a second or more. A link with no gateway on it, the
-			// bench's, fails here quickly rather than reading the card for
-			// minutes and taking every frame from the stack that owns it.
-			in_buf: [2048]u8
-			got := false
-			for _ in 0 ..< 40 {
-				rn := libuser.read(int(dfd), in_buf[:])
-				if rn > 0 {
-					frame := in_buf[:int(rn)]
-					if libnet.eth_type(frame) == libnet.ETHERTYPE_ARP && int(rn) >= libnet.ETH_HDR + libnet.ARP_LEN {
-						a, ok := libnet.parse_arp(frame[libnet.ETH_HDR:])
-						if ok && a.op == libnet.ARP_REPLY && a.spa == gw {
-							got = true
-							break
-						}
-					}
-				} else {
-					_ = libuser.sleep(1)
-				}
+		_ = libuser.close(int(afd))
+		got := false
+		cards := [?]string{"ether0", "ether1"}
+		for name in cards {
+			if got {
+				break
 			}
-			want(got, "the gateway answered our ARP across the card, from ring 3")
-			_ = libuser.close(int(dfd))
+			got = gateway_answers(name)
 		}
+		want(got, "the gateway answered our ARP across the card, from ring 3")
 	}
 
 	// -- The retransmit queue remembers until it is acknowledged --------------
@@ -257,5 +231,96 @@ start :: proc "c" (block: ^abi.Args) {
 		want(!miss2, "and so does an attribute the record does not hold")
 	}
 
+	// -- A DHCP request, and an answer read back -----------------------------
+	{
+		card := libnet.MAC{0x52, 0x54, 0x00, 0x12, 0x34, 0x56}
+		msg: [libnet.DHCP_MAX]u8
+		n := libnet.put_dhcp(msg[:], libnet.Dhcp_Ask{kind = libnet.DHCP_DISCOVER, xid = 0x1234_5678, mac = card})
+		want(n >= libnet.DHCP_MIN, "a DISCOVER is at least the smallest BOOTP message")
+		want(msg[0] == 1 && libnet.get_be32(msg[:], 4) == 0x1234_5678, "and is a request carrying its transaction")
+		want(msg[28] == 0x52 && msg[33] == 0x56, "from the card that asked")
+		want(msg[236] == 0x63 && msg[239] == 0x63, "with the cookie before the options")
+		want(msg[240] == 53 && msg[242] == libnet.DHCP_DISCOVER, "and the first option says which message")
+
+		// An OFFER as a server would write it: the fixed part, the cookie,
+		// and the options in an order of its own choosing.
+		reply: [libnet.DHCP_MAX]u8
+		reply[0] = 2
+		libnet.put_be32(reply[:], 4, 0x1234_5678)
+		offered := [4]u8{10, 0, 2, 15}
+		for i in 0 ..< 4 {reply[16 + i] = offered[i]}
+		at := libnet.DHCP_FIXED
+		cookie := [4]u8{0x63, 0x82, 0x53, 0x63}
+		for i in 0 ..< 4 {reply[at + i] = cookie[i]}
+		at += 4
+		opts := [?]u8{
+			1, 4, 255, 255, 255, 0, // mask
+			53, 1, libnet.DHCP_OFFER, // kind
+			0, 0, // pads
+			3, 4, 10, 0, 2, 2, // router
+			51, 4, 0, 0, 0x0e, 0x10, // lease 3600
+			54, 4, 10, 0, 2, 2, // server
+			6, 4, 10, 0, 2, 3, // dns
+			255,
+		}
+		for i in 0 ..< len(opts) {reply[at + i] = opts[i]}
+		a, ok := libnet.parse_dhcp(reply[:at + len(opts)])
+		want(ok, "the offer parses")
+		want(a.kind == libnet.DHCP_OFFER && a.xid == 0x1234_5678, "as an OFFER for the transaction asked")
+		want(a.yiaddr == libnet.IP{10, 0, 2, 15}, "offering the address")
+		want(a.mask == libnet.IP{255, 255, 255, 0} && a.router == libnet.IP{10, 0, 2, 2}, "with the mask and the router")
+		want(a.dns == libnet.IP{10, 0, 2, 3} && a.lease == 3600 && a.server == libnet.IP{10, 0, 2, 2}, "the name server, the lease and the server")
+		reply[236] = 0
+		_, bad := libnet.parse_dhcp(reply[:at + len(opts)])
+		want(!bad, "and a message with no cookie is refused")
+	}
+
 	libuser.exits("ok")
+}
+
+/*
+gateway_answers asks `/dev/<name>`'s link who has the gateway and reads the
+card for the reply. False for a card that is not there, or a link that does
+not answer. Each empty read parks in the device for its bound, fifty ticks,
+and a gateway that is there answers within the first: three reads is a link
+with no gateway giving way in under the suite's patience, rather than reading
+the card for minutes and taking every frame from the stack that owns it.
+*/
+gateway_answers :: proc "contextless" (name: string) -> bool {
+	path: [32]u8
+	afd := libuser.open(libuser.cat_into(path[:], "/dev/", name, "/addr"), abi.O_RDONLY)
+	if afd < 0 {
+		return false
+	}
+	card: [6]u8
+	_ = libuser.read(int(afd), card[:])
+	_ = libuser.close(int(afd))
+	card_mac := libnet.MAC{card[0], card[1], card[2], card[3], card[4], card[5]}
+
+	dfd := libuser.open(libuser.cat_into(path[:], "/dev/", name, "/data"), abi.O_RDWR)
+	want(dfd >= 0, "the ether data file opens")
+	defer libuser.close(int(dfd))
+
+	mine := libnet.IP{10, 0, 2, 15}
+	gw := libnet.IP{10, 0, 2, 2}
+	out: [64]u8
+	n := libnet.build_arp_request(out[:], card_mac, mine, gw)
+	want(libuser.write(int(dfd), out[:n]) == i64(n), "the ARP request is written to the card")
+
+	in_buf: [2048]u8
+	for _ in 0 ..< 3 {
+		rn := libuser.read(int(dfd), in_buf[:])
+		if rn > 0 {
+			frame := in_buf[:int(rn)]
+			if libnet.eth_type(frame) == libnet.ETHERTYPE_ARP && int(rn) >= libnet.ETH_HDR + libnet.ARP_LEN {
+				a, ok := libnet.parse_arp(frame[libnet.ETH_HDR:])
+				if ok && a.op == libnet.ARP_REPLY && a.spa == gw {
+					return true
+				}
+			}
+		} else {
+			_ = libuser.sleep(1)
+		}
+	}
+	return false
 }

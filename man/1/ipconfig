@@ -1,0 +1,57 @@
+.TH IPCONFIG 1
+.SH NAME
+ipconfig \- ask the network for an address
+.SH SYNOPSIS
+.B ipconfig
+[
+.I etherN
+]
+.SH DESCRIPTION
+.I Ipconfig
+asks for an address by DHCP and tells the stack what it was given.
+With no argument, every interface the stack has that
+.B /lib/ndb/local
+gave no address asks for one.
+With an interface named, that interface asks, whether or not it has one.
+.PP
+The asking is four datagrams over a conversation of
+.BR /net/udp ,
+bound to the interface and connected to the broadcast address,
+since a machine with no address can only shout.
+The answer goes three places:
+.TP
+.BI /net/ipifc/ N /ctl
+the address and its mask, as
+.BR "add ip mask" .
+.TP
+.B /net/iproute
+the router as the default route, as
+.BR "add 0.0.0.0 0.0.0.0 router" .
+.TP
+.B /net/ndb
+one line of what was learned, as
+.BR "ip= ipmask= ipgw= dns= ifc=" ,
+for whoever asks the stack what it knows about itself.
+.PP
+On success one line is printed naming the interface and what it was given.
+Each exchange waits two seconds for an answer and is tried three times.
+.SH EXAMPLES
+On the bench, the second card faces QEMU's router.
+.IP
+.EX
+% ipconfig ether1
+ether1: ip=10.0.2.15 ipmask=255.255.255.0 ipgw=10.0.2.2 dns=10.0.2.3 ifc=ether1
+.EE
+.SH SOURCE
+.B cmd/ipconfig/main.odin
+.SH SEE ALSO
+.IR ping (1),
+.IR net (2)
+.SH DIAGNOSTICS
+The exit status is empty when the interface named was given an address,
+or when nothing was asked, and
+.B no answer
+when a named interface asked and nothing answered.
+.SH BUGS
+The lease is not renewed. A router that takes the address back
+after its lease will not be told.

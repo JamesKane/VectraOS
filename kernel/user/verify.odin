@@ -7384,6 +7384,37 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 		check(r, false, "and /net/ether0/addr opens")
 	}
 
+	/*
+	An address asked for rather than read. `ipconfig` shouts DHCP on the card
+	from no address, QEMU's router answers with the one the database already
+	gives this machine, and the stack's route and its note say so. The
+	exchange is four datagrams across the card, the first from `0.0.0.0` to
+	the broadcast address. It comes before the gateway checks: on the bench
+	the router is on the second card, which has no address until this asks,
+	and the stack probes the gateway once a route to it appears.
+	*/
+	{
+		// The card that faces the router: the bench's first is the link
+		// between its two machines, and its second is the one QEMU's router
+		// is on.
+		ifc := virtio.net_count() >= 2 ? "ether1" : "ether0"
+		names := [?]string{"ipconfig", ifc}
+		word, _, iok := run_script(
+			r,
+			"/bin/ipconfig",
+			names[:],
+			PATIENCE * 10,
+			abi_said[:],
+			"a program asks the router for an address by DHCP",
+		)
+		if iok {
+			check(r, word == "", word == "" ? "and the router answered with one" : word)
+			check(r, net_file_holds(r, "/net/ndb", "ip=10.0.2.15 ipmask=255.255.255.0 ipgw=10.0.2.2"), "which the stack notes in /net/ndb, with the mask and the router")
+			route := ifc == "ether1" ? "0.0.0.0 0.0.0.0 10.0.2.2 ether1" : "0.0.0.0 0.0.0.0 10.0.2.2 ether0"
+			check(r, net_file_holds(r, "/net/iproute", route), "and takes the router as its default route")
+		}
+	}
+
 	// The gateway resolved by ARP, and the echo it answered. Both are polled,
 	// because the frames cross a card and a server between them.
 	check(r, net_file_holds(r, "/net/arp", "10.0.2.2"), "the stack resolved the gateway by ARP across the card")

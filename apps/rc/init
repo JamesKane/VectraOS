@@ -17,9 +17,13 @@ while(! test -e /srv/draw) sleep 1
 # where every program looks for it. A machine with no card has no /srv/net,
 # and the mount is skipped rather than waited on for ever.
 netfs &
-if(test -e /dev/ether/data) {
+if(test -e /dev/ether0/data) {
 	while(! test -e /srv/net) sleep 1
 	mount /srv/net /net
+	# An interface the database gave no address asks the network for one.
+	# In the background: a link with no router answers nothing, and the
+	# boot does not wait on it.
+	ipconfig &
 }
 
 # A window with a shell in it, the terminal's own child.

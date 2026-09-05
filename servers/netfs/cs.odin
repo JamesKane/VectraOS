@@ -144,7 +144,7 @@ cs_translate :: proc "contextless" (query: string, into: []u8) -> int #no_bounds
 	ip := host
 	if host == "*" {
 		lsink := libodin.sink_from(local[:])
-		put_ip(&lsink, my_ip)
+		put_ip(&lsink, primary_ip())
 		ip = libodin.str(&lsink)
 	} else if !dotted(host) {
 		found, has := libndb.find(ndb(), "sys", host, "ip")

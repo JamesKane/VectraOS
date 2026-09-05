@@ -17,6 +17,7 @@ exit rc
 flag rc
 grep grep
 intro 0intro
+ipconfig ipconfig
 kill kill
 ls ls
 mkdir mkdir

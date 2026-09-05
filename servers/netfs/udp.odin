@@ -61,6 +61,8 @@ Conv :: struct {
 	proto:     Proto,
 	announced: bool,
 	connected: bool,
+	ifc:       int, // The interface a `bind` tied it to, or -1 for any
+	laddr:     libnet.IP, // This end's address, once a send or a bind fixed it
 	lport:     u16,
 	raddr:     libnet.IP,
 	rport:     u16,
@@ -80,6 +82,7 @@ conv_alloc :: proc "contextless" (proto: Proto) -> int #no_bounds_check {
 			convs[i] = Conv {
 				used  = true,
 				proto = proto,
+				ifc   = -1,
 				lport = next_port,
 			}
 			next_port += 1
@@ -135,16 +138,18 @@ conv_pop :: proc "contextless" (i: int, out: []u8) -> int #no_bounds_check {
 /*
 udp_deliver hands one received datagram to the conversation it belongs to. That
 is the one holding its destination port, whose far end matches when it has one.
-A datagram nothing announced is dropped, which is what a port with no listener
-means.
+A conversation connected to the broadcast address hears everyone, which is what
+`ipconfig` asks for. A datagram nothing announced is dropped, which is what a
+port with no listener means.
 */
-udp_deliver :: proc "contextless" (src: libnet.IP, sport: u16, dport: u16, payload: []u8) #no_bounds_check {
+udp_deliver :: proc "contextless" (src, dst: libnet.IP, sport: u16, dport: u16, payload: []u8) #no_bounds_check {
+	_ = dst
 	for i in 0 ..< MAX_CONV {
 		c := &convs[i]
 		if !c.used || c.proto != .UDP || c.lport != dport {
 			continue
 		}
-		if c.connected && (c.raddr != src || c.rport != sport) {
+		if c.connected && c.raddr != BROADCAST && (c.raddr != src || c.rport != sport) {
 			continue
 		}
 		conv_push(i, src, sport, payload)
@@ -167,17 +172,22 @@ conv_send :: proc "contextless" (i: int, payload: []u8) -> bool #no_bounds_check
 	if c.proto == .ICMP {
 		return icmp_send(i, payload)
 	}
+	src, ok := source_for(c.raddr, c.ifc)
+	if !ok {
+		return false
+	}
+	c.laddr = src
 	dgram: [libnet.UDP_HDR + DG_MAX]u8 = ---
-	end := libnet.put_udp(dgram[:], 0, my_ip, c.raddr, c.lport, c.rport, payload)
-	return ip_output(c.raddr, libnet.IPPROTO_UDP, dgram[:end]) != .Dropped
+	end := libnet.put_udp(dgram[:], 0, src, c.raddr, c.lport, c.rport, payload)
+	return ip_output(c.raddr, libnet.IPPROTO_UDP, dgram[:end], c.ifc) != .Dropped
 }
 
 // -- The control file ---------------------------------------------------------
 
 /*
-run_ctl takes one of the three lines a conversation understands. `announce`
-gives it a port to be found at, `connect` gives it a far end to send to, and
-`hangup` ends it.
+run_ctl takes one of the lines a conversation understands. `announce` gives it
+a port to be found at, `connect` gives it a far end to send to, `bind` ties it
+to an interface, and `hangup` ends it.
 */
 run_ctl :: proc "contextless" (i: int, text: string) -> bool #no_bounds_check {
 	verb, rest := word(text)
@@ -199,6 +209,17 @@ run_ctl :: proc "contextless" (i: int, text: string) -> bool #no_bounds_check {
 		convs[i].raddr = ip
 		convs[i].rport = port
 		convs[i].connected = true
+		return true
+	case "bind":
+		// Tie the conversation to an interface, for a broadcast that must
+		// leave by a particular card.
+		name, _ := word(rest)
+		ifc, ok := ether_name(name)
+		if !ok {
+			return false
+		}
+		convs[i].ifc = ifc
+		convs[i].laddr = ifcs[ifc].ip
 		return true
 	case "hangup":
 		conv_free(i)
@@ -312,7 +333,7 @@ render_conv :: proc "contextless" (sink: ^libodin.Sink, i: int, kind: i32) #no_b
 	c := &convs[i]
 	switch kind {
 	case CONV_LOCAL:
-		put_ip(sink, my_ip)
+		put_ip(sink, c.laddr != ANY ? c.laddr : primary_ip())
 		libodin.put_str(sink, "!")
 		libodin.put_uint(sink, u64(c.lport))
 		libodin.put_str(sink, "\n")

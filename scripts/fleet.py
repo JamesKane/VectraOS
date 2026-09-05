@@ -83,6 +83,19 @@ def main():
     print(b.buf[-600:])
     # The word appears once as the echoed command line and once as the reply.
     crossed=b.buf.count("crossing")>=2
+    # The second card faces QEMU's router. init's ipconfig asked it for an
+    # address at boot; the interface's status says what it got, and a ping
+    # of the router says the route through it works.
+    routed=0
+    for name,c in (("one",a),("two",b)):
+        st=c.cmd("cat /net/ipifc/1/status")
+        c.buf=""; c.send("ping -n 2 10.0.2.2"); c.waitfor("received", 10)
+        print("=== %s ether1: %s" % (name, st.strip().splitlines()[-2:]))
+        print(c.buf[-200:])
+        if "10.0.2.15" in st and "2 received" in c.buf: routed+=1
+        print(c.cmd("echo status=$status").strip())
+        print(c.cmd("cat /net/ether1/stats").strip())
+        print(c.cmd("cat /dev/ether1/stats").strip())
     # And a ping by name the other way: machine one pings `two`, which
     # `/net/cs` resolves out of ndb, and counts the replies.
     a.buf=""
@@ -101,10 +114,11 @@ def main():
         print("=== %s icmp stats / arp ===" % name)
         print(c.cmd("cat /net/icmp/stats").strip())
         print(c.cmd("cat /net/ether0/stats").strip())
-        print(c.cmd("cat /dev/ether/stats").strip())
+        print(c.cmd("cat /dev/ether0/stats").strip())
+        print(c.cmd("cat /net/iproute").strip())
         print(c.cmd("cat /net/arp").strip())
     two=len(set(arches))==2 and "?" not in arches
-    print("=== VERDICT:", ("LINE CROSSED" if crossed else "NO CROSSING")+", "+("PINGED BY NAME" if pinged else "NO PING")+", "+("TWO ARCHITECTURES" if two else "NOT TWO ARCHITECTURES"))
+    print("=== VERDICT:", ("LINE CROSSED" if crossed else "NO CROSSING")+", "+("PINGED BY NAME" if pinged else "NO PING")+", "+("ADDRESSES FROM THE ROUTER" if routed==2 else "NO ADDRESS FROM THE ROUTER (%d of 2)" % routed)+", "+("TWO ARCHITECTURES" if two else "NOT TWO ARCHITECTURES"))
     # leave them; caller kills qemu
     return 0
 
