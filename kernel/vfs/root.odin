@@ -58,6 +58,9 @@ ROOT_NODES := [?]Static_Node {
 	{name = "one", parent = 6, dir = true},
 	{name = "two", parent = 6, dir = true},
 	{name = "remote", parent = 6, dir = true},
+	// Where a session's `factotum` is mounted: the keys a user typed in, and
+	// the handshakes run through them. `/mnt` is the fifth entry.
+	{name = "factotum", parent = 5, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

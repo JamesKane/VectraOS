@@ -485,6 +485,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_mui(&r)
 	verify_netfs(&r)
 	verify_cryptotest(&r)
+	verify_factotum(&r)
 	verify_netserver(&r)
 	verify_rc(&r)
 	verify_tools(&r)
@@ -7326,6 +7327,41 @@ verify_netfs :: proc(r: ^Result) {
 	if ok {
 		check(r, said == "ok", said == "ok" ? "and every packet parsed and every checksum held" : said)
 	}
+}
+
+/*
+verify_factotum starts the key server, mounts it where a session finds it,
+and runs `authtest` against it: two keys in, their public halves out, and a
+handshake carried between two of its conversations, which is the exchange
+`sys/libauth` will carry across a wire. Then it stops it the way every server
+stops, by a remove of one of its files.
+*/
+@(private = "file")
+verify_factotum :: proc(r: ^Result) {
+	count0 := srv.count()
+	p, serr := spawn_path(nil, "/bin/factotum", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && p != nil, "the loader starts factotum") {
+		return
+	}
+	r.programs += 1
+	check(r, await_posted("factotum"), "which posts /srv/factotum")
+	if check(r, srv.mount(vfs.boot_namespace, "/srv/factotum", "/mnt/factotum") == vfs.OK, "and the kernel mounts it at /mnt/factotum") {
+		names := [?]string{"authtest"}
+		said, _, ok := run_script(r, "/bin/authtest", names[:], PATIENCE * 40, abi_said[:], "a program drives its keys and a handshake")
+		if ok {
+			check(r, said == "ok", said == "ok" ? "and both ends of the handshake hold the same keys" : said)
+		}
+	}
+	if c, err := vfs.open_path(vfs.boot_namespace, "/mnt/factotum/ctl", vfs.O_RDONLY); err == vfs.OK {
+		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of its file is factotum's stop")
+		vfs.chan_close(c)
+	}
+	check(r, wait(p, PATIENCE), "and it exits")
+	check(r, srv.remove("factotum") == vfs.OK, "and the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+	finish(r, p, "and factotum is taken down")
+	pipe.quiesce()
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/factotum") == vfs.OK, "and its mount comes down")
 }
 
 /*

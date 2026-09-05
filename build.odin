@@ -124,6 +124,8 @@ user_programs := [?]User_Program {
 	{name = "srv", path = "cmd/srv"},
 	{name = "import", path = "cmd/import"},
 	{name = "cryptotest", path = "tests/crypto"},
+	{name = "factotum", path = "servers/factotum"},
+	{name = "authtest", path = "tests/auth"},
 	{name = "muidemo", path = "apps/muidemo"},
 }
 

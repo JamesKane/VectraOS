@@ -129,14 +129,44 @@ heap_free :: proc "contextless" (p: rawptr) {
 	unlock(&heap_lock)
 }
 
+/*
+A request for an alignment above sixteen -- `core:crypto/argon2id` wants its
+working memory on a page -- is met by taking a block big enough to hold the
+bytes at any offset, answering the aligned address inside it, and leaving a
+mark in the sixteen bytes before that address: a magic word, and where the
+block really begins. `block_of` reads the mark back. A payload handed out the
+ordinary way has the block's own header in those bytes, whose first word is a
+flag and padding, never the magic.
+*/
+@(private = "file")
+ALIGN_MAGIC :: u64(0xA11A_A11A_5EED_5EED)
+
+// block_of answers the block a payload pointer came from, aligned or not.
+@(private = "file")
+block_of :: proc "contextless" (p: rawptr) -> ^Block {
+	mark := (^u64)(uintptr(p) - 16)
+	if mark^ == ALIGN_MAGIC {
+		raw := (^rawptr)(uintptr(p) - 8)^
+		return (^Block)(uintptr(raw) - uintptr(BLOCK_HEADER))
+	}
+	return (^Block)(uintptr(p) - uintptr(BLOCK_HEADER))
+}
+
 // alloc is the walk. Caller holds `heap_lock`.
 @(private = "file")
 alloc :: proc "contextless" (size: int, alignment: int) -> rawptr {
-	// The header is sixteen bytes, so a block's payload is aligned to
-	// sixteen when the block is; every request is rounded to sixteen and
-	// larger alignments are refused, which nothing in a tool asks for.
+	// The header is a multiple of sixteen bytes, so a block's payload is
+	// aligned to sixteen; every request is rounded to sixteen. A larger
+	// alignment is found inside a larger block, and marked. See `block_of`.
 	if alignment > 16 {
-		return nil
+		raw := alloc(size + alignment + 16, 16)
+		if raw == nil {
+			return nil
+		}
+		aligned := align_up(int(uintptr(raw)) + 16, alignment)
+		(^u64)(uintptr(aligned) - 16)^ = ALIGN_MAGIC
+		(^rawptr)(uintptr(aligned) - 8)^ = raw
+		return rawptr(uintptr(aligned))
 	}
 	want := align_up(max(size, 1), 16)
 	for attempt in 0 ..< 2 {
@@ -169,7 +199,7 @@ free :: proc "contextless" (p: rawptr) {
 	if p == nil {
 		return
 	}
-	b := (^Block)(uintptr(p) - uintptr(BLOCK_HEADER))
+	b := block_of(p)
 	b.free = true
 	// Merge forward from here, then let the block before absorb this one.
 	coalesce(b)
@@ -214,8 +244,11 @@ heap_proc :: proc(
 		if old_memory == nil {
 			return heap_proc(data, .Alloc, size, alignment, nil, 0, loc)
 		}
-		b := (^Block)(uintptr(old_memory) - uintptr(BLOCK_HEADER))
-		if size <= b.size {
+		b := block_of(old_memory)
+		// A block found by its mark cannot be reused in place: its usable
+		// span is less than the block's by the alignment slack. It is
+		// copied, like one that no longer fits.
+		if size <= b.size && (^u64)(uintptr(old_memory) - 16)^ != ALIGN_MAGIC {
 			return ([^]u8)(old_memory)[:size], nil
 		}
 		p := heap_alloc(size, alignment)

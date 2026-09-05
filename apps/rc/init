@@ -38,6 +38,13 @@ if(test -e /dev/ether0/data) {
 	listen &
 }
 
+# The keys a session holds: factotum, at /mnt/factotum, empty until a
+# passphrase or a host key is written to its ctl. Every handshake a program
+# runs goes through it. docs/FLEET.md section 4.
+factotum &
+while(! test -e /srv/factotum) sleep 1
+mount /srv/factotum /mnt/factotum
+
 # A window with a shell in it, the terminal's own child.
 terminal &
 

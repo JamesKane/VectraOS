@@ -32,6 +32,12 @@ TAG_SIZE :: libcrypto.TAG_SIZE // 16
 // The protocol name, hashed into `h` to start. Exactly the suite this speaks.
 PROTOCOL_NAME :: "Noise_IK_25519_ChaChaPoly_BLAKE2s"
 
+// The most a handshake message holds, with a payload of up to 64 bytes: the
+// first is an ephemeral key, an encrypted static key, and the payload
+// encrypted; the second an ephemeral key and the payload encrypted.
+MSG1_MAX :: DH_SIZE + DH_SIZE + TAG_SIZE + 64 + TAG_SIZE
+MSG2_MAX :: DH_SIZE + 64 + TAG_SIZE
+
 // -- BLAKE2s HMAC and Noise's HKDF --------------------------------------------
 
 BLAKE2S_BLOCK :: 64

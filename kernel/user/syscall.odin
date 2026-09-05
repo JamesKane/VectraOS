@@ -1235,17 +1235,21 @@ sys_segattach :: proc(fd: int) -> i64 {
 /*
 The most memory one `segalloc` may ask for, and why there is a bound at all.
 
-Four megabytes is two of `docs/DRAW.md` section 10's windows, which is the
-thing this call is for. A program that asks for more made an arithmetic
-mistake. A bound turns that into an errno, rather than into a machine with no
-frames left for the process that asks next.
+Four megabytes was two of `docs/DRAW.md` section 10's windows, which was the
+thing this call was for. `docs/FLEET.md` step 2 added a second: `factotum`
+derives a key from a passphrase with argon2id, whose point is to need memory,
+four megabytes of it in one page-aligned block, and a tool's heap doubles when
+it grows, so the run that holds it is eight. Thirty-two leaves room for a
+larger derivation and a window or two beside it. A program that asks for more
+made an arithmetic mistake. A bound turns that into an errno, rather than
+into a machine with no frames left for the process that asks next.
 
 It is a cap to raise rather than a design, the way `MAX_WINDOWS` is. What it
 must never become is unbounded. `MAX_PROC_SEGS` limits how many segments a
 process may hold, and this limits how large each one is. A resource with only
 one of those two is not bounded.
 */
-SEGALLOC_MAX :: u64(4) << 20
+SEGALLOC_MAX :: u64(32) << 20
 
 /*
 sys_segalloc gives a process a run of anonymous memory, and answers with the
