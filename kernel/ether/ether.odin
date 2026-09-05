@@ -28,6 +28,7 @@ import "kernel:drivers/virtio"
 import "kernel:mem"
 import "kernel:sync"
 import "kernel:vfs"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 ETHER_MAX_FIDS :: 16
@@ -51,6 +52,7 @@ ROOT :: i32(0)
 NODE_DIR :: i32(1)
 NODE_ADDR :: i32(2)
 NODE_DATA :: i32(3)
+NODE_STATS :: i32(4) // ether/stats: frames each way, and the ring's counts
 
 @(private = "file")
 Ether_Device :: struct {
@@ -132,6 +134,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 			return NODE_ADDR
 		case "data":
 			return NODE_DATA
+		case "stats":
+			return NODE_STATS
 		}
 	case:
 		if name == ".." {
@@ -211,6 +215,37 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 		return
 	}
 	room := min(len(buf), int(m.count))
+
+	if node == NODE_STATS {
+		// The counts, as text, at the offset the read names.
+		text: [160]u8
+		sink := libodin.sink_from(text[:])
+		reads, writes := stats()
+		seen, empty, used_idx, avail_idx := virtio.net_stats(0)
+		libodin.put_str(&sink, "reads ")
+		libodin.put_uint(&sink, reads)
+		libodin.put_str(&sink, " writes ")
+		libodin.put_uint(&sink, writes)
+		libodin.put_str(&sink, " seen ")
+		libodin.put_uint(&sink, seen)
+		libodin.put_str(&sink, " empty ")
+		libodin.put_uint(&sink, empty)
+		libodin.put_str(&sink, " used ")
+		libodin.put_uint(&sink, u64(used_idx))
+		libodin.put_str(&sink, " avail ")
+		libodin.put_uint(&sink, u64(avail_idx))
+		libodin.put_str(&sink, "\n")
+		whole := libodin.str(&sink)
+		off := int(m.offset)
+		if off >= len(whole) || room == 0 {
+			reply^ = vectra9.Rread{data = buf[:0]}
+			return
+		}
+		n := min(len(whole) - off, room)
+		copy(buf[:n], whole[off:off + n])
+		reply^ = vectra9.Rread{data = buf[:n]}
+		return
+	}
 
 	if node == NODE_ADDR {
 		// The six-byte hardware address, at the offset the read names.
@@ -408,8 +443,8 @@ readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_
 		names = []string{"ether"}
 		nodes = []i32{NODE_DIR}
 	} else {
-		names = []string{"addr", "data"}
-		nodes = []i32{NODE_ADDR, NODE_DATA}
+		names = []string{"addr", "data", "stats"}
+		nodes = []i32{NODE_ADDR, NODE_DATA, NODE_STATS}
 	}
 	for i := int(m.offset); i < len(names); i += 1 {
 		if vectra9.remaining(&c) < vectra9.dirent_size(names[i]) {

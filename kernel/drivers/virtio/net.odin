@@ -65,6 +65,24 @@ Net_Queue :: struct {
 	last_used:  u16,
 	avail_idx:  u16,
 	doorbell:   rawptr,
+	// What the driver saw on the used ring: entries it took, and the ones it
+	// took that carried nothing it could hand on. Read by `net_stats`.
+	seen:       u64,
+	empty:      u64,
+}
+
+// net_stats reports what card `n`'s receive ring has done: used entries
+// taken, entries that carried no frame, and the ring's two indices as the
+// driver last saw them. For a bench that counts frames at each step.
+net_stats :: proc "contextless" (n: int) -> (seen, empty: u64, used_idx, avail_idx: u16) {
+	if n < 0 || n >= MAX_NICS || !nics[n].used {
+		return
+	}
+	nic := &nics[n]
+	g := sync.acquire(&nic.lock)
+	defer sync.release(&nic.lock, g)
+	fence()
+	return nic.rx.seen, nic.rx.empty, nic.rx.used_ring[1], nic.rx.avail_idx
 }
 
 Nic :: struct {
@@ -400,13 +418,18 @@ recv :: proc "contextless" (n: int, out: []u8) -> int #no_bounds_check {
 	base := 2 + slot * 4
 	id := int(u32(q.used_ring[base]) | u32(q.used_ring[base + 1]) << 16)
 	wrote := int(u32(q.used_ring[base + 2]) | u32(q.used_ring[base + 3]) << 16)
+	q.seen += 1
 	if id < 0 || id >= NET_RX_BUFS {
+		q.empty += 1
 		q.last_used += 1
 		return 0
 	}
 
 	frame_len := wrote - NET_HDR_LEN
 	copied := 0
+	if frame_len <= 0 {
+		q.empty += 1
+	}
 	if frame_len > 0 {
 		src := cast([^]u8)nic.rx_virt[id]
 		copied = min(frame_len, len(out))

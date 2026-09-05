@@ -126,6 +126,35 @@ read_some :: proc "contextless" (n: int, out: []u8) -> int {
 bulk: [6144]u8
 sink: [2048]u8
 
+
+// The address this machine answers to, read from `/net/local`, so the
+// connects below are the loopback on any machine: the bench's two have
+// addresses of their own, and a hardcoded one would cross the card there.
+local_buf: [32]u8
+local_len: int
+
+my_address :: proc "contextless" () -> string {
+	if local_len == 0 {
+		fd := libuser.open("/net/local", abi.O_RDONLY)
+		want(fd >= 0, "/net/local opens")
+		n := libuser.read(int(fd), local_buf[:])
+		_ = libuser.close(int(fd))
+		want(n > 0, "and answers this machine's address")
+		local_len = int(n)
+		for local_len > 0 && (local_buf[local_len - 1] == '\n' || local_buf[local_len - 1] == '\r') {
+			local_len -= 1
+		}
+	}
+	return string(local_buf[:local_len])
+}
+
+// connect_line builds `connect a.b.c.d!port` for this machine's own address.
+connect_buf: [64]u8
+
+connect_line :: proc "contextless" (port: string) -> string {
+	return libuser.cat_into(connect_buf[:], "connect ", my_address(), "!", port)
+}
+
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	_ = block
@@ -139,7 +168,7 @@ start :: proc "c" (block: ^abi.Args) {
 
 	client := clone()
 	want(client != server, "a second clone is a second conversation")
-	ctl(client, "connect 10.0.2.15!9", "a conversation connects to it")
+	ctl(client, connect_line("9"), "a conversation connects to it")
 	want(libodin.contains(text_of(client, "status"), "Established"), "and the handshake left it established")
 
 	// The listener hands over the conversation it answered with.
@@ -229,7 +258,7 @@ start :: proc "c" (block: ^abi.Args) {
 		srv := clone()
 		ctl(srv, "announce 30", "a conversation announces for the bulk transfer")
 		cli := clone()
-		ctl(cli, "connect 10.0.2.15!30", "another connects for the bulk transfer")
+		ctl(cli, connect_line("30"), "another connects for the bulk transfer")
 
 		acc := 0
 		{

@@ -137,9 +137,13 @@ start :: proc "c" (block: ^abi.Args) {
 			n := libnet.build_arp_request(out[:], card_mac, mine, gw)
 			want(libuser.write(int(dfd), out[:n]) == i64(n), "the ARP request is written to the card")
 
+			// Each empty read parks in the device for its bound, so a few
+			// reads are a second or more. A link with no gateway on it, the
+			// bench's, fails here quickly rather than reading the card for
+			// minutes and taking every frame from the stack that owns it.
 			in_buf: [2048]u8
 			got := false
-			for _ in 0 ..< 3000 {
+			for _ in 0 ..< 40 {
 				rn := libuser.read(int(dfd), in_buf[:])
 				if rn > 0 {
 					frame := in_buf[:int(rn)]
