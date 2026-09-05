@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Drives the two-machine bench: waits for both to boot, announces a service on
 # one, dials it by name from the other, and checks a line crosses.
-import socket, time, os, sys, subprocess, threading, functools
+import socket, time, os, sys, re, functools
 print=functools.partial(print, flush=True)
 
 BUILD="/Users/jkane/Development/odin/Vectra/build"
@@ -48,6 +48,17 @@ def main():
     if not a.waitfor("%", 180): print("machine one no prompt"); print(repr(a.buf[-300:])); return 2
     if not b.waitfor("%", 60): print("machine two no prompt"); print(repr(b.buf[-300:])); return 2
     print("both at a prompt")
+    # Each kernel names its architecture in its first line. The bench wants
+    # two, so the same tree is proven on both rather than one kernel twice.
+    arches=[]
+    for tag in ("a","b"):
+        try:
+            log=open(BUILD+"/serial-%s.log"%tag, errors="replace").read()
+        except OSError:
+            log=""
+        m=re.search(r"Vectra [^ ]+ \((\w+)\) entering kmain", log)
+        arches.append(m.group(1) if m else "?")
+    print("machine one is %s, machine two is %s" % tuple(arches))
     time.sleep(1); a.pump(1); b.pump(1)
     # confirm each resolved its own name/ip from ndb
     a.send("cat /net/ether0/addr"); a.pump(2)
@@ -71,7 +82,9 @@ def main():
     print("=== machine two output tail ===")
     print(b.buf[-600:])
     # The word appears once as the echoed command line and once as the reply.
-    print("=== VERDICT:", "LINE CROSSED" if b.buf.count("crossing")>=2 else "NO CROSSING")
+    crossed=b.buf.count("crossing")>=2
+    two=len(set(arches))==2 and "?" not in arches
+    print("=== VERDICT:", ("LINE CROSSED" if crossed else "NO CROSSING")+", "+("TWO ARCHITECTURES" if two else "NOT TWO ARCHITECTURES"))
     # leave them; caller kills qemu
     return 0
 

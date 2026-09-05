@@ -11,7 +11,9 @@ sys=gw ip=10.0.2.2
 # The two-machine bench (docs/FLEET.md step 0). Each finds itself by the card
 # address the `fleet` target gives it.
 sys=one ip=10.0.0.1 ether=52540000000a
+	cputype=amd64
 sys=two ip=10.0.0.2 ether=52540000000b
+	cputype=arm64
 
 sys=fs ip=10.0.2.15
 	cputype=amd64

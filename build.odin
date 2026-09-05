@@ -13,11 +13,13 @@ Targets:
     esp      Stage a bootable EFI system partition in build/esp
     run      esp, then boot it under QEMU
     debug    run, but halted and waiting for gdb on :1234
+    fleet    esp for two architectures, then boot two machines on one link
     clean    Remove build/
     lint     Check the prose against ASD-STE100
 
 Options:
     --arch=amd64|arm64|riscv64   Target architecture (default: amd64)
+    --arch2=amd64|arm64|riscv64  The fleet's second machine (default: arm64)
     --release                    Optimise, otherwise a debug build
     --serial=stdio|file          Where QEMU's COM1 goes (default: stdio)
     --monitor=PATH               A QEMU monitor on a unix socket, for screendump
@@ -271,9 +273,21 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 	return {}
 }
 
+// parse_arch reads an `--arch=NAME` or `--arch2=NAME` option.
+parse_arch :: proc(arg: string) -> Arch {
+	name := arg[strings.index_byte(arg, '=') + 1:]
+	switch name {
+	case "amd64", "x86_64": return .amd64
+	case "arm64", "aarch64": return .arm64
+	case "riscv64", "rv64": return .riscv64
+	}
+	die("unknown %s (want amd64, arm64, riscv64)", arg)
+}
+
 Options :: struct {
 	target:  string,
 	arch:    Arch,
+	arch2:   Arch, // The fleet's second machine, `arch` being its first
 	release: bool,
 	serial:  string,
 	monitor: string,
@@ -289,6 +303,7 @@ main :: proc() {
 	opts := Options {
 		target = "kernel",
 		arch   = .amd64,
+		arch2  = .arm64,
 		serial = "stdio",
 		smp    = 4,
 	}
@@ -299,14 +314,9 @@ main :: proc() {
 	for arg in os.args[1:] {
 		switch {
 		case strings.has_prefix(arg, "--arch="):
-			name := arg[len("--arch="):]
-			switch name {
-			case "amd64", "x86_64": opts.arch = .amd64
-			case "arm64", "aarch64": opts.arch = .arm64
-			case "riscv64", "rv64": opts.arch = .riscv64
-			case:
-				die("unknown --arch=%s (want amd64, arm64, riscv64)", name)
-			}
+			opts.arch = parse_arch(arg)
+		case strings.has_prefix(arg, "--arch2="):
+			opts.arch2 = parse_arch(arg)
 		case strings.has_prefix(arg, "--serial="):
 			opts.serial = arg[len("--serial="):]
 		case strings.has_prefix(arg, "--monitor="):
@@ -347,7 +357,7 @@ main :: proc() {
 	case "check":    check(opts)
 	case "esp":    stage_esp(opts)
 	case "run":    stage_esp(opts); run_qemu(opts, debug = false)
-	case "fleet":  stage_esp(opts); run_fleet(opts)
+	case "fleet":  run_fleet(opts)
 	case "debug":  stage_esp(opts); run_qemu(opts, debug = true)
 	case "clean":  clean()
 	case "lint":   lint(opts)
@@ -965,11 +975,14 @@ run_qemu :: proc(opts: Options, debug: bool) {
 /*
 run_fleet boots two machines on one socket network, which is `docs/FLEET.md`
 step 0's bench. One machine listens for the link and the other dials it, so the
-two are wired as if by a crossing cable. Each gets its own copy of the ESP and
-its own scratch disk. Two QEMUs cannot share one `fat:rw` overlay, nor one raw
-image's write lock. Each gets a distinct card address, so `/lib/ndb/local`
-gives each a distinct name and IP -- the whole point of a fleet reading one
-database.
+two are wired as if by a crossing cable. They are of two architectures, `--arch`
+and `--arch2`, because the plan's boot line wants the one tree proven across
+them, not one kernel twice. The tree is staged once per architecture, and each
+staging is copied aside before the next overwrites `build/`. Each machine gets
+its own copy of the ESP and its own scratch disk. Two QEMUs cannot share one
+`fat:rw` overlay, nor one raw image's write lock. Each gets a distinct card
+address, so `/lib/ndb/local` gives each a distinct name and IP -- the whole
+point of a fleet reading one database.
 
 The consoles go to unix sockets a host script drives, and the serial log of
 each also to a file. This launches both and waits. A driver connects to the
@@ -977,10 +990,16 @@ sockets, runs `netecho` on each, and watches a line cross.
 */
 run_fleet :: proc(opts: Options) {
 
-	// Each machine's own ESP and scratch, copied from the staged originals.
+	// Each machine's own ESP, staged for its own architecture, and its own
+	// scratch disk. Machine one is `--arch`, machine two `--arch2`.
+	opts_a := opts
+	opts_b := opts
+	opts_b.arch = opts.arch2
 	esp_a := fmt.tprintf("%s/esp-a", BUILD_DIR)
 	esp_b := fmt.tprintf("%s/esp-b", BUILD_DIR)
+	stage_esp(opts_a)
 	copy_tree(ESP_DIR, esp_a)
+	stage_esp(opts_b)
 	copy_tree(ESP_DIR, esp_b)
 	ensure_scratch_disk()
 	scratch_a := fmt.tprintf("%s/disk-a.img", BUILD_DIR)
@@ -990,27 +1009,27 @@ run_fleet :: proc(opts: Options) {
 
 	PORT :: "17999"
 	a := machine_args(
-		opts, esp_a, scratch_a,
+		opts_a, esp_a, scratch_a,
 		{"-netdev", fmt.tprintf("socket,id=n0,listen=127.0.0.1:%s", PORT),
 		 "-device", "virtio-net-pci,netdev=n0,mac=52:54:00:00:00:0a,disable-legacy=on"},
 		fmt.tprintf("%s/console-a.sock", BUILD_DIR),
 		fmt.tprintf("%s/serial-a.log", BUILD_DIR),
 	)
 	b := machine_args(
-		opts, esp_b, scratch_b,
+		opts_b, esp_b, scratch_b,
 		{"-netdev", fmt.tprintf("socket,id=n0,connect=127.0.0.1:%s", PORT),
 		 "-device", "virtio-net-pci,netdev=n0,mac=52:54:00:00:00:0b,disable-legacy=on"},
 		fmt.tprintf("%s/console-b.sock", BUILD_DIR),
 		fmt.tprintf("%s/serial-b.log", BUILD_DIR),
 	)
 
-	step("booting machine one, listening for the link on port %s", PORT)
+	step("booting machine one (%v), listening for the link on port %s", opts_a.arch, PORT)
 	pa := spawn_bg(a[:])
 	// Let machine one open its listening socket before machine two dials it.
 	// A socket netdev does not retry, so a dial that races the listen leaves
 	// the two on a dead link with no way back.
 	run({"sleep", "3"})
-	step("booting machine two, dialling the link")
+	step("booting machine two (%v), dialling the link", opts_b.arch)
 	pb := spawn_bg(b[:])
 
 	step("fleet up: consoles at %s/console-a.sock and console-b.sock", BUILD_DIR)

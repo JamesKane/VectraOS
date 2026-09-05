@@ -68,9 +68,9 @@ save.
 ### The rest of step 0
 
 `docs/FLEET.md` step 0 is more than this stack. The bench crosses a line
-between two machines by name, but both are amd64. The boot line wants two
-architectures. `cmd/ipconfig`, `servers/dns` and `servers/etherfs` are named in
-the plan and not yet written.
+between two machines by name, one amd64 and one arm64, as the boot line wants.
+`cmd/ipconfig`, `servers/dns` and `servers/etherfs` are named in the plan and
+not yet written.
 
 ## See also
 
