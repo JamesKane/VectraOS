@@ -2183,7 +2183,12 @@ sys_dirread :: proc(fd: int, addr: uintptr, count: int) -> i64 {
 @(private = "file")
 sys_dup :: proc(old: int, new: int) -> i64 {
 	p := current()
-	c, _, ok := fd_take(p, old)
+	// The old descriptor's cursor goes with it. A dup shares the file offset
+	// in Plan 9 and Unix; here the cursor is the process's, one per
+	// descriptor, so a dup copies it. Without this a `>>` redirect, which
+	// seeks to the end and then dups onto descriptor one, wrote at the start
+	// instead: the seek was on the descriptor the dup replaced.
+	c, off, ok := fd_take(p, old)
 	if !ok {
 		return -i64(vectra9.EBADF)
 	}
@@ -2193,6 +2198,7 @@ sys_dup :: proc(old: int, new: int) -> i64 {
 			vfs.chan_close(c)
 			return -i64(vectra9.EMFILE)
 		}
+		_ = fd_seek(p, fd, off)
 		return i64(fd)
 	}
 	if new >= MAX_FDS {
@@ -2203,6 +2209,7 @@ sys_dup :: proc(old: int, new: int) -> i64 {
 		vfs.chan_close(c)
 		return -i64(vectra9.EBADF)
 	}
+	_ = fd_seek(p, new, off)
 	return i64(new)
 }
 

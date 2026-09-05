@@ -7772,7 +7772,7 @@ serial log, one `ok name` per tool, and its exit word is `N ok` or
 `failed` and the names. The count is a constant here, so a check added to
 the script without a change here fails the boot, and says so.
 */
-TOOLS_OK :: "36 ok"
+TOOLS_OK :: "37 ok"
 
 verify_tools :: proc(r: ^Result) {
 	names := [?]string{"rc", "/lib/tests/tools.rc"}
