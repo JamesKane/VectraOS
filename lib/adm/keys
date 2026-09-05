@@ -1,0 +1,8 @@
+# The users, one per line: a name, the public half of the key, and groups.
+# docs/FLEET.md section 4. A host is a user too, and these are the bench's
+# machines and the solo one. The private halves are each machine's own
+# /adm/hostkey, staged by the build for the machine it boots; a person's is
+# derived from a passphrase and never written down.
+one 44732d94646e3caf820067be7f0eb8fdd3ca9ec5432644886761842d8827760f sys
+two e6b84f4fe31aa05bc38b2307cd5c0d4f318f4e4bd7e7f7000b969277f0a4775b sys
+vectra f14194c9bea065b79e07223e1fd23404448bcafda93a308f9c52454fe5cea260 sys adm

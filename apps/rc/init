@@ -41,9 +41,26 @@ if(test -e /dev/ether0/data) {
 # The keys a session holds: factotum, at /mnt/factotum, empty until a
 # passphrase or a host key is written to its ctl. Every handshake a program
 # runs goes through it. docs/FLEET.md section 4.
+# /mnt becomes a union: the draw server will mount its windows before the
+# root's own directory, and a union here holds only what was mounted or
+# bound, so the directory is bound onto itself first. That keeps
+# /mnt/factotum, a mount point inside it, reachable beside the windows.
+bind /mnt /mnt
 factotum &
 while(! test -e /srv/factotum) sleep 1
 mount /srv/factotum /mnt/factotum
+# A host is a user too. Its name is the database record its card matched,
+# and its key is /adm/hostkey, the private half only this machine carries;
+# the public half is on its record as key=. Both go into factotum, and the
+# session runs as the host until a person types a passphrase.
+dom=home
+if(test -e /net/sysname) sysname=`{cat /net/sysname}
+if(~ $#sysname 0) sysname=vectra
+user=$sysname
+if(test -e /adm/hostkey) {
+	hostkey=`{cat /adm/hostkey}
+	echo key proto=noise user=$sysname dom=$dom '!private='^$hostkey > /mnt/factotum/ctl
+}
 
 # A window with a shell in it, the terminal's own child.
 terminal &

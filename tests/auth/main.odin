@@ -46,9 +46,12 @@ word :: proc "contextless" (line: string, n: int) -> string #no_bounds_check {
 	at := 0
 	i := 0
 	for at < len(line) {
-		for at < len(line) && line[at] == ' ' {at += 1}
+		for at < len(line) && (line[at] == ' ' || line[at] == '\n' || line[at] == '\t') {at += 1}
 		end := at
-		for end < len(line) && line[end] != ' ' && line[end] != '\n' {end += 1}
+		for end < len(line) && line[end] != ' ' && line[end] != '\n' && line[end] != '\t' {end += 1}
+		if end == at {
+			break
+		}
 		if i == n {
 			return line[at:end]
 		}

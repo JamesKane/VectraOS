@@ -69,6 +69,7 @@ conv_node :: proc "contextless" (i: int, kind: i32) -> i32 {
 
 NODE_TCP :: i32(7) // The tcp directory
 NODE_TCLONE :: i32(8) // tcp/clone
+NODE_SYSNAME :: i32(9) // This machine's name, from the record its card matched
 NODE_LOCAL :: i32(10) // This machine's own address, resolved from ndb
 NODE_ICLONE :: i32(11) // icmp/clone
 NODE_ISTATS :: i32(12) // icmp/stats
@@ -584,6 +585,8 @@ render :: proc "contextless" (node: i32, into: []u8) -> int #no_bounds_check {
 	switch node {
 	case NODE_ARP:
 		render_arp(&sink)
+	case NODE_SYSNAME:
+		libodin.put_str(&sink, string(sysname[:sysname_len]))
 	case NODE_LOCAL:
 		put_ip(&sink, primary_ip())
 		libodin.put_str(&sink, "\n")
@@ -682,6 +685,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 			return NODE_IPIFC
 		case "iproute":
 			return NODE_IPROUTE
+		case "sysname":
+			return NODE_SYSNAME
 		case "ndb":
 			return NODE_NDB
 		case "arp":
@@ -1133,8 +1138,8 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 	nodes: []i32
 	switch {
 	case node == NODE_ROOT:
-		root_names := [?]string{"ether0", "ether1", "arp", "icmp", "udp", "tcp", "local", "ipifc", "iproute", "ndb"}
-		root_nodes := [?]i32{ether_node(0, ETHER_DIR), ether_node(1, ETHER_DIR), NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_LOCAL, NODE_IPIFC, NODE_IPROUTE, NODE_NDB}
+		root_names := [?]string{"ether0", "ether1", "arp", "icmp", "udp", "tcp", "local", "sysname", "ipifc", "iproute", "ndb"}
+		root_nodes := [?]i32{ether_node(0, ETHER_DIR), ether_node(1, ETHER_DIR), NODE_ARP, NODE_ICMP, NODE_UDP, NODE_TCP, NODE_LOCAL, NODE_SYSNAME, NODE_IPIFC, NODE_IPROUTE, NODE_NDB}
 		// A second card that is not there is not listed.
 		skip := ifc_count < 2 ? 1 : 0
 		names = ifc_count < 2 ? root_names[1:] : root_names[:]

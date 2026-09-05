@@ -17,6 +17,7 @@ this end takes the whole of it; a `bind` after the mount picks the part.
 package import_cmd
 
 import "vsys:abi"
+import "vsys:libauth"
 import "vsys:libnet"
 import "vsys:libodin"
 import "vsys:libuser"
@@ -53,9 +54,30 @@ start :: proc "c" (block: ^abi.Args) {
 		say("\n")
 		libuser.exits("dial")
 	}
+	who: [128]u8
+	user, dom, wok := libauth.whoami(who[:])
+	if !wok {
+		say("import: no user in the environment: /env/user and /env/dom\n")
+		libuser.exits("auth")
+	}
+	keybuf: [64]u8
+	key, has := libauth.host_key(host, keybuf[:])
+	if !has {
+		say("import: no key= for ")
+		say(host)
+		say(" in /lib/ndb/local\n")
+		libuser.exits("auth")
+	}
+	sess, done := libauth.auth_client(fd, user, dom, key)
+	if !done {
+		say("import: the handshake with ")
+		say(host)
+		say(" failed\n")
+		libuser.exits("auth")
+	}
 	path: [96]u8
 	posted := libuser.cat_into(path[:], "/srv/", host)
-	if !post(posted, fd) {
+	if !post(posted, sess.fd) {
 		say("import: cannot post ")
 		say(posted)
 		say("\n")

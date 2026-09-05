@@ -182,7 +182,7 @@ start :: proc "c" (block: ^abi.Args) {
 	// kernel's console may be a shell of its own that wants its echo. An
 	// earlier terminal wrote `echooff` here, from the days it read the
 	// kernel's console itself.
-	if libuser.mount("/srv/draw", "/mnt", 0) < 0 {
+	if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
 		libuser.exit(0x74)
 	}
 

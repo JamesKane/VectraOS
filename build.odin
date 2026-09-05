@@ -307,6 +307,7 @@ Options :: struct {
 	gfx:     bool,
 	smp:     int,
 	pcap:    bool, // The fleet's frames, captured at QEMU's netdev
+	hostname: string, // Whose host key the staged /adm carries;  when unset
 
 	// Everything after the target, handed to the target untouched. Only
 	// `lint` reads it, so that `build lint --show docs` reaches the checker.
@@ -872,7 +873,7 @@ stage_esp :: proc(opts: Options) {
 	// rather than at the volume root, where another limine.conf could shadow it.
 	copy_file("boot/limine.conf", fmt.tprintf("%s/EFI/BOOT/limine.conf", ESP_DIR))
 	copy_file(KERNEL_ELF, fmt.tprintf("%s/vectra.elf", ESP_DIR))
-	stage_vectra()
+	stage_vectra(opts.hostname == "" ? "vectra" : opts.hostname)
 }
 
 /*
@@ -882,7 +883,7 @@ and `/lib`. Every program image under `bin/` by its `/bin` name, `rcmain`
 and the test script under `lib/`, and an empty `tmp/` for what a running
 machine writes back to the host.
 */
-stage_vectra :: proc() {
+stage_vectra :: proc(host: string) {
 	root := fmt.tprintf("%s/vectra", ESP_DIR)
 	ensure_dir(root)
 	ensure_dir(fmt.tprintf("%s/bin", root))
@@ -906,6 +907,11 @@ stage_vectra :: proc() {
 	// The services `listen` announces: one script per port.
 	ensure_dir(fmt.tprintf("%s/lib/service", root))
 	copy_file("lib/service/tcp564", fmt.tprintf("%s/lib/service/tcp564", root))
+	// /adm: the users and their public keys, one file for the fleet, and
+	// this machine's own host key, the private half only it carries.
+	ensure_dir(fmt.tprintf("%s/adm", root))
+	copy_file("lib/adm/keys", fmt.tprintf("%s/adm/keys", root))
+	copy_file(fmt.tprintf("lib/adm/hostkey.%s", host), fmt.tprintf("%s/adm/hostkey", root))
 	step("staged %d programs and the library under %s", len(user_programs), root)
 }
 
@@ -1018,6 +1024,8 @@ run_fleet :: proc(opts: Options) {
 	opts_a := opts
 	opts_b := opts
 	opts_b.arch = opts.arch2
+	opts_a.hostname = "one"
+	opts_b.hostname = "two"
 	esp_a := fmt.tprintf("%s/esp-a", BUILD_DIR)
 	esp_b := fmt.tprintf("%s/esp-b", BUILD_DIR)
 	stage_esp(opts_a)

@@ -90,6 +90,10 @@ Route :: struct {
 routes: [MAX_ROUTES]Route
 
 // What `ipconfig` learned, kept as text for whoever asks: `/net/ndb`.
+// This machine's name, from the database record its card matched: `/net/sysname`.
+sysname: [64]u8
+sysname_len: int
+
 ndb_note: [NDB_TEXT_MAX]u8
 ndb_note_len: int
 
@@ -399,6 +403,10 @@ resolve_addresses :: proc "contextless" () #no_bounds_check {
 			libodin.put_uint(&sink, u64(f.mac[k]), 16, 2)
 		}
 		key := libodin.str(&sink)
+		// The record's  is this machine's name, served as .
+		if sn, hs := libndb.find(ndb(), "ether", key, "sys"); hs && sysname_len == 0 {
+			sysname_len = copy(sysname[:], sn)
+		}
 		if text, has := libndb.find(ndb(), "ether", key, "ip"); has {
 			if ip, ok := address(text); ok {
 				f.ip = ip

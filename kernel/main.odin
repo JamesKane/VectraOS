@@ -2225,7 +2225,7 @@ init_fatfs :: proc() -> bool {
 		emit(&klog, .Fault, &sink)
 		return false
 	}
-	for pair in ([][2]string{{"/n/esp/vectra/bin", "/bin"}, {"/n/esp/vectra/lib", "/lib"}}) {
+	for pair in ([][2]string{{"/n/esp/vectra/bin", "/bin"}, {"/n/esp/vectra/lib", "/lib"}, {"/n/esp/vectra/adm", "/adm"}}) {
 		if err := vfs.bind_path(ns, pair[0], pair[1], .Before); err != vfs.OK {
 			sink := begin(&klog)
 			libodin.put_str(&sink, "fatfs: cannot bind ")

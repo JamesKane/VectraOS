@@ -22,6 +22,7 @@ package libauth
 
 import "vsys:abi"
 import "vsys:libcrypto"
+import "vsys:libndb"
 import "vsys:libuser"
 
 FRAME_MAX :: 1024 // Plaintext bytes one frame carries at most
@@ -56,9 +57,12 @@ word :: proc "contextless" (line: string, n: int) -> string #no_bounds_check {
 	at := 0
 	i := 0
 	for at < len(line) {
-		for at < len(line) && line[at] == ' ' {at += 1}
+		for at < len(line) && (line[at] == ' ' || line[at] == '\n' || line[at] == '\t') {at += 1}
 		end := at
-		for end < len(line) && line[end] != ' ' && line[end] != '\n' {end += 1}
+		for end < len(line) && line[end] != ' ' && line[end] != '\n' && line[end] != '\t' {end += 1}
+		if end == at {
+			break
+		}
 		if i == n {
 			return line[at:end]
 		}
@@ -310,4 +314,67 @@ carry_in :: proc "contextless" (conn: int, to: int, c: ^Cipher) -> ! {
 		}
 	}
 	leave()
+}
+
+// -- Who a program is, and whose key a host has --------------------------------
+
+/*
+whoami answers the user and domain this session runs as: `/env/user` and
+`/env/dom`, which `init` sets to the host's name and the fleet's domain and a
+login sets to a person's. `into` holds both, and a session with neither
+answers false.
+*/
+whoami :: proc "contextless" (into: []u8) -> (user, dom: string, ok: bool) #no_bounds_check {
+	n := read_env("/env/user", into)
+	if n <= 0 || n >= len(into) - 1 {
+		return "", "", false
+	}
+	user = string(into[:n])
+	m := read_env("/env/dom", into[n:])
+	if m <= 0 {
+		return "", "", false
+	}
+	return user, string(into[n:n + m]), true
+}
+
+@(private = "file")
+read_env :: proc "contextless" (path: string, into: []u8) -> int #no_bounds_check {
+	fd := libuser.open(path, abi.O_RDONLY)
+	if fd < 0 {
+		return -1
+	}
+	n := int(libuser.read(int(fd), into))
+	_ = libuser.close(int(fd))
+	for n > 0 && (into[n - 1] == '\n' || into[n - 1] == 0) {
+		n -= 1
+	}
+	return n
+}
+
+/*
+host_key answers the static public key of `host`, the `key=` on its record in
+`/lib/ndb/local`, as hex in `into`. A host with no key cannot be dialled with
+a handshake, and a dial that finds none must not fall back to the clear.
+*/
+host_key :: proc "contextless" (host: string, into: []u8) -> (string, bool) #no_bounds_check {
+	@(static) text: [8192]u8
+	fd := libuser.open("/lib/ndb/local", abi.O_RDONLY)
+	if fd < 0 {
+		return "", false
+	}
+	at := 0
+	for at < len(text) {
+		n := libuser.read(int(fd), text[at:])
+		if n <= 0 {
+			break
+		}
+		at += int(n)
+	}
+	_ = libuser.close(int(fd))
+	key, has := libndb.find(string(text[:at]), "sys", host, "key")
+	if !has || len(key) != 64 || len(into) < 64 {
+		return "", false
+	}
+	n := copy(into, key)
+	return string(into[:n]), true
 }

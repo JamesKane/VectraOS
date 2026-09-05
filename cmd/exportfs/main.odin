@@ -24,6 +24,7 @@ import "base:runtime"
 
 import "vsys:abi"
 import "vsys:lib9p"
+import "vsys:libauth"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
@@ -42,6 +43,13 @@ Fid :: struct {
 }
 
 fids: [MAX_FIDS]Fid
+
+// The descriptor 9P is served on: the stream, or the sealed one over it.
+serve_fd: int = 0
+
+// Who the handshake proved the client to be, when there was one.
+proven: [64]u8
+proven_len: int
 srv: lib9p.Srv
 root: string = "/"
 root_buf: [PATH_MAX]u8
@@ -51,12 +59,35 @@ start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 	args := libuser.args(block)
+	auth := false
 	for i := 1; i < len(args); i += 1 {
 		if args[i] == "-r" && i + 1 < len(args) {
 			i += 1
 			n := copy(root_buf[:], args[i])
 			root = string(root_buf[:n])
+		} else if args[i] == "-a" {
+			auth = true
 		}
+	}
+	if auth {
+		// The handshake first, on the raw stream, as this host. A client
+		// whose key the keys file does not list is `none`, and the tree is
+		// not for `none`: it is refused before 9P begins.
+		who: [128]u8
+		host, dom, ok := libauth.whoami(who[:])
+		if !ok {
+			libuser.exits("no host user in the environment")
+		}
+		sess, done := libauth.auth_server(0, host, dom)
+		if !done {
+			libuser.exits("the handshake failed")
+		}
+		if libauth.session_name(&sess) == libauth.NONE {
+			_ = libuser.close(sess.fd)
+			libuser.exits("a stranger, refused")
+		}
+		proven_len = copy(proven[:], libauth.session_name(&sess))
+		serve_fd = sess.fd
 	}
 	for i in 0 ..< MAX_FIDS {
 		fids[i].fd = -1
@@ -67,7 +98,7 @@ start :: proc "c" (block: ^abi.Args) {
 threadmain :: proc "contextless" (arg: rawptr) {
 	_ = arg
 	srv = lib9p.Srv {
-		fd      = 0,
+		fd      = serve_fd,
 		handler = handler,
 		msize   = FRAME,
 	}

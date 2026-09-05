@@ -71,7 +71,7 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	}
 	font_init(&win.fonts, 1)
 
-	if libuser.mount("/srv/draw", "/mnt", 0) < 0 {
+	if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
 		return false
 	}
 	nfd := libuser.open("/mnt/new", abi.O_RDONLY)

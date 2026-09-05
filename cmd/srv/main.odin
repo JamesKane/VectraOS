@@ -13,6 +13,7 @@ removing the name is what ends it. `docs/FLEET.md` section 5.
 package srv
 
 import "vsys:abi"
+import "vsys:libauth"
 import "vsys:libnet"
 import "vsys:libodin"
 import "vsys:libuser"
@@ -36,7 +37,17 @@ start :: proc "c" (block: ^abi.Args) {
 		say("\n")
 		libuser.exits("dial")
 	}
-	if !post(args[2], fd) {
+	// The handshake, before anything is posted: the host proves itself by
+	// the key its record carries, and this session proves itself as the
+	// user it runs as. What is posted is the sealed stream.
+	sealed, aerr := authenticate(fd, host_of(args[1]))
+	if aerr != "" {
+		say("srv: ")
+		say(aerr)
+		say("\n")
+		libuser.exits("auth")
+	}
+	if !post(args[2], sealed) {
 		say("srv: cannot post /srv/")
 		say(args[2])
 		say("\n")
@@ -60,4 +71,36 @@ post :: proc "contextless" (name: string, fd: int) -> bool {
 	wrote := libuser.write(int(cfd), transmute([]u8)text) == i64(len(text))
 	_ = libuser.close(int(cfd))
 	return wrote
+}
+
+// host_of is the middle of `proto!host!service`.
+host_of :: proc "contextless" (addr: string) -> string #no_bounds_check {
+	a := 0
+	for a < len(addr) && addr[a] != '!' {a += 1}
+	if a >= len(addr) {
+		return addr
+	}
+	b := a + 1
+	for b < len(addr) && addr[b] != '!' {b += 1}
+	return addr[a + 1:b]
+}
+
+// authenticate runs the handshake with `host` on `fd` and answers the sealed
+// descriptor, or why not.
+authenticate :: proc "contextless" (fd: int, host: string) -> (int, string) {
+	who: [128]u8
+	user, dom, ok := libauth.whoami(who[:])
+	if !ok {
+		return -1, "no user in the environment: /env/user and /env/dom"
+	}
+	keybuf: [64]u8
+	key, has := libauth.host_key(host, keybuf[:])
+	if !has {
+		return -1, "no key= for that host in /lib/ndb/local"
+	}
+	sess, done := libauth.auth_client(fd, user, dom, key)
+	if !done {
+		return -1, "the handshake with the host failed"
+	}
+	return sess.fd, ""
 }

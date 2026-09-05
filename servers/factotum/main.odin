@@ -194,9 +194,15 @@ key_add :: proc(line: string) -> bool #no_bounds_check {
 attr :: proc "contextless" (line: string, name: string) -> (string, bool) #no_bounds_check {
 	at := 0
 	for at < len(line) {
-		for at < len(line) && line[at] == ' ' {at += 1}
+		// Spaces and newlines both separate words. A line from `echo` ends
+		// in a newline, and a scan that stopped at one without stepping
+		// over it would never move again.
+		for at < len(line) && (line[at] == ' ' || line[at] == '\n' || line[at] == '\t') {at += 1}
 		end := at
-		for end < len(line) && line[end] != ' ' && line[end] != '\n' {end += 1}
+		for end < len(line) && line[end] != ' ' && line[end] != '\n' && line[end] != '\t' {end += 1}
+		if end == at {
+			break
+		}
 		word := line[at:end]
 		if len(word) >= len(name) && word[:len(name)] == name {
 			return word[len(name):], true
