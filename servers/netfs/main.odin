@@ -291,6 +291,7 @@ wake_udp: [MAX_CONV]bool
 wake_tcp: [MAX_TCP]bool
 wake_listen: [MAX_TCP]bool
 wake_connect: [MAX_TCP]bool
+wake_write: [MAX_TCP]bool
 
 // drain_wakes answers every held read a protocol raised a flag for. The ether
 // thread calls it, and nothing else does.
@@ -313,6 +314,10 @@ drain_wakes :: proc "contextless" () #no_bounds_check {
 		if wake_connect[i] {
 			wake_connect[i] = false
 			answer_connect(i)
+		}
+		if wake_write[i] {
+			wake_write[i] = false
+			answer_write(i)
 		}
 	}
 }
@@ -950,11 +955,21 @@ handler :: proc "contextless" (
 					reply^ = vectra9.error_reply(vectra9.EINVAL)
 				}
 			case TCONV_DATA:
-				if !tcp_write(i, m.data) {
+				// The write returns the bytes the window and the retransmit
+				// queue let through. A write that got none is held until an
+				// acknowledgement makes room. A stream blocks a writer there,
+				// rather than lose what it could not take or spin it on a
+				// zero-length write.
+				sent := tcp_write(i, m.data)
+				if sent < 0 {
 					reply^ = vectra9.error_reply(vectra9.EIO)
 					return
 				}
-				reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+				if sent == 0 && len(m.data) > 0 {
+					lib9p.hold(&srv)
+					return
+				}
+				reply^ = vectra9.Rwrite{count = u32(sent)}
 			case:
 				reply^ = vectra9.error_reply(vectra9.EPERM)
 			}

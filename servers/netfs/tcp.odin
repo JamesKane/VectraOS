@@ -148,25 +148,38 @@ tcp_queued :: proc "contextless" (i: int) -> int #no_bounds_check {
 }
 
 // tcp_push appends payload to a conversation's stream, as much as there is room
-// for. What does not fit is dropped, which a window would have prevented.
-tcp_push :: proc "contextless" (i: int, data: []u8) #no_bounds_check {
+// for, and answers how many bytes that was. The caller advances the sequence
+// over what was taken and no further, so a byte that did not fit is never one
+// this end acknowledges. The far side sends it again, and the advertised window
+// keeps a peer that respects it from reaching the drop at all.
+tcp_push :: proc "contextless" (i: int, data: []u8) -> int #no_bounds_check {
 	c := &tcps[i]
+	n := 0
 	for k in 0 ..< len(data) {
 		if c.tail - c.head >= TCP_RQ {
 			break
 		}
 		c.rq[c.tail % TCP_RQ] = data[k]
 		c.tail += 1
+		n += 1
 	}
+	return n
 }
 
 tcp_pop :: proc "contextless" (i: int, out: []u8) -> int #no_bounds_check {
 	c := &tcps[i]
+	was_full := c.tail - c.head >= TCP_RQ
 	n := min(len(out), c.tail - c.head)
 	for k in 0 ..< n {
 		out[k] = c.rq[(c.head + k) % TCP_RQ]
 	}
 	c.head += n
+	// A read that reopens a window this end shut must be announced. A peer
+	// blocked on a zero window sends nothing until an acknowledgement gives it
+	// room. Without this the stream would wedge here.
+	if was_full && n > 0 && (c.state == .Established || c.state == .Close_Wait) {
+		tcp_output(i, libnet.TCP_ACK, nil)
+	}
 	return n
 }
 
@@ -318,10 +331,20 @@ it, and would otherwise find a conversation that had not moved yet.
 tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 	c := &tcps[i]
 
+	old_win := c.peer_win
 	c.peer_win = t.window
+	advanced := false
 	if t.flags & libnet.TCP_ACK != 0 && libnet.seq_le_u32(c.snd_una, t.ack) {
+		if t.ack != c.snd_una {
+			advanced = true
+		}
 		c.snd_una = t.ack
 		libnet.retx_ack(&c.retx, c.snd_una)
+	}
+	// An acknowledgement that freed a retransmit slot, or a window that grew,
+	// is room a held write was waiting for. Let the ether thread answer it.
+	if advanced || c.peer_win > old_win {
+		wake_write[i] = true
 	}
 
 	#partial switch c.state {
@@ -371,17 +394,24 @@ tcp_step :: proc "contextless" (i: int, t: libnet.Tcp) #no_bounds_check {
 	*/
 	if len(t.payload) > 0 {
 		if t.seq == c.rcv_nxt {
-			tcp_push(i, t.payload)
-			c.rcv_nxt += u32(len(t.payload))
-			// And the run the arrival just made contiguous.
-			held: [libnet.SEG_MAX]u8 = ---
-			for {
-				n := libnet.reseq_take(&c.reseq, c.rcv_nxt, held[:])
-				if n == 0 {
-					break
+			got := tcp_push(i, t.payload)
+			c.rcv_nxt += u32(got)
+			// The run the arrival just made contiguous, while it keeps fitting.
+			// A held segment that no longer fits stays for a later read to make
+			// room, the same as a fresh one that overran the window.
+			if got == len(t.payload) {
+				held: [libnet.SEG_MAX]u8 = ---
+				for {
+					n := libnet.reseq_take(&c.reseq, c.rcv_nxt, held[:])
+					if n == 0 {
+						break
+					}
+					pushed := tcp_push(i, held[:n])
+					c.rcv_nxt += u32(pushed)
+					if pushed < n {
+						break
+					}
 				}
-				tcp_push(i, held[:n])
-				c.rcv_nxt += u32(n)
 			}
 			tcp_output(i, libnet.TCP_ACK, nil)
 			wake_tcp[i] = true
@@ -457,10 +487,17 @@ tcp_hangup :: proc "contextless" (i: int) #no_bounds_check {
 }
 
 // tcp_write sends a run of bytes, a segment at a time.
-tcp_write :: proc "contextless" (i: int, data: []u8) -> bool #no_bounds_check {
+/*
+tcp_write puts as much of `data` on the wire as the far end's window and the
+retransmit queue allow. It answers how many bytes that was. A caller writes
+the rest in another call, once an acknowledgement makes room. A short count is
+the truth: never more than went, so no byte a full window held back is counted
+as sent.
+*/
+tcp_write :: proc "contextless" (i: int, data: []u8) -> int #no_bounds_check {
 	c := &tcps[i]
 	if c.state != .Established && c.state != .Close_Wait {
-		return false
+		return -1
 	}
 	at := 0
 	for at < len(data) {
@@ -477,7 +514,7 @@ tcp_write :: proc "contextless" (i: int, data: []u8) -> bool #no_bounds_check {
 		tcp_output(i, libnet.TCP_PSH | libnet.TCP_ACK, data[at:at + n])
 		at += n
 	}
-	return at > 0
+	return at
 }
 
 /*
@@ -565,6 +602,40 @@ wants_connect :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool
 		node := libuser.fid_lookup(&fids, m.fid)
 		conv, kind, ok := tconv_of(node)
 		return ok && conv == i && kind == TCONV_CTL
+	}
+	return false
+}
+
+/*
+answer_write answers a data write that was held for want of room. A freed
+retransmit slot, or a wider window, opened room since. The write puts what it
+can on the wire and answers with that count. One that still cannot move a byte
+stays held for the next opening.
+*/
+answer_write :: proc "contextless" (i: int) {
+	req, ok := lib9p.held(&srv, rawptr(uintptr(i)), wants_write)
+	if !ok {
+		return
+	}
+	if m, is_write := req.msg.(vectra9.Twrite); is_write {
+		sent := tcp_write(i, m.data)
+		if sent > 0 {
+			_ = lib9p.respond(req, vectra9.Rwrite{count = u32(sent)})
+			return
+		}
+		if sent < 0 {
+			_ = lib9p.respond(req, vectra9.error_reply(vectra9.EIO))
+		}
+	}
+}
+
+wants_write :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
+	i := int(uintptr(arg))
+	#partial switch m in request^ {
+	case vectra9.Twrite:
+		node := libuser.fid_lookup(&fids, m.fid)
+		conv, kind, ok := tconv_of(node)
+		return ok && conv == i && kind == TCONV_DATA
 	}
 	return false
 }

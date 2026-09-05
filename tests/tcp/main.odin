@@ -104,6 +104,28 @@ stream_read :: proc "contextless" (n: int) -> string {
 	return string(read_buf[:max(int(got), 0)])
 }
 
+// write_some puts as much of `data` as the stream takes now, and answers the
+// count. A short answer is the window holding the sender back, not an error.
+write_some :: proc "contextless" (n: int, data: []u8) -> int {
+	fd := libuser.open(conv_path(n, "data"), abi.O_WRONLY)
+	want(fd >= 0, "the bulk stream opens for writing")
+	got := libuser.write(int(fd), data)
+	_ = libuser.close(int(fd))
+	return int(got)
+}
+
+// read_some takes what the stream holds now, up to `out`, and answers the count.
+read_some :: proc "contextless" (n: int, out: []u8) -> int {
+	fd := libuser.open(conv_path(n, "data"), abi.O_RDONLY)
+	want(fd >= 0, "the bulk stream opens for reading")
+	got := libuser.read(int(fd), out)
+	_ = libuser.close(int(fd))
+	return int(max(got, 0))
+}
+
+bulk: [6144]u8
+sink: [2048]u8
+
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	_ = block
@@ -194,6 +216,62 @@ start :: proc "c" (block: ^abi.Args) {
 		want(libuser.write(fd, transmute([]u8)named) == i64(len(named)), "the dialled stream takes a write")
 		want(stream_read(acc) == named, "and the bytes arrive at the accepted end")
 		_ = libuser.close(fd)
+	}
+
+	// -- A transfer larger than the receive buffer ---------------------------
+	//
+	// The receive buffer is smaller than this, so the window shuts partway and
+	// a read is what reopens it. A small message never reaches that edge. Every
+	// byte crosses once and in order across it. The sender is held to the
+	// window, and the count it is told is the count that went. No byte the
+	// buffer could not take is acknowledged as if it had.
+	{
+		srv := clone()
+		ctl(srv, "announce 30", "a conversation announces for the bulk transfer")
+		cli := clone()
+		ctl(cli, "connect 10.0.2.15!30", "another connects for the bulk transfer")
+
+		acc := 0
+		{
+			fd := libuser.open(conv_path(srv, "listen"), abi.O_RDONLY)
+			want(fd >= 0, "the bulk listener's listen opens")
+			got := libuser.read(int(fd), read_buf[:])
+			_ = libuser.close(int(fd))
+			want(got > 0, "and answers the accepted conversation")
+			v, ok := number(string(read_buf[:int(got)]))
+			want(ok, "which is a number")
+			acc = v
+		}
+
+		for j in 0 ..< len(bulk) {
+			bulk[j] = u8(j)
+		}
+		sent := 0
+		recvd := 0
+		ordered := true
+		// Drain fully before each write. A write then always finds an open
+		// window, and never parks on this one thread that must also do the read.
+		for recvd < len(bulk) {
+			if sent < len(bulk) {
+				n := write_some(cli, bulk[sent:])
+				want(n > 0, "the bulk write moves at least one byte")
+				sent += n
+			}
+			for recvd < sent {
+				room := min(len(sink), sent - recvd)
+				m := read_some(acc, sink[:room])
+				want(m > 0, "the bulk read returns what was sent")
+				for k in 0 ..< m {
+					if sink[k] != u8(recvd + k) {
+						ordered = false
+					}
+				}
+				recvd += m
+			}
+		}
+		want(sent == len(bulk), "the whole blob was sent")
+		want(recvd == len(bulk), "and the whole blob arrived")
+		want(ordered, "every byte once and in order, across the window's edge")
 	}
 
 	libuser.exits("ok")
