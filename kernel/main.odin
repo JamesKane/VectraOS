@@ -83,6 +83,12 @@ bootloader_info_request := limine.Bootloader_Info_Request {
 }
 
 @(export, link_section = ".limine_requests")
+date_at_boot_request := limine.Date_At_Boot_Request {
+	id       = limine.DATE_AT_BOOT_REQUEST,
+	revision = 0,
+}
+
+@(export, link_section = ".limine_requests")
 firmware_type_request := limine.Firmware_Type_Request {
 	id       = limine.FIRMWARE_TYPE_REQUEST,
 	revision = 0,
@@ -207,6 +213,7 @@ kmain :: proc "c" () {
 	}
 
 	report_bootloader()
+	report_date()
 	report_cpus()
 	report_paging_mode()
 	report_kernel_layout()
@@ -513,6 +520,28 @@ draw_lamps :: proc "contextless" (memory: bool) {
 		{fb.PHOSPHOR, fb.CYAN, fb.AMBER, fb.PHOSPHOR},
 		{true, true, serial.present, memory},
 	)
+}
+
+/*
+report_date takes the date the bootloader knew and makes it the kernel's
+epoch. UEFI's clock reaches the kernel as seconds since 1970 in the
+Date-at-Boot response, on every board, with no driver; the tick counts on
+from there, and `/dev/time` reads and sets it. A nil response is a firmware
+with no clock, and the boot says so rather than run the date from 1970 --
+a write to `/dev/time` sets it afterwards, which is what `timesync` is for.
+*/
+report_date :: proc "contextless" () {
+	d := date_at_boot_request.response
+	if d == nil {
+		log_line(&klog, .Warn, "date: the bootloader gave none; /dev/time starts at 1970 until something sets it")
+		return
+	}
+	sched.set_boot_epoch(d.timestamp)
+	sink := begin(&klog)
+	libodin.put_str(&sink, "date: ")
+	libodin.put_uint(&sink, u64(d.timestamp))
+	libodin.put_str(&sink, " seconds since 1970 at boot, from the firmware's clock; the tick counts on")
+	emit(&klog, .Ok, &sink)
 }
 
 report_bootloader :: proc "contextless" () {
@@ -2418,6 +2447,33 @@ verify_kfs :: proc() {
 			vfs.chan_close(f2)
 		}
 		libodin.tally(&result, got == len(text) && string(back[:got]) == text, "and reads it back through a fresh open")
+
+		/*
+		Dates. `/dev/time` is the clock the bootloader's date started, and a
+		write stamps the file with it; the two things to prove are that the
+		clock knows a date at all and that kfs wrote it down. A second past
+		the start of 2020 is `a date` -- what the firmware hands over is
+		today's, and anything the check would accept below that is 1970.
+		*/
+		PLAUSIBLE :: u64(1_577_836_800) // 2020-01-01T00:00:00Z
+		clock: u64
+		if t, terr := vfs.open_path(ns, "/dev/time", vfs.O_RDONLY); libodin.tally(&result, terr == vfs.OK, "/dev/time opens") {
+			tline: [96]u8
+			tn, _ := vfs.chan_read(t, 0, tline[:])
+			vfs.chan_close(t)
+			for i in 0 ..< tn {
+				if tline[i] < '0' || tline[i] > '9' {
+					break
+				}
+				clock = clock * 10 + u64(tline[i] - '0')
+			}
+			libodin.tally(&result, clock > PLAUSIBLE, "and reads a date, from the firmware's clock at boot")
+		}
+		if bf, brerr := vfs.open_path(ns, "/usr/glenda/boots", vfs.O_RDONLY); brerr == vfs.OK {
+			battr, bsrr := vfs.chan_stat(bf)
+			vfs.chan_close(bf)
+			libodin.tally(&result, bsrr == vfs.OK && battr.mtime_sec > PLAUSIBLE && battr.mtime_sec <= clock + 5, "and the file just written carries that date as its mtime")
+		}
 
 		// What FAT could not keep.
 		if p, perr := vfs.create_path(ns, "/usr/glenda/private", vfs.O_RDWR, 0o600); perr == vfs.OK {

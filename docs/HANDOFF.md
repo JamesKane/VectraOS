@@ -552,7 +552,11 @@ step each stopped at. Both are done now, as a root of their own:
                        across directories, and `mv` uses it; EXDEV or a
                        server that cannot (memfs) makes `mv` copy. DEVTOOLS
                        7's `libposix` has the real thing to wrap.
-    owners             DONE, FLEET 2. Dates wait on FLEET 3's clock.
+    owners, dates      DONE. Owners in FLEET 2; dates from `/dev/time`,
+                       which the bootloader's Date-at-Boot starts with no
+                       driver and kfs stamps `mtime` from. FLEET 3's
+                       `timesync` and an RTC driver later *set* a clock
+                       that already exists, rather than each inventing one.
     a journal, a check anything that must survive a crash mid-write. No
                        plan's function waits on it, but a fleet's root
                        disk (FLEET 3) is the first thing that would, so

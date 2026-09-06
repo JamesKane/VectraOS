@@ -1055,6 +1055,65 @@ timer_hz: u64
 @(private)
 timer_count: u32
 
+// -- The clock ---------------------------------------------------------------
+
+/*
+The wall clock is an epoch and the tick. `boot_epoch` is the second since
+1970 at which the tick count was zero -- the date the bootloader handed
+over, or what a write to `/dev/time` later made it -- and everything after
+is ticks divided by the rate. Nothing here reads a clock chip: a real-time
+clock driver, when a board has one, is one more setter of the epoch, and so
+is `timesync` over the network. Volatile, because the setter is a syscall
+on one core and the reader a tick on another.
+*/
+@(private)
+boot_epoch: i64
+
+// set_boot_epoch sets the second since 1970 that tick zero stood at. A
+// caller that knows the time *now* subtracts the uptime first, which
+// `set_wall_clock` does for it.
+set_boot_epoch :: proc "contextless" (epoch: i64) {
+	intrinsics.volatile_store(&boot_epoch, epoch)
+}
+
+// set_wall_clock makes `now` the current second since 1970, by moving the
+// epoch under the tick count rather than the count itself, so nothing that
+// measures in ticks sees a jump.
+set_wall_clock :: proc "contextless" (now: i64) {
+	hz := tick_hz()
+	if hz == 0 {
+		set_boot_epoch(now)
+		return
+	}
+	set_boot_epoch(now - i64(ticks() / hz))
+}
+
+// tick_hz is the timer's rate, ticks per second, or zero before it runs.
+tick_hz :: proc "contextless" () -> u64 {
+	return intrinsics.volatile_load(&timer_hz)
+}
+
+// uptime_ns is the nanoseconds since boot, from the tick and its rate.
+uptime_ns :: proc "contextless" () -> u64 {
+	hz := tick_hz()
+	if hz == 0 {
+		return 0
+	}
+	return ticks() * (1_000_000_000 / hz)
+}
+
+/*
+wall_clock is the time now: whole seconds since 1970, and the nanoseconds
+into that second. Zero seconds is `nobody has told this machine the date`,
+which a caller may say rather than print 1970.
+*/
+wall_clock :: proc "contextless" (sec: ^i64, nsec: ^i64) {
+	epoch := intrinsics.volatile_load(&boot_epoch)
+	up := uptime_ns()
+	sec^ = epoch + i64(up / 1_000_000_000)
+	nsec^ = i64(up % 1_000_000_000)
+}
+
 /*
 start_timer arms the local timer and lets interrupts in for the first time.
 

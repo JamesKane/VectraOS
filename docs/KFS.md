@@ -35,8 +35,12 @@ level for the price of three blocks rather than a thousand writes.
 The qid's path is the inode number and its version the inode's, which moves
 on every write, so a client that cached a file can tell it changed. The mode
 is the inode's, Plan 9's permission bits and directory bit, kept as given.
-`mtime` is a field with nothing to fill it: the kernel has no clock that
-knows the date.
+`mtime` is the second since 1970 at the last write, read from `/dev/time`
+as a file is made, written or truncated, and answered as every date in a
+`Tgetattr` -- kfs keeps one. The clock it reads is the bootloader's date
+counted forward by the tick, so a file has a real date from the first boot
+with no clock driver; a volume from before this has zeros there, and a zero
+is still `nobody wrote a date`.
 
 ## Write-through, in an order
 
@@ -111,7 +115,6 @@ would, and checks that `$home` is `/usr/glenda`.
 
 - **A journal**, and a check program. The write order above is the whole
   crash story.
-- **Dates.** `mtime` is written as zero.
 - **Rename across servers.** Within kfs, `Trename` moves an entry and
   keeps the inode, across directories, and `mv` uses it; a name on another
   server answers EXDEV and `mv` copies and removes, as it does for a server

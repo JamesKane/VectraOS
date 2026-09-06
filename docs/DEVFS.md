@@ -557,9 +557,23 @@ for everybody. That is correct while there is one screen and one keyboard, and
 it stops being correct the day `/dev` means something different in two
 namespaces.
 
-**No `/dev/random`, `/dev/draw`, `/dev/mouse` or `/dev/kbd`.** Each is a row in
-`DEV_NODES` and a case in two switches, which is the path `fb`, `fbctl`,
-`scancode` and `eia0` walked. `draw` is now a protocol question rather than a
+**`/dev/random`, `/dev/mouse` and `/dev/time` walked the path `fb`, `fbctl`,
+`scancode` and `eia0` walked -- a row in `DEV_NODES` and a case in two
+switches.** `random` reads the virtio generator. `time` is Plan 9's: one
+line, `seconds nanoseconds ticks hz`, the wall clock since 1970 and the tick
+since boot with its rate, so a reader takes the rate and the epoch once and
+counts on its own after; every read answers now, whatever its offset, because
+it is a value rather than a file with a length. A write of seconds sets the
+clock to that second, moving the epoch under the tick rather than the tick
+under the epoch, so nothing that counts in ticks sees a jump -- that is what
+`timesync` writes, and what a real-time clock driver would write at boot on
+a board with one. The clock's first setting is the bootloader's: Limine's
+Date-at-Boot request hands over UEFI's clock as seconds since 1970 on every
+board, with no driver, and `kmain` says so on the boot line. Seconds of zero
+is a machine nobody has told the date, which a reader may say instead of
+printing 1970. `kfs` stamps `mtime` from it.
+
+**No `/dev/draw` or `/dev/kbd`.** `draw` is a protocol question rather than a
 memory question, because `/dev/fb` already serves the memory. And `kbd` —
 Plan 9's *cooked* keyboard file, runes with modifiers spelled out — is a
 userland `kbdfs`'s to serve over `/dev/scancode`, not this server's to grow.

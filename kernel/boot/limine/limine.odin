@@ -125,6 +125,33 @@ Bootloader_Info_Request :: struct {
 	response: ^Bootloader_Info_Response,
 }
 
+// -- Date at boot ------------------------------------------------------------
+
+/*
+The wall-clock date the firmware knew when it handed over: seconds since
+the Unix epoch, from UEFI's GetTime on every board. It is the machine's one
+free time source -- no driver, no network -- and the kernel's clock counts
+forward from it. Absent (`response` nil) on a firmware with no clock, in
+which case the date is what a write to `/dev/time` later makes it.
+*/
+DATE_AT_BOOT_REQUEST :: [4]u64 {
+	COMMON_MAGIC_1,
+	COMMON_MAGIC_2,
+	0x502746e184c088aa,
+	0xfbc5ec83e6327893,
+}
+
+Date_At_Boot_Response :: struct {
+	revision:  u64,
+	timestamp: i64, // Seconds since 1970-01-01T00:00:00Z
+}
+
+Date_At_Boot_Request :: struct {
+	id:       [4]u64,
+	revision: u64,
+	response: ^Date_At_Boot_Response,
+}
+
 // -- Firmware type -----------------------------------------------------------
 
 FIRMWARE_TYPE_REQUEST :: [4]u64 {

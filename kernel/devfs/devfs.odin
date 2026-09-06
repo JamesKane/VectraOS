@@ -62,9 +62,11 @@ import "kernel:drivers/virtio"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
 import "kernel:mnt"
+import "kernel:sched"
 import "kernel:sync"
 import "kernel:mem"
 import "kernel:vfs"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 /*
@@ -81,6 +83,7 @@ Dev_Kind :: enum u8 {
 	Null, // Writes vanish, reads are at end of file
 	Zero, // Writes vanish, reads are zeroes and never end
 	Random, // Reads are entropy from virtio-rng; writes vanish
+	Time, // The clock: reads say now, a write of seconds sets it. See `time_read`
 	Fb, // The raw framebuffer: pixel bytes at an offset. See `fbdev.odin`
 	Fbctl, // The framebuffer's geometry: reads report, nothing to command yet
 		Scancode, // The keyboard before translation, diverted while open. See `tap.odin`
@@ -118,6 +121,7 @@ DEV_NODES := [?]Dev_Node {
 	{name = "null", parent = 0, kind = .Null},
 	{name = "zero", parent = 0, kind = .Zero},
 	{name = "random", parent = 0, kind = .Random},
+	{name = "time", parent = 0, kind = .Time},
 	{name = "fb", parent = 0, kind = .Fb},
 	{name = "fbctl", parent = 0, kind = .Fbctl},
 		{name = "scancode", parent = 0, kind = .Scancode},
@@ -1063,6 +1067,34 @@ devfs_read :: proc "contextless" (
 		}
 		reply^ = vectra9.Rread{data = buf[:got]}
 
+	case .Time:
+		/*
+		One line, now: `seconds nanoseconds ticks hz`, Plan 9's /dev/time.
+		Seconds and nanoseconds are the wall clock since 1970; ticks and hz
+		are the count since boot and its rate, so a reader takes the rate
+		and the epoch once and counts on its own after. Every read answers
+		the current line whatever its offset -- this is a value, not a file
+		with a length. Seconds of zero is a machine nobody has told the
+		date, which a reader may say instead of printing 1970.
+		*/
+		sec, nsec: i64
+		sched.wall_clock(&sec, &nsec)
+		line: [96]u8
+		sink := libodin.sink_from(line[:])
+		// Unsigned on the wire: a date is at or after 1970, and the
+		// nanoseconds are a remainder.
+		libodin.put_uint(&sink, u64(max(sec, 0)))
+		libodin.put_str(&sink, " ")
+		libodin.put_uint(&sink, u64(nsec))
+		libodin.put_str(&sink, " ")
+		libodin.put_uint(&sink, sched.ticks())
+		libodin.put_str(&sink, " ")
+		libodin.put_uint(&sink, sched.tick_hz())
+		libodin.put_str(&sink, "\n")
+		text := libodin.str(&sink)
+		n := copy(buf[:room], text)
+		reply^ = vectra9.Rread{data = buf[:n]}
+
 	case .Consctl:
 		reply^ = vectra9.Rread{data = consctl_report(t, m.offset, buf[:room])}
 
@@ -1263,6 +1295,28 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 		// Raw bytes out the wire, and no glyph anywhere. A caller that wants
 		// a screen has `/dev/cons`. See `tap.odin`.
 		reply^ = vectra9.Rwrite{count = u32(eia0_write(t, m.data))}
+
+	case .Time:
+		// A write of seconds since 1970 sets the clock to that second, now.
+		// The epoch moves under the tick rather than the tick under the
+		// epoch, so nothing counting in ticks sees a jump. This is what
+		// `timesync` writes, from the file server or NTP, and what a
+		// real-time clock driver would write at boot on a board with one.
+		sec: i64
+		seen := false
+		for c in m.data {
+			if c < '0' || c > '9' {
+				break
+			}
+			sec = sec * 10 + i64(c - '0')
+			seen = true
+		}
+		if !seen {
+			reply^ = vectra9.error_reply(vectra9.EINVAL)
+			return
+		}
+		sched.set_wall_clock(sec)
+		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 
 	case .Null, .Zero, .Random:
 		// Accepted and discarded. A write to `/dev/random` could stir the

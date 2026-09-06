@@ -49,6 +49,7 @@ Node :: struct {
 	mode:     u32, // The inode's, permission bits and DMDIR
 	size:     u64,
 	version:  u32,
+	mtime:    u64, // The inode's: seconds since 1970 at the last write, or zero
 	parent:   ^Node,
 	children: [dynamic]^Node,
 	loaded:   bool,
@@ -178,6 +179,7 @@ refresh :: proc(n: ^Node, in_: ^Inode) {
 	n.mode = in_.mode
 	n.size = in_.size
 	n.version = in_.version
+	n.mtime = in_.mtime
 	n.dir = in_.mode & DMDIR != 0
 	n.owner = in_.owner
 	n.olen = in_.olen
@@ -213,6 +215,33 @@ wanted :: proc(flags: u32) -> u32 {
 		return 6
 	}
 	return 4
+}
+
+/*
+now_seconds is the wall clock, whole seconds since 1970, read from
+`/dev/time` -- the kernel's clock, which the bootloader's date started and
+`timesync` keeps. Zero when the file cannot be read, or when nobody has
+told this machine the date, and a zero `mtime` is what it always was.
+Opened per call: a stamp is a write's price to pay, and a held descriptor
+on a kernel device would be one more thing a server has to give back.
+*/
+now_seconds :: proc "contextless" () -> u64 #no_bounds_check {
+	fd := libuser.open("/dev/time", abi.O_RDONLY)
+	if fd < 0 {
+		return 0
+	}
+	line: [96]u8
+	n := libuser.read(int(fd), line[:])
+	_ = libuser.close(int(fd))
+	sec: u64
+	for i in 0 ..< int(n) {
+		c := line[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		sec = sec * 10 + u64(c - '0')
+	}
+	return sec
 }
 
 clone_string :: proc(s: string) -> string {
@@ -396,6 +425,7 @@ make_child :: proc(d: ^Node, name: string, dir: bool, perm: u32, owner: string) 
 	in_ := Inode {
 		mode    = perm & 0o777,
 		version = 1,
+		mtime   = now_seconds(),
 	}
 	in_.olen = copy(in_.owner[:], owner)
 	if dir {
@@ -527,6 +557,7 @@ file_write :: proc(n: ^Node, off: u64, data: []u8) -> (put: int, ok: bool) #no_b
 	if off + u64(put) > in_.size {
 		in_.size = off + u64(put)
 	}
+	in_.mtime = now_seconds()
 	in_.version += 1
 	if !put_inode(n.ino, &in_) {
 		return put, false
@@ -568,6 +599,7 @@ truncate :: proc(n: ^Node, want: u64) -> bool {
 		}
 	}
 	in_.size = want
+	in_.mtime = now_seconds()
 	in_.version += 1
 	if !put_inode(n.ino, &in_) {
 		return false
@@ -924,12 +956,17 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 			return
 		}
 		attr := vectra9.Rgetattr {
-			valid   = m.request_mask & 0x000007FF,
-			qid     = qid_of(n),
-			mode    = mode_of(n),
-			nlink   = n.dir ? 2 : 1,
-			size    = n.dir ? 0 : n.size,
-			blksize = BLOCK,
+			valid     = m.request_mask & 0x000007FF,
+			qid       = qid_of(n),
+			mode      = mode_of(n),
+			nlink     = n.dir ? 2 : 1,
+			size      = n.dir ? 0 : n.size,
+			blksize   = BLOCK,
+			// The one date kfs keeps: the last write's second. The others
+			// are given as it too, rather than as 1970 beside a real one.
+			mtime_sec = n.mtime,
+			atime_sec = n.mtime,
+			ctime_sec = n.mtime,
 		}
 		attr.blocks = (attr.size + 511) / 512
 		reply^ = attr
