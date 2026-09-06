@@ -50,11 +50,13 @@ The arithmetic is `core:unicode/utf8`'s, which compiles freestanding and is
 allocator-free. What `sys/libkey` adds is the half a standard library cannot
 have: which numbers Plan 9 gives to which keys.
 
-**Only ASCII is ever stored.** A rune this line does not act on is dropped
-rather than inserted: `sys/libfont` is an 8x16 table of 7-bit characters, so
-there is no glyph for anything else and a caller that drew one would draw a
-question mark of its own invention. What that costs is named in
-`docs/DRAW.md` section 17.
+**A rune past ASCII is stored, its UTF-8 inserted at the cursor.** It used to
+be dropped -- `sys/libfont` was an 8x16 table of 7-bit characters and no
+caller could draw the rest. That is no longer so: the font reads its ranges
+from `/lib/font`, the terminal holds runes and draws them, and a typed name
+with an accent in it reaches the shell as the bytes it is. The cursor moves by
+whole runes, an erase takes a whole rune, and `cursor` answers a column so a
+caret lands on a cell and not mid-rune.
 */
 package libedit
 
@@ -114,7 +116,13 @@ erase_back :: proc "contextless" (line: []u8, key: u8) -> int #no_bounds_check {
 		}
 		return n - q
 	case BACKSPACE, DEL:
-		return 1
+		// One rune, not one byte: step back over any UTF-8 continuation bytes
+		// to the lead, so an accented letter comes off whole.
+		q := n - 1
+		for q > 0 && line[q] & 0xC0 == 0x80 {
+			q -= 1
+		}
+		return n - q
 	}
 	return 0
 }
@@ -220,10 +228,12 @@ put :: proc "contextless" (l: ^Line, b: u8) -> Result #no_bounds_check {
 /*
 put_rune_byte collects one byte of a rune and acts on it once it is whole.
 
-**A rune that is not motion is dropped**, which is the honest answer while
-`sys/libfont` is an 8x16 table of 7-bit characters. Storing one would put bytes
-in a line that no caller can draw, and a caller that invented a glyph for it
-would be inventing the layout too. `docs/DRAW.md` section 17 owns the cost.
+The arrows and the home and end keys are `rio`'s: runes in the private Unicode
+space, and they move the cursor by a whole rune -- past an accented letter in
+one step, not one of its bytes. **Every other rune is stored**, its UTF-8
+inserted at the cursor, now that `sys/libfont` draws past ASCII and the
+terminal holds runes: a name with an accent typed at a prompt reaches the
+shell as the bytes it is.
 
 A byte that cannot start or continue a sequence resets the collector and is
 dropped with it. That is `chartorune` answering `Runeerror` and moving on: a
@@ -247,7 +257,8 @@ put_rune_byte :: proc "contextless" (l: ^Line, b: u8) -> Result #no_bounds_check
 	if !utf8.full_rune_in_bytes(l.pend[:l.pend_n]) {
 		return .Pending
 	}
-	r, _ := utf8.decode_rune_in_bytes(l.pend[:l.pend_n])
+	r, size := utf8.decode_rune_in_bytes(l.pend[:l.pend_n])
+	rn := l.pend_n
 	l.pend_n = 0
 
 	switch r {
@@ -258,19 +269,47 @@ put_rune_byte :: proc "contextless" (l: ^Line, b: u8) -> Result #no_bounds_check
 		l.pos = l.n
 		return .Edited
 	case libkey.KLEFT:
+		// Back over the previous rune: skip its continuation bytes to the lead.
 		if l.pos > 0 {
-			l.pos -= 1
+			q := l.pos - 1
+			for q > 0 && l.buf[q] & 0xC0 == 0x80 {
+				q -= 1
+			}
+			l.pos = q
 		}
 		return .Edited
 	case libkey.KRIGHT:
+		// Forward over the rune at the cursor.
 		if l.pos < l.n {
-			l.pos += 1
+			_, fwd := utf8.decode_rune_in_bytes(l.buf[l.pos:l.n])
+			l.pos += max(fwd, 1)
 		}
 		return .Edited
 	}
-	// Every other rune, including the ones a keyboard has and this line has no
-	// use for. Nothing changed, so nothing has to be drawn again.
-	return .Pending
+
+	// A byte that made no valid rune is dropped, not stored as a box.
+	if r == utf8.RUNE_ERROR && size == 1 {
+		return .Pending
+	}
+
+	// A keyboard key with no character -- an arrow this line does not move on,
+	// a function key, a modifier -- is a rune in Plan 9's private space and is
+	// not text. It moves nothing and is not stored. `KF` begins that space and
+	// `0xF8FF` ends the block it uses, above which are real runes again.
+	if r >= libkey.KF && r <= 0xF8FF {
+		return .Pending
+	}
+
+	// Every other rune goes in at the cursor, its UTF-8 bytes -- the ones still
+	// in `pend` -- opened for the way `put` opens one byte for an ASCII insert.
+	if l.n + rn > len(l.buf) {
+		return .Full
+	}
+	copy(l.buf[l.pos + rn:l.n + rn], l.buf[l.pos:l.n])
+	copy(l.buf[l.pos:l.pos + rn], l.pend[:rn])
+	l.n += rn
+	l.pos += rn
+	return .Edited
 }
 
 // text is the line so far, and clear empties it.
@@ -278,9 +317,22 @@ text :: proc "contextless" (l: ^Line) -> string #no_bounds_check {
 	return string(l.buf[:l.n])
 }
 
-// cursor is where the next character goes, as an index into `text`.
-cursor :: proc "contextless" (l: ^Line) -> int {
-	return l.pos
+// cursor is where the next character goes, as a *column* -- the count of
+// runes before it, not the byte offset `pos` holds. A caller draws one glyph
+// per rune, so a caret at an accented letter lands on its cell and not a byte
+// or two past it.
+cursor :: proc "contextless" (l: ^Line) -> int #no_bounds_check {
+	c := 0
+	i := 0
+	for i < l.pos {
+		_, size := utf8.decode_rune_in_bytes(l.buf[i:l.pos])
+		if size <= 0 {
+			break
+		}
+		i += size
+		c += 1
+	}
+	return c
 }
 
 clear :: proc "contextless" (l: ^Line) {

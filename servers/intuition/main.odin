@@ -1165,8 +1165,13 @@ type_at :: proc "contextless" (w: int, b: u8) #no_bounds_check {
 	if libedit.put(&edit[w], b) != .Done {
 		return
 	}
-	for c in libedit.text(&edit[w]) {
-		libuser.ring_push(&kbd[w], u8(c))
+	// The line's own bytes, not its runes: `for c in string` would iterate
+	// runes and `u8(c)` would truncate a multi-byte one, so a name with an
+	// accent in it would lose all but the low byte. `/dev/cons` delivers the
+	// UTF-8 as it is.
+	line := libedit.text(&edit[w])
+	for i in 0 ..< len(line) {
+		libuser.ring_push(&kbd[w], line[i])
 	}
 	// The newline goes with the line, because it is what a reader stops at
 	// and what `/dev/cons` always delivered. `libedit` does not store it,

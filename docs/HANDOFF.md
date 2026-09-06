@@ -627,8 +627,8 @@ here, and `segbrk` and `segdetach` cover every give-back a caller today can
 act on. So it waits for a caller that needs the pages back and the addresses
 kept.
 
-**The font past 128 glyphs: the loader is built, the renderers are being
-wired.** Plan 9's shape, not a wider table: `/lib/font/default.font` names
+**The font past 128 glyphs: done, every renderer wired.** Plan 9's shape, not
+a wider table: `/lib/font/default.font` names
 rune ranges and the subfont file each is in, and `sys/libfont` reads them at
 run time -- the first data this system loads rather than bakes -- into a
 `Loader` that keeps a few subfonts by recency and answers a rune's cell,
@@ -667,10 +667,20 @@ name shows it. `tests/mui` bakes a face and checks the atlas names Latin-1 and
 refuses a CJK rune; the terminal's prompt and echo, drawn through the new
 path, stay green on the glass.
 
-Left: **`sys/libedit`** still drops a rune it cannot store -- the typed line
-is ASCII, though the terminal that draws it now shows runes. That is the last
-piece, and `docs/WEB.md` step 1, the reader of the world's pages, is what
-wants it all whole.
+And **`sys/libedit` stores a typed rune** rather than dropping it: its UTF-8
+goes in at the cursor, the cursor and an erase move by whole runes, and
+`cursor` answers a column so a caret lands on a cell. A keyboard key with no
+character -- an arrow, a function key -- is still dropped, being a rune in
+Plan 9's private space and not text. `servers/intuition` delivers the cooked
+line as its bytes, not its runes (the byte-truncation bug that hid while only
+ASCII was stored). The window line discipline's self-test types `café`, steps
+a left arrow over the accent as one rune, and erases it whole.
+
+**So the font past ASCII is whole through the tree**: the kernel console and
+panic screen, the draw server's titles, `sys/libmui` labels, the terminal's
+output and its typed line all read `/lib/font` and draw or store runes.
+`docs/WEB.md` step 1, the reader of the world's pages, has the text stack it
+was waiting on.
 
 **Deferred, with the reason written down: priority inheritance.** A lock hands
 off to the best *waiter*. But a low-priority *holder* still delays a

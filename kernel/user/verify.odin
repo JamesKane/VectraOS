@@ -5221,19 +5221,38 @@ verify_edit :: proc(r: ^Result, cons: ^vfs.Chan) #no_bounds_check {
 		"and Kend what ^E does")
 
 	/*
-	And a rune with no glyph does not reach the line.
+	And a key with no character does not reach the line.
 
-	`sys/libfont` is an 8x16 table of 7-bit characters, so there is nothing to
-	draw for anything else and nothing that stores it could be shown. `Kup` is
-	a real key that this line has no use for, and it leaves no trace.
+	`Kup` is a real key this line has no use for -- a rune in Plan 9's private
+	space, not text -- so it moves nothing and stores nothing. A printable rune
+	past ASCII is a different thing, and the checks below store one.
 	*/
 	typed_runes(r, cons, "a\uF00Eb\n", "ab\n",
-		"a rune the line has no use for leaves nothing behind, because it has no glyph either")
+		"a key the line has no use for leaves nothing behind, because it is a key and not a character")
 
 	// And a byte that cannot begin a rune is dropped rather than stored, which
 	// is `chartorune` answering Runeerror and making progress.
 	typed_reads(r, cons, {'a', 0x80, 'b', '\n'}, "ab\n",
 		"and a byte that cannot start a rune goes the same way")
+
+	/*
+	And a printable rune past ASCII *is* stored, its UTF-8 reaching the shell
+	as the bytes it is. The font reads its ranges from `/lib/font` and the
+	window draws runes now, so a name with an accent typed at a prompt is no
+	longer dropped for want of a glyph. `\u00E9` is U+00E9, two bytes the compiler
+	encodes; the read gives them back whole.
+	*/
+	typed_runes(r, cons, "caf\u00E9\n", "caf\u00E9\n",
+		"an accented letter is stored and read back, its UTF-8 whole")
+
+	// The cursor steps over a multi-byte rune as one, not two: a left arrow
+	// past `\u00E9` lands before it, and a character typed there goes in ahead of it.
+	typed_runes(r, cons, "caf\u00E9\uF011x\n", "cafx\u00E9\n",
+		"a left arrow steps over an accented letter as one rune")
+
+	// And a backspace takes the whole rune off, both its bytes, not one.
+	typed_runes(r, cons, "caf\u00E9\b\n", "caf\n",
+		"a backspace takes an accented letter off whole")
 
 	/*
 	And two lines typed together come back one at a time.
