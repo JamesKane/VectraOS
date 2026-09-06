@@ -5906,8 +5906,9 @@ verify_ctl :: proc(
 	this screen the *server* draws about a client's window. A client uploads
 	its own glyphs and blits them, which is section 5's answer to a font verb.
 	A title is not the client's text, so it needed no verb: the server links
-	`sys/libfont` -- the same 8x16 table the kernel console draws with -- and
-	stores the letters into memory the client cannot reach.
+	`sys/libfont` -- the baked ASCII table and, past it, a `Loader` it fills
+	from `/lib/font`, the same font the kernel console loads -- and stores the
+	letters into memory the client cannot reach.
 
 	The sensor is the band above this window's client area -- border, bar and
 	the well's lip -- taken across the window's own width, which `win_right`
@@ -5935,6 +5936,21 @@ verify_ctl :: proc(
 		r,
 		bar_has(s, bx, by, bw, bh, ink),
 		"and the bar says so, in the font the draw server has and never gave a verb to",
+	)
+
+	/*
+	And a name past ASCII draws too, out of a subfont the server loaded from
+	`/lib/font` rather than the baked table. The name is nothing but accented
+	letters, so a hit is a glyph the old byte-wide title path could not have
+	drawn: every byte of a `é` is past the baked table's last rune, and the
+	code that skipped a byte it did not know would have left the bar blank.
+	*/
+	_, u8err := vfs.chan_write(cfd, 0, bytes_of("name ééé\n"))
+	check(r, u8err == vfs.OK, "the client names its window in runes past ASCII")
+	check(
+		r,
+		bar_has(s, bx, by, bw, bh, ink),
+		"and the bar draws them, decoded UTF-8 and loaded from a subfont",
 	)
 
 	_, eerr := vfs.chan_write(cfd, 0, bytes_of("name\n"))

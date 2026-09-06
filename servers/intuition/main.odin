@@ -811,8 +811,11 @@ bar_show :: proc "contextless" (win: ^Window) {
 }
 
 /*
-title_text draws the name across the bar, out of `sys/libfont` -- the one 8x16
-table the kernel console and every ring 3 program already link.
+title_text draws the name across the bar, out of `sys/libfont`: the baked
+ASCII table every ring 3 program links, and past it a `Loader` filled from
+`/lib/font` at startup -- the same font the kernel console loads. A name is
+UTF-8, so `title_text` decodes a rune at a time and asks the loader for its
+cell; ASCII comes from the baked table, an accented letter from a subfont.
 
 **This is the font `docs/DRAW.md` said the server had none of, and it did not
 make one a protocol question.** A client still uploads its own glyphs as images
@@ -836,19 +839,29 @@ title_text :: proc "contextless" (win: ^Window) #no_bounds_check {
 	tx := bx + FRAME_PAD + GADGET + 2
 	ty := by + (bh - libfont.FONT_HEIGHT) / 2
 	right := bx + bw - FRAME_PAD - 2 * GADGET - 4
-	for i in 0 ..< win.title_n {
-		gx := tx + i * libfont.FONT_WIDTH
+	// The name is UTF-8, so a glyph is one rune and not one byte: the column
+	// steps per rune, and a rune past ASCII comes from a subfont the loader
+	// keeps. A rune no range holds draws nothing and still takes its column.
+	cell: [libfont.FONT_HEIGHT]u8
+	col := 0
+	i := 0
+	for i < win.title_n {
+		r, size := utf8.decode_rune(win.title[i:win.title_n])
+		if size <= 0 {
+			break
+		}
+		i += size
+		gx := tx + col * libfont.FONT_WIDTH
+		col += 1
 		if gx >= right {
 			return
 		}
-		ch := win.title[i]
-		if ch < libfont.FONT_FIRST || ch > libfont.FONT_LAST {
+		if _, ok := libfont.loader_glyph(&title_font, r, cell[:]); !ok {
 			continue
 		}
-		rows := &libfont.font_8x16[int(ch) - libfont.FONT_FIRST]
 		wide := min(libfont.FONT_WIDTH, right - gx)
-				for line in 0 ..< libfont.FONT_HEIGHT {
-			bits := rows[line]
+		for line in 0 ..< libfont.FONT_HEIGHT {
+			bits := cell[line]
 			dst := win.pixels[(ty + line) * win.stride:]
 			for c in 0 ..< wide {
 				if bits & (0x80 >> u8(c)) != 0 {
@@ -1385,6 +1398,31 @@ win_h: int
 // attach is a claim on the file rather than a copy of it.
 fb_fd: int
 
+// The font past ASCII, for a window's name. A `Loader` is tens of kilobytes
+// of subfont cache, so it is a global rather than a thing on a thread's
+// stack. `title_open` fills it once; a title with a rune past ASCII in it
+// draws through it, and an empty one draws the baked table alone.
+title_font: libfont.Loader
+
+// title_read is the loader's I/O: the whole of `path` into `into`, or zero.
+title_read :: proc "contextless" (data: rawptr, path: string, into: []u8) -> int {
+	_ = data
+	fd := libuser.open(path, abi.O_RDONLY)
+	if fd < 0 {
+		return 0
+	}
+	at := 0
+	for at < len(into) {
+		n := libuser.read(int(fd), into[at:])
+		if n <= 0 {
+			break
+		}
+		at += int(n)
+	}
+	_ = libuser.close(int(fd))
+	return at
+}
+
 
 
 fids: libuser.Fid_Table
@@ -1472,6 +1510,10 @@ start :: proc "c" (block: ^abi.Args) {
 		windows_init()
 	current_ws = 1
 	rules_load()
+	// The font past ASCII, for names with an accent in them. A failure is not
+	// fatal: `title_text` falls back to the baked table, which is every
+	// window's name until one carries a rune past it.
+	_ = libfont.loader_open(&title_font, "/lib/font/default.font", title_read, nil)
 
 	// The image pool, one segment before any window store, so it is placed
 	// early and never has to grow. See `Image`.

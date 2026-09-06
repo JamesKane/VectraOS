@@ -640,7 +640,11 @@ loader. The **kernel console** now draws through it: `console.use_font` opens
 `kernel/main` gives it, and `draw_glyph` takes a rune and decodes UTF-8 --
 `verify_console_font` draws an accented letter to a scratch surface and reads
 the ink back. The early-boot log and the panic screen stay ASCII and wait on
-no load. Left: the draw server's title, `sys/libmui`'s glyph images, and
+no load. The **draw server's title** draws through it too: `servers/intuition`
+fills a `Loader` from `/lib/font` at startup and `title_text` decodes the
+name's UTF-8 a rune at a time, so a window named with an accent in it draws
+rather than dropping the byte -- the kernel draw self-test names a window
+`ééé` and reads the ink back. Left: `sys/libmui`'s glyph images, and
 `sys/libedit`, which still drops a rune it cannot draw. `docs/WEB.md` step 1,
 the reader of the world's pages, is what wants it whole.
 
