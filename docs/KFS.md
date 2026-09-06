@@ -180,6 +180,8 @@ would, and checks that `$home` is `/usr/glenda`.
 - **Groups.** A file has an owner (bytes 96 to 123 of the inode, the user
   that made it) and a mode the server checks against the attaching user,
   but no group; `/adm/users` is not read.
-- **A bigger cache, or a write-back one.** Write-through costs a device
-  request per changed block, which a boot of a few hundred writes does not
-  notice.
+- **A write-back cache in normal running.** A transaction is write-back
+  within itself -- its blocks are held and land at commit -- but between
+  transactions the cache is dropped, so a block touched by two requests is
+  read twice. A cache that survived across requests would save that, at
+  the cost of knowing which of its blocks a crash may not have committed.

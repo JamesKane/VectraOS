@@ -561,15 +561,21 @@ step each stopped at. Both are done now, as a root of their own:
                        transaction, its writes held and landed through a
                        forty-block journal all at once, so a stop leaves
                        all of them or none; a mount replays a commit a stop
-                       interrupted. Holding writes back is what made the
-                       32-slot cache unsafe, and the transaction's overlay
-                       -- reads answer from the request's own copy first --
-                       is what fixed it. `kfs -c` still marks and sweeps
-                       for a volume from before, and the boot runs both
-                       controls: a leak the check must reclaim, and a
-                       commit faked as stopped after its record that
-                       replay must finish. Left: a write barrier between
-                       the log and the header, a board driver's to give.
+                       interrupted. `kfs -c` still marks and sweeps for a
+                       volume from before, and the boot runs both controls:
+                       a leak the check must reclaim, and a commit faked as
+                       stopped after its record that replay must finish.
+    the cache          DONE. 256 blocks, a megabyte, 32 sets of 8 ways,
+                       LRU -- was 32 direct-mapped, where an inode block and
+                       a data block that shared a residue evicted each other
+                       (a probe reads eight of a set twice: 16 disk reads of
+                       16 became 8). Held on the heap, since a megabyte will
+                       not fit a program's static image; the transaction's
+                       overlay is what lets its writes be held safely.
+                       Left in kfs: a write barrier between the log and the
+                       header (a board driver's to give), and a cache that
+                       survives across requests rather than being dropped
+                       at each transaction's end.
 
 **One way to defer the largest of these.** A model's weights are read,
 not written, and `/lib` is bound from the FAT system partition the host

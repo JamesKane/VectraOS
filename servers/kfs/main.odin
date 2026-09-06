@@ -110,6 +110,13 @@ start :: proc "c" (block: ^abi.Args) {
 		name = args[1]
 	}
 
+	// The cache is a megabyte on the heap, made before the first block is
+	// read; the static image has no room for it.
+	if !cache_init() {
+		libuser.eprint("kfs: no memory for the block cache\n")
+		libuser.exits("cache")
+	}
+
 	fd := libuser.open(device, abi.O_RDWR)
 	if fd < 0 {
 		libuser.eprint("kfs: can't open ", device, ": ", libuser.errstr(fd), "\n")
@@ -158,6 +165,22 @@ start :: proc "c" (block: ^abi.Args) {
 				"kfs -t ", device,
 				jok ? ": journal control passed -- a commit stopped after its record was replayed onto block " : ": JOURNAL CONTROL FAILED at block ",
 				itoa_u32(jblock), "\n",
+			)
+			// What the cache did across the mount, the check and the two
+			// controls: the check reads every inode block and directory
+			// block more than once, so this is a fair measure of it.
+			total := cache_hits + cache_misses
+			pct := total == 0 ? u64(0) : cache_hits * 100 / total
+			libuser.eprint(
+				"kfs -t ", device, ": cache ", itoa_u32(u32(cache_hits)), " hits, ",
+				itoa_u32(u32(cache_misses)), " misses (", itoa_u32(u32(pct)), "% hit)\n",
+			)
+			// And the one property a hit rate on a small volume cannot show:
+			// eight blocks of one set, read twice. See `cache_probe`.
+			probe := cache_probe()
+			libuser.eprint(
+				"kfs -t ", device, ": probe -- eight blocks of one set read twice: ",
+				itoa_u32(u32(probe)), " of 16 reads went to the disk\n",
 			)
 		} else {
 			c := check_volume()

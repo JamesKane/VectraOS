@@ -13,28 +13,32 @@ straddles two. An inode's twelve direct blocks and one indirect block of
 1024 more make a file of a little over four megabytes, which is the limit
 the day something wants a bigger one raises by adding a second level.
 
-## Write-through
+## The order, the transaction, and the journal
 
-A block that changes is written when it changes. There is no journal, and
-the order of writes is the order that leaves the volume consistent if the
+The order of writes is the one that leaves the volume consistent if the
 machine stops between any two: a block is marked taken before anything
 points at it, a file's inode is written after its blocks hold what the
 size says, and a directory entry is written after the inode it names is
-whole. A crash loses the last operation and nothing before it, and a
-block that was taken and never pointed at is the one kind of leak, which
-a scan at the next ream would reclaim. `docs/SHELL.md` step 7 says a
-journal comes when a crash costs something, and this is the shape it
-would journal.
+whole. On top of that order, every request that changes the volume is one
+transaction: its writes are held in an overlay until the request has
+succeeded, then landed through the journal -- a header and a log between
+the inode table and the data -- all at once, so a stop leaves every one of
+them or none, and a mount replays a commit a stop interrupted. `Txn`,
+`txn_commit` and `journal_replay` below; `docs/KFS.md` has the argument.
+`kfs -c` (fsck.odin) is the mark and sweep for a volume from before.
 
 ## The cache
 
-Thirty-two blocks, direct-mapped by block number, in this program's own
-memory. The superblock, the bitmap and the inode table are the blocks
-touched again and again; file data passes through the same slots because
-a 9P read is two blocks and a second read of the same file is rare. A
-slot holds bytes the caller may change, and `bwrite` puts them on the
-disk; the slot is good until the next `bread` that maps to it, which is
-why an inode is copied out of its block into an `Inode` and back rather
+256 blocks as 32 sets of 8 ways, least recently used first out of a set.
+The superblock, the bitmap and the inode table are the blocks touched again
+and again, and eight ways keep an inode table block from being evicted by a
+data block that shares its residue, which one way per set could not. A way
+holds bytes the caller may change; `bwrite` records the change -- into the
+transaction's overlay inside a request, to the disk outside one. The overlay
+is the truth for a block the request has written and `bread` answers from it
+first, which is what lets writes be held without a block evicted and read
+again coming back stale. A way is good until its block is evicted, which is
+why an inode is still copied out of its block into an `Inode` and back rather
 than edited in place.
 */
 package kfs
@@ -122,15 +126,93 @@ Volume :: struct {
 	free:       u32, // Free blocks, counted at mount and kept
 	next_block: u32, // Where the next allocation looks first
 	replayed:   int, // Blocks the journal landed at mount: a stop's commit, finished
-	cache:      [CACHE_BLOCKS]Cached,
+	cache:      []Cached, // CACHE_BLOCKS of them, on the heap: see `cache_init`
 }
 
-CACHE_BLOCKS :: 32
+/*
+The cache: 256 blocks, a megabyte, as 32 sets of 8 ways. A block belongs to
+the set its number selects and may sit in any of that set's ways; the way
+to evict is the one least recently used. That is what a direct-mapped cache
+of 32 slots could not do: two hot blocks whose numbers agreed modulo 32 --
+an inode table block and a data block, say -- evicted each other on every
+touch, and the check walked the inode table through that. Eight ways means
+a block leaves only when eight others of its set have been touched since,
+and 256 blocks hold the whole of a small volume's tables with room over.
+
+The contract callers were written to is kept and strengthened: a slice
+`bread` hands out is good until its block is evicted, which was `until the
+next read that maps to the slot` and is now `until eight reads of its set`.
+The tight read-change-write a caller does is unchanged.
+
+A megabyte does not fit a program's static image -- `MAX_PROGRAM_FRAMES`
+bounds that at half of it -- so the cache is one heap allocation, made at
+startup by `cache_init`. The heap grows to `SEGALLOC_MAX`, far past this,
+and a file server is exactly the program the static bound was not meant to
+hold a cache for. Nil until `cache_init`, so nothing reads a block before
+the boot has made it.
+*/
+CACHE_SETS :: 32
+CACHE_WAYS :: 8
+CACHE_BLOCKS :: CACHE_SETS * CACHE_WAYS
 
 Cached :: struct {
 	block: u32,
 	valid: bool,
+	age:   u32, // The clock at last touch; the smallest in a set is the one to evict
 	data:  [BLOCK]u8,
+}
+
+// cache_init allocates the cache on the heap. Answers false when the heap
+// cannot hold a megabyte, which is a machine too small to serve from.
+cache_init :: proc() -> bool {
+	vol.cache = make([]Cached, CACHE_BLOCKS)
+	return vol.cache != nil
+}
+
+@(private = "file")
+cache_clock: u32
+
+// cache_find answers the way holding block `b`, touched now, or nil.
+@(private = "file")
+cache_find :: proc "contextless" (b: u32) -> ^Cached #no_bounds_check {
+	set := (b % CACHE_SETS) * CACHE_WAYS
+	for w in 0 ..< CACHE_WAYS {
+		c := &vol.cache[set + u32(w)]
+		if c.valid && c.block == b {
+			cache_clock += 1
+			c.age = cache_clock
+			return c
+		}
+	}
+	return nil
+}
+
+// cache_take answers a way for block `b`: the one holding it, else an empty
+// way of its set, else the set's least recently used, claimed for `b` and
+// not yet valid -- the caller fills it and says so.
+@(private = "file")
+cache_take :: proc "contextless" (b: u32) -> ^Cached #no_bounds_check {
+	if c := cache_find(b); c != nil {
+		return c
+	}
+	set := (b % CACHE_SETS) * CACHE_WAYS
+	// An empty way first; failing that, the least recently touched.
+	victim: ^Cached
+	for w in 0 ..< CACHE_WAYS {
+		c := &vol.cache[set + u32(w)]
+		if !c.valid {
+			victim = c
+			break
+		}
+		if victim == nil || c.age < victim.age {
+			victim = c
+		}
+	}
+	cache_clock += 1
+	victim.block = b
+	victim.valid = false
+	victim.age = cache_clock
+	return victim
 }
 
 vol: Volume
@@ -255,8 +337,8 @@ txn_begin :: proc "contextless" () {
 // overlay, added if `b` is new to it. The overlay is now the block's truth.
 @(private = "file")
 txn_note :: proc "contextless" (b: u32) -> bool #no_bounds_check {
-	c := &vol.cache[b % CACHE_BLOCKS]
-	if !c.valid || c.block != b {
+	c := cache_find(b)
+	if c == nil {
 		return false
 	}
 	i := txn_find(b)
@@ -462,16 +544,54 @@ bread :: proc "contextless" (b: u32) -> []u8 {
 			return txn.data[i][:]
 		}
 	}
-	c := &vol.cache[b % CACHE_BLOCKS]
-	if !c.valid || c.block != b {
-		if !read_block_raw(b, c.data[:]) {
-			c.valid = false
-			return nil
-		}
-		c.block = b
-		c.valid = true
+	if c := cache_find(b); c != nil {
+		cache_hits += 1
+		return c.data[:]
 	}
+	cache_misses += 1
+	c := cache_take(b)
+	if !read_block_raw(b, c.data[:]) {
+		c.valid = false
+		return nil
+	}
+	c.valid = true
 	return c.data[:]
+}
+
+// How the cache is doing: reads answered from it, and reads that went to
+// the disk. Counted since the program started, reported by `kfs -t`.
+cache_hits: u64
+cache_misses: u64
+
+/*
+cache_probe measures the one thing associativity is for. It reads eight
+blocks that share a set -- consecutive multiples of CACHE_SETS, the way
+consecutive inode table blocks and a data block can share a residue -- and
+then reads them again, and answers how many of the sixteen went to the disk.
+A direct-mapped cache of one way per set evicts each with the next and
+misses all sixteen; eight ways hold the eight and miss only the first pass.
+The blocks are the volume's own tables and data, read and not written, so
+this changes nothing. Reported beside the hit rate, which on a small volume
+says little, since the hazard this cures is a collision and not a capacity.
+*/
+// How many blocks the probe reads: eight, whatever the cache's shape, so
+// the same probe measures a one-way cache and an eight-way one alike.
+PROBE_BLOCKS :: 8
+
+cache_probe :: proc "contextless" () -> (misses: u64) {
+	cache_drop() // From cold, so what the controls left cached does not count.
+	before := cache_misses
+	for pass in 0 ..< 2 {
+		for i := u32(0); i < PROBE_BLOCKS; i += 1 {
+			b := i * CACHE_SETS
+			if b >= vol.sb.blocks {
+				break
+			}
+			_ = bread(b)
+		}
+		_ = pass
+	}
+	return cache_misses - before
 }
 
 /*
@@ -485,18 +605,17 @@ bwrite :: proc "contextless" (b: u32) -> bool {
 	if txn.active {
 		if i := txn_find(b); i >= 0 {
 			// The caller wrote through the overlay slice `bread` gave it.
-			// The cache slot, if it holds `b`, may be stale; refresh it so
+			// The cache way, if it holds `b`, may be stale; refresh it so
 			// a `txn_note` from a later cache-side edit starts from truth.
-			c := &vol.cache[b % CACHE_BLOCKS]
-			if c.valid && c.block == b {
+			if c := cache_find(b); c != nil {
 				copy(c.data[:], txn.data[i][:])
 			}
 			return true
 		}
 		return txn_note(b)
 	}
-	c := &vol.cache[b % CACHE_BLOCKS]
-	if !c.valid || c.block != b {
+	c := cache_find(b)
+	if c == nil {
 		return false
 	}
 	return write_block_raw(b, c.data[:])
@@ -504,11 +623,10 @@ bwrite :: proc "contextless" (b: u32) -> bool {
 
 // bzero fills block `b` with zeros, on the disk and in the cache.
 bzero :: proc "contextless" (b: u32) -> bool #no_bounds_check {
-	c := &vol.cache[b % CACHE_BLOCKS]
+	c := cache_take(b)
 	for i in 0 ..< BLOCK {
 		c.data[i] = 0
 	}
-	c.block = b
 	c.valid = true
 	return write_block_raw(b, c.data[:])
 }
@@ -542,11 +660,10 @@ read_superblock :: proc "contextless" () -> (sb: Superblock, ok: bool) #no_bound
 
 @(private = "file")
 write_superblock :: proc "contextless" () -> bool #no_bounds_check {
-	c := &vol.cache[0]
+	c := cache_take(0)
 	for i in 0 ..< BLOCK {
 		c.data[i] = 0
 	}
-	c.block = 0
 	c.valid = true
 	b := c.data[:]
 	put64(b, MAGIC)
