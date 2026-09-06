@@ -52,7 +52,14 @@ start :: proc "c" (block: ^abi.Args) {
 	target := args[at + 1]
 
 	spec: [96]u8
-	fd, ok := libnet.dial(libuser.cat_into(spec[:], "tcp!", host, "!9fs"))
+	// `-n` dials the control that skips the handshake -- `9fsnone`, the port
+	// where `listen` runs `exportfs` with no `-a`. The far side then names
+	// this session `none`, and a private file refuses it. Dialled and mounted
+	// in this one process, because a posted connection is the mounting
+	// process's to complete: `srv` then `mount` posts a stream whose end is
+	// gone by the time a separate `mount` speaks 9P over it.
+	service := noauth ? "9fsnone" : "9fs"
+	fd, ok := libnet.dial(libuser.cat_into(spec[:], "tcp!", host, "!", service))
 	if !ok {
 		say("import: cannot dial ")
 		say(host)

@@ -555,6 +555,17 @@ become :: proc "contextless" (name: string) {
 		_ = libuser.write(2, transmute([]u8)msg)
 		libuser.exits("become")
 	}
+
+	// Attach the writable tree afresh, now as this user. The kernel mounted
+	// `/srv/kfs` at `/usr` at boot as the host, and a fid from that attach
+	// answers for the host whoever walks it -- so an open exportfs makes on
+	// behalf of a client is checked against the host, not the client. A
+	// replace here mounts it again from this process, whose user is now the
+	// one the handshake proved, so kfs's Tattach carries that name and every
+	// open is checked against it. That is what makes a private file refuse
+	// across the wire. This process's namespace only; nothing else's `/usr`
+	// moves. A machine with no `/srv/kfs` serves what it has.
+	_ = libuser.mount("/srv/kfs", "/usr", abi.ORDER_REPLACE)
 }
 
 @(private = "file")

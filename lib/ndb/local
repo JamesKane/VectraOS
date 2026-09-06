@@ -27,5 +27,6 @@ sys=fs ip=10.0.2.15 dom=home
 tcp=echo port=9
 tcp=vtest port=1717
 tcp=9fs port=564
+tcp=9fsnone port=565
 tcp=discard port=9
 udp=echo port=7
