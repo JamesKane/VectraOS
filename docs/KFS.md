@@ -54,10 +54,18 @@ leaves the volume whole if the machine stops between any two writes:
   reaches them;
 - a removed file's entry is cleared before its inode and blocks are freed.
 
-A stop loses the last operation and nothing before it. The one leak it can
-leave is a block taken and never pointed at, which a scan at the next ream
-would reclaim. There is no journal; `docs/SHELL.md` step 7 says one comes
-when a crash costs something, and this is the shape it would journal.
+A stop loses the last operation and nothing before it. What it can leave is
+a block taken and never pointed at, or -- in the window a create opens
+between an inode written and the entry that names it -- an inode in use no
+directory reaches. Neither is corruption a reader trips over; both are space
+that never comes back on its own. `kfs -c` reclaims them, a mark from the
+root and a sweep of what it did not reach, without a ream that throws the
+volume away. The boot runs it (`kfs -t`) with a leaked block injected on
+purpose, and requires that one block back, so the check is proven to reclaim
+rather than only to report zero. There is still no journal -- one would make
+a group of writes atomic rather than reclaim after the fact -- and
+`docs/SHELL.md` step 7 keeps that; this is the check half, which pays for the
+crash the write order already survives. `servers/kfs/fsck.odin`.
 
 ## The cache
 
@@ -113,8 +121,10 @@ would, and checks that `$home` is `/usr/glenda`.
 
 ## What is not here
 
-- **A journal**, and a check program. The write order above is the whole
-  crash story.
+- **A journal.** `kfs -c` is the check program now, so what a crash leaks is
+  reclaimed; a journal would go further and make a group of writes atomic.
+  The write order plus the check is the crash story until one costs enough
+  to want it -- `docs/SHELL.md` step 7.
 - **Rename across servers.** Within kfs, `Trename` moves an entry and
   keeps the inode, across directories, and `mv` uses it; a name on another
   server answers EXDEV and `mv` copies and removes, as it does for a server

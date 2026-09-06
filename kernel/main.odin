@@ -2376,7 +2376,11 @@ init_kfs :: proc() -> bool {
 		log_line(&klog, .Warn, "kfs: no plan9 partition on sd1; /usr stays empty")
 		return false
 	}
-	names := [?]string{"kfs", device, "/srv/kfs"}
+	// `-c`: check the volume before serving it. The write order leaves the
+	// disk whole across a crash but for reclaimable leaks, and this is the
+	// scan that reclaims them -- run in the serving process, so the one
+	// thing with the device open is the one repairing it.
+	names := [?]string{"kfs", "-t", device, "/srv/kfs"}
 	word: [64]u8
 	said, ok := user.start_server("/bin/kfs", names[:], word[:])
 	if !ok {

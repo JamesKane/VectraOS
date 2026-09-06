@@ -83,12 +83,25 @@ start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)[1:]
 	want_ream := false
-	if len(args) > 0 && args[0] == "-r" {
-		want_ream = true
+	want_check := false
+	want_test := false
+	for len(args) > 0 && len(args[0]) == 2 && args[0][0] == '-' {
+		switch args[0][1] {
+		case 'r':
+			want_ream = true
+		case 'c':
+			want_check = true
+		case 't':
+			want_check = true
+			want_test = true
+		case:
+			libuser.eprint("kfs: no such flag ", args[0], "\n")
+			libuser.exits("usage")
+		}
 		args = args[1:]
 	}
 	if len(args) < 1 {
-		libuser.eprint("usage: kfs [-r] device [srvname]\n")
+		libuser.eprint("usage: kfs [-r] [-c] device [srvname]\n")
 		libuser.exits("usage")
 	}
 	device := args[0]
@@ -119,6 +132,23 @@ start :: proc "c" (block: ^abi.Args) {
 		if !ok {
 			libuser.eprint("kfs: ", device, ": ", rwhy, "\n")
 			libuser.exits("ream")
+		}
+	}
+
+	// The check, if asked, before anything is served: this is the one
+	// process with the device open, so it repairs without a second writer.
+	// A fresh ream is consistent by construction and not worth walking. The
+	// bitmap and free count are the volume's afterward, so serving goes on
+	// from a checked disk.
+	if want_check && mounted {
+		if want_test {
+			// The negative control: leak a block on purpose and require the
+			// check to reclaim it. Net zero on the disk, so serving goes on
+			// from a volume as consistent as it found it.
+			_ = run_selftest(device)
+		} else {
+			c := check_volume()
+			report_check(device, &c)
 		}
 	}
 

@@ -557,10 +557,14 @@ step each stopped at. Both are done now, as a root of their own:
                        driver and kfs stamps `mtime` from. FLEET 3's
                        `timesync` and an RTC driver later *set* a clock
                        that already exists, rather than each inventing one.
-    a journal, a check anything that must survive a crash mid-write. No
-                       plan's function waits on it, but a fleet's root
-                       disk (FLEET 3) is the first thing that would, so
-                       it is FLEET 3's to want.
+    the check         DONE. `kfs -c` marks from the root and sweeps,
+                       reclaiming a crash's leaked blocks and orphaned
+                       inodes without a ream; the boot runs it with a leak
+                       injected and requires that block back. A journal --
+                       atomic write groups, going further than reclaiming
+                       after the fact -- is still unbuilt, and a fleet's
+                       root disk (FLEET 3) is the first thing that would
+                       want it.
 
 **One way to defer the largest of these.** A model's weights are read,
 not written, and `/lib` is bound from the FAT system partition the host
