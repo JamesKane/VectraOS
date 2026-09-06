@@ -1745,17 +1745,40 @@ proc_set_user :: proc "contextless" (pid: u64, name: string) -> bool {
 }
 
 /*
-set_hostowner is `hostowner` on `/proc/n/ctl`: the caller, itself the host
-owner's, names the host and becomes that user. `init` does it once, with the
-name the database gives the machine, before anything else runs as the host.
+set_hostowner is `hostowner` on `/proc/n/ctl`: a process of the host owner's
+names the host, and process `pid` becomes that user. `init` does it once,
+with the name the database gives the machine, before anything runs that
+must be the host's.
+
+The target is `pid`, not the caller, and that is the whole point. `init`
+writes it as `echo hostowner $sysname > /proc/$pid/ctl`, and `echo` is a
+program: rc forks and execs it, so the write arrives from a child whose pid
+is not `$pid`. A rule of `only yourself` refused every such write, silently,
+and the host never had an owner but the kernel's default -- so nothing
+downstream could ever `become` a client it had proved. Plan 9's
+`#c/hostowner` is the same shape: writable by whoever is eve now, and it
+sets the writer's process user as well as the name. The caller gets it too,
+so a program that writes its own ctl ends up as it asked either way.
+`user` stays a process's own to change, which is what `exportfs` does for
+the client it proved, with `getpid` and no fork between.
 */
 set_hostowner :: proc "contextless" (pid: u64, name: string) -> bool {
 	caller := current()
-	if caller == nil || caller.pid != pid || !is_hostowner(caller) || len(name) == 0 || len(name) > USER_MAX {
+	if caller == nil || !is_hostowner(caller) || len(name) == 0 || len(name) > USER_MAX {
+		return false
+	}
+	guard := sync.acquire(&table_lock)
+	target := live_by_pid(pid)
+	if target == nil {
+		sync.release(&table_lock, guard)
 		return false
 	}
 	hostowner_len = copy(hostowner[:], name)
-	caller.ulen = copy(caller.user[:], name)
+	target.ulen = copy(target.user[:], name)
+	if caller != target {
+		caller.ulen = copy(caller.user[:], name)
+	}
+	sync.release(&table_lock, guard)
 	return true
 }
 

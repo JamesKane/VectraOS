@@ -540,11 +540,21 @@ become :: proc "contextless" (name: string) {
 	pid := libuser.getpid()
 	ctl := libuser.open(libuser.cat_into(path[:], "/proc/", pidtext(pid), "/ctl"), abi.O_WRONLY)
 	if ctl < 0 {
-		return
+		libuser.exits("cannot open my own ctl")
 	}
 	line: [64]u8
-	_ = libuser.write(int(ctl), transmute([]u8)libuser.cat_into(line[:], "user ", name))
+	text := libuser.cat_into(line[:], "user ", name)
+	wrote := libuser.write(int(ctl), transmute([]u8)text)
 	_ = libuser.close(int(ctl))
+	// A server that cannot be the client it proved must not serve as the
+	// host instead. The write is refused only to a process that is not the
+	// host owner's, which is `init` having failed to name the host -- worth
+	// a word rather than a tree quietly served as the wrong user.
+	if wrote != i64(len(text)) {
+		msg := "exportfs: cannot become the client: this process is not the host owner's\n"
+		_ = libuser.write(2, transmute([]u8)msg)
+		libuser.exits("become")
+	}
 }
 
 @(private = "file")

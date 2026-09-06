@@ -28,13 +28,33 @@ if(test -e /dev/ether0/data) {
 	cs &
 	while(! test -e /srv/cs) sleep 1
 	mount -a /srv/cs /net
+}
+
+# A host is a user too. Its name is the database record its card matched,
+# read from /net once the stack can say it, or `vectra` on a machine with
+# no card. The kernel's word for it is `hostowner` on this process's ctl:
+# from here on this process and every process it starts run as the host,
+# and the host owner's processes are the ones that may become a client they
+# have proved. So it comes before anything that must run as the host --
+# `listen`, whose `exportfs` becomes each client -- and not after. `echo` is
+# a program, so the write arrives from a forked child; the kernel sets the
+# named process, not the writer, which is why `$pid` names this shell. See
+# /proc/n/ctl in proc(3).
+dom=home
+if(test -e /net/sysname) sysname=`{cat /net/sysname}
+if(~ $#sysname 0) sysname=vectra
+user=$sysname
+echo hostowner $sysname > /proc/$pid/ctl
+
+if(test -e /dev/ether0/data) {
 	# An interface the database gave no address asks the network for one.
 	# In the background: a link with no router answers nothing, and the
 	# boot does not wait on it.
 	ipconfig &
 	# And this machine serves its tree: `listen` runs `exportfs` for every
 	# connection to a port named in `/lib/service`, so another machine can
-	# import what this one holds. `docs/FLEET.md` step 1.
+	# import what this one holds. `docs/FLEET.md` step 1. Started as the
+	# host, above, so each `exportfs` may become the client it proves.
 	listen &
 }
 
@@ -49,18 +69,10 @@ bind /mnt /mnt
 factotum &
 while(! test -e /srv/factotum) sleep 1
 mount /srv/factotum /mnt/factotum
-# A host is a user too. Its name is the database record its card matched,
-# and its key is /adm/hostkey, the private half only this machine carries;
-# the public half is on its record as key=. Both go into factotum, and the
-# session runs as the host until a person types a passphrase.
-dom=home
-if(test -e /net/sysname) sysname=`{cat /net/sysname}
-if(~ $#sysname 0) sysname=vectra
-user=$sysname
-# The kernel's word for it: this process and every process after it run
-# as the host, and the host owner's processes are the ones that may become
-# a client they have proved. See /proc/n/ctl in proc(3).
-echo hostowner $sysname > /proc/$pid/ctl
+# The host's key is /adm/hostkey, the private half only this machine
+# carries; the public half is on its record as key=. It goes into factotum
+# under the host's name, set above, and the session runs as the host until
+# a person types a passphrase.
 if(test -e /adm/hostkey) {
 	hostkey=`{cat /adm/hostkey}
 	echo key proto=noise user=$sysname dom=$dom '!private='^$hostkey > /mnt/factotum/ctl
