@@ -468,22 +468,29 @@ plan, and each is a root that can start now:
                          are all windowed clients of it. The root is built.
     the network          FLEET 0 DONE but for `etherfs` (waits on HARDWARE
                          0's `mmio`/`irq`), FLEET 1 (9P both ways) DONE, and
-                         FLEET 2 (users) half done: the wire half. `factotum`
+                         FLEET 2 (users) all but its last command. `factotum`
                          holds the keys, `sys/libauth` runs Noise IK through
                          it and seals the stream, `srv`/`import`/`exportfs -a`
                          prove who they are, and the bench imports across
-                         architectures sealed with a stranger refused. Left:
-                         the kernel's per-process user, `/dev/user`, kfs
-                         owners and modes, so a private file refuses and a
-                         kill of another's process is denied.
+                         architectures sealed with a stranger refused. The
+                         kernel gives each process a user and each kfs file an
+                         owner and modes; `init` names the host owner and it
+                         takes, so `exportfs` becomes the client it proved and
+                         re-attaches the tree as that user. A `none` mount now
+                         opens a public file and is refused a private one,
+                         across the wire, on the bench. Left: `cmd/auth`
+                         (`newuser`/`passwd`), a second real user, and the
+                         three proofs it unlocks -- a mount attaches as
+                         `jkane`, `jkane` is refused `glenda`'s 0600, and a
+                         kill of another user's process is denied.
                          The bench holds both boot lines: two architectures
                          ping by name, a line crosses, `ipconfig` gets an
                          address from the router, and machine one imports
                          machine two's tree and reads its `/proc` across the
                          wire. `dns` and `cs` stand beside the stack;
                          `exportfs`, `listen`, `srv`, `import` and `9fs`
-                         serve and mount it. See `docs/NETFS.md`. FLEET 2
-                         (users) is next, and GHOST 4 and the stack half of
+                         serve and mount it. See `docs/NETFS.md`. `cmd/auth`
+                         finishes FLEET 2, and GHOST 4 and the stack half of
                          HARDWARE 3 read all of this.
     users and factotum   FLEET 2. GHOST 4 needs an identity, and the
                          one-user note in `docs/DRAW.md`, `docs/PROCS.md`
