@@ -47,8 +47,8 @@ ATLAS :: libdraw.Atlas {
 	per_image      = 16,
 	cell_w         = libfont.FONT_WIDTH,
 	cell_h         = libfont.FONT_HEIGHT,
-	first_char     = libfont.FONT_FIRST,
-	count          = libfont.FONT_LAST - libfont.FONT_FIRST + 1,
+	n              = 1,
+	ranges         = {0 = {lo = libfont.FONT_FIRST, hi = libfont.FONT_LAST, offset = 0}},
 }
 
 // has_fill reports whether the command stream in `b[:end]` holds a fill with
@@ -352,6 +352,33 @@ start :: proc "c" (block: ^abi.Args) {
 		th: libmui.Theme
 		libmui.parse_theme(&th, "")
 		want(th.face == libmui.default_theme.face, "an empty file is the chassis")
+	}
+
+	// -- A baked face carries the font past ASCII -----------------------------
+	//
+	// Every test above baked with the past-ASCII font unopened, which is the
+	// ASCII-only path a `Fonts` took before this milestone. This opens
+	// `/lib/font` the way `window_open` does and bakes one face: it names more
+	// than the one ASCII range, locates a Latin-1 letter and refuses a rune no
+	// range holds, and allocates more strips than ASCII alone would -- the
+	// subfonts uploaded in this ink over this background.
+	{
+		libmui.font_load()
+		want(libmui.text_font.ready, "the past-ASCII font opens from /lib/font")
+
+		fonts: libmui.Fonts
+		libmui.font_init(&fonts, 1)
+		sink := rec_sink()
+		a, ok := libmui.font_for(&fonts, libpal.AMBER, libpal.SLATE, scratch[:], sink)
+		want(ok, "a face bakes with the font loaded")
+		want(a.n >= 2, "the atlas names ASCII and at least one range past it")
+
+		_, _, e_ok := libdraw.atlas_locate(a, 'é')
+		want(e_ok, "a Latin-1 letter is in the atlas")
+		_, _, cjk := libdraw.atlas_locate(a, rune(0x4E00))
+		want(!cjk, "a rune no range holds is not")
+
+		want(count_verb(rec_buf[:], rec_len, libdraw.ALLOC) > libmui.STRIPS, "it allocated more strips than ASCII alone")
 	}
 
 	libuser.exits("ok")

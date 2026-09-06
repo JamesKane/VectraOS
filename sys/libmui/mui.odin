@@ -26,6 +26,7 @@ hand.
 */
 package libmui
 
+import "vsys:libdraw"
 import "vsys:libpal"
 import "vsys:libuser"
 
@@ -207,8 +208,13 @@ drawn_len :: proc "contextless" (label: string) -> int {
 				continue
 			}
 		}
+		// One cell per rune, so a multi-byte rune counts once, not once a byte.
+		_, size := libdraw.decode_rune(transmute([]u8)label[i:])
+		if size <= 0 {
+			break
+		}
 		n += 1
-		i += 1
+		i += size
 	}
 	return n
 }

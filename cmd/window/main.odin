@@ -77,8 +77,8 @@ ATLAS :: libdraw.Atlas {
 	per_image      = PER_STRIP,
 	cell_w         = libfont.FONT_WIDTH,
 	cell_h         = libfont.FONT_HEIGHT,
-	first_char     = libfont.FONT_FIRST,
-	count          = GLYPHS,
+	n              = 1,
+	ranges         = {0 = {lo = libfont.FONT_FIRST, hi = libfont.FONT_LAST, offset = 0}},
 }
 
 // The grid's origin inside the client area, and its ceiling. The origin
@@ -480,7 +480,7 @@ present :: proc "contextless" () #no_bounds_check {
 	shown := string(text_copy[:min(n, max(cols - col, 0))])
 	done := 0
 	for done < len(shown) {
-		nat, put := libdraw.put_text(buf[:], at, ATLAS, 0, cell_x(col + done), cell_y(row), shown[done:])
+		nat, put, _ := libdraw.put_text(buf[:], at, ATLAS, 0, cell_x(col + done), cell_y(row), shown[done:])
 		done += put
 		if done < len(shown) {
 			send(buf[:], nat)
@@ -515,7 +515,7 @@ draw_row :: proc "contextless" (buf: []u8, start: int, r: int) -> int #no_bounds
 	text := string(cells[r][:end])
 	done := 0
 	for done < len(text) {
-		nat, put := libdraw.put_text(buf, at, ATLAS, 0, cell_x(done), cell_y(r), text[done:])
+		nat, put, _ := libdraw.put_text(buf, at, ATLAS, 0, cell_x(done), cell_y(r), text[done:])
 		done += put
 		if done < len(text) {
 			send(buf, nat)

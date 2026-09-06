@@ -161,7 +161,7 @@ label :: proc "contextless" (
 ) -> int {
 	// The drawn text with a single hotkey underscore removed.
 	drawn := strip_hotkey(o.label)
-	nat, _ := libdraw.put_text(b, at, atlas, dst, u32(x), u32(y), drawn)
+	nat, _, _ := libdraw.put_text(b, at, atlas, dst, u32(x), u32(y), drawn)
 	return nat
 }
 

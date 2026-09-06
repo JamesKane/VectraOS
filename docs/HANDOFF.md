@@ -644,9 +644,26 @@ no load. The **draw server's title** draws through it too: `servers/intuition`
 fills a `Loader` from `/lib/font` at startup and `title_text` decodes the
 name's UTF-8 a rune at a time, so a window named with an accent in it draws
 rather than dropping the byte -- the kernel draw self-test names a window
-`ééé` and reads the ink back. Left: `sys/libmui`'s glyph images, and
-`sys/libedit`, which still drops a rune it cannot draw. `docs/WEB.md` step 1,
-the reader of the world's pages, is what wants it whole.
+`ééé` and reads the ink back.
+
+The **draw protocol's text model** went multi-range with it. `libdraw.Atlas`
+is 9front's `Font`: a set of rune ranges, each packed into one shared strip
+set at a cell `offset` (9front's `Cachefont.offset`), so a font of several
+ranges spends one run of image ids and not one per range. `put_text` decodes
+UTF-8 and blits a cell per rune. `sys/libmui` bakes ASCII and the ranges
+`/lib/font` names into a face per (ink, bg), sourcing every cell through
+`loader_glyph` -- baked ASCII when the font is closed, a subfont when it is
+open -- so a button label with an accent draws; `tests/mui` bakes a face and
+checks the atlas names Latin-1 and refuses a CJK rune. The server's image
+pool is 64 and a full-font face is ~14 strips, so `font_for` degrades to the
+label it cannot draw when the pool fills.
+
+Left: **`apps/terminal`** (and `cmd/window`) store one byte per grid cell, so
+past-ASCII output still shows as `?` until the grid holds runes -- they are
+ported to the new `Atlas` but not yet rune-celled. And **`sys/libedit`** still
+drops a rune it cannot store, now only because the terminal that draws the
+line cannot yet show it. `docs/WEB.md` step 1, the reader of the world's
+pages, is what wants it all whole.
 
 **Deferred, with the reason written down: priority inheritance.** A lock hands
 off to the best *waiter*. But a low-priority *holder* still delays a

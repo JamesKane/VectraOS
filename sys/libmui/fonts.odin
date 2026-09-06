@@ -17,18 +17,73 @@ first this `Fonts` was given, six to an atlas, out of the server's shared pool.
 */
 package libmui
 
+import "vsys:abi"
 import "vsys:libdraw"
 import "vsys:libfont"
 import "vsys:libpal"
+import "vsys:libuser"
 
-STRIPS :: 6
 PER_STRIP :: 16
 GLYPHS :: libfont.FONT_LAST - libfont.FONT_FIRST + 1
 STRIP_W :: PER_STRIP * libfont.FONT_WIDTH
 
-// How many distinct (ink, background) pairs one window may bake. Six ids each,
-// out of the server's pool of sixty-four across all windows.
+// The strips ASCII alone needs -- what a face bakes when the past-ASCII font
+// is not loaded, which is every face until `window_open` opens it.
+STRIPS :: (GLYPHS + PER_STRIP - 1) / PER_STRIP
+
+// The strip set of one face holds ASCII and the ranges `sys/libfont` names
+// past it, packed one after another. Sixteen strips is room for the whole of
+// `default.font` -- ASCII, Latin-1, punctuation and arrows come to fourteen.
+// The server's pool is sixty-four across all windows, so a face is not free:
+// `font_for` degrades to the label it cannot draw when the pool fills.
+STRIPS_MAX :: 16
+MAX_CELLS :: STRIPS_MAX * PER_STRIP
+
+// How many distinct (ink, background) pairs one window may bake. A full-font
+// face is up to fourteen ids, so a window with several colours can exhaust
+// the pool; the demo uses two.
 MAX_FACES :: 8
+
+// text_font is the font past ASCII, shared across every `Fonts` a program
+// makes. `window_open` fills it once from `/lib/font`; until then, and if the
+// load fails, `loader_glyph` still answers ASCII from the baked table, so a
+// face bakes ASCII alone rather than nothing. A `tests/mui` that never opens
+// a window leaves it closed and bakes ASCII, which is what it always did.
+text_font: libfont.Loader
+
+// glyph_cells holds one baked strip set's cells, `FONT_HEIGHT` 1bpp rows each,
+// filled once per face before the pixels go out. It is a scratch buffer, not
+// state a caller keeps.
+glyph_cells: [MAX_CELLS][libfont.FONT_HEIGHT]u8
+
+// text_read is the font loader's I/O: the whole of `path` into `into`, or
+// zero. `window_open` gives the loader this reader.
+text_read :: proc "contextless" (data: rawptr, path: string, into: []u8) -> int {
+	_ = data
+	fd := libuser.open(path, abi.O_RDONLY)
+	if fd < 0 {
+		return 0
+	}
+	at := 0
+	for at < len(into) {
+		n := libuser.read(int(fd), into[at:])
+		if n <= 0 {
+			break
+		}
+		at += int(n)
+	}
+	_ = libuser.close(int(fd))
+	return at
+}
+
+// font_load opens the shared past-ASCII font once. A failure is not fatal: a
+// face still bakes ASCII from the baked table. `window_open` calls it before
+// it bakes; a caller that bakes without a window (a test) skips it.
+font_load :: proc "contextless" () {
+	if !text_font.ready {
+		_ = libfont.loader_open(&text_font, "/lib/font/default.font", text_read, nil)
+	}
+}
 
 /*
 A Sink is where a baked atlas batch goes. A live window points it at its `data`
@@ -100,9 +155,22 @@ font_for :: proc "contextless" (
 	}
 	base := f.next_id
 
-	// The six images, allocated in one batch.
+	// The ranges this face carries -- ASCII, and the font's own past it -- and
+	// the cells they pack into. Then the strips those cells need.
+	ranges: [libdraw.MAX_ATLAS_RANGES]libdraw.Atlas_Range
+	nr, total := plan_ranges(ranges[:])
+	strips := (total + PER_STRIP - 1) / PER_STRIP
+
+	// Each cell's 1bpp bits, once, from the baked table for ASCII and a loaded
+	// subfont for the rest. A rune a range names but no subfont holds bakes
+	// blank, which reads as a space.
+	for g in 0 ..< total {
+		libfont.loader_glyph(&text_font, cell_rune(ranges[:nr], g), glyph_cells[g][:])
+	}
+
+	// The strip images, allocated in one batch.
 	at := 0
-	for s in 0 ..< STRIPS {
+	for s in 0 ..< strips {
 		at = libdraw.put_alloc(scratch, at, base + u32(s), STRIP_W, u32(libfont.FONT_HEIGHT))
 	}
 	if at < 0 || !sink.write(sink.user, scratch[:at]) {
@@ -117,7 +185,7 @@ font_for :: proc "contextless" (
 	}
 	fg := libpal.xrgb(ink)
 	bw_color := libpal.xrgb(bg)
-	for s in 0 ..< STRIPS {
+	for s in 0 ..< strips {
 		bx := 0
 		for bx < STRIP_W {
 			w := min(band, STRIP_W - bx)
@@ -126,8 +194,8 @@ font_for :: proc "contextless" (
 					px := bx + i
 					g := s * PER_STRIP + px / libfont.FONT_WIDTH
 					v := bw_color
-					if g < GLYPHS {
-						bits := libfont.font_8x16[g][y]
+					if g < total {
+						bits := glyph_cells[g][y]
 						if bits & (0x80 >> u8(px % libfont.FONT_WIDTH)) != 0 {
 							v = fg
 						}
@@ -157,8 +225,8 @@ font_for :: proc "contextless" (
 		per_image      = PER_STRIP,
 		cell_w         = libfont.FONT_WIDTH,
 		cell_h         = libfont.FONT_HEIGHT,
-		first_char     = libfont.FONT_FIRST,
-		count          = GLYPHS,
+		n              = nr,
+		ranges         = ranges,
 	}
 	f.faces[f.n] = Face_Atlas {
 		ink   = ink,
@@ -166,8 +234,46 @@ font_for :: proc "contextless" (
 		atlas = a,
 	}
 	f.n += 1
-	f.next_id += STRIPS
+	f.next_id += u32(strips)
 	return a, true
+}
+
+// plan_ranges fills `out` with the ranges a face carries: ASCII first, then
+// the ones `text_font` names, each packed after the last. Answers how many
+// ranges and how many cells in all. A range that would run past `MAX_CELLS`
+// is dropped whole rather than split across the buffer's end.
+plan_ranges :: proc "contextless" (out: []libdraw.Atlas_Range) -> (n: int, total: int) #no_bounds_check {
+	out[0] = {lo = libfont.FONT_FIRST, hi = libfont.FONT_LAST, offset = 0}
+	n = 1
+	total = int(libfont.FONT_LAST - libfont.FONT_FIRST) + 1
+	if text_font.ready {
+		for i in 0 ..< text_font.idx.n {
+			if n >= len(out) {
+				break
+			}
+			rg := text_font.idx.ranges[i]
+			cnt := int(rg.hi - rg.lo) + 1
+			if total + cnt > MAX_CELLS {
+				break
+			}
+			out[n] = {lo = rg.lo, hi = rg.hi, offset = total}
+			total += cnt
+			n += 1
+		}
+	}
+	return
+}
+
+// cell_rune answers the rune baked into cell `g`, or zero for a cell no range
+// covers -- which the bake loop draws blank.
+cell_rune :: proc "contextless" (ranges: []libdraw.Atlas_Range, g: int) -> rune #no_bounds_check {
+	for rg in ranges {
+		cnt := int(rg.hi - rg.lo) + 1
+		if g >= rg.offset && g < rg.offset + cnt {
+			return rg.lo + rune(g - rg.offset)
+		}
+	}
+	return 0
 }
 
 /*

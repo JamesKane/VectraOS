@@ -70,6 +70,9 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 		win.theme = default_theme
 	}
 	font_init(&win.fonts, 1)
+	// The font past ASCII, so a label with an accent in it bakes and draws.
+	// Not fatal: a face falls back to the baked ASCII table.
+	font_load()
 
 	if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
 		return false
