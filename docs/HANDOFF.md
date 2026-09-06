@@ -27,20 +27,27 @@ A modular operating system in Odin. Three ideas define it:
   tree, and a namespace is its sandbox. `docs/GHOST.md` is the plan, and it
   is not a second-class citizen of the other two.
 
-Layout — `kernel/` (arch, mem, sched, vfs, drivers), `sys/` (libodin, libuser,
-libdraw, vectra9), `servers/` (ramfs, consrv, kbdfs, eiafs, intuition), `apps/`
-(terminal, rc), `cmd/` (the tools). Three architectures via Limine: `amd64` first and furthest,
-`arm64` and `riscv64` booting the same `kmain` on QEMU's `virt` board since
-September 2026. `docs/PORTS.md` says where each port stands.
+Layout — `kernel/` (arch, mem, sched, vfs, mnt, pipe, srv, env, devfs, procfs,
+drivers), `sys/` (the ~20 libraries: `libuser`, `vectra9`, `libthread`,
+`lib9p`, `libdraw`, `libmui`, `libnet`, `libndb`, `libauth`, `libcrypto`, …),
+`servers/` (ramfs, memfs, consrv, kbdfs, eiafs, intuition, netfs, cs, dns,
+fatfs, kfs, factotum — a dozen ring 3 file servers), `apps/` (rc, terminal,
+filemgr, muidemo, tracker), `cmd/` (about forty tools). Three architectures
+via Limine: `amd64` first and furthest, `arm64` and `riscv64` booting the same
+`kmain` on QEMU's `virt` board since September 2026. `docs/PORTS.md` says where
+each port stands.
 
-About 81,500 lines of Odin. The linked kernel is ~1.6 MB debug, and the six
-embedded user images are ~300 KB.
+About 103,000 lines of Odin. The linked kernel is ~1.6 MB debug, and the
+embedded user images (`/bin`, the library, the boot servers) are staged onto
+the ESP.
 
 ## 2. Where things stand
 
 The machine boots and brings up memory, a namespace, a scheduler and a
-preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
-`/bin`. It then runs about 1550 checks against itself and idles.
+preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv`, `#b` at
+`/bin`, `#e` at `/env` and `#p` at `/proc`. It then runs its self-tests --
+about 1600 checks, the userland suite alone over a thousand -- and idles a
+shell on the console with a windowed desktop beside it.
 
 **What it can do**, and which document says why:
 
@@ -51,54 +58,26 @@ preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv` and `#b` at
 | The console | `/dev/cons` is a real terminal: a line typed at the keyboard or the serial port is edited, echoed, and handed to a parked reader | `DEVFS.md` |
 | The hardware | every device behind `#c` is a file — `/dev/fb` the screen's memory, `/dev/scancode` the untranslated keyboard, `/dev/eia0` the port. A raw stream is *diverted* while held, and given back on the last close | `DEVFS.md` |
 | Services | `/srv` names a running service, mountable anywhere in a namespace, postable from ring 3, and its connection comes down when the last mount and the name are both gone | `SRV.md`, `PIPE.md` |
-| Processes | ring 3, a namespace and a descriptor group of its own, `spawn`, `rfork` by Plan 9's flag word, `exec` in place, notes a handler catches, `segalloc` for memory no file serves | `USER.md` |
-| Ring 3 servers | five of them, on a runtime with a serve loop, and `lib9p` for a server whose reads park: a request is held and answered later by whichever thread has the answer | `RUNTIME.md`, `THREAD.md` |
+| Processes | ring 3, a namespace and a descriptor group of its own, `spawn`, `rfork` by Plan 9's flag word, `exec` in place, notes a handler catches, `segalloc` for memory no file serves, and a user the kernel gates control by | `USER.md` |
+| Ring 3 servers | a dozen, on a runtime with a serve loop, and `lib9p` for a server whose reads park: a request is held and answered later by whichever thread has the answer | `RUNTIME.md`, `THREAD.md` |
 | Threads | Plan 9's `libthread`: procs for what blocks in the kernel, cooperative threads for what does not, channels and `alt` between them, and a server on it that needs no lock | `THREAD.md` |
+| The network | `/net` served by `servers/netfs`: IPv4, ARP, ICMP, UDP and TCP over `virtio-net`, with `cs` and `dns` beside it and `dial` a string away. Two machines on one link ping by name | `FLEET.md`, `NETFS.md` |
+| 9P both ways | `exportfs` serves a namespace, `listen` runs it per connection, `srv`/`import` mount another machine's tree, and a flush crosses the wire | `FLEET.md`, `TRANSPORT.md` |
+| Users | a person is a key pair; `factotum` holds the private half derived from a passphrase, a Noise IK handshake proves it and seals the stream, `kfs` files have owners and modes, and a private file refuses across the wire while a stranger is refused before 9P | `FLEET.md` |
+| The disk | `servers/kfs` (writable, owners and modes) and `servers/fatfs` (the ESP), each a ring 3 file server over `virtio-blk` | `KFS.md`, `FATFS.md`, `DISK.md` |
 | The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` and `consctl` per window with a line discipline of its own | `DRAW.md` |
 | Typing | one discipline (`sys/libedit`) worn by the server that cooks a window's lines and by the program that draws them and echoes, with a cursor the arrow keys and `^A`/`^E` move | `DRAW.md` |
 | Runes | a key with no character arrives as Plan 9's private-space rune in UTF-8 (`sys/libkey` names them, `core:unicode/utf8` encodes them) through a `/dev/cons` that stayed bytes | `DRAW.md`, `KBD.md` |
 
-**The screen is the part with the most recent work in it.**
-`servers/intuition` holds `/dev/fb` and maps it with `segattach`. It owns every
-pixel while it does, so the console draws into a shadow copy and blits that back
-on the last close.
-
-Each window is a run of anonymous memory from `segalloc`. A draw is therefore a
-store, and `flush` is the damage mark that walks it onto the glass. Windows
-overlap, and stacking order is a list of its own. A window that closes gives
-back what it covered out of the store below, which is why there is no expose
-event.
-
-A window is a raised plinth with a sunken screen in it. The chrome vocabulary
-is `sys/libdraw` and the palette is `sys/libpal`, and ring 0 and ring 3 both
-read them. `move`, `size`, `raise` and `name` are `ctl` lines rather than verbs.
-The window in front wears the lit copper.
-
-**And the keyboard reaches the window in front.** A window serves a `cons`. A
-client binds its own window's directory over `/dev` before everything else, so
-it opens plain `/dev/cons` and gets the window's. That is `rio`'s
-`filsysmount`, one bind shorter.
-
-It is also why the draw server does not touch `/dev/scancode`. `rio` reads a
-cooked keyboard too, and the translation belongs to `servers/kbdfs`, one
-process further out.
-
-**And each window cooks its own lines.** The draw server writes `rawon` and
-takes the characters. So the erase keys and the line under construction belong
-to a window rather than to the machine. `^W` is there, which `/dev/cons` still
-does not have. A window has a `consctl` of its own for the raw mode a client
-may want instead.
-
-**And the window that draws is the one that echoes.** `apps/terminal` takes its
-own window raw and cooks the line itself, because a person has to see the
-characters as they arrive and only the half that owns the pixels can show them.
-That is every Plan 9 program that draws its own text -- `vt`, `con`, `ssh`,
-`sam` all write `rawon` -- and it is why there is no read anywhere that answers
-a line which is not finished. `sys/libedit` is the one set of rules both halves
-wear.
-
-`docs/DRAW.md` owns all of it, section by section, with the controls each claim
-was measured against.
+**The screen and the fleet are where the depth is.** The screen is a draw
+server that owns `/dev/fb`, a window per session with its own pixels out of
+`segalloc`, a compositor that walks damage onto the glass, chrome as `ctl`
+lines, and a `cons`/`consctl` per window with its own line discipline -- the
+window in front gets the keyboard through a namespace bind, and the half that
+draws is the half that cooks and echoes, `rio`'s arrangement. `docs/DRAW.md`
+owns all of it. The fleet is the network as files, 9P served as well as
+dialled, and a person proved by a Noise handshake -- `docs/FLEET.md` owns
+that, and steps 0, 1 and 2 of it are done.
 
 **The order these arrived in matters in exactly one way**, and it is worth
 knowing before reading any document. Each one unblocked the next, and none of
@@ -163,17 +142,24 @@ them could have come earlier:
                             and a program can wait for another with one call
     a thread                and a program is procs for what blocks and threads
                             for what does not, and a server holds no lock
+    a card, a stack         and /net is files: a frame, an address, a
+                            conversation, a name the database or DNS resolves
+    9P both ways            and a machine serves its tree as well as dials
+                            another's, so one namespace spans the LAN
+    a person                and a key pair proved by a handshake is a user the
+                            file server and the kernel both check, so a
+                            private file refuses and a stranger is turned away
 
 ### Reading a boot log
 
-`just run` prints one `[ ok ]` line per subsystem, each a self-test on the
+A boot prints one `[ ok ]` line per subsystem, each a self-test on the
 machine that will run it. `docs/TESTING.md` is the discipline behind them.
 Three things about a boot are worth knowing before you read one:
 
 - **Some numbers move on every run, and that is the design.** The LAPIC
   calibration, the preemption round counts, the lock acquisitions, and the
   operation count under a fixed tick budget are measured rather than asserted.
-  `just release` does the same thousand ticks of work and reports about fifty
+  A release build does the same thousand ticks of work and reports about fifty
   thousand operations. `docs/TESTING.md` says why measuring in ticks is the
   right way round.
 - **`9p ... payload checks` reports readers spoiled by a shared buffer, and
@@ -206,8 +192,9 @@ gap with a design question attached is work rather than orientation.
   signal a whole job can be sent. `RFNOTEG` acts now: a child forked with it
   is a group of one. What a delivery still does not carry is floating-point
   state, which is `Ureg`'s edge in Plan 9 too. See `docs/USER.md`.
-- **No allocator in ring 3**, and no way for one process to wait on two
-  descriptors — it forks instead, which is Plan 9's answer.
+- **No way for one process to wait on two descriptors** — it forks instead,
+  which is Plan 9's answer. (A ring 3 heap does exist: `libuser`'s allocator,
+  which `factotum`'s argon2id and the shell both lean on.)
 - **No ACPI.** The I/O APIC's address and the ISA-to-GSI mapping are assumed
   rather than read from a MADT. Both are right on every PC and neither is
   discovered.
@@ -292,28 +279,24 @@ Three rules run through all of them and are worth knowing before opening any:
 
 ## 4. Build and run
 
-```sh
-just run          # build, stage ESP, boot headless, serial on stdio
-just gui          # same, with a QEMU window
-just debug        # boot halted; `just gdb` in another shell (no gdb here: see below)
-just release      # -o:speed, bounds checks off
-just check        # type-check everything, emit nothing
-just font         # regenerate the baked console font
-make run          # identical targets, if `just` is absent (it is, here)
-```
-
 `build.odin` is the real build system — compile, link, stage, run — and holds
-the per-architecture table. `justfile`/`Makefile` are thin wrappers. Invoke the
-driver directly as:
+the per-architecture table. **`just` is not installed on this machine**;
+`make` wraps the same targets, but invoking the driver directly is what these
+notes and the sessions actually use:
 
 ```sh
-odin run build.odin -file -out:.vectra-build -- run --gfx
-odin run build.odin -file -out:.vectra-build -- run --arch=arm64 --serial=file
+odin run build.odin -file -out:.vectra-build -- run            # build, stage ESP, boot headless, serial on stdio
+odin run build.odin -file -out:.vectra-build -- run --gfx      # same, with a QEMU window
+odin run build.odin -file -out:.vectra-build -- run --serial=file   # COM1 to build/serial.log, for headless capture
+odin run build.odin -file -out:.vectra-build -- check          # type-check everything, emit nothing
+odin run build.odin -file -out:.vectra-build -- run --arch=arm64
 odin run build.odin -file -out:.vectra-build -- check --arch=riscv64
+odin run build.odin -file -out:.vectra-build -- fleet          # two machines on one socket link; drive with scripts/fleet.py
 ```
 
+`make run`, `make check`, `make release`, `make font` cover the common ones.
 `--arch` selects the architecture for every target, `check` type-checks the
-kernel and the six programs for one architecture without linking, and a
+kernel and every program for one architecture without linking, and a
 change to anything under `kernel/arch/` or to `main.odin` wants all three
 checked. The two ports boot the same firmware pair QEMU ships for their
 boards, and the riscv64 firmware prints about twelve hundred lines of its
@@ -326,10 +309,10 @@ The one-core boot is the one every self-test before `verify_smp` was written
 against, so a check that fails only at `--smp=4` is a check the cores broke.
 
 **There is no gdb on this machine, and lldb attaches fine.** `lldb
-build/vectra.elf -o 'gdb-remote localhost:1234'` reaches a `just debug` boot
-with symbols and line numbers. QEMU's `-s` flag opens the same stub without
-halting, so a boot loop can run with it open and leave a wedged machine
-standing to be read. `docs/TESTING.md` describes reading one.
+build/vectra.elf -o 'gdb-remote localhost:1234'` reaches a boot started with
+the `debug` target (halted, waiting on :1234) with symbols and line numbers. QEMU's `-s` flag opens
+the same stub without halting, so a boot loop can run with it open and leave
+a wedged machine standing to be read. `docs/TESTING.md` describes reading one.
 
 **The explicit `-out:` is mandatory.** Without it `odin run` names the driver
 binary after the script and drops `./build` directly on top of the `build/`
@@ -344,10 +327,9 @@ does.
 
 Homebrew moved Odin from `dev-2026-08` to `dev-2026-09` under a running
 session on 2 September 2026. The two constraints below about inline assembly
-are what that cost. No `just` installed — use `make`. No
-`xorriso`, no loop devices, no `sudo` required. Pillow is **not** currently
-installed, so `make font` will not run until it is. The two generated font
-files are checked in, and nothing else needs Python.
+are what that cost. No `xorriso`, no loop devices, no `sudo` required. Pillow
+is **not** currently installed, so `make font` will not run until it is; the
+two generated font files are checked in, and nothing else needs Python.
 
 **UEFI firmware is the neighbouring `odin-os` checkout's `ovmf_x64.fd` when
 it is there, and it is there again as of September 2026.** `run_qemu` looks
@@ -427,14 +409,17 @@ the documents it points at.
    a file server with a window as one client. POSIX is mlibc over the
    calls, so that `clang` and `odin` run on the machine. Three of its
    steps need nothing before them.
-6. **The fleet.** `docs/FLEET.md` is the plan, written before its code,
-   and it is the authentication milestone two documents promised. `/net`
-   as files with a listening half, and `exportfs`, `import` and `cpu`.
-   Users are key pairs proved by a Noise handshake through `factotum`.
-   A role is an init script, root comes over the network, one tree
-   serves three architectures, and a queue is a directory. Its bench is two QEMU
-   machines of two architectures on one laptop. Its step 0 takes over
-   the network half of `docs/HARDWARE.md` step 3.
+6. **The fleet, from step 3.** `docs/FLEET.md` is the plan, and steps 0
+   (the network), 1 (9P both ways) and 2 (users, `factotum`, the Noise
+   handshake, kfs owners) are done and on the bench. **Step 3 is next:**
+   roles as init scripts, root over the network, and one tree that serves
+   three architectures, with `cmd/timesync` and the real-time clock. Steps
+   4 (`cpu`) and 5 (the fleet's tools, the queue) follow it. Its bench is
+   two QEMU machines of two architectures on one laptop, driven by
+   `scripts/fleet.py`. The one loose end in step 2 is a permanent person
+   stage in that bench (the manual proof is reliable; the scripted one
+   flaked on console timing), and `/adm` on writable kfs so `auth newuser`
+   can append rather than the build staging the line.
 7. **The ghost.** `docs/GHOST.md` is the plan, written before its code.
    A model is a file server with a local engine and a cloud backend
    behind one directory. The ghost runs the API's loop with seven tools
@@ -726,296 +711,62 @@ What is open, in order:
 
 ## 7. File map
 
-One line per file, and only what the name does not say. The `docs/` tree is
-section 3's table and is not repeated here.
+A directory map: what lives where, and the document that says *why*. The
+per-file detail rotted between sessions, so this stays at the directory
+level -- section 3's table is the index into the reasoning, and `ls` plus a
+package's own comment is the rest.
 
 ```
-build.odin              Build driver: user programs, kernel, ESP, QEMU, and
-                        the ELF-to-VECTRA02 converter
-tests/abi/              /bin/abitest: the process ABI exercised from ring 3,
-                        which the user suite spawns with three arguments
-tests/thread/           /bin/threadtest: libthread's claims, from ring 3
-tests/tools.rc          Every tool once, run by rc from /lib/tests/tools.rc
-justfile / Makefile     Thin wrappers over build.odin
-boot/
-  limine.conf           Limine config, staged to /EFI/BOOT/
-  limine/               Vendored Limine 12.6.1 UEFI binaries
+build.odin            The build system: compiles the kernel and every ring 3
+                      program, links, stages the ESP, drives QEMU, and holds
+                      the per-architecture table. `run`, `check`, `fleet`, `esp`.
+boot/                 Limine config and the vendored UEFI binaries.
 kernel/
-  main.odin             kmain, Limine requests, boot survey, memory bring-up
-  splash.odin           Boot chassis: plinth, copper bar, well, lamps
-  log.odin              Kernel log; serial + screen, with early-line replay
-  panic.odin            The panic screen, and the trap handler behind it
-  link_amd64.ld         Static-PIE layout; orders .limine_requests, exports
-                        the __text/__rodata/__data segment bounds
-  link_arm64.ld         The same layout for aarch64
-  link_riscv64.ld       The same, with the small-data sections placed
-  verify_sync.odin      The sleeping lock on its own terms
-  verify_rendez.odin    The sleep queue: the clock, the park, the condition
-  verify_flush.odin     Tflush against a server that will not finish -- the
-                        stubborn one is the test
-  verify_payload.odin   A payload buffer per request slot, with a shared-buffer
-                        control that has to corrupt
-  verify_vfs_mnt.odin   The namespace over a transport with workers
-  verify_vfs.odin       The namespace under five threads, two servers
-  verify_space.odin     Address spaces: one address, two meanings
-  verify_wire.odin      The wire against a scripted server across a real pipe:
-                        out-of-order replies, a stale reply, a poisoning
-  smp.odin              The other cores: the release, the arrival, and kmain
-                        again from where a core diverges
-  verify_smp.odin       Every core ticks, work spreads, a wake crosses cores
-  arch/
-    arch_amd64.odin     The architecture interface, bound to amd64
-    arch_arm64.odin     The same names, bound to arm64
-    arch_riscv64.odin   The same names, bound to riscv64
-    neutral/            What every architecture spells the same way: the trap
-                        kinds, the page flags, the paging constants, the
-                        console kinds, the core classes. One copy, imported by
-                        all three
-    amd64/frame.odin    What kernel/user may read out of a frame, and put in
-    amd64/cpu.odin      Port I/O, control regs, MSRs, CPUID, EFER, SSE
-    amd64/paging.odin   Page table format: entry bits, encode/decode, TLB
-    amd64/gdt.odin      GDT, TSS, and the interrupt stack table
-    amd64/idt.odin      IDT, the 256 entry stubs, dispatch, fault reporting
-    amd64/pic.odin      Legacy 8259s: remapped clear of the exceptions, masked
-    amd64/ioapic.odin   The register window, and one redirection entry per line
-    amd64/lapic.odin    Local APIC, the timer that preempts, EOI
-    amd64/pit.odin      Channel 2 as a ruler, to measure the LAPIC against
-    amd64/context.odin  A new thread's first saved state, and a core's class
-    amd64/percpu.odin   What one core keeps behind GS, and the two MSRs
-    amd64/syscall.odin  SYSCALL/SYSRET: the four registers that arm them, and
-                        the naked stub that finds a stack with nothing to trust
-    arm64/cpu.odin      DAIF, barriers, the system registers, as bytes
-    arm64/vectors.S     The sixteen-entry table and the tail
-    arm64/traps.odin    The dispatcher: GIC ids, svc immediates and classes
-    arm64/paging.odin   Stage 1 tables; two base registers, one root
-    arm64/early.odin    The TTBR0 window onto the PL011, before the VMM
-    arm64/gic.odin      GICv2: distributor, CPU interface, SGIs
-    arm64/timer.odin    The generic timer, re-armed in the acknowledge
-    arm64/context.odin  A new thread's first frame, and the AP switch
-    arm64/percpu.odin   What one core keeps behind TPIDR_EL1
-    arm64/frame.odin    The frame's public face for arm64
-    riscv64/cpu.odin    sstatus, the CSRs by number, ebreak with a vector
-    riscv64/vectors.S   The one entry stvec names, and the sscratch dance
-    riscv64/traps.odin  The dispatcher: causes, PLIC sources, the mailbox
-    riscv64/paging.odin Sv48
-    riscv64/sbi.odin    Timer, IPI and console through the firmware
-    riscv64/early.odin  The firmware console, and the device tree's one word
-    riscv64/plic.odin   Sources, contexts, claim and complete
-    riscv64/timer.odin  The tick through the SBI, and the IPI mailbox
-    riscv64/context.odin, percpu.odin, frame.odin  As arm64's
-  boot/limine/          Protocol bindings, base revision tag, request delimiters
-  drivers/
-    uart/uart.odin      The serial console, polled: a 16550 behind ports or
-                        in memory, a PL011, or the firmware's own
-    fb/fb.odin          Surface, clipping, gradients, brushed fill, and the
-                        painter that walks libdraw's chrome onto a surface
-    fb/palette.odin     The kernel's aliases for sys/libpal
-    console/            Framebuffer text console, drawing from sys/libfont
-    kbd/kbd.odin        PS/2 scancodes: the top half that may not park, the
-                        ring, the bottom half that may, and the raw hook with
-                        first refusal
-        kbd/verify.odin     The state machine, the raw hook's stale-shift arc, and
-                        one interrupt the 8042 was asked to raise
-    mouse/mouse.odin    PS/2 mouse on the 8042's second port: packets into a
-                        position, rio's buttons, the same two halves
-    mouse/verify.odin   The packet decoder on its own, and a packet the
-                        controller was asked to deliver
-  mem/
-    mem.odin            Region/Boot_Memory types, HHDM, alignment, mem.init
-    pmm.odin            Bitmap physical page allocator, and the zeroed run an
-                        anonymous segment is cut from
-    vmm.odin            Page table walk, kernel address space, translate
-    heap.odin           Slab allocator + Odin's context.allocator
-    space.odin          One page table tree per process, and the kernel half
-                        every one of them shares
-  vfs/
-    lock.odin           What guards what, in what order, and the lock that went
-    vfs.odin            Server on either transport, the #name device table,
-                        rpc, and the counted release a server can carry
-    chan.odin           Chan and its refcounting, the file operations, a read
-                        with a deadline
-    mount.odin          The mount table, bind/unmount, union member lists
-    namespace.odin      Namespace, rfork semantics, teardown
-    walk.odin           attach, walk1, cross_mounts, `..`, resolve, open_path
-    readdir.odin        Union directory reads, and the member-index cookie
-                        kernel/srv shows how to retire
-    fidtab.odin         The fid table every server here uses, and no lock
-    static.odin         A read-only server over a node table
-    root.odin           `#/`, an instance of it, and the boot namespace
-    verify.odin         Two real servers, and a union over them
-  sched/
-    thread.odin         Thread, Cpu, priorities, decay and boost, slice scaling
-    queue.odin          Per-level FIFOs and the pick
-    sched.odin          init, spawn, block/ready/unpark, reschedule, and the
-                        tick that also drains sync's deadlines
-    verify.odin         A cooperative half and a preemptive half
-  sync/
-    spin.odin           The lock that masks: the interrupt flag, nesting handled
-    wait.odin           Wait queues, scheduler hooks, priority-ordered service
-    sleep.odin          The lock that parks: Mutex, handoff rather than retry
-    rendez.odin         Waiting for a condition, with or without a deadline
-  mnt/
-    mnt.odin            A 9P connection with several requests in flight: the
-                        tag pool, the payload buffer per slot, the work queue
-    serve.odin          The workers, and where Rflush's ordering rule lives
-    wire.odin           The same client over bytes: frames down a Wire_IO,
-                        replies matched by tag, and the poison for a server
-                        that breaks framing
-  pipe/
-    pipe.odin           Two ends, a byte ring per direction, and the ends as
-                        chans that park
-    serve9.odin         A posted end turned into a mountable server: the wire
-                        build, the handshake deadline, the pin, and the
-                        counted release that gives all of it back
-    verify.odin         Bytes across, a reader and a writer parked and woken,
-                        EOF and EPIPE out the right sides
-  devfs/
-    devfs.odin          `#c` at /dev: the node table, the handler, the abort
-                        hook, /dev/consctl, and the worker count that bounds
-                        parked readers
-    cons.odin           The console device: two sinks out, a line discipline
-                        and a ring in, and two locks of different kinds
-    fbdev.odin          /dev/fb as the screen's memory at an offset, /dev/fbctl
-                        as its geometry, and the shadow surface the console
-                        draws into while something else holds the glass
-        tap.odin            /dev/scancode and /dev/eia0: each owns its stream while
-                        held open, and gives it back on the last close
-    mouse.odin          /dev/mouse: the latest movement as rio's line, one
-                        reader, a read parked until the next
-    verify.odin         The real /dev: a read that parks through a character, a
-                        line edited, a mode that reverts with its file, pixels
-                        read off the screen, and each stream diverted and
-                        given back
-  srv/
-    srv.odin            `#s` at /srv: the table, post and remove, mounting by
-                        name, the id a fid binds instead of a slot, and the
-                        name's stake a removal releases
-    verify.odin         Published, mounted, removed under its own mount, and a
-                        listing paced across a removal
-  env/
-    env.odin            `#e` at /env: a group of variables per process, the
-                        root that resolves to the caller, and what rfork's
-                        RFENVG and RFCENVG do to a group
-  procfs/
-    proc.odin           `#p` at /proc: a directory per pid with status, ns,
-                        note and ctl, over kernel/user/procinfo.odin's doors
-  user/
-    user.odin           A process: a space, segments, a namespace forked from
-                        the kernel's, a descriptor group, and the fault handler
-                        that ends one rather than the machine
-    segment.odin        The frames behind one mapping, refcounted, in two
-                        shapes: a frame list, and a base with an extent
-    fdtable.odin        The fd table as a refcounted group: the take/advance
-                        borrow discipline, and the release-once exit rule
-    rfork.odin          Plan 9's fork: the flag word, the per-kind segment copy
-                        rule, and the child built before it can run
-    syscall.odin        Behind the door: the calling convention, the calls, the
-                        note check the door runs first, and the two copies that
-                        judge a pointer from ring 3
-    notify.odin         The note handler: the frame pushed onto the user stack,
-                        and the noted that resumes or dies
-    exec.odin           A new image built in a fresh space, committed only when
-                        whole, and the syscall frame rewritten to return into it
-    image.odin          Both image formats, the segment judge, the loader, and
-                        `#b` at /bin
-    spawn.odin          What a child inherits, the wait that parks by pid, and
-                        the reaper that collects a detached orphan
-    programs/           The ring 3 test programs, one Odin package built once
-                        per program into a page-sized blob the kernel embeds
-    path.odin           A process's current directory, and cleanname
-    args.odin           A program's arguments, copied in and staged onto its stack
-    program.odin        The programs' marks, cells and blobs, and
-                        the marks they write to say they ran
-    verify.odin         The largest self-test in the tree, and the one the boot
-                        log's untagged lines come from. Every claim in section
-                        2's process and screen rows is checked here
-sys/
-  abi/abi.odin          The system call ABI, included by both sides of the door
-  libodin/format.odin   Allocation-free formatting (Sink)
-  libodin/tally.odin    Checks counted and the first failure kept
-  vectra9/
-    proto.odin          Message kinds, Qid, the 57 bodies, the Msg union
-    codec.odin          Encode/decode over a bounds-checked cursor; dirents
-    errors.odin         Codec Error and protocol Errno, kept separate
-    session.odin        Session, Transport, Handler; in-process and loopback
-    verify.odin         Both transports agree, and every kind round-trips
-  libuser/
-    sys.odin            The calls from ring 3, the loop helpers every
-                        byte-moving caller needs, and the child-first teardown
-    ring.odin           The byte ring a forked reader publishes through
-    serve.odin          post and serve, the one-at-a-time loop; and Spin,
-                        the ring 3 spinlock the heap, the fid table and
-                        libthread's queues take
-    fid.odin            The fid table five servers had each written, with a
-                        lock, a walk, an attach and an EBADF guard
-    sys_<arch>.odin     The door, as its bytes, one per architecture
-    heap.odin           A first-fit heap over segalloc, behind context.allocator,
-                        with the one lock a program of several procs needs
-  libthread/
-        thread.odin         Plan 9's libthread: procs, threads, the scheduler
-                        per proc, the rendezvous it sleeps in, the endings
-    io.odin             An io proc, and ioread: a read a thread may make
-    chan.odin           Channels and alt, 9front's, under one lock
-    lock.odin           QLock and Rendez, the lock a thread may hold across
-                        a wait and the condition under it
-    label_<arch>.odin   A thread's saved registers, laid out for the switch
-    thread_<arch>.S     The switch, and the fork onto a new stack
-  lib9p/
-        srv.odin            A 9P server on libthread: the pipe through an io
-                        proc, a Req per request, hold and respond from any
-                        thread
-    main.odin           startup, args, Bio: what a tool starts with
-    link_user.ld        A ring 3 program's layout, aligned so every change of
-                        permission gets its own page
-    lines.odin          Reader and read_line, read_all, eprint, itoa, atoi:
-                        what a tool reads and says without core:fmt
-  libregex/regex.odin   Plan 9's regular expressions as a Thompson simulation,
-                        for grep and sed
-  libfmt/print.odin     print, fprint and bio_print over core:fmt, apart from
-                        libuser so a page-sized program never links fmt
-  libdraw/draw.odin     The draw protocol's encoding: the six verbs, the put
-                        half a client batches with, the get half the server
-                        decodes with
-  libdraw/text.odin     Text as a library over blit: the atlas layout, and the
-                        consumed-count return that pumps a long line through
-  libdraw/chrome.odin   The chassis vocabulary as rectangles, worn by both
-                        rings. What composes them is the caller's
-  libpal/palette.odin   The system palette, once, for both privilege levels
-    libfont/font_data.odin  GENERATED -- the one 8x16 font table
-  libkbd/kbd.odin       Scancode set 1 as a state machine both rings call:
-                        a position, whether it went down, and what it means
-                        under the modifiers now
-  libposix/             Empty. docs/DEVTOOLS.md section 8 is the plan
-servers/
-  ramfs/main.odin       The first compiled server: two files, one writable,
-                        serving this program's own segments back
-  memfs/main.odin       A file tree on the heap: create, mkdir, remove,
-                        grow, list; the working filesystem until the disk
-  consrv/main.odin      An rfork'd reader parked on /dev/cons, a concurrent
-                        serve loop, and a shared ring under two locks
-  kbdfs/main.odin       The kernel's scancode state machine rebuilt in ring 3
-                        over /dev/scancode, served cooked on /kbd
-  eiafs/main.odin       /dev/eia0 served raw both ways, and the first Twrite
-                        that reaches hardware
-  intuition/main.odin   The draw server and the compositor: /new and a numbered
-                        directory per window, six verbs on each window's data
-                        file, a desktop, a frame, and four ctl lines
-apps/
-  terminal/main.odin    Lines in from /dev/cons, glyphs out through a /srv/draw
-                        mount of its own -- the tree's first ring 3 mount
-  rc/                   Plan 9's shell: lex, parse, tree, word, exec, builtin,
-                        var, status, input, main, and rcmain in the image;
-                        docs/RC.md
-cmd/                    One package per tool, one binary each; docs/CMD.md
-  echo cat ls pwd mkdir rm cp mv cmp wc tee tail grep sed sort uniq tr
-  basename cleanname test seq sleep read env bind mount unmount ps kill ns
-tools/
-  genfont.py            TTF -> font_data.odin
-  ste-lint.py           The ASD-STE100 checker; `build.odin -- lint` runs it
-.claude/skills/
-  asd-ste100/           The controlled-language skill this tree writes under
-docs/
-  *.md                  Section 3's table
-  *.png                 Milestone screenshots, and the boot the README leads
-                        with
+  main.odin           kmain: Limine requests, the boot survey, and every
+                      subsystem's bring-up in order. The boot self-tests are
+                      the `verify_*.odin` files beside it and in each package.
+  arch/               The architecture interface, bound three ways (amd64,
+                      arm64, riscv64) with a `neutral/` core; the .S stubs and
+                      the paging, GDT/IDT, APIC and MSR code live under amd64/.
+                      docs/BOOT.md, docs/PORTS.md.
+  mem/                PMM, VMM, heap, and a space per process. docs/MEMORY.md,
+                      docs/SPACE.md.
+  sched/  sync/       The scheduler, the switch, the tick; spinlocks, the
+                      sleeping lock and the sleep queue. docs/SCHED.md,
+                      docs/SYNC.md, docs/SMP.md.
+  vfs/  mnt/  pipe/   The namespace, the 9P transport (tag pool, workers,
+                      Tflush, the wire over bytes), and pipes whose posted end
+                      becomes a server. docs/NAMESPACE.md, docs/TRANSPORT.md,
+                      docs/PIPE.md.
+  devfs/ srv/ env/    The kernel device trees: `#c` /dev, `#s` /srv, `#e` /env,
+  procfs/             `#p` /proc. docs/DEVFS.md, SRV.md, ENV.md, PROC.md.
+  user/               Ring 3: the syscall door, a process and its namespace,
+                      rfork/exec/notes, and the per-process user. docs/USER.md.
+  drivers/            kbd, mouse, uart, fb, console, virtio (blk, net, rng),
+                      ether. docs/KBD.md, docs/MOUSE.md.
+sys/                  The ~20 ring 3 libraries. libuser (the syscall wrappers
+                      and heap), vectra9 (the wire), libthread + lib9p (threads,
+                      channels, a parking server), libdraw + libpal + libmui
+                      (the screen and the toolkit), libedit (the line
+                      discipline), libnet + libndb (dial, the database),
+                      libauth + libcrypto (the handshake and its primitives),
+                      libregex, libfmt, libodin, libkbd, libkey, libfont,
+                      libposix (empty; docs/DEVTOOLS.md 8).
+servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
+                      consrv/kbdfs/eiafs (the console and its devices reborn in
+                      ring 3), intuition (the draw server + compositor),
+                      netfs/cs/dns (the network as files), fatfs/kfs (the ESP
+                      and the writable disk), factotum (keys and the handshake).
+apps/                 rc (the shell), terminal, filemgr, muidemo, tracker.
+                      docs/RC.md, docs/DRAW.md, docs/WORKBENCH.md.
+cmd/                  ~40 tools, one package and one binary each; the fleet's
+                      srv/import/exportfs/listen and auth are here too.
+                      docs/CMD.md; tests/tools.rc runs each once.
+tests/                abitest and threadtest (the ABI and libthread from ring
+                      3), plus the crypto and auth test programs.
+scripts/fleet.py      Drives the two-machine bench: boots both, crosses a line,
+                      imports a tree, refuses a stranger.
+tools/                genfont.py (the baked font) and ste-lint.py (the
+                      controlled-language checker `build.odin -- lint` runs).
+docs/                 Section 3's table. Every "why" lives here.
 ```
