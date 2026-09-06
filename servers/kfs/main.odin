@@ -182,6 +182,14 @@ start :: proc "c" (block: ^abi.Args) {
 				"kfs -t ", device, ": probe -- eight blocks of one set read twice: ",
 				itoa_u32(u32(probe)), " of 16 reads went to the disk\n",
 			)
+			// And that the cache survives a commit: a block written through
+			// a transaction is read again after it, warm and right.
+			wblock, wok := cache_writeback_test()
+			libuser.eprint(
+				"kfs -t ", device,
+				wok ? ": write-back control passed -- a block read after its commit was warm and right, at " : ": WRITE-BACK CONTROL FAILED at block ",
+				itoa_u32(wblock), "\n",
+			)
 		} else {
 			c := check_volume()
 			report_check(device, &c)

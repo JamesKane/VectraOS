@@ -79,16 +79,23 @@ home, not atomic, and says so.
 
 **Holding writes back is what made the cache a problem, and the transaction
 is what fixed it.** The cache is thirty-two slots direct-mapped by block
-number, good only until the next read that maps to a slot. With every write
-going straight to the disk that was harmless: a block evicted and read again
-came back with its change. With writes held it would not -- a bitmap block a
+number, good only until a way of its set is reused. With every write going
+straight to the disk that was harmless: a block evicted and read again came
+back with its change. With writes held it would not -- a bitmap block a
 truncate clears bit after bit would come back from the disk with the first
 bits still set, and the change would be lost inside the request that made
 it. So a transaction keeps its own copy of every block it has written, and
 `bread` answers from that copy first: the overlay is the truth for a block
-the request changed, and the cache is a read accelerator and no more. When
-the transaction ends, committed or not, the cache is dropped whole, so no
-slot can serve a copy it took before an eviction and a re-read.
+the request changed, and the cache is a read accelerator behind it.
+
+A commit keeps the cache, and this is the write-back part. Every block a
+request changed it also wrote, so by the commit each dirty way already holds
+what lands home -- `bwrite` keeps the way in step with the overlay -- and a
+dirty way that was evicted simply misses and re-reads the committed disk.
+Nothing stale survives, and a block two requests touch is read once. Only an
+*abort* drops the cache, because an abandoned request's edits are in the ways
+and were never committed, and that is the one case a way can hold what the
+disk does not.
 
 There is no barrier between the log write and the header write, which real
 hardware would want before trusting the header; QEMU's disk is ordered
@@ -101,23 +108,30 @@ nothing behind. What the order could leave before the journal -- a block
 taken and never pointed at, an inode written before the entry that names it
 -- the journal now prevents; `kfs -c` remains, a mark from the root and a
 sweep of what it did not reach, for a volume from before the journal or a
-disk that lied. The boot runs both controls (`kfs -t`): a block leaked on
-purpose that the check must reclaim, and a commit faked as stopped after its
+disk that lied. The boot runs three controls (`kfs -t`): a block leaked on
+purpose that the check must reclaim; a commit faked as stopped after its
 record -- the log written and the header committed, the home untouched --
-that replay must finish. Each is net zero on the disk and each can fail, which
-is what makes them tests. `servers/kfs/fsck.odin`, and the transaction in
-`disk.odin`.
+that replay must finish; and a block written through a transaction that,
+read after the commit, must be warm in the cache and hold what was written,
+which a cache dropped at commit would miss and a stale one would get wrong.
+Each is net zero on the disk and each can fail, which is what makes them
+tests. `servers/kfs/fsck.odin`, and the transaction in `disk.odin`.
 
 ## The cache
 
-Thirty-two blocks, direct-mapped by block number, in the program's own
-memory. The superblock, the bitmap and the inode table are the blocks
-touched again and again; file data passes through the same slots, because
-a 9P read is two blocks and a second read of the same file is rare. A slot
-holds bytes a caller may change and `bwrite` puts on the disk, and is good
-only until the next `bread` that maps to it -- which is why an inode is
-copied out of its block into an `Inode` and back rather than edited in
-place, and why a directory scan re-reads its block per entry.
+256 blocks -- a megabyte -- as 32 sets of 8 ways, the least recently used
+way of a set the one evicted. The superblock, the bitmap and the inode
+table are the blocks touched again and again, and eight ways keep an inode
+table block from being evicted by a data block that shares its residue,
+which a direct-mapped slot per set could not: a probe that reads eight
+blocks of one set twice missed all sixteen there and misses eight here, the
+cold pass alone. A megabyte does not fit a program's static image, so the
+cache is one heap allocation at startup (`cache_init`); the heap grows far
+past it. A way holds bytes a caller may change, and it is good until the way
+is reused -- which is why an inode is still copied out of its block into an
+`Inode` and back rather than edited in place. The transaction section above
+has the rest: how a change is held until commit, why a commit keeps the
+cache and an abort drops it.
 
 ## Ream
 
@@ -180,8 +194,3 @@ would, and checks that `$home` is `/usr/glenda`.
 - **Groups.** A file has an owner (bytes 96 to 123 of the inode, the user
   that made it) and a mode the server checks against the attaching user,
   but no group; `/adm/users` is not read.
-- **A write-back cache in normal running.** A transaction is write-back
-  within itself -- its blocks are held and land at commit -- but between
-  transactions the cache is dropped, so a block touched by two requests is
-  read twice. A cache that survived across requests would save that, at
-  the cost of knowing which of its blocks a crash may not have committed.

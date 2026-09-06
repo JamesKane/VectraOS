@@ -386,10 +386,15 @@ An overflowed transaction has already written itself home block by block,
 and only the cache is dropped.
 */
 txn_commit :: proc "contextless" () -> bool #no_bounds_check {
+	// The cache is kept, not dropped: every block the request changed it
+	// also wrote, so each dirty way already holds what lands home -- `bwrite`
+	// keeps the way in step with the overlay -- and an evicted dirty simply
+	// misses and re-reads the committed disk. So a block two requests touch
+	// is read once, which a drop here threw away. Only `txn_abort` drops,
+	// because an abandoned request's edits are in the ways and uncommitted.
 	defer {
 		txn.active = false
 		txn.n = 0
-		cache_drop()
 	}
 	if txn.overflow {
 		// The overlay's blocks went home as they overflowed; land the rest.
@@ -421,8 +426,8 @@ txn_commit :: proc "contextless" () -> bool #no_bounds_check {
 }
 
 // txn_abort discards the transaction: nothing reached the log or a home
-// block, and the cache is dropped so no slot keeps a change that was never
-// made.
+// block, and the cache is dropped so no way keeps a change that was never
+// made -- the one case a way can hold what the disk does not.
 txn_abort :: proc "contextless" () {
 	txn.active = false
 	txn.n = 0
@@ -529,6 +534,53 @@ journal_selftest :: proc "contextless" () -> (block: u32, ok: bool) #no_bounds_c
 	}
 	// As it was: the block free and zero.
 	ok = bzero(block)
+	cache_drop()
+	return block, ok
+}
+
+/*
+cache_writeback_test is the control for the cache that survives a commit.
+A free block is written a pattern through a real transaction; after the
+commit the same block is read again, and the read must not touch the disk
+(the way is still there, warm) and must hold the pattern (the way is not
+stale). A cache dropped at commit would miss the read; a cache that kept a
+pre-write copy would hold the wrong bytes. The block is freed to zero after,
+so the volume is as it was. Answers the block and whether both held.
+*/
+cache_writeback_test :: proc "contextless" () -> (block: u32, ok: bool) #no_bounds_check {
+	for b := vol.sb.data_start; b < vol.sb.blocks; b += 1 {
+		taken, got := bit_read(b)
+		if !got {
+			return 0, false
+		}
+		if !taken {
+			block = b
+			break
+		}
+	}
+	if block == 0 {
+		return 0, false
+	}
+	txn_begin()
+	d := bread(block)
+	if d == nil {
+		txn_abort()
+		return block, false
+	}
+	for i in 0 ..< BLOCK {
+		d[i] = 0x5A
+	}
+	if !bwrite(block) || !txn_commit() {
+		return block, false
+	}
+	// The read the commit did not throw away: a hit, and the pattern.
+	misses := cache_misses
+	got := bread(block)
+	warm := cache_misses == misses
+	coherent := got != nil && got[0] == 0x5A && got[BLOCK - 1] == 0x5A
+	ok = warm && coherent
+	// As it was.
+	_ = bzero(block)
 	cache_drop()
 	return block, ok
 }

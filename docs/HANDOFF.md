@@ -566,16 +566,15 @@ step each stopped at. Both are done now, as a root of their own:
                        a leak the check must reclaim, and a commit faked as
                        stopped after its record that replay must finish.
     the cache          DONE. 256 blocks, a megabyte, 32 sets of 8 ways,
-                       LRU -- was 32 direct-mapped, where an inode block and
-                       a data block that shared a residue evicted each other
-                       (a probe reads eight of a set twice: 16 disk reads of
-                       16 became 8). Held on the heap, since a megabyte will
-                       not fit a program's static image; the transaction's
-                       overlay is what lets its writes be held safely.
-                       Left in kfs: a write barrier between the log and the
-                       header (a board driver's to give), and a cache that
-                       survives across requests rather than being dropped
-                       at each transaction's end.
+                       LRU, on the heap -- was 32 direct-mapped, where an
+                       inode block and a data block that shared a residue
+                       evicted each other (a probe reads eight of a set
+                       twice: 16 disk reads of 16 became 8). Write-back: a
+                       commit keeps the cache, since every changed block was
+                       written and each dirty way holds what landed, so a
+                       block two requests touch is read once; only an abort
+                       drops it. Left in kfs: a write barrier between the log
+                       and the header, a board driver's to give.
 
 **One way to defer the largest of these.** A model's weights are read,
 not written, and `/lib` is bound from the FAT system partition the host
