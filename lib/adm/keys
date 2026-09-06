@@ -6,3 +6,8 @@
 one 44732d94646e3caf820067be7f0eb8fdd3ca9ec5432644886761842d8827760f sys
 two e6b84f4fe31aa05bc38b2307cd5c0d4f318f4e4bd7e7f7000b969277f0a4775b sys
 vectra f14194c9bea065b79e07223e1fd23404448bcafda93a308f9c52454fe5cea260 sys adm
+# A person, enrolled with `auth newuser jkane sys`. The private half is
+# derived from a passphrase (argon2id, salted jkane@home) and never written;
+# `auth login jkane` types it into factotum for a session. See docs/FLEET.md
+# section 4.
+jkane 426f8a879624d12e1bb4c80e72d1fe3224e9fd6b9243b22f56cae6fbd0f5077f sys

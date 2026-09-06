@@ -127,6 +127,7 @@ user_programs := [?]User_Program {
 	{name = "factotum", path = "servers/factotum"},
 	{name = "authtest", path = "tests/auth"},
 	{name = "chmod", path = "cmd/chmod"},
+	{name = "auth", path = "cmd/auth"},
 	{name = "muidemo", path = "apps/muidemo"},
 }
 

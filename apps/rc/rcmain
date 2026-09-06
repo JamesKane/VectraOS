@@ -9,3 +9,9 @@ if(~ $#prompt 0) prompt=('% ' '	')
 # 9fs: mount another machine's tree at /n/host, the two lines as one.
 # `srv` dials tcp!host!9fs and posts the stream; `mount` makes it a tree.
 fn 9fs { srv tcp!$1!9fs $1 && mount /srv/$1 /n/$1 }
+
+# login: become a person for the rest of this session. `exec` so `auth`
+# replaces this shell rather than a child of it -- the passphrase, the
+# name into the kernel and /env, and a fresh shell all land on the one
+# process that owns the console. docs/FLEET.md section 4.
+fn login { exec auth login $1 }
