@@ -4,6 +4,7 @@ package mv
 
 import "vsys:abi"
 import "vsys:libuser"
+import "vsys:vectra9"
 
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -35,6 +36,19 @@ start :: proc "c" (block: ^abi.Args) {
 }
 
 move :: proc(src, dst: string) -> bool {
+	// A rename first: the server keeps the file and moves the entry, which
+	// is instant and keeps the qid. Two answers mean `copy instead`: EXDEV,
+	// the names are on different servers; and EOPNOTSUPP, a server that
+	// does not rename at all, which memfs and the static tree still are.
+	// Any other refusal is the server's word and stands.
+	renamed := libuser.rename(src, dst)
+	if renamed == 0 {
+		return true
+	}
+	if renamed != -i64(vectra9.EXDEV) && renamed != -i64(vectra9.EOPNOTSUPP) {
+		libuser.eprint("mv: can't move ", src, " to ", dst, ": ", libuser.errstr(renamed), "\n")
+		return false
+	}
 	data, ok := libuser.read_file(src, context.allocator)
 	if !ok {
 		libuser.eprint("mv: can't read ", src, "\n")

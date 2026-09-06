@@ -108,6 +108,7 @@ SYS_WAIT :: abi.SYS_WAIT
 SYS_CREATE :: abi.SYS_CREATE
 SYS_MOUNT :: abi.SYS_MOUNT
 SYS_REMOVE :: abi.SYS_REMOVE
+SYS_RENAME :: abi.SYS_RENAME
 SYS_UNMOUNT :: abi.SYS_UNMOUNT
 SYS_GETPID :: abi.SYS_GETPID
 SYS_PIPE :: abi.SYS_PIPE
@@ -344,6 +345,8 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		result = sys_mount(uintptr(a0), int(a1), uintptr(a2), int(a3), a4)
 	case SYS_REMOVE:
 		result = sys_remove(uintptr(a0), int(a1))
+	case SYS_RENAME:
+		result = sys_rename(uintptr(a0), int(a1), uintptr(a2), int(a3))
 	case SYS_UNMOUNT:
 		result = sys_unmount(uintptr(a0), int(a1), uintptr(a2), int(a3))
 	case SYS_GETPID:
@@ -1013,6 +1016,68 @@ sys_remove :: proc(addr: uintptr, length: int) -> i64 {
 	err = vfs.chan_remove(c)
 	vfs.chan_close(c)
 	if err != vfs.OK {
+		return -i64(err)
+	}
+	return 0
+}
+
+/*
+sys_rename moves the file `old` names to the name `new`, without a copy.
+
+The file is resolved to its chan, and the new path is split at its last
+slash into the directory that will hold it and the name it will have there;
+the directory is resolved too, and `vfs.chan_rename` sends one `Trename`
+to the server both live on. A new path with no slash names a file in the
+process's working directory, which is where every other path here starts.
+Two names on different servers answer EXDEV, because no server can move an
+entry into a tree it does not hold, and that is `mv`'s cue to copy.
+*/
+sys_rename :: proc(old_addr: uintptr, old_len: int, new_addr: uintptr, new_len: int) -> i64 {
+	p := current()
+	if p == nil || p.ns == nil {
+		return -i64(vectra9.EBADF)
+	}
+
+	old_buf: [PATH_MAX]u8
+	old, oerr := copy_path(p, old_addr, old_len, old_buf[:])
+	if oerr != vfs.OK {
+		return -i64(oerr)
+	}
+	new_buf: [PATH_MAX]u8
+	new, nerr := copy_path(p, new_addr, new_len, new_buf[:])
+	if nerr != vfs.OK {
+		return -i64(nerr)
+	}
+
+	// The new name's directory and leaf. `/a/b/c` is `/a/b` and `c`; `c`
+	// alone is `.` and `c`; `/c` is `/` and `c`.
+	cut := len(new)
+	for cut > 0 && new[cut - 1] != '/' {
+		cut -= 1
+	}
+	leaf := new[cut:]
+	if len(leaf) == 0 || leaf == "." || leaf == ".." {
+		return -i64(vectra9.EINVAL)
+	}
+	dir := "."
+	if cut > 1 {
+		dir = new[:cut - 1]
+	} else if cut == 1 {
+		dir = "/"
+	}
+
+	c, cerr := vfs.resolve(p.ns, old)
+	if cerr != vfs.OK {
+		return -i64(cerr)
+	}
+	defer vfs.chan_close(c)
+	d, derr := vfs.resolve(p.ns, dir)
+	if derr != vfs.OK {
+		return -i64(derr)
+	}
+	defer vfs.chan_close(d)
+
+	if err := vfs.chan_rename(c, d, leaf); err != vfs.OK {
 		return -i64(err)
 	}
 	return 0

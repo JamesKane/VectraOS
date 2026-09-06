@@ -111,8 +111,13 @@ would, and checks that `$home` is `/usr/glenda`.
 
 - **A journal**, and a check program. The write order above is the whole
   crash story.
-- **Rename.** `mv` copies and removes, as it does everywhere here.
 - **Dates.** `mtime` is written as zero.
+- **Rename across servers.** Within kfs, `Trename` moves an entry and
+  keeps the inode, across directories, and `mv` uses it; a name on another
+  server answers EXDEV and `mv` copies and removes, as it does for a server
+  that does not rename at all (memfs, the static tree: EOPNOTSUPP). The
+  entry leaves its old directory before it lands in the new, so a stop
+  between the two leaves an unnamed inode rather than one named twice.
 - **A third indirect level.** Two reach four gigabytes: twelve direct
   blocks, a table of a thousand, and a table of tables. The double
   pointer sits at byte 92 of the inode, a slot that was spare, so a volume

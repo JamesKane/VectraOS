@@ -401,6 +401,34 @@ chan_remove :: proc(c: ^Chan) -> Errno {
 	return OK
 }
 
+/*
+chan_rename moves the file `c` names to `name` under the directory `d`, on
+the server both live on. The file keeps its fid and its qid: only the
+entry that names it moves. Plan 9 renames with a `wstat` of the name and
+cannot cross a directory; 9P2000.L's `Trename` carries the new parent, so
+one message does what `mv` needed two and a copy for. Both chans must be
+the same server's -- a server cannot re-point an entry into a tree it does
+not hold -- and a pair that is not answers EXDEV, which is a mover's cue
+to copy and remove instead.
+*/
+chan_rename :: proc(c: ^Chan, d: ^Chan, name: string) -> Errno {
+	if c == nil || d == nil || c.fid == vectra9.NOFID || d.fid == vectra9.NOFID {
+		return vectra9.EBADF
+	}
+	if c.server != d.server {
+		return vectra9.EXDEV
+	}
+	request := vectra9.Msg(vectra9.Trename{fid = c.fid, dfid = d.fid, name = name})
+	reply: vectra9.Msg
+	if err := rpc(c.server, &request, &reply); err != OK {
+		return err
+	}
+	if _, ok := reply.(vectra9.Rrename); !ok {
+		return vectra9.EPROTO
+	}
+	return OK
+}
+
 // The Tgetattr request masks a client can ask for. `BASIC` is what stat(2)
 // needs, and what every Vectra server answers. A request for more is legal,
 // and gets whatever the server chose to fill in. `valid` reports which that

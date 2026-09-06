@@ -132,6 +132,14 @@ remove :: proc "contextless" (path: string) -> i64 {
 	return raw2(abi.SYS_REMOVE, u64(uintptr(raw_data(path))), u64(len(path)))
 }
 
+// rename moves a file to a new name, across directories, without copying
+// it: the server keeps the file and re-points the entry. Both names must
+// reach the same server; across servers the answer is -EXDEV, and a mover
+// copies and removes instead.
+rename :: proc "contextless" (old, new: string) -> i64 {
+	return raw4(abi.SYS_RENAME, u64(uintptr(raw_data(old))), u64(len(old)), u64(uintptr(raw_data(new))), u64(len(new)))
+}
+
 pipe :: proc "contextless" () -> i64 {
 	return raw1(abi.SYS_PIPE, 0)
 }

@@ -793,6 +793,90 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 	case vectra9.Treaddir:
 		readdir(m, reply, buf)
 
+	case vectra9.Trename:
+		/*
+		Move the entry that names a file, and nothing else: the inode, its
+		blocks and its qid stay, and every fid on it stays open. The entry
+		leaves its old directory and lands in `dfid`'s under `name`. That is
+		what `mv` needed a copy and a remove for.
+
+		The new home may not be the file itself or anything under it -- a
+		directory moved into its own subtree is unreachable for ever -- and
+		the checks are the ones a create makes: a valid name, no such name
+		already, and the mover may write the target directory. The old entry
+		goes first, as a remove's does, so a stop between the two leaves a
+		file the fsck of the future finds unnamed rather than named twice.
+		*/
+		n := live_node(m.fid, reply)
+		if n == nil {
+			return
+		}
+		d := live_node(m.dfid, reply)
+		if d == nil {
+			return
+		}
+		if n == root || n.removed {
+			reply^ = vectra9.error_reply(n == root ? vectra9.EPERM : vectra9.ENOENT)
+			return
+		}
+		if !d.dir {
+			reply^ = vectra9.error_reply(vectra9.ENOTDIR)
+			return
+		}
+		if !valid_name(m.name) {
+			reply^ = vectra9.error_reply(vectra9.EINVAL)
+			return
+		}
+		// The root is its own parent, so the walk up ends at it by
+		// identity rather than at nil, or it never ends at all.
+		for a := d; ; a = a.parent {
+			if a == n {
+				reply^ = vectra9.error_reply(vectra9.EINVAL)
+				return
+			}
+			if a == root {
+				break
+			}
+		}
+		if !load_children(d) {
+			reply^ = vectra9.error_reply(vectra9.EIO)
+			return
+		}
+		if d == n.parent && m.name == n.name {
+			reply^ = vectra9.Rrename{}
+			return
+		}
+		if child_named(d, m.name) != nil {
+			reply^ = vectra9.error_reply(vectra9.EEXIST)
+			return
+		}
+		mover := fid_slot(m.dfid)
+		if !allowed(d, mover, 2) || !allowed(n.parent, mover, 2) {
+			reply^ = vectra9.error_reply(vectra9.EPERM)
+			return
+		}
+		if !dir_del(n.parent, n.slot) {
+			reply^ = vectra9.error_reply(vectra9.EIO)
+			return
+		}
+		slot, added := dir_add(d, m.name, n.ino)
+		if !added {
+			reply^ = vectra9.error_reply(vectra9.ENOSPC)
+			return
+		}
+		for c, i in n.parent.children {
+			if c == n {
+				ordered_remove(&n.parent.children, i)
+				break
+			}
+		}
+		delete(n.name)
+		n.name = clone_string(m.name)
+		n.parent = d
+		n.slot = slot
+		append(&d.children, n)
+		reply^ = vectra9.Rrename{}
+
 	case vectra9.Tremove:
 		f := fid_slot(m.fid)
 		if f == nil {

@@ -2461,6 +2461,58 @@ verify_kfs :: proc() {
 			libodin.tally(&result, bgot == 3 && string(back[:3]) == "far", "and reads back from there through a fresh open")
 			libodin.tally(&result, remove_at(ns, "/usr/glenda/big") == vfs.OK, "and the double level frees on remove")
 		}
+
+		/*
+		A rename: the entry moves and the file does not. A file is made and
+		written, moved to a new name in the same directory by one Trename,
+		and the old name is gone while the new one holds the same bytes and
+		the same qid path -- the inode, which a copy-and-remove could never
+		keep. Then moved again, into a subdirectory, which Plan 9's wstat
+		could not do and 9P2000.L's Trename can.
+		*/
+		_ = remove_at(ns, "/usr/glenda/moved")
+		_ = remove_at(ns, "/usr/glenda/sub/moved")
+		_ = remove_at(ns, "/usr/glenda/sub")
+		_ = remove_at(ns, "/usr/glenda/tomove")
+		if m0, merr := vfs.create_path(ns, "/usr/glenda/tomove", vfs.O_RDWR, 0o664); libodin.tally(&result, merr == vfs.OK, "a file to move is made") {
+			_, _ = vfs.chan_write(m0, 0, transmute([]u8)string("kept"))
+			mattr, _ := vfs.chan_stat(m0)
+			path_before := mattr.qid.path
+			vfs.chan_close(m0)
+
+			if fc, dc, ok := resolve_pair(ns, "/usr/glenda/tomove", "/usr/glenda"); libodin.tally(&result, ok, "the file and its directory resolve") {
+				libodin.tally(&result, vfs.chan_rename(fc, dc, "moved") == vfs.OK, "one Trename moves it to a new name")
+				vfs.chan_close(fc)
+				vfs.chan_close(dc)
+			}
+			_, gone := vfs.open_path(ns, "/usr/glenda/tomove", vfs.O_RDONLY)
+			libodin.tally(&result, gone != vfs.OK, "the old name is gone")
+			kept: [8]u8
+			kn := 0
+			path_after: u64
+			if m1, rerr := vfs.open_path(ns, "/usr/glenda/moved", vfs.O_RDONLY); rerr == vfs.OK {
+				kn, _ = vfs.chan_read(m1, 0, kept[:])
+				a1, _ := vfs.chan_stat(m1)
+				path_after = a1.qid.path
+				vfs.chan_close(m1)
+			}
+			libodin.tally(&result, kn == 4 && string(kept[:4]) == "kept", "the new name holds the bytes")
+			libodin.tally(&result, path_after == path_before, "and the same qid path -- the file moved, not a copy of it")
+
+			// Into a subdirectory, which is the cross-directory case.
+			if sd, sderr := vfs.create_path(ns, "/usr/glenda/sub", vfs.O_RDONLY, 0o775 | u32(vfs.DMDIR)); sderr == vfs.OK {
+				vfs.chan_close(sd)
+			}
+			if fc, dc, ok := resolve_pair(ns, "/usr/glenda/moved", "/usr/glenda/sub"); ok {
+				libodin.tally(&result, vfs.chan_rename(fc, dc, "moved") == vfs.OK, "and into a subdirectory")
+				vfs.chan_close(fc)
+				vfs.chan_close(dc)
+			}
+			_, in_sub := vfs.open_path(ns, "/usr/glenda/sub/moved", vfs.O_RDONLY)
+			libodin.tally(&result, in_sub == vfs.OK, "where it is found by its new path")
+			_ = remove_at(ns, "/usr/glenda/sub/moved")
+			_ = remove_at(ns, "/usr/glenda/sub")
+		}
 	}
 
 	sink := report_begin("kfs", result.checks)
@@ -2476,6 +2528,21 @@ verify_kfs :: proc() {
 
 // remove_at removes the file a path names: resolve it, send the remove,
 // and close the reference the resolve took, which the remove does not.
+// resolve_pair resolves a file and a directory for a rename, and answers
+// both chans or neither: a caller that gets false has nothing to close.
+resolve_pair :: proc(ns: ^vfs.Namespace, file, dir: string) -> (c: ^vfs.Chan, d: ^vfs.Chan, ok: bool) {
+	fc, ferr := vfs.resolve(ns, file)
+	if ferr != vfs.OK {
+		return nil, nil, false
+	}
+	dc, derr := vfs.resolve(ns, dir)
+	if derr != vfs.OK {
+		vfs.chan_close(fc)
+		return nil, nil, false
+	}
+	return fc, dc, true
+}
+
 remove_at :: proc(ns: ^vfs.Namespace, path: string) -> vfs.Errno {
 	c, err := vfs.resolve(ns, path)
 	if err != vfs.OK {

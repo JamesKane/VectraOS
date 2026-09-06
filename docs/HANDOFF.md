@@ -538,29 +538,25 @@ order:
    second client. A `tlsclient` written for one host first is one
    written twice.
 
-**The filesystem is not finished, and three plans lean on the parts that
-are missing.** `docs/KFS.md` defers six things, and four of the five
-plans reach one of them:
+**The filesystem was not finished, and three plans leaned on the parts
+that were missing.** `docs/KFS.md` deferred six things; two of them were
+owned by no plan and were the ones GHOST 0 and the DEVTOOLS self-hosting
+step each stopped at. Both are done now, as a root of their own:
 
-    files past 4 MB    kfs has one indirect level. GHOST 0's model
-                       weights are `a gigabyte on a disk`, and DEVTOOLS 8's
-                       self-hosted `clang` and `odin` write objects and
-                       debug files past the cap. The block is real.
-        owners, dates      FLEET 2 and 3 grow both, and `docs/FLEET.md` says
-                       so. This one is owned. Do not build it twice.
-    rename             `mv` copies and removes. DEVTOOLS 7's `libposix`
-                       and every build that writes a file and moves it
-                       into place want the real thing.
+    files past 4 MB    DONE. A double indirect level takes a file to four
+                       gigabytes on the same format -- byte 92 of the inode
+                       was spare -- so GHOST 0's weights and DEVTOOLS 8's
+                       objects fit. A third level is the same recursion
+                       again, when a file wants it.
+    rename             DONE. `Trename` moves the entry and keeps the inode,
+                       across directories, and `mv` uses it; EXDEV or a
+                       server that cannot (memfs) makes `mv` copy. DEVTOOLS
+                       7's `libposix` has the real thing to wrap.
+    owners             DONE, FLEET 2. Dates wait on FLEET 3's clock.
     a journal, a check anything that must survive a crash mid-write. No
                        plan's function waits on it, but a fleet's root
-                       disk (FLEET 3) is the first thing that would.
-
-**Two of these are unowned, and that is the finding.** Owners and dates
-are FLEET's. But nothing yet owns *large files* or *rename*, and GHOST 0
-and the DEVTOOLS self-hosting step each stop at one. So kfs growing a
-second and third indirect level, and a `wstat` that renames, is a root
-of its own. It goes ahead of GHOST 0 and DEVTOOLS 8, on the forward
-list rather than inside a plan that assumes it.
+                       disk (FLEET 3) is the first thing that would, so
+                       it is FLEET 3's to want.
 
 **One way to defer the largest of these.** A model's weights are read,
 not written, and `/lib` is bound from the FAT system partition the host
@@ -590,7 +586,8 @@ The remaining roots wait on nothing, and each can start now:
     the font > 128     WEB 1
     C and the clock    DEVTOOLS 0 and 1
     a model, the ghost GHOST 0 and 1
-    kfs large + rename unowned, ahead of GHOST 0's write path and DEVTOOLS 8
+    kfs large + rename DONE -- the unowned root, built; GHOST 0's write path
+                       and DEVTOOLS 7 and 8 no longer stop at kfs
 
 Of these the network has the widest fan-out. Every later FLEET step,
 GHOST 4, and the stack half of HARDWARE 3 read it. So it is the next
