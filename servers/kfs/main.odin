@@ -135,6 +135,12 @@ start :: proc "c" (block: ^abi.Args) {
 		}
 	}
 
+	// A commit a stop interrupted was finished by the mount; say so, since
+	// it is the journal doing the one thing it exists for.
+	if mounted && vol.replayed > 0 {
+		libuser.eprint("kfs: ", device, ": the journal landed ", itoa_u32(u32(vol.replayed)), " blocks a stop left in it\n")
+	}
+
 	// The check, if asked, before anything is served: this is the one
 	// process with the device open, so it repairs without a second writer.
 	// A fresh ream is consistent by construction and not worth walking. The
@@ -142,10 +148,17 @@ start :: proc "c" (block: ^abi.Args) {
 	// from a checked disk.
 	if want_check && mounted {
 		if want_test {
-			// The negative control: leak a block on purpose and require the
-			// check to reclaim it. Net zero on the disk, so serving goes on
-			// from a volume as consistent as it found it.
+			// The negative controls: leak a block on purpose and require the
+			// check to reclaim it; then fake a commit interrupted after its
+			// record and require replay to finish it. Both net zero on the
+			// disk, so serving goes on from a volume as consistent as found.
 			_ = run_selftest(device)
+			jblock, jok := journal_selftest()
+			libuser.eprint(
+				"kfs -t ", device,
+				jok ? ": journal control passed -- a commit stopped after its record was replayed onto block " : ": JOURNAL CONTROL FAILED at block ",
+				itoa_u32(jblock), "\n",
+			)
 		} else {
 			c := check_volume()
 			report_check(device, &c)
@@ -272,6 +285,28 @@ now_seconds :: proc "contextless" () -> u64 #no_bounds_check {
 		sec = sec * 10 + u64(c - '0')
 	}
 	return sec
+}
+
+// itoa_u32 is a number as decimal text, in a buffer of its own, for a line
+// written to descriptor 2. Good until the next call.
+itoa_u32 :: proc "contextless" (v: u32) -> string #no_bounds_check {
+	@(static) buf: [12]u8
+	if v == 0 {
+		buf[0] = '0'
+		return string(buf[:1])
+	}
+	tmp: [12]u8
+	n := 0
+	x := v
+	for x > 0 {
+		tmp[n] = u8('0' + x % 10)
+		n += 1
+		x /= 10
+	}
+	for i in 0 ..< n {
+		buf[i] = tmp[n - 1 - i]
+	}
+	return string(buf[:n])
 }
 
 clone_string :: proc(s: string) -> string {
@@ -720,7 +755,36 @@ handler :: proc "contextless" (
 	_ = tag
 	context = libuser.heap_context()
 	reply^ = vectra9.error_reply(vectra9.EOPNOTSUPP)
+	// A request that changes the volume is one transaction: its writes are
+	// held until it has succeeded, then landed through the journal all at
+	// once. A request that failed part way lands nothing -- the write order
+	// used to leave its first writes behind, and now the disk never sees
+	// them. Done here rather than in each case, because a case returns
+	// early on every refusal and this is the one place every path passes.
+	changes := mutates(request)
+	if changes {
+		txn_begin()
+	}
 	dispatch(request, reply, buf)
+	if changes {
+		if _, refused := reply.(vectra9.Rlerror); refused {
+			txn_abort()
+		} else if !txn_commit() {
+			reply^ = vectra9.error_reply(vectra9.EIO)
+		}
+	}
+}
+
+// mutates reports whether a request writes the volume: the ones a
+// transaction wraps. A read, a walk, a stat and a clunk change nothing and
+// take no transaction.
+mutates :: proc "contextless" (request: ^vectra9.Msg) -> bool {
+	#partial switch _ in request^ {
+	case vectra9.Twrite, vectra9.Tlcreate, vectra9.Tmkdir, vectra9.Tremove,
+	     vectra9.Trename, vectra9.Tsetattr:
+		return true
+	}
+	return false
 }
 
 // new_child is the checks a create and a mkdir share, then the file.

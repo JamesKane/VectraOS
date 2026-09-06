@@ -18,6 +18,8 @@ shape of our own. Named for Plan 9's `kfs`, which played the same part.
     inode table    1024 inodes of 128 bytes: mode, version, size, mtime,
                    twelve direct block numbers, one indirect, one double
                    indirect, and the owner
+    journal        forty blocks: a header, then a log a transaction's
+                   changed blocks are written to before they land
     data           everything else, handed out by the bitmap
 
 Blocks are 4 KiB and every structure is a whole number of them, so a block
@@ -54,18 +56,57 @@ leaves the volume whole if the machine stops between any two writes:
   reaches them;
 - a removed file's entry is cleared before its inode and blocks are freed.
 
-A stop loses the last operation and nothing before it. What it can leave is
-a block taken and never pointed at, or -- in the window a create opens
-between an inode written and the entry that names it -- an inode in use no
-directory reaches. Neither is corruption a reader trips over; both are space
-that never comes back on its own. `kfs -c` reclaims them, a mark from the
-root and a sweep of what it did not reach, without a ream that throws the
-volume away. The boot runs it (`kfs -t`) with a leaked block injected on
-purpose, and requires that one block back, so the check is proven to reclaim
-rather than only to report zero. There is still no journal -- one would make
-a group of writes atomic rather than reclaim after the fact -- and
-`docs/SHELL.md` step 7 keeps that; this is the check half, which pays for the
-crash the write order already survives. `servers/kfs/fsck.odin`.
+That order is still kept, and it is no longer the whole story. Every
+request that changes the volume is now one **transaction**: its writes are
+held until the request has succeeded, then landed through a journal all at
+once, so a stop leaves either every one of them on the disk or none. A
+request refused part way lands nothing -- the order alone used to leave its
+first writes behind. What a stop can still leave, then, is only a
+transaction's worth of work undone, never a half-done one.
+
+## The journal, and the cache it made honest
+
+The journal is forty blocks between the inode table and the data: a header
+and a log. A commit writes the changed blocks to the log, then the header --
+their block numbers, a count, and a magic at each end, so a header torn
+mid-write does not read as a commit -- then the blocks to their homes, then
+clears the header. A mount that finds a committed header copies the log home
+before it reads anything else; a torn or empty one is nothing to do, since no
+home block is touched before the header is whole. `MAX_TXN` bounds the
+distinct blocks one request may dirty at thirty-two, many times what a
+write, a create or a truncate touches; past it a request writes straight
+home, not atomic, and says so.
+
+**Holding writes back is what made the cache a problem, and the transaction
+is what fixed it.** The cache is thirty-two slots direct-mapped by block
+number, good only until the next read that maps to a slot. With every write
+going straight to the disk that was harmless: a block evicted and read again
+came back with its change. With writes held it would not -- a bitmap block a
+truncate clears bit after bit would come back from the disk with the first
+bits still set, and the change would be lost inside the request that made
+it. So a transaction keeps its own copy of every block it has written, and
+`bread` answers from that copy first: the overlay is the truth for a block
+the request changed, and the cache is a read accelerator and no more. When
+the transaction ends, committed or not, the cache is dropped whole, so no
+slot can serve a copy it took before an eviction and a re-read.
+
+There is no barrier between the log write and the header write, which real
+hardware would want before trusting the header; QEMU's disk is ordered
+enough for the story to be checked, and the gap is this paragraph's to name.
+
+## The check
+
+A stop before a commit loses that transaction and nothing else, and leaves
+nothing behind. What the order could leave before the journal -- a block
+taken and never pointed at, an inode written before the entry that names it
+-- the journal now prevents; `kfs -c` remains, a mark from the root and a
+sweep of what it did not reach, for a volume from before the journal or a
+disk that lied. The boot runs both controls (`kfs -t`): a block leaked on
+purpose that the check must reclaim, and a commit faked as stopped after its
+record -- the log written and the header committed, the home untouched --
+that replay must finish. Each is net zero on the disk and each can fail, which
+is what makes them tests. `servers/kfs/fsck.odin`, and the transaction in
+`disk.odin`.
 
 ## The cache
 
@@ -121,10 +162,10 @@ would, and checks that `$home` is `/usr/glenda`.
 
 ## What is not here
 
-- **A journal.** `kfs -c` is the check program now, so what a crash leaks is
-  reclaimed; a journal would go further and make a group of writes atomic.
-  The write order plus the check is the crash story until one costs enough
-  to want it -- `docs/SHELL.md` step 7.
+- **A write barrier.** The journal orders the log write before the header
+  write in program order and nothing more; a disk that reorders them could
+  present a committed header over a log that had not landed. QEMU's does
+  not, and a board's driver is where the barrier belongs.
 - **Rename across servers.** Within kfs, `Trename` moves an entry and
   keeps the inode, across directories, and `mv` uses it; a name on another
   server answers EXDEV and `mv` copies and removes, as it does for a server

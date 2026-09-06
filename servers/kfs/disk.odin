@@ -42,7 +42,24 @@ package kfs
 import "vsys:libuser"
 
 BLOCK :: 4096
-MAGIC :: u64(0x3130_3030_5346_4B56) // "VKFS0001"
+// "VKFS0002": the second layout, with a journal between the inode table and
+// the data. A volume with the first magic has no journal and is reamed.
+MAGIC :: u64(0x3230_3030_5346_4B56)
+
+/*
+The journal: a run of blocks a transaction's writes are logged to before
+they land where they belong, so a stop between the two leaves either all
+of them or none. One header block, then room for the largest transaction.
+`MAX_TXN` bounds the distinct blocks one 9P request may dirty; a write
+dirties a data block or two, an inode and a bitmap block, a create an
+inode block and a directory block, a truncate a bitmap block, an inode and
+the one table it cuts through. Thirty-two is many times any of them.
+*/
+JOURNAL_BLOCKS :: 40
+MAX_TXN :: 32
+#assert(JOURNAL_BLOCKS > MAX_TXN)
+JOURNAL_COMMIT :: u64(0x54494D4D_4F435F4A) // "J_COMMIT"
+JOURNAL_EMPTY :: u64(0)
 
 INODE_SIZE :: 128
 INODES_PER_BLOCK :: BLOCK / INODE_SIZE
@@ -73,6 +90,8 @@ Superblock :: struct {
 	data_start:    u32,
 	inodes:        u32,
 	generation:    u64, // Reams so far, so a reformatted disk is a new one
+	journal_start:  u32, // The journal's header block; the log follows it
+	journal_blocks: u32,
 }
 
 Inode :: struct {
@@ -102,6 +121,7 @@ Volume :: struct {
 	sb:         Superblock,
 	free:       u32, // Free blocks, counted at mount and kept
 	next_block: u32, // Where the next allocation looks first
+	replayed:   int, // Blocks the journal landed at mount: a stop's commit, finished
 	cache:      [CACHE_BLOCKS]Cached,
 }
 
@@ -171,9 +191,277 @@ write_block_raw :: proc "contextless" (block: u32, buf: []u8) -> bool {
 	return true
 }
 
-// bread answers block `b`'s bytes through the cache, good until the next
+// -- The transaction ----------------------------------------------------------------
+
+/*
+A transaction is one 9P request's writes, held back until the request has
+succeeded and then landed all at once, through the journal, so a stop leaves
+either every one of them on the disk or none.
+
+**This is also what makes the cache safe to write through.** The cache is
+thirty-two slots direct-mapped by block number, and a slot is good only
+until the next read that maps to it. With every write going straight to the
+disk that was harmless: a block evicted and read again came back with its
+change. With writes held back it would not -- a block changed, evicted and
+read again would come back as the disk still has it, and the change would
+be lost inside the very request that made it. A bitmap block a truncate
+clears bit after bit is exactly that case. So a transaction keeps its own
+copy of every block it has written, and `bread` answers from that copy first.
+The overlay is the truth for a block the request changed, whatever the cache
+holds; the cache is a read accelerator and nothing more. When the transaction
+ends, committed or not, the cache is dropped whole, so it cannot serve a copy
+it took before an eviction and a re-read.
+
+The journal is a header block and a log. Commit writes the changed blocks to
+the log, then the header -- the block numbers, a count, and a magic at each
+end, so a header torn mid-write does not read as a commit -- then the blocks
+to their homes, then clears the header. A mount that finds a committed header
+copies the log home before anything else reads the volume; one that finds a
+torn or empty header has nothing to do, because nothing reached a home block
+before the header was whole. There is no barrier between the log and the
+header write, which real hardware would want; QEMU's disk is ordered enough
+for the story to be checked, and the gap is named in `docs/KFS.md`.
+*/
+Txn :: struct {
+	active:   bool,
+	overflow: bool, // More distinct blocks than the log holds: written straight home, not atomic
+	n:        int,
+	block:    [MAX_TXN]u32,
+	data:     [MAX_TXN][BLOCK]u8,
+}
+
+txn: Txn
+
+@(private = "file")
+txn_find :: proc "contextless" (b: u32) -> int {
+	for i in 0 ..< txn.n {
+		if txn.block[i] == b {
+			return i
+		}
+	}
+	return -1
+}
+
+// txn_begin opens a transaction. Every `bwrite` until `txn_commit` or
+// `txn_abort` is held in the overlay rather than written home.
+txn_begin :: proc "contextless" () {
+	txn.active = true
+	txn.overflow = false
+	txn.n = 0
+}
+
+// txn_note is `bwrite` inside a transaction: the cache slot's bytes for
+// block `b` -- which the caller has just changed -- are copied into the
+// overlay, added if `b` is new to it. The overlay is now the block's truth.
+@(private = "file")
+txn_note :: proc "contextless" (b: u32) -> bool #no_bounds_check {
+	c := &vol.cache[b % CACHE_BLOCKS]
+	if !c.valid || c.block != b {
+		return false
+	}
+	i := txn_find(b)
+	if i < 0 {
+		if txn.n >= MAX_TXN {
+			// Past what the log holds. Written home at once: the request is
+			// no longer atomic, which the analysis above says never happens.
+			txn.overflow = true
+			return write_block_raw(b, c.data[:])
+		}
+		i = txn.n
+		txn.n += 1
+		txn.block[i] = b
+	}
+	copy(txn.data[i][:], c.data[:])
+	return true
+}
+
+// cache_drop forgets every cached block, so the next read of any of them
+// comes from the disk. The end of every transaction.
+@(private = "file")
+cache_drop :: proc "contextless" () {
+	for i in 0 ..< CACHE_BLOCKS {
+		vol.cache[i].valid = false
+	}
+}
+
+@(private = "file")
+journal_header_write :: proc "contextless" (magic: u64) -> bool #no_bounds_check {
+	hdr: [BLOCK]u8
+	put64(hdr[:], magic)
+	put32(hdr[8:], u32(txn.n))
+	for i in 0 ..< txn.n {
+		put32(hdr[12 + 4 * i:], txn.block[i])
+	}
+	put64(hdr[BLOCK - 8:], magic)
+	return write_block_raw(vol.sb.journal_start, hdr[:])
+}
+
+/*
+txn_commit lands the transaction: the log, the header, the homes, and the
+header cleared. Anything that fails before the header is written leaves the
+volume untouched; anything after it is finished by replay at the next mount.
+An overflowed transaction has already written itself home block by block,
+and only the cache is dropped.
+*/
+txn_commit :: proc "contextless" () -> bool #no_bounds_check {
+	defer {
+		txn.active = false
+		txn.n = 0
+		cache_drop()
+	}
+	if txn.overflow {
+		// The overlay's blocks went home as they overflowed; land the rest.
+		for i in 0 ..< txn.n {
+			if !write_block_raw(txn.block[i], txn.data[i][:]) {
+				return false
+			}
+		}
+		return true
+	}
+	if txn.n == 0 {
+		return true
+	}
+	for i in 0 ..< txn.n {
+		if !write_block_raw(vol.sb.journal_start + 1 + u32(i), txn.data[i][:]) {
+			return false
+		}
+	}
+	if !journal_header_write(JOURNAL_COMMIT) {
+		return false
+	}
+	// Committed. From here the blocks land, now or at the next mount.
+	for i in 0 ..< txn.n {
+		if !write_block_raw(txn.block[i], txn.data[i][:]) {
+			return false
+		}
+	}
+	return journal_header_write(JOURNAL_EMPTY)
+}
+
+// txn_abort discards the transaction: nothing reached the log or a home
+// block, and the cache is dropped so no slot keeps a change that was never
+// made.
+txn_abort :: proc "contextless" () {
+	txn.active = false
+	txn.n = 0
+	cache_drop()
+}
+
+/*
+journal_replay finishes a commit a stop interrupted. A header with the
+commit magic whole at both ends names blocks the log holds that may not all
+have reached home; each is copied there again -- copying one that already
+arrived changes nothing -- and the header is cleared. Any other header is
+nothing to do: a torn one means the commit never happened, and no home block
+was touched before the header was whole. Answers how many blocks it landed.
+*/
+journal_replay :: proc "contextless" () -> (landed: int, ok: bool) #no_bounds_check {
+	hdr: [BLOCK]u8
+	if !read_block_raw(vol.sb.journal_start, hdr[:]) {
+		return 0, false
+	}
+	if le64(hdr[:]) != JOURNAL_COMMIT || le64(hdr[BLOCK - 8:]) != JOURNAL_COMMIT {
+		return 0, true
+	}
+	count := int(le32(hdr[8:]))
+	if count <= 0 || count > MAX_TXN {
+		return 0, true
+	}
+	buf: [BLOCK]u8
+	for i in 0 ..< count {
+		home := le32(hdr[12 + 4 * i:])
+		if home >= vol.sb.blocks {
+			return landed, false
+		}
+		if !read_block_raw(vol.sb.journal_start + 1 + u32(i), buf[:]) ||
+		   !write_block_raw(home, buf[:]) {
+			return landed, false
+		}
+		landed += 1
+	}
+	txn.n = 0
+	if !journal_header_write(JOURNAL_EMPTY) {
+		return landed, false
+	}
+	return landed, true
+}
+
+/*
+journal_selftest is the journal's negative control: the stop that hurts is
+one after the commit record and before the blocks land, and this makes
+exactly that. A free block is chosen; a recognisable page is written into
+the log, and a committed header naming that block, and nothing to the block
+itself -- the disk now looks like a commit interrupted at the worst moment.
+`journal_replay` must then land the page on the block and clear the header.
+The block is zeroed after, so the volume is as it was. Answers the block
+and whether every step held; a replay that missed it answers false.
+*/
+journal_selftest :: proc "contextless" () -> (block: u32, ok: bool) #no_bounds_check {
+	// A free data block, found the way the check finds one.
+	for b := vol.sb.data_start; b < vol.sb.blocks; b += 1 {
+		taken, got := bit_read(b)
+		if !got {
+			return 0, false
+		}
+		if !taken {
+			block = b
+			break
+		}
+	}
+	if block == 0 {
+		return 0, false
+	}
+	page: [BLOCK]u8
+	for i in 0 ..< BLOCK {
+		page[i] = u8(0xA5) ~ u8(i & 0xFF)
+	}
+	// The log and the header, as a commit writes them; the home untouched.
+	if !write_block_raw(vol.sb.journal_start + 1, page[:]) {
+		return block, false
+	}
+	txn.n = 1
+	txn.block[0] = block
+	committed := journal_header_write(JOURNAL_COMMIT)
+	txn.n = 0
+	if !committed {
+		return block, false
+	}
+	// The next mount's first act, done now.
+	landed, rok := journal_replay()
+	if !rok || landed != 1 {
+		return block, false
+	}
+	cache_drop()
+	got := bread(block)
+	if got == nil {
+		return block, false
+	}
+	for i in 0 ..< BLOCK {
+		if got[i] != page[i] {
+			return block, false
+		}
+	}
+	hdr: [BLOCK]u8
+	if !read_block_raw(vol.sb.journal_start, hdr[:]) || le64(hdr[:]) != JOURNAL_EMPTY {
+		return block, false
+	}
+	// As it was: the block free and zero.
+	ok = bzero(block)
+	cache_drop()
+	return block, ok
+}
+
+// -- The cache -----------------------------------------------------------------------
+
+// bread answers block `b`'s bytes: from the transaction's overlay when the
+// request has written `b`, else through the cache, good until the next
 // bread that maps to the same slot. Nil on a read error.
 bread :: proc "contextless" (b: u32) -> []u8 {
+	if txn.active {
+		if i := txn_find(b); i >= 0 {
+			return txn.data[i][:]
+		}
+	}
 	c := &vol.cache[b % CACHE_BLOCKS]
 	if !c.valid || c.block != b {
 		if !read_block_raw(b, c.data[:]) {
@@ -186,9 +474,27 @@ bread :: proc "contextless" (b: u32) -> []u8 {
 	return c.data[:]
 }
 
-// bwrite puts the cached block `b` on the disk, after the caller changed
-// the bytes `bread` handed it.
+/*
+bwrite records that the caller changed the bytes `bread` handed it for
+block `b`. Inside a transaction the change is held in the overlay until
+commit; outside one -- a ream, a check, the boot -- it goes to the disk now.
+A caller that was handed the overlay's own bytes has already changed the
+overlay, and the note is a copy of the copy, harmless.
+*/
 bwrite :: proc "contextless" (b: u32) -> bool {
+	if txn.active {
+		if i := txn_find(b); i >= 0 {
+			// The caller wrote through the overlay slice `bread` gave it.
+			// The cache slot, if it holds `b`, may be stale; refresh it so
+			// a `txn_note` from a later cache-side edit starts from truth.
+			c := &vol.cache[b % CACHE_BLOCKS]
+			if c.valid && c.block == b {
+				copy(c.data[:], txn.data[i][:])
+			}
+			return true
+		}
+		return txn_note(b)
+	}
 	c := &vol.cache[b % CACHE_BLOCKS]
 	if !c.valid || c.block != b {
 		return false
@@ -223,7 +529,12 @@ read_superblock :: proc "contextless" () -> (sb: Superblock, ok: bool) #no_bound
 	sb.data_start = le32(b[32:])
 	sb.inodes = le32(b[36:])
 	sb.generation = le64(b[48:])
+	sb.journal_start = le32(b[56:])
+	sb.journal_blocks = le32(b[60:])
 	if sb.blocks == 0 || sb.data_start >= sb.blocks || sb.inodes == 0 {
+		return {}, false
+	}
+	if sb.journal_blocks == 0 || sb.journal_start + sb.journal_blocks > sb.data_start {
 		return {}, false
 	}
 	return sb, true
@@ -249,6 +560,8 @@ write_superblock :: proc "contextless" () -> bool #no_bounds_check {
 	put32(b[36:], vol.sb.inodes)
 	put32(b[40:], ROOT_INODE)
 	put64(b[48:], vol.sb.generation)
+	put32(b[56:], vol.sb.journal_start)
+	put32(b[60:], vol.sb.journal_blocks)
 	return write_block_raw(0, b)
 }
 
@@ -267,6 +580,14 @@ mount_volume :: proc(fd: int, size: u64) -> (ok: bool, why: string) {
 		return false, "superblock claims more than the device holds"
 	}
 	vol.sb = sb
+	// A commit a stop interrupted is finished here, before the bitmap is
+	// counted: one of the blocks it lands may be a bitmap block.
+	if landed, rok := journal_replay(); !rok {
+		return false, "the journal would not replay"
+	} else {
+		vol.replayed = landed
+	}
+	cache_drop()
 	vol.free = 0
 	for b := sb.data_start; b < sb.blocks; b += 1 {
 		taken, got := bit_read(b)
@@ -294,19 +615,24 @@ ream :: proc(fd: int, size: u64, generation: u64) -> (ok: bool, why: string) {
 		return false, "too small to hold a volume"
 	}
 	bitmap_blocks := (blocks + BLOCK * 8 - 1) / (BLOCK * 8)
+	journal_start := 1 + bitmap_blocks + INODE_BLOCKS
 	vol.sb = Superblock {
-		blocks        = blocks,
-		bitmap_start  = 1,
-		bitmap_blocks = bitmap_blocks,
-		inode_start   = 1 + bitmap_blocks,
-		inode_blocks  = INODE_BLOCKS,
-		data_start    = 1 + bitmap_blocks + INODE_BLOCKS,
-		inodes        = INODES,
-		generation    = generation,
+		blocks         = blocks,
+		bitmap_start   = 1,
+		bitmap_blocks  = bitmap_blocks,
+		inode_start    = 1 + bitmap_blocks,
+		inode_blocks   = INODE_BLOCKS,
+		journal_start  = journal_start,
+		journal_blocks = JOURNAL_BLOCKS,
+		data_start     = journal_start + JOURNAL_BLOCKS,
+		inodes         = INODES,
+		generation     = generation,
 	}
 	if vol.sb.data_start >= blocks {
 		return false, "too small for its own tables"
 	}
+	// Every table block cleared, the journal's header among them: a zero
+	// header is an empty journal, so a fresh volume has nothing to replay.
 	for b := vol.sb.bitmap_start; b < vol.sb.data_start; b += 1 {
 		if !bzero(b) {
 			return false, "cannot clear a table block"

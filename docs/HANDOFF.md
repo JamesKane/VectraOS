@@ -557,14 +557,19 @@ step each stopped at. Both are done now, as a root of their own:
                        driver and kfs stamps `mtime` from. FLEET 3's
                        `timesync` and an RTC driver later *set* a clock
                        that already exists, rather than each inventing one.
-    the check         DONE. `kfs -c` marks from the root and sweeps,
-                       reclaiming a crash's leaked blocks and orphaned
-                       inodes without a ream; the boot runs it with a leak
-                       injected and requires that block back. A journal --
-                       atomic write groups, going further than reclaiming
-                       after the fact -- is still unbuilt, and a fleet's
-                       root disk (FLEET 3) is the first thing that would
-                       want it.
+    a journal, a check DONE. Every request that changes kfs is one
+                       transaction, its writes held and landed through a
+                       forty-block journal all at once, so a stop leaves
+                       all of them or none; a mount replays a commit a stop
+                       interrupted. Holding writes back is what made the
+                       32-slot cache unsafe, and the transaction's overlay
+                       -- reads answer from the request's own copy first --
+                       is what fixed it. `kfs -c` still marks and sweeps
+                       for a volume from before, and the boot runs both
+                       controls: a leak the check must reclaim, and a
+                       commit faked as stopped after its record that
+                       replay must finish. Left: a write barrier between
+                       the log and the header, a board driver's to give.
 
 **One way to defer the largest of these.** A model's weights are read,
 not written, and `/lib` is bound from the FAT system partition the host
