@@ -81,13 +81,33 @@ Nothing paints the background. Glyphs composite onto whatever is already there,
 so a console can sit over a gradient or a brushed panel and punch no rectangles
 through it.
 */
-draw_glyph :: proc "contextless" (s: ^fb.Surface, px, py: int, ch: u8, color: fb.RGB) #no_bounds_check {
-	if ch < FONT_FIRST || ch > FONT_LAST {
+/*
+The kernel's own font, past ASCII: a `libfont.Loader` filled from `/lib/font`
+once a filesystem is up. Before then, and for ASCII always, the baked table
+answers; `loader_glyph` reaches the loaded subfonts only for the rest. The
+early-boot log and the panic screen are ASCII and want none of it, which is
+why nothing waits on the load.
+*/
+console_font: libfont.Loader
+
+// use_font opens the kernel's runtime font through the caller's reader --
+// `kernel/main` gives it one over `vfs`. Called once a filesystem holds the
+// `.font`; a console that never calls it draws ASCII and nothing more.
+use_font :: proc "contextless" (
+	read: proc "contextless" (data: rawptr, path: string, into: []u8) -> int,
+	data: rawptr,
+) -> bool {
+	return libfont.loader_open(&console_font, "/lib/font/default.font", read, data)
+}
+
+draw_glyph :: proc "contextless" (s: ^fb.Surface, px, py: int, ch: rune, color: fb.RGB) #no_bounds_check {
+	cell: [FONT_HEIGHT]u8
+	_, ok := libfont.loader_glyph(&console_font, ch, cell[:])
+	if !ok {
 		return
 	}
-	rows := libfont.font_8x16[ch - FONT_FIRST]
 	for y in 0 ..< FONT_HEIGHT {
-		bits := rows[y]
+		bits := cell[y]
 		if bits == 0 {
 			continue
 		}
@@ -97,6 +117,40 @@ draw_glyph :: proc "contextless" (s: ^fb.Surface, px, py: int, ch: u8, color: fb
 			}
 		}
 	}
+}
+
+// decode_rune reads one UTF-8 rune from `b`, answering it and its byte
+// length. A byte that starts no valid sequence is one Latin-1-ish rune of
+// itself, so a lone high byte still draws something rather than stalling.
+decode_rune :: proc "contextless" (b: []u8) -> (r: rune, size: int) #no_bounds_check {
+	if len(b) == 0 {
+		return 0, 0
+	}
+	c := b[0]
+	if c < 0x80 {
+		return rune(c), 1
+	}
+	n: int
+	switch {
+	case c & 0xE0 == 0xC0:
+		r = rune(c & 0x1F); n = 2
+	case c & 0xF0 == 0xE0:
+		r = rune(c & 0x0F); n = 3
+	case c & 0xF8 == 0xF0:
+		r = rune(c & 0x07); n = 4
+	case:
+		return rune(c), 1
+	}
+	if len(b) < n {
+		return rune(c), 1
+	}
+	for i in 1 ..< n {
+		if b[i] & 0xC0 != 0x80 {
+			return rune(c), 1
+		}
+		r = r << 6 | rune(b[i] & 0x3F)
+	}
+	return r, n
 }
 
 // draw_text_styled renders `text` at a pixel position with the emboss applied.
@@ -119,11 +173,17 @@ draw_text_styled :: proc "contextless" (
 }
 
 @(private)
-draw_string :: proc "contextless" (s: ^fb.Surface, px, py: int, text: string, color: fb.RGB) {
+draw_string :: proc "contextless" (s: ^fb.Surface, px, py: int, text: string, color: fb.RGB) #no_bounds_check {
 	x := px
-	for i in 0 ..< len(text) {
-		draw_glyph(s, x, py, text[i], color)
+	i := 0
+	for i < len(text) {
+		r, size := decode_rune(transmute([]u8)text[i:])
+		if size == 0 {
+			break
+		}
+		draw_glyph(s, x, py, r, color)
 		x += FONT_WIDTH
+		i += size
 	}
 }
 

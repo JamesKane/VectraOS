@@ -635,10 +635,14 @@ run time -- the first data this system loads rather than bakes -- into a
 ASCII from the baked table and the rest from a subfont. `tools/gensubfont.py`
 rasterises the subfonts (Latin-1, punctuation, arrows so far) and checks them
 in, so a build stages them without a rasteriser. `tests/font` proves the
-loader. Left: the renderers -- the kernel console, the draw server's title,
-`sys/libmui`'s glyph images, and `sys/libedit`, which still drops a rune it
-cannot draw. `docs/WEB.md` step 1, the reader of the world's pages, is what
-wants it whole.
+loader. The **kernel console** now draws through it: `console.use_font` opens
+`/lib/font/default.font` once `init_fatfs` has the disk, over a `vfs` reader
+`kernel/main` gives it, and `draw_glyph` takes a rune and decodes UTF-8 --
+`verify_console_font` draws an accented letter to a scratch surface and reads
+the ink back. The early-boot log and the panic screen stay ASCII and wait on
+no load. Left: the draw server's title, `sys/libmui`'s glyph images, and
+`sys/libedit`, which still drops a rune it cannot draw. `docs/WEB.md` step 1,
+the reader of the world's pages, is what wants it whole.
 
 **Deferred, with the reason written down: priority inheritance.** A lock hands
 off to the best *waiter*. But a low-priority *holder* still delays a

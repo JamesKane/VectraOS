@@ -313,6 +313,11 @@ kmain :: proc "c" () {
 			// suite looks for its tools there. See `docs/FATFS.md`.
 			if init_fatfs() {
 				verify_fatfs()
+				// The console's own font past ASCII, now that `/lib/font`
+				// is on a mounted disk. The boot log above is ASCII and
+				// wanted none of it; from here a panic could spell a name
+				// with an accent in it. See `docs/DRAW.md`.
+				verify_console_font()
 				// And the disk of Vectra's own, whose server is a file on
 				// the first. See `docs/KFS.md`.
 				if init_kfs() {
@@ -2355,6 +2360,95 @@ verify_fatfs :: proc() {
 		libodin.put_str(&sink, " disk filesystem checks passed -- ")
 		libodin.put_uint(&sink, u64(programs))
 		libodin.put_str(&sink, " programs on the disk, served from ring 3")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
+}
+
+/*
+console_font_read is the kernel console's I/O for `sys/libfont`: the whole of
+`path` into `into`, or zero. The loader's callback is `contextless`, and the
+`vfs` calls it makes are not, so it sets a context of its own -- with the
+kernel heap as `context.allocator`, which every kernel-side reader needs and
+`runtime.default_context()` does not supply.
+*/
+console_font_read :: proc "contextless" (data: rawptr, path: string, into: []u8) -> int {
+	_ = data
+	context = runtime.default_context()
+	context.allocator = mem.allocator()
+	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
+	if err != vfs.OK {
+		return 0
+	}
+	defer vfs.chan_close(c)
+	at := 0
+	for at < len(into) {
+		n, rerr := vfs.chan_read(c, u64(at), into[at:])
+		if rerr != vfs.OK || n <= 0 {
+			break
+		}
+		at += n
+	}
+	return at
+}
+
+/*
+verify_console_font proves the kernel console draws past ASCII once the font
+is loaded. It draws onto a scratch surface -- eight by sixteen, its own bytes,
+never the glass -- and reads the pixels back: a baked ASCII cell inks, a
+Latin-1 letter from a subfont inks, and a rune no range holds leaves the cell
+blank rather than drawing a stray box. The layout is invented, not the
+screen's; it need only round-trip through `pack` and `get_raw`, which any
+non-zero channel does.
+*/
+verify_console_font :: proc() {
+	result: libodin.Tally
+
+	libodin.tally(&result, console.use_font(console_font_read, nil), "the .font index loads through vfs")
+
+	buf: [console.FONT_WIDTH * console.FONT_HEIGHT * 4]u8
+	scratch := fb.Surface {
+		pixels     = raw_data(buf[:]),
+		width      = console.FONT_WIDTH,
+		height     = console.FONT_HEIGHT,
+		pitch      = console.FONT_WIDTH * 4,
+		bytes_pp   = 4,
+		red_shift  = 16,
+		green_shift = 8,
+		blue_shift = 0,
+		red_size   = 8,
+		green_size = 8,
+		blue_size  = 8,
+	}
+	white := fb.RGB{255, 255, 255}
+
+	any_lit :: proc(s: ^fb.Surface) -> bool {
+		for y in 0 ..< s.height {
+			for x in 0 ..< s.width {
+				if fb.get_raw(s, x, y) != 0 {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	buf = {}
+	console.draw_glyph(&scratch, 0, 0, 'A', white)
+	libodin.tally(&result, any_lit(&scratch), "a baked ASCII cell inks on the console surface")
+
+	buf = {}
+	console.draw_glyph(&scratch, 0, 0, 'é', white)
+	libodin.tally(&result, any_lit(&scratch), "a Latin-1 letter from a subfont inks")
+
+	buf = {}
+	console.draw_glyph(&scratch, 0, 0, rune(0x4E00), white) // an uncovered CJK ideograph
+	libodin.tally(&result, !any_lit(&scratch), "a rune no range holds leaves the cell blank")
+
+	sink := report_begin("console-font", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " kernel console draws past ASCII from /lib/font")
 		emit(&klog, .Ok, &sink)
 		return
 	}
