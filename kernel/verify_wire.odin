@@ -626,6 +626,10 @@ DEAF_PATIENCE :: 1200
 verify_posted_run :: proc(r: ^Posted_Result) {
 	ns := vfs.boot_namespace
 	sched.reap()
+	// And the other cores' dead, which the reap above cannot reach and the
+	// drain at the end waits for. An opening reading that counts one of
+	// them is a heap that never settles. See `sched.all_reaped`.
+	_ = sync.await(sched.all_reaped, nil, 200)
 	heap_before := mem.live_objects(mem.heap_stats())
 	pipes_before := pipe.count()
 

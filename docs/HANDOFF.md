@@ -734,10 +734,25 @@ which lock came out of a control. A second thread in a process is a second
 process under `RFMEM` here. It now shares a run as it grows and shrinks, and
 `docs/USER.md` argues that under the run that grows.
 
-The one-core flake is still there. About one boot in eight at `--smp=4`
-fails a userland heap bracket by one object, before the cores start, in the
-way the notes in `docs/TESTING.md` describe for a detached worker collected
-late. It was not seen at `--smp=1` this session and was not chased.
+The one-core flake is closed, and it was not one. A sweep of sixty boots at
+`--smp=4` found six distinct one-in-ten failures, and `docs/TESTING.md`
+records the two rules they taught: a heap bracket's opening reading waits for
+every collector in the machine (`sched.all_reaped`, `user.settled`, and
+`settle` in the user suite), and a check waits for the outcome it names
+rather than a counter the handler bumps on the way in. The other four were a
+script that stopped a child before its exec, a label read once instead of
+polled, a terminal glyph read that has not recurred in sixty boots, and the
+shootdown counter order. A failed drain and a failed label now say what they
+saw, so the next one names itself.
+
+One thing the sweep found and did not chase: a tight fork storm from rc --
+`while(! {ps | grep ' sleep$' > /dev/null}) sleep 0`, four forks a turn on
+four cores -- hung the boot once in twenty, somewhere in the user suite with
+no line to say where. The script no longer does that, so the boot does not
+see it. A machine that does is a `solo.py` run with that loop typed at the
+shell and QEMU's `-s` gdb stub attached (`lldb build/vectra.elf -o
+'gdb-remote localhost:1234'`, then each core's registers and the process
+table by symbol).
 
 ### Smaller things worth doing when convenient
 

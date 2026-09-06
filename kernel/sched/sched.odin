@@ -563,6 +563,7 @@ park_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 
 kill_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	if t := cpu().current; t != nil {
+		intrinsics.atomic_add(&dying, 1)
 		t.state = .Dead
 	}
 	return reschedule(r, spent_slice = false)
@@ -598,12 +599,28 @@ is reclaiming.
 exit :: proc "contextless" () -> ! {
 	arch.disable_interrupts()
 	if t := current(); t != nil {
+		intrinsics.atomic_add(&dying, 1)
 		t.state = .Dead
 	}
 	for {
 		arch.yield_now()
 	}
 }
+
+/*
+How many threads have died and still hold heap: their record and their stack.
+
+Counted up the moment a thread turns `.Dead`, before it has even left its core,
+and down after `reap` has freed both objects. That is wider than the reap lists
+on purpose. A dead thread is on no list between its last instruction and the
+switch that links it, and it is on no list again between the pop in `reap` and
+the `free` -- and in both gaps its two objects are still live on the heap. A
+heap bracket that waited on the lists alone read a thread on another core in
+one of those gaps as one or two objects short, once in ten boots on four
+cores. See `all_reaped` and `docs/TESTING.md`.
+*/
+@(private = "file")
+dying: int
 
 // reap_pending is how many dead threads are waiting for their stacks to be
 // given back. A sensor for the self-test that checks the idle thread reaps
@@ -644,6 +661,9 @@ reap :: proc() {
 			delete(t.stack)
 		}
 		free(t)
+		// After the free, not before: `all_reaped` promises the heap has the
+		// objects back, not that the list has let go of the thread.
+		intrinsics.atomic_sub(&dying, 1)
 	}
 }
 
@@ -1446,16 +1466,24 @@ cpu_stats :: proc "contextless" (id: int) -> Cpu_Stats #no_bounds_check {
 	}
 }
 
-// reap_pending_all is `reap_pending` summed over every core, for a heap
-// bracket that has to wait for every core's idle thread rather than this one's.
-reap_pending_all :: proc "contextless" () -> int {
-	guard := sync.acquire(&lock)
-	defer sync.release(&lock, guard)
-	n := 0
-	for i in 0 ..< cpu_count {
-		for t := cpus[i].reap; t != nil; t = t.next {
-			n += 1
-		}
-	}
-	return n
+/*
+all_reaped is the condition a heap bracket waits on before it reads: no thread
+that has died still holds heap, on any core.
+
+Shaped for `sync.await`, and the answer to a rule `docs/TESTING.md` states for
+one core: a bracket's opening reading must not count a corpse the closing
+reading will not. On one core `reap` before the reading was enough. On four,
+a thread that died on another core is that core's idle thread's to free, a
+tick later, and a reading taken between the death and the free is one or two
+objects high. Every bracket that measures the heap across threads waits on
+this first, at both readings.
+
+It replaced a sum of the reap lists. A thread is dead and on no list twice in
+its ending: before the switch that links it, and after the pop in `reap` and
+before the `free`. Both gaps are on another core, so a bracket that read the
+lists as empty and then read the heap counted the thread. `dying` covers both.
+*/
+all_reaped :: proc "contextless" (arg: rawptr) -> bool {
+	_ = arg
+	return intrinsics.atomic_load(&dying) == 0
 }

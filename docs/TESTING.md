@@ -440,6 +440,45 @@ runs before the opening reading now. `kernel/verify_space.odin` reached the
 same conclusion from the other side, by finding a phase with no threads in it
 at all.
 
+Four cores reopened the same hole from another side. `sched.reap` frees this
+core's dead, and a thread that died on another core is that core's idle
+thread's to free, a tick later. Between its death and that free its record and
+its stack are on the heap, on no list this core can drain. An opening reading
+taken in that window counted them, the closing reading did not, and the
+bracket read `leaked -1` one boot in eight and `with the heap where it was`
+one in ten. The sensor that was there, a sum of the reap lists, answered zero
+in both gaps of a thread's ending: before the switch that links it, and after
+the pop in `reap` but before the `free`. `sched.all_reaped` counts from the
+moment a thread turns dead to the moment its objects are back, and every
+bracket that measures the heap across threads waits on it before both
+readings. **A sensor for `the objects are back` has to be set by the code that
+puts them back**, not by a list that let go of them a moment earlier.
+
+The same sweep found the bracket's other side, and it is the reaper thread.
+`kernel/user`'s reaper takes a dead process's descriptor table the moment it
+ends, and the self-test's `finish` races it for the same pointer; the reaper
+usually wins, and it then closes the descriptors on its own stack. The last
+close of a chan into a dead server's mount is what releases that server's
+wire, and a wire is fifty-odd objects. So a self-test that stopped `factotum`,
+waited for it, unmounted it and moved on could reach the next test's opening
+reading before the reaper had finished closing `authtest`'s descriptors. The
+reading counted the wire, the reaper freed it a few ticks later, and the next
+test's drain read **minus fifty-three**, one boot in eight. The sign is what
+placed it: a negative bracket is an opening reading that counted a corpse.
+`user.settled` says whether the reaper is idle with nothing due, and every
+opening reading in the user suite waits on it and on `sched.all_reaped`
+together, through `settle`. That wait alone left the miss at one boot in
+twenty, and the remainder was a process the reaper had nothing to say about
+yet: a server on the thread library ends by noting the procs it made, and a
+proc one of *those* made is detached and may still be parked in a bounded
+read when the test's `finish` returns. It dies a moment later, and as the
+last holder of the server's namespace copy it takes the fifty-odd objects
+with it. So `settle` first waits for the live process count to be back at
+the resident set boot left running. **A bracket's opening reading waits for
+every collector in the machine, not only the ones the test called, and for
+every process the last test started to be gone, not only the one it waited
+for.**
+
 ## A bracket counts, and some errors keep every count even
 
 `docs/USER.md` found the case a bracket cannot see, and it is worth a rule of

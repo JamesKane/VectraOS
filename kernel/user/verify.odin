@@ -269,7 +269,8 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	objects**, which is a run that gave back more than it took. A bracket that
 	can go negative is not measuring what it says.
 	*/
-	sched.reap()
+	resident_live = stats().live
+	settle()
 	before_heap := mem.live_objects(mem.heap_stats())
 	r.resident = stats().live
 	before_tables := mem.space_stats()
@@ -1741,7 +1742,7 @@ checked to the object: the wire's deliberate pin, and nothing else.
 verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int) {
 	count0 := srv.count()
 
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	p, serr := spawn_path(nil, "/bin/niner", SPAWN_NS_COPY)
@@ -1979,7 +1980,7 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 
 	verify_image2(r)
 
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	// -- The image is a file, and says which format it is ---------------------
@@ -3008,6 +3009,45 @@ await_posted :: proc(name: string) -> bool {
 	return false
 }
 
+/*
+settle is what every opening reading of the heap waits for: the reaper idle
+with nothing due, this core's dead reaped, and every other core's dead freed.
+
+Two collectors run behind this suite's back. The reaper thread takes a dead
+process's descriptors the moment it ends and closes them on its own stack,
+and the last close into a dead server's mount releases that server's wire.
+Each core's idle thread frees the threads that died on it. A reading taken
+while either is part way through counts objects the closing reading will not,
+and the bracket goes negative -- `leaked -1` on four cores, and minus
+fifty-three the boot the reaper was still closing `authtest`'s descriptors
+when the network test opened its bracket. `docs/TESTING.md` has both.
+*/
+@(private = "file")
+settle :: proc() {
+	// Every program a test started is gone, and so is every process one of
+	// them made. A server on the thread library ends by noting the procs it
+	// made and waiting for its own; a proc one of those made is detached,
+	// and it may still be parked in a bounded read when the test's `finish`
+	// returns. It dies a moment later, and the last holder of the server's
+	// namespace copy takes fifty-odd objects with it -- inside the next
+	// bracket, once in twenty boots, after the reaper wait alone was in.
+	_ = sync.await(live_is_resident, nil, PATIENCE)
+	_ = sync.await(settled, nil, PATIENCE)
+	sched.reap()
+	_ = sync.await(sched.all_reaped, nil, PATIENCE)
+}
+
+// The processes the machine holds when the suite begins, the servers boot
+// left running. Every opening reading waits for the count to be back here.
+@(private = "file")
+resident_live: int
+
+@(private = "file")
+live_is_resident :: proc "contextless" (arg: rawptr) -> bool {
+	_ = arg
+	return stats().live == resident_live
+}
+
 // drain_pinned collects orphans and dead threads until the heap reads
 // level with the bracket's opening, then checks it got there. The tail
 // every server test ends on, written once.
@@ -3023,8 +3063,72 @@ drain_pinned :: proc(r: ^Result, pin_before: int, what: string) {
 		}
 		sync.delay(1)
 	}
-	check(r, pinned == 0, what)
+	if pinned != 0 {
+		// A drain that did not level names what is still standing: the
+		// count, and every live process with the state its thread is in.
+		// A holder that is a process shows here; one that is not is a
+		// kernel object, and the count is the clue.
+		sink := detail_sink()
+		libodin.put_str(&sink, what)
+		libodin.put_str(&sink, " -- ")
+		libodin.put_int(&sink, i64(pinned))
+		libodin.put_str(&sink, " objects held, live:")
+		describe_live(&sink)
+		check(r, false, libodin.str(&sink))
+	} else {
+		check(r, true, what)
+	}
 	r.pinned += pinned
+}
+
+// Room for a failure message that carries more than its name. Two, so a second
+// failure in one boot does not overwrite the first's words; a third reuses
+// the second's.
+@(private = "file")
+detail_bufs: [2][512]u8
+@(private = "file")
+detail_used: int
+
+@(private = "file")
+detail_sink :: proc "contextless" () -> libodin.Sink {
+	i := min(detail_used, len(detail_bufs) - 1)
+	detail_used += 1
+	return libodin.sink_from(detail_bufs[i][:])
+}
+
+// describe_live writes every live process: name, pid, parent, and the flags
+// D (detached), X (its exit is done), C (being collected), then T and its
+// thread's state as a digit (0 ready, 1 running, 2 blocked, 3 dead), or T-
+// for a process with no thread.
+@(private = "file")
+describe_live :: proc "contextless" (sink: ^libodin.Sink) #no_bounds_check {
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if !p.live {
+			continue
+		}
+		libodin.put_str(sink, " ")
+		libodin.put_str(sink, p.name)
+		libodin.put_str(sink, "#")
+		libodin.put_uint(sink, p.pid)
+		libodin.put_str(sink, "<")
+		libodin.put_uint(sink, p.parent)
+		if p.detached {
+			libodin.put_str(sink, "D")
+		}
+		if intrinsics.volatile_load(&p.exit.done) {
+			libodin.put_str(sink, "X")
+		}
+		if p.collecting {
+			libodin.put_str(sink, "C")
+		}
+		libodin.put_str(sink, "T")
+		if p.thread != nil {
+			libodin.put_uint(sink, u64(p.thread.state))
+		} else {
+			libodin.put_str(sink, "-")
+		}
+	}
 }
 
 // The line the kernel types at the console server, byte by byte through the
@@ -3097,7 +3201,7 @@ teardown that ended some other way.
 @(private = "file")
 verify_consrv :: proc(r: ^Result) {
 	count0 := srv.count()
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	// -- The image is served, and is the second format ------------------------
@@ -3322,7 +3426,7 @@ machine makes -- shift included, since one of them is shifted.
 @(private = "file")
 verify_kbdfs :: proc(r: ^Result) {
 	count0 := srv.count()
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	p, serr := spawn_path(nil, "/bin/kbdfs", SPAWN_NS_COPY)
@@ -3508,7 +3612,7 @@ verify_eiafs :: proc(r: ^Result) {
 	}
 
 	count0 := srv.count()
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	p, serr := spawn_path(nil, "/bin/eiafs", SPAWN_NS_COPY)
@@ -3649,7 +3753,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	}
 
 	count0 := srv.count()
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	p, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
@@ -4160,6 +4264,39 @@ cell_body_blank :: proc "contextless" (s: ^fb.Surface, x: int, y: int) -> bool {
 	return glyph_on_glass(s, x, y, ' ', libfont.FONT_HEIGHT - CARET_BAND)
 }
 
+// cell_says names what a cell holds, for a failure message: the glyph asked
+// for, a blank, or something else with its count of foreground pixels, which
+// tells a wrong glyph from a caret from a half-drawn one.
+@(private = "file")
+cell_says :: proc "contextless" (s: ^fb.Surface, x: int, y: int, ch: u8) -> string #no_bounds_check {
+	if glyph_on_glass(s, x, y, ch) {
+		return "ok"
+	}
+	if cell_body_blank(s, x, y) {
+		return "blank"
+	}
+	fg, other := 0, 0
+	for line in 0 ..< libfont.FONT_HEIGHT {
+		for i in 0 ..< libfont.FONT_WIDTH {
+			switch fb.get_raw(s, x + i, y + line) {
+			case TERM_FG: fg += 1
+			case TERM_BG:
+			case: other += 1
+			}
+		}
+	}
+	@(static) said: [2][32]u8
+	@(static) turn: int
+	sink := libodin.sink_from(said[turn & 1][:])
+	turn += 1
+	libodin.put_str(&sink, "other(fg ")
+	libodin.put_int(&sink, i64(fg))
+	libodin.put_str(&sink, ", foreign ")
+	libodin.put_int(&sink, i64(other))
+	libodin.put_str(&sink, ")")
+	return libodin.str(&sink)
+}
+
 /*
 verify_terminal is the first program in apps/, run against both services
 it consumes.
@@ -4181,7 +4318,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	}
 
 	count0 := srv.count()
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
@@ -4370,11 +4507,38 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	}
 	r.echo_ticks = echo_ticks
 	check(r, echoed, "and yet appear on the glass, because the window that draws them holds the line")
-	check(
-		r,
-		glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i'),
-		"every one of them, before any newline says the line is finished",
-	)
+	if glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i') {
+		check(r, true, "every one of them, before any newline says the line is finished")
+	} else {
+		// Seen once in twelve boots with the third glyph on the glass and
+		// one of the first two not. The failure says what each cell held
+		// instead, and whether the pair was right a moment later, because
+		// a glyph that arrives late and one that never does are two bugs.
+		sink := detail_sink()
+		libodin.put_str(&sink, "every one of them, before any newline says the line is finished -- h ")
+		libodin.put_str(&sink, cell_says(s, ox + 24, y0, 'h'))
+		libodin.put_str(&sink, ", i ")
+		libodin.put_str(&sink, cell_says(s, ox + 32, y0, 'i'))
+		late := -1
+		for tick in 0 ..< PATIENCE {
+			if glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i') {
+				late = tick
+				break
+			}
+			sync.delay(1)
+		}
+		if late >= 0 {
+			libodin.put_str(&sink, ", both right ")
+			libodin.put_int(&sink, i64(late))
+			libodin.put_str(&sink, " ticks later")
+		} else {
+			libodin.put_str(&sink, ", never right; h ")
+			libodin.put_str(&sink, cell_says(s, ox + 24, y0, 'h'))
+			libodin.put_str(&sink, ", i ")
+			libodin.put_str(&sink, cell_says(s, ox + 32, y0, 'i'))
+		}
+		check(r, false, libodin.str(&sink))
+	}
 
 	/*
 	And a backspace takes one back, which is `libedit` seen through the glass.
@@ -4579,7 +4743,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	}
 
 	count0 := srv.count()
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
@@ -4654,14 +4818,71 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	// A label on that face is amber, blitted from the atlas baked for it.
 	if face {
 		amber := fb.pack(s, fb.AMBER)
+		// Polled like the face, and the ticks it took kept. The face and
+		// the label are one batch and one flush, so a label that lands
+		// after the face was seen is either a composite caught part way or
+		// a paint nobody asked for -- and one boot in twenty the label was
+		// not there when the face was. A late label fails with its delay,
+		// so the next such boot says which.
 		found_label := false
-		for row in gtop ..< gbot {
-			if first, _ := scan_row(s, row, amber, gx - bw / 4, gx + bw / 4); first >= 0 {
-				found_label = true
+		label_ticks := 0
+		for _ in 0 ..< PATIENCE * 20 {
+			for row in gtop ..< gbot {
+				if first, _ := scan_row(s, row, amber, gx - bw / 4, gx + bw / 4); first >= 0 {
+					found_label = true
+					break
+				}
+			}
+			if found_label {
 				break
 			}
+			sync.delay(1)
+			label_ticks += 1
 		}
-		check(r, found_label, "with an amber label on it, blitted from an atlas baked for that one colour")
+		if found_label && label_ticks == 0 {
+			check(r, true, "with an amber label on it, blitted from an atlas baked for that one colour")
+		} else {
+			sink := detail_sink()
+			libodin.put_str(&sink, "with an amber label on it, blitted from an atlas baked for that one colour -- ")
+			if found_label {
+				libodin.put_str(&sink, "there after ")
+				libodin.put_int(&sink, i64(label_ticks))
+				libodin.put_str(&sink, " ticks, face rows ")
+			} else {
+				libodin.put_str(&sink, "never, face rows ")
+			}
+			libodin.put_int(&sink, i64(gtop))
+			libodin.put_str(&sink, "..")
+			libodin.put_int(&sink, i64(gbot))
+			libodin.put_str(&sink, " at column ")
+			libodin.put_int(&sink, i64(gx))
+			// What the band holds instead: a face with nothing on it is a
+			// label never blitted, and foreign pixels are a blit of the
+			// wrong image.
+			mag, amb, stray := 0, 0, 0
+			for row in gtop ..< gbot {
+				for x in max(gx - bw / 4, 0) ..< min(gx + bw / 4, s.width) {
+					switch fb.get_raw(s, x, row) {
+					case magnesium: mag += 1
+					case amber: amb += 1
+					case: stray += 1
+					}
+				}
+			}
+			libodin.put_str(&sink, "; band face ")
+			libodin.put_int(&sink, i64(mag))
+			libodin.put_str(&sink, " amber ")
+			libodin.put_int(&sink, i64(amb))
+			libodin.put_str(&sink, " other ")
+			libodin.put_int(&sink, i64(stray))
+			libodin.put_str(&sink, ", window ")
+			libodin.put_int(&sink, i64(bx))
+			libodin.put_str(&sink, ",")
+			libodin.put_int(&sink, i64(by))
+			libodin.put_str(&sink, " wide ")
+			libodin.put_int(&sink, i64(bw))
+			check(r, false, libodin.str(&sink))
+		}
 	}
 
 	// -- Teardown, the terminal's way -----------------------------------------
@@ -4696,7 +4917,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 @(private = "file")
 verify_chords :: proc(r: ^Result) #no_bounds_check {
 	count0 := srv.count()
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	// kbdfs on the raw keyboard, mounted where the draw server will read it.
@@ -7486,7 +7707,7 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 		return
 	}
 	count0 := srv.count()
-	sched.reap()
+	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	p, serr := spawn_path(nil, "/bin/netfs", SPAWN_NS_COPY)

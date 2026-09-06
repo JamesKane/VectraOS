@@ -745,7 +745,9 @@ than a failed check.
 */
 @(private = "file")
 on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
-	faults += 1
+	// Atomic, as every count this handler keeps is: two cores fault at
+	// once, and a plain add loses one of them.
+	intrinsics.atomic_add(&faults, 1)
 
 	if thread := sched.current(); thread != nil {
 		if p := (^Process)(thread.user); p != nil {
@@ -838,7 +840,7 @@ fix_fault :: proc "contextless" (p: ^Process, addr: uintptr, write: bool) -> boo
 			return false
 		}
 		segment_set_frame(s, j, frame)
-		stack_pages_grown += 1
+		intrinsics.atomic_add(&stack_pages_grown, 1)
 		return true
 	}
 	flags, present := mem.permissions(p.space, va)
@@ -847,8 +849,11 @@ fix_fault :: proc "contextless" (p: ^Process, addr: uintptr, write: bool) -> boo
 		if mem.frame_holders(cur) > 1 {
 			mapped -= {.Write}
 		}
-		page_refills += 1
-		return mem.map_user(p.space, va, cur, mapped, 1) == .None
+		// Counted after the map, so a watcher that sees the count sees the
+		// page. `verify_smp` waits on exactly this.
+		ok := mem.map_user(p.space, va, cur, mapped, 1) == .None
+		intrinsics.atomic_add(&page_refills, 1)
+		return ok
 	}
 	if !write || .Write not_in s.flags || .Write in flags {
 		return false
@@ -856,7 +861,7 @@ fix_fault :: proc "contextless" (p: ^Process, addr: uintptr, write: bool) -> boo
 	if mem.frame_holders(cur) > 1 {
 		return cow_copy(p, s, j, va)
 	}
-	cow_upgrades += 1
+	intrinsics.atomic_add(&cow_upgrades, 1)
 	return mem.protect_user(p.space, va, 1, s.flags) == .None
 }
 
@@ -896,7 +901,7 @@ cow_copy :: proc "contextless" (p: ^Process, s: ^Segment, j: int, va: uintptr) -
 		p.stack = fresh
 	}
 	mem.free_page(cur)
-	cow_copies += 1
+	intrinsics.atomic_add(&cow_copies, 1)
 	return true
 }
 
@@ -1579,9 +1584,36 @@ reaper :: proc "contextless" (arg: rawptr) {
 
 	for {
 		_ = sync.sleep_for(&exit_rendez, dead_needs_collecting, nil, REAP_PATIENCE)
+		intrinsics.volatile_store(&reaper_busy, true)
 		hangup_dead()
 		reap_orphans()
+		intrinsics.volatile_store(&reaper_busy, false)
 	}
+}
+
+// Whether the reaper is between waking and going back to sleep. Its work
+// releases descriptor tables, and the last chan closed into a dead server's
+// mount releases that server's wire, fifty-odd objects, on the reaper's own
+// stack. See `settled`.
+@(private = "file")
+reaper_busy: bool
+
+/*
+settled is whether the collectors are idle: no process has ended holding a
+descriptor table or a record nobody will wait for, and the reaper is not part
+way through releasing one.
+
+Shaped for `sync.await`. A self-test that brackets the heap reads its opening
+number only when this holds, because the reaper usually beats the test's own
+`finish` to a dead process's descriptors and closes them on its own time. A
+test that stopped a server, waited for it and moved on reached the next
+test's opening reading before the reaper had closed the last chan into that
+server's mount, and the wire it then released read as minus fifty-three
+objects in the next bracket, one boot in eight. `docs/TESTING.md`.
+*/
+settled :: proc "contextless" (arg: rawptr) -> bool {
+	_ = arg
+	return !intrinsics.volatile_load(&reaper_busy) && !dead_needs_collecting(nil)
 }
 
 // reaper_start puts the collector on the scheduler. Called once, from init.

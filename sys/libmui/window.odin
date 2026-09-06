@@ -174,15 +174,31 @@ flush_batches :: proc "contextless" (win: ^Window, b: []u8, end: int) #no_bounds
 		if at + size - start > SLOT {
 			// The command at `at` would overflow the slot, so flush up to it.
 			if at > start {
-				_ = libuser.write(win.data_fd, b[start:at])
+				slot_write(win, b[start:at])
 				start = at
 			}
 		}
 		at += size
 	}
 	if end > start {
-		_ = libuser.write(win.data_fd, b[start:end])
+		slot_write(win, b[start:end])
 	}
+}
+
+// slot_write is one write of a slot's commands, and says so on standard
+// error when the server took less than all of it. The server executes a
+// write up to the first command it refuses and answers the error, so a
+// refusal here is a batch half drawn -- a face with no label on it -- and
+// a program that said nothing about it was a boot that could not either.
+@(private = "file")
+slot_write :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
+	n := libuser.write(win.data_fd, data)
+	if n == i64(len(data)) {
+		return
+	}
+	got: [24]u8
+	want: [24]u8
+	libuser.eprint("mui: draw write took ", libuser.itoa(got[:], n), " of ", libuser.itoa(want[:], i64(len(data))), "\n")
 }
 
 /*

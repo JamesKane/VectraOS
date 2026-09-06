@@ -872,6 +872,9 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	has nothing to do with the namespace.
 	*/
 	sched.reap()
+	// A worker that died on another core is off the heap only when that
+	// core's idle thread has run. See `sched.all_reaped`.
+	_ = sync.await(sched.all_reaped, nil, PATIENCE)
 	r.settled = true
 
 	a_done := intrinsics.volatile_load(&list_done[0])

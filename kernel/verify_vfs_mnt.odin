@@ -454,6 +454,11 @@ verify_vfs_mnt :: proc() #no_bounds_check {
 	mcheck(&r, vfs.register_device(&mserver), "#m registered")
 	mcheck(&r, vfs.register_device(&sserver), "#w registered")
 
+	// Every core's dead off the heap first, or a thread an earlier suite
+	// left dying on another core reads below as a block this suite freed.
+	// See `sched.all_reaped`.
+	sched.reap()
+	_ = sync.await(sched.all_reaped, nil, MNT_PATIENCE)
 	before := live_blocks(mem.heap_stats())
 
 	// -- A namespace of this test's own --------------------------------------
@@ -559,6 +564,7 @@ verify_vfs_mnt :: proc() #no_bounds_check {
 	mns = nil
 
 	sched.reap()
+	_ = sync.await(sched.all_reaped, nil, MNT_PATIENCE)
 	r.leaked = live_blocks(mem.heap_stats()) - before
 	mcheck(&r, r.leaked == 0, "every chan, mount point and connection was released")
 

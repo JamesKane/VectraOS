@@ -1538,6 +1538,9 @@ verify_pipe :: proc() {
 	// Threads earlier suites left dead are heap objects `pipe.verify`'s own
 	// reap would otherwise free inside the measured window.
 	sched.reap()
+	// And the threads dying on other cores, which no reap here frees. The
+	// bound is the one `pipe.verify` gives its own waits.
+	_ = sync.await(sched.all_reaped, nil, 200)
 	before := mem.live_objects(mem.heap_stats())
 	result := pipe.verify(scratch)
 	leaked := mem.live_objects(mem.heap_stats()) - before

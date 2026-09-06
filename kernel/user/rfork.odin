@@ -65,6 +65,8 @@ is what `sys/libthread` does at `threadexitsall`.
 */
 package user
 
+import "base:intrinsics"
+
 import "kernel:arch"
 import "kernel:env"
 import "kernel:mem"
@@ -404,7 +406,7 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 			return false
 		}
 		mem.shoot(mem.space_root(parent.space), s.va, s.pages)
-		cow_forks += 1
+		intrinsics.atomic_add(&cow_forks, 1)
 	}
 	return true
 }

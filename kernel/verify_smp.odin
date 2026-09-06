@@ -243,12 +243,6 @@ spin_moving :: proc "contextless" (arg: rawptr) -> bool {
 	return user.cell(cast(^user.Process)arg, 1) > 0
 }
 
-@(private = "file")
-nothing_to_reap :: proc "contextless" (arg: rawptr) -> bool {
-	_ = arg
-	return sched.reap_pending_all() == 0
-}
-
 // kicks_sent sums the kicks every core sent. Every core, because the boot
 // thread is a thread like any other. It may itself be placed on another core
 // between two spawns, and its kicks are then that core's.
@@ -333,7 +327,7 @@ verify_smp :: proc() {
 	scheck(&r, ticking, "every core takes its own timer ticks")
 
 	sched.reap()
-	_ = sync.await(nothing_to_reap, nil, PATIENCE)
+	_ = sync.await(sched.all_reaped, nil, PATIENCE)
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	// -- Work spreads ---------------------------------------------------------
@@ -440,6 +434,11 @@ verify_smp :: proc() {
 		}
 	}
 	live_before := user.stats().live
+	// The last brief worker reported and then died, on another core, and
+	// its record and stack are on the heap until that core's idle thread
+	// frees them. An opening reading taken before that counts them, and the
+	// closing reading, which waits, does not. See `sched.all_reaped`.
+	_ = sync.await(sched.all_reaped, nil, PATIENCE)
 	claim_heap := mem.live_objects(mem.heap_stats())
 	if run_workers(&r, "smp-claim", claim_worker, CLAIMERS, "every claimer finished inside the bound") {
 		unique: bool
@@ -447,7 +446,7 @@ verify_smp :: proc() {
 		scheck(&r, r.claims >= CLAIMERS * CLAIM_ROUNDS / 2, "the claimers were handed process records, most rounds")
 		scheck(&r, unique, "and no two claimers were handed one record")
 		scheck(&r, user.stats().live == live_before, "and every record they took was given back")
-		_ = sync.await(nothing_to_reap, nil, PATIENCE)
+		_ = sync.await(sched.all_reaped, nil, PATIENCE)
 		sched.reap()
 		scheck(&r, mem.live_objects(mem.heap_stats()) == claim_heap, "with the heap where it was")
 	}
@@ -502,14 +501,19 @@ verify_smp :: proc() {
 		in ring 3, one more refill -- and the program is taken down after.
 		*/
 		faults_before := user.stats().faults
-		refills_before := user.page_refills
+		watch := Refill_Watch{prog = prog, refills_before = user.page_refills}
 		scheck(&r, mem.unmap_user(prog.space, user.DATA_VA, 1) == .None, "this core unmapped its data page")
-		faulted := sync.await(fault_after, &faults_before, PATIENCE)
+		// Waited for by its outcome, the refill or the program's end, and not
+		// by the fault count. The handler counts the fault on entry and the
+		// refill on the way out, on the other core, and this thread's first
+		// poll lands between the two often enough to read a refill that is
+		// a few instructions from happening as one that did not.
+		settled := sync.await(refilled_or_ended, &watch, PATIENCE)
 		r.shot_ticks = sched.ticks() - sent_at
-		scheck(&r, faulted, "and the program faulted inside the bound")
+		scheck(&r, settled && user.stats().faults > faults_before, "and the program faulted inside the bound")
 		scheck(
 			&r,
-			user.page_refills > refills_before && !prog.exit.done,
+			user.page_refills > watch.refills_before && !prog.exit.done,
 			"by a page fault in ring 3 the kernel refilled from its segment, and it ran on",
 		)
 		// Summed over the cores rather than read for `me`: the sender waits
@@ -525,7 +529,7 @@ verify_smp :: proc() {
 
 	// Each worker's stack comes back on the core it died on, when that core's
 	// idle thread next runs. Waited for rather than assumed.
-	scheck(&r, sync.await(nothing_to_reap, nil, PATIENCE), "every core reaped its dead")
+	scheck(&r, sync.await(sched.all_reaped, nil, PATIENCE), "every core reaped its dead")
 	sched.reap()
 	scheck(&r, mem.live_objects(mem.heap_stats()) == pin_before, "and the heap is balanced")
 
@@ -568,8 +572,19 @@ report_smp :: proc(r: ^Smp_Result) {
 	emit(&klog, .Fault, &sink)
 }
 
-// fault_after is whether ring 3 has faulted since the count `arg` names.
+// What the shootdown check waits for: the spinning program, and the refill
+// count before its data page was unmapped.
 @(private = "file")
-fault_after :: proc "contextless" (arg: rawptr) -> bool {
-	return user.stats().faults > (^int)(arg)^
+Refill_Watch :: struct {
+	prog:           ^user.Process,
+	refills_before: int,
+}
+
+// refilled_or_ended is whether the fault the unmap provoked has run its
+// course: the handler refilled the page, or it ended the program instead.
+// Either is an answer; a fault counted and not yet handled is not one.
+@(private = "file")
+refilled_or_ended :: proc "contextless" (arg: rawptr) -> bool {
+	w := (^Refill_Watch)(arg)
+	return user.page_refills > w.refills_before || intrinsics.volatile_load(&w.prog.exit.done)
 }
