@@ -28,16 +28,9 @@ GLYPHS :: libfont.FONT_LAST - libfont.FONT_FIRST + 1
 STRIP_W :: PER_STRIP * libfont.FONT_WIDTH
 
 // The strips ASCII alone needs -- what a face bakes when the past-ASCII font
-// is not loaded, which is every face until `window_open` opens it.
+// is not loaded, which is every face until `window_open` opens it. The bake
+// itself, and the room for the ranges past ASCII, are `libdraw`'s.
 STRIPS :: (GLYPHS + PER_STRIP - 1) / PER_STRIP
-
-// The strip set of one face holds ASCII and the ranges `sys/libfont` names
-// past it, packed one after another. Sixteen strips is room for the whole of
-// `default.font` -- ASCII, Latin-1, punctuation and arrows come to fourteen.
-// The server's pool is sixty-four across all windows, so a face is not free:
-// `font_for` degrades to the label it cannot draw when the pool fills.
-STRIPS_MAX :: 16
-MAX_CELLS :: STRIPS_MAX * PER_STRIP
 
 // How many distinct (ink, background) pairs one window may bake. A full-font
 // face is up to fourteen ids, so a window with several colours can exhaust
@@ -50,11 +43,6 @@ MAX_FACES :: 8
 // face bakes ASCII alone rather than nothing. A `tests/mui` that never opens
 // a window leaves it closed and bakes ASCII, which is what it always did.
 text_font: libfont.Loader
-
-// glyph_cells holds one baked strip set's cells, `FONT_HEIGHT` 1bpp rows each,
-// filled once per face before the pixels go out. It is a scratch buffer, not
-// state a caller keeps.
-glyph_cells: [MAX_CELLS][libfont.FONT_HEIGHT]u8
 
 // text_read is the font loader's I/O: the whole of `path` into `into`, or
 // zero. `window_open` gives the loader this reader.
@@ -155,79 +143,25 @@ font_for :: proc "contextless" (
 	}
 	base := f.next_id
 
-	// The ranges this face carries -- ASCII, and the font's own past it -- and
-	// the cells they pack into. Then the strips those cells need.
-	ranges: [libdraw.MAX_ATLAS_RANGES]libdraw.Atlas_Range
-	nr, total := plan_ranges(ranges[:])
-	strips := (total + PER_STRIP - 1) / PER_STRIP
-
-	// Each cell's 1bpp bits, once, from the baked table for ASCII and a loaded
-	// subfont for the rest. A rune a range names but no subfont holds bakes
-	// blank, which reads as a space.
-	for g in 0 ..< total {
-		libfont.loader_glyph(&text_font, cell_rune(ranges[:nr], g), glyph_cells[g][:])
-	}
-
-	// The strip images, allocated in one batch.
-	at := 0
-	for s in 0 ..< strips {
-		at = libdraw.put_alloc(scratch, at, base + u32(s), STRIP_W, u32(libfont.FONT_HEIGHT))
-	}
-	if at < 0 || !sink.write(sink.user, scratch[:at]) {
+	// The one place a face is baked: ASCII and the ranges `text_font` names,
+	// packed and uploaded in this ink over this background. `libdraw` owns the
+	// loop, so `cmd/window` and `apps/terminal` bake the same way.
+	a: libdraw.Atlas
+	strips, ok := libdraw.bake_atlas(
+		&a,
+		base,
+		&text_font,
+		libpal.xrgb(ink),
+		libpal.xrgb(bg),
+		scratch,
+		band_pixels[:],
+		sink.write,
+		sink.user,
+	)
+	if !ok {
 		return {}, false
 	}
 
-	// The pixels, in bands that fit one slot: ink where a glyph bit is set,
-	// the background everywhere else.
-	band := (len(scratch) - libdraw.HEADER - 20) / (libfont.FONT_HEIGHT * 4)
-	if band <= 0 {
-		return {}, false
-	}
-	fg := libpal.xrgb(ink)
-	bw_color := libpal.xrgb(bg)
-	for s in 0 ..< strips {
-		bx := 0
-		for bx < STRIP_W {
-			w := min(band, STRIP_W - bx)
-			for y in 0 ..< libfont.FONT_HEIGHT {
-				for i in 0 ..< w {
-					px := bx + i
-					g := s * PER_STRIP + px / libfont.FONT_WIDTH
-					v := bw_color
-					if g < total {
-						bits := glyph_cells[g][y]
-						if bits & (0x80 >> u8(px % libfont.FONT_WIDTH)) != 0 {
-							v = fg
-						}
-					}
-					libdraw.put_u32(band_pixels[:], (y * w + i) * 4, v)
-				}
-			}
-			end := libdraw.put_load(
-				scratch,
-				0,
-				base + u32(s),
-				u32(bx),
-				0,
-				u32(w),
-				u32(libfont.FONT_HEIGHT),
-				band_pixels[:w * libfont.FONT_HEIGHT * 4],
-			)
-			if end < 0 || !sink.write(sink.user, scratch[:end]) {
-				return {}, false
-			}
-			bx += w
-		}
-	}
-
-	a := libdraw.Atlas {
-		first_image_id = base,
-		per_image      = PER_STRIP,
-		cell_w         = libfont.FONT_WIDTH,
-		cell_h         = libfont.FONT_HEIGHT,
-		n              = nr,
-		ranges         = ranges,
-	}
 	f.faces[f.n] = Face_Atlas {
 		ink   = ink,
 		bg    = bg,
@@ -236,44 +170,6 @@ font_for :: proc "contextless" (
 	f.n += 1
 	f.next_id += u32(strips)
 	return a, true
-}
-
-// plan_ranges fills `out` with the ranges a face carries: ASCII first, then
-// the ones `text_font` names, each packed after the last. Answers how many
-// ranges and how many cells in all. A range that would run past `MAX_CELLS`
-// is dropped whole rather than split across the buffer's end.
-plan_ranges :: proc "contextless" (out: []libdraw.Atlas_Range) -> (n: int, total: int) #no_bounds_check {
-	out[0] = {lo = libfont.FONT_FIRST, hi = libfont.FONT_LAST, offset = 0}
-	n = 1
-	total = int(libfont.FONT_LAST - libfont.FONT_FIRST) + 1
-	if text_font.ready {
-		for i in 0 ..< text_font.idx.n {
-			if n >= len(out) {
-				break
-			}
-			rg := text_font.idx.ranges[i]
-			cnt := int(rg.hi - rg.lo) + 1
-			if total + cnt > MAX_CELLS {
-				break
-			}
-			out[n] = {lo = rg.lo, hi = rg.hi, offset = total}
-			total += cnt
-			n += 1
-		}
-	}
-	return
-}
-
-// cell_rune answers the rune baked into cell `g`, or zero for a cell no range
-// covers -- which the bake loop draws blank.
-cell_rune :: proc "contextless" (ranges: []libdraw.Atlas_Range, g: int) -> rune #no_bounds_check {
-	for rg in ranges {
-		cnt := int(rg.hi - rg.lo) + 1
-		if g >= rg.offset && g < rg.offset + cnt {
-			return rg.lo + rune(g - rg.offset)
-		}
-	}
-	return 0
 }
 
 /*

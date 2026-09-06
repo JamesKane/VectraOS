@@ -127,6 +127,41 @@ rune_len :: proc "contextless" (text: string) -> int #no_bounds_check {
 }
 
 /*
+put_runes packs one blit per rune of `runes` at (x, y) on `dst`, a cell apart,
+until the buffer refuses the next one. It is `put_text` for a caller that
+already holds runes rather than UTF-8 -- a terminal's grid, a cell a rune --
+so it needs no decoding. Returns the new offset and how many runes it drew; a
+count short of the slice is the cue to write the batch and continue with the
+rest, `x` moved on by `put * cell_w`. A rune the atlas does not carry consumes
+with no blit. A negative `at` passes through as (-1, 0).
+*/
+put_runes :: proc "contextless" (
+	b: []u8,
+	at: int,
+	a: Atlas,
+	dst: u32,
+	x: u32,
+	y: u32,
+	runes: []rune,
+) -> (nat: int, put: int) #no_bounds_check {
+	if at < 0 {
+		return -1, 0
+	}
+	nat = at
+	for put < len(runes) {
+		if image, sx, ok := atlas_locate(a, runes[put]); ok {
+			next := put_blit(b, nat, dst, x + u32(put * a.cell_w), y, image, sx, 0, u32(a.cell_w), u32(a.cell_h))
+			if next < 0 {
+				return nat, put
+			}
+			nat = next
+		}
+		put += 1
+	}
+	return nat, put
+}
+
+/*
 put_text packs one blit per rune of `text` at (x, y) on `dst`, until the
 buffer refuses the next one. Returns the new offset, the bytes it consumed,
 and the cells it advanced. A rune the atlas does not carry consumes with no

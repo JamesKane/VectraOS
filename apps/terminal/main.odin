@@ -59,19 +59,41 @@ import "vsys:vectra9"
 FG :: u32(libpal.AMBER[0]) << 16 | u32(libpal.AMBER[1]) << 8 | u32(libpal.AMBER[2])
 BG :: u32(libpal.SLATE[0]) << 16 | u32(libpal.SLATE[1]) << 8 | u32(libpal.SLATE[2])
 
-// The atlas: six strips of sixteen 8x16 cells, ids 1..6, holding the
-// font's 95 glyphs.
-STRIPS :: 6
+// The atlas: strips of sixteen 8x16 cells from image id 1 up, holding ASCII
+// and the ranges `/lib/font` names past it. `libdraw.bake_atlas` fills it and
+// uploads the strips in this program's amber over its slate, once, so its
+// ranges are not known until then -- a var, not a constant like it was when
+// the font stopped at ASCII.
 PER_STRIP :: 16
-GLYPHS :: libfont.FONT_LAST - libfont.FONT_FIRST + 1
+atlas: libdraw.Atlas
 
-ATLAS :: libdraw.Atlas {
-	first_image_id = 1,
-	per_image      = PER_STRIP,
-	cell_w         = libfont.FONT_WIDTH,
-	cell_h         = libfont.FONT_HEIGHT,
-	n              = 1,
-	ranges         = {0 = {lo = libfont.FONT_FIRST, hi = libfont.FONT_LAST, offset = 0}},
+// term_font is the font past ASCII, opened once from `/lib/font`. A failure
+// is not fatal: `bake_atlas` bakes ASCII from the baked table alone.
+term_font: libfont.Loader
+
+// term_read is the font loader's I/O, and term_write the bake's sink -- the
+// window's own `data` stream, which `send` writes to.
+term_read :: proc "contextless" (data: rawptr, path: string, into: []u8) -> int {
+	_ = data
+	fd := libuser.open(path, abi.O_RDONLY)
+	if fd < 0 {
+		return 0
+	}
+	at := 0
+	for at < len(into) {
+		n := libuser.read(int(fd), into[at:])
+		if n <= 0 {
+			break
+		}
+		at += int(n)
+	}
+	_ = libuser.close(int(fd))
+	return at
+}
+
+term_write :: proc "contextless" (user: rawptr, data: []u8) -> bool {
+	_ = user
+	return libuser.write_full(data_fd, data)
 }
 
 // The grid's origin inside the client area, and its ceiling. The origin
@@ -93,12 +115,12 @@ CMD_CAP :: vectra9.WIRE_SLOT - vectra9.IOHDRSZ
 cmd: [CMD_CAP]u8
 
 BAND :: (CMD_CAP - libdraw.HEADER - 20) / (libfont.FONT_HEIGHT * 4)
-STRIP_W :: PER_STRIP * libfont.FONT_WIDTH
 band: [BAND * libfont.FONT_HEIGHT * 4]u8
 
 // The grid, the cursor and the line being typed: the drawer's, and
-// nobody else's.
-cells: [MAX_ROWS][MAX_COLS]u8
+// nobody else's. A cell is a rune, not a byte, so a program's output past
+// ASCII lands whole -- `put_byte` decodes the UTF-8 the shell writes.
+cells: [MAX_ROWS][MAX_COLS]rune
 row_dirty: [MAX_ROWS]bool
 cols, rows: int
 crow, ccol: int
@@ -341,8 +363,34 @@ type_thread :: proc "contextless" (arg: rawptr) {
 
 // -- The grid -------------------------------------------------------------------
 
-// put_byte moves the cursor and the cells the way a terminal does.
+// The bytes of an output rune that has not finished arriving. The shell
+// writes UTF-8 and `put_byte` takes it a byte at a time, so a rune past ASCII
+// waits here until it is whole. Never longer than one rune.
+out_pend: [4]u8
+out_need: int
+out_have: int
+
+/*
+put_byte moves the cursor and the cells the way a terminal does, and gathers
+the UTF-8 of a rune past ASCII across the bytes it arrives in. A byte that is
+no continuation of a half-gathered rune abandons it -- 9front's `chartorune`
+answering `Runeerror` and moving on -- and is then handled fresh, so a stream
+this cannot read makes progress rather than stalling.
+*/
 put_byte :: proc "contextless" (b: u8) #no_bounds_check {
+	if out_need != 0 {
+		if b & 0xC0 == 0x80 {
+			out_pend[out_have] = b
+			out_have += 1
+			if out_have == out_need {
+				r, _ := libdraw.decode_rune(out_pend[:out_have])
+				out_need, out_have = 0, 0
+				place_rune(r)
+			}
+			return
+		}
+		out_need, out_have = 0, 0 // Not a continuation: the half rune is dropped.
+	}
 	switch b {
 	case '\n':
 		newline()
@@ -363,13 +411,35 @@ put_byte :: proc "contextless" (b: u8) #no_bounds_check {
 		if b < 0x20 {
 			return
 		}
-		if ccol >= cols {
-			newline()
+		if b < 0x80 {
+			place_rune(rune(b))
+			return
 		}
-		cells[crow][ccol] = b > 0x7E ? '?' : b
-		ccol += 1
-		row_dirty[crow] = true
+		// A UTF-8 lead byte: how many bytes the rune is, then gather them.
+		switch {
+		case b & 0xE0 == 0xC0:
+			out_need = 2
+		case b & 0xF0 == 0xE0:
+			out_need = 3
+		case b & 0xF8 == 0xF0:
+			out_need = 4
+		case:
+			return // A stray continuation or an invalid lead: dropped.
+		}
+		out_pend[0] = b
+		out_have = 1
 	}
+}
+
+// place_rune puts one whole rune at the cursor and steps it, wrapping to the
+// next row at the right edge.
+place_rune :: proc "contextless" (r: rune) #no_bounds_check {
+	if ccol >= cols {
+		newline()
+	}
+	cells[crow][ccol] = r
+	ccol += 1
+	row_dirty[crow] = true
 }
 
 // newline moves to the next row, scrolling when the last is used up.
@@ -438,7 +508,7 @@ present :: proc "contextless" () #no_bounds_check {
 	shown := string(text_copy[:min(n, max(cols - col, 0))])
 	done := 0
 	for done < len(shown) {
-		nat, put, _ := libdraw.put_text(buf[:], at, ATLAS, 0, cell_x(col + done), cell_y(row), shown[done:])
+		nat, put, _ := libdraw.put_text(buf[:], at, atlas, 0, cell_x(col + done), cell_y(row), shown[done:])
 		done += put
 		if done < len(shown) {
 			send(buf[:], nat)
@@ -470,12 +540,12 @@ draw_row :: proc "contextless" (buf: []u8, start: int, r: int) -> int #no_bounds
 	for end > 0 && cells[r][end - 1] == ' ' {
 		end -= 1
 	}
-	text := string(cells[r][:end])
+	runes := cells[r][:end]
 	done := 0
-	for done < len(text) {
-		nat, put, _ := libdraw.put_text(buf, at, ATLAS, 0, cell_x(done), cell_y(r), text[done:])
+	for done < len(runes) {
+		nat, put := libdraw.put_runes(buf, at, atlas, 0, cell_x(done), cell_y(r), runes[done:])
 		done += put
-		if done < len(text) {
+		if done < len(runes) {
 			send(buf, nat)
 			at = 0
 		} else {
@@ -486,35 +556,16 @@ draw_row :: proc "contextless" (buf: []u8, start: int, r: int) -> int #no_bounds
 }
 
 /*
-upload_font pays the once-per-life cost: six allocs in one write, then
-each strip in bands as wide as one write carries. Fifty-five writes move
-the whole set, and every blit afterwards is 36 bytes.
+upload_font pays the once-per-life cost: the font opened from `/lib/font`,
+then ASCII and the ranges past it baked into strips in amber over slate and
+uploaded through the window's `data` stream. `libdraw.bake_atlas` owns the
+loop -- the same one `sys/libmui` and `cmd/window` bake through -- and fills
+`atlas`. A bake that the server's pool refuses exits the program, as any draw
+write that fails does; there is no half-drawn font to fall back to.
 */
 upload_font :: proc "contextless" () #no_bounds_check {
-	at := 0
-	for s in 0 ..< STRIPS {
-		at = libdraw.put_alloc(cmd[:], at, u32(1 + s), STRIP_W, libfont.FONT_HEIGHT)
-	}
-	send(cmd[:], at)
-
-	for s in 0 ..< STRIPS {
-		for bx := 0; bx < STRIP_W; bx += BAND {
-			bw := min(BAND, STRIP_W - bx)
-			for y in 0 ..< libfont.FONT_HEIGHT {
-				for i in 0 ..< bw {
-					px := bx + i
-					g := s * ATLAS.per_image + px / ATLAS.cell_w
-					v := BG
-					if g < GLYPHS {
-						bits := libfont.font_8x16[g][y]
-						if bits & (0x80 >> u8(px % ATLAS.cell_w)) != 0 {
-							v = FG
-						}
-					}
-					libdraw.put_u32(band[:], (y * bw + i) * 4, v)
-				}
-			}
-			send(cmd[:], libdraw.put_load(cmd[:], 0, u32(1 + s), u32(bx), 0, u32(bw), libfont.FONT_HEIGHT, band[:bw * libfont.FONT_HEIGHT * 4]))
-		}
+	_ = libfont.loader_open(&term_font, "/lib/font/default.font", term_read, nil)
+	if _, ok := libdraw.bake_atlas(&atlas, 1, &term_font, FG, BG, cmd[:], band[:], term_write, nil); !ok {
+		libuser.exit(0x78)
 	}
 }

@@ -650,20 +650,27 @@ The **draw protocol's text model** went multi-range with it. `libdraw.Atlas`
 is 9front's `Font`: a set of rune ranges, each packed into one shared strip
 set at a cell `offset` (9front's `Cachefont.offset`), so a font of several
 ranges spends one run of image ids and not one per range. `put_text` decodes
-UTF-8 and blits a cell per rune. `sys/libmui` bakes ASCII and the ranges
-`/lib/font` names into a face per (ink, bg), sourcing every cell through
-`loader_glyph` -- baked ASCII when the font is closed, a subfont when it is
-open -- so a button label with an accent draws; `tests/mui` bakes a face and
-checks the atlas names Latin-1 and refuses a CJK rune. The server's image
-pool is 64 and a full-font face is ~14 strips, so `font_for` degrades to the
-label it cannot draw when the pool fills.
+UTF-8 and blits a cell per rune; `put_runes` does the same for a caller that
+already holds runes. `libdraw.bake_atlas` is the one baker -- it plans an
+atlas's ranges from ASCII and a `libfont.Loader`, and uploads the strips in
+one ink over one background -- so `sys/libmui`, `apps/terminal` and
+`cmd/window` all bake the same way. A face sources every cell through
+`loader_glyph`: baked ASCII when the font is closed, a subfont when open. The
+server's image pool is 64 and a full-font face is ~14 strips, so a bake the
+pool refuses degrades to the label (or exits the terminal) rather than drawing
+half a font.
 
-Left: **`apps/terminal`** (and `cmd/window`) store one byte per grid cell, so
-past-ASCII output still shows as `?` until the grid holds runes -- they are
-ported to the new `Atlas` but not yet rune-celled. And **`sys/libedit`** still
-drops a rune it cannot store, now only because the terminal that draws the
-line cannot yet show it. `docs/WEB.md` step 1, the reader of the world's
-pages, is what wants it all whole.
+The **terminal and `cmd/window` hold runes**, not bytes: a cell is a `rune`,
+`put_byte` gathers the UTF-8 the shell writes across the bytes it arrives in,
+and `draw_row` blits with `put_runes`, so a program that prints an accented
+name shows it. `tests/mui` bakes a face and checks the atlas names Latin-1 and
+refuses a CJK rune; the terminal's prompt and echo, drawn through the new
+path, stay green on the glass.
+
+Left: **`sys/libedit`** still drops a rune it cannot store -- the typed line
+is ASCII, though the terminal that draws it now shows runes. That is the last
+piece, and `docs/WEB.md` step 1, the reader of the world's pages, is what
+wants it all whole.
 
 **Deferred, with the reason written down: priority inheritance.** A lock hands
 off to the best *waiter*. But a low-priority *holder* still delays a
