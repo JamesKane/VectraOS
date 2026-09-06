@@ -2434,6 +2434,33 @@ verify_kfs :: proc() {
 		} else {
 			libodin.tally(&result, false, "a file is made in /usr/glenda")
 		}
+
+		/*
+		A file past four megabytes. One indirect table reached 1036 blocks;
+		the double level reaches a thousand times that. A marker written at
+		four and a half megabytes lands in the double level's first inner
+		table, and a file that sparse costs three blocks and two tables
+		rather than a thousand writes, so the boot proves the format without
+		paying for the bytes. Read back through a fresh open; removed after,
+		which is the double level's free path.
+		*/
+		_ = remove_at(ns, "/usr/glenda/big")
+		FAR :: u64(4608) * 1024 // 4.5 MB: past the single table, inside the double
+		if big, berr := vfs.create_path(ns, "/usr/glenda/big", vfs.O_RDWR, 0o664); libodin.tally(&result, berr == vfs.OK, "a file for the double level is made") {
+			bwn, bwerr := vfs.chan_write(big, FAR, transmute([]u8)string("far"))
+			libodin.tally(&result, bwerr == vfs.OK && bwn == 3, "a write lands at four and a half megabytes")
+			battr, bserr := vfs.chan_stat(big)
+			libodin.tally(&result, bserr == vfs.OK && battr.size == FAR + 3, "and the file is that long")
+			vfs.chan_close(big)
+			back: [8]u8
+			bgot := 0
+			if b2, rerr := vfs.open_path(ns, "/usr/glenda/big", vfs.O_RDONLY); rerr == vfs.OK {
+				bgot, _ = vfs.chan_read(b2, FAR, back[:])
+				vfs.chan_close(b2)
+			}
+			libodin.tally(&result, bgot == 3 && string(back[:3]) == "far", "and reads back from there through a fresh open")
+			libodin.tally(&result, remove_at(ns, "/usr/glenda/big") == vfs.OK, "and the double level frees on remove")
+		}
 	}
 
 	sink := report_begin("kfs", result.checks)

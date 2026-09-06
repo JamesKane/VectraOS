@@ -48,7 +48,12 @@ INODE_SIZE :: 128
 INODES_PER_BLOCK :: BLOCK / INODE_SIZE
 DIRECT :: 12
 INDIRECT_ENTRIES :: BLOCK / 4
-MAX_FILE_BLOCKS :: DIRECT + INDIRECT_ENTRIES
+// Where the single indirect table's blocks begin, and where the double's
+// do. A file is direct blocks, then one table of them, then a table of
+// tables: 12 + 1024 + 1024*1024 blocks, four gigabytes at 4 KiB a block.
+SINGLE_START :: DIRECT
+DOUBLE_START :: DIRECT + INDIRECT_ENTRIES
+MAX_FILE_BLOCKS :: DOUBLE_START + INDIRECT_ENTRIES * INDIRECT_ENTRIES
 
 // How many inodes a ream makes: one per file the volume can hold.
 INODES :: 1024
@@ -77,6 +82,11 @@ Inode :: struct {
 	mtime:    u64,
 	direct:   [DIRECT]u32,
 	indirect: u32,
+	// A second level: a block of pointers to blocks of pointers, so a file
+	// runs to a thousand times what one indirect table reaches. Byte 92 of
+	// the record, a slot that was spare; zero on a volume from before it,
+	// and zero means absent, as it does for every block number here.
+	double:   u32,
 	// Whose file it is: the user that made it, bytes 96 to 123 of the
 	// record, zero-padded. A volume from before owners has zeroes there,
 	// and a file with no owner is open to whoever the mode lets in.
@@ -441,6 +451,7 @@ get_inode :: proc "contextless" (ino: u32, out: ^Inode) -> bool #no_bounds_check
 		out.direct[i] = le32(e[40 + 4 * i:])
 	}
 	out.indirect = le32(e[88:])
+	out.double = le32(e[92:])
 	out.olen = 0
 	for i in 0 ..< OWNER_MAX {
 		c := e[OWNER_AT + i]
@@ -476,6 +487,7 @@ put_inode :: proc "contextless" (ino: u32, in_: ^Inode) -> bool #no_bounds_check
 		put32(e[40 + 4 * i:], in_.direct[i])
 	}
 	put32(e[88:], in_.indirect)
+	put32(e[92:], in_.double)
 	for i in 0 ..< OWNER_MAX {
 		e[OWNER_AT + i] = i < in_.olen ? in_.owner[i] : 0
 	}
@@ -503,6 +515,65 @@ With `alloc` set a hole is filled: a data block taken, and the indirect
 block first if the index needs one. The inode is changed in memory and the
 caller writes it, after the data is in place.
 */
+/*
+A pointer table is read afresh for every slot it answers, rather than held
+as a slice across the call. `alloc_block` and `free_block` touch the bitmap,
+and the cache may evict the table to make room, so a slice taken before an
+allocation can point at another block after it. The single-level code
+re-read after each allocation for that reason; with two levels of table the
+simplest correct rule is to never hold one. A read hits the cache, so this
+costs nothing the old care did not.
+*/
+@(private = "file")
+table_get :: proc "contextless" (table: u32, slot: u32) -> (block: u32, ok: bool) #no_bounds_check {
+	t := bread(table)
+	if t == nil {
+		return 0, false
+	}
+	return le32(t[slot * 4:]), true
+}
+
+@(private = "file")
+table_set :: proc "contextless" (table: u32, slot: u32, block: u32) -> bool #no_bounds_check {
+	t := bread(table)
+	if t == nil {
+		return false
+	}
+	put32(t[slot * 4:], block)
+	return bwrite(table)
+}
+
+// table_slot answers the block in `slot` of `table`, allocating one there
+// when it is empty and `alloc` says so. A table being filled is a table of
+// zeroes, so a fresh block is zeroed too.
+@(private = "file")
+table_slot :: proc "contextless" (table: u32, slot: u32, alloc: bool) -> (block: u32, ok: bool) {
+	have, got := table_get(table, slot)
+	if !got {
+		return 0, false
+	}
+	if have == 0 && alloc {
+		b, made := alloc_block(true)
+		if !made {
+			return 0, false
+		}
+		if !table_set(table, slot, b) {
+			return 0, false
+		}
+		have = b
+	}
+	return have, true
+}
+
+/*
+bmap answers the disk block that holds file block `idx`, allocating it and
+any table on the way when `alloc` is set. A block that does not exist and is
+not to be made answers zero with `ok`, which a read treats as a hole.
+
+Three regions, by index: the twelve direct blocks in the inode, then the
+single indirect table's thousand, then the double's -- a table whose entries
+are each a table of a thousand more.
+*/
 bmap :: proc "contextless" (in_: ^Inode, idx: u32, alloc: bool) -> (block: u32, ok: bool) #no_bounds_check {
 	if idx >= MAX_FILE_BLOCKS {
 		return 0, false
@@ -517,7 +588,21 @@ bmap :: proc "contextless" (in_: ^Inode, idx: u32, alloc: bool) -> (block: u32, 
 		}
 		return in_.direct[idx], true
 	}
-	if in_.indirect == 0 {
+	if idx < DOUBLE_START {
+		if in_.indirect == 0 {
+			if !alloc {
+				return 0, true
+			}
+			b, got := alloc_block(true)
+			if !got {
+				return 0, false
+			}
+			in_.indirect = b
+		}
+		return table_slot(in_.indirect, idx - SINGLE_START, alloc)
+	}
+	// The double level: an outer table of inner tables.
+	if in_.double == 0 {
 		if !alloc {
 			return 0, true
 		}
@@ -525,35 +610,49 @@ bmap :: proc "contextless" (in_: ^Inode, idx: u32, alloc: bool) -> (block: u32, 
 		if !got {
 			return 0, false
 		}
-		in_.indirect = b
+		in_.double = b
 	}
-	table := bread(in_.indirect)
-	if table == nil {
-		return 0, false
+	rel := idx - DOUBLE_START
+	inner, iok := table_slot(in_.double, rel / INDIRECT_ENTRIES, alloc)
+	if !iok || inner == 0 {
+		return 0, iok
 	}
-	slot := int(idx - DIRECT) * 4
-	block = le32(table[slot:])
-	if block == 0 && alloc {
-		b, got := alloc_block(true)
-		if !got {
-			return 0, false
-		}
-		// `alloc_block` may have evicted the table; read it again.
-		table = bread(in_.indirect)
-		if table == nil {
-			return 0, false
-		}
-		put32(table[slot:], b)
-		if !bwrite(in_.indirect) {
-			return 0, false
-		}
-		block = b
-	}
-	return block, true
+	return table_slot(inner, rel % INDIRECT_ENTRIES, alloc)
 }
 
-// free_blocks_from gives back every block of the file from block index
-// `from` on, and the indirect block when nothing below it remains.
+/*
+free_table gives back every block a pointer table names from slot `start`
+on, and answers whether any slot below `start` still holds one. The table
+block itself is the caller's to free or keep on that answer. Slots are read
+fresh through `table_get`, for the reason `table_slot` gives.
+*/
+@(private = "file")
+free_table :: proc "contextless" (table: u32, start: u32) -> (live: bool, ok: bool) {
+	for i := u32(0); i < INDIRECT_ENTRIES; i += 1 {
+		b, got := table_get(table, i)
+		if !got {
+			return false, false
+		}
+		if b == 0 {
+			continue
+		}
+		if i < start {
+			live = true
+			continue
+		}
+		if !free_block(b) || !table_set(table, i, 0) {
+			return false, false
+		}
+	}
+	return live, true
+}
+
+/*
+free_blocks_from gives back every block of the file from block index `from`
+on, and each pointer table when nothing below it remains: the single
+indirect table, each inner table of the double level, and the double's
+outer table last of all.
+*/
 free_blocks_from :: proc "contextless" (in_: ^Inode, from: u32) -> bool #no_bounds_check {
 	for i := from; i < DIRECT; i += 1 {
 		if in_.direct[i] != 0 {
@@ -563,40 +662,61 @@ free_blocks_from :: proc "contextless" (in_: ^Inode, from: u32) -> bool #no_boun
 			in_.direct[i] = 0
 		}
 	}
-	if in_.indirect == 0 {
+
+	if in_.indirect != 0 {
+		start := from > SINGLE_START ? from - SINGLE_START : 0
+		live, ok := free_table(in_.indirect, start)
+		if !ok {
+			return false
+		}
+		if !live {
+			if !free_block(in_.indirect) {
+				return false
+			}
+			in_.indirect = 0
+		}
+	}
+
+	if in_.double == 0 {
 		return true
 	}
-	table := bread(in_.indirect)
-	if table == nil {
-		return false
-	}
-	start := from > DIRECT ? from - DIRECT : 0
-	live := false
-	for i := u32(0); i < INDIRECT_ENTRIES; i += 1 {
-		b := le32(table[i * 4:])
-		if b == 0 {
-			continue
-		}
-		if i < start {
-			live = true
-			continue
-		}
-		if !free_block(b) {
+	// Each inner table covers INDIRECT_ENTRIES file blocks. An inner table
+	// wholly below `from` is kept whole; one wholly above is freed whole;
+	// the one `from` falls inside is trimmed from its slot on.
+	rel := from > DOUBLE_START ? from - DOUBLE_START : 0
+	outer_live := false
+	for oi := u32(0); oi < INDIRECT_ENTRIES; oi += 1 {
+		inner, got := table_get(in_.double, oi)
+		if !got {
 			return false
 		}
-		// `free_block` touched the bitmap and may have evicted the table.
-		table = bread(in_.indirect)
-		if table == nil {
+		if inner == 0 {
+			continue
+		}
+		first := oi * INDIRECT_ENTRIES // This inner table's first file block, from DOUBLE_START
+		if first + INDIRECT_ENTRIES <= rel {
+			outer_live = true
+			continue
+		}
+		start := rel > first ? rel - first : 0
+		live, ok := free_table(inner, start)
+		if !ok {
 			return false
 		}
-		put32(table[i * 4:], 0)
+		if live {
+			outer_live = true
+			continue
+		}
+		if !free_block(inner) || !table_set(in_.double, oi, 0) {
+			return false
+		}
 	}
-	if live {
-		return bwrite(in_.indirect)
+	if outer_live {
+		return true
 	}
-	if !free_block(in_.indirect) {
+	if !free_block(in_.double) {
 		return false
 	}
-	in_.indirect = 0
+	in_.double = 0
 	return true
 }

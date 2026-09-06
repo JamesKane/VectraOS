@@ -16,17 +16,21 @@ shape of our own. Named for Plan 9's `kfs`, which played the same part.
     block 0        the superblock: magic, block size, where the tables are
     bitmap         one bit per block of the volume, set when taken
     inode table    1024 inodes of 128 bytes: mode, version, size, mtime,
-                   twelve direct block numbers and one indirect
+                   twelve direct block numbers, one indirect, one double
+                   indirect, and the owner
     data           everything else, handed out by the bitmap
 
 Blocks are 4 KiB and every structure is a whole number of them, so a block
 is the unit of every read and write and nothing straddles two. A directory
 is a file whose blocks hold 128-byte entries, an inode number and a name of
 up to 123 bytes; an empty entry has inode zero, which is never handed out.
-Twelve direct blocks and an indirect block of 1024 more make a file of a
-little over four megabytes, which is the ceiling until a second level is
-added. A read of a block the file never wrote answers zeros: a file may have
-holes, and a truncate that grows makes one.
+Twelve direct blocks, an indirect table of 1024 more, and a double indirect
+table of 1024 such tables make a file of four gigabytes. The tables are
+walked a slot at a time and never held across an allocation, because the
+cache may evict a table to make room for the block being allocated. A read
+of a block the file never wrote answers zeros: a file may have holes, and a
+truncate that grows makes one -- which is how the boot proves the double
+level for the price of three blocks rather than a thousand writes.
 
 The qid's path is the inode number and its version the inode's, which moves
 on every write, so a client that cached a file can tell it changed. The mode
@@ -107,11 +111,16 @@ would, and checks that `$home` is `/usr/glenda`.
 
 - **A journal**, and a check program. The write order above is the whole
   crash story.
-- **Files past four megabytes.** One indirect level.
 - **Rename.** `mv` copies and removes, as it does everywhere here.
-- **Owners.** Every file is glenda's; `uid` and `gid` are zero on the wire.
-  The inode has no field for them yet because nothing has a second user.
 - **Dates.** `mtime` is written as zero.
+- **A third indirect level.** Two reach four gigabytes: twelve direct
+  blocks, a table of a thousand, and a table of tables. The double
+  pointer sits at byte 92 of the inode, a slot that was spare, so a volume
+  from before it reads as zero there and needs no ream. A third level is
+  the same recursion again and waits for a file that wants it.
+- **Groups.** A file has an owner (bytes 96 to 123 of the inode, the user
+  that made it) and a mode the server checks against the attaching user,
+  but no group; `/adm/users` is not read.
 - **A bigger cache, or a write-back one.** Write-through costs a device
   request per changed block, which a boot of a few hundred writes does not
   notice.
