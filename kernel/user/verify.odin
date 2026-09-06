@@ -485,6 +485,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_mui(&r)
 	verify_netfs(&r)
 	verify_cryptotest(&r)
+	verify_fonttest(&r)
 	verify_users(&r)
 	verify_factotum(&r)
 	verify_netserver(&r)
@@ -7409,6 +7410,22 @@ verify_cryptotest :: proc(r: ^Result) {
 	said, _, ok := run_script(r, "/bin/cryptotest", names[:], PATIENCE * 5, abi_said[:], "a program on the fleet's cryptography starts")
 	if ok {
 		check(r, said == "ok", said == "ok" ? "and every cipher matched its published vector" : said)
+	}
+}
+
+/*
+verify_fonttest runs `fonttest`, which reads `/lib/font` -- the first data
+this system loads at run time rather than bakes. It opens the `.font` index,
+draws an ASCII letter from the baked table and a Latin-1 letter and an arrow
+from subfonts it loads, and refuses a rune no range holds. The word it exits
+with is the first check that did not hold, or `ok`.
+*/
+@(private = "file")
+verify_fonttest :: proc(r: ^Result) {
+	names := [?]string{"fonttest"}
+	said, _, ok := run_script(r, "/bin/fonttest", names[:], PATIENCE * 5, abi_said[:], "a program on the runtime font starts")
+	if ok {
+		check(r, said == "ok", said == "ok" ? "and a rune past ASCII loaded from a subfont with ink" : said)
 	}
 }
 

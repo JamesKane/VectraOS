@@ -328,8 +328,9 @@ does.
 Homebrew moved Odin from `dev-2026-08` to `dev-2026-09` under a running
 session on 2 September 2026. The two constraints below about inline assembly
 are what that cost. No `xorriso`, no loop devices, no `sudo` required. Pillow
-is **not** currently installed, so `make font` will not run until it is; the
-two generated font files are checked in, and nothing else needs Python.
+is installed again, so `tools/genfont.py` (the baked ASCII table) and
+`tools/gensubfont.py` (the subfonts past it) both run; their output is
+checked in, so a build needs no rasteriser. Nothing else needs Python.
 
 **UEFI firmware is the neighbouring `odin-os` checkout's `ovmf_x64.fd` when
 it is there, and it is there again as of September 2026.** `run_qemu` looks
@@ -626,14 +627,18 @@ here, and `segbrk` and `segdetach` cover every give-back a caller today can
 act on. So it waits for a caller that needs the pages back and the addresses
 kept.
 
-**Deferred, with the reason written down: a font with more than 128 glyphs.**
-`sys/libedit` drops every rune it does not act on, because `sys/libfont` is an
-8x16 table of 7-bit characters. This file used to say the fix was "a wider
-table", and that is not Plan 9's shape: a `.font` there is a text file of rune
-ranges pointing at separate subfont files, loaded lazily and LRU-cached. The
-real work is a file format, a loader, and the first data this system reads at
-runtime rather than bakes into its image. `docs/WEB.md` step 1 is the
-thing that needs it, a reader of the world's pages, and owns it now.
+**The font past 128 glyphs: the loader is built, the renderers are being
+wired.** Plan 9's shape, not a wider table: `/lib/font/default.font` names
+rune ranges and the subfont file each is in, and `sys/libfont` reads them at
+run time -- the first data this system loads rather than bakes -- into a
+`Loader` that keeps a few subfonts by recency and answers a rune's cell,
+ASCII from the baked table and the rest from a subfont. `tools/gensubfont.py`
+rasterises the subfonts (Latin-1, punctuation, arrows so far) and checks them
+in, so a build stages them without a rasteriser. `tests/font` proves the
+loader. Left: the renderers -- the kernel console, the draw server's title,
+`sys/libmui`'s glyph images, and `sys/libedit`, which still drops a rune it
+cannot draw. `docs/WEB.md` step 1, the reader of the world's pages, is what
+wants it whole.
 
 **Deferred, with the reason written down: priority inheritance.** A lock hands
 off to the best *waiter*. But a low-priority *holder* still delays a
