@@ -468,30 +468,34 @@ plan, and each is a root that can start now:
                          are all windowed clients of it. The root is built.
     the network          FLEET 0 DONE but for `etherfs` (waits on HARDWARE
                          0's `mmio`/`irq`), FLEET 1 (9P both ways) DONE, and
-                         FLEET 2 (users) all but its last command. `factotum`
-                         holds the keys, `sys/libauth` runs Noise IK through
-                         it and seals the stream, `srv`/`import`/`exportfs -a`
-                         prove who they are, and the bench imports across
-                         architectures sealed with a stranger refused. The
-                         kernel gives each process a user and each kfs file an
-                         owner and modes; `init` names the host owner and it
-                         takes, so `exportfs` becomes the client it proved and
-                         re-attaches the tree as that user. A `none` mount now
-                         opens a public file and is refused a private one,
-                         across the wire, on the bench. Left: `cmd/auth`
-                         (`newuser`/`passwd`), a second real user, and the
-                         three proofs it unlocks -- a mount attaches as
-                         `jkane`, `jkane` is refused `glenda`'s 0600, and a
-                         kill of another user's process is denied.
+                         FLEET 2 (users) DONE. `factotum` holds the keys,
+                         `sys/libauth` runs Noise IK through it and seals the
+                         stream, `srv`/`import`/`exportfs -a` prove who they
+                         are, and the bench imports across architectures
+                         sealed with a stranger refused. The kernel gives each
+                         process a user and each kfs file an owner and modes;
+                         `init` names the host owner and it takes, so
+                         `exportfs` becomes the client it proved and
+                         re-attaches the tree as that user. `cmd/auth`
+                         enrols a person (`newuser`), changes a passphrase
+                         (`passwd`) and logs one in (`login`, which `exec`s so
+                         it becomes the console's own shell). All three of
+                         section 4's proofs hold on two machines: `jkane`
+                         logs in on one, imports two as themselves, reads a
+                         public file and is refused a private one, and cannot
+                         kill a host process. `jkane` is staged in `/adm/keys`
+                         (passphrase in `cmd/auth`'s source). Left in FLEET 2:
+                         nothing required; `/dev/user` and `/adm/users` groups
+                         are the only niceties not built.
                          The bench holds both boot lines: two architectures
                          ping by name, a line crosses, `ipconfig` gets an
                          address from the router, and machine one imports
                          machine two's tree and reads its `/proc` across the
                          wire. `dns` and `cs` stand beside the stack;
                          `exportfs`, `listen`, `srv`, `import` and `9fs`
-                         serve and mount it. See `docs/NETFS.md`. `cmd/auth`
-                         finishes FLEET 2, and GHOST 4 and the stack half of
-                         HARDWARE 3 read all of this.
+                         serve and mount it. See `docs/NETFS.md`. FLEET 2 is
+                         done; FLEET 3 (roles and boot) is next, and GHOST 4
+                         and the stack half of HARDWARE 3 read all of this.
     users and factotum   FLEET 2. GHOST 4 needs an identity, and the
                          one-user note in `docs/DRAW.md`, `docs/PROCS.md`
                          and `docs/KFS.md` is written against this.
