@@ -4264,6 +4264,45 @@ cell_body_blank :: proc "contextless" (s: ^fb.Surface, x: int, y: int) -> bool {
 	return glyph_on_glass(s, x, y, ' ', libfont.FONT_HEIGHT - CARET_BAND)
 }
 
+// column_profile writes one column of the glass as runs, for a failure
+// message: a letter per kind of pixel and the run's length.
+@(private = "file")
+column_profile :: proc "contextless" (sink: ^libodin.Sink, s: ^fb.Surface, x: int, y0: int, y1: int, face: u32, amber: u32) #no_bounds_check {
+	lit := fb.pack(s, fb.MAGNESIUM_LIT)
+	dark := fb.pack(s, fb.MAGNESIUM_DARK)
+	ground := fb.pack(s, fb.SLATE_DEEP)
+	well := fb.pack(s, fb.SLATE)
+	last := u8(0)
+	run := 0
+	for y in y0 ..< y1 {
+		px := fb.get_raw(s, x, y)
+		kind := u8('o')
+		switch px {
+		case face: kind = 'M'
+		case lit: kind = 'L'
+		case dark: kind = 'D'
+		case ground: kind = 'G'
+		case well: kind = 'S'
+		case amber: kind = 'A'
+		}
+		if kind == last {
+			run += 1
+			continue
+		}
+		if last != 0 {
+			libodin.put_str(sink, string([]u8{last}))
+			libodin.put_int(sink, i64(run))
+			libodin.put_str(sink, " ")
+		}
+		last = kind
+		run = 1
+	}
+	if last != 0 {
+		libodin.put_str(sink, string([]u8{last}))
+		libodin.put_int(sink, i64(run))
+	}
+}
+
 // cell_says names what a cell holds, for a failure message: the glyph asked
 // for, a blank, or something else with its count of foreground pixels, which
 // tells a wrong glyph from a caret from a half-drawn one.
@@ -4815,50 +4854,53 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	}
 	face := check(r, gtop > 0, "and paints a button face inside it, which is the client drawing through the toolkit")
 
-	// A label on that face is amber, blitted from the atlas baked for it.
+	/*
+	A label on that face is amber, blitted from the atlas baked for it.
+
+	The face's extent is measured again on every look, and that is the whole
+	of this check's history. The face poll above returns the moment a run of
+	face appears under a column, and the compositor paints a window's rows top
+	down, so the run it saw can be the top of a button whose bottom rows had
+	not reached the glass yet. A band frozen there never holds the label:
+	in a full-height window the tools row stretches its buttons to a hundred
+	and twenty rows, the label sits fifty rows below the top edge, and five
+	boots in two hundred read the band as `55..90` and found nothing amber in
+	it for four seconds while the whole button, label and all, stood beneath
+	it. The pixels were never wrong; the ruler was.
+	*/
 	if face {
 		amber := fb.pack(s, fb.AMBER)
-		// Polled like the face, and the ticks it took kept. The face and
-		// the label are one batch and one flush, so a label that lands
-		// after the face was seen is either a composite caught part way or
-		// a paint nobody asked for -- and one boot in twenty the label was
-		// not there when the face was. A late label fails with its delay,
-		// so the next such boot says which.
 		found_label := false
-		label_ticks := 0
 		for _ in 0 ..< PATIENCE * 20 {
-			for row in gtop ..< gbot {
-				if first, _ := scan_row(s, row, amber, gx - bw / 4, gx + bw / 4); first >= 0 {
-					found_label = true
-					break
+			t, b := scan_col(s, gx, magnesium, by + 8, s.height)
+			if t > by + 8 && b > t {
+				gtop, gbot = t, b
+				for row in t ..< b {
+					if first, _ := scan_row(s, row, amber, gx - bw / 4, gx + bw / 4); first >= 0 {
+						found_label = true
+						break
+					}
 				}
 			}
 			if found_label {
 				break
 			}
 			sync.delay(1)
-			label_ticks += 1
 		}
-		if found_label && label_ticks == 0 {
+		if found_label {
 			check(r, true, "with an amber label on it, blitted from an atlas baked for that one colour")
 		} else {
+			// What stood there instead, so the next miss names itself: the
+			// face's rows, the band's census, and the column as runs of what
+			// each pixel is -- M face, L lit edge, D dark edge, G the window
+			// ground, S the well, A amber, o anything else.
 			sink := detail_sink()
-			libodin.put_str(&sink, "with an amber label on it, blitted from an atlas baked for that one colour -- ")
-			if found_label {
-				libodin.put_str(&sink, "there after ")
-				libodin.put_int(&sink, i64(label_ticks))
-				libodin.put_str(&sink, " ticks, face rows ")
-			} else {
-				libodin.put_str(&sink, "never, face rows ")
-			}
+			libodin.put_str(&sink, "with an amber label on it, blitted from an atlas baked for that one colour -- none in face rows ")
 			libodin.put_int(&sink, i64(gtop))
 			libodin.put_str(&sink, "..")
 			libodin.put_int(&sink, i64(gbot))
 			libodin.put_str(&sink, " at column ")
 			libodin.put_int(&sink, i64(gx))
-			// What the band holds instead: a face with nothing on it is a
-			// label never blitted, and foreign pixels are a blit of the
-			// wrong image.
 			mag, amb, stray := 0, 0, 0
 			for row in gtop ..< gbot {
 				for x in max(gx - bw / 4, 0) ..< min(gx + bw / 4, s.width) {
@@ -4881,6 +4923,8 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			libodin.put_int(&sink, i64(by))
 			libodin.put_str(&sink, " wide ")
 			libodin.put_int(&sink, i64(bw))
+			libodin.put_str(&sink, "; column from the bar: ")
+			column_profile(&sink, s, gx, by, min(by + 220, s.height), magnesium, amber)
 			check(r, false, libodin.str(&sink))
 		}
 	}
@@ -5167,7 +5211,16 @@ verify_mapping :: proc(r: ^Result) {
 
 	if comes_back(r, p, "and it comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_MAPPER, "having reached its first instruction")
-		check(r, cell(p, MAPPER_FD) < u64(MAX_FDS), "the screen opened as an ordinary descriptor")
+		if fdv := cell(p, MAPPER_FD); fdv < u64(MAX_FDS) {
+			check(r, true, "the screen opened as an ordinary descriptor")
+		} else {
+			// Seen once in fifty boots with the checker's own open of the
+			// screen a line above it fine; the answer says which refusal.
+			sink := detail_sink()
+			libodin.put_str(&sink, "the screen opened as an ordinary descriptor -- the open answered ")
+			libodin.put_int(&sink, i64(fdv))
+			check(r, false, libodin.str(&sink))
+		}
 
 		addr := uintptr(cell(p, MAPPER_ADDR))
 		check(r, addr >= mem.USER_MIN && addr < mem.USER_MAX, "and attached at an address in its own half")

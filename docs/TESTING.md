@@ -479,6 +479,21 @@ every collector in the machine, not only the ones the test called, and for
 every process the last test started to be gone, not only the one it waited
 for.**
 
+## A poll that returns early must not fix the ruler
+
+The toolkit demo's label check polled for a button face, then looked for an
+amber label inside the rows it had found. The compositor paints a window's
+rows top down, and the poll returned the moment sixteen rows of face were
+under a column. In a full-height window a button is a hundred and twenty rows
+tall and its label sits fifty rows below its top edge. Five boots in two
+hundred the band froze at the top of the button, and four seconds of looking
+found no amber in rows that never held any, while the whole label stood
+beneath them. Client and server checksums of every atlas strip matched, every
+blit landed where the good boots put it, and the pixels were never wrong.
+**A poll that stops at `enough of it is here` must measure again on every
+later look, or it measures the moment it stopped.** A miss now prints the
+column as runs of what each pixel is, which is how the ruler was caught.
+
 ## A bracket counts, and some errors keep every count even
 
 `docs/USER.md` found the case a bracket cannot see, and it is worth a rule of

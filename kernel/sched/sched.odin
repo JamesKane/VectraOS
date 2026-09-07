@@ -657,6 +657,13 @@ reap :: proc() {
 		if t == nil {
 			return
 		}
+		if t.reaped {
+			sync.bug("sched: a thread reached the reap list twice")
+		}
+		if t.state != .Dead {
+			sync.bug("sched: a thread on the reap list is not dead")
+		}
+		t.reaped = true
 		if t.owns_stack && t.stack != nil {
 			delete(t.stack)
 		}
@@ -770,6 +777,9 @@ wake :: proc "contextless" (t: ^Thread, boosted: bool) {
 
 	if t.state == .Ready || t.state == .Running || t.state == .Dead {
 		return
+	}
+	if t.reaped {
+		sync.bug("sched: a wake of a reaped thread")
 	}
 	if boosted {
 		boost(t)
@@ -988,6 +998,9 @@ reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Res
 		case .Blocked:
 		// Off every queue on purpose.
 		case .Dead:
+			if prev.reaped {
+				sync.bug("sched: a reaped thread was running")
+			}
 			prev.next = c.reap
 			c.reap = prev
 		}

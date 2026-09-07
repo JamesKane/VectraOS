@@ -197,6 +197,17 @@ Thread :: struct {
 
 	next:       ^Thread, // Run queue and reap list link
 	owns_stack: bool, // False for the boot thread, whose stack is the loader's
+
+	/*
+	Set by `reap` the moment before it frees the record, and read by every
+	path that could touch the record afterwards: a switch-out, an enqueue, a
+	wake. A record that comes back with this set is one somebody still held a
+	pointer to after it was freed. One boot in a hundred a dead thread's stack
+	and record were freed twice, and the fork child that had been handed both
+	in between was dispatched into a zeroed frame. The checks turn that into a
+	sentence at the first wrong touch rather than a #GP at `iretq`.
+	*/
+	reaped:     bool,
 }
 
 /*

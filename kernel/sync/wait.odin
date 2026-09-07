@@ -197,6 +197,12 @@ set_panic :: proc "contextless" (p: proc "contextless" (reason: string) -> !) {
 	panic_hook = p
 }
 
+// bug is `fail` for another package's invariant: the scheduler stops the
+// machine with a sentence rather than let a thread it knows is wrong run.
+bug :: proc "contextless" (reason: string) -> ! {
+	fail(reason)
+}
+
 @(private)
 fail :: proc "contextless" (reason: string) -> ! {
 	if panic_hook != nil {

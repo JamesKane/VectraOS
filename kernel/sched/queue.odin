@@ -19,6 +19,7 @@ already means -- see `kernel/sync`.
 package sched
 
 import "kernel:arch"
+import "kernel:sync"
 
 Queue :: struct {
 	head:  ^Thread,
@@ -73,6 +74,9 @@ take it ahead of a runnable thread.
 enqueue :: proc "contextless" (c: ^Cpu, t: ^Thread) #no_bounds_check {
 	if t == nil || t == c.idle {
 		return
+	}
+	if t.state == .Dead || t.reaped {
+		sync.bug("sched: a dead thread was queued to run")
 	}
 
 	level := clamp_priority(t.prio)

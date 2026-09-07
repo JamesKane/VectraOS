@@ -745,6 +745,40 @@ polled, a terminal glyph read that has not recurred in sixty boots, and the
 shootdown counter order. A failed drain and a failed label now say what they
 saw, so the next one names itself.
 
+The label miss was the ruler, not the pixels: the face poll returned the
+moment a run of face appeared under a column, and the compositor paints a
+window top down, so the band it froze could be the top of a button whose
+label sat fifty rows lower. Five boots in two hundred read `55..90` and found
+nothing amber there for four seconds while the whole button stood beneath.
+The check measures the face again on every look now, and a miss prints the
+column as runs of what each pixel is, which is what found it.
+
+**Open, and the most serious thing in this file.** Once in about a hundred
+boots, on a machine kept up after the desktop's programs had died, `ps` took
+the kernel down with a `#GP` at `iretq`: every register zero, on the kernel
+stack of a program that had exited ten minutes earlier. The corpse read
+cleanly: rc's fork child had been handed that dead thread's record and stack
+back from the heap, a *second* reap of the same dead record then freed the
+live child's stack and record from under it, the pages were reissued and
+zeroed, and the child was dispatched into the zeros. The physical allocator
+counted no double free because the pages had been reallocated between the
+two frees. Two dead threads of thread-library programs also sat `Dead` and
+unreaped for minutes while plain programs' dead threads were reaped at once,
+which is unexplained and probably the same fault. `kernel/sched` now carries
+`Thread.reaped` and four `sync.bug` checks -- the reap list twice, a
+non-dead thread on it, a reaped thread switched out, queued, or woken -- so
+the next occurrence stops with a sentence naming the path instead of a
+`#GP`. Reproducing it needs the desktop's programs dead first, which the
+hunt's own tracing caused by slowing the draw server's handler until clients
+saw `EIO`; without that, sixteen idle minutes with a `ps` every two did not
+reach it. The lldb walk (process table by symbol, exit records at `+776`,
+kernel threads by heap scan) is in the memory notes.
+
+Two one-offs seen once each in two hundred boots and not chased: the chord
+test's `an alt-n the server does not know reaches the desktop, verbatim`,
+and the terminal's `every one of them, before any newline says the line is
+finished`, which now says what each cell held when it next fails.
+
 One thing the sweep found and did not chase: a tight fork storm from rc --
 `while(! {ps | grep ' sleep$' > /dev/null}) sleep 0`, four forks a turn on
 four cores -- hung the boot once in twenty, somewhere in the user suite with
