@@ -104,6 +104,35 @@ File :: struct {
 	part_uuid:       UUID,
 }
 
+// -- Modules -----------------------------------------------------------------
+
+// The files `limine.conf` names beside the kernel, loaded into memory
+// before the kernel runs. Vectra asks for one: `vectra.vxd`, the kernel's
+// own debug table, which the panic screen resolves names through. See
+// `kernel/debuginfo.odin`.
+MODULE_REQUEST :: [4]u64 {
+	COMMON_MAGIC_1,
+	COMMON_MAGIC_2,
+	0x3e7e279702be32af,
+	0xca1c4f3bd1280cee,
+}
+
+Module_Response :: struct {
+	revision:     u64,
+	module_count: u64,
+	modules:      [^]^File,
+}
+
+Module_Request :: struct {
+	id:                    [4]u64,
+	revision:              u64,
+	response:              ^Module_Response,
+	// Revision 1 adds internal modules the kernel asks for by path; Vectra
+	// asks with revision 0 and names its module in the config instead.
+	internal_module_count: u64,
+	internal_modules:      rawptr,
+}
+
 // -- Bootloader info ---------------------------------------------------------
 
 BOOTLOADER_INFO_REQUEST :: [4]u64 {

@@ -407,10 +407,12 @@ the documents it points at.
    its code. C and C++ enter the build at the object. A platform library
    of twenty calls sits over files a program can open itself. `/proc`
    has Plan 9's `mem`, `regs` and `startstop` now: step 3, done in
-   September 2026. A debugger runs as a file server with a window as one
-   client. POSIX is mlibc over the calls, so that `clang` and `odin` run
-   on the machine. Steps 0 and 1 need nothing before them, and step 4
-   needs only step 0's build flag.
+   September 2026. Every program has a debug file beside it, and the
+   kernel names its panic backtrace: step 4's first cut, the same month.
+   Variables and types are still to come. A debugger runs as a file
+   server with a window as one client. POSIX is mlibc over the calls, so
+   that `clang` and `odin` run on the machine. Steps 0 and 1 need nothing
+   before them, and step 5 needs the rest of step 4.
 6. **The fleet, from step 3.** `docs/FLEET.md` is the plan, and steps 0
    (the network), 1 (9P both ways) and 2 (users, `factotum`, the Noise
    handshake, kfs owners) are done and on the bench. **Step 3 is next:**

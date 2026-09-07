@@ -686,6 +686,22 @@ with the control section 5 asks for.
 Boot line: the kernel resolves a procedure by name from its own table,
 and the panic screen prints names.
 
+**First cut done, September 2026.** `elf_to_debug` in `build.odin` writes
+`units`, `files`, `procs`, `lines`, `names`, `dis` and `strings`.
+`sys/libdebug` reads them, and `tests/debug` proves them from ring 3.
+The kernel's `vectra.vxd` is a Limine module rather than bytes in the
+image. `kernel/debuginfo.odin` reads it, and the panic screen's backtrace
+carries names and lines.
+
+Three things differ from section 6 and are written down here. This Odin
+emits DWARF 4, so the converter reads 4 and refuses 5. Nothing emits
+`.debug_frame`, so there are no `unwind` rows, and the frame chain stays
+the fallback. Disassembly is per program, on by a flag in `user_programs`,
+and `debugtest` alone asks for it today. The next increment is `scopes`,
+`vars` and `types` from `.debug_info`, which the abbreviation reader is
+already shaped for. `dis` for every program waits until its size on the
+disk is worth it.
+
 ### Step 5: `dbgfs` and `db`
 
 `servers/dbgfs`, `cmd/db`, `tests/debuggee`. About 4,700 lines. Needs

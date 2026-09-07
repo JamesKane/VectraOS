@@ -487,6 +487,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_netfs(&r)
 	verify_cryptotest(&r)
 	verify_fonttest(&r)
+	verify_debugtest(&r)
 	verify_users(&r)
 	verify_debug(&r)
 	verify_factotum(&r)
@@ -8050,6 +8051,23 @@ has_text :: proc "contextless" (hay, needle: string) -> bool {
 		}
 	}
 	return false
+}
+
+/*
+verify_debugtest runs `debugtest`, which reads its own debug file from
+`/lib/debug` -- `docs/DEVTOOLS.md` section 6, the file the build writes
+beside every program. It finds its entry by name, names a procedure from an
+address inside it, finds that address's source line, and reads the
+instruction text at its entry. The word it exits with is the first check
+that did not hold, or `ok`.
+*/
+@(private = "file")
+verify_debugtest :: proc(r: ^Result) {
+	names := [?]string{"debugtest"}
+	said, _, ok := run_script(r, "/bin/debugtest", names[:], PATIENCE * 5, abi_said[:], "a program on its own debug file starts")
+	if ok {
+		check(r, said == "ok", said == "ok" ? "and names, lines and instructions read back from it" : said)
+	}
 }
 
 /*

@@ -220,6 +220,20 @@ scan_stack :: proc "contextless" (sp: uintptr, space: ^mem.Address_Space, show: 
 				sink := begin(&klog)
 				libodin.put_str(&sink, found == 0 ? "maybe " : "      ")
 				libodin.put_hex(&sink, u64(v), 16)
+				// The name, from the kernel's own debug table when the
+				// boot brought one. See `debuginfo.odin`.
+				if name, off, named := debug_name(v); named {
+					libodin.put_str(&sink, "  ")
+					libodin.put_str(&sink, name)
+					libodin.put_str(&sink, "+")
+					libodin.put_hex(&sink, off, 0)
+					if file, line, lined := debug_line(v); lined {
+						libodin.put_str(&sink, "  ")
+						libodin.put_str(&sink, file)
+						libodin.put_str(&sink, ":")
+						libodin.put_uint(&sink, u64(line))
+					}
+				}
 				emit(&klog, .Trace, &sink)
 			}
 			found += 1

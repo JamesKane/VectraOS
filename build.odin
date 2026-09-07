@@ -38,6 +38,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 
@@ -45,6 +46,7 @@ BUILD_DIR :: "build"
 ESP_DIR :: "build/esp"
 SCRATCH_IMG :: "build/disk.img"
 KERNEL_ELF :: "build/vectra.elf"
+KERNEL_VXD :: "build/vectra.vxd"
 KERNEL_OBJ :: "build/vectra.o"
 
 USER_DIR :: "build/user"
@@ -62,6 +64,7 @@ kernel's compile is what consumes the artifact.
 User_Program :: struct {
 	name: string, // The image's basename under build/user/
 	path: string, // The package directory
+	dis:  bool, // Whether its debug file carries disassembly, `docs/DEVTOOLS.md` section 6
 }
 
 user_programs := [?]User_Program {
@@ -130,6 +133,7 @@ user_programs := [?]User_Program {
 	{name = "auth", path = "cmd/auth"},
 	{name = "fonttest", path = "tests/font"},
 	{name = "muidemo", path = "apps/muidemo"},
+	{name = "debugtest", path = "tests/debug", dis = true},
 }
 
 /*
@@ -467,6 +471,11 @@ build_kernel :: proc(opts: Options) {
 	if info, err := os.stat(KERNEL_ELF, context.allocator); err == nil {
 		step("kernel image is %d bytes", info.size)
 	}
+	// The kernel's own debug file, which Limine loads as a module beside
+	// it and the panic screen resolves names through. No disassembly: a
+	// table of the whole kernel's instructions is a large module for a
+	// line the panic screen does not print.
+	elf_to_debug(KERNEL_ELF, KERNEL_VXD, opts.arch, false)
 }
 
 // assemble turns one `.S` into an object for the arch's ELF. `-target`
@@ -516,6 +525,7 @@ build_user :: proc(opts: Options) {
 		compile_ring3(cfg, prog.path, obj, {})
 		link_ring3(cfg, obj, elf, "sys/libuser/link_user.ld", {thread_obj})
 		elf_to_image(elf, img)
+		elf_to_debug(elf, fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), opts.arch, prog.dis)
 	}
 	write_pak()
 }
@@ -591,6 +601,9 @@ ring3_build_flags := [?]string{
 	"-disable-red-zone",
 	"-no-thread-local",
 	"-o:speed",
+	// DWARF beside the code, for `elf_to_debug`. The image does not grow:
+	// the converter consumes the sections and `elf_to_image` drops them.
+	"-debug",
 }
 
 // compile_ring3 compiles one ring 3 package to an object, with `extra`
@@ -876,6 +889,8 @@ stage_esp :: proc(opts: Options) {
 	// rather than at the volume root, where another limine.conf could shadow it.
 	copy_file("boot/limine.conf", fmt.tprintf("%s/EFI/BOOT/limine.conf", ESP_DIR))
 	copy_file(KERNEL_ELF, fmt.tprintf("%s/vectra.elf", ESP_DIR))
+	// The kernel's debug table, named as a module in limine.conf.
+	copy_file(KERNEL_VXD, fmt.tprintf("%s/vectra.vxd", ESP_DIR))
 	stage_vectra(opts.hostname == "" ? "vectra" : opts.hostname)
 }
 
@@ -898,6 +913,12 @@ stage_vectra :: proc(host: string) {
 	ensure_dir(fmt.tprintf("%s/tmp", root))
 	for prog in user_programs {
 		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
+	}
+	// Each program's debug file, where a debugger looks for it by the
+	// program's name. `/bin` is served from the image and stays small.
+	ensure_dir(fmt.tprintf("%s/lib/debug", root))
+	for prog in user_programs {
+		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/lib/debug/%s.vxd", root, prog.name))
 	}
 	copy_file("apps/rc/rcmain", fmt.tprintf("%s/lib/rcmain", root))
 	copy_file("apps/rc/init", fmt.tprintf("%s/lib/init", root))
@@ -1365,4 +1386,644 @@ die :: proc(format: string, args: ..any) -> ! {
 	fmt.eprintf("!!! ")
 	fmt.eprintfln(format, ..args)
 	os.exit(1)
+}
+
+/*
+-- Debug information ----------------------------------------------------------
+
+elf_to_debug writes the flat debug file `docs/DEVTOOLS.md` section 6
+describes, beside a program's image: `build/user/<name>.vxd`, and
+`build/vectra.vxd` for the kernel. `sys/libdebug` reads it, on the machine.
+
+The sources are the linked ELF's `.symtab` for the procedures, its DWARF 4
+`.debug_info` for the compilation units and `.debug_line` for the files and
+the line rows, and `llvm-objdump` for the disassembly where a program asks
+for it. This Odin emits DWARF 4, and the reader below refuses a version or
+a form it does not know by name. A compiler that moves is then a build
+failure and not a wrong answer. Nothing here reads `.debug_frame`, because
+nothing emits one. The frame chain is the fallback the plan named.
+
+The tables and their layout are the reader's file comment, and the two
+must agree by hand: this file builds the file and that one reads it, and
+neither can import the other.
+*/
+
+VXD_MAGIC :: u32(0x3144_5856) // "VXD1"
+VXD_VERSION :: u32(1)
+
+Vxd_Table :: enum u32 {
+	Units   = 1,
+	Files   = 2,
+	Procs   = 3,
+	Lines   = 4,
+	Names   = 5,
+	Dis     = 6,
+	Strings = 7,
+}
+
+Vxd_Unit :: struct {
+	name, dir, lang, stmt: u32,
+}
+Vxd_File :: struct {
+	unit, path: u32,
+}
+Vxd_Proc :: struct {
+	low, high: u64,
+	name, unit: u32,
+}
+Vxd_Line :: struct {
+	addr:       u64,
+	file, line: u32,
+}
+Vxd_Name :: struct {
+	name, index: u32,
+}
+Vxd_Dis :: struct {
+	addr:      u64,
+	text, pad: u32,
+}
+
+Vxd_Builder :: struct {
+	pool:    [dynamic]u8,
+	interned: map[string]u32,
+	units:   [dynamic]Vxd_Unit,
+	files:   [dynamic]Vxd_File,
+	procs:   [dynamic]Vxd_Proc,
+	lines:   [dynamic]Vxd_Line,
+	names:   [dynamic]Vxd_Name,
+	dis:     [dynamic]Vxd_Dis,
+}
+
+vxd_intern :: proc(b: ^Vxd_Builder, s: string) -> u32 {
+	if len(b.pool) == 0 {
+		append(&b.pool, 0) // Offset zero is the empty string.
+	}
+	if off, found := b.interned[s]; found {
+		return off
+	}
+	off := u32(len(b.pool))
+	append(&b.pool, ..transmute([]u8)s)
+	append(&b.pool, 0)
+	b.interned[strings.clone(s)] = off
+	return off
+}
+
+// One ELF section, as the converter reads it.
+Elf_Section :: struct {
+	name:   string,
+	kind:   u32,
+	addr:   u64,
+	offset: int,
+	size:   int,
+	link:   u32,
+}
+
+elf_sections :: proc(data: []u8) -> []Elf_Section {
+	shoff := int(u64le(data, 0x28))
+	shentsize := int(u16le(data, 0x3a))
+	shnum := int(u16le(data, 0x3c))
+	shstrndx := int(u16le(data, 0x3e))
+	out := make([]Elf_Section, shnum)
+	for i in 0 ..< shnum {
+		at := shoff + i * shentsize
+		out[i] = Elf_Section {
+			kind   = u32(u32le(data, at + 4)),
+			addr   = u64le(data, at + 16),
+			offset = int(u64le(data, at + 24)),
+			size   = int(u64le(data, at + 32)),
+			link   = u32(u32le(data, at + 40)),
+		}
+	}
+	names := out[shstrndx]
+	for i in 0 ..< shnum {
+		n := int(u32le(data, shoff + i * shentsize))
+		out[i].name = cstr_at(data, names.offset + n)
+	}
+	return out
+}
+
+elf_section :: proc(secs: []Elf_Section, name: string) -> (Elf_Section, bool) {
+	for s in secs {
+		if s.name == name {
+			return s, true
+		}
+	}
+	return {}, false
+}
+
+cstr_at :: proc(data: []u8, at: int) -> string {
+	n := at
+	for n < len(data) && data[n] != 0 {
+		n += 1
+	}
+	return string(data[at:n])
+}
+
+// A cursor over a DWARF section, with the LEB128 readers the format is
+// built on.
+Dwarf_Cursor :: struct {
+	data: []u8,
+	at:   int,
+}
+
+dw_u8 :: proc(c: ^Dwarf_Cursor) -> u64 {
+	v := u64(c.data[c.at])
+	c.at += 1
+	return v
+}
+dw_u16 :: proc(c: ^Dwarf_Cursor) -> u64 {
+	v := u16le(c.data, c.at)
+	c.at += 2
+	return v
+}
+dw_u32 :: proc(c: ^Dwarf_Cursor) -> u64 {
+	v := u32le(c.data, c.at)
+	c.at += 4
+	return v
+}
+dw_u64 :: proc(c: ^Dwarf_Cursor) -> u64 {
+	v := u64le(c.data, c.at)
+	c.at += 8
+	return v
+}
+dw_uleb :: proc(c: ^Dwarf_Cursor) -> u64 {
+	v := u64(0)
+	shift := u64(0)
+	for {
+		b := c.data[c.at]
+		c.at += 1
+		v |= u64(b & 0x7f) << shift
+		shift += 7
+		if b & 0x80 == 0 {
+			break
+		}
+	}
+	return v
+}
+dw_sleb :: proc(c: ^Dwarf_Cursor) -> i64 {
+	v := i64(0)
+	shift := u64(0)
+	b: u8
+	for {
+		b = c.data[c.at]
+		c.at += 1
+		v |= i64(b & 0x7f) << shift
+		shift += 7
+		if b & 0x80 == 0 {
+			break
+		}
+	}
+	if shift < 64 && b & 0x40 != 0 {
+		v |= -(i64(1) << shift)
+	}
+	return v
+}
+dw_cstr :: proc(c: ^Dwarf_Cursor) -> string {
+	s := cstr_at(c.data, c.at)
+	c.at += len(s) + 1
+	return s
+}
+
+// The DWARF 4 attributes and forms the converter names. Anything else on a
+// compile unit's DIE is skipped by its form's size. A form this table does
+// not size is a refusal.
+DW_TAG_compile_unit :: 0x11
+DW_AT_name :: 0x03
+DW_AT_stmt_list :: 0x10
+DW_AT_language :: 0x13
+DW_AT_comp_dir :: 0x1b
+
+Dwarf_Attr :: struct {
+	at, form: u64,
+}
+
+Dwarf_Abbrev :: struct {
+	tag:      u64,
+	children: bool,
+	attrs:    [dynamic]Dwarf_Attr,
+}
+
+// dw_form_value reads one attribute value of `form` and answers it as a
+// number and, for the string forms, as text. Block and expression forms
+// are skipped and answer nothing.
+dw_form_value :: proc(c: ^Dwarf_Cursor, form: u64, str_section: []u8, elf_path: string) -> (num: u64, text: string) {
+	switch form {
+	case 0x01: return dw_u64(c), "" // addr
+	case 0x03: n := dw_u16(c); c.at += int(n); return 0, "" // block2
+	case 0x04: n := dw_u32(c); c.at += int(n); return 0, "" // block4
+	case 0x05: return dw_u16(c), "" // data2
+	case 0x06: return dw_u32(c), "" // data4
+	case 0x07: return dw_u64(c), "" // data8
+	case 0x08: s := dw_cstr(c); return 0, s // string
+	case 0x09: n := dw_uleb(c); c.at += int(n); return 0, "" // block
+	case 0x0a: n := dw_u8(c); c.at += int(n); return 0, "" // block1
+	case 0x0b: return dw_u8(c), "" // data1
+	case 0x0c: return dw_u8(c), "" // flag
+	case 0x0d: return u64(dw_sleb(c)), "" // sdata
+	case 0x0e: off := dw_u32(c); return off, cstr_at(str_section, int(off)) // strp
+	case 0x0f: return dw_uleb(c), "" // udata
+	case 0x10: return dw_u32(c), "" // ref_addr
+	case 0x11: return dw_u8(c), "" // ref1
+	case 0x12: return dw_u16(c), "" // ref2
+	case 0x13: return dw_u32(c), "" // ref4
+	case 0x14: return dw_u64(c), "" // ref8
+	case 0x15: return dw_uleb(c), "" // ref_udata
+	case 0x16: inner := dw_uleb(c); return dw_form_value(c, inner, str_section, elf_path) // indirect
+	case 0x17: return dw_u32(c), "" // sec_offset
+	case 0x18: n := dw_uleb(c); c.at += int(n); return 0, "" // exprloc
+	case 0x19: return 1, "" // flag_present
+	case 0x20: return dw_u64(c), "" // ref_sig8
+	}
+	die("%s: DWARF form 0x%x is not one this converter knows", elf_path, form)
+}
+
+// dw_abbrevs reads one abbreviation table, from `offset` to its terminator.
+dw_abbrevs :: proc(section: []u8, offset: int) -> map[u64]Dwarf_Abbrev {
+	out := make(map[u64]Dwarf_Abbrev)
+	c := Dwarf_Cursor{data = section, at = offset}
+	for {
+		code := dw_uleb(&c)
+		if code == 0 {
+			break
+		}
+		ab := Dwarf_Abbrev {
+			tag      = dw_uleb(&c),
+			children = dw_u8(&c) != 0,
+		}
+		for {
+			at := dw_uleb(&c)
+			form := dw_uleb(&c)
+			if at == 0 && form == 0 {
+				break
+			}
+			append(&ab.attrs, Dwarf_Attr{at, form})
+		}
+		out[code] = ab
+	}
+	return out
+}
+
+/*
+vxd_units reads every compilation unit's top DIE out of `.debug_info`: its
+name, directory, language and the offset of its line program. Nothing
+below the top DIE is read yet. The variables and types the plan lists are
+the next increment, and they are the reason the abbreviation reader above
+handles every form.
+*/
+vxd_units :: proc(b: ^Vxd_Builder, data: []u8, secs: []Elf_Section, elf_path: string) {
+	info, has_info := elf_section(secs, ".debug_info")
+	abbrev, has_abbrev := elf_section(secs, ".debug_abbrev")
+	if !has_info || !has_abbrev {
+		return
+	}
+	strs, _ := elf_section(secs, ".debug_str")
+	str_section := data[strs.offset:][:strs.size]
+	abbrev_section := data[abbrev.offset:][:abbrev.size]
+	c := Dwarf_Cursor{data = data[info.offset:][:info.size]}
+	for c.at < len(c.data) {
+		start := c.at
+		unit_length := dw_u32(&c)
+		if unit_length == 0xffff_ffff {
+			die("%s: a 64-bit DWARF unit, which this converter does not read", elf_path)
+		}
+		end := c.at + int(unit_length)
+		version := dw_u16(&c)
+		if version != 4 {
+			die("%s: DWARF version %d, and this converter reads 4", elf_path, version)
+		}
+		abbrev_offset := dw_u32(&c)
+		address_size := dw_u8(&c)
+		if address_size != 8 {
+			die("%s: DWARF address size %d", elf_path, address_size)
+		}
+		abbrevs := dw_abbrevs(abbrev_section, int(abbrev_offset))
+		code := dw_uleb(&c)
+		ab, known := abbrevs[code]
+		if !known || ab.tag != DW_TAG_compile_unit {
+			die("%s: a unit at %d whose first DIE is not a compile unit", elf_path, start)
+		}
+		unit := Vxd_Unit{stmt = 0xffff_ffff}
+		for a in ab.attrs {
+			num, text := dw_form_value(&c, a.form, str_section, elf_path)
+			switch a.at {
+			case DW_AT_name:      unit.name = vxd_intern(b, text)
+			case DW_AT_comp_dir:  unit.dir = vxd_intern(b, text)
+			case DW_AT_language:  unit.lang = u32(num)
+			case DW_AT_stmt_list: unit.stmt = u32(num)
+			}
+		}
+		append(&b.units, unit)
+		c.at = end
+	}
+}
+
+// vxd_unit_for answers the unit whose line program sits at `stmt`, or a
+// nameless one made for a program no unit claims.
+vxd_unit_for :: proc(b: ^Vxd_Builder, stmt: u32) -> u32 {
+	for u, i in b.units {
+		if u.stmt == stmt {
+			return u32(i)
+		}
+	}
+	append(&b.units, Vxd_Unit{stmt = stmt})
+	return u32(len(b.units) - 1)
+}
+
+/*
+vxd_lines runs every line program in `.debug_line` and keeps the rows: an
+address, a file and a line, in address order once sorted. The DWARF 4
+header carries the directory and file tables, so the `files` table is
+built here too. It has one entry per program file, with the path joined
+to its directory or the unit's.
+*/
+vxd_lines :: proc(b: ^Vxd_Builder, data: []u8, secs: []Elf_Section, elf_path: string) {
+	sec, has := elf_section(secs, ".debug_line")
+	if !has {
+		return
+	}
+	c := Dwarf_Cursor{data = data[sec.offset:][:sec.size]}
+	for c.at < len(c.data) {
+		program := c.at
+		unit_length := dw_u32(&c)
+		if unit_length == 0xffff_ffff {
+			die("%s: a 64-bit line program, which this converter does not read", elf_path)
+		}
+		end := c.at + int(unit_length)
+		version := dw_u16(&c)
+		if version != 4 {
+			die("%s: line table version %d, and this converter reads 4", elf_path, version)
+		}
+		header_length := dw_u32(&c)
+		rows_at := c.at + int(header_length)
+		min_inst := dw_u8(&c)
+		_ = dw_u8(&c) // maximum operations per instruction: one, on every target here
+		default_is_stmt := dw_u8(&c) != 0
+		line_base := i64(i8(dw_u8(&c)))
+		line_range := dw_u8(&c)
+		opcode_base := dw_u8(&c)
+		std_lengths := make([]u64, opcode_base)
+		for i in 1 ..< int(opcode_base) {
+			std_lengths[i] = dw_u8(&c)
+		}
+		unit := vxd_unit_for(b, u32(program))
+		// Cloned out of the pool: the pool grows as paths are interned below,
+		// and a string into it would point at wherever it was.
+		unit_dir := ""
+		if b.units[unit].dir != 0 {
+			unit_dir = strings.clone(cstr_at(b.pool[:], int(b.units[unit].dir)))
+		}
+		dirs: [dynamic]string
+		append(&dirs, unit_dir)
+		for {
+			d := dw_cstr(&c)
+			if len(d) == 0 {
+				break
+			}
+			append(&dirs, d)
+		}
+		// File one is the first entry; zero is "no file", which an end of
+		// sequence row uses.
+		first_file := u32(len(b.files))
+		append(&b.files, Vxd_File{unit = unit, path = 0})
+		for {
+			name := dw_cstr(&c)
+			if len(name) == 0 {
+				break
+			}
+			dir := dw_uleb(&c)
+			_ = dw_uleb(&c) // mtime
+			_ = dw_uleb(&c) // length
+			path := name
+			if len(name) > 0 && name[0] != '/' && int(dir) < len(dirs) && len(dirs[dir]) > 0 {
+				path = fmt.tprintf("%s/%s", dirs[dir], name)
+			}
+			append(&b.files, Vxd_File{unit = unit, path = vxd_intern(b, path)})
+		}
+		c.at = rows_at
+
+		address := u64(0)
+		file := u64(1)
+		line := i64(1)
+		is_stmt := default_is_stmt
+		emit :: proc(b: ^Vxd_Builder, address: u64, first_file: u32, file: u64, line: i64, end_sequence: bool) {
+			if end_sequence {
+				append(&b.lines, Vxd_Line{addr = address, file = 0, line = 0})
+				return
+			}
+			append(&b.lines, Vxd_Line{addr = address, file = first_file + u32(file), line = u32(max(line, 0))})
+		}
+		for c.at < end {
+			op := dw_u8(&c)
+			switch {
+			case op == 0:
+				n := dw_uleb(&c)
+				sub_at := c.at
+				sub := dw_u8(&c)
+				switch sub {
+				case 1:
+					emit(b, address, first_file, file, line, true)
+					address = 0
+					file = 1
+					line = 1
+					is_stmt = default_is_stmt
+				case 2:
+					address = dw_u64(&c)
+				case 3:
+					// A file defined in the program rather than the header:
+					// added the same way, at the next index.
+					name := dw_cstr(&c)
+					dir := dw_uleb(&c)
+					_ = dw_uleb(&c)
+					_ = dw_uleb(&c)
+					path := name
+					if len(name) > 0 && name[0] != '/' && int(dir) < len(dirs) && len(dirs[dir]) > 0 {
+						path = fmt.tprintf("%s/%s", dirs[dir], name)
+					}
+					append(&b.files, Vxd_File{unit = unit, path = vxd_intern(b, path)})
+				case 4:
+					_ = dw_uleb(&c) // discriminator
+				case:
+					die("%s: extended line opcode %d", elf_path, sub)
+				}
+				c.at = sub_at + int(n)
+			case op < opcode_base:
+				switch op {
+				case 1: emit(b, address, first_file, file, line, false)
+				case 2: address += dw_uleb(&c) * u64(min_inst)
+				case 3: line += dw_sleb(&c)
+				case 4: file = dw_uleb(&c)
+				case 5: _ = dw_uleb(&c) // column
+				case 6: is_stmt = !is_stmt
+				case 7: // basic block
+				case 8: address += u64((255 - opcode_base) / line_range) * u64(min_inst)
+				case 9: address += dw_u16(&c)
+				case 10: // prologue end
+				case 11: // epilogue begin
+				case 12: _ = dw_uleb(&c) // isa
+				case:
+					// A standard opcode this reader does not know is skipped
+					// by the length the header gave it.
+					for _ in 0 ..< std_lengths[op] {
+						_ = dw_uleb(&c)
+					}
+				}
+			case:
+				adjusted := u64(op - opcode_base)
+				address += (adjusted / u64(line_range)) * u64(min_inst)
+				line += line_base + i64(adjusted % u64(line_range))
+				emit(b, address, first_file, file, line, false)
+			}
+		}
+		c.at = end
+	}
+}
+
+// vxd_procs takes every function symbol with a size out of `.symtab`.
+// The symbol table names what DWARF's subprograms name and more, the
+// assembly entry points too, and is the simpler source.
+vxd_procs :: proc(b: ^Vxd_Builder, data: []u8, secs: []Elf_Section, elf_path: string) {
+	sym, has := elf_section(secs, ".symtab")
+	if !has {
+		die("%s: no symbol table", elf_path)
+	}
+	strtab := secs[sym.link]
+	STT_FUNC :: 2
+	for at := sym.offset; at + 24 <= sym.offset + sym.size; at += 24 {
+		info := data[at + 4]
+		if info & 0xf != STT_FUNC {
+			continue
+		}
+		value := u64le(data, at + 8)
+		size := u64le(data, at + 16)
+		if size == 0 {
+			continue
+		}
+		name := cstr_at(data, strtab.offset + int(u32le(data, at)))
+		append(&b.procs, Vxd_Proc{low = value, high = value + size, name = vxd_intern(b, name), unit = 0xffff_ffff})
+	}
+}
+
+// vxd_dis runs `llvm-objdump` over the program and keeps one line of text
+// per instruction, so the machine never needs a decoder.
+vxd_dis :: proc(b: ^Vxd_Builder, elf_path: string) {
+	desc := os.Process_Desc {
+		command = {"llvm-objdump", "-d", "--no-show-raw-insn", elf_path},
+	}
+	state, stdout, _, err := os.process_exec(desc, context.allocator)
+	if err != nil || !state.success {
+		die("%s: llvm-objdump did not run", elf_path)
+	}
+	text_out := string(stdout)
+	for line in strings.split_lines_iterator(&text_out) {
+		trimmed := strings.trim_left_space(line)
+		colon := strings.index_byte(trimmed, ':')
+		if colon <= 0 {
+			continue
+		}
+		addr, ok := strconv.parse_u64_of_base(trimmed[:colon], 16)
+		if !ok {
+			continue
+		}
+		text := strings.trim_space(trimmed[colon + 1:])
+		if len(text) == 0 {
+			continue
+		}
+		// Tabs to one space, so a reader prints it as it is.
+		cleaned, _ := strings.replace_all(text, "\t", " ")
+		append(&b.dis, Vxd_Dis{addr = addr, text = vxd_intern(b, cleaned)})
+	}
+}
+
+vxd_arch_id :: proc(arch: Arch) -> u32 {
+	switch arch {
+	case .amd64:   return 1
+	case .arm64:   return 2
+	case .riscv64: return 3
+	}
+	return 0
+}
+
+// vxd_put appends one table's bytes to `out` and records its directory row.
+vxd_write_table :: proc(out: ^[dynamic]u8, dir: ^[dynamic]u8, kind: Vxd_Table, entry: int, count: int, bytes: []u8) {
+	if count == 0 {
+		return
+	}
+	offset := len(out)
+	append(out, ..bytes)
+	put_u32(dir, u32(kind))
+	put_u32(dir, u32(entry))
+	put_u64(dir, u64(count))
+	put_u64(dir, u64(offset))
+}
+
+put_u32 :: proc(out: ^[dynamic]u8, v: u32) {
+	append(out, u8(v), u8(v >> 8), u8(v >> 16), u8(v >> 24))
+}
+
+put_u64 :: proc(out: ^[dynamic]u8, v: u64) {
+	put_u32(out, u32(v))
+	put_u32(out, u32(v >> 32))
+}
+
+elf_to_debug :: proc(elf_path: string, out_path: string, arch: Arch, with_dis: bool) {
+	data := read_elf(elf_path)
+	defer delete(data)
+	secs := elf_sections(data)
+	b: Vxd_Builder
+	_ = vxd_intern(&b, "")
+
+	vxd_units(&b, data, secs, elf_path)
+	vxd_lines(&b, data, secs, elf_path)
+	vxd_procs(&b, data, secs, elf_path)
+	if with_dis {
+		vxd_dis(&b, elf_path)
+	}
+
+	// Sorted on their keys, which is what the reader's binary searches
+	// stand on. Rows with one address keep their order.
+	slice.stable_sort_by(b.procs[:], proc(x, y: Vxd_Proc) -> bool {return x.low < y.low})
+	slice.stable_sort_by(b.lines[:], proc(x, y: Vxd_Line) -> bool {return x.addr < y.addr})
+	slice.stable_sort_by(b.dis[:], proc(x, y: Vxd_Dis) -> bool {return x.addr < y.addr})
+	for p, i in b.procs {
+		append(&b.names, Vxd_Name{name = p.name, index = u32(i)})
+	}
+	pool := b.pool[:]
+	context.user_ptr = &pool
+	slice.sort_by(b.names[:], proc(x, y: Vxd_Name) -> bool {
+		pool := (^[]u8)(context.user_ptr)^
+		return cstr_at(pool, int(x.name)) < cstr_at(pool, int(y.name))
+	})
+
+	// The header and directory come first, so the reader knows where every
+	// table is from sixteen bytes and the rows after them. The directory is
+	// written after the tables are laid out, at a size fixed by the count.
+	tables := 7
+	dir_size := tables * 24
+	body: [dynamic]u8
+	dir: [dynamic]u8
+	// Offsets in the directory are from the start of the file, so the
+	// body starts where the directory ends.
+	for _ in 0 ..< 16 + dir_size {
+		append(&body, 0)
+	}
+	vxd_write_table(&body, &dir, .Units, 16, len(b.units), slice.to_bytes(b.units[:]))
+	vxd_write_table(&body, &dir, .Files, 8, len(b.files), slice.to_bytes(b.files[:]))
+	vxd_write_table(&body, &dir, .Procs, 24, len(b.procs), slice.to_bytes(b.procs[:]))
+	vxd_write_table(&body, &dir, .Lines, 16, len(b.lines), slice.to_bytes(b.lines[:]))
+	vxd_write_table(&body, &dir, .Names, 8, len(b.names), slice.to_bytes(b.names[:]))
+	vxd_write_table(&body, &dir, .Dis, 16, len(b.dis), slice.to_bytes(b.dis[:]))
+	vxd_write_table(&body, &dir, .Strings, 1, len(b.pool), b.pool[:])
+	written := len(dir) / 24
+	head: [dynamic]u8
+	put_u32(&head, VXD_MAGIC)
+	put_u32(&head, VXD_VERSION)
+	put_u32(&head, vxd_arch_id(arch))
+	put_u32(&head, u32(written))
+	copy(body[:16], head[:])
+	copy(body[16:16 + len(dir)], dir[:])
+	if werr := os.write_entire_file(out_path, body[:]); werr != nil {
+		die("cannot write %s", out_path)
+	}
+	step("%s: %d units, %d files, %d procedures, %d line rows, %d instructions, %d bytes",
+		out_path, len(b.units), len(b.files), len(b.procs), len(b.lines), len(b.dis), len(body))
 }

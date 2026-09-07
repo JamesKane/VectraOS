@@ -94,6 +94,14 @@ firmware_type_request := limine.Firmware_Type_Request {
 	revision = 0,
 }
 
+// The kernel's debug table, `vectra.vxd`, which limine.conf names as a
+// module. See `debuginfo.odin`.
+@(export, link_section = ".limine_requests")
+module_request := limine.Module_Request {
+	id       = limine.MODULE_REQUEST,
+	revision = 0,
+}
+
 /*
 Pin the paging mode rather than accepting whatever the firmware left on.
 
@@ -191,6 +199,9 @@ kmain :: proc "c" () {
 	log_line(&klog, .Info, "Vectra " + VERSION + " (" + arch.NAME + ") entering kmain")
 
 	check_base_revision()
+	// The kernel's own names, from the module the bootloader loaded beside
+	// it, so a panic from here on can name its addresses.
+	debuginfo_init()
 	if r := dtb_request.response; r != nil {
 		arch.set_device_tree(r.dtb)
 	}
@@ -230,6 +241,10 @@ kmain :: proc "c" () {
 	// point had to make do with static storage and the caller's buffer.
 	context.allocator = mem.allocator()
 	verify_memory()
+	// The debug table moves onto the heap before the bootloader's memory
+	// is anybody else's, and proves it resolves a name both ways.
+	debuginfo_keep()
+	verify_debuginfo()
 	verify_protocol()
 
 	init_namespace()

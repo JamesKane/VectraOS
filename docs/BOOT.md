@@ -101,10 +101,14 @@ Traps and the panic screen:
 - **No `swapgs` in the entry path.** Correct today, because nothing runs at
   CPL 3. It becomes wrong the moment userland does, and the fix has to land in
   the same tail that the point above rewrites.
-- **The panic screen has no backtrace.** It reports the faulting instruction and
-  the register state, and it cannot walk the stack. That needs either deliberate
-  frame pointers or retained unwind tables. It is the largest single thing
-  missing from an otherwise complete fault report.
+- **The panic screen's backtrace is a scan, with names.** It reports the
+  faulting instruction and the register state, and then every stack slot
+  that lands in kernel text, marked `maybe` because a code pointer pushed as
+  data reads the same. Each is named from `vectra.vxd`, the kernel's own
+  debug table, which the bootloader loads as a module beside the kernel:
+  procedure, offset, file and line. See `kernel/debuginfo.odin` and
+  `docs/DEVTOOLS.md` section 6. A walk rather than a scan still needs
+  frame pointers or unwind rows, and this compiler emits neither.
 - **The firmware is QEMU's.** `build.odin` prefers the OVMF image in
   `../odin-os/ovmf/` on amd64 when it is there, and otherwise loads the
   edk2 code and variable images that ship beside every QEMU install, per
