@@ -62,6 +62,9 @@ ROOT_NODES := [?]Static_Node {
 	// Where a session's `factotum` is mounted: the keys a user typed in, and
 	// the handshakes run through them. `/mnt` is the sixth entry now that  is first.
 	{name = "factotum", parent = 6, dir = true},
+	// Where the debugger's engine is mounted, so `db` and the debugger's
+	// window find `/mnt/dbg` in any namespace. `docs/DEVTOOLS.md` section 7.
+	{name = "dbg", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

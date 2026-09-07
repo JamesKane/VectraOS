@@ -344,6 +344,8 @@ Process :: struct {
 	trace_return:  bool, // and once more before that call returns
 	hang:          bool, // `hang`: stop at the next exec, before its first instruction
 	stepping:      bool, // `step`: the frame carries the step flag, and its trap is a stop
+	step_at_door:  bool, // the step left a syscall door, whose return traps once before the first instruction
+	step_from:     uintptr, // the counter the step left
 	stops:         u64,
 	stop_frame:    ^arch.Trap_Frame,
 	stop_fpu:      rawptr,
@@ -785,7 +787,17 @@ on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
 			// A process nobody is watching ends here as it always did.
 			if t.user && !intrinsics.volatile_load(&p.stopping) {
 				if p.stepping && t.kind == .Debug {
+					// A step out of a syscall door returns by `sysretq`,
+					// and a step flag loaded that way traps before the
+					// first instruction runs, at the very counter the
+					// step left. That trap is not the step: the flag
+					// stays up and the program goes on to its next one.
+					if p.step_at_door && t.ip == p.step_from {
+						p.step_at_door = false
+						return r
+					}
 					p.stepping = false
+					p.step_at_door = false
 					arch.frame_set_step(r.frame, false)
 					return stop_in_trap(p, r)
 				}

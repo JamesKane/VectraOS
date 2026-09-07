@@ -138,6 +138,7 @@ user_programs := [?]User_Program {
 	{name = "dbgfs", path = "servers/dbgfs"},
 	{name = "db", path = "cmd/db"},
 	{name = "debuggee", path = "tests/debuggee", dis = true, noopt = true},
+	{name = "debugger", path = "apps/debugger"},
 }
 
 /*
@@ -1007,6 +1008,12 @@ stage_vectra :: proc(host: string) {
 	copy_file("servers/intuition/workspaces", fmt.tprintf("%s/lib/workspaces", root))
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
 	copy_file("tests/dbg.rc", fmt.tprintf("%s/lib/tests/dbg.rc", root))
+	// The source the debugger's window shows, under the path the debug file
+	// names. The one program a debugger is expected on today.
+	ensure_dir(fmt.tprintf("%s/lib/src", root))
+	ensure_dir(fmt.tprintf("%s/lib/src/tests", root))
+	ensure_dir(fmt.tprintf("%s/lib/src/tests/debuggee", root))
+	copy_file("tests/debuggee/main.odin", fmt.tprintf("%s/lib/src/tests/debuggee/main.odin", root))
 	ensure_dir(fmt.tprintf("%s/lib/ndb", root))
 	copy_file("lib/ndb/local", fmt.tprintf("%s/lib/ndb/local", root))
 	// The services `listen` announces: one script per port.

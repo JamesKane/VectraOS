@@ -25,6 +25,11 @@ import "vsys:vectra9"
 // One wire slot's worth of body, the most a write to `/srv/draw` may carry.
 SLOT :: vectra9.WIRE_SLOT - vectra9.IOHDRSZ
 
+// A whole tree's commands. A glyph is one blit of thirty-six bytes, and a
+// window of lists is a page of glyphs. Eighty by forty is over a hundred
+// thousand bytes, which this holds with room.
+PAINT_MAX :: 160 * 1024
+
 /*
 A live window: the files it holds, the client area it was given, the tree it
 draws, and the focus a key goes to. A program makes one, fills `root` and
@@ -34,6 +39,7 @@ Window :: struct {
 	id:        int,
 	data_fd:   int,
 	cons_fd:   int,
+	consctl_fd: int, // Held open, which is what keeps the window's keys raw
 	mouse_fd:  int,
 	cw:        int,
 	ch:        int,
@@ -43,9 +49,10 @@ Window :: struct {
 	focus:     ^Object,
 	pressed:   ^Object, // The gadget a mouse press landed on, awaiting release
 	done:      bool,
+	overflowed: bool, // A paint that did not fit was reported
 	handler:   proc "contextless" (win: ^Window, id: int),
 	scratch:   [SLOT]u8, // One slot, for atlas uploads and paint flushes
-	paint_buf: [8192]u8, // A whole tree's commands, pumped from here in slots
+	paint_buf: [PAINT_MAX]u8, // A whole tree's commands, pumped from here in slots
 	geo:       [160]u8,
 	path:      [64]u8,
 	keys:      [64]u8,
@@ -75,36 +82,36 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	font_load()
 
 	if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
-		return false
+		return refused("no draw server at /srv/draw")
 	}
 	nfd := libuser.open("/mnt/new", abi.O_RDONLY)
 	if nfd < 0 {
-		return false
+		return refused("the server has no window to give")
 	}
 	nn := libuser.read(int(nfd), win.geo[:])
 	_ = libuser.close(int(nfd))
 	scan := 0
 	mine, mok := libdraw.scan_int(win.geo[:max(int(nn), 0)], &scan)
 	if !mok {
-		return false
+		return refused("the new window has no number")
 	}
 	win.id = mine
 
 	fd := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "data"), abi.O_WRONLY)
 	if fd < 0 {
-		return false
+		return refused("the window's data file will not open")
 	}
 	win.data_fd = int(fd)
 
 	ctl := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "ctl"), abi.O_RDWR)
 	if ctl < 0 {
-		return false
+		return refused("the window's ctl will not open")
 	}
 	n := libuser.read(int(ctl), win.geo[:])
 	w, h, _, _, gok := libdraw.parse_geometry(win.geo[:max(int(n), 0)])
 	if !gok {
 		_ = libuser.close(int(ctl))
-		return false
+		return refused("the window's ctl reports no geometry")
 	}
 	win.cw, win.ch = w, h
 	// The bar's name.
@@ -115,18 +122,23 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 
 	// This window's own /dev, so its cons and mouse are the two files read.
 	if libuser.bind(libdraw.win_dir(win.path[:], "/mnt", mine), "/dev", abi.ORDER_BEFORE) < 0 {
-		return false
+		return refused("the window's directory will not bind over /dev")
 	}
 	cons := libuser.open("/dev/cons", abi.O_RDONLY)
 	if cons < 0 {
-		return false
+		return refused("the window's cons will not open")
 	}
 	win.cons_fd = int(cons)
+	// Raw mode lasts while a consctl descriptor is open, `/dev/consctl`'s
+	// rule, so the window keeps its own for as long as it lives. Closed
+	// here, the server would cook the keys into lines, and a hotkey would
+	// wait for a Return.
+	win.consctl_fd = -1
 	ccl := libuser.open("/dev/consctl", abi.O_WRONLY)
 	if ccl >= 0 {
 		raw := "rawon"
 		_ = libuser.write(int(ccl), transmute([]u8)raw)
-		_ = libuser.close(int(ccl))
+		win.consctl_fd = int(ccl)
 	}
 	mouse := libuser.open("/dev/mouse", abi.O_RDONLY)
 	if mouse >= 0 {
@@ -141,16 +153,41 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	set_focus_first(win)
 	sink := Sink{write = data_sink, user = rawptr(uintptr(win.data_fd))}
 	if !font_prepare(root, &win.fonts, win.scratch[:], sink, &win.theme) {
-		return false
+		return refused("an atlas would not bake: the server's image pool is full, or a write failed")
 	}
 	window_paint(win)
 	return true
 }
 
-// window_paint redraws the whole tree and flushes it to the glass.
+// refused says on standard error why a window could not be had, and
+// answers the false `window_open` returns. A program that said nothing
+// was a boot that could not either.
+refused :: proc "contextless" (why: string) -> bool {
+	libuser.eprint("mui: no window: ", why, "\n")
+	return false
+}
+
+// window_relayout lays the tree out again in the client area, bakes any
+// atlas a new gadget needs, and paints. A program whose rows or labels
+// changed calls this, so a longer label takes the room it now needs.
+window_relayout :: proc "contextless" (win: ^Window) #no_bounds_check {
+	fit(win.root, &win.theme)
+	lay(win.root, 0, 0, win.cw, win.ch, &win.theme)
+	sink := Sink{write = data_sink, user = rawptr(uintptr(win.data_fd))}
+	_ = font_prepare(win.root, &win.fonts, win.scratch[:], sink, &win.theme)
+	window_paint(win)
+}
+
+// window_paint redraws the whole tree and flushes it to the glass. A tree
+// whose commands outgrow the buffer says so once, rather than drawing
+// nothing in silence.
 window_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
 	end := paint(win.paint_buf[:], 0, win.root, 0, &win.fonts, &win.theme)
 	if end <= 0 {
+		if !win.overflowed {
+			win.overflowed = true
+			libuser.eprint("mui: the tree's paint outgrew the buffer\n")
+		}
 		return
 	}
 	flush_batches(win, win.paint_buf[:], end)
@@ -274,6 +311,13 @@ mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 		win.pressed = hit(win.root, x, y)
 		if win.pressed != nil {
 			win.focus = win.pressed
+			// A press on a list's row selects it, and the release tells
+			// the program which list, whose `sel` says which row.
+			if win.pressed.class == .List {
+				if row := list_row_at(win.pressed, y, &win.theme); row >= 0 {
+					win.pressed.sel = row
+				}
+			}
 			window_paint(win)
 		}
 	} else if !down && was {
@@ -286,7 +330,8 @@ mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 }
 
 // key_event routes one key: Tab moves the focus, Return presses it, Escape
-// cancels, and a checkmark toggles on a space.
+// cancels, and a checkmark toggles on a space. Any other letter presses
+// the button whose label marks it as the hotkey, `_Step` on an s.
 key_event :: proc "contextless" (win: ^Window, k: u8) #no_bounds_check {
 	switch k {
 	case '\t':
@@ -300,7 +345,50 @@ key_event :: proc "contextless" (win: ^Window, k: u8) #no_bounds_check {
 		if win.handler != nil {
 			win.handler(win, -1)
 		}
+	case:
+		if g := hotkey_gadget(win.root, k); g != nil {
+			activate(win, g)
+		}
 	}
+}
+
+// hotkey_gadget finds the button whose label's `_` marks the letter `k`,
+// either case, in tree order.
+hotkey_gadget :: proc "contextless" (o: ^Object, k: u8) -> ^Object {
+	if o == nil {
+		return nil
+	}
+	if o.class == .Button {
+		if h, ok := hotkey_of(o.label); ok && lower(h) == lower(k) {
+			return o
+		}
+	}
+	for c := o.first; c != nil; c = c.next {
+		if got := hotkey_gadget(c, k); got != nil {
+			return got
+		}
+	}
+	return nil
+}
+
+// hotkey_of answers the letter after a label's first `_`, if one is there.
+hotkey_of :: proc "contextless" (label: string) -> (u8, bool) {
+	for i in 0 ..< len(label) - 1 {
+		if label[i] == '_' {
+			d := label[i + 1]
+			if (d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z') {
+				return d, true
+			}
+		}
+	}
+	return 0, false
+}
+
+lower :: proc "contextless" (c: u8) -> u8 {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
 }
 
 // activate does what a press means for a gadget: a checkmark flips, and then

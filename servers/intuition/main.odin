@@ -1357,7 +1357,13 @@ windows: [MAX_WINDOWS]Window
 // extend past it, so an image allocated after a window opened would fail
 // with `ENOMEM`. One segment allocated before any window store never
 // grows and never fights.
-MAX_IMAGES :: 64
+//
+// A full-font face is about fourteen strips, and a toolkit window bakes
+// one face per ink-and-ground pair it draws: two for a window of buttons
+// and lists. The terminal, the toolkit demo and the debugger's window
+// together are past sixty-four, so the pool is a hundred and twenty-eight,
+// a megabyte of pixels.
+MAX_IMAGES :: 128
 IMG_PIXELS :: 2048
 
 Image :: struct {

@@ -106,6 +106,17 @@ rec_sink :: proc "contextless" () -> libmui.Sink {
 	return libmui.Sink{write = rec_write, user = nil}
 }
 
+drop_write :: proc "contextless" (user: rawptr, data: []u8) -> bool {
+	_, _ = user, data
+	return true
+}
+
+// drop_sink takes every batch and keeps none, for a bake whose stream
+// the check does not read.
+drop_sink :: proc "contextless" () -> libmui.Sink {
+	return libmui.Sink{write = drop_write, user = nil}
+}
+
 // blit_from_range reports whether any blit in the stream reads its source from
 // an image id in [lo, hi]. A blit's fields are dst, dx, dy, src, so src is the
 // fourth word after the header.
@@ -379,6 +390,46 @@ start :: proc "c" (block: ^abi.Args) {
 		want(!cjk, "a rune no range holds is not")
 
 		want(count_verb(rec_buf[:], rec_len, libdraw.ALLOC) > libmui.STRIPS, "it allocated more strips than ASCII alone")
+	}
+
+	// -- A list is rows in a well, one on a bar of the face ------------------
+	//
+	// Ten rows, room for four: the list asks for four rows plus the well,
+	// stretches past that, and shows the four from its top. Showing row
+	// eight scrolls, and the selected row's bar is a face-coloured fill of
+	// one row's height. A click on the third drawn row selects the row it
+	// shows, not the third row of the data.
+	{
+		tl := libmui.default_theme
+		rows := [10]string{"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
+		l := libmui.list(4)
+		l.rows = rows[:]
+		col := libmui.group(false)
+		libmui.add(col, l)
+		libmui.fit(col, &tl)
+		main_check(l.minh, 4 * libmui.FONT_H + 2 * tl.well, "a list asks room for its rows and the well")
+		want(l.maxh >= libmui.BIG, "and stretches past them")
+		libmui.lay(col, 0, 0, 200, 4 * libmui.FONT_H + 2 * tl.well + 2 * tl.pad, &tl)
+		main_check(libmui.list_visible(l, &tl), 4, "four rows fit the height it was given")
+
+		libmui.list_show(l, 8, &tl)
+		want(l.top > 0 && 8 >= l.top && 8 < l.top + 4, "showing row eight scrolls the list to hold it")
+		l.top = 2
+		l.sel = 4
+		main_check(libmui.list_row_at(l, l.y + tl.well + 2 * libmui.FONT_H + 3, &tl), 4, "the third drawn row is row four")
+		main_check(libmui.list_row_at(l, l.y + l.h - 1, &tl), -1, "past the last drawn row is no row")
+
+		// Two full-font faces are more strips than `rec_buf` holds, and the
+		// stream is not read here, so the strips go to a sink that drops them.
+		fl: libmui.Fonts
+		libmui.font_init(&fl, 1)
+		want(libmui.font_prepare(col, &fl, scratch[:], drop_sink(), &tl), "the list's two atlases baked")
+		end := libmui.paint(paint_buf[:], 0, col, 1, &fl, &tl)
+		want(end > 0, "the list's paint fit the buffer")
+		want(has_fill(paint_buf[:], end, libpal.xrgb(tl.face)), "the selected row sits on a bar of the face")
+		// "two", "three", "four", "five" drawn: sixteen glyphs.
+		main_check(count_verb(paint_buf[:], end, libdraw.BLIT), 16, "the four drawn rows are blitted, glyph by glyph")
+		want(libmui.hit(col, l.x + 10, l.y + 10) == l, "a click in the well lands on the list")
 	}
 
 	libuser.exits("ok")

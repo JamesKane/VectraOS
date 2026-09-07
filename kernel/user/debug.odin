@@ -174,6 +174,11 @@ proc_debug_ctl :: proc(pid: u64, word: string) -> vfs.Errno {
 		case:
 			arch.frame_set_step(p.stop_frame, true)
 			p.stepping = true
+			// A door stop is the syscall's frame, resumed by `sysretq`;
+			// a tick's or a trap's is resumed by `iretq`. See the debug
+			// trap in `user.odin` for why the door's is told apart.
+			p.step_at_door = !p.stopped_in_tick
+			p.step_from = arch.frame_ip(p.stop_frame)
 			run, wait = true, true
 		}
 	case:

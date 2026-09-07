@@ -175,7 +175,7 @@ font_for :: proc "contextless" (
 /*
 font_prepare bakes every atlas the tree's labels need, so a later `paint` finds
 them all in the cache. A Text wants ink on the ground, a Button ink on the
-face. It walks the tree once and asks `font_for` for each, which uploads only
+face, and a List both. It walks the tree once and asks `font_for` for each, which uploads only
 the pairs it has not seen. A false return says the pool filled before the tree
 was covered.
 */
@@ -195,6 +195,14 @@ font_prepare :: proc "contextless" (
 			return false
 		}
 	case .Button:
+		if _, ok := font_for(f, t.ink, t.face, scratch, sink); !ok {
+			return false
+		}
+	case .List:
+		// Rows on the ground, and the selected row on a bar of the face.
+		if _, ok := font_for(f, t.ink, t.ground, scratch, sink); !ok {
+			return false
+		}
 		if _, ok := font_for(f, t.ink, t.face, scratch, sink); !ok {
 			return false
 		}

@@ -91,7 +91,10 @@ the boundary that honours it takes it down.
     nohang        withdraw that
     startsyscall  run, and stop at the next system call's entry. Started again,
                   stop once more before it returns
-    step          run one instruction and stop, where the architecture has a step
+    step          run one instruction and stop, where the architecture has a step.
+                  From a stop at a syscall door the resume is `sysretq`, which
+                  traps once before the first instruction: that trap is let
+                  through, so the stop is one instruction on
 
 A trap is an ending for a program nobody watches, as `docs/USER.md` argues.
 Under `startstop` it is a note instead, and the process parks before the

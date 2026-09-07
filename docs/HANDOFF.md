@@ -412,10 +412,10 @@ the documents it points at.
    beside them: step 4, done the same month. A debugger runs as a file
    server, `servers/dbgfs`, with `cmd/db` as its line client and
    `tests/dbg.rc` as the boot self-test's script: step 5, first cut, the
-   same month, with a window as the next client. POSIX is mlibc over the
+   same month. `apps/debugger` is the window, a `libmui` client of the
+   same files: step 6, first cut, the same month. POSIX is mlibc over the
    calls, so that `clang` and `odin` run on the machine. Steps 0 and 1
-   need nothing before them, and step 6, the window, has step 5 and
-   `docs/WORKBENCH.md` step 3 under it.
+   need nothing before them, and steps 7 and 8 have step 0 under them.
 6. **The fleet, from step 3.** `docs/FLEET.md` is the plan, and steps 0
    (the network), 1 (9P both ways) and 2 (users, `factotum`, the Noise
    handshake, kfs owners) are done and on the bench. **Step 3 is next:**
@@ -664,7 +664,7 @@ atlas's ranges from ASCII and a `libfont.Loader`, and uploads the strips in
 one ink over one background -- so `sys/libmui`, `apps/terminal` and
 `cmd/window` all bake the same way. A face sources every cell through
 `loader_glyph`: baked ASCII when the font is closed, a subfont when open. The
-server's image pool is 64 and a full-font face is ~14 strips, so a bake the
+server's image pool is 128 and a full-font face is ~14 strips, so a bake the
 pool refuses degrades to the label (or exits the terminal) rather than drawing
 half a font.
 

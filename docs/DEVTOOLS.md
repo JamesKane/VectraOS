@@ -506,7 +506,7 @@ not served: `vars` and `regs` are frame zero's.
 
 `attach` takes a pid in this machine's `/proc` and no path yet. A `run`
 is one target, and a child of it is not followed. Section 10's step 5
-has the rest.
+has the rest, and step 6 has the window's.
 
 ## 8. `sys/libposix`: mlibc over the files
 
@@ -766,6 +766,31 @@ step 3.
 
 Boot line: the window opens on the debuggee, and a chord steps it. The
 panels are files, so the check reads the files.
+
+**First cut done, September 2026.** `apps/debugger` is a `libmui` window
+of lists: the source with the counter's line marked and a breakpoint's
+line starred, the stack, the variables, the registers, the disassembly
+and the breakpoints, with a status line above and a row of buttons below.
+Every panel is one file under `/mnt/dbg` read whole, and every button one
+word written, so the window holds layout and nothing else. A key is a
+button's hotkey. `verify_debugger` opens it on the debuggee, types an `s`
+and reads the engine's status file, which says the program stepped.
+
+What the window needed of the rest. `libmui` gained the `List` class,
+a `window_relayout` for rows that change, a press on a row, and the
+hotkeys. The draw server's image pool went to a hundred and twenty-eight,
+because three windows of two faces each were past sixty-four. `/mnt/dbg`
+is in the root, so any namespace mounts the engine there. And a step out
+of the exec stop reported the same counter: the stop is a syscall door,
+resumed by `sysretq`, which traps once before the first instruction when
+the step flag rides in R11. The kernel now lets that trap through. And a
+window's keys are raw only while a `consctl` descriptor stays open, which
+the toolkit closed as soon as it had written `rawon`: every hotkey waited
+for a Return. It holds the descriptor now.
+
+Not yet: a watch list, memory at an address, the procs, the program's
+output, and `finish`, which waits on the frame walk step 5 waits on.
+Source comes from `/lib/src`, which stages the debuggee's alone.
 
 ### Step 7: `sys/libposix`
 

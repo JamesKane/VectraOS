@@ -534,6 +534,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_terminal(&r, column)
 	verify_chords(&r)
 	verify_muiwin(&r)
+	verify_debugger(&r)
 
 	// -- And a typed ^C, which reaches the program reading the console -------
 
@@ -4959,6 +4960,212 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	pipe.quiesce()
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "the mount of the dead server comes down")
 	drain_pinned(r, pin_before, "and the toolkit window's wire comes back whole")
+}
+
+/*
+verify_debugger opens the debugger's window on the debuggee and steps it
+from the keyboard.
+
+`docs/DEVTOOLS.md` step 6's line: the window opens on the debuggee, and a
+chord steps it. The draw server and the engine are started as the desktop
+starts them, then `debugger /bin/debuggee`, which runs the program under
+the engine and opens a window on it. The window's bar is copper, as the
+toolkit demo's is. The debuggee stops at its entry, which is the window's
+`run`, and the kernel reads its counter from the frame it is stopped on.
+An `s` typed at the window is its Step, and the counter moves one
+instruction on. A `q` is its Quit, which detaches and closes the window.
+The engine ends when its last client and its name are gone, and the draw
+server the terminal's way.
+
+The keys come the way `verify_chords` sends them: `kbdfs` on the raw
+keyboard, the draw server reading its `kbd` file, and scancodes injected
+below both. A plain key reaches the window in front through its cons.
+*/
+@(private = "file")
+verify_debugger :: proc(r: ^Result) #no_bounds_check {
+	s := devfs.raw_surface()
+	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
+		return
+	}
+	count0 := srv.count()
+	settle()
+	pin_before := mem.live_objects(mem.heap_stats())
+
+	pk, kerr := spawn_path(nil, "/bin/kbdfs", SPAWN_NS_COPY)
+	if !check(r, kerr == vfs.OK && pk != nil, "the loader starts the keyboard translator for the debugger's window") {
+		return
+	}
+	r.programs += 1
+	if !check(r, await_posted("kbdfs"), "it posts /srv/kbdfs") {
+		return
+	}
+	check(r, srv.mount(vfs.boot_namespace, "/srv/kbdfs", "/n/kbd") == vfs.OK, "the kernel mounts it at /n/kbd, as init does")
+
+	sargv := new(Argv)
+	snames := [?]string{"intuition", "/n/kbd/kbd"}
+	check(r, sargv != nil && argv_from(sargv, snames[:]), "a record holds the draw server's argument")
+	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY, sargv)
+	free(sargv)
+	if !check(r, serr == vfs.OK && ps != nil, "the loader starts the draw server for the debugger's window, reading the kbd file") {
+		return
+	}
+	r.programs += 1
+	if !check(r, await_posted("draw"), "which posts /srv/draw") {
+		return
+	}
+	if !check(r, desk_measure(s), "and paints a desktop before the window opens") {
+		return
+	}
+	pe, eerr := spawn_path(nil, "/bin/dbgfs", SPAWN_NS_COPY)
+	if !check(r, eerr == vfs.OK && pe != nil, "the loader starts the debugger's engine") {
+		return
+	}
+	r.programs += 1
+	if !check(r, await_posted("dbg"), "which posts /srv/dbg") {
+		return
+	}
+
+	argv := new(Argv)
+	names := [?]string{"debugger", "/bin/debuggee"}
+	check(r, argv != nil && argv_from(argv, names[:]), "a record holds the window's arguments")
+	pd, derr := spawn_path(nil, "/bin/debugger", SPAWN_NS_COPY, argv)
+	free(argv)
+	if !check(r, derr == vfs.OK && pd != nil, "the loader starts the debugger's window on the debuggee") {
+		return
+	}
+	r.programs += 1
+
+	// The window in front wears a copper bar.
+	copper := fb.pack(s, fb.COPPER)
+	bx := -1
+	for _ in 0 ..< PATIENCE * 20 {
+		for y in 4 ..< s.height / 2 {
+			first, last := scan_row(s, y, copper, 8, s.width - 8)
+			if first >= 0 && last - first > 100 {
+				bx = first
+				break
+			}
+		}
+		if bx >= 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, bx >= 0, "the window opens on the toolkit, its title bar copper")
+
+	// The step is read from the debuggee itself, not from a panel. The
+	// kernel does not mount the engine, so the window is the engine's one
+	// client and its quit is what lets the engine go. The debuggee is the
+	// engine's child, stopped at its `hang` door, and its counter is in the
+	// frame `/proc/n/regs` would read.
+	entry: uintptr
+	for _ in 0 ..< PATIENCE * 20 {
+		if pc, ok := debuggee_pc(); ok {
+			entry = pc
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, entry != 0, "the window ran the program under the engine, stopped at its entry")
+
+	// An s at the window is its Step, and the debuggee's counter moves on.
+	// The key is sent again every so often, because one typed before the
+	// window's reader is parked is lost, and a step by breakpoint on a port
+	// is a round trip a slow machine takes its time over.
+	stepped := false
+	for _ in 0 ..< 40 {
+		inject_key(0x1f)
+		for _ in 0 ..< PATIENCE * 4 {
+			if pc, ok := debuggee_pc(); ok && pc != entry {
+				stepped = true
+				break
+			}
+			sync.delay(1)
+		}
+		if stepped {
+			break
+		}
+	}
+	check(r, stepped, "an s typed at the window steps the program, and its counter moves one instruction on")
+
+	// And a q is its Quit, which detaches the target and closes the window.
+	inject_key(0x10)
+	check(r, wait(pd, PATIENCE), "a q typed at the window is its quit, and the window comes down")
+
+	// -- Teardown: the engine by its name, the draw server the terminal's way --
+
+	// The window was the engine's one client. Its mount is released when it
+	// is reaped, not when it exits, so it is reaped first. The name is then
+	// the last stake on the engine's wire, and removing it is the hangup the
+	// engine ends on, its stopped child reaped with it. This is
+	// `tests/dbg.rc`'s `unmount` then `rm`, with the window's reap standing
+	// in for the unmount.
+	finish(r, pd, "the debugger's window is reaped, and its mount of the engine with it")
+	check(r, srv.remove("dbg") == vfs.OK, "the kernel takes the engine's name away")
+	check(r, wait(pe, PATIENCE), "and the engine ends when its last client and its name are gone")
+	// The engine has exited but is not reaped, and its stopped child is a
+	// zombie under it. Reaping the engine orphans the child, which the drain
+	// below collects.
+	finish(r, pe, "the engine is reaped, and its child orphaned for the drain")
+	if check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the draw server to stop it") {
+		ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/ctl", vfs.O_RDONLY)
+		if cerr == vfs.OK {
+			check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
+			vfs.chan_close(ctl)
+		}
+		check(r, wait(ps, PATIENCE), "the draw server exits")
+		check(r, srv.remove("draw") == vfs.OK, "the kernel takes its name away")
+	}
+	pipe.quiesce()
+	_ = vfs.unmount_path(vfs.boot_namespace, "", "/mnt")
+	// The draw server held the only fid on kbdfs's tree, so a remove of one
+	// of its files is its stop, as `verify_chords` stops it.
+	if kc, oerr := vfs.open_path(vfs.boot_namespace, "/n/kbd/cons", vfs.O_RDONLY); oerr == vfs.OK {
+		check(r, vfs.chan_remove(kc) == vfs.OK, "a remove stops the keyboard translator")
+		vfs.chan_close(kc)
+	}
+	check(r, wait(pk, PATIENCE), "the translator exits")
+	check(r, srv.remove("kbdfs") == vfs.OK, "the kernel takes its name away too")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+	finish(r, ps, "the draw server is reaped")
+	finish(r, pk, "and the translator is reaped")
+	pipe.quiesce()
+	_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/kbd")
+	drain_pinned(r, pin_before, "and the debugger's wires come back whole")
+}
+
+// debuggee_pc answers the counter of the debuggee the engine holds: the
+// one live process named for it, stopped at its door, whose `stop_frame`
+// is the frame `/proc/n/regs` reads. False while no such process is
+// stopped, which is the moment between a step and the stop that follows.
+@(private = "file")
+debuggee_pc :: proc "contextless" () -> (uintptr, bool) {
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if !p.live || !name_ends(p.name, "debuggee") {
+			continue
+		}
+		if !intrinsics.volatile_load(&p.stopped) || p.stop_frame == nil {
+			continue
+		}
+		return arch.frame_ip(p.stop_frame), true
+	}
+	return 0, false
+}
+
+// name_ends reports whether `s` ends with `suffix`, so a process's full
+// path matches its program's name.
+@(private = "file")
+name_ends :: proc "contextless" (s: string, suffix: string) -> bool {
+	return len(s) >= len(suffix) && s[len(s) - len(suffix):] == suffix
+}
+
+// inject_key presses one key and releases it, as `inject_chord` does with
+// alt held. A plain key reaches the window in front through its cons.
+@(private = "file")
+inject_key :: proc(make: u8) {
+	devfs.scancode_tap(make)
+	devfs.scancode_tap(make | 0x80)
 }
 
 @(private = "file")

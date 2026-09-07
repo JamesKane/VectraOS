@@ -83,6 +83,7 @@ Class :: enum u8 {
 	Checkmark, // A square lamp, on or off, rigid
 	String, // A recessed field for typed text, stretches wide
 	Group, // A parent that lays its children along one axis
+	List, // Rows of text in a well, one selected, scrolled by its top row
 }
 
 /*
@@ -113,6 +114,11 @@ Object :: struct {
 	// Widget state a caller reads and writes.
 	on:     bool, // Checkmark: lit or dark
 	id:     int, // A caller's own tag, returned in events
+	// A list's rows, which the caller owns, and how it shows them.
+	rows:     []string,
+	top:      int, // The first row drawn
+	sel:      int, // The selected row, or -1
+	min_rows: int, // The rows `fit` asks room for
 }
 
 // -- Building a tree ---------------------------------------------------------
@@ -163,6 +169,56 @@ group :: proc "contextless" (horiz: bool) -> ^Object {
 	return o
 }
 
+// list makes a list that asks room for `min_rows` rows and stretches past
+// them. The caller sets its rows, and none is selected.
+list :: proc "contextless" (min_rows: int) -> ^Object {
+	o := obj(.List)
+	if o != nil {
+		o.min_rows = min_rows
+		o.sel = -1
+	}
+	return o
+}
+
+// list_visible answers how many rows a laid-out list shows.
+list_visible :: proc "contextless" (o: ^Object, t: ^Theme) -> int {
+	if o == nil {
+		return 0
+	}
+	return max((o.h - 2 * t.well) / FONT_H, 0)
+}
+
+// list_show scrolls a list so that `row` is drawn, near the middle when the
+// list has to move, so the rows around it show too.
+list_show :: proc "contextless" (o: ^Object, row: int, t: ^Theme) {
+	if o == nil {
+		return
+	}
+	n := list_visible(o, t)
+	if n <= 0 || row < 0 {
+		return
+	}
+	if row < o.top || row >= o.top + n {
+		o.top = max(row - n / 2, 0)
+	}
+}
+
+// list_row_at answers the row under a point in a laid-out list, or -1.
+list_row_at :: proc "contextless" (o: ^Object, y: int, t: ^Theme) -> int {
+	if o == nil || y < o.y + t.well {
+		return -1
+	}
+	k := (y - o.y - t.well) / FONT_H
+	if k >= list_visible(o, t) {
+		return -1
+	}
+	row := o.top + k
+	if row < 0 || row >= len(o.rows) {
+		return -1
+	}
+	return row
+}
+
 /*
 `add` links `child` as the last child of `parent`. It returns `parent` so a
 tree reads as nested calls. A weight set on the child before this call is kept.
@@ -193,8 +249,24 @@ weigh :: proc "contextless" (o: ^Object, w: int) -> ^Object {
 
 // -- fit: the smallest and largest each node accepts -------------------------
 
-// drawn_len counts the cells a label draws. A single `_` before a letter marks
-// a hotkey and is not drawn, the way a menu label underlines its key.
+// rune_len counts the cells a text draws: one per rune.
+rune_len :: proc "contextless" (label: string) -> int {
+	n := 0
+	i := 0
+	for i < len(label) {
+		_, size := libdraw.decode_rune(transmute([]u8)label[i:])
+		if size <= 0 {
+			break
+		}
+		n += 1
+		i += size
+	}
+	return n
+}
+
+// drawn_len counts the cells a button's label draws. A single `_` before a
+// letter marks a hotkey and is not drawn, the way a menu label underlines
+// its key.
 drawn_len :: proc "contextless" (label: string) -> int {
 	n := 0
 	i := 0
@@ -235,7 +307,7 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 		o.minw, o.minh = 0, 0
 		o.maxw, o.maxh = BIG, BIG
 	case .Text:
-		w := drawn_len(o.label) * FONT_W
+		w := rune_len(o.label) * FONT_W
 		o.minw, o.maxw = w, w
 		o.minh, o.maxh = FONT_H, FONT_H
 	case .Button:
@@ -252,6 +324,11 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 		o.maxw = BIG
 		o.minh = FONT_H + 2 * t.well
 		o.maxh = o.minh
+	case .List:
+		o.minw = 8 * FONT_W + 2 * t.well
+		o.maxw = BIG
+		o.minh = max(o.min_rows, 1) * FONT_H + 2 * t.well
+		o.maxh = BIG
 	case .Group:
 		// Recurse first, then sum along the axis and take the widest across it.
 		n := 0

@@ -70,8 +70,10 @@ paint_node :: proc "contextless" (
 	case .Group:
 	// A container draws nothing of its own.
 	case .Text:
+		// A label draws as written: an underscore in it is a character,
+		// not a hotkey mark, which only a button's label carries.
 		if a, ok := font_get(f, t.ink, t.ground); ok {
-			nat = label(b, nat, o, o.x, o.y, dst, a, t)
+			nat, _, _ = libdraw.put_text(b, nat, a, dst, u32(o.x), u32(o.y), o.label)
 		}
 	case .Button:
 		nat = raised(b, nat, o, dst, t)
@@ -107,11 +109,77 @@ paint_node :: proc "contextless" (
 			u32(o.h - 2 * t.bevel),
 			libpal.xrgb(t.ground),
 		)
+	case .List:
+		nat = list_rows(b, nat, o, dst, f, t)
 	}
 	for c := o.first; c != nil; c = c.next {
 		nat = paint_node(b, nat, c, dst, f, t)
 	}
 	return nat
+}
+
+/*
+list_rows draws a list: a well like a string gadget's, then the rows from
+`top` down as far as the well holds. Each is clipped to the well's width. The
+selected row sits on a bar of the face colour, in the ink baked for that
+face, so it reads as the one pressed. A row past the end draws nothing, and
+the well behind it already reads as blank.
+*/
+list_rows :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fonts, t: ^Theme) -> int {
+	nat := libdraw.put_fill(b, at, dst, u32(o.x), u32(o.y), u32(o.w), u32(o.h), libpal.xrgb(t.shade))
+	nat = libdraw.put_fill(
+		b,
+		nat,
+		dst,
+		u32(o.x + t.well),
+		u32(o.y + t.well),
+		u32(o.w - 2 * t.well),
+		u32(o.h - 2 * t.well),
+		libpal.xrgb(t.ground),
+	)
+	plain, pok := font_get(f, t.ink, t.ground)
+	lit, lok := font_get(f, t.ink, t.face)
+	if !pok {
+		return nat
+	}
+	cells := (o.w - 2 * t.well) / FONT_W
+	n := list_visible(o, t)
+	x := o.x + t.well
+	for k in 0 ..< n {
+		row := o.top + k
+		if row < 0 || row >= len(o.rows) {
+			break
+		}
+		y := o.y + t.well + k * FONT_H
+		atlas := plain
+		if row == o.sel && lok {
+			nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y), u32(o.w - 2 * t.well), u32(FONT_H), libpal.xrgb(t.face))
+			atlas = lit
+		}
+		shown := clip_cells(o.rows[row], cells)
+		next, _, _ := libdraw.put_text(b, nat, atlas, dst, u32(x), u32(y), shown)
+		if next < 0 {
+			return next
+		}
+		nat = next
+	}
+	return nat
+}
+
+// clip_cells answers the longest prefix of `s` that draws in `cells` cells,
+// counting a multi-byte rune as one.
+clip_cells :: proc "contextless" (s: string, cells: int) -> string {
+	n := 0
+	i := 0
+	for i < len(s) && n < cells {
+		_, size := libdraw.decode_rune(transmute([]u8)s[i:])
+		if size <= 0 {
+			break
+		}
+		i += size
+		n += 1
+	}
+	return s[:i]
 }
 
 // raised draws a control's face with a bevel: the face, a lit top-left edge,

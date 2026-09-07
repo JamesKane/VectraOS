@@ -346,13 +346,17 @@ MUI program never places a gadget by a number.
 
     Window      a `/srv/draw` window, its files, and the event loop
     Group       horizontal or vertical, with a frame and a title or none
-    Text        a label, with `_` before the hotkey letter
-    Button      a raised panel with a label, pressed on click or hotkey
+    Text        a label, drawn as written
+    Button      a raised panel with a label, pressed on click or hotkey,
+                which `_` before a letter of the label names
     Checkmark   a lamp, lit or not
     Cycle       a button whose label is one of a list, and a popup of them
     String      one line of text, `sys/libedit` wearing a well
     Slider      a knob in a well, horizontal or vertical
     List        rows of text in a well, one selected, a scrollbar beside
+                (built for the debugger's window: rows, a top row, a
+                selected row on a bar of the face, a press selects; the
+                scrollbar waits)
     Scrollbar   a knob in a trough, with arrows
     Image       pixels, loaded once
     Space       nothing, with a weight
