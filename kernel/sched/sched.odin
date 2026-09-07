@@ -481,6 +481,14 @@ note_thread :: proc "contextless" (t: ^Thread) {
 	wake_noted(t)
 }
 
+// unstop is `note_thread`'s wake without the note. A thread parked by a
+// stop is started again, and a thread parked in a sleeping lock is left
+// for the handoff. For `/proc/n/ctl`'s `start`, whose target may be killed
+// while stopped and parked in a lock on its way out.
+unstop :: proc "contextless" (t: ^Thread) {
+	wake_noted(t)
+}
+
 /*
 wake_noted starts a thread a note landed on, unless the thread is parked in a
 sleeping lock.

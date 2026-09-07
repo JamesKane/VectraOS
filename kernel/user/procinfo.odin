@@ -15,37 +15,48 @@ import "kernel:sched"
 import "kernel:sync"
 import "kernel:vfs"
 
+/*
+A snapshot of one record. The strings point into the snapshot's own
+buffers, so it is the caller's to keep and to read after the lock is gone.
+They pointed into buffers of this package once, and `procfs` built its
+text after `proc_info` returned. Two `ps` on two cores then wrote one
+buffer between them, and a status line could carry another process's name
+or directory. The snapshot is filled in place rather than returned, because
+a string into a value that is then copied points at the copy's source.
+*/
 Proc_Info :: struct {
-	name:       string, // into a static buffer of this package; copy it before the next call
+	name:       string, // into `name_buf`
 	pid:        u64,
 	parent:     u64,
 	note_group: u64,
 	detached:   bool,
 	state:      string, // Ready, Running, Blocked, Stopped, Exited, or Faulted
-	user:       string, // Whose process it is
-	cwd:        string,
+	user:       string, // Whose process it is, into `user_buf`
+	cwd:        string, // into `cwd_buf`
 	args:       string, // the arguments it was started with, as `/proc/n/args` shows them
+	name_buf:   [PATH_MAX]u8,
+	cwd_buf:    [PATH_MAX]u8,
+	user_buf:   [USER_MAX]u8,
+	args_buf:   [ARGS_KEEP]u8,
 }
 
-@(private = "file") info_name: [PATH_MAX]u8
-@(private = "file") info_cwd: [PATH_MAX]u8
-@(private = "file") info_args: [ARGS_KEEP]u8
-
-// proc_info reads one record, or answers false for a pid that is not live.
-proc_info :: proc "contextless" (pid: u64) -> (info: Proc_Info, ok: bool) #no_bounds_check {
+// proc_info fills `info` from one record, or answers false for a pid that
+// is not live.
+proc_info :: proc "contextless" (pid: u64, info: ^Proc_Info) -> bool #no_bounds_check {
 	guard := sync.acquire(&table_lock)
 	defer sync.release(&table_lock, guard)
 	p := live_by_pid(pid)
 	if p == nil {
-		return {}, false
+		return false
 	}
-	n := copy(info_name[:], p.name)
-	info.name = string(info_name[:n])
-	info.user = string(p.user[:p.ulen])
-	c := copy(info_cwd[:], current_directory(p))
-	info.cwd = string(info_cwd[:c])
-	a := copy(info_args[:], p.args_buf[:p.args_len])
-	info.args = string(info_args[:a])
+	n := copy(info.name_buf[:], p.name)
+	info.name = string(info.name_buf[:n])
+	u := copy(info.user_buf[:], p.user[:p.ulen])
+	info.user = string(info.user_buf[:u])
+	c := copy(info.cwd_buf[:], current_directory(p))
+	info.cwd = string(info.cwd_buf[:c])
+	a := copy(info.args_buf[:], p.args_buf[:p.args_len])
+	info.args = string(info.args_buf[:a])
 	info.pid = p.pid
 	info.parent = p.parent
 	info.note_group = p.note_group
@@ -69,7 +80,7 @@ proc_info :: proc "contextless" (pid: u64) -> (info: Proc_Info, ok: bool) #no_bo
 			info.state = "Dead"
 		}
 	}
-	return info, true
+	return true
 }
 
 // proc_live says whether a pid names a live process: the existence check
@@ -128,8 +139,19 @@ proc_stop :: proc "contextless" (pid: u64) -> bool {
 	return true
 }
 
-// proc_start lets a stopped process go on: the ask comes down, the door's
-// sleeper wakes, and a thread the tick parked is readied by hand.
+/*
+proc_start lets a stopped process go on: the ask comes down, the door's
+sleeper wakes, and a thread the tick parked is readied by hand.
+
+The wake for the tick's park is `sched.unstop`, not `ready`. A kill that
+lands while the process is stopped wakes it out of that park by the note
+path, and the thread then walks its exit, which closes descriptors and may
+park in a sleeping lock on the way. `stopped_in_tick` is still set then,
+because only this call clears it. A plain `ready` here would pull the
+thread out of that lock without the handoff, which is the stale wake
+`docs/SYNC.md` records. `unstop` wakes only a park that a note may wake,
+which is the tick's park and never a lock's.
+*/
 proc_start :: proc "contextless" (pid: u64) -> bool {
 	guard := sync.acquire(&table_lock)
 	p := live_by_pid(pid)
@@ -142,7 +164,7 @@ proc_start :: proc "contextless" (pid: u64) -> bool {
 	if p.stopped_in_tick {
 		p.stopped_in_tick = false
 		p.stopped = false
-		sched.ready(p.thread)
+		sched.unstop(p.thread)
 	}
 	return true
 }

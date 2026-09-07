@@ -351,8 +351,10 @@ render :: proc(pid: u64, f: File, out: []u8) -> int {
 		// Its own door, and its own answer for a pid that is gone.
 		return user.proc_namespace(pid, out)
 	}
-	info, ok := user.proc_info(pid)
-	if !ok {
+	// On this stack, not in a buffer the package shares: another core may
+	// be rendering another pid at the same moment.
+	info: user.Proc_Info
+	if !user.proc_info(pid, &info) {
 		return -1
 	}
 	switch f {

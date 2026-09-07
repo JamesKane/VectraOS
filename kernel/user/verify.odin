@@ -5015,7 +5015,27 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 				sync.delay(1)
 			}
 			line := string(mount_reader.buf[:max(mount_reader.n, 0)])
-			check(r, woke && line == "window rc -i\n", "an alt-n the server does not know reaches the desktop, verbatim")
+			if woke && line == "window rc -i\n" {
+				check(r, true, "an alt-n the server does not know reaches the desktop, verbatim")
+			} else {
+				// Seen once in two hundred boots, before the stale wake in
+				// `kernel/sync` was fixed. A reader that never woke and one
+				// that got other bytes are two different bugs, so the
+				// failure says which, and what the read answered.
+				sink := detail_sink()
+				libodin.put_str(&sink, "an alt-n the server does not know reaches the desktop, verbatim -- ")
+				libodin.put_str(&sink, woke ? "read answered " : "the reader never woke, read so far ")
+				libodin.put_int(&sink, i64(mount_reader.n))
+				libodin.put_str(&sink, " bytes, errno ")
+				libodin.put_int(&sink, i64(mount_reader.err))
+				libodin.put_str(&sink, ": `")
+				if len(line) > 0 && line[len(line) - 1] == '\n' {
+					line = line[:len(line) - 1]
+				}
+				libodin.put_str(&sink, line)
+				libodin.put_str(&sink, "`")
+				check(r, false, libodin.str(&sink))
+			}
 		}
 		vfs.chan_close(hk)
 	}
