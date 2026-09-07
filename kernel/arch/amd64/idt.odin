@@ -453,6 +453,41 @@ trap_dispatch :: proc "c" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no_bo
 		intrinsics.volatile_store(&user_traps, intrinsics.volatile_load(&user_traps) + 1)
 	}
 
+	/*
+	The paranoid check `percpu.odin` names as the day's answer. A trap that
+	says ring 0 but arrives on the program's GS base was taken between a
+	`swapgs` and the `iretq` or `sysretq` after it -- a frame the hardware
+	refused, or an NMI in the stub's one-instruction window. Every handler
+	below reads `%gs`, so run on: `cpu()` would answer with another core's
+	record, and that is how a core once marked a different core's idle thread
+	dead. The kernel's record is in the upper half and a program's base never
+	is, so the sign bit is the whole test. Swap back so the report can run,
+	then stop with the vector and the address that faulted.
+	*/
+	if !from_user && read_msr(MSR_GS_BASE) >> 63 == 0 {
+		swapgs()
+		name, kind := vector_info(frame.vector)
+		_ = name
+		trap := Trap {
+			kind       = kind,
+			vector     = frame.vector,
+			name       = "trap in ring 0 on the program's GS base, after a swapgs",
+			error_code = frame.error_code,
+			has_error  = vector_has_error_code(frame.vector),
+			ip         = uintptr(frame.rip),
+			sp         = uintptr(frame.rsp),
+			frame      = frame,
+			user       = false,
+		}
+		if kind == .Page_Fault {
+			trap.fault_address = read_cr2()
+		}
+		if handler != nil && handler(&trap) {
+			return
+		}
+		halt_forever()
+	}
+
 	if frame.vector < VECTOR_COUNT {
 		if h := vectors[frame.vector]; h != nil {
 			// The one bracket that makes `in_interrupt` true. A top half runs

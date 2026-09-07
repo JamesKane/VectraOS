@@ -273,3 +273,10 @@ irq_restore :: proc "contextless" (was_on: bool) {
 interrupts_enabled :: proc "contextless" () -> bool {
 	return read_rflags() & RFLAGS_IF != 0
 }
+
+// swapgs exchanges GS_BASE and KERNEL_GS_BASE. The paranoid check in
+// `trap_dispatch` is its one caller outside the entry stubs: a ring 0 trap
+// that arrived on a program's base swaps the kernel's back before it reports.
+swapgs :: proc "contextless" () {
+	asm() [#volatile, #clobber memory] { #byte 0x0F, 0x01, 0xF8 }()
+}

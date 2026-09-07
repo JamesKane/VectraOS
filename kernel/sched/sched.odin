@@ -563,6 +563,12 @@ park_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 
 kill_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	if t := cpu().current; t != nil {
+		if t == cpu().idle {
+			sync.bug("sched: kill_current with the idle thread current")
+		}
+		if t.state == .Dead {
+			sync.bug("sched: kill_current of a dead thread")
+		}
 		intrinsics.atomic_add(&dying, 1)
 		t.state = .Dead
 	}
@@ -599,6 +605,16 @@ is reclaiming.
 exit :: proc "contextless" () -> ! {
 	arch.disable_interrupts()
 	if t := current(); t != nil {
+		// The idle thread never exits, and a thread exits once. Either
+		// here is a core whose `current` is not the thread standing on it,
+		// which is how core 0's idle thread was once found dead on its own
+		// reap list, about to free the stack it was running on.
+		if t == cpu().idle {
+			sync.bug("sched: exit called with the idle thread current")
+		}
+		if t.state == .Dead {
+			sync.bug("sched: exit called twice for one thread")
+		}
 		intrinsics.atomic_add(&dying, 1)
 		t.state = .Dead
 	}

@@ -753,26 +753,26 @@ nothing amber there for four seconds while the whole button stood beneath.
 The check measures the face again on every look now, and a miss prints the
 column as runs of what each pixel is, which is what found it.
 
-**Open, and the most serious thing in this file.** Once in about a hundred
-boots, on a machine kept up after the desktop's programs had died, `ps` took
-the kernel down with a `#GP` at `iretq`: every register zero, on the kernel
-stack of a program that had exited ten minutes earlier. The corpse read
-cleanly: rc's fork child had been handed that dead thread's record and stack
-back from the heap, a *second* reap of the same dead record then freed the
-live child's stack and record from under it, the pages were reissued and
-zeroed, and the child was dispatched into the zeros. The physical allocator
-counted no double free because the pages had been reallocated between the
-two frees. Two dead threads of thread-library programs also sat `Dead` and
-unreaped for minutes while plain programs' dead threads were reaped at once,
-which is unexplained and probably the same fault. `kernel/sched` now carries
-`Thread.reaped` and four `sync.bug` checks -- the reap list twice, a
-non-dead thread on it, a reaped thread switched out, queued, or woken -- so
-the next occurrence stops with a sentence naming the path instead of a
-`#GP`. Reproducing it needs the desktop's programs dead first, which the
-hunt's own tracing caused by slowing the draw server's handler until clients
-saw `EIO`; without that, sixteen idle minutes with a `ps` every two did not
-reach it. The lldb walk (process table by symbol, exit records at `+776`,
-kernel threads by heap scan) is in the memory notes.
+**Two kernel `#GP`s on kept machines, and what they most likely were.** On
+two machines kept up for lldb after a failure, `ps` later took the kernel
+down: once at `iretq` with every register zero on a dead program's kernel
+stack, once inside `percpu_id` with the per-core self word's top bytes
+overwritten. The first corpse read as a dead thread reaped twice; the second
+showed core 0's idle thread marked dead on its own reap list, which only a
+`cpu()` answering for the wrong core can do. Both machines had been walked
+with an lldb script that *writes* vCPU 0's `rip`, `rsp` and `rbp` to unwind
+parked threads, and a batch lldb exits without restoring them, so the guest
+resumed vCPU 0 inside some parked thread's frame. That alone makes a core run
+a thread that is not its `current`, which is every symptom seen. The walk
+restores the registers now. The same recipe without the walk ran clean for
+two hundred rounds of `ps` and forks, and the clobbering walk once did not
+reproduce it either, so this is the leading explanation and not a proof.
+What stays in the tree is worth having whatever the cause: `Thread.reaped`
+and `sync.bug` checks in `kernel/sched` for a thread reaped twice, queued
+dead, woken reaped, or exiting while the idle thread is `current`; and the
+paranoid check `percpu.odin` had promised, a ring 0 trap arriving on the
+program's GS base now swaps back and stops with its vector and address
+rather than run every handler on another core's record.
 
 Two one-offs seen once each in two hundred boots and not chased: the chord
 test's `an alt-n the server does not know reaches the desktop, verbatim`,

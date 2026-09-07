@@ -27,10 +27,13 @@ frame in front of it names ring 3.
 **A crossing that swaps twice is the hazard, and there is one.** An NMI can
 arrive between the syscall stub's `swapgs` and its next instruction. It finds a
 frame that says ring 3, so the tail swaps again and the kernel runs with the
-program's base. Nothing in Vectra reads `GS` inside a handler, so the two swaps
-cancel on the way out and nothing is damaged. This stops being true the day a
-handler wants per-CPU state. The answer then is what Linux calls a paranoid
-entry: read the base rather than infer it from the frame.
+program's base. The same happens to a fault the hardware raises at the
+`iretq` or `sysretq` itself, after the tail's swap. Handlers read `GS` now --
+the scheduler's `cpu()` is behind every tick -- so a handler on the wrong base
+would act for the wrong core. `trap_dispatch` therefore does what Linux calls
+a paranoid entry: a ring 0 frame whose `GS_BASE` has the sign bit clear is
+a trap on a program's base, and it swaps back and stops with the vector and
+the address rather than run on.
 */
 package amd64
 
