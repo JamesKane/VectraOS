@@ -96,6 +96,24 @@ under the scheduler's own lock. A waker unlinks the node, under `wait_lock`,
 and then readies the thread, under the scheduler's lock. Either the park sees
 the unlink and does not happen, or the ready sees a parked thread and starts
 it. There is no third order, because the scheduler's lock serialises the two.
+
+## A wake is issued under the list lock
+
+The order above has a fourth case the scheduler cannot see. A thread that
+finds its condition true after registering never parks: it unlinks itself
+and returns. A waker that took the node a moment earlier still holds the
+thread's pointer and a wake it did not issue yet. If that wake waits for the
+release of the list lock, the thread can return, run on and park in a
+*different* wait first. A lock's park trusts the first wake it gets.
+
+So every waker in this package readies or unparks its thread before it lets
+go of `wait_lock`: `tick`, `wakeup`, `wakeup_all`, `mutex_unlock`, `runlock`
+and `wunlock`. The thread's own unlink waits for that hold. So the wake
+lands on a thread parked here or still running its test, and the scheduler
+ignores the second. The scheduler's lock nests inside `wait_lock`, which is
+the only order the package uses. `handed_off` in `sleep.odin` checks the
+rule from the sleeper's side, and `start` in `rendez.odin` says what the
+window cost.
 */
 package sync
 

@@ -50,6 +50,7 @@ thread that matters, and Plan 9 never had it either.
 */
 package sync
 
+import "base:intrinsics"
 
 /*
 A mutual exclusion lock that parks the loser instead of masking interrupts.
@@ -121,6 +122,26 @@ mutex_lock :: proc "contextless" (m: ^Mutex) {
 	// note-proof for the same reason. A note posted meanwhile stays pending
 	// and is met at the next boundary, after the lock is honestly held.
 	hooks.block(cast(^rawptr)&node.queue, note_wakes = false)
+	handed_off(&node)
+}
+
+/*
+handed_off checks that the wake a lock waiter got was the handoff, which is
+the only wake it may get. The handoff took the node off the queue under
+`wait_lock` before it woke the thread. So a node still on the queue here was
+not handed anything: something else readied this thread. A wake from a
+rendezvous or a deadline this thread left earlier once did exactly that.
+The node it left behind on a wire's lock queue was read as a node again
+after the frame was gone -- see `start` in `rendez.odin`. Every waker now
+wakes under the list lock, so this is an invariant.
+
+A stop with a sentence beats a lock two threads believe they hold.
+*/
+@(private)
+handed_off :: proc "contextless" (node: ^Wait_Node) {
+	if intrinsics.volatile_load(&node.queue) != nil {
+		fail("a lock waiter woke without the handoff")
+	}
 }
 
 /*
@@ -150,12 +171,13 @@ mutex_unlock :: proc "contextless" (m: ^Mutex) {
 	w := best.waiter
 	m.owner = w
 	handoffs += 1
-	release(&wait_lock, g)
 
 	// `unpark`, not `ready`: a thread that queued for a lock waited on
 	// nothing outside itself, so the scheduler does not give its priority
-	// back. See `Scheduler`.
+	// back. See `Scheduler`. Under the list lock, as every wake is: see
+	// `start` in `rendez.odin`.
 	hooks.unpark(w)
+	release(&wait_lock, g)
 }
 
 // mutex_held reports whether anyone holds the lock. Use it for assertions in

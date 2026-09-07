@@ -94,6 +94,7 @@ rlock :: proc "contextless" (l: ^RW_Lock) {
 	// `wunlock`. `note_wakes = false`: a lock handoff, note-proof for the
 	// reason `mutex_lock` is -- the node comes off only by the handoff.
 	hooks.block(cast(^rawptr)&node.queue, note_wakes = false)
+	handed_off(&node)
 }
 
 /*
@@ -126,8 +127,9 @@ runlock :: proc "contextless" (l: ^RW_Lock) {
 	l.writer = true
 	l.owner = w
 	handoffs += 1
-	release(&wait_lock, g)
+	// Under the list lock, as every wake is: see `start` in `rendez.odin`.
 	hooks.unpark(w)
+	release(&wait_lock, g)
 }
 
 // wlock takes the lock for writing: alone, after every reader and writer
@@ -168,6 +170,7 @@ wlock :: proc "contextless" (l: ^RW_Lock) {
 	// a park it did not is ended by it. `note_wakes = false`: note-proof, as
 	// `mutex_lock` is -- only the handoff takes the node off the queue.
 	hooks.block(cast(^rawptr)&node.queue, note_wakes = false)
+	handed_off(&node)
 }
 
 /*
@@ -200,16 +203,17 @@ wunlock :: proc "contextless" (l: ^RW_Lock) {
 		w := n.waiter
 		l.owner = w
 		handoffs += 1
-		release(&wait_lock, g)
+		// Under the list lock, as every wake is: see `start` in `rendez.odin`.
 		hooks.unpark(w)
+		release(&wait_lock, g)
 		return
 	}
 
 	/*
-	Every reader at the head goes in together. They are counted and taken
-	off the queue under the list lock, all of them in one hold, and started
-	outside it, because a start takes the scheduler's lock and this package
-	takes that one last.
+	Every reader at the head goes in together. They are counted, removed
+	from the queue and started under the list lock, all of them in one hold.
+	A start takes the scheduler's lock inside it, which is the order this
+	package uses everywhere -- see `start` in `rendez.odin`.
 
 	**One hold, and not one per reader.** The first cut took a reader, let
 	go of the lock, started it, and came back for the next. A reader started
@@ -224,6 +228,9 @@ wunlock :: proc "contextless" (l: ^RW_Lock) {
 	the queue and parks, and the start wakes it. `queue` is cleared just
 	before each start, and `next` is read before that, because a reader
 	that sees nil returns from `rlock` and its node is stack it is done with.
+	The starts used to run after the release. A reader that saw its `queue`
+	cleared could then return, run on and park in another lock before its
+	start reached the scheduler. The scheduler then woke it out of that lock.
 	*/
 	l.writer = false
 	l.owner = nil
@@ -243,7 +250,6 @@ wunlock :: proc "contextless" (l: ^RW_Lock) {
 	}
 	l.readers += started
 	handoffs += u64(started)
-	release(&wait_lock, g)
 
 	for node := run; node != nil; {
 		next := node.next
@@ -253,6 +259,7 @@ wunlock :: proc "contextless" (l: ^RW_Lock) {
 		hooks.unpark(w)
 		node = next
 	}
+	release(&wait_lock, g)
 }
 
 // rw_readers and rw_writer report the lock's state, for checks in code that

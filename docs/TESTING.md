@@ -186,6 +186,22 @@ turn, rendezvous condition and all. A progress line per procedure through
 `devfs.cons_write`, which reaches the serial port whatever holds `/dev/fb`,
 said which procedure. The walk said which line, and what it was waiting for.
 
+**Two rules for the next wedge, from the sixth.** A machine that stops
+answering after `boot complete` may not be wedged at all. Once `eiafs` holds
+the serial port, the kernel's log has no serial sink, so a panic prints on
+the framebuffer and nowhere else. The fork storm "hang" was a `#PF` in the
+kernel with a full report on the screen. The serial log ended at the command
+that provoked it. So the first look at a kept machine is a `screendump`
+through the QEMU monitor, before any lldb.
+
+The second rule is about the walk above. It writes `rip`, `rsp` and `rbp`
+into a stopped core, and a batch lldb that exits without restoring them
+resumes the guest inside a parked thread's frame. That corrupted two kept
+machines. A read-only walk does the same job: the process table by symbol,
+each core's registers, and a scan of each parked thread's kernel stack for
+words in kernel text. That scan is what `panic.odin` prints, because this
+kernel keeps no frame pointer.
+
 **The third one hung in the teardown, not the test.** The control for the
 ring 3 flush cancel -- `serve_mux` marking nothing, so a flushed worker never
 leaves -- wedged `consrv` exactly as intended, and the boot then stopped

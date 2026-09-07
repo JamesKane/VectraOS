@@ -80,8 +80,8 @@ check args 'sleep 100' `{sleep 100 & cat /proc/$apid/args; kill $apid; wait $api
 # forked, and the child is still rc until its exec; a stop written before that
 # stops rc, and `ps` then has no sleep to show as Stopped -- one boot in
 # twenty. A second is many exec's worth. (A `while` that polled `ps` for the
-# sleep instead was a fork storm, and hung one boot in twenty somewhere in
-# the kernel; see docs/HANDOFF.md.)
+# sleep instead was a fork storm, and stopped one boot in twenty on a stale
+# wake inside a sleeping lock -- fixed, and docs/SYNC.md has the account.)
 check stop 'Stopped Blocked' `{sleep 100 & sleep 1; echo stop > /proc/$apid/ctl; sleep 1; during=`{ps | grep ' sleep$'}; echo start > /proc/$apid/ctl; sleep 1; after=`{ps | grep ' sleep$'}; echo $during(2) $after(2); kill $apid; wait $apid}
 
 if(~ $#bad 0) exit $#ok' ok'

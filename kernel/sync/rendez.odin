@@ -158,15 +158,15 @@ tick :: proc "contextless" (now: u64) -> int {
 		// anything can look at it running.
 		unlink(n)
 		w := n.waiter
-		release(&wait_lock, g)
 
-		// The wake is outside the list lock, because it takes the
-		// scheduler's, and that order -- lists, then scheduler -- is the
-		// only one this package uses.
+		// The wake is under the list lock, and the order -- lists, then the
+		// scheduler's -- is the one this package uses everywhere. See `start`
+		// for why the wake may not wait for the release.
 		if have_sched && w != nil {
 			wakeups += 1
 			hooks.ready(w)
 		}
+		release(&wait_lock, g)
 		started += 1
 	}
 	return started
@@ -301,8 +301,8 @@ wakeup :: proc "contextless" (r: ^Rendez) -> bool {
 		return false
 	}
 	w := detach(n)
-	release(&wait_lock, g)
 	start(w)
+	release(&wait_lock, g)
 	return true
 }
 
@@ -324,8 +324,8 @@ wakeup_all :: proc "contextless" (r: ^Rendez) -> int {
 			return started
 		}
 		w := detach(n)
-		release(&wait_lock, g)
 		start(w)
+		release(&wait_lock, g)
 		started += 1
 	}
 }
@@ -333,17 +333,37 @@ wakeup_all :: proc "contextless" (r: ^Rendez) -> int {
 // detach takes a node the queue already let go of off the timer list too, and
 // answers with its thread. Under `wait_lock`. After this the node belongs to
 // its thread again, and nothing here reads it: the thread may be awake and
-// gone from the frame the node lived in before `start` runs.
+// gone from the frame the node lived in by the time `start` runs.
 @(private = "file")
 detach :: proc "contextless" (n: ^Wait_Node) -> Waiter {
 	timer_remove(n)
 	return n.waiter
 }
 
-// start makes a thread runnable, with no list lock held. The unlink came
-// first, in every path that wakes anybody -- see `wait.odin`. The scheduler's
-// lock is taken inside `ready`, after `wait_lock` is gone, which is the one
-// order this package uses.
+/*
+start makes a thread runnable, under `wait_lock`. The unlink came first, in
+every path that wakes anybody -- see `wait.odin`. The scheduler's lock is
+taken inside `ready`, nested in `wait_lock`, which is the one order this
+package uses.
+
+**The wake is under the list lock because a late wake can land on a
+different park.** The thread this wakes may not be waiting any more.
+`wait_on` tests its condition after it registers, and a thread that finds
+the condition true unlinks itself and returns without a wake. With the lock
+dropped first, a waker that already took the node still held a thread
+pointer and a `ready` to issue. The thread meanwhile returned, called on,
+and parked in a `Mutex`, and the late `ready` pulled it out of the lock's
+queue without the handoff.
+
+A rendezvous survives a wake it did not ask for, because `wait_on` loops. A
+lock does not: its waiter is woken once and trusts the wake. Its node stayed
+on the queue after its frame was gone. `take_best` then read the frame's
+next tenant as a node, and faulted at address 8 inside a wire's
+`mutex_unlock`, about one fork storm in twenty. Under the lock, the thread's
+own unlink waits for this hold to end. So a `ready` here lands on a thread
+parked in this wait or still running its test, and the scheduler ignores
+the second.
+*/
 @(private = "file")
 start :: proc "contextless" (w: Waiter) {
 	if have_sched && w != nil {

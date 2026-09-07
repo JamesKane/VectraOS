@@ -164,6 +164,30 @@ stops a node reaching two callers while its thread is runnable and has not yet
 run. The sleeper's stops a departing frame from leaving a pointer to itself in a
 list.
 
+**A wake is issued under the list lock.** The waker's unlink was under
+`wait_lock`, and its `ready` came after the release, because the scheduler's
+lock serialises a wake against a park. That holds for the park the wake was
+meant for, and not for a park the thread reaches afterwards. A thread that
+finds its condition true after it registers unlinks itself and returns
+without a wake. The waker that already took its node still owes it one. The
+scheduler's lock nests inside `wait_lock`, the order `wunlock` already named.
+
+On a fork storm, the thread returned, called on, and parked in a wire's
+`Mutex`. The late `ready` pulled it out of that queue with no handoff. Its
+stack node stayed on the queue after the frame was gone. The next
+`mutex_unlock` read the frame's new tenant as a node, and faulted at address
+8 in `take_best`, about one storm in twenty. The serial line showed nothing,
+because ring 3 holds the port once `eiafs` is up, and the panic screen said
+it.
+
+Every waker now readies its thread before it lets go of `wait_lock`:
+`tick`, `wakeup`, `wakeup_all`, `mutex_unlock`, `runlock` and `wunlock`.
+The thread's own unlink waits for the hold. So the wake lands on a thread
+parked here or still running, and the scheduler ignores the second. And
+`mutex_lock`, `rlock` and `wlock` check on waking that their node came off
+the queue. A lock waiter woken any other way means two threads that each
+believe they hold the lock. A stop with a sentence is the better failure.
+
 **Three busy-waits went away, and the last of them was the point.**
 `kernel/verify_vfs.odin` spent three attempts on one problem. The boot thread
 had to watch a five-thread run without disturbance to it. A yield starved the

@@ -777,16 +777,26 @@ rather than run every handler on another core's record.
 Two one-offs seen once each in two hundred boots and not chased: the chord
 test's `an alt-n the server does not know reaches the desktop, verbatim`,
 and the terminal's `every one of them, before any newline says the line is
-finished`, which now says what each cell held when it next fails.
+finished`, which now says what each cell held when it next fails. Both were
+seen before the stale-wake fix above, and a lock two threads believed they
+held is a plausible cause of either.
 
-One thing the sweep found and did not chase: a tight fork storm from rc --
-`while(! {ps | grep ' sleep$' > /dev/null}) sleep 0`, four forks a turn on
-four cores -- hung the boot once in twenty, somewhere in the user suite with
-no line to say where. The script no longer does that, so the boot does not
-see it. A machine that does is a `solo.py` run with that loop typed at the
-shell and QEMU's `-s` gdb stub attached (`lldb build/vectra.elf -o
-'gdb-remote localhost:1234'`, then each core's registers and the process
-table by symbol).
+**The fork storm "hang" was a kernel page fault, and it is fixed.** A tight
+fork storm from rc, four forks a turn on four cores, stopped the boot once
+in twenty with no line to say where. It was not a hang. The kernel panicked
+at `take_best` in `kernel/sync/wait.odin`, and the report went to the panic
+screen alone. Ring 3 holds the serial port once `eiafs` is up, so the
+serial log ended at the command that provoked it.
+
+The cause was a wake issued after `wait_lock` was released. A sleeper whose
+condition came true unlinked itself, returned, and parked in a wire's
+`Mutex`. The late `ready` then pulled it out of that lock with no handoff.
+`docs/SYNC.md` has the account and the rule. Every waker now wakes under
+the list lock, and a lock waiter checks it got the handoff. The reproducer
+is the storm inside a backquote, four at once, typed at the shell of a `-s`
+machine: it stopped the first boot before the fix and ran five boots clean
+after it. Sixty plain boots on four cores and three arm64 boots followed,
+all clean, where the sweep before it lost several in sixty.
 
 ### Smaller things worth doing when convenient
 
