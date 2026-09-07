@@ -58,7 +58,7 @@ check unmount gone `{unmount /mnt && echo gone}
 rm /srv/memfs
 
 # -- Namespace and time ------------------------------------------------------
-check bind /mnt/tools.rc `{bind /lib/tests /mnt && ls /mnt && unmount /lib/tests /mnt}
+check bind '/mnt/dbg.rc /mnt/tools.rc' `{bind /lib/tests /mnt && ls /mnt && unmount /lib/tests /mnt}
 check mount refused `{mount /srv/nope /mnt || echo refused}
 check sleep woke `{sleep 0 && echo woke}
 check ns '/n/esp/vectra/bin /bin' `{ns | grep '^bind /n/esp/vectra/bin' | sed 's/^bind //'}

@@ -65,6 +65,7 @@ User_Program :: struct {
 	name: string, // The image's basename under build/user/
 	path: string, // The package directory
 	dis:  bool, // Whether its debug file carries disassembly, `docs/DEVTOOLS.md` section 6
+	noopt: bool, // Built at -o:none, so every variable has a place a debugger can read
 }
 
 user_programs := [?]User_Program {
@@ -134,6 +135,9 @@ user_programs := [?]User_Program {
 	{name = "fonttest", path = "tests/font"},
 	{name = "muidemo", path = "apps/muidemo"},
 	{name = "debugtest", path = "tests/debug", dis = true},
+	{name = "dbgfs", path = "servers/dbgfs"},
+	{name = "db", path = "cmd/db"},
+	{name = "debuggee", path = "tests/debuggee", dis = true, noopt = true},
 }
 
 /*
@@ -522,8 +526,10 @@ build_user :: proc(opts: Options) {
 		elf := fmt.tprintf("%s/%s.elf", USER_DIR, prog.name)
 		img := fmt.tprintf("%s/%s.vx", USER_DIR, prog.name)
 
-		compile_ring3(cfg, prog.path, obj, {})
-		link_ring3(cfg, obj, elf, "sys/libuser/link_user.ld", {thread_obj})
+		// A program the debugger's self-test steps is built at none, so
+		// every variable has a place to be read from.
+		objs := compile_ring3(cfg, prog.path, obj, prog.noopt ? {"-o:none"} : {})
+		link_ring3(cfg, objs, elf, "sys/libuser/link_user.ld", {thread_obj})
 		elf_to_image(elf, img)
 		elf_to_debug(elf, fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), opts.arch, prog.dis)
 	}
@@ -606,26 +612,91 @@ ring3_build_flags := [?]string{
 	"-debug",
 }
 
-// compile_ring3 compiles one ring 3 package to an object, with `extra`
-// for the flags one caller adds.
-compile_ring3 :: proc(cfg: Arch_Config, pkg: string, obj: string, extra: []string) {
+/*
+compile_ring3 compiles one ring 3 package, with `extra` for the flags one
+caller adds, and returns the objects to link.
+
+Usually that is the one object named. At `-o:none` and `-o:minimal` this
+compiler writes one object per package instead -- `name-debuggee.o`,
+`name-runtime-core.o` and so on beside the name asked for, and nothing at
+the name itself -- and exits 0 either way. A stale single object would
+link without a word. So both shapes are removed before the compile, and
+what the compile left is what is linked.
+*/
+compile_ring3 :: proc(cfg: Arch_Config, pkg: string, obj: string, extra: []string) -> []string {
+	dir, stem := split_object_name(obj)
+	_ = os.remove(obj)
+	for old in sibling_objects(dir, stem) {
+		_ = os.remove(old)
+	}
 	args := [dynamic]string{"odin", "build", pkg, fmt.tprintf("-out:%s", obj), "-build-mode:obj", fmt.tprintf("-target:%s", cfg.odin_target)}
 	append(&args, ..ring3_check_flags[:])
-	append(&args, ..ring3_build_flags[:])
+	// The compiler refuses an optimisation flag given twice, so a caller's
+	// `-o:` replaces the table's rather than follows it.
+	own_opt := false
+	for e in extra {
+		if strings.has_prefix(e, "-o:") {
+			own_opt = true
+		}
+	}
+	for f in ring3_build_flags {
+		if own_opt && strings.has_prefix(f, "-o:") {
+			continue
+		}
+		append(&args, f)
+	}
 	append(&args, ..extra)
 	run(args[:])
+	if os.exists(obj) {
+		one := make([]string, 1)
+		one[0] = obj
+		return one
+	}
+	objs := sibling_objects(dir, stem)
+	if len(objs) == 0 {
+		die("%s left no object at %s and none beside it", pkg, obj)
+	}
+	step("%s compiled to %d objects", pkg, len(objs))
+	return objs
+}
+
+// split_object_name splits `build/user/name.o` into its directory and `name`.
+split_object_name :: proc(obj: string) -> (dir: string, stem: string) {
+	slash := strings.last_index_byte(obj, '/')
+	dir = slash < 0 ? "." : obj[:slash]
+	stem = strings.trim_suffix(obj[slash + 1:], ".o")
+	return
+}
+
+// sibling_objects lists `dir/stem-*.o`, sorted, so a link is the same
+// order every build.
+sibling_objects :: proc(dir: string, stem: string) -> []string {
+	found := make([dynamic]string)
+	infos, err := os.read_all_directory_by_path(dir, context.allocator)
+	if err != nil {
+		return found[:]
+	}
+	prefix := fmt.tprintf("%s-", stem)
+	for fi in infos {
+		if strings.has_prefix(fi.name, prefix) && strings.has_suffix(fi.name, ".o") {
+			append(&found, fmt.tprintf("%s/%s", dir, fi.name))
+		}
+	}
+	slice.sort(found[:])
+	return found[:]
 }
 
 /*
-link_ring3 links a ring 3 object by the script a caller names.
+link_ring3 links ring 3 objects by the script a caller names.
 
 `-z norelro`, because the linker otherwise carves a read-only segment for
 the GOT out of `.data` and starts `.bss` where that ends, mid-page. The
 loader maps whole pages, and each link script exists so every segment
 starts on one.
 */
-link_ring3 :: proc(cfg: Arch_Config, obj: string, elf: string, script: string, extra: []string = nil) {
-	args := [dynamic]string{"ld.lld", obj}
+link_ring3 :: proc(cfg: Arch_Config, objs: []string, elf: string, script: string, extra: []string = nil) {
+	args := [dynamic]string{"ld.lld"}
+	append(&args, ..objs)
 	append(&args, ..extra)
 	append(&args,
 		"-o", elf,
@@ -658,8 +729,8 @@ build_programs :: proc(opts: Options) {
 		elf := fmt.tprintf("%s/%s.elf", PROGRAMS_DIR, name)
 		bin := fmt.tprintf("%s/%s.bin", PROGRAMS_DIR, name)
 
-		compile_ring3(cfg, "kernel/user/programs", obj, {fmt.tprintf("-define:PROGRAM=%s", name)})
-		link_ring3(cfg, obj, elf, "kernel/user/programs/link_program.ld")
+		objs := compile_ring3(cfg, "kernel/user/programs", obj, {fmt.tprintf("-define:PROGRAM=%s", name)})
+		link_ring3(cfg, objs, elf, "kernel/user/programs/link_program.ld")
 		elf_to_blob(elf, bin)
 	}
 }
@@ -935,6 +1006,7 @@ stage_vectra :: proc(host: string) {
 	copy_file("servers/intuition/keys", fmt.tprintf("%s/lib/keys", root))
 	copy_file("servers/intuition/workspaces", fmt.tprintf("%s/lib/workspaces", root))
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
+	copy_file("tests/dbg.rc", fmt.tprintf("%s/lib/tests/dbg.rc", root))
 	ensure_dir(fmt.tprintf("%s/lib/ndb", root))
 	copy_file("lib/ndb/local", fmt.tprintf("%s/lib/ndb/local", root))
 	// The services `listen` announces: one script per port.
@@ -2562,6 +2634,28 @@ vxd_procs :: proc(b: ^Vxd_Builder, data: []u8, secs: []Elf_Section, elf_path: st
 		name := cstr_at(data, strtab.offset + int(u32le(data, at)))
 		append(&b.procs, Vxd_Proc{low = value, high = value + size, name = vxd_intern(b, name), unit = 0xffff_ffff})
 	}
+	// A compiler helper -- `__$equal$$struct{...}` -- that shares its start
+	// with a named procedure is an alias of it, and the name a person wrote
+	// is the one an address should answer. The helper goes.
+	kept: [dynamic]Vxd_Proc
+	for p in b.procs {
+		name := cstr_at(b.pool[:], int(p.name))
+		if strings.has_prefix(name, "__$") {
+			twin := false
+			for q in b.procs {
+				if q.low == p.low && !strings.has_prefix(cstr_at(b.pool[:], int(q.name)), "__$") {
+					twin = true
+					break
+				}
+			}
+			if twin {
+				continue
+			}
+		}
+		append(&kept, p)
+	}
+	delete(b.procs)
+	b.procs = kept
 }
 
 // vxd_dis runs `llvm-objdump` over the program and keeps one line of text
@@ -2578,7 +2672,9 @@ vxd_dis :: proc(b: ^Vxd_Builder, elf_path: string) {
 	for line in strings.split_lines_iterator(&text_out) {
 		trimmed := strings.trim_left_space(line)
 		colon := strings.index_byte(trimmed, ':')
-		if colon <= 0 {
+		// An instruction is `addr: text`; a symbol's header is `addr <name>:`
+		// with nothing after its colon, and a name may carry `::` of its own.
+		if colon <= 0 || colon + 1 >= len(trimmed) || (trimmed[colon + 1] != ' ' && trimmed[colon + 1] != '\t') {
 			continue
 		}
 		addr, ok := strconv.parse_u64_of_base(trimmed[:colon], 16)

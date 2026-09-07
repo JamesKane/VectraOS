@@ -1,0 +1,105 @@
+# dbg.rc: the debugger's engine driven by a script, from the boot self-test.
+# `docs/DEVTOOLS.md` section 7's proof: `servers/dbgfs` is started and
+# mounted, `debuggee` is run under it, stopped at a line by number, read,
+# stepped, and released, and the script knows the answers.
+#
+# A check prints `ok name` or `FAIL name` and what it saw. The exit word is
+# `ok` when every check held, and the first failed check's name otherwise,
+# so the kernel reads one word.
+ok=()
+bad=()
+fn pass { ok=($ok $1); echo ok $1 }
+fn fail { bad=($bad $1); echo FAIL $1 }
+fn check {
+	name=$1; want=$2; shift 2
+	if(~ $"* $want) pass $name
+	if not { echo '   ' $name : got $"* expected $want; fail $name }
+}
+# `has name want got...`: the words seen contain the word wanted.
+fn has {
+	name=$1; want=$2; shift 2
+	if({echo $"* | grep $want > /dev/null}) pass $name
+	if not { echo '   ' $name : got $"* expected $want; fail $name }
+}
+
+# A memfs for the mount point, as tools.rc has one, and the engine.
+memfs
+mount /srv/memfs /mnt
+mkdir /mnt/dbg
+dbgfs &
+while(! test -e /srv/dbg) sleep 1
+mount /srv/dbg /mnt/dbg
+check mount ok `{test -e /mnt/dbg/ctl && echo ok}
+
+# run: the program stops at its exec, before its first instruction.
+t=`{db run /bin/debuggee}
+check run 1 $t
+has status-exec Stopped `{cat /mnt/dbg/$t/status}
+
+# A breakpoint on a line, by number, and the first stop there.
+echo 'break tests/debuggee/main.odin:28' > /mnt/dbg/$t/ctl
+has breaks main.odin:28 `{cat /mnt/dbg/$t/breaks}
+echo cont > /mnt/dbg/$t/ctl
+has status-break main.odin:28 `{cat /mnt/dbg/$t/status}
+has bt add `{cat /mnt/dbg/$t/bt}
+
+# The globals and the parameter, as the debugger reads them.
+echo total > /mnt/dbg/$t/eval
+check total-first 0 `{cat /mnt/dbg/$t/eval}
+echo n > /mnt/dbg/$t/eval
+check n-first 1 `{cat /mnt/dbg/$t/eval}
+echo label > /mnt/dbg/$t/eval
+check label '"debuggee"' `{cat /mnt/dbg/$t/eval}
+echo last > /mnt/dbg/$t/eval
+has last-none none `{cat /mnt/dbg/$t/eval}
+echo 'total + 40' > /mnt/dbg/$t/eval
+check arith 40 `{cat /mnt/dbg/$t/eval}
+
+# Round again: the loop's second turn, with the first turn's sum in place.
+echo cont > /mnt/dbg/$t/ctl
+has status-second main.odin:28 `{cat /mnt/dbg/$t/status}
+echo total > /mnt/dbg/$t/eval
+check total-second 2 `{cat /mnt/dbg/$t/eval}
+echo n > /mnt/dbg/$t/eval
+check n-second 2 `{cat /mnt/dbg/$t/eval}
+echo last.name > /mnt/dbg/$t/eval
+check last-name '"added"' `{cat /mnt/dbg/$t/eval}
+echo last.y > /mnt/dbg/$t/eval
+check last-y 2 `{cat /mnt/dbg/$t/eval}
+
+# The disassembly at the stop, and the registers: the counter, named `pc`
+# on every machine once amd64's `rip` is renamed, is in the program's text.
+has dis '=>' `{cat /mnt/dbg/$t/dis}
+has regs 'pc 0x40' `{cat /mnt/dbg/$t/regs | sed 's/^rip /pc /'}
+
+# Delete the breakpoint and let it finish.
+echo 'delete 0' > /mnt/dbg/$t/ctl
+echo cont > /mnt/dbg/$t/ctl
+has status-exit exited `{cat /mnt/dbg/$t/status}
+echo 'detach '^$t > /mnt/dbg/ctl
+
+# The control: the same program under a name with no debug file. The
+# engine finds `/lib/debug/name.vxd` by the program's name, so a copy
+# under another name is the `.vxd` withheld. `bt` then answers the
+# address alone, a line has no address, and `eval` has no names.
+cp /bin/debuggee /mnt/nodbg
+u=`{db run /mnt/nodbg}
+check run-control 1 $#u
+bt=`{cat /mnt/dbg/$u/bt}
+check bt-control 2 $#bt
+echo 'break tests/debuggee/main.odin:28' > /mnt/dbg/$u/ctl
+check break-control none `{cat /mnt/dbg/$u/breaks; echo none}
+echo total > /mnt/dbg/$u/eval
+has eval-control 'no debug file' `{cat /mnt/dbg/$u/eval}
+echo cont > /mnt/dbg/$u/ctl
+has exit-control exited `{cat /mnt/dbg/$u/status}
+echo 'detach '^$u > /mnt/dbg/ctl
+
+# Down: the engine ends when its name goes, and the memfs with it.
+unmount /mnt/dbg
+rm /srv/dbg
+unmount /mnt
+rm /srv/memfs
+
+if(~ $#bad 0) exit ok
+exit $bad(1)

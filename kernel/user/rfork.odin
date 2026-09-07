@@ -213,6 +213,10 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 	if flags & RFREND == 0 {
 		child.rend_group = parent.rend_group
 	}
+	// A debugger's `hang` follows the fork, as Plan 9's does: a child of a
+	// watched process stops at its own exec, which is how an engine follows
+	// a program into every process it starts. See `debug.odin`.
+	child.hang = parent.hang
 
 	space, merr := mem.space_new()
 	if merr != .None {

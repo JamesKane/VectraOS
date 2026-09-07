@@ -499,6 +499,15 @@ Proves: the script above, run by `rc` from the boot self-test on three
 architectures. And one control, the `.vxd` withheld, so `bt` answers
 addresses and `vars` answers nothing.
 
+**Where the first cut stands.** `tests/dbg.rc` is the script, and it
+knows the answers at two stops of the loop. The control is the same
+program copied under a name with no debug file beside it. `frames/K` is
+not served: `vars` and `regs` are frame zero's.
+
+`attach` takes a pid in this machine's `/proc` and no path yet. A `run`
+is one target, and a child of it is not followed. Section 10's step 5
+has the rest.
+
 ## 8. `sys/libposix`: mlibc over the files
 
 The purpose is narrow. `clang`, `ld.lld` and later `odin` run on this
@@ -726,6 +735,29 @@ named here so it is not forgotten.
 steps 3 and 4.
 
 Boot line: the script in section 7, on three architectures.
+
+**First cut done, September 2026.** `servers/dbgfs` posts `/srv/dbg` and
+serves the tree section 7 draws, with `vars` flat in place of
+`frames/K/vars`. `cmd/db` is the line client, and `tests/dbg.rc` is the
+script, run by `rc` from the boot self-test with its control. What is
+first cut, and why, is in the head of `servers/dbgfs/main.odin`. In
+short: frame zero only, a scanned `bt`, `next` as a step until the line
+changes, and `finish` refused until a frame walk exists.
+
+Three things were learned. A program the debugger steps is built at
+`-o:none`. This compiler then writes one object per package, and keeps
+every global of the program in the first unit, away from the procedures
+that read them. `build.odin` links every object and `sys/libdebug` looks
+in every unit's globals after the scope chain. On four cores a `run`
+reads the target's name before its exec as often as after. So the debug
+file is loaded at the exec's stop and not before.
+
+A `step` from a breakpoint is the engine's, not the kernel's. The
+breakpoint is lifted, the instruction stepped, and every breakpoint
+planted again before the program goes on. And a breakpoint is the size
+of the instruction it replaces: riscv64 code has two-byte instructions,
+and a four-byte `ebreak` over one spills into the next, so the engine
+plants `c.ebreak` there.
 
 ### Step 6: the window
 

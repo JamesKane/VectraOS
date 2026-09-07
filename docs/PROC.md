@@ -86,7 +86,8 @@ the boundary that honours it takes it down.
 
     startstop     run, and stop before the next note is delivered. Answer then
     waitstop      answer when the process has stopped, or EIO if it ended
-    hang          stop at the next exec, before its first instruction, until `nohang`
+    hang          stop at the next exec, before its first instruction, until `nohang`.
+                  A fork carries it, so a watched program's children stop too
     nohang        withdraw that
     startsyscall  run, and stop at the next system call's entry. Started again,
                   stop once more before it returns
@@ -151,4 +152,4 @@ the checks after it fail.
 
 ## Not yet
 
-No line checks `hang`, because nothing in the suite execs while watched. `watch`, `notepg` and `profile` wait for a tool that wants them.
+`hang` is checked by `tests/dbg.rc`, the debugger's script, whose `run` is a fork that writes `hang` to its own ctl and execs. `watch`, `notepg` and `profile` wait for a tool that wants them.

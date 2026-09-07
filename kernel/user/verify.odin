@@ -494,6 +494,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_netserver(&r)
 	verify_rc(&r)
 	verify_tools(&r)
+	verify_dbg(&r)
 
 	// -- And a process that replaces itself -----------------------------------
 
@@ -8580,6 +8581,24 @@ verify_tools :: proc(r: ^Result) {
 
 @(private = "file") tools_said: [EXITS_MAX]u8
 @(private = "file") tools_diag: [256]u8
+
+/*
+verify_dbg runs `tests/dbg.rc`: `docs/DEVTOOLS.md` section 7's script.
+The shell starts `dbgfs`, mounts it, runs `debuggee` under it, and breaks
+on a line by number. At two stops it reads the globals and the parameter,
+and evaluates member and arithmetic expressions. It lists the disassembly
+and the registers, and lets the program end. The word is `ok` or the
+first check that did not hold.
+*/
+@(private = "file")
+verify_dbg :: proc(r: ^Result) {
+	names := [?]string{"rc", "/lib/tests/dbg.rc"}
+	said, _, ok := run_script(r, "/bin/rc", names[:], PATIENCE * 100, tools_said[:], "the shell starts on the debugger script")
+	if ok {
+		check(r, said == "ok", said == "ok" ? "and the engine stopped, read, stepped and released the debuggee as the script says" : kept_said(said))
+	}
+	reap_orphans()
+}
 
 
 /*

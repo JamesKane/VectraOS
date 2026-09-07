@@ -436,9 +436,9 @@ scope_at :: proc "contextless" (d: ^Debug, addr: u64) -> (i: int, ok: bool) {
 				best, best_low, best_high = i, s.low, s.high
 			}
 		}
-		// Rows start in order, so once a row starts more than a large
+		// Rows start in order. So once a row starts more than a large
 		// procedure's length before the address, nothing earlier covers
-		// it but the unit's own row, which is the first.
+		// it but a unit's row, and the first row is one.
 		if s.low + (1 << 20) < addr && i != 0 {
 			i = 0
 			continue
@@ -470,11 +470,12 @@ var_holds :: proc "contextless" (v: Var, addr: u64) -> bool {
 }
 
 /*
-var_at finds a variable by name as seen from an address: the innermost
-scope's first, then each scope outward to the unit's globals. Among the
-rows of one name, the one that holds at the address wins; a name with rows
-that all hold elsewhere answers its first row with the kind `Gone`, so the
-caller can still say the variable exists and is not here.
+var_at finds a variable by name as seen from an address. The innermost
+scope is searched first, then each scope outward to the unit's globals,
+then every unit's globals. Among the rows of one name, the one that holds
+at the address wins. A name with rows that all hold elsewhere answers its
+first row with the kind `Gone`. The caller can then still say the
+variable exists and is not here.
 */
 var_at :: proc "contextless" (d: ^Debug, addr: u64, name: string) -> (v: Var, ok: bool) {
 	scope, found := scope_at(d, addr)
@@ -510,6 +511,22 @@ var_at :: proc "contextless" (d: ^Debug, addr: u64, name: string) -> (v: Var, ok
 		}
 		scope = int(s.parent)
 	}
+	// Past the chain, every unit's globals. A program built at `-o:none`
+	// is one object per package, and the compiler then keeps every global
+	// of the program in the first unit, apart from the procedures that use
+	// them. The unit rows hold everywhere, so they sort first.
+	for i in 0 ..< count(d, .Scopes) {
+		s, sok := scope_row(d, i)
+		if !sok || s.parent != NO_SCOPE || s.low != 0 {
+			break
+		}
+		for j in int(s.first) ..< int(s.first + s.nvars) {
+			row, _ := var_row(d, j)
+			if row.name == name {
+				return row, true
+			}
+		}
+	}
 	return {}, false
 }
 
@@ -529,4 +546,73 @@ scope_proc :: proc "contextless" (d: ^Debug, i: int) -> (index: int, s: Scope, o
 		index = int(s.parent)
 	}
 	return index, s, true
+}
+
+// dis_index answers the row of the instruction at or before `addr`, for a
+// listing around it, and dis_row answers one row.
+dis_index :: proc "contextless" (d: ^Debug, addr: u64) -> (i: int, ok: bool) {
+	i = last_at_most(d, .Dis, addr)
+	return i, i >= 0
+}
+
+dis_row :: proc "contextless" (d: ^Debug, i: int) -> (addr: u64, text: string, ok: bool) {
+	if i < 0 || i >= count(d, .Dis) {
+		return 0, "", false
+	}
+	at := entry_at(d, .Dis, i)
+	return u64at(d.data, at), str(d, u32at(d.data, at + 8)), true
+}
+
+// line_first answers the lowest address a file's line was compiled to, for
+// a breakpoint by `file:line`. The file matches by its tail, so a name
+// without its directory finds it.
+line_first :: proc "contextless" (d: ^Debug, file: string, line: u32) -> (addr: u64, ok: bool) {
+	best := u64(0)
+	found := false
+	for i in 0 ..< count(d, .Lines) {
+		at := entry_at(d, .Lines, i)
+		if u32at(d.data, at + 12) != line {
+			continue
+		}
+		path := file_path(d, int(u32at(d.data, at + 8)))
+		if len(path) < len(file) || path[len(path) - len(file):] != file {
+			continue
+		}
+		if len(path) > len(file) && path[len(path) - len(file) - 1] != '/' {
+			continue
+		}
+		a := u64at(d.data, at)
+		if !found || a < best {
+			best, found = a, true
+		}
+	}
+	return best, found
+}
+
+// proc_named finds a procedure by its name's tail, `add` for
+// `debuggee::add`, and answers where it starts.
+proc_named :: proc "contextless" (d: ^Debug, name: string) -> (low: u64, ok: bool) {
+	if l, _, exact := lookup(d, name); exact {
+		return l, true
+	}
+	for i in 0 ..< count(d, .Procs) {
+		pname, plow, _, _ := proc_row(d, i)
+		if len(pname) > len(name) + 2 && pname[len(pname) - len(name):] == name && pname[len(pname) - len(name) - 2:len(pname) - len(name)] == "::" {
+			return plow, true
+		}
+	}
+	return 0, false
+}
+
+// u64_of reads a little-endian word out of bytes, for a consumer that
+// took them from a target's memory.
+u64_of :: proc "contextless" (b: []u8) -> u64 {
+	if len(b) < 8 {
+		v := u64(0)
+		for i in 0 ..< len(b) {
+			v |= u64(b[i]) << (8 * u64(i))
+		}
+		return v
+	}
+	return u64at(b, 0)
 }

@@ -410,9 +410,12 @@ the documents it points at.
    September 2026. Every program has a debug file beside it, and the
    kernel names its panic backtrace, with scopes, variables and types
    beside them: step 4, done the same month. A debugger runs as a file
-   server with a window as one client. POSIX is mlibc over the calls, so
-   that `clang` and `odin` run on the machine. Steps 0 and 1 need nothing
-   before them, and step 5, `dbgfs` and `db`, has steps 3 and 4 under it.
+   server, `servers/dbgfs`, with `cmd/db` as its line client and
+   `tests/dbg.rc` as the boot self-test's script: step 5, first cut, the
+   same month, with a window as the next client. POSIX is mlibc over the
+   calls, so that `clang` and `odin` run on the machine. Steps 0 and 1
+   need nothing before them, and step 6, the window, has step 5 and
+   `docs/WORKBENCH.md` step 3 under it.
 6. **The fleet, from step 3.** `docs/FLEET.md` is the plan, and steps 0
    (the network), 1 (9P both ways) and 2 (users, `factotum`, the Noise
    handshake, kfs owners) are done and on the bench. **Step 3 is next:**
@@ -785,6 +788,18 @@ and the terminal's `every one of them, before any newline says the line is
 finished`, which now says what each cell held when it next fails. Both were
 seen before the stale-wake fix above, and a lock two threads believed they
 held is a plausible cause of either.
+
+A third, on riscv64, seen once after the stale-wake fix: a load page fault
+at address `0x4a` in `sched::unpark`, under `mutex_unlock` in
+`wire_submit`, under `chan_close`. The self-test was done and `memfs` had
+just been typed at the shell. A waiter record with no thread on it is the
+shape. Not chased.
+
+And one that is not a one-off: on riscv64 alone, three boots in seven end
+the suite's heap bracket three objects short, `leaked 3`, with every check
+of `tests/dbg.rc` held. amd64 and arm64 close the bracket every time. The
+script is the last the suite runs, so anything an engine's proc or a
+target's exit releases late lands in that reading. Not chased.
 
 **The fork storm "hang" was a kernel page fault, and it is fixed.** A tight
 fork storm from rc, four forks a turn on four cores, stopped the boot once
