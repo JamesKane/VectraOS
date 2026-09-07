@@ -50,6 +50,7 @@ import "kernel:sched"
 import "kernel:srv"
 import "kernel:sync"
 import "kernel:vfs"
+import "vsys:abi"
 import "vsys:libdraw"
 import "vsys:libfont"
 import "vsys:vectra9"
@@ -482,6 +483,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_rfork(&r)
 	verify_abi(&r)
+	verify_c(&r)
 	verify_threads(&r)
 	verify_mui(&r)
 	verify_netfs(&r)
@@ -7802,6 +7804,70 @@ with a word, and says `ok` if every step held or the name of the first that
 did not. The kernel's check is that one word, which is what makes the test
 one line here and forty in the program.
 */
+/*
+verify_c runs the C and C++ programs `docs/DEVTOOLS.md` step 0 built.
+
+`chello` is a C program over `sys/libc`: it writes a line and exits with a
+word. `cpphello` is C++, whose global constructor `crt0` runs from
+`.init_array` before `main`; its word says the constructor ran. `cmix` is
+one image of a C `main` and an Odin package that call each other, and its
+word says the round trip gave twelve. `abicheck` is the generated header's
+proof: the kernel spawns it with its own `abi` constants as arguments, and
+it compares each to `sys/abi/abi.h` and says `ok` or the first that
+differs. Each program writes its line for a person to see; the kernel
+checks the word.
+*/
+@(private = "file")
+c_num_bufs: [10][24]u8
+@(private = "file")
+c_arg_strs: [11]string
+
+@(private = "file")
+verify_c :: proc(r: ^Result) {
+	chello := [?]string{"chello", "one", "two"}
+	said, _, ok := run_script(r, "/bin/chello", chello[:], PATIENCE * 5, abi_said[:], "a C program over sys/libc starts")
+	if ok {
+		check(r, said == "chello ok", said == "chello ok" ? "and writes a line and exits with a word" : said)
+	}
+
+	cpp := [?]string{"cpphello"}
+	said2, _, ok2 := run_script(r, "/bin/cpphello", cpp[:], PATIENCE * 5, abi_said[:], "a C++ program starts")
+	if ok2 {
+		check(r, said2 == "cpp ok", said2 == "cpp ok" ? "and its global constructor ran from .init_array before main" : said2)
+	}
+
+	cmix := [?]string{"cmix"}
+	said3, _, ok3 := run_script(r, "/bin/cmix", cmix[:], PATIENCE * 5, abi_said[:], "the mixed C-and-Odin image starts")
+	if ok3 {
+		check(r, said3 == "cmix ok", said3 == "cmix ok" ? "and a call from C into Odin and back into C held in one image" : said3)
+	}
+
+	// The generated header's numbers, in `abicheck`'s order, each the
+	// kernel's own `abi` constant. The program compares them to `abi.h`.
+	nums := [?]u64 {
+		abi.SYS_WRITE,
+		abi.SYS_READ,
+		abi.SYS_OPEN,
+		abi.SYS_EXITS,
+		abi.O_RDONLY,
+		abi.O_WRONLY,
+		abi.O_TRUNC,
+		abi.RFPROC,
+		abi.RFMEM,
+		u64(abi.ARGS_MAX),
+	}
+	c_arg_strs[0] = "abicheck"
+	for v, i in nums {
+		sink := libodin.sink_from(c_num_bufs[i][:])
+		libodin.put_uint(&sink, v)
+		c_arg_strs[i + 1] = libodin.str(&sink)
+	}
+	said4, _, ok4 := run_script(r, "/bin/abicheck", c_arg_strs[:], PATIENCE * 5, abi_said[:], "the abi header check starts")
+	if ok4 {
+		check(r, said4 == "abi ok", said4 == "abi ok" ? "and every generated constant agrees with the kernel's" : said4)
+	}
+}
+
 @(private = "file")
 verify_abi :: proc(r: ^Result) {
 	names := [?]string{"abitest", "one", "two", "three"}

@@ -404,18 +404,22 @@ the documents it points at.
    disk driver runs over `mmio`, `irq` and `dma`. All of that is on
    QEMU's `virt` board. The board comes second, and the GPU fifth.
 5. **Development tools.** `docs/DEVTOOLS.md` is the plan, written before
-   its code. C and C++ enter the build at the object. A platform library
-   of twenty calls sits over files a program can open itself. `/proc`
-   has Plan 9's `mem`, `regs` and `startstop` now: step 3, done in
-   September 2026. Every program has a debug file beside it, and the
-   kernel names its panic backtrace, with scopes, variables and types
-   beside them: step 4, done the same month. A debugger runs as a file
-   server, `servers/dbgfs`, with `cmd/db` as its line client and
-   `tests/dbg.rc` as the boot self-test's script: step 5, first cut, the
-   same month. `apps/debugger` is the window, a `libmui` client of the
-   same files: step 6, first cut, the same month. POSIX is mlibc over the
-   calls, so that `clang` and `odin` run on the machine. Steps 0 and 1
-   need nothing before them, and steps 7 and 8 have step 0 under them.
+   its code. C and C++ enter the build at the object: `sys/libc`, `crt0`
+   and a generated `sys/abi/abi.h`, with a C hello, a C++ hello whose
+   constructor runs, and a mixed Odin-and-C image, on three
+   architectures: step 0, first cut, September 2026, minus the thread
+   pointer. A platform library of twenty calls sits over files a program
+   can open itself. `/proc` has Plan 9's `mem`, `regs` and `startstop`
+   now: step 3, done in September 2026. Every program has a debug file
+   beside it, and the kernel names its panic backtrace, with scopes,
+   variables and types beside them: step 4, done the same month. A
+   debugger runs as a file server, `servers/dbgfs`, with `cmd/db` as its
+   line client and `tests/dbg.rc` as the boot self-test's script: step 5,
+   first cut, the same month. `apps/debugger` is the window, a `libmui`
+   client of the same files: step 6, first cut, the same month. POSIX is
+   mlibc over the calls, so that `clang` and `odin` run on the machine.
+   Step 1 needs nothing before it, and steps 7 and 8 have step 0 under
+   them.
 6. **The fleet, from step 3.** `docs/FLEET.md` is the plan, and steps 0
    (the network), 1 (9P both ways) and 2 (users, `factotum`, the Noise
    handshake, kfs owners) are done and on the bench. **Step 3 is next:**

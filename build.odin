@@ -512,6 +512,10 @@ build_user :: proc(opts: Options) {
 	ensure_dir(BUILD_DIR)
 	ensure_dir(USER_DIR)
 
+	// The header both sides of the door read, written from the one Odin file
+	// before anything compiles against it. `docs/DEVTOOLS.md` section 3.
+	generate_abi_h()
+
 	// The one `.S` a ring 3 program links: `sys/libthread`'s thread switch
 	// and its fork onto a new stack, a file for the reason the kernel's
 	// are. Linked into every program rather than named per program,
@@ -534,7 +538,210 @@ build_user :: proc(opts: Options) {
 		elf_to_image(elf, img)
 		elf_to_debug(elf, fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), opts.arch, prog.dis)
 	}
+
+	// The C and C++ programs, over `sys/libc`. Their images and debug files
+	// land beside the Odin ones and stage to `/bin` the same way.
+	libc := build_libc(cfg, opts.arch)
+	for prog in c_programs {
+		step("compiling %s for ring 3", prog.name)
+		elf := fmt.tprintf("%s/%s.elf", USER_DIR, prog.name)
+		img := fmt.tprintf("%s/%s.vx", USER_DIR, prog.name)
+		objs := make([dynamic]string)
+		for src, i in prog.sources {
+			obj := fmt.tprintf("%s/%s.%d.o", USER_DIR, prog.name, i)
+			if strings.has_suffix(src, ".c") || strings.has_suffix(src, ".cpp") {
+				compile_c(cfg, opts.arch, src, obj)
+				append(&objs, obj)
+			} else {
+				// An Odin package in a C program's row: the mixed image. Its
+				// objects link beside the C ones.
+				for o in compile_ring3(cfg, src, obj, nil) {
+					append(&objs, o)
+				}
+			}
+		}
+		append(&objs, ..libc)
+		append(&objs, thread_obj)
+		link_ring3(cfg, objs[:], elf, "sys/libuser/link_user.ld")
+		elf_to_image(elf, img)
+		elf_to_debug(elf, fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), opts.arch, false)
+	}
 	write_pak()
+}
+
+/*
+The C and C++ programs, `docs/DEVTOOLS.md` step 0. A row is a name and the
+sources under it: `.c` and `.cpp` files, and Odin package directories for a
+mixed image. Each links `sys/libc` and stages to `/bin` like any program.
+*/
+C_Program :: struct {
+	name:    string,
+	sources: []string,
+}
+
+c_programs := [?]C_Program {
+	{name = "chello", sources = {"tests/chello/hello.c"}},
+	{name = "cpphello", sources = {"tests/cpphello/hello.cpp"}},
+	{name = "cmix", sources = {"tests/cmix/main.c", "tests/cmix/odd"}},
+	{name = "abicheck", sources = {"tests/abicheck/main.c"}},
+}
+
+// The `sys/libc` sources, compiled once per arch build. `crt0` is first, so
+// a link that takes the objects in order finds `_start` where the script
+// expects it.
+libc_sources := [?]string {
+	"sys/libc/src/crt0.c",
+	"sys/libc/src/door.c",
+	"sys/libc/src/sys.c",
+	"sys/libc/src/str.c",
+	"sys/libc/src/print.c",
+	"sys/libc/src/malloc.c",
+}
+
+// build_libc compiles `sys/libc` to objects and answers their paths.
+build_libc :: proc(cfg: Arch_Config, arch: Arch) -> []string {
+	objs := make([dynamic]string)
+	for src in libc_sources {
+		base := src[strings.last_index_byte(src, '/') + 1:]
+		obj := fmt.tprintf("%s/libc-%s.o", USER_DIR, strings.trim_suffix(base, ".c"))
+		compile_c(cfg, arch, src, obj)
+		append(&objs, obj)
+	}
+	return objs[:]
+}
+
+/*
+compile_c compiles one C or C++ source with the arch's clang, freestanding
+and hosted by nothing: no C runtime, no standard include path, no PIC, and
+the frame pointer kept so a backtrace has a chain even where Odin drops it.
+`-debug` is `-g`, for step 4's debug file. C++ builds without exceptions or
+RTTI, the two halves that need a runtime this tree does not have yet.
+*/
+compile_c :: proc(cfg: Arch_Config, arch: Arch, src: string, obj: string) {
+	step("compiling %s", src)
+	args := [dynamic]string{"clang", "-target", cfg.clang_target}
+	if arch == .riscv64 {
+		append(&args, "-march=rv64gc_zihintpause")
+	}
+	append(
+		&args,
+		"-ffreestanding",
+		"-nostdinc",
+		"-nostdlib",
+		"-fno-pic",
+		"-fno-stack-protector",
+		"-fno-omit-frame-pointer",
+		"-fno-exceptions",
+		"-fno-rtti",
+		"-O2",
+		// DWARF 4, not clang's default 5, because `elf_to_debug` reads 4 --
+		// the version Odin emits. `docs/DEVTOOLS.md` section 6.
+		"-gdwarf-4",
+		"-Wall",
+		"-Wextra",
+		"-Isys/libc/include",
+		"-Isys/abi",
+	)
+	if strings.has_suffix(src, ".cpp") {
+		append(&args, "-nostdinc++", "-std=c++17")
+	}
+	append(&args, "-c", src, "-o", obj)
+	run(args[:])
+}
+
+/*
+generate_abi_h writes `sys/abi/abi.h` from `sys/abi/abi.odin`: one `#define`
+per numeric constant, so a C program and the kernel read the same numbers
+from the one file. Only integer constants cross -- `NAME :: u64(N)`,
+`NAME :: N`, and `NAME :: u64(1) << N` -- because a call number and a flag
+are all a C program needs. The `Args` struct and the rest are hand-written
+in `vlibc.h`, which does not change. `abitest` compares the two at boot.
+*/
+generate_abi_h :: proc() {
+	data, rerr := os.read_entire_file_from_path("sys/abi/abi.odin", context.allocator)
+	if rerr != nil {
+		die("cannot read sys/abi/abi.odin")
+	}
+	out: strings.Builder
+	strings.write_string(&out, "/* Generated from sys/abi/abi.odin by build.odin. Do not edit. */\n")
+	strings.write_string(&out, "#ifndef ABI_H\n#define ABI_H\n\n")
+	it := string(data)
+	for line in strings.split_lines_iterator(&it) {
+		name, value, has := abi_constant(line)
+		if !has {
+			continue
+		}
+		strings.write_string(&out, "#define ")
+		strings.write_string(&out, name)
+		strings.write_string(&out, " ")
+		strings.write_string(&out, value)
+		strings.write_string(&out, "\n")
+	}
+	strings.write_string(&out, "\n#endif\n")
+	if err := os.write_entire_file("sys/abi/abi.h", transmute([]u8)strings.to_string(out)); err != nil {
+		die("cannot write sys/abi/abi.h")
+	}
+}
+
+// abi_constant reads one line of `abi.odin` and answers a name and a decimal
+// value when the line defines an integer constant. False for anything else:
+// a proc, a struct, a comment, or a non-integer.
+abi_constant :: proc(line: string) -> (name: string, value: string, ok: bool) {
+	// Strip a trailing `// comment`.
+	code := line
+	if c := strings.index(code, "//"); c >= 0 {
+		code = code[:c]
+	}
+	sep := strings.index(code, "::")
+	if sep < 0 {
+		return "", "", false
+	}
+	name = strings.trim_space(code[:sep])
+	rhs := strings.trim_space(code[sep + 2:])
+	if len(name) == 0 || len(rhs) == 0 {
+		return "", "", false
+	}
+	// A name is one identifier: letters, digits and underscore, no spaces.
+	for r in name {
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			return "", "", false
+		}
+	}
+	// `1 << N` is a shifted flag, each side maybe wrapped in `u64(...)`.
+	if sh := strings.index(rhs, "<<"); sh >= 0 {
+		base, bok := parse_abi_int(rhs[:sh])
+		shift, sok := parse_abi_int(rhs[sh + 2:])
+		if !bok || !sok {
+			return "", "", false
+		}
+		return name, fmt.tprintf("%d", base << u64(shift)), true
+	}
+	// A plain integer, in any base Odin writes: `0o1000`, `0x...`, decimal.
+	n, nok := parse_abi_int(rhs)
+	if !nok {
+		return "", "", false
+	}
+	return name, fmt.tprintf("%d", n), true
+}
+
+// parse_abi_int reads one integer operand, unwrapping a `u64(...)` around it.
+parse_abi_int :: proc(s: string) -> (i64, bool) {
+	t := strings.trim_space(s)
+	if strings.has_prefix(t, "u64(") && strings.has_suffix(t, ")") {
+		t = strings.trim_space(t[4:len(t) - 1])
+	}
+	return parse_odin_int(t)
+}
+
+// parse_odin_int reads an Odin integer literal in decimal, hex or octal.
+parse_odin_int :: proc(s: string) -> (i64, bool) {
+	if strings.has_prefix(s, "0o") {
+		return strconv.parse_i64_of_base(s[2:], 8)
+	}
+	if strings.has_prefix(s, "0x") {
+		return strconv.parse_i64_of_base(s[2:], 16)
+	}
+	return strconv.parse_i64(s)
 }
 
 /*
@@ -986,10 +1193,17 @@ stage_vectra :: proc(host: string) {
 	for prog in user_programs {
 		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
 	}
+	// The C and C++ programs go to `/bin` the same way.
+	for prog in c_programs {
+		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
+	}
 	// Each program's debug file, where a debugger looks for it by the
 	// program's name. `/bin` is served from the image and stays small.
 	ensure_dir(fmt.tprintf("%s/lib/debug", root))
 	for prog in user_programs {
+		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/lib/debug/%s.vxd", root, prog.name))
+	}
+	for prog in c_programs {
 		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/lib/debug/%s.vxd", root, prog.name))
 	}
 	copy_file("apps/rc/rcmain", fmt.tprintf("%s/lib/rcmain", root))

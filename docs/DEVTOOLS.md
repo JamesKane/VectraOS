@@ -189,10 +189,16 @@ section 9's work, because it is the same work that puts the compiler on
 the machine.
 
 Proves: a C program and a C++ program in the user suite, on three
-architectures. Each opens `/dev/cons` through `sys/libc` and writes a
-line. The C++ one writes it from a constructor. An Odin program calls a
-C procedure and a C program calls an Odin one, in one image, and the
+architectures. Each writes a line through `sys/libc` to standard output.
+The C++ one writes it from a constructor. An Odin program calls a C
+procedure and a C program calls an Odin one, in one image, and the
 `abi.h` check holds.
+
+**First cut done, September 2026**, minus the thread pointer -- see step 0
+in section 10. The line is written to standard output rather than opened
+on `/dev/cons`: the kernel console is typed at, not written, and a windowed
+`cons` wants a window, so a program's own output is where the self-test
+reads it and a person sees it.
 
 ## 4. `sys/libapp`: the platform layer, and the escape hatches
 
@@ -648,6 +654,31 @@ ports. About 3,300 lines.
 
 Boot line: a C hello, a C++ hello with a constructor, and the mixed
 image, on three architectures.
+
+**First cut done, September 2026.** `build.odin` generates `sys/abi/abi.h`
+from `sys/abi/abi.odin`, one `#define` per numeric constant. `sys/libc`
+is the door in C (`__vsyscall` per arch), the calls, `print` and `fprint`,
+the string and memory routines, a bump `malloc`, and `crt0`, which turns
+the `abi.Args` block into a C `argv`, runs `.init_array`, and calls `main`.
+A `c_programs` table beside `user_programs` compiles `.c` and `.cpp` with
+clang, freestanding and `-gdwarf-4`, and links `sys/libc`; a row may name
+Odin packages too, for a mixed image. `verify_c` runs `chello`, `cpphello`
+(whose constructor runs before `main`), `cmix` (a C-into-Odin-into-C round
+trip in one image), and `abicheck` (the header's numbers against the
+kernel's), on three architectures.
+
+Learned on the way. Freestanding C++ leaves `main`'s name
+implementation-defined, and clang mangles it, so a C++ program declares
+`extern "C" int main`. clang emits DWARF 5 by default and `elf_to_debug`
+reads 4, so the C build passes `-gdwarf-4`. The Odin runtime defines
+`memcpy`, `memmove` and `memset`, so `sys/libc`'s are weak and a mixed
+image takes the runtime's.
+
+Not yet: the thread pointer. `link_user.ld` exports the TLS bounds, but
+`SYS_TLS`, `crt0`'s per-proc block, and the save and restore on a context
+switch across the three ports are the next increment. Nothing in the boot
+line needs a thread pointer, and a C++ program builds without
+`thread_local` until it lands.
 
 ### Step 1: the clock, the store, and sound
 
