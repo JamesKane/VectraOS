@@ -330,6 +330,25 @@ Process :: struct {
 	stopped_in_tick: bool, // parked by the tick, so `start` readies the thread itself
 	stop_wake:       bool, // the note flag is up for a stop and nothing else; a post clears it
 
+	/*
+	The debugger's asks, `docs/DEVTOOLS.md` section 5, and what a stop keeps
+	for it. Each ask is one stop: the boundary that honours it takes it down.
+	`stop_frame` is the program's own frame while it is stopped, at the door
+	or in the tick, which is what `/proc/n/regs` reads and writes. `stops`
+	counts them, so a `startstop` can tell the stop it asked for from the one
+	it started from. `pins` are readers of this process's memory through
+	`/proc`, and a collector waits for them. See `debug.odin`.
+	*/
+	trace_note:    bool, // `startstop`: stop before the next note is delivered
+	trace_syscall: bool, // `startsyscall`: stop at the next system call's entry
+	trace_return:  bool, // and once more before that call returns
+	hang:          bool, // `hang`: stop at the next exec, before its first instruction
+	stepping:      bool, // `step`: the frame carries the step flag, and its trap is a stop
+	stops:         u64,
+	stop_frame:    ^arch.Trap_Frame,
+	stop_fpu:      rawptr,
+	pins:          int,
+
 	// The arguments the program was started with, joined by spaces and cut
 	// at ARGS_KEEP, for `/proc/n/args`. The kernel stages the real ones onto
 	// the stack and keeps nothing else.
@@ -760,6 +779,22 @@ on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
 					return r
 				}
 			}
+			// A debugger's trap is a stop rather than an ending: the step
+			// it asked for, or any trap while `startstop` is in force, which
+			// posts the note Plan 9 would and parks before delivering it.
+			// A process nobody is watching ends here as it always did.
+			if t.user && !intrinsics.volatile_load(&p.stopping) {
+				if p.stepping && t.kind == .Debug {
+					p.stepping = false
+					arch.frame_set_step(r.frame, false)
+					return stop_in_trap(p, r)
+				}
+				if p.trace_note {
+					p.trace_note = false
+					post_trap_note(p, thread, t)
+					return stop_in_trap(p, r)
+				}
+			}
 			p.exit.kind = t.kind
 			p.exit.vector = t.vector
 			p.exit.error_code = t.error_code
@@ -1025,11 +1060,44 @@ posted since, so it does not deliver a note that was never there.
 */
 stop_here :: proc(p: ^Process) {
 	p.stopped = true
+	// Counted after `stopped` is up, so a waiter that sees the count sees
+	// the stop. See `wait_stop` in `debug.odin`.
+	intrinsics.atomic_add(&p.stops, 1)
 	for intrinsics.volatile_load(&p.stop_requested) && !intrinsics.volatile_load(&p.stopping) {
 		sync.sleep_noted(&stop_rendez, stop_lifted, p)
 	}
 	p.stopped = false
+	p.stop_frame = nil
+	p.stop_fpu = nil
 	// The door clears the stop's own wake flag next, once the ask is gone.
+}
+
+// stop_at_door is `stop_here` with the program's frame kept for `/proc/n/regs`:
+// the syscall frame, and the float image the door parked below it.
+@(private)
+stop_at_door :: proc(p: ^Process, frame: ^arch.Trap_Frame) {
+	p.stop_frame = frame
+	p.stop_fpu = arch.syscall_frame_fpu(frame)
+	intrinsics.volatile_store(&p.stop_requested, true)
+	stop_here(p)
+}
+
+/*
+stop_in_trap is the stop from interrupt context: the tick that caught a
+stop's ask in ring 3, or a trap the debugger asked to see. The frame is the
+program's own, so `regs` reads it where it lies. `start` readies the thread
+by hand, which `stopped_in_tick` tells it. The ask is raised here too, so
+one `start` lifts every kind of stop the same way.
+*/
+@(private)
+stop_in_trap :: proc "contextless" (p: ^Process, r: arch.Resume) -> arch.Resume {
+	p.stop_frame = r.frame
+	p.stop_fpu = r.fpu
+	intrinsics.volatile_store(&p.stop_requested, true)
+	p.stopped = true
+	p.stopped_in_tick = true
+	intrinsics.atomic_add(&p.stops, 1)
+	return sched.park_current(r)
 }
 
 @(private = "file")
@@ -1120,14 +1188,19 @@ note_trap :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 		// comes off and the thread simply carries on in ring 3.
 		if p := (^Process)(thread.user); p != nil && !intrinsics.volatile_load(&p.stopping) {
 			if intrinsics.volatile_load(&p.stop_requested) {
-				p.stopped = true
-				p.stopped_in_tick = true
-				return sched.park_current(r)
+				return stop_in_trap(p, r)
 			}
 			if p.stop_wake {
 				p.stop_wake = false
 				sched.clear_note(thread)
 				return r
+			}
+			// A debugger asked to see the next note before it lands. The
+			// note stays pending; `start` delivers it, or a read of
+			// `/proc/n/note` takes it away first. See `debug.odin`.
+			if p.trace_note {
+				p.trace_note = false
+				return stop_in_trap(p, r)
 			}
 		}
 	}
@@ -1400,20 +1473,29 @@ collect :: proc(p: ^Process, pid: u64) -> bool {
 	// cannot change tenants between them. One collector: the reaper takes a
 	// detached process the moment it ends, and a fork or a self-test may reach
 	// for the same record a tick later. The second finds `collecting` set.
-	guard := sync.acquire(&table_lock)
-	ok := p.live && p.pid == pid && !p.collecting
-	if ok && p.thread != nil && !intrinsics.volatile_load(&p.exit.done) {
-		ok = false
+	for {
+		guard := sync.acquire(&table_lock)
+		ok := p.live && p.pid == pid && !p.collecting
+		if ok && p.thread != nil && !intrinsics.volatile_load(&p.exit.done) {
+			ok = false
+		}
+		if ok && p.pins > 0 {
+			// A debugger is reading its memory through /proc. The record
+			// outlives the read, which is a page copy, and this comes back.
+			sync.release(&table_lock, guard)
+			sync.delay(1)
+			continue
+		}
+		if ok {
+			p.collecting = true
+		}
+		sync.release(&table_lock, guard)
+		if !ok {
+			return false
+		}
+		unload(p)
+		return true
 	}
-	if ok {
-		p.collecting = true
-	}
-	sync.release(&table_lock, guard)
-	if !ok {
-		return false
-	}
-	unload(p)
-	return true
 }
 
 /*

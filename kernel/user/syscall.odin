@@ -288,11 +288,19 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		// comes off, or the block below would end a process nobody noted.
 		if p != nil && !intrinsics.volatile_load(&p.stopping) {
 			if intrinsics.volatile_load(&p.stop_requested) {
-				stop_here(p)
+				stop_at_door(p, frame)
 			}
 			if p.stop_wake {
 				p.stop_wake = false
 				sched.clear_note(thread)
+			}
+			// A debugger asked to see the next note before it lands: the
+			// process stops here with the note still pending, and `start`
+			// delivers it unless a read of `/proc/n/note` took it away. See
+			// `debug.odin`.
+			if sched.thread_noted(thread) && p.trace_note {
+				p.trace_note = false
+				stop_at_door(p, frame)
 			}
 		}
 		// A flag still up is a note. The kernel's word first, before any
@@ -310,6 +318,15 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 				return
 			}
 		}
+	}
+
+	// `startsyscall`: the call is on the frame and nothing ran yet. The
+	// return stop is armed here, so a debugger that starts the process sees
+	// the call go in and come out. See `debug.odin`.
+	if p := current(); p != nil && p.trace_syscall && !intrinsics.volatile_load(&p.stopping) {
+		p.trace_syscall = false
+		p.trace_return = true
+		stop_at_door(p, frame)
 	}
 
 	number, args := arch.syscall_request(frame)
@@ -423,6 +440,14 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	}
 
 	arch.set_syscall_result(frame, result)
+
+	// The second half of `startsyscall`: the answer is on the frame and the
+	// program has not seen it. A call that does not return -- an exit, an
+	// exec that succeeded -- never reaches this line, and stops nowhere.
+	if p := current(); p != nil && p.trace_return && !intrinsics.volatile_load(&p.stopping) {
+		p.trace_return = false
+		stop_at_door(p, frame)
+	}
 }
 
 /*

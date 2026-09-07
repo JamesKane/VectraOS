@@ -82,6 +82,57 @@ frame_sanitise_user :: proc "contextless" (f: ^Trap_Frame) {
 	f.rflags = f.rflags & 0x0000_0000_0000_0CD5 | 0x202
 }
 
+/*
+The debugger's three questions of a frame, for `/proc/n/regs` and `step`.
+`docs/DEVTOOLS.md` section 5.
+
+`HAS_STEP` says whether one instruction can be run alone. Here it is the
+trap flag. It is set in the saved frame before the thread resumes, and the
+`#DB` after the next instruction is the stop. `frame_sanitise_user` drops
+the flag with every other bit a program does not own. So a `regs` write
+cannot set it, and `frame_set_step` is the only door.
+
+`FRAME_REGS_SIZE` is how many bytes `regs` holds: the frame as the stubs
+push it, which is the layout a debugger for this architecture reads.
+*/
+HAS_STEP :: true
+FRAME_REGS_SIZE :: size_of(Trap_Frame)
+
+frame_set_step :: proc "contextless" (f: ^Trap_Frame, on: bool) {
+	if on {
+		f.rflags |= 0x100
+	} else {
+		f.rflags &= ~u64(0x100)
+	}
+}
+
+// sync_text is what a write of instructions through `/proc/n/mem` needs
+// before the program runs them. Nothing here: this architecture's
+// instruction cache follows its data cache.
+sync_text :: proc "contextless" (at: rawptr, n: int) {
+	_, _ = at, n
+}
+
+// frame_set_ip moves where the frame resumes, for a `regs` write that a
+// self-test makes from the kernel side.
+frame_set_ip :: proc "contextless" (f: ^Trap_Frame, ip: uintptr) {
+	f.rip = u64(ip)
+}
+
+// The breakpoint a debugger writes through `mem`, and how far past it the
+// trap leaves the program counter. `int3` is one byte, and `#BP` reports
+// the instruction after it.
+BREAKPOINT_CODE :: [1]u8{0xCC}
+BREAKPOINT_ADVANCE :: 1
+
+// fpu_image_sanitise rebuilds what a program must not choose in an FXSAVE
+// image a debugger wrote. That is MXCSR's reserved bits, which FXRSTOR
+// faults on, in the kernel, at the next switch. See `fpu_init`.
+fpu_image_sanitise :: proc "contextless" (area: rawptr) {
+	mxcsr := (^u32)(rawptr(uintptr(area) + 24))
+	mxcsr^ &= 0xFFFF
+}
+
 // What the CPU said about a fault, in `kernel/arch/neutral`'s words. The
 // page fault error code carries all three; whether the page was present is
 // the VMM's to answer, and `kernel/user` asks it.

@@ -406,10 +406,11 @@ the documents it points at.
 5. **Development tools.** `docs/DEVTOOLS.md` is the plan, written before
    its code. C and C++ enter the build at the object. A platform library
    of twenty calls sits over files a program can open itself. `/proc`
-   grows Plan 9's `mem`, `regs` and `startstop`, and a debugger runs as
-   a file server with a window as one client. POSIX is mlibc over the
-   calls, so that `clang` and `odin` run on the machine. Three of its
-   steps need nothing before them.
+   has Plan 9's `mem`, `regs` and `startstop` now: step 3, done in
+   September 2026. A debugger runs as a file server with a window as one
+   client. POSIX is mlibc over the calls, so that `clang` and `odin` run
+   on the machine. Steps 0 and 1 need nothing before them, and step 4
+   needs only step 0's build flag.
 6. **The fleet, from step 3.** `docs/FLEET.md` is the plan, and steps 0
    (the network), 1 (9P both ways) and 2 (users, `factotum`, the Noise
    handshake, kfs owners) are done and on the bench. **Step 3 is next:**
@@ -485,8 +486,10 @@ plan, and each is a root that can start now:
     users and factotum   FLEET 2. GHOST 4 needs an identity, and the
                          one-user note in `docs/DRAW.md`, `docs/PROCS.md`
                          and `docs/KFS.md` is written against this.
-    /proc, whole         DEVTOOLS 3. `dbgfs` reads it, and it waits on
-                         nothing.
+    /proc, whole         DEVTOOLS 3, DONE. `mem`, `regs`, `fpregs`, `text`,
+                         `segment`, `fd`, `wait`, and the words `startstop`,
+                         `waitstop`, `hang`, `startsyscall`, `step`. `dbgfs`
+                         (DEVTOOLS 5) reads it, after step 4's debug file.
     the font             WEB 1. WORKBENCH 5 lists it deferred, and this
                          file did too. A reader of the world's pages
                          cannot drop runes, so WEB owns it, and it waits
@@ -601,7 +604,7 @@ across three plans waited behind is built.
 The remaining roots wait on nothing, and each can start now:
 
     the network        FLEET 0
-    /proc, whole       DEVTOOLS 3
+    /proc, whole       DEVTOOLS 3, DONE
     the font > 128     WEB 1
     C and the clock    DEVTOOLS 0 and 1
     a model, the ghost GHOST 0 and 1

@@ -669,6 +669,15 @@ Needs nothing before it.
 
 Boot line: section 5's breakpoint written, hit, stepped and released.
 
+**Done, September 2026.** `kernel/user/debug.odin` is the doors and
+`docs/PROC.md` the account. Every file in section 5's table is served, and
+every word but `watch`. `step` is the trap flag on amd64 and answers
+EOPNOTSUPP on the ports, because arm64's step wants `MDSCR_EL1.SS` carried
+by the scheduler to the core that resumes the thread, and riscv64 has none.
+The breakpoint's gate opens to ring 3 on amd64, which section 5 did not
+know it needed. `verify_debug` is the boot line, on three architectures,
+with the control section 5 asks for.
+
 ### Step 4: debug information
 
 `build.odin`, `sys/libdebug` for the reader, `kernel/panic.odin`. About

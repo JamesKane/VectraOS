@@ -110,6 +110,15 @@ set_syscall_result :: arm64.set_syscall_result
 syscall_result :: arm64.syscall_result
 frame_call_handler :: arm64.frame_call_handler
 frame_sanitise_user :: arm64.frame_sanitise_user
+HAS_STEP :: arm64.HAS_STEP
+FRAME_REGS_SIZE :: arm64.FRAME_REGS_SIZE
+frame_set_step :: arm64.frame_set_step
+sync_text :: arm64.sync_text
+frame_set_ip :: arm64.frame_set_ip
+BREAKPOINT_CODE :: arm64.BREAKPOINT_CODE
+BREAKPOINT_ADVANCE :: arm64.BREAKPOINT_ADVANCE
+fpu_image_sanitise :: arm64.fpu_image_sanitise
+FPU_AREA_SIZE :: arm64.FPU_AREA_SIZE
 Fault_Bit :: arm64.Fault_Bit
 Fault_Bits :: arm64.Fault_Bits
 fault_bits :: arm64.fault_bits

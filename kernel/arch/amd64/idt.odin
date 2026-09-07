@@ -348,7 +348,11 @@ idt_init :: proc "contextless" () {
 		case 2:  ist = IST_NMI
 		case 18: ist = IST_MACHINE_CHECK
 		}
-		set_gate(vector, base + uintptr(vector * STUB_SIZE), ist)
+		// `int3` is a software interrupt, and the CPU refuses one from ring
+		// 3 through a gate below ring 3 with a #GP. A program's breakpoint
+		// -- the byte a debugger writes through `/proc/n/mem` -- is the
+		// one trap ring 3 may raise by name, so its gate alone opens to it.
+		set_gate(vector, base + uintptr(vector * STUB_SIZE), ist, dpl = vector == 3 ? 3 : 0)
 	}
 
 	idtr = Descriptor_Pointer {
@@ -366,13 +370,13 @@ idt_load :: proc "contextless" () {
 }
 
 @(private = "file")
-set_gate :: proc "contextless" (vector: int, entry: uintptr, ist: u8) #no_bounds_check {
+set_gate :: proc "contextless" (vector: int, entry: uintptr, ist: u8, dpl: u8 = 0) #no_bounds_check {
 	address := u64(entry)
 	idt[vector] = IDT_Entry {
 		offset_low  = u16(address),
 		selector    = KERNEL_CODE_SEL,
 		ist         = ist,
-		flags       = GATE_PRESENT | GATE_INTERRUPT,
+		flags       = GATE_PRESENT | GATE_INTERRUPT | (dpl & 3) << 5,
 		offset_mid  = u16(address >> 16),
 		offset_high = u32(address >> 32),
 	}

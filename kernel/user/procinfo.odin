@@ -162,8 +162,19 @@ proc_start :: proc "contextless" (pid: u64) -> bool {
 	intrinsics.volatile_store(&p.stop_requested, false)
 	sync.wakeup_all(&stop_rendez)
 	if p.stopped_in_tick {
+		// The tick's park announces itself a few instructions before it
+		// parks. A start that arrives inside them would find the thread
+		// still running and wake nothing, so wait for the park, briefly.
+		for _ in 0 ..< 50 {
+			if p.thread == nil || intrinsics.volatile_load(&p.thread.state) == .Blocked || intrinsics.volatile_load(&p.exit.done) {
+				break
+			}
+			sync.delay(1)
+		}
 		p.stopped_in_tick = false
 		p.stopped = false
+		p.stop_frame = nil
+		p.stop_fpu = nil
 		sched.unstop(p.thread)
 	}
 	return true

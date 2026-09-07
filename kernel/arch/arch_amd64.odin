@@ -206,6 +206,15 @@ set_syscall_result :: amd64.set_syscall_result
 syscall_result :: amd64.syscall_result
 frame_call_handler :: amd64.frame_call_handler
 frame_sanitise_user :: amd64.frame_sanitise_user
+HAS_STEP :: amd64.HAS_STEP
+FRAME_REGS_SIZE :: amd64.FRAME_REGS_SIZE
+frame_set_step :: amd64.frame_set_step
+sync_text :: amd64.sync_text
+frame_set_ip :: amd64.frame_set_ip
+BREAKPOINT_CODE :: amd64.BREAKPOINT_CODE
+BREAKPOINT_ADVANCE :: amd64.BREAKPOINT_ADVANCE
+fpu_image_sanitise :: amd64.fpu_image_sanitise
+FPU_AREA_SIZE :: amd64.FPU_AREA_SIZE
 Fault_Bit :: amd64.Fault_Bit
 Fault_Bits :: amd64.Fault_Bits
 fault_bits :: amd64.fault_bits

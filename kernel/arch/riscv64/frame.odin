@@ -54,6 +54,49 @@ frame_sanitise_user :: proc "contextless" (f: ^Trap_Frame) {
 	f.sstatus = SSTATUS_USER
 }
 
+/*
+The debugger's questions of a frame, as `amd64/frame.odin` answers them.
+
+`HAS_STEP` is false: the base architecture has no single step, and
+`docs/DEVTOOLS.md` section 5 steps this port with a breakpoint on the next
+instruction instead. `frame_set_step` is therefore nothing here, and
+`/proc/n/ctl` answers `step` with EOPNOTSUPP.
+*/
+HAS_STEP :: false
+FRAME_REGS_SIZE :: size_of(Trap_Frame)
+
+frame_set_step :: proc "contextless" (f: ^Trap_Frame, on: bool) {
+	_, _ = f, on
+}
+
+// frame_set_ip moves where the frame resumes, for a `regs` write that a
+// self-test makes from the kernel side.
+frame_set_ip :: proc "contextless" (f: ^Trap_Frame, ip: uintptr) {
+	f.sepc = u64(ip)
+}
+
+// sync_text makes instructions written through `/proc/n/mem` visible to
+// this hart's fetch: `fence.i`. Another hart that runs them fetches through
+// its own cache, which QEMU does not model and a board driver's `sfence`
+// hook will.
+sync_text :: proc "contextless" (at: rawptr, n: int) {
+	_, _ = at, n
+	asm() [#volatile, #clobber memory] { #byte 0x0F, 0x10, 0x00, 0x00 }()
+}
+
+// The breakpoint a debugger writes through `mem`, and how far past it the
+// trap leaves the program counter. The four-byte `ebreak`, because the
+// trap entry steps `sepc` past a four-byte instruction, for its own
+// `ebreak` and a program's alike. The hart itself leaves the counter on it.
+BREAKPOINT_CODE :: [4]u8{0x73, 0x00, 0x10, 0x00}
+BREAKPOINT_ADVANCE :: 4
+
+// fpu_image_sanitise rebuilds what a program must not choose in a float
+// image a debugger wrote. Nothing here is reserved.
+fpu_image_sanitise :: proc "contextless" (area: rawptr) {
+	_ = area
+}
+
 // What the CPU said about a fault, in `kernel/arch/neutral`'s words: the
 // cause says fetch, read or write, and the mode says who. Whether the page
 // was there is the VMM's to answer, and `kernel/user` asks it.

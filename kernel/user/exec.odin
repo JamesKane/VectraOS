@@ -205,5 +205,13 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 	// what keeps the frame the new program's first state. `noted` makes the
 	// same promise the same way.
 	arch.frame_enter_user(frame, entry, sp, arg0)
+
+	// `hang`: a debugger asked to see the new program before its first
+	// instruction. The frame is that instruction's, so `regs` shows the
+	// entry and `mem` reaches the text a breakpoint goes into. The ask is
+	// kept, as Plan 9 keeps it, until `nohang`. See `debug.odin`.
+	if p.hang {
+		stop_at_door(p, frame)
+	}
 	return arch.syscall_result(frame)
 }

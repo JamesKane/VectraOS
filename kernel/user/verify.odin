@@ -488,6 +488,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_cryptotest(&r)
 	verify_fonttest(&r)
 	verify_users(&r)
+	verify_debug(&r)
 	verify_factotum(&r)
 	verify_netserver(&r)
 	verify_rc(&r)
@@ -7725,6 +7726,330 @@ verify_users :: proc(r: ^Result) {
 	}
 	check(r, !proc_set_user(p.pid, "alice"), "and no thread without a process can rename it")
 	finish(r, p, "and it is taken down")
+}
+
+/*
+verify_debug is `docs/DEVTOOLS.md` section 5's boot line: a debugger's whole
+loop through `/proc`, from the kernel side, with no debugger yet.
+
+A held program gets a breakpoint written into its first instruction
+through `mem`. `startstop` is asked before it launches, so the breakpoint
+stops it before the note it raised is delivered. `note` says why, and
+reading it takes it away. `regs` shows the counter past the breakpoint,
+and a write takes it back. `mem` puts the instruction back, `step` runs it
+alone, and `start` lets the program run to its end. A second program is
+stopped at a system call's entry and at its return by `startsyscall`. The
+call's number and then its answer are on the frame. A third, started from
+a file, is read through `text` and stopped for `waitstop`.
+
+The words that answer only when the process stops are written from a
+thread of their own. The thread that writes them is parked until then. A control: with the check before delivery in `on_trap` removed, the
+breakpoint ends the program and `startstop` answers EIO.
+*/
+@(private = "file")
+verify_debug :: proc(r: ^Result) {
+	p, err := load_held("spin", program_spin())
+	if !check(r, err == .None && p != nil, "a program is loaded and held, for a debugger to arm") {
+		return
+	}
+	r.programs += 1
+	pid := p.pid
+
+	// -- A breakpoint through mem --------------------------------------------
+
+	code := arch.BREAKPOINT_CODE
+	first: [len(arch.BREAKPOINT_CODE)]u8
+	n, rerr := read_proc(pid, "mem", u64(TEXT_VA), first[:])
+	check(
+		r,
+		rerr == vfs.OK && n == len(first) && same_bytes(first[:], program_spin()[:len(first)]),
+		"mem reads the program's first bytes at their own address",
+	)
+	werr: vfs.Errno
+	n, werr = write_proc(pid, "mem", u64(TEXT_VA), code[:])
+	check(r, werr == vfs.OK && n == len(code), "and a breakpoint written through mem lands")
+	back: [len(arch.BREAKPOINT_CODE)]u8
+	n, rerr = read_proc(pid, "mem", u64(TEXT_VA), back[:])
+	check(r, rerr == vfs.OK && same_bytes(back[:], code[:]), "and reads back")
+
+	// -- startstop, asked before there is a thread -----------------------------
+
+	if !check(r, ctl_ask(pid, "startstop"), "a thread asks startstop") {
+		finish(r, p, "and the held program is taken down")
+		return
+	}
+	armed := false
+	for _ in 0 ..< PATIENCE {
+		if intrinsics.volatile_load(&p.trace_note) {
+			armed = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, armed, "which arms the stop before the program has a thread")
+	check(r, launch(p, 0), "and the program launches into it")
+	cerr, answered := ctl_answered()
+	check(r, answered && cerr == vfs.OK, "and startstop answers when the breakpoint stops it")
+
+	status: [256]u8
+	n, _ = read_proc(pid, "status", 0, status[:])
+	check(r, has_text(string(status[:n]), " Stopped "), "status says Stopped")
+	note: [NOTE_MAX]u8
+	n, _ = read_proc(pid, "note", 0, note[:])
+	if string(note[:n]) == "sys: breakpoint" {
+		check(r, true, "and note says sys: breakpoint")
+	} else {
+		sink := detail_sink()
+		libodin.put_str(&sink, "and note says sys: breakpoint -- it said `")
+		libodin.put_str(&sink, string(note[:max(n, 0)]))
+		libodin.put_str(&sink, "`, stops ")
+		libodin.put_uint(&sink, intrinsics.atomic_load(&p.stops))
+		libodin.put_str(&sink, ", noted ")
+		libodin.put_int(&sink, p.thread != nil && sched.thread_noted(p.thread) ? 1 : 0)
+		check(r, false, libodin.str(&sink))
+	}
+	n, _ = read_proc(pid, "note", 0, note[:])
+	check(r, n == 0, "and reading it took it away")
+
+	// -- regs, there and back -------------------------------------------------
+
+	frame: arch.Trap_Frame
+	fbytes := (cast([^]u8)&frame)[:size_of(arch.Trap_Frame)]
+	n, rerr = read_proc(pid, "regs", 0, fbytes)
+	if rerr == vfs.OK && n == len(fbytes) && arch.frame_ip(&frame) == TEXT_VA + arch.BREAKPOINT_ADVANCE {
+		check(r, true, "regs shows the counter at the breakpoint")
+	} else {
+		sink := detail_sink()
+		libodin.put_str(&sink, "regs shows the counter at the breakpoint -- errno ")
+		libodin.put_int(&sink, i64(rerr))
+		libodin.put_str(&sink, ", ")
+		libodin.put_int(&sink, i64(n))
+		libodin.put_str(&sink, " bytes, pc ")
+		libodin.put_hex(&sink, u64(arch.frame_ip(&frame)), 0)
+		libodin.put_str(&sink, " sp ")
+		libodin.put_hex(&sink, u64(arch.frame_sp(&frame)), 0)
+		libodin.put_str(&sink, " vector ")
+		libodin.put_uint(&sink, arch.frame_vector(&frame))
+		check(r, false, libodin.str(&sink))
+	}
+	arch.frame_set_ip(&frame, TEXT_VA)
+	n, werr = write_proc(pid, "regs", 0, fbytes)
+	check(r, werr == vfs.OK && n == len(fbytes), "a regs write takes it back to the instruction")
+	n, rerr = read_proc(pid, "regs", 0, fbytes)
+	check(r, rerr == vfs.OK && arch.frame_ip(&frame) == TEXT_VA, "and regs reads the counter it wrote")
+	n, werr = write_proc(pid, "mem", u64(TEXT_VA), first[:])
+	check(r, werr == vfs.OK && n == len(first), "and mem puts the instruction back")
+
+	// -- step -----------------------------------------------------------------
+
+	serr: vfs.Errno
+	when arch.HAS_STEP {
+		check(r, ctl_ask(pid, "step"), "a thread asks step")
+		cerr, answered = ctl_answered()
+		check(r, answered && cerr == vfs.OK, "and it answers when one instruction has run")
+		n, rerr = read_proc(pid, "regs", 0, fbytes)
+		pc := arch.frame_ip(&frame)
+		check(r, rerr == vfs.OK && pc > TEXT_VA && pc < TEXT_VA + 16, "with the counter on the next instruction")
+	} else {
+		_, serr = write_proc(pid, "ctl", 0, bytes_of("step"))
+		check(r, serr == vectra9.EOPNOTSUPP, "step is not this architecture's yet, and ctl says so")
+	}
+
+	// -- The lists, and the release -------------------------------------------
+
+	lines: [512]u8
+	n, _ = read_proc(pid, "segment", 0, lines[:])
+	check(r, has_text(string(lines[:n]), "Text ") && has_text(string(lines[:n]), "Stack "), "segment lists its text and its stack")
+	n, _ = read_proc(pid, "fd", 0, lines[:])
+	check(r, n > 0 && lines[0] == '/' && has_text(string(lines[:n]), "\n0 "), "fd starts with its directory, then descriptor 0")
+
+	set_cell(p, CELL_STOP, 1)
+	_, serr = write_proc(pid, "ctl", 0, bytes_of("start"))
+	check(r, serr == vfs.OK, "start lets it go")
+	check(r, wait(p, PATIENCE), "and it runs to its own end")
+	finish(r, p, "and the debugged program is taken down")
+
+	// -- startsyscall: in, and out --------------------------------------------
+
+	p, err = load_held("hello", program_hello())
+	if !check(r, err == .None && p != nil, "a program that makes a system call is loaded and held") {
+		return
+	}
+	r.programs += 1
+	pid = p.pid
+	check(r, set_bytes(p, MESSAGE_OFFSET, bytes_of(MESSAGE)), "with a line in its data page")
+	check(r, ctl_ask(pid, "startsyscall"), "a thread asks startsyscall")
+	armed = false
+	for _ in 0 ..< PATIENCE {
+		if intrinsics.volatile_load(&p.trace_syscall) {
+			armed = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, armed && launch(p, u64(len(MESSAGE))), "and the program launches into it")
+	cerr, answered = ctl_answered()
+	check(r, answered && cerr == vfs.OK, "and startsyscall answers at the call's entry")
+	n, rerr = read_proc(pid, "regs", 0, fbytes)
+	number, _ := arch.syscall_request(&frame)
+	check(r, rerr == vfs.OK && number == SYS_WRITE, "with the write's number on the frame")
+	_, serr = write_proc(pid, "ctl", 0, bytes_of("start"))
+	check(r, serr == vfs.OK && ctl_ask(pid, "waitstop"), "start, and a thread asks waitstop")
+	cerr, answered = ctl_answered()
+	check(r, answered && cerr == vfs.OK, "which answers at the call's return")
+	n, rerr = read_proc(pid, "regs", 0, fbytes)
+	check(r, rerr == vfs.OK && arch.syscall_result(&frame) == i64(len(MESSAGE)), "with the write's answer on the frame")
+	_, serr = write_proc(pid, "ctl", 0, bytes_of("start"))
+	check(r, serr == vfs.OK && wait(p, PATIENCE), "and started again it exits")
+	check(r, p.exit.deliberate && p.exit.status == 0x2A, "with the status it meant")
+	finish(r, p, "and it is taken down")
+
+	// -- text and waitstop, on a program from a file ---------------------------
+
+	argv := new(Argv)
+	if !check(r, argv != nil, "a record for a program's arguments") {
+		return
+	}
+	names := [?]string{"sleep", "5"}
+	check(r, argv_from(argv, names[:]), "holds them")
+	ps, perr := spawn_path(nil, "/bin/sleep", SPAWN_NS_COPY, argv)
+	free(argv)
+	if !check(r, perr == vfs.OK && ps != nil, "a program from a file starts") {
+		return
+	}
+	r.programs += 1
+	head: [16]u8
+	terr: vfs.Errno
+	n, terr = read_proc(ps.pid, "text", 0, head[:])
+	file_head: [16]u8
+	fn := 0
+	if c, oerr := vfs.open_path(vfs.boot_namespace, "/bin/sleep", vfs.O_RDONLY); oerr == vfs.OK {
+		fn, _ = vfs.chan_read(c, 0, file_head[:])
+		vfs.chan_close(c)
+	}
+	check(r, terr == vfs.OK && n == len(head) && fn == len(head) && same_bytes(head[:], file_head[:]), "text reads the file it was started from")
+	_, serr = write_proc(ps.pid, "ctl", 0, bytes_of("stop"))
+	check(r, serr == vfs.OK && ctl_ask(ps.pid, "waitstop"), "stop, and a thread asks waitstop")
+	cerr, answered = ctl_answered()
+	check(r, answered && cerr == vfs.OK, "which answers once it has stopped")
+	n, _ = read_proc(ps.pid, "status", 0, status[:])
+	check(r, has_text(string(status[:n]), " Stopped "), "and status says Stopped")
+	_, serr = write_proc(ps.pid, "ctl", 0, bytes_of("start"))
+	check(r, serr == vfs.OK && end(ps, PATIENCE), "started, it is ended by the kernel's word")
+	finish(r, ps, "and taken down")
+}
+
+// The blocking words of `/proc/n/ctl`, written from a thread of their own.
+@(private = "file")
+Ctl_Helper :: struct {
+	path:     [32]u8,
+	path_len: int,
+	word:     string,
+	err:      vfs.Errno,
+	done:     bool,
+}
+
+@(private = "file")
+ctl_helper: Ctl_Helper
+
+@(private = "file")
+ctl_helper_thread :: proc "contextless" (arg: rawptr) {
+	context = runtime.default_context()
+	context.allocator = mem.allocator()
+	h := (^Ctl_Helper)(arg)
+	c, err := vfs.open_path(vfs.boot_namespace, string(h.path[:h.path_len]), vfs.O_WRONLY)
+	if err == vfs.OK {
+		_, err = vfs.chan_write(c, 0, transmute([]u8)h.word)
+		vfs.chan_close(c)
+	}
+	h.err = err
+	intrinsics.volatile_store(&h.done, true)
+}
+
+// ctl_ask starts a thread that writes `word` to the process's ctl and
+// answers whether the thread started. `ctl_answered` waits for its answer.
+@(private = "file")
+ctl_ask :: proc(pid: u64, word: string) -> bool {
+	h := &ctl_helper
+	h^ = {}
+	sink := libodin.sink_from(h.path[:])
+	libodin.put_str(&sink, "/proc/")
+	libodin.put_uint(&sink, pid)
+	libodin.put_str(&sink, "/ctl")
+	h.path_len = len(libodin.str(&sink))
+	h.word = word
+	return sched.spawn("ctl-ask", ctl_helper_thread, h) != nil
+}
+
+@(private = "file")
+ctl_answered :: proc(patience := PATIENCE * 5) -> (err: vfs.Errno, answered: bool) {
+	for _ in 0 ..< patience {
+		if intrinsics.volatile_load(&ctl_helper.done) {
+			return ctl_helper.err, true
+		}
+		sync.delay(1)
+	}
+	return vectra9.EIO, false
+}
+
+// read_proc and write_proc reach one of a process's files by name, at an
+// offset, the way a debugger would.
+@(private = "file")
+proc_file :: proc "contextless" (buf: []u8, pid: u64, name: string) -> string {
+	sink := libodin.sink_from(buf)
+	libodin.put_str(&sink, "/proc/")
+	libodin.put_uint(&sink, pid)
+	libodin.put_str(&sink, "/")
+	libodin.put_str(&sink, name)
+	return libodin.str(&sink)
+}
+
+@(private = "file")
+read_proc :: proc(pid: u64, name: string, off: u64, out: []u8) -> (n: int, err: vfs.Errno) {
+	path: [40]u8
+	c, oerr := vfs.open_path(vfs.boot_namespace, proc_file(path[:], pid, name), vfs.O_RDONLY)
+	if oerr != vfs.OK {
+		return 0, oerr
+	}
+	defer vfs.chan_close(c)
+	return vfs.chan_read(c, off, out)
+}
+
+@(private = "file")
+write_proc :: proc(pid: u64, name: string, off: u64, data: []u8) -> (n: int, err: vfs.Errno) {
+	path: [40]u8
+	c, oerr := vfs.open_path(vfs.boot_namespace, proc_file(path[:], pid, name), vfs.O_WRONLY)
+	if oerr != vfs.OK {
+		return 0, oerr
+	}
+	defer vfs.chan_close(c)
+	return vfs.chan_write(c, off, data)
+}
+
+@(private = "file")
+same_bytes :: proc "contextless" (a, b: []u8) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i in 0 ..< len(a) {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+@(private = "file")
+has_text :: proc "contextless" (hay, needle: string) -> bool {
+	if len(needle) > len(hay) {
+		return false
+	}
+	for i in 0 ..= len(hay) - len(needle) {
+		if hay[i:i + len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }
 
 /*
