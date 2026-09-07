@@ -697,10 +697,28 @@ Three things differ from section 6 and are written down here. This Odin
 emits DWARF 4, so the converter reads 4 and refuses 5. Nothing emits
 `.debug_frame`, so there are no `unwind` rows, and the frame chain stays
 the fallback. Disassembly is per program, on by a flag in `user_programs`,
-and `debugtest` alone asks for it today. The next increment is `scopes`,
-`vars` and `types` from `.debug_info`, which the abbreviation reader is
-already shaped for. `dis` for every program waits until its size on the
-disk is worth it.
+and `debugtest` alone asks for it today. `dis` for every program waits
+until its size on the disk is worth it.
+
+**Second cut, the same month: `scopes`, `vars`, `types` and `members`.**
+The converter reads each unit's DIE tree whole, so a reference by offset,
+a variable's type or an inlined block's origin, is a row. A scope is a
+procedure with code, a block in it, or a call inlined into it with the
+callee's name on it. The unit itself is one scope holding the globals. A
+scope with several ranges is several rows sharing one run of variables.
+
+A variable is one row per location-list entry, each holding on its own
+range. Its location is one of six words: the frame base plus an offset, a
+register, a register plus an offset, an address, a constant, or `Gone`.
+An expression the converter cannot say in those words is `Other`, which a
+debugger shows as optimised away. Types are the kinds section 6 lists.
+Odin's slice, string and map are told from a struct by the name the
+compiler gives them, and a struct's members or an enum's values are a run
+of `members` rows.
+
+Frame bases are `rsp` or `CFA-32` on amd64. With no CFI the engine will
+need the frame chain to place the second, which is section 7's problem,
+named here so it is not forgotten.
 
 ### Step 5: `dbgfs` and `db`
 

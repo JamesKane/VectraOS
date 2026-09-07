@@ -8066,8 +8066,18 @@ verify_debugtest :: proc(r: ^Result) {
 	names := [?]string{"debugtest"}
 	said, _, ok := run_script(r, "/bin/debugtest", names[:], PATIENCE * 5, abi_said[:], "a program on its own debug file starts")
 	if ok {
-		check(r, said == "ok", said == "ok" ? "and names, lines and instructions read back from it" : said)
+		check(r, said == "ok", said == "ok" ? "and names, lines, instructions, types and variables read back from it" : kept_said(said))
 	}
+}
+
+// kept_said copies a program's exit word into a detail buffer. Every
+// script answers into one buffer, and the next script writes over it, so
+// a failure line that pointed into it would say the wrong word.
+@(private = "file")
+kept_said :: proc "contextless" (said: string) -> string {
+	sink := detail_sink()
+	libodin.put_str(&sink, said)
+	return libodin.str(&sink)
 }
 
 /*
@@ -8081,7 +8091,7 @@ verify_cryptotest :: proc(r: ^Result) {
 	names := [?]string{"cryptotest"}
 	said, _, ok := run_script(r, "/bin/cryptotest", names[:], PATIENCE * 5, abi_said[:], "a program on the fleet's cryptography starts")
 	if ok {
-		check(r, said == "ok", said == "ok" ? "and every cipher matched its published vector" : said)
+		check(r, said == "ok", said == "ok" ? "and every cipher matched its published vector" : kept_said(said))
 	}
 }
 
@@ -8097,7 +8107,7 @@ verify_fonttest :: proc(r: ^Result) {
 	names := [?]string{"fonttest"}
 	said, _, ok := run_script(r, "/bin/fonttest", names[:], PATIENCE * 5, abi_said[:], "a program on the runtime font starts")
 	if ok {
-		check(r, said == "ok", said == "ok" ? "and a rune past ASCII loaded from a subfont with ink" : said)
+		check(r, said == "ok", said == "ok" ? "and a rune past ASCII loaded from a subfont with ink" : kept_said(said))
 	}
 }
 

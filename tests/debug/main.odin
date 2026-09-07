@@ -38,6 +38,16 @@ probe :: proc "contextless" (x: int) -> int {
 	return y
 }
 
+// A global with a type of this program's own, so the file carries a
+// variable at an address and a struct with members to find by name.
+Point :: struct {
+	x, y: i32,
+	tag:  u8,
+}
+
+origin: Point = {x = 3, y = 4, tag = 'o'}
+counter: int = 7
+
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
@@ -63,6 +73,38 @@ start :: proc "c" (block: ^abi.Args) {
 	want(tok && len(text) > 0, "the entry has its instruction text")
 	next, nok := libdebug.dis_next(&d, entry)
 	want(nok && next > entry && next < entry + 16, "and the instruction after it is known")
+
+	// -- Variables, scopes and types ----------------------------------------
+
+	c, cok := libdebug.var_at(&d, entry, "counter")
+	want(cok && c.kind == .Addr && c.offset == i64(uintptr(&counter)), "a global resolves by name to its address")
+	ct, _, ctok := libdebug.type_resolved(&d, int(c.type))
+	want(ctok && ct.kind == .Base && ct.size == 8 && ct.name == "int", "with its type followed through the typedef to int")
+
+	o, ook := libdebug.var_at(&d, entry, "origin")
+	want(ook && o.kind == .Addr && o.offset == i64(uintptr(&origin)), "a global of a struct type resolves too")
+	ot, _, otok := libdebug.type_resolved(&d, int(o.type))
+	want(otok && ot.kind == .Struct && ot.size == size_of(Point) && ot.count == 3, "with its struct's size and member count")
+	mname, mtype, moff, mok := libdebug.member_row(&d, int(ot.first) + 1)
+	want(mok && mname == "y" && moff == 4, "and its second member named at its offset")
+	mt, _, mtok := libdebug.type_resolved(&d, int(mtype))
+	want(mtok && mt.kind == .Base && mt.size == 4, "of a four-byte base type")
+
+	pi, pok2 := libdebug.type_named(&d, "debugtest::Point")
+	want(pok2 && pi >= 0, "and the struct is found by its own name")
+
+	sc, sok := libdebug.scope_at(&d, inside)
+	want(sok, "an address inside probe is inside a scope")
+	_, scope, pok3 := libdebug.scope_proc(&d, sc)
+	want(pok3 && ends_with(scope.name, "::probe"), "whose procedure is probe")
+	xv, xok := libdebug.var_at(&d, inside, "x")
+	want(xok && xv.name == "x", "whose parameter x is known there")
+	xt, _, xtok := libdebug.type_resolved(&d, int(xv.type))
+	want(xtok && xt.kind == .Base && xt.size == 8, "as an eight-byte integer")
+	gc, gok := libdebug.var_at(&d, inside, "counter")
+	want(gok && gc.kind == .Addr, "and the unit's globals are visible from inside it")
+
+	_ = probe(int(counter))
 
 	_ = probe(1)
 	libuser.exits("ok")

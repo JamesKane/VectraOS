@@ -1419,6 +1419,10 @@ Vxd_Table :: enum u32 {
 	Names   = 5,
 	Dis     = 6,
 	Strings = 7,
+	Types   = 8,
+	Members = 9,
+	Scopes  = 10,
+	Vars    = 11,
 }
 
 Vxd_Unit :: struct {
@@ -1444,14 +1448,18 @@ Vxd_Dis :: struct {
 }
 
 Vxd_Builder :: struct {
-	pool:    [dynamic]u8,
+	pool:     [dynamic]u8,
 	interned: map[string]u32,
-	units:   [dynamic]Vxd_Unit,
-	files:   [dynamic]Vxd_File,
-	procs:   [dynamic]Vxd_Proc,
-	lines:   [dynamic]Vxd_Line,
-	names:   [dynamic]Vxd_Name,
-	dis:     [dynamic]Vxd_Dis,
+	units:    [dynamic]Vxd_Unit,
+	files:    [dynamic]Vxd_File,
+	procs:    [dynamic]Vxd_Proc,
+	lines:    [dynamic]Vxd_Line,
+	names:    [dynamic]Vxd_Name,
+	dis:      [dynamic]Vxd_Dis,
+	types:    [dynamic]Vxd_Type,
+	members:  [dynamic]Vxd_Member,
+	scopes:   [dynamic]Vxd_Scope,
+	vars:     [dynamic]Vxd_Var,
 }
 
 vxd_intern :: proc(b: ^Vxd_Builder, s: string) -> u32 {
@@ -1664,11 +1672,226 @@ dw_abbrevs :: proc(section: []u8, offset: int) -> map[u64]Dwarf_Abbrev {
 }
 
 /*
-vxd_units reads every compilation unit's top DIE out of `.debug_info`: its
-name, directory, language and the offset of its line program. Nothing
-below the top DIE is read yet. The variables and types the plan lists are
-the next increment, and they are the reason the abbreviation reader above
-handles every form.
+The DIE tree of one compilation unit, read whole.
+
+`vxd_units` used to read the top DIE alone. The scopes, variables and types
+the plan lists live under it, and they refer to each other by offset, a
+variable's type or an inlined block's origin. So the tree is read into a
+flat list first, offsets to indices, and the tables are built from the
+list. A unit of the kernel is some fifty thousand DIEs, which is nothing.
+*/
+Dwarf_Value :: struct {
+	form:  u64,
+	num:   u64,
+	text:  string,
+	block: []u8,
+}
+
+Dwarf_Die :: struct {
+	offset:   int, // From the section start: what a `ref_addr` names
+	tag:      u64,
+	parent:   int,
+	children: [dynamic]int,
+	attrs:    map[u64]Dwarf_Value,
+}
+
+DW_TAG_array_type :: 0x01
+DW_TAG_enumeration_type :: 0x04
+DW_TAG_formal_parameter :: 0x05
+DW_TAG_lexical_block :: 0x0b
+DW_TAG_member :: 0x0d
+DW_TAG_pointer_type :: 0x0f
+DW_TAG_structure_type :: 0x13
+DW_TAG_subroutine_type :: 0x15
+DW_TAG_typedef :: 0x16
+DW_TAG_union_type :: 0x17
+DW_TAG_inlined_subroutine :: 0x1d
+DW_TAG_subrange_type :: 0x21
+DW_TAG_base_type :: 0x24
+DW_TAG_enumerator :: 0x28
+DW_TAG_subprogram :: 0x2e
+DW_TAG_variable :: 0x34
+
+DW_AT_location :: 0x02
+DW_AT_byte_size :: 0x0b
+DW_AT_low_pc :: 0x11
+DW_AT_high_pc :: 0x12
+DW_AT_const_value :: 0x1c
+DW_AT_abstract_origin :: 0x31
+DW_AT_count :: 0x37
+DW_AT_data_member_location :: 0x38
+DW_AT_encoding :: 0x3e
+DW_AT_frame_base :: 0x40
+DW_AT_type :: 0x49
+DW_AT_ranges :: 0x55
+DW_AT_linkage_name :: 0x6e
+
+// The forms whose value is a reference to another DIE of the same unit.
+dw_form_is_ref :: proc(form: u64) -> bool {
+	return form == 0x11 || form == 0x12 || form == 0x13 || form == 0x14 || form == 0x15
+}
+
+// dw_form_read reads one attribute of `form`, keeping what the tables need:
+// a number, the text of a string form, or the bytes of a block form.
+dw_form_read :: proc(c: ^Dwarf_Cursor, form: u64, str_section: []u8, elf_path: string) -> Dwarf_Value {
+	v := Dwarf_Value{form = form}
+	switch form {
+	case 0x01: v.num = dw_u64(c)
+	case 0x03: n := int(dw_u16(c)); v.block = c.data[c.at:][:n]; c.at += n
+	case 0x04: n := int(dw_u32(c)); v.block = c.data[c.at:][:n]; c.at += n
+	case 0x05: v.num = dw_u16(c)
+	case 0x06: v.num = dw_u32(c)
+	case 0x07: v.num = dw_u64(c)
+	case 0x08: v.text = dw_cstr(c)
+	case 0x09: n := int(dw_uleb(c)); v.block = c.data[c.at:][:n]; c.at += n
+	case 0x0a: n := int(dw_u8(c)); v.block = c.data[c.at:][:n]; c.at += n
+	case 0x0b: v.num = dw_u8(c)
+	case 0x0c: v.num = dw_u8(c)
+	case 0x0d: v.num = u64(dw_sleb(c))
+	case 0x0e: off := dw_u32(c); v.num = off; v.text = cstr_at(str_section, int(off))
+	case 0x0f: v.num = dw_uleb(c)
+	case 0x10: v.num = dw_u32(c)
+	case 0x11: v.num = dw_u8(c)
+	case 0x12: v.num = dw_u16(c)
+	case 0x13: v.num = dw_u32(c)
+	case 0x14: v.num = dw_u64(c)
+	case 0x15: v.num = dw_uleb(c)
+	case 0x16:
+		inner := dw_uleb(c)
+		v = dw_form_read(c, inner, str_section, elf_path)
+	case 0x17: v.num = dw_u32(c)
+	case 0x18: n := int(dw_uleb(c)); v.block = c.data[c.at:][:n]; c.at += n
+	case 0x19: v.num = 1
+	case 0x20: v.num = dw_u64(c)
+	case:
+		die("%s: DWARF form 0x%x is not one this converter knows", elf_path, form)
+	}
+	return v
+}
+
+// One unit's tree, and the section offsets the unit's references are
+// relative to.
+Dwarf_Unit :: struct {
+	base:  int, // The unit header's offset in `.debug_info`
+	dies:  [dynamic]Dwarf_Die,
+	index: map[int]int, // DIE offset to its place in `dies`
+}
+
+dw_attr :: proc(d: ^Dwarf_Die, at: u64) -> (Dwarf_Value, bool) {
+	v, ok := d.attrs[at]
+	return v, ok
+}
+
+// dw_ref answers the DIE a reference attribute names, or -1.
+dw_ref :: proc(u: ^Dwarf_Unit, d: ^Dwarf_Die, at: u64) -> int {
+	v, ok := dw_attr(d, at)
+	if !ok {
+		return -1
+	}
+	target := int(v.num)
+	if dw_form_is_ref(v.form) {
+		target += u.base
+	}
+	if i, found := u.index[target]; found {
+		return i
+	}
+	return -1
+}
+
+// dw_origin_attr answers an attribute of a DIE, or of the abstract origin
+// it stands for, as far up as origins go. An inlined variable's name is on
+// the original.
+dw_origin_attr :: proc(u: ^Dwarf_Unit, i: int, at: u64) -> (Dwarf_Value, bool) {
+	at_die := i
+	for _ in 0 ..< 8 {
+		if at_die < 0 {
+			break
+		}
+		d := &u.dies[at_die]
+		if v, ok := dw_attr(d, at); ok {
+			return v, true
+		}
+		at_die = dw_ref(u, d, DW_AT_abstract_origin)
+	}
+	return {}, false
+}
+
+dw_origin_ref :: proc(u: ^Dwarf_Unit, i: int, at: u64) -> int {
+	at_die := i
+	for _ in 0 ..< 8 {
+		if at_die < 0 {
+			break
+		}
+		d := &u.dies[at_die]
+		if r := dw_ref(u, d, at); r >= 0 {
+			return r
+		}
+		at_die = dw_ref(u, d, DW_AT_abstract_origin)
+	}
+	return -1
+}
+
+// dw_read_unit reads one unit's DIEs into a tree and answers where the
+// next unit starts.
+dw_read_unit :: proc(info: []u8, abbrev_section: []u8, str_section: []u8, start: int, elf_path: string) -> (u: Dwarf_Unit, next: int) {
+	c := Dwarf_Cursor{data = info, at = start}
+	unit_length := dw_u32(&c)
+	if unit_length == 0xffff_ffff {
+		die("%s: a 64-bit DWARF unit, which this converter does not read", elf_path)
+	}
+	end := c.at + int(unit_length)
+	version := dw_u16(&c)
+	if version != 4 {
+		die("%s: DWARF version %d, and this converter reads 4", elf_path, version)
+	}
+	abbrev_offset := dw_u32(&c)
+	address_size := dw_u8(&c)
+	if address_size != 8 {
+		die("%s: DWARF address size %d", elf_path, address_size)
+	}
+	abbrevs := dw_abbrevs(abbrev_section, int(abbrev_offset))
+	u.base = start
+	u.index = make(map[int]int)
+	stack: [dynamic]int
+	for c.at < end {
+		offset := c.at
+		code := dw_uleb(&c)
+		if code == 0 {
+			if len(stack) > 0 {
+				pop(&stack)
+			}
+			continue
+		}
+		ab, known := abbrevs[code]
+		if !known {
+			die("%s: abbreviation %d is not in the table", elf_path, code)
+		}
+		d := Dwarf_Die {
+			offset = offset,
+			tag    = ab.tag,
+			parent = len(stack) > 0 ? stack[len(stack) - 1] : -1,
+			attrs  = make(map[u64]Dwarf_Value),
+		}
+		for a in ab.attrs {
+			d.attrs[a.at] = dw_form_read(&c, a.form, str_section, elf_path)
+		}
+		i := len(u.dies)
+		append(&u.dies, d)
+		u.index[offset] = i
+		if d.parent >= 0 {
+			append(&u.dies[d.parent].children, i)
+		}
+		if ab.children {
+			append(&stack, i)
+		}
+	}
+	return u, end
+}
+
+/*
+vxd_units reads every compilation unit out of `.debug_info`: its name,
+directory, language and the offset of its line program from the top DIE,
+and the types, procedures, scopes and variables from the tree below it.
 */
 vxd_units :: proc(b: ^Vxd_Builder, data: []u8, secs: []Elf_Section, elf_path: string) {
 	info, has_info := elf_section(secs, ".debug_info")
@@ -1679,41 +1902,479 @@ vxd_units :: proc(b: ^Vxd_Builder, data: []u8, secs: []Elf_Section, elf_path: st
 	strs, _ := elf_section(secs, ".debug_str")
 	str_section := data[strs.offset:][:strs.size]
 	abbrev_section := data[abbrev.offset:][:abbrev.size]
-	c := Dwarf_Cursor{data = data[info.offset:][:info.size]}
-	for c.at < len(c.data) {
-		start := c.at
-		unit_length := dw_u32(&c)
-		if unit_length == 0xffff_ffff {
-			die("%s: a 64-bit DWARF unit, which this converter does not read", elf_path)
+	info_section := data[info.offset:][:info.size]
+	loc, has_loc := elf_section(secs, ".debug_loc")
+	loc_section := has_loc ? data[loc.offset:][:loc.size] : nil
+	rng, has_rng := elf_section(secs, ".debug_ranges")
+	rng_section := has_rng ? data[rng.offset:][:rng.size] : nil
+
+	at := 0
+	for at < len(info_section) {
+		u, next := dw_read_unit(info_section, abbrev_section, str_section, at, elf_path)
+		at = next
+		if len(u.dies) == 0 || u.dies[0].tag != DW_TAG_compile_unit {
+			die("%s: a unit at %d whose first DIE is not a compile unit", elf_path, u.base)
 		}
-		end := c.at + int(unit_length)
-		version := dw_u16(&c)
-		if version != 4 {
-			die("%s: DWARF version %d, and this converter reads 4", elf_path, version)
-		}
-		abbrev_offset := dw_u32(&c)
-		address_size := dw_u8(&c)
-		if address_size != 8 {
-			die("%s: DWARF address size %d", elf_path, address_size)
-		}
-		abbrevs := dw_abbrevs(abbrev_section, int(abbrev_offset))
-		code := dw_uleb(&c)
-		ab, known := abbrevs[code]
-		if !known || ab.tag != DW_TAG_compile_unit {
-			die("%s: a unit at %d whose first DIE is not a compile unit", elf_path, start)
-		}
+		top := &u.dies[0]
 		unit := Vxd_Unit{stmt = 0xffff_ffff}
-		for a in ab.attrs {
-			num, text := dw_form_value(&c, a.form, str_section, elf_path)
-			switch a.at {
-			case DW_AT_name:      unit.name = vxd_intern(b, text)
-			case DW_AT_comp_dir:  unit.dir = vxd_intern(b, text)
-			case DW_AT_language:  unit.lang = u32(num)
-			case DW_AT_stmt_list: unit.stmt = u32(num)
-			}
+		if v, ok := dw_attr(top, DW_AT_name); ok {
+			unit.name = vxd_intern(b, v.text)
+		}
+		if v, ok := dw_attr(top, DW_AT_comp_dir); ok {
+			unit.dir = vxd_intern(b, v.text)
+		}
+		if v, ok := dw_attr(top, DW_AT_language); ok {
+			unit.lang = u32(v.num)
+		}
+		if v, ok := dw_attr(top, DW_AT_stmt_list); ok {
+			unit.stmt = u32(v.num)
 		}
 		append(&b.units, unit)
-		c.at = end
+		unit_index := u32(len(b.units) - 1)
+		cu_low := u64(0)
+		if v, ok := dw_attr(top, DW_AT_low_pc); ok {
+			cu_low = v.num
+		}
+		ctx := Vxd_Unit_Ctx {
+			b       = b,
+			u       = &u,
+			unit    = unit_index,
+			cu_low  = cu_low,
+			loc     = loc_section,
+			ranges  = rng_section,
+			types   = make(map[int]u32),
+			elf     = elf_path,
+		}
+		vxd_types(&ctx)
+		vxd_scopes(&ctx)
+	}
+}
+
+// What one unit's tables are built with. The tree, the section slices its
+// references reach into, and the map from a type DIE to its row.
+Vxd_Unit_Ctx :: struct {
+	b:      ^Vxd_Builder,
+	u:      ^Dwarf_Unit,
+	unit:   u32,
+	cu_low: u64,
+	loc:    []u8,
+	ranges: []u8,
+	types:  map[int]u32,
+	elf:    string,
+}
+
+// The kinds of type the file names. `docs/DEVTOOLS.md` section 6's list,
+// with Odin's slice, string and map told apart from a struct by the name
+// the compiler gives them.
+Vxd_Type_Kind :: enum u32 {
+	Unknown = 0,
+	Base    = 1,
+	Pointer = 2,
+	Array   = 3,
+	Struct  = 4,
+	Union   = 5,
+	Enum    = 6,
+	Proc    = 7,
+	Typedef = 8,
+	Slice   = 9,
+	String  = 10,
+	Map     = 11,
+}
+
+Vxd_Type :: struct {
+	kind:   u32,
+	name:   u32,
+	size:   u32,
+	target: u32, // The type this points at, holds, or names; `NO_TYPE` for none
+	count:  u32, // Members, enumerators, or an array's length
+	first:  u32, // First member or enumerator row
+	enc:    u32, // A base type's DWARF encoding
+	pad:    u32,
+}
+
+Vxd_Member :: struct {
+	name, type: u32,
+	offset:     u64, // A member's byte offset, or an enumerator's value
+}
+
+VXD_NO_TYPE :: u32(0xffff_ffff)
+
+/*
+vxd_types makes a row for every type DIE of the unit, in two passes. The
+rows come first, so a reference to a type not seen yet has a row to name,
+and the references after. Members and enumerators go in one table, a struct's
+run of them named by `first` and `count`.
+*/
+vxd_types :: proc(ctx: ^Vxd_Unit_Ctx) {
+	b := ctx.b
+	u := ctx.u
+	is_type :: proc(tag: u64) -> bool {
+		switch tag {
+		case DW_TAG_base_type, DW_TAG_pointer_type, DW_TAG_array_type, DW_TAG_structure_type,
+		     DW_TAG_union_type, DW_TAG_enumeration_type, DW_TAG_subroutine_type, DW_TAG_typedef:
+			return true
+		}
+		return false
+	}
+	for d, i in u.dies {
+		if is_type(d.tag) {
+			ctx.types[i] = u32(len(b.types))
+			append(&b.types, Vxd_Type{target = VXD_NO_TYPE})
+		}
+	}
+	for d, i in u.dies {
+		row, is := ctx.types[i]
+		if !is {
+			continue
+		}
+		t := &b.types[row]
+		if v, ok := dw_attr(&u.dies[i], DW_AT_name); ok {
+			t.name = vxd_intern(b, v.text)
+		}
+		if v, ok := dw_attr(&u.dies[i], DW_AT_byte_size); ok {
+			t.size = u32(v.num)
+		}
+		if r := dw_ref(u, &u.dies[i], DW_AT_type); r >= 0 {
+			if tr, known := ctx.types[r]; known {
+				t.target = tr
+			}
+		}
+		switch d.tag {
+		case DW_TAG_base_type:
+			t.kind = u32(Vxd_Type_Kind.Base)
+			if v, ok := dw_attr(&u.dies[i], DW_AT_encoding); ok {
+				t.enc = u32(v.num)
+			}
+		case DW_TAG_pointer_type:
+			t.kind = u32(Vxd_Type_Kind.Pointer)
+			t.size = 8
+		case DW_TAG_array_type:
+			t.kind = u32(Vxd_Type_Kind.Array)
+			for ci in u.dies[i].children {
+				if u.dies[ci].tag == DW_TAG_subrange_type {
+					if v, ok := dw_attr(&u.dies[ci], DW_AT_count); ok {
+						t.count = u32(v.num)
+					}
+				}
+			}
+		case DW_TAG_structure_type, DW_TAG_union_type:
+			name := cstr_at(b.pool[:], int(t.name))
+			switch {
+			case d.tag == DW_TAG_union_type:  t.kind = u32(Vxd_Type_Kind.Union)
+			case name == "string":            t.kind = u32(Vxd_Type_Kind.String)
+			case strings.has_prefix(name, "[]"): t.kind = u32(Vxd_Type_Kind.Slice)
+			case strings.has_prefix(name, "map["): t.kind = u32(Vxd_Type_Kind.Map)
+			case:                             t.kind = u32(Vxd_Type_Kind.Struct)
+			}
+			t.first = u32(len(b.members))
+			for ci in u.dies[i].children {
+				m := &u.dies[ci]
+				if m.tag != DW_TAG_member {
+					continue
+				}
+				row := Vxd_Member{type = VXD_NO_TYPE}
+				if v, ok := dw_attr(m, DW_AT_name); ok {
+					row.name = vxd_intern(b, v.text)
+				}
+				if v, ok := dw_attr(m, DW_AT_data_member_location); ok {
+					row.offset = v.num
+				}
+				if r := dw_ref(u, m, DW_AT_type); r >= 0 {
+					if tr, known := ctx.types[r]; known {
+						row.type = tr
+					}
+				}
+				append(&b.members, row)
+				t.count += 1
+			}
+		case DW_TAG_enumeration_type:
+			t.kind = u32(Vxd_Type_Kind.Enum)
+			t.first = u32(len(b.members))
+			for ci in u.dies[i].children {
+				e := &u.dies[ci]
+				if e.tag != DW_TAG_enumerator {
+					continue
+				}
+				row := Vxd_Member{type = VXD_NO_TYPE}
+				if v, ok := dw_attr(e, DW_AT_name); ok {
+					row.name = vxd_intern(b, v.text)
+				}
+				if v, ok := dw_attr(e, DW_AT_const_value); ok {
+					row.offset = v.num
+				}
+				append(&b.members, row)
+				t.count += 1
+			}
+		case DW_TAG_subroutine_type:
+			t.kind = u32(Vxd_Type_Kind.Proc)
+			t.size = 8
+		case DW_TAG_typedef:
+			t.kind = u32(Vxd_Type_Kind.Typedef)
+		}
+	}
+}
+
+// Where a variable is, in the words the reader repeats. A location the
+// converter cannot say in one of these is `Other`, which a debugger shows
+// as optimised away.
+Vxd_Loc_Kind :: enum u32 {
+	Gone  = 0, // No location at all
+	Fbreg = 1, // At the frame base plus `offset`
+	Reg   = 2, // In register `reg`
+	Breg  = 3, // At register `reg` plus `offset`
+	Addr  = 4, // At the address `offset`
+	Const = 5, // The value `offset` itself
+	Other = 6, // An expression this file does not say
+}
+
+Vxd_Scope :: struct {
+	low, high: u64,
+	parent:    u32, // The enclosing scope's row, or `VXD_NO_SCOPE`
+	name:      u32, // The procedure's, for a procedure or an inlined one; empty for a block
+	first:     u32, // Its first variable row
+	nvars:     u32,
+}
+
+Vxd_Var :: struct {
+	name:      u32,
+	type:      u32,
+	kind:      u32,
+	reg:       u32,
+	offset:    i64,
+	low, high: u64, // Where this row holds; zero and zero for everywhere
+}
+
+VXD_NO_SCOPE :: u32(0xffff_ffff)
+
+// vxd_classify turns one DWARF expression into a kind, a register and an
+// offset. One operation, or one with `stack_value` behind it, or an address
+// form with `plus_uconst` behind it: what the compiler emits for a value it
+// kept somewhere simple, and for a global it placed past another.
+vxd_classify :: proc(expr: []u8) -> (kind: Vxd_Loc_Kind, reg: u32, offset: i64) {
+	if len(expr) == 0 {
+		return .Gone, 0, 0
+	}
+	c := Dwarf_Cursor{data = expr}
+	op := dw_u8(&c)
+	// The rest of an address form may be one `plus_uconst`, which is an
+	// offset added; anything else makes the expression one this file does
+	// not say.
+	tail_offset :: proc(c: ^Dwarf_Cursor) -> (extra: i64, ok: bool) {
+		if c.at == len(c.data) {
+			return 0, true
+		}
+		if c.data[c.at] == 0x23 {
+			c.at += 1
+			v := dw_uleb(c)
+			return i64(v), c.at == len(c.data)
+		}
+		return 0, false
+	}
+	switch {
+	case op == 0x03: // addr
+		if len(expr) >= 9 {
+			a := i64(dw_u64(&c))
+			if extra, ok := tail_offset(&c); ok {
+				return .Addr, 0, a + extra
+			}
+		}
+	case op == 0x91: // fbreg
+		off := dw_sleb(&c)
+		if extra, ok := tail_offset(&c); ok {
+			return .Fbreg, 0, off + extra
+		}
+	case op >= 0x50 && op <= 0x6f: // reg0..reg31
+		if len(expr) == 1 {
+			return .Reg, u32(op - 0x50), 0
+		}
+	case op == 0x90: // regx
+		r := dw_uleb(&c)
+		if c.at == len(expr) {
+			return .Reg, u32(r), 0
+		}
+	case op >= 0x70 && op <= 0x8f: // breg0..breg31
+		off := dw_sleb(&c)
+		if extra, ok := tail_offset(&c); ok {
+			return .Breg, u32(op - 0x70), off + extra
+		}
+	case op >= 0x30 && op <= 0x4f: // lit0..lit31, with stack_value
+		if len(expr) == 2 && expr[1] == 0x9f {
+			return .Const, 0, i64(op - 0x30)
+		}
+	case op == 0x10: // constu, with stack_value
+		v := dw_uleb(&c)
+		if c.at + 1 == len(expr) && expr[c.at] == 0x9f {
+			return .Const, 0, i64(v)
+		}
+	case op == 0x11: // consts, with stack_value
+		v := dw_sleb(&c)
+		if c.at + 1 == len(expr) && expr[c.at] == 0x9f {
+			return .Const, 0, v
+		}
+	}
+	return .Other, 0, 0
+}
+
+// vxd_var_rows appends the rows for one variable. One for an expression,
+// one per entry for a location list, and one `Gone` row for a variable
+// with no location, so a debugger can still name and type it.
+vxd_var_rows :: proc(ctx: ^Vxd_Unit_Ctx, i: int) {
+	b := ctx.b
+	u := ctx.u
+	name := u32(0)
+	if v, ok := dw_origin_attr(u, i, DW_AT_name); ok {
+		name = vxd_intern(b, v.text)
+	}
+	type_row := VXD_NO_TYPE
+	if r := dw_origin_ref(u, i, DW_AT_type); r >= 0 {
+		if tr, known := ctx.types[r]; known {
+			type_row = tr
+		}
+	}
+	d := &u.dies[i]
+	if v, ok := dw_attr(d, DW_AT_const_value); ok {
+		append(&b.vars, Vxd_Var{name = name, type = type_row, kind = u32(Vxd_Loc_Kind.Const), offset = i64(v.num)})
+		return
+	}
+	v, has_loc := dw_attr(d, DW_AT_location)
+	if !has_loc {
+		append(&b.vars, Vxd_Var{name = name, type = type_row, kind = u32(Vxd_Loc_Kind.Gone)})
+		return
+	}
+	if v.form == 0x18 || len(v.block) > 0 {
+		kind, reg, off := vxd_classify(v.block)
+		append(&b.vars, Vxd_Var{name = name, type = type_row, kind = u32(kind), reg = reg, offset = off})
+		return
+	}
+	// A location list: entries relative to a base the list may reset.
+	if ctx.loc == nil {
+		append(&b.vars, Vxd_Var{name = name, type = type_row, kind = u32(Vxd_Loc_Kind.Other)})
+		return
+	}
+	c := Dwarf_Cursor{data = ctx.loc, at = int(v.num)}
+	base := ctx.cu_low
+	rows := 0
+	for c.at + 16 <= len(c.data) {
+		lo := dw_u64(&c)
+		hi := dw_u64(&c)
+		if lo == 0 && hi == 0 {
+			break
+		}
+		if lo == 0xffff_ffff_ffff_ffff {
+			base = hi
+			continue
+		}
+		n := int(dw_u16(&c))
+		expr := c.data[c.at:][:n]
+		c.at += n
+		kind, reg, off := vxd_classify(expr)
+		append(&b.vars, Vxd_Var{name = name, type = type_row, kind = u32(kind), reg = reg, offset = off, low = base + lo, high = base + hi})
+		rows += 1
+	}
+	if rows == 0 {
+		append(&b.vars, Vxd_Var{name = name, type = type_row, kind = u32(Vxd_Loc_Kind.Gone)})
+	}
+}
+
+// vxd_die_ranges answers the address ranges a DIE covers: its low and
+// high, or every pair of its range list.
+vxd_die_ranges :: proc(ctx: ^Vxd_Unit_Ctx, i: int) -> [dynamic][2]u64 {
+	out: [dynamic][2]u64
+	d := &ctx.u.dies[i]
+	if lo, ok := dw_attr(d, DW_AT_low_pc); ok {
+		if hi, hok := dw_attr(d, DW_AT_high_pc); hok {
+			high := hi.form == 0x01 ? hi.num : lo.num + hi.num
+			append(&out, [2]u64{lo.num, high})
+		}
+		return out
+	}
+	if r, ok := dw_attr(d, DW_AT_ranges); ok && ctx.ranges != nil {
+		c := Dwarf_Cursor{data = ctx.ranges, at = int(r.num)}
+		base := ctx.cu_low
+		for c.at + 16 <= len(c.data) {
+			lo := dw_u64(&c)
+			hi := dw_u64(&c)
+			if lo == 0 && hi == 0 {
+				break
+			}
+			if lo == 0xffff_ffff_ffff_ffff {
+				base = hi
+				continue
+			}
+			append(&out, [2]u64{base + lo, base + hi})
+		}
+	}
+	return out
+}
+
+/*
+vxd_scope adds the rows for one scope-making DIE, a procedure with code,
+a block or an inlined call. Below it come its variables and the scopes
+nested in it. A scope with several ranges is several rows sharing one run
+of variables. A lookup by address then finds the right one whichever
+range the address is in.
+*/
+vxd_scope :: proc(ctx: ^Vxd_Unit_Ctx, i: int, parent: u32) {
+	b := ctx.b
+	u := ctx.u
+	ranges := vxd_die_ranges(ctx, i)
+	defer delete(ranges)
+	if len(ranges) == 0 {
+		return
+	}
+	name := u32(0)
+	if u.dies[i].tag != DW_TAG_lexical_block {
+		if v, ok := dw_origin_attr(u, i, DW_AT_linkage_name); ok {
+			name = vxd_intern(b, v.text)
+		} else if v, ok := dw_origin_attr(u, i, DW_AT_name); ok {
+			name = vxd_intern(b, v.text)
+		}
+	}
+	first := u32(len(b.vars))
+	for ci in u.dies[i].children {
+		tag := u.dies[ci].tag
+		if tag == DW_TAG_variable || tag == DW_TAG_formal_parameter {
+			vxd_var_rows(ctx, ci)
+		}
+	}
+	nvars := u32(len(b.vars)) - first
+	// The first row is the one children hang off; the others are the
+	// same scope again at its other ranges.
+	row := u32(len(b.scopes))
+	for r in ranges {
+		append(&b.scopes, Vxd_Scope{low = r[0], high = r[1], parent = parent, name = name, first = first, nvars = nvars})
+	}
+	for ci in u.dies[i].children {
+		tag := u.dies[ci].tag
+		if tag == DW_TAG_lexical_block || tag == DW_TAG_inlined_subroutine || tag == DW_TAG_subprogram {
+			vxd_scope(ctx, ci, row)
+		}
+	}
+}
+
+// vxd_scopes walks the unit: a scope for the unit's own variables, which
+// hold everywhere, then one for every procedure with code and everything
+// below it.
+vxd_scopes :: proc(ctx: ^Vxd_Unit_Ctx) {
+	b := ctx.b
+	u := ctx.u
+	top := &u.dies[0]
+	unit_row := u32(len(b.scopes))
+	first := u32(len(b.vars))
+	for ci in top.children {
+		if u.dies[ci].tag == DW_TAG_variable {
+			vxd_var_rows(ctx, ci)
+		}
+	}
+	name := u32(0)
+	if v, ok := dw_attr(top, DW_AT_name); ok {
+		name = vxd_intern(b, v.text)
+	}
+	append(&b.scopes, Vxd_Scope{low = 0, high = 0xffff_ffff_ffff_ffff, parent = VXD_NO_SCOPE, name = name, first = first, nvars = u32(len(b.vars)) - first})
+	for ci in top.children {
+		if u.dies[ci].tag == DW_TAG_subprogram {
+			vxd_scope(ctx, ci, unit_row)
+		}
 	}
 }
 
@@ -1984,6 +2645,11 @@ elf_to_debug :: proc(elf_path: string, out_path: string, arch: Arch, with_dis: b
 	slice.stable_sort_by(b.procs[:], proc(x, y: Vxd_Proc) -> bool {return x.low < y.low})
 	slice.stable_sort_by(b.lines[:], proc(x, y: Vxd_Line) -> bool {return x.addr < y.addr})
 	slice.stable_sort_by(b.dis[:], proc(x, y: Vxd_Dis) -> bool {return x.addr < y.addr})
+	// Scopes sort by their start, and a nested one after the one around it.
+	// The same start means the outer one first, which is the order they
+	// were made in. `parent` rows are indices, so the sort must keep them,
+	// and a permutation is applied to the links after.
+	vxd_sort_scopes(&b)
 	for p, i in b.procs {
 		append(&b.names, Vxd_Name{name = p.name, index = u32(i)})
 	}
@@ -1997,7 +2663,7 @@ elf_to_debug :: proc(elf_path: string, out_path: string, arch: Arch, with_dis: b
 	// The header and directory come first, so the reader knows where every
 	// table is from sixteen bytes and the rows after them. The directory is
 	// written after the tables are laid out, at a size fixed by the count.
-	tables := 7
+	tables := 11
 	dir_size := tables * 24
 	body: [dynamic]u8
 	dir: [dynamic]u8
@@ -2012,6 +2678,10 @@ elf_to_debug :: proc(elf_path: string, out_path: string, arch: Arch, with_dis: b
 	vxd_write_table(&body, &dir, .Lines, 16, len(b.lines), slice.to_bytes(b.lines[:]))
 	vxd_write_table(&body, &dir, .Names, 8, len(b.names), slice.to_bytes(b.names[:]))
 	vxd_write_table(&body, &dir, .Dis, 16, len(b.dis), slice.to_bytes(b.dis[:]))
+	vxd_write_table(&body, &dir, .Types, 32, len(b.types), slice.to_bytes(b.types[:]))
+	vxd_write_table(&body, &dir, .Members, 16, len(b.members), slice.to_bytes(b.members[:]))
+	vxd_write_table(&body, &dir, .Scopes, 32, len(b.scopes), slice.to_bytes(b.scopes[:]))
+	vxd_write_table(&body, &dir, .Vars, 40, len(b.vars), slice.to_bytes(b.vars[:]))
 	vxd_write_table(&body, &dir, .Strings, 1, len(b.pool), b.pool[:])
 	written := len(dir) / 24
 	head: [dynamic]u8
@@ -2024,6 +2694,44 @@ elf_to_debug :: proc(elf_path: string, out_path: string, arch: Arch, with_dis: b
 	if werr := os.write_entire_file(out_path, body[:]); werr != nil {
 		die("cannot write %s", out_path)
 	}
-	step("%s: %d units, %d files, %d procedures, %d line rows, %d instructions, %d bytes",
-		out_path, len(b.units), len(b.files), len(b.procs), len(b.lines), len(b.dis), len(body))
+	step("%s: %d units, %d files, %d procedures, %d line rows, %d types, %d scopes, %d variable rows, %d instructions, %d bytes",
+		out_path, len(b.units), len(b.files), len(b.procs), len(b.lines), len(b.types), len(b.scopes), len(b.vars), len(b.dis), len(body))
+}
+
+// vxd_sort_scopes orders the scope rows by start address, keeping a scope
+// before the ones nested in it. Every `parent` link is rewritten for the
+// new order.
+vxd_sort_scopes :: proc(b: ^Vxd_Builder) {
+	n := len(b.scopes)
+	order := make([]int, n)
+	for i in 0 ..< n {
+		order[i] = i
+	}
+	rows := b.scopes[:]
+	context.user_ptr = &rows
+	slice.sort_by(order, proc(x, y: int) -> bool {
+		rows := (^[]Vxd_Scope)(context.user_ptr)^
+		a, c := rows[x], rows[y]
+		if a.low != c.low {
+			return a.low < c.low
+		}
+		if a.high != c.high {
+			return a.high > c.high
+		}
+		return x < y
+	})
+	place := make([]u32, n)
+	for old, new_i in order {
+		place[old] = u32(new_i)
+	}
+	sorted := make([dynamic]Vxd_Scope, 0, n)
+	for old in order {
+		r := b.scopes[old]
+		if r.parent != VXD_NO_SCOPE {
+			r.parent = place[r.parent]
+		}
+		append(&sorted, r)
+	}
+	delete(b.scopes)
+	b.scopes = sorted
 }

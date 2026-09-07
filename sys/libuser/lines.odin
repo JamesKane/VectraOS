@@ -11,6 +11,8 @@ package libuser
 
 import "base:runtime"
 
+import "vsys:abi"
+
 READER_SIZE :: 8192
 
 Reader :: struct {
@@ -73,7 +75,20 @@ read_line :: proc "contextless" (r: ^Reader) -> (line: string, ok: bool) #no_bou
 
 // read_all reads a descriptor to its end into memory from `allocator`.
 read_all :: proc(fd: int, allocator: runtime.Allocator) -> (data: []u8, ok: bool) {
-	out := make([dynamic]u8, 0, 4096, allocator)
+	// Sized from the file when the server says how long it is, so a large
+	// file is one allocation and not a doubling that holds two copies at
+	// the top. A server that says zero -- a device, a pipe -- gets the
+	// doubling, and an append the heap refuses is a short file the caller
+	// must not mistake for the whole one.
+	size := 4096
+	st: abi.Stat
+	if fstat(fd, &st) == 0 && st.length > 0 && st.length < 1 << 30 {
+		size = int(st.length) + 1
+	}
+	out := make([dynamic]u8, 0, size, allocator)
+	if cap(out) < size {
+		return nil, false
+	}
 	tmp: [4096]u8
 	for {
 		n := read(fd, tmp[:])
@@ -84,7 +99,12 @@ read_all :: proc(fd: int, allocator: runtime.Allocator) -> (data: []u8, ok: bool
 		if n == 0 {
 			break
 		}
+		before := len(out)
 		append(&out, ..tmp[:n])
+		if len(out) != before + int(n) {
+			delete(out)
+			return nil, false
+		}
 	}
 	return out[:], true
 }

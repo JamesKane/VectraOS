@@ -47,9 +47,13 @@ Table :: enum u32 {
 	Names   = 5,
 	Dis     = 6,
 	Strings = 7,
+	Types   = 8,
+	Members = 9,
+	Scopes  = 10,
+	Vars    = 11,
 }
 
-MAX_TABLES :: 8
+MAX_TABLES :: 12
 HEADER_SIZE :: 16
 DIR_ENTRY_SIZE :: 24
 
@@ -275,4 +279,254 @@ dis_next :: proc "contextless" (d: ^Debug, addr: u64) -> (next: u64, ok: bool) {
 		return 0, false
 	}
 	return u64at(d.data, entry_at(d, .Dis, i + 1)), true
+}
+
+// -- Types, scopes and variables ------------------------------------------------
+
+/*
+The second half of the file: what a debugger shows beside an address.
+
+    types     kind, name, size, target, count, first, encoding
+    members   name, type, offset -- a struct's fields, or an enum's values
+    scopes    low, high, parent, name, first, nvars   sorted by low, outer first
+    vars      name, type, kind, reg, offset, low, high
+
+A scope is a procedure with code, a block in it, or a call inlined into
+it. The unit itself is one scope holding every global. Its variables are
+a run of rows. A variable with a location list has one row per entry, and
+each holds on its own range. A row with no range holds everywhere. `var_at`
+walks from the innermost scope at an address outward and answers the first
+row of a name that holds there.
+*/
+TYPE_SIZE :: 32
+MEMBER_SIZE :: 16
+SCOPE_SIZE :: 32
+VAR_SIZE :: 40
+NO_TYPE :: u32(0xffff_ffff)
+NO_SCOPE :: u32(0xffff_ffff)
+
+Type_Kind :: enum u32 {
+	Unknown = 0,
+	Base    = 1,
+	Pointer = 2,
+	Array   = 3,
+	Struct  = 4,
+	Union   = 5,
+	Enum    = 6,
+	Proc    = 7,
+	Typedef = 8,
+	Slice   = 9,
+	String  = 10,
+	Map     = 11,
+}
+
+Loc_Kind :: enum u32 {
+	Gone  = 0, // No location at all
+	Fbreg = 1, // At the frame base plus `offset`
+	Reg   = 2, // In register `reg`, in DWARF's numbering for the architecture
+	Breg  = 3, // At register `reg` plus `offset`
+	Addr  = 4, // At the address `offset`
+	Const = 5, // The value `offset` itself
+	Other = 6, // An expression the file does not say: optimised away, to a debugger
+}
+
+Type :: struct {
+	kind:   Type_Kind,
+	name:   string,
+	size:   u32,
+	target: u32, // What it points at, holds or names; `NO_TYPE` for none
+	count:  u32, // Members, enumerators, or an array's length
+	first:  u32, // Its first member row
+	enc:    u32, // A base type's DWARF encoding
+}
+
+Scope :: struct {
+	low, high: u64,
+	parent:    u32,
+	name:      string,
+	first:     u32,
+	nvars:     u32,
+}
+
+Var :: struct {
+	name:      string,
+	type:      u32,
+	kind:      Loc_Kind,
+	reg:       u32,
+	offset:    i64,
+	low, high: u64,
+}
+
+type_row :: proc "contextless" (d: ^Debug, i: int) -> (t: Type, ok: bool) {
+	if i < 0 || i >= count(d, .Types) {
+		return {}, false
+	}
+	at := entry_at(d, .Types, i)
+	t.kind = Type_Kind(u32at(d.data, at))
+	t.name = str(d, u32at(d.data, at + 4))
+	t.size = u32at(d.data, at + 8)
+	t.target = u32at(d.data, at + 12)
+	t.count = u32at(d.data, at + 16)
+	t.first = u32at(d.data, at + 20)
+	t.enc = u32at(d.data, at + 24)
+	return t, true
+}
+
+// type_named finds a type by its full name, the first of that name. A
+// linear scan: the table is small, and a name lookup is a person typing.
+type_named :: proc "contextless" (d: ^Debug, name: string) -> (index: int, ok: bool) {
+	for i in 0 ..< count(d, .Types) {
+		if str(d, u32at(d.data, entry_at(d, .Types, i) + 4)) == name {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// type_resolved follows typedefs to the type they name.
+type_resolved :: proc "contextless" (d: ^Debug, i: int) -> (t: Type, index: int, ok: bool) {
+	index = i
+	for _ in 0 ..< 8 {
+		t, ok = type_row(d, index)
+		if !ok {
+			return {}, -1, false
+		}
+		if t.kind != .Typedef || t.target == NO_TYPE {
+			return t, index, true
+		}
+		index = int(t.target)
+	}
+	return t, index, true
+}
+
+member_row :: proc "contextless" (d: ^Debug, i: int) -> (name: string, type: u32, offset: u64, ok: bool) {
+	if i < 0 || i >= count(d, .Members) {
+		return "", NO_TYPE, 0, false
+	}
+	at := entry_at(d, .Members, i)
+	return str(d, u32at(d.data, at)), u32at(d.data, at + 4), u64at(d.data, at + 8), true
+}
+
+scope_row :: proc "contextless" (d: ^Debug, i: int) -> (s: Scope, ok: bool) {
+	if i < 0 || i >= count(d, .Scopes) {
+		return {}, false
+	}
+	at := entry_at(d, .Scopes, i)
+	s.low = u64at(d.data, at)
+	s.high = u64at(d.data, at + 8)
+	s.parent = u32at(d.data, at + 16)
+	s.name = str(d, u32at(d.data, at + 20))
+	s.first = u32at(d.data, at + 24)
+	s.nvars = u32at(d.data, at + 28)
+	return s, true
+}
+
+// scope_at answers the innermost scope an address is inside. Of the rows
+// that cover it, that is the one that starts last and, at a tie, ends
+// first. The unit's own scope covers everything, so an address in no
+// procedure answers it.
+scope_at :: proc "contextless" (d: ^Debug, addr: u64) -> (i: int, ok: bool) {
+	best := -1
+	best_low, best_high := u64(0), u64(0)
+	i = last_at_most(d, .Scopes, addr)
+	for i >= 0 {
+		s, _ := scope_row(d, i)
+		if addr >= s.low && addr < s.high {
+			if best < 0 || s.low > best_low || (s.low == best_low && s.high < best_high) {
+				best, best_low, best_high = i, s.low, s.high
+			}
+		}
+		// Rows start in order, so once a row starts more than a large
+		// procedure's length before the address, nothing earlier covers
+		// it but the unit's own row, which is the first.
+		if s.low + (1 << 20) < addr && i != 0 {
+			i = 0
+			continue
+		}
+		i -= 1
+	}
+	return best, best >= 0
+}
+
+var_row :: proc "contextless" (d: ^Debug, i: int) -> (v: Var, ok: bool) {
+	if i < 0 || i >= count(d, .Vars) {
+		return {}, false
+	}
+	at := entry_at(d, .Vars, i)
+	v.name = str(d, u32at(d.data, at))
+	v.type = u32at(d.data, at + 4)
+	v.kind = Loc_Kind(u32at(d.data, at + 8))
+	v.reg = u32at(d.data, at + 12)
+	v.offset = i64(u64at(d.data, at + 16))
+	v.low = u64at(d.data, at + 24)
+	v.high = u64at(d.data, at + 32)
+	return v, true
+}
+
+// var_holds says whether a variable row is the one for an address: a row
+// with no range holds everywhere.
+var_holds :: proc "contextless" (v: Var, addr: u64) -> bool {
+	return (v.low == 0 && v.high == 0) || (addr >= v.low && addr < v.high)
+}
+
+/*
+var_at finds a variable by name as seen from an address: the innermost
+scope's first, then each scope outward to the unit's globals. Among the
+rows of one name, the one that holds at the address wins; a name with rows
+that all hold elsewhere answers its first row with the kind `Gone`, so the
+caller can still say the variable exists and is not here.
+*/
+var_at :: proc "contextless" (d: ^Debug, addr: u64, name: string) -> (v: Var, ok: bool) {
+	scope, found := scope_at(d, addr)
+	if !found {
+		return {}, false
+	}
+	for _ in 0 ..< 64 {
+		s, sok := scope_row(d, scope)
+		if !sok {
+			break
+		}
+		seen := false
+		fallback: Var
+		for i in int(s.first) ..< int(s.first + s.nvars) {
+			row, _ := var_row(d, i)
+			if row.name != name {
+				continue
+			}
+			if var_holds(row, addr) {
+				return row, true
+			}
+			if !seen {
+				fallback = row
+				seen = true
+			}
+		}
+		if seen {
+			fallback.kind = .Gone
+			return fallback, true
+		}
+		if s.parent == NO_SCOPE {
+			break
+		}
+		scope = int(s.parent)
+	}
+	return {}, false
+}
+
+// scope_proc answers the procedure a scope is in: the scope itself when it
+// is one, or the nearest named scope above a block. The unit's row when
+// nothing named is above.
+scope_proc :: proc "contextless" (d: ^Debug, i: int) -> (index: int, s: Scope, ok: bool) {
+	index = i
+	for _ in 0 ..< 64 {
+		s, ok = scope_row(d, index)
+		if !ok {
+			return -1, {}, false
+		}
+		if len(s.name) > 0 || s.parent == NO_SCOPE {
+			return index, s, true
+		}
+		index = int(s.parent)
+	}
+	return index, s, true
 }

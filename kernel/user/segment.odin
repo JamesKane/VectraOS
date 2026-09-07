@@ -59,12 +59,18 @@ import "kernel:sync"
 /*
 One contiguous piece of a run, past the first.
 
-Four is the cap, and it is a cap on how many pieces a run may be in at once
+Eight is the cap, and it is a cap on how many pieces a run may be in at once
 rather than on how big it gets. A `segbrk` that adds pages adds a piece and one
 that gives them back takes pieces away, so a run that grows and shrinks and
 grows again stays inside it. It is a number to raise rather than a design.
+
+It was four, and four capped every ring 3 heap at half a megabyte without
+saying so. `sys/libuser`'s heap doubles at each grow, so the pieces were
+64K, 64K, 128K and 256K, and the fifth grow was refused. A program reading
+a file past a quarter of a megabyte into a growing array then kept a short
+copy, because a failed `append` says nothing. Eight is eight megabytes.
 */
-MAX_RUN_PIECES :: 4
+MAX_RUN_PIECES :: 8
 
 Run_Piece :: struct {
 	base:  uintptr,
