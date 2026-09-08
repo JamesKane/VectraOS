@@ -7886,7 +7886,7 @@ verify_c :: proc(r: ^Result) {
 	posix := [?]string{"posixtest"}
 	said6, _, ok6 := run_script(r, "/bin/posixtest", posix[:], PATIENCE * 10, abi_said[:], "a program over sys/libposix starts")
 	if ok6 {
-		check(r, said6 == "0", said6 == "0" ? "and printf, pipe, fork, exec and waitpid all held over the POSIX library" : posix_step(said6))
+		check(r, said6 == "0", said6 == "0" ? "and printf, pipe, fork, exec, waitpid, mmap, the clock and poll all held over the POSIX library" : posix_step(said6))
 	}
 	reap_orphans()
 
@@ -7920,6 +7920,9 @@ posix_step :: proc(said: string) -> string {
 	case "4": return "posixtest could not fork"
 	case "5": return "posixtest's waitpid returned the wrong pid"
 	case "6": return "posixtest's child exited with the wrong number"
+	case "7", "8": return "posixtest's mmap did not hold its pages"
+	case "9": return "posixtest's clock ran backwards across a sleep"
+	case "10", "11": return "posixtest's poll did not see a ready descriptor"
 	}
 	return kept_said(said)
 }

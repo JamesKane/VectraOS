@@ -622,6 +622,9 @@ libposix_sources := [?]string {
 	"sys/libposix/src/tls.c",
 	"sys/libposix/src/pthread.c",
 	"sys/libposix/src/signal.c",
+	"sys/libposix/src/mman.c",
+	"sys/libposix/src/time.c",
+	"sys/libposix/src/poll.c",
 	"sys/libposix/src/crt0.c",
 }
 

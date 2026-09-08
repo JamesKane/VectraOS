@@ -11,6 +11,9 @@ or the name of the first that did not, which the self-test reads.
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/mman.h>
+#include <time.h>
+#include <poll.h>
 
 int main(int argc, char **argv)
 {
@@ -60,6 +63,46 @@ int main(int argc, char **argv)
 		exit(6);
 	}
 
-	printf("posixtest: pipe, fork, exec and wait all held\n");
+	/* An anonymous map: write a pattern across a page, read it back. */
+	long *page = (long *)mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+		MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	if (page == MAP_FAILED) {
+		exit(7);
+	}
+	for (int i = 0; i < 512; i++) {
+		page[i] = i * 3;
+	}
+	for (int i = 0; i < 512; i++) {
+		if (page[i] != i * 3) {
+			exit(8);
+		}
+	}
+	munmap(page, 4096);
+
+	/* The clock: two reads a sleep apart, the second not before the first. */
+	struct timespec a, b;
+	clock_gettime(CLOCK_REALTIME, &a);
+	struct timespec nap = {0, 5000000};
+	nanosleep(&nap, NULL);
+	clock_gettime(CLOCK_REALTIME, &b);
+	long dsec = (long)(b.tv_sec - a.tv_sec);
+	if (dsec < 0 || (dsec == 0 && b.tv_nsec < a.tv_nsec)) {
+		exit(9);
+	}
+
+	/* poll a readable pipe: a byte waiting, POLLIN reported. */
+	int pf[2];
+	if (pipe(pf) != 0) {
+		exit(10);
+	}
+	write(pf[1], "x", 1);
+	struct pollfd p = {pf[0], POLLIN, 0};
+	if (poll(&p, 1, 0) < 1 || !(p.revents & POLLIN)) {
+		exit(11);
+	}
+	close(pf[0]);
+	close(pf[1]);
+
+	printf("posixtest: pipe, fork, exec, wait, mmap, clock and poll all held\n");
 	exit(0);
 }

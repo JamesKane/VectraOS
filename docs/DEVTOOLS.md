@@ -851,13 +851,19 @@ each thread with its own thread pointer; and a signal caught, a note
 turned back into a number. `verify_c` runs a program per shape --
 `posixtest`, `posixthreads`, `posixsignal` -- on three architectures.
 
+`mmap` and `munmap` are `segalloc` and `segdetach`, a private file map a
+run read once and a shared one refused; `clock_gettime` and `nanosleep`
+are `/dev/time` and the tick; `poll` reports every descriptor ready, the
+first cut the plan allows until a program truly waits on several. All
+three are in `posixtest` now.
+
 Not yet, and each named for what it waits on. mlibc itself, built with
 meson, and `libc++` on it: the external half, and the reason the library
 exists. `lld` and `clang` on the machine: the two measurements, which
-that half unlocks. And the table's rows no test here needs yet -- `mmap`,
-the sockets, `poll`, `tcsetattr`, `clock_gettime`, and `envp` written to
-`/env`. The boundary is proven; the large C++ programs that ride it are
-the next increment.
+that half unlocks. And the table's rows no test here needs yet -- the
+sockets over `/net`, `tcsetattr`, and `envp` written to `/env`. The
+boundary is proven; the large C++ programs that ride it are the next
+increment.
 
 ### Step 8: self-hosting
 
