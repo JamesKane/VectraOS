@@ -417,7 +417,10 @@ the documents it points at.
    line client and `tests/dbg.rc` as the boot self-test's script: step 5,
    first cut, the same month. `apps/debugger` is the window, a `libmui`
    client of the same files: step 6, first cut, the same month. POSIX is
-   mlibc over the calls, so that `clang` and `odin` run on the machine.
+   mlibc over the calls, so that `clang` and `odin` run on the machine:
+   `sys/libposix` is the tree's own half of it, files, processes,
+   threads and a caught signal over the door, step 7, first cut, the same
+   month, with mlibc itself and the compiler on the machine still ahead.
    Step 1 needs nothing before it, and steps 7 and 8 have step 0 under
    them.
 6. **The fleet, from step 3.** `docs/FLEET.md` is the plan, and steps 0
