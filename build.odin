@@ -603,6 +603,7 @@ posix_programs := [?]Posix_Program {
 	{name = "posixchild", sources = {"tests/posix/child.c"}},
 	{name = "posixthreads", sources = {"tests/posix/threads.c"}},
 	{name = "posixsignal", sources = {"tests/posix/signal.c"}},
+	{name = "posixnet", sources = {"tests/posix/net.c"}},
 }
 
 // The `sys/libposix` sources: the shared door, string and heap from
@@ -625,6 +626,9 @@ libposix_sources := [?]string {
 	"sys/libposix/src/mman.c",
 	"sys/libposix/src/time.c",
 	"sys/libposix/src/poll.c",
+	"sys/libposix/src/env.c",
+	"sys/libposix/src/termios.c",
+	"sys/libposix/src/socket.c",
 	"sys/libposix/src/crt0.c",
 }
 

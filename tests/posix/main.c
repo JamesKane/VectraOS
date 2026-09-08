@@ -14,6 +14,7 @@ or the name of the first that did not, which the self-test reads.
 #include <sys/mman.h>
 #include <time.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 
 int main(int argc, char **argv)
 {
@@ -49,7 +50,10 @@ int main(int argc, char **argv)
 		cargv[0] = "posixchild";
 		cargv[1] = "from-fork";
 		cargv[2] = NULL;
-		execv("/bin/posixchild", cargv);
+		char *cenv[2];
+		cenv[0] = "PXCHILD=ok";
+		cenv[1] = NULL;
+		execve("/bin/posixchild", cargv, cenv);
 		_exit(99); /* exec returned: it failed. */
 	}
 	int status = 0;
@@ -103,6 +107,24 @@ int main(int argc, char **argv)
 	close(pf[0]);
 	close(pf[1]);
 
-	printf("posixtest: pipe, fork, exec, wait, mmap, clock and poll all held\n");
+	/* The environment: set a variable, read it back. */
+	setenv("PXVAR", "42", 1);
+	const char *pv = getenv("PXVAR");
+	if (pv == NULL || strcmp(pv, "42") != 0) {
+		exit(12);
+	}
+
+	/* The terminal, read-only so the shared console mode is not touched:
+	   a standard descriptor is a tty, and the window-size request is
+	   ENOTTY on a console that is no window. */
+	if (!isatty(0) || !isatty(1)) {
+		exit(13);
+	}
+	struct winsize ws;
+	if (ioctl(1, TIOCGWINSZ, &ws) != -1) {
+		exit(14);
+	}
+
+	printf("posixtest: pipe, fork, exec, wait, mmap, clock, poll, env and tty all held\n");
 	exit(0);
 }

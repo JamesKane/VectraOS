@@ -1,10 +1,9 @@
 /*
-stdlib_extra.c -- number conversion, `calloc`, `realloc` and `getenv`.
+stdlib_extra.c -- number conversion, `calloc` and `realloc`.
 
 `malloc` and `free` are the bump heap in the shared `malloc.c`. `calloc`
 zeroes, and `realloc` allocates and copies, because the bump never frees.
-`getenv` answers nothing yet: the environment as files under `/env` is
-section 8's remaining piece.
+The environment lives in `env.c`, over files under `/env`.
 */
 #include "posix_internal.h"
 #include <stdlib.h>
@@ -99,8 +98,3 @@ void *realloc(void *p, size_t n)
 	return q;
 }
 
-char *getenv(const char *name)
-{
-	(void)name;
-	return NULL;
-}

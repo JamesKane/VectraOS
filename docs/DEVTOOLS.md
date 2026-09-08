@@ -857,11 +857,20 @@ are `/dev/time` and the tick; `poll` reports every descriptor ready, the
 first cut the plan allows until a program truly waits on several. All
 three are in `posixtest` now.
 
+The terminal is `tcsetattr` and `tcgetattr` over `/dev/consctl`'s
+`rawon` and `rawoff`, with `isatty` and an `ioctl(TIOCGWINSZ)` that
+answers `ENOTTY` where there is no window. The environment is files
+under `/env`: `getenv`, `setenv`, and `execve` writing its `envp` there
+before the exec, which the child then reads. A client socket is Plan 9's
+dial in the library -- `socket`, `connect`, `send` and `recv` over
+`/net/cs` and the conversation's files, the sequence `sys/libnet` proves;
+`posixnet` connects to the machine's own listener over it.
+
 Not yet, and each named for what it waits on. mlibc itself, built with
 meson, and `libc++` on it: the external half, and the reason the library
 exists. `lld` and `clang` on the machine: the two measurements, which
-that half unlocks. And the table's rows no test here needs yet -- the
-sockets over `/net`, `tcsetattr`, and `envp` written to `/env`. The
+that half unlocks. And the socket's server side -- `bind`, `listen`,
+`accept` -- which comes with a server program that announces. The
 boundary is proven; the large C++ programs that ride it are the next
 increment.
 

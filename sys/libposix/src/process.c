@@ -53,12 +53,18 @@ int execvp(const char *file, char *const argv[])
 	return execv(file, argv);
 }
 
+extern int putenv(char *nameval);
+
 int execve(const char *path, char *const argv[], char *const envp[])
 {
-	/* The environment is a set of files under `/env`; a first cut runs the
-	   program with the parent's, which a shared namespace already gives.
-	   Writing `envp` to `/env` is the remaining piece named in section 8. */
-	(void)envp;
+	/* The environment is a set of files under `/env`, shared across the
+	   exec because the namespace is. So each `NAME=VALUE` is written there
+	   before the exec, and the new program reads it with `getenv`. */
+	if (envp != NULL) {
+		for (int i = 0; envp[i] != NULL; i++) {
+			putenv(envp[i]);
+		}
+	}
 	return execv(path, argv);
 }
 
