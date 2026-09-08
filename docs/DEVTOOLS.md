@@ -750,6 +750,23 @@ pointer.
 Boot line: the C program of section 4, the same in Odin, and the game
 started and closed by the self-test.
 
+**Started, September 2026: `sys/libapp`'s spine in Odin.** The platform
+layer's core is built: `open` claims a window from `/srv/draw`, sizes it,
+and attaches its store directly (`shmattach` by the id the `store` file
+names, over step 1's shared buffer); `frame` hands back the pixels, the
+seconds since the last frame (from `/dev/time`'s uptime -- the register
+fast path is a later rung), and the pointer, drained from an io thread that
+parks on the window's `mouse` file; `present` composites the frame with one
+write to `store`; `close` gives it all back. A frame loop is cooperative,
+so `pump` is the yield that lets the pointer thread run. `tests/app`
+(`apptest`) is the section-4 program in Odin: it opens a window, paints a
+ground and a marker where the pointer is, and the self-test reads both out
+of the store -- past the cursor's races on the glass -- injects a pointer
+move and watches the marker follow, then stops the server so the window
+closes under the client. Green on three architectures (the pointer half on
+the one board with a mouse). Left: the C header in `sys/include/vectra`
+and a C `apptest`, sound and the pads, and a game in `apps/`.
+
 ### Step 3: `/proc`, whole
 
 `kernel/procfs`, `kernel/user`, the three ports. About 1,900 lines.

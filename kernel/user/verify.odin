@@ -536,6 +536,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_terminal(&r, column)
 	verify_chords(&r)
 	verify_muiwin(&r)
+	verify_app(&r)
 	verify_debugger(&r)
 
 	// -- And a typed ^C, which reaches the program reading the console -------
@@ -5038,6 +5039,185 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	pipe.quiesce()
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "the mount of the dead server comes down")
 	drain_pinned(r, pin_before, "and the toolkit window's wire comes back whole")
+}
+
+/*
+verify_app runs a `sys/libapp` client and reads its frame off the glass.
+
+`apptest` is the platform layer's spine made a program: it opens a window,
+attaches its store, and each frame paints a ground and a marker where the
+pointer is. This spawns the draw server and the client, waits for the ground to
+appear -- `open` and the first `present` -- moves the pointer into the client
+area and watches the marker follow it -- a `frame` delivered the injected
+pointer and `present` composited it -- then stops the server, which closes the
+window under the client so it comes down on its own. `docs/DEVTOOLS.md` step 2.
+*/
+@(private = "file")
+verify_app :: proc(r: ^Result) #no_bounds_check {
+	s := devfs.raw_surface()
+	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
+		return
+	}
+	// The pointer part of this needs a mouse; the window, the store and the
+	// frame do not. So open, paint and present are checked on every board, and
+	// only the marker waits on a board that has a pointer to inject.
+	has_mouse := devfs.tree().mouse.present
+
+	count0 := srv.count()
+	settle()
+	pin_before := mem.live_objects(mem.heap_stats())
+
+	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
+	if !check(r, serr == vfs.OK && ps != nil, "the loader starts the draw server for the platform layer") {
+		return
+	}
+	r.programs += 1
+	if !check(r, await_posted("draw"), "which posts /srv/draw for the client to find") {
+		finish(r, ps, "the draw server is taken down")
+		return
+	}
+	if !check(r, desk_measure(s), "and paints a desktop before the client opens a window") {
+		finish(r, ps, "the draw server is taken down")
+		return
+	}
+
+	pd, derr := spawn_path(nil, "/bin/apptest", SPAWN_NS_COPY)
+	if !check(r, derr == vfs.OK && pd != nil, "the loader starts the libapp client") {
+		finish(r, ps, "the draw server is taken down")
+		return
+	}
+	r.programs += 1
+
+	// The kernel mounts the server, to read the client's window files and to
+	// stop it at the end.
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the server") {
+		finish(r, pd, "the client is taken down")
+		finish(r, ps, "and the draw server is taken down")
+		return
+	}
+
+	// Find the client's window. Its index is not fixed -- the server holds
+	// windows of its own -- so scan for the one whose store, read straight, the
+	// client has painted its ground into. That the store the file names has the
+	// ground in it is the client's `open`, its store attached, and a `frame`'s
+	// pixels, all in one. `shm_lookup` takes a reference the release below
+	// returns; a window that is not the client's is released and passed.
+	ground := u32(0x0022_4466)
+	marker := u32(0x00EE_8822)
+	wi := -1
+	sid: u64
+	stride, cx, cy, cw, ch := 0, 0, 0, 0, 0
+	store: [^]u32
+	scan: for _ in 0 ..< PATIENCE * 20 {
+		for i in 0 ..< 8 {
+			pbuf: [16]u8
+			pn := copy(pbuf[:], "/mnt/")
+			pbuf[pn] = u8('0' + i)
+			pn += 1
+			pn += copy(pbuf[pn:], "/store")
+			sf, se := vfs.open_path(vfs.boot_namespace, string(pbuf[:pn]), vfs.O_RDONLY)
+			if se != vfs.OK {
+				continue
+			}
+			sl: [96]u8
+			sn, _ := vfs.chan_read(sf, 0, sl[:])
+			vfs.chan_close(sf)
+			v: [6]int
+			si := 0
+			for k in 0 ..< 6 {
+				for si < sn && (sl[si] < '0' || sl[si] > '9') {si += 1}
+				for si < sn && sl[si] >= '0' && sl[si] <= '9' {v[k] = v[k] * 10 + int(sl[si] - '0'); si += 1}
+			}
+			if v[0] == 0 || v[4] <= 32 || v[5] <= 32 {
+				continue
+			}
+			phys, _, ok := shm_lookup(u64(v[0]))
+			if !ok {
+				continue
+			}
+			st := ([^]u32)(mem.phys_to_virt(phys))
+			c := (v[3] + v[5] / 2) * v[1] + v[2] + v[4] / 2
+			if st[c] == ground {
+				wi = i
+				sid = u64(v[0])
+				stride, cx, cy, cw, ch = v[1], v[2], v[3], v[4], v[5]
+				store = st
+				break scan
+			}
+			shm_release(u64(v[0]))
+		}
+		sync.delay(1)
+	}
+	if !check(r, wi >= 0, "the client opens a window and paints its ground into the store, which is a frame's pixels") {
+		finish(r, pd, "the client is taken down")
+		finish(r, ps, "and the draw server is taken down")
+		return
+	}
+
+	// And it presents: the ground reaches the glass. Where it landed is the
+	// client area's origin on the screen, which the pointer is aimed at.
+	ox2, oy2 := -1, -1
+	for _ in 0 ..< PATIENCE * 20 {
+		for col := 20; col < s.width - 20; col += 32 {
+			x, y, w, h := find_rect(s, ground, col, 0)
+			if x >= 0 && w > 32 && h > 32 {
+				ox2, oy2 = x, y
+				break
+			}
+		}
+		if ox2 >= 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, ox2 >= 0, "and presents it, so the ground is on the glass")
+
+	// The pointer into the middle of the client area, on a board that has one.
+	// A window's mouse file answers in client coordinates, so a `frame` paints
+	// the marker at the pointer within the client -- read back out of the store,
+	// past the cursor's races on the glass.
+	MARK_OFF :: 28
+	if has_mouse && ox2 >= 0 && check(r, point_to(ox2 + cw / 2, oy2 + ch / 2), "the pointer is moved into the client area") {
+		mark_at := (cy + ch / 2 + MARK_OFF + 8) * stride + cx + cw / 2 + MARK_OFF + 8
+		landed := false
+		for _ in 0 ..< PATIENCE * 20 {
+			if store[mark_at] == marker {
+				landed = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, landed, "and a frame paints the marker where the pointer is, which the store shows")
+	}
+
+	shm_release(sid)
+
+	// Stop the server by removing the client's window ctl, the terminal's way.
+	// That hangs the client's window up, the pointer read its io thread parks on
+	// ends, and the client closes and exits on its own.
+	cbuf: [16]u8
+	cn := copy(cbuf[:], "/mnt/")
+	cbuf[cn] = u8('0' + wi)
+	cn += 1
+	cn += copy(cbuf[cn:], "/ctl")
+	if ctl, cerr := vfs.open_path(vfs.boot_namespace, string(cbuf[:cn]), vfs.O_RDONLY); cerr == vfs.OK {
+		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of the window's ctl is the server's stop")
+		vfs.chan_close(ctl)
+	}
+	if check(r, wait(ps, PATIENCE), "the draw server exits") {
+		check(r, ps.exit.deliberate && ps.exit.status == 0, "with zero -- the remove was the stop it obeyed")
+	}
+	check(r, wait(pd, PATIENCE), "and the client comes down with it, its window gone")
+
+	check(r, srv.remove("draw") == vfs.OK, "the kernel takes the name away")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+
+	finish(r, pd, "and the client is reaped")
+	finish(r, ps, "and the draw server is reaped")
+
+	pipe.quiesce()
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "the mount of the dead server comes down")
+	drain_pinned(r, pin_before, "and the platform layer's wire comes back whole")
 }
 
 /*

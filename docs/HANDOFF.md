@@ -630,6 +630,13 @@ The remaining roots wait on nothing, and each can start now:
                        edge is answered by pre-sizing every store to the
                        whole screen, so a resize moves only `w`/`h` and the
                        run never moves under the client. All on three arches.
+    libapp             DEVTOOLS 2 started. `sys/libapp`'s spine in Odin --
+                       open/frame/present/close over the window store and
+                       the clock, the pointer on an io thread, `pump` the
+                       frame loop's yield. `tests/app` (apptest) proves it,
+                       the marker read out of the store past the cursor's
+                       glass races. Left: the C header (`sys/include/vectra`)
+                       and a C apptest, sound, the pads, and a game in apps/.
     a model, the ghost GHOST 0 and 1
     kfs large + rename DONE -- the unowned root, built; GHOST 0's write path
                        and DEVTOOLS 7 and 8 no longer stop at kfs
