@@ -1,0 +1,16 @@
+# tls.rc: two C programs with thread-local storage, run at once, from the
+# boot self-test. Each sets its thread-locals, sleeps so the other runs,
+# and checks they held. The pointer they read through is restored on every
+# switch, or one would read the other's. The exit word is `ok` when both
+# said `tls ok`, or what they said instead.
+tlstest &
+p1=$apid
+tlstest2 &
+p2=$apid
+wait $p1
+s1=$status
+wait $p2
+s2=$status
+if(~ $s1 'tls ok' && ~ $s2 'tls ok') exit ok
+echo '   tls: got' $s1 'and' $s2
+exit $s1

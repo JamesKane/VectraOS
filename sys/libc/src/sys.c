@@ -57,3 +57,8 @@ void _exit(int code)
 	for (;;) {
 	}
 }
+
+long vtls(void *tp)
+{
+	return __vsyscall(SYS_TLS, (long)tp, 0, 0, 0, 0, 0);
+}

@@ -149,6 +149,29 @@ write_tp :: proc "contextless" (v: u64) {
 	asm(v: u64) [#volatile, #clobber memory] { add %tp, v, %zero }(v)
 }
 
+/*
+The thread pointer, `tp`, which is a program's TLS base in ring 3 and this
+hart's own record in the kernel. The trap entry swaps the two: it saves a
+program's `tp` into its frame and restores it on the way out, so the frame
+carries it across a context switch and the scheduler does nothing.
+
+`SYS_TLS` therefore writes the frame's saved `tp`, not the live register,
+and the return puts it in `tp`. Saving and loading on a switch are nothing
+here, because the frame already is the save. See `vectors.S` and
+`docs/DEVTOOLS.md` section 3.
+*/
+user_tls_set :: proc "contextless" (frame: ^Trap_Frame, addr: u64) {
+	frame.x[4] = addr
+}
+
+user_tls_save :: proc "contextless" () -> u64 {
+	return 0
+}
+
+user_tls_load :: proc "contextless" (v: u64) {
+	_ = v
+}
+
 // current_sp is this frame's stack pointer. `mv a0, sp`, in bytes, because
 // the checker wants an input pinned to `sp` before it will read it.
 current_sp :: proc "contextless" () -> u64 {

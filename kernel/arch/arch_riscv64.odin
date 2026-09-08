@@ -141,6 +141,11 @@ USER_STACK_TILT :: 0
 
 kernel_stack_top :: riscv64.kernel_stack_top
 set_kernel_stack :: riscv64.set_kernel_stack
+
+// The thread pointer for a program's TLS, `docs/DEVTOOLS.md` section 3.
+user_tls_set :: riscv64.user_tls_set
+user_tls_save :: riscv64.user_tls_save
+user_tls_load :: riscv64.user_tls_load
 kernel_stack :: riscv64.kernel_stack
 set_user_trap_handler :: riscv64.set_user_trap_handler
 frame_is_user :: riscv64.frame_is_user

@@ -189,6 +189,21 @@ Thread :: struct {
 	*/
 	user: rawptr,
 
+	/*
+	The thread pointer a C or C++ program's TLS reads through, and whether
+	it was ever set.
+
+	A ring 3 program sets it with `SYS_TLS`, and the scheduler saves it off
+	the register when this thread stops running and loads it back when it
+	runs again -- so two programs with their own thread-local storage do not
+	read each other's. `has_tls` keeps the common program, which sets none,
+	from paying a register write on every switch. riscv64 carries the
+	pointer in the trap frame instead, so its `arch` hooks do nothing here.
+	See `docs/DEVTOOLS.md` section 3.
+	*/
+	tls:     u64,
+	has_tls: bool,
+
 	// Counters, all of them for the self-test rather than for the scheduler.
 	slices:      u64, // Whole slices of CPU consumed, blocking or not
 	preemptions: u64,

@@ -7866,6 +7866,17 @@ verify_c :: proc(r: ^Result) {
 	if ok4 {
 		check(r, said4 == "abi ok", said4 == "abi ok" ? "and every generated constant agrees with the kernel's" : said4)
 	}
+
+	// Thread-local storage: two C programs, each with its own thread pointer,
+	// run at once by `tls.rc`. Each sleeps so the other runs, and checks its
+	// thread-locals held, which they do only if the kernel saved and restored
+	// the pointer on the switch. `docs/DEVTOOLS.md` step 0.
+	tls := [?]string{"rc", "/lib/tests/tls.rc"}
+	said5, _, ok5 := run_script(r, "/bin/rc", tls[:], PATIENCE * 20, abi_said[:], "two C programs with thread-local storage start at once")
+	if ok5 {
+		check(r, said5 == "ok", said5 == "ok" ? "and each read its own thread-locals across every switch, its thread pointer restored" : kept_said(said5))
+	}
+	reap_orphans()
 }
 
 @(private = "file")

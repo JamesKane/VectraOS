@@ -67,6 +67,7 @@ void vsleep(long ms);
 long vgetpid(void);
 void exits(const char *msg) __attribute__((noreturn));
 void _exit(int code) __attribute__((noreturn));
+long vtls(void *tp);
 
 /* -- Output: Plan 9's print and fprint, a small subset -- */
 int print(const char *fmt, ...);

@@ -246,6 +246,11 @@ USER_STACK_TILT :: 8
 
 kernel_stack_top :: amd64.kernel_stack_top
 set_kernel_stack :: amd64.set_kernel_stack
+
+// The thread pointer for a program's TLS, `docs/DEVTOOLS.md` section 3.
+user_tls_set :: amd64.user_tls_set
+user_tls_save :: amd64.user_tls_save
+user_tls_load :: amd64.user_tls_load
 kernel_stack :: amd64.kernel_stack
 set_user_trap_handler :: amd64.set_user_trap_handler
 frame_is_user :: amd64.frame_is_user

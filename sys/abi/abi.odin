@@ -130,6 +130,11 @@ SYS_SEMACQUIRE :: u64(40) // address, block -> 1 taken, 0 not, -EINTR noted
 SYS_SEMRELEASE :: u64(41) // address, count
 SYS_ALARM :: u64(42) // ticks -> ticks the last alarm had left
 SYS_RENAME :: u64(43) // old path, new path -> 0, or -EXDEV across servers
+// docs/DEVTOOLS.md step 0: the thread pointer a C or C++ program's TLS wants.
+// amd64 needs it, because the FS base is a model-specific register a program
+// cannot write; arm64 and riscv64 set their own register and call it anyway,
+// so the kernel knows to save and restore the base on a context switch.
+SYS_TLS :: u64(44) // addr -> 0, the thread pointer set to `addr`
 
 /*
 How a program receives its arguments.

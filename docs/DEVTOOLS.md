@@ -674,11 +674,15 @@ reads 4, so the C build passes `-gdwarf-4`. The Odin runtime defines
 `memcpy`, `memmove` and `memset`, so `sys/libc`'s are weak and a mixed
 image takes the runtime's.
 
-Not yet: the thread pointer. `link_user.ld` exports the TLS bounds, but
-`SYS_TLS`, `crt0`'s per-proc block, and the save and restore on a context
-switch across the three ports are the next increment. Nothing in the boot
-line needs a thread pointer, and a C++ program builds without
-`thread_local` until it lands.
+**The thread pointer, September 2026.** `SYS_TLS` sets it: the FS base MSR
+on amd64, `TPIDR_EL0` on arm64, and the frame's saved `tp` on riscv64,
+which the trap entry already carries. `crt0` allocates one block per
+program, copies `.tdata` and zeros `.tbss` by each ABI's layout, and calls
+`SYS_TLS` before the constructors. The scheduler saves the base off a
+stopping thread and loads it onto a starting one, for a thread that set
+one, so two programs with their own thread-local storage do not read each
+other's. `tests/tls.rc` runs two C programs at once, each checking its
+thread-locals held across thirty sleeps.
 
 ### Step 1: the clock, the store, and sound
 

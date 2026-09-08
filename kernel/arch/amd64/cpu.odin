@@ -109,6 +109,29 @@ write_msr :: proc "contextless" (msr: u32, value: u64) {
 	_, _, _ = asm(m, lo, hi: u32) -> (m2, lo2, hi2: u32) [m -> m2 = %ecx, lo -> lo2 = %eax, hi -> hi2 = %edx, #volatile, #clobber memory] { wrmsr }(msr, u32(value), u32(value >> 32))
 }
 
+/*
+The thread pointer, a program's TLS base, in the FS base MSR.
+
+The kernel keeps this core's own record in GS, so FS is a program's to
+use, and a program cannot write the base itself: it is a model-specific
+register. `SYS_TLS` writes it here through `user_tls_set`, the scheduler
+saves it off a stopping thread and loads it onto a starting one, and the
+frame is nothing to this architecture. See `kernel/sched` and
+`docs/DEVTOOLS.md` section 3.
+*/
+user_tls_set :: proc "contextless" (frame: ^Trap_Frame, addr: u64) {
+	_ = frame
+	write_msr(MSR_FS_BASE, addr)
+}
+
+user_tls_save :: proc "contextless" () -> u64 {
+	return read_msr(MSR_FS_BASE)
+}
+
+user_tls_load :: proc "contextless" (v: u64) {
+	write_msr(MSR_FS_BASE, v)
+}
+
 // -- Control registers -------------------------------------------------------
 
 read_cr0 :: proc "contextless" () -> u64 {

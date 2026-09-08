@@ -238,6 +238,36 @@ write_tpidr :: proc "contextless" (v: u64) {
 	_ = asm(v: u64) -> (q: u64) [v -> q = %x0, #volatile, #clobber memory] { #byte 0x80, 0xD0, 0x18, 0xD5 }(v)
 }
 
+// TPIDR_EL0 is the program's thread pointer, the one a C or C++ program's
+// TLS reads through. The kernel keeps its own record in TPIDR_EL1, so EL0
+// is a program's to set. `mrs x0, tpidr_el0` and `msr tpidr_el0, x0`.
+read_tpidr_el0 :: proc "contextless" () -> u64 {
+	return asm() -> (r: u64) [r = %x0, #volatile] { #byte 0x40, 0xD0, 0x3B, 0xD5 }()
+}
+
+write_tpidr_el0 :: proc "contextless" (v: u64) {
+	_ = asm(v: u64) -> (q: u64) [v -> q = %x0, #volatile, #clobber memory] { #byte 0x40, 0xD0, 0x1B, 0xD5 }(v)
+}
+
+/*
+The thread pointer, in TPIDR_EL0. A program sets it with `msr` itself and
+calls `SYS_TLS` so the kernel knows, and the scheduler saves it off a
+stopping thread and loads it onto a starting one. The frame is nothing to
+this architecture. See `docs/DEVTOOLS.md` section 3.
+*/
+user_tls_set :: proc "contextless" (frame: ^Trap_Frame, addr: u64) {
+	_ = frame
+	write_tpidr_el0(addr)
+}
+
+user_tls_save :: proc "contextless" () -> u64 {
+	return read_tpidr_el0()
+}
+
+user_tls_load :: proc "contextless" (v: u64) {
+	write_tpidr_el0(v)
+}
+
 read_far :: proc "contextless" () -> u64 {
 	return asm() -> (r: u64) [r = %x0, #volatile] { #byte 0x00, 0x60, 0x38, 0xD5 }()
 }

@@ -407,8 +407,8 @@ the documents it points at.
    its code. C and C++ enter the build at the object: `sys/libc`, `crt0`
    and a generated `sys/abi/abi.h`, with a C hello, a C++ hello whose
    constructor runs, and a mixed Odin-and-C image, on three
-   architectures: step 0, first cut, September 2026, minus the thread
-   pointer. A platform library of twenty calls sits over files a program
+   architectures, and a thread pointer for C thread-local storage saved and
+   restored on a switch: step 0, September 2026. A platform library of twenty calls sits over files a program
    can open itself. `/proc` has Plan 9's `mem`, `regs` and `startstop`
    now: step 3, done in September 2026. Every program has a debug file
    beside it, and the kernel names its panic backtrace, with scopes,

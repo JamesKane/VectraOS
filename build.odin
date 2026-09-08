@@ -584,6 +584,8 @@ c_programs := [?]C_Program {
 	{name = "cpphello", sources = {"tests/cpphello/hello.cpp"}},
 	{name = "cmix", sources = {"tests/cmix/main.c", "tests/cmix/odd"}},
 	{name = "abicheck", sources = {"tests/abicheck/main.c"}},
+	{name = "tlstest", sources = {"tests/tlstest/main.c"}},
+	{name = "tlstest2", sources = {"tests/tlstest2/main.c"}},
 }
 
 // The `sys/libc` sources, compiled once per arch build. `crt0` is first, so
@@ -1222,6 +1224,7 @@ stage_vectra :: proc(host: string) {
 	copy_file("servers/intuition/workspaces", fmt.tprintf("%s/lib/workspaces", root))
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
 	copy_file("tests/dbg.rc", fmt.tprintf("%s/lib/tests/dbg.rc", root))
+	copy_file("tests/tls.rc", fmt.tprintf("%s/lib/tests/tls.rc", root))
 	// The source the debugger's window shows, under the path the debug file
 	// names. The one program a debugger is expected on today.
 	ensure_dir(fmt.tprintf("%s/lib/src", root))

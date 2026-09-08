@@ -59,6 +59,17 @@ current :: proc "contextless" () -> ^Thread {
 	return cpu().current
 }
 
+// set_tls records a thread's TLS base and marks it as having one, so the
+// scheduler saves and restores it on a switch. `SYS_TLS` calls this after
+// the arch has put the base in the register. See `Thread.tls`.
+set_tls :: proc "contextless" (t: ^Thread, addr: u64) {
+	if t == nil {
+		return
+	}
+	t.tls = addr
+	t.has_tls = true
+}
+
 /*
 ticks is the machine's clock: the count of timer interrupts the boot core took.
 
@@ -1060,6 +1071,22 @@ reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Res
 		} else {
 			mem.space_switch(mem.kernel_address_space())
 		}
+	}
+
+	/*
+	The thread pointer, for a program that set one with `SYS_TLS`.
+
+	Saved off the register while it still holds the outgoing thread's value,
+	loaded with the incoming thread's before it runs. Only for a thread that
+	has one, so the common program, which sets none, pays nothing. riscv64
+	carries the pointer in the trap frame, so its hooks do nothing and this
+	is a pair of predicted-false branches there. See `Thread.tls`.
+	*/
+	if prev != nil && prev.has_tls {
+		prev.tls = arch.user_tls_save()
+	}
+	if next.has_tls {
+		arch.user_tls_load(next.tls)
 	}
 
 	/*

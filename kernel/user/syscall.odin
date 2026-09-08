@@ -111,6 +111,7 @@ SYS_REMOVE :: abi.SYS_REMOVE
 SYS_RENAME :: abi.SYS_RENAME
 SYS_UNMOUNT :: abi.SYS_UNMOUNT
 SYS_GETPID :: abi.SYS_GETPID
+SYS_TLS :: abi.SYS_TLS
 SYS_PIPE :: abi.SYS_PIPE
 SYS_NOTE :: abi.SYS_NOTE
 SYS_RFORK :: abi.SYS_RFORK
@@ -372,6 +373,11 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		} else {
 			result = -i64(vectra9.ESRCH)
 		}
+	case SYS_TLS:
+		// The frame crosses because riscv64 sets the thread pointer in it,
+		// to be restored on the way out; amd64 and arm64 write the register
+		// and ignore the frame. See `sys_tls` and `docs/DEVTOOLS.md`.
+		result = sys_tls(frame, uintptr(a0))
 	case SYS_PIPE:
 		result = sys_pipe()
 	case SYS_NOTE:
@@ -809,6 +815,27 @@ through `spawn`, and they close through `close`. Either one can be written
 into a `/srv` entry, which is the posting that makes the far side of the
 pipe a service. See `docs/SRV.md`.
 */
+/*
+sys_tls sets the calling thread's TLS base, the pointer a C or C++
+program's thread-local storage reads through.
+
+The arch puts the base where its ring 3 reads it -- the FS base MSR on
+amd64, `TPIDR_EL0` on arm64, the frame's saved `tp` on riscv64 -- and the
+thread records it, so the scheduler restores it when the thread runs
+again. A program calls this once from `crt0`. See `docs/DEVTOOLS.md`
+section 3.
+*/
+@(private = "file")
+sys_tls :: proc(frame: ^arch.Trap_Frame, addr: uintptr) -> i64 {
+	t := sched.current()
+	if t == nil {
+		return -i64(vectra9.ESRCH)
+	}
+	arch.user_tls_set(frame, u64(addr))
+	sched.set_tls(t, u64(addr))
+	return 0
+}
+
 @(private = "file")
 sys_pipe :: proc() -> i64 {
 	p := current()

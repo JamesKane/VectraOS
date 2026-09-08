@@ -22,6 +22,68 @@ typedef void (*initfn)(void);
 extern initfn __init_array_start[];
 extern initfn __init_array_end[];
 
+/* The initial thread-local image, from `link_user.ld`: `.tdata` is copied,
+   the `.tbss` past it is zeroed. */
+extern char __tdata_start[];
+extern char __tdata_end[];
+extern char __tbss_end[];
+
+static usize tls_align(usize n)
+{
+	return (n + 15) & ~(usize)15;
+}
+
+/*
+setup_tls lays out this program's thread-local storage and sets the thread
+pointer, so a `_Thread_local` variable reads and writes correctly. The
+layout is each architecture's own ABI, and the thread pointer is set with
+`SYS_TLS`, which the kernel then saves and restores on a context switch.
+
+There is one block per program, allocated here. A program with no
+thread-local data has an empty `.tdata` and `.tbss`, and still gets a
+pointer, because the kernel's save and restore want one.
+*/
+static void setup_tls(void)
+{
+	usize data = (usize)(__tdata_end - __tdata_start);
+	usize total = tls_align((usize)(__tbss_end - __tdata_start));
+
+#if defined(__x86_64__)
+	/* Variant II: the thread pointer is the block's end, thread-local data
+	   sits below it, and the word at the pointer points to itself. */
+	char *block = (char *)malloc(total + 16);
+	if (block == NULL) {
+		return;
+	}
+	char *tp = block + total;
+	memcpy(block, __tdata_start, data);
+	memset(block + data, 0, total - data);
+	*(void **)tp = tp;
+	vtls(tp);
+#elif defined(__aarch64__)
+	/* Variant I: the thread pointer is the block's start, a 16-byte control
+	   block comes first, and thread-local data follows it. */
+	char *block = (char *)malloc(16 + total);
+	if (block == NULL) {
+		return;
+	}
+	memset(block, 0, 16);
+	memcpy(block + 16, __tdata_start, data);
+	memset(block + 16 + data, 0, total - data);
+	vtls(block);
+#else
+	/* riscv64: the thread pointer is the block's start, and thread-local
+	   data begins there. */
+	char *block = (char *)malloc(total > 0 ? total : 16);
+	if (block == NULL) {
+		return;
+	}
+	memcpy(block, __tdata_start, data);
+	memset(block + data, 0, total - data);
+	vtls(block);
+#endif
+}
+
 /* argv and its backing bytes, in bss: a program's arguments are bounded by
    ARGS_MAX and ARGV_MAX, so no allocation is needed to lay them out. */
 static char argv_bytes[ARGS_MAX + ARGV_MAX + 1];
@@ -46,6 +108,10 @@ void _start(Args *block)
 		}
 	}
 	argv[argc] = NULL;
+
+	// The thread pointer before the constructors, so a `_Thread_local`
+	// works in one, and before `main`.
+	setup_tls();
 
 	for (initfn *f = __init_array_start; f < __init_array_end; f++) {
 		(*f)();
