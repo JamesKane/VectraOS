@@ -355,6 +355,12 @@ timer_periodic :: amd64.lapic_timer_periodic
 timer_stop :: amd64.lapic_timer_stop
 timer_ack :: amd64.lapic_eoi
 
+// The free-running counter `/dev/time` publishes, and the rate the scheduler
+// measures for it once at boot. On amd64 the counter is the TSC, whose rate is
+// not a register, so `fast_counter_calibrate` measures it against the PIT.
+fast_counter :: amd64.rdtsc
+fast_counter_calibrate :: amd64.tsc_calibrate
+
 /*
 The I/O APIC, which is how a device interrupt reaches a core.
 

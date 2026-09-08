@@ -212,6 +212,12 @@ timer_periodic :: arm64.timer_periodic
 timer_stop :: arm64.timer_stop
 timer_ack :: arm64.gic_ack
 
+// The free-running counter `/dev/time` publishes, and its rate. On arm64 both
+// are registers -- the generic timer's physical counter and its frequency --
+// so the "calibration" the scheduler asks for once is just a read.
+fast_counter :: arm64.read_cntpct
+fast_counter_calibrate :: arm64.read_cntfrq
+
 // -- The interrupt controller ------------------------------------------------
 
 IRQ_MMIO_SIZE :: arm64.GIC_MMIO_SIZE

@@ -1,7 +1,8 @@
 /*
 time.c -- the clock over `/dev/time`, `docs/DEVTOOLS.md` section 8.
 
-`/dev/time` answers `seconds nanoseconds ticks hz`. `clock_gettime` and
+`/dev/time` answers `seconds nanoseconds fastticks fasthz uptime`, and only
+the first two matter here. `clock_gettime` and
 `gettimeofday` read it and hand back the first two, and `nanosleep` is a
 sleep in ticks, the timer at a thousand hertz. A read of a value file
 answers the whole line at any offset, so one open and one read is enough.

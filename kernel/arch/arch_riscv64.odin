@@ -216,6 +216,12 @@ timer_periodic :: riscv64.timer_periodic
 timer_stop :: riscv64.timer_stop
 timer_ack :: riscv64.timer_ack
 
+// The free-running counter `/dev/time` publishes, and its rate. On riscv64 the
+// counter is the `time` CSR every hart shares and the rate is the device tree's
+// `timebase-frequency`, so the "calibration" the scheduler asks for is a read.
+fast_counter :: riscv64.read_time
+fast_counter_calibrate :: riscv64.timebase
+
 // -- The interrupt controller ------------------------------------------------
 
 IRQ_MMIO_SIZE :: riscv64.PLIC_MMIO_SIZE

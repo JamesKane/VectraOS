@@ -2577,13 +2577,27 @@ verify_kfs :: proc() {
 			tline: [96]u8
 			tn, _ := vfs.chan_read(t, 0, tline[:])
 			vfs.chan_close(t)
-			for i in 0 ..< tn {
-				if tline[i] < '0' || tline[i] > '9' {
-					break
+			// `seconds nanoseconds fastticks fasthz uptime`, five fields; parse
+			// them all, the date from the first and the fast clock from the
+			// middle two.
+			fields: [5]u64
+			fi, i := 0, 0
+			for fi < 5 && i < tn {
+				for i < tn && (tline[i] < '0' || tline[i] > '9') {
+					i += 1
 				}
-				clock = clock * 10 + u64(tline[i] - '0')
+				for i < tn && tline[i] >= '0' && tline[i] <= '9' {
+					fields[fi] = fields[fi] * 10 + u64(tline[i] - '0')
+					i += 1
+				}
+				fi += 1
 			}
+			clock = fields[0]
 			libodin.tally(&result, clock > PLAUSIBLE, "and reads a date, from the firmware's clock at boot")
+			// The fast clock: a rate the boot measured, and a counter that moves
+			// between the read on the wire and one now.
+			libodin.tally(&result, fields[3] > 0, "and a fast-counter rate")
+			libodin.tally(&result, sched.fast_ticks() >= fields[2], "and its counter has advanced since the read")
 		}
 		if bf, brerr := vfs.open_path(ns, "/usr/glenda/boots", vfs.O_RDONLY); brerr == vfs.OK {
 			battr, bsrr := vfs.chan_stat(bf)

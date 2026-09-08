@@ -1177,6 +1177,29 @@ tick_hz :: proc "contextless" () -> u64 {
 	return intrinsics.volatile_load(&timer_hz)
 }
 
+/*
+The fast clock is the free-running hardware counter -- the TSC on amd64, the
+generic timer on arm64, the `time` CSR on riscv64. Unlike the scheduler tick it
+is not the kernel's to advance; it runs at the part's own rate, far finer than a
+thousand hertz. `/dev/time` publishes both the counter and its rate so a program
+reads the counter directly for a fine interval and divides by the rate itself.
+The rate is measured or read once, in `start_timer` while interrupts are off.
+*/
+@(private)
+fast_hz: u64
+
+// fast_ticks is the free-running counter now. It wraps only after centuries at
+// any real rate, so a difference of two reads is the elapsed count outright.
+fast_ticks :: proc "contextless" () -> u64 {
+	return arch.fast_counter()
+}
+
+// fast_clock_hz is the fast counter's rate, ticks per second, or zero before
+// the timer has run.
+fast_clock_hz :: proc "contextless" () -> u64 {
+	return intrinsics.volatile_load(&fast_hz)
+}
+
 // uptime_ns is the nanoseconds since boot, from the tick and its rate.
 uptime_ns :: proc "contextless" () -> u64 {
 	hz := tick_hz()
@@ -1223,6 +1246,13 @@ start_timer :: proc "contextless" (hz: u64 = 1000) -> bool {
 	if count == 0 {
 		return false
 	}
+
+	// The fast counter's rate, measured or read once here while interrupts are
+	// still off. On amd64 this measures the TSC against the PIT, the same
+	// reference the LAPIC was just measured against; on arm64 and riscv64 it is
+	// a register read. Zero is a counter that did not move, and `/dev/time` then
+	// reports a rate of zero rather than a number a reader would divide by.
+	intrinsics.volatile_store(&fast_hz, arch.fast_counter_calibrate())
 
 	timer_hz = hz
 	timer_count = u32(min(count, u64(max(u32))))

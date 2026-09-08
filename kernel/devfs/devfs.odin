@@ -1069,13 +1069,15 @@ devfs_read :: proc "contextless" (
 
 	case .Time:
 		/*
-		One line, now: `seconds nanoseconds ticks hz`, Plan 9's /dev/time.
-		Seconds and nanoseconds are the wall clock since 1970; ticks and hz
-		are the count since boot and its rate, so a reader takes the rate
-		and the epoch once and counts on its own after. Every read answers
-		the current line whatever its offset -- this is a value, not a file
-		with a length. Seconds of zero is a machine nobody has told the
-		date, which a reader may say instead of printing 1970.
+		One line, now: `seconds nanoseconds fastticks fasthz uptime`, Plan 9's
+		/dev/time. Seconds and nanoseconds are the wall clock since 1970;
+		`fastticks` is the free-running hardware counter and `fasthz` its rate,
+		so a reader takes the rate once and reads the counter itself after for a
+		fine interval; `uptime` is nanoseconds since boot. Every read answers the
+		current line whatever its offset -- this is a value, not a file with a
+		length. Seconds of zero is a machine nobody has told the date, which a
+		reader may say instead of printing 1970; `fasthz` of zero is a counter
+		the boot could not rate.
 		*/
 		sec, nsec: i64
 		sched.wall_clock(&sec, &nsec)
@@ -1087,9 +1089,11 @@ devfs_read :: proc "contextless" (
 		libodin.put_str(&sink, " ")
 		libodin.put_uint(&sink, u64(nsec))
 		libodin.put_str(&sink, " ")
-		libodin.put_uint(&sink, sched.ticks())
+		libodin.put_uint(&sink, sched.fast_ticks())
 		libodin.put_str(&sink, " ")
-		libodin.put_uint(&sink, sched.tick_hz())
+		libodin.put_uint(&sink, sched.fast_clock_hz())
+		libodin.put_str(&sink, " ")
+		libodin.put_uint(&sink, sched.uptime_ns())
 		libodin.put_str(&sink, "\n")
 		text := libodin.str(&sink)
 		n := copy(buf[:room], text)
