@@ -7877,6 +7877,51 @@ verify_c :: proc(r: ^Result) {
 		check(r, said5 == "ok", said5 == "ok" ? "and each read its own thread-locals across every switch, its thread pointer restored" : kept_said(said5))
 	}
 	reap_orphans()
+
+	// The POSIX library: `posixtest` prints through `printf`, moves bytes
+	// through a `pipe`, and runs `posixchild` through `fork`, `execv` and
+	// `waitpid`, checking the child's exit number came back. It exits `0`
+	// when every shape held, or the number of the step that did not.
+	// `docs/DEVTOOLS.md` step 7.
+	posix := [?]string{"posixtest"}
+	said6, _, ok6 := run_script(r, "/bin/posixtest", posix[:], PATIENCE * 10, abi_said[:], "a program over sys/libposix starts")
+	if ok6 {
+		check(r, said6 == "0", said6 == "0" ? "and printf, pipe, fork, exec and waitpid all held over the POSIX library" : posix_step(said6))
+	}
+	reap_orphans()
+
+	// Four threads and a mutex: each adds to a shared counter under one
+	// lock and keeps its own `errno`. The total is exact only if the lock
+	// held, and the `errno` only if the thread pointer is per thread.
+	threads := [?]string{"posixthreads"}
+	said7, _, ok7 := run_script(r, "/bin/posixthreads", threads[:], PATIENCE * 20, abi_said[:], "a POSIX program with four threads starts")
+	if ok7 {
+		check(r, said7 == "0", said7 == "0" ? "and four threads added under a mutex, each with its own errno" : kept_said(said7))
+	}
+	reap_orphans()
+
+	// A signal caught: the program raises SIGTERM at itself and its handler
+	// turns the note back into the signal and runs.
+	sig := [?]string{"posixsignal"}
+	said8, _, ok8 := run_script(r, "/bin/posixsignal", sig[:], PATIENCE * 10, abi_said[:], "a POSIX program that catches a signal starts")
+	if ok8 {
+		check(r, said8 == "0", said8 == "0" ? "and a raised SIGTERM was caught as a signal" : kept_said(said8))
+	}
+	reap_orphans()
+}
+
+// posix_step names the POSIX step a number stands for, so a failing
+// `posixtest` says what broke rather than an exit code.
+@(private = "file")
+posix_step :: proc(said: string) -> string {
+	switch said {
+	case "1": return "posixtest could not make a pipe"
+	case "2", "3": return "posixtest's pipe did not carry its bytes"
+	case "4": return "posixtest could not fork"
+	case "5": return "posixtest's waitpid returned the wrong pid"
+	case "6": return "posixtest's child exited with the wrong number"
+	}
+	return kept_said(said)
 }
 
 @(private = "file")

@@ -566,7 +566,75 @@ build_user :: proc(opts: Options) {
 		elf_to_image(elf, img)
 		elf_to_debug(elf, fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), opts.arch, false)
 	}
+
+	// The POSIX programs, over `sys/libposix`. Each links the library and
+	// its own `crt0`, and stages to `/bin` the same way.
+	libposix := build_libposix(cfg, opts.arch)
+	for prog in posix_programs {
+		step("compiling %s for ring 3", prog.name)
+		elf := fmt.tprintf("%s/%s.elf", USER_DIR, prog.name)
+		img := fmt.tprintf("%s/%s.vx", USER_DIR, prog.name)
+		objs := make([dynamic]string)
+		for src, i in prog.sources {
+			obj := fmt.tprintf("%s/%s.%d.o", USER_DIR, prog.name, i)
+			compile_c(cfg, opts.arch, src, obj)
+			append(&objs, obj)
+		}
+		append(&objs, ..libposix)
+		append(&objs, thread_obj)
+		link_ring3(cfg, objs[:], elf, "sys/libuser/link_user.ld")
+		elf_to_image(elf, img)
+		elf_to_debug(elf, fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), opts.arch, false)
+	}
 	write_pak()
+}
+
+/*
+The POSIX programs, `docs/DEVTOOLS.md` step 7. A row is a name and its C
+sources, linked against `sys/libposix`.
+*/
+Posix_Program :: struct {
+	name:    string,
+	sources: []string,
+}
+
+posix_programs := [?]Posix_Program {
+	{name = "posixtest", sources = {"tests/posix/main.c"}},
+	{name = "posixchild", sources = {"tests/posix/child.c"}},
+	{name = "posixthreads", sources = {"tests/posix/threads.c"}},
+	{name = "posixsignal", sources = {"tests/posix/signal.c"}},
+}
+
+// The `sys/libposix` sources: the shared door, string and heap from
+// `sys/libc`, then the library's own boundary, process calls, output,
+// and `crt0`. `crt0` is `sys/libposix`'s, not `sys/libc`'s, so a POSIX
+// program's `_start` sets up `errno`'s thread-local storage.
+libposix_sources := [?]string {
+	"sys/libc/src/door.c",
+	"sys/libc/src/str.c",
+	"sys/libc/src/malloc.c",
+	"sys/libposix/src/errno.c",
+	"sys/libposix/src/sysdeps.c",
+	"sys/libposix/src/process.c",
+	"sys/libposix/src/stdio.c",
+	"sys/libposix/src/string_extra.c",
+	"sys/libposix/src/stdlib_extra.c",
+	"sys/libposix/src/tls.c",
+	"sys/libposix/src/pthread.c",
+	"sys/libposix/src/signal.c",
+	"sys/libposix/src/crt0.c",
+}
+
+// build_libposix compiles `sys/libposix` to objects and answers their paths.
+build_libposix :: proc(cfg: Arch_Config, arch: Arch) -> []string {
+	objs := make([dynamic]string)
+	for src in libposix_sources {
+		base := src[strings.last_index_byte(src, '/') + 1:]
+		obj := fmt.tprintf("%s/libposix-%s.o", USER_DIR, strings.trim_suffix(base, ".c"))
+		compile_c(cfg, arch, src, obj)
+		append(&objs, obj)
+	}
+	return objs[:]
 }
 
 /*
@@ -642,6 +710,7 @@ compile_c :: proc(cfg: Arch_Config, arch: Arch, src: string, obj: string) {
 		"-Wall",
 		"-Wextra",
 		"-Isys/libc/include",
+		"-Isys/libposix/include",
 		"-Isys/abi",
 	)
 	if strings.has_suffix(src, ".cpp") {
@@ -1199,6 +1268,9 @@ stage_vectra :: proc(host: string) {
 	for prog in c_programs {
 		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
 	}
+	for prog in posix_programs {
+		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
+	}
 	// Each program's debug file, where a debugger looks for it by the
 	// program's name. `/bin` is served from the image and stays small.
 	ensure_dir(fmt.tprintf("%s/lib/debug", root))
@@ -1206,6 +1278,9 @@ stage_vectra :: proc(host: string) {
 		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/lib/debug/%s.vxd", root, prog.name))
 	}
 	for prog in c_programs {
+		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/lib/debug/%s.vxd", root, prog.name))
+	}
+	for prog in posix_programs {
 		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/lib/debug/%s.vxd", root, prog.name))
 	}
 	copy_file("apps/rc/rcmain", fmt.tprintf("%s/lib/rcmain", root))

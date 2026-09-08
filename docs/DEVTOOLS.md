@@ -595,11 +595,16 @@ triple clang treats as generic ELF, and the objects land in
 `build.odin` gains a `posix_programs` table that links a program against
 it with its own `crt0`, and section 3's link and converter do the rest.
 
-Proves: a program per shape in `sys/libposix/tests`, each a line of the
-user suite. `hello` through `printf`. `fork`, `exec` and `waitpid`
-returning the number. Four threads and a mutex. A signal caught. Then
-`lld` links a program on the machine, which is the first measurement,
-and `clang` compiles one, which is the second.
+Proves: a program per shape in `tests/posix`, each a line of the user
+suite. `hello` through `printf`. `fork`, `exec` and `waitpid` returning
+the number. Four threads and a mutex. A signal caught. Then `lld` links
+a program on the machine, which is the first measurement, and `clang`
+compiles one, which is the second.
+
+**First cut done, September 2026**, up to the two measurements. The
+tests through the caught signal pass on three architectures; `lld` and
+`clang` on the machine wait on mlibc and `libc++`, the external half.
+Step 7 in section 10 has the account.
 
 ## 9. Self-hosting, and the loop
 
@@ -834,6 +839,25 @@ this tree's own. Needs step 0 and the disk.
 
 Boot line: the tests of section 8, and `lld` links a program on the
 machine.
+
+**First cut done, September 2026, the tree's own half.** `sys/libposix`
+is this tree's `sysdeps`, made concrete: `open`, `read`, `write`, `close`
+and `lseek` one to one; `fork` as `rfork`, `execv` and `waitpid` around
+`exec` and `await`, with the exit number crossing as text; a `pipe`;
+`printf` and the string and number routines; a bump `malloc`; `errno` in
+the thread's own storage, the wire's Linux numbers with no table; four
+threads and a mutex over `rfork(RFPROC|RFMEM)` and the semaphore calls,
+each thread with its own thread pointer; and a signal caught, a note
+turned back into a number. `verify_c` runs a program per shape --
+`posixtest`, `posixthreads`, `posixsignal` -- on three architectures.
+
+Not yet, and each named for what it waits on. mlibc itself, built with
+meson, and `libc++` on it: the external half, and the reason the library
+exists. `lld` and `clang` on the machine: the two measurements, which
+that half unlocks. And the table's rows no test here needs yet -- `mmap`,
+the sockets, `poll`, `tcsetattr`, `clock_gettime`, and `envp` written to
+`/env`. The boundary is proven; the large C++ programs that ride it are
+the next increment.
 
 ### Step 8: self-hosting
 
