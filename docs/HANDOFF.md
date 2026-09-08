@@ -636,10 +636,12 @@ The remaining roots wait on nothing, and each can start now:
                        frame loop's yield. And its C face: `vapp_*` exports
                        (`capi.odin`), `sys/include/vectra/libapp.h`, and
                        `tests/capp`, a C client linking the Odin library (the
-                       mixed image `cmix` proves). `tests/app`+`tests/capp`
-                       prove both, the marker read out of the store past the
-                       cursor's glass races. Left: sound, the pads, and a
-                       game in apps/.
+                       mixed image `cmix` proves). And a game, `apps/rebound`
+                       (a ball and a paddle, motion in `frame`'s real
+                       seconds). `tests/app`, `tests/capp` and rebound all
+                       started and closed by the self-test -- the step's boot
+                       line met. Left: sound and the pads, the two frame
+                       rungs above the pointer.
     a model, the ghost GHOST 0 and 1
     kfs large + rename DONE -- the unowned root, built; GHOST 0's write path
                        and DEVTOOLS 7 and 8 no longer stop at kfs

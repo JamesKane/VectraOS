@@ -772,9 +772,16 @@ includes. `vapp_run` starts the runtime and the scheduler and calls back
 into a C worker, so the frame loop runs with a runtime under it. `tests/capp`
 is `apptest` in C: it links the Odin `sys/libapp` beside its own object -- the
 mixed image `tests/cmix` proves -- and the self-test drives it exactly as it
-drives the Odin one. Both green on three architectures (the pointer half on
-the one board with a mouse). Left: sound and the pads in the frame, and a
-game in `apps/`.
+drives the Odin one.
+
+**And a game, `apps/rebound`.** A ball falls and bounces and the pointer moves
+a paddle to send it back; its motion is in `frame`'s real seconds, so it
+crosses the window at one speed whatever the frame rate. It is `open`, a loop
+of `frame`/`present`/`pump`, and `close` -- the platform layer used the way a
+game uses it. The self-test starts it and closes it, its ground read out of
+the store like the others'. The step's boot line -- the C program, the same
+in Odin, and the game started and closed by the self-test -- is met, on three
+architectures. Left: sound and the pads, the two frame rungs above the pointer.
 
 ### Step 3: `/proc`, whole
 

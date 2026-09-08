@@ -80,6 +80,7 @@ user_programs := [?]User_Program {
 	{name = "threadtest", path = "tests/thread"},
 	{name = "mui", path = "tests/mui"},
 	{name = "apptest", path = "tests/app"},
+	{name = "rebound", path = "apps/rebound"},
 	{name = "nettest", path = "tests/net"},
 	{name = "udptest", path = "tests/udp"},
 	{name = "tcptest", path = "tests/tcp"},

@@ -537,9 +537,11 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_chords(&r)
 	verify_muiwin(&r)
 	// The platform layer, from both languages over one library: the Odin
-	// client, then the same program in C linking the same Odin `sys/libapp`.
-	verify_app(&r, "/bin/apptest")
-	verify_app(&r, "/bin/capp")
+	// client, then the same program in C linking the same Odin `sys/libapp`,
+	// then a game -- started and closed the same way, its ground its own.
+	verify_app(&r, "/bin/apptest", 0x0022_4466, true)
+	verify_app(&r, "/bin/capp", 0x0022_4466, true)
+	verify_app(&r, "/bin/rebound", 0x0010_1830, false)
 	verify_debugger(&r)
 
 	// -- And a typed ^C, which reaches the program reading the console -------
@@ -5045,26 +5047,29 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 }
 
 /*
-verify_app runs a `sys/libapp` client and reads its frame off the glass.
+verify_app runs a `sys/libapp` client and reads its frame off the store.
 
-`apptest` is the platform layer's spine made a program: it opens a window,
-attaches its store, and each frame paints a ground and a marker where the
-pointer is. This spawns the draw server and the client, waits for the ground to
-appear -- `open` and the first `present` -- moves the pointer into the client
-area and watches the marker follow it -- a `frame` delivered the injected
-pointer and `present` composited it -- then stops the server, which closes the
-window under the client so it comes down on its own. `docs/DEVTOOLS.md` step 2.
+The client at `path` opens a window, attaches its store, and each frame paints
+its `ground`. This spawns the draw server and the client, finds the window whose
+store the ground was painted into -- `open`, its store attached, and a `frame`'s
+pixels -- and checks the ground reached the glass -- `present`. A client that
+paints a marker at the pointer (`want_marker`) is moved over and the marker
+watched to follow, on a board that has a pointer. Then the server is stopped,
+which closes the window under the client so it comes down on its own. Run for
+the Odin client, the C client, and a game over the one library. `docs/DEVTOOLS.md`
+step 2.
 */
 @(private = "file")
-verify_app :: proc(r: ^Result, path: string) #no_bounds_check {
+verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool) #no_bounds_check {
 	s := devfs.raw_surface()
 	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
 		return
 	}
 	// The pointer part of this needs a mouse; the window, the store and the
 	// frame do not. So open, paint and present are checked on every board, and
-	// only the marker waits on a board that has a pointer to inject.
-	has_mouse := devfs.tree().mouse.present
+	// only the marker waits on a board that has a pointer, and a client that
+	// paints one.
+	has_mouse := devfs.tree().mouse.present && want_marker
 
 	count0 := srv.count()
 	settle()
@@ -5105,7 +5110,6 @@ verify_app :: proc(r: ^Result, path: string) #no_bounds_check {
 	// ground in it is the client's `open`, its store attached, and a `frame`'s
 	// pixels, all in one. `shm_lookup` takes a reference the release below
 	// returns; a window that is not the client's is released and passed.
-	ground := u32(0x0022_4466)
 	marker := u32(0x00EE_8822)
 	wi := -1
 	sid: u64
