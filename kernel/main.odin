@@ -316,6 +316,9 @@ kmain :: proc "c" () {
 			if init_net() {
 				verify_net()
 			}
+			if init_sound() {
+				verify_sound()
+			}
 			verify_space()
 
 			// Last, because ring 3 needs everything above it. A space to run
@@ -2099,6 +2102,104 @@ init_net :: proc() -> bool {
 		log_line(&klog, .Warn, "ether: #E would not come up")
 	}
 	return true
+}
+
+/*
+init_sound brings up the virtio-sound card, if one is on the bus, and starts its
+one stream so `/dev/audio` is only ever samples on a running stream. A machine
+with no card still boots, and `verify_sound` is skipped; `/dev/audio` is then a
+file whose writes the device that is not there takes none of. `docs/DEVTOOLS.md`
+step 1 makes the card a file the way the disk and the network are files.
+*/
+init_sound :: proc() -> bool {
+	if !arch.pci_available() {
+		return false
+	}
+	if !virtio.sound_init() {
+		return false
+	}
+	hz, ch, bits := virtio.sound_rate()
+	sink := begin(&klog)
+	libodin.put_str(&sink, "sound virtio-sound over ")
+	libodin.put_str(&sink, arch.PCI_CONFIG_NAME)
+	libodin.put_str(&sink, ", ")
+	libodin.put_uint(&sink, u64(hz))
+	libodin.put_str(&sink, " Hz, ")
+	libodin.put_uint(&sink, u64(ch))
+	libodin.put_str(&sink, " channels, ")
+	libodin.put_uint(&sink, u64(bits))
+	libodin.put_str(&sink, "-bit")
+	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+verify_sound proves the sound path end to end through the file. It reads
+`/dev/audio` for the format the card plays, then writes a second of a square
+wave -- forty-eight thousand stereo frames, the samples not a page of zeroes a
+device might wave through -- and checks the device took very nearly all of it.
+The device drains at real time, so this is about a second of wall clock, and the
+driver's own deadline is what keeps a card that never drains from hanging here.
+*/
+verify_sound :: proc() {
+	result: libodin.Tally
+	ns := vfs.boot_namespace
+
+	// The ctl-read: the format the samples must take.
+	if t, terr := vfs.open_path(ns, "/dev/audio", vfs.O_RDONLY); libodin.tally(&result, terr == vfs.OK, "/dev/audio opens") {
+		line: [32]u8
+		n, _ := vfs.chan_read(t, 0, line[:])
+		vfs.chan_close(t)
+		libodin.tally(&result, n > 0 && string(line[:n]) == "48000 2 16\n", "and reads its format, 48000 2 16")
+	}
+
+	// A second of a square wave: a hundred frames high, a hundred low, both
+	// channels together. Signed sixteen-bit, so a frame is four bytes.
+	TOTAL :: 48000 * 4
+	buf: [4096]u8
+	for f in 0 ..< len(buf) / 4 {
+		v: i16 = -8000
+		if (f / 100) % 2 == 0 {
+			v = 8000
+		}
+		bits := u16(v)
+		lo := u8(bits)
+		hi := u8(bits >> 8)
+		buf[f * 4 + 0] = lo
+		buf[f * 4 + 1] = hi
+		buf[f * 4 + 2] = lo
+		buf[f * 4 + 3] = hi
+	}
+
+	delivered := 0
+	if w, werr := vfs.open_path(ns, "/dev/audio", vfs.O_WRONLY); libodin.tally(&result, werr == vfs.OK, "/dev/audio opens to write") {
+		unit := vfs.chan_iounit(w)
+		if unit <= 0 || unit > len(buf) {
+			unit = len(buf)
+		}
+		attempted := 0
+		for attempted < TOTAL {
+			want := min(TOTAL - attempted, unit)
+			got, e := vfs.chan_write(w, 0, buf[:want])
+			attempted += want
+			if e != vfs.OK || got == 0 {
+				break
+			}
+			delivered += got
+		}
+		vfs.chan_close(w)
+	}
+	// Nearly all: the last period may time out on a slow drain, and one period
+	// short of a second is still a second reaching the device.
+	libodin.tally(&result, delivered >= TOTAL - 4096, "and a second of samples reaches the device")
+
+	sink := report_begin("sound", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " sound checks passed -- the format read back and a second of samples taken by the card")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
 }
 
 /*

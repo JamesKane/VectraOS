@@ -89,6 +89,7 @@ Dev_Kind :: enum u8 {
 		Scancode, // The keyboard before translation, diverted while open. See `tap.odin`
 	Eia0, // The serial port's bytes, raw in and raw out. See `tap.odin`
 	Mouse, // The pointer, one line per movement, one reader. See `mouse.odin`
+	Audio, // Sound: writes are samples to virtio-sound, reads report the format
 }
 
 Dev_Node :: struct {
@@ -127,6 +128,7 @@ DEV_NODES := [?]Dev_Node {
 		{name = "scancode", parent = 0, kind = .Scancode},
 	{name = "eia0", parent = 0, kind = .Eia0},
 	{name = "mouse", parent = 0, kind = .Mouse},
+	{name = "audio", parent = 0, kind = .Audio},
 }
 
 // How many devices this server publishes, not counting its own root. Reported
@@ -1099,6 +1101,26 @@ devfs_read :: proc "contextless" (
 		n := copy(buf[:room], text)
 		reply^ = vectra9.Rread{data = buf[:n]}
 
+	case .Audio:
+		/*
+		The format the card plays, one line: `rate channels bits`. Samples are
+		written, not read -- so a read is the ctl, telling a program what shape
+		the bytes it writes must take. A value whatever the offset, like the
+		clock's.
+		*/
+		hz, channels, bits := virtio.sound_rate()
+		line: [32]u8
+		sink := libodin.sink_from(line[:])
+		libodin.put_uint(&sink, u64(hz))
+		libodin.put_str(&sink, " ")
+		libodin.put_uint(&sink, u64(channels))
+		libodin.put_str(&sink, " ")
+		libodin.put_uint(&sink, u64(bits))
+		libodin.put_str(&sink, "\n")
+		text := libodin.str(&sink)
+		n := copy(buf[:room], text)
+		reply^ = vectra9.Rread{data = buf[:n]}
+
 	case .Consctl:
 		reply^ = vectra9.Rread{data = consctl_report(t, m.offset, buf[:room])}
 
@@ -1321,6 +1343,13 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 		}
 		sched.set_wall_clock(sec)
 		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+
+	case .Audio:
+		// The samples the card plays, signed sixteen-bit stereo at the rate the
+		// read reports. `sound_play` hands them to the device and answers how
+		// many bytes it took; a card that drained none is a write of none, not
+		// an error, so a program can tell a stall from a refusal.
+		reply^ = vectra9.Rwrite{count = u32(virtio.sound_play(m.data))}
 
 	case .Null, .Zero, .Random:
 		// Accepted and discarded. A write to `/dev/random` could stir the

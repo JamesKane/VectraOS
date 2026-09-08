@@ -1381,6 +1381,12 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	// it, and `docs/FLEET.md` step 2's handshake needs it for a fresh key.
 	append(&args, "-object", "rng-builtin,id=rng0")
 	append(&args, "-device", "virtio-rng-pci,rng=rng0,disable-legacy=on")
+	// A virtio-sound card, `/dev/audio`'s device. The `none` backend takes the
+	// samples and discards them but runs the playback clock, so the tx buffers
+	// complete and `a second of samples reaches the device` without a host that
+	// has speakers. See `docs/DEVTOOLS.md` step 1.
+	append(&args, "-audiodev", "none,id=snd0")
+	append(&args, "-device", "virtio-sound-pci,audiodev=snd0,disable-legacy=on")
 	// More than one core, because the kernel starts every core the
 	// bootloader lists and the self-tests run across them. `--smp=1` is
 	// the uniprocessor control.

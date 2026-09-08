@@ -702,21 +702,38 @@ thread-locals held across thirty sleeps.
 Boot line: a program attaches its window's store and paints without a
 verb, and a second of samples reaches the device.
 
-**Started, September 2026: the shared buffer the store rides on.** A
-window's store is memory two processes map -- the client that paints it
-and the draw server that composites it -- and `segattach` maps only a
-card, whose frames the allocator never owned. So the kernel grew a shared
-buffer: `SYS_SHMALLOC` allocates one and maps it, `SYS_SHMATTACH` maps the
-same frames into another process by an id, and the run is freed when the
-last mapping detaches. It is a `.Device` run held by a reference count in
+**The clock, done, September 2026.** `/dev/time` already gave the wall
+clock; it now reports the *fast* counter beside it, Plan 9's five fields:
+seconds, nanoseconds, fastticks, fasthz, uptime. `fastticks` is the
+free-running hardware counter -- the TSC on amd64 (measured against the
+PIT, as the LAPIC is), the generic timer on arm64, the `time` CSR on
+riscv64 -- and `fasthz` its rate, so a program reads the rate once and the
+counter itself after, for an interval finer than the thousand-hertz tick.
+
+**`/dev/audio`, done, September 2026.** Sound is a file. `kernel/drivers/
+virtio/sound.odin` drives a `virtio-sound-pci` card on the same transport
+as the disk and the card: it sets one PCM stream up over the control queue
+and hands it samples over the transmit queue, polled under a fast-counter
+deadline so a backend that never drains cannot hang. `/dev/audio` writes
+are signed sixteen-bit stereo at 48 kHz; a read reports that format. The
+self-test writes a second of a square wave and checks the card took nearly
+all of it, on three architectures.
+
+**The shared buffer the store rides on, done, September 2026.** A window's
+store is memory two processes map -- the client that paints it and the draw
+server that composites it -- and `segattach` maps only a card, whose frames
+the allocator never owned. So the kernel grew a shared buffer:
+`SYS_SHMALLOC` allocates one and maps it, `SYS_SHMATTACH` maps the same
+frames into another process by an id, and the run is freed when the last
+mapping detaches. It is a `.Device` run held by a reference count in
 `kernel/user/shm.odin`, and `sys/libposix`'s cross-process test paints one
 from a child and reads it in the parent, on three architectures.
 
-The window `store` file over it is the next piece, and it waits on one
-design decision: a window's store grows and moves as the window resizes
-(`segbrk` for a taller one, a fresh wider run for a wider), and a store
-shared with a client cannot move under it without the client re-attaching.
-The clock and `/dev/audio` are the step's other two parts.
+**Left: the window `store` file itself.** It rides the shared buffer above,
+and it waits on one design decision: a window's store grows and moves as
+the window resizes (`segbrk` for a taller one, a fresh wider run for a
+wider), and a store shared with a client cannot move under it without the
+client re-attaching. That is the last piece of the step.
 
 ### Step 2: `sys/libapp`, and the C faces
 
