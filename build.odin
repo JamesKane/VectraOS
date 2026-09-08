@@ -659,6 +659,9 @@ c_programs := [?]C_Program {
 	{name = "chello", sources = {"tests/chello/hello.c"}},
 	{name = "cpphello", sources = {"tests/cpphello/hello.cpp"}},
 	{name = "cmix", sources = {"tests/cmix/main.c", "tests/cmix/odd"}},
+	// A C client of `sys/libapp`: the C main and the Odin library in one image,
+	// the mixed shape `cmix` proves. `docs/DEVTOOLS.md` step 2.
+	{name = "capp", sources = {"tests/capp/main.c", "sys/libapp"}},
 	{name = "abicheck", sources = {"tests/abicheck/main.c"}},
 	{name = "tlstest", sources = {"tests/tlstest/main.c"}},
 	{name = "tlstest2", sources = {"tests/tlstest2/main.c"}},
@@ -719,6 +722,7 @@ compile_c :: proc(cfg: Arch_Config, arch: Arch, src: string, obj: string) {
 		"-Wextra",
 		"-Isys/libc/include",
 		"-Isys/libposix/include",
+		"-Isys/include",
 		"-Isys/abi",
 	)
 	if strings.has_suffix(src, ".cpp") {

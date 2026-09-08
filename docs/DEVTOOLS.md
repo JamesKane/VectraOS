@@ -763,9 +763,18 @@ so `pump` is the yield that lets the pointer thread run. `tests/app`
 ground and a marker where the pointer is, and the self-test reads both out
 of the store -- past the cursor's races on the glass -- injects a pointer
 move and watches the marker follow, then stops the server so the window
-closes under the client. Green on three architectures (the pointer half on
-the one board with a mouse). Left: the C header in `sys/include/vectra`
-and a C `apptest`, sound and the pads, and a game in `apps/`.
+closes under the client.
+
+**And the C face, the same program in the other language.** `sys/libapp`'s
+Odin entries gain a `proc "c"` wall exported as `vapp_*` (`capi.odin`), and
+`sys/include/vectra/libapp.h` is the hand-written header a C program
+includes. `vapp_run` starts the runtime and the scheduler and calls back
+into a C worker, so the frame loop runs with a runtime under it. `tests/capp`
+is `apptest` in C: it links the Odin `sys/libapp` beside its own object -- the
+mixed image `tests/cmix` proves -- and the self-test drives it exactly as it
+drives the Odin one. Both green on three architectures (the pointer half on
+the one board with a mouse). Left: sound and the pads in the frame, and a
+game in `apps/`.
 
 ### Step 3: `/proc`, whole
 

@@ -536,7 +536,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_terminal(&r, column)
 	verify_chords(&r)
 	verify_muiwin(&r)
-	verify_app(&r)
+	// The platform layer, from both languages over one library: the Odin
+	// client, then the same program in C linking the same Odin `sys/libapp`.
+	verify_app(&r, "/bin/apptest")
+	verify_app(&r, "/bin/capp")
 	verify_debugger(&r)
 
 	// -- And a typed ^C, which reaches the program reading the console -------
@@ -5053,7 +5056,7 @@ pointer and `present` composited it -- then stops the server, which closes the
 window under the client so it comes down on its own. `docs/DEVTOOLS.md` step 2.
 */
 @(private = "file")
-verify_app :: proc(r: ^Result) #no_bounds_check {
+verify_app :: proc(r: ^Result, path: string) #no_bounds_check {
 	s := devfs.raw_surface()
 	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
 		return
@@ -5081,7 +5084,7 @@ verify_app :: proc(r: ^Result) #no_bounds_check {
 		return
 	}
 
-	pd, derr := spawn_path(nil, "/bin/apptest", SPAWN_NS_COPY)
+	pd, derr := spawn_path(nil, path, SPAWN_NS_COPY)
 	if !check(r, derr == vfs.OK && pd != nil, "the loader starts the libapp client") {
 		finish(r, ps, "the draw server is taken down")
 		return
@@ -5177,6 +5180,12 @@ verify_app :: proc(r: ^Result) #no_bounds_check {
 	// the marker at the pointer within the client -- read back out of the store,
 	// past the cursor's races on the glass.
 	MARK_OFF :: 28
+	// Out of the client area first, so the move into it is a real movement the
+	// window hears -- a second client sits where the first left the pointer, and
+	// a `point_to` that is already there injects nothing.
+	if has_mouse {
+		_ = point_to(s.width - 4, s.height - 4)
+	}
 	if has_mouse && ox2 >= 0 && check(r, point_to(ox2 + cw / 2, oy2 + ch / 2), "the pointer is moved into the client area") {
 		mark_at := (cy + ch / 2 + MARK_OFF + 8) * stride + cx + cw / 2 + MARK_OFF + 8
 		landed := false
