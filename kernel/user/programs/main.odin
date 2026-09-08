@@ -71,6 +71,8 @@ start :: proc "c" (cells: ^Cells, arg1, arg2: u64) -> ! {
 		painter(cells, arg1, arg2)
 	} else when PROGRAM == "bulkio" {
 		bulkio(cells, arg1, arg2)
+	} else when PROGRAM == "storetest" {
+		storetest(cells, arg1, arg2)
 	} else when PROGRAM == "mapper" {
 		mapper(cells, arg1)
 	} else when PROGRAM == "anon" {

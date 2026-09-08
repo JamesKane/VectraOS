@@ -153,7 +153,7 @@ embeds with `#load`. That is what lets one suite serve three architectures.
 test_programs := [?]string{
 	"spin", "poke", "peek", "priv", "jump",
 	"hello", "probe", "shadow",
-	"namer", "reader", "binder", "painter", "bulkio",
+	"namer", "reader", "binder", "painter", "bulkio", "storetest",
 	"mapper", "anon", "sharer", "sharedseg",
 	"parent", "child", "poster", "execer", "niner",
 	"noter", "catcher", "dfltnote",

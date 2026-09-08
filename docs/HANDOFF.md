@@ -618,17 +618,18 @@ The remaining roots wait on nothing, and each can start now:
     the network        FLEET 0
     /proc, whole       DEVTOOLS 3, DONE
     the font > 128     WEB 1
-    C and the clock    DEVTOOLS 0 DONE; DEVTOOLS 1 nearly done -- the fast
-                       clock (`/dev/time`'s five Plan 9 fields, the hardware
+    C and the clock    DEVTOOLS 0 and 1 DONE. Step 1: the fast clock
+                       (`/dev/time`'s five Plan 9 fields, the hardware
                        counter and its rate), `/dev/audio` (a virtio-sound
                        driver, one PCM stream, a second of samples proven),
-                       and the shared buffer (`SYS_SHMALLOC`/`SYS_SHMATTACH`,
-                       a `.Device` run refcounted in `kernel/user/shm.odin`)
-                       are all built on three arches. Left: the window
-                       `store` file over the shared buffer, which waits on
-                       the resize/share edge -- a shared store cannot move
-                       under its client the way `segbrk` and a wider run
-                       move a private one.
+                       the shared buffer (`SYS_SHMALLOC`/`SYS_SHMATTACH`, a
+                       `.Device` run refcounted in `kernel/user/shm.odin`),
+                       and the window `store` file over it -- a client
+                       `shmattach`es a window's store and paints it, no verb,
+                       and a write to `store` flushes it. The resize/share
+                       edge is answered by pre-sizing every store to the
+                       whole screen, so a resize moves only `w`/`h` and the
+                       run never moves under the client. All on three arches.
     a model, the ghost GHOST 0 and 1
     kfs large + rename DONE -- the unowned root, built; GHOST 0's write path
                        and DEVTOOLS 7 and 8 no longer stop at kfs

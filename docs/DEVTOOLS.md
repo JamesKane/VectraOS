@@ -700,7 +700,7 @@ thread-locals held across thirty sleeps.
 - `/dev/audio` over `virtio-sound`.
 
 Boot line: a program attaches its window's store and paints without a
-verb, and a second of samples reaches the device.
+verb, and a second of samples reaches the device. **Done, September 2026.**
 
 **The clock, done, September 2026.** `/dev/time` already gave the wall
 clock; it now reports the *fast* counter beside it, Plan 9's five fields:
@@ -729,11 +729,17 @@ mapping detaches. It is a `.Device` run held by a reference count in
 `kernel/user/shm.odin`, and `sys/libposix`'s cross-process test paints one
 from a child and reads it in the parent, on three architectures.
 
-**Left: the window `store` file itself.** It rides the shared buffer above,
-and it waits on one design decision: a window's store grows and moves as
-the window resizes (`segbrk` for a taller one, a fresh wider run for a
-wider), and a store shared with a client cannot move under it without the
-client re-attaching. That is the last piece of the step.
+**The window `store` file, done, September 2026.** Each window's pixel store
+is now the shared buffer above: the draw server `shmalloc`s it and composites
+from it, and a client `shmattach`es the same frames by the id the window's
+`store` file reports and paints them directly -- no draw verb between the
+pixels and the glass, only a write to `store` to flush a rectangle. The
+resize entanglement is answered by pre-sizing: the store is bought once at
+the whole screen's size, so a window grows or shrinks by moving `w`/`h`
+within a run that never moves under the client holding it -- a resize
+allocates and frees nothing. The self-test drives a ring 3 client that
+attaches a window's store, paints a square, and reads it back off the glass,
+on three architectures. Step 1 is complete.
 
 ### Step 2: `sys/libapp`, and the C faces
 

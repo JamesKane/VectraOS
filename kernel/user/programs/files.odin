@@ -63,6 +63,50 @@ painter :: proc "contextless" (cells: ^Cells, path_len, text_len: u64) -> ! {
 	libuser.exit(0)
 }
 
+/*
+storetest attaches its window's shared store and paints it, no draw verb
+between the pixels and the glass -- the handoff `docs/DEVTOOLS.md` step 1 names.
+
+The kernel has already read the store file and staged its id and geometry into
+cells 3..6 (a report the freestanding parse could not be trusted to read here).
+This `shmattach`es those frames, writes a square of `COLOR` into the client
+area, and opens the store to write the flush line staged at 320, which composits
+it. The cell indices and the square's colour and place must match
+`program.odin`'s `STORE_*`, the way every program here agrees with its checker.
+*/
+storetest :: proc "contextless" (cells: ^Cells, path_len, cmd_len: u64) -> ! {
+	COLOR :: u32(0x00AB_CDEF)
+	BX :: 8
+	BY :: 8
+	SZ :: 24
+	id := cells[3]
+	stride := int(cells[4])
+	cx := int(cells[5])
+	cy := int(cells[6])
+	cells[0] = 0x53_54_4F_52_53_54_4F_52 // STORSTOR, the mark
+
+	addr, aerr := libuser.shmattach(id)
+	put(cells, 9, seg_result(addr, aerr))
+	if aerr == 0 {
+		store := ([^]u32)(addr)
+		for row in 0 ..< SZ {
+			base := (cy + BY + row) * stride + cx + BX
+			for col in 0 ..< SZ {
+				store[base + col] = COLOR
+			}
+		}
+	}
+	// Flush: open the store and write the staged `x y w h`, through a
+	// multipointer for the write's buffer.
+	fd := libuser.open(text(cells, 128, path_len), abi.O_RDWR)
+	put(cells, 1, fd)
+	if fd >= 0 {
+		fbuf := ([^]u8)(uintptr(cells) + 320)
+		put(cells, 10, libuser.write(int(fd), fbuf[:cmd_len]))
+	}
+	libuser.exit(0)
+}
+
 // bulkio moves four thousand bytes out and back through one descriptor,
 // which is more than one call's copy bound.
 bulkio :: proc "contextless" (cells: ^Cells, path_len, offset: u64) -> ! {

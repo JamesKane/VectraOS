@@ -65,6 +65,7 @@ MARK_NOWAITER :: u64(0x4E4F_5741_4E4F_5741) // NOWANOWA
 MARK_BULKIO :: u64(0x4255_4C4B_4255_4C4B) // BULKBULK
 MARK_FORGER :: u64(0x464F_5247_464F_5247) // FORGFORG
 MARK_ANON :: u64(0x414E_4F4E_414E_4F4E) // ANONANON
+MARK_STORETEST :: u64(0x53_54_4F_52_53_54_4F_52) // STORSTOR
 
 /*
 Where `spin` keeps its two words, in units of eight bytes from the data page.
@@ -135,6 +136,34 @@ READER_READ :: 2
 READER_REFUSED :: 3
 READER_CLOSED :: 4
 READER_BUFFER :: 8 // Byte offset 64, which is where the read lands
+
+/*
+Where `storetest` keeps its answers, one cell per step, and the block it
+paints into its window's shared store.
+
+`storetest` proves the handoff `docs/DEVTOOLS.md` step 1 names: a program
+attaches its window's store and paints it, no draw verb between the pixels and
+the glass. It opens `/store`, reads the id and geometry the server reports,
+`shmattach`es the same frames, writes a square of `STORE_COLOR` into the client
+area at `(STORE_BX, STORE_BY)`, and writes `/store` to have it composited. The
+kernel stages the path and the flush line, and reads the square back off the
+glass -- which no cell of the program's could fake.
+*/
+STORE_FD :: 1
+STORE_READ :: 2
+STORE_ID :: 3
+STORE_STRIDE :: 4
+STORE_CX :: 5
+STORE_CY :: 6
+STORE_CW :: 7
+STORE_CH :: 8
+STORE_ATTACH :: 9 // the shmattach address, or a negative errno
+STORE_FLUSHED :: 10
+
+STORE_BX :: 8 // where in the client area the square starts
+STORE_BY :: 8
+STORE_SZ :: 24 // its side, in pixels
+STORE_COLOR :: u32(0x00AB_CDEF) // a colour nothing else on the glass makes
 
 /*
 Where `anon` keeps its answers, and what each one is a claim about.
@@ -692,6 +721,7 @@ program_reader :: proc "contextless" () -> []u8 {return #load("../../build/progr
 program_binder :: proc "contextless" () -> []u8 {return #load("../../build/programs/binder.bin")}
 program_painter :: proc "contextless" () -> []u8 {return #load("../../build/programs/painter.bin")}
 program_bulkio :: proc "contextless" () -> []u8 {return #load("../../build/programs/bulkio.bin")}
+program_storetest :: proc "contextless" () -> []u8 {return #load("../../build/programs/storetest.bin")}
 
 // The ones that hold memory no file serves, or a device's.
 program_mapper :: proc "contextless" () -> []u8 {return #load("../../build/programs/mapper.bin")}

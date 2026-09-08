@@ -4131,6 +4131,13 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 		"and the span between them is untouched, because damage is a region and not a box",
 	)
 
+	// -- A client attaches the store and paints it, no verb ------------------
+	//
+	// Window zero is open and its client area is at `(ox, oy)` on the glass.
+	// Before a second window is on the screen to occlude it, a ring 3 client
+	// maps the store and paints it straight.
+	verify_store_client(r, s, ox, oy)
+
 	// -- Two sessions, two windows -------------------------------------------
 	//
 	// While `dc` is still open, because the claim is about two windows held at
@@ -4178,6 +4185,75 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	)
 
 	drain_pinned(r, pin_before, "and the draw server's wire comes back whole")
+}
+
+/*
+verify_store_client is the handoff step 1 names: a program attaches its
+window's store and paints it, with no draw verb between its pixels and the
+glass.
+
+`storetest` opens `/mnt/0/store`, reads the id and geometry the server reports,
+`shmattach`es the same frames the server composites from, writes a square of
+`STORE_COLOR` into the client area, and writes the store file to have it
+flushed. The proof is the glass: the square is read back where the client area
+sits, which no cell of the program's could fake -- the same standard
+`verify_painter` holds a device write to. `ox, oy` is that client area's origin,
+found by `verify_draw` before this runs.
+*/
+@(private = "file")
+verify_store_client :: proc(r: ^Result, s: ^fb.Surface, ox: int, oy: int) {
+	PATH :: "/mnt/0/store"
+	// The rectangle `storetest` paints, named for its flush. It must match the
+	// square `program.odin`'s `STORE_*` place, which is what the glass check
+	// below reads.
+	FLUSH :: "8 8 24 24"
+
+	// The kernel reads the report and parses it -- the id and the client-area
+	// origin -- and stages them into the client's cells. The freestanding
+	// program cannot be trusted to parse; the read itself is proven here.
+	id, stride, cx, cy: u64
+	report_ok := false
+	if t, terr := vfs.open_path(vfs.boot_namespace, PATH, vfs.O_RDONLY); terr == vfs.OK {
+		sline: [96]u8
+		sn, _ := vfs.chan_read(t, 0, sline[:])
+		vfs.chan_close(t)
+		vals: [4]u64
+		si := 0
+		for k in 0 ..< 4 {
+			for si < sn && (sline[si] < '0' || sline[si] > '9') {si += 1}
+			for si < sn && sline[si] >= '0' && sline[si] <= '9' {vals[k] = vals[k] * 10 + u64(sline[si] - '0'); si += 1}
+		}
+		id, stride, cx, cy = vals[0], vals[1], vals[2], vals[3]
+		report_ok = sn > 0
+	}
+	check(r, report_ok && id != 0, "the store file names a shared-buffer id and geometry")
+
+	p, err := load_held("storetest", program_storetest())
+	if !check(r, err == .None && p != nil, "a client is built to attach the window's store") {
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, SLOT_A, bytes_of(PATH)), "with the store's path in its page")
+	check(r, set_bytes(p, SLOT_D, bytes_of(FLUSH)), "and a flush line to send")
+	// The id and origin the client attaches and paints at, in cells 3..6.
+	set_cell(p, STORE_ID, id)
+	set_cell(p, STORE_STRIDE, stride)
+	set_cell(p, STORE_CX, cx)
+	set_cell(p, STORE_CY, cy)
+
+	check(r, launch(p, u64(len(PATH)), u64(len(FLUSH))), "and it launches, staged")
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_STORETEST, "having reached its first instruction")
+		check(r, i64(cell(p, STORE_ATTACH)) >= 0, "the window's store attached into the client's own space")
+		check(r, i64(cell(p, STORE_FD)) >= 0, "it opened the store to flush")
+		check(r, i64(cell(p, STORE_FLUSHED)) >= 0, "and its flush was answered")
+		check(
+			r,
+			fb.get_raw(s, ox + STORE_BX + STORE_SZ / 2, oy + STORE_BY + STORE_SZ / 2) == STORE_COLOR,
+			"and the square it painted straight into the store is on the glass, no verb between",
+		)
+	}
+	finish(r, p, "and the client is taken down")
 }
 
 // The terminal's two colors, duplicated as fixtures. A test that read
@@ -6249,17 +6325,20 @@ verify_ctl :: proc(
 	close would do, over the part the window gave up.
 	*/
 	/*
-	And first it grows past the size its slot was born with, which is the
-	sentence `segbrk` was built for.
+	And first it grows past the size its slot was born with, into a store that
+	already holds it.
 
 	**A run used to be fixed at its one `segalloc`**, so `window_size` refused
-	anything taller than the window it was handed and `docs/DRAW.md` recorded
-	that as `segbrk`'s absence speaking. The call exists now, and this is the
-	client asking for it without knowing: a `ctl` line names a client area, and
-	the server turns that into a run that has to get bigger.
+	anything taller; then `segbrk` grew it and a wider one was bought and copied.
+	Neither survives a store shared with a client: a run cannot move under the
+	client that maps it. So the store is bought once, at the whole screen's size,
+	and a grow only moves `w`/`h` within it. The client asks without knowing: a
+	`ctl` line names a client area, and the window gets bigger inside a run that
+	was always big enough.
 
-	The frames are counted across it, because a grow that answered without
-	allocating would pass a geometry check and leak nothing but truth.
+	The frames are counted across it, because the claim is now the opposite of
+	what `segbrk` proved -- a grow allocates *nothing*, because the pages were
+	bought at the window's birth.
 	*/
 	grew_from := mem.pmm_stats().free_frames
 
@@ -6300,8 +6379,8 @@ verify_ctl :: proc(
 	)
 	check(
 		r,
-		mem.pmm_stats().free_frames < grew_from,
-		"and the machine is poorer for it, so the pages are real",
+		mem.pmm_stats().free_frames >= grew_from,
+		"and the machine is no poorer for it, because the store was bought whole at the window's birth",
 	)
 
 	/*
@@ -6324,68 +6403,50 @@ verify_ctl :: proc(
 	And every frame the server maps is one its segments own, which is the
 	claim the glass cannot make either.
 
-	This is the sweep `docs/USER.md` asked for. A `segment_frame` that reads
-	a grown run's tail out of its first piece maps frames past that piece's
-	end. The server writes the new rows there and the compositor reads them
-	back from there. So the window stands exactly as tall as it should, on
-	memory the allocator gave to somebody else. No readback sees it. The
-	record does: those frames are in no piece.
+	This is the sweep `docs/USER.md` asked for. The store is a `.Device` run,
+	one piece, the whole screen's -- shared with the client that painted it two
+	windows ago -- so there is no grown tail to walk here, only a run every page
+	of which is mapped and owned. The sweep says stray, borrowed and short are
+	all zero.
 
 	The server is parked between requests, which is what holds it still for
 	the walk. Its reader child holds none of the window runs. They are bought
 	at `Tlopen` now, after the fork, and given back at the clunk with
 	`segdetach`. So the child is short of nothing, and maps nothing past what
-	it was given. While the runs were bought at start and shared, the child
-	was short of exactly the pages the server's run gained after the fork.
-	`segment_grow` says why.
+	it was given.
 	*/
-	grown := 0
-	for i in 0 ..< server.seg_count {
-		if seg := server.segs[i]; seg != nil && seg.kind == .Anon {
-			for j in 1 ..< seg.piece_n {
-				grown += seg.pieces[j].pages
-			}
-		}
-	}
-	check(r, grown > 0, "the server holds a run with a second piece, which is what a grow leaves")
 	swept := sweep(server)
 	check(r, swept.stray == 0, "every page the server maps is inside a segment it holds")
-	check(r, swept.borrowed == 0, "and every frame under one is that segment's own, the grown tail included")
-	check(r, swept.short == 0, "and every page of every run it holds is mapped, the grown tail included")
+	check(r, swept.borrowed == 0, "and every frame under one is that segment's own, the store's run included")
+	check(r, swept.short == 0, "and every page of every run it holds is mapped, the store's run included")
 	if reader := forked_child(server); check(r, reader != nil, "the server's reader child is in the table") {
 		child_swept := sweep(reader)
 		check(
 			r,
 			child_swept.stray == 0 && child_swept.borrowed == 0,
-			"and maps the shared run's frames, and none past the end it was given",
+			"and maps only frames its own segments hold",
 		)
-		check(r, child_swept.short == 0, "and holds no window run at all, because those are bought after the fork")
+		check(r, child_swept.short == 0, "and holds no window store at all, because those are bought after the fork")
 	}
 
 	/*
-	And smaller again, and the run follows now.
+	And smaller again, into the same run.
 
-	**A shared run could not shrink**, which was `ibrk`'s `Einuse`. Another
-	process mapped the same frames. The ones about to go back could already be
-	somewhere in its kernel. Every window run was shared while the server
-	bought them at start, before its fork. This line used to say the run did not have to follow.
-
-	A run is bought at `Tlopen` now, after the fork, so it is the server's
-	alone. And a shared run shrinks in every holder now in any case, which
-	`verify_rfork` checks. The pages go back either way, and the frames say so
-	below.
-
-	The window gets smaller either way. Keeping the pages is what a refused
-	shrink costs, and refusing the *client* is not -- which is the
+	**A shared run cannot shrink under its client** -- the pages about to go back
+	could already be somewhere in the client's kernel -- and the store is shared
+	with the client that painted it. So a shrink, like a grow, moves only `w`/`h`
+	within the run bought at the window's birth. The window gets smaller and the
+	ground behind it comes back; the run stays whole, and the machine is no
+	richer for it. Keeping the pages is not refusing the client, which is the
 	distinction `window_size` makes and this checks.
 	*/
 	shrink_from := mem.pmm_stats().free_frames
 	_, serr := vfs.chan_write(cfd, 0, bytes_of("size 200 100\n"))
-	check(r, serr == vfs.OK, "and makes it smaller, and a run the server holds alone follows")
+	check(r, serr == vfs.OK, "and makes it smaller, within the run the store keeps whole")
 	check(
 		r,
-		mem.pmm_stats().free_frames > shrink_from,
-		"and the machine is richer for it, because a run nobody shares may shrink",
+		mem.pmm_stats().free_frames <= shrink_from,
+		"and the machine is no richer for it, because the run stays whole under the client that holds it",
 	)
 	check(r, is_desk(s, far_x, far_y), "which gives back the ground it was covering")
 

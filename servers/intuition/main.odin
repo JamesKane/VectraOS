@@ -127,9 +127,9 @@ NODE_NEW :: i32(1)
 NODE_CTL :: i32(2) // The server's own: a workspace switch, a reload. See `files.odin`
 NODE_HOTKEY :: i32(3) // The chords the server does not act on, for the desktop
 
-// A window's eight nodes, in one block apiece after the four fixed ones.
+// A window's nine nodes, in one block apiece after the four fixed ones.
 NODE_BASE :: i32(4)
-NODE_PER :: i32(8)
+NODE_PER :: i32(9)
 PART_DIR :: i32(0)
 PART_DATA :: i32(1)
 PART_CTL :: i32(2)
@@ -138,6 +138,7 @@ PART_CONSCTL :: i32(4)
 PART_MOUSE :: i32(5) // The pointer, in the window's coordinates. See `files.odin`
 PART_WCTL :: i32(6) // rio's wctl: the geometry and the workspace out, the lines in
 PART_CURSOR :: i32(7) // The pointer's image over this window
+PART_STORE :: i32(8) // The pixel store shared: a read names it, a write flushes it
 
 // A window's directory name is `libdraw.win_name`, which both this server and
 // its clients read so the tree's layout is stated once. The bound is the
@@ -899,10 +900,10 @@ window_name :: proc "contextless" (win: ^Window, name: []u8) -> vectra9.Errno #n
 /*
 One window: where it sits, the memory behind it, and the damage it owes.
 
-`pixels` is a run of anonymous memory from `segalloc`, `w * h` words of it,
+`pixels` is a shared run from `shmalloc`, the whole screen's worth of words,
 and **it belongs to the session**. `Tlopen` buys it and the clunk gives it
-back with `segdetach`, which is the call this line waited two milestones
-for. A slot between sessions holds no memory at all.
+back with `segdetach`, which drops the server's hold; the frames go once the
+client's mapping detaches too. A slot between sessions holds no memory at all.
 
 `dmg` is what this client drew since its last `flush`, and it is the only
 region a window keeps now.
@@ -936,17 +937,23 @@ Window :: struct {
 	w:      int,
 	h:      int,
 
-		// The store. A window's run is bought at its own size when a session
-	// opens `data` and detached when it clunks. `stride` is the run's
-	// width, which a `size` line may leave behind. A window grows rows
-	// with `segbrk`, and buys a wider run when it needs one. Nil between
-	// sessions, and `used` is the gate every reader passes first.
+		// The store, a shared run two processes map: this server paints it and
+	// composites from it, and the client that owns the window attaches it by
+	// the id below and paints into it directly. It is bought once, at the
+	// whole screen's size, so a window can grow to any size that fits the
+	// glass without the run ever moving under the client that is holding it.
+	// `stride` is the run's width in pixels, the screen's, and a `size` line
+	// only ever changes `w`/`h` within it. Nil between sessions, and `used`
+	// is the gate every reader passes first.
 	pixels: [^]u32,
 	stride: int,
 
-	// How many rows the run behind `pixels` actually holds. It starts at the
-	// birth height and `segbrk` moves it, which is what lets a window grow
-	// past the size its slot was born with.
+	// The shared run's id, from `shmalloc`, which the `store` file names so
+	// the client can `shmattach` the same frames. Zero between sessions.
+	store_id: u64,
+
+	// How many rows the run behind `pixels` holds: the screen's height, fixed
+	// for the run's life, so a window's rows never need to grow.
 	rows:   int,
 
 	// Which workspace this window is on, one to `WORKSPACES`. The
@@ -1299,11 +1306,6 @@ key_message :: proc "contextless" (msg: []u8) #no_bounds_check {
 	}
 }
 
-// win_h_at is how many rows this window's run holds. `win_h` is the height a
-// slot is born with; `segbrk` can move a window's own above it.
-win_h_at :: proc "contextless" (win: ^Window) -> int {
-	return win.rows
-}
 
 // stack_add puts a new window on top. stack_drop takes one out and closes the
 // gap, which keeps the order of everything under it.
@@ -1351,12 +1353,10 @@ windows: [MAX_WINDOWS]Window
 // at start and carved into `MAX_IMAGES` fixed slices.
 //
 // **Not the bss, and not the heap.** Sixty-four images in the bss put
-// this program past the loader's frame budget. The heap would fight the
-// window stores for room to grow. A store is a `segalloc` the allocator
-// places right after the heap, and the heap's next `segbrk` cannot then
-// extend past it, so an image allocated after a window opened would fail
-// with `ENOMEM`. One segment allocated before any window store never
-// grows and never fights.
+// this program past the loader's frame budget. A window store is a shared
+// run mapped by `shmalloc`, at a high address of its own; the image pool
+// is one `segalloc` before any window opens, so it never fights a store
+// for room.
 //
 // A full-font face is about fourteen strips, and a toolkit window bakes
 // one face per ink-and-ground pair it draws: two for a window of buttons
@@ -2027,7 +2027,12 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	if win.used {
 		return win.owner == owner ? vectra9.Errno(0) : vectra9.ENOSPC
 	}
-		base, err := libuser.segalloc(win_w * win_h * 4)
+		// The store is the whole screen's size, not the window's, and shared: the
+	// client attaches the same frames by its id and paints into them. A window
+	// can then grow to any size that fits the glass without the run moving under
+	// a client that is holding it -- the run never needs `segbrk` for a taller
+	// window nor a wider run for a wider one, so it never needs a new id.
+	base, store_id, err := libuser.shmalloc(scr_w * scr_h * 4)
 	if err < 0 {
 		return vectra9.ENOMEM
 	}
@@ -2036,8 +2041,9 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	win.owner = owner
 	win.used = true
 	win.pixels = ([^]u32)(base)
-	win.stride = win_w
-	win.rows = win_h
+	win.store_id = store_id
+	win.stride = scr_w
+	win.rows = scr_h
 	win.x = cascade_x(at)
 	win.y = cascade_y(at)
 	win.w = win_w
@@ -2152,6 +2158,10 @@ window_close :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
 		// for two milestones, and the honest answer to a kernel that says no.
 		if win.pixels != nil && libuser.segdetach(uintptr(win.pixels)) == 0 {
 			win.pixels = nil
+			// The shared run's last hold here is gone; the kernel frees the
+			// frames when the client's own mapping detaches too. The id is
+			// stale the moment the run is, so a late reader gets zero.
+			win.store_id = 0
 		}
 	}
 }
@@ -2203,21 +2213,18 @@ window_move :: proc "contextless" (win: ^Window, nx: int, ny: int) -> vectra9.Er
 }
 
 /*
-window_size changes what a window is, and grows its run to hold it.
+window_size changes what a window is, within a run that already holds it.
 
 **The numbers are the client area**, the same rectangle `window_report`
 answers with, and the frame this server puts around it is what the two differ
 by. `frame_window` is that arithmetic, and the bound is checked
 against the window it produces rather than against what was asked.
 
-**A window grows its own run now, which is `segbrk`.** The store began as one
-`segalloc` and `size` was capped at the birth height because nothing could
-change a run. `docs/USER.md` has the call. What is still fixed is the *width*:
-the stride is the run's and a window's shape is its rows.
-
-The stride does not move with the width. A pixel a client drew at (x, y) is at
-(x, y) afterwards, so shrinking loses the edges and growing keeps whatever this
-session drew there before its last shrink.
+**A window does not grow its run, because the run is the screen's.** The store
+is bought once, at the whole glass's size, so `size` only moves `w`/`h` inside
+it. The stride is the run's -- the screen's width -- and never changes, so a
+pixel a client drew at (x, y) is at (x, y) afterwards: shrinking hides the
+edges and growing shows again whatever this session drew there before.
 
 **And the frame is what takes the stale band, the way it takes a new slot.**
 `window_chrome` writes every pixel of the new window rectangle: the plinth's
@@ -2234,73 +2241,22 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 	}
 		nw, nh := frame_window(win, ncw, nch)
 	/*
-	And the run grows to hold it, which is `segbrk`.
+	And the run already holds it, because the run is the whole screen's.
 
 	**A window used to be capped at the size it was born**, because a run was
-	fixed at its one `segalloc` and nothing in this kernel could grow one. That
-	is the sentence `docs/DRAW.md` section 10 wrote as "`segbrk`'s absence
-	speaking", and the call exists now.
+	fixed at its one `segalloc` and nothing could grow one. Then the run grew
+	with `segbrk` and a wider one was bought and copied. Neither survives the
+	store being shared: a client holds the same frames, and a run cannot move
+	nor a shared run shrink under it. So the run is bought once at the screen's
+	size, and a resize is only `w`/`h` moving within a run that was always big
+	enough. `docs/DRAW.md` section 10's "`segbrk`'s absence" is answered by a
+	run that never needs to grow.
 
-	The stride is the run's width and stays `win_w`, so a window's shape is its
-	rows. What `segbrk` is asked for is exactly the rows this window is about
-	to have -- **both ways**. A window that shrinks gives the pages back rather
-	than sitting on them, which is the half of `segbrk` that is about memory
-	rather than about a cap.
+	A window bigger than the glass is refused: the run cannot hold it, and the
+	one thing this store exists not to do is move under the client.
 	*/
-		if nw > scr_w * 2 || nh > scr_h * 2 {
-		return vectra9.EINVAL
-	}
-	if nw > win.stride {
-		/*
-		**A wider window is a new run.** The stride is the run's, and a run
-		cannot get wider in place: `segbrk` moves the top and nothing else.
-						A window that grows past its birth width buys a run of the new
-		width, copies its rows across, and gives the old one back. What
-		a client drew is at the same (x, y) afterwards. The band it grew
-		into is the frame's to paint, as it is for a taller window.
-		*/
-		base, err := libuser.segalloc(nw * max(nh, win.h) * 4)
-		if err < 0 {
-			return vectra9.ENOSPC
-		}
-		fresh := ([^]u32)(base)
-		for row in 0 ..< min(win.h, nh) {
-			copy(fresh[row * nw:row * nw + win.w], win.pixels[row * win.stride:row * win.stride + win.w])
-		}
-		_ = libuser.segdetach(uintptr(win.pixels))
-		win.pixels = fresh
-		win.stride = nw
-		win.rows = max(nh, win.h)
-	}
-	if nh != win_h_at(win) {
-		/*
-		**Growing must work and shrinking is best effort.**
-
-		A run shared with another process cannot shrink -- Plan 9 refuses
-		that on `s->ref > 1` and `docs/USER.md` says why: the pages about to
-		go back may already be somewhere in the sharer's kernel. This server's
-		runs were shared with its reader child while they were bought at
-		start, before the fork, and every shrink was refused. A run is bought
-		at `Tlopen` now, after the fork. It is this process's alone, and a
-		shrink gives the pages back.
-
-		The rule stays as written, because it is about the kernel's answer
-		rather than about this server's history. A refused shrink is a reason
-		to keep the pages, not to refuse the client. A window that gets smaller
-		and keeps its run is a window that works; a window that cannot get
-		bigger is the cap this call exists to lift.
-		*/
-				need := uintptr(win.stride) * uintptr(nh) * 4
-		err := libuser.segbrk(uintptr(win.pixels), uintptr(win.pixels) + need)
-		if err < 0 {
-			// Only a grow has to work. A refused shrink costs the pages and
-			// nothing else.
-			if nh > win_h_at(win) {
-				return vectra9.ENOSPC
-			}
-		} else {
-			win.rows = nh
-		}
+		if nw > win.stride || nh > win.rows {
+		return vectra9.ENOSPC
 	}
 	if nw == win.w && nh == win.h {
 		return vectra9.Errno(0)
@@ -2474,6 +2430,95 @@ window_flush :: proc "contextless" (win: ^Window) #no_bounds_check {
 // rectangle in by the frame, because the store is where a frame lives too.
 window_mark :: proc "contextless" (win: ^Window, x: int, y: int, w: int, h: int) {
 	region_add(&win.dmg, x, y, w, h)
+}
+
+/*
+store_report writes the line `/store` answers: the shared run's id, its stride
+in pixels, and where the client area sits in it.
+
+`id` is what a client hands `shmattach` to map the same frames. `stride` is the
+run's width in pixels -- the screen's -- so a client addresses a pixel as
+`store[y*stride + x]`. `cx cy` is the client area's origin in the run, past the
+frame the server owns, and `cw ch` its size, the same rectangle `/ctl` reports.
+A client attaches the run once, paints into `store[(cy+row)*stride + cx + col]`,
+and writes `/store` to have it composited. The run never moves, so the id and
+the stride hold for the window's life.
+*/
+store_report :: proc "contextless" (out: []u8, win: ^Window) -> int #no_bounds_check {
+	cx, cy, cw, ch := frame_client(win)
+	at := 0
+	at = put_number(out, at, int(win.store_id))
+	at = put_report(out, at, " ")
+	at = put_number(out, at, win.stride)
+	at = put_report(out, at, " ")
+	at = put_number(out, at, cx)
+	at = put_report(out, at, " ")
+	at = put_number(out, at, cy)
+	at = put_report(out, at, " ")
+	at = put_number(out, at, cw)
+	at = put_report(out, at, " ")
+	at = put_number(out, at, ch)
+	at = put_report(out, at, "\n")
+	return at
+}
+
+/*
+store_flush composites what a client painted into the shared store.
+
+A client that paints the store directly leaves no damage for the server to
+find, so a plain draw-stream `flush` would composite nothing. This is the flush
+for that client: the bytes name a client-area rectangle `x y w h`, or none at
+all for the whole area, and it is that rectangle -- moved in past the frame,
+into the store's own coordinates -- that the next composite carries to the
+glass. Numbers outside the client area are clipped to it; a client cannot
+flush onto its frame or another window.
+*/
+store_flush :: proc "contextless" (win: ^Window, data: []u8) -> bool #no_bounds_check {
+	cx, cy, cw, ch := frame_client(win)
+	rx, ry, rw, rh := 0, 0, cw, ch
+
+	// Up to four unsigned numbers, `x y w h` in client coordinates. Four gives
+	// a rectangle; anything else is the whole client area.
+	nums: [4]int
+	got := 0
+	i := 0
+	for got < 4 && i < len(data) {
+		for i < len(data) && (data[i] < '0' || data[i] > '9') {
+			i += 1
+		}
+		v := 0
+		saw := false
+		for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+			v = v * 10 + int(data[i] - '0')
+			i += 1
+			saw = true
+		}
+		if !saw {
+			break
+		}
+		nums[got] = v
+		got += 1
+	}
+	if got == 4 {
+		rx, ry, rw, rh = nums[0], nums[1], nums[2], nums[3]
+	}
+
+	// Clip to the client area: a flush names nothing the client cannot draw.
+	if rx < 0 {rx = 0}
+	if ry < 0 {ry = 0}
+	if rx > cw {rx = cw}
+	if ry > ch {ry = ch}
+	if rw < 0 {rw = 0}
+	if rh < 0 {rh = 0}
+	if rx + rw > cw {rw = cw - rx}
+	if ry + rh > ch {rh = ch - ry}
+	if rw <= 0 || rh <= 0 {
+		return true // A flush of nothing is answered, not refused.
+	}
+
+	window_mark(win, cx + rx, cy + ry, rw, rh)
+	window_flush(win)
+	return true
 }
 
 // window_of is which window a session draws into. Nil is a fid that opened
@@ -2930,6 +2975,8 @@ name_of :: proc "contextless" (node: i32) -> string #no_bounds_check {
 		return "wctl"
 	case PART_CURSOR:
 		return "cursor"
+	case PART_STORE:
+		return "store"
 	}
 	return ""
 }
@@ -2981,6 +3028,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 		return node_of(w, PART_WCTL)
 	case "cursor":
 		return node_of(w, PART_CURSOR)
+	case "store":
+		return node_of(w, PART_STORE)
 	}
 	return -1
 }
@@ -3187,6 +3236,8 @@ handler :: proc "contextless" (
 			n = server_report(line[:])
 		case node_part(node) == PART_WCTL:
 			n = wctl_report(line[:], &windows[node_win(node)])
+		case node_part(node) == PART_STORE:
+			n = store_report(line[:], &windows[node_win(node)])
 		case node_win(node) >= 0:
 			n = window_report(line[:], &windows[node_win(node)])
 		}
@@ -3245,6 +3296,15 @@ handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(vectra9.EPERM)
 		case PART_CURSOR:
 			if w := node_win(node); w < 0 || !windows[w].used || !cursor_set(&windows[w], m.data) {
+				reply^ = vectra9.error_reply(vectra9.EINVAL)
+				return
+			}
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+		case PART_STORE:
+			// A write is a flush: the client has painted the shared store
+			// directly and asks the server to composite what it changed. The
+			// bytes name a client-area rectangle, or none for all of it.
+			if w := node_win(node); w < 0 || !windows[w].used || !store_flush(&windows[w], m.data) {
 				reply^ = vectra9.error_reply(vectra9.EINVAL)
 				return
 			}
