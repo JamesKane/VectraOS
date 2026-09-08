@@ -702,6 +702,22 @@ thread-locals held across thirty sleeps.
 Boot line: a program attaches its window's store and paints without a
 verb, and a second of samples reaches the device.
 
+**Started, September 2026: the shared buffer the store rides on.** A
+window's store is memory two processes map -- the client that paints it
+and the draw server that composites it -- and `segattach` maps only a
+card, whose frames the allocator never owned. So the kernel grew a shared
+buffer: `SYS_SHMALLOC` allocates one and maps it, `SYS_SHMATTACH` maps the
+same frames into another process by an id, and the run is freed when the
+last mapping detaches. It is a `.Device` run held by a reference count in
+`kernel/user/shm.odin`, and `sys/libposix`'s cross-process test paints one
+from a child and reads it in the parent, on three architectures.
+
+The window `store` file over it is the next piece, and it waits on one
+design decision: a window's store grows and moves as the window resizes
+(`segbrk` for a taller one, a fresh wider run for a wider), and a store
+shared with a client cannot move under it without the client re-attaching.
+The clock and `/dev/audio` are the step's other two parts.
+
 ### Step 2: `sys/libapp`, and the C faces
 
 `sys/libapp`, `sys/include/vectra`, a game in `apps/`. About 2,900

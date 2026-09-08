@@ -167,6 +167,12 @@ Segment :: struct {
 
 	flags:  arch.Page_Flags,
 	kind:   Segment_Kind,
+
+	// The shared buffer this segment maps, or zero. A `.Device` run whose
+	// frames the allocator did own after all, held by a reference count in
+	// the shm table rather than freed when this mapping goes. `segdetach`
+	// drops the reference. See `kernel/user/shm.odin`.
+	shm_id: u64,
 }
 
 /*
@@ -577,6 +583,7 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	pieces: [MAX_RUN_PIECES]Run_Piece = s.pieces
 	piece_n := s.piece_n
 	frames := s.frames
+	shm_id := s.shm_id
 	s.frames = nil
 	for i in 0 ..< MAX_SEGMENTS {
 		if &segments[i].seg == s {
@@ -588,7 +595,12 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	sync.release(&seg_lock, guard)
 
 	if kind == .Device {
-		// Nothing. See above -- this is the branch with a control on it.
+		// A plain device's frames go back to nobody. A shared buffer's do:
+		// they came from the allocator, and the shm table frees them when
+		// its last mapping -- this one -- lets go.
+		if shm_id != 0 {
+			shm_release(shm_id)
+		}
 		return
 	}
 	if run {

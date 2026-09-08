@@ -329,6 +329,27 @@ segdetach :: proc "contextless" (addr: uintptr) -> i64 {
 	return raw1(abi.SYS_SEGDETACH, u64(addr))
 }
 
+// shmalloc makes a shared buffer, maps it here, and answers its address and
+// the id another process attaches it by. `docs/DEVTOOLS.md` step 1.
+shmalloc :: proc "contextless" (bytes: int) -> (addr: uintptr, id: u64, err: i64) {
+	id_store: u64
+	r := raw2(abi.SYS_SHMALLOC, u64(bytes), u64(uintptr(&id_store)))
+	if r < 0 {
+		return 0, 0, r
+	}
+	return uintptr(r), id_store, 0
+}
+
+// shmattach maps a shared buffer another process made, by its id. It is
+// given back with `segdetach`.
+shmattach :: proc "contextless" (id: u64) -> (addr: uintptr, err: i64) {
+	r := raw1(abi.SYS_SHMATTACH, id)
+	if r < 0 {
+		return 0, r
+	}
+	return uintptr(r), 0
+}
+
 // note posts a note to one of the caller's own children. With no handler
 // the child ends at its next kernel boundary, and the wait status is
 // EINTR. With a handler the child catches it instead -- see `notify`.

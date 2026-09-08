@@ -618,7 +618,14 @@ The remaining roots wait on nothing, and each can start now:
     the network        FLEET 0
     /proc, whole       DEVTOOLS 3, DONE
     the font > 128     WEB 1
-    C and the clock    DEVTOOLS 0 and 1
+    C and the clock    DEVTOOLS 0 DONE; DEVTOOLS 1 started -- its shared
+                       buffer (`SYS_SHMALLOC`/`SYS_SHMATTACH`, a `.Device`
+                       run refcounted in `kernel/user/shm.odin`) is built
+                       and proven cross-process on three arches. The window
+                       `store` file over it, the clock and `/dev/audio` are
+                       the rest. The store waits on the resize/share edge:
+                       a shared store cannot move under its client the way
+                       `segbrk` and a wider run move a private one.
     a model, the ghost GHOST 0 and 1
     kfs large + rename DONE -- the unowned root, built; GHOST 0's write path
                        and DEVTOOLS 7 and 8 no longer stop at kfs

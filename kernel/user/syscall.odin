@@ -112,6 +112,8 @@ SYS_RENAME :: abi.SYS_RENAME
 SYS_UNMOUNT :: abi.SYS_UNMOUNT
 SYS_GETPID :: abi.SYS_GETPID
 SYS_TLS :: abi.SYS_TLS
+SYS_SHMALLOC :: abi.SYS_SHMALLOC
+SYS_SHMATTACH :: abi.SYS_SHMATTACH
 SYS_PIPE :: abi.SYS_PIPE
 SYS_NOTE :: abi.SYS_NOTE
 SYS_RFORK :: abi.SYS_RFORK
@@ -378,6 +380,10 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		// to be restored on the way out; amd64 and arm64 write the register
 		// and ignore the frame. See `sys_tls` and `docs/DEVTOOLS.md`.
 		result = sys_tls(frame, uintptr(a0))
+	case SYS_SHMALLOC:
+		result = sys_shmalloc(a0, uintptr(a1))
+	case SYS_SHMATTACH:
+		result = sys_shmattach(a0)
 	case SYS_PIPE:
 		result = sys_pipe()
 	case SYS_NOTE:
@@ -1395,6 +1401,96 @@ memory a program can be tricked into jumping into.
 the caller's arithmetic. `ENOMEM` is the machine's answer and can mean the
 segment pool, the process's own list, or no run of that many frames left.
 */
+/*
+sys_shmalloc makes a shared buffer, maps it here, and writes its id.
+
+The buffer is the store a program paints its window into. This allocates
+its frames, maps them into the caller as a run, and writes the id to
+`id_out` so the caller can publish it. Another process maps the same
+frames with `sys_shmattach`. The buffer is freed when the last mapping
+detaches. See `kernel/user/shm.odin` and `docs/DEVTOOLS.md` step 1.
+*/
+@(private = "file")
+sys_shmalloc :: proc(bytes: u64, id_out: uintptr) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ESRCH)
+	}
+	if bytes == 0 || bytes > SHM_BYTES_MAX || id_out == 0 {
+		return -i64(vectra9.EINVAL)
+	}
+	pages := int((bytes + u64(arch.PAGE_SIZE) - 1) / u64(arch.PAGE_SIZE))
+	id, phys, ok := shm_create(pages)
+	if !ok {
+		return -i64(vectra9.ENOMEM)
+	}
+	// The creator's own mapping, which takes the first reference. A failure
+	// past here frees the run, because no mapping ever held it.
+	_, _, got := shm_lookup(id)
+	if !got {
+		shm_release(id)
+		return -i64(vectra9.ENOMEM)
+	}
+	va := shm_map(p, id, phys, pages)
+	if va < 0 {
+		return va
+	}
+	id_bytes := transmute([8]u8)id
+	if !copy_out(id_out, id_bytes[:]) {
+		return -i64(vectra9.EFAULT)
+	}
+	return va
+}
+
+// sys_shmattach maps an existing shared buffer into the caller too.
+@(private = "file")
+sys_shmattach :: proc(id: u64) -> i64 {
+	p := current()
+	if p == nil {
+		return -i64(vectra9.ESRCH)
+	}
+	phys, pages, ok := shm_lookup(id)
+	if !ok {
+		return -i64(vectra9.ENOENT)
+	}
+	return shm_map(p, id, phys, pages)
+}
+
+/*
+shm_map builds a `.Device` run over a shared buffer's frames and maps it
+into `p`, carrying the id so a release drops the reference. The reference
+is already taken by `shm_lookup`; until `proc_add_segment` succeeds it is
+this call's to drop on failure, and after it the segment owns it, dropped
+through `segment_release` on `segdetach` and on teardown alike. It lives
+here, beside `map_reserve` and `map_run`, which are this file's.
+*/
+@(private = "file")
+shm_map :: proc "contextless" (p: ^Process, id: u64, phys: uintptr, pages: int) -> i64 {
+	va, room := map_reserve(p, pages)
+	if !room {
+		shm_release(id)
+		return -i64(vectra9.ENOMEM)
+	}
+	seg := segment_new(va, {.Write, .No_Execute}, .Device)
+	if seg == nil {
+		shm_release(id)
+		return -i64(vectra9.ENOMEM)
+	}
+	seg.run = true
+	seg.pieces[0] = Run_Piece{base = phys, pages = pages}
+	seg.piece_n = 1
+	seg.pages = pages
+	if !proc_add_segment(p, seg) {
+		shm_release(id)
+		return -i64(vectra9.ENOMEM)
+	}
+	seg.shm_id = id
+	if !map_run(p, seg) {
+		return -i64(vectra9.ENOMEM)
+	}
+	return i64(va)
+}
+
 @(private = "file")
 sys_segalloc :: proc(bytes: u64, flags: u64) -> i64 {
 	p := current()

@@ -107,6 +107,34 @@ int main(int argc, char **argv)
 	close(pf[0]);
 	close(pf[1]);
 
+	/* A shared buffer across a fork: the parent writes, a child that maps
+	   it by id sees the write and writes back, and the parent sees that.
+	   The two are separate address spaces sharing the same frames. */
+	unsigned long shid = 0;
+	unsigned char *shbuf = (unsigned char *)shmalloc_v(4096, &shid);
+	if (shbuf == MAP_FAILED) {
+		exit(15);
+	}
+	shbuf[0] = 0xAB;
+	shbuf[1] = 0;
+	pid_t sp = fork();
+	if (sp < 0) {
+		exit(16);
+	}
+	if (sp == 0) {
+		unsigned char *c = (unsigned char *)shmattach_v(shid);
+		if (c == MAP_FAILED || c[0] != 0xAB) {
+			_exit(51);
+		}
+		c[1] = 0xCD;
+		_exit(0);
+	}
+	int sst = 0;
+	waitpid(sp, &sst, 0);
+	if (!WIFEXITED(sst) || WEXITSTATUS(sst) != 0 || shbuf[1] != 0xCD) {
+		exit(17);
+	}
+
 	/* The environment: set a variable, read it back. */
 	setenv("PXVAR", "42", 1);
 	const char *pv = getenv("PXVAR");

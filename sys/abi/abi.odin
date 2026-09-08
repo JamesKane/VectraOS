@@ -135,6 +135,10 @@ SYS_RENAME :: u64(43) // old path, new path -> 0, or -EXDEV across servers
 // cannot write; arm64 and riscv64 set their own register and call it anyway,
 // so the kernel knows to save and restore the base on a context switch.
 SYS_TLS :: u64(44) // addr -> 0, the thread pointer set to `addr`
+// docs/DEVTOOLS.md step 1: a shared buffer two processes map by an id, so a
+// program paints its window's store where the draw server composites from.
+SYS_SHMALLOC :: u64(45) // bytes, id_out -> addr, a fresh shared buffer mapped, its id written
+SYS_SHMATTACH :: u64(46) // id -> addr, an existing shared buffer mapped here too
 
 /*
 How a program receives its arguments.

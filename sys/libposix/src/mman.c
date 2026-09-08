@@ -60,3 +60,29 @@ int mprotect(void *addr, size_t len, int prot)
 	(void)prot;
 	return 0;
 }
+
+/*
+Vectra shared buffers, the primitive the window store is built on. Not
+POSIX: a program maps a buffer other processes can map by its id, so a
+window's client and the draw server paint and composite the same pixels.
+See `docs/DEVTOOLS.md` step 1.
+*/
+void *shmalloc_v(size_t bytes, unsigned long *id_out)
+{
+	long r = __vsyscall(SYS_SHMALLOC, (long)bytes, (long)id_out, 0, 0, 0, 0);
+	if (r < 0) {
+		errno = (int)(-r);
+		return MAP_FAILED;
+	}
+	return (void *)r;
+}
+
+void *shmattach_v(unsigned long id)
+{
+	long r = __vsyscall(SYS_SHMATTACH, (long)id, 0, 0, 0, 0, 0);
+	if (r < 0) {
+		errno = (int)(-r);
+		return MAP_FAILED;
+	}
+	return (void *)r;
+}

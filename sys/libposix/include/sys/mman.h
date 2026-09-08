@@ -28,4 +28,9 @@ void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off);
 int munmap(void *addr, size_t len);
 int mprotect(void *addr, size_t len, int prot);
 
+/* Vectra shared buffers, docs/DEVTOOLS.md step 1: a buffer two processes
+   map by an id. Not POSIX. */
+void *shmalloc_v(size_t bytes, unsigned long *id_out);
+void *shmattach_v(unsigned long id);
+
 #endif
