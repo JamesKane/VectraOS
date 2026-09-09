@@ -431,6 +431,15 @@ set_interrupt_handler :: proc "contextless" (vector: int, h: Interrupt_Handler) 
 	}
 }
 
+// resume_vector is the interrupt id being handled, for a handler that serves
+// several lines. See the arm64 note.
+resume_vector :: proc "contextless" (r: Resume) -> u64 {
+	if r.frame == nil {
+		return 0
+	}
+	return r.frame.vector
+}
+
 /*
 trap_dispatch is where every stub lands.
 

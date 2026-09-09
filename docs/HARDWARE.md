@@ -843,8 +843,25 @@ mapping, no kernel driver.
 meaning what it meant before and a page-aligned address meaning the run must
 land there, refused if a run already holds it. The GPU firmware asks for this,
 its sections naming where in the address space they go; the self-test places a
-run, writes and reads it, and is refused a second at the same address. The
-GICv3 selection, `irq`, `dma` and `blkfs` are the rest of the step.
+run, writes and reads it, and is refused a second at the same address.
+
+**And `irq`, thing three.** Each node whose `interrupts` names a shared
+peripheral line (type 0, the device kind rather than the timer's per-core kind)
+grows a synthesized `irq` file. A read parks until the line fires; the kernel's
+one shared handler masks the line at the controller, acknowledges, counts the
+fire and wakes the reader, which answers the count; the next read unmasks, and
+the last close masks the line for good, so a reader that goes away cannot storm
+the machine. On arm64 this made the GIC route the line level-triggered
+(`GICD_ICFGR`), the handshake `docs/KBD.md` wants. Because a read parks, `#t`
+moved onto `kernel/mnt` workers -- a parked read holds one worker and the rest
+still answer property and `mmio` reads, and a flush wakes a parked reader with
+`EINTR`. The self-test arms the RTC's alarm through its `mmio`, reads its `irq`
+to park, and comes back when the alarm fires within the second -- a device
+interrupt reaching ring 3 with nothing but files and a mapping, no kernel
+driver. Proven on arm64, where the RTC is; riscv64's `#t` synthesises the same
+files over the PLIC, and a machine with no tree has none.
+
+The GICv3 selection, `dma` and `blkfs` are the rest of the step.
 
 ### Step 1: the board boots
 

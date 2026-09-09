@@ -69,6 +69,61 @@ treemmio :: proc "contextless" (cells: ^Cells, path_len: u64, offset: u64) -> ! 
 }
 
 /*
+treeirq waits for a device interrupt through its `#t` `irq` file. It attaches the
+RTC's register window (the mmio path staged at 128, its length the first
+argument), arms the alarm one tick ahead and enables the device's interrupt, then
+opens the `irq` file (the path staged at 192, its length the second argument) and
+reads it. The read parks until the alarm fires; the kernel's handler masks the
+line, acknowledges and wakes it, and the read answers the fire count. Then it
+clears the source and reports the read and the raw status left behind -- zero,
+the interrupt serviced. This is the whole handshake `docs/HARDWARE.md` section 3
+names, driven from ring 3 with nothing but files and a mapping.
+
+PL031 registers: the data register at `0x000` is the running count, the match at
+`0x004` is where the alarm fires, the interrupt mask at `0x010` enables it, the
+clear at `0x01C` retires the source, and the raw status at `0x014` reads it.
+*/
+treeirq :: proc "contextless" (cells: ^Cells, mmio_len: u64, irq_len: u64) -> ! {
+	cells[0] = 0x54_49_52_51_54_49_52_51 // TIRQTIRQ
+	mfd := libuser.open(text(cells, 128, mmio_len), abi.O_RDONLY)
+	put(cells, 1, mfd)
+	if mfd < 0 {
+		libuser.exit(0)
+	}
+	base, aerr := libuser.segattach(int(mfd))
+	put(cells, 2, seg_result(base, aerr))
+	if aerr != 0 {
+		libuser.exit(0)
+	}
+
+	// Arm the alarm one tick ahead of the running count, and let the device
+	// raise its line. The GIC side stays masked until the read below unmasks it.
+	now := intrinsics.volatile_load((^u32)(base + 0x000))
+	intrinsics.volatile_store((^u32)(base + 0x004), now + 1)
+	intrinsics.volatile_store((^u32)(base + 0x010), 1)
+
+	ifd := libuser.open(text(cells, 192, irq_len), abi.O_RDONLY)
+	put(cells, 3, ifd)
+	if ifd < 0 {
+		libuser.exit(0)
+	}
+	// The park. The read returns when the alarm fires, one tick out, with the
+	// count of fires the kernel counted written as text.
+	n := libuser.read(int(ifd), slot(cells, 256, 16))
+	put(cells, 4, n)
+	if n > 0 {
+		put(cells, 5, i64(intrinsics.volatile_load(&bytes(cells)[256])))
+	}
+
+	// Retire the source at the device and disable it, then read the raw status
+	// back: zero says the line the handler serviced is truly quiet again.
+	intrinsics.volatile_store((^u32)(base + 0x01C), 1)
+	intrinsics.volatile_store((^u32)(base + 0x010), 0)
+	put(cells, 6, i64(intrinsics.volatile_load((^u32)(base + 0x014))))
+	libuser.exit(0)
+}
+
+/*
 fixedseg allocates a run at the address named as the argument, writes a witness
 into it and reads it back, then asks for a second run at the same address, which
 the kernel refuses because the first one is there. It reports the placed address,

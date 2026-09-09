@@ -224,6 +224,16 @@ gic_route :: proc "contextless" (gsi: int, vector: u8, cpu: u32) {
 	}
 	id := uintptr(VECTOR_IRQ_BASE + gsi)
 	dist_write_byte(GICD_ITARGETSR + id, u8(1 << (cpu & 7)))
+
+	// Level-sensitive: a shared line stays asserted until its device is
+	// serviced, which is the handshake `docs/HARDWARE.md` section 3's `irq`
+	// stream keeps -- mask on fire, the driver clears the source, unmask on the
+	// next read. `GICD_ICFGR` holds two bits a line, sixteen lines a word; the
+	// high bit is edge. Clearing it makes this SPI level, and touches no other
+	// line. Reset default is level on this part, so this is the explicit say.
+	cfg := GICD_ICFGR + uintptr(id / 16 * 4)
+	shift := u32((id % 16) * 2)
+	dist_write(cfg, dist_read(cfg) & ~(u32(0b10) << shift))
 }
 
 gic_set_mask :: proc "contextless" (gsi: int, masked: bool) {

@@ -161,6 +161,16 @@ set_interrupt_handler :: proc "contextless" (vector: int, h: Interrupt_Handler) 
 	}
 }
 
+// resume_vector is the interrupt id being handled, from the frame the dispatch
+// set before it called the handler. A handler registered for several lines
+// reads this to know which one fired.
+resume_vector :: proc "contextless" (r: Resume) -> u64 {
+	if r.frame == nil {
+		return 0
+	}
+	return r.frame.vector
+}
+
 // frame_is_user reads the exception level out of the saved PSTATE. The M
 // field is zero for EL0, and the CPU wrote it before any of this code ran.
 frame_is_user :: proc "contextless" (frame: ^Trap_Frame) -> bool {

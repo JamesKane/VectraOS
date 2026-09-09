@@ -187,6 +187,7 @@ VECTOR_SHOOT :: riscv64.VECTOR_SHOOT
 VECTOR_NMI :: riscv64.VECTOR_NMI
 
 set_interrupt_handler :: riscv64.set_interrupt_handler
+resume_vector :: riscv64.resume_vector
 
 inb :: riscv64.inb
 outb :: riscv64.outb

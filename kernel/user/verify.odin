@@ -544,6 +544,8 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_app(&r, "/bin/rebound", 0x0010_1830, false, false)
 	// A device's register window, attached through the tree's `mmio` file.
 	verify_tree_mmio(&r)
+	// A device interrupt, waited on through the tree's `irq` file.
+	verify_tree_irq(&r)
 	// A run placed at an address the caller named, which a firmware binary asks.
 	verify_fixedseg(&r)
 	verify_debugger(&r)
@@ -5296,6 +5298,56 @@ verify_tree_mmio :: proc(r: ^Result) #no_bounds_check {
 			cell(p, TREEMMIO_WORD) & 0xFF == 0x31,
 			"and a load read the RTC's id register, which is the hardware reached through a mapping",
 		)
+	}
+	finish(r, p, "and the program is taken down")
+}
+
+/*
+verify_tree_irq waits for a device interrupt through `#t`'s `irq` file. The
+stream model of `docs/HARDWARE.md` section 3: the kernel synthesises `irq` from
+the node's `interrupts`, a program reads it to park until the line fires, and the
+kernel's handler masks the line, acknowledges and wakes the reader -- the whole
+handshake driven from ring 3 with nothing but a file and the register window.
+
+The target is the same RTC as `verify_tree_mmio`, `pl031@9010000` on the arm64
+`virt` board, whose alarm is the one device interrupt a self-test can raise on
+demand: arm the match one tick ahead and it fires within a second. A board whose
+tree has no such node -- riscv64, or an x86 PC with no tree -- has no `irq` file
+to open, and this is skipped. The mechanism is the same on every board; the node
+and its one-hertz clock are this one's.
+
+The wait is its own, longer than `PATIENCE`: the RTC counts seconds, so the alarm
+is up to a real second out, where every other program here answers in a
+scheduler tick or two.
+*/
+@(private = "file")
+verify_tree_irq :: proc(r: ^Result) #no_bounds_check {
+	MMIO :: "/dev/tree/pl031@9010000/mmio"
+	IRQ :: "/dev/tree/pl031@9010000/irq"
+	IRQ_PATIENCE :: 3000 // ticks; the alarm is up to a wall-clock second out
+
+	probe, perr := vfs.open_path(vfs.boot_namespace, IRQ, vfs.O_RDONLY)
+	if perr != vfs.OK {
+		return // No such node on this board; the mechanism is checked where there is one.
+	}
+	vfs.chan_close(probe)
+
+	p, err := load_held("treeirq", program_treeirq())
+	if !check(r, err == .None && p != nil, "a program is built to wait on the line") {
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, SLOT_A, bytes_of(MMIO)), "with the mmio path in its page")
+	check(r, set_bytes(p, SLOT_B, bytes_of(IRQ)), "and the irq path beside it")
+	check(r, launch(p, u64(len(MMIO)), u64(len(IRQ))), "and it launches, staged with both path lengths")
+	if check(r, wait(p, IRQ_PATIENCE), "and comes back once the alarm has fired") {
+		check(r, cell(p, CELL_MARK) == MARK_TREEIRQ, "having reached its first instruction")
+		check(r, i64(cell(p, TREEIRQ_MFD)) >= 0, "it opened the mmio file to arm the alarm")
+		check(r, i64(cell(p, TREEIRQ_BASE)) >= 0, "the register window attached, and the alarm is set through it")
+		check(r, i64(cell(p, TREEIRQ_IFD)) >= 0, "it opened the irq file")
+		check(r, i64(cell(p, TREEIRQ_READ)) > 0, "the parked read answered when the line fired, which is the interrupt reaching ring 3")
+		check(r, cell(p, TREEIRQ_BYTE) == '1', "reporting one fire taken")
+		check(r, cell(p, TREEIRQ_RIS) == 0, "and the source is quiet again, the interrupt serviced")
 	}
 	finish(r, p, "and the program is taken down")
 }

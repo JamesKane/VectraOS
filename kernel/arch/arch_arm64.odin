@@ -183,6 +183,7 @@ VECTOR_SHOOT :: arm64.VECTOR_SHOOT
 VECTOR_NMI :: arm64.VECTOR_NMI
 
 set_interrupt_handler :: arm64.set_interrupt_handler
+resume_vector :: arm64.resume_vector
 
 inb :: arm64.inb
 outb :: arm64.outb

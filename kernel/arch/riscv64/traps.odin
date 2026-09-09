@@ -156,6 +156,15 @@ set_interrupt_handler :: proc "contextless" (vector: int, h: Interrupt_Handler) 
 	}
 }
 
+// resume_vector is the interrupt id being handled, for a handler that serves
+// several lines. See the arm64 note.
+resume_vector :: proc "contextless" (r: Resume) -> u64 {
+	if r.frame == nil {
+		return 0
+	}
+	return r.frame.vector
+}
+
 // frame_is_user reads the previous privilege out of the saved status. SPP
 // clear is user mode, and the hart wrote it before any of this code ran.
 frame_is_user :: proc "contextless" (frame: ^Trap_Frame) -> bool {

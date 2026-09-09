@@ -312,6 +312,7 @@ VECTOR_SHOOT :: amd64.VECTOR_SHOOT
 VECTOR_NMI :: amd64.VECTOR_NMI
 
 set_interrupt_handler :: amd64.set_interrupt_handler
+resume_vector :: amd64.resume_vector
 
 // Port I/O, for a driver that has registers rather than memory. The 8042 is
 // the first, and on this architecture it is the only way to reach it.

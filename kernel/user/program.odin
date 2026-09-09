@@ -48,6 +48,7 @@ MARK_READER :: u64(0x5245_4144_5245_4144) // READREAD
 MARK_BINDER :: u64(0x4249_4E44_4249_4E44) // BINDBIND
 MARK_MAPPER :: u64(0x4D41_5050_4D41_5050) // MAPPMAPP
 MARK_TREEMMIO :: u64(0x54_4D_4D_4F_54_4D_4D_4F) // TMMOTMMO
+MARK_TREEIRQ :: u64(0x54_49_52_51_54_49_52_51) // TIRQTIRQ
 MARK_FIXEDSEG :: u64(0x46_49_58_53_46_49_58_53) // FIXSFIXS
 MARK_PARENT :: u64(0x5052_4E54_5052_4E54) // PRNTPRNT
 MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
@@ -267,6 +268,17 @@ MAPPER_DETACH :: 7
 TREEMMIO_FD :: 1
 TREEMMIO_ADDR :: 2
 TREEMMIO_WORD :: 3
+
+// Where `treeirq` reports: the mmio descriptor and the window it attached to arm
+// the RTC alarm, the irq descriptor it parked on, the bytes the parked read
+// answered when the line fired, the first byte (the fire count, `'1'`), and the
+// device's raw interrupt status after the clear (zero, the source serviced).
+TREEIRQ_MFD :: 1
+TREEIRQ_BASE :: 2
+TREEIRQ_IFD :: 3
+TREEIRQ_READ :: 4
+TREEIRQ_BYTE :: 5
+TREEIRQ_RIS :: 6
 
 // Where `fixedseg` reports: the run placed at the named address, the witness
 // read back from it, and the second run at the same address, which is refused.
@@ -740,6 +752,7 @@ program_storetest :: proc "contextless" () -> []u8 {return #load("../../build/pr
 // The ones that hold memory no file serves, or a device's.
 program_mapper :: proc "contextless" () -> []u8 {return #load("../../build/programs/mapper.bin")}
 program_treemmio :: proc "contextless" () -> []u8 {return #load("../../build/programs/treemmio.bin")}
+program_treeirq :: proc "contextless" () -> []u8 {return #load("../../build/programs/treeirq.bin")}
 program_fixedseg :: proc "contextless" () -> []u8 {return #load("../../build/programs/fixedseg.bin")}
 program_anon :: proc "contextless" () -> []u8 {return #load("../../build/programs/anon.bin")}
 program_sharer :: proc "contextless" () -> []u8 {return #load("../../build/programs/sharer.bin")}

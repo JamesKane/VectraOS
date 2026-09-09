@@ -23,6 +23,11 @@ timebase, generalised here to build the whole tree rather than find one value.
 */
 package tree
 
+import "base:intrinsics"
+
+import "kernel:arch"
+import "kernel:mnt"
+import "kernel:sync"
 import "kernel:vfs"
 import "vsys:vectra9"
 
@@ -52,6 +57,15 @@ tree_static: vfs.Static_Tree
 @(private)
 node_count: int
 
+// The worker threads `#t` runs on. A read of an `irq` file parks until the line
+// fires, and a parked handler on the synchronous transport takes its caller's
+// thread down with it -- so `#t` moves onto `kernel/mnt`, where a parked read
+// holds one worker and the others still answer property and `mmio` reads. One
+// worker per in-flight request, plus one so the flush that unwedges a parked
+// read is never itself waiting for a worker.
+@(private)
+WORKERS :: mnt.MAX_REQUESTS + 1
+
 /*
 Mmio is one node's register window, kept beside the node table because a
 `Static_Node` has no room for a physical address. `mmio_table[i]` is set for
@@ -67,6 +81,82 @@ Mmio :: struct {
 
 @(private)
 mmio_table: []Mmio
+
+/*
+Irq is one node's interrupt line, beside the node table for the same reason
+`Mmio` is: a `Static_Node` has no room for it. `irq_table[i]` is set for the
+synthesized `irq` file at node index `i`. A read of that file parks on `ready`
+until the line fires; the handler masks the line, acknowledges, counts the fire
+and wakes the reader; the next read unmasks. `holders` is the open descriptors,
+so the last close masks the line for good.
+*/
+@(private)
+Irq :: struct {
+	valid:     bool,
+	gsi:       int,   // the shared-line number, from the node's `interrupts`
+	intid:     u64,   // the controller id the handler is registered for
+	fired:     u64,   // fires the handler has counted
+	delivered: u64,   // fires reads have taken
+	holders:   int,   // open descriptors on this line's file
+	routed:    bool,  // the handler is registered and the line aimed
+	ready:     sync.Rendez,
+}
+
+@(private)
+irq_table: []Irq
+
+/*
+on_irq is the handler every device line shares. The dispatch calls it with the
+frame naming the id that fired, so it finds the line, masks it at the controller
+so a level line does not re-fire before the driver has serviced it,
+acknowledges, counts the fire and wakes the parked reader. It runs in interrupt
+context; `sync.wakeup` is safe there and it touches nothing else.
+*/
+@(private)
+on_irq :: proc "contextless" (r: arch.Resume) -> arch.Resume #no_bounds_check {
+	intid := arch.resume_vector(r)
+	for i in 0 ..< len(irq_table) {
+		e := &irq_table[i]
+		if e.valid && e.routed && e.intid == intid {
+			arch.irq_set_mask(e.gsi, true)
+			arch.irq_ack()
+			intrinsics.volatile_store(&e.fired, intrinsics.volatile_load(&e.fired) + 1)
+			sync.wakeup(&e.ready)
+			return r
+		}
+	}
+	// No line owns it, which should not happen for an id this registered a
+	// handler for. Acknowledge anyway, so the controller is not left with an
+	// active line masking every lower priority -- the timer among them.
+	arch.irq_ack()
+	return r
+}
+
+// Irq_Wait is what a parked read waits on: the line, and the tag that names the
+// request so the wake can tell a fire from a flush. It lives on the worker's own
+// stack while the read is parked, which is exactly as long as the condition is
+// dereferenced.
+@(private)
+Irq_Wait :: struct {
+	e:   ^Irq,
+	tag: vectra9.Tag,
+}
+
+/*
+irq_ready is a parked read's wake condition. Two ways out, as `devfs`'s reader
+has: the line fired and this reader has not taken it, or the request was flushed
+-- the client gave up, or was killed, and `tree_abort` woke every reader to let
+the flushed one find its tag here. It runs in interrupt context on the wake, so
+it loads and compares and does nothing else.
+*/
+@(private)
+irq_ready :: proc "contextless" (arg: rawptr) -> bool {
+	w := (^Irq_Wait)(arg)
+	if intrinsics.volatile_load(&w.e.fired) > intrinsics.volatile_load(&w.e.delivered) {
+		return true
+	}
+	return vfs.server_flushed(&tree_server, w.tag)
+}
 
 // nodes reports how many directories and property files `#t` serves, for the
 // boot line. Zero on a machine the bootloader gave no tree.
@@ -145,7 +235,7 @@ node with a `reg` grows one more file, a synthesized `mmio`, whose window
 one file the kernel adds, not the firmware, and the one a driver segattaches.
 */
 @(private)
-walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio) -> int #no_bounds_check {
+walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, itab: []Irq) -> int #no_bounds_check {
 	if len(blob) < 40 || be32(blob, 0) != FDT_MAGIC {
 		return 0
 	}
@@ -236,6 +326,30 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio) ->
 					}
 				}
 			}
+
+			// A shared interrupt grows the node an `irq` file. The `interrupts`
+			// property is cells of `<type intid flags>`; type 0 is a shared
+			// peripheral line, whose controller id is the base plus the number.
+			// A per-core line (type 1, the timer's kind) is not a device's to
+			// take, so it grows no file.
+			if sp > 0 && pname == "interrupts" && length >= 12 {
+				itype := be32(blob, value_at)
+				icell := be32(blob, value_at + 4)
+				if itype == 0 {
+					iidx := count
+					count += 1
+					if iidx < len(out) {
+						out[iidx] = vfs.Static_Node{name = "irq", parent = i32(stack[sp - 1].idx)}
+					}
+					if iidx < len(itab) {
+						itab[iidx] = Irq {
+							valid = true,
+							gsi   = int(icell),
+							intid = u64(arch.VECTOR_IRQ_BASE) + u64(icell),
+						}
+					}
+				}
+			}
 		case FDT_NOP:
 		case FDT_END:
 			return count
@@ -259,6 +373,161 @@ tree_device :: proc "contextless" (sv: ^vfs.Server, qid: vectra9.Qid) -> (phys: 
 		return 0, 0, false, false
 	}
 	return mmio_table[node].phys, mmio_table[node].size, true, true
+}
+
+/*
+tree_handler serves the tree. The property files, the directories and the `mmio`
+device are `vfs.static_handler`'s and the device hook's; this adds the one file
+with behaviour, the `irq` stream. It handles a `Tlopen`, `Tread` and `Tclunk` on
+an `irq` fid itself -- arming the line, parking the read, masking on the last
+close -- and hands every other message to `static_handler`.
+
+It never holds `tree_static.lock` across a park: `irq_of` takes it only to read
+the fid's node, and the read then sleeps outside any lock. The park is on a
+`kernel/mnt` worker thread, not the caller's -- `#t` runs worker-backed for
+exactly this, so a parked read holds one worker and the rest keep answering.
+*/
+@(private)
+tree_handler :: proc "contextless" (server: rawptr, s: ^vectra9.Session, tag: vectra9.Tag, request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
+	#partial switch m in request^ {
+	case vectra9.Tlopen:
+		if e := irq_of(m.fid); e != nil {
+			tree_irq_arm(e)
+		}
+	case vectra9.Tread:
+		if e := irq_of(m.fid); e != nil {
+			tree_irq_read(e, tag, buf, reply)
+			return
+		}
+	case vectra9.Tclunk:
+		if e := irq_of(m.fid); e != nil {
+			tree_irq_disarm(e)
+		}
+	}
+	vfs.static_handler(&tree_static, s, tag, request, reply, buf)
+}
+
+// irq_of is the line a fid names, or nil for a fid on any other file.
+@(private)
+irq_of :: proc "contextless" (fid: vectra9.Fid) -> ^Irq #no_bounds_check {
+	g := sync.acquire(&tree_static.lock)
+	defer sync.release(&tree_static.lock, g)
+	node := vfs.fidtab_node(&tree_static.fids, fid)
+	if node >= 0 && int(node) < len(irq_table) && irq_table[node].valid {
+		return &irq_table[node]
+	}
+	return nil
+}
+
+// tree_irq_arm registers the handler and aims the line on the first open, and
+// counts the holder. The line stays masked; a read is what unmasks it.
+@(private)
+tree_irq_arm :: proc "contextless" (e: ^Irq) {
+	g := sync.acquire(&tree_static.lock)
+	defer sync.release(&tree_static.lock, g)
+	if e.holders == 0 {
+		arch.set_interrupt_handler(int(e.intid), on_irq)
+		arch.irq_route(e.gsi, arch.irq_vector_of(e.gsi), 0)
+		e.routed = true
+		e.delivered = intrinsics.volatile_load(&e.fired)
+	}
+	e.holders += 1
+}
+
+// tree_irq_disarm drops a holder and masks the line for good on the last close,
+// the property `docs/HARDWARE.md` section 3 keeps: a line with nobody to unmask
+// it stays masked, so a reader that goes away cannot storm the machine.
+@(private)
+tree_irq_disarm :: proc "contextless" (e: ^Irq) {
+	g := sync.acquire(&tree_static.lock)
+	defer sync.release(&tree_static.lock, g)
+	if e.holders > 0 {
+		e.holders -= 1
+	}
+	if e.holders == 0 {
+		arch.irq_set_mask(e.gsi, true)
+		e.routed = false
+	}
+}
+
+/*
+tree_irq_read unmasks the line and parks until it fires, then answers the count
+of fires taken. It runs on a `kernel/mnt` worker, so the way out of the park is
+not a note to the caller's thread but a flush: the client gives up or dies, the
+transport sets the flushed bit and `tree_abort` wakes the reader, which finds
+its tag flushed and answers EINTR. The reply of a flushed request is dropped, so
+the fire it would have reported is left uncounted for the read that follows.
+
+The flush is tested before the count is taken, and the order is the same one
+`devfs` keeps: a fire taken into a flushed reply is a fire handed to nobody.
+*/
+@(private)
+tree_irq_read :: proc "contextless" (e: ^Irq, tag: vectra9.Tag, buf: []u8, reply: ^vectra9.Msg) #no_bounds_check {
+	arch.irq_set_mask(e.gsi, false)
+	w := Irq_Wait{e = e, tag = tag}
+	for {
+		if vfs.server_flushed(&tree_server, tag) {
+			reply^ = vectra9.error_reply(vectra9.EINTR)
+			return
+		}
+		fired := intrinsics.volatile_load(&e.fired)
+		if fired > intrinsics.volatile_load(&e.delivered) {
+			n := fired - intrinsics.volatile_load(&e.delivered)
+			intrinsics.volatile_store(&e.delivered, fired)
+			at := put_uint(buf, n)
+			if at < len(buf) {
+				buf[at] = '\n'
+				at += 1
+			}
+			reply^ = vectra9.Rread{data = buf[:at]}
+			return
+		}
+		sync.sleep(&e.ready, irq_ready, &w)
+	}
+}
+
+// put_uint writes an unsigned decimal into a buffer and answers its length.
+@(private)
+put_uint :: proc "contextless" (b: []u8, v: u64) -> int #no_bounds_check {
+	if len(b) == 0 {
+		return 0
+	}
+	if v == 0 {
+		b[0] = '0'
+		return 1
+	}
+	tmp: [20]u8
+	n := 0
+	x := v
+	for x > 0 {
+		tmp[n] = u8('0' + x % 10)
+		x /= 10
+		n += 1
+	}
+	out := 0
+	for i := n - 1; i >= 0 && out < len(b); i -= 1 {
+		b[out] = tmp[i]
+		out += 1
+	}
+	return out
+}
+
+/*
+tree_abort is the transport's flush hook. It cannot know which line the flushed
+read was parked on -- a rendezvous, not a tag, is what a sleeper waits on -- so
+it wakes every line's readers, and each re-tests its own condition: the one that
+was flushed finds its tag set and leaves, the rest find neither a fire nor a
+flush and park again. It runs in interrupt context, where `wakeup_all` is safe.
+*/
+@(private)
+tree_abort :: proc "contextless" (server: rawptr, tag: vectra9.Tag) {
+	_ = server
+	_ = tag
+	for i in 0 ..< len(irq_table) {
+		if irq_table[i].valid {
+			sync.wakeup_all(&irq_table[i].ready)
+		}
+	}
 }
 
 /*
@@ -290,31 +559,43 @@ init :: proc(ns: ^vfs.Namespace, dtb: rawptr) -> vfs.Errno {
 		blob[i] = src[i]
 	}
 
-	count := walk(blob, nil, nil)
+	count := walk(blob, nil, nil, nil)
 	if count <= 0 {
 		delete(blob)
 		return vfs.OK
 	}
 	rows := make([]vfs.Static_Node, count)
 	mtab := make([]Mmio, count)
-	if rows == nil || mtab == nil {
+	itab := make([]Irq, count)
+	if rows == nil || mtab == nil || itab == nil {
 		delete(blob)
 		return vectra9.ENOMEM
 	}
-	_ = walk(blob, rows, mtab)
+	_ = walk(blob, rows, mtab, itab)
 	node_count = count
 	mmio_table = mtab
+	irq_table = itab
 
 	if !vfs.static_init(&tree_static, "tree", rows) {
 		return vectra9.ENOMEM
 	}
-	if err := vfs.server_init(&tree_server, "t", vfs.static_handler, &tree_static); err != .None {
+	// `tree_handler` wraps `static_handler`: the property reads and the mmio
+	// device are its and the hook's, and the `irq` stream is the one file with
+	// behaviour of its own. See `docs/HARDWARE.md` section 3.
+	if err := vfs.server_init(&tree_server, "t", tree_handler, &tree_static); err != .None {
 		return vectra9.EPROTO
 	}
-	// The kernel hook that answers a segattach of an `mmio`, beside the handler
-	// that answers the property reads. See `docs/HARDWARE.md` section 3.
 	tree_server.device = tree_device
+	// Worker-backed, so a read parked on an `irq` file holds one worker rather
+	// than wedging every property and `mmio` read behind it. `server_start`
+	// comes before `register_device`, so nothing reaches this server while it is
+	// still on its own stack -- the same order `devfs` keeps, and for the same
+	// reason: the synchronous transport hands a parked handler no way back.
+	if !vfs.server_start(&tree_server, WORKERS, 0, tree_abort) {
+		return vectra9.ENOMEM
+	}
 	if !vfs.register_device(&tree_server) {
+		vfs.server_stop(&tree_server)
 		return vectra9.EEXIST
 	}
 	return vfs.mount_device(ns, "#t", "/dev/tree")
