@@ -54,6 +54,15 @@ void vapp_frame(VApp *app, VFrame *out);
 /* Composite what was painted. `vsync` is taken for the loop's shape. */
 void vapp_present(VApp *app, int vsync);
 
+/* Hand `count` interleaved signed-16-bit samples to the device (two to a
+   stereo frame), and return how many it took. */
+int vapp_sound(VApp *app, short *samples, int count);
+
+/* The device's rate in samples a second, and channels a frame -- the shape a
+   program's samples must take. Zero rate is a machine with no card. */
+int vapp_rate(VApp *app);
+int vapp_channels(VApp *app);
+
 /* Yield to the pointer thread: a busy frame loop yields nowhere else. */
 void vapp_pump(VApp *app);
 

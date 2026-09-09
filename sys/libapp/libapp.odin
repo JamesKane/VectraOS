@@ -43,6 +43,14 @@ App :: struct {
 	store_fd:   int,
 	mouse_fd:   int,
 	time_fd:    int,
+	audio_fd:   int,
+
+	// The format `/dev/audio` plays: the rate in hertz, the channel count, and
+	// the bits a sample carries, read once at `open`. `sound` writes samples in
+	// this shape. Zero rate is a machine with no card, and `sound` a no-op.
+	rate:       int,
+	channels:   int,
+	bits:       int,
 
 	// The store, mapped by `shmalloc`'s id: `stride` words to a row, the client
 	// area at `(cx, cy)` in it, `cw` by `ch`. The run is the whole screen's, so
@@ -103,6 +111,7 @@ open :: proc "contextless" (app: ^App, title: string, w: int, h: int) -> bool #n
 	app.store_fd = -1
 	app.mouse_fd = -1
 	app.time_fd = -1
+	app.audio_fd = -1
 
 	if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
 		return refused("no draw server at /srv/draw")
@@ -177,6 +186,25 @@ open :: proc "contextless" (app: ^App, title: string, w: int, h: int) -> bool #n
 	if tfd >= 0 {
 		app.time_fd = int(tfd)
 		app.last_uptime = read_uptime(app)
+	}
+
+	// Sound, if the machine has a card. A read of `/dev/audio` is the format a
+	// program's samples must take -- `rate channels bits`. No card is a rate of
+	// zero and a `sound` that writes nowhere.
+	afd := libuser.open("/dev/audio", abi.O_RDWR)
+	if afd >= 0 {
+		app.audio_fd = int(afd)
+		fbuf: [32]u8
+		fn := libuser.read(int(afd), fbuf[:])
+		at := 0
+		hz, hz_ok := libdraw.scan_int(fbuf[:max(int(fn), 0)], &at)
+		chn, chn_ok := libdraw.scan_int(fbuf[:max(int(fn), 0)], &at)
+		bits, bits_ok := libdraw.scan_int(fbuf[:max(int(fn), 0)], &at)
+		if hz_ok && chn_ok && bits_ok {
+			app.rate = hz
+			app.channels = chn
+			app.bits = bits
+		}
 	}
 
 	app.mouse_chan = libthread.chancreate(size_of(u64), MOUSE_QUEUE)
@@ -281,6 +309,25 @@ present :: proc "contextless" (app: ^App, vsync: bool = true) #no_bounds_check {
 	_ = libuser.write(app.store_fd, app.line[:at])
 }
 
+/*
+sound hands the next slice of audio to the device, in the shape `open` read:
+interleaved signed sixteen-bit samples, `channels` to a frame, at `rate` a
+second. It answers how many samples the device took. A machine with no card
+takes none. The write drains at the rate, so a program that hands it a slice
+each frame is paced by the sound as much as by the frame.
+*/
+sound :: proc "contextless" (app: ^App, samples: []i16) -> int #no_bounds_check {
+	if app.audio_fd < 0 || len(samples) == 0 {
+		return 0
+	}
+	bytes := ([^]u8)(raw_data(samples))[:len(samples) * 2]
+	n := libuser.write(app.audio_fd, bytes)
+	if n <= 0 {
+		return 0
+	}
+	return int(n) / 2
+}
+
 // close gives the window and its store back. The io thread ends when the mouse
 // file it reads is gone, which the close makes true; a program that exits after
 // this takes the thread with it in any case.
@@ -289,6 +336,7 @@ close :: proc "contextless" (app: ^App) {
 		_ = libuser.segdetach(uintptr(app.store))
 		app.store = nil
 	}
+	if app.audio_fd >= 0 {_ = libuser.close(app.audio_fd)}
 	if app.mouse_fd >= 0 {_ = libuser.close(app.mouse_fd)}
 	if app.store_fd >= 0 {_ = libuser.close(app.store_fd)}
 	if app.ctl_fd >= 0 {_ = libuser.close(app.ctl_fd)}

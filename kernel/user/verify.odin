@@ -539,9 +539,9 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// The platform layer, from both languages over one library: the Odin
 	// client, then the same program in C linking the same Odin `sys/libapp`,
 	// then a game -- started and closed the same way, its ground its own.
-	verify_app(&r, "/bin/apptest", 0x0022_4466, true)
-	verify_app(&r, "/bin/capp", 0x0022_4466, true)
-	verify_app(&r, "/bin/rebound", 0x0010_1830, false)
+	verify_app(&r, "/bin/apptest", 0x0022_4466, true, true)
+	verify_app(&r, "/bin/capp", 0x0022_4466, true, true)
+	verify_app(&r, "/bin/rebound", 0x0010_1830, false, false)
 	verify_debugger(&r)
 
 	// -- And a typed ^C, which reaches the program reading the console -------
@@ -5060,7 +5060,7 @@ the Odin client, the C client, and a game over the one library. `docs/DEVTOOLS.m
 step 2.
 */
 @(private = "file")
-verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool) #no_bounds_check {
+verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool, want_sound: bool) #no_bounds_check {
 	s := devfs.raw_surface()
 	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
 		return
@@ -5088,6 +5088,10 @@ verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool) #no
 		finish(r, ps, "the draw server is taken down")
 		return
 	}
+
+	// The device's sample count before the client, so a client's tone reaching
+	// the card is a number that moved.
+	sound_before := virtio.sound_played()
 
 	pd, derr := spawn_path(nil, path, SPAWN_NS_COPY)
 	if !check(r, derr == vfs.OK && pd != nil, "the loader starts the libapp client") {
@@ -5159,6 +5163,20 @@ verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool) #no
 		finish(r, pd, "the client is taken down")
 		finish(r, ps, "and the draw server is taken down")
 		return
+	}
+
+	// The tone the client played before its window, if it plays one and the
+	// board has a card: the device's sample count moved past where it was.
+	if want_sound && virtio.sound_present() {
+		grew := false
+		for _ in 0 ..< PATIENCE * 20 {
+			if virtio.sound_played() > sound_before + 4096 {
+				grew = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, grew, "and its sound reached the device, samples the card took through libapp")
 	}
 
 	// And it presents: the ground reaches the glass. Where it landed is the

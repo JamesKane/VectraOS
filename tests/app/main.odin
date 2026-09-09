@@ -38,6 +38,26 @@ threadmain :: proc "contextless" (arg: rawptr) {
 		libthread.threadexitsall("noopen")
 	}
 
+	// A short tone through libapp, so the self-test sees samples reach the
+	// device: a square wave, interleaved for the two channels, in chunks.
+	TONE_FRAMES :: 9600 // a fifth of a second at forty-eight thousand
+	chunk: [960]i16 // 480 stereo frames
+	phase := 0
+	played := 0
+	for played < TONE_FRAMES {
+		for i in 0 ..< 480 {
+			v: i16 = -6000
+			if (phase / 60) % 2 == 0 {
+				v = 6000
+			}
+			chunk[i * 2] = v
+			chunk[i * 2 + 1] = v
+			phase += 1
+		}
+		libapp.sound(&app, chunk[:])
+		played += 480
+	}
+
 	for _ in 0 ..< MAX_FRAMES {
 		f := libapp.frame(&app)
 		// The ground, every frame, so the marker's last place is rubbed out.

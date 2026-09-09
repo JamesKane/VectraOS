@@ -37,6 +37,20 @@ static void worker(void *arg)
 		vapp_threadexitsall();
 	}
 
+	/* A short tone through libapp, so the self-test sees samples reach the
+	   device from C too: a square wave, interleaved, in chunks. */
+	short chunk[960]; /* 480 stereo frames */
+	int phase = 0;
+	for (int played = 0; played < 9600; played += 480) {
+		for (int i = 0; i < 480; i++) {
+			short v = (phase / 60) % 2 == 0 ? 6000 : -6000;
+			chunk[i * 2] = v;
+			chunk[i * 2 + 1] = v;
+			phase++;
+		}
+		vapp_sound(&app, chunk, 960);
+	}
+
 	for (int i = 0; i < MAX_FRAMES; i++) {
 		VFrame f;
 		vapp_frame(&app, &f);

@@ -640,8 +640,10 @@ The remaining roots wait on nothing, and each can start now:
                        (a ball and a paddle, motion in `frame`'s real
                        seconds). `tests/app`, `tests/capp` and rebound all
                        started and closed by the self-test -- the step's boot
-                       line met. Left: sound and the pads, the two frame
-                       rungs above the pointer.
+                       line met. Sound too: `open` opens /dev/audio, `sound`/
+                       `vapp_sound` feed it, both clients play a tone and the
+                       self-test reads the device's sample count move. Left:
+                       the pads, the last frame rung.
     a model, the ghost GHOST 0 and 1
     kfs large + rename DONE -- the unowned root, built; GHOST 0's write path
                        and DEVTOOLS 7 and 8 no longer stop at kfs

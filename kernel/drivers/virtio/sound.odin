@@ -130,10 +130,21 @@ Card :: struct {
 @(private = "file")
 cards: [MAX_CARDS]Card
 
+// The total sample bytes the device has taken, across every writer. The
+// self-test reads it before and after a client plays, so a client's samples
+// reaching the device is a number that moved rather than a sound nobody hears.
+@(private = "file")
+total_played: u64
+
 // sound_present reports whether a card came up, for the boot line and the
 // device file that will not open without one.
 sound_present :: proc "contextless" () -> bool {
 	return cards[0].used && cards[0].started
+}
+
+// sound_played is the running count of sample bytes the device has taken.
+sound_played :: proc "contextless" () -> u64 {
+	return intrinsics.volatile_load(&total_played)
 }
 
 // sound_rate answers the format `/dev/audio` plays at: the rate in hertz, the
@@ -515,6 +526,9 @@ sound_play :: proc "contextless" (data: []u8) -> int #no_bounds_check {
 		}
 		q.last_used = q.used_ring[1]
 		sent += chunk
+	}
+	if sent > 0 {
+		intrinsics.volatile_store(&total_played, intrinsics.volatile_load(&total_played) + u64(sent))
 	}
 	return sent
 }

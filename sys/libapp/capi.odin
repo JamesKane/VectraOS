@@ -107,6 +107,28 @@ vapp_present :: proc "c" (app: ^App, vsync: b32) {
 	present(app, bool(vsync))
 }
 
+// vapp_sound hands `count` interleaved samples to the device, and answers how
+// many it took. `count` is samples, not frames: two to a stereo frame.
+@(export, link_name = "vapp_sound")
+vapp_sound :: proc "c" (app: ^App, samples: [^]i16, count: i32) -> i32 #no_bounds_check {
+	if samples == nil || count <= 0 {
+		return 0
+	}
+	return i32(sound(app, samples[:int(count)]))
+}
+
+// vapp_rate answers the samples-a-second the device plays, and vapp_channels
+// how many to a frame -- what a program shapes its tone to.
+@(export, link_name = "vapp_rate")
+vapp_rate :: proc "c" (app: ^App) -> i32 {
+	return i32(app.rate)
+}
+
+@(export, link_name = "vapp_channels")
+vapp_channels :: proc "c" (app: ^App) -> i32 {
+	return i32(app.channels)
+}
+
 @(export, link_name = "vapp_pump")
 vapp_pump :: proc "c" (app: ^App) {
 	pump(app)

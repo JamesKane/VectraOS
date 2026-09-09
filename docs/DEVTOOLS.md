@@ -781,7 +781,14 @@ of `frame`/`present`/`pump`, and `close` -- the platform layer used the way a
 game uses it. The self-test starts it and closes it, its ground read out of
 the store like the others'. The step's boot line -- the C program, the same
 in Odin, and the game started and closed by the self-test -- is met, on three
-architectures. Left: sound and the pads, the two frame rungs above the pointer.
+architectures.
+
+**And sound, the next rung.** `open` opens `/dev/audio` and reads the format
+it plays; `sound` hands the next slice of interleaved samples to it, exported
+to C as `vapp_sound`. Both `apptest` and the C `capp` play a short tone before
+their frame loop, and the self-test reads the device's own sample count moving
+past where it was -- samples the card took through `sys/libapp`, from both
+languages. Left: the pads, the last frame rung.
 
 ### Step 3: `/proc`, whole
 
