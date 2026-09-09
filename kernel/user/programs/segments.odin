@@ -69,6 +69,25 @@ treemmio :: proc "contextless" (cells: ^Cells, path_len: u64, offset: u64) -> ! 
 }
 
 /*
+fixedseg allocates a run at the address named as the argument, writes a witness
+into it and reads it back, then asks for a second run at the same address, which
+the kernel refuses because the first one is there. It reports the placed address,
+the witness, and the refusal.
+*/
+fixedseg :: proc "contextless" (cells: ^Cells, at: u64) -> ! {
+	cells[0] = 0x46_49_58_53_46_49_58_53 // FIXSFIXS
+	a1, e1 := libuser.segalloc(4096, 0, uintptr(at))
+	put(cells, 1, seg_result(a1, e1))
+	if e1 == 0 {
+		store64(a1, 0x1234_5678)
+		put(cells, 2, i64(load64(a1)))
+	}
+	a2, e2 := libuser.segalloc(4096, 0, uintptr(at))
+	put(cells, 3, seg_result(a2, e2))
+	libuser.exit(0)
+}
+
+/*
 anon takes memory of its own and exercises every edge of it.
 
 A run of `size` bytes, read and written at both ends. A second run, grown

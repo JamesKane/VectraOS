@@ -544,6 +544,8 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_app(&r, "/bin/rebound", 0x0010_1830, false, false)
 	// A device's register window, attached through the tree's `mmio` file.
 	verify_tree_mmio(&r)
+	// A run placed at an address the caller named, which a firmware binary asks.
+	verify_fixedseg(&r)
 	verify_debugger(&r)
 
 	// -- And a typed ^C, which reaches the program reading the console -------
@@ -5294,6 +5296,31 @@ verify_tree_mmio :: proc(r: ^Result) #no_bounds_check {
 			cell(p, TREEMMIO_WORD) & 0xFF == 0x31,
 			"and a load read the RTC's id register, which is the hardware reached through a mapping",
 		)
+	}
+	finish(r, p, "and the program is taken down")
+}
+
+/*
+verify_fixedseg places a run at an address a program names and refuses a second
+there. `segalloc` grew an address argument for the GPU firmware, whose sections
+name where in the address space they land, `docs/HARDWARE.md` section 4. A zero
+is the old behaviour; a named address is a run that must go there or nowhere.
+*/
+@(private = "file")
+verify_fixedseg :: proc(r: ^Result) #no_bounds_check {
+	AT :: uintptr(0x2000_0000) // inside the mappable range, clear of image and stack
+
+	p, err := load_held("fixedseg", program_fixedseg())
+	if !check(r, err == .None && p != nil, "a program is built to place a run") {
+		return
+	}
+	r.programs += 1
+	check(r, launch(p, u64(AT)), "and it launches, asking for an address")
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_FIXEDSEG, "having reached its first instruction")
+		check(r, cell(p, FIXEDSEG_FIRST) == u64(AT), "segalloc placed the run at the address it named")
+		check(r, cell(p, FIXEDSEG_WITNESS) == 0x1234_5678, "and the run is real, a word written into it and read back")
+		check(r, i64(cell(p, FIXEDSEG_SECOND)) < 0, "and a second run at that address is refused, because the first is there")
 	}
 	finish(r, p, "and the program is taken down")
 }

@@ -405,7 +405,7 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	case SYS_SEGATTACH:
 		result = sys_segattach(int(a0))
 	case SYS_SEGALLOC:
-		result = sys_segalloc(a0, a1)
+		result = sys_segalloc(a0, a1, a2)
 	case SYS_SEGBRK:
 		result = sys_segbrk(uintptr(a0), uintptr(a1))
 	case SYS_SEGDETACH:
@@ -1265,6 +1265,41 @@ map_reserve :: proc "contextless" (p: ^Process, pages: int) -> (va: uintptr, ok:
 }
 
 /*
+map_reserve_at reserves a run at a virtual address the caller names, rather than
+wherever there is room. It answers false for an address that is not page-aligned,
+falls outside the range a program may map into, or overlaps a segment the process
+already holds -- which is what refuses a second run at an address the first took.
+
+A firmware binary names where its sections must land; this is how `segalloc`
+honours that. The range is the same one `map_reserve` allocates from, so a fixed
+run and a placed one never collide by construction.
+*/
+@(private)
+map_reserve_at :: proc "contextless" (p: ^Process, va: uintptr, pages: int) -> (out: uintptr, ok: bool) #no_bounds_check {
+	if p == nil || pages <= 0 {
+		return 0, false
+	}
+	if va % uintptr(arch.PAGE_SIZE) != 0 || va < MAPPING_BASE {
+		return 0, false
+	}
+	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
+	if va + span > mem.USER_MAX || va + span < va {
+		return 0, false
+	}
+	for i in 0 ..< p.seg_count {
+		s := p.segs[i]
+		if s == nil {
+			continue
+		}
+		s_end := s.va + uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
+		if va < s_end && va + span > s.va {
+			return 0, false
+		}
+	}
+	return va, true
+}
+
+/*
 map_run maps a run segment's frames into a process, page by page, from
 page `from` to the end.
 
@@ -1500,7 +1535,7 @@ shm_map :: proc "contextless" (p: ^Process, id: u64, phys: uintptr, pages: int) 
 }
 
 @(private = "file")
-sys_segalloc :: proc(bytes: u64, flags: u64) -> i64 {
+sys_segalloc :: proc(bytes: u64, flags: u64, at: u64) -> i64 {
 	p := current()
 	if p == nil {
 		return -i64(vectra9.ESRCH)
@@ -1521,7 +1556,16 @@ sys_segalloc :: proc(bytes: u64, flags: u64) -> i64 {
 	// whole page. A mapping cannot be finer than the hardware page it is in.
 	pages := int((bytes + u64(arch.PAGE_SIZE) - 1) / u64(arch.PAGE_SIZE))
 
-	va, room := map_reserve(p, pages)
+	// An address the caller named, or wherever there is room. A named address
+	// that is unaligned, out of range, or already a run's is refused -- which is
+	// how a second alloc at the same address answers no.
+	va: uintptr
+	room: bool
+	if at != 0 {
+		va, room = map_reserve_at(p, uintptr(at), pages)
+	} else {
+		va, room = map_reserve(p, pages)
+	}
 	if !room {
 		return -i64(vectra9.ENOMEM)
 	}

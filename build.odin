@@ -156,7 +156,7 @@ test_programs := [?]string{
 	"spin", "poke", "peek", "priv", "jump",
 	"hello", "probe", "shadow",
 	"namer", "reader", "binder", "painter", "bulkio", "storetest",
-	"mapper", "anon", "sharer", "sharedseg", "treemmio",
+	"mapper", "anon", "sharer", "sharedseg", "treemmio", "fixedseg",
 	"parent", "child", "poster", "execer", "niner",
 	"noter", "catcher", "dfltnote",
 	"forker", "memfork", "fdforker", "refuser", "grouper", "nowaiter",

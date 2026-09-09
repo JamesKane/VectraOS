@@ -837,8 +837,14 @@ and ordered, which is where the segattach hook grew to say whether a file is a
 register window or a framebuffer, so a store reaches the hardware. The
 self-test attaches the RTC's window through its `mmio` and reads the id
 register the part answers with a fixed byte -- the hardware reached through a
-mapping, no kernel driver. The GICv3 selection, `irq`, `dma` and `blkfs` are
-the rest of the step.
+mapping, no kernel driver.
+
+**And `segalloc` at an address.** `segalloc` grew an address argument, a zero
+meaning what it meant before and a page-aligned address meaning the run must
+land there, refused if a run already holds it. The GPU firmware asks for this,
+its sections naming where in the address space they go; the self-test places a
+run, writes and reads it, and is refused a second at the same address. The
+GICv3 selection, `irq`, `dma` and `blkfs` are the rest of the step.
 
 ### Step 1: the board boots
 

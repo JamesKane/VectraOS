@@ -285,9 +285,14 @@ copied otherwise. `abi.SEGSHARED` asks for Plan 9's shared class instead: a
 run every fork shares whatever its flags say, and every exec keeps. That is
 memory a process arranges for the program it is about to become, or for a
 worker it forks without sharing everything else.
+
+`at` is the virtual address the run must land at, page-aligned, or zero to let
+the kernel place it as it always has. A firmware binary names where its
+sections go, `docs/HARDWARE.md` section 4, and this is how a loader honours
+that. A run over one already there is refused.
 */
-segalloc :: proc "contextless" (bytes: int, flags: u64 = 0) -> (addr: uintptr, err: i64) {
-	r := raw2(abi.SYS_SEGALLOC, u64(bytes), flags)
+segalloc :: proc "contextless" (bytes: int, flags: u64 = 0, at: uintptr = 0) -> (addr: uintptr, err: i64) {
+	r := raw3(abi.SYS_SEGALLOC, u64(bytes), flags, u64(at))
 	if r < 0 {
 		return 0, r
 	}
