@@ -891,7 +891,10 @@ uniform cores would otherwise hide it. The big.LITTLE split is the board's to
 show; the mechanism is proven on QEMU, and it is what reaching `read_mpidr`
 turned up its byte bug.
 
-The `dma`/SMMU walker and `blkfs` are the rest of the step.
+The `dma`/SMMU walker and `blkfs` are the rest of the step. `docs/SMMU.md`
+is their design, written before the code. It has the tables, the walker
+list on a space, the `dma` file's words, the fault stream, and the order of
+commits.
 
 ### Step 1: the board boots
 
@@ -1069,5 +1072,7 @@ parts are independent and can proceed at once.
   `doorbell` and `sync` are more of.
 - `docs/USER.md` -- `segalloc`, the fault rule, and the reaper a driver
   that faults relies on.
+- `docs/SMMU.md` -- the walker: `kernel/smmu`, the `dma` file, and the
+  list a space carries, designed from section 4.
 - `docs/SMP.md` -- the shootdown a device joins.
 - `docs/WORKBENCH.md` -- the desktop this puts on a real screen.
