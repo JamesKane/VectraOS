@@ -84,6 +84,7 @@ attach :: proc(sv: ^Server, aname: string = "", uname: string = "vectra") -> (^C
 
 	c := chan_alloc(sv, fid, answer.qid)
 	if c == nil {
+		clunk_fid(sv, fid)
 		return nil, vectra9.ENOMEM
 	}
 	return c, OK
@@ -175,6 +176,7 @@ server_walk1 :: proc(from: ^Chan, name: string) -> (^Chan, Errno) #no_bounds_che
 
 	nc := chan_alloc(from.server, newfid, answer.qids[0])
 	if nc == nil {
+		clunk_fid(from.server, newfid)
 		return nil, vectra9.ENOMEM
 	}
 	nc.tree_root = from.tree_root

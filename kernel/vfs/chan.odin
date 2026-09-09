@@ -519,12 +519,27 @@ chan_clone :: proc(c: ^Chan) -> (^Chan, Errno) {
 
 	nc := chan_alloc(c.server, newfid, c.qid)
 	if nc == nil {
+		clunk_fid(c.server, newfid)
 		return nil, vectra9.ENOMEM
 	}
 	nc.tree_root = c.tree_root
 	nc.mounted_over = chan_incref(c.mounted_over)
 	nc.union_head = mount_point_incref(c.union_head)
 	return nc, OK
+}
+
+// clunk_fid releases a fid the server bound when no chan could be allocated to
+// hold it. Without it an `ENOMEM` after a walk or attach leaves the fid bound on
+// the server for good, and a run of such failures exhausts its fid table into
+// spurious `ENFILE`. The reply is ignored, as `chan_close`'s clunk is.
+@(private)
+clunk_fid :: proc(sv: ^Server, fid: vectra9.Fid) {
+	if fid == vectra9.NOFID {
+		return
+	}
+	request := vectra9.Msg(vectra9.Tclunk{fid = fid})
+	reply: vectra9.Msg
+	_ = rpc(sv, &request, &reply)
 }
 
 /*
