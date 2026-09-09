@@ -252,8 +252,8 @@ asm_riscv64 := [?]string{
 // device tree and not both, and the tree is the one word on the clock rate
 // this kernel can read. See `docs/PORTS.md`.
 qemu_amd64_machine := [?]string{"-machine", "q35", "-cpu", "qemu64", "-m", "512M"}
-qemu_arm64_machine := [?]string{"-machine", "virt,gic-version=2,acpi=off", "-cpu", "cortex-a72", "-m", "512M", "-device", "ramfb"}
-qemu_arm64_machine_v3 := [?]string{"-machine", "virt,gic-version=3,acpi=off", "-cpu", "cortex-a72", "-m", "512M", "-device", "ramfb"}
+qemu_arm64_machine := [?]string{"-machine", "virt,gic-version=2,acpi=off,iommu=smmuv3", "-cpu", "cortex-a72", "-m", "512M", "-device", "ramfb"}
+qemu_arm64_machine_v3 := [?]string{"-machine", "virt,gic-version=3,acpi=off,iommu=smmuv3", "-cpu", "cortex-a72", "-m", "512M", "-device", "ramfb"}
 qemu_riscv64_machine := [?]string{"-machine", "virt,acpi=off", "-cpu", "rv64", "-m", "512M", "-device", "ramfb"}
 
 // qemu_machine_for is the machine line for this build. It is the architecture's

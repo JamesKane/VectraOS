@@ -164,6 +164,78 @@ nodes :: proc "contextless" () -> int {
 	return node_count
 }
 
+/*
+The lookups a kernel driver makes before the tree is a file to anyone.
+
+`kernel/smmu` runs before ring 3 and asks the three questions a program asks
+through `/dev/tree`. Which node is the part, what a property of it says, and
+where its registers are. The answers are reads of the same rows, by index
+rather than by path. A node's index is the position `walk` gave it, stable for
+the life of the machine. Every property of the node is a row whose `parent` is
+that index.
+*/
+
+// find_compatible answers the index of the first node whose `compatible` names
+// `want`. A `compatible` is a list of NUL-separated strings, and any one of them
+// matching is a match.
+find_compatible :: proc "contextless" (want: string) -> (idx: int, ok: bool) #no_bounds_check {
+	rows := tree_static.nodes
+	for i in 0 ..< len(rows) {
+		r := &rows[i]
+		if r.dir || r.name != "compatible" || r.parent < 0 {
+			continue
+		}
+		v := r.data
+		start := 0
+		for j in 0 ..< len(v) {
+			if v[j] == 0 {
+				if v[start:j] == want {
+					return int(r.parent), true
+				}
+				start = j + 1
+			}
+		}
+		if start < len(v) && v[start:] == want {
+			return int(r.parent), true
+		}
+	}
+	return -1, false
+}
+
+// property answers the bytes of a node's property, as the tree spells them.
+property :: proc "contextless" (node: int, name: string) -> (v: string, ok: bool) #no_bounds_check {
+	rows := tree_static.nodes
+	for i in 0 ..< len(rows) {
+		r := &rows[i]
+		if !r.dir && int(r.parent) == node && r.name == name {
+			return r.data, true
+		}
+	}
+	return "", false
+}
+
+// window answers a node's register window, the same one its `mmio` file names.
+window :: proc "contextless" (node: int) -> (phys: uintptr, size: u64, ok: bool) #no_bounds_check {
+	rows := tree_static.nodes
+	for i in 0 ..< len(rows) {
+		r := &rows[i]
+		if !r.dir && int(r.parent) == node && r.name == "mmio" && i < len(mmio_table) && mmio_table[i].valid {
+			return mmio_table[i].phys, mmio_table[i].size, true
+		}
+	}
+	return 0, 0, false
+}
+
+// cell reads the `n`th big-endian 32-bit cell of a property value, or zero past
+// its end.
+cell :: proc "contextless" (v: string, n: int) -> u32 #no_bounds_check {
+	at := n * 4
+	if at < 0 || at + 4 > len(v) {
+		return 0
+	}
+	return u32(v[at]) << 24 | u32(v[at + 1]) << 16 | u32(v[at + 2]) << 8 | u32(v[at + 3])
+}
+
 @(private)
 be32 :: proc "contextless" (b: []u8, at: int) -> u32 #no_bounds_check {
 	return u32(b[at]) << 24 | u32(b[at + 1]) << 16 | u32(b[at + 2]) << 8 | u32(b[at + 3])

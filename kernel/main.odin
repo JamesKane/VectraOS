@@ -33,6 +33,7 @@ import "kernel:mem"
 import "kernel:pipe"
 import "kernel:procfs"
 import "kernel:sd"
+import "kernel:smmu"
 import "kernel:sched"
 import "kernel:srv"
 import "kernel:drivers/virtio"
@@ -323,6 +324,7 @@ kmain :: proc "c" () {
 			if init_disk() {
 				verify_disk()
 			}
+			verify_smmu()
 			if init_rng() {
 				verify_rng()
 			}
@@ -1414,6 +1416,71 @@ init_tree :: proc() {
 }
 
 /*
+init_smmu brings up the SMMUv3 the tree names, if it names one. amd64 has no
+tree and riscv64's has no such node, so on both this is quietly a no-op. A part
+this cannot drive is left as it reset, and the line says why. `docs/SMMU.md`.
+*/
+init_smmu :: proc() {
+	info := smmu.init()
+	if info.status == .No_Node {
+		return
+	}
+	sink := begin(&klog)
+	libodin.put_str(&sink, "smmu: arm,smmu-v3 at ")
+	libodin.put_hex(&sink, u64(info.phys), 8)
+	switch info.status {
+	case .No_Node:
+	case .No_Window:
+		libodin.put_str(&sink, " -- no register window; left as it reset")
+		emit(&klog, .Warn, &sink)
+		return
+	case .Unsupported:
+		libodin.put_str(&sink, " -- no stage 1, AArch64 format or 4 KiB granule; left as it reset")
+		emit(&klog, .Warn, &sink)
+		return
+	case .No_Memory:
+		libodin.put_str(&sink, " -- no memory for its tables; left as it reset")
+		emit(&klog, .Warn, &sink)
+		return
+	case .Broken:
+		libodin.put_str(&sink, " -- did not acknowledge its enable; left disabled")
+		emit(&klog, .Fault, &sink)
+		return
+	case .Enabled:
+	}
+	libodin.put_str(&sink, ", ")
+	libodin.put_uint(&sink, u64(info.sid_bits))
+	libodin.put_str(&sink, "-bit stream ids in a two-level table, ")
+	libodin.put_uint(&sink, u64(info.functions))
+	libodin.put_str(&sink, " functions in bypass, ")
+	libodin.put_str(&sink, info.coherent ? "walks snoop" : "walks do not snoop")
+	libodin.put_str(&sink, ", enabled")
+	emit(&klog, .Ok, &sink)
+}
+
+/*
+verify_smmu is `docs/SMMU.md` section 10's ring 0 half. The id registers, a
+sync that completes, and an entry nobody attached. Then an attach and a detach
+of a fresh space, with the walker told in between. A machine with no unit is
+skipped.
+*/
+verify_smmu :: proc() {
+	if !smmu.present() {
+		return
+	}
+	r := smmu.verify()
+	sink := report_begin("smmu", r.checks)
+	if libodin.passed(r.tally) {
+		libodin.put_str(&sink, " walker checks passed -- ")
+		libodin.put_uint(&sink, r.commands)
+		libodin.put_str(&sink, " commands issued, a stream attached, told, orphaned and given back")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, r.tally)
+}
+
+/*
 verify_tree reads the device tree back through `/dev/tree`. A machine with no
 tree is skipped. The two checks are that the directory opens and that the root
 names a `compatible`, which is the tree served as files at all.
@@ -1990,6 +2057,12 @@ init_disk :: proc() -> bool {
 		log_line(&klog, .Warn, "pci: no configuration access; no disk")
 		return false
 	}
+
+	// The walker, before any kernel driver's first transfer: every function
+	// the scan finds gets a bypass entry before the part is enabled, so the
+	// drivers below keep handing devices physical addresses. `docs/SMMU.md`
+	// section 8.
+	init_smmu()
 
 	disks := virtio.init()
 	if err := sd.init(vfs.boot_namespace); err != vfs.OK {
