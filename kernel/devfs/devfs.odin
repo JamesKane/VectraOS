@@ -307,17 +307,19 @@ in text, and a text report is a stream however close it sits to the pixels.
 devfs_device :: proc "contextless" (
 	sv: ^vfs.Server,
 	qid: vectra9.Qid,
-) -> (phys: uintptr, bytes: u64, ok: bool) #no_bounds_check {
+) -> (phys: uintptr, bytes: u64, device_mem: bool, ok: bool) #no_bounds_check {
 	_ = sv
 	node := i32(qid.path) - 1
 	if node < 0 || int(node) >= len(DEV_NODES) || DEV_NODES[node].kind != .Fb {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	raw := dev_tree.raw
 	if raw == nil || raw.pixels == nil {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
-	return mem.virt_to_phys(rawptr(raw.pixels)), fb_size(raw), true
+	// The framebuffer is normal cacheable memory, not a register window: a
+	// program paints it and the compositor reads it, and caching is right.
+	return mem.virt_to_phys(rawptr(raw.pixels)), fb_size(raw), false, true
 }
 
 // raw_surface is the screen `/dev/fb` serves, for a self-test that has to

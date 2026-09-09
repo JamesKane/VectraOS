@@ -73,6 +73,8 @@ start :: proc "c" (cells: ^Cells, arg1, arg2: u64) -> ! {
 		bulkio(cells, arg1, arg2)
 	} else when PROGRAM == "storetest" {
 		storetest(cells, arg1, arg2)
+	} else when PROGRAM == "treemmio" {
+		treemmio(cells, arg1, arg2)
 	} else when PROGRAM == "mapper" {
 		mapper(cells, arg1)
 	} else when PROGRAM == "anon" {

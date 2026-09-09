@@ -540,9 +540,9 @@ ask this, and a process whose namespace binds something else over `/dev/fb`
 asks about that instead. That is the permission story, and it came free with
 putting the question on a chan rather than on a name in a kernel table.
 */
-chan_device :: proc "contextless" (c: ^Chan) -> (phys: uintptr, bytes: u64, ok: bool) {
+chan_device :: proc "contextless" (c: ^Chan) -> (phys: uintptr, bytes: u64, device_mem: bool, ok: bool) {
 	if c == nil || c.server == nil || c.server.device == nil {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	return c.server.device(c.server, c.qid)
 }

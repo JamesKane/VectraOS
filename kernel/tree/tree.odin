@@ -52,6 +52,22 @@ tree_static: vfs.Static_Tree
 @(private)
 node_count: int
 
+/*
+Mmio is one node's register window, kept beside the node table because a
+`Static_Node` has no room for a physical address. `mmio_table[i]` is set for
+the synthesized `mmio` file at node index `i`, and left `valid = false` for
+every other row. `tree_device` reads it when a program segattaches an `mmio`.
+*/
+@(private)
+Mmio :: struct {
+	phys:  uintptr,
+	size:  u64,
+	valid: bool,
+}
+
+@(private)
+mmio_table: []Mmio
+
 // nodes reports how many directories and property files `#t` serves, for the
 // boot line. Zero on a machine the bootloader gave no tree.
 nodes :: proc "contextless" () -> int {
@@ -79,19 +95,57 @@ align4 :: proc "contextless" (x: int) -> int {
 	return (x + 3) & ~int(3)
 }
 
+// A node while the walk is inside it: its index, and the cell counts it sets
+// for the addresses and sizes of its own children's `reg`. The defaults are
+// the device-tree spec's when a node names neither.
+@(private)
+Frame :: struct {
+	idx: int,
+	ac:  int,
+	sc:  int,
+}
+
+// decode_reg reads the first `reg` tuple -- `ac` address cells then `sc` size
+// cells, big-endian -- into a base and a size. It answers false for cells it
+// cannot hold in 64 bits or a value too short for one tuple. Nested buses with
+// `ranges` are not translated; the `virt` platform devices are the root's own
+// children, so there is nothing to translate for step 0.
+@(private)
+decode_reg :: proc "contextless" (v: []u8, ac: int, sc: int) -> (base: u64, size: u64, ok: bool) #no_bounds_check {
+	if ac < 1 || ac > 2 || sc < 0 || sc > 2 {
+		return 0, 0, false
+	}
+	if len(v) < (ac + sc) * 4 {
+		return 0, 0, false
+	}
+	at := 0
+	for _ in 0 ..< ac {
+		base = base << 32 | u64(be32(v, at))
+		at += 4
+	}
+	for _ in 0 ..< sc {
+		size = size << 32 | u64(be32(v, at))
+		at += 4
+	}
+	return base, size, true
+}
+
 /*
 walk reads the structure block and either counts the rows or fills them. One
-walk serves both passes: called with an empty `out` it returns the count, and
-called with a slice of that size it writes each row. The two runs assign the
-same index in the same order, so a property's `parent` set in the fill is the
-index the same node took in the count.
+walk serves both passes: called with empty slices it returns the count, and
+called with slices of that size it writes each row and each window. The two runs
+assign the same index in the same order, so a property's `parent` set in the
+fill is the index the same node took in the count.
 
 A node is a directory whose parent is the node on top of the stack; the first,
 the tree's own root with no name, becomes `/` with no parent. A property is a
-file under the node on top of the stack, its bytes a slice of the blob.
+file under the node on top of the stack, its bytes a slice of the blob. And a
+node with a `reg` grows one more file, a synthesized `mmio`, whose window
+`decode_reg` reads from that `reg` with the node's *parent* cell counts -- the
+one file the kernel adds, not the firmware, and the one a driver segattaches.
 */
 @(private)
-walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node) -> int #no_bounds_check {
+walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio) -> int #no_bounds_check {
 	if len(blob) < 40 || be32(blob, 0) != FDT_MAGIC {
 		return 0
 	}
@@ -99,7 +153,7 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node) -> int #no_bound
 	strings_off := int(be32(blob, 12))
 	struct_size := int(be32(blob, 36))
 
-	stack: [MAX_DEPTH]int
+	stack: [MAX_DEPTH]Frame
 	sp := 0
 	count := 0
 
@@ -118,13 +172,15 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node) -> int #no_bound
 			at = align4(name_at + n + 1)
 			idx := count
 			count += 1
-			parent := sp > 0 ? stack[sp - 1] : -1
+			parent := sp > 0 ? stack[sp - 1].idx : -1
 			name := sp == 0 ? "/" : string(blob[name_at:name_at + n])
 			if idx < len(out) {
 				out[idx] = vfs.Static_Node{name = name, parent = i32(parent), dir = true}
 			}
 			if sp < MAX_DEPTH {
-				stack[sp] = idx
+				// Two and two are the spec's defaults until a `#*-cells` says
+				// otherwise, which arrives as a property below.
+				stack[sp] = Frame{idx = idx, ac = 2, sc = 2}
 				sp += 1
 			}
 		case FDT_END_NODE:
@@ -136,19 +192,48 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node) -> int #no_bound
 			name_off := int(be32(blob, at + 4))
 			value_at := at + 8
 			at = align4(value_at + length)
+			vend := value_at + length
+			if vend > len(blob) {
+				vend = value_at
+			}
+			pn := cstr_len(blob, strings_off + name_off)
+			pname := string(blob[strings_off + name_off:strings_off + name_off + pn])
+
 			idx := count
 			count += 1
-			parent := sp > 0 ? stack[sp - 1] : -1
-			pn := cstr_len(blob, strings_off + name_off)
+			parent := sp > 0 ? stack[sp - 1].idx : -1
 			if idx < len(out) {
-				vend := value_at + length
-				if vend > len(blob) {
-					vend = value_at
-				}
 				out[idx] = vfs.Static_Node {
-					name   = string(blob[strings_off + name_off:strings_off + name_off + pn]),
+					name   = pname,
 					parent = i32(parent),
 					data   = string(blob[value_at:vend]),
+				}
+			}
+
+			// A node names the cell counts for its own children here.
+			if sp > 0 && length == 4 {
+				if pname == "#address-cells" {
+					stack[sp - 1].ac = int(be32(blob, value_at))
+				} else if pname == "#size-cells" {
+					stack[sp - 1].sc = int(be32(blob, value_at))
+				}
+			}
+
+			// A `reg` grows the node a synthesized `mmio`, decoded with the
+			// parent's cell counts. The root, which has no parent, has no bus
+			// address and so no window.
+			if sp >= 2 && pname == "reg" {
+				pac := stack[sp - 2].ac
+				psc := stack[sp - 2].sc
+				if base, size, rok := decode_reg(blob[value_at:vend], pac, psc); rok && size > 0 {
+					midx := count
+					count += 1
+					if midx < len(out) {
+						out[midx] = vfs.Static_Node{name = "mmio", parent = i32(stack[sp - 1].idx)}
+					}
+					if midx < len(mtab) {
+						mtab[midx] = Mmio{phys = uintptr(base), size = size, valid = true}
+					}
 				}
 			}
 		case FDT_NOP:
@@ -159,6 +244,21 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node) -> int #no_bound
 		}
 	}
 	return count
+}
+
+/*
+tree_device answers a segattach of an `mmio` file: the register window the node's
+`reg` named, as device memory. Every other file in the tree is a stream of bytes
+and answers no.
+*/
+@(private)
+tree_device :: proc "contextless" (sv: ^vfs.Server, qid: vectra9.Qid) -> (phys: uintptr, bytes: u64, device_mem: bool, ok: bool) #no_bounds_check {
+	_ = sv
+	node := int(qid.path) - 1
+	if node < 0 || node >= len(mmio_table) || !mmio_table[node].valid {
+		return 0, 0, false, false
+	}
+	return mmio_table[node].phys, mmio_table[node].size, true, true
 }
 
 /*
@@ -190,18 +290,20 @@ init :: proc(ns: ^vfs.Namespace, dtb: rawptr) -> vfs.Errno {
 		blob[i] = src[i]
 	}
 
-	count := walk(blob, nil)
+	count := walk(blob, nil, nil)
 	if count <= 0 {
 		delete(blob)
 		return vfs.OK
 	}
 	rows := make([]vfs.Static_Node, count)
-	if rows == nil {
+	mtab := make([]Mmio, count)
+	if rows == nil || mtab == nil {
 		delete(blob)
 		return vectra9.ENOMEM
 	}
-	_ = walk(blob, rows)
+	_ = walk(blob, rows, mtab)
 	node_count = count
+	mmio_table = mtab
 
 	if !vfs.static_init(&tree_static, "tree", rows) {
 		return vectra9.ENOMEM
@@ -209,6 +311,9 @@ init :: proc(ns: ^vfs.Namespace, dtb: rawptr) -> vfs.Errno {
 	if err := vfs.server_init(&tree_server, "t", vfs.static_handler, &tree_static); err != .None {
 		return vectra9.EPROTO
 	}
+	// The kernel hook that answers a segattach of an `mmio`, beside the handler
+	// that answers the property reads. See `docs/HARDWARE.md` section 3.
+	tree_server.device = tree_device
 	if !vfs.register_device(&tree_server) {
 		return vectra9.EEXIST
 	}

@@ -826,10 +826,19 @@ The QEMU `virt` boards hand it through Limine's DTB request; arm64 needed
 `acpi=off` on the machine line to be given a tree rather than ACPI, which is
 the OrangePi's shape anyway. It is bound over a `tree` directory in `#c`, and
 the self-test reads the root's `compatible` back through `/dev/tree`. Proven
-on arm64 (330 nodes) and riscv64 (219); a machine with no tree, an x86 PC,
-publishes none. The GICv3 selection, `mmio`/`irq`/`dma` and `blkfs` are the
-rest of the step, and the three assumed bases retire when a driver reads
-`reg` from this.
+on arm64 and riscv64; a machine with no tree, an x86 PC, publishes none.
+
+**Started, September 2026: `mmio`, thing two.** Each node with a `reg` grows a
+synthesized `mmio` file. The kernel decodes `reg`'s first window with the
+parent node's `#address-cells`/`#size-cells` -- two and two on `virt`, whose
+platform devices are the root's own children, so no `ranges` translation --
+and a program `segattach`es it to map that window as *device* memory: uncached
+and ordered, which is where the segattach hook grew to say whether a file is a
+register window or a framebuffer, so a store reaches the hardware. The
+self-test attaches the RTC's window through its `mmio` and reads the id
+register the part answers with a fixed byte -- the hardware reached through a
+mapping, no kernel driver. The GICv3 selection, `irq`, `dma` and `blkfs` are
+the rest of the step.
 
 ### Step 1: the board boots
 

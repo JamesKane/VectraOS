@@ -47,6 +47,7 @@ MARK_NAMER :: u64(0x4E41_4D45_4E41_4D45) // NAMENAME
 MARK_READER :: u64(0x5245_4144_5245_4144) // READREAD
 MARK_BINDER :: u64(0x4249_4E44_4249_4E44) // BINDBIND
 MARK_MAPPER :: u64(0x4D41_5050_4D41_5050) // MAPPMAPP
+MARK_TREEMMIO :: u64(0x54_4D_4D_4F_54_4D_4D_4F) // TMMOTMMO
 MARK_PARENT :: u64(0x5052_4E54_5052_4E54) // PRNTPRNT
 MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
 MARK_POSTER :: u64(0x504F_5354_504F_5354) // POSTPOST
@@ -259,6 +260,12 @@ MAPPER_BRK :: 6
 // goes and the card's memory goes back to nobody, which `untracked_frees`
 // is what would say otherwise.
 MAPPER_DETACH :: 7
+
+// Where `treemmio` reports: the descriptor it opened, the attach address (or
+// a negative errno), and the register word it read through the mapping.
+TREEMMIO_FD :: 1
+TREEMMIO_ADDR :: 2
+TREEMMIO_WORD :: 3
 
 BINDER_BOUND :: 1
 BINDER_OPENED :: 2
@@ -725,6 +732,7 @@ program_storetest :: proc "contextless" () -> []u8 {return #load("../../build/pr
 
 // The ones that hold memory no file serves, or a device's.
 program_mapper :: proc "contextless" () -> []u8 {return #load("../../build/programs/mapper.bin")}
+program_treemmio :: proc "contextless" () -> []u8 {return #load("../../build/programs/treemmio.bin")}
 program_anon :: proc "contextless" () -> []u8 {return #load("../../build/programs/anon.bin")}
 program_sharer :: proc "contextless" () -> []u8 {return #load("../../build/programs/sharer.bin")}
 program_sharedseg :: proc "contextless" () -> []u8 {return #load("../../build/programs/sharedseg.bin")}

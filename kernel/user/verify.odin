@@ -542,6 +542,8 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_app(&r, "/bin/apptest", 0x0022_4466, true, true)
 	verify_app(&r, "/bin/capp", 0x0022_4466, true, true)
 	verify_app(&r, "/bin/rebound", 0x0010_1830, false, false)
+	// A device's register window, attached through the tree's `mmio` file.
+	verify_tree_mmio(&r)
 	verify_debugger(&r)
 
 	// -- And a typed ^C, which reaches the program reading the console -------
@@ -5252,6 +5254,51 @@ verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool, wan
 }
 
 /*
+verify_tree_mmio attaches a device's register window through `#t`'s `mmio` file
+and reads one register. The window model of `docs/HARDWARE.md` section 3: the
+kernel synthesises `mmio` from the node's `reg`, a program `segattach`es it as
+device memory, and a load reaches the hardware.
+
+The target is the RTC on the arm64 `virt` board, `pl031@9010000`, whose id
+register at `0xFE0` is the fixed `0x31` and whose reads have no side effect. A
+board whose tree has no such node -- riscv64, or an x86 PC with no tree at all
+-- has no `/dev/tree/pl031@9010000/mmio` to open, and this is skipped. The
+register window is the same mechanism on every board; the node is this one's.
+*/
+@(private = "file")
+verify_tree_mmio :: proc(r: ^Result) #no_bounds_check {
+	PATH :: "/dev/tree/pl031@9010000/mmio"
+
+	probe, perr := vfs.open_path(vfs.boot_namespace, PATH, vfs.O_RDONLY)
+	if perr != vfs.OK {
+		return // No such node on this board; the mechanism is checked where there is one.
+	}
+	phys, bytes, device_mem, ok := vfs.chan_device(probe)
+	vfs.chan_close(probe)
+	check(r, ok && device_mem, "the tree's mmio file answers a device window, not a stream")
+	check(r, phys == 0x0901_0000 && bytes == 0x1000, "at the base and size the RTC node's reg names, one page")
+
+	p, err := load_held("treemmio", program_treemmio())
+	if !check(r, err == .None && p != nil, "a program is built to attach the window") {
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, SLOT_A, bytes_of(PATH)), "with the mmio path in its page")
+	check(r, launch(p, u64(len(PATH)), 0xFE0), "and it launches, staged with the id register's offset")
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_TREEMMIO, "having reached its first instruction")
+		check(r, i64(cell(p, TREEMMIO_FD)) >= 0, "it opened the mmio file")
+		check(r, i64(cell(p, TREEMMIO_ADDR)) >= 0, "the register window attached into its own space")
+		check(
+			r,
+			cell(p, TREEMMIO_WORD) & 0xFF == 0x31,
+			"and a load read the RTC's id register, which is the hardware reached through a mapping",
+		)
+	}
+	finish(r, p, "and the program is taken down")
+}
+
+/*
 verify_debugger opens the debugger's window on the debuggee and steps it
 from the keyboard.
 
@@ -5662,7 +5709,7 @@ verify_mapping :: proc(r: ^Result) {
 	if !check(r, ferr == vfs.OK, "/dev/fb opens") {
 		return
 	}
-	phys, bytes, is_device := vfs.chan_device(fbc)
+	phys, bytes, _, is_device := vfs.chan_device(fbc)
 	check(r, is_device, "and answers that it is memory rather than a stream")
 	check(
 		r,
@@ -5674,7 +5721,7 @@ verify_mapping :: proc(r: ^Result) {
 
 	cc, cerr := vfs.open_path(vfs.boot_namespace, PATH_CONS, vfs.O_WRONLY)
 	if check(r, cerr == vfs.OK, "/dev/cons opens too") {
-		_, _, cons_device := vfs.chan_device(cc)
+		_, _, _, cons_device := vfs.chan_device(cc)
 		check(r, !cons_device, "and answers that it is a stream, which almost every file is")
 		vfs.chan_close(cc)
 	}

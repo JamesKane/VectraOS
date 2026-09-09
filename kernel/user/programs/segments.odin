@@ -46,6 +46,29 @@ mapper :: proc "contextless" (cells: ^Cells, corner: u64) -> ! {
 }
 
 /*
+treemmio attaches a device's register window through its `#t` `mmio` file and
+reads one register. The path is staged at 128, its length the first argument,
+and the register's offset the second. It reports the descriptor, the attach,
+and the word it read -- which for the RTC's id register is a fixed number the
+self-test knows, proof that segattach mapped the hardware and a load reached it.
+*/
+treemmio :: proc "contextless" (cells: ^Cells, path_len: u64, offset: u64) -> ! {
+	cells[0] = 0x54_4D_4D_4F_54_4D_4D_4F // TMMOTMMO
+	fd := libuser.open(text(cells, 128, path_len), abi.O_RDONLY)
+	put(cells, 1, fd)
+	if fd < 0 {
+		libuser.exit(0)
+	}
+	addr, aerr := libuser.segattach(int(fd))
+	put(cells, 2, seg_result(addr, aerr))
+	if aerr == 0 {
+		v := intrinsics.volatile_load((^u32)(uintptr(addr) + uintptr(offset)))
+		put(cells, 3, i64(v))
+	}
+	libuser.exit(0)
+}
+
+/*
 anon takes memory of its own and exercises every edge of it.
 
 A run of `size` bytes, read and written at both ends. A second run, grown

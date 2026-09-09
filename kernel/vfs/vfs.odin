@@ -136,7 +136,7 @@ Server :: struct {
 	See `docs/DRAW.md` section 7, which itemised this a milestone before it
 	existed.
 	*/
-	device:    proc "contextless" (sv: ^Server, qid: vectra9.Qid) -> (phys: uintptr, bytes: u64, ok: bool),
+	device:    proc "contextless" (sv: ^Server, qid: vectra9.Qid) -> (phys: uintptr, bytes: u64, device_mem: bool, ok: bool),
 }
 
 // server_pin takes a non-chan stake on a server: a name that holds it, or a

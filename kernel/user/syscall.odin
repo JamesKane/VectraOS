@@ -1324,7 +1324,7 @@ sys_segattach :: proc(fd: int) -> i64 {
 	}
 	defer vfs.chan_close(c)
 
-	phys, bytes, ok := vfs.chan_device(c)
+	phys, bytes, device_mem, ok := vfs.chan_device(c)
 	if !ok || bytes == 0 {
 		return -i64(vectra9.ENODEV)
 	}
@@ -1341,7 +1341,15 @@ sys_segattach :: proc(fd: int) -> i64 {
 		return -i64(vectra9.ENOMEM)
 	}
 
-	seg := segment_new(va, {.Write, .No_Execute}, .Device)
+	// A register window is device memory: uncached and ordered, so a store
+	// reaches the hardware and a load is not answered from a cache. A
+	// framebuffer is not -- it wants caching -- so the server says which. See
+	// `docs/HARDWARE.md` section 3.
+	flags := arch.Page_Flags{.Write, .No_Execute}
+	if device_mem {
+		flags += {.No_Cache}
+	}
+	seg := segment_new(va, flags, .Device)
 	if seg == nil {
 		return -i64(vectra9.ENOMEM)
 	}
