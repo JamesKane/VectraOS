@@ -120,8 +120,7 @@ init :: proc() -> bool {
 		return false
 	}
 	boot.name = "boot"
-	boot.id = next_id
-	next_id += 1
+	boot.id = intrinsics.atomic_add(&next_id, 1)
 	boot.state = .Running
 	boot.base = PRIORITY_NORMAL
 	boot.prio = PRIORITY_NORMAL
@@ -284,8 +283,7 @@ spawn_at :: proc(
 	t.arg = arg
 	t.base = priority
 	t.prio = priority
-	t.id = next_id
-	next_id += 1
+	t.id = intrinsics.atomic_add(&next_id, 1)
 
 	/*
 	The space is set before the thread is enqueued, and that ordering is the
@@ -370,8 +368,7 @@ spawn_user :: proc(
 	t.base = priority
 	t.prio = priority
 	t.affinity = ANY_CLASS
-	t.id = next_id
-	next_id += 1
+	t.id = intrinsics.atomic_add(&next_id, 1)
 
 	// Both before the enqueue, and for the same reason the space alone was.
 	// The next interrupt may dispatch this thread. One dispatched without its
@@ -438,8 +435,7 @@ spawn_user_clone :: proc(
 	t.base = priority
 	t.prio = priority
 	t.affinity = ANY_CLASS
-	t.id = next_id
-	next_id += 1
+	t.id = intrinsics.atomic_add(&next_id, 1)
 
 	t.space = space
 	t.user = record
@@ -569,11 +565,21 @@ set_note_trap :: proc "contextless" (h: Note_Trap) {
 // in its record, until `ready` puts it back. `block` from interrupt context,
 // for a stop that catches a thread in ring 3.
 park_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	// The scheduler lock is taken before `.Blocked` and held into `reschedule`,
+	// whose nested acquire keeps the hold until `switch_done` lets go on the
+	// incoming stack -- the same rule `block` keeps. Without it there is a
+	// window between this `.Blocked` store and `reschedule`'s own acquire where
+	// the lock is free while this thread is still `current` with a stale
+	// `resume`. A core polling for the park -- a `/proc` stop's `unstop`, or a
+	// kill's `wake_noted`, both of which act on `.Blocked` -- could take the
+	// lock in that window, enqueue this thread on another core, and dispatch it
+	// on a stale frame while this core is still on its stack.
+	_ = sync.acquire(&lock)
 	if t := cpu().current; t != nil {
 		// A ring-3 stop is note-wakeable: a kill of a stopped process must
 		// reach it, and this park holds no wait-queue node to leave
-		// dangling. Written before `.Blocked` so any core that sees the
-		// block sees the right answer. See `Thread.note_wakes`.
+		// dangling. Written under the lock that sets `.Blocked`, so a waker
+		// that sees the block sees the right answer. See `Thread.note_wakes`.
 		t.note_wakes = true
 		t.state = .Blocked
 	}
@@ -1301,7 +1307,7 @@ Stats :: struct {
 stats :: proc "contextless" () -> Stats {
 	c := cpu()
 	return Stats {
-		threads     = next_id,
+		threads     = intrinsics.atomic_load(&next_id),
 		ready       = ready_count(c),
 		ticks       = c.ticks,
 		switches    = c.switches,
@@ -1459,8 +1465,7 @@ init_ap :: proc(id: int, stack: []u8) -> bool #no_bounds_check {
 	}
 	guard := sync.acquire(&lock)
 	boot.name = "ap-boot"
-	boot.id = next_id
-	next_id += 1
+	boot.id = intrinsics.atomic_add(&next_id, 1)
 	sync.release(&lock, guard)
 	boot.state = .Running
 	boot.base = PRIORITY_NORMAL
