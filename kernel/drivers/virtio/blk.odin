@@ -520,6 +520,13 @@ transfer :: proc "contextless" (n: int, sector: u64, buf: []u8, write: bool) -> 
 	}
 	d.last_used = d.used_ring[1]
 
+	// A read barrier between seeing the used index advance and reading what the
+	// device wrote -- the status byte here, the sector bytes in the caller's
+	// bounce page next. Without it a weakly-ordered core (every target but
+	// amd64) may satisfy those loads from before the device's stores: a stale
+	// `0xFF` status read as an I/O error, or worse, stale sector data read as
+	// good. `sound.control` keeps the same barrier; this path had dropped it.
+	fence()
 	return d.status^ == VIRTIO_BLK_S_OK
 }
 

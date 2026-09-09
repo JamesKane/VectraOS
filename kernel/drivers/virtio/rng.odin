@@ -110,6 +110,11 @@ rng_fill :: proc "contextless" (out: []u8) -> int #no_bounds_check {
 	if !got_used {
 		return 0
 	}
+	// A read barrier between seeing the used index advance and reading the byte
+	// count and the entropy the device wrote: on a weakly-ordered core those
+	// loads may otherwise come from before the device's stores, handing back
+	// stale or zeroed bytes -- and this feeds key material. See `sound.control`.
+	fence()
 	// The used element at `last_used`: id then the byte count the device wrote.
 	slot := int(q.last_used % q.size)
 	base := 2 + slot * 4

@@ -412,6 +412,11 @@ recv :: proc "contextless" (n: int, out: []u8) -> int #no_bounds_check {
 	if q.used_ring[1] == q.last_used {
 		return 0
 	}
+	// A read barrier between seeing the used index advance and reading the used
+	// element and the device-written frame below: on a weakly-ordered core those
+	// loads may otherwise be satisfied from before the device's stores, giving a
+	// stale length or stale frame bytes. See `sound.control` for the same rule.
+	fence()
 	// The used element at `last_used` holds an id and a len. Each is a u32 in
 	// the ring of u16s that starts at index 2, four u16s to an element.
 	slot := int(q.last_used % VIRTQ_SIZE)
