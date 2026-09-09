@@ -421,6 +421,34 @@ register_device :: proc "contextless" (sv: ^Server) -> bool #no_bounds_check {
 }
 
 /*
+unregister_device takes a server's `#name` back out of the table, so the name
+is free to register again. It answers whether the server was there to remove.
+
+A device published for the life of the machine never calls it. A self-test that
+stands a server up on a name a real device wants -- `#t`, before the tree server
+existed -- is the caller this exists for: it releases the name it borrowed, and
+`register_device` for the real one no longer refuses. The slot is filled from
+the tail, so the table stays dense and the order of the rest is not promised.
+*/
+unregister_device :: proc "contextless" (sv: ^Server) -> bool #no_bounds_check {
+	if sv == nil {
+		return false
+	}
+	g := sync.acquire(&device_lock)
+	defer sync.release(&device_lock, g)
+
+	for i in 0 ..< device_count {
+		if devices[i] == sv {
+			device_count -= 1
+			devices[i] = devices[device_count]
+			devices[device_count] = nil
+			return true
+		}
+	}
+	return false
+}
+
+/*
 is_device_server reports whether `sv` is a kernel device registered with
 `register_device`, as opposed to a mounted file server. `kernel/srv` asks it
 to tell a posted device chan (mount it, and its whole tree appears) from a

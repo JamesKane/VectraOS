@@ -768,6 +768,7 @@ verify_vfs_threads :: proc() {
 	tcheck(&r, vfs.register_device(&server_v), "#v registered")
 
 	verify_union_cookie(&r)
+	vfs.unregister_device(&server_v)
 	vfs.static_destroy(&tree_v)
 
 	verify_fid_discipline(&r)
@@ -802,6 +803,11 @@ verify_vfs_threads :: proc() {
 	r.leaked_total = verify_live(mem.heap_stats()) - before
 	tcheck(&r, r.leaked_total == 0, "every chan and mount point was released")
 
+	// The names go back with the servers, so the real `#t` (the device tree)
+	// and any later `#u`/`#v` can register them. Nothing else this boot uses
+	// them, but a name a self-test never gave back is a name a device cannot.
+	vfs.unregister_device(&server_u)
+	vfs.unregister_device(&server_t)
 	vfs.static_destroy(&tree_u)
 	vfs.static_destroy(&tree_t)
 	report_vfs_threads(&r)

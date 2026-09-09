@@ -252,7 +252,7 @@ asm_riscv64 := [?]string{
 // device tree and not both, and the tree is the one word on the clock rate
 // this kernel can read. See `docs/PORTS.md`.
 qemu_amd64_machine := [?]string{"-machine", "q35", "-cpu", "qemu64", "-m", "512M"}
-qemu_arm64_machine := [?]string{"-machine", "virt,gic-version=2", "-cpu", "cortex-a72", "-m", "512M", "-device", "ramfb"}
+qemu_arm64_machine := [?]string{"-machine", "virt,gic-version=2,acpi=off", "-cpu", "cortex-a72", "-m", "512M", "-device", "ramfb"}
 qemu_riscv64_machine := [?]string{"-machine", "virt,acpi=off", "-cpu", "rv64", "-m", "512M", "-device", "ramfb"}
 
 arch_config :: proc(arch: Arch) -> Arch_Config {

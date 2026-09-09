@@ -129,6 +129,9 @@ DEV_NODES := [?]Dev_Node {
 	{name = "eia0", parent = 0, kind = .Eia0},
 	{name = "mouse", parent = 0, kind = .Mouse},
 	{name = "audio", parent = 0, kind = .Audio},
+	// The mount point the device tree binds over: an empty directory here, and
+	// `#t`'s nodes once `kernel/tree` mounts on it. See `docs/HARDWARE.md` 3.
+	{name = "tree", parent = 0, kind = .Dir},
 }
 
 // How many devices this server publishes, not counting its own root. Reported

@@ -22,6 +22,7 @@ import "base:runtime"
 import "kernel:arch"
 import "kernel:boot/limine"
 import "kernel:devfs"
+import "kernel:tree"
 import "kernel:env"
 import "kernel:drivers/console"
 import "kernel:drivers/kbd"
@@ -130,6 +131,10 @@ dtb_request := limine.DTB_Request {
 	revision = 0,
 }
 
+// The device-tree blob the bootloader passed, kept for `#t` to publish. Nil on
+// a machine with no tree, an x86 PC among them.
+boot_dtb: rawptr
+
 /*
 Ask for the other cores.
 
@@ -204,6 +209,10 @@ kmain :: proc "c" () {
 	debuginfo_init()
 	if r := dtb_request.response; r != nil {
 		arch.set_device_tree(r.dtb)
+		// Kept for `#t`, which builds `/dev/tree` from it once the heap and a
+		// namespace are up. The blob is bootloader-reclaimable, so the tree
+		// server copies it rather than trusting this pointer to outlive boot.
+		boot_dtb = r.dtb
 	}
 	// The boot core's name goes with the tables, for the architecture that
 	// cannot read its own: a hart learns its id from whoever started it, and
@@ -268,6 +277,10 @@ kmain :: proc "c" () {
 			if init_devfs() {
 				verify_devfs()
 			}
+			// The device tree as files, over `/dev`, so it must follow devfs.
+			// A machine with no tree publishes none, and this is a no-op.
+			init_tree()
+			verify_tree()
 			if init_srv() {
 				verify_srv()
 			}
@@ -1367,6 +1380,62 @@ init_devfs :: proc() -> bool {
 	libodin.put_str(&sink, devfs.input_started() ? "live" : "absent")
 	emit(&klog, .Ok, &sink)
 	return true
+}
+
+/*
+init_tree publishes the firmware's device tree as `#t` at `/dev/tree`. A machine
+the bootloader gave no tree -- an x86 PC -- has none, and this is quietly a
+no-op. `docs/HARDWARE.md` section 3: the kernel knows what is there.
+*/
+init_tree :: proc() {
+	if boot_dtb == nil {
+		return
+	}
+	if err := tree.init(vfs.boot_namespace, boot_dtb); err != vfs.OK {
+		sink := begin(&klog)
+		libodin.put_str(&sink, "tree: #t would not come up -- ")
+		libodin.put_str(&sink, vectra9.errno_name(err))
+		emit(&klog, .Warn, &sink)
+		return
+	}
+	sink := begin(&klog)
+	libodin.put_str(&sink, "tree #t over /dev/tree, ")
+	libodin.put_uint(&sink, u64(tree.nodes()))
+	libodin.put_str(&sink, " nodes and properties")
+	emit(&klog, .Ok, &sink)
+}
+
+/*
+verify_tree reads the device tree back through `/dev/tree`. A machine with no
+tree is skipped. The two checks are that the directory opens and that the root
+names a `compatible`, which is the tree served as files at all.
+*/
+verify_tree :: proc() {
+	if boot_dtb == nil {
+		return
+	}
+	result: libodin.Tally
+	ns := vfs.boot_namespace
+
+	if t, e := vfs.open_path(ns, "/dev/tree", vfs.O_RDONLY); libodin.tally(&result, e == vfs.OK, "/dev/tree opens as a directory") {
+		vfs.chan_close(t)
+	}
+	if c, e := vfs.open_path(ns, "/dev/tree/compatible", vfs.O_RDONLY); e == vfs.OK {
+		buf: [96]u8
+		n, _ := vfs.chan_read(c, 0, buf[:])
+		vfs.chan_close(c)
+		libodin.tally(&result, n > 0, "and the root node names a compatible, the tree served as files")
+	} else {
+		libodin.tally(&result, false, "and the root node names a compatible, the tree served as files")
+	}
+
+	sink := report_begin("tree", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " tree checks passed -- the firmware's device tree read back through /dev/tree")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
 }
 
 /*

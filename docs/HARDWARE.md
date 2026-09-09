@@ -817,6 +817,20 @@ else changes. A page the driver gave back is not readable by the device.
 A thread pinned to `.Efficiency` lands on the core the command line made
 one.
 
+**Started, September 2026: `#t` at `/dev/tree`.** `kernel/tree` publishes
+the flattened device tree the bootloader passes -- a directory per node, a
+file per property, over `vfs.static`'s shape. The blob is copied to the heap
+(it is bootloader-reclaimable), walked as the FDT token stream
+`kernel/arch/riscv64` already reads for the timebase, and served read-only.
+The QEMU `virt` boards hand it through Limine's DTB request; arm64 needed
+`acpi=off` on the machine line to be given a tree rather than ACPI, which is
+the OrangePi's shape anyway. It is bound over a `tree` directory in `#c`, and
+the self-test reads the root's `compatible` back through `/dev/tree`. Proven
+on arm64 (330 nodes) and riscv64 (219); a machine with no tree, an x86 PC,
+publishes none. The GICv3 selection, `mmio`/`irq`/`dma` and `blkfs` are the
+rest of the step, and the three assumed bases retire when a driver reads
+`reg` from this.
+
 ### Step 1: the board boots
 
 `build.odin`, `kernel/arch/arm64`, `boot/`, about 800 lines.
