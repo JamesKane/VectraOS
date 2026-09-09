@@ -1133,6 +1133,14 @@ init_scheduler :: proc() -> bool {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "sched cpu0 ")
 	libodin.put_str(&sink, class_name(s.class))
+	// The model the class was read from, where the architecture has a name for
+	// it. A part this build does not know, and every amd64 and riscv64 core,
+	// has none, and the line reads as it did before.
+	if model := arch.cpu_model(); model != "" {
+		libodin.put_str(&sink, " (")
+		libodin.put_str(&sink, model)
+		libodin.put_str(&sink, ")")
+	}
 	libodin.put_str(&sink, ", capacity ")
 	libodin.put_uint(&sink, u64(s.capacity))
 	libodin.put_str(&sink, "/1024, slice ")

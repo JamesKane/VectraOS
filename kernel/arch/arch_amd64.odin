@@ -321,6 +321,7 @@ outb :: amd64.outb
 thread_resume_init :: amd64.thread_resume_init
 ap_switch :: amd64.ap_switch
 cpu_class :: amd64.cpu_class
+cpu_model :: amd64.cpu_model
 
 // yield_now raises the software interrupt the scheduler listens on, so that a
 // voluntary switch and a preemption arrive by the same path.

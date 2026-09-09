@@ -109,6 +109,12 @@ cpu_class :: proc "contextless" () -> (class: Cpu_Class, capacity: int) {
 	return .Performance, CAPACITY_FULL
 }
 
+// cpu_model has no name to give: every core here is the one class, and the boot
+// line says so without a model beside it.
+cpu_model :: proc "contextless" () -> string {
+	return ""
+}
+
 /*
 kernel_stack_top is the address the CPU pushes an interrupt frame below.
 

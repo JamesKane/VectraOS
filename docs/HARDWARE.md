@@ -878,6 +878,19 @@ The v3 path was also what first executed `read_mpidr`, and found its byte
 encoding had been wrong (a copy of `read_midr` that never left op2), an
 undefined instruction no earlier path had reached.
 
+**And the cores tell themselves apart.** The scheduler weighs a core by its
+capacity and filters a thread by its class, and until now every arm64 core
+reported the one full-capacity performance class, assumed rather than read.
+`kernel/arch/arm64/cpu.odin` now reads `MIDR_EL1` -- the register that says which
+core this is -- and maps the part to a class and a capacity: the OrangePi's
+Cortex-A520 is an efficiency core at 403 against a full core's 1024, its
+Cortex-A720 a performance core at 1024, and a part with no entry, QEMU's
+Cortex-A72 among them, stays one full-capacity performance core. The boot line
+names the model beside the class, so the read is visible where a `virt` board's
+uniform cores would otherwise hide it. The big.LITTLE split is the board's to
+show; the mechanism is proven on QEMU, and it is what reaching `read_mpidr`
+turned up its byte bug.
+
 The `dma`/SMMU walker and `blkfs` are the rest of the step.
 
 ### Step 1: the board boots

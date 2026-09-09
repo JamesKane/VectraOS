@@ -190,6 +190,7 @@ outb :: arm64.outb
 thread_resume_init :: arm64.thread_resume_init
 ap_switch :: arm64.ap_switch
 cpu_class :: arm64.cpu_class
+cpu_model :: arm64.cpu_model
 
 yield_now :: arm64.yield_trap
 

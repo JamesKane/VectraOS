@@ -194,6 +194,7 @@ outb :: riscv64.outb
 thread_resume_init :: riscv64.thread_resume_init
 ap_switch :: riscv64.ap_switch
 cpu_class :: riscv64.cpu_class
+cpu_model :: riscv64.cpu_model
 
 yield_now :: riscv64.yield_trap
 

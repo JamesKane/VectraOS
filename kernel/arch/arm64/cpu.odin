@@ -356,11 +356,46 @@ outb :: proc "contextless" (port: u16, value: u8) {
 
 // -- What kind of core this is --------------------------------------------------
 
-// One class for now, at full capacity. A big.LITTLE part reports its cores
-// by MIDR part number, and this is where that table will live.
 Cpu_Class :: neutral.Cpu_Class
 CAPACITY_FULL :: neutral.CAPACITY_FULL
 
+/*
+core_of reads a core's kind out of its MIDR, which is the one register that
+says. A big.LITTLE part such as the OrangePi's mixes two, and the scheduler
+weighs a core by the capacity here and filters a thread by the class, so this
+is where "read, do not assume" reaches the cores themselves.
+
+The implementer byte gates the part number, because a part number means nothing
+without whose it is; ARM's is `0x41`. The capacities are the DMIPS-derived
+figures `docs/HARDWARE.md` section 5 records, against a full core's 1024. A part
+this does not know -- QEMU's Cortex-A72 is named so the boot line shows the read
+worked, and anything else -- is one full-capacity performance core, which is the
+honest thing to say when there is nothing to tell cores apart.
+*/
+@(private = "file")
+core_of :: proc "contextless" (midr: u64) -> (name: string, class: Cpu_Class, capacity: int) {
+	if midr >> 24 & 0xFF == 0x41 {
+		switch midr >> 4 & 0xFFF {
+		case 0xD80:
+			return "Cortex-A520", .Efficiency, 403 // the OrangePi's LITTLE
+		case 0xD81:
+			return "Cortex-A720", .Performance, CAPACITY_FULL // its big
+		case 0xD08:
+			return "Cortex-A72", .Performance, CAPACITY_FULL // QEMU's `virt`
+		}
+	}
+	return "", .Performance, CAPACITY_FULL
+}
+
 cpu_class :: proc "contextless" () -> (class: Cpu_Class, capacity: int) {
-	return .Performance, CAPACITY_FULL
+	_, class, capacity = core_of(read_midr())
+	return
+}
+
+// cpu_model is the calling core's model name, or the empty string for a part
+// this has no name for. It is what the boot line shows to say which core the
+// class beside it was read from.
+cpu_model :: proc "contextless" () -> string {
+	name, _, _ := core_of(read_midr())
+	return name
 }

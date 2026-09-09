@@ -263,3 +263,9 @@ CAPACITY_FULL :: neutral.CAPACITY_FULL
 cpu_class :: proc "contextless" () -> (class: Cpu_Class, capacity: int) {
 	return .Performance, CAPACITY_FULL
 }
+
+// cpu_model has no name to give: every hart here is the one class, and the boot
+// line says so without a model beside it.
+cpu_model :: proc "contextless" () -> string {
+	return ""
+}
