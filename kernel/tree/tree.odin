@@ -266,6 +266,121 @@ Frame :: struct {
 	idx: int,
 	ac:  int,
 	sc:  int,
+
+	// An `interrupt-map` seen in this node, decoded when the node ends. By
+	// then the node's own `#address-cells` and `#interrupt-cells` are
+	// certain, since a property may come before the cell counts it needs.
+	map_at:  int,
+	map_len: int,
+	ic:      int,
+}
+
+// The four legacy pins a PCI host routes, `irq0` to `irq3`, and their names
+// as the rows spell them.
+@(private)
+PIN_NAMES := [4]string{"irq0", "irq1", "irq2", "irq3"}
+
+/*
+cells_of_phandle answers a node's `#address-cells` and `#interrupt-cells` by
+its phandle, for the parent half of an `interrupt-map` entry. Two and zero
+are the defaults for a node that names neither. False for no such node.
+*/
+@(private)
+cells_of_phandle :: proc "contextless" (blob: []u8, want: u32) -> (ac: int, ic: int, ok: bool) #no_bounds_check {
+	struct_off := int(be32(blob, 8))
+	strings_off := int(be32(blob, 12))
+	end := min(struct_off + int(be32(blob, 36)), len(blob))
+
+	Seen :: struct {
+		phandle: u32,
+		ac:      int,
+		ic:      int,
+	}
+	stack: [MAX_DEPTH]Seen
+	sp := 0
+	at := struct_off
+	for at + 4 <= end {
+		token := be32(blob, at)
+		at += 4
+		switch token {
+		case FDT_BEGIN_NODE:
+			n := cstr_len(blob, at)
+			at = align4(at + n + 1)
+			if sp < MAX_DEPTH {
+				stack[sp] = Seen{ac = 2}
+				sp += 1
+			}
+		case FDT_END_NODE:
+			if sp > 0 {
+				sp -= 1
+				if stack[sp].phandle == want {
+					return stack[sp].ac, stack[sp].ic, true
+				}
+			}
+		case FDT_PROP:
+			length := int(be32(blob, at))
+			name_off := int(be32(blob, at + 4))
+			value_at := at + 8
+			at = align4(value_at + length)
+			if sp == 0 || length != 4 || value_at + length > len(blob) {
+				continue
+			}
+			pn := cstr_len(blob, strings_off + name_off)
+			pname := string(blob[strings_off + name_off:strings_off + name_off + pn])
+			switch pname {
+			case "phandle":
+				stack[sp - 1].phandle = be32(blob, value_at)
+			case "#address-cells":
+				stack[sp - 1].ac = int(be32(blob, value_at))
+			case "#interrupt-cells":
+				stack[sp - 1].ic = int(be32(blob, value_at))
+			}
+		case FDT_NOP:
+		case:
+			return 0, 0, false
+		}
+	}
+	return 0, 0, false
+}
+
+/*
+pin_lines decodes a PCI host's `interrupt-map` into the four shared lines its
+legacy pins reach from device zero, `docs/SMMU.md` section 11. An entry is
+the child's unit address and pin, the parent's phandle, then the parent's
+unit address and interrupt cells, whose counts the parent names. Only a
+parent in the GIC's shape is a line this tree can route: three cells of
+`<type number flags>` with type zero. That is the rule `interrupts` keeps.
+Pins are numbered from one. A pin the map does not route answers -1.
+*/
+@(private)
+pin_lines :: proc "contextless" (blob: []u8, at: int, length: int, child_ac: int, child_ic: int) -> (lines: [4]int) #no_bounds_check {
+	lines = {-1, -1, -1, -1}
+	if child_ic != 1 || child_ac < 1 || child_ac > 3 {
+		return
+	}
+	cursor := at
+	end := at + length
+	for cursor + (child_ac + child_ic + 1) * 4 <= end {
+		device := be32(blob, cursor) >> 11 & 0x1F
+		pin := int(be32(blob, cursor + child_ac * 4))
+		phandle := be32(blob, cursor + (child_ac + child_ic) * 4)
+		pac, pic, found := cells_of_phandle(blob, phandle)
+		if !found {
+			return
+		}
+		entry := (child_ac + child_ic + 1 + pac + pic) * 4
+		if cursor + entry > end {
+			return
+		}
+		if device == 0 && pin >= 1 && pin <= 4 && pic == 3 {
+			pcells := cursor + (child_ac + child_ic + 1 + pac) * 4
+			if be32(blob, pcells) == 0 {
+				lines[pin - 1] = int(be32(blob, pcells + 4))
+			}
+		}
+		cursor += entry
+	}
+	return
 }
 
 // decode_reg reads the first `reg` tuple -- `ac` address cells then `sc` size
@@ -421,6 +536,31 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, it
 		case FDT_END_NODE:
 			if sp > 0 {
 				sp -= 1
+				// A PCI host's `interrupt-map` grows `irq0` to `irq3`, one
+				// per legacy pin, now that the node's cell counts are all
+				// read. A device at slot `d` on pin `p` reads
+				// `irq<(d + p - 1) mod 4>`, the rotation the map spells.
+				f := &stack[sp]
+				if f.map_len > 0 {
+					lines := pin_lines(blob, f.map_at, f.map_len, f.ac, f.ic)
+					for pin in 0 ..< 4 {
+						if lines[pin] < 0 {
+							continue
+						}
+						pidx := count
+						count += 1
+						if pidx < len(out) {
+							out[pidx] = vfs.Static_Node{name = PIN_NAMES[pin], parent = i32(f.idx)}
+						}
+						if pidx < len(itab) {
+							itab[pidx] = Irq {
+								valid = true,
+								gsi   = lines[pin],
+								intid = u64(arch.VECTOR_IRQ_BASE) + u64(lines[pin]),
+							}
+						}
+					}
+				}
 			}
 		case FDT_PROP:
 			length := int(be32(blob, at))
@@ -451,7 +591,13 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, it
 					stack[sp - 1].ac = int(be32(blob, value_at))
 				} else if pname == "#size-cells" {
 					stack[sp - 1].sc = int(be32(blob, value_at))
+				} else if pname == "#interrupt-cells" {
+					stack[sp - 1].ic = int(be32(blob, value_at))
 				}
+			}
+			if sp > 0 && pname == "interrupt-map" && vend > value_at {
+				stack[sp - 1].map_at = value_at
+				stack[sp - 1].map_len = vend - value_at
 			}
 
 			// A `reg` grows the node a synthesized `mmio`, decoded with the

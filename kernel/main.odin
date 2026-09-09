@@ -1516,6 +1516,28 @@ verify_tree :: proc() {
 		libodin.tally(&result, false, "and the root node names a compatible, the tree served as files")
 	}
 
+	// A PCI host with a walker and an interrupt-map grows the files a ring 3
+	// disk driver opens, `docs/SMMU.md` sections 6 and 11. Those are `dma`,
+	// and the four legacy pins as `irq0` to `irq3`. The node is `virt`'s,
+	// and a board without it is not checked here.
+	if host, e := vfs.open_path(ns, "/dev/tree/pcie@10000000", vfs.O_RDONLY); e == vfs.OK {
+		vfs.chan_close(host)
+		if d, de := vfs.open_path(ns, "/dev/tree/pcie@10000000/dma", vfs.O_RDONLY); libodin.tally(&result, de == vfs.OK, "the PCI host grew a dma file, its walker's") {
+			vfs.chan_close(d)
+		}
+		pins := 0
+		for name in ([4]string{"irq0", "irq1", "irq2", "irq3"}) {
+			path: [40]u8
+			at := copy(path[:], "/dev/tree/pcie@10000000/")
+			at += copy(path[at:], name)
+			if l, le := vfs.open_path(ns, string(path[:at]), vfs.O_RDONLY); le == vfs.OK {
+				vfs.chan_close(l)
+				pins += 1
+			}
+		}
+		libodin.tally(&result, pins == 4, "and irq0 to irq3, the four legacy pins its interrupt-map routes")
+	}
+
 	sink := report_begin("tree", result.checks)
 	if libodin.passed(result) {
 		libodin.put_str(&sink, " tree checks passed -- the firmware's device tree read back through /dev/tree")
