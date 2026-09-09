@@ -217,12 +217,17 @@ unit, `docs/HARDWARE.md` section 7, is a second implementation of the same
 two procedures. That is why they are procedure values rather than a stream
 number.
 
-**The invalidate rides on `shoot`.** Every unmap in the tree already
-calls `mem.shoot` after it drops its locks. The core shootdown waits for
-other cores, and a wait like that cannot be under a lock. `shoot` takes a
-root today. It grows to take the space, at its four call sites in
-`kernel/user`. After the cores are told it walks `space.walkers` and calls
-each `invalidate`.
+**The invalidate is told where the entry changes, not from `shoot`.**
+The first draft of this section put it on `mem.shoot`, after the cores.
+That is the wrong place. `shoot` runs after every lock is gone, because
+it waits for other cores. Its quiet callers keep a root rather than a
+space across that gap, since the space may die in it. A list on a space
+that may be dead cannot be walked.
+
+So the walk is at the change. Each procedure that narrows an entry,
+`unmap_user` and its quiet form, `protect_user` and `remap_user`, walks
+`space.walkers` under `space.lock` before that lock is dropped. The space
+is certainly alive there. `shoot` keeps its root and is not changed.
 
 The SMMU's `invalidate` issues one `TLBI_NH_VA` per page, or
 `TLBI_NH_ASID` for a run past sixteen pages, then `CMD_SYNC`. It returns
@@ -406,7 +411,7 @@ part is under `when ODIN_ARCH == .arm64`.
 
 amd64 has no tree and riscv64's tree has no SMMU. On both `smmu.init`
 finds nothing, no node grows a `dma` file, and `Address_Space.walkers`
-stays nil everywhere. `shoot`'s one nil test is the whole cost. riscv64's
+stays nil everywhere. One nil test at each change is the whole cost. riscv64's
 own IOMMU is a second `Walker` when it is wanted, in the same two
 procedures.
 
@@ -441,7 +446,7 @@ saw.
   translation. It frees the buffer with `segfree` and writes the sector
   from the same address again. The second transfer faults.
 - The negative control for that proof is `-define:VECTRA_SMMU_NO_INVALIDATE`,
-  which skips the walker's call in `shoot`. Under it the second transfer
+  which skips the walker's call at every change. Under it the second transfer
   lands, the sector holds the freed page's bytes, and the check fails,
   which is what a control is for. The control uses a device read of
   memory rather than a device write into it. A stale translation then
@@ -477,8 +482,8 @@ node's `ranges`. About nine hundred lines with the two proofs, and
 
 ## 12. The order of commits
 
-1. `mem.alloc_pages_aligned`. `Walker`, `Address_Space.walkers`, `shoot`
-   over the space, and the detach in `space_destroy`. No SMMU yet. The
+1. `mem.alloc_pages_aligned`. `Walker`, `Address_Space.walkers`, the
+   invalidate at each change, and the detach in `space_destroy`. No SMMU yet. The
    kernel builds and boots on all three with a nil list. About 120 lines.
 2. `kernel/smmu`: the probe from the tree, the id registers, the tables,
    the queues, bypass entries from the PCI scan, `SMMUEN`, and

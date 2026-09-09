@@ -312,16 +312,29 @@ fallback for it, and the VMM turns it into a `mem.Error`. A physical allocator
 that halts the machine is not one a page fault handler can call.
 */
 alloc_pages :: proc "contextless" (count: int) -> (phys: uintptr, ok: bool) {
+	return alloc_pages_aligned(count, 1)
+}
+
+/*
+alloc_pages_aligned is `alloc_pages` with the run's start on a boundary:
+`align` frames, so 4 asks for 16 KiB alignment.
+
+A device table is the caller. An SMMU's second-level stream table block is 16
+KiB and must sit on 16 KiB, `docs/SMMU.md` section 2, and one page's alignment
+is all `alloc_pages` promises. The scan is the same one, refusing to start a run
+on a frame short of the boundary. An alignment of one is `alloc_pages`.
+*/
+alloc_pages_aligned :: proc "contextless" (count: int, align: int) -> (phys: uintptr, ok: bool) {
 	guard := sync.acquire(&pmm_lock)
 	defer sync.release(&pmm_lock, guard)
 
-	if count <= 0 || count > frame_free {
+	if count <= 0 || count > frame_free || align <= 0 {
 		return 0, false
 	}
 
-	frame, found := scan(hint, frame_total, count)
+	frame, found := scan(hint, frame_total, count, align)
 	if !found {
-		frame, found = scan(0, hint, count)
+		frame, found = scan(0, hint, count, align)
 	}
 	if !found {
 		return 0, false
@@ -454,7 +467,7 @@ rather than eight. It only fires on a byte boundary with no run in progress.
 The loop proper has to break a run that crosses into the byte.
 */
 @(private = "file")
-scan :: proc "contextless" (from, to, count: int) -> (int, bool) #no_bounds_check {
+scan :: proc "contextless" (from, to, count: int, align: int = 1) -> (int, bool) #no_bounds_check {
 	run := 0
 	start := 0
 
@@ -468,6 +481,11 @@ scan :: proc "contextless" (from, to, count: int) -> (int, bool) #no_bounds_chec
 			continue
 		}
 		if run == 0 {
+			// A run may only start on the alignment asked for. A free frame
+			// short of it is skipped rather than started on.
+			if align > 1 && f % align != 0 {
+				continue
+			}
 			start = f
 		}
 		run += 1

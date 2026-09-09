@@ -54,6 +54,43 @@ Address_Space :: struct {
 	// entries. Held for a walk, never across a shootdown, which waits for
 	// other cores.
 	lock: sync.Spinlock,
+
+	// The walkers attached to this space, or nil, which it is for every
+	// space that has no device behind it. See `walker_attach` in
+	// `space.odin`, and `docs/SMMU.md` section 4 for why a space carries
+	// the list rather than the device.
+	walkers: ^Walker,
+}
+
+/*
+A walker: a device's memory management unit, translating through this space's
+own tables.
+
+An SMMU stream, or a GPU's own unit, each with a TLB of its own that the CPU's
+shootdown cannot reach. So an entry that narrows -- an unmap, a page made
+read-only, a frame replaced -- tells each walker on the list, under the space's
+lock, at the place the entry changed. The record is the walker's, allocated and
+filled by `kernel/smmu` or its like, and this package calls the two procedures
+and reads `next`.
+
+`invalidate` drops the walker's translations for a run of pages, and returns
+once the device holds none of them. It runs under `space.lock`, so it may spin
+on a register and may not sleep.
+
+`detach` is called by `space_destroy` with the record already unlinked and the
+lock held, before a single table is freed. It aborts the device's stream and
+must not call `walker_detach`, which would take the lock again.
+
+`clean` is for a walker that does not snoop the CPU's caches, and cleans the
+line an entry was written in. Nil for every walker on QEMU. `docs/HARDWARE.md`
+section 4 names the board's GPU as the one that needs it, and the slot is here
+so that walker does not bring a second list.
+*/
+Walker :: struct {
+	invalidate: proc "contextless" (w: ^Walker, virt: uintptr, pages: int),
+	detach:     proc "contextless" (w: ^Walker),
+	clean:      proc "contextless" (w: ^Walker, entry: rawptr),
+	next:       ^Walker,
 }
 
 @(private = "file") kernel_space: Address_Space

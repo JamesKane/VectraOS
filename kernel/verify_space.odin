@@ -152,6 +152,7 @@ verify_space :: proc() {
 	where nothing else is allocating, and the answer is exact.
 	*/
 	verify_lifetime(&r)
+	verify_walker(&r)
 
 	// -- Two spaces ----------------------------------------------------------
 
@@ -360,6 +361,117 @@ verify_lifetime :: proc(r: ^Space_Result) {
 		mem.pmm_stats().double_frees == doubles_before,
 		"and nothing twice, which is what a space owning its leaves would do",
 	)
+}
+
+/*
+A walker that only counts: what a device's unit would be told, and when.
+
+`docs/SMMU.md` section 4. Every change that narrows an entry tells each walker
+on the space's list the range it lost. A space that dies detaches each one
+before its tables go. This record stands in for an SMMU stream and writes down
+what it was told, so the checks below can read it back.
+*/
+@(private = "file")
+Test_Walker :: struct {
+	using w:     mem.Walker,
+	invalidates: int,
+	last_virt:   uintptr,
+	last_pages:  int,
+	detaches:    int,
+}
+
+@(private = "file")
+test_walker_invalidate :: proc "contextless" (w: ^mem.Walker, virt: uintptr, pages: int) {
+	t := cast(^Test_Walker)w
+	t.invalidates += 1
+	t.last_virt = virt
+	t.last_pages = pages
+}
+
+@(private = "file")
+test_walker_detach :: proc "contextless" (w: ^mem.Walker) {
+	t := cast(^Test_Walker)w
+	t.detaches += 1
+}
+
+/*
+verify_walker attaches a counting walker to a space and changes the space under
+it.
+
+An unmap, a narrowing of flags and a replaced frame each reach the walker with
+the range that changed. A detach takes the record off the list, and a second
+detach finds nothing. A space destroyed with a walker still attached detaches
+it before the tables go. The aligned allocator is checked beside it, because the
+walker's tables are what asked for it.
+*/
+@(private = "file")
+verify_walker :: proc(r: ^Space_Result) {
+	free_before := mem.pmm_stats().free_frames
+
+	// -- The aligned run the tables want --------------------------------------
+	ALIGN :: 4 // frames: 16 KiB, an SMMU's second-level stream table block
+	run, got_run := mem.alloc_pages_aligned(ALIGN, ALIGN)
+	if scheck(r, got_run, "a run of four frames is found on a four-frame boundary") {
+		scheck(r, run % (ALIGN * uintptr(mem.PAGE_SIZE)) == 0, "and it sits on 16 KiB")
+		mem.free_pages(run, ALIGN)
+	}
+	scheck(r, mem.pmm_stats().free_frames == free_before, "and comes back whole")
+
+	// -- A walker on a space ----------------------------------------------------
+	space, err := mem.space_new()
+	if !scheck(r, err == .None && space != nil, "a space is built for a walker") {
+		return
+	}
+	scheck(r, mem.walker_count(space) == 0, "and carries no walker at birth")
+
+	frame, got := mem.alloc_page_zeroed()
+	if !scheck(r, got, "and a frame to map into it") {
+		mem.space_destroy(space)
+		return
+	}
+	other, got_other := mem.alloc_page_zeroed()
+	if !scheck(r, got_other, "and a second, for a frame replaced") {
+		mem.space_destroy(space)
+		mem.free_page(frame)
+		return
+	}
+
+	t: Test_Walker
+	t.invalidate = test_walker_invalidate
+	t.detach = test_walker_detach
+	mem.walker_attach(space, &t)
+	scheck(r, mem.walker_count(space) == 1, "a walker attaches, and the space counts one")
+
+	flags := arch.Page_Flags{.Write, .No_Execute}
+	scheck(r, mem.map_user(space, USER_VA, frame, flags, 1) == .None, "a page maps under it")
+	scheck(r, t.invalidates == 0, "and a mapping that widens tells the walker nothing")
+
+	scheck(r, mem.protect_user(space, USER_VA, 1, {.No_Execute}) == .None, "the page goes read-only")
+	scheck(
+		r,
+		t.invalidates == 1 && t.last_virt == USER_VA && t.last_pages == 1,
+		"and the walker is told the page that narrowed",
+	)
+
+	scheck(r, mem.remap_user(space, USER_VA, other, flags) == .None, "its frame is replaced")
+	scheck(r, t.invalidates == 2 && t.last_virt == USER_VA, "and the walker is told again")
+
+	scheck(r, mem.unmap_user(space, USER_VA, 1) == .None, "the page is unmapped")
+	scheck(r, t.invalidates == 3 && t.last_pages == 1, "and the walker loses it too")
+
+	scheck(r, mem.walker_detach(space, &t), "a detach takes the record off the list")
+	scheck(r, mem.walker_count(space) == 0, "and the space counts none")
+	scheck(r, !mem.walker_detach(space, &t), "a second detach finds nothing")
+	scheck(r, mem.map_user(space, USER_VA, frame, flags, 1) == .None && mem.unmap_user(space, USER_VA, 1) == .None && t.invalidates == 3, "and a detached walker hears no more")
+
+	mem.walker_attach(space, &t)
+	mem.space_destroy(space)
+	scheck(r, t.detaches == 1, "a space destroyed with a walker on it detaches the walker first")
+	scheck(r, t.next == nil, "and the record is unlinked")
+
+	mem.free_page(frame)
+	mem.free_page(other)
+	scheck(r, mem.pmm_stats().free_frames == free_before, "and every frame comes back")
 }
 
 @(private = "file")

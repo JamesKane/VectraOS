@@ -137,6 +137,17 @@ space_destroy :: proc "contextless" (space: ^Address_Space) {
 	}
 
 	guard := sync.acquire(&space.lock)
+	// The devices first. A walker still pointed at these tables would read a
+	// frame the free below recycles. So each is unlinked and told to abort
+	// its stream before a single table goes. `docs/SMMU.md` section 4.
+	for space.walkers != nil {
+		w := space.walkers
+		space.walkers = w.next
+		w.next = nil
+		if w.detach != nil {
+			w.detach(w)
+		}
+	}
 	table := cast(^arch.Page_Table)phys_to_virt(space.root)
 	for i in 0 ..< arch.TABLE_ENTRIES / 2 {
 		free_subtree(table[i], arch.TABLE_LEVELS)
@@ -273,6 +284,7 @@ protect_user :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages:
 			_ = reset_leaf(space, va, arch.entry_address(e^), user)
 		}
 	}
+	invalidate_walkers(space, virt, pages)
 	return .None
 }
 
@@ -287,6 +299,7 @@ remap_user :: proc "contextless" (space: ^Address_Space, virt, phys: uintptr, fl
 	if !reset_leaf(space, virt, phys, flags + {.User}) {
 		return .Mapping_Conflict
 	}
+	invalidate_walkers(space, virt, 1)
 	return .None
 }
 
@@ -332,6 +345,9 @@ unmap_user_quiet :: proc "contextless" (space: ^Address_Space, virt: uintptr, pa
 	for i in 0 ..< pages {
 		unmap_page(space, virt + uintptr(i) * uintptr(arch.PAGE_SIZE))
 	}
+	// Quiet is about the cores. A device's translations go here, under the
+	// lock, because the wait is on a register and not on another core.
+	invalidate_walkers(space, virt, pages)
 	return .None
 }
 
@@ -364,6 +380,87 @@ shootdown: Shootdown
 
 set_shootdown :: proc "contextless" (s: Shootdown) {
 	shootdown = s
+}
+
+/*
+The walkers on a space, and where they are told.
+
+A device's unit holds translations of its own, and the shootdown above reaches
+cores and nothing else. So every change that narrows an entry -- `unmap_user`
+and its quiet form, `protect_user`, `remap_user` -- tells each walker on the
+list at the place the entry changed, under `space.lock`. That is a different
+place from `shoot`, on purpose. `shoot` is called after every lock is gone
+because it waits for other cores, and its quiet callers keep a root rather
+than a space across that gap, since the space may die in it. A walker's wait
+is on a register, which no core is behind, so it is safe under the lock and
+is done where the space is still certainly alive.
+
+The list is under `space.lock` for every read and write. A detach cannot pull
+a record out from under an invalidate, and an attach cannot miss one.
+
+`VECTRA_SMMU_NO_INVALIDATE` is the negative control `docs/SMMU.md` section 10
+names. A build with it set changes every entry and tells no walker. Under it
+the check that a device cannot read a freed page must fail.
+*/
+WALKER_INVALIDATE :: !#config(VECTRA_SMMU_NO_INVALIDATE, false)
+
+// walker_attach links a walker's record onto a space. The record is the
+// caller's and stays valid until `walker_detach` or `space_destroy` unlinks it.
+walker_attach :: proc "contextless" (space: ^Address_Space, w: ^Walker) {
+	if space == nil || w == nil {
+		return
+	}
+	guard := sync.acquire(&space.lock)
+	defer sync.release(&space.lock, guard)
+	w.next = space.walkers
+	space.walkers = w
+}
+
+// walker_detach unlinks a record, and answers whether it was on the list. A
+// record `space_destroy` already took answers false, which is how a caller
+// racing a process's end learns it lost.
+walker_detach :: proc "contextless" (space: ^Address_Space, w: ^Walker) -> bool {
+	if space == nil || w == nil {
+		return false
+	}
+	guard := sync.acquire(&space.lock)
+	defer sync.release(&space.lock, guard)
+	prev: ^^Walker = &space.walkers
+	for prev^ != nil {
+		if prev^ == w {
+			prev^ = w.next
+			w.next = nil
+			return true
+		}
+		prev = &prev^.next
+	}
+	return false
+}
+
+// walker_count answers how many walkers a space carries, for a self-test.
+walker_count :: proc "contextless" (space: ^Address_Space) -> (n: int) {
+	if space == nil {
+		return 0
+	}
+	guard := sync.acquire(&space.lock)
+	defer sync.release(&space.lock, guard)
+	for w := space.walkers; w != nil; w = w.next {
+		n += 1
+	}
+	return n
+}
+
+// invalidate_walkers tells each walker on the list, with `space.lock` held by
+// the caller. The nil test is the whole cost for a space with no device.
+@(private = "file")
+invalidate_walkers :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages: int) {
+	when WALKER_INVALIDATE {
+		for w := space.walkers; w != nil; w = w.next {
+			if w.invalidate != nil {
+				w.invalidate(w, virt, pages)
+			}
+		}
+	}
 }
 
 /*
