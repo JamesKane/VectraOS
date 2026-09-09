@@ -41,6 +41,8 @@ The caller still frees what it mapped -- through its segments now -- and
 */
 package mem
 
+import "base:intrinsics"
+
 import "kernel:arch"
 import "kernel:sync"
 
@@ -71,7 +73,7 @@ Space_Stats :: struct {
 }
 
 space_stats :: proc "contextless" () -> Space_Stats {
-	return Space_Stats{live = live_spaces, frames = table_frames}
+	return Space_Stats{live = intrinsics.atomic_load(&live_spaces), frames = intrinsics.atomic_load(&table_frames)}
 }
 
 /*
@@ -104,8 +106,8 @@ space_new :: proc "contextless" () -> (^Address_Space, Error) {
 		table[i] = kernel[i]
 	}
 
-	live_spaces += 1
-	table_frames += 1
+	intrinsics.atomic_add(&live_spaces, 1)
+	intrinsics.atomic_add(&table_frames, 1)
 	return space, .None
 }
 
@@ -141,8 +143,8 @@ space_destroy :: proc "contextless" (space: ^Address_Space) {
 	}
 
 	free_page(space.root)
-	table_frames -= 1
-	live_spaces -= 1
+	intrinsics.atomic_sub(&table_frames, 1)
+	intrinsics.atomic_sub(&live_spaces, 1)
 	space.root = 0
 	sync.release(&space.lock, guard)
 	free_space_record(space)
@@ -170,7 +172,7 @@ free_subtree :: proc "contextless" (entry: arch.Page_Table_Entry, level: int) {
 	}
 
 	free_page(frame)
-	table_frames -= 1
+	intrinsics.atomic_sub(&table_frames, 1)
 }
 
 /*
@@ -453,8 +455,19 @@ Space_Slot :: struct {
 @(private = "file")
 spaces: [MAX_SPACES]Space_Slot
 
+// The pool is a shared table claimed by a scan, so it needs a lock of its own:
+// two cores creating a process at once would otherwise read the same slot free
+// and both claim it, handing one `Address_Space` to two processes -- one root,
+// freed when either exits, translated through by the other. This is the process
+// table's own lock, distinct from any per-space `lock`, which cannot serialise a
+// claim of a record that does not belong to a space yet.
+@(private = "file")
+pool_lock: sync.Spinlock
+
 @(private = "file")
 new_space_record :: proc "contextless" () -> ^Address_Space #no_bounds_check {
+	guard := sync.acquire(&pool_lock)
+	defer sync.release(&pool_lock, guard)
 	for i in 0 ..< MAX_SPACES {
 		if !spaces[i].used {
 			spaces[i].used = true
@@ -467,6 +480,8 @@ new_space_record :: proc "contextless" () -> ^Address_Space #no_bounds_check {
 
 @(private = "file")
 free_space_record :: proc "contextless" (space: ^Address_Space) #no_bounds_check {
+	guard := sync.acquire(&pool_lock)
+	defer sync.release(&pool_lock, guard)
 	for i in 0 ..< MAX_SPACES {
 		if &spaces[i].space == space {
 			spaces[i].used = false

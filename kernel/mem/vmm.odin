@@ -22,6 +22,8 @@ tables and riscv64's Sv39/Sv48 just as well.
 */
 package mem
 
+import "base:intrinsics"
+
 import "kernel:arch"
 import "kernel:sync"
 
@@ -77,8 +79,8 @@ Vmm_Stats :: struct {
 vmm_stats :: proc "contextless" () -> Vmm_Stats {
 	return Vmm_Stats {
 		root         = kernel_space.root,
-		table_frames = table_frames,
-		mapped_bytes = mapped_bytes,
+		table_frames = intrinsics.atomic_load(&table_frames),
+		mapped_bytes = intrinsics.atomic_load(&mapped_bytes),
 		nx           = arch.nx_available(),
 		global       = arch.global_available(),
 		max_leaf     = arch.max_leaf_level(),
@@ -140,7 +142,7 @@ vmm_init :: proc "contextless" (b: ^Boot_Memory) -> Error {
 	if !ok {
 		return .Out_Of_Memory
 	}
-	table_frames += 1
+	intrinsics.atomic_add(&table_frames, 1)
 	kernel_space.root = root
 
 	if err := populate_higher_half(&kernel_space); err != .None {
@@ -173,7 +175,7 @@ populate_higher_half :: proc "contextless" (space: ^Address_Space) -> Error {
 		if !ok {
 			return .Out_Of_Memory
 		}
-		table_frames += 1
+		intrinsics.atomic_add(&table_frames, 1)
 		// No `User` in the flags, because these branches are kernel-only. The
 		// hardware ANDs the user bit down the path, so its absence here seals the
 		// whole higher half from userland in one place.
@@ -352,7 +354,7 @@ map_range :: proc "contextless" (
 		}
 		offset += u64(arch.level_size(level))
 	}
-	mapped_bytes += size
+	intrinsics.atomic_add(&mapped_bytes, size)
 	return .None
 }
 
@@ -387,7 +389,7 @@ map_at :: proc "contextless" (
 			if !ok {
 				return .Out_Of_Memory
 			}
-			table_frames += 1
+			intrinsics.atomic_add(&table_frames, 1)
 			entry = arch.branch_encode(frame, flags)
 			table[index] = entry
 		} else if arch.entry_is_leaf(entry, l) {
@@ -429,6 +431,13 @@ map_mmio :: proc "contextless" (phys: uintptr, size: u64) -> (rawptr, Error) {
 	virt := uintptr(phys_to_virt(uintptr(base)))
 	flags := arch.Page_Flags{.Write, .No_Cache, .No_Execute}
 
+	// Under `kernel_space.lock`, as `map_user` is under the target space's: the
+	// higher half is one tree shared by every core, and two drivers mapping
+	// their windows at once would each grow an absent intermediate table and the
+	// second would overwrite the first -- a leaked frame and a device whose
+	// registers are then unmapped. See the lock's note on `Address_Space`.
+	guard := sync.acquire(&kernel_space.lock)
+	defer sync.release(&kernel_space.lock, guard)
 	for i in 0 ..< pages {
 		step := uintptr(i) * uintptr(arch.PAGE_SIZE)
 		if err := map_at(&kernel_space, virt + step, uintptr(base) + step, flags, 1); err != .None {
