@@ -1792,6 +1792,10 @@ verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int
 
 	c, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/served", vfs.O_RDWR)
 	if check(r, oerr == vfs.OK && c != nil, "a path resolves through walks the program answered") {
+		check(r, c.server.poster == p.pid, "and the server built from the posting names the program's pid as its poster")
+		check(r, holds_server_of(p.pid, p.pid), "which holds its own files, the self case")
+		check(r, !holds_server_of(p.pid + 1000, p.pid), "and a pid that is gone holds none of them")
+		check(r, !holds_server_of(p.pid, 0), "and no process holds a file of poster zero, the kernel's")
 		before := column()
 		wn, werr := vfs.chan_write(c, 0, transmute([]u8)string(NINER_ECHO_LINE))
 		check(r, werr == vfs.OK && wn == len(NINER_ECHO_LINE), "a write crosses to ring 3 and back")

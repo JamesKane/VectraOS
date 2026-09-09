@@ -100,6 +100,10 @@ Slow :: struct {
 
 	flushed:    [mnt.MAX_REQUESTS]bool,
 	waits:      [mnt.MAX_REQUESTS]Slow_Wait,
+
+	// Who the slot said submitted the last fast request, for the check that
+	// a handler on a worker can still name its client.
+	asked_by:   ^sched.Thread,
 }
 
 // One per tag, so the wait condition can name both the server and the request
@@ -186,6 +190,7 @@ slow_handler :: proc "contextless" (
 		// The fast request. Nothing here blocks, which is what makes it worth
 		// issuing while something else is stuck.
 		intrinsics.volatile_store(&sv.fast, intrinsics.volatile_load(&sv.fast) + 1)
+		sv.asked_by = mnt.requester(&conn, tag)
 		reply^ = vectra9.Rclunk{}
 
 	case vectra9.Tread:
@@ -364,6 +369,8 @@ verify_flush :: proc() #no_bounds_check {
 		err := mnt.call(&conn, &request, &reply)
 		_, is_rclunk := reply.(vectra9.Rclunk)
 		fcheck(&r, err == .None && is_rclunk, "an ordinary request gets an ordinary reply")
+		fcheck(&r, slow.asked_by == sched.current(), "and the handler, on a worker, named this thread as the one that asked")
+		fcheck(&r, mnt.requester(&conn, 0) == nil, "which the slot forgot once the tag was given back")
 	}
 
 	// -- An abortable server: the flush is prompt ----------------------------

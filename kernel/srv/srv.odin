@@ -147,6 +147,11 @@ Service :: struct {
 	server:   ^vfs.Server,
 	endpoint: ^vfs.Chan,
 	id:       i32,
+
+	// The pid of the process whose descriptor write filled `endpoint`, or
+	// zero for a kernel posting. The server a mount builds from the
+	// connection carries it on, as `vfs.Server.poster`.
+	poster:   u64,
 }
 
 /*
@@ -173,7 +178,7 @@ The resolver runs under this server's spinlock. It may look tables up, may
 nest a spinlock of its own, and may not send a message or take a lock that
 parks. The one registered keeps to that.
 */
-Fd_Resolver :: proc "contextless" (fd: int) -> ^vfs.Chan
+Fd_Resolver :: proc "contextless" (fd: int) -> (c: ^vfs.Chan, pid: u64)
 
 @(private = "file")
 fd_resolver: Fd_Resolver
@@ -507,7 +512,7 @@ mount :: proc(
 	flags: vfs.Mount_Flags = {},
 	uname: string = "vectra",
 ) -> vfs.Errno {
-	server, endpoint, err := service_at(ns, path)
+	server, endpoint, poster, err := service_at(ns, path)
 	if err != vfs.OK {
 		return err
 	}
@@ -524,6 +529,9 @@ mount :: proc(
 		*/
 		defer vfs.chan_close(endpoint)
 		if wired := pipe.server_for(endpoint); wired != nil {
+			// The program answering the wire is the one that posted the
+			// end, and the server says so for `user.holds_server_of`.
+			wired.poster = poster
 			server = wired
 			pinned = wired
 		} else if p, _ := pipe.chan_pipe(endpoint); p != nil {
@@ -538,6 +546,7 @@ mount :: proc(
 			// A stream: a conversation's data file, posted by `srv` or
 			// `import`. The kernel becomes a client of the far machine's
 			// `exportfs` over it. See `pipe/chanwire.odin`.
+			stream.poster = poster
 			server = stream
 			pinned = stream
 		} else {
@@ -580,7 +589,7 @@ service_at resolves a path and reports what the posted name holds.
 One of the two answers is non-nil on success: the kernel service, or the
 posted connection with a reference taken for the caller. The reference is
 what keeps the chan alive across the mount that follows, against a removal
-racing it.
+racing it. A posted connection comes with the pid that posted it.
 
 EINVAL when the path resolves to something this server does not serve, or to
 this server's own root. Neither is a service, and both are a caller that
@@ -590,21 +599,21 @@ believes a path is a `/srv` entry when it is not.
 service_at :: proc(
 	ns: ^vfs.Namespace,
 	path: string,
-) -> (^vfs.Server, ^vfs.Chan, vfs.Errno) #no_bounds_check {
+) -> (^vfs.Server, ^vfs.Chan, u64, vfs.Errno) #no_bounds_check {
 	t := &srv_tree
 
 	c, err := vfs.resolve(ns, path)
 	if err != vfs.OK {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	defer vfs.chan_close(c)
 
 	if c.server != &t.server {
-		return nil, nil, vectra9.EINVAL
+		return nil, nil, 0, vectra9.EINVAL
 	}
 	id := id_of_qid(c.qid)
 	if id <= 0 {
-		return nil, nil, vectra9.EINVAL
+		return nil, nil, 0, vectra9.EINVAL
 	}
 
 	g := sync.acquire(&t.lock)
@@ -614,17 +623,17 @@ service_at :: proc(
 	if i < 0 {
 		// The name resolved and the entry went between the walk and here.
 		// ENOENT is what a client would have got a moment earlier.
-		return nil, nil, vectra9.ENOENT
+		return nil, nil, 0, vectra9.ENOENT
 	}
 	if t.table[i].server != nil {
-		return t.table[i].server, nil, vfs.OK
+		return t.table[i].server, nil, 0, vfs.OK
 	}
 	if t.table[i].endpoint != nil {
-		return nil, vfs.chan_incref(t.table[i].endpoint), vfs.OK
+		return nil, vfs.chan_incref(t.table[i].endpoint), t.table[i].poster, vfs.OK
 	}
 	// Created and not yet written. The name is real and the connection
 	// behind it is not there, which is ENXIO's exact sentence.
-	return nil, nil, vectra9.ENXIO
+	return nil, nil, 0, vectra9.ENXIO
 }
 
 // -- The tree ----------------------------------------------------------------
@@ -854,8 +863,9 @@ srv_dispatch :: proc(
 			return
 		}
 		ch: ^vfs.Chan
+		poster: u64
 		if fd_resolver != nil {
-			ch = fd_resolver(fd)
+			ch, poster = fd_resolver(fd)
 		}
 		if ch == nil {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
@@ -865,6 +875,7 @@ srv_dispatch :: proc(
 		// The descriptor may close and the process may end, and the
 		// connection stays reachable by name.
 		t.table[i].endpoint = ch
+		t.table[i].poster = poster
 		t.posts += 1
 		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 

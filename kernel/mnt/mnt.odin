@@ -115,6 +115,7 @@ package mnt
 
 import "base:intrinsics"
 
+import "kernel:sched"
 import "kernel:sync"
 import "vsys:vectra9"
 
@@ -172,6 +173,12 @@ Rpc :: struct {
 
 	state:   Rpc_State,
 	flushed: bool, // A Tflush named this tag while it was in flight
+
+	// The thread that submitted this request, set where it takes the slot
+	// and cleared where it gives the slot back. A handler on a worker asks
+	// `requester` for it, which is how a served write learns who wrote.
+	// Nil on the flush half of the pool. `docs/SMMU.md` section 7.
+	client:  ^sched.Thread,
 
 	// The Tflush waiting on this request, if any. Whoever finishes this
 	// request answers that flush, which is how "Rflush comes after the
@@ -482,6 +489,7 @@ give_back :: proc "contextless" (c: ^Conn, r: ^Rpc) {
 	r.state = .Free
 	r.partner = nil
 	r.flushed = false
+	r.client = nil
 	sync.release(&c.lock, guard)
 
 	sync.wakeup(&c.free)
@@ -736,6 +744,7 @@ submit :: proc "contextless" (c: ^Conn, request: ^vectra9.Msg) -> ^Rpc {
 	r.request = request^
 	r.reply = {}
 	r.err = .None
+	r.client = sched.current()
 
 	guard := sync.acquire(&c.lock)
 	c.stats.requests += 1

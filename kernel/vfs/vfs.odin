@@ -40,6 +40,7 @@ than asserted. `kernel/verify_vfs.odin` runs the same namespace over both.
 package vfs
 
 import "kernel:mnt"
+import "kernel:sched"
 import "kernel:sync"
 import "vsys:vectra9"
 
@@ -137,6 +138,15 @@ Server :: struct {
 	existed.
 	*/
 	device:    proc "contextless" (sv: ^Server, qid: vectra9.Qid) -> (phys: uintptr, bytes: u64, device_mem: bool, ok: bool),
+
+	/*
+	The process that posted the connection this server was built from, by
+	pid, or zero for a kernel server. Set by `kernel/srv` when a mount builds
+	the server from a posted descriptor. A chan on this server is then a file
+	that process serves, which is what `user.holds_server_of` walks a
+	descriptor table for. `docs/SMMU.md` section 7.
+	*/
+	poster:    u64,
 }
 
 // server_pin takes a non-chan stake on a server: a name that holds it, or a
@@ -365,6 +375,23 @@ nothing was ever flushed.
 */
 server_flushed :: proc "contextless" (sv: ^Server, tag: vectra9.Tag) -> bool {
 	return sv != nil && sv.conn != nil && mnt.flushed(sv.conn, tag)
+}
+
+/*
+server_requester answers the thread that submitted this request, the way
+`server_flushed` answers whether it was flushed. The answer is on the request
+slot, which is the one place that knows. A handler on a worker is not on its client's
+thread, and a write that is a capability has to know who wrote it.
+`kernel/user` turns the thread into a pid, `docs/SMMU.md` section 7.
+
+Nil on the synchronous transport. There the handler *is* on the caller's
+thread, and `sched.current` is the answer.
+*/
+server_requester :: proc "contextless" (sv: ^Server, tag: vectra9.Tag) -> ^sched.Thread {
+	if sv == nil || sv.conn == nil {
+		return nil
+	}
+	return mnt.requester(sv.conn, tag)
 }
 
 // server_msize is the largest message this server's transport carries. It

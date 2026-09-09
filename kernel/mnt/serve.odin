@@ -255,3 +255,13 @@ flushed :: proc "contextless" (c: ^Conn, tag: vectra9.Tag) -> bool #no_bounds_ch
 	}
 	return intrinsics.volatile_load(&c.pool[int(tag)].flushed)
 }
+
+// requester answers the thread that submitted the request this tag names, or
+// nil for a tag not in flight. For a handler that has to know who asked: a
+// worker's own thread is nobody's, and the slot remembers the client's.
+requester :: proc "contextless" (c: ^Conn, tag: vectra9.Tag) -> ^sched.Thread #no_bounds_check {
+	if !is_request_tag(tag) {
+		return nil
+	}
+	return intrinsics.volatile_load(&c.pool[int(tag)].client)
+}

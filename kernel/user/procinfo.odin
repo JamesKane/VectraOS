@@ -196,6 +196,59 @@ proc_namespace :: proc(pid: u64, out: []u8) -> int {
 }
 
 @(private)
+/*
+pid_of_thread answers the process a thread belongs to, by pid, or zero for a
+kernel thread, which is every worker. The one use so far is a served write
+that is a capability. `vfs.server_requester` names the thread that wrote, and
+this names the process, `docs/SMMU.md` section 7. A request the kernel sent
+itself answers zero, and a handler refuses it, since the kernel attaches
+nothing on a program's behalf.
+*/
+pid_of_thread :: proc "contextless" (t: ^sched.Thread) -> u64 {
+	if t == nil || t.user == nil {
+		return 0
+	}
+	return (^Process)(t.user).pid
+}
+
+/*
+holds_server_of answers whether process `pid` holds a descriptor on a file
+that process `poster` serves. The self case, the two pids equal, is answered
+before any walk. Otherwise the target's table is walked under its own lock
+for a chan whose server carries the poster's pid, `vfs.Server.poster`. A pid
+that is gone answers false. So does a poster of zero, which no served server
+carries.
+
+This is the capability check `docs/SMMU.md` section 7 describes. A driver may
+bind a client's space to its device only when the client already holds a
+file the driver serves. That file is the client's own consent.
+*/
+holds_server_of :: proc "contextless" (pid: u64, poster: u64) -> bool #no_bounds_check {
+	if pid == 0 || poster == 0 {
+		return false
+	}
+	if pid == poster {
+		return true
+	}
+	p := pin(pid)
+	if p == nil {
+		return false
+	}
+	defer unpin(p)
+	if p.fdt == nil {
+		return false
+	}
+	guard := sync.acquire(&p.fdt.lock)
+	defer sync.release(&p.fdt.lock, guard)
+	for i in 0 ..< MAX_FDS {
+		c := p.fdt.fds[i].chan
+		if c != nil && c.server != nil && c.server.poster == poster {
+			return true
+		}
+	}
+	return false
+}
+
 live_by_pid :: proc "contextless" (pid: u64) -> ^Process #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]

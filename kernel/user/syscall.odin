@@ -236,12 +236,13 @@ chan between this answer and `/srv`'s increment. Lock order: `/srv` before
 the table, here and nowhere the other way.
 */
 @(private = "file")
-resolve_fd_chan :: proc "contextless" (fd: int) -> ^vfs.Chan {
-	c, _, ok := fd_take(current(), fd)
+resolve_fd_chan :: proc "contextless" (fd: int) -> (^vfs.Chan, u64) {
+	p := current()
+	c, _, ok := fd_take(p, fd)
 	if !ok {
-		return nil
+		return nil, 0
 	}
-	return c
+	return c, p.pid
 }
 
 syscall_count :: proc "contextless" () -> int {
