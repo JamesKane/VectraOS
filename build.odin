@@ -253,7 +253,19 @@ asm_riscv64 := [?]string{
 // this kernel can read. See `docs/PORTS.md`.
 qemu_amd64_machine := [?]string{"-machine", "q35", "-cpu", "qemu64", "-m", "512M"}
 qemu_arm64_machine := [?]string{"-machine", "virt,gic-version=2,acpi=off", "-cpu", "cortex-a72", "-m", "512M", "-device", "ramfb"}
+qemu_arm64_machine_v3 := [?]string{"-machine", "virt,gic-version=3,acpi=off", "-cpu", "cortex-a72", "-m", "512M", "-device", "ramfb"}
 qemu_riscv64_machine := [?]string{"-machine", "virt,acpi=off", "-cpu", "rv64", "-m", "512M", "-device", "ramfb"}
+
+// qemu_machine_for is the machine line for this build. It is the architecture's
+// default, except that arm64 with `--gic=3` swaps the controller QEMU gives, so
+// a v3 kernel meets a v3 board rather than reading a v2 distributor that answers
+// differently. The compile-time `-define:VECTRA_GIC` and this must agree.
+qemu_machine_for :: proc(opts: Options) -> []string {
+	if opts.arch == .arm64 && opts.gic == 3 {
+		return qemu_arm64_machine_v3[:]
+	}
+	return arch_config(opts.arch).qemu_machine
+}
 
 arch_config :: proc(arch: Arch) -> Arch_Config {
 	switch arch {
@@ -320,6 +332,7 @@ Options :: struct {
 	monitor: string,
 	gfx:     bool,
 	smp:     int,
+	gic:     int, // arm64: the interrupt-controller version, 2 or 3
 	pcap:    bool, // The fleet's frames, captured at QEMU's netdev
 	hostname: string, // Whose host key the staged /adm carries;  when unset
 
@@ -335,6 +348,7 @@ main :: proc() {
 		arch2  = .arm64,
 		serial = "stdio",
 		smp    = 4,
+		gic    = 2,
 	}
 
 	positional_seen := false
@@ -356,6 +370,12 @@ main :: proc() {
 				die("bad --smp=%s (want a core count of 1 or more)", arg[len("--smp="):])
 			}
 			opts.smp = n
+		case strings.has_prefix(arg, "--gic="):
+			n, ok := strconv.parse_int(arg[len("--gic="):])
+			if !ok || (n != 2 && n != 3) {
+				die("bad --gic=%s (want 2 or 3)", arg[len("--gic="):])
+			}
+			opts.gic = n
 		case arg == "--release":
 			opts.release = true
 		case arg == "--gfx":
@@ -446,6 +466,12 @@ build_kernel :: proc(opts: Options) {
 		append(&compile, "-o:speed", "-no-bounds-check")
 	} else {
 		append(&compile, "-debug", "-o:none")
+	}
+	// The interrupt-controller version, when it is not the default. arm64 only;
+	// the define reaches `kernel/arch/arm64/gic_select.odin`, and the QEMU
+	// machine line `qemu_machine_for` picks has to match it.
+	if opts.arch == .arm64 && opts.gic == 3 {
+		append(&compile, "-define:VECTRA_GIC=3")
 	}
 	run(compile[:])
 
@@ -1337,7 +1363,7 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	cfg := arch_config(opts.arch)
 
 	args := [dynamic]string{cfg.qemu}
-	append(&args, ..cfg.qemu_machine)
+	append(&args, ..qemu_machine_for(opts))
 
 	// UEFI firmware. A combined OVMF image, when one is around, goes in whole
 	// via -bios. Otherwise the split edk2 code+vars pair that every QEMU
@@ -1510,7 +1536,7 @@ between fleet machines lifted out.
 machine_args :: proc(opts: Options, esp_dir, scratch: string, net: []string, console, serial_log: string) -> [dynamic]string {
 	cfg := arch_config(opts.arch)
 	args := [dynamic]string{cfg.qemu}
-	append(&args, ..cfg.qemu_machine)
+	append(&args, ..qemu_machine_for(opts))
 
 	combined := "../odin-os/ovmf/ovmf_x64.fd"
 	if opts.arch == .amd64 && os.exists(combined) {

@@ -170,7 +170,10 @@ write_cpacr :: proc "contextless" (v: u64) {
 }
 
 read_mpidr :: proc "contextless" () -> u64 {
-	return asm() -> (r: u64) [r = %x0, #volatile] { #byte 0x00, 0x00, 0x3B, 0xD5 }()
+	// `mrs x0, mpidr_el1`, which is `0xD53800A0`. MPIDR differs from MIDR only in
+	// op2, so the byte that carries it is `0xA0`, not the `0x00` a copy of MIDR
+	// would leave -- an undefined instruction the GICv3 path was first to reach.
+	return asm() -> (r: u64) [r = %x0, #volatile] { #byte 0xA0, 0x00, 0x38, 0xD5 }()
 }
 
 read_midr :: proc "contextless" () -> u64 {

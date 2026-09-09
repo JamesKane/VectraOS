@@ -861,7 +861,24 @@ interrupt reaching ring 3 with nothing but files and a mapping, no kernel
 driver. Proven on arm64, where the RTC is; riscv64's `#t` synthesises the same
 files over the PLIC, and a machine with no tree has none.
 
-The GICv3 selection, `dma` and `blkfs` are the rest of the step.
+**And a GICv3, beside the v2.** The real board's GIC-700 is a version 3, which
+speaks to a core differently than version 2: the CPU interface is system
+registers (`ICC_*_EL1`) rather than a mapped page, each core has its own
+redistributor for its private lines, and a shared line routes by a target's
+affinity rather than a mask of eight cores. So `kernel/arch/arm64/gic3.odin` is
+a second driver beside `gic.odin`, and `gic_select.odin` binds the version-blind
+names (`gic_route`, `gic_ack` and the rest) to one or the other at build time
+from `-define:VECTRA_GIC`. `build.odin`'s `--gic=3` sets the define and swaps
+QEMU's machine line to `gic-version=3` together, because a v3 driver on a v2
+board reads a distributor that answers differently. A board will read the
+version from the tree's `compatible`; for now it is one number at build time. The
+whole boot -- timer preemption, the cross-core IPIs, and the `irq` self-test's
+RTC alarm -- runs green on `virt` under both versions, at one and at four cores.
+The v3 path was also what first executed `read_mpidr`, and found its byte
+encoding had been wrong (a copy of `read_midr` that never left op2), an
+undefined instruction no earlier path had reached.
+
+The `dma`/SMMU walker and `blkfs` are the rest of the step.
 
 ### Step 1: the board boots
 
