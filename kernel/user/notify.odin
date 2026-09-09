@@ -91,7 +91,13 @@ deliver_note :: proc "contextless" (p: ^Process, frame: ^arch.Trap_Frame) -> boo
 		return false
 	}
 
-	text_va := sp - NOTE_MAX
+	// One byte below `sp - NOTE_MAX`, so a full `NOTE_MAX`-byte note plus the
+	// NUL terminator at `text[note_len]` (up to `text[NOTE_MAX]`) still lands at
+	// `sp - 1`, inside the range `reachable` checks below. Reserved at
+	// `sp - NOTE_MAX` alone, a 64-byte note wrote the terminator at `sp` -- one
+	// byte above the check, into the interrupted program's own stack, or a fault
+	// in interrupt context at a page boundary. `NOTE_STACK`'s slack covers it.
+	text_va := sp - NOTE_MAX - 1
 	ureg_va := (text_va - size_of(arch.Trap_Frame)) & ~uintptr(15)
 	cow_prepare(p, ureg_va, int(sp - ureg_va))
 	if !reachable(ureg_va, int(sp - ureg_va), {.User, .Write}) {

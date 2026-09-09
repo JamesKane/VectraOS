@@ -192,6 +192,11 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 	// this is that reload. `space_destroy` after the switch finds a CR3 that
 	// no longer names the old tree, so it frees it rather than switching away.
 	if t := sched.current(); t != nil {
+		// A note posted while the pre-exec handler ran leaves the thread's
+		// pending-note flag set. It was for the handler and the text that are
+		// gone now; left set, the new program dies at its first boundary on a
+		// note nobody sent it. Clearing it completes the note reset above.
+		sched.clear_note(t)
 		t.space = space
 	}
 	mem.space_switch(space)
