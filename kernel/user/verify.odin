@@ -47,6 +47,7 @@ import "kernel:mem"
 import "kernel:mnt"
 import "kernel:pipe"
 import "kernel:sched"
+import "kernel:smmu"
 import "kernel:srv"
 import "kernel:sync"
 import "kernel:vfs"
@@ -546,6 +547,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_tree_mmio(&r)
 	// A device interrupt, waited on through the tree's `irq` file.
 	verify_tree_irq(&r)
+	verify_tree_dma(&r)
 	// A run placed at an address the caller named, which a firmware binary asks.
 	verify_fixedseg(&r)
 	verify_debugger(&r)
@@ -5354,6 +5356,49 @@ verify_tree_irq :: proc(r: ^Result) #no_bounds_check {
 		check(r, cell(p, TREEIRQ_RIS) == 0, "and the source is quiet again, the interrupt serviced")
 	}
 	finish(r, p, "and the program is taken down")
+}
+
+/*
+verify_tree_dma binds a device's stream to a program's space through `#t`'s
+`dma` file, `docs/SMMU.md` section 10's ring 3 half. The program attaches the
+scratch disk's slot to itself and tries every refusal the line has. Then it
+leaves the slot bound and exits. The kernel checks the last close gave the
+stream back: its entry reads `abort`, and no program owns it. A board
+whose tree has no walker, riscv64 or a PC, has no `dma` file, and this is
+skipped.
+*/
+@(private = "file")
+verify_tree_dma :: proc(r: ^Result) #no_bounds_check {
+	DMA :: "/dev/tree/pcie@10000000/dma"
+	SLOT :: u32(16)
+
+	probe, perr := vfs.open_path(vfs.boot_namespace, DMA, vfs.O_RDONLY)
+	if perr != vfs.OK {
+		return // No walker on this board; the mechanism is checked where there is one.
+	}
+	vfs.chan_close(probe)
+
+	p, err := load_held("treedma", program_treedma())
+	if !check(r, err == .None && p != nil, "a program is built to bind a device to itself") {
+		return
+	}
+	r.programs += 1
+	check(r, set_bytes(p, SLOT_A, bytes_of(DMA)), "with the dma path in its page")
+	check(r, launch(p, u64(len(DMA))), "and it launches, staged with the path length")
+	if check(r, wait(p, PATIENCE), "and comes back") {
+		check(r, cell(p, CELL_MARK) == MARK_TREEDMA, "having reached its first instruction")
+		check(r, i64(cell(p, TREEDMA_FD)) >= 0, "it opened the dma file for writing")
+		check(r, i64(cell(p, TREEDMA_ATTACH)) > 0, "attach 16 <self> bound the scratch disk's stream to its own space")
+		check(r, i64(cell(p, TREEDMA_AGAIN)) == -i64(vectra9.EBUSY), "a second attach of the slot is EBUSY")
+		check(r, i64(cell(p, TREEDMA_OTHER)) == -i64(vectra9.EPERM), "an attach to a process that holds nothing of ours is EPERM")
+		check(r, i64(cell(p, TREEDMA_PAST)) == -i64(vectra9.EINVAL), "and a slot past the map is EINVAL")
+		check(r, i64(cell(p, TREEDMA_DETACH)) > 0, "detach 16 gives the slot back")
+		check(r, i64(cell(p, TREEDMA_REDETACH)) == -i64(vectra9.EINVAL), "and a second detach names no binding")
+		check(r, i64(cell(p, TREEDMA_LEFT)) > 0, "it attaches once more and leaves the slot bound at exit")
+	}
+	finish(r, p, "and the program is taken down")
+	check(r, !smmu.stream_owned(SLOT), "and the last close gave the stream back")
+	check(r, smmu.stream_aborted(SLOT), "with its entry reading abort, so the device faults rather than reads")
 }
 
 /*

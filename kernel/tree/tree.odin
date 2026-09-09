@@ -27,6 +27,7 @@ import "base:intrinsics"
 
 import "kernel:arch"
 import "kernel:mnt"
+import "kernel:smmu"
 import "kernel:sync"
 import "kernel:vfs"
 import "vsys:vectra9"
@@ -306,8 +307,80 @@ node with a `reg` grows one more file, a synthesized `mmio`, whose window
 `decode_reg` reads from that `reg` with the node's *parent* cell counts -- the
 one file the kernel adds, not the firmware, and the one a driver segattaches.
 */
+/*
+phandle_of_compatible finds the node whose `compatible` names `want` and
+answers its `phandle`, before the walk that needs it. A node's `phandle` may
+come before or after its `compatible`, so both are kept per level of the
+stack until the node ends. Zero, and false, for no such node.
+*/
 @(private)
-walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, itab: []Irq) -> int #no_bounds_check {
+phandle_of_compatible :: proc "contextless" (blob: []u8, want: string) -> (u32, bool) #no_bounds_check {
+	if len(blob) < 40 || be32(blob, 0) != FDT_MAGIC {
+		return 0, false
+	}
+	struct_off := int(be32(blob, 8))
+	strings_off := int(be32(blob, 12))
+	end := min(struct_off + int(be32(blob, 36)), len(blob))
+
+	Seen :: struct {
+		phandle: u32,
+		matched: bool,
+	}
+	stack: [MAX_DEPTH]Seen
+	sp := 0
+	at := struct_off
+	for at + 4 <= end {
+		token := be32(blob, at)
+		at += 4
+		switch token {
+		case FDT_BEGIN_NODE:
+			n := cstr_len(blob, at)
+			at = align4(at + n + 1)
+			if sp < MAX_DEPTH {
+				stack[sp] = {}
+				sp += 1
+			}
+		case FDT_END_NODE:
+			if sp > 0 {
+				sp -= 1
+				if stack[sp].matched && stack[sp].phandle != 0 {
+					return stack[sp].phandle, true
+				}
+			}
+		case FDT_PROP:
+			length := int(be32(blob, at))
+			name_off := int(be32(blob, at + 4))
+			value_at := at + 8
+			at = align4(value_at + length)
+			if sp == 0 || value_at + length > len(blob) {
+				continue
+			}
+			pn := cstr_len(blob, strings_off + name_off)
+			pname := string(blob[strings_off + name_off:strings_off + name_off + pn])
+			if pname == "phandle" && length == 4 {
+				stack[sp - 1].phandle = be32(blob, value_at)
+			} else if pname == "compatible" {
+				v := blob[value_at:value_at + length]
+				start := 0
+				for j in 0 ..< len(v) {
+					if v[j] == 0 {
+						if string(v[start:j]) == want {
+							stack[sp - 1].matched = true
+						}
+						start = j + 1
+					}
+				}
+			}
+		case FDT_NOP:
+		case:
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+@(private)
+walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, itab: []Irq, dtab: []Dma, walker: u32) -> int #no_bounds_check {
 	if len(blob) < 40 || be32(blob, 0) != FDT_MAGIC {
 		return 0
 	}
@@ -422,6 +495,41 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, it
 					}
 				}
 			}
+
+			// A walker grows the node a `dma` file, `docs/SMMU.md` section
+			// 6. `iommus` is `<phandle stream>` for a device with one
+			// stream. `iommu-map` on a PCI host is `<rid phandle sid
+			// length>` per entry. The first entry naming the walker the
+			// kernel drives is the one kept. `walker` is that phandle.
+			// It is zero on a machine with none, which then grows no file.
+			if sp > 0 && walker != 0 {
+				d: Dma
+				if pname == "iommus" && length >= 8 && be32(blob, value_at) == walker {
+					d = Dma{valid = true, single = true, stream = be32(blob, value_at + 4)}
+				} else if pname == "iommu-map" && length >= 16 {
+					for e := 0; e + 16 <= length; e += 16 {
+						if be32(blob, value_at + e + 4) == walker {
+							d = Dma {
+								valid    = true,
+								rid_base = be32(blob, value_at + e),
+								sid_base = be32(blob, value_at + e + 8),
+								length   = be32(blob, value_at + e + 12),
+							}
+							break
+						}
+					}
+				}
+				if d.valid {
+					didx := count
+					count += 1
+					if didx < len(out) {
+						out[didx] = vfs.Static_Node{name = "dma", parent = i32(stack[sp - 1].idx)}
+					}
+					if didx < len(dtab) {
+						dtab[didx] = d
+					}
+				}
+			}
 		case FDT_NOP:
 		case FDT_END:
 			return count
@@ -466,14 +574,30 @@ tree_handler :: proc "contextless" (server: rawptr, s: ^vectra9.Session, tag: ve
 		if e := irq_of(m.fid); e != nil {
 			tree_irq_arm(e)
 		}
+		if d, node := dma_of(m.fid); d != nil {
+			tree_dma_open(d, node, m.fid, reply)
+			return
+		}
 	case vectra9.Tread:
 		if e := irq_of(m.fid); e != nil {
 			tree_irq_read(e, tag, buf, reply)
 			return
 		}
+		if d, _ := dma_of(m.fid); d != nil {
+			tree_dma_read(d, tag, buf, reply)
+			return
+		}
+	case vectra9.Twrite:
+		if d, _ := dma_of(m.fid); d != nil {
+			tree_dma_write(d, tag, m.data, reply)
+			return
+		}
 	case vectra9.Tclunk:
 		if e := irq_of(m.fid); e != nil {
 			tree_irq_disarm(e)
+		}
+		if d, _ := dma_of(m.fid); d != nil {
+			tree_dma_close(d, m.fid)
 		}
 	}
 	vfs.static_handler(&tree_static, s, tag, request, reply, buf)
@@ -595,6 +719,11 @@ flush and park again. It runs in interrupt context, where `wakeup_all` is safe.
 tree_abort :: proc "contextless" (server: rawptr, tag: vectra9.Tag) {
 	_ = server
 	_ = tag
+	for i in 0 ..< len(dma_table) {
+		if dma_table[i].valid {
+			sync.wakeup_all(&dma_table[i].ready)
+		}
+	}
 	for i in 0 ..< len(irq_table) {
 		if irq_table[i].valid {
 			sync.wakeup_all(&irq_table[i].ready)
@@ -631,7 +760,11 @@ init :: proc(ns: ^vfs.Namespace, dtb: rawptr) -> vfs.Errno {
 		blob[i] = src[i]
 	}
 
-	count := walk(blob, nil, nil, nil)
+	// The walker the kernel drives, by phandle. The walk needs it to tell a
+	// node with a `dma` file from one whose walker is some other part's.
+	walker, _ := phandle_of_compatible(blob, "arm,smmu-v3")
+
+	count := walk(blob, nil, nil, nil, nil, walker)
 	if count <= 0 {
 		delete(blob)
 		return vfs.OK
@@ -639,14 +772,17 @@ init :: proc(ns: ^vfs.Namespace, dtb: rawptr) -> vfs.Errno {
 	rows := make([]vfs.Static_Node, count)
 	mtab := make([]Mmio, count)
 	itab := make([]Irq, count)
-	if rows == nil || mtab == nil || itab == nil {
+	dtab := make([]Dma, count)
+	if rows == nil || mtab == nil || itab == nil || dtab == nil {
 		delete(blob)
 		return vectra9.ENOMEM
 	}
-	_ = walk(blob, rows, mtab, itab)
+	_ = walk(blob, rows, mtab, itab, dtab, walker)
 	node_count = count
 	mmio_table = mtab
 	irq_table = itab
+	dma_table = dtab
+	smmu.set_sink(on_event)
 
 	if !vfs.static_init(&tree_static, "tree", rows) {
 		return vectra9.ENOMEM

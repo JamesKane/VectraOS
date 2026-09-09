@@ -124,6 +124,86 @@ treeirq :: proc "contextless" (cells: ^Cells, mmio_len: u64, irq_len: u64) -> ! 
 }
 
 /*
+treedma binds a device's stream to its own space through a `dma` file, and
+tries every way the line can be wrong. `docs/SMMU.md` section 10's ring 3
+half. The file's path is staged at 128, its length the argument. Slot 16 is
+the scratch disk's requester id on `virt`, bus 0 device 2 function 0.
+
+It opens the file and attaches slot 16 to itself. It attaches it again,
+which is busy. It attaches it to pid 1, which holds nothing of ours and is
+refused. It attaches slot 70000, past the map, which is invalid.
+
+Then it detaches. It attaches once more and exits with the slot still bound,
+so the kernel can check that the last close gave it back. Each write's answer
+is a cell.
+*/
+treedma :: proc "contextless" (cells: ^Cells, path_len: u64) -> ! {
+	cells[0] = 0x54_44_4D_41_54_44_4D_41 // TDMATDMA
+	fd := libuser.open(text(cells, 128, path_len), abi.O_RDWR)
+	put(cells, 1, fd)
+	if fd < 0 {
+		libuser.exit(0)
+	}
+	pid := libuser.getpid()
+
+	line := slot(cells, 256, 64)
+	n := put_text(line, 0, "attach 16 ")
+	n = put_dec(line, n, pid)
+	put(cells, 2, libuser.write(int(fd), line[:n]))
+	put(cells, 3, libuser.write(int(fd), line[:n]))
+
+	n = put_text(line, 0, "attach 16 1")
+	put(cells, 4, libuser.write(int(fd), line[:n]))
+
+	n = put_text(line, 0, "attach 70000 ")
+	n = put_dec(line, n, pid)
+	put(cells, 5, libuser.write(int(fd), line[:n]))
+
+	n = put_text(line, 0, "detach 16")
+	put(cells, 6, libuser.write(int(fd), line[:n]))
+	put(cells, 7, libuser.write(int(fd), line[:n]))
+
+	n = put_text(line, 0, "attach 16 ")
+	n = put_dec(line, n, pid)
+	put(cells, 8, libuser.write(int(fd), line[:n]))
+	libuser.exit(0)
+}
+
+@(private = "file")
+put_text :: proc "contextless" (b: []u8, at: int, s: string) -> int {
+	n := at
+	for i in 0 ..< len(s) {
+		if n >= len(b) {
+			break
+		}
+		b[n] = s[i]
+		n += 1
+	}
+	return n
+}
+
+@(private = "file")
+put_dec :: proc "contextless" (b: []u8, at: int, v: u64) -> int {
+	tmp: [20]u8
+	k := 0
+	x := v
+	for {
+		tmp[k] = u8('0' + x % 10)
+		k += 1
+		x /= 10
+		if x == 0 {
+			break
+		}
+	}
+	n := at
+	for i := k - 1; i >= 0 && n < len(b); i -= 1 {
+		b[n] = tmp[i]
+		n += 1
+	}
+	return n
+}
+
+/*
 fixedseg allocates a run at the address named as the argument, writes a witness
 into it and reads it back, then asks for a second run at the same address, which
 the kernel refuses because the first one is there. It reports the placed address,

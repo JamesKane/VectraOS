@@ -49,6 +49,7 @@ MARK_BINDER :: u64(0x4249_4E44_4249_4E44) // BINDBIND
 MARK_MAPPER :: u64(0x4D41_5050_4D41_5050) // MAPPMAPP
 MARK_TREEMMIO :: u64(0x54_4D_4D_4F_54_4D_4D_4F) // TMMOTMMO
 MARK_TREEIRQ :: u64(0x54_49_52_51_54_49_52_51) // TIRQTIRQ
+MARK_TREEDMA :: u64(0x54_44_4D_41_54_44_4D_41) // TDMATDMA
 MARK_FIXEDSEG :: u64(0x46_49_58_53_46_49_58_53) // FIXSFIXS
 MARK_PARENT :: u64(0x5052_4E54_5052_4E54) // PRNTPRNT
 MARK_CHILD :: u64(0x4348_4C44_4348_4C44) // CHLDCHLD
@@ -279,6 +280,17 @@ TREEIRQ_IFD :: 3
 TREEIRQ_READ :: 4
 TREEIRQ_BYTE :: 5
 TREEIRQ_RIS :: 6
+
+// Where `treedma` reports: the descriptor, then each write's answer in the
+// order the program makes them.
+TREEDMA_FD :: 1
+TREEDMA_ATTACH :: 2
+TREEDMA_AGAIN :: 3
+TREEDMA_OTHER :: 4
+TREEDMA_PAST :: 5
+TREEDMA_DETACH :: 6
+TREEDMA_REDETACH :: 7
+TREEDMA_LEFT :: 8
 
 // Where `fixedseg` reports: the run placed at the named address, the witness
 // read back from it, and the second run at the same address, which is refused.
@@ -753,6 +765,7 @@ program_storetest :: proc "contextless" () -> []u8 {return #load("../../build/pr
 program_mapper :: proc "contextless" () -> []u8 {return #load("../../build/programs/mapper.bin")}
 program_treemmio :: proc "contextless" () -> []u8 {return #load("../../build/programs/treemmio.bin")}
 program_treeirq :: proc "contextless" () -> []u8 {return #load("../../build/programs/treeirq.bin")}
+program_treedma :: proc "contextless" () -> []u8 {return #load("../../build/programs/treedma.bin")}
 program_fixedseg :: proc "contextless" () -> []u8 {return #load("../../build/programs/fixedseg.bin")}
 program_anon :: proc "contextless" () -> []u8 {return #load("../../build/programs/anon.bin")}
 program_sharer :: proc "contextless" () -> []u8 {return #load("../../build/programs/sharer.bin")}

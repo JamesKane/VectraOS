@@ -128,6 +128,12 @@ static_destroy :: proc(t: ^Static_Tree) {
 
 // -- The tree ----------------------------------------------------------------
 
+// static_node_qid is `node_qid` for a server that wraps `static_handler` and
+// answers an open of one of its own files, as `kernel/tree` does for `dma`.
+static_node_qid :: proc "contextless" (t: ^Static_Tree, node: i32) -> vectra9.Qid {
+	return node_qid(t, node)
+}
+
 @(private = "file")
 node_qid :: proc "contextless" (t: ^Static_Tree, node: i32) -> vectra9.Qid #no_bounds_check {
 	// Path is the index plus one: zero is left unused so that a qid a caller

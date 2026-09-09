@@ -34,10 +34,10 @@ package smmu
 
 import "base:intrinsics"
 
+import "kernel:arch"
 import "kernel:drivers/pci"
 import "kernel:mem"
 import "kernel:sync"
-import "kernel:tree"
 
 // -- The registers, at their offsets from the node's window -------------------
 
@@ -51,6 +51,7 @@ import "kernel:tree"
 @(private) CR2 :: uintptr(0x2C)
 @(private) GBPA :: uintptr(0x44)
 @(private) IRQ_CTRL :: uintptr(0x50)
+@(private) IRQ_CTRLACK :: uintptr(0x54)
 @(private) GERROR :: uintptr(0x60)
 @(private) GERRORN :: uintptr(0x64)
 @(private) STRTAB_BASE :: uintptr(0x80)
@@ -97,6 +98,19 @@ import "kernel:tree"
 @(private) GERROR_CMDQ_ERR :: u32(1) << 0
 @(private) GERROR_EVENTQ_ABT_ERR :: u32(1) << 2
 @(private) GERROR_SFM_ERR :: u32(1) << 8
+
+// IRQ_CTRL, and IRQ_CTRLACK answering it: the event queue's line and the
+// global error line. The command queue completes by a poll, and the part has
+// no page request interface, so the other two stay unrouted, section 1.
+@(private) IRQ_CTRL_GERROR :: u32(1) << 0
+@(private) IRQ_CTRL_EVENTQ :: u32(1) << 2
+
+// An event record, section 5, in four words. The type is the low byte of
+// the first and the stream its high half. The direction is in the second,
+// and the input address is the third.
+@(private) EVT0_TYPE_MASK :: u64(0xFF)
+@(private) EVT0_STREAM_SHIFT :: 32
+@(private) EVT1_RNW :: u64(1) << 35
 
 // The stream table configuration, section 2: two-level with a split at bit 8.
 @(private) STRTAB_FMT_2LEVEL :: u32(1) << 16
@@ -220,6 +234,8 @@ Unit :: struct {
 	eventq_phys: uintptr,
 	eventq:    [^][4]u64,
 	eventq_cons: u32,
+	events:    u64, // records taken off the event queue
+	sink:      Sink,
 
 	cd_phys:   uintptr,
 	cds:       [^][8]u64,
@@ -415,7 +431,146 @@ zero_pages :: proc "contextless" (phys: uintptr, pages: int) {
 	}
 }
 
+// -- What the walker reports, and to whom ---------------------------------------------
+
+/*
+An event the part reports, section 5, in the shape the `dma` file turns into
+a line. `Fault` is a record off the event queue: the stream, the type, the
+input address for the types that carry one, and the direction. `Orphaned` is
+the attach whose space died, from `walker_detach`, named by handle. `Broken`
+is the global error line: the part refused a command or could not write an
+event, and every attach is dead with it.
+*/
+Event_Kind :: enum {
+	Fault,
+	Orphaned,
+	Broken,
+}
+
+Event :: struct {
+	kind:   Event_Kind,
+	stream: u32,
+	fault:  u32, // the event type, `fault_name` spells it
+	addr:   u64,
+	write:  bool,
+	handle: int,
+}
+
+// A sink runs in interrupt context, or under `space.lock` and the unit's
+// lock for an orphan. It may take a lock nothing above it takes, may wake a
+// sleeper, and may not allocate or sleep.
+Sink :: proc "contextless" (e: Event)
+
+// set_sink names who is told. `kernel/tree` sets it when it has a `dma` file
+// to tell. Nil drops every event, which is what a machine with no tree does.
+set_sink :: proc "contextless" (s: Sink) {
+	unit.sink = s
+}
+
+// fault_name spells an event type as the specification names it, and a type
+// this does not know as unknown.
+fault_name :: proc "contextless" (kind: u32) -> string {
+	switch kind {
+	case 0x01: return "F_UUT"
+	case 0x02: return "C_BAD_STREAMID"
+	case 0x03: return "F_STE_FETCH"
+	case 0x04: return "C_BAD_STE"
+	case 0x05: return "F_BAD_ATS_TREQ"
+	case 0x06: return "F_STREAM_DISABLED"
+	case 0x07: return "F_TRANSL_FORBIDDEN"
+	case 0x08: return "C_BAD_SUBSTREAMID"
+	case 0x09: return "F_CD_FETCH"
+	case 0x0A: return "C_BAD_CD"
+	case 0x0B: return "F_WALK_EABT"
+	case 0x10: return "F_TRANSLATION"
+	case 0x11: return "F_ADDR_SIZE"
+	case 0x12: return "F_ACCESS"
+	case 0x13: return "F_PERMISSION"
+	case 0x20: return "F_TLB_CONFLICT"
+	case 0x21: return "F_CFG_CONFLICT"
+	case 0x24: return "E_PAGE_REQUEST"
+	}
+	return "F_UNKNOWN"
+}
+
+/*
+on_event is the event queue's line. It reads every record between the
+consumer and producer indexes and decodes each. It hands each to the sink,
+then stores the consumer index and acknowledges the line. In interrupt context,
+so it takes the unit's lock and nothing else, and the sink is held to the
+same rule.
+*/
+@(private)
+on_event :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	drain_events()
+	arch.irq_ack()
+	return r
+}
+
+@(private)
+drain_events :: proc "contextless" () {
+	guard := sync.acquire(&unit.lock)
+	defer sync.release(&unit.lock, guard)
+	mask := u32(EVENTQ_ENTRIES * 2 - 1)
+	prod := read32(EVENTQ_PROD) & mask
+	for unit.eventq_cons != prod {
+		rec := &unit.eventq[unit.eventq_cons & u32(EVENTQ_ENTRIES - 1)]
+		barrier()
+		e := Event {
+			kind   = .Fault,
+			stream = u32(rec[0] >> EVT0_STREAM_SHIFT),
+			fault  = u32(rec[0] & EVT0_TYPE_MASK),
+			addr   = rec[2],
+			write  = rec[1] & EVT1_RNW == 0,
+		}
+		unit.events += 1
+		unit.eventq_cons = (unit.eventq_cons + 1) & mask
+		if unit.sink != nil {
+			unit.sink(e)
+		}
+	}
+	write32(EVENTQ_CONS, unit.eventq_cons)
+}
+
+/*
+on_gerror is the global error line, section 5. The part refused a command or
+could not write an event, and a driver cannot recover from either. The bits
+are acknowledged through `GERRORN`, the unit is marked broken, after which
+every attach answers `Broken`, and the sink is told once. The machine's
+other work is not the device's, so this does not panic.
+*/
+@(private)
+on_gerror :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	{
+		guard := sync.acquire(&unit.lock)
+		defer sync.release(&unit.lock, guard)
+		write32(GERRORN, read32(GERROR))
+		unit.broken = true
+	}
+	if unit.sink != nil {
+		unit.sink(Event{kind = .Broken})
+	}
+	arch.irq_ack()
+	return r
+}
+
+// events answers how many records came off the queue, for a self-test.
+events :: proc "contextless" () -> u64 {
+	return unit.events
+}
+
 // -- Bring-up ----------------------------------------------------------------------------
+
+// The node, as `kernel/tree` read it: where the registers are, whether the
+// walks snoop, and the two shared lines section 5 uses. `kernel/main` fills
+// it, because this package is below the tree.
+Node :: struct {
+	phys:       uintptr,
+	size:       u64,
+	coherent:   bool,
+	eventq_spi: int,
+	gerror_spi: int,
+}
 
 // What `init` found, for the boot line.
 Status :: enum {
@@ -447,34 +602,28 @@ one without `iommu=smmuv3`, does nothing and says so. A part this cannot drive
 is left as it reset, with its reason on the log, and no stream is ever
 attached to it.
 */
-init :: proc "contextless" () -> Info {
+init :: proc "contextless" (node: Node, found: bool) -> Info {
 	info: Info
-	node, found := tree.find_compatible("arm,smmu-v3")
 	if !found {
 		info.status = .No_Node
 		return info
 	}
-	phys, size, has_window := tree.window(node)
-	if !has_window || size < 0x20000 {
+	if node.size < 0x20000 {
 		info.status = .No_Window
 		return info
 	}
-	info.phys = phys
-	virt, err := mem.map_mmio(phys, size)
+	info.phys = node.phys
+	virt, err := mem.map_mmio(node.phys, node.size)
 	if err != .None {
 		info.status = .No_Window
 		return info
 	}
-	unit.phys = phys
+	unit.phys = node.phys
 	unit.base = uintptr(virt)
-	_, unit.coherent = tree.property(node, "dma-coherent")
+	unit.coherent = node.coherent
 	info.coherent = unit.coherent
-	// The four lines are eventq, priq, cmdq-sync, gerror in that order, each
-	// three cells. The first and last are the ones section 5 uses.
-	if ints, has := tree.property(node, "interrupts"); has {
-		unit.eventq_spi = int(tree.cell(ints, 1))
-		unit.gerror_spi = int(tree.cell(ints, 10))
-	}
+	unit.eventq_spi = node.eventq_spi
+	unit.gerror_spi = node.gerror_spi
 
 	unit.idr0 = read32(IDR0)
 	unit.idr1 = read32(IDR1)
@@ -530,8 +679,34 @@ init :: proc "contextless" () -> Info {
 			return info
 		}
 	}
+	arm_lines()
 	info.status = .Enabled
 	return info
+}
+
+/*
+arm_lines routes the event queue's line and the global error line to their
+handlers and lets the part raise them. Both are edge lines on `virt`, so a
+handler acknowledges and does not mask. A part whose lines the tree did not
+name is left to be polled, which `drain_events` allows.
+*/
+@(private)
+arm_lines :: proc "contextless" () {
+	if unit.eventq_spi <= 0 || unit.gerror_spi <= 0 {
+		return
+	}
+	arch.set_interrupt_handler(arch.VECTOR_IRQ_BASE + unit.eventq_spi, on_event)
+	arch.irq_route(unit.eventq_spi, arch.irq_vector_of(unit.eventq_spi), 0)
+	arch.irq_set_mask(unit.eventq_spi, false)
+	arch.set_interrupt_handler(arch.VECTOR_IRQ_BASE + unit.gerror_spi, on_gerror)
+	arch.irq_route(unit.gerror_spi, arch.irq_vector_of(unit.gerror_spi), 0)
+	arch.irq_set_mask(unit.gerror_spi, false)
+	write32(IRQ_CTRL, IRQ_CTRL_EVENTQ | IRQ_CTRL_GERROR)
+	for _ in 0 ..< PATIENCE {
+		if read32(IRQ_CTRLACK) == IRQ_CTRL_EVENTQ | IRQ_CTRL_GERROR {
+			return
+		}
+	}
 }
 
 @(private)
@@ -710,6 +885,27 @@ abort_stream :: proc "contextless" (a: ^Attach) {
 	_ = cmd_sync()
 }
 
+// stream_aborted answers whether a stream's entry is `abort`: attached once
+// and given back, or taken by a space that died. For a self-test.
+stream_aborted :: proc "contextless" (stream: u32) -> bool {
+	if !unit.present {
+		return false
+	}
+	guard := sync.acquire(&unit.lock)
+	defer sync.release(&unit.lock, guard)
+	valid, config := ste_state(stream)
+	return valid && config == STE_CONFIG_ABORT
+}
+
+// stream_count answers how many stream ids the table holds, `2^sid_bits`, so
+// a caller can refuse one past it before asking.
+stream_count :: proc "contextless" () -> u32 {
+	if !unit.present {
+		return 0
+	}
+	return u32(1) << uint(unit.sid_bits)
+}
+
 // space_gone answers whether the attach's space died under it, section 6's
 // `detached <slot> exit` line. A handle that names no attach answers false.
 space_gone :: proc "contextless" (handle: int) -> bool {
@@ -785,6 +981,9 @@ walker_detach :: proc "contextless" (w: ^mem.Walker) {
 	abort_stream(a)
 	a.space = nil
 	a.orphaned = true
+	if unit.sink != nil {
+		unit.sink(Event{kind = .Orphaned, stream = a.stream, handle = int(uintptr(a) - uintptr(&unit.attaches[0])) / size_of(Attach)})
+	}
 }
 
 // -- What the rest of the kernel reads ----------------------------------------------------

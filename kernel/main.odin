@@ -1421,7 +1421,19 @@ tree and riscv64's has no such node, so on both this is quietly a no-op. A part
 this cannot drive is left as it reset, and the line says why. `docs/SMMU.md`.
 */
 init_smmu :: proc() {
-	info := smmu.init()
+	node: smmu.Node
+	idx, found := tree.find_compatible("arm,smmu-v3")
+	if found {
+		node.phys, node.size, _ = tree.window(idx)
+		_, node.coherent = tree.property(idx, "dma-coherent")
+		// The four lines are eventq, priq, cmdq-sync, gerror in that order,
+		// each three cells. The first and last are the ones the driver uses.
+		if ints, has := tree.property(idx, "interrupts"); has {
+			node.eventq_spi = int(tree.cell(ints, 1))
+			node.gerror_spi = int(tree.cell(ints, 10))
+		}
+	}
+	info := smmu.init(node, found)
 	if info.status == .No_Node {
 		return
 	}

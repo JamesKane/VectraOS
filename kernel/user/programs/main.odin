@@ -77,6 +77,8 @@ start :: proc "c" (cells: ^Cells, arg1, arg2: u64) -> ! {
 		treemmio(cells, arg1, arg2)
 	} else when PROGRAM == "treeirq" {
 		treeirq(cells, arg1, arg2)
+	} else when PROGRAM == "treedma" {
+		treedma(cells, arg1)
 	} else when PROGRAM == "fixedseg" {
 		fixedseg(cells, arg1)
 	} else when PROGRAM == "mapper" {

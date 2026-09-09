@@ -11,6 +11,7 @@ package user
 
 import "base:intrinsics"
 
+import "kernel:mem"
 import "kernel:sched"
 import "kernel:sync"
 import "kernel:vfs"
@@ -195,7 +196,6 @@ proc_namespace :: proc(pid: u64, out: []u8) -> int {
 	return n
 }
 
-@(private)
 /*
 pid_of_thread answers the process a thread belongs to, by pid, or zero for a
 kernel thread, which is every worker. The one use so far is a served write
@@ -249,6 +249,40 @@ holds_server_of :: proc "contextless" (pid: u64, poster: u64) -> bool #no_bounds
 	return false
 }
 
+/*
+hold_space answers a process's address space, with the process pinned so the
+record and the space outlive the caller's use of it. `release_space` lets it
+go. The one caller is the tree's `dma` file, which binds a device's stream to
+the space and needs the space alive across `smmu.attach`. A process that ends
+meanwhile waits in its collector until the release. A pid that is gone, or one
+already being collected, answers nil.
+
+An exec is not held off. It destroys the old space without waiting for pins,
+and the walker on it is orphaned then. That is the answer `docs/SMMU.md`
+section 4 wants for a driver that replaces itself.
+*/
+hold_space :: proc "contextless" (pid: u64) -> ^mem.Address_Space {
+	p := pin(pid)
+	if p == nil {
+		return nil
+	}
+	if p.space == nil {
+		unpin(p)
+		return nil
+	}
+	return p.space
+}
+
+release_space :: proc "contextless" (pid: u64) {
+	guard := sync.acquire(&table_lock)
+	defer sync.release(&table_lock, guard)
+	p := live_by_pid(pid)
+	if p != nil && p.pins > 0 {
+		p.pins -= 1
+	}
+}
+
+@(private)
 live_by_pid :: proc "contextless" (pid: u64) -> ^Process #no_bounds_check {
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]
