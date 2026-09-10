@@ -53,7 +53,6 @@ become a kernel segment.
 privilege change. A user frame with RPL 0 in CS returns to ring 0 code that
 lives in a ring 3 descriptor. That is neither an error nor userland.
 */
-RING_KERNEL :: u16(0)
 RING_USER :: u16(3)
 
 USER_CODE_RING3 :: USER_CODE_SEL | RING_USER
@@ -151,8 +150,7 @@ instruction in the handler faults.
 */
 @(private = "file")
 stack_top :: proc "contextless" (stack: []u8) -> u64 {
-	end := u64(uintptr(raw_data(stack))) + u64(len(stack))
-	return end &~ u64(15)
+	return u64(kernel_stack_top(stack))
 }
 
 @(private = "file")

@@ -14,13 +14,14 @@ where the tail puts one, so `syscall_frame_fpu` has one rule for both.
 */
 package riscv64
 
+import "base:intrinsics"
 import "kernel:arch/neutral"
 
-MIN_STACK_SIZE :: 4096
+MIN_STACK_SIZE :: neutral.MIN_STACK_SIZE
 
 // f0..f31, then fcsr, rounded to sixteen.
 FPU_AREA_SIZE :: 272
-FPU_AREA_ALIGN :: 16
+FPU_AREA_ALIGN :: neutral.FPU_AREA_ALIGN
 
 // The status a kernel thread starts with: supervisor mode after the return,
 // interrupts on after the return, the float unit on, and supervisor access
@@ -33,30 +34,18 @@ SSTATUS_KERNEL :: SSTATUS_SPP | SSTATUS_SPIE | SSTATUS_FS_INITIAL | SSTATUS_SUM 
 // on after the return, the float unit on.
 SSTATUS_USER :: SSTATUS_SPIE | SSTATUS_FS_INITIAL | SSTATUS_SUM | u64(2) << 32
 
-align_down :: neutral.align_down
-
-kernel_stack_top :: proc "contextless" (stack: []u8) -> uintptr {
-	return align_down(uintptr(raw_data(stack)) + uintptr(len(stack)), 16)
-}
+kernel_stack_top :: neutral.kernel_stack_top
 
 @(private = "file")
 carve :: proc "contextless" (stack: []u8) -> (frame: ^Trap_Frame, fpu: rawptr, ok: bool) {
-	if len(stack) < MIN_STACK_SIZE {
-		return nil, nil, false
-	}
-	top := kernel_stack_top(stack)
-	frame_at := top - size_of(Trap_Frame)
-	fpu_at := frame_at - FPU_AREA_SIZE
-	if fpu_at <= uintptr(raw_data(stack)) {
+	top, frame_at, fpu_at, carved := neutral.carve_top(stack, size_of(Trap_Frame), FPU_AREA_SIZE)
+	if !carved {
 		return nil, nil, false
 	}
 	frame = (^Trap_Frame)(frame_at)
 	frame^ = {}
 	frame.x[REG_SP] = u64(top)
-	bytes := ([^]u8)(fpu_at)
-	for i in 0 ..< FPU_AREA_SIZE {
-		bytes[i] = 0
-	}
+	intrinsics.mem_zero(rawptr(fpu_at), FPU_AREA_SIZE)
 	return frame, rawptr(fpu_at), true
 }
 
@@ -124,11 +113,7 @@ thread_user_clone :: proc "contextless" (stack: []u8, src: ^Trap_Frame) -> (resu
 	// learns which of the two it is.
 	frame^ = src^
 	frame.x[REG_A0] = 0
-	from := ([^]u8)(syscall_frame_fpu(src))
-	to := ([^]u8)(fpu)
-	for i in 0 ..< FPU_AREA_SIZE {
-		to[i] = from[i]
-	}
+	intrinsics.mem_copy(fpu, syscall_frame_fpu(src), FPU_AREA_SIZE)
 	return Resume{frame = frame, fpu = fpu}, true
 }
 
@@ -166,7 +151,6 @@ kernel_stack :: proc "contextless" () -> uintptr {
 
 foreign {
 	vectra_ap_switch :: proc "c" (stack_top: uintptr, entry: proc "c" (arg: rawptr) -> !, arg: rawptr) -> ! ---
-	vectra_fpu_hold :: proc "c" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) ---
 }
 
 ap_switch :: proc "contextless" (stack_top: uintptr, root: uintptr, entry: proc "c" (arg: rawptr) -> !, arg: rawptr) -> ! {
@@ -174,6 +158,4 @@ ap_switch :: proc "contextless" (stack_top: uintptr, root: uintptr, entry: proc 
 	vectra_ap_switch(stack_top, entry, arg)
 }
 
-fpu_hold :: proc "contextless" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) {
-	vectra_fpu_hold(value, flag, out, counter)
-}
+fpu_hold :: neutral.fpu_hold

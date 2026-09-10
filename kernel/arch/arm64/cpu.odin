@@ -275,10 +275,6 @@ read_far :: proc "contextless" () -> u64 {
 	return asm() -> (r: u64) [r = %x0, #volatile] { #byte 0x00, 0x60, 0x38, 0xD5 }()
 }
 
-read_esr :: proc "contextless" () -> u64 {
-	return asm() -> (r: u64) [r = %x0, #volatile] { #byte 0x00, 0x52, 0x38, 0xD5 }()
-}
-
 read_cntfrq :: proc "contextless" () -> u64 {
 	return asm() -> (r: u64) [r = %x0, #volatile] { #byte 0x00, 0xE0, 0x3B, 0xD5 }()
 }
@@ -343,16 +339,10 @@ raise_test_interrupt :: proc "contextless" () {
 //
 // There is no port space on this architecture. A driver that probes one, the
 // PS/2 keyboard's, reads all-ones, which is what an absent device answers on
-// a PC too, and gives up the same way.
+// a PC too, and gives up the same way. `neutral` writes the answer once.
 
-inb :: proc "contextless" (port: u16) -> u8 {
-	_ = port
-	return 0xFF
-}
-
-outb :: proc "contextless" (port: u16, value: u8) {
-	_, _ = port, value
-}
+inb :: neutral.no_port_io_inb
+outb :: neutral.no_port_io_outb
 
 // -- What kind of core this is --------------------------------------------------
 

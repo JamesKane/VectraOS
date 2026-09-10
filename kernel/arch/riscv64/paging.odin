@@ -83,10 +83,7 @@ table_index :: neutral.table_index
 level_size :: neutral.level_size
 
 // Bits 63..48 copy bit 47, as under amd64's 4-level paging.
-is_canonical :: proc "contextless" (virt: uintptr) -> bool {
-	top := u64(virt) >> 47
-	return top == 0 || top == 0x1FFFF
-}
+is_canonical :: neutral.is_canonical_47
 
 @(private = "file")
 ppn :: proc "contextless" (phys: uintptr) -> u64 {
@@ -127,9 +124,7 @@ branch_encode :: proc "contextless" (phys: uintptr, flags: Page_Flags) -> Page_T
 	return Page_Table_Entry(ppn(phys) | PTE_VALID)
 }
 
-entry_present :: proc "contextless" (e: Page_Table_Entry) -> bool {
-	return u64(e) & PTE_VALID != 0
-}
+entry_present :: neutral.entry_present
 
 entry_is_leaf :: proc "contextless" (e: Page_Table_Entry, level: int) -> bool {
 	return level == 1 || u64(e) & PTE_LEAF_MASK != 0
@@ -157,7 +152,7 @@ entry_flags :: proc "contextless" (e: Page_Table_Entry) -> Page_Flags {
 	return flags
 }
 
-ENTRY_EMPTY :: Page_Table_Entry(0)
+ENTRY_EMPTY :: neutral.ENTRY_EMPTY
 
 // -- Address space switching and TLB ----------------------------------------------
 

@@ -72,6 +72,69 @@ align_down :: proc "contextless" (value: uintptr, align: uintptr) -> uintptr {
 	return value & ~(align - 1)
 }
 
+// An entry that maps nothing, and the test for one that maps something. Bit
+// 0 is the present bit on all three encodings, and a zero entry is empty on
+// all three.
+ENTRY_EMPTY :: Page_Table_Entry(0)
+
+entry_present :: proc "contextless" (e: Page_Table_Entry) -> bool {
+	return u64(e) & 1 != 0
+}
+
+// is_canonical_47 is the 47-bit rule two of the three ports share: bits
+// 63..48 copy bit 47. amd64's 4-level paging and riscv64's Sv48 both refuse
+// anything else. arm64 has its own rule, in `arm64/paging.odin`.
+is_canonical_47 :: proc "contextless" (virt: uintptr) -> bool {
+	top := u64(virt) >> 47
+	return top == 0 || top == 0x1FFFF
+}
+
+// -- A thread's first stack --------------------------------------------------
+
+// The least a kernel stack may be, and the alignment every port's vector
+// image wants.
+MIN_STACK_SIZE :: 4096
+FPU_AREA_ALIGN :: 16
+
+// kernel_stack_top is the sixteen-byte-aligned end of a stack. Aligned down,
+// so the alignment comes out of the space above the stack and not out of it.
+kernel_stack_top :: proc "contextless" (stack: []u8) -> uintptr {
+	return align_down(uintptr(raw_data(stack)) + uintptr(len(stack)), 16)
+}
+
+/*
+carve_top finds room for a frame at the very top of `stack` and a vector
+image of `fpu_size` bytes directly below it, which is where the trap tail on
+arm64 and riscv64 leaves both. It answers the top, the two addresses, and
+false when the stack is too small to hold them. The port writes the frame.
+*/
+carve_top :: proc "contextless" (stack: []u8, frame_size, fpu_size: uintptr) -> (top, frame_at, fpu_at: uintptr, ok: bool) {
+	if len(stack) < MIN_STACK_SIZE {
+		return 0, 0, 0, false
+	}
+	top = kernel_stack_top(stack)
+	frame_at = top - frame_size
+	fpu_at = frame_at - fpu_size
+	if fpu_at <= uintptr(raw_data(stack)) {
+		return 0, 0, 0, false
+	}
+	return top, frame_at, fpu_at, true
+}
+
+// -- The vector unit, held live ----------------------------------------------
+
+// `vectra_fpu_hold` is `<arch>/fpu_hold.S`, one per port under the one name.
+foreign {
+	vectra_fpu_hold :: proc "c" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) ---
+}
+
+// fpu_hold loads four vector registers from `value`, spins until `flag`
+// while counting rounds in `counter`, and writes the sum of the four to
+// `out`. `docs/TESTING.md` says why the loop is assembly.
+fpu_hold :: proc "contextless" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) {
+	vectra_fpu_hold(value, flag, out, counter)
+}
+
 // -- Traps -------------------------------------------------------------------
 
 /*
@@ -188,4 +251,69 @@ mmio_read64 :: proc "contextless" (base: rawptr, offset: uintptr) -> u64 {
 
 mmio_write64 :: proc "contextless" (base: rawptr, offset: uintptr, value: u64) {
 	intrinsics.volatile_store(cast(^u64)(uintptr(base) + offset), value)
+}
+
+// -- What a port has not got -------------------------------------------------
+//
+// Where a name in the interface has no meaning on an architecture it is still
+// bound, to something that says so honestly. These are the honest answers,
+// written once, so two ports do not each keep a copy.
+
+// There is no port space on arm64 or riscv64. A driver that probes one, the
+// PS/2 keyboard's, reads all-ones, which is what an absent device answers on
+// a PC too, and gives up the same way.
+no_port_io_inb :: proc "contextless" (port: u16) -> u8 {
+	_ = port
+	return 0xFF
+}
+
+no_port_io_outb :: proc "contextless" (port: u16, value: u8) {
+	_, _ = port, value
+}
+
+// The firmware console, on an architecture that has none. The four exist so
+// `kernel/drivers/uart` can name them on every architecture.
+no_console_available :: proc "contextless" () -> bool {
+	return false
+}
+
+no_console_write :: proc "contextless" (bytes: []u8) {
+	_ = bytes
+}
+
+no_console_write_byte :: proc "contextless" (b: u8) {
+	_ = b
+}
+
+no_console_read_byte :: proc "contextless" () -> (u8, bool) {
+	return 0, false
+}
+
+// no_device_tree takes the flattened device tree on an architecture that
+// reads nothing from it.
+no_device_tree :: proc "contextless" (dtb: rawptr) {
+	_ = dtb
+}
+
+// One class of core, at full capacity, with no model name beside it: the
+// answer on an architecture with nothing to tell its cores apart.
+one_class_cpu_class :: proc "contextless" () -> (class: Cpu_Class, capacity: int) {
+	return .Performance, CAPACITY_FULL
+}
+
+one_class_cpu_model :: proc "contextless" () -> string {
+	return ""
+}
+
+// no_irq_set_edge is the answer on a controller with no trigger type to set
+// after a route.
+no_irq_set_edge :: proc "contextless" (gsi: int) {
+	_ = gsi
+}
+
+// door_is_trap_entry is the three answers a port gives when its system call
+// is an ordinary exception: the door is there, there is nothing to arm, and
+// the architecture masks interrupts on the way in.
+door_is_trap_entry :: proc "contextless" () -> bool {
+	return true
 }

@@ -98,12 +98,12 @@ sync_text :: proc "contextless" (at: rawptr, n: int) {
 	for va := first; va <= last; va += line {
 		_ = asm(v: u64) -> (q: u64) [v -> q = %x0, #volatile, #clobber memory] { #byte 0x20, 0x7B, 0x0B, 0xD5 }(u64(va))
 	}
-	asm() [#volatile, #clobber memory] { #byte 0x9F, 0x3B, 0x03, 0xD5 }() // dsb ish
+	dsb_ish()
 	for va := first; va <= last; va += line {
 		_ = asm(v: u64) -> (q: u64) [v -> q = %x0, #volatile, #clobber memory] { #byte 0x20, 0x75, 0x0B, 0xD5 }(u64(va))
 	}
-	asm() [#volatile, #clobber memory] { #byte 0x9F, 0x3B, 0x03, 0xD5 }() // dsb ish
-	asm() [#volatile, #clobber memory] { #byte 0xDF, 0x3F, 0x03, 0xD5 }() // isb
+	dsb_ish()
+	isb()
 }
 
 // What the CPU said about a fault, in `kernel/arch/neutral`'s words: the

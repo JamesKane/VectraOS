@@ -161,7 +161,7 @@ here, because the frame already is the save. See `vectors.S` and
 `docs/DEVTOOLS.md` section 3.
 */
 user_tls_set :: proc "contextless" (frame: ^Trap_Frame, addr: u64) {
-	frame.x[4] = addr
+	frame.x[REG_TP] = addr
 }
 
 user_tls_save :: proc "contextless" () -> u64 {
@@ -240,14 +240,8 @@ raise_test_interrupt :: proc "contextless" () {
 // There is no port space on this architecture. A driver that probes one
 // reads all-ones, which is what an absent device answers on a PC too.
 
-inb :: proc "contextless" (port: u16) -> u8 {
-	_ = port
-	return 0xFF
-}
-
-outb :: proc "contextless" (port: u16, value: u8) {
-	_, _ = port, value
-}
+inb :: neutral.no_port_io_inb
+outb :: neutral.no_port_io_outb
 
 // cpu_hart_number is this core's id in the firmware's terms, which is what
 // the scheduler keeps to reach it with an interrupt.
@@ -260,12 +254,8 @@ cpu_hart_number :: proc "contextless" () -> u32 {
 Cpu_Class :: neutral.Cpu_Class
 CAPACITY_FULL :: neutral.CAPACITY_FULL
 
-cpu_class :: proc "contextless" () -> (class: Cpu_Class, capacity: int) {
-	return .Performance, CAPACITY_FULL
-}
+cpu_class :: neutral.one_class_cpu_class
 
 // cpu_model has no name to give: every hart here is the one class, and the boot
 // line says so without a model beside it.
-cpu_model :: proc "contextless" () -> string {
-	return ""
-}
+cpu_model :: neutral.one_class_cpu_model

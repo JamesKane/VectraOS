@@ -17,12 +17,9 @@ caller's is living in them across the call either.
 */
 package amd64
 
-foreign {
-	vectra_fpu_hold :: proc "c" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) ---
-}
+import "kernel:arch/neutral"
 
 // fpu_hold loads four XMM registers from `value`, spins until `flag` while
 // counting rounds in `counter`, and writes the sum of the four to `out`.
-fpu_hold :: proc "contextless" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) {
-	vectra_fpu_hold(value, flag, out, counter)
-}
+// The binding to `fpu_hold.S` is `neutral`'s, one for the three ports.
+fpu_hold :: neutral.fpu_hold

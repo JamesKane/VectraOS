@@ -19,7 +19,7 @@ the APIC is, map it in the caller, and hand the virtual address back through
 */
 package amd64
 
-import "base:intrinsics"
+import "kernel:arch/neutral"
 
 MSR_APIC_BASE :: u32(0x1B)
 
@@ -58,11 +58,11 @@ TIMER_DIVISOR :: 16
 mmio: rawptr
 
 lapic_write :: proc "contextless" (offset: uintptr, value: u32) {
-	intrinsics.volatile_store(cast(^u32)(uintptr(mmio) + offset), value)
+	neutral.mmio_write32(mmio, offset, value)
 }
 
 lapic_read :: proc "contextless" (offset: uintptr) -> u32 {
-	return intrinsics.volatile_load(cast(^u32)(uintptr(mmio) + offset))
+	return neutral.mmio_read32(mmio, offset)
 }
 
 // lapic_available reports CPUID.1:EDX[9]. Every 64-bit CPU has one, so a false

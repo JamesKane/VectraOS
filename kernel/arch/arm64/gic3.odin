@@ -23,7 +23,7 @@ section 5 has the board's real bases, which a tree read will hand over there.
 */
 package arm64
 
-import "base:intrinsics"
+import "kernel:arch/neutral"
 
 // The distributor is at the same base version 2 uses; the redistributors sit
 // `0xA_0000` above it on `virt`, a `0x2_0000` frame pair to a core. One mapping
@@ -34,18 +34,7 @@ GICV3_MMIO_SIZE :: u64(0x1A_0000)
 @(private = "file") GICV3_REDIST_STRIDE :: uintptr(0x2_0000)
 @(private = "file") GICV3_SGI_FRAME :: uintptr(0x1_0000)
 
-// Distributor registers. The shared ones -- enable, priority, config -- are at
-// version 2's offsets. What is new is group selection by bit, and routing by a
-// sixty-four-bit affinity rather than a byte of core mask.
-@(private = "file") GICD_CTLR :: uintptr(0x0000)
-@(private = "file") GICD_TYPER :: uintptr(0x0004)
-@(private = "file") GICD_IGROUPR :: uintptr(0x0080)
-@(private = "file") GICD_ISENABLER :: uintptr(0x0100)
-@(private = "file") GICD_ICENABLER :: uintptr(0x0180)
-@(private = "file") GICD_ICPENDR :: uintptr(0x0280)
-@(private = "file") GICD_IPRIORITYR :: uintptr(0x0400)
-@(private = "file") GICD_ICFGR :: uintptr(0x0C00)
-@(private = "file") GICD_IROUTER :: uintptr(0x6000)
+// The distributor's registers are `gicd.odin`'s.
 
 // Redistributor registers, split across the two frames. The first frame owns
 // the core's wake state; the second owns its private lines.
@@ -77,55 +66,13 @@ GICV3_MMIO_SIZE :: u64(0x1A_0000)
 // interrupt id, and the mode bit that means "every core but the writer".
 @(private = "file") SGI1R_IRM_ALL_BUT_SELF :: u64(1) << 40
 
-@(private = "file") gicd: rawptr
 @(private = "file") redist_region: rawptr
-@(private = "file") lines: int
 // The affinity a shared line is routed to: the boot core's, in `GICD_IROUTER`
 // layout. On `virt` that is zero, but the boot core need not be affinity zero
 // on a real part, so this is read rather than assumed.
 @(private = "file") route_target: u64
 
-// -- Memory-mapped register access -------------------------------------------
-
-@(private = "file")
-gicd_read :: proc "contextless" (off: uintptr) -> u32 {
-	return intrinsics.volatile_load(cast(^u32)(uintptr(gicd) + off))
-}
-
-@(private = "file")
-gicd_write :: proc "contextless" (off: uintptr, v: u32) {
-	intrinsics.volatile_store(cast(^u32)(uintptr(gicd) + off), v)
-}
-
-@(private = "file")
-gicd_write_byte :: proc "contextless" (off: uintptr, v: u8) {
-	intrinsics.volatile_store(cast(^u8)(uintptr(gicd) + off), v)
-}
-
-@(private = "file")
-gicd_write64 :: proc "contextless" (off: uintptr, v: u64) {
-	intrinsics.volatile_store(cast(^u64)(uintptr(gicd) + off), v)
-}
-
-@(private = "file")
-mmio_read :: proc "contextless" (base: uintptr, off: uintptr) -> u32 {
-	return intrinsics.volatile_load(cast(^u32)(base + off))
-}
-
-@(private = "file")
-mmio_write :: proc "contextless" (base: uintptr, off: uintptr, v: u32) {
-	intrinsics.volatile_store(cast(^u32)(base + off), v)
-}
-
-@(private = "file")
-mmio_write_byte :: proc "contextless" (base: uintptr, off: uintptr, v: u8) {
-	intrinsics.volatile_store(cast(^u8)(base + off), v)
-}
-
-@(private = "file")
-mmio_read64 :: proc "contextless" (base: uintptr, off: uintptr) -> u64 {
-	return intrinsics.volatile_load(cast(^u64)(base + off))
-}
+// -- The distributor's write-pending wait ------------------------------------
 
 @(private = "file")
 gicd_wait_rwp :: proc "contextless" () {
@@ -205,16 +152,16 @@ route_value :: proc "contextless" (mpidr: u64) -> u64 {
 // `GICR_TYPER` affinity to the core's own, walking the frames until the match
 // or the one flagged last.
 @(private = "file")
-this_redist :: proc "contextless" () -> uintptr {
+this_redist :: proc "contextless" () -> rawptr {
 	want := affinity_of(read_mpidr())
 	p := uintptr(redist_region)
 	for {
-		typer := mmio_read64(p, GICR_TYPER)
+		typer := neutral.mmio_read64(rawptr(p), GICR_TYPER)
 		if u32(typer >> 32) == want {
-			return p
+			return rawptr(p)
 		}
 		if typer & (1 << 4) != 0 { // Last
-			return 0
+			return nil
 		}
 		p += GICV3_REDIST_STRIDE
 	}
@@ -243,10 +190,7 @@ gicv3_attach :: proc "contextless" (virt: rawptr) {
 		gicd = nil
 		return
 	}
-	lines = int(typer & 0x1F + 1) * 32
-	if lines > 1020 {
-		lines = 1020
-	}
+	lines = gicd_lines_from_typer(typer)
 
 	gicd_write(GICD_CTLR, 0)
 	gicd_wait_rwp()
@@ -259,9 +203,7 @@ gicv3_attach :: proc "contextless" (virt: rawptr) {
 		gicd_write_byte(GICD_IPRIORITYR + uintptr(id), PRIORITY_DEFAULT)
 		// Level-sensitive, as the `irq` handshake wants: clear the config high
 		// bit for this line. Two bits a line, sixteen a word.
-		cfg := GICD_ICFGR + uintptr(id / 16 * 4)
-		shift := u32((id % 16) * 2)
-		gicd_write(cfg, gicd_read(cfg) & ~(u32(0b10) << shift))
+		gicd_set_trigger(id, false)
 		// Aimed at the boot core, and disabled until a driver unmasks it.
 		gicd_write64(GICD_IROUTER + uintptr(id * 8), route_target)
 		gicd_write(GICD_ICENABLER + uintptr(id / 32 * 4), u32(1) << u32(id % 32))
@@ -284,23 +226,23 @@ gicv3_attach_here :: proc "contextless" () {
 		return
 	}
 	rd := this_redist()
-	if rd == 0 {
+	if rd == nil {
 		return
 	}
 
 	// Tell the redistributor this core is awake, and wait until its lines are.
-	waker := mmio_read(rd, GICR_WAKER) & ~WAKER_PROCESSOR_SLEEP
-	mmio_write(rd, GICR_WAKER, waker)
-	for mmio_read(rd, GICR_WAKER) & WAKER_CHILDREN_ASLEEP != 0 {}
+	waker := neutral.mmio_read32(rd, GICR_WAKER) & ~WAKER_PROCESSOR_SLEEP
+	neutral.mmio_write32(rd, GICR_WAKER, waker)
+	for neutral.mmio_read32(rd, GICR_WAKER) & WAKER_CHILDREN_ASLEEP != 0 {}
 
 	// The private lines live in the second frame. Group one, the one priority,
 	// then enable the software interrupts and the timer.
-	sgi := rd + GICV3_SGI_FRAME
-	mmio_write(sgi, GICR_IGROUPR0, 0xFFFF_FFFF)
+	sgi := rawptr(uintptr(rd) + GICV3_SGI_FRAME)
+	neutral.mmio_write32(sgi, GICR_IGROUPR0, 0xFFFF_FFFF)
 	for id in uintptr(0) ..< 32 {
-		mmio_write_byte(sgi, GICR_IPRIORITYR + id, PRIORITY_DEFAULT)
+		neutral.mmio_write8(sgi, GICR_IPRIORITYR + id, PRIORITY_DEFAULT)
 	}
-	mmio_write(sgi, GICR_ISENABLER0, 0x0000_FFFF | u32(1) << VECTOR_TIMER)
+	neutral.mmio_write32(sgi, GICR_ISENABLER0, 0x0000_FFFF | u32(1) << VECTOR_TIMER)
 
 	// The CPU interface. System-register access first, because every line below
 	// it is a system register and would fault without it.
@@ -323,12 +265,7 @@ gicv3_available :: proc "contextless" () -> bool {
 	return gicd != nil
 }
 
-gicv3_lines :: proc "contextless" () -> int {
-	if gicd == nil || lines < 32 {
-		return 0
-	}
-	return lines - 32
-}
+gicv3_lines :: gicd_lines
 
 gicv3_version :: proc "contextless" () -> u32 {
 	return 3
@@ -373,11 +310,6 @@ gicv3_cpu_number :: proc "contextless" () -> u32 {
 
 // -- Shared peripheral lines --------------------------------------------------
 
-@(private = "file")
-line_valid :: proc "contextless" (gsi: int) -> bool {
-	return gicd != nil && gsi >= 0 && gsi < gicv3_lines()
-}
-
 // gicv3_route aims one shared line at the boot core and leaves it level and
 // masked, so a driver can register its handler before the first interrupt.
 gicv3_route :: proc "contextless" (gsi: int, vector: u8, cpu: u32) {
@@ -388,49 +320,15 @@ gicv3_route :: proc "contextless" (gsi: int, vector: u8, cpu: u32) {
 	}
 	id := VECTOR_IRQ_BASE + gsi
 	gicd_write64(GICD_IROUTER + uintptr(id * 8), route_target)
-	cfg := GICD_ICFGR + uintptr(id / 16 * 4)
-	shift := u32((id % 16) * 2)
-	gicd_write(cfg, gicd_read(cfg) & ~(u32(0b10) << shift))
+	gicd_set_trigger(id, false)
 }
 
-// gicv3_set_edge is `gicv2_set_edge` on the version 3 distributor.
-gicv3_set_edge :: proc "contextless" (gsi: int) {
-	if !line_valid(gsi) {
-		return
-	}
-	id := VECTOR_IRQ_BASE + gsi
-	cfg := GICD_ICFGR + uintptr(id / 16 * 4)
-	shift := u32((id % 16) * 2)
-	gicd_write(cfg, gicd_read(cfg) | u32(0b10) << shift)
-}
-
-gicv3_set_mask :: proc "contextless" (gsi: int, masked: bool) {
-	if !line_valid(gsi) {
-		return
-	}
-	id := VECTOR_IRQ_BASE + gsi
-	bit := u32(1) << u32(id % 32)
-	if masked {
-		gicd_write(GICD_ICENABLER + uintptr(id / 32 * 4), bit)
-	} else {
-		gicd_write(GICD_ISENABLER + uintptr(id / 32 * 4), bit)
-	}
-}
-
-gicv3_masked :: proc "contextless" (gsi: int) -> bool {
-	if !line_valid(gsi) {
-		return true
-	}
-	id := VECTOR_IRQ_BASE + gsi
-	return gicd_read(GICD_ISENABLER + uintptr(id / 32 * 4)) & (u32(1) << u32(id % 32)) == 0
-}
-
-gicv3_vector_of :: proc "contextless" (gsi: int) -> u8 {
-	if !line_valid(gsi) {
-		return 0
-	}
-	return u8(VECTOR_IRQ_BASE + gsi)
-}
+// gicv3_set_edge is `gicv2_set_edge`, because both are the shared
+// distributor's, as are the mask and the vector of a line.
+gicv3_set_edge :: gicd_set_edge
+gicv3_set_mask :: gicd_set_mask
+gicv3_masked :: gicd_masked
+gicv3_vector_of :: gicd_vector_of
 
 // -- Software-generated interrupts -------------------------------------------
 

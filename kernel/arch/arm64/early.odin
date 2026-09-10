@@ -50,10 +50,6 @@ set_boot_layout :: proc "contextless" (hhdm, kernel_phys, kernel_virt: u64) {
 	slide = kernel_phys - kernel_virt
 }
 
-kernel_slide :: proc "contextless" () -> u64 {
-	return slide
-}
-
 // image_phys translates an address inside the kernel image to physical.
 image_phys :: proc "contextless" (p: rawptr) -> uintptr {
 	return uintptr(u64(uintptr(p)) + slide)
@@ -99,24 +95,11 @@ Serial_Kind :: neutral.Serial_Kind
 Serial_Desc :: neutral.Serial_Desc
 
 // This architecture has no firmware console.
-console_available :: proc "contextless" () -> bool {
-	return false
-}
-
-console_write :: proc "contextless" (bytes: []u8) {
-	_ = bytes
-}
-
-console_write_byte :: proc "contextless" (b: u8) {
-	_ = b
-}
-
-console_read_byte :: proc "contextless" () -> (u8, bool) {
-	return 0, false
-}
+console_available :: neutral.no_console_available
+console_write :: neutral.no_console_write
+console_write_byte :: neutral.no_console_write_byte
+console_read_byte :: neutral.no_console_read_byte
 
 // The device tree, which nothing here reads: the timer's rate is a register
 // on this architecture, and the GIC's address is the `virt` board's.
-set_device_tree :: proc "contextless" (dtb: rawptr) {
-	_ = dtb
-}
+set_device_tree :: neutral.no_device_tree

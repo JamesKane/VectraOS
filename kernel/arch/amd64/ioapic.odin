@@ -53,7 +53,7 @@ waiting for a reason rather than doing it here.
 */
 package amd64
 
-import "base:intrinsics"
+import "kernel:arch/neutral"
 
 // Where the first I/O APIC lives on a PC. See the file comment for what makes
 // this an assumption rather than a fact.
@@ -68,8 +68,6 @@ IOREGSEL :: uintptr(0x00)
 @(private = "file")
 IOWIN :: uintptr(0x10)
 
-@(private = "file")
-IOAPIC_ID :: u32(0x00)
 @(private = "file")
 IOAPIC_VER :: u32(0x01)
 @(private = "file")
@@ -93,6 +91,11 @@ REDIR_ACTIVE_LOW :: u32(1) << 13
 @(private = "file")
 mmio: rawptr
 
+// The count of redirection entries, read once at attach: the version
+// register carries one less than the count, in its second byte.
+@(private = "file")
+lines: int
+
 /*
 ioapic_attach takes the mapped register page.
 
@@ -102,6 +105,8 @@ unexpected interrupt, with nothing to service it.
 */
 ioapic_attach :: proc "contextless" (virt: rawptr) {
 	mmio = virt
+	v := ioapic_read(IOAPIC_VER)
+	lines = v == 0xFFFF_FFFF ? 0 : int((v >> 16) & 0xFF) + 1
 	for gsi in 0 ..< ioapic_lines() {
 		ioapic_set_mask(gsi, true)
 	}
@@ -133,17 +138,12 @@ ioapic_available :: proc "contextless" () -> bool {
 	return v != 0xFFFF_FFFF && v != 0
 }
 
-// ioapic_lines is how many redirection entries this controller has. The version
-// register carries one less than the count, in its second byte.
+// ioapic_lines is how many redirection entries this controller has.
 ioapic_lines :: proc "contextless" () -> int {
 	if mmio == nil {
 		return 0
 	}
-	v := ioapic_read(IOAPIC_VER)
-	if v == 0xFFFF_FFFF {
-		return 0
-	}
-	return int((v >> 16) & 0xFF) + 1
+	return lines
 }
 
 ioapic_version :: proc "contextless" () -> u32 {
@@ -219,16 +219,12 @@ quieter.
 */
 @(private = "file")
 ioapic_read :: proc "contextless" (index: u32) -> u32 {
-	sel := cast(^u32)(uintptr(mmio) + IOREGSEL)
-	win := cast(^u32)(uintptr(mmio) + IOWIN)
-	intrinsics.volatile_store(sel, index)
-	return intrinsics.volatile_load(win)
+	neutral.mmio_write32(mmio, IOREGSEL, index)
+	return neutral.mmio_read32(mmio, IOWIN)
 }
 
 @(private = "file")
 ioapic_write :: proc "contextless" (index: u32, value: u32) {
-	sel := cast(^u32)(uintptr(mmio) + IOREGSEL)
-	win := cast(^u32)(uintptr(mmio) + IOWIN)
-	intrinsics.volatile_store(sel, index)
-	intrinsics.volatile_store(win, value)
+	neutral.mmio_write32(mmio, IOREGSEL, index)
+	neutral.mmio_write32(mmio, IOWIN, value)
 }

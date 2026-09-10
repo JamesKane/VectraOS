@@ -11,6 +11,7 @@ returned from an interrupt that never happened.
 */
 package amd64
 
+import "base:intrinsics"
 import "kernel:arch/neutral"
 
 /*
@@ -31,9 +32,25 @@ The frame and the image sit in stack the thread will immediately run over, and
 that is fine. The resume sequence reads both in full before the thread's first
 instruction executes.
 */
-MIN_STACK_SIZE :: 4096
+MIN_STACK_SIZE :: neutral.MIN_STACK_SIZE
 
 align_down :: neutral.align_down
+
+/*
+carve finds the FXSAVE image below `from`, and the frame below that, in the
+geometry the layout above draws. `from` is the top of the stack, or the word
+under the return address a kernel thread starts with. Refuses a stack too
+small to hold both.
+*/
+@(private = "file")
+carve :: proc "contextless" (stack: []u8, from: uintptr) -> (fpu, frame_at: uintptr, ok: bool) {
+	fpu = align_down(from - FPU_AREA_RESERVE, FPU_AREA_ALIGN)
+	frame_at = align_down(fpu - size_of(Trap_Frame), 16)
+	if frame_at <= uintptr(raw_data(stack)) {
+		return 0, 0, false
+	}
+	return fpu, frame_at, true
+}
 
 /*
 thread_resume_init writes a new thread's saved state onto its own stack.
@@ -60,15 +77,13 @@ thread_resume_init :: proc "contextless" (
 		return {}, false
 	}
 
-	base := uintptr(raw_data(stack))
 	top := kernel_stack_top(stack)
 
 	sp := top - 8
 	(^uintptr)(sp)^ = uintptr(on_return)
 
-	fpu := align_down(sp - FPU_AREA_RESERVE, FPU_AREA_ALIGN)
-	frame_at := align_down(fpu - size_of(Trap_Frame), 16)
-	if frame_at <= base {
+	fpu, frame_at, carved := carve(stack, sp)
+	if !carved {
 		return {}, false
 	}
 
@@ -105,15 +120,11 @@ CPUID does not carry those. A guess would make the scheduler worse rather than
 better, on the exact machines it is meant to help. Reported honestly as one
 class until there is a number worth trusting.
 */
-cpu_class :: proc "contextless" () -> (class: Cpu_Class, capacity: int) {
-	return .Performance, CAPACITY_FULL
-}
+cpu_class :: neutral.one_class_cpu_class
 
 // cpu_model has no name to give: every core here is the one class, and the boot
 // line says so without a model beside it.
-cpu_model :: proc "contextless" () -> string {
-	return ""
-}
+cpu_model :: neutral.one_class_cpu_model
 
 /*
 kernel_stack_top is the address the CPU pushes an interrupt frame below.
@@ -125,9 +136,7 @@ scheduler puts it in the TSS, so a trap from ring 3 lands on the same stack.
 Aligned down to 16, so the alignment comes out of the space above the stack
 rather than out of the stack.
 */
-kernel_stack_top :: proc "contextless" (stack: []u8) -> uintptr {
-	return align_down(uintptr(raw_data(stack)) + uintptr(len(stack)), 16)
-}
+kernel_stack_top :: neutral.kernel_stack_top
 
 /*
 thread_user_init lays out a thread whose first instruction is in ring 3.
@@ -171,12 +180,8 @@ thread_user_init :: proc "contextless" (
 		return {}, false
 	}
 
-	base := uintptr(raw_data(stack))
-	top := kernel_stack_top(stack)
-
-	fpu := align_down(top - FPU_AREA_RESERVE, FPU_AREA_ALIGN)
-	frame_at := align_down(fpu - size_of(Trap_Frame), 16)
-	if frame_at <= base {
+	fpu, frame_at, carved := carve(stack, kernel_stack_top(stack))
+	if !carved {
 		return {}, false
 	}
 
@@ -259,20 +264,12 @@ thread_user_clone :: proc "contextless" (
 		return {}, false
 	}
 
-	base := uintptr(raw_data(stack))
-	top := kernel_stack_top(stack)
-
-	fpu := align_down(top - FPU_AREA_RESERVE, FPU_AREA_ALIGN)
-	frame_at := align_down(fpu - size_of(Trap_Frame), 16)
-	if frame_at <= base {
+	fpu, frame_at, carved := carve(stack, kernel_stack_top(stack))
+	if !carved {
 		return {}, false
 	}
 
-	src_fpu := ([^]u8)(syscall_frame_fpu(src))
-	dst_fpu := ([^]u8)(rawptr(fpu))
-	for i in 0 ..< FPU_AREA_SIZE {
-		dst_fpu[i] = src_fpu[i]
-	}
+	intrinsics.mem_copy(rawptr(fpu), syscall_frame_fpu(src), FPU_AREA_SIZE)
 
 	frame := (^Trap_Frame)(frame_at)
 	frame^ = src^

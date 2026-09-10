@@ -89,7 +89,7 @@ changed.
 
 `can_sleep` answers `may the code running here park`, and that is a question
 about a core. The count of spinlocks and the count of trap handlers both moved
-behind `GS`, into `arch.Percpu`. That record already held the kernel stack
+behind `GS`, into amd64's `Percpu`. That record already held the kernel stack
 pointer the syscall stub finds there. So did the GDT, the TSS and the fault
 stacks move. A TSS names the stacks a core switches to, and `ltr` marks its
 descriptor busy, so neither can be shared.
@@ -317,7 +317,7 @@ check.
 - **`cpu_class` is still one class.** Every core reports `.Performance` at
   full capacity, so the placement policy spreads by load alone. The three
   tiers `docs/SCHED.md` argues wait for an arm64 `cpu_class`.
-- **The NMI window.** `arch.Percpu` documents an NMI between the syscall
+- **The NMI window.** amd64's `Percpu` documents an NMI between the syscall
   stub's `swapgs` and its next instruction. A handler that read the per-core
   depths there would read them through the program's base. Nothing handles an
   NMI yet, and the paranoid entry is the answer when something does.

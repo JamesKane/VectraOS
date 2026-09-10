@@ -50,27 +50,14 @@ mmio_write64 :: neutral.mmio_write64
 
 // The firmware console, which this architecture does not have. The four
 // exist so `kernel/drivers/uart` can name them on every architecture.
-console_available :: proc "contextless" () -> bool {
-	return false
-}
-
-console_write :: proc "contextless" (bytes: []u8) {
-	_ = bytes
-}
-
-console_write_byte :: proc "contextless" (b: u8) {
-	_ = b
-}
-
-console_read_byte :: proc "contextless" () -> (u8, bool) {
-	return 0, false
-}
+console_available :: neutral.no_console_available
+console_write :: neutral.no_console_write
+console_write_byte :: neutral.no_console_write_byte
+console_read_byte :: neutral.no_console_read_byte
 
 // set_device_tree hands over the flattened device tree, on an architecture
 // that has one. amd64 describes itself through ACPI and gets none.
-set_device_tree :: proc "contextless" (dtb: rawptr) {
-	_ = dtb
-}
+set_device_tree :: neutral.no_device_tree
 
 // -- Execution control -------------------------------------------------------
 
@@ -92,7 +79,7 @@ raise_test_interrupt :: amd64.raise_test_interrupt
 // The scheduler's preemption self-test holds vector registers live across a
 // preemption with this. Which registers is the architecture's business, and
 // so is the assembly. See `amd64/fpu.odin`.
-fpu_hold :: amd64.fpu_hold
+fpu_hold :: neutral.fpu_hold
 
 /*
 -- Paging ---------------------------------------------------------------------
@@ -102,34 +89,34 @@ the walk and calls through these to encode what it decides. See
 `amd64/paging.odin` for why the split falls here.
 */
 
-PAGE_SIZE :: amd64.PAGE_SIZE
-TABLE_ENTRIES :: amd64.TABLE_ENTRIES
-TABLE_LEVELS :: amd64.TABLE_LEVELS
+PAGE_SIZE :: neutral.PAGE_SIZE
+TABLE_ENTRIES :: neutral.TABLE_ENTRIES
+TABLE_LEVELS :: neutral.TABLE_LEVELS
 
-Page_Table :: amd64.Page_Table
-Page_Table_Entry :: amd64.Page_Table_Entry
+Page_Table :: neutral.Page_Table
+Page_Table_Entry :: neutral.Page_Table_Entry
 
 // The register that names the current address space. A write is what a context
 // switch does, and it flushes every non-global translation on the way.
 read_cr3 :: amd64.read_cr3
 write_cr3 :: amd64.write_cr3
-Page_Flag :: amd64.Page_Flag
-Page_Flags :: amd64.Page_Flags
+Page_Flag :: neutral.Page_Flag
+Page_Flags :: neutral.Page_Flags
 
-ENTRY_EMPTY :: amd64.ENTRY_EMPTY
+ENTRY_EMPTY :: neutral.ENTRY_EMPTY
 
 enable_paging_features :: amd64.enable_paging_features
 nx_available :: amd64.nx_available
 global_available :: amd64.global_available
 max_leaf_level :: amd64.max_leaf_level
 
-table_index :: amd64.table_index
-level_size :: amd64.level_size
-is_canonical :: amd64.is_canonical
+table_index :: neutral.table_index
+level_size :: neutral.level_size
+is_canonical :: neutral.is_canonical_47
 
 leaf_encode :: amd64.leaf_encode
 branch_encode :: amd64.branch_encode
-entry_present :: amd64.entry_present
+entry_present :: neutral.entry_present
 entry_is_leaf :: amd64.entry_is_leaf
 entry_address :: amd64.entry_address
 entry_flags :: amd64.entry_flags
@@ -153,7 +140,7 @@ know, and they write into a caller's sink rather than print.
 */
 
 Trap :: amd64.Trap
-Trap_Kind :: amd64.Trap_Kind
+Trap_Kind :: neutral.Trap_Kind
 Trap_Handler :: amd64.Trap_Handler
 Trap_Frame :: amd64.Trap_Frame
 
@@ -221,8 +208,8 @@ BREAKPOINT_CODE :: amd64.BREAKPOINT_CODE
 BREAKPOINT_ADVANCE :: amd64.BREAKPOINT_ADVANCE
 fpu_image_sanitise :: amd64.fpu_image_sanitise
 FPU_AREA_SIZE :: amd64.FPU_AREA_SIZE
-Fault_Bit :: amd64.Fault_Bit
-Fault_Bits :: amd64.Fault_Bits
+Fault_Bit :: neutral.Fault_Bit
+Fault_Bits :: neutral.Fault_Bits
 fault_bits :: amd64.fault_bits
 
 /*
@@ -250,7 +237,7 @@ syscall_frame_fpu :: amd64.syscall_frame_fpu
 // stack pointer sits: the System V ABI enters a function with the return address already pushed, so compiled code believes `rsp + 8` is sixteen-aligned and spills vector registers on that belief.
 USER_STACK_TILT :: 8
 
-kernel_stack_top :: amd64.kernel_stack_top
+kernel_stack_top :: neutral.kernel_stack_top
 set_kernel_stack :: amd64.set_kernel_stack
 
 // The thread pointer for a program's TLS, `docs/DEVTOOLS.md` section 3.
@@ -303,10 +290,10 @@ never seen a `Trap_Frame`.
 
 Resume :: amd64.Resume
 Interrupt_Handler :: amd64.Interrupt_Handler
-Cpu_Class :: amd64.Cpu_Class
+Cpu_Class :: neutral.Cpu_Class
 
-CAPACITY_FULL :: amd64.CAPACITY_FULL
-MIN_STACK_SIZE :: amd64.MIN_STACK_SIZE
+CAPACITY_FULL :: neutral.CAPACITY_FULL
+MIN_STACK_SIZE :: neutral.MIN_STACK_SIZE
 
 VECTOR_TIMER :: amd64.VECTOR_TIMER
 VECTOR_IRQ_BASE :: amd64.VECTOR_IRQ_BASE
@@ -326,8 +313,8 @@ inb :: amd64.inb
 outb :: amd64.outb
 thread_resume_init :: amd64.thread_resume_init
 ap_switch :: amd64.ap_switch
-cpu_class :: amd64.cpu_class
-cpu_model :: amd64.cpu_model
+cpu_class :: neutral.one_class_cpu_class
+cpu_model :: neutral.one_class_cpu_model
 
 // yield_now raises the software interrupt the scheduler listens on, so that a
 // voluntary switch and a preemption arrive by the same path.
@@ -395,9 +382,7 @@ irq_set_mask :: amd64.ioapic_set_mask
 // irq_set_edge makes a line edge-triggered after it is routed. The I/O APIC
 // routes every line the way the ACPI tables say. No device here asks for
 // an edge after the fact, so this is the honest no-op.
-irq_set_edge :: proc "contextless" (gsi: int) {
-	_ = gsi
-}
+irq_set_edge :: neutral.no_irq_set_edge
 irq_masked :: amd64.ioapic_masked
 irq_vector_of :: amd64.ioapic_vector_of
 irq_ack :: amd64.lapic_eoi

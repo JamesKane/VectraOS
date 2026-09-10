@@ -392,15 +392,20 @@ put_reg :: proc "contextless" (s: ^libodin.Sink, name: string, value: u64) {
 	libodin.put_byte(s, ' ')
 }
 
+// The names of the general registers, in the frame's order, in the image
+// rather than rebuilt on a stack the panic path may not have much of.
+@(private = "file")
+@(rodata)
+reg_names := [?]string {
+	" x0", " x1", " x2", " x3", " x4", " x5", " x6", " x7", " x8", " x9",
+	"x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19",
+	"x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29",
+	"x30",
+}
+
 @(private = "file")
 reg_name :: proc "contextless" (i: int) -> string {
-	names := [?]string{
-		" x0", " x1", " x2", " x3", " x4", " x5", " x6", " x7", " x8", " x9",
-		"x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19",
-		"x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29",
-		"x30",
-	}
-	return names[i]
+	return reg_names[i]
 }
 
 // register_line formats one line of the register dump: eight lines of four

@@ -50,8 +50,8 @@ debuginfo_init :: proc "contextless" () {
 		}
 		break
 	}
-	if addr := executable_address_request.response; addr != nil {
-		kdebug_slide = addr.virtual_base - KERNEL_LINK_BASE
+	if boot_facts.has_layout {
+		kdebug_slide = boot_facts.kernel_virt - KERNEL_LINK_BASE
 	}
 }
 

@@ -16,7 +16,6 @@ and not as a boot that hangs.
 package kernel
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:arch"
 import "kernel:mem"
@@ -74,11 +73,6 @@ Smp_Result :: struct {
 	shot_ticks:  u64, // Ticks between an unmap here and the fault on the other core
 }
 
-@(private = "file")
-scheck :: proc "contextless" (r: ^Smp_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
-
 // Where each worker was when it finished, and whether it has. `worker_where` is the
 // core's id, read once so a preemption between the read and the store cannot
 // change the answer half way.
@@ -126,8 +120,7 @@ claim_code: [16]u8
 
 @(private = "file")
 claim_worker :: proc "contextless" (arg: rawptr) {
-	context = runtime.default_context()
-	context.allocator = mem.allocator()
+	context = mem.kernel_context()
 	i := int(uintptr(arg))
 	for round in 0 ..< CLAIM_ROUNDS {
 		p, err := user.load_held("smp-claim", claim_code[:])
@@ -293,20 +286,20 @@ run_workers :: proc(r: ^Smp_Result, name: string, entry: sched.Thread_Proc, n: i
 			spawned += 1
 		}
 	}
-	if !scheck(r, spawned == n, "every worker was spawned") {
+	if !libodin.check(r, spawned == n, "every worker was spawned") {
 		return false
 	}
-	return scheck(r, sync.await(all_done, rawptr(uintptr(n)), PATIENCE), what)
+	return libodin.check(r, sync.await(all_done, rawptr(uintptr(n)), PATIENCE), what)
 }
 
 verify_smp :: proc() {
 	r: Smp_Result
 
-	mp := mp_request.response
+	mp := boot_facts.mp
 	expected := mp == nil ? 1 : min(int(mp.cpu_count), sched.MAX_CPUS)
 	r.cores = sched.online_count()
-	scheck(&r, r.cores == expected, "every core the bootloader listed is online")
-	if !scheck(&r, r.cores >= 2, "there is a second core to test against") {
+	libodin.check(&r, r.cores == expected, "every core the bootloader listed is online")
+	if !libodin.check(&r, r.cores >= 2, "there is a second core to test against") {
 		report_smp(&r)
 		return
 	}
@@ -324,7 +317,7 @@ verify_smp :: proc() {
 			ticking = false
 		}
 	}
-	scheck(&r, ticking, "every core takes its own timer ticks")
+	libodin.check(&r, ticking, "every core takes its own timer ticks")
 
 	sched.reap()
 	_ = sync.await(sched.all_reaped, nil, PATIENCE)
@@ -341,14 +334,14 @@ verify_smp :: proc() {
 	*/
 	if run_workers(&r, "smp-spin", spin_worker, SMP_WORKERS, "every spinning worker finished inside the bound") {
 		r.spread = spread(SMP_WORKERS)
-		scheck(&r, r.spread >= 2, "the spinning workers ran on more than one core")
+		libodin.check(&r, r.spread >= 2, "the spinning workers ran on more than one core")
 		moved := true
 		for i in 0 ..< r.cores {
 			if sched.cpu_stats(i).switches <= before[i].switches {
 				moved = false
 			}
 		}
-		scheck(&r, moved, "every core switched threads while they ran")
+		libodin.check(&r, moved, "every core switched threads while they ran")
 	}
 
 	// -- A wake crosses cores -------------------------------------------------
@@ -365,12 +358,12 @@ verify_smp :: proc() {
 	stats_before := sync.sleep_stats()
 	if run_workers(&r, "smp-park", delay_worker, SMP_WORKERS, "every parking worker finished inside the bound") {
 		r.delays = sync.sleep_stats().timeouts - stats_before.timeouts
-		scheck(
+		libodin.check(
 			&r,
 			r.delays >= u64(SMP_WORKERS * DELAY_ROUNDS),
 			"every one-tick delay ended by its deadline",
 		)
-		scheck(&r, spread(SMP_WORKERS) >= 2, "the parking workers woke on more than one core")
+		libodin.check(&r, spread(SMP_WORKERS) >= 2, "the parking workers woke on more than one core")
 	}
 
 	// -- A wake reaches an idle core now ----------------------------------------
@@ -404,19 +397,19 @@ verify_smp :: proc() {
 	}
 	r.kick_ticks = sched.ticks() - start
 	r.kicks = kicks_sent(r.cores) - kicks_before
-	scheck(&r, rounds == KICK_ROUNDS, "fifty brief workers each ran on an idle core and reported")
+	libodin.check(&r, rounds == KICK_ROUNDS, "fifty brief workers each ran on an idle core and reported")
 	// Nearly every round, and not every one. A worker that has reported and
 	// not yet left its core leaves that core's next reschedule imminent, and
 	// a placement there needs no kick and sends none. That is the scheduler
 	// being right, once in fifty on the ports, and the check asks for the
 	// forty-five that were kicks.
-	scheck(&r, r.kicks * 10 >= u64(KICK_ROUNDS) * 9, "and a core kicked an idle core for nearly every one of them")
-	scheck(&r, r.kick_ticks < KICK_ROUNDS / 2, "and the fifty wakes together cost less than the ticks they would have waited for")
+	libodin.check(&r, r.kicks * 10 >= u64(KICK_ROUNDS) * 9, "and a core kicked an idle core for nearly every one of them")
+	libodin.check(&r, r.kick_ticks < KICK_ROUNDS / 2, "and the fifty wakes together cost less than the ticks they would have waited for")
 	received: u64
 	for i in 1 ..< r.cores {
 		received += sched.cpu_stats(i).ipis
 	}
-	scheck(&r, received >= u64(KICK_ROUNDS), "and the kicks arrived on the other cores")
+	libodin.check(&r, received >= u64(KICK_ROUNDS), "and the kicks arrived on the other cores")
 
 	// -- Two cores claim a process slot at once ---------------------------------
 
@@ -443,12 +436,12 @@ verify_smp :: proc() {
 	if run_workers(&r, "smp-claim", claim_worker, CLAIMERS, "every claimer finished inside the bound") {
 		unique: bool
 		r.claims, unique = distinct_pids()
-		scheck(&r, r.claims >= CLAIMERS * CLAIM_ROUNDS / 2, "the claimers were handed process records, most rounds")
-		scheck(&r, unique, "and no two claimers were handed one record")
-		scheck(&r, user.stats().live == live_before, "and every record they took was given back")
+		libodin.check(&r, r.claims >= CLAIMERS * CLAIM_ROUNDS / 2, "the claimers were handed process records, most rounds")
+		libodin.check(&r, unique, "and no two claimers were handed one record")
+		libodin.check(&r, user.stats().live == live_before, "and every record they took was given back")
 		_ = sync.await(sched.all_reaped, nil, PATIENCE)
 		sched.reap()
-		scheck(&r, mem.live_objects(mem.heap_stats()) == claim_heap, "with the heap where it was")
+		libodin.check(&r, mem.live_objects(mem.heap_stats()) == claim_heap, "with the heap where it was")
 	}
 
 		// -- Four cores log at once ----------------------------------------------
@@ -466,8 +459,8 @@ verify_smp :: proc() {
 	if run_workers(&r, "smp-log", log_worker, LOG_WRITERS, "every log writer finished inside the bound") {
 		whole: bool
 		r.lines, whole = whole_lines()
-		scheck(&r, r.lines == EARLY_LINES_MAX, "every line four cores logged at once was kept")
-		scheck(&r, whole, "and each is one writer's, whole")
+		libodin.check(&r, r.lines == EARLY_LINES_MAX, "every line four cores logged at once was kept")
+		libodin.check(&r, whole, "and each is one writer's, whole")
 	}
 
 	// -- An unmap here reaches a translation cached over there -----------------
@@ -480,15 +473,15 @@ verify_smp :: proc() {
 	runs on for as long as its loop lasts. With one, its next touch of the page
 	is a fault, and the fault is what this waits for.
 	*/
-	if prog, lerr := user.load("smp-spin", user.program_spin(), 0); scheck(&r, lerr == .None, "a spinning program was loaded") {
+	if prog, lerr := user.load("smp-spin", user.program_spin(), 0); libodin.check(&r, lerr == .None, "a spinning program was loaded") {
 		running := sync.await(spin_moving, prog, PATIENCE)
-		scheck(&r, running, "and it runs, counting on its data page")
+		libodin.check(&r, running, "and it runs, counting on its data page")
 		// This thread's own core, read now rather than assumed to be the boot
 		// core. The boot thread parks and is placed afresh like any other, and
 		// nothing between here and the unmap parks it again.
 		me := sched.cpu().id
 		on := prog.thread != nil && prog.thread.cpu != nil ? prog.thread.cpu.id : me
-		scheck(&r, on != me, "on a core that is not this one")
+		libodin.check(&r, on != me, "on a core that is not this one")
 		shot_before := shoots_sent(r.cores)
 		before := sched.cpu_stats(on).shot
 
@@ -502,7 +495,7 @@ verify_smp :: proc() {
 		*/
 		faults_before := user.stats().faults
 		watch := Refill_Watch{prog = prog, refills_before = user.page_refills}
-		scheck(&r, mem.unmap_user(prog.space, user.DATA_VA, 1) == .None, "this core unmapped its data page")
+		libodin.check(&r, mem.unmap_user(prog.space, user.DATA_VA, 1) == .None, "this core unmapped its data page")
 		// Waited for by its outcome, the refill or the program's end, and not
 		// by the fault count. The handler counts the fault on entry and the
 		// refill on the way out, on the other core, and this thread's first
@@ -510,8 +503,8 @@ verify_smp :: proc() {
 		// a few instructions from happening as one that did not.
 		settled := sync.await(refilled_or_ended, &watch, PATIENCE)
 		r.shot_ticks = sched.ticks() - sent_at
-		scheck(&r, settled && user.stats().faults > faults_before, "and the program faulted inside the bound")
-		scheck(
+		libodin.check(&r, settled && user.stats().faults > faults_before, "and the program faulted inside the bound")
+		libodin.check(
 			&r,
 			user.page_refills > watch.refills_before && !prog.exit.done,
 			"by a page fault in ring 3 the kernel refilled from its segment, and it ran on",
@@ -519,31 +512,27 @@ verify_smp :: proc() {
 		// Summed over the cores rather than read for `me`: the sender waits
 		// for the answer with interrupts on, and a thread that waits may be
 		// placed afresh on another core, which is what `me` stops naming.
-		scheck(&r, shoots_sent(r.cores) > shot_before, "which a core asked for")
-		scheck(&r, sched.cpu_stats(on).shot > before, "and the other core answered")
-		scheck(&r, user.end(prog, PATIENCE), "and the program, still running, was ended")
-		scheck(&r, user.destroy(prog), "and taken down")
+		libodin.check(&r, shoots_sent(r.cores) > shot_before, "which a core asked for")
+		libodin.check(&r, sched.cpu_stats(on).shot > before, "and the other core answered")
+		libodin.check(&r, user.end(prog, PATIENCE), "and the program, still running, was ended")
+		libodin.check(&r, user.destroy(prog), "and taken down")
 	}
 
 	// -- Nothing left behind --------------------------------------------------
 
 	// Each worker's stack comes back on the core it died on, when that core's
 	// idle thread next runs. Waited for rather than assumed.
-	scheck(&r, sync.await(sched.all_reaped, nil, PATIENCE), "every core reaped its dead")
+	libodin.check(&r, sync.await(sched.all_reaped, nil, PATIENCE), "every core reaped its dead")
 	sched.reap()
-	scheck(&r, mem.live_objects(mem.heap_stats()) == pin_before, "and the heap is balanced")
+	libodin.check(&r, mem.live_objects(mem.heap_stats()) == pin_before, "and the heap is balanced")
 
 	report_smp(&r)
 }
 
 @(private = "file")
 report_smp :: proc(r: ^Smp_Result) {
-	ok := libodin.passed(r.tally)
-
-	sink := begin(&klog)
-	libodin.put_str(&sink, "smp ")
-	libodin.put_uint(&sink, u64(r.checks))
-	if ok {
+	sink := report_begin("smp", r.checks)
+	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " multiprocessor checks passed -- ")
 		libodin.put_uint(&sink, u64(r.cores))
 		libodin.put_str(&sink, " cores ticking, workers spread over ")
@@ -564,12 +553,7 @@ report_smp :: proc(r: ^Smp_Result) {
 		emit(&klog, .Ok, &sink)
 		return
 	}
-
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, r.tally)
 }
 
 // What the shootdown check waits for: the spinning program, and the refill

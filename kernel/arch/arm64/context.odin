@@ -15,14 +15,15 @@ tail puts one, so `syscall_frame_fpu` has one rule for both.
 */
 package arm64
 
+import "base:intrinsics"
 import "kernel:arch/neutral"
 
-MIN_STACK_SIZE :: 4096
+MIN_STACK_SIZE :: neutral.MIN_STACK_SIZE
 
 // The vector image: q0..q31, then fpsr and fpcr. What the tail saves below
 // every frame.
 FPU_AREA_SIZE :: 528
-FPU_AREA_ALIGN :: 16
+FPU_AREA_ALIGN :: neutral.FPU_AREA_ALIGN
 
 // PSTATE for a kernel thread: EL1 on SP_EL1, debug, SError and FIQ masked,
 // IRQ open. A thread whose first frame had IRQs masked would run its whole
@@ -33,34 +34,22 @@ SPSR_EL1H :: u64(0x345)
 // what `frame_is_user` reads.
 SPSR_EL0 :: u64(0x340)
 
-align_down :: neutral.align_down
-
 // kernel_stack_top is the sixteen-byte-aligned end of a stack, which is what
 // SP has to be whenever it is used as a base here.
-kernel_stack_top :: proc "contextless" (stack: []u8) -> uintptr {
-	return align_down(uintptr(raw_data(stack)) + uintptr(len(stack)), 16)
-}
+kernel_stack_top :: neutral.kernel_stack_top
 
 // carve puts an empty frame and a zeroed vector image at the top of `stack`,
 // and answers both. False when the stack is too small to hold them.
 @(private = "file")
 carve :: proc "contextless" (stack: []u8) -> (frame: ^Trap_Frame, fpu: rawptr, ok: bool) {
-	if len(stack) < MIN_STACK_SIZE {
-		return nil, nil, false
-	}
-	top := kernel_stack_top(stack)
-	frame_at := top - size_of(Trap_Frame)
-	fpu_at := frame_at - FPU_AREA_SIZE
-	if fpu_at <= uintptr(raw_data(stack)) {
+	top, frame_at, fpu_at, carved := neutral.carve_top(stack, size_of(Trap_Frame), FPU_AREA_SIZE)
+	if !carved {
 		return nil, nil, false
 	}
 	frame = (^Trap_Frame)(frame_at)
 	frame^ = {}
 	frame.sp = u64(top)
-	bytes := ([^]u8)(fpu_at)
-	for i in 0 ..< FPU_AREA_SIZE {
-		bytes[i] = 0
-	}
+	intrinsics.mem_zero(rawptr(fpu_at), FPU_AREA_SIZE)
 	return frame, rawptr(fpu_at), true
 }
 
@@ -144,11 +133,7 @@ thread_user_clone :: proc "contextless" (stack: []u8, src: ^Trap_Frame) -> (resu
 	}
 	frame^ = src^
 	frame.x[0] = 0
-	from := ([^]u8)(syscall_frame_fpu(src))
-	to := ([^]u8)(fpu)
-	for i in 0 ..< FPU_AREA_SIZE {
-		to[i] = from[i]
-	}
+	intrinsics.mem_copy(fpu, syscall_frame_fpu(src), FPU_AREA_SIZE)
 	return Resume{frame = frame, fpu = fpu}, true
 }
 
@@ -210,13 +195,7 @@ ap_switch :: proc "contextless" (stack_top: uintptr, root: uintptr, entry: proc 
 
 // -- The vector unit, held live -----------------------------------------------
 
-foreign {
-	vectra_fpu_hold :: proc "c" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) ---
-}
-
 // fpu_hold loads four vector registers from `value`, spins until `flag`
 // while counting rounds in `counter`, and writes the sum of the four to
 // `out`. `fpu_hold.S` is the loop; `docs/TESTING.md` says why it is assembly.
-fpu_hold :: proc "contextless" (value: ^f64, flag: ^bool, out: ^f64, counter: ^u64) {
-	vectra_fpu_hold(value, flag, out, counter)
-}
+fpu_hold :: neutral.fpu_hold

@@ -27,26 +27,14 @@ from `-define:VECTRA_GIC`. The public names both files answer to -- `gic_route`,
 */
 package arm64
 
-import "base:intrinsics"
+import "kernel:arch/neutral"
 
 GICV2_PHYS :: uintptr(0x0800_0000)
 GICV2_MMIO_SIZE :: u64(0x2_0000)
 
 @(private = "file") GICC_OFFSET :: uintptr(0x1_0000)
 
-// The distributor.
-@(private = "file") GICD_CTLR :: uintptr(0x000)
-@(private = "file") GICD_TYPER :: uintptr(0x004)
-@(private = "file") GICD_IIDR :: uintptr(0x008)
-@(private = "file") GICD_ISENABLER :: uintptr(0x100) // One bit per interrupt, 32 per word
-@(private = "file") GICD_ICENABLER :: uintptr(0x180)
-@(private = "file") GICD_ICPENDR :: uintptr(0x280)
-@(private = "file") GICD_IPRIORITYR :: uintptr(0x400) // One byte per interrupt
-@(private = "file") GICD_ITARGETSR :: uintptr(0x800) // One byte per interrupt, a bit per core
-@(private = "file") GICD_ICFGR :: uintptr(0xC00)
-@(private = "file") GICD_SGIR :: uintptr(0xF00)
-
-// The CPU interface.
+// The distributor's registers are `gicd.odin`'s. The CPU interface.
 @(private = "file") GICC_CTLR :: uintptr(0x000)
 @(private = "file") GICC_PMR :: uintptr(0x004)
 @(private = "file") GICC_BPR :: uintptr(0x008)
@@ -60,33 +48,16 @@ GICV2_MMIO_SIZE :: u64(0x2_0000)
 
 @(private = "file") SGIR_ALL_BUT_SELF :: u32(1) << 24
 
-@(private = "file") dist: rawptr
 @(private = "file") cpu_if: rawptr
-@(private = "file") lines: int
-
-@(private = "file")
-dist_read :: proc "contextless" (offset: uintptr) -> u32 {
-	return intrinsics.volatile_load(cast(^u32)(uintptr(dist) + offset))
-}
-
-@(private = "file")
-dist_write :: proc "contextless" (offset: uintptr, value: u32) {
-	intrinsics.volatile_store(cast(^u32)(uintptr(dist) + offset), value)
-}
-
-@(private = "file")
-dist_write_byte :: proc "contextless" (offset: uintptr, value: u8) {
-	intrinsics.volatile_store(cast(^u8)(uintptr(dist) + offset), value)
-}
 
 @(private = "file")
 cpu_read :: proc "contextless" (offset: uintptr) -> u32 {
-	return intrinsics.volatile_load(cast(^u32)(uintptr(cpu_if) + offset))
+	return neutral.mmio_read32(cpu_if, offset)
 }
 
 @(private = "file")
 cpu_write :: proc "contextless" (offset: uintptr, value: u32) {
-	intrinsics.volatile_store(cast(^u32)(uintptr(cpu_if) + offset), value)
+	neutral.mmio_write32(cpu_if, offset, value)
 }
 
 gicv2_physical_base :: proc "contextless" () -> uintptr {
@@ -102,32 +73,29 @@ has not enabled its interface is an interrupt nobody takes. Then this core's
 own interface, which every other core does for itself in `gicv2_attach_here`.
 */
 gicv2_attach :: proc "contextless" (virt: rawptr) {
-	dist = virt
+	gicd = virt
 	cpu_if = rawptr(uintptr(virt) + GICC_OFFSET)
 
-	typer := dist_read(GICD_TYPER)
+	typer := gicd_read(GICD_TYPER)
 	if typer == 0xFFFF_FFFF {
-		dist = nil
+		gicd = nil
 		cpu_if = nil
 		return
 	}
-	lines = int(typer & 0x1F + 1) * 32
-	if lines > 1020 {
-		lines = 1020
-	}
+	lines = gicd_lines_from_typer(typer)
 
-	dist_write(GICD_CTLR, 0)
+	gicd_write(GICD_CTLR, 0)
 	for id := 32; id < lines; id += 32 {
-		dist_write(GICD_ICENABLER + uintptr(id / 8), 0xFFFF_FFFF)
-		dist_write(GICD_ICPENDR + uintptr(id / 8), 0xFFFF_FFFF)
+		gicd_write(GICD_ICENABLER + uintptr(id / 8), 0xFFFF_FFFF)
+		gicd_write(GICD_ICPENDR + uintptr(id / 8), 0xFFFF_FFFF)
 	}
 	for id in 0 ..< lines {
-		dist_write_byte(GICD_IPRIORITYR + uintptr(id), PRIORITY_DEFAULT)
+		gicd_write_byte(GICD_IPRIORITYR + uintptr(id), PRIORITY_DEFAULT)
 		if id >= 32 {
-			dist_write_byte(GICD_ITARGETSR + uintptr(id), 1)
+			gicd_write_byte(GICD_ITARGETSR + uintptr(id), 1)
 		}
 	}
-	dist_write(GICD_CTLR, 1)
+	gicd_write(GICD_CTLR, 1)
 
 	gicv2_attach_here()
 }
@@ -141,29 +109,23 @@ gicv2_attach_here :: proc "contextless" () {
 	cpu_write(GICC_CTLR, 0)
 	cpu_write(GICC_PMR, PRIORITY_MASK)
 	cpu_write(GICC_BPR, 0)
-	dist_write(GICD_ICENABLER, 0xFFFF_FFFF)
-	dist_write(GICD_ISENABLER, 0x0000_FFFF | u32(1) << VECTOR_TIMER)
+	gicd_write(GICD_ICENABLER, 0xFFFF_FFFF)
+	gicd_write(GICD_ISENABLER, 0x0000_FFFF | u32(1) << VECTOR_TIMER)
 	cpu_write(GICC_CTLR, 1)
 }
 
 gicv2_attached :: proc "contextless" () -> bool {
-	return dist != nil
+	return gicd != nil
 }
 
 gicv2_available :: proc "contextless" () -> bool {
-	return dist != nil
+	return gicd != nil
 }
 
-// gicv2_lines is how many shared peripheral lines the distributor has.
-gicv2_lines :: proc "contextless" () -> int {
-	if dist == nil || lines < 32 {
-		return 0
-	}
-	return lines - 32
-}
+gicv2_lines :: gicd_lines
 
 gicv2_version :: proc "contextless" () -> u32 {
-	return dist == nil ? 0 : dist_read(GICD_IIDR) >> 16 & 0xF
+	return gicd == nil ? 0 : gicd_read(GICD_IIDR) >> 16 & 0xF
 }
 
 /*
@@ -203,10 +165,10 @@ gicv2_ack :: proc "contextless" () {
 // register that reports it: the targets of a private interrupt are the
 // reading core alone.
 gicv2_cpu_number :: proc "contextless" () -> u32 {
-	if dist == nil {
+	if gicd == nil {
 		return 0
 	}
-	mask := dist_read(GICD_ITARGETSR) & 0xFF
+	mask := gicd_read(GICD_ITARGETSR) & 0xFF
 	for i in u32(0) ..< 8 {
 		if mask & (1 << i) != 0 {
 			return i
@@ -217,11 +179,6 @@ gicv2_cpu_number :: proc "contextless" () -> u32 {
 
 // -- Shared peripheral lines --------------------------------------------------
 
-@(private = "file")
-line_valid :: proc "contextless" (gsi: int) -> bool {
-	return dist != nil && gsi >= 0 && gsi < gicv2_lines()
-}
-
 // gicv2_route aims one shared line at one core and leaves it masked, so a
 // driver can register its handler before the first interrupt arrives.
 gicv2_route :: proc "contextless" (gsi: int, vector: u8, cpu: u32) {
@@ -229,8 +186,8 @@ gicv2_route :: proc "contextless" (gsi: int, vector: u8, cpu: u32) {
 	if !line_valid(gsi) {
 		return
 	}
-	id := uintptr(VECTOR_IRQ_BASE + gsi)
-	dist_write_byte(GICD_ITARGETSR + id, u8(1 << (cpu & 7)))
+	id := VECTOR_IRQ_BASE + gsi
+	gicd_write_byte(GICD_ITARGETSR + uintptr(id), u8(1 << (cpu & 7)))
 
 	// Level-sensitive: a shared line stays asserted until its device is
 	// serviced, which is the handshake `docs/HARDWARE.md` section 3's `irq`
@@ -238,70 +195,32 @@ gicv2_route :: proc "contextless" (gsi: int, vector: u8, cpu: u32) {
 	// next read. `GICD_ICFGR` holds two bits a line, sixteen lines a word; the
 	// high bit is edge. Clearing it makes this SPI level, and touches no other
 	// line. Reset default is level on this part, so this is the explicit say.
-	cfg := GICD_ICFGR + uintptr(id / 16 * 4)
-	shift := u32((id % 16) * 2)
-	dist_write(cfg, dist_read(cfg) & ~(u32(0b10) << shift))
+	gicd_set_trigger(id, false)
 }
 
-// gicv2_set_edge makes a shared line edge-triggered, for a device that
-// pulses its line rather than holds it. The SMMU's event queue is one, and
-// its tree entry says so. A pulse on a level line is a fire the controller
-// may lose.
-gicv2_set_edge :: proc "contextless" (gsi: int) {
-	if !line_valid(gsi) {
-		return
-	}
-	id := uintptr(VECTOR_IRQ_BASE + gsi)
-	cfg := GICD_ICFGR + uintptr(id / 16 * 4)
-	shift := u32((id % 16) * 2)
-	dist_write(cfg, dist_read(cfg) | u32(0b10) << shift)
-}
-
-gicv2_set_mask :: proc "contextless" (gsi: int, masked: bool) {
-	if !line_valid(gsi) {
-		return
-	}
-	id := VECTOR_IRQ_BASE + gsi
-	bit := u32(1) << u32(id % 32)
-	if masked {
-		dist_write(GICD_ICENABLER + uintptr(id / 32 * 4), bit)
-	} else {
-		dist_write(GICD_ISENABLER + uintptr(id / 32 * 4), bit)
-	}
-}
-
-gicv2_masked :: proc "contextless" (gsi: int) -> bool {
-	if !line_valid(gsi) {
-		return true
-	}
-	id := VECTOR_IRQ_BASE + gsi
-	return dist_read(GICD_ISENABLER + uintptr(id / 32 * 4)) & (u32(1) << u32(id % 32)) == 0
-}
-
-// gicv2_vector_of is the vector a line arrives on, which is its id.
-gicv2_vector_of :: proc "contextless" (gsi: int) -> u8 {
-	if !line_valid(gsi) {
-		return 0
-	}
-	return u8(VECTOR_IRQ_BASE + gsi)
-}
+// The mask, the trigger and the vector of a shared line are the
+// distributor's, in `gicd.odin`.
+gicv2_set_edge :: gicd_set_edge
+gicv2_set_mask :: gicd_set_mask
+gicv2_masked :: gicd_masked
+gicv2_vector_of :: gicd_vector_of
 
 // -- Software-generated interrupts ---------------------------------------------
 
 // gicv2_send delivers software interrupt `vector` to core `cpu`.
 gicv2_send :: proc "contextless" (cpu: u32, vector: u8) {
-	if dist == nil {
+	if gicd == nil {
 		return
 	}
 	dsb_ish()
-	dist_write(GICD_SGIR, u32(1) << (16 + (cpu & 7)) | u32(vector & 0xF))
+	gicd_write(GICD_SGIR, u32(1) << (16 + (cpu & 7)) | u32(vector & 0xF))
 }
 
 // gicv2_stop_others sends the stop to every core but this one.
 gicv2_stop_others :: proc "contextless" () {
-	if dist == nil {
+	if gicd == nil {
 		return
 	}
 	dsb_ish()
-	dist_write(GICD_SGIR, SGIR_ALL_BUT_SELF | VECTOR_NMI)
+	gicd_write(GICD_SGIR, SGIR_ALL_BUT_SELF | VECTOR_NMI)
 }

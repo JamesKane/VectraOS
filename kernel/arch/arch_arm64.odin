@@ -30,11 +30,11 @@ mmio_read16 :: neutral.mmio_read16
 mmio_write16 :: neutral.mmio_write16
 mmio_read64 :: neutral.mmio_read64
 mmio_write64 :: neutral.mmio_write64
-console_available :: arm64.console_available
-console_write :: arm64.console_write
-console_write_byte :: arm64.console_write_byte
-console_read_byte :: arm64.console_read_byte
-set_device_tree :: arm64.set_device_tree
+console_available :: neutral.no_console_available
+console_write :: neutral.no_console_write
+console_write_byte :: neutral.no_console_write_byte
+console_read_byte :: neutral.no_console_read_byte
+set_device_tree :: neutral.no_device_tree
 
 // -- Execution control -------------------------------------------------------
 
@@ -49,36 +49,36 @@ in_interrupt :: arm64.in_interrupt
 VECTOR_TEST :: arm64.VECTOR_TEST
 raise_test_interrupt :: arm64.raise_test_interrupt
 
-fpu_hold :: arm64.fpu_hold
+fpu_hold :: neutral.fpu_hold
 
 // -- Paging ------------------------------------------------------------------
 
-PAGE_SIZE :: arm64.PAGE_SIZE
-TABLE_ENTRIES :: arm64.TABLE_ENTRIES
-TABLE_LEVELS :: arm64.TABLE_LEVELS
+PAGE_SIZE :: neutral.PAGE_SIZE
+TABLE_ENTRIES :: neutral.TABLE_ENTRIES
+TABLE_LEVELS :: neutral.TABLE_LEVELS
 
-Page_Table :: arm64.Page_Table
-Page_Table_Entry :: arm64.Page_Table_Entry
+Page_Table :: neutral.Page_Table
+Page_Table_Entry :: neutral.Page_Table_Entry
 
 read_cr3 :: arm64.read_cr3
 write_cr3 :: arm64.write_cr3
-Page_Flag :: arm64.Page_Flag
-Page_Flags :: arm64.Page_Flags
+Page_Flag :: neutral.Page_Flag
+Page_Flags :: neutral.Page_Flags
 
-ENTRY_EMPTY :: arm64.ENTRY_EMPTY
+ENTRY_EMPTY :: neutral.ENTRY_EMPTY
 
 enable_paging_features :: arm64.enable_paging_features
 nx_available :: arm64.nx_available
 global_available :: arm64.global_available
 max_leaf_level :: arm64.max_leaf_level
 
-table_index :: arm64.table_index
-level_size :: arm64.level_size
+table_index :: neutral.table_index
+level_size :: neutral.level_size
 is_canonical :: arm64.is_canonical
 
 leaf_encode :: arm64.leaf_encode
 branch_encode :: arm64.branch_encode
-entry_present :: arm64.entry_present
+entry_present :: neutral.entry_present
 entry_is_leaf :: arm64.entry_is_leaf
 entry_address :: arm64.entry_address
 entry_flags :: arm64.entry_flags
@@ -92,7 +92,7 @@ flush_all :: arm64.flush_all
 // -- Traps -------------------------------------------------------------------
 
 Trap :: arm64.Trap
-Trap_Kind :: arm64.Trap_Kind
+Trap_Kind :: neutral.Trap_Kind
 Trap_Handler :: arm64.Trap_Handler
 Trap_Frame :: arm64.Trap_Frame
 
@@ -125,8 +125,8 @@ BREAKPOINT_CODE :: arm64.BREAKPOINT_CODE
 BREAKPOINT_ADVANCE :: arm64.BREAKPOINT_ADVANCE
 fpu_image_sanitise :: arm64.fpu_image_sanitise
 FPU_AREA_SIZE :: arm64.FPU_AREA_SIZE
-Fault_Bit :: arm64.Fault_Bit
-Fault_Bits :: arm64.Fault_Bits
+Fault_Bit :: neutral.Fault_Bit
+Fault_Bits :: neutral.Fault_Bits
 fault_bits :: arm64.fault_bits
 
 // -- Ring 3 ------------------------------------------------------------------
@@ -141,7 +141,7 @@ syscall_frame_fpu :: arm64.syscall_frame_fpu
 // stack pointer sits: the procedure call standard wants the stack pointer sixteen-aligned at every call, and a fresh stack is.
 USER_STACK_TILT :: 0
 
-kernel_stack_top :: arm64.kernel_stack_top
+kernel_stack_top :: neutral.kernel_stack_top
 set_kernel_stack :: arm64.set_kernel_stack
 
 // The thread pointer for a program's TLS, `docs/DEVTOOLS.md` section 3.
@@ -157,27 +157,26 @@ user_trap_count :: arm64.user_trap_count
 
 VECTOR_SYSCALL :: arm64.VECTOR_SYSCALL
 
-syscall_available :: arm64.syscall_available
-syscall_init :: arm64.syscall_init
+syscall_available :: neutral.door_is_trap_entry
+syscall_init :: neutral.door_is_trap_entry
 set_syscall_dispatcher :: arm64.set_syscall_dispatcher
 syscall_armed :: arm64.syscall_armed
-syscall_masks_interrupts :: arm64.syscall_masks_interrupts
+syscall_masks_interrupts :: neutral.door_is_trap_entry
 current_sp :: arm64.current_sp
 syscall_entry_address :: arm64.syscall_entry_address
 percpu_kernel_stack :: arm64.percpu_kernel_stack
 percpu_id :: arm64.percpu_id
 percpu_critical_depth :: arm64.percpu_critical_depth
 percpu_ready :: arm64.percpu_ready
-Percpu :: arm64.Percpu
 
 // -- Scheduling --------------------------------------------------------------
 
 Resume :: arm64.Resume
 Interrupt_Handler :: arm64.Interrupt_Handler
-Cpu_Class :: arm64.Cpu_Class
+Cpu_Class :: neutral.Cpu_Class
 
-CAPACITY_FULL :: arm64.CAPACITY_FULL
-MIN_STACK_SIZE :: arm64.MIN_STACK_SIZE
+CAPACITY_FULL :: neutral.CAPACITY_FULL
+MIN_STACK_SIZE :: neutral.MIN_STACK_SIZE
 
 VECTOR_TIMER :: arm64.VECTOR_TIMER
 VECTOR_IRQ_BASE :: arm64.VECTOR_IRQ_BASE
@@ -191,8 +190,8 @@ VECTOR_NMI :: arm64.VECTOR_NMI
 set_interrupt_handler :: arm64.set_interrupt_handler
 resume_vector :: arm64.resume_vector
 
-inb :: arm64.inb
-outb :: arm64.outb
+inb :: neutral.no_port_io_inb
+outb :: neutral.no_port_io_outb
 thread_resume_init :: arm64.thread_resume_init
 ap_switch :: arm64.ap_switch
 cpu_class :: arm64.cpu_class

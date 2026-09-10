@@ -132,9 +132,43 @@ dtb_request := limine.DTB_Request {
 	revision = 0,
 }
 
-// The device-tree blob the bootloader passed, kept for `#t` to publish. Nil on
-// a machine with no tree, an x86 PC among them.
-boot_dtb: rawptr
+/*
+What the bootloader said, read once at the top of `kmain` and kept. It is
+the direct map's offset, where the image is, the device tree, and the list
+of cores. Each is a response the protocol may leave out, and a flag says whether
+one arrived. The device-tree blob is kept for `#t`, which builds `/dev/tree`
+from it once the heap and a namespace are up. Nil on a machine with no tree,
+an x86 PC among them. The blob is bootloader-reclaimable, so the tree server
+copies it rather than trusting this pointer to outlive boot.
+*/
+Boot_Facts :: struct {
+	hhdm:        u64,
+	has_hhdm:    bool,
+	kernel_phys: u64,
+	kernel_virt: u64,
+	has_layout:  bool,
+	dtb:         rawptr,
+	has_tree:    bool,
+	mp:          ^limine.MP_Response,
+}
+
+boot_facts: Boot_Facts
+
+// read_boot_facts copies what the bootloader answered into `boot_facts`,
+// before the console exists, so nothing after reads a response twice.
+read_boot_facts :: proc "contextless" () {
+	if r := hhdm_request.response; r != nil {
+		boot_facts.hhdm, boot_facts.has_hhdm = r.offset, true
+	}
+	if r := executable_address_request.response; r != nil {
+		boot_facts.kernel_phys, boot_facts.kernel_virt = r.physical_base, r.virtual_base
+		boot_facts.has_layout = true
+	}
+	if r := dtb_request.response; r != nil {
+		boot_facts.dtb, boot_facts.has_tree = r.dtb, true
+	}
+	boot_facts.mp = mp_request.response
+}
 
 /*
 Ask for the other cores.
@@ -191,14 +225,8 @@ kmain :: proc "c" () {
 	// The bootloader's word on where memory is, handed to the architecture
 	// before anything else: one port has to map the way to its console with
 	// it, and another names buffers to its firmware by physical address.
-	hhdm, kphys, kvirt: u64
-	if r := hhdm_request.response; r != nil {
-		hhdm = r.offset
-	}
-	if r := executable_address_request.response; r != nil {
-		kphys, kvirt = r.physical_base, r.virtual_base
-	}
-	arch.set_boot_layout(hhdm, kphys, kvirt)
+	read_boot_facts()
+	arch.set_boot_layout(boot_facts.hhdm, boot_facts.kernel_phys, boot_facts.kernel_virt)
 	serial = uart.init(arch.serial_console())
 	klog.serial = &serial
 	uart.write_string(&serial, "\n\n")
@@ -208,18 +236,14 @@ kmain :: proc "c" () {
 	// The kernel's own names, from the module the bootloader loaded beside
 	// it, so a panic from here on can name its addresses.
 	debuginfo_init()
-	if r := dtb_request.response; r != nil {
-		arch.set_device_tree(r.dtb)
-		// Kept for `#t`, which builds `/dev/tree` from it once the heap and a
-		// namespace are up. The blob is bootloader-reclaimable, so the tree
-		// server copies it rather than trusting this pointer to outlive boot.
-		boot_dtb = r.dtb
+	if boot_facts.has_tree {
+		arch.set_device_tree(boot_facts.dtb)
 	}
 	// The boot core's name goes with the tables, for the architecture that
 	// cannot read its own: a hart learns its id from whoever started it, and
 	// that was the bootloader.
 	boot_cpu := u64(0)
-	if mp := mp_request.response; mp != nil {
+	if mp := boot_facts.mp; mp != nil {
 		boot_cpu = limine.mp_bsp_id(mp)
 	}
 	init_traps(boot_cpu)
@@ -260,117 +284,137 @@ kmain :: proc "c" () {
 	init_namespace()
 	verify_namespace()
 
-	if init_scheduler() {
-		verify_scheduler()
-		if init_timer() {
-			verify_preemption()
-			verify_sleep_lock()
-			verify_rw_lock()
-			verify_sleep_queue()
-			verify_flush()
-			verify_payload()
-			verify_vfs_mnt()
-			verify_vfs_threads()
+	if !init_scheduler() {
+		finish_boot()
+	}
+	verify_scheduler()
+	if !init_timer() {
+		finish_boot()
+	}
+	// The interrupt controller, between the timer's attach and its first
+	// tick: on arm64 the tick arrives through it.
+	init_irq_controller()
+	if !start_timer() {
+		finish_boot()
+	}
+	verify_preemption()
+	verify_sleep_lock()
+	verify_rw_lock()
+	verify_sleep_queue()
+	verify_flush()
+	verify_payload()
+	verify_vfs_mnt()
+	verify_vfs_threads()
 
-			// Last, and only here. devfs is the first server whose reads
-			// park. It needs workers, a clock and a rendezvous, and the block
-			// above just finished proving all three.
-			if init_devfs() {
-				verify_devfs()
-			}
-			// The device tree as files, over `/dev`, so it must follow devfs.
-			// A machine with no tree publishes none, and this is a no-op.
-			init_tree()
-			verify_tree()
-			if init_srv() {
-				verify_srv()
-			}
-			// The environment device holds nothing until a process writes
-			// it; the user suite is what exercises it, from ring 3. The
-			// process device is exercised the same way, by ps, kill and ns.
-			init_env()
-			init_proc()
+	// Last, and only here. devfs is the first server whose reads
+	// park. It needs workers, a clock and a rendezvous, and the block
+	// above just finished proving all three.
+	if init_devfs() {
+		verify_devfs()
+	}
+	// The device tree as files, over `/dev`, so it must follow devfs.
+	// A machine with no tree publishes none, and this is a no-op.
+	init_tree()
+	verify_tree()
+	if init_srv() {
+		verify_srv()
+	}
+	// The environment device holds nothing until a process writes
+	// it; the user suite is what exercises it, from ring 3. The
+	// process device is exercised the same way, by ps, kill and ns.
+	init_env()
+	init_proc()
 
-			// The pipe needs nothing above the scheduler, and the wire needs
-			// the pipe. Both come before userland, because a posted pipe is
-			// what a process's service will be. A machine that cannot keep
-			// that contract should say so before inviting one.
-			if init_pipe() {
-				verify_pipe()
-				verify_wire()
-				verify_posted()
-			}
-
-			// The programs become files here, after the namespace has its
-			// conventional directories and before anything asks to run one.
-			// The loader below then has something to load.
-			init_bin()
-
-			// Last of all, because a keystroke needs somewhere to go. The
-			// bottom half hands its bytes to `/dev/cons`, which has to exist
-			// before the first interrupt is let through.
-						if init_keyboard() {
-				verify_keyboard()
-			}
-			// The mouse shares the keyboard's controller and comes after
-			// it, with the screen it is kept inside already measured.
-			if init_mouse() {
-				verify_mouse()
-			}
-
-			// The disk, after the console it binds beside and the keyboard
-			// that shares its interrupt controller. A machine with no virtio
-			// disk still boots; `#S` is then an empty directory.
-			if init_disk() {
-				verify_disk()
-			}
-			verify_smmu()
-			if init_rng() {
-				verify_rng()
-			}
-			if init_net() {
-				verify_net()
-			}
-			if init_sound() {
-				verify_sound()
-			}
-			verify_space()
-
-			// Last, because ring 3 needs everything above it. A space to run
-			// in, a scheduler to preempt it, a clock behind the preemption,
-			// and a fault path with somewhere to report to.
-			init_user()
-
-			// The disk's filesystem, served by a program the kernel just
-			// made able to run, and bound over /bin and /lib before the
-			// suite looks for its tools there. See `docs/FATFS.md`.
-			if init_fatfs() {
-				verify_fatfs()
-				// The console's own font past ASCII, now that `/lib/font`
-				// is on a mounted disk. The boot log above is ASCII and
-				// wanted none of it; from here a panic could spell a name
-				// with an accent in it. See `docs/DRAW.md`.
-				verify_console_font()
-				// And the disk of Vectra's own, whose server is a file on
-				// the first. See `docs/KFS.md`.
-				if init_kfs() {
-					verify_kfs()
-				}
-			}
-			verify_user()
-
-			// Last of all, the other cores. Every self-test above was written
-			// for one core and says so wherever it counts something, so they
-			// all run before a second core can change what they count.
-			if init_smp() {
-				verify_smp()
-			}
-		}
+	// The pipe needs nothing above the scheduler, and the wire needs
+	// the pipe. Both come before userland, because a posted pipe is
+	// what a process's service will be. A machine that cannot keep
+	// that contract should say so before inviting one.
+	if init_pipe() {
+		verify_pipe()
+		verify_wire()
+		verify_posted()
 	}
 
-	// Last of all, the first program: `init`, an rc script on the disk,
-	// which starts the window system and a shell in a window, and becomes
-	// the shell on this console. After every check, so none counts it.
+	// The programs become files here, after the namespace has its
+	// conventional directories and before anything asks to run one.
+	// The loader below then has something to load.
+	init_bin()
+
+	// Last of all, because a keystroke needs somewhere to go. The
+	// bottom half hands its bytes to `/dev/cons`, which has to exist
+	// before the first interrupt is let through.
+	if init_keyboard() {
+		verify_keyboard()
+	}
+	// The mouse shares the keyboard's controller and comes after
+	// it, with the screen it is kept inside already measured.
+	if init_mouse() {
+		verify_mouse()
+	}
+
+	// The disk, after the console it binds beside and the keyboard
+	// that shares its interrupt controller. A machine with no virtio
+	// disk still boots; `#S` is then an empty directory.
+	if init_pci() {
+		// The walker, before any kernel driver's first transfer: every function
+		// the scan finds gets a bypass entry before the part is enabled, so the
+		// drivers below keep handing devices physical addresses. `docs/SMMU.md`
+		// section 8.
+		init_smmu()
+		if init_disk() {
+			verify_disk()
+		}
+	}
+	verify_smmu()
+	if init_rng() {
+		verify_rng()
+	}
+	if init_net() {
+		verify_net()
+	}
+	if init_sound() {
+		verify_sound()
+	}
+	verify_space()
+
+	// Last, because ring 3 needs everything above it. A space to run
+	// in, a scheduler to preempt it, a clock behind the preemption,
+	// and a fault path with somewhere to report to.
+	init_user()
+
+	// The disk's filesystem, served by a program the kernel just
+	// made able to run, and bound over /bin and /lib before the
+	// suite looks for its tools there. See `docs/FATFS.md`.
+	if init_fatfs() {
+		verify_fatfs()
+		// The console's own font past ASCII, now that `/lib/font`
+		// is on a mounted disk. The boot log above is ASCII and
+		// wanted none of it; from here a panic could spell a name
+		// with an accent in it. See `docs/DRAW.md`.
+		verify_console_font()
+		// And the disk of Vectra's own, whose server is a file on
+		// the first. See `docs/KFS.md`.
+		if init_kfs() {
+			verify_kfs()
+		}
+	}
+	verify_user()
+
+	// Last of all, the other cores. Every self-test above was written
+	// for one core and says so wherever it counts something, so they
+	// all run before a second core can change what they count.
+	if init_smp() {
+		verify_smp()
+	}
+	finish_boot()
+}
+
+// finish_boot is the end of `kmain` on every path, with or without a
+// scheduler for the self-tests. Last of all, the first program:
+// `init`, an rc script on the disk, which starts the window system and a
+// shell in a window, and becomes the shell on this console. After every
+// check, so none counts it.
+finish_boot :: proc() -> ! {
 	init_init()
 
 	log_line(&klog, .Ok, "boot complete -- idling")
@@ -621,7 +665,7 @@ and that is a warning rather than a fault: the kernel runs on one core either
 way.
 */
 report_cpus :: proc "contextless" () {
-	mp := mp_request.response
+	mp := boot_facts.mp
 	if mp == nil {
 		log_line(&klog, .Warn, "bootloader lists no cores; running on one")
 		return
@@ -679,31 +723,31 @@ report_paging_mode :: proc "contextless" () {
 }
 
 report_kernel_layout :: proc "contextless" () {
-	if addr := executable_address_request.response; addr != nil {
+	if boot_facts.has_layout {
 		sink := begin(&klog)
 		libodin.put_str(&sink, "kernel phys ")
-		libodin.put_hex(&sink, addr.physical_base, 16)
+		libodin.put_hex(&sink, boot_facts.kernel_phys, 16)
 		libodin.put_str(&sink, " virt ")
-		libodin.put_hex(&sink, addr.virtual_base, 16)
+		libodin.put_hex(&sink, boot_facts.kernel_virt, 16)
 		emit(&klog, .Info, &sink)
 	}
 
-	if hhdm := hhdm_request.response; hhdm != nil {
+	if boot_facts.has_hhdm {
 		sink := begin(&klog)
 		libodin.put_str(&sink, "hhdm offset ")
-		libodin.put_hex(&sink, hhdm.offset, 16)
+		libodin.put_hex(&sink, boot_facts.hhdm, 16)
 		emit(&klog, .Info, &sink)
 	}
 
 	// The device tree, where there is one. Its size is the second word of
 	// its header, big-endian, which is the one thing worth reading here:
 	// a tree of a few bytes is a tree the firmware did not really pass.
-	if dtb := dtb_request.response; dtb != nil && dtb.dtb != nil {
-		b := cast([^]u8)dtb.dtb
+	if dtb := boot_facts.dtb; dtb != nil {
+		b := cast([^]u8)dtb
 		size := u64(b[4]) << 24 | u64(b[5]) << 16 | u64(b[6]) << 8 | u64(b[7])
 		sink := begin(&klog)
 		libodin.put_str(&sink, "device tree at ")
-		libodin.put_ptr(&sink, dtb.dtb)
+		libodin.put_ptr(&sink, dtb)
 		libodin.put_str(&sink, ", ")
 		libodin.put_size(&sink, size)
 		emit(&klog, .Info, &sink)
@@ -729,20 +773,18 @@ survey_memory :: proc "contextless" () -> bool #no_bounds_check {
 		log_line(&klog, .Fault, "no memory map -- cannot bring up the PMM")
 		return false
 	}
-	hhdm := hhdm_request.response
-	if hhdm == nil {
+	if !boot_facts.has_hhdm {
 		log_line(&klog, .Fault, "no HHDM offset -- cannot reach physical memory")
 		return false
 	}
-	addr := executable_address_request.response
-	if addr == nil {
+	if !boot_facts.has_layout {
 		log_line(&klog, .Fault, "no executable address -- cannot map the kernel image")
 		return false
 	}
 
-	boot_mem.hhdm = hhdm.offset
-	boot_mem.kernel_phys = addr.physical_base
-	boot_mem.kernel_virt = addr.virtual_base
+	boot_mem.hhdm = boot_facts.hhdm
+	boot_mem.kernel_phys = boot_facts.kernel_phys
+	boot_mem.kernel_virt = boot_facts.kernel_virt
 
 	for i in 0 ..< memmap.entry_count {
 		entry := memmap.entries[i]
@@ -761,7 +803,7 @@ survey_memory :: proc "contextless" () -> bool #no_bounds_check {
 	*/
 	if response := framebuffer_request.response; response != nil && response.framebuffer_count > 0 {
 		f := response.framebuffers[0]
-		base := u64(uintptr(f.address)) - hhdm.offset
+		base := u64(uintptr(f.address)) - boot_facts.hhdm
 		length := f.pitch * f.height
 		if !mem.covers(&boot_mem, base, length) {
 			mem.add_region(&boot_mem, base, length, .Framebuffer)
@@ -1010,9 +1052,8 @@ encoded again, and the two byte strings must match. See
 decoded structs.
 */
 verify_protocol :: proc() {
-	scratch := make([]u8, 4096)
+	scratch := scratch_or_skip("vectra9", 4096)
 	if scratch == nil {
-		log_line(&klog, .Fault, "vectra9 self-test skipped -- no memory for a scratch buffer")
 		return
 	}
 	defer delete(scratch)
@@ -1054,10 +1095,7 @@ namespace depends on.
 */
 init_namespace :: proc() {
 	if err := vfs.init(); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "namespace: root device failed -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "namespace: root device failed -- ", err)
 		return
 	}
 
@@ -1076,9 +1114,8 @@ machine, all over real 9P traffic. See `kernel/vfs/verify.odin` for what each
 check is for. This only reports.
 */
 verify_namespace :: proc() {
-	scratch := make([]u8, 1024)
+	scratch := scratch_or_skip("namespace", 1024)
 	if scratch == nil {
-		log_line(&klog, .Fault, "namespace self-test skipped -- no memory for a scratch buffer")
 		return
 	}
 	defer delete(scratch)
@@ -1093,9 +1130,9 @@ verify_namespace :: proc() {
 	Every allocation the self-test makes is also released by it, so the only
 	correct answer is zero.
 	*/
-	before := mem.live_objects(mem.heap_stats())
+	before := heap_live()
 	result := vfs.verify(scratch)
-	leaked := mem.live_objects(mem.heap_stats()) - before
+	leaked := heap_live() - before
 
 	ok := libodin.passed(result.tally) && leaked == 0
 
@@ -1182,14 +1219,12 @@ verify_scheduler :: proc() {
 }
 
 /*
-init_timer maps the local timer, calibrates it and starts the tick.
+init_timer maps the local timer, and `start_timer` calibrates it and starts
+the tick.
 
 On amd64 that is the local APIC, measured against the PIT. On arm64 the
 generic timer's rate is a register, and on riscv64 it is a line in the device
 tree. `arch.TIMER_REFERENCE` says which on the boot line.
-
-This is where interrupts come on for the first time in Vectra's life. Everything
-before it ran with them masked from the moment the bootloader handed over.
 */
 init_timer :: proc() -> bool {
 	if !arch.timer_available() {
@@ -1203,22 +1238,30 @@ init_timer :: proc() -> bool {
 
 	// A timer reached through registers in memory has a page to map first.
 	// One reached through system registers says so with a size of zero,
-	// which maps nothing and answers an address nothing reads.
-	phys := arch.timer_physical_base()
-	virt, err := mem.map_mmio(phys, arch.TIMER_MMIO_SIZE)
-	if err != .None {
-		sink := begin(&klog)
-		libodin.put_str(&sink, arch.TIMER_NAME)
-		libodin.put_str(&sink, ": cannot map registers at ")
-		libodin.put_hex(&sink, u64(phys), 16)
-		libodin.put_str(&sink, " -- ")
-		libodin.put_str(&sink, mem.describe(err))
-		emit(&klog, .Fault, &sink)
-		return false
+	// and there is nothing to map.
+	virt: rawptr
+	if arch.TIMER_MMIO_SIZE > 0 {
+		phys := arch.timer_physical_base()
+		mapped, err := mem.map_mmio(phys, arch.TIMER_MMIO_SIZE)
+		if err != .None {
+			log_map_failure(.Fault, arch.TIMER_NAME, "registers", phys, err)
+			return false
+		}
+		virt = mapped
 	}
 
 	arch.timer_attach(virt)
-	init_irq_controller()
+	return true
+}
+
+/*
+start_timer calibrates the local timer and starts the tick, on the
+interrupt controller `init_irq_controller` brought up between the two.
+
+This is where interrupts come on for the first time in Vectra's life. Everything
+before it ran with them masked from the moment the bootloader handed over.
+*/
+start_timer :: proc() -> bool {
 	if !sched.start_timer(TICK_HZ) {
 		sink := begin(&klog)
 		libodin.put_str(&sink, arch.TIMER_NAME)
@@ -1338,6 +1381,48 @@ report_failed :: proc(sink: ^libodin.Sink, t: libodin.Tally, leaked := 0) {
 	}
 }
 
+// log_errno writes one line that ends in an errno's name: the prefix says
+// what would not come up, and the name says why.
+log_errno :: proc(level: Log_Level, prefix: string, err: vfs.Errno) {
+	sink := begin(&klog)
+	libodin.put_str(&sink, prefix)
+	libodin.put_str(&sink, vectra9.errno_name(err))
+	emit(&klog, level, &sink)
+}
+
+// log_map_failure reports a register window the VMM would not map: whose it
+// was, what it was, where it was, and the VMM's reason.
+log_map_failure :: proc(level: Log_Level, who, what: string, phys: uintptr, err: mem.Error) {
+	sink := begin(&klog)
+	libodin.put_str(&sink, who)
+	libodin.put_str(&sink, ": cannot map ")
+	libodin.put_str(&sink, what)
+	libodin.put_str(&sink, " at ")
+	libodin.put_hex(&sink, u64(phys), 16)
+	libodin.put_str(&sink, " -- ")
+	libodin.put_str(&sink, mem.describe(err))
+	emit(&klog, level, &sink)
+}
+
+// scratch_or_skip is the buffer a self-test works in, or nil after a line
+// that says the test was skipped for want of one. The caller frees it.
+scratch_or_skip :: proc(label: string, n: int) -> []u8 {
+	scratch := make([]u8, n)
+	if scratch == nil {
+		sink := begin(&klog)
+		libodin.put_str(&sink, label)
+		libodin.put_str(&sink, " self-test skipped -- no memory for a scratch buffer")
+		emit(&klog, .Fault, &sink)
+	}
+	return scratch
+}
+
+// heap_live is how many objects the heap holds right now, read before and
+// after a self-test so a leak shows as a difference.
+heap_live :: proc() -> int {
+	return mem.live_objects(mem.heap_stats())
+}
+
 // report_sched prints one self-test result. The success wording differs
 // between the two halves, and the failure wording does not. That is the whole
 // reason this takes a procedure, rather than a format string there is no
@@ -1374,10 +1459,7 @@ a clock to give up against.
 */
 init_devfs :: proc() -> bool {
 	if err := devfs.init(vfs.boot_namespace, &kcon, &serial, &screen); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "devfs: #c would not come up -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "devfs: #c would not come up -- ", err)
 		return false
 	}
 
@@ -1398,14 +1480,11 @@ the bootloader gave no tree -- an x86 PC -- has none, and this is quietly a
 no-op. `docs/HARDWARE.md` section 3: the kernel knows what is there.
 */
 init_tree :: proc() {
-	if boot_dtb == nil {
+	if boot_facts.dtb == nil {
 		return
 	}
-	if err := tree.init(vfs.boot_namespace, boot_dtb); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "tree: #t would not come up -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Warn, &sink)
+	if err := tree.init(vfs.boot_namespace, boot_facts.dtb); err != vfs.OK {
+		log_errno(.Warn, "tree: #t would not come up -- ", err)
 		return
 	}
 	sink := begin(&klog)
@@ -1498,7 +1577,7 @@ tree is skipped. The two checks are that the directory opens and that the root
 names a `compatible`, which is the tree served as files at all.
 */
 verify_tree :: proc() {
-	if boot_dtb == nil {
+	if boot_facts.dtb == nil {
 		return
 	}
 	result: libodin.Tally
@@ -1555,9 +1634,8 @@ checks that matter are a read that parks until a byte arrives and a read that
 gives up and flushes. See `kernel/devfs/verify.odin`.
 */
 verify_devfs :: proc() {
-	scratch := make([]u8, 512)
+	scratch := scratch_or_skip("devfs", 512)
 	if scratch == nil {
-		log_line(&klog, .Fault, "devfs self-test skipped -- no memory for a scratch buffer")
 		return
 	}
 	defer delete(scratch)
@@ -1594,10 +1672,7 @@ and every process's is empty until it or its parent sets something. See
 */
 init_env :: proc() -> bool {
 	if err := env.init(vfs.boot_namespace); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "env: #e would not come up -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "env: #e would not come up -- ", err)
 		return false
 	}
 	sink := begin(&klog)
@@ -1616,10 +1691,7 @@ init_env :: proc() -> bool {
 // process, with status, ns, note and ctl in it. See `docs/PROC.md`.
 init_proc :: proc() -> bool {
 	if err := procfs.init(vfs.boot_namespace); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "proc: #p would not come up -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "proc: #p would not come up -- ", err)
 		return false
 	}
 	log_line(&klog, .Ok, "proc #p bound at /proc, a directory per process: status, ns, note, ctl")
@@ -1639,10 +1711,7 @@ so there is nothing for a worker thread to be doing while a caller waits.
 */
 init_srv :: proc() -> bool {
 	if err := srv.init(vfs.boot_namespace); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "srv: #s would not come up -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "srv: #s would not come up -- ", err)
 		return false
 	}
 
@@ -1664,16 +1733,15 @@ Vectra whose contents change, so it is the first whose cookie may not be a
 position. See `kernel/srv/verify.odin`.
 */
 verify_srv :: proc() {
-	scratch := make([]u8, 1024)
+	scratch := scratch_or_skip("srv", 1024)
 	if scratch == nil {
-		log_line(&klog, .Fault, "srv self-test skipped -- no memory for a scratch buffer")
 		return
 	}
 	defer delete(scratch)
 
-	before := mem.live_objects(mem.heap_stats())
+	before := heap_live()
 	result := srv.verify(scratch)
-	leaked := mem.live_objects(mem.heap_stats()) - before
+	leaked := heap_live() - before
 
 	ok := libodin.passed(result.tally) && leaked == 0
 
@@ -1724,9 +1792,8 @@ a writer. Then it closes the two ends, to see EOF and EPIPE come out the
 right sides. See `kernel/pipe/verify.odin`.
 */
 verify_pipe :: proc() {
-	scratch := make([]u8, 4096)
+	scratch := scratch_or_skip("pipe", 4096)
 	if scratch == nil {
-		log_line(&klog, .Fault, "pipe self-test skipped -- no memory for a scratch buffer")
 		return
 	}
 	defer delete(scratch)
@@ -1737,9 +1804,9 @@ verify_pipe :: proc() {
 	// And the threads dying on other cores, which no reap here frees. The
 	// bound is the one `pipe.verify` gives its own waits.
 	_ = sync.await(sched.all_reaped, nil, 200)
-	before := mem.live_objects(mem.heap_stats())
+	before := heap_live()
 	result := pipe.verify(scratch)
-	leaked := mem.live_objects(mem.heap_stats()) - before
+	leaked := heap_live() - before
 
 	ok := libodin.passed(result.tally) && leaked == 0
 
@@ -1776,13 +1843,7 @@ and what would retire it.
 init_irq_controller :: proc() -> bool {
 	virt, err := mem.map_mmio(arch.irq_physical_base(), arch.IRQ_MMIO_SIZE)
 	if err != .None {
-		sink := begin(&klog)
-		libodin.put_str(&sink, arch.IRQ_CONTROLLER_NAME)
-		libodin.put_str(&sink, ": cannot map registers at ")
-		libodin.put_hex(&sink, u64(arch.irq_physical_base()), 16)
-		libodin.put_str(&sink, " -- ")
-		libodin.put_str(&sink, mem.describe(err))
-		emit(&klog, .Warn, &sink)
+		log_map_failure(.Warn, arch.IRQ_CONTROLLER_NAME, "registers", arch.irq_physical_base(), err)
 		return false
 	}
 
@@ -1873,7 +1934,7 @@ init_mouse :: proc() -> bool {
 	if s == nil {
 		return false
 	}
-		vector := arch.VECTOR_IRQ_BASE + mouse.MOUSE_IRQ
+	vector := arch.VECTOR_IRQ_BASE + mouse.MOUSE_IRQ
 	if ok, why := mouse.init(vector, s.width, s.height, devfs.mouse_sink); !ok {
 		sink := begin(&klog)
 		libodin.put_str(&sink, "no mouse: ")
@@ -1944,8 +2005,7 @@ mouse_read: Mouse_Read
 
 @(private = "file")
 mouse_read_thread :: proc "contextless" (arg: rawptr) {
-	context = runtime.default_context()
-	context.allocator = mem.allocator()
+	context = mem.kernel_context()
 	_ = arg
 	mouse_read.n, mouse_read.err = vfs.chan_read(mouse_read.c, 0, mouse_read.buf[:])
 	intrinsics.volatile_store(&mouse_read.done, true)
@@ -2037,17 +2097,11 @@ thing it replaces.
 */
 init_bin :: proc() -> bool {
 	if err := user.bin_init(vfs.boot_namespace); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "bin: #b would not come up -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "bin: #b would not come up -- ", err)
 		return false
 	}
 	if err := user.lib_init(vfs.boot_namespace); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "lib: #l would not come up -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "lib: #l would not come up -- ", err)
 		return false
 	}
 
@@ -2060,7 +2114,8 @@ init_bin :: proc() -> bool {
 }
 
 /*
-init_disk brings up the PCI bus, the virtio-blk driver and `#S`.
+init_pci brings up the PCI bus, and `init_disk` the virtio-blk driver and
+`#S` over it.
 
 The bus first, because the driver reads configuration space through it; on
 the boards that is a memory window to map, and on the PC it is two ports
@@ -2071,18 +2126,11 @@ and binds the tree into `/dev`.
 Every step degrades rather than fails. No PCI window still boots. No disk
 still boots, and `#S` is an empty directory. The line says what came up.
 */
-init_disk :: proc() -> bool {
+init_pci :: proc() -> bool {
 	if arch.PCI_CONFIG_MMIO_SIZE > 0 {
 		virt, err := mem.map_mmio(arch.pci_config_physical_base(), arch.PCI_CONFIG_MMIO_SIZE)
 		if err != .None {
-			sink := begin(&klog)
-			libodin.put_str(&sink, "pci: cannot map ")
-			libodin.put_str(&sink, arch.PCI_CONFIG_NAME)
-			libodin.put_str(&sink, " at ")
-			libodin.put_hex(&sink, u64(arch.pci_config_physical_base()), 16)
-			libodin.put_str(&sink, " -- ")
-			libodin.put_str(&sink, mem.describe(err))
-			emit(&klog, .Warn, &sink)
+			log_map_failure(.Warn, "pci", arch.PCI_CONFIG_NAME, arch.pci_config_physical_base(), err)
 			return false
 		}
 		arch.pci_attach(virt)
@@ -2091,19 +2139,13 @@ init_disk :: proc() -> bool {
 		log_line(&klog, .Warn, "pci: no configuration access; no disk")
 		return false
 	}
+	return true
+}
 
-	// The walker, before any kernel driver's first transfer: every function
-	// the scan finds gets a bypass entry before the part is enabled, so the
-	// drivers below keep handing devices physical addresses. `docs/SMMU.md`
-	// section 8.
-	init_smmu()
-
+init_disk :: proc() -> bool {
 	disks := virtio.init()
 	if err := sd.init(vfs.boot_namespace); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "sd: #S would not come up -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "sd: #S would not come up -- ", err)
 		return false
 	}
 
@@ -2556,10 +2598,7 @@ init_fatfs :: proc() -> bool {
 		return false
 	}
 	if err := srv.mount(ns, "/srv/esp", "/n/esp"); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "fatfs: /srv/esp would not mount at /n/esp -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "fatfs: /srv/esp would not mount at /n/esp -- ", err)
 		return false
 	}
 	for pair in ([][2]string{{"/n/esp/vectra/bin", "/bin"}, {"/n/esp/vectra/lib", "/lib"}, {"/n/esp/vectra/adm", "/adm"}}) {
@@ -2678,8 +2717,7 @@ kernel heap as `context.allocator`, which every kernel-side reader needs and
 */
 console_font_read :: proc "contextless" (data: rawptr, path: string, into: []u8) -> int {
 	_ = data
-	context = runtime.default_context()
-	context.allocator = mem.allocator()
+	context = mem.kernel_context()
 	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
 	if err != vfs.OK {
 		return 0
@@ -2788,10 +2826,7 @@ init_kfs :: proc() -> bool {
 		return false
 	}
 	if err := srv.mount(ns, "/srv/kfs", "/usr", uname = user.hostowner_name()); err != vfs.OK {
-		sink := begin(&klog)
-		libodin.put_str(&sink, "kfs: /srv/kfs would not mount at /usr -- ")
-		libodin.put_str(&sink, vectra9.errno_name(err))
-		emit(&klog, .Fault, &sink)
+		log_errno(.Fault, "kfs: /srv/kfs would not mount at /usr -- ", err)
 		return false
 	}
 	log_line(&klog, .Ok, "kfs /srv/kfs mounted at /usr from /dev/sd1/plan9; /usr/glenda is home")

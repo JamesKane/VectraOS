@@ -12,14 +12,12 @@ answers below say which.
 */
 package arm64
 
-syscall_available :: proc "contextless" () -> bool {
-	return true
-}
+import "kernel:arch/neutral"
+
+syscall_available :: neutral.door_is_trap_entry
 
 // syscall_init has nothing to arm. The vector table is the door.
-syscall_init :: proc "contextless" () -> bool {
-	return true
-}
+syscall_init :: neutral.door_is_trap_entry
 
 // syscall_armed reports whether the table a program's `svc` will reach is
 // the kernel's.
@@ -29,9 +27,7 @@ syscall_armed :: proc "contextless" () -> bool {
 
 // An exception masks IRQs on entry, architecturally. Nothing lands on the
 // program's stack in any case, because the exception takes SP_EL1.
-syscall_masks_interrupts :: proc "contextless" () -> bool {
-	return true
-}
+syscall_masks_interrupts :: neutral.door_is_trap_entry
 
 syscall_entry_address :: proc "contextless" () -> uintptr {
 	return uintptr(&vectra_vectors)

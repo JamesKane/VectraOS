@@ -15,46 +15,20 @@ drivers/pci` reports as an empty bus rather than trusting.
 */
 package arm64
 
-import "base:intrinsics"
+import "kernel:arch/neutral"
 
 ECAM_PHYS :: uintptr(0x40_1000_0000)
 
-// One bus of the window.
-PCI_CONFIG_MMIO_SIZE :: u64(1 << 20)
-PCI_CONFIG_NAME :: "ecam"
-
-@(private = "file")
-ecam: rawptr
+// The window is `neutral/ecam.odin`'s: one bus of it, reached by the same
+// loads and stores on both boards. Only the base is this port's.
+PCI_CONFIG_MMIO_SIZE :: neutral.ECAM_BUS_SIZE
+PCI_CONFIG_NAME :: neutral.ECAM_NAME
 
 pci_config_physical_base :: proc "contextless" () -> uintptr {
 	return ECAM_PHYS
 }
 
-pci_attach :: proc "contextless" (virt: rawptr) {
-	ecam = virt
-}
-
-pci_available :: proc "contextless" () -> bool {
-	return ecam != nil
-}
-
-@(private = "file")
-register :: proc "contextless" (bus, dev, fn: u8, offset: u16) -> ^u32 {
-	at := uintptr(bus) << 20 | uintptr(dev & 31) << 15 | uintptr(fn & 7) << 12 | uintptr(offset & 0xFFC)
-	return cast(^u32)(uintptr(ecam) + at)
-}
-
-// pci_read32 reads the aligned 32-bit register `offset` names, on bus 0.
-pci_read32 :: proc "contextless" (bus, dev, fn: u8, offset: u16) -> u32 {
-	if ecam == nil || bus != 0 {
-		return 0xFFFF_FFFF
-	}
-	return intrinsics.volatile_load(register(bus, dev, fn, offset))
-}
-
-pci_write32 :: proc "contextless" (bus, dev, fn: u8, offset: u16, value: u32) {
-	if ecam == nil || bus != 0 {
-		return
-	}
-	intrinsics.volatile_store(register(bus, dev, fn, offset), value)
-}
+pci_attach :: neutral.ecam_attach
+pci_available :: neutral.ecam_available
+pci_read32 :: neutral.ecam_read32
+pci_write32 :: neutral.ecam_write32

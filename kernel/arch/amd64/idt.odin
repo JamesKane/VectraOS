@@ -102,7 +102,7 @@ Resume :: struct {
 // The 512 bytes and 16-byte alignment FXSAVE requires. `FPU_AREA_RESERVE`
 // includes room to align a pointer that arrived anywhere.
 FPU_AREA_SIZE :: 512
-FPU_AREA_ALIGN :: 16
+FPU_AREA_ALIGN :: neutral.FPU_AREA_ALIGN
 FPU_AREA_RESERVE :: FPU_AREA_SIZE + FPU_AREA_ALIGN
 
 /*
@@ -477,31 +477,10 @@ trap_dispatch :: proc "c" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no_bo
 	is, so the sign bit is the whole test. Swap back so the report can run,
 	then stop with the vector and the address that faulted.
 	*/
-	if !from_user && read_msr(MSR_GS_BASE) >> 63 == 0 {
+	paranoid := !from_user && read_msr(MSR_GS_BASE) >> 63 == 0
+	if paranoid {
 		swapgs()
-		name, kind := vector_info(frame.vector)
-		_ = name
-		trap := Trap {
-			kind       = kind,
-			vector     = frame.vector,
-			name       = "trap in ring 0 on the program's GS base, after a swapgs",
-			error_code = frame.error_code,
-			has_error  = vector_has_error_code(frame.vector),
-			ip         = uintptr(frame.rip),
-			sp         = uintptr(frame.rsp),
-			frame      = frame,
-			user       = false,
-		}
-		if kind == .Page_Fault {
-			trap.fault_address = read_cr2()
-		}
-		if handler != nil && handler(&trap) {
-			return
-		}
-		halt_forever()
-	}
-
-	if frame.vector < VECTOR_COUNT {
+	} else if frame.vector < VECTOR_COUNT {
 		if h := vectors[frame.vector]; h != nil {
 			// The one bracket that makes `in_interrupt` true. A top half runs
 			// here, on the interrupted thread's stack, and may not park: if it
@@ -529,6 +508,9 @@ trap_dispatch :: proc "c" (frame: ^Trap_Frame, fpu: rawptr, out: ^Resume) #no_bo
 		sp         = uintptr(frame.rsp),
 		frame      = frame,
 		user       = from_user,
+	}
+	if paranoid {
+		trap.name = "trap in ring 0 on the program's GS base, after a swapgs"
 	}
 	if kind == .Page_Fault {
 		// CR2 is live only until the next page fault. An interrupt gate already
@@ -565,10 +547,7 @@ These two words are what the CPU itself puts there after `finit` and a reset.
 exceptions masked, and round-to-nearest.
 */
 fpu_init :: proc "contextless" (area: rawptr) {
-	bytes := ([^]u8)(area)
-	for i in 0 ..< FPU_AREA_SIZE {
-		bytes[i] = 0
-	}
+	intrinsics.mem_zero(area, FPU_AREA_SIZE)
 	(^u16)(area)^ = 0x037F // FCW
 	(^u32)(rawptr(uintptr(area) + 24))^ = 0x1F80 // MXCSR
 }

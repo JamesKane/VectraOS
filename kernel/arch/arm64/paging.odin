@@ -220,9 +220,7 @@ branch_encode :: proc "contextless" (phys: uintptr, flags: Page_Flags) -> Page_T
 	return Page_Table_Entry((u64(phys) & PTE_ADDR_MASK) | PTE_VALID | PTE_TABLE)
 }
 
-entry_present :: proc "contextless" (e: Page_Table_Entry) -> bool {
-	return u64(e) & PTE_VALID != 0
-}
+entry_present :: neutral.entry_present
 
 // entry_is_leaf reports whether a walk stops at this entry. Level 1 entries
 // are always leaves. Above that, a clear table bit means a block.
@@ -263,7 +261,7 @@ entry_flags :: proc "contextless" (e: Page_Table_Entry) -> Page_Flags {
 	return flags
 }
 
-ENTRY_EMPTY :: Page_Table_Entry(0)
+ENTRY_EMPTY :: neutral.ENTRY_EMPTY
 
 // -- Address space switching and TLB --------------------------------------------
 

@@ -22,7 +22,6 @@ that logged for itself would interleave with the boot core's line.
 package kernel
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:arch"
 import "kernel:boot/limine"
@@ -105,8 +104,7 @@ ap_main :: proc "c" (arg: rawptr) -> ! {
 	_ = arch.syscall_init()
 	arch.timer_attach_here()
 
-	context = runtime.default_context()
-	context.allocator = mem.allocator()
+	context = mem.kernel_context()
 
 	if !sched.init_ap(b.id, b.stack) || !sched.start_timer_here() {
 		// No thread to become and no clock to be preempted by. This core
@@ -134,7 +132,7 @@ or a bootloader without the feature. The kernel is complete on one core, so
 that is a fact and not a fault.
 */
 init_smp :: proc() -> bool {
-	mp := mp_request.response
+	mp := boot_facts.mp
 	if mp == nil || mp.cpu_count <= 1 {
 		log_line(&klog, .Info, "smp: one core, and nothing to start")
 		return false

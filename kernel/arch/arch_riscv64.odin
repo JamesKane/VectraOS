@@ -49,36 +49,36 @@ in_interrupt :: riscv64.in_interrupt
 VECTOR_TEST :: riscv64.VECTOR_TEST
 raise_test_interrupt :: riscv64.raise_test_interrupt
 
-fpu_hold :: riscv64.fpu_hold
+fpu_hold :: neutral.fpu_hold
 
 // -- Paging ------------------------------------------------------------------
 
-PAGE_SIZE :: riscv64.PAGE_SIZE
-TABLE_ENTRIES :: riscv64.TABLE_ENTRIES
-TABLE_LEVELS :: riscv64.TABLE_LEVELS
+PAGE_SIZE :: neutral.PAGE_SIZE
+TABLE_ENTRIES :: neutral.TABLE_ENTRIES
+TABLE_LEVELS :: neutral.TABLE_LEVELS
 
-Page_Table :: riscv64.Page_Table
-Page_Table_Entry :: riscv64.Page_Table_Entry
+Page_Table :: neutral.Page_Table
+Page_Table_Entry :: neutral.Page_Table_Entry
 
 read_cr3 :: riscv64.read_cr3
 write_cr3 :: riscv64.write_cr3
-Page_Flag :: riscv64.Page_Flag
-Page_Flags :: riscv64.Page_Flags
+Page_Flag :: neutral.Page_Flag
+Page_Flags :: neutral.Page_Flags
 
-ENTRY_EMPTY :: riscv64.ENTRY_EMPTY
+ENTRY_EMPTY :: neutral.ENTRY_EMPTY
 
 enable_paging_features :: riscv64.enable_paging_features
 nx_available :: riscv64.nx_available
 global_available :: riscv64.global_available
 max_leaf_level :: riscv64.max_leaf_level
 
-table_index :: riscv64.table_index
-level_size :: riscv64.level_size
-is_canonical :: riscv64.is_canonical
+table_index :: neutral.table_index
+level_size :: neutral.level_size
+is_canonical :: neutral.is_canonical_47
 
 leaf_encode :: riscv64.leaf_encode
 branch_encode :: riscv64.branch_encode
-entry_present :: riscv64.entry_present
+entry_present :: neutral.entry_present
 entry_is_leaf :: riscv64.entry_is_leaf
 entry_address :: riscv64.entry_address
 entry_flags :: riscv64.entry_flags
@@ -92,7 +92,7 @@ flush_all :: riscv64.flush_all
 // -- Traps -------------------------------------------------------------------
 
 Trap :: riscv64.Trap
-Trap_Kind :: riscv64.Trap_Kind
+Trap_Kind :: neutral.Trap_Kind
 Trap_Handler :: riscv64.Trap_Handler
 Trap_Frame :: riscv64.Trap_Frame
 
@@ -129,8 +129,8 @@ BREAKPOINT_CODE :: riscv64.BREAKPOINT_CODE
 BREAKPOINT_ADVANCE :: riscv64.BREAKPOINT_ADVANCE
 fpu_image_sanitise :: riscv64.fpu_image_sanitise
 FPU_AREA_SIZE :: riscv64.FPU_AREA_SIZE
-Fault_Bit :: riscv64.Fault_Bit
-Fault_Bits :: riscv64.Fault_Bits
+Fault_Bit :: neutral.Fault_Bit
+Fault_Bits :: neutral.Fault_Bits
 fault_bits :: riscv64.fault_bits
 
 // -- Ring 3 ------------------------------------------------------------------
@@ -145,7 +145,7 @@ syscall_frame_fpu :: riscv64.syscall_frame_fpu
 // stack pointer sits: the procedure call standard wants the stack pointer sixteen-aligned at every call, and a fresh stack is.
 USER_STACK_TILT :: 0
 
-kernel_stack_top :: riscv64.kernel_stack_top
+kernel_stack_top :: neutral.kernel_stack_top
 set_kernel_stack :: riscv64.set_kernel_stack
 
 // The thread pointer for a program's TLS, `docs/DEVTOOLS.md` section 3.
@@ -161,27 +161,26 @@ user_trap_count :: riscv64.user_trap_count
 
 VECTOR_SYSCALL :: riscv64.VECTOR_SYSCALL
 
-syscall_available :: riscv64.syscall_available
-syscall_init :: riscv64.syscall_init
+syscall_available :: neutral.door_is_trap_entry
+syscall_init :: neutral.door_is_trap_entry
 set_syscall_dispatcher :: riscv64.set_syscall_dispatcher
 syscall_armed :: riscv64.syscall_armed
-syscall_masks_interrupts :: riscv64.syscall_masks_interrupts
+syscall_masks_interrupts :: neutral.door_is_trap_entry
 current_sp :: riscv64.current_sp
 syscall_entry_address :: riscv64.syscall_entry_address
 percpu_kernel_stack :: riscv64.percpu_kernel_stack
 percpu_id :: riscv64.percpu_id
 percpu_critical_depth :: riscv64.percpu_critical_depth
 percpu_ready :: riscv64.percpu_ready
-Percpu :: riscv64.Percpu
 
 // -- Scheduling --------------------------------------------------------------
 
 Resume :: riscv64.Resume
 Interrupt_Handler :: riscv64.Interrupt_Handler
-Cpu_Class :: riscv64.Cpu_Class
+Cpu_Class :: neutral.Cpu_Class
 
-CAPACITY_FULL :: riscv64.CAPACITY_FULL
-MIN_STACK_SIZE :: riscv64.MIN_STACK_SIZE
+CAPACITY_FULL :: neutral.CAPACITY_FULL
+MIN_STACK_SIZE :: neutral.MIN_STACK_SIZE
 
 VECTOR_TIMER :: riscv64.VECTOR_TIMER
 VECTOR_IRQ_BASE :: riscv64.VECTOR_IRQ_BASE
@@ -195,12 +194,12 @@ VECTOR_NMI :: riscv64.VECTOR_NMI
 set_interrupt_handler :: riscv64.set_interrupt_handler
 resume_vector :: riscv64.resume_vector
 
-inb :: riscv64.inb
-outb :: riscv64.outb
+inb :: neutral.no_port_io_inb
+outb :: neutral.no_port_io_outb
 thread_resume_init :: riscv64.thread_resume_init
 ap_switch :: riscv64.ap_switch
-cpu_class :: riscv64.cpu_class
-cpu_model :: riscv64.cpu_model
+cpu_class :: neutral.one_class_cpu_class
+cpu_model :: neutral.one_class_cpu_model
 
 yield_now :: riscv64.yield_trap
 
@@ -245,9 +244,7 @@ irq_route :: riscv64.plic_route
 irq_set_mask :: riscv64.plic_set_mask
 
 // irq_set_edge: a PLIC has no trigger type to set, so this is a no-op.
-irq_set_edge :: proc "contextless" (gsi: int) {
-	_ = gsi
-}
+irq_set_edge :: neutral.no_irq_set_edge
 irq_masked :: riscv64.plic_masked
 irq_vector_of :: riscv64.plic_vector_of
 irq_ack :: riscv64.timer_ack

@@ -94,11 +94,6 @@ halt_forever :: proc "contextless" () -> ! {
 
 // rdmsr splits its result across edx:eax, so the asm block returns both halves
 // and we recombine here.
-MSR_Pair :: struct {
-	lo: u32,
-	hi: u32,
-}
-
 read_msr :: proc "contextless" (msr: u32) -> u64 {
 	lo, hi, _ := asm(m: u32) -> (lo, hi, m2: u32) [m -> m2 = %ecx, lo = %eax, hi = %edx, #volatile] { rdmsr }(msr)
 	return u64(hi) << 32 | u64(lo)
@@ -162,7 +157,6 @@ CR0_MP :: u64(1) << 1   // Monitor coprocessor
 CR0_EM :: u64(1) << 2   // Emulation -- must be clear for SSE
 CR0_WP :: u64(1) << 16  // Supervisor writes obey the read-only page bit
 
-CR4_PSE        :: u64(1) << 4   // 4 MiB pages in 32-bit paging; always on in long mode
 CR4_PGE        :: u64(1) << 7   // Global pages survive a CR3 reload
 CR4_OSFXSR     :: u64(1) << 9   // FXSAVE/FXRSTOR and SSE enabled
 CR4_OSXMMEXCPT :: u64(1) << 10  // Unmasked SSE exceptions raise #XF
@@ -245,8 +239,6 @@ CPUID_Register :: enum {
 MSR_EFER :: u32(0xC000_0080)
 
 EFER_SCE  :: u64(1) << 0  // SYSCALL/SYSRET
-EFER_LME  :: u64(1) << 8  // Long mode enable
-EFER_LMA  :: u64(1) << 10 // Long mode active (read-only)
 EFER_NXE  :: u64(1) << 11 // No-execute page bit is honoured rather than reserved
 
 read_efer :: proc "contextless" () -> u64 {

@@ -9,21 +9,16 @@ the one table.
 */
 package riscv64
 
-syscall_available :: proc "contextless" () -> bool {
-	return true
-}
+import "kernel:arch/neutral"
 
-syscall_init :: proc "contextless" () -> bool {
-	return true
-}
+syscall_available :: neutral.door_is_trap_entry
+syscall_init :: neutral.door_is_trap_entry
 
 syscall_armed :: proc "contextless" () -> bool {
 	return read_stvec() == u64(uintptr(&vectra_vectors))
 }
 
-syscall_masks_interrupts :: proc "contextless" () -> bool {
-	return true
-}
+syscall_masks_interrupts :: neutral.door_is_trap_entry
 
 syscall_entry_address :: proc "contextless" () -> uintptr {
 	return uintptr(&vectra_vectors)

@@ -19,7 +19,7 @@ this is the day `early.odin` grows a second lookup.
 */
 package riscv64
 
-import "base:intrinsics"
+import "kernel:arch/neutral"
 
 PLIC_PHYS :: uintptr(0x0C00_0000)
 
@@ -39,12 +39,12 @@ PLIC_SOURCES :: 96
 
 @(private = "file")
 plic_read :: proc "contextless" (offset: uintptr) -> u32 {
-	return intrinsics.volatile_load(cast(^u32)(uintptr(mmio) + offset))
+	return neutral.mmio_read32(mmio, offset)
 }
 
 @(private = "file")
 plic_write :: proc "contextless" (offset: uintptr, value: u32) {
-	intrinsics.volatile_store(cast(^u32)(uintptr(mmio) + offset), value)
+	neutral.mmio_write32(mmio, offset, value)
 }
 
 @(private = "file")

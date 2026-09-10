@@ -121,10 +121,7 @@ general protection fault on use, rather than a page fault. That is a far less
 informative way to find out. The VMM checks before mapping so the complaint
 names the address.
 */
-is_canonical :: proc "contextless" (virt: uintptr) -> bool {
-	top := u64(virt) >> 47
-	return top == 0 || top == 0x1FFFF
-}
+is_canonical :: neutral.is_canonical_47
 
 // -- Entry encoding ----------------------------------------------------------
 
@@ -182,9 +179,7 @@ branch_encode :: proc "contextless" (phys: uintptr, flags: Page_Flags) -> Page_T
 	return Page_Table_Entry(e)
 }
 
-entry_present :: proc "contextless" (e: Page_Table_Entry) -> bool {
-	return u64(e) & PTE_PRESENT != 0
-}
+entry_present :: neutral.entry_present
 
 // entry_is_leaf reports whether a walk stops at this entry. Level 1 entries
 // are always leaves. Above that it takes the large-page bit.
@@ -235,7 +230,7 @@ entry_flags :: proc "contextless" (e: Page_Table_Entry) -> Page_Flags {
 	return flags
 }
 
-ENTRY_EMPTY :: Page_Table_Entry(0)
+ENTRY_EMPTY :: neutral.ENTRY_EMPTY
 
 // -- Address space switching and TLB -----------------------------------------
 
