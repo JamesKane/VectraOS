@@ -67,7 +67,6 @@ MARK_DFLTNOTE :: u64(0x4446_4C54_4446_4C54) // DFLTDFLT
 MARK_EXECER :: u64(0x4558_4543_4558_4543) // EXECEXEC
 MARK_NOWAITER :: u64(0x4E4F_5741_4E4F_5741) // NOWANOWA
 MARK_BULKIO :: u64(0x4255_4C4B_4255_4C4B) // BULKBULK
-MARK_FORGER :: u64(0x464F_5247_464F_5247) // FORGFORG
 MARK_ANON :: u64(0x414E_4F4E_414E_4F4E) // ANONANON
 MARK_STORETEST :: u64(0x53_54_4F_52_53_54_4F_52) // STORSTOR
 
@@ -392,11 +391,9 @@ NOWAITER_CHILD_RAN :: 8 // The child's witness cell, byte offset 64
 // Bounded the way `spin`'s is.
 NOWAITER_CHILD_STOP :: 9
 
-// What `nowaiter`'s child exits with, and the flags the fork takes:
-// RFPROC to make a child, RFNOWAIT to detach it. Written twice, here and as
-// immediates in the blob.
+// What `nowaiter`'s child exits with. The flags the fork takes, RFPROC to
+// make a child and RFNOWAIT to detach it, are immediates in the blob.
 NOWAITER_CHILD_STATUS :: u64(0x5A)
-NOWAITER_FLAGS :: u64(0x10 | 0x40)
 
 /*
 Where `bulkio` keeps its answers -- one cell per call, in call order.

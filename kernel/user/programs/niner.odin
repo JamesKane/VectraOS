@@ -15,6 +15,7 @@ self-test recognises as the wire going wrong.
 package programs
 
 import "vsys:abi"
+import "vsys:libodin"
 import "vsys:libuser"
 import "vsys:vectra9"
 
@@ -43,13 +44,6 @@ put32 :: proc "contextless" (b: []u8, at: int, v: int) {
 	b[at + 1] = u8(v >> 8)
 	b[at + 2] = u8(v >> 16)
 	b[at + 3] = u8(v >> 24)
-}
-
-@(private = "file")
-put64 :: proc "contextless" (b: []u8, at: int, v: u64) {
-	for i in 0 ..< 8 {
-		b[at + i] = u8(v >> (8 * u64(i)))
-	}
 }
 
 niner :: proc "contextless" (cells: ^Cells) -> ! {
@@ -91,7 +85,7 @@ niner :: proc "contextless" (cells: ^Cells) -> ! {
 			frame[4] = u8(vectra9.Kind.Rattach)
 			frame[7] = 0x80
 			put32(frame, 8, 0)
-			put64(frame, 12, 1)
+			libodin.put_u64le(frame[12:], 1)
 			reply = 20
 		case u8(vectra9.Kind.Twalk): // one file qid per name asked for
 			n := get16(frame, 15)
@@ -101,7 +95,7 @@ niner :: proc "contextless" (cells: ^Cells) -> ! {
 			for _ in 0 ..< n {
 				frame[at] = 0
 				put32(frame, at + 1, 0)
-				put64(frame, at + 5, 2)
+				libodin.put_u64le(frame[at + 5:], 2)
 				at += 13
 			}
 			reply = get16(frame, 7) * 13 + 9
@@ -111,7 +105,7 @@ niner :: proc "contextless" (cells: ^Cells) -> ! {
 			frame[4] = u8(vectra9.Kind.Rlopen)
 			frame[7] = 0
 			put32(frame, 8, 0)
-			put64(frame, 12, 2)
+			libodin.put_u64le(frame[12:], 2)
 			put32(frame, 20, 0)
 			reply = 24
 		case u8(vectra9.Kind.Twrite): // the payload to the console, the count back

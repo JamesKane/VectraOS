@@ -34,7 +34,6 @@ package user
 
 import "vsys:libodin"
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:arch"
 import "kernel:devfs"
@@ -95,6 +94,12 @@ channel :: proc "contextless" (s: ^fb.Surface, value: u32, shift: u8, size: u8) 
 		return 0
 	}
 	return (value >> shift) & ((u32(1) << size) - 1)
+}
+
+// fdt_level is true when the descriptor tables hold what they held at `arg`.
+@(private = "file")
+fdt_level :: proc "contextless" (arg: rawptr) -> bool {
+	return fdt_stats() == (^int)(arg)^
 }
 
 // fault_bits is what the CPU said about a fault, in the neutral words
@@ -187,11 +192,10 @@ run_program :: proc(
 	arg: u64,
 	what: string,
 ) -> ^Process {
-	p, err := load(name, code, arg)
-	if !check(r, err == .None && p != nil, what) {
+	p := start_blob(r, name, code, what, arg)
+	if p == nil {
 		return nil
 	}
-	r.programs += 1
 
 	// The program's name in the line, because ten tests share this helper
 	// and a timeout that says only "it" costs a boot to place.
@@ -247,6 +251,149 @@ finish :: proc(r: ^Result, p: ^Process, what: string) {
 		return
 	}
 	check(r, destroy(p), what)
+}
+
+/*
+start_blob loads one blob and counts it, under the site's own check name.
+
+Every program start made the same three moves: load, check the load, count
+the program. The helpers keep the moves in one place. Each answers nil when
+the load failed. The check said so first, and the site returns.
+*/
+@(private = "file")
+start_blob :: proc(r: ^Result, name: string, code: []u8, what: string, arg: u64 = 0, arg2: u64 = 0) -> ^Process {
+	p, err := load(name, code, arg, arg2)
+	if !check(r, err == .None && p != nil, what) {
+		return nil
+	}
+	r.programs += 1
+	return p
+}
+
+// hold_blob is `start_blob` over `load_held`: the process is built and not
+// yet launched, so the site can stage its data page first.
+@(private = "file")
+hold_blob :: proc(r: ^Result, name: string, code: []u8, what: string) -> ^Process {
+	p, err := load_held(name, code)
+	if !check(r, err == .None && p != nil, what) {
+		return nil
+	}
+	r.programs += 1
+	return p
+}
+
+// start_path is `start_blob` for a program on a file. The loader copies
+// `argv` into the new stack, so the record goes back here, whatever happened.
+@(private = "file")
+start_path :: proc(r: ^Result, path: string, what: string, argv: ^Argv = nil, flags: u64 = SPAWN_NS_COPY) -> ^Process {
+	p, serr := spawn_path(nil, path, flags, argv)
+	if argv != nil {
+		free(argv)
+	}
+	if !check(r, serr == vfs.OK && p != nil, what) {
+		return nil
+	}
+	r.programs += 1
+	return p
+}
+
+// What a poll of a program's data page waits for: one cell, one value.
+@(private = "file")
+Cell_Wait :: struct {
+	p:     ^Process,
+	index: int,
+	want:  u64,
+}
+
+@(private = "file")
+cell_is :: proc "contextless" (arg: rawptr) -> bool {
+	w := (^Cell_Wait)(arg)
+	return cell(w.p, w.index) == w.want
+}
+
+@(private = "file")
+cell_moved :: proc "contextless" (arg: rawptr) -> bool {
+	w := (^Cell_Wait)(arg)
+	return cell(w.p, w.index) != 0
+}
+
+// await_cell waits for a program to write `want` into one cell of its data
+// page. The write happens in ring 3, so it is a poll rather than a read.
+@(private = "file")
+await_cell :: proc(p: ^Process, index: int, want: u64, patience: int) -> bool {
+	w := Cell_Wait{p, index, want}
+	return sync.await(cell_is, &w, patience)
+}
+
+// await_cell_moves waits for a cell to leave zero: a counter that moved, or
+// a mark that landed.
+@(private = "file")
+await_cell_moves :: proc(p: ^Process, index: int, patience: int) -> bool {
+	w := Cell_Wait{p, index, 0}
+	return sync.await(cell_moved, &w, patience)
+}
+
+// catcher_armed is `catcher` with its handler registered and its loop moving,
+// before any note reaches it.
+@(private = "file")
+catcher_armed :: proc "contextless" (arg: rawptr) -> bool {
+	p := (^Process)(arg)
+	return cell(p, CATCHER_NOTIFIED) == 0 && cell(p, CATCHER_ROUNDS) > 0
+}
+
+// launch_or_finish launches a held program, and takes it down when the
+// launch was refused, so the caller only returns. Both checks are the
+// site's own.
+@(private = "file")
+launch_or_finish :: proc(r: ^Result, p: ^Process, what_launch: string, what_down: string) -> bool {
+	if !check(r, launch(p), what_launch) {
+		finish(r, p, what_down)
+		return false
+	}
+	return true
+}
+
+// hold_frames keeps a program's three frames for the sweep after it is
+// gone, and checks all three are held while it exists.
+@(private = "file")
+hold_frames :: proc(r: ^Result, p: ^Process, held: ^[3]uintptr, what: string) {
+	held^ = {p.text, p.data, p.stack}
+	check(
+		r,
+		!mem.frame_is_free(held[0]) && !mem.frame_is_free(held[1]) && !mem.frame_is_free(held[2]),
+		what,
+	)
+}
+
+// type_text feeds a line to the keyboard, one byte at a time, the way a
+// key arrives.
+@(private = "file")
+type_text :: proc(text: string) {
+	for i in 0 ..< len(text) {
+		devfs.keyboard_sink(text[i])
+	}
+}
+
+// mnt_file names one window's file under the server's mount: `/mnt/<i><name>`.
+@(private = "file")
+mnt_file :: proc "contextless" (buf: []u8, i: int, name: string) -> string {
+	n := copy(buf, "/mnt/")
+	buf[n] = u8('0' + i)
+	n += 1
+	n += copy(buf[n:], name)
+	return string(buf[:n])
+}
+
+// report_numbers pulls the numbers out of a window file's report, one per
+// slot of `into`, skipping whatever stands between them. The freestanding
+// program cannot be trusted to parse. The read itself is proven here.
+@(private = "file")
+report_numbers :: proc "contextless" (line: []u8, into: []$T) {
+	si := 0
+	for k in 0 ..< len(into) {
+		for si < len(line) && (line[si] < '0' || line[si] > '9') {si += 1}
+		for si < len(line) && line[si] >= '0' && line[si] <= '9' {into[k] = into[k] * 10 + T(line[si] - '0'); si += 1}
+	}
 }
 
 /*
@@ -351,14 +498,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	record, and it has not run yet. The only thing that can have released this
 	table is the reaper, woken by the ending itself.
 	*/
-	hung_up := false
-	for _ in 0 ..< PATIENCE {
-		if fdt_stats() == fdt_before {
-			hung_up = true
-			break
-		}
-		sync.delay(1)
-	}
+	hung_up := sync.await(fdt_level, &fdt_before, PATIENCE)
 	check(&r, hung_up, "and its descriptors come back with nothing asking, which is the hangup")
 
 	/*
@@ -377,9 +517,10 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	p = run_program(&r, "peek-kernel", program_peek(), MARK_PEEK, u64(witness), "a program reads the kernel")
 	if p != nil && p.exit.done {
 		check(&r, p.exit.kind == .Page_Fault, "and takes a page fault for that too")
+		bits := fault_bits(p)
 		check(
 			&r,
-			.Write not_in fault_bits(p) && .User in fault_bits(p),
+			.Write not_in bits && .User in bits,
 			"reported as a read rather than a write, so the User bit stops both",
 		)
 		check(&r, cell(p, 1) == 0, "and the word it wanted never reached its own page")
@@ -577,7 +718,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 		libodin.put_uint(&sink, u64(r.resident))
 		libodin.put_str(&sink, "):")
 		describe_live(&sink)
-		check(&r, false, libodin.str(&sink))
+		fail_detail(&r, &sink)
 	}
 	check(&r, s.live == r.resident, "every program was taken down")
 	check(&r, s.faults + s.calls >= r.programs, "each of them by a fault or by asking")
@@ -649,22 +790,14 @@ survive it. The observer is not scheduled. See `docs/TESTING.md`.
 */
 @(private = "file")
 verify_spin :: proc(r: ^Result) {
-	p, err := load("spin", program_spin(), 0)
-	if !check(r, err == .None && p != nil, "a program is loaded into a space of its own") {
+	p := start_blob(r, "spin", program_spin(), "a program is loaded into a space of its own")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	// Wait for the mark rather than assume it. The program writes nothing until
 	// something dispatches it, and that is a scheduler decision.
-	started := false
-	for _ in 0 ..< PATIENCE {
-		if cell(p, CELL_MARK) == MARK_SPIN {
-			started = true
-			break
-		}
-		sync.delay(1)
-	}
+	started := await_cell(p, CELL_MARK, MARK_SPIN, PATIENCE)
 	check(r, started, "and runs, which is the first instruction ever executed in ring 3")
 
 	first := cell(p, CELL_COUNTER)
@@ -747,11 +880,10 @@ outside can ask about frames rather than about a total.
 verify_syscalls :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^[3]uintptr) {
 	// -- A program writes a line to the console ------------------------------
 
-	p, err := load_held("hello", program_hello())
-	if !check(r, err == .None && p != nil, "a program is loaded that asks rather than faults") {
+	p := hold_blob(r, "hello", program_hello(), "a program is loaded that asks rather than faults")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, MESSAGE_OFFSET, bytes_of(MESSAGE)), "with a line in its data page")
 
 	before := column()
@@ -799,11 +931,10 @@ verify_syscalls :: proc(r: ^Result, column: proc "contextless" () -> int, held: 
 	// -- And a program that asks for six other things ------------------------
 
 	witness := u64(uintptr(rawptr(&kernel_witness)))
-	p, err = load("probe", program_probe(), witness)
-	if !check(r, err == .None && p != nil, "a second program makes six calls") {
+	p = start_blob(r, "probe", program_probe(), "a second program makes six calls", witness)
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	if check(r, wait(p, PATIENCE), "and comes back from all of them") {
 		check(r, cell(p, CELL_MARK) == MARK_PROBE, "having reached its first instruction")
@@ -888,11 +1019,10 @@ handshake in the other direction.
 */
 @(private = "file")
 verify_shadow :: proc(r: ^Result, held: ^[3]uintptr) {
-	p, err := load("shadow", program_shadow(), 0)
-	if !check(r, err == .None && p != nil, "a third program is given an address it may not read") {
+	p := start_blob(r, "shadow", program_shadow(), "a third program is given an address it may not read")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	mapped := mem.map_at(p.space, SHADOW_VA, p.stack, {.Write, .No_Execute}, 1)
 	check(r, mapped == .None, "a page goes into its half with no user bit on it")
@@ -916,12 +1046,7 @@ verify_shadow :: proc(r: ^Result, held: ^[3]uintptr) {
 		)
 	}
 
-	held^ = {p.text, p.data, p.stack}
-	check(
-		r,
-		!mem.frame_is_free(held[0]) && !mem.frame_is_free(held[1]) && !mem.frame_is_free(held[2]),
-		"a program holds three frames while it exists",
-	)
+	hold_frames(r, p, held, "a program holds three frames while it exists")
 
 	/*
 	And the sweep sees the shadow page, which is the control that runs on
@@ -989,11 +1114,10 @@ verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held:
 
 	// -- A process opens a file by name --------------------------------------
 
-	p, err := load_held("namer", program_namer())
-	if !check(r, err == .None && p != nil, "a process is built with a namespace of its own") {
+	p := hold_blob(r, "namer", program_namer(), "a process is built with a namespace of its own")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, p.ns != nil, "which is a copy rather than the kernel's")
 	check(r, fd_count(p) == 3, "and three descriptors already open on the console")
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_CONS)), "with a path in its page")
@@ -1030,11 +1154,10 @@ verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held:
 
 	// -- And reads one -------------------------------------------------------
 
-	p, err = load_held("reader", program_reader())
-	if !check(r, err == .None && p != nil, "a second process opens a file to read") {
+	p = hold_blob(r, "reader", program_reader(), "a second process opens a file to read")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_ZERO)), "with that path in its page")
 	check(r, launch(p, u64(len(PATH_ZERO))), "and it launches, staged")
 
@@ -1067,11 +1190,10 @@ verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held:
 
 	// -- And one rearranges its own view of the tree -------------------------
 
-	p, err = load_held("binder", program_binder())
-	if !check(r, err == .None && p != nil, "a third process rearranges its own namespace") {
+	p = hold_blob(r, "binder", program_binder(), "a third process rearranges its own namespace")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_NULL)), "binding one device")
 	check(r, set_bytes(p, SLOT_B, bytes_of(PATH_CONS)), "over another")
 	check(r, set_bytes(p, SLOT_C, bytes_of(REDIRECTED)), "with a line to send through both")
@@ -1117,12 +1239,7 @@ verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held:
 	}
 	cons_finish()
 
-	held^ = {p.text, p.data, p.stack}
-	check(
-		r,
-		!mem.frame_is_free(held[0]) && !mem.frame_is_free(held[1]) && !mem.frame_is_free(held[2]),
-		"a process holds three frames while it exists",
-	)
+	hold_frames(r, p, held, "a process holds three frames while it exists")
 	finish(r, p, "and is taken down")
 
 	// -- And the kernel's own view of the tree is what it was ----------------
@@ -1201,11 +1318,10 @@ verify_painter :: proc(r: ^Result) {
 		vfs.chan_close(hold)
 	}
 
-	p, err := load_held("painter", program_painter())
-	if !check(r, err == .None && p != nil, "a process is built to reach it") {
+	p := hold_blob(r, "painter", program_painter(), "a process is built to reach it")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_FB)), "with the path in its page")
 	set_cell(p, SLOT_B / 8, offset)
 	check(r, set_bytes(p, SLOT_C, pattern[:span]), "and pixel bytes to carry")
@@ -1280,12 +1396,11 @@ verify_scancode_reader :: proc(r: ^Result) {
 	}
 	check(r, staged, "sixteen release codes wait in the ring, all consumed by the tap")
 
-	p, perr := load_held("scanread", program_reader())
-	if !check(r, perr == .None && p != nil, "a process is built to read them") {
+	p := hold_blob(r, "scanread", program_reader(), "a process is built to read them")
+	if p == nil {
 		vfs.chan_close(held)
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_SCANCODE)), "with the path in its page")
 	check(r, launch(p, u64(len(PATH_SCANCODE))), "and it launches, staged")
 	if check(r, wait(p, PATIENCE), "and comes back") {
@@ -1359,11 +1474,10 @@ verify_bulkio :: proc(r: ^Result) #no_bounds_check {
 		vfs.chan_close(hold)
 	}
 
-	p, err := load_held("bulkio", program_bulkio())
-	if !check(r, err == .None && p != nil, "a process is built to move a large buffer") {
+	p := hold_blob(r, "bulkio", program_bulkio(), "a process is built to move a large buffer")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	// The path and a byte ramp, staged into the program's data page.
 	check(r, set_bytes(p, BULKIO_PATH_OFF, bytes_of(BULKIO_PATH)), "with a path and a pattern in its page")
@@ -1476,9 +1590,8 @@ verify_loading :: proc(r: ^Result, column: proc "contextless" () -> int) {
 	// -- The kernel starts a process from a file -----------------------------
 
 	before := column()
-	p, serr := spawn_path(nil, "/bin/child", SPAWN_NS_COPY)
-	if check(r, serr == vfs.OK && p != nil, "a process is built from a file rather than from a blob") {
-		r.programs += 1
+	p := start_path(r, "/bin/child", "a process is built from a file rather than from a blob")
+	if p != nil {
 		if comes_back(r, p, "and it comes back") {
 			after := column()
 			check(r, cell(p, CELL_MARK) == MARK_CHILD, "having reached its first instruction")
@@ -1502,7 +1615,7 @@ verify_loading :: proc(r: ^Result, column: proc "contextless" () -> int) {
 
 	// -- And refuses what it must --------------------------------------------
 
-	_, serr = spawn_path(nil, "/bin/no-such", 0)
+	_, serr := spawn_path(nil, "/bin/no-such", 0)
 	check(r, serr == vectra9.ENOENT, "a path with nothing at it is refused by name")
 
 	_, serr = spawn_path(nil, "/dev/zero", 0)
@@ -1514,9 +1627,8 @@ verify_loading :: proc(r: ^Result, column: proc "contextless" () -> int) {
 
 	// -- A clean namespace is a world with no names --------------------------
 
-	p, serr = spawn_path(nil, "/bin/child", SPAWN_NS_CLEAN)
-	if check(r, serr == vfs.OK && p != nil, "a child with a clean namespace still loads, through its parent's") {
-		r.programs += 1
+	p = start_path(r, "/bin/child", "a child with a clean namespace still loads, through its parent's", flags = SPAWN_NS_CLEAN)
+	if p != nil {
 		if check(r, wait(p, PATIENCE), "and runs") {
 			check(r, cell(p, CELL_MARK) == MARK_CHILD, "having reached its first instruction")
 			check(
@@ -1553,11 +1665,10 @@ verify_parenthood :: proc(r: ^Result, column: proc "contextless" () -> int, held
 	spawned_before := stats().spawned
 
 	before := column()
-	p, serr := spawn_path(nil, "/bin/parent", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "a process is started that will start more") {
+	p := start_path(r, "/bin/parent", "a process is started that will start more")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	/*
 	While it lives: nobody else may collect it.
@@ -1618,12 +1729,7 @@ verify_parenthood :: proc(r: ^Result, column: proc "contextless" () -> int, held
 	}
 	cons_finish()
 
-	held^ = {p.text, p.data, p.stack}
-	check(
-		r,
-		!mem.frame_is_free(held[0]) && !mem.frame_is_free(held[1]) && !mem.frame_is_free(held[2]),
-		"a spawned process holds three frames while it exists",
-	)
+	hold_frames(r, p, held, "a spawned process holds three frames while it exists")
 	finish(r, p, "and is taken down")
 }
 
@@ -1691,11 +1797,10 @@ verify_posting :: proc(r: ^Result, column: proc "contextless" () -> int, held: ^
 	// -- A process posts a service, and reaches the console through it -------
 
 	before := column()
-	p, serr := spawn_path(nil, "/bin/poster", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "a process is started that will publish a service") {
+	p := start_path(r, "/bin/poster", "a process is started that will publish a service")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	if comes_back(r, p, "and it comes back") {
 		after := column()
@@ -1780,11 +1885,10 @@ verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int
 	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
-	p, serr := spawn_path(nil, "/bin/niner", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "a process is started that will answer 9P") {
+	p := start_path(r, "/bin/niner", "a process is started that will answer 9P")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	// The posting is the process's own doing, so the kernel waits for the
 	// name rather than races it. `lookup` answers nil until the descriptor
@@ -1935,15 +2039,8 @@ image_header :: proc(r: ^Result, path: string, what: string) -> (entry: uintptr,
 		return 0, false
 	}
 
-	word :: proc "contextless" (b: []u8) -> u64 {
-		v := u64(0)
-		for i in 0 ..< 8 {
-			v |= u64(b[i]) << (8 * u64(i))
-		}
-		return v
-	}
-	check(r, word(header[:]) == IMAGE2_MAGIC, "and its header says VECTRA02")
-	return uintptr(word(header[8:])), true
+	check(r, libodin.get_u64le(header[:]) == IMAGE2_MAGIC, "and its header says VECTRA02")
+	return uintptr(libodin.get_u64le(header[8:])), true
 }
 
 /*
@@ -1965,15 +2062,10 @@ that ends `niner`, and what stays is one more wire's pin, to the object.
 // seg_row writes one segment-table row, for the format checks below.
 @(private = "file")
 seg_row :: proc "contextless" (out: []u8, at: int, vaddr: u64, filesz: u64, memsz: u64, flags: u64) #no_bounds_check {
-	put :: proc "contextless" (b: []u8, v: u64) #no_bounds_check {
-		for i in 0 ..< 8 {
-			b[i] = u8(v >> (8 * u64(i)))
-		}
-	}
-	put(out[at:], vaddr)
-	put(out[at + 8:], filesz)
-	put(out[at + 16:], memsz)
-	put(out[at + 24:], flags)
+	libodin.put_u64le(out[at:], vaddr)
+	libodin.put_u64le(out[at + 8:], filesz)
+	libodin.put_u64le(out[at + 16:], memsz)
+	libodin.put_u64le(out[at + 24:], flags)
 }
 
 // verify_image2 holds the segment judge to its refusals, one rule at a time.
@@ -2031,11 +2123,10 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 
 	// -- The loader builds a bigger world than a blob's -----------------------
 
-	p, serr := spawn_path(nil, "/bin/ramfs", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "the segment loader starts it") {
+	p := start_path(r, "/bin/ramfs", "the segment loader starts it")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	total_pages := 0
 	for i in 0 ..< p.seg_count {
 		total_pages += p.segs[i].pages
@@ -2134,12 +2225,7 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 		check(r, werr == vfs.OK && wn == LONG, "a note longer than one copy bound lands whole")
 		back: [LONG + 8]u8
 		n, rerr = vfs.chan_read(nc, 0, back[:])
-		same := rerr == vfs.OK && n == LONG
-		if same {
-			for i in 0 ..< LONG {
-				same = same && back[i] == long[i]
-			}
-		}
+		same := rerr == vfs.OK && n == LONG && string(back[:LONG]) == string(long[:])
 		check(r, same, "and comes back whole, through the library's loops")
 
 		// -- text: the listing is the program running -------------------------
@@ -2248,25 +2334,17 @@ first delivery is what says the wake was a wake rather than a timeout.
 verify_notes :: proc(r: ^Result) {
 	// -- The tick's delivery: a program that never crosses on its own ---------
 
-	p, err := load("spin-noted", program_spin(), 0)
-	if !check(r, err == .None && p != nil, "a program is started that loops for ever") {
+	p := start_blob(r, "spin-noted", program_spin(), "a program is started that loops for ever")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	// Mid loop, provably: the counter has to move before the note is
 	// posted. Posting on the heels of `load` raced the first dispatch.
 	// A tick that caught the thread before its first instruction read a
 	// counter of zero. The flake arrived the day the boot's timing
 	// shifted. The handshake is `verify_spin`'s, in one direction.
-	moving := false
-	for _ in 0 ..< PATIENCE {
-		if cell(p, CELL_COUNTER) > 0 {
-			moving = true
-			break
-		}
-		sync.delay(1)
-	}
+	moving := await_cell_moves(p, CELL_COUNTER, PATIENCE)
 	check(r, moving, "and its counter moves")
 
 	before := sync.now()
@@ -2284,12 +2362,10 @@ verify_notes :: proc(r: ^Result) {
 
 	// -- The sleep's delivery: a server parked in a pipe ----------------------
 
-	serr: vfs.Errno
-	p, serr = spawn_path(nil, "/bin/ramfs", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "a server is started to park in its pipe") {
+	p = start_path(r, "/bin/ramfs", "a server is started to park in its pipe")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	posted := await_posted("ramfs")
 	check(r, posted, "and it posts, then parks with nothing to serve")
@@ -2304,11 +2380,10 @@ verify_notes :: proc(r: ^Result) {
 
 	// -- Ring 3's delivery: a parent ends its own child -----------------------
 
-	p, serr = spawn_path(nil, "/bin/noter", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "a process is started that will end another") {
+	p = start_path(r, "/bin/noter", "a process is started that will end another")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	if comes_back(r, p, "and it comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_NOTER, "having reached its first instruction")
@@ -2347,26 +2422,17 @@ a note and still decline it.
 */
 @(private = "file")
 verify_handler :: proc(r: ^Result) {
-	p, err := load_held("catcher", program_catcher())
-	if !check(r, err == .None && p != nil, "a process is built that will catch a note") {
+	p := hold_blob(r, "catcher", program_catcher(), "a process is built that will catch a note")
+	if p == nil {
 		return
 	}
-	r.programs += 1
-	if !check(r, launch(p), "and it launches") {
-		finish(r, p, "and is taken down")
+	if !launch_or_finish(r, p, "and it launches", "and is taken down") {
 		return
 	}
 
 	// Registered and spinning before anything is posted. The counter is the
 	// proof of ring 3, the same proof `spin` gives.
-	registered := false
-	for _ in 0 ..< PATIENCE {
-		if cell(p, CATCHER_ROUNDS) > 0 {
-			registered = true
-			break
-		}
-		sync.delay(1)
-	}
+	registered := await_cell_moves(p, CATCHER_ROUNDS, PATIENCE)
 	check(r, registered, "it registers a handler and spins")
 	check(
 		r,
@@ -2376,14 +2442,7 @@ verify_handler :: proc(r: ^Result) {
 	check(r, cell(p, CATCHER_NOTIFIED) == 0, "and notify answered zero")
 
 	check(r, post_note(p, CATCHER_NOTE), "a note is posted to it, mid spin")
-	handled := false
-	for _ in 0 ..< PATIENCE {
-		if cell(p, CATCHER_HANDLED) >= 1 {
-			handled = true
-			break
-		}
-		sync.delay(1)
-	}
+	handled := await_cell_moves(p, CATCHER_HANDLED, PATIENCE)
 	if !check(r, handled, "the tick hands the handler the frame it interrupted") {
 		finish(r, p, "and the catcher is taken down")
 		return
@@ -2391,11 +2450,9 @@ verify_handler :: proc(r: ^Result) {
 	check(r, !exit_done(p), "and the process is still alive")
 
 	// Seven characters and the NUL are one cell, byte for byte the kernel's.
-	text := string(CATCHER_NOTE)
-	want := u64(0)
-	for i := len(text) - 1; i >= 0; i -= 1 {
-		want = want << 8 | u64(text[i])
-	}
+	note_cell: [8]u8
+	copy(note_cell[:], CATCHER_NOTE)
+	want := libodin.get_u64le(note_cell[:])
 	check(r, cell(p, CATCHER_TEXT) == want, "the handler read the note's own text")
 
 	check(r, post_note(p, "again"), "a second note is posted, into its syscall loop")
@@ -2416,24 +2473,15 @@ verify_handler :: proc(r: ^Result) {
 
 	// -- The other answer ------------------------------------------------------
 
-	p, err = load_held("dfltnote", program_dfltnote())
-	if !check(r, err == .None && p != nil, "a process is built that will decline one") {
+	p = hold_blob(r, "dfltnote", program_dfltnote(), "a process is built that will decline one")
+	if p == nil {
 		return
 	}
-	r.programs += 1
-	if !check(r, launch(p), "and it launches") {
-		finish(r, p, "and is taken down")
+	if !launch_or_finish(r, p, "and it launches", "and is taken down") {
 		return
 	}
 
-	moving := false
-	for _ in 0 ..< PATIENCE {
-		if cell(p, DFLTNOTE_ROUNDS) > 0 {
-			moving = true
-			break
-		}
-		sync.delay(1)
-	}
+	moving := await_cell_moves(p, DFLTNOTE_ROUNDS, PATIENCE)
 	check(r, moving, "it registers and spins")
 
 	check(r, post_note(p, "enough"), "a note is posted")
@@ -2464,26 +2512,17 @@ which is the arc `wait_pid` walks for a parent.
 @(private = "file")
 verify_stop :: proc(r: ^Result) {
 	before := stats().live
-	p, err := load_held("catcher", program_catcher())
-	if !check(r, err == .None && p != nil, "a process is built that catches every note") {
+	p := hold_blob(r, "catcher", program_catcher(), "a process is built that catches every note")
+	if p == nil {
 		return
 	}
-	r.programs += 1
-	if !check(r, launch(p), "and it launches") {
-		finish(r, p, "and is taken down")
+	if !launch_or_finish(r, p, "and it launches", "and is taken down") {
 		return
 	}
 
 	// Spinning, with its handler registered, before the kernel acts. A stop
 	// before the handler exists would prove nothing about handlers.
-	armed := false
-	for _ in 0 ..< PATIENCE {
-		if cell(p, CATCHER_NOTIFIED) == 0 && cell(p, CATCHER_ROUNDS) > 0 {
-			armed = true
-			break
-		}
-		sync.delay(1)
-	}
+	armed := sync.await(catcher_armed, p, PATIENCE)
 	check(r, armed, "it registers its handler and spins")
 	check(r, !destroy(p), "and the kernel cannot take it down while it runs, as before")
 
@@ -2504,32 +2543,16 @@ verify_stop :: proc(r: ^Result) {
 	word has to end it at the next call, and the handler's count has to stay
 	at one.
 	*/
-	p, err = load_held("catcher", program_catcher())
-	if !check(r, err == .None && p != nil, "a second catcher is built") {
+	p = hold_blob(r, "catcher", program_catcher(), "a second catcher is built")
+	if p == nil {
 		return
 	}
-	r.programs += 1
-	if !check(r, launch(p), "and it launches") {
-		finish(r, p, "and is taken down")
+	if !launch_or_finish(r, p, "and it launches", "and is taken down") {
 		return
 	}
-	armed = false
-	for _ in 0 ..< PATIENCE {
-		if cell(p, CATCHER_NOTIFIED) == 0 && cell(p, CATCHER_ROUNDS) > 0 {
-			armed = true
-			break
-		}
-		sync.delay(1)
-	}
+	armed = sync.await(catcher_armed, p, PATIENCE)
 	check(r, armed && post_note(p, CATCHER_NOTE), "it spins, and an ordinary note is posted to it")
-	sleeping := false
-	for _ in 0 ..< PATIENCE {
-		if cell(p, CATCHER_HANDLED) == 1 {
-			sleeping = true
-			break
-		}
-		sync.delay(1)
-	}
+	sleeping := await_cell(p, CATCHER_HANDLED, 1, PATIENCE)
 	check(r, sleeping, "which its handler catches, and it moves on to loop on sleep")
 	check(r, end(p, PATIENCE), "the kernel ends it there, at the door, inside the patience")
 	check(r, p.exit.noted && note(p) == "sys: killed", "noted, with the same word")
@@ -2553,11 +2576,10 @@ them after it exits.
 @(private = "file")
 verify_notepg :: proc(r: ^Result) {
 	before := stats().live
-	p, err := load("grouper", program_grouper())
-	if !check(r, err == .None && p != nil, "a program forks two children into two note groups") {
+	p := start_blob(r, "grouper", program_grouper(), "a program forks two children into two note groups")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	r.spawned += 2
 	if !check(r, wait(p, PATIENCE), "and comes back") {
 		finish(r, p, "and is taken down")
@@ -2597,16 +2619,14 @@ execs.
 */
 @(private = "file")
 verify_exec :: proc(r: ^Result, column: proc "contextless" () -> int) {
-	p, err := load_held("execer", program_execer())
-	if !check(r, err == .None && p != nil, "a process is built that will replace itself") {
+	p := hold_blob(r, "execer", program_execer(), "a process is built that will replace itself")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	pid_before := p.pid
 
 	before := column()
-	if !check(r, launch(p), "and it launches") {
-		finish(r, p, "and is taken down")
+	if !launch_or_finish(r, p, "and it launches", "and is taken down") {
 		return
 	}
 	if check(r, wait(p, PATIENCE), "and comes back, having become another program") {
@@ -2649,11 +2669,10 @@ it.
 verify_shared_class :: proc(r: ^Result) {
 	segs0 := segment_stats()
 
-	p, err := load("sharedseg", program_sharedseg())
-	if !check(r, err == .None && p != nil, "a program that asks for the shared class starts") {
+	p := start_blob(r, "sharedseg", program_sharedseg(), "a program that asks for the shared class starts")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	if check(r, wait(p, PATIENCE), "and comes back, having forked and become another program") {
 		check(r, cell(p, CELL_MARK) == MARK_CHILD, "the mark is the program it became")
 		check(r, p.exit.deliberate && p.exit.status == CHILD_STATUS, "which exited with its own status")
@@ -2708,13 +2727,11 @@ leak, visible in `stats().live` and collectable by nothing.
 */
 @(private = "file")
 verify_reap :: proc(r: ^Result) {
-	p, err := load_held("nowaiter", program_nowaiter())
-	if !check(r, err == .None && p != nil, "a process is built that forks a detached child") {
+	p := hold_blob(r, "nowaiter", program_nowaiter(), "a process is built that forks a detached child")
+	if p == nil {
 		return
 	}
-	r.programs += 1
-	if !check(r, launch(p), "and it launches") {
-		finish(r, p, "and is taken down")
+	if !launch_or_finish(r, p, "and it launches", "and is taken down") {
 		return
 	}
 	if !check(r, wait(p, PATIENCE), "the parent comes back") {
@@ -2741,14 +2758,7 @@ verify_reap :: proc(r: ^Result) {
 	if !check(r, child != nil && child.detached, "the child stands alone, detached to the kernel") {
 		return
 	}
-	ran := false
-	for _ in 0 ..< PATIENCE {
-		if cell(child, NOWAITER_CHILD_RAN) == 1 {
-			ran = true
-			break
-		}
-		sync.delay(1)
-	}
+	ran := await_cell(child, NOWAITER_CHILD_RAN, 1, PATIENCE)
 	check(r, ran, "it runs with nobody watching, and waits for the kernel's word")
 
 	/*
@@ -2805,11 +2815,10 @@ verify_rfork :: proc(r: ^Result) {
 
 	// -- Two processes return from one call, and a copy divides them ----------
 
-	p, err := load("forker", program_forker())
-	if !check(r, err == .None && p != nil, "a program that forks starts") {
+	p := start_blob(r, "forker", program_forker(), "a program that forks starts")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	if check(r, wait(p, PATIENCE), "and both of it come back") {
 		check(r, cell(p, CELL_MARK) == MARK_FORKER, "having reached its first instruction")
 		check(r, i64(cell(p, FORKER_PID)) > 0, "the parent was answered a pid")
@@ -2829,11 +2838,10 @@ verify_rfork :: proc(r: ^Result) {
 
 	// -- RFMEM shares the page, and the share outlives the parent -------------
 
-	p, err = load("memfork", program_memfork())
-	if !check(r, err == .None && p != nil, "a program that shares memory starts") {
+	p = start_blob(r, "memfork", program_memfork(), "a program that shares memory starts")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	if !check(r, wait(p, PATIENCE), "the parent exits first, child still running") {
 		return
 	}
@@ -2879,14 +2887,7 @@ verify_rfork :: proc(r: ^Result) {
 	// The witness crossed the shared page, and the stop goes back the same
 	// way. It is written through what was the parent's data alias, now
 	// nobody's but the segment's.
-	saw := false
-	for _ in 0 ..< PATIENCE {
-		if cell(child, MEMFORK_WITNESS) == MEMFORK_WITNESS_VALUE {
-			saw = true
-			break
-		}
-		sync.delay(1)
-	}
+	saw := await_cell(child, MEMFORK_WITNESS, MEMFORK_WITNESS_VALUE, PATIENCE)
 	check(r, saw, "the child's write arrived through the shared frame")
 	check(r, child.data == shared_data, "which is the frame the parent's alias named")
 
@@ -2919,11 +2920,10 @@ verify_rfork :: proc(r: ^Result) {
 	is. That is the shootdown doing its job for a second process, which is
 	what a second thread is here.
 	*/
-	p, err = load("sharer", program_sharer())
-	if !check(r, err == .None && p != nil, "a program that shares a run and resizes it starts") {
+	p = start_blob(r, "sharer", program_sharer(), "a program that shares a run and resizes it starts")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	if !check(r, wait(p, PATIENCE), "the parent grows, waits for the child to see, shrinks, and leaves") {
 		return
 	}
@@ -2957,11 +2957,10 @@ verify_rfork :: proc(r: ^Result) {
 
 	// -- A shared descriptor group spends a close once ------------------------
 
-	p, err = load("fdforker", program_fdforker(), RFPROC)
-	if !check(r, err == .None && p != nil, "a program forks sharing its descriptors") {
+	p = start_blob(r, "fdforker", program_fdforker(), "a program forks sharing its descriptors", RFPROC)
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	if check(r, wait(p, PATIENCE), "and comes back") {
 		check(r, cell(p, FDFORKER_WAITED) == 0, "the child closed descriptor 1 and left")
 		check(
@@ -2972,11 +2971,10 @@ verify_rfork :: proc(r: ^Result) {
 	}
 	finish(r, p, "and the sharer is taken down")
 
-	p, err = load("fdforker", program_fdforker(), RFPROC | RFFDG)
-	if !check(r, err == .None && p != nil, "the same program forks with RFFDG") {
+	p = start_blob(r, "fdforker", program_fdforker(), "the same program forks with RFFDG", RFPROC | RFFDG)
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	if check(r, wait(p, PATIENCE), "and comes back") {
 		check(r, cell(p, FDFORKER_WAITED) == 0, "the child closed its copy's descriptor 1")
 		check(
@@ -2989,11 +2987,10 @@ verify_rfork :: proc(r: ^Result) {
 
 	// -- The flag word refuses what it does not mean --------------------------
 
-	p, err = load("refuser", program_refuser())
-	if !check(r, err == .None && p != nil, "a program holds the flags to their refusals") {
+	p = start_blob(r, "refuser", program_refuser(), "a program holds the flags to their refusals")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	if check(r, wait(p, PATIENCE), "and comes back") {
 		check(r, cell(p, REFUSER_ENVG) == 0, "an environment group of its own is granted in place")
 		check(r, cell(p, REFUSER_NOWAIT) == refused(vectra9.EINVAL), "dissociation is refused")
@@ -3107,13 +3104,11 @@ drain_pinned :: proc(r: ^Result, pin_before: int, what: string) {
 		// count, and every live process with the state its thread is in.
 		// A holder that is a process shows here; one that is not is a
 		// kernel object, and the count is the clue.
-		sink := detail_sink()
-		libodin.put_str(&sink, what)
-		libodin.put_str(&sink, " -- ")
+		sink := detail_for(what)
 		libodin.put_int(&sink, i64(pinned))
 		libodin.put_str(&sink, " objects held, live:")
 		describe_live(&sink)
-		check(r, false, libodin.str(&sink))
+		fail_detail(r, &sink)
 	} else {
 		check(r, true, what)
 	}
@@ -3127,6 +3122,23 @@ drain_pinned :: proc(r: ^Result, pin_before: int, what: string) {
 detail_bufs: [2][512]u8
 @(private = "file")
 detail_used: int
+
+// detail_for opens a failure line that begins with the check's own name,
+// so the line still says which check it was, and then says more.
+@(private = "file")
+detail_for :: proc "contextless" (what: string) -> libodin.Sink {
+	sink := detail_sink()
+	libodin.put_str(&sink, what)
+	libodin.put_str(&sink, " -- ")
+	return sink
+}
+
+// fail_detail is the failed check whose name is the detail line built.
+// False, the way `check` answers, for a caller that returns it.
+@(private = "file")
+fail_detail :: proc "contextless" (r: ^Result, sink: ^libodin.Sink) -> bool {
+	return check(r, false, libodin.str(sink))
+}
 
 @(private = "file")
 detail_sink :: proc "contextless" () -> libodin.Sink {
@@ -3207,11 +3219,101 @@ mount_reader: Mount_Reader
 
 @(private = "file")
 mount_read_thread :: proc "contextless" (arg: rawptr) {
-	context = runtime.default_context()
-	context.allocator = mem.allocator()
+	context = mem.kernel_context()
 	_ = arg
 	mount_reader.n, mount_reader.err = vfs.chan_read(mount_reader.c, 0, mount_reader.buf[:])
 	intrinsics.volatile_store(&mount_reader.done, true)
+}
+
+/*
+A server the suite starts, mounts, stops, and measures after.
+
+`count0` is /srv before it posted and `pin_before` the heap before it
+started. The three servers whose reads park open and close the same
+bracket, so its two halves are written once. Every `what` is the site's
+own, so each test still names its own claims.
+*/
+@(private = "file")
+Tenant :: struct {
+	p:          ^Process,
+	name:       string, // What it posts in /srv
+	at:         string, // Where the kernel mounts it
+	srv_path:   [32]u8,
+	count0:     int,
+	pin_before: int,
+}
+
+// tenant_open takes the two readings the bracket closes against.
+@(private = "file")
+tenant_open :: proc(t: ^Tenant, name: string, at: string) {
+	t.name = name
+	t.at = at
+	t.count0 = srv.count()
+	settle()
+	t.pin_before = mem.live_objects(mem.heap_stats())
+}
+
+// tenant_start starts the server, waits for its name, and mounts it. False
+// when it did not start or did not post, and the site returns.
+@(private = "file")
+tenant_start :: proc(r: ^Result, t: ^Tenant, path: string, what_start: string, what_posted: string, what_mount: string) -> bool {
+	t.p = start_path(r, path, what_start)
+	if t.p == nil {
+		return false
+	}
+	if !check(r, await_posted(t.name), what_posted) {
+		return false
+	}
+	sink := libodin.sink_from(t.srv_path[:])
+	libodin.put_str(&sink, "/srv/")
+	libodin.put_str(&sink, t.name)
+	check(r, srv.mount(vfs.boot_namespace, libodin.str(&sink), t.at) == vfs.OK, what_mount)
+	return true
+}
+
+// The seven claims a stop makes, in the order it makes them.
+@(private = "file")
+Tenant_Stop :: struct {
+	exits:     string,
+	zero:      string,
+	removed:   string,
+	count:     string,
+	down:      string,
+	unmounted: string,
+	drained:   string,
+}
+
+// tenant_stop is the tail every server test ends on. The exit, the name,
+// the count, the record, the mount, and the heap back where it was.
+// start_draw_server starts `intuition`, waits for its name, and measures
+// the desktop it painted, which every discovery after it stands on. Nil
+// when any of the three did not happen, and the site returns.
+@(private = "file")
+start_draw_server :: proc(r: ^Result, s: ^fb.Surface, what_start: string, what_posted: string, what_desk: string, argv: ^Argv = nil) -> ^Process {
+	ps := start_path(r, "/bin/intuition", what_start, argv)
+	if ps == nil {
+		return nil
+	}
+	if !check(r, await_posted("draw"), what_posted) {
+		return nil
+	}
+	if !check(r, desk_measure(s), what_desk) {
+		return nil
+	}
+	return ps
+}
+
+@(private = "file")
+tenant_stop :: proc(r: ^Result, t: ^Tenant, w: Tenant_Stop) {
+	if check(r, wait(t.p, PATIENCE), w.exits) {
+		check(r, t.p.exit.deliberate && t.p.exit.status == 0, w.zero)
+	}
+	check(r, srv.remove(t.name) == vfs.OK, w.removed)
+	check(r, srv.count() == t.count0, w.count)
+	finish(r, t.p, w.down)
+	pipe.quiesce()
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", t.at) == vfs.OK, w.unmounted)
+	drain_pinned(r, t.pin_before, w.drained)
 }
 
 /*
@@ -3239,9 +3341,8 @@ teardown that ended some other way.
 */
 @(private = "file")
 verify_consrv :: proc(r: ^Result) {
-	count0 := srv.count()
-	settle()
-	pin_before := mem.live_objects(mem.heap_stats())
+	t: Tenant
+	tenant_open(&t, "consrv", "/mnt")
 
 	// -- The image is served, and is the second format ------------------------
 
@@ -3252,21 +3353,9 @@ verify_consrv :: proc(r: ^Result) {
 
 	// -- It starts, forks, and posts ------------------------------------------
 
-	p, serr := spawn_path(nil, "/bin/consrv", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "the loader starts the console server") {
+	if !tenant_start(r, &t, "/bin/consrv", "the loader starts the console server", "it forks its reader and posts /srv/consrv", "the kernel mounts it") {
 		return
 	}
-	r.programs += 1
-
-	posted := await_posted("consrv")
-	if !check(r, posted, "it forks its reader and posts /srv/consrv") {
-		return
-	}
-	check(
-		r,
-		srv.mount(vfs.boot_namespace, "/srv/consrv", "/mnt") == vfs.OK,
-		"the kernel mounts it",
-	)
 
 	nc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/line", vfs.O_RDONLY)
 	if !check(r, oerr == vfs.OK, "and opens the line file through the mount") {
@@ -3288,14 +3377,7 @@ verify_consrv :: proc(r: ^Result) {
 	}
 
 	// It stays parked. A read that answered empty would come back at once.
-	parked := true
-	for _ in 0 ..< 20 {
-		sync.delay(1)
-		if intrinsics.volatile_load(&mount_reader.done) {
-			parked = false
-			break
-		}
-	}
+	parked := !sync.await_flag(&mount_reader.done, 20)
 	check(r, parked, "the read parks on the empty line, rather than answering empty")
 
 	// And the server answers another request while that read is parked. The
@@ -3373,19 +3455,9 @@ verify_consrv :: proc(r: ^Result) {
 		_, _ = vfs.chan_write(ctl, 0, transmute([]u8)off)
 	}
 
-	typed := CONSRV_TYPED
-	for i in 0 ..< len(typed) {
-		devfs.keyboard_sink(typed[i])
-	}
+	type_text(CONSRV_TYPED)
 
-	woke := false
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&mount_reader.done) {
-			woke = true
-			break
-		}
-		sync.delay(1)
-	}
+	woke := sync.await_flag(&mount_reader.done, PATIENCE)
 	check(r, woke, "the parked read wakes when the line is typed")
 	check(
 		r,
@@ -3403,30 +3475,18 @@ verify_consrv :: proc(r: ^Result) {
 	check(r, vfs.chan_remove(nc) == vfs.OK, "a remove is answered, and is the stop")
 	vfs.chan_close(nc)
 
-	if check(r, wait(p, PATIENCE), "the server exits") {
-		check(
-			r,
-			p.exit.deliberate && p.exit.status == 0,
-			"with zero -- its noted reader unwound a parked device read and answered EINTR",
-		)
-	}
-
-	check(r, srv.remove("consrv") == vfs.OK, "the kernel takes the name away")
-	check(r, srv.count() == count0, "and /srv holds what it held")
-
-	finish(r, p, "and the server is taken down")
-
-	pipe.quiesce()
-	check(
-		r,
-		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
-		"the mount of the dead server comes down",
-	)
-
 	// The concurrent serve loop forked a worker per parked read, each
-	// detached and left for the kernel. Collect them before measuring, the
-	// way a live server would when its next fork wanted a slot.
-	drain_pinned(r, pin_before, "and the forked server's wire comes back whole")
+	// detached and left for the kernel. The drain collects them before
+	// measuring, the way a live server would when its next fork wanted a slot.
+	tenant_stop(r, &t, {
+		exits     = "the server exits",
+		zero      = "with zero -- its noted reader unwound a parked device read and answered EINTR",
+		removed   = "the kernel takes the name away",
+		count     = "and /srv holds what it held",
+		down      = "and the server is taken down",
+		unmounted = "the mount of the dead server comes down",
+		drained   = "and the forked server's wire comes back whole",
+	})
 }
 
 // The scancodes the kernel injects into `/dev/scancode`, and the characters
@@ -3464,25 +3524,11 @@ machine makes -- shift included, since one of them is shifted.
 */
 @(private = "file")
 verify_kbdfs :: proc(r: ^Result) {
-	count0 := srv.count()
-	settle()
-	pin_before := mem.live_objects(mem.heap_stats())
-
-	p, serr := spawn_path(nil, "/bin/kbdfs", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "the loader starts the keyboard translator") {
+	t: Tenant
+	tenant_open(&t, "kbdfs", "/mnt")
+	if !tenant_start(r, &t, "/bin/kbdfs", "the loader starts the keyboard translator", "it forks its reader, opens /dev/scancode, and posts /srv/kbdfs", "the kernel mounts it") {
 		return
 	}
-	r.programs += 1
-
-	posted := await_posted("kbdfs")
-	if !check(r, posted, "it forks its reader, opens /dev/scancode, and posts /srv/kbdfs") {
-		return
-	}
-	check(
-		r,
-		srv.mount(vfs.boot_namespace, "/srv/kbdfs", "/mnt") == vfs.OK,
-		"the kernel mounts it",
-	)
 
 		kc, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/cons", vfs.O_RDONLY)
 	if !check(r, oerr == vfs.OK, "and opens the cooked keyboard file") {
@@ -3495,14 +3541,7 @@ verify_kbdfs :: proc(r: ^Result) {
 	if !check(r, sched.spawn("kbdfs-read", mount_read_thread, nil) != nil, "a thread to read /kbd") {
 		return
 	}
-	parked := true
-	for _ in 0 ..< 20 {
-		sync.delay(1)
-		if intrinsics.volatile_load(&mount_reader.done) {
-			parked = false
-			break
-		}
-	}
+	parked := !sync.await_flag(&mount_reader.done, 20)
 	check(r, parked, "a read of /kbd parks until a key, rather than answering empty")
 
 	// Opening /dev/scancode diverted the raw stream to kbdfs. The kernel's own
@@ -3525,14 +3564,7 @@ verify_kbdfs :: proc(r: ^Result) {
 	}
 	check(r, drained, "and its reader child drains them from the raw stream")
 
-	woke := false
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&mount_reader.done) {
-			woke = true
-			break
-		}
-		sync.delay(1)
-	}
+	woke := sync.await_flag(&mount_reader.done, PATIENCE)
 	check(r, woke, "the parked read wakes when the keys are pressed")
 	check(
 		r,
@@ -3581,27 +3613,15 @@ verify_kbdfs :: proc(r: ^Result) {
 	check(r, vfs.chan_remove(kc) == vfs.OK, "a remove is answered, and is the stop")
 	vfs.chan_close(kc)
 
-	if check(r, wait(p, PATIENCE), "the translator exits") {
-		check(
-			r,
-			p.exit.deliberate && p.exit.status == 0,
-			"with zero -- its noted reader unwound a parked scancode read",
-		)
-	}
-
-	check(r, srv.remove("kbdfs") == vfs.OK, "the kernel takes the name away")
-	check(r, srv.count() == count0, "and /srv holds what it held")
-
-	finish(r, p, "and the translator is taken down")
-
-	pipe.quiesce()
-	check(
-		r,
-		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
-		"the mount of the dead translator comes down",
-	)
-
-	drain_pinned(r, pin_before, "and the translator's wire comes back whole")
+	tenant_stop(r, &t, {
+		exits     = "the translator exits",
+		zero      = "with zero -- its noted reader unwound a parked scancode read",
+		removed   = "the kernel takes the name away",
+		count     = "and /srv holds what it held",
+		down      = "and the translator is taken down",
+		unmounted = "the mount of the dead translator comes down",
+		drained   = "and the translator's wire comes back whole",
+	})
 }
 
 // kbd_read reads one message off a kbdfs file on a thread, waits for it,
@@ -3612,14 +3632,7 @@ kbd_read :: proc(r: ^Result, c: ^vfs.Chan, want: string, what: string) -> bool {
 	if !check(r, sched.spawn("kbdfs-read", mount_read_thread, nil) != nil, "a thread to read the file") {
 		return false
 	}
-	woke := false
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&mount_reader.done) {
-			woke = true
-			break
-		}
-		sync.delay(1)
-	}
+	woke := sync.await_flag(&mount_reader.done, PATIENCE)
 	return check(r, woke && mount_reader.err == vfs.OK && string(mount_reader.buf[:mount_reader.n]) == want, what)
 }
 
@@ -3650,25 +3663,11 @@ verify_eiafs :: proc(r: ^Result) {
 		return
 	}
 
-	count0 := srv.count()
-	settle()
-	pin_before := mem.live_objects(mem.heap_stats())
-
-	p, serr := spawn_path(nil, "/bin/eiafs", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "the loader starts the serial server") {
+	t: Tenant
+	tenant_open(&t, "eiafs", "/mnt")
+	if !tenant_start(r, &t, "/bin/eiafs", "the loader starts the serial server", "it forks its reader, opens /dev/eia0, and posts /srv/eiafs", "the kernel mounts it") {
 		return
 	}
-	r.programs += 1
-
-	posted := await_posted("eiafs")
-	if !check(r, posted, "it forks its reader, opens /dev/eia0, and posts /srv/eiafs") {
-		return
-	}
-	check(
-		r,
-		srv.mount(vfs.boot_namespace, "/srv/eiafs", "/mnt") == vfs.OK,
-		"the kernel mounts it",
-	)
 
 	ec, oerr := vfs.open_path(vfs.boot_namespace, "/mnt/eia0", vfs.O_RDWR)
 	if !check(r, oerr == vfs.OK, "and opens the port file through the mount") {
@@ -3681,14 +3680,7 @@ verify_eiafs :: proc(r: ^Result) {
 	if !check(r, sched.spawn("eiafs-read", mount_read_thread, nil) != nil, "a thread to read /eia0") {
 		return
 	}
-	parked := true
-	for _ in 0 ..< 20 {
-		sync.delay(1)
-		if intrinsics.volatile_load(&mount_reader.done) {
-			parked = false
-			break
-		}
-	}
+	parked := !sync.await_flag(&mount_reader.done, 20)
 	check(r, parked, "a read of /eia0 parks until the wire speaks, rather than answering empty")
 
 	// Opening /dev/eia0 diverted the port's bytes to eiafs. The kernel's own
@@ -3711,14 +3703,7 @@ verify_eiafs :: proc(r: ^Result) {
 	}
 	check(r, drained, "and its reader child drains them from the raw stream")
 
-	woke := false
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&mount_reader.done) {
-			woke = true
-			break
-		}
-		sync.delay(1)
-	}
+	woke := sync.await_flag(&mount_reader.done, PATIENCE)
 	check(r, woke, "the parked read wakes when the wire speaks")
 	check(
 		r,
@@ -3747,27 +3732,15 @@ verify_eiafs :: proc(r: ^Result) {
 	check(r, vfs.chan_remove(ec) == vfs.OK, "a remove is answered, and is the stop")
 	vfs.chan_close(ec)
 
-	if check(r, wait(p, PATIENCE), "the serial server exits") {
-		check(
-			r,
-			p.exit.deliberate && p.exit.status == 0,
-			"with zero -- its noted reader unwound a parked port read",
-		)
-	}
-
-	check(r, srv.remove("eiafs") == vfs.OK, "the kernel takes the name away")
-	check(r, srv.count() == count0, "and /srv holds what it held")
-
-	finish(r, p, "and the serial server is taken down")
-
-	pipe.quiesce()
-	check(
-		r,
-		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
-		"the mount of the dead server comes down",
-	)
-
-	drain_pinned(r, pin_before, "and the serial server's wire comes back whole")
+	tenant_stop(r, &t, {
+		exits     = "the serial server exits",
+		zero      = "with zero -- its noted reader unwound a parked port read",
+		removed   = "the kernel takes the name away",
+		count     = "and /srv holds what it held",
+		down      = "and the serial server is taken down",
+		unmounted = "the mount of the dead server comes down",
+		drained   = "and the serial server's wire comes back whole",
+	})
 }
 
 /*
@@ -3795,11 +3768,10 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
-	p, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "the loader starts the draw server") {
+	p := start_path(r, "/bin/intuition", "the loader starts the draw server")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	posted := await_posted("draw")
 	if !check(r, posted, "it reads the screen's shape and posts /srv/draw") {
@@ -4251,21 +4223,16 @@ verify_store_client :: proc(r: ^Result, s: ^fb.Surface, ox: int, oy: int) {
 		sn, _ := vfs.chan_read(t, 0, sline[:])
 		vfs.chan_close(t)
 		vals: [4]u64
-		si := 0
-		for k in 0 ..< 4 {
-			for si < sn && (sline[si] < '0' || sline[si] > '9') {si += 1}
-			for si < sn && sline[si] >= '0' && sline[si] <= '9' {vals[k] = vals[k] * 10 + u64(sline[si] - '0'); si += 1}
-		}
+		report_numbers(sline[:sn], vals[:])
 		id, stride, cx, cy = vals[0], vals[1], vals[2], vals[3]
 		report_ok = sn > 0
 	}
 	check(r, report_ok && id != 0, "the store file names a shared-buffer id and geometry")
 
-	p, err := load_held("storetest", program_storetest())
-	if !check(r, err == .None && p != nil, "a client is built to attach the window's store") {
+	p := hold_blob(r, "storetest", program_storetest(), "a client is built to attach the window's store")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH)), "with the store's path in its page")
 	check(r, set_bytes(p, SLOT_D, bytes_of(FLUSH)), "and a flush line to send")
 	// The id and origin the client attaches and paints at, in cells 3..6.
@@ -4359,6 +4326,56 @@ await_caret :: proc(s: ^fb.Surface, at: int, was: int, y: int) -> bool {
 		sync.delay(1)
 	}
 	return false
+}
+
+// await_glyph is `await_caret` for a character: true once `ch` is on the
+// glass at the cell, with the ticks it took, which one caller reports.
+@(private = "file")
+await_glyph :: proc(s: ^fb.Surface, x: int, y: int, ch: u8, patience: int) -> (found: bool, ticks: int) {
+	for _ in 0 ..< patience {
+		if glyph_on_glass(s, x, y, ch) {
+			return true, ticks
+		}
+		sync.delay(1)
+		ticks += 1
+	}
+	return false, ticks
+}
+
+// await_corner waits for the screen's first pixel to take one colour, which
+// is how an overview's ground arrives and leaves.
+@(private = "file")
+await_corner :: proc(s: ^fb.Surface, want: u32, patience: int) -> bool {
+	for _ in 0 ..< patience {
+		if fb.get_raw(s, 0, 0) == want {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+// await_bar finds the window in front by its copper title bar: a wide run of
+// copper, scanned top down, which a stray pixel is not. Returns -1 when none
+// arrived in the patience.
+@(private = "file")
+await_bar :: proc(s: ^fb.Surface) -> (bx: int, by: int, bw: int) {
+	copper := fb.pack(s, fb.COPPER)
+	bx, by, bw = -1, -1, 0
+	for _ in 0 ..< PATIENCE * 20 {
+		for y in 4 ..< s.height / 2 {
+			first, last := scan_row(s, y, copper, 8, s.width - 8)
+			if first >= 0 && last - first > 100 {
+				bx, by, bw = first, y, last - first + 1
+				break
+			}
+		}
+		if bx >= 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	return
 }
 
 @(private = "file")
@@ -4475,27 +4492,17 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
-	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && ps != nil, "the loader starts the draw server") {
-		return
-	}
-	r.programs += 1
-
-	posted := await_posted("draw")
-	if !check(r, posted, "it posts /srv/draw for a client to find") {
-		return
-	}
 	// This server is a fresh one, so its desktop is measured again rather than
 	// inherited from the last procedure's. It gates for `verify_draw`'s reason.
-	if !check(r, desk_measure(s), "and paints a desktop over the whole screen before anything else") {
+	ps := start_draw_server(r, s, "the loader starts the draw server", "it posts /srv/draw for a client to find", "and paints a desktop over the whole screen before anything else")
+	if ps == nil {
 		return
 	}
 
-	pt, terr := spawn_path(nil, "/bin/terminal", SPAWN_NS_COPY)
-	if !check(r, terr == vfs.OK && pt != nil, "the loader starts the terminal") {
+	pt := start_path(r, "/bin/terminal", "the loader starts the terminal")
+	if pt == nil {
 		return
 	}
-	r.programs += 1
 
 	/*
 	Where the terminal's window is, found rather than computed.
@@ -4594,14 +4601,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	for the exact glyph, so a wrong atlas never satisfies it, and for longer
 	than a glyph alone would take, because a program load is in the way.
 	*/
-	prompted := false
-	for _ in 0 ..< PATIENCE * 10 {
-		if glyph_on_glass(s, ox + 8, y0, '%') {
-			prompted = true
-			break
-		}
-		sync.delay(1)
-	}
+	prompted, _ := await_glyph(s, ox + 8, y0, '%', PATIENCE * 10)
 	check(r, prompted, "the terminal starts a shell in its window, whose prompt it draws")
 	check(r, glyph_on_glass(s, ox + 16, y0, ' '), "whose glyphs match the kernel's own font, pixel for pixel")
 
@@ -4649,16 +4649,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	The last glyph is polled rather than the first. The server paints a batch
 	left to right, so the first says only that the batch began.
 	*/
-	echoed := false
-	echo_ticks := 0
-	for _ in 0 ..< PATIENCE * 10 {
-		if glyph_on_glass(s, ox + 40, y0, '!') {
-			echoed = true
-			break
-		}
-		sync.delay(1)
-		echo_ticks += 1
-	}
+	echoed, echo_ticks := await_glyph(s, ox + 40, y0, '!', PATIENCE * 10)
 	r.echo_ticks = echo_ticks
 	check(r, echoed, "and yet appear on the glass, because the window that draws them holds the line")
 	if glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i') {
@@ -4668,8 +4659,8 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		// one of the first two not. The failure says what each cell held
 		// instead, and whether the pair was right a moment later, because
 		// a glyph that arrives late and one that never does are two bugs.
-		sink := detail_sink()
-		libodin.put_str(&sink, "every one of them, before any newline says the line is finished -- h ")
+		sink := detail_for("every one of them, before any newline says the line is finished")
+		libodin.put_str(&sink, "h ")
 		libodin.put_str(&sink, cell_says(s, ox + 24, y0, 'h'))
 		libodin.put_str(&sink, ", i ")
 		libodin.put_str(&sink, cell_says(s, ox + 32, y0, 'i'))
@@ -4691,7 +4682,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 			libodin.put_str(&sink, ", i ")
 			libodin.put_str(&sink, cell_says(s, ox + 32, y0, 'i'))
 		}
-		check(r, false, libodin.str(&sink))
+		fail_detail(r, &sink)
 	}
 
 	/*
@@ -4748,14 +4739,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	// The poll waits for the line's LAST glyph. The server paints the
 	// batch left to right, so the first glyph says only that the batch
 	// began. A poll of it once raced the two behind it.
-	rendered := false
-	for _ in 0 ..< PATIENCE {
-		if glyph_on_glass(s, ox + 40, y0, '!') {
-			rendered = true
-			break
-		}
-		sync.delay(1)
-	}
+	rendered, _ := await_glyph(s, ox + 40, y0, '!', PATIENCE)
 	check(r, rendered, "the newline completes the line and the terminal renders it")
 	check(
 		r,
@@ -4768,14 +4752,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	terminal's cursor follows the shell's output, and the typed line stays
 	where it was, above.
 	*/
-	answered := false
-	for _ in 0 ..< PATIENCE * 10 {
-		if glyph_on_glass(s, ox + 8, y0 + 32, '%') {
-			answered = true
-			break
-		}
-		sync.delay(1)
-	}
+	answered, _ := await_glyph(s, ox + 8, y0 + 32, '%', PATIENCE * 10)
 	check(r, answered, "the shell takes the line, answers it on the next row, and prompts again")
 	check(
 		r,
@@ -4784,10 +4761,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	)
 
 	// The typed stop, and the terminal's own exit.
-	stop := "exit\n"
-	for i in 0 ..< len(stop) {
-		devfs.keyboard_sink(stop[i])
-	}
+	type_text("exit\n")
 	if check(r, wait(pt, PATIENCE * 10), "the typed exit ends the shell, and the terminal with it") {
 		check(
 			r,
@@ -4900,41 +4874,19 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
-	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && ps != nil, "the loader starts the draw server for the toolkit") {
-		return
-	}
-	r.programs += 1
-	if !check(r, await_posted("draw"), "which posts /srv/draw for the demo to find") {
-		return
-	}
-	if !check(r, desk_measure(s), "and paints a desktop before the demo opens a window") {
+	ps := start_draw_server(r, s, "the loader starts the draw server for the toolkit", "which posts /srv/draw for the demo to find", "and paints a desktop before the demo opens a window")
+	if ps == nil {
 		return
 	}
 
-	pd, derr := spawn_path(nil, "/bin/muidemo", SPAWN_NS_COPY)
-	if !check(r, derr == vfs.OK && pd != nil, "the loader starts the toolkit demo") {
+	pd := start_path(r, "/bin/muidemo", "the loader starts the toolkit demo")
+	if pd == nil {
 		return
 	}
-	r.programs += 1
 
 	// The focused window's bar is copper. Wait for it, scanning top down for a
 	// wide run of it, which a title bar is and a stray pixel is not.
-	copper := fb.pack(s, fb.COPPER)
-	bx, by, bw := -1, -1, 0
-	for _ in 0 ..< PATIENCE * 20 {
-		for y in 4 ..< s.height / 2 {
-			first, last := scan_row(s, y, copper, 8, s.width - 8)
-			if first >= 0 && last - first > 100 {
-				bx, by, bw = first, y, last - first + 1
-				break
-			}
-		}
-		if bx >= 0 {
-			break
-		}
-		sync.delay(1)
-	}
+	bx, by, bw := await_bar(s)
 	if !check(r, bx >= 0, "the demo opens a framed window on the toolkit, its title bar copper") {
 		finish(r, pd, "the toolkit demo is taken down")
 		finish(r, ps, "and the draw server is taken down")
@@ -5009,8 +4961,8 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			// face's rows, the band's census, and the column as runs of what
 			// each pixel is -- M face, L lit edge, D dark edge, G the window
 			// ground, S the well, A amber, o anything else.
-			sink := detail_sink()
-			libodin.put_str(&sink, "with an amber label on it, blitted from an atlas baked for that one colour -- none in face rows ")
+			sink := detail_for("with an amber label on it, blitted from an atlas baked for that one colour")
+			libodin.put_str(&sink, "none in face rows ")
 			libodin.put_int(&sink, i64(gtop))
 			libodin.put_str(&sink, "..")
 			libodin.put_int(&sink, i64(gbot))
@@ -5040,7 +4992,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			libodin.put_int(&sink, i64(bw))
 			libodin.put_str(&sink, "; column from the bar: ")
 			column_profile(&sink, s, gx, by, min(by + 220, s.height), magnesium, amber)
-			check(r, false, libodin.str(&sink))
+			fail_detail(r, &sink)
 		}
 	}
 
@@ -5102,11 +5054,10 @@ verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool, wan
 	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
-	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && ps != nil, "the loader starts the draw server for the platform layer") {
+	ps := start_path(r, "/bin/intuition", "the loader starts the draw server for the platform layer")
+	if ps == nil {
 		return
 	}
-	r.programs += 1
 	if !check(r, await_posted("draw"), "which posts /srv/draw for the client to find") {
 		finish(r, ps, "the draw server is taken down")
 		return
@@ -5120,12 +5071,11 @@ verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool, wan
 	// the card is a number that moved.
 	sound_before := virtio.sound_played()
 
-	pd, derr := spawn_path(nil, path, SPAWN_NS_COPY)
-	if !check(r, derr == vfs.OK && pd != nil, "the loader starts the libapp client") {
+	pd := start_path(r, path, "the loader starts the libapp client")
+	if pd == nil {
 		finish(r, ps, "the draw server is taken down")
 		return
 	}
-	r.programs += 1
 
 	// The kernel mounts the server, to read the client's window files and to
 	// stop it at the end.
@@ -5149,11 +5099,7 @@ verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool, wan
 	scan: for _ in 0 ..< PATIENCE * 20 {
 		for i in 0 ..< 8 {
 			pbuf: [16]u8
-			pn := copy(pbuf[:], "/mnt/")
-			pbuf[pn] = u8('0' + i)
-			pn += 1
-			pn += copy(pbuf[pn:], "/store")
-			sf, se := vfs.open_path(vfs.boot_namespace, string(pbuf[:pn]), vfs.O_RDONLY)
+			sf, se := vfs.open_path(vfs.boot_namespace, mnt_file(pbuf[:], i, "/store"), vfs.O_RDONLY)
 			if se != vfs.OK {
 				continue
 			}
@@ -5161,11 +5107,7 @@ verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool, wan
 			sn, _ := vfs.chan_read(sf, 0, sl[:])
 			vfs.chan_close(sf)
 			v: [6]int
-			si := 0
-			for k in 0 ..< 6 {
-				for si < sn && (sl[si] < '0' || sl[si] > '9') {si += 1}
-				for si < sn && sl[si] >= '0' && sl[si] <= '9' {v[k] = v[k] * 10 + int(sl[si] - '0'); si += 1}
-			}
+			report_numbers(sl[:sn], v[:])
 			if v[0] == 0 || v[4] <= 32 || v[5] <= 32 {
 				continue
 			}
@@ -5254,11 +5196,7 @@ verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool, wan
 	// That hangs the client's window up, the pointer read its io thread parks on
 	// ends, and the client closes and exits on its own.
 	cbuf: [16]u8
-	cn := copy(cbuf[:], "/mnt/")
-	cbuf[cn] = u8('0' + wi)
-	cn += 1
-	cn += copy(cbuf[cn:], "/ctl")
-	if ctl, cerr := vfs.open_path(vfs.boot_namespace, string(cbuf[:cn]), vfs.O_RDONLY); cerr == vfs.OK {
+	if ctl, cerr := vfs.open_path(vfs.boot_namespace, mnt_file(cbuf[:], wi, "/ctl"), vfs.O_RDONLY); cerr == vfs.OK {
 		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of the window's ctl is the server's stop")
 		vfs.chan_close(ctl)
 	}
@@ -5303,11 +5241,10 @@ verify_tree_mmio :: proc(r: ^Result) #no_bounds_check {
 	check(r, ok && device_mem, "the tree's mmio file answers a device window, not a stream")
 	check(r, phys == 0x0901_0000 && bytes == 0x1000, "at the base and size the RTC node's reg names, one page")
 
-	p, err := load_held("treemmio", program_treemmio())
-	if !check(r, err == .None && p != nil, "a program is built to attach the window") {
+	p := hold_blob(r, "treemmio", program_treemmio(), "a program is built to attach the window")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH)), "with the mmio path in its page")
 	check(r, launch(p, u64(len(PATH)), 0xFE0), "and it launches, staged with the id register's offset")
 	if check(r, wait(p, PATIENCE), "and comes back") {
@@ -5353,11 +5290,10 @@ verify_tree_irq :: proc(r: ^Result) #no_bounds_check {
 	}
 	vfs.chan_close(probe)
 
-	p, err := load_held("treeirq", program_treeirq())
-	if !check(r, err == .None && p != nil, "a program is built to wait on the line") {
+	p := hold_blob(r, "treeirq", program_treeirq(), "a program is built to wait on the line")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, SLOT_A, bytes_of(MMIO)), "with the mmio path in its page")
 	check(r, set_bytes(p, SLOT_B, bytes_of(IRQ)), "and the irq path beside it")
 	check(r, launch(p, u64(len(MMIO)), u64(len(IRQ))), "and it launches, staged with both path lengths")
@@ -5393,11 +5329,10 @@ verify_tree_dma :: proc(r: ^Result) #no_bounds_check {
 	}
 	vfs.chan_close(probe)
 
-	p, err := load_held("treedma", program_treedma())
-	if !check(r, err == .None && p != nil, "a program is built to bind a device to itself") {
+	p := hold_blob(r, "treedma", program_treedma(), "a program is built to bind a device to itself")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, SLOT_A, bytes_of(DMA)), "with the dma path in its page")
 	check(r, launch(p, u64(len(DMA))), "and it launches, staged with the path length")
 	if check(r, wait(p, PATIENCE), "and comes back") {
@@ -5445,12 +5380,10 @@ verify_blkfs :: proc(r: ^Result) #no_bounds_check {
 	argv := new(Argv)
 	names := [?]string{"blkfs", "2"}
 	check(r, argv != nil && argv_from(argv, names[:]), "a record holds the disk driver's argument, the scratch disk's slot")
-	p, serr := spawn_path(nil, "/bin/blkfs", SPAWN_NS_COPY, argv)
-	free(argv)
-	if !check(r, serr == vfs.OK && p != nil, "the loader starts blkfs, a disk driver that is a program") {
+	p := start_path(r, "/bin/blkfs", "the loader starts blkfs, a disk driver that is a program", argv)
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	posted := await_posted("blkfs")
 	if !posted {
 		// Each step of the bring-up has its own exit code, so the log says
@@ -5477,14 +5410,14 @@ verify_blkfs :: proc(r: ^Result) #no_bounds_check {
 	if check(r, cerr == vfs.OK && ctl != nil, "sd0/ctl opens") {
 		line: [256]u8
 		n, _ := vfs.chan_read(ctl, 0, line[:])
-		check(r, n > 0 && has_text(string(line[:n]), " sectors of 512 bytes"), "and reads the disk's geometry")
+		check(r, n > 0 && libodin.contains(string(line[:n]), " sectors of 512 bytes"), "and reads the disk's geometry")
 	}
 	sector: [512]u8
 	marker: [512]u8
 	if data, derr := vfs.open_path(ns, "/mnt/sd0/data", vfs.O_RDONLY); check(r, derr == vfs.OK && data != nil, "sd0/data opens") {
 		n, rerr := vfs.chan_read(data, 0, sector[:])
 		check(r, rerr == vfs.OK && n == 512 && sector[510] == 0x55 && sector[511] == 0xAA, "and its first sector, read through the walker, is a partition table")
-		lba := u64(sector[454]) | u64(sector[455]) << 8 | u64(sector[456]) << 16 | u64(sector[457]) << 24
+		lba := u64(libodin.get_u32le(sector[454:]))
 		mn, merr := vfs.chan_read(data, lba * 512, marker[:])
 		check(r, merr == vfs.OK && mn == 512 && string(marker[:12]) == "VECTRA-PART0", "and the DOS partition's first sector carries the build's marker")
 		vfs.chan_close(data)
@@ -5503,16 +5436,16 @@ verify_blkfs :: proc(r: ^Result) #no_bounds_check {
 		check(r, werr == vfs.OK && wn > 0, "prove unmapped: a transfer aimed at a page the program never mapped")
 		n, _ := vfs.chan_read(ctl, 0, line[:])
 		text := string(line[:n])
-		check(r, has_text(text, "fault 16 F_TRANSLATION 0x70000000"), "is refused, and the dma file names the stream, the type and the address")
-		check(r, has_text(text, "0x70000000 write"), "and the direction, a device write into memory it may not touch")
-		check(r, has_text(text, "recovered"), "and the device is reset, its queue rebuilt, and the disk reads correctly after")
+		check(r, libodin.contains(text, "fault 16 F_TRANSLATION 0x70000000"), "is refused, and the dma file names the stream, the type and the address")
+		check(r, libodin.contains(text, "0x70000000 write"), "and the direction, a device write into memory it may not touch")
+		check(r, libodin.contains(text, "recovered"), "and the device is reset, its queue rebuilt, and the disk reads correctly after")
 
 		wn, werr = vfs.chan_write(ctl, 0, transmute([]u8)string("prove freed"))
 		check(r, werr == vfs.OK && wn > 0, "prove freed: a sector written from a page, the page given back, the same write again")
 		n, _ = vfs.chan_read(ctl, 0, line[:])
 		text = string(line[:n])
-		check(r, has_text(text, "written, page freed at ") && has_text(text, "fault 16 F_TRANSLATION"), "and the second write faults, because the walker was told when the page went")
-		check(r, has_text(text, " read"), "a device read of memory it was told is gone, on the dma file")
+		check(r, libodin.contains(text, "written, page freed at ") && libodin.contains(text, "fault 16 F_TRANSLATION"), "and the second write faults, because the walker was told when the page went")
+		check(r, libodin.contains(text, " read"), "a device read of memory it was told is gone, on the dma file")
 		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove is the stop")
 		vfs.chan_close(ctl)
 	}
@@ -5538,12 +5471,7 @@ verify_blkfs :: proc(r: ^Result) #no_bounds_check {
 	if kd, kerr := vfs.open_path(ns, "/dev/sd1/dos", vfs.O_RDONLY); check(r, kerr == vfs.OK, "#S opens the disk again") {
 		back: [512]u8
 		n, rerr := vfs.chan_read(kd, 0, back[:])
-		same := rerr == vfs.OK && n == 512
-		for i in 0 ..< 512 {
-			if same && back[i] != marker[i] {
-				same = false
-			}
-		}
+		same := rerr == vfs.OK && n == 512 && string(back[:]) == string(marker[:])
 		check(r, same, "and reads the marker sector byte for byte as the program did, the device brought up again on the kernel's rings")
 		vfs.chan_close(kd)
 	}
@@ -5559,11 +5487,10 @@ is the old behaviour; a named address is a run that must go there or nowhere.
 verify_fixedseg :: proc(r: ^Result) #no_bounds_check {
 	AT :: uintptr(0x2000_0000) // inside the mappable range, clear of image and stack
 
-	p, err := load_held("fixedseg", program_fixedseg())
-	if !check(r, err == .None && p != nil, "a program is built to place a run") {
+	p := hold_blob(r, "fixedseg", program_fixedseg(), "a program is built to place a run")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, launch(p, u64(AT)), "and it launches, asking for an address")
 	if check(r, wait(p, PATIENCE), "and comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_FIXEDSEG, "having reached its first instruction")
@@ -5603,11 +5530,10 @@ verify_debugger :: proc(r: ^Result) #no_bounds_check {
 	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
-	pk, kerr := spawn_path(nil, "/bin/kbdfs", SPAWN_NS_COPY)
-	if !check(r, kerr == vfs.OK && pk != nil, "the loader starts the keyboard translator for the debugger's window") {
+	pk := start_path(r, "/bin/kbdfs", "the loader starts the keyboard translator for the debugger's window")
+	if pk == nil {
 		return
 	}
-	r.programs += 1
 	if !check(r, await_posted("kbdfs"), "it posts /srv/kbdfs") {
 		return
 	}
@@ -5616,23 +5542,14 @@ verify_debugger :: proc(r: ^Result) #no_bounds_check {
 	sargv := new(Argv)
 	snames := [?]string{"intuition", "/n/kbd/kbd"}
 	check(r, sargv != nil && argv_from(sargv, snames[:]), "a record holds the draw server's argument")
-	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY, sargv)
-	free(sargv)
-	if !check(r, serr == vfs.OK && ps != nil, "the loader starts the draw server for the debugger's window, reading the kbd file") {
+	ps := start_draw_server(r, s, "the loader starts the draw server for the debugger's window, reading the kbd file", "which posts /srv/draw", "and paints a desktop before the window opens", sargv)
+	if ps == nil {
 		return
 	}
-	r.programs += 1
-	if !check(r, await_posted("draw"), "which posts /srv/draw") {
+	pe := start_path(r, "/bin/dbgfs", "the loader starts the debugger's engine")
+	if pe == nil {
 		return
 	}
-	if !check(r, desk_measure(s), "and paints a desktop before the window opens") {
-		return
-	}
-	pe, eerr := spawn_path(nil, "/bin/dbgfs", SPAWN_NS_COPY)
-	if !check(r, eerr == vfs.OK && pe != nil, "the loader starts the debugger's engine") {
-		return
-	}
-	r.programs += 1
 	if !check(r, await_posted("dbg"), "which posts /srv/dbg") {
 		return
 	}
@@ -5640,29 +5557,13 @@ verify_debugger :: proc(r: ^Result) #no_bounds_check {
 	argv := new(Argv)
 	names := [?]string{"debugger", "/bin/debuggee"}
 	check(r, argv != nil && argv_from(argv, names[:]), "a record holds the window's arguments")
-	pd, derr := spawn_path(nil, "/bin/debugger", SPAWN_NS_COPY, argv)
-	free(argv)
-	if !check(r, derr == vfs.OK && pd != nil, "the loader starts the debugger's window on the debuggee") {
+	pd := start_path(r, "/bin/debugger", "the loader starts the debugger's window on the debuggee", argv)
+	if pd == nil {
 		return
 	}
-	r.programs += 1
 
 	// The window in front wears a copper bar.
-	copper := fb.pack(s, fb.COPPER)
-	bx := -1
-	for _ in 0 ..< PATIENCE * 20 {
-		for y in 4 ..< s.height / 2 {
-			first, last := scan_row(s, y, copper, 8, s.width - 8)
-			if first >= 0 && last - first > 100 {
-				bx = first
-				break
-			}
-		}
-		if bx >= 0 {
-			break
-		}
-		sync.delay(1)
-	}
+	bx, _, _ := await_bar(s)
 	check(r, bx >= 0, "the window opens on the toolkit, its title bar copper")
 
 	// The step is read from the debuggee itself, not from a panel. The
@@ -5787,11 +5688,10 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 	pin_before := mem.live_objects(mem.heap_stats())
 
 	// kbdfs on the raw keyboard, mounted where the draw server will read it.
-	pk, kerr := spawn_path(nil, "/bin/kbdfs", SPAWN_NS_COPY)
-	if !check(r, kerr == vfs.OK && pk != nil, "the loader starts the keyboard translator") {
+	pk := start_path(r, "/bin/kbdfs", "the loader starts the keyboard translator")
+	if pk == nil {
 		return
 	}
-	r.programs += 1
 	if !check(r, await_posted("kbdfs"), "it posts /srv/kbdfs") {
 		return
 	}
@@ -5804,12 +5704,10 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 	}
 	names := [?]string{"intuition", "/n/kbd/kbd"}
 	check(r, argv_from(argv, names[:]), "holds it")
-	ps, serr := spawn_path(nil, "/bin/intuition", SPAWN_NS_COPY, argv)
-	free(argv)
-	if !check(r, serr == vfs.OK && ps != nil, "the draw server starts, reading the kbd file") {
+	ps := start_path(r, "/bin/intuition", "the draw server starts, reading the kbd file", argv)
+	if ps == nil {
 		return
 	}
-	r.programs += 1
 	if !check(r, await_posted("draw"), "it posts /srv/draw") {
 		return
 	}
@@ -5828,14 +5726,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		mount_reader = Mount_Reader{c = hk}
 		if check(r, sched.spawn("hotkey-read", mount_read_thread, nil) != nil, "a thread reads it") {
 			inject_chord(0x11 + 0x20) // 'n' is make 0x31
-			woke := false
-			for _ in 0 ..< PATIENCE {
-				if intrinsics.volatile_load(&mount_reader.done) {
-					woke = true
-					break
-				}
-				sync.delay(1)
-			}
+			woke := sync.await_flag(&mount_reader.done, PATIENCE)
 			line := string(mount_reader.buf[:max(mount_reader.n, 0)])
 			if woke && line == "window rc -i\n" {
 				check(r, true, "an alt-n the server does not know reaches the desktop, verbatim")
@@ -5844,8 +5735,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 				// `kernel/sync` was fixed. A reader that never woke and one
 				// that got other bytes are two different bugs, so the
 				// failure says which, and what the read answered.
-				sink := detail_sink()
-				libodin.put_str(&sink, "an alt-n the server does not know reaches the desktop, verbatim -- ")
+				sink := detail_for("an alt-n the server does not know reaches the desktop, verbatim")
 				libodin.put_str(&sink, woke ? "read answered " : "the reader never woke, read so far ")
 				libodin.put_int(&sink, i64(mount_reader.n))
 				libodin.put_str(&sink, " bytes, errno ")
@@ -5856,7 +5746,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 				}
 				libodin.put_str(&sink, line)
 				libodin.put_str(&sink, "`")
-				check(r, false, libodin.str(&sink))
+				fail_detail(r, &sink)
 			}
 		}
 		vfs.chan_close(hk)
@@ -5872,24 +5762,10 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		frame := fb.pack(s, fb.MAGNESIUM_HOT)
 		void := fb.pack(s, fb.VOID)
 		inject_chord(0x39) // space is make 0x39
-		dimmed := false
-		for _ in 0 ..< PATIENCE {
-			if fb.get_raw(s, 0, 0) == void {
-				dimmed = true
-				break
-			}
-			sync.delay(1)
-		}
+		dimmed := await_corner(s, void, PATIENCE)
 		check(r, dimmed, "an alt-space dims the glass to the overview's ground")
 		inject_chord(0x39)
-		closed := false
-		for _ in 0 ..< PATIENCE {
-			if fb.get_raw(s, 0, 0) == frame {
-				closed = true
-				break
-			}
-			sync.delay(1)
-		}
+		closed := await_corner(s, frame, PATIENCE)
 		check(r, closed, "and a second alt-space closes it, back to the window it covered")
 	}
 
@@ -5900,14 +5776,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		mount_reader = Mount_Reader{c = cons}
 		if check(r, sched.spawn("chord-cons", mount_read_thread, nil) != nil, "a thread reads it") {
 			inject_chord(0x11) // 'w' is make 0x11
-			ended := false
-			for _ in 0 ..< PATIENCE {
-				if intrinsics.volatile_load(&mount_reader.done) {
-					ended = true
-					break
-				}
-				sync.delay(1)
-			}
+			ended := sync.await_flag(&mount_reader.done, PATIENCE)
 			check(r, ended && mount_reader.n == 0, "an alt-w hangs the window in front up, and its keyboard answers nothing")
 		}
 		vfs.chan_close(cons)
@@ -6043,11 +5912,10 @@ verify_mapping :: proc(r: ^Result) {
 	untracked_before := mem.pmm_stats().untracked_frees
 	segs_before := segment_stats().live
 
-	p, err := load("mapper", program_mapper(), u64(corner))
-	if !check(r, err == .None && p != nil, "a process is loaded that asks for memory") {
+	p := start_blob(r, "mapper", program_mapper(), "a process is loaded that asks for memory", u64(corner))
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_FB)), "with the screen's name in its page")
 	check(r, set_bytes(p, SLOT_B, bytes_of(PATH_CONS)), "and a stream's name beside it")
 
@@ -6058,10 +5926,10 @@ verify_mapping :: proc(r: ^Result) {
 		} else {
 			// Seen once in fifty boots with the checker's own open of the
 			// screen a line above it fine; the answer says which refusal.
-			sink := detail_sink()
-			libodin.put_str(&sink, "the screen opened as an ordinary descriptor -- the open answered ")
+			sink := detail_for("the screen opened as an ordinary descriptor")
+			libodin.put_str(&sink, "the open answered ")
 			libodin.put_int(&sink, i64(fdv))
-			check(r, false, libodin.str(&sink))
+			fail_detail(r, &sink)
 		}
 
 		addr := uintptr(cell(p, MAPPER_ADDR))
@@ -6526,9 +6394,7 @@ answer, which is the one the check exists to reject.
 @(private = "file")
 type_settled :: proc(keys: []u8) -> bool #no_bounds_check {
 	before := devfs.cons_takes()
-	for c in keys {
-		devfs.keyboard_sink(c)
-	}
+	type_text(string(keys))
 	for _ in 0 ..< PATIENCE {
 		if devfs.cons_takes() >= before + u64(len(keys)) {
 			return true
@@ -6609,9 +6475,7 @@ are not the same instant.
 typed_to :: proc(r: ^Result, want: ^vfs.Chan, other: ^vfs.Chan, text: string, what: string) #no_bounds_check {
 	// The newline is what makes the kernel's line discipline hand the line
 	// over. Until it lands there is nothing for any window to be given.
-	for c in transmute([]u8)text {
-		devfs.keyboard_sink(c)
-	}
+	type_text(text)
 	devfs.keyboard_sink('\n')
 
 	waiting := u64(0)
@@ -7319,11 +7183,10 @@ verify_anon :: proc(r: ^Result) {
 	untracked_before := mem.pmm_stats().untracked_frees
 	segs_before := segment_stats()
 
-	p, err := load("anon", program_anon(), ANON_BYTES)
-	if !check(r, err == .None && p != nil, "a process is loaded that asks for memory nobody serves") {
+	p := start_blob(r, "anon", program_anon(), "a process is loaded that asks for memory nobody serves", ANON_BYTES)
+	if p == nil {
 		return
 	}
-	r.programs += 1
 
 	/*
 	The wedge, and why the program waits for it.
@@ -7340,14 +7203,7 @@ verify_anon :: proc(r: ^Result) {
 	now, and the control fails where it should. The frame goes back after
 	the teardown, before the totals are read.
 	*/
-	asked := false
-	for _ in 0 ..< PATIENCE {
-		if cell(p, ANON_AGAIN) != 0 {
-			asked = true
-			break
-		}
-		sync.delay(1)
-	}
+	asked := await_cell_moves(p, ANON_AGAIN, PATIENCE)
 	check(r, asked, "the program asked twice and waits for the kernel's word before it grows")
 	wedge, wedged := mem.alloc_page()
 	check(r, wedged, "and the kernel takes the frame the allocator would have handed the grow")
@@ -7985,9 +7841,7 @@ verify_windows :: proc(
 	*/
 	stale_cons, scerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/cons", vfs.O_RDONLY)
 	if check(r, scerr == vfs.OK, "the second window's keyboard opens") {
-		for c in transmute([]u8)string("zz") {
-			devfs.keyboard_sink(c)
-		}
+		type_text("zz")
 		devfs.keyboard_sink('\n')
 		for _ in 0 ..< PATIENCE {
 			if attr, e := vfs.chan_stat(stale_cons); e == vfs.OK && attr.size > 0 {
@@ -8199,25 +8053,11 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #n
 		vfs.chan_close(mf)
 		return
 	}
-	parked := true
-	for _ in 0 ..< 20 {
-		sync.delay(1)
-		if intrinsics.volatile_load(&mount_reader.done) {
-			parked = false
-			break
-		}
-	}
+	parked := !sync.await_flag(&mount_reader.done, 20)
 	check(r, parked, "a read of it parks until the pointer moves over the window")
 
 		check(r, point_to(second_x + ox + 10, oy + 10), "the pointer is moved into the window's client area")
-	woke := false
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&mount_reader.done) {
-			woke = true
-			break
-		}
-		sync.delay(1)
-	}
+	woke := sync.await_flag(&mount_reader.done, PATIENCE)
 	check(r, woke, "and the read wakes")
 	// The parked read caught the first movement into the window, which the
 	// pointer entered part-way to its mark, because it began over this
@@ -8271,14 +8111,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #n
 	check(r, press_and_move(0, 0), "and pressed")
 	mount_reader = Mount_Reader{c = cons}
 	if check(r, sched.spawn("cons-read", mount_read_thread, nil) != nil, "a thread to read the keyboard") {
-		ended := false
-		for _ in 0 ..< PATIENCE {
-			if intrinsics.volatile_load(&mount_reader.done) {
-				ended = true
-				break
-			}
-			sync.delay(1)
-		}
+		ended := sync.await_flag(&mount_reader.done, PATIENCE)
 		check(r, ended && mount_reader.err == vfs.OK && mount_reader.n == 0, "the keyboard answers nothing, which is how a program learns its window is gone")
 	}
 	check(r, is_desk(s, probe_x, probe_y), "and the window is off the glass, with the desktop where it was")
@@ -8420,22 +8253,13 @@ c_arg_strs: [11]string
 @(private = "file")
 verify_c :: proc(r: ^Result) {
 	chello := [?]string{"chello", "one", "two"}
-	said, _, ok := run_script(r, "/bin/chello", chello[:], PATIENCE * 5, abi_said[:], "a C program over sys/libc starts")
-	if ok {
-		check(r, said == "chello ok", said == "chello ok" ? "and writes a line and exits with a word" : said)
-	}
+	script_says(r, "/bin/chello", chello[:], PATIENCE * 5, "a C program over sys/libc starts", "chello ok", "and writes a line and exits with a word")
 
 	cpp := [?]string{"cpphello"}
-	said2, _, ok2 := run_script(r, "/bin/cpphello", cpp[:], PATIENCE * 5, abi_said[:], "a C++ program starts")
-	if ok2 {
-		check(r, said2 == "cpp ok", said2 == "cpp ok" ? "and its global constructor ran from .init_array before main" : said2)
-	}
+	script_says(r, "/bin/cpphello", cpp[:], PATIENCE * 5, "a C++ program starts", "cpp ok", "and its global constructor ran from .init_array before main")
 
 	cmix := [?]string{"cmix"}
-	said3, _, ok3 := run_script(r, "/bin/cmix", cmix[:], PATIENCE * 5, abi_said[:], "the mixed C-and-Odin image starts")
-	if ok3 {
-		check(r, said3 == "cmix ok", said3 == "cmix ok" ? "and a call from C into Odin and back into C held in one image" : said3)
-	}
+	script_says(r, "/bin/cmix", cmix[:], PATIENCE * 5, "the mixed C-and-Odin image starts", "cmix ok", "and a call from C into Odin and back into C held in one image")
 
 	// The generated header's numbers, in `abicheck`'s order, each the
 	// kernel's own `abi` constant. The program compares them to `abi.h`.
@@ -8457,20 +8281,14 @@ verify_c :: proc(r: ^Result) {
 		libodin.put_uint(&sink, v)
 		c_arg_strs[i + 1] = libodin.str(&sink)
 	}
-	said4, _, ok4 := run_script(r, "/bin/abicheck", c_arg_strs[:], PATIENCE * 5, abi_said[:], "the abi header check starts")
-	if ok4 {
-		check(r, said4 == "abi ok", said4 == "abi ok" ? "and every generated constant agrees with the kernel's" : said4)
-	}
+	script_says(r, "/bin/abicheck", c_arg_strs[:], PATIENCE * 5, "the abi header check starts", "abi ok", "and every generated constant agrees with the kernel's")
 
 	// Thread-local storage: two C programs, each with its own thread pointer,
 	// run at once by `tls.rc`. Each sleeps so the other runs, and checks its
 	// thread-locals held, which they do only if the kernel saved and restored
 	// the pointer on the switch. `docs/DEVTOOLS.md` step 0.
 	tls := [?]string{"rc", "/lib/tests/tls.rc"}
-	said5, _, ok5 := run_script(r, "/bin/rc", tls[:], PATIENCE * 20, abi_said[:], "two C programs with thread-local storage start at once")
-	if ok5 {
-		check(r, said5 == "ok", said5 == "ok" ? "and each read its own thread-locals across every switch, its thread pointer restored" : kept_said(said5))
-	}
+	script_says(r, "/bin/rc", tls[:], PATIENCE * 20, "two C programs with thread-local storage start at once", "ok", "and each read its own thread-locals across every switch, its thread pointer restored")
 	reap_orphans()
 
 	// The POSIX library: `posixtest` prints through `printf`, moves bytes
@@ -8479,36 +8297,28 @@ verify_c :: proc(r: ^Result) {
 	// when every shape held, or the number of the step that did not.
 	// `docs/DEVTOOLS.md` step 7.
 	posix := [?]string{"posixtest"}
-	said6, _, ok6 := run_script(r, "/bin/posixtest", posix[:], PATIENCE * 10, abi_said[:], "a program over sys/libposix starts")
-	if ok6 {
-		check(r, said6 == "0", said6 == "0" ? "and printf, pipe, fork, exec, waitpid, mmap, the clock, poll, the environment and the tty all held over the POSIX library" : posix_step(said6))
-	}
+	script_says(r, "/bin/posixtest", posix[:], PATIENCE * 10, "a program over sys/libposix starts", "0", "and printf, pipe, fork, exec, waitpid, mmap, the clock, poll, the environment and the tty all held over the POSIX library", posix_step)
 	reap_orphans()
 
 	// Four threads and a mutex: each adds to a shared counter under one
 	// lock and keeps its own `errno`. The total is exact only if the lock
 	// held, and the `errno` only if the thread pointer is per thread.
 	threads := [?]string{"posixthreads"}
-	said7, _, ok7 := run_script(r, "/bin/posixthreads", threads[:], PATIENCE * 20, abi_said[:], "a POSIX program with four threads starts")
-	if ok7 {
-		check(r, said7 == "0", said7 == "0" ? "and four threads added under a mutex, each with its own errno" : kept_said(said7))
-	}
+	script_says(r, "/bin/posixthreads", threads[:], PATIENCE * 20, "a POSIX program with four threads starts", "0", "and four threads added under a mutex, each with its own errno")
 	reap_orphans()
 
 	// A signal caught: the program raises SIGTERM at itself and its handler
 	// turns the note back into the signal and runs.
 	sig := [?]string{"posixsignal"}
-	said8, _, ok8 := run_script(r, "/bin/posixsignal", sig[:], PATIENCE * 10, abi_said[:], "a POSIX program that catches a signal starts")
-	if ok8 {
-		check(r, said8 == "0", said8 == "0" ? "and a raised SIGTERM was caught as a signal" : kept_said(said8))
-	}
+	script_says(r, "/bin/posixsignal", sig[:], PATIENCE * 10, "a POSIX program that catches a signal starts", "0", "and a raised SIGTERM was caught as a signal")
 	reap_orphans()
 }
 
 // posix_step names the POSIX step a number stands for, so a failing
-// `posixtest` says what broke rather than an exit code.
+// `posixtest` says what broke rather than an exit code. Empty for a word
+// it does not know, and `script_says` keeps the word itself then.
 @(private = "file")
-posix_step :: proc(said: string) -> string {
+posix_step :: proc "contextless" (said: string) -> string {
 	switch said {
 	case "1": return "posixtest could not make a pipe"
 	case "2", "3": return "posixtest's pipe did not carry its bytes"
@@ -8522,7 +8332,7 @@ posix_step :: proc(said: string) -> string {
 	case "13", "14": return "posixtest's tty calls did not answer as a console does"
 	case "70": return "posixtest's child did not receive the environment execve set"
 	}
-	return kept_said(said)
+	return ""
 }
 
 @(private = "file")
@@ -8530,10 +8340,7 @@ verify_abi :: proc(r: ^Result) {
 	names := [?]string{"abitest", "one", "two", "three"}
 	// Seven forks and spawns, each a copy of the program's memory: on the
 	// slowest emulated board that is more than one program's patience.
-	said, _, ok := run_script(r, "/bin/abitest", names[:], PATIENCE * 5, abi_said[:], "a program with a heap and three arguments starts")
-	if ok {
-		check(r, said == "ok", said == "ok" ? "and every step of the process ABI held" : said)
-	}
+	script_says(r, "/bin/abitest", names[:], PATIENCE * 5, "a program with a heap and three arguments starts", "ok", "and every step of the process ABI held")
 }
 
 /*
@@ -8552,9 +8359,7 @@ is the machine's: the proc it left parked is gone with it, which is what
 verify_threads :: proc(r: ^Result) {
 	names := [?]string{"threadtest"}
 	before := stats().live
-	said, _, ok := run_script(r, "/bin/threadtest", names[:], PATIENCE * 5, abi_said[:], "a program on the thread library starts")
-	if ok {
-		check(r, said == "ok", said == "ok" ? "and every claim the library makes held" : said)
+	if script_says(r, "/bin/threadtest", names[:], PATIENCE * 5, "a program on the thread library starts", "ok", "and every claim the library makes held") {
 		check(r, stats().live == before, "and the procs it made went down with it")
 	}
 }
@@ -8570,10 +8375,7 @@ or the name of the first step that failed.
 @(private = "file")
 verify_mui :: proc(r: ^Result) {
 	names := [?]string{"mui"}
-	said, _, ok := run_script(r, "/bin/mui", names[:], PATIENCE * 5, abi_said[:], "a program on the toolkit's layout starts")
-	if ok {
-		check(r, said == "ok", said == "ok" ? "and every rectangle matched the weights" : said)
-	}
+	script_says(r, "/bin/mui", names[:], PATIENCE * 5, "a program on the toolkit's layout starts", "ok", "and every rectangle matched the weights")
 }
 
 /*
@@ -8587,10 +8389,7 @@ first step that failed.
 @(private = "file")
 verify_netfs :: proc(r: ^Result) {
 	names := [?]string{"nettest"}
-	said, _, ok := run_script(r, "/bin/nettest", names[:], PATIENCE * 5, abi_said[:], "a program on the network's wire formats starts")
-	if ok {
-		check(r, said == "ok", said == "ok" ? "and every packet parsed and every checksum held" : said)
-	}
+	script_says(r, "/bin/nettest", names[:], PATIENCE * 5, "a program on the network's wire formats starts", "ok", "and every packet parsed and every checksum held")
 }
 
 /*
@@ -8603,18 +8402,14 @@ stops, by a remove of one of its files.
 @(private = "file")
 verify_factotum :: proc(r: ^Result) {
 	count0 := srv.count()
-	p, serr := spawn_path(nil, "/bin/factotum", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "the loader starts factotum") {
+	p := start_path(r, "/bin/factotum", "the loader starts factotum")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, await_posted("factotum"), "which posts /srv/factotum")
 	if check(r, srv.mount(vfs.boot_namespace, "/srv/factotum", "/mnt/factotum") == vfs.OK, "and the kernel mounts it at /mnt/factotum") {
 		names := [?]string{"authtest"}
-		said, _, ok := run_script(r, "/bin/authtest", names[:], PATIENCE * 40, abi_said[:], "a program drives its keys and a handshake")
-		if ok {
-			check(r, said == "ok", said == "ok" ? "and both ends of the handshake hold the same keys" : said)
-		}
+		script_says(r, "/bin/authtest", names[:], PATIENCE * 40, "a program drives its keys and a handshake", "ok", "and both ends of the handshake hold the same keys")
 	}
 	if c, err := vfs.open_path(vfs.boot_namespace, "/mnt/factotum/ctl", vfs.O_RDONLY); err == vfs.OK {
 		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of its file is factotum's stop")
@@ -8636,19 +8431,14 @@ process cannot ask for it at all.
 */
 @(private = "file")
 verify_users :: proc(r: ^Result) {
-	p, serr := spawn_path(nil, "/bin/echo", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "a program starts as the host owner") {
+	p := start_path(r, "/bin/echo", "a program starts as the host owner")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	check(r, wait(p, PATIENCE), "and ends")
 	check(r, user_of(p) == hostowner_name(), "with the host owner's name on it")
-	spath: [32]u8
-	ssink := libodin.sink_from(spath[:])
-	libodin.put_str(&ssink, "/proc/")
-	libodin.put_uint(&ssink, p.pid)
-	libodin.put_str(&ssink, "/status")
-	if c, err := vfs.open_path(vfs.boot_namespace, libodin.str(&ssink), vfs.O_RDONLY); err == vfs.OK {
+	spath: [40]u8
+	if c, err := vfs.open_path(vfs.boot_namespace, proc_file(spath[:], p.pid, "status"), vfs.O_RDONLY); err == vfs.OK {
 		line: [256]u8
 		n, _ := vfs.chan_read(c, 0, line[:])
 		vfs.chan_close(c)
@@ -8680,11 +8470,10 @@ breakpoint ends the program and `startstop` answers EIO.
 */
 @(private = "file")
 verify_debug :: proc(r: ^Result) {
-	p, err := load_held("spin", program_spin())
-	if !check(r, err == .None && p != nil, "a program is loaded and held, for a debugger to arm") {
+	p := hold_blob(r, "spin", program_spin(), "a program is loaded and held, for a debugger to arm")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	pid := p.pid
 
 	// -- A breakpoint through mem --------------------------------------------
@@ -8694,7 +8483,7 @@ verify_debug :: proc(r: ^Result) {
 	n, rerr := read_proc(pid, "mem", u64(TEXT_VA), first[:])
 	check(
 		r,
-		rerr == vfs.OK && n == len(first) && same_bytes(first[:], program_spin()[:len(first)]),
+		rerr == vfs.OK && n == len(first) && string(first[:]) == string(program_spin()[:len(first)]),
 		"mem reads the program's first bytes at their own address",
 	)
 	werr: vfs.Errno
@@ -8702,7 +8491,7 @@ verify_debug :: proc(r: ^Result) {
 	check(r, werr == vfs.OK && n == len(code), "and a breakpoint written through mem lands")
 	back: [len(arch.BREAKPOINT_CODE)]u8
 	n, rerr = read_proc(pid, "mem", u64(TEXT_VA), back[:])
-	check(r, rerr == vfs.OK && same_bytes(back[:], code[:]), "and reads back")
+	check(r, rerr == vfs.OK && string(back[:]) == string(code[:]), "and reads back")
 
 	// -- startstop, asked before there is a thread -----------------------------
 
@@ -8710,14 +8499,7 @@ verify_debug :: proc(r: ^Result) {
 		finish(r, p, "and the held program is taken down")
 		return
 	}
-	armed := false
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&p.trace_note) {
-			armed = true
-			break
-		}
-		sync.delay(1)
-	}
+	armed := sync.await_flag(&p.trace_note, PATIENCE)
 	check(r, armed, "which arms the stop before the program has a thread")
 	check(r, launch(p, 0), "and the program launches into it")
 	cerr, answered := ctl_answered()
@@ -8725,20 +8507,20 @@ verify_debug :: proc(r: ^Result) {
 
 	status: [256]u8
 	n, _ = read_proc(pid, "status", 0, status[:])
-	check(r, has_text(string(status[:n]), " Stopped "), "status says Stopped")
+	check(r, libodin.contains(string(status[:n]), " Stopped "), "status says Stopped")
 	note: [NOTE_MAX]u8
 	n, _ = read_proc(pid, "note", 0, note[:])
 	if string(note[:n]) == "sys: breakpoint" {
 		check(r, true, "and note says sys: breakpoint")
 	} else {
-		sink := detail_sink()
-		libodin.put_str(&sink, "and note says sys: breakpoint -- it said `")
+		sink := detail_for("and note says sys: breakpoint")
+		libodin.put_str(&sink, "it said `")
 		libodin.put_str(&sink, string(note[:max(n, 0)]))
 		libodin.put_str(&sink, "`, stops ")
 		libodin.put_uint(&sink, intrinsics.atomic_load(&p.stops))
 		libodin.put_str(&sink, ", noted ")
 		libodin.put_int(&sink, p.thread != nil && sched.thread_noted(p.thread) ? 1 : 0)
-		check(r, false, libodin.str(&sink))
+		fail_detail(r, &sink)
 	}
 	n, _ = read_proc(pid, "note", 0, note[:])
 	check(r, n == 0, "and reading it took it away")
@@ -8751,8 +8533,8 @@ verify_debug :: proc(r: ^Result) {
 	if rerr == vfs.OK && n == len(fbytes) && arch.frame_ip(&frame) == TEXT_VA + arch.BREAKPOINT_ADVANCE {
 		check(r, true, "regs shows the counter at the breakpoint")
 	} else {
-		sink := detail_sink()
-		libodin.put_str(&sink, "regs shows the counter at the breakpoint -- errno ")
+		sink := detail_for("regs shows the counter at the breakpoint")
+		libodin.put_str(&sink, "errno ")
 		libodin.put_int(&sink, i64(rerr))
 		libodin.put_str(&sink, ", ")
 		libodin.put_int(&sink, i64(n))
@@ -8762,7 +8544,7 @@ verify_debug :: proc(r: ^Result) {
 		libodin.put_hex(&sink, u64(arch.frame_sp(&frame)), 0)
 		libodin.put_str(&sink, " vector ")
 		libodin.put_uint(&sink, arch.frame_vector(&frame))
-		check(r, false, libodin.str(&sink))
+		fail_detail(r, &sink)
 	}
 	arch.frame_set_ip(&frame, TEXT_VA)
 	n, werr = write_proc(pid, "regs", 0, fbytes)
@@ -8791,9 +8573,9 @@ verify_debug :: proc(r: ^Result) {
 
 	lines: [512]u8
 	n, _ = read_proc(pid, "segment", 0, lines[:])
-	check(r, has_text(string(lines[:n]), "Text ") && has_text(string(lines[:n]), "Stack "), "segment lists its text and its stack")
+	check(r, libodin.contains(string(lines[:n]), "Text ") && libodin.contains(string(lines[:n]), "Stack "), "segment lists its text and its stack")
 	n, _ = read_proc(pid, "fd", 0, lines[:])
-	check(r, n > 0 && lines[0] == '/' && has_text(string(lines[:n]), "\n0 "), "fd starts with its directory, then descriptor 0")
+	check(r, n > 0 && lines[0] == '/' && libodin.contains(string(lines[:n]), "\n0 "), "fd starts with its directory, then descriptor 0")
 
 	set_cell(p, CELL_STOP, 1)
 	_, serr = write_proc(pid, "ctl", 0, bytes_of("start"))
@@ -8803,22 +8585,14 @@ verify_debug :: proc(r: ^Result) {
 
 	// -- startsyscall: in, and out --------------------------------------------
 
-	p, err = load_held("hello", program_hello())
-	if !check(r, err == .None && p != nil, "a program that makes a system call is loaded and held") {
+	p = hold_blob(r, "hello", program_hello(), "a program that makes a system call is loaded and held")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	pid = p.pid
 	check(r, set_bytes(p, MESSAGE_OFFSET, bytes_of(MESSAGE)), "with a line in its data page")
 	check(r, ctl_ask(pid, "startsyscall"), "a thread asks startsyscall")
-	armed = false
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&p.trace_syscall) {
-			armed = true
-			break
-		}
-		sync.delay(1)
-	}
+	armed = sync.await_flag(&p.trace_syscall, PATIENCE)
 	check(r, armed && launch(p, u64(len(MESSAGE))), "and the program launches into it")
 	cerr, answered = ctl_answered()
 	check(r, answered && cerr == vfs.OK, "and startsyscall answers at the call's entry")
@@ -8844,12 +8618,10 @@ verify_debug :: proc(r: ^Result) {
 	}
 	names := [?]string{"sleep", "5"}
 	check(r, argv_from(argv, names[:]), "holds them")
-	ps, perr := spawn_path(nil, "/bin/sleep", SPAWN_NS_COPY, argv)
-	free(argv)
-	if !check(r, perr == vfs.OK && ps != nil, "a program from a file starts") {
+	ps := start_path(r, "/bin/sleep", "a program from a file starts", argv)
+	if ps == nil {
 		return
 	}
-	r.programs += 1
 	head: [16]u8
 	terr: vfs.Errno
 	n, terr = read_proc(ps.pid, "text", 0, head[:])
@@ -8859,13 +8631,13 @@ verify_debug :: proc(r: ^Result) {
 		fn, _ = vfs.chan_read(c, 0, file_head[:])
 		vfs.chan_close(c)
 	}
-	check(r, terr == vfs.OK && n == len(head) && fn == len(head) && same_bytes(head[:], file_head[:]), "text reads the file it was started from")
+	check(r, terr == vfs.OK && n == len(head) && fn == len(head) && string(head[:]) == string(file_head[:]), "text reads the file it was started from")
 	_, serr = write_proc(ps.pid, "ctl", 0, bytes_of("stop"))
 	check(r, serr == vfs.OK && ctl_ask(ps.pid, "waitstop"), "stop, and a thread asks waitstop")
 	cerr, answered = ctl_answered()
 	check(r, answered && cerr == vfs.OK, "which answers once it has stopped")
 	n, _ = read_proc(ps.pid, "status", 0, status[:])
-	check(r, has_text(string(status[:n]), " Stopped "), "and status says Stopped")
+	check(r, libodin.contains(string(status[:n]), " Stopped "), "and status says Stopped")
 	_, serr = write_proc(ps.pid, "ctl", 0, bytes_of("start"))
 	check(r, serr == vfs.OK && end(ps, PATIENCE), "started, it is ended by the kernel's word")
 	finish(r, ps, "and taken down")
@@ -8886,8 +8658,7 @@ ctl_helper: Ctl_Helper
 
 @(private = "file")
 ctl_helper_thread :: proc "contextless" (arg: rawptr) {
-	context = runtime.default_context()
-	context.allocator = mem.allocator()
+	context = mem.kernel_context()
 	h := (^Ctl_Helper)(arg)
 	c, err := vfs.open_path(vfs.boot_namespace, string(h.path[:h.path_len]), vfs.O_WRONLY)
 	if err == vfs.OK {
@@ -8904,11 +8675,7 @@ ctl_helper_thread :: proc "contextless" (arg: rawptr) {
 ctl_ask :: proc(pid: u64, word: string) -> bool {
 	h := &ctl_helper
 	h^ = {}
-	sink := libodin.sink_from(h.path[:])
-	libodin.put_str(&sink, "/proc/")
-	libodin.put_uint(&sink, pid)
-	libodin.put_str(&sink, "/ctl")
-	h.path_len = len(libodin.str(&sink))
+	h.path_len = len(proc_file(h.path[:], pid, "ctl"))
 	h.word = word
 	return sched.spawn("ctl-ask", ctl_helper_thread, h) != nil
 }
@@ -8958,32 +8725,6 @@ write_proc :: proc(pid: u64, name: string, off: u64, data: []u8) -> (n: int, err
 	return vfs.chan_write(c, off, data)
 }
 
-@(private = "file")
-same_bytes :: proc "contextless" (a, b: []u8) -> bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i in 0 ..< len(a) {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-@(private = "file")
-has_text :: proc "contextless" (hay, needle: string) -> bool {
-	if len(needle) > len(hay) {
-		return false
-	}
-	for i in 0 ..= len(hay) - len(needle) {
-		if hay[i:i + len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}
-
 /*
 verify_debugtest runs `debugtest`, which reads its own debug file from
 `/lib/debug` -- `docs/DEVTOOLS.md` section 6, the file the build writes
@@ -8995,20 +8736,7 @@ that did not hold, or `ok`.
 @(private = "file")
 verify_debugtest :: proc(r: ^Result) {
 	names := [?]string{"debugtest"}
-	said, _, ok := run_script(r, "/bin/debugtest", names[:], PATIENCE * 5, abi_said[:], "a program on its own debug file starts")
-	if ok {
-		check(r, said == "ok", said == "ok" ? "and names, lines, instructions, types and variables read back from it" : kept_said(said))
-	}
-}
-
-// kept_said copies a program's exit word into a detail buffer. Every
-// script answers into one buffer, and the next script writes over it, so
-// a failure line that pointed into it would say the wrong word.
-@(private = "file")
-kept_said :: proc "contextless" (said: string) -> string {
-	sink := detail_sink()
-	libodin.put_str(&sink, said)
-	return libodin.str(&sink)
+	script_says(r, "/bin/debugtest", names[:], PATIENCE * 5, "a program on its own debug file starts", "ok", "and names, lines, instructions, types and variables read back from it")
 }
 
 /*
@@ -9020,10 +8748,7 @@ RFC 8439, X25519 against RFC 7748, and BLAKE2s against a fixed digest.
 @(private = "file")
 verify_cryptotest :: proc(r: ^Result) {
 	names := [?]string{"cryptotest"}
-	said, _, ok := run_script(r, "/bin/cryptotest", names[:], PATIENCE * 5, abi_said[:], "a program on the fleet's cryptography starts")
-	if ok {
-		check(r, said == "ok", said == "ok" ? "and every cipher matched its published vector" : kept_said(said))
-	}
+	script_says(r, "/bin/cryptotest", names[:], PATIENCE * 5, "a program on the fleet's cryptography starts", "ok", "and every cipher matched its published vector")
 }
 
 /*
@@ -9036,10 +8761,7 @@ with is the first check that did not hold, or `ok`.
 @(private = "file")
 verify_fonttest :: proc(r: ^Result) {
 	names := [?]string{"fonttest"}
-	said, _, ok := run_script(r, "/bin/fonttest", names[:], PATIENCE * 5, abi_said[:], "a program on the runtime font starts")
-	if ok {
-		check(r, said == "ok", said == "ok" ? "and a rune past ASCII loaded from a subfont with ink" : kept_said(said))
-	}
+	script_says(r, "/bin/fonttest", names[:], PATIENCE * 5, "a program on the runtime font starts", "ok", "and a rune past ASCII loaded from a subfont with ink")
 }
 
 /*
@@ -9067,11 +8789,10 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 	settle()
 	pin_before := mem.live_objects(mem.heap_stats())
 
-	p, serr := spawn_path(nil, "/bin/netfs", SPAWN_NS_COPY)
-	if !check(r, serr == vfs.OK && p != nil, "the loader starts the network stack") {
+	p := start_path(r, "/bin/netfs", "the loader starts the network stack")
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	if !check(r, await_posted("net"), "which posts /srv/net") {
 		finish(r, p, "and the stack is taken down")
 		return
@@ -9090,15 +8811,13 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 	answers one name, and both files are asked for it: `/net/dns` for the
 	address, `/net/cs` for a dial string the database cannot finish.
 	*/
-	pdns, dnserr := spawn_path(nil, "/bin/dns", SPAWN_NS_COPY)
-	if check(r, dnserr == vfs.OK && pdns != nil, "the loader starts dns") {
-		r.programs += 1
+	pdns := start_path(r, "/bin/dns", "the loader starts dns")
+	if pdns != nil {
 		check(r, await_posted("dns"), "which posts /srv/dns")
 		check(r, srv.mount(vfs.boot_namespace, "/srv/dns", "/net", .After) == vfs.OK, "and the kernel mounts it after the stack")
 	}
-	pcs, cserr := spawn_path(nil, "/bin/cs", SPAWN_NS_COPY)
-	if check(r, cserr == vfs.OK && pcs != nil, "the loader starts cs") {
-		r.programs += 1
+	pcs := start_path(r, "/bin/cs", "the loader starts cs")
+	if pcs != nil {
 		check(r, await_posted("cs"), "which posts /srv/cs")
 		check(r, srv.mount(vfs.boot_namespace, "/srv/cs", "/net", .After) == vfs.OK, "and the kernel mounts it after the stack")
 	}
@@ -9123,9 +8842,8 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 		libodin.put_str(&nsink, "\n")
 		note := libodin.str(&nsink)
 		check(r, ln > 0 && net_file_write("/net/ndb", note), "the stack's note names this machine as the resolver")
-		ptest, terr := spawn_path(nil, "/bin/dnstest", SPAWN_NS_COPY)
-		if check(r, terr == vfs.OK && ptest != nil, "a resolver of one name starts") {
-			r.programs += 1
+		ptest := start_path(r, "/bin/dnstest", "a resolver of one name starts")
+		if ptest != nil {
 			sync.delay(PATIENCE / 10)
 			got: [128]u8
 			n := net_file_ask("/net/dns", "fs.test", got[:])
@@ -9174,16 +8892,7 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 		// is on.
 		ifc := virtio.net_count() >= 2 ? "ether1" : "ether0"
 		names := [?]string{"ipconfig", ifc}
-		word, _, iok := run_script(
-			r,
-			"/bin/ipconfig",
-			names[:],
-			PATIENCE * 10,
-			abi_said[:],
-			"a program asks the router for an address by DHCP",
-		)
-		if iok {
-			check(r, word == "", word == "" ? "and the router answered with one" : word)
+		if script_says(r, "/bin/ipconfig", names[:], PATIENCE * 10, "a program asks the router for an address by DHCP", "", "and the router answered with one") {
 			check(r, net_file_holds(r, "/net/ndb", "ip=10.0.2.15 ipmask=255.255.255.0 ipgw=10.0.2.2"), "which the stack notes in /net/ndb, with the mask and the router")
 			route := ifc == "ether1" ? "0.0.0.0 0.0.0.0 10.0.2.2 ether1" : "0.0.0.0 0.0.0.0 10.0.2.2 ether0"
 			check(r, net_file_holds(r, "/net/iproute", route), "and takes the router as its default route")
@@ -9204,21 +8913,15 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 	*/
 	{
 		names := [?]string{"udptest"}
-		word, _, uok := run_script(
+		script_says(
 			r,
 			"/bin/udptest",
 			names[:],
 			PATIENCE * 5,
-			abi_said[:],
 			"a program takes a udp conversation from /net/udp/clone",
+			"ok",
+			"and the datagram it sent came back out of the end that announced",
 		)
-		if uok {
-			check(
-				r,
-				word == "ok",
-				word == "ok" ? "and the datagram it sent came back out of the end that announced" : word,
-			)
-		}
 	}
 
 	/*
@@ -9231,21 +8934,15 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 	*/
 	{
 		names := [?]string{"tcptest"}
-		word, _, tok := run_script(
+		script_says(
 			r,
 			"/bin/tcptest",
 			names[:],
 			PATIENCE * 5,
-			abi_said[:],
 			"a program takes a tcp conversation and connects it",
+			"ok",
+			"and the stream carried bytes each way and closed",
 		)
-		if tok {
-			check(
-				r,
-				word == "ok",
-				word == "ok" ? "and the stream carried bytes each way and closed" : word,
-			)
-		}
 	}
 
 	// -- Teardown, a remove of one of its files -------------------------------
@@ -9355,14 +9052,12 @@ run_script :: proc(
 	if !check(r, argv != nil, "a record for the program's arguments") {
 		return
 	}
-	defer free(argv)
 	check(r, argv_from(argv, names), "holds them")
 
-	p, serr := spawn_path(nil, path, SPAWN_NS_COPY, argv)
-	if !check(r, serr == vfs.OK && p != nil, what) {
+	p := start_path(r, path, what, argv)
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	started := sched.ticks()
 	came_back := comes_back(r, p, "and comes back", patience)
 	ticks = int(sched.ticks() - started)
@@ -9381,7 +9076,7 @@ run_script :: proc(
 			libodin.put_hex(&sink, u64(p.exit.ip))
 			libodin.put_str(&sink, " address ")
 			libodin.put_hex(&sink, u64(p.exit.address))
-			check(r, false, libodin.str(&sink))
+			fail_detail(r, &sink)
 			came_back = false
 		}
 	}
@@ -9389,7 +9084,48 @@ run_script :: proc(
 	return said, ticks, came_back
 }
 
-@(private = "file") abi_said: [EXITS_MAX]u8
+/*
+script_says is `run_script` on a program that answers one word, checked.
+
+`what_start` names the start, `what_pass` the word matched, and the word
+itself is the failure line otherwise. It is copied into a detail buffer
+first. Every script answers into one buffer, and the next script writes
+over it, so a failure line that pointed into it would say the wrong word.
+`why` may turn a word into a sentence, and answers empty when it cannot.
+Returns whether the program ran, for a caller with more to check.
+*/
+@(private = "file")
+script_says :: proc(
+	r: ^Result,
+	path: string,
+	names: []string,
+	patience: int,
+	what_start: string,
+	want: string,
+	what_pass: string,
+	why: proc "contextless" (said: string) -> string = nil,
+) -> (ran: bool) {
+	said, _, ok := run_script(r, path, names, patience, said_buf[:], what_start)
+	if !ok {
+		return false
+	}
+	if said == want {
+		check(r, true, what_pass)
+		return true
+	}
+	detail := why != nil ? why(said) : ""
+	if detail == "" {
+		sink := detail_sink()
+		libodin.put_str(&sink, said)
+		detail = libodin.str(&sink)
+	}
+	check(r, false, detail)
+	return true
+}
+
+// Where every script's exit word lands. One buffer, because no test reads
+// a word once the next script answers.
+@(private = "file") said_buf: [EXITS_MAX]u8
 @(private = "file") helper_line: [512]u8
 
 /*
@@ -9431,7 +9167,7 @@ comes_back :: proc(r: ^Result, p: ^Process, what: string, patience := PATIENCE) 
 		libodin.put_str(&sink, " ")
 		libodin.put_hex(&sink, cell(p, i))
 	}
-	return check(r, false, libodin.str(&sink))
+	return fail_detail(r, &sink)
 }
 
 /*
@@ -9457,7 +9193,7 @@ verify_rc :: proc(r: ^Result) {
 	// Twenty forks and execs, each a copy of the shell's memory, on an
 	// emulated core: a few hundred ticks, ten times what one program takes,
 	// and over eight hundred before the ring 3 heap started small.
-	said, ticks, ok := run_script(r, "/bin/rc", names[:], PATIENCE * 25, rc_said[:], "the shell starts on a script")
+	said, ticks, ok := run_script(r, "/bin/rc", names[:], PATIENCE * 25, said_buf[:], "the shell starts on a script")
 	r.shell_ticks = ticks
 	if ok {
 		sink := libodin.sink_from(rc_diag[:])
@@ -9474,7 +9210,6 @@ verify_rc :: proc(r: ^Result) {
 	}
 }
 
-@(private = "file") rc_said: [EXITS_MAX]u8
 @(private = "file") rc_diag: [256]u8
 
 /*
@@ -9491,7 +9226,7 @@ TOOLS_OK :: "37 ok"
 
 verify_tools :: proc(r: ^Result) {
 	names := [?]string{"rc", "/lib/tests/tools.rc"}
-	said, ticks, ok := run_script(r, "/bin/rc", names[:], PATIENCE * 100, tools_said[:], "the shell starts on the tool script")
+	said, ticks, ok := run_script(r, "/bin/rc", names[:], PATIENCE * 100, said_buf[:], "the shell starts on the tool script")
 	r.tools_ticks = ticks
 	if ok {
 		sink := libodin.sink_from(tools_diag[:])
@@ -9509,7 +9244,6 @@ verify_tools :: proc(r: ^Result) {
 	reap_orphans()
 }
 
-@(private = "file") tools_said: [EXITS_MAX]u8
 @(private = "file") tools_diag: [256]u8
 
 /*
@@ -9523,10 +9257,7 @@ first check that did not hold.
 @(private = "file")
 verify_dbg :: proc(r: ^Result) {
 	names := [?]string{"rc", "/lib/tests/dbg.rc"}
-	said, _, ok := run_script(r, "/bin/rc", names[:], PATIENCE * 100, tools_said[:], "the shell starts on the debugger script")
-	if ok {
-		check(r, said == "ok", said == "ok" ? "and the engine stopped, read, stepped and released the debuggee as the script says" : kept_said(said))
-	}
+	script_says(r, "/bin/rc", names[:], PATIENCE * 100, "the shell starts on the debugger script", "ok", "and the engine stopped, read, stepped and released the debuggee as the script says")
 	reap_orphans()
 }
 
@@ -9545,13 +9276,11 @@ verify_interrupt :: proc(r: ^Result) {
 	if !check(r, argv != nil, "a record for cat's arguments") {
 		return
 	}
-	defer free(argv)
 	check(r, argv_from(argv, []string{"cat"}), "holds them")
-	p, serr := spawn_path(nil, "/bin/cat", SPAWN_NS_COPY, argv)
-	if !check(r, serr == vfs.OK && p != nil, "cat starts, to read the console") {
+	p := start_path(r, "/bin/cat", "cat starts, to read the console", argv)
+	if p == nil {
 		return
 	}
-	r.programs += 1
 	// Long enough to load off the disk and park in its first read.
 	sync.delay(PATIENCE)
 	typed := interrupts_typed
