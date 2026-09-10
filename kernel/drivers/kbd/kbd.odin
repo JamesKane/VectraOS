@@ -59,40 +59,19 @@ import "base:intrinsics"
 import "core:unicode/utf8"
 
 import "kernel:arch"
+import "kernel:drivers/ring"
 import "kernel:sched"
 import "kernel:sync"
 import "vsys:libkbd"
-
-// The 8042's two ports. Data carries scancodes in and commands out. The second
-// is status when read and command when written.
-@(private = "file")
-PORT_DATA :: u16(0x60)
-@(private = "file")
-PORT_STATUS :: u16(0x64)
-
-// The one status bit this driver reads. Set means the controller has a byte
-// for us, and reading the data port with it clear returns whatever was there
-// last time.
-@(private = "file")
-STATUS_OUTPUT_FULL :: u8(0x01)
 
 // The ISA interrupt a keyboard asserts, and the vector it is routed to. See
 // `kernel/arch/amd64/ioapic.odin` for why the mapping to a global system
 // interrupt is an identity here rather than a lookup.
 KBD_IRQ :: 1
 
-/*
-How many scancodes survive with the bottom half not yet running.
-
-A person types at ten bytes a second, and the bottom half runs at the first
-opportunity after a wake. This is deep enough for a burst of key-down and
-key-up pairs while something holds the console. A full ring drops the scancode
-and counts it, because that is what an interrupt handler with nowhere to put a
-byte has to do.
-*/
-RING_BYTES :: 64
-@(private = "file")
-RING_MASK :: RING_BYTES - 1
+// How many scancodes survive with the bottom half not yet running. The ring
+// is `kernel/drivers/ring`'s, which says why this many.
+RING_BYTES :: ring.BYTES
 
 // Where a translated byte goes. `kernel/devfs` sets this to `cons_feed`, and
 // nothing here knows that. A driver that named its consumer would be a driver
@@ -113,18 +92,11 @@ Raw :: #type proc "contextless" (code: u8) -> bool
 /*
 Everything one keyboard is.
 
-`head` and `tail` are monotonic and the index is the counter masked. That is
-the same arrangement `devfs.Cons` uses, for the same reason. `head - tail` is
-then the count, with no ambiguity between full and empty.
-
-`lock` is a spinlock and may never be anything else. The producer is an
-interrupt handler, and an interrupt handler cannot park.
+The ring, its lock and the top half's counters are `ring.Byte_Ring`'s, which
+says why the lock is a spinlock and may never be anything else.
 */
 Keyboard :: struct {
-	ring: [RING_BYTES]u8,
-	head: u64,
-	tail: u64,
-	lock: sync.Spinlock,
+	using fifo: ring.Byte_Ring,
 
 	// Where the bottom half waits. Woken by the top half, and by nothing else.
 	ready: sync.Rendez,
@@ -141,10 +113,8 @@ Keyboard :: struct {
 	// what resets the modifier state -- see `deliver`.
 	diverting: bool,
 
-	// Counters, reported at boot and checked by the self-test.
-	interrupts: u64, // Times the top half ran
-	scancodes:  u64, // Bytes it put in the ring
-	dropped:    u64, // ...and bytes it could not, because the ring was full
+	// The bottom half's counters, reported at boot and checked by the
+	// self-test. The top half's are the ring's.
 	delivered:  u64, // Bytes the bottom half handed to the sink
 	ignored:    u64, // Scancodes that produce no byte: releases, modifiers
 	diverted:   u64, // Scancodes the raw hook consumed before translation
@@ -224,20 +194,16 @@ Stats :: struct {
 	scancodes:  u64,
 	dropped:    u64,
 	delivered:  u64,
-	ignored:    u64,
-	diverted:   u64,
 }
 
 stats :: proc "contextless" () -> Stats {
 	g := sync.acquire(&kbd.lock)
 	defer sync.release(&kbd.lock, g)
 	return Stats {
-		interrupts = kbd.interrupts,
-		scancodes = kbd.scancodes,
+		interrupts = kbd.pushed,
+		scancodes = kbd.stored,
 		dropped = kbd.dropped,
 		delivered = intrinsics.volatile_load(&kbd.delivered),
-		ignored = intrinsics.volatile_load(&kbd.ignored),
-		diverted = intrinsics.volatile_load(&kbd.diverted),
 	}
 }
 
@@ -265,34 +231,10 @@ on_interrupt :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	code := arch.inb(PORT_DATA)
 	arch.irq_ack()
 
-	if push(&kbd, code) {
+	if ring.push(&kbd.fifo, code) {
 		sync.wakeup(&kbd.ready)
 	}
 	return r
-}
-
-/*
-push puts one scancode in the ring and reports whether it fit.
-
-Shared with the self-test, which is what lets a check exercise a full ring
-without pressing sixty-five keys. A full ring drops the scancode and counts it,
-because an interrupt handler with nowhere to put a byte has nowhere to wait
-either.
-*/
-@(private)
-push :: proc "contextless" (k: ^Keyboard, code: u8) -> bool #no_bounds_check {
-	g := sync.acquire(&k.lock)
-	defer sync.release(&k.lock, g)
-
-	k.interrupts += 1
-	if k.head - k.tail >= RING_BYTES {
-		k.dropped += 1
-		return false
-	}
-	k.ring[k.head & RING_MASK] = code
-	k.head += 1
-	k.scancodes += 1
-	return true
 }
 
 /*
@@ -310,30 +252,14 @@ it is busy, and waiting for one that never empties would hang the boot.
 */
 @(private)
 inject :: proc "contextless" (code: u8) -> bool {
-	for _ in 0 ..< 1000 {
-		// Bit 1 of the status port is `input buffer full`. Writing a command
-		// while it is set loses the command.
-		if arch.inb(PORT_STATUS) & 0x02 == 0 {
-			arch.outb(PORT_STATUS, 0xD2)
-			for _ in 0 ..< 1000 {
-				if arch.inb(PORT_STATUS) & 0x02 == 0 {
-					arch.outb(PORT_DATA, code)
-					return true
-				}
-			}
-			return false
-		}
+	if !controller_command(0xD2, 1000) || !wait_input(1000) {
+		return false
 	}
-	return false
+	arch.outb(PORT_DATA, code)
+	return true
 }
 
 // -- The bottom half ---------------------------------------------------------
-
-@(private = "file")
-have_scancodes :: proc "contextless" (arg: rawptr) -> bool {
-	k := cast(^Keyboard)arg
-	return intrinsics.volatile_load(&k.head) != intrinsics.volatile_load(&k.tail)
-}
 
 /*
 bottom_half is an ordinary thread, and that is what buys it the right to park.
@@ -348,30 +274,15 @@ yet takes a keyboard away.
 bottom_half :: proc "contextless" (arg: rawptr) {
 	k := cast(^Keyboard)arg
 	for {
-		sync.sleep(&k.ready, have_scancodes, k)
+		sync.sleep(&k.ready, ring.pending, &k.fifo)
 		for {
-			code, ok := take(k)
+			code, ok := ring.take(&k.fifo)
 			if !ok {
 				break
 			}
 			deliver(k, code)
 		}
 	}
-}
-
-// Package-visible for the same reason `push` is: the self-test drains a ring it
-// filled, and neither half is worth a second implementation.
-@(private)
-take :: proc "contextless" (k: ^Keyboard) -> (code: u8, ok: bool) #no_bounds_check {
-	g := sync.acquire(&k.lock)
-	defer sync.release(&k.lock, g)
-
-	if k.tail == k.head {
-		return 0, false
-	}
-	code = k.ring[k.tail & RING_MASK]
-	k.tail += 1
-	return code, true
 }
 
 /*
@@ -396,7 +307,7 @@ and cleared is the only honest value for unknowable.
 deliver :: proc "contextless" (k: ^Keyboard, code: u8) {
 	if k.raw != nil && k.raw(code) {
 		k.diverting = true
-		bump(&k.diverted)
+		ring.bump(&k.diverted)
 		return
 	}
 		if k.diverting {
@@ -406,10 +317,10 @@ deliver :: proc "contextless" (k: ^Keyboard, code: u8) {
 
 	r, produced := step(k, code)
 	if !produced {
-		bump(&k.ignored)
+		ring.bump(&k.ignored)
 		return
 	}
-	bump(&k.delivered)
+	ring.bump(&k.delivered)
 	if k.sink == nil {
 		return
 	}
@@ -429,11 +340,6 @@ deliver :: proc "contextless" (k: ^Keyboard, code: u8) {
 	for i in 0 ..< n {
 		k.sink(buf[i])
 	}
-}
-
-@(private = "file")
-bump :: proc "contextless" (p: ^u64) {
-	intrinsics.volatile_store(p, intrinsics.volatile_load(p) + 1)
 }
 
 // -- Scancode set 1 ----------------------------------------------------------

@@ -57,8 +57,6 @@ requester_id :: proc "contextless" (at: Address) -> u32 {
 Bar :: struct {
 	phys:  uintptr,
 	size:  u64,
-	io:    bool, // A port range rather than memory
-	wide:  bool, // 64 bits, occupying this BAR and the next
 }
 
 // Header registers.
@@ -164,8 +162,9 @@ The size is found the way the specification says and every operating
 system does: write all ones, read back which bits stayed writable, and put
 the address back. Memory decoding is off for the duration, so a device does
 not answer at the all-ones address in between. A 64-bit BAR is this one and
-the next, and the next is then not a BAR of its own, which is what `wide`
-tells a caller stepping through them.
+the next, and the next is then not a BAR of its own. No caller steps through
+them, so whether a BAR is wide, or a port range rather than memory, stays
+inside this procedure.
 
 An unassigned BAR answers `ok` false, as does an index that is not a BAR.
 */
@@ -178,9 +177,9 @@ bar :: proc "contextless" (at: Address, index: int) -> (b: Bar, ok: bool) {
 	if low == 0 {
 		return
 	}
-	b.io = low & 1 != 0
-	b.wide = !b.io && (low >> 1) & 3 == 2
-	mask := b.io ? u32(0xFFFF_FFFC) : u32(0xFFFF_FFF0)
+	io := low & 1 != 0 // A port range rather than memory
+	wide := !io && (low >> 1) & 3 == 2 // 64 bits, occupying this BAR and the next
+	mask := io ? u32(0xFFFF_FFFC) : u32(0xFFFF_FFF0)
 
 	command := read16(at, COMMAND)
 	write16(at, COMMAND, command & ~(COMMAND_IO | COMMAND_MEMORY))
@@ -191,7 +190,7 @@ bar :: proc "contextless" (at: Address, index: int) -> (b: Bar, ok: bool) {
 	write32(at, offset, low)
 
 	b.phys = uintptr(low & mask)
-	if b.wide {
+	if wide {
 		high := read32(at, offset + 4)
 		write32(at, offset + 4, 0xFFFF_FFFF)
 		probe_high := read32(at, offset + 4)

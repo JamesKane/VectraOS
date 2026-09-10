@@ -47,7 +47,7 @@ verify :: proc "contextless" () -> Result {
 	check(&r, unit.idr5 & IDR5_GRAN4K != 0, "and the 4 KiB granule")
 	check(&r, (unit.idr0 >> IDR0_STLEVEL_SHIFT) & 3 == 1 && unit.sid_bits >= STRTAB_SPLIT, "and a two-level stream table")
 	check(&r, (unit.idr0 & IDR0_COHACC != 0) == unit.coherent, "and its walks snoop as the node's dma-coherent says")
-	check(&r, read32(CR0ACK) == CR0_SMMUEN | CR0_EVENTQEN | CR0_CMDQEN, "CR0ACK says the part and both queues are enabled")
+	check(&r, arch.mmio_read32(unit.base, CR0ACK) == CR0_SMMUEN | CR0_EVENTQEN | CR0_CMDQEN, "CR0ACK says the part and both queues are enabled")
 
 	// -- The command queue ------------------------------------------------------------
 	{

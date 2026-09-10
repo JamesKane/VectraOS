@@ -217,11 +217,9 @@ Unit :: struct {
 	enabled:   bool,
 	broken:    bool,
 	coherent:  bool, // the node's `dma-coherent`
-	phys:      uintptr,
-	base:      uintptr,
+	base:      rawptr,
 	idr0:      u32,
 	idr1:      u32,
-	idr3:      u32,
 	idr5:      u32,
 	sid_bits:  int,
 	ips:       u32, // the output address size code the descriptors carry
@@ -241,7 +239,6 @@ Unit :: struct {
 	eventq_phys: uintptr,
 	eventq:    [^][4]u64,
 	eventq_cons: u32,
-	events:    u64, // records taken off the event queue
 	lost:      u64, // times the queue overflowed and the part dropped a record
 	by_type:   [256]u64, // of each type, for a self-test that names them
 	sink:      Sink,
@@ -249,7 +246,6 @@ Unit :: struct {
 	cd_phys:   uintptr,
 	cds:       [^][8]u64,
 	attaches:  [SLOTS]Attach,
-	attached:  int,
 	bypassed:  int,
 	generation: u64, // attaches ever, for a kernel driver that shares a device
 }
@@ -270,29 +266,16 @@ sync_release :: proc "contextless" (g: sync.Guard) {
 }
 
 // -- Register access ------------------------------------------------------------
-
-@(private)
-read32 :: proc "contextless" (off: uintptr) -> u32 {
-	return intrinsics.volatile_load(cast(^u32)(unit.base + off))
-}
-
-@(private)
-write32 :: proc "contextless" (off: uintptr, v: u32) {
-	intrinsics.volatile_store(cast(^u32)(unit.base + off), v)
-}
-
-@(private)
-write64 :: proc "contextless" (off: uintptr, v: u64) {
-	intrinsics.volatile_store(cast(^u64)(unit.base + off), v)
-}
+//
+// The registers are reached through `arch.mmio_*` at `unit.base`.
 
 // wait_ack writes CR0 and spins until CR0ACK answers the same, or gives up
 // and marks the part broken.
 @(private)
 wait_ack :: proc "contextless" (v: u32) -> bool {
-	write32(CR0, v)
+	arch.mmio_write32(unit.base, CR0, v)
 	for _ in 0 ..< PATIENCE {
-		if read32(CR0ACK) == v {
+		if arch.mmio_read32(unit.base, CR0ACK) == v {
 			return true
 		}
 	}
@@ -319,7 +302,7 @@ issue :: proc "contextless" (w0, w1: u64) -> bool {
 	if unit.broken {
 		return false
 	}
-	for queue_full(unit.cmdq_prod, read32(CMDQ_CONS)) {
+	for queue_full(unit.cmdq_prod, arch.mmio_read32(unit.base, CMDQ_CONS)) {
 		if gerror_pending() {
 			unit.broken = true
 			return false
@@ -330,7 +313,7 @@ issue :: proc "contextless" (w0, w1: u64) -> bool {
 	unit.cmdq[idx][1] = w1
 	barrier()
 	unit.cmdq_prod = (unit.cmdq_prod + 1) & u32(CMDQ_ENTRIES * 2 - 1)
-	write32(CMDQ_PROD, unit.cmdq_prod)
+	arch.mmio_write32(unit.base, CMDQ_PROD, unit.cmdq_prod)
 	unit.commands += 1
 	return true
 }
@@ -341,7 +324,7 @@ issue :: proc "contextless" (w0, w1: u64) -> bool {
 // refused.
 @(private)
 gerror_pending :: proc "contextless" () -> bool {
-	return (read32(GERROR) ~ read32(GERRORN)) & ~GERROR_EVENTQ_ABT_ERR != 0
+	return (arch.mmio_read32(unit.base, GERROR) ~ arch.mmio_read32(unit.base, GERRORN)) & ~GERROR_EVENTQ_ABT_ERR != 0
 }
 
 /*
@@ -356,7 +339,7 @@ cmd_sync :: proc "contextless" () -> bool {
 		return false
 	}
 	for _ in 0 ..< PATIENCE {
-		if read32(CMDQ_CONS) & u32(CMDQ_ENTRIES * 2 - 1) == unit.cmdq_prod {
+		if arch.mmio_read32(unit.base, CMDQ_CONS) & u32(CMDQ_ENTRIES * 2 - 1) == unit.cmdq_prod {
 			return true
 		}
 		if gerror_pending() {
@@ -524,7 +507,7 @@ drain_events :: proc "contextless" () {
 	guard := sync.acquire(&unit.lock)
 	defer sync.release(&unit.lock, guard)
 	mask := u32(EVENTQ_ENTRIES * 2 - 1)
-	prod := read32(EVENTQ_PROD) & mask
+	prod := arch.mmio_read32(unit.base, EVENTQ_PROD) & mask
 	for unit.eventq_cons != prod {
 		rec := &unit.eventq[unit.eventq_cons & u32(EVENTQ_ENTRIES - 1)]
 		barrier()
@@ -535,14 +518,13 @@ drain_events :: proc "contextless" () {
 			addr   = rec[2],
 			write  = rec[1] & EVT1_RNW == 0,
 		}
-		unit.events += 1
 		unit.by_type[e.fault] += 1
 		unit.eventq_cons = (unit.eventq_cons + 1) & mask
 		if unit.sink != nil {
 			unit.sink(e)
 		}
 	}
-	write32(EVENTQ_CONS, unit.eventq_cons)
+	arch.mmio_write32(unit.base, EVENTQ_CONS, unit.eventq_cons)
 }
 
 /*
@@ -563,7 +545,7 @@ on_gerror :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	{
 		guard := sync.acquire(&unit.lock)
 		defer sync.release(&unit.lock, guard)
-		pending := read32(GERROR) ~ read32(GERRORN)
+		pending := arch.mmio_read32(unit.base, GERROR) ~ arch.mmio_read32(unit.base, GERRORN)
 		if pending & GERROR_EVENTQ_ABT_ERR != 0 {
 			unit.lost += 1
 		}
@@ -571,7 +553,7 @@ on_gerror :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 			unit.broken = true
 			fatal = true
 		}
-		write32(GERRORN, read32(GERROR))
+		arch.mmio_write32(unit.base, GERRORN, arch.mmio_read32(unit.base, GERROR))
 	}
 	if !fatal {
 		drain_events()
@@ -580,45 +562,6 @@ on_gerror :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	}
 	arch.irq_ack()
 	return r
-}
-
-// lost answers how many times the part dropped a record for a full queue.
-lost :: proc "contextless" () -> u64 {
-	return unit.lost
-}
-
-// stream_config answers a stream's entry as the part reads it: bit 0 valid,
-// then the configuration field, or 0xFF for a stream past the table. For a
-// self-test that says what state an entry is in rather than that it is wrong.
-stream_config :: proc "contextless" (stream: u32) -> u64 {
-	if !unit.present {
-		return 0xFF
-	}
-	guard := sync.acquire(&unit.lock)
-	defer sync.release(&unit.lock, guard)
-	valid, config := ste_state(stream)
-	return (valid ? 1 : 0) | config << 1
-}
-
-// registers answers CR0ACK, GERROR and GERRORN, for a self-test's line.
-registers :: proc "contextless" () -> (cr0ack, gerror, gerrorn: u32) {
-	if !unit.present {
-		return 0, 0, 0
-	}
-	return read32(CR0ACK), read32(GERROR), read32(GERRORN)
-}
-
-// poll drains the event queue without waiting for its line, for a self-test
-// that asks whether records are there that no interrupt delivered.
-poll :: proc "contextless" () {
-	if unit.present && unit.enabled {
-		drain_events()
-	}
-}
-
-// events answers how many records came off the queue, for a self-test.
-events :: proc "contextless" () -> u64 {
-	return unit.events
 }
 
 // events_of answers how many records of one type came off the queue. A
@@ -687,17 +630,15 @@ init :: proc "contextless" (node: Node, found: bool) -> Info {
 		info.status = .No_Window
 		return info
 	}
-	unit.phys = node.phys
-	unit.base = uintptr(virt)
+	unit.base = virt
 	unit.coherent = node.coherent
 	info.coherent = unit.coherent
 	unit.eventq_spi = node.eventq_spi
 	unit.gerror_spi = node.gerror_spi
 
-	unit.idr0 = read32(IDR0)
-	unit.idr1 = read32(IDR1)
-	unit.idr3 = read32(IDR3)
-	unit.idr5 = read32(IDR5)
+	unit.idr0 = arch.mmio_read32(unit.base, IDR0)
+	unit.idr1 = arch.mmio_read32(unit.base, IDR1)
+	unit.idr5 = arch.mmio_read32(unit.base, IDR5)
 	unit.present = true
 
 	ttf := (unit.idr0 >> IDR0_TTF_SHIFT) & 3
@@ -729,8 +670,15 @@ init :: proc "contextless" (node: Node, found: bool) -> Info {
 	unit.cmdq = cast([^][2]u64)mem.phys_to_virt(unit.cmdq_phys)
 	unit.eventq = cast([^][4]u64)mem.phys_to_virt(unit.eventq_phys)
 	unit.cds = cast([^][8]u64)mem.phys_to_virt(unit.cd_phys)
+	// Every slot's ASID, and the two procedures a walker record carries, are
+	// the same for the life of the machine. `clean` stays nil: QEMU's walker
+	// snoops, `docs/SMMU.md` section 4.
 	for i in 0 ..< SLOTS {
-		unit.attaches[i].asid = u16(i + 1)
+		a := &unit.attaches[i]
+		a.asid = u16(i + 1)
+		a.invalidate = walker_invalidate
+		a.detach = walker_detach
+		a.clean = nil
 	}
 
 	// Bypass for every function the scan found, before the part is enabled,
@@ -741,8 +689,7 @@ init :: proc "contextless" (node: Node, found: bool) -> Info {
 		guard := sync.acquire(&unit.lock)
 		defer sync.release(&unit.lock, guard)
 		for i in 0 ..< n {
-			at := found_fns[i].at
-			stream := u32(at.bus) << 8 | u32(at.dev) << 3 | u32(at.fn)
+			stream := pci.requester_id(found_fns[i].at)
 			if e, ok := ste(stream); ok {
 				_ = ste_write(stream, e, STE_V | STE_CONFIG_BYPASS << STE_CONFIG_SHIFT, STE1_SHCFG_INCOMING)
 				unit.bypassed += 1
@@ -782,9 +729,9 @@ arm_lines :: proc "contextless" () {
 	arch.irq_route(unit.gerror_spi, arch.irq_vector_of(unit.gerror_spi), 0)
 	arch.irq_set_edge(unit.gerror_spi)
 	arch.irq_set_mask(unit.gerror_spi, false)
-	write32(IRQ_CTRL, IRQ_CTRL_EVENTQ | IRQ_CTRL_GERROR)
+	arch.mmio_write32(unit.base, IRQ_CTRL, IRQ_CTRL_EVENTQ | IRQ_CTRL_GERROR)
 	for _ in 0 ..< PATIENCE {
-		if read32(IRQ_CTRLACK) == IRQ_CTRL_EVENTQ | IRQ_CTRL_GERROR {
+		if arch.mmio_read32(unit.base, IRQ_CTRLACK) == IRQ_CTRL_EVENTQ | IRQ_CTRL_GERROR {
 			return
 		}
 	}
@@ -812,13 +759,13 @@ enable :: proc "contextless" () -> bool {
 	if !wait_ack(0) {
 		return false
 	}
-	write32(CR1, CR1_VALUE)
-	write32(CR2, CR2_PTM | CR2_RECINVSID)
+	arch.mmio_write32(unit.base, CR1, CR1_VALUE)
+	arch.mmio_write32(unit.base, CR2, CR2_PTM | CR2_RECINVSID)
 
-	write64(CMDQ_BASE, u64(unit.cmdq_phys) & ADDR_MASK | QUEUE_BASE_RA | u64(CMDQ_LOG2))
+	arch.mmio_write64(unit.base, CMDQ_BASE, u64(unit.cmdq_phys) & ADDR_MASK | QUEUE_BASE_RA | u64(CMDQ_LOG2))
 	unit.cmdq_prod = 0
-	write32(CMDQ_PROD, 0)
-	write32(CMDQ_CONS, 0)
+	arch.mmio_write32(unit.base, CMDQ_PROD, 0)
+	arch.mmio_write32(unit.base, CMDQ_CONS, 0)
 	if !wait_ack(CR0_CMDQEN) {
 		return false
 	}
@@ -828,17 +775,17 @@ enable :: proc "contextless" () -> bool {
 		return false
 	}
 
-	write64(EVENTQ_BASE, u64(unit.eventq_phys) & ADDR_MASK | QUEUE_BASE_RA | u64(EVENTQ_LOG2))
+	arch.mmio_write64(unit.base, EVENTQ_BASE, u64(unit.eventq_phys) & ADDR_MASK | QUEUE_BASE_RA | u64(EVENTQ_LOG2))
 	unit.eventq_cons = 0
-	write32(EVENTQ_PROD, 0)
-	write32(EVENTQ_CONS, 0)
+	arch.mmio_write32(unit.base, EVENTQ_PROD, 0)
+	arch.mmio_write32(unit.base, EVENTQ_CONS, 0)
 	if !wait_ack(CR0_CMDQEN | CR0_EVENTQEN) {
 		unit.enabled = false
 		return false
 	}
 
-	write64(STRTAB_BASE, u64(unit.l1_phys) & ADDR_MASK | STRTAB_BASE_RA)
-	write32(STRTAB_BASE_CFG, STRTAB_FMT_2LEVEL | u32(STRTAB_SPLIT) << 6 | u32(unit.sid_bits))
+	arch.mmio_write64(unit.base, STRTAB_BASE, u64(unit.l1_phys) & ADDR_MASK | STRTAB_BASE_RA)
+	arch.mmio_write32(unit.base, STRTAB_BASE_CFG, STRTAB_FMT_2LEVEL | u32(STRTAB_SPLIT) << 6 | u32(unit.sid_bits))
 	barrier()
 	if !wait_ack(CR0_CMDQEN | CR0_EVENTQEN | CR0_SMMUEN) {
 		unit.enabled = false
@@ -894,9 +841,6 @@ attach :: proc "contextless" (stream: u32, space: ^mem.Address_Space) -> (handle
 		a.space = space
 		a.used = true
 		a.orphaned = false
-		a.invalidate = walker_invalidate
-		a.detach = walker_detach
-		a.clean = nil
 		a.next = nil
 
 		cd_fill(&unit.cds[slot], space.root, a.asid, unit.ips)
@@ -907,7 +851,6 @@ attach :: proc "contextless" (stream: u32, space: ^mem.Address_Space) -> (handle
 			a.space = nil
 			return -1, .Broken
 		}
-		unit.attached += 1
 		unit.generation += 1
 	}
 	mem.walker_attach(space, &unit.attaches[slot].w)
@@ -960,7 +903,6 @@ detach :: proc "contextless" (handle: int) -> Error {
 	a.space = nil
 	a.orphaned = false
 	a.used = false
-	unit.attached -= 1
 	return unit.broken ? .Broken : .None
 }
 
@@ -1108,7 +1050,8 @@ walker_detach :: proc "contextless" (w: ^mem.Walker) {
 	a.space = nil
 	a.orphaned = true
 	if unit.sink != nil {
-		unit.sink(Event{kind = .Orphaned, stream = a.stream, handle = int(uintptr(a) - uintptr(&unit.attaches[0])) / size_of(Attach)})
+		// The handle is the slot, and a slot's ASID is one past its index.
+		unit.sink(Event{kind = .Orphaned, stream = a.stream, handle = int(a.asid) - 1})
 	}
 }
 
@@ -1120,17 +1063,4 @@ present :: proc "contextless" () -> bool {
 
 broken :: proc "contextless" () -> bool {
 	return unit.broken
-}
-
-coherent :: proc "contextless" () -> bool {
-	return unit.coherent
-}
-
-// The shared line numbers the node named, for the handler section 5 describes.
-event_line :: proc "contextless" () -> int {
-	return unit.eventq_spi
-}
-
-error_line :: proc "contextless" () -> int {
-	return unit.gerror_spi
 }

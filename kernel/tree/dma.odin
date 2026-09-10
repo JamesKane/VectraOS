@@ -40,6 +40,7 @@ import "kernel:smmu"
 import "kernel:sync"
 import "kernel:user"
 import "kernel:vfs"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 @(private) RING :: 16
@@ -63,9 +64,10 @@ Bind :: struct {
 }
 
 /*
-Dma is one node's walker, beside the node table for the reason `Irq` is.
-`single` is an `iommus` node: one slot, zero, one stream. Otherwise the node
-is a PCI host with an `iommu-map`, and a slot in `[rid_base, rid_base +
+Dma is one node's walker, beside the node table for the reason `Irq` is, and
+indexed the same way. `dma_index[i]` names the row's entry in `dma_table`, or
+-1. `single` is an `iommus` node: one slot, zero, one stream. Otherwise the
+node is a PCI host with an `iommu-map`, and a slot in `[rid_base, rid_base +
 length)` is the stream `sid_base + (slot - rid_base)`.
 */
 @(private)
@@ -89,21 +91,19 @@ Dma :: struct {
 }
 
 @(private)
+dma_index: []i32
+@(private)
 dma_table: []Dma
 
-// Faults naming a stream no node maps, which a broken descriptor could
-// produce. They go to nobody's ring, and the count is here for a self-test.
-@(private)
-stray_faults: u64
-
-// dma_of is the walker a fid names, or nil for a fid on any other file.
+// dma_of is the walker a fid names, and the row, or nil for a fid on any
+// other file.
 @(private)
 dma_of :: proc "contextless" (fid: vectra9.Fid) -> (^Dma, i32) #no_bounds_check {
 	g := sync.acquire(&tree_static.lock)
 	defer sync.release(&tree_static.lock, g)
 	node := vfs.fidtab_node(&tree_static.fids, fid)
-	if node >= 0 && int(node) < len(dma_table) && dma_table[node].valid {
-		return &dma_table[node], node
+	if node >= 0 && int(node) < len(dma_index) && dma_index[node] >= 0 {
+		return &dma_table[dma_index[node]], node
 	}
 	return nil, -1
 }
@@ -136,72 +136,27 @@ slot_of_stream :: proc "contextless" (d: ^Dma, stream: u32) -> (u32, bool) {
 
 // -- The ring ------------------------------------------------------------------------
 
-// A line under construction, on the caller's stack.
-@(private)
-Text :: struct {
-	b: [LINE]u8,
-	n: int,
-}
-
-@(private)
-text_str :: proc "contextless" (t: ^Text, s: string) #no_bounds_check {
-	for i in 0 ..< len(s) {
-		if t.n >= LINE {
-			return
-		}
-		t.b[t.n] = s[i]
-		t.n += 1
-	}
-}
-
-@(private)
-text_uint :: proc "contextless" (t: ^Text, v: u64) {
-	if t.n < LINE {
-		t.n += put_uint(t.b[t.n:], v)
-	}
-}
-
-@(private)
-text_hex :: proc "contextless" (t: ^Text, v: u64) #no_bounds_check {
-	text_str(t, "0x")
-	digits: [16]u8
-	n := 0
-	x := v
-	for {
-		d := u8(x & 0xF)
-		digits[n] = d < 10 ? '0' + d : 'a' + d - 10
-		n += 1
-		x >>= 4
-		if x == 0 {
-			break
-		}
-	}
-	for i := n - 1; i >= 0 && t.n < LINE; i -= 1 {
-		t.b[t.n] = digits[i]
-		t.n += 1
-	}
-}
+// A line under construction is a `libodin.Sink` over a buffer of `LINE`
+// bytes on the caller's stack. A line past the buffer loses its tail, as it
+// did when this file kept a text type of its own.
 
 // push appends a line to the ring and wakes the readers, or drops it and
 // counts. With `d.lock` held.
 @(private)
-push :: proc "contextless" (d: ^Dma, t: ^Text) #no_bounds_check {
+push :: proc "contextless" (d: ^Dma, s: ^libodin.Sink) #no_bounds_check {
 	if d.count == RING {
 		d.dropped += 1
 		return
 	}
 	if d.dropped > 0 {
-		text_str(t, " dropped ")
-		text_uint(t, d.dropped)
+		libodin.put_str(s, " dropped ")
+		libodin.put_uint(s, d.dropped)
 		d.dropped = 0
 	}
-	if t.n < LINE {
-		t.b[t.n] = '\n'
-		t.n += 1
-	}
+	libodin.put_byte(s, '\n')
 	at := (d.head + d.count) % RING
-	d.ring[at].text = t.b
-	d.ring[at].n = t.n
+	l := &d.ring[at]
+	l.n = copy(l.text[:], libodin.bytes(s))
 	d.count += 1
 	sync.wakeup_all(&d.ready)
 }
@@ -228,21 +183,23 @@ on_event :: proc "contextless" (e: smmu.Event) #no_bounds_check {
 			if !covered {
 				continue
 			}
-			t: Text
-			text_str(&t, "fault ")
-			text_uint(&t, u64(slot))
-			text_str(&t, " ")
-			text_str(&t, smmu.fault_name(e.fault))
-			text_str(&t, " ")
-			text_hex(&t, e.addr)
-			text_str(&t, e.write ? " write" : " read")
+			buf: [LINE]u8
+			t := libodin.sink_from(buf[:])
+			libodin.put_str(&t, "fault ")
+			libodin.put_uint(&t, u64(slot))
+			libodin.put_str(&t, " ")
+			libodin.put_str(&t, smmu.fault_name(e.fault))
+			libodin.put_str(&t, " ")
+			libodin.put_hex(&t, e.addr)
+			libodin.put_str(&t, e.write ? " write" : " read")
 			g := sync.acquire(&d.lock)
 			d.faults += 1
 			push(d, &t)
 			sync.release(&d.lock, g)
 			return
 		}
-		intrinsics.atomic_add(&stray_faults, 1)
+		// A fault naming a stream no node maps, which a broken descriptor
+		// could produce, goes to nobody's ring.
 	case .Orphaned:
 		for i in 0 ..< len(dma_table) {
 			d := &dma_table[i]
@@ -252,10 +209,11 @@ on_event :: proc "contextless" (e: smmu.Event) #no_bounds_check {
 			g := sync.acquire(&d.lock)
 			for b in 0 ..< BINDS {
 				if d.binds[b].used && d.binds[b].handle == e.handle {
-					t: Text
-					text_str(&t, "detached ")
-					text_uint(&t, u64(d.binds[b].slot))
-					text_str(&t, " exit")
+					buf: [LINE]u8
+					t := libodin.sink_from(buf[:])
+					libodin.put_str(&t, "detached ")
+					libodin.put_uint(&t, u64(d.binds[b].slot))
+					libodin.put_str(&t, " exit")
 					push(d, &t)
 					sync.release(&d.lock, g)
 					return
@@ -269,8 +227,9 @@ on_event :: proc "contextless" (e: smmu.Event) #no_bounds_check {
 			if !d.valid {
 				continue
 			}
-			t: Text
-			text_str(&t, "broken")
+			buf: [LINE]u8
+			t := libodin.sink_from(buf[:])
+			libodin.put_str(&t, "broken")
 			g := sync.acquire(&d.lock)
 			push(d, &t)
 			sync.release(&d.lock, g)
@@ -547,10 +506,7 @@ tree_dma_read :: proc "contextless" (d: ^Dma, tag: vectra9.Tag, buf: []u8, reply
 		g := sync.acquire(&d.lock)
 		if d.count > 0 {
 			l := &d.ring[d.head]
-			n := min(l.n, len(buf))
-			for i in 0 ..< n {
-				buf[i] = l.text[i]
-			}
+			n := copy(buf, l.text[:l.n])
 			d.head = (d.head + 1) % RING
 			d.count -= 1
 			sync.release(&d.lock, g)
@@ -560,21 +516,4 @@ tree_dma_read :: proc "contextless" (d: ^Dma, tag: vectra9.Tag, buf: []u8, reply
 		sync.release(&d.lock, g)
 		sync.sleep(&d.ready, dma_ready, &w)
 	}
-}
-
-// -- For a self-test -----------------------------------------------------------------------
-
-// dma_files answers how many nodes grew a `dma` file.
-dma_files :: proc "contextless" () -> (n: int) {
-	for i in 0 ..< len(dma_table) {
-		if dma_table[i].valid {
-			n += 1
-		}
-	}
-	return n
-}
-
-// dma_stray answers the faults that named a stream no node maps.
-dma_stray :: proc "contextless" () -> u64 {
-	return intrinsics.atomic_load(&stray_faults)
 }

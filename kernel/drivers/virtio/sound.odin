@@ -18,9 +18,9 @@ fast counter, because a playback backend drains at real time and a wedged one
 must not hang the boot. `sound_play` answers how many bytes the device took.
 
 The register access, the capability walk and the feature handshake are
-virtio-pci's, written again here as `net.odin` and `blk.odin` write them. The
-common half across four drivers is now worth lifting into its own file; that is
-a tidy this driver does not do, so as to land the sound path on its own.
+virtio-pci's, and this was the fourth driver to write them. That made the
+common half worth lifting into its own file, `transport.odin`, a tidy this
+driver left for after the sound path had landed on its own.
 */
 package virtio
 
@@ -33,7 +33,7 @@ import "kernel:sched"
 import "kernel:sync"
 
 // The device id of a modern virtio sound card: the base 0x1040 plus the sound
-// device type, 25. The vendor and the transport constants are the disk's.
+// device type, 25. The vendor and the transport constants are the transport's.
 VIRTIO_SND_DEVICE :: u16(0x1059)
 
 // The four queues, as the specification numbers them. This driver uses the
@@ -42,7 +42,6 @@ SND_VQ_CONTROL :: u16(0)
 SND_VQ_EVENT :: u16(1)
 SND_VQ_TX :: u16(2)
 SND_VQ_RX :: u16(3)
-SND_VQ_COUNT :: 4
 
 // Device configuration: three counts, the first of which the driver reads.
 SND_CFG_JACKS :: uintptr(0)
@@ -52,9 +51,7 @@ SND_CFG_CHMAPS :: uintptr(8)
 // Control request codes, and the one status the driver hopes to read back.
 VIRTIO_SND_R_PCM_SET_PARAMS :: u32(0x0101)
 VIRTIO_SND_R_PCM_PREPARE :: u32(0x0102)
-VIRTIO_SND_R_PCM_RELEASE :: u32(0x0103)
 VIRTIO_SND_R_PCM_START :: u32(0x0104)
-VIRTIO_SND_R_PCM_STOP :: u32(0x0105)
 VIRTIO_SND_S_OK :: u32(0x8000)
 
 // The one PCM format and rate this driver asks for: signed sixteen-bit, two
@@ -89,30 +86,12 @@ SND_TX_TIMEOUT_MS :: 400
 MAX_CARDS :: 1
 
 @(private = "file")
-Snd_Queue :: struct {
-	desc:       [^]Virtq_Desc,
-	avail:      [^]u16,
-	used_ring:  [^]u16,
-	desc_phys:  u64,
-	avail_phys: u64,
-	used_phys:  u64,
-	last_used:  u16,
-	avail_idx:  u16,
-	doorbell:   rawptr,
-}
-
-@(private = "file")
 Card :: struct {
 	used:        bool,
-	at:          pci.Address,
-	common:      rawptr,
-	notify:      rawptr,
-	notify_mult: u32,
-	device:      rawptr,
+	using t:     Transport,
 	streams:     u32,
-	started:     bool,
-	control:     Snd_Queue,
-	tx:          Snd_Queue,
+	control:     Virtq,
+	tx:          Virtq,
 	// The control request and response, reused under the lock.
 	req_phys:    u64,
 	req_virt:    rawptr,
@@ -136,10 +115,10 @@ cards: [MAX_CARDS]Card
 @(private = "file")
 total_played: u64
 
-// sound_present reports whether a card came up, for the boot line and the
-// device file that will not open without one.
+// sound_present reports whether a card came up with its stream running, for
+// the boot line and the device file that will not open without one.
 sound_present :: proc "contextless" () -> bool {
-	return cards[0].used && cards[0].started
+	return cards[0].used
 }
 
 // sound_played is the running count of sample bytes the device has taken.
@@ -151,16 +130,6 @@ sound_played :: proc "contextless" () -> u64 {
 // channel count, and the bits a sample carries. Fixed, this first cut.
 sound_rate :: proc "contextless" () -> (hz: int, channels: int, bits: int) {
 	return SND_RATE_HZ, int(SND_CHANNELS), 16
-}
-
-// -- Register access ----------------------------------------------------------
-//
-// `blk.odin`'s, the same registers on the same transport.
-
-@(private = "file")
-s_set_status :: proc "contextless" (c: ^Card, bit: u8) {
-	now := r8(c.common, COMMON_DEVICE_STATUS)
-	w8(c.common, COMMON_DEVICE_STATUS, now | bit)
 }
 
 // -- Bring-up -----------------------------------------------------------------
@@ -179,154 +148,63 @@ sound_attach :: proc(at: pci.Address) -> bool #no_bounds_check {
 	}
 	c := &cards[0]
 	c^ = Card {
-		at = at,
+		t = {at = at},
 	}
 
 	pci.enable(at)
-	if !sound_map_structures(c) {
+	if !map_structures(&c.t, true) {
 		return false
 	}
 
-	w8(c.common, COMMON_DEVICE_STATUS, 0)
-	s_set_status(c, STATUS_ACKNOWLEDGE)
-	s_set_status(c, STATUS_DRIVER)
+	arch.mmio_write8(c.common, COMMON_DEVICE_STATUS, 0)
+	set_status(&c.t, STATUS_ACKNOWLEDGE)
+	set_status(&c.t, STATUS_DRIVER)
 
-	if !sound_negotiate(c) {
-		sound_fail(c)
+	// Only VERSION_1, in word 1. No sound feature is asked for: message-based
+	// transfer, which this driver uses, is the device's baseline.
+	if !negotiate(&c.t, 0, VIRTIO_F_VERSION_1) {
+		fail(c)
 		return false
 	}
 
 	// All four queues, so the device sees the ring it expects at each index.
 	// Only the control and transmit rings are ever fed.
-	if !sound_setup_queue(c, SND_VQ_CONTROL, &c.control) {
-		sound_fail(c)
+	if !setup_queue(&c.t, SND_VQ_CONTROL, &c.control) {
+		fail(c)
 		return false
 	}
-	dead: Snd_Queue
-	if !sound_setup_queue(c, SND_VQ_EVENT, &dead) {
-		sound_fail(c)
+	dead: Virtq
+	if !setup_queue(&c.t, SND_VQ_EVENT, &dead) {
+		fail(c)
 		return false
 	}
-	if !sound_setup_queue(c, SND_VQ_TX, &c.tx) {
-		sound_fail(c)
+	if !setup_queue(&c.t, SND_VQ_TX, &c.tx) {
+		fail(c)
 		return false
 	}
-	if !sound_setup_queue(c, SND_VQ_RX, &dead) {
-		sound_fail(c)
+	if !setup_queue(&c.t, SND_VQ_RX, &dead) {
+		fail(c)
 		return false
 	}
 	if !sound_setup_buffers(c) {
-		sound_fail(c)
+		fail(c)
 		return false
 	}
 
-	c.streams = r32(c.device, SND_CFG_STREAMS)
+	c.streams = arch.mmio_read32(c.device, SND_CFG_STREAMS)
 
-	s_set_status(c, STATUS_DRIVER_OK)
+	set_status(&c.t, STATUS_DRIVER_OK)
 
 	if c.streams == 0 {
-		sound_fail(c)
+		fail(c)
 		return false
 	}
 	if !sound_start_stream(c) {
-		sound_fail(c)
+		fail(c)
 		return false
 	}
 
 	c.used = true
-	c.started = true
-	return true
-}
-
-@(private = "file")
-sound_fail :: proc "contextless" (c: ^Card) {
-	s_set_status(c, STATUS_FAILED)
-	c^ = Card{}
-}
-
-@(private = "file")
-sound_negotiate :: proc "contextless" (c: ^Card) -> bool {
-	// Only VERSION_1, in word 1. No sound feature is asked for: message-based
-	// transfer, which this driver uses, is the device's baseline.
-	w32(c.common, COMMON_DRIVER_FEATURE_SELECT, 0)
-	w32(c.common, COMMON_DRIVER_FEATURE, 0)
-	w32(c.common, COMMON_DRIVER_FEATURE_SELECT, 1)
-	w32(c.common, COMMON_DRIVER_FEATURE, VIRTIO_F_VERSION_1)
-
-	s_set_status(c, STATUS_FEATURES_OK)
-	return r8(c.common, COMMON_DEVICE_STATUS) & STATUS_FEATURES_OK != 0
-}
-
-@(private = "file")
-sound_map_structures :: proc(c: ^Card) -> bool {
-	cap := pci.first_cap(c.at)
-	for cap != 0 {
-		if pci.cap_id(c.at, cap) == pci.CAP_VENDOR {
-			sound_read_cap(c, cap)
-		}
-		cap = pci.next_cap(c.at, cap)
-	}
-	return c.common != nil && c.notify != nil && c.device != nil
-}
-
-@(private = "file")
-sound_read_cap :: proc(c: ^Card, cap: u8) {
-	cfg_type := pci.read8(c.at, u16(cap) + CAP_CFG_TYPE)
-	bar_index := int(pci.read8(c.at, u16(cap) + CAP_BAR))
-	offset := pci.read32(c.at, u16(cap) + CAP_OFFSET)
-	length := pci.read32(c.at, u16(cap) + CAP_LENGTH)
-
-	bar, ok := pci.bar(c.at, bar_index)
-	if !ok {
-		return
-	}
-	virt, merr := mem.map_mmio(bar.phys + uintptr(offset), u64(length))
-	if merr != .None {
-		return
-	}
-	switch cfg_type {
-	case CAP_COMMON:
-		c.common = virt
-	case CAP_NOTIFY:
-		c.notify = virt
-		c.notify_mult = pci.read32(c.at, u16(cap) + CAP_NOTIFY_MULT)
-	case CAP_ISR:
-	case CAP_DEVICE:
-		c.device = virt
-	}
-}
-
-@(private = "file")
-sound_setup_queue :: proc "contextless" (c: ^Card, index: u16, q: ^Snd_Queue) -> bool {
-	w16(c.common, COMMON_QUEUE_SELECT, index)
-	if r16(c.common, COMMON_QUEUE_SIZE) == 0 {
-		return false
-	}
-	w16(c.common, COMMON_QUEUE_SIZE, VIRTQ_SIZE)
-
-	desc_phys, ok1 := mem.alloc_page_zeroed()
-	avail_phys, ok2 := mem.alloc_page_zeroed()
-	used_phys, ok3 := mem.alloc_page_zeroed()
-	if !ok1 || !ok2 || !ok3 {
-		return false
-	}
-	q.desc = cast([^]Virtq_Desc)mem.phys_to_virt(desc_phys)
-	q.avail = cast([^]u16)mem.phys_to_virt(avail_phys)
-	q.used_ring = cast([^]u16)mem.phys_to_virt(used_phys)
-	q.desc_phys = u64(desc_phys)
-	q.avail_phys = u64(avail_phys)
-	q.used_phys = u64(used_phys)
-	q.last_used = 0
-	q.avail_idx = 0
-
-	w64(c.common, COMMON_QUEUE_DESC, q.desc_phys)
-	w64(c.common, COMMON_QUEUE_DRIVER, q.avail_phys)
-	w64(c.common, COMMON_QUEUE_DEVICE, q.used_phys)
-
-	notify_off := r16(c.common, COMMON_QUEUE_NOTIFY_OFF)
-	q.doorbell = rawptr(uintptr(c.notify) + uintptr(u32(notify_off) * c.notify_mult))
-
-	w16(c.common, COMMON_QUEUE_ENABLE, 1)
 	return true
 }
 
@@ -380,14 +258,9 @@ control :: proc "contextless" (c: ^Card, req_len: u32) -> u32 #no_bounds_check {
 		flags = VIRTQ_DESC_WRITE,
 		next  = 0,
 	}
-	q.avail[2 + (q.avail_idx % VIRTQ_SIZE)] = 0
-	q.avail_idx += 1
-	fence()
-	q.avail[1] = q.avail_idx
-	fence()
-	w16(q.doorbell, 0, SND_VQ_CONTROL)
+	kick(q, 0, SND_VQ_CONTROL)
 
-	if !wait_used(q, SND_TX_TIMEOUT_MS) {
+	if !wait_drained(q, SND_TX_TIMEOUT_MS) {
 		return 0
 	}
 	q.last_used = q.used_ring[1]
@@ -447,12 +320,13 @@ sound_start_stream :: proc "contextless" (c: ^Card) -> bool #no_bounds_check {
 // -- The transmit queue -------------------------------------------------------
 
 /*
-wait_used spins on a queue's used ring until it moves past what the driver last
-saw, or the fast-counter deadline passes. True if the ring moved. The deadline
-is what keeps a backend that never drains from hanging the boot.
+wait_drained spins on a queue's used ring until it moves past what the driver
+last saw, or the fast-counter deadline passes. True if the ring moved. The
+deadline is what keeps a backend that never drains from hanging the boot, and
+is why this is not the transport's `wait_used`.
 */
 @(private = "file")
-wait_used :: proc "contextless" (q: ^Snd_Queue, timeout_ms: u64) -> bool {
+wait_drained :: proc "contextless" (q: ^Virtq, timeout_ms: u64) -> bool {
 	hz := sched.fast_clock_hz()
 	deadline := sched.fast_ticks() + hz * timeout_ms / 1000
 	// A raw spin cap for the degraded boot where the timer never calibrated and
@@ -487,7 +361,7 @@ stops the run, and the bytes already taken are the answer -- a short write, not
 a hang.
 */
 sound_play :: proc "contextless" (data: []u8) -> int #no_bounds_check {
-	if !cards[0].used || !cards[0].started || len(data) == 0 {
+	if !cards[0].used || len(data) == 0 {
 		return 0
 	}
 	c := &cards[0]
@@ -514,14 +388,9 @@ sound_play :: proc "contextless" (data: []u8) -> int #no_bounds_check {
 			flags = VIRTQ_DESC_WRITE,
 			next  = 0,
 		}
-		q.avail[2 + (q.avail_idx % VIRTQ_SIZE)] = 0
-		q.avail_idx += 1
-		fence()
-		q.avail[1] = q.avail_idx
-		fence()
-		w16(q.doorbell, 0, SND_VQ_TX)
+		kick(q, 0, SND_VQ_TX)
 
-		if !wait_used(q, SND_TX_TIMEOUT_MS) {
+		if !wait_drained(q, SND_TX_TIMEOUT_MS) {
 			break
 		}
 		q.last_used = q.used_ring[1]
@@ -534,16 +403,12 @@ sound_play :: proc "contextless" (data: []u8) -> int #no_bounds_check {
 }
 
 /*
-sound_init scans the PCI bus for the first virtio-sound function and brings it
-up. Answers whether one came up. A machine with no card still boots and simply
-has no sound; `/dev/audio` then refuses to open.
+sound_init brings up the first virtio-sound function on the bus. Answers
+whether one came up. A machine with no card still boots and simply has no
+sound; `/dev/audio` then refuses to open.
 */
 sound_init :: proc() -> bool {
-	found: [32]pci.Device
-	total := pci.scan(found[:])
-	seen := min(total, len(found))
-	for i in 0 ..< seen {
-		dev := found[i]
+	for dev in functions() {
 		if dev.vendor == VIRTIO_VENDOR && dev.device == VIRTIO_SND_DEVICE {
 			if sound_attach(dev.at) {
 				return true

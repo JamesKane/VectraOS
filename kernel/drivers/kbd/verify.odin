@@ -24,6 +24,7 @@ import "vsys:libodin"
 import "base:intrinsics"
 
 import "kernel:arch"
+import "kernel:drivers/ring"
 import "kernel:sched"
 import "kernel:sync"
 
@@ -261,29 +262,20 @@ than overruns, and that the bytes that did fit come back in order.
 verify_ring :: proc(r: ^Verify_Result) #no_bounds_check {
 	k: Keyboard
 
-	for i in 0 ..< RING_BYTES {
-		if !push(&k, u8(i)) {
-			check(r, false, "the ring takes every scancode up to its size")
-			return
-		}
+	filled, refused := ring.fill(&k.fifo)
+	if !filled {
+		check(r, false, "the ring takes every scancode up to its size")
+		return
 	}
-	check(r, k.scancodes == RING_BYTES, "the ring takes exactly its size")
-	check(r, !push(&k, 0xFF), "and refuses one more")
+	check(r, k.stored == RING_BYTES, "the ring takes exactly its size")
+	check(r, refused, "and refuses one more")
 	check(r, k.dropped == 1, "counting what it dropped")
-	check(r, k.interrupts == RING_BYTES + 1, "and what it was asked for")
+	check(r, k.pushed == RING_BYTES + 1, "and what it was asked for")
 
-	ordered := true
-	for i in 0 ..< RING_BYTES {
-		code, ok := take(&k)
-		if !ok || code != u8(i) {
-			ordered = false
-		}
-	}
+	ordered, empty, again := ring.drain(&k.fifo)
 	check(r, ordered, "and hands the scancodes back in the order they arrived")
-
-	_, empty := take(&k)
-	check(r, !empty, "an empty ring hands back nothing")
-	check(r, push(&k, 1), "and takes a scancode again once it has drained")
+	check(r, empty, "an empty ring hands back nothing")
+	check(r, again, "and takes a scancode again once it has drained")
 }
 
 // The recording raw hook, and the gate the checks flip. Package state

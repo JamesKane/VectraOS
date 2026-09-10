@@ -14,6 +14,7 @@ package mouse
 import "base:intrinsics"
 
 import "kernel:arch"
+import "kernel:drivers/ring"
 import "kernel:sched"
 import "kernel:sync"
 import "vsys:libodin"
@@ -103,20 +104,13 @@ verify :: proc() -> Verify_Result #no_bounds_check {
 @(private = "file")
 verify_ring :: proc(r: ^Verify_Result) #no_bounds_check {
 	m: Mouse
-	for i in 0 ..< RING_BYTES {
-		if !push(&m, u8(i)) {
-			check(r, false, "the ring takes every byte up to its size")
-			return
-		}
+	filled, refused := ring.fill(&m.fifo)
+	if !filled {
+		check(r, false, "the ring takes every byte up to its size")
+		return
 	}
-	check(r, !push(&m, 0xFF) && m.dropped == 1, "the ring refuses one more and counts it")
-	ordered := true
-	for i in 0 ..< RING_BYTES {
-		b, ok := take(&m)
-		if !ok || b != u8(i) {
-			ordered = false
-		}
-	}
+	check(r, refused && m.dropped == 1, "the ring refuses one more and counts it")
+	ordered, _, _ := ring.drain(&m.fifo)
 	check(r, ordered, "and hands the bytes back in order")
 }
 

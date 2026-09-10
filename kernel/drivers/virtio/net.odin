@@ -15,14 +15,12 @@ interrupt. The polled shape is what the kernel's own self-test needs, and what
 proves the card before a stack sits on it.
 
 The register access, the capability walk and the feature handshake are
-virtio-pci's, the same as the disk's. They are written again here rather than
-shared. A factoring would serve only these two drivers, and a shared file would
-couple the disk to the card. When a third virtio device arrives, the common half
-is worth lifting out.
+virtio-pci's, the same as the disk's. They were written again here rather than
+shared, while a factoring would have served only these two drivers. The fourth
+virtio device was the time to lift the common half out, and `transport.odin`
+is it.
 */
 package virtio
-
-import "base:intrinsics"
 
 import "kernel:arch"
 import "kernel:drivers/pci"
@@ -30,7 +28,7 @@ import "kernel:mem"
 import "kernel:sync"
 
 // The device id of a modern virtio network card. The vendor and the
-// capability, status and feature constants are the disk's, in `blk.odin`.
+// capability, status and feature constants are the transport's.
 VIRTIO_NET_DEVICE :: u16(0x1041)
 
 // The one device feature this driver asks for: that the card report its own
@@ -53,24 +51,6 @@ NET_RX_BUFS :: int(VIRTQ_SIZE)
 
 MAX_NICS :: 2
 
-// A virtqueue, the three rings and where the device reaches them, plus the
-// used index this driver has already accounted for and the queue's doorbell.
-Net_Queue :: struct {
-	desc:       [^]Virtq_Desc,
-	avail:      [^]u16,
-	used_ring:  [^]u16,
-	desc_phys:  u64,
-	avail_phys: u64,
-	used_phys:  u64,
-	last_used:  u16,
-	avail_idx:  u16,
-	doorbell:   rawptr,
-	// What the driver saw on the used ring: entries it took, and the ones it
-	// took that carried nothing it could hand on. Read by `net_stats`.
-	seen:       u64,
-	empty:      u64,
-}
-
 // net_stats reports what card `n`'s receive ring has done: used entries
 // taken, entries that carried no frame, and the ring's two indices as the
 // driver last saw them. For a bench that counts frames at each step.
@@ -82,19 +62,20 @@ net_stats :: proc "contextless" (n: int) -> (seen, empty: u64, used_idx, avail_i
 	g := sync.acquire(&nic.lock)
 	defer sync.release(&nic.lock, g)
 	fence()
-	return nic.rx.seen, nic.rx.empty, nic.rx.used_ring[1], nic.rx.avail_idx
+	return nic.rx_seen, nic.rx_empty, nic.rx.used_ring[1], nic.rx.avail_idx
 }
 
 Nic :: struct {
 	used:        bool,
-	at:          pci.Address,
-	common:      rawptr,
-	notify:      rawptr,
-	notify_mult: u32,
-	device:      rawptr,
+	using t:     Transport,
 	mac:         [6]u8,
-	rx:          Net_Queue,
-	tx:          Net_Queue,
+	rx:          Virtq,
+	tx:          Virtq,
+	// What the driver saw on the receive queue's used ring: entries it took,
+	// and the ones it took that carried nothing it could hand on. Read by
+	// `net_stats`.
+	rx_seen:     u64,
+	rx_empty:    u64,
 	// The receive buffers, by physical address the device writes into and the
 	// virtual address this driver reads out of.
 	rx_phys:     [NET_RX_BUFS]u64,
@@ -135,17 +116,6 @@ mac :: proc "contextless" (n: int, out: []u8) -> bool #no_bounds_check {
 	return true
 }
 
-// -- Register access ----------------------------------------------------------
-//
-// `blk.odin`'s, which are the same registers on the same transport. The disk
-// wrote them first and this driver shares them rather than writing them again.
-
-@(private = "file")
-n_set_status :: proc "contextless" (nic: ^Nic, bit: u8) {
-	now := r8(nic.common, COMMON_DEVICE_STATUS)
-	w8(nic.common, COMMON_DEVICE_STATUS, now | bit)
-}
-
 // -- Bring-up -----------------------------------------------------------------
 
 /*
@@ -167,139 +137,49 @@ net_attach :: proc(at: pci.Address) -> bool #no_bounds_check {
 	}
 	nic := &nics[slot]
 	nic^ = Nic {
-		at = at,
+		t = {at = at},
 	}
 
 	pci.enable(at)
-	if !net_map_structures(nic) {
+	if !map_structures(&nic.t, true) {
 		return false
 	}
 
-	w8(nic.common, COMMON_DEVICE_STATUS, 0)
-	n_set_status(nic, STATUS_ACKNOWLEDGE)
-	n_set_status(nic, STATUS_DRIVER)
+	arch.mmio_write8(nic.common, COMMON_DEVICE_STATUS, 0)
+	set_status(&nic.t, STATUS_ACKNOWLEDGE)
+	set_status(&nic.t, STATUS_DRIVER)
 
-	if !net_negotiate(nic) {
-		net_fail(nic)
+	// Word 0: the MAC feature. Word 1: VERSION_1. Nothing else is accepted,
+	// so the card runs without checksum or segmentation offload.
+	if !negotiate(&nic.t, VIRTIO_NET_F_MAC, VIRTIO_F_VERSION_1) {
+		fail(nic)
 		return false
 	}
 
-	if !net_setup_queue(nic, NET_QUEUE_RX, &nic.rx) {
-		net_fail(nic)
+	if !setup_queue(&nic.t, NET_QUEUE_RX, &nic.rx) {
+		fail(nic)
 		return false
 	}
-	if !net_setup_queue(nic, NET_QUEUE_TX, &nic.tx) {
-		net_fail(nic)
+	if !setup_queue(&nic.t, NET_QUEUE_TX, &nic.tx) {
+		fail(nic)
 		return false
 	}
 	if !net_setup_buffers(nic) {
-		net_fail(nic)
+		fail(nic)
 		return false
 	}
 
 	// The card's own address, from device configuration the feature unlocked.
 	for i in 0 ..< 6 {
-		nic.mac[i] = r8(nic.device, uintptr(i))
+		nic.mac[i] = arch.mmio_read8(nic.device, uintptr(i))
 	}
 
-	n_set_status(nic, STATUS_DRIVER_OK)
+	set_status(&nic.t, STATUS_DRIVER_OK)
 
 	// Post every receive buffer, then tell the card they are there.
 	net_post_all_rx(nic)
 
 	nic.used = true
-	return true
-}
-
-@(private = "file")
-net_fail :: proc "contextless" (nic: ^Nic) {
-	n_set_status(nic, STATUS_FAILED)
-	nic^ = Nic{}
-}
-
-@(private = "file")
-net_negotiate :: proc "contextless" (nic: ^Nic) -> bool {
-	// Word 0: the MAC feature. Word 1: VERSION_1. Nothing else is accepted,
-	// so the card runs without checksum or segmentation offload.
-	w32(nic.common, COMMON_DRIVER_FEATURE_SELECT, 0)
-	w32(nic.common, COMMON_DRIVER_FEATURE, VIRTIO_NET_F_MAC)
-	w32(nic.common, COMMON_DRIVER_FEATURE_SELECT, 1)
-	w32(nic.common, COMMON_DRIVER_FEATURE, VIRTIO_F_VERSION_1)
-
-	n_set_status(nic, STATUS_FEATURES_OK)
-	return r8(nic.common, COMMON_DEVICE_STATUS) & STATUS_FEATURES_OK != 0
-}
-
-@(private = "file")
-net_map_structures :: proc(nic: ^Nic) -> bool {
-	cap := pci.first_cap(nic.at)
-	for cap != 0 {
-		if pci.cap_id(nic.at, cap) == pci.CAP_VENDOR {
-			net_read_cap(nic, cap)
-		}
-		cap = pci.next_cap(nic.at, cap)
-	}
-	return nic.common != nil && nic.notify != nil && nic.device != nil
-}
-
-@(private = "file")
-net_read_cap :: proc(nic: ^Nic, cap: u8) {
-	cfg_type := pci.read8(nic.at, u16(cap) + CAP_CFG_TYPE)
-	bar_index := int(pci.read8(nic.at, u16(cap) + CAP_BAR))
-	offset := pci.read32(nic.at, u16(cap) + CAP_OFFSET)
-	length := pci.read32(nic.at, u16(cap) + CAP_LENGTH)
-
-	bar, ok := pci.bar(nic.at, bar_index)
-	if !ok {
-		return
-	}
-	virt, merr := mem.map_mmio(bar.phys + uintptr(offset), u64(length))
-	if merr != .None {
-		return
-	}
-	switch cfg_type {
-	case CAP_COMMON:
-		nic.common = virt
-	case CAP_NOTIFY:
-		nic.notify = virt
-		nic.notify_mult = pci.read32(nic.at, u16(cap) + CAP_NOTIFY_MULT)
-	case CAP_ISR:
-	case CAP_DEVICE:
-		nic.device = virt
-	}
-}
-
-@(private = "file")
-net_setup_queue :: proc "contextless" (nic: ^Nic, index: u16, q: ^Net_Queue) -> bool {
-	w16(nic.common, COMMON_QUEUE_SELECT, index)
-	if r16(nic.common, COMMON_QUEUE_SIZE) == 0 {
-		return false
-	}
-	w16(nic.common, COMMON_QUEUE_SIZE, VIRTQ_SIZE)
-
-	desc_phys, ok1 := mem.alloc_page_zeroed()
-	avail_phys, ok2 := mem.alloc_page_zeroed()
-	used_phys, ok3 := mem.alloc_page_zeroed()
-	if !ok1 || !ok2 || !ok3 {
-		return false
-	}
-	q.desc = cast([^]Virtq_Desc)mem.phys_to_virt(desc_phys)
-	q.avail = cast([^]u16)mem.phys_to_virt(avail_phys)
-	q.used_ring = cast([^]u16)mem.phys_to_virt(used_phys)
-	q.desc_phys = u64(desc_phys)
-	q.avail_phys = u64(avail_phys)
-	q.used_phys = u64(used_phys)
-	q.last_used = 0
-	q.avail_idx = 0
-
-	w64(nic.common, COMMON_QUEUE_DESC, q.desc_phys)
-	w64(nic.common, COMMON_QUEUE_DRIVER, q.avail_phys)
-	w64(nic.common, COMMON_QUEUE_DEVICE, q.used_phys)
-
-	notify_off := r16(nic.common, COMMON_QUEUE_NOTIFY_OFF)
-	q.doorbell = rawptr(uintptr(nic.notify) + uintptr(u32(notify_off) * nic.notify_mult))
-
-	w16(nic.common, COMMON_QUEUE_ENABLE, 1)
 	return true
 }
 
@@ -340,7 +220,7 @@ net_post_all_rx :: proc "contextless" (nic: ^Nic) #no_bounds_check {
 	fence()
 	q.avail[1] = q.avail_idx
 	fence()
-	w16(q.doorbell, 0, NET_QUEUE_RX)
+	arch.mmio_write16(q.doorbell, 0, NET_QUEUE_RX)
 }
 
 // -- Sending and receiving ----------------------------------------------------
@@ -375,20 +255,9 @@ send :: proc "contextless" (n: int, frame: []u8) -> bool #no_bounds_check {
 		flags = 0,
 		next  = 0,
 	}
-	q.avail[2 + (q.avail_idx % VIRTQ_SIZE)] = 0
-	q.avail_idx += 1
-	fence()
-	q.avail[1] = q.avail_idx
-	fence()
-	w16(q.doorbell, 0, NET_QUEUE_TX)
+	kick(q, 0, NET_QUEUE_TX)
 
-	for {
-		fence()
-		if q.used_ring[1] != q.last_used {
-			break
-		}
-		arch.spin_hint()
-	}
+	_ = wait_used(q, UNBOUNDED)
 	q.last_used = q.used_ring[1]
 	return true
 }
@@ -417,15 +286,13 @@ recv :: proc "contextless" (n: int, out: []u8) -> int #no_bounds_check {
 	// loads may otherwise be satisfied from before the device's stores, giving a
 	// stale length or stale frame bytes. See `sound.control` for the same rule.
 	fence()
-	// The used element at `last_used` holds an id and a len. Each is a u32 in
-	// the ring of u16s that starts at index 2, four u16s to an element.
-	slot := int(q.last_used % VIRTQ_SIZE)
-	base := 2 + slot * 4
-	id := int(u32(q.used_ring[base]) | u32(q.used_ring[base + 1]) << 16)
-	wrote := int(u32(q.used_ring[base + 2]) | u32(q.used_ring[base + 3]) << 16)
-	q.seen += 1
+	// The used element at `last_used` holds an id and a len.
+	head, wrote32 := used_elem(q)
+	id := int(head)
+	wrote := int(wrote32)
+	nic.rx_seen += 1
 	if id < 0 || id >= NET_RX_BUFS {
-		q.empty += 1
+		nic.rx_empty += 1
 		q.last_used += 1
 		return 0
 	}
@@ -433,7 +300,7 @@ recv :: proc "contextless" (n: int, out: []u8) -> int #no_bounds_check {
 	frame_len := wrote - NET_HDR_LEN
 	copied := 0
 	if frame_len <= 0 {
-		q.empty += 1
+		nic.rx_empty += 1
 	}
 	if frame_len > 0 {
 		src := cast([^]u8)nic.rx_virt[id]
@@ -442,32 +309,22 @@ recv :: proc "contextless" (n: int, out: []u8) -> int #no_bounds_check {
 	}
 
 	// Post the buffer again for the next frame.
-	q.avail[2 + (q.avail_idx % VIRTQ_SIZE)] = u16(id)
-	q.avail_idx += 1
-	fence()
-	q.avail[1] = q.avail_idx
-	fence()
-	w16(q.doorbell, 0, NET_QUEUE_RX)
+	kick(q, u16(id), NET_QUEUE_RX)
 
 	q.last_used += 1
 	return copied
 }
 
 /*
-net_init scans the PCI bus for every virtio-net function and brings each up as
-a card, in bus order. Answers how many came up. A machine with none still
-boots, and simply has no network.
+net_init brings up every virtio-net function on the bus as a card, in bus
+order. Answers how many came up. A machine with none still boots, and simply
+has no network.
 */
 net_init :: proc() -> int {
-	found: [32]pci.Device
-	total := pci.scan(found[:])
-	seen := min(total, len(found))
-	for i in 0 ..< seen {
-		dev := found[i]
+	for dev in functions() {
 		if dev.vendor == VIRTIO_VENDOR && dev.device == VIRTIO_NET_DEVICE {
 			net_attach(dev.at)
 		}
 	}
 	return net_count()
 }
-

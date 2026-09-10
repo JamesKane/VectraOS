@@ -30,6 +30,7 @@ import "kernel:mnt"
 import "kernel:smmu"
 import "kernel:sync"
 import "kernel:vfs"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 // The flattened-tree structure-block tokens, and the header offsets this reads.
@@ -85,11 +86,13 @@ mmio_table: []Mmio
 
 /*
 Irq is one node's interrupt line, beside the node table for the same reason
-`Mmio` is: a `Static_Node` has no room for it. `irq_table[i]` is set for the
-synthesized `irq` file at node index `i`. A read of that file parks on `ready`
-until the line fires; the handler masks the line, acknowledges, counts the fire
-and wakes the reader; the next read unmasks. `holders` is the open descriptors,
-so the last close masks the line for good.
+`Mmio` is: a `Static_Node` has no room for it. `irq_index[i]` names the entry
+in `irq_table` for the synthesized `irq` file at node index `i`, and is -1 for
+every other row. So the table holds one entry per line rather than one per
+row. A read of that file parks on `ready` until the line fires; the handler
+masks the line, acknowledges, counts the fire and wakes the reader; the next
+read unmasks. `holders` is the open descriptors, so the last close masks the
+line for good.
 */
 @(private)
 Irq :: struct {
@@ -103,6 +106,8 @@ Irq :: struct {
 	ready:     sync.Rendez,
 }
 
+@(private)
+irq_index: []i32
 @(private)
 irq_table: []Irq
 
@@ -186,21 +191,27 @@ find_compatible :: proc "contextless" (want: string) -> (idx: int, ok: bool) #no
 		if r.dir || r.name != "compatible" || r.parent < 0 {
 			continue
 		}
-		v := r.data
-		start := 0
-		for j in 0 ..< len(v) {
-			if v[j] == 0 {
-				if v[start:j] == want {
-					return int(r.parent), true
-				}
-				start = j + 1
-			}
-		}
-		if start < len(v) && v[start:] == want {
+		if compatible_matches(r.data, want) {
 			return int(r.parent), true
 		}
 	}
 	return -1, false
+}
+
+// compatible_matches answers whether a `compatible` value, a list of
+// NUL-separated strings, names `want` in any of them.
+@(private)
+compatible_matches :: proc "contextless" (v: string, want: string) -> bool #no_bounds_check {
+	start := 0
+	for j in 0 ..< len(v) {
+		if v[j] == 0 {
+			if v[start:j] == want {
+				return true
+			}
+			start = j + 1
+		}
+	}
+	return start < len(v) && v[start:] == want
 }
 
 // property answers the bytes of a node's property, as the tree spells them.
@@ -234,7 +245,7 @@ cell :: proc "contextless" (v: string, n: int) -> u32 #no_bounds_check {
 	if at < 0 || at + 4 > len(v) {
 		return 0
 	}
-	return u32(v[at]) << 24 | u32(v[at + 1]) << 16 | u32(v[at + 2]) << 8 | u32(v[at + 3])
+	return be32(transmute([]u8)v, at)
 }
 
 @(private)
@@ -256,6 +267,69 @@ cstr_len :: proc "contextless" (b: []u8, at: int) -> int #no_bounds_check {
 @(private)
 align4 :: proc "contextless" (x: int) -> int {
 	return (x + 3) & ~int(3)
+}
+
+// -- The token stream ----------------------------------------------------------
+
+// A cursor over the structure block, which the three walks below share. `at`
+// is the next token, `end` the block's end bounded by the blob, and `strings`
+// the strings block a property's name is an offset into.
+@(private)
+Fdt_Cursor :: struct {
+	blob:    []u8,
+	at:      int,
+	end:     int,
+	strings: int,
+}
+
+// A token off the stream. A node carries its name. A property carries its
+// name, its value's offset, and its length as the blob says it. That length
+// may run past the blob, and is the caller's to bound.
+@(private)
+Fdt_Token :: struct {
+	kind:     u32,
+	name:     string,
+	value_at: int,
+	length:   int,
+}
+
+// fdt_open checks the header and answers a cursor at the first token.
+@(private)
+fdt_open :: proc "contextless" (blob: []u8) -> (c: Fdt_Cursor, ok: bool) #no_bounds_check {
+	if len(blob) < 40 || be32(blob, 0) != FDT_MAGIC {
+		return
+	}
+	c.blob = blob
+	c.at = int(be32(blob, 8))
+	c.strings = int(be32(blob, 12))
+	c.end = min(c.at + int(be32(blob, 36)), len(blob))
+	return c, true
+}
+
+// fdt_next reads one token and steps past it: past a node's name, or past a
+// property's header and value, each aligned to four. False at the block's end.
+@(private)
+fdt_next :: proc "contextless" (c: ^Fdt_Cursor, t: ^Fdt_Token) -> bool #no_bounds_check {
+	if c.at + 4 > c.end {
+		return false
+	}
+	blob := c.blob
+	t^ = Fdt_Token{kind = be32(blob, c.at)}
+	c.at += 4
+	switch t.kind {
+	case FDT_BEGIN_NODE:
+		n := cstr_len(blob, c.at)
+		t.name = string(blob[c.at:c.at + n])
+		c.at = align4(c.at + n + 1)
+	case FDT_PROP:
+		t.length = int(be32(blob, c.at))
+		name_off := int(be32(blob, c.at + 4))
+		t.value_at = c.at + 8
+		c.at = align4(t.value_at + t.length)
+		pn := cstr_len(blob, c.strings + name_off)
+		t.name = string(blob[c.strings + name_off:c.strings + name_off + pn])
+	}
+	return true
 }
 
 // A node while the walk is inside it: its index, and the cell counts it sets
@@ -293,10 +367,6 @@ are the defaults for a node that names neither. False for no such node.
 */
 @(private)
 cells_of_phandle :: proc "contextless" (blob: []u8, want: u32) -> (ac: int, ic: int, ok: bool) #no_bounds_check {
-	struct_off := int(be32(blob, 8))
-	strings_off := int(be32(blob, 12))
-	end := min(struct_off + int(be32(blob, 36)), len(blob))
-
 	Seen :: struct {
 		phandle: u32,
 		ac:      int,
@@ -304,14 +374,14 @@ cells_of_phandle :: proc "contextless" (blob: []u8, want: u32) -> (ac: int, ic: 
 	}
 	stack: [MAX_DEPTH]Seen
 	sp := 0
-	at := struct_off
-	for at + 4 <= end {
-		token := be32(blob, at)
-		at += 4
-		switch token {
+	c, valid := fdt_open(blob)
+	if !valid {
+		return 0, 0, false
+	}
+	t: Fdt_Token
+	for fdt_next(&c, &t) {
+		switch t.kind {
 		case FDT_BEGIN_NODE:
-			n := cstr_len(blob, at)
-			at = align4(at + n + 1)
 			if sp < MAX_DEPTH {
 				stack[sp] = Seen{ac = 2}
 				sp += 1
@@ -324,22 +394,16 @@ cells_of_phandle :: proc "contextless" (blob: []u8, want: u32) -> (ac: int, ic: 
 				}
 			}
 		case FDT_PROP:
-			length := int(be32(blob, at))
-			name_off := int(be32(blob, at + 4))
-			value_at := at + 8
-			at = align4(value_at + length)
-			if sp == 0 || length != 4 || value_at + length > len(blob) {
+			if sp == 0 || t.length != 4 || t.value_at + t.length > len(blob) {
 				continue
 			}
-			pn := cstr_len(blob, strings_off + name_off)
-			pname := string(blob[strings_off + name_off:strings_off + name_off + pn])
-			switch pname {
+			switch t.name {
 			case "phandle":
-				stack[sp - 1].phandle = be32(blob, value_at)
+				stack[sp - 1].phandle = be32(blob, t.value_at)
 			case "#address-cells":
-				stack[sp - 1].ac = int(be32(blob, value_at))
+				stack[sp - 1].ac = int(be32(blob, t.value_at))
 			case "#interrupt-cells":
-				stack[sp - 1].ic = int(be32(blob, value_at))
+				stack[sp - 1].ic = int(be32(blob, t.value_at))
 			}
 		case FDT_NOP:
 		case:
@@ -415,20 +479,6 @@ decode_reg :: proc "contextless" (v: []u8, ac: int, sc: int) -> (base: u64, size
 }
 
 /*
-walk reads the structure block and either counts the rows or fills them. One
-walk serves both passes: called with empty slices it returns the count, and
-called with slices of that size it writes each row and each window. The two runs
-assign the same index in the same order, so a property's `parent` set in the
-fill is the index the same node took in the count.
-
-A node is a directory whose parent is the node on top of the stack; the first,
-the tree's own root with no name, becomes `/` with no parent. A property is a
-file under the node on top of the stack, its bytes a slice of the blob. And a
-node with a `reg` grows one more file, a synthesized `mmio`, whose window
-`decode_reg` reads from that `reg` with the node's *parent* cell counts -- the
-one file the kernel adds, not the firmware, and the one a driver segattaches.
-*/
-/*
 phandle_of_compatible finds the node whose `compatible` names `want` and
 answers its `phandle`, before the walk that needs it. A node's `phandle` may
 come before or after its `compatible`, so both are kept per level of the
@@ -436,27 +486,20 @@ stack until the node ends. Zero, and false, for no such node.
 */
 @(private)
 phandle_of_compatible :: proc "contextless" (blob: []u8, want: string) -> (u32, bool) #no_bounds_check {
-	if len(blob) < 40 || be32(blob, 0) != FDT_MAGIC {
-		return 0, false
-	}
-	struct_off := int(be32(blob, 8))
-	strings_off := int(be32(blob, 12))
-	end := min(struct_off + int(be32(blob, 36)), len(blob))
-
 	Seen :: struct {
 		phandle: u32,
 		matched: bool,
 	}
 	stack: [MAX_DEPTH]Seen
 	sp := 0
-	at := struct_off
-	for at + 4 <= end {
-		token := be32(blob, at)
-		at += 4
-		switch token {
+	c, valid := fdt_open(blob)
+	if !valid {
+		return 0, false
+	}
+	t: Fdt_Token
+	for fdt_next(&c, &t) {
+		switch t.kind {
 		case FDT_BEGIN_NODE:
-			n := cstr_len(blob, at)
-			at = align4(at + n + 1)
 			if sp < MAX_DEPTH {
 				stack[sp] = {}
 				sp += 1
@@ -469,27 +512,14 @@ phandle_of_compatible :: proc "contextless" (blob: []u8, want: string) -> (u32, 
 				}
 			}
 		case FDT_PROP:
-			length := int(be32(blob, at))
-			name_off := int(be32(blob, at + 4))
-			value_at := at + 8
-			at = align4(value_at + length)
-			if sp == 0 || value_at + length > len(blob) {
+			if sp == 0 || t.value_at + t.length > len(blob) {
 				continue
 			}
-			pn := cstr_len(blob, strings_off + name_off)
-			pname := string(blob[strings_off + name_off:strings_off + name_off + pn])
-			if pname == "phandle" && length == 4 {
-				stack[sp - 1].phandle = be32(blob, value_at)
-			} else if pname == "compatible" {
-				v := blob[value_at:value_at + length]
-				start := 0
-				for j in 0 ..< len(v) {
-					if v[j] == 0 {
-						if string(v[start:j]) == want {
-							stack[sp - 1].matched = true
-						}
-						start = j + 1
-					}
+			if t.name == "phandle" && t.length == 4 {
+				stack[sp - 1].phandle = be32(blob, t.value_at)
+			} else if t.name == "compatible" {
+				if compatible_matches(string(blob[t.value_at:t.value_at + t.length]), want) {
+					stack[sp - 1].matched = true
 				}
 			}
 		case FDT_NOP:
@@ -500,36 +530,40 @@ phandle_of_compatible :: proc "contextless" (blob: []u8, want: string) -> (u32, 
 	return 0, false
 }
 
-@(private)
-walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, itab: []Irq, dtab: []Dma, walker: u32) -> int #no_bounds_check {
-	if len(blob) < 40 || be32(blob, 0) != FDT_MAGIC {
-		return 0
-	}
-	struct_off := int(be32(blob, 8))
-	strings_off := int(be32(blob, 12))
-	struct_size := int(be32(blob, 36))
+/*
+walk reads the structure block and either counts the rows or fills them. One
+walk serves both passes: called with empty slices it returns the counts, and
+called with slices of those sizes it writes each row and each window. The two
+runs assign the same index in the same order, so a property's `parent` set in
+the fill is the index the same node took in the count. The rows that grow an
+`irq` or a `dma` file are counted apart, as `irqs` and `dmas`. Their tables
+hold one entry per file, and `irq_index` and `dma_index` name each row's
+entry.
 
+A node is a directory whose parent is the node on top of the stack; the first,
+the tree's own root with no name, becomes `/` with no parent. A property is a
+file under the node on top of the stack, its bytes a slice of the blob. And a
+node with a `reg` grows one more file, a synthesized `mmio`, whose window
+`decode_reg` reads from that `reg` with the node's *parent* cell counts -- the
+one file the kernel adds, not the firmware, and the one a driver segattaches.
+*/
+@(private)
+walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, iidx: []i32, itab: []Irq, didx: []i32, dtab: []Dma, walker: u32) -> (count, irqs, dmas: int) #no_bounds_check {
 	stack: [MAX_DEPTH]Frame
 	sp := 0
-	count := 0
 
-	at := struct_off
-	end := struct_off + struct_size
-	if end > len(blob) {
-		end = len(blob)
+	c, valid := fdt_open(blob)
+	if !valid {
+		return 0, 0, 0
 	}
-	for at + 4 <= end {
-		token := be32(blob, at)
-		at += 4
-		switch token {
+	t: Fdt_Token
+	for fdt_next(&c, &t) {
+		switch t.kind {
 		case FDT_BEGIN_NODE:
-			name_at := at
-			n := cstr_len(blob, name_at)
-			at = align4(name_at + n + 1)
 			idx := count
 			count += 1
 			parent := sp > 0 ? stack[sp - 1].idx : -1
-			name := sp == 0 ? "/" : string(blob[name_at:name_at + n])
+			name := sp == 0 ? "/" : t.name
 			if idx < len(out) {
 				out[idx] = vfs.Static_Node{name = name, parent = i32(parent), dir = true}
 			}
@@ -589,27 +623,26 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, it
 						if pidx < len(out) {
 							out[pidx] = vfs.Static_Node{name = PIN_NAMES[pin], parent = i32(f.idx)}
 						}
-						if pidx < len(itab) {
-							itab[pidx] = Irq {
+						if pidx < len(iidx) && irqs < len(itab) {
+							iidx[pidx] = i32(irqs)
+							itab[irqs] = Irq {
 								valid = true,
 								gsi   = lines[pin],
 								intid = u64(arch.VECTOR_IRQ_BASE) + u64(lines[pin]),
 							}
 						}
+						irqs += 1
 					}
 				}
 			}
 		case FDT_PROP:
-			length := int(be32(blob, at))
-			name_off := int(be32(blob, at + 4))
-			value_at := at + 8
-			at = align4(value_at + length)
+			length := t.length
+			value_at := t.value_at
 			vend := value_at + length
 			if vend > len(blob) {
 				vend = value_at
 			}
-			pn := cstr_len(blob, strings_off + name_off)
-			pname := string(blob[strings_off + name_off:strings_off + name_off + pn])
+			pname := t.name
 
 			idx := count
 			count += 1
@@ -668,18 +701,20 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, it
 				itype := be32(blob, value_at)
 				icell := be32(blob, value_at + 4)
 				if itype == 0 {
-					iidx := count
+					lidx := count
 					count += 1
-					if iidx < len(out) {
-						out[iidx] = vfs.Static_Node{name = "irq", parent = i32(stack[sp - 1].idx)}
+					if lidx < len(out) {
+						out[lidx] = vfs.Static_Node{name = "irq", parent = i32(stack[sp - 1].idx)}
 					}
-					if iidx < len(itab) {
-						itab[iidx] = Irq {
+					if lidx < len(iidx) && irqs < len(itab) {
+						iidx[lidx] = i32(irqs)
+						itab[irqs] = Irq {
 							valid = true,
 							gsi   = int(icell),
 							intid = u64(arch.VECTOR_IRQ_BASE) + u64(icell),
 						}
 					}
+					irqs += 1
 				}
 			}
 
@@ -707,24 +742,26 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, it
 					}
 				}
 				if d.valid {
-					didx := count
+					widx := count
 					count += 1
-					if didx < len(out) {
-						out[didx] = vfs.Static_Node{name = "dma", parent = i32(stack[sp - 1].idx)}
+					if widx < len(out) {
+						out[widx] = vfs.Static_Node{name = "dma", parent = i32(stack[sp - 1].idx)}
 					}
-					if didx < len(dtab) {
-						dtab[didx] = d
+					if widx < len(didx) && dmas < len(dtab) {
+						didx[widx] = i32(dmas)
+						dtab[dmas] = d
 					}
+					dmas += 1
 				}
 			}
 		case FDT_NOP:
 		case FDT_END:
-			return count
+			return count, irqs, dmas
 		case:
-			return count
+			return count, irqs, dmas
 		}
 	}
-	return count
+	return count, irqs, dmas
 }
 
 /*
@@ -796,8 +833,8 @@ irq_of :: proc "contextless" (fid: vectra9.Fid) -> ^Irq #no_bounds_check {
 	g := sync.acquire(&tree_static.lock)
 	defer sync.release(&tree_static.lock, g)
 	node := vfs.fidtab_node(&tree_static.fids, fid)
-	if node >= 0 && int(node) < len(irq_table) && irq_table[node].valid {
-		return &irq_table[node]
+	if node >= 0 && int(node) < len(irq_index) && irq_index[node] >= 0 {
+		return &irq_table[irq_index[node]]
 	}
 	return nil
 }
@@ -857,42 +894,14 @@ tree_irq_read :: proc "contextless" (e: ^Irq, tag: vectra9.Tag, buf: []u8, reply
 		if fired > intrinsics.volatile_load(&e.delivered) {
 			n := fired - intrinsics.volatile_load(&e.delivered)
 			intrinsics.volatile_store(&e.delivered, fired)
-			at := put_uint(buf, n)
-			if at < len(buf) {
-				buf[at] = '\n'
-				at += 1
-			}
-			reply^ = vectra9.Rread{data = buf[:at]}
+			line := libodin.sink_from(buf)
+			libodin.put_uint(&line, n)
+			libodin.put_byte(&line, '\n')
+			reply^ = vectra9.Rread{data = libodin.bytes(&line)}
 			return
 		}
 		sync.sleep(&e.ready, irq_ready, &w)
 	}
-}
-
-// put_uint writes an unsigned decimal into a buffer and answers its length.
-@(private)
-put_uint :: proc "contextless" (b: []u8, v: u64) -> int #no_bounds_check {
-	if len(b) == 0 {
-		return 0
-	}
-	if v == 0 {
-		b[0] = '0'
-		return 1
-	}
-	tmp: [20]u8
-	n := 0
-	x := v
-	for x > 0 {
-		tmp[n] = u8('0' + x % 10)
-		x /= 10
-		n += 1
-	}
-	out := 0
-	for i := n - 1; i >= 0 && out < len(b); i -= 1 {
-		b[out] = tmp[i]
-		out += 1
-	}
-	return out
 }
 
 /*
@@ -943,31 +952,54 @@ init :: proc(ns: ^vfs.Namespace, dtb: rawptr) -> vfs.Errno {
 	if blob == nil {
 		return vectra9.ENOMEM
 	}
-	for i in 0 ..< total {
-		blob[i] = src[i]
-	}
+	copy(blob, src[:total])
 
 	// The walker the kernel drives, by phandle. The walk needs it to tell a
 	// node with a `dma` file from one whose walker is some other part's.
 	walker, _ := phandle_of_compatible(blob, "arm,smmu-v3")
 
-	count := walk(blob, nil, nil, nil, nil, walker)
+	count, irqs, dmas := walk(blob, nil, nil, nil, nil, nil, nil, walker)
 	if count <= 0 {
 		delete(blob)
 		return vfs.OK
 	}
+	// One index per row, and a table entry only per synthesized `irq` or
+	// `dma` file. A `Dma` carries a ring of lines, and one per row would be
+	// most of the heap the tree takes.
 	rows := make([]vfs.Static_Node, count)
 	mtab := make([]Mmio, count)
-	itab := make([]Irq, count)
-	dtab := make([]Dma, count)
-	if rows == nil || mtab == nil || itab == nil || dtab == nil {
+	iidx := make([]i32, count)
+	didx := make([]i32, count)
+	if rows == nil || mtab == nil || iidx == nil || didx == nil {
 		delete(blob)
 		return vectra9.ENOMEM
 	}
-	_ = walk(blob, rows, mtab, itab, dtab, walker)
+	itab: []Irq
+	dtab: []Dma
+	if irqs > 0 {
+		itab = make([]Irq, irqs)
+		if itab == nil {
+			delete(blob)
+			return vectra9.ENOMEM
+		}
+	}
+	if dmas > 0 {
+		dtab = make([]Dma, dmas)
+		if dtab == nil {
+			delete(blob)
+			return vectra9.ENOMEM
+		}
+	}
+	for i in 0 ..< count {
+		iidx[i] = -1
+		didx[i] = -1
+	}
+	_, _, _ = walk(blob, rows, mtab, iidx, itab, didx, dtab, walker)
 	node_count = count
 	mmio_table = mtab
+	irq_index = iidx
 	irq_table = itab
+	dma_index = didx
 	dma_table = dtab
 	smmu.set_sink(on_event)
 

@@ -14,12 +14,11 @@ by them.
 package console
 
 import "kernel:drivers/fb"
+import "vsys:libdraw"
 import "vsys:libfont"
 
 FONT_WIDTH :: libfont.FONT_WIDTH
 FONT_HEIGHT :: libfont.FONT_HEIGHT
-FONT_FIRST :: libfont.FONT_FIRST
-FONT_LAST :: libfont.FONT_LAST
 
 /*
 Text is drawn embossed by default: a dark copy one pixel down-right, then the
@@ -106,6 +105,7 @@ draw_glyph :: proc "contextless" (s: ^fb.Surface, px, py: int, ch: rune, color: 
 	if !ok {
 		return
 	}
+	value := fb.pack(s, color)
 	for y in 0 ..< FONT_HEIGHT {
 		bits := cell[y]
 		if bits == 0 {
@@ -113,45 +113,15 @@ draw_glyph :: proc "contextless" (s: ^fb.Surface, px, py: int, ch: rune, color: 
 		}
 		for x in 0 ..< FONT_WIDTH {
 			if bits & (0x80 >> u8(x)) != 0 {
-				fb.put_pixel(s, px + x, py + y, color)
+				fb.put_packed(s, px + x, py + y, value)
 			}
 		}
 	}
 }
 
-// decode_rune reads one UTF-8 rune from `b`, answering it and its byte
-// length. A byte that starts no valid sequence is one Latin-1-ish rune of
-// itself, so a lone high byte still draws something rather than stalling.
-decode_rune :: proc "contextless" (b: []u8) -> (r: rune, size: int) #no_bounds_check {
-	if len(b) == 0 {
-		return 0, 0
-	}
-	c := b[0]
-	if c < 0x80 {
-		return rune(c), 1
-	}
-	n: int
-	switch {
-	case c & 0xE0 == 0xC0:
-		r = rune(c & 0x1F); n = 2
-	case c & 0xF0 == 0xE0:
-		r = rune(c & 0x0F); n = 3
-	case c & 0xF8 == 0xF0:
-		r = rune(c & 0x07); n = 4
-	case:
-		return rune(c), 1
-	}
-	if len(b) < n {
-		return rune(c), 1
-	}
-	for i in 1 ..< n {
-		if b[i] & 0xC0 != 0x80 {
-			return rune(c), 1
-		}
-		r = r << 6 | rune(b[i] & 0x3F)
-	}
-	return r, n
-}
+// The UTF-8 decoder is `libdraw.decode_rune`, which the kernel links too. A
+// byte that starts no valid sequence is one Latin-1-ish rune of itself, so a
+// lone high byte still draws something rather than stalling.
 
 // draw_text_styled renders `text` at a pixel position with the emboss applied.
 draw_text_styled :: proc "contextless" (
@@ -177,7 +147,7 @@ draw_string :: proc "contextless" (s: ^fb.Surface, px, py: int, text: string, co
 	x := px
 	i := 0
 	for i < len(text) {
-		r, size := decode_rune(transmute([]u8)text[i:])
+		r, size := libdraw.decode_rune(transmute([]u8)text[i:])
 		if size == 0 {
 			break
 		}
@@ -281,9 +251,7 @@ scroll :: proc "contextless" (c: ^Console) #no_bounds_check {
 		src := (y + step) * s.pitch + area.x * s.bytes_pp
 		dst := y * s.pitch + area.x * s.bytes_pp
 		span := area.w * s.bytes_pp
-		for i in 0 ..< span {
-			s.pixels[dst + i] = s.pixels[src + i]
-		}
+		copy(s.pixels[dst:dst + span], s.pixels[src:src + span])
 	}
 
 	fb.fill_rect(s, fb.Rect{area.x, area.y + area.h - step, area.w, step}, c.bg)

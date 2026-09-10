@@ -48,21 +48,19 @@ import "base:intrinsics"
 
 import "kernel:arch"
 import "kernel:drivers/kbd"
+import "kernel:drivers/ring"
 import "kernel:sched"
 import "kernel:sync"
 
-@(private = "file")
-PORT_DATA :: u16(0x60)
-@(private = "file")
-PORT_STATUS :: u16(0x64)
-
-@(private = "file")
-STATUS_OUTPUT_FULL :: u8(0x01)
-@(private = "file")
-STATUS_INPUT_FULL :: u8(0x02)
-// Set when the byte in the output buffer came from the second port.
+// The controller's ports and its two buffer bits are the keyboard driver's,
+// in `kbd/i8042.odin`. This bit is set when the byte in the output buffer
+// came from the second port.
 @(private = "file")
 STATUS_AUX :: u8(0x20)
+
+// How many turns every wait on the controller is bounded to.
+@(private = "file")
+BOUND :: 10000
 
 // The controller's commands this driver uses, and the mouse's.
 @(private = "file")
@@ -95,9 +93,7 @@ MOUSE_IRQ :: 12
 
 // A packet is three bytes and a burst is a few packets, so the keyboard's
 // ring is deep enough here too.
-RING_BYTES :: 64
-@(private = "file")
-RING_MASK :: RING_BYTES - 1
+RING_BYTES :: ring.BYTES
 
 // Where a decoded packet goes: a position, the buttons, and the tick.
 // `kernel/devfs` sets this, and nothing here knows that.
@@ -105,14 +101,11 @@ Sink :: #type proc "contextless" (x: int, y: int, buttons: u8, msec: u64)
 
 /*
 Everything one mouse is. The ring and its lock are the keyboard's
-arrangement. The position and the packet under construction belong to
-the bottom half alone.
+arrangement, `ring.Byte_Ring`, with the top half's counters. The position
+and the packet under construction belong to the bottom half alone.
 */
 Mouse :: struct {
-	ring:  [RING_BYTES]u8,
-	head:  u64,
-	tail:  u64,
-	lock:  sync.Spinlock,
+	using fifo: ring.Byte_Ring,
 	ready: sync.Rendez,
 	sink:  Sink,
 
@@ -125,10 +118,8 @@ Mouse :: struct {
 	h:       int,
 	buttons: u8,
 
-	// Counters, reported at boot and checked by the self-test.
-	interrupts: u64,
-	bytes:      u64,
-	dropped:    u64,
+	// The bottom half's counters, reported at boot and checked by the
+	// self-test. The top half's are the ring's.
 	packets:    u64,
 	bad:        u64, // Bytes dropped to find the start of a packet
 }
@@ -147,7 +138,7 @@ init :: proc(vector: int, w: int, h: int, sink: Sink) -> (ok: bool, why: string)
 	if sink == nil || w <= 0 || h <= 0 || !arch.irq_attached() || !arch.irq_available() {
 		return false, "no interrupt controller to route through"
 	}
-	if arch.inb(PORT_STATUS) == 0xFF {
+	if arch.inb(kbd.PORT_STATUS) == 0xFF {
 		return false, "no 8042 on the port bus"
 	}
 
@@ -185,16 +176,16 @@ init :: proc(vector: int, w: int, h: int, sink: Sink) -> (ok: bool, why: string)
 	if !controller_command(CMD_READ_CONFIG) {
 		return false, "the controller would not say its configuration"
 	}
-	config, got := wait_output()
+	config, got := kbd.wait_output(BOUND)
 	if !got {
 		return false, "the controller never answered its configuration"
 	}
 	config |= CONFIG_AUX_INTERRUPT
 	config &~= CONFIG_AUX_CLOCK_OFF
-	if !controller_command(CMD_WRITE_CONFIG) || !wait_input() {
+	if !controller_command(CMD_WRITE_CONFIG) || !kbd.wait_input(BOUND) {
 		return false, "the controller would not take its configuration"
 	}
-	arch.outb(PORT_DATA, config)
+	arch.outb(kbd.PORT_DATA, config)
 
 	if sched.spawn("mouse-bottom", bottom_half, &mouse) == nil {
 		return false, "no thread for the bottom half"
@@ -205,37 +196,10 @@ init :: proc(vector: int, w: int, h: int, sink: Sink) -> (ok: bool, why: string)
 	return true, ""
 }
 
-// wait_input waits, bounded, until the controller will take a byte.
-@(private = "file")
-wait_input :: proc "contextless" () -> bool {
-	for _ in 0 ..< 10000 {
-		if arch.inb(PORT_STATUS) & STATUS_INPUT_FULL == 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// wait_output waits, bounded, for a byte from the controller, and answers
-// it. What it answers may be the keyboard's rather than the mouse's, and
-// a caller that cares asks for the acknowledgement it expects.
-@(private = "file")
-wait_output :: proc "contextless" () -> (b: u8, ok: bool) {
-	for _ in 0 ..< 10000 {
-		if arch.inb(PORT_STATUS) & STATUS_OUTPUT_FULL != 0 {
-			return arch.inb(PORT_DATA), true
-		}
-	}
-	return 0, false
-}
-
+// controller_command is the keyboard driver's, at this driver's bound.
 @(private = "file")
 controller_command :: proc "contextless" (cmd: u8) -> bool {
-	if !wait_input() {
-		return false
-	}
-	arch.outb(PORT_STATUS, cmd)
-	return true
+	return kbd.controller_command(cmd, BOUND)
 }
 
 // mouse_command sends one byte to the mouse through the controller and
@@ -243,12 +207,12 @@ controller_command :: proc "contextless" (cmd: u8) -> bool {
 // acknowledgement is the keyboard's, left over, and is skipped.
 @(private = "file")
 mouse_command :: proc "contextless" (cmd: u8) -> bool {
-	if !controller_command(CMD_WRITE_AUX) || !wait_input() {
+	if !controller_command(CMD_WRITE_AUX) || !kbd.wait_input(BOUND) {
 		return false
 	}
-	arch.outb(PORT_DATA, cmd)
+	arch.outb(kbd.PORT_DATA, cmd)
 	for _ in 0 ..< 8 {
-		b, ok := wait_output()
+		b, ok := kbd.wait_output(BOUND)
 		if !ok {
 			return false
 		}
@@ -271,8 +235,8 @@ stats :: proc "contextless" () -> Stats {
 	g := sync.acquire(&mouse.lock)
 	defer sync.release(&mouse.lock, g)
 	return Stats {
-		interrupts = mouse.interrupts,
-		bytes = mouse.bytes,
+		interrupts = mouse.pushed,
+		bytes = mouse.stored,
 		dropped = mouse.dropped,
 		packets = intrinsics.volatile_load(&mouse.packets),
 		bad = intrinsics.volatile_load(&mouse.bad),
@@ -292,33 +256,17 @@ position :: proc "contextless" () -> (x: int, y: int) {
 // is the keyboard's arriving on the wrong line, and is left for it.
 @(private = "file")
 on_interrupt :: proc "contextless" (r: arch.Resume) -> arch.Resume {
-	status := arch.inb(PORT_STATUS)
-	if status & STATUS_OUTPUT_FULL != 0 && status & STATUS_AUX != 0 {
-		b := arch.inb(PORT_DATA)
+	status := arch.inb(kbd.PORT_STATUS)
+	if status & kbd.STATUS_OUTPUT_FULL != 0 && status & STATUS_AUX != 0 {
+		b := arch.inb(kbd.PORT_DATA)
 		arch.irq_ack()
-		if push(&mouse, b) {
+		if ring.push(&mouse.fifo, b) {
 			sync.wakeup(&mouse.ready)
 		}
 		return r
 	}
 	arch.irq_ack()
 	return r
-}
-
-@(private)
-push :: proc "contextless" (m: ^Mouse, b: u8) -> bool #no_bounds_check {
-	g := sync.acquire(&m.lock)
-	defer sync.release(&m.lock, g)
-
-	m.interrupts += 1
-	if m.head - m.tail >= RING_BYTES {
-		m.dropped += 1
-		return false
-	}
-	m.ring[m.head & RING_MASK] = b
-	m.head += 1
-	m.bytes += 1
-	return true
 }
 
 /*
@@ -331,10 +279,10 @@ driver and the file above it.
 */
 @(private)
 inject :: proc "contextless" (b: u8) -> bool {
-	if !controller_command(CMD_WRITE_AUX_OUTPUT) || !wait_input() {
+	if !controller_command(CMD_WRITE_AUX_OUTPUT) || !kbd.wait_input(BOUND) {
 		return false
 	}
-	arch.outb(PORT_DATA, b)
+	arch.outb(kbd.PORT_DATA, b)
 	return true
 }
 
@@ -347,18 +295,12 @@ inject_packet :: proc "contextless" (flags: u8, dx: u8, dy: u8) -> bool {
 // -- The bottom half ---------------------------------------------------------
 
 @(private = "file")
-have_bytes :: proc "contextless" (arg: rawptr) -> bool {
-	m := cast(^Mouse)arg
-	return intrinsics.volatile_load(&m.head) != intrinsics.volatile_load(&m.tail)
-}
-
-@(private = "file")
 bottom_half :: proc "contextless" (arg: rawptr) {
 	m := cast(^Mouse)arg
 	for {
-		sync.sleep(&m.ready, have_bytes, m)
+		sync.sleep(&m.ready, ring.pending, &m.fifo)
 		for {
-			b, ok := take(m)
+			b, ok := ring.take(&m.fifo)
 			if !ok {
 				break
 			}
@@ -367,18 +309,6 @@ bottom_half :: proc "contextless" (arg: rawptr) {
 			}
 		}
 	}
-}
-
-@(private)
-take :: proc "contextless" (m: ^Mouse) -> (b: u8, ok: bool) #no_bounds_check {
-	g := sync.acquire(&m.lock)
-	defer sync.release(&m.lock, g)
-	if m.tail == m.head {
-		return 0, false
-	}
-	b = m.ring[m.tail & RING_MASK]
-	m.tail += 1
-	return b, true
 }
 
 /*
@@ -395,7 +325,7 @@ turned over, because the mouse counts up and the screen counts down.
 @(private)
 decode :: proc "contextless" (m: ^Mouse, b: u8) -> (x: int, y: int, buttons: u8, done: bool) #no_bounds_check {
 	if m.have == 0 && b & 0x08 == 0 {
-		bump(&m.bad)
+		ring.bump(&m.bad)
 		return 0, 0, 0, false
 	}
 	m.packet[m.have] = b
@@ -419,11 +349,6 @@ decode :: proc "contextless" (m: ^Mouse, b: u8) -> (x: int, y: int, buttons: u8,
 	// `rio`'s numbering: 1 left, 2 middle, 4 right. The packet has the
 	// middle button above the right one.
 	m.buttons = (flags & 0x01) | (flags & 0x04) >> 1 | (flags & 0x02) << 1
-	bump(&m.packets)
+	ring.bump(&m.packets)
 	return m.x, m.y, m.buttons, true
-}
-
-@(private = "file")
-bump :: proc "contextless" (p: ^u64) {
-	intrinsics.volatile_store(p, intrinsics.volatile_load(p) + 1)
 }

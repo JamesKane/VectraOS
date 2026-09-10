@@ -126,10 +126,43 @@ get_raw :: proc "contextless" (s: ^Surface, x, y: int) -> u32 #no_bounds_check {
 // procedure no control can reach.
 
 put_pixel :: proc "contextless" (s: ^Surface, x, y: int, c: RGB) {
+	put_packed(s, x, y, pack(s, c))
+}
+
+// put_packed is `put_pixel` for a colour already packed, so a caller that
+// paints many pixels of one colour packs it once.
+put_packed :: proc "contextless" (s: ^Surface, x, y: int, value: u32) {
 	if x < 0 || y < 0 || x >= s.width || y >= s.height {
 		return
 	}
-	put_raw(s, x, y, pack(s, c))
+	put_raw(s, x, y, value)
+}
+
+// fill_span writes `w` pixels of one packed value from (x, y), inside a
+// rectangle the caller clipped. The switch on the depth is outside the pixel
+// loop, once per row rather than once per pixel.
+@(private)
+fill_span :: proc "contextless" (s: ^Surface, x, y, w: int, value: u32) #no_bounds_check {
+	offset := y * s.pitch + x * s.bytes_pp
+	switch s.bytes_pp {
+	case 4:
+		row := cast([^]u32)&s.pixels[offset]
+		for i in 0 ..< w {
+			row[i] = value
+		}
+	case 3:
+		row := s.pixels[offset:]
+		for i in 0 ..< w {
+			row[i * 3 + 0] = u8(value)
+			row[i * 3 + 1] = u8(value >> 8)
+			row[i * 3 + 2] = u8(value >> 16)
+		}
+	case 2:
+		row := cast([^]u16)&s.pixels[offset]
+		for i in 0 ..< w {
+			row[i] = u16(value)
+		}
+	}
 }
 
 // -- Rectangles --------------------------------------------------------------
@@ -159,14 +192,8 @@ fill_rect :: proc "contextless" (s: ^Surface, r: Rect, c: RGB) #no_bounds_check 
 	}
 	value := pack(s, c)
 	for y in area.y ..< area.y + area.h {
-		for x in area.x ..< area.x + area.w {
-			put_raw(s, x, y, value)
-		}
+		fill_span(s, area.x, y, area.w, value)
 	}
-}
-
-clear :: proc "contextless" (s: ^Surface, c: RGB) {
-	fill_rect(s, Rect{0, 0, s.width, s.height}, c)
 }
 
 hline :: proc "contextless" (s: ^Surface, x, y, w: int, c: RGB) {
@@ -275,9 +302,6 @@ brushed :: proc "contextless" (s: ^Surface, r: Rect, face: RGB) {
 	lit := pack(s, shade(face, +6))
 	base := pack(s, face)
 	for y in area.y ..< area.y + area.h {
-		value := (y & 3) == 0 ? lit : base
-		for x in area.x ..< area.x + area.w {
-			put_raw(s, x, y, value)
-		}
+		fill_span(s, area.x, y, area.w, (y & 3) == 0 ? lit : base)
 	}
 }

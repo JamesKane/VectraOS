@@ -27,7 +27,6 @@ package uart
 import "base:intrinsics"
 
 import "kernel:arch"
-import "vsys:libodin"
 
 // -- The 16550 ---------------------------------------------------------------
 
@@ -275,14 +274,6 @@ write_string :: proc "contextless" (port: ^Port, text: string) {
 			write_byte(port, '\r')
 		}
 		write_byte(port, text[i])
-	}
-}
-
-// write_sink flushes a libodin.Sink and marks truncated output inline.
-write_sink :: proc "contextless" (port: ^Port, s: ^libodin.Sink) {
-	write_string(port, libodin.str(s))
-	if s.overflowed {
-		write_string(port, "<truncated>")
 	}
 }
 
