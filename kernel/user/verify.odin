@@ -565,6 +565,20 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	s := stats()
 	r.calls = s.calls
 	r.spawned = s.spawned
+	// A program left standing is named, with the pids it hangs on, so this
+	// check says which chain leaked rather than only that one did. The
+	// format is `describe_live`'s: name#pid<parent, then D X C flags and T
+	// with the thread's state. See `describe_live`.
+	if s.live != r.resident {
+		sink := detail_sink()
+		libodin.put_str(&sink, "and it left these standing (live ")
+		libodin.put_uint(&sink, u64(s.live))
+		libodin.put_str(&sink, " resident ")
+		libodin.put_uint(&sink, u64(r.resident))
+		libodin.put_str(&sink, "):")
+		describe_live(&sink)
+		check(&r, false, libodin.str(&sink))
+	}
 	check(&r, s.live == r.resident, "every program was taken down")
 	check(&r, s.faults + s.calls >= r.programs, "each of them by a fault or by asking")
 
