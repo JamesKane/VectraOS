@@ -2045,7 +2045,9 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	win.stride = scr_w
 	win.rows = scr_h
 	win.x = cascade_x(at)
-	win.y = cascade_y(at)
+	// Below the screen bar, when a desktop has one: a bar is never covered,
+	// so a window born under it would be born half hidden.
+	win.y = min(cascade_y(at) + bar_height(), max(scr_h - win_h, 0))
 	win.w = win_w
 	win.h = win_h
 	win.title_n = 0

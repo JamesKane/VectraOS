@@ -65,6 +65,7 @@ ROOT_NODES := [?]Static_Node {
 	// Where the debugger's engine is mounted, so `db` and the debugger's
 	// window find `/mnt/dbg` in any namespace. `docs/DEVTOOLS.md` section 7.
 	{name = "dbg", parent = 6, dir = true},
+	{name = "wb", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

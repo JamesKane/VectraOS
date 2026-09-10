@@ -94,6 +94,8 @@ user_programs := [?]User_Program {
 	{name = "fatfs", path = "servers/fatfs"},
 	{name = "kfs", path = "servers/kfs"},
 	{name = "blkfs", path = "servers/blkfs"},
+	{name = "workbench", path = "apps/workbench"},
+	{name = "view", path = "apps/view"},
 	{name = "pwd", path = "cmd/pwd"},
 	{name = "mkdir", path = "cmd/mkdir"},
 	{name = "rm", path = "cmd/rm"},
@@ -1354,6 +1356,14 @@ stage_vectra :: proc(host: string) {
 	// The draw server's two files: the chords, and where a window opens.
 	copy_file("servers/intuition/keys", fmt.tprintf("%s/lib/keys", root))
 	copy_file("servers/intuition/workspaces", fmt.tprintf("%s/lib/workspaces", root))
+	// The desktop's tools and types, `docs/WORKBENCH.md` section 6: a tool
+	// is a file whose first line is its command, and a type is a suffix
+	// and the tool that opens it.
+	ensure_dir(fmt.tprintf("%s/lib/wb", root))
+	ensure_dir(fmt.tprintf("%s/lib/wb/tools", root))
+	copy_file("lib/wb/types", fmt.tprintf("%s/lib/wb/types", root))
+	copy_file("lib/wb/tools/Shell", fmt.tprintf("%s/lib/wb/tools/Shell", root))
+	copy_file("lib/wb/tools/Toolkit", fmt.tprintf("%s/lib/wb/tools/Toolkit", root))
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
 	copy_file("tests/dbg.rc", fmt.tprintf("%s/lib/tests/dbg.rc", root))
 	copy_file("tests/tls.rc", fmt.tprintf("%s/lib/tests/tls.rc", root))

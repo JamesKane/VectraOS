@@ -1,0 +1,8 @@
+# types: a suffix, and the tool that opens a project with it, in a window.
+# A project with no line here opens in view.
+.txt    view
+.rc     view
+.odin   view
+.md     view
+.c      view
+.h      view

@@ -90,6 +90,7 @@ Dev_Kind :: enum u8 {
 	Eia0, // The serial port's bytes, raw in and raw out. See `tap.odin`
 	Mouse, // The pointer, one line per movement, one reader. See `mouse.odin`
 	Audio, // Sound: writes are samples to virtio-sound, reads report the format
+	Sysstat, // The machine's memory and uptime, one line each. See the read
 }
 
 Dev_Node :: struct {
@@ -129,6 +130,7 @@ DEV_NODES := [?]Dev_Node {
 	{name = "eia0", parent = 0, kind = .Eia0},
 	{name = "mouse", parent = 0, kind = .Mouse},
 	{name = "audio", parent = 0, kind = .Audio},
+	{name = "sysstat", parent = 0, kind = .Sysstat},
 	// The mount point the device tree binds over: an empty directory here, and
 	// `#t`'s nodes once `kernel/tree` mounts on it. See `docs/HARDWARE.md` 3.
 	{name = "tree", parent = 0, kind = .Dir},
@@ -1106,6 +1108,28 @@ devfs_read :: proc "contextless" (
 		n := copy(buf[:room], text)
 		reply^ = vectra9.Rread{data = buf[:n]}
 
+	case .Sysstat:
+		/*
+		What the screen bar says, `docs/WORKBENCH.md` section 6: the memory
+		as `mem <usable> <free>` in kibibytes, and `uptime <seconds>`. The
+		frame counts are the ones the boot line prints, read now rather
+		than then. A value, not a file with a length, like `time`.
+		*/
+		ps := mem.pmm_stats()
+		kib := u64(mem.PAGE_SIZE / 1024)
+		line: [96]u8
+		sink := libodin.sink_from(line[:])
+		libodin.put_str(&sink, "mem ")
+		libodin.put_uint(&sink, u64(ps.usable_frames) * kib)
+		libodin.put_str(&sink, " ")
+		libodin.put_uint(&sink, u64(ps.free_frames) * kib)
+		libodin.put_str(&sink, "\nuptime ")
+		libodin.put_uint(&sink, sched.uptime_ns() / 1_000_000_000)
+		libodin.put_str(&sink, "\n")
+		text := libodin.str(&sink)
+		n := copy(buf[:room], text)
+		reply^ = vectra9.Rread{data = buf[:n]}
+
 	case .Audio:
 		/*
 		The format the card plays, one line: `rate channels bits`. Samples are
@@ -1305,6 +1329,10 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 			return
 		}
 		reply^ = vectra9.Rwrite{count = u32(n)}
+
+	case .Sysstat:
+		// A reading, not a setting: nothing here is written.
+		reply^ = vectra9.error_reply(vectra9.EPERM)
 
 	case .Fbctl:
 		// The command vocabulary is empty until something about the hardware

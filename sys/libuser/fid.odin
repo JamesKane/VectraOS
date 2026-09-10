@@ -36,7 +36,7 @@ Sixteen, and fixed. The argument is the one `srv.MAX_SERVICES` and
 `mem.MAX_SPACES` make. A table a client can grow is a table a client can exhaust
 the machine through. A server is exactly what a client talks to.
 */
-MAX_FIDS :: 16
+MAX_FIDS :: 64
 
 Fid_Slot :: struct {
 	fid:  vectra9.Fid,

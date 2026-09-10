@@ -154,10 +154,16 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	// Not fatal: a face falls back to the baked ASCII table.
 	font_load()
 
-	if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
-		return refused("no draw server at /srv/draw")
-	}
+	// The server at /mnt, mounted once. A program of several windows opens
+	// the next through the mount the first made. A mount per window would
+	// hold a fid on the server for each.
 	nfd := libuser.open("/mnt/new", abi.O_RDONLY)
+	if nfd < 0 {
+		if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
+			return refused("no draw server at /srv/draw")
+		}
+		nfd = libuser.open("/mnt/new", abi.O_RDONLY)
+	}
 	if nfd < 0 {
 		return refused("the server has no window to give")
 	}
@@ -223,7 +229,9 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 		_ = libuser.write(int(ctl), win.line[:at])
 	}
 	if win.kind != .Normal || (win.want_w > 0 && win.want_h > 0) {
-		n = libuser.read(int(ctl), win.geo[:])
+		// At offset zero: the report is a value, and the first read moved
+		// this descriptor past it.
+		n = libuser.pread(int(ctl), win.geo[:], 0)
 		if w2, h2, _, _, ok2 := libdraw.parse_geometry(win.geo[:max(int(n), 0)]); ok2 {
 			win.cw, win.ch = w2, h2
 		}

@@ -77,6 +77,7 @@ menu_open :: proc "contextless" (m: ^Menu, items: []string, x: int, y: int) -> b
 	win.kind = .Popup
 	win.bind_dev = false
 	win.own_exit = false
+	win.set_up = true
 	win.placed = true
 	win.at_x = x
 	win.at_y = y

@@ -27,6 +27,7 @@ import "vsys:libuser"
 Io_Op :: enum u8 {
 	Read,
 	Write,
+	Sleep, // `ticks` in `fd`: a wait a thread may make without parking its proc
 }
 
 Io_Call :: struct {
@@ -76,6 +77,8 @@ io_loop :: proc "contextless" (arg: rawptr) {
 			c.result = libuser.read(c.fd, c.buf)
 		case .Write:
 			c.result = libuser.write(c.fd, c.buf)
+		case .Sleep:
+			c.result = libuser.sleep(u64(c.fd))
 		}
 		sendp(io.replies, c)
 	}
@@ -97,6 +100,15 @@ ioread :: proc "contextless" (io: ^Ioproc, fd: int, buf: []u8) -> i64 {
 
 iowrite :: proc "contextless" (io: ^Ioproc, fd: int, data: []u8) -> i64 {
 	c := Io_Call{op = .Write, fd = fd, buf = data}
+	return iocall(io, &c)
+}
+
+// iosleep is `libuser.sleep` made from a thread: the io proc waits the
+// ticks, and the proc runs its other threads meanwhile. A thread that
+// slept with the system call itself would park every thread beside it,
+// which is what a desktop's clock must never do.
+iosleep :: proc "contextless" (io: ^Ioproc, ticks: int) -> i64 {
+	c := Io_Call{op = .Sleep, fd = ticks}
 	return iocall(io, &c)
 }
 

@@ -666,6 +666,34 @@ more shell in `ps`. It writes a line to `notice`, reads it back off
 From the serial line, `window ls` opens a window with a listing in it.
 Then `ps` shows the desktop as one proc of threads and its io procs.
 
+**Where it stands.** Built and screenshot-verified, September 2026.
+`apps/workbench` opens a `bar` window and a `backdrop`. The bar draws the
+four menu titles and the machine's memory off a new `/dev/sysstat`. The
+backdrop lays `Home`, `System`, `Tools` and one icon per disk as a grid.
+
+Button 3 on a title opens that title's menu as a `libmui` popup. A double
+click on `Home` opens a drawer window of icons. `Execute Command...`
+matches what is typed against `/bin`, the tools and the chords.
+
+Notices are a served `/srv/wb`, mounted at `/mnt/wb`. Its `notice` file
+draws a toast, and its `history` keeps the last ten. `apps/view` opens a
+project in a window.
+
+The toolkit grew what the desktop needs, all proven in `tests/mui`.
+Several windows per program, the three window kinds, a `Menu` popup, an
+`Icons` grid, and a `String` gadget that takes typing.
+
+Two things wait. `init` does not start Workbench yet. Its many
+short-lived threads -- a drawer, a toast, a menu each a thread that opens
+and closes -- reliably trip the open stale-wake reaper race. The boot
+then faults with `a wake of a reaped thread`. So a person starts it by
+hand until that is fixed, and `muidemo` stays init's toolkit window.
+
+The end-to-end suite check waits on the same fix. Driving and then
+tearing down a full desktop is what exposes the race. The toolkit's own
+classes are proven in `tests/mui` meanwhile, and the integrated desktop
+by `docs/workbench-desktop.png`.
+
 ### Step 5: the rest of the platform
 
 Each its own document, in whatever order a reason arrives.
