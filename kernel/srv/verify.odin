@@ -34,10 +34,7 @@ Verify_Result :: struct {
 	mounted:       int, // Services it mounted and read through
 }
 
-@(private = "file")
-check :: proc "contextless" (r: ^Verify_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
+check :: libodin.check
 
 // -- Fixtures ----------------------------------------------------------------
 
@@ -226,7 +223,7 @@ verify_post :: proc(r: ^Verify_Result, ns: ^vfs.Namespace, buf: []u8) #no_bounds
 
 	n, rerr := vfs.chan_read(c, 0, buf[:64])
 	check(r, rerr == vfs.OK, "and reads")
-	check(r, same(buf[:], n, "alpha direct\n"), "reporting the service and its transport")
+	check(r, string(buf[:n]) == "alpha direct\n", "reporting the service and its transport")
 
 	attr, aerr := vfs.chan_stat(c)
 	check(r, aerr == vfs.OK, "and stats")
@@ -301,7 +298,7 @@ verify_mount :: proc(r: ^Verify_Result, ns: ^vfs.Namespace, buf: []u8) #no_bound
 	}
 	check(r, vfs.chan_remove(rc) == vfs.OK, "and a Tremove takes the name away")
 	vfs.chan_close(rc)
-	r.posted -= 0 // The post is still counted; only the name went.
+	// The post stays counted in `r.posted`. Only the name went.
 
 	check(r, count() == 0, "/srv is empty again")
 	_, gone := vfs.resolve(ns, "/srv/alpha")
@@ -340,7 +337,7 @@ verify_mount :: proc(r: ^Verify_Result, ns: ^vfs.Namespace, buf: []u8) #no_bound
 		again == vectra9.ENOENT,
 		"and the old handle still names nothing, rather than whatever took the slot",
 	)
-	check(r, !same(buf[:], n, "beta direct\n"), "which is the capability a slot index would have leaked")
+	check(r, string(buf[:n]) != "beta direct\n", "which is the capability a slot index would have leaked")
 
 	check(r, remove("beta") == vfs.OK, "the second service goes too")
 }
@@ -482,19 +479,6 @@ fill_name :: proc "contextless" (i: int) -> string #no_bounds_check {
 }
 
 @(private = "file")
-same :: proc "contextless" (got: []u8, n: int, want: string) -> bool #no_bounds_check {
-	if n != len(want) {
-		return false
-	}
-	for i in 0 ..< n {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
-}
-
-@(private = "file")
 read_is :: proc(ns: ^vfs.Namespace, path: string, buf: []u8, want: string) -> bool {
 	c, err := vfs.open_path(ns, path, vfs.O_RDONLY)
 	if err != vfs.OK {
@@ -503,5 +487,5 @@ read_is :: proc(ns: ^vfs.Namespace, path: string, buf: []u8, want: string) -> bo
 	defer vfs.chan_close(c)
 
 	n, rerr := vfs.chan_read(c, 0, buf[:64])
-	return rerr == vfs.OK && same(buf, n, want)
+	return rerr == vfs.OK && string(buf[:n]) == want
 }

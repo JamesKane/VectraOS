@@ -403,9 +403,11 @@ is_request_tag :: proc "contextless" (t: vectra9.Tag) -> bool {
 	return int(t) < MAX_REQUESTS
 }
 
+// flush_partner is the reserved flush slot above a request's, in whichever
+// pool the request lives in.
 @(private)
-flush_partner :: proc "contextless" (c: ^Conn, r: ^Rpc) -> ^Rpc #no_bounds_check {
-	return &c.pool[int(r.tag) + MAX_REQUESTS]
+flush_partner :: proc "contextless" (pool: ^[POOL]Rpc, r: ^Rpc) -> ^Rpc #no_bounds_check {
+	return &pool[int(r.tag) + MAX_REQUESTS]
 }
 
 // enqueue puts a filled-in slot on the work queue. The lock is the caller's.
@@ -569,54 +571,49 @@ deliver :: proc "contextless" (r: ^Rpc, buf: []u8) -> (n: int, ok: bool) {
 		buf = buf,
 	}
 
-	if m, is := &r.reply.(vectra9.Rread); is {
-		if in_slot(r, raw_data(m.data), len(m.data)) {
-			m.data, ok = land(&l, m.data)
-			if !ok {
-				return 0, false
-			}
-		}
+	if m, is := &r.reply.(vectra9.Rread); is && !land_bytes(&l, r, &m.data) {
+		return 0, false
 	}
-	if m, is := &r.reply.(vectra9.Rreaddir); is {
-		if in_slot(r, raw_data(m.data), len(m.data)) {
-			m.data, ok = land(&l, m.data)
-			if !ok {
-				return 0, false
-			}
-		}
+	if m, is := &r.reply.(vectra9.Rreaddir); is && !land_bytes(&l, r, &m.data) {
+		return 0, false
 	}
-	if m, is := &r.reply.(vectra9.Rreadlink); is {
-		if in_slot(r, raw_data(m.target), len(m.target)) {
-			copied: []u8
-			copied, ok = land(&l, transmute([]u8)m.target)
-			if !ok {
-				return 0, false
-			}
-			m.target = string(copied)
-		}
+	if m, is := &r.reply.(vectra9.Rreadlink); is && !land_string(&l, r, &m.target) {
+		return 0, false
 	}
-	if m, is := &r.reply.(vectra9.Rversion); is {
-		if in_slot(r, raw_data(m.version), len(m.version)) {
-			copied: []u8
-			copied, ok = land(&l, transmute([]u8)m.version)
-			if !ok {
-				return 0, false
-			}
-			m.version = string(copied)
-		}
+	if m, is := &r.reply.(vectra9.Rversion); is && !land_string(&l, r, &m.version) {
+		return 0, false
 	}
-	if m, is := &r.reply.(vectra9.Rgetlock); is {
-		if in_slot(r, raw_data(m.client_id), len(m.client_id)) {
-			copied: []u8
-			copied, ok = land(&l, transmute([]u8)m.client_id)
-			if !ok {
-				return 0, false
-			}
-			m.client_id = string(copied)
-		}
+	if m, is := &r.reply.(vectra9.Rgetlock); is && !land_string(&l, r, &m.client_id) {
+		return 0, false
 	}
 
 	return l.used, true
+}
+
+// land_bytes moves one reply field out of the slot, when it lies there, and
+// repoints the field at the copy. False when the copy did not fit.
+@(private = "file")
+land_bytes :: proc "contextless" (l: ^Landing, r: ^Rpc, b: ^[]u8) -> (ok: bool) {
+	if !in_slot(r, raw_data(b^), len(b^)) {
+		return true
+	}
+	b^, ok = land(l, b^)
+	return ok
+}
+
+// land_string is `land_bytes` for a reply string. The string is left as it
+// was when the copy did not fit.
+@(private = "file")
+land_string :: proc "contextless" (l: ^Landing, r: ^Rpc, s: ^string) -> bool {
+	if !in_slot(r, raw_data(s^), len(s^)) {
+		return true
+	}
+	copied, ok := land(l, transmute([]u8)s^)
+	if !ok {
+		return false
+	}
+	s^ = string(copied)
+	return true
 }
 
 /*
@@ -627,23 +624,42 @@ A refusal replaces the reply rather than passes it along. The reply that did
 not fit still points into a slot this caller is about to release. To hand it
 back would be the bug this whole file exists to remove. A `Short_Buffer` beside
 it, saying not to look, would only add insult.
+
+The lock and the two counters are the pool's, and a `Wire` has its own. So
+this takes them by pointer rather than a `Conn`, and both pools share it.
 */
 @(private)
-settle :: proc "contextless" (c: ^Conn, r: ^Rpc, buf: []u8, err: vectra9.Error) -> vectra9.Error {
+settle :: proc "contextless" (
+	lock: ^sync.Spinlock,
+	payload: ^u64,
+	oversize: ^u64,
+	r: ^Rpc,
+	buf: []u8,
+) -> vectra9.Error {
 	n, fitted := deliver(r, buf)
 
-	guard := sync.acquire(&c.lock)
+	guard := sync.acquire(lock)
 	if fitted {
-		c.stats.payload += u64(n)
+		payload^ += u64(n)
 	} else {
-		c.stats.oversize += 1
+		oversize^ += 1
 	}
-	sync.release(&c.lock, guard)
+	sync.release(lock, guard)
 
 	if !fitted {
 		r.reply = vectra9.error_reply(vectra9.EPROTO)
 		return .Short_Buffer
 	}
+	return r.err
+}
+
+// collect is what a client does with an answered slot: settle the reply into
+// its own storage, take it, and give the slot back.
+@(private = "file")
+collect :: proc "contextless" (c: ^Conn, r: ^Rpc, reply: ^vectra9.Msg, buf: []u8) -> vectra9.Error {
+	err := settle(&c.lock, &c.stats.payload, &c.stats.oversize, r, buf)
+	reply^ = r.reply
+	give_back(c, r)
 	return err
 }
 
@@ -672,11 +688,7 @@ call :: proc "contextless" (
 	}
 
 	sync.sleep(&r.settled, is_done, r)
-
-	err := settle(c, r, buf, r.err)
-	reply^ = r.reply
-	give_back(c, r)
-	return err
+	return collect(c, r, reply, buf)
 }
 
 /*
@@ -723,10 +735,7 @@ call_for :: proc "contextless" (
 	}
 
 	if sync.sleep_for(&r.settled, is_done, r, ticks) {
-		err := settle(c, r, buf, r.err)
-		reply^ = r.reply
-		give_back(c, r)
-		return err
+		return collect(c, r, reply, buf)
 	}
 
 	flush(c, r)
@@ -764,7 +773,7 @@ to do with `r` and said so. `r`'s tag is the caller's again.
 */
 @(private = "file")
 flush :: proc "contextless" (c: ^Conn, r: ^Rpc) {
-	f := flush_partner(c, r)
+	f := flush_partner(&c.pool, r)
 
 	f.request = vectra9.Msg(vectra9.Tflush{oldtag = r.tag})
 	f.reply = {}

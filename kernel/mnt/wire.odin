@@ -53,7 +53,6 @@ because a count that should stay put is the cheapest kind of check.
 package mnt
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:mem"
 import "kernel:sched"
@@ -372,23 +371,14 @@ wire_submit :: proc "contextless" (w: ^Wire, request: ^vectra9.Msg) -> (^Rpc, ve
 	return r, .None
 }
 
+// wire_collect is `Conn`'s `collect` for a wire: the reply settles into the
+// caller's storage and the slot goes back.
 @(private = "file")
-wire_settle :: proc "contextless" (w: ^Wire, r: ^Rpc, buf: []u8) -> vectra9.Error {
-	n, fitted := deliver(r, buf)
-
-	g := sync.acquire(&w.lock)
-	if fitted {
-		w.stats.payload += u64(n)
-	} else {
-		w.stats.oversize += 1
-	}
-	sync.release(&w.lock, g)
-
-	if !fitted {
-		r.reply = vectra9.error_reply(vectra9.EPROTO)
-		return .Short_Buffer
-	}
-	return r.err
+wire_collect :: proc "contextless" (w: ^Wire, r: ^Rpc, reply: ^vectra9.Msg, buf: []u8) -> vectra9.Error {
+	err := settle(&w.lock, &w.stats.payload, &w.stats.oversize, r, buf)
+	reply^ = r.reply
+	wire_give_back(w, r)
+	return err
 }
 
 /*
@@ -409,11 +399,7 @@ wire_call :: proc "contextless" (
 	}
 
 	sync.sleep(&r.settled, is_done, r)
-
-	err = wire_settle(w, r, buf)
-	reply^ = r.reply
-	wire_give_back(w, r)
-	return err
+	return wire_collect(w, r, reply, buf)
 }
 
 /*
@@ -447,10 +433,7 @@ wire_call_for :: proc "contextless" (
 	}
 
 	if sync.sleep_for(&r.settled, is_done, r, ticks) {
-		err = wire_settle(w, r, buf)
-		reply^ = r.reply
-		wire_give_back(w, r)
-		return err
+		return wire_collect(w, r, reply, buf)
 	}
 
 	wire_flush(w, r)
@@ -460,10 +443,7 @@ wire_call_for :: proc "contextless" (
 	// request as flushed. Keep it too, rather than lose an answer that
 	// arrived to a caller that asked again.
 	if intrinsics.volatile_load(&r.state) == .Done {
-		err = wire_settle(w, r, buf)
-		reply^ = r.reply
-		wire_give_back(w, r)
-		return err
+		return wire_collect(w, r, reply, buf)
 	}
 	wire_give_back(w, r)
 	return .Interrupted
@@ -486,7 +466,7 @@ request nor its flush is not one this wire can wait for.
 */
 @(private = "file")
 wire_flush :: proc "contextless" (w: ^Wire, r: ^Rpc) #no_bounds_check {
-	f := &w.pool[int(r.tag) + MAX_REQUESTS]
+	f := flush_partner(&w.pool, r)
 
 	g := sync.acquire(&w.lock)
 	f.state = .Queued
@@ -622,9 +602,7 @@ reader :: proc "contextless" (arg: rawptr) {
 
 	// The reader decodes and copies and never allocates, but it runs library
 	// code on this stack, and library code is entitled to a context.
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 
 	header: [vectra9.HEADER_SIZE]u8
 	for {
@@ -633,10 +611,11 @@ reader :: proc "contextless" (arg: rawptr) {
 			break
 		}
 
-		size := int(header[0]) | int(header[1]) << 8 | int(header[2]) << 16 | int(header[3]) << 24
+		declared, sane := vectra9.message_size(header[:])
+		size := int(declared)
 		tag := vectra9.Tag(u16(header[5]) | u16(header[6]) << 8)
 
-		if size < vectra9.HEADER_SIZE || size > w.per {
+		if !sane || size > w.per {
 			// Checked before the tag is even looked at. A frame beyond the msize is
 			// broken framing, whoever it claims to be for. A drain sized by a lie
 			// would park this thread on bytes that are never coming.

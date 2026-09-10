@@ -194,14 +194,15 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 				ok = false
 				break copy_loop
 			}
-			copy_mp.server = mp.server
-			copy_mp.path = mp.path
+			// The key and the member-id counter cross the fork. The counter
+			// matters. A listing cookie stays valid, and the next `bind` in
+			// the child hands out a fresh id. A zeroed counter would read as
+			// exhausted. See `Mount.id`. The members, the count, the lock and
+			// the chain are the child's own, and start fresh.
+			copy_mp^ = mp^
+			copy_mp.members = nil
 			copy_mp.refs = 1
-			// The member-id counter and the members' own ids cross the fork.
-			// A listing cookie stays valid, and the next `bind` in the child
-			// hands out a fresh id rather than reading a zeroed counter as
-			// exhausted. See `Mount.id`.
-			copy_mp.next_member_id = mp.next_member_id
+			copy_mp.lock = {}
 			copy_mp.next = child.mounts[bucket]
 			child.mounts[bucket] = copy_mp
 			child.mount_count += 1
@@ -214,14 +215,11 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 					ok = false
 					break
 				}
+				// The names, the flags and the id come across as they are.
+				// The chan is shared and counted, and the link is the copy's.
+				copy_m^ = m^
 				copy_m.chan = chan_incref(m.chan)
-				copy_m.flags = m.flags
-				copy_m.id = m.id
-				copy_m.source = m.source
-				copy_m.source_len = m.source_len
-				copy_m.target = m.target
-				copy_m.target_len = m.target_len
-				copy_m.mounted = m.mounted
+				copy_m.next = nil
 				if tail == nil {
 					copy_mp.members = copy_m
 				} else {

@@ -444,12 +444,12 @@ unmount :: proc(ns: ^Namespace, source: ^Chan, over: ^Chan) -> Errno #no_bounds_
 	sync.wlock(&ns.lock)
 
 	mp := mount_head(ns, over)
-	if mp != nil {
-		sync.wlock(&mp.lock)
-	}
 	if mp == nil {
-		err = vectra9.EINVAL
-	} else if source == nil {
+		sync.wunlock(&ns.lock)
+		return vectra9.EINVAL
+	}
+	sync.wlock(&mp.lock)
+	if source == nil {
 		removed = mp.members
 		mp.members = nil
 	} else {
@@ -492,9 +492,7 @@ unmount :: proc(ns: ^Namespace, source: ^Chan, over: ^Chan) -> Errno #no_bounds_
 		sync.release(&object_lock, go)
 	}
 
-	if mp != nil {
-		sync.wunlock(&mp.lock)
-	}
+	sync.wunlock(&mp.lock)
 	sync.wunlock(&ns.lock)
 
 	if orphaned {

@@ -34,7 +34,6 @@ Static_Node :: struct {
 }
 
 Static_Tree :: struct {
-	label: string,
 	nodes: []Static_Node,
 
 	// One fid table, shared with every other server in the tree -- see
@@ -99,7 +98,9 @@ static_init :: proc(
 		return false
 	}
 
-	t.label = label
+	// `label` is the caller's name for the tree. Nothing reads it, so
+	// nothing keeps it.
+	_ = label
 	t.nodes = nodes
 	t.dirbuf = make([]u8, dirbuf_size)
 	if !fidtab_init(&t.fids, max_fids) || t.dirbuf == nil {
@@ -167,35 +168,6 @@ step :: proc "contextless" (t: ^Static_Tree, from: i32, name: string) -> i32 #no
 	return find_child(t, from, name)
 }
 
-/*
-static_mutates reports whether a message would change the tree.
-
-Answered by kind, rather than by a fall through to a default. A read-only
-server therefore refuses a write with EROFS, which says `there is such an
-operation and you may not`. EOPNOTSUPP would say the server does not implement
-it, and send a client to look for a different one.
-*/
-@(private = "file")
-static_mutates :: proc "contextless" (k: vectra9.Kind) -> bool {
-	#partial switch k {
-	case .Twrite,
-	     .Tlcreate,
-	     .Tmkdir,
-	     .Tmknod,
-	     .Tsymlink,
-	     .Tlink,
-	     .Trename,
-	     .Trenameat,
-	     .Tunlinkat,
-	     .Tremove,
-	     .Tsetattr,
-	     .Txattrcreate,
-	     .Tfsync:
-		return true
-	}
-	return false
-}
-
 // -- The handler -------------------------------------------------------------
 
 static_handler :: proc "contextless" (
@@ -222,7 +194,15 @@ static_handler :: proc "contextless" (
 	g := sync.acquire(&t.lock)
 	defer sync.release(&t.lock, g)
 
-	if static_mutates(vectra9.kind(request^)) {
+	/*
+	`vectra9.mutates` names every message that would change the tree.
+
+	Answered by kind, rather than by a fall through to a default. A read-only
+	server therefore refuses a write with EROFS, which says `there is such an
+	operation and you may not`. EOPNOTSUPP would say the server does not
+	implement it, and send a client to look for a different one.
+	*/
+	if vectra9.mutates(vectra9.kind(request^)) {
 		reply^ = vectra9.error_reply(vectra9.EROFS)
 		return
 	}
@@ -261,14 +241,10 @@ static_handler :: proc "contextless" (
 		reply^ = vectra9.Rlopen{qid = node_qid(t, node), iounit = 0}
 
 	case vectra9.Tread:
-		node := fidtab_node(&t.fids, m.fid)
-		if node < 0 {
-			reply^ = vectra9.error_reply(vectra9.EBADF)
-			return
-		}
-		if !fidtab_is_open(&t.fids, m.fid) {
-			// 9P forbids a read of a fid before Tlopen.
-			reply^ = vectra9.error_reply(vectra9.EINVAL)
+		// 9P forbids a read of a fid before Tlopen, which is the EINVAL here.
+		node, err := fidtab_open_node(&t.fids, m.fid)
+		if err != OK {
+			reply^ = vectra9.error_reply(err)
 			return
 		}
 		if t.nodes[node].dir {
@@ -278,13 +254,7 @@ static_handler :: proc "contextless" (
 			return
 		}
 		data := transmute([]u8)t.nodes[node].data
-		if m.offset >= u64(len(data)) {
-			reply^ = vectra9.Rread{data = data[:0]}
-			return
-		}
-		start := int(m.offset)
-		end := min(len(data), start + int(m.count))
-		reply^ = vectra9.Rread{data = data[start:end]}
+		reply^ = vectra9.Rread{data = read_slice(data, m.offset, m.count)}
 
 	case vectra9.Treaddir:
 		static_readdir(t, m, reply, buf)
@@ -348,41 +318,20 @@ The two rules a walk has to get right, both easy to miss:
     path runs out partway" by which of those it gets.
 */
 @(private = "file")
-static_walk :: proc "contextless" (t: ^Static_Tree, m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
-	node := fidtab_node(&t.fids, m.fid)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if fidtab_is_open(&t.fids, m.fid) {
-		// 9P forbids a walk on a fid opened for I/O. EBUSY is `Ebadusefd`.
-		reply^ = vectra9.error_reply(vectra9.EBUSY)
-		return
-	}
+static_walk :: proc "contextless" (t: ^Static_Tree, m: vectra9.Twalk, reply: ^vectra9.Msg) {
+	fidtab_walk(&t.fids, m, reply, t, walk_step, walk_qid)
+}
 
-	answer: vectra9.Rwalk
-	cur := node
-	for i in 0 ..< m.count {
-		next := step(t, cur, m.names[i])
-		if next < 0 {
-			if i == 0 {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			break
-		}
-		cur = next
-		answer.qids[answer.count] = node_qid(t, cur)
-		answer.count += 1
-	}
+// walk_step and walk_qid are `step` and `node_qid` in the shape `fidtab_walk`
+// asks for, with the tree behind `ctx`.
+@(private = "file")
+walk_step :: proc "contextless" (ctx: rawptr, from: i32, name: string) -> i32 {
+	return step(cast(^Static_Tree)ctx, from, name)
+}
 
-	if answer.count == m.count {
-		if !fidtab_bind(&t.fids, m.newfid, cur) {
-			reply^ = vectra9.error_reply(vectra9.ENFILE)
-			return
-		}
-	}
-	reply^ = answer
+@(private = "file")
+walk_qid :: proc "contextless" (ctx: rawptr, node: i32) -> vectra9.Qid {
+	return node_qid(cast(^Static_Tree)ctx, node)
 }
 
 @(private = "file")
@@ -392,13 +341,9 @@ static_readdir :: proc "contextless" (
 	reply: ^vectra9.Msg,
 	buf: []u8,
 ) #no_bounds_check {
-	node := fidtab_node(&t.fids, m.fid)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if !fidtab_is_open(&t.fids, m.fid) {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	node, err := fidtab_open_node(&t.fids, m.fid)
+	if err != OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
 	if !t.nodes[node].dir {

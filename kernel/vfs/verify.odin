@@ -27,10 +27,7 @@ Verify_Result :: struct {
 	mounts:        int, // Mount points the test namespace ended up with
 }
 
-@(private = "file")
-check :: proc(r: ^Verify_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
+check :: libodin.check
 
 // -- Fixtures ----------------------------------------------------------------
 
@@ -76,6 +73,37 @@ read_file :: proc(ns: ^Namespace, path: string, buf: []u8) -> (string, Errno) {
 		return "", err
 	}
 	return string(buf[:n]), OK
+}
+
+/*
+bind_fixture attaches a fixture server and binds it over `/dev`. The three
+names are the checks, in order: the attach, the resolve of the mount point,
+and the bind. It hands back the mount point's chan for the caller to close,
+or nil when a check before the bind failed.
+*/
+@(private = "file")
+bind_fixture :: proc(
+	r: ^Verify_Result,
+	ns: ^Namespace,
+	sv: ^Server,
+	order: Mount_Order,
+	attached: string,
+	resolved: string,
+	bound: string,
+) -> ^Chan {
+	src, err := attach(sv)
+	if !check(r, err == OK, attached) {
+		return nil
+	}
+	defer chan_close(src)
+
+	over, oerr := resolve_mount_point(ns, "/dev")
+	if !check(r, oerr == OK, resolved) {
+		return nil
+	}
+
+	check(r, bind(ns, src, over, order) == OK, bound)
+	return over
 }
 
 /*
@@ -256,21 +284,19 @@ verify_paths :: proc(r: ^Verify_Result, ns: ^Namespace, buf: []u8) {
 
 	// Now bind a real server over /dev and read out of it. Two servers are
 	// involved in `/dev/cons` from here on, which is the point.
-	src: ^Chan
-	src, err = attach(&alpha_server)
-	if !check(r, err == OK, "attach alpha") {
+	over := bind_fixture(
+		r,
+		ns,
+		&alpha_server,
+		.Replace,
+		"attach alpha",
+		"resolve /dev as a mount point",
+		"bind alpha over /dev",
+	)
+	if over == nil {
 		return
 	}
-	defer chan_close(src)
-
-	over: ^Chan
-	over, err = resolve_mount_point(ns, "/dev")
-	if !check(r, err == OK, "resolve /dev as a mount point") {
-		return
-	}
-	defer chan_close(over)
-
-	check(r, bind(ns, src, over, .Replace) == OK, "bind alpha over /dev")
+	chan_close(over)
 
 	text: string
 	text, err = read_file(ns, "/dev/cons", buf)
@@ -294,26 +320,27 @@ verify_union :: proc(r: ^Verify_Result, ns: ^Namespace, buf: []u8) {
 		check(r, false, "a bogus device spec must not bind")
 	}
 
-	src, err := attach(&beta_server)
-	if !check(r, err == OK, "attach beta") {
-		return
-	}
-	defer chan_close(src)
-
-	over: ^Chan
-	over, err = resolve_mount_point(ns, "/dev")
-	if !check(r, err == OK, "resolve /dev as a mount point again") {
+	over := bind_fixture(
+		r,
+		ns,
+		&beta_server,
+		.After,
+		"attach beta",
+		"resolve /dev as a mount point again",
+		"bind beta after alpha on /dev",
+	)
+	if over == nil {
 		return
 	}
 	defer chan_close(over)
-
-	check(r, bind(ns, src, over, .After) == OK, "bind beta after alpha on /dev")
 
 	// The second bind must have joined the existing mount point rather than
 	// keying a new one on alpha's root. Two members, one union.
 	mp := mount_head_ref(ns, over)
 	defer mount_point_release(mp)
 	check(r, member_count(mp) == 2, "/dev is a union of two members")
+
+	err: Errno
 
 	/*
 	The chan a union resolves to is its *first* member -- so `stat /dev` describes

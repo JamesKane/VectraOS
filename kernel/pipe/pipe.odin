@@ -39,11 +39,11 @@ runs. See `server_for`.
 package pipe
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:mem"
 import "kernel:sync"
 import "kernel:vfs"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 /*
@@ -287,9 +287,10 @@ read :: proc "contextless" (p: ^Pipe, end: int, buf: []u8) -> int #no_bounds_che
 		g := sync.acquire(&t.lock)
 		if f.used > 0 {
 			n := min(f.used, len(buf))
-			for i in 0 ..< n {
-				buf[i] = f.buf[(f.head + i) % len(f.buf)]
-			}
+			// The run to the end of the ring, then the rest from its start.
+			first := min(n, len(f.buf) - f.head)
+			copy(buf[:first], f.buf[f.head:][:first])
+			copy(buf[first:n], f.buf[:n - first])
 			f.head = (f.head + n) % len(f.buf)
 			f.used -= n
 			sync.release(&t.lock, g)
@@ -337,9 +338,9 @@ write :: proc "contextless" (p: ^Pipe, end: int, data: []u8) -> (n: int, err: vf
 		if room > 0 {
 			k := min(room, len(data) - sent)
 			tail := (f.head + f.used) % len(f.buf)
-			for i in 0 ..< k {
-				f.buf[(tail + i) % len(f.buf)] = data[sent + i]
-			}
+			first := min(k, len(f.buf) - tail)
+			copy(f.buf[tail:][:first], data[sent:][:first])
+			copy(f.buf[:k - first], data[sent + first:][:k - first])
 			f.used += k
 			sent += k
 			sync.release(&t.lock, g)
@@ -469,27 +470,12 @@ open_end :: proc(p: ^Pipe, end: int) -> (^vfs.Chan, vfs.Errno) {
 }
 
 @(private = "file")
-format_aname :: proc "contextless" (buf: []u8, id: i32, end: int) -> int #no_bounds_check {
-	digits: [12]u8
-	d := 0
-	v := u32(id)
-	for {
-		digits[d] = '0' + u8(v % 10)
-		d += 1
-		v /= 10
-		if v == 0 {
-			break
-		}
-	}
-	n := 0
-	for d > 0 {
-		d -= 1
-		buf[n] = digits[d]
-		n += 1
-	}
-	buf[n] = '.'
-	buf[n + 1] = '0' + u8(end)
-	return n + 2
+format_aname :: proc "contextless" (buf: []u8, id: i32, end: int) -> int {
+	sink := libodin.sink_from(buf)
+	libodin.put_uint(&sink, u64(u32(id)))
+	libodin.put_byte(&sink, '.')
+	libodin.put_byte(&sink, '0' + u8(end))
+	return len(libodin.str(&sink))
 }
 
 @(private = "file")
@@ -545,24 +531,20 @@ chan_pipe :: proc "contextless" (c: ^vfs.Chan) -> (^Pipe, int) {
 		return nil, 0
 	}
 
-	g := sync.acquire(&t.lock)
-	defer sync.release(&t.lock, g)
-	p := slot_of(t, node / 2)
-	if p == nil {
+	p, end, ok := end_of(t, node)
+	if !ok {
 		return nil, 0
 	}
-	return p, int(node & 1)
+	return p, end
 }
 
 // -- The handler -------------------------------------------------------------
 
+// pipe_creates is `vectra9.creates` plus a removal. An end is not a name
+// anything may take away.
 @(private = "file")
 pipe_creates :: proc "contextless" (k: vectra9.Kind) -> bool {
-	#partial switch k {
-	case .Tlcreate, .Tmkdir, .Tmknod, .Tsymlink, .Tlink, .Trename, .Trenameat, .Tremove:
-		return true
-	}
-	return false
+	return k == .Tremove || vectra9.creates(k)
 }
 
 /*
@@ -602,14 +584,7 @@ pipe_handler :: proc "contextless" (
 
 	#partial switch m in request^ {
 	case vectra9.Tversion:
-		if m.version != vectra9.VERSION {
-			reply^ = vectra9.Rversion{msize = m.msize, version = "unknown"}
-			return
-		}
-		reply^ = vectra9.Rversion {
-			msize   = min(m.msize, vectra9.MSIZE_DEFAULT),
-			version = vectra9.VERSION,
-		}
+		vectra9.version_reply(m, reply)
 
 	case vectra9.Tattach:
 		id, end, ok := parse_aname(m.aname)
@@ -645,17 +620,16 @@ pipe_handler :: proc "contextless" (
 		reply^ = vectra9.Rlopen{qid = vectra9.Qid{path = u64(node)}, iounit = 0}
 
 	case vectra9.Tread:
-		node := locked_node(t, m.fid)
+		p, end, open, node := locked_end(t, m.fid)
 		if node < 0 {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
 		}
-		if !vfs.fidtab_is_open(&t.fids, m.fid) {
+		if !open {
 			reply^ = vectra9.error_reply(vectra9.EINVAL)
 			return
 		}
-		p, end, ok := end_of(t, node)
-		if !ok {
+		if p == nil {
 			reply^ = vectra9.error_reply(vectra9.ENOENT)
 			return
 		}
@@ -668,13 +642,12 @@ pipe_handler :: proc "contextless" (
 		reply^ = vectra9.Rread{data = buf[:n]}
 
 	case vectra9.Twrite:
-		node := locked_node(t, m.fid)
+		p, end, _, node := locked_end(t, m.fid)
 		if node < 0 {
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
 		}
-		p, end, ok := end_of(t, node)
-		if !ok {
+		if p == nil {
 			reply^ = vectra9.error_reply(vectra9.ENOENT)
 			return
 		}
@@ -712,9 +685,7 @@ pipe_handler :: proc "contextless" (
 			if ok {
 				// `close_end` frees the rings on the last close, which wants
 				// an allocator, and a contextless handler arrives without one.
-				ctx := runtime.default_context()
-				ctx.allocator = mem.allocator()
-				context = ctx
+				context = mem.kernel_context()
 				close_end(p, end)
 			}
 		}
@@ -744,4 +715,19 @@ end_of :: proc "contextless" (t: ^Pipe_Table, node: i32) -> (^Pipe, int, bool) {
 		return nil, 0, false
 	}
 	return p, int(node & 1), true
+}
+
+// locked_end is `locked_node` and `end_of` under one hold, with the open flag
+// read under it too. `node` is -1 for a fid the table never bound, and `p` is
+// nil for an end whose pipe is gone.
+@(private = "file")
+locked_end :: proc "contextless" (t: ^Pipe_Table, fid: vectra9.Fid) -> (p: ^Pipe, end: int, open: bool, node: i32) {
+	g := sync.acquire(&t.lock)
+	defer sync.release(&t.lock, g)
+	node = vfs.fidtab_node(&t.fids, fid)
+	if node < 0 {
+		return nil, 0, false, node
+	}
+	open = vfs.fidtab_is_open(&t.fids, fid)
+	return slot_of(t, node / 2), int(node & 1), open, node
 }

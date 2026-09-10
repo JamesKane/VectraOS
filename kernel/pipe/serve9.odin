@@ -75,10 +75,20 @@ WIRE_ARENA :: vectra9.WIRE_SLOT * (mnt.MAX_REQUESTS + 1)
 NEGOTIATE_TICKS :: 500
 
 // What `io.data` points at: which pipe, and which end the wire drives.
-@(private = "file")
+@(private)
 Wire_End :: struct {
 	p:   ^Pipe,
 	end: int,
+}
+
+// free_wire_build gives back what a build allocated, in whatever state it
+// reached. Every argument may be nil, so an unwind names them all.
+@(private)
+free_wire_build :: proc(we: ^Wire_End, arena: []u8, w: ^mnt.Wire, sv: ^vfs.Server) {
+	free(we)
+	delete(arena)
+	free(w)
+	free(sv)
 }
 
 @(private = "file")
@@ -167,10 +177,7 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	w := new(mnt.Wire)
 	sv := new(vfs.Server)
 	if we == nil || arena == nil || w == nil || sv == nil {
-		free(we)
-		delete(arena)
-		free(w)
-		free(sv)
+		free_wire_build(we, arena, w, sv)
 		clear_building(t, p)
 		return nil
 	}
@@ -178,10 +185,7 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 
 	if !mnt.wire_init(w, mnt.Wire_IO{data = we, read = wire_read, write = wire_write}, arena) ||
 	   !mnt.wire_start(w) {
-		free(we)
-		delete(arena)
-		free(w)
-		free(sv)
+		free_wire_build(we, arena, w, sv)
 		clear_building(t, p)
 		return nil
 	}
@@ -207,10 +211,7 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		p.server9 = nil
 		p.building = false
 		sync.release(&t.lock, g4)
-		free(we)
-		delete(arena)
-		free(w)
-		free(sv)
+		free_wire_build(we, arena, w, sv)
 		return nil
 	}
 

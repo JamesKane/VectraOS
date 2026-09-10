@@ -73,12 +73,11 @@ same operation from inside the kernel.
 */
 package srv
 
-import "base:runtime"
-
 import "kernel:mem"
 import "kernel:pipe"
 import "kernel:sync"
 import "kernel:vfs"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 /*
@@ -311,42 +310,53 @@ post :: proc "contextless" (name: string, server: ^vfs.Server) -> vfs.Errno #no_
 	g := sync.acquire(&t.lock)
 	defer sync.release(&t.lock, g)
 
+	s, err := reserve(t, name)
+	if err != vfs.OK {
+		return err
+	}
+	s.server = server
+	t.posts += 1
+	return vfs.OK
+}
+
+/*
+reserve takes a free slot for a name: a fresh id, the name copied in, and
+the count bumped. Nothing serves the entry yet, and the caller fills in what
+does. EEXIST on a name already posted, ENOSPC on a full table. Caller holds
+`lock`.
+*/
+@(private = "file")
+reserve :: proc "contextless" (t: ^Srv_Tree, name: string) -> (^Service, vfs.Errno) #no_bounds_check {
+	if slot_named(t, name) >= 0 {
+		return nil, vectra9.EEXIST
+	}
 	free := -1
 	for i in 0 ..< MAX_SERVICES {
 		if !live(&t.table[i]) {
-			if free < 0 {
-				free = i
-			}
-			continue
-		}
-		if name_of(&t.table[i]) == name {
-			return vectra9.EEXIST
+			free = i
+			break
 		}
 	}
 	if free < 0 {
-		return vectra9.ENOSPC
+		return nil, vectra9.ENOSPC
 	}
 	if t.next_id <= 0 {
 		// The counter ran out rather than wrapped. A wrap would hand a new
 		// service the identity of an old one, which is exactly the aliasing the
 		// id exists to prevent.
-		return vectra9.ENOSPC
+		return nil, vectra9.ENOSPC
 	}
 
 	s := &t.table[free]
 	s^ = Service {
-		server = server,
-		id     = t.next_id,
-		len    = len(name),
+		id  = t.next_id,
+		len = len(name),
 	}
-	for i in 0 ..< len(name) {
-		s.name[i] = name[i]
-	}
+	copy(s.name[:], name)
 
 	t.next_id += 1
 	t.count += 1
-	t.posts += 1
-	return vfs.OK
+	return s, vfs.OK
 }
 
 /*
@@ -367,34 +377,11 @@ post_chan :: proc(name: string, c: ^vfs.Chan) -> vfs.Errno #no_bounds_check {
 	g := sync.acquire(&t.lock)
 	defer sync.release(&t.lock, g)
 
-	free := -1
-	for i in 0 ..< MAX_SERVICES {
-		if !live(&t.table[i]) {
-			if free < 0 {
-				free = i
-			}
-			continue
-		}
-		if name_of(&t.table[i]) == name {
-			return vectra9.EEXIST
-		}
+	s, err := reserve(t, name)
+	if err != vfs.OK {
+		return err
 	}
-	if free < 0 || t.next_id <= 0 {
-		return vectra9.ENOSPC
-	}
-
-	s := &t.table[free]
-	s^ = Service {
-		endpoint = vfs.chan_incref(c),
-		id       = t.next_id,
-		len      = len(name),
-	}
-	for i in 0 ..< len(name) {
-		s.name[i] = name[i]
-	}
-
-	t.next_id += 1
-	t.count += 1
+	s.endpoint = vfs.chan_incref(c)
 	t.posts += 1
 	return vfs.OK
 }
@@ -415,10 +402,7 @@ remove :: proc(name: string) -> vfs.Errno #no_bounds_check {
 	found := false
 	for i in 0 ..< MAX_SERVICES {
 		if live(&t.table[i]) && name_of(&t.table[i]) == name {
-			retired = t.table[i].endpoint
-			t.table[i] = Service{}
-			t.count -= 1
-			t.removes += 1
+			retired = retire_slot(t, i)
 			found = true
 			break
 		}
@@ -439,12 +423,30 @@ remove :: proc(name: string) -> vfs.Errno #no_bounds_check {
 		if staked == nil {
 			staked = pipe.chan_unpost(retired)
 		}
-		vfs.chan_close(retired)
-		if staked != nil {
-			vfs.server_unpin(staked)
-		}
+		retire_endpoint(retired, staked)
 	}
 	return found ? vfs.OK : vectra9.ENOENT
+}
+
+// retire_slot empties a live slot and hands back the chan it held, for the
+// caller to close where a message is legal. Caller holds `lock`.
+@(private = "file")
+retire_slot :: proc "contextless" (t: ^Srv_Tree, i: int) -> ^vfs.Chan #no_bounds_check {
+	retired := t.table[i].endpoint
+	t.table[i] = Service{}
+	t.count -= 1
+	t.removes += 1
+	return retired
+}
+
+// retire_endpoint closes a removed entry's chan, then drops the name's stake
+// on the server behind it, if there was one. The order is `unpost`'s rule.
+@(private = "file")
+retire_endpoint :: proc(c: ^vfs.Chan, staked: ^vfs.Server) {
+	vfs.chan_close(c)
+	if staked != nil {
+		vfs.server_unpin(staked)
+	}
 }
 
 // lookup finds a posted service by name. Nil when nothing has that name, and
@@ -692,11 +694,7 @@ permission rather than an absence.
 */
 @(private = "file")
 srv_creates :: proc "contextless" (k: vectra9.Kind) -> bool {
-	#partial switch k {
-	case .Tmkdir, .Tmknod, .Tsymlink, .Tlink, .Trename, .Trenameat:
-		return true
-	}
-	return false
+	return k != .Tlcreate && vectra9.creates(k)
 }
 
 @(private = "file")
@@ -723,9 +721,7 @@ srv_handler :: proc "contextless" (
 
 	// A context, because two arms below touch chans, and chan bookkeeping is
 	// context code. Built once here rather than in each arm.
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 
 	retired := srv_dispatch(t, request, reply, buf)
 	if retired != nil {
@@ -733,11 +729,7 @@ srv_handler :: proc "contextless" (
 		// clunk a fid and a clunk is a message. The service behind the chan
 		// does not stop with the name -- but the name's stake on a wired
 		// connection goes with it, after this reference. See `remove`.
-		staked := pipe.unpost(retired)
-		vfs.chan_close(retired)
-		if staked != nil {
-			vfs.server_unpin(staked)
-		}
+		retire_endpoint(retired, pipe.unpost(retired))
 	}
 }
 
@@ -795,31 +787,11 @@ srv_dispatch :: proc(
 			reply^ = vectra9.error_reply(vectra9.EINVAL)
 			return
 		}
-		if slot_named(t, m.name) >= 0 {
-			reply^ = vectra9.error_reply(vectra9.EEXIST)
+		s, err := reserve(t, m.name)
+		if err != vfs.OK {
+			reply^ = vectra9.error_reply(err)
 			return
 		}
-		free := -1
-		for i in 0 ..< MAX_SERVICES {
-			if !live(&t.table[i]) {
-				free = i
-				break
-			}
-		}
-		if free < 0 || t.next_id <= 0 {
-			reply^ = vectra9.error_reply(vectra9.ENOSPC)
-			return
-		}
-		s := &t.table[free]
-		s^ = Service {
-			id  = t.next_id,
-			len = len(m.name),
-		}
-		for i in 0 ..< len(m.name) {
-			s.name[i] = m.name[i]
-		}
-		t.next_id += 1
-		t.count += 1
 		_ = vfs.fidtab_bind(&t.fids, m.fid, s.id)
 		reply^ = vectra9.Rlcreate{qid = qid_of_id(s.id), iounit = 0}
 
@@ -923,10 +895,7 @@ srv_dispatch :: proc(
 			reply^ = vectra9.error_reply(vectra9.ENOENT)
 			return
 		}
-		retired = t.table[i].endpoint
-		t.table[i] = Service{}
-		t.count -= 1
-		t.removes += 1
+		retired = retire_slot(t, i)
 		reply^ = vectra9.Rremove{}
 
 	case vectra9.Tgetattr:
@@ -1004,14 +973,8 @@ parse_fd :: proc "contextless" (data: []u8) -> (fd: int, ok: bool) #no_bounds_ch
 	if end == 0 || end > 5 {
 		return 0, false
 	}
-	n := 0
-	for i in 0 ..< end {
-		if data[i] < '0' || data[i] > '9' {
-			return 0, false
-		}
-		n = n * 10 + int(data[i] - '0')
-	}
-	return n, true
+	n, digits := libodin.parse_uint(string(data[:end]))
+	return int(n), digits
 }
 
 /*
@@ -1023,46 +986,23 @@ partial walk binds nothing, and a failure at element zero is an error while a
 failure later is a short Rwalk.
 */
 @(private = "file")
-srv_walk :: proc "contextless" (t: ^Srv_Tree, m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
-	id := vfs.fidtab_node(&t.fids, m.fid)
-	if id < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if vfs.fidtab_is_open(&t.fids, m.fid) {
-		reply^ = vectra9.error_reply(vectra9.EBUSY)
-		return
-	}
+srv_walk :: proc "contextless" (t: ^Srv_Tree, m: vectra9.Twalk, reply: ^vectra9.Msg) {
+	vfs.fidtab_walk(&t.fids, m, reply, t, step, walk_qid)
+}
 
-	answer: vectra9.Rwalk
-	cur := id
-	for i in 0 ..< m.count {
-		next := step(t, cur, m.names[i])
-		if next < 0 {
-			if i == 0 {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			break
-		}
-		cur = next
-		answer.qids[answer.count] = qid_of_id(cur)
-		answer.count += 1
-	}
-
-	if answer.count == m.count {
-		if !vfs.fidtab_bind(&t.fids, m.newfid, cur) {
-			reply^ = vectra9.error_reply(vectra9.ENFILE)
-			return
-		}
-	}
-	reply^ = answer
+// walk_qid is `qid_of_id` in the shape `fidtab_walk` asks for.
+@(private = "file")
+walk_qid :: proc "contextless" (ctx: rawptr, node: i32) -> vectra9.Qid {
+	_ = ctx
+	return qid_of_id(node)
 }
 
 // step walks one name. Returns the id, or -1 for `no such name`. An id of zero
 // is the root rather than a failure, which is why the failure is -1 and not it.
+// `ctx` is the tree, as `fidtab_walk` hands it back.
 @(private = "file")
-step :: proc "contextless" (t: ^Srv_Tree, from: i32, name: string) -> i32 #no_bounds_check {
+step :: proc "contextless" (ctx: rawptr, from: i32, name: string) -> i32 #no_bounds_check {
+	t := cast(^Srv_Tree)ctx
 	switch name {
 	case ".":
 		return from
@@ -1107,27 +1047,16 @@ report :: proc "contextless" (t: ^Srv_Tree, id: i32, out: []u8) -> int #no_bound
 	}
 	sv := served_by(&t.table[i])
 
-	n := 0
-	put :: proc "contextless" (out: []u8, n: int, text: string) -> int #no_bounds_check {
-		n := n
-		for j in 0 ..< len(text) {
-			if n >= len(out) {
-				return n
-			}
-			out[n] = text[j]
-			n += 1
-		}
-		return n
-	}
-
+	sink := libodin.sink_from(out)
 	if sv == nil {
 		// Created and not yet written. Saying so is more use to a person at
 		// a shell than any answer built from fields that are not there.
-		return put(out, n, "pending\n")
+		libodin.put_str(&sink, "pending\n")
+		return len(libodin.str(&sink))
 	}
-	n = put(out, n, sv.name)
-	n = put(out, n, vfs.server_interruptible(sv) ? " workers\n" : " direct\n")
-	return n
+	libodin.put_str(&sink, sv.name)
+	libodin.put_str(&sink, vfs.server_interruptible(sv) ? " workers\n" : " direct\n")
+	return len(libodin.str(&sink))
 }
 
 // report_len is what `report` would write, for the size in an Rgetattr. Built
@@ -1146,13 +1075,9 @@ srv_read :: proc "contextless" (
 	reply: ^vectra9.Msg,
 	buf: []u8,
 ) #no_bounds_check {
-	id := vfs.fidtab_node(&t.fids, m.fid)
-	if id < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if !vfs.fidtab_is_open(&t.fids, m.fid) {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	id, err := vfs.fidtab_open_node(&t.fids, m.fid)
+	if err != vfs.OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
 	if id == ROOT_ID {
@@ -1168,15 +1093,8 @@ srv_read :: proc "contextless" (
 
 	line: [MAX_NAME + 16]u8
 	n := report(t, id, line[:])
-	if m.offset >= u64(n) {
-		reply^ = vectra9.Rread{data = nil}
-		return
-	}
-
-	start := int(m.offset)
-	end := min(n, start + min(len(buf), int(m.count)))
-	copy(buf[:end - start], line[start:end])
-	reply^ = vectra9.Rread{data = buf[:end - start]}
+	k := copy(buf, vfs.read_slice(line[:n], m.offset, m.count))
+	reply^ = vectra9.Rread{data = buf[:k]}
 }
 
 /*
@@ -1206,13 +1124,9 @@ srv_readdir :: proc "contextless" (
 	reply: ^vectra9.Msg,
 	buf: []u8,
 ) #no_bounds_check {
-	id := vfs.fidtab_node(&t.fids, m.fid)
-	if id < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if !vfs.fidtab_is_open(&t.fids, m.fid) {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	id, err := vfs.fidtab_open_node(&t.fids, m.fid)
+	if err != vfs.OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
 	if id != ROOT_ID {

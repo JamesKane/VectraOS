@@ -26,8 +26,6 @@ build reclaims it.
 */
 package pipe
 
-import "base:runtime"
-
 import "kernel:mem"
 import "kernel:mnt"
 import "kernel:sync"
@@ -51,9 +49,7 @@ chan_wires: [MAX_CHAN_WIRES]Chan_Wire
 @(private = "file")
 chan_wire_read :: proc "contextless" (data: rawptr, buf: []u8) -> int {
 	cw := cast(^Chan_Wire)data
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 	n, err := vfs.chan_read(cw.c, 0, buf)
 	if err != vfs.OK || n <= 0 {
 		return 0
@@ -64,9 +60,7 @@ chan_wire_read :: proc "contextless" (data: rawptr, buf: []u8) -> int {
 @(private = "file")
 chan_wire_write :: proc "contextless" (data: rawptr, frame: []u8) -> bool {
 	cw := cast(^Chan_Wire)data
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 	// A stream may take a frame in pieces, so this writes until it has.
 	at := 0
 	for at < len(frame) {
@@ -129,9 +123,7 @@ chan_server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	w := new(mnt.Wire)
 	sv := new(vfs.Server)
 	if arena == nil || w == nil || sv == nil {
-		delete(arena)
-		free(w)
-		free(sv)
+		free_wire_build(nil, arena, w, sv)
 		return nil
 	}
 	cw^ = Chan_Wire{used = true, c = vfs.chan_incref(c), w = w, sv = sv, arena = arena}
@@ -139,9 +131,7 @@ chan_server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	   !mnt.wire_start(w) {
 		vfs.chan_close(cw.c)
 		cw^ = {}
-		delete(arena)
-		free(w)
-		free(sv)
+		free_wire_build(nil, arena, w, sv)
 		return nil
 	}
 	sv.name = "stream"
@@ -213,8 +203,6 @@ chan_wire_retire :: proc(cw: ^Chan_Wire) {
 
 @(private = "file")
 chan_wire_free :: proc(cw: ^Chan_Wire) {
-	delete(cw.arena)
-	free(cw.w)
-	free(cw.sv)
+	free_wire_build(nil, cw.arena, cw.w, cw.sv)
 	cw^ = {}
 }

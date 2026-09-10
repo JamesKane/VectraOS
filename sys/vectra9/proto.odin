@@ -253,13 +253,6 @@ kind_name :: proc "contextless" (k: Kind) -> string {
 	return "unknown"
 }
 
-// is_request reports whether a kind is a T-message. Odd-numbered kinds are
-// replies throughout 9P, with Rlerror at 7 the only reply that answers any
-// request rather than its own.
-is_request :: proc "contextless" (kind: Kind) -> bool {
-	return u8(kind) & 1 == 0
-}
-
 // -- Session establishment ---------------------------------------------------
 
 Tversion :: struct {
@@ -731,6 +724,17 @@ creates :: proc "contextless" (k: Kind) -> bool {
 		return true
 	}
 	return false
+}
+
+// mutates reports whether a message kind would change a file or its tree.
+// That is everything `creates` names, plus a write, a removal, an attribute
+// change and a sync. A read-only server refuses all of them with one guard.
+mutates :: proc "contextless" (k: Kind) -> bool {
+	#partial switch k {
+	case .Twrite, .Tunlinkat, .Tremove, .Tsetattr, .Txattrcreate, .Tfsync:
+		return true
+	}
+	return creates(k)
 }
 
 /*

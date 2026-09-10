@@ -66,9 +66,7 @@ Chan :: struct {
 O_RDONLY :: u32(0o0)
 O_WRONLY :: u32(0o1)
 O_RDWR :: u32(0o2)
-O_CREAT :: u32(0o100)
 O_TRUNC :: u32(0o1000)
-O_APPEND :: u32(0o2000)
 O_DIRECTORY :: u32(0o200000)
 
 @(private)
@@ -141,11 +139,7 @@ chan_close :: proc(c: ^Chan) {
 			c.union_head = nil
 		}
 
-		if c.fid != vectra9.NOFID {
-			request := vectra9.Msg(vectra9.Tclunk{fid = c.fid})
-			reply: vectra9.Msg
-			_ = rpc(c.server, &request, &reply)
-		}
+		clunk_fid(c.server, c.fid)
 
 		// Loop rather than recurse: mount nesting is unbounded and this runs
 		// on a 16 KiB fault stack's worth of assumptions about depth.
@@ -160,14 +154,7 @@ chan_close :: proc(c: ^Chan) {
 		because a release tears a connection down, and that parks.
 		*/
 		if sv != nil {
-			g2 := sync.acquire(&object_lock)
-			sv.chans -= 1
-			fire := server_should_release(sv)
-			release := sv.release
-			sync.release(&object_lock, g2)
-			if fire {
-				release(sv)
-			}
+			server_drop(sv, &sv.chans)
 		}
 		c = parent
 	}
@@ -214,24 +201,7 @@ A short read is not an error and not the end of the file. Zero bytes is the end
 of the file.
 */
 chan_read :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
-	if c == nil {
-		return 0, vectra9.EBADF
-	}
-	if len(buf) == 0 {
-		return 0, OK
-	}
-
-	count := u32(min(len(buf), max_payload(c.server)))
-	request := vectra9.Msg(vectra9.Tread{fid = c.fid, offset = offset, count = count})
-	reply: vectra9.Msg
-	if e := rpc(c.server, &request, &reply, buf); e != OK {
-		return 0, e
-	}
-	answer, ok := reply.(vectra9.Rread)
-	if !ok {
-		return 0, vectra9.EPROTO
-	}
-	return take_payload(buf, answer.data), OK
+	return send_read(c, offset, buf, 0, false)
 }
 
 /*
@@ -248,6 +218,14 @@ read with a number attached. `chan_interruptible` reports which a caller has,
 before it waits rather than after.
 */
 chan_read_for :: proc(c: ^Chan, offset: u64, buf: []u8, ticks: u64) -> (n: int, err: Errno) {
+	return send_read(c, offset, buf, ticks, true)
+}
+
+// send_read is the one Tread both reads send. `timed` picks `rpc_for` over
+// `rpc`, because a deadline of zero on a worker-backed server is a flush at
+// once and not the plain call.
+@(private = "file")
+send_read :: proc(c: ^Chan, offset: u64, buf: []u8, ticks: u64, timed: bool) -> (n: int, err: Errno) {
 	if c == nil {
 		return 0, vectra9.EBADF
 	}
@@ -258,7 +236,8 @@ chan_read_for :: proc(c: ^Chan, offset: u64, buf: []u8, ticks: u64) -> (n: int, 
 	count := u32(min(len(buf), max_payload(c.server)))
 	request := vectra9.Msg(vectra9.Tread{fid = c.fid, offset = offset, count = count})
 	reply: vectra9.Msg
-	if e := rpc_for(c.server, &request, &reply, ticks, buf); e != OK {
+	e := timed ? rpc_for(c.server, &request, &reply, ticks, buf) : rpc(c.server, &request, &reply, buf)
+	if e != OK {
 		return 0, e
 	}
 	answer, ok := reply.(vectra9.Rread)
@@ -429,13 +408,10 @@ chan_rename :: proc(c: ^Chan, d: ^Chan, name: string) -> Errno {
 	return OK
 }
 
-// The Tgetattr request masks a client can ask for. `BASIC` is what stat(2)
+// The Tgetattr request mask a client asks for. `BASIC` is what stat(2)
 // needs, and what every Vectra server answers. A request for more is legal,
 // and gets whatever the server chose to fill in. `valid` reports which that
 // was.
-GETATTR_MODE :: u64(0x0000_0001)
-GETATTR_NLINK :: u64(0x0000_0004)
-GETATTR_SIZE :: u64(0x0000_0200)
 GETATTR_BASIC :: u64(0x0000_07FF)
 
 chan_stat :: proc(c: ^Chan, mask: u64 = GETATTR_BASIC) -> (attr: vectra9.Rgetattr, err: Errno) {

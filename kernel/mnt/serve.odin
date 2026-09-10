@@ -29,7 +29,6 @@ Both branches are under `Conn.lock`, which is what makes "still running" and
 package mnt
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:mem"
 import "kernel:sched"
@@ -114,9 +113,7 @@ worker :: proc "contextless" (arg: rawptr) {
 
 	// A handler may allocate. Nothing in this loop does, but the handler is
 	// somebody else's code and it runs on this stack.
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 
 	guard := sync.acquire(&c.lock)
 	c.live += 1

@@ -166,8 +166,16 @@ server_unpin :: proc(sv: ^Server) {
 	if sv == nil {
 		return
 	}
+	server_drop(sv, &sv.pins)
+}
+
+// server_drop takes one stake off a server, a chan's or a pin's, and fires
+// the release when nothing else holds it. The hook runs outside the lock,
+// because a release tears a connection down, and that parks.
+@(private)
+server_drop :: proc(sv: ^Server, count: ^int) {
 	g := sync.acquire(&object_lock)
-	sv.pins -= 1
+	count^ -= 1
 	fire := server_should_release(sv)
 	release := sv.release
 	sync.release(&object_lock, g)

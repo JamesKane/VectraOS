@@ -287,47 +287,36 @@ walk1_ex :: proc(ns: ^Namespace, c: ^Chan, name: string, cross: bool) -> (^Chan,
 	// comes from whichever member provided it. A search of the others for its
 	// children would join trees the namespace never joined.
 	mp := c.union_head
+	if mp != nil {
+		/*
+		The union search, under the mount point's read lock for the whole of it.
+
+		This is `walk()` in Plan 9's `chan.c`: `rlock(&mh->lock)`, one walk per
+		member, `runlock` after. The lock sleeps, so a message under it is
+		ordinary. A `bind` that wants the list waits for this search to end
+		rather than shifting members under it. A counter used to say whether the
+		list moved, and the search ran again if it did. The lock is the
+		design that counter stood in for.
+
+		The lock goes before `cross_mounts`, which takes other locks of its own.
+		Holding this one across it would nest read locks on two mount points. A
+		writer queued on the second would then wait for a reader that is waiting
+		on the first.
+
+		ENOENT until something more specific happens. A member that answers EACCES
+		told us something worth reporting. A member that simply does not have the
+		file told us nothing, and must not stop the search.
+		*/
+		sync.rlock(&mp.lock)
+		if member_count(mp) == 0 {
+			// A dissolved union. The chan walks as one never in a union.
+			sync.runlock(&mp.lock)
+			mp = nil
+		}
+	}
 	if mp == nil {
 		nc, err := server_walk1(c, name)
-		if err != OK {
-			return nil, err
-		}
-		if !cross {
-			return nc, OK
-		}
-		return cross_mounts(ns, nc)
-	}
-
-	/*
-	The union search, under the mount point's read lock for the whole of it.
-
-	This is `walk()` in Plan 9's `chan.c`: `rlock(&mh->lock)`, one walk per
-	member, `runlock` after. The lock sleeps, so a message under it is
-	ordinary. A `bind` that wants the list waits for this search to end
-	rather than shifting members under it. A counter used to say whether the
-	list moved, and the search ran again if it did. The lock is the
-	design that counter stood in for.
-
-	The lock goes before `cross_mounts`, which takes other locks of its own.
-	Holding this one across it would nest read locks on two mount points. A
-	writer queued on the second would then wait for a reader that is waiting
-	on the first.
-
-	ENOENT until something more specific happens. A member that answers EACCES
-	told us something worth reporting. A member that simply does not have the
-	file told us nothing, and must not stop the search.
-	*/
-	sync.rlock(&mp.lock)
-	if member_count(mp) == 0 {
-		sync.runlock(&mp.lock)
-		nc, err := server_walk1(c, name)
-		if err != OK {
-			return nil, err
-		}
-		if !cross {
-			return nc, OK
-		}
-		return cross_mounts(ns, nc)
+		return step_done(ns, nc, err, cross)
 	}
 
 	last := Errno(vectra9.ENOENT)
@@ -344,10 +333,7 @@ walk1_ex :: proc(ns: ^Namespace, c: ^Chan, name: string, cross: bool) -> (^Chan,
 		chan_close(member)
 		if err == OK {
 			sync.runlock(&mp.lock)
-			if !cross {
-				return nc, OK
-			}
-			return cross_mounts(ns, nc)
+			return step_done(ns, nc, OK, cross)
 		}
 		if err != vectra9.ENOENT {
 			last = err
@@ -355,6 +341,19 @@ walk1_ex :: proc(ns: ^Namespace, c: ^Chan, name: string, cross: bool) -> (^Chan,
 	}
 	sync.runlock(&mp.lock)
 	return nil, last
+}
+
+// step_done ends one walk step: the server's answer as it is, or crossed into
+// whatever is mounted on it when the caller looks through mounts.
+@(private = "file")
+step_done :: proc(ns: ^Namespace, nc: ^Chan, err: Errno, cross: bool) -> (^Chan, Errno) {
+	if err != OK {
+		return nil, err
+	}
+	if !cross {
+		return nc, OK
+	}
+	return cross_mounts(ns, nc)
 }
 
 /*

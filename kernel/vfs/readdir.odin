@@ -80,6 +80,7 @@ readdir :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 }
 
 // readdir_one is the ordinary case: one server, its own cookies, no rewriting.
+// It is also one member's pass of a union, which `union_pass` restamps after.
 @(private)
 readdir_one :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
 	count := u32(min(len(buf), max_payload(c.server)))
@@ -222,22 +223,10 @@ union_pass :: proc(
 	}
 	landing := vectra9.free_space(out)
 
-	count := u32(min(room, max_payload(src.server)))
-	request := vectra9.Msg(
-		vectra9.Treaddir{fid = src.fid, offset = member_offset, count = count},
-	)
-	reply: vectra9.Msg
-	if e := rpc(src.server, &request, &reply, landing); e != OK {
+	n, e := readdir_one(src, member_offset, landing)
+	if e != OK {
 		return 0, e
 	}
-	answer, ok := reply.(vectra9.Rreaddir)
-	if !ok {
-		return 0, vectra9.EPROTO
-	}
-	if len(answer.data) > room {
-		return 0, vectra9.EPROTO
-	}
-	n := take_payload(landing, answer.data)
 
 	/*
 	Every entry is walked before any of it is kept, and a malformed one fails

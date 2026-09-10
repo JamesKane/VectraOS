@@ -32,10 +32,7 @@ Verify_Result :: struct {
 	parked:        int, // Helper threads observed parked before their wake
 }
 
-@(private = "file")
-check :: proc "contextless" (r: ^Verify_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
+check :: libodin.check
 
 // How long a bounded wait spins before calling the condition failed. Fifty
 // ticks is generous for a wake that should take one.
@@ -44,13 +41,7 @@ PATIENCE :: 50
 
 @(private = "file")
 wait_for :: proc "contextless" (flag: ^bool) -> bool {
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(flag) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return intrinsics.volatile_load(flag)
+	return sync.await_flag(flag, PATIENCE)
 }
 
 /*
@@ -87,6 +78,35 @@ write_helper :: proc "contextless" (arg: rawptr) {
 	intrinsics.volatile_store(&x.entered, true)
 	x.got, x.err = write(x.p, x.end, x.data)
 	intrinsics.volatile_store(&x.done, true)
+}
+
+/*
+expect_parked starts a helper on a transfer that has nothing to do yet, and
+checks that it parks. The three names are the checks, in order: the thread
+started, it reached its call, and the call held it. Reports whether the
+thread started, so the caller knows whether there is a wake to check.
+*/
+@(private = "file")
+expect_parked :: proc(
+	r: ^Verify_Result,
+	name: string,
+	helper: proc "contextless" (arg: rawptr),
+	x: ^Xfer,
+	started: string,
+	reached: string,
+	held: string,
+) -> bool {
+	if !check(r, sched.spawn(name, helper, x) != nil, started) {
+		return false
+	}
+	check(r, wait_for(&x.entered), reached)
+	sync.delay(3)
+	still := !intrinsics.volatile_load(&x.done)
+	check(r, still, held)
+	if still {
+		r.parked += 1
+	}
+	return true
 }
 
 verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
@@ -155,14 +175,15 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 		end  = 1,
 		data = buf[:16],
 	}
-	if check(&r, sched.spawn("pipe-reader", read_helper, &rx) != nil, "a reader thread starts") {
-		check(&r, wait_for(&rx.entered), "and reaches its read")
-		sync.delay(3)
-		still := !intrinsics.volatile_load(&rx.done)
-		check(&r, still, "an empty pipe holds the reader")
-		if still {
-			r.parked += 1
-		}
+	if expect_parked(
+		&r,
+		"pipe-reader",
+		read_helper,
+		&rx,
+		"a reader thread starts",
+		"and reaches its read",
+		"an empty pipe holds the reader",
+	) {
 		n, werr = write(p, 0, transmute([]u8)string("wake"))
 		check(&r, n == 4 && werr == vfs.OK, "the write goes through")
 		check(&r, wait_for(&rx.done), "and the reader comes back")
@@ -179,14 +200,15 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 		end  = 0,
 		data = buf[RING_SIZE:][:8],
 	}
-	if check(&r, sched.spawn("pipe-writer", write_helper, &wx) != nil, "a writer thread starts") {
-		check(&r, wait_for(&wx.entered), "and reaches its write")
-		sync.delay(3)
-		still := !intrinsics.volatile_load(&wx.done)
-		check(&r, still, "a full ring holds the writer")
-		if still {
-			r.parked += 1
-		}
+	if expect_parked(
+		&r,
+		"pipe-writer",
+		write_helper,
+		&wx,
+		"a writer thread starts",
+		"and reaches its write",
+		"a full ring holds the writer",
+	) {
 		drained := 0
 		for drained < RING_SIZE + 8 {
 			k := read(p, 1, buf[:256])
