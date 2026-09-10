@@ -84,7 +84,20 @@ Class :: enum u8 {
 	String, // A recessed field for typed text, stretches wide
 	Group, // A parent that lays its children along one axis
 	List, // Rows of text in a well, one selected, scrolled by its top row
+	Icons, // Cells in a well, a picture and a name each, one selected, scrolled by rows
 }
+
+// The kinds an icon is, `docs/WORKBENCH.md` section 6: a directory is a
+// drawer, a program is a tool, anything else is a project. Each kind has one
+// picture, drawn in the chassis's vocabulary.
+ICON_DRAWER :: u8(0)
+ICON_TOOL :: u8(1)
+ICON_PROJECT :: u8(2)
+
+// An icon's cell: the picture above, the name under it, in a grid the well's
+// width divides into.
+ICON_W :: 96
+ICON_H :: 64
 
 /*
 One node. A caller builds these, links them with `add`, and reads back the
@@ -114,11 +127,19 @@ Object :: struct {
 	// Widget state a caller reads and writes.
 	on:     bool, // Checkmark: lit or dark
 	id:     int, // A caller's own tag, returned in events
-	// A list's rows, which the caller owns, and how it shows them.
+	// A list's rows, which the caller owns, and how it shows them. An
+	// icon grid's rows are its names, and `kinds` says the picture each
+	// wears. `top` is then its first row of cells.
 	rows:     []string,
+	kinds:    []u8,
 	top:      int, // The first row drawn
 	sel:      int, // The selected row, or -1
 	min_rows: int, // The rows `fit` asks room for
+
+	// A string gadget's text, in storage the caller owns, and how much of
+	// it is written. `string_key` edits it.
+	edit:     []u8,
+	edit_n:   int,
 }
 
 // -- Building a tree ---------------------------------------------------------
@@ -181,6 +202,83 @@ list :: proc "contextless" (min_rows: int) -> ^Object {
 }
 
 // list_visible answers how many rows a laid-out list shows.
+// icons makes an icon grid that asks room for `min_rows` rows of cells. The
+// caller fills `rows` with the names and `kinds` with a kind per name.
+icons :: proc "contextless" (min_rows: int) -> ^Object {
+	o := obj(.Icons)
+	if o != nil {
+		o.min_rows = min_rows
+		o.sel = -1
+	}
+	return o
+}
+
+// icons_cols is how many cells a row of the grid holds at its laid width.
+icons_cols :: proc "contextless" (o: ^Object, t: ^Theme) -> int {
+	if o == nil {
+		return 0
+	}
+	return max((o.w - 2 * t.well) / ICON_W, 1)
+}
+
+// icons_visible is how many rows of cells the well shows.
+icons_visible :: proc "contextless" (o: ^Object, t: ^Theme) -> int {
+	if o == nil {
+		return 0
+	}
+	return max((o.h - 2 * t.well) / ICON_H, 0)
+}
+
+// icons_cell_at answers the icon under a point, or -1 for the well between.
+icons_cell_at :: proc "contextless" (o: ^Object, x: int, y: int, t: ^Theme) -> int {
+	if o == nil || x < o.x + t.well || y < o.y + t.well {
+		return -1
+	}
+	col := (x - o.x - t.well) / ICON_W
+	row := (y - o.y - t.well) / ICON_H
+	cols := icons_cols(o, t)
+	if col >= cols || row >= icons_visible(o, t) {
+		return -1
+	}
+	i := (o.top + row) * cols + col
+	if i < 0 || i >= len(o.rows) {
+		return -1
+	}
+	return i
+}
+
+// field_text answers what a string gadget holds.
+field_text :: proc "contextless" (o: ^Object) -> string {
+	if o == nil || o.edit == nil {
+		return ""
+	}
+	return string(o.edit[:o.edit_n])
+}
+
+// string_key edits a string gadget by one key: a printable byte is appended,
+// a backspace or delete takes the last one off. Answers whether the text
+// changed, so a caller knows to repaint. Return and Escape are not its to
+// take, and a field with no storage takes nothing.
+string_key :: proc "contextless" (o: ^Object, k: u8) -> bool #no_bounds_check {
+	if o == nil || o.class != .String || o.edit == nil {
+		return false
+	}
+	switch k {
+	case 0x08, 0x7F:
+		if o.edit_n > 0 {
+			o.edit_n -= 1
+			return true
+		}
+	case 0x20 ..= 0x7E:
+		if o.edit_n < len(o.edit) {
+			o.edit[o.edit_n] = k
+			o.edit_n += 1
+			return true
+		}
+	}
+	return false
+}
+
 list_visible :: proc "contextless" (o: ^Object, t: ^Theme) -> int {
 	if o == nil {
 		return 0
@@ -328,6 +426,11 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 		o.minw = 8 * FONT_W + 2 * t.well
 		o.maxw = BIG
 		o.minh = max(o.min_rows, 1) * FONT_H + 2 * t.well
+		o.maxh = BIG
+	case .Icons:
+		o.minw = 2 * ICON_W + 2 * t.well
+		o.maxw = BIG
+		o.minh = max(o.min_rows, 1) * ICON_H + 2 * t.well
 		o.maxh = BIG
 	case .Group:
 		// Recurse first, then sum along the axis and take the widest across it.

@@ -198,12 +198,17 @@ font_prepare :: proc "contextless" (
 		if _, ok := font_for(f, t.ink, t.face, scratch, sink); !ok {
 			return false
 		}
-	case .List:
+	case .List, .Icons:
 		// Rows on the ground, and the selected row on a bar of the face.
 		if _, ok := font_for(f, t.ink, t.ground, scratch, sink); !ok {
 			return false
 		}
 		if _, ok := font_for(f, t.ink, t.face, scratch, sink); !ok {
+			return false
+		}
+	case .String:
+		// The text typed, on the well's ground.
+		if _, ok := font_for(f, t.ink, t.ground, scratch, sink); !ok {
 			return false
 		}
 	}

@@ -109,8 +109,15 @@ paint_node :: proc "contextless" (
 			u32(o.h - 2 * t.bevel),
 			libpal.xrgb(t.ground),
 		)
+		if a, ok := font_get(f, t.ink, t.ground); ok && o.edit_n > 0 {
+			cells := (o.w - 2 * t.well) / FONT_W
+			shown := clip_cells(field_text(o), cells)
+			nat, _, _ = libdraw.put_text(b, nat, a, dst, u32(o.x + t.well), u32(o.y + t.well), shown)
+		}
 	case .List:
 		nat = list_rows(b, nat, o, dst, f, t)
+	case .Icons:
+		nat = icon_cells(b, nat, o, dst, f, t)
 	}
 	for c := o.first; c != nil; c = c.next {
 		nat = paint_node(b, nat, c, dst, f, t)
@@ -168,6 +175,105 @@ list_rows :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fon
 
 // clip_cells answers the longest prefix of `s` that draws in `cells` cells,
 // counting a multi-byte rune as one.
+/*
+icon_cells draws an icon grid. First the well, then a cell per name from
+the top row down as far as the well holds. Each cell is a picture of its
+kind above its name. The selected cell's name sits on a bar of the face,
+as a list's selected row does. The pictures are the chassis's vocabulary,
+`docs/WORKBENCH.md` section 6. A drawer is a plinth with a bar, a tool a
+plinth with a lamp, and a project a well with lines in it.
+*/
+icon_cells :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fonts, t: ^Theme) -> int {
+	nat := libdraw.put_fill(b, at, dst, u32(o.x), u32(o.y), u32(o.w), u32(o.h), libpal.xrgb(t.shade))
+	nat = libdraw.put_fill(
+		b,
+		nat,
+		dst,
+		u32(o.x + t.well),
+		u32(o.y + t.well),
+		u32(o.w - 2 * t.well),
+		u32(o.h - 2 * t.well),
+		libpal.xrgb(t.ground),
+	)
+	plain, pok := font_get(f, t.ink, t.ground)
+	lit, lok := font_get(f, t.ink, t.face)
+	if !pok {
+		return nat
+	}
+	cols := icons_cols(o, t)
+	rows := icons_visible(o, t)
+	name_cells := ICON_W / FONT_W - 1
+	for r in 0 ..< rows {
+		for c in 0 ..< cols {
+			i := (o.top + r) * cols + c
+			if i < 0 || i >= len(o.rows) {
+				break
+			}
+			cx := o.x + t.well + c * ICON_W
+			cy := o.y + t.well + r * ICON_H
+			kind := ICON_PROJECT
+			if o.kinds != nil && i < len(o.kinds) {
+				kind = o.kinds[i]
+			}
+			nat = icon_picture(b, nat, dst, cx + (ICON_W - 40) / 2, cy + 6, kind, t)
+			shown := clip_cells(o.rows[i], name_cells)
+			tw := drawn_len(shown) * FONT_W
+			tx := cx + (ICON_W - tw) / 2
+			ty := cy + ICON_H - FONT_H - 4
+			atlas := plain
+			if i == o.sel && lok {
+				nat = libdraw.put_fill(b, nat, dst, u32(tx - 2), u32(ty), u32(tw + 4), u32(FONT_H), libpal.xrgb(t.face))
+				atlas = lit
+			}
+			next, _, _ := libdraw.put_text(b, nat, atlas, dst, u32(tx), u32(ty), shown)
+			if next < 0 {
+				return next
+			}
+			nat = next
+		}
+	}
+	return nat
+}
+
+// icon_picture is one kind's picture, forty by twenty-eight, at a point.
+icon_picture :: proc "contextless" (b: []u8, at: int, dst: u32, x: int, y: int, kind: u8, t: ^Theme) -> int {
+	W :: 40
+	H :: 28
+	nat := at
+	switch kind {
+	case ICON_DRAWER, ICON_TOOL:
+		// A plinth: the face with a lit top and left, a shaded bottom and right.
+		nat = plinth(b, nat, dst, x, y, W, H, t)
+		if kind == ICON_DRAWER {
+			// The drawer's bar, copper across the top like a window's.
+			nat = libdraw.put_fill(b, nat, dst, u32(x + t.bevel), u32(y + t.bevel), u32(W - 2 * t.bevel), 5, libpal.xrgb(libpal.COPPER))
+		} else {
+			// The tool's lamp, phosphor in a socket at the corner.
+			nat = libdraw.put_fill(b, nat, dst, u32(x + W - 12), u32(y + 4), 8, 8, libpal.xrgb(t.shade))
+			nat = libdraw.put_fill(b, nat, dst, u32(x + W - 11), u32(y + 5), 6, 6, libpal.xrgb(libpal.PHOSPHOR))
+		}
+	case:
+		// A project: a well, and three lines of ink in it.
+		nat = libdraw.put_fill(b, nat, dst, u32(x + 4), u32(y), u32(W - 8), u32(H), libpal.xrgb(t.shade))
+		nat = libdraw.put_fill(b, nat, dst, u32(x + 4 + t.well), u32(y + t.well), u32(W - 8 - 2 * t.well), u32(H - 2 * t.well), libpal.xrgb(t.ground))
+		for k in 0 ..< 3 {
+			nat = libdraw.put_fill(b, nat, dst, u32(x + 10), u32(y + 6 + k * 7), u32(W - 20), 2, libpal.xrgb(t.ink))
+		}
+	}
+	return nat
+}
+
+// plinth is `raised` for a rectangle that is not a node.
+plinth :: proc "contextless" (b: []u8, at: int, dst: u32, x: int, y: int, w: int, h: int, t: ^Theme) -> int {
+	nat := libdraw.put_fill(b, at, dst, u32(x), u32(y), u32(w), u32(h), libpal.xrgb(t.face))
+	edge := t.bevel
+	nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y), u32(w), u32(edge), libpal.xrgb(t.lit))
+	nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y), u32(edge), u32(h), libpal.xrgb(t.lit))
+	nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y + h - edge), u32(w), u32(edge), libpal.xrgb(t.shade))
+	nat = libdraw.put_fill(b, nat, dst, u32(x + w - edge), u32(y), u32(edge), u32(h), libpal.xrgb(t.shade))
+	return nat
+}
+
 clip_cells :: proc "contextless" (s: string, cells: int) -> string {
 	n := 0
 	i := 0

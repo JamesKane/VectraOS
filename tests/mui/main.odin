@@ -432,5 +432,79 @@ start :: proc "c" (block: ^abi.Args) {
 		want(libmui.hit(col, l.x + 10, l.y + 10) == l, "a click in the well lands on the list")
 	}
 
+	// -- An icon grid: cells in a well, a picture and a name each -------------
+	{
+		ti := libmui.default_theme
+		names := [?]string{"Home", "System", "Tools", "notes", "pong", "draft.txt", "kfs"}
+		kinds := [?]u8{libmui.ICON_DRAWER, libmui.ICON_DRAWER, libmui.ICON_DRAWER, libmui.ICON_PROJECT, libmui.ICON_TOOL, libmui.ICON_PROJECT, libmui.ICON_DRAWER}
+		g := libmui.icons(2)
+		want(g != nil, "an icon grid is made")
+		g.rows = names[:]
+		g.kinds = kinds[:]
+		col := libmui.group(false)
+		libmui.add(col, g)
+		libmui.fit(col, &ti)
+		main_check(g.minh, 2 * libmui.ICON_H + 2 * ti.well, "a grid asks room for its rows of cells and the well")
+		main_check(g.minw, 2 * libmui.ICON_W + 2 * ti.well, "and two cells across")
+		libmui.lay(col, 0, 0, 3 * libmui.ICON_W + 2 * ti.well + 2 * ti.pad, 2 * libmui.ICON_H + 2 * ti.well + 2 * ti.pad, &ti)
+		main_check(libmui.icons_cols(g, &ti), 3, "three cells fit the width it was given")
+		main_check(libmui.icons_visible(g, &ti), 2, "and two rows the height")
+		main_check(libmui.icons_cell_at(g, g.x + ti.well + 2 * libmui.ICON_W + 5, g.y + ti.well + 5, &ti), 2, "the third cell of the first row is icon two")
+		main_check(libmui.icons_cell_at(g, g.x + ti.well + 5, g.y + ti.well + libmui.ICON_H + 5, &ti), 3, "the first cell of the second row is icon three")
+		main_check(libmui.icons_cell_at(g, g.x + ti.well + libmui.ICON_W + 5, g.y + ti.well + libmui.ICON_H + 5, &ti), 4, "and the next is four")
+		g.top = 1
+		main_check(libmui.icons_cell_at(g, g.x + ti.well + 5, g.y + ti.well + 5, &ti), 3, "scrolled a row, the first cell is icon three")
+		main_check(libmui.icons_cell_at(g, g.x + ti.well + libmui.ICON_W + 5, g.y + ti.well + libmui.ICON_H + 5, &ti), -1, "and a cell past the last icon is no icon")
+		g.top = 0
+		g.sel = 4
+		fi: libmui.Fonts
+		libmui.font_init(&fi, 1)
+		want(libmui.font_prepare(col, &fi, scratch[:], drop_sink(), &ti), "the grid's two atlases baked")
+		end := libmui.paint(paint_buf[:], 0, col, 1, &fi, &ti)
+		want(end > 0, "the grid's paint fit the buffer")
+		want(has_fill(paint_buf[:], end, libpal.xrgb(libpal.COPPER)), "a drawer wears a copper bar")
+		want(has_fill(paint_buf[:], end, libpal.xrgb(libpal.PHOSPHOR)), "a tool wears a phosphor lamp")
+		want(has_fill(paint_buf[:], end, libpal.xrgb(ti.face)), "and the selected name sits on a bar of the face")
+		want(libmui.hit(col, g.x + 10, g.y + 10) == g, "a click in the well lands on the grid")
+	}
+
+	// -- A string gadget takes typing -------------------------------------------
+	{
+		f := libmui.field()
+		want(f != nil, "a field is made")
+		store: [8]u8
+		want(!libmui.string_key(f, 'a'), "a field with no storage takes nothing")
+		f.edit = store[:]
+		want(libmui.string_key(f, 'r') && libmui.string_key(f, 'c'), "typed letters land in it")
+		want(libmui.field_text(f) == "rc", "and read back as typed")
+		want(libmui.string_key(f, 0x08) && libmui.field_text(f) == "r", "a backspace takes the last one off")
+		want(!libmui.string_key(f, '\n'), "a Return is not the field's to take")
+		for i in 0 ..< 10 {
+			_ = libmui.string_key(f, u8('0' + i))
+		}
+		main_check(f.edit_n, 8, "and the text stops at the storage's end")
+	}
+
+	// -- A menu: a column of buttons as wide as the longest --------------------
+	{
+		tm := libmui.default_theme
+		m: libmui.Menu
+		items := [?]string{"About...", "Execute Command...", "Shell", "Quit"}
+		root := libmui.menu_build(&m, items[:], &tm)
+		want(root != nil, "a menu builds its column")
+		n := 0
+		widest := 0
+		for c := root.first; c != nil; c = c.next {
+			n += 1
+			if c.minw > widest {
+				widest = c.minw
+			}
+		}
+		main_check(n, 4, "with a button per item")
+		main_check(m.buttons[1].id, 2, "each tagged by its place")
+		want(root.minw >= widest, "and the column as wide as the longest label")
+		main_check(root.minw, m.buttons[1].minw + 2 * tm.pad, "which is Execute Command's")
+	}
+
 	libuser.exits("ok")
 }

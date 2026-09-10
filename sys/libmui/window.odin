@@ -43,6 +43,8 @@ Window :: struct {
 	mouse_fd:  int,
 	cw:        int,
 	ch:        int,
+	sx:        int, // Where the client area is on the screen, for a popup
+	sy:        int, // opened at a point in it
 	theme:     Theme,
 	fonts:     Fonts,
 	root:      ^Object,
@@ -51,12 +53,80 @@ Window :: struct {
 	done:      bool,
 	overflowed: bool, // A paint that did not fit was reported
 	handler:   proc "contextless" (win: ^Window, id: int),
+
+	/*
+	What a program says before `window_open`, and what a desktop needs of
+	it. `kind` is the `wctl` word the window is opened as, `docs/WORKBENCH.md`
+	section 4: a bar, a backdrop or a popup wears no frame. `want_w` and
+	`want_h` ask a client area, and `placed` puts the window at `at_x`,
+	`at_y` on the screen, both before the first paint. `bind_dev` binds the
+	window's directory over `/dev`, which a program of one window wants
+	and a program of several cannot have twice. `own_exit` is whether the
+	loop's end takes the whole program down, which a program of one window
+	wants and a menu does not. `window_defaults` sets the two a program
+	of one window wants, and `window_open` calls it for a Window nobody
+	set up.
+	*/
+	kind:      Kind,
+	want_w:    int,
+	want_h:    int,
+	placed:    bool,
+	at_x:      int,
+	at_y:      int,
+	bind_dev:  bool,
+	own_exit:  bool,
+	set_up:    bool,
+
+	// What an event says beyond the gadget's id. The row or cell a list or
+	// grid selected, and whether the press was the second of a double
+	// click. The point a button 3 press landed on is `on_menu`'s.
+	arg:       int,
+	clicks:    int,
+	on_menu:   proc "contextless" (win: ^Window, x: int, y: int),
+	user:      rawptr,
+	last_press: ^Object,
+	last_ms:   int,
+	last_buttons: u8,
+
+	// The io procs the loop reads through, made once and kept. A proc is
+	// never given back, so a window opened again reads through the same
+	// two.
+	key_io:    ^libthread.Ioproc,
+	mouse_io:  ^libthread.Ioproc,
+
 	scratch:   [SLOT]u8, // One slot, for atlas uploads and paint flushes
 	paint_buf: [PAINT_MAX]u8, // A whole tree's commands, pumped from here in slots
 	geo:       [160]u8,
 	path:      [64]u8,
 	keys:      [64]u8,
 	line:      [64]u8,
+}
+
+// The kinds a window is opened as, the server's `wctl` words. A normal
+// window wears a frame. The other three are their client's whole rectangle.
+Kind :: enum u8 {
+	Normal,
+	Backdrop,
+	Bar,
+	Popup,
+}
+
+// The frame's client offsets, the server's `FRAME_INSET_X` and `_Y`: three
+// of edge, two of well, and the twenty of the title bar above.
+FRAME_INSET_X :: 5
+FRAME_INSET_Y :: 25
+
+// Two presses on one gadget within this many milliseconds are a double click.
+DOUBLE_MS :: 400
+
+// window_defaults is what a Window says before a program says otherwise.
+// A normal window, one that binds its directory over /dev, and one whose
+// end is the program's. A program of several windows sets the last two off.
+window_defaults :: proc "contextless" (win: ^Window) {
+	win.kind = .Normal
+	win.bind_dev = true
+	win.own_exit = true
+	win.set_up = true
 }
 
 // data_sink writes an atlas batch to a window's data stream.
@@ -75,6 +145,9 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	win.root = root
 	if win.theme.pad == 0 && win.theme.gap == 0 {
 		win.theme = default_theme
+	}
+	if !win.set_up {
+		window_defaults(win)
 	}
 	font_init(&win.fonts, 1)
 	// The font past ASCII, so a label with an accent in it bakes and draws.
@@ -118,13 +191,72 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	name_at := copy(win.line[:], "name ")
 	name_at += copy(win.line[name_at:], title)
 	_ = libuser.write(int(ctl), win.line[:name_at])
+	// The kind, the size and the place a program asked for, each a line the
+	// server takes before the first paint. The geometry is read again
+	// after, because a kind or a size changes it.
+	if win.kind != .Normal {
+		wctl := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "wctl"), abi.O_WRONLY)
+		if wctl >= 0 {
+			word := "backdrop"
+			#partial switch win.kind {
+			case .Bar:
+				word = "bar"
+			case .Popup:
+				word = "popup"
+			}
+			_ = libuser.write(int(wctl), transmute([]u8)word)
+			_ = libuser.close(int(wctl))
+		}
+	}
+	if win.want_w > 0 && win.want_h > 0 {
+		at := copy(win.line[:], "size ")
+		at += len(libuser.itoa(win.line[at:], i64(win.want_w)))
+		at += copy(win.line[at:], " ")
+		at += len(libuser.itoa(win.line[at:], i64(win.want_h)))
+		_ = libuser.write(int(ctl), win.line[:at])
+	}
+	if win.placed {
+		at := copy(win.line[:], "move ")
+		at += len(libuser.itoa(win.line[at:], i64(win.at_x)))
+		at += copy(win.line[at:], " ")
+		at += len(libuser.itoa(win.line[at:], i64(win.at_y)))
+		_ = libuser.write(int(ctl), win.line[:at])
+	}
+	if win.kind != .Normal || (win.want_w > 0 && win.want_h > 0) {
+		n = libuser.read(int(ctl), win.geo[:])
+		if w2, h2, _, _, ok2 := libdraw.parse_geometry(win.geo[:max(int(n), 0)]); ok2 {
+			win.cw, win.ch = w2, h2
+		}
+	}
 	_ = libuser.close(int(ctl))
 
-	// This window's own /dev, so its cons and mouse are the two files read.
-	if libuser.bind(libdraw.win_dir(win.path[:], "/mnt", mine), "/dev", abi.ORDER_BEFORE) < 0 {
-		return refused("the window's directory will not bind over /dev")
+	// Where the client area is on the screen, off `wctl`, so a popup opened
+	// at a point in this window lands under the pointer.
+	win.sx, win.sy = 0, 0
+	if wfd := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "wctl"), abi.O_RDONLY); wfd >= 0 {
+		wn := libuser.read(int(wfd), win.geo[:])
+		_ = libuser.close(int(wfd))
+		at := 0
+		if x, xok := libdraw.scan_int(win.geo[:max(int(wn), 0)], &at); xok {
+			if y, yok := libdraw.scan_int(win.geo[:max(int(wn), 0)], &at); yok {
+				win.sx, win.sy = x, y
+				if win.kind == .Normal {
+					win.sx += FRAME_INSET_X
+					win.sy += FRAME_INSET_Y
+				}
+			}
+		}
 	}
-	cons := libuser.open("/dev/cons", abi.O_RDONLY)
+
+	// This window's own /dev, when the program is the window's alone, so a
+	// program it starts inherits the window as its console. The files open
+	// by their path either way, which is how a program holds several.
+	if win.bind_dev {
+		if libuser.bind(libdraw.win_dir(win.path[:], "/mnt", mine), "/dev", abi.ORDER_BEFORE) < 0 {
+			return refused("the window's directory will not bind over /dev")
+		}
+	}
+	cons := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "cons"), abi.O_RDONLY)
 	if cons < 0 {
 		return refused("the window's cons will not open")
 	}
@@ -134,18 +266,22 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	// here, the server would cook the keys into lines, and a hotkey would
 	// wait for a Return.
 	win.consctl_fd = -1
-	ccl := libuser.open("/dev/consctl", abi.O_WRONLY)
+	ccl := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "consctl"), abi.O_WRONLY)
 	if ccl >= 0 {
 		raw := "rawon"
 		_ = libuser.write(int(ccl), transmute([]u8)raw)
 		win.consctl_fd = int(ccl)
 	}
-	mouse := libuser.open("/dev/mouse", abi.O_RDONLY)
+	mouse := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "mouse"), abi.O_RDONLY)
 	if mouse >= 0 {
 		win.mouse_fd = int(mouse)
 	} else {
 		win.mouse_fd = -1
 	}
+	win.done = false
+	win.pressed = nil
+	win.last_press = nil
+	win.last_buttons = 0
 
 	// The tree in the client area, the atlases it needs, and the first paint.
 	fit(root, &win.theme)
@@ -247,50 +383,103 @@ window_run :: proc "contextless" (win: ^Window) #no_bounds_check {
 	if win.mouse_fd >= 0 {
 		_ = libthread.threadcreate(mouse_thread, win)
 	}
-	io := libthread.ioproc()
-	if io == nil {
+	if win.key_io == nil {
+		win.key_io = libthread.ioproc()
+	}
+	if win.key_io == nil {
 		return
 	}
-	for {
-		got := libthread.ioread(io, win.cons_fd, win.keys[:])
-		// A read that ends means the window's files are gone, the server with
-		// them, so the whole program comes down, its other threads and all.
+	loop: for {
+		got := libthread.ioread(win.key_io, win.cons_fd, win.keys[:])
+		// A read that ends means the window's files are gone: the server
+		// hung it up, or closed. The window is done either way.
 		if got <= 0 {
-			libthread.threadexitsall("")
+			break
 		}
 		for i in 0 ..< int(got) {
 			key_event(win, win.keys[i])
 			if win.done {
-				libthread.threadexitsall("")
+				break loop
 			}
 		}
 	}
+	win.done = true
+	// A program of one window comes down whole here, its other threads and
+	// all. A program of several gives this one back and goes on.
+	if win.own_exit {
+		libthread.threadexitsall("")
+	}
+	window_close(win)
+}
+
+/*
+window_close gives the window back: its files are closed, and the server
+takes the window off the glass when the `data` fid is gone. The mouse
+thread's read ends with the file and the thread leaves on its own. A
+program of several windows calls this for a window it is done with. A
+program of one never needs to, since its exit is the close.
+*/
+window_close :: proc "contextless" (win: ^Window) {
+	win.done = true
+	if win.mouse_fd >= 0 {
+		_ = libuser.close(win.mouse_fd)
+		win.mouse_fd = -1
+	}
+	if win.consctl_fd >= 0 {
+		_ = libuser.close(win.consctl_fd)
+		win.consctl_fd = -1
+	}
+	if win.cons_fd >= 0 {
+		_ = libuser.close(win.cons_fd)
+		win.cons_fd = -1
+	}
+	if win.data_fd >= 0 {
+		_ = libuser.close(win.data_fd)
+		win.data_fd = -1
+	}
+	font_init(&win.fonts, 1)
 }
 
 // mouse_thread reads the window's pointer and turns each line into an event.
+// It leaves when the file ends or the window is done.
 mouse_thread :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	win := (^Window)(arg)
-	io := libthread.ioproc()
-	if io == nil {
+	if win.mouse_io == nil {
+		win.mouse_io = libthread.ioproc()
+	}
+	if win.mouse_io == nil {
 		return
 	}
 	for {
-		got := libthread.ioread(io, win.mouse_fd, win.line[:])
+		fd := win.mouse_fd
+		if fd < 0 || win.done {
+			break
+		}
+		got := libthread.ioread(win.mouse_io, fd, win.line[:])
 		if got <= 0 {
-			libthread.threadexitsall("")
+			break
 		}
 		mouse_event(win, win.line[:int(got)])
 		if win.done {
-			libthread.threadexitsall("")
+			break
 		}
+	}
+	if win.own_exit {
+		libthread.threadexitsall("")
 	}
 }
 
 // -- Dispatch ----------------------------------------------------------------
 
-// mouse_event parses a `rio` mouse line and presses or releases a gadget.
-last_buttons: u8
-
+/*
+mouse_event turns one mouse line into what it means to the tree. A button
+1 press lands on a gadget, which takes the focus, and a list or a grid
+selects the row or cell under it. A release on the same gadget activates
+it. A second press on the same gadget within `DOUBLE_MS` of the first
+makes the activation a double click, by the line's own clock, and `clicks`
+says so. A button 3 press is the program's, through `on_menu`, with the point
+it landed on, which is where a menu opens.
+*/
 mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 	if len(data) < 1 || data[0] != 'm' {
 		return
@@ -302,22 +491,36 @@ mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 	if !xok || !yok || !bok {
 		return
 	}
+	ms, _ := libdraw.scan_int(data, &at)
 	buttons := u8(b)
-	// The left button going down is a press, coming up a release.
 	down := buttons & 1 != 0
-	was := last_buttons & 1 != 0
-	last_buttons = buttons
+	was := win.last_buttons & 1 != 0
+	menu_down := buttons & 4 != 0
+	menu_was := win.last_buttons & 4 != 0
+	win.last_buttons = buttons
+	if menu_down && !menu_was && win.on_menu != nil {
+		win.on_menu(win, x, y)
+		return
+	}
 	if down && !was {
 		win.pressed = hit(win.root, x, y)
 		if win.pressed != nil {
 			win.focus = win.pressed
-			// A press on a list's row selects it, and the release tells
-			// the program which list, whose `sel` says which row.
-			if win.pressed.class == .List {
+			#partial switch win.pressed.class {
+			case .List:
 				if row := list_row_at(win.pressed, y, &win.theme); row >= 0 {
 					win.pressed.sel = row
 				}
+			case .Icons:
+				win.pressed.sel = icons_cell_at(win.pressed, x, y, &win.theme)
 			}
+			if win.pressed == win.last_press && ms >= win.last_ms && ms - win.last_ms < DOUBLE_MS {
+				win.clicks = 2
+			} else {
+				win.clicks = 1
+			}
+			win.last_press = win.pressed
+			win.last_ms = ms
 			window_paint(win)
 		}
 	} else if !down && was {
@@ -329,16 +532,30 @@ mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 	}
 }
 
-// key_event routes one key: Tab moves the focus, Return presses it, Escape
-// cancels, and a checkmark toggles on a space. Any other letter presses
-// the button whose label marks it as the hotkey, `_Step` on an s.
+// key_event routes one key. A string gadget with the focus takes the typing
+// first, and its handler hears the id as the text changes. Tab moves the
+// focus, Return and Space press it, Escape is the cancel, and any other
+// key is a hotkey or nothing.
 key_event :: proc "contextless" (win: ^Window, k: u8) #no_bounds_check {
+	if win.focus != nil && win.focus.class == .String && k != KEY_RETURN_N && k != KEY_RETURN_R && k != KEY_ESCAPE && k != '\t' {
+		if string_key(win.focus, k) {
+			win.clicks = 0
+			if win.handler != nil {
+				win.handler(win, win.focus.id)
+			}
+			if !win.done {
+				window_paint(win)
+			}
+		}
+		return
+	}
 	switch k {
 	case '\t':
 		focus_next(win)
 		window_paint(win)
 	case KEY_RETURN_N, KEY_RETURN_R, ' ':
 		if win.focus != nil {
+			win.clicks = 1
 			activate(win, win.focus)
 		}
 	case KEY_ESCAPE:
@@ -347,6 +564,7 @@ key_event :: proc "contextless" (win: ^Window, k: u8) #no_bounds_check {
 		}
 	case:
 		if g := hotkey_gadget(win.root, k); g != nil {
+			win.clicks = 1
 			activate(win, g)
 		}
 	}
@@ -398,6 +616,7 @@ activate :: proc "contextless" (win: ^Window, g: ^Object) #no_bounds_check {
 		g.on = !g.on
 		window_paint(win)
 	}
+	win.arg = g.sel
 	if win.handler != nil {
 		win.handler(win, g.id)
 	}
