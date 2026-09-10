@@ -93,6 +93,26 @@ io_thread :: proc "contextless" (arg: rawptr) {
 	io_n = libthread.ioread(io, fd, io_got[:])
 }
 
+// count_procs answers how many processes the machine holds, by the entries
+// of /proc, without allocating: `ioclose` must leave this where it found it.
+count_procs :: proc "contextless" () -> int {
+	fd := libuser.open("/proc", abi.O_RDONLY)
+	if fd < 0 {
+		return -1
+	}
+	entries: [16]abi.Dirent
+	total := 0
+	for {
+		n := libuser.dirread(int(fd), entries[:])
+		if n <= 0 {
+			break
+		}
+		total += int(n)
+	}
+	_ = libuser.close(int(fd))
+	return total
+}
+
 // A proc that lives until the program ends, parked in a read nobody will
 // answer, so `threadexitsall` has something to take down.
 parked_proc :: proc "contextless" (arg: rawptr) {
@@ -263,6 +283,25 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	}
 	if io_n != 2 || string(io_got[:2]) != "io" {
 		fail("ioread")
+	}
+
+	// -- An io proc goes back when it is closed ----------------------------
+	// `ioclose` tells the loop to leave and waits for the proc. A program
+	// that opens and drops io procs -- a desktop, one popup at a time --
+	// holds no more processes after than before.
+	procs_before := count_procs()
+	if procs_before < 0 {
+		fail("no /proc to count")
+	}
+	for _ in 0 ..< 16 {
+		io := libthread.ioproc()
+		if io == nil {
+			fail("ioproc in the close loop")
+		}
+		libthread.ioclose(io)
+	}
+	if count_procs() > procs_before {
+		fail("io procs not given back by ioclose")
 	}
 
 	// -- A lock hands over in order ----------------------------------------

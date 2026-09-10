@@ -88,11 +88,15 @@ Window :: struct {
 	last_ms:   int,
 	last_buttons: u8,
 
-	// The io procs the loop reads through, made once and kept. A proc is
-	// never given back, so a window opened again reads through the same
-	// two.
+	// The io procs the loop reads through. A window that reopens reads
+	// through the same two, so they are made once and kept for a window
+	// whose end is the program's. A window given back for good -- a popup,
+	// a drawer, a notice -- closes them. `window_run` waits on `mouse_done`
+	// first, so the mouse reader is off its io proc before it goes back.
+	// See `window_close` and `mouse_thread`.
 	key_io:    ^libthread.Ioproc,
 	mouse_io:  ^libthread.Ioproc,
+	mouse_done: ^libthread.Chan,
 
 	scratch:   [SLOT]u8, // One slot, for atlas uploads and paint flushes
 	paint_buf: [PAINT_MAX]u8, // A whole tree's commands, pumped from here in slots
@@ -389,6 +393,12 @@ threads are one proc's, so the tree they share needs no lock.
 */
 window_run :: proc "contextless" (win: ^Window) #no_bounds_check {
 	if win.mouse_fd >= 0 {
+		// The channel the mouse reader answers on when it is off its io
+		// proc. A window given back must not free what the reader still
+		// reads. A program of one window never waits, and needs none.
+		if !win.own_exit && win.mouse_done == nil {
+			win.mouse_done = libthread.chancreate(size_of(u64), 0)
+		}
 		_ = libthread.threadcreate(mouse_thread, win)
 	}
 	if win.key_io == nil {
@@ -417,7 +427,22 @@ window_run :: proc "contextless" (win: ^Window) #no_bounds_check {
 	if win.own_exit {
 		libthread.threadexitsall("")
 	}
+	// The files first, so the mouse reader's read ends and it answers on
+	// `mouse_done`. Then both io procs, now idle, go back with the window.
 	window_close(win)
+	if win.mouse_done != nil {
+		_ = libthread.recvul(win.mouse_done)
+		libthread.chanfree(win.mouse_done)
+		win.mouse_done = nil
+	}
+	if win.mouse_io != nil {
+		libthread.ioclose(win.mouse_io)
+		win.mouse_io = nil
+	}
+	if win.key_io != nil {
+		libthread.ioclose(win.key_io)
+		win.key_io = nil
+	}
 }
 
 /*
@@ -455,25 +480,30 @@ mouse_thread :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	if win.mouse_io == nil {
 		win.mouse_io = libthread.ioproc()
 	}
-	if win.mouse_io == nil {
-		return
+	if win.mouse_io != nil {
+		for {
+			fd := win.mouse_fd
+			if fd < 0 || win.done {
+				break
+			}
+			got := libthread.ioread(win.mouse_io, fd, win.line[:])
+			if got <= 0 {
+				break
+			}
+			mouse_event(win, win.line[:int(got)])
+			if win.done {
+				break
+			}
+		}
 	}
-	for {
-		fd := win.mouse_fd
-		if fd < 0 || win.done {
-			break
-		}
-		got := libthread.ioread(win.mouse_io, fd, win.line[:])
-		if got <= 0 {
-			break
-		}
-		mouse_event(win, win.line[:int(got)])
-		if win.done {
-			break
-		}
-	}
+	// A program of one window ends here with the rest. A program of several
+	// answers `window_run`, which is waiting to close the io proc and give
+	// the window back, and then this thread touches the window no more.
 	if win.own_exit {
 		libthread.threadexitsall("")
+	}
+	if win.mouse_done != nil {
+		libthread.sendul(win.mouse_done, 1)
 	}
 }
 

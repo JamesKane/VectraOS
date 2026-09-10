@@ -23,11 +23,13 @@ the reply names it, so the io proc reads and writes the record freely.
 package libthread
 
 import "vsys:libuser"
+import "vsys:vectra9"
 
 Io_Op :: enum u8 {
 	Read,
 	Write,
 	Sleep, // `ticks` in `fd`: a wait a thread may make without parking its proc
+	Exit, // leave the loop, so `ioclose` can give the proc back
 }
 
 Io_Call :: struct {
@@ -67,11 +69,55 @@ ioproc :: proc "contextless" () -> ^Ioproc {
 	return io
 }
 
+/*
+ioclose gives an io proc back: the record, its two channels, and the proc
+itself. Without it an io proc lives as long as the program. That is right
+for a server's, made once, but a leak for one a window makes and drops.
+
+The loop is told to leave with an `Exit` call, and `iocall` waits for the
+ack the loop sends before it returns. So by the time this frees the
+channels the loop is on its way out of them. Only safe when the io proc is
+idle, between calls rather than parked in one. A reader closes its own
+descriptor first, so a read in flight ends and the loop comes back to wait
+for the `Exit`. See `sys/libmui`'s `window_close`.
+
+The proc is waited for, not just told to go. The maker of an io proc is the
+one that waits for it, the same as `wait_children` at exit. So its record is
+back, not a zombie holding a table slot through a desktop's churn. A proc the
+kernel collects itself, made detached by a proc that is not the first,
+answers the wait at once. This is right for either.
+*/
+ioclose :: proc "contextless" (io: ^Ioproc) {
+	if io == nil {
+		return
+	}
+	c := Io_Call{op = .Exit}
+	iocall(io, &c)
+	if io.pid > 0 {
+		for {
+			r := libuser.wait(u64(io.pid))
+			if r != -i64(vectra9.EAGAIN) {
+				break
+			}
+		}
+	}
+	chanfree(io.calls)
+	chanfree(io.replies)
+	libuser.heap_free(io)
+}
+
 @(private = "file")
 io_loop :: proc "contextless" (arg: rawptr) {
 	io := (^Ioproc)(arg)
 	for {
 		c := (^Io_Call)(recvp(io.calls))
+		if c.op == .Exit {
+			// Acked, not answered: `ioclose` waits for this send. By the
+			// time it returns the loop is on its way out and touches neither
+			// channel again, so freeing them is safe.
+			sendp(io.replies, c)
+			return
+		}
 		switch c.op {
 		case .Read:
 			c.result = libuser.read(c.fd, c.buf)
@@ -79,6 +125,7 @@ io_loop :: proc "contextless" (arg: rawptr) {
 			c.result = libuser.write(c.fd, c.buf)
 		case .Sleep:
 			c.result = libuser.sleep(u64(c.fd))
+		case .Exit:
 		}
 		sendp(io.replies, c)
 	}
