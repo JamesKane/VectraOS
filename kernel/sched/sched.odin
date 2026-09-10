@@ -565,6 +565,47 @@ set_note_trap :: proc "contextless" (h: Note_Trap) {
 	note_trap = h
 }
 
+/*
+What the reaper asks of a thread's owner before it decides the record's fate.
+
+`kernel/user` keeps a raw `^Thread` in every process, and a note sender reads
+it. So a user thread's record cannot go the moment the thread dies, the way a
+kernel worker's does. It stands until the process is collected, valid and
+Dead. A sender that still holds the pointer then reads a live record and drops
+its note, rather than touching freed memory.
+
+`reap` frees the stack, then asks this. It marks the thread reaped and answers
+whether reap should free the record now. True means the process already let go,
+because collect ran first, and false means collect frees it once it sees the
+thread reaped. Whichever of reap and collect runs second frees the record,
+under `kernel/user`'s own lock. A thread with no process, a kernel worker whose
+`user` is nil, is freed at reap as before. Registered by `kernel/user`, it runs
+in thread context, off the scheduler lock.
+*/
+Reap_Decide :: #type proc "contextless" (t: ^Thread) -> bool
+
+@(private = "file")
+reap_decide: Reap_Decide
+
+set_reap_decide :: proc "contextless" (h: Reap_Decide) {
+	reap_decide = h
+}
+
+/*
+free_reaped gives back a thread record reap left for the collector.
+
+The stack came back at reap. This is the record, and the `dying` count that
+covers it. `kernel/user`'s collector calls it once collect and reap have both
+let go of the thread. See `Reap_Decide` and `reap`.
+*/
+free_reaped :: proc(t: ^Thread) {
+	if t == nil {
+		return
+	}
+	free(t)
+	intrinsics.atomic_sub(&dying, 1)
+}
+
 // park_current takes the interrupted thread off every queue, its frame kept
 // in its record, until `ready` puts it back. `block` from interrupt context,
 // for a stop that catches a thread in ring 3.
@@ -708,14 +749,28 @@ reap :: proc() {
 		if t.state != .Dead {
 			sync.bug("sched: a thread on the reap list is not dead")
 		}
-		t.reaped = true
+		// The stack comes back here always. The record's fate is the owner's
+		// to decide. A kernel worker's is freed now. A user thread's stays,
+		// valid and Dead, until the process is collected, so `p.thread` never
+		// names freed memory. `reap_decide` marks the thread reaped and says
+		// whether reap frees the record or leaves it for collect. See
+		// `set_reap_decide`.
 		if t.owns_stack && t.stack != nil {
 			delete(t.stack)
+			t.stack = nil
 		}
-		free(t)
-		// After the free, not before: `all_reaped` promises the heap has the
-		// objects back, not that the list has let go of the thread.
-		intrinsics.atomic_sub(&dying, 1)
+		free_now := true
+		if reap_decide != nil {
+			free_now = reap_decide(t)
+		} else {
+			t.reaped = true
+		}
+		if free_now {
+			// After the free, not before: `all_reaped` promises the heap has
+			// the objects back, not that the list has let go of the thread.
+			free(t)
+			intrinsics.atomic_sub(&dying, 1)
+		}
 	}
 }
 

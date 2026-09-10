@@ -482,6 +482,9 @@ ring 3 again, which is the fault. See `syscall.odin`.
 init :: proc(ns: ^vfs.Namespace) -> bool {
 	arch.set_user_trap_handler(on_trap)
 	sched.set_note_trap(note_trap)
+	// The reaper asks this before it frees a thread's record, so a process
+	// keeps a valid Dead thread until it is collected. See `on_thread_reaped`.
+	sched.set_reap_decide(on_thread_reaped)
 	// The collector before the door opens, so no process can end without one
 	// running. See `hangup_dead`.
 	if !reaper_start() {
@@ -1012,6 +1015,26 @@ exit_done :: proc "contextless" (arg: rawptr) -> bool {
 }
 
 /*
+on_thread_reaped is what the reaper asks before it frees a thread's record.
+
+A note sender keeps reading `p.thread`, so a user thread's record has to stand
+until its process is collected. This marks the thread reaped and returns
+whether reap may free the record now. It may only when collect has already run
+and cleared `p.thread`, and otherwise collect frees it once it sees the thread
+reaped. Whoever runs second frees the record under `table_lock`, so a sender
+holding the lock reads a live Dead record or nil, never freed memory. A worker
+with no process is reap's, as before. See `unload` and `sched.free_reaped`.
+*/
+@(private)
+on_thread_reaped :: proc "contextless" (t: ^sched.Thread) -> bool {
+	guard := sync.acquire(&table_lock)
+	defer sync.release(&table_lock, guard)
+	t.reaped = true
+	p := (^Process)(t.user)
+	return p == nil || p.thread != t
+}
+
+/*
 post_note delivers an ending to a process, from outside it.
 
 The note is a flag on the thread and a line of text on the process. What
@@ -1025,6 +1048,11 @@ arc for parents, and the kernel's for itself.
 Refused on a process that already ended. The note would outlive its target
 and kill whatever reuses the thread, which is the aliasing every id in this
 tree exists to prevent.
+
+Called with `table_lock` held. The guard and the wake both read `p.thread`,
+and only the lock keeps the collector from taking it off and freeing the
+record in between. The callers that hold it are `proc_note`, `end`, and the
+group senders `notepg_kernel` and `sys_note`. See `on_thread_reaped`.
 */
 post_note :: proc "contextless" (p: ^Process, text: string) -> bool {
 	if p == nil || !p.live || p.thread == nil {
@@ -1049,6 +1077,10 @@ set_note_text :: proc "contextless" (p: ^Process, text: string) {
 /*
 request_end is `end` without the wait: the kernel's word set, the note
 that names it, and the wake. `end` waits after it; `/proc/n/ctl` does not.
+
+Called with `table_lock` held, for the reason `post_note` gives. The wake
+reads `p.thread`, and the lock keeps the collector from freeing the record
+meanwhile.
 */
 request_end :: proc "contextless" (p: ^Process) -> bool {
 	if p == nil || !p.live || p.thread == nil || intrinsics.volatile_load(&p.exit.done) {
@@ -1154,7 +1186,14 @@ end :: proc(p: ^Process, patience: int) -> bool {
 	if intrinsics.volatile_load(&p.exit.done) {
 		return true
 	}
-	request_end(p)
+	// The note under the lock that pins `p.thread`. The wait comes after it,
+	// with the lock let go, because `wait` sleeps and a `Spinlock` cannot be
+	// held across a sleep. See `request_end` and `on_thread_reaped`.
+	{
+		guard := sync.acquire(&table_lock)
+		request_end(p)
+		sync.release(&table_lock, guard)
+	}
 	return wait(p, patience)
 }
 
@@ -1402,10 +1441,14 @@ pointer, which is why this reads zero afterwards rather than reads freed
 memory.
 */
 blocked :: proc "contextless" (p: ^Process) -> u64 {
-	if p == nil || p.thread == nil {
+	if p == nil {
 		return 0
 	}
-	return p.thread.wakeups
+	// Under `table_lock`, so `p.thread` is a live record or nil, never one
+	// the collector is freeing. See `on_thread_reaped`.
+	guard := sync.acquire(&table_lock)
+	defer sync.release(&table_lock, guard)
+	return p.thread != nil ? p.thread.wakeups : 0
 }
 
 // ended reports whether a program already faulted, without waiting.
@@ -1778,11 +1821,21 @@ unload :: proc(p: ^Process) {
 	for i in 0 ..< p.seg_count {
 		segment_release(p.segs[i])
 	}
-	// The release, under the lock, so a claim on another core sees the slot
-	// whole and free rather than half zeroed and live.
+	// The thread record, then the slot, under one lock. The thread went Dead
+	// and the reaper gave its stack back, but the record stayed, so a note
+	// sender read a live Dead record. Zeroing the slot removes `p.thread`. The
+	// record is freed here if reap already reached it, and left for reap
+	// otherwise, which then finds `p.thread` gone and frees it. The release is
+	// under the lock, so a claim on another core sees the slot whole and free,
+	// not half zeroed and live. See `on_thread_reaped`.
 	guard := sync.acquire(&table_lock)
+	dead := p.thread
+	reaped := dead != nil && dead.reaped
 	p^ = Process{}
 	sync.release(&table_lock, guard)
+	if reaped {
+		sched.free_reaped(dead)
+	}
 }
 
 /*
