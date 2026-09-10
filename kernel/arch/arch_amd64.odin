@@ -41,6 +41,12 @@ serial_console :: proc "contextless" () -> Serial_Desc {
 // Device registers in memory, for the drivers above this line.
 mmio_read32 :: neutral.mmio_read32
 mmio_write32 :: neutral.mmio_write32
+mmio_read8 :: neutral.mmio_read8
+mmio_write8 :: neutral.mmio_write8
+mmio_read16 :: neutral.mmio_read16
+mmio_write16 :: neutral.mmio_write16
+mmio_read64 :: neutral.mmio_read64
+mmio_write64 :: neutral.mmio_write64
 
 // The firmware console, which this architecture does not have. The four
 // exist so `kernel/drivers/uart` can name them on every architecture.

@@ -68,6 +68,17 @@ anything failed at something the failure counter cannot see. A run that reports
 `0 checks passed` then looks exactly like a run with nothing to do. Every caller
 in the tree wrote `failures == 0 && checks > 0` for that reason.
 */
+/*
+check is `tally` for a result struct that embeds one.
+
+Every self-test defined this wrapper for its own result type, twenty-one
+times under nine names. One polymorphic form serves them all: `r` is any
+struct with a `tally` field, which `using tally` gives every result here.
+*/
+check :: proc "contextless" (r: ^$R, ok: bool, what: string) -> bool {
+	return tally(&r.tally, ok, what)
+}
+
 passed :: proc "contextless" (t: Tally) -> bool {
 	return t.failures == 0 && t.checks > 0
 }

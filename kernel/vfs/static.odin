@@ -33,12 +33,6 @@ Static_Node :: struct {
 	data:   string, // File contents; ignored for a directory
 }
 
-// Linux st_mode type bits, as Rgetattr carries them.
-@(private)
-S_IFDIR :: u32(0o040000)
-@(private)
-S_IFREG :: u32(0o100000)
-
 Static_Tree :: struct {
 	label: string,
 	nodes: []Static_Node,
@@ -305,7 +299,7 @@ static_handler :: proc "contextless" (
 		attr := vectra9.Rgetattr {
 			valid   = m.request_mask & GETATTR_BASIC,
 			qid     = node_qid(t, node),
-			mode    = n.dir ? S_IFDIR | 0o555 : S_IFREG | 0o444,
+			mode    = n.dir ? vectra9.S_IFDIR | 0o555 : vectra9.S_IFREG | 0o444,
 			nlink   = n.dir ? 2 : 1,
 			size    = n.dir ? 0 : u64(len(n.data)),
 			blksize = 512,

@@ -162,3 +162,30 @@ mmio_read32 :: proc "contextless" (base: rawptr, offset: uintptr) -> u32 {
 mmio_write32 :: proc "contextless" (base: rawptr, offset: uintptr, value: u32) {
 	intrinsics.volatile_store(cast(^u32)(uintptr(base) + offset), value)
 }
+
+// The same access at the other widths a device presents. Virtio's common
+// configuration is a mix of 8-, 16-, 32- and 64-bit fields, and the GIC's
+// priority registers are bytes.
+mmio_read8 :: proc "contextless" (base: rawptr, offset: uintptr) -> u8 {
+	return intrinsics.volatile_load(cast(^u8)(uintptr(base) + offset))
+}
+
+mmio_write8 :: proc "contextless" (base: rawptr, offset: uintptr, value: u8) {
+	intrinsics.volatile_store(cast(^u8)(uintptr(base) + offset), value)
+}
+
+mmio_read16 :: proc "contextless" (base: rawptr, offset: uintptr) -> u16 {
+	return intrinsics.volatile_load(cast(^u16)(uintptr(base) + offset))
+}
+
+mmio_write16 :: proc "contextless" (base: rawptr, offset: uintptr, value: u16) {
+	intrinsics.volatile_store(cast(^u16)(uintptr(base) + offset), value)
+}
+
+mmio_read64 :: proc "contextless" (base: rawptr, offset: uintptr) -> u64 {
+	return intrinsics.volatile_load(cast(^u64)(uintptr(base) + offset))
+}
+
+mmio_write64 :: proc "contextless" (base: rawptr, offset: uintptr, value: u64) {
+	intrinsics.volatile_store(cast(^u64)(uintptr(base) + offset), value)
+}

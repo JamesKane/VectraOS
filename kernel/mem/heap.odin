@@ -375,6 +375,20 @@ allocator :: proc "contextless" () -> runtime.Allocator {
 	return runtime.Allocator{procedure = allocator_proc, data = nil}
 }
 
+/*
+kernel_context is the context a kernel thread gives itself.
+
+A thread entry, an interrupt worker and a device handler all arrive
+contextless, and each one used to build the same context by hand: the runtime
+default with this heap as its allocator. That is the one context the kernel
+has, so it is built here.
+*/
+kernel_context :: proc "contextless" () -> runtime.Context {
+	c := runtime.default_context()
+	c.allocator = allocator()
+	return c
+}
+
 allocator_proc :: proc(
 	allocator_data: rawptr,
 	mode: runtime.Allocator_Mode,

@@ -48,9 +48,6 @@ SECTOR :: 512
 // Partitions a disk may name past `data` and `ctl`. The MBR holds four.
 MAX_PARTS :: 4
 
-S_IFDIR :: u32(0o040000)
-S_IFREG :: u32(0o100000)
-
 // A file kind within a disk directory. `Data` and `Ctl` first, then the
 // partitions, so a node's file field past `Ctl` is a partition index.
 FILE_DIR :: 0
@@ -496,14 +493,14 @@ attr_of :: proc "contextless" (node: i32, mask: u64) -> vectra9.Rgetattr {
 	mode: u32
 	size: u64
 	if dir {
-		mode = S_IFDIR | 0o555
+		mode = vectra9.S_IFDIR | 0o555
 	} else {
 		disk, file := split(node)
 		switch file {
 		case FILE_CTL:
-			mode = S_IFREG | 0o444
+			mode = vectra9.S_IFREG | 0o444
 		case:
-			mode = S_IFREG | 0o666
+			mode = vectra9.S_IFREG | 0o666
 			if base, span, ok := window(disk, file); ok {
 				_ = base
 				size = span * SECTOR

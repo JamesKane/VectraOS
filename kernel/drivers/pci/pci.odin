@@ -47,6 +47,12 @@ Device :: struct {
 	header:   u8, // Header type, without the multi-function bit
 }
 
+// requester_id is the number a function puts on the bus as the source of a
+// DMA: bus, device and function packed as `docs/SMMU.md` section 1 says.
+requester_id :: proc "contextless" (at: Address) -> u32 {
+	return u32(at.bus) << 8 | u32(at.dev) << 3 | u32(at.fn)
+}
+
 // Where a function's registers are.
 Bar :: struct {
 	phys:  uintptr,

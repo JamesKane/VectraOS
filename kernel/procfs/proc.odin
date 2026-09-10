@@ -82,9 +82,6 @@ FILE_NAMES := [File]string {
 PID_BITS :: 27
 FILE_BITS :: 4
 
-S_IFDIR :: u32(0o040000)
-S_IFREG :: u32(0o100000)
-
 @(private = "file")
 Proc_Device :: struct {
 	fids:   vfs.Fid_Table,
@@ -143,15 +140,15 @@ writable :: proc "contextless" (f: File) -> bool {
 mode_of :: proc "contextless" (f: File) -> u32 {
 	switch f {
 	case .Dir:
-		return S_IFDIR | 0o555
+		return vectra9.S_IFDIR | 0o555
 	case .Note, .Ctl:
-		return S_IFREG | 0o222
+		return vectra9.S_IFREG | 0o222
 	case .Mem, .Regs, .Fpregs:
-		return S_IFREG | 0o666
+		return vectra9.S_IFREG | 0o666
 	case .Status, .Ns, .Args, .Text, .Segment, .Fd, .Wait:
-		return S_IFREG | 0o444
+		return vectra9.S_IFREG | 0o444
 	}
-	return S_IFREG | 0o444
+	return vectra9.S_IFREG | 0o444
 }
 
 @(private = "file")

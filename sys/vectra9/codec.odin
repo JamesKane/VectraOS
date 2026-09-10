@@ -249,6 +249,13 @@ DT_UNKNOWN :: u8(0)
 DT_DIR :: u8(4)
 DT_REG :: u8(8)
 DT_LNK :: u8(10)
+DT_CHR :: u8(2)
+
+// Linux st_mode type bits, as Rgetattr carries them. Every server in the
+// tree answers with these, so they live here rather than in each one.
+S_IFDIR :: u32(0o040000)
+S_IFREG :: u32(0o100000)
+S_IFCHR :: u32(0o020000)
 
 // dirent_size is what one entry will occupy, so a server can stop filling a
 // buffer before it overruns the count the client asked for.

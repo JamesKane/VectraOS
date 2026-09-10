@@ -24,6 +24,12 @@ set_boot_layout :: riscv64.set_boot_layout
 serial_console :: riscv64.serial_console
 mmio_read32 :: neutral.mmio_read32
 mmio_write32 :: neutral.mmio_write32
+mmio_read8 :: neutral.mmio_read8
+mmio_write8 :: neutral.mmio_write8
+mmio_read16 :: neutral.mmio_read16
+mmio_write16 :: neutral.mmio_write16
+mmio_read64 :: neutral.mmio_read64
+mmio_write64 :: neutral.mmio_write64
 console_available :: riscv64.console_available
 console_write :: riscv64.console_write
 console_write_byte :: riscv64.console_write_byte

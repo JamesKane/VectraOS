@@ -75,9 +75,6 @@ ENV_MAX_FIDS :: 64
 
 // Plan 9's `env` files are `0666`, and its directory `0777`: the environment
 // is the process's own to change. Linux bits, because 9P2000.L carries them.
-S_IFDIR :: u32(0o040000)
-S_IFREG :: u32(0o100000)
-
 Var :: struct {
 	id:      i32,
 	name:    [MAX_NAME]u8,
@@ -581,7 +578,7 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 		attr := vectra9.Rgetattr {
 			valid   = m.request_mask & vfs.GETATTR_BASIC,
 			qid     = qid_of(node, v),
-			mode    = dir ? S_IFDIR | 0o777 : S_IFREG | 0o666,
+			mode    = dir ? vectra9.S_IFDIR | 0o777 : vectra9.S_IFREG | 0o666,
 			nlink   = dir ? 2 : 1,
 			blksize = 512,
 		}

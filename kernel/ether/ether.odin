@@ -39,9 +39,6 @@ ETHER_MAX_FIDS :: 16
 // that it is still a read that returns.
 ETHER_WAIT_TICKS :: 50
 
-S_IFDIR :: u32(0o040000)
-S_IFREG :: u32(0o100000)
-
 /*
 The nodes. The root holds a directory per card, `ether0` and on, and a card's
 three files live under its directory, so the mount at `/dev` gives
@@ -198,12 +195,12 @@ attr_of :: proc "contextless" (node: i32, mask: u64) -> vectra9.Rgetattr {
 	size: u64
 	_, kind, _ := card_of(node)
 	if dir {
-		mode = S_IFDIR | 0o555
+		mode = vectra9.S_IFDIR | 0o555
 	} else if kind == KIND_ADDR {
-		mode = S_IFREG | 0o444
+		mode = vectra9.S_IFREG | 0o444
 		size = 6
 	} else {
-		mode = S_IFREG | 0o666
+		mode = vectra9.S_IFREG | 0o666
 	}
 	return vectra9.Rgetattr {
 		valid   = mask & vfs.GETATTR_BASIC,

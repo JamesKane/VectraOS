@@ -528,3 +528,15 @@ await :: proc "contextless" (cond: Condition, arg: rawptr, patience: int) -> boo
 	}
 	return cond(arg)
 }
+
+// await_flag is `await` for the common case: a flag another thread sets.
+// The flag is read volatile, because the writer is another thread and the
+// compiler may not cache it across the delay.
+await_flag :: proc "contextless" (flag: ^bool, patience: int) -> bool {
+	return await(flag_set, flag, patience)
+}
+
+@(private = "file")
+flag_set :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.volatile_load((^bool)(arg))
+}

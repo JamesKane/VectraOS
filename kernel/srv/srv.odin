@@ -98,12 +98,6 @@ MAX_NAME :: 32
 // mount holds none -- it attaches to the posted service instead.
 SRV_MAX_FIDS :: 64
 
-// Linux st_mode type bits, as Rgetattr carries them.
-@(private = "file")
-S_IFDIR :: u32(0o040000)
-@(private = "file")
-S_IFREG :: u32(0o100000)
-
 /*
 One posted service.
 
@@ -952,7 +946,7 @@ srv_dispatch :: proc(
 			// 0o600 on an entry, because a posted service is a capability and
 			// not a public one. A permission model that means it arrives with
 			// the processes that would be checked against it.
-			mode    = dir ? S_IFDIR | 0o555 : S_IFREG | 0o600,
+			mode    = dir ? vectra9.S_IFDIR | 0o555 : vectra9.S_IFREG | 0o600,
 			nlink   = dir ? 2 : 1,
 			blksize = 512,
 		}

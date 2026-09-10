@@ -149,10 +149,6 @@ pipes: Pipe_Table
 
 PIPE_MAX_FIDS :: 32
 
-// Linux st_mode type bits, as Rgetattr carries them.
-@(private = "file")
-S_IFREG :: u32(0o100000)
-
 /*
 init brings the pipe server up. It binds nothing and registers nothing.
 
@@ -701,7 +697,7 @@ pipe_handler :: proc "contextless" (
 		reply^ = vectra9.Rgetattr {
 			valid   = m.request_mask & vfs.GETATTR_BASIC,
 			qid     = vectra9.Qid{path = u64(node)},
-			mode    = S_IFREG | 0o600,
+			mode    = vectra9.S_IFREG | 0o600,
 			nlink   = 1,
 			blksize = RING_SIZE,
 		}

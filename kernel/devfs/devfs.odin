@@ -140,17 +140,6 @@ DEV_NODES := [?]Dev_Node {
 // at boot, so a change to the table above shows up in the log.
 DEV_FILES :: len(DEV_NODES) - 1
 
-// Linux st_mode type bits, as Rgetattr carries them. A device is a character
-// device, and says so: that is what tells a POSIX layer not to seek it.
-@(private = "file")
-S_IFDIR :: u32(0o040000)
-@(private = "file")
-S_IFCHR :: u32(0o020000)
-
-// Linux d_type, for a listing. `sys/vectra9` names the two it needed first.
-@(private = "file")
-DT_CHR :: u8(2)
-
 /*
 One parked reader's wait, one per request slot.
 
@@ -906,8 +895,9 @@ devfs_handler :: proc "contextless" (
 			qid     = node_qid(node),
 			// 0o666 on a device, because `/dev/cons` is the one file every
 			// process is expected to be able to write. A permission model that
-			// says otherwise arrives with the processes.
-			mode    = dir ? S_IFDIR | 0o555 : S_IFCHR | 0o666,
+			// says otherwise arrives with the processes. A device is a character
+			// device, and says so: that is what tells a POSIX layer not to seek it.
+			mode    = dir ? vectra9.S_IFDIR | 0o555 : vectra9.S_IFCHR | 0o666,
 			nlink   = dir ? 2 : 1,
 			// A stream has no length, and zero is what stops a caller from
 			// reading one by its size. The framebuffer is not a stream. It has
@@ -1450,7 +1440,7 @@ devfs_readdir :: proc "contextless" (
 			vectra9.Dirent {
 				qid = node_qid(i32(i)),
 				offset = ordinal,
-				type = DEV_NODES[i].kind == .Dir ? vectra9.DT_DIR : DT_CHR,
+				type = DEV_NODES[i].kind == .Dir ? vectra9.DT_DIR : vectra9.DT_CHR,
 				name = DEV_NODES[i].name,
 			},
 		)
