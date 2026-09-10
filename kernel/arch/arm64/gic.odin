@@ -243,6 +243,20 @@ gicv2_route :: proc "contextless" (gsi: int, vector: u8, cpu: u32) {
 	dist_write(cfg, dist_read(cfg) & ~(u32(0b10) << shift))
 }
 
+// gicv2_set_edge makes a shared line edge-triggered, for a device that
+// pulses its line rather than holds it. The SMMU's event queue is one, and
+// its tree entry says so. A pulse on a level line is a fire the controller
+// may lose.
+gicv2_set_edge :: proc "contextless" (gsi: int) {
+	if !line_valid(gsi) {
+		return
+	}
+	id := uintptr(VECTOR_IRQ_BASE + gsi)
+	cfg := GICD_ICFGR + uintptr(id / 16 * 4)
+	shift := u32((id % 16) * 2)
+	dist_write(cfg, dist_read(cfg) | u32(0b10) << shift)
+}
+
 gicv2_set_mask :: proc "contextless" (gsi: int, masked: bool) {
 	if !line_valid(gsi) {
 		return

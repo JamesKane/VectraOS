@@ -39,6 +39,7 @@ import "base:intrinsics"
 import "kernel:arch"
 import "kernel:drivers/pci"
 import "kernel:mem"
+import "kernel:smmu"
 import "kernel:sync"
 
 // -- PCI identity ------------------------------------------------------------
@@ -90,12 +91,22 @@ STATUS_FAILED :: u8(128)
 // this is a 1.0 device and not a legacy one. Bit 32, hence feature word 1.
 VIRTIO_F_VERSION_1 :: u32(1) // bit 0 of feature word 1
 
+// ACCESS_PLATFORM, bit 33: the device's addresses go through the platform's
+// walker rather than straight to memory. A device behind the SMMU offers it
+// and requires it accepted. For this driver, whose stream is in bypass, the
+// addresses it hands over are still physical. `docs/SMMU.md` section 8.
+VIRTIO_F_ACCESS_PLATFORM :: u32(1) << 1 // bit 1 of feature word 1
+
 // -- The split virtqueue ------------------------------------------------------
 
 // Small on purpose. This driver issues one request and waits for it, so a
 // ring of sixteen descriptors is fifteen more than it needs and still fits
 // each of the three rings in well under a page.
 VIRTQ_SIZE :: u16(16)
+
+// How many spins a request is waited for. A disk answers in microseconds.
+// This is seconds, and past it the device is not answering at all.
+POLL_PATIENCE :: 200_000_000
 
 // Descriptor flags.
 VIRTQ_DESC_NEXT :: u16(1) // Another descriptor follows in `next`
@@ -162,10 +173,27 @@ Disk :: struct {
 	status_phys: u64,
 
 	lock:      sync.Spinlock,
+
+	// The walker's attach count this driver last saw. A change means a
+	// program held some device's stream since, and may have reset this
+	// one and rebuilt its queue. So the next transfer brings it up again
+	// on this driver's own rings first. `docs/SMMU.md` section 8.
+	generation: u64,
 }
 
 @(private = "file")
 disks: [MAX_DISKS]Disk
+
+// owned answers whether a program holds disk `n`'s stream, section 8's
+// rule. A disk a program attached is no longer the kernel's, and `#S` says
+// so.
+owned :: proc "contextless" (n: int) -> bool {
+	if n < 0 || n >= MAX_DISKS || !disks[n].used {
+		return false
+	}
+	at := disks[n].at
+	return smmu.stream_owned(u32(at.bus) << 8 | u32(at.dev) << 3 | u32(at.fn))
+}
 
 // count reports how many disks came up, for the boot line.
 count :: proc "contextless" () -> int {
@@ -380,11 +408,15 @@ happen and is a failure if it does.
 */
 @(private = "file")
 negotiate :: proc "contextless" (d: ^Disk) -> bool {
-	// Word 0: nothing this driver needs. Word 1: VERSION_1.
+	// Word 0: nothing this driver needs. Word 1: VERSION_1, and
+	// ACCESS_PLATFORM when the device offers it, which a device behind the
+	// walker does and refuses to work without.
+	w32(d.common, COMMON_DEVICE_FEATURE_SELECT, 1)
+	offered := r32(d.common, COMMON_DEVICE_FEATURE)
 	w32(d.common, COMMON_DRIVER_FEATURE_SELECT, 0)
 	w32(d.common, COMMON_DRIVER_FEATURE, 0)
 	w32(d.common, COMMON_DRIVER_FEATURE_SELECT, 1)
-	w32(d.common, COMMON_DRIVER_FEATURE, VIRTIO_F_VERSION_1)
+	w32(d.common, COMMON_DRIVER_FEATURE, VIRTIO_F_VERSION_1 | (offered & VIRTIO_F_ACCESS_PLATFORM))
 
 	set_status(d, STATUS_FEATURES_OK)
 	return r8(d.common, COMMON_DEVICE_STATUS) & STATUS_FEATURES_OK != 0
@@ -472,6 +504,16 @@ transfer :: proc "contextless" (n: int, sector: u64, buf: []u8, write: bool) -> 
 	g := sync.acquire(&d.lock)
 	defer sync.release(&d.lock, g)
 
+	// A program that held a stream since the last transfer may have reset
+	// this device and named its own rings to it. The handshake again, on
+	// this driver's rings, before the request goes on them.
+	if gen := smmu.attach_generation(); gen != d.generation {
+		d.generation = gen
+		if !reinit(d) {
+			return false
+		}
+	}
+
 	d.header^ = Blk_Header {
 		type   = write ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN,
 		sector = sector,
@@ -510,13 +552,21 @@ transfer :: proc "contextless" (n: int, sector: u64, buf: []u8, write: bool) -> 
 	// Ring the doorbell with the queue index.
 	w16(d.doorbell, 0, 0)
 
-	// Poll the used ring's idx, at index 1, until it passes what we have seen.
-	for {
+	// Poll the used ring's idx, at index 1, until it moves past the last
+	// value taken. Bounded, because a device a program held and gave back
+	// may be broken past this driver's rebuilding of it. A request it
+	// never answers is an I/O error rather than a machine that stops here.
+	answered := false
+	for _ in 0 ..< POLL_PATIENCE {
 		fence()
 		if d.used_ring[1] != d.last_used {
+			answered = true
 			break
 		}
 		arch.spin_hint()
+	}
+	if !answered {
+		return false
 	}
 	d.last_used = d.used_ring[1]
 
@@ -528,6 +578,44 @@ transfer :: proc "contextless" (n: int, sector: u64, buf: []u8, write: bool) -> 
 	// good. `sound.control` keeps the same barrier; this path had dropped it.
 	fence()
 	return d.status^ == VIRTIO_BLK_S_OK
+}
+
+/*
+reinit is the handshake again on a device a program reset. Status zero,
+the stream back to bypass, acknowledge, driver, the one feature,
+features-ok, the queue named by the rings this driver already holds, and
+driver-ok. The rings are zeroed and the used index forgotten, because the
+device's indexes restart at zero.
+*/
+@(private = "file")
+reinit :: proc "contextless" (d: ^Disk) -> bool {
+	w8(d.common, COMMON_DEVICE_STATUS, 0)
+	for r8(d.common, COMMON_DEVICE_STATUS) != 0 {}
+	// Reset, so nothing is in flight, and only now the stream back to
+	// bypass. A program that held it left the entry `abort`, and this
+	// driver's physical addresses need it gone. A stream a program still
+	// holds stays as it is, and `owned` keeps every transfer off it.
+	_ = smmu.stream_release(u32(d.at.bus) << 8 | u32(d.at.dev) << 3 | u32(d.at.fn))
+	set_status(d, STATUS_ACKNOWLEDGE)
+	set_status(d, STATUS_DRIVER)
+	if !negotiate(d) {
+		return false
+	}
+	rings := [3][^]u8{cast([^]u8)d.desc, cast([^]u8)d.avail, cast([^]u8)d.used_ring}
+	for ring in rings {
+		for i in 0 ..< mem.PAGE_SIZE {
+			ring[i] = 0
+		}
+	}
+	d.last_used = 0
+	w16(d.common, COMMON_QUEUE_SELECT, 0)
+	w16(d.common, COMMON_QUEUE_SIZE, VIRTQ_SIZE)
+	w64(d.common, COMMON_QUEUE_DESC, d.desc_phys)
+	w64(d.common, COMMON_QUEUE_DRIVER, d.avail_phys)
+	w64(d.common, COMMON_QUEUE_DEVICE, d.used_phys)
+	w16(d.common, COMMON_QUEUE_ENABLE, 1)
+	set_status(d, STATUS_DRIVER_OK)
+	return true
 }
 
 // read fills `buf` from `sector` onward; write does the reverse. Both are

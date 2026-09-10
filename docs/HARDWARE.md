@@ -861,6 +861,47 @@ interrupt reaching ring 3 with nothing but files and a mapping, no kernel
 driver. Proven on arm64, where the RTC is; riscv64's `#t` synthesises the same
 files over the PLIC, and a machine with no tree has none.
 
+**And the walker, things four and five: `dma`, the SMMU, and `blkfs`.**
+`docs/SMMU.md` is the design, and its twelve sections say what was
+learned. `kernel/smmu` drives the SMMUv3 in front of the PCIe root on
+`virt` with `iommu=smmuv3`. It builds a two-level stream table and one
+context descriptor per attached stream, each with an ASID of its own. Its
+command queue completes by a poll and its event queue drains on its line.
+Every function the PCI scan found gets a `bypass` entry before `SMMUEN`,
+so the kernel's drivers keep their physical addresses.
+
+A space carries a list of walkers. Every change that narrows an entry
+tells each one under the space's lock, at the change rather than from the
+core shootdown. The space may be dead by the time the shootdown runs. A
+PCI host node
+grows `dma`, `mmio32` and `mmio64`, and the four legacy pins `irq0` to
+`irq3`, from its `iommu-map`, `ranges` and `interrupt-map`.
+
+`attach <slot>
+<pid>` written to `dma` binds the slot's stream to that process's space.
+The line is a capability. The writer is the thread the transport's request
+slot remembers, and the target must be the writer or hold a file the
+writer serves.
+
+`servers/blkfs` is the first driver behind it. It is a program that reads
+the scratch disk through `mmio`, `mmio32` or `mmio64`, `dma` and memory
+of its own. The self-test compares its reading of the marker with `#S`'s.
+Both proofs hold. A transfer aimed at a page the program never
+mapped answers `fault 16 F_TRANSLATION 0x70000000 write` on the `dma`
+file, and the device recovers. A page given back with `segdetach` faults
+the device's next read of it, because the unmap told the walker.
+
+`--no-invalidate` is the control that fails it.
+
+Three things the model taught that the design did not know. QEMU's virtio
+devices reach memory directly until `iommu_platform=on` is on the device,
+and then require `ACCESS_PLATFORM` accepted. The device retries a refused
+transfer a hundred times and overflows a small event queue, which is a
+record lost and not an error. And the device reports such a request
+complete, so the fault line is the judgement and never the status byte.
+Proven on arm64 on both GIC lines. A machine with no such node grows no
+`dma` file and runs no `blkfs`.
+
 **And a GICv3, beside the v2.** The real board's GIC-700 is a version 3, which
 speaks to a core differently than version 2: the CPU interface is system
 registers (`ICC_*_EL1`) rather than a mapped page, each core has its own

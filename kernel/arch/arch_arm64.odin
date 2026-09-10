@@ -232,6 +232,7 @@ irq_attached :: arm64.gic_attached
 irq_lines :: arm64.gic_lines
 irq_version :: arm64.gic_version
 irq_route :: arm64.gic_route
+irq_set_edge :: arm64.gic_set_edge
 irq_set_mask :: arm64.gic_set_mask
 irq_masked :: arm64.gic_masked
 irq_vector_of :: arm64.gic_vector_of

@@ -39,6 +39,7 @@ when GIC_VERSION == 3 {
 	gic_ack :: gicv3_ack
 	gic_cpu_number :: gicv3_cpu_number
 	gic_route :: gicv3_route
+	gic_set_edge :: gicv3_set_edge
 	gic_set_mask :: gicv3_set_mask
 	gic_masked :: gicv3_masked
 	gic_vector_of :: gicv3_vector_of
@@ -60,6 +61,7 @@ when GIC_VERSION == 3 {
 	gic_ack :: gicv2_ack
 	gic_cpu_number :: gicv2_cpu_number
 	gic_route :: gicv2_route
+	gic_set_edge :: gicv2_set_edge
 	gic_set_mask :: gicv2_set_mask
 	gic_masked :: gicv2_masked
 	gic_vector_of :: gicv2_vector_of

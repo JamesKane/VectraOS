@@ -548,6 +548,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	// A device interrupt, waited on through the tree's `irq` file.
 	verify_tree_irq(&r)
 	verify_tree_dma(&r)
+	verify_blkfs(&r)
 	// A run placed at an address the caller named, which a firmware binary asks.
 	verify_fixedseg(&r)
 	verify_debugger(&r)
@@ -5399,6 +5400,139 @@ verify_tree_dma :: proc(r: ^Result) #no_bounds_check {
 	finish(r, p, "and the program is taken down")
 	check(r, !smmu.stream_owned(SLOT), "and the last close gave the stream back")
 	check(r, smmu.stream_aborted(SLOT), "with its entry reading abort, so the device faults rather than reads")
+}
+
+/*
+verify_blkfs runs the disk driver that is a program, `docs/SMMU.md` section
+11, and the two proofs `docs/HARDWARE.md` step 0 lists. `blkfs` attaches the
+scratch disk's stream to itself and serves the disk through the walker. The
+marker `docs/DISK.md` put at the DOS partition's first sector reads the same
+through `blkfs` as through `#S`. `#S` answers EIO for the disk while the
+program holds it, and serves it again after.
+
+Then the proofs, through `ctl`. A transfer aimed at a page the program
+never mapped is refused with
+a fault line, and the device recovers. A page the program gave back is not
+readable by the device. The control, `--no-invalidate`, fails the last one.
+A board with no walker is skipped.
+*/
+@(private = "file")
+verify_blkfs :: proc(r: ^Result) #no_bounds_check {
+	probe, perr := vfs.open_path(vfs.boot_namespace, "/dev/tree/pcie@10000000/dma", vfs.O_RDONLY)
+	if perr != vfs.OK {
+		return
+	}
+	vfs.chan_close(probe)
+	if !virtio.present(1) {
+		return
+	}
+	ns := vfs.boot_namespace
+
+	argv := new(Argv)
+	names := [?]string{"blkfs", "2"}
+	check(r, argv != nil && argv_from(argv, names[:]), "a record holds the disk driver's argument, the scratch disk's slot")
+	p, serr := spawn_path(nil, "/bin/blkfs", SPAWN_NS_COPY, argv)
+	free(argv)
+	if !check(r, serr == vfs.OK && p != nil, "the loader starts blkfs, a disk driver that is a program") {
+		return
+	}
+	r.programs += 1
+	posted := await_posted("blkfs")
+	if !posted {
+		// Each step of the bring-up has its own exit code, so the log says
+		// which door was shut rather than that one was. These come before
+		// the posting's own check so the first failure is the door.
+		if wait(p, PATIENCE) {
+			status := p.exit.status
+			check(r, status != 0x74, "it found the host's memory windows in ranges, and opened mmio32 or mmio64")
+			check(r, status != 0x75, "it attached the function's configuration page and mapped its three register structures")
+			check(r, status != 0x76, "it attached the function's stream to itself through dma")
+			check(r, status != 0x77, "it took the memory for its rings")
+			check(r, status != 0x78, "and the device completed the handshake on the program's own addresses")
+			check(r, status != 0x71, "and /srv/blkfs was posted")
+		}
+	}
+	if !check(r, posted, "which brings the device up through mmio, dma and its own memory, and posts /srv/blkfs") {
+		finish(r, p, "and the program is taken down")
+		return
+	}
+	check(r, srv.mount(ns, "/srv/blkfs", "/mnt") == vfs.OK, "the kernel mounts it at /mnt")
+
+	// -- The comparison, section 8 ------------------------------------------------------
+	ctl, cerr := vfs.open_path(ns, "/mnt/sd0/ctl", vfs.O_RDWR)
+	if check(r, cerr == vfs.OK && ctl != nil, "sd0/ctl opens") {
+		line: [256]u8
+		n, _ := vfs.chan_read(ctl, 0, line[:])
+		check(r, n > 0 && has_text(string(line[:n]), " sectors of 512 bytes"), "and reads the disk's geometry")
+	}
+	sector: [512]u8
+	marker: [512]u8
+	if data, derr := vfs.open_path(ns, "/mnt/sd0/data", vfs.O_RDONLY); check(r, derr == vfs.OK && data != nil, "sd0/data opens") {
+		n, rerr := vfs.chan_read(data, 0, sector[:])
+		check(r, rerr == vfs.OK && n == 512 && sector[510] == 0x55 && sector[511] == 0xAA, "and its first sector, read through the walker, is a partition table")
+		lba := u64(sector[454]) | u64(sector[455]) << 8 | u64(sector[456]) << 16 | u64(sector[457]) << 24
+		mn, merr := vfs.chan_read(data, lba * 512, marker[:])
+		check(r, merr == vfs.OK && mn == 512 && string(marker[:12]) == "VECTRA-PART0", "and the DOS partition's first sector carries the build's marker")
+		vfs.chan_close(data)
+	}
+	if kd, kerr := vfs.open_path(ns, "/dev/sd1/dos", vfs.O_RDONLY); check(r, kerr == vfs.OK, "#S still opens the same disk") {
+		back: [512]u8
+		_, rerr := vfs.chan_read(kd, 0, back[:])
+		check(r, rerr == vectra9.EIO, "and answers EIO for it while the program holds its stream")
+		vfs.chan_close(kd)
+	}
+
+	// -- The two proofs, section 10 -----------------------------------------------------
+	if ctl != nil {
+		line: [256]u8
+		wn, werr := vfs.chan_write(ctl, 0, transmute([]u8)string("prove unmapped"))
+		check(r, werr == vfs.OK && wn > 0, "prove unmapped: a transfer aimed at a page the program never mapped")
+		n, _ := vfs.chan_read(ctl, 0, line[:])
+		text := string(line[:n])
+		check(r, has_text(text, "fault 16 F_TRANSLATION 0x70000000"), "is refused, and the dma file names the stream, the type and the address")
+		check(r, has_text(text, "0x70000000 write"), "and the direction, a device write into memory it may not touch")
+		check(r, has_text(text, "recovered"), "and the device is reset, its queue rebuilt, and the disk reads correctly after")
+
+		wn, werr = vfs.chan_write(ctl, 0, transmute([]u8)string("prove freed"))
+		check(r, werr == vfs.OK && wn > 0, "prove freed: a sector written from a page, the page given back, the same write again")
+		n, _ = vfs.chan_read(ctl, 0, line[:])
+		text = string(line[:n])
+		check(r, has_text(text, "written, page freed at ") && has_text(text, "fault 16 F_TRANSLATION"), "and the second write faults, because the walker was told when the page went")
+		check(r, has_text(text, " read"), "a device read of memory it was told is gone, on the dma file")
+		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove is the stop")
+		vfs.chan_close(ctl)
+	}
+
+	if check(r, wait(p, PATIENCE), "and the program exits") {
+		check(r, p.exit.deliberate && p.exit.status == 0, "deliberately, with nothing to report")
+	}
+	check(r, srv.remove("blkfs") == vfs.OK, "the kernel takes the name away")
+	finish(r, p, "and it is taken down")
+	// The dead server's wire noticed the hangup, and its reader is leaving,
+	// which the unmount and the count after want finished.
+	pipe.quiesce()
+	check(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "the mount of the dead server comes down")
+
+	// -- After ---------------------------------------------------------------------------
+	check(r, smmu.events_of(0x04) == 0, "the walker never reported a bad stream table entry")
+	check(r, smmu.events_of(0x0A) == 0, "nor a bad context descriptor")
+	check(r, smmu.events_of(0x02) == 0 && smmu.events_of(0x03) == 0 && smmu.events_of(0x09) == 0, "nor a bad stream id or a table it could not fetch")
+	check(r, smmu.events_of(0x0B) == 0 && smmu.events_of(0x13) == 0 && smmu.events_of(0x12) == 0, "nor a walk that aborted, a permission fault or an access flag fault")
+	check(r, smmu.events_of(0x10) >= 2, "and the two proofs were translation faults, one each at least")
+	check(r, !smmu.broken(), "and the part is whole, a queue that overflowed on a device's retries being a record lost and not an error")
+	check(r, !smmu.stream_owned(16), "the last close gave the stream back")
+	if kd, kerr := vfs.open_path(ns, "/dev/sd1/dos", vfs.O_RDONLY); check(r, kerr == vfs.OK, "#S opens the disk again") {
+		back: [512]u8
+		n, rerr := vfs.chan_read(kd, 0, back[:])
+		same := rerr == vfs.OK && n == 512
+		for i in 0 ..< 512 {
+			if same && back[i] != marker[i] {
+				same = false
+			}
+		}
+		check(r, same, "and reads the marker sector byte for byte as the program did, the device brought up again on the kernel's rings")
+		vfs.chan_close(kd)
+	}
 }
 
 /*

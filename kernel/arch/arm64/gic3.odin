@@ -393,6 +393,17 @@ gicv3_route :: proc "contextless" (gsi: int, vector: u8, cpu: u32) {
 	gicd_write(cfg, gicd_read(cfg) & ~(u32(0b10) << shift))
 }
 
+// gicv3_set_edge is `gicv2_set_edge` on the version 3 distributor.
+gicv3_set_edge :: proc "contextless" (gsi: int) {
+	if !line_valid(gsi) {
+		return
+	}
+	id := VECTOR_IRQ_BASE + gsi
+	cfg := GICD_ICFGR + uintptr(id / 16 * 4)
+	shift := u32((id % 16) * 2)
+	gicd_write(cfg, gicd_read(cfg) | u32(0b10) << shift)
+}
+
 gicv3_set_mask :: proc "contextless" (gsi: int, masked: bool) {
 	if !line_valid(gsi) {
 		return

@@ -111,8 +111,10 @@ should be in.
     translate  V=1, Config=0b101. Stage 1 translates, stage 2 bypasses.
                `S1ContextPtr` names the context descriptor. `S1CDMax` is
                zero, one descriptor per stream. `S1Fmt` is linear. Faults
-               are recorded (`S1STALLD` set, no stall). The walk's
-               cacheability and shareability say write-back, inner.
+               terminate, which `IDR0.STALL_MODEL` already says, so
+               `S1STALLD` stays clear. QEMU's model calls an entry with it
+               set a bad one, and every transaction then aborted. The
+               walk's cacheability and shareability say write-back, inner.
     abort      V=1, Config=0b000. A stream that was attached and then
                detached. A device still in flight gets `F_STREAM_DISABLED`
                on the event queue, which section 5 turns into a line.
@@ -143,9 +145,16 @@ it. `T0SZ` must be between 16 and 39, the granule 4, 16 or 64 KiB, and the
 root aligned. All three hold.
 
 **The queues.** The command queue is 256 entries of 16 bytes, one page.
-The event queue is 128 entries of 32 bytes, one page. Each base is aligned
-to the larger of 32 bytes and the queue's size, which one page satisfies
-for both. The priority queue is not enabled.
+The event queue is 1024 entries of 32 bytes, eight pages on an eight-page
+boundary, through the aligned allocator below. The priority queue is not
+enabled.
+
+The event queue was one page of 128 in the first draft, and the first
+proof overflowed it. QEMU's `virtio-blk`
+retries a transfer the walker refused, a hundred and twenty-nine times for
+one sector. Every retry is a record, in one burst before a core can drain
+them. A full queue is a record lost, section 5, and a larger queue loses
+fewer.
 
 **One allocator call is missing.** `mem.alloc_pages` finds contiguous
 frames and promises no alignment past a page. A second-level block wants
@@ -282,12 +291,24 @@ the sixteenth while nobody reads is dropped and counted, and the count
 appears in the next line as `dropped N`. A ring rather than a queue that
 grows, because the handler runs where nothing may allocate.
 
-The global error line is the other interrupt. It means the part refused a
-command or could not write an event, and a driver cannot recover from
-either. The handler logs the error register and acknowledges through
-`GERRORN`. It marks the walker broken, after which every `dma` write
-answers `EIO` and every parked read returns. It does not panic. The
-machine's other work is not the device's.
+The global error line is the other interrupt, and it says one of two
+things. `EVENTQ_ABT_ERR` is a record the part could not write because the
+queue was full. The handler counts it as lost, acknowledges, and drains
+the queue. The part goes on, the way the ring above counts a line it
+dropped.
+
+Any other bit means the part refused a command or faulted in itself, and
+a driver cannot recover from that. The handler acknowledges
+through `GERRORN` and marks the walker broken. After that every `dma`
+write answers `EIO`, every parked read returns, and the ring says
+`broken`. It does not panic. The machine's other work is not the device's.
+
+**Both lines are edges.** The tree's `interrupts` flags say so, and the
+part pulses them. The tree's `irq` file makes every line it routes level,
+which is the handshake a device that holds its line wants. A pulse on a
+level line is a fire the controller may drop before a core sees it. So
+the walker's two lines are made edges after the route, `GICD_ICFGR`, and
+that is `arch.irq_set_edge`, a no-op on a controller with no such bit.
 
 ## 6. The `dma` file
 
@@ -383,6 +404,15 @@ and `virtio-sound` all do, and they stay until the board. So `smmu.init`
 writes a `bypass` entry for every function the PCI scan found, and only
 then sets `SMMUEN`. Those drivers do not know the walker exists.
 
+**QEMU's devices reach memory directly unless told otherwise.** A
+`virtio-blk-pci` on the machine line ignores the platform's walker until
+it carries `iommu_platform=on`. The trace shows it: not one translation
+until the scratch disk had the flag. With it the device offers
+`ACCESS_PLATFORM`, feature bit 33, and refuses to work unless the driver
+accepts it, so `kernel/drivers/virtio` and `blkfs` both do. Only the
+scratch disk carries the flag, and only on arm64. The ESP is the disk
+every program loads from, and its stream stays the kernel's.
+
 A stream a program attaches leaves bypass. From that write on, the kernel
 driver's next transfer to that device faults into the event queue. A
 driver that polls for completion would poll forever. `kernel/sd` is the
@@ -390,6 +420,20 @@ one that matters, and it takes one rule. `transfer` asks
 `smmu.stream_owned` first and answers `EIO` for a disk whose stream a
 program holds. A disk a program attached is no longer the kernel's, and
 `#S` says so rather than hangs.
+
+The poll itself is bounded now, seconds of spins, so a device that never
+answers is an `EIO` too.
+
+**And the disk comes back.** A program that held a disk reset it and named
+its own rings to it, and its detach left the entry `abort`. So the kernel
+driver keeps the walker's attach count, and a transfer after it changed
+brings the device up again first. First a reset, so nothing is in flight.
+Then `smmu.stream_release`, which puts an entry that is `abort` and that
+no attach holds back to `bypass`. Then the handshake on the driver's own
+rings.
+
+The self-test reads the marker through `#S` after `blkfs` is gone and
+gets the same bytes.
 
 That is also how the step's comparison runs. `sd` reads the scratch disk's
 marker at boot through bypass. `blkfs` attaches the same disk later and
@@ -438,17 +482,25 @@ saw.
 - A transfer aimed outside the driver's space is refused with a fault
   line and nothing else changes. `blkfs` submits a read whose data
   descriptor names an address below `USER_MAX` it never mapped. The `dma`
-  read answers `fault 16 F_TRANSLATION <that address> write`. QEMU marks
-  the device as needing a reset, `blkfs` resets it and rebuilds its
-  queue, and the marker sector reads correctly after.
+  read answers `fault 16 F_TRANSLATION 0x70000000 write`. `blkfs` resets
+  the device and rebuilds its queue, and the marker sector reads
+  correctly after. The judgement is the line, not the device's status.
+  QEMU's `virtio-blk` reports a request complete whose data it could not
+  reach, so a proof that trusted the status byte would call the refusal a
+  success. A read of the `dma` file parks. A proof that may have no line
+  to read, the control below, bounds it with an alarm and a note handler
+  that continues, which is `EINTR` and `no fault line`.
 - A page the driver gave back is not readable by the device. `blkfs` maps
   a buffer and writes a sector from it, so the walker's TLB holds the
-  translation. It frees the buffer with `segfree` and writes the sector
-  from the same address again. The second transfer faults.
-- The negative control for that proof is `-define:VECTRA_SMMU_NO_INVALIDATE`,
-  which skips the walker's call at every change. Under it the second transfer
-  lands, the sector holds the freed page's bytes, and the check fails,
-  which is what a control is for. The control uses a device read of
+  translation. It frees the buffer with `segdetach` and writes the sector
+  from the same address again. The `dma` read answers `fault 16
+  F_TRANSLATION <the page> read`, the device reading memory it was told
+  is gone. The ring is drained before each proof, because a device's
+  retries of the last one are lines too.
+- The negative control for that proof is `--no-invalidate`, which is
+  `-define:VECTRA_SMMU_NO_INVALIDATE` and skips the walker's call at every
+  change. Under it the second transfer lands, the line is `no fault line`,
+  and the check fails, which is what a control is for. The control uses a device read of
   memory rather than a device write into it. A stale translation then
   reads a recycled frame rather than corrupts one.
 
@@ -462,10 +514,14 @@ way `servers/ramfs` is. `init` starts it, and it is mounted where `#S` is
 today, serving `sdN/data` and `sdN/ctl` in the shape `docs/DISK.md` gives
 them.
 
-It opens three things under `pcie@10000000`. `mmio` for the ECAM window,
-through which it finds the device, enables bus mastering and reads the
-BARs. `dma`, to which it writes `attach <rid> <self>`. And the device's
-interrupt line, which is one more file `kernel/tree` grows.
+It opens four things under `pcie@10000000`. `mmio` for the ECAM window,
+of which it attaches the one page that is its function's configuration
+space. That is `segattach_window`, the `segattach` that takes an offset
+and a length. `mmio32` or `mmio64`, the host's memory windows from its
+`ranges`, out of which it attaches the pages a BAR's register structures
+fall in. `dma`, to which it writes `attach <rid> <self>`. And the
+device's interrupt line, which is one more file `kernel/tree` grows,
+though the first `blkfs` polls as the kernel's driver polls.
 
 The PCI host node has no `interrupts`. It has `interrupt-map`, and the
 four legacy pins route to shared lines 3 to 6 rotated by device number.
@@ -475,9 +531,7 @@ is a later step, and the ITS is not on this machine line.
 
 The virtqueue is memory from `segalloc`, and the addresses it hands the
 device are the addresses it wrote them at. That is the sentence the whole
-design exists for. The device's BAR is a second `segattach`, of the window
-the ECAM names. `mmio` covers it because the BAR falls inside the host
-node's `ranges`. About nine hundred lines with the two proofs, and
+design exists for. About nine hundred lines with the two proofs, and
 `kernel/sd` stays beside it until the board.
 
 ## 12. The order of commits

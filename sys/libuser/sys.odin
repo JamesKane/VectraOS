@@ -256,7 +256,20 @@ Nothing releases one, because nothing needs to yet: a server that attaches a
 card holds it until it exits.
 */
 segattach :: proc "contextless" (fd: int) -> (addr: uintptr, err: i64) {
-	r := raw1(abi.SYS_SEGATTACH, u64(fd))
+	return segattach_window(fd, 0, 0)
+}
+
+/*
+segattach_window is `segattach` for a part of a device. It maps `bytes` of
+it from `offset`, both in bytes, and zero and zero means the whole of it. A
+PCI host's memory window is gigabytes, and a driver wants the few pages of
+it that hold its function's registers. The mapping covers the pages those
+bytes fall in. The address answered is the first byte asked for, which is
+not page-aligned when `offset` is not. `EINVAL` is a window the device does
+not hold.
+*/
+segattach_window :: proc "contextless" (fd: int, offset: u64, bytes: u64) -> (addr: uintptr, err: i64) {
+	r := raw3(abi.SYS_SEGATTACH, u64(fd), offset, bytes)
 	if r < 0 {
 		return 0, r
 	}

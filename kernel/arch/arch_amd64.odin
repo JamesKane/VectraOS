@@ -385,6 +385,13 @@ irq_lines :: amd64.ioapic_lines
 irq_version :: amd64.ioapic_version
 irq_route :: amd64.ioapic_route
 irq_set_mask :: amd64.ioapic_set_mask
+
+// irq_set_edge makes a line edge-triggered after it is routed. The I/O APIC
+// routes every line the way the ACPI tables say. No device here asks for
+// an edge after the fact, so this is the honest no-op.
+irq_set_edge :: proc "contextless" (gsi: int) {
+	_ = gsi
+}
 irq_masked :: amd64.ioapic_masked
 irq_vector_of :: amd64.ioapic_vector_of
 irq_ack :: amd64.lapic_eoi

@@ -237,6 +237,11 @@ irq_lines :: riscv64.plic_lines
 irq_version :: riscv64.plic_version
 irq_route :: riscv64.plic_route
 irq_set_mask :: riscv64.plic_set_mask
+
+// irq_set_edge: a PLIC has no trigger type to set, so this is a no-op.
+irq_set_edge :: proc "contextless" (gsi: int) {
+	_ = gsi
+}
 irq_masked :: riscv64.plic_masked
 irq_vector_of :: riscv64.plic_vector_of
 irq_ack :: riscv64.timer_ack

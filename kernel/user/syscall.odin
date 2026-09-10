@@ -404,7 +404,7 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		// the door returns into a new program. See `exec.odin`.
 		result = sys_exec(frame, uintptr(a0), int(a1), uintptr(a2), int(a3))
 	case SYS_SEGATTACH:
-		result = sys_segattach(int(a0))
+		result = sys_segattach(int(a0), a1, a2)
 	case SYS_SEGALLOC:
 		result = sys_segalloc(a0, a1, a2)
 	case SYS_SEGBRK:
@@ -1352,7 +1352,7 @@ Returns the address, or `-errno`. `ENODEV` is the honest answer for a file
 that is a stream, which is almost all of them.
 */
 @(private = "file")
-sys_segattach :: proc(fd: int) -> i64 {
+sys_segattach :: proc(fd: int, offset: u64, want: u64) -> i64 {
 	p := current()
 	c, _, held := fd_take(p, fd)
 	if !held {
@@ -1363,6 +1363,20 @@ sys_segattach :: proc(fd: int) -> i64 {
 	phys, bytes, device_mem, ok := vfs.chan_device(c)
 	if !ok || bytes == 0 {
 		return -i64(vectra9.ENODEV)
+	}
+
+	// A window out of the device, `libuser.segattach_window`: the pages the
+	// bytes asked for fall in, and the answer is the first byte asked for.
+	// Zero and zero is the whole device, which is what `segattach` asks.
+	within := uintptr(0)
+	if want != 0 || offset != 0 {
+		if want == 0 || offset >= bytes || want > bytes - offset {
+			return -i64(vectra9.EINVAL)
+		}
+		start := offset & ~u64(arch.PAGE_SIZE - 1)
+		within = uintptr(offset - start)
+		bytes = offset + want - start
+		phys += uintptr(start)
 	}
 
 	// Whole pages, both ends. A device that ends mid-page still owns the rest
@@ -1399,7 +1413,7 @@ sys_segattach :: proc(fd: int) -> i64 {
 	if !map_run(p, seg) {
 		return -i64(vectra9.ENOMEM)
 	}
-	return i64(va)
+	return i64(va + within)
 }
 
 /*

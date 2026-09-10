@@ -119,12 +119,16 @@ import "kernel:sync"
 @(private) QUEUE_BASE_RA :: u64(1) << 62
 @(private) ADDR_MASK :: u64(0x000F_FFFF_FFFF_FFC0) // bits 51:6
 
-// The queues, section 2: 256 commands of 16 bytes, 128 events of 32 bytes,
-// one page each.
+// The queues, section 2: 256 commands of 16 bytes in one page, and 1024
+// events of 32 bytes in eight, aligned to their own size. A device retries a
+// transfer the walker refused, and every retry is a record. QEMU's
+// virtio-blk made a hundred and twenty-nine of one refused sector. That
+// overflowed a queue of 128 in one burst before a core could drain it.
 @(private) CMDQ_LOG2 :: 8
 @(private) CMDQ_ENTRIES :: 1 << CMDQ_LOG2
-@(private) EVENTQ_LOG2 :: 7
+@(private) EVENTQ_LOG2 :: 10
 @(private) EVENTQ_ENTRIES :: 1 << EVENTQ_LOG2
+@(private) EVENTQ_PAGES :: EVENTQ_ENTRIES * 32 / mem.PAGE_SIZE
 
 // The commands this issues, by opcode in the low byte of the first word.
 @(private) CMD_CFGI_STE :: u64(0x03)
@@ -143,8 +147,11 @@ import "kernel:sync"
 @(private) STE_CONFIG_BYPASS :: u64(0b100)
 @(private) STE_CONFIG_S1 :: u64(0b101)
 @(private) STE_CONFIG_MASK :: u64(0b111) << STE_CONFIG_SHIFT
-// Word 1: S1CIR, S1COR write-back, S1CSH inner, S1STALLD, SHCFG incoming.
-@(private) STE1_S1_WALK :: u64(1) << 2 | u64(1) << 4 | u64(3) << 6 | u64(1) << 27
+// Word 1: S1CIR, S1COR write-back, S1CSH inner, SHCFG incoming. S1STALLD,
+// bit 27, stays clear. A part whose IDR0 says faults terminate never
+// stalls, and QEMU's model refuses an entry with the bit set as a bad STE.
+// That made every transaction on the stream abort. `docs/SMMU.md` section 2.
+@(private) STE1_S1_WALK :: u64(1) << 2 | u64(1) << 4 | u64(3) << 6
 @(private) STE1_SHCFG_INCOMING :: u64(1) << 44
 @(private) STE_BYTES :: 64
 @(private) STE_PER_BLOCK :: 1 << STRTAB_SPLIT
@@ -235,6 +242,8 @@ Unit :: struct {
 	eventq:    [^][4]u64,
 	eventq_cons: u32,
 	events:    u64, // records taken off the event queue
+	lost:      u64, // times the queue overflowed and the part dropped a record
+	by_type:   [256]u64, // of each type, for a self-test that names them
 	sink:      Sink,
 
 	cd_phys:   uintptr,
@@ -242,6 +251,7 @@ Unit :: struct {
 	attaches:  [SLOTS]Attach,
 	attached:  int,
 	bypassed:  int,
+	generation: u64, // attaches ever, for a kernel driver that shares a device
 }
 
 @(private)
@@ -326,10 +336,12 @@ issue :: proc "contextless" (w0, w1: u64) -> bool {
 }
 
 // gerror_pending: a bit set in GERROR the driver has not acknowledged in
-// GERRORN. Any one means a queue the part refused.
+// GERRORN, other than a lost event. The line's handler counts and
+// acknowledges that one on its own. Any other means a queue the part
+// refused.
 @(private)
 gerror_pending :: proc "contextless" () -> bool {
-	return read32(GERROR) ~ read32(GERRORN) != 0
+	return (read32(GERROR) ~ read32(GERRORN)) & ~GERROR_EVENTQ_ABT_ERR != 0
 }
 
 /*
@@ -524,6 +536,7 @@ drain_events :: proc "contextless" () {
 			write  = rec[1] & EVT1_RNW == 0,
 		}
 		unit.events += 1
+		unit.by_type[e.fault] += 1
 		unit.eventq_cons = (unit.eventq_cons + 1) & mask
 		if unit.sink != nil {
 			unit.sink(e)
@@ -533,30 +546,86 @@ drain_events :: proc "contextless" () {
 }
 
 /*
-on_gerror is the global error line, section 5. The part refused a command or
-could not write an event, and a driver cannot recover from either. The bits
-are acknowledged through `GERRORN`, the unit is marked broken, after which
-every attach answers `Broken`, and the sink is told once. The machine's
-other work is not the device's, so this does not panic.
+on_gerror is the global error line, section 5, and it says one of two
+things. An event the part could not write, because the queue was full, is
+a record lost. It is counted and acknowledged, the queue is drained, and
+the part goes on, the way the tree's ring counts a line it dropped.
+
+A command the part refused, or a fault in the part itself, is a unit a
+driver cannot recover. The bits are acknowledged through `GERRORN` and
+the unit is marked broken. After that every attach answers `Broken`, and
+the sink is told once. The machine's other work is not the device's, so
+this does not panic.
 */
 @(private)
 on_gerror :: proc "contextless" (r: arch.Resume) -> arch.Resume {
+	fatal := false
 	{
 		guard := sync.acquire(&unit.lock)
 		defer sync.release(&unit.lock, guard)
+		pending := read32(GERROR) ~ read32(GERRORN)
+		if pending & GERROR_EVENTQ_ABT_ERR != 0 {
+			unit.lost += 1
+		}
+		if pending & ~GERROR_EVENTQ_ABT_ERR != 0 {
+			unit.broken = true
+			fatal = true
+		}
 		write32(GERRORN, read32(GERROR))
-		unit.broken = true
 	}
-	if unit.sink != nil {
+	if !fatal {
+		drain_events()
+	} else if unit.sink != nil {
 		unit.sink(Event{kind = .Broken})
 	}
 	arch.irq_ack()
 	return r
 }
 
+// lost answers how many times the part dropped a record for a full queue.
+lost :: proc "contextless" () -> u64 {
+	return unit.lost
+}
+
+// stream_config answers a stream's entry as the part reads it: bit 0 valid,
+// then the configuration field, or 0xFF for a stream past the table. For a
+// self-test that says what state an entry is in rather than that it is wrong.
+stream_config :: proc "contextless" (stream: u32) -> u64 {
+	if !unit.present {
+		return 0xFF
+	}
+	guard := sync.acquire(&unit.lock)
+	defer sync.release(&unit.lock, guard)
+	valid, config := ste_state(stream)
+	return (valid ? 1 : 0) | config << 1
+}
+
+// registers answers CR0ACK, GERROR and GERRORN, for a self-test's line.
+registers :: proc "contextless" () -> (cr0ack, gerror, gerrorn: u32) {
+	if !unit.present {
+		return 0, 0, 0
+	}
+	return read32(CR0ACK), read32(GERROR), read32(GERRORN)
+}
+
+// poll drains the event queue without waiting for its line, for a self-test
+// that asks whether records are there that no interrupt delivered.
+poll :: proc "contextless" () {
+	if unit.present && unit.enabled {
+		drain_events()
+	}
+}
+
 // events answers how many records came off the queue, for a self-test.
 events :: proc "contextless" () -> u64 {
 	return unit.events
+}
+
+// events_of answers how many records of one type came off the queue. A
+// self-test can then say which kind of fault it saw rather than that it
+// saw one.
+events_of :: proc "contextless" (kind: u32) -> u64 {
+	return unit.by_type[kind & 0xFF]
 }
 
 // -- Bring-up ----------------------------------------------------------------------------
@@ -644,7 +713,14 @@ init :: proc "contextless" (node: Node, found: bool) -> Info {
 
 	// The tables and the queues, one page each. The first level's page holds
 	// 2^(sid_bits-8) descriptors of 8 bytes, at most 4 KiB.
-	if !alloc_page(&unit.l1_phys) || !alloc_page(&unit.cmdq_phys) || !alloc_page(&unit.eventq_phys) || !alloc_page(&unit.cd_phys) {
+	if !alloc_page(&unit.l1_phys) || !alloc_page(&unit.cmdq_phys) || !alloc_page(&unit.cd_phys) {
+		info.status = .No_Memory
+		return info
+	}
+	if eq, got := mem.alloc_pages_aligned(EVENTQ_PAGES, EVENTQ_PAGES); got {
+		zero_pages(eq, EVENTQ_PAGES)
+		unit.eventq_phys = eq
+	} else {
 		info.status = .No_Memory
 		return info
 	}
@@ -695,11 +771,16 @@ arm_lines :: proc "contextless" () {
 	if unit.eventq_spi <= 0 || unit.gerror_spi <= 0 {
 		return
 	}
+	// Both lines are pulses, which the tree's `interrupts` flags say. So
+	// each is made an edge after the route makes it a level. A pulse on a
+	// level line is a fire the controller may drop before a core sees it.
 	arch.set_interrupt_handler(arch.VECTOR_IRQ_BASE + unit.eventq_spi, on_event)
 	arch.irq_route(unit.eventq_spi, arch.irq_vector_of(unit.eventq_spi), 0)
+	arch.irq_set_edge(unit.eventq_spi)
 	arch.irq_set_mask(unit.eventq_spi, false)
 	arch.set_interrupt_handler(arch.VECTOR_IRQ_BASE + unit.gerror_spi, on_gerror)
 	arch.irq_route(unit.gerror_spi, arch.irq_vector_of(unit.gerror_spi), 0)
+	arch.irq_set_edge(unit.gerror_spi)
 	arch.irq_set_mask(unit.gerror_spi, false)
 	write32(IRQ_CTRL, IRQ_CTRL_EVENTQ | IRQ_CTRL_GERROR)
 	for _ in 0 ..< PATIENCE {
@@ -827,9 +908,18 @@ attach :: proc "contextless" (stream: u32, space: ^mem.Address_Space) -> (handle
 			return -1, .Broken
 		}
 		unit.attached += 1
+		unit.generation += 1
 	}
 	mem.walker_attach(space, &unit.attaches[slot].w)
 	return slot, .None
+}
+
+// attach_generation answers how many attaches there have ever been. A kernel
+// driver whose device a program may have reset compares it with the count
+// it last saw, section 8. A change brings the device up again on its own
+// rings.
+attach_generation :: proc "contextless" () -> u64 {
+	return intrinsics.volatile_load(&unit.generation)
 }
 
 /*
@@ -883,6 +973,42 @@ abort_stream :: proc "contextless" (a: ^Attach) {
 	}
 	_ = issue(CMD_TLBI_NH_ASID | u64(a.asid) << 48, 0)
 	_ = cmd_sync()
+}
+
+/*
+stream_release gives a stream back to the kernel's own driver, section 8.
+A stream a program held is `abort` after its detach, so a device still in
+flight faults rather than reads a recycled frame. The kernel driver that
+shares the device resets it, and only then, with nothing in flight, asks
+here. An entry that is `abort` and that no attach holds goes back to
+`bypass`, which is what the driver's physical addresses need. An entry a
+program holds, or one never bypassed, is left as it is, and the answer says
+whether the entry is bypass now.
+*/
+stream_release :: proc "contextless" (stream: u32) -> bool {
+	if !unit.present || !unit.enabled {
+		return false
+	}
+	guard := sync.acquire(&unit.lock)
+	defer sync.release(&unit.lock, guard)
+	for i in 0 ..< SLOTS {
+		a := &unit.attaches[i]
+		if a.used && a.stream == stream {
+			return false
+		}
+	}
+	valid, config := ste_state(stream)
+	if valid && config == STE_CONFIG_BYPASS {
+		return true
+	}
+	if !valid || config != STE_CONFIG_ABORT {
+		return false
+	}
+	e, ok := ste(stream)
+	if !ok {
+		return false
+	}
+	return ste_write(stream, e, STE_V | STE_CONFIG_BYPASS << STE_CONFIG_SHIFT, STE1_SHCFG_INCOMING)
 }
 
 // stream_aborted answers whether a stream's entry is `abort`: attached once

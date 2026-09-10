@@ -26,6 +26,9 @@ Options:
     --gfx                        Open a QEMU window, otherwise headless
     --smp=N                      Cores QEMU presents (default: 4)
     --pcap                       fleet: capture each machine's frames to build/net-{a,b}.pcap
+    --no-invalidate              The walker is told nothing: docs/SMMU.md's negative control, which must fail
+    --qemu-log                   QEMU's own guest-error and unimplemented log, to build/qemu.log
+    --gdb                        Open QEMU's stub on :1234 without halting, so a wedged boot can be read
 
 An Odin program rather than a shell script, for one reason. The flag handling,
 the arch table and the link line will all grow per-architecture.
@@ -90,6 +93,7 @@ user_programs := [?]User_Program {
 	{name = "memfs", path = "servers/memfs"},
 	{name = "fatfs", path = "servers/fatfs"},
 	{name = "kfs", path = "servers/kfs"},
+	{name = "blkfs", path = "servers/blkfs"},
 	{name = "pwd", path = "cmd/pwd"},
 	{name = "mkdir", path = "cmd/mkdir"},
 	{name = "rm", path = "cmd/rm"},
@@ -333,6 +337,9 @@ Options :: struct {
 	gfx:     bool,
 	smp:     int,
 	gic:     int, // arm64: the interrupt-controller version, 2 or 3
+	no_invalidate: bool, // -define:VECTRA_SMMU_NO_INVALIDATE, the control that must fail
+	qemu_log: bool, // -d guest_errors,unimp -D build/qemu.log: what the model refused
+	gdb: bool, // -s: the stub open, the machine running
 	pcap:    bool, // The fleet's frames, captured at QEMU's netdev
 	hostname: string, // Whose host key the staged /adm carries;  when unset
 
@@ -378,6 +385,12 @@ main :: proc() {
 			opts.gic = n
 		case arg == "--release":
 			opts.release = true
+		case arg == "--no-invalidate":
+			opts.no_invalidate = true
+		case arg == "--qemu-log":
+			opts.qemu_log = true
+		case arg == "--gdb":
+			opts.gdb = true
 		case arg == "--gfx":
 			opts.gfx = true
 		case arg == "--pcap":
@@ -472,6 +485,11 @@ build_kernel :: proc(opts: Options) {
 	// machine line `qemu_machine_for` picks has to match it.
 	if opts.arch == .arm64 && opts.gic == 3 {
 		append(&compile, "-define:VECTRA_GIC=3")
+	}
+	// The negative control `docs/SMMU.md` section 10 names: every entry
+	// changes and no walker is told, and the freed-page proof must fail.
+	if opts.no_invalidate {
+		append(&compile, "-define:VECTRA_SMMU_NO_INVALIDATE=true")
 	}
 	run(compile[:])
 
@@ -1402,7 +1420,16 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	append(&args, "-drive", fmt.tprintf("if=none,id=esp,format=raw,file=fat:rw:%s", ESP_DIR))
 	append(&args, "-device", "virtio-blk-pci,drive=esp,bootindex=0,disable-legacy=on")
 	append(&args, "-drive", fmt.tprintf("if=none,id=scratch,format=raw,file=%s", SCRATCH_IMG))
-	append(&args, "-device", "virtio-blk-pci,drive=scratch,disable-legacy=on")
+	// The scratch disk goes through the walker on the board that has one:
+	// QEMU's virtio devices reach memory directly unless told otherwise,
+	// and `iommu_platform=on` is the telling. It offers the driver
+	// ACCESS_PLATFORM, which `kernel/drivers/virtio` and `blkfs` accept.
+	// `docs/SMMU.md` section 8.
+	if opts.arch == .arm64 {
+		append(&args, "-device", "virtio-blk-pci,drive=scratch,disable-legacy=on,iommu_platform=on")
+	} else {
+		append(&args, "-device", "virtio-blk-pci,drive=scratch,disable-legacy=on")
+	}
 	// A virtio-net card on QEMU's user-mode network. SLIRP answers ARP for the
 	// gateway at 10.0.2.2, which is what the kernel's net self-test round-trips
 	// against. `docs/FLEET.md` step 0's bench replaces this with a socket
@@ -1428,6 +1455,14 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	case "stdio": append(&args, "-serial", "stdio")
 	case "file":  append(&args, "-serial", "file:build/serial.log")
 	case:         die("unknown --serial=%s (want stdio or file)", opts.serial)
+	}
+	// What the model refused and what it does not implement, for a driver
+	// whose device answers all-ones and says nothing else.
+	if opts.qemu_log {
+		append(&args, "-d", "guest_errors,unimp,trace:smmuv3_*,trace:smmu_*", "-D", "build/qemu.log")
+	}
+	if opts.gdb && !debug {
+		append(&args, "-s")
 	}
 
 	// A QMP-less monitor on a unix socket, for a host that wants to drive the

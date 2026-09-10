@@ -559,6 +559,13 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 		reply^ = vectra9.error_reply(vectra9.ENXIO)
 		return
 	}
+	// A disk a program attached is no longer the kernel's, `docs/SMMU.md`
+	// section 8. Its transfers would fault into the walker's event queue
+	// and this poll would never end, so the answer is EIO instead.
+	if virtio.owned(disk) {
+		reply^ = vectra9.error_reply(vectra9.EIO)
+		return
+	}
 	n := read_bytes(disk, base, span, m.offset, buf[:room])
 	if n < 0 {
 		reply^ = vectra9.error_reply(vectra9.EIO)
@@ -622,6 +629,10 @@ do_write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 	base, span, ok := window(disk, file)
 	if !ok {
 		reply^ = vectra9.error_reply(vectra9.ENXIO)
+		return
+	}
+	if virtio.owned(disk) {
+		reply^ = vectra9.error_reply(vectra9.EIO)
 		return
 	}
 	n := write_bytes(disk, base, span, m.offset, m.data)

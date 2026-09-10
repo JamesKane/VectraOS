@@ -273,6 +273,12 @@ Frame :: struct {
 	map_at:  int,
 	map_len: int,
 	ic:      int,
+
+	// A `ranges` seen in this node, decoded when the node ends for the
+	// same reason. A PCI host's memory windows become `mmio32` and
+	// `mmio64`, the files a driver maps a function's registers out of.
+	ranges_at:  int,
+	ranges_len: int,
 }
 
 // The four legacy pins a PCI host routes, `irq0` to `irq3`, and their names
@@ -541,6 +547,37 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, it
 				// read. A device at slot `d` on pin `p` reads
 				// `irq<(d + p - 1) mod 4>`, the rotation the map spells.
 				f := &stack[sp]
+				// A PCI host's `ranges`. An entry is the child's three
+				// cells, whose high cell's type bits say 32-bit or 64-bit
+				// memory, then the parent's address and the size. Those
+				// two are in the parent's and this node's counts. Each
+				// memory window grows a file a driver attaches a BAR's
+				// pages out of.
+				if f.ranges_len > 0 && f.ac == 3 && sp > 0 {
+					pac := stack[sp - 1].ac
+					entry := (3 + pac + f.sc) * 4
+					if pac >= 1 && pac <= 2 && f.sc >= 1 && f.sc <= 2 {
+						for e := 0; e + entry <= f.ranges_len; e += entry {
+							ra := f.ranges_at + e
+							kind := be32(blob, ra) & 0x0300_0000
+							if kind != 0x0200_0000 && kind != 0x0300_0000 {
+								continue
+							}
+							base, size, rok := decode_reg(blob[ra + 12:ra + entry], pac, f.sc)
+							if !rok || size == 0 {
+								continue
+							}
+							widx := count
+							count += 1
+							if widx < len(out) {
+								out[widx] = vfs.Static_Node{name = kind == 0x0200_0000 ? "mmio32" : "mmio64", parent = i32(f.idx)}
+							}
+							if widx < len(mtab) {
+								mtab[widx] = Mmio{phys = uintptr(base), size = size, valid = true}
+							}
+						}
+					}
+				}
 				if f.map_len > 0 {
 					lines := pin_lines(blob, f.map_at, f.map_len, f.ac, f.ic)
 					for pin in 0 ..< 4 {
@@ -598,6 +635,10 @@ walk :: proc "contextless" (blob: []u8, out: []vfs.Static_Node, mtab: []Mmio, it
 			if sp > 0 && pname == "interrupt-map" && vend > value_at {
 				stack[sp - 1].map_at = value_at
 				stack[sp - 1].map_len = vend - value_at
+			}
+			if sp > 0 && pname == "ranges" && vend > value_at {
+				stack[sp - 1].ranges_at = value_at
+				stack[sp - 1].ranges_len = vend - value_at
 			}
 
 			// A `reg` grows the node a synthesized `mmio`, decoded with the

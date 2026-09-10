@@ -400,10 +400,16 @@ the documents it points at.
    same table lists the cores SMP will need to start. The mouse's IRQ 12 is
    one more line assumed rather than read, and may be the reason.
 4. **Real hardware.** `docs/HARDWARE.md` is the plan, written before its
-   code, for the OrangePi 6 Plus. Its first step needs no board. The
-   device tree becomes files, a GICv3 and the SMMU come up, and a ring 3
-   disk driver runs over `mmio`, `irq` and `dma`. All of that is on
-   QEMU's `virt` board. The board comes second, and the GPU fifth.
+   code, for the OrangePi 6 Plus. Its first step needed no board and is
+   done, September 2026. The device tree is files. A GICv3 runs beside
+   the v2. The SMMU is up with `docs/SMMU.md`'s `dma` file, and
+   `servers/blkfs` reads the scratch disk over `mmio`, `dma` and its own
+   memory. Both fault proofs are green, and `--no-invalidate` is the
+   control that fails one.
+
+   The core-class pinning step 0 lists is checked in the scheduler's own
+   test over a fabricated pool. No machine line makes `virt`'s cores two
+   tiers yet. The board comes second, and the GPU fifth.
 5. **Development tools.** `docs/DEVTOOLS.md` is the plan, written before
    its code. C and C++ enter the build at the object: `sys/libc`, `crt0`
    and a generated `sys/abi/abi.h`, with a C hello, a C++ hello whose
