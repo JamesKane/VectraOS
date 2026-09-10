@@ -40,7 +40,7 @@ memory, so `rfork` treats it as Data. `docs/DRAW.md` section 10 named the
 trigger a milestone before the code. A window with pixels of its own is two
 megabytes, and static `bss` was all a program had.
 
-The two of them are the *run* shape, and `segment_is_run` is the one question
+The two of them are the *run* shape, and the `run` field is the one question
 that separates the shapes from the kinds. Everything above this line treats
 all five identically.
 
@@ -86,23 +86,6 @@ Segment_Kind :: enum {
 	Shared, // A run shared by every fork whatever the flags say, and kept by exec
 }
 
-/*
-segment_is_run is which of the two shapes a segment has.
-
-A base and an extent, or a list of frames. Device and Anon answer the first
-way, because both are contiguous by construction and both can be larger than
-`MAX_PROGRAM_FRAMES` will hold. Everything else answers the second, because
-its frames arrived from the allocator one at a time and in no order.
-
-Three places care: the frame question, the release, and the fork. The
-predicate exists so each asks in one word, rather than naming the two kinds
-again. A sixth kind then joins the right shape in one edit.
-*/
-@(private)
-segment_is_run :: proc "contextless" (s: ^Segment) -> bool {
-	return s != nil && s.run
-}
-
 // run_kind is whether a kind is born as a run: what `segalloc` and
 // `segattach` make. A fork may give the same kind the list shape.
 @(private)
@@ -130,13 +113,25 @@ Segment :: struct {
 	// The list shape: one frame per page, from the heap, grown as pages
 	// arrive. Zero is a page with no frame yet -- a hole a fault fills.
 	frames: []uintptr,
-	// Which shape this is. A run keeps `pieces`; everything else keeps the
-	// list. A copy-on-write child of a run is a list, because its frames
-	// are the parent's one at a time and replaced one at a time.
+	/*
+	Which shape this is. A run keeps `pieces`; everything else keeps the
+	list. A copy-on-write child of a run is a list, because its frames
+	are the parent's one at a time and replaced one at a time.
+
+	A base and an extent, or a list of frames. Device and Anon answer the
+	first way, because both are contiguous by construction and both can be
+	larger than `MAX_PROGRAM_FRAMES` will hold. Everything else answers the
+	second, because its frames arrived from the allocator one at a time and
+	in no order.
+
+	Three places care: the frame question, the release, and the fork. The
+	field exists so each asks in one word, rather than naming the two kinds
+	again. A sixth kind then joins the right shape in one edit.
+	*/
 	run:    bool,
 
 	/*
-	The run, for the run shape alone -- see `segment_is_run`. Empty for every
+	The run, for the run shape alone -- see `run`. Empty for every
 	other kind, which carry their frames one at a time above.
 
 	**A run is a list of contiguous pieces, and almost always one.**
@@ -206,9 +201,6 @@ segments: [MAX_SEGMENTS]Segment_Slot
 
 @(private = "file")
 seg_lock: sync.Spinlock
-
-@(private = "file")
-live_segments: int
 
 Segment_Stats :: struct {
 	live:   int, // Segments allocated and not yet fully released
@@ -346,6 +338,12 @@ sweep_leaf :: proc "contextless" (arg: rawptr, virt: uintptr, phys: uintptr, lev
 	}
 }
 
+// segment_end is the address just past a segment's last byte.
+@(private)
+segment_end :: proc "contextless" (s: ^Segment) -> uintptr {
+	return s.va + uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
+}
+
 // segment_covering is the segment whose extent holds an address, of any
 // kind. `proc_segment_at` asks the same question of the run kinds alone,
 // because `segbrk` may only be asked of those. A sweep has to answer for a
@@ -357,12 +355,42 @@ segment_covering :: proc "contextless" (p: ^Process, virt: uintptr) -> ^Segment 
 		if s == nil {
 			continue
 		}
-		span := uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
-		if virt >= s.va && virt < s.va + span {
+		if virt >= s.va && virt < segment_end(s) {
 			return s
 		}
 	}
 	return nil
+}
+
+// proc_overlapping is the first of a process's segments whose extent meets
+// `[va, va + span)`, or nil. `except` is a segment the scan skips: the one
+// a grow is asked of, which overlaps its own extent by definition.
+@(private)
+proc_overlapping :: proc "contextless" (p: ^Process, va: uintptr, span: uintptr, except: ^Segment = nil) -> ^Segment #no_bounds_check {
+	for i in 0 ..< p.seg_count {
+		s := p.segs[i]
+		if s == nil || s == except {
+			continue
+		}
+		if va < segment_end(s) && va + span > s.va {
+			return s
+		}
+	}
+	return nil
+}
+
+// proc_segment_index is where a segment sits on a process's list, or -1.
+@(private)
+proc_segment_index :: proc "contextless" (p: ^Process, s: ^Segment) -> int #no_bounds_check {
+	if s == nil {
+		return -1
+	}
+	for i in 0 ..< p.seg_count {
+		if p.segs[i] == s {
+			return i
+		}
+	}
+	return -1
 }
 
 // segment_owns is whether a frame is one the segment's record would free.
@@ -415,7 +443,6 @@ segment_new :: proc "contextless" (
 				flags = flags,
 				kind  = kind,
 			}
-			live_segments += 1
 			return &segments[i].seg
 		}
 	}
@@ -475,9 +502,7 @@ segment_add_frame :: proc "contextless" (s: ^Segment, frame: uintptr) -> bool #n
 			return false
 		}
 		list := (cast([^]uintptr)fresh)[:want]
-		for i in 0 ..< s.pages {
-			list[i] = s.frames[i]
-		}
+		copy(list, s.frames[:s.pages])
 		if s.frames != nil {
 			_ = mem.free(raw_data(s.frames))
 		}
@@ -585,13 +610,11 @@ segment_release :: proc "contextless" (s: ^Segment) #no_bounds_check {
 	frames := s.frames
 	shm_id := s.shm_id
 	s.frames = nil
-	for i in 0 ..< MAX_SEGMENTS {
-		if &segments[i].seg == s {
-			segments[i].used = false
-			break
-		}
+	// The slot, by arithmetic: `seg` is the slot's first field.
+	slot := (uintptr(s) - uintptr(&segments[0])) / size_of(Segment_Slot)
+	if slot < MAX_SEGMENTS && &segments[slot].seg == s {
+		segments[slot].used = false
 	}
-	live_segments -= 1
 	sync.release(&seg_lock, guard)
 
 	if kind == .Device {
@@ -648,15 +671,31 @@ segment_run :: proc "contextless" (
 	if !got {
 		return nil
 	}
-	s := segment_new(va, flags, kind)
+	s := segment_run_over(va, base, pages, flags, kind)
 	if s == nil {
 		mem.free_pages(base, pages)
+	}
+	return s
+}
+
+// segment_run_over builds the run shape over frames the caller already has:
+// a run this allocator gave out, a card's window, or a shared buffer's frames.
+// The record is whole before any caller can fail, so a release finds the
+// whole run to give back rather than half of one.
+@(private)
+segment_run_over :: proc "contextless" (
+	va: uintptr,
+	phys: uintptr,
+	pages: int,
+	flags: arch.Page_Flags,
+	kind: Segment_Kind,
+) -> ^Segment {
+	s := segment_new(va, flags, kind)
+	if s == nil {
 		return nil
 	}
-	// Both before any caller can fail, so a release finds the whole run to
-	// give back rather than half of one.
 	s.run = true
-	s.pieces[0] = Run_Piece{base = base, pages = pages}
+	s.pieces[0] = Run_Piece{base = phys, pages = pages}
 	s.piece_n = 1
 	s.pages = pages
 	return s

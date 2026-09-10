@@ -89,39 +89,23 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 
 	entry, sp, arg0, lerr := load_program(&scratch, p.ns, path)
 	if lerr != vfs.OK {
-		for i in 0 ..< scratch.seg_count {
-			segment_release(scratch.segs[i])
-		}
-		mem.space_destroy(space)
-		return -i64(lerr)
+		return discard_scratch(&scratch, lerr)
 	}
 	// The arguments come across only now, after the program is known to
 	// load: a shell searching `$path` execs a name that is not there before
 	// the one that is, and the miss should cost a walk and nothing more.
 	argv := new(Argv)
 	if argv == nil {
-		for i in 0 ..< scratch.seg_count {
-			segment_release(scratch.segs[i])
-		}
-		mem.space_destroy(space)
-		return -i64(vectra9.ENOMEM)
+		return discard_scratch(&scratch, vectra9.ENOMEM)
 	}
 	defer free(argv)
 	if !copy_argv(argv_addr, argc, argv) {
-		for i in 0 ..< scratch.seg_count {
-			segment_release(scratch.segs[i])
-		}
-		mem.space_destroy(space)
-		return -i64(vectra9.EFAULT)
+		return discard_scratch(&scratch, vectra9.EFAULT)
 	}
 	if arg0 == 0 {
 		staged_sp, block, staged := stage_args(stack_segment(&scratch), sp, argv)
 		if !staged {
-			for i in 0 ..< scratch.seg_count {
-				segment_release(scratch.segs[i])
-			}
-			mem.space_destroy(space)
-			return -i64(vectra9.E2BIG)
+			return discard_scratch(&scratch, vectra9.E2BIG)
 		}
 		sp = staged_sp
 		arg0 = u64(block)
@@ -143,11 +127,7 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 		}
 		segment_incref(s)
 		if !proc_add_segment(&scratch, s) || !map_run(&scratch, s) {
-			for j in 0 ..< scratch.seg_count {
-				segment_release(scratch.segs[j])
-			}
-			mem.space_destroy(space)
-			return -i64(vectra9.ENOMEM)
+			return discard_scratch(&scratch, vectra9.ENOMEM)
 		}
 	}
 
@@ -176,10 +156,7 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 	// The name follows the program, the way Plan 9 keeps `argv[0]`. Copied
 	// home, because the path sits on this call's syscall stack and the record
 	// outlives it.
-	for i in 0 ..< len(path) {
-		p.name_buf[i] = path[i]
-	}
-	p.name = string(p.name_buf[:len(path)])
+	set_name(p, path)
 	set_args(p, argv)
 
 	// The handler pointed into text that is gone. A note from here on is an
@@ -219,4 +196,16 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 		stop_at_door(p, frame)
 	}
 	return arch.syscall_result(frame)
+}
+
+// discard_scratch gives a failed exec's scratch image back: every segment
+// it collected, then its space. The answer is the call's errno, and the
+// caller is still the program it was.
+@(private = "file")
+discard_scratch :: proc(scratch: ^Process, err: vectra9.Errno) -> i64 {
+	for i in 0 ..< scratch.seg_count {
+		segment_release(scratch.segs[i])
+	}
+	mem.space_destroy(scratch.space)
+	return -i64(err)
 }

@@ -67,7 +67,6 @@ question.
 package user
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:arch"
 import "kernel:env"
@@ -173,11 +172,6 @@ partial :: proc "contextless" (total: int, err: vfs.Errno) -> i64 {
 	return total > 0 ? i64(total) : -i64(err)
 }
 
-// The longest a program may ask to sleep in one call. A program can ask again.
-// What this stops is one call parking a thread past the end of the boot, where
-// nothing would ever reap it.
-SLEEP_MAX :: u64(100)
-
 /*
 The kernel's own handle on the console, which is not a process's.
 
@@ -259,7 +253,7 @@ the program and nothing else.
 
 The context is built here rather than inherited. A `proc "c"` has no
 implicit one, and the thread this runs on was never given a default. That is
-the same three lines every worker thread in the tree starts with.
+the same context every worker thread in the tree starts with.
 
 The answer goes into the frame, through `arch.set_syscall_result`, and the
 pops at the end of the stub deliver it back to the program. Nothing here
@@ -270,8 +264,10 @@ knows.
 */
 @(export, link_name = "vectra_syscall_dispatch")
 dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
-	context = syscall_context()
+	context = mem.kernel_context()
 	calls += 1
+	thread := sched.current()
+	p := current()
 
 	/*
 	The door is the boundary a note waits at, and the check comes before the
@@ -283,8 +279,7 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	flight holds the note instead -- the handler's own calls, `noted` above
 	all, must still work.
 	*/
-	if thread := sched.current(); sched.thread_noted(thread) {
-		p := current()
+	if sched.thread_noted(thread) {
 		// A stop asked for through /proc raised this flag too, and parks
 		// the thread here until `start`, before any note is looked at. If
 		// the wake was the stop's own -- here, or at a tick that parked and
@@ -327,7 +322,7 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	// `startsyscall`: the call is on the frame and nothing ran yet. The
 	// return stop is armed here, so a debugger that starts the process sees
 	// the call go in and come out. See `debug.odin`.
-	if p := current(); p != nil && p.trace_syscall && !intrinsics.volatile_load(&p.stopping) {
+	if p != nil && p.trace_syscall && !intrinsics.volatile_load(&p.stopping) {
 		p.trace_syscall = false
 		p.trace_return = true
 		stop_at_door(p, frame)
@@ -371,7 +366,7 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	case SYS_UNMOUNT:
 		result = sys_unmount(uintptr(a0), int(a1), uintptr(a2), int(a3))
 	case SYS_GETPID:
-		if p := current(); p != nil {
+		if p != nil {
 			result = i64(p.pid)
 		} else {
 			result = -i64(vectra9.ESRCH)
@@ -457,7 +452,7 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	// The second half of `startsyscall`: the answer is on the frame and the
 	// program has not seen it. A call that does not return -- an exit, an
 	// exec that succeeded -- never reaches this line, and stops nowhere.
-	if p := current(); p != nil && p.trace_return && !intrinsics.volatile_load(&p.stopping) {
+	if p != nil && p.trace_return && !intrinsics.volatile_load(&p.stopping) {
 		p.trace_return = false
 		stop_at_door(p, frame)
 	}
@@ -671,13 +666,55 @@ sys_open :: proc(addr: uintptr, length: int, flags: u32) -> i64 {
 	if err != vfs.OK {
 		return -i64(err)
 	}
+	return install_chan(p, c)
+}
 
+// install_chan puts a chan behind the lowest free descriptor and answers the
+// number, or closes the chan and answers EMFILE. Every call that opens ends
+// this way.
+@(private = "file")
+install_chan :: proc(p: ^Process, c: ^vfs.Chan) -> i64 {
 	fd, ok := fd_open(p, c)
 	if !ok {
 		vfs.chan_close(c)
 		return -i64(vectra9.EMFILE)
 	}
 	return i64(fd)
+}
+
+// two_paths copies a call's two paths in, made absolute, for `bind` and
+// `mount`. EINVAL is a length out of range and EFAULT a copy that failed.
+@(private = "file")
+two_paths :: proc "contextless" (
+	p: ^Process,
+	src: uintptr,
+	src_len: int,
+	dst: uintptr,
+	dst_len: int,
+	source_buf: []u8,
+	target_buf: []u8,
+) -> (source: string, target: string, err: vectra9.Errno) {
+	if src_len <= 0 || src_len > PATH_MAX || dst_len <= 0 || dst_len > PATH_MAX {
+		return "", "", vectra9.EINVAL
+	}
+	serr, terr: vectra9.Errno
+	source, serr = copy_path(p, src, src_len, source_buf)
+	target, terr = copy_path(p, dst, dst_len, target_buf)
+	if serr != vfs.OK || terr != vfs.OK {
+		return "", "", vectra9.EFAULT
+	}
+	return source, target, vfs.OK
+}
+
+// mount_order is the `Mount_Order` a number from ring 3 names. A number the
+// enum does not have is `.Replace`.
+@(private = "file")
+mount_order :: proc "contextless" (order: u64) -> vfs.Mount_Order {
+	switch order {
+	case 1: return .Before
+	case 2: return .After
+	}
+	return .Replace
 }
 
 @(private = "file")
@@ -710,25 +747,14 @@ sys_bind :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order: 
 	if p == nil || p.ns == nil {
 		return -i64(vectra9.EBADF)
 	}
-	if src_len <= 0 || src_len > PATH_MAX || dst_len <= 0 || dst_len > PATH_MAX {
-		return -i64(vectra9.EINVAL)
-	}
-
 	source_buf: [PATH_MAX]u8
 	target_buf: [PATH_MAX]u8
-	source, serr := copy_path(p, src, src_len, source_buf[:])
-	target, terr := copy_path(p, dst, dst_len, target_buf[:])
-	if serr != vfs.OK || terr != vfs.OK {
-		return -i64(vectra9.EFAULT)
+	source, target, perr := two_paths(p, src, src_len, dst, dst_len, source_buf[:], target_buf[:])
+	if perr != vfs.OK {
+		return -i64(perr)
 	}
 
-	how := vfs.Mount_Order.Replace
-	switch order {
-	case 1: how = .Before
-	case 2: how = .After
-	}
-
-	err := vfs.bind_path(p.ns, source, target, how)
+	err := vfs.bind_path(p.ns, source, target, mount_order(order))
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -761,12 +787,7 @@ sys_create :: proc(addr: uintptr, length: int, flags: u32, mode: u32) -> i64 {
 	if err != vfs.OK {
 		return -i64(err)
 	}
-	fd, ok := fd_open(p, c)
-	if !ok {
-		vfs.chan_close(c)
-		return -i64(vectra9.EMFILE)
-	}
-	return i64(fd)
+	return install_chan(p, c)
 }
 
 /*
@@ -784,25 +805,14 @@ sys_mount :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order:
 	if p == nil || p.ns == nil {
 		return -i64(vectra9.EBADF)
 	}
-	if src_len <= 0 || src_len > PATH_MAX || dst_len <= 0 || dst_len > PATH_MAX {
-		return -i64(vectra9.EINVAL)
-	}
-
 	source_buf: [PATH_MAX]u8
 	target_buf: [PATH_MAX]u8
-	source, serr := copy_path(p, src, src_len, source_buf[:])
-	target, terr := copy_path(p, dst, dst_len, target_buf[:])
-	if serr != vfs.OK || terr != vfs.OK {
-		return -i64(vectra9.EFAULT)
+	source, target, perr := two_paths(p, src, src_len, dst, dst_len, source_buf[:], target_buf[:])
+	if perr != vfs.OK {
+		return -i64(perr)
 	}
 
-	how := vfs.Mount_Order.Replace
-	switch order {
-	case 1: how = .Before
-	case 2: how = .After
-	}
-
-	err := srv.mount(p.ns, source, target, how, uname = user_of(p))
+	err := srv.mount(p.ns, source, target, mount_order(order), uname = user_of(p))
 	if err != vfs.OK {
 		return -i64(err)
 	}
@@ -871,19 +881,18 @@ sys_pipe :: proc() -> i64 {
 		return -i64(vectra9.ENOSPC)
 	}
 
-	fd0, ok0 := fd_open(p, c0)
-	if !ok0 {
-		vfs.chan_close(c0)
+	fd0 := install_chan(p, c0)
+	if fd0 < 0 {
 		vfs.chan_close(c1)
-		return -i64(vectra9.EMFILE)
+		return fd0
 	}
 	fd1, ok1 := fd_open(p, c1)
 	if !ok1 {
-		_ = fd_close(p, fd0)
+		_ = fd_close(p, int(fd0))
 		vfs.chan_close(c1)
 		return -i64(vectra9.EMFILE)
 	}
-	return i64(fd0 | fd1 << 8)
+	return fd0 | i64(fd1) << 8
 }
 
 /*
@@ -973,19 +982,7 @@ sys_notepg :: proc(pid: u64, addr: uintptr, length: int) -> i64 #no_bounds_check
 
 	// Under the table lock, so the group is read whole. A member that ended or
 	// was born half way through the scan is either in it or not.
-	noted := 0
-	guard := sync.acquire(&table_lock)
-	for i in 0 ..< MAX_PROCESSES {
-		q := &processes[i]
-		if q == p || !q.live || q.note_group != group {
-			continue
-		}
-		if post_note(q, string(text[:length])) {
-			noted += 1
-		}
-	}
-	sync.release(&table_lock, guard)
-	return i64(noted)
+	return i64(notepg_kernel(group, string(text[:length]), except = p))
 }
 
 /*
@@ -1000,11 +997,23 @@ ends here, with its pipe already hung up for its clients.
 */
 @(private)
 note_exit :: proc(frame: ^arch.Trap_Frame) -> ! {
-	p := current()
+	publish_exit(current(), frame, deliberate = false, status = 0)
+}
+
+/*
+publish_exit is the door's ending, shared by `note_exit` and `sys_exit`.
+
+The descriptors go first. Detach before the record is published, release in
+thread context. On a shared table this is one holder leaving, not a
+close-all: a sibling's descriptors survive their sibling's death.
+
+The record is written with interrupts off -- see `sys_exit` for why -- and
+`done` last. `deliberate` is `sys_exit`'s word, with the status the program
+chose. Without it the record says a note did it.
+*/
+@(private = "file")
+publish_exit :: proc(p: ^Process, frame: ^arch.Trap_Frame, deliberate: bool, status: u64) -> ! {
 	if p != nil {
-		// Detach before the record is published, release in thread context.
-		// On a shared table this is one holder leaving, not a close-all: a
-		// sibling's descriptors survive their sibling's death.
 		t := p.fdt
 		p.fdt = nil
 		fdt_release(t)
@@ -1012,13 +1021,22 @@ note_exit :: proc(frame: ^arch.Trap_Frame) -> ! {
 
 	arch.disable_interrupts()
 	if p != nil {
-		p.exit.ip = arch.frame_ip(frame)
-		p.exit.sp = arch.frame_sp(frame)
-		p.exit.kstack = uintptr(rawptr(frame))
-		p.exit.from_user = arch.frame_is_user(frame)
-		p.exit.noted = true
+		if deliberate {
+			p.exit.vector = arch.frame_vector(frame)
+		}
+		record_frame(&p.exit, frame)
+		if deliberate {
+			p.exit.status = status
+			p.exit.deliberate = true
+		} else {
+			p.exit.noted = true
+		}
 		intrinsics.volatile_store(&p.exit.done, true)
 	}
+
+	// The parent may be parked on the exit rendezvous. Interrupts are off, and
+	// `wakeup_all` masks rather than enables, so the woken waiter cannot run
+	// before this thread leaves the core.
 	sync.wakeup_all(&exit_rendez)
 	sched.exit()
 }
@@ -1108,21 +1126,9 @@ sys_rename :: proc(old_addr: uintptr, old_len: int, new_addr: uintptr, new_len: 
 		return -i64(nerr)
 	}
 
-	// The new name's directory and leaf. `/a/b/c` is `/a/b` and `c`; `c`
-	// alone is `.` and `c`; `/c` is `/` and `c`.
-	cut := len(new)
-	for cut > 0 && new[cut - 1] != '/' {
-		cut -= 1
-	}
-	leaf := new[cut:]
+	dir, leaf := split_leaf(new)
 	if len(leaf) == 0 || leaf == "." || leaf == ".." {
 		return -i64(vectra9.EINVAL)
-	}
-	dir := "."
-	if cut > 1 {
-		dir = new[:cut - 1]
-	} else if cut == 1 {
-		dir = "/"
 	}
 
 	c, cerr := vfs.resolve(p.ns, old)
@@ -1246,22 +1252,12 @@ map_reserve :: proc "contextless" (p: ^Process, pages: int) -> (va: uintptr, ok:
 		if cand + span > mem.USER_MAX || cand + span < cand {
 			return 0, false
 		}
-		moved := false
-		for i in 0 ..< p.seg_count {
-			s := p.segs[i]
-			if s == nil {
-				continue
-			}
-			s_end := s.va + uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
-			// [cand, cand+span) overlaps [s.va, s_end)? Step past the segment.
-			if cand < s_end && cand + span > s.va {
-				cand = s_end
-				moved = true
-			}
-		}
-		if !moved {
+		// [cand, cand+span) overlaps a segment? Step past the segment.
+		s := proc_overlapping(p, cand, span)
+		if s == nil {
 			return cand, true
 		}
+		cand = segment_end(s)
 	}
 }
 
@@ -1287,15 +1283,8 @@ map_reserve_at :: proc "contextless" (p: ^Process, va: uintptr, pages: int) -> (
 	if va + span > mem.USER_MAX || va + span < va {
 		return 0, false
 	}
-	for i in 0 ..< p.seg_count {
-		s := p.segs[i]
-		if s == nil {
-			continue
-		}
-		s_end := s.va + uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
-		if va < s_end && va + span > s.va {
-			return 0, false
-		}
+	if proc_overlapping(p, va, span) != nil {
+		return 0, false
 	}
 	return va, true
 }
@@ -1381,7 +1370,7 @@ sys_segattach :: proc(fd: int, offset: u64, want: u64) -> i64 {
 
 	// Whole pages, both ends. A device that ends mid-page still owns the rest
 	// of it, and a mapping cannot be finer than the hardware page it lands in.
-	pages := int((bytes + u64(arch.PAGE_SIZE) - 1) / u64(arch.PAGE_SIZE))
+	pages := int(mem.page_count(bytes))
 	if pages <= 0 {
 		return -i64(vectra9.ENODEV)
 	}
@@ -1399,14 +1388,10 @@ sys_segattach :: proc(fd: int, offset: u64, want: u64) -> i64 {
 	if device_mem {
 		flags += {.No_Cache}
 	}
-	seg := segment_new(va, flags, .Device)
+	seg := segment_run_over(va, phys, pages, flags, .Device)
 	if seg == nil {
 		return -i64(vectra9.ENOMEM)
 	}
-	seg.run = true
-	seg.pieces[0] = Run_Piece{base = phys, pages = pages}
-	seg.piece_n = 1
-	seg.pages = pages
 	if !proc_add_segment(p, seg) {
 		return -i64(vectra9.ENOMEM)
 	}
@@ -1477,7 +1462,7 @@ sys_shmalloc :: proc(bytes: u64, id_out: uintptr) -> i64 {
 	if bytes == 0 || bytes > SHM_BYTES_MAX || id_out == 0 {
 		return -i64(vectra9.EINVAL)
 	}
-	pages := int((bytes + u64(arch.PAGE_SIZE) - 1) / u64(arch.PAGE_SIZE))
+	pages := int(mem.page_count(bytes))
 	id, phys, ok := shm_create(pages)
 	if !ok {
 		return -i64(vectra9.ENOMEM)
@@ -1529,15 +1514,11 @@ shm_map :: proc "contextless" (p: ^Process, id: u64, phys: uintptr, pages: int) 
 		shm_release(id)
 		return -i64(vectra9.ENOMEM)
 	}
-	seg := segment_new(va, {.Write, .No_Execute}, .Device)
+	seg := segment_run_over(va, phys, pages, {.Write, .No_Execute}, .Device)
 	if seg == nil {
 		shm_release(id)
 		return -i64(vectra9.ENOMEM)
 	}
-	seg.run = true
-	seg.pieces[0] = Run_Piece{base = phys, pages = pages}
-	seg.piece_n = 1
-	seg.pages = pages
 	if !proc_add_segment(p, seg) {
 		shm_release(id)
 		return -i64(vectra9.ENOMEM)
@@ -1569,7 +1550,7 @@ sys_segalloc :: proc(bytes: u64, flags: u64, at: u64) -> i64 {
 
 	// Whole pages, up. A program that asks for one byte past a page gets the
 	// whole page. A mapping cannot be finer than the hardware page it is in.
-	pages := int((bytes + u64(arch.PAGE_SIZE) - 1) / u64(arch.PAGE_SIZE))
+	pages := int(mem.page_count(bytes))
 
 	// An address the caller named, or wherever there is room. A named address
 	// that is unaligned, out of range, or already a run's is refused -- which is
@@ -1720,8 +1701,8 @@ segment_shrink :: proc(p: ^Process, s: ^Segment, want: int) -> i64 {
 	n := 0
 	guard := sync.acquire(&table_lock)
 	for i in 0 ..< MAX_PROCESSES {
-		q := &processes[i]
-		if !q.live || q.collecting || q.space == nil || !proc_holds(q, s) {
+		q := holder_at(i, s)
+		if q == nil {
 			continue
 		}
 		if mem.unmap_user_quiet(q.space, at, gone) != .None {
@@ -1847,8 +1828,8 @@ segment_grow :: proc(p: ^Process, s: ^Segment, want: int, newtop: uintptr) -> i6
 	ok := true
 	guard := sync.acquire(&table_lock)
 	for i in 0 ..< MAX_PROCESSES {
-		q := &processes[i]
-		if !q.live || q.collecting || q.space == nil || !proc_holds(q, s) {
+		q := holder_at(i, s)
+		if q == nil {
 			continue
 		}
 		if !map_run(q, s, from) {
@@ -1940,22 +1921,11 @@ sys_segdetach :: proc(addr: uintptr) -> i64 {
 	if p == nil {
 		return -i64(vectra9.ESRCH)
 	}
-	at := -1
-	for i in 0 ..< p.seg_count {
-		s := p.segs[i]
-		if s == nil {
-			continue
-		}
-		span := uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
-		if addr >= s.va && addr < s.va + span {
-			at = i
-			break
-		}
-	}
+	s := segment_covering(p, addr)
+	at := proc_segment_index(p, s)
 	if at < 0 {
 		return -i64(vectra9.EINVAL)
 	}
-	s := p.segs[at]
 	// By kind rather than shape, as `proc_segment_at` answers: a run a fork
 	// turned into a list is still the process's to give back.
 	if !run_kind(s.kind) {
@@ -1993,12 +1963,23 @@ proc_segment_at :: proc "contextless" (p: ^Process, addr: uintptr) -> ^Segment #
 		if s == nil || !run_kind(s.kind) {
 			continue
 		}
-		span := uintptr(s.pages) * uintptr(arch.PAGE_SIZE)
-		if addr >= s.va && addr < s.va + span {
+		if addr >= s.va && addr < segment_end(s) {
 			return s
 		}
 	}
 	return nil
+}
+
+// holder_at is process `i` of the table when it holds segment `s`. Nil for
+// a slot that is not live, is on its way out, or has no space. Under the
+// table lock, which is what makes the answer whole.
+@(private = "file")
+holder_at :: proc "contextless" (i: int, s: ^Segment) -> ^Process #no_bounds_check {
+	q := &processes[i]
+	if !q.live || q.collecting || q.space == nil || !proc_holds(q, s) {
+		return nil
+	}
+	return q
 }
 
 // proc_span_taken reports whether growing `seg` to `newtop` would run into
@@ -2006,17 +1987,7 @@ proc_segment_at :: proc "contextless" (p: ^Process, addr: uintptr) -> ^Segment #
 // that makes growing the last run the only one that can succeed.
 @(private)
 proc_span_taken :: proc "contextless" (p: ^Process, seg: ^Segment, newtop: uintptr) -> bool #no_bounds_check {
-	for i in 0 ..< p.seg_count {
-		o := p.segs[i]
-		if o == nil || o == seg {
-			continue
-		}
-		span := uintptr(o.pages) * uintptr(arch.PAGE_SIZE)
-		if newtop > o.va && seg.va < o.va + span {
-			return true
-		}
-	}
-	return false
+	return proc_overlapping(p, seg.va, newtop - seg.va, except = seg) != nil
 }
 
 @(private = "file")
@@ -2112,32 +2083,7 @@ sys_exit :: proc(frame: ^arch.Trap_Frame, status: u64) {
 	the chans close only when the last one does. The detach comes before the
 	record is published, so `unload` finds nothing to release twice.
 	*/
-	if p := current(); p != nil {
-		t := p.fdt
-		p.fdt = nil
-		fdt_release(t)
-	}
-
-	arch.disable_interrupts()
-
-	if thread := sched.current(); thread != nil {
-		if p := (^Process)(thread.user); p != nil {
-			p.exit.vector = arch.frame_vector(frame)
-			p.exit.ip = arch.frame_ip(frame)
-			p.exit.sp = arch.frame_sp(frame)
-			p.exit.kstack = uintptr(rawptr(frame))
-			p.exit.from_user = arch.frame_is_user(frame)
-			p.exit.status = status
-			p.exit.deliberate = true
-			intrinsics.volatile_store(&p.exit.done, true)
-		}
-	}
-
-	// The parent may be parked on the exit rendezvous. Interrupts are off, and
-	// `wakeup_all` masks rather than enables, so the woken waiter cannot run
-	// before this thread leaves the core.
-	sync.wakeup_all(&exit_rendez)
-	sched.exit()
+	publish_exit(current(), frame, deliberate = true, status = status)
 }
 
 /*
@@ -2181,10 +2127,7 @@ copy_out :: proc "contextless" (addr: uintptr, src: []u8) -> bool {
 	if !reachable(addr, len(src), {.User, .Write}) {
 		return false
 	}
-	dst := cast([^]u8)addr
-	for i in 0 ..< len(src) {
-		dst[i] = src[i]
-	}
+	copy((cast([^]u8)addr)[:len(src)], src)
 	return true
 }
 
@@ -2197,10 +2140,7 @@ copy_in :: proc "contextless" (addr: uintptr, n: int, dst: []u8) -> bool {
 		return false
 	}
 
-	src := cast([^]u8)addr
-	for i in 0 ..< n {
-		dst[i] = src[i]
-	}
+	copy(dst, (cast([^]u8)addr)[:n])
 	return true
 }
 
@@ -2263,13 +2203,6 @@ cons_finish :: proc() {
 	}
 }
 
-@(private = "file")
-syscall_context :: proc "contextless" () -> runtime.Context {
-	c := runtime.default_context()
-	c.allocator = mem.allocator()
-	return c
-}
-
 // -- The calls a shell needs ---------------------------------------------------
 //
 // `docs/SHELL.md` step 1. Each is Plan 9's by shape, over what the vfs
@@ -2298,25 +2231,26 @@ fill_stat :: proc "contextless" (out: ^abi.Stat, c: ^vfs.Chan, attr: vectra9.Rge
 	out.length = attr.size
 	out.atime = attr.atime_sec
 	out.mtime = attr.mtime_sec
-	n := min(len(name), abi.NAME_MAX)
-	for i in 0 ..< n {
-		out.name[i] = name[i]
-	}
-	out.name_len = u8(n)
+	out.name_len = u8(copy(out.name[:], name))
 }
 
-// last_element is the name a path ends in, for `stat`'s answer.
+// split_leaf is a path's directory and the name it ends in. `/a/b/c` is
+// `/a/b` and `c`; `c` alone is `.` and `c`; `/c` is `/` and `c`. The leaf
+// is `stat`'s answer and the pair is `rename`'s.
 @(private = "file")
-last_element :: proc "contextless" (path: string) -> string {
-	end := len(path)
-	for end > 1 && path[end - 1] == '/' {
-		end -= 1
+split_leaf :: proc "contextless" (path: string) -> (dir: string, leaf: string) {
+	cut := len(path)
+	for cut > 0 && path[cut - 1] != '/' {
+		cut -= 1
 	}
-	start := end
-	for start > 0 && path[start - 1] != '/' {
-		start -= 1
+	leaf = path[cut:]
+	dir = "."
+	if cut > 1 {
+		dir = path[:cut - 1]
+	} else if cut == 1 {
+		dir = "/"
 	}
-	return path[start:end]
+	return dir, leaf
 }
 
 // sys_stat asks about a file by name: a walk to it, one `Tgetattr`, and the
@@ -2337,7 +2271,8 @@ sys_stat :: proc(addr: uintptr, length: int, out: uintptr) -> i64 {
 		return -i64(err)
 	}
 	defer vfs.chan_close(c)
-	return stat_out(c, last_element(path), out)
+	_, leaf := split_leaf(path)
+	return stat_out(c, leaf, out)
 }
 
 // sys_fstat is `stat` on an open descriptor, whose name the kernel does not
@@ -2480,13 +2415,11 @@ sys_dup :: proc(old: int, new: int) -> i64 {
 		return -i64(vectra9.EBADF)
 	}
 	if new < 0 {
-		fd, opened := fd_open(p, c)
-		if !opened {
-			vfs.chan_close(c)
-			return -i64(vectra9.EMFILE)
+		fd := install_chan(p, c)
+		if fd >= 0 {
+			_ = fd_seek(p, int(fd), off)
 		}
-		_ = fd_seek(p, fd, off)
-		return i64(fd)
+		return fd
 	}
 	if new >= MAX_FDS {
 		vfs.chan_close(c)

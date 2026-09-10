@@ -44,27 +44,18 @@ make_absolute :: proc "contextless" (p: ^Process, path: string, buf: []u8) -> (s
 		if len(path) > len(buf) {
 			return "", vectra9.ENAMETOOLONG
 		}
-		for i in 0 ..< len(path) {
-			buf[i] = path[i]
-		}
+		copy(buf, path)
 		return string(buf[:len(path)]), vectra9.Errno(0)
 	}
 
 	joined: [2 * PATH_MAX + 1]u8
 	n := 0
 	if path[0] != '/' && p != nil {
-		cwd := current_directory(p)
-		for i in 0 ..< len(cwd) {
-			joined[n] = cwd[i]
-			n += 1
-		}
+		n += copy(joined[n:], current_directory(p))
 		joined[n] = '/'
 		n += 1
 	}
-	for i in 0 ..< len(path) {
-		joined[n] = path[i]
-		n += 1
-	}
+	n += copy(joined[n:], path)
 	return cleanname(string(joined[:n]), buf)
 }
 
@@ -111,10 +102,7 @@ cleanname :: proc "contextless" (path: string, buf: []u8) -> (string, vectra9.Er
 		}
 		buf[n] = '/'
 		n += 1
-		for k in 0 ..< len(element) {
-			buf[n] = element[k]
-			n += 1
-		}
+		n += copy(buf[n:], element)
 	}
 	if n == 0 {
 		if len(buf) == 0 {
@@ -142,9 +130,14 @@ set_directory :: proc "contextless" (p: ^Process, path: string) -> bool {
 	if len(path) > PATH_MAX {
 		return false
 	}
-	for i in 0 ..< len(path) {
-		p.cwd_buf[i] = path[i]
-	}
-	p.cwd_len = len(path)
+	p.cwd_len = copy(p.cwd_buf[:], path)
 	return true
+}
+
+// set_name copies a program's name home. The caller's string may live on a
+// syscall stack, and the record outlives that stack by the process's
+// lifetime.
+@(private)
+set_name :: proc "contextless" (p: ^Process, name: string) {
+	p.name = string(p.name_buf[:copy(p.name_buf[:], name)])
 }

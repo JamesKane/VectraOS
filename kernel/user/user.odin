@@ -65,7 +65,6 @@ process with a note. That is the missing piece by its proper name.
 package user
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:arch"
 import "kernel:devfs"
@@ -166,6 +165,16 @@ Exit :: struct {
 	// Whether a note is what ended it. Never true beside `deliberate`: a
 	// noted process dies at a boundary it did not choose to cross that way.
 	noted:      bool,
+}
+
+// record_frame fills the fields every ending has a frame for: where the
+// program was, its stack, the kernel's frame, and which ring it came from.
+@(private)
+record_frame :: proc "contextless" (e: ^Exit, frame: ^arch.Trap_Frame) {
+	e.ip = arch.frame_ip(frame)
+	e.sp = arch.frame_sp(frame)
+	e.kstack = uintptr(rawptr(frame))
+	e.from_user = arch.frame_is_user(frame)
 }
 
 Process :: struct {
@@ -380,13 +389,6 @@ Fd :: struct {
 // pipeline holds two per stage.
 MAX_FDS :: 32
 
-// The three a process starts with, on `/dev/cons`. The numbers are the
-// convention rather than a requirement, and every program in `program.odin`
-// writes to 1.
-FD_STDIN :: 0
-FD_STDOUT :: 1
-FD_STDERR :: 2
-
 /*
 The programs, from a fixed table.
 
@@ -513,8 +515,6 @@ alarm_rendez: sync.Rendez
 @(private = "file")
 alarm_armed: bool
 
-alarms_fired: int
-
 @(private = "file")
 alarm_set :: proc "contextless" (arg: rawptr) -> bool {
 	_ = arg
@@ -536,9 +536,7 @@ alarm_loop :: proc "contextless" (arg: rawptr) {
 			}
 			if p.alarm_at <= now {
 				p.alarm_at = 0
-				if post_note(p, "alarm") {
-					alarms_fired += 1
-				}
+				_ = post_note(p, "alarm")
 			} else if soonest == 0 || p.alarm_at < soonest {
 				soonest = p.alarm_at
 			}
@@ -585,12 +583,14 @@ interrupt_group :: proc "contextless" (group: u64) {
 
 // notepg_kernel posts a note to every live process in a group, and answers
 // how many took it. The kernel's own `notepg`, with no poster to exclude.
-notepg_kernel :: proc "contextless" (group: u64, text: string) -> int #no_bounds_check {
+// `sys_notepg` names its caller as `except`, so a process that notes its
+// own group does not end itself.
+notepg_kernel :: proc "contextless" (group: u64, text: string, except: ^Process = nil) -> int #no_bounds_check {
 	noted := 0
 	guard := sync.acquire(&table_lock)
 	for i in 0 ..< MAX_PROCESSES {
 		q := &processes[i]
-		if !q.live || q.note_group != group {
+		if q == except || !q.live || q.note_group != group {
 			continue
 		}
 		if post_note(q, text) {
@@ -627,8 +627,6 @@ rendezvous_table: [REND_MAX]Rend_Entry
 @(private = "file")
 rend_lock: sync.Spinlock
 
-rendezvous_met: int
-
 @(private = "file")
 rend_matched :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&(^Rend_Entry)(arg).matched)
@@ -647,7 +645,6 @@ rendezvous :: proc "contextless" (p: ^Process, tag: u64, value: u64) -> (partner
 			intrinsics.volatile_store(&e.matched, true)
 			sync.release(&rend_lock, guard)
 			_ = sync.wakeup(&e.wake)
-			rendezvous_met += 1
 			return partner, true
 		}
 	}
@@ -686,8 +683,6 @@ word, which is right for a handful of waiters and wrong for thousands.
 */
 @(private = "file")
 sema_rendez: sync.Rendez
-
-semaphores_waited: int
 
 @(private = "file")
 sema_positive :: proc "contextless" (arg: rawptr) -> bool {
@@ -729,7 +724,6 @@ semacquire :: proc "contextless" (p: ^Process, addr: uintptr, block: bool) -> i6
 		if !block {
 			return 0
 		}
-		semaphores_waited += 1
 		if !sync.sleep_noted(&sema_rendez, sema_positive, word) {
 			return -i64(vectra9.EINTR)
 		}
@@ -773,62 +767,62 @@ on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
 	// once, and a plain add loses one of them.
 	intrinsics.atomic_add(&faults, 1)
 
-	if thread := sched.current(); thread != nil {
-		if p := (^Process)(thread.user); p != nil {
-			// A page fault a program survives: a write to a page it holds
-			// under copy-on-write, or a page of its own that is not mapped
-			// yet. Fixed here, and the same instruction runs again.
-			if t.kind == .Page_Fault && t.user && p.space != nil {
-				bits := arch.fault_bits(t.kind, t.vector, t.error_code, t.user)
-				if fix_fault(p, t.fault_address, .Write in bits) {
+	thread := sched.current()
+	p := thread != nil ? (^Process)(thread.user) : nil
+	if p != nil {
+		// A page fault a program survives: a write to a page it holds
+		// under copy-on-write, or a page of its own that is not mapped
+		// yet. Fixed here, and the same instruction runs again.
+		if t.kind == .Page_Fault && t.user && p.space != nil {
+			bits := arch.fault_bits(t.kind, t.vector, t.error_code, t.user)
+			if fix_fault(p, t.fault_address, .Write in bits) {
+				return r
+			}
+		}
+		// A debugger's trap is a stop rather than an ending: the step
+		// it asked for, or any trap while `startstop` is in force, which
+		// posts the note Plan 9 would and parks before delivering it.
+		// A process nobody is watching ends here as it always did.
+		if t.user && !intrinsics.volatile_load(&p.stopping) {
+			if p.stepping && t.kind == .Debug {
+				// A step out of a syscall door returns by `sysretq`,
+				// and a step flag loaded that way traps before the
+				// first instruction runs, at the very counter the
+				// step left. That trap is not the step: the flag
+				// stays up and the program goes on to its next one.
+				if p.step_at_door && t.ip == p.step_from {
+					p.step_at_door = false
 					return r
 				}
+				p.stepping = false
+				p.step_at_door = false
+				arch.frame_set_step(r.frame, false)
+				return stop_in_trap(p, r)
 			}
-			// A debugger's trap is a stop rather than an ending: the step
-			// it asked for, or any trap while `startstop` is in force, which
-			// posts the note Plan 9 would and parks before delivering it.
-			// A process nobody is watching ends here as it always did.
-			if t.user && !intrinsics.volatile_load(&p.stopping) {
-				if p.stepping && t.kind == .Debug {
-					// A step out of a syscall door returns by `sysretq`,
-					// and a step flag loaded that way traps before the
-					// first instruction runs, at the very counter the
-					// step left. That trap is not the step: the flag
-					// stays up and the program goes on to its next one.
-					if p.step_at_door && t.ip == p.step_from {
-						p.step_at_door = false
-						return r
-					}
-					p.stepping = false
-					p.step_at_door = false
-					arch.frame_set_step(r.frame, false)
-					return stop_in_trap(p, r)
-				}
-				if p.trace_note {
-					p.trace_note = false
-					post_trap_note(p, thread, t)
-					return stop_in_trap(p, r)
-				}
+			if p.trace_note {
+				p.trace_note = false
+				post_trap_note(p, thread, t)
+				return stop_in_trap(p, r)
 			}
-			p.exit.kind = t.kind
-			p.exit.vector = t.vector
-			p.exit.error_code = t.error_code
-			p.exit.has_error = t.has_error
-			p.exit.ip = t.ip
-			p.exit.address = t.fault_address
-			// Whether the page was there, asked of the tables the program
-			// faulted through, now, while they are the ones loaded. A
-			// syndrome may not say; the VMM always can.
-			if t.kind == .Page_Fault && p.space != nil {
-				_, p.exit.present = mem.permissions(p.space, t.fault_address)
-			}
-			p.exit.from_user = t.user
-			p.exit.sp = t.sp
-			p.exit.kstack = uintptr(rawptr(t.frame))
-			// Last, and volatile: it is what the observer polls, and everything
-			// above it has to be visible to a reader that sees it set.
-			intrinsics.volatile_store(&p.exit.done, true)
 		}
+		p.exit.kind = t.kind
+		p.exit.vector = t.vector
+		p.exit.error_code = t.error_code
+		p.exit.has_error = t.has_error
+		p.exit.ip = t.ip
+		p.exit.address = t.fault_address
+		// Whether the page was there, asked of the tables the program
+		// faulted through, now, while they are the ones loaded. A
+		// syndrome may not say; the VMM always can.
+		if t.kind == .Page_Fault && p.space != nil {
+			_, p.exit.present = mem.permissions(p.space, t.fault_address)
+		}
+		p.exit.from_user = t.user
+		p.exit.sp = t.sp
+		p.exit.kstack = uintptr(rawptr(t.frame))
+		// Last, and volatile: it is what the observer polls, and everything
+		// above it has to be visible to a reader that sees it set.
+		intrinsics.volatile_store(&p.exit.done, true)
 	}
 
 	// Interrupts are already off, and `wakeup_all` masks rather than enables,
@@ -838,11 +832,9 @@ on_trap :: proc "contextless" (t: ^arch.Trap, r: arch.Resume) -> arch.Resume {
 }
 
 // What the fault handler did, for the boot line: forks that shared rather
-// than copied, pages copied on a write, and pages a process had to itself
-// that only needed the write bit back.
+// than copied, and pages copied on a write.
 cow_forks: int
 cow_copies: int
-cow_upgrades: int
 page_refills: int
 stack_pages_grown: int
 
@@ -911,7 +903,6 @@ fix_fault :: proc "contextless" (p: ^Process, addr: uintptr, write: bool) -> boo
 	if mem.frame_holders(cur) > 1 {
 		return cow_copy(p, s, j, va)
 	}
-	intrinsics.atomic_add(&cow_upgrades, 1)
 	return mem.protect_user(p.space, va, 1, s.flags) == .None
 }
 
@@ -936,9 +927,7 @@ cow_copy :: proc "contextless" (p: ^Process, s: ^Segment, j: int, va: uintptr) -
 	}
 	src := (cast([^]u8)mem.phys_to_virt(cur))[:arch.PAGE_SIZE]
 	dst := (cast([^]u8)mem.phys_to_virt(fresh))[:arch.PAGE_SIZE]
-	for k in 0 ..< arch.PAGE_SIZE {
-		dst[k] = src[k]
-	}
+	copy(dst, src)
 	if mem.remap_user(p.space, va, fresh, s.flags) != .None {
 		mem.free_page(fresh)
 		return false
@@ -1232,53 +1221,47 @@ path's arrangement too.
 @(private = "file")
 note_trap :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	thread := sched.current()
-	if thread != nil {
-		// A stop parks the thread here, off every queue, its frame in the
-		// record, until `start` readies it. Resumed, the flag that woke it
-		// is still up: if it was the stop's own and nothing was posted, it
-		// comes off and the thread simply carries on in ring 3.
-		if p := (^Process)(thread.user); p != nil && !intrinsics.volatile_load(&p.stopping) {
-			if intrinsics.volatile_load(&p.stop_requested) {
-				return stop_in_trap(p, r)
-			}
-			if p.stop_wake {
-				p.stop_wake = false
-				sched.clear_note(thread)
-				return r
-			}
-			// A debugger asked to see the next note before it lands. The
-			// note stays pending; `start` delivers it, or a read of
-			// `/proc/n/note` takes it away first. See `debug.odin`.
-			if p.trace_note {
-				p.trace_note = false
-				return stop_in_trap(p, r)
-			}
+	p := thread != nil ? (^Process)(thread.user) : nil
+	// A stop parks the thread here, off every queue, its frame in the
+	// record, until `start` readies it. Resumed, the flag that woke it
+	// is still up: if it was the stop's own and nothing was posted, it
+	// comes off and the thread simply carries on in ring 3.
+	if p != nil && !intrinsics.volatile_load(&p.stopping) {
+		if intrinsics.volatile_load(&p.stop_requested) {
+			return stop_in_trap(p, r)
+		}
+		if p.stop_wake {
+			p.stop_wake = false
+			sched.clear_note(thread)
+			return r
+		}
+		// A debugger asked to see the next note before it lands. The
+		// note stays pending; `start` delivers it, or a read of
+		// `/proc/n/note` takes it away first. See `debug.odin`.
+		if p.trace_note {
+			p.trace_note = false
+			return stop_in_trap(p, r)
 		}
 	}
-	if thread != nil {
-		// The kernel's word first, before any handler. See `end`.
-		if p := (^Process)(thread.user); p != nil && p.handler != 0 && !intrinsics.volatile_load(&p.stopping) {
-			if p.notified {
-				// One delivery at a time. The note waits, flagged, for the
-				// boundary after the handler's own `noted`.
-				return r
-			}
-			if deliver_note(p, r.frame) {
-				sched.clear_note(thread)
-				return r
-			}
+	// The kernel's word first, before any handler. See `end`.
+	if p != nil && p.handler != 0 && !intrinsics.volatile_load(&p.stopping) {
+		if p.notified {
+			// One delivery at a time. The note waits, flagged, for the
+			// boundary after the handler's own `noted`.
+			return r
+		}
+		if deliver_note(p, r.frame) {
+			sched.clear_note(thread)
+			return r
 		}
 	}
 
-	if thread != nil {
-		if p := (^Process)(thread.user); p != nil {
-			p.exit.ip = arch.frame_ip(r.frame)
-			p.exit.sp = arch.frame_sp(r.frame)
-			p.exit.kstack = uintptr(rawptr(r.frame))
-			p.exit.from_user = true
-			p.exit.noted = true
-			intrinsics.volatile_store(&p.exit.done, true)
-		}
+	// The frame is a tick's, taken in ring 3: `sched` calls this hook for
+	// a user frame alone.
+	if p != nil {
+		record_frame(&p.exit, r.frame)
+		p.exit.noted = true
+		intrinsics.volatile_store(&p.exit.done, true)
 	}
 	sync.wakeup_all(&exit_rendez)
 	return sched.kill_current(r)
@@ -1326,7 +1309,7 @@ load_held :: proc(name: string, code: []u8) -> (^Process, mem.Error) {
 		return nil, .Not_Canonical
 	}
 
-	p := claim_slot(parent = 0, detached = false, note_group = 0)
+	p := claim_slot(parent = 0, detached = false, note_group = 0, rend_group = 0)
 	if p == nil {
 		return nil, .Out_Of_Memory
 	}
@@ -1371,9 +1354,7 @@ load_held :: proc(name: string, code: []u8) -> (^Process, mem.Error) {
 	// execute those bytes where they lie, whatever the source was. Mapped
 	// already, but there is no thread yet, so there is no race to lose.
 	dst := (cast([^]u8)mem.phys_to_virt(p.text))[:arch.PAGE_SIZE]
-	for i in 0 ..< len(code) {
-		dst[i] = code[i]
-	}
+	copy(dst, code)
 
 	// Before the thread, not after. A program's first instruction may be a
 	// write to descriptor 1. The next interrupt can dispatch any thread that
@@ -1406,7 +1387,7 @@ launch :: proc(p: ^Process, arg: u64 = 0, arg2: u64 = 0) -> bool {
 	p.kstack_lo = uintptr(raw_data(p.thread.stack))
 	p.kstack_hi = p.thread.kstack_top
 	loaded += 1
-	return p.thread != nil
+	return true
 }
 
 /*
@@ -1449,11 +1430,6 @@ blocked :: proc "contextless" (p: ^Process) -> u64 {
 	guard := sync.acquire(&table_lock)
 	defer sync.release(&table_lock, guard)
 	return p.thread != nil ? p.thread.wakeups : 0
-}
-
-// ended reports whether a program already faulted, without waiting.
-ended :: proc "contextless" (p: ^Process) -> bool {
-	return p != nil && intrinsics.volatile_load(&p.exit.done)
 }
 
 /*
@@ -1570,9 +1546,7 @@ set_bytes :: proc "contextless" (p: ^Process, offset: int, data: []u8) -> bool {
 		return false
 	}
 	dst := (cast([^]u8)mem.phys_to_virt(p.data))[:arch.PAGE_SIZE]
-	for i in 0 ..< len(data) {
-		dst[offset + i] = data[i]
-	}
+	copy(dst[offset:], data)
 	return true
 }
 
@@ -1715,9 +1689,7 @@ reaper :: proc "contextless" (arg: rawptr) {
 	// A clunk crossing to a ring 3 server runs a codec on this stack, and a
 	// codec may allocate. `kernel/mnt`'s worker takes a context for the same
 	// reason and in the same words.
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 
 	for {
 		_ = sync.sleep_for(&exit_rendez, dead_needs_collecting, nil, REAP_PATIENCE)
@@ -1848,10 +1820,14 @@ its own. A claim that fails later -- no space, no namespace -- is given back
 through `unload`, which is what a record with nothing in it needs.
 
 `note_group` of zero means `the new pid`. A process with no parent wants that,
-and so does a child forked into a group of its own.
+and so does a child forked into a group of its own. `rend_group` follows the
+same rule: inherited, or a group of one under `RFREND`.
+
+`inherit` is the parent, or nil for a process the kernel builds. The user
+and the current directory follow it, as the namespace does.
 */
 @(private)
-claim_slot :: proc "contextless" (parent: u64, detached: bool, note_group: u64, inherit: ^Process = nil) -> ^Process #no_bounds_check {
+claim_slot :: proc "contextless" (parent: u64, detached: bool, note_group: u64, rend_group: u64, inherit: ^Process = nil) -> ^Process #no_bounds_check {
 	guard := sync.acquire(&table_lock)
 	defer sync.release(&table_lock, guard)
 	for i in 0 ..< MAX_PROCESSES {
@@ -1865,12 +1841,13 @@ claim_slot :: proc "contextless" (parent: u64, detached: bool, note_group: u64, 
 			parent     = parent,
 			detached   = detached,
 			note_group = note_group == 0 ? next_pid : note_group,
-			rend_group = next_pid,
+			rend_group = rend_group == 0 ? next_pid : rend_group,
 		}
 		// A child is its parent's user; a process with no parent is the
 		// host owner's, which is who the kernel runs as.
 		if inherit != nil {
 			p.ulen = copy(p.user[:], inherit.user[:inherit.ulen])
+			_ = set_directory(p, current_directory(inherit))
 		} else {
 			p.ulen = copy(p.user[:], hostowner[:hostowner_len])
 		}

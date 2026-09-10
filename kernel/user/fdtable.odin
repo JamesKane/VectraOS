@@ -127,11 +127,10 @@ fdt_release :: proc(t: ^Fd_Table) #no_bounds_check {
 		return
 	}
 	held: [MAX_FDS]Fd = t.fds
-	for i in 0 ..< MAX_FD_TABLES {
-		if &fd_tables[i].table == t {
-			fd_tables[i].used = false
-			break
-		}
+	// The slot, by arithmetic: `table` is the slot's first field.
+	slot := (uintptr(t) - uintptr(&fd_tables[0])) / size_of(Fd_Table_Slot)
+	if slot < MAX_FD_TABLES && &fd_tables[slot].table == t {
+		fd_tables[slot].used = false
 	}
 	live_tables -= 1
 	sync.release(&fdt_pool_lock, guard)

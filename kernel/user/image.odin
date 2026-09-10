@@ -48,6 +48,7 @@ package user
 import "kernel:arch"
 import "kernel:mem"
 import "kernel:vfs"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 // "VECTRA01" read as a little-endian u64. The check compares one word rather
@@ -124,13 +125,7 @@ image2_read_segs :: proc "contextless" (
 	if len(raw) < nsegs * IMAGE2_SEG_SIZE {
 		return false
 	}
-	word :: proc "contextless" (b: []u8) -> u64 {
-		v := u64(0)
-		for i in 0 ..< 8 {
-			v |= u64(b[i]) << (8 * u64(i))
-		}
-		return v
-	}
+	word :: libodin.get_u64le
 
 	page := u64(arch.PAGE_SIZE)
 	total_pages := 0
@@ -166,7 +161,7 @@ image2_read_segs :: proc "contextless" (
 		}
 		prev_end = end
 
-		total_pages += int((s.memsz + page - 1) / page)
+		total_pages += int(mem.page_count(s.memsz))
 		if s.flags & IMG_FLAG_X != 0 && entry >= s.vaddr && u64(entry) < end {
 			entry_ok = true
 		}
@@ -212,13 +207,7 @@ image_read_header :: proc "contextless" (raw: []u8) -> (h: Image_Header, ok: boo
 	if len(raw) < IMAGE_HEADER_SIZE {
 		return h, false
 	}
-	word :: proc "contextless" (b: []u8) -> u64 {
-		v := u64(0)
-		for i in 0 ..< 8 {
-			v |= u64(b[i]) << (8 * u64(i))
-		}
-		return v
-	}
+	word :: libodin.get_u64le
 	h.magic = word(raw[0:])
 	h.entry = word(raw[8:])
 	h.text = word(raw[16:])
@@ -243,18 +232,12 @@ image_build :: proc(code: []u8) -> []u8 {
 	if img == nil {
 		return nil
 	}
-	put :: proc "contextless" (b: []u8, v: u64) {
-		for i in 0 ..< 8 {
-			b[i] = u8(v >> (8 * u64(i)))
-		}
-	}
+	put :: libodin.put_u64le
 	put(img[0:], IMAGE_MAGIC)
 	put(img[8:], u64(TEXT_VA))
 	put(img[16:], u64(len(code)))
 	put(img[24:], 0)
-	for i in 0 ..< len(code) {
-		img[IMAGE_HEADER_SIZE + i] = code[i]
-	}
+	copy(img[IMAGE_HEADER_SIZE:], code)
 	return img
 }
 
@@ -358,14 +341,14 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 	// The pack: every compiled program, in `build.odin`'s order.
 	pak := PROGRAMS_PAK
 	if len(pak) >= 8 && string(pak[:4]) == "VPAK" {
-		n := int(u32le(pak[4:]))
+		n := int(libodin.get_u32le(pak[4:]))
 		at := 8
 		for _ in 0 ..< n {
 			if at + 8 > len(pak) {
 				break
 			}
-			name_len := int(u32le(pak[at:]))
-			size := int(u32le(pak[at + 4:]))
+			name_len := int(libodin.get_u32le(pak[at:]))
+			size := int(libodin.get_u32le(pak[at + 4:]))
 			at += 8
 			if at + name_len + size > len(pak) {
 				break
@@ -460,15 +443,7 @@ load_program :: proc(
 		return 0, 0, 0, vectra9.ENOEXEC
 	}
 
-	word :: proc "contextless" (b: []u8) -> u64 {
-		v := u64(0)
-		for i in 0 ..< 8 {
-			v |= u64(b[i]) << (8 * u64(i))
-		}
-		return v
-	}
-
-	switch word(raw[:]) {
+	switch libodin.get_u64le(raw[:]) {
 	case IMAGE_MAGIC:
 		return load_v1(p, c, raw[:got])
 	case IMAGE2_MAGIC:
@@ -516,13 +491,7 @@ thing a compiled program is handed. A blob keeps its data page there.
 */
 @(private = "file")
 load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64, vectra9.Errno) #no_bounds_check {
-	word :: proc "contextless" (b: []u8) -> u64 {
-		v := u64(0)
-		for i in 0 ..< 8 {
-			v |= u64(b[i]) << (8 * u64(i))
-		}
-		return v
-	}
+	word :: libodin.get_u64le
 	entry := uintptr(word(raw[8:]))
 	nsegs := int(word(raw[16:]))
 	if word(raw[24:]) != 0 {
@@ -562,7 +531,7 @@ load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 			return 0, 0, 0, vectra9.ENOMEM
 		}
 
-		pages := int((s.memsz + page - 1) / page)
+		pages := int(mem.page_count(s.memsz))
 		copied := u64(0)
 		for j in 0 ..< pages {
 			frame, ok := mem.alloc_page_zeroed()
@@ -598,31 +567,22 @@ load_v2 :: proc(p: ^Process, c: ^vfs.Chan, raw: []u8) -> (uintptr, uintptr, u64,
 	// the top page, where the arguments go and the first frames land. The
 	// rest are holes a fault fills as the stack grows down into them --
 	// `fix_fault`, and Plan 9's stack segment growing on demand.
-	for j in 0 ..< STACK_PAGES2 {
-		if j < STACK_PAGES2 - 1 {
-			if !segment_add_frame(stack, 0) {
-				return 0, 0, 0, vectra9.ENOMEM
-			}
-			continue
-		}
-		frame, ok := mem.alloc_page_zeroed()
-		if !ok {
-			return 0, 0, 0, vectra9.ENOMEM
-		}
-		if !segment_add_frame(stack, frame) {
-			mem.free_page(frame)
-			return 0, 0, 0, vectra9.ENOMEM
-		}
-		va := STACK_VA2 + uintptr(j * arch.PAGE_SIZE)
-		if mem.map_user(p.space, va, frame, {.Write, .No_Execute}, 1) != .None {
+	for _ in 0 ..< STACK_PAGES2 - 1 {
+		if !segment_add_frame(stack, 0) {
 			return 0, 0, 0, vectra9.ENOMEM
 		}
 	}
+	frame, ok := mem.alloc_page_zeroed()
+	if !ok {
+		return 0, 0, 0, vectra9.ENOMEM
+	}
+	if !segment_add_frame(stack, frame) {
+		mem.free_page(frame)
+		return 0, 0, 0, vectra9.ENOMEM
+	}
+	va := STACK_VA2 + uintptr((STACK_PAGES2 - 1) * arch.PAGE_SIZE)
+	if mem.map_user(p.space, va, frame, {.Write, .No_Execute}, 1) != .None {
+		return 0, 0, 0, vectra9.ENOMEM
+	}
 	return entry, STACK_TOP, 0, vfs.OK
-}
-
-// u32le reads a little-endian 32-bit number from the front of a slice.
-@(private = "file")
-u32le :: proc "contextless" (b: []u8) -> u32 #no_bounds_check {
-	return u32(b[0]) | u32(b[1]) << 8 | u32(b[2]) << 16 | u32(b[3]) << 24
 }

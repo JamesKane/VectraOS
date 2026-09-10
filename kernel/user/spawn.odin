@@ -82,7 +82,7 @@ SPAWN_FD_CLEAN :: abi.SPAWN_FD_CLEAN
 /*
 How long `wait` watches before it reports nothing happened.
 
-A bound for the same reason `SLEEP_MAX` is one. A call that can park a thread
+A bound, and this is the reason for one. A call that can park a thread
 for ever is a call that can park it past the end of the boot. A parent whose
 child outlives the bound gets EAGAIN and may ask again, which every caller of
 a bounded wait already handles.
@@ -116,11 +116,9 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 		parent = parent != nil ? parent.pid : 0,
 		detached = false,
 		note_group = parent != nil ? parent.note_group : 0,
+		rend_group = parent != nil ? parent.rend_group : 0,
 		inherit = parent,
 	)
-	if p != nil && parent != nil {
-		p.rend_group = parent.rend_group
-	}
 	if p == nil {
 		// The table is full, which is a resource the caller can wait for
 		// rather than a request that can never work.
@@ -134,17 +132,9 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 	}
 	p.space = space
 
-	// The path, copied home. The caller's string may live on a syscall
-	// stack, and this record outlives that stack by the child's lifetime.
-	for i in 0 ..< len(path) {
-		p.name_buf[i] = path[i]
-	}
-	p.name = string(p.name_buf[:len(path)])
-
-	// The directory follows the parent, as the namespace does.
-	if parent != nil {
-		_ = set_directory(p, current_directory(parent))
-	}
+	// The path, copied home. The directory followed the parent at the
+	// claim, as the namespace does below.
+	set_name(p, path)
 
 	ns_flags: vfs.Fork_Flags
 	if flags & SPAWN_NS_COPY != 0 {

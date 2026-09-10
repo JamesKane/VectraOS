@@ -1050,7 +1050,7 @@ wanted memory in proportion to its work rather than to its source.
 segment already carried a base and an extent, because a thousand frames do not
 fit a frame list of sixty-four. An anonymous segment is the same description of
 memory this allocator *did* hand out, so the last release hands it in.
-`segment_is_run` is the one predicate that separates the two shapes from the
+The `run` field is the one flag that separates the two shapes from the
 five kinds. Three places care: `segment_frame`, `segment_release` and
 `fork_segments`. Each asks in one word, and a sixth kind joins the right shape
 in one edit.
@@ -1424,8 +1424,8 @@ hands out, one type for both. `Segment` carries a growable `Pte **map` with a
 `mapsize`, so one shape serves a four-kilobyte segment and a two-gigabyte one.
 
 Vectra needed two kinds only because `MAX_PROGRAM_FRAMES` is a fixed array of
-sixty-four. That is what forced the run shape, and `segment_is_run` is the seam
-it left. A growable frame list would retire the predicate, the second kind, and
+sixty-four. That is what forced the run shape, and the `run` field is the seam
+it left. A growable frame list would retire the flag, the second kind, and
 this paragraph.
 
 ### The self-test, and its controls

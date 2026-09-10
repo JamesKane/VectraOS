@@ -198,20 +198,18 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 	// `RFNOWAIT` hands the child to the kernel at birth: no parent to wait
 	// for it, and `reap_orphans` collects it when it ends. Plan 9's detached
 	// child, and the answer to the orphan leak from the side that chooses
-	// it up front. `RFNOTEG` is a note group of the child's own.
+	// it up front. `RFNOTEG` is a note group of the child's own. The
+	// rendezvous group follows the note group's rule: inherited, or a
+	// group of one under RFREND.
 	child := claim_slot(
 		parent = flags & RFNOWAIT != 0 ? 0 : parent.pid,
 		detached = flags & RFNOWAIT != 0,
 		note_group = flags & RFNOTEG != 0 ? 0 : parent.note_group,
+		rend_group = flags & RFREND != 0 ? 0 : parent.rend_group,
 		inherit = parent,
 	)
 	if child == nil {
 		return -i64(vectra9.EAGAIN)
-	}
-	// The rendezvous group follows the note group's rule: inherited, or a
-	// group of one under RFREND.
-	if flags & RFREND == 0 {
-		child.rend_group = parent.rend_group
 	}
 	// A debugger's `hang` follows the fork, as Plan 9's does: a child of a
 	// watched process stops at its own exec, which is how an engine follows
@@ -231,14 +229,11 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 
 	// The parent's name, copied home like a spawned path. Two processes of
 	// one name tell a boot log less than they might. The pid is the field
-	// that disambiguates, which is the answer `/srv`'s listing gives.
-	for i in 0 ..< len(parent.name) {
-		child.name_buf[i] = parent.name[i]
-	}
-	child.name = string(child.name_buf[:len(parent.name)])
+	// that disambiguates, which is the answer `/srv`'s listing gives. The
+	// directory followed the parent at the claim.
+	set_name(child, parent.name)
 	child.args_buf = parent.args_buf
 	child.args_len = parent.args_len
-	_ = set_directory(child, current_directory(parent))
 
 	ns_how: vfs.Fork_Flags
 	if flags & RFNAMEG != 0 {
@@ -344,19 +339,12 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 				return false
 			}
 			for j in 0 ..< s.pages {
-				va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
 				frame := segment_frame(s, j)
 				if frame == 0 {
 					continue
 				}
-				if mem.map_user(child.space, va, frame, s.flags, 1) != .None {
+				if !map_child_page(child, parent, s, j, frame, frame, s.flags) {
 					return false
-				}
-				// A run segment is hundreds of pages and the alias table
-				// holds a handful. Nothing stages through a card or through
-				// memory a program asked for after it started, in any case.
-				if !s.run {
-					alias_frame(child, parent, frame, frame)
 				}
 			}
 			continue
@@ -396,12 +384,8 @@ fork_segments :: proc(child: ^Process, parent: ^Process, share: bool) -> bool {
 				continue
 			}
 			mem.frame_share(frame)
-			va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
-			if mem.map_user(child.space, va, frame, read_only, 1) != .None {
+			if !map_child_page(child, parent, s, j, frame, frame, read_only) {
 				return false
-			}
-			if !s.run {
-				alias_frame(child, parent, frame, frame)
 			}
 		}
 		// The parent's own pages go read-only too, and every core that
@@ -442,16 +426,35 @@ copy_segment :: proc(child: ^Process, parent: ^Process, s: ^Segment) -> bool {
 		}
 		src := (cast([^]u8)mem.phys_to_virt(from))[:arch.PAGE_SIZE]
 		dst := (cast([^]u8)mem.phys_to_virt(frame))[:arch.PAGE_SIZE]
-		for k in 0 ..< arch.PAGE_SIZE {
-			dst[k] = src[k]
-		}
-		va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
-		if mem.map_user(child.space, va, frame, s.flags, 1) != .None {
+		copy(dst, src)
+		if !map_child_page(child, parent, s, j, from, frame, s.flags) {
 			return false
 		}
-		if !s.run {
-			alias_frame(child, parent, from, frame)
-		}
+	}
+	return true
+}
+
+// map_child_page maps `frame` at page `j` of segment `s` in the child. It
+// then aliases it for the staging table: the parent's frame `from` is now
+// `frame` in the child. A run segment is hundreds of pages and the alias
+// table holds a handful. Nothing stages through a card or through memory a
+// program asked for after it started, in any case.
+@(private = "file")
+map_child_page :: proc "contextless" (
+	child: ^Process,
+	parent: ^Process,
+	s: ^Segment,
+	j: int,
+	from: uintptr,
+	frame: uintptr,
+	flags: arch.Page_Flags,
+) -> bool {
+	va := s.va + uintptr(j) * uintptr(arch.PAGE_SIZE)
+	if mem.map_user(child.space, va, frame, flags, 1) != .None {
+		return false
+	}
+	if !s.run {
+		alias_frame(child, parent, from, frame)
 	}
 	return true
 }

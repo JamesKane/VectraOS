@@ -21,6 +21,7 @@ package user
 import "kernel:arch"
 import "kernel:mem"
 import "vsys:abi"
+import "vsys:libodin"
 
 // The copied arguments: the bytes, and where each argument starts and ends
 // in them. `count` is how many.
@@ -75,8 +76,8 @@ copy_argv :: proc "contextless" (addr: uintptr, count: int, into: ^Argv) -> bool
 		return false
 	}
 	for i in 0 ..< count {
-		ptr := uintptr(word(headers[i * 16:]))
-		length := int(word(headers[i * 16 + 8:]))
+		ptr := uintptr(libodin.get_u64le(headers[i * 16:]))
+		length := int(libodin.get_u64le(headers[i * 16 + 8:]))
 		if length < 0 || length > abi.ARG_MAX || into.used + length > abi.ARGS_MAX {
 			return false
 		}
@@ -88,15 +89,6 @@ copy_argv :: proc "contextless" (addr: uintptr, count: int, into: ^Argv) -> bool
 	}
 	into.count = count
 	return true
-}
-
-@(private = "file")
-word :: proc "contextless" (b: []u8) -> u64 {
-	v := u64(0)
-	for i in 0 ..< 8 {
-		v |= u64(b[i]) << (8 * u64(i))
-	}
-	return v
 }
 
 /*
@@ -137,8 +129,8 @@ stage_args :: proc "contextless" (stack: ^Segment, top: uintptr, argv: ^Argv) ->
 		start := 0
 		for i in 0 ..< count {
 			record: [16]u8
-			put_word(record[:], u64(bytes_at + uintptr(start)))
-			put_word(record[8:], u64(argv.ends[i] - start))
+			libodin.put_u64le(record[:], u64(bytes_at + uintptr(start)))
+			libodin.put_u64le(record[8:], u64(argv.ends[i] - start))
 			if !stack_write(stack, top, strings_at + uintptr(i * 16), record[:]) {
 				return 0, 0, false
 			}
@@ -146,19 +138,12 @@ stage_args :: proc "contextless" (stack: ^Segment, top: uintptr, argv: ^Argv) ->
 		}
 	}
 	header: [16]u8
-	put_word(header[:], u64(count))
-	put_word(header[8:], u64(strings_at))
+	libodin.put_u64le(header[:], u64(count))
+	libodin.put_u64le(header[8:], u64(strings_at))
 	if !stack_write(stack, top, block_at, header[:]) {
 		return 0, 0, false
 	}
 	return sp, block_at, true
-}
-
-@(private = "file")
-put_word :: proc "contextless" (b: []u8, v: u64) {
-	for i in 0 ..< 8 {
-		b[i] = u8(v >> (8 * u64(i)))
-	}
 }
 
 // stack_write puts bytes at a program address inside the stack segment,
@@ -205,10 +190,7 @@ argv_from :: proc "contextless" (into: ^Argv, strs: []string) -> bool {
 		if into.used + len(s) > abi.ARGS_MAX {
 			return false
 		}
-		for k in 0 ..< len(s) {
-			into.bytes[into.used + k] = s[k]
-		}
-		into.used += len(s)
+		into.used += copy(into.bytes[into.used:], s)
 		into.ends[i] = into.used
 	}
 	into.count = len(strs)

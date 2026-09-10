@@ -341,9 +341,9 @@ a syscall and a kind rather than an allocator.
 `docs/USER.md` owns the call. Two sentences from that milestone are worth
 carrying back here:
 
-- The kind is the device's shape with the ownership put back. One predicate,
-  `segment_is_run`, separates the two shapes from the five kinds, and the
-  release, the frame question and the fork each ask it in one word.
+- The kind is the device's shape with the ownership put back. One field,
+  `run`, separates the two shapes from the five kinds, and the release, the
+  frame question and the fork each read it in one word.
 - The call reuses `segattach`'s bump, so a device mapping and a run of memory
   cannot be handed the same addresses. One counter has no argument to make
   about which region grows into the other.

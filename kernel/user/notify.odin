@@ -105,9 +105,7 @@ deliver_note :: proc "contextless" (p: ^Process, frame: ^arch.Trap_Frame) -> boo
 	}
 
 	text := cast([^]u8)text_va
-	for i in 0 ..< p.note_len {
-		text[i] = p.note_buf[i]
-	}
+	copy(text[:p.note_len], p.note_buf[:p.note_len])
 	text[p.note_len] = 0
 
 	(cast(^arch.Trap_Frame)ureg_va)^ = frame^
@@ -176,8 +174,7 @@ sys_noted :: proc(frame: ^arch.Trap_Frame, how: u64) -> i64 {
 	}
 
 	if how == abi.NDFLT {
-		p.notified = false
-		note_exit(frame)
+		default_action(p, frame)
 	}
 	if how != abi.NCONT {
 		// Still in the handler, still holding the delivery. A word this
@@ -190,14 +187,12 @@ sys_noted :: proc(frame: ^arch.Trap_Frame, how: u64) -> i64 {
 	if !copy_in(p.note_sp, size_of(arch.Trap_Frame), buf) {
 		// The handler lost the frame it was handed. There is nothing left
 		// to resume, and the default action is all that remains.
-		p.notified = false
-		note_exit(frame)
+		default_action(p, frame)
 	}
 
 	ip, sp := arch.frame_ip(&saved), arch.frame_sp(&saved)
 	if ip < mem.USER_MIN || ip >= mem.USER_MAX || sp < mem.USER_MIN || sp > mem.USER_MAX {
-		p.notified = false
-		note_exit(frame)
+		default_action(p, frame)
 	}
 
 	// The parts a program must not choose, rebuilt from the kernel's own
@@ -208,4 +203,12 @@ sys_noted :: proc(frame: ^arch.Trap_Frame, how: u64) -> i64 {
 	frame^ = saved
 	p.notified = false
 	return arch.syscall_result(frame)
+}
+
+// default_action ends the process the way a note with no handler does: the
+// delivery is over, `notified` comes down, and `note_exit` finishes.
+@(private = "file")
+default_action :: proc(p: ^Process, frame: ^arch.Trap_Frame) -> ! {
+	p.notified = false
+	note_exit(frame)
 }

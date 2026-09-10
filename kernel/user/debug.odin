@@ -458,11 +458,8 @@ privatise_segment :: proc(p: ^Process, s: ^Segment) -> ^Segment {
 			p.text = frame
 		}
 	}
-	for i in 0 ..< p.seg_count {
-		if p.segs[i] == s {
-			p.segs[i] = fresh
-			break
-		}
+	if at := proc_segment_index(p, s); at >= 0 {
+		p.segs[at] = fresh
 	}
 	segment_release(s)
 	mem.shoot(mem.space_root(p.space), s.va, s.pages)
@@ -482,15 +479,35 @@ proc_regs_read :: proc "contextless" (pid: u64, off: u64, out: []u8) -> (n: int,
 		return 0, vectra9.ESRCH
 	}
 	defer unpin(p)
-	if !p.stopped || p.stop_frame == nil {
-		return 0, vectra9.EBUSY
+	bytes, e := stopped_image(p, fpu = false)
+	if e != vfs.OK {
+		return 0, e
 	}
-	if off >= u64(arch.FRAME_REGS_SIZE) {
+	if off >= u64(len(bytes)) {
 		return 0, vfs.OK
 	}
-	bytes := (cast([^]u8)p.stop_frame)[:arch.FRAME_REGS_SIZE]
 	n = copy(out, bytes[off:])
 	return n, vfs.OK
+}
+
+// stopped_image is the stopped process's frame, or its float image, as the
+// bytes `regs` and `fpregs` read and write. EBUSY for a process that is not
+// stopped, which is Plan 9's "process not stopped".
+@(private = "file")
+stopped_image :: proc "contextless" (p: ^Process, fpu: bool) -> ([]u8, vfs.Errno) {
+	if !p.stopped {
+		return nil, vectra9.EBUSY
+	}
+	if fpu {
+		if p.stop_fpu == nil {
+			return nil, vectra9.EBUSY
+		}
+		return (cast([^]u8)p.stop_fpu)[:arch.FPU_AREA_SIZE], vfs.OK
+	}
+	if p.stop_frame == nil {
+		return nil, vectra9.EBUSY
+	}
+	return (cast([^]u8)p.stop_frame)[:arch.FRAME_REGS_SIZE], vfs.OK
 }
 
 /*
@@ -506,8 +523,8 @@ proc_regs_write :: proc "contextless" (pid: u64, off: u64, data: []u8) -> (n: in
 		return 0, vectra9.ESRCH
 	}
 	defer unpin(p)
-	if !p.stopped || p.stop_frame == nil {
-		return 0, vectra9.EBUSY
+	if _, e := stopped_image(p, fpu = false); e != vfs.OK {
+		return 0, e
 	}
 	if off >= u64(arch.FRAME_REGS_SIZE) {
 		return 0, vectra9.EINVAL
@@ -534,13 +551,13 @@ proc_fpregs_read :: proc "contextless" (pid: u64, off: u64, out: []u8) -> (n: in
 		return 0, vectra9.ESRCH
 	}
 	defer unpin(p)
-	if !p.stopped || p.stop_fpu == nil {
-		return 0, vectra9.EBUSY
+	bytes, e := stopped_image(p, fpu = true)
+	if e != vfs.OK {
+		return 0, e
 	}
-	if off >= u64(arch.FPU_AREA_SIZE) {
+	if off >= u64(len(bytes)) {
 		return 0, vfs.OK
 	}
-	bytes := (cast([^]u8)p.stop_fpu)[:arch.FPU_AREA_SIZE]
 	n = copy(out, bytes[off:])
 	return n, vfs.OK
 }
@@ -551,13 +568,13 @@ proc_fpregs_write :: proc "contextless" (pid: u64, off: u64, data: []u8) -> (n: 
 		return 0, vectra9.ESRCH
 	}
 	defer unpin(p)
-	if !p.stopped || p.stop_fpu == nil {
-		return 0, vectra9.EBUSY
+	bytes, e := stopped_image(p, fpu = true)
+	if e != vfs.OK {
+		return 0, e
 	}
-	if off >= u64(arch.FPU_AREA_SIZE) {
+	if off >= u64(len(bytes)) {
 		return 0, vectra9.EINVAL
 	}
-	bytes := (cast([^]u8)p.stop_fpu)[:arch.FPU_AREA_SIZE]
 	n = copy(bytes[off:], data)
 	arch.fpu_image_sanitise(p.stop_fpu)
 	return n, vfs.OK
@@ -594,7 +611,7 @@ proc_segments :: proc "contextless" (pid: u64, out: []u8) -> int {
 		libodin.put_str(&sink, " ")
 		libodin.put_hex(&sink, u64(s.va), 16)
 		libodin.put_str(&sink, " ")
-		libodin.put_hex(&sink, u64(s.va + uintptr(s.pages) * uintptr(arch.PAGE_SIZE)), 16)
+		libodin.put_hex(&sink, u64(segment_end(s)), 16)
 		libodin.put_str(&sink, " ")
 		libodin.put_int(&sink, i64(s.refs))
 		libodin.put_str(&sink, "\n")
