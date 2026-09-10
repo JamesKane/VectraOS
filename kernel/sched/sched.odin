@@ -28,6 +28,7 @@ import "base:runtime"
 import "kernel:arch"
 import "kernel:mem"
 import "kernel:sync"
+import "vsys:libodin"
 
 @(private)
 cpus: [MAX_CPUS]Cpu
@@ -518,6 +519,9 @@ wake_noted :: proc "contextless" (t: ^Thread) {
 	if t.state == .Ready || t.state == .Running || t.state == .Dead {
 		return
 	}
+	if t.reaped {
+		reaped_bug(t, "note")
+	}
 	if !t.note_wakes {
 		// A sleeping lock's waiter. Leave it queued; the handoff wakes it,
 		// and the note waits at the next boundary. See `note_thread`.
@@ -808,6 +812,24 @@ unpark :: proc "contextless" (t: ^Thread) {
 	wake(t, boosted = false)
 }
 
+// reaped_bug halts, naming the thread a waker reached after the reaper freed
+// it and by which door. A stale `^Thread` is the shape: a wait node whose
+// frame was reused, or a raw thread pointer a subsystem outlived. The name
+// says which subsystem's thread. The door says a rendezvous wake, a lock
+// handoff, or a note. `docs/TESTING.md`, and the stale-wake hunt notes.
+@(private = "file")
+reaped_bug :: proc "contextless" (t: ^Thread, door: string) -> ! {
+	buf: [128]u8
+	sink := libodin.sink_from(buf[:])
+	libodin.put_str(&sink, "sched: wake of reaped thread [")
+	libodin.put_str(&sink, t.name)
+	libodin.put_str(&sink, "] id ")
+	libodin.put_uint(&sink, u64(t.id))
+	libodin.put_str(&sink, " via ")
+	libodin.put_str(&sink, door)
+	sync.bug(libodin.str(&sink))
+}
+
 @(private = "file")
 wake :: proc "contextless" (t: ^Thread, boosted: bool) {
 	if t == nil {
@@ -820,7 +842,7 @@ wake :: proc "contextless" (t: ^Thread, boosted: bool) {
 		return
 	}
 	if t.reaped {
-		sync.bug("sched: a wake of a reaped thread")
+		reaped_bug(t, boosted ? "ready(io)" : "unpark(lock)")
 	}
 	if boosted {
 		boost(t)
