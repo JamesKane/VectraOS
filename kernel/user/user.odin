@@ -482,9 +482,6 @@ ring 3 again, which is the fault. See `syscall.odin`.
 init :: proc(ns: ^vfs.Namespace) -> bool {
 	arch.set_user_trap_handler(on_trap)
 	sched.set_note_trap(note_trap)
-	// The reaper's last word on a thread, so a process drops its back-pointer
-	// as the record is freed rather than after. See `on_thread_reaped`.
-	sched.set_reap_hook(on_thread_reaped)
 	// The collector before the door opens, so no process can end without one
 	// running. See `hangup_dead`.
 	if !reaper_start() {
@@ -1015,40 +1012,6 @@ exit_done :: proc "contextless" (arg: rawptr) -> bool {
 }
 
 /*
-on_thread_reaped takes the back-pointer off a process as the reaper frees its
-thread. Registered with `sched.set_reap_hook` in `init`.
-
-`p.thread` is the one raw pointer to the thread a note sender still reads, and
-`sched.reap` is what frees the record. The clear is here, under `table_lock`,
-tied to the free rather than the exit, and it is the whole of the reaped-wake
-fix. A sender holding the lock sees one of two things. The first is a live
-thread whose free this clear waits behind, because the sender holds the lock.
-The second is `nil`, and it never sees freed memory.
-
-Tied to the free on purpose, because an earlier clear in the exit path broke
-two things. It stretched the window in which `all_reaped` cannot yet see a
-dying thread. It also blinded `collect`, whose `p.thread != nil` gate reads a
-running thread as running. Here `p.thread` stands from spawn until the reaper
-has the record, which is what both of those expect. `sched.wake_noted` keeps
-its `reaped` check as a tripwire. See `post_note`, `proc_note`, and
-`docs/SYNC.md`.
-
-Thread context, off the scheduler lock, so `table_lock` is safe to take.
-*/
-@(private)
-on_thread_reaped :: proc "contextless" (t: ^sched.Thread) {
-	if t == nil || t.user == nil {
-		return
-	}
-	guard := sync.acquire(&table_lock)
-	p := (^Process)(t.user)
-	if p.thread == t {
-		p.thread = nil
-	}
-	sync.release(&table_lock, guard)
-}
-
-/*
 post_note delivers an ending to a process, from outside it.
 
 The note is a flag on the thread and a line of text on the process. What
@@ -1062,11 +1025,6 @@ arc for parents, and the kernel's for itself.
 Refused on a process that already ended. The note would outlive its target
 and kill whatever reuses the thread, which is the aliasing every id in this
 tree exists to prevent.
-
-Called with `table_lock` held. The guard and the wake both read `p.thread`,
-and only the lock keeps the reaper's `on_thread_reaped` from nilling it and
-freeing the record in between. The callers that hold it are `proc_note`,
-`end`, and the group senders `notepg_kernel` and `sys_note`.
 */
 post_note :: proc "contextless" (p: ^Process, text: string) -> bool {
 	if p == nil || !p.live || p.thread == nil {
@@ -1091,9 +1049,6 @@ set_note_text :: proc "contextless" (p: ^Process, text: string) {
 /*
 request_end is `end` without the wait: the kernel's word set, the note
 that names it, and the wake. `end` waits after it; `/proc/n/ctl` does not.
-
-Called with `table_lock` held, for the reason `post_note` gives: the wake
-reads `p.thread`, and the lock is what keeps it off the reap list meanwhile.
 */
 request_end :: proc "contextless" (p: ^Process) -> bool {
 	if p == nil || !p.live || p.thread == nil || intrinsics.volatile_load(&p.exit.done) {
@@ -1193,28 +1148,13 @@ True means the process ended, noted, and its record is still there for the
 caller to read. `stop` is this and the collection.
 */
 end :: proc(p: ^Process, patience: int) -> bool {
-	if p == nil || !p.live {
+	if p == nil || !p.live || p.thread == nil {
 		return false
 	}
-	// Exit checked before the `p.thread` guard. The reaper nils `p.thread`
-	// once a process is collected, so an ended process may already have no
-	// thread. The caller that wants to collect it, `stop`, must still be told
-	// it ended. A nil thread that has not exited is the pre-spawn window, and
-	// nothing there is to end.
 	if intrinsics.volatile_load(&p.exit.done) {
 		return true
 	}
-	if p.thread == nil {
-		return false
-	}
-	// The note under the lock that pins `p.thread`. The wait comes after it,
-	// with the lock let go, because `wait` sleeps and a `Spinlock` cannot be
-	// held across a sleep. See `request_end` and `on_thread_reaped`.
-	{
-		guard := sync.acquire(&table_lock)
-		request_end(p)
-		sync.release(&table_lock, guard)
-	}
+	request_end(p)
 	return wait(p, patience)
 }
 
@@ -1456,18 +1396,16 @@ A thread that never parked has none. A system call that parks is therefore
 visible from outside as a number, rather than inferred from how long the
 program took.
 
-**Zero once the thread is gone.** The reaper nils `p.thread` under `table_lock`
-in the same breath it frees the record, through `on_thread_reaped`. Read under
-that lock, `p.thread` is therefore either a live record or `nil`, never freed
-memory, so this reads zero rather than a ghost.
+**Valid only until the next `load`.** A dead thread's record is still allocated
+until something reaps it, and `spawn` is what reaps. `destroy` clears the
+pointer, which is why this reads zero afterwards rather than reads freed
+memory.
 */
 blocked :: proc "contextless" (p: ^Process) -> u64 {
-	if p == nil {
+	if p == nil || p.thread == nil {
 		return 0
 	}
-	guard := sync.acquire(&table_lock)
-	defer sync.release(&table_lock, guard)
-	return p.thread != nil ? p.thread.wakeups : 0
+	return p.thread.wakeups
 }
 
 // ended reports whether a program already faulted, without waiting.

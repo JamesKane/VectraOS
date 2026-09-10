@@ -56,16 +56,6 @@ import "vsys:libdraw"
 import "vsys:libfont"
 import "vsys:vectra9"
 
-// test_note posts a note the way production does, with `table_lock` held. The
-// self-test then drives the locked path `post_note` now requires, not the bare
-// call the contract forbids. See `post_note` and `on_thread_reaped`.
-@(private = "file")
-test_note :: proc "contextless" (p: ^Process, text: string) -> bool {
-	guard := sync.acquire(&table_lock)
-	defer sync.release(&table_lock, guard)
-	return post_note(p, text)
-}
-
 /*
 The page fault error code, in the bits `describe_error` turns into words.
 
@@ -2266,7 +2256,7 @@ verify_notes :: proc(r: ^Result) {
 	check(r, moving, "and its counter moves")
 
 	before := sync.now()
-	check(r, test_note(p, "die"), "a note is posted to it")
+	check(r, post_note(p, "die"), "a note is posted to it")
 	if check(r, wait(p, 100), "and it ends") {
 		check(r, sync.now() - before < 50, "promptly -- the wake was a wake, not a timeout")
 		check(r, p.exit.noted, "the record says a note did it")
@@ -2274,7 +2264,7 @@ verify_notes :: proc(r: ^Result) {
 		check(r, p.exit.from_user, "caught in ring 3, mid loop")
 		check(r, cell(p, CELL_COUNTER) > 0, "with its counter moving when the tick took it")
 		check(r, note(p) == "die", "and the text arrived whole")
-		check(r, !test_note(p, "again"), "a second note is refused -- the target is gone")
+		check(r, !post_note(p, "again"), "a second note is refused -- the target is gone")
 	}
 	finish(r, p, "and it is taken down")
 
@@ -2290,7 +2280,7 @@ verify_notes :: proc(r: ^Result) {
 	posted := await_posted("ramfs")
 	check(r, posted, "and it posts, then parks with nothing to serve")
 
-	check(r, test_note(p, "enough"), "a note is posted to the parked server")
+	check(r, post_note(p, "enough"), "a note is posted to the parked server")
 	if check(r, wait(p, 200), "the sleep unwinds and it ends") {
 		check(r, p.exit.noted, "by the note, at the door")
 		check(r, !p.exit.deliberate, "not by the exit it was walking toward")
@@ -2371,7 +2361,7 @@ verify_handler :: proc(r: ^Result) {
 	)
 	check(r, cell(p, CATCHER_NOTIFIED) == 0, "and notify answered zero")
 
-	check(r, test_note(p, CATCHER_NOTE), "a note is posted to it, mid spin")
+	check(r, post_note(p, CATCHER_NOTE), "a note is posted to it, mid spin")
 	handled := false
 	for _ in 0 ..< PATIENCE {
 		if cell(p, CATCHER_HANDLED) >= 1 {
@@ -2394,7 +2384,7 @@ verify_handler :: proc(r: ^Result) {
 	}
 	check(r, cell(p, CATCHER_TEXT) == want, "the handler read the note's own text")
 
-	check(r, test_note(p, "again"), "a second note is posted, into its syscall loop")
+	check(r, post_note(p, "again"), "a second note is posted, into its syscall loop")
 	if check(r, wait(p, PATIENCE), "and the program comes back from both") {
 		check(r, cell(p, CATCHER_HANDLED) == 2, "each delivery ran the handler once")
 		check(
@@ -2432,7 +2422,7 @@ verify_handler :: proc(r: ^Result) {
 	}
 	check(r, moving, "it registers and spins")
 
-	check(r, test_note(p, "enough"), "a note is posted")
+	check(r, post_note(p, "enough"), "a note is posted")
 	if check(r, wait(p, PATIENCE), "and it ends") {
 		check(r, cell(p, DFLTNOTE_RAN) == 1, "the handler ran first")
 		check(
@@ -2517,7 +2507,7 @@ verify_stop :: proc(r: ^Result) {
 		}
 		sync.delay(1)
 	}
-	check(r, armed && test_note(p, CATCHER_NOTE), "it spins, and an ordinary note is posted to it")
+	check(r, armed && post_note(p, CATCHER_NOTE), "it spins, and an ordinary note is posted to it")
 	sleeping := false
 	for _ in 0 ..< PATIENCE {
 		if cell(p, CATCHER_HANDLED) == 1 {

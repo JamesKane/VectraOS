@@ -530,32 +530,8 @@ verify_smp :: proc() {
 	// Each worker's stack comes back on the core it died on, when that core's
 	// idle thread next runs. Waited for rather than assumed.
 	scheck(&r, sync.await(sched.all_reaped, nil, PATIENCE), "every core reaped its dead")
-
-	/*
-	Drained until the heap reads level, not read once. A thread that died on
-	another core is freed a tick later, by that core's idle thread. A detached
-	process the reaper has not reached yet still holds its record. Either is a
-	corpse the closing reading counts and the next tick clears. It is a
-	transient, not a leak.
-
-	So the loop runs the collectors until the bracket is zero. A real leak
-	never reaches zero and still fails. This is the user suite's `drain_pinned`,
-	which `docs/TESTING.md` explains. A one-shot reading here read `+1` most
-	boots, once a lock on the note path moved the timing a hair. See
-	`user.settled`.
-	*/
-	pinned := 0
-	for _ in 0 ..< PATIENCE {
-		sched.reap()
-		_ = sync.await(sched.all_reaped, nil, PATIENCE)
-		_ = sync.await(user.settled, nil, PATIENCE)
-		pinned = mem.live_objects(mem.heap_stats()) - pin_before
-		if pinned == 0 {
-			break
-		}
-		sync.delay(1)
-	}
-	scheck(&r, pinned == 0, "and the heap is balanced")
+	sched.reap()
+	scheck(&r, mem.live_objects(mem.heap_stats()) == pin_before, "and the heap is balanced")
 
 	report_smp(&r)
 }

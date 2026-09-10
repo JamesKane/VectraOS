@@ -565,23 +565,6 @@ set_note_trap :: proc "contextless" (h: Note_Trap) {
 	note_trap = h
 }
 
-/*
-What the reaper calls on a thread's record the instant before it frees it.
-
-Registered by `kernel/user`, which keeps a raw `^Thread` in every process and
-must drop it before the free, not after. `reap` runs this in thread context
-with the scheduler lock already let go, so the hook may take a lock of its
-own. The thread is still whole when it runs. It is gone the moment after.
-*/
-Reap_Hook :: #type proc "contextless" (t: ^Thread)
-
-@(private = "file")
-reap_hook: Reap_Hook
-
-set_reap_hook :: proc "contextless" (h: Reap_Hook) {
-	reap_hook = h
-}
-
 // park_current takes the interrupted thread off every queue, its frame kept
 // in its record, until `ready` puts it back. `block` from interrupt context,
 // for a stop that catches a thread in ring 3.
@@ -726,14 +709,6 @@ reap :: proc() {
 			sync.bug("sched: a thread on the reap list is not dead")
 		}
 		t.reaped = true
-		// The owner's last chance to drop its back-pointer to this thread,
-		// while the record still stands. `kernel/user` clears `Process.thread`
-		// here, under its own lock, so a note sender holding that lock never
-		// reaches a freed thread. Thread context, off the scheduler lock, so
-		// the hook may take a lock of its own. See `set_reap_hook`.
-		if reap_hook != nil {
-			reap_hook(t)
-		}
 		if t.owns_stack && t.stack != nil {
 			delete(t.stack)
 		}

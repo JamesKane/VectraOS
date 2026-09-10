@@ -109,33 +109,28 @@ proc_after :: proc "contextless" (pid: u64) -> u64 #no_bounds_check {
 // proc_note posts a note to a process by pid, from anyone: Plan 9 grants
 // notes by owner, and there are no owners yet.
 proc_note :: proc "contextless" (pid: u64, text: string) -> bool {
-	// The lock is held across `post_note`, not just the lookup: it is what
-	// pins `p.thread` against the reaper while the note reaches it. See
-	// `post_note` and `on_thread_reaped`.
 	guard := sync.acquire(&table_lock)
-	defer sync.release(&table_lock, guard)
-	return post_note(live_by_pid(pid), text)
+	p := live_by_pid(pid)
+	sync.release(&table_lock, guard)
+	return post_note(p, text)
 }
 
 // proc_kill ends a process unconditionally at its next boundary, without
 // waiting for it: `end` less the wait, for a writer of `/proc/n/ctl`.
 proc_kill :: proc "contextless" (pid: u64) -> bool {
-	// Held across `request_end`, the same as `proc_note`: the lock pins
-	// `p.thread` against the reaper while the note reaches it.
 	guard := sync.acquire(&table_lock)
-	defer sync.release(&table_lock, guard)
-	return request_end(live_by_pid(pid))
+	p := live_by_pid(pid)
+	sync.release(&table_lock, guard)
+	return request_end(p)
 }
 
 // proc_stop asks a process to stop at its next boundary. The wake is a
 // note's, and the record remembers it was a stop's, so the boundary parks
 // rather than delivers. See `stop_here`.
 proc_stop :: proc "contextless" (pid: u64) -> bool {
-	// The flags and the wake are under the lock with the lookup, so the
-	// note's thread cannot be reaped from under it.
 	guard := sync.acquire(&table_lock)
-	defer sync.release(&table_lock, guard)
 	p := live_by_pid(pid)
+	sync.release(&table_lock, guard)
 	if p == nil || p.thread == nil || intrinsics.volatile_load(&p.exit.done) {
 		return false
 	}
@@ -161,8 +156,8 @@ which is the tick's park and never a lock's.
 proc_start :: proc "contextless" (pid: u64) -> bool {
 	guard := sync.acquire(&table_lock)
 	p := live_by_pid(pid)
+	sync.release(&table_lock, guard)
 	if p == nil || p.thread == nil {
-		sync.release(&table_lock, guard)
 		return false
 	}
 	intrinsics.volatile_store(&p.stop_requested, false)
@@ -171,26 +166,18 @@ proc_start :: proc "contextless" (pid: u64) -> bool {
 		// The tick's park announces itself a few instructions before it
 		// parks. A start that arrives inside them would find the thread
 		// still running and wake nothing, so wait for the park, briefly.
-		// The lock drops only around the delay, then is taken again to read
-		// `p.thread`. A kill in the gap exits the thread, and
-		// `on_thread_reaped` leaves `nil` here, not a reaped pointer.
 		for _ in 0 ..< 50 {
 			if p.thread == nil || intrinsics.volatile_load(&p.thread.state) == .Blocked || intrinsics.volatile_load(&p.exit.done) {
 				break
 			}
-			sync.release(&table_lock, guard)
 			sync.delay(1)
-			guard = sync.acquire(&table_lock)
 		}
 		p.stopped_in_tick = false
 		p.stopped = false
 		p.stop_frame = nil
 		p.stop_fpu = nil
-		if p.thread != nil {
-			sched.unstop(p.thread)
-		}
+		sched.unstop(p.thread)
 	}
-	sync.release(&table_lock, guard)
 	return true
 }
 
