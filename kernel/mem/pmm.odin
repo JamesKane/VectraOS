@@ -43,7 +43,6 @@ is no `Page`.
 @(private = "file") untracked_frees: int
 @(private = "file") frame_peak: int // High-water mark of frames in use
 @(private = "file") bitmap_frame: int // Where the bitmap put itself
-@(private = "file") bitmap_frames: int
 @(private = "file") hint: int
 
 Pmm_Stats :: struct {
@@ -143,7 +142,7 @@ pmm_init :: proc "contextless" (b: ^Boot_Memory) -> Error {
 		return .No_Usable_Memory
 	}
 
-	frame_total = int(align_up(top, PAGE_SIZE) / PAGE_SIZE)
+	frame_total = int(page_count(top))
 	need := u64(frame_total + 7) / 8
 
 	home, found := find_bitmap_home(b, need)
@@ -152,7 +151,7 @@ pmm_init :: proc "contextless" (b: ^Boot_Memory) -> Error {
 	}
 
 	bitmap_frame = int(home / PAGE_SIZE)
-	bitmap_frames = int(page_count(need))
+	bitmap_frames := int(page_count(need))
 	bitmap = (cast([^]u8)phys_to_virt(uintptr(home)))[:need]
 
 	// Everything starts taken, so a frame the firmware never described -- a

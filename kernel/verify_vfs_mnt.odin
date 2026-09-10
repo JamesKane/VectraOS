@@ -37,7 +37,6 @@ namespace of its own costs one `ns_new`.
 package kernel
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:mem"
 import "kernel:mnt"
@@ -168,7 +167,7 @@ slow_abort :: proc "contextless" (server: rawptr, tag: vectra9.Tag) #no_bounds_c
 	if int(tag) < mnt.MAX_REQUESTS {
 		intrinsics.volatile_store(&sv.flushed[int(tag)], true)
 	}
-	mnt_bump(&sv.aborts)
+	bump(&sv.aborts)
 	sync.wakeup_all(&sv.gate)
 }
 
@@ -192,9 +191,9 @@ slow_handler :: proc "contextless" (
 		w.sv = sv
 		w.tag = int(tag)
 
-		mnt_bump(&sv.blocked)
+		bump(&sv.blocked)
 		sync.sleep(&sv.gate, slow_ready, w)
-		mnt_unbump(&sv.blocked)
+		unbump(&sv.blocked)
 
 		if !intrinsics.volatile_load(&sv.open) {
 			// Flushed, and this server is one that acts on it. The reply is
@@ -210,16 +209,6 @@ slow_handler :: proc "contextless" (
 	vfs.static_handler(&sv.tree, s, tag, request, reply, buf)
 }
 
-@(private = "file")
-mnt_bump :: proc "contextless" (p: ^int) {
-	intrinsics.volatile_store(p, intrinsics.volatile_load(p) + 1)
-}
-
-@(private = "file")
-mnt_unbump :: proc "contextless" (p: ^int) {
-	intrinsics.volatile_store(p, intrinsics.volatile_load(p) - 1)
-}
-
 // -- The readers ----------------------------------------------------------------
 
 @(private = "file")
@@ -228,14 +217,10 @@ Reader_Result :: struct {
 	listings:  int,
 	wrong:     int, // Bytes that belonged to another reader's file
 	errs:      int,
-	returned:  bool,
 }
 
 @(private = "file")
 readers: [MNT_READERS]Reader_Result
-
-@(private = "file")
-reader_done: sync.Rendez
 
 @(private = "file")
 reader_returns: int
@@ -243,24 +228,6 @@ reader_returns: int
 @(private = "file")
 all_read :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&reader_returns) >= MNT_READERS
-}
-
-// What the heap gave out and did not take back. The bracket around this whole
-// self-test, which is what makes `leaked` mean anything.
-@(private = "file")
-live_blocks :: proc "contextless" (s: mem.Heap_Stats) -> int {
-	live := s.large_blocks
-	for i in 0 ..< len(s.class_total) {
-		live += s.class_total[i] - s.class_free[i]
-	}
-	return live
-}
-
-@(private = "file")
-mnt_context :: proc "contextless" () -> runtime.Context {
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	return ctx
 }
 
 /*
@@ -272,7 +239,7 @@ the old session lock would have serialised.
 */
 @(private = "file")
 reader :: proc "contextless" (arg: rawptr) #no_bounds_check {
-	context = mnt_context()
+	context = mem.kernel_context()
 
 	i := int(uintptr(arg))
 	rd := &readers[i]
@@ -331,9 +298,7 @@ reader :: proc "contextless" (arg: rawptr) #no_bounds_check {
 		}
 	}
 
-	intrinsics.volatile_store(&rd.returned, true)
-	mnt_bump(&reader_returns)
-	sync.wakeup_all(&reader_done)
+	bump(&reader_returns)
 }
 
 // count_entries decodes a listing and counts only names this tree actually
@@ -374,12 +339,6 @@ Mnt_Result :: struct {
 }
 
 @(private = "file")
-mcheck :: proc "contextless" (r: ^Mnt_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
-
-
-@(private = "file")
 one_blocked :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&slow.blocked) >= 1
 }
@@ -409,16 +368,13 @@ Give_Up :: struct {
 give_up: Give_Up
 
 @(private = "file")
-give_up_done: sync.Rendez
-
-@(private = "file")
 give_up_returned :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&give_up.returned)
 }
 
 @(private = "file")
 give_up_reader :: proc "contextless" (arg: rawptr) {
-	context = mnt_context()
+	context = mem.kernel_context()
 
 	buf: [FILE_BYTES]u8
 	started := sched.ticks()
@@ -426,7 +382,6 @@ give_up_reader :: proc "contextless" (arg: rawptr) {
 	give_up.ticks = sched.ticks() - started
 
 	intrinsics.volatile_store(&give_up.returned, true)
-	sync.wakeup_all(&give_up_done)
 }
 
 @(private = "file")
@@ -437,47 +392,49 @@ none_blocked :: proc "contextless" (arg: rawptr) -> bool {
 verify_vfs_mnt :: proc() #no_bounds_check {
 	r: Mnt_Result
 
-	if !mcheck(&r, vfs.static_init(&mtree, "m", MTREE_NODES[:]), "the shared tree came up") {
+	if !libodin.check(&r, vfs.static_init(&mtree, "m", MTREE_NODES[:]), "the shared tree came up") {
 		report_vfs_mnt(&r)
 		return
 	}
 	defer vfs.static_destroy(&mtree)
 
-	if !mcheck(&r, vfs.static_init(&slow.tree, "w", SLOW_NODES[:]), "the blocking tree came up") {
+	if !libodin.check(&r, vfs.static_init(&slow.tree, "w", SLOW_NODES[:]), "the blocking tree came up") {
 		report_vfs_mnt(&r)
 		return
 	}
 	defer vfs.static_destroy(&slow.tree)
 
-	mcheck(&r, vfs.server_init(&mserver, "m", vfs.static_handler, &mtree) == .None, "#m Tversion")
-	mcheck(&r, vfs.server_init(&sserver, "w", slow_handler, &slow) == .None, "#w Tversion")
-	mcheck(&r, vfs.register_device(&mserver), "#m registered")
-	mcheck(&r, vfs.register_device(&sserver), "#w registered")
+	libodin.check(&r, vfs.server_init(&mserver, "m", vfs.static_handler, &mtree) == .None, "#m Tversion")
+	libodin.check(&r, vfs.server_init(&sserver, "w", slow_handler, &slow) == .None, "#w Tversion")
+	libodin.check(&r, vfs.register_device(&mserver), "#m registered")
+	libodin.check(&r, vfs.register_device(&sserver), "#w registered")
 
 	// Every core's dead off the heap first, or a thread an earlier suite
 	// left dying on another core reads below as a block this suite freed.
 	// See `sched.all_reaped`.
 	sched.reap()
 	_ = sync.await(sched.all_reaped, nil, MNT_PATIENCE)
-	before := live_blocks(mem.heap_stats())
+	// What the heap gave out and did not take back. The bracket around this
+	// whole self-test, which is what makes `leaked` mean anything.
+	before := mem.live_objects(mem.heap_stats())
 
 	// -- A namespace of this test's own --------------------------------------
 
 	mns = vfs.ns_new()
-	if !mcheck(&r, mns != nil, "a private namespace") {
+	if !libodin.check(&r, mns != nil, "a private namespace") {
 		report_vfs_mnt(&r)
 		return
 	}
 
 	root, root_err := vfs.device_attach("#m")
-	if !mcheck(&r, root_err == vfs.OK, "#m attached through the device escape") {
+	if !libodin.check(&r, root_err == vfs.OK, "#m attached through the device escape") {
 		report_vfs_mnt(&r)
 		return
 	}
-	mcheck(&r, vfs.ns_set_root(mns, root) == vfs.OK, "and became the namespace root")
+	libodin.check(&r, vfs.ns_set_root(mns, root) == vfs.OK, "and became the namespace root")
 	vfs.chan_close(root)
 
-	mcheck(
+	libodin.check(
 		&r,
 		vfs.mount_device(mns, "#w", "/mnt") == vfs.OK,
 		"#w bound at /mnt, which is a walk that crosses servers",
@@ -485,8 +442,8 @@ verify_vfs_mnt :: proc() #no_bounds_check {
 
 	// -- Synchronous first, so the move has a baseline -----------------------
 
-	mcheck(&r, !vfs.server_interruptible(&mserver), "a server on its own stack cannot be interrupted")
-	mcheck(&r, read_is(mns, "/alpha", 'a'), "and answers an ordinary read")
+	libodin.check(&r, !vfs.server_interruptible(&mserver), "a server on its own stack cannot be interrupted")
+	libodin.check(&r, read_is(mns, "/alpha", 'a'), "and answers an ordinary read")
 
 	/*
 	A chan taken before the move, kept across it, and read after.
@@ -497,11 +454,11 @@ verify_vfs_mnt :: proc() #no_bounds_check {
 	number already in use. A chan that stopped working here would say it did not.
 	*/
 	kept, kept_err := vfs.resolve(mns, "/bravo")
-	mcheck(&r, kept_err == vfs.OK, "a chan taken before the move")
+	libodin.check(&r, kept_err == vfs.OK, "a chan taken before the move")
 
 	// -- The move ------------------------------------------------------------
 
-	if !mcheck(
+	if !libodin.check(
 		&r,
 		vfs.server_start(&mserver, MNT_WORKERS),
 		"the shared server took four workers",
@@ -509,22 +466,22 @@ verify_vfs_mnt :: proc() #no_bounds_check {
 		report_vfs_mnt(&r)
 		return
 	}
-	mcheck(
+	libodin.check(
 		&r,
 		vfs.server_start(&sserver, MNT_WORKERS, 0, slow_abort),
 		"the blocking server took four workers and an abort hook",
 	)
 
 	r.msize = vfs.server_msize(&mserver)
-	mcheck(&r, vfs.server_interruptible(&mserver), "a server with workers can be interrupted")
-	mcheck(
+	libodin.check(&r, vfs.server_interruptible(&mserver), "a server with workers can be interrupted")
+	libodin.check(
 		&r,
 		r.msize == u32(vfs.DEFAULT_PAYLOAD + vectra9.IOHDRSZ),
 		"and says so in an msize its slots can actually carry",
 	)
 
 	if kept != nil {
-		mcheck(&r, vfs.chan_open(kept, vfs.O_RDONLY) == vfs.OK, "still opens after the move")
+		libodin.check(&r, vfs.chan_open(kept, vfs.O_RDONLY) == vfs.OK, "still opens after the move")
 		got: [FILE_BYTES]u8
 		n, e := vfs.chan_read(kept, 0, got[:])
 		clean := e == vfs.OK && n == FILE_BYTES
@@ -533,7 +490,7 @@ verify_vfs_mnt :: proc() #no_bounds_check {
 				clean = false
 			}
 		}
-		mcheck(&r, clean, "and still names the file it named before")
+		libodin.check(&r, clean, "and still names the file it named before")
 		vfs.chan_close(kept)
 	}
 
@@ -549,24 +506,24 @@ verify_vfs_mnt :: proc() #no_bounds_check {
 
 	vfs.server_stop(&sserver)
 	vfs.server_stop(&mserver)
-	mcheck(&r, !vfs.server_interruptible(&mserver), "a stopped server is on its own stack again")
-	mcheck(
+	libodin.check(&r, !vfs.server_interruptible(&mserver), "a stopped server is on its own stack again")
+	libodin.check(
 		&r,
 		vfs.server_msize(&mserver) == vectra9.MSIZE_DEFAULT,
 		"with the msize a transport that carries no buffer reports",
 	)
-	mcheck(&r, read_is(mns, "/charlie", 'c'), "and answers an ordinary read as it always did")
+	libodin.check(&r, read_is(mns, "/charlie", 'c'), "and answers an ordinary read as it always did")
 
 	// -- Leave nothing behind -------------------------------------------------
 
-	mcheck(&r, vfs.unmount_path(mns, "", "/mnt") == vfs.OK, "/mnt unbound again")
+	libodin.check(&r, vfs.unmount_path(mns, "", "/mnt") == vfs.OK, "/mnt unbound again")
 	vfs.ns_close(mns)
 	mns = nil
 
 	sched.reap()
 	_ = sync.await(sched.all_reaped, nil, MNT_PATIENCE)
-	r.leaked = live_blocks(mem.heap_stats()) - before
-	mcheck(&r, r.leaked == 0, "every chan, mount point and connection was released")
+	r.leaked = mem.live_objects(mem.heap_stats()) - before
+	libodin.check(&r, r.leaked == 0, "every chan, mount point and connection was released")
 
 	report_vfs_mnt(&r)
 }
@@ -615,10 +572,10 @@ run_readers :: proc(r: ^Mnt_Result) #no_bounds_check {
 			spawned += 1
 		}
 	}
-	if !mcheck(r, spawned == MNT_READERS, "a reader for every path") {
+	if !libodin.check(r, spawned == MNT_READERS, "a reader for every path") {
 		return
 	}
-	if !mcheck(r, sync.await(all_read, nil, MNT_PATIENCE), "and every one of them came back") {
+	if !libodin.check(r, sync.await(all_read, nil, MNT_PATIENCE), "and every one of them came back") {
 		return
 	}
 
@@ -630,10 +587,10 @@ run_readers :: proc(r: ^Mnt_Result) #no_bounds_check {
 		errs += readers[i].errs
 	}
 
-	mcheck(r, errs == 0, "no path failed while four threads walked it at once")
-	mcheck(r, r.reads == MNT_READERS * ROUNDS, "every read got its bytes")
-	mcheck(r, r.listings == MNT_READERS * ROUNDS, "every listing was the whole directory")
-	mcheck(r, wrong == 0, "and no thread was handed another thread's payload")
+	libodin.check(r, errs == 0, "no path failed while four threads walked it at once")
+	libodin.check(r, r.reads == MNT_READERS * ROUNDS, "every read got its bytes")
+	libodin.check(r, r.listings == MNT_READERS * ROUNDS, "every listing was the whole directory")
+	libodin.check(r, wrong == 0, "and no thread was handed another thread's payload")
 }
 
 /*
@@ -657,20 +614,20 @@ verify_give_up :: proc(r: ^Mnt_Result) #no_bounds_check {
 	aborts_before := intrinsics.volatile_load(&slow.aborts)
 
 	c, err := vfs.resolve(mns, "/mnt/slow")
-	if !mcheck(r, err == vfs.OK, "a path that crosses into the blocking server") {
+	if !libodin.check(r, err == vfs.OK, "a path that crosses into the blocking server") {
 		return
 	}
 	defer vfs.chan_close(c)
 
-	if !mcheck(r, vfs.chan_open(c, vfs.O_RDONLY) == vfs.OK, "and opens, because only a read blocks") {
+	if !libodin.check(r, vfs.chan_open(c, vfs.O_RDONLY) == vfs.OK, "and opens, because only a read blocks") {
 		return
 	}
-	mcheck(r, vfs.chan_interruptible(c), "a read on it can be given up on")
+	libodin.check(r, vfs.chan_interruptible(c), "a read on it can be given up on")
 
 	give_up = Give_Up {
 		c = c,
 	}
-	if !mcheck(
+	if !libodin.check(
 		r,
 		sched.spawn("vfs-give-up", give_up_reader, nil) != nil,
 		"a thread to do the giving up",
@@ -679,7 +636,7 @@ verify_give_up :: proc(r: ^Mnt_Result) #no_bounds_check {
 	}
 
 	came_back := sync.await(give_up_returned, nil, MNT_PATIENCE)
-	if !mcheck(r, came_back, "a read that outlives its deadline comes back at all") {
+	if !libodin.check(r, came_back, "a read that outlives its deadline comes back at all") {
 		// It did not, so it is still inside the server. Let it finish, or the
 		// teardown below pulls the tree out from under a live thread.
 		intrinsics.volatile_store(&slow.open, true)
@@ -689,15 +646,15 @@ verify_give_up :: proc(r: ^Mnt_Result) #no_bounds_check {
 	}
 	r.gave_up = give_up.ticks
 
-	mcheck(r, give_up.err == vectra9.EINTR, "and reports EINTR")
-	mcheck(r, give_up.n == 0, "and hands back no bytes it did not get")
-	mcheck(r, r.gave_up >= GIVE_UP, "after waiting the deadline it was given")
-	mcheck(
+	libodin.check(r, give_up.err == vectra9.EINTR, "and reports EINTR")
+	libodin.check(r, give_up.n == 0, "and hands back no bytes it did not get")
+	libodin.check(r, r.gave_up >= GIVE_UP, "after waiting the deadline it was given")
+	libodin.check(
 		r,
 		intrinsics.volatile_load(&slow.aborts) > aborts_before,
 		"and the server was told which request to abandon",
 	)
-	mcheck(r, sync.await(none_blocked, nil, MNT_PATIENCE), "which left no handler parked behind it")
+	libodin.check(r, sync.await(none_blocked, nil, MNT_PATIENCE), "which left no handler parked behind it")
 
 	// The connection is a connection afterwards. A give-up that poisoned the
 	// session would show up here rather than at the next boot.
@@ -706,14 +663,12 @@ verify_give_up :: proc(r: ^Mnt_Result) #no_bounds_check {
 
 	buf: [FILE_BYTES]u8
 	n2, e2 := vfs.chan_read(c, 0, buf[:])
-	mcheck(r, e2 == vfs.OK && n2 == FILE_BYTES, "and the same fid reads normally once the server will answer")
+	libodin.check(r, e2 == vfs.OK && n2 == FILE_BYTES, "and the same fid reads normally once the server will answer")
 }
 
 @(private = "file")
 report_vfs_mnt :: proc(r: ^Mnt_Result) {
-	sink := begin(&klog)
-	libodin.put_str(&sink, "vfs ")
-	libodin.put_uint(&sink, u64(r.checks))
+	sink := report_begin("vfs", r.checks)
 	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " transport checks passed -- ")
 		libodin.put_uint(&sink, u64(r.reads))
@@ -731,10 +686,5 @@ report_vfs_mnt :: proc(r: ^Mnt_Result) {
 		emit(&klog, .Ok, &sink)
 		return
 	}
-
-	libodin.put_str(&sink, " transport checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, r.tally, r.leaked)
 }

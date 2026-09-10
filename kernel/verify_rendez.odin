@@ -110,7 +110,7 @@ is_released :: proc "contextless" (arg: rawptr) -> bool {
 	if intrinsics.volatile_load(&released) {
 		return true
 	}
-	intrinsics.volatile_store(&parked, intrinsics.volatile_load(&parked) + 1)
+	bump(&parked)
 	return false
 }
 
@@ -147,10 +147,7 @@ sleeper :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	intrinsics.volatile_store(&next_turn, turn + 1)
 	intrinsics.volatile_store(&wake_order[slot], turn)
 
-	intrinsics.volatile_store(
-		&finished_sleepers,
-		intrinsics.volatile_load(&finished_sleepers) + 1,
-	)
+	bump(&finished_sleepers)
 	sync.wakeup(&done)
 }
 
@@ -175,24 +172,18 @@ Rendez_Result :: struct {
 	woke:          u64,
 }
 
-@(private = "file")
-rcheck :: proc "contextless" (r: ^Rendez_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
-
 // wait_parked spins the boot thread down onto the clock until `want` threads
 // commit to a sleep. A poll, but a polite one. Between looks, this thread is
 // off the run queue entirely, so the threads it waits for have the core to
 // themselves.
 @(private = "file")
 wait_parked :: proc "contextless" (want: int) -> bool {
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&parked) >= want {
-			return true
-		}
-		sync.delay(1)
-	}
-	return false
+	return sync.await(parked_at_least, rawptr(uintptr(want)), PATIENCE)
+}
+
+@(private = "file")
+parked_at_least :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.volatile_load(&parked) >= int(uintptr(arg))
 }
 
 verify_sleep_queue :: proc() #no_bounds_check {
@@ -202,7 +193,7 @@ verify_sleep_queue :: proc() #no_bounds_check {
 
 	// -- The clock ----------------------------------------------------------
 
-	rcheck(&r, sync.now() > 0, "the clock is running")
+	libodin.check(&r, sync.now() > 0, "the clock is running")
 
 	{
 		// Nothing else is alive at this point, so the switch count below is
@@ -213,9 +204,9 @@ verify_sleep_queue :: proc() #no_bounds_check {
 		r.nap = sched.ticks() - t0
 		r.switches = sched.stats().switches - s0.switches
 
-		rcheck(&r, r.nap >= NAP_TICKS, "a thread that asked for a delay got all of it")
-		rcheck(&r, r.nap <= NAP_TICKS + NAP_SLACK, "and was given the core back promptly")
-		rcheck(&r, r.switches >= 2, "and left the core while it waited, rather than spinning")
+		libodin.check(&r, r.nap >= NAP_TICKS, "a thread that asked for a delay got all of it")
+		libodin.check(&r, r.nap <= NAP_TICKS + NAP_SLACK, "and was given the core back promptly")
+		libodin.check(&r, r.switches >= 2, "and left the core while it waited, rather than spinning")
 	}
 
 	// -- Conditions ---------------------------------------------------------
@@ -225,14 +216,14 @@ verify_sleep_queue :: proc() #no_bounds_check {
 		// racing ahead of a wait harmless. Nothing may park.
 		s0 := sync.sleep_stats()
 		sync.sleep(&gate, always)
-		rcheck(
+		libodin.check(
 			&r,
 			sync.sleep_stats().sleeps == s0.sleeps,
 			"a wait whose condition already holds does not park",
 		)
 	}
 
-	rcheck(&r, !sync.wakeup(&gate), "waking an empty rendezvous finds nobody")
+	libodin.check(&r, !sync.wakeup(&gate), "waking an empty rendezvous finds nobody")
 
 	{
 		// The lost wake-up, from the direction it actually happens in: the
@@ -243,7 +234,7 @@ verify_sleep_queue :: proc() #no_bounds_check {
 		woke := sync.wakeup(&gate)
 		s0 := sync.sleep_stats()
 		sync.sleep(&gate, is_released)
-		rcheck(
+		libodin.check(
 			&r,
 			!woke && sync.sleep_stats().sleeps == s0.sleeps,
 			"a wake-up that arrives before the wait is not lost",
@@ -255,7 +246,7 @@ verify_sleep_queue :: proc() #no_bounds_check {
 		// the caller keeps the core.
 		s0 := sync.sleep_stats()
 		got := sync.sleep_for(&gate, never, nil, 0)
-		rcheck(
+		libodin.check(
 			&r,
 			!got && sync.sleep_stats().sleeps == s0.sleeps,
 			"a wait with no time left polls rather than parks",
@@ -303,11 +294,11 @@ verify_sleep_queue :: proc() #no_bounds_check {
 			break
 		}
 	}
-	if !rcheck(&r, spawned == SLEEPERS, "every sleeper spawned and parked in turn") {
+	if !libodin.check(&r, spawned == SLEEPERS, "every sleeper spawned and parked in turn") {
 		report_sleep_queue(&r)
 		return
 	}
-	rcheck(&r, sync.sleep_stats().sleeps - before.sleeps >= u64(SLEEPERS), "and really slept")
+	libodin.check(&r, sync.sleep_stats().sleeps - before.sleeps >= u64(SLEEPERS), "and really slept")
 
 	// Released before the first wake, so a woken thread finds its condition
 	// true and goes rather than parking again.
@@ -321,10 +312,10 @@ verify_sleep_queue :: proc() #no_bounds_check {
 	sync.delay(2)
 	rest := sync.wakeup_all(&gate)
 
-	rcheck(&r, first && second, "waking a rendezvous with waiters finds them")
-	rcheck(&r, rest == SLEEPERS - 2, "and waking the rest takes the rest")
+	libodin.check(&r, first && second, "waking a rendezvous with waiters finds them")
+	libodin.check(&r, rest == SLEEPERS - 2, "and waking the rest takes the rest")
 
-	rcheck(
+	libodin.check(
 		&r,
 		sync.sleep_for(&done, all_slept, nil, PATIENCE),
 		"every sleeper came back",
@@ -333,7 +324,7 @@ verify_sleep_queue :: proc() #no_bounds_check {
 	high := intrinsics.volatile_load(&wake_order[2])
 	mid := intrinsics.volatile_load(&wake_order[1])
 	low := intrinsics.volatile_load(&wake_order[0])
-	rcheck(
+	libodin.check(
 		&r,
 		high == 0 && mid == 1 && low == 2,
 		"and the queue let them go in the order the scheduler would have",
@@ -345,23 +336,23 @@ verify_sleep_queue :: proc() #no_bounds_check {
 	intrinsics.volatile_store(&timed_out, false)
 	timeouts_before := sync.sleep_stats().timeouts
 
-	if rcheck(
+	if libodin.check(
 		&r,
 		sched.spawn("rendez-timeout", timeout_worker) != nil,
 		"the timeout worker spawned",
 	) {
-		rcheck(
+		libodin.check(
 			&r,
 			sync.sleep_for(&done, timed_worker_done, nil, PATIENCE),
 			"a wait for something that never happens still ends",
 		)
-		rcheck(&r, intrinsics.volatile_load(&timed_out), "and says it gave up rather than won")
-		rcheck(
+		libodin.check(&r, intrinsics.volatile_load(&timed_out), "and says it gave up rather than won")
+		libodin.check(
 			&r,
 			intrinsics.volatile_load(&timed_elapsed) >= TIMEOUT_TICKS,
 			"and waited the whole of its deadline first",
 		)
-		rcheck(
+		libodin.check(
 			&r,
 			sync.sleep_stats().timeouts > timeouts_before,
 			"and was counted as a deadline rather than a wake",
@@ -374,16 +365,14 @@ verify_sleep_queue :: proc() #no_bounds_check {
 	r.slept = after.sleeps - before.sleeps
 	r.woke = after.wakeups - before.wakeups
 
-	rcheck(&r, !sync.waiting(&gate.queue), "the rendezvous came back empty")
+	libodin.check(&r, !sync.waiting(&gate.queue), "the rendezvous came back empty")
 
 	report_sleep_queue(&r)
 }
 
 @(private = "file")
 report_sleep_queue :: proc(r: ^Rendez_Result) {
-	sink := begin(&klog)
-	libodin.put_str(&sink, "sync ")
-	libodin.put_uint(&sink, u64(r.checks))
+	sink := report_begin("sync", r.checks)
 	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " sleep queue checks passed -- ")
 		libodin.put_uint(&sink, r.slept)
@@ -399,10 +388,5 @@ report_sleep_queue :: proc(r: ^Rendez_Result) {
 		emit(&klog, .Ok, &sink)
 		return
 	}
-
-	libodin.put_str(&sink, " sleep queue checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, r.tally)
 }

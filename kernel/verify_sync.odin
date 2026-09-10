@@ -30,7 +30,6 @@ enough never to run a whole slice on its own. That gap is precisely what tells
 package kernel
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:arch"
 import "kernel:mem"
@@ -129,9 +128,7 @@ that a variable this thread just wrote is still what it wrote.
 */
 @(private = "file")
 contend_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
-	c := runtime.default_context()
-	c.allocator = mem.allocator()
-	context = c
+	context = mem.kernel_context()
 
 	slot := int(uintptr(arg))
 
@@ -139,10 +136,7 @@ contend_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
 		sync.mutex_lock(&contend_lock)
 
 		if intrinsics.volatile_load(&contend_inside) {
-			intrinsics.volatile_store(
-				&contend_violations,
-				intrinsics.volatile_load(&contend_violations) + 1,
-			)
+			bump(&contend_violations)
 		}
 		intrinsics.volatile_store(&contend_inside, true)
 
@@ -152,24 +146,18 @@ contend_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
 
 		// Still ours on the way out, or somebody was in here too.
 		if !intrinsics.volatile_load(&contend_inside) {
-			intrinsics.volatile_store(
-				&contend_violations,
-				intrinsics.volatile_load(&contend_violations) + 1,
-			)
+			bump(&contend_violations)
 		}
 		intrinsics.volatile_store(&contend_inside, false)
 
 		sync.mutex_unlock(&contend_lock)
-		intrinsics.volatile_store(
-			&contend_takes[slot],
-			intrinsics.volatile_load(&contend_takes[slot]) + 1,
-		)
+		bump(&contend_takes[slot])
 	}
 
 	if t := sched.current(); t != nil {
 		intrinsics.volatile_store(&contend_prio[slot], int(t.prio))
 	}
-	intrinsics.volatile_store(&contend_done, intrinsics.volatile_load(&contend_done) + 1)
+	bump(&contend_done)
 	sync.wakeup(&contend_over)
 }
 
@@ -232,13 +220,7 @@ rw_reader_worker :: proc "contextless" (arg: rawptr) {
 // no name, which `docs/TESTING.md` forbids.
 @(private = "file")
 await :: proc(flag: ^bool) -> bool {
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(flag) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return false
+	return sync.await_flag(flag, PATIENCE)
 }
 
 /*
@@ -254,63 +236,62 @@ under observing the effect rather than the bookkeeping beside it.
 */
 @(private = "file")
 await_parked :: proc(t: ^sched.Thread) -> bool {
-	for _ in 0 ..< PATIENCE {
-		if intrinsics.volatile_load(&t.state) == .Blocked {
-			return true
-		}
-		sync.delay(1)
-	}
-	return false
+	return sync.await(thread_parked, t, PATIENCE)
+}
+
+@(private = "file")
+thread_parked :: proc "contextless" (arg: rawptr) -> bool {
+	return intrinsics.volatile_load(&(cast(^sched.Thread)arg).state) == .Blocked
 }
 
 
 verify_rw_lock :: proc() {
 	r: Sync_Result
 
-	scheck(&r, sync.rw_readers(&rw) == 0 && !sync.rw_writer(&rw), "a fresh read/write lock is free")
+	libodin.check(&r, sync.rw_readers(&rw) == 0 && !sync.rw_writer(&rw), "a fresh read/write lock is free")
 	sync.rlock(&rw)
 	sync.rlock(&rw)
-	scheck(&r, sync.rw_readers(&rw) == 2, "and two readers share it")
+	libodin.check(&r, sync.rw_readers(&rw) == 2, "and two readers share it")
 	sync.runlock(&rw)
-	scheck(&r, sync.rw_readers(&rw) == 1, "one leaves and one remains")
+	libodin.check(&r, sync.rw_readers(&rw) == 1, "one leaves and one remains")
 
 		// A writer arrives while a reader holds the lock, and waits.
 	writer := sched.spawn("rw-writer", rw_writer_worker)
-	if !scheck(&r, writer != nil, "a writer is spawned") {
+	if !libodin.check(&r, writer != nil, "a writer is spawned") {
 		sync.runlock(&rw)
 		report_rw_lock(&r)
 		return
 	}
-	scheck(&r, await_parked(writer), "and parks behind the reader")
-	scheck(&r, !intrinsics.volatile_load(&rw_writer_in), "rather than getting in beside it")
+	libodin.check(&r, await_parked(writer), "and parks behind the reader")
+	libodin.check(&r, !intrinsics.volatile_load(&rw_writer_in), "rather than getting in beside it")
 
 	// A second reader arrives behind the queued writer, and waits too. This
 	// is the rule that stops readers starving a writer, and the one a
 	// simpler lock gets wrong.
 		reader := sched.spawn("rw-reader", rw_reader_worker)
-	if !scheck(&r, reader != nil, "a second reader is spawned") {
+	if !libodin.check(&r, reader != nil, "a second reader is spawned") {
 		sync.runlock(&rw)
 		report_rw_lock(&r)
 		return
 	}
-	scheck(&r, await_parked(reader), "and parks behind the waiting writer")
-	scheck(&r, !intrinsics.volatile_load(&rw_reader_in), "rather than joining the reader that holds the lock")
+	libodin.check(&r, await_parked(reader), "and parks behind the waiting writer")
+	libodin.check(&r, !intrinsics.volatile_load(&rw_reader_in), "rather than joining the reader that holds the lock")
 
 		// The first reader leaves, and the writer goes first. The queue is in
 	// arrival order, and the last reader out starts the writer at its head.
 	handoffs := sync.sleep_stats().handoffs
 	sync.runlock(&rw)
-	scheck(&r, await(&rw_writer_in), "the last reader out starts the writer")
-	scheck(&r, sync.rw_writer(&rw) && sync.rw_readers(&rw) == 0, "which holds the lock alone")
-	scheck(&r, !intrinsics.volatile_load(&rw_reader_in), "while the reader behind it still waits")
+	libodin.check(&r, await(&rw_writer_in), "the last reader out starts the writer")
+	libodin.check(&r, sync.rw_writer(&rw) && sync.rw_readers(&rw) == 0, "which holds the lock alone")
+	libodin.check(&r, !intrinsics.volatile_load(&rw_reader_in), "while the reader behind it still waits")
 
 	// The writer leaves, and the reader at the head of the queue goes in.
 	intrinsics.volatile_store(&rw_release_writer, true)
 	sync.wakeup(&rw_step)
-	scheck(&r, await(&rw_reader_in), "the writer leaving admits the reader at the head")
-	scheck(&r, await(&rw_reader_done) && await(&rw_writer_done), "and both finish")
-	scheck(&r, sync.rw_readers(&rw) == 0 && !sync.rw_writer(&rw), "leaving the lock free")
-	scheck(&r, sync.sleep_stats().handoffs - handoffs == 2, "with two handoffs, one per waiter, and no release to nobody")
+	libodin.check(&r, await(&rw_reader_in), "the writer leaving admits the reader at the head")
+	libodin.check(&r, await(&rw_reader_done) && await(&rw_writer_done), "and both finish")
+	libodin.check(&r, sync.rw_readers(&rw) == 0 && !sync.rw_writer(&rw), "leaving the lock free")
+	libodin.check(&r, sync.sleep_stats().handoffs - handoffs == 2, "with two handoffs, one per waiter, and no release to nobody")
 	sched.reap()
 
 	report_rw_lock(&r)
@@ -318,19 +299,13 @@ verify_rw_lock :: proc() {
 
 @(private = "file")
 report_rw_lock :: proc(r: ^Sync_Result) {
-	sink := begin(&klog)
-	libodin.put_str(&sink, "sync ")
-	libodin.put_uint(&sink, u64(r.checks))
+	sink := report_begin("sync", r.checks)
 	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " read/write lock checks passed -- a writer waited behind a reader, a reader behind the writer, and each was handed the lock in turn")
 		emit(&klog, .Ok, &sink)
 		return
 	}
-	libodin.put_str(&sink, " read/write lock checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, r.tally)
 }
 
 @(private = "file")
@@ -340,11 +315,6 @@ Sync_Result :: struct {
 	slept:         u64,
 	handoffs:      u64,
 	prio:          int, // The lower of the two contenders' final priorities
-}
-
-@(private = "file")
-scheck :: proc "contextless" (r: ^Sync_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
 }
 
 /*
@@ -358,22 +328,22 @@ verify_sleep_lock :: proc() #no_bounds_check {
 	r: Sync_Result
 
 	// Uncontended, on the boot thread, before anything else can be involved.
-	scheck(&r, !sync.mutex_held(&contend_lock), "a fresh mutex is free")
+	libodin.check(&r, !sync.mutex_held(&contend_lock), "a fresh mutex is free")
 	sync.mutex_lock(&contend_lock)
-	scheck(&r, sync.mutex_held(&contend_lock), "and is held once taken")
+	libodin.check(&r, sync.mutex_held(&contend_lock), "and is held once taken")
 	sync.mutex_unlock(&contend_lock)
-	scheck(&r, !sync.mutex_held(&contend_lock), "and free again once given back")
+	libodin.check(&r, !sync.mutex_held(&contend_lock), "and free again once given back")
 
 	// The rule the whole file rests on, from both sides.
-	scheck(&r, sync.can_sleep(), "a thread holding no spinlock may sleep")
+	libodin.check(&r, sync.can_sleep(), "a thread holding no spinlock may sleep")
 	{
 		probe: sync.Spinlock
 		g := sync.acquire(&probe)
 		inside := sync.can_sleep()
 		sync.release(&probe, g)
-		scheck(&r, !inside, "a thread inside one may not")
+		libodin.check(&r, !inside, "a thread inside one may not")
 	}
-	scheck(&r, sync.can_sleep(), "and may again once it is out")
+	libodin.check(&r, sync.can_sleep(), "and may again once it is out")
 
 	/*
 	And the other half of the rule, from inside a top half. A spinlock count of zero is not the whole of `may this park`. An interrupt
@@ -386,8 +356,8 @@ verify_sleep_lock :: proc() #no_bounds_check {
 	arch.set_interrupt_handler(arch.VECTOR_TEST, interrupt_probe)
 	arch.raise_test_interrupt()
 	arch.set_interrupt_handler(arch.VECTOR_TEST, nil)
-	scheck(&r, !intrinsics.volatile_load(&probe_slept), "a top half may not park, though it holds no spinlock")
-	scheck(&r, sync.can_sleep(), "and the bracket is gone once the handler returns")
+	libodin.check(&r, !intrinsics.volatile_load(&probe_slept), "a top half may not park, though it holds no spinlock")
+	libodin.check(&r, sync.can_sleep(), "and the bracket is gone once the handler returns")
 
 	/*
 	And the panic screen's backtrace walks the live stack. The walk only
@@ -398,7 +368,7 @@ verify_sleep_lock :: proc() #no_bounds_check {
 	terminates rather than faults or loops.
 	*/
 	depth := backtrace_a()
-	scheck(&r, depth >= 3, "the panic backtrace walks the live frame-pointer chain")
+	libodin.check(&r, depth >= 3, "the panic backtrace walks the live frame-pointer chain")
 
 	intrinsics.volatile_store(&contend_done, 0)
 	intrinsics.volatile_store(&contend_violations, 0)
@@ -417,7 +387,7 @@ verify_sleep_lock :: proc() #no_bounds_check {
 	if sched.spawn("lock-b", contend_worker, rawptr(uintptr(1))) != nil {
 		spawned += 1
 	}
-	if !scheck(&r, spawned == CONTENDERS, "both contenders spawned") {
+	if !libodin.check(&r, spawned == CONTENDERS, "both contenders spawned") {
 		report_sleep_lock(&r)
 		return
 	}
@@ -427,7 +397,7 @@ verify_sleep_lock :: proc() #no_bounds_check {
 	//
 	// It is off every run queue until the second of them finishes. The deadline
 	// makes a contender that wedges a failed check, rather than a hung boot.
-	scheck(
+	libodin.check(
 		&r,
 		sync.sleep_for(&contend_over, both_done, nil, CONTEND_TICKS + PATIENCE),
 		"both contenders finished",
@@ -446,13 +416,13 @@ verify_sleep_lock :: proc() #no_bounds_check {
 		intrinsics.volatile_load(&contend_prio[1]),
 	)
 
-	scheck(&r, a >= MIN_TAKES && b >= MIN_TAKES, "both contenders took the lock repeatedly")
-	scheck(&r, intrinsics.volatile_load(&contend_violations) == 0, "and never both at once")
-	scheck(&r, !sync.mutex_held(&contend_lock), "the lock came back free")
+	libodin.check(&r, a >= MIN_TAKES && b >= MIN_TAKES, "both contenders took the lock repeatedly")
+	libodin.check(&r, intrinsics.volatile_load(&contend_violations) == 0, "and never both at once")
+	libodin.check(&r, !sync.mutex_held(&contend_lock), "the lock came back free")
 
 	// Without this the run proves only that two threads took turns politely.
-	scheck(&r, r.slept > 0, "they contended for it rather than taking turns")
-	scheck(&r, r.handoffs > 0, "and it was handed over rather than released")
+	libodin.check(&r, r.slept > 0, "they contended for it rather than taking turns")
+	libodin.check(&r, r.handoffs > 0, "and it was handed over rather than released")
 
 	/*
 	The accounting check.
@@ -469,7 +439,7 @@ verify_sleep_lock :: proc() #no_bounds_check {
 	reach the end of a slice. Charged properly, the two of them reach the floor.
 	Charged per dispatch, they stop at seven.
 	*/
-	scheck(
+	libodin.check(
 		&r,
 		r.prio > 0 && r.prio <= int(sched.PRIORITY_NORMAL) - MIN_DECAY,
 		"and a thread that blocked through a whole slice was still charged for it",
@@ -480,9 +450,7 @@ verify_sleep_lock :: proc() #no_bounds_check {
 
 @(private = "file")
 report_sleep_lock :: proc(r: ^Sync_Result) {
-	sink := begin(&klog)
-	libodin.put_str(&sink, "sync ")
-	libodin.put_uint(&sink, u64(r.checks))
+	sink := report_begin("sync", r.checks)
 	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " sleeping lock checks passed -- ")
 		libodin.put_uint(&sink, u64(r.takes))
@@ -493,10 +461,5 @@ report_sleep_lock :: proc(r: ^Sync_Result) {
 		emit(&klog, .Ok, &sink)
 		return
 	}
-
-	libodin.put_str(&sink, " sleeping lock checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, r.tally)
 }

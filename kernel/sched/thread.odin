@@ -205,9 +205,7 @@ Thread :: struct {
 	has_tls: bool,
 
 	// Counters, all of them for the self-test rather than for the scheduler.
-	slices:      u64, // Whole slices of CPU consumed, blocking or not
 	preemptions: u64,
-	dispatches:  u64,
 	wakeups:     u64,
 
 	next:       ^Thread, // Run queue and reap list link
@@ -335,10 +333,6 @@ thing that must always lose.
 Realtime threads do not decay. That is the promise, and it is also the hazard.
 */
 decay :: proc "contextless" (t: ^Thread) {
-	// Counted here rather than at dispatch, which makes `slices` the count of
-	// slices *consumed*. That is the same quantity `ticks_left` measures, and
-	// not the number of times a core took the thread.
-	t.slices += 1
 	if t.prio >= PRIORITY_REALTIME {
 		return
 	}

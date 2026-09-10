@@ -90,11 +90,7 @@ in whatever code eventually dereferences the address, with nothing left to name
 the bad assumption.
 */
 hhdm_mapped :: proc "contextless" (kind: Region_Kind) -> bool {
-	#partial switch kind {
-	case .Unmapped:
-		return false
-	}
-	return true
+	return kind != .Unmapped
 }
 
 // allocatable reports whether the PMM may hand pages of this kind out. Note
@@ -174,10 +170,6 @@ covers :: proc "contextless" (b: ^Boot_Memory, base, length: u64) -> bool {
 @(private)
 hhdm_offset: u64
 
-hhdm :: proc "contextless" () -> u64 {
-	return hhdm_offset
-}
-
 /*
 phys_to_virt maps a physical address into the direct map.
 
@@ -195,12 +187,6 @@ phys_to_virt :: proc "contextless" (phys: uintptr) -> rawptr {
 // (`vmm_translate`).
 virt_to_phys :: proc "contextless" (virt: rawptr) -> uintptr {
 	return uintptr(u64(uintptr(virt)) - hhdm_offset)
-}
-
-// is_direct_map reports whether `virt` looks like an HHDM address, which is the
-// precondition virt_to_phys cannot check for itself.
-is_direct_map :: proc "contextless" (virt: rawptr) -> bool {
-	return u64(uintptr(virt)) >= hhdm_offset
 }
 
 // -- Bring-up ----------------------------------------------------------------

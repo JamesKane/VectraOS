@@ -106,34 +106,6 @@ dequeue_highest :: proc "contextless" (c: ^Cpu) -> ^Thread #no_bounds_check {
 	return nil
 }
 
-// remove unlinks a specific thread from whatever queue it is on. Linear in the
-// length of its level, which is fine for the one caller. That caller kills a
-// thread while it is merely ready, rather than running.
-remove :: proc "contextless" (c: ^Cpu, t: ^Thread) -> bool #no_bounds_check {
-	level := clamp_priority(t.prio)
-	q := &c.runq.level[level]
-
-	prev: ^Thread
-	for cur := q.head; cur != nil; cur = cur.next {
-		if cur == t {
-			if prev == nil {
-				q.head = cur.next
-			} else {
-				prev.next = cur.next
-			}
-			if q.tail == cur {
-				q.tail = prev
-			}
-			q.count -= 1
-			c.runq.ready -= 1
-			t.next = nil
-			return true
-		}
-		prev = cur
-	}
-	return false
-}
-
 /*
 clamp_priority is the one place a priority becomes an array index.
 

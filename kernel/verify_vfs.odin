@@ -89,7 +89,6 @@ that problem because it holds a sleeping read lock across the whole search. See
 package kernel
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:mem"
 import "kernel:sched"
@@ -298,11 +297,6 @@ running :: proc "contextless" () -> bool {
 }
 
 @(private = "file")
-bump :: proc "contextless" (p: ^int) {
-	intrinsics.volatile_store(p, intrinsics.volatile_load(p) + 1)
-}
-
-@(private = "file")
 note :: proc "contextless" (err: vfs.Errno, counter: ^int) {
 	if err == vfs.OK {
 		return
@@ -323,12 +317,6 @@ allocators. So the first thing a thread that means to allocate does is name
 one. Without this line every `new` in the namespace layer returns nil and the
 worker reports failures that are its own fault.
 */
-@(private = "file")
-worker_context :: proc "contextless" () -> runtime.Context {
-	c := runtime.default_context()
-	c.allocator = mem.allocator()
-	return c
-}
 
 /*
 list_worker lists one directory of `#t`, forever, and checks what came back.
@@ -340,7 +328,7 @@ Two of them run, on `a` and on `b`. Only one thing can put a `b` name in the
 */
 @(private = "file")
 list_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
-	context = worker_context()
+	context = mem.kernel_context()
 
 	which := int(uintptr(arg))
 	letter := u8('a') + u8(which)
@@ -415,7 +403,7 @@ data\n".
 */
 @(private = "file")
 read_worker :: proc "contextless" (arg: rawptr) {
-	context = worker_context()
+	context = mem.kernel_context()
 	_ = arg
 
 	buf: [64]u8
@@ -427,8 +415,9 @@ read_worker :: proc "contextless" (arg: rawptr) {
 			n: int
 			n, err = vfs.chan_read(c, 0, buf[:])
 			if err != vfs.OK || string(buf[:n]) != "a0 data\n" {
-				note(err, &read_errors)
-				if err == vfs.OK {
+				if err != vfs.OK {
+					note(err, &read_errors)
+				} else {
 					bump(&read_errors)
 				}
 			}
@@ -457,7 +446,7 @@ freed under the walker produces neither.
 */
 @(private = "file")
 union_worker :: proc "contextless" (arg: rawptr) #no_bounds_check {
-	context = worker_context()
+	context = mem.kernel_context()
 	_ = arg
 
 	buf: [512]u8
@@ -544,7 +533,7 @@ walker is standing on, not what it finds.
 */
 @(private = "file")
 churn_worker :: proc "contextless" (arg: rawptr) {
-	context = worker_context()
+	context = mem.kernel_context()
 	_ = arg
 
 	for running() {
@@ -557,15 +546,6 @@ churn_worker :: proc "contextless" (arg: rawptr) {
 }
 
 // -- The boot thread's part --------------------------------------------------
-
-@(private = "file")
-verify_live :: proc "contextless" (s: mem.Heap_Stats) -> int {
-	live := s.large_blocks
-	for i in 0 ..< len(s.class_total) {
-		live += s.class_total[i] - s.class_free[i]
-	}
-	return live
-}
 
 @(private = "file")
 Vfs_Threads :: struct {
@@ -586,11 +566,6 @@ all_workers_done :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&finished) >= WORKERS
 }
 
-@(private = "file")
-tcheck :: proc "contextless" (r: ^Vfs_Threads, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
-
 /*
 verify_fid_discipline is 9P's two fid rules, enforced by every server now.
 A walk on an open fid is refused. A read on an unopened one is refused.
@@ -607,29 +582,29 @@ of the open fid -- is refused with `EBUSY`, which is Plan 9's `Ebadusefd`.
 @(private = "file")
 verify_fid_discipline :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	ns := vfs.boot_namespace
-	if !tcheck(r, vfs.mount_device(ns, "#t", "/mnt") == vfs.OK, "a static server binds at /mnt") {
+	if !libodin.check(r, vfs.mount_device(ns, "#t", "/mnt") == vfs.OK, "a static server binds at /mnt") {
 		return
 	}
 
 	// A read before the open is refused.
 	unopened, uerr := vfs.resolve(ns, "/mnt")
-	if tcheck(r, uerr == vfs.OK, "the root resolves to a bound but unopened fid") {
+	if libodin.check(r, uerr == vfs.OK, "the root resolves to a bound but unopened fid") {
 		buf: [8]u8
 		_, rerr := vfs.chan_read(unopened, 0, buf[:])
-		tcheck(r, rerr == vectra9.EINVAL, "and a read of it before Tlopen is refused")
+		libodin.check(r, rerr == vectra9.EINVAL, "and a read of it before Tlopen is refused")
 		vfs.chan_close(unopened)
 	}
 
 	// A walk of an open fid is refused, which `chan_clone` is.
 	opened, oerr := vfs.resolve(ns, "/mnt")
-	if tcheck(r, oerr == vfs.OK, "a second fid resolves the root") {
-		tcheck(r, vfs.chan_open(opened, vfs.O_RDONLY | vfs.O_DIRECTORY) == vfs.OK, "and opens as a directory")
+	if libodin.check(r, oerr == vfs.OK, "a second fid resolves the root") {
+		libodin.check(r, vfs.chan_open(opened, vfs.O_RDONLY | vfs.O_DIRECTORY) == vfs.OK, "and opens as a directory")
 		_, cerr := vfs.chan_clone(opened)
-		tcheck(r, cerr == vectra9.EBUSY, "a clone of the open fid is refused, because a walk of an open fid is")
+		libodin.check(r, cerr == vectra9.EBUSY, "a clone of the open fid is refused, because a walk of an open fid is")
 		vfs.chan_close(opened)
 	}
 
-	tcheck(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "the static server comes down")
+	libodin.check(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "the static server comes down")
 }
 
 /*
@@ -652,24 +627,24 @@ threaded run below still means what it says.
 @(private = "file")
 verify_union_cookie :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	ns := vfs.boot_namespace
-	if !tcheck(r, vfs.mount_device(ns, "#t", "/mnt") == vfs.OK, "a union's first member binds at /mnt") {
+	if !libodin.check(r, vfs.mount_device(ns, "#t", "/mnt") == vfs.OK, "a union's first member binds at /mnt") {
 		return
 	}
-	if !tcheck(r, vfs.mount_device(ns, "#u", "/mnt", .After) == vfs.OK, "and a second member joins it") {
+	if !libodin.check(r, vfs.mount_device(ns, "#u", "/mnt", .After) == vfs.OK, "and a second member joins it") {
 		_ = vfs.unmount_path(ns, "", "/mnt")
 		return
 	}
-	if !tcheck(r, vfs.mount_device(ns, "#v", "/mnt", .After) == vfs.OK, "and a third, so a removal still leaves a union") {
+	if !libodin.check(r, vfs.mount_device(ns, "#v", "/mnt", .After) == vfs.OK, "and a third, so a removal still leaves a union") {
 		_ = vfs.unmount_path(ns, "", "/mnt")
 		return
 	}
 
 	dir, oerr := vfs.resolve(ns, "/mnt")
-	if !tcheck(r, oerr == vfs.OK, "the union opens") {
+	if !libodin.check(r, oerr == vfs.OK, "the union opens") {
 		_ = vfs.unmount_path(ns, "", "/mnt")
 		return
 	}
-	if !tcheck(r, vfs.chan_open(dir, vfs.O_RDONLY | vfs.O_DIRECTORY) == vfs.OK, "as a directory") {
+	if !libodin.check(r, vfs.chan_open(dir, vfs.O_RDONLY | vfs.O_DIRECTORY) == vfs.OK, "as a directory") {
 		vfs.chan_close(dir)
 		_ = vfs.unmount_path(ns, "", "/mnt")
 		return
@@ -688,7 +663,7 @@ verify_union_cookie :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	for _ in 0 ..< 32 {
 		n, rerr := vfs.readdir(dir, offset, buf[:])
 		if rerr != vfs.OK {
-			tcheck(r, false, "each paced read of the union comes back")
+			libodin.check(r, false, "each paced read of the union comes back")
 			break
 		}
 		if n == 0 {
@@ -714,7 +689,7 @@ verify_union_cookie :: proc(r: ^Vfs_Threads) #no_bounds_check {
 			// The removal, once the listing crossed into `#u`. The first member
 			// is unmounted after a name from the second is in hand.
 			if !removed && len(e.name) > 0 && e.name[0] == 'u' {
-				tcheck(r, vfs.unmount_path(ns, "#t", "/mnt") == vfs.OK, "the first member is removed mid-listing")
+				libodin.check(r, vfs.unmount_path(ns, "#t", "/mnt") == vfs.OK, "the first member is removed mid-listing")
 				removed = true
 			}
 		}
@@ -725,13 +700,13 @@ verify_union_cookie :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	}
 
 	vfs.chan_close(dir)
-	tcheck(r, !overran, "the listing terminates rather than spins")
-	tcheck(r, removed, "the listing reached the second member and the first was removed")
-	tcheck(r, u_seen == 3, "and every name of the member the listing was in still came back")
-	tcheck(r, v_seen == 3, "and every name of the member past it, which an ordinal cookie would have skipped")
-	tcheck(r, t_seen == 2, "with the first member's names, seen before it went")
+	libodin.check(r, !overran, "the listing terminates rather than spins")
+	libodin.check(r, removed, "the listing reached the second member and the first was removed")
+	libodin.check(r, u_seen == 3, "and every name of the member the listing was in still came back")
+	libodin.check(r, v_seen == 3, "and every name of the member past it, which an ordinal cookie would have skipped")
+	libodin.check(r, t_seen == 2, "with the first member's names, seen before it went")
 
-	tcheck(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "the union comes down")
+	libodin.check(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "the union comes down")
 }
 
 /*
@@ -745,27 +720,27 @@ Both show up as a heap that does not come back to where it started.
 verify_vfs_threads :: proc() {
 	r: Vfs_Threads
 
-	if !tcheck(&r, vfs.boot_namespace != nil, "boot namespace exists") {
+	if !libodin.check(&r, vfs.boot_namespace != nil, "boot namespace exists") {
 		report_vfs_threads(&r)
 		return
 	}
-	if !tcheck(&r, vfs.static_init(&tree_t, "t", TREE_T_NODES[:]), "#t server tables") {
+	if !libodin.check(&r, vfs.static_init(&tree_t, "t", TREE_T_NODES[:]), "#t server tables") {
 		report_vfs_threads(&r)
 		return
 	}
-	if !tcheck(&r, vfs.static_init(&tree_u, "u", TREE_U_NODES[:]), "#u server tables") {
+	if !libodin.check(&r, vfs.static_init(&tree_u, "u", TREE_U_NODES[:]), "#u server tables") {
 		vfs.static_destroy(&tree_t)
 		report_vfs_threads(&r)
 		return
 	}
 
-	tcheck(&r, vfs.server_init(&server_t, "t", vfs.static_handler, &tree_t) == .None, "#t Tversion")
-	tcheck(&r, vfs.server_init(&server_u, "u", vfs.static_handler, &tree_u) == .None, "#u Tversion")
-	tcheck(&r, vfs.register_device(&server_t), "#t registered")
-	tcheck(&r, vfs.register_device(&server_u), "#u registered")
-	tcheck(&r, vfs.static_init(&tree_v, "v", TREE_V_NODES[:]), "#v server tables")
-	tcheck(&r, vfs.server_init(&server_v, "v", vfs.static_handler, &tree_v) == .None, "#v Tversion")
-	tcheck(&r, vfs.register_device(&server_v), "#v registered")
+	libodin.check(&r, vfs.server_init(&server_t, "t", vfs.static_handler, &tree_t) == .None, "#t Tversion")
+	libodin.check(&r, vfs.server_init(&server_u, "u", vfs.static_handler, &tree_u) == .None, "#u Tversion")
+	libodin.check(&r, vfs.register_device(&server_t), "#t registered")
+	libodin.check(&r, vfs.register_device(&server_u), "#u registered")
+	libodin.check(&r, vfs.static_init(&tree_v, "v", TREE_V_NODES[:]), "#v server tables")
+	libodin.check(&r, vfs.server_init(&server_v, "v", vfs.static_handler, &tree_v) == .None, "#v Tversion")
+	libodin.check(&r, vfs.register_device(&server_v), "#v registered")
 
 	verify_union_cookie(&r)
 	vfs.unregister_device(&server_v)
@@ -773,16 +748,16 @@ verify_vfs_threads :: proc() {
 
 	verify_fid_discipline(&r)
 
-	before := verify_live(mem.heap_stats())
+	before := mem.live_objects(mem.heap_stats())
 
-	tcheck(
+	libodin.check(
 		&r,
 		vfs.mount_device(vfs.boot_namespace, "#t", "/mnt") == vfs.OK,
 		"#t bound at /mnt",
 	)
 
 	run_workers(&r)
-	r.leaked_run = verify_live(mem.heap_stats()) - before
+	r.leaked_run = mem.live_objects(mem.heap_stats()) - before
 	if !r.settled {
 		// A worker is still in there. Everything from here down would pull the floor
 		// out from under it. Leave the servers standing, and report what is known.
@@ -794,14 +769,14 @@ verify_vfs_threads :: proc() {
 
 	// Leave the namespace as it was found. The heap bracket below then means what
 	// it says, and nothing after this boots into a rearranged `/mnt`.
-	tcheck(
+	libodin.check(
 		&r,
 		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
 		"/mnt unbound again",
 	)
 
-	r.leaked_total = verify_live(mem.heap_stats()) - before
-	tcheck(&r, r.leaked_total == 0, "every chan and mount point was released")
+	r.leaked_total = mem.live_objects(mem.heap_stats()) - before
+	libodin.check(&r, r.leaked_total == 0, "every chan and mount point was released")
 
 	// The names go back with the servers, so the real `#t` (the device tree)
 	// and any later `#u`/`#v` can register them. Nothing else this boot uses
@@ -844,7 +819,7 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	if sched.spawn("vfs-churn", churn_worker) != nil {
 		spawned += 1
 	}
-	if !tcheck(r, spawned == WORKERS, "every worker spawned") {
+	if !libodin.check(r, spawned == WORKERS, "every worker spawned") {
 		return
 	}
 
@@ -864,7 +839,7 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	// namespace, and neither is the teardown in the caller. A server's fid table
 	// destroyed under a live client is a fault, not a failed check. So this is
 	// the one failure that stops the self-test rather than counting.
-	if !tcheck(r, intrinsics.volatile_load(&finished) == WORKERS, "every worker finished") {
+	if !libodin.check(r, intrinsics.volatile_load(&finished) == WORKERS, "every worker finished") {
 		return
 	}
 
@@ -891,25 +866,25 @@ run_workers :: proc(r: ^Vfs_Threads) #no_bounds_check {
 	r.operations = a_done + b_done + reads
 	r.rebinds = rebinds
 
-	tcheck(r, a_done >= MIN_ROUNDS && b_done >= MIN_ROUNDS, "both listers got a share of the core")
-	tcheck(r, reads >= MIN_ROUNDS, "so did the reader")
-	tcheck(r, rebinds >= MIN_ROUNDS, "so did the thread rearranging the table under them")
+	libodin.check(r, a_done >= MIN_ROUNDS && b_done >= MIN_ROUNDS, "both listers got a share of the core")
+	libodin.check(r, reads >= MIN_ROUNDS, "so did the reader")
+	libodin.check(r, rebinds >= MIN_ROUNDS, "so did the thread rearranging the table under them")
 
 	// And none of them got a share that only counts as one arithmetically. A
 	// scheduler that ignores priority on a wake leaves exactly one thread
 	// behind, and MIN_ROUNDS alone catches that only when it is severe.
 	busiest := max(a_done, b_done, reads, rebinds)
 	quietest := min(a_done, b_done, reads, rebinds)
-	tcheck(r, quietest * MAX_SPREAD >= busiest, "and the quietest of them still got a share")
+	libodin.check(r, quietest * MAX_SPREAD >= busiest, "and the quietest of them still got a share")
 
 	// The four that matter. Each is one lock's job, and each of them fails
 	// loudly and often when that lock is not there.
-	tcheck(r, intrinsics.volatile_load(&list_errors[0]) == 0, "/a listed only /a, every time")
-	tcheck(r, intrinsics.volatile_load(&list_errors[1]) == 0, "/b listed only /b, every time")
-	tcheck(r, intrinsics.volatile_load(&read_errors) == 0, "a file read the same under a moving mount table")
-	tcheck(r, intrinsics.volatile_load(&churn_errors) == 0, "every bind and unmount succeeded")
-	tcheck(r, intrinsics.volatile_load(&union_errors) == 0, "no union listing invented a name")
-	tcheck(r, intrinsics.volatile_load(&deadlocks) == 0, "no lock was held across a message")
+	libodin.check(r, intrinsics.volatile_load(&list_errors[0]) == 0, "/a listed only /a, every time")
+	libodin.check(r, intrinsics.volatile_load(&list_errors[1]) == 0, "/b listed only /b, every time")
+	libodin.check(r, intrinsics.volatile_load(&read_errors) == 0, "a file read the same under a moving mount table")
+	libodin.check(r, intrinsics.volatile_load(&churn_errors) == 0, "every bind and unmount succeeded")
+	libodin.check(r, intrinsics.volatile_load(&union_errors) == 0, "no union listing invented a name")
+	libodin.check(r, intrinsics.volatile_load(&deadlocks) == 0, "no lock was held across a message")
 }
 
 /*
@@ -947,31 +922,31 @@ it actually has a fid on.
 verify_dissolved_union :: proc(r: ^Vfs_Threads) {
 	ns := vfs.boot_namespace
 
-	if !tcheck(r, vfs.mount_device(ns, "#u", "/mnt", .After) == vfs.OK, "#u bound after #t") {
+	if !libodin.check(r, vfs.mount_device(ns, "#u", "/mnt", .After) == vfs.OK, "#u bound after #t") {
 		return
 	}
 
 	c, err := vfs.open_path(ns, "/mnt", vfs.O_RDONLY | vfs.O_DIRECTORY)
-	if !tcheck(r, err == vfs.OK, "/mnt opens as a union") {
+	if !libodin.check(r, err == vfs.OK, "/mnt opens as a union") {
 		return
 	}
 	defer vfs.chan_close(c)
 
 	mp := c.union_head
-	tcheck(r, mp != nil, "a union chan remembers its mount point")
-	tcheck(r, vfs.mount_point_refs(mp) == 2, "which the table and the chan each hold")
+	libodin.check(r, mp != nil, "a union chan remembers its mount point")
+	libodin.check(r, vfs.mount_point_refs(mp) == 2, "which the table and the chan each hold")
 
 	// Every member goes, including the one this chan is standing on. The chan
 	// itself is untouched -- it holds its own fid on `#t`'s root.
-	tcheck(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "/mnt dissolved while open")
+	libodin.check(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "/mnt dissolved while open")
 
 	// The check the behavioural ones below cannot make. A mount point freed one
 	// reference early goes on reading as a valid empty one, for as long as
 	// nothing claims the block. The listing therefore comes out right either way,
 	// and the bug survives the test. The count is the thing that actually
 	// differs.
-	tcheck(r, vfs.mount_point_refs(mp) == 1, "leaving the chan's reference and no other")
-	tcheck(r, vfs.member_count(mp) == 0, "and no members")
+	libodin.check(r, vfs.mount_point_refs(mp) == 1, "leaving the chan's reference and no other")
+	libodin.check(r, vfs.member_count(mp) == 0, "and no members")
 
 	/*
 	A second union at the same name, built out of the same size class a free of
@@ -984,13 +959,13 @@ verify_dissolved_union :: proc(r: ^Vfs_Threads) {
 	The listing would then come out right, whether or not it read the wrong mount
 	point. Order is what makes the difference observable.
 	*/
-	tcheck(r, vfs.mount_device(ns, "#u", "/mnt") == vfs.OK, "/mnt rebound to #u")
-	tcheck(r, vfs.mount_device(ns, "#t", "/mnt", .After) == vfs.OK, "and unioned the other way round")
+	libodin.check(r, vfs.mount_device(ns, "#u", "/mnt") == vfs.OK, "/mnt rebound to #u")
+	libodin.check(r, vfs.mount_device(ns, "#t", "/mnt", .After) == vfs.OK, "and unioned the other way round")
 
 	buf: [512]u8
 	n: int
 	n, err = vfs.readdir(c, 0, buf[:])
-	if !tcheck(r, err == vfs.OK && n > 0, "a chan outlives the union it was reached through") {
+	if !libodin.check(r, err == vfs.OK && n > 0, "a chan outlives the union it was reached through") {
 		return
 	}
 
@@ -1010,15 +985,13 @@ verify_dissolved_union :: proc(r: ^Vfs_Threads) {
 		}
 		names += 1
 	}
-	tcheck(r, !foreign_name, "a dissolved union lists only the tree the chan is on")
-	tcheck(r, names == 2, "and lists all of it")
+	libodin.check(r, !foreign_name, "a dissolved union lists only the tree the chan is on")
+	libodin.check(r, names == 2, "and lists all of it")
 }
 
 @(private = "file")
 report_vfs_threads :: proc(r: ^Vfs_Threads) {
-	sink := begin(&klog)
-	libodin.put_str(&sink, "vfs ")
-	libodin.put_uint(&sink, u64(r.checks))
+	sink := report_begin("vfs", r.checks)
 	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " concurrency checks passed -- ")
 		libodin.put_uint(&sink, u64(r.operations))
@@ -1030,15 +1003,7 @@ report_vfs_threads :: proc(r: ^Vfs_Threads) {
 		emit(&klog, .Ok, &sink)
 		return
 	}
-
-	libodin.put_str(&sink, " concurrency checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	libodin.put_str(&sink, " (leaked ")
-	libodin.put_int(&sink, i64(r.leaked_run))
-	libodin.put_str(&sink, " in the run, ")
-	libodin.put_int(&sink, i64(r.leaked_total))
-	libodin.put_str(&sink, " overall)")
-	emit(&klog, .Fault, &sink)
+	// The run's own leak when the run is what stopped the test, and the
+	// whole bracket's once the teardown ran too.
+	report_failed(&sink, r.tally, r.settled ? r.leaked_total : r.leaked_run)
 }

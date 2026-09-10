@@ -148,7 +148,7 @@ scribble_handler :: proc "contextless" (
 		mark := u8(m.fid)
 
 		if intrinsics.volatile_load(&sv.barrier) {
-			pay_bump(&sv.arrived)
+			bump(&sv.arrived)
 			sync.wakeup_all(&sv.gate)
 			sync.sleep_for(&sv.gate, all_arrived, sv, BARRIER_TICKS)
 		}
@@ -163,11 +163,6 @@ scribble_handler :: proc "contextless" (
 
 		reply^ = vectra9.Rread{data = out[:n]}
 	}
-}
-
-@(private = "file")
-pay_bump :: proc "contextless" (p: ^int) {
-	intrinsics.volatile_store(p, intrinsics.volatile_load(p) + 1)
 }
 
 // -- The readers ---------------------------------------------------------------
@@ -188,14 +183,10 @@ Reader :: struct {
 	got:      int,
 	err:      vectra9.Error,
 	clean:    bool, // Every byte returned was this reader's own
-	returned: bool,
 }
 
 @(private = "file")
 pay_readers: [PAY_READERS]Reader
-
-@(private = "file")
-pay_done: sync.Rendez
 
 @(private = "file")
 pay_returns: int
@@ -222,9 +213,7 @@ reader :: proc "contextless" (arg: rawptr) #no_bounds_check {
 		}
 	}
 
-	intrinsics.volatile_store(&rd.returned, true)
-	pay_bump(&pay_returns)
-	sync.wakeup_all(&pay_done)
+	bump(&pay_returns)
 }
 
 @(private = "file")
@@ -253,7 +242,6 @@ run_readers :: proc() -> int #no_bounds_check {
 		rd.got = 0
 		rd.clean = false
 		rd.err = .None
-		intrinsics.volatile_store(&rd.returned, false)
 		for j in 0 ..< COUNT {
 			rd.buf[j] = 0
 		}
@@ -310,7 +298,6 @@ Lister :: struct {
 	buf:      [SLOT]u8,
 	entries:  int,
 	err:      vectra9.Errno,
-	returned: bool,
 }
 
 @(private = "file")
@@ -337,6 +324,7 @@ lister :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	i := int(uintptr(arg))
 	ls := &listers[i]
 	fid := vectra9.Fid(i + 1)
+	defer bump(&lister_returns)
 
 	attach := vectra9.Msg(
 		vectra9.Tattach{fid = fid, afid = vectra9.NOFID, uname = "boot", aname = ""},
@@ -344,9 +332,6 @@ lister :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	reply: vectra9.Msg
 	if mnt.call(&dir_conn, &attach, &reply, nil) != .None {
 		ls.err = vectra9.EIO
-		intrinsics.volatile_store(&ls.returned, true)
-		pay_bump(&lister_returns)
-		sync.wakeup_all(&pay_done)
 		return
 	}
 
@@ -355,9 +340,6 @@ lister :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	open_msg := vectra9.Msg(vectra9.Tlopen{fid = fid, flags = 0})
 	if mnt.call(&dir_conn, &open_msg, &reply, nil) != .None {
 		ls.err = vectra9.EIO
-		intrinsics.volatile_store(&ls.returned, true)
-		pay_bump(&lister_returns)
-		sync.wakeup_all(&pay_done)
 		return
 	}
 
@@ -366,9 +348,6 @@ lister :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	)
 	if mnt.call(&dir_conn, &request, &reply, ls.buf[:]) != .None {
 		ls.err = vectra9.EIO
-		intrinsics.volatile_store(&ls.returned, true)
-		pay_bump(&lister_returns)
-		sync.wakeup_all(&pay_done)
 		return
 	}
 
@@ -388,10 +367,6 @@ lister :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	} else {
 		ls.err = vectra9.EPROTO
 	}
-
-	intrinsics.volatile_store(&ls.returned, true)
-	pay_bump(&lister_returns)
-	sync.wakeup_all(&pay_done)
 }
 
 @(private = "file")
@@ -414,11 +389,6 @@ Payload_Result :: struct {
 	listings:      int, // Concurrent directory listings that came back whole
 }
 
-@(private = "file")
-pcheck :: proc "contextless" (r: ^Payload_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
-
 verify_payload :: proc() #no_bounds_check {
 	r: Payload_Result
 
@@ -428,26 +398,26 @@ verify_payload :: proc() #no_bounds_check {
 		// One byte short of the floor per slot, which is the arithmetic `init`
 		// does rather than a size it is handed.
 		tiny: mnt.Conn
-		pcheck(
+		libodin.check(
 			&r,
 			!mnt.init(&tiny, scribble_handler, &scribble, nil, pay_arena[:mnt.MAX_REQUESTS * mnt.MIN_PAYLOAD - 1]),
 			"an arena too small to give every slot a dirent is refused",
 		)
-		pcheck(&r, mnt.payload_size(&tiny) == 0, "and leaves the connection carrying nothing")
+		libodin.check(&r, mnt.payload_size(&tiny) == 0, "and leaves the connection carrying nothing")
 	}
 
 	{
 		// No arena at all is legal, and is what limits a connection to the one
 		// worker the old borrow rule needs.
 		bare: mnt.Conn
-		pcheck(&r, mnt.init(&bare, scribble_handler, &scribble), "a connection may take no arena")
-		pcheck(&r, !mnt.serve_start(&bare, 2), "and is then refused a second worker")
-		if pcheck(&r, mnt.serve_start(&bare, 1), "while one worker is still allowed") {
+		libodin.check(&r, mnt.init(&bare, scribble_handler, &scribble), "a connection may take no arena")
+		libodin.check(&r, !mnt.serve_start(&bare, 2), "and is then refused a second worker")
+		if libodin.check(&r, mnt.serve_start(&bare, 1), "while one worker is still allowed") {
 			mnt.serve_stop(&bare)
 		}
 	}
 
-	if !pcheck(
+	if !libodin.check(
 		&r,
 		mnt.init(&pay_conn, scribble_handler, &scribble, nil, pay_arena[:]),
 		"the connection divided its arena among the request slots",
@@ -456,24 +426,24 @@ verify_payload :: proc() #no_bounds_check {
 		return
 	}
 
-	pcheck(&r, mnt.payload_size(&pay_conn) == SLOT, "each slot carries its share of it")
-	pcheck(
+	libodin.check(&r, mnt.payload_size(&pay_conn) == SLOT, "each slot carries its share of it")
+	libodin.check(
 		&r,
 		mnt.session(&pay_conn).msize == u32(SLOT + vectra9.IOHDRSZ),
 		"and the session's msize is that share plus a header",
 	)
 
-	if !pcheck(&r, mnt.serve_start(&pay_conn, PAY_WORKERS), "the connection started serving") {
+	if !libodin.check(&r, mnt.serve_start(&pay_conn, PAY_WORKERS), "the connection started serving") {
 		report_payload(&r)
 		return
 	}
 
-	pcheck(
+	libodin.check(
 		&r,
 		vectra9.negotiate(mnt.session(&pay_conn)) == .None,
 		"Tversion round-trips",
 	)
-	pcheck(
+	libodin.check(
 		&r,
 		mnt.session(&pay_conn).msize == u32(SLOT + vectra9.IOHDRSZ),
 		"and negotiation did not talk msize above what a slot holds",
@@ -485,9 +455,9 @@ verify_payload :: proc() #no_bounds_check {
 	intrinsics.volatile_store(&scribble.shared, true)
 
 	clean := run_readers()
-	if pcheck(&r, clean >= 0, "every reader in the control came back") {
+	if libodin.check(&r, clean >= 0, "every reader in the control came back") {
 		r.corrupted = PAY_READERS - clean
-		pcheck(
+		libodin.check(
 			&r,
 			r.corrupted > 0,
 			"a server answering out of one shared buffer corrupts a reader",
@@ -500,18 +470,18 @@ verify_payload :: proc() #no_bounds_check {
 
 	before := mnt.stats(&pay_conn)
 	clean = run_readers()
-	if pcheck(&r, clean >= 0, "every reader came back") {
-		pcheck(&r, clean == PAY_READERS, "and every one of them got its own bytes back")
+	if libodin.check(&r, clean >= 0, "every reader came back") {
+		libodin.check(&r, clean == PAY_READERS, "and every one of them got its own bytes back")
 	}
 
 	after := mnt.stats(&pay_conn)
 	r.bytes = after.payload - before.payload
-	pcheck(
+	libodin.check(
 		&r,
 		r.bytes == u64(PAY_READERS * COUNT),
 		"the payload each of them asked for was copied out of its slot",
 	)
-	pcheck(&r, after.oversize == before.oversize, "and none of it had to be refused")
+	libodin.check(&r, after.oversize == before.oversize, "and none of it had to be refused")
 
 	// -- A reply larger than the client's buffer -----------------------------
 
@@ -535,8 +505,8 @@ verify_payload :: proc() #no_bounds_check {
 		reply: vectra9.Msg
 		err := mnt.call(&pay_conn, &request, &reply, small[:room])
 
-		pcheck(&r, err == .Short_Buffer, "a payload that does not fit is a short buffer")
-		pcheck(
+		libodin.check(&r, err == .Short_Buffer, "a payload that does not fit is a short buffer")
+		libodin.check(
 			&r,
 			mnt.stats(&pay_conn).oversize == oversize_before + 1,
 			"and is counted where a server's author would see it",
@@ -548,13 +518,13 @@ verify_payload :: proc() #no_bounds_check {
 				untouched = false
 			}
 		}
-		pcheck(&r, untouched, "nothing was copied, rather than as much as fitted")
+		libodin.check(&r, untouched, "nothing was copied, rather than as much as fitted")
 
 		// The reply that did not fit is the one still pointing into the slot,
 		// and the slot goes back the instant this call returns. Handing it over
 		// would be the bug the whole milestone removes.
 		_, still_borrowing := reply.(vectra9.Rread)
-		pcheck(&r, !still_borrowing, "and the refused reply was not handed back borrowing the slot")
+		libodin.check(&r, !still_borrowing, "and the refused reply was not handed back borrowing the slot")
 	}
 
 	// -- A request that answers with no payload at all -----------------------
@@ -564,7 +534,7 @@ verify_payload :: proc() #no_bounds_check {
 		reply: vectra9.Msg
 		err := mnt.call(&pay_conn, &request, &reply, nil)
 		_, is_error := reply.(vectra9.Rlerror)
-		pcheck(
+		libodin.check(
 			&r,
 			err == .None && is_error,
 			"a client that expects no payload may pass no buffer",
@@ -575,7 +545,7 @@ verify_payload :: proc() #no_bounds_check {
 
 	// -- A real server, listed by four threads at once -----------------------
 
-	pcheck(&r, verify_concurrent_listing(&r), "four threads listed one directory at once")
+	libodin.check(&r, verify_concurrent_listing(&r), "four threads listed one directory at once")
 
 	sched.reap()
 	report_payload(&r)
@@ -615,7 +585,6 @@ verify_concurrent_listing :: proc(r: ^Payload_Result) -> bool #no_bounds_check {
 	for i in 0 ..< LISTERS {
 		listers[i].entries = 0
 		listers[i].err = vfs.OK
-		intrinsics.volatile_store(&listers[i].returned, false)
 	}
 
 	for i in 0 ..< LISTERS {
@@ -639,9 +608,7 @@ verify_concurrent_listing :: proc(r: ^Payload_Result) -> bool #no_bounds_check {
 
 @(private = "file")
 report_payload :: proc(r: ^Payload_Result) {
-	sink := begin(&klog)
-	libodin.put_str(&sink, "9p ")
-	libodin.put_uint(&sink, u64(r.checks))
+	sink := report_begin("9p", r.checks)
 	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " payload checks passed -- ")
 		libodin.put_uint(&sink, u64(SLOT))
@@ -657,10 +624,5 @@ report_payload :: proc(r: ^Payload_Result) {
 		emit(&klog, .Ok, &sink)
 		return
 	}
-
-	libodin.put_str(&sink, " payload checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, r.tally)
 }

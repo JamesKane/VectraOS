@@ -160,7 +160,7 @@ slow_abort :: proc "contextless" (server: rawptr, tag: vectra9.Tag) #no_bounds_c
 		intrinsics.volatile_store(&sv.flushed[int(tag)], true)
 	}
 	intrinsics.volatile_store(&sv.last_abort, int(tag))
-	intrinsics.volatile_store(&sv.aborts, intrinsics.volatile_load(&sv.aborts) + 1)
+	bump(&sv.aborts)
 	sync.wakeup_all(&sv.gate)
 }
 
@@ -189,7 +189,7 @@ slow_handler :: proc "contextless" (
 	case vectra9.Tclunk:
 		// The fast request. Nothing here blocks, which is what makes it worth
 		// issuing while something else is stuck.
-		intrinsics.volatile_store(&sv.fast, intrinsics.volatile_load(&sv.fast) + 1)
+		bump(&sv.fast)
 		sv.asked_by = mnt.requester(&conn, tag)
 		reply^ = vectra9.Rclunk{}
 
@@ -209,27 +209,14 @@ slow_handler :: proc "contextless" (
 		if intrinsics.volatile_load(&sv.open) {
 			// Answered for real, whether or not a Tflush named this tag. The
 			// protocol allows exactly this and the client has to cope.
-			intrinsics.volatile_store(
-				&sv.answered,
-				intrinsics.volatile_load(&sv.answered) + 1,
-			)
+			bump(&sv.answered)
 			reply^ = vectra9.Rread{data = nil}
 			return
 		}
 
-		intrinsics.volatile_store(&sv.abandoned, intrinsics.volatile_load(&sv.abandoned) + 1)
+		bump(&sv.abandoned)
 		reply^ = vectra9.error_reply(vectra9.EINTR)
 	}
-}
-
-@(private = "file")
-bump :: proc "contextless" (p: ^int) {
-	intrinsics.volatile_store(p, intrinsics.volatile_load(p) + 1)
-}
-
-@(private = "file")
-unbump :: proc "contextless" (p: ^int) {
-	intrinsics.volatile_store(p, intrinsics.volatile_load(p) - 1)
 }
 
 // -- The clients -------------------------------------------------------------
@@ -248,8 +235,6 @@ Client :: struct {
 @(private = "file")
 clients: [CLIENTS]Client
 @(private = "file")
-client_done: sync.Rendez
-@(private = "file")
 returns: int
 @(private = "file")
 expected: int
@@ -264,10 +249,7 @@ give_up_client :: proc "contextless" (arg: rawptr) #no_bounds_check {
 
 	request := vectra9.Msg(vectra9.Tread{fid = 1, offset = 0, count = 16})
 	cl.err = mnt.call_for(&conn, &request, &cl.reply, GIVE_UP_TICKS)
-
-	intrinsics.volatile_store(&cl.returned, true)
-	intrinsics.volatile_store(&returns, intrinsics.volatile_load(&returns) + 1)
-	sync.wakeup_all(&client_done)
+	client_returned(cl)
 }
 
 // A client with no deadline, which waits however long the server takes.
@@ -278,10 +260,15 @@ patient_client :: proc "contextless" (arg: rawptr) #no_bounds_check {
 
 	request := vectra9.Msg(vectra9.Tread{fid = 2, offset = 0, count = 16})
 	cl.err = mnt.call(&conn, &request, &cl.reply)
+	client_returned(cl)
+}
 
+// client_returned is a client's last word: its own flag, for the one check
+// that reads a client by name, and the count `all_returned` watches.
+@(private = "file")
+client_returned :: proc "contextless" (cl: ^Client) {
 	intrinsics.volatile_store(&cl.returned, true)
-	intrinsics.volatile_store(&returns, intrinsics.volatile_load(&returns) + 1)
-	sync.wakeup_all(&client_done)
+	bump(&returns)
 }
 
 // -- Waiting, without competing ----------------------------------------------
@@ -296,38 +283,12 @@ Flush_Result :: struct {
 	held_ticks:    u64, // How long a stubborn flush kept its client parked
 }
 
-@(private = "file")
-fcheck :: proc "contextless" (r: ^Flush_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
-
-@(private = "file")
-returned_0 :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
-	return intrinsics.volatile_load(&clients[0].returned)
-}
-
-@(private = "file")
-returned_1 :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
-	return intrinsics.volatile_load(&clients[1].returned)
-}
-
-@(private = "file")
-returned_2 :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
-	return intrinsics.volatile_load(&clients[2].returned)
-}
-
-// spin_down waits for a condition by sleeping between looks, so the threads it
+// watch_for waits for a condition by sleeping between looks, so the threads it
 // is waiting for have the core to themselves. See `verify_vfs.odin`'s PATIENCE
 // for why the boot thread must never be the one spinning.
 @(private = "file")
 watch_for :: proc "contextless" (cond: sync.Condition, arg: rawptr) -> bool {
-	for _ in 0 ..< PATIENCE {
-		if cond(arg) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return false
+	return sync.await(cond, arg, PATIENCE)
 }
 
 @(private = "file")
@@ -345,19 +306,19 @@ one_aborted :: proc "contextless" (arg: rawptr) -> bool {
 verify_flush :: proc() #no_bounds_check {
 	r: Flush_Result
 
-	fcheck(
+	libodin.check(
 		&r,
 		mnt.init(&conn, slow_handler, &slow, slow_abort, arena[:]),
 		"the connection took a payload arena it could divide",
 	)
-	if !fcheck(&r, mnt.serve_start(&conn, WORKERS), "the connection started serving") {
+	if !libodin.check(&r, mnt.serve_start(&conn, WORKERS), "the connection started serving") {
 		report_flush(&r)
 		return
 	}
 
 	// -- It is a working transport first -------------------------------------
 
-	fcheck(
+	libodin.check(
 		&r,
 		vectra9.negotiate(mnt.session(&conn)) == .None,
 		"Tversion round-trips over a queue and two threads",
@@ -368,9 +329,9 @@ verify_flush :: proc() #no_bounds_check {
 		reply: vectra9.Msg
 		err := mnt.call(&conn, &request, &reply)
 		_, is_rclunk := reply.(vectra9.Rclunk)
-		fcheck(&r, err == .None && is_rclunk, "an ordinary request gets an ordinary reply")
-		fcheck(&r, slow.asked_by == sched.current(), "and the handler, on a worker, named this thread as the one that asked")
-		fcheck(&r, mnt.requester(&conn, 0) == nil, "which the slot forgot once the tag was given back")
+		libodin.check(&r, err == .None && is_rclunk, "an ordinary request gets an ordinary reply")
+		libodin.check(&r, slow.asked_by == sched.current(), "and the handler, on a worker, named this thread as the one that asked")
+		libodin.check(&r, mnt.requester(&conn, 0) == nil, "which the slot forgot once the tag was given back")
 	}
 
 	// -- An abortable server: the flush is prompt ----------------------------
@@ -380,28 +341,28 @@ verify_flush :: proc() #no_bounds_check {
 	reset_clients(1)
 	before := mnt.stats(&conn)
 
-	if fcheck(
+	if libodin.check(
 		&r,
 		sched.spawn("9p-giveup", give_up_client, rawptr(uintptr(0))) != nil,
 		"the first client spawned",
 	) {
-		fcheck(&r, watch_for(returned_0, nil), "a client whose deadline passes comes back")
-		fcheck(&r, clients[0].err == .Interrupted, "and says it was interrupted")
+		libodin.check(&r, watch_for(all_returned, nil), "a client whose deadline passes comes back")
+		libodin.check(&r, clients[0].err == .Interrupted, "and says it was interrupted")
 
 		after := mnt.stats(&conn)
-		fcheck(&r, after.flushes > before.flushes, "it got there by sending Tflush")
-		fcheck(&r, after.aborted > before.aborted, "which found its request still in flight")
-		fcheck(
+		libodin.check(&r, after.flushes > before.flushes, "it got there by sending Tflush")
+		libodin.check(&r, after.aborted > before.aborted, "which found its request still in flight")
+		libodin.check(
 			&r,
 			intrinsics.volatile_load(&slow.aborts) > 0,
 			"and the server was told which tag to abandon",
 		)
-		fcheck(
+		libodin.check(
 			&r,
 			intrinsics.volatile_load(&slow.abandoned) > 0,
 			"so the handler gave up rather than finishing",
 		)
-		fcheck(&r, watch_for(no_one_blocked, nil), "and left no handler parked behind it")
+		libodin.check(&r, watch_for(no_one_blocked, nil), "and left no handler parked behind it")
 	}
 
 	// -- A stubborn server: the flush has to wait ----------------------------
@@ -419,18 +380,18 @@ verify_flush :: proc() #no_bounds_check {
 	reset_clients(1)
 	answered_before := intrinsics.volatile_load(&slow.answered)
 
-	if fcheck(
+	if libodin.check(
 		&r,
 		sched.spawn("9p-stubborn", give_up_client, rawptr(uintptr(1))) != nil,
 		"the second client spawned",
 	) {
-		fcheck(&r, watch_for(one_blocked, nil), "its read reached the server and stopped there")
-		fcheck(&r, watch_for(one_aborted, nil), "and the deadline sent a Tflush after it")
+		libodin.check(&r, watch_for(one_blocked, nil), "its read reached the server and stopped there")
+		libodin.check(&r, watch_for(one_aborted, nil), "and the deadline sent a Tflush after it")
 
 		started := sched.ticks()
 		sync.delay(WATCH_TICKS)
 		r.held_ticks = sched.ticks() - started
-		fcheck(
+		libodin.check(
 			&r,
 			!intrinsics.volatile_load(&clients[1].returned),
 			"Rflush did not arrive while the request was still running",
@@ -441,9 +402,9 @@ verify_flush :: proc() #no_bounds_check {
 		intrinsics.volatile_store(&slow.open, true)
 		sync.wakeup_all(&slow.gate)
 
-		fcheck(&r, watch_for(returned_1, nil), "and did arrive once it was not")
-		fcheck(&r, clients[1].err == .Interrupted, "the client still reports interrupted")
-		fcheck(
+		libodin.check(&r, watch_for(all_returned, nil), "and did arrive once it was not")
+		libodin.check(&r, clients[1].err == .Interrupted, "the client still reports interrupted")
+		libodin.check(
 			&r,
 			intrinsics.volatile_load(&slow.answered) > answered_before,
 			"even though the server answered the flushed request for real",
@@ -473,9 +434,9 @@ verify_flush :: proc() #no_bounds_check {
 			spawned += 1
 		}
 	}
-	if fcheck(&r, spawned == CLIENTS, "a client for every slot in the pool") {
-		fcheck(&r, watch_for(all_blocked, nil), "all of them stuck in the server at once")
-		fcheck(
+	if libodin.check(&r, spawned == CLIENTS, "a client for every slot in the pool") {
+		libodin.check(&r, watch_for(all_blocked, nil), "all of them stuck in the server at once")
+		libodin.check(
 			&r,
 			watch_for(all_flushed, nil),
 			"and every Tflush got through a pool with nothing free in it",
@@ -486,7 +447,7 @@ verify_flush :: proc() #no_bounds_check {
 		intrinsics.volatile_store(&slow.open, true)
 		sync.wakeup_all(&slow.gate)
 
-		fcheck(&r, watch_for(all_returned, nil), "and every one of them got its tag back")
+		libodin.check(&r, watch_for(all_returned, nil), "and every one of them got its tag back")
 
 		all_interrupted := true
 		for i in 0 ..< CLIENTS {
@@ -494,7 +455,7 @@ verify_flush :: proc() #no_bounds_check {
 				all_interrupted = false
 			}
 		}
-		fcheck(&r, all_interrupted, "each reporting the deadline it actually missed")
+		libodin.check(&r, all_interrupted, "each reporting the deadline it actually missed")
 	}
 
 	// -- Tflush of a tag that names nothing ----------------------------------
@@ -506,11 +467,11 @@ verify_flush :: proc() #no_bounds_check {
 		reply: vectra9.Msg
 		err := mnt.call(&conn, &request, &reply)
 		_, is_rflush := reply.(vectra9.Rflush)
-		fcheck(&r, err == .None && is_rflush, "a Tflush naming no request still gets Rflush")
+		libodin.check(&r, err == .None && is_rflush, "a Tflush naming no request still gets Rflush")
 
 		_, is_error := reply.(vectra9.Rlerror)
-		fcheck(&r, !is_error, "and never an Rlerror -- Tflush has no failure reply")
-		fcheck(&r, mnt.stats(&conn).stale > stale_before, "and was counted as naming nothing")
+		libodin.check(&r, !is_error, "and never an Rlerror -- Tflush has no failure reply")
+		libodin.check(&r, mnt.stats(&conn).stale > stale_before, "and was counted as naming nothing")
 	}
 
 	// -- One stuck request does not stop the connection ----------------------
@@ -519,12 +480,12 @@ verify_flush :: proc() #no_bounds_check {
 	intrinsics.volatile_store(&slow.stubborn, true)
 	reset_clients(1)
 
-	if fcheck(
+	if libodin.check(
 		&r,
 		sched.spawn("9p-patient", patient_client, rawptr(uintptr(2))) != nil,
 		"the third client spawned",
 	) {
-		fcheck(&r, watch_for(one_blocked, nil), "and stopped in the server with no deadline")
+		libodin.check(&r, watch_for(one_blocked, nil), "and stopped in the server with no deadline")
 
 		fast_before := intrinsics.volatile_load(&slow.fast)
 		ok := true
@@ -535,8 +496,8 @@ verify_flush :: proc() #no_bounds_check {
 				ok = false
 			}
 		}
-		fcheck(&r, ok, "other requests were served while it was stuck")
-		fcheck(
+		libodin.check(&r, ok, "other requests were served while it was stuck")
+		libodin.check(
 			&r,
 			intrinsics.volatile_load(&slow.fast) - fast_before == FAST_CALLS,
 			"all of them, and by the server rather than by the transport",
@@ -544,8 +505,8 @@ verify_flush :: proc() #no_bounds_check {
 
 		intrinsics.volatile_store(&slow.open, true)
 		sync.wakeup_all(&slow.gate)
-		fcheck(&r, watch_for(returned_2, nil), "and the stuck one finished when it could")
-		fcheck(&r, clients[2].err == .None, "with no deadline to interrupt it")
+		libodin.check(&r, watch_for(all_returned, nil), "and the stuck one finished when it could")
+		libodin.check(&r, clients[2].err == .None, "with no deadline to interrupt it")
 	}
 
 	// -- The rule, from the client's side ------------------------------------
@@ -555,10 +516,10 @@ verify_flush :: proc() #no_bounds_check {
 	r.aborted = final.aborted
 	r.stale = final.stale
 	r.requests = final.requests
-	fcheck(&r, final.unsettled == 0, "no Rflush ever arrived before its request was settled")
+	libodin.check(&r, final.unsettled == 0, "no Rflush ever arrived before its request was settled")
 
 	mnt.serve_stop(&conn)
-	fcheck(&r, verify_transparency(&r), "a real server behind a queue answers as it always did")
+	libodin.check(&r, verify_transparency(&r), "a real server behind a queue answers as it always did")
 
 	// Last, and after every `serve_stop` returns. Whoever runs next frees a
 	// worker's stack, and not the worker that stands on it.
@@ -676,9 +637,7 @@ verify_transparency :: proc(r: ^Flush_Result) -> bool #no_bounds_check {
 
 @(private = "file")
 report_flush :: proc(r: ^Flush_Result) {
-	sink := begin(&klog)
-	libodin.put_str(&sink, "9p ")
-	libodin.put_uint(&sink, u64(r.checks))
+	sink := report_begin("9p", r.checks)
 	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " Tflush checks passed -- ")
 		libodin.put_uint(&sink, r.requests)
@@ -694,10 +653,5 @@ report_flush :: proc(r: ^Flush_Result) {
 		emit(&klog, .Ok, &sink)
 		return
 	}
-
-	libodin.put_str(&sink, " Tflush checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, r.tally)
 }

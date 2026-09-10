@@ -29,7 +29,6 @@ half transport and half border control, and the checks below are the border.
 package kernel
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:mem"
 import "kernel:mnt"
@@ -47,11 +46,6 @@ Wire_Result :: struct {
 	served:        int, // Frames the scripted server answered
 	flushed:       int, // Requests the client gave up on
 	stale:         u64, // Unsolicited replies the wire drained
-}
-
-@(private = "file")
-wcheck :: proc "contextless" (r: ^Wire_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
 }
 
 // The offset a client sends when it wants the server to sit on the request.
@@ -260,29 +254,9 @@ wire_client :: proc "contextless" (arg: rawptr) {
 	intrinsics.volatile_store(&c.done, true)
 }
 
+// How long a wait on the wire has, in ticks.
 @(private = "file")
-wire_wait :: proc "contextless" (flag: ^bool) -> bool {
-	for _ in 0 ..< 200 {
-		if intrinsics.volatile_load(flag) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return intrinsics.volatile_load(flag)
-}
-
-// wire_wait_for is `wire_wait` with the bound as a parameter, for a wait that
-// has a handshake's deadline inside it.
-@(private = "file")
-wire_wait_for :: proc "contextless" (flag: ^bool, ticks: int) -> bool {
-	for _ in 0 ..< ticks {
-		if intrinsics.volatile_load(flag) {
-			return true
-		}
-		sync.delay(1)
-	}
-	return intrinsics.volatile_load(flag)
-}
+WIRE_PATIENCE :: 200
 
 @(private = "file")
 wire_io_read :: proc "contextless" (data: rawptr, buf: []u8) -> int {
@@ -305,20 +279,20 @@ wire_up :: proc(r: ^Wire_Result, s: ^Script, w: ^mnt.Wire, arena: []u8) -> bool 
 		end = 0,
 	}
 	s.p = pipe.create()
-	if !wcheck(r, s.p != nil, "a pipe for the wire comes up") {
+	if !libodin.check(r, s.p != nil, "a pipe for the wire comes up") {
 		return false
 	}
-	if !wcheck(
+	if !libodin.check(
 		r,
 		mnt.wire_init(w, mnt.Wire_IO{data = s, read = wire_io_read, write = wire_io_write}, arena),
 		"the wire divides its arena",
 	) {
 		return false
 	}
-	if !wcheck(r, mnt.wire_start(w), "the reader thread starts") {
+	if !libodin.check(r, mnt.wire_start(w), "the reader thread starts") {
 		return false
 	}
-	return wcheck(r, sched.spawn("wire-script", script_server, s) != nil, "the scripted server starts")
+	return libodin.check(r, sched.spawn("wire-script", script_server, s) != nil, "the scripted server starts")
 }
 
 /*
@@ -337,15 +311,20 @@ either did not leave, which a caller checks.
 wire_down :: proc(s: ^Script, w: ^mnt.Wire) -> bool {
 	pipe.close_end(s.p, 0)
 	mnt.wire_join(w)
-	left := wire_wait(&s.done)
+	left := sync.await_flag(&s.done, WIRE_PATIENCE)
 	pipe.close_end(s.p, 1)
 	return left
 }
 
 @(private = "file")
+wire_poisoned :: proc "contextless" (arg: rawptr) -> bool {
+	return mnt.wire_stats(cast(^mnt.Wire)arg).poisoned
+}
+
+@(private = "file")
 verify_wire_run :: proc(r: ^Wire_Result) {
 	arena := make([]u8, 1024 * (mnt.MAX_REQUESTS + 1))
-	if !wcheck(r, arena != nil, "an arena for the wire") {
+	if !libodin.check(r, arena != nil, "an arena for the wire") {
 		return
 	}
 	defer delete(arena)
@@ -359,30 +338,30 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 
 	// -- The handshake --------------------------------------------------------
 
-	wcheck(r, vectra9.interruptible(session), "a wire session can give up on a request")
-	wcheck(r, vectra9.negotiate(session) == .None, "Tversion crosses the pipe and back")
-	wcheck(r, session.msize == 1024, "and the msize is what one slot holds")
+	libodin.check(r, vectra9.interruptible(session), "a wire session can give up on a request")
+	libodin.check(r, vectra9.negotiate(session) == .None, "Tversion crosses the pipe and back")
+	libodin.check(r, session.msize == 1024, "and the msize is what one slot holds")
 
 	// -- One request, and whose bytes the reply borrows -----------------------
 
 	buf: [64]u8
 	request := vectra9.Msg(vectra9.Tattach{fid = 1, afid = vectra9.NOFID})
 	reply: vectra9.Msg
-	wcheck(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "an attach is answered")
+	libodin.check(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "an attach is answered")
 	att, is_att := reply.(vectra9.Rattach)
-	wcheck(r, is_att && att.qid.path == 1, "with the qid the script serves")
+	libodin.check(r, is_att && att.qid.path == 1, "with the qid the script serves")
 
 	request = vectra9.Msg(vectra9.Tread{fid = 1, offset = 7, count = 16})
-	wcheck(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "a read is answered")
-	if m, is := reply.(vectra9.Rread); wcheck(r, is && len(m.data) == 16, "with the bytes asked for") {
+	libodin.check(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "a read is answered")
+	if m, is := reply.(vectra9.Rread); libodin.check(r, is && len(m.data) == 16, "with the bytes asked for") {
 		mine := true
 		for b in m.data {
 			mine = mine && b == 7
 		}
-		wcheck(r, mine, "and they are this request's bytes")
+		libodin.check(r, mine, "and they are this request's bytes")
 		here := uintptr(raw_data(m.data)) >= uintptr(raw_data(buf[:])) &&
 			uintptr(raw_data(m.data)) < uintptr(raw_data(buf[:])) + len(buf)
-		wcheck(r, here, "landed in the caller's own buffer")
+		libodin.check(r, here, "landed in the caller's own buffer")
 	}
 
 	// -- Two in flight, answered in the wrong order ---------------------------
@@ -396,25 +375,25 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 		session = session,
 		offset  = 42,
 	}
-	if wcheck(r, sched.spawn("wire-a", wire_client, &a) != nil, "a first client starts") &&
-	   wcheck(r, sched.spawn("wire-b", wire_client, &b) != nil, "and a second") {
-		wcheck(r, wire_wait(&a.done) && wire_wait(&b.done), "both come back")
-		wcheck(r, a.ok && b.ok, "each with its own answer, out of order")
+	if libodin.check(r, sched.spawn("wire-a", wire_client, &a) != nil, "a first client starts") &&
+	   libodin.check(r, sched.spawn("wire-b", wire_client, &b) != nil, "and a second") {
+		libodin.check(r, sync.await_flag(&a.done, WIRE_PATIENCE) && sync.await_flag(&b.done, WIRE_PATIENCE), "both come back")
+		libodin.check(r, a.ok && b.ok, "each with its own answer, out of order")
 	}
 
 	// -- A deadline, a flush, and the tag afterwards --------------------------
 
 	request = vectra9.Msg(vectra9.Tread{fid = 1, offset = STALL, count = 8})
 	err := vectra9.call_for(session, &request, &reply, 5, buf[:])
-	wcheck(r, err == .Interrupted, "a stalled request times out")
+	libodin.check(r, err == .Interrupted, "a stalled request times out")
 
 	request = vectra9.Msg(vectra9.Tread{fid = 1, offset = 3, count = 8})
-	wcheck(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "the wire still answers")
+	libodin.check(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "the wire still answers")
 
 	st := mnt.wire_stats(&wire)
-	wcheck(r, st.flushes == 1, "one Tflush went out")
-	wcheck(r, st.discards == 1, "the server discarded the stalled request, and the wire counted it")
-	wcheck(r, !st.poisoned, "and nothing poisoned the wire")
+	libodin.check(r, st.flushes == 1, "one Tflush went out")
+	libodin.check(r, st.discards == 1, "the server discarded the stalled request, and the wire counted it")
+	libodin.check(r, !st.poisoned, "and nothing poisoned the wire")
 
 	// -- Every slot stuck at once, and every client can still leave -----------
 
@@ -437,31 +416,31 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 			started += 1
 		}
 	}
-	wcheck(r, started == mnt.MAX_REQUESTS, "a client per request slot starts")
+	libodin.check(r, started == mnt.MAX_REQUESTS, "a client per request slot starts")
 	all_back := true
 	all_flushed := true
 	for i in 0 ..< mnt.MAX_REQUESTS {
-		all_back = all_back && wire_wait(&stuck[i].done)
+		all_back = all_back && sync.await_flag(&stuck[i].done, WIRE_PATIENCE)
 		all_flushed = all_flushed && stuck[i].ok
 	}
-	wcheck(r, all_back, "a full pool of stuck requests strands nobody")
-	wcheck(r, all_flushed, "every one of them flushed and left")
+	libodin.check(r, all_back, "a full pool of stuck requests strands nobody")
+	libodin.check(r, all_flushed, "every one of them flushed and left")
 
 	request = vectra9.Msg(vectra9.Tread{fid = 1, offset = 2, count = 8})
-	wcheck(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "and every slot is a slot again")
+	libodin.check(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "and every slot is a slot again")
 	st = mnt.wire_stats(&wire)
-	wcheck(r, st.discards == 9, "the server discarded all nine sat-on requests")
+	libodin.check(r, st.discards == 9, "the server discarded all nine sat-on requests")
 	r.flushed = int(st.flushes)
 
 	// -- A reply nobody asked for ---------------------------------------------
 
 	script.stale_next = true
 	request = vectra9.Msg(vectra9.Tread{fid = 1, offset = 4, count = 8})
-	wcheck(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "a request beside a stale reply is answered")
+	libodin.check(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "a request beside a stale reply is answered")
 	request = vectra9.Msg(vectra9.Tread{fid = 1, offset = 5, count = 8})
-	wcheck(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "and the wire survives the stale one")
+	libodin.check(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "and the wire survives the stale one")
 	st = mnt.wire_stats(&wire)
-	wcheck(r, st.stale >= 1, "which it drained and counted")
+	libodin.check(r, st.stale >= 1, "which it drained and counted")
 	r.stale = st.stale
 
 	// -- Hangup, with a request in flight -------------------------------------
@@ -471,21 +450,21 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 		session = session,
 		offset  = 60,
 	}
-	if wcheck(r, sched.spawn("wire-hung", wire_client, &hung) != nil, "a doomed client starts") {
-		_ = wire_wait(&script.done)
+	if libodin.check(r, sched.spawn("wire-hung", wire_client, &hung) != nil, "a doomed client starts") {
+		_ = sync.await_flag(&script.done, WIRE_PATIENCE)
 		pipe.close_end(script.p, 0)
-		wcheck(r, wire_wait(&hung.done), "the hangup wakes it")
-		wcheck(r, !hung.ok, "with a failure rather than an answer")
+		libodin.check(r, sync.await_flag(&hung.done, WIRE_PATIENCE), "the hangup wakes it")
+		libodin.check(r, !hung.ok, "with a failure rather than an answer")
 	}
-	wcheck(r, mnt.wire_broken(&wire), "the wire knows it is dead")
+	libodin.check(r, mnt.wire_broken(&wire), "the wire knows it is dead")
 	st = mnt.wire_stats(&wire)
-	wcheck(r, st.hangup, "and that the death was a hangup")
+	libodin.check(r, st.hangup, "and that the death was a hangup")
 
 	request = vectra9.Msg(vectra9.Tread{fid = 1, offset = 6, count = 8})
-	wcheck(r, vectra9.call(session, &request, &reply, buf[:]) == .Transport_Failed, "a call after the death fails at once")
+	libodin.check(r, vectra9.call(session, &request, &reply, buf[:]) == .Transport_Failed, "a call after the death fails at once")
 
 	r.served = script.served
-	wcheck(r, wire_down(&script, &wire), "the scripted server and the reader both leave")
+	libodin.check(r, wire_down(&script, &wire), "the scripted server and the reader both leave")
 
 	// -- A server that breaks framing -----------------------------------------
 
@@ -495,7 +474,7 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 		return
 	}
 	session2 := mnt.wire_session(&wire2)
-	wcheck(r, vectra9.negotiate(session2) == .None, "a second wire negotiates")
+	libodin.check(r, vectra9.negotiate(session2) == .None, "a second wire negotiates")
 
 	// Sixteen bytes whose size field is far beyond the msize. The reader must
 	// refuse the frame rather than route it anywhere.
@@ -504,23 +483,16 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 	junk[1] = 0xFF
 	junk[2] = 0x01
 	n, werr := pipe.write(script2.p, 0, junk[:])
-	wcheck(r, n == len(junk) && werr == 0, "sixteen bytes of junk go down the pipe")
-	poisoned := false
-	for _ in 0 ..< 200 {
-		if mnt.wire_stats(&wire2).poisoned {
-			poisoned = true
-			break
-		}
-		sync.delay(1)
-	}
-	wcheck(r, poisoned, "a frame larger than the msize poisons the wire")
+	libodin.check(r, n == len(junk) && werr == 0, "sixteen bytes of junk go down the pipe")
+	poisoned := sync.await(wire_poisoned, &wire2, WIRE_PATIENCE)
+	libodin.check(r, poisoned, "a frame larger than the msize poisons the wire")
 	st = mnt.wire_stats(&wire2)
-	wcheck(r, !st.hangup, "as a protocol breach rather than a hangup")
+	libodin.check(r, !st.hangup, "as a protocol breach rather than a hangup")
 
 	request = vectra9.Msg(vectra9.Tattach{fid = 2, afid = vectra9.NOFID})
-	wcheck(r, vectra9.call(session2, &request, &reply, buf[:]) == .Transport_Failed, "and every later call fails")
+	libodin.check(r, vectra9.call(session2, &request, &reply, buf[:]) == .Transport_Failed, "and every later call fails")
 
-	wcheck(r, wire_down(&script2, &wire2), "the scripted server leaves the poisoned wire")
+	libodin.check(r, wire_down(&script2, &wire2), "the scripted server leaves the poisoned wire")
 	sched.reap()
 }
 
@@ -535,9 +507,7 @@ verify_wire :: proc() {
 	result: Wire_Result
 	verify_wire_run(&result)
 
-	sink := begin(&klog)
-	libodin.put_str(&sink, "wire ")
-	libodin.put_uint(&sink, u64(result.checks))
+	sink := report_begin("wire", result.checks)
 	if libodin.passed(result.tally) {
 		libodin.put_str(&sink, " checks passed -- ")
 		libodin.put_uint(&sink, u64(result.served))
@@ -549,12 +519,7 @@ verify_wire :: proc() {
 		emit(&klog, .Ok, &sink)
 		return
 	}
-
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(result.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, result.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, result.tally)
 }
 
 // -- The posted end's parks ----------------------------------------------------
@@ -582,11 +547,6 @@ Posted_Result :: struct {
 	using tally: libodin.Tally,
 }
 
-@(private = "file")
-pcheck :: proc "contextless" (r: ^Posted_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
-
 // One kernel call made on a watched thread: which, its answer, and whether it
 // came back at all.
 @(private = "file")
@@ -600,9 +560,7 @@ Posted_Step :: struct {
 @(private = "file")
 posted_remove_worker :: proc "contextless" (arg: rawptr) {
 	st := cast(^Posted_Step)arg
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 	st.err = srv.remove(st.name)
 	intrinsics.volatile_store(&st.done, true)
 }
@@ -610,9 +568,7 @@ posted_remove_worker :: proc "contextless" (arg: rawptr) {
 @(private = "file")
 posted_mount_worker :: proc "contextless" (arg: rawptr) {
 	st := cast(^Posted_Step)arg
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 	st.err = srv.mount(vfs.boot_namespace, st.name, st.target)
 	intrinsics.volatile_store(&st.done, true)
 }
@@ -638,24 +594,24 @@ verify_posted_run :: proc(r: ^Posted_Result) {
 	{
 		s := Script{end = 1}
 		s.p = pipe.create()
-		if !pcheck(r, s.p != nil, "a pipe for a posted service comes up") {
+		if !libodin.check(r, s.p != nil, "a pipe for a posted service comes up") {
 			return
 		}
 		c0, e0 := pipe.open_end(s.p, 0)
-		pcheck(r, e0 == vfs.OK, "and its posted end is a chan")
-		pcheck(r, srv.post_chan("park-a", c0) == vfs.OK, "which the kernel posts under a name")
+		libodin.check(r, e0 == vfs.OK, "and its posted end is a chan")
+		libodin.check(r, srv.post_chan("park-a", c0) == vfs.OK, "which the kernel posts under a name")
 		vfs.chan_close(c0)
-		pcheck(r, sched.spawn("park-a-script", script_server, &s) != nil, "a scripted far side reads the other end")
+		libodin.check(r, sched.spawn("park-a-script", script_server, &s) != nil, "a scripted far side reads the other end")
 
 		merr := srv.mount(ns, "/srv/park-a", "/mnt")
-		pcheck(r, merr == vfs.OK, "a mount of the name builds the wire and the far side answers the handshake")
-		pcheck(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "and the mount comes down")
+		libodin.check(r, merr == vfs.OK, "a mount of the name builds the wire and the far side answers the handshake")
+		libodin.check(r, vfs.unmount_path(ns, "", "/mnt") == vfs.OK, "and the mount comes down")
 
 		st := Posted_Step{name = "park-a"}
-		pcheck(r, sched.spawn("park-a-remove", posted_remove_worker, &st) != nil, "the name is removed on a watched thread")
-		pcheck(r, wire_wait_for(&st.done, 400), "and the removal comes back, which fires the connection's release")
-		pcheck(r, st.err == vfs.OK, "having found the name")
-		pcheck(r, wire_wait_for(&s.done, 200), "the far side's read answers EOF and its serve loop leaves")
+		libodin.check(r, sched.spawn("park-a-remove", posted_remove_worker, &st) != nil, "the name is removed on a watched thread")
+		libodin.check(r, sync.await_flag(&st.done, 400), "and the removal comes back, which fires the connection's release")
+		libodin.check(r, st.err == vfs.OK, "having found the name")
+		libodin.check(r, sync.await_flag(&s.done, WIRE_PATIENCE), "the far side's read answers EOF and its serve loop leaves")
 		pipe.close_end(s.p, 1)
 	}
 
@@ -663,20 +619,20 @@ verify_posted_run :: proc(r: ^Posted_Result) {
 
 	{
 		p := pipe.create()
-		if !pcheck(r, p != nil, "a second pipe comes up") {
+		if !libodin.check(r, p != nil, "a second pipe comes up") {
 			return
 		}
 		c0, e0 := pipe.open_end(p, 0)
 		c1, e1 := pipe.open_end(p, 1)
-		pcheck(r, e0 == vfs.OK && e1 == vfs.OK, "with both ends as chans and nobody reading the far one")
-		pcheck(r, srv.post_chan("park-b", c0) == vfs.OK, "the posted end goes under a name")
+		libodin.check(r, e0 == vfs.OK && e1 == vfs.OK, "with both ends as chans and nobody reading the far one")
+		libodin.check(r, srv.post_chan("park-b", c0) == vfs.OK, "the posted end goes under a name")
 		vfs.chan_close(c0)
 
 		st := Posted_Step{name = "/srv/park-b", target = "/mnt"}
-		pcheck(r, sched.spawn("park-b-mount", posted_mount_worker, &st) != nil, "a mount of it runs on a watched thread")
-		pcheck(r, wire_wait_for(&st.done, DEAF_PATIENCE), "and comes back inside the handshake's deadline and the flush's")
-		pcheck(r, st.err == vectra9.ENXIO, "with /srv's sentence for a service that is not there")
-		pcheck(r, srv.remove("park-b") == vfs.OK, "the name is removed")
+		libodin.check(r, sched.spawn("park-b-mount", posted_mount_worker, &st) != nil, "a mount of it runs on a watched thread")
+		libodin.check(r, sync.await_flag(&st.done, DEAF_PATIENCE), "and comes back inside the handshake's deadline and the flush's")
+		libodin.check(r, st.err == vectra9.ENXIO, "with /srv's sentence for a service that is not there")
+		libodin.check(r, srv.remove("park-b") == vfs.OK, "the name is removed")
 		vfs.chan_close(c1)
 	}
 
@@ -685,19 +641,19 @@ verify_posted_run :: proc(r: ^Posted_Result) {
 	{
 		s := Script{end = 1, wrong_dialect = true}
 		s.p = pipe.create()
-		if !pcheck(r, s.p != nil, "a third pipe comes up") {
+		if !libodin.check(r, s.p != nil, "a third pipe comes up") {
 			return
 		}
 		c0, e0 := pipe.open_end(s.p, 0)
-		pcheck(r, e0 == vfs.OK, "and its posted end is a chan")
-		pcheck(r, srv.post_chan("park-c", c0) == vfs.OK, "posted under a name")
+		libodin.check(r, e0 == vfs.OK, "and its posted end is a chan")
+		libodin.check(r, srv.post_chan("park-c", c0) == vfs.OK, "posted under a name")
 		vfs.chan_close(c0)
-		pcheck(r, sched.spawn("park-c-script", script_server, &s) != nil, "with a far side that answers the wrong dialect")
+		libodin.check(r, sched.spawn("park-c-script", script_server, &s) != nil, "with a far side that answers the wrong dialect")
 
-		pcheck(r, srv.mount(ns, "/srv/park-c", "/mnt") == vectra9.ENXIO, "a mount is refused, because the handshake failed")
-		pcheck(r, wire_wait_for(&s.done, 200), "and the far side's serve loop leaves, because the connection came down")
-		pcheck(r, srv.mount(ns, "/srv/park-c", "/mnt") == vectra9.ENXIO, "a second mount of the name is refused again rather than parks")
-		pcheck(r, srv.remove("park-c") == vfs.OK, "and the name is removed")
+		libodin.check(r, srv.mount(ns, "/srv/park-c", "/mnt") == vectra9.ENXIO, "a mount is refused, because the handshake failed")
+		libodin.check(r, sync.await_flag(&s.done, WIRE_PATIENCE), "and the far side's serve loop leaves, because the connection came down")
+		libodin.check(r, srv.mount(ns, "/srv/park-c", "/mnt") == vectra9.ENXIO, "a second mount of the name is refused again rather than parks")
+		libodin.check(r, srv.remove("park-c") == vfs.OK, "and the name is removed")
 		pipe.close_end(s.p, 1)
 	}
 
@@ -717,25 +673,19 @@ verify_posted_run :: proc(r: ^Posted_Result) {
 		}
 		sync.delay(1)
 	}
-	pcheck(r, pipe.count() == pipes_before, "every pipe went back")
-	pcheck(r, settled, "and the heap settled back to where it was")
+	libodin.check(r, pipe.count() == pipes_before, "every pipe went back")
+	libodin.check(r, settled, "and the heap settled back to where it was")
 }
 
 verify_posted :: proc() {
 	result: Posted_Result
 	verify_posted_run(&result)
 
-	sink := begin(&klog)
-	libodin.put_str(&sink, "posted ")
-	libodin.put_uint(&sink, u64(result.checks))
+	sink := report_begin("posted", result.checks)
 	if libodin.passed(result.tally) {
 		libodin.put_str(&sink, " checks passed -- a name removed after its last mount, a far side that never read, and one that spoke the wrong dialect, each let go of inside its bound")
 		emit(&klog, .Ok, &sink)
 		return
 	}
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(result.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, result.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, result.tally)
 }

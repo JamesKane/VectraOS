@@ -281,7 +281,7 @@ protect_user :: proc "contextless" (space: ^Address_Space, virt: uintptr, pages:
 	for i in 0 ..< pages {
 		va := virt + uintptr(i) * uintptr(arch.PAGE_SIZE)
 		if e := leaf_ptr(space, va); e != nil && arch.entry_present(e^) {
-			_ = reset_leaf(space, va, arch.entry_address(e^), user)
+			rewrite_leaf(e, va, arch.entry_address(e^), user)
 		}
 	}
 	invalidate_walkers(space, virt, pages)
@@ -579,10 +579,14 @@ new_space_record :: proc "contextless" () -> ^Address_Space #no_bounds_check {
 free_space_record :: proc "contextless" (space: ^Address_Space) #no_bounds_check {
 	guard := sync.acquire(&pool_lock)
 	defer sync.release(&pool_lock, guard)
-	for i in 0 ..< MAX_SPACES {
-		if &spaces[i].space == space {
-			spaces[i].used = false
-			return
-		}
+	// The slot, by arithmetic rather than a scan. The range check and the
+	// exact match keep a pointer from outside the pool from freeing anything.
+	first := uintptr(&spaces[0])
+	if uintptr(space) < first {
+		return
+	}
+	i := int((uintptr(space) - first) / size_of(Space_Slot))
+	if i < MAX_SPACES && &spaces[i].space == space {
+		spaces[i].used = false
 	}
 }

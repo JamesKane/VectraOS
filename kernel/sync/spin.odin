@@ -97,12 +97,6 @@ release :: proc "contextless" (l: ^Spinlock, g: Guard) {
 	arch.irq_restore(g.interrupts_were_on)
 }
 
-// held reports whether anybody holds a lock, for an assertion in code that
-// must run inside one.
-held :: proc "contextless" (l: ^Spinlock) -> bool {
-	return intrinsics.atomic_load(&l.owner) != 0
-}
-
 // held_here reports whether this core holds the lock. The scheduler asks it
 // after a switch, to know whether the lock it may have carried across is
 // its to let go of.
@@ -157,7 +151,7 @@ hang with no error, at a point arbitrarily far from the code that caused it.
 
 So every sleeping wait checks this first, and `kernel/vfs` checks it before it
 sends a 9P message. See `rpc_begin`. The count lives behind `GS`, one per
-core, because a second core has its own answer. See `arch.Percpu`.
+core, because a second core has its own answer. See the port's `Percpu`.
 
 A spinlock is not the only thing that forbids a park. A top half holds none
 and still may not sleep. It runs on a thread it does not own, and cannot be

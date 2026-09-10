@@ -491,15 +491,43 @@ walk ends early: a missing branch, or a larger leaf above.
 */
 @(private)
 leaf_ptr :: proc "contextless" (space: ^Address_Space, virt: uintptr) -> ^arch.Page_Table_Entry {
-	table := cast(^arch.Page_Table)phys_to_virt(space.root)
-	for l := arch.TABLE_LEVELS; l > 1; l -= 1 {
-		e := table[arch.table_index(virt, l)]
-		if !arch.entry_present(e) || arch.entry_is_leaf(e, l) {
-			return nil
-		}
-		table = cast(^arch.Page_Table)phys_to_virt(arch.entry_address(e))
+	e, level, _ := entry_ptr(space, virt)
+	if level != 1 {
+		return nil
 	}
-	return &table[arch.table_index(virt, 1)]
+	return e
+}
+
+/*
+entry_ptr walks to whichever entry terminates `virt`'s translation.
+
+`level` is where the walk stopped. `ok` says the entry there is a present
+leaf. When it is not, `e` is the absent entry the walk stopped at, and `level`
+is its level. `lookup`, `unmap_page` and `leaf_ptr` are each one question
+about that entry. `map_at` keeps a walk of its own, because it grows the tree
+as it goes.
+*/
+@(private = "file")
+entry_ptr :: proc "contextless" (
+	space: ^Address_Space,
+	virt: uintptr,
+) -> (
+	e: ^arch.Page_Table_Entry,
+	level: int,
+	ok: bool,
+) {
+	table := cast(^arch.Page_Table)phys_to_virt(space.root)
+	for l := arch.TABLE_LEVELS; l >= 1; l -= 1 {
+		e = &table[arch.table_index(virt, l)]
+		if !arch.entry_present(e^) {
+			return e, l, false
+		}
+		if arch.entry_is_leaf(e^, l) {
+			return e, l, true
+		}
+		table = cast(^arch.Page_Table)phys_to_virt(arch.entry_address(e^))
+	}
+	return nil, 0, false
 }
 
 /*
@@ -514,9 +542,16 @@ reset_leaf :: proc "contextless" (space: ^Address_Space, virt, phys: uintptr, fl
 	if e == nil || !arch.entry_present(e^) {
 		return false
 	}
+	rewrite_leaf(e, virt, phys, flags)
+	return true
+}
+
+// rewrite_leaf is `reset_leaf` with the entry already in hand: the new
+// encoding, and this core's translation dropped.
+@(private)
+rewrite_leaf :: proc "contextless" (e: ^arch.Page_Table_Entry, virt, phys: uintptr, flags: arch.Page_Flags) {
 	e^ = arch.leaf_encode(phys, flags, 1)
 	arch.flush_page(virt)
-	return true
 }
 
 /*
@@ -537,22 +572,13 @@ own. A page that was never mapped answers false, which is the state the caller
 asked for rather than a failure.
 */
 unmap_page :: proc "contextless" (space: ^Address_Space, virt: uintptr) -> bool {
-	table := cast(^arch.Page_Table)phys_to_virt(space.root)
-
-	for l := arch.TABLE_LEVELS; l >= 1; l -= 1 {
-		index := arch.table_index(virt, l)
-		entry := table[index]
-		if !arch.entry_present(entry) {
-			return false
-		}
-		if arch.entry_is_leaf(entry, l) {
-			table[index] = arch.ENTRY_EMPTY
-			arch.flush_page(virt)
-			return true
-		}
-		table = cast(^arch.Page_Table)phys_to_virt(arch.entry_address(entry))
+	e, _, ok := entry_ptr(space, virt)
+	if !ok {
+		return false
 	}
-	return false
+	e^ = arch.ENTRY_EMPTY
+	arch.flush_page(virt)
+	return true
 }
 
 /*
@@ -607,17 +633,9 @@ lookup :: proc "contextless" (
 	level: int,
 	ok: bool,
 ) {
-	table := cast(^arch.Page_Table)phys_to_virt(space.root)
-
-	for l := arch.TABLE_LEVELS; l >= 1; l -= 1 {
-		e := table[arch.table_index(virt, l)]
-		if !arch.entry_present(e) {
-			return {}, 0, false
-		}
-		if arch.entry_is_leaf(e, l) {
-			return e, l, true
-		}
-		table = cast(^arch.Page_Table)phys_to_virt(arch.entry_address(e))
+	e, l, found := entry_ptr(space, virt)
+	if !found {
+		return {}, 0, false
 	}
-	return {}, 0, false
+	return e^, l, true
 }

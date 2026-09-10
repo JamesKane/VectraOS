@@ -58,11 +58,6 @@ Space_Result :: struct {
 	frames:        int, // Frames the two spaces spent on page tables
 }
 
-@(private = "file")
-scheck :: proc "contextless" (r: ^Space_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
-}
-
 /*
 One thread's half of the isolation check, and everything it reported.
 
@@ -157,52 +152,52 @@ verify_space :: proc() {
 	// -- Two spaces ----------------------------------------------------------
 
 	space_a, err_a := mem.space_new()
-	if !scheck(&r, err_a == .None && space_a != nil, "an address space is built") {
+	if !libodin.check(&r, err_a == .None && space_a != nil, "an address space is built") {
 		report_space(&r)
 		return
 	}
 	space_b, err_b := mem.space_new()
-	if !scheck(&r, err_b == .None && space_b != nil, "and a second one") {
+	if !libodin.check(&r, err_b == .None && space_b != nil, "and a second one") {
 		mem.space_destroy(space_a)
 		report_space(&r)
 		return
 	}
 
-	scheck(&r, mem.space_root(space_a) != mem.space_root(space_b), "with page tables of their own")
+	libodin.check(&r, mem.space_root(space_a) != mem.space_root(space_b), "with page tables of their own")
 
 	// A fresh space is empty below the kernel half. A program that names an
 	// address before anything maps it should fault, and this is that in the
 	// only form a self-test can see.
 	_, mapped := mem.translate(space_a, USER_VA)
-	scheck(&r, !mapped, "and nothing mapped in the half a program gets")
+	libodin.check(&r, !mapped, "and nothing mapped in the half a program gets")
 
 	// The kernel half is not empty, and is the same in both. That is the copy
 	// `space_new` makes, checked at an address the kernel actually uses.
 	witness := uintptr(uintptr(rawptr(&shared_witness)))
 	pa, ok_a := mem.translate(space_a, witness)
 	pb, ok_b := mem.translate(space_b, witness)
-	scheck(&r, ok_a && ok_b && pa == pb, "the kernel half is present in both, at the same frame")
+	libodin.check(&r, ok_a && ok_b && pa == pb, "the kernel half is present in both, at the same frame")
 
 	// -- The same address, different memory ----------------------------------
 
 	frame_a, got_a := mem.alloc_page_zeroed()
 	frame_b, got_b := mem.alloc_page_zeroed()
-	if !scheck(&r, got_a && got_b && frame_a != frame_b, "a frame each") {
+	if !libodin.check(&r, got_a && got_b && frame_a != frame_b, "a frame each") {
 		cleanup(space_a, space_b, frame_a, got_a, frame_b, got_b)
 		report_space(&r)
 		return
 	}
 
 	flags := arch.Page_Flags{.Write, .No_Execute}
-	scheck(&r, mem.map_user(space_a, USER_VA, frame_a, flags, 1) == .None, "one maps the address")
-	scheck(&r, mem.map_user(space_b, USER_VA, frame_b, flags, 1) == .None, "the other maps the same address")
+	libodin.check(&r, mem.map_user(space_a, USER_VA, frame_a, flags, 1) == .None, "one maps the address")
+	libodin.check(&r, mem.map_user(space_b, USER_VA, frame_b, flags, 1) == .None, "the other maps the same address")
 
 	va, va_ok := mem.translate(space_a, USER_VA)
 	vb, vb_ok := mem.translate(space_b, USER_VA)
-	scheck(&r, va_ok && vb_ok && va != vb, "and the two resolve to different frames")
+	libodin.check(&r, va_ok && vb_ok && va != vb, "and the two resolve to different frames")
 
 	perms, perm_ok := mem.permissions(space_a, USER_VA)
-	scheck(&r, perm_ok && .User in perms, "a user mapping carries the bit that lets a program reach it")
+	libodin.check(&r, perm_ok && .User in perms, "a user mapping carries the bit that lets a program reach it")
 
 	// -- What a user mapping may not name ------------------------------------
 
@@ -221,13 +216,13 @@ verify_space :: proc() {
 	*/
 	kernel_va := uintptr(0xFFFF_C000_0000_0000)
 	_, occupied := mem.translate(mem.kernel_address_space(), kernel_va)
-	scheck(&r, !occupied, "an empty address in the kernel half, so the guard is what refuses it")
-	scheck(
+	libodin.check(&r, !occupied, "an empty address in the kernel half, so the guard is what refuses it")
+	libodin.check(
 		&r,
 		mem.map_user(space_a, kernel_va, frame_a, flags, 1) != .None,
 		"and the kernel half is not an address a program may be given",
 	)
-	scheck(
+	libodin.check(
 		&r,
 		mem.map_user(space_a, 0, frame_a, flags, 1) != .None,
 		"and neither is page zero, so a null dereference faults",
@@ -259,44 +254,44 @@ verify_space :: proc() {
 			started += 1
 		}
 	}
-	scheck(&r, started == 2, "a thread runs in each")
+	libodin.check(&r, started == 2, "a thread runs in each")
 
-	if started == 2 && scheck(&r, sync.await(both_done, nil, PATIENCE), "and both come back") {
+	if started == 2 && libodin.check(&r, sync.await(both_done, nil, PATIENCE), "and both come back") {
 		r.switches = sched.stats().space_switches - sw_before
 
-		scheck(&r, occupants[0].saw == MARKS[0], "the first saw its own mark")
-		scheck(&r, occupants[1].saw == MARKS[1], "the second saw its own")
-		scheck(
+		libodin.check(&r, occupants[0].saw == MARKS[0], "the first saw its own mark")
+		libodin.check(&r, occupants[1].saw == MARKS[1], "the second saw its own")
+		libodin.check(
 			&r,
 			occupants[0].saw != occupants[1].saw,
 			"and neither saw the other's, which is the whole of an address space",
 		)
-		scheck(&r, occupants[0].kernel_ok && occupants[1].kernel_ok, "with the kernel half reachable from both")
-		scheck(&r, shared_witness == 2, "and written by both, into the one copy of it")
-		scheck(&r, r.switches > 0, "the scheduler really did reload CR3")
+		libodin.check(&r, occupants[0].kernel_ok && occupants[1].kernel_ok, "with the kernel half reachable from both")
+		libodin.check(&r, shared_witness == 2, "and written by both, into the one copy of it")
+		libodin.check(&r, r.switches > 0, "the scheduler really did reload CR3")
 	}
 
 	// That the two frames really differ is visible from outside the spaces, now
 	// that both threads wrote.
-	scheck(&r, read_frame(frame_a) == MARKS[0], "the first space's frame holds the first mark")
-	scheck(&r, read_frame(frame_b) == MARKS[1], "and the second's holds the second")
+	libodin.check(&r, read_frame(frame_a) == MARKS[0], "the first space's frame holds the first mark")
+	libodin.check(&r, read_frame(frame_b) == MARKS[1], "and the second's holds the second")
 
 	// -- Teardown ------------------------------------------------------------
 
 	r.frames = mem.space_stats().frames - before.frames
-	scheck(&r, r.frames > 0, "the two spaces cost page tables")
+	libodin.check(&r, r.frames > 0, "the two spaces cost page tables")
 
 	cleanup(space_a, space_b, frame_a, got_a, frame_b, got_b)
 
 	after := mem.space_stats()
-	scheck(&r, after.live == before.live, "every space was destroyed")
-	scheck(&r, after.frames == before.frames, "and gave back every table it took")
+	libodin.check(&r, after.live == before.live, "every space was destroyed")
+	libodin.check(&r, after.frames == before.frames, "and gave back every table it took")
 
 	// The kernel is still here, which is the check that the teardown stopped at
 	// the halfway index. A walk that freed the shared half would have taken the
 	// tables this very read goes through.
 	_, still := mem.translate(mem.kernel_address_space(), witness)
-	scheck(&r, still, "and the kernel half it shares is untouched")
+	libodin.check(&r, still, "and the kernel half it shares is untouched")
 
 	report_space(&r)
 }
@@ -318,27 +313,27 @@ verify_lifetime :: proc(r: ^Space_Result) {
 	doubles_before := mem.pmm_stats().double_frees
 
 	space, err := mem.space_new()
-	if !scheck(r, err == .None && space != nil, "a space is built with nothing else running") {
+	if !libodin.check(r, err == .None && space != nil, "a space is built with nothing else running") {
 		return
 	}
 
 	frame, got := mem.alloc_page_zeroed()
-	if !scheck(r, got, "and a frame to put in it") {
+	if !libodin.check(r, got, "and a frame to put in it") {
 		mem.space_destroy(space)
 		return
 	}
 
-	scheck(
+	libodin.check(
 		r,
 		mem.map_user(space, USER_VA, frame, {.Write, .No_Execute}, 1) == .None,
 		"a page maps into it, growing three levels of table",
 	)
-	scheck(r, mem.pmm_stats().free_frames < free_before, "which costs frames")
+	libodin.check(r, mem.pmm_stats().free_frames < free_before, "which costs frames")
 
 	mem.space_destroy(space)
 	mem.free_page(frame)
 
-	scheck(
+	libodin.check(
 		r,
 		mem.pmm_stats().free_frames == free_before,
 		"and the teardown hands back every one of them",
@@ -356,7 +351,7 @@ verify_lifetime :: proc(r: ^Space_Result) {
 	it is a double free the moment that owner frees it too. This is the check that
 	says so.
 	*/
-	scheck(
+	libodin.check(
 		r,
 		mem.pmm_stats().double_frees == doubles_before,
 		"and nothing twice, which is what a space owning its leaves would do",
@@ -411,26 +406,26 @@ verify_walker :: proc(r: ^Space_Result) {
 	// -- The aligned run the tables want --------------------------------------
 	ALIGN :: 4 // frames: 16 KiB, an SMMU's second-level stream table block
 	run, got_run := mem.alloc_pages_aligned(ALIGN, ALIGN)
-	if scheck(r, got_run, "a run of four frames is found on a four-frame boundary") {
-		scheck(r, run % (ALIGN * uintptr(mem.PAGE_SIZE)) == 0, "and it sits on 16 KiB")
+	if libodin.check(r, got_run, "a run of four frames is found on a four-frame boundary") {
+		libodin.check(r, run % (ALIGN * uintptr(mem.PAGE_SIZE)) == 0, "and it sits on 16 KiB")
 		mem.free_pages(run, ALIGN)
 	}
-	scheck(r, mem.pmm_stats().free_frames == free_before, "and comes back whole")
+	libodin.check(r, mem.pmm_stats().free_frames == free_before, "and comes back whole")
 
 	// -- A walker on a space ----------------------------------------------------
 	space, err := mem.space_new()
-	if !scheck(r, err == .None && space != nil, "a space is built for a walker") {
+	if !libodin.check(r, err == .None && space != nil, "a space is built for a walker") {
 		return
 	}
-	scheck(r, mem.walker_count(space) == 0, "and carries no walker at birth")
+	libodin.check(r, mem.walker_count(space) == 0, "and carries no walker at birth")
 
 	frame, got := mem.alloc_page_zeroed()
-	if !scheck(r, got, "and a frame to map into it") {
+	if !libodin.check(r, got, "and a frame to map into it") {
 		mem.space_destroy(space)
 		return
 	}
 	other, got_other := mem.alloc_page_zeroed()
-	if !scheck(r, got_other, "and a second, for a frame replaced") {
+	if !libodin.check(r, got_other, "and a second, for a frame replaced") {
 		mem.space_destroy(space)
 		mem.free_page(frame)
 		return
@@ -440,38 +435,38 @@ verify_walker :: proc(r: ^Space_Result) {
 	t.invalidate = test_walker_invalidate
 	t.detach = test_walker_detach
 	mem.walker_attach(space, &t)
-	scheck(r, mem.walker_count(space) == 1, "a walker attaches, and the space counts one")
+	libodin.check(r, mem.walker_count(space) == 1, "a walker attaches, and the space counts one")
 
 	flags := arch.Page_Flags{.Write, .No_Execute}
-	scheck(r, mem.map_user(space, USER_VA, frame, flags, 1) == .None, "a page maps under it")
-	scheck(r, t.invalidates == 0, "and a mapping that widens tells the walker nothing")
+	libodin.check(r, mem.map_user(space, USER_VA, frame, flags, 1) == .None, "a page maps under it")
+	libodin.check(r, t.invalidates == 0, "and a mapping that widens tells the walker nothing")
 
-	scheck(r, mem.protect_user(space, USER_VA, 1, {.No_Execute}) == .None, "the page goes read-only")
-	scheck(
+	libodin.check(r, mem.protect_user(space, USER_VA, 1, {.No_Execute}) == .None, "the page goes read-only")
+	libodin.check(
 		r,
 		t.invalidates == 1 && t.last_virt == USER_VA && t.last_pages == 1,
 		"and the walker is told the page that narrowed",
 	)
 
-	scheck(r, mem.remap_user(space, USER_VA, other, flags) == .None, "its frame is replaced")
-	scheck(r, t.invalidates == 2 && t.last_virt == USER_VA, "and the walker is told again")
+	libodin.check(r, mem.remap_user(space, USER_VA, other, flags) == .None, "its frame is replaced")
+	libodin.check(r, t.invalidates == 2 && t.last_virt == USER_VA, "and the walker is told again")
 
-	scheck(r, mem.unmap_user(space, USER_VA, 1) == .None, "the page is unmapped")
-	scheck(r, t.invalidates == 3 && t.last_pages == 1, "and the walker loses it too")
+	libodin.check(r, mem.unmap_user(space, USER_VA, 1) == .None, "the page is unmapped")
+	libodin.check(r, t.invalidates == 3 && t.last_pages == 1, "and the walker loses it too")
 
-	scheck(r, mem.walker_detach(space, &t), "a detach takes the record off the list")
-	scheck(r, mem.walker_count(space) == 0, "and the space counts none")
-	scheck(r, !mem.walker_detach(space, &t), "a second detach finds nothing")
-	scheck(r, mem.map_user(space, USER_VA, frame, flags, 1) == .None && mem.unmap_user(space, USER_VA, 1) == .None && t.invalidates == 3, "and a detached walker hears no more")
+	libodin.check(r, mem.walker_detach(space, &t), "a detach takes the record off the list")
+	libodin.check(r, mem.walker_count(space) == 0, "and the space counts none")
+	libodin.check(r, !mem.walker_detach(space, &t), "a second detach finds nothing")
+	libodin.check(r, mem.map_user(space, USER_VA, frame, flags, 1) == .None && mem.unmap_user(space, USER_VA, 1) == .None && t.invalidates == 3, "and a detached walker hears no more")
 
 	mem.walker_attach(space, &t)
 	mem.space_destroy(space)
-	scheck(r, t.detaches == 1, "a space destroyed with a walker on it detaches the walker first")
-	scheck(r, t.next == nil, "and the record is unlinked")
+	libodin.check(r, t.detaches == 1, "a space destroyed with a walker on it detaches the walker first")
+	libodin.check(r, t.next == nil, "and the record is unlinked")
 
 	mem.free_page(frame)
 	mem.free_page(other)
-	scheck(r, mem.pmm_stats().free_frames == free_before, "and every frame comes back")
+	libodin.check(r, mem.pmm_stats().free_frames == free_before, "and every frame comes back")
 }
 
 @(private = "file")
@@ -499,12 +494,8 @@ cleanup :: proc(
 
 @(private = "file")
 report_space :: proc(r: ^Space_Result) {
-	ok := libodin.passed(r.tally)
-
-	sink := begin(&klog)
-	libodin.put_str(&sink, "space ")
-	libodin.put_uint(&sink, u64(r.checks))
-	if ok {
+	sink := report_begin("space", r.checks)
+	if libodin.passed(r.tally) {
 		libodin.put_str(&sink, " address space checks passed -- 2 spaces sharing one kernel half, ")
 		libodin.put_uint(&sink, u64(r.frames))
 		libodin.put_str(&sink, " tables between them, ")
@@ -513,10 +504,5 @@ report_space :: proc(r: ^Space_Result) {
 		emit(&klog, .Ok, &sink)
 		return
 	}
-
-	libodin.put_str(&sink, " checks, ")
-	libodin.put_uint(&sink, u64(r.failures))
-	libodin.put_str(&sink, " FAILED -- first: ")
-	libodin.put_str(&sink, r.first_failure)
-	emit(&klog, .Fault, &sink)
+	report_failed(&sink, r.tally)
 }

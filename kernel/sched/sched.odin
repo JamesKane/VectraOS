@@ -23,7 +23,6 @@ out of memory at the one moment it must not.
 package sched
 
 import "base:intrinsics"
-import "base:runtime"
 
 import "kernel:arch"
 import "kernel:mem"
@@ -116,29 +115,18 @@ init :: proc() -> bool {
 	c.online = true
 	cpu_count = 1
 
-	boot := new(Thread)
-	if boot == nil {
+	if adopt(c, "boot", nil, false) == nil {
 		return false
 	}
-	boot.name = "boot"
-	boot.id = intrinsics.atomic_add(&next_id, 1)
-	boot.state = .Running
-	boot.base = PRIORITY_NORMAL
-	boot.prio = PRIORITY_NORMAL
-	boot.cpu = c
-	boot.ticks_left = slice_ticks(c)
-	boot.owns_stack = false
-	c.current = boot
 
-	idle := spawn_at(c, "idle", idle_loop, nil, PRIORITY_IDLE, ANY_CLASS, IDLE_STACK_SIZE)
+	idle := spawn_at(c, "idle", idle_loop, nil, PRIORITY_IDLE, ANY_CLASS, IDLE_STACK_SIZE, how = .Idle)
 	if idle == nil {
 		return false
 	}
-	// The idle thread is never on a queue -- `enqueue` refuses it by identity,
-	// so this assignment has to happen before anything tries.
-	remove(c, idle)
+	// The idle thread is never on a queue -- `enqueue` refuses it by identity.
+	// So it is built with `.Idle`, and this assignment has to happen before
+	// anything tries.
 	c.idle = idle
-	idle.state = .Ready
 
 	arch.set_interrupt_handler(arch.VECTOR_YIELD, on_yield)
 	arch.set_interrupt_handler(arch.VECTOR_WAKE, on_wake)
@@ -196,9 +184,7 @@ same way and for the same reason.
 @(private = "file")
 idle_loop :: proc "contextless" (arg: rawptr) {
 	_ = arg
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 	for {
 		reap()
 		// Interrupts are on in this thread's frame, so the halt ends at the
@@ -209,6 +195,115 @@ idle_loop :: proc "contextless" (arg: rawptr) {
 }
 
 // -- Creating and ending threads ---------------------------------------------
+
+/*
+adopt makes a thread record for the context a core is already running on, and
+makes it the core's current thread.
+
+`init` and `init_ap` both arrive on a stack something else built, with a
+thread already in flight on it. `owns_stack` is the one difference between
+them. The boot core stands on the loader's stack, and another core on one the
+boot core made for it.
+*/
+@(private = "file")
+adopt :: proc(c: ^Cpu, name: string, stack: []u8, owns_stack: bool) -> ^Thread {
+	boot := new(Thread)
+	if boot == nil {
+		return nil
+	}
+	guard := sync.acquire(&lock)
+	boot.name = name
+	boot.id = intrinsics.atomic_add(&next_id, 1)
+	sync.release(&lock, guard)
+	boot.state = .Running
+	boot.base = PRIORITY_NORMAL
+	boot.prio = PRIORITY_NORMAL
+	boot.cpu = c
+	boot.ticks_left = slice_ticks(c)
+	boot.stack = stack
+	boot.owns_stack = owns_stack
+	c.current = boot
+	return boot
+}
+
+/*
+How `commit` hands a new thread to its core.
+
+A kernel thread goes through `place`, which kicks an idle core. A user thread
+is enqueued and kicks nobody. The idle thread joins no queue at all. It is
+Ready in `cpu.idle`, and only an empty set of queues reaches it.
+*/
+@(private = "file")
+Placement :: enum {
+	Place,
+	Enqueue,
+	Idle,
+}
+
+/*
+new_thread allocates a record and a stack for a thread that is not yet
+runnable. It fills in what every constructor fills in the same way.
+
+The resume state is the one thing the three constructors build differently.
+The caller builds it on the stack this returns, and then hands both to
+`commit`. Nil when either allocation failed, with nothing kept.
+*/
+@(private = "file")
+new_thread :: proc(name: string, priority: Priority, affinity: Cpu_Classes, stack_size: int) -> (t: ^Thread, stack: []u8) {
+	t = new(Thread)
+	if t == nil {
+		return nil, nil
+	}
+	stack = make([]u8, stack_size)
+	if stack == nil {
+		free(t)
+		return nil, nil
+	}
+	t.name = name
+	t.base = priority
+	t.prio = priority
+	t.affinity = affinity
+	return t, stack
+}
+
+// discard gives back what `new_thread` took, for a resume state that could
+// not be built.
+@(private = "file")
+discard :: proc(t: ^Thread, stack: []u8) {
+	delete(stack)
+	free(t)
+}
+
+/*
+commit makes a thread runnable. The resume state, the stack and the id are
+recorded, and the thread goes to its core under the scheduler lock.
+
+Everything the thread needs on its first dispatch is written before the lock
+is taken, because the next interrupt may dispatch it. The callers say what
+that costs when it is not.
+*/
+@(private = "file")
+commit :: proc(c: ^Cpu, t: ^Thread, resume: arch.Resume, stack: []u8, how: Placement) {
+	t.resume = resume
+	t.stack = stack
+	t.kstack_top = arch.kernel_stack_top(stack)
+	t.owns_stack = true
+	t.id = intrinsics.atomic_add(&next_id, 1)
+
+	guard := sync.acquire(&lock)
+	switch how {
+	case .Place:
+		place(c, t)
+	case .Enqueue:
+		enqueue(c, t)
+	case .Idle:
+		// What `enqueue` records, with no queue to join. The core's `idle`
+		// slot is the caller's to fill.
+		t.cpu = c
+		t.state = .Ready
+	}
+	sync.release(&lock, guard)
+}
 
 /*
 spawn creates a runnable thread.
@@ -243,12 +338,13 @@ spawn_at :: proc(
 	affinity: Cpu_Classes,
 	stack_size: int,
 	space: ^mem.Address_Space = nil,
+	how: Placement = .Place,
 ) -> ^Thread {
 	if entry == nil || stack_size < arch.MIN_STACK_SIZE {
 		return nil
 	}
 
-	t := new(Thread)
+	t, stack := new_thread(name, priority, affinity, stack_size)
 	if t == nil {
 		return nil
 	}
@@ -256,35 +352,18 @@ spawn_at :: proc(
 	// An affinity that excludes this core is a thread that would sit on a queue
 	// nothing drains. Refused here rather than enqueued, because the failure is
 	// otherwise invisible: the thread simply never runs.
-	t.affinity = affinity
 	if !eligible(t, c) {
-		free(t)
-		return nil
-	}
-
-	stack := make([]u8, stack_size)
-	if stack == nil {
-		free(t)
+		discard(t, stack)
 		return nil
 	}
 
 	resume, ok := arch.thread_resume_init(stack, rawptr(thread_start), t, nil)
 	if !ok {
-		delete(stack)
-		free(t)
+		discard(t, stack)
 		return nil
 	}
-
-	t.resume = resume
-	t.stack = stack
-	t.kstack_top = arch.kernel_stack_top(stack)
-	t.owns_stack = true
-	t.name = name
 	t.entry = entry
 	t.arg = arg
-	t.base = priority
-	t.prio = priority
-	t.id = intrinsics.atomic_add(&next_id, 1)
 
 	/*
 	The space is set before the thread is enqueued, and that ordering is the
@@ -297,9 +376,7 @@ spawn_at :: proc(
 	*/
 	t.space = space
 
-	guard := sync.acquire(&lock)
-	place(c, t)
-	sync.release(&lock, guard)
+	commit(c, t, resume, stack, how)
 	return t
 }
 
@@ -343,33 +420,16 @@ spawn_user :: proc(
 
 	// A user thread names no class, so load alone places it. See `pick_cpu`.
 	c := pick_cpu(ANY_CLASS, cpus[:cpu_count])
-	t := new(Thread)
+	t, stack := new_thread(name, priority, ANY_CLASS, stack_size)
 	if t == nil {
-		return nil
-	}
-
-	stack := make([]u8, stack_size)
-	if stack == nil {
-		free(t)
 		return nil
 	}
 
 	resume, ok := arch.thread_user_init(stack, entry, sp, arg0, arg1, arg2)
 	if !ok {
-		delete(stack)
-		free(t)
+		discard(t, stack)
 		return nil
 	}
-
-	t.resume = resume
-	t.stack = stack
-	t.kstack_top = arch.kernel_stack_top(stack)
-	t.owns_stack = true
-	t.name = name
-	t.base = priority
-	t.prio = priority
-	t.affinity = ANY_CLASS
-	t.id = intrinsics.atomic_add(&next_id, 1)
 
 	// Both before the enqueue, and for the same reason the space alone was.
 	// The next interrupt may dispatch this thread. One dispatched without its
@@ -378,9 +438,7 @@ spawn_user :: proc(
 	t.space = space
 	t.user = record
 
-	guard := sync.acquire(&lock)
-	enqueue(c, t)
-	sync.release(&lock, guard)
+	commit(c, t, resume, stack, .Enqueue)
 	return t
 }
 
@@ -410,58 +468,24 @@ spawn_user_clone :: proc(
 
 	// A user thread names no class, so load alone places it. See `pick_cpu`.
 	c := pick_cpu(ANY_CLASS, cpus[:cpu_count])
-	t := new(Thread)
+	t, stack := new_thread(name, priority, ANY_CLASS, stack_size)
 	if t == nil {
-		return nil
-	}
-
-	stack := make([]u8, stack_size)
-	if stack == nil {
-		free(t)
 		return nil
 	}
 
 	resume, ok := arch.thread_user_clone(stack, src)
 	if !ok {
-		delete(stack)
-		free(t)
+		discard(t, stack)
 		return nil
 	}
-
-	t.resume = resume
-	t.stack = stack
-	t.kstack_top = arch.kernel_stack_top(stack)
-	t.owns_stack = true
-	t.name = name
-	t.base = priority
-	t.prio = priority
-	t.affinity = ANY_CLASS
-	t.id = intrinsics.atomic_add(&next_id, 1)
 
 	t.space = space
 	t.user = record
 
-	guard := sync.acquire(&lock)
-	enqueue(c, t)
-	sync.release(&lock, guard)
+	commit(c, t, resume, stack, .Enqueue)
 	return t
 }
 
-/*
-kill_current ends the running thread from inside a trap handler.
-
-Takes the state the trap arrived with and returns the state to resume, which
-will be some other thread's. That is the only way to end a thread that is not
-cooperating. `exit` needs the thread to call it, and a program that faulted
-calls nothing.
-
-`spent_slice` is false. A thread that faulted did not consume a slice, and
-charging it one would decay a priority that is about to stop existing.
-
-The dead thread's stack is not freed here. `reschedule` puts it on the reap
-list, and the next `spawn` gives it back, because the stack this trap is
-standing on is that thread's.
-*/
 /*
 note_thread marks a thread noted and makes it runnable if it was parked in a
 wait a note may end. The flag is the note, as far as this package knows.
@@ -510,25 +534,7 @@ back, the same as `ready`.
 */
 @(private = "file")
 wake_noted :: proc "contextless" (t: ^Thread) {
-	if t == nil {
-		return
-	}
-	guard := sync.acquire(&lock)
-	defer sync.release(&lock, guard)
-
-	if t.state == .Ready || t.state == .Running || t.state == .Dead {
-		return
-	}
-	if t.reaped {
-		reaped_bug(t, "note")
-	}
-	if !t.note_wakes {
-		// A sleeping lock's waiter. Leave it queued; the handoff wakes it,
-		// and the note waits at the next boundary. See `note_thread`.
-		return
-	}
-	boost(t)
-	place(pick_cpu(t.affinity, cpus[:cpu_count]), t)
+	wake(t, boosted = true, noted = true)
 }
 
 // clear_note consumes a thread's note flag. Delivery calls it -- the door
@@ -631,6 +637,21 @@ park_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	return reschedule(r, spent_slice = false)
 }
 
+/*
+kill_current ends the running thread from inside a trap handler.
+
+Takes the state the trap arrived with and returns the state to resume, which
+will be some other thread's. That is the only way to end a thread that is not
+cooperating. `exit` needs the thread to call it, and a program that faulted
+calls nothing.
+
+`spent_slice` is false. A thread that faulted did not consume a slice, and
+charging it one would decay a priority that is about to stop existing.
+
+The dead thread's stack is not freed here. `reschedule` puts it on the reap
+list, and the next `spawn` gives it back, because the stack this trap is
+standing on is that thread's.
+*/
 kill_current :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	if t := cpu().current; t != nil {
 		if t == cpu().idle {
@@ -885,8 +906,10 @@ reaped_bug :: proc "contextless" (t: ^Thread, door: string) -> ! {
 	sync.bug(libodin.str(&sink))
 }
 
+// wake is the one body behind `ready`, `unpark` and `wake_noted`. `noted` is
+// the gate the third adds: a note may not wake a sleeping lock's waiter.
 @(private = "file")
-wake :: proc "contextless" (t: ^Thread, boosted: bool) {
+wake :: proc "contextless" (t: ^Thread, boosted: bool, noted := false) {
 	if t == nil {
 		return
 	}
@@ -897,7 +920,12 @@ wake :: proc "contextless" (t: ^Thread, boosted: bool) {
 		return
 	}
 	if t.reaped {
-		reaped_bug(t, boosted ? "ready(io)" : "unpark(lock)")
+		reaped_bug(t, noted ? "note" : boosted ? "ready(io)" : "unpark(lock)")
+	}
+	if noted && !t.note_wakes {
+		// A sleeping lock's waiter. Leave it queued; the handoff wakes it,
+		// and the note waits at the next boundary. See `note_thread`.
+		return
 	}
 	if boosted {
 		boost(t)
@@ -1199,7 +1227,6 @@ reschedule :: proc "contextless" (r: arch.Resume, spent_slice: bool) -> arch.Res
 	if next.ticks_left <= 0 {
 		next.ticks_left = slice_ticks(c)
 	}
-	next.dispatches += 1
 	if next != prev {
 		c.switches += 1
 	}
@@ -1348,12 +1375,6 @@ start_timer :: proc "contextless" (hz: u64 = 1000) -> bool {
 	arch.timer_periodic(u8(arch.VECTOR_TIMER), timer_count)
 	arch.enable_interrupts()
 	return true
-}
-
-// stop_timer masks the tick and leaves interrupts on. Used by the self-test to
-// put the machine back the way it found it after measuring preemption.
-stop_timer :: proc "contextless" () {
-	arch.timer_stop()
 }
 
 Timer_Stats :: struct {
@@ -1536,30 +1557,15 @@ init_ap :: proc(id: int, stack: []u8) -> bool #no_bounds_check {
 	c.capacity = capacity
 	c.lapic = arch.cpu_lapic_id()
 
-	boot := new(Thread)
-	if boot == nil {
+	if adopt(c, "ap-boot", stack, true) == nil {
 		return false
 	}
-	guard := sync.acquire(&lock)
-	boot.name = "ap-boot"
-	boot.id = intrinsics.atomic_add(&next_id, 1)
-	sync.release(&lock, guard)
-	boot.state = .Running
-	boot.base = PRIORITY_NORMAL
-	boot.prio = PRIORITY_NORMAL
-	boot.cpu = c
-	boot.ticks_left = slice_ticks(c)
-	boot.stack = stack
-	boot.owns_stack = true
-	c.current = boot
 
-	idle := spawn_at(c, "idle", idle_loop, nil, PRIORITY_IDLE, ANY_CLASS, IDLE_STACK_SIZE)
+	idle := spawn_at(c, "idle", idle_loop, nil, PRIORITY_IDLE, ANY_CLASS, IDLE_STACK_SIZE, how = .Idle)
 	if idle == nil {
 		return false
 	}
-	remove(c, idle)
 	c.idle = idle
-	idle.state = .Ready
 	return true
 }
 
