@@ -51,8 +51,6 @@ it waits.
 */
 package env
 
-import "base:runtime"
-
 import "kernel:mem"
 import "kernel:sync"
 import "kernel:vfs"
@@ -90,6 +88,7 @@ Group :: struct {
 	refs:    int,
 	vars:    [MAX_VARS]Var,
 	next_id: i32,
+	slot:    int, // Which `Env_Device.slots` entry this is, set at `claim`
 }
 
 @(private = "file")
@@ -111,8 +110,6 @@ Env_Device :: struct {
 	lock:     sync.Spinlock,
 	resolver: Group_Resolver,
 	server:   vfs.Server,
-	writes:   u64,
-	removes:  u64,
 }
 
 @(private = "file")
@@ -149,13 +146,6 @@ live :: proc "contextless" () -> int {
 	return dev.live
 }
 
-// stats reports what this device did: writes and removes, so a table that
-// ends where it started still shows what happened in between.
-stats :: proc "contextless" () -> (writes: u64, removes: u64) {
-	g := sync.acquire(&dev.lock)
-	defer sync.release(&dev.lock, g)
-	return dev.writes, dev.removes
-}
 
 // -- Groups, as `kernel/user` holds them -------------------------------------
 
@@ -174,6 +164,7 @@ claim :: proc "contextless" () -> ^Group #no_bounds_check {
 			dev.slots[i].group = Group {
 				refs    = 1,
 				next_id = 1,
+				slot    = i,
 			}
 			dev.live += 1
 			return &dev.slots[i].group
@@ -263,31 +254,9 @@ release_locked :: proc(grp: ^Group) #no_bounds_check {
 			delete(grp.vars[i].data, mem.allocator())
 		}
 	}
-	if i := slot_of_group(grp); i >= 0 {
-		dev.slots[i].used = false
-		dev.slots[i].group = Group{}
-	}
+	dev.slots[grp.slot].used = false
+	dev.slots[grp.slot].group = Group{}
 	dev.live -= 1
-}
-
-/*
-lookup reads one variable out of a group into `out`, for the kernel's own
-use: a boot check, or a loader that wants `$path`. The length set, or -1
-for no such name. Truncated to `out` without saying so, like a short read.
-*/
-lookup :: proc "contextless" (grp: ^Group, name: string, out: []u8) -> int #no_bounds_check {
-	if grp == nil {
-		return -1
-	}
-	g := sync.acquire(&dev.lock)
-	defer sync.release(&dev.lock, g)
-	i := var_named(grp, name)
-	if i < 0 {
-		return -1
-	}
-	n := min(len(out), grp.vars[i].size)
-	copy(out[:n], grp.vars[i].data[:n])
-	return n
 }
 
 // -- The device -------------------------------------------------------------
@@ -317,15 +286,6 @@ var_of :: proc "contextless" (node: i32) -> ^Var #no_bounds_check {
 	return nil
 }
 
-@(private = "file")
-slot_of_group :: proc "contextless" (grp: ^Group) -> int #no_bounds_check {
-	for i in 0 ..< MAX_GROUPS {
-		if &dev.slots[i].group == grp {
-			return i
-		}
-	}
-	return -1
-}
 
 // var_named is the index in `grp` of the live variable `name`, or -1.
 @(private = "file")
@@ -387,10 +347,8 @@ env_handler :: proc "contextless" (
 	_ = tag
 	_ = server
 	// A context, because a write may grow a value and growth is an
-	// allocation. Built once here rather than in the arm.
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	// allocation. Set once here rather than in the arm.
+	context = mem.kernel_context()
 	env_dispatch(request, reply, buf)
 }
 
@@ -463,7 +421,7 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 		}
 		copy(v.name[:], m.name)
 		grp.next_id += 1
-		new_node := node_of(slot_of_group(grp), v.id)
+		new_node := node_of(grp.slot, v.id)
 		_ = vfs.fidtab_bind(&d.fids, m.fid, new_node)
 		vfs.fidtab_set_open(&d.fids, m.fid, true)
 		reply^ = vectra9.Rlcreate{qid = qid_of(new_node, v), iounit = 0}
@@ -474,52 +432,38 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
 		}
+		v: ^Var
 		if node == ROOT_ID {
 			if m.flags & 0o3 != vfs.O_RDONLY {
 				reply^ = vectra9.error_reply(vectra9.EISDIR)
 				return
 			}
-			vfs.fidtab_set_open(&d.fids, m.fid, true)
-			reply^ = vectra9.Rlopen{qid = qid_of(ROOT_ID, nil), iounit = 0}
-			return
-		}
-		v := var_of(node)
-		if v == nil {
-			reply^ = vectra9.error_reply(vectra9.ENOENT)
-			return
-		}
-		if m.flags & vfs.O_TRUNC != 0 && m.flags & 0o3 != vfs.O_RDONLY {
-			v.size = 0
-			v.version += 1
+		} else {
+			v = var_of(node)
+			if v == nil {
+				reply^ = vectra9.error_reply(vectra9.ENOENT)
+				return
+			}
+			if m.flags & vfs.O_TRUNC != 0 && m.flags & 0o3 != vfs.O_RDONLY {
+				v.size = 0
+				v.version += 1
+			}
 		}
 		vfs.fidtab_set_open(&d.fids, m.fid, true)
 		reply^ = vectra9.Rlopen{qid = qid_of(node, v), iounit = 0}
 
 	case vectra9.Tread:
-		node, v, ok := open_var(m.fid, reply)
+		v, ok := open_var(m.fid, reply)
 		if !ok {
 			return
 		}
-		if node == ROOT_ID {
-			reply^ = vectra9.error_reply(vectra9.EISDIR)
-			return
-		}
-		if m.offset >= u64(v.size) {
-			reply^ = vectra9.Rread{data = nil}
-			return
-		}
-		start := int(m.offset)
-		end := min(v.size, start + min(len(buf), int(m.count)))
-		copy(buf[:end - start], v.data[start:end])
-		reply^ = vectra9.Rread{data = buf[:end - start]}
+		// A copy, because the value can be freed before the reply is encoded.
+		n := copy(buf, vfs.read_slice(v.data[:v.size], m.offset, m.count))
+		reply^ = vectra9.Rread{data = buf[:n]}
 
 	case vectra9.Twrite:
-		node, v, ok := open_var(m.fid, reply)
+		v, ok := open_var(m.fid, reply)
 		if !ok {
-			return
-		}
-		if node == ROOT_ID {
-			reply^ = vectra9.error_reply(vectra9.EISDIR)
 			return
 		}
 		if m.offset > u64(VALUE_MAX) || int(m.offset) + len(m.data) > VALUE_MAX {
@@ -532,7 +476,6 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 			return
 		}
 		copy(v.data[m.offset:end], m.data)
-		d.writes += 1
 		reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 
 	case vectra9.Treaddir:
@@ -557,7 +500,6 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 		}
 		delete(v.data)
 		v^ = Var{}
-		d.removes += 1
 		reply^ = vectra9.Rremove{}
 
 	case vectra9.Tgetattr:
@@ -648,28 +590,26 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 	}
 }
 
-// open_var is the fid checks a read or write starts with: bound, open, and
-// still naming something. `v` is nil for the root, which the caller refuses
-// with the message's own error.
+// open_var is the fid checks a read or write starts with: bound, open, a
+// variable rather than the root, and still naming something. The reply is
+// the refusal when `ok` is false.
 @(private = "file")
-open_var :: proc "contextless" (fid: vectra9.Fid, reply: ^vectra9.Msg) -> (node: i32, v: ^Var, ok: bool) {
-	node = vfs.fidtab_node(&dev.fids, fid)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
+open_var :: proc "contextless" (fid: vectra9.Fid, reply: ^vectra9.Msg) -> (v: ^Var, ok: bool) {
+	node, err := vfs.fidtab_open_node(&dev.fids, fid)
+	if err != vfs.OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
-	if !vfs.fidtab_is_open(&dev.fids, fid) {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	if node == ROOT_ID {
+		reply^ = vectra9.error_reply(vectra9.EISDIR)
 		return
 	}
-	if node != ROOT_ID {
-		v = var_of(node)
-		if v == nil {
-			reply^ = vectra9.error_reply(vectra9.ENOENT)
-			return
-		}
+	v = var_of(node)
+	if v == nil {
+		reply^ = vectra9.error_reply(vectra9.ENOENT)
+		return
 	}
-	return node, v, true
+	return v, true
 }
 
 // grow_to sets a value's length: the room, zeroes over any gap a write past
@@ -717,57 +657,36 @@ reserve :: proc(v: ^Var, want: int) -> bool {
 env_walk resolves names against the caller's directory, which has one level.
 `.` and `..` from anywhere land on the root; a name from the root is a
 variable of the asking process's group. Nothing walks out of a variable.
+`vfs.fidtab_walk` is the loop, and `env_step` is one name of it.
 */
 @(private = "file")
-env_walk :: proc "contextless" (m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
-	d := &dev
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if vfs.fidtab_is_open(&d.fids, m.fid) {
-		reply^ = vectra9.error_reply(vectra9.EBUSY)
-		return
-	}
+env_walk :: proc "contextless" (m: vectra9.Twalk, reply: ^vectra9.Msg) {
+	vfs.fidtab_walk(&dev.fids, m, reply, nil, env_step, env_walk_qid)
+}
 
-	answer: vectra9.Rwalk
-	cur := node
-	for i in 0 ..< m.count {
-		next := i32(-1)
-		name := m.names[i]
-		switch {
-		case name == "." :
-			next = cur
-		case name == "..":
-			next = ROOT_ID
-		case cur == ROOT_ID:
-			grp := caller()
-			if grp != nil {
-				if j := var_named(grp, name); j >= 0 {
-					next = node_of(slot_of_group(grp), grp.vars[j].id)
-				}
+@(private = "file")
+env_step :: proc "contextless" (ctx: rawptr, cur: i32, name: string) -> i32 #no_bounds_check {
+	_ = ctx
+	switch {
+	case name == ".":
+		return cur
+	case name == "..":
+		return ROOT_ID
+	case cur == ROOT_ID:
+		grp := caller()
+		if grp != nil {
+			if j := var_named(grp, name); j >= 0 {
+				return node_of(grp.slot, grp.vars[j].id)
 			}
 		}
-		if next < 0 {
-			if i == 0 {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			break
-		}
-		cur = next
-		answer.qids[answer.count] = qid_of(cur, cur == ROOT_ID ? nil : var_of(cur))
-		answer.count += 1
 	}
+	return -1
+}
 
-	if answer.count == m.count {
-		if !vfs.fidtab_bind(&d.fids, m.newfid, cur) {
-			reply^ = vectra9.error_reply(vectra9.ENFILE)
-			return
-		}
-	}
-	reply^ = answer
+@(private = "file")
+env_walk_qid :: proc "contextless" (ctx: rawptr, node: i32) -> vectra9.Qid {
+	_ = ctx
+	return qid_of(node, node == ROOT_ID ? nil : var_of(node))
 }
 
 // env_readdir lists the caller's group. The cookie is the id, as in `#s`,
@@ -793,7 +712,7 @@ env_readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf
 	room := min(len(out), int(m.count))
 	c := vectra9.cursor_from(out[:room])
 	if grp != nil {
-		slot := slot_of_group(grp)
+		slot := grp.slot
 		after := i32(m.offset)
 		for {
 			best := -1

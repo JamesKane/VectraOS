@@ -23,8 +23,6 @@ write do, which is a frame in and a frame out rather than a sector.
 */
 package ether
 
-import "base:runtime"
-
 import "kernel:drivers/virtio"
 import "kernel:mem"
 import "kernel:sync"
@@ -50,17 +48,25 @@ A node is a card and a kind in one number, `NODE_BASE` on: the card's
 directory, then its three files. `card_of` reads it back.
 */
 ROOT :: i32(0)
+@(private = "file")
 NODE_BASE :: i32(1)
+@(private = "file")
 NODE_STRIDE :: i32(4)
+@(private = "file")
 KIND_DIR :: i32(0)
+@(private = "file")
 KIND_ADDR :: i32(1)
+@(private = "file")
 KIND_DATA :: i32(2)
+@(private = "file")
 KIND_STATS :: i32(3)
 
+@(private = "file")
 node_of :: proc "contextless" (card: int, kind: i32) -> i32 {
 	return NODE_BASE + i32(card) * NODE_STRIDE + kind
 }
 
+@(private = "file")
 card_of :: proc "contextless" (node: i32) -> (card: int, kind: i32, ok: bool) {
 	if node < NODE_BASE {
 		return 0, 0, false
@@ -137,6 +143,7 @@ card_name :: proc "contextless" (name: string) -> (int, bool) {
 
 // -- The node tree ------------------------------------------------------------
 
+@(private = "file")
 node_is_dir :: proc "contextless" (node: i32) -> bool {
 	if node == ROOT {
 		return true
@@ -145,6 +152,7 @@ node_is_dir :: proc "contextless" (node: i32) -> bool {
 	return ok && kind == KIND_DIR
 }
 
+@(private = "file")
 qid_of :: proc "contextless" (node: i32) -> vectra9.Qid {
 	kind: vectra9.Qid_Flags
 	if node_is_dir(node) {
@@ -153,7 +161,15 @@ qid_of :: proc "contextless" (node: i32) -> vectra9.Qid {
 	return vectra9.Qid{kind = kind, path = u64(node) + 1}
 }
 
-step :: proc "contextless" (from: i32, name: string) -> i32 {
+@(private = "file")
+walk_qid :: proc "contextless" (ctx: rawptr, node: i32) -> vectra9.Qid {
+	_ = ctx
+	return qid_of(node)
+}
+
+@(private = "file")
+step :: proc "contextless" (ctx: rawptr, from: i32, name: string) -> i32 {
+	_ = ctx
 	if name == "." {
 		return from
 	}
@@ -189,6 +205,7 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 	return -1
 }
 
+@(private = "file")
 attr_of :: proc "contextless" (node: i32, mask: u64) -> vectra9.Rgetattr {
 	dir := node_is_dir(node)
 	mode: u32
@@ -214,6 +231,7 @@ attr_of :: proc "contextless" (node: i32, mask: u64) -> vectra9.Rgetattr {
 
 // -- The handler --------------------------------------------------------------
 
+@(private = "file")
 ether_handler :: proc "contextless" (
 	server: rawptr,
 	s: ^vectra9.Session,
@@ -225,9 +243,7 @@ ether_handler :: proc "contextless" (
 	_ = server
 	_ = s
 	_ = tag
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 
 	#partial switch m in request^ {
 	case vectra9.Tread:
@@ -240,19 +256,15 @@ ether_handler :: proc "contextless" (
 	dispatch(request, reply, buf)
 }
 
+@(private = "file")
 do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
 	d := &dev
 	g := sync.acquire(&d.lock)
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	open := node >= 0 && vfs.fidtab_is_open(&d.fids, m.fid)
+	node, err := vfs.fidtab_open_node(&d.fids, m.fid)
 	sync.release(&d.lock, g)
 
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if !open {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	if err != vfs.OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
 	if node_is_dir(node) {
@@ -281,14 +293,7 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 		libodin.put_str(&sink, " avail ")
 		libodin.put_uint(&sink, u64(avail_idx))
 		libodin.put_str(&sink, "\n")
-		whole := libodin.str(&sink)
-		off := int(m.offset)
-		if off >= len(whole) || room == 0 {
-			reply^ = vectra9.Rread{data = buf[:0]}
-			return
-		}
-		n := min(len(whole) - off, room)
-		copy(buf[:n], whole[off:off + n])
+		n := copy(buf[:room], vfs.read_slice(libodin.bytes(&sink), m.offset, m.count))
 		reply^ = vectra9.Rread{data = buf[:n]}
 		return
 	}
@@ -297,15 +302,7 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 		// The six-byte hardware address, at the offset the read names.
 		mac: [6]u8
 		_ = virtio.mac(card, mac[:])
-		off := int(m.offset)
-		if off >= 6 || room == 0 {
-			reply^ = vectra9.Rread{data = buf[:0]}
-			return
-		}
-		n := min(6 - off, room)
-		for i in 0 ..< n {
-			buf[i] = mac[off + i]
-		}
+		n := copy(buf[:room], vfs.read_slice(mac[:], m.offset, m.count))
 		reply^ = vectra9.Rread{data = buf[:n]}
 		return
 	}
@@ -333,19 +330,15 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 	reply^ = vectra9.Rread{data = buf[:n]}
 }
 
+@(private = "file")
 do_write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 	d := &dev
 	g := sync.acquire(&d.lock)
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	open := node >= 0 && vfs.fidtab_is_open(&d.fids, m.fid)
+	node, err := vfs.fidtab_open_node(&d.fids, m.fid)
 	sync.release(&d.lock, g)
 
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if !open {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	if err != vfs.OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
 	card, kind, ok := card_of(node)
@@ -366,6 +359,7 @@ do_write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 
 // -- The rest of 9P, `#S`'s ---------------------------------------------------
 
+@(private = "file")
 dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
 	d := &dev
 	reply^ = vectra9.error_reply(vectra9.EOPNOTSUPP)
@@ -436,41 +430,12 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_boun
 	}
 }
 
-walk :: proc(m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
-	d := &dev
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if vfs.fidtab_is_open(&d.fids, m.fid) {
-		reply^ = vectra9.error_reply(vectra9.EBUSY)
-		return
-	}
-	answer: vectra9.Rwalk
-	cur := node
-	for i in 0 ..< m.count {
-		next := step(cur, m.names[i])
-		if next < 0 {
-			if i == 0 {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			break
-		}
-		cur = next
-		answer.qids[answer.count] = qid_of(cur)
-		answer.count += 1
-	}
-	if answer.count == m.count {
-		if !vfs.fidtab_bind(&d.fids, m.newfid, cur) {
-			reply^ = vectra9.error_reply(vectra9.ENFILE)
-			return
-		}
-	}
-	reply^ = answer
+@(private = "file")
+walk :: proc(m: vectra9.Twalk, reply: ^vectra9.Msg) {
+	vfs.fidtab_walk(&dev.fids, m, reply, nil, step, walk_qid)
 }
 
+@(private = "file")
 readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
 	d := &dev
 	node := vfs.fidtab_node(&d.fids, m.fid)
@@ -486,8 +451,8 @@ readdir :: proc(m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) #no_bounds_
 	c := vectra9.cursor_from(buf[:room])
 	names: []string
 	nodes: []i32
-	card_names := [?]string{"ether0", "ether1", "ether2", "ether3"}
-	card_nodes: [4]i32
+	card_names := [virtio.MAX_NICS]string{"ether0", "ether1"}
+	card_nodes: [virtio.MAX_NICS]i32
 	if node == ROOT {
 		count := min(virtio.net_count(), len(card_names))
 		for i in 0 ..< count {

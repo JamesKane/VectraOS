@@ -31,8 +31,6 @@ Synchronous, like `#e` and `#s`: every message is a table lookup.
 */
 package procfs
 
-import "base:runtime"
-
 import "kernel:mem"
 import "kernel:sync"
 import "kernel:user"
@@ -87,8 +85,6 @@ Proc_Device :: struct {
 	fids:   vfs.Fid_Table,
 	lock:   sync.Spinlock,
 	server: vfs.Server,
-	notes:  u64, // notes posted through /proc/n/note
-	kills:  u64, // and kills through ctl
 }
 
 @(private = "file")
@@ -110,13 +106,6 @@ init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 	return vfs.mount_device(ns, "#p", "/proc")
 }
 
-// stats reports what the device did: notes and kills, for the boot line.
-stats :: proc "contextless" () -> (notes, kills: u64) {
-	g := sync.acquire(&dev.lock)
-	defer sync.release(&dev.lock, g)
-	return dev.notes, dev.kills
-}
-
 ROOT :: i32(0)
 
 @(private = "file")
@@ -130,10 +119,10 @@ split :: proc "contextless" (node: i32) -> (pid: u64, f: File) {
 }
 
 // writable says whether a file takes a write at all. `mode_of` is what
-// `stat` reports, and the two agree.
+// `stat` reports, and the two agree because this reads it.
 @(private = "file")
 writable :: proc "contextless" (f: File) -> bool {
-	return f == .Note || f == .Ctl || f == .Mem || f == .Regs || f == .Fpregs
+	return mode_of(f) & 0o222 != 0
 }
 
 @(private = "file")
@@ -173,9 +162,7 @@ proc_handler :: proc "contextless" (
 	_ = server
 	_ = s
 	_ = tag
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 	dispatch(request, reply, buf)
 }
 
@@ -287,15 +274,10 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_boun
 read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
 	d := &dev
 	g := sync.acquire(&d.lock)
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	open := node >= 0 && vfs.fidtab_is_open(&d.fids, m.fid)
+	node, err := vfs.fidtab_open_node(&d.fids, m.fid)
 	sync.release(&d.lock, g)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if !open {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	if err != vfs.OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
 	pid, f := split(node)
@@ -310,7 +292,6 @@ read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check 
 	// frame, or a place in the program's file. `wait` parks until a child
 	// ends.
 	n := 0
-	err := vfs.OK
 	switch f {
 	case .Mem:
 		n, err = user.proc_mem_read(pid, m.offset, buf[:room])
@@ -335,14 +316,7 @@ read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check 
 			reply^ = vectra9.error_reply(vectra9.ESRCH)
 			return
 		}
-		if m.offset >= u64(total) {
-			reply^ = vectra9.Rread{data = nil}
-			return
-		}
-		start := int(m.offset)
-		end := min(total, start + room)
-		copy(buf[:end - start], text[start:end])
-		n = end - start
+		n = copy(buf[:room], vfs.read_slice(text[:total], m.offset, m.count))
 	}
 	if err != vfs.OK {
 		reply^ = vectra9.error_reply(err)
@@ -360,15 +334,10 @@ segment. The fid is looked up under the lock and the act runs after it.
 write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 	d := &dev
 	g := sync.acquire(&d.lock)
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	open := node >= 0 && vfs.fidtab_is_open(&d.fids, m.fid)
+	node, err := vfs.fidtab_open_node(&d.fids, m.fid)
 	sync.release(&d.lock, g)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if !open {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	if err != vfs.OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
 	pid, f := split(node)
@@ -384,14 +353,12 @@ write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 	// processes may reach any: see `user.may_control`. The user words on
 	// `ctl` check for themselves, because they are about becoming one.
 	text := trim_newline(string(m.data))
-	is_user_word := f == .Ctl && ((len(text) > 5 && text[:5] == "user ") || (len(text) > 10 && text[:10] == "hostowner "))
-	if !is_user_word && !user.may_control(pid) {
+	if !(f == .Ctl && user_word(text)) && !user.may_control(pid) {
 		reply^ = vectra9.error_reply(vectra9.EPERM)
 		return
 	}
 
 	n := len(m.data)
-	err := vfs.OK
 	switch f {
 	case .Mem:
 		n, err = user.proc_mem_write(pid, m.offset, m.data)
@@ -402,10 +369,6 @@ write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 	case .Note:
 		if !user.proc_note(pid, text) {
 			err = vectra9.ESRCH
-		} else {
-			g = sync.acquire(&d.lock)
-			d.notes += 1
-			sync.release(&d.lock, g)
 		}
 	case .Ctl:
 		err = ctl(pid, text)
@@ -419,23 +382,26 @@ write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 	reply^ = vectra9.Rwrite{count = u32(n)}
 }
 
+// user_word says whether a ctl line is one of the two words about becoming
+// a user. Each needs a name after it, so the bare word is not one.
+@(private = "file")
+user_word :: proc "contextless" (text: string) -> bool {
+	return (len(text) > 5 && libodin.has_prefix(text, "user ")) || (len(text) > 10 && libodin.has_prefix(text, "hostowner "))
+}
+
 // ctl is one word written to `/proc/n/ctl`: the shell's three, the two
 // user words, and the debugger's, which `user.proc_debug_ctl` answers.
 @(private = "file")
 ctl :: proc(pid: u64, text: string) -> vfs.Errno {
-	d := &dev
 	did := false
 	switch {
 	case text == "kill":
 		did = user.proc_kill(pid)
-		g := sync.acquire(&d.lock)
-		d.kills += 1
-		sync.release(&d.lock, g)
 	case text == "stop":
 		did = user.proc_stop(pid)
 	case text == "start":
 		did = user.proc_start(pid)
-	case len(text) > 5 && text[:5] == "user ":
+	case len(text) > 5 && libodin.has_prefix(text, "user "):
 		// `user name`: become that user. Only a process of the host
 		// owner's, and only for itself, which is what a server does
 		// for the client it proved. A refusal is EPERM.
@@ -443,7 +409,7 @@ ctl :: proc(pid: u64, text: string) -> vfs.Errno {
 			return vectra9.EPERM
 		}
 		did = true
-	case len(text) > 10 && text[:10] == "hostowner ":
+	case len(text) > 10 && libodin.has_prefix(text, "hostowner "):
 		if !user.set_hostowner(pid, text[10:]) {
 			return vectra9.EPERM
 		}
@@ -519,45 +485,21 @@ trim_newline :: proc "contextless" (s: string) -> string {
 
 // walk resolves names: from the root a pid, from a pid directory one of
 // the four file names. `..` from anywhere below the root is the root or
-// the pid directory.
+// the pid directory. `vfs.fidtab_walk` is the loop, and `step` one name.
 @(private = "file")
-walk :: proc(m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
-	d := &dev
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if vfs.fidtab_is_open(&d.fids, m.fid) {
-		reply^ = vectra9.error_reply(vectra9.EBUSY)
-		return
-	}
-	answer: vectra9.Rwalk
-	cur := node
-	for i in 0 ..< m.count {
-		next := step(cur, m.names[i])
-		if next < 0 {
-			if i == 0 {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			break
-		}
-		cur = next
-		answer.qids[answer.count] = qid_of(cur)
-		answer.count += 1
-	}
-	if answer.count == m.count {
-		if !vfs.fidtab_bind(&d.fids, m.newfid, cur) {
-			reply^ = vectra9.error_reply(vectra9.ENFILE)
-			return
-		}
-	}
-	reply^ = answer
+walk :: proc(m: vectra9.Twalk, reply: ^vectra9.Msg) {
+	vfs.fidtab_walk(&dev.fids, m, reply, nil, step, walk_qid)
 }
 
 @(private = "file")
-step :: proc(from: i32, name: string) -> i32 {
+walk_qid :: proc "contextless" (ctx: rawptr, node: i32) -> vectra9.Qid {
+	_ = ctx
+	return qid_of(node)
+}
+
+@(private = "file")
+step :: proc "contextless" (ctx: rawptr, from: i32, name: string) -> i32 {
+	_ = ctx
 	pid, f := split(from)
 	switch name {
 	case ".":

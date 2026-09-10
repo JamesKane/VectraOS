@@ -21,6 +21,7 @@ package devfs
 import "base:intrinsics"
 
 import "kernel:sync"
+import "vsys:libodin"
 
 MOUSE_LINE :: 49
 
@@ -76,39 +77,24 @@ mouse_line :: proc "contextless" (f: ^Mouse_File, out: []u8) -> int #no_bounds_c
 		return 0
 	}
 	f.read = f.seq
-	out[0] = 'm'
-	at := 1
-	at = put_field(out, at, u64(f.x))
-	at = put_field(out, at, u64(f.y))
-	at = put_field(out, at, u64(f.buttons))
-	at = put_field(out, at, f.msec)
-	return at
+	sink := libodin.sink_from(out)
+	libodin.put_byte(&sink, 'm')
+	put_field(&sink, u64(f.x))
+	put_field(&sink, u64(f.y))
+	put_field(&sink, u64(f.buttons))
+	put_field(&sink, f.msec)
+	return len(libodin.str(&sink))
 }
 
-// put_field is one `%11d` and the space after it.
+// put_field is one `%11d` and the space after it. `libodin.put_uint` pads
+// with zeroes, so the blanks are counted here.
 @(private = "file")
-put_field :: proc "contextless" (out: []u8, at: int, v: u64) -> int #no_bounds_check {
-	digits: [20]u8
-	n := 0
-	v := v
-	for {
-		digits[n] = '0' + u8(v % 10)
-		n += 1
-		v /= 10
-		if v == 0 {
-			break
-		}
+put_field :: proc "contextless" (sink: ^libodin.Sink, v: u64) {
+	digits := 1
+	for rest := v; rest >= 10; rest /= 10 {
+		digits += 1
 	}
-	p := at
-	for _ in n ..< 11 {
-		out[p] = ' '
-		p += 1
-	}
-	for n > 0 {
-		n -= 1
-		out[p] = digits[n]
-		p += 1
-	}
-	out[p] = ' '
-	return p + 1
+	libodin.put_pad(sink, ' ', 11 - digits)
+	libodin.put_uint(sink, v)
+	libodin.put_byte(sink, ' ')
 }

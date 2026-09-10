@@ -708,8 +708,14 @@ answers nothing for ever, and a thread that polls it would be a thread that
 never does anything else.
 */
 cons_start :: proc(c: ^Cons) -> bool {
-	if c == nil || c.port == nil || !c.port.present {
+	if c == nil || !cons_has_port(c) {
 		return false
 	}
 	return sched.spawn("cons-input", cons_input, c) != nil
+}
+
+// cons_has_port says whether a port answered its probe. What the producer
+// thread, `/dev/eia0` and the self-test each ask before they touch the wire.
+cons_has_port :: proc "contextless" (c: ^Cons) -> bool {
+	return c.port != nil && c.port.present
 }

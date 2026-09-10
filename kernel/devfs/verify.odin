@@ -71,9 +71,22 @@ Verify_Result :: struct {
 	edits:         u64, // Characters erased, plus lines killed
 }
 
+// check is `libodin.check`, which an alias may not make private.
+check :: libodin.check
+
+// open_checked opens a path and tallies whether it did. `ok` is the check's
+// answer, so a caller that cannot go on without the file returns on it.
 @(private = "file")
-check :: proc "contextless" (r: ^Verify_Result, ok: bool, what: string) -> bool {
-	return libodin.tally(&r.tally, ok, what)
+open_checked :: proc(r: ^Verify_Result, ns: ^vfs.Namespace, path: string, flags: u32, what: string) -> (^vfs.Chan, bool) {
+	c, err := vfs.open_path(ns, path, flags)
+	return c, check(r, err == vfs.OK, what)
+}
+
+// write_str is a write of a literal at offset zero, which is how every
+// write in this file that is not pixels goes out.
+@(private = "file")
+write_str :: proc(c: ^vfs.Chan, s: string) -> (int, vfs.Errno) {
+	return vfs.chan_write(c, 0, transmute([]u8)s)
 }
 
 /*
@@ -121,6 +134,7 @@ One read, on a thread, and everything it came back with.
 
 `deadline` of zero is an ordinary read that waits for as long as it takes.
 Anything else is `chan_read_for`, which flushes when the deadline passes.
+`reader` is the lone one, and `many` is one per request slot.
 */
 @(private = "file")
 Reader :: struct {
@@ -141,20 +155,22 @@ reader_returned :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&reader.returned)
 }
 
+// read_thread is one reader's whole life: the read, and the flag that says
+// it came back. `arg` is the `Reader`.
 @(private = "file")
 read_thread :: proc "contextless" (arg: rawptr) {
 	context = verify_context()
-	_ = arg
+	rd := cast(^Reader)arg
 
 	started := sched.ticks()
-	if reader.deadline == 0 {
-		reader.n, reader.err = vfs.chan_read(reader.c, 0, reader.got[:])
+	if rd.deadline == 0 {
+		rd.n, rd.err = vfs.chan_read(rd.c, 0, rd.got[:])
 	} else {
-		reader.n, reader.err = vfs.chan_read_for(reader.c, 0, reader.got[:], reader.deadline)
+		rd.n, rd.err = vfs.chan_read_for(rd.c, 0, rd.got[:], rd.deadline)
 	}
-	reader.ticks = sched.ticks() - started
+	rd.ticks = sched.ticks() - started
 
-	intrinsics.volatile_store(&reader.returned, true)
+	intrinsics.volatile_store(&rd.returned, true)
 }
 
 // start_read puts one read on a thread and reports whether the thread started.
@@ -164,7 +180,7 @@ start_read :: proc(c: ^vfs.Chan, deadline: u64) -> bool {
 		c        = c,
 		deadline = deadline,
 	}
-	return sched.spawn("devfs-read", read_thread, nil) != nil
+	return sched.spawn("devfs-read", read_thread, &reader) != nil
 }
 
 /*
@@ -214,37 +230,16 @@ One reader on its own thread and its own handle.
 Its own handle, because two threads reading one fid share a request slot and
 would serialise. A separate handle per reader is what puts one read in every
 slot. A `deadline` of zero blocks until a line arrives, and anything else gives
-up after that many ticks, the way `Reader` does.
+up after that many ticks, the way `reader` does. Each is a `Reader` on
+`read_thread`.
 */
 @(private = "file")
-Many_Reader :: struct {
-	c:        ^vfs.Chan,
-	deadline: u64,
-	got:      [16]u8,
-	n:        int,
-	err:      vfs.Errno,
-	returned: bool,
-}
-
-@(private = "file")
-many: [MANY]Many_Reader
+many: [MANY]Reader
 
 // The console's park count before the readers start, so `all_parked` can tell
 // this test's parks from every earlier one.
 @(private = "file")
 many_base: u64
-
-@(private = "file")
-many_read_thread :: proc "contextless" (arg: rawptr) {
-	context = verify_context()
-	mr := cast(^Many_Reader)arg
-	if mr.deadline == 0 {
-		mr.n, mr.err = vfs.chan_read(mr.c, 0, mr.got[:])
-	} else {
-		mr.n, mr.err = vfs.chan_read_for(mr.c, 0, mr.got[:], mr.deadline)
-	}
-	intrinsics.volatile_store(&mr.returned, true)
-}
 
 // all_parked reports whether every reader parked, which the console's own count
 // shows by rising one per reader.
@@ -258,7 +253,7 @@ all_parked :: proc "contextless" (arg: rawptr) -> bool {
 @(private = "file")
 many_done :: proc "contextless" (arg: rawptr) -> bool {
 	if arg != nil {
-		return intrinsics.volatile_load(&(cast(^Many_Reader)arg).returned)
+		return intrinsics.volatile_load(&(cast(^Reader)arg).returned)
 	}
 	for i in 0 ..< MANY {
 		if !intrinsics.volatile_load(&many[i].returned) {
@@ -346,8 +341,8 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 
 	// -- /dev/cons -----------------------------------------------------------
 
-	cons, cons_err := vfs.open_path(ns, "/dev/cons", vfs.O_RDWR)
-	if !check(&r, cons_err == vfs.OK, "/dev/cons opens for reading and writing") {
+	cons, cons_ok := open_checked(&r, ns, "/dev/cons", vfs.O_RDWR, "/dev/cons opens for reading and writing")
+	if !cons_ok {
 		return r
 	}
 	defer vfs.chan_close(cons)
@@ -372,21 +367,19 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 	*/
 	verify_write(&r, t, cons)
 	verify_echo(&r, t)
-	_, _ = vfs.chan_write(cons, 0, transmute([]u8)string("\n"))
+	_, _ = write_str(cons, "\n")
 
 	// -- /dev/null and /dev/zero ---------------------------------------------
 
-	null, null_err := vfs.open_path(ns, "/dev/null", vfs.O_RDWR)
-	if check(&r, null_err == vfs.OK, "/dev/null opens") {
-		nn, ne := vfs.chan_write(null, 0, transmute([]u8)string("swallowed"))
+	if null, ok := open_checked(&r, ns, "/dev/null", vfs.O_RDWR, "/dev/null opens"); ok {
+		nn, ne := write_str(null, "swallowed")
 		check(&r, ne == vfs.OK && nn == 9, "and swallows a write whole")
 		nn, ne = vfs.chan_read(null, 0, buf[:16])
 		check(&r, ne == vfs.OK && nn == 0, "and is at the end of the file when read")
 		vfs.chan_close(null)
 	}
 
-	zero, zero_err := vfs.open_path(ns, "/dev/zero", vfs.O_RDONLY)
-	if check(&r, zero_err == vfs.OK, "/dev/zero opens") {
+	if zero, ok := open_checked(&r, ns, "/dev/zero", vfs.O_RDONLY, "/dev/zero opens"); ok {
 		for i in 0 ..< 32 {
 			buf[i] = 0xFF
 		}
@@ -489,7 +482,7 @@ verify_write :: proc(r: ^Verify_Result, t: ^Dev_Tree, cons: ^vfs.Chan) {
 
 	written_before := t.cons.writes
 	col_before := kcon_col(t)
-	n, write_err := vfs.chan_write(cons, 0, transmute([]u8)string(PROOF))
+	n, write_err := write_str(cons, PROOF)
 	r.written = n
 
 	check(r, write_err == vfs.OK, "a write to /dev/cons is accepted")
@@ -671,8 +664,8 @@ verify_consctl :: proc(
 ) #no_bounds_check {
 	got: [64]u8
 
-	ctl, ctl_err := vfs.open_path(ns, "/dev/consctl", vfs.O_RDWR)
-	if !check(r, ctl_err == vfs.OK, "/dev/consctl opens") {
+	ctl, ctl_ok := open_checked(r, ns, "/dev/consctl", vfs.O_RDWR, "/dev/consctl opens")
+	if !ctl_ok {
 		return
 	}
 	check(r, t.ctl_opens == 1, "and the server counted the open")
@@ -693,7 +686,7 @@ verify_consctl :: proc(
 	type_in(&t.cons, "half")
 	check(r, t.cons.edit_len == 4, "a half-typed line is waiting")
 
-	wn, werr := vfs.chan_write(ctl, 0, transmute([]u8)string("rawon\n"))
+	wn, werr := write_str(ctl, "rawon\n")
 	check(r, werr == vfs.OK && wn == 6, "rawon is accepted whole")
 	mode, echo := cons_mode(&t.cons)
 	check(r, mode == .Raw, "and the console is raw")
@@ -724,12 +717,12 @@ verify_consctl :: proc(
 	n, err = read_now(cons, got[:])
 	check(r, err == vfs.OK && same(got[:], n, "V"), "and a read gets it with no newline in sight")
 
-	_, werr = vfs.chan_write(ctl, 0, transmute([]u8)string("  echoon  \n"))
+	_, werr = write_str(ctl, "  echoon  \n")
 	check(r, werr == vfs.OK, "surrounding whitespace is ignored")
 	_, echo = cons_mode(&t.cons)
 	check(r, echo, "and echo moves on its own")
 
-	_, werr = vfs.chan_write(ctl, 0, transmute([]u8)string("rawsideways\n"))
+	_, werr = write_str(ctl, "rawsideways\n")
 	check(r, werr == vectra9.EINVAL, "a command nothing recognises is refused")
 	mode, _ = cons_mode(&t.cons)
 	check(r, mode == .Raw, "and changed nothing on the way out")
@@ -822,7 +815,7 @@ verify_worker_bound :: proc(r: ^Verify_Result, ns: ^vfs.Namespace) #no_bounds_ch
 		if e != vfs.OK {
 			break
 		}
-		many[i] = Many_Reader {
+		many[i] = Reader {
 			c = c,
 		}
 		opened += 1
@@ -843,7 +836,7 @@ verify_worker_bound :: proc(r: ^Verify_Result, ns: ^vfs.Namespace) #no_bounds_ch
 	many_base = intrinsics.volatile_load(&t.cons.blocks)
 	spawned := 0
 	for i in 0 ..< MANY {
-		if sched.spawn("devfs-many", many_read_thread, &many[i]) == nil {
+		if sched.spawn("devfs-many", read_thread, &many[i]) == nil {
 			break
 		}
 		spawned += 1
@@ -953,8 +946,8 @@ verify_screen :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_b
 	*/
 	chrome := screen_sample(s, 0, 24)
 
-	fbc, ferr := vfs.open_path(ns, "/dev/fb", vfs.O_RDWR)
-	if !check(r, ferr == vfs.OK, "/dev/fb opens") {
+	fbc, fb_ok := open_checked(r, ns, "/dev/fb", vfs.O_RDWR, "/dev/fb opens")
+	if !fb_ok {
 		return
 	}
 	/*
@@ -971,10 +964,9 @@ verify_screen :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_b
 
 	// The line that proves the silence. It goes to the console the ordinary
 	// way, through the file every other write in this test uses.
-	cons, cerr := vfs.open_path(ns, "/dev/cons", vfs.O_WRONLY)
-	if check(r, cerr == vfs.OK, "/dev/cons opens while the screen is held") {
+	if cons, ok := open_checked(r, ns, "/dev/cons", vfs.O_WRONLY, "/dev/cons opens while the screen is held"); ok {
 		line := "-- this line was written while the screen was somebody else's\n"
-		n, werr := vfs.chan_write(cons, 0, transmute([]u8)line)
+		n, werr := write_str(cons, line)
 		check(r, werr == vfs.OK && n == len(line), "and takes a line")
 		r.written += n
 		vfs.chan_close(cons)
@@ -989,8 +981,7 @@ verify_screen :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_b
 	everything the console drew into it. The only way to see that is to draw
 	something first, so the order of this procedure is the check.
 	*/
-	second, serr := vfs.open_path(ns, "/dev/fb", vfs.O_RDONLY)
-	if check(r, serr == vfs.OK, "a second holder opens the screen too") {
+	if second, ok := open_checked(r, ns, "/dev/fb", vfs.O_RDONLY, "a second holder opens the screen too"); ok {
 		check(r, screen_diverted(), "and the console is no further away than it was")
 		vfs.chan_close(second)
 		check(r, screen_diverted(), "and its close is not the last one")
@@ -1089,8 +1080,8 @@ verify_fb :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bound
 	}
 	limit := fb_size(s)
 
-	fbc, fb_err := vfs.open_path(ns, "/dev/fb", vfs.O_RDWR)
-	if !check(r, fb_err == vfs.OK, "/dev/fb opens for reading and writing") {
+	fbc, fb_ok := open_checked(r, ns, "/dev/fb", vfs.O_RDWR, "/dev/fb opens for reading and writing")
+	if !fb_ok {
 		return
 	}
 	defer vfs.chan_close(fbc)
@@ -1102,8 +1093,7 @@ verify_fb :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bound
 
 	// -- The geometry file ----------------------------------------------------
 
-	ctl, ctl_err := vfs.open_path(ns, "/dev/fbctl", vfs.O_RDWR)
-	if check(r, ctl_err == vfs.OK, "/dev/fbctl opens") {
+	if ctl, ok := open_checked(r, ns, "/dev/fbctl", vfs.O_RDWR, "/dev/fbctl opens"); ok {
 		report: [128]u8
 		n, err := vfs.chan_read(ctl, 0, report[:])
 		check(r, err == vfs.OK && n > 0, "and reads")
@@ -1240,8 +1230,8 @@ verify_taps :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bou
 
 	// -- ...and open ------------------------------------------------------------
 
-	sc, sc_err := vfs.open_path(ns, "/dev/scancode", vfs.O_RDONLY)
-	if !check(r, sc_err == vfs.OK, "/dev/scancode opens") {
+	sc, sc_ok := open_checked(r, ns, "/dev/scancode", vfs.O_RDONLY, "/dev/scancode opens")
+	if !sc_ok {
 		return
 	}
 	check(r, t.scan_opens == 1, "and the server counted the open")
@@ -1284,7 +1274,7 @@ verify_taps :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bou
 
 	// -- The serial stream -------------------------------------------------------
 
-	if t.cons.port == nil || !t.cons.port.present {
+	if !cons_has_port(&t.cons) {
 		// No port probed on this machine. The open must say so, and the rest
 		// of this section has no hardware to be about.
 		_, ne := vfs.open_path(ns, "/dev/eia0", vfs.O_RDWR)
@@ -1292,8 +1282,8 @@ verify_taps :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bou
 		return
 	}
 
-	eia, eia_err := vfs.open_path(ns, "/dev/eia0", vfs.O_RDWR)
-	if !check(r, eia_err == vfs.OK, "/dev/eia0 opens") {
+	eia, eia_ok := open_checked(r, ns, "/dev/eia0", vfs.O_RDWR, "/dev/eia0 opens")
+	if !eia_ok {
 		return
 	}
 	check(r, t.eia_opens == 1, "and the server counted the open")
@@ -1302,7 +1292,7 @@ verify_taps :: proc(r: ^Verify_Result, t: ^Dev_Tree, ns: ^vfs.Namespace) #no_bou
 	WIRE :: "-- these bytes went straight out the wire\n"
 	writes_before := t.cons.writes
 	col_before := kcon_col(t)
-	wn, werr := vfs.chan_write(eia, 0, transmute([]u8)string(WIRE))
+	wn, werr := write_str(eia, WIRE)
 	check(r, werr == vfs.OK && wn == len(WIRE), "a write to /dev/eia0 takes every byte")
 	check(r, t.cons.writes == writes_before, "without passing through the console")
 	check(r, kcon_col(t) == col_before, "and without drawing a glyph")

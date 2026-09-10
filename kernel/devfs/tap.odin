@@ -235,7 +235,7 @@ eia0_write :: proc "contextless" (t: ^Dev_Tree, data: []u8) -> int {
 	sync.mutex_lock(&c.out)
 	defer sync.mutex_unlock(&c.out)
 
-	if c.port != nil && c.port.present {
+	if cons_has_port(c) {
 		uart.write_string(c.port, string(data))
 	}
 	return len(data)

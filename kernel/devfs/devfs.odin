@@ -143,18 +143,17 @@ DEV_FILES :: len(DEV_NODES) - 1
 /*
 One parked reader's wait, one per request slot.
 
-The condition procedure gets one `rawptr` and needs two facts: which console to
+The condition procedure gets one `rawptr` and needs two facts: which stream to
 look at, and which request to ask the transport about. Odin has no closure that
 does not allocate, so the pair is a struct with a slot of its own. Indexed by
 tag, because a tag is what names a request slot on this transport and there is
-one wait per slot by construction.
+one wait per slot by construction. The tree is `dev_tree`, the one instance.
 */
 @(private = "file")
 Read_Wait :: struct {
-	tree: ^Dev_Tree,
-	tag:  vectra9.Tag,
+	tag:   vectra9.Tag,
 
-		// Which stream this request waits on: a tap, the mouse, or the console
+	// Which stream this request waits on: a tap, the mouse, or the console
 	// when neither. Written by every request that parks, because the slot is
 	// reused and a stale stream would have a reader test the wrong ring.
 	tap:   ^Tap,
@@ -358,7 +357,7 @@ cons_takes :: proc "contextless" () -> u64 {
 // input_started reports whether the producer thread is on the port. False on a
 // machine with no serial port, where `/dev/cons` writes and never reads.
 input_started :: proc "contextless" () -> bool {
-	return dev_tree.cons.port != nil && dev_tree.cons.port.present
+	return cons_has_port(&dev_tree.cons)
 }
 
 // -- The tree ----------------------------------------------------------------
@@ -384,8 +383,11 @@ find_child :: proc "contextless" (parent: i32, name: string) -> i32 #no_bounds_c
 	return -1
 }
 
+// step is the `vfs.Walk_Step` of this tree. `ctx` is unused: the table is
+// the package's own.
 @(private = "file")
-step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
+step :: proc "contextless" (ctx: rawptr, from: i32, name: string) -> i32 #no_bounds_check {
+	_ = ctx
 	switch name {
 	case ".":
 		return from
@@ -400,6 +402,12 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 		return -1
 	}
 	return find_child(from, name)
+}
+
+@(private = "file")
+walk_qid :: proc "contextless" (ctx: rawptr, node: i32) -> vectra9.Qid {
+	_ = ctx
+	return node_qid(node)
 }
 
 // -- The fid table, and the lock around it -----------------------------------
@@ -432,36 +440,47 @@ tap is the moment the stream diverts. The count and the fid's open flag
 move together, and one lock covers both. What the count *causes* -- a tap
 gate, a console mode -- happens elsewhere, because the rule in this
 package is one lock at a time.
+
+The one open this refuses is a second holder of the mouse. A pointer has
+one owner, so a second open of a held mouse is refused rather than given
+half the movements. The count it reads and the count it moves are under
+one hold, so two openers cannot both pass the gate.
 */
 @(private = "file")
-mark_open :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_Kind, first: bool) {
+mark_open :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_Kind, first: bool, err: vfs.Errno) {
 	g := sync.acquire(&t.lock)
 	defer sync.release(&t.lock, g)
 
 	node := vfs.fidtab_node(&t.fids, fid)
-	if node < 0 || !vfs.fidtab_set_open(&t.fids, fid, true) {
-		return .Dir, false
+	if node < 0 {
+		return .Dir, false, vfs.OK
+	}
+	kind = DEV_NODES[node].kind
+	if kind == .Mouse && t.mouse.opens > 0 {
+		return kind, false, vectra9.EBUSY
+	}
+	if !vfs.fidtab_set_open(&t.fids, fid, true) {
+		return .Dir, false, vfs.OK
 	}
 
-	kind = DEV_NODES[node].kind
 	#partial switch kind {
 	case .Consctl:
 		t.ctl_opens += 1
-		return kind, t.ctl_opens == 1
+		return kind, t.ctl_opens == 1, vfs.OK
 	case .Scancode:
 		t.scan_opens += 1
-		return kind, t.scan_opens == 1
+		return kind, t.scan_opens == 1, vfs.OK
 	case .Eia0:
 		t.eia_opens += 1
-		return kind, t.eia_opens == 1
-		case .Fb:
+		return kind, t.eia_opens == 1, vfs.OK
+	case .Fb:
 		t.fb_opens += 1
-		return kind, t.fb_opens == 1
+		return kind, t.fb_opens == 1, vfs.OK
 	case .Mouse:
 		t.mouse.opens += 1
-		return kind, t.mouse.opens == 1
+		return kind, t.mouse.opens == 1, vfs.OK
 	}
-	return kind, false
+	return kind, false, vfs.OK
 }
 
 /*
@@ -501,7 +520,7 @@ drop_fid :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_Ki
 	case .Eia0:
 		t.eia_opens -= 1
 		return kind, t.eia_opens <= 0
-		case .Fb:
+	case .Fb:
 		t.fb_opens -= 1
 		return kind, t.fb_opens <= 0
 	case .Mouse:
@@ -544,6 +563,8 @@ accident:
 
 Surrounding whitespace is ignored, and a trailing newline is expected rather
 than merely tolerated. A client that writes `rawon` is writing a line of text.
+Whether the line arrives with its newline is a property of the client. No ctl
+file should have an opinion about that, so `libodin.trim_space` takes it off.
 */
 
 // The command vocabulary, and the whole of it. A table rather than a chain of
@@ -573,30 +594,6 @@ ECHO_ON :: "echoon"
 ECHO_OFF :: "echooff"
 
 /*
-trim removes surrounding whitespace and at most one trailing newline.
-
-A client writes a line. Whether the line arrives with its newline is a property
-of the client. No ctl file should have an opinion about that.
-*/
-@(private = "file")
-trim :: proc "contextless" (data: []u8) -> string #no_bounds_check {
-	lo := 0
-	hi := len(data)
-	for lo < hi && is_space(data[lo]) {
-		lo += 1
-	}
-	for hi > lo && is_space(data[hi - 1]) {
-		hi -= 1
-	}
-	return string(data[lo:hi])
-}
-
-@(private = "file")
-is_space :: proc "contextless" (b: u8) -> bool {
-	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
-}
-
-/*
 consctl_command applies one command and reports whether it was one.
 
 A write of nothing at all is accepted and does nothing, because that is what a
@@ -608,7 +605,7 @@ consctl_command :: proc "contextless" (t: ^Dev_Tree, data: []u8) -> bool #no_bou
 	if len(data) == 0 {
 		return true
 	}
-	word := trim(data)
+	word := libodin.trim_space(string(data))
 	if word == "" {
 		return false
 	}
@@ -673,13 +670,7 @@ consctl_report :: proc "contextless" (t: ^Dev_Tree, offset: u64, buf: []u8) -> [
 	line[n] = '\n'
 	n += 1
 
-	if offset >= u64(n) {
-		return nil
-	}
-	start := int(offset)
-	end := min(n, start + len(buf))
-	copy(buf[:end - start], line[start:end])
-	return buf[:end - start]
+	return buf[:copy(buf, vfs.read_slice(line[:n], offset, u32(len(buf))))]
 }
 
 /*
@@ -720,7 +711,7 @@ waking three threads that will go straight back to sleep.
 devfs_abort :: proc "contextless" (server: rawptr, tag: vectra9.Tag) {
 	t := cast(^Dev_Tree)server
 	_ = tag
-		sync.wakeup_all(&t.cons.ready)
+	sync.wakeup_all(&t.cons.ready)
 	sync.wakeup_all(&t.scancode.ready)
 	sync.wakeup_all(&t.serial.ready)
 	sync.wakeup_all(&t.mouse.ready)
@@ -735,7 +726,7 @@ condition is allowed to do and nothing else: two loads and a comparison.
 */
 @(private = "file")
 read_ready :: proc "contextless" (arg: rawptr) -> bool {
-		w := cast(^Read_Wait)arg
+	w := cast(^Read_Wait)arg
 	if w.tap != nil {
 		if tap_available(w.tap) {
 			return true
@@ -744,10 +735,10 @@ read_ready :: proc "contextless" (arg: rawptr) -> bool {
 		if mouse_available(w.mouse) {
 			return true
 		}
-	} else if cons_available(&w.tree.cons) {
+	} else if cons_available(&dev_tree.cons) {
 		return true
 	}
-	return vfs.server_flushed(&w.tree.server, w.tag)
+	return vfs.server_flushed(&dev_tree.server, w.tag)
 }
 
 // -- The handler -------------------------------------------------------------
@@ -764,19 +755,7 @@ send a client off to look for a server that does implement it.
 */
 @(private = "file")
 dev_creates :: proc "contextless" (k: vectra9.Kind) -> bool {
-	#partial switch k {
-	case .Tlcreate,
-	     .Tmkdir,
-	     .Tmknod,
-	     .Tsymlink,
-	     .Tlink,
-	     .Trename,
-	     .Trenameat,
-	     .Tunlinkat,
-	     .Tremove:
-		return true
-	}
-	return false
+	return vectra9.creates(k) || k == .Tunlinkat || k == .Tremove
 }
 
 devfs_handler :: proc "contextless" (
@@ -797,7 +776,8 @@ devfs_handler :: proc "contextless" (
 	// No lock here, unlike `vfs.static_handler`. This handler writes to a
 	// framebuffer and parks on a rendezvous, and a spinlock forbids both. What
 	// needs the lock is the fid table, and `bind_fid`, `node_of` and `drop_fid`
-	// take it for exactly as long as a lookup.
+	// take it for exactly as long as a lookup. `devfs_walk` holds it for the
+	// walk, which is lookups in a table that never changes.
 
 	if dev_creates(vectra9.kind(request^)) {
 		reply^ = vectra9.error_reply(vectra9.EPERM)
@@ -839,27 +819,24 @@ devfs_handler :: proc "contextless" (
 		// A port that failed its loopback probe is a device that is not
 		// there. A refusal at the open beats a read that parks for ever on
 		// hardware nothing feeds.
-				if DEV_NODES[node].kind == .Eia0 && (t.cons.port == nil || !t.cons.port.present) {
+		if DEV_NODES[node].kind == .Eia0 && !cons_has_port(&t.cons) {
 			reply^ = vectra9.error_reply(vectra9.ENXIO)
 			return
 		}
-				// A mouse that never came up is the same refusal. A pointer has one
-		// owner, so a second open of a held mouse is refused rather than
-		// given half the movements.
-		if DEV_NODES[node].kind == .Mouse {
-			if !t.mouse.present {
-				reply^ = vectra9.error_reply(vectra9.ENXIO)
-				return
-			}
-			if mouse_held(t) {
-				reply^ = vectra9.error_reply(vectra9.EBUSY)
-				return
-			}
+		// A mouse that never came up is the same refusal. A held mouse is
+		// `mark_open`'s refusal, under the lock that counts the holders.
+		if DEV_NODES[node].kind == .Mouse && !t.mouse.present {
+			reply^ = vectra9.error_reply(vectra9.ENXIO)
+			return
 		}
 		// The open is recorded, not merely allowed. `/dev/consctl` owns the
 		// console's rules while held, and a tap owns its stream. The first
 		// open of a tap is the moment the stream diverts.
-		kind, first := mark_open(t, m.fid)
+		kind, first, err := mark_open(t, m.fid)
+		if err != vfs.OK {
+			reply^ = vectra9.error_reply(err)
+			return
+		}
 		if first {
 			#partial switch kind {
 			case .Scancode:
@@ -952,47 +929,128 @@ devfs_handler :: proc "contextless" (
 /*
 devfs_walk resolves up to sixteen names in one message.
 
-The same two rules `vfs.static_walk` gets right, and worth restating because
+The two rules `vfs.fidtab_walk` gets right are worth restating, because
 getting either wrong is silent. A partial walk binds nothing, so `newfid` is
 untouched when element three of five fails. A failure at element zero is an
 error reply, and a failure later is a short Rwalk. That is how a client tells
 `the first name is not there` from `the path runs out partway`.
+
+The lock is held for the whole walk, which `vfs.fidtab_walk` asks of its
+caller. Every step is a lookup in a table that never changes. The hold is
+still a lookup's length, and the device does nothing under it.
 */
 @(private = "file")
-devfs_walk :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
-	node := node_of(t, m.fid)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if vfs.fidtab_is_open(&t.fids, m.fid) {
-		reply^ = vectra9.error_reply(vectra9.EBUSY)
-		return
-	}
+devfs_walk :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twalk, reply: ^vectra9.Msg) {
+	g := sync.acquire(&t.lock)
+	defer sync.release(&t.lock, g)
+	vfs.fidtab_walk(&t.fids, m, reply, nil, step, walk_qid)
+}
 
-	answer: vectra9.Rwalk
-	cur := node
-	for i in 0 ..< m.count {
-		next := step(cur, m.names[i])
-		if next < 0 {
-			if i == 0 {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			break
-		}
-		cur = next
-		answer.qids[answer.count] = node_qid(cur)
-		answer.count += 1
-	}
+/*
+wait_slot names the wait for this request's slot, and the stream it is on.
 
-	if answer.count == m.count {
-		if !bind_fid(t, m.newfid, cur) {
-			reply^ = vectra9.error_reply(vectra9.ENFILE)
+Nil for a tag this server cannot index. Such a tag is one it cannot ask the
+transport about, so a park on it could never be flushed. Refusing beats
+parking with no way out.
+*/
+@(private = "file")
+wait_slot :: proc "contextless" (
+	t: ^Dev_Tree,
+	tag: vectra9.Tag,
+	tap: ^Tap,
+	mouse: ^Mouse_File,
+) -> ^Read_Wait #no_bounds_check {
+	if int(tag) >= mnt.MAX_REQUESTS {
+		return nil
+	}
+	w := &t.waits[int(tag)]
+	w.tag = tag
+	w.tap = tap
+	w.mouse = mouse
+	return w
+}
+
+// Read_Take is one attempt to answer a parked read: the bytes it found, and
+// whether the read is answered. A read not answered parks.
+@(private = "file")
+Read_Take :: #type proc "contextless" (t: ^Dev_Tree, w: ^Read_Wait, buf: []u8) -> (data: []u8, done: bool)
+
+/*
+park_read is the loop every parked read runs: the flush, the take, the park.
+
+The flush is checked *before* the drain, and the order is load-bearing. A
+client that gave up on this read has a tag the transport reclaimed, and a
+reply on it is dropped. A drain before the check would consume the bytes
+into that dropped reply. The next read would find them gone -- a byte lost
+to a flush that raced its arrival. The transport sets `flushed` before it
+wakes this reader, so checking it first leaves the bytes in the ring for
+the read that comes after.
+
+The loop rather than one park is `sync.sleep`'s contract, honoured. A wake
+is a hint. One byte can wake two readers, and only one of them gets it. The
+other finds nothing and parks again.
+*/
+@(private = "file")
+park_read :: proc "contextless" (
+	t: ^Dev_Tree,
+	w: ^Read_Wait,
+	rendez: ^sync.Rendez,
+	buf: []u8,
+	take: Read_Take,
+	reply: ^vectra9.Msg,
+) {
+	for {
+		if vfs.server_flushed(&t.server, w.tag) {
+			reply^ = vectra9.error_reply(vectra9.EINTR)
 			return
 		}
+		if data, done := take(t, w, buf); done {
+			reply^ = vectra9.Rread{data = data}
+			return
+		}
+		sync.sleep(rendez, read_ready, w)
 	}
-	reply^ = answer
+}
+
+// take_cons is the console's take: a line, or the end of the file behind it.
+@(private = "file")
+take_cons :: proc "contextless" (t: ^Dev_Tree, w: ^Read_Wait, buf: []u8) -> ([]u8, bool) {
+	_ = w
+	if n := cons_take(&t.cons, buf); n > 0 {
+		return buf[:n], true
+	}
+	if cons_take_eof(&t.cons) {
+		// A `^D` on an empty line, and the one place a read of the
+		// console answers with nothing. The drain above came first, so
+		// this cannot overtake bytes typed before it.
+		return nil, true
+	}
+	cons_note_block(&t.cons)
+	return nil, false
+}
+
+// take_tap is the console's take with two lines gone. A tap has no line
+// discipline, so any byte answers, and no `^D`, so nothing here ever
+// answers zero bytes. Park, byte, or flush is the whole state space.
+@(private = "file")
+take_tap :: proc "contextless" (t: ^Dev_Tree, w: ^Read_Wait, buf: []u8) -> ([]u8, bool) {
+	_ = t
+	if n := tap_take(w.tap, buf); n > 0 {
+		return buf[:n], true
+	}
+	tap_note_block(w.tap)
+	return nil, false
+}
+
+// take_mouse is one line per movement, when there is one newer than the
+// last line answered.
+@(private = "file")
+take_mouse :: proc "contextless" (t: ^Dev_Tree, w: ^Read_Wait, buf: []u8) -> ([]u8, bool) {
+	_ = t
+	if n := mouse_line(w.mouse, buf); n > 0 {
+		return buf[:n], true
+	}
+	return nil, false
 }
 
 /*
@@ -1007,9 +1065,7 @@ The reply is built in `buf`, which is the request slot's own storage. A read
 that answered out of anything shared would be a read that hands one worker's
 bytes to another worker's client. See `docs/TRANSPORT.md`.
 
-The loop rather than one park is `sync.sleep`'s contract, honoured. A wake is a
-hint. One byte can wake two readers, and only one of them gets it. The other
-finds nothing and parks again.
+The parked kinds each hand `park_read` their take, and the loop is there.
 */
 @(private = "file")
 devfs_read :: proc "contextless" (
@@ -1153,126 +1209,43 @@ devfs_read :: proc "contextless" (
 		reply^ = vectra9.Rread{data = fbctl_report(t.raw, m.offset, buf[:room])}
 
 	case .Cons:
-		if int(tag) >= mnt.MAX_REQUESTS {
-			// A tag this server cannot index is a tag it cannot ask the
-			// transport about, so a park here could never be flushed. Refusing
-			// beats parking with no way out.
+		w := wait_slot(t, tag, nil, nil)
+		if w == nil {
 			reply^ = vectra9.error_reply(vectra9.EIO)
 			return
 		}
-				w := &t.waits[int(tag)]
-		w.tree = t
-		w.tag = tag
-		w.tap = nil
-		w.mouse = nil
 		// The reader owns the console for a typed interrupt from here on.
 		if console_owner != nil {
 			if group := console_owner(); group != 0 {
 				t.cons.owner_group = group
 			}
 		}
-
-		for {
-			// The flush is checked before the drain, and the order keeps a
-			// line from being lost to a flush that raced its arrival. A
-			// flushed request's reply is dropped, so a drain into one would
-			// consume the line and hand it to nobody. `flushed` is set before
-			// this reader wakes, so seeing it first leaves the line for the
-			// read that follows. See the `.Scancode` loop for the long form.
-			if vfs.server_flushed(&t.server, tag) {
-				reply^ = vectra9.error_reply(vectra9.EINTR)
-				return
-			}
-			if n := cons_take(&t.cons, buf[:room]); n > 0 {
-				reply^ = vectra9.Rread{data = buf[:n]}
-				return
-			}
-			if cons_take_eof(&t.cons) {
-				// A `^D` on an empty line, and the one place a read of the
-				// console answers with nothing. The drain above came first, so
-				// this cannot overtake bytes typed before it.
-				reply^ = vectra9.Rread{data = nil}
-				return
-			}
-			cons_note_block(&t.cons)
-			sync.sleep(&t.cons.ready, read_ready, w)
-		}
+		park_read(t, w, &t.cons.ready, buf[:room], take_cons, reply)
 
 	case .Scancode, .Eia0:
-		// The console's loop with two lines gone. A tap has no line
-		// discipline, so any byte answers, and no `^D`, so nothing here ever
-		// answers zero bytes. Park, byte, or flush is the whole state space.
 		tp := DEV_NODES[node].kind == .Scancode ? &t.scancode : &t.serial
-		if int(tag) >= mnt.MAX_REQUESTS {
+		w := wait_slot(t, tag, tp, nil)
+		if w == nil {
 			reply^ = vectra9.error_reply(vectra9.EIO)
 			return
 		}
-				w := &t.waits[int(tag)]
-		w.tree = t
-		w.tag = tag
-		w.tap = tp
-		w.mouse = nil
-
-		for {
-			/*
-			The flush is checked *before* the drain, and the order is
-			load-bearing. A client that gave up on this read has a tag the
-			transport reclaimed, and a reply on it is dropped. A drain before
-			the check would consume the bytes into that dropped reply. The
-			next read would find them gone -- a byte lost to a flush that
-			raced its arrival. The transport sets `flushed` before it wakes
-			this reader, so checking it first leaves the bytes in the tap for
-			the read that comes after.
-			*/
-			if vfs.server_flushed(&t.server, tag) {
-				reply^ = vectra9.error_reply(vectra9.EINTR)
-				return
-			}
-			if n := tap_take(tp, buf[:room]); n > 0 {
-				reply^ = vectra9.Rread{data = buf[:n]}
-				return
-			}
-			tap_note_block(tp)
-			sync.sleep(&tp.ready, read_ready, w)
-		}
+		park_read(t, w, &tp.ready, buf[:room], take_tap, reply)
 
 	case .Mouse:
 		// One line per movement, and a park until there is one newer than
 		// the last line answered. The same flush-first loop as the taps.
-		if int(tag) >= mnt.MAX_REQUESTS {
+		w := wait_slot(t, tag, nil, &t.mouse)
+		if w == nil {
 			reply^ = vectra9.error_reply(vectra9.EIO)
 			return
 		}
-		w := &t.waits[int(tag)]
-		w.tree = t
-		w.tag = tag
-		w.tap = nil
-		w.mouse = &t.mouse
-		for {
-			if vfs.server_flushed(&t.server, tag) {
-				reply^ = vectra9.error_reply(vectra9.EINTR)
-				return
-			}
-			if n := mouse_line(&t.mouse, buf[:room]); n > 0 {
-				reply^ = vectra9.Rread{data = buf[:n]}
-				return
-			}
-			sync.sleep(&t.mouse.ready, read_ready, w)
-		}
+		park_read(t, w, &t.mouse.ready, buf[:room], take_mouse, reply)
 
 	case .Dir:
 		// Answered above, and named here so the switch is exhaustive rather
 		// than defaulted. A file kind added to the enum should not compile.
 		reply^ = vectra9.error_reply(vectra9.EISDIR)
 	}
-}
-
-// mouse_held says whether a fid holds the pointer right now.
-@(private = "file")
-mouse_held :: proc "contextless" (t: ^Dev_Tree) -> bool {
-	g := sync.acquire(&t.lock)
-	defer sync.release(&t.lock, g)
-	return t.mouse.opens > 0
 }
 
 /*
@@ -1320,10 +1293,6 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 		}
 		reply^ = vectra9.Rwrite{count = u32(n)}
 
-	case .Sysstat:
-		// A reading, not a setting: nothing here is written.
-		reply^ = vectra9.error_reply(vectra9.EPERM)
-
 	case .Fbctl:
 		// The command vocabulary is empty until something about the hardware
 		// can be set, so every command is one nothing recognises. A write of
@@ -1334,10 +1303,11 @@ devfs_write :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twrite, reply: ^vect
 		}
 		reply^ = vectra9.Rwrite{count = 0}
 
-	case .Scancode, .Mouse:
+	case .Scancode, .Mouse, .Sysstat:
 		// Nobody writes the keyboard, or the mouse. The operation exists and
 		// is refused, which is what EPERM says. EINVAL would blame the
-		// bytes, and no bytes would have done better.
+		// bytes, and no bytes would have done better. `sysstat` is a
+		// reading, not a setting: nothing there is written either.
 		reply^ = vectra9.error_reply(vectra9.EPERM)
 
 	case .Eia0:

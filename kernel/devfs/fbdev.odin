@@ -72,6 +72,7 @@ import "kernel:drivers/console"
 import "kernel:drivers/fb"
 import "kernel:mem"
 import "kernel:vfs"
+import "vsys:libodin"
 import "vsys:vectra9"
 
 // fb_size is how many bytes the framebuffer file has: every scanline,
@@ -132,86 +133,39 @@ Generated on every read, like `/dev/consctl`'s report, and for a weaker
 reason: nothing here can change yet, so a snapshot would also be correct.
 Generation is simply the shape ctl reads have in this tree. `offset` is
 honoured so a client with a small buffer can finish the file.
+
+The report buffer is sized for the longest report a mode can produce.
+Overflow is therefore truncation rather than a fault, and the self-test
+would catch it as a wrong report. The formatter is `libodin`'s, which this
+package already imports for the clock's line.
 */
 fbctl_report :: proc "contextless" (s: ^fb.Surface, offset: u64, buf: []u8) -> []u8 #no_bounds_check {
 	line: [96]u8
-	n := 0
+	sink := libodin.sink_from(line[:])
 
-	n = put_word(line[:], n, "size ")
-	n = put_dec(line[:], n, u64(s.width))
-	n = put_word(line[:], n, " ")
-	n = put_dec(line[:], n, u64(s.height))
-	n = put_word(line[:], n, "\npitch ")
-	n = put_dec(line[:], n, u64(s.pitch))
-	n = put_word(line[:], n, "\ndepth ")
-	n = put_dec(line[:], n, u64(s.bytes_pp) * 8)
-	n = put_word(line[:], n, "\nr ")
-	n = put_dec(line[:], n, u64(s.red_size))
-	n = put_word(line[:], n, " ")
-	n = put_dec(line[:], n, u64(s.red_shift))
-	n = put_word(line[:], n, "\ng ")
-	n = put_dec(line[:], n, u64(s.green_size))
-	n = put_word(line[:], n, " ")
-	n = put_dec(line[:], n, u64(s.green_shift))
-	n = put_word(line[:], n, "\nb ")
-	n = put_dec(line[:], n, u64(s.blue_size))
-	n = put_word(line[:], n, " ")
-	n = put_dec(line[:], n, u64(s.blue_shift))
-	n = put_word(line[:], n, "\n")
+	libodin.put_str(&sink, "size ")
+	libodin.put_uint(&sink, u64(s.width))
+	libodin.put_str(&sink, " ")
+	libodin.put_uint(&sink, u64(s.height))
+	libodin.put_str(&sink, "\npitch ")
+	libodin.put_uint(&sink, u64(s.pitch))
+	libodin.put_str(&sink, "\ndepth ")
+	libodin.put_uint(&sink, u64(s.bytes_pp) * 8)
+	libodin.put_str(&sink, "\nr ")
+	libodin.put_uint(&sink, u64(s.red_size))
+	libodin.put_str(&sink, " ")
+	libodin.put_uint(&sink, u64(s.red_shift))
+	libodin.put_str(&sink, "\ng ")
+	libodin.put_uint(&sink, u64(s.green_size))
+	libodin.put_str(&sink, " ")
+	libodin.put_uint(&sink, u64(s.green_shift))
+	libodin.put_str(&sink, "\nb ")
+	libodin.put_uint(&sink, u64(s.blue_size))
+	libodin.put_str(&sink, " ")
+	libodin.put_uint(&sink, u64(s.blue_shift))
+	libodin.put_str(&sink, "\n")
 
-	if offset >= u64(n) {
-		return nil
-	}
-	start := int(offset)
-	end := min(n, start + len(buf))
-	copy(buf[:end - start], line[start:end])
-	return buf[:end - start]
-}
-
-// put_word appends a literal to the report under construction. The report
-// buffer is sized for the longest report a mode can produce. Overflow is
-// therefore truncation rather than a fault, and the self-test would catch
-// it as a wrong report.
-@(private = "file")
-put_word :: proc "contextless" (line: []u8, at: int, word: string) -> int #no_bounds_check {
-	n := at
-	for i in 0 ..< len(word) {
-		if n >= len(line) {
-			return n
-		}
-		line[n] = word[i]
-		n += 1
-	}
-	return n
-}
-
-// put_dec appends a number in decimal. The one formatter this package
-// needs, written here rather than imported, because the layer a fault
-// handler runs in should not grow a dependency for ten lines.
-@(private = "file")
-put_dec :: proc "contextless" (line: []u8, at: int, value: u64) -> int #no_bounds_check {
-	digits: [20]u8
-	v := value
-	d := 0
-	for {
-		digits[d] = '0' + u8(v % 10)
-		v /= 10
-		d += 1
-		if v == 0 {
-			break
-		}
-	}
-
-	n := at
-	for d > 0 {
-		d -= 1
-		if n >= len(line) {
-			return n
-		}
-		line[n] = digits[d]
-		n += 1
-	}
-	return n
+	return buf[:copy(buf, vfs.read_slice(libodin.bytes(&sink), offset, u32(len(buf))))]
 }
 
 // -- The console steps aside -------------------------------------------------

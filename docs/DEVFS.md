@@ -59,8 +59,9 @@ most of a 1280x800 framebuffer with interrupts masked. The second, because
 `sync.can_sleep` says so and stops the machine on a broken rule.
 
 So `Dev_Tree.lock` guards the fid table and only the fid table, taken for the
-length of a lookup by `bind_fid`, `node_of` and `drop_fid`. The node table needs
-no lock at all: it is `.rodata` and it never changes.
+length of a lookup by `bind_fid`, `node_of` and `drop_fid`. `devfs_walk` holds
+it for the length of a walk. The node table needs no lock at all: it is `.rodata`
+and it never changes.
 
 ### The first server whose reads genuinely park
 

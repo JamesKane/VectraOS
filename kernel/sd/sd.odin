@@ -33,8 +33,6 @@ always where the device can reach by physical address.
 */
 package sd
 
-import "base:runtime"
-
 import "kernel:drivers/virtio"
 import "kernel:mem"
 import "kernel:sync"
@@ -113,17 +111,7 @@ init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 	return vfs.mount_device(ns, "#S", "/dev", .After)
 }
 
-// disk_count and part_count report what came up, for the boot line.
-disk_count :: proc "contextless" () -> int {
-	n := 0
-	for i in 0 ..< virtio.MAX_DISKS {
-		if dev.disks[i].present {
-			n += 1
-		}
-	}
-	return n
-}
-
+// part_count reports what came up, for the boot line.
 part_count :: proc "contextless" () -> (n: int) {
 	for i in 0 ..< virtio.MAX_DISKS {
 		if dev.disks[i].present {
@@ -160,7 +148,7 @@ disk.
 @(private = "file")
 read_table :: proc(n: int) {
 	sector: [SECTOR]u8
-	if read_bytes(n, 0, dev.disks[n].sectors, 0, sector[:]) != SECTOR {
+	if transfer(n, 0, dev.disks[n].sectors, 0, sector[:], false) != SECTOR {
 		return
 	}
 	if u16(sector[510]) | u16(sector[511]) << 8 != MBR_SIGNATURE {
@@ -279,16 +267,6 @@ transfer :: proc(n: int, base, span: u64, offset: u64, data: []u8, write: bool) 
 	return done
 }
 
-@(private = "file")
-read_bytes :: proc(n: int, base, span: u64, offset: u64, out: []u8) -> int {
-	return transfer(n, base, span, offset, out, false)
-}
-
-@(private = "file")
-write_bytes :: proc(n: int, base, span: u64, offset: u64, in_buf: []u8) -> int {
-	return transfer(n, base, span, offset, in_buf, true)
-}
-
 // -- Nodes --------------------------------------------------------------------
 
 ROOT :: i32(0)
@@ -391,9 +369,7 @@ sd_handler :: proc "contextless" (
 	_ = server
 	_ = s
 	_ = tag
-	ctx := runtime.default_context()
-	ctx.allocator = mem.allocator()
-	context = ctx
+	context = mem.kernel_context()
 
 	// A read or a write is a disk transfer: resolve the fid under the lock,
 	// then move bytes with it dropped, as the file comment explains.
@@ -501,8 +477,7 @@ attr_of :: proc "contextless" (node: i32, mask: u64) -> vectra9.Rgetattr {
 			mode = vectra9.S_IFREG | 0o444
 		case:
 			mode = vectra9.S_IFREG | 0o666
-			if base, span, ok := window(disk, file); ok {
-				_ = base
+			if _, span, ok := window(disk, file); ok {
 				size = span * SECTOR
 			}
 		}
@@ -524,16 +499,11 @@ attr_of :: proc "contextless" (node: i32, mask: u64) -> vectra9.Rgetattr {
 do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check {
 	d := &dev
 	g := sync.acquire(&d.lock)
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	open := node >= 0 && vfs.fidtab_is_open(&d.fids, m.fid)
+	node, err := vfs.fidtab_open_node(&d.fids, m.fid)
 	sync.release(&d.lock, g)
 
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if !open {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	if err != vfs.OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
 	if node_is_dir(node) {
@@ -551,11 +521,8 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 		read_ctl(disk, m.offset, buf[:room], reply)
 		return
 	}
-	base, span, ok := window(disk, file)
-	if !ok {
-		reply^ = vectra9.error_reply(vectra9.ENXIO)
-		return
-	}
+	// A live file that is not `ctl` has a window: `node_live` said so.
+	base, span, _ := window(disk, file)
 	// A disk a program attached is no longer the kernel's, `docs/SMMU.md`
 	// section 8. Its transfers would fault into the walker's event queue
 	// and this poll would never end, so the answer is EIO instead.
@@ -563,7 +530,7 @@ do_read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_che
 		reply^ = vectra9.error_reply(vectra9.EIO)
 		return
 	}
-	n := read_bytes(disk, base, span, m.offset, buf[:room])
+	n := transfer(disk, base, span, m.offset, buf[:room], false)
 	if n < 0 {
 		reply^ = vectra9.error_reply(vectra9.EIO)
 		return
@@ -583,14 +550,7 @@ read_ctl :: proc(disk: int, offset: u64, buf: []u8, reply: ^vectra9.Msg) #no_bou
 	libodin.put_str(&sink, " ")
 	libodin.put_uint(&sink, SECTOR)
 	libodin.put_str(&sink, "\n")
-	rendered := libodin.str(&sink)
-	if offset >= u64(len(rendered)) {
-		reply^ = vectra9.Rread{data = nil}
-		return
-	}
-	start := int(offset)
-	end := min(len(rendered), start + len(buf))
-	n := copy(buf, rendered[start:end])
+	n := copy(buf, vfs.read_slice(libodin.bytes(&sink), offset, u32(len(buf))))
 	reply^ = vectra9.Rread{data = buf[:n]}
 }
 
@@ -598,16 +558,11 @@ read_ctl :: proc(disk: int, offset: u64, buf: []u8, reply: ^vectra9.Msg) #no_bou
 do_write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 	d := &dev
 	g := sync.acquire(&d.lock)
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	open := node >= 0 && vfs.fidtab_is_open(&d.fids, m.fid)
+	node, err := vfs.fidtab_open_node(&d.fids, m.fid)
 	sync.release(&d.lock, g)
 
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if !open {
-		reply^ = vectra9.error_reply(vectra9.EINVAL)
+	if err != vfs.OK {
+		reply^ = vectra9.error_reply(err)
 		return
 	}
 	if node_is_dir(node) {
@@ -623,16 +578,12 @@ do_write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 		reply^ = vectra9.error_reply(vectra9.ENXIO)
 		return
 	}
-	base, span, ok := window(disk, file)
-	if !ok {
-		reply^ = vectra9.error_reply(vectra9.ENXIO)
-		return
-	}
+	base, span, _ := window(disk, file)
 	if virtio.owned(disk) {
 		reply^ = vectra9.error_reply(vectra9.EIO)
 		return
 	}
-	n := write_bytes(disk, base, span, m.offset, m.data)
+	n := transfer(disk, base, span, m.offset, m.data, true)
 	if n <= 0 && len(m.data) > 0 {
 		reply^ = vectra9.error_reply(vectra9.EIO)
 		return
@@ -644,45 +595,21 @@ do_write :: proc(m: vectra9.Twrite, reply: ^vectra9.Msg) #no_bounds_check {
 }
 
 @(private = "file")
-walk :: proc(m: vectra9.Twalk, reply: ^vectra9.Msg) #no_bounds_check {
-	d := &dev
-	node := vfs.fidtab_node(&d.fids, m.fid)
-	if node < 0 {
-		reply^ = vectra9.error_reply(vectra9.EBADF)
-		return
-	}
-	if vfs.fidtab_is_open(&d.fids, m.fid) {
-		reply^ = vectra9.error_reply(vectra9.EBUSY)
-		return
-	}
-	answer: vectra9.Rwalk
-	cur := node
-	for i in 0 ..< m.count {
-		next := step(cur, m.names[i])
-		if next < 0 {
-			if i == 0 {
-				reply^ = vectra9.error_reply(vectra9.ENOENT)
-				return
-			}
-			break
-		}
-		cur = next
-		answer.qids[answer.count] = qid_of(cur)
-		answer.count += 1
-	}
-	if answer.count == m.count {
-		if !vfs.fidtab_bind(&d.fids, m.newfid, cur) {
-			reply^ = vectra9.error_reply(vectra9.ENFILE)
-			return
-		}
-	}
-	reply^ = answer
+walk :: proc(m: vectra9.Twalk, reply: ^vectra9.Msg) {
+	vfs.fidtab_walk(&dev.fids, m, reply, nil, step, walk_qid)
+}
+
+@(private = "file")
+walk_qid :: proc "contextless" (ctx: rawptr, node: i32) -> vectra9.Qid {
+	_ = ctx
+	return qid_of(node)
 }
 
 // step resolves one name: a disk name from the root, a file name from a
 // disk directory. `..` climbs to the disk directory or the root.
 @(private = "file")
-step :: proc "contextless" (from: i32, name: string) -> i32 {
+step :: proc "contextless" (ctx: rawptr, from: i32, name: string) -> i32 {
+	_ = ctx
 	if name == "." {
 		return from
 	}
