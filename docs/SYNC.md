@@ -404,6 +404,19 @@ A kernel thread is never noted, so for one `sleep_noted` is `sleep` exactly.
 That is what lets a path both kinds of thread cross, a pipe's flows, wait
 this way unconditionally. `docs/USER.md` owns the note itself.
 
+## The note and the reaped thread
+
+A note reaches a thread through a raw `^Thread` the process keeps in
+`Process.thread`. The reaper frees that record the moment the thread dies, so
+the pointer can outlive what it names. A sender that read it after the free
+woke freed memory, which the panic "a wake of a reaped thread" names.
+
+The rule is one lock over both ends. Every note sender reads `p.thread` and
+wakes it under `table_lock`. The reaper clears `p.thread` under the same lock,
+in the breath it frees the record. A sender holding the lock then sees a live
+thread the free waits behind, or `nil`. It never reaches freed memory.
+`docs/USER.md` owns `on_thread_reaped` and the senders.
+
 ## See also
 
 - `docs/SCHED.md` — what `block`, `ready` and `unpark` do on the other side.
