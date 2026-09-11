@@ -18,6 +18,8 @@ like a working one from anywhere else.
 */
 package vfs
 
+import "kernel:mem"
+import "kernel:sync"
 import "vsys:libodin"
 import "vsys:vectra9"
 
@@ -214,6 +216,7 @@ verify :: proc(buf: []u8) -> Verify_Result {
 
 	verify_paths(&r, ns, buf)
 	verify_union(&r, ns, buf)
+	verify_member_ids(&r, ns)
 	verify_dotdot(&r, ns)
 	verify_forks(&r, ns, buf)
 	verify_protocol_rules(&r)
@@ -382,6 +385,47 @@ verify_union :: proc(r: ^Verify_Result, ns: ^Namespace, buf: []u8) {
 	// Section 7.4: creation goes to the member flagged Create, and there is no
 	// such member here, so there is no target rather than a guess.
 	check(r, union_create_target(mp) == nil, "no Create flag means no create target")
+}
+
+/*
+verify_member_ids is the bind that finds a mount point's member ids run out.
+
+The counter is 32 bits and never resets, so no boot reaches its end. The
+check moves it there by hand and puts it back. What it is for is the unwind.
+A `Before` bind clones the directory as a member of its own before it takes
+the locks. The refusal has to give that clone back. Once it did not, and the
+leak had no check to name it.
+*/
+@(private = "file")
+verify_member_ids :: proc(r: ^Verify_Result, ns: ^Namespace) {
+	over, err := resolve_mount_point(ns, "/dev")
+	if !check(r, err == OK, "resolve /dev as a mount point for the id check") {
+		return
+	}
+	defer chan_close(over)
+	mp := mount_head_ref(ns, over)
+	if !check(r, mp != nil, "and it has a mount point") {
+		return
+	}
+	defer mount_point_release(mp)
+
+	src, aerr := attach(&beta_server)
+	if !check(r, aerr == OK, "attach beta for the id check") {
+		return
+	}
+	defer chan_close(src)
+
+	before := mem.live_objects(mem.heap_stats())
+	sync.wlock(&mp.lock)
+	saved := mp.next_member_id
+	mp.next_member_id = 0
+	sync.wunlock(&mp.lock)
+	berr := bind(ns, src, over, .Before)
+	sync.wlock(&mp.lock)
+	mp.next_member_id = saved
+	sync.wunlock(&mp.lock)
+	check(r, berr == vectra9.ENOSPC, "a mount point whose member ids ran out refuses a bind")
+	check(r, mem.live_objects(mem.heap_stats()) == before, "and the refusal gives back the member it cloned first")
 }
 
 @(private = "file")

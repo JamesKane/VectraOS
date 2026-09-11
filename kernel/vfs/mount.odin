@@ -380,6 +380,10 @@ bind :: proc(
 		sync.wunlock(&ns.lock)
 		chan_close(member_chan)
 		free(m)
+		if self_m != nil {
+			chan_close(self_m.chan)
+			free(self_m)
+		}
 		return vectra9.ENOSPC
 	}
 	m.id = mp.next_member_id
