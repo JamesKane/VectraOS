@@ -35,8 +35,9 @@ MAX_CHAN_WIRES :: 8
 
 @(private = "file")
 Chan_Wire :: struct {
-	used:  bool,
-	dying: bool, // Released, with a reader still parked on the far side
+	used:   bool,
+	dying:  bool, // Released, with a reader still parked on the far side
+	staked: bool, // The /srv name's stake, taken at the build and spent once
 	c:     ^vfs.Chan,
 	w:     ^mnt.Wire,
 	sv:    ^vfs.Server,
@@ -126,7 +127,7 @@ chan_server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		free_wire_build(nil, arena, w, sv)
 		return nil
 	}
-	cw^ = Chan_Wire{used = true, c = vfs.chan_incref(c), w = w, sv = sv, arena = arena}
+	cw^ = Chan_Wire{used = true, staked = true, c = vfs.chan_incref(c), w = w, sv = sv, arena = arena}
 	if !mnt.wire_init(w, mnt.Wire_IO{data = cw, read = chan_wire_read, write = chan_wire_write}, arena) ||
 	   !mnt.wire_start(w) {
 		vfs.chan_close(cw.c)
@@ -151,8 +152,10 @@ chan_server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 /*
 chan_unpost takes the `/srv` name's stake off a posted stream's wire, and
 hands the caller the server to drop it on. Nil for a chan that is not a
-stream's wire. The caller closes its chan and then unpins, outside every
-lock, as `unpost` asks.
+stream's wire, or for a wire whose stake already went. Two names can post
+one chan, and the first removal spends the only stake, as with a pipe. The
+caller closes its chan and then unpins, outside every lock, as `unpost`
+asks.
 */
 chan_unpost :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	t := &pipes
@@ -160,12 +163,14 @@ chan_unpost :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	defer sync.mutex_unlock(&t.build)
 	for i in 0 ..< MAX_CHAN_WIRES {
 		cw := &chan_wires[i]
-		if cw.used && !cw.dying && cw.c == c {
+		if cw.used && !cw.dying && cw.staked && cw.c == c {
+			cw.staked = false
 			return cw.sv
 		}
 	}
 	return nil
 }
+
 
 // chan_wire_release is the last stake going: the wire is retired.
 @(private = "file")

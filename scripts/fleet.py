@@ -166,11 +166,30 @@ def main():
         flushed = "FLUSH OK"
     print("=== flush ==="); print(r[-200:])
 
+    # A posted stream's name, released by Tremove. `import` posts /srv/two and
+    # mounts it; `rm /srv/two` is the Tremove that has to drop the stream's
+    # stake so the wire, its reader and its chan-wire slot come back. The
+    # table holds eight, so importing and removing nine times over exhausts it
+    # if a removal leaks a slot, and the ninth import then reads nothing. With
+    # the stake released each time, the ninth still reads. (regression: a
+    # stream removed by Tremove once kept its slot for ever.)
+    reclaim = "NO"
+    a.cmd("unmount /n/two >[2]/dev/null; rm /srv/two >[2]/dev/null", 6)
+    last = ""
+    for i in range(9):
+        a.cmd("import two /n/two >[2]/dev/null", 10)
+        last = a.cmd("ls /n/two/proc", 8)
+        a.cmd("unmount /n/two >[2]/dev/null; rm /srv/two >[2]/dev/null", 6)
+    if "/n/two/proc/" in last:
+        reclaim = "SLOTS RECLAIMED"
+    print("=== stream stake reclaim ==="); print(last[-200:])
+
     print("=== VERDICT:", ", ".join([
         ("LINE CROSSED" if crossed else "NO CROSSING"),
         ("PINGED BY NAME" if pinged else "NO PING"),
         ("ADDRESSES FROM THE ROUTER" if routed==2 else "NO ADDRESS FROM THE ROUTER (%d of 2)" % routed),
         ("9P: "+ninep+"/"+crossread+"/"+flushed+" SEALED"),
+        reclaim,
         stranger,
         ("TWO ARCHITECTURES" if two else "NOT TWO ARCHITECTURES"),
     ]))

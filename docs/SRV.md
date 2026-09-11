@@ -113,7 +113,10 @@ opened.
 `Tremove` on `/srv/foo` takes the name away, and `srv.remove` is the same
 operation from inside the kernel. Both halves of a removal run outside the
 table lock, because both may send a message. The entry's chan closes, and
-`pipe.unpost` releases the name's stake on a wired connection.
+`pipe.unpost` releases the name's stake on a wired pipe end, or
+`pipe.chan_unpost` on a stream. Both paths ask through one `stake_of`. The
+Tremove path once asked only the pipe, and a stream a program removed kept
+its wire for ever.
 
 The service does not stop with the name. But when the last mount is also
 gone, the stake was the last hold on the wire, and the counted release

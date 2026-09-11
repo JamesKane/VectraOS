@@ -419,11 +419,7 @@ remove :: proc(name: string) -> vfs.Errno #no_bounds_check {
 		// The close goes first. The release's own close has to be the last
 		// one on the posted end. This reference would otherwise keep the end
 		// open under the wire's reader. See `pipe.unpost`.
-		staked := pipe.unpost(retired)
-		if staked == nil {
-			staked = pipe.chan_unpost(retired)
-		}
-		retire_endpoint(retired, staked)
+		retire_endpoint(retired, stake_of(retired))
 	}
 	return found ? vfs.OK : vectra9.ENOENT
 }
@@ -729,8 +725,25 @@ srv_handler :: proc "contextless" (
 		// clunk a fid and a clunk is a message. The service behind the chan
 		// does not stop with the name -- but the name's stake on a wired
 		// connection goes with it, after this reference. See `remove`.
-		retire_endpoint(retired, pipe.unpost(retired))
+		retire_endpoint(retired, stake_of(retired))
 	}
+}
+
+/*
+stake_of answers the server a removed name held a stake on, or nil.
+
+A posted pipe end's wire and a posted stream's wire each take the name's
+stake at their build, and each has its own release. Both removal paths ask
+here, so a name removed by Tremove and one removed by `remove` let go of
+the same thing. The Tremove path used to ask only the pipe. A stream a
+program removed then kept its wire, its reader and its slot for ever.
+*/
+@(private = "file")
+stake_of :: proc(c: ^vfs.Chan) -> ^vfs.Server {
+	if staked := pipe.unpost(c); staked != nil {
+		return staked
+	}
+	return pipe.chan_unpost(c)
 }
 
 // srv_dispatch answers one message under the table lock. It hands back the
