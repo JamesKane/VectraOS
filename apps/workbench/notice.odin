@@ -1,7 +1,10 @@
 /*
 notice -- a line written to a file, `docs/WORKBENCH.md` section 6.
 
-Workbench serves `/srv/wb`, which `init` mounts at `/mnt/wb`:
+Workbench serves `/srv/wb`, posted before its first window opens so a
+boot script finds it at once, and mounted at `/mnt/wb` by the desktop
+itself, so every shell it opens can write one, and by `init`, for the
+console's:
 
     notice     a write posts one: `source text[\tverb args]`. A read is the
                latest.
@@ -22,6 +25,7 @@ both, so `history` and `ctl` sit beside it.
 */
 package workbench
 
+import "vsys:abi"
 import "vsys:lib9p"
 import "vsys:libmui"
 import "vsys:libthread"
@@ -64,15 +68,48 @@ fids: libuser.Fid_Table
 srv: lib9p.Srv
 FRAME :: 2048
 
-// notice_thread posts /srv/wb and serves it for as long as it is mounted.
-notice_thread :: proc "contextless" (arg: rawptr) {
-	_ = arg
+// The served end of /srv/wb, posted by `notice_post` before any window
+// opens, and read by `notice_thread`. Negative when the post failed.
+notice_fd: int = -1
+
+// notice_post posts /srv/wb. Called from `wb_main` first thing, so `init`
+// finds the name posted as soon as the program is running rather than
+// after the windows have painted. A failure is said and survived: the
+// desktop works without notices.
+notice_post :: proc "contextless" () {
 	fd, perr := libuser.post("/srv/wb")
 	if perr < 0 {
+		tmp: [24]u8
+		libuser.eprint("workbench: post /srv/wb failed: ")
+		libuser.eprint(libuser.itoa(tmp[:], perr))
+		libuser.eprint("\n")
+		return
+	}
+	notice_fd = fd
+}
+
+// mount_thread mounts /srv/wb at /mnt/wb in the desktop's own namespace,
+// which every shell it opens inherits. Through an io proc, because the
+// server the mount waits on is `notice_thread`, a thread of this proc.
+mount_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	if notice_fd >= 0 {
+		if io := libthread.ioproc(); io != nil {
+			_ = libthread.iomount(io, "/srv/wb", "/mnt/wb", abi.ORDER_REPLACE)
+			libthread.ioclose(io)
+		}
+	}
+	libthread.threadexits("")
+}
+
+// notice_thread serves /srv/wb for as long as it is mounted.
+notice_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	if notice_fd < 0 {
 		libthread.threadexits("post")
 	}
 	srv = lib9p.Srv {
-		fd      = fd,
+		fd      = notice_fd,
 		handler = notice_handler,
 		msize   = FRAME,
 	}
@@ -155,10 +192,15 @@ show_toast :: proc "contextless" (n: ^Notice) {
 	if quiet {
 		return
 	}
-	if toast == nil {
-		toast = new(libmui.Window)
+	// A record of its own per toast, freed by the thread that runs it. The
+	// toast before it, if still up, is asked to go and goes on its own
+	// time; a record reused under a window's running threads is what
+	// wedged the second toast once.
+	if toast != nil && !toast.done {
+		libmui.window_end(toast)
 	}
-	if toast == nil {
+	t := new(libmui.Window)
+	if t == nil {
 		return
 	}
 	line: [NOTICE_MAX + 24]u8
@@ -175,25 +217,37 @@ show_toast :: proc "contextless" (n: ^Notice) {
 	libmui.add(col, b)
 	theme := libmui.default_theme
 	libmui.fit(col, &theme)
-	if toast.data_fd > 0 && !toast.done {
-		libmui.window_close(toast)
-	}
-	toast.kind = .Popup
-	toast.bind_dev = false
-	toast.own_exit = false
-	toast.set_up = true
-	toast.placed = true
-	toast.want_w, toast.want_h = col.minw, col.minh
-	toast.at_x = max(screen_w - col.minw - 8, 0)
-	toast.at_y = BAR_H + 4
-	toast.handler = toast_press
-	toast.user = rawptr(n)
-	if !libmui.window_open(toast, "notice", col) {
+	t.kind = .Popup
+	t.bind_dev = false
+	t.own_exit = false
+	t.set_up = true
+	t.placed = true
+	t.want_w, t.want_h = col.minw, col.minh
+	t.at_x = max(screen_w - col.minw - 8, 0)
+	t.at_y = BAR_H + 4
+	t.handler = toast_press
+	t.user = rawptr(n)
+	if !libmui.window_open(t, "notice", col) {
+		free(t)
 		return
 	}
+	toast = t
 	toast_seq += 1
-	_ = libthread.threadcreate(window_thread, toast)
+	_ = libthread.threadcreate(toast_window_thread, t)
 	_ = libthread.threadcreate(toast_sleeper, rawptr(uintptr(toast_seq)))
+}
+
+// toast_window_thread runs one toast's window and frees its record after,
+// which is when no thread of the window is left to touch it.
+toast_window_thread :: proc "contextless" (arg: rawptr) {
+	context = wb_ctx
+	w := (^libmui.Window)(arg)
+	libmui.window_run(w)
+	if toast == w {
+		toast = nil
+	}
+	free(w)
+	libthread.threadexits("")
 }
 
 // toast_text is what the toast says: the text, without the source.
@@ -229,7 +283,7 @@ toast_sleeper :: proc "contextless" (arg: rawptr) {
 	}
 	_ = libthread.iosleep(toast_io, TOAST_MS)
 	if toast != nil && toast_seq == seq && !toast.done {
-		libmui.window_close(toast)
+		libmui.window_end(toast)
 	}
 	libthread.threadexits("")
 }

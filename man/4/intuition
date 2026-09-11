@@ -201,6 +201,11 @@ take the window off the glass without ending its session
 .B unhide
 put it back
 .TP
+.B close
+hang the window up, as the close gadget and alt-w do: its keyboard
+answers nothing from then on, and a program parked reading it learns the
+window is gone
+.TP
 .BI workspace " n"
 move the window to workspace
 .I n

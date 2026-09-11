@@ -386,12 +386,13 @@ the documents it points at.
 
 **Next, in order:**
 
-1. **The desktop.** `docs/WORKBENCH.md` is the plan, and steps 1, 2 and 3
-   are done. Input is files, `intuition` has the pointer and gadgets, and
-   `sys/libmui` is now live in a window. `apps/muidemo` shows the toolkit
-   on the desktop beside the terminal (`docs/workbench-desktop.png`). Step
-   4 is Workbench itself, and it needs `libmui`'s `List` and `Menu` first.
-   See "the order that avoids a rewrite" below.
+1. **The desktop.** `docs/WORKBENCH.md` is the plan, and steps 1 to 4
+   are done. Input is files, `intuition` has the pointer and gadgets,
+   `sys/libmui` is live in a window, and Workbench is the desktop `init`
+   starts, driven end to end by the suite, September 2026
+   (`docs/workbench-step4-desktop.png`). Step 5 is the rest of the
+   platform, in whatever order a reason arrives. See "the order that
+   avoids a rewrite" below.
 2. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
    Plan 9's `threadnotify`, so a proc other than the first can end the
    program and a note can be caught rather than end a proc. A guard page

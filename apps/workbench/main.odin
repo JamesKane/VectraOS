@@ -109,6 +109,13 @@ wb_main :: proc "contextless" (arg: rawptr) {
 	menu.win = menu_win
 	menu.handler = menu_chosen
 
+	// The notice service first, posted and served before a window opens,
+	// so `init` and the desktop's own mount find a server answering.
+	notice_post()
+	_ = libthread.threadcreate(notice_thread, nil)
+	_ = libthread.threadcreate(mount_thread, nil)
+	libthread.yield()
+
 	if !open_bar() {
 		libuser.eprint("workbench: no bar\n")
 		libthread.threadexitsall("no bar")
@@ -121,7 +128,6 @@ wb_main :: proc "contextless" (arg: rawptr) {
 	_ = libthread.threadcreate(window_thread, back)
 	_ = libthread.threadcreate(memory_thread, nil)
 	_ = libthread.threadcreate(toast_thread, nil)
-	_ = libthread.threadcreate(notice_thread, nil)
 	hotkey_loop()
 	libthread.threadexitsall("")
 }

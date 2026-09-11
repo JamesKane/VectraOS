@@ -243,7 +243,7 @@ drawer_window_menu :: proc "contextless" (item: int) {
 		}
 	case 2: // Close
 		if d != nil {
-			libmui.window_close(&d.win)
+			libmui.window_end(&d.win)
 		}
 	case 3: // Update
 		if d != nil {

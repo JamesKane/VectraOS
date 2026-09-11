@@ -683,16 +683,32 @@ The toolkit grew what the desktop needs, all proven in `tests/mui`.
 Several windows per program, the three window kinds, a `Menu` popup, an
 `Icons` grid, and a `String` gadget that takes typing.
 
-Two things wait. `init` does not start Workbench yet. Its many
-short-lived threads -- a drawer, a toast, a menu each a thread that opens
-and closes -- reliably trip the open stale-wake reaper race. The boot
-then faults with `a wake of a reaped thread`. So a person starts it by
-hand until that is fixed, and `muidemo` stays init's toolkit window.
+`init` starts Workbench in the terminal's place, September 2026, and the
+suite drives it: `verify_workbench` in `kernel/user/verify.odin` is the
+five checks above, fifty lines of them on the glass. It waited on the
+stale-wake reaper race, which the desktop's many short-lived threads -- a
+drawer, a toast, a menu each a thread that opens and closes -- reliably
+tripped, faulting the boot with `a wake of a reaped thread`. `docs/SYNC.md`
+records the fix. A shell in a window is `Shell` on the first menu, and
+`terminal` stays in `/bin` for `window`. `docs/workbench-step4-desktop.png`
+is the desktop under `init`: the bar's menu titles, the backdrop's icons,
+a shell opened from the menu, and a notice's toast in the bar's corner.
 
-The end-to-end suite check waits on the same fix. Driving and then
-tearing down a full desktop is what exposes the race. The toolkit's own
-classes are proven in `tests/mui` meanwhile, and the integrated desktop
-by `docs/workbench-desktop.png`.
+Driving it found two things the screenshot never had. **A menu item chosen
+by the mouse was never acted on.** The choice set the popup's `done` from
+the toolkit's mouse thread, and `window_run` was parked in the key read,
+which a popup, never focused, never gets; so the menu stayed open and the
+item undone until a key came. Closing the files under that read ends
+nothing, because a read in flight outlives its descriptor. So the server
+took a `close` word on `wctl`, alt-w's own hangup, and the mouse thread
+asks for it: the key read answers nothing, and `window_run` takes it from
+there. **The server keeps one mouse line per window**, the latest, so a
+press and release a tick apart reach a slow client as the release alone;
+the suite's injected clicks are held forty milliseconds each, which a
+person's are too. And the notice service is posted and served before the
+first window opens, mounted at `/mnt/wb` by the desktop itself through an
+io proc (`libthread.iomount`, since the server it waits on is a thread of
+the same proc) and by `init` for the console's shell.
 
 ### Step 5: the rest of the platform
 

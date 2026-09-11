@@ -78,11 +78,12 @@ if(test -e /adm/hostkey) {
 	echo key proto=noise user=$sysname dom=$dom '!private='^$hostkey > /mnt/factotum/ctl
 }
 
-# A window with a shell in it, the terminal's own child.
-terminal &
-
-# A panel of gadgets on sys/libmui, so the desktop shows the toolkit too.
-muidemo &
+# The desktop, in the terminal's place: the bar and its menus, the backdrop
+# and its icons. A shell in a window is `Shell` on the first menu. Its
+# notice service goes at /mnt/wb, so a line from this console draws a toast.
+workbench &
+while(! test -e /srv/wb) sleep 1
+mount /srv/wb /mnt/wb
 
 # And this console's shell, which init becomes.
 cd $home

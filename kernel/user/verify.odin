@@ -678,6 +678,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_terminal(&r, column)
 	verify_chords(&r)
 	verify_muiwin(&r)
+	verify_workbench(&r)
 	// The platform layer, from both languages over one library: the Odin
 	// client, then the same program in C linking the same Odin `sys/libapp`,
 	// then a game -- started and closed the same way, its ground its own.
@@ -5026,6 +5027,543 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 }
 
 /*
+verify_workbench starts the desktop as `init` does and drives it: `docs/
+WORKBENCH.md` step 4's five checks.
+
+`kbdfs` on the raw keyboard, the draw server reading its `kbd` file, and
+`apps/workbench` on both. The desktop's bar and backdrop are read off the
+glass. Then the plan's five, in its order: a double click on `Home` opens a
+drawer of the home directory, with the file `verify_kfs` leaves there as an
+icon in it; `Shell` on the first menu opens a window with a shell in it,
+typed at through the keyboard translator as `verify_terminal` types; the
+`alt-n` chord `/lib/keys` binds opens one more, counted in the process table;
+a line written to the served `notice` file comes back off `history`; and the
+toast it draws is in the bar's corner.
+
+The desktop is many short-lived threads -- a menu, a drawer, a toast each a
+thread that opens and closes -- which is what tripped the reaped-thread wake
+`docs/SYNC.md` records. This is the check that drives them all in one boot.
+The teardown is the toolkit demo's: the server is stopped by a remove of a
+window's ctl, and the desktop, its windows and their shells come down with
+it, their files gone.
+*/
+@(private = "file")
+verify_workbench :: proc(r: ^Result) #no_bounds_check {
+	s := devfs.raw_surface()
+	if s == nil || s.pixels == nil || s.bytes_pp != 4 || !devfs.tree().mouse.present {
+		return
+	}
+
+	count0 := srv.count()
+	settle()
+	pin_before := mem.live_objects(mem.heap_stats())
+
+	// -- The desktop, as init starts it -----------------------------------------
+
+	pk := start_path(r, "/bin/kbdfs", "the loader starts the keyboard translator for the desktop")
+	if pk == nil {
+		return
+	}
+	if !check(r, await_posted("kbdfs"), "it posts /srv/kbdfs") {
+		return
+	}
+	check(r, srv.mount(vfs.boot_namespace, "/srv/kbdfs", "/n/kbd") == vfs.OK, "the kernel mounts it at /n/kbd, as init does")
+
+	argv := new(Argv)
+	if !check(r, argv != nil, "a record for the draw server's argument") {
+		return
+	}
+	names := [?]string{"intuition", "/n/kbd/kbd"}
+	check(r, argv_from(argv, names[:]), "holds it")
+	ps := start_draw_server(r, s, "the draw server starts, reading the kbd file", "it posts /srv/draw for the desktop to find", "and paints a desktop before the desktop program opens a window", argv)
+	if ps == nil {
+		return
+	}
+
+	pw := start_path(r, "/bin/workbench", "the loader starts Workbench, as init does")
+	if pw == nil {
+		return
+	}
+	// The notice service is the desktop's last thread, and it runs after
+	// the bar and the backdrop have baked their atlases and painted, so
+	// its post gets the patience the glass gets.
+	posted_wb := false
+	for _ in 0 ..< 20 {
+		if await_posted("wb") {
+			posted_wb = true
+			break
+		}
+	}
+	check(r, posted_wb, "it posts /srv/wb, the notice service")
+
+	// The bar: a strip across the top of the screen, its titles amber on it.
+	amber := fb.pack(s, fb.AMBER)
+	copper := fb.pack(s, fb.COPPER)
+	magnesium := fb.pack(s, fb.MAGNESIUM)
+	titled := false
+	for _ in 0 ..< PATIENCE * 20 {
+		for y in 2 ..< WB_BAR_H {
+			if first, _ := scan_row(s, y, amber, 0, s.width); first >= 0 {
+				titled = true
+				break
+			}
+		}
+		if titled {
+			break
+		}
+		sync.delay(1)
+	}
+	if !check(r, titled, "and draws its bar across the top of the screen, the menu titles amber on it") {
+		return
+	}
+
+	// The backdrop's icons under it: a drawer's picture carries a copper lip,
+	// and `Home` is the first cell of the grid, at the top left.
+	lipped := false
+	for _ in 0 ..< PATIENCE * 20 {
+		for y in WB_BAR_H ..< WB_BAR_H + libmui_icon_h() {
+			if first, _ := scan_row(s, y, copper, 0, libmui_icon_w()); first >= 0 {
+				lipped = true
+				break
+			}
+		}
+		if lipped {
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, lipped, "and lays the backdrop's icons under it, Home's drawer first with its copper lip")
+
+	// -- 1. A double click on Home opens a drawer ----------------------------------
+
+	home_x, home_y := libmui_icon_w() / 2, WB_BAR_H + libmui_icon_h() / 2
+	check(r, point_to(home_x, home_y), "the pointer is moved onto Home")
+	check(r, click_held() && click_held(), "and clicked twice")
+	dx, dy, dw := await_title_bar(s)
+	if check(r, dx >= 0, "a double click on Home opens a drawer window, its bar copper") {
+		// An icon in it: the file `verify_kfs` left in the home directory is
+		// a project, whose picture and name are drawn in ink, which is amber
+		// on the desktop's theme. The band read is inside the window and
+		// below its bar, where no frame reaches.
+		inked := false
+		for _ in 0 ..< PATIENCE * 20 {
+			for y in dy + 24 ..< min(dy + 24 + 2 * libmui_icon_h(), s.height) {
+				if first, _ := scan_row(s, y, amber, dx + 8, dx + dw - 8); first >= 0 {
+					inked = true
+					break
+				}
+			}
+			if inked {
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, inked, "with the icons verify_kfs left in the home directory drawn in it")
+
+		// alt-w closes the window in front, which the drawer is. The bar the
+		// drawer wore goes with it.
+		inject_chord(0x11) // 'w' is make 0x11
+		closed := false
+		for _ in 0 ..< PATIENCE * 10 {
+			if _, run := row_span(s, dy, copper, 8, s.width - 8); run <= 100 {
+				closed = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, closed, "and an alt-w closes the drawer, its bar gone from the glass")
+	}
+
+	// -- 2. Shell, from the first menu, and typing at it ------------------------------
+
+	// The first menu title after the wordmark: along the bar's text row the
+	// amber falls in groups a gap of ground apart, the wordmark first and
+	// `Workbench` second.
+	title_x := amber_group(s, WB_BAR_H / 2, amber, 2)
+	shells0 := count_named("window")
+	menu_col := title_x + 8
+	if check(r, title_x > 0, "the first menu title stands after the wordmark on the bar") {
+		check(r, point_to(title_x + 8, WB_BAR_H / 2), "the pointer is moved onto it")
+		check(r, inject_move(0, 0, 2) && wait_pointer(title_x + 8, WB_BAR_H / 2) && inject_move(0, 0, 0), "and button 3 is pressed there")
+		// The menu is a popup of button faces below the title. `Shell` is
+		// the third, so its face is the third run of face down a column
+		// inside the popup.
+		item_y := -1
+		for _ in 0 ..< PATIENCE * 20 {
+			item_y = nth_face_run(s, menu_col, WB_BAR_H, magnesium, 3)
+			if item_y >= 0 {
+				break
+			}
+			sync.delay(1)
+		}
+		if item_y < 0 {
+			sink := detail_for("a menu opens under it, a popup of items, Shell the third")
+			libodin.put_str(&sink, "title at ")
+			libodin.put_int(&sink, i64(title_x))
+			libodin.put_str(&sink, ", column ")
+			libodin.put_int(&sink, i64(menu_col))
+			libodin.put_str(&sink, " from the bar: ")
+			column_profile(&sink, s, menu_col, WB_BAR_H, min(WB_BAR_H + 220, s.height), magnesium, amber)
+			fail_detail(r, &sink)
+		}
+		if item_y >= 0 {
+			check(r, point_to(menu_col, item_y), "the pointer is moved onto Shell")
+			check(r, click_held(), "and clicked")
+		}
+	}
+
+	// The shell's window. Its bar is copper, being the window in front, and
+	// only one bar is, so the first wide run of copper is its.
+	bx, by, bw := await_title_bar(s)
+	if check(r, bx >= 0, "Shell opens a window, its bar copper") {
+		check(r, await_count(shells0 + 1, "window"), "with a shell in it, one more window in the process table")
+		// The well below the bar, and the prompt eight pixels into it.
+		slate := fb.pack(s, fb.SLATE)
+		ox, oy := -1, -1
+		for _ in 0 ..< PATIENCE * 10 {
+			oy, _ = scan_col(s, bx + bw / 2, slate, by, s.height)
+			if oy > by {
+				ox, _ = scan_row(s, oy + 4, slate, 0, s.width)
+				if ox >= 0 {
+					break
+				}
+			}
+			sync.delay(1)
+		}
+		if check(r, ox >= 0, "and a well below its bar") {
+			y0 := oy + 8
+			prompted, _ := await_glyph(s, ox + 8, y0, '%', PATIENCE * 10)
+			check(r, prompted, "where the shell's prompt lands")
+			inject_key(0x23) // 'h'
+			inject_key(0x17) // 'i'
+			echoed, _ := await_glyph(s, ox + 32, y0, 'i', PATIENCE * 10)
+			check(r, echoed, "two keys typed through the translator are on the glass after it, as verify_terminal types")
+			inject_key(0x1C) // Enter
+			answered, _ := await_glyph(s, ox + 8, y0 + 32, '%', PATIENCE * 10)
+			check(r, answered, "and a newline has the shell answer, and prompt again")
+		}
+	}
+
+	// -- 3. The bound chord opens one more --------------------------------------------
+
+	shells1 := count_named("window")
+	inject_chord(0x31) // 'n' is make 0x31: `window rc -i` in /lib/keys
+	check(r, await_count(shells1 + 1, "window"), "an alt-n reaches the desktop, which opens one more shell, counted in the process table")
+
+	// The shells are closed the way a person closes them, an alt-w each,
+	// front window first, and the glass says each went: the bar of the
+	// window in front is copper, and after the chord no bar is.
+	closed_shells := 0
+	for _ in 0 ..< 2 {
+		if fx, _, _ := await_title_bar(s); fx < 0 {
+			break
+		}
+		inject_chord(0x11) // 'w' is make 0x11
+		gone := false
+		deadline := sched.ticks() + PATIENCE * 10
+		for sched.ticks() < deadline {
+			if !any_title_bar(s) {
+				gone = true
+				break
+			}
+			sync.delay(1)
+		}
+		if !gone {
+			break
+		}
+		closed_shells += 1
+	}
+	check(r, closed_shells == 2, "an alt-w closes each shell window, front first, its bar gone from the glass")
+
+	// -- 4. A notice, written and read back ------------------------------------------
+
+	if check(r, srv.mount(vfs.boot_namespace, "/srv/wb", "/mnt") == vfs.OK, "the kernel mounts the notice service") {
+		posted := false
+		if nf, nerr := vfs.open_path(vfs.boot_namespace, "/mnt/notice", vfs.O_WRONLY); nerr == vfs.OK {
+			line := "verify the suite says hello\n"
+			n, werr := vfs.chan_write(nf, 0, transmute([]u8)line)
+			posted = werr == vfs.OK && n == len(line)
+			vfs.chan_close(nf)
+		}
+		check(r, posted, "a line written to notice is taken")
+		kept := false
+		if hf, herr := vfs.open_path(vfs.boot_namespace, "/mnt/history", vfs.O_RDONLY); herr == vfs.OK {
+			buf: [2048]u8
+			n, rerr := vfs.chan_read(hf, 0, buf[:])
+			kept = rerr == vfs.OK && n > 0 && index_of(string(buf[:n]), "the suite says hello") >= 0
+			vfs.chan_close(hf)
+		}
+		check(r, kept, "and comes back off history")
+
+		// -- 5. And the toast is in the bar's corner ----------------------------------
+
+		// A toast is a popup below the bar's right corner holding one button,
+		// whose face is magnesium where the backdrop was.
+		toasted := false
+		for _ in 0 ..< PATIENCE * 20 {
+			if first, _ := scan_row(s, WB_BAR_H + 4 + 8, magnesium, s.width / 2, s.width - 8); first >= 0 {
+				toasted = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, toasted, "and the toast's pixels are in the bar's corner")
+		pipe.quiesce()
+		check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "the notice mount comes down")
+	}
+
+	// -- Teardown, the toolkit demo's way ----------------------------------------------
+
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the server to stop it") {
+		finish(r, pw, "the desktop is taken down")
+		finish(r, ps, "and the draw server is taken down")
+		finish(r, pk, "and the translator is taken down")
+		return
+	}
+	if ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/ctl", vfs.O_RDONLY); cerr == vfs.OK {
+		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
+		vfs.chan_close(ctl)
+	}
+	if check(r, wait(ps, PATIENCE), "the draw server exits") {
+		check(r, ps.exit.deliberate && ps.exit.status == 0, "with zero -- the remove was the stop it obeyed")
+	}
+	// The desktop's windows are the server's files, so its loops end when
+	// the server does, and it comes down on its own; the shells it opened
+	// lose their windows the same way.
+	check(r, wait(pw, PATIENCE * 10), "and the desktop comes down with the server, its files gone")
+	check(r, srv.remove("draw") == vfs.OK, "the kernel takes the server's name away")
+	check(r, srv.remove("wb") == vfs.OK, "and the notice service's")
+	pipe.quiesce()
+	_ = vfs.unmount_path(vfs.boot_namespace, "", "/mnt")
+
+	// The draw server held the only fid on kbdfs's tree, so kbdfs's wire is
+	// idle now, and a Tremove of one of its files is its stop.
+	if kc, oerr := vfs.open_path(vfs.boot_namespace, "/n/kbd/cons", vfs.O_RDONLY); oerr == vfs.OK {
+		check(r, vfs.chan_remove(kc) == vfs.OK, "a remove stops the keyboard translator")
+		vfs.chan_close(kc)
+	}
+	check(r, wait(pk, PATIENCE), "the translator exits")
+	check(r, srv.remove("kbdfs") == vfs.OK, "and the kernel takes its name away too")
+
+	finish(r, pw, "and the desktop is reaped")
+	finish(r, ps, "and the draw server is reaped")
+	finish(r, pk, "and the translator is reaped")
+	pipe.quiesce()
+	_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/kbd")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+	drain_pinned(r, pin_before, "and the desktop's wires come back whole")
+}
+
+// The desktop's own metrics, as `apps/workbench` and `sys/libmui` lay them:
+// the bar's height and an icon cell. Written here rather than imported,
+// because the kernel links neither.
+WB_BAR_H :: 24
+
+@(private = "file")
+libmui_icon_w :: proc "contextless" () -> int {
+	return 96
+}
+
+@(private = "file")
+libmui_icon_h :: proc "contextless" () -> int {
+	return 64
+}
+
+// count_named counts the live processes whose program is `name`.
+@(private = "file")
+count_named :: proc "contextless" (name: string) -> int #no_bounds_check {
+	n := 0
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if p.live && name_ends(p.name, name) {
+			n += 1
+		}
+	}
+	return n
+}
+
+// await_count waits, inside the patience, for the count of live processes
+// named `name` to be `want`.
+@(private = "file")
+await_count :: proc(want: int, name: string) -> bool {
+	for _ in 0 ..< PATIENCE * 10 {
+		if count_named(name) == want {
+			return true
+		}
+		reap_orphans()
+		sync.delay(1)
+	}
+	return false
+}
+
+/*
+click_held presses the left button where the pointer is, holds it, and
+releases, with a hold either side. The server keeps one mouse line per
+window and a newer one overwrites it, so a press and a release a tick
+apart can reach a client's reader as the release alone. A person's press
+lasts longer than a program's turn, and so does this one.
+*/
+@(private = "file")
+click_held :: proc() -> bool {
+	cx, cy := mouse.position()
+	if !inject_move(0, 0, 1) || !wait_pointer(cx, cy) {
+		return false
+	}
+	sync.delay(CLICK_HOLD)
+	if !inject_move(0, 0, 0) || !wait_pointer(cx, cy) {
+		return false
+	}
+	sync.delay(CLICK_HOLD)
+	return true
+}
+
+// How long an injected press is held, and the gap before the next: a few
+// scheduler ticks, more than a cooperative program takes to read a line.
+CLICK_HOLD :: 40
+
+// row_span answers the start and length of the longest span of `want`
+// along row `y` between `x0` and `x1`, where a span is pixels of it fewer
+// than sixteen apart. A title bar is one: its copper is broken by the
+// title's letters and the gadgets, each a few pixels wide. A row of drawer
+// icons is five short ones, their copper lips sixty pixels apart, which
+// `scan_row`'s first-to-last cannot tell from a bar.
+@(private = "file")
+row_span :: proc "contextless" (s: ^fb.Surface, y: int, want: u32, x0: int, x1: int) -> (start: int, length: int) #no_bounds_check {
+	start, length = -1, 0
+	span_start, last := -1, -1
+	for x in x0 ..< x1 {
+		if fb.get_raw(s, x, y) != want {
+			continue
+		}
+		if span_start < 0 || x - last >= 16 {
+			if span_start >= 0 && last + 1 - span_start > length {
+				start, length = span_start, last + 1 - span_start
+			}
+			span_start = x
+		}
+		last = x
+	}
+	if span_start >= 0 && last + 1 - span_start > length {
+		start, length = span_start, last + 1 - span_start
+	}
+	return
+}
+
+// await_title_bar is `await_bar` over `row_span`: the first row, top down,
+// that carries a contiguous run of copper wider than a hundred pixels,
+// which is the bar of the window in front and nothing else on the desktop.
+@(private = "file")
+await_title_bar :: proc(s: ^fb.Surface) -> (bx: int, by: int, bw: int) {
+	copper := fb.pack(s, fb.COPPER)
+	bx, by, bw = -1, -1, 0
+	// A window program started cold reads itself, its shell and its font
+	// off the disk before it claims a window, which is seconds, so the
+	// wait is the suite's longest.
+	deadline := sched.ticks() + PATIENCE * 100
+	for sched.ticks() < deadline {
+		bx, by, bw = title_bar(s, copper)
+		if bx >= 0 {
+			break
+		}
+		sync.delay(1)
+	}
+	return
+}
+
+// title_bar finds a window's bar on the glass now: a span of copper wider
+// than a hundred pixels on a row of the top half. A bar that wide crosses
+// one of the columns sampled sixty-four apart, so those are read down
+// first and only a row with copper on one is measured -- a whole-glass
+// read every tick is what a compositor on another core would feel.
+@(private = "file")
+title_bar :: proc "contextless" (s: ^fb.Surface, copper: u32) -> (bx: int, by: int, bw: int) #no_bounds_check {
+	for y in 4 ..< s.height / 2 {
+		hit := false
+		for x := 40; x < s.width - 8; x += 64 {
+			if fb.get_raw(s, x, y) == copper {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		if start, run := row_span(s, y, copper, 8, s.width - 8); run > 100 {
+			return start, y, run
+		}
+	}
+	return -1, -1, 0
+}
+
+// nth_face_run answers the middle row of the n-th run of `face` down column
+// `x` from `y0`, or -1 when there are fewer. A run is eight rows or more,
+// which a button is and a bevel line is not.
+@(private = "file")
+nth_face_run :: proc "contextless" (s: ^fb.Surface, x: int, y0: int, face: u32, n: int) -> int #no_bounds_check {
+	runs, start := 0, -1
+	for y in y0 ..< s.height {
+		on := fb.get_raw(s, x, y) == face
+		if on && start < 0 {
+			start = y
+		} else if !on && start >= 0 {
+			if y - start >= 8 {
+				runs += 1
+				if runs == n {
+					return (start + y) / 2
+				}
+			}
+			start = -1
+		}
+	}
+	return -1
+}
+
+// any_title_bar says whether any window's bar is on the glass: a span of
+// copper wider than a hundred pixels on any row of the top half.
+@(private = "file")
+any_title_bar :: proc "contextless" (s: ^fb.Surface) -> bool {
+	bx, _, _ := title_bar(s, fb.pack(s, fb.COPPER))
+	return bx >= 0
+}
+
+// amber_group answers the first column of the n-th group of `want` along
+// row `y`, where a gap of twenty-four pixels or more separates groups: the
+// words on the desktop's bar, each a run of letters a few pixels apart.
+// -1 when there are fewer groups.
+@(private = "file")
+amber_group :: proc "contextless" (s: ^fb.Surface, y: int, want: u32, n: int) -> int #no_bounds_check {
+	groups, start, last := 0, -1, -1
+	for x in 0 ..< s.width {
+		if fb.get_raw(s, x, y) != want {
+			continue
+		}
+		if start < 0 || x - last >= 24 {
+			groups += 1
+			if groups == n {
+				return x
+			}
+			start = x
+		}
+		last = x
+	}
+	return -1
+}
+
+// index_of is the position of `sub` in `s`, or -1.
+@(private = "file")
+index_of :: proc "contextless" (s: string, sub: string) -> int {
+	if len(sub) == 0 {
+		return 0
+	}
+	for i in 0 ..= len(s) - len(sub) {
+		if s[i:i + len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}
+
+/*
 verify_app runs a `sys/libapp` client and reads its frame off the store.
 
 The client at `path` opens a window, attaches its store, and each frame paints
@@ -8155,12 +8693,13 @@ press_and_move :: proc(dx: int, dy: int) -> bool {
 	return inject_move(0, 0, 0) && wait_pointer(cx + dx, cy + dy)
 }
 
-// inject_move is one packet: the movement in screen terms, the button as
-// rio numbers it. The mouse counts Y up, so the sign is turned over here.
+// inject_move is one packet: the movement in screen terms, the buttons as
+// the PS/2 packet carries them: bit 0 the left, bit 1 the right, bit 2 the
+// middle. The driver renumbers them as rio does. The mouse counts Y up, so the sign is turned over here.
 @(private = "file")
 inject_move :: proc(dx: int, dy: int, buttons: u8) -> bool {
 	my := -dy
-	flags := u8(0x08) | (buttons & 1)
+	flags := u8(0x08) | (buttons & 7)
 	if dx < 0 {
 		flags |= 0x10
 	}

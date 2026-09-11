@@ -290,6 +290,15 @@ run_wctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bo
 			return vectra9.EINVAL
 		}
 		window_hide(win, true)
+	case "close":
+		// The client's own alt-w: the window is hung up, so its keyboard
+		// answers nothing and a reader parked on it learns the window is
+		// gone. A program whose mouse thread ended a window asks this,
+		// because closing the files under a parked read ends nothing.
+		if len(trim(rest)) != 0 {
+			return vectra9.EINVAL
+		}
+		window_hangup(win)
 	case "unhide":
 		if len(trim(rest)) != 0 {
 			return vectra9.EINVAL

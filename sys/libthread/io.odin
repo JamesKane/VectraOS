@@ -29,6 +29,7 @@ Io_Op :: enum u8 {
 	Read,
 	Write,
 	Sleep, // `ticks` in `fd`: a wait a thread may make without parking its proc
+	Mount, // `path` on `target` in `order`: a mount whose server is a thread of this proc
 	Exit, // leave the loop, so `ioclose` can give the proc back
 }
 
@@ -36,6 +37,9 @@ Io_Call :: struct {
 	op:     Io_Op,
 	fd:     int,
 	buf:    []u8,
+	path:   string,
+	target: string,
+	order:  u64,
 	result: i64,
 }
 
@@ -125,6 +129,8 @@ io_loop :: proc "contextless" (arg: rawptr) {
 			c.result = libuser.write(c.fd, c.buf)
 		case .Sleep:
 			c.result = libuser.sleep(u64(c.fd))
+		case .Mount:
+			c.result = libuser.mount(c.path, c.target, c.order)
 		case .Exit:
 		}
 		sendp(io.replies, c)
@@ -136,6 +142,15 @@ iocall :: proc "contextless" (io: ^Ioproc, c: ^Io_Call) -> i64 {
 	sendp(io.calls, c)
 	_ = recvp(io.replies)
 	return c.result
+}
+
+// iomount is `libuser.mount` made from a thread. A mount waits for the
+// server's Tversion, so a program that mounts the service one of its own
+// threads serves would park that thread's proc waiting on itself. The io
+// proc waits instead, and the serving thread answers meanwhile.
+iomount :: proc "contextless" (io: ^Ioproc, source: string, target: string, order: u64) -> i64 {
+	c := Io_Call{op = .Mount, path = source, target = target, order = order}
+	return iocall(io, &c)
 }
 
 // ioread is `libuser.read` made from a thread: the answer is the kernel's,

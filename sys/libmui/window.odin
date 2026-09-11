@@ -492,6 +492,15 @@ mouse_thread :: proc "contextless" (arg: rawptr) #no_bounds_check {
 			}
 			mouse_event(win, win.line[:int(got)])
 			if win.done {
+				// A handler ended the window from here. `window_run` is
+				// parked in the key read and would learn it only from a
+				// key, which a popup, never focused, never gets: a menu
+				// item chosen by the mouse stayed chosen and undone. A
+				// close of the files would end nothing, since a read in
+				// flight outlives its descriptor. So the server is asked
+				// to hang the window up, which answers the key read with
+				// nothing, and `window_run` takes it from there.
+				window_end(win)
 				break
 			}
 		}
@@ -505,6 +514,26 @@ mouse_thread :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	if win.mouse_done != nil {
 		libthread.sendul(win.mouse_done, 1)
 	}
+}
+
+/*
+window_end ends a window from any thread but its own: it asks the server
+to hang the window up, `close` on its wctl, the chord alt-w's own word.
+The window's key read answers nothing after it, `window_run` returns, and
+the window's threads leave the way they do for a close gadget. This is
+the call for a thread that wants a window it does not run gone -- a
+sleeper taking a toast down, a menu closing a drawer. `window_close` is
+not: it closes the files, and a read in flight outlives its descriptor,
+so the window's own threads would stay parked on a window that is gone,
+and a record reused under them is a record two windows share.
+*/
+window_end :: proc "contextless" (win: ^Window) {
+	wctl := libuser.open(libdraw.win_path(win.path[:], "/mnt", win.id, "wctl"), abi.O_WRONLY)
+	if wctl < 0 {
+		return
+	}
+	_ = libuser.write(int(wctl), transmute([]u8)string("close"))
+	_ = libuser.close(int(wctl))
 }
 
 // -- Dispatch ----------------------------------------------------------------
