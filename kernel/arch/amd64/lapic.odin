@@ -152,6 +152,7 @@ lapic_calibrate :: proc "contextless" (micros: u64 = 10_000) -> u64 {
 
 	pit_gate_arm(pit_count_for_micros(micros))
 	lapic_write(LAPIC_TIMER_INITIAL, 0xFFFF_FFFF)
+	tsc_start := rdtsc()
 	pit_gate_start()
 
 	for !pit_gate_expired() {
@@ -159,8 +160,15 @@ lapic_calibrate :: proc "contextless" (micros: u64 = 10_000) -> u64 {
 	}
 
 	remaining := lapic_read(LAPIC_TIMER_CURRENT)
+	// The time-stamp counter runs off the same window, so measure it here
+	// rather than spin the PIT a second time. `tsc_calibrate` reads this.
+	tsc_elapsed := rdtsc() - tsc_start
 	lapic_write(LAPIC_TIMER_INITIAL, 0)
 	pit_gate_stop()
+
+	if tsc_elapsed != 0 {
+		measured_tsc_hz = (tsc_elapsed * 1_000_000) / micros
+	}
 
 	if remaining == 0 || remaining == 0xFFFF_FFFF {
 		return 0

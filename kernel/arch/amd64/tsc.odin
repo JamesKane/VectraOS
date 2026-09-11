@@ -30,7 +30,15 @@ Interrupts must be off: a tick landing in the middle would be counted as part of
 the window with no way to tell afterwards. Returns zero if the counter did not
 move, rather than a rate the caller would divide by.
 */
+// measured_tsc_hz is what `lapic_calibrate` read off its own PIT window. The
+// boot calibrates the LAPIC first. So the counter's rate is already known
+// by the time anything asks, and the PIT need not spin a second time.
+measured_tsc_hz: u64
+
 tsc_calibrate :: proc "contextless" (micros: u64 = 10_000) -> u64 {
+	if measured_tsc_hz != 0 {
+		return measured_tsc_hz
+	}
 	pit_gate_arm(pit_count_for_micros(micros))
 	start := rdtsc()
 	pit_gate_start()
