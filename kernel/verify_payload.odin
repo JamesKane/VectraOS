@@ -564,7 +564,7 @@ Before the slot buffer this was the arrangement `serve_start` had to refuse.
 */
 @(private = "file")
 verify_concurrent_listing :: proc(r: ^Payload_Result) -> bool #no_bounds_check {
-	if !vfs.static_init(&dir_tree, "payload", DIR_NODES[:]) {
+	if !vfs.static_init(&dir_tree, DIR_NODES[:]) {
 		return false
 	}
 	defer vfs.static_destroy(&dir_tree)

@@ -1003,7 +1003,7 @@ init :: proc(ns: ^vfs.Namespace, dtb: rawptr) -> vfs.Errno {
 	dma_table = dtab
 	smmu.set_sink(on_event)
 
-	if !vfs.static_init(&tree_static, "tree", rows) {
+	if !vfs.static_init(&tree_static, rows) {
 		return vectra9.ENOMEM
 	}
 	// `tree_handler` wraps `static_handler`: the property reads and the mmio

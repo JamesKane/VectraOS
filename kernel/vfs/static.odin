@@ -89,7 +89,6 @@ its transport offers nowhere else -- see `dirbuf` above.
 */
 static_init :: proc(
 	t: ^Static_Tree,
-	label: string,
 	nodes: []Static_Node,
 	max_fids: int = 64,
 	dirbuf_size: int = 4096,
@@ -98,9 +97,6 @@ static_init :: proc(
 		return false
 	}
 
-	// `label` is the caller's name for the tree. Nothing reads it, so
-	// nothing keeps it.
-	_ = label
 	t.nodes = nodes
 	t.dirbuf = make([]u8, dirbuf_size)
 	if !fidtab_init(&t.fids, max_fids) || t.dirbuf == nil {
@@ -274,7 +270,7 @@ static_handler :: proc "contextless" (
 			size    = n.dir ? 0 : u64(len(n.data)),
 			blksize = 512,
 		}
-		attr.blocks = (attr.size + 511) / 512
+		attr.blocks = vectra9.blocks_of(attr.size)
 		reply^ = attr
 
 	case vectra9.Tstatfs:
@@ -283,7 +279,7 @@ static_handler :: proc "contextless" (
 			return
 		}
 		reply^ = vectra9.Rstatfs {
-			type    = 0x0139_9249, // V9FS_MAGIC, as Linux reports for 9P
+			type    = vectra9.V9FS_MAGIC,
 			bsize   = 512,
 			files   = u64(len(t.nodes)),
 			namelen = 255,

@@ -889,7 +889,7 @@ devfs_handler :: proc "contextless" (
 			return
 		}
 		reply^ = vectra9.Rstatfs {
-			type    = 0x0139_9249, // V9FS_MAGIC, as Linux reports for 9P
+			type    = vectra9.V9FS_MAGIC,
 			bsize   = 512,
 			files   = u64(len(DEV_NODES)),
 			namelen = 255,

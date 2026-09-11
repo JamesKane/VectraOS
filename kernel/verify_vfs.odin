@@ -724,11 +724,11 @@ verify_vfs_threads :: proc() {
 		report_vfs_threads(&r)
 		return
 	}
-	if !libodin.check(&r, vfs.static_init(&tree_t, "t", TREE_T_NODES[:]), "#t server tables") {
+	if !libodin.check(&r, vfs.static_init(&tree_t, TREE_T_NODES[:]), "#t server tables") {
 		report_vfs_threads(&r)
 		return
 	}
-	if !libodin.check(&r, vfs.static_init(&tree_u, "u", TREE_U_NODES[:]), "#u server tables") {
+	if !libodin.check(&r, vfs.static_init(&tree_u, TREE_U_NODES[:]), "#u server tables") {
 		vfs.static_destroy(&tree_t)
 		report_vfs_threads(&r)
 		return
@@ -738,7 +738,7 @@ verify_vfs_threads :: proc() {
 	libodin.check(&r, vfs.server_init(&server_u, "u", vfs.static_handler, &tree_u) == .None, "#u Tversion")
 	libodin.check(&r, vfs.register_device(&server_t), "#t registered")
 	libodin.check(&r, vfs.register_device(&server_u), "#u registered")
-	libodin.check(&r, vfs.static_init(&tree_v, "v", TREE_V_NODES[:]), "#v server tables")
+	libodin.check(&r, vfs.static_init(&tree_v, TREE_V_NODES[:]), "#v server tables")
 	libodin.check(&r, vfs.server_init(&server_v, "v", vfs.static_handler, &tree_v) == .None, "#v Tversion")
 	libodin.check(&r, vfs.register_device(&server_v), "#v registered")
 

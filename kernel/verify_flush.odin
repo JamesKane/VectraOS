@@ -592,7 +592,7 @@ of things and `mnt.odin` says why.
 */
 @(private = "file")
 verify_transparency :: proc(r: ^Flush_Result) -> bool #no_bounds_check {
-	if !vfs.static_init(&plain_tree, "plain", PLAIN_NODES[:]) {
+	if !vfs.static_init(&plain_tree, PLAIN_NODES[:]) {
 		return false
 	}
 	defer vfs.static_destroy(&plain_tree)

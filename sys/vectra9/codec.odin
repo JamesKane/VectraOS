@@ -257,6 +257,15 @@ S_IFDIR :: u32(0o040000)
 S_IFREG :: u32(0o100000)
 S_IFCHR :: u32(0o020000)
 
+// The filesystem type a statfs reports. Linux names 9P this, and every
+// server in the tree answers with it. `blocks_of` is the 512-byte block
+// count a statfs and a getattr give for a file of `size` bytes.
+V9FS_MAGIC :: u32(0x0139_9249)
+
+blocks_of :: proc "contextless" (size: u64) -> u64 {
+	return (size + 511) / 512
+}
+
 // dirent_size is what one entry will occupy, so a server can stop filling a
 // buffer before it overruns the count the client asked for.
 dirent_size :: proc "contextless" (name: string) -> int {

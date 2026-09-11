@@ -735,7 +735,7 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 			size    = n.dir ? 0 : u64(n.size),
 			blksize = u64(vol.cluster_bytes),
 		}
-		attr.blocks = (attr.size + 511) / 512
+		attr.blocks = vectra9.blocks_of(attr.size)
 		reply^ = attr
 
 	case vectra9.Tsetattr:

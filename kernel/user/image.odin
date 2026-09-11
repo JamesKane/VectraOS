@@ -372,7 +372,7 @@ bin_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 	count = live
 	bin_published = count - 1
 
-	if !vfs.static_init(&bin_tree, "bin", bin_live[:count]) {
+	if !vfs.static_init(&bin_tree, bin_live[:count]) {
 		return vectra9.ENOMEM
 	}
 	if err := vfs.server_init(&bin_server, "b", vfs.static_handler, &bin_tree); err != .None {

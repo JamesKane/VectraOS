@@ -392,13 +392,13 @@ none_blocked :: proc "contextless" (arg: rawptr) -> bool {
 verify_vfs_mnt :: proc() #no_bounds_check {
 	r: Mnt_Result
 
-	if !libodin.check(&r, vfs.static_init(&mtree, "m", MTREE_NODES[:]), "the shared tree came up") {
+	if !libodin.check(&r, vfs.static_init(&mtree, MTREE_NODES[:]), "the shared tree came up") {
 		report_vfs_mnt(&r)
 		return
 	}
 	defer vfs.static_destroy(&mtree)
 
-	if !libodin.check(&r, vfs.static_init(&slow.tree, "w", SLOW_NODES[:]), "the blocking tree came up") {
+	if !libodin.check(&r, vfs.static_init(&slow.tree, SLOW_NODES[:]), "the blocking tree came up") {
 		report_vfs_mnt(&r)
 		return
 	}

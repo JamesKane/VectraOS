@@ -32,7 +32,7 @@ lib_init :: proc(ns: ^vfs.Namespace) -> vfs.Errno {
 		{name = "tests", parent = 0, dir = true},
 		{name = "tools.rc", parent = 1, data = string(TOOLS_RC)},
 	}
-	if !vfs.static_init(&lib_tree, "lib", lib_nodes[:3]) {
+	if !vfs.static_init(&lib_tree, lib_nodes[:3]) {
 		return vectra9.ENOMEM
 	}
 	if err := vfs.server_init(&lib_server, "l", vfs.static_handler, &lib_tree); err != .None {

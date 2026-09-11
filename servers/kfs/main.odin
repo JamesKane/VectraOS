@@ -1093,7 +1093,7 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 			atime_sec = n.mtime,
 			ctime_sec = n.mtime,
 		}
-		attr.blocks = (attr.size + 511) / 512
+		attr.blocks = vectra9.blocks_of(attr.size)
 		reply^ = attr
 
 	case vectra9.Tsetattr:

@@ -416,7 +416,7 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 			size    = n.dir ? 0 : u64(len(n.data)),
 			blksize = 512,
 		}
-		attr.blocks = (attr.size + 511) / 512
+		attr.blocks = vectra9.blocks_of(attr.size)
 		reply^ = attr
 
 	case vectra9.Tsetattr:
@@ -435,7 +435,7 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) {
 
 	case vectra9.Tstatfs:
 		reply^ = vectra9.Rstatfs {
-			type    = 0x0139_9249,
+			type    = vectra9.V9FS_MAGIC,
 			bsize   = 512,
 			namelen = 255,
 		}

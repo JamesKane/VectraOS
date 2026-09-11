@@ -187,11 +187,11 @@ verify :: proc(buf: []u8) -> Verify_Result {
 	if !check(&r, boot_namespace != nil, "boot namespace exists") {
 		return r
 	}
-	if !check(&r, static_init(&alpha_tree, "alpha", ALPHA_NODES[:]), "alpha server tables") {
+	if !check(&r, static_init(&alpha_tree, ALPHA_NODES[:]), "alpha server tables") {
 		return r
 	}
 	defer static_destroy(&alpha_tree)
-	if !check(&r, static_init(&beta_tree, "beta", BETA_NODES[:]), "beta server tables") {
+	if !check(&r, static_init(&beta_tree, BETA_NODES[:]), "beta server tables") {
 		return r
 	}
 	defer static_destroy(&beta_tree)

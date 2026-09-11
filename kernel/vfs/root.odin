@@ -95,7 +95,7 @@ come from the heap. Everything before this point in the boot names files by not
 naming them at all.
 */
 init :: proc() -> Errno {
-	if !static_init(&root_tree, "root", ROOT_NODES[:]) {
+	if !static_init(&root_tree, ROOT_NODES[:]) {
 		return vectra9.ENOMEM
 	}
 	if err := server_init(&root_server, "/", static_handler, &root_tree); err != .None {

@@ -527,7 +527,7 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 		if !dir {
 			attr.size = u64(v.size)
 		}
-		attr.blocks = (attr.size + 511) / 512
+		attr.blocks = vectra9.blocks_of(attr.size)
 		reply^ = attr
 
 	case vectra9.Tsetattr:
@@ -573,7 +573,7 @@ env_dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_
 			}
 		}
 		reply^ = vectra9.Rstatfs {
-			type    = 0x0139_9249,
+			type    = vectra9.V9FS_MAGIC,
 			bsize   = 512,
 			files   = u64(n),
 			ffree   = u64(MAX_VARS - n),

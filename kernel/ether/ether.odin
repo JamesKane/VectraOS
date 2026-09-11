@@ -414,7 +414,7 @@ dispatch :: proc(request: ^vectra9.Msg, reply: ^vectra9.Msg, buf: []u8) #no_boun
 			reply^ = vectra9.error_reply(vectra9.EBADF)
 			return
 		}
-		reply^ = vectra9.Rstatfs{type = 0x0139_9249, bsize = 2048, namelen = 16}
+		reply^ = vectra9.Rstatfs{type = vectra9.V9FS_MAGIC, bsize = 2048, namelen = 16}
 
 	case vectra9.Tremove:
 		_ = vfs.fidtab_release(&d.fids, m.fid)

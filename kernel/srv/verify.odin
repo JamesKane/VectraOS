@@ -83,11 +83,11 @@ verify :: proc(buf: []u8) -> Verify_Result #no_bounds_check {
 		return r
 	}
 
-	if !check(&r, vfs.static_init(&alpha_tree, "alpha", ALPHA_NODES[:]), "the alpha fixture came up") {
+	if !check(&r, vfs.static_init(&alpha_tree, ALPHA_NODES[:]), "the alpha fixture came up") {
 		return r
 	}
 	defer vfs.static_destroy(&alpha_tree)
-	if !check(&r, vfs.static_init(&beta_tree, "beta", BETA_NODES[:]), "the beta fixture came up") {
+	if !check(&r, vfs.static_init(&beta_tree, BETA_NODES[:]), "the beta fixture came up") {
 		return r
 	}
 	defer vfs.static_destroy(&beta_tree)

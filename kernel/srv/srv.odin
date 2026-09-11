@@ -935,7 +935,7 @@ srv_dispatch :: proc(
 		if !dir {
 			attr.size = u64(report_len(t, id))
 		}
-		attr.blocks = (attr.size + 511) / 512
+		attr.blocks = vectra9.blocks_of(attr.size)
 		reply^ = attr
 
 	case vectra9.Tstatfs:
@@ -944,7 +944,7 @@ srv_dispatch :: proc(
 			return
 		}
 		reply^ = vectra9.Rstatfs {
-			type    = 0x0139_9249, // V9FS_MAGIC, as Linux reports for 9P
+			type    = vectra9.V9FS_MAGIC,
 			bsize   = 512,
 			files   = u64(t.count),
 			ffree   = u64(MAX_SERVICES - t.count),
