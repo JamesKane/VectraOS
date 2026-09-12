@@ -126,9 +126,11 @@ NODE_ROOT :: i32(0)
 NODE_NEW :: i32(1)
 NODE_CTL :: i32(2) // The server's own: a workspace switch, a reload. See `files.odin`
 NODE_HOTKEY :: i32(3) // The chords the server does not act on, for the desktop
+NODE_SNARF :: i32(4) // rio's /dev/snarf: the shared clipboard. See `snarf.odin`
+NODE_SNARFHIST :: i32(5) // what a cut pushed off the buffer, ten deep
 
-// A window's nine nodes, in one block apiece after the four fixed ones.
-NODE_BASE :: i32(4)
+// A window's nine nodes, in one block apiece after the six fixed ones.
+NODE_BASE :: i32(6)
 NODE_PER :: i32(9)
 PART_DIR :: i32(0)
 PART_DATA :: i32(1)
@@ -3070,6 +3072,10 @@ name_of :: proc "contextless" (node: i32) -> string #no_bounds_check {
 		return "ctl"
 	case NODE_HOTKEY:
 		return "hotkey"
+	case NODE_SNARF:
+		return "snarf"
+	case NODE_SNARFHIST:
+		return "snarfhist"
 	}
 	w := node_win(node)
 	if w < 0 {
@@ -3119,6 +3125,10 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 			return NODE_CTL
 		case "hotkey":
 			return NODE_HOTKEY
+		case "snarf":
+			return NODE_SNARF
+		case "snarfhist":
+			return NODE_SNARFHIST
 		}
 		if w := libdraw.win_index(name); w >= 0 && w < MAX_WINDOWS {
 			return node_of(w, PART_DIR)
@@ -3147,6 +3157,12 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 		return node_of(w, PART_CURSOR)
 	case "store":
 		return node_of(w, PART_STORE)
+	case "snarf":
+		// The one shared buffer, reachable from a window's directory so the
+		// bind over `/dev` makes it `/dev/snarf`. It has no window of its own.
+		return NODE_SNARF
+	case "snarfhist":
+		return NODE_SNARFHIST
 	}
 	return -1
 }
@@ -3342,6 +3358,18 @@ handler :: proc "contextless" (
 			lib9p.hold(&srv)
 			return
 		}
+		// The snarf buffer and its history are bytes, not a report, so they
+		// are answered from their own store rather than the line below.
+		if node == NODE_SNARF {
+			room := min(len(buf), int(m.count))
+			reply^ = vectra9.Rread{data = buf[:snarf_read(buf[:room], m.offset)]}
+			return
+		}
+		if node == NODE_SNARFHIST {
+			room := min(len(buf), int(m.count))
+			reply^ = vectra9.Rread{data = buf[:snarfhist_read(buf[:room], m.offset)]}
+			return
+		}
 
 		line: [160]u8
 		n := 0
@@ -3378,6 +3406,15 @@ handler :: proc "contextless" (
 				return
 			}
 			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+			return
+		}
+		if node == NODE_SNARF {
+			reply^ = vectra9.Rwrite{count = u32(snarf_write(m.offset, m.data))}
+			return
+		}
+		if node == NODE_SNARFHIST {
+			// The history is what a write pushed off the buffer, read only.
+			reply^ = vectra9.error_reply(vectra9.EINVAL)
 			return
 		}
 		switch node_part(node) {
@@ -3499,7 +3536,11 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 		return
 	}
 
-		count := root ? 3 + MAX_WINDOWS : int(NODE_PER) - 1
+	// The root holds `new`, `ctl`, `hotkey`, `snarf` and `snarfhist`, then a
+	// directory per window. A window's directory holds its own files and the
+	// two shared snarf names, so the bind over `/dev` carries `/dev/snarf`.
+	per := int(NODE_PER) - 1
+	count := root ? 5 + MAX_WINDOWS : per + 2
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
 	for i := int(m.offset); i < count; i += 1 {
@@ -3513,12 +3554,23 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 				child = NODE_CTL
 			case 2:
 				child = NODE_HOTKEY
+			case 3:
+				child = NODE_SNARF
+			case 4:
+				child = NODE_SNARFHIST
 			case:
-				child = node_of(i - 3, PART_DIR)
+				child = node_of(i - 5, PART_DIR)
 				kind = vectra9.DT_DIR
 			}
 		} else {
-			child = node_of(w, PART_DATA + i32(i))
+			switch {
+			case i < per:
+				child = node_of(w, PART_DATA + i32(i))
+			case i == per:
+				child = NODE_SNARF
+			case:
+				child = NODE_SNARFHIST
+			}
 		}
 		if vectra9.remaining(&c) < vectra9.dirent_size(name_of(child)) {
 			break

@@ -233,10 +233,18 @@ server knows nothing of what the program waits for, which is why the
 word is on the window and not on the program.
 
 **The snarf buffer is the server's.** `/srv/draw/snarf` is `rio`'s
-`/dev/snarf`, and `window` binds it there. A write replaces it and
-pushes what was there onto `snarf/history`, ten deep, so a thing cut
-over is not lost. An image is a write of a `sys/libdraw` image's bytes,
-and a program that reads one gets pixels back.
+`/dev/snarf`: one clipboard the whole desktop shares. It is a file at the
+server's root and a name in every window's directory too -- the same buffer
+either way, with no window of its own -- so the bind that puts a window's
+files over `/dev`, `cmd/window`'s and `sys/libmui`'s, makes `/dev/snarf` this
+window's with no second bind. A write replaces it and pushes what was there
+onto the history, ten deep, so a thing cut over is not lost; the history is
+its own read-only file, `snarfhist`, since a file cannot also be the `snarf`
+directory the plan first drew. An image is a write of a `sys/libdraw` image's
+bytes, and a program that reads one gets pixels back. The buffer is capped,
+small: static memory in a server whose whole image must fit the loader's
+budget, so it holds a selection -- a line, a paragraph, a small image -- and a
+write past the cap keeps what fits. See `servers/intuition/snarf.odin`.
 
 **The chords are the server's, and a file says which.** `intuition` reads
 `$home/lib/keys`, and `/lib/keys` when there is none, at start and on a
@@ -735,8 +743,6 @@ Each its own document, in whatever order a reason arrives.
   and a window dragged between tiles in the overview.
 - **Snapshot**, an icon's position kept in `$home/lib/wb`.
 - **Menus on MUI programs**, with the toolkit's `Menu` on button 3.
-- **`state` on `wctl` and the snarf history**, section 4's two late
-  additions to a step that is done.
 - **A theme switcher** over `/lib/themes`, and the `use` line, section 5.
 - **The fault notice**, the day `docs/GHOST.md` step 3 gives the click
   somewhere to go.

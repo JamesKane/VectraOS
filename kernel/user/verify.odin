@@ -4024,6 +4024,42 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	}
 
 	/*
+	And the snarf buffer, rio's `/dev/snarf` the desktop shares.
+
+	`docs/WORKBENCH.md` section 4: one clipboard, a write replaces it and
+	pushes the old contents onto a ten-deep history. The same buffer is
+	reachable through a window's own directory, which is what the bind over
+	`/dev` turns into `/dev/snarf` with no second bind.
+	*/
+	if sc, serr := vfs.open_path(vfs.boot_namespace, "/mnt/snarf", vfs.O_RDWR); serr == vfs.OK {
+		rb: [64]u8
+		first := "hello"
+		_, w1 := vfs.chan_write(sc, 0, transmute([]u8)first)
+		n1, _ := vfs.chan_read(sc, 0, rb[:])
+		check(r, w1 == vfs.OK && string(rb[:n1]) == "hello", "a write to snarf is read back as the buffer")
+
+		second := "world"
+		_, _ = vfs.chan_write(sc, 0, transmute([]u8)second)
+		n2, _ := vfs.chan_read(sc, 0, rb[:])
+		check(r, string(rb[:n2]) == "world", "a second write replaces what snarf holds")
+		vfs.chan_close(sc)
+
+		if hc, herr := vfs.open_path(vfs.boot_namespace, "/mnt/snarfhist", vfs.O_RDONLY); herr == vfs.OK {
+			hb: [128]u8
+			hn, _ := vfs.chan_read(hc, 0, hb[:])
+			check(r, hn > 0 && index_of(string(hb[:hn]), "hello") >= 0, "and the buffer it replaced is kept on snarfhist")
+			vfs.chan_close(hc)
+		}
+
+		if qc, qerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/snarf", vfs.O_RDONLY); qerr == vfs.OK {
+			qb: [64]u8
+			qn, _ := vfs.chan_read(qc, 0, qb[:])
+			check(r, string(qb[:qn]) == "world", "and a window's own snarf is the one shared buffer, for /dev/snarf")
+			vfs.chan_close(qc)
+		}
+	}
+
+	/*
 	The region the test paints, saved to be restored. Four rows of 48 pixels
 	on the left, and eight pixels at the right edge of the first.
 
