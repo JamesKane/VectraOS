@@ -532,7 +532,7 @@ what should grow this array, and against `MAX_DEPTH` it would not have.
 
 Its own bound rather than `libdraw.MAX_PIECES`, which is what one panel makes.
 */
-MAX_FRAME_PIECES :: 4 * FRAME_EDGE + (1 + 4) + (1 + 4 * FRAME_WELL) + 4 * libdraw.MAX_GADGET_PIECES
+MAX_FRAME_PIECES :: 4 * FRAME_EDGE + (1 + 4) + (1 + 4 * FRAME_WELL) + 4 * libdraw.MAX_GADGET_PIECES + (libdraw.MAX_PIECES + 1)
 
 /*
 The window frame's three numbers, and the only three a window's chassis has.
@@ -572,6 +572,12 @@ FRAME_INSET_Y :: FRAME_EDGE + FRAME_TITLE + FRAME_WELL
 // What the bar keeps clear around its text. The bar is `FRAME_TITLE` tall and
 // a glyph is sixteen, so the vertical half of this is what centres one.
 FRAME_PAD :: 4
+
+// STATE_LAMP_GAP is how far a state lamp pushes the title to the right when
+// one is shown. A window that never sets a state keeps the bar's left edge,
+// so the title does not move for the windows -- nearly all of them -- that do
+// not want a person. See `state_lamp` and `title_text`.
+STATE_LAMP_GAP :: LAMP + 2
 
 /*
 window_frame decomposes a window's chassis: a raised border, with a copper bar across
@@ -756,8 +762,31 @@ window_chrome :: proc "contextless" (win: ^Window) {
 		win_pieces(win, pieces[:1])
 		return
 	}
-	win_pieces(win, pieces[:window_frame(pieces[:], 0, 0, win.w, win.h, focused(win))])
+	n := window_frame(pieces[:], 0, 0, win.w, win.h, focused(win))
+	n += state_lamp(pieces[n:], win)
+	win_pieces(win, pieces[:n])
 	title_text(win)
+}
+
+/*
+state_lamp draws the lamp beside the title for a window that wants a person,
+or nothing for one that does not. Working is the phosphor jewel lit; waiting
+is amber, the hot colour the screen bar's workspace lamp wears for the same
+reason; idle is no lamp, and the title keeps the bar's left edge.
+
+It sits between the close gadget and the name, and `title_text` starts the
+name past it by the same `STATE_LAMP_GAP`, so the two agree on where the lamp
+ends and the letters begin.
+*/
+state_lamp :: proc "contextless" (out: []libdraw.Piece, win: ^Window) -> int #no_bounds_check {
+	if win.state == .Idle {
+		return 0
+	}
+	bx, by, _, _ := frame_bar_at(0, 0, win.w)
+	lx := bx + FRAME_PAD + GADGET + 2
+	ly := by + (FRAME_TITLE - LAMP) / 2
+	color := win.state == .Working ? libpal.PHOSPHOR : libpal.AMBER
+	return libdraw.lamp(out, lx, ly, LAMP, color, true)
 }
 
 /*
@@ -791,6 +820,7 @@ title_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
 		gx, gy, gs := gadget_at(&probe, g)
 		n += libdraw.gadget(pieces[n:], gx, gy, gs, g, false)
 	}
+	n += state_lamp(pieces[n:], win)
 	win_pieces(win, pieces[:n])
 	title_text(win)
 }
@@ -836,8 +866,12 @@ taller than a glyph by `FRAME_PAD`, so no row of one can leave it.
 title_text :: proc "contextless" (win: ^Window) #no_bounds_check {
 		bx, by, bw, bh := frame_bar_at(0, 0, win.w)
 	// The name starts past the close gadget and stops before the two at
-	// the right.
+	// the right. A window that wants a person has a lamp in that first gap,
+	// so its name starts one lamp further in; see `state_lamp`.
 	tx := bx + FRAME_PAD + GADGET + 2
+	if win.state != .Idle {
+		tx += STATE_LAMP_GAP
+	}
 	ty := by + (bh - libfont.FONT_HEIGHT) / 2
 	right := bx + bw - FRAME_PAD - 2 * GADGET - 4
 	// The name is UTF-8, so a glyph is one rune and not one byte: the column
@@ -965,6 +999,11 @@ Window :: struct {
 	// three a desktop needs. See `Window_Kind`.
 	kind:      Window_Kind,
 	hidden:    bool,
+
+	// Whether this window wants a person, set by `state` on `wctl`: idle,
+	// working, or waiting. The frame shows a lamp for it and the workspace
+	// lamp goes hot while any window is waiting. See `Window_State`.
+	state:     Window_State,
 
 	// The pointer's last movement over this window, in the client area's
 	// coordinates, and which one a read of `mouse` last answered. See
@@ -2122,6 +2161,7 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	win.workspace = current_ws
 	win.kind = .Normal
 	win.hidden = false
+	win.state = .Idle
 		win.mseq = 0
 	win.mread = 0
 	win.mouse_held = false

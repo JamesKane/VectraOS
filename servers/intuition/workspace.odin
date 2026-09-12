@@ -53,6 +53,31 @@ Window_Kind :: enum u8 {
 	Popup,
 }
 
+// Window_State is what a window says about whether it wants a person, on its
+// `wctl`: `state working`, `state waiting` or `state idle`. The frame shows a
+// lamp for it beside the title -- working lit, waiting hot, idle none -- and
+// the screen bar's workspace lamp goes hot while any window on a workspace is
+// waiting, so a parked question is seen from every workspace. The server
+// knows nothing of what the program waits for; the word is on the window.
+// `docs/WORKBENCH.md` section 4, and `state_lamp` draws it.
+Window_State :: enum u8 {
+	Idle,
+	Working,
+	Waiting,
+}
+
+// workspace_waiting says whether any window on `ws` is waiting for a person,
+// which is what turns its lamp hot. A hidden window counts: a parked question
+// is the reason to raise the window, so the lamp must still call for it.
+workspace_waiting :: proc "contextless" (ws: int) -> bool #no_bounds_check {
+	for i in 0 ..< MAX_WINDOWS {
+		if windows[i].used && windows[i].workspace == ws && windows[i].state == .Waiting {
+			return true
+		}
+	}
+	return false
+}
+
 // The current workspace, one to `WORKSPACES`.
 current_ws: int
 
@@ -73,6 +98,13 @@ unlit lamp, dark in its own colour, which `libdraw.lamp` is the rule
 for.
 */
 workspace_lamp :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, ws: int) -> int #no_bounds_check {
+	// Hot while a window here waits for a person, whichever workspace is in
+	// front, so a parked question shows from every one. This overrides the
+	// lit and half states: a waiting workspace wants the eye before a current
+	// or merely-occupied one does.
+	if workspace_waiting(ws) {
+		return libdraw.lamp(out, x, y, LAMP, libpal.AMBER, true)
+	}
 	n := libdraw.lamp(out, x, y, LAMP, libpal.PHOSPHOR, ws == current_ws)
 	if ws != current_ws && workspace_has(ws) && n > 0 {
 		out[n - 1].color = libpal.mix(libpal.PHOSPHOR, libpal.VOID, 110)

@@ -3955,6 +3955,75 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	)
 
 	/*
+	And a window that wants a person says so, and the frame shows it.
+
+	`state` on `wctl` is `docs/WORKBENCH.md` section 4: `working`, `waiting` or
+	`idle`, a lamp on the frame beside the title and the screen bar's
+	workspace lamp hot while any window waits. The amber jewel is a colour
+	nothing else on a copper bar or a green workspace lamp makes, so its
+	presence is the lamp and its absence is idle. The pair -- lit on `waiting`,
+	gone on `idle` -- is what says the lamp follows the word and is not some
+	fixture that was always there.
+	*/
+	amber := fb.pack(s, fb.AMBER)
+	bar_amber :: proc "contextless" (s: ^fb.Surface, x0: int, y0: int, x1: int, y1: int, want: u32) -> bool #no_bounds_check {
+		for y in y0 ..< y1 {
+			if first, _ := scan_row(s, y, want, x0, x1); first >= 0 {
+				return true
+			}
+		}
+		return false
+	}
+	// The gadget glyphs are amber too, so the lamp is read where no gadget is:
+	// between the close gadget on the bar's left (its amber ends near x18) and
+	// the window's title, which is where `state_lamp` puts the jewel. Window
+	// zero sits at the screen's origin, so the bar's coordinates are the
+	// glass's. The workspace lamps sit in the right-edge column two half-screen
+	// windows never reach, clear of this window's own gadgets.
+	lamp_x0 := 22
+	lamp_x1 := 44
+	ws_x0 := max(s.width - 32, 0)
+	ws_y1 := min(160, s.height)
+	wbuf: [24]u8
+	if wc, werr := vfs.open_path(vfs.boot_namespace, mnt_file(wbuf[:], 0, "/wctl"), vfs.O_RDWR); werr == vfs.OK {
+		// Before any state is set the gap holds no lamp: the test reads the
+		// word's effect, not a fixture.
+		check(r, !bar_amber(s, lamp_x0, 6, lamp_x1, 20, amber), "a window with no state shows no lamp beside its title")
+
+		waiting := "state waiting"
+		_, serr := vfs.chan_write(wc, 0, transmute([]u8)waiting)
+		check(r, serr == vfs.OK, "a window writes `state waiting` to its wctl")
+		lit, hot := false, false
+		for _ in 0 ..< PATIENCE * 10 {
+			if !lit && bar_amber(s, lamp_x0, 6, lamp_x1, 20, amber) {
+				lit = true
+			}
+			if !hot && bar_amber(s, ws_x0, 2, s.width, ws_y1, amber) {
+				hot = true
+			}
+			if lit && hot {
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, lit, "the frame lights an amber lamp beside the title for it")
+		check(r, hot, "and the screen bar's workspace lamp goes hot")
+
+		idle := "state idle"
+		_, _ = vfs.chan_write(wc, 0, transmute([]u8)idle)
+		cooled := false
+		for _ in 0 ..< PATIENCE * 10 {
+			if !bar_amber(s, lamp_x0, 6, lamp_x1, 20, amber) {
+				cooled = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, cooled, "and `state idle` takes the lamp away again")
+		vfs.chan_close(wc)
+	}
+
+	/*
 	The region the test paints, saved to be restored. Four rows of 48 pixels
 	on the left, and eight pixels at the right edge of the first.
 

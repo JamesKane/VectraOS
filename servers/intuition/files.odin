@@ -324,6 +324,25 @@ run_wctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bo
 			return vectra9.EINVAL
 		}
 		window_place(win, ws)
+	case "state":
+		// What a window says about whether it wants a person. The lamp on the
+		// frame and the hot workspace lamp are `window_state`'s to paint.
+		which, tail := word(rest)
+		st: Window_State
+		switch string(which) {
+		case "idle":
+			st = .Idle
+		case "working":
+			st = .Working
+		case "waiting":
+			st = .Waiting
+		case:
+			return vectra9.EINVAL
+		}
+		if len(trim(tail)) != 0 {
+			return vectra9.EINVAL
+		}
+		window_state(win, st)
 	case "backdrop":
 		window_kind(win, win_at, .Backdrop)
 	case "bar":
@@ -440,6 +459,26 @@ window_kind :: proc "contextless" (win: ^Window, at: int, kind: Window_Kind) {
 	if win.workspace == current_ws && !win.hidden {
 		repaint(win.x, win.y, win.w, win.h)
 	}
+}
+
+/*
+window_state is the `state` line: whether a window wants a person. The frame's
+lamp is repainted with or without it, and the screen bar's workspace lamp may
+go hot or cool, since a waiting window anywhere on a workspace lights it.
+
+`bar_show` is the repaint of one bar into the store and onto the glass, and it
+is the whole of the frame change -- the lamp lives on the bar. It is a no-op
+for a window with no frame (a bar, a backdrop, a popup), which is the right
+answer: a chromeless window has nowhere to show a lamp, and none of the three
+is a thing that waits for a person.
+*/
+window_state :: proc "contextless" (win: ^Window, st: Window_State) {
+	if win.state == st {
+		return
+	}
+	win.state = st
+	bar_show(win)
+	lamp_show(win.workspace)
 }
 
 // bar_height is how much of the top of the screen a bar window holds,
