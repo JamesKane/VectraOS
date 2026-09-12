@@ -523,11 +523,16 @@ notice dismissed, or ten more behind it, lets the note through and the
 program ends as it always did. With the ghost off, the notice says the
 program faulted, and nothing waits.
 
-**Drag and drop is deferred.** Moving an icon from one drawer to another
-is a `cp` and an `rm`. But the pointer crosses from one window to another
-mid-press, and that needs the server to hand a drag between windows. The
-server owns the pointer and can. It is a step after this one, with its
-own document.
+**Drag and drop moves an icon between drawers**, step 5's. It is a `cp` and
+an `rm`, but the pointer crosses from one window to another mid-press, so the
+server hands the drag between windows: a client press grabs the pointer, and
+every line until the button is up goes to the window the press began in,
+wherever it roams (`servers/intuition/pointer.odin`). The window hears the
+pointer leave its bounds and the release with the point it landed on.
+`sys/libmui` turns a press on an icon that releases elsewhere into `on_drop`,
+the cell and the release point; `apps/workbench` maps that point to the drawer
+under it and moves the file there. A directory is left where it is -- a
+recursive move is a later day -- and a drop on no drawer does nothing.
 
 ## 7. The order
 
@@ -744,8 +749,9 @@ the same proc) and by `init` for the console's shell.
 
 Each its own document, in whatever order a reason arrives.
 
-- **Drag and drop**, with the server handing a drag between windows,
-  and a window dragged between tiles in the overview.
+- **A window dragged between tiles in the overview**, to send it to that
+  workspace. The file drag-and-drop that the server's grab was built for is
+  done (section 6); this is its other half, the overview's.
 - **Snapshot**, an icon's position kept in `$home/lib/wb`.
 - **A theme switcher** over `/lib/themes`, and the `use` line, section 5.
 - **The fault notice**, the day `docs/GHOST.md` step 3 gives the click

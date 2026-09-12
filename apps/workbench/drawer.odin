@@ -154,6 +154,7 @@ open_drawer :: proc "contextless" (path: string) {
 	w.want_w, w.want_h = 4 * libmui.ICON_W + 24, 3 * libmui.ICON_H + 60
 	w.handler = drawer_press
 	w.on_menu = drawer_menu
+	w.on_drop = drawer_drop
 	w.user = rawptr(d)
 	if !libmui.window_open(w, base_name(d.path), col) {
 		d.used = false
@@ -275,6 +276,94 @@ drawer_update :: proc "contextless" (d: ^Drawer) {
 		}
 		libmui.window_relayout(&d.win)
 	}
+}
+
+/*
+drawer_drop is a file dragged out of a drawer and released. `w` is the drawer
+the drag began in, `item` the icon it began on, and `(x, y)` the release in
+`w`'s own coordinates -- which the server's grab may carry outside `w` and onto
+another drawer. Moving a file from one drawer to another is a `cp` and an `rm`,
+`docs/WORKBENCH.md` section 6; a drawer (a directory) is left where it is,
+since a move of one is a recursion this cut does not do.
+
+It runs on the source window's mouse thread and touches both drawers, but
+every step between here and the repaints is a synchronous call that `libthread`
+does not yield on, so no other window's thread runs in the middle of it.
+*/
+drawer_drop :: proc "contextless" (w: ^libmui.Window, item: int, x: int, y: int) {
+	context = wb_ctx
+	src := (^Drawer)(w.user)
+	if src == nil || item < 0 || item >= len(src.paths) {
+		return
+	}
+	// The screen point the drop landed on, from the source's client origin.
+	dst := drawer_at(w.sx + x, w.sy + y)
+	if dst == nil || dst == src {
+		return // released on nothing, or back on its own drawer
+	}
+	if src.kinds[item] == libmui.ICON_DRAWER {
+		post_notice("workbench", "Drag a file, not a drawer", "")
+		return
+	}
+	target := libuser.join(dst.path, src.names[item])
+	if !move_file(src.paths[item], target) {
+		post_notice("workbench", "Cannot move that", "")
+		return
+	}
+	drawer_update(src)
+	drawer_update(dst)
+}
+
+// drawer_at is the open drawer whose client area holds a screen point, or nil.
+drawer_at :: proc "contextless" (sx: int, sy: int) -> ^Drawer #no_bounds_check {
+	for i in 0 ..< MAX_DRAWERS {
+		d := drawers[i]
+		if d == nil || !d.used {
+			continue
+		}
+		if sx >= d.win.sx && sx < d.win.sx + d.win.cw && sy >= d.win.sy && sy < d.win.sy + d.win.ch {
+			return d
+		}
+	}
+	return nil
+}
+
+// move_file copies a file's bytes to a new path and removes the original: the
+// `cp` and the `rm` section 6's move is. False if the source will not open,
+// the destination will not be made, or a read or write fails -- and then the
+// original is left, so a failed move loses nothing.
+move_file :: proc "contextless" (src: string, dst: string) -> bool #no_bounds_check {
+	sfd := libuser.open(src, abi.O_RDONLY)
+	if sfd < 0 {
+		return false
+	}
+	dfd := libuser.create(dst, abi.O_WRONLY, 0o644)
+	if dfd < 0 {
+		libuser.close(int(sfd))
+		return false
+	}
+	buf: [2048]u8
+	ok := true
+	for {
+		n := libuser.read(int(sfd), buf[:])
+		if n < 0 {
+			ok = false
+			break
+		}
+		if n == 0 {
+			break
+		}
+		if libuser.write(int(dfd), buf[:n]) != n {
+			ok = false
+			break
+		}
+	}
+	libuser.close(int(sfd))
+	libuser.close(int(dfd))
+	if ok {
+		_ = libuser.remove(src)
+	}
+	return ok
 }
 
 // drawer_icons_menu is the Icons menu, on the selection in the drawer in

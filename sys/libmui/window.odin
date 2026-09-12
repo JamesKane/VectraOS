@@ -83,6 +83,14 @@ Window :: struct {
 	arg:       int,
 	clicks:    int,
 	on_menu:   proc "contextless" (win: ^Window, x: int, y: int),
+	// A press on an icon that releases somewhere other than where it began is
+	// a drag, not a click: `on_drop` hears the cell it began on and the point
+	// it released, in the window's own coordinates, which the grab may carry
+	// outside the window. The program maps that to a drop. See
+	// `docs/WORKBENCH.md` section 6 and `window_open`'s comment on the grab.
+	on_drop:   proc "contextless" (win: ^Window, item: int, x: int, y: int),
+	press_x:   int, // where the last press landed, for the drag threshold
+	press_y:   int,
 	user:      rawptr,
 	last_press: ^Object,
 	last_ms:   int,
@@ -588,16 +596,31 @@ mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 			}
 			win.last_press = win.pressed
 			win.last_ms = ms
+			win.press_x = x
+			win.press_y = y
 			window_paint(win)
 		}
 	} else if !down && was {
-		g := hit(win.root, x, y)
-		if g != nil && g == win.pressed {
-			activate(win, g)
+		// A press on an icon that moved before it released is a drag, not a
+		// click: the program hears the drop rather than an activation. The
+		// grab keeps the release coming here even when the pointer has left
+		// the window, so `x`/`y` may be outside it, which is a drop elsewhere.
+		moved := abs(x - win.press_x) + abs(y - win.press_y)
+		if win.pressed != nil && win.pressed.class == .Icons && win.pressed.sel >= 0 && moved > DRAG_MIN && win.on_drop != nil {
+			win.on_drop(win, win.pressed.sel, x, y)
+		} else {
+			g := hit(win.root, x, y)
+			if g != nil && g == win.pressed {
+				activate(win, g)
+			}
 		}
 		win.pressed = nil
 	}
 }
+
+// DRAG_MIN is how far a press must move before a release is a drag and not a
+// click, in pixels of the two axes added. Below it a shaky hand still clicks.
+DRAG_MIN :: 6
 
 // key_event routes one key. A string gadget with the focus takes the typing
 // first, and its handler hears the id as the text changes. Tab moves the
