@@ -230,11 +230,38 @@ slice.
 on_interrupt :: proc "contextless" (r: arch.Resume) -> arch.Resume {
 	code := arch.inb(PORT_DATA)
 	arch.irq_ack()
+	feed(code)
+	return r
+}
 
+/*
+feed puts one scancode into the ring as though the port had raised it, and
+wakes the bottom half. The top half calls it from the interrupt; a keyboard
+with no 8042 -- `kernel/drivers/virtio`'s input driver on the `virt` boards --
+calls it with the set-1 scancodes it made from another bus's events, so the
+bottom half translates them the one way it knows.
+*/
+feed :: proc "contextless" (code: u8) {
 	if ring.push(&kbd.fifo, code) {
 		sync.wakeup(&kbd.ready)
 	}
-	return r
+}
+
+/*
+init_headless starts the bottom half with no port under it: the ring, the sink
+and the translating thread, for a keyboard whose scancodes arrive through
+`feed` rather than an 8042. `docs/PORTS.md` says the `virt` boards have no PS/2;
+`kernel/drivers/virtio`'s input driver feeds this instead.
+*/
+init_headless :: proc(sink: Sink, raw: Raw = nil) -> bool {
+	if sink == nil {
+		return false
+	}
+	kbd.sink = sink
+	kbd.raw = raw
+	kbd.head = 0
+	kbd.tail = 0
+	return sched.spawn("kbd-bottom", bottom_half, &kbd) != nil
 }
 
 /*

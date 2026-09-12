@@ -193,9 +193,15 @@ counted across the cores rather than on the core the checker started on.
   SGI and the riscv64 stop is a software interrupt. A core inside a spinlock
   takes neither until it lets go, and until then it can write over the
   report.
-- **The keyboard.** There is no PS/2 controller on either board, and
-  `kbd.init` says so by reading all-ones from a port that is not there.
-  Input is the serial line.
+- **The keyboard and mouse are virtio, not PS/2.** There is no 8042 on
+  either board, and `kbd.init`/`mouse.init` say so by reading all-ones from a
+  port that is not there. They are virtio-input devices on the PCI bus
+  instead: `kernel/drivers/virtio/input.odin` finds them, turns each event
+  into the set-1 scancode or PS/2 packet the existing drivers take, and feeds
+  it to a `kbd`/`mouse` brought up headless. Everything over `/dev/cons` and
+  `/dev/mouse` is then the desktop amd64 has. The serial line still works as a
+  console. (QEMU drives the device from its own window, so the boot self-test
+  proves the translation with synthetic events rather than a real keypress.)
 - **The 16550 on riscv64** is reached through the firmware and not mapped.
 - **The device tree** is parsed for one property. The GIC, the PLIC and
   the UART addresses are the `virt` board's, assumed as the I/O APIC's is

@@ -1456,6 +1456,15 @@ run_qemu :: proc(opts: Options, debug: bool) {
 	// has speakers. See `docs/DEVTOOLS.md` step 1.
 	append(&args, "-audiodev", "none,id=snd0")
 	append(&args, "-device", "virtio-sound-pci,audiodev=snd0,disable-legacy=on")
+	// The `virt` boards have no 8042, so their keyboard and mouse are
+	// virtio-input devices on the same PCI bus, which `kernel/drivers/virtio/
+	// input.odin` finds and feeds to the keyboard and mouse drivers. amd64's
+	// q35 has a real controller and keeps its PS/2 pair, so it gets none here.
+	// `docs/PORTS.md`.
+	if opts.arch != .amd64 {
+		append(&args, "-device", "virtio-keyboard-pci,disable-legacy=on")
+		append(&args, "-device", "virtio-mouse-pci,disable-legacy=on")
+	}
 	// More than one core, because the kernel starts every core the
 	// bootloader lists and the self-tests run across them. `--smp=1` is
 	// the uniprocessor control.

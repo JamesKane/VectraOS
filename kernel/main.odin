@@ -343,12 +343,14 @@ kmain :: proc "c" () {
 	// Last of all, because a keystroke needs somewhere to go. The
 	// bottom half hands its bytes to `/dev/cons`, which has to exist
 	// before the first interrupt is let through.
-	if init_keyboard() {
+	kbd_up := init_keyboard()
+	if kbd_up {
 		verify_keyboard()
 	}
 	// The mouse shares the keyboard's controller and comes after
 	// it, with the screen it is kept inside already measured.
-	if init_mouse() {
+	mouse_up := init_mouse()
+	if mouse_up {
 		verify_mouse()
 	}
 
@@ -375,6 +377,11 @@ kmain :: proc "c" () {
 	if init_sound() {
 		verify_sound()
 	}
+	// The keyboard and mouse the `virt` boards have, once the bus is up: a
+	// PS/2 controller's work done by virtio-input instead. A board with a real
+	// controller has none on the bus and keeps what it brought up above.
+	init_input(kbd_up, mouse_up)
+	verify_input()
 	verify_space()
 
 	// Last, because ring 3 needs everything above it. A space to run
@@ -1960,6 +1967,42 @@ init_mouse :: proc() -> bool {
 }
 
 /*
+init_input gives the `virt` boards a keyboard and a mouse: virtio-input devices
+whose events feed the same drivers a PS/2 controller would, through `kbd.feed`
+and `mouse.feed`. A board with a real controller (amd64) has none on the bus,
+so this finds none and leaves its PS/2 keyboard and mouse alone.
+
+The ports bailed out of the 8042 init above, so their keyboard and mouse are
+not up; they are brought up headless here -- the ring, the sink and the bottom
+half, no port under them -- for the events to feed. `kernel/drivers/virtio/
+input.odin` and `docs/PORTS.md`.
+*/
+init_input :: proc(kbd_up: bool, mouse_up: bool) {
+	n := virtio.input_attach_all()
+	if n == 0 {
+		return
+	}
+	if !kbd_up {
+		_ = kbd.init_headless(devfs.keyboard_sink, devfs.scancode_tap)
+	}
+	if !mouse_up {
+		if s := devfs.raw_surface(); s != nil {
+			if mouse.init_headless(s.width, s.height, devfs.mouse_sink) {
+				x, y := mouse.position()
+				devfs.mouse_present(x, y)
+			}
+		}
+	}
+	virtio.input_start_poll()
+
+	sink := begin(&klog)
+	libodin.put_str(&sink, "virtio-input: ")
+	libodin.put_uint(&sink, u64(n))
+	libodin.put_str(&sink, " device(s), a keyboard and a mouse feeding kbd and mouse")
+	emit(&klog, .Ok, &sink)
+}
+
+/*
 verify_mouse checks the packet decoder, makes the controller interrupt,
 and then reads the line the movement became on `/dev/mouse`.
 
@@ -2422,6 +2465,57 @@ verify_sound :: proc() {
 	sink := report_begin("sound", result.checks)
 	if libodin.passed(result) {
 		libodin.put_str(&sink, " sound checks passed -- the format read back and a second of samples taken by the card")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
+}
+
+/*
+verify_input proves the translation from a virtio-input event to the shape a
+driver already takes, and the feed into the driver. The translation is pure --
+a scancode from a keycode, a packet from a movement -- so those checks need no
+device and run on every board, amd64 included, where there is no virtio-input
+at all. The one end-to-end check drives a synthetic movement through
+`feed_event` into the mouse and reads the pointer move, where a mouse is
+present; the keyboard path is the same feed, and its translation is the check
+above. The device itself is driven by QEMU's own input, which a boot self-test
+cannot make fire, so real event flow on the board stays a check by hand.
+*/
+verify_input :: proc() {
+	result: libodin.Tally
+	buf: [2]u8
+	// A letter key is its own set-1 scancode, the high bit set for a release.
+	n := virtio.key_scancodes(35, true, buf[:]) // KEY_H
+	libodin.tally(&result, n == 1 && buf[0] == 0x23, "a letter key is its own set-1 scancode")
+	n = virtio.key_scancodes(35, false, buf[:])
+	libodin.tally(&result, n == 1 && buf[0] == 0xA3, "and its release sets the high bit")
+	// An extended key is an 0xE0 escape and then the set-1 code.
+	n = virtio.key_scancodes(103, true, buf[:]) // KEY_UP
+	libodin.tally(&result, n == 2 && buf[0] == 0xE0 && buf[1] == 0x48, "an arrow key is an 0xE0 escape and its code")
+	// A movement with the left button: the button is in the flags, and Y is
+	// turned over from the screen's direction.
+	flags, bx, by := virtio.mouse_packet(5, 3, 0x01)
+	libodin.tally(&result, flags == 0x29 && bx == 5 && by == 0xFD, "a movement builds a PS/2 packet, Y turned over and the button in the flags")
+
+	if devfs.tree().mouse.present {
+		x0, _ := mouse.position()
+		virtio.feed_event(virtio.EV_REL, virtio.REL_X, 20)
+		virtio.feed_event(virtio.EV_SYN, 0, 0)
+		moved := false
+		for _ in 0 ..< 200 {
+			if x, _ := mouse.position(); x != x0 {
+				moved = true
+				break
+			}
+			sync.delay(1)
+		}
+		libodin.tally(&result, moved, "a synthetic movement fed as an event moves the pointer")
+	}
+
+	sink := report_begin("input", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " input checks passed -- a keycode to a scancode, a move to a packet, and an event moves the pointer")
 		emit(&klog, .Ok, &sink)
 		return
 	}

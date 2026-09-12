@@ -744,9 +744,6 @@ the same proc) and by `init` for the console's shell.
 
 Each its own document, in whatever order a reason arrives.
 
-- **`virtio-input`** on the `virt` boards, a keyboard and a mouse both, so
-  the two ports get the desktop amd64 has. The tree already speaks
-  virtio over PCI for the disk.
 - **Drag and drop**, with the server handing a drag between windows,
   and a window dragged between tiles in the overview.
 - **Snapshot**, an icon's position kept in `$home/lib/wb`.
@@ -791,9 +788,10 @@ Each its own document, in whatever order a reason arrives.
 - **The overview is the compositor's, and scales by skipping.** A
   smoother picture is a filter over the stores, which is a day's work
   the day someone minds. No program redraws for it, which is the point.
-- **The desktop is amd64's until `virtio-input`.** The `virt` boards have
-  no keyboard and no mouse, and a desktop nobody can type at is a
-  picture. `window` from the serial line works on all three.
+- **The desktop is on all three now.** The `virt` boards have no 8042, so
+  their keyboard and mouse are virtio-input devices a driver turns into the
+  scancodes and packets the `kbd` and `mouse` drivers already take; see
+  `docs/PORTS.md`. `window` from the serial line still works too.
 - **No drag and drop in step 4**, for section 6's reason.
 - **A notice's action is a verb, not a shell.** The text a notice
   carries came from somewhere the desktop does not control. A verb

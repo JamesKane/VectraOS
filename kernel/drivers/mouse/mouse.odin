@@ -109,6 +109,10 @@ Mouse :: struct {
 	ready: sync.Rendez,
 	sink:  Sink,
 
+	// Whether this mouse has no 8042 under it, so `inject_packet` feeds the
+	// fifo straight rather than through the controller. Set by `init_headless`.
+	headless: bool,
+
 	// The packet under construction, and where the pointer is.
 	packet:  [3]u8,
 	have:    int,
@@ -286,10 +290,60 @@ inject :: proc "contextless" (b: u8) -> bool {
 	return true
 }
 
-// inject_packet is `inject` three times, for a check outside this package
-// that wants a movement to arrive through the whole path.
+// inject_packet delivers one movement as though the mouse sent it, for a check
+// outside this package. With an 8042 under it, it goes through the controller's
+// second port so every step but the mouse itself is real. A headless mouse --
+// the `virt` boards', fed by `kernel/drivers/virtio` -- has no controller to
+// route through, so the packet goes straight into the fifo the same way a real
+// event would, which is what lets the desktop's mouse checks run on the ports.
 inject_packet :: proc "contextless" (flags: u8, dx: u8, dy: u8) -> bool {
+	if mouse.headless {
+		feed_packet(flags, dx, dy)
+		return true
+	}
 	return inject(flags) && inject(dx) && inject(dy)
+}
+
+/*
+feed puts one byte straight into the fifo and wakes the bottom half, the inject
+path for a mouse with no 8042. `inject` above goes through the controller's
+second port, which a `virt` board does not have; `kernel/drivers/virtio`'s
+input driver builds PS/2-shaped packets from another bus's events and feeds
+them here, where the same bottom half decodes them.
+*/
+feed :: proc "contextless" (b: u8) {
+	if ring.push(&mouse.fifo, b) {
+		sync.wakeup(&mouse.ready)
+	}
+}
+
+// feed_packet is `feed` three times: one movement, the three bytes a PS/2
+// packet is.
+feed_packet :: proc "contextless" (flags: u8, dx: u8, dy: u8) {
+	feed(flags)
+	feed(dx)
+	feed(dy)
+}
+
+/*
+init_headless starts the bottom half with no port under it: the fifo, the sink,
+the pointer centred on the screen, and the decoding thread, for a mouse whose
+packets arrive through `feed` rather than an 8042. The `virt` boards have no
+PS/2; `kernel/drivers/virtio`'s input driver feeds this instead.
+*/
+init_headless :: proc(w: int, h: int, sink: Sink) -> bool {
+	if sink == nil || w <= 0 || h <= 0 {
+		return false
+	}
+	mouse.headless = true
+	mouse.sink = sink
+	mouse.w = w
+	mouse.h = h
+	mouse.x = w / 2
+	mouse.y = h / 2
+	mouse.head = 0
+	mouse.tail = 0
+	return sched.spawn("mouse-bottom", bottom_half, &mouse) != nil
 }
 
 // -- The bottom half ---------------------------------------------------------
