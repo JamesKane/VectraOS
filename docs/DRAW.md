@@ -508,6 +508,19 @@ milestones. That is the simplest rule with an answer for every pixel, and it
 cannot also be a client's to change. A window's index is where its memory is.
 Its place in the stack is where it is on the screen.
 
+**A popup floats above every ordinary window.** A toast and a menu are popups,
+and a notification is meant to be seen over the work under it, not buried by
+the next window that opens or the one a click raises. So `stack_add` puts a
+popup at the very top and inserts everything else *below* the run of popups.
+This matters because a popup is marked after it is opened: a client opens a
+window as an ordinary one and then writes `popup` to its `wctl`, so for an
+instant it is stacked as a normal window, and a window that opened in between
+would sit over it. `window_kind` raises it when the word arrives, and the
+float rule keeps it there. A popup never takes the keyboard either -- `focus`
+reads the topmost window that is neither a bar nor a popup -- so keys typed
+while a toast is up reach the window the person is working in. This is the
+rule the toast in `apps/workbench/notice.odin` depends on.
+
 `move` is **the first thing in this server that damages two rectangles far
 apart**. That is the case `MAX_RECTS` was sized for, and nothing reached it
 until now. The old place and the new one are two entries in one region rather

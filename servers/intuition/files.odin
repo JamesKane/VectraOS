@@ -429,6 +429,12 @@ window_kind :: proc "contextless" (win: ^Window, at: int, kind: Window_Kind) {
 		window_lower(at)
 	case .Bar:
 		window_raise(win, at)
+	case .Popup:
+		// A popup is marked after `window_open` already placed it as an
+		// ordinary window, so a window that opened in between now sits over
+		// it. Raise it: `stack_add` floats a popup above every normal window,
+		// so this puts the toast or the menu back on top where it belongs.
+		window_raise(win, at)
 	}
 	window_chrome(win)
 	if win.workspace == current_ws && !win.hidden {

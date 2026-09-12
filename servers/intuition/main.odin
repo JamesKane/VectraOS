@@ -1047,7 +1047,12 @@ move. See `frame_bar` for the colour and `refocus` for the repaint.
 stack_top :: proc "contextless" () -> int #no_bounds_check {
 	for i := stack_n - 1; i >= 0; i -= 1 {
 		w := stack[i]
-		if windows[w].workspace == current_ws && !windows[w].hidden && windows[w].kind != .Bar {
+		// A bar is never the front, and neither is a popup: a toast or a menu
+		// floats above the windows but never takes the keyboard, the way
+		// `mouse_thread` in `sys/libmui` says a popup is never focused. Focus
+		// stays on the window under them, so keys typed while a toast is up
+		// reach the window the person is working in.
+		if windows[w].workspace == current_ws && !windows[w].hidden && windows[w].kind != .Bar && windows[w].kind != .Popup {
 			return w
 		}
 	}
@@ -1309,9 +1314,31 @@ key_message :: proc "contextless" (msg: []u8) #no_bounds_check {
 
 // stack_add puts a new window on top. stack_drop takes one out and closes the
 // gap, which keeps the order of everything under it.
+//
+// **A popup floats above every normal window.** A toast or a menu is a popup,
+// and it is drawn over the windows under it the way a notification is. So a
+// popup goes to the very top, and a window that is not one goes above the
+// other ordinary windows but *below* any popup: a click that raises a window
+// does not bury the toast that a moment ago stood over it. Without this a
+// popup opened before a window that then opened or was raised would sit under
+// it, because `window_kind` marks a popup after `window_open` already placed
+// it -- see `docs/DRAW.md` and the toast in `apps/workbench/notice.odin`.
 stack_add :: proc "contextless" (win: int) #no_bounds_check {
 	stack_drop(win)
-	stack[stack_n] = win
+	if windows[win].kind == .Popup {
+		stack[stack_n] = win
+		stack_n += 1
+		return
+	}
+	// Below the run of popups at the top, above everything else.
+	ins := stack_n
+	for ins > 0 && windows[stack[ins - 1]].kind == .Popup {
+		ins -= 1
+	}
+	for i := stack_n; i > ins; i -= 1 {
+		stack[i] = stack[i - 1]
+	}
+	stack[ins] = win
 	stack_n += 1
 }
 

@@ -665,6 +665,9 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	verify_draw(&r)
 
+	// -- The toast-stacking reproduction: a popup over windows at the corner --
+	verify_popup_stack(&r)
+
 	// -- And the memory the draw server draws through ------------------------
 
 	verify_mapping(&r)
@@ -4191,6 +4194,203 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	)
 
 	drain_pinned(r, pin_before, "and the draw server's wire comes back whole")
+}
+
+/*
+verify_popup_stack guards the toast-stacking rule: a `.Popup` floats above
+every ordinary window.
+
+A notice toast is a popup below the bar's right corner. The bug it was found
+by: a window opened or raised after the toast sat on top of it, because a
+popup is marked after `window_open` has already placed it as an ordinary
+window, and nothing raised it back. This drives the mechanism without the
+desktop's keyboard and mouse automation: two normal windows cover the
+top-right band, a popup opens over them, and then -- the heart of it -- a
+third normal window opens over the same corner. The popup must stay on the
+glass above it. The close-and-reopen step in between mirrors a toast
+replacing the one before it, so a reused slot is exercised too.
+
+See `stack_add` and `window_kind` in `servers/intuition`.
+*/
+@(private = "file")
+popup_open :: proc(r: ^Result, slot: int, x: int, y: int, w: int, h: int, col: u32, kind: string, what: string) -> (^vfs.Chan, bool) {
+	dbuf: [24]u8
+	dc, derr := vfs.open_path(vfs.boot_namespace, mnt_file(dbuf[:], slot, "/data"), vfs.O_WRONLY)
+	if !check(r, derr == vfs.OK, what) {
+		return nil, false
+	}
+	wbuf: [24]u8
+	wc, werr := vfs.open_path(vfs.boot_namespace, mnt_file(wbuf[:], slot, "/wctl"), vfs.O_RDWR)
+	if werr != vfs.OK {
+		vfs.chan_close(dc)
+		check(r, false, what)
+		return nil, false
+	}
+	defer vfs.chan_close(wc)
+
+	line: [48]u8
+	n := copy(line[:], "size ")
+	n += put_uint(line[n:], w)
+	line[n] = ' ';n += 1
+	n += put_uint(line[n:], h)
+	vfs.chan_write(wc, 0, line[:n])
+
+	n = copy(line[:], "move ")
+	n += put_uint(line[n:], x)
+	line[n] = ' ';n += 1
+	n += put_uint(line[n:], y)
+	vfs.chan_write(wc, 0, line[:n])
+
+	if len(kind) != 0 {
+		vfs.chan_write(wc, 0, transmute([]u8)kind)
+	}
+
+	cmd: [64]u8
+	at := libdraw.put_fill(cmd[:], 0, 0, 0, 0, u32(w), u32(h), col)
+	at = libdraw.put_flush(cmd[:], at)
+	vfs.chan_write(dc, 0, cmd[:at])
+	return dc, true
+}
+
+// put_uint writes a non-negative integer as decimal into buf, returning its
+// length. The freestanding side parses; the kernel side prints.
+@(private = "file")
+put_uint :: proc "contextless" (buf: []u8, v: int) -> int #no_bounds_check {
+	if v == 0 {
+		buf[0] = '0'
+		return 1
+	}
+	tmp: [16]u8
+	n := 0
+	x := v
+	for x > 0 {
+		tmp[n] = u8('0' + x % 10)
+		n += 1
+		x /= 10
+	}
+	for i in 0 ..< n {
+		buf[i] = tmp[n - 1 - i]
+	}
+	return n
+}
+
+verify_popup_stack :: proc(r: ^Result) #no_bounds_check {
+	s := devfs.raw_surface()
+	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
+		return
+	}
+	count0 := srv.count()
+	settle()
+	pin_before := mem.live_objects(mem.heap_stats())
+
+	p := start_path(r, "/bin/intuition", "the popup-stack repro starts the draw server")
+	if p == nil {
+		return
+	}
+	if !check(r, await_posted("draw"), "it posts /srv/draw") {
+		return
+	}
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts it") {
+		return
+	}
+	if !check(r, desk_measure(s), "and has painted a desktop") {
+		return
+	}
+
+	// A band at the top-right, where a toast lands. Two normal windows cover
+	// it; the popup takes the same corner.
+	TW := 220
+	TH := 90
+	TX := s.width - TW - 24
+	TY := WB_BAR_H + 12
+	CA :: u32(0x0020_4080)
+	CB :: u32(0x0040_8020)
+	CP1 :: u32(0x00C0_3090)
+	CP2 :: u32(0x0030_C0A0)
+
+	// Two normal windows over the band, offset so both own the corner.
+	dcA, okA := popup_open(r, 0, TX - 20, TY - 6, TW + 60, TH + 40, CA, "", "a first window covers the top-right band")
+	if !okA {
+		return
+	}
+	dcB, okB := popup_open(r, 1, TX - 6, TY - 2, TW + 40, TH + 30, CB, "", "a second window covers it too")
+	if !okB {
+		vfs.chan_close(dcA)
+		return
+	}
+
+	// The popup over them, the corner a toast takes.
+	dcP, okP := popup_open(r, 2, TX, TY, TW, TH, CP1, "popup", "a popup opens over them, the toast's corner")
+	cx := TX + TW / 2
+	cy := TY + TH / 2
+	shown1 := false
+	if okP {
+		for _ in 0 ..< PATIENCE * 10 {
+			if fb.get_raw(s, cx, cy) == CP1 {
+				shown1 = true
+				break
+			}
+			sync.delay(1)
+		}
+	}
+	check(r, shown1, "the popup's pixels are on the glass over the two windows")
+
+	// The toast replaces the one before it: close this popup and open another
+	// in the slot it frees, the same corner. A reused slot is the suspect.
+	if okP {
+		vfs.chan_close(dcP)
+	}
+	settle()
+	dcP2, okP2 := popup_open(r, 2, TX, TY, TW, TH, CP2, "popup", "a second popup reuses the freed slot")
+	shown2 := false
+	if okP2 {
+		for _ in 0 ..< PATIENCE * 10 {
+			if fb.get_raw(s, cx, cy) == CP2 {
+				shown2 = true
+				break
+			}
+			sync.delay(1)
+		}
+	}
+	check(r, shown2, "and the replacing popup's pixels are on the glass too")
+
+	// The heart of the fix: a normal window that opens over the popup must
+	// land *under* it. The toast-stacking bug was a window opened after a
+	// popup sitting on top of it, because a popup keeps no place of its own.
+	dcC, okC := popup_open(r, 3, TX - 10, TY - 8, TW + 50, TH + 40, CA, "", "a normal window opens over the popup's corner")
+	still := false
+	if okC {
+		for _ in 0 ..< PATIENCE * 10 {
+			if fb.get_raw(s, cx, cy) == CP2 {
+				still = true
+				break
+			}
+			sync.delay(1)
+		}
+	}
+	check(r, still, "the popup stays on the glass above a window that opened over it")
+
+	if okC {
+		vfs.chan_close(dcC)
+	}
+	if okP2 {
+		vfs.chan_close(dcP2)
+	}
+	vfs.chan_close(dcB)
+	vfs.chan_close(dcA)
+
+	// Teardown, the arc every tenant obeys.
+	if ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/ctl", vfs.O_RDONLY); cerr == vfs.OK {
+		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
+		vfs.chan_close(ctl)
+	}
+	check(r, wait(p, PATIENCE), "the draw server exits")
+	check(r, srv.remove("draw") == vfs.OK, "the kernel takes the name away")
+	finish(r, p, "and the draw server is taken down")
+	pipe.quiesce()
+	_ = vfs.unmount_path(vfs.boot_namespace, "", "/mnt")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+	drain_pinned(r, pin_before, "and the popup repro's wire comes back whole")
 }
 
 /*
