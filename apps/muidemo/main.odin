@@ -20,6 +20,13 @@ import "vsys:libuser"
 
 win: libmui.Window
 
+// The menu and the window it draws in: a button 3 press opens it, the
+// toolkit's `Menu` on a program's own window, `docs/WORKBENCH.md` section 5.
+// A menu is a popup, so it is a window of its own, separate from the panel's.
+menu: libmui.Menu
+menu_win: libmui.Window
+menu_items := [3]string{"New View", "Refresh", "Close"}
+
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	_ = block
@@ -32,6 +39,23 @@ start :: proc "c" (block: ^abi.Args) {
 on_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 	if id == 9 || id == -1 {
 		w.done = true
+	}
+}
+
+// on_menu is a button 3 press, with the point it landed on in the panel's own
+// coordinates. It opens the toolkit's menu there, at the pointer on the
+// screen, which is `w.sx`/`w.sy` plus the point.
+on_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
+	menu.win = &menu_win
+	menu.handler = menu_chosen
+	libmui.menu_open(&menu, menu_items[:], w.sx + x, w.sy + y)
+}
+
+// menu_chosen hears which item was picked, or -1 if the menu closed on
+// nothing. `Close` ends the program; the others are the menu showing it works.
+menu_chosen :: proc "contextless" (m: ^libmui.Menu, item: int) {
+	if item == 2 {
+		win.done = true
 	}
 }
 
@@ -68,6 +92,7 @@ demo_main :: proc "contextless" (arg: rawptr) {
 	libmui.add(col, foot)
 
 	win.handler = on_press
+	win.on_menu = on_menu
 	if !libmui.window_open(&win, "Workbench", col) {
 		libthread.threadexitsall("open")
 	}

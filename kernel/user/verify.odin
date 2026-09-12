@@ -5302,6 +5302,76 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 		}
 	}
 
+	// -- A menu on button 3, the toolkit's own --------------------------------
+
+	/*
+	`docs/WORKBENCH.md` section 5: a MUI program's menu is the toolkit's `Menu`,
+	a popup the program draws where a button 3 press lands. muidemo opens one
+	with three items.
+
+	Pressed low in the window, the menu spills past the bottom edge onto the
+	desktop, and that is where it is read: the window's ground is slate and the
+	desktop is slate, but a menu's buttons are magnesium, a colour neither has
+	below the window until the menu is there. Opening is proven, not choosing:
+	an injected click on a just-opened popup is the race `verify_workbench`'s
+	menu check names, so the item is left to a person and the dismiss -- a
+	press on the bare desktop -- is proven instead.
+	*/
+	// The window's right edge is the bar's, plus its border; the menu is read
+	// in the desktop just past it, where a magnesium button stands out against
+	// a slate ground neither the window nor the desktop paints magnesium on.
+	// (The window's own client ground is slate too, so a menu read over the
+	// window could not be told from the panel; the desktop to the right can.)
+	if devfs.tree().mouse.present && bx + bw + 90 < s.width {
+		px := bx + bw - 16 // just inside the right edge, so on_menu fires in the window
+		py := by + 40 // below the bar, in the client area
+		mx0 := bx + bw + 6 // the desktop strip just past the window's border
+		mx1 := min(bx + bw + 86, s.width)
+		my1 := min(py + 56, s.height)
+		opened := false
+		for attempt in 0 ..< 6 {
+			if attempt > 0 {
+				// A prior try may have left a menu standing; a press on the
+				// bare desktop, far from window and menu, takes it away.
+				_ = point_to(s.width - 24, s.height - 24)
+				_ = click_held()
+			}
+			if !point_to(px, py) {
+				continue
+			}
+			if !(inject_move(0, 0, CLICK_MENU) && wait_pointer(px, py)) {
+				continue
+			}
+			sync.delay(CLICK_HOLD)
+			_ = inject_move(0, 0, 0)
+			for _ in 0 ..< PATIENCE * 10 {
+				if bar_has(s, mx0, py, mx1 - mx0, my1 - py, magnesium) {
+					opened = true
+					break
+				}
+				sync.delay(1)
+			}
+			if opened {
+				break
+			}
+		}
+		check(r, opened, "a button 3 press opens the toolkit's menu, its buttons on the desktop past the window's edge")
+
+		if opened {
+			_ = point_to(s.width - 24, s.height - 24)
+			_ = click_held()
+			dismissed := false
+			for _ in 0 ..< PATIENCE * 10 {
+				if !bar_has(s, mx0, py, mx1 - mx0, my1 - py, magnesium) {
+					dismissed = true
+					break
+				}
+				sync.delay(1)
+			}
+			check(r, dismissed, "and a press on the bare desktop outside it takes it away")
+		}
+	}
+
 	// -- Teardown, the terminal's way -----------------------------------------
 
 	if !check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the server to stop it") {

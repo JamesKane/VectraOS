@@ -742,7 +742,6 @@ Each its own document, in whatever order a reason arrives.
 - **Drag and drop**, with the server handing a drag between windows,
   and a window dragged between tiles in the overview.
 - **Snapshot**, an icon's position kept in `$home/lib/wb`.
-- **Menus on MUI programs**, with the toolkit's `Menu` on button 3.
 - **A theme switcher** over `/lib/themes`, and the `use` line, section 5.
 - **The fault notice**, the day `docs/GHOST.md` step 3 gives the click
   somewhere to go.
