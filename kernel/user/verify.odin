@@ -5302,6 +5302,42 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 		}
 	}
 
+	// -- A relay click on a gadget --------------------------------------------
+
+	/*
+	`docs/HANDOFF.md` section 1's tracker-synthesised relay clicks: a MUI
+	gadget that activates plays a short click to `/dev/audio`. It is read by
+	the device's played-sample count moving when a button is clicked -- the
+	same counter `verify_app` watches a tone reach. The button is the one the
+	face poll already found, topmost and to the left, which is a tool and not
+	the Quit that would end the demo. Skipped on a machine with no mouse or no
+	card, where the click is a silent no-op by design.
+	*/
+	if face && devfs.tree().mouse.present && virtio.sound_present() {
+		before := virtio.sound_played()
+		cy := (gtop + gbot) / 2
+		clicked := false
+		for _ in 0 ..< 6 {
+			if !point_to(gx, cy) {
+				continue
+			}
+			if !click_held() {
+				continue
+			}
+			for _ in 0 ..< PATIENCE * 10 {
+				if virtio.sound_played() > before {
+					clicked = true
+					break
+				}
+				sync.delay(1)
+			}
+			if clicked {
+				break
+			}
+		}
+		check(r, clicked, "a click on a gadget plays a relay click, its samples reaching /dev/audio")
+	}
+
 	// -- A menu on button 3, the toolkit's own --------------------------------
 
 	/*

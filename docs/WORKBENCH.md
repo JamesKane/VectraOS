@@ -384,6 +384,14 @@ requester in the system is usable from a keyboard alone. MUI insisted on
 that, and it matters on a machine where the mouse may be a self-test
 injecting packets.
 
+**A gadget that acts plays a relay click**, `docs/HANDOFF.md` section 1's
+"tracker-synthesised relay clicks": a short burst of noise under a fast fall,
+made once and written to `/dev/audio`, the tick of a 1994 workstation's relay.
+`activate` is the one place a gadget acts and so the one place it plays, and
+every program on the toolkit gets it. A machine with no sound card is silent;
+the device is shared, so several MUI programs each play their own. See
+`sys/libmui/sound.odin`.
+
 **The theme is a file, and the palette is its default:**
 
     # theme: the look. A role, and what it is.
@@ -745,9 +753,6 @@ Each its own document, in whatever order a reason arrives.
 - **A theme switcher** over `/lib/themes`, and the `use` line, section 5.
 - **The fault notice**, the day `docs/GHOST.md` step 3 gives the click
   somewhere to go.
-- **The relay clicks.** `docs/HANDOFF.md` section 1 promises them, and
-  there is no audio device in this system. A `virtio-sound` or an AC97
-  is the day.
 - **A font past 128 glyphs**, deferred in `docs/HANDOFF.md` with its
   reason. The theme names a font file so that the day has somewhere to
   land.

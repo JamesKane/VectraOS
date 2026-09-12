@@ -679,6 +679,8 @@ lower :: proc "contextless" (c: u8) -> u8 {
 // activate does what a press means for a gadget: a checkmark flips, and then
 // the program's handler hears the gadget's id.
 activate :: proc "contextless" (win: ^Window, g: ^Object) #no_bounds_check {
+	// The relay's tick, the one place a gadget acts. See `sound.odin`.
+	relay_click()
 	if g.class == .Checkmark {
 		g.on = !g.on
 		window_paint(win)
