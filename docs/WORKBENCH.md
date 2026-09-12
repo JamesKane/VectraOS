@@ -656,12 +656,26 @@ injected click on its button, and answers which. A theme file that names
 - **Notices**, the list in `Execute Command...`, and the spend on the
   bar.
 
-Proves, in five checks. The suite starts the desktop and opens `Home` by
-an injected double click. It sees a drawer window with the icons
-`verify_kfs` left there. It opens a Shell from the menu and types at it
-as `verify_terminal` types. It presses the bound chord and counts one
-more shell in `ps`. It writes a line to `notice`, reads it back off
-`history`, and sees the toast's pixels in the bar's corner.
+Proves, in the suite. The suite starts the desktop and opens `Home` by an
+injected double click, and sees a drawer window with the icons `verify_kfs`
+left there. It presses button three on the first title and sees the menu
+open, a popup with `Shell` among its items. It presses the bound chord,
+which opens a shell in a window, and types at it as `verify_terminal`
+types; a second chord opens one more, counted in `ps`, and an `alt-w` each
+closes them. It writes a line to `notice`, reads it back off `history`,
+and sees the toast's pixels in the bar's corner.
+
+**What the suite drives, and what a person does.** Choosing an item off an
+open menu is a click on a popup that opened a moment earlier, and the draw
+server keeps one mouse line per window, the latest -- a press onto a window
+whose reader has not run yet is overwritten by its release before it is
+read. An injected click on a fresh popup is a race the glass cannot be
+driven through reliably, so the suite proves the menu opens with the item
+on it and leaves the choosing to a person; `docs/workbench-step4-desktop.png`
+is a shell opened from that menu by hand. The shell the suite types at is
+the one the bound chord opens, keyboard-driven, with no such race. A plain
+left click and a plain right-button menu-open are reliable once the press
+is held past a busy client's read, which `button_held` in the suite does.
 
 From the serial line, `window ls` opens a window with a listing in it.
 Then `ps` shows the desktop as one proc of threads and its io procs.

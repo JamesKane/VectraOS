@@ -79,6 +79,11 @@ SPAWN_NS_CLEAN :: abi.SPAWN_NS_CLEAN
 // RFCFDG -- for a parent building a sandbox.
 SPAWN_FD_CLEAN :: abi.SPAWN_FD_CLEAN
 
+// And whether the parent will wait for it. Zero keeps the child the parent's
+// to reap; the bit detaches it, so the kernel's reaper collects it when it
+// exits and a launcher that never waits leaks no slot. See `claim_slot`.
+SPAWN_NOWAIT :: abi.SPAWN_NOWAIT
+
 /*
 How long `wait` watches before it reports nothing happened.
 
@@ -114,7 +119,7 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 
 	p := claim_slot(
 		parent = parent != nil ? parent.pid : 0,
-		detached = false,
+		detached = flags & SPAWN_NOWAIT != 0,
 		note_group = parent != nil ? parent.note_group : 0,
 		rend_group = parent != nil ? parent.rend_group : 0,
 		inherit = parent,

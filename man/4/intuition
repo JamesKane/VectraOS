@@ -263,9 +263,12 @@ own, not any window's.
 Reading it answers the current workspace and how many there are.
 Writing it takes
 .BI workspace " n"
-to switch, or
+to switch,
 .B reload
-to read the keys and workspace rules files again.
+to read the keys and workspace rules files again, or
+.B diag
+to print the image pool's use \(en images in use, the high\-water mark, and
+the cap \(en to the server's standard error, for sizing the glyph atlas.
 .B /srv/draw/hotkey
 carries one line per read, the chords the server matched but did not act
 on itself, verbatim from the keys file; see

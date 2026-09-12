@@ -98,6 +98,11 @@ ORDER_AFTER :: u64(2)
 SPAWN_NS_COPY :: u64(1)
 SPAWN_NS_CLEAN :: u64(2)
 SPAWN_FD_CLEAN :: u64(4)
+// Fire and forget: the child is the kernel's to reap, not the parent's to
+// wait for, so a launcher that never waits -- a desktop opening a window,
+// a menu running a tool -- leaks no slot when the child exits. It is
+// `rfork`'s `RFNOWAIT` for a spawn.
+SPAWN_NOWAIT :: u64(8)
 
 // How `pipe` packs its two descriptors into one answer: end 0 in the low
 // byte, end 1 in the next. A descriptor table holds sixteen, so a byte is

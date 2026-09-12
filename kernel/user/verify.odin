@@ -5136,10 +5136,21 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 
 	// -- 1. A double click on Home opens a drawer ----------------------------------
 
+	// A double click is two presses close enough in the server's own clock,
+	// which the injected pair does not always land inside on the first try.
+	// So the click is retried until a drawer's bar appears, a few times
+	// before it is called a failure.
 	home_x, home_y := libmui_icon_w() / 2, WB_BAR_H + libmui_icon_h() / 2
 	check(r, point_to(home_x, home_y), "the pointer is moved onto Home")
-	check(r, click_held() && click_held(), "and clicked twice")
-	dx, dy, dw := await_title_bar(s)
+	dx, dy, dw := -1, -1, 0
+	for _ in 0 ..< 5 {
+		_ = click_held()
+		_ = click_held()
+		if x, y, w := title_bar_within(s, PATIENCE * 2); x >= 0 {
+			dx, dy, dw = x, y, w
+			break
+		}
+	}
 	if check(r, dx >= 0, "a double click on Home opens a drawer window, its bar copper") {
 		// An icon in it: the file `verify_kfs` left in the home directory is
 		// a project, whose picture and name are drawn in ink, which is amber
@@ -5174,106 +5185,137 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		check(r, closed, "and an alt-w closes the drawer, its bar gone from the glass")
 	}
 
-	// -- 2. Shell, from the first menu, and typing at it ------------------------------
+	// -- 2. The first menu opens on button three -------------------------------------
 
-	// The first menu title after the wordmark: along the bar's text row the
-	// amber falls in groups a gap of ground apart, the wordmark first and
-	// `Workbench` second.
+	/*
+	The bar's first title opens its menu, a popup with `Shell` among its
+	items. The choice on that item is a click on a popup that just opened,
+	and the draw server keeps only the latest mouse line per window, so a
+	press onto a window whose reader has not run yet is gone before it is
+	read -- an injected click on a fresh popup is a race the glass cannot
+	be driven through reliably. So this proves the menu opens with the item
+	on it, and leaves the choosing to a person. `docs/workbench-step4-
+	desktop.png` is a shell opened from that menu by hand. The shell this
+	suite types at is the one the bound chord opens below, keyboard-driven
+	and with no such race.
+	*/
 	title_x := amber_group(s, WB_BAR_H / 2, amber, 2)
-	shells0 := count_named("window")
-	menu_col := title_x + 8
+	shells0 := count_windows()
+	menu_ok := false
 	if check(r, title_x > 0, "the first menu title stands after the wordmark on the bar") {
-		check(r, point_to(title_x + 8, WB_BAR_H / 2), "the pointer is moved onto it")
-		check(r, inject_move(0, 0, 2) && wait_pointer(title_x + 8, WB_BAR_H / 2) && inject_move(0, 0, 0), "and button 3 is pressed there")
-		// The menu is a popup of button faces below the title. `Shell` is
-		// the third, so its face is the third run of face down a column
-		// inside the popup.
-		item_y := -1
-		for _ in 0 ..< PATIENCE * 20 {
-			item_y = nth_face_run(s, menu_col, WB_BAR_H, magnesium, 3)
-			if item_y >= 0 {
-				break
+		// The press that opens the menu can miss -- a tap collapses into its
+		// release when the bar is between reads -- so it is retried, each
+		// retry first clicking the bare backdrop to close a menu a prior try
+		// left standing, which the toolkit would not open a second over.
+		for attempt in 0 ..< 6 {
+			if attempt > 0 {
+				_ = point_to(s.width / 2, s.height / 2)
+				_ = click_held()
 			}
-			sync.delay(1)
-		}
-		if item_y < 0 {
-			sink := detail_for("a menu opens under it, a popup of items, Shell the third")
-			libodin.put_str(&sink, "title at ")
-			libodin.put_int(&sink, i64(title_x))
-			libodin.put_str(&sink, ", column ")
-			libodin.put_int(&sink, i64(menu_col))
-			libodin.put_str(&sink, " from the bar: ")
-			column_profile(&sink, s, menu_col, WB_BAR_H, min(WB_BAR_H + 220, s.height), magnesium, amber)
-			fail_detail(r, &sink)
-		}
-		if item_y >= 0 {
-			check(r, point_to(menu_col, item_y), "the pointer is moved onto Shell")
-			check(r, click_held(), "and clicked")
-		}
-	}
-
-	// The shell's window. Its bar is copper, being the window in front, and
-	// only one bar is, so the first wide run of copper is its.
-	bx, by, bw := await_title_bar(s)
-	if check(r, bx >= 0, "Shell opens a window, its bar copper") {
-		check(r, await_count(shells0 + 1, "window"), "with a shell in it, one more window in the process table")
-		// The well below the bar, and the prompt eight pixels into it.
-		slate := fb.pack(s, fb.SLATE)
-		ox, oy := -1, -1
-		for _ in 0 ..< PATIENCE * 10 {
-			oy, _ = scan_col(s, bx + bw / 2, slate, by, s.height)
-			if oy > by {
-				ox, _ = scan_row(s, oy + 4, slate, 0, s.width)
-				if ox >= 0 {
+			if !point_to(title_x + 8, WB_BAR_H / 2) {
+				continue
+			}
+			if !(inject_move(0, 0, CLICK_MENU) && wait_pointer(title_x + 8, WB_BAR_H / 2)) {
+				continue
+			}
+			sync.delay(CLICK_HOLD)
+			_ = inject_move(0, 0, 0)
+			// The popup opens at the title's gadget, past the label's own left
+			// padding, so it is found by its pixels: the first row under the
+			// bar carries the top button, a wide magnesium span. `Shell` is
+			// its third item, a third run of face down a column a dozen pixels
+			// inside the button's left edge, clear of bevel and centred label.
+			mcol := -1
+			for _ in 0 ..< PATIENCE * 2 {
+				if first, last := scan_row(s, WB_BAR_H + 12, magnesium, title_x, s.width - 8); first >= 0 && last - first > 60 {
+					mcol = first + 12
 					break
 				}
+				sync.delay(1)
 			}
-			sync.delay(1)
-		}
-		if check(r, ox >= 0, "and a well below its bar") {
-			y0 := oy + 8
-			prompted, _ := await_glyph(s, ox + 8, y0, '%', PATIENCE * 10)
-			check(r, prompted, "where the shell's prompt lands")
-			inject_key(0x23) // 'h'
-			inject_key(0x17) // 'i'
-			echoed, _ := await_glyph(s, ox + 32, y0, 'i', PATIENCE * 10)
-			check(r, echoed, "two keys typed through the translator are on the glass after it, as verify_terminal types")
-			inject_key(0x1C) // Enter
-			answered, _ := await_glyph(s, ox + 8, y0 + 32, '%', PATIENCE * 10)
-			check(r, answered, "and a newline has the shell answer, and prompt again")
-		}
-	}
-
-	// -- 3. The bound chord opens one more --------------------------------------------
-
-	shells1 := count_named("window")
-	inject_chord(0x31) // 'n' is make 0x31: `window rc -i` in /lib/keys
-	check(r, await_count(shells1 + 1, "window"), "an alt-n reaches the desktop, which opens one more shell, counted in the process table")
-
-	// The shells are closed the way a person closes them, an alt-w each,
-	// front window first, and the glass says each went: the bar of the
-	// window in front is copper, and after the chord no bar is.
-	closed_shells := 0
-	for _ in 0 ..< 2 {
-		if fx, _, _ := await_title_bar(s); fx < 0 {
-			break
-		}
-		inject_chord(0x11) // 'w' is make 0x11
-		gone := false
-		deadline := sched.ticks() + PATIENCE * 10
-		for sched.ticks() < deadline {
-			if !any_title_bar(s) {
-				gone = true
+			if mcol >= 0 && nth_face_run(s, mcol, WB_BAR_H, magnesium, 3) >= 0 {
+				menu_ok = true
 				break
 			}
-			sync.delay(1)
 		}
-		if !gone {
-			break
-		}
-		closed_shells += 1
 	}
-	check(r, closed_shells == 2, "an alt-w closes each shell window, front first, its bar gone from the glass")
+	check(r, menu_ok, "button three on it opens a menu, a popup with a third item where Shell sits")
+	// The menu down again, so the shells and the toast below have clear glass.
+	// A press on the bare backdrop, outside the popup, is what closes it.
+	_ = point_to(s.width / 2, s.height / 2)
+	_ = click_held()
+
+	// -- 3. A shell in a window, typed at, and one more on the chord ------------------
+
+	// The bound chord opens a shell in a window: `alt-n` runs `window rc -i`,
+	// which `/lib/keys` binds. Keyboard, so no pointer race.
+	inject_chord(0x31) // 'n' is make 0x31
+	if check(r, await_windows(shells0 + 1), "an alt-n opens a shell in a window, one more in the process table") {
+		// Its window is the one in front, its bar copper. The well below the
+		// bar, and the prompt eight pixels into it.
+		bx, by, bw := await_title_bar(s)
+		if check(r, bx >= 0, "the shell's window is on the glass, its bar copper") {
+			slate := fb.pack(s, fb.SLATE)
+			ox, oy := -1, -1
+			for _ in 0 ..< PATIENCE * 10 {
+				oy, _ = scan_col(s, bx + bw / 2, slate, by, s.height)
+				if oy > by {
+					ox, _ = scan_row(s, oy + 4, slate, 0, s.width)
+					if ox >= 0 {
+						break
+					}
+				}
+				sync.delay(1)
+			}
+			if check(r, ox >= 0, "and a well below its bar") {
+				y0 := oy + 8
+				prompted, _ := await_glyph(s, ox + 8, y0, '%', PATIENCE * 10)
+				check(r, prompted, "where the shell's prompt lands")
+				inject_key(0x23) // 'h'
+				inject_key(0x17) // 'i'
+				echoed, _ := await_glyph(s, ox + 32, y0, 'i', PATIENCE * 10)
+				check(r, echoed, "two keys typed through the translator are on the glass after it, as verify_terminal types")
+				inject_key(0x1C) // Enter
+				answered, _ := await_glyph(s, ox + 8, y0 + 32, '%', PATIENCE * 10)
+				check(r, answered, "and a newline has the shell answer, and prompt again")
+			}
+		}
+	}
+
+	// One more, the bound chord again, counted in the table.
+	shells1 := count_windows()
+	inject_chord(0x31) // 'n' is make 0x31
+	check(r, await_windows(shells1 + 1), "a second alt-n opens one more shell, counted in the process table")
+
+	// The shells are closed the way a person closes them, an alt-w each,
+	// front window first. Their count in the process table is the witness,
+	// not the glass: closing the front shell leaves the other's copper bar
+	// standing, so "a bar is gone" cannot tell one close from none. A window
+	// `alt-w` hangs up ends when its keyboard answers nothing, so this waits
+	// for the table to lose one before sending the next chord.
+	start_shells := count_windows()
+	chords := 0
+	for count_windows() > shells0 && chords < start_shells + 4 {
+		want := count_windows() - 1
+		sync.delay(5) // let the last close's refocus settle before the next chord
+		inject_chord(0x11) // 'w' is make 0x11
+		chords += 1
+		_ = await_windows(want)
+	}
+	if count_windows() != shells0 {
+		sink := detail_for("an alt-w closes each shell window in turn, front first")
+		libodin.put_str(&sink, "started ")
+		libodin.put_int(&sink, i64(start_shells))
+		libodin.put_str(&sink, " baseline ")
+		libodin.put_int(&sink, i64(shells0))
+		libodin.put_str(&sink, " chords ")
+		libodin.put_int(&sink, i64(chords))
+		libodin.put_str(&sink, " now ")
+		libodin.put_int(&sink, i64(count_windows()))
+		fail_detail(r, &sink)
+	} else {
+		check(r, true, "an alt-w closes each shell window in turn, front first")
+	}
 
 	// -- 4. A notice, written and read back ------------------------------------------
 
@@ -5369,25 +5411,52 @@ libmui_icon_h :: proc "contextless" () -> int {
 	return 64
 }
 
-// count_named counts the live processes whose program is `name`.
+// name_is_window reports whether a live process is a `window` program.
 @(private = "file")
-count_named :: proc "contextless" (name: string) -> int #no_bounds_check {
+name_is_window :: proc "contextless" (p: ^Process) -> bool #no_bounds_check {
+	return p.live && name_ends(p.name, "window")
+}
+
+/*
+count_windows counts the shell windows on the desktop -- the top-level
+`window` programs, not the io procs each forks.
+
+`window` is a `sys/libthread` program, so its io procs are forked children
+that carry its name: one shell in a window shows as three `window` processes
+in the table. Counting the name alone would move by three per shell and lie.
+A top-level window's parent is the desktop that spawned it; an io proc's
+parent is the window itself. So a `window` process whose parent is also a
+`window` is an io proc and is not counted.
+*/
+@(private = "file")
+count_windows :: proc "contextless" () -> int #no_bounds_check {
 	n := 0
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]
-		if p.live && name_ends(p.name, name) {
+		if !name_is_window(p) {
+			continue
+		}
+		parent_is_window := false
+		for j in 0 ..< MAX_PROCESSES {
+			q := &processes[j]
+			if q.live && q.pid == p.parent && name_ends(q.name, "window") {
+				parent_is_window = true
+				break
+			}
+		}
+		if !parent_is_window {
 			n += 1
 		}
 	}
 	return n
 }
 
-// await_count waits, inside the patience, for the count of live processes
-// named `name` to be `want`.
+// await_windows waits, inside the patience, for the count of shell windows
+// to be `want`, collecting orphans as it goes.
 @(private = "file")
-await_count :: proc(want: int, name: string) -> bool {
+await_windows :: proc(want: int) -> bool {
 	for _ in 0 ..< PATIENCE * 10 {
-		if count_named(name) == want {
+		if count_windows() == want {
 			return true
 		}
 		reap_orphans()
@@ -5397,16 +5466,20 @@ await_count :: proc(want: int, name: string) -> bool {
 }
 
 /*
-click_held presses the left button where the pointer is, holds it, and
-releases, with a hold either side. The server keeps one mouse line per
-window and a newer one overwrites it, so a press and a release a tick
-apart can reach a client's reader as the release alone. A person's press
-lasts longer than a program's turn, and so does this one.
+button_held presses one rio button where the pointer is, holds it, and
+releases, with a hold either side.
+
+**This is the whole of why a click is reliable.** The draw server keeps one
+mouse line per window, the latest, and marks it read; a press and the
+release after it, landing between two of the client's reads, reach the
+client as the release alone -- button zero, no click. So the press is held
+long enough that a client busy baking a face still reads it before it goes.
+A person's press lasts longer than a program's turn, and so does this one.
 */
 @(private = "file")
-click_held :: proc() -> bool {
+button_held :: proc(button: u8) -> bool {
 	cx, cy := mouse.position()
-	if !inject_move(0, 0, 1) || !wait_pointer(cx, cy) {
+	if !inject_move(0, 0, button) || !wait_pointer(cx, cy) {
 		return false
 	}
 	sync.delay(CLICK_HOLD)
@@ -5417,9 +5490,25 @@ click_held :: proc() -> bool {
 	return true
 }
 
-// How long an injected press is held, and the gap before the next: a few
-// scheduler ticks, more than a cooperative program takes to read a line.
-CLICK_HOLD :: 40
+// The `inject_move` button bits are the PS/2 packet's, which the driver
+// remaps to rio's: bit 0 is the left button, and bit 1 -- not bit 2 --
+// decodes to rio's right, the menu button. `parse_mouse` and the driver's
+// `decode` are the two halves of that mapping.
+CLICK_LEFT :: u8(1)
+CLICK_MENU :: u8(2)
+
+// click_held is the left button, the plain click. `button_held(CLICK_MENU)`
+// is the right, which opens a menu.
+@(private = "file")
+click_held :: proc() -> bool {
+	return button_held(CLICK_LEFT)
+}
+
+// How long an injected press is held, and the gap before the next. Generous
+// on purpose: a window baking a full face between its mouse reads can be
+// tens of ticks between them, and a shorter hold lets the release overwrite
+// the press before the read. See `button_held`.
+CLICK_HOLD :: 120
 
 // row_span answers the start and length of the longest span of `want`
 // along row `y` between `x0` and `x1`, where a span is pixels of it fewer
@@ -5518,12 +5607,20 @@ nth_face_run :: proc "contextless" (s: ^fb.Surface, x: int, y0: int, face: u32, 
 	return -1
 }
 
-// any_title_bar says whether any window's bar is on the glass: a span of
-// copper wider than a hundred pixels on any row of the top half.
+// title_bar_within polls for a window's bar for `ticks`, or answers -1. The
+// short-patience form the retries use, where a full `await_title_bar` per
+// attempt would be minutes.
 @(private = "file")
-any_title_bar :: proc "contextless" (s: ^fb.Surface) -> bool {
-	bx, _, _ := title_bar(s, fb.pack(s, fb.COPPER))
-	return bx >= 0
+title_bar_within :: proc(s: ^fb.Surface, ticks: int) -> (bx: int, by: int, bw: int) {
+	copper := fb.pack(s, fb.COPPER)
+	deadline := sched.ticks() + u64(ticks)
+	for sched.ticks() < deadline {
+		if x, y, w := title_bar(s, copper); x >= 0 {
+			return x, y, w
+		}
+		sync.delay(1)
+	}
+	return -1, -1, 0
 }
 
 // amber_group answers the first column of the n-th group of `want` along

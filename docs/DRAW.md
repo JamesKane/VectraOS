@@ -118,6 +118,49 @@ again. A short count would leave the client to guess which commands ran.
 The stream is not transactional beyond that: what stood before the bad
 command already drew.
 
+### The image pool, and what sizes it
+
+The server-side images live in one `segalloc`'d pool, carved into fixed
+slices of `IMG_PIXELS` pixels each. In practice they are glyph strips: a
+toolkit face bakes `BAKE_PER_STRIP` cells to a strip and a whole Latin face
+is fourteen strips, so the pool is the desktop's glyph atlas and its size
+is that atlas's budget. `MAX_IMAGES` was a flat 128, which a desktop of a
+couple of shells, a drawer, a toast and a menu open at once ran over -- a
+bake would fail and a window draw half a font. `servers/intuition`'s
+`image_budget` sizes it now, and three separate things set it:
+
+- **How many strips a face costs** is the font's, not the display's:
+  fourteen for `default.font`'s ranges, capped at `BAKE_MAX_STRIPS`. A
+  bigger screen adds no glyphs.
+- **How many pixels a strip is** (`IMG_PIXELS`) is `BAKE_PER_STRIP` cells
+  of `FONT_WIDTH` by `FONT_HEIGHT`. This is the one term a display's DPI
+  moves: a board that runs a larger font has larger cells, so each strip
+  and the whole pool grow with it, with no code change.
+- **How many strips fit at once** (`img_cap`) scales with the glass, since
+  a larger screen holds more windows, hence more faces, at a time.
+  `image_budget` reads it from the geometry -- about four more faces per
+  megapixel -- floored for a small screen and capped at `IMAGE_SLOTS_MAX`.
+
+At the QEMU default of 1280 by 800 the pool is ~300 strips, about 2.4 MB;
+the cap holds it under ~4 MB at 8 by 16 cells, or ~16 MB were the cells
+scaled to a hi-DPI board. Those land where a modern whole-desktop glyph
+atlas sits: Skia's alpha atlas is one 2048² A8 page, 4 MB, up to four; a
+full RGBA page is 16 MB.
+
+**The multiplier, and where it goes next.** This pool is bigger than it
+needs to be for one reason: the blit is opaque, so a glyph carries its
+foreground and background baked together, and a face is one atlas *per
+ink-and-ground pair* a window draws. Modern renderers -- Skia, WebRender,
+Qt, Flutter's Impeller -- store a single-channel *coverage* atlas instead
+and tint at composite, so one atlas serves every colour, at a quarter the
+bytes per pixel and none of the per-pair copies. The change here is a blit
+that reads coverage and a fill colour rather than opaque pixels; it would
+cut the pool by the colour-pair factor and retire most of this budget. Until
+then the pool is sized for the colour-baked cost, with headroom. Writing
+`diag` to the server's own `ctl` -- the `ctl` in its served tree, beside
+`workspace` and `reload` -- prints the images in use, the high-water mark,
+and the cap, for reading how near a desktop runs to the edge.
+
 ## 6. Flush means visibility
 
 `flush` promises the drawing so far is visible, and promises nothing about

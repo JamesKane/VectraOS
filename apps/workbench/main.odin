@@ -471,7 +471,11 @@ spawn_window :: proc "contextless" (cmdline: string) {
 		n += 1
 		rest = r
 	}
-	_ = libuser.spawn("/bin/window", 0, argv[:n])
+	// Detached: the desktop opens windows and never waits for them, so the
+	// kernel reaps each when its window closes. Without this a closed shell
+	// or tool would sit in the process table forever, a slot the desktop
+	// leaks every time it launches one.
+	_ = libuser.spawn("/bin/window", abi.SPAWN_NOWAIT, argv[:n])
 }
 
 // run_tool runs one of /lib/wb/tools: the file's first line is its command.

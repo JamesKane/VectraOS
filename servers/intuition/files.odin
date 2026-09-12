@@ -20,6 +20,7 @@ superset, so the terminal need not change to keep working.
 package intuition
 
 import "vsys:libdraw"
+import "vsys:libuser"
 import "vsys:vectra9"
 
 // -- The server's ctl --------------------------------------------------------------
@@ -56,6 +57,18 @@ run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_ch
 			return vectra9.EINVAL
 		}
 		rules_load()
+		return vectra9.Errno(0)
+	case "diag":
+		// The image pool's use, so a person can see how near the cap a
+		// desktop runs. `docs/DRAW.md` sizes the pool.
+		tmp: [24]u8
+		libuser.eprint("intuition: images used ")
+		libuser.eprint(libuser.itoa(tmp[:], i64(img_used)))
+		libuser.eprint(" high-water ")
+		libuser.eprint(libuser.itoa(tmp[:], i64(img_hw)))
+		libuser.eprint(" of ")
+		libuser.eprint(libuser.itoa(tmp[:], i64(img_cap)))
+		libuser.eprint("\n")
 		return vectra9.Errno(0)
 	}
 	return vectra9.EINVAL

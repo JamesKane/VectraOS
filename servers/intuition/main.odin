@@ -1347,24 +1347,60 @@ scratch: Region
 
 windows: [MAX_WINDOWS]Window
 
-// The image pool. Image zero is the session's window and lives nowhere; these
-// are the client's own images, owned by the fid that allocated each. The
-// pixels come from one segment of their own, `img_pool`, allocated once
-// at start and carved into `MAX_IMAGES` fixed slices.
-//
-// **Not the bss, and not the heap.** Sixty-four images in the bss put
-// this program past the loader's frame budget. A window store is a shared
-// run mapped by `shmalloc`, at a high address of its own; the image pool
-// is one `segalloc` before any window opens, so it never fights a store
-// for room.
-//
-// A full-font face is about fourteen strips, and a toolkit window bakes
-// one face per ink-and-ground pair it draws: two for a window of buttons
-// and lists. The terminal, the toolkit demo and the debugger's window
-// together are past sixty-four, so the pool is a hundred and twenty-eight,
-// a megabyte of pixels.
-MAX_IMAGES :: 128
-IMG_PIXELS :: 2048
+/*
+The image pool -- the desktop's glyph atlas. Image zero is the session's
+window and lives nowhere; these are the client's own images, owned by the
+fid that allocated each. In practice they are the strips a toolkit face
+bakes: one server image holds `BAKE_PER_STRIP` glyph cells, and a whole
+Latin face is `STRIPS_PER_FACE` of them. The pixels come from one segment
+of their own, `img_pool`, allocated once at start and carved into `img_cap`
+fixed slices.
+
+**Not the bss, and not the heap.** The pixels in the bss put this program
+past the loader's frame budget. A window store is a shared run mapped by
+`shmalloc`, at a high address of its own; the image pool is one `segalloc`
+before any window opens, so it never fights a store for room. Only the
+slots' bookkeeping (`images`) sits in the bss, sized to the static ceiling.
+
+**Why it is bigger than it was, and why it scales.** The blit is opaque:
+a glyph carries its foreground and background baked together, so a face is
+one atlas *per ink-and-ground pair* a window draws -- about two for a window
+of buttons and lists. A busy desktop -- the bar, the backdrop, a couple of
+shells, a drawer, a toast, and a menu open at once -- keeps close to nine
+faces, ~126 strips, which is why the old flat 128 tipped over the moment a
+second window drew. Modern renderers avoid the per-colour multiplier by
+storing coverage alone and tinting at composite; `docs/DRAW.md` records that
+as the direction. Until then the pool is budgeted for the colour-baked cost,
+with headroom.
+
+Three things set the size, and only one of them is the screen's resolution:
+
+  - `STRIPS_PER_FACE` is the font's, not the display's: at most
+    `BAKE_MAX_STRIPS`, which `default.font` fills to fourteen (219 cells,
+    `BAKE_PER_STRIP` to a strip). A bigger screen does not add glyphs.
+  - `IMG_PIXELS` is one strip's pixels, `BAKE_PER_STRIP` cells of
+    `FONT_WIDTH` by `FONT_HEIGHT`. This is the one term the display's DPI
+    moves: a board that runs a larger font has larger cells, so each strip,
+    and the whole pool, grows with it -- with no change here.
+  - `img_cap` is how many strips fit at once. It scales with the glass,
+    since a larger screen holds more windows, hence more faces, at a time.
+    `image_budget` sets it from the geometry, floored for a small screen
+    and capped at `IMAGE_SLOTS_MAX` so the bss stays bounded.
+*/
+STRIPS_PER_FACE :: libdraw.BAKE_MAX_STRIPS // the baker's ceiling; default.font fills 14
+IMG_PIXELS :: libdraw.BAKE_PER_STRIP * libfont.FONT_WIDTH * libfont.FONT_HEIGHT
+IMAGE_SLOTS_MAX :: 512
+
+// image_budget is how many pool slots a screen of `w` by `h` gets: a
+// working set of faces -- the bar and backdrop, a couple per open window,
+// and room for a menu and a toast -- times the strips a face costs. The
+// face count grows with the glass, about four more per megapixel, since a
+// larger screen holds more windows at once. Floored at eight faces for the
+// smallest screen and capped at the static ceiling.
+image_budget :: proc "contextless" (w: int, h: int) -> int {
+	faces := 16 + (w * h) / (256 * 1024)
+	return clamp(faces * STRIPS_PER_FACE, 8 * STRIPS_PER_FACE, IMAGE_SLOTS_MAX)
+}
 
 Image :: struct {
 	owner:  vectra9.Fid,
@@ -1375,8 +1411,11 @@ Image :: struct {
 	pixels: [^]u32,
 }
 
-images: [MAX_IMAGES]Image
+images: [IMAGE_SLOTS_MAX]Image
 img_pool: [^]u32
+img_cap: int // Slots actually carved from `img_pool`, set from the geometry
+img_used: int
+img_hw: int
 
 /*
 The screen itself, once `segattach` answers.
@@ -1527,8 +1566,10 @@ start :: proc "c" (block: ^abi.Args) {
 	_ = libfont.loader_open(&title_font, "/lib/font/default.font", title_read, nil)
 
 	// The image pool, one segment before any window store, so it is placed
-	// early and never has to grow. See `Image`.
-	if pool, perr := libuser.segalloc(MAX_IMAGES * IMG_PIXELS * 4); perr >= 0 {
+	// early and never has to grow. Its slot count comes from the geometry
+	// read above, so a larger glass gets more of them. See `Image`.
+	img_cap = image_budget(scr_w, scr_h)
+	if pool, perr := libuser.segalloc(img_cap * IMG_PIXELS * 4); perr >= 0 {
 		img_pool = ([^]u32)(pool)
 	} else {
 		libuser.exit(0x77)
@@ -2537,7 +2578,7 @@ window_of :: proc "contextless" (owner: vectra9.Fid) -> ^Window #no_bounds_check
 // -- The images ---------------------------------------------------------------
 
 image_find :: proc "contextless" (owner: vectra9.Fid, id: u32) -> int #no_bounds_check {
-	for i in 0 ..< MAX_IMAGES {
+	for i in 0 ..< img_cap {
 		if images[i].used && images[i].owner == owner && images[i].id == id {
 			return i
 		}
@@ -2555,7 +2596,7 @@ image_alloc :: proc "contextless" (owner: vectra9.Fid, id: u32, w: int, h: int) 
 	if image_find(owner, id) >= 0 {
 		return vectra9.EINVAL
 	}
-			for i in 0 ..< MAX_IMAGES {
+			for i in 0 ..< img_cap {
 		if !images[i].used {
 			images[i] = Image {
 				owner  = owner,
@@ -2564,6 +2605,10 @@ image_alloc :: proc "contextless" (owner: vectra9.Fid, id: u32, w: int, h: int) 
 				h      = h,
 				used   = true,
 				pixels = img_pool[i * IMG_PIXELS:],
+			}
+			img_used += 1
+			if img_used > img_hw {
+				img_hw = img_used
 			}
 			return vectra9.Errno(0)
 		}
@@ -2574,13 +2619,16 @@ image_alloc :: proc "contextless" (owner: vectra9.Fid, id: u32, w: int, h: int) 
 // image_drop gives one slot back. Its slice of the pool stays put, and
 // the next image in the slot reuses it.
 image_drop :: proc "contextless" (i: int) #no_bounds_check {
+	if images[i].used {
+		img_used -= 1
+	}
 	images[i] = Image{}
 }
 
 // image_free_all is the clunk's half of the session rule: what a fid
 // allocated goes when the fid does.
 image_free_all :: proc "contextless" (owner: vectra9.Fid) #no_bounds_check {
-		for i in 0 ..< MAX_IMAGES {
+		for i in 0 ..< img_cap {
 		if images[i].used && images[i].owner == owner {
 			image_drop(i)
 		}
