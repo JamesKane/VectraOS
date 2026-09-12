@@ -9122,6 +9122,34 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #n
 	}
 	mx, my, _, parsed := parse_mouse(mount_reader.buf[:max(mount_reader.n, 0)])
 	check(r, parsed && mx == 10 && my == 10, "carrying the pointer in the window's own coordinates, inside the frame")
+
+	/*
+	And a press in it grabs the pointer, so a drag that leaves the window is
+	still the window's own.
+
+	This is what hands a drag between windows: a file dragged out of a drawer
+	and dropped on another. The pointer is pressed in this window's client,
+	then dragged left out of it and over window zero -- where, with no grab,
+	window zero would take the line and this window would hear nothing. The
+	grab keeps it here, and the window sees the pointer outside its own bounds,
+	a negative x, with the button still down. `docs/WORKBENCH.md` section 6.
+	*/
+	gx0, gy0 := mouse.position()
+	_ = inject_move(0, 0, 1) // press button 1, beginning the grab
+	_ = wait_pointer(gx0, gy0)
+	mount_reader = Mount_Reader{c = mf}
+	if check(r, sched.spawn("grab-read", mount_read_thread, nil) != nil, "a thread reads the grabbing window's mouse") {
+		_ = inject_move(-50, 0, 1) // drag left out of the window, button held
+		dwoke := sync.await_flag(&mount_reader.done, PATIENCE)
+		dragx, _, dragb, dok := parse_mouse(mount_reader.buf[:max(mount_reader.n, 0)])
+		check(
+			r,
+			dwoke && dok && dragb & 1 != 0 && dragx < 0,
+			"a drag out of the window is still delivered to it, the pointer past its own edge",
+		)
+	}
+	_ = inject_move(0, 0, 0) // release, ending the grab
+	_ = wait_pointer(gx0 - 50, gy0)
 	vfs.chan_close(mf)
 
 	// -- A drag on the bar moves the window -----------------------------------------

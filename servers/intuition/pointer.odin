@@ -93,6 +93,23 @@ Drag :: struct {
 
 drag: Drag
 
+/*
+A client grab: the window a button press landed in keeps the pointer until
+the button is up, wherever it goes. That is what hands a drag between windows
+-- a file dragged out of a drawer and dropped on another is one press that
+starts in one window and ends over a second, and the server owns the pointer,
+so it can keep the whole of it for the window that began it. The window hears
+the pointer leave its own bounds as coordinates outside them, `rio`'s way, and
+the release comes back to it with the point it landed on, which the program
+maps to a drop. `docs/WORKBENCH.md` section 6.
+
+Only a client press grabs. A bar or a gadget has its own press (a window
+drag, a close), and a popup is dismissed by a press outside it, each decided
+before this.
+*/
+grabbing: bool
+grab_win: int
+
 // The sizing corner: this many pixels square at a window's bottom right,
 // which is the border, the well and a corner of the client area.
 SIZE_GRIP :: 12
@@ -177,6 +194,20 @@ pointer_move :: proc "contextless" (x: int, y: int, b: u8, msec: u64) #no_bounds
 		return
 	}
 
+	// A client grab holds the pointer to the window the press began in, so a
+	// drag that leaves it is still delivered there and the release comes back.
+	if grabbing {
+		if !windows[grab_win].used {
+			grabbing = false
+		} else {
+			mouse_deliver(grab_win, x, y, b, msec)
+			if b == 0 {
+				grabbing = false
+			}
+			return
+		}
+	}
+
 	w := window_at(x, y)
 	if pressed & 1 != 0 && w >= 0 {
 		win := &windows[w]
@@ -202,6 +233,11 @@ pointer_move :: proc "contextless" (x: int, y: int, b: u8, msec: u64) #no_bounds
 			if win.kind == .Normal {
 				window_raise(win, w)
 			}
+			// The press begins a grab, so a drag out of this window stays its
+			// own until the button is up. A plain click is a press and release
+			// in place, which the grab delivers to this same window and ends.
+			grabbing = true
+			grab_win = w
 		case .None:
 		}
 	}
