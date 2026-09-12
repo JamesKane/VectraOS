@@ -306,8 +306,9 @@ row and a column skipped. The compositor does that from the stores it
 already holds, so no program takes part and none is asked to redraw.
 
 A click on a tile switches to it. Escape, or the chord again, returns. A
-press on a window inside a tile and a release on another tile is the
-drag between workspaces. That comes with drag and drop in step 5.
+press on a window inside a tile and a release on another tile moves the
+window to that workspace, the drag between workspaces, and the picture stays
+up so the move is seen. See `overview_release` in `servers/intuition`.
 
 **Rules put a program where it belongs.** A window gets its name from
 the `name` line its program writes, `terminal` or `view` or `Home`, and
@@ -749,9 +750,6 @@ the same proc) and by `init` for the console's shell.
 
 Each its own document, in whatever order a reason arrives.
 
-- **A window dragged between tiles in the overview**, to send it to that
-  workspace. The file drag-and-drop that the server's grab was built for is
-  done (section 6); this is its other half, the overview's.
 - **Snapshot**, an icon's position kept in `$home/lib/wb`.
 - **A theme switcher** over `/lib/themes`, and the `use` line, section 5.
 - **The fault notice**, the day `docs/GHOST.md` step 3 gives the click

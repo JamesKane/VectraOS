@@ -38,6 +38,8 @@ overview_toggle :: proc "contextless" () {
 
 overview_open :: proc "contextless" () #no_bounds_check {
 	overview_on = true
+	ov_win = -1
+	ov_from = -1
 	// A dimmed ground under the tiles, so the picture reads as apart from
 	// the desktop.
 	for y in 0 ..< scr_h {
@@ -136,20 +138,92 @@ overview_window :: proc "contextless" (win: ^Window, tx: int, ty: int, tw: int, 
 	}
 }
 
+// A drag in the picture: the window a press landed on, and the workspace whose
+// tile it was in. A release on another tile moves the window there. Reset when
+// the picture opens and after each release, so a release never reads a stale
+// window slot.
+ov_win: int
+ov_from: int
+
+// overview_press begins a press in the picture: which tile it is in, and which
+// window inside it, if any.
+overview_press :: proc "contextless" (x: int, y: int) {
+	ov_from = overview_tile_at(x, y)
+	ov_win = ov_from >= 1 ? overview_window_at(ov_from, x, y) : -1
+}
+
 /*
-overview_click is a press while the picture is up: the tile it landed in
-becomes the current workspace, and the picture closes. A press in no tile
-closes it and stays.
+overview_release ends the press, `docs/WORKBENCH.md`'s two gestures in one.
+
+A window dragged onto another tile moves to that workspace, and the picture
+stays up so the move is seen -- the drag between workspaces. A press and
+release in one tile is a click: that workspace comes to the front, the window
+under the press raised if there was one. A release on no tile closes the
+picture.
 */
-overview_click :: proc "contextless" (x: int, y: int) #no_bounds_check {
+overview_release :: proc "contextless" (x: int, y: int) #no_bounds_check {
+	to := overview_tile_at(x, y)
+	win := ov_win
+	from := ov_from
+	ov_win = -1
+	ov_from = -1
+	if win >= 0 {
+		if to >= 1 && to != from {
+			// The move is the workspace field and two tiles repainted; the
+			// focus and the lamps settle when the picture closes and the whole
+			// glass is laid out again. No desktop repaint, which would paint
+			// the real windows over the picture.
+			windows[win].workspace = to
+			overview_tile(from)
+			overview_tile(to)
+			return
+		}
+		if to == from {
+			window_raise(&windows[win], win)
+			overview_on = false
+			current_ws = 0
+			workspace_switch(to)
+			return
+		}
+		return // a window dragged onto nothing: cancelled, the picture stays
+	}
+	if to >= 1 {
+		overview_on = false
+		current_ws = 0 // Force the switch to repaint.
+		workspace_switch(to)
+		return
+	}
+	overview_close()
+}
+
+// overview_tile_at is the workspace whose tile holds a screen point, or -1.
+overview_tile_at :: proc "contextless" (x: int, y: int) -> int #no_bounds_check {
 	for ws in 1 ..= WORKSPACES {
 		tx, ty, tw, th := tile_rect(ws)
 		if x >= tx && x < tx + tw && y >= ty && y < ty + th {
-			overview_on = false
-			current_ws = 0 // Force the switch to repaint.
-			workspace_switch(ws)
-			return
+			return ws
 		}
 	}
-	overview_close()
+	return -1
+}
+
+// overview_window_at maps a point in workspace `ws`'s tile back to the window
+// under it -- the point times the scale is where it is in the workspace -- the
+// topmost on that workspace, or -1. A bar or a backdrop is not dragged between
+// workspaces; a window is.
+overview_window_at :: proc "contextless" (ws: int, x: int, y: int) -> int #no_bounds_check {
+	tx, ty, _, _ := tile_rect(ws)
+	wx := (x - tx) * OVERVIEW_SCALE
+	wy := (y - ty) * OVERVIEW_SCALE
+	for si := stack_n - 1; si >= 0; si -= 1 {
+		w := stack[si]
+		win := &windows[w]
+		if !win.used || win.workspace != ws || win.hidden || win.kind != .Normal {
+			continue
+		}
+		if wx >= win.x && wx < win.x + win.w && wy >= win.y && wy < win.y + win.h {
+			return w
+		}
+	}
+	return -1
 }

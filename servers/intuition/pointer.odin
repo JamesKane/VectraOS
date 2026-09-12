@@ -181,10 +181,15 @@ pointer_move :: proc "contextless" (x: int, y: int, b: u8, msec: u64) #no_bounds
 	}
 	cursor_show()
 
-	// The overview owns every press while it is up: a tile switches to it.
+	// The overview owns the pointer while it is up: a press begins a gesture
+	// and the release decides it -- a tile switched to, or a window dragged to
+	// another workspace. See `overview_release`.
 	if overview_on {
 		if pressed & 1 != 0 {
-			overview_click(x, y)
+			overview_press(x, y)
+		}
+		if released & 1 != 0 {
+			overview_release(x, y)
 		}
 		return
 	}

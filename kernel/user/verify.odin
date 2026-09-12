@@ -6810,6 +6810,22 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		inject_chord(0x39) // space is make 0x39
 		dimmed := await_corner(s, void, PATIENCE)
 		check(r, dimmed, "an alt-space dims the glass to the overview's ground")
+
+		// A window dragged from one tile to another moves to that workspace,
+		// the overview's half of drag and drop. Window zero is on workspace
+		// one, in the first tile at its top-left; it is dragged to the second
+		// tile, its workspace read off its wctl, then dragged back so the
+		// close below finds it where it was.
+		if devfs.tree().mouse.present {
+			t1x, t1y := overview_tile_xy(1, s.width, s.height)
+			t2x, t2y := overview_tile_xy(2, s.width, s.height)
+			if check(r, overview_drag(t1x + 10, t1y + 10, t2x + 24, t2y + 24), "a window is dragged from its tile to another") {
+				check(r, window_ws("/mnt/0/wctl") == 2, "and moves to that tile's workspace")
+				_ = overview_drag(t2x + 10, t2y + 10, t1x + 10, t1y + 10)
+				check(r, window_ws("/mnt/0/wctl") == 1, "and dragging it back returns it to the first")
+			}
+		}
+
 		inject_chord(0x39)
 		closed := await_corner(s, frame, PATIENCE)
 		check(r, closed, "and a second alt-space closes it, back to the window it covered")
@@ -9227,6 +9243,61 @@ press_and_move :: proc(dx: int, dy: int) -> bool {
 	}
 	sync.delay(2)
 	return inject_move(0, 0, 0) && wait_pointer(cx + dx, cy + dy)
+}
+
+// overview_tile_xy is where workspace `ws`'s tile sits on the glass, the same
+// arithmetic `servers/intuition/overview.odin`'s `tile_rect` does -- three by
+// three, scaled by three -- so a check can press inside one.
+@(private = "file")
+overview_tile_xy :: proc "contextless" (ws: int, w: int, h: int) -> (x: int, y: int) {
+	col := (ws - 1) % 3
+	row := (ws - 1) / 3
+	gap := (w / 3) / 16
+	cw := (w - 4 * gap) / 3
+	ch := (h - 4 * gap) / 3
+	return gap + col * (cw + gap), gap + row * (ch + gap)
+}
+
+// overview_drag presses at one point, steps to another with the button held,
+// and releases: a window dragged between overview tiles. Stepped like
+// `point_to`, so a long drag stays inside a packet's reach per move.
+@(private = "file")
+overview_drag :: proc(fromx: int, fromy: int, tox: int, toy: int) -> bool {
+	if !point_to(fromx, fromy) {
+		return false
+	}
+	cx, cy := mouse.position()
+	if !inject_move(0, 0, 1) || !wait_pointer(cx, cy) {
+		return false
+	}
+	for _ in 0 ..< 128 {
+		px, py := mouse.position()
+		if px == tox && py == toy {
+			break
+		}
+		dx := clamp(tox - px, -120, 120)
+		dy := clamp(toy - py, -120, 120)
+		if !inject_move(dx, dy, 1) || !wait_pointer(px + dx, py + dy) {
+			return false
+		}
+	}
+	return inject_move(0, 0, 0) && wait_pointer(tox, toy)
+}
+
+// window_ws reads a window's wctl and answers the workspace it reports, the
+// last of the numbers in `x y w h current visible N`.
+@(private = "file")
+window_ws :: proc(path: string) -> int {
+	fd, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
+	if err != vfs.OK {
+		return -1
+	}
+	defer vfs.chan_close(fd)
+	buf: [96]u8
+	n, _ := vfs.chan_read(fd, 0, buf[:])
+	nums: [5]int
+	report_numbers(buf[:max(n, 0)], nums[:])
+	return nums[4]
 }
 
 // inject_move is one packet: the movement in screen terms, the buttons as
