@@ -111,13 +111,10 @@ apply_line :: proc "contextless" (t: ^Theme, line: string) {
 }
 
 // set_color reads a palette name or six hex digits into `dst`, and leaves it
-// alone if it can read neither.
+// alone if it can read neither. The grammar is `libpal.parse_color`'s, shared
+// with the server that themes the frame.
 set_color :: proc "contextless" (dst: ^libpal.RGB, value: string) {
-	if c, ok := libpal.by_name(value); ok {
-		dst^ = c
-		return
-	}
-	if c, ok := hex_rgb(value); ok {
+	if c, ok := libpal.parse_color(value); ok {
 		dst^ = c
 	}
 }
@@ -136,33 +133,6 @@ set_metric :: proc "contextless" (dst: ^int, value: string) {
 	if len(value) > 0 {
 		dst^ = n
 	}
-}
-
-// hex_rgb reads exactly six hex digits, `rrggbb`, into a colour.
-hex_rgb :: proc "contextless" (value: string) -> (libpal.RGB, bool) {
-	if len(value) != 6 {
-		return libpal.RGB{}, false
-	}
-	nibbles: [6]u8
-	for k in 0 ..< 6 {
-		c := value[k]
-		switch {
-		case c >= '0' && c <= '9':
-			nibbles[k] = c - '0'
-		case c >= 'a' && c <= 'f':
-			nibbles[k] = c - 'a' + 10
-		case c >= 'A' && c <= 'F':
-			nibbles[k] = c - 'A' + 10
-		case:
-			return libpal.RGB{}, false
-		}
-	}
-	return libpal.RGB{
-			nibbles[0] << 4 | nibbles[1],
-			nibbles[2] << 4 | nibbles[3],
-			nibbles[4] << 4 | nibbles[5],
-		},
-		true
 }
 
 // word returns the first run of non-space characters in `s` and the rest of

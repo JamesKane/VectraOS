@@ -18,7 +18,10 @@ import "vsys:libmui"
 import "vsys:libthread"
 import "vsys:libuser"
 
-THEME_MAX :: 2048
+// Comfortably over the 769-byte shipped `/lib/theme`, the largest file read;
+// a `themes/*` base or a personal file is far smaller. `merge_buf` is twice
+// this, holding base + '\n' + body.
+THEME_MAX :: 1024
 MAX_THEMES :: 32
 
 theme_win: ^libmui.Window // the picker, one at a time
@@ -208,25 +211,15 @@ theme_use :: proc "contextless" (text: []u8) -> (name: string, rest: []u8, ok: b
 	line := text[:e]
 	next := e < len(text) ? e + 1 : e
 	// `use` then a name.
-	verb, after := theme_word(string(line))
+	verb, after := libmui.word(string(line))
 	if verb != "use" {
 		return "", text, false
 	}
-	nm, _ := theme_word(after)
+	nm, _ := libmui.word(after)
 	if nm == "" {
 		return "", text, false
 	}
 	return nm, text[next:], true
-}
-
-// theme_word returns the first run of non-space in `s` and the rest after it.
-@(private = "file")
-theme_word :: proc "contextless" (s: string) -> (first: string, rest: string) #no_bounds_check {
-	i := 0
-	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r') {i += 1}
-	start := i
-	for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '\r' {i += 1}
-	return s[start:i], s[i:]
 }
 
 // home_theme_path is `$home/lib/theme`.

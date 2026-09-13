@@ -155,3 +155,41 @@ by_name :: proc "contextless" (name: string) -> (RGB, bool) {
 	}
 	return RGB{}, false
 }
+
+/*
+parse_color reads a theme file's way of naming a colour: one of the palette's
+own names, or six hex digits `rrggbb`. It is `by_name` with the hex fallback
+that name's doc-comment promises a caller would try next, in one call, so every
+theme reader -- `sys/libmui`'s for a gadget, `servers/intuition`'s for the
+frame -- resolves a colour by the same grammar rather than each carrying its
+own copy of it. A value that is neither answers `false`.
+*/
+parse_color :: proc "contextless" (value: string) -> (RGB, bool) {
+	if c, ok := by_name(value); ok {
+		return c, true
+	}
+	return hex_rgb(value)
+}
+
+// hex_rgb reads exactly six hex digits, `rrggbb`, into a colour, or answers
+// `false`. The digit form `parse_color` falls back to.
+hex_rgb :: proc "contextless" (value: string) -> (RGB, bool) {
+	if len(value) != 6 {
+		return RGB{}, false
+	}
+	nibbles: [6]u8
+	for k in 0 ..< 6 {
+		c := value[k]
+		switch {
+		case c >= '0' && c <= '9':
+			nibbles[k] = c - '0'
+		case c >= 'a' && c <= 'f':
+			nibbles[k] = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			nibbles[k] = c - 'A' + 10
+		case:
+			return RGB{}, false
+		}
+	}
+	return RGB{nibbles[0] << 4 | nibbles[1], nibbles[2] << 4 | nibbles[3], nibbles[4] << 4 | nibbles[5]}, true
+}

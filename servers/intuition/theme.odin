@@ -23,19 +23,30 @@ import "vsys:abi"
 import "vsys:libpal"
 import "vsys:libuser"
 
-// The frame's colours, defaulting to the chassis constants `window_frame` and
-// `frame_bar` carried before the look was a file. A theme file names a role to
-// move it; one it does not name keeps the value set here.
-th_plinth_lit := libpal.MAGNESIUM_HOT // the border's top-left highlight
-th_plinth_shade := libpal.MAGNESIUM_DARK // its bottom-right shadow
-th_bar := libpal.COPPER // the focused title bar's face
-th_bar_lit := libpal.COPPER_LIT // its highlight edge
-th_bar_shade := libpal.COPPER_DARK // its shadow edge
+// The chassis defaults: the frame's colours `window_frame` and `frame_bar`
+// carried before the look was a file. Named once, so the global initialisers
+// and `theme_reload`'s reset cannot drift into disagreeing about what "the
+// chassis" is.
+CHASSIS_PLINTH_LIT :: libpal.MAGNESIUM_HOT // the border's top-left highlight
+CHASSIS_PLINTH_SHADE :: libpal.MAGNESIUM_DARK // its bottom-right shadow
+CHASSIS_BAR :: libpal.COPPER // the focused title bar's face
+CHASSIS_BAR_LIT :: libpal.COPPER_LIT // its highlight edge
+CHASSIS_BAR_SHADE :: libpal.COPPER_DARK // its shadow edge
+
+// The frame's colours now. A theme file names a role to move it; one it does
+// not name keeps the chassis default.
+th_plinth_lit := CHASSIS_PLINTH_LIT
+th_plinth_shade := CHASSIS_PLINTH_SHADE
+th_bar := CHASSIS_BAR
+th_bar_lit := CHASSIS_BAR_LIT
+th_bar_shade := CHASSIS_BAR_SHADE
 
 @(private = "file") home_buf: [THEME_MAX]u8
 @(private = "file") base_buf: [THEME_MAX]u8
 
-THEME_MAX :: 2048
+// Comfortably over the 769-byte shipped `/lib/theme`, the largest file either
+// buffer holds; a `themes/*` base or a personal file is far smaller.
+THEME_MAX :: 1024
 
 /*
 theme_reload reads `$home/lib/theme`, resolves a leading `use <name>` to its
@@ -46,11 +57,11 @@ rather than keeping the value a previous read left in the global.
 */
 theme_reload :: proc "contextless" () #no_bounds_check {
 	// Back to the chassis, then apply what the files say over it.
-	th_plinth_lit = libpal.MAGNESIUM_HOT
-	th_plinth_shade = libpal.MAGNESIUM_DARK
-	th_bar = libpal.COPPER
-	th_bar_lit = libpal.COPPER_LIT
-	th_bar_shade = libpal.COPPER_DARK
+	th_plinth_lit = CHASSIS_PLINTH_LIT
+	th_plinth_shade = CHASSIS_PLINTH_SHADE
+	th_bar = CHASSIS_BAR
+	th_bar_lit = CHASSIS_BAR_LIT
+	th_bar_shade = CHASSIS_BAR_SHADE
 
 	home := theme_read_home(home_buf[:])
 
@@ -129,46 +140,13 @@ theme_apply_line :: proc "contextless" (line: []u8) #no_bounds_check {
 }
 
 // set_color reads a palette name or six hex digits into `dst`, and leaves it
-// alone when the value is neither -- the chassis constant stands.
+// alone when the value is neither -- the chassis constant stands. The grammar
+// is `libpal.parse_color`'s, shared with `sys/libmui`'s reader for the gadgets.
 @(private = "file")
 set_color :: proc "contextless" (dst: ^libpal.RGB, value: string) {
-	if c, ok := libpal.by_name(value); ok {
-		dst^ = c
-		return
-	}
-	if c, ok := hex_rgb(value); ok {
+	if c, ok := libpal.parse_color(value); ok {
 		dst^ = c
 	}
-}
-
-@(private = "file")
-hex_rgb :: proc "contextless" (value: string) -> (libpal.RGB, bool) #no_bounds_check {
-	if len(value) != 6 {
-		return libpal.RGB{}, false
-	}
-	out: libpal.RGB
-	for i in 0 ..< 3 {
-		hi, ok0 := hex_digit(value[i * 2])
-		lo, ok1 := hex_digit(value[i * 2 + 1])
-		if !ok0 || !ok1 {
-			return libpal.RGB{}, false
-		}
-		out[i] = hi << 4 | lo
-	}
-	return out, true
-}
-
-@(private = "file")
-hex_digit :: proc "contextless" (c: u8) -> (u8, bool) {
-	switch c {
-	case '0' ..= '9':
-		return c - '0', true
-	case 'a' ..= 'f':
-		return c - 'a' + 10, true
-	case 'A' ..= 'F':
-		return c - 'A' + 10, true
-	}
-	return 0, false
 }
 
 // theme_line takes one line off `text`, and what follows it.
