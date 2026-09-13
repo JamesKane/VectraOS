@@ -359,17 +359,25 @@ than a clean exit or a caught signal, posts the desktop's fault notice,
 `/mnt/wb/notice`, the toast in the bar's corner.
 
 `window` runs every program the desktop starts, so `window` is what sees one
-die. `await` answers `<pid> <status>`, and a program the kernel ended on an
-uncaught trap wears the trap's own note as its status -- `sys: trap: fault
-addr=0x0 pc=0x...` from `post_trap_note`. A typed `exit` says its pid alone,
-a `^C` or a `kill` says `interrupt` or `kill`; none of those is a fault, and
-none posts a notice.
+die. `await` answers `<pid> <status>`, and the status is how the kernel ended
+it: a program taken down by an uncaught trap says `fault` (`kernel/user/spawn.
+odin`'s word for that ending), a typed `exit` says its pid alone, a `^C` or a
+`kill` says `interrupt` or `kill`, a breakpoint `sys: breakpoint`. Only the
+first is a fault, and only it posts a notice.
+
+**The trap's detail is not in the status.** The kernel keeps the faulting
+`addr` and `pc` in the exit record but does not serialise them into the await
+word on the ending path, so today's notice can only say *that* a program
+faulted, not where. The `sys: trap: addr=... pc=...` text `post_trap_note`
+builds reaches `await` only when a debugger was watching (which parks instead
+of ending); this reads it too, for that day, but the plain `fault` word is the
+case the desktop hits.
 
 **The ghost's half is not here.** With the ghost on, `window` parks the
 process on the fault and the notice's action is `ask -c debug -p N`, a click
 that hands the parked process to the agent -- `docs/GHOST.md` step 3. That day
-this notice grows the action and the parking; until then it is the honest
-statement that a program faulted, and nothing waits.
+this notice grows the action, the parking, and the trap detail; until then it
+is the honest statement that a program faulted, and nothing waits.
 */
 fault_notice :: proc "contextless" () #no_bounds_check {
 	buf: [256]u8
@@ -387,20 +395,28 @@ fault_notice :: proc "contextless" () #no_bounds_check {
 	if sp < 0 {
 		return
 	}
-	detail := status[sp + 1:]
-	// Only a genuine trap is a fault. A breakpoint (`sys: breakpoint`), a
-	// caught signal, or an error string a program `exits` with is not one.
+	word := status[sp + 1:]
+	// Is it a fault? The kernel's ending word is `fault`; a debugger-watched
+	// trap instead carries the `sys: trap: <kind> addr=... pc=...` detail. A
+	// clean exit, a `^C`/`kill`, or an `exits` string is not a fault.
 	TRAP :: "sys: trap: "
-	if len(detail) < len(TRAP) || string(detail[:len(TRAP)]) != TRAP {
+	detail := ""
+	switch {
+	case word == "fault":
+	case len(word) >= len(TRAP) && string(word[:len(TRAP)]) == TRAP:
+		detail = word[len(TRAP):]
+	case:
 		return
 	}
-	detail = detail[len(TRAP):]
 
 	line: [320]u8
 	at := copy(line[:], "window ")
-	at += copy(line[at:], prog_name())
-	at += copy(line[at:], " faulted: ")
-	at += copy(line[at:], detail)
+	at += copy(line[at:], libuser.basename(cmd_path))
+	at += copy(line[at:], " faulted")
+	if len(detail) > 0 {
+		at += copy(line[at:], ": ")
+		at += copy(line[at:], detail)
+	}
 	// No desktop mounted, no notices; the console's own `window` still runs.
 	fd := libuser.open("/mnt/wb/notice", abi.O_WRONLY)
 	if fd < 0 {
@@ -408,16 +424,6 @@ fault_notice :: proc "contextless" () #no_bounds_check {
 	}
 	_ = libuser.write(int(fd), line[:at])
 	_ = libuser.close(int(fd))
-}
-
-// prog_name is the command's own name, the basename of `cmd_path`, which is
-// what the notice calls the program that faulted.
-prog_name :: proc "contextless" () -> string #no_bounds_check {
-	start := 0
-	for i in 0 ..< len(cmd_path) {
-		if cmd_path[i] == '/' {start = i + 1}
-	}
-	return cmd_path[start:]
 }
 
 /*
