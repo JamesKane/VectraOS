@@ -522,10 +522,11 @@ whose argument is the rest of the line cannot be made to.
 
 **A fault is a notice, and the process waits for the answer.** `window`
 runs every program the desktop starts, so `window` is what sees one
-die. When its child dies by an uncaught trap -- `await` answers the
-trap's own note, `sys: trap: fault addr=... pc=...` -- `window` posts
-`window <prog> faulted: <trap>` to `/mnt/wb/notice`. A typed `exit`, a
-`^C` or a `kill` is not a fault and posts nothing. That half is built.
+die. When its child dies by an uncaught trap -- `await` answers the word
+`fault` -- `window` posts `window <prog> faulted` to `/mnt/wb/notice`. A
+typed `exit`, a `^C` or a `kill` is not a fault and posts nothing. That
+half is built. The trap's `addr` and `pc` are not in the await word on
+the ending path, so the notice names the program but not yet the place.
 
 When the ghost is on, `window` writes `startstop` to its command's
 `ctl`, and a fault parks the process before the note lands,
