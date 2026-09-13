@@ -2079,7 +2079,9 @@ verify_mouse_file :: proc(t: ^libodin.Tally) {
 	libodin.tally(t, parked, "a read parks until the mouse moves")
 
 	x0, y0 := mouse.position()
-	mouse.inject_packet(0x0A, 7, 2)
+	// Fed to the driver's fifo, the way a decoded packet arrives; the 8042
+	// second-port routing is proven by the driver's own `verify_interrupt`.
+	mouse.feed_packet(0x0A, 7, 2)
 	woke := false
 	for _ in 0 ..< 200 {
 		if intrinsics.volatile_load(&mouse_read.done) {

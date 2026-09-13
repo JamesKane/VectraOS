@@ -109,10 +109,6 @@ Mouse :: struct {
 	ready: sync.Rendez,
 	sink:  Sink,
 
-	// Whether this mouse has no 8042 under it, so `inject_packet` feeds the
-	// fifo straight rather than through the controller. Set by `init_headless`.
-	headless: bool,
-
 	// The packet under construction, and where the pointer is.
 	packet:  [3]u8,
 	have:    int,
@@ -290,26 +286,16 @@ inject :: proc "contextless" (b: u8) -> bool {
 	return true
 }
 
-// inject_packet delivers one movement as though the mouse sent it, for a check
-// outside this package. With an 8042 under it, it goes through the controller's
-// second port so every step but the mouse itself is real. A headless mouse --
-// the `virt` boards', fed by `kernel/drivers/virtio` -- has no controller to
-// route through, so the packet goes straight into the fifo the same way a real
-// event would, which is what lets the desktop's mouse checks run on the ports.
-inject_packet :: proc "contextless" (flags: u8, dx: u8, dy: u8) -> bool {
-	if mouse.headless {
-		feed_packet(flags, dx, dy)
-		return true
-	}
-	return inject(flags) && inject(dx) && inject(dy)
-}
-
 /*
-feed puts one byte straight into the fifo and wakes the bottom half, the inject
-path for a mouse with no 8042. `inject` above goes through the controller's
-second port, which a `virt` board does not have; `kernel/drivers/virtio`'s
-input driver builds PS/2-shaped packets from another bus's events and feeds
-them here, where the same bottom half decodes them.
+feed puts one byte straight into the fifo and wakes the bottom half. This is
+how a packet reaches the driver when no 8042 sits under it: `inject` above goes
+through the controller's second port, which a `virt` board does not have.
+`kernel/drivers/virtio`'s input driver builds PS/2-shaped packets from another
+bus's events and feeds them here, where the same bottom half decodes them; and
+a self-test outside this package feeds one the same way with `feed_packet`, the
+mouse's analog of the keyboard's `scancode_tap` -- delivery to the driver on
+every board, with the 8042 second-port path proven separately by
+`verify_interrupt`.
 */
 feed :: proc "contextless" (b: u8) {
 	if ring.push(&mouse.fifo, b) {
@@ -335,7 +321,6 @@ init_headless :: proc(w: int, h: int, sink: Sink) -> bool {
 	if sink == nil || w <= 0 || h <= 0 {
 		return false
 	}
-	mouse.headless = true
 	mouse.sink = sink
 	mouse.w = w
 	mouse.h = h

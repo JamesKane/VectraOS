@@ -9313,7 +9313,12 @@ inject_move :: proc(dx: int, dy: int, buttons: u8) -> bool {
 	if my < 0 {
 		flags |= 0x20
 	}
-	return mouse.inject_packet(flags, u8(dx & 0xFF), u8(my & 0xFF))
+	// Delivered straight to the driver's fifo on every board -- the mouse's
+	// `scancode_tap`. The 8042 second-port routing is proven separately by the
+	// driver's own `verify_interrupt`, so the desktop's pointer checks need
+	// only the movement, not a controller to run on.
+	mouse.feed_packet(flags, u8(dx & 0xFF), u8(my & 0xFF))
+	return true
 }
 
 // wait_pointer waits for the driver's position to be (x, y), inside the
