@@ -2,20 +2,16 @@
 # The disks are mounted already, and this console -- the serial line, and
 # the screen until the draw server takes it -- is descriptors 0, 1 and 2.
 #
-# The keyboard goes to kbdfs, whose file the draw server reads its keys
-# from, so the serial line keeps the kernel's own line discipline for the
-# shell below. A machine with no keyboard still gets the window; only the
-# serial shell can be typed at there.
-kbdfs &
-while(! test -e /srv/kbdfs) sleep 1
-mount /srv/kbdfs /n/kbd
+# A machine's role is its `ndb` line, not a build or a flag (docs/FLEET.md
+# section 6). `terminal=` starts the keyboard, the screen and the desktop;
+# `cpu=` and `fs=` start `listen`, which serves this machine's tree over the
+# network. A machine may be more than one: a laptop under QEMU is a terminal
+# and a CPU server at once. init reads the roles and starts what they name.
 
-intuition /n/kbd/kbd &
-while(! test -e /srv/draw) sleep 1
-
-# The network: the stack over the card the kernel serves as #E, and /net
-# where every program looks for it. A machine with no card has no /srv/net,
-# and the mount is skipped rather than waited on for ever.
+# The network first, because a machine's name -- and so its roles -- is the
+# `ndb` record its card matched, read from /net once the stack can say it. A
+# machine with no card has no /srv/net, and the mount is skipped rather than
+# waited on for ever.
 netfs &
 if(test -e /dev/ether0/data) {
 	while(! test -e /srv/net) sleep 1
@@ -30,37 +26,27 @@ if(test -e /dev/ether0/data) {
 	mount -a /srv/cs /net
 }
 
-# A host is a user too. Its name is the database record its card matched,
-# read from /net once the stack can say it, or `vectra` on a machine with
-# no card. The kernel's word for it is `hostowner` on this process's ctl:
-# from here on this process and every process it starts run as the host,
-# and the host owner's processes are the ones that may become a client they
-# have proved. So it comes before anything that must run as the host --
-# `listen`, whose `exportfs` becomes each client -- and not after. `echo` is
-# a program, so the write arrives from a forked child; the kernel sets the
-# named process, not the writer, which is why `$pid` names this shell. See
-# /proc/n/ctl in proc(3).
+# This machine's name: the database record its card matched, read from /net
+# once the stack can say it, or `vectra` on a machine with no card.
 dom=home
 if(test -e /net/sysname) sysname=`{cat /net/sysname}
 if(~ $#sysname 0) sysname=vectra
 user=$sysname
-echo hostowner $sysname > /proc/$pid/ctl
 
-if(test -e /dev/ether0/data) {
-	# An interface the database gave no address asks the network for one.
-	# In the background: a link with no router answers nothing, and the
-	# boot does not wait on it.
-	ipconfig &
-	# And this machine serves its tree: `listen` runs `exportfs` for every
-	# connection to a port named in `/lib/service`, so another machine can
-	# import what this one holds. `docs/FLEET.md` step 1. Started as the
-	# host, above, so each `exportfs` may become the client it proves.
-	listen &
-}
+# A host is a user too. The kernel's word for it is `hostowner` on this
+# process's ctl: from here on this process and every process it starts run as
+# the host, and the host owner's processes are the ones that may become a
+# client they have proved. So it comes before anything that must run as the
+# host -- `listen`, whose `exportfs` becomes each client -- and not after.
+# `echo` is a program, so the write arrives from a forked child; the kernel
+# sets the named process, not the writer, which is why `$pid` names this
+# shell. See /proc/n/ctl in proc(3).
+echo hostowner $sysname > /proc/$pid/ctl
 
 # The keys a session holds: factotum, at /mnt/factotum, empty until a
 # passphrase or a host key is written to its ctl. Every handshake a program
-# runs goes through it. docs/FLEET.md section 4.
+# runs goes through it -- a login on a terminal, a client on a server. So it
+# comes before the roles. docs/FLEET.md section 4.
 # /mnt becomes a union: the draw server will mount its windows before the
 # root's own directory, and a union here holds only what was mounted or
 # bound, so the directory is bound onto itself first. That keeps
@@ -78,12 +64,37 @@ if(test -e /adm/hostkey) {
 	echo key proto=noise user=$sysname dom=$dom '!private='^$hostkey > /mnt/factotum/ctl
 }
 
-# The desktop, in the terminal's place: the bar and its menus, the backdrop
-# and its icons. A shell in a window is `Shell` on the first menu. Its
+# The terminal role: a keyboard, a screen, and the desktop in the terminal's
+# place -- the bar and its menus, the backdrop and its icons. The keyboard
+# goes to kbdfs, whose file the draw server reads its keys from, so the serial
+# line keeps the kernel's own line discipline for the shell below. Workbench's
 # notice service goes at /mnt/wb, so a line from this console draws a toast.
-workbench &
-while(! test -e /srv/wb) sleep 1
-mount /srv/wb /mnt/wb
+if(role $sysname terminal) {
+	kbdfs &
+	while(! test -e /srv/kbdfs) sleep 1
+	mount /srv/kbdfs /n/kbd
+
+	intuition /n/kbd/kbd &
+	while(! test -e /srv/draw) sleep 1
+
+	workbench &
+	while(! test -e /srv/wb) sleep 1
+	mount /srv/wb /mnt/wb
+}
+
+# The server roles: a CPU server or a file server serves its tree to another
+# machine, so both need the card and both start `listen`, which runs
+# `exportfs` for every connection to a port named in /lib/service. Started as
+# the host, above, so each `exportfs` may become the client it proves. The
+# file server's `kfs` is already up, started by the kernel on the disk it
+# found; the fs role's work here is to serve it. docs/FLEET.md section 6.
+if(test -e /dev/ether0/data) {
+	# An interface the database gave no address asks the network for one.
+	# In the background: a link with no router answers nothing, and the
+	# boot does not wait on it.
+	ipconfig &
+	if(role $sysname cpu || role $sysname fs) listen &
+}
 
 # And this console's shell, which init becomes.
 cd $home

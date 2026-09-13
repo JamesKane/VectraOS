@@ -639,6 +639,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_rc(&r)
 	verify_cputype(&r)
 	verify_nstest(&r)
+	verify_roles(&r)
 	verify_tools(&r)
 	verify_dbg(&r)
 
@@ -10377,6 +10378,26 @@ verify_nstest :: proc(r: ^Result) {
 		"a program replays a namespace file with newns",
 		"ok",
 		"and a bind with $cputype expanded landed, a tool resolving through it",
+	)
+}
+
+/*
+verify_roles proves a machine reads its role off its `ndb` line, `docs/FLEET.md`
+step 3: `sys/libuser`'s `ndb_attr` -- the call `cmd/role` and `/lib/init` use --
+finds a record by `sys=` and answers whether it carries `terminal=`, `cpu=` or
+`fs=`. `/bin/roletest` checks a present role reads true though its value is empty
+and an absent one reads false; the word is `ok` or the first check that failed.
+*/
+verify_roles :: proc(r: ^Result) {
+	names := [?]string{"roletest"}
+	script_says(
+		r,
+		"/bin/roletest",
+		names[:],
+		PATIENCE * 10,
+		"a program reads the roles on a machine's ndb line",
+		"ok",
+		"and a role present reads true, one absent false -- what /lib/init branches on",
 	)
 }
 

@@ -1,26 +1,34 @@
 # The network database. `docs/FLEET.md` section 3's shape, 9front's format:
 # a record is a run of attr=value pairs, and an indented line continues it.
 #
-# `/net/cs` reads this to turn `tcp!fs!9fs` into an address and a port.
+# `/net/cs` reads this to turn `tcp!fs!9fs` into an address and a port, and
+# `/lib/init` reads its own line's roles -- `terminal=`, `cpu=`, `fs=` -- to
+# decide which services to start. A machine may carry more than one.
 
 sys=vectra ip=10.0.2.15 ether=525400123456 dom=home
 	key=f14194c9bea065b79e07223e1fd23404448bcafda93a308f9c52454fe5cea260
 	cputype=amd64
+	terminal= cpu=
 
 sys=gw ip=10.0.2.2 dns=10.0.2.3
 
 # The two-machine bench (docs/FLEET.md step 0). Each finds itself by the card
-# address the `fleet` target gives it.
+# address the `fleet` target gives it. Both are a terminal and a CPU server.
 sys=one ip=10.0.0.1 ether=52540000000a dom=home
 	key=44732d94646e3caf820067be7f0eb8fdd3ca9ec5432644886761842d8827760f
 	cputype=amd64
+	terminal= cpu=
 sys=two ip=10.0.0.2 ether=52540000000b dom=home
 	key=e6b84f4fe31aa05bc38b2307cd5c0d4f318f4e4bd7e7f7000b969277f0a4775b
 	cputype=arm64
+	terminal= cpu=
 
+# The file server: it holds the disk and the one tree, and serves it. A CPU
+# server too, so a job can run where the files are.
 sys=fs ip=10.0.2.15 dom=home
 	key=f14194c9bea065b79e07223e1fd23404448bcafda93a308f9c52454fe5cea260
 	cputype=amd64
+	fs= cpu=
 
 # The services, by the name a dial string uses for them.
 

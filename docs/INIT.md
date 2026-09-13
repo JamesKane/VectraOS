@@ -16,6 +16,13 @@ the bind `docs/FATFS.md` describes.
     cd $home
     exec rc -i                       and this console's shell, which init becomes
 
+Those keyboard-and-screen lines are the *terminal role* now. `init` reads
+the machine's `ndb` line and starts each service its role names -- `terminal=`
+the keyboard and desktop above, `cpu=` and `fs=` the `listen` that serves the
+tree -- so one image boots a laptop, a compute node or a file server by what
+`/lib/ndb/local` says the machine is. `docs/FLEET.md` section 6 has the roles;
+this document is the terminal one, the keyboard split and the window's shell.
+
 ## Two shells, two keyboards
 
 The machine has one console, `/dev/cons`, into which the kernel's line
