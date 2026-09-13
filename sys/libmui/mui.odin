@@ -98,6 +98,9 @@ ICON_PROJECT :: u8(2)
 // width divides into.
 ICON_W :: 96
 ICON_H :: 64
+// How many glyph cells a name gets under an icon: the cell width less one, so
+// the last column stays a margin. A compile-time constant off two constants.
+NAME_CELLS :: ICON_W / FONT_W - 1
 
 /*
 One node. A caller builds these, links them with `add`, and reads back the
@@ -245,8 +248,7 @@ icons_cell_at :: proc "contextless" (o: ^Object, x: int, y: int, t: ^Theme) -> i
 	if o.place != nil {
 		n := min(len(o.rows), len(o.place))
 		for i := n - 1; i >= 0; i -= 1 {
-			cx := o.x + t.well + o.place[i][0]
-			cy := o.y + t.well + o.place[i][1]
+			cx, cy := icons_place_xy(o, i, t)
 			if x >= cx && x < cx + ICON_W && y >= cy && y < cy + ICON_H {
 				return i
 			}
@@ -276,6 +278,14 @@ icons_cell_at :: proc "contextless" (o: ^Object, x: int, y: int, t: ^Theme) -> i
 icons_grid_xy :: proc "contextless" (o: ^Object, i: int, t: ^Theme) -> (x: int, y: int) {
 	cols := icons_cols(o, t)
 	return (i % cols) * ICON_W, (i / cols) * ICON_H
+}
+
+// icons_place_xy is where a freely-placed cell `i` sits: its stored place
+// offset past the well inset, in the window's own coordinates. Paint
+// (`icon_cells`) and hit-test (`icons_cell_at`) both ask it, so the two never
+// disagree about where a placed icon is.
+icons_place_xy :: proc "contextless" (o: ^Object, i: int, t: ^Theme) -> (x: int, y: int) {
+	return o.x + t.well + o.place[i][0], o.y + t.well + o.place[i][1]
 }
 
 /*

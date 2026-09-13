@@ -57,7 +57,9 @@ BTN_RIGHT :: u16(0x111)
 BTN_MIDDLE :: u16(0x112)
 
 MAX_INPUTS :: 4
-POLL_TICKS :: u64(1) // the nap between event-queue sweeps
+POLL_TICKS :: u64(8) // the nap between event-queue sweeps: ~8 ms at 1 kHz,
+// well under human perception for a key or a move, and 1/8th the wakeups of a
+// per-tick poll of a queue that is idle almost every tick.
 
 // An event as the device writes it: a type, a code and a signed value. Packed
 // and little-endian, which every architecture this runs on reads natively.

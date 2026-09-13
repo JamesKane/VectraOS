@@ -384,7 +384,7 @@ move_file :: proc "contextless" (src: string, dst: string) -> bool #no_bounds_ch
 		if n == 0 {
 			break
 		}
-		if libuser.write(int(dfd), buf[:n]) != n {
+		if !libuser.write_full(int(dfd), buf[:n]) {
 			ok = false
 			break
 		}

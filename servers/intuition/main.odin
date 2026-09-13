@@ -1468,8 +1468,10 @@ IMAGE_SLOTS_MAX :: 512
 // larger screen holds more windows at once. Floored at eight faces for the
 // smallest screen and capped at the static ceiling.
 image_budget :: proc "contextless" (w: int, h: int) -> int {
+	// The `16 +` base is the floor: the smallest screen still gets sixteen
+	// faces. So only the cap can bind.
 	faces := 16 + (w * h) / (256 * 1024)
-	return clamp(faces * STRIPS_PER_FACE, 8 * STRIPS_PER_FACE, IMAGE_SLOTS_MAX)
+	return min(faces * STRIPS_PER_FACE, IMAGE_SLOTS_MAX)
 }
 
 Image :: struct {

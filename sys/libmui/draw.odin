@@ -206,8 +206,7 @@ icon_cells :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fo
 	if o.place != nil {
 		n := min(len(o.rows), len(o.place))
 		for i in 0 ..< n {
-			cx := o.x + t.well + o.place[i][0]
-			cy := o.y + t.well + o.place[i][1]
+			cx, cy := icons_place_xy(o, i, t)
 			if cx < o.x + t.well || cy < o.y + t.well || cx + ICON_W > o.x + o.w - t.well || cy + ICON_H > o.y + o.h - t.well {
 				continue
 			}
@@ -242,13 +241,12 @@ icon_cells :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fo
 // kind above, its name under it, on a bar of the face when it is the selected
 // one. Both the grid and free placement draw a cell this way.
 icon_one :: proc "contextless" (b: []u8, at: int, o: ^Object, i: int, cx: int, cy: int, dst: u32, plain: libdraw.Atlas, lit: libdraw.Atlas, lok: bool, t: ^Theme) -> int #no_bounds_check {
-	name_cells := ICON_W / FONT_W - 1
 	kind := ICON_PROJECT
 	if o.kinds != nil && i < len(o.kinds) {
 		kind = o.kinds[i]
 	}
 	nat := icon_picture(b, at, dst, cx + (ICON_W - 40) / 2, cy + 6, kind, t)
-	shown := clip_cells(o.rows[i], name_cells)
+	shown := clip_cells(o.rows[i], NAME_CELLS)
 	tw := drawn_len(shown) * FONT_W
 	tx := cx + (ICON_W - tw) / 2
 	ty := cy + ICON_H - FONT_H - 4

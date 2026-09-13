@@ -136,31 +136,17 @@ snap_parse :: proc "contextless" (line: []u8) -> (key: string, name: string, x: 
 			if t0 < 0 {t0 = i} else if t1 < 0 {t1 = i} else if t2 < 0 {t2 = i}
 		}
 	}
-	if t0 < 0 || t1 < 0 || t2 < 0 || t2 <= t1 || t1 <= t0 {
+	// The three tabs are found left-to-right, so t0 < t1 < t2 whenever all
+	// three are set; only "found at all" needs checking.
+	if t0 < 0 || t1 < 0 || t2 < 0 {
 		return "", "", 0, 0, false
 	}
-	xv, xok := snap_int(line[t1 + 1:t2])
-	yv, yok := snap_int(line[t2 + 1:])
+	xv, xok := libuser.atoi(string(line[t1 + 1:t2]))
+	yv, yok := libuser.atoi(string(line[t2 + 1:]))
 	if !xok || !yok {
 		return "", "", 0, 0, false
 	}
-	return string(line[:t0]), string(line[t0 + 1:t1]), xv, yv, true
-}
-
-// snap_int reads a non-negative integer. False on no digit or a stray byte.
-@(private = "file")
-snap_int :: proc "contextless" (s: []u8) -> (int, bool) #no_bounds_check {
-	if len(s) == 0 {
-		return 0, false
-	}
-	v := 0
-	for c in s {
-		if c < '0' || c > '9' {
-			return 0, false
-		}
-		v = v * 10 + int(c - '0')
-	}
-	return v, true
+	return string(line[:t0]), string(line[t0 + 1:t1]), int(xv), int(yv), true
 }
 
 // snap_mkdirs makes `$home/lib` and `$home/lib/wb`, so the file has somewhere
