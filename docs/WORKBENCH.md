@@ -404,8 +404,11 @@ the device is shared, so several MUI programs each play their own. See
     text.dim    amber_dim               # a gadget that cannot be pressed
     value       cyan                    # a string gadget's contents
     ok          phosphor
-    bar         copper                  # the bar of the window in front
-    bar.back    magnesium_dark          # the bar of every other window
+    bar         copper                  # the title bar of the window in front
+    bar.lit     copper_lit              #   its highlight edge
+    bar.shade   copper_dark             #   its shadow, and every other bar's face
+    plinth.lit  magnesium_hot           # the raised border's highlight
+    plinth.shade magnesium_dark         #   its shadow
     bevel       2                       # the depth of a raised edge
     well        2                       # the depth of a sunken one
     pad         4                       # inside a group
@@ -425,8 +428,11 @@ selection moves, and choosing writes the `use` line.
 
 Both files are read at start and on a note or a chord, and every window
 lays itself out again. `intuition` reads the same two files for the
-frame it draws, so a window's chrome and the gadgets inside it are one
-look. A theme that names nothing is the chassis.
+frame it draws -- the `bar.*` roles for the copper title bar, `plinth.*`
+for the raised border, the rest being the toolkit's -- so a window's
+chrome and the gadgets inside it are one look. The unfocused bar is not
+its own role: it is the focused bar one step down its own table, the
+lamp's rule. A theme that names nothing is the chassis.
 
 **The toolkit is not the window manager and not the desktop.** It draws
 inside a window it was given. What a program on it looks like is the
@@ -753,7 +759,6 @@ the same proc) and by `init` for the console's shell.
 
 Each its own document, in whatever order a reason arrives.
 
-- **A theme switcher** over `/lib/themes`, and the `use` line, section 5.
 - **The fault notice**, the day `docs/GHOST.md` step 3 gives the click
   somewhere to go.
 - **A font past 128 glyphs**, deferred in `docs/HANDOFF.md` with its
