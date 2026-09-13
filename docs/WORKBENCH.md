@@ -471,10 +471,13 @@ for `$home`, `System` for `/`, `Tools` for `/bin`, and one per disk under
 `/n`. A double click opens a drawer window.
 
 **A drawer window** is a MUI `Window` whose root is a `List` of icons in
-a well, with a scrollbar. `Clean Up` lays the icons out in rows. A double
-click on a drawer opens it. On a tool it runs `window <path>`. On a
-project it runs `window view <path>`, or the tool a line in
-`/lib/wb/types` names for the file's suffix.
+a well, with a scrollbar. An icon dragged within its window is placed there
+freely; `Snapshot` keeps the placement in `$home/lib/wb/snapshot` and the
+window loads it when it opens; `Clean Up` drops the placement and lays the
+icons out in rows again. The backdrop's icons snapshot the same way, from the
+`Workbench` menu. A double click on a drawer opens it. On a tool it runs
+`window <path>`. On a project it runs `window view <path>`, or the tool a
+line in `/lib/wb/types` names for the file's suffix.
 
 A single click selects, and the `Icons` menu acts on the selection. `Information...` is a requester of the file's `stat`.
 `Rename...` and `Delete...` are requesters that ask first.
@@ -750,7 +753,6 @@ the same proc) and by `init` for the console's shell.
 
 Each its own document, in whatever order a reason arrives.
 
-- **Snapshot**, an icon's position kept in `$home/lib/wb`.
 - **A theme switcher** over `/lib/themes`, and the `use` line, section 5.
 - **The fault notice**, the day `docs/GHOST.md` step 3 gives the click
   somewhere to go.

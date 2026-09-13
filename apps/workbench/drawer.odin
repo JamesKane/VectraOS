@@ -160,6 +160,10 @@ open_drawer :: proc "contextless" (path: string) {
 		d.used = false
 		return
 	}
+	// The grid is laid now, so a saved arrangement can be placed onto it and
+	// painted before the window's own thread takes over.
+	snapshot_load(d.path, d.grid, d.names)
+	libmui.window_paint(w)
 	front = d
 	_ = libthread.threadcreate(drawer_thread, d)
 }
@@ -255,9 +259,14 @@ drawer_window_menu :: proc "contextless" (item: int) {
 			d.grid.sel = 0
 			libmui.window_paint(&d.win)
 		}
-	case 5: // Clean Up: the grid is always in rows, so this is a relayout
+	case 5: // Clean Up: drop any free placement and lay the icons in rows again
 		if d != nil {
+			libmui.icons_clear(d.grid)
 			libmui.window_relayout(&d.win)
+		}
+	case 6: // Snapshot: keep this drawer's icon positions across sessions
+		if d != nil {
+			snapshot_save(d.path, d.grid, d.names)
 		}
 	}
 }
@@ -296,6 +305,13 @@ drawer_drop :: proc "contextless" (w: ^libmui.Window, item: int, x: int, y: int)
 	if src == nil || item < 0 || item >= len(src.paths) {
 		return
 	}
+	// Released inside the same window: a reposition, free placement for
+	// Snapshot, not a move between drawers.
+	if x >= 0 && x < w.cw && y >= 0 && y < w.ch {
+		icon_reposition(src.grid, item, x, y)
+		libmui.window_paint(&src.win)
+		return
+	}
 	// The screen point the drop landed on, from the source's client origin.
 	dst := drawer_at(w.sx + x, w.sy + y)
 	if dst == nil || dst == src {
@@ -312,6 +328,21 @@ drawer_drop :: proc "contextless" (w: ^libmui.Window, item: int, x: int, y: int)
 	}
 	drawer_update(src)
 	drawer_update(dst)
+}
+
+// icon_reposition gives an icon a free place under the point it was dropped,
+// centred on the cursor, for Snapshot. The point is in the window's client
+// coordinates; the grid sits inside the client and its well inside that, so
+// the cell's place is the point less the grid's origin, the well, and half a
+// cell. `libmui.icons_set` clamps it into the well and repaints follows.
+icon_reposition :: proc(grid: ^libmui.Object, item: int, cx: int, cy: int) {
+	if grid == nil {
+		return
+	}
+	t := libmui.default_theme
+	wx := cx - grid.x - t.well - libmui.ICON_W / 2
+	wy := cy - grid.y - t.well - libmui.ICON_H / 2
+	libmui.icons_set(grid, item, wx, wy, &t)
 }
 
 // drawer_at is the open drawer whose client area holds a screen point, or nil.

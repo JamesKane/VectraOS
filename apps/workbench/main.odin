@@ -83,8 +83,8 @@ tool_n: int
 tools_read: bool
 
 // The menu's items, built per title.
-MENU_WORKBENCH := [?]string{"About...", "Execute Command...", "Shell", "Reload", "Quit"}
-MENU_WINDOW := [?]string{"New Drawer", "Open Parent", "Close", "Update", "Select All", "Clean Up"}
+MENU_WORKBENCH := [?]string{"About...", "Execute Command...", "Shell", "Snapshot", "Clean Up", "Reload", "Quit"}
+MENU_WINDOW := [?]string{"New Drawer", "Open Parent", "Close", "Update", "Select All", "Clean Up", "Snapshot"}
 MENU_ICONS := [?]string{"Open", "Copy", "Rename...", "Information...", "Delete..."}
 menu_items: [MAX_TOOLS]string
 
@@ -227,6 +227,7 @@ open_menu :: proc "contextless" (which: int, x: int, y: int) {
 
 // menu_chosen hears the item, and runs what it means.
 menu_chosen :: proc "contextless" (m: ^libmui.Menu, item: int) {
+	context = wb_ctx
 	_ = m
 	if item < 0 {
 		return
@@ -240,9 +241,14 @@ menu_chosen :: proc "contextless" (m: ^libmui.Menu, item: int) {
 			execute_open()
 		case 2:
 			run_action("window rc -i")
-		case 3:
+		case 3: // Snapshot: keep the backdrop's icon positions
+			snapshot_save(BACKDROP_KEY, back_grid, back_names[:back_n])
+		case 4: // Clean Up: drop them and lay the backdrop's icons in rows again
+			libmui.icons_clear(back_grid)
+			libmui.window_relayout(back)
+		case 5:
 			server_ctl("reload")
-		case 4:
+		case 6:
 			libthread.threadexitsall("")
 		}
 	case 1:
@@ -290,7 +296,14 @@ open_backdrop :: proc "contextless" () -> bool {
 	back.want_w, back.want_h = screen_w, screen_h - BAR_H
 	back.handler = back_press
 	back.on_menu = back_menu
-	return libmui.window_open(back, "Workbench", col)
+	back.on_drop = back_drop
+	if !libmui.window_open(back, "Workbench", col) {
+		return false
+	}
+	// A saved arrangement, placed onto the laid grid and painted.
+	snapshot_load(BACKDROP_KEY, back_grid, back_names[:back_n])
+	libmui.window_paint(back)
+	return true
 }
 
 back_icon :: proc "contextless" (name: string, path: string, kind: u8) {
@@ -312,6 +325,15 @@ back_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 
 back_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
 	open_menu(0, w.sx + x, w.sy + y)
+}
+
+// back_drop repositions a backdrop icon where it was dropped. The backdrop
+// fills the screen below the bar, so a drop is always within it; a desktop
+// icon has nowhere else to go. `icon_reposition` and Snapshot are `drawer`'s.
+back_drop :: proc "contextless" (w: ^libmui.Window, item: int, x: int, y: int) {
+	context = wb_ctx
+	icon_reposition(back_grid, item, x, y)
+	libmui.window_paint(back)
 }
 
 // home_path is `$home`, or the host owner's home when the environment
