@@ -116,6 +116,10 @@ wb_main :: proc "contextless" (arg: rawptr) {
 	_ = libthread.threadcreate(mount_thread, nil)
 	libthread.yield()
 
+	// The look, from /lib/theme and $home/lib/theme, before a window opens so
+	// each takes it. `docs/WORKBENCH.md` section 5.
+	theme_load()
+
 	if !open_bar() {
 		libuser.eprint("workbench: no bar\n")
 		libthread.threadexitsall("no bar")

@@ -22,6 +22,22 @@ package libmui
 import "vsys:libpal"
 
 /*
+ui_theme is the look every window takes unless it sets its own: the current
+theme. It starts at the chassis, `default_theme`, and a program that reads a
+theme file sets it with `set_theme`, so a window opened after wears it. A live
+window keeps the theme it was opened with until its program lays it out again
+with the new one -- `docs/WORKBENCH.md` section 5's "every window lays itself
+out again". `default_theme` stays the constant the chassis is, for a reset.
+*/
+ui_theme := default_theme
+
+// set_theme makes `t` the look new windows take. Apply it to windows already
+// open by setting each one's `theme` and laying it out again.
+set_theme :: proc "contextless" (t: Theme) {
+	ui_theme = t
+}
+
+/*
 parse_theme fills `t` from the lines in `text`. It starts `t` at the default,
 so every role the text leaves out keeps the chassis value. An unknown role or
 an unreadable value is skipped rather than an error. A newer theme file that

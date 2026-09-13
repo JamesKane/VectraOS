@@ -539,5 +539,19 @@ start :: proc "c" (block: ^abi.Args) {
 		main_check(libmui.icons_cell_at(g, g.x + tg.well + 4, g.y + tg.well + 4, &tg), 0, "and the grid lays them out again")
 	}
 
+	// -- A theme merges, the later line for a role winning --------------------
+	//
+	// The switcher hands the base file and the personal one to the parser as
+	// one text, base first, so the later line wins. A role named nowhere keeps
+	// the chassis, and a metric reads as a number.
+	{
+		tt: libmui.Theme
+		libmui.parse_theme(&tt, "face copper\ntext phosphor\ntext cyan\ngap 9")
+		main_check(int(tt.face.r), int(libpal.COPPER.r), "a colour role reads a palette name")
+		main_check(int(tt.ink.r), int(libpal.CYAN.r), "the later line for a role wins")
+		main_check(tt.gap, 9, "a metric role reads a number")
+		main_check(int(tt.ground.r), int(libpal.SLATE_DEEP.r), "a role named nowhere keeps the chassis")
+	}
+
 	libuser.exits("ok")
 }

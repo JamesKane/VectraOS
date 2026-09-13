@@ -1356,6 +1356,14 @@ stage_vectra :: proc(host: string) {
 	// The draw server's two files: the chords, and where a window opens.
 	copy_file("servers/intuition/keys", fmt.tprintf("%s/lib/keys", root))
 	copy_file("servers/intuition/workspaces", fmt.tprintf("%s/lib/workspaces", root))
+	// The look as data, docs/WORKBENCH.md section 5: the shipped theme, and a
+	// few to `use` from `Workbench > Theme...`. The toolkit and `intuition`
+	// both read `/lib/theme`.
+	copy_file("lib/theme", fmt.tprintf("%s/lib/theme", root))
+	ensure_dir(fmt.tprintf("%s/lib/themes", root))
+	for name in ([?]string{"phosphor", "cyan", "copper"}) {
+		copy_file(fmt.tprintf("lib/themes/%s", name), fmt.tprintf("%s/lib/themes/%s", root, name))
+	}
 	// The desktop's tools and types, `docs/WORKBENCH.md` section 6: a tool
 	// is a file whose first line is its command, and a type is a suffix
 	// and the tool that opens it.

@@ -156,7 +156,7 @@ because the loop that follows does.
 window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -> bool #no_bounds_check {
 	win.root = root
 	if win.theme.pad == 0 && win.theme.gap == 0 {
-		win.theme = default_theme
+		win.theme = ui_theme
 	}
 	if !win.set_up {
 		window_defaults(win)

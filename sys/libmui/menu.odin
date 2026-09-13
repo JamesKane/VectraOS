@@ -68,7 +68,7 @@ menu_open :: proc "contextless" (m: ^Menu, items: []string, x: int, y: int) -> b
 	}
 	win := m.win
 	if win.theme.pad == 0 && win.theme.gap == 0 {
-		win.theme = default_theme
+		win.theme = ui_theme
 	}
 	root := menu_build(m, items, &win.theme)
 	if root == nil {

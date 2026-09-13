@@ -1,0 +1,13 @@
+# theme: the desktop's look, docs/WORKBENCH.md section 5. A role, and what it
+# is: a colour is one of sys/libpal's names or six hex digits, a metric a
+# number. A role named nowhere keeps the chassis value, so this file states
+# the chassis. $home/lib/theme is read after it, and the later line wins.
+ground      slate_deep      # the desktop, and a window's well
+face        magnesium       # a raised control's face
+face.lit    magnesium_lit   # its top-left highlight
+face.shade  magnesium_dark  # its bottom-right shadow
+text        amber           # labels
+bevel       2               # the depth of a raised edge
+well        2               # the depth of a sunken one
+pad         4               # a group's inset
+gap         4               # between children

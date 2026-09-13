@@ -1,0 +1,4 @@
+# copper: a copper face, warm over the slate.
+face        copper
+face.lit    copper_lit
+face.shade  copper_dark
