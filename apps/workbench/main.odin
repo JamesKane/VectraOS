@@ -83,7 +83,7 @@ tool_n: int
 tools_read: bool
 
 // The menu's items, built per title.
-MENU_WORKBENCH := [?]string{"About...", "Execute Command...", "Shell", "Snapshot", "Clean Up", "Reload", "Quit"}
+MENU_WORKBENCH := [?]string{"About...", "Execute Command...", "Shell", "Snapshot", "Clean Up", "Theme...", "Reload", "Quit"}
 MENU_WINDOW := [?]string{"New Drawer", "Open Parent", "Close", "Update", "Select All", "Clean Up", "Snapshot"}
 MENU_ICONS := [?]string{"Open", "Copy", "Rename...", "Information...", "Delete..."}
 menu_items: [MAX_TOOLS]string
@@ -250,9 +250,11 @@ menu_chosen :: proc "contextless" (m: ^libmui.Menu, item: int) {
 		case 4: // Clean Up: drop them and lay the backdrop's icons in rows again
 			libmui.icons_clear(back_grid)
 			libmui.window_relayout(back)
-		case 5:
-			server_ctl("reload")
+		case 5: // Theme...: the picker over /lib/themes
+			theme_pick()
 		case 6:
+			server_ctl("reload")
+		case 7:
 			libthread.threadexitsall("")
 		}
 	case 1:

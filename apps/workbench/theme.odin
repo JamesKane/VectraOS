@@ -15,9 +15,16 @@ package workbench
 
 import "vsys:abi"
 import "vsys:libmui"
+import "vsys:libthread"
 import "vsys:libuser"
 
 THEME_MAX :: 2048
+MAX_THEMES :: 32
+
+theme_win: ^libmui.Window // the picker, one at a time
+theme_list: ^libmui.Object
+theme_names: [MAX_THEMES]string
+theme_n: int
 
 @(private = "file") home_buf: [THEME_MAX]u8
 @(private = "file") base_buf: [THEME_MAX]u8
@@ -48,6 +55,134 @@ theme_load :: proc "contextless" () #no_bounds_check {
 	t: libmui.Theme
 	libmui.parse_theme(&t, string(merge_buf[:w]))
 	libmui.set_theme(t)
+}
+
+/*
+theme_pick opens `Workbench > Theme...`: a List of the names under
+`/lib/themes`. Choosing one writes `use <name>` to `$home/lib/theme` and
+applies it, the switcher of `docs/WORKBENCH.md` section 5. One picker at a
+time, a window of its own.
+*/
+theme_pick :: proc "contextless" () {
+	context = wb_ctx
+	if theme_win == nil {
+		theme_win = new(libmui.Window)
+	}
+	if theme_win == nil {
+		return
+	}
+	theme_n = 0
+	if fd := libuser.open("/lib/themes", abi.O_RDONLY); fd >= 0 {
+		names := libuser.list_dir(int(fd))
+		_ = libuser.close(int(fd))
+		libuser.sort_strings(names)
+		for nm in names {
+			if theme_n < MAX_THEMES {
+				theme_names[theme_n] = nm
+				theme_n += 1
+			}
+		}
+	}
+	theme_list = libmui.list(8)
+	theme_list.rows = theme_names[:theme_n]
+	theme_list.id = 1
+	col := libmui.group(false)
+	libmui.add(col, libmui.text("Theme"))
+	libmui.add(col, theme_list)
+
+	w := theme_win
+	w.kind = .Normal
+	w.bind_dev = false
+	w.own_exit = false
+	w.set_up = true
+	w.placed = true
+	w.at_x, w.at_y = 120, 80
+	w.want_w, w.want_h = 180, 220
+	w.handler = theme_chosen
+	if !libmui.window_open(w, "Theme", col) {
+		return
+	}
+	_ = libthread.threadcreate(theme_win_thread, w)
+}
+
+// theme_win_thread runs the picker window and frees nothing: the record is
+// reused for the next open.
+theme_win_thread :: proc "contextless" (arg: rawptr) {
+	context = wb_ctx
+	libmui.window_run((^libmui.Window)(arg))
+	libthread.threadexits("")
+}
+
+// theme_chosen hears a row picked: it writes the `use` line and applies the
+// theme, then closes the picker. A list's selected row is in `w.arg`.
+theme_chosen :: proc "contextless" (w: ^libmui.Window, id: int) {
+	context = wb_ctx
+	if id == 1 && w.arg >= 0 && w.arg < theme_n {
+		theme_write_use(theme_names[w.arg])
+		theme_apply()
+	}
+	libmui.window_end(w)
+}
+
+/*
+theme_apply re-reads the files -- now with the new `use` line -- and lays every
+open window out again in the new look, section 5's "every window lays itself
+out again". The picker is on its way out, so it is not among them.
+*/
+theme_apply :: proc "contextless" () {
+	context = wb_ctx
+	theme_load()
+	theme_relay(bar)
+	theme_relay(back)
+	for i in 0 ..< MAX_DRAWERS {
+		if drawers[i] != nil && drawers[i].used {
+			theme_relay(&drawers[i].win)
+		}
+	}
+}
+
+@(private = "file")
+theme_relay :: proc "contextless" (w: ^libmui.Window) {
+	if w == nil {
+		return
+	}
+	w.theme = libmui.ui_theme
+	libmui.window_relayout(w)
+}
+
+/*
+theme_write_use writes `use <name>` as the first line of `$home/lib/theme`,
+keeping the rest of the personal file after it and replacing any `use` that was
+there. So a person's other lines -- a font, a gap -- survive a theme change.
+*/
+theme_write_use :: proc "contextless" (name: string) #no_bounds_check {
+	context = wb_ctx
+	old := theme_read(home_theme_path(), home_buf[:])
+	// Drop a leading `use` line; keep the rest.
+	body := old
+	if _, rest, ok := theme_use(old); ok {
+		body = rest
+	}
+	w := copy(merge_buf[:], "use ")
+	w += copy(merge_buf[w:], name)
+	merge_buf[w] = '\n';w += 1
+	w += copy(merge_buf[w:], body)
+	theme_mkdir()
+	path := home_theme_path()
+	_ = libuser.remove(path)
+	if fd := libuser.create(path, abi.O_WRONLY, 0o644); fd >= 0 {
+		_ = libuser.write(int(fd), merge_buf[:w])
+		_ = libuser.close(int(fd))
+	}
+}
+
+// theme_mkdir makes `$home/lib`, so `$home/lib/theme` has somewhere to land.
+@(private = "file")
+theme_mkdir :: proc "contextless" () #no_bounds_check {
+	b: [256]u8
+	n := copy(b[:], home_path())
+	n += copy(b[n:], "/lib")
+	_ = libuser.mkdir(string(b[:n]))
 }
 
 // theme_read reads a whole file into `buf` and answers the bytes, or nothing
