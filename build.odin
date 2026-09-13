@@ -318,6 +318,18 @@ arch_config :: proc(arch: Arch) -> Arch_Config {
 	return {}
 }
 
+// arch_name is the tree's own directory name for an architecture: the
+// `/$cputype/bin` a machine binds over `/bin`, `docs/FLEET.md` step 3. It
+// matches the kernel's `CPUTYPE` (from `ODIN_ARCH`) and `lib/ndb`'s `cputype=`.
+arch_name :: proc(arch: Arch) -> string {
+	switch arch {
+	case .amd64:   return "amd64"
+	case .arm64:   return "arm64"
+	case .riscv64: return "riscv64"
+	}
+	return "unknown"
+}
+
 // parse_arch reads an `--arch=NAME` or `--arch2=NAME` option.
 parse_arch :: proc(arg: string) -> Arch {
 	name := arg[strings.index_byte(arg, '=') + 1:]
@@ -1300,7 +1312,7 @@ stage_esp :: proc(opts: Options) {
 	copy_file(KERNEL_ELF, fmt.tprintf("%s/vectra.elf", ESP_DIR))
 	// The kernel's debug table, named as a module in limine.conf.
 	copy_file(KERNEL_VXD, fmt.tprintf("%s/vectra.vxd", ESP_DIR))
-	stage_vectra(opts.hostname == "" ? "vectra" : opts.hostname)
+	stage_vectra(arch_name(opts.arch), opts.hostname == "" ? "vectra" : opts.hostname)
 }
 
 /*
@@ -1310,37 +1322,48 @@ and `/lib`. Every program image under `bin/` by its `/bin` name, `rcmain`
 and the test script under `lib/`, and an empty `tmp/` for what a running
 machine writes back to the host.
 */
-stage_vectra :: proc(host: string) {
+stage_vectra :: proc(arch: string, host: string) {
 	root := fmt.tprintf("%s/vectra", ESP_DIR)
 	ensure_dir(root)
-	ensure_dir(fmt.tprintf("%s/bin", root))
+	// One tree, three architectures, `docs/FLEET.md` step 3: the compiled
+	// tools live under `/<arch>/bin`, so one tree can hold every
+	// architecture's and a machine binds its own `$cputype` over `/bin`.
+	// `/lib` and `/adm` are shared, one of each. A single-architecture build
+	// stages just its own `/<arch>` here; a fleet build stages all three into
+	// the one tree. (Debug files stay under the shared `/lib/debug` for now;
+	// they turn per-architecture the day one tree serves more than one arch.)
+	abin := fmt.tprintf("%s/%s/bin", root, arch)
+	// One level at a time: `ensure_dir` is `mkdir`, not `mkdir -p`.
+	ensure_dir(fmt.tprintf("%s/%s", root, arch))
+	ensure_dir(abin)
 	ensure_dir(fmt.tprintf("%s/lib", root))
 	ensure_dir(fmt.tprintf("%s/lib/tests", root))
+	ensure_dir(fmt.tprintf("%s/lib/debug", root))
 	// Fresh each build: what the last run wrote there was the last run's
 	// proof, and vvfat leaves a removed directory behind as its short name.
 	run({"rm", "-rf", fmt.tprintf("%s/tmp", root)})
 	ensure_dir(fmt.tprintf("%s/tmp", root))
 	for prog in user_programs {
-		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
+		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/%s", abin, prog.name))
 	}
-	// The C and C++ programs go to `/bin` the same way.
+	// The C and C++ programs go to `/<arch>/bin` the same way.
 	for prog in c_programs {
-		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
+		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/%s", abin, prog.name))
 	}
 	for prog in posix_programs {
-		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/bin/%s", root, prog.name))
+		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/%s", abin, prog.name))
 	}
 	// Each program's debug file, where a debugger looks for it by the
-	// program's name. `/bin` is served from the image and stays small.
-	ensure_dir(fmt.tprintf("%s/lib/debug", root))
+	// program's name, under the shared `/lib/debug`.
+	dbg := fmt.tprintf("%s/lib/debug", root)
 	for prog in user_programs {
-		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/lib/debug/%s.vxd", root, prog.name))
+		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/%s.vxd", dbg, prog.name))
 	}
 	for prog in c_programs {
-		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/lib/debug/%s.vxd", root, prog.name))
+		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/%s.vxd", dbg, prog.name))
 	}
 	for prog in posix_programs {
-		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/lib/debug/%s.vxd", root, prog.name))
+		copy_file(fmt.tprintf("%s/%s.vxd", USER_DIR, prog.name), fmt.tprintf("%s/%s.vxd", dbg, prog.name))
 	}
 	copy_file("apps/rc/rcmain", fmt.tprintf("%s/lib/rcmain", root))
 	copy_file("apps/rc/init", fmt.tprintf("%s/lib/init", root))

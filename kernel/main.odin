@@ -2659,9 +2659,11 @@ init_fatfs starts `fatfs` over the disk's FAT partition and mounts it.
 
 Three steps a shell would do in three lines. Start the server, which posts
 `/srv/esp` and exits its parent once the name is there. Mount the name at
-`/n/esp`. Bind the disk's `vectra/bin` before `/bin` and `vectra/lib`
-before `/lib`, so every program the kernel image no longer carries is found
-on the disk, and the same names keep working. The partition is the EFI
+`/n/esp`. Bind this machine's `vectra/$cputype/bin` before `/bin` and the
+shared `vectra/lib` before `/lib`, so every program the kernel image no longer
+carries is found on the disk, and the same names keep working -- one tree that
+can hold every architecture's tools, `docs/FLEET.md` step 3. The partition is
+the EFI
 system partition when the table names one, and otherwise the FAT partition
 QEMU's `vvfat` makes.
 
@@ -2697,7 +2699,20 @@ init_fatfs :: proc() -> bool {
 		log_errno(.Fault, "fatfs: /srv/esp would not mount at /n/esp -- ", err)
 		return false
 	}
-	for pair in ([][2]string{{"/n/esp/vectra/bin", "/bin"}, {"/n/esp/vectra/lib", "/lib"}, {"/n/esp/vectra/adm", "/adm"}}) {
+	// One tree, three architectures, `docs/FLEET.md` step 3: this machine
+	// binds its own `/<cputype>/bin` over `/bin`, out of a tree that can hold
+	// every architecture's. `/lib` (its debug files among them) and `/adm` are
+	// shared, one of each.
+	bin_buf: [64]u8
+	bn := copy(bin_buf[:], "/n/esp/vectra/")
+	bn += copy(bin_buf[bn:], user.CPUTYPE)
+	bn += copy(bin_buf[bn:], "/bin")
+	bin_src := string(bin_buf[:bn])
+	for pair in ([][2]string {
+		{bin_src, "/bin"},
+		{"/n/esp/vectra/lib", "/lib"},
+		{"/n/esp/vectra/adm", "/adm"},
+	}) {
 		if err := vfs.bind_path(ns, pair[0], pair[1], .Before); err != vfs.OK {
 			sink := begin(&klog)
 			libodin.put_str(&sink, "fatfs: cannot bind ")
@@ -2714,7 +2729,9 @@ init_fatfs :: proc() -> bool {
 	sink := begin(&klog)
 	libodin.put_str(&sink, "fatfs /srv/esp mounted at /n/esp from ")
 	libodin.put_str(&sink, device)
-	libodin.put_str(&sink, ", vectra/bin before /bin and vectra/lib before /lib")
+	libodin.put_str(&sink, ", ")
+	libodin.put_str(&sink, bin_src)
+	libodin.put_str(&sink, " before /bin and vectra/lib before /lib")
 	emit(&klog, .Ok, &sink)
 	return true
 }
@@ -2722,7 +2739,7 @@ init_fatfs :: proc() -> bool {
 /*
 verify_fatfs reads the disk through the filesystem the boot just mounted.
 
-Two claims. The listing of `/n/esp/vectra/bin` names the programs the
+Two claims. The listing of `/n/esp/vectra/$cputype/bin` names the programs the
 build staged, `echo` and `cleanname` among them -- the second is nine
 letters, which is one more than a short name holds, so it is the long-name
 path being read. And the test script on the disk reads back byte for byte
@@ -2735,7 +2752,14 @@ verify_fatfs :: proc() {
 	result: libodin.Tally
 	programs := 0
 
-	if c, err := vfs.open_path(ns, "/n/esp/vectra/bin", vfs.O_RDONLY); err == vfs.OK {
+	// The per-architecture tools directory this machine binds over `/bin`.
+	bin_buf: [64]u8
+	bn := copy(bin_buf[:], "/n/esp/vectra/")
+	bn += copy(bin_buf[bn:], user.CPUTYPE)
+	bn += copy(bin_buf[bn:], "/bin")
+	bin_path := string(bin_buf[:bn])
+
+	if c, err := vfs.open_path(ns, bin_path, vfs.O_RDONLY); err == vfs.OK {
 		saw_echo, saw_clean := false, false
 		buf: [4096]u8
 		offset: u64
@@ -2761,10 +2785,10 @@ verify_fatfs :: proc() {
 			}
 		}
 		vfs.chan_close(c)
-		libodin.tally(&result, programs >= 30, "/n/esp/vectra/bin lists the staged programs")
+		libodin.tally(&result, programs >= 30, "/n/esp/vectra/$cputype/bin lists the staged programs")
 		libodin.tally(&result, saw_echo && saw_clean, "echo and cleanname among them, the second by its long name")
 	} else {
-		libodin.tally(&result, false, "/n/esp/vectra/bin opens")
+		libodin.tally(&result, false, "/n/esp/vectra/$cputype/bin opens")
 	}
 
 	if f, err := vfs.open_path(ns, "/n/esp/vectra/lib/tests/tools.rc", vfs.O_RDONLY); err == vfs.OK {
