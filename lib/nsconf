@@ -1,0 +1,6 @@
+# A namespace file for the newns self-test, docs/FLEET.md step 3. It exercises
+# a comment, a blank line, and a bind whose source needs $cputype expanded --
+# the tree's own per-architecture tools, bound over /mnt so a known program
+# resolves there. Kept out of /lib/tests, which tools.rc enumerates.
+
+bind /n/esp/vectra/$cputype/bin /mnt

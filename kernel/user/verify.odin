@@ -638,6 +638,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_netserver(&r)
 	verify_rc(&r)
 	verify_cputype(&r)
+	verify_nstest(&r)
 	verify_tools(&r)
 	verify_dbg(&r)
 
@@ -10357,6 +10358,25 @@ verify_cputype :: proc(r: ^Result) {
 		"a shell reads the $cputype the kernel seeded",
 		CPUTYPE,
 		"and it is this machine's architecture, the tree's own name for it",
+	)
+}
+
+/*
+verify_nstest proves the namespace is a file, `docs/FLEET.md` step 3:
+`sys/libuser`'s `newns` replays a file of `bind`/`mount` lines, `$cputype`
+expanded from `#e`. `/bin/nstest` replays a test file and resolves a program
+through the bind it made; the word is `ok` or the first check that failed.
+*/
+verify_nstest :: proc(r: ^Result) {
+	names := [?]string{"nstest"}
+	script_says(
+		r,
+		"/bin/nstest",
+		names[:],
+		PATIENCE * 10,
+		"a program replays a namespace file with newns",
+		"ok",
+		"and a bind with $cputype expanded landed, a tool resolving through it",
 	)
 }
 
