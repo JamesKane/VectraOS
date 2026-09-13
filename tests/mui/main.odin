@@ -506,5 +506,38 @@ start :: proc "c" (block: ^abi.Args) {
 		main_check(root.minw, m.buttons[1].minw + 2 * tm.pad, "which is Execute Command's")
 	}
 
+	// -- An icon grid's free placement, for Snapshot --------------------------
+	//
+	// Laid out, a grid hits by rows and columns. A cell given a free place is
+	// then found there, the others where the grid left them, and Clean Up
+	// drops it all back to the grid. The places are the well's own offsets, so
+	// a hit is the well's origin plus the place plus a little.
+	{
+		tg := libmui.default_theme
+		names := [?]string{"one", "two", "three", "four"}
+		kinds := [?]u8{libmui.ICON_PROJECT, libmui.ICON_PROJECT, libmui.ICON_PROJECT, libmui.ICON_PROJECT}
+		g := libmui.icons(2)
+		g.rows = names[:]
+		g.kinds = kinds[:]
+		libmui.fit(g, &tg)
+		libmui.lay(g, 0, 0, 3 * libmui.ICON_W, 3 * libmui.ICON_H, &tg)
+
+		// Under the grid, cell zero is at the top-left of the well.
+		main_check(libmui.icons_cell_at(g, g.x + tg.well + 4, g.y + tg.well + 4, &tg), 0, "the grid hits its first cell at the well's corner")
+
+		// Place cell two well to the right of every grid column, so its square
+		// holds the query point alone; it is found there now, and cell zero
+		// stays at its grid corner.
+		libmui.icons_set(g, 2, 220, 20, &tg)
+		want(g.place != nil, "a placement allocates the grid's places")
+		main_check(libmui.icons_cell_at(g, g.x + tg.well + 224, g.y + tg.well + 24, &tg), 2, "a placed cell is found where it was put")
+		main_check(libmui.icons_cell_at(g, g.x + tg.well + 4, g.y + tg.well + 4, &tg), 0, "and the others keep their grid places")
+
+		// Clean Up drops free placement back to the grid.
+		libmui.icons_clear(g)
+		want(g.place == nil, "Clean Up drops the placement")
+		main_check(libmui.icons_cell_at(g, g.x + tg.well + 4, g.y + tg.well + 4, &tg), 0, "and the grid lays them out again")
+	}
+
 	libuser.exits("ok")
 }

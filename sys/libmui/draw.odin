@@ -200,9 +200,27 @@ icon_cells :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fo
 	if !pok {
 		return nat
 	}
+	// Free placement, for Snapshot: each cell at its own point in the well,
+	// rather than the grid. A cell that would fall outside the well is
+	// skipped, so a placement near an edge clips rather than spills.
+	if o.place != nil {
+		n := min(len(o.rows), len(o.place))
+		for i in 0 ..< n {
+			cx := o.x + t.well + o.place[i][0]
+			cy := o.y + t.well + o.place[i][1]
+			if cx < o.x + t.well || cy < o.y + t.well || cx + ICON_W > o.x + o.w - t.well || cy + ICON_H > o.y + o.h - t.well {
+				continue
+			}
+			nat = icon_one(b, nat, o, i, cx, cy, dst, plain, lit, lok, t)
+			if nat < 0 {
+				return nat
+			}
+		}
+		return nat
+	}
+
 	cols := icons_cols(o, t)
 	rows := icons_visible(o, t)
-	name_cells := ICON_W / FONT_W - 1
 	for r in 0 ..< rows {
 		for c in 0 ..< cols {
 			i := (o.top + r) * cols + c
@@ -211,28 +229,36 @@ icon_cells :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fo
 			}
 			cx := o.x + t.well + c * ICON_W
 			cy := o.y + t.well + r * ICON_H
-			kind := ICON_PROJECT
-			if o.kinds != nil && i < len(o.kinds) {
-				kind = o.kinds[i]
+			nat = icon_one(b, nat, o, i, cx, cy, dst, plain, lit, lok, t)
+			if nat < 0 {
+				return nat
 			}
-			nat = icon_picture(b, nat, dst, cx + (ICON_W - 40) / 2, cy + 6, kind, t)
-			shown := clip_cells(o.rows[i], name_cells)
-			tw := drawn_len(shown) * FONT_W
-			tx := cx + (ICON_W - tw) / 2
-			ty := cy + ICON_H - FONT_H - 4
-			atlas := plain
-			if i == o.sel && lok {
-				nat = libdraw.put_fill(b, nat, dst, u32(tx - 2), u32(ty), u32(tw + 4), u32(FONT_H), libpal.xrgb(t.face))
-				atlas = lit
-			}
-			next, _, _ := libdraw.put_text(b, nat, atlas, dst, u32(tx), u32(ty), shown)
-			if next < 0 {
-				return next
-			}
-			nat = next
 		}
 	}
 	return nat
+}
+
+// icon_one draws one cell of an icon grid at `(cx, cy)`: the picture of its
+// kind above, its name under it, on a bar of the face when it is the selected
+// one. Both the grid and free placement draw a cell this way.
+icon_one :: proc "contextless" (b: []u8, at: int, o: ^Object, i: int, cx: int, cy: int, dst: u32, plain: libdraw.Atlas, lit: libdraw.Atlas, lok: bool, t: ^Theme) -> int #no_bounds_check {
+	name_cells := ICON_W / FONT_W - 1
+	kind := ICON_PROJECT
+	if o.kinds != nil && i < len(o.kinds) {
+		kind = o.kinds[i]
+	}
+	nat := icon_picture(b, at, dst, cx + (ICON_W - 40) / 2, cy + 6, kind, t)
+	shown := clip_cells(o.rows[i], name_cells)
+	tw := drawn_len(shown) * FONT_W
+	tx := cx + (ICON_W - tw) / 2
+	ty := cy + ICON_H - FONT_H - 4
+	atlas := plain
+	if i == o.sel && lok {
+		nat = libdraw.put_fill(b, nat, dst, u32(tx - 2), u32(ty), u32(tw + 4), u32(FONT_H), libpal.xrgb(t.face))
+		atlas = lit
+	}
+	next, _, _ := libdraw.put_text(b, nat, atlas, dst, u32(tx), u32(ty), shown)
+	return next
 }
 
 // icon_picture is one kind's picture, forty by twenty-eight, at a point.

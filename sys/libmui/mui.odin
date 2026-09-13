@@ -136,6 +136,12 @@ Object :: struct {
 	sel:      int, // The selected row, or -1
 	min_rows: int, // The rows `fit` asks room for
 
+	// An icon grid's free placement, for Snapshot: when set, one (x, y) per
+	// cell, in the well's interior, rather than the row-and-column grid. A
+	// drag places a cell; Clean Up clears it back to `nil` and the grid. The
+	// caller owns the slice. See `icons_place` and `docs/WORKBENCH.md`.
+	place:    [][2]int,
+
 	// A string gadget's text, in storage the caller owns, and how much of
 	// it is written. `string_key` edits it.
 	edit:     []u8,
@@ -230,8 +236,24 @@ icons_visible :: proc "contextless" (o: ^Object, t: ^Theme) -> int {
 }
 
 // icons_cell_at answers the icon under a point, or -1 for the well between.
-icons_cell_at :: proc "contextless" (o: ^Object, x: int, y: int, t: ^Theme) -> int {
-	if o == nil || x < o.x + t.well || y < o.y + t.well {
+icons_cell_at :: proc "contextless" (o: ^Object, x: int, y: int, t: ^Theme) -> int #no_bounds_check {
+	if o == nil {
+		return -1
+	}
+	// Free placement: the topmost cell whose square holds the point, which is
+	// the last drawn, so the search runs from the end.
+	if o.place != nil {
+		n := min(len(o.rows), len(o.place))
+		for i := n - 1; i >= 0; i -= 1 {
+			cx := o.x + t.well + o.place[i][0]
+			cy := o.y + t.well + o.place[i][1]
+			if x >= cx && x < cx + ICON_W && y >= cy && y < cy + ICON_H {
+				return i
+			}
+		}
+		return -1
+	}
+	if x < o.x + t.well || y < o.y + t.well {
 		return -1
 	}
 	col := (x - o.x - t.well) / ICON_W
@@ -245,6 +267,47 @@ icons_cell_at :: proc "contextless" (o: ^Object, x: int, y: int, t: ^Theme) -> i
 		return -1
 	}
 	return i
+}
+
+// icons_grid_xy is where cell `i` sits in the well's interior under the
+// row-and-column grid, so a caller seeding free placement starts from where
+// the icons already are. The caller owns the `place` slice; this only says
+// where the grid would put a cell.
+icons_grid_xy :: proc "contextless" (o: ^Object, i: int, t: ^Theme) -> (x: int, y: int) {
+	cols := icons_cols(o, t)
+	return (i % cols) * ICON_W, (i / cols) * ICON_H
+}
+
+/*
+icons_set gives cell `i` a free position, `(wx, wy)` in the well's interior.
+The first placement allocates the slice from the grid, so every other cell
+keeps where it was until it too is moved. The caller owns the slice;
+`icons_clear` frees it and returns to the grid. Allocates, so it is not
+contextless: the caller's context is the allocator.
+*/
+icons_set :: proc(o: ^Object, i: int, wx: int, wy: int, t: ^Theme) #no_bounds_check {
+	if o == nil || o.class != .Icons || i < 0 || i >= len(o.rows) {
+		return
+	}
+	if o.place == nil {
+		o.place = make([][2]int, len(o.rows))
+		for k in 0 ..< len(o.rows) {
+			o.place[k][0], o.place[k][1] = icons_grid_xy(o, k, t)
+		}
+	}
+	if i >= len(o.place) {
+		return
+	}
+	o.place[i] = {max(wx, 0), max(wy, 0)}
+}
+
+// icons_clear drops free placement, so the grid lays the icons out again. Clean
+// Up is this, and a caller frees the slice it owned here.
+icons_clear :: proc(o: ^Object) {
+	if o != nil && o.place != nil {
+		delete(o.place)
+		o.place = nil
+	}
 }
 
 // field_text answers what a string gadget holds.
