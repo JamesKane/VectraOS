@@ -147,6 +147,52 @@ live :: proc "contextless" () -> int {
 }
 
 
+/*
+set puts `name=value` into `grp`, creating the variable or replacing its value.
+It is how the kernel seeds a boot variable -- `cputype`, `docs/FLEET.md` step 3
+-- into the first process's group, which every process it starts inherits by
+copy. A shell then sees `$cputype` as though it had set it. False only when the
+group is full or the heap is out; the caller treats that as "not seeded" and
+carries on, since a missing `$cputype` is a warning, not a dead machine.
+
+Allocates through `reserve`, so the caller provides a context.
+*/
+set :: proc(grp: ^Group, name: string, value: string) -> bool #no_bounds_check {
+	if grp == nil || !valid_name(name) || len(value) > VALUE_MAX {
+		return false
+	}
+	g := sync.acquire(&dev.lock)
+	defer sync.release(&dev.lock, g)
+
+	idx := var_named(grp, name)
+	if idx < 0 {
+		for i in 0 ..< MAX_VARS {
+			if grp.vars[i].id == 0 {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 || grp.next_id >= 0xFFFF {
+			return false
+		}
+		v := &grp.vars[idx]
+		v^ = Var {
+			id  = grp.next_id,
+			len = len(name),
+		}
+		copy(v.name[:], name)
+		grp.next_id += 1
+	}
+	v := &grp.vars[idx]
+	if !reserve(v, len(value)) {
+		return false
+	}
+	copy(v.data[:len(value)], value)
+	v.size = len(value)
+	v.version += 1
+	return true
+}
+
 // -- Groups, as `kernel/user` holds them -------------------------------------
 
 // new_group claims an empty group with one reference.

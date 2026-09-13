@@ -637,6 +637,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_factotum(&r)
 	verify_netserver(&r)
 	verify_rc(&r)
+	verify_cputype(&r)
 	verify_tools(&r)
 	verify_dbg(&r)
 
@@ -10338,6 +10339,26 @@ RC_SCRIPT :: "fn twice { echo $1 $1 }; x=(); for(i in a b c) x=($x `{twice $i});
 	"exit $\"x^' '^$\"y^' '^$s^' '^$#z"
 
 RC_EXPECT :: "a a b b c c hello world six 3"
+
+/*
+verify_cputype proves the kernel seeds `$cputype` into a root process's
+environment, `docs/FLEET.md` step 3. A shell reads it and `exit $cputype`
+makes it the child's status, which `run_script` reads back. The word is the
+tree's own name for this architecture -- the `/$cputype/bin` a machine binds
+over `/bin`, and the `cputype=` an `ndb` record carries.
+*/
+verify_cputype :: proc(r: ^Result) {
+	names := [?]string{"rc", "-c", "exit $cputype"}
+	script_says(
+		r,
+		"/bin/rc",
+		names[:],
+		PATIENCE * 10,
+		"a shell reads the $cputype the kernel seeded",
+		CPUTYPE,
+		"and it is this machine's architecture, the tree's own name for it",
+	)
+}
 
 verify_rc :: proc(r: ^Result) {
 	names := [?]string{"rc", "-c", RC_SCRIPT}

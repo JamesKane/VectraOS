@@ -64,6 +64,12 @@ import "vsys:abi"
 import "vsys:libodin"
 import "vsys:vectra9"
 
+// CPUTYPE is this kernel's architecture as the fleet's tree names it: the
+// directory `/$cputype/bin` a machine binds over `/bin`, and the `cputype=`
+// field an `ndb` record carries. Seeded into the first process's `#e` at boot.
+// The names match `build.odin`'s `--arch` and `lib/ndb`'s records.
+CPUTYPE :: "amd64" when ODIN_ARCH == .amd64 else "arm64" when ODIN_ARCH == .arm64 else "riscv64" when ODIN_ARCH == .riscv64 else "unknown"
+
 /*
 What a spawned child gets for a namespace, as bits a program can pass.
 
@@ -196,6 +202,14 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 	if p.env == nil {
 		unload(p)
 		return nil, vectra9.ENOMEM
+	}
+	// A root process -- `init`, the one the kernel starts -- is seeded with
+	// `cputype`, the machine's architecture, `docs/FLEET.md` step 3. Every
+	// process it starts copies its group, so the whole fleet's tree of
+	// processes sees `$cputype` and binds its own `/$cputype/bin` over `/bin`.
+	// A failure to seed is a warning, not a dead boot, so it is not checked.
+	if parent == nil {
+		_ = env.set(p.env, "cputype", CPUTYPE)
 	}
 	if flags & SPAWN_FD_CLEAN == 0 && parent == nil {
 		open_standard(p)
