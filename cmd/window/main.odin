@@ -339,8 +339,10 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	for {
 		got := libthread.ioread(io, out_fd, out[:])
 		if got <= 0 {
-			// The shell is gone. Take the io procs down and let the
-			// window go.
+			// The shell is gone -- a typed `exit` or a fault. Collect it,
+			// and if it faulted, post the desktop's notice before the
+			// window goes. Take the io procs down and let the window go.
+			fault_notice()
 			libthread.threadexitsall("")
 		}
 		for i in 0 ..< int(got) {
@@ -348,6 +350,74 @@ threadmain :: proc "contextless" (arg: rawptr) {
 		}
 		present()
 	}
+}
+
+/*
+fault_notice collects the ended shell and, when it died by a trap rather
+than a clean exit or a caught signal, posts the desktop's fault notice,
+`docs/WORKBENCH.md` section 6: `window <prog> faulted: <trap>` to
+`/mnt/wb/notice`, the toast in the bar's corner.
+
+`window` runs every program the desktop starts, so `window` is what sees one
+die. `await` answers `<pid> <status>`, and a program the kernel ended on an
+uncaught trap wears the trap's own note as its status -- `sys: trap: fault
+addr=0x0 pc=0x...` from `post_trap_note`. A typed `exit` says its pid alone,
+a `^C` or a `kill` says `interrupt` or `kill`; none of those is a fault, and
+none posts a notice.
+
+**The ghost's half is not here.** With the ghost on, `window` parks the
+process on the fault and the notice's action is `ask -c debug -p N`, a click
+that hands the parked process to the agent -- `docs/GHOST.md` step 3. That day
+this notice grows the action and the parking; until then it is the honest
+statement that a program faulted, and nothing waits.
+*/
+fault_notice :: proc "contextless" () #no_bounds_check {
+	buf: [256]u8
+	n := libuser.await(shell_pid, buf[:])
+	if n <= 0 {
+		return
+	}
+	// await answers `<pid> <status>`; the status is after the first space, and
+	// a child that exited cleanly answers with its pid alone.
+	status := string(buf[:n])
+	sp := -1
+	for i in 0 ..< len(status) {
+		if status[i] == ' ' {sp = i;break}
+	}
+	if sp < 0 {
+		return
+	}
+	detail := status[sp + 1:]
+	// Only a genuine trap is a fault. A breakpoint (`sys: breakpoint`), a
+	// caught signal, or an error string a program `exits` with is not one.
+	TRAP :: "sys: trap: "
+	if len(detail) < len(TRAP) || string(detail[:len(TRAP)]) != TRAP {
+		return
+	}
+	detail = detail[len(TRAP):]
+
+	line: [320]u8
+	at := copy(line[:], "window ")
+	at += copy(line[at:], prog_name())
+	at += copy(line[at:], " faulted: ")
+	at += copy(line[at:], detail)
+	// No desktop mounted, no notices; the console's own `window` still runs.
+	fd := libuser.open("/mnt/wb/notice", abi.O_WRONLY)
+	if fd < 0 {
+		return
+	}
+	_ = libuser.write(int(fd), line[:at])
+	_ = libuser.close(int(fd))
+}
+
+// prog_name is the command's own name, the basename of `cmd_path`, which is
+// what the notice calls the program that faulted.
+prog_name :: proc "contextless" () -> string #no_bounds_check {
+	start := 0
+	for i in 0 ..< len(cmd_path) {
+		if cmd_path[i] == '/' {start = i + 1}
+	}
+	return cmd_path[start:]
 }
 
 /*
