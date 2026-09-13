@@ -621,7 +621,7 @@ passes (0, 0). Answers how many pieces it wrote; size the array by
 `MAX_FRAME_PIECES`.
 */
 window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, h: int, lit: bool) -> int #no_bounds_check {
-	n := libdraw.edges(out, x, y, w, h, .Raised, libpal.MAGNESIUM_HOT, libpal.MAGNESIUM_DARK, FRAME_EDGE)
+	n := libdraw.edges(out, x, y, w, h, .Raised, th_plinth_lit, th_plinth_shade, FRAME_EDGE)
 	if n == 0 {
 		return 0
 	}
@@ -662,9 +662,11 @@ both faces already, so this is a choice between two names and not a new colour.
 frame_bar :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, lit: bool) -> int {
 	bx, by, bw, bh := frame_bar_at(x, y, w)
 	if lit {
-		return libdraw.panel(out, bx, by, bw, bh, .Raised, libpal.COPPER, libpal.COPPER_LIT, libpal.COPPER_DARK, 1)
+		return libdraw.panel(out, bx, by, bw, bh, .Raised, th_bar, th_bar_lit, th_bar_shade, 1)
 	}
-	return libdraw.panel(out, bx, by, bw, bh, .Raised, libpal.COPPER_DARK, libpal.COPPER, libpal.VOID, 1)
+	// The window not in front wears the same trim one step down its own table:
+	// the focused shade for its face, the focused face above it, `VOID` below.
+	return libdraw.panel(out, bx, by, bw, bh, .Raised, th_bar_shade, th_bar, libpal.VOID, 1)
 }
 
 // frame_bar_at is where that bar sits, inside a window at (x, y) that is `w`
@@ -1696,6 +1698,7 @@ start :: proc "c" (block: ^abi.Args) {
 		cons_fd = int(cons)
 	key_msgs = ends_with(key_source, "/kbd")
 	keys_load()
+	theme_reload()
 	libthread.main(threadmain, nil)
 }
 

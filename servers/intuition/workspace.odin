@@ -264,7 +264,6 @@ read_user_file :: proc "contextless" (name: string, buf: []u8) -> int #no_bounds
 	return read_whole(string(path[:at]), buf)
 }
 
-@(private = "file")
 read_whole :: proc "contextless" (path: string, buf: []u8) -> int {
 	fd := libuser.open(path, abi.O_RDONLY)
 	if fd < 0 {

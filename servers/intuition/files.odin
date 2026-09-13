@@ -57,6 +57,7 @@ run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_ch
 			return vectra9.EINVAL
 		}
 		rules_load()
+		theme_rechrome()
 		return vectra9.Errno(0)
 	case "diag":
 		// The image pool's use, so a person can see how near the cap a
