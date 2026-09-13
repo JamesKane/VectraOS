@@ -522,10 +522,15 @@ whose argument is the rest of the line cannot be made to.
 
 **A fault is a notice, and the process waits for the answer.** `window`
 runs every program the desktop starts, so `window` is what sees one
-die. When the ghost is on, `window` writes `startstop` to its command's
+die. When its child dies by an uncaught trap -- `await` answers the
+trap's own note, `sys: trap: fault addr=... pc=...` -- `window` posts
+`window <prog> faulted: <trap>` to `/mnt/wb/notice`. A typed `exit`, a
+`^C` or a `kill` is not a fault and posts nothing. That half is built.
+
+When the ghost is on, `window` writes `startstop` to its command's
 `ctl`, and a fault parks the process before the note lands,
-`docs/DEVTOOLS.md` section 7. `window` posts the notice with the trap's
-text and `ask -c debug -p N` as the action.
+`docs/DEVTOOLS.md` section 7; the notice then carries `ask -c debug -p N`
+as its action. The parking and the action wait on `docs/GHOST.md` step 3.
 
 A click hands the parked process to the ghost, which attaches the
 debugger and reads `bt`. A
@@ -759,8 +764,10 @@ the same proc) and by `init` for the console's shell.
 
 Each its own document, in whatever order a reason arrives.
 
-- **The fault notice**, the day `docs/GHOST.md` step 3 gives the click
-  somewhere to go.
+- **The fault notice's ghost half**, the day `docs/GHOST.md` step 3
+  gives the click somewhere to go. `window` already posts the notice
+  when a child faults (section 6); what waits on the ghost is parking
+  the process on the fault and the `ask -c debug -p N` action.
 - **A font past 128 glyphs**, deferred in `docs/HANDOFF.md` with its
   reason. The theme names a font file so that the day has somewhere to
   land.
