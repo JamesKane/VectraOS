@@ -126,6 +126,7 @@ user_programs := [?]User_Program {
 	{name = "ps", path = "cmd/ps"},
 	{name = "kill", path = "cmd/kill"},
 	{name = "ns", path = "cmd/ns"},
+	{name = "newns", path = "cmd/newns"},
 	{name = "role", path = "cmd/role"},
 	{name = "window", path = "cmd/window"},
 	{name = "netecho", path = "cmd/netecho"},

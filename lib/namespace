@@ -1,9 +1,14 @@
 # namespace: the binds a fresh process starts from, docs/FLEET.md step 3.
 # `newns` in sys/libuser replays these, expanding $cputype from #e -- the same
 # `bind`/`mount` lines `ns` prints, so a rebuilt namespace matches a described
-# one. A machine binds its own architecture's tools over /bin.
+# one. A machine binds its own architecture's tools over /bin, out of one tree
+# that holds every architecture's.
 #
-# The source is where the tree sits today: mounted under /n/esp. When the file
-# server's tree is the root (docs/FLEET.md step 3's diskless boot), /amd64 and
-# its siblings are top-level and this becomes `bind /$cputype/bin /bin`.
-bind /n/esp/vectra/$cputype/bin /bin
+# The tree is at /n/fs, and this file does not care how it got there: a machine
+# with a disk mounts it off the disk, and a diskless one imports it over the
+# network, but both reach it here. When the file server's tree is bound as the
+# root (docs/FLEET.md step 3's diskless boot), /n/fs is / and these read
+# `/$cputype/bin` and so on.
+bind /n/fs/$cputype/bin /bin
+bind /n/fs/lib /lib
+bind /n/fs/adm /adm

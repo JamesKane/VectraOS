@@ -394,6 +394,8 @@ kmain :: proc "c" () {
 	// suite looks for its tools there. See `docs/FATFS.md`.
 	if init_fatfs() {
 		verify_fatfs()
+		// One name for the tree, `/n/fs`, off this disk or the network.
+		verify_fs()
 		// The console's own font past ASCII, now that `/lib/font`
 		// is on a mounted disk. The boot log above is ASCII and
 		// wanted none of it; from here a panic could spell a name
@@ -2702,13 +2704,17 @@ init_fatfs :: proc() -> bool {
 	// One tree, three architectures, `docs/FLEET.md` step 3: this machine
 	// binds its own `/<cputype>/bin` over `/bin`, out of a tree that can hold
 	// every architecture's. `/lib` (its debug files among them) and `/adm` are
-	// shared, one of each.
+	// shared, one of each. The tree's root is also bound at `/n/fs`, one name
+	// for it whether it came off this disk or, on a diskless machine, over the
+	// network: `/lib/namespace` binds `/bin` out of `/n/fs`, and `newns` replays
+	// that file the same way on either.
 	bin_buf: [64]u8
 	bn := copy(bin_buf[:], "/n/esp/vectra/")
 	bn += copy(bin_buf[bn:], user.CPUTYPE)
 	bn += copy(bin_buf[bn:], "/bin")
 	bin_src := string(bin_buf[:bn])
 	for pair in ([][2]string {
+		{"/n/esp/vectra", "/n/fs"},
 		{bin_src, "/bin"},
 		{"/n/esp/vectra/lib", "/lib"},
 		{"/n/esp/vectra/adm", "/adm"},
@@ -2822,6 +2828,46 @@ verify_fatfs :: proc() {
 		libodin.put_str(&sink, " disk filesystem checks passed -- ")
 		libodin.put_uint(&sink, u64(programs))
 		libodin.put_str(&sink, " programs on the disk, served from ring 3")
+		emit(&klog, .Ok, &sink)
+		return
+	}
+	report_failed(&sink, result)
+}
+
+/*
+verify_fs proves the tree has one name, `/n/fs`, `docs/FLEET.md` step 3. The
+kernel bound the tree's root there so a machine finds its tools the same way
+whether the tree came off this disk or, on a diskless machine, over the network:
+`/lib/namespace` binds `/bin` out of `/n/fs`, and `newns` replays that one file
+on either. This opens this architecture's `echo` through `/n/fs/$cputype/bin` and
+the shared `/n/fs/lib/namespace`, so the name resolves the per-architecture tools
+and the shared library both.
+*/
+verify_fs :: proc() {
+	ns := vfs.boot_namespace
+	result: libodin.Tally
+
+	bin_buf: [64]u8
+	bn := copy(bin_buf[:], "/n/fs/")
+	bn += copy(bin_buf[bn:], user.CPUTYPE)
+	bn += copy(bin_buf[bn:], "/bin/echo")
+	if c, err := vfs.open_path(ns, string(bin_buf[:bn]), vfs.O_RDONLY); err == vfs.OK {
+		vfs.chan_close(c)
+		libodin.tally(&result, true, "/n/fs/$cputype/bin resolves this architecture's tools")
+	} else {
+		libodin.tally(&result, false, "/n/fs/$cputype/bin resolves this architecture's tools")
+	}
+
+	if c, err := vfs.open_path(ns, "/n/fs/lib/namespace", vfs.O_RDONLY); err == vfs.OK {
+		vfs.chan_close(c)
+		libodin.tally(&result, true, "/n/fs/lib holds the shared library, the namespace file among it")
+	} else {
+		libodin.tally(&result, false, "/n/fs/lib holds the shared library, the namespace file among it")
+	}
+
+	sink := report_begin("fs", result.checks)
+	if libodin.passed(result) {
+		libodin.put_str(&sink, " tree checks passed -- one name for the tree, /n/fs, off the disk or the network")
 		emit(&klog, .Ok, &sink)
 		return
 	}

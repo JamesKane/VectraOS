@@ -8,6 +8,13 @@
 # network. A machine may be more than one: a laptop under QEMU is a terminal
 # and a CPU server at once. init reads the roles and starts what they name.
 
+# The namespace is a file: /lib/namespace carries the binds that make a fresh
+# process's world -- /bin and its siblings out of the one tree at /n/fs. The
+# kernel bound them for its own checks; this replays the file so a process's
+# world is data, the same file a diskless machine replays after it imports the
+# tree over the network. docs/FLEET.md section 6.
+newns /lib/namespace
+
 # The network first, because a machine's name -- and so its roles -- is the
 # `ndb` record its card matched, read from /net once the stack can say it. A
 # machine with no card has no /srv/net, and the mount is skipped rather than
