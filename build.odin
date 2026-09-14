@@ -1631,6 +1631,12 @@ run_fleet :: proc(opts: Options) {
 		fmt.tprintf("%s/serial-b.log", BUILD_DIR),
 	)
 
+	// A monitor per machine on a unix socket, for `screendump` -- a screenshot of
+	// a desktop that only a graphical fleet would otherwise show. Off unless a
+	// host connects, so it costs a boot nothing.
+	append(&a, "-monitor", fmt.tprintf("unix:%s/mon-a.sock,server,nowait", BUILD_DIR))
+	append(&b, "-monitor", fmt.tprintf("unix:%s/mon-b.sock,server,nowait", BUILD_DIR))
+
 	step("booting machine one (%v), listening for the link on port %s", opts_a.arch, PORT)
 	pa := spawn_bg(a[:])
 	// Let machine one open its listening socket before machine two dials it.
