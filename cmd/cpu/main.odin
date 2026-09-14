@@ -126,12 +126,23 @@ server :: proc() {
 	become(name)
 	// Mount the client's exported namespace, and bind its `/dev` before ours so
 	// its `/dev/cons` -- the terminal's -- is the shell's console.
-	if !post("/srv/term", sess.fd) {
-		libuser.exits("cpu: cannot post /srv/term")
+	// A `/srv` name of this session's own -- `/srv` is one table for the whole
+	// machine, so a fixed name would collide with another `cpu` in flight. It is
+	// removed once mounted: the mount keeps its own reference to the stream, so
+	// the name is free again at once and nothing leaks. `/mnt/term` itself is
+	// this process's own namespace (`listen` gives each connection a fresh one),
+	// so it needs no such care.
+	nbuf: [24]u8
+	sbuf: [40]u8
+	srvname := libuser.cat_into(sbuf[:], "/srv/term", libuser.itoa(nbuf[:], i64(libuser.getpid())))
+	if !post(srvname, sess.fd) {
+		libuser.exits("cpu: cannot post the terminal's srv name")
 	}
-	if libuser.mount("/srv/term", "/mnt/term", abi.ORDER_REPLACE) < 0 {
+	if libuser.mount(srvname, "/mnt/term", abi.ORDER_REPLACE) < 0 {
+		_ = libuser.remove(srvname)
 		libuser.exits("cpu: cannot mount the terminal at /mnt/term")
 	}
+	_ = libuser.remove(srvname)
 	if libuser.bind("/mnt/term/dev", "/dev", abi.ORDER_BEFORE) < 0 {
 		libuser.exits("cpu: cannot bind the terminal's /dev")
 	}
