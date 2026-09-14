@@ -74,12 +74,29 @@ if(test -e /adm/hostkey) {
 # The root: where this machine's tree comes from. The boot may have told it on
 # the kernel command line as root=, seeded into #e as $root. `local` -- or being
 # told nothing -- is the disk the kernel already mounted at /n/fs. Anything else
-# names a file server a diskless machine dials, mounts at /n/fs and binds as its
-# root before the real init runs from there. That mount is docs/FLEET.md section
-# 6's diskless boot; the roles below read the tree, so it comes before them.
+# names a file server: init dials it, mounts its tree at /n/fs over the disk's,
+# and replays /lib/namespace so /bin and its siblings come from the server's one
+# tree. From there this machine runs its own architecture's tools off another's
+# disk -- docs/FLEET.md section 6's diskless boot. The roles below read the tree,
+# so the root comes before them; a server it cannot reach leaves it on the disk.
 if(~ $#root 0) root=local
 if(! ~ $root local) {
-	echo init: root=$root over the network is not built yet, using the disk >[1=2]
+	# A diskless machine has nothing to run until it reaches its file server, so
+	# it keeps trying: the server may still be booting, or the link still cold.
+	# On success the server's own tree, at /n/fs in its namespace, becomes ours
+	# at /n/fs, and /lib/namespace binds /bin and its siblings out of it -- the
+	# same file a local machine replays.
+	imported=no
+	for(i in `{seq 30}) if(~ $imported no) {
+		if(import $root /n/remote) {
+			bind /n/remote/n/fs /n/fs
+			newns /lib/namespace
+			imported=yes
+		}
+		if not sleep 1
+	}
+	if(~ $imported yes) echo init: root over the network, on $root -- /bin is its tree >[1=2]
+	if(~ $imported no) echo init: could not reach root $root, using the disk >[1=2]
 }
 
 # The terminal role: a keyboard, a screen, and the desktop in the terminal's

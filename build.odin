@@ -20,6 +20,7 @@ Targets:
 Options:
     --arch=amd64|arm64|riscv64   Target architecture (default: amd64)
     --arch2=amd64|arm64|riscv64  The fleet's second machine (default: arm64)
+    --root2=HOST                 fleet: boot the second machine diskless, its root on HOST
     --release                    Optimise, otherwise a debug build
     --serial=stdio|file          Where QEMU's COM1 goes (default: stdio)
     --monitor=PATH               A QEMU monitor on a unix socket, for screendump
@@ -360,6 +361,8 @@ Options :: struct {
 	gdb: bool, // -s: the stub open, the machine running
 	pcap:    bool, // The fleet's frames, captured at QEMU's netdev
 	hostname: string, // Whose host key the staged /adm carries;  when unset
+	root:     string, // `root=` on this machine's kernel command line; "" = local disk
+	root2:    string, // fleet: the second machine's `root=` (e.g. `one`); "" = local disk
 
 	// Everything after the target, handed to the target untouched. Only
 	// `lint` reads it, so that `build lint --show docs` reaches the checker.
@@ -385,6 +388,8 @@ main :: proc() {
 			opts.arch = parse_arch(arg)
 		case strings.has_prefix(arg, "--arch2="):
 			opts.arch2 = parse_arch(arg)
+		case strings.has_prefix(arg, "--root2="):
+			opts.root2 = arg[len("--root2="):]
 		case strings.has_prefix(arg, "--serial="):
 			opts.serial = arg[len("--serial="):]
 		case strings.has_prefix(arg, "--monitor="):
@@ -1312,7 +1317,8 @@ stage_esp :: proc(opts: Options) {
 	)
 	// Limine looks next to its own EFI executable first. The config goes there,
 	// rather than at the volume root, where another limine.conf could shadow it.
-	copy_file("boot/limine.conf", fmt.tprintf("%s/EFI/BOOT/limine.conf", ESP_DIR))
+	// A fleet's diskless machine is told its file server here, as `root=<host>`.
+	stage_limine_conf(opts.root)
 	copy_file(KERNEL_ELF, fmt.tprintf("%s/vectra.elf", ESP_DIR))
 	// The kernel's debug table, named as a module in limine.conf.
 	copy_file(KERNEL_VXD, fmt.tprintf("%s/vectra.vxd", ESP_DIR))
@@ -1570,6 +1576,9 @@ run_fleet :: proc(opts: Options) {
 	opts_b.arch = opts.arch2
 	opts_a.hostname = "one"
 	opts_b.hostname = "two"
+	// A diskless second machine: told machine one's tree as its root, it dials
+	// it at boot and runs from it. `--root2=one`. docs/FLEET.md section 6.
+	opts_b.root = opts.root2
 	esp_a := fmt.tprintf("%s/esp-a", BUILD_DIR)
 	esp_b := fmt.tprintf("%s/esp-b", BUILD_DIR)
 	stage_esp(opts_a)
@@ -1866,6 +1875,28 @@ copy_file :: proc(src, dst: string) {
 		die("could not read %s: %v", src, err)
 	}
 	if werr := os.write_entire_file(dst, data); werr != nil {
+		die("could not write %s: %v", dst, werr)
+	}
+}
+
+/*
+stage_limine_conf writes the boot config to the ESP, with this machine's `root=`.
+The template says `root=local`, the disk. A fleet's diskless machine is told a
+file server instead -- `stage_limine_conf("one")` makes the entry `root=one`, and
+its `/lib/init` dials that server and binds its tree as the root. `docs/FLEET.md`
+section 6.
+*/
+stage_limine_conf :: proc(root: string) {
+	data, err := os.read_entire_file_from_path("boot/limine.conf", context.allocator)
+	if err != nil {
+		die("could not read boot/limine.conf: %v", err)
+	}
+	text := string(data)
+	if root != "" && root != "local" {
+		text, _ = strings.replace_all(text, "root=local", fmt.tprintf("root=%s", root))
+	}
+	dst := fmt.tprintf("%s/EFI/BOOT/limine.conf", ESP_DIR)
+	if werr := os.write_entire_file(dst, transmute([]u8)text); werr != nil {
 		die("could not write %s: %v", dst, werr)
 	}
 }
