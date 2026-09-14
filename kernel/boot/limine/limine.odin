@@ -133,6 +133,30 @@ Module_Request :: struct {
 	internal_modules:      rawptr,
 }
 
+// -- The kernel's own file, and its command line -----------------------------
+
+// The bootloader answers with the `File` it loaded the kernel from, whose
+// `string` is the command line `limine.conf` gave the entry. Vectra reads
+// `root=` off it: where this machine's tree comes from, the disk or a file
+// server over the network. `docs/FLEET.md` section 6, `docs/BOOT.md`.
+EXECUTABLE_FILE_REQUEST :: [4]u64 {
+	COMMON_MAGIC_1,
+	COMMON_MAGIC_2,
+	0xad97e90e83f1ed67,
+	0x31eb5d1c5ff23b69,
+}
+
+Executable_File_Response :: struct {
+	revision:        u64,
+	executable_file: ^File,
+}
+
+Executable_File_Request :: struct {
+	id:       [4]u64,
+	revision: u64,
+	response: ^Executable_File_Response,
+}
+
 // -- Bootloader info ---------------------------------------------------------
 
 BOOTLOADER_INFO_REQUEST :: [4]u64 {

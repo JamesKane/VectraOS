@@ -70,6 +70,21 @@ import "vsys:vectra9"
 // The names match `build.odin`'s `--arch` and `lib/ndb`'s records.
 CPUTYPE :: "amd64" when ODIN_ARCH == .amd64 else "arm64" when ODIN_ARCH == .arm64 else "riscv64" when ODIN_ARCH == .riscv64 else "unknown"
 
+// root_spec is where the boot told this machine to find its tree: the value of
+// `root=` on the kernel command line, or "" when it said nothing. `main` sets it
+// once from the Limine command line, and it is seeded into the first process's
+// `#e` as `$root`, so `/lib/init` dials a file server or uses the disk by what
+// it reads there. docs/FLEET.md section 6. Slice of `root_buf` so it outlives the
+// bootloader-reclaimable command line the value was copied from.
+root_spec: string
+root_buf: [64]u8
+
+// set_root_spec copies the boot's `root=` value into durable kernel memory.
+set_root_spec :: proc "contextless" (value: string) {
+	n := copy(root_buf[:], value)
+	root_spec = string(root_buf[:n])
+}
+
 /*
 What a spawned child gets for a namespace, as bits a program can pass.
 
@@ -210,6 +225,9 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 	// A failure to seed is a warning, not a dead boot, so it is not checked.
 	if parent == nil {
 		_ = env.set(p.env, "cputype", CPUTYPE)
+		if root_spec != "" {
+			_ = env.set(p.env, "root", root_spec)
+		}
 	}
 	if flags & SPAWN_FD_CLEAN == 0 && parent == nil {
 		open_standard(p)

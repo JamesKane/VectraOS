@@ -120,6 +120,11 @@ Traps and the panic screen:
   assembly test programs are not yet. `docs/PORTS.md` has the table.
 - **Memory-map entry count varies run to run** (27, 31, 33) with OVMF and vvfat.
   It is not a bug. Do not chase it.
+- **The command line carries `root=`.** `limine.conf`'s entry sets `cmdline:
+  root=local`, and the kernel reads it off its own file (Limine's executable-file
+  request) and seeds `$root` into the first process's `#e`. `local` is the disk
+  the machine booted; a diskless machine is told a file server there instead, and
+  `/lib/init` dials it and binds it as the root. `docs/FLEET.md` section 6.
 
 ## See also
 

@@ -640,6 +640,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_cputype(&r)
 	verify_nstest(&r)
 	verify_roles(&r)
+	verify_root(&r)
 	verify_tools(&r)
 	verify_dbg(&r)
 
@@ -10398,6 +10399,26 @@ verify_roles :: proc(r: ^Result) {
 		"a program reads the roles on a machine's ndb line",
 		"ok",
 		"and a role present reads true, one absent false -- what /lib/init branches on",
+	)
+}
+
+/*
+verify_root proves the boot tells a machine where its tree is, `docs/FLEET.md`
+step 3. The kernel reads `root=` off its own command line and seeds `$root` into
+the first process's `#e`; a shell reads it back with `exit $root`. This machine's
+`limine.conf` says `root=local`, the disk it booted -- a diskless machine is told
+a file server here instead, and `/lib/init` dials it and binds it as the root.
+*/
+verify_root :: proc(r: ^Result) {
+	names := [?]string{"rc", "-c", "exit $root"}
+	script_says(
+		r,
+		"/bin/rc",
+		names[:],
+		PATIENCE * 10,
+		"a shell reads the $root the kernel seeded from the command line",
+		"local",
+		"and it is what limine.conf told this machine: the disk it booted",
 	)
 }
 

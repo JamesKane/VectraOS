@@ -104,6 +104,14 @@ module_request := limine.Module_Request {
 	revision = 0,
 }
 
+// The kernel's own file, whose command line carries `root=`: where this
+// machine's tree comes from, the disk or the network. See `boot_root`.
+@(export, link_section = ".limine_requests")
+executable_file_request := limine.Executable_File_Request {
+	id       = limine.EXECUTABLE_FILE_REQUEST,
+	revision = 0,
+}
+
 /*
 Pin the paging mode rather than accepting whatever the firmware left on.
 
@@ -168,6 +176,38 @@ read_boot_facts :: proc "contextless" () {
 		boot_facts.dtb, boot_facts.has_tree = r.dtb, true
 	}
 	boot_facts.mp = mp_request.response
+	// Where this machine's tree comes from, read off the kernel command line
+	// and kept where the first process's `#e` seed can reach it. docs/FLEET.md
+	// section 6.
+	if r := executable_file_request.response; r != nil && r.executable_file != nil {
+		user.set_root_spec(boot_root(r.executable_file.string))
+	}
+}
+
+/*
+boot_root pulls the `root=` value off the kernel command line, or "" when the
+line carries none. The command line is space-separated words; `root=` names
+where this machine's tree comes from -- `local` (or nothing) for the disk it
+booted, or a file server a diskless machine dials. `docs/FLEET.md` section 6,
+`docs/BOOT.md`.
+*/
+boot_root :: proc "contextless" (cmdline: cstring) -> string {
+	line := string(cmdline)
+	i := 0
+	for i < len(line) {
+		for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+			i += 1
+		}
+		start := i
+		for i < len(line) && line[i] != ' ' && line[i] != '\t' {
+			i += 1
+		}
+		word := line[start:i]
+		if len(word) >= 5 && word[:5] == "root=" {
+			return word[5:]
+		}
+	}
+	return ""
 }
 
 /*

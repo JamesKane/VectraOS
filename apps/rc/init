@@ -71,6 +71,17 @@ if(test -e /adm/hostkey) {
 	echo key proto=noise user=$sysname dom=$dom '!private='^$hostkey > /mnt/factotum/ctl
 }
 
+# The root: where this machine's tree comes from. The boot may have told it on
+# the kernel command line as root=, seeded into #e as $root. `local` -- or being
+# told nothing -- is the disk the kernel already mounted at /n/fs. Anything else
+# names a file server a diskless machine dials, mounts at /n/fs and binds as its
+# root before the real init runs from there. That mount is docs/FLEET.md section
+# 6's diskless boot; the roles below read the tree, so it comes before them.
+if(~ $#root 0) root=local
+if(! ~ $root local) {
+	echo init: root=$root over the network is not built yet, using the disk >[1=2]
+}
+
 # The terminal role: a keyboard, a screen, and the desktop in the terminal's
 # place -- the bar and its menus, the backdrop and its icons. The keyboard
 # goes to kbdfs, whose file the draw server reads its keys from, so the serial
