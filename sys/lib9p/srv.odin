@@ -207,6 +207,22 @@ hold :: proc "contextless" (srv: ^Srv) {
 	srv.hold = true
 }
 
+/*
+find_held_tag answers the held request bearing `tag`, or nil. A server that
+reads for a client on a worker thread parks with only the tag in hand; when the
+read returns it asks for its request back before responding, and gets nil when a
+`Tflush` freed it while the read was parked. The list it walks holds only live
+records, so the answer is safe even after that flush. `docs/FLEET.md` section 7.
+*/
+find_held_tag :: proc "contextless" (srv: ^Srv, tag: vectra9.Tag) -> ^Req {
+	for r := srv.held; r != nil; r = r.next {
+		if r.tag == tag {
+			return r
+		}
+	}
+	return nil
+}
+
 // held finds the oldest held request `wants(arg, request)` accepts: a read
 // of the window a line was just typed into, and not another's. The
 // record's `payload` is where the answer goes, and `respond` sends it.

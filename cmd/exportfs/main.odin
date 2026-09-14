@@ -13,10 +13,14 @@ it starts decides what a client sees. That is the whole access model, and it
 is Plan 9's. `docs/FLEET.md` section 5.
 
 A fid is a path and, once opened, a descriptor. The table is small and
-fixed, the way every table a client can grow is here. Reads and writes are
-answered on the serve loop's own thread, so a read that parks in this
-namespace parks the loop; a flush that reaches it then waits behind the read.
-Answering those from threads of their own is the step after this one.
+fixed, the way every table a client can grow is here. A read is answered on a
+worker thread of its own, off a small pool, so a read that parks in this
+namespace -- the console of a `cpu` shell waiting for a key -- parks that
+worker, not the loop that serves everyone else. The loop holds the request and
+hands the worker its tag; the worker reads through its own io proc and responds,
+or drops the answer when a flush freed the request while it was parked. Writes
+and the rest are answered on the loop, which they do not stall. `docs/FLEET.md`
+section 7.
 */
 package exportfs
 
@@ -53,6 +57,24 @@ proven_len: int
 srv: lib9p.Srv
 root: string = "/"
 root_buf: [PATH_MAX]u8
+
+// The reader pool. A read is answered on a worker thread of its own, so a
+// device that parks until a key -- the console of a `cpu` shell, above all --
+// parks that worker, not the loop that serves everyone else. The loop holds
+// the request and hands the worker its tag, fd and offset; the worker reads
+// through its own io proc and responds, or drops the answer when a flush freed
+// the request while it was parked. `docs/FLEET.md` section 7.
+READERS :: 4
+READ_QUEUE :: MAX_FIDS
+read_q: ^libthread.Chan
+
+Read_Job :: struct {
+	tag:    vectra9.Tag,
+	fid:    vectra9.Fid,
+	fd:     int,
+	offset: u64,
+	count:  int,
+}
 
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -120,6 +142,13 @@ start :: proc "c" (block: ^abi.Args) {
 
 threadmain :: proc "contextless" (arg: rawptr) {
 	_ = arg
+	// The reader pool, before the loop, so a held read has a worker waiting.
+	read_q = libthread.chancreate(size_of(Read_Job), READ_QUEUE)
+	if read_q != nil {
+		for _ in 0 ..< READERS {
+			_ = libthread.threadcreate(reader, nil)
+		}
+	}
 	srv = lib9p.Srv {
 		fd      = serve_fd,
 		handler = handler,
@@ -135,6 +164,44 @@ threadmain :: proc "contextless" (arg: rawptr) {
 		_ = libuser.write(2, transmute([]u8)text)
 	}
 	libthread.threadexitsall(why == .Broken ? "broken" : "")
+}
+
+/*
+reader is one worker of the pool: it takes a held read off the queue, makes the
+`pread` through an io proc of its own so its parking is its own, and answers.
+When it wakes it asks the loop for its request back by tag: nil means a `Tflush`
+freed it while the read was parked, and there is nothing to answer. The check
+that the request is still a read of the same fid guards the rare reuse of a tag
+a flush had freed. It reads into its own buffer, not the record's, because that
+record may be gone by the time the read returns.
+*/
+reader :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	io := libthread.ioproc()
+	block := libuser.heap_alloc(FRAME)
+	if io == nil || block == nil {
+		libthread.threadexits("reader: no io proc or buffer")
+	}
+	buf := ([^]u8)(block)[:FRAME]
+	for {
+		job: Read_Job
+		libthread.recv(read_q, &job)
+		room := min(len(buf), job.count)
+		n := libthread.iopread(io, job.fd, buf[:room], job.offset)
+		req := lib9p.find_held_tag(&srv, job.tag)
+		if req == nil {
+			continue
+		}
+		if r, is_read := req.msg.(vectra9.Tread); !is_read || r.fid != job.fid {
+			continue
+		}
+		if n < 0 {
+			_ = lib9p.respond(req, vectra9.error_reply(vectra9.Errno(-n)))
+			continue
+		}
+		got := copy(req.payload, buf[:n])
+		_ = lib9p.respond(req, vectra9.Rread{data = req.payload[:got]})
+	}
 }
 
 // -- The fid table --------------------------------------------------------------
@@ -416,6 +483,18 @@ handler :: proc "contextless" (
 			reply^ = vectra9.error_reply(f == nil ? vectra9.EBADF : vectra9.EINVAL)
 			return
 		}
+		// Hand the read to a worker and hold the request: a read that parks --
+		// a console waiting for a key -- must not stall the loop. `nbsend` never
+		// parks, so the loop has appended this request to the held list by the
+		// time a worker wakes to serve it.
+		if read_q != nil {
+			job := Read_Job{tag = tag, fid = m.fid, fd = f.fd, offset = m.offset, count = int(m.count)}
+			if libthread.nbsend(read_q, &job) {
+				lib9p.hold(&srv)
+				return
+			}
+		}
+		// No pool, or its queue is full: read on the loop, which may park it.
 		room := min(len(buf), int(m.count))
 		n := libuser.pread(f.fd, buf[:room], m.offset)
 		if n < 0 {

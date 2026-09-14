@@ -27,6 +27,7 @@ import "vsys:vectra9"
 
 Io_Op :: enum u8 {
 	Read,
+	Pread, // `buf` from `fd` at `offset`: a read whose place in the file is given
 	Write,
 	Sleep, // `ticks` in `fd`: a wait a thread may make without parking its proc
 	Mount, // `path` on `target` in `order`: a mount whose server is a thread of this proc
@@ -37,6 +38,7 @@ Io_Call :: struct {
 	op:     Io_Op,
 	fd:     int,
 	buf:    []u8,
+	offset: u64,
 	path:   string,
 	target: string,
 	order:  u64,
@@ -125,6 +127,8 @@ io_loop :: proc "contextless" (arg: rawptr) {
 		switch c.op {
 		case .Read:
 			c.result = libuser.read(c.fd, c.buf)
+		case .Pread:
+			c.result = libuser.pread(c.fd, c.buf, c.offset)
 		case .Write:
 			c.result = libuser.write(c.fd, c.buf)
 		case .Sleep:
@@ -162,6 +166,15 @@ ioread :: proc "contextless" (io: ^Ioproc, fd: int, buf: []u8) -> i64 {
 
 iowrite :: proc "contextless" (io: ^Ioproc, fd: int, data: []u8) -> i64 {
 	c := Io_Call{op = .Write, fd = fd, buf = data}
+	return iocall(io, &c)
+}
+
+// iopread is `libuser.pread` made from a thread: a read at a given offset, the
+// io proc parking in the kernel while the proc runs its other threads. This is
+// how a server reads a file -- or a device that parks until a key -- for a
+// client without stalling the thread that serves everyone else.
+iopread :: proc "contextless" (io: ^Ioproc, fd: int, buf: []u8, offset: u64) -> i64 {
+	c := Io_Call{op = .Pread, fd = fd, buf = buf, offset = offset}
 	return iocall(io, &c)
 }
 
