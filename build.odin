@@ -1581,10 +1581,23 @@ run_fleet :: proc(opts: Options) {
 	opts_b.root = opts.root2
 	esp_a := fmt.tprintf("%s/esp-a", BUILD_DIR)
 	esp_b := fmt.tprintf("%s/esp-b", BUILD_DIR)
-	stage_esp(opts_a)
-	copy_tree(ESP_DIR, esp_a)
-	stage_esp(opts_b)
-	copy_tree(ESP_DIR, esp_b)
+	if opts.root2 != "" {
+		// A diskless second machine boots from the first's tree, so the first --
+		// the file server -- must hold the second's architecture's bin as well as
+		// its own: one tree, every architecture (docs/FLEET.md section 6). The ESP
+		// accumulates what is staged into it, so stage the client's architecture
+		// first and the server's second, and the server's copy carries both bins;
+		// its kernel and its `root=local` config are staged last, and win.
+		stage_esp(opts_b)
+		copy_tree(ESP_DIR, esp_b)
+		stage_esp(opts_a)
+		copy_tree(ESP_DIR, esp_a)
+	} else {
+		stage_esp(opts_a)
+		copy_tree(ESP_DIR, esp_a)
+		stage_esp(opts_b)
+		copy_tree(ESP_DIR, esp_b)
+	}
 	ensure_scratch_disk()
 	scratch_a := fmt.tprintf("%s/disk-a.img", BUILD_DIR)
 	scratch_b := fmt.tprintf("%s/disk-b.img", BUILD_DIR)
