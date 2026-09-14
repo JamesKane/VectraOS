@@ -70,6 +70,10 @@ ROOT_NODES := [?]Static_Node {
 	// `/mnt/term/dev` before its own so the shell's console is the terminal's.
 	// `docs/FLEET.md` section 7.
 	{name = "term", parent = 6, dir = true},
+	// Where `#d` binds: a process's own descriptors as files, `/fd/0` and its
+	// siblings. `cpu` exports it so a remote command's three are the terminal's.
+	// `docs/FLEET.md` section 7. Appended last so no parent index above shifts.
+	{name = "fd", parent = 0, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

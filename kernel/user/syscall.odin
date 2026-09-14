@@ -70,6 +70,7 @@ import "base:intrinsics"
 
 import "kernel:arch"
 import "kernel:env"
+import "kernel:fddev"
 import "kernel:mem"
 import "kernel:pipe"
 import "kernel:sched"
@@ -204,6 +205,10 @@ syscall_init :: proc(ns: ^vfs.Namespace) -> bool {
 	// This package owns descriptor tables, so it is the one that can say what
 	// a number in a Twrite to `/srv` means. See `resolve_fd_server`.
 	srv.set_fd_resolver(resolve_fd_chan)
+	// `#d` names the calling process's descriptors as files, and asks the same
+	// question `/srv` does -- which connection is number n -- so it takes the
+	// same resolver. `docs/FLEET.md` section 7.
+	fddev.set_fd_resolver(resolve_fd_chan)
 	// And it owns environment groups, so it is the one that can say whose
 	// directory a message to `/env` is about.
 	env.set_group_resolver(resolve_env_group)

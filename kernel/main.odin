@@ -22,6 +22,7 @@ import "base:runtime"
 import "kernel:arch"
 import "kernel:boot/limine"
 import "kernel:devfs"
+import "kernel:fddev"
 import "kernel:tree"
 import "kernel:env"
 import "kernel:drivers/console"
@@ -359,6 +360,11 @@ kmain :: proc "c" () {
 	if init_srv() {
 		verify_srv()
 	}
+	// The descriptor device, `#d` at `/fd`: a process's own open files as
+	// files, which `cpu` exports so a remote command's three are the
+	// terminal's. Per process, so every namespace carries it. See `docs/FLEET.md`
+	// section 7.
+	init_fddev()
 	// The environment device holds nothing until a process writes
 	// it; the user suite is what exercises it, from ring 3. The
 	// process device is exercised the same way, by ps, kill and ns.
@@ -1771,6 +1777,22 @@ init_srv :: proc() -> bool {
 	libodin.put_uint(&sink, u64(srv.MAX_SERVICES))
 	libodin.put_str(&sink, " slots")
 	emit(&klog, .Ok, &sink)
+	return true
+}
+
+/*
+init_fddev brings up `#d` and binds it at `/fd`: a process's own descriptors as
+files. Synchronous like `#s`, and for the same reason -- an open reads the
+descriptor out of the calling process's own table, which only the caller's own
+thread can name. `cpu` exports `/fd` so a remote command's three descriptors are
+the terminal's. `docs/FLEET.md` section 7.
+*/
+init_fddev :: proc() -> bool {
+	if err := fddev.init(vfs.boot_namespace); err != vfs.OK {
+		log_errno(.Fault, "fddev: #d would not come up -- ", err)
+		return false
+	}
+	log_line(&klog, .Ok, "fddev #d bound at /fd, a process's descriptors as files")
 	return true
 }
 

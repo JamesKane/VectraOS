@@ -43,6 +43,7 @@ start :: proc "c" (block: ^abi.Args) {
 
 	host := ""
 	cmd := ""
+	fds := false
 	i := 0
 	for i < len(args) {
 		switch args[i] {
@@ -50,20 +51,26 @@ start :: proc "c" (block: ^abi.Args) {
 			if i + 1 < len(args) {host = args[i + 1];i += 2} else {i += 1}
 		case "-c":
 			if i + 1 < len(args) {cmd = args[i + 1];i += 2} else {i += 1}
+		case "-f":
+			// Connect the far command to this terminal's own three descriptors
+			// (its `/fd`), not its console -- so a pipe can have a remote stage.
+			// `rx` runs `cpu` this way. docs/FLEET.md section 7.
+			fds = true
+			i += 1
 		case:
 			i += 1
 		}
 	}
 	if host == "" {
-		say("usage: cpu -h host [-c command]\n")
+		say("usage: cpu -h host [-f] [-c command]\n")
 		libuser.exits("usage")
 	}
-	client(host, cmd)
+	client(host, cmd, fds)
 }
 
 // -- The client, at the terminal -------------------------------------------------
 
-client :: proc(host: string, cmd: string) {
+client :: proc(host: string, cmd: string, fds: bool) {
 	spec: [96]u8
 	fd, ok := libnet.dial(libuser.cat_into(spec[:], "tcp!", host, "!", SERVICE))
 	if !ok {
@@ -89,9 +96,13 @@ client :: proc(host: string, cmd: string) {
 		libuser.exits("auth")
 	}
 	// A command to run, left where the far shell reads it over the mount: the
-	// terminal's own environment, which the export carries.
+	// terminal's own environment, which the export carries. `cpufd` there tells
+	// the far side to use this terminal's descriptors rather than its console.
 	if cmd != "" {
 		put_env("cpucmd", cmd)
+	}
+	if fds {
+		put_env("cpufd", "1")
 	}
 	// Serve this terminal's namespace back over the sealed stream. `exportfs`
 	// runs until the far shell exits and the stream closes, which is when `cpu`
@@ -146,17 +157,31 @@ server :: proc() {
 	if libuser.bind("/mnt/term/dev", "/dev", abi.ORDER_BEFORE) < 0 {
 		libuser.exits("cpu: cannot bind the terminal's /dev")
 	}
-	// The command the client left, if any, read over the mount.
+	// The command the client left, if any, read over the mount, and whether it
+	// asked for its own three descriptors rather than the console.
 	cbuf: [1024]u8
 	cmd := slurp("/mnt/term/env/cpucmd", cbuf[:])
-	// The shell's three descriptors are the terminal's console, now `/dev/cons`.
-	cons := libuser.open("/dev/cons", abi.O_RDWR)
-	if cons >= 0 {
-		_ = libuser.dup(int(cons), 0)
-		_ = libuser.dup(int(cons), 1)
-		_ = libuser.dup(int(cons), 2)
-		if int(cons) > 2 {
-			_ = libuser.close(int(cons))
+	fbuf: [8]u8
+	want_fds := slurp("/mnt/term/env/cpufd", fbuf[:]) != ""
+	if want_fds {
+		// `rx`: the shell's three are the terminal's own descriptors, reached
+		// through its exported `/fd`, so a pipeline can have a remote stage.
+		r := libuser.open("/mnt/term/fd/0", abi.O_RDONLY)
+		w := libuser.open("/mnt/term/fd/1", abi.O_WRONLY)
+		e := libuser.open("/mnt/term/fd/2", abi.O_WRONLY)
+		if r >= 0 {_ = libuser.dup(int(r), 0)}
+		if w >= 0 {_ = libuser.dup(int(w), 1)}
+		if e >= 0 {_ = libuser.dup(int(e), 2)}
+	} else {
+		// A shell on the terminal: its three are the terminal's console.
+		cons := libuser.open("/dev/cons", abi.O_RDWR)
+		if cons >= 0 {
+			_ = libuser.dup(int(cons), 0)
+			_ = libuser.dup(int(cons), 1)
+			_ = libuser.dup(int(cons), 2)
+			if int(cons) > 2 {
+				_ = libuser.close(int(cons))
+			}
 		}
 	}
 	if len(cmd) > 0 {

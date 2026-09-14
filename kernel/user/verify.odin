@@ -641,6 +641,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_nstest(&r)
 	verify_roles(&r)
 	verify_root(&r)
+	verify_fdtest(&r)
 	verify_tools(&r)
 	verify_dbg(&r)
 
@@ -10419,6 +10420,27 @@ verify_root :: proc(r: ^Result) {
 		"a shell reads the $root the kernel seeded from the command line",
 		"local",
 		"and it is what limine.conf told this machine: the disk it booted",
+	)
+}
+
+/*
+verify_fdtest proves `#d` names a process's descriptors as files, `docs/FLEET.md`
+section 7: `/fd/<n>` reads and writes wherever descriptor `n` points. `/bin/fdtest`
+writes a token into one end of a pipe and reads it back through `/fd/<other end>`;
+the word is `ok` or the first check that failed. It is what `cpu -f` and `rx`
+rest on -- a descriptor reached by name, so a remote command's three may be the
+terminal's.
+*/
+verify_fdtest :: proc(r: ^Result) {
+	names := [?]string{"fdtest"}
+	script_says(
+		r,
+		"/bin/fdtest",
+		names[:],
+		PATIENCE * 10,
+		"a program names a descriptor through /fd and reads it",
+		"ok",
+		"and #d reaches the pipe the descriptor points at -- what cpu -f exports",
 	)
 }
 
