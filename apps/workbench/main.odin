@@ -38,6 +38,7 @@ import "base:runtime"
 import "vsys:abi"
 import "vsys:libdraw"
 import "vsys:libmui"
+import "vsys:libndb"
 import "vsys:libthread"
 import "vsys:libuser"
 
@@ -88,6 +89,91 @@ MENU_WINDOW := [?]string{"New Drawer", "Open Parent", "Close", "Update", "Select
 MENU_ICONS := [?]string{"Open", "Copy", "Rename...", "Information...", "Delete..."}
 menu_items: [MAX_TOOLS]string
 
+// The Workbench menu grows a `Shell on <host>` for every machine `ndb` marks
+// `cpu=` -- picking one opens a `cpu` shell on it in a window. `docs/FLEET.md`
+// section 7. The names and the labels live here for the life of the desktop,
+// because the menu holds slices of them.
+WB_SHELL_MAX :: 6
+cpu_hosts: [WB_SHELL_MAX]string
+cpu_host_n: int
+cpu_host_buf: [192]u8
+shell_label_buf: [256]u8
+wb_menu: [len(MENU_WORKBENCH) + WB_SHELL_MAX]string
+wb_menu_n: int
+
+// read_cpu_hosts scans the local database once for the machines a `cpu` shell
+// can run on -- those marked `cpu=` -- and builds the Workbench menu from the
+// base items and a `Shell on <host>` for each, this machine itself left off.
+read_cpu_hosts :: proc "contextless" () {
+	context = wb_ctx
+	// This machine's own name, so it does not offer a shell on itself.
+	selfbuf: [64]u8
+	self := ""
+	if fd := libuser.open("/net/sysname", abi.O_RDONLY); fd >= 0 {
+		n := libuser.read(int(fd), selfbuf[:])
+		_ = libuser.close(int(fd))
+		if n > 0 {
+			self = trim_line(string(selfbuf[:n]))
+		}
+	}
+	data, ok := libuser.read_file("/lib/ndb/local", context.allocator)
+	if ok {
+		defer delete(data)
+		text := string(data)
+		at := 0
+		hb := 0
+		for cpu_host_n < WB_SHELL_MAX {
+			rec, next, more := libndb.record_at(text, at)
+			if !more {
+				break
+			}
+			at = next
+			name, has_sys := libndb.attr_of(rec, "sys")
+			if !has_sys {
+				continue
+			}
+			if _, has_cpu := libndb.attr_of(rec, "cpu"); !has_cpu {
+				continue
+			}
+			if name == self || hb + len(name) > len(cpu_host_buf) {
+				continue
+			}
+			m := copy(cpu_host_buf[hb:], name)
+			cpu_hosts[cpu_host_n] = string(cpu_host_buf[hb:hb + m])
+			hb += m
+			cpu_host_n += 1
+		}
+	}
+	build_wb_menu()
+}
+
+// build_wb_menu lays the base items down, then a `Shell on <host>` per machine.
+build_wb_menu :: proc "contextless" () {
+	n := 0
+	for it in MENU_WORKBENCH {
+		wb_menu[n] = it
+		n += 1
+	}
+	lb := 0
+	for i in 0 ..< cpu_host_n {
+		start := lb
+		lb += copy(shell_label_buf[lb:], "Shell on ")
+		lb += copy(shell_label_buf[lb:], cpu_hosts[i])
+		wb_menu[n] = string(shell_label_buf[start:lb])
+		n += 1
+	}
+	wb_menu_n = n
+}
+
+// trim_line drops a trailing newline or carriage return from a read value.
+trim_line :: proc "contextless" (s: string) -> string {
+	end := len(s)
+	for end > 0 && (s[end - 1] == '\n' || s[end - 1] == '\r') {
+		end -= 1
+	}
+	return s[:end]
+}
+
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	_ = block
@@ -119,6 +205,9 @@ wb_main :: proc "contextless" (arg: rawptr) {
 	// The look, from /lib/theme and $home/lib/theme, before a window opens so
 	// each takes it. `docs/WORKBENCH.md` section 5.
 	theme_load()
+
+	// The machines a `cpu` shell can run on, from `ndb`, for the menu below.
+	read_cpu_hosts()
 
 	if !open_bar() {
 		libuser.eprint("workbench: no bar\n")
@@ -213,7 +302,7 @@ open_menu :: proc "contextless" (which: int, x: int, y: int) {
 	items: []string
 	switch which {
 	case 0:
-		items = MENU_WORKBENCH[:]
+		items = wb_menu_n > 0 ? wb_menu[:wb_menu_n] : MENU_WORKBENCH[:]
 	case 1:
 		items = MENU_WINDOW[:]
 	case 2:
@@ -256,6 +345,14 @@ menu_chosen :: proc "contextless" (m: ^libmui.Menu, item: int) {
 			server_ctl("reload")
 		case 7:
 			libthread.threadexitsall("")
+		case:
+			// A `Shell on <host>` past the base items: open a `cpu` shell on
+			// that machine in a window, its three descriptors the window's own.
+			h := item - len(MENU_WORKBENCH)
+			if h >= 0 && h < cpu_host_n {
+				cmd: [64]u8
+				spawn_window(libuser.cat_into(cmd[:], "cpu -h ", cpu_hosts[h], " -f"))
+			}
 		}
 	case 1:
 		drawer_window_menu(item)
