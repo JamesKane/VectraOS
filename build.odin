@@ -140,6 +140,7 @@ user_programs := [?]User_Program {
 	{name = "listen", path = "cmd/listen"},
 	{name = "srv", path = "cmd/srv"},
 	{name = "import", path = "cmd/import"},
+	{name = "cpu", path = "cmd/cpu"},
 	{name = "cryptotest", path = "tests/crypto"},
 	{name = "factotum", path = "servers/factotum"},
 	{name = "authtest", path = "tests/auth"},
@@ -1425,6 +1426,7 @@ stage_vectra :: proc(arch: string, host: string) {
 	ensure_dir(fmt.tprintf("%s/lib/service", root))
 	copy_file("lib/service/tcp564", fmt.tprintf("%s/lib/service/tcp564", root))
 	copy_file("lib/service/tcp565", fmt.tprintf("%s/lib/service/tcp565", root))
+	copy_file("lib/service/tcp17010", fmt.tprintf("%s/lib/service/tcp17010", root))
 	// /adm: the users and their public keys, one file for the fleet, and
 	// this machine's own host key, the private half only it carries.
 	ensure_dir(fmt.tprintf("%s/adm", root))

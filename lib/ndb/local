@@ -36,5 +36,6 @@ tcp=echo port=9
 tcp=vtest port=1717
 tcp=9fs port=564
 tcp=9fsnone port=565
+tcp=rcpu port=17010
 tcp=discard port=9
 udp=echo port=7

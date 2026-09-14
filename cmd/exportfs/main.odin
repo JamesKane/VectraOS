@@ -60,6 +60,7 @@ start :: proc "c" (block: ^abi.Args) {
 	#force_no_inline runtime._startup_runtime()
 	args := libuser.args(block)
 	auth := false
+	given_fd := -1
 	for i := 1; i < len(args); i += 1 {
 		if args[i] == "-r" && i + 1 < len(args) {
 			i += 1
@@ -67,9 +68,22 @@ start :: proc "c" (block: ^abi.Args) {
 			root = string(root_buf[:n])
 		} else if args[i] == "-a" {
 			auth = true
+		} else if args[i] == "-f" && i + 1 < len(args) {
+			// Serve an already-open, already-sealed descriptor, with no
+			// handshake of our own. `cmd/cpu` dials and authenticates, then
+			// hands the sealed stream here to serve its namespace back to the
+			// server it reached -- the client half of `cpu`, `docs/FLEET.md`
+			// section 7.
+			i += 1
+			if v, vok := libuser.atoi(args[i]); vok {
+				given_fd = int(v)
+			}
 		}
 	}
-	if auth {
+	if given_fd >= 0 {
+		serve_fd = given_fd
+		proven_len = copy(proven[:], libauth.NONE)
+	} else if auth {
 		// The handshake first, on the raw stream, as this host. A client
 		// whose key the keys file does not list is `none`, and the tree is
 		// not for `none`: it is refused before 9P begins.
@@ -91,7 +105,13 @@ start :: proc "c" (block: ^abi.Args) {
 	} else {
 		proven_len = copy(proven[:], libauth.NONE)
 	}
-	become(string(proven[:proven_len]))
+	// A `-f` server keeps the user it already is: it is `cmd/cpu`'s client half,
+	// serving its own namespace as the terminal's user, so that the far shell --
+	// which becomes that user itself -- reads the terminal's files as the person
+	// who typed `cpu`. Only a fresh handshake (`-a`) or a clear stream renames.
+	if given_fd < 0 {
+		become(string(proven[:proven_len]))
+	}
 	for i in 0 ..< MAX_FIDS {
 		fids[i].fd = -1
 	}

@@ -1,0 +1,6 @@
+# The CPU service: a shell on this machine for whoever dialled and proved who
+# they are. `listen` runs this with the stream as descriptors 0 and 1, and
+# `cpu -R` is the far half of `cpu` -- it answers the handshake, becomes the
+# proven client, mounts the terminal's namespace it serves back, binds the
+# terminal's /dev, and execs the shell. docs/FLEET.md section 7.
+exec cpu -R
