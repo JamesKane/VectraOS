@@ -1,5 +1,7 @@
-// kill -- end processes by pid, through /proc/n/ctl. `-n text` posts a note
-// instead, which a process may handle.
+// kill -- end processes by pid, through a /proc/n/ctl. `-n text` posts a note
+// instead, which a process may handle. `-d dir` names the /proc the pids live
+// in, so `kill -d /n/big/proc 12` ends a process on another machine, imported
+// under /n. `docs/FLEET.md` section 8.
 package kill
 
 import "vsys:abi"
@@ -10,18 +12,26 @@ start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)[1:]
 	note := ""
-	if len(args) > 1 && args[0] == "-n" {
-		note = args[1]
-		args = args[2:]
+	dir := "/proc"
+	for len(args) > 1 {
+		if args[0] == "-n" {
+			note = args[1]
+			args = args[2:]
+		} else if args[0] == "-d" {
+			dir = args[1]
+			args = args[2:]
+		} else {
+			break
+		}
 	}
 	if len(args) == 0 {
-		libuser.eprint("usage: kill [-n note] pid ...\n")
+		libuser.eprint("usage: kill [-n note] [-d dir] pid ...\n")
 		libuser.exits("usage")
 	}
 	status := ""
 	path: [64]u8
 	for pid in args {
-		name := libuser.cat_into(path[:], "/proc/", pid, len(note) > 0 ? "/note" : "/ctl")
+		name := libuser.cat_into(path[:], dir, "/", pid, len(note) > 0 ? "/note" : "/ctl")
 		fd := libuser.open(name, abi.O_WRONLY)
 		if fd < 0 {
 			libuser.eprint("kill: ", pid, ": ", libuser.errstr(fd), "\n")

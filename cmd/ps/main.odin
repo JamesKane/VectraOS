@@ -1,5 +1,7 @@
-// ps -- list the processes, from /proc: pid, state and name, one per line;
-// -a shows the arguments each was started with instead of the name.
+// ps -- list the processes, from a `/proc`: pid, state and name, one per line;
+// -a shows the arguments each was started with instead of the name. A directory
+// argument names the `/proc` to read, so `ps /n/big/proc` is another machine's,
+// imported under `/n`. `docs/FLEET.md` section 8.
 package ps
 
 import "vsys:abi"
@@ -9,10 +11,18 @@ import "vsys:libuser"
 start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)[1:]
-	show_args := len(args) > 0 && args[0] == "-a"
-	fd := libuser.open("/proc", abi.O_RDONLY)
+	show_args := false
+	dir := "/proc"
+	for a in args {
+		if a == "-a" {
+			show_args = true
+		} else {
+			dir = a
+		}
+	}
+	fd := libuser.open(dir, abi.O_RDONLY)
 	if fd < 0 {
-		libuser.eprint("ps: can't open /proc: ", libuser.errstr(fd), "\n")
+		libuser.eprint("ps: can't open ", dir, ": ", libuser.errstr(fd), "\n")
 		libuser.exits("can't open")
 	}
 	out: libuser.Bio
@@ -27,7 +37,7 @@ start :: proc "c" (block: ^abi.Args) {
 		for i in 0 ..< int(n) {
 			e := &entries[i]
 			pid := string(e.name[:e.name_len])
-			data, ok := libuser.read_file(libuser.cat_into(path[:], "/proc/", pid, "/status"), context.allocator)
+			data, ok := libuser.read_file(libuser.cat_into(path[:], dir, "/", pid, "/status"), context.allocator)
 			if !ok {
 				continue
 			}
@@ -43,7 +53,7 @@ start :: proc "c" (block: ^abi.Args) {
 				// last element is what a person calls it.
 				libuser.bio_puts(&out, libuser.basename(fields[0]))
 				if show_args {
-					if argv, aok := libuser.read_file(libuser.cat_into(path[:], "/proc/", pid, "/args"), context.allocator); aok {
+					if argv, aok := libuser.read_file(libuser.cat_into(path[:], dir, "/", pid, "/args"), context.allocator); aok {
 						libuser.bio_putc(&out, ' ')
 						libuser.bio_write(&out, argv[:max(0, len(argv) - 1)])
 						delete(argv)
