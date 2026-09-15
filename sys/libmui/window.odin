@@ -112,6 +112,14 @@ Window :: struct {
 	path:      [64]u8,
 	keys:      [64]u8,
 	line:      [64]u8,
+
+	// Where the draw server's files sit. `/mnt` for a local program, which
+	// mounts `/srv/draw` there; `$wsys` for a program a `cpu` runs, where the
+	// terminal's window system is a tree the export already carries and no
+	// mount reaches. `window_open` sets it, and every file below opens under it.
+	// See `docs/FLEET.md` section 7.
+	base:      string,
+	base_buf:  [64]u8,
 }
 
 // The kinds a window is opened as, the server's `wctl` words. A normal
@@ -166,16 +174,26 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	// Not fatal: a face falls back to the baked ASCII table.
 	font_load()
 
-	// The server at /mnt, mounted once. A program of several windows opens
-	// the next through the mount the first made. A mount per window would
-	// hold a fid on the server for each.
-	nfd := libuser.open("/mnt/new", abi.O_RDONLY)
-	if nfd < 0 {
-		if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
-			return refused("no draw server at /srv/draw")
+	// The draw server's files. A program a `cpu` runs finds its terminal's
+	// window system already in its namespace, named by `$wsys`, and opens the
+	// files there -- the verbs cross the wire to the terminal's screen. A local
+	// program has `$wsys` unset and mounts `/srv/draw` at `/mnt` once, the way it
+	// always did. Either way the files below open under `win.base`. docs/FLEET.md
+	// section 7.
+	if wsys := libuser.getenv("wsys", win.base_buf[:]); wsys != "" {
+		win.base = wsys
+	} else {
+		win.base = "/mnt"
+		probe := libuser.open("/mnt/new", abi.O_RDONLY)
+		if probe < 0 {
+			if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
+				return refused("no draw server at /srv/draw")
+			}
+		} else {
+			_ = libuser.close(int(probe))
 		}
-		nfd = libuser.open("/mnt/new", abi.O_RDONLY)
 	}
+	nfd := libuser.open(libuser.cat_into(win.path[:], win.base, "/new"), abi.O_RDONLY)
 	if nfd < 0 {
 		return refused("the server has no window to give")
 	}
@@ -188,13 +206,13 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	}
 	win.id = mine
 
-	fd := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "data"), abi.O_WRONLY)
+	fd := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "data"), abi.O_WRONLY)
 	if fd < 0 {
 		return refused("the window's data file will not open")
 	}
 	win.data_fd = int(fd)
 
-	ctl := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "ctl"), abi.O_RDWR)
+	ctl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "ctl"), abi.O_RDWR)
 	if ctl < 0 {
 		return refused("the window's ctl will not open")
 	}
@@ -213,7 +231,7 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	// server takes before the first paint. The geometry is read again
 	// after, because a kind or a size changes it.
 	if win.kind != .Normal {
-		wctl := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "wctl"), abi.O_WRONLY)
+		wctl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "wctl"), abi.O_WRONLY)
 		if wctl >= 0 {
 			word := "backdrop"
 			#partial switch win.kind {
@@ -253,7 +271,7 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	// Where the client area is on the screen, off `wctl`, so a popup opened
 	// at a point in this window lands under the pointer.
 	win.sx, win.sy = 0, 0
-	if wfd := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "wctl"), abi.O_RDONLY); wfd >= 0 {
+	if wfd := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "wctl"), abi.O_RDONLY); wfd >= 0 {
 		wn := libuser.read(int(wfd), win.geo[:])
 		_ = libuser.close(int(wfd))
 		at := 0
@@ -272,11 +290,11 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	// program it starts inherits the window as its console. The files open
 	// by their path either way, which is how a program holds several.
 	if win.bind_dev {
-		if libuser.bind(libdraw.win_dir(win.path[:], "/mnt", mine), "/dev", abi.ORDER_BEFORE) < 0 {
+		if libuser.bind(libdraw.win_dir(win.path[:], win.base, mine), "/dev", abi.ORDER_BEFORE) < 0 {
 			return refused("the window's directory will not bind over /dev")
 		}
 	}
-	cons := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "cons"), abi.O_RDONLY)
+	cons := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "cons"), abi.O_RDONLY)
 	if cons < 0 {
 		return refused("the window's cons will not open")
 	}
@@ -286,13 +304,13 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	// here, the server would cook the keys into lines, and a hotkey would
 	// wait for a Return.
 	win.consctl_fd = -1
-	ccl := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "consctl"), abi.O_WRONLY)
+	ccl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "consctl"), abi.O_WRONLY)
 	if ccl >= 0 {
 		raw := "rawon"
 		_ = libuser.write(int(ccl), transmute([]u8)raw)
 		win.consctl_fd = int(ccl)
 	}
-	mouse := libuser.open(libdraw.win_path(win.path[:], "/mnt", mine, "mouse"), abi.O_RDONLY)
+	mouse := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "mouse"), abi.O_RDONLY)
 	if mouse >= 0 {
 		win.mouse_fd = int(mouse)
 	} else {
@@ -536,7 +554,7 @@ so the window's own threads would stay parked on a window that is gone,
 and a record reused under them is a record two windows share.
 */
 window_end :: proc "contextless" (win: ^Window) {
-	wctl := libuser.open(libdraw.win_path(win.path[:], "/mnt", win.id, "wctl"), abi.O_WRONLY)
+	wctl := libuser.open(libdraw.win_path(win.path[:], win.base, win.id, "wctl"), abi.O_WRONLY)
 	if wctl < 0 {
 		return
 	}

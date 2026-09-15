@@ -210,6 +210,14 @@ server :: proc() {
 	if libuser.bind("/mnt/term/dev", "/dev", abi.ORDER_BEFORE) < 0 {
 		libuser.exits("cpu: cannot bind the terminal's /dev")
 	}
+	// Where the terminal's window system is, for a graphical program run here.
+	// The terminal's `/mnt` -- its draw server among what it holds -- is a tree
+	// the export already carries, at `/mnt/term/mnt`. `sys/libmui` and `sys/libapp`
+	// read `$wsys` and open a window's files there rather than mounting a
+	// `/srv/draw` this machine has not got, so the verbs cross to the terminal's
+	// screen. A terminal with no window system simply has no `new` to open.
+	// docs/FLEET.md section 7.
+	put_env("wsys", "/mnt/term/mnt")
 	// If the terminal opened an interrupt channel, a forwarder child reads it
 	// through the terminal's exported `/fd` and re-posts each `interrupt` to this
 	// session's note group -- which the shell below joins, so a `^C` typed at the
