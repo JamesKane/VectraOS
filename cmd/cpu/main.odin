@@ -22,6 +22,7 @@ import "vsys:abi"
 import "vsys:libauth"
 import "vsys:libnet"
 import "vsys:libuser"
+import "vsys:vectra9"
 
 // The service name a dial string names, resolved to a port through `ndb`.
 SERVICE :: "rcpu"
@@ -104,14 +105,66 @@ client :: proc(host: string, cmd: string, fds: bool) {
 	if fds {
 		put_env("cpufd", "1")
 	}
-	// Serve this terminal's namespace back over the sealed stream. `exportfs`
-	// runs until the far shell exits and the stream closes, which is when `cpu`
-	// is done; so become it rather than wait on it.
+	// The interrupt channel: a pipe whose read end the far side reads through
+	// this terminal's exported `/fd`, and whose write end a `^C` fills. A ^C on
+	// the terminal posts `interrupt` to the group that reads its console -- this
+	// process, which serves the far shell's reads of it -- and nothing on the
+	// terminal can post to a process on the far machine. So the note becomes a
+	// line the far side reads and re-posts to its own shell. docs/FLEET.md §7.
+	packed := libuser.pipe()
+	if packed >= 0 {
+		nr, nw := abi.pipe_ends(packed)
+		note_wfd = nw
+		nnum: [16]u8
+		put_env("cpunote", libuser.itoa(nnum[:], i64(nr)))
+		_ = libuser.notify(uintptr(rawptr(on_interrupt)))
+	}
+	// Serve this terminal's namespace back over the sealed stream. When a `^C`
+	// must cross, a child serves and this process stays to catch the note; else
+	// it becomes `exportfs` and there is nothing to wait on.
 	num: [16]u8
 	argv := []string{"exportfs", "-f", libuser.itoa(num[:], i64(sess.fd)), "-r", "/"}
+	if note_wfd >= 0 {
+		kid := libuser.rfork(abi.RFPROC | abi.RFFDG)
+		if kid == 0 {
+			// The server serves the pipe's READ end through /fd; only this
+			// parent writes it. Drop the child's write end, so the pipe ends --
+			// and the far forwarder stops -- when this process exits.
+			_ = libuser.close(note_wfd)
+			_ = libuser.exec("/bin/exportfs", argv)
+			say("cpu: cannot exec exportfs\n")
+			libuser.exits("exec")
+		}
+		// The parent: its note handler forwards each `^C` while it waits for the
+		// server child to end, which is when the session is over.
+		wbuf: [64]u8
+		for {
+			r := libuser.await(u64(kid), wbuf[:])
+			if r == -i64(vectra9.EAGAIN) || r == -i64(vectra9.EINTR) {
+				continue
+			}
+			break
+		}
+		libuser.exits("")
+	}
 	_ = libuser.exec("/bin/exportfs", argv)
 	say("cpu: cannot exec exportfs\n")
 	libuser.exits("exec")
+}
+
+// note_wfd is the write end of the interrupt pipe, filled by the note handler.
+note_wfd: int = -1
+
+// on_interrupt turns a `^C` note into a line on the interrupt pipe, which the
+// far side reads and re-posts to its shell. Any other note takes its default.
+on_interrupt :: proc "c" (ureg: rawptr, note: cstring) {
+	_ = ureg
+	if string(note) == "interrupt" && note_wfd >= 0 {
+		msg := "interrupt\n"
+		_ = libuser.write(note_wfd, transmute([]u8)msg)
+		libuser.noted(abi.NCONT)
+	}
+	libuser.noted(abi.NDFLT)
 }
 
 // -- The server, on the CPU machine ----------------------------------------------
@@ -157,6 +210,17 @@ server :: proc() {
 	if libuser.bind("/mnt/term/dev", "/dev", abi.ORDER_BEFORE) < 0 {
 		libuser.exits("cpu: cannot bind the terminal's /dev")
 	}
+	// If the terminal opened an interrupt channel, a forwarder child reads it
+	// through the terminal's exported `/fd` and re-posts each `interrupt` to this
+	// session's note group -- which the shell below joins, so a `^C` typed at the
+	// terminal interrupts the command running here. docs/FLEET.md section 7.
+	notebuf: [16]u8
+	note := slurp("/mnt/term/env/cpunote", notebuf[:])
+	if note != "" {
+		if libuser.rfork(abi.RFPROC | abi.RFFDG) == 0 {
+			forward_interrupts(note)
+		}
+	}
 	// The command the client left, if any, read over the mount, and whether it
 	// asked for its own three descriptors rather than the console.
 	cbuf: [1024]u8
@@ -192,6 +256,28 @@ server :: proc() {
 		_ = libuser.exec("/bin/rc", argv)
 	}
 	libuser.exits("cpu: cannot exec rc")
+}
+
+// forward_interrupts is the server's interrupt forwarder: it reads the
+// terminal's note pipe through `/mnt/term/fd/<n>` and re-posts each line as an
+// `interrupt` to its own note group -- which the shell shares -- so a `^C` at
+// the terminal reaches the command here. It ends when the pipe does, which is
+// when the terminal's `cpu` exits. It never returns; the child it runs in exits.
+forward_interrupts :: proc "contextless" (note: string) -> ! {
+	path: [32]u8
+	fd := libuser.open(libuser.cat_into(path[:], "/mnt/term/fd/", note), abi.O_RDONLY)
+	if fd < 0 {
+		libuser.exits("")
+	}
+	buf: [64]u8
+	for {
+		n := libuser.read(int(fd), buf[:])
+		if n <= 0 {
+			break
+		}
+		_ = libuser.notepg(0, "interrupt")
+	}
+	libuser.exits("")
 }
 
 // -- Small shared helpers --------------------------------------------------------

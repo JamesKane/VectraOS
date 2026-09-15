@@ -134,10 +134,26 @@ start :: proc "c" (block: ^abi.Args) {
 	if given_fd < 0 {
 		become(string(proven[:proven_len]))
 	}
+	// A ^C on the terminal a `cpu` shell runs from posts `interrupt` to the
+	// group that reads its console -- which is this exportfs, serving the far
+	// shell's reads of it. The interrupt is meant for the far shell, not for the
+	// server carrying it: `cmd/cpu` forwards it over the wire and this ignores
+	// it. Any other note takes its default, so a `kill` still ends the server.
+	_ = libuser.notify(uintptr(rawptr(ignore_interrupt)))
 	for i in 0 ..< MAX_FIDS {
 		fids[i].fd = -1
 	}
 	libthread.main(threadmain, nil)
+}
+
+// ignore_interrupt lets an `interrupt` note pass without ending the server, and
+// gives every other note its default.
+ignore_interrupt :: proc "c" (ureg: rawptr, note: cstring) {
+	_ = ureg
+	if string(note) == "interrupt" {
+		libuser.noted(abi.NCONT)
+	}
+	libuser.noted(abi.NDFLT)
 }
 
 threadmain :: proc "contextless" (arg: rawptr) {
