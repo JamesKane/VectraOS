@@ -201,7 +201,7 @@ A short read is not an error and not the end of the file. Zero bytes is the end
 of the file.
 */
 chan_read :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
-	return send_read(c, offset, buf, 0, false)
+	return send_read(c, offset, buf, 0, .Plain)
 }
 
 /*
@@ -218,14 +218,37 @@ read with a number attached. `chan_interruptible` reports which a caller has,
 before it waits rather than after.
 */
 chan_read_for :: proc(c: ^Chan, offset: u64, buf: []u8, ticks: u64) -> (n: int, err: Errno) {
-	return send_read(c, offset, buf, ticks, true)
+	return send_read(c, offset, buf, ticks, .Timed)
 }
 
-// send_read is the one Tread both reads send. `timed` picks `rpc_for` over
-// `rpc`, because a deadline of zero on a worker-backed server is a flush at
-// once and not the plain call.
+/*
+chan_read_noted is a read that parks until the reply or until a note reaches
+this thread, whichever comes first.
+
+Returns EINTR when a note ended the wait. The request was flushed, so the tag is
+free and nothing writes into `buf` afterwards -- the same promise `chan_read_for`
+gives on a deadline, kept for a note instead. It is what an interruptible read
+of a device or a remote file waits on: one park, woken by the answer or by a
+`^C`, and never a poll. `chan_interruptible` reports which a caller has.
+*/
+chan_read_noted :: proc(c: ^Chan, offset: u64, buf: []u8) -> (n: int, err: Errno) {
+	return send_read(c, offset, buf, 0, .Noted)
+}
+
+// Read_Wait picks how send_read waits for the answer: the plain indefinite
+// park, one with a deadline, or one a note ends. A deadline of zero on a
+// worker-backed server is a flush at once and not the plain call, which is why
+// this is a mode rather than a ticks-of-zero convention.
 @(private = "file")
-send_read :: proc(c: ^Chan, offset: u64, buf: []u8, ticks: u64, timed: bool) -> (n: int, err: Errno) {
+Read_Wait :: enum {
+	Plain,
+	Timed,
+	Noted,
+}
+
+// send_read is the one Tread every read sends. `mode` picks the wait.
+@(private = "file")
+send_read :: proc(c: ^Chan, offset: u64, buf: []u8, ticks: u64, mode: Read_Wait) -> (n: int, err: Errno) {
 	if c == nil {
 		return 0, vectra9.EBADF
 	}
@@ -236,7 +259,15 @@ send_read :: proc(c: ^Chan, offset: u64, buf: []u8, ticks: u64, timed: bool) -> 
 	count := u32(min(len(buf), max_payload(c.server)))
 	request := vectra9.Msg(vectra9.Tread{fid = c.fid, offset = offset, count = count})
 	reply: vectra9.Msg
-	e := timed ? rpc_for(c.server, &request, &reply, ticks, buf) : rpc(c.server, &request, &reply, buf)
+	e: Errno
+	switch mode {
+	case .Timed:
+		e = rpc_for(c.server, &request, &reply, ticks, buf)
+	case .Noted:
+		e = rpc_noted(c.server, &request, &reply, buf)
+	case .Plain:
+		e = rpc(c.server, &request, &reply, buf)
+	}
 	if e != OK {
 		return 0, e
 	}

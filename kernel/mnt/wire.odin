@@ -232,7 +232,12 @@ reader_gone :: proc "contextless" (arg: rawptr) -> bool {
 }
 
 wire_transport :: proc "contextless" (w: ^Wire) -> vectra9.Transport {
-	return vectra9.Transport{data = w, call = wire_call_t, call_for = wire_call_for_t}
+	return vectra9.Transport {
+		data = w,
+		call = wire_call_t,
+		call_for = wire_call_for_t,
+		call_noted = wire_call_noted_t,
+	}
 }
 
 @(private = "file")
@@ -262,6 +267,20 @@ wire_call_for_t :: proc "contextless" (
 	_ = s
 	_ = tag
 	return wire_call_for(cast(^Wire)data, request, reply, ticks, buf)
+}
+
+@(private = "file")
+wire_call_noted_t :: proc "contextless" (
+	data: rawptr,
+	s: ^vectra9.Session,
+	tag: vectra9.Tag,
+	request: ^vectra9.Msg,
+	reply: ^vectra9.Msg,
+	buf: []u8,
+) -> vectra9.Error {
+	_ = s
+	_ = tag
+	return wire_call_noted(cast(^Wire)data, request, reply, buf)
 }
 
 // -- The pool, again ----------------------------------------------------------
@@ -400,6 +419,43 @@ wire_call :: proc "contextless" (
 
 	sync.sleep(&r.settled, is_done, r)
 	return wire_collect(w, r, reply, buf)
+}
+
+/*
+wire_call_noted is `wire_call` a note may cut short.
+
+The wait is `wire_call`'s -- indefinite, no deadline -- but a note delivered to
+the calling thread ends it early. It then flushes the request the way
+`wire_call_for` does on expiry, keeping a reply that won the race with the
+flush, and returns `.Interrupted`. This is the interruptible read's park: one
+sleep, woken by the reply or by a note, never by a clock. It is how a read of a
+remote file that blocks -- a `cpu` shell's console, or the note pipe a `^C`
+crosses -- is interrupted without the caller polling. Plan 9's `mountio` is the
+same shape: `sleep(rpcattn)`, and a note takes the `Eintr` path to `mntflushalloc`.
+*/
+wire_call_noted :: proc "contextless" (
+	w: ^Wire,
+	request: ^vectra9.Msg,
+	reply: ^vectra9.Msg,
+	buf: []u8 = nil,
+) -> vectra9.Error {
+	r, err := wire_submit(w, request)
+	if r == nil {
+		return err
+	}
+
+	if sync.sleep_noted(&r.settled, is_done, r) {
+		return wire_collect(w, r, reply, buf)
+	}
+
+	wire_flush(w, r)
+	// The reply may have won the race with the flush, landing before the Tflush
+	// reached the server. Keep it, the way `wire_call_for` does.
+	if intrinsics.volatile_load(&r.state) == .Done {
+		return wire_collect(w, r, reply, buf)
+	}
+	wire_give_back(w, r)
+	return .Interrupted
 }
 
 /*

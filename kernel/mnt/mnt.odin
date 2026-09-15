@@ -345,6 +345,14 @@ The session's own tag counter goes unused. See `alloc_tag`.
 this transport answers true to `vectra9.interruptible`, and a caller with a
 deadline gets one honoured rather than accepted and ignored.
 */
+/*
+A `Conn` fills in `call` and `call_for` but not `call_noted`. Its clients are
+local devices -- a console, a disk -- reached with no mount between. A note that
+must end a read of one of those is delivered by the deadline poll `call_for`
+already carries; parking a local read until a note, the way a read across a
+mount now does, changed how the console hands a cooked line to two readers at
+once and is left to the transport that needed it. See `wire_call_noted`.
+*/
 transport :: proc "contextless" (c: ^Conn) -> vectra9.Transport {
 	return vectra9.Transport{data = c, call = transport_call, call_for = transport_call_for}
 }

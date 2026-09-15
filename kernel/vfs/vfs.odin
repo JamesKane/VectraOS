@@ -366,6 +366,13 @@ server_interruptible :: proc "contextless" (sv: ^Server) -> bool {
 	return sv != nil && vectra9.interruptible(&sv.session)
 }
 
+// server_notable reports whether an interruptible read of this server should
+// park until a note (a mount) rather than poll for one (a local device). See
+// `vectra9.notable` and `chan_read_noted`.
+server_notable :: proc "contextless" (sv: ^Server) -> bool {
+	return sv != nil && vectra9.notable(&sv.session)
+}
+
 /*
 server_flushed reports whether a Tflush named this request's tag.
 
@@ -587,6 +594,29 @@ rpc_for :: proc "contextless" (
 		return e
 	}
 	return rpc_answer(vectra9.call_for(&sv.session, request, reply, ticks, buf), reply)
+}
+
+/*
+rpc_noted is the same request, parked until the reply or until a note reaches
+this thread.
+
+Returns EINTR when a note ended the wait first; the request was flushed, so the
+tag is free and nothing writes into `buf` afterwards. It is `rpc_for` reached by
+a note instead of a deadline -- one park rather than a poll -- and it is what an
+interruptible read waits on. On a server with nothing to interrupt it answers as
+`rpc` does; `server_interruptible` says which a caller has.
+*/
+@(private)
+rpc_noted :: proc "contextless" (
+	sv: ^Server,
+	request: ^vectra9.Msg,
+	reply: ^vectra9.Msg,
+	buf: []u8 = nil,
+) -> Errno {
+	if e := rpc_ready(sv); e != OK {
+		return e
+	}
+	return rpc_answer(vectra9.call_noted(&sv.session, request, reply, buf), reply)
 }
 
 /*

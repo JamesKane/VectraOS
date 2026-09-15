@@ -108,6 +108,26 @@ Transport :: struct {
 		buf: []u8,
 		ticks: u64,
 	) -> Error,
+
+	/*
+	`call_noted` waits for the reply the way `call` does -- indefinitely, no
+	deadline -- but a note delivered to the calling thread ends the wait early.
+	It returns `.Interrupted` then, having flushed the request first, so the tag
+	is free and nothing writes into `buf` afterwards. This is how a read that
+	parks for a keystroke or a remote `^C` is interrupted by a note without the
+	caller polling for one: a single park, woken by the reply or by the note.
+	Optional, and left nil by a transport whose handler runs on the caller's own
+	stack (there is no other thread to interrupt); `call_noted` below then falls
+	back to `call`, whose synchronous handler already checks the note itself.
+	*/
+	call_noted: proc "contextless" (
+		data: rawptr,
+		s: ^Session,
+		tag: Tag,
+		request: ^Msg,
+		reply: ^Msg,
+		buf: []u8,
+	) -> Error,
 }
 
 Session :: struct {
@@ -249,6 +269,35 @@ call_for :: proc "contextless" (
 // up. False means a deadline is accepted and ignored.
 interruptible :: proc "contextless" (s: ^Session) -> bool {
 	return s.transport.call_for != nil
+}
+
+// notable reports whether `call_noted` on this session parks until a note
+// rather than falling back to the plain wait. True is a transport across a
+// mount, where a read that blocks -- a remote console, or a ^C's note pipe --
+// should park once and be woken by the note. False is a local device, which
+// ends such a read by the deadline poll instead.
+notable :: proc "contextless" (s: ^Session) -> bool {
+	return s.transport.call_noted != nil
+}
+
+/*
+call_noted is `call` that a note may cut short.
+
+Returns `.Interrupted` when a note reached the calling thread before the reply
+did. The request was flushed, so the tag is free and nothing will write into
+`buf` afterwards -- the same guarantee `call_for` gives on a deadline, reached
+by a note instead of a clock. It is the interruptible read's park: one wait,
+woken by the reply or the note, and never a poll.
+
+A transport with nothing to interrupt has no `call_noted`, and this answers as
+`call` does. That is honest: a synchronous handler runs on the caller's own
+stack, where the note is the caller's to check on its own return.
+*/
+call_noted :: proc "contextless" (s: ^Session, request: ^Msg, reply: ^Msg, buf: []u8 = nil) -> Error {
+	if s.transport.call_noted == nil {
+		return call(s, request, reply, buf)
+	}
+	return s.transport.call_noted(s.transport.data, s, alloc_tag(s), request, reply, buf)
 }
 
 /*

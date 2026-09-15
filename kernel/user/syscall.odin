@@ -600,12 +600,25 @@ sys_read :: proc(fd: int, addr: uintptr, count: int, at: u64 = 0, use_cursor := 
 	buffer: [IO_CHUNK]u8 = ---
 	chunk := io_chunk(c)
 	interruptible := vfs.server_interruptible(c.server)
+	// A read across a mount parks until a note ends it: one wait, woken by the
+	// answer or by a `^C`, and no poll. A read of a local device polls instead,
+	// because parking it until a note changed how the console hands a cooked
+	// line to two readers at once. `vfs.server_notable` is the difference.
+	notable := interruptible && vfs.server_notable(c.server)
 	total := 0
 	for total < count {
 		n := min(count - total, chunk)
 		got: int
 		err: vfs.Errno
-		if interruptible {
+		if notable {
+			// One park, woken by the reply or by a note. Plan 9's `mountio`,
+			// where a note interrupts the `sleep` and sends the flush. The
+			// request is flushed first, so the tag is free and nothing writes
+			// into `buffer` afterwards. See `docs/FLEET.md`.
+			got, err = vfs.chan_read_noted(c, offset + u64(total), buffer[:n])
+		} else if interruptible {
+			// A local device: fetch a chunk with a deadline and check the note
+			// between tries, so a note lands on a parked reader promptly.
 			for {
 				got, err = vfs.chan_read_for(c, offset + u64(total), buffer[:n], NOTE_POLL)
 				if err != vectra9.EINTR {
@@ -637,9 +650,10 @@ sys_read :: proc(fd: int, addr: uintptr, count: int, at: u64 = 0, use_cursor := 
 	return i64(total)
 }
 
-// Ticks between note checks on a read that waits for a device. Short enough
-// that a note lands promptly, long enough that a parked console reader costs
-// a handful of flushes a second rather than a poll.
+// Ticks between note checks on a read of a local device that parks for input.
+// Short enough that a note lands promptly, long enough that a parked console
+// reader costs a handful of flushes a second rather than a poll. A read across
+// a mount does not use this: it parks on the note itself. See `sys_read`.
 @(private = "file")
 NOTE_POLL :: u64(25)
 
