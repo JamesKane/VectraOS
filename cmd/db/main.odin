@@ -3,7 +3,9 @@ db -- the debugger's line client, a page of commands over `/mnt/dbg`.
 
     db run path args...      start the program stopped at its entry, and
                              print the target's number
-    db attach pid            stop a running process and take it as a target
+    db attach pid            stop a running process and take it as a target;
+                             `attach /n/big/proc/12` takes one on another
+                             machine, its /proc imported under /n
     db N word...             write the words to the target's ctl, then print
                              its status: break, delete, cont, stop, step, next,
                              until
@@ -22,7 +24,7 @@ import "vsys:abi"
 import "vsys:libuser"
 
 usage :: proc "contextless" () -> ! {
-	libuser.eprint("usage: db run path args... | db attach pid | db N word... | db N print expr | db N file | db detach N\n")
+	libuser.eprint("usage: db run path args... | db attach pid|/n/host/proc/pid | db N word... | db N print expr | db N file | db detach N\n")
 	libuser.exits("usage")
 }
 

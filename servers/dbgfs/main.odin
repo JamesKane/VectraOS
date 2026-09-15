@@ -194,6 +194,15 @@ Target :: struct {
 	stopped:  bool,
 	busy:     bool, // a word is out with the target's proc
 	pid:      u64,
+
+	// The `/proc` the target lives in: `/proc` for one on this machine, or an
+	// imported `/n/big/proc` for one on another. Every file the engine opens for
+	// this target hangs under it, and the `.vxd` comes from the tree it names --
+	// so a debugger on the terminal attaches a process on a CPU server, the
+	// engine being files. `docs/FLEET.md` section 8.
+	dir:      string,
+	dir_buf:  [PATH_MAX]u8,
+
 	name:     [PATH_MAX]u8,
 	name_len: int,
 	group:    u64, // its note group, for `procs`
@@ -262,16 +271,16 @@ target_proc :: proc "contextless" (arg: rawptr) {
 	t := (^Target)(arg)
 	for {
 		a := (^Ask)(libthread.recvp(t.ask))
-		a.err = ctl_write(t.pid, a.word)
+		a.err = ctl_write(t.dir, t.pid, a.word)
 		libthread.sendp(stops, a)
 	}
 }
 
 // ctl_write writes one word to a process's ctl and answers the kernel's
 // errno, zero for success.
-ctl_write :: proc "contextless" (pid: u64, word: string) -> i64 {
-	path: [64]u8
-	fd := libuser.open(proc_file(path[:], pid, "ctl"), abi.O_WRONLY)
+ctl_write :: proc "contextless" (dir: string, pid: u64, word: string) -> i64 {
+	path: [PATH_MAX]u8
+	fd := libuser.open(proc_file(path[:], dir, pid, "ctl"), abi.O_WRONLY)
 	if fd < 0 {
 		return fd
 	}
@@ -283,13 +292,26 @@ ctl_write :: proc "contextless" (pid: u64, word: string) -> i64 {
 	return 0
 }
 
-proc_file :: proc "contextless" (buf: []u8, pid: u64, name: string) -> string {
+// proc_file names a file of process `pid` under `dir` -- `/proc` for a local
+// target, `/n/big/proc` for an imported one.
+proc_file :: proc "contextless" (buf: []u8, dir: string, pid: u64, name: string) -> string {
 	sink := libodin.sink_from(buf)
-	libodin.put_str(&sink, "/proc/")
+	libodin.put_str(&sink, dir)
+	libodin.put_str(&sink, "/")
 	libodin.put_uint(&sink, pid)
 	libodin.put_str(&sink, "/")
 	libodin.put_str(&sink, name)
 	return libodin.str(&sink)
+}
+
+// tree_root is the `dir`'s machine root -- its `/proc` trimmed off -- under
+// which the target's `/lib/debug` and its `.vxd` files sit. `/proc` gives ``,
+// so a local target reads `/lib/debug`; `/n/big/proc` gives `/n/big`.
+tree_root :: proc "contextless" (dir: string) -> string {
+	if len(dir) >= 5 && dir[len(dir) - 5:] == "/proc" {
+		return dir[:len(dir) - 5]
+	}
+	return dir
 }
 
 // ask sends a blocking word to the target's proc. The stop thread hears the
@@ -335,7 +357,7 @@ on_stop :: proc "contextless" (t: ^Target, err: i64) {
 	pc := libdebug.frame_pc(t.regs[:])
 
 	note: [64]u8
-	n := read_file_once(t.pid, "note", note[:])
+	n := read_file_once(t.dir, t.pid, "note", note[:])
 	text := string(note[:max(n, 0)])
 	hit := -1
 	switch {
@@ -388,7 +410,7 @@ on_stop :: proc "contextless" (t: ^Target, err: i64) {
 		// exec, and nothing else it starts should stop that way, so
 		// `nohang`, and the children of a watched program run.
 		load_debug(t)
-		_ = ctl_write(t.pid, "nohang")
+		_ = ctl_write(t.dir, t.pid, "nohang")
 	case .Idle, .Stepping, .Running, .Stopping:
 	}
 	t.phase = .Idle
@@ -449,9 +471,9 @@ set_why :: proc "contextless" (t: ^Target, why: string) {
 
 // -- Reading and writing the target ------------------------------------------------
 
-read_file_once :: proc "contextless" (pid: u64, name: string, into: []u8) -> int {
-	path: [64]u8
-	fd := libuser.open(proc_file(path[:], pid, name), abi.O_RDONLY)
+read_file_once :: proc "contextless" (dir: string, pid: u64, name: string, into: []u8) -> int {
+	path: [PATH_MAX]u8
+	fd := libuser.open(proc_file(path[:], dir, pid, name), abi.O_RDONLY)
 	if fd < 0 {
 		return -1
 	}
@@ -461,8 +483,8 @@ read_file_once :: proc "contextless" (pid: u64, name: string, into: []u8) -> int
 }
 
 read_regs :: proc "contextless" (t: ^Target) -> bool {
-	path: [64]u8
-	fd := libuser.open(proc_file(path[:], t.pid, "regs"), abi.O_RDONLY)
+	path: [PATH_MAX]u8
+	fd := libuser.open(proc_file(path[:], t.dir, t.pid, "regs"), abi.O_RDONLY)
 	if fd < 0 {
 		return false
 	}
@@ -472,8 +494,8 @@ read_regs :: proc "contextless" (t: ^Target) -> bool {
 }
 
 write_regs :: proc "contextless" (t: ^Target) -> bool {
-	path: [64]u8
-	fd := libuser.open(proc_file(path[:], t.pid, "regs"), abi.O_WRONLY)
+	path: [PATH_MAX]u8
+	fd := libuser.open(proc_file(path[:], t.dir, t.pid, "regs"), abi.O_WRONLY)
 	if fd < 0 {
 		return false
 	}
@@ -595,7 +617,7 @@ resume :: proc "contextless" (t: ^Target) {
 // build staged one.
 load_debug :: proc "contextless" (t: ^Target) {
 	status: [512]u8
-	n := read_file_once(t.pid, "status", status[:])
+	n := read_file_once(t.dir, t.pid, "status", status[:])
 	if n <= 0 {
 		return
 	}
@@ -617,7 +639,7 @@ load_debug :: proc "contextless" (t: ^Target) {
 		}
 	}
 	path: [PATH_MAX]u8
-	vxd := libuser.cat_into(path[:], "/lib/debug/", libuser.basename(name), ".vxd")
+	vxd := libuser.cat_into(path[:], tree_root(t.dir), "/lib/debug/", libuser.basename(name), ".vxd")
 	data := load_file(vxd)
 	if data == nil {
 		return
@@ -663,7 +685,7 @@ load_file :: proc "contextless" (path: string) -> []u8 {
 	return data
 }
 
-new_target :: proc "contextless" (pid: u64) -> ^Target {
+new_target :: proc "contextless" (pid: u64, dir: string) -> ^Target {
 	for i in 0 ..< MAX_TARGETS {
 		t := &targets[i]
 		if t.used {
@@ -672,14 +694,15 @@ new_target :: proc "contextless" (pid: u64) -> ^Target {
 		t^ = {}
 		t.used = true
 		t.pid = pid
+		t.dir = string(t.dir_buf[:copy(t.dir_buf[:], dir)])
 		t.mem_fd = -1
 		t.ask = libthread.chancreate(size_of(rawptr), 0)
 		if t.ask == nil || libthread.proccreate(target_proc, t) < 0 {
 			t.used = false
 			return nil
 		}
-		path: [64]u8
-		t.mem_fd = int(libuser.open(proc_file(path[:], pid, "mem"), abi.O_RDWR))
+		path: [PATH_MAX]u8
+		t.mem_fd = int(libuser.open(proc_file(path[:], t.dir, pid, "mem"), abi.O_RDWR))
 		last_made = i
 		return t
 	}
@@ -689,7 +712,7 @@ new_target :: proc "contextless" (pid: u64) -> ^Target {
 release_target :: proc "contextless" (t: ^Target) {
 	if !t.exited && t.stopped {
 		lift_all(t)
-		_ = ctl_write(t.pid, "start")
+		_ = ctl_write(t.dir, t.pid, "start")
 	}
 	if t.mem_fd >= 0 {
 		_ = libuser.close(t.mem_fd)
@@ -718,7 +741,7 @@ run_program :: proc "contextless" (argv: []string) -> (pid: u64, ok: bool) {
 	}
 	if child == 0 {
 		me := libuser.getpid()
-		_ = ctl_write(me, "hang")
+		_ = ctl_write("/proc", me, "hang")
 		_ = libuser.exec(argv[0], argv)
 		libuser.exits("exec")
 	}
@@ -740,15 +763,22 @@ root_ctl :: proc "contextless" (fid: vectra9.Fid, text: string) -> (errno: vectr
 		if n < 2 {
 			return vectra9.EINVAL, false
 		}
-		pid, pok := libuser.atoi(words[1])
+		// A bare number is a process in this machine's `/proc`; a path is one
+		// in the `/proc` it names -- `attach /n/big/proc/12` an imported rack's.
+		dir, pidstr := "/proc", words[1]
+		if cut := last_slash(words[1]); cut >= 0 {
+			dir = words[1][:cut]
+			pidstr = words[1][cut + 1:]
+		}
+		pid, pok := libuser.atoi(pidstr)
 		if !pok {
 			return vectra9.EINVAL, false
 		}
-		t := new_target(u64(pid))
+		t := new_target(u64(pid), dir)
 		if t == nil {
 			return vectra9.ENOMEM, false
 		}
-		_ = ctl_write(t.pid, "stop")
+		_ = ctl_write(t.dir, t.pid, "stop")
 		t.phase = .Attaching
 		t.pending = fid
 		t.has_pending = true
@@ -762,7 +792,7 @@ root_ctl :: proc "contextless" (fid: vectra9.Fid, text: string) -> (errno: vectr
 		if !rok {
 			return vectra9.EIO, false
 		}
-		t := new_target(pid)
+		t := new_target(pid, "/proc")
 		if t == nil {
 			return vectra9.ENOMEM, false
 		}
@@ -839,7 +869,7 @@ target_ctl :: proc "contextless" (t: ^Target, fid: vectra9.Fid, text: string) ->
 		if t.stopped {
 			return vectra9.Errno(0), false
 		}
-		_ = ctl_write(t.pid, "stop")
+		_ = ctl_write(t.dir, t.pid, "stop")
 		t.phase = .Stopping
 		t.pending = fid
 		t.has_pending = true
@@ -1061,7 +1091,7 @@ dis_text :: proc "contextless" (t: ^Target, out: []u8) -> int {
 // procs, in `docs/THREAD.md`'s sense.
 procs_text :: proc "contextless" (t: ^Target, out: []u8) -> int {
 	sink := libodin.sink_from(out)
-	fd := libuser.open("/proc", abi.O_RDONLY)
+	fd := libuser.open(t.dir, abi.O_RDONLY)
 	if fd < 0 {
 		return 0
 	}
@@ -1079,7 +1109,7 @@ procs_text :: proc "contextless" (t: ^Target, out: []u8) -> int {
 				continue
 			}
 			status: [512]u8
-			got := read_file_once(u64(pid), "status", status[:])
+			got := read_file_once(t.dir, u64(pid), "status", status[:])
 			if got <= 0 {
 				continue
 			}
@@ -1349,6 +1379,17 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 }
 
 // -- Text helpers ----------------------------------------------------------------------
+
+// last_slash is the index of the last '/' in `s`, or -1 for none: the cut
+// between an imported `/proc` and the pid in `attach /n/big/proc/12`.
+last_slash :: proc "contextless" (s: string) -> int {
+	for i := len(s) - 1; i >= 0; i -= 1 {
+		if s[i] == '/' {
+			return i
+		}
+	}
+	return -1
+}
 
 split_fields :: proc "contextless" (s: string, out: []string) -> int {
 	n := 0
