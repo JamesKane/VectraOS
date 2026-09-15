@@ -26,6 +26,7 @@ import "vsys:abi"
 import "vsys:libdraw"
 import "vsys:libthread"
 import "vsys:libuser"
+import "vsys:vectra9"
 
 // The most pointer movements a frame may fall behind before the oldest are
 // dropped. A program that calls `frame` every few milliseconds never fills it.
@@ -77,10 +78,28 @@ App :: struct {
 	// closing under the program. `frame` reports it as `quit`.
 	quit:       bool,
 
+	/*
+	The remote path. A program a `cpu` runs cannot map the terminal's store --
+	the shared run is the terminal's memory, and `shmattach` refuses it across
+	the wire. So it paints a run of its own, `store_mem`, and `present` sends it
+	to the window's surface as `load` verbs down `data`, which the export
+	carries. `docs/FLEET.md` section 7's fallback: the store when `segattach`
+	answers, the verbs when it refuses. Zero and nil for a local program, which
+	paints the shared store directly.
+	*/
+	remote:     bool,
+	store_mem:  rawptr, // the local run `store` points at, to free at close
+
 	path:       [64]u8,
 	line:       [96]u8,
 	geo:        [96]u8,
 }
+
+// One wire slot's worth of a command, the most a write to `data` may carry
+// whole across the mount. A `load` bigger than this would be chunked mid-command
+// and refused, so `present` splits a frame into loads that each fit. `sys/libmui`
+// keeps the same bound for its paint.
+SLOT :: vectra9.WIRE_SLOT - vectra9.IOHDRSZ
 
 /*
 Frame is what a program reads and paints each turn: the pixels it owns, the
@@ -113,10 +132,21 @@ open :: proc "contextless" (app: ^App, title: string, w: int, h: int) -> bool #n
 	app.time_fd = -1
 	app.audio_fd = -1
 
-	if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
-		return refused("no draw server at /srv/draw")
+	// `$wsys` names the terminal's window system for a program a `cpu` runs;
+	// unset, a local program mounts `/srv/draw` at `/mnt` as before. Either way
+	// the files open under `base`, which every open here reads and nothing after
+	// does. See `sys/libmui` and docs/FLEET.md section 7.
+	base_buf: [64]u8
+	base: string
+	if wsys := libuser.getenv("wsys", base_buf[:]); wsys != "" {
+		base = wsys
+	} else {
+		base = "/mnt"
+		if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
+			return refused("no draw server at /srv/draw")
+		}
 	}
-	nfd := libuser.open("/mnt/new", abi.O_RDONLY)
+	nfd := libuser.open(libuser.cat_into(app.path[:], base, "/new"), abi.O_RDONLY)
 	if nfd < 0 {
 		return refused("the server has no window to give")
 	}
@@ -129,13 +159,13 @@ open :: proc "contextless" (app: ^App, title: string, w: int, h: int) -> bool #n
 	}
 	app.id = mine
 
-	fd := libuser.open(libdraw.win_path(app.path[:], "/mnt", mine, "data"), abi.O_WRONLY)
+	fd := libuser.open(libdraw.win_path(app.path[:], base, mine, "data"), abi.O_WRONLY)
 	if fd < 0 {
 		return refused("the window's data file will not open")
 	}
 	app.data_fd = int(fd)
 
-	ctl := libuser.open(libdraw.win_path(app.path[:], "/mnt", mine, "ctl"), abi.O_RDWR)
+	ctl := libuser.open(libdraw.win_path(app.path[:], base, mine, "ctl"), abi.O_RDWR)
 	if ctl < 0 {
 		return refused("the window's ctl will not open")
 	}
@@ -161,7 +191,7 @@ open :: proc "contextless" (app: ^App, title: string, w: int, h: int) -> bool #n
 	app.ctl_fd = -1
 
 	// The store: the id to attach, the stride, and where the client area sits.
-	sfd := libuser.open(libdraw.win_path(app.path[:], "/mnt", mine, "store"), abi.O_RDWR)
+	sfd := libuser.open(libdraw.win_path(app.path[:], base, mine, "store"), abi.O_RDWR)
 	if sfd < 0 {
 		return refused("the window has no store file")
 	}
@@ -171,12 +201,25 @@ open :: proc "contextless" (app: ^App, title: string, w: int, h: int) -> bool #n
 		return refused("the store file named no run to attach")
 	}
 	addr, aerr := libuser.shmattach(app.store_id)
-	if aerr < 0 {
-		return refused("the store's run would not attach")
+	if aerr >= 0 {
+		app.store = ([^]u32)(addr)
+	} else {
+		// The store is the terminal's memory and does not cross the wire: this
+		// is a program a `cpu` runs. It paints a run of its own, the client area
+		// packed tight -- stride is the width, and the client sits at (0, 0) --
+		// and `present` pushes it to the window's surface as verbs. docs/FLEET.md §7.
+		app.remote = true
+		app.stride = app.cw
+		app.cx = 0
+		app.cy = 0
+		app.store_mem = libuser.heap_alloc(app.cw * app.ch * size_of(u32))
+		if app.store_mem == nil {
+			return refused("no memory for the frame")
+		}
+		app.store = ([^]u32)(app.store_mem)
 	}
-	app.store = ([^]u32)(addr)
 
-	mfd := libuser.open(libdraw.win_path(app.path[:], "/mnt", mine, "mouse"), abi.O_RDONLY)
+	mfd := libuser.open(libdraw.win_path(app.path[:], base, mine, "mouse"), abi.O_RDONLY)
 	if mfd >= 0 {
 		app.mouse_fd = int(mfd)
 	}
@@ -293,12 +336,19 @@ frame :: proc "contextless" (app: ^App) -> Frame #no_bounds_check {
 }
 
 /*
-present composites what the program painted. A write to the store names the
-client rectangle to flush; this flushes the whole client area, which is the
-frame a game paints each turn. `vsync` is a later rung -- there is no vblank to
-wait on yet -- and is taken for the shape the loop will keep.
+present composites what the program painted. A local program's frame is already
+in the shared store, so a write to the store file names the client rectangle to
+flush -- the whole client area, the frame a game paints each turn. A program a
+`cpu` runs painted a run of its own instead, and `present` sends it to the
+window's surface as `load` verbs down `data`, then a `flush`; the export carries
+both and the terminal's server composites. `vsync` is a later rung -- there is no
+vblank to wait on yet -- and is taken for the shape the loop will keep.
 */
 present :: proc "contextless" (app: ^App, vsync: bool = true) #no_bounds_check {
+	if app.remote {
+		present_verbs(app)
+		return
+	}
 	at := copy(app.line[:], "0 0 ")
 	at += put_int(app.line[at:], app.cw)
 	app.line[at] = ' '
@@ -307,6 +357,42 @@ present :: proc "contextless" (app: ^App, vsync: bool = true) #no_bounds_check {
 	app.line[at] = '\n'
 	at += 1
 	_ = libuser.write(app.store_fd, app.line[:at])
+}
+
+/*
+present_verbs pushes the frame a remote program painted to the window's surface.
+
+Its run is the client area packed tight -- `cw` words a row -- and it goes as
+`load` commands into image zero, the window's own surface, at the client
+coordinates the server's `run_load` translates and clips. A `load` must fit one
+wire slot whole, or the mount chunks it mid-command and the server refuses, so a
+row wider than a slot holds is sent in pieces of it. A `flush` at the end is the
+damage mark that composites what the loads drew. This is `docs/FLEET.md` section
+7's fallback, the pixels as the path.
+*/
+@(private = "file")
+present_verbs :: proc "contextless" (app: ^App) #no_bounds_check {
+	slot: [SLOT]u8 = ---
+	pixels := ([^]u8)(app.store)
+	max_px := (SLOT - libdraw.HEADER - 20) / 4
+	if max_px < 1 {
+		max_px = 1
+	}
+	for y in 0 ..< app.ch {
+		x := 0
+		for x < app.cw {
+			run := min(max_px, app.cw - x)
+			off := (y * app.cw + x) * 4
+			end := libdraw.put_load(slot[:], 0, 0, u32(x), u32(y), u32(run), 1, pixels[off:off + run * 4])
+			if end > 0 {
+				_ = libuser.write(app.data_fd, slot[:end])
+			}
+			x += run
+		}
+	}
+	if end := libdraw.put_flush(slot[:], 0); end > 0 {
+		_ = libuser.write(app.data_fd, slot[:end])
+	}
 }
 
 /*
@@ -332,7 +418,14 @@ sound :: proc "contextless" (app: ^App, samples: []i16) -> int #no_bounds_check 
 // file it reads is gone, which the close makes true; a program that exits after
 // this takes the thread with it in any case.
 close :: proc "contextless" (app: ^App) {
-	if app.store != nil {
+	if app.remote {
+		// A run of this program's own, not the terminal's shared store.
+		if app.store_mem != nil {
+			libuser.heap_free(app.store_mem)
+			app.store_mem = nil
+		}
+		app.store = nil
+	} else if app.store != nil {
 		_ = libuser.segdetach(uintptr(app.store))
 		app.store = nil
 	}

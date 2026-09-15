@@ -2858,15 +2858,41 @@ run_load :: proc "contextless" (owner: vectra9.Fid, body: []u8) -> vectra9.Errno
 	y := int(libdraw.get_u32(body, 8))
 	w := int(libdraw.get_u32(body, 12))
 	h := int(libdraw.get_u32(body, 16))
+	if w <= 0 || h <= 0 || len(body) - 20 != w * h * 4 {
+		return vectra9.EINVAL
+	}
+
+	// Image zero is the window's own surface, and a load into it is a frame of
+	// pixels straight into the store -- what a program a `cpu` runs sends when
+	// it cannot map the store to paint it directly. It is `run_fill`'s clip and
+	// translation, with the payload as the source the clip trims into, so a
+	// remote `libapp` reaches the same memory the shared store would. docs/FLEET.md
+	// section 7 and `docs/DEVTOOLS.md` section 4.
+	if id == 0 {
+		win := window_of(owner)
+		if win == nil {
+			return vectra9.EBADF
+		}
+		w_full := w
+		sx, sy := 0, 0
+		if !client_clip(win, &x, &y, &w, &h, &sx, &sy) {
+			return vectra9.Errno(0)
+		}
+		for line in 0 ..< h {
+			src := 20 + ((sy + line) * w_full + sx) * 4
+			dst := ([^]u8)(win.pixels[(y + line) * win.stride + x:])
+			copy(dst[:w * 4], body[src:src + w * 4])
+		}
+		window_mark(win, x, y, w, h)
+		return vectra9.Errno(0)
+	}
+
 	slot := image_find(owner, id)
-	if slot < 0 || w <= 0 || h <= 0 {
+	if slot < 0 {
 		return vectra9.EINVAL
 	}
 	img := &images[slot]
 	if x < 0 || y < 0 || x + w > img.w || y + h > img.h {
-		return vectra9.EINVAL
-	}
-	if len(body) - 20 != w * h * 4 {
 		return vectra9.EINVAL
 	}
 	// The wire and the one build target are both little-endian, so a row
