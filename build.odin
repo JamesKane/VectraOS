@@ -127,6 +127,7 @@ user_programs := [?]User_Program {
 	{name = "sed", path = "cmd/sed"},
 	{name = "ps", path = "cmd/ps"},
 	{name = "kill", path = "cmd/kill"},
+	{name = "ndb", path = "cmd/ndb"},
 	{name = "ns", path = "cmd/ns"},
 	{name = "newns", path = "cmd/newns"},
 	{name = "role", path = "cmd/role"},
@@ -1366,6 +1367,11 @@ stage_vectra :: proc(arch: string, host: string) {
 	for prog in posix_programs {
 		copy_file(fmt.tprintf("%s/%s.vx", USER_DIR, prog.name), fmt.tprintf("%s/%s", abin, prog.name))
 	}
+	// The `fleet` dispatcher is an rc script, not a program image: a command
+	// on `$path` the shell runs as a script when the loader refuses it (rc's
+	// ENOEXEC fallback). It goes in `/bin` beside the tools it drives.
+	// docs/FLEET.md section 8.
+	copy_file("lib/fleet", fmt.tprintf("%s/fleet", abin))
 	// Each program's debug file, where a debugger looks for it by the
 	// program's name, under the shared `/lib/debug`.
 	dbg := fmt.tprintf("%s/lib/debug", root)

@@ -1,0 +1,33 @@
+# fleet -- run a command across the rack, from the terminal's own shell.
+#
+#   fleet each cmd ...     run cmd on every cpu= machine, output by machine
+#   fleet on arch cmd ...  run cmd on every machine whose cputype= is arch
+#
+# The machines come from the database: `ndb cpu` names the CPU servers, `ndb
+# cpu cputype amd64` those of an architecture. `rx` runs the command on each
+# with this terminal's own descriptors, so the output lands here. The tree
+# builds one architecture's bin on a machine of that architecture with
+# `fleet on <arch> mk`. docs/FLEET.md section 8.
+
+switch($1){
+case each
+	shift
+	if(~ $#* 0){
+		echo usage: fleet each cmd ... >[1=2]
+		exit usage
+	}
+	for(m in `{ndb cpu})
+		rx $m $*
+case on
+	arch=$2
+	shift 2
+	if(~ $#arch 0 || ~ $#* 0){
+		echo usage: fleet on arch cmd ... >[1=2]
+		exit usage
+	}
+	for(m in `{ndb cpu cputype $arch})
+		rx $m $*
+case *
+	echo 'usage: fleet each cmd ... | fleet on arch cmd ...' >[1=2]
+	exit usage
+}

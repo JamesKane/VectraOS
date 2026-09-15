@@ -280,6 +280,32 @@ exec_program replaces this process with the program, searched for along
 `$path` unless the name has a slash in it. Returns only when nothing
 along the path would exec, having said so.
 */
+/*
+exec_file execs `full` as `argv`, and when the kernel answers ENOEXEC -- a real
+file that is not a program image -- re-execs it as an rc script: `rc full
+argv[1:]`. That is what makes a text script in `$path` a command, the way Plan 9's
+rc runs one the loader would refuse. Returns the exec errno; it returns only on
+failure.
+*/
+exec_file :: proc(full: string, argv: []string) -> i64 {
+	r := libuser.exec(full, argv)
+	if r != -i64(vectra9.ENOEXEC) {
+		return r
+	}
+	buf: [64]string
+	buf[0] = "rc"
+	buf[1] = full
+	n := 2
+	for a in argv[1:] {
+		if n >= len(buf) {
+			break
+		}
+		buf[n] = a
+		n += 1
+	}
+	return libuser.exec("/bin/rc", buf[:n])
+}
+
 exec_program :: proc(sh: ^Shell, argv: []string) {
 	name := argv[0]
 	has_slash := false
@@ -290,14 +316,14 @@ exec_program :: proc(sh: ^Shell, argv: []string) {
 		}
 	}
 	if has_slash {
-		r := libuser.exec(name, argv)
+		r := exec_file(name, argv)
 		libfmt.fprint(2, "rc: %s: %s\n", name, libuser.errstr(r))
 		return
 	}
 	last := -i64(vectra9.ENOENT)
 	for dir in search_path(sh) {
 		full := dir == "." ? name : path_join(sh, dir, name)
-		last = libuser.exec(full, argv)
+		last = exec_file(full, argv)
 		if last != -i64(vectra9.ENOENT) {
 			break
 		}
