@@ -287,23 +287,19 @@ argv[1:]`. That is what makes a text script in `$path` a command, the way Plan 9
 rc runs one the loader would refuse. Returns the exec errno; it returns only on
 failure.
 */
-exec_file :: proc(full: string, argv: []string) -> i64 {
+exec_file :: proc(sh: ^Shell, full: string, argv: []string) -> i64 {
 	r := libuser.exec(full, argv)
 	if r != -i64(vectra9.ENOEXEC) {
 		return r
 	}
-	buf: [64]string
-	buf[0] = "rc"
-	buf[1] = full
-	n := 2
-	for a in argv[1:] {
-		if n >= len(buf) {
-			break
-		}
-		buf[n] = a
-		n += 1
-	}
-	return libuser.exec("/bin/rc", buf[:n])
+	// The new argv -- `rc`, the file, then its arguments -- is built in the
+	// shell's arena like every other, so a long argument list is not capped.
+	rest := argv[1:]
+	line := make([]string, 2 + len(rest), sh.temp)
+	line[0] = "rc"
+	line[1] = full
+	copy(line[2:], rest)
+	return libuser.exec("/bin/rc", line)
 }
 
 exec_program :: proc(sh: ^Shell, argv: []string) {
@@ -316,14 +312,14 @@ exec_program :: proc(sh: ^Shell, argv: []string) {
 		}
 	}
 	if has_slash {
-		r := exec_file(name, argv)
+		r := exec_file(sh, name, argv)
 		libfmt.fprint(2, "rc: %s: %s\n", name, libuser.errstr(r))
 		return
 	}
 	last := -i64(vectra9.ENOENT)
 	for dir in search_path(sh) {
 		full := dir == "." ? name : path_join(sh, dir, name)
-		last = exec_file(full, argv)
+		last = exec_file(sh, full, argv)
 		if last != -i64(vectra9.ENOENT) {
 			break
 		}
