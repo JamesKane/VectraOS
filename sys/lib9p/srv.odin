@@ -95,7 +95,10 @@ Srv :: struct {
 }
 
 // What a caller of `held` and `answer_reads` supplies: whether a held
-// request is one it can answer, and the bytes for the answer.
+// request is one it can answer, and the bytes for the answer. A `Drain`
+// answers a read three ways: a positive count is that many bytes; zero is
+// nothing yet, so the read stays held; a negative is end of file, so the read
+// is answered empty and unheld -- what a stream half-closing tells a reader.
 Wants :: #type proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool
 Drain :: #type proc "contextless" (arg: rawptr, buf: []u8) -> int
 
@@ -250,6 +253,12 @@ answer_reads :: proc "contextless" (srv: ^Srv, arg: rawptr, wants: Wants, drain:
 		m := req.msg.(vectra9.Tread)
 		room := min(len(req.payload), int(m.count))
 		got := drain(arg, req.payload[:room])
+		if got < 0 {
+			// End of file: answer this read empty and unhold it, then go on
+			// to any others, which the closed file ends the same way.
+			_ = respond(req, vectra9.Rread{data = nil})
+			continue
+		}
 		if got == 0 {
 			return
 		}

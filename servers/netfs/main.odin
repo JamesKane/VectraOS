@@ -926,12 +926,13 @@ handler :: proc "contextless" (
 				return
 			}
 			if kind == TCONV_DATA {
-				got := tcp_pop(i, buf[:room])
+				got := drain_tcp(rawptr(uintptr(i)), buf[:room])
 				if got > 0 {
 					reply^ = vectra9.Rread{data = buf[:got]}
 					return
 				}
-				if tcps[i].fin_seen {
+				if got < 0 {
+					// The far end has closed with nothing left: end of file.
 					reply^ = vectra9.Rread{data = nil}
 					return
 				}
