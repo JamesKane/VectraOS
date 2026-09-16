@@ -570,6 +570,21 @@ tcp_tick :: proc "contextless" () #no_bounds_check {
 
 answer_tcp :: proc "contextless" (i: int) {
 	lib9p.answer_reads(&srv, rawptr(uintptr(i)), wants_tcp, drain_tcp)
+	// A stream whose far end has closed answers a held read with end of file,
+	// not more waiting: `answer_reads` keeps a read whose drain came up empty,
+	// which is right while data may still arrive but wrong once the `FIN` is in
+	// -- the reader would park for ever. This ends every such read on the
+	// conversation, so a program blocked on a closed connection returns. It is
+	// what lets a `cpu`/`rx` session wind down when its far end hangs up.
+	if tcps[i].fin_seen {
+		for {
+			req, ok := lib9p.held(&srv, rawptr(uintptr(i)), wants_tcp)
+			if !ok {
+				break
+			}
+			_ = lib9p.respond(req, vectra9.Rread{data = nil})
+		}
+	}
 }
 
 wants_tcp :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
