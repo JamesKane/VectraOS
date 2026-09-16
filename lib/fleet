@@ -3,12 +3,24 @@
 #   fleet each cmd ...     run cmd on every cpu= machine, output by machine
 #   fleet on arch cmd ...  run cmd on every machine whose cputype= is arch
 #   fleet ps               import every cpu= machine's /proc and ps each
+#   fleet sub host cmd ... queue a job: run cmd on host
+#   fleet work             one pass of the worker: run each queued job
+#   fleet done             show finished jobs and their output
 #
 # The machines come from the database: `ndb cpu` names the CPU servers, `ndb
 # cpu cputype amd64` those of an architecture. `rx` runs the command on each
 # with this terminal's own descriptors, so the output lands here. The tree
 # builds one architecture's bin on a machine of that architecture with
 # `fleet on <arch> mk`. docs/FLEET.md section 8.
+#
+# The queue is a directory on the file server's disk (`/usr/queue`, or `$fleetq`
+# if set -- point it at an imported fs's queue to share one across the rack). A
+# job is a file whose one line is a command for `rx`, its first word the host.
+# A worker claims a job with an atomic rename into `running/`, runs it, and
+# renames it into `done/` with its output beside it -- a scheduler in a page of
+# rc, riding kfs's rename (docs/KFS.md). Loop `fleet work` for a standing worker.
+
+if(~ $#fleetq 0) fleetq=/usr/queue
 
 switch($1){
 case ps
@@ -56,7 +68,42 @@ case on
 	}
 	for(m in `{ndb cpu cputype $arch})
 		rx $m $*
+case sub
+	# Queue "run cmd on host": a file whose one line is a command for `rx`.
+	# `fleet` re-execs for each `sub`, so this shell's pid names one job -- a
+	# fresh one every time, unique enough for a homelab's rate of jobs.
+	shift
+	if(~ $#* 0 || ~ $#* 1){
+		echo 'usage: fleet sub host cmd ...' >[1=2]
+		exit usage
+	}
+	mkdir -p $fleetq/running $fleetq/done
+	echo $* > $fleetq/$pid
+case work
+	# One pass: claim each pending job with an atomic rename into running/ --
+	# so two workers never take the same one -- run it, land its output in
+	# done/ beside the job, then rename the job into done/. A file in the
+	# queue root is a job; running/ and done/ are skipped by `test -f`.
+	mkdir -p $fleetq/running $fleetq/done
+	for(j in $fleetq/*){
+		if(test -f $j){
+			n=`{basename $j}
+			if(mv $j $fleetq/running/$n >[2]/dev/null){
+				rx `{cat $fleetq/running/$n} > $fleetq/done/$n.out >[2=1]
+				mv $fleetq/running/$n $fleetq/done/$n
+				echo $n done
+			}
+		}
+	}
+case done
+	# The finished jobs and what each one wrote.
+	for(o in $fleetq/done/*.out){
+		if(test -f $o){
+			echo '--- '^`{basename $o}^' ---'
+			cat $o
+		}
+	}
 case *
-	echo 'usage: fleet each cmd ... | fleet on arch cmd ...' >[1=2]
+	echo 'usage: fleet each|on|ps|sub|work|done ...' >[1=2]
 	exit usage
 }
