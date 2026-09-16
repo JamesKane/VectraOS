@@ -2,6 +2,7 @@
 #
 #   fleet each cmd ...     run cmd on every cpu= machine, output by machine
 #   fleet on arch cmd ...  run cmd on every machine whose cputype= is arch
+#   fleet ps               import every cpu= machine's /proc and ps each
 #
 # The machines come from the database: `ndb cpu` names the CPU servers, `ndb
 # cpu cputype amd64` those of an architecture. `rx` runs the command on each
@@ -10,6 +11,34 @@
 # `fleet on <arch> mk`. docs/FLEET.md section 8.
 
 switch($1){
+case ps
+	# The rack as a directory: each machine's process table is its /proc,
+	# imported under /n/<host>, so `ps` on it lists that machine from here.
+	# This machine's own /proc is right here, no import. The file server's
+	# name is the tree's mount point (/n/fs), so it is left alone rather than
+	# mounted over. /n is a static tree (docs/FLEET.md section 6), so a host
+	# with no mount point there is skipped -- the mount would have nowhere to
+	# land. The mount and its /srv post are undone after, so a rerun is clean.
+	me=`{cat /net/sysname >[2]/dev/null}
+	for(m in `{ndb cpu}){
+		if(~ $m $me){
+			echo '--- '^$m^' (this machine) ---'
+			ps /proc
+		}
+		if not if(~ $m fs){
+			echo 'fleet ps: '^$m^' is the file server; its tree is /n/fs' >[1=2]
+		}
+		if not if(test -e /n/$m){
+			if(import $m /n/$m >[2]/dev/null){
+				echo '--- '^$m^' ---'
+				ps /n/$m/proc
+				unmount /n/$m >[2]/dev/null
+				rm /srv/$m >[2]/dev/null
+			}
+			if not echo 'fleet ps: '^$m^' unreachable' >[1=2]
+		}
+		if not echo 'fleet ps: '^$m^' has no /n mount point' >[1=2]
+	}
 case each
 	shift
 	if(~ $#* 0){
