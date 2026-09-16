@@ -224,10 +224,13 @@ server :: proc() {
 	// terminal interrupts the command running here. docs/FLEET.md section 7.
 	notebuf: [16]u8
 	note := slurp("/mnt/term/env/cpunote", notebuf[:])
+	forwarder: i64 = -1
 	if note != "" {
-		if libuser.rfork(abi.RFPROC | abi.RFFDG) == 0 {
+		k := libuser.rfork(abi.RFPROC | abi.RFFDG)
+		if k == 0 {
 			forward_interrupts(note)
 		}
+		forwarder = k
 	}
 	// The command the client left, if any, read over the mount, and whether it
 	// asked for its own three descriptors rather than the console.
@@ -241,9 +244,9 @@ server :: proc() {
 		r := libuser.open("/mnt/term/fd/0", abi.O_RDONLY)
 		w := libuser.open("/mnt/term/fd/1", abi.O_WRONLY)
 		e := libuser.open("/mnt/term/fd/2", abi.O_WRONLY)
-		if r >= 0 {_ = libuser.dup(int(r), 0)}
-		if w >= 0 {_ = libuser.dup(int(w), 1)}
-		if e >= 0 {_ = libuser.dup(int(e), 2)}
+		if r >= 0 {_ = libuser.dup(int(r), 0);if int(r) > 2 {_ = libuser.close(int(r))}}
+		if w >= 0 {_ = libuser.dup(int(w), 1);if int(w) > 2 {_ = libuser.close(int(w))}}
+		if e >= 0 {_ = libuser.dup(int(e), 2);if int(e) > 2 {_ = libuser.close(int(e))}}
 	} else {
 		// A shell on the terminal: its three are the terminal's console.
 		cons := libuser.open("/dev/cons", abi.O_RDWR)
@@ -256,14 +259,71 @@ server :: proc() {
 			}
 		}
 	}
-	if len(cmd) > 0 {
-		argv := []string{"rc", "-c", cmd}
-		_ = libuser.exec("/bin/rc", argv)
-	} else {
+	if len(cmd) == 0 {
+		// An interactive shell: become it. Its exit ends the session, and the
+		// terminal drives teardown when the window or console closes.
 		argv := []string{"rc", "-i"}
 		_ = libuser.exec("/bin/rc", argv)
+		libuser.exits("cpu: cannot exec rc")
 	}
-	libuser.exits("cpu: cannot exec rc")
+	// A one-shot command (`rx`, a queued job): run it as a child and wait, then
+	// wind the session down so the terminal's `cpu`/`rx` returns and nothing is
+	// left running here. When the command's shell, the interrupt forwarder and
+	// the terminal's mount are all gone, the session pipe closes; the sealed
+	// stream's carriers, which read it, see the end and exit -- carry-out on the
+	// local close, no hang-up from this end. docs/FLEET.md section 7.
+	argv := []string{"rc", "-c", cmd}
+	kid := libuser.rfork(abi.RFPROC | abi.RFFDG)
+	if kid == 0 {
+		_ = libuser.exec("/bin/rc", argv)
+		libuser.exits("cpu: cannot exec rc")
+	}
+	// Drop this process's copies of the terminal's three descriptors now, while
+	// the carriers still relay. They reach the terminal over the session pipe;
+	// closing them at exit, as the pipe tears down, would clunk into a stream
+	// with no far end and hang. The command's shell keeps its own copies.
+	_ = libuser.close(0)
+	_ = libuser.close(1)
+	_ = libuser.close(2)
+	wbuf: [64]u8
+	for {
+		r := libuser.await(u64(kid), wbuf[:])
+		if r == -i64(vectra9.EAGAIN) || r == -i64(vectra9.EINTR) {
+			continue
+		}
+		break
+	}
+	if forwarder >= 0 {
+		// End the forwarder and wait for it to go before unmounting: it parks
+		// reading the terminal's note pipe through `/mnt/term`, so the mount is
+		// busy until it is reaped, and an unmount that races it would fail and
+		// leave the session pipe held.
+		kill_pid(forwarder)
+		fbuf: [64]u8
+		for {
+			r := libuser.await(u64(forwarder), fbuf[:])
+			if r == -i64(vectra9.EAGAIN) || r == -i64(vectra9.EINTR) {
+				continue
+			}
+			break
+		}
+	}
+	_ = libuser.unmount("", "/mnt/term")
+	libuser.exits("")
+}
+
+// kill_pid ends a process by its number, a `kill` written to its `/proc` ctl.
+kill_pid :: proc "contextless" (pid: i64) {
+	num: [16]u8
+	path: [32]u8
+	ctl := libuser.cat_into(path[:], "/proc/", libuser.itoa(num[:], pid), "/ctl")
+	fd := libuser.open(ctl, abi.O_WRONLY)
+	if fd < 0 {
+		return
+	}
+	word := [4]u8{'k', 'i', 'l', 'l'}
+	_ = libuser.write(int(fd), word[:])
+	_ = libuser.close(int(fd))
 }
 
 // forward_interrupts is the server's interrupt forwarder: it reads the

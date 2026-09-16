@@ -250,7 +250,15 @@ seal_stream :: proc "contextless" (s: ^Session, conn: int, send_hex, recv_hex: s
 	}
 	near, far := abi.pipe_ends(packed)
 
-	pid := libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFNOTEG | abi.RFNOWAIT)
+	// A namespace of the carriers' own (`RFNAMEG`), apart from the program's:
+	// they serve descriptors and never name a file, and the server half of
+	// `cpu` mounts this very session at `/mnt/term` and binds its `/dev`.
+	// Sharing that namespace would pin the mount -- and so the session pipe --
+	// open for as long as the carriers run, and the carrier reading it would
+	// never see the program's end close. Their own namespace, taken before the
+	// mount, lets the session pipe close when the program is done, so the
+	// carriers wind down. docs/FLEET.md section 7.
+	pid := libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFNOTEG | abi.RFNAMEG | abi.RFNOWAIT)
 	if pid < 0 {
 		_ = libuser.close(near)
 		_ = libuser.close(far)
