@@ -103,10 +103,14 @@ which is five of today's `ramfs`, and it is a *format* bound. A program that
 outgrows it asks this constant to move, visibly, rather than quietly taking
 the machine.
 */
-// 512 KiB per segment, up from 256: a tool that formats through `core:fmt`
-// carries the runtime's type tables, and the first one that did was 300 KiB
-// of text.
-MAX_PROGRAM_FRAMES :: 128
+// 1 MiB per segment, up from 512 KiB: a program that carries `core:crypto`
+// carries its tables -- the P-256 field multiples, the AES box, the SHA
+// constants -- and the first that did (the TLS 1.3 client `docs/WEB.md` step 0
+// builds, and the crypto self-test that proves its substrate) was 513 KiB of
+// text and rodata, one page past the old bound. The earlier move, 256 KiB to
+// 512, was for a tool that formats through `core:fmt` and so carries the
+// runtime's type tables.
+MAX_PROGRAM_FRAMES :: 256
 STACK_PAGES2 :: 16
 STACK_VA2 :: STACK_TOP - uintptr(STACK_PAGES2 * arch.PAGE_SIZE)
 

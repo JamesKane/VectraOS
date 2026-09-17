@@ -15,6 +15,10 @@ import "vsys:libcrypto"
 import "vsys:libuser"
 import "core:crypto/x25519"
 import "core:crypto/blake2s"
+import "core:crypto/hash"
+import "core:crypto/hmac"
+import "core:crypto/hkdf"
+import "core:crypto/ecdsa"
 import "vsys:libauth"
 
 fail :: proc "contextless" (what: string) -> ! {
@@ -150,6 +154,56 @@ start :: proc "c" (block: ^abi.Args) {
 		gw: [64]u8
 		_, okw := libauth.read_msg1(&hr2, mw[:nw], gw[:])
 		want(!okw, "a handshake aimed at the wrong key is refused")
+	}
+
+	// -- The TLS 1.3 substrate, run on this machine -------------------------
+	//
+	// `docs/WEB.md` step 0 builds TLS 1.3 on Odin's `core:crypto`, whose hash,
+	// MAC, key-derivation and signature packages have no freestanding build of
+	// their own -- `build.odin` installs the backend that lets them compile,
+	// and every one selects its portable software path here. So this is where
+	// that path is proven to run and to agree with the RFCs on the real target,
+	// not only on the host that built it. The key schedule stands on HKDF,
+	// HKDF on HMAC, HMAC on SHA-256, and the certificate on ECDSA.
+	{
+		// SHA-256 of "abc" (FIPS 180-4's own example).
+		sum: [32]u8
+		hash.hash_bytes_to_buffer(.SHA256, transmute([]u8)string("abc"), sum[:])
+		want(sum[0] == 0xba && sum[1] == 0x78 && sum[31] == 0xad, "SHA-256 matches FIPS 180-4")
+
+		// HMAC-SHA-256, RFC 4231 test case 2.
+		tag: [32]u8
+		hmac.sum(.SHA256, tag[:], transmute([]u8)string("what do ya want for nothing?"), transmute([]u8)string("Jefe"))
+		want(tag[0] == 0x5b && tag[1] == 0xdc && tag[31] == 0x43, "HMAC-SHA-256 matches RFC 4231")
+
+		// HKDF-SHA-256, RFC 5869 test case 1: extract then expand to 42 bytes.
+		ikm: [22]u8; for i in 0 ..< 22 {ikm[i] = 0x0b}
+		salt: [13]u8; for i in 0 ..< 13 {salt[i] = u8(i)}
+		info: [10]u8; for i in 0 ..< 10 {info[i] = u8(0xf0 + i)}
+		okm: [42]u8
+		hkdf.extract_and_expand(.SHA256, salt[:], ikm[:], info[:], okm[:])
+		want(okm[0] == 0x3c && okm[1] == 0xb2 && okm[41] == 0x65, "HKDF-SHA-256 matches RFC 5869")
+
+		// ECDSA over P-256: a fixed key, a deterministic (RFC 6979) signature,
+		// and the verify that a certificate chain will lean on. No entropy is
+		// drawn, so the check is stable and needs no RNG on the target.
+		kb: [32]u8; for i in 0 ..< 32 {kb[i] = u8(i + 1)}
+		priv: ecdsa.Private_Key
+		pub: ecdsa.Public_Key
+		want(ecdsa.private_key_set_bytes(&priv, .SECP256R1, kb[:]), "a P-256 private key sets")
+		ecdsa.public_key_set_priv(&pub, &priv)
+		msg := transmute([]u8)string("the reader keeps the other direction itself")
+		sig: [64]u8
+		want(ecdsa.sign_raw(&priv, .SHA256, msg, sig[:], true), "P-256 signs")
+		want(ecdsa.verify_raw(&pub, .SHA256, msg, sig[:]), "and the signature verifies")
+		sig[10] ~= 0xff
+		want(!ecdsa.verify_raw(&pub, .SHA256, msg, sig[:]), "a tampered P-256 signature is refused")
+
+		// A breadcrumb on the console: the kernel's self-test reads this
+		// program's exit word, not this stream, so a line here reaches the boot
+		// log and says the substrate ran on the machine. A failed `want` above
+		// exits before it, so its presence is the on-target pass.
+		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 substrate (sha256/hmac/hkdf/ecdsa-p256) ok\n"))
 	}
 
 	libuser.exits("ok")

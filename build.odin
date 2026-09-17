@@ -584,6 +584,7 @@ build_user :: proc(opts: Options) {
 	cfg := arch_config(opts.arch)
 	ensure_dir(BUILD_DIR)
 	ensure_dir(USER_DIR)
+	ensure_crypto_backend()
 
 	// The header both sides of the door read, written from the one Odin file
 	// before anything compiles against it. `docs/DEVTOOLS.md` section 3.
@@ -1085,6 +1086,7 @@ build_programs :: proc(opts: Options) {
 	cfg := arch_config(opts.arch)
 	ensure_dir(BUILD_DIR)
 	ensure_dir(PROGRAMS_DIR)
+	ensure_crypto_backend()
 
 	for name in test_programs {
 		step("compiling test program %s", name)
@@ -1817,6 +1819,75 @@ run :: proc(command: []string) {
 	if !state.success || state.exit_code != 0 {
 		die("%s exited with %d", command[0], state.exit_code)
 	}
+}
+
+// ensure_crypto_backend installs the freestanding backends `core:crypto` needs.
+//
+// Odin's stock `core:sys/info` and `core:sync` have no freestanding build, and
+// the whole hardware-accelerated crypto stack -- sha2, hmac, hkdf, aes, aead,
+// ecdsa, rsa, ed25519 and x509 -- imports them for CPU-feature detection. So
+// none of it compiles for Vectra's targets out of the box. The two files in
+// `toolchain/` supply the missing per-target symbols, gated to freestanding so
+// a hosted `odin` is untouched; this copies them next to the packages they
+// complete. It runs before every compile because a Homebrew upgrade replaces
+// the whole install (it did once, under a running session), taking the backend
+// with it. The source of truth stays in the tree, and the toolchain is synced
+// to match.
+ensure_crypto_backend :: proc() {
+	core := fmt.tprintf("%s/core", strings.trim_right(odin_root(), "/"))
+	install :: proc(src, dst: string) {
+		want, rerr := os.read_entire_file_from_path(src, context.allocator)
+		if rerr != nil {
+			die("cannot read %s: %v", src, rerr)
+		}
+		have, herr := os.read_entire_file_from_path(dst, context.allocator)
+		if herr == nil && slice.equal(have, want) {
+			return
+		}
+		if werr := os.write_entire_file(dst, want); werr != nil {
+			die("cannot install %s (is the Odin core writable?): %v", dst, werr)
+		}
+		step("installed freestanding crypto backend into %s", dst)
+	}
+	install("toolchain/sysinfo_backend_freestanding.odin",
+		fmt.tprintf("%s/sys/info/backend_freestanding.odin", core))
+	install("toolchain/sync_backend_freestanding.odin",
+		fmt.tprintf("%s/sync/backend_freestanding.odin", core))
+}
+
+// odin_root returns the compiler's root directory (the parent of `core`), by
+// asking `odin root`. Odin exposes it no other way to a build script: neither
+// an env var nor a `#config` value carries it.
+odin_root :: proc() -> string {
+	ensure_dir(BUILD_DIR)
+	out := fmt.tprintf("%s/.odin-root", BUILD_DIR)
+	f, oerr := os.open(out, os.O_WRONLY | os.O_CREATE | os.O_TRUNC)
+	if oerr != nil {
+		die("cannot open %s: %v", out, oerr)
+	}
+	desc := os.Process_Desc {
+		command = {"odin", "root"},
+		stdout  = f,
+		stderr  = os.stderr,
+		stdin   = os.stdin,
+	}
+	process, serr := os.process_start(desc)
+	if serr != nil {
+		die("cannot run odin root: %v", serr)
+	}
+	if _, werr := os.process_wait(process); werr != nil {
+		die("cannot wait on odin root: %v", werr)
+	}
+	os.close(f)
+	data, rerr := os.read_entire_file_from_path(out, context.allocator)
+	if rerr != nil {
+		die("cannot read %s: %v", out, rerr)
+	}
+	root := strings.trim_space(string(data))
+	if root == "" {
+		die("odin root printed nothing")
+	}
+	return root
 }
 
 ensure_dir :: proc(path: string) {
