@@ -68,6 +68,7 @@ shell on the console with a windowed desktop beside it.
 | The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` and `consctl` per window with a line discipline of its own | `DRAW.md` |
 | Typing | one discipline (`sys/libedit`) worn by the server that cooks a window's lines and by the program that draws them and echoes, with a cursor the arrow keys and `^A`/`^E` move | `DRAW.md` |
 | Runes | a key with no character arrives as Plan 9's private-space rune in UTF-8 (`sys/libkey` names them, `core:unicode/utf8` encodes them) through a `/dev/cons` that stayed bytes | `DRAW.md`, `KBD.md` |
+| Crypto and TLS | `core:crypto` compiles and runs freestanding, proven against its RFC vectors on the machine; `sys/libtls` is a TLS 1.3 client -- the key schedule, the record layer, the handshake and the authenticated flight (a certificate chained to a root, its signature, both Finisheds) -- checked against RFC 8448 and a scripted server every boot | `WEB.md` |
 
 **The screen and the fleet are where the depth is.** The screen is a draw
 server that owns `/dev/fb`, a window per session with its own pixels out of
@@ -373,6 +374,7 @@ ways whose error messages do not point back here.
 | `ecall` from supervisor mode never reaches the kernel | It is the SBI's door, and no delegation changes that. The riscv64 yield is an `ebreak` with the vector in `a7`. |
 | riscv64 links need `-z norelro` and the small-data sections placed | `ld.lld` otherwise carves a read-only segment for the GOT out of `.data` and starts `.bss` mid-page, which `build.odin` refuses; and `.sdata`/`.sbss` left unplaced become a segment of their own. |
 | The riscv64 firmware publishes ACPI or a device tree, not both | The clock rate is a device tree property and nothing else says it. `build.odin` boots the `virt` board with `acpi=off`. |
+| `core:crypto` needs a freestanding backend `build.odin` injects | Its hash, HKDF, AEAD, signature and X.509 packages import `core:sys/info` and `core:sync`, which have no freestanding build, so they will not compile for Vectra as they ship. `ensure_crypto_backend` copies `toolchain/*_backend_freestanding.odin` into the Odin install before every compile, idempotently, so a Homebrew Odin upgrade that wipes it is repaired on the next build. The stubs report "no CPU features", which is why every crypto package selects its portable software path — the one Vectra wants, since a context switch saves SSE but not AVX. The tables cost image budget: `MAX_PROGRAM_FRAMES` in `kernel/user/user.odin` went to 256 so a crypto program loads. |
 
 **No vendored runtime shim.** The neighbouring `odin-os` project hand-maintains
 a copy of `base:runtime` that must track the compiler. Current Odin ships
@@ -448,15 +450,34 @@ the documents it points at.
    over files, in a namespace forked with `RFNOMNT` as its sandbox.
    Every application serves `ctl`, `dict` and `event`, and `libmui`
    serves them for free. Its first two steps need nothing but the disk.
-8. **The web.** `docs/WEB.md` is the plan, written before its code, and
-   no protocol is invented. Every body fetched goes into a store under
-   its hash, and every link is kept both ways, on this machine. A
-   message is a directory on every network, `upas/fs`'s shape, a union
-   of them is the timeline, and `mothra` reads it all. Mail is the
-   sealed messenger, Delta Chat's way, then ActivityPub and the AT
-   Protocol, then Matrix, then a site from a directory. `webfs` and TLS
-   are built once, for this and the ghost's cloud, and step 1 owns the
-   font past 128 glyphs, which can start today.
+8. **The web, from step 0's wire.** `docs/WEB.md` is the plan, written
+   before its code, and no protocol is invented. **Step 0 is underway,
+   and its TLS 1.3 client is built and proven on the machine.**
+   `sys/libtls` is the engine: the key schedule against RFC 8448's own
+   secrets, the record layer, the handshake's two hellos, and the
+   authenticated flight — a certificate chained to a trust root, its
+   CertificateVerify signature, and both Finished MACs — over Odin's
+   `core:crypto` (which `build.odin` makes compile freestanding; see
+   section 5). `sys/libtls/client.odin` is the transport that reads
+   records off a byte stream, reassembles and demultiplexes them, and
+   seals the replies; `cmd/tlsclient` runs it over `/net/tcp`, verifying
+   the chain against `/lib/tls/roots` and the clock. `tests/crypto`
+   proves each brick on-target against a scripted server whose flight is
+   deliberately fragmented, and mutates the code to see the checks bite.
+
+   **What is left in step 0**, in order: a scripted TLS *server* fixture
+   so `cmd/tlsclient` itself is proven end to end over a real connection
+   (its engine already is — the command's dial, root-load and relay are
+   the only untested glue); the host's CA bundle staged at
+   `/lib/tls/roots` in place of the single test certificate there now;
+   and then `servers/webfs`, the HTTP client as files, with the store of
+   every body by hash, the link index both ways, and the cookie jar. Then
+   step 0's other schemes (Gemini, WebSocket). `webfs` and TLS are built
+   once, for this and the ghost's cloud. After step 0: a message is a
+   directory on every network, `upas/fs`'s shape, a union of them is the
+   timeline, `mothra` reads it all, then mail the Delta Chat way,
+   ActivityPub and the AT Protocol, Matrix, and a site from a directory.
+   Step 1 owns the font past 128 glyphs, which is done.
 
 ### The plans, and the order that avoids a rewrite
 
@@ -560,7 +581,10 @@ order:
    of TLS 1.3, X.509 and HTTP. WEB step 0 builds them, with the store
    and the jar the reader needs, and the ghost's cloud backend is their
    second client. A `tlsclient` written for one host first is one
-   written twice.
+   written twice. **WEB 0 is building them now:** `sys/libtls` and
+   `cmd/tlsclient` are the TLS half, built and proven on the machine;
+   `servers/webfs`, the HTTP half, is still to come. GHOST 4 waits behind
+   both, and rewrites neither.
 
 **The filesystem was not finished, and three plans leaned on the parts
 that were missing.** `docs/KFS.md` deferred six things; two of them were
@@ -931,8 +955,9 @@ sys/                  The ~20 ring 3 libraries. libuser (the syscall wrappers
                       (the screen and the toolkit), libedit (the line
                       discipline), libnet + libndb (dial, the database),
                       libauth + libcrypto (the handshake and its primitives),
+                      libtls (the TLS 1.3 client over core:crypto),
                       libregex, libfmt, libodin, libkbd, libkey, libfont,
-                      libposix (empty; docs/DEVTOOLS.md 8).
+                      libposix (docs/DEVTOOLS.md 7). docs/WEB.md.
 servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
                       consrv/kbdfs/eiafs (the console and its devices reborn in
                       ring 3), intuition (the draw server + compositor),
@@ -944,7 +969,8 @@ cmd/                  ~40 tools, one package and one binary each; the fleet's
                       srv/import/exportfs/listen and auth are here too.
                       docs/CMD.md; tests/tools.rc runs each once.
 tests/                abitest and threadtest (the ABI and libthread from ring
-                      3), plus the crypto and auth test programs.
+                      3), plus the crypto and auth test programs; `tests/crypto`
+                      proves `sys/libtls` end to end against a scripted server.
 scripts/fleet.py      Drives the two-machine bench: boots both, crosses a line,
                       imports a tree, refuses a stranger.
 tools/                genfont.py (the baked font) and ste-lint.py (the
