@@ -148,6 +148,8 @@ user_programs := [?]User_Program {
 	{name = "tlsclient", path = "cmd/tlsclient"},
 	{name = "cryptotest", path = "tests/crypto"},
 	{name = "tlssrv", path = "tests/tlssrv"},
+	{name = "webfs", path = "servers/webfs"},
+	{name = "websrv", path = "tests/websrv"},
 	{name = "factotum", path = "servers/factotum"},
 	{name = "authtest", path = "tests/auth"},
 	{name = "chmod", path = "cmd/chmod"},

@@ -74,6 +74,8 @@ ROOT_NODES := [?]Static_Node {
 	// siblings. `cpu` exports it so a remote command's three are the terminal's.
 	// `docs/FLEET.md` section 7. Appended last so no parent index above shifts.
 	{name = "fd", parent = 0, dir = true},
+	// Where `webfs` is mounted: the web as files, `docs/WEB.md` section 3.
+	{name = "web", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

@@ -10123,6 +10123,10 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 		reap_orphans()
 	}
 
+	// And the web as files, `docs/WEB.md` step 0: a body from a scripted
+	// server lands in the store under its hash, over http and over https.
+	verify_webfs(r)
+
 	// -- Teardown, a remove of one of its files -------------------------------
 
 	// The names first: each stops on a remove of its file, as the stack does.
@@ -10489,6 +10493,181 @@ verify_rc :: proc(r: ^Result) {
 }
 
 @(private = "file") rc_diag: [256]u8
+
+
+/*
+verify_webfs runs `servers/webfs`, the HTTP client as files, against two
+scripted servers on this machine's own stack: `websrv`, plain HTTP with a
+chunked body, and `tlssrv`, which answers a GET over TLS. A conversation is
+taken off `/mnt/web/clone`, the URL written to its `ctl`, the body read to its
+end and the hash after it. The body is the bytes the fixture sent, the hash is
+their sha256, and the store under `/usr/glenda/lib/web` holds the body under
+that hash with a line in `names` naming the URL -- `docs/WEB.md` section 3's
+boot line, "a body from a scripted server lands in the store under its hash".
+*/
+@(private = "file")
+verify_webfs :: proc(r: ^Result) {
+	names := [?]string{"webfs", "-s", "/usr/glenda/lib/web"}
+	argv := new(Argv)
+	if !check(r, argv != nil && argv_from(argv, names[:]), "a record for webfs's arguments") {
+		return
+	}
+	p := start_path(r, "/bin/webfs", "the loader starts webfs, the web as files", argv)
+	if p == nil {
+		return
+	}
+	if !check(r, await_posted("web"), "which posts /srv/web") {
+		finish(r, p, "and webfs is taken down")
+		return
+	}
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/web", "/mnt/web") == vfs.OK, "and the kernel mounts it at /mnt/web") {
+		finish(r, p, "and webfs is taken down")
+		return
+	}
+
+	// This machine's own address and name, for the URLs.
+	local: [64]u8
+	ln := web_read_file("/net/local", local[:])
+	sysname: [64]u8
+	sn := web_read_file("/net/sysname", sysname[:])
+
+	// Plain HTTP, a chunked body.
+	{
+		wargs := [?]string{"websrv", "8080"}
+		wargv := new(Argv)
+		_ = argv_from(wargv, wargs[:])
+		ws := start_path(r, "/bin/websrv", "a scripted HTTP server starts", wargv)
+		if ws != nil {
+			sync.delay(PATIENCE)
+			url_buf: [128]u8
+			url := libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/")
+			body: [1024]u8
+			hash: [80]u8
+			bn, hn, ok := web_fetch(url, body[:], hash[:])
+			check(r, ok && string(body[:bn]) == "hello, web\n", "webfs fetches a chunked body over http and streams it whole")
+			check(r, hn == 65 && string(hash[:64]) == "e65c8086738e71ec1ad09627c56b0c1b90f0cbbf00ff0c253728b094f2bba149", "and its hash is the body's sha256")
+			stored: [1024]u8
+			sn2 := web_read_file("/usr/glenda/lib/web/store/e65c8086738e71ec1ad09627c56b0c1b90f0cbbf00ff0c253728b094f2bba149", stored[:], raw = true)
+			check(r, sn2 == bn && string(stored[:sn2]) == string(body[:bn]), "and the store holds the body under that hash")
+			index: [4096]u8
+			in_ := web_read_file("/usr/glenda/lib/web/names", index[:])
+			check(r, in_ > 0 && libodin.contains(string(index[:in_]), url) && libodin.contains(string(index[:in_]), "e65c8086738e71ec1ad09627c56b0c1b90f0cbbf00ff0c253728b094f2bba149"), "and names has a line for the URL and the hash")
+			check(r, wait(ws, PATIENCE * 5), "and the scripted server, its one connection served, exits")
+			finish(r, ws, "and is taken down")
+		}
+	}
+
+	// HTTPS, through the same trust store tlsclient uses.
+	{
+		targs := [?]string{"tlssrv", "4433"}
+		targv := new(Argv)
+		_ = argv_from(targv, targs[:])
+		ts := start_path(r, "/bin/tlssrv", "a scripted TLS server starts for the web", targv)
+		if ts != nil {
+			sync.delay(PATIENCE)
+			url_buf: [128]u8
+			url := libodin_cat(url_buf[:], "https://", string(sysname[:sn]), ":4433/")
+			body: [1024]u8
+			hash: [80]u8
+			bn, hn, ok := web_fetch(url, body[:], hash[:])
+			check(r, ok && string(body[:bn]) == "hello, secure web\n", "webfs fetches a body over https, the chain verified against the trust store")
+			check(r, hn == 65 && string(hash[:64]) == "43e8e41c52a64133b65e76d326756f682ffb1e2ce2293f8d61374529d1f08f70", "and its hash is that body's sha256")
+			check(r, wait(ts, PATIENCE * 5), "and the TLS server exits")
+			finish(r, ts, "and is taken down")
+		}
+	}
+
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
+	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(p, PATIENCE * 5), "and webfs, its pipe gone, exits")
+	finish(r, p, "and is taken down")
+}
+
+// web_read_file reads a whole small file into `into` and answers the count,
+// or -1. Newlines at the end are trimmed unless `raw`, since a name file ends
+// with one and a stored body is compared byte for byte.
+@(private = "file")
+web_read_file :: proc(path: string, into: []u8, raw := false) -> int {
+	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
+	if err != vfs.OK {
+		return -1
+	}
+	defer vfs.chan_close(c)
+	total := 0
+	for total < len(into) {
+		n, rerr := vfs.chan_read(c, u64(total), into[total:])
+		if rerr != vfs.OK || n == 0 {
+			break
+		}
+		total += int(n)
+	}
+	for !raw && total > 0 && (into[total - 1] == '\n' || into[total - 1] == '\r') {
+		total -= 1
+	}
+	return total
+}
+
+// libodin_cat joins strings into `buf`, the way libuser.cat_into does.
+@(private = "file")
+libodin_cat :: proc(buf: []u8, parts: ..string) -> string {
+	sink := libodin.sink_from(buf)
+	for part in parts {
+		libodin.put_str(&sink, part)
+	}
+	return libodin.str(&sink)
+}
+
+/*
+web_fetch drives one conversation of `/mnt/web`: a number off `clone`, the URL
+into `ctl`, the body read to its end, then the hash. Answers the body's and the
+hash's lengths (the hash with its newline), and whether every step held.
+*/
+@(private = "file") web_why: string
+
+@(private = "file")
+web_fetch :: proc(url: string, body: []u8, hash: []u8) -> (bn: int, hn: int, ok: bool) {
+	num: [16]u8
+	n := web_read_file("/mnt/web/clone", num[:])
+	if n <= 0 {
+		web_why = "clone"
+		return 0, 0, false
+	}
+	conv := string(num[:n])
+	path: [128]u8
+	line: [1100]u8
+	if !net_file_write(libodin_cat(path[:], "/mnt/web/", conv, "/ctl"), libodin_cat(line[:], "url ", url)) {
+		web_why = "ctl"
+		return 0, 0, false
+	}
+	c, err := vfs.open_path(vfs.boot_namespace, libodin_cat(path[:], "/mnt/web/", conv, "/body"), vfs.O_RDONLY)
+	if err != vfs.OK {
+		web_why = "open body"
+		return 0, 0, false
+	}
+	web_why = "read body"
+	for bn < len(body) {
+		got, rerr := vfs.chan_read(c, u64(bn), body[bn:])
+		if rerr != vfs.OK {
+			vfs.chan_close(c)
+			return bn, 0, false
+		}
+		if got == 0 {
+			break
+		}
+		bn += int(got)
+	}
+	vfs.chan_close(c)
+	h, herr := vfs.open_path(vfs.boot_namespace, libodin_cat(path[:], "/mnt/web/", conv, "/hash"), vfs.O_RDONLY)
+	if herr != vfs.OK {
+		return bn, 0, false
+	}
+	got, rerr := vfs.chan_read(h, 0, hash)
+	vfs.chan_close(h)
+	if rerr != vfs.OK {
+		return bn, 0, false
+	}
+	return bn, int(got), true
+}
 
 /*
 verify_tools runs the shell on `/lib/tests/tools.rc`, which checks every

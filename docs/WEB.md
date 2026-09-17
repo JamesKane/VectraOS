@@ -213,9 +213,28 @@ every key in it matches. `tests/tlssrv` stands a scripted TLS 1.3 server
 on this machine's own stack, over `sys/libtls`'s server side, and
 `tests/web.rc` has `tlsclient` dial it by this machine's name, verify its
 chain against `/lib/tls/roots` and the clock, and relay a line each way.
-A body from a scripted server through a pipe lands in the store under
-the hash the test computes. A second fetch of the same URL adds a line
-to `names` and no file to the store.
+`webfs` fetches a chunked body from `tests/websrv` over http and a body
+from `tlssrv` over https, each read to its end off `body` and landing in
+the store under the hash `hash` answers, with a line in `names`. A
+second fetch of the same URL adds a line to `names` and no file to the
+store. By hand: `ipconfig ether0`, then a GET piped into `tlsclient
+example.com 443` answers with the page.
+
+**What `webfs` does today, and what it does not yet.** HTTP/1.1 over
+`/net/tcp`, `https` over `sys/libtls`, a body by Content-Length, chunked
+or to the close, `method`, `header` and `postbody`, and the store with
+`names`. A conversation outlives its descriptors, as `netfs`'s do, so a
+shell writes `ctl`, reads `body` and reads `hash` as three commands; a
+finished one with no descriptor is reclaimed when the table is full, and
+`hangup` frees it at once. The first open of `body`, `headers`, `status`
+or `hash` starts the fetch, on a thread with an io proc of its own, so
+the serve loop never parks on the network. Not yet: gzip (Odin's
+`core:compress/zlib` inflates freestanding, and the gzip frame is a
+header and a trailer around it), a connection kept for the next request,
+the cookie jar, the `links` index (the reader's), the Gemini scheme and
+the WebSocket. One thing to know: `libnet.dial` connects with a plain
+system call, not through the io proc, so the serve loop waits out the
+connect's round trip; a dial through an io proc is the fix.
 
 ## 4. The message shape, and the union that is a timeline
 

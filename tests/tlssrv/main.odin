@@ -34,6 +34,26 @@ CERT_PRIV :: [32]u8{
 	0xce, 0xcf, 0xb3, 0xa8, 0x8d, 0x01, 0xb7, 0x43, 0xda, 0x72, 0x23, 0x9b, 0xa3, 0x6b, 0xaa, 0x3c,
 }
 
+// What an HTTP request is answered with: a body by Content-Length.
+HTTP_RESPONSE :: "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\nConnection: close\r\n\r\nhello, secure web\n"
+
+// request_whole says whether the client's request has all arrived: a line for
+// the echo, or an HTTP request through its empty line.
+request_whole :: proc "contextless" (req: []u8) -> bool #no_bounds_check {
+	if len(req) == 0 {
+		return false
+	}
+	if len(req) >= 4 && string(req[:4]) == "GET " {
+		for i in 0 ..< len(req) - 1 {
+			if req[i] == '\n' && (req[i + 1] == '\n' || (i + 2 < len(req) && req[i + 1] == '\r' && req[i + 2] == '\n')) {
+				return true
+			}
+		}
+		return false
+	}
+	return req[len(req) - 1] == '\n'
+}
+
 // One connection's state and buffers: large, so it lives on the heap.
 Fixture :: struct {
 	srv:         libtls.Server,
@@ -42,7 +62,7 @@ Fixture :: struct {
 	plain:       [libtls.MAX_CIPHERTEXT]u8,
 	tx:          [libtls.REC_CAP]u8,
 	msg:         [2048]u8,
-	request:     [512]u8,
+	request:     [2048]u8,
 	request_len: int,
 }
 
@@ -210,7 +230,7 @@ start :: proc "c" (block: ^abi.Args) {
 
 	// The client's Finished, then its request: sealed records, routed by the
 	// inner type once opened. A change_cipher_spec on the wire is dropped.
-	for f.srv.state != .Connected || f.request_len == 0 || f.request[f.request_len - 1] != '\n' {
+	for f.srv.state != .Connected || !request_whole(f.request[:f.request_len]) {
 		wire, full, rok = recv_record(f)
 		if !rok {
 			fail("the stream ended early")
@@ -241,9 +261,15 @@ start :: proc "c" (block: ^abi.Args) {
 		}
 	}
 
-	// The answer, and a clean end.
+	// The answer, and a clean end. A line is echoed; an HTTP request gets a
+	// small page, so `webfs` can fetch over https from this same fixture.
 	reply: [600]u8
-	text := libuser.cat_into(reply[:], "you said: ", string(f.request[:f.request_len]))
+	text: string
+	if f.request_len >= 4 && string(f.request[:4]) == "GET " {
+		text = HTTP_RESPONSE
+	} else {
+		text = libuser.cat_into(reply[:], "you said: ", string(f.request[:f.request_len]))
+	}
 	send_sealed(f, libtls.CONTENT_APPLICATION_DATA, transmute([]u8)text, "send the reply")
 	alert := [2]u8{1, 0} // warning, close_notify
 	send_sealed(f, libtls.CONTENT_ALERT, alert[:], "send close_notify")
