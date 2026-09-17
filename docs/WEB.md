@@ -683,16 +683,27 @@ Boot line: a page of each kind lays out to the numbers, a click plumbs,
 and a rune past 128 is a glyph.
 
 **Where it stands.** The font past 128 is done. `sys/libdoc` is the page
-as blocks, the shape every parser makes and one layout turns into rows
-of a width: gemtext's line types, since they are the readable minimum a
-richer format reduces to. `sys/libgemtext` and `sys/libmark` parse into
-it, and `tests/doc` lays a page of each out to the numbers every boot.
-`apps/mothra` is the reader's first cut: a page from a URL through
-`/mnt/web` or a file, laid out to the window's columns and shown as the
-toolkit's list, a press on a link's row following it, `b` back, `j`,
-`k`, `n`, `p` scrolling, and the boot line opens it on a gemtext page.
-Not yet: `sys/libhtml`, images, the column, and the plumber -- a click
-follows its link inside the reader until `docs/GHOST.md` step 2 lands.
+as blocks, the shape every parser makes, and one layout turns it into
+rows of a width. The blocks are gemtext's line types, since they are the
+readable minimum a richer format reduces to. `sys/libgemtext` and
+`sys/libmark` parse into it, and `tests/doc` lays a page of each out to
+the numbers every boot.
+
+`apps/mothra` is the reader's first cut. A page from a URL through
+`/mnt/web` or a file is laid out to the window's columns and shown as
+the toolkit's list. A press on a link's row follows it, `b` goes back,
+`j`, `k`, `n` and `p` scroll, and the boot line opens it on a gemtext
+page.
+
+`sys/libhtml` is the tokenizer above and a reader's builder rather than
+a tree. Text gathers into a paragraph, a block element flushes it, and
+the element it sits in says the kind. A link follows its paragraph as a
+block. A paragraph that is nothing but a link is the link, a heading's
+own `#` anchor goes, and a table row is its cells parted by a bar. It
+reads example.com, a Wikipedia article and the Odin overview to rows
+that read, and `tests/doc` holds a page of it. Not yet: forms, images,
+the column, and the plumber. A click follows its link inside the reader
+until `docs/GHOST.md` step 2 lands.
 
 ### Step 2: the shape, and feeds
 

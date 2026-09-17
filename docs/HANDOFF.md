@@ -493,13 +493,20 @@ the documents it points at.
    the WebSocket, the `links` index, and Gemini's trust-on-first-use.
 
    **Step 1, the reader, has begun.** `sys/libdoc` is the page as blocks
-   and one layout to rows; `sys/libgemtext` and `sys/libmark` parse into
-   it; `tests/doc` lays a page of each out to the numbers; `apps/mothra`
-   shows a page from a URL or a file as the toolkit's list and follows a
-   link's row, and the boot line opens it on `/lib/tests/page.gmi`. The
-   toolkit gained `Window.on_key`, a program's first look at a key. Next:
-   `sys/libhtml`, then the plumber (`docs/GHOST.md` step 2) so a click
-   plumbs, then images and the column.
+   and one layout to rows. `sys/libgemtext` and `sys/libmark` parse into
+   it, and `tests/doc` lays a page of each out to the numbers.
+   `apps/mothra` shows a page from a URL or a file as the toolkit's list
+   and follows a link's row, and the boot line opens it on
+   `/lib/tests/page.gmi`. The toolkit gained `Window.on_key`, a program's
+   first look at a key.
+
+   `sys/libhtml` is the WHATWG tokenizer cut to a page's states, and a
+   reader's builder rather than a tree. Paragraphs, headings, items,
+   quotes, preformatted text, links as blocks after their paragraph,
+   images, rules and table rows. The head, scripts and styles are
+   dropped, and a page that is a menu of links is one row each. `mothra`
+   reads `text/html`. Next: the plumber (`docs/GHOST.md` step 2) so a
+   click plumbs, then images, forms and the column.
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
    directory on every network, `upas/fs`'s shape, a union of them is the
@@ -984,6 +991,8 @@ sys/                  The ~20 ring 3 libraries. libuser (the syscall wrappers
                       discipline), libnet + libndb (dial, the database),
                       libauth + libcrypto (the handshake and its primitives),
                       libtls (the TLS 1.3 client over core:crypto),
+                      libdoc + libgemtext + libmark + libhtml (a page as
+                      blocks, and the parsers into it, docs/WEB.md 1),
                       libregex, libfmt, libodin, libkbd, libkey, libfont,
                       libposix (docs/DEVTOOLS.md 7). docs/WEB.md.
 servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
