@@ -491,6 +491,15 @@ the documents it points at.
 
    **What is left in step 0**: a connection kept for the next request,
    the WebSocket, the `links` index, and Gemini's trust-on-first-use.
+
+   **Step 1, the reader, has begun.** `sys/libdoc` is the page as blocks
+   and one layout to rows; `sys/libgemtext` and `sys/libmark` parse into
+   it; `tests/doc` lays a page of each out to the numbers; `apps/mothra`
+   shows a page from a URL or a file as the toolkit's list and follows a
+   link's row, and the boot line opens it on `/lib/tests/page.gmi`. The
+   toolkit gained `Window.on_key`, a program's first look at a key. Next:
+   `sys/libhtml`, then the plumber (`docs/GHOST.md` step 2) so a click
+   plumbs, then images and the column.
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
    directory on every network, `upas/fs`'s shape, a union of them is the
@@ -983,7 +992,8 @@ servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
                       netfs/cs/dns (the network as files), fatfs/kfs (the ESP
                       and the writable disk), factotum (keys and the handshake),
                       webfs (the web as files, docs/WEB.md).
-apps/                 rc (the shell), terminal, filemgr, muidemo, tracker.
+apps/                 rc (the shell), terminal, filemgr, muidemo, tracker,
+                      mothra (the reader, docs/WEB.md step 1).
                       docs/RC.md, docs/DRAW.md, docs/WORKBENCH.md.
 cmd/                  ~40 tools, one package and one binary each; the fleet's
                       srv/import/exportfs/listen and auth are here too.
