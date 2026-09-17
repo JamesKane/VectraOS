@@ -27,6 +27,7 @@ Client_State :: enum {
 	Start,
 	Wait_Server_Hello,
 	Wait_Flight,
+	Send_Finished,
 	Connected,
 	Failed,
 }
@@ -45,6 +46,22 @@ Conn :: struct {
 	secrets:     Secrets,
 	c_hs_secret: [HASH_LEN]u8,
 	s_hs_secret: [HASH_LEN]u8,
+
+	// The application traffic secrets, derived when the server's Finished lands.
+	c_ap_secret: [HASH_LEN]u8,
+	s_ap_secret: [HASH_LEN]u8,
+
+	// The server leaf's public key, captured at Certificate so CertificateVerify
+	// can check its signature. Held as raw bytes -- not an x509.Certificate whose
+	// slices would point into the caller's message buffer -- so the value outlives
+	// the buffer the Certificate message was read from.
+	leaf_algo:      Leaf_Algo,
+	leaf_ec:        [65]u8, // ECDSA point (0x04||X||Y) or Ed25519 key
+	leaf_ec_len:    int,
+	leaf_rsa_n:     [512]u8, // up to RSA-4096
+	leaf_rsa_n_len: int,
+	leaf_rsa_e:     [8]u8,
+	leaf_rsa_e_len: int,
 
 	// Record keys: `write` seals what this end sends, `read` opens what it gets.
 	write: Record_Keys,

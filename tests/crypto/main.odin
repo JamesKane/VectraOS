@@ -19,6 +19,8 @@ import "core:crypto/hash"
 import "core:crypto/hmac"
 import "core:crypto/hkdf"
 import "core:crypto/ecdsa"
+import "core:crypto/x509"
+import "core:time"
 import "vsys:libauth"
 import "vsys:libtls"
 
@@ -74,6 +76,43 @@ tls_ch_pub :: proc(body: []u8) -> []u8 {
 		}
 	}
 	return nil
+}
+
+// A real ECDSA P-256 self-signed certificate (DER) and its private scalar,
+// generated with openssl (CN=vectra.test, valid 2020-2040). The flight test
+// stands a server up with it: it signs a real CertificateVerify the client
+// checks through x509 + ecdsa, exactly as a `tlsclient` will against the wire.
+CERT_DER :: [389]u8{
+	0x30, 0x82, 0x01, 0x81, 0x30, 0x82, 0x01, 0x27, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x14, 0x08,
+	0x8d, 0xaa, 0x88, 0x9b, 0x15, 0x11, 0x32, 0xca, 0xb3, 0x55, 0x34, 0x62, 0xf7, 0xc9, 0x31, 0x99,
+	0x80, 0x1b, 0xee, 0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x30,
+	0x16, 0x31, 0x14, 0x30, 0x12, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x0b, 0x76, 0x65, 0x63, 0x74,
+	0x72, 0x61, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x30, 0x1e, 0x17, 0x0d, 0x32, 0x30, 0x30, 0x31, 0x30,
+	0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5a, 0x17, 0x0d, 0x34, 0x30, 0x30, 0x31, 0x30, 0x31,
+	0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5a, 0x30, 0x16, 0x31, 0x14, 0x30, 0x12, 0x06, 0x03, 0x55,
+	0x04, 0x03, 0x0c, 0x0b, 0x76, 0x65, 0x63, 0x74, 0x72, 0x61, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x30,
+	0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86,
+	0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04, 0xb9, 0x58, 0x70, 0xc4, 0x2e, 0xaf,
+	0x42, 0xc2, 0x16, 0x94, 0xa6, 0xd5, 0x62, 0x32, 0x2c, 0x66, 0x94, 0x88, 0x85, 0x05, 0x87, 0x73,
+	0x03, 0x3c, 0x77, 0x26, 0xa4, 0xdb, 0xb8, 0x45, 0xf8, 0xa4, 0x7b, 0x8f, 0xa6, 0x56, 0xf4, 0xd7,
+	0x1a, 0xd2, 0x8c, 0x8c, 0x5d, 0x1b, 0x75, 0xf0, 0xb6, 0xc3, 0x8b, 0xfb, 0xdf, 0xc1, 0x54, 0x49,
+	0x86, 0xdb, 0x44, 0xf5, 0xf8, 0xf5, 0xc6, 0xc3, 0x9b, 0x00, 0xa3, 0x53, 0x30, 0x51, 0x30, 0x1d,
+	0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x00, 0xc7, 0xb6, 0xab, 0xb3, 0x5c, 0xa3,
+	0xe2, 0xfb, 0xde, 0x37, 0x89, 0x74, 0x81, 0x34, 0x05, 0x57, 0x9b, 0x4f, 0xdc, 0x30, 0x1f, 0x06,
+	0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x00, 0xc7, 0xb6, 0xab, 0xb3, 0x5c,
+	0xa3, 0xe2, 0xfb, 0xde, 0x37, 0x89, 0x74, 0x81, 0x34, 0x05, 0x57, 0x9b, 0x4f, 0xdc, 0x30, 0x0f,
+	0x06, 0x03, 0x55, 0x1d, 0x13, 0x01, 0x01, 0xff, 0x04, 0x05, 0x30, 0x03, 0x01, 0x01, 0xff, 0x30,
+	0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x03, 0x48, 0x00, 0x30, 0x45,
+	0x02, 0x20, 0x4d, 0x80, 0x0b, 0x98, 0xb5, 0x63, 0xff, 0x8f, 0x2d, 0x58, 0x4e, 0x22, 0x66, 0xcb,
+	0xd3, 0xb9, 0xb7, 0x1f, 0x54, 0xc8, 0xd1, 0xbb, 0x6c, 0xc6, 0xf5, 0x96, 0x82, 0x66, 0xbb, 0x44,
+	0xb6, 0x89, 0x02, 0x21, 0x00, 0xd7, 0x21, 0x14, 0x5a, 0x7f, 0x73, 0x98, 0xde, 0x48, 0x47, 0x6d,
+	0x50, 0x75, 0x88, 0xad, 0x27, 0xdf, 0x58, 0x0e, 0x1f, 0xa1, 0x91, 0xc2, 0x66, 0xab, 0xec, 0xd2,
+	0x85, 0x40, 0x8f, 0x1c, 0xcb,
+}
+
+CERT_PRIV :: [32]u8{
+	0x92, 0xf2, 0x9e, 0x14, 0x1a, 0x76, 0xb7, 0xa3, 0x24, 0x15, 0x22, 0x91, 0x8e, 0x97, 0x45, 0x9f,
+	0xce, 0xcf, 0xb3, 0xa8, 0x8d, 0x01, 0xb7, 0x43, 0xda, 0x72, 0x23, 0x9b, 0xa3, 0x6b, 0xaa, 0x3c,
 }
 
 @(export, link_name = "_start")
@@ -358,11 +397,154 @@ start :: proc "c" (block: ^abi.Args) {
 		fm, fct, fok := libtls.open_record(&c.read, frec[:fn], fout[:])
 		want(fok && fct == libtls.CONTENT_HANDSHAKE && string(fout[:fm]) == string(flight), "and a record the server seals opens on the client")
 
+		// -- The TLS 1.3 encrypted flight: the half that authenticates the server.
+		//
+		// The synthetic server holds a real ECDSA P-256 certificate. It sends the
+		// sealed flight -- EncryptedExtensions, the Certificate, a
+		// CertificateVerify it signs over the live transcript, and its Finished.
+		// The client opens each record under the server's handshake key and runs
+		// the flight parsers, which verify the chain to a trust root, the
+		// signature, and the MAC. Then the client's own Finished crosses and
+		// application data flows under the application keys. This is the first
+		// on-target proof of the authentication path -- x509.verify_chain and
+		// ecdsa.verify_asn1 over a real certificate and a real, live signature.
+
+		// The trust store: the leaf is its own root (self-signed), so a parse of
+		// the same DER is the one anchor; a `tlsclient` reads /lib/tls/roots.
+		cert_der := CERT_DER
+		rootc, root_perr := x509.parse(cert_der[:])
+		want(root_perr == .None, "the test certificate parses as a trust root")
+		roots := []^x509.Certificate{&rootc}
+		now := time.unix(1893456000, 0) // 2030-01-01, inside the cert's 2020-2040 window
+
+		// The server's signing key.
+		priv_bytes := CERT_PRIV
+		skey: ecdsa.Private_Key
+		want(ecdsa.private_key_set_bytes(&skey, .SECP256R1, priv_bytes[:]), "the certificate's private key sets")
+
+		srec: [1024]u8
+		sout: [1024]u8
+
+		// 1) EncryptedExtensions: an empty extension block.
+		ee := [?]u8{libtls.HS_ENCRYPTED_EXTENSIONS, 0x00, 0x00, 0x02, 0x00, 0x00}
+		libtls.transcript_update(&srv, ee[:])
+		sn := libtls.seal_record(&srv.write, libtls.CONTENT_HANDSHAKE, ee[:], srec[:])
+		on, _, ook := libtls.open_record(&c.read, srec[:sn], sout[:])
+		want(ook && libtls.encrypted_extensions(&c, sout[:on]), "the client opens and accepts EncryptedExtensions")
+
+		// 2) Certificate: one entry, the leaf DER, no per-entry extensions.
+		cmsgbuf: [512]u8
+		certw := libtls.writer(cmsgbuf[:])
+		libtls.w_u8(&certw, libtls.HS_CERTIFICATE)
+		cm := libtls.w_open24(&certw)
+		libtls.w_u8(&certw, 0) // certificate_request_context, empty
+		cl := libtls.w_open24(&certw)
+		ce := libtls.w_open24(&certw);libtls.w_bytes(&certw, cert_der[:]);libtls.w_close24(&certw, ce)
+		cx := libtls.w_open16(&certw);libtls.w_close16(&certw, cx)
+		libtls.w_close24(&certw, cl)
+		libtls.w_close24(&certw, cm)
+		cert_msg := cmsgbuf[:certw.pos]
+		libtls.transcript_update(&srv, cert_msg)
+		sn = libtls.seal_record(&srv.write, libtls.CONTENT_HANDSHAKE, cert_msg, srec[:])
+		on, _, ook = libtls.open_record(&c.read, srec[:sn], sout[:])
+		want(ook && libtls.certificate(&c, sout[:on], roots, now, "", context.allocator), "the client opens the Certificate and verifies the chain to the root")
+
+		// 3) CertificateVerify: the server signs the transcript through Certificate.
+		th_cert: [32]u8
+		libtls.transcript_snapshot(&srv, th_cert[:])
+		cv_content: [64 + len(libtls.CV_CONTEXT_SERVER) + 1 + 32]u8
+		libtls.build_cert_verify_content(th_cert[:], cv_content[:])
+		cvsig, cvsok := ecdsa.sign_asn1(&skey, .SHA256, cv_content[:], context.allocator, true)
+		want(cvsok, "the server signs its CertificateVerify")
+		cvbuf: [256]u8
+		cvw := libtls.writer(cvbuf[:])
+		libtls.w_u8(&cvw, libtls.HS_CERTIFICATE_VERIFY)
+		cvm := libtls.w_open24(&cvw)
+		libtls.w_u16(&cvw, libtls.SIG_ECDSA_SECP256R1_SHA256)
+		cvs := libtls.w_open16(&cvw);libtls.w_bytes(&cvw, cvsig);libtls.w_close16(&cvw, cvs)
+		libtls.w_close24(&cvw, cvm)
+		cv_msg := cvbuf[:cvw.pos]
+
+		// The mutation check: a second, identically driven client must reject a
+		// CertificateVerify whose signature is flipped by a single bit. It stands
+		// in for a forged proof of possession -- the guard that makes the whole
+		// handshake mean something.
+		{
+			cn: libtls.Conn
+			cnb: [512]u8
+			_ = libtls.client_hello(&cn, cpriv, crand, "vectra.test", cnb[:])
+			_ = libtls.server_hello(&cn, lsh_msg)
+			_ = libtls.encrypted_extensions(&cn, ee[:])
+			_ = libtls.certificate(&cn, cert_msg, roots, now, "", context.allocator)
+			badcv := cvbuf
+			badcv[cvw.pos - 1] ~= 0x01
+			want(!libtls.certificate_verify(&cn, badcv[:cvw.pos]) && cn.state == .Failed, "a tampered CertificateVerify signature is refused")
+		}
+
+		libtls.transcript_update(&srv, cv_msg)
+		sn = libtls.seal_record(&srv.write, libtls.CONTENT_HANDSHAKE, cv_msg, srec[:])
+		on, _, ook = libtls.open_record(&c.read, srec[:sn], sout[:])
+		want(ook && libtls.certificate_verify(&c, sout[:on]), "the client opens CertificateVerify and the server signature verifies over the live transcript")
+
+		// 4) Server Finished: MAC over the transcript through CertificateVerify.
+		th_cv: [32]u8
+		libtls.transcript_snapshot(&srv, th_cv[:])
+		svd: [32]u8
+		libtls.finished_mac(srv.s_hs_secret[:], th_cv[:], svd[:])
+		finbuf: [64]u8
+		fw := libtls.writer(finbuf[:])
+		libtls.w_u8(&fw, libtls.HS_FINISHED)
+		fmk := libtls.w_open24(&fw);libtls.w_bytes(&fw, svd[:]);libtls.w_close24(&fw, fmk)
+		fin_msg := finbuf[:fw.pos]
+		libtls.transcript_update(&srv, fin_msg)
+		sn = libtls.seal_record(&srv.write, libtls.CONTENT_HANDSHAKE, fin_msg, srec[:])
+		on, _, ook = libtls.open_record(&c.read, srec[:sn], sout[:])
+		want(ook && libtls.finished(&c, sout[:on]) && c.state == .Send_Finished, "the client opens the server Finished and its MAC verifies")
+
+		// 5) The client's Finished, sealed under the handshake key and checked by
+		// the server, then both ends switch to the application keys.
+		cfinbuf: [64]u8
+		cfn := libtls.client_finished(&c, cfinbuf[:])
+		want(cfn > 0, "the client writes its Finished")
+		th_sf: [32]u8
+		libtls.transcript_snapshot(&srv, th_sf[:])
+		cvd: [32]u8
+		libtls.finished_mac(srv.c_hs_secret[:], th_sf[:], cvd[:])
+		cfr := libtls.reader(cfinbuf[:cfn])
+		_, cfbody, _ := libtls.read_handshake(&cfr)
+		want(len(cfbody) == 32 && libtls.slice_eq(cfbody, cvd[:]), "and the server accepts the client Finished MAC")
+
+		libtls.enter_application(&c)
+		want(c.state == .Connected, "the client reaches the connected state")
+
+		// The server derives the same application secrets, over the same transcript.
+		srv_c_ap: [32]u8
+		srv_s_ap: [32]u8
+		libtls.derive_secret(srv.secrets.master[:], "c ap traffic", th_sf[:], srv_c_ap[:])
+		libtls.derive_secret(srv.secrets.master[:], "s ap traffic", th_sf[:], srv_s_ap[:])
+		want(srv_c_ap == c.c_ap_secret && srv_s_ap == c.s_ap_secret, "both ends reach the same application traffic secrets")
+
+		// Application data each way, under the application keys.
+		srv_ap_write: libtls.Record_Keys
+		libtls.record_keys(&srv_ap_write, srv_s_ap[:])
+		srv_ap_read: libtls.Record_Keys
+		libtls.record_keys(&srv_ap_read, srv_c_ap[:])
+		appmsg := transmute([]u8)string("GET / HTTP/1.1")
+		arec: [128]u8
+		aout: [128]u8
+		an := libtls.seal_record(&srv_ap_write, libtls.CONTENT_APPLICATION_DATA, appmsg, arec[:])
+		am, act, aok := libtls.open_record(&c.read, arec[:an], aout[:])
+		want(aok && act == libtls.CONTENT_APPLICATION_DATA && string(aout[:am]) == string(appmsg), "server application data opens on the client")
+		reply := transmute([]u8)string("HTTP/1.1 200 OK")
+		an = libtls.seal_record(&c.write, libtls.CONTENT_APPLICATION_DATA, reply, arec[:])
+		am, act, aok = libtls.open_record(&srv_ap_read, arec[:an], aout[:])
+		want(aok && act == libtls.CONTENT_APPLICATION_DATA && string(aout[:am]) == string(reply), "and the client's application data opens on the server")
+
 		// A breadcrumb on the console: the kernel's self-test reads this
 		// program's exit word, not this stream, so a line here reaches the boot
 		// log and says the substrate ran on the machine. A failed `want` above
 		// exits before it, so its presence is the on-target pass.
-		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 substrate + schedule + records + messages + handshake keys ok\n"))
+		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 client handshake -- schedule, records, messages, keys, and the authenticated flight ok\n"))
 	}
 
 	libuser.exits("ok")
