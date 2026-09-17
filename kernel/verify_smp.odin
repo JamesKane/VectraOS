@@ -524,7 +524,23 @@ verify_smp :: proc() {
 	// idle thread next runs. Waited for rather than assumed.
 	libodin.check(&r, sync.await(sched.all_reaped, nil, PATIENCE), "every core reaped its dead")
 	sched.reap()
-	libodin.check(&r, mem.live_objects(mem.heap_stats()) == pin_before, "and the heap is balanced")
+	/*
+	A corpse in flight reads as one object too many: a record the reaper
+	frees a tick or two after `all_reaped` said every core had reaped, so a
+	single read of the heap here landed on it one boot in several, and every
+	boot once the userland phase grew. Waited out, bounded, so a true leak
+	still fails: the bracket is read until it balances or the patience ends.
+	*/
+	balanced := false
+	for _ in 0 ..< PATIENCE * 5 {
+		if mem.live_objects(mem.heap_stats()) == pin_before {
+			balanced = true
+			break
+		}
+		sync.delay(1)
+		sched.reap()
+	}
+	libodin.check(&r, balanced, "and the heap is balanced")
 
 	report_smp(&r)
 }
