@@ -1,19 +1,20 @@
 /*
 mothra -- the reader, `docs/WEB.md` section 5.
 
-`mothra URL` or `mothra file` shows a page in a window. Gemtext, markdown or
-plain text is laid out by `sys/libdoc` to the window's columns and shown as
-rows, one selected. A press on a link's row follows it, and the page it
-leads to takes the window. `b` goes back, `j` and `k` move a row, `n` and
-`p` a page, `r` fetches again, `q` and Escape close. A URL is fetched
-through `/mnt/web`, `servers/webfs`. So every scheme it speaks is one this
-reads, and the page lands in the store on the way. A file is read from the
-namespace, its kind by its suffix.
+`mothra URL` or `mothra file` shows a page in a window. Gemtext, markdown,
+HTML or plain text is laid out by `sys/libdoc` to the window's columns and
+shown as rows, one selected. A press on a link's row follows it, and the
+page it leads to takes the window. `b` goes back, `j` and `k` move a row,
+`n` and `p` a page, `r` fetches again, `q` and Escape close.
+
+A URL is fetched through `/mnt/web`, `servers/webfs`. So every scheme it
+speaks is one this reads, and the page lands in the store on the way. A
+file is read from the namespace, its kind by its suffix.
 
 This is the reader's first cut. The toolkit's list is the page, so every
 row wears one face. A click follows a link itself rather than through the
-plumber, which `docs/GHOST.md` step 2 has yet to build. The HTML
-subset, images, messages and the column come next.
+plumber, which `docs/GHOST.md` step 2 has yet to build. Images, messages
+and the column come next.
 */
 package mothra
 
@@ -22,6 +23,7 @@ import "base:runtime"
 import "vsys:abi"
 import "vsys:libdoc"
 import "vsys:libgemtext"
+import "vsys:libhtml"
 import "vsys:libmark"
 import "vsys:libmui"
 import "vsys:libthread"
@@ -50,6 +52,7 @@ Kind :: enum {
 	Plain,
 	Gemtext,
 	Markdown,
+	Html,
 }
 
 @(export, link_name = "_start")
@@ -276,6 +279,8 @@ load :: proc "contextless" (target: string) -> bool {
 		libgemtext.parse(&doc, string(text))
 	case .Markdown:
 		libmark.parse(&doc, string(text))
+	case .Html:
+		libhtml.parse(&doc, string(text))
 	case .Plain:
 		parse_plain(&doc, string(text))
 	}
@@ -306,6 +311,9 @@ kind_of_suffix :: proc "contextless" (path: string) -> Kind {
 	if ends_with(path, ".md") || ends_with(path, ".markdown") {
 		return .Markdown
 	}
+	if ends_with(path, ".html") || ends_with(path, ".htm") {
+		return .Html
+	}
 	return .Plain
 }
 
@@ -315,6 +323,9 @@ kind_of_type :: proc "contextless" (ctype: string, url: string) -> Kind {
 	}
 	if starts_with(ctype, "text/markdown") {
 		return .Markdown
+	}
+	if starts_with(ctype, "text/html") || starts_with(ctype, "application/xhtml") {
+		return .Html
 	}
 	if len(ctype) == 0 {
 		return kind_of_suffix(url)
@@ -337,7 +348,7 @@ starts_with :: proc "contextless" (s, prefix: string) -> bool {
 /*
 fetch takes a conversation off `/mnt/web/clone`, writes the URL, and reads
 the body to its end, then the status and the headers. It answers the body
-with the kind its media type says. When nothing has mounted `/mnt/web` yet,
+with the kind its media type says. When `/mnt/web` is not mounted yet,
 it is mounted here from `/srv/web`.
 */
 fetch :: proc(url: string) -> (text: []u8, kind: Kind, ok: bool) {

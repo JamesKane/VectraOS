@@ -4,19 +4,20 @@ libdoc -- a page as blocks, and the rows it lays out to.
 `docs/WEB.md` section 5's reader draws eight kinds of thing, and the first
 four are documents: gemtext, markdown, HTML and plain text. Each parser turns
 its bytes into the same shape, a `Doc` of `Block`s. One layout turns that
-into rows of a width. The reader shows the rows, and a test counts them. So a parser
-knows its format and nothing of the screen, and the screen knows rows and
-nothing of a format. Gemtext's line types are the shape, because they are the
-readable minimum every richer format reduces to. A heading with a level, a
-paragraph, a link on its own line, a list item, a quote, preformatted text,
-an image, a rule.
+into rows of a width. The reader shows the rows, and a test counts them. So a
+parser knows its format and nothing of the screen, and the screen knows rows
+and nothing of a format.
+
+Gemtext's line types are the shape, because they are the readable minimum
+every richer format reduces to. A heading with a level, a paragraph, a link
+on its own line, a list item, a quote, preformatted text, an image, a rule.
 
 A `Doc` owns the text of its blocks in one buffer, so a parser may join
 lines or strip markers and the source can go. Blocks and rows name their
 text by offset, which survives the buffer growing. `layout` wraps each block
-at a column count, with the prefix its kind wears (`# ` for a heading, `=> `
-for a link, `* ` for an item, `> ` for a quote). The continuation rows are
-indented under it. Preformatted text is cut at the width, never wrapped.
+at a column count, behind the prefix its kind wears. `# ` for a heading,
+`=> ` for a link, `* ` for an item, `> ` for a quote. The continuation rows
+sit indented under it. Preformatted text is cut at the width, never wrapped.
 */
 package libdoc
 
@@ -101,6 +102,16 @@ doc_add :: proc(d: ^Doc, kind: Kind, text: string, href: string = "", level: int
 	}
 }
 
+// doc_title sets the title outright, for a format that names its page apart
+// from its headings, HTML's `<title>`. A heading added later does not replace
+// it.
+doc_title :: proc(d: ^Doc, text: string) {
+	context.allocator = libuser.allocator()
+	d.title_off = len(d.buf)
+	append(&d.buf, ..transmute([]u8)text)
+	d.title_len = len(text)
+}
+
 block_text :: proc "contextless" (d: ^Doc, i: int) -> string #no_bounds_check {
 	b := &d.blocks[i]
 	return string(d.buf[b.text_off:][:b.text_len])
@@ -135,8 +146,8 @@ row_text :: proc "contextless" (l: ^Layout, i: int) -> string #no_bounds_check {
 	return string(l.buf[r.off:][:r.len])
 }
 
-// prefix_of is what a block's first row begins with, and how many columns its
-// continuation rows are indented by.
+// prefix_of is what a block's first row begins with. Its width is the indent
+// of the continuation rows.
 prefix_of :: proc "contextless" (b: ^Block) -> string {
 	switch b.kind {
 	case .Heading:

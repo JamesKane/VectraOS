@@ -2,8 +2,8 @@
 doctest -- the reader's document model and its layout, from ring 3.
 
 The kernel's self-test spawns this and reads the word it exits with: `ok`, or
-the name of the first step that did not hold. A gemtext page and a markdown
-page each parse to the blocks their lines mean. Each lays out to the rows a
+the name of the first step that did not hold. A gemtext page, a markdown page
+and an HTML page each parse to the blocks their lines mean. Each lays out to the rows a
 narrow column gives them, counted here by hand. That is `docs/WEB.md` step
 1's "a page of each kind lays out to the numbers".
 */
@@ -12,6 +12,7 @@ package doctest
 import "vsys:abi"
 import "vsys:libdoc"
 import "vsys:libgemtext"
+import "vsys:libhtml"
 import "vsys:libmark"
 import "vsys:libuser"
 
@@ -26,6 +27,8 @@ want :: proc "contextless" (cond: bool, what: string) {
 }
 
 GEMTEXT :: "# Title\n\nSome text that is long enough to wrap when the column is narrow indeed.\n=> gemini://example.org/ Example\n=> /bare\n* one\n* two\n> quoted\n```\ncode line\n```\n"
+
+HTML :: "<!DOCTYPE html>\n<html><head><meta charset=utf-8><title>Page &amp; Co</title>\n<style>p { color: red }</style><script>var s = \"<p>not text</p>\";</script></head>\n<body>\n<h1>Hello</h1>\n<p>Some   <b>bold</b>\ntext with a <a href=\"/next\">link</a>.</p>\n<ul><li>one</li><li>two</ul>\n<blockquote><p>quoted</p></blockquote>\n<pre>\n  code\nline</pre>\n<hr>\n<img src=\"p.png\" alt=\"pic\">\n<table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>\n<!-- a comment <p>hidden</p> -->\n<p>&#169; 2026 &mdash; done</p>\n</body></html>\n"
 
 MARKDOWN :: "# Doc\n\nSee [the site](https://x.y/ \"a title\") now.\nMore *here*.\n\n- a\n1. b\n\n---\n![pic](p.png)\n"
 
@@ -95,6 +98,35 @@ start :: proc "c" (block: ^abi.Args) {
 		want(libdoc.row_text(&l, 2) == "=> the site", "the link is a row to press")
 		want(len(libdoc.row_text(&l, 5)) == 40 && libdoc.row_text(&l, 5)[0] == '-', "the rule is dashes across the width")
 		want(libdoc.row_text(&l, 6) == "[image] pic", "and the image is named")
+		libdoc.layout_free(&l)
+		libdoc.doc_free(&d)
+	}
+
+	// -- HTML ------------------------------------------------------------------
+	{
+		d: libdoc.Doc
+		libdoc.doc_init(&d)
+		libhtml.parse(&d, HTML)
+		want(len(d.blocks) == 12, "html: twelve blocks, the head, the comment and the script left out")
+		want(libdoc.title(&d) == "Page & Co", "the title is the page's, its reference decoded")
+		want(d.blocks[0].kind == .Heading && d.blocks[0].level == 1 && libdoc.block_text(&d, 0) == "Hello", "a heading keeps its level")
+		want(d.blocks[1].kind == .Text && libdoc.block_text(&d, 1) == "Some bold text with a link.", "a paragraph collapses its space, drops emphasis and keeps a link's name")
+		want(d.blocks[2].kind == .Link && libdoc.block_text(&d, 2) == "link" && libdoc.block_href(&d, 2) == "/next", "and the link follows it")
+		want(d.blocks[3].kind == .Item && libdoc.block_text(&d, 3) == "one" && d.blocks[4].kind == .Item && libdoc.block_text(&d, 4) == "two", "items are items, the last unclosed")
+		want(d.blocks[5].kind == .Quote && libdoc.block_text(&d, 5) == "quoted", "a paragraph in a quote is a quote")
+		want(d.blocks[6].kind == .Pre && libdoc.block_text(&d, 6) == "  code\nline", "preformatted text keeps its space, less the tag's own newline")
+		want(d.blocks[7].kind == .Rule, "hr is a rule")
+		want(d.blocks[8].kind == .Image && libdoc.block_text(&d, 8) == "pic" && libdoc.block_href(&d, 8) == "p.png", "an image keeps its alt and its source")
+		want(d.blocks[9].kind == .Text && libdoc.block_text(&d, 9) == "a | b" && libdoc.block_text(&d, 10) == "1 | 2", "a table row is its cells parted by a bar")
+		want(libdoc.block_text(&d, 11) == "\u00a9 2026 \u2014 done", "a numbered and a named reference decode")
+
+		l: libdoc.Layout
+		libdoc.layout_init(&l)
+		n := libdoc.layout(&l, &d, 40)
+		want(n == 13, "at forty columns the page is thirteen rows")
+		want(libdoc.row_text(&l, 2) == "=> link", "the link is a row to press")
+		want(libdoc.row_text(&l, 6) == "  code" && libdoc.row_text(&l, 7) == "line", "the preformatted lines are rows as they were")
+		want(libdoc.row_text(&l, 9) == "[image] pic", "and the image is named")
 		libdoc.layout_free(&l)
 		libdoc.doc_free(&d)
 	}
