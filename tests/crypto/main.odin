@@ -220,11 +220,34 @@ start :: proc "c" (block: ^abi.Args) {
 		want(ki.key == [16]u8{0x3f, 0xce, 0x51, 0x60, 0x09, 0xc2, 0x17, 0x27, 0xd0, 0xf2, 0xe4, 0xe8, 0x6e, 0xe4, 0x03, 0xbc}, "TLS 1.3 write key matches RFC 8448")
 		want(ki.iv == [12]u8{0x5d, 0x31, 0x3e, 0xb2, 0x67, 0x12, 0x76, 0xee, 0x13, 0x00, 0x0b, 0x30}, "TLS 1.3 write iv matches RFC 8448")
 
+		// The TLS 1.3 record layer, over those verified keys: seal one record,
+		// open it back to its content and type, and refuse a tampered header
+		// and a wrong sequence -- the AAD binding and the nonce's count, which
+		// a seal/open roundtrip on its own cannot show.
+		send := libtls.Record_Keys{key = ki.key, iv = ki.iv, seq = 0}
+		recv := libtls.Record_Keys{key = ki.key, iv = ki.iv, seq = 0}
+		rec_content := transmute([]u8)string("a sealed handshake record")
+		rbuf: [128]u8
+		rn := libtls.seal_record(&send, libtls.CONTENT_HANDSHAKE, rec_content, rbuf[:], 5)
+		want(rn > 0 && send.seq == 1, "a TLS 1.3 record seals and counts up")
+		robuf: [128]u8
+		rm, rtype, rok := libtls.open_record(&recv, rbuf[:rn], robuf[:])
+		want(rok && rtype == libtls.CONTENT_HANDSHAKE && string(robuf[:rm]) == string(rec_content), "and opens back to its content and type")
+		want(recv.seq == 1, "and the read sequence counts up too")
+		bad := rbuf
+		bad[4] ~= 1
+		recv2 := libtls.Record_Keys{key = ki.key, iv = ki.iv, seq = 0}
+		_, _, bok := libtls.open_record(&recv2, bad[:rn], robuf[:])
+		want(!bok, "a tampered TLS record header is refused")
+		recv3 := libtls.Record_Keys{key = ki.key, iv = ki.iv, seq = 1}
+		_, _, sok := libtls.open_record(&recv3, rbuf[:rn], robuf[:])
+		want(!sok, "a TLS record opened at the wrong sequence is refused")
+
 		// A breadcrumb on the console: the kernel's self-test reads this
 		// program's exit word, not this stream, so a line here reaches the boot
 		// log and says the substrate ran on the machine. A failed `want` above
 		// exits before it, so its presence is the on-target pass.
-		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 substrate (sha256/hmac/hkdf/ecdsa-p256) + RFC 8448 key schedule ok\n"))
+		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 substrate + RFC 8448 key schedule + record layer ok\n"))
 	}
 
 	libuser.exits("ok")
