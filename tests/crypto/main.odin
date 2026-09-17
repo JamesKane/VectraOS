@@ -243,11 +243,37 @@ start :: proc "c" (block: ^abi.Args) {
 		_, _, sok := libtls.open_record(&recv3, rbuf[:rn], robuf[:])
 		want(!sok, "a TLS record opened at the wrong sequence is refused")
 
+		// TLS 1.3 message parsing: RFC 8448's own ServerHello, to its fields.
+		sh_msg := [?]u8{
+			0x02, 0x00, 0x00, 0x56, 0x03, 0x03, 0xa6, 0xaf, 0x06, 0xa4, 0x12, 0x18, 0x60, 0xdc, 0x5e, 0x6e,
+			0x60, 0x24, 0x9c, 0xd3, 0x4c, 0x95, 0x93, 0x0c, 0x8a, 0xc5, 0xcb, 0x14, 0x34, 0xda, 0xc1, 0x55,
+			0x77, 0x2e, 0xd3, 0xe2, 0x69, 0x28, 0x00, 0x13, 0x01, 0x00, 0x00, 0x2e, 0x00, 0x33, 0x00, 0x24,
+			0x00, 0x1d, 0x00, 0x20, 0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, 0x66, 0x76, 0x2b, 0xdb,
+			0xf7, 0xc6, 0x72, 0xe1, 0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, 0xdd, 0x69, 0xb1, 0xb0,
+			0x4e, 0x75, 0x1f, 0x0f, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04,
+		}
+		mr := libtls.reader(sh_msg[:])
+		mt, sh_body, hok := libtls.read_handshake(&mr)
+		want(hok && mt == libtls.HS_SERVER_HELLO && len(sh_body) == 86, "a TLS handshake header frames RFC 8448's ServerHello")
+		sh, shok := libtls.parse_server_hello(sh_body)
+		want(shok && sh.cipher_suite == libtls.TLS_AES_128_GCM_SHA256 && sh.version == libtls.VERSION_TLS13, "and its suite and version parse to RFC 8448's")
+		want(sh.group == libtls.GROUP_X25519 && len(sh.key_share) == 32 && sh.key_share[0] == 0xc9 && sh.key_share[31] == 0x0f && !sh.is_retry, "and its X25519 key share is the trace's")
+
+		// And a ClientHello this client writes frames back as one.
+		chrnd: [32]u8; for i in 0 ..< 32 {chrnd[i] = u8(i)}
+		chpub: [32]u8; for i in 0 ..< 32 {chpub[i] = u8(0x40 + i)}
+		chbuf: [512]u8
+		cw := libtls.writer(chbuf[:])
+		libtls.write_client_hello(&cw, {random = chrnd[:], key_share = chpub[:], server_name = "vectra.test", session_id = {}})
+		crd := libtls.reader(chbuf[:cw.pos])
+		cmt, _, cok := libtls.read_handshake(&crd)
+		want(!cw.err && cok && cmt == libtls.HS_CLIENT_HELLO, "and a ClientHello this client writes frames as one")
+
 		// A breadcrumb on the console: the kernel's self-test reads this
 		// program's exit word, not this stream, so a line here reaches the boot
 		// log and says the substrate ran on the machine. A failed `want` above
 		// exits before it, so its presence is the on-target pass.
-		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 substrate + RFC 8448 key schedule + record layer ok\n"))
+		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 substrate + key schedule + record layer + messages ok\n"))
 	}
 
 	libuser.exits("ok")
