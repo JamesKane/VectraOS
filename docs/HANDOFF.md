@@ -68,7 +68,7 @@ shell on the console with a windowed desktop beside it.
 | The screen | a draw server with six verbs, a window per session with pixels of its own, a compositor, a desktop, window chrome, four `ctl` lines, and a `cons` and `consctl` per window with a line discipline of its own | `DRAW.md` |
 | Typing | one discipline (`sys/libedit`) worn by the server that cooks a window's lines and by the program that draws them and echoes, with a cursor the arrow keys and `^A`/`^E` move | `DRAW.md` |
 | Runes | a key with no character arrives as Plan 9's private-space rune in UTF-8 (`sys/libkey` names them, `core:unicode/utf8` encodes them) through a `/dev/cons` that stayed bytes | `DRAW.md`, `KBD.md` |
-| Crypto and TLS | `core:crypto` compiles and runs freestanding, proven against its RFC vectors on the machine; `sys/libtls` is a TLS 1.3 client -- the key schedule, the record layer, the handshake and the authenticated flight (a certificate chained to a root, its signature, both Finisheds) -- checked against RFC 8448 and a scripted server every boot | `WEB.md` |
+| Crypto and TLS | `core:crypto` compiles and runs freestanding, proven against its RFC vectors on the machine; `sys/libtls` is a TLS 1.3 client -- the key schedule, the record layer, the handshake and the authenticated flight (a certificate chained to a root, its signature, both Finisheds) -- checked against RFC 8448 and a scripted server every boot, and `cmd/tlsclient` dials a scripted TLS server on the machine's own stack every boot, its chain verified against `/lib/tls/roots` | `WEB.md` |
 
 **The screen and the fleet are where the depth is.** The screen is a draw
 server that owns `/dev/fb`, a window per session with its own pixels out of
@@ -465,10 +465,17 @@ the documents it points at.
    proves each brick on-target against a scripted server whose flight is
    deliberately fragmented, and mutates the code to see the checks bite.
 
-   **What is left in step 0**, in order: a scripted TLS *server* fixture
-   so `cmd/tlsclient` itself is proven end to end over a real connection
-   (its engine already is — the command's dial, root-load and relay are
-   the only untested glue); the host's CA bundle staged at
+   `sys/libtls/server.odin` is the server side of the same handshake,
+   enough to answer a client, and `tests/tlssrv` stands one on `/net/tcp`
+   so `cmd/tlsclient` itself is proven over a real connection every boot
+   (`tests/web.rc`: the dial by this machine's name through `/net/cs`,
+   the trust store, the clock and the relay). Proving that found a stack
+   bug: a TCP conversation lived on after its last descriptor closed, so
+   every test that exited mid-stream kept a slot of the eight until a
+   listener could accept nothing. The last close of an opened stream now
+   hangs the conversation up, Plan 9's rule, `docs/NETFS.md`.
+
+   **What is left in step 0**, in order: the host's CA bundle staged at
    `/lib/tls/roots` in place of the single test certificate there now;
    and then `servers/webfs`, the HTTP client as files, with the store of
    every body by hash, the link index both ways, and the cookie jar. Then
@@ -970,7 +977,9 @@ cmd/                  ~40 tools, one package and one binary each; the fleet's
                       docs/CMD.md; tests/tools.rc runs each once.
 tests/                abitest and threadtest (the ABI and libthread from ring
                       3), plus the crypto and auth test programs; `tests/crypto`
-                      proves `sys/libtls` end to end against a scripted server.
+                      proves `sys/libtls` end to end against a scripted server,
+                      and `tests/tlssrv` + `tests/web.rc` prove `cmd/tlsclient`
+                      against one on the machine's own stack.
 scripts/fleet.py      Drives the two-machine bench: boots both, crosses a line,
                       imports a tree, refuses a stranger.
 tools/                genfont.py (the baked font) and ste-lint.py (the
