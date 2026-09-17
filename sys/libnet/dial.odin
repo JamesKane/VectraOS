@@ -51,8 +51,26 @@ dial_dir is `dial` that also answers the conversation's directory, copied into
 descriptor does not.
 */
 dial_dir :: proc "contextless" (addr: string, into: []u8) -> (int, int, bool) #no_bounds_check {
+	return dial_dir_via(addr, into, {})
+}
+
+/*
+Dial_IO is how a dial's two parking calls are made. A server with an io proc
+must not park its whole process on them. `write` sends the `connect` line into
+`ctl`, which `netfs` holds until the handshake finishes. `read` takes the
+answer off `/net/cs`, which may wait on the network for a name. Nil procs mean
+the plain system calls.
+*/
+Dial_IO :: struct {
+	ctx:   rawptr,
+	read:  proc "contextless" (ctx: rawptr, fd: int, buf: []u8) -> i64,
+	write: proc "contextless" (ctx: rawptr, fd: int, data: []u8) -> i64,
+}
+
+// dial_dir_via is `dial_dir` with its parking calls made through `io`.
+dial_dir_via :: proc "contextless" (addr: string, into: []u8, io: Dial_IO) -> (int, int, bool) #no_bounds_check {
 	line: [DIAL_MAX]u8
-	n := cs_query(addr, line[:])
+	n := cs_query_via(addr, line[:], io)
 	if n <= 0 {
 		return -1, 0, false
 	}
@@ -60,7 +78,7 @@ dial_dir :: proc "contextless" (addr: string, into: []u8) -> (int, int, bool) #n
 	if !ok {
 		return -1, 0, false
 	}
-	return dial_addr(clone_path, remote, into)
+	return dial_addr(clone_path, remote, into, io)
 }
 
 /*
@@ -68,7 +86,7 @@ dial_addr is `dial_dir` past the connection server: the clone file to take a
 conversation from and the far end to connect it to, already known. `dns`
 dials this way, since it is what `cs` asks and cannot ask `cs` in turn.
 */
-dial_addr :: proc "contextless" (clone_path: string, remote: string, into: []u8) -> (int, int, bool) #no_bounds_check {
+dial_addr :: proc "contextless" (clone_path: string, remote: string, into: []u8, io: Dial_IO = {}) -> (int, int, bool) #no_bounds_check {
 	// The conversation, and the directory its files are in.
 	dirlen, cok := take_conv(clone_path, into)
 	if !cok {
@@ -90,9 +108,9 @@ dial_addr :: proc "contextless" (clone_path: string, remote: string, into: []u8)
 	// is established, and answers it short if the conversation cannot open. So
 	// a write that returns the whole line is a conversation ready for its
 	// stream, and there is nothing more to wait for here.
-	wrote := libuser.write(int(ctl), transmute([]u8)text) == i64(len(text))
+	wn := io.write != nil ? io.write(io.ctx, int(ctl), transmute([]u8)text) : libuser.write(int(ctl), transmute([]u8)text)
 	_ = libuser.close(int(ctl))
-	if !wrote {
+	if wn != i64(len(text)) {
 		return -1, 0, false
 	}
 
@@ -168,6 +186,12 @@ announce :: proc "contextless" (addr: string, into: []u8) -> (int, bool) #no_bou
 
 // cs_query writes one dial string to `/net/cs` and reads the answer back.
 cs_query :: proc "contextless" (addr: string, into: []u8) -> int {
+	return cs_query_via(addr, into, {})
+}
+
+// cs_query_via is `cs_query` with the read, which may wait on the network
+// for a name, made through `io`.
+cs_query_via :: proc "contextless" (addr: string, into: []u8, io: Dial_IO) -> int {
 	fd := libuser.open("/net/cs", abi.O_RDWR)
 	if fd < 0 {
 		return 0
@@ -176,7 +200,7 @@ cs_query :: proc "contextless" (addr: string, into: []u8) -> int {
 		_ = libuser.close(int(fd))
 		return 0
 	}
-	n := libuser.read(int(fd), into)
+	n := io.read != nil ? io.read(io.ctx, int(fd), into) : libuser.read(int(fd), into)
 	_ = libuser.close(int(fd))
 	return int(max(n, 0))
 }

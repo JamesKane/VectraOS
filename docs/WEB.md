@@ -222,19 +222,25 @@ example.com 443` answers with the page.
 
 **What `webfs` does today, and what it does not yet.** HTTP/1.1 over
 `/net/tcp`, `https` over `sys/libtls`, a body by Content-Length, chunked
-or to the close, `method`, `header` and `postbody`, and the store with
-`names`. A conversation outlives its descriptors, as `netfs`'s do, so a
-shell writes `ctl`, reads `body` and reads `hash` as three commands; a
-finished one with no descriptor is reclaimed when the table is full, and
-`hangup` frees it at once. The first open of `body`, `headers`, `status`
-or `hash` starts the fetch, on a thread with an io proc of its own, so
-the serve loop never parks on the network. Not yet: gzip (Odin's
-`core:compress/zlib` inflates freestanding, and the gzip frame is a
-header and a trailer around it), a connection kept for the next request,
-the cookie jar, the `links` index (the reader's), the Gemini scheme and
-the WebSocket. One thing to know: `libnet.dial` connects with a plain
-system call, not through the io proc, so the serve loop waits out the
-connect's round trip; a dial through an io proc is the fix.
+or to the close, gzip inflated whole before it is served, `method`,
+`header` and `postbody`, the cookie jar at `/mnt/web/cookies` (a line per
+cookie, a write adds one, a remove forgets them all, `ctl cookies off`
+sends none, and the jar persists in the store), the Gemini scheme through
+the same files (`status` is the `20 text/gemini` line), and the store
+with `names`. A conversation outlives its descriptors, as `netfs`'s do,
+so a shell writes `ctl`, reads `body` and reads `hash` as three commands;
+a finished one with no descriptor is reclaimed when the table is full,
+and `hangup` frees it at once. The first open of `body`, `headers`,
+`status` or `hash` starts the fetch, on a thread with an io proc of its
+own, and the dial's parking calls go through that io proc too
+(`libnet.dial_dir_via`), so the serve loop never waits on the network.
+The boot line fetches, from `tests/websrv` over http, a chunked body, a
+gzipped one, a response that sets a cookie and one that echoes the
+cookie sent (and does not when `cookies off`), and from `tests/tlssrv` a
+body over https and a capsule over gemini. Not yet: a connection kept
+for the next request, the WebSocket, the `links` index (the reader's),
+and Gemini's trust-on-first-use for a capsule's self-signed certificate,
+which today must chain to `/lib/tls/roots` like any other.
 
 ## 4. The message shape, and the union that is a timeline
 

@@ -28,12 +28,30 @@ to answer yet, and the fetch thread answers it when the bytes land, the way
 `cmd/exportfs`'s readers do. Threads are cooperative, so a fetch thread that
 answers a request does so while the loop is parked in its own read.
 
-Not yet: gzip, a connection kept for the next request, the cookie jar, the
-Gemini scheme and the WebSocket. Each is a step this file grows by.
+**The cookie jar is a file.** `/mnt/web/cookies` lists every cookie a
+response set, one per line (`host path name value`). A write adds one, and a
+remove of the file forgets them all. A request carries the cookies whose host
+and path match, unless the conversation's `ctl` said `cookies off`. The jar
+persists in the store. There is no third-party cookie because there is no
+script to want one.
+
+**Gemini is a scheme.** A `gemini://` URL is one TLS connection, one request
+line, one response with a status and a media type. It is served through the
+same files: `status` is the `20 text/gemini` line, and `body` the rest.
+
+**gzip is taken.** The request offers it, and a body that arrives gzipped is
+inflated whole before it is served: `core:compress/zlib` inflates the deflate
+stream inside the frame.
+
+Not yet: a connection kept for the next request, and the WebSocket. Each is a
+step this file grows by. And `dial` runs through the fetch's io proc, so the
+loop never waits out a connect or a name.
 */
 package webfs
 
 import "base:runtime"
+import "core:bytes"
+import "core:compress/zlib"
 import "core:crypto/hash"
 import "core:crypto/x509"
 import "core:time"
@@ -54,6 +72,7 @@ REQUEST_MAX :: 4096
 
 NODE_ROOT :: i32(0)
 NODE_CLONE :: i32(1)
+NODE_COOKIES :: i32(2)
 CONV_BASE :: i32(16)
 CONV_STRIDE :: i32(8)
 CONV_DIR :: i32(0)
@@ -83,6 +102,9 @@ Conv :: struct {
 	extra:     [1024]u8, // Request headers `ctl header` added, CRLF-terminated
 	extra_len: int,
 	post:      [dynamic]u8,
+	cookies_off: bool,
+	gzip:      bool, // The body arrives gzipped, and is inflated once whole
+	packed:    [dynamic]u8, // The gzipped bytes, until the body ends
 	status:    [128]u8, // `200 OK`
 	status_len: int,
 	ctype:     [96]u8,
@@ -132,10 +154,12 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	}
 	roots = load_roots("/lib/tls/roots")
 	ensure_store()
+	jar_load()
 	srv = lib9p.Srv {
-		fd      = fd,
-		handler = handler,
-		msize   = FRAME,
+		fd             = fd,
+		handler        = handler,
+		msize          = FRAME,
+		keep_on_remove = true, // A remove of `cookies` empties the jar
 	}
 	_, why := lib9p.serve(&srv)
 	lib9p.respond_all(&srv, vectra9.Rread{data = nil})
@@ -281,6 +305,7 @@ conv_alloc :: proc "contextless" () -> int {
 	c.post = make([dynamic]u8, libuser.allocator())
 	c.headers = make([dynamic]u8, libuser.allocator())
 	c.body = make([dynamic]u8, libuser.allocator())
+	c.packed = make([dynamic]u8, libuser.allocator())
 	c.method_len = copy(c.method[:], "GET")
 	return slot
 }
@@ -291,6 +316,7 @@ conv_free :: proc "contextless" (i: int) {
 	delete(c.post)
 	delete(c.headers)
 	delete(c.body)
+	delete(c.packed)
 	c^ = Conv{}
 }
 
@@ -340,6 +366,9 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 	if from == NODE_ROOT {
 		if name == "clone" {
 			return NODE_CLONE
+		}
+		if name == "cookies" {
+			return NODE_COOKIES
 		}
 		if v, _, ok := scan_uint(name); ok {
 			i := int(v)
@@ -463,6 +492,13 @@ handler :: proc "contextless" (
 			reply^ = vectra9.Rread{data = buf[:len(libodin.str(&sink))]}
 			return
 		}
+		if node == NODE_COOKIES {
+			text := make([dynamic]u8, libuser.allocator())
+			defer delete(text)
+			jar_render(&text)
+			reply^ = vectra9.Rread{data = slice_window(text[:], m.offset, buf[:room])}
+			return
+		}
 		i, kind, is_conv := conv_of(node)
 		if !is_conv || is_dir(node) {
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
@@ -492,6 +528,15 @@ handler :: proc "contextless" (
 	case vectra9.Twrite:
 		node, ok := libuser.open_node(&fids, m.fid, reply)
 		if !ok {
+			return
+		}
+		if node == NODE_COOKIES {
+			if !jar_add_line(string(m.data)) {
+				reply^ = vectra9.error_reply(vectra9.EINVAL)
+				return
+			}
+			jar_save()
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 			return
 		}
 		i, kind, is_conv := conv_of(node)
@@ -560,7 +605,15 @@ handler :: proc "contextless" (
 		reply^ = vectra9.Rclunk{}
 
 	case vectra9.Tremove:
+		node := libuser.fid_lookup(&fids, m.fid)
 		libuser.fid_release(&fids, m.fid)
+		if node != NODE_COOKIES {
+			reply^ = vectra9.error_reply(vectra9.EPERM)
+			return
+		}
+		// Forgetting every cookie is the one remove here. The file stays.
+		jar_clear()
+		jar_save()
 		reply^ = vectra9.Rremove{}
 
 	case vectra9.Tflush:
@@ -679,8 +732,11 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 		if m.offset == 0 {
 			vectra9.put_dirent(&c, vectra9.Dirent{qid = qid_of(NODE_CLONE), offset = 1, type = vectra9.DT_REG, name = "clone"})
 		}
+		if m.offset <= 1 {
+			vectra9.put_dirent(&c, vectra9.Dirent{qid = qid_of(NODE_COOKIES), offset = 2, type = vectra9.DT_REG, name = "cookies"})
+		}
 		name: [16]u8
-		for i := max(int(m.offset) - 1, 0); i < MAX_CONVS; i += 1 {
+		for i := max(int(m.offset) - 2, 0); i < MAX_CONVS; i += 1 {
 			if !convs[i].used {
 				continue
 			}
@@ -690,7 +746,7 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 			if vectra9.remaining(&c) < vectra9.dirent_size(entry) {
 				break
 			}
-			vectra9.put_dirent(&c, vectra9.Dirent{qid = qid_of(conv_node(i, CONV_DIR)), offset = u64(i + 2), type = vectra9.DT_DIR, name = entry})
+			vectra9.put_dirent(&c, vectra9.Dirent{qid = qid_of(conv_node(i, CONV_DIR)), offset = u64(i + 3), type = vectra9.DT_DIR, name = entry})
 		}
 	} else {
 		i, _, _ := conv_of(node)
@@ -742,6 +798,16 @@ run_ctl :: proc "contextless" (c: ^Conv, text: string) -> bool {
 		c.extra_len += copy(c.extra[c.extra_len:], rest)
 		c.extra_len += copy(c.extra[c.extra_len:], "\r\n")
 		return true
+	case "cookies":
+		if rest == "off" {
+			c.cookies_off = true
+			return true
+		}
+		if rest == "on" {
+			c.cookies_off = false
+			return true
+		}
+		return false
 	case "hangup":
 		if c.state == .Fetching || c.state == .Streaming {
 			return false
@@ -754,6 +820,8 @@ run_ctl :: proc "contextless" (c: ^Conv, text: string) -> bool {
 		clear(&c.post)
 		clear(&c.headers)
 		clear(&c.body)
+		clear(&c.packed)
+		c.gzip = false
 		c.status_len = 0
 		return true
 	}
@@ -817,12 +885,19 @@ split_url :: proc "contextless" (text: string) -> (u: Url, ok: bool) {
 		u.port = authority[colon + 1:]
 	} else {
 		u.host = authority
-		u.port = u.scheme == "https" ? "443" : "80"
+		switch u.scheme {
+		case "https":
+			u.port = "443"
+		case "gemini":
+			u.port = "1965"
+		case:
+			u.port = "80"
+		}
 	}
 	if len(u.host) == 0 || len(u.port) == 0 {
 		return u, false
 	}
-	return u, u.scheme == "http" || u.scheme == "https"
+	return u, u.scheme == "http" || u.scheme == "https" || u.scheme == "gemini"
 }
 
 // A fetch in flight: the connection, the io proc it reads through, and the
@@ -844,6 +919,18 @@ tls_read :: proc(ctx: rawptr, buf: []u8) -> int {
 tls_write :: proc(ctx: rawptr, buf: []u8) -> int {
 	f := (^Fetch)(ctx)
 	return int(libthread.iowrite(f.io, f.fd, buf))
+}
+
+// The dial's parking calls, through the fetch's io proc: the `connect` line
+// held for the handshake, and the name off `/net/cs` that may wait on dns.
+dial_read :: proc "contextless" (ctx: rawptr, fd: int, buf: []u8) -> i64 {
+	f := (^Fetch)(ctx)
+	return libthread.ioread(f.io, fd, buf)
+}
+
+dial_write :: proc "contextless" (ctx: rawptr, fd: int, data: []u8) -> i64 {
+	f := (^Fetch)(ctx)
+	return libthread.iowrite(f.io, fd, data)
 }
 
 // stream_read takes the next bytes of the response, through TLS or not.
@@ -922,7 +1009,7 @@ fetch :: proc(f: ^Fetch) {
 
 	spec_buf: [512]u8
 	spec := libuser.cat_into(spec_buf[:], "tcp!", u.host, "!", u.port)
-	fd, dirlen, dok := libnet.dial_dir(spec, f.dir[:])
+	fd, dirlen, dok := libnet.dial_dir_via(spec, f.dir[:], libnet.Dial_IO{ctx = f, read = dial_read, write = dial_write})
 	if !dok {
 		fail_fetch(c, "cannot dial the host")
 		return
@@ -930,7 +1017,7 @@ fetch :: proc(f: ^Fetch) {
 	f.fd = fd
 	f.dirlen = dirlen
 
-	if u.scheme == "https" {
+	if u.scheme == "https" || u.scheme == "gemini" {
 		if len(roots) == 0 {
 			fail_fetch(c, "no trust roots, so no https")
 			return
@@ -949,6 +1036,11 @@ fetch :: proc(f: ^Fetch) {
 		}
 	}
 
+	if u.scheme == "gemini" {
+		fetch_gemini(f, u)
+		return
+	}
+
 	// The request.
 	req: [REQUEST_MAX]u8
 	sink := libodin.sink_from(req[:])
@@ -957,7 +1049,10 @@ fetch :: proc(f: ^Fetch) {
 	libodin.put_str(&sink, u.path)
 	libodin.put_str(&sink, " HTTP/1.1\r\nHost: ")
 	libodin.put_str(&sink, u.host)
-	libodin.put_str(&sink, "\r\nUser-Agent: vectra-webfs/0\r\nAccept: */*\r\nConnection: close\r\n")
+	libodin.put_str(&sink, "\r\nUser-Agent: vectra-webfs/0\r\nAccept: */*\r\nAccept-Encoding: gzip\r\nConnection: close\r\n")
+	if !c.cookies_off {
+		jar_header(&sink, u.host, u.path)
+	}
 	if len(c.post) > 0 {
 		libodin.put_str(&sink, "Content-Length: ")
 		libodin.put_uint(&sink, u64(len(c.post)))
@@ -993,6 +1088,10 @@ fetch :: proc(f: ^Fetch) {
 		return
 	}
 	framing := body_framing(string(head[:body_start]))
+	if v, has := header_value(string(head[:body_start]), "content-encoding"); has && libodin.contains(v, "gzip") {
+		c.gzip = true
+	}
+	jar_take(string(head[:body_start]), u.host)
 	c.state = .Streaming
 	answer_held(c)
 
@@ -1009,6 +1108,10 @@ fetch :: proc(f: ^Fetch) {
 	}
 	if !ok {
 		fail_fetch(c, "the body ended early")
+		return
+	}
+	if c.gzip && !inflate_gzip(c) {
+		fail_fetch(c, "the gzip body would not inflate")
 		return
 	}
 	digest: [32]u8
@@ -1163,21 +1266,400 @@ body_framing :: proc "contextless" (head: string) -> Framing {
 // deliver appends body bytes and answers the reads that were waiting on them.
 deliver :: proc "contextless" (c: ^Conv, data: []u8) {
 	context = libuser.heap_context()
+	if c.gzip {
+		append(&c.packed, ..data)
+		return
+	}
 	append(&c.body, ..data)
 	answer_held(c)
+}
+
+/*
+inflate_gzip turns the gzipped bytes into the body, once they are all here. The
+frame is RFC 1952's: a ten-byte header, optional fields the flags name, the
+deflate stream, and a trailer of CRC and size. `core:compress/zlib` inflates the
+stream raw. The trailer is not checked, since the hash `hash` answers is of
+the bytes served either way.
+*/
+inflate_gzip :: proc(c: ^Conv) -> bool {
+	g := c.packed[:]
+	if len(g) < 18 || g[0] != 0x1f || g[1] != 0x8b || g[2] != 8 {
+		return false
+	}
+	flags := g[3]
+	at := 10
+	if flags & 4 != 0 { // FEXTRA
+		if at + 2 > len(g) {
+			return false
+		}
+		xlen := int(g[at]) | int(g[at + 1]) << 8
+		at += 2 + xlen
+	}
+	if flags & 8 != 0 { // FNAME
+		for at < len(g) && g[at] != 0 {
+			at += 1
+		}
+		at += 1
+	}
+	if flags & 16 != 0 { // FCOMMENT
+		for at < len(g) && g[at] != 0 {
+			at += 1
+		}
+		at += 1
+	}
+	if flags & 2 != 0 { // FHCRC
+		at += 2
+	}
+	if at + 8 > len(g) {
+		return false
+	}
+	out: bytes.Buffer
+	defer bytes.buffer_destroy(&out)
+	if err := zlib.inflate_from_byte_array(g[at:len(g) - 8], &out, raw = true); err != nil {
+		return false
+	}
+	append(&c.body, ..out.buf[:])
+	clear(&c.packed)
+	return true
+}
+
+// -- Gemini ---------------------------------------------------------------------
+
+/*
+fetch_gemini runs one Gemini exchange over the TLS connection already made.
+The URL and a CRLF go out. A line of `STATUS META` comes back, then the body
+to the close. The status line is what `status` answers, the META its media type,
+and the body is served as any other.
+*/
+fetch_gemini :: proc(f: ^Fetch, u: Url) {
+	c := f.c
+	req: [URL_MAX + 2]u8
+	rn := copy(req[:], c.url[:c.url_len])
+	rn += copy(req[rn:], "\r\n")
+	if !stream_write(f, req[:rn]) {
+		fail_fetch(c, "could not send the request")
+		return
+	}
+	head := make([dynamic]u8, libuser.allocator())
+	defer delete(head)
+	chunk: [4096]u8
+	eol := -1
+	for eol < 0 {
+		n := stream_read(f, chunk[:])
+		if n <= 0 {
+			fail_fetch(c, "the response ended before its header")
+			return
+		}
+		append(&head, ..chunk[:n])
+		for i in 0 ..< len(head) {
+			if head[i] == '\n' {
+				eol = i
+				break
+			}
+		}
+		if eol < 0 && len(head) > 1100 {
+			fail_fetch(c, "the header is too long")
+			return
+		}
+	}
+	line := string(head[:eol])
+	if len(line) > 0 && line[len(line) - 1] == '\r' {
+		line = line[:len(line) - 1]
+	}
+	if len(line) < 2 {
+		fail_fetch(c, "a header this client does not understand")
+		return
+	}
+	c.status_len = copy(c.status[:], line)
+	meta := len(line) > 3 ? line[3:] : ""
+	c.ctype_len = copy(c.ctype[:], meta)
+	for i in 0 ..< c.ctype_len {
+		if c.ctype[i] == ';' || c.ctype[i] == ' ' {
+			c.ctype_len = i
+			break
+		}
+	}
+	clear(&c.headers)
+	append(&c.headers, ..transmute([]u8)line)
+	append(&c.headers, '\n')
+	c.state = .Streaming
+	answer_held(c)
+	if !read_until_close(f, head[eol + 1:]) {
+		fail_fetch(c, "the body ended early")
+		return
+	}
+	digest: [32]u8
+	hash.hash_bytes_to_buffer(.SHA256, c.body[:], digest[:])
+	hex_of(digest[:], c.hash_hex[:])
+	c.state = .Done
+}
+
+// -- The cookie jar ---------------------------------------------------------------
+
+MAX_COOKIES :: 64
+
+Cookie :: struct {
+	used:      bool,
+	host:      [128]u8,
+	host_len:  int,
+	path:      [128]u8,
+	path_len:  int,
+	name:      [64]u8,
+	name_len:  int,
+	value:     [512]u8,
+	value_len: int,
+}
+
+jar: [MAX_COOKIES]Cookie
+
+// jar_set adds a cookie, replacing one of the same host, path and name.
+jar_set :: proc "contextless" (host, path, name, value: string) -> bool {
+	if len(host) == 0 || len(name) == 0 || len(host) > 128 || len(path) > 128 || len(name) > 64 || len(value) > 512 {
+		return false
+	}
+	free_slot := -1
+	for i in 0 ..< MAX_COOKIES {
+		k := &jar[i]
+		if !k.used {
+			if free_slot < 0 {
+				free_slot = i
+			}
+			continue
+		}
+		if string(k.host[:k.host_len]) == host && string(k.path[:k.path_len]) == path && string(k.name[:k.name_len]) == name {
+			k.value_len = copy(k.value[:], value)
+			return true
+		}
+	}
+	if free_slot < 0 {
+		return false
+	}
+	k := &jar[free_slot]
+	k^ = Cookie{used = true}
+	k.host_len = copy(k.host[:], host)
+	k.path_len = copy(k.path[:], len(path) > 0 ? path : "/")
+	k.name_len = copy(k.name[:], name)
+	k.value_len = copy(k.value[:], value)
+	return true
+}
+
+jar_clear :: proc "contextless" () {
+	for i in 0 ..< MAX_COOKIES {
+		jar[i].used = false
+	}
+}
+
+// jar_add_line takes `host path name value`, the line the jar file shows.
+jar_add_line :: proc "contextless" (text: string) -> bool {
+	line := text
+	for len(line) > 0 && (line[len(line) - 1] == '\n' || line[len(line) - 1] == '\r') {
+		line = line[:len(line) - 1]
+	}
+	host, r1 := word(line)
+	path, r2 := word(r1)
+	name, value := word(r2)
+	return jar_set(host, path, name, value)
+}
+
+jar_render :: proc "contextless" (into: ^[dynamic]u8) {
+	context = libuser.heap_context()
+	for i in 0 ..< MAX_COOKIES {
+		k := &jar[i]
+		if !k.used {
+			continue
+		}
+		append(into, ..k.host[:k.host_len])
+		append(into, ' ')
+		append(into, ..k.path[:k.path_len])
+		append(into, ' ')
+		append(into, ..k.name[:k.name_len])
+		append(into, ' ')
+		append(into, ..k.value[:k.value_len])
+		append(into, '\n')
+	}
+}
+
+// jar_matches says whether a cookie is sent to `host` for `path`: the host is
+// the cookie's or ends in `.` and the cookie's, and the path starts with the
+// cookie's.
+jar_matches :: proc "contextless" (k: ^Cookie, host, path: string) -> bool #no_bounds_check {
+	kh := string(k.host[:k.host_len])
+	if host != kh {
+		if len(host) <= len(kh) || host[len(host) - len(kh):] != kh || host[len(host) - len(kh) - 1] != '.' {
+			return false
+		}
+	}
+	kp := string(k.path[:k.path_len])
+	return len(path) >= len(kp) && path[:len(kp)] == kp
+}
+
+// jar_header writes the `Cookie:` line for a request, if any cookie matches.
+jar_header :: proc "contextless" (sink: ^libodin.Sink, host, path: string) {
+	first := true
+	for i in 0 ..< MAX_COOKIES {
+		k := &jar[i]
+		if !k.used || !jar_matches(k, host, path) {
+			continue
+		}
+		libodin.put_str(sink, first ? "Cookie: " : "; ")
+		libodin.put_str(sink, string(k.name[:k.name_len]))
+		libodin.put_str(sink, "=")
+		libodin.put_str(sink, string(k.value[:k.value_len]))
+		first = false
+	}
+	if !first {
+		libodin.put_str(sink, "\r\n")
+	}
+}
+
+/*
+jar_take keeps every `Set-Cookie` of a response for `host`. It takes the name
+and value before the first `;`, and a `Path` attribute if one is given. `Domain` sets the
+host the cookie is for, with its leading dot dropped. Expiry is not kept, so
+a cookie stays until the jar forgets it. The jar is saved when it changed.
+*/
+jar_take :: proc "contextless" (headers: string, host: string) #no_bounds_check {
+	changed := false
+	at := 0
+	for at < len(headers) {
+		eol := at
+		for eol < len(headers) && headers[eol] != '\n' {
+			eol += 1
+		}
+		line := headers[at:eol]
+		at = eol + 1
+		if len(line) < 11 || !same_fold(line[:11], "set-cookie:") {
+			continue
+		}
+		v := line[11:]
+		for len(v) > 0 && v[0] == ' ' {
+			v = v[1:]
+		}
+		for len(v) > 0 && (v[len(v) - 1] == '\r' || v[len(v) - 1] == ' ') {
+			v = v[:len(v) - 1]
+		}
+		// name=value, then attributes.
+		semi := len(v)
+		for i in 0 ..< len(v) {
+			if v[i] == ';' {
+				semi = i
+				break
+			}
+		}
+		pair := v[:semi]
+		eq := -1
+		for i in 0 ..< len(pair) {
+			if pair[i] == '=' {
+				eq = i
+				break
+			}
+		}
+		if eq <= 0 {
+			continue
+		}
+		name := pair[:eq]
+		value := pair[eq + 1:]
+		path := "/"
+		chost := host
+		attrs := semi < len(v) ? v[semi + 1:] : ""
+		for len(attrs) > 0 {
+			for len(attrs) > 0 && attrs[0] == ' ' {
+				attrs = attrs[1:]
+			}
+			end := len(attrs)
+			for i in 0 ..< len(attrs) {
+				if attrs[i] == ';' {
+					end = i
+					break
+				}
+			}
+			attr := attrs[:end]
+			attrs = end < len(attrs) ? attrs[end + 1:] : ""
+			if len(attr) > 5 && same_fold(attr[:5], "path=") {
+				path = attr[5:]
+			} else if len(attr) > 7 && same_fold(attr[:7], "domain=") {
+				chost = attr[7:]
+				if len(chost) > 0 && chost[0] == '.' {
+					chost = chost[1:]
+				}
+			}
+		}
+		if jar_set(chost, path, name, value) {
+			changed = true
+		}
+	}
+	if changed {
+		jar_save()
+	}
+}
+
+// same_fold compares ASCII without case, for a header's name and its attributes.
+same_fold :: proc "contextless" (a, b: string) -> bool #no_bounds_check {
+	if len(a) != len(b) {
+		return false
+	}
+	for i in 0 ..< len(a) {
+		x := a[i]
+		y := b[i]
+		if x >= 'A' && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if y >= 'A' && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
+}
+
+// jar_save writes the jar whole to the store, and jar_load reads it back.
+jar_save :: proc "contextless" () {
+	context = libuser.heap_context()
+	text := make([dynamic]u8, libuser.allocator())
+	defer delete(text)
+	jar_render(&text)
+	path: [300]u8
+	file := libuser.cat_into(path[:], store, "/cookies")
+	fd := libuser.create(file, abi.O_WRONLY | abi.O_TRUNC, 0o600)
+	if fd < 0 {
+		return
+	}
+	_ = libuser.write_full(int(fd), text[:])
+	_ = libuser.close(int(fd))
+}
+
+jar_load :: proc() {
+	path: [300]u8
+	data, ok := libuser.read_file(libuser.cat_into(path[:], store, "/cookies"), context.allocator)
+	if !ok {
+		return
+	}
+	text := string(data)
+	at := 0
+	for at < len(text) {
+		eol := at
+		for eol < len(text) && text[eol] != '\n' {
+			eol += 1
+		}
+		_ = jar_add_line(text[at:eol])
+		at = eol + 1
+	}
 }
 
 read_length :: proc(f: ^Fetch, first: []u8, length: int) -> bool {
 	got := min(len(first), length)
 	deliver(f.c, first[:got])
 	chunk: [4096]u8
-	for len(f.c.body) < length {
+	for got < length {
 		n := stream_read(f, chunk[:])
 		if n <= 0 {
 			return false
 		}
-		take := min(n, length - len(f.c.body))
+		take := min(n, length - got)
 		deliver(f.c, chunk[:take])
+		got += take
 	}
 	return true
 }

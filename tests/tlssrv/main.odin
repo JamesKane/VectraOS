@@ -10,7 +10,8 @@ a port and takes one connection. It answers the ClientHello with the
 certificate the trust store holds (the leaf is its own root). It checks the
 client's Finished, reads one line of application data, and answers it prefixed
 `you said: `. Then it says close_notify, hangs up, and exits `ok`, or the name
-of the step that did not hold.
+of the step that did not hold. A GET gets a small page, and a Gemini request
+a small capsule.
 
 `tests/web.rc` runs it against `tlsclient` from the boot self-test,
 `docs/WEB.md` step 0.
@@ -36,6 +37,9 @@ CERT_PRIV :: [32]u8{
 
 // What an HTTP request is answered with: a body by Content-Length.
 HTTP_RESPONSE :: "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\nConnection: close\r\n\r\nhello, secure web\n"
+
+// What a Gemini request is answered with: a status, a media type, a body.
+GEMINI_RESPONSE :: "20 text/gemini\r\n# hello, gemini\n"
 
 // request_whole says whether the client's request has all arrived: a line for
 // the echo, or an HTTP request through its empty line.
@@ -261,12 +265,15 @@ start :: proc "c" (block: ^abi.Args) {
 		}
 	}
 
-	// The answer, and a clean end. A line is echoed; an HTTP request gets a
-	// small page, so `webfs` can fetch over https from this same fixture.
+	// The answer, and a clean end. A line is echoed. An HTTP request gets a
+	// small page and a Gemini request a small capsule, so `webfs` can fetch
+	// over https and gemini from this same fixture.
 	reply: [600]u8
 	text: string
 	if f.request_len >= 4 && string(f.request[:4]) == "GET " {
 		text = HTTP_RESPONSE
+	} else if f.request_len >= 9 && string(f.request[:9]) == "gemini://" {
+		text = GEMINI_RESPONSE
 	} else {
 		text = libuser.cat_into(reply[:], "you said: ", string(f.request[:f.request_len]))
 	}

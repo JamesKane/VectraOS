@@ -10533,13 +10533,14 @@ verify_webfs :: proc(r: ^Result) {
 
 	// Plain HTTP, a chunked body.
 	{
-		wargs := [?]string{"websrv", "8080"}
+		wargs := [?]string{"websrv", "8080", "5"}
 		wargv := new(Argv)
 		_ = argv_from(wargv, wargs[:])
 		ws := start_path(r, "/bin/websrv", "a scripted HTTP server starts", wargv)
 		if ws != nil {
 			sync.delay(PATIENCE)
 			url_buf: [128]u8
+			line_buf: [128]u8
 			url := libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/")
 			body: [1024]u8
 			hash: [80]u8
@@ -10552,7 +10553,28 @@ verify_webfs :: proc(r: ^Result) {
 			index: [4096]u8
 			in_ := web_read_file("/usr/glenda/lib/web/names", index[:])
 			check(r, in_ > 0 && libodin.contains(string(index[:in_]), url) && libodin.contains(string(index[:in_]), "e65c8086738e71ec1ad09627c56b0c1b90f0cbbf00ff0c253728b094f2bba149"), "and names has a line for the URL and the hash")
-			check(r, wait(ws, PATIENCE * 5), "and the scripted server, its one connection served, exits")
+
+			// A body that arrives gzipped is served inflated, and the hash
+			// is of the bytes served.
+			url = libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/gz")
+			bn, hn, ok = web_fetch(url, body[:], hash[:])
+			check(r, ok && string(body[:bn]) == "hello, compressed web\n", "a gzipped body is inflated before it is served")
+			check(r, hn == 65 && string(hash[:64]) == "f315d54fb4a5d7893272f07a256ea3936b47c0ea54736291bf882e843e41d3a2", "and its hash is the inflated body's")
+
+			// The cookie jar: a response sets one, the next request carries
+			// it, the jar file lists it, and `cookies off` leaves it out.
+			url = libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/cookie")
+			bn, hn, ok = web_fetch(url, body[:], hash[:])
+			check(r, ok && string(body[:bn]) == "cookie set\n", "a response sets a cookie")
+			jar: [1024]u8
+			jn := web_read_file("/mnt/web/cookies", jar[:])
+			check(r, jn > 0 && libodin.contains(string(jar[:jn]), libodin_cat(line_buf[:], string(local[:ln]), " / session abc")), "which the jar lists as host, path, name and value")
+			url = libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/whoami")
+			bn, hn, ok = web_fetch(url, body[:], hash[:])
+			check(r, ok && string(body[:bn]) == "cookie: session=abc\n", "and the next request to that host carries it")
+			bn, hn, ok = web_fetch(url, body[:], hash[:], "cookies off")
+			check(r, ok && string(body[:bn]) == "cookie: none\n", "unless the conversation said cookies off")
+			check(r, wait(ws, PATIENCE * 5), "and the scripted server, its connections served, exits")
 			finish(r, ws, "and is taken down")
 		}
 	}
@@ -10572,6 +10594,27 @@ verify_webfs :: proc(r: ^Result) {
 			bn, hn, ok := web_fetch(url, body[:], hash[:])
 			check(r, ok && string(body[:bn]) == "hello, secure web\n", "webfs fetches a body over https, the chain verified against the trust store")
 			check(r, hn == 65 && string(hash[:64]) == "43e8e41c52a64133b65e76d326756f682ffb1e2ce2293f8d61374529d1f08f70", "and its hash is that body's sha256")
+			check(r, wait(ts, PATIENCE * 5), "and the TLS server exits")
+			finish(r, ts, "and is taken down")
+		}
+	}
+
+	// Gemini, the same TLS fixture answering a capsule's line.
+	{
+		targs := [?]string{"tlssrv", "4433"}
+		targv := new(Argv)
+		_ = argv_from(targv, targs[:])
+		ts := start_path(r, "/bin/tlssrv", "a scripted TLS server starts for gemini", targv)
+		if ts != nil {
+			sync.delay(PATIENCE)
+			url_buf: [128]u8
+			url := libodin_cat(url_buf[:], "gemini://", string(sysname[:sn]), ":4433/")
+			body: [1024]u8
+			hash: [80]u8
+			status: [128]u8
+			bn, _, ok := web_fetch(url, body[:], hash[:], "", status[:])
+			check(r, ok && string(body[:bn]) == "# hello, gemini\n", "webfs fetches a gemini capsule: one TLS connection, one line, one response")
+			check(r, libodin.contains(string(status[:]), "20 text/gemini"), "and its status is the capsule's status and media type")
 			check(r, wait(ts, PATIENCE * 5), "and the TLS server exits")
 			finish(r, ts, "and is taken down")
 		}
@@ -10625,7 +10668,7 @@ hash's lengths (the hash with its newline), and whether every step held.
 @(private = "file") web_why: string
 
 @(private = "file")
-web_fetch :: proc(url: string, body: []u8, hash: []u8) -> (bn: int, hn: int, ok: bool) {
+web_fetch :: proc(url: string, body: []u8, hash: []u8, ctl_extra: string = "", status: []u8 = nil) -> (bn: int, hn: int, ok: bool) {
 	num: [16]u8
 	n := web_read_file("/mnt/web/clone", num[:])
 	if n <= 0 {
@@ -10637,6 +10680,10 @@ web_fetch :: proc(url: string, body: []u8, hash: []u8) -> (bn: int, hn: int, ok:
 	line: [1100]u8
 	if !net_file_write(libodin_cat(path[:], "/mnt/web/", conv, "/ctl"), libodin_cat(line[:], "url ", url)) {
 		web_why = "ctl"
+		return 0, 0, false
+	}
+	if ctl_extra != "" && !net_file_write(libodin_cat(path[:], "/mnt/web/", conv, "/ctl"), ctl_extra) {
+		web_why = "ctl extra"
 		return 0, 0, false
 	}
 	c, err := vfs.open_path(vfs.boot_namespace, libodin_cat(path[:], "/mnt/web/", conv, "/body"), vfs.O_RDONLY)
@@ -10665,6 +10712,9 @@ web_fetch :: proc(url: string, body: []u8, hash: []u8) -> (bn: int, hn: int, ok:
 	vfs.chan_close(h)
 	if rerr != vfs.OK {
 		return bn, 0, false
+	}
+	if status != nil {
+		_ = web_read_file(libodin_cat(path[:], "/mnt/web/", conv, "/status"), status)
 	}
 	return bn, int(got), true
 }
