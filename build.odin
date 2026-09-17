@@ -40,6 +40,7 @@ they build. `justfile` and `Makefile` are thin wrappers over this.
 #+feature dynamic-literals
 package main
 
+import "core:encoding/base64"
 import "core:fmt"
 import "core:os"
 import "core:slice"
@@ -1438,7 +1439,7 @@ stage_vectra :: proc(arch: string, host: string) {
 	// The TLS trust store `tlsclient` verifies certificate chains against:
 	// X.509 certificates in DER, one after another. `docs/WEB.md` section 3.
 	ensure_dir(fmt.tprintf("%s/lib/tls", root))
-	copy_file("lib/tls/roots", fmt.tprintf("%s/lib/tls/roots", root))
+	stage_tls_roots(fmt.tprintf("%s/lib/tls/roots", root))
 	// The services `listen` announces: one script per port.
 	ensure_dir(fmt.tprintf("%s/lib/service", root))
 	copy_file("lib/service/tcp564", fmt.tprintf("%s/lib/service/tcp564", root))
@@ -1983,6 +1984,66 @@ copy_file :: proc(src, dst: string) {
 	}
 	if werr := os.write_entire_file(dst, data); werr != nil {
 		die("could not write %s: %v", dst, werr)
+	}
+}
+
+/*
+stage_tls_roots writes the trust store: the repository's test certificate first
+(the one `tests/tlssrv` serves and `tests/crypto` embeds, so the boot self-test
+needs no host), then every certificate of the host's CA bundle, each PEM block
+decoded to the DER it wraps. The store is concatenated DER, which `tlsclient`
+walks by each certificate's own length. A host with no bundle in a known place
+gets the test certificate alone, and the build says so rather than fail: the
+self-test still runs, and only a dial of the world would be refused.
+*/
+stage_tls_roots :: proc(dst: string) {
+	test_cert, terr := os.read_entire_file_from_path("lib/tls/roots", context.allocator)
+	if terr != nil {
+		die("could not read lib/tls/roots: %v", terr)
+	}
+	out := make([dynamic]u8)
+	append(&out, ..test_cert)
+
+	// Where a host keeps its bundle: macOS and the BSDs, Debian and its
+	// family, Red Hat and its family.
+	candidates := [?]string{"/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"}
+	count := 0
+	source := ""
+	for path in candidates {
+		pem, perr := os.read_entire_file_from_path(path, context.allocator)
+		if perr != nil {
+			continue
+		}
+		text := string(pem)
+		for {
+			b := strings.index(text, "-----BEGIN CERTIFICATE-----")
+			if b < 0 {
+				break
+			}
+			text = text[b + len("-----BEGIN CERTIFICATE-----"):]
+			e := strings.index(text, "-----END CERTIFICATE-----")
+			if e < 0 {
+				break
+			}
+			body, _ := strings.remove_all(text[:e], "\n")
+			text = text[e:]
+			der, derr := base64.decode(body)
+			if derr != nil || len(der) == 0 {
+				continue
+			}
+			append(&out, ..der)
+			count += 1
+		}
+		source = path
+		break
+	}
+	if werr := os.write_entire_file(dst, out[:]); werr != nil {
+		die("could not write %s: %v", dst, werr)
+	}
+	if count == 0 {
+		step("no host CA bundle found: the trust store holds the test certificate only")
+	} else {
+		step("staged the trust store: the test certificate and %d roots from %s", count, source)
 	}
 }
 

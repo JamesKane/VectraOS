@@ -161,3 +161,31 @@ w_close24 :: proc(w: ^Writer, mark: int) #no_bounds_check {
 	w.buf[mark + 1] = u8(n >> 8)
 	w.buf[mark + 2] = u8(n)
 }
+
+/*
+der_len answers the whole length of the DER element at the head of `data` --
+its tag, its length bytes and its content -- or -1 if the head is not a
+well-formed element that fits. A trust store is certificates in DER one after
+another, and this is how a reader steps from one to the next without parsing
+it, so one it cannot parse is skipped rather than ending the walk.
+*/
+der_len :: proc(data: []u8) -> int #no_bounds_check {
+	if len(data) < 2 {
+		return -1
+	}
+	first := int(data[1])
+	if first < 0x80 {
+		total := 2 + first
+		return total <= len(data) ? total : -1
+	}
+	n := first & 0x7f
+	if n == 0 || n > 4 || 2 + n > len(data) {
+		return -1
+	}
+	length := 0
+	for i in 0 ..< n {
+		length = length << 8 | int(data[2 + i])
+	}
+	total := 2 + n + length
+	return total <= len(data) ? total : -1
+}

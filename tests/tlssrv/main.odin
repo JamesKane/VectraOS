@@ -160,11 +160,14 @@ start :: proc "c" (block: ^abi.Args) {
 	args := libuser.args(block)
 	port := len(args) >= 2 ? args[1] : "4433"
 
-	// The identity: the trust store's one certificate, and its key.
-	cert, cok := libuser.read_file("/lib/tls/roots", context.allocator)
-	if !cok || len(cert) == 0 {
+	// The identity: the trust store's first certificate, the test one the
+	// build stages ahead of the host's roots, and its key.
+	store, cok := libuser.read_file("/lib/tls/roots", context.allocator)
+	first := libtls.der_len(store)
+	if !cok || first <= 0 {
 		fail("read the certificate")
 	}
+	cert := store[:first]
 	f := new(Fixture)
 	priv := CERT_PRIV
 	if !libtls.server_init(&f.srv, cert, priv[:]) {

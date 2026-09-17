@@ -53,8 +53,10 @@ fail :: proc "contextless" (what: string) -> ! {
 // load_roots reads the trust store, a file of X.509 certificates in DER, one
 // after another, and returns them parsed. Concatenated DER, not PEM: each
 // certificate is a self-delimiting ASN.1 element, so its own length walks to the
-// next. An empty or unreadable store is fatal -- a client with no roots trusts
-// nothing and must not pretend otherwise.
+// next. One the parser refuses is stepped over by that length rather than ending
+// the walk, since a host's bundle may hold a certificate shape this parser does
+// not know. An empty or unreadable store is fatal -- a client with no roots
+// trusts nothing and must not pretend otherwise.
 load_roots :: proc(path: string) -> []^x509.Certificate {
 	data, ok := libuser.read_file(path, context.allocator)
 	if !ok {
@@ -63,14 +65,17 @@ load_roots :: proc(path: string) -> []^x509.Certificate {
 	roots: [dynamic]^x509.Certificate
 	off := 0
 	for off < len(data) {
-		cert, err := x509.parse(data[off:], context.allocator)
-		if err != .None || len(cert.raw) == 0 {
+		n := libtls.der_len(data[off:])
+		if n <= 0 {
 			break
 		}
-		c := new(x509.Certificate)
-		c^ = cert
-		append(&roots, c)
-		off += len(cert.raw)
+		cert, err := x509.parse(data[off:][:n], context.allocator)
+		if err == .None {
+			c := new(x509.Certificate)
+			c^ = cert
+			append(&roots, c)
+		}
+		off += n
 	}
 	if len(roots) == 0 {
 		fail("the trust store holds no certificates")
