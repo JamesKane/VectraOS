@@ -144,6 +144,7 @@ user_programs := [?]User_Program {
 	{name = "import", path = "cmd/import"},
 	{name = "cpu", path = "cmd/cpu"},
 	{name = "rx", path = "cmd/rx"},
+	{name = "tlsclient", path = "cmd/tlsclient"},
 	{name = "cryptotest", path = "tests/crypto"},
 	{name = "factotum", path = "servers/factotum"},
 	{name = "authtest", path = "tests/auth"},
@@ -1432,6 +1433,10 @@ stage_vectra :: proc(arch: string, host: string) {
 	copy_file("tests/debuggee/main.odin", fmt.tprintf("%s/lib/src/tests/debuggee/main.odin", root))
 	ensure_dir(fmt.tprintf("%s/lib/ndb", root))
 	copy_file("lib/ndb/local", fmt.tprintf("%s/lib/ndb/local", root))
+	// The TLS trust store `tlsclient` verifies certificate chains against:
+	// X.509 certificates in DER, one after another. `docs/WEB.md` section 3.
+	ensure_dir(fmt.tprintf("%s/lib/tls", root))
+	copy_file("lib/tls/roots", fmt.tprintf("%s/lib/tls/roots", root))
 	// The services `listen` announces: one script per port.
 	ensure_dir(fmt.tprintf("%s/lib/service", root))
 	copy_file("lib/service/tcp564", fmt.tprintf("%s/lib/service/tcp564", root))
