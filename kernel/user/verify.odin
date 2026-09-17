@@ -10101,6 +10101,28 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 		)
 	}
 
+	/*
+	And TLS 1.3 over one of them, `docs/WEB.md` step 0: `tlssrv` announces a
+	port and answers one handshake with the certificate in `/lib/tls/roots`,
+	and `tlsclient` dials it by this machine's name through `/net/cs`, verifies
+	the chain against the store and the clock, and relays a line each way.
+	`tests/crypto` proves the engine on a pipe; this is the command's own glue
+	-- the dial, the store, the clock and the relay -- over a real connection.
+	*/
+	{
+		names := [?]string{"rc", "/lib/tests/web.rc"}
+		script_says(
+			r,
+			"/bin/rc",
+			names[:],
+			PATIENCE * 100,
+			"a scripted TLS server and tlsclient start on this machine's stack",
+			"ok",
+			"and a line crossed a TLS 1.3 connection, the chain verified against the trust store",
+		)
+		reap_orphans()
+	}
+
 	// -- Teardown, a remove of one of its files -------------------------------
 
 	// The names first: each stops on a remove of its file, as the stack does.

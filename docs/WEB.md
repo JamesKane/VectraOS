@@ -209,9 +209,13 @@ no third-party cookie because there is no script to want one.
 dials through `/net/tcp`. A URL is `core:net/url`'s.
 
 Proves, offline. RFC 8448's handshake trace runs through `tlsclient` and
-every key in it matches. A body from a scripted server through a pipe
-lands in the store under the hash the test computes. A second fetch of
-the same URL adds a line to `names` and no file to the store.
+every key in it matches. `tests/tlssrv` stands a scripted TLS 1.3 server
+on this machine's own stack, over `sys/libtls`'s server side, and
+`tests/web.rc` has `tlsclient` dial it by this machine's name, verify its
+chain against `/lib/tls/roots` and the clock, and relay a line each way.
+A body from a scripted server through a pipe lands in the store under
+the hash the test computes. A second fetch of the same URL adds a line
+to `names` and no file to the store.
 
 ## 4. The message shape, and the union that is a timeline
 

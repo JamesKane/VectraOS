@@ -146,6 +146,7 @@ user_programs := [?]User_Program {
 	{name = "rx", path = "cmd/rx"},
 	{name = "tlsclient", path = "cmd/tlsclient"},
 	{name = "cryptotest", path = "tests/crypto"},
+	{name = "tlssrv", path = "tests/tlssrv"},
 	{name = "factotum", path = "servers/factotum"},
 	{name = "authtest", path = "tests/auth"},
 	{name = "chmod", path = "cmd/chmod"},
@@ -1425,6 +1426,7 @@ stage_vectra :: proc(arch: string, host: string) {
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))
 	copy_file("tests/dbg.rc", fmt.tprintf("%s/lib/tests/dbg.rc", root))
 	copy_file("tests/tls.rc", fmt.tprintf("%s/lib/tests/tls.rc", root))
+	copy_file("tests/web.rc", fmt.tprintf("%s/lib/tests/web.rc", root))
 	// The source the debugger's window shows, under the path the debug file
 	// names. The one program a debugger is expected on today.
 	ensure_dir(fmt.tprintf("%s/lib/src", root))

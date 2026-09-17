@@ -82,10 +82,10 @@ tls_ch_pub :: proc(body: []u8) -> []u8 {
 // generated with openssl (CN=vectra.test, valid 2020-2040). The flight test
 // stands a server up with it: it signs a real CertificateVerify the client
 // checks through x509 + ecdsa, exactly as a `tlsclient` will against the wire.
-CERT_DER :: [389]u8{
-	0x30, 0x82, 0x01, 0x81, 0x30, 0x82, 0x01, 0x27, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x14, 0x08,
-	0x8d, 0xaa, 0x88, 0x9b, 0x15, 0x11, 0x32, 0xca, 0xb3, 0x55, 0x34, 0x62, 0xf7, 0xc9, 0x31, 0x99,
-	0x80, 0x1b, 0xee, 0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x30,
+CERT_DER :: [436]u8{
+	0x30, 0x82, 0x01, 0xb0, 0x30, 0x82, 0x01, 0x56, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x14, 0x2d,
+	0x31, 0x8e, 0xd9, 0x3c, 0xb6, 0x43, 0x8a, 0x37, 0xd5, 0x2e, 0xcd, 0xcd, 0xe9, 0x08, 0x3a, 0x4f,
+	0x2e, 0x22, 0x7a, 0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x30,
 	0x16, 0x31, 0x14, 0x30, 0x12, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x0b, 0x76, 0x65, 0x63, 0x74,
 	0x72, 0x61, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x30, 0x1e, 0x17, 0x0d, 0x32, 0x30, 0x30, 0x31, 0x30,
 	0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5a, 0x17, 0x0d, 0x34, 0x30, 0x30, 0x31, 0x30, 0x31,
@@ -96,18 +96,21 @@ CERT_DER :: [389]u8{
 	0x42, 0xc2, 0x16, 0x94, 0xa6, 0xd5, 0x62, 0x32, 0x2c, 0x66, 0x94, 0x88, 0x85, 0x05, 0x87, 0x73,
 	0x03, 0x3c, 0x77, 0x26, 0xa4, 0xdb, 0xb8, 0x45, 0xf8, 0xa4, 0x7b, 0x8f, 0xa6, 0x56, 0xf4, 0xd7,
 	0x1a, 0xd2, 0x8c, 0x8c, 0x5d, 0x1b, 0x75, 0xf0, 0xb6, 0xc3, 0x8b, 0xfb, 0xdf, 0xc1, 0x54, 0x49,
-	0x86, 0xdb, 0x44, 0xf5, 0xf8, 0xf5, 0xc6, 0xc3, 0x9b, 0x00, 0xa3, 0x53, 0x30, 0x51, 0x30, 0x1d,
-	0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x00, 0xc7, 0xb6, 0xab, 0xb3, 0x5c, 0xa3,
-	0xe2, 0xfb, 0xde, 0x37, 0x89, 0x74, 0x81, 0x34, 0x05, 0x57, 0x9b, 0x4f, 0xdc, 0x30, 0x1f, 0x06,
-	0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x00, 0xc7, 0xb6, 0xab, 0xb3, 0x5c,
-	0xa3, 0xe2, 0xfb, 0xde, 0x37, 0x89, 0x74, 0x81, 0x34, 0x05, 0x57, 0x9b, 0x4f, 0xdc, 0x30, 0x0f,
-	0x06, 0x03, 0x55, 0x1d, 0x13, 0x01, 0x01, 0xff, 0x04, 0x05, 0x30, 0x03, 0x01, 0x01, 0xff, 0x30,
-	0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x03, 0x48, 0x00, 0x30, 0x45,
-	0x02, 0x20, 0x4d, 0x80, 0x0b, 0x98, 0xb5, 0x63, 0xff, 0x8f, 0x2d, 0x58, 0x4e, 0x22, 0x66, 0xcb,
-	0xd3, 0xb9, 0xb7, 0x1f, 0x54, 0xc8, 0xd1, 0xbb, 0x6c, 0xc6, 0xf5, 0x96, 0x82, 0x66, 0xbb, 0x44,
-	0xb6, 0x89, 0x02, 0x21, 0x00, 0xd7, 0x21, 0x14, 0x5a, 0x7f, 0x73, 0x98, 0xde, 0x48, 0x47, 0x6d,
-	0x50, 0x75, 0x88, 0xad, 0x27, 0xdf, 0x58, 0x0e, 0x1f, 0xa1, 0x91, 0xc2, 0x66, 0xab, 0xec, 0xd2,
-	0x85, 0x40, 0x8f, 0x1c, 0xcb,
+	0x86, 0xdb, 0x44, 0xf5, 0xf8, 0xf5, 0xc6, 0xc3, 0x9b, 0x00, 0xa3, 0x81, 0x81, 0x30, 0x7f, 0x30,
+	0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x00, 0xc7, 0xb6, 0xab, 0xb3, 0x5c,
+	0xa3, 0xe2, 0xfb, 0xde, 0x37, 0x89, 0x74, 0x81, 0x34, 0x05, 0x57, 0x9b, 0x4f, 0xdc, 0x30, 0x1f,
+	0x06, 0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x00, 0xc7, 0xb6, 0xab, 0xb3,
+	0x5c, 0xa3, 0xe2, 0xfb, 0xde, 0x37, 0x89, 0x74, 0x81, 0x34, 0x05, 0x57, 0x9b, 0x4f, 0xdc, 0x30,
+	0x0f, 0x06, 0x03, 0x55, 0x1d, 0x13, 0x01, 0x01, 0xff, 0x04, 0x05, 0x30, 0x03, 0x01, 0x01, 0xff,
+	0x30, 0x2c, 0x06, 0x03, 0x55, 0x1d, 0x11, 0x04, 0x25, 0x30, 0x23, 0x82, 0x0b, 0x76, 0x65, 0x63,
+	0x74, 0x72, 0x61, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x82, 0x06, 0x76, 0x65, 0x63, 0x74, 0x72, 0x61,
+	0x82, 0x03, 0x6f, 0x6e, 0x65, 0x82, 0x03, 0x74, 0x77, 0x6f, 0x82, 0x02, 0x66, 0x73, 0x30, 0x0a,
+	0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x03, 0x48, 0x00, 0x30, 0x45, 0x02,
+	0x20, 0x4d, 0xc7, 0x2f, 0x66, 0x6b, 0xab, 0x2a, 0xfd, 0x80, 0xe5, 0xcb, 0x8d, 0xe7, 0xbf, 0x4f,
+	0x6b, 0x31, 0x28, 0x88, 0x4c, 0x04, 0x4d, 0xec, 0xa3, 0x37, 0x28, 0xd9, 0x8f, 0x94, 0x96, 0xfb,
+	0xbd, 0x02, 0x21, 0x00, 0xba, 0xdc, 0xb7, 0x32, 0x98, 0xdb, 0x35, 0x2c, 0x65, 0xf6, 0x1e, 0xc4,
+	0x38, 0x47, 0x2f, 0x68, 0xbc, 0xe6, 0x9b, 0x4c, 0xdf, 0xb9, 0xbd, 0x3c, 0x5b, 0x49, 0xc0, 0xf0,
+	0xf2, 0xea, 0xb4, 0x7b,
 }
 
 CERT_PRIV :: [32]u8{
@@ -125,11 +128,10 @@ CERT_PRIV :: [32]u8{
 // records, and the CertificateVerify and Finished packed into one. That is
 // exactly the reassembly and demux the driver must get right.
 Mock :: struct {
-	srv:           libtls.Conn,
-	skey:          ecdsa.Private_Key,
-	spriv:         [32]u8,
-	ap_write:      libtls.Record_Keys, // server -> client application key
-	ap_read:       libtls.Record_Keys, // client -> server application key
+	srv:           libtls.Server,
+	cert:          [512]u8, // the server's leaf, the store's one certificate
+	cert_len:      int,
+	msg:           [1024]u8, // the handshake message being built
 	c2s:           [1024]u8, // records the client wrote
 	c2s_len:       int,
 	c2s_pos:       int,
@@ -180,8 +182,8 @@ mock_emit_plain :: proc(m: ^Mock, wire: u8, payload: []u8) {
 	m.s2c_len += libtls.write_plaintext_record(wire, payload, m.s2c[m.s2c_len:])
 }
 
-mock_emit_sealed :: proc(m: ^Mock, rk: ^libtls.Record_Keys, inner: u8, payload: []u8) {
-	m.s2c_len += libtls.seal_record(rk, inner, payload, m.s2c[m.s2c_len:])
+mock_emit_sealed :: proc(m: ^Mock, inner: u8, payload: []u8) {
+	m.s2c_len += libtls.seal_record(&m.srv.conn.write, inner, payload, m.s2c[m.s2c_len:])
 }
 
 mock_next_c2s :: proc(m: ^Mock) -> (full: []u8, ok: bool) {
@@ -198,94 +200,41 @@ mock_next_c2s :: proc(m: ^Mock) -> (full: []u8, ok: bool) {
 }
 
 // mock_flight answers the ClientHello: it runs the server half of the exchange
-// and stages the whole flight, fragmented, into the server-to-client buffer.
+// through `sys/libtls/server.odin`, one message at a time, and stages the
+// flight into the server-to-client buffer fragmented on purpose.
 mock_flight :: proc(m: ^Mock) {
 	ch_len := int(m.c2s[3]) << 8 | int(m.c2s[4])
 	ch_msg := m.c2s[libtls.RECORD_HEADER:][:ch_len]
 	m.c2s_pos = libtls.RECORD_HEADER + ch_len
-	r := libtls.reader(ch_msg)
-	_, ch_body, _ := libtls.read_handshake(&r)
-	cpub := tls_ch_pub(ch_body)
 
-	hash.init(&m.srv.transcript, libtls.HASH)
-	libtls.transcript_update(&m.srv, ch_msg)
-
-	spub: [32]u8;x25519.scalarmult_basepoint(spub[:], m.spriv[:])
-	shbuf: [256]u8
-	shn := tls_make_server_hello(spub[:], shbuf[:])
-	sh_msg := shbuf[:shn]
-	libtls.transcript_update(&m.srv, sh_msg)
-
-	sshared: [32]u8;x25519.scalarmult(sshared[:], m.spriv[:], cpub)
-	libtls.install_handshake_keys(&m.srv, sshared[:], false)
+	spriv: [32]u8;for i in 0 ..< 32 {spriv[i] = u8(0x80 + i)}
+	srand: [32]u8;for i in 0 ..< 32 {srand[i] = 0xaa}
+	shn := libtls.answer_client_hello(&m.srv, ch_msg, spriv, srand, m.msg[:])
+	want(shn > 0, "the scripted server answers the ClientHello")
 
 	// ServerHello in the clear, then a change_cipher_spec to be ignored.
-	mock_emit_plain(m, libtls.CONTENT_HANDSHAKE, sh_msg)
+	mock_emit_plain(m, libtls.CONTENT_HANDSHAKE, m.msg[:shn])
 	ccs := [1]u8{0x01}
 	mock_emit_plain(m, libtls.CONTENT_CHANGE_CIPHER_SPEC, ccs[:])
 
 	// EncryptedExtensions, in its own record.
-	ee := [?]u8{libtls.HS_ENCRYPTED_EXTENSIONS, 0x00, 0x00, 0x02, 0x00, 0x00}
-	libtls.transcript_update(&m.srv, ee[:])
-	mock_emit_sealed(m, &m.srv.write, libtls.CONTENT_HANDSHAKE, ee[:])
+	n := libtls.server_encrypted_extensions(&m.srv, m.msg[:])
+	want(n > 0, "and writes EncryptedExtensions")
+	mock_emit_sealed(m, libtls.CONTENT_HANDSHAKE, m.msg[:n])
 
 	// Certificate, split across two records to exercise reassembly.
-	cert_der := CERT_DER
-	cbuf: [512]u8
-	certw := libtls.writer(cbuf[:])
-	libtls.w_u8(&certw, libtls.HS_CERTIFICATE)
-	cm := libtls.w_open24(&certw)
-	libtls.w_u8(&certw, 0)
-	cl := libtls.w_open24(&certw)
-	ce := libtls.w_open24(&certw);libtls.w_bytes(&certw, cert_der[:]);libtls.w_close24(&certw, ce)
-	cx := libtls.w_open16(&certw);libtls.w_close16(&certw, cx)
-	libtls.w_close24(&certw, cl)
-	libtls.w_close24(&certw, cm)
-	cert_msg := cbuf[:certw.pos]
-	libtls.transcript_update(&m.srv, cert_msg)
-	half := len(cert_msg) / 2
-	mock_emit_sealed(m, &m.srv.write, libtls.CONTENT_HANDSHAKE, cert_msg[:half])
-	mock_emit_sealed(m, &m.srv.write, libtls.CONTENT_HANDSHAKE, cert_msg[half:])
+	n = libtls.server_certificate(&m.srv, m.msg[:])
+	want(n > 0, "and the Certificate")
+	half := n / 2
+	mock_emit_sealed(m, libtls.CONTENT_HANDSHAKE, m.msg[:half])
+	mock_emit_sealed(m, libtls.CONTENT_HANDSHAKE, m.msg[half:n])
 
-	// CertificateVerify, signed over the transcript through Certificate.
-	th_cert: [32]u8;libtls.transcript_snapshot(&m.srv, th_cert[:])
-	cv_content: [64 + len(libtls.CV_CONTEXT_SERVER) + 1 + 32]u8
-	libtls.build_cert_verify_content(th_cert[:], cv_content[:])
-	cvsig, _ := ecdsa.sign_asn1(&m.skey, .SHA256, cv_content[:], context.allocator, true)
-	cvbuf: [256]u8
-	cvw := libtls.writer(cvbuf[:])
-	libtls.w_u8(&cvw, libtls.HS_CERTIFICATE_VERIFY)
-	cvm := libtls.w_open24(&cvw)
-	libtls.w_u16(&cvw, libtls.SIG_ECDSA_SECP256R1_SHA256)
-	cvs := libtls.w_open16(&cvw);libtls.w_bytes(&cvw, cvsig);libtls.w_close16(&cvw, cvs)
-	libtls.w_close24(&cvw, cvm)
-	cv_msg := cvbuf[:cvw.pos]
-	libtls.transcript_update(&m.srv, cv_msg)
-
-	// Server Finished.
-	th_cv: [32]u8;libtls.transcript_snapshot(&m.srv, th_cv[:])
-	svd: [32]u8;libtls.finished_mac(m.srv.s_hs_secret[:], th_cv[:], svd[:])
-	finbuf: [64]u8
-	fw := libtls.writer(finbuf[:])
-	libtls.w_u8(&fw, libtls.HS_FINISHED)
-	fk := libtls.w_open24(&fw);libtls.w_bytes(&fw, svd[:]);libtls.w_close24(&fw, fk)
-	fin_msg := finbuf[:fw.pos]
-	libtls.transcript_update(&m.srv, fin_msg)
-
-	// CertificateVerify and Finished packed into one record.
-	coalesced: [512]u8
-	pn := copy(coalesced[:], cv_msg)
-	pn += copy(coalesced[pn:], fin_msg)
-	mock_emit_sealed(m, &m.srv.write, libtls.CONTENT_HANDSHAKE, coalesced[:pn])
-
-	// The server's transcript is now CH..serverFinished; derive the app keys.
-	th_sf: [32]u8;libtls.transcript_snapshot(&m.srv, th_sf[:])
-	c_ap: [32]u8
-	s_ap: [32]u8
-	libtls.derive_secret(m.srv.secrets.master[:], "c ap traffic", th_sf[:], c_ap[:])
-	libtls.derive_secret(m.srv.secrets.master[:], "s ap traffic", th_sf[:], s_ap[:])
-	libtls.record_keys(&m.ap_write, s_ap[:])
-	libtls.record_keys(&m.ap_read, c_ap[:])
+	// CertificateVerify and Finished, packed into one record.
+	cvn := libtls.server_certificate_verify(&m.srv, m.msg[:])
+	want(cvn > 0, "and signs the CertificateVerify")
+	fn := libtls.server_finished(&m.srv, m.msg[cvn:])
+	want(fn > 0, "and its Finished")
+	mock_emit_sealed(m, libtls.CONTENT_HANDSHAKE, m.msg[:cvn + fn])
 }
 
 // mock_response reads the client's Finished and its application request, checks
@@ -293,23 +242,19 @@ mock_flight :: proc(m: ^Mock) {
 mock_response :: proc(m: ^Mock) {
 	scratch: [256]u8
 	if fin_full, ok := mock_next_c2s(m); ok {
-		fn, ftype, fok := libtls.open_record(&m.srv.read, fin_full, scratch[:])
+		fn, ftype, fok := libtls.open_record(&m.srv.conn.read, fin_full, scratch[:])
 		if fok && ftype == libtls.CONTENT_HANDSHAKE {
-			th_sf: [32]u8;libtls.transcript_snapshot(&m.srv, th_sf[:])
-			cvd: [32]u8;libtls.finished_mac(m.srv.c_hs_secret[:], th_sf[:], cvd[:])
-			fr := libtls.reader(scratch[:fn])
-			_, fbody, _ := libtls.read_handshake(&fr)
-			m.client_fin_ok = len(fbody) == 32 && libtls.slice_eq(fbody, cvd[:])
+			m.client_fin_ok = libtls.server_client_finished(&m.srv, scratch[:fn])
 		}
 	}
 	if req_full, ok := mock_next_c2s(m); ok {
-		rn, rtype, rok := libtls.open_record(&m.ap_read, req_full, scratch[:])
+		rn, rtype, rok := libtls.open_record(&m.srv.conn.read, req_full, scratch[:])
 		if rok && rtype == libtls.CONTENT_APPLICATION_DATA {
 			m.request_len = copy(m.request[:], scratch[:rn])
 		}
 	}
 	reply := transmute([]u8)string("hello from the mock server")
-	mock_emit_sealed(m, &m.ap_write, libtls.CONTENT_APPLICATION_DATA, reply)
+	mock_emit_sealed(m, libtls.CONTENT_APPLICATION_DATA, reply)
 }
 
 @(export, link_name = "_start")
@@ -756,11 +701,11 @@ start :: proc "c" (block: ^abi.Args) {
 	// `cmd/tlsclient` runs over `/net/tcp`.
 	{
 		m := new(Mock)
-		for i in 0 ..< 32 {m.spriv[i] = u8(0x80 + i)}
-		priv2 := CERT_PRIV
-		want(ecdsa.private_key_set_bytes(&m.skey, .SECP256R1, priv2[:]), "the scripted server's key sets")
-
 		cert_der := CERT_DER
+		priv2 := CERT_PRIV
+		m.cert_len = copy(m.cert[:], cert_der[:])
+		want(libtls.server_init(&m.srv, m.cert[:m.cert_len], priv2[:]), "the scripted server takes its certificate and key")
+
 		rootc, root_perr := x509.parse(cert_der[:])
 		want(root_perr == .None, "the client's trust root parses")
 		roots := []^x509.Certificate{&rootc}
@@ -768,7 +713,7 @@ start :: proc "c" (block: ^abi.Args) {
 
 		cl := new(libtls.Client)
 		io := libtls.IO{ctx = m, read = mock_read, write = mock_write}
-		libtls.client_init(cl, io, roots, now, "")
+		libtls.client_init(cl, io, roots, now, "vectra.test")
 
 		dpriv: [32]u8;for i in 0 ..< 32 {dpriv[i] = u8(i + 3)}
 		drand: [32]u8;for i in 0 ..< 32 {drand[i] = u8(0x20 + i)}
