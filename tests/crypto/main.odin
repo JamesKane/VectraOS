@@ -115,6 +115,203 @@ CERT_PRIV :: [32]u8{
 	0xce, 0xcf, 0xb3, 0xa8, 0x8d, 0x01, 0xb7, 0x43, 0xda, 0x72, 0x23, 0x9b, 0xa3, 0x6b, 0xaa, 0x3c,
 }
 
+// -- A scripted TLS 1.3 server, in memory, to drive the client transport ------
+//
+// libtls.Client is the record demultiplexer and handshake driver. To prove it
+// end to end without a network, this stands a minimal server on the other end
+// of an in-memory pipe and answers the client's ClientHello with a full flight
+// -- deliberately fragmented the way a real peer's might be: the ServerHello in
+// the clear, a change_cipher_spec to ignore, the Certificate split across two
+// records, and the CertificateVerify and Finished packed into one. That is
+// exactly the reassembly and demux the driver must get right.
+Mock :: struct {
+	srv:           libtls.Conn,
+	skey:          ecdsa.Private_Key,
+	spriv:         [32]u8,
+	ap_write:      libtls.Record_Keys, // server -> client application key
+	ap_read:       libtls.Record_Keys, // client -> server application key
+	c2s:           [1024]u8, // records the client wrote
+	c2s_len:       int,
+	c2s_pos:       int,
+	s2c:           [2048]u8, // records the server has staged for the client
+	s2c_len:       int,
+	s2c_pos:       int,
+	phase:         int,
+	request:       [128]u8, // the client's application request, captured
+	request_len:   int,
+	client_fin_ok: bool,
+}
+
+mock_write :: proc(ctx: rawptr, buf: []u8) -> int {
+	m := (^Mock)(ctx)
+	copy(m.c2s[m.c2s_len:], buf)
+	m.c2s_len += len(buf)
+	return len(buf)
+}
+
+mock_read :: proc(ctx: rawptr, buf: []u8) -> int {
+	m := (^Mock)(ctx)
+	for m.s2c_pos >= m.s2c_len {
+		if !mock_advance(m) {
+			return 0
+		}
+	}
+	n := copy(buf, m.s2c[m.s2c_pos:m.s2c_len])
+	m.s2c_pos += n
+	return n
+}
+
+mock_advance :: proc(m: ^Mock) -> bool {
+	switch m.phase {
+	case 0:
+		mock_flight(m)
+		m.phase = 1
+		return true
+	case 1:
+		mock_response(m)
+		m.phase = 2
+		return true
+	case:
+		return false
+	}
+}
+
+mock_emit_plain :: proc(m: ^Mock, wire: u8, payload: []u8) {
+	m.s2c_len += libtls.write_plaintext_record(wire, payload, m.s2c[m.s2c_len:])
+}
+
+mock_emit_sealed :: proc(m: ^Mock, rk: ^libtls.Record_Keys, inner: u8, payload: []u8) {
+	m.s2c_len += libtls.seal_record(rk, inner, payload, m.s2c[m.s2c_len:])
+}
+
+mock_next_c2s :: proc(m: ^Mock) -> (full: []u8, ok: bool) {
+	if m.c2s_pos + libtls.RECORD_HEADER > m.c2s_len {
+		return nil, false
+	}
+	length := int(m.c2s[m.c2s_pos + 3]) << 8 | int(m.c2s[m.c2s_pos + 4])
+	if m.c2s_pos + libtls.RECORD_HEADER + length > m.c2s_len {
+		return nil, false
+	}
+	full = m.c2s[m.c2s_pos:][:libtls.RECORD_HEADER + length]
+	m.c2s_pos += libtls.RECORD_HEADER + length
+	return full, true
+}
+
+// mock_flight answers the ClientHello: it runs the server half of the exchange
+// and stages the whole flight, fragmented, into the server-to-client buffer.
+mock_flight :: proc(m: ^Mock) {
+	ch_len := int(m.c2s[3]) << 8 | int(m.c2s[4])
+	ch_msg := m.c2s[libtls.RECORD_HEADER:][:ch_len]
+	m.c2s_pos = libtls.RECORD_HEADER + ch_len
+	r := libtls.reader(ch_msg)
+	_, ch_body, _ := libtls.read_handshake(&r)
+	cpub := tls_ch_pub(ch_body)
+
+	hash.init(&m.srv.transcript, libtls.HASH)
+	libtls.transcript_update(&m.srv, ch_msg)
+
+	spub: [32]u8;x25519.scalarmult_basepoint(spub[:], m.spriv[:])
+	shbuf: [256]u8
+	shn := tls_make_server_hello(spub[:], shbuf[:])
+	sh_msg := shbuf[:shn]
+	libtls.transcript_update(&m.srv, sh_msg)
+
+	sshared: [32]u8;x25519.scalarmult(sshared[:], m.spriv[:], cpub)
+	libtls.install_handshake_keys(&m.srv, sshared[:], false)
+
+	// ServerHello in the clear, then a change_cipher_spec to be ignored.
+	mock_emit_plain(m, libtls.CONTENT_HANDSHAKE, sh_msg)
+	ccs := [1]u8{0x01}
+	mock_emit_plain(m, libtls.CONTENT_CHANGE_CIPHER_SPEC, ccs[:])
+
+	// EncryptedExtensions, in its own record.
+	ee := [?]u8{libtls.HS_ENCRYPTED_EXTENSIONS, 0x00, 0x00, 0x02, 0x00, 0x00}
+	libtls.transcript_update(&m.srv, ee[:])
+	mock_emit_sealed(m, &m.srv.write, libtls.CONTENT_HANDSHAKE, ee[:])
+
+	// Certificate, split across two records to exercise reassembly.
+	cert_der := CERT_DER
+	cbuf: [512]u8
+	certw := libtls.writer(cbuf[:])
+	libtls.w_u8(&certw, libtls.HS_CERTIFICATE)
+	cm := libtls.w_open24(&certw)
+	libtls.w_u8(&certw, 0)
+	cl := libtls.w_open24(&certw)
+	ce := libtls.w_open24(&certw);libtls.w_bytes(&certw, cert_der[:]);libtls.w_close24(&certw, ce)
+	cx := libtls.w_open16(&certw);libtls.w_close16(&certw, cx)
+	libtls.w_close24(&certw, cl)
+	libtls.w_close24(&certw, cm)
+	cert_msg := cbuf[:certw.pos]
+	libtls.transcript_update(&m.srv, cert_msg)
+	half := len(cert_msg) / 2
+	mock_emit_sealed(m, &m.srv.write, libtls.CONTENT_HANDSHAKE, cert_msg[:half])
+	mock_emit_sealed(m, &m.srv.write, libtls.CONTENT_HANDSHAKE, cert_msg[half:])
+
+	// CertificateVerify, signed over the transcript through Certificate.
+	th_cert: [32]u8;libtls.transcript_snapshot(&m.srv, th_cert[:])
+	cv_content: [64 + len(libtls.CV_CONTEXT_SERVER) + 1 + 32]u8
+	libtls.build_cert_verify_content(th_cert[:], cv_content[:])
+	cvsig, _ := ecdsa.sign_asn1(&m.skey, .SHA256, cv_content[:], context.allocator, true)
+	cvbuf: [256]u8
+	cvw := libtls.writer(cvbuf[:])
+	libtls.w_u8(&cvw, libtls.HS_CERTIFICATE_VERIFY)
+	cvm := libtls.w_open24(&cvw)
+	libtls.w_u16(&cvw, libtls.SIG_ECDSA_SECP256R1_SHA256)
+	cvs := libtls.w_open16(&cvw);libtls.w_bytes(&cvw, cvsig);libtls.w_close16(&cvw, cvs)
+	libtls.w_close24(&cvw, cvm)
+	cv_msg := cvbuf[:cvw.pos]
+	libtls.transcript_update(&m.srv, cv_msg)
+
+	// Server Finished.
+	th_cv: [32]u8;libtls.transcript_snapshot(&m.srv, th_cv[:])
+	svd: [32]u8;libtls.finished_mac(m.srv.s_hs_secret[:], th_cv[:], svd[:])
+	finbuf: [64]u8
+	fw := libtls.writer(finbuf[:])
+	libtls.w_u8(&fw, libtls.HS_FINISHED)
+	fk := libtls.w_open24(&fw);libtls.w_bytes(&fw, svd[:]);libtls.w_close24(&fw, fk)
+	fin_msg := finbuf[:fw.pos]
+	libtls.transcript_update(&m.srv, fin_msg)
+
+	// CertificateVerify and Finished packed into one record.
+	coalesced: [512]u8
+	pn := copy(coalesced[:], cv_msg)
+	pn += copy(coalesced[pn:], fin_msg)
+	mock_emit_sealed(m, &m.srv.write, libtls.CONTENT_HANDSHAKE, coalesced[:pn])
+
+	// The server's transcript is now CH..serverFinished; derive the app keys.
+	th_sf: [32]u8;libtls.transcript_snapshot(&m.srv, th_sf[:])
+	c_ap: [32]u8
+	s_ap: [32]u8
+	libtls.derive_secret(m.srv.secrets.master[:], "c ap traffic", th_sf[:], c_ap[:])
+	libtls.derive_secret(m.srv.secrets.master[:], "s ap traffic", th_sf[:], s_ap[:])
+	libtls.record_keys(&m.ap_write, s_ap[:])
+	libtls.record_keys(&m.ap_read, c_ap[:])
+}
+
+// mock_response reads the client's Finished and its application request, checks
+// the Finished MAC, keeps the request, and stages a reply.
+mock_response :: proc(m: ^Mock) {
+	scratch: [256]u8
+	if fin_full, ok := mock_next_c2s(m); ok {
+		fn, ftype, fok := libtls.open_record(&m.srv.read, fin_full, scratch[:])
+		if fok && ftype == libtls.CONTENT_HANDSHAKE {
+			th_sf: [32]u8;libtls.transcript_snapshot(&m.srv, th_sf[:])
+			cvd: [32]u8;libtls.finished_mac(m.srv.c_hs_secret[:], th_sf[:], cvd[:])
+			fr := libtls.reader(scratch[:fn])
+			_, fbody, _ := libtls.read_handshake(&fr)
+			m.client_fin_ok = len(fbody) == 32 && libtls.slice_eq(fbody, cvd[:])
+		}
+	}
+	if req_full, ok := mock_next_c2s(m); ok {
+		rn, rtype, rok := libtls.open_record(&m.ap_read, req_full, scratch[:])
+		if rok && rtype == libtls.CONTENT_APPLICATION_DATA {
+			m.request_len = copy(m.request[:], scratch[:rn])
+		}
+	}
+	reply := transmute([]u8)string("hello from the mock server")
+	mock_emit_sealed(m, &m.ap_write, libtls.CONTENT_APPLICATION_DATA, reply)
+}
+
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	_ = block
@@ -545,6 +742,47 @@ start :: proc "c" (block: ^abi.Args) {
 		// log and says the substrate ran on the machine. A failed `want` above
 		// exits before it, so its presence is the on-target pass.
 		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 client handshake -- schedule, records, messages, keys, and the authenticated flight ok\n"))
+	}
+
+	// -- The TLS 1.3 client transport, against a scripted server ------------
+	//
+	// The flight test drove the engine's message procs by hand; this drives the
+	// whole `libtls.Client` -- the record demultiplexer and handshake state
+	// machine -- over an in-memory pipe to a minimal server that fragments its
+	// flight the way a real peer's might. It proves the reassembler (a
+	// Certificate split across two records), the demux (a change_cipher_spec
+	// ignored, one record holding two messages), the key transitions, and
+	// application data crossing in both directions. This is the code path
+	// `cmd/tlsclient` runs over `/net/tcp`.
+	{
+		m := new(Mock)
+		for i in 0 ..< 32 {m.spriv[i] = u8(0x80 + i)}
+		priv2 := CERT_PRIV
+		want(ecdsa.private_key_set_bytes(&m.skey, .SECP256R1, priv2[:]), "the scripted server's key sets")
+
+		cert_der := CERT_DER
+		rootc, root_perr := x509.parse(cert_der[:])
+		want(root_perr == .None, "the client's trust root parses")
+		roots := []^x509.Certificate{&rootc}
+		now := time.unix(1893456000, 0)
+
+		cl := new(libtls.Client)
+		io := libtls.IO{ctx = m, read = mock_read, write = mock_write}
+		libtls.client_init(cl, io, roots, now, "")
+
+		dpriv: [32]u8;for i in 0 ..< 32 {dpriv[i] = u8(i + 3)}
+		drand: [32]u8;for i in 0 ..< 32 {drand[i] = u8(0x20 + i)}
+		want(libtls.client_handshake(cl, dpriv, drand) && cl.conn.state == .Connected, "the client transport completes the handshake against the scripted server")
+
+		req := transmute([]u8)string("GET / HTTP/1.1\r\n\r\n")
+		want(libtls.client_write(cl, req), "the client sends application data")
+		rbuf: [128]u8
+		rn := libtls.client_read(cl, rbuf[:])
+		want(rn > 0 && string(rbuf[:rn]) == "hello from the mock server", "and reads the server's application reply")
+		want(m.client_fin_ok, "the server accepted the client's Finished MAC")
+		want(m.request_len == len(req) && libtls.slice_eq(m.request[:m.request_len], req), "and received the client's request intact")
+
+		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 client transport -- reassembly, demux, and app data over a pipe ok\n"))
 	}
 
 	libuser.exits("ok")
