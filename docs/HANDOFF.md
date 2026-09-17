@@ -475,12 +475,22 @@ the documents it points at.
    listener could accept nothing. The last close of an opened stream now
    hangs the conversation up, Plan 9's rule, `docs/NETFS.md`.
 
-   **What is left in step 0**, in order: the host's CA bundle staged at
-   `/lib/tls/roots` in place of the single test certificate there now;
-   and then `servers/webfs`, the HTTP client as files, with the store of
-   every body by hash, the link index both ways, and the cookie jar. Then
-   step 0's other schemes (Gemini, WebSocket). `webfs` and TLS are built
-   once, for this and the ghost's cloud. After step 0: a message is a
+   The trust store is the host's CA bundle behind the test certificate,
+   and a page from `example.com` came back by hand. **`servers/webfs` is
+   built and proven:** `/mnt/web/clone`, `ctl` (`url`, `method`, `header`,
+   `hangup`), `postbody`, `body` that streams, `headers`, `status` and
+   `hash`; HTTP/1.1 by Content-Length, chunked or to the close, `https`
+   over `sys/libtls`; every body into the store under its sha256 with a
+   line in `names`. The boot line fetches a chunked body from
+   `tests/websrv` over http and a body from `tlssrv` over https, and
+   finds each in the store under its hash.
+
+   **What is left in step 0**: gzip (zlib inflates freestanding; the
+   gzip frame is a header and a trailer around it), a connection kept for
+   the next request, the cookie jar, the `links` index, and step 0's other
+   schemes (Gemini, WebSocket). A dial through an io proc, so the serve
+   loop does not wait out a connect. `webfs` and TLS are built once, for
+   this and the ghost's cloud. After step 0: a message is a
    directory on every network, `upas/fs`'s shape, a union of them is the
    timeline, `mothra` reads it all, then mail the Delta Chat way,
    ActivityPub and the AT Protocol, Matrix, and a site from a directory.
@@ -969,7 +979,8 @@ servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
                       consrv/kbdfs/eiafs (the console and its devices reborn in
                       ring 3), intuition (the draw server + compositor),
                       netfs/cs/dns (the network as files), fatfs/kfs (the ESP
-                      and the writable disk), factotum (keys and the handshake).
+                      and the writable disk), factotum (keys and the handshake),
+                      webfs (the web as files, docs/WEB.md).
 apps/                 rc (the shell), terminal, filemgr, muidemo, tracker.
                       docs/RC.md, docs/DRAW.md, docs/WORKBENCH.md.
 cmd/                  ~40 tools, one package and one binary each; the fleet's
@@ -979,7 +990,8 @@ tests/                abitest and threadtest (the ABI and libthread from ring
                       3), plus the crypto and auth test programs; `tests/crypto`
                       proves `sys/libtls` end to end against a scripted server,
                       and `tests/tlssrv` + `tests/web.rc` prove `cmd/tlsclient`
-                      against one on the machine's own stack.
+                      against one on the machine's own stack; `tests/websrv`
+                      is the scripted HTTP server `webfs` fetches from.
 scripts/fleet.py      Drives the two-machine bench: boots both, crosses a line,
                       imports a tree, refuses a stranger.
 tools/                genfont.py (the baked font) and ste-lint.py (the
