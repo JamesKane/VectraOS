@@ -32,6 +32,50 @@ want :: proc "contextless" (cond: bool, what: string) {
 	}
 }
 
+// A synthetic ServerHello, so the handshake key exchange can be driven from
+// both ends in one process and shown to reach the same keys.
+tls_make_server_hello :: proc(server_pub: []u8, out: []u8) -> int {
+	w := libtls.writer(out)
+	libtls.w_u8(&w, libtls.HS_SERVER_HELLO)
+	hs := libtls.w_open24(&w)
+	libtls.w_u16(&w, libtls.VERSION_TLS12)
+	srand: [32]u8
+	for i in 0 ..< 32 {srand[i] = 0xaa}
+	libtls.w_bytes(&w, srand[:])
+	sid := libtls.w_open8(&w);libtls.w_close8(&w, sid)
+	libtls.w_u16(&w, libtls.TLS_AES_128_GCM_SHA256)
+	libtls.w_u8(&w, 0)
+	exts := libtls.w_open16(&w)
+	e := libtls.ext_open(&w, libtls.EXT_SUPPORTED_VERSIONS);libtls.w_u16(&w, libtls.VERSION_TLS13);libtls.ext_close(&w, e)
+	e = libtls.ext_open(&w, libtls.EXT_KEY_SHARE);libtls.w_u16(&w, libtls.GROUP_X25519)
+	k := libtls.w_open16(&w);libtls.w_bytes(&w, server_pub);libtls.w_close16(&w, k)
+	libtls.ext_close(&w, e)
+	libtls.w_close16(&w, exts)
+	libtls.w_close24(&w, hs)
+	return w.pos
+}
+
+// The client's X25519 public value out of a ClientHello body's key_share.
+tls_ch_pub :: proc(body: []u8) -> []u8 {
+	r := libtls.reader(body)
+	_ = libtls.r_u16(&r);_ = libtls.r_bytes(&r, 32);_ = libtls.r_vec8(&r)
+	_ = libtls.r_vec16(&r);_ = libtls.r_vec8(&r)
+	exts := libtls.r_vec16(&r)
+	er := libtls.reader(exts)
+	for libtls.r_remaining(&er) > 0 && !er.err {
+		et := libtls.r_u16(&er)
+		ed := libtls.r_vec16(&er)
+		if et == libtls.EXT_KEY_SHARE {
+			kr := libtls.reader(ed)
+			shares := libtls.r_vec16(&kr)
+			sr := libtls.reader(shares)
+			_ = libtls.r_u16(&sr)
+			return libtls.r_vec16(&sr)
+		}
+	}
+	return nil
+}
+
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	_ = block
@@ -269,11 +313,56 @@ start :: proc "c" (block: ^abi.Args) {
 		cmt, _, cok := libtls.read_handshake(&crd)
 		want(!cw.err && cok && cmt == libtls.HS_CLIENT_HELLO, "and a ClientHello this client writes frames as one")
 
+		// The handshake's key exchange, both ends in one process. First the
+		// interop anchor: RFC 8448's client private times the trace's server
+		// public is the trace's shared secret, so this X25519 agrees with a
+		// real peer's. Then a loopback: a client and a synthetic server drive
+		// client_hello / server_hello to the same handshake keys, shown by a
+		// record one seals opening under the key the other derived.
+		rfc_priv := [32]u8{0x49, 0xaf, 0x42, 0xba, 0x7f, 0x79, 0x94, 0x85, 0x2d, 0x71, 0x3e, 0xf2, 0x78, 0x4b, 0xcb, 0xca, 0xa7, 0x91, 0x1d, 0xe2, 0x6a, 0xdc, 0x56, 0x42, 0xcb, 0x63, 0x45, 0x40, 0xe7, 0xea, 0x50, 0x05}
+		rfc_spub := [32]u8{0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, 0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1, 0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, 0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f}
+		shared: [32]u8
+		x25519.scalarmult(shared[:], rfc_priv[:], rfc_spub[:])
+		want(shared == [32]u8{0x8b, 0xd4, 0x05, 0x4f, 0xb5, 0x5b, 0x9d, 0x63, 0xfd, 0xfb, 0xac, 0xf9, 0xf0, 0x4b, 0x9f, 0x0d, 0x35, 0xe6, 0xd6, 0x3f, 0x53, 0x75, 0x63, 0xef, 0xd4, 0x62, 0x72, 0x90, 0x0f, 0x89, 0x49, 0x2d}, "TLS 1.3 X25519 agrees with RFC 8448's peer")
+
+		c: libtls.Conn
+		cpriv: [32]u8; for i in 0 ..< 32 {cpriv[i] = u8(i + 1)}
+		crand: [32]u8; for i in 0 ..< 32 {crand[i] = u8(0x10 + i)}
+		chb: [512]u8
+		chn := libtls.client_hello(&c, cpriv, crand, "vectra.test", chb[:])
+		want(chn > 0, "the client writes a ClientHello and holds its transcript")
+		ch_msg := chb[:chn]
+
+		spriv: [32]u8; for i in 0 ..< 32 {spriv[i] = u8(0x80 + i)}
+		spub: [32]u8; x25519.scalarmult_basepoint(spub[:], spriv[:])
+		chr := libtls.reader(ch_msg)
+		_, ch_body, _ := libtls.read_handshake(&chr)
+		cpub := tls_ch_pub(ch_body)
+		shb: [256]u8
+		shn := tls_make_server_hello(spub[:], shb[:])
+		lsh_msg := shb[:shn]
+		want(libtls.server_hello(&c, lsh_msg) && c.state == .Wait_Flight, "the client reads the ServerHello and holds handshake keys")
+
+		srv: libtls.Conn
+		hash.init(&srv.transcript, libtls.HASH)
+		libtls.transcript_update(&srv, ch_msg)
+		libtls.transcript_update(&srv, lsh_msg)
+		sshared: [32]u8; x25519.scalarmult(sshared[:], spriv[:], cpub)
+		libtls.install_handshake_keys(&srv, sshared[:], false)
+		want(c.c_hs_secret == srv.c_hs_secret && c.s_hs_secret == srv.s_hs_secret, "and both ends reach the same handshake traffic secrets")
+
+		flight := transmute([]u8)string("the server's first sealed flight")
+		frec: [128]u8
+		fn := libtls.seal_record(&srv.write, libtls.CONTENT_HANDSHAKE, flight, frec[:])
+		fout: [128]u8
+		fm, fct, fok := libtls.open_record(&c.read, frec[:fn], fout[:])
+		want(fok && fct == libtls.CONTENT_HANDSHAKE && string(fout[:fm]) == string(flight), "and a record the server seals opens on the client")
+
 		// A breadcrumb on the console: the kernel's self-test reads this
 		// program's exit word, not this stream, so a line here reaches the boot
 		// log and says the substrate ran on the machine. A failed `want` above
 		// exits before it, so its presence is the on-target pass.
-		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 substrate + key schedule + record layer + messages ok\n"))
+		libuser.write(1, transmute([]u8)string("cryptotest: TLS 1.3 substrate + schedule + records + messages + handshake keys ok\n"))
 	}
 
 	libuser.exits("ok")
