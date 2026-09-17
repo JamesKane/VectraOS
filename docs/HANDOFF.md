@@ -485,11 +485,13 @@ the documents it points at.
    `tests/websrv` over http and a body from `tlssrv` over https, and
    finds each in the store under its hash.
 
-   **What is left in step 0**: gzip (zlib inflates freestanding; the
-   gzip frame is a header and a trailer around it), a connection kept for
-   the next request, the cookie jar, the `links` index, and step 0's other
-   schemes (Gemini, WebSocket). A dial through an io proc, so the serve
-   loop does not wait out a connect. `webfs` and TLS are built once, for
+   Since then: gzip, the cookie jar (`/mnt/web/cookies`, persisted in
+   the store), the Gemini scheme, and the dial through the fetch's io
+   proc, each on the boot line against the same two fixtures.
+
+   **What is left in step 0**: a connection kept for the next request,
+   the WebSocket, the `links` index, and Gemini's trust-on-first-use.
+   `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
    directory on every network, `upas/fs`'s shape, a union of them is the
    timeline, `mothra` reads it all, then mail the Delta Chat way,
