@@ -863,8 +863,11 @@ handler :: proc "contextless" (
 		libuser.fid_open(&fids, m.fid)
 		// A descriptor on a conversation's file counts against its life, so the
 		// conversation is not reclaimed while a program still holds one.
-		if i, _, is_tcp := tconv_of(node); is_tcp && tcps[i].used {
+		if i, kind, is_tcp := tconv_of(node); is_tcp && tcps[i].used {
 			tcps[i].refs += 1
+			if kind == TCONV_DATA {
+				tcps[i].streamed = true
+			}
 		}
 		reply^ = vectra9.Rlopen{qid = qid_of(node), iounit = 0}
 
@@ -1091,6 +1094,15 @@ handler :: proc "contextless" (
 		// accepting role, the way Plan 9 holds a conversation open through a
 		// file. Letting it go ends the role, so no conversation is left
 		// answering SYNs that nothing will accept.
+		//
+		// The last descriptor on a conversation whose stream was opened hangs
+		// it up, as Plan 9's `closeconv` does: a program that exits without
+		// writing `hangup` -- or is killed -- would otherwise leave its
+		// conversation established for ever, its far end in Close_Wait, and
+		// both slots taken until the machine reboots. The stack has few slots,
+		// and every test that opened a stream and exited was keeping one. A
+		// conversation whose `data` was never opened is left alone: a `dial`
+		// closes `ctl` after its connect and opens `data` only then.
 		node := libuser.fid_lookup(&fids, m.fid)
 		held_open := libuser.fid_is_open(&fids, m.fid)
 		libuser.fid_release(&fids, m.fid)
@@ -1101,6 +1113,11 @@ handler :: proc "contextless" (
 				}
 				if kind == TCONV_LISTEN && tcps[i].state == .Listen {
 					tcp_release(i)
+				} else if tcps[i].refs == 0 && tcps[i].streamed {
+					#partial switch tcps[i].state {
+					case .Syn_Sent, .Syn_Received, .Established, .Close_Wait:
+						tcp_hangup(i)
+					}
 				}
 			}
 		}

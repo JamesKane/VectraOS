@@ -66,6 +66,11 @@ Tcp_Conv :: struct {
 	// its slot is free to serve another. This is Plan 9's `Conv.inuse`, which
 	// ties a conversation's life to the descriptors on it.
 	refs:     int,
+	// Whether a program ever opened this conversation's `data`. One that did
+	// and then let every descriptor go is finished with the stream, and the
+	// last clunk hangs the conversation up for it. One that only ever wrote
+	// `ctl` -- a `dial` between its connect and its open of `data` -- is not.
+	streamed: bool,
 	state:    Tcp_State,
 	laddr:    libnet.IP, // This end's address: the SYN's destination, or the route's
 	lport:    u16,

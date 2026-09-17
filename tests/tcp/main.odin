@@ -86,41 +86,49 @@ text_of :: proc "contextless" (n: int, leaf: string) -> string {
 	return string(read_buf[:max(int(got), 0)])
 }
 
-// stream_write puts bytes into a conversation's data file.
+/*
+A conversation's stream, opened once and held. A conversation lives as long
+as a descriptor names its stream: the last one to go hangs it up, the way
+Plan 9's does, so a program that exits mid-conversation leaves nothing behind.
+The helpers below therefore open `data` on first use and keep it for the
+conversation's life here, rather than opening it for each call -- which would
+end the conversation after the first write.
+*/
+data_fds: [16]int
+
+stream_fd :: proc "contextless" (n: int) -> int {
+	if n < len(data_fds) && data_fds[n] >= 0 {
+		return data_fds[n]
+	}
+	fd := libuser.open(conv_path(n, "data"), abi.O_RDWR)
+	want(fd >= 0, "a conversation's data opens")
+	if n < len(data_fds) {
+		data_fds[n] = int(fd)
+	}
+	return int(fd)
+}
+
+// stream_write puts bytes into a conversation's stream.
 stream_write :: proc "contextless" (n: int, text: string, what: string) {
-	fd := libuser.open(conv_path(n, "data"), abi.O_WRONLY)
-	want(fd >= 0, "a conversation's data opens for writing")
-	ok := libuser.write(int(fd), transmute([]u8)text) == i64(len(text))
-	_ = libuser.close(int(fd))
+	ok := libuser.write(stream_fd(n), transmute([]u8)text) == i64(len(text))
 	want(ok, what)
 }
 
 // stream_read takes what a conversation's stream holds.
 stream_read :: proc "contextless" (n: int) -> string {
-	fd := libuser.open(conv_path(n, "data"), abi.O_RDONLY)
-	want(fd >= 0, "a conversation's data opens for reading")
-	got := libuser.read(int(fd), read_buf[:])
-	_ = libuser.close(int(fd))
+	got := libuser.read(stream_fd(n), read_buf[:])
 	return string(read_buf[:max(int(got), 0)])
 }
 
 // write_some puts as much of `data` as the stream takes now, and answers the
 // count. A short answer is the window holding the sender back, not an error.
 write_some :: proc "contextless" (n: int, data: []u8) -> int {
-	fd := libuser.open(conv_path(n, "data"), abi.O_WRONLY)
-	want(fd >= 0, "the bulk stream opens for writing")
-	got := libuser.write(int(fd), data)
-	_ = libuser.close(int(fd))
-	return int(got)
+	return int(libuser.write(stream_fd(n), data))
 }
 
 // read_some takes what the stream holds now, up to `out`, and answers the count.
 read_some :: proc "contextless" (n: int, out: []u8) -> int {
-	fd := libuser.open(conv_path(n, "data"), abi.O_RDONLY)
-	want(fd >= 0, "the bulk stream opens for reading")
-	got := libuser.read(int(fd), out)
-	_ = libuser.close(int(fd))
-	return int(max(got, 0))
+	return int(max(libuser.read(stream_fd(n), out), 0))
 }
 
 bulk: [6144]u8
@@ -159,6 +167,9 @@ connect_line :: proc "contextless" (port: string) -> string {
 start :: proc "c" (block: ^abi.Args) {
 	_ = block
 	context = libuser.startup()
+	for i in 0 ..< len(data_fds) {
+		data_fds[i] = -1
+	}
 
 	// A conversation that listens, and one that connects to it. The connect is
 	// the whole handshake, because the loopback answers inside the write.

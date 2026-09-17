@@ -63,9 +63,16 @@ round of the ether thread's loop is the only clock the stack has now.
 - **`Time_Wait`.** A closed conversation has no timer to leave `Time_Wait` on,
   so it rests there until a new `clone` reclaims its slot. A real close waits
   two segment lifetimes and then frees itself.
-- **A conversation abandoned mid-close.** One left in `Fin_Wait` or `Close_Wait`
-  with no descriptor is reclaimed only once it reaches `Closed` or `Time_Wait`.
-  A timer would reap it on its own, as a crash leaves it hanging otherwise.
+- **A conversation abandoned mid-close.** The last descriptor on a
+  conversation whose `data` was opened hangs it up, as Plan 9's `closeconv`
+  does, so a program that exits or is killed mid-stream still sends its FIN
+  and both ends finish. (A conversation whose `data` was never opened is left
+  alone: `dial` closes `ctl` between its connect and its open of `data`.) One
+  left in `Fin_Wait_2` by a far end that never answers, or resting in
+  `Time_Wait`, holds its slot until a new `clone` reclaims it. A timer would
+  reap it on its own. The stack has eight slots, and before the last close
+  hung a conversation up, every test that opened a stream and exited kept one
+  until the table was full and a listener could accept nothing.
 
 ### Efficiency, not correctness
 
