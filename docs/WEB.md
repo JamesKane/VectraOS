@@ -682,6 +682,18 @@ and `docs/GHOST.md` step 2 for the plumber.
 Boot line: a page of each kind lays out to the numbers, a click plumbs,
 and a rune past 128 is a glyph.
 
+**Where it stands.** The font past 128 is done. `sys/libdoc` is the page
+as blocks, the shape every parser makes and one layout turns into rows
+of a width: gemtext's line types, since they are the readable minimum a
+richer format reduces to. `sys/libgemtext` and `sys/libmark` parse into
+it, and `tests/doc` lays a page of each out to the numbers every boot.
+`apps/mothra` is the reader's first cut: a page from a URL through
+`/mnt/web` or a file, laid out to the window's columns and shown as the
+toolkit's list, a press on a link's row following it, `b` back, `j`,
+`k`, `n`, `p` scrolling, and the boot line opens it on a gemtext page.
+Not yet: `sys/libhtml`, images, the column, and the plumber -- a click
+follows its link inside the reader until `docs/GHOST.md` step 2 lands.
+
 ### Step 2: the shape, and feeds
 
 `sys/libmsg`, `sys/libmime`, `servers/feedfs`, the union, the timeline

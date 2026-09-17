@@ -628,6 +628,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_c(&r)
 	verify_threads(&r)
 	verify_mui(&r)
+	verify_mothra(&r)
 	verify_netfs(&r)
 	verify_cryptotest(&r)
 	verify_fonttest(&r)
@@ -9532,6 +9533,12 @@ or the name of the first step that failed.
 verify_mui :: proc(r: ^Result) {
 	names := [?]string{"mui"}
 	script_says(r, "/bin/mui", names[:], PATIENCE * 5, "a program on the toolkit's layout starts", "ok", "and every rectangle matched the weights")
+
+	// The reader's document model, `docs/WEB.md` step 1: a gemtext page
+	// and a markdown page parse to their blocks and lay out to the rows a
+	// column count gives them.
+	dnames := [?]string{"doctest"}
+	script_says(r, "/bin/doctest", dnames[:], PATIENCE * 5, "a program on the reader's document model starts", "ok", "and a page of each kind laid out to the numbers")
 }
 
 /*
@@ -10717,6 +10724,52 @@ web_fetch :: proc(url: string, body: []u8, hash: []u8, ctl_extra: string = "", s
 		_ = web_read_file(libodin_cat(path[:], "/mnt/web/", conv, "/status"), status)
 	}
 	return bn, int(got), true
+}
+
+
+/*
+verify_mothra opens the reader on a page, `docs/WEB.md` step 1: `mothra` on
+`/lib/tests/page.gmi` opens a framed window on the toolkit, which the copper
+title bar on the glass shows. The layout under it is `doctest`'s to prove.
+*/
+@(private = "file")
+verify_mothra :: proc(r: ^Result) #no_bounds_check {
+	s := devfs.raw_surface()
+	if s == nil || s.pixels == nil || s.bytes_pp != 4 {
+		return
+	}
+	count0 := srv.count()
+	ps := start_draw_server(r, s, "the loader starts the draw server for the reader", "which posts /srv/draw for the reader to find", "and paints a desktop before the reader opens a window")
+	if ps == nil {
+		return
+	}
+	names := [?]string{"mothra", "/lib/tests/page.gmi"}
+	argv := new(Argv)
+	_ = argv_from(argv, names[:])
+	pm := start_path(r, "/bin/mothra", "the loader starts the reader on a gemtext page", argv)
+	if pm != nil {
+		bx, _, _ := await_bar(s)
+		check(r, bx >= 0, "and the reader opens a framed window on the page, its title bar copper")
+		check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
+		finish(r, pm, "and is taken down")
+	}
+
+	// Teardown, the terminal's way: a remove of a window's ctl is the draw
+	// server's stop.
+	if check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the draw server to stop it") {
+		if ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/ctl", vfs.O_RDONLY); cerr == vfs.OK {
+			check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
+			vfs.chan_close(ctl)
+		}
+		check(r, wait(ps, PATIENCE), "and the draw server exits")
+		check(r, srv.remove("draw") == vfs.OK, "and the kernel takes the name away")
+		check(r, srv.count() == count0, "and /srv holds what it held")
+		finish(r, ps, "and the draw server is reaped")
+		pipe.quiesce()
+		check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "and the mount of the dead server comes down")
+	} else {
+		finish(r, ps, "and the draw server is taken down")
+	}
 }
 
 /*

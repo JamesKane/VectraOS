@@ -83,6 +83,10 @@ Window :: struct {
 	arg:       int,
 	clicks:    int,
 	on_menu:   proc "contextless" (win: ^Window, x: int, y: int),
+	// A key the program wants first, before the focus and the hotkeys see
+	// it: a reader's scrolling, a game's controls. True means it was taken,
+	// and the window is painted again.
+	on_key:    proc "contextless" (win: ^Window, k: u8) -> bool,
 	// A press on an icon that releases somewhere other than where it began is
 	// a drag, not a click: `on_drop` hears the cell it began on and the point
 	// it released, in the window's own coordinates, which the grab may carry
@@ -645,6 +649,12 @@ DRAG_MIN :: 6
 // focus, Return and Space press it, Escape is the cancel, and any other
 // key is a hotkey or nothing.
 key_event :: proc "contextless" (win: ^Window, k: u8) #no_bounds_check {
+	if win.on_key != nil && (win.focus == nil || win.focus.class != .String) && win.on_key(win, k) {
+		if !win.done {
+			window_paint(win)
+		}
+		return
+	}
 	if win.focus != nil && win.focus.class == .String && k != KEY_RETURN_N && k != KEY_RETURN_R && k != KEY_ESCAPE && k != '\t' {
 		if string_key(win.focus, k) {
 			win.clicks = 0
