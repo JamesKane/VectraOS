@@ -705,7 +705,11 @@ that read, and `tests/doc` holds a page of it. A click plumbs: the URL
 goes to `/mnt/plumb/send`, the rules route it to the `web` port, and the
 reader, which holds that port open, reads it back and opens it. So
 `plumb URL` from any shell opens a page in the running reader, or
-starts one. Not yet: forms, images, and the column.
+starts one. A PNG on its own is a page too: `sys/libimage` decodes it,
+since Odin's own `core:image` cannot build for ring 3, and the toolkit's
+picture gadget loads the pixels into the window fitted to it. The boot
+line decodes a PNG of each shape to its pixels and opens the reader on
+one. Not yet: forms, images on the page, JPEG, and the column.
 
 ### Step 2: the shape, and feeds
 

@@ -515,7 +515,11 @@ the documents it points at.
    images, rules and table rows. The head, scripts and styles are
    dropped, and a page that is a menu of links is one row each. `mothra`
    reads `text/html`. The plumber is in (`docs/GHOST.md` step 2, below),
-   and a press on a link plumbs. Next: images, forms and the column.
+   and a press on a link plumbs. A PNG on its own is a page: `sys/libimage`
+   decodes it (Odin's `core:image` wants `core:os`), and `libmui`'s new
+   `Picture` gadget loads the pixels into the window after the tree's
+   paint, fitted, `libapp`'s way. Next: images on the page, forms, JPEG
+   and the column.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
@@ -1003,6 +1007,8 @@ sys/                  The ~20 ring 3 libraries. libuser (the syscall wrappers
                       libtls (the TLS 1.3 client over core:crypto),
                       libdoc + libgemtext + libmark + libhtml (a page as
                       blocks, and the parsers into it, docs/WEB.md 1),
+                      libimage (PNG to pixels), libplumb (the plumber's
+                      message, docs/GHOST.md 5),
                       libregex, libfmt, libodin, libkbd, libkey, libfont,
                       libposix (docs/DEVTOOLS.md 7). docs/WEB.md.
 servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
