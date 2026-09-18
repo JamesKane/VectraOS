@@ -1444,6 +1444,7 @@ stage_vectra :: proc(arch: string, host: string) {
 	copy_file("tests/one.atom", fmt.tprintf("%s/lib/tests/one.atom", root))
 	copy_file("tests/two.rss", fmt.tprintf("%s/lib/tests/two.rss", root))
 	copy_file("tests/feed.rc", fmt.tprintf("%s/lib/tests/feed.rc", root))
+	copy_file("tests/mail.eml", fmt.tprintf("%s/lib/tests/mail.eml", root))
 	// The plumber's rules: what a message nobody addressed does, docs/GHOST.md 5.
 	ensure_dir(fmt.tprintf("%s/lib/plumb", root))
 	copy_file("lib/plumb/rules", fmt.tprintf("%s/lib/plumb/rules", root))

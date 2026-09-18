@@ -1,0 +1,35 @@
+From: =?utf-8?q?Gl=C3=A9nda_of_Plan_9?= <glenda@example.org>
+To: "Bob Jones" <bob@example.net>, carol@example.net
+Subject: A message with
+ two parts and an =?ISO-8859-1?B?ZmlsZQ==?=
+Date: Thu, 17 Sep 2026 20:15:00 -0400
+Message-ID: <one@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed;
+ boundary="outer_bound"
+
+This is the preamble, which a reader never sees.
+--outer_bound
+Content-Type: multipart/alternative; boundary=inner_bound
+
+--inner_bound
+Content-Type: text/plain; charset="ISO-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+Caf=E9 au lait, and a line that is soft=
+-wrapped here.  
+Second line =3D done.
+--inner_bound
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: base64
+
+PHA+Q2Fmw6kgYXUgbGFpdDwvcD4=
+--inner_bound--
+--outer_bound
+Content-Type: application/octet-stream; name="data.bin"
+Content-Disposition: attachment; filename="data.bin"
+Content-Transfer-Encoding: base64
+
+AAECAwQFBgc=
+--outer_bound--
+An epilogue.

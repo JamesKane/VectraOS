@@ -21,6 +21,7 @@ import "vsys:libgemtext"
 import "vsys:libhtml"
 import "vsys:libimage"
 import "vsys:libmark"
+import "vsys:libmime"
 import "vsys:libmsg"
 import "vsys:libuser"
 
@@ -268,10 +269,50 @@ start :: proc "c" (block: ^abi.Args) {
 		want(g.entries[1].date == 1789690500 && g.entries[1].from == "Two" && g.entries[1].type == "text/plain" && g.entries[1].body == "Just text, no tags.", "an rfc 822 date with a numeric zone, and an item with no creator is from the feed")
 		_, pok := libfeed.parse("<html><body>no</body></html>")
 		want(!pok, "a page is not a feed")
-		d, dok := libfeed.parse_date("15 Sep 26 18:45 EST")
+		d, dok := libmsg.parse_date("15 Sep 26 18:45 EST")
 		want(dok && d == 1789515900, "a two-digit year and a named zone read")
 		buf: [64]u8
 		want(libfeed.decode("a &amp; b &#169; <![CDATA[<x>&amp;]]> &bogus;", buf[:]) == "a & b \u00a9 <x>&amp; &bogus;", "entities decode, cdata stands, and an unknown entity is kept")
+	}
+
+	// -- Mail's shape ------------------------------------------------------------
+	{
+		eml, eok := libuser.read_file("/lib/tests/mail.eml", context.allocator)
+		want(eok, "mime: the mail fixture reads")
+		m, ok := libmime.parse(string(eml))
+		want(ok && len(m.headers.list) == 7 && m.type == "multipart/mixed" && len(m.parts) == 2, "a message parses to its seven headers and its two parts, the folded ones unfolded")
+		subj, _ := libmime.header(&m.headers, "SUBJECT")
+		buf: [256]u8
+		want(libmime.decode_words(subj, buf[:]) == "A message with two parts and an file", "a header is found with case not counting, and its encoded words decode")
+		from, _ := libmime.header(&m.headers, "from")
+		name, box := libmime.address(from, buf[:])
+		want(name == "Gl\u00e9nda of Plan 9" && box == "glenda@example.org", "a sender is a name, its Q words decoded, and a box")
+		to, _ := libmime.header(&m.headers, "to")
+		name, box = libmime.address(to, buf[:])
+		want(name == "Bob Jones" && box == "bob@example.net", "the first of two recipients, its quotes off")
+		alt := &m.parts[0]
+		want(alt.type == "multipart/alternative" && len(alt.parts) == 2 && alt.parts[0].type == "text/plain" && alt.parts[0].charset == "iso-8859-1", "a multipart inside a multipart is cut at its own boundary")
+		want(alt.parts[0].body == "Caf\u00e9 au lait, and a line that is soft-wrapped here.\r\nSecond line = done.", "quoted-printable decodes, its soft break joins, and latin-1 comes to utf-8")
+		want(alt.parts[1].body == "<p>Caf\u00e9 au lait</p>", "base64 decodes")
+		att := &m.parts[1]
+		want(att.filename == "data.bin" && len(att.body) == 8 && att.body[0] == 0 && att.body[7] == 7, "an attachment has its name from the disposition and its bytes")
+		body, btype := libmime.text_body(&m)
+		want(btype == "text/plain" && libmime.has_prefix(body, "Caf"), "the text a reader shows is the first plain part")
+		date, _ := libmime.header(&m.headers, "date")
+		secs, dok := libmsg.parse_date(date)
+		want(dok && secs == 1789690500, "and mail's date reads as a feed's does")
+		libmime.part_free(&m)
+
+		n := libmsg.parse_new("to: bob@example.net\nsubject: hello\nattach: /tmp/a\nattach: /tmp/b\n\nthe body\nstays\n")
+		to2, has := libmsg.new_header(&n, "to")
+		a1, _ := libmsg.new_attach(&n, 1)
+		_, unknown := libmsg.new_unknown(&n)
+		want(has && to2 == "bob@example.net" && a1 == "/tmp/b" && n.body == "the body\nstays\n" && !unknown, "a write to new is the same block: its headers by name, its attachments in order, and the body")
+		n2 := libmsg.parse_new("colour: blue\n\nx")
+		bad, has_bad := libmsg.new_unknown(&n2)
+		want(has_bad && bad == "colour", "and a header no network knows is named, for the refusal")
+		libmsg.new_free(&n)
+		libmsg.new_free(&n2)
 	}
 
 	libuser.exits("ok")
