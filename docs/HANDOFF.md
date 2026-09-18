@@ -550,7 +550,9 @@ the documents it points at.
    walks a reply. It binds the two under `/mnt/all` as one timeline,
    and the shell reads it in order. `mothra` on a directory of messages
    is the timeline, and a message is a page, through `libmsg`'s reading
-   half. Next: `libmime`, the poll and the compose window.
+   half. `sys/libmime` reads mail's headers and parts, and `libmsg`
+   reads a write to `new` with it. Next: the poll and the compose
+   window.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a

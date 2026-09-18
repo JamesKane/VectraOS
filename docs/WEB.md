@@ -782,7 +782,19 @@ the raw text.
 makes a conversation, through `webfs` for a URL and the file for a
 path. The fetch runs on a thread and the write waits for it, so the
 shell knows when the entries are in, or why not. `new` is refused, as
-the proof asks. Not yet: the poll, `libmime`, and the compose window.
+the proof asks. Not yet: the poll, and the compose window.
+
+`sys/libmime` is in. It unfolds RFC 5322 headers and cuts RFC 2045
+parts at their boundaries, one level down at a time. A part's bytes
+come out of quoted-printable or base64, a Latin-1 part comes to UTF-8,
+and a header's encoded words decode. `address` parts a sender into a
+name and a box, and `text_body` picks the part a reader shows.
+
+The dates every network writes now parse in `libmsg`, RFC 3339 and RFC
+822 both. `libmsg.parse_new` reads a write to `new` with the same
+header reader, and names a header no network knows for the refusal.
+The boot line parses a saved two-part mail with an attachment to its
+values.
 
 The reader shows it. `libmsg`'s reading half turns a message directory
 back into a record and a conversation into rows, from any network's
