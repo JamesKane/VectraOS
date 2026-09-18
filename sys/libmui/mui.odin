@@ -85,6 +85,7 @@ Class :: enum u8 {
 	Group, // A parent that lays its children along one axis
 	List, // Rows of text in a well, one selected, scrolled by its top row
 	Icons, // Cells in a well, a picture and a name each, one selected, scrolled by rows
+	Picture, // Pixels in a well, fitted to it, stretches both ways
 }
 
 // The kinds an icon is, `docs/WORKBENCH.md` section 6: a directory is a
@@ -149,6 +150,12 @@ Object :: struct {
 	// it is written. `string_key` edits it.
 	edit:     []u8,
 	edit_n:   int,
+
+	// A picture's pixels, `pw` by `ph` of four bytes each, RGBA, which the
+	// caller owns. Drawn fitted into the well, never enlarged.
+	pix:      []u8,
+	pw:       int,
+	ph:       int,
 }
 
 // -- Building a tree ---------------------------------------------------------
@@ -208,6 +215,12 @@ list :: proc "contextless" (min_rows: int) -> ^Object {
 		o.sel = -1
 	}
 	return o
+}
+
+// picture makes a gadget that shows pixels. The caller sets `pix`, `pw`
+// and `ph`, and may change them between paints.
+picture :: proc "contextless" () -> ^Object {
+	return obj(.Picture)
 }
 
 // list_visible answers how many rows a laid-out list shows.
@@ -499,6 +512,11 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 		o.minw = 8 * FONT_W + 2 * t.well
 		o.maxw = BIG
 		o.minh = max(o.min_rows, 1) * FONT_H + 2 * t.well
+		o.maxh = BIG
+	case .Picture:
+		o.minw = 8 * FONT_W + 2 * t.well
+		o.maxw = BIG
+		o.minh = 4 * FONT_H + 2 * t.well
 		o.maxh = BIG
 	case .Icons:
 		o.minw = 2 * ICON_W + 2 * t.well

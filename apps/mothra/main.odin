@@ -3,7 +3,8 @@ mothra -- the reader, `docs/WEB.md` section 5.
 
 `mothra URL` or `mothra file` shows a page in a window. Gemtext, markdown,
 HTML or plain text is laid out by `sys/libdoc` to the window's columns and
-shown as rows, one selected. A press on a link's row follows it, and the
+shown as rows, one selected. `sys/libimage` decodes a PNG, shown as a
+picture fitted to the window. A press on a link's row follows it, and the
 page it leads to takes the window. `b` goes back, `j` and `k` move a row,
 `n` and `p` a page, `r` fetches again, `q` and Escape close.
 
@@ -11,16 +12,16 @@ A URL is fetched through `/mnt/web`, `servers/webfs`. So every scheme it
 speaks is one this reads, and the page lands in the store on the way. A
 file is read from the namespace, its kind by its suffix.
 
-A press on a link is a plumb message, `docs/GHOST.md` section 5: the URL
-goes to `/mnt/plumb/send`, the rules route it to the `web` port, and this
-reader, which holds that port open, reads it back and opens it. So what a
+A press on a link is a plumb message, `docs/GHOST.md` section 5. The URL
+goes to `/mnt/plumb/send`, and the rules route it to the `web` port. This
+reader holds that port open, reads it back and opens it. So what a
 press does is what `plumb URL` from a shell does, and a page any program
 plumbs opens here. With no plumber the press follows the link itself.
 
 This is the reader's first cut. The toolkit's list is the page, so every
 row wears one face. A click follows a link itself rather than through the
-plumber, since a page's own links are its to follow. Images, messages and
-the column come next.
+plumber, since a page's own links are its to follow. Images on the page,
+messages and the column come next.
 */
 package mothra
 
@@ -30,6 +31,7 @@ import "vsys:abi"
 import "vsys:libdoc"
 import "vsys:libgemtext"
 import "vsys:libhtml"
+import "vsys:libimage"
 import "vsys:libmark"
 import "vsys:libmui"
 import "vsys:libplumb"
@@ -44,6 +46,10 @@ HISTORY :: 32
 ctx: runtime.Context
 win: libmui.Window
 page: ^libmui.Object
+pic: ^libmui.Object
+page_root: ^libmui.Object
+pic_root: ^libmui.Object
+showing_pic: bool
 doc: libdoc.Doc
 lay: libdoc.Layout
 rows: []string
@@ -60,6 +66,7 @@ Kind :: enum {
 	Gemtext,
 	Markdown,
 	Html,
+	Png,
 }
 
 @(export, link_name = "_start")
@@ -84,8 +91,12 @@ mothra_main :: proc "contextless" (arg: rawptr) {
 
 	page = libmui.list(24)
 	page.id = 1
-	col := libmui.group(false)
-	libmui.add(col, page)
+	page_root = libmui.group(false)
+	libmui.add(page_root, page)
+	pic = libmui.picture()
+	pic.id = 2
+	pic_root = libmui.group(false)
+	libmui.add(pic_root, pic)
 	win.handler = on_press
 	win.on_key = on_key
 	win.want_w, win.want_h = 80 * libmui.FONT_W + 8, 30 * libmui.FONT_H + 8
@@ -98,7 +109,7 @@ mothra_main :: proc "contextless" (arg: rawptr) {
 		libuser.eprint("mothra: cannot read ", string(current[:current_len]), "\n")
 		libthread.threadexitsall("read")
 	}
-	if !libmui.window_open(&win, page_title(), col) {
+	if !libmui.window_open(&win, page_title(), showing_pic ? pic_root : page_root) {
 		libthread.threadexitsall("open")
 	}
 	// Now the window has a width, the page is laid out to it.
@@ -229,6 +240,15 @@ go :: proc "contextless" (target: string, remember: bool) {
 	if !load(string(current[:current_len])) {
 		libuser.eprint("mothra: cannot read ", string(current[:current_len]), "\n")
 	}
+	// A picture and a page are two roots, and the window takes the one
+	// the load filled.
+	root := showing_pic ? pic_root : page_root
+	if win.root != root {
+		win.root = root
+		if win.cw > 0 {
+			libmui.window_relayout(&win)
+		}
+	}
 	relayout()
 }
 
@@ -322,7 +342,19 @@ load :: proc "contextless" (target: string) -> bool {
 	defer delete(text)
 	libdoc.doc_free(&doc)
 	libdoc.doc_init(&doc)
+	showing_pic = false
 	switch kind {
+	case .Png:
+		img, dok := libimage.decode_png(text, context.allocator)
+		if !dok {
+			libdoc.doc_add(&doc, .Text, "This picture could not be decoded.")
+			return true
+		}
+		if pic.pix != nil {
+			delete(pic.pix)
+		}
+		pic.pix, pic.pw, pic.ph = img.pix, img.w, img.h
+		showing_pic = true
 	case .Gemtext:
 		libgemtext.parse(&doc, string(text))
 	case .Markdown:
@@ -362,6 +394,9 @@ kind_of_suffix :: proc "contextless" (path: string) -> Kind {
 	if ends_with(path, ".html") || ends_with(path, ".htm") {
 		return .Html
 	}
+	if ends_with(path, ".png") {
+		return .Png
+	}
 	return .Plain
 }
 
@@ -374,6 +409,9 @@ kind_of_type :: proc "contextless" (ctype: string, url: string) -> Kind {
 	}
 	if starts_with(ctype, "text/html") || starts_with(ctype, "application/xhtml") {
 		return .Html
+	}
+	if starts_with(ctype, "image/png") {
+		return .Png
 	}
 	if len(ctype) == 0 {
 		return kind_of_suffix(url)

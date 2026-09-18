@@ -8091,6 +8091,18 @@ scan_col :: proc "contextless" (s: ^fb.Surface, x: int, want: u32, y0: int, y1: 
 	return
 }
 
+// glass_has says whether any pixel of the surface is the colour.
+@(private = "file")
+glass_has :: proc "contextless" (s: ^fb.Surface, c: fb.RGB) -> bool {
+	want := fb.pack(s, c)
+	for y in 0 ..< s.height {
+		if first, _ := scan_row(s, y, want, 0, s.width); first >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
 @(private = "file")
 scan_row :: proc "contextless" (s: ^fb.Surface, y: int, want: u32, x0: int, x1: int) -> (first: int, last: int) {
 	first, last = -1, -1
@@ -9585,7 +9597,7 @@ verify_mui :: proc(r: ^Result) {
 	// and a markdown page parse to their blocks and lay out to the rows a
 	// column count gives them.
 	dnames := [?]string{"doctest"}
-	script_says(r, "/bin/doctest", dnames[:], PATIENCE * 5, "a program on the reader's document model starts", "ok", "and a page of each kind laid out to the numbers")
+	script_says(r, "/bin/doctest", dnames[:], PATIENCE * 5, "a program on the reader's document model starts", "ok", "and a page of each kind laid out to the numbers, and a PNG of each shape decoded to its pixels")
 }
 
 /*
@@ -10952,6 +10964,32 @@ verify_mothra :: proc(r: ^Result) #no_bounds_check {
 		_ = notepg_kernel(pm.note_group, "kill")
 		check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
 		finish(r, pm, "and is taken down")
+	}
+
+	// A picture on its own: the reader decodes a PNG and shows it fitted.
+	inames := [?]string{"mothra", "/lib/tests/page.png"}
+	iargv := new(Argv)
+	_ = argv_from(iargv, inames[:])
+	pi := start_path(r, "/bin/mothra", "the loader starts the reader on a picture", iargv)
+	if pi != nil {
+		bx, _, _ := await_bar(s)
+		check(r, bx >= 0, "and the reader opens a framed window on the picture")
+		// The picture is a gradient of red across and green down, blue held
+		// at 128: its three corners are colours nothing else on the glass
+		// wears, and all three landing is the upload path whole.
+		corners := [3]fb.RGB{{0, 0, 128}, {255, 0, 128}, {0, 255, 128}}
+		landed := false
+		for _ in 0 ..< PATIENCE * 20 {
+			landed = glass_has(s, corners[0]) && glass_has(s, corners[1]) && glass_has(s, corners[2])
+			if landed {
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, landed, "and the picture's corner pixels reach the glass, decoded and loaded")
+		_ = notepg_kernel(pi.note_group, "kill")
+		check(r, end(pi, PATIENCE * 5), "and the reader, told to end, ends")
+		finish(r, pi, "and is taken down")
 	}
 
 	// Teardown, the terminal's way: a remove of a window's ctl is the draw

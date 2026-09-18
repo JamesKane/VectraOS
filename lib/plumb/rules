@@ -15,9 +15,9 @@ data matches 'gemini://[^ ]+'
 plumb to web
 plumb client window mothra $0
 
-# A page on this machine, by its suffix.
+# A page on this machine, by its suffix, and a picture the same way.
 type is text
-data matches '[a-zA-Z0-9_/.\-]+\.(gmi|md|html?|txt)'
+data matches '[a-zA-Z0-9_/.\-]+\.(gmi|md|html?|txt|png)'
 arg isfile $0
 data set $file
 plumb to web

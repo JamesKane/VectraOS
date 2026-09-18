@@ -118,6 +118,11 @@ paint_node :: proc "contextless" (
 		nat = list_rows(b, nat, o, dst, f, t)
 	case .Icons:
 		nat = icon_cells(b, nat, o, dst, f, t)
+	case .Picture:
+		// The well alone. The pixels go straight to the window after the
+		// tree is painted, since they outgrow any command buffer.
+		nat = libdraw.put_fill(b, nat, dst, u32(o.x), u32(o.y), u32(o.w), u32(o.h), libpal.xrgb(t.shade))
+		nat = libdraw.put_fill(b, nat, dst, u32(o.x + t.well), u32(o.y + t.well), u32(o.w - 2 * t.well), u32(o.h - 2 * t.well), libpal.xrgb(t.ground))
 	}
 	for c := o.first; c != nil; c = c.next {
 		nat = paint_node(b, nat, c, dst, f, t)

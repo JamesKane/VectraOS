@@ -369,10 +369,81 @@ window_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
 		return
 	}
 	flush_batches(win, win.paint_buf[:], end)
+	upload_pictures(win, win.root)
 	// One flush command of its own, so the server shows the frame.
 	fat := libdraw.put_flush(win.scratch[:], 0)
 	if fat > 0 {
 		_ = libuser.write(win.data_fd, win.scratch[:fat])
+	}
+}
+
+// upload_pictures sends every picture gadget's pixels after the tree's
+// paint, each straight into the window.
+upload_pictures :: proc "contextless" (win: ^Window, o: ^Object) {
+	if o == nil {
+		return
+	}
+	if o.class == .Picture && o.pix != nil && o.pw > 0 && o.ph > 0 && len(o.pix) >= o.pw * o.ph * 4 {
+		picture_upload(win, o)
+	}
+	for c := o.first; c != nil; c = c.next {
+		upload_pictures(win, c)
+	}
+}
+
+/*
+picture_upload loads a picture's pixels into the window, `sys/libapp`'s
+way. `load` commands go into image zero, a run of a row each, every one
+a wire slot or less. A picture larger than the well is shrunk to fit it,
+its shape kept, by taking one source pixel per destination pixel. A
+smaller one is drawn as it is, centred. Alpha is laid over the well's
+ground, since the blit is opaque.
+*/
+picture_upload :: proc "contextless" (win: ^Window, o: ^Object) #no_bounds_check {
+	t := &win.theme
+	ax, ay := o.x + t.well, o.y + t.well
+	aw, ah := o.w - 2 * t.well, o.h - 2 * t.well
+	if aw <= 0 || ah <= 0 {
+		return
+	}
+	dw, dh := o.pw, o.ph
+	if dw > aw || dh > ah {
+		if dw * ah > dh * aw {
+			dh = max(o.ph * aw / o.pw, 1)
+			dw = aw
+		} else {
+			dw = max(o.pw * ah / o.ph, 1)
+			dh = ah
+		}
+	}
+	ox, oy := ax + (aw - dw) / 2, ay + (ah - dh) / 2
+	ground := t.ground
+	slot: [SLOT]u8 = ---
+	run_buf: [SLOT]u8 = ---
+	max_px := (SLOT - libdraw.HEADER - 20) / 4
+	for y in 0 ..< dh {
+		sy := y * o.ph / dh
+		x := 0
+		for x < dw {
+			run := min(max_px, dw - x)
+			for i in 0 ..< run {
+				sx := (x + i) * o.pw / dw
+				p := o.pix[(sy * o.pw + sx) * 4:]
+				a := int(p[3])
+				r := (int(p[0]) * a + int(ground[0]) * (255 - a)) / 255
+				g := (int(p[1]) * a + int(ground[1]) * (255 - a)) / 255
+				b := (int(p[2]) * a + int(ground[2]) * (255 - a)) / 255
+				run_buf[i * 4] = u8(b)
+				run_buf[i * 4 + 1] = u8(g)
+				run_buf[i * 4 + 2] = u8(r)
+				run_buf[i * 4 + 3] = 0
+			}
+			end := libdraw.put_load(slot[:], 0, 0, u32(ox + x), u32(oy + y), u32(run), 1, run_buf[:run * 4])
+			if end > 0 {
+				slot_write(win, slot[:end])
+			}
+			x += run
+		}
 	}
 }
 
