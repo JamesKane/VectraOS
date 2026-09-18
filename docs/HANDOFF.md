@@ -499,7 +499,8 @@ the documents it points at.
    proc, each on the boot line against the same two fixtures.
 
    **What is left in step 0**: a connection kept for the next request,
-   the WebSocket, the `links` index, and Gemini's trust-on-first-use.
+   the WebSocket, and Gemini's trust-on-first-use. The `links` index is
+   the reader's, and step 1 keeps it.
 
    **Step 1, the reader, has begun.** `sys/libdoc` is the page as blocks
    and one layout to rows. `sys/libgemtext` and `sys/libmark` parse into
@@ -533,7 +534,11 @@ the documents it points at.
 
    JPEG is in: baseline, with restart intervals and subsampled chroma,
    checked against the host's decoder. `libimage.decode` picks PNG or
-   JPEG by signature. The column waits on step 2's messages.
+   JPEG by signature. The column is in, the window's second pane. It
+   shows a message's replies and what it answers, and a page's
+   backlinks from the `links` index the reader keeps. Step 1 is
+   complete, but for the mentions and quotes that wait on their
+   networks.
 
    **Step 2, the shape, is open.** `sys/libmsg` is the message as a
    directory and a network as a directory of them. It serves the tree
@@ -545,8 +550,7 @@ the documents it points at.
    walks a reply. It binds the two under `/mnt/all` as one timeline,
    and the shell reads it in order. `mothra` on a directory of messages
    is the timeline, and a message is a page, through `libmsg`'s reading
-   half. Next: the column, then `libmime`, the poll and the compose
-   window.
+   half. Next: `libmime`, the poll and the compose window.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a

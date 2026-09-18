@@ -238,9 +238,10 @@ The boot line fetches, from `tests/websrv` over http, a chunked body, a
 gzipped one, a response that sets a cookie and one that echoes the
 cookie sent (and does not when `cookies off`), and from `tests/tlssrv` a
 body over https and a capsule over gemini. Not yet: a connection kept
-for the next request, the WebSocket, the `links` index (the reader's),
-and Gemini's trust-on-first-use for a capsule's self-signed certificate,
-which today must chain to `/lib/tls/roots` like any other.
+for the next request, the WebSocket, and Gemini's trust-on-first-use.
+A capsule's self-signed certificate today must chain to
+`/lib/tls/roots` like any other. The `links` index is the reader's, and
+step 1 keeps it.
 
 ## 4. The message shape, and the union that is a timeline
 
@@ -736,7 +737,19 @@ hand out. The progressive kind is refused.
 The host's own decoder agrees with it to within a few levels on the
 same file. The boot line decodes two fixtures to the numbers. The
 reader and its rules take `.jpg` beside `.png`, on the page and on
-their own. Not yet: the column.
+their own.
+
+The column is in. The window is two panes, the page and a third of the
+width beside it. For a message the column is what it answers, its
+replies, and its network's `notify/` messages that answer it. For a
+page it is the backlinks. The reader keeps section 3's `links` index
+itself, one line per link it laid out, and reads it backwards. A press
+in the column opens on the left, and the column follows.
+
+The boot line sees the gemtext page's links land in the index. Then it
+sees the backlink in the column of the page that link names, and a
+reply in the column of the message it answers. Step 1 is complete, but
+for the mentions and quotes that wait on their networks.
 
 ### Step 2: the shape, and feeds
 
