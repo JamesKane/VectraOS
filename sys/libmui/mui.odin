@@ -91,6 +91,8 @@ STYLE_QUOTE :: u8(3)
 STYLE_PRE :: u8(4)
 STYLE_RULE :: u8(5) // A line across the well, no text
 STYLE_PICTURE :: u8(6) // A row a picture stands on, no text
+STYLE_FIELD :: u8(7) // A form's field: text on a recessed bar
+STYLE_BUTTON :: u8(8) // A form's button: hot text
 
 // A picture standing on a list's rows: `tall` rows from `row`, its pixels
 // as a picture gadget's. The caller owns the pixels.

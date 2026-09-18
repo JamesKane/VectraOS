@@ -159,6 +159,7 @@ list_rows :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fon
 	hot, hok := font_get(f, t.hot, t.ground)
 	link, kok := font_get(f, t.link, t.ground)
 	dim, dok := font_get(f, t.dim, t.ground)
+	field, fok := font_get(f, t.ink, t.shade)
 	cells := (o.w - 2 * t.well) / FONT_W
 	n := list_visible(o, t)
 	x := o.x + t.well
@@ -182,6 +183,16 @@ list_rows :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fon
 		case STYLE_QUOTE:
 			if dok {
 				atlas = dim
+			}
+		case STYLE_BUTTON:
+			if hok {
+				atlas = hot
+			}
+		case STYLE_FIELD:
+			// A recessed bar, the way a string gadget's well reads.
+			if fok {
+				nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y), u32(o.w - 2 * t.well), u32(FONT_H), libpal.xrgb(t.shade))
+				atlas = field
 			}
 		}
 		if row == o.sel && lok {

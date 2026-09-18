@@ -217,6 +217,9 @@ font_prepare :: proc "contextless" (
 			if _, ok := font_for(f, t.dim, t.ground, scratch, sink); !ok {
 				return false
 			}
+			if _, ok := font_for(f, t.ink, t.shade, scratch, sink); !ok {
+				return false
+			}
 		}
 	case .String:
 		// The text typed, on the well's ground.

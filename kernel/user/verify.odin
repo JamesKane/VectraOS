@@ -10748,7 +10748,7 @@ verify_webfs :: proc(r: ^Result) {
 
 	// Plain HTTP, a chunked body.
 	{
-		wargs := [?]string{"websrv", "8080", "5"}
+		wargs := [?]string{"websrv", "8080", "6"}
 		wargv := new(Argv)
 		_ = argv_from(wargv, wargs[:])
 		ws := start_path(r, "/bin/websrv", "a scripted HTTP server starts", wargv)
@@ -10789,6 +10789,11 @@ verify_webfs :: proc(r: ^Result) {
 			check(r, ok && string(body[:bn]) == "cookie: session=abc\n", "and the next request to that host carries it")
 			bn, hn, ok = web_fetch(url, body[:], hash[:], "cookies off")
 			check(r, ok && string(body[:bn]) == "cookie: none\n", "unless the conversation said cookies off")
+
+			// A POST: a form's body through the conversation's postbody.
+			url = libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/login")
+			bn, hn, ok = web_fetch(url, body[:], hash[:], "", nil, "user=glenda&pass=secret&next=%2F")
+			check(r, ok && string(body[:bn]) == "welcome glenda\n", "a POST carries its body, and the server answers what it was sent")
 			check(r, wait(ws, PATIENCE * 5), "and the scripted server, its connections served, exits")
 			finish(r, ws, "and is taken down")
 		}
@@ -10883,7 +10888,7 @@ hash's lengths (the hash with its newline), and whether every step held.
 @(private = "file") web_why: string
 
 @(private = "file")
-web_fetch :: proc(url: string, body: []u8, hash: []u8, ctl_extra: string = "", status: []u8 = nil) -> (bn: int, hn: int, ok: bool) {
+web_fetch :: proc(url: string, body: []u8, hash: []u8, ctl_extra: string = "", status: []u8 = nil, post: string = "") -> (bn: int, hn: int, ok: bool) {
 	num: [16]u8
 	n := web_read_file("/mnt/web/clone", num[:])
 	if n <= 0 {
@@ -10900,6 +10905,15 @@ web_fetch :: proc(url: string, body: []u8, hash: []u8, ctl_extra: string = "", s
 	if ctl_extra != "" && !net_file_write(libodin_cat(path[:], "/mnt/web/", conv, "/ctl"), ctl_extra) {
 		web_why = "ctl extra"
 		return 0, 0, false
+	}
+	if post != "" {
+		// A form's body: the method, its type, and the bytes before the fetch.
+		if !net_file_write(libodin_cat(path[:], "/mnt/web/", conv, "/ctl"), "method POST") ||
+		   !net_file_write(libodin_cat(path[:], "/mnt/web/", conv, "/ctl"), "header Content-Type: application/x-www-form-urlencoded") ||
+		   !net_file_write(libodin_cat(path[:], "/mnt/web/", conv, "/postbody"), post) {
+			web_why = "post"
+			return 0, 0, false
+		}
 	}
 	c, err := vfs.open_path(vfs.boot_namespace, libodin_cat(path[:], "/mnt/web/", conv, "/body"), vfs.O_RDONLY)
 	if err != vfs.OK {
@@ -11016,8 +11030,14 @@ verify_mothra :: proc(r: ^Result) #no_bounds_check {
 		finish(r, pd, "and is taken down")
 	}
 
-	// Teardown, the terminal's way: a remove of a window's ctl is the draw
-	// server's stop.
+	stop_draw_server(r, ps, count0)
+}
+
+// stop_draw_server takes the draw server down the terminal's way. A remove
+// of a window's ctl is the server's stop, and `/srv` is checked back to
+// what it held before the server posted.
+@(private = "file")
+stop_draw_server :: proc(r: ^Result, ps: ^Process, count0: int) {
 	if check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the draw server to stop it") {
 		if ctl, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/0/ctl", vfs.O_RDONLY); cerr == vfs.OK {
 			check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")

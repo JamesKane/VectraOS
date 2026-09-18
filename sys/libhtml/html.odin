@@ -15,8 +15,9 @@ link's name stays in the paragraph and the link follows it as a block,
 
 A table row is a paragraph, its cells parted by a bar. Emphasis is dropped,
 since the reader draws one face. No stylesheet is read and no script is run.
-Forms are not here yet. They are the login page, and they want the page
-gadget that draws a field, which the reader has still to grow.
+A form is its parts as blocks, each with the form it belongs to. A text
+field, a password, a check box, a hidden value, a select reduced to its
+chosen value, and a button. The reader draws the parts and sends the form.
 */
 package libhtml
 
@@ -585,6 +586,17 @@ Builder :: struct {
 	a_start: int, // Where the open link's name began in `para`
 	a_href:  Span, // Its target in `aux`
 	a_images: int, // Images noted since it opened
+	// The form being built, and the part of it whose text is gathering.
+	form:      int,
+	in_select: bool,
+	sel_name:  Span,
+	sel_value: Span,
+	sel_set:   bool, // A selected option was seen
+	in_area:   bool, // `<textarea>`: its text is the value
+	area_name: Span,
+	in_button: bool, // `<button>`: its text is the label
+	btn_name:  Span,
+	btn_value: Span,
 }
 
 // parse turns `src` into the blocks of `d`.
@@ -594,6 +606,7 @@ parse :: proc(d: ^libdoc.Doc, src: string) {
 	defer tokenizer_free(&t)
 	b: Builder
 	b.d = d
+	b.form = -1
 	b.para = make([dynamic]u8, 0, 1024, context.allocator)
 	b.aux = make([dynamic]u8, 0, 256, context.allocator)
 	b.pending = make([dynamic]Pending, 0, 16, context.allocator)
@@ -623,7 +636,10 @@ text :: proc(b: ^Builder, s: string) {
 	if b.drop > 0 && !b.title {
 		return
 	}
-	if b.pre > 0 {
+	if b.in_select {
+		return
+	}
+	if b.pre > 0 || b.in_area {
 		append(&b.para, ..transmute([]u8)s)
 		return
 	}
@@ -685,6 +701,45 @@ start :: proc(b: ^Builder, tok: ^Token) {
 		}
 	case "img":
 		image(b, tok)
+	case "form":
+		flush(b)
+		action, _ := attr(tok, "action")
+		method, _ := attr(tok, "method")
+		b.form = libdoc.doc_form(b.d, action, same_fold(method, "post"))
+	case "input":
+		input(b, tok)
+	case "select":
+		flush(b)
+		name, _ := attr(tok, "name")
+		b.in_select = true
+		b.sel_name = put_aux(b, name)
+		b.sel_value = Span{}
+		b.sel_set = false
+	case "option":
+		if b.in_select {
+			_, selected := attr(tok, "selected")
+			value, has := attr(tok, "value")
+			if has && (!b.sel_set || selected) {
+				b.sel_value = put_aux(b, value)
+				b.sel_set = b.sel_set || selected
+			}
+		}
+	case "textarea":
+		flush(b)
+		name, _ := attr(tok, "name")
+		b.in_area = true
+		b.area_name = put_aux(b, name)
+	case "button":
+		flush(b)
+		kind, has := attr(tok, "type")
+		if has && !same_fold(kind, "submit") {
+			return
+		}
+		name, _ := attr(tok, "name")
+		value, _ := attr(tok, "value")
+		b.in_button = true
+		b.btn_name = put_aux(b, name)
+		b.btn_value = put_aux(b, value)
 	case "a":
 		if b.a_open {
 			close_link(b)
@@ -749,11 +804,78 @@ end :: proc(b: ^Builder, name: string) {
 		if b.a_open {
 			close_link(b)
 		}
+	case "form":
+		flush(b)
+		b.form = -1
+	case "select":
+		if b.in_select {
+			b.in_select = false
+			sel := aux_text(b, b.sel_name)
+			libdoc.doc_field(b.d, .Field, sel, sel, aux_text(b, b.sel_value), b.form)
+		}
+	case "textarea":
+		if b.in_area {
+			b.in_area = false
+			area := aux_text(b, b.area_name)
+			libdoc.doc_field(b.d, .Field, area, area, string(b.para[:]), b.form)
+			clear(&b.para)
+		}
+	case "button":
+		if b.in_button {
+			b.in_button = false
+			trim_para(b)
+			label := string(b.para[:])
+			if len(label) == 0 {
+				label = "Submit"
+			}
+			libdoc.doc_field(b.d, .Submit, label, aux_text(b, b.btn_name), aux_text(b, b.btn_value), b.form)
+			clear(&b.para)
+		}
 	case:
 		if is_block(name) {
 			flush(b)
 		}
 	}
+}
+
+// input is an `<input>`: a part by its type, labelled by its placeholder
+// or its name. A kind this reader does not draw, a file or a colour say,
+// is left out.
+input :: proc(b: ^Builder, tok: ^Token) {
+	kind, _ := attr(tok, "type")
+	name, _ := attr(tok, "name")
+	value, _ := attr(tok, "value")
+	placeholder, _ := attr(tok, "placeholder")
+	label := len(placeholder) > 0 ? placeholder : name
+	part := libdoc.Kind.Field
+	switch {
+	case len(kind) == 0, same_fold(kind, "text"), same_fold(kind, "email"), same_fold(kind, "search"), same_fold(kind, "url"), same_fold(kind, "tel"), same_fold(kind, "number"):
+		part = .Field
+	case same_fold(kind, "password"):
+		part = .Secret
+	case same_fold(kind, "checkbox"), same_fold(kind, "radio"):
+		part = .Check
+		_, checked := attr(tok, "checked")
+		if len(value) == 0 {
+			value = "on"
+		}
+		if !checked {
+			value = ""
+		}
+	case same_fold(kind, "hidden"):
+		part = .Hidden
+	case same_fold(kind, "submit"):
+		part = .Submit
+		label = len(value) > 0 ? value : "Submit"
+	case:
+		return
+	}
+	flush(b)
+	libdoc.doc_field(b.d, part, label, name, value, b.form)
+}
+
+aux_text :: proc "contextless" (b: ^Builder, s: Span) -> string {
+	return string(b.aux[s.off:][:s.len])
 }
 
 // image notes an `<img>` for after the paragraph. One with no alt shows
@@ -919,7 +1041,7 @@ only_link :: proc(b: ^Builder, s: string) -> (int, bool) {
 // drops names an element whose text is not part of the page.
 drops :: proc "contextless" (name: string) -> bool {
 	switch name {
-	case "head", "script", "style", "template", "textarea", "select", "option", "datalist", "svg", "math", "object", "noscript", "iframe", "canvas", "video", "audio", "map":
+	case "head", "script", "style", "template", "datalist", "svg", "math", "object", "noscript", "iframe", "canvas", "video", "audio", "map":
 		return true
 	}
 	return false
@@ -928,7 +1050,7 @@ drops :: proc "contextless" (name: string) -> bool {
 // is_block names an element that ends the paragraph before it and after.
 is_block :: proc "contextless" (name: string) -> bool {
 	switch name {
-	case "p", "div", "ul", "ol", "dl", "table", "thead", "tbody", "tfoot", "caption", "section", "article", "header", "footer", "nav", "aside", "main", "figure", "figcaption", "form", "fieldset", "legend", "details", "summary", "address", "center", "body", "html", "menu", "hgroup", "button", "input":
+	case "p", "div", "ul", "ol", "dl", "table", "thead", "tbody", "tfoot", "caption", "section", "article", "header", "footer", "nav", "aside", "main", "figure", "figcaption", "fieldset", "legend", "details", "summary", "address", "center", "body", "html", "menu", "hgroup":
 		return true
 	}
 	return false

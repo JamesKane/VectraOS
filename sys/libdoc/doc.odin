@@ -32,6 +32,20 @@ Kind :: enum u8 {
 	Pre, // Lines kept as they are
 	Image, // `text` the alt, `href` the source
 	Rule,
+	// A form's parts, `docs/WEB.md` section 5: `text` the label shown,
+	// `href` the name sent, `value` what is sent, and `form` the form.
+	Field, // Typed text
+	Secret, // Typed text shown as stars
+	Check, // On or off: sent when its value is not empty
+	Hidden, // Sent, never shown
+	Submit, // A button that sends the form
+}
+
+// A form: where its parts go, and how.
+Form :: struct {
+	action_off: int,
+	action_len: int,
+	post:       bool,
 }
 
 Block :: struct {
@@ -44,11 +58,16 @@ Block :: struct {
 	// The rows an image stands on, when the reader fetched it: its caption
 	// row and the rows its pixels take. Zero lays the caption out alone.
 	tall:     int,
+	// A form part's form, or -1, and its value as the page gave it.
+	form:      int,
+	value_off: int,
+	value_len: int,
 }
 
 Doc :: struct {
 	buf:       [dynamic]u8,
 	blocks:    [dynamic]Block,
+	forms:     [dynamic]Form,
 	title_off: int,
 	title_len: int,
 }
@@ -77,6 +96,7 @@ doc_init :: proc(d: ^Doc) {
 	context.allocator = libuser.allocator()
 	d.buf = make([dynamic]u8, 0, 4096)
 	d.blocks = make([dynamic]Block, 0, 64)
+	d.forms = make([dynamic]Form, 0, 4)
 	d.title_len = 0
 }
 
@@ -84,13 +104,14 @@ doc_free :: proc(d: ^Doc) {
 	context.allocator = libuser.allocator()
 	delete(d.buf)
 	delete(d.blocks)
+	delete(d.forms)
 	d^ = Doc{}
 }
 
 // doc_add appends a block, copying `text` and `href` into the document.
 doc_add :: proc(d: ^Doc, kind: Kind, text: string, href: string = "", level: int = 0) {
 	context.allocator = libuser.allocator()
-	b := Block{kind = kind, level = level}
+	b := Block{kind = kind, level = level, form = -1}
 	b.text_off = len(d.buf)
 	append(&d.buf, ..transmute([]u8)text)
 	b.text_len = len(text)
@@ -103,6 +124,121 @@ doc_add :: proc(d: ^Doc, kind: Kind, text: string, href: string = "", level: int
 		d.title_off = b.text_off
 		d.title_len = b.text_len
 	}
+}
+
+// doc_form adds a form and answers its index. `post` says its parts go as
+// a body rather than a query.
+doc_form :: proc(d: ^Doc, action: string, post: bool) -> int {
+	context.allocator = libuser.allocator()
+	f := Form{post = post}
+	f.action_off = len(d.buf)
+	append(&d.buf, ..transmute([]u8)action)
+	f.action_len = len(action)
+	append(&d.forms, f)
+	return len(d.forms) - 1
+}
+
+// doc_field adds a form part: its label as the text, its name as the href,
+// its value, and the form it belongs to.
+doc_field :: proc(d: ^Doc, kind: Kind, label: string, name: string, value: string, form: int) {
+	context.allocator = libuser.allocator()
+	doc_add(d, kind, label, name)
+	b := &d.blocks[len(d.blocks) - 1]
+	b.form = form
+	b.value_off = len(d.buf)
+	append(&d.buf, ..transmute([]u8)value)
+	b.value_len = len(value)
+}
+
+block_value :: proc "contextless" (d: ^Doc, i: int) -> string #no_bounds_check {
+	b := &d.blocks[i]
+	return string(d.buf[b.value_off:][:b.value_len])
+}
+
+form_action :: proc "contextless" (d: ^Doc, f: int) -> string #no_bounds_check {
+	if f < 0 || f >= len(d.forms) {
+		return ""
+	}
+	fm := &d.forms[f]
+	return string(d.buf[fm.action_off:][:fm.action_len])
+}
+
+// is_form_part says whether a kind is a form's.
+is_form_part :: proc "contextless" (k: Kind) -> bool {
+	return k == .Field || k == .Secret || k == .Check || k == .Hidden || k == .Submit
+}
+
+/*
+form_encode writes a form's parts as `name=value&name=value` into `into`,
+each escaped the way a URL's query is. Answers the length, or -1 when it
+does not fit. `values[i]` is what block i sends. A check whose value is
+empty is left out, and a part with no name is left out too.
+*/
+form_encode :: proc "contextless" (d: ^Doc, form: int, values: []string, into: []u8) -> int {
+	at := 0
+	first := true
+	for i in 0 ..< len(d.blocks) {
+		b := &d.blocks[i]
+		if b.form != form || !is_form_part(b.kind) || b.href_len == 0 {
+			continue
+		}
+		value := i < len(values) ? values[i] : block_value(d, i)
+		if b.kind == .Check && len(value) == 0 {
+			continue
+		}
+		if !first {
+			if at >= len(into) {
+				return -1
+			}
+			into[at] = '&'
+			at += 1
+		}
+		first = false
+		at = url_encode(into, at, block_href(d, i))
+		if at < 0 || at >= len(into) {
+			return -1
+		}
+		into[at] = '='
+		at += 1
+		at = url_encode(into, at, value)
+		if at < 0 {
+			return -1
+		}
+	}
+	return at
+}
+
+// url_encode appends `s` to `into` at `at`, a space as `+` and anything
+// but a letter, a digit or `-_.~` as `%XX`. Answers the new offset, or -1.
+url_encode :: proc "contextless" (into: []u8, at: int, s: string) -> int {
+	hex := "0123456789ABCDEF"
+	at := at
+	for i in 0 ..< len(s) {
+		c := s[i]
+		switch {
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~':
+			if at >= len(into) {
+				return -1
+			}
+			into[at] = c
+			at += 1
+		case c == ' ':
+			if at >= len(into) {
+				return -1
+			}
+			into[at] = '+'
+			at += 1
+		case:
+			if at + 3 > len(into) {
+				return -1
+			}
+			into[at] = '%'
+			into[at + 1] = hex[c >> 4]
+			into[at + 2] = hex[c & 15]
+			at += 3
+		}
+	}
+	return at
 }
 
 // doc_title sets the title outright, for a format that names its page apart
@@ -170,7 +306,7 @@ prefix_of :: proc "contextless" (b: ^Block) -> string {
 		return "> "
 	case .Image:
 		return "[image] "
-	case .Text, .Pre, .Rule:
+	case .Text, .Pre, .Rule, .Field, .Secret, .Check, .Hidden, .Submit:
 		return ""
 	}
 	return ""
@@ -214,7 +350,9 @@ layout :: proc(l: ^Layout, d: ^Doc, cols_in: int) -> int {
 					break
 				}
 			}
-		case .Text, .Heading, .Link, .Item, .Quote, .Image:
+		case .Hidden:
+			// Sent with its form, never shown.
+		case .Text, .Heading, .Link, .Item, .Quote, .Image, .Field, .Secret, .Check, .Submit:
 			before := len(l.rows)
 			wrap(l, i, prefix_of(b), text, cols)
 			// An image with pixels stands on rows of its own under its caption.
