@@ -713,7 +713,21 @@ under its caption, and the rows wear the ink their kind says: a heading
 hot, a link cyan, a quote dim, a rule a line. The boot line decodes a
 PNG of each shape to its pixels, opens the reader on one, and opens it
 on a markdown page that names one and finds its corners on the glass.
-Not yet: forms, JPEG, and the column.
+
+Forms are in. `libhtml` reads a form's parts into blocks of their own,
+each knowing its form. A field, a secret, a check, a hidden value, a
+select reduced to its chosen value, and a button. `libdoc` encodes a
+form as a query. The reader draws the parts as rows on a recessed bar.
+Tab selects the next part, typing fills a field, Space turns a check,
+and Return sends the form, as a query on the action or as a POST body
+through `webfs`.
+
+The boot line parses a form to its parts and its query, and POSTs a
+login to the fixture server through `webfs` and reads the welcome back.
+The reader's own typing is not on the boot line. A reader started
+inside the network tests hangs in a write to the draw server, which is
+the open stale-wake race the handoff names. That path is hand-tested
+until the race is found. Not yet: JPEG and the column.
 
 ### Step 2: the shape, and feeds
 

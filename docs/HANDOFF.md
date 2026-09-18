@@ -522,8 +522,14 @@ the documents it points at.
    loads the pixels into the window after the tree's paint, `libapp`'s
    way. On a page, the list gadget's rows wear styles: heading, link,
    quote, rule, and a picture's stand. The reader fetches each picture a
-   page names and stands it on rows under its caption. Next: forms, JPEG
-   and the column.
+   page names and stands it on rows under its caption.
+
+   Forms are in. `libhtml` reads a form's parts to blocks, and `libdoc`
+   encodes the query. The reader edits the parts as rows and sends the
+   form as a query or a POST through `webfs`. The boot line proves
+   the parse, the encoding and the POST. The typed path is hand-tested
+   only. A reader started inside the network tests hangs in a draw
+   write, the open stale-wake race. Next: JPEG and the column.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
