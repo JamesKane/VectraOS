@@ -141,3 +141,59 @@ put_int :: proc "contextless" (into: []u8, v: i64) -> int #no_bounds_check {
 	}
 	return n + k
 }
+
+// calendar answers the civil date and time of seconds since the epoch, in
+// UTC: the inverse of libfeed's `civil`, Howard Hinnant's civil-from-days.
+calendar :: proc "contextless" (secs: i64) -> (y, mo, d, h, mi, s: int) {
+	days := secs / 86400
+	rem := secs % 86400
+	if rem < 0 {
+		rem += 86400
+		days -= 1
+	}
+	h = int(rem / 3600)
+	mi = int(rem % 3600 / 60)
+	s = int(rem % 60)
+	z := days + 719468
+	era := (z >= 0 ? z : z - 146096) / 146097
+	doe := z - era * 146097
+	yoe := (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+	yy := yoe + era * 400
+	doy := doe - (365 * yoe + yoe / 4 - yoe / 100)
+	mp := (5 * doy + 2) / 153
+	d = int(doy - (153 * mp + 2) / 5 + 1)
+	mo = int(mp < 10 ? mp + 3 : mp - 9)
+	if mo <= 2 {
+		yy += 1
+	}
+	y = int(yy)
+	return
+}
+
+// format_time writes `secs` as `YYYY-MM-DD HH:MM` into `into`, sixteen
+// bytes, the way a timeline row shows a message's time.
+format_time :: proc "contextless" (secs: i64, into: []u8) -> string #no_bounds_check {
+	if len(into) < 16 {
+		return ""
+	}
+	y, mo, d, h, mi, _ := calendar(secs)
+	put_pad(into[0:4], y)
+	into[4] = '-'
+	put_pad(into[5:7], mo)
+	into[7] = '-'
+	put_pad(into[8:10], d)
+	into[10] = ' '
+	put_pad(into[11:13], h)
+	into[13] = ':'
+	put_pad(into[14:16], mi)
+	return string(into[:16])
+}
+
+@(private = "file")
+put_pad :: proc "contextless" (into: []u8, v: int) #no_bounds_check {
+	x := v
+	for i := len(into) - 1; i >= 0; i -= 1 {
+		into[i] = u8('0' + x % 10)
+		x /= 10
+	}
+}

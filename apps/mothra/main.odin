@@ -24,10 +24,15 @@ reader holds that port open, reads it back and opens it. So what a
 press does is what `plumb URL` from a shell does, and a page any program
 plumbs opens here. With no plumber the press follows the link itself.
 
+A directory of messages, `sys/libmsg`'s shape, is a timeline: one row a
+message with its time, its author and its first line, and a press opens
+the message in place, since a message under a timeline is the timeline's
+own to show. A message is a page of its own: subject, sender, date, the
+body by its type, its links, and its replies as rows. A plain directory
+is a listing. `messages.odin` builds these.
+
 This is the reader's first cut. The toolkit's list is the page, so every
-row wears one face. A click follows a link itself rather than through the
-plumber, since a page's own links are its to follow. Messages and the
-column come next.
+row wears one face. The column comes next.
 */
 package mothra
 
@@ -39,6 +44,7 @@ import "vsys:libgemtext"
 import "vsys:libhtml"
 import "vsys:libimage"
 import "vsys:libmark"
+import "vsys:libmsg"
 import "vsys:libmui"
 import "vsys:libplumb"
 import "vsys:libthread"
@@ -99,6 +105,7 @@ Kind :: enum {
 	Markdown,
 	Html,
 	Picture, // PNG or JPEG, by libimage
+	Directory, // A timeline, a message or a listing, by libmsg
 }
 
 @(export, link_name = "_start")
@@ -512,13 +519,22 @@ on_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 	if n <= 0 {
 		return
 	}
-	// Through the plumber when there is one and this reader is listening.
-	// The message comes back on the web port, and plumb_thread opens it.
+	// A message under a timeline opens in place. Anything else goes through
+	// the plumber when there is one and this reader is listening: the
+	// message comes back on the web port, and plumb_thread opens it.
+	if in_place && !has_scheme(href) {
+		go(string(target[:n]), true)
+		return
+	}
 	if plumb_fd >= 0 && libplumb.send_text("mothra", string(target[:n])) {
 		return
 	}
 	go(string(target[:n]), true)
 }
+
+// in_place is set while the page is a directory's, whose own links are its
+// to open rather than the plumber's.
+in_place: bool
 
 // plumb_fd is the web port, or -1 when there is no plumber.
 plumb_fd: int = -1
@@ -694,6 +710,8 @@ load :: proc "contextless" (target: string, post: []u8 = nil) -> bool {
 	ok: bool
 	if has_scheme(target) {
 		text, kind, ok = fetch(target, post)
+	} else if libmsg.path_is_dir(target) {
+		kind, ok = .Directory, true
 	} else {
 		text, ok = libuser.read_file(target, context.allocator)
 		kind = kind_of_suffix(target)
@@ -706,7 +724,12 @@ load :: proc "contextless" (target: string, post: []u8 = nil) -> bool {
 	libdoc.doc_free(&doc)
 	libdoc.doc_init(&doc)
 	showing_pic = false
+	in_place = kind == .Directory
 	switch kind {
+	case .Directory:
+		if !load_dir(target) {
+			return false
+		}
 	case .Picture:
 		img, dok := libimage.decode(text, context.allocator)
 		if !dok {

@@ -60,8 +60,14 @@ MARKDOWN :: "# Doc\n\nSee [the site](https://x.y/ \"a title\") now.\nMore *here*
 
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
-	_ = block
 	context = libuser.startup()
+	args := libuser.args(block)
+	// `doctest msgs DIR` reads a served conversation back, the reading
+	// half of libmsg, once a network is up to serve one.
+	if len(args) >= 3 && args[1] == "msgs" {
+		check_msgs(args[2])
+		libuser.exits("ok")
+	}
 
 	// -- Gemtext ---------------------------------------------------------------
 	{
@@ -269,4 +275,31 @@ start :: proc "c" (block: ^abi.Args) {
 	}
 
 	libuser.exits("ok")
+}
+
+// check_msgs reads the atom fixture's conversation back through the shape
+// a network serves, from its files.
+check_msgs :: proc(dir: string) {
+	ID1 :: "000000006aaa4c80.5755209cc066ae5a"
+	ID3 :: "000000006aad106e.7f920dcf24c8d8b8"
+	if !libmsg.path_is_dir(dir) {
+		// A namespace made before the network was mounted.
+		_ = libuser.mount("/srv/feed", "/mnt/feed", 0)
+	}
+	want(libmsg.path_is_dir(dir) && !libmsg.is_message(dir), "msgs: the conversation is a directory and not a message")
+	rows, ok := libmsg.read_conv(dir)
+	want(ok && len(rows) == 3, "a conversation reads back as its three rows")
+	want(rows[0].id == ID1 && rows[0].from == "Glenda" && rows[0].subject == "First post" && rows[0].date == 1789545600 && rows[0].date_text == "2026-09-16T08:00:00Z", "a row is the message's id, sender, subject and date")
+	want(rows[0].body == "Hello, feed." && libmsg.first_line(&rows[0]) == "First post", "a row holds the body's first line, and shows the subject when there is one")
+	when_: [16]u8
+	want(libmsg.format_time(rows[0].date, when_[:]) == "2026-09-16 08:00", "a time formats as a calendar day and minute")
+	path: [512]u8
+	m, mok := libmsg.read_msg(libuser.cat_into(path[:], dir, "/", ID3))
+	want(mok && m.id == ID3 && m.replyto == ID1 && m.type == "text/html" && m.from == "One & Only", "a message reads back whole: id, replyto, type and sender")
+	want(m.body == "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Quite so.</p></div>" && m.links == "https://one.example/3\n", "with its body and links as served")
+	want(string(m.hash[:]) == "b8399c32475daea2ff04feccd71683343ca9f1c2f8c9d27dcc13c560dcd78dea", "and its hash, as served")
+	replies, rok := libmsg.read_conv(libuser.cat_into(path[:], dir, "/", ID1, "/replies"))
+	want(rok && len(replies) == 1 && replies[0].id == ID3, "the first entry's replies read back as one row, the reply")
+	no, nok := libmsg.read_msg(dir)
+	want(!nok && no.id == "", "and the conversation itself is no message")
 }

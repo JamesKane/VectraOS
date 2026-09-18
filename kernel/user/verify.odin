@@ -10776,6 +10776,43 @@ verify_feedfs :: proc(r: ^Result) {
 	script_says(r, "/bin/rc", snames[:], PATIENCE * 40, "the shell starts on the feed script", "ok", "and the shell bound the two feeds and read the timeline in order, first to last")
 	reap_orphans()
 
+	// The reading half: a program reads the conversation back from its files.
+	dnames := [?]string{"doctest", "msgs", "/mnt/feed/one"}
+	script_says(r, "/bin/doctest", dnames[:], PATIENCE * 5, "a program on the message shape starts on the conversation", "ok", "and reads its rows, a message, and a reply back from the files")
+	reap_orphans()
+
+	// The reader on the conversation: a timeline, one link row a message.
+	// A link's ink is one the desktop under it does not wear, so its
+	// arrival on the glass is the timeline drawn.
+	if s := devfs.raw_surface(); s != nil && s.pixels != nil && s.bytes_pp == 4 {
+		count0 := srv.count()
+		if ps := start_draw_server(r, s, "the loader starts the draw server for the timeline", "which posts /srv/draw for the reader to find", "and paints a desktop before the reader opens a window"); ps != nil {
+			link := fb.RGB{0x38, 0xE0, 0xE8}
+			had_link := glass_has(s, link)
+			mnames := [?]string{"mothra", "/mnt/feed/one"}
+			margv := new(Argv)
+			_ = argv_from(margv, mnames[:])
+			if pm := start_path(r, "/bin/mothra", "the loader starts the reader on the conversation", margv); pm != nil {
+				bx, _, _ := await_bar(s)
+				check(r, bx >= 0, "and the reader opens a framed window on it")
+				landed := false
+				for _ in 0 ..< PATIENCE * 20 {
+					landed = glass_has(s, link)
+					if landed {
+						break
+					}
+					sync.delay(1)
+				}
+				check(r, !had_link && landed, "and the timeline's link rows reach the glass in the link's ink, which nothing under them wore")
+				_ = notepg_kernel(pm.note_group, "kill")
+				check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
+				finish(r, pm, "and is taken down")
+			}
+			stop_draw_server(r, ps, count0)
+		}
+	}
+	reap_orphans()
+
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/feed") == vfs.OK, "the mount of feedfs comes down")
 	check(r, srv.remove("feed") == vfs.OK, "and the kernel takes its name away")
 	check(r, wait(p, PATIENCE * 5), "and feedfs, its pipe gone, exits")
