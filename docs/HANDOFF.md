@@ -529,7 +529,12 @@ the documents it points at.
    form as a query or a POST through `webfs`. The boot line proves
    the parse, the encoding and the POST. The typed path is hand-tested
    only. A reader started inside the network tests hangs in a draw
-   write, the open stale-wake race. Next: JPEG and the column.
+   write, the open stale-wake race.
+
+   JPEG is in: baseline, with restart intervals and subsampled chroma,
+   checked against the host's decoder. `libimage.decode` picks PNG or
+   JPEG by signature. Next: the column, which waits on step 2's
+   messages.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
@@ -1017,7 +1022,7 @@ sys/                  The ~20 ring 3 libraries. libuser (the syscall wrappers
                       libtls (the TLS 1.3 client over core:crypto),
                       libdoc + libgemtext + libmark + libhtml (a page as
                       blocks, and the parsers into it, docs/WEB.md 1),
-                      libimage (PNG to pixels), libplumb (the plumber's
+                      libimage (PNG and JPEG to pixels), libplumb (the plumber's
                       message, docs/GHOST.md 5),
                       libregex, libfmt, libodin, libkbd, libkey, libfont,
                       libposix (docs/DEVTOOLS.md 7). docs/WEB.md.

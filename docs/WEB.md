@@ -722,12 +722,21 @@ Tab selects the next part, typing fills a field, Space turns a check,
 and Return sends the form, as a query on the action or as a POST body
 through `webfs`.
 
-The boot line parses a form to its parts and its query, and POSTs a
+The boot line parses a form to its parts and its query. It POSTs a
 login to the fixture server through `webfs` and reads the welcome back.
 The reader's own typing is not on the boot line. A reader started
 inside the network tests hangs in a write to the draw server, which is
 the open stale-wake race the handoff names. That path is hand-tested
-until the race is found. Not yet: JPEG and the column.
+until the race is found.
+
+JPEG is in. `sys/libimage` decodes the baseline kind, with its restart
+intervals and its subsampled chroma. That is what a camera and a page
+hand out. The progressive kind is refused.
+
+The host's own decoder agrees with it to within a few levels on the
+same file. The boot line decodes two fixtures to the numbers. The
+reader and its rules take `.jpg` beside `.png`, on the page and on
+their own. Not yet: the column.
 
 ### Step 2: the shape, and feeds
 
