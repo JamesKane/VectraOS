@@ -769,13 +769,22 @@ the raw text.
 makes a conversation, through `webfs` for a URL and the file for a
 path. The fetch runs on a thread and the write waits for it, so the
 shell knows when the entries are in, or why not. `new` is refused, as
-the proof asks. Not yet: the poll, `libmime`, and the timeline view and
-compose window in `mothra`.
+the proof asks. Not yet: the poll, `libmime`, and the compose window.
+
+The reader shows it. `libmsg`'s reading half turns a message directory
+back into a record and a conversation into rows, from any network's
+files. `mothra` on a directory of messages is the timeline, one row a
+message with its time, its author and its first line. A press opens the
+message in place. A message is a page: subject, sender, date, the
+body by its type, its links, and its replies as rows. A plain directory
+is a listing.
 
 The boot line runs the proof above on two saved feeds. It reads an
 entry's files and walks a reply under the entry it answers. It binds
 the two under `/mnt/all` and lists five entries as one. Then the shell
-reads the union first to last with `ls` and `cat`.
+reads the union first to last with `ls` and `cat`. A program reads the
+conversation back through the reading half, and the reader opens it as
+a timeline, its link rows on the glass.
 
 ### Step 3: mail
 

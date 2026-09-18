@@ -543,8 +543,10 @@ the documents it points at.
 
    The boot line fetches two saved feeds, reads an entry's files, and
    walks a reply. It binds the two under `/mnt/all` as one timeline,
-   and the shell reads it in order. Next: the timeline view in
-   `mothra`, then the column, then `libmime` and the poll.
+   and the shell reads it in order. `mothra` on a directory of messages
+   is the timeline, and a message is a page, through `libmsg`'s reading
+   half. Next: the column, then `libmime`, the poll and the compose
+   window.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
