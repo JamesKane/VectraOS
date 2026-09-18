@@ -2,9 +2,11 @@
 mothra -- the reader, `docs/WEB.md` section 5.
 
 `mothra URL` or `mothra file` shows a page in a window. Gemtext, markdown,
-HTML or plain text is laid out by `sys/libdoc` to the window's columns and
-shown as rows, one selected. `sys/libimage` decodes a PNG, shown as a
-picture fitted to the window. A press on a link's row follows it, and the
+HTML or plain text is laid out by `sys/libdoc` to the window's columns.
+The rows are shown one selected, each in the ink its kind wears. A PNG on
+a page is fetched, decoded by `sys/libimage`, and stood on rows of its
+own under its caption. A PNG on its own is shown as a picture fitted to the
+window. A press on a link's row follows it, and the
 page it leads to takes the window. `b` goes back, `j` and `k` move a row,
 `n` and `p` a page, `r` fetches again, `q` and Escape close.
 
@@ -20,8 +22,8 @@ plumbs opens here. With no plumber the press follows the link itself.
 
 This is the reader's first cut. The toolkit's list is the page, so every
 row wears one face. A click follows a link itself rather than through the
-plumber, since a page's own links are its to follow. Images on the page,
-messages and the column come next.
+plumber, since a page's own links are its to follow. Forms, messages and
+the column come next.
 */
 package mothra
 
@@ -40,6 +42,7 @@ import "vsys:libuser"
 
 MAX_BYTES :: 1024 * 1024
 MAX_ROWS :: 16384
+MAX_PICS :: 16
 URL_MAX :: 1024
 HISTORY :: 32
 
@@ -53,6 +56,17 @@ showing_pic: bool
 doc: libdoc.Doc
 lay: libdoc.Layout
 rows: []string
+styles: []u8
+
+// The pictures a page names, fetched and decoded, each standing on rows
+// under its caption.
+Pic :: struct {
+	block: int,
+	img:   libimage.Image,
+}
+pics: [MAX_PICS]Pic
+npics: int
+row_pics: [MAX_PICS]libmui.Row_Picture
 
 // Where the reader is, and where it was.
 current: [URL_MAX]u8
@@ -86,6 +100,7 @@ mothra_main :: proc "contextless" (arg: rawptr) {
 	_ = arg
 	context = ctx
 	rows = make([]string, MAX_ROWS)
+	styles = make([]u8, MAX_ROWS)
 	libdoc.doc_init(&doc)
 	libdoc.layout_init(&lay)
 
@@ -135,11 +150,104 @@ page_title :: proc "contextless" () -> string {
 relayout :: proc "contextless" () {
 	context = ctx
 	cols := page.w > 0 ? (page.w - 2 * win.theme.well) / libmui.FONT_W : 78
+	// A picture stands on rows under its caption, as many as its height
+	// takes once shrunk to the well's width.
+	avail := max(cols * libmui.FONT_W - 2 * libmui.FONT_W, 1)
+	for k in 0 ..< npics {
+		p := &pics[k]
+		dw := min(p.img.w, avail)
+		dh := max(p.img.h * dw / p.img.w, 1)
+		doc.blocks[p.block].tall = 1 + (dh + libmui.FONT_H - 1) / libmui.FONT_H
+	}
 	n := libdoc.layout(&lay, &doc, cols)
 	n = libdoc.rows_as_strings(&lay, rows[:min(n, MAX_ROWS)])
+	// Each row's style is its block's kind, and a picture's rows are its stand.
+	np := 0
+	for i in 0 ..< n {
+		r := lay.rows[i]
+		b := &doc.blocks[r.block]
+		st := libmui.STYLE_PLAIN
+		switch b.kind {
+		case .Heading:
+			st = libmui.STYLE_HEADING
+		case .Link:
+			st = libmui.STYLE_LINK
+		case .Quote:
+			st = libmui.STYLE_QUOTE
+		case .Pre:
+			st = libmui.STYLE_PRE
+		case .Rule:
+			st = libmui.STYLE_RULE
+		case .Image:
+			if !r.first {
+				st = libmui.STYLE_PICTURE
+			} else if b.tall > 1 && np < MAX_PICS {
+				for k in 0 ..< npics {
+					if pics[k].block == r.block {
+						row_pics[np] = libmui.Row_Picture{row = i + 1, tall = b.tall - 1, pix = pics[k].img.pix, pw = pics[k].img.w, ph = pics[k].img.h}
+						np += 1
+						break
+					}
+				}
+			}
+		case .Text, .Item:
+		}
+		styles[i] = st
+	}
 	page.rows = rows[:n]
+	page.styles = styles[:n]
+	page.pics = row_pics[:np]
 	page.top = 0
 	page.sel = -1
+}
+
+// free_pics lets a page's pictures go, before the next page's.
+free_pics :: proc "contextless" () {
+	context = ctx
+	for k in 0 ..< npics {
+		libimage.image_free(&pics[k].img, context.allocator)
+	}
+	npics = 0
+	page.pics = nil
+}
+
+/*
+gather_pics fetches each picture a page names, through the same path as the
+page, and keeps the ones that decode. A picture that is not a PNG, or is
+not there, leaves its caption alone on the page. At most MAX_PICS, and each
+within `sys/libimage`'s bound, which keeps a page's pictures inside the heap.
+*/
+gather_pics :: proc "contextless" () {
+	context = ctx
+	for i in 0 ..< len(doc.blocks) {
+		if doc.blocks[i].kind != .Image || npics >= MAX_PICS {
+			continue
+		}
+		href := libdoc.block_href(&doc, i)
+		target: [URL_MAX]u8
+		n := resolve(href, target[:])
+		if n <= 0 {
+			continue
+		}
+		t := string(target[:n])
+		data: []u8
+		ok: bool
+		if has_scheme(t) {
+			data, _, ok = fetch(t)
+		} else {
+			data, ok = libuser.read_file(t, context.allocator)
+		}
+		if !ok {
+			continue
+		}
+		if libimage.is_png(data) {
+			if img, dok := libimage.decode_png(data, context.allocator); dok {
+				pics[npics] = Pic{block = i, img = img}
+				npics += 1
+			}
+		}
+		delete(data)
+	}
 }
 
 // on_press follows the link a pressed row belongs to. Escape closes.
@@ -340,6 +448,7 @@ load :: proc "contextless" (target: string) -> bool {
 		return false
 	}
 	defer delete(text)
+	free_pics()
 	libdoc.doc_free(&doc)
 	libdoc.doc_init(&doc)
 	showing_pic = false
@@ -363,6 +472,9 @@ load :: proc "contextless" (target: string) -> bool {
 		libhtml.parse(&doc, string(text))
 	case .Plain:
 		parse_plain(&doc, string(text))
+	}
+	if !showing_pic {
+		gather_pics()
 	}
 	return true
 }

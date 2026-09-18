@@ -41,6 +41,9 @@ Block :: struct {
 	text_len: int,
 	href_off: int,
 	href_len: int,
+	// The rows an image stands on, when the reader fetched it: its caption
+	// row and the rows its pixels take. Zero lays the caption out alone.
+	tall:     int,
 }
 
 Doc :: struct {
@@ -212,7 +215,12 @@ layout :: proc(l: ^Layout, d: ^Doc, cols_in: int) -> int {
 				}
 			}
 		case .Text, .Heading, .Link, .Item, .Quote, .Image:
+			before := len(l.rows)
 			wrap(l, i, prefix_of(b), text, cols)
+			// An image with pixels stands on rows of its own under its caption.
+			for len(l.rows) - before < b.tall {
+				put_row(l, i, false, "", "", cols)
+			}
 		}
 	}
 	return len(l.rows)

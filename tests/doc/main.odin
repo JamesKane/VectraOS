@@ -108,6 +108,10 @@ start :: proc "c" (block: ^abi.Args) {
 		want(libdoc.row_text(&l, 2) == "=> the site", "the link is a row to press")
 		want(len(libdoc.row_text(&l, 5)) == 40 && libdoc.row_text(&l, 5)[0] == '-', "the rule is dashes across the width")
 		want(libdoc.row_text(&l, 6) == "[image] pic", "and the image is named")
+		// An image the reader fetched stands on rows of its own.
+		d.blocks[6].tall = 4
+		n = libdoc.layout(&l, &d, 40)
+		want(n == 10 && libdoc.row_text(&l, 6) == "[image] pic" && l.rows[7].block == 6 && !l.rows[7].first && libdoc.row_text(&l, 9) == "", "and with pixels it stands on three rows more, under its caption")
 		libdoc.layout_free(&l)
 		libdoc.doc_free(&d)
 	}

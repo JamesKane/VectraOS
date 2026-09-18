@@ -10992,6 +10992,30 @@ verify_mothra :: proc(r: ^Result) #no_bounds_check {
 		finish(r, pi, "and is taken down")
 	}
 
+	// A picture on the page: a markdown page names the same PNG, the reader
+	// fetches it and stands it on rows under its caption.
+	mnames := [?]string{"mothra", "/lib/tests/page.md"}
+	margv := new(Argv)
+	_ = argv_from(margv, mnames[:])
+	pd := start_path(r, "/bin/mothra", "the loader starts the reader on a page with a picture", margv)
+	if pd != nil {
+		bx, _, _ := await_bar(s)
+		check(r, bx >= 0, "and the reader opens a framed window on the page")
+		corners := [3]fb.RGB{{0, 0, 128}, {255, 0, 128}, {0, 255, 128}}
+		landed := false
+		for _ in 0 ..< PATIENCE * 20 {
+			landed = glass_has(s, corners[0]) && glass_has(s, corners[1]) && glass_has(s, corners[2])
+			if landed {
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, landed, "and the picture's corners reach the glass from its rows on the page")
+		_ = notepg_kernel(pd.note_group, "kill")
+		check(r, end(pd, PATIENCE * 5), "and the reader, told to end, ends")
+		finish(r, pd, "and is taken down")
+	}
+
 	// Teardown, the terminal's way: a remove of a window's ctl is the draw
 	// server's stop.
 	if check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the draw server to stop it") {

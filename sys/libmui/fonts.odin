@@ -206,6 +206,18 @@ font_prepare :: proc "contextless" (
 		if _, ok := font_for(f, t.ink, t.face, scratch, sink); !ok {
 			return false
 		}
+		// A styled list wears three inks more: a heading, a link, a quote.
+		if root.class == .List && root.styles != nil {
+			if _, ok := font_for(f, t.hot, t.ground, scratch, sink); !ok {
+				return false
+			}
+			if _, ok := font_for(f, t.link, t.ground, scratch, sink); !ok {
+				return false
+			}
+			if _, ok := font_for(f, t.dim, t.ground, scratch, sink); !ok {
+				return false
+			}
+		}
 	case .String:
 		// The text typed, on the well's ground.
 		if _, ok := font_for(f, t.ink, t.ground, scratch, sink); !ok {

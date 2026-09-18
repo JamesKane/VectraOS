@@ -154,6 +154,11 @@ list_rows :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fon
 	if !pok {
 		return nat
 	}
+	// The styled inks, when the list has styles: absent, a row falls back
+	// to plain.
+	hot, hok := font_get(f, t.hot, t.ground)
+	link, kok := font_get(f, t.link, t.ground)
+	dim, dok := font_get(f, t.dim, t.ground)
 	cells := (o.w - 2 * t.well) / FONT_W
 	n := list_visible(o, t)
 	x := o.x + t.well
@@ -163,10 +168,34 @@ list_rows :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fon
 			break
 		}
 		y := o.y + t.well + k * FONT_H
+		style := row_style(o, row)
 		atlas := plain
+		switch style {
+		case STYLE_HEADING:
+			if hok {
+				atlas = hot
+			}
+		case STYLE_LINK:
+			if kok {
+				atlas = link
+			}
+		case STYLE_QUOTE:
+			if dok {
+				atlas = dim
+			}
+		}
 		if row == o.sel && lok {
 			nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y), u32(o.w - 2 * t.well), u32(FONT_H), libpal.xrgb(t.face))
 			atlas = lit
+		}
+		if style == STYLE_RULE {
+			// A line across the well, at the row's middle.
+			nat = libdraw.put_fill(b, nat, dst, u32(x + FONT_W), u32(y + FONT_H / 2), u32(max(o.w - 2 * t.well - 2 * FONT_W, 1)), 1, libpal.xrgb(t.face))
+			continue
+		}
+		if style == STYLE_PICTURE {
+			// The picture lands after the tree's paint. The row is its stand.
+			continue
 		}
 		shown := clip_cells(o.rows[row], cells)
 		next, _, _ := libdraw.put_text(b, nat, atlas, dst, u32(x), u32(y), shown)

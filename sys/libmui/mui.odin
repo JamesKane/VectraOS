@@ -58,6 +58,11 @@ Theme :: struct {
 	lit:    libpal.RGB, // A raised control's top-left highlight
 	shade:  libpal.RGB, // A raised control's bottom-right shadow
 	ink:    libpal.RGB, // Text, and a lit checkmark
+	// The inks a styled row wears, `docs/WEB.md` section 5's "the theme
+	// says how": a heading, a link, and a quote.
+	hot:    libpal.RGB,
+	link:   libpal.RGB,
+	dim:    libpal.RGB,
 }
 
 default_theme :: Theme {
@@ -72,6 +77,29 @@ default_theme :: Theme {
 	lit    = libpal.MAGNESIUM_LIT,
 	shade  = libpal.MAGNESIUM_DARK,
 	ink    = libpal.AMBER,
+	hot    = libpal.AMBER_HOT,
+	link   = libpal.CYAN,
+	dim    = libpal.AMBER_DIM,
+}
+
+// The styles a list's rows may wear, one byte a row in `styles`. A page is
+// a list whose rows know what they are.
+STYLE_PLAIN :: u8(0)
+STYLE_HEADING :: u8(1)
+STYLE_LINK :: u8(2)
+STYLE_QUOTE :: u8(3)
+STYLE_PRE :: u8(4)
+STYLE_RULE :: u8(5) // A line across the well, no text
+STYLE_PICTURE :: u8(6) // A row a picture stands on, no text
+
+// A picture standing on a list's rows: `tall` rows from `row`, its pixels
+// as a picture gadget's. The caller owns the pixels.
+Row_Picture :: struct {
+	row:  int,
+	tall: int,
+	pix:  []u8,
+	pw:   int,
+	ph:   int,
 }
 
 // -- The object model --------------------------------------------------------
@@ -156,6 +184,19 @@ Object :: struct {
 	pix:      []u8,
 	pw:       int,
 	ph:       int,
+
+	// A list's row styles, one STYLE byte a row, and the pictures standing
+	// on its rows. Either may be nil, for a list of plain rows.
+	styles:   []u8,
+	pics:     []Row_Picture,
+}
+
+// row_style answers a row's style, plain when the list has none.
+row_style :: proc "contextless" (o: ^Object, row: int) -> u8 {
+	if o.styles == nil || row < 0 || row >= len(o.styles) {
+		return STYLE_PLAIN
+	}
+	return o.styles[row]
 }
 
 // -- Building a tree ---------------------------------------------------------

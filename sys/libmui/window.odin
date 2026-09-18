@@ -18,6 +18,7 @@ package libmui
 
 import "vsys:abi"
 import "vsys:libdraw"
+import "vsys:libpal"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
@@ -386,8 +387,41 @@ upload_pictures :: proc "contextless" (win: ^Window, o: ^Object) {
 	if o.class == .Picture && o.pix != nil && o.pw > 0 && o.ph > 0 && len(o.pix) >= o.pw * o.ph * 4 {
 		picture_upload(win, o)
 	}
+	if o.class == .List && o.pics != nil {
+		list_pictures_upload(win, o)
+	}
 	for c := o.first; c != nil; c = c.next {
 		upload_pictures(win, c)
+	}
+}
+
+/*
+list_pictures_upload loads the pictures standing on a list's rows. Each
+sits under its caption row, a cell in from the well's left, shrunk to the
+well's width if wider. Only the rows the well shows are loaded: a picture half
+scrolled off is cut at the well's edge, the way its rows are.
+*/
+list_pictures_upload :: proc "contextless" (win: ^Window, o: ^Object) {
+	t := &win.theme
+	n := list_visible(o, t)
+	top_y := o.y + t.well
+	bottom_y := top_y + n * FONT_H
+	avail := o.w - 2 * t.well - 2 * FONT_W
+	if avail <= 0 || n <= 0 {
+		return
+	}
+	for &p in o.pics {
+		if p.pix == nil || p.pw <= 0 || p.ph <= 0 || len(p.pix) < p.pw * p.ph * 4 {
+			continue
+		}
+		if p.row + p.tall <= o.top || p.row >= o.top + n {
+			continue
+		}
+		dw := min(p.pw, avail)
+		dh := max(p.ph * dw / p.pw, 1)
+		dx := o.x + t.well + FONT_W
+		dy := top_y + (p.row - o.top) * FONT_H
+		load_pixels(win, p.pix, p.pw, p.ph, dx, dy, dw, dh, top_y, bottom_y, t.ground)
 	}
 }
 
@@ -417,18 +451,28 @@ picture_upload :: proc "contextless" (win: ^Window, o: ^Object) #no_bounds_check
 		}
 	}
 	ox, oy := ax + (aw - dw) / 2, ay + (ah - dh) / 2
-	ground := t.ground
+	load_pixels(win, o.pix, o.pw, o.ph, ox, oy, dw, dh, ay, ay + ah, t.ground)
+}
+
+// load_pixels loads `pw` by `ph` RGBA pixels into the window, scaled to
+// `dw` by `dh` at (`dx`, `dy`), one source pixel a destination pixel. Rows
+// outside `cy0` to `cy1` are not sent, which is how a picture clips to the
+// well it stands in. Alpha is laid over `ground`.
+load_pixels :: proc "contextless" (win: ^Window, pix: []u8, pw, ph: int, dx, dy, dw, dh: int, cy0, cy1: int, ground: libpal.RGB) #no_bounds_check {
 	slot: [SLOT]u8 = ---
 	run_buf: [SLOT]u8 = ---
 	max_px := (SLOT - libdraw.HEADER - 20) / 4
 	for y in 0 ..< dh {
-		sy := y * o.ph / dh
+		if dy + y < cy0 || dy + y >= cy1 {
+			continue
+		}
+		sy := y * ph / dh
 		x := 0
 		for x < dw {
 			run := min(max_px, dw - x)
 			for i in 0 ..< run {
-				sx := (x + i) * o.pw / dw
-				p := o.pix[(sy * o.pw + sx) * 4:]
+				sx := (x + i) * pw / dw
+				p := pix[(sy * pw + sx) * 4:]
 				a := int(p[3])
 				r := (int(p[0]) * a + int(ground[0]) * (255 - a)) / 255
 				g := (int(p[1]) * a + int(ground[1]) * (255 - a)) / 255
@@ -438,7 +482,7 @@ picture_upload :: proc "contextless" (win: ^Window, o: ^Object) #no_bounds_check
 				run_buf[i * 4 + 2] = u8(r)
 				run_buf[i * 4 + 3] = 0
 			}
-			end := libdraw.put_load(slot[:], 0, 0, u32(ox + x), u32(oy + y), u32(run), 1, run_buf[:run * 4])
+			end := libdraw.put_load(slot[:], 0, 0, u32(dx + x), u32(dy + y), u32(run), 1, run_buf[:run * 4])
 			if end > 0 {
 				slot_write(win, slot[:end])
 			}
