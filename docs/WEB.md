@@ -747,6 +747,36 @@ view and the compose window in `mothra`. About 2,900 lines. Needs step
 Boot line: two saved feeds bound together list as one timeline in order,
 and `mothra` shows it.
 
+**Where it stands.** The shape is served and the first network reads
+it. `sys/libmsg` is the record and the tree. The record is a message
+and a conversation in id order. The tree is the six files above the
+conversations and the handler that serves them all on `sys/lib9p`. A
+server fills a `Net` and two callbacks, one for `ctl` and one for
+`new`, and is then its wire and its record.
+
+An id is the date in sixteen hex digits, a dot, and the network's id.
+A network id that is no file name gives way to its hash. `replies/`
+is walked on demand from `replyto`. A read of `event` parks and answers
+one `conv/id` line. A message's parts are not served yet.
+
+`sys/libfeed` reads Atom and RSS into records, over a scanner of its own,
+since `core:encoding/xml` wants `core:os`. It reads both date forms. An
+entry's content or summary is the body, with the type the feed
+declares. Its links and enclosures are the links, and its own markup is
+the raw text.
+
+`servers/feedfs` is the network. `fetch [name] url-or-path` on `ctl`
+makes a conversation, through `webfs` for a URL and the file for a
+path. The fetch runs on a thread and the write waits for it, so the
+shell knows when the entries are in, or why not. `new` is refused, as
+the proof asks. Not yet: the poll, `libmime`, and the timeline view and
+compose window in `mothra`.
+
+The boot line runs the proof above on two saved feeds. It reads an
+entry's files and walks a reply under the entry it answers. It binds
+the two under `/mnt/all` and lists five entries as one. Then the shell
+reads the union first to last with `ls` and `cat`.
+
 ### Step 3: mail
 
 `servers/mailfs`, `sys/libpgp`, `factotum`'s `openpgp` and `pass`

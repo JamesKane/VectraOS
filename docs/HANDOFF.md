@@ -533,8 +533,18 @@ the documents it points at.
 
    JPEG is in: baseline, with restart intervals and subsampled chroma,
    checked against the host's decoder. `libimage.decode` picks PNG or
-   JPEG by signature. Next: the column, which waits on step 2's
-   messages.
+   JPEG by signature. The column waits on step 2's messages.
+
+   **Step 2, the shape, is open.** `sys/libmsg` is the message as a
+   directory and a network as a directory of them. It serves the tree
+   on `lib9p` from a record a server fills. `sys/libfeed` reads Atom
+   and RSS into it. `servers/feedfs` is the first network: a feed's
+   path or URL on `ctl` is a conversation of entries in time order.
+
+   The boot line fetches two saved feeds, reads an entry's files, and
+   walks a reply. It binds the two under `/mnt/all` as one timeline,
+   and the shell reads it in order. Next: the timeline view in
+   `mothra`, then the column, then `libmime` and the poll.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
@@ -1023,7 +1033,8 @@ sys/                  The ~20 ring 3 libraries. libuser (the syscall wrappers
                       libdoc + libgemtext + libmark + libhtml (a page as
                       blocks, and the parsers into it, docs/WEB.md 1),
                       libimage (PNG and JPEG to pixels), libplumb (the plumber's
-                      message, docs/GHOST.md 5),
+                      message, docs/GHOST.md 5), libmsg + libfeed (a message
+                      as a directory, and feeds into it, docs/WEB.md 4),
                       libregex, libfmt, libodin, libkbd, libkey, libfont,
                       libposix (docs/DEVTOOLS.md 7). docs/WEB.md.
 servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
@@ -1031,7 +1042,8 @@ servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
                       ring 3), intuition (the draw server + compositor),
                       netfs/cs/dns (the network as files), fatfs/kfs (the ESP
                       and the writable disk), factotum (keys and the handshake),
-                      webfs (the web as files, docs/WEB.md).
+                      webfs (the web as files, docs/WEB.md), feedfs (the
+                      first network, docs/WEB.md 4).
 apps/                 rc (the shell), terminal, filemgr, muidemo, tracker,
                       mothra (the reader, docs/WEB.md step 1).
                       docs/RC.md, docs/DRAW.md, docs/WORKBENCH.md.
