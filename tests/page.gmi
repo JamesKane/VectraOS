@@ -3,7 +3,7 @@
 This is a gemtext page the boot self-test opens in mothra, so a window on the reader is proven every boot. The line is long enough to wrap at the window's width.
 
 => gemini://geminiprotocol.net/ The Gemini protocol
-=> page.gmi This page again
+=> page.md The page with the picture
 
 * one item
 * another

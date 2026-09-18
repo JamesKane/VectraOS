@@ -8104,6 +8104,18 @@ glass_has :: proc "contextless" (s: ^fb.Surface, c: fb.RGB) -> bool {
 	return false
 }
 
+// glass_has_in is glass_has within the columns `x0` to `x1`, below `y0`.
+@(private = "file")
+glass_has_in :: proc "contextless" (s: ^fb.Surface, c: fb.RGB, x0: int, x1: int, y0: int) -> bool {
+	want := fb.pack(s, c)
+	for y in max(y0, 0) ..< s.height {
+		if first, _ := scan_row(s, y, want, max(x0, 0), min(x1, s.width)); first >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
 @(private = "file")
 scan_row :: proc "contextless" (s: ^fb.Surface, y: int, want: u32, x0: int, x1: int) -> (first: int, last: int) {
 	first, last = -1, -1
@@ -10808,6 +10820,26 @@ verify_feedfs :: proc(r: ^Result) {
 				check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
 				finish(r, pm, "and is taken down")
 			}
+			// A message: the page on the left, and in the column its reply.
+			enames := [?]string{"mothra", "/mnt/feed/one/" + ID1}
+			eargv := new(Argv)
+			_ = argv_from(eargv, enames[:])
+			if pe := start_path(r, "/bin/mothra", "the loader starts the reader on the first entry", eargv); pe != nil {
+				bx, by, bw := await_bar(s)
+				check(r, bx >= 0, "and the reader opens a framed window on the message")
+				in_column := false
+				for _ in 0 ..< PATIENCE * 20 {
+					in_column = bx >= 0 && glass_has_in(s, link, bx + bw * 2 / 3, bx + bw, by)
+					if in_column {
+						break
+					}
+					sync.delay(1)
+				}
+				check(r, in_column, "and the column beside it shows the reply as a link row")
+				_ = notepg_kernel(pe.note_group, "kill")
+				check(r, end(pe, PATIENCE * 5), "and the reader, told to end, ends")
+				finish(r, pe, "and is taken down")
+			}
 			stop_draw_server(r, ps, count0)
 		}
 	}
@@ -11174,6 +11206,12 @@ verify_mothra :: proc(r: ^Result) #no_bounds_check {
 		_ = notepg_kernel(pm.note_group, "kill")
 		check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
 		finish(r, pm, "and is taken down")
+		// The reader kept the page's links, both ways: the index is one
+		// line a link, the page it was on and the page it names.
+		idx: [4096]u8
+		n := web_read_file("/usr/glenda/lib/web/links", idx[:], raw = true)
+		got := string(idx[:max(n, 0)])
+		check(r, n > 0 && libodin.contains(got, "/lib/tests/page.gmi gemini://geminiprotocol.net/\n") && libodin.contains(got, "/lib/tests/page.gmi /lib/tests/page.md\n"), "and the links index names the page and each page it links to, resolved")
 	}
 
 	// A picture on its own: the reader decodes a PNG and shows it fitted.
@@ -11221,6 +11259,21 @@ verify_mothra :: proc(r: ^Result) #no_bounds_check {
 			sync.delay(1)
 		}
 		check(r, landed, "and the picture's corners reach the glass from its rows on the page")
+		// The column, the window's right third: the gemtext page links
+		// here, so it is this page's backlink, a link row in the link's ink.
+		link := fb.RGB{0x38, 0xE0, 0xE8}
+		by := 0
+		bw := 0
+		bx, by, bw = await_bar(s)
+		in_column := false
+		for _ in 0 ..< PATIENCE * 20 {
+			in_column = bx >= 0 && glass_has_in(s, link, bx + bw * 2 / 3, bx + bw, by)
+			if in_column {
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, in_column, "and the column beside the page shows the page that links here, read backwards from the index")
 		_ = notepg_kernel(pd.note_group, "kill")
 		check(r, end(pd, PATIENCE * 5), "and the reader, told to end, ends")
 		finish(r, pd, "and is taken down")

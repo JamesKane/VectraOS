@@ -31,8 +31,15 @@ own to show. A message is a page of its own: subject, sender, date, the
 body by its type, its links, and its replies as rows. A plain directory
 is a listing. `messages.odin` builds these.
 
+The column stands beside the page, a third of the width: what points at
+the page. A message's column is what it answers, its replies, and the
+network's `notify/` messages that answer it. A page's column is its
+backlinks, from the `links` index this reader keeps: one line per link
+it laid out, the page and the page it names, read backwards. A press in
+the column opens on the left. `column.odin` is the column.
+
 This is the reader's first cut. The toolkit's list is the page, so every
-row wears one face. The column comes next.
+row wears one face.
 */
 package mothra
 
@@ -134,8 +141,17 @@ mothra_main :: proc "contextless" (arg: rawptr) {
 	// Styled from the start, so the window prepares the styled inks' faces
 	// when it opens, before the first page fills the styles in.
 	page.styles = styles[:0]
-	page_root = libmui.group(false)
+	// The column beside the page, a third of the width: what points at it.
+	col = libmui.list(24)
+	col.id = 3
+	col_rows = make([]string, MAX_COL)
+	col_styles = make([]u8, MAX_COL)
+	col.styles = col_styles[:0]
+	page.weight = 2
+	col.weight = 1
+	page_root = libmui.group(true)
 	libmui.add(page_root, page)
+	libmui.add(page_root, col)
 	pic = libmui.picture()
 	pic.id = 2
 	pic_root = libmui.group(false)
@@ -157,6 +173,7 @@ mothra_main :: proc "contextless" (arg: rawptr) {
 	}
 	// Now the window has a width, the page is laid out to it.
 	relayout()
+	fill_column()
 	libmui.window_paint(&win)
 	// The plumber's web port, when there is a plumber: a page plumbed from
 	// anywhere opens here.
@@ -493,6 +510,11 @@ on_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 		w.done = true
 		return
 	}
+	if id == 3 {
+		column_press(w.arg)
+		libmui.window_paint(w)
+		return
+	}
 	if id != 1 || w.arg < 0 || w.arg >= len(lay.rows) {
 		return
 	}
@@ -596,6 +618,7 @@ on_key :: proc "contextless" (w: ^libmui.Window, k: u8) -> bool {
 	case 'r':
 		_ = load(string(current[:current_len]))
 		relayout()
+		fill_column()
 	case 'q':
 		w.done = true
 	case:
@@ -628,6 +651,7 @@ go :: proc "contextless" (target: string, remember: bool, post: []u8 = nil) {
 		}
 	}
 	relayout()
+	fill_column()
 }
 
 back :: proc "contextless" () {
@@ -753,6 +777,9 @@ load :: proc "contextless" (target: string, post: []u8 = nil) -> bool {
 	if !showing_pic {
 		gather_pics()
 		init_fields()
+		if kind != .Directory {
+			record_links()
+		}
 	}
 	return true
 }
