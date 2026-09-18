@@ -701,9 +701,11 @@ the element it sits in says the kind. A link follows its paragraph as a
 block. A paragraph that is nothing but a link is the link, a heading's
 own `#` anchor goes, and a table row is its cells parted by a bar. It
 reads example.com, a Wikipedia article and the Odin overview to rows
-that read, and `tests/doc` holds a page of it. Not yet: forms, images,
-the column, and the plumber. A click follows its link inside the reader
-until `docs/GHOST.md` step 2 lands.
+that read, and `tests/doc` holds a page of it. A click plumbs: the URL
+goes to `/mnt/plumb/send`, the rules route it to the `web` port, and the
+reader, which holds that port open, reads it back and opens it. So
+`plumb URL` from any shell opens a page in the running reader, or
+starts one. Not yet: forms, images, and the column.
 
 ### Step 2: the shape, and feeds
 

@@ -450,6 +450,15 @@ the documents it points at.
    over files, in a namespace forked with `RFNOMNT` as its sandbox.
    Every application serves `ctl`, `dict` and `event`, and `libmui`
    serves them for free. Its first two steps need nothing but the disk.
+
+   **Step 2 is open, with the plumber in.** `servers/plumber` serves
+   `/mnt/plumb`: `send`, `rules`, and a file per port, on Plan 9's
+   rules and message. `sys/libplumb` is the message, `cmd/plumb` the
+   command, `/lib/plumb/rules` the shipped rules, and `sys/libregex`
+   gained captures so a rule can say `$1`. A rule starts a program by
+   its words, never a shell. `init` starts it on a terminal, and
+   `mothra` reads the web port. Not yet: `libmui`'s `gadgets` and
+   `dict`, the trees, the tool generator.
 8. **The web, from step 0's wire.** `docs/WEB.md` is the plan, written
    before its code, and no protocol is invented. **Step 0 is underway,
    and its TLS 1.3 client is built and proven on the machine.**
@@ -505,8 +514,9 @@ the documents it points at.
    quotes, preformatted text, links as blocks after their paragraph,
    images, rules and table rows. The head, scripts and styles are
    dropped, and a page that is a menu of links is one row each. `mothra`
-   reads `text/html`. Next: the plumber (`docs/GHOST.md` step 2) so a
-   click plumbs, then images, forms and the column.
+   reads `text/html`. The plumber is in (`docs/GHOST.md` step 2, below),
+   and a press on a link plumbs. Next: images, forms and the column.
+
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
    directory on every network, `upas/fs`'s shape, a union of them is the

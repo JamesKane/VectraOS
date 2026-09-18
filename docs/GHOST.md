@@ -506,6 +506,24 @@ lines. Needs `docs/WORKBENCH.md` step 3.
 
 Boot line: section 5's gadget, plumb and event checks.
 
+**Where it stands.** The plumber is built. `servers/plumber` serves
+`/mnt/plumb` with `send`, `rules` and a file per port the rules name,
+and `sys/libplumb` packs and unpacks the message. The rules are section
+5's, with Plan 9's verbs. `is`, and `matches` on the whole object with
+`$1` to `$9` from `sys/libregex`, which gained captures for it. `isfile`
+and `isdir`, `set`, `add`, `delete`, `to`, `start` and `client`.
+
+A rule starts a program by its words and never through a shell.
+
+`cmd/plumb` sends from the shell, and `init` starts the plumber on a
+terminal. `/lib/plumb/rules` routes a URL or a page to the `web` port,
+and a `file:line` to `edit`, which waits for an editor. `mothra` holds
+the web port open, and a press on a link goes out through `send` and
+comes back in. The boot line routes a URL, a file line and a note that
+starts a program, and refuses a line no rule takes. Not yet: `libmui`'s
+`gadgets` and `dict`, the terminal's and Workbench's trees, and the tool
+generator.
+
 ### Step 3: the window and the chords
 
 `apps/ghost`, the Workbench menu, the chord, `sys/libapp`'s call, the
