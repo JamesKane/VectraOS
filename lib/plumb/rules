@@ -1,0 +1,35 @@
+# /lib/plumb/rules: what the plumber does with a message nobody addressed.
+# A rule set is patterns and actions up to a blank line, and the first set
+# whose patterns all hold takes the message. docs/GHOST.md section 5.
+# A person's own rules go in $home/lib/plumbing, which replaces this file.
+
+# A web page, by URL. The reader has the web port open, or one is started.
+type is text
+data matches 'https?://[^ ]+'
+plumb to web
+plumb client window mothra $0
+
+# A gemini capsule, the same way.
+type is text
+data matches 'gemini://[^ ]+'
+plumb to web
+plumb client window mothra $0
+
+# A page on this machine, by its suffix.
+type is text
+data matches '[a-zA-Z0-9_/.\-]+\.(gmi|md|html?|txt)'
+arg isfile $0
+data set $file
+plumb to web
+plumb client window mothra $file
+
+# A source line, file:NN. The edit port waits for an editor.
+type is text
+data matches '([a-zA-Z0-9_/.\-]+\.(odin|c|h|rc|md))(:([0-9]+))?'
+arg isfile $1
+data set $file
+attr add addr=$4
+plumb to edit
+
+# Ports with no rule of their own.
+plumb to ghost

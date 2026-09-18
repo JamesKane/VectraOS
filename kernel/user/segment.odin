@@ -210,6 +210,60 @@ Segment_Stats :: struct {
 // segment_stats is the sensor the balance checks read. Modeled on
 // `mem.space_stats`, and for the same reason: a teardown that leaks wants to
 // be visible as a number, not as a slower machine.
+// segment_pages fills `into` with each slot's page count, zero for a free
+// slot, so a balance that fails can say which segment grew.
+segment_pages :: proc "contextless" (into: []int) {
+	guard := sync.acquire(&seg_lock)
+	defer sync.release(&seg_lock, guard)
+	for i in 0 ..< min(MAX_SEGMENTS, len(into)) {
+		into[i] = segments[i].used ? segments[i].seg.pages : 0
+	}
+}
+
+// segment_owner_pid answers the pid of a live process holding a slot's
+// segment, or zero. A shared segment has several holders, and the first
+// found is answered, which is enough to say whether a resident holds it.
+segment_owner_pid :: proc "contextless" (i: int) -> u64 #no_bounds_check {
+	if i < 0 || i >= MAX_SEGMENTS || !segments[i].used {
+		return 0
+	}
+	seg := &segments[i].seg
+	for j in 0 ..< MAX_PROCESSES {
+		p := &processes[j]
+		if !p.live {
+			continue
+		}
+		for k in 0 ..< MAX_PROC_SEGS {
+			if p.segs[k] == seg {
+				return p.pid
+			}
+		}
+	}
+	return 0
+}
+
+// segment_kind_name names a slot's kind, for the same line.
+segment_kind_name :: proc "contextless" (i: int) -> string {
+	if i < 0 || i >= MAX_SEGMENTS || !segments[i].used {
+		return "free"
+	}
+	switch segments[i].seg.kind {
+	case .Text:
+		return "text"
+	case .Data:
+		return "data"
+	case .Stack:
+		return "stack"
+	case .Device:
+		return "device"
+	case .Anon:
+		return "anon"
+	case .Shared:
+		return "shared"
+	}
+	return "?"
+}
+
 segment_stats :: proc "contextless" () -> Segment_Stats {
 	guard := sync.acquire(&seg_lock)
 	defer sync.release(&seg_lock, guard)

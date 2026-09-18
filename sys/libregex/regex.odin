@@ -14,7 +14,9 @@ Compiled to a small instruction list and run as a Thompson simulation: a
 set of positions in the program advances one character at a time, so a
 pattern costs time proportional to its length times the text's, never the
 exponential a backtracker can. The match is leftmost, and longest at that
-start. No captures: neither tool here needs `\1` yet.
+start. The first nine groups are captured, Pike's way: a position carries
+the bounds it saw, and the first to reach a place keeps it. The plumber's
+rules name a group as `$1`, and `sed` may one day.
 */
 package libregex
 
@@ -28,8 +30,13 @@ Op :: enum u8 {
 	Jmp,
 	Bol,
 	Eol,
+	Save, // `x` is the slot: the start of group n at 2n, its end at 2n+1
 	Match,
 }
+
+// How many groups are captured: `$1` to `$9`, so nine, two slots each.
+MAX_GROUPS :: 9
+SLOTS :: 2 * MAX_GROUPS
 
 Inst :: struct {
 	op:    Op,
@@ -49,6 +56,10 @@ Regex :: struct {
 	nxt:     []int,
 	mark:    []int,
 	generation: int,
+	groups:  int, // Groups in the pattern, captured up to MAX_GROUPS
+	// A thread's captures, beside its position in `cur` and `nxt`.
+	cur_caps: []int,
+	nxt_caps: []int,
 }
 
 // -- Parsing into a program ---------------------------------------------------------
@@ -82,6 +93,8 @@ compile :: proc(pattern: string, fold: bool, allocator: runtime.Allocator) -> (r
 	re.cur = make([]int, n, allocator)
 	re.nxt = make([]int, n, allocator)
 	re.mark = make([]int, n, allocator)
+	re.cur_caps = make([]int, n * SLOTS, allocator)
+	re.nxt_caps = make([]int, n * SLOTS, allocator)
 	return re, true
 }
 
@@ -94,6 +107,8 @@ destroy :: proc(re: ^Regex) {
 	delete(re.cur)
 	delete(re.nxt)
 	delete(re.mark)
+	delete(re.cur_caps)
+	delete(re.nxt_caps)
 	free(re)
 }
 
@@ -207,12 +222,20 @@ parse_atom :: proc(p: ^Parser) {
 	case '$':
 		emit(p, Inst{op = .Eol})
 	case '(':
+		group := p.re.groups
+		p.re.groups += 1
+		if group < MAX_GROUPS {
+			emit(p, Inst{op = .Save, x = 2 * group})
+		}
 		parse_alt(p)
 		if p.pos >= len(p.pat) || p.pat[p.pos] != ')' {
 			p.err = true
 			return
 		}
 		p.pos += 1
+		if group < MAX_GROUPS {
+			emit(p, Inst{op = .Save, x = 2 * group + 1})
+		}
 	case '[':
 		parse_class(p)
 	case '\\':
@@ -299,19 +322,36 @@ match :: proc(re: ^Regex, text: string) -> (start, end: int, ok: bool) {
 
 // match_from is `match` starting the search at `from`, for `s///g`.
 match_from :: proc(re: ^Regex, text: string, from: int) -> (start, end: int, ok: bool) {
+	return match_caps(re, text, from, nil)
+}
+
+/*
+match_caps is `match_from` that also answers the groups. `caps[2n]` and
+`caps[2n+1]` are the bounds of group n+1, or -1 when it took no part in the
+match. `caps` may be nil, and is read only up to SLOTS.
+*/
+match_caps :: proc(re: ^Regex, text: string, from: int, caps: []int) -> (start, end: int, ok: bool) {
 	cur, nxt, mark := re.cur, re.nxt, re.mark
+	cur_caps, nxt_caps := re.cur_caps, re.nxt_caps
 	generation := re.generation
 	defer re.generation = generation
+	fresh: [SLOTS]int
+	for i in 0 ..< SLOTS {
+		fresh[i] = -1
+	}
+	best_caps: [SLOTS]int
 	for s := from; s <= len(text); s += 1 {
 		ncur := 0
 		generation += 1
-		ncur = add_thread(re, cur, ncur, mark, generation, 0, text, s)
+		ncur = add_thread(re, cur, cur_caps, ncur, mark, generation, 0, text, s, fresh[:])
 		best := -1
 		for i := s; ; i += 1 {
-			// Anything at Match now is a match ending at i.
+			// Anything at Match now is a match ending at i. The first in the
+			// list is the preferred one, and its groups are the answer.
 			for k in 0 ..< ncur {
 				if re.prog[cur[k]].op == .Match {
 					best = i
+					copy(best_caps[:], cur_caps[k * SLOTS:][:SLOTS])
 					break
 				}
 			}
@@ -334,16 +374,20 @@ match_from :: proc(re: ^Regex, text: string, from: int) -> (start, end: int, ok:
 					step = c != '\n'
 				case .Class:
 					step = re.classes[ins.class][c]
-				case .Split, .Jmp, .Bol, .Eol, .Match:
+				case .Split, .Jmp, .Bol, .Eol, .Save, .Match:
 				}
 				if step {
-					nnxt = add_thread(re, nxt, nnxt, mark, generation, cur[k] + 1, text, i + 1)
+					nnxt = add_thread(re, nxt, nxt_caps, nnxt, mark, generation, cur[k] + 1, text, i + 1, cur_caps[k * SLOTS:][:SLOTS])
 				}
 			}
 			cur, nxt = nxt, cur
+			cur_caps, nxt_caps = nxt_caps, cur_caps
 			ncur = nnxt
 		}
 		if best >= 0 {
+			if caps != nil {
+				copy(caps, best_caps[:])
+			}
 			return s, best, true
 		}
 		// An anchored pattern cannot match later; a plain one may.
@@ -355,9 +399,11 @@ match_from :: proc(re: ^Regex, text: string, from: int) -> (start, end: int, ok:
 }
 
 // add_thread follows the epsilon edges out of `pc` and adds every
-// character-consuming or matching position reached to `list`, once.
+// character-consuming or matching position reached to `list`, once. Each
+// carries the captures `caps` it arrived with. A Save on the way marks the
+// position in a copy, so the other branch of a Split keeps its own.
 @(private = "file")
-add_thread :: proc(re: ^Regex, list: []int, count: int, mark: []int, generation: int, pc: int, text: string, at: int) -> int {
+add_thread :: proc(re: ^Regex, list: []int, list_caps: []int, count: int, mark: []int, generation: int, pc: int, text: string, at: int, caps: []int) -> int {
 	count := count
 	if pc >= len(re.prog) || mark[pc] == generation {
 		return count
@@ -366,20 +412,26 @@ add_thread :: proc(re: ^Regex, list: []int, count: int, mark: []int, generation:
 	ins := re.prog[pc]
 	switch ins.op {
 	case .Split:
-		count = add_thread(re, list, count, mark, generation, ins.x, text, at)
-		count = add_thread(re, list, count, mark, generation, ins.y, text, at)
+		count = add_thread(re, list, list_caps, count, mark, generation, ins.x, text, at, caps)
+		count = add_thread(re, list, list_caps, count, mark, generation, ins.y, text, at, caps)
 	case .Jmp:
-		count = add_thread(re, list, count, mark, generation, ins.x, text, at)
+		count = add_thread(re, list, list_caps, count, mark, generation, ins.x, text, at, caps)
 	case .Bol:
 		if at == 0 || text[at - 1] == '\n' {
-			count = add_thread(re, list, count, mark, generation, pc + 1, text, at)
+			count = add_thread(re, list, list_caps, count, mark, generation, pc + 1, text, at, caps)
 		}
 	case .Eol:
 		if at == len(text) || text[at] == '\n' {
-			count = add_thread(re, list, count, mark, generation, pc + 1, text, at)
+			count = add_thread(re, list, list_caps, count, mark, generation, pc + 1, text, at, caps)
 		}
+	case .Save:
+		saved: [SLOTS]int
+		copy(saved[:], caps)
+		saved[ins.x] = at
+		count = add_thread(re, list, list_caps, count, mark, generation, pc + 1, text, at, saved[:])
 	case .Char, .Any, .Class, .Match:
 		list[count] = pc
+		copy(list_caps[count * SLOTS:][:SLOTS], caps)
 		count += 1
 	}
 	return count

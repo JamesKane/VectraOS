@@ -76,6 +76,9 @@ ROOT_NODES := [?]Static_Node {
 	{name = "fd", parent = 0, dir = true},
 	// Where `webfs` is mounted: the web as files, `docs/WEB.md` section 3.
 	{name = "web", parent = 6, dir = true},
+	// Where the plumber is mounted: messages between programs by rules,
+	// `docs/GHOST.md` section 5.
+	{name = "plumb", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

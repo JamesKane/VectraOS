@@ -426,6 +426,16 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	before_doubles := mem.pmm_stats().double_frees
 	before_traps := arch.user_trap_count()
 	before_segs := segment_stats()
+	segment_pages(seg_pages_before[:])
+	// The processes alive before the run: the boot's servers, whose heaps may
+	// grow as they serve. Their growth is not the run's to give back.
+	{
+		guard := sync.acquire(&table_lock)
+		for j in 0 ..< MAX_PROCESSES {
+			resident_pids[j] = processes[j].live ? processes[j].pid : 0
+		}
+		sync.release(&table_lock, guard)
+	}
 
 	// The three frames of the last program to run, kept so the teardown can be
 	// checked frame by frame rather than by a total. See `mem.frame_is_free`.
@@ -629,6 +639,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_threads(&r)
 	verify_mui(&r)
 	verify_mothra(&r)
+	verify_plumber(&r)
 	verify_netfs(&r)
 	verify_cryptotest(&r)
 	verify_fonttest(&r)
@@ -777,7 +788,43 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 
 	after_segs := segment_stats()
 	check(&r, after_segs.live == before_segs.live, "every segment was released")
-	check(&r, after_segs.frames == before_segs.frames, "and owns no frame it did before")
+	// A segment that grew is named, since a total alone costs a boot to
+	// place. One a resident server holds -- fatfs caching a directory the
+	// run read first, say -- grew by serving, and is discounted.
+	seg_pages_after: [MAX_SEGMENTS]int
+	segment_pages(seg_pages_after[:])
+	sink := libodin.sink_from(seg_diag[:])
+	libodin.put_str(&sink, "and owns no frame it did before, save what a resident grew by")
+	resident_growth := 0
+	for i in 0 ..< MAX_SEGMENTS {
+		if seg_pages_before[i] != seg_pages_after[i] {
+			owner := segment_owner_pid(i)
+			resident := false
+			for j in 0 ..< MAX_PROCESSES {
+				if owner != 0 && resident_pids[j] == owner {
+					resident = true
+					break
+				}
+			}
+			if resident {
+				resident_growth += seg_pages_after[i] - seg_pages_before[i]
+			}
+			libodin.put_str(&sink, " -- slot ")
+			libodin.put_int(&sink, i64(i))
+			libodin.put_str(&sink, " ")
+			libodin.put_str(&sink, segment_kind_name(i))
+			libodin.put_str(&sink, " ")
+			libodin.put_int(&sink, i64(seg_pages_before[i]))
+			libodin.put_str(&sink, " to ")
+			libodin.put_int(&sink, i64(seg_pages_after[i]))
+			if resident {
+				libodin.put_str(&sink, " (pid ")
+				libodin.put_uint(&sink, owner)
+				libodin.put_str(&sink, ", resident)")
+			}
+		}
+	}
+	check(&r, after_segs.frames - before_segs.frames == resident_growth, libodin.str(&sink))
 
 	return r
 }
@@ -10315,6 +10362,9 @@ script_says :: proc(
 // Where every script's exit word lands. One buffer, because no test reads
 // a word once the next script answers.
 @(private = "file") said_buf: [EXITS_MAX]u8
+@(private = "file") seg_pages_before: [MAX_SEGMENTS]int
+@(private = "file") resident_pids: [MAX_PROCESSES]u64
+@(private = "file") seg_diag: [512]u8
 @(private = "file") helper_line: [512]u8
 
 /*
@@ -10501,6 +10551,152 @@ verify_rc :: proc(r: ^Result) {
 
 @(private = "file") rc_diag: [256]u8
 
+
+/*
+verify_plumber runs `servers/plumber` on the self-test's rules, which include
+the shipped `/lib/plumb/rules`. It sends messages the way a program does: a
+packed message written to `send`, and a port held open for the answer.
+
+A URL is routed to the web port. A file and a line become the file's path
+with an `addr` attribute on the edit port, which is a regular expression's
+groups at work. A note nobody reads starts the program its rule names,
+which reports back through the plumber. A message no rule takes is refused.
+Then the shell runs `tests/plumb.rc`, the same through `cmd/plumb`. That is
+`docs/GHOST.md` section 5's "a plumb of a file name opens it".
+*/
+@(private = "file")
+verify_plumber :: proc(r: ^Result) {
+	names := [?]string{"plumber", "-r", "/lib/tests/plumb.rules"}
+	argv := new(Argv)
+	if !check(r, argv != nil && argv_from(argv, names[:]), "a record for the plumber's arguments") {
+		return
+	}
+	p := start_path(r, "/bin/plumber", "the loader starts the plumber on the self-test's rules", argv)
+	if p == nil {
+		return
+	}
+	if !check(r, await_posted("plumb"), "which posts /srv/plumb") {
+		finish(r, p, "and the plumber is taken down")
+		return
+	}
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/plumb", "/mnt/plumb") == vfs.OK, "and the kernel mounts it at /mnt/plumb") {
+		finish(r, p, "and the plumber is taken down")
+		return
+	}
+
+	// The ports the rules declare are files.
+	ports_ok := true
+	for name in ([?]string{"web", "edit", "ghost", "note"}) {
+		path_buf: [64]u8
+		c, err := vfs.open_path(vfs.boot_namespace, libodin_cat(path_buf[:], "/mnt/plumb/", name), vfs.O_RDONLY)
+		if err != vfs.OK {
+			ports_ok = false
+			continue
+		}
+		vfs.chan_close(c)
+	}
+	check(r, ports_ok, "the ports the rules name are files: web, edit, ghost and note")
+	rules: [4096]u8
+	rn := web_read_file("/mnt/plumb/rules", rules[:])
+	check(r, rn > 0 && libodin.contains(string(rules[:rn]), "plumb to web") && libodin.contains(string(rules[:rn]), "plumb to note"), "and rules reads back the shipped file and the included one")
+
+	// A URL, to a reader holding the web port.
+	msg: [1024]u8
+	if web, err := vfs.open_path(vfs.boot_namespace, "/mnt/plumb/web", vfs.O_RDONLY); check(r, err == vfs.OK, "a reader opens the web port") {
+		sent := plumb_send("verify", "", "text", "https://example.com/a", "")
+		check(r, sent, "a URL written to send is taken by a rule")
+		n, rerr := vfs.chan_read(web, 0, msg[:])
+		got := string(msg[:max(n, 0)])
+		check(r, rerr == vfs.OK && n > 0 && libodin.contains(got, "\nweb\n") && libodin.contains(got, "\n21\nhttps://example.com/a"), "and the reader gets it back on the web port, its destination set")
+		vfs.chan_close(web)
+	}
+
+	// A file and a line: the groups of a match become the path and an addr.
+	if edit, err := vfs.open_path(vfs.boot_namespace, "/mnt/plumb/edit", vfs.O_RDONLY); check(r, err == vfs.OK, "a reader opens the edit port") {
+		sent := plumb_send("verify", "", "text", "/lib/tests/tools.rc:3", "")
+		check(r, sent, "a file and a line are taken by the edit rule")
+		n, rerr := vfs.chan_read(edit, 0, msg[:])
+		got := string(msg[:max(n, 0)])
+		check(r, rerr == vfs.OK && libodin.contains(got, "addr=3\n") && libodin.contains(got, "\n19\n/lib/tests/tools.rc"), "and the file's path is the data and its line an addr attribute")
+		vfs.chan_close(edit)
+	}
+
+	// A message with a destination goes there as it is. The ghost port is
+	// held open from here, since the programs the rules start report there.
+	ghost, gerr := vfs.open_path(vfs.boot_namespace, "/mnt/plumb/ghost", vfs.O_RDONLY)
+	if check(r, gerr == vfs.OK, "a reader opens the ghost port") {
+		sent := plumb_send("verify", "ghost", "text", "what is this", "")
+		check(r, sent, "a message addressed to a port is taken with no rule")
+		n, rerr := vfs.chan_read(ghost, 0, msg[:])
+		got := string(msg[:max(n, 0)])
+		check(r, rerr == vfs.OK && libodin.contains(got, "\n12\nwhat is this"), "and arrives there as it was")
+
+		// A note nobody reads: the rule starts `plumb -d ghost started:kernel`,
+		// which lands here. A marker sent after a patience means the read
+		// below always has something to answer, so a program that never
+		// started fails the check rather than parking it.
+		check(r, plumb_send("verify", "", "text", "note:kernel", ""), "a note with no reader is taken by its rule")
+		sync.delay(PATIENCE * 5)
+		_ = plumb_send("verify", "ghost", "text", "marker one", "")
+		n, rerr = vfs.chan_read(ghost, 0, msg[:])
+		got = string(msg[:max(n, 0)])
+		started := rerr == vfs.OK && libodin.contains(got, "started:kernel")
+		check(r, started, "and the program the rule starts ran, by its words and not a shell, and said so through the plumber")
+		if started {
+			// The marker is queued behind it, and is taken off.
+			_, _ = vfs.chan_read(ghost, 0, msg[:])
+		}
+	}
+
+	// Nothing takes a message no rule matches.
+	check(r, !plumb_send("verify", "", "text", "nothing takes this line", ""), "a message no rule takes is refused")
+
+	// The shell, through cmd/plumb: refused the same line, and its note
+	// starts the program too, heard on the ghost port the same way.
+	snames := [?]string{"rc", "/lib/tests/plumb.rc"}
+	if script_says(r, "/bin/rc", snames[:], PATIENCE * 40, "the shell starts on the plumb script", "ok", "and plumb from the shell was refused a line no rule takes, and sent its note") && gerr == vfs.OK {
+		sync.delay(PATIENCE * 5)
+		_ = plumb_send("verify", "ghost", "text", "marker two", "")
+		n, rerr := vfs.chan_read(ghost, 0, msg[:])
+		got := string(msg[:max(n, 0)])
+		heard := rerr == vfs.OK && libodin.contains(got, "started:shell")
+		if !heard && rerr == vfs.OK && !libodin.contains(got, "marker two") {
+			// A late report from the first note; the marker is still queued.
+			n, rerr = vfs.chan_read(ghost, 0, msg[:])
+			got = string(msg[:max(n, 0)])
+			heard = rerr == vfs.OK && libodin.contains(got, "started:shell")
+		}
+		check(r, heard, "and the shell's note started its program, which reported through the plumber")
+	}
+	if gerr == vfs.OK {
+		vfs.chan_close(ghost)
+	}
+	reap_orphans()
+
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/plumb") == vfs.OK, "the mount of the plumber comes down")
+	check(r, srv.remove("plumb") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(p, PATIENCE * 5), "and the plumber, its pipe gone, exits")
+	finish(r, p, "and is taken down")
+	reap_orphans()
+}
+
+// plumb_send writes one packed message to the plumber's send file, and
+// answers whether the write was taken.
+@(private = "file")
+plumb_send :: proc(src, dst, type, data, attr: string) -> bool {
+	c, err := vfs.open_path(vfs.boot_namespace, "/mnt/plumb/send", vfs.O_WRONLY)
+	if err != vfs.OK {
+		return false
+	}
+	defer vfs.chan_close(c)
+	buf: [2048]u8
+	count: [24]u8
+	sink := libodin.sink_from(count[:])
+	libodin.put_uint(&sink, u64(len(data)))
+	text := libodin_cat(buf[:], src, "\n", dst, "\n", "", "\n", type, "\n", attr, "\n", libodin.str(&sink), "\n", data)
+	n, werr := vfs.chan_write(c, 0, transmute([]u8)text)
+	return werr == vfs.OK && int(n) == len(text)
+}
 
 /*
 verify_webfs runs `servers/webfs`, the HTTP client as files, against two
@@ -10750,6 +10946,10 @@ verify_mothra :: proc(r: ^Result) #no_bounds_check {
 	if pm != nil {
 		bx, _, _ := await_bar(s)
 		check(r, bx >= 0, "and the reader opens a framed window on the page, its title bar copper")
+		// The reader's io procs are processes of its note group, parked in
+		// reads of the window's files. Ending the main process alone leaves
+		// them standing, so the whole group is noted, the way `^C` is.
+		_ = notepg_kernel(pm.note_group, "kill")
 		check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
 		finish(r, pm, "and is taken down")
 	}

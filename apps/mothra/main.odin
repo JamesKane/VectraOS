@@ -11,10 +11,16 @@ A URL is fetched through `/mnt/web`, `servers/webfs`. So every scheme it
 speaks is one this reads, and the page lands in the store on the way. A
 file is read from the namespace, its kind by its suffix.
 
+A press on a link is a plumb message, `docs/GHOST.md` section 5: the URL
+goes to `/mnt/plumb/send`, the rules route it to the `web` port, and this
+reader, which holds that port open, reads it back and opens it. So what a
+press does is what `plumb URL` from a shell does, and a page any program
+plumbs opens here. With no plumber the press follows the link itself.
+
 This is the reader's first cut. The toolkit's list is the page, so every
 row wears one face. A click follows a link itself rather than through the
-plumber, which `docs/GHOST.md` step 2 has yet to build. Images, messages
-and the column come next.
+plumber, since a page's own links are its to follow. Images, messages and
+the column come next.
 */
 package mothra
 
@@ -26,6 +32,7 @@ import "vsys:libgemtext"
 import "vsys:libhtml"
 import "vsys:libmark"
 import "vsys:libmui"
+import "vsys:libplumb"
 import "vsys:libthread"
 import "vsys:libuser"
 
@@ -97,6 +104,12 @@ mothra_main :: proc "contextless" (arg: rawptr) {
 	// Now the window has a width, the page is laid out to it.
 	relayout()
 	libmui.window_paint(&win)
+	// The plumber's web port, when there is a plumber: a page plumbed from
+	// anywhere opens here.
+	plumb_fd = libplumb.open_port("web")
+	if plumb_fd >= 0 {
+		_ = libthread.threadcreate(plumb_thread, nil)
+	}
 	libmui.window_run(&win)
 	libthread.threadexits("")
 }
@@ -138,7 +151,42 @@ on_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 	if n <= 0 {
 		return
 	}
+	// Through the plumber when there is one and this reader is listening.
+	// The message comes back on the web port, and plumb_thread opens it.
+	if plumb_fd >= 0 && libplumb.send_text("mothra", string(target[:n])) {
+		return
+	}
 	go(string(target[:n]), true)
+}
+
+// plumb_fd is the web port, or -1 when there is no plumber.
+plumb_fd: int = -1
+
+// plumb_thread reads the web port and opens each page that arrives, until
+// the plumber goes.
+plumb_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	context = ctx
+	io := libthread.ioproc()
+	if io == nil {
+		return
+	}
+	buf := make([]u8, libplumb.MAX)
+	for {
+		n := libthread.ioread(io, plumb_fd, buf)
+		if n <= 0 {
+			break
+		}
+		m, ok := libplumb.unpack(string(buf[:n]))
+		if !ok || len(m.data) == 0 {
+			continue
+		}
+		go(m.data, true)
+		libmui.window_paint(&win)
+	}
+	_ = libuser.close(plumb_fd)
+	plumb_fd = -1
+	libthread.ioclose(io)
 }
 
 // on_key scrolls, goes back, fetches again, or closes.

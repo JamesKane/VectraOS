@@ -1,0 +1,9 @@
+# plumb.rules: the boot self-test's rules -- the shipped file, and a port
+# whose rule starts a program. The program is plumb itself, which reports
+# to the ghost port, so the start path is proven with no window and no disk.
+include /lib/plumb/rules
+
+type is text
+data matches 'note:([a-z]+)'
+plumb to note
+plumb start plumb -d ghost started:$1

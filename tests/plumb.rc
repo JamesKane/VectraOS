@@ -1,0 +1,7 @@
+# plumb.rc: the plumb command against the plumber the boot self-test runs.
+# A message no rule takes is refused, and a note starts the program its rule
+# names, which the self-test hears on the ghost port. The exit word is `ok`
+# or what went wrong.
+if(plumb 'nothing takes this line') exit unrefused
+plumb note:shell
+exit ok

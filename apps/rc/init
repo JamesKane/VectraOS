@@ -112,6 +112,12 @@ if(role $sysname terminal) {
 	intuition /n/kbd/kbd &
 	while(! test -e /srv/draw) sleep 1
 
+	# The plumber: a click, a file name or a URL goes to the program that
+	# reads for it, by the rules in /lib/plumb/rules. docs/GHOST.md section 5.
+	plumber &
+	while(! test -e /srv/plumb) sleep 1
+	mount /srv/plumb /mnt/plumb
+
 	workbench &
 	while(! test -e /srv/wb) sleep 1
 	mount /srv/wb /mnt/wb

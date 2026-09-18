@@ -149,6 +149,8 @@ user_programs := [?]User_Program {
 	{name = "cryptotest", path = "tests/crypto"},
 	{name = "tlssrv", path = "tests/tlssrv"},
 	{name = "webfs", path = "servers/webfs"},
+	{name = "plumber", path = "servers/plumber"},
+	{name = "plumb", path = "cmd/plumb"},
 	{name = "doctest", path = "tests/doc"},
 	{name = "mothra", path = "apps/mothra"},
 	{name = "websrv", path = "tests/websrv"},
@@ -1433,6 +1435,11 @@ stage_vectra :: proc(arch: string, host: string) {
 	copy_file("tests/tls.rc", fmt.tprintf("%s/lib/tests/tls.rc", root))
 	copy_file("tests/web.rc", fmt.tprintf("%s/lib/tests/web.rc", root))
 	copy_file("tests/page.gmi", fmt.tprintf("%s/lib/tests/page.gmi", root))
+	copy_file("tests/plumb.rules", fmt.tprintf("%s/lib/tests/plumb.rules", root))
+	copy_file("tests/plumb.rc", fmt.tprintf("%s/lib/tests/plumb.rc", root))
+	// The plumber's rules: what a message nobody addressed does, docs/GHOST.md 5.
+	ensure_dir(fmt.tprintf("%s/lib/plumb", root))
+	copy_file("lib/plumb/rules", fmt.tprintf("%s/lib/plumb/rules", root))
 	// The source the debugger's window shows, under the path the debug file
 	// names. The one program a debugger is expected on today.
 	ensure_dir(fmt.tprintf("%s/lib/src", root))
