@@ -1437,6 +1437,7 @@ stage_vectra :: proc(arch: string, host: string) {
 	copy_file("tests/page.gmi", fmt.tprintf("%s/lib/tests/page.gmi", root))
 	copy_file("tests/page.png", fmt.tprintf("%s/lib/tests/page.png", root))
 	copy_file("tests/page.md", fmt.tprintf("%s/lib/tests/page.md", root))
+	copy_file("tests/page.jpg", fmt.tprintf("%s/lib/tests/page.jpg", root))
 	copy_file("tests/plumb.rules", fmt.tprintf("%s/lib/tests/plumb.rules", root))
 	copy_file("tests/plumb.rc", fmt.tprintf("%s/lib/tests/plumb.rc", root))
 	// The plumber's rules: what a message nobody addressed does, docs/GHOST.md 5.

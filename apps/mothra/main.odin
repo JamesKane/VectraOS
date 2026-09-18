@@ -3,10 +3,10 @@ mothra -- the reader, `docs/WEB.md` section 5.
 
 `mothra URL` or `mothra file` shows a page in a window. Gemtext, markdown,
 HTML or plain text is laid out by `sys/libdoc` to the window's columns.
-The rows are shown one selected, each in the ink its kind wears. A PNG on
-a page is fetched, decoded by `sys/libimage`, and stood on rows of its
-own under its caption. A PNG on its own is shown as a picture fitted to the
-window.
+The rows are shown one selected, each in the ink its kind wears. A PNG or
+a JPEG on a page is fetched, decoded by `sys/libimage`, and stood on rows
+of its own under its caption. One on its own is shown as a picture fitted
+to the window.
 
 A form's parts are rows too. Tab selects the next one, typing fills a
 field, Space turns a check, and Return sends the form, as a query or as a
@@ -98,7 +98,7 @@ Kind :: enum {
 	Gemtext,
 	Markdown,
 	Html,
-	Png,
+	Picture, // PNG or JPEG, by libimage
 }
 
 @(export, link_name = "_start")
@@ -469,8 +469,8 @@ gather_pics :: proc "contextless" () {
 		if !ok {
 			continue
 		}
-		if libimage.is_png(data) {
-			if img, dok := libimage.decode_png(data, context.allocator); dok {
+		if libimage.is_png(data) || libimage.is_jpeg(data) {
+			if img, dok := libimage.decode(data, context.allocator); dok {
 				pics[npics] = Pic{block = i, img = img}
 				npics += 1
 			}
@@ -707,8 +707,8 @@ load :: proc "contextless" (target: string, post: []u8 = nil) -> bool {
 	libdoc.doc_init(&doc)
 	showing_pic = false
 	switch kind {
-	case .Png:
-		img, dok := libimage.decode_png(text, context.allocator)
+	case .Picture:
+		img, dok := libimage.decode(text, context.allocator)
 		if !dok {
 			libdoc.doc_add(&doc, .Text, "This picture could not be decoded.")
 			return true
@@ -761,8 +761,8 @@ kind_of_suffix :: proc "contextless" (path: string) -> Kind {
 	if ends_with(path, ".html") || ends_with(path, ".htm") {
 		return .Html
 	}
-	if ends_with(path, ".png") {
-		return .Png
+	if ends_with(path, ".png") || ends_with(path, ".jpg") || ends_with(path, ".jpeg") {
+		return .Picture
 	}
 	return .Plain
 }
@@ -777,8 +777,8 @@ kind_of_type :: proc "contextless" (ctype: string, url: string) -> Kind {
 	if starts_with(ctype, "text/html") || starts_with(ctype, "application/xhtml") {
 		return .Html
 	}
-	if starts_with(ctype, "image/png") {
-		return .Png
+	if starts_with(ctype, "image/png") || starts_with(ctype, "image/jpeg") {
+		return .Picture
 	}
 	if len(ctype) == 0 {
 		return kind_of_suffix(url)

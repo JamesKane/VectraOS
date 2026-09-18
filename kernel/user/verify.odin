@@ -9597,7 +9597,7 @@ verify_mui :: proc(r: ^Result) {
 	// and a markdown page parse to their blocks and lay out to the rows a
 	// column count gives them.
 	dnames := [?]string{"doctest"}
-	script_says(r, "/bin/doctest", dnames[:], PATIENCE * 5, "a program on the reader's document model starts", "ok", "and a page of each kind laid out to the numbers, and a PNG of each shape decoded to its pixels")
+	script_says(r, "/bin/doctest", dnames[:], PATIENCE * 5, "a program on the reader's document model starts", "ok", "and a page of each kind laid out to the numbers, and a PNG of each shape and a JPEG decoded to their pixels")
 }
 
 /*

@@ -9,8 +9,8 @@ is chunks, one zlib stream, and five row filters. Every colour type and
 bit depth decodes to one shape, eight bits of red, green, blue and alpha a
 pixel, row by row. That is what a gadget draws and a test compares.
 
-Not yet: interlaced PNG, which a reader can live without, and JPEG, which
-is its own decoder and its own brick.
+`jpeg.odin` is the baseline JPEG beside it, and `decode` picks by the
+file's signature. Not yet: interlaced PNG, which a reader can live without.
 */
 package libimage
 
