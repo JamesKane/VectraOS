@@ -707,9 +707,13 @@ reader, which holds that port open, reads it back and opens it. So
 `plumb URL` from any shell opens a page in the running reader, or
 starts one. A PNG on its own is a page too: `sys/libimage` decodes it,
 since Odin's own `core:image` cannot build for ring 3, and the toolkit's
-picture gadget loads the pixels into the window fitted to it. The boot
-line decodes a PNG of each shape to its pixels and opens the reader on
-one. Not yet: forms, images on the page, JPEG, and the column.
+picture gadget loads the pixels into the window fitted to it. On a page,
+a picture is fetched the way the page was and stood on rows of its own
+under its caption, and the rows wear the ink their kind says: a heading
+hot, a link cyan, a quote dim, a rule a line. The boot line decodes a
+PNG of each shape to its pixels, opens the reader on one, and opens it
+on a markdown page that names one and finds its corners on the glass.
+Not yet: forms, JPEG, and the column.
 
 ### Step 2: the shape, and feeds
 

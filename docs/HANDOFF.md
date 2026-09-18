@@ -515,10 +515,14 @@ the documents it points at.
    images, rules and table rows. The head, scripts and styles are
    dropped, and a page that is a menu of links is one row each. `mothra`
    reads `text/html`. The plumber is in (`docs/GHOST.md` step 2, below),
-   and a press on a link plumbs. A PNG on its own is a page: `sys/libimage`
-   decodes it (Odin's `core:image` wants `core:os`), and `libmui`'s new
-   `Picture` gadget loads the pixels into the window after the tree's
-   paint, fitted, `libapp`'s way. Next: images on the page, forms, JPEG
+   and a press on a link plumbs.
+
+   A PNG on its own is a page. `sys/libimage` decodes it, since Odin's
+   `core:image` wants `core:os`, and `libmui`'s new `Picture` gadget
+   loads the pixels into the window after the tree's paint, `libapp`'s
+   way. On a page, the list gadget's rows wear styles: heading, link,
+   quote, rule, and a picture's stand. The reader fetches each picture a
+   page names and stands it on rows under its caption. Next: forms, JPEG
    and the column.
 
    `webfs` and TLS are built once, for
