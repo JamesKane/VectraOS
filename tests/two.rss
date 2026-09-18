@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<channel>
+<title>Two</title>
+<link>https://two.example/</link>
+<description>The second feed</description>
+<item>
+<title>Older news</title>
+<link>https://two.example/older</link>
+<guid isPermaLink="false">older</guid>
+<pubDate>Tue, 15 Sep 2026 18:45:00 GMT</pubDate>
+<dc:creator>Bob</dc:creator>
+<description><![CDATA[<p>Plain <b>bold</b> news</p>]]></description>
+<enclosure url="https://two.example/older.mp3" length="1" type="audio/mpeg"/>
+</item>
+<item>
+<title>Newer news</title>
+<link>https://two.example/newer</link>
+<guid>https://two.example/newer</guid>
+<pubDate>Thu, 17 Sep 2026 20:15:00 -0400</pubDate>
+<description>Just text, no tags.</description>
+</item>
+</channel>
+</rss>

@@ -79,6 +79,11 @@ ROOT_NODES := [?]Static_Node {
 	// Where the plumber is mounted: messages between programs by rules,
 	// `docs/GHOST.md` section 5.
 	{name = "plumb", parent = 6, dir = true},
+	// Where the first network is mounted, and where a union of conversations
+	// is the timeline: `bind -a /mnt/feed/one /mnt/all`. `docs/WEB.md`
+	// section 4.
+	{name = "feed", parent = 6, dir = true},
+	{name = "all", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

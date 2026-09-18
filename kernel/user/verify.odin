@@ -640,6 +640,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_mui(&r)
 	verify_mothra(&r)
 	verify_plumber(&r)
+	verify_feedfs(&r)
 	verify_netfs(&r)
 	verify_cryptotest(&r)
 	verify_fonttest(&r)
@@ -10690,6 +10691,164 @@ verify_plumber :: proc(r: ^Result) {
 	check(r, wait(p, PATIENCE * 5), "and the plumber, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 	reap_orphans()
+}
+
+/*
+verify_feedfs runs `servers/feedfs` on two saved feeds, the offline proof of
+`docs/WEB.md` section 4's shape. A feed's path written to `ctl` makes a
+conversation of its entries, each a directory of files, in time order by
+name. A reply is walked under the message it answers. The two conversations
+bound together under `/mnt/all` list as one timeline. A write to `new` is
+refused, since a feed is read only. Then the shell runs `tests/feed.rc`,
+which reads the union with `ls` and `cat`.
+*/
+@(private = "file")
+verify_feedfs :: proc(r: ^Result) {
+	names := [?]string{"feedfs"}
+	argv := new(Argv)
+	if !check(r, argv != nil && argv_from(argv, names[:]), "a record for feedfs's arguments") {
+		return
+	}
+	p := start_path(r, "/bin/feedfs", "the loader starts feedfs, the first network", argv)
+	if p == nil {
+		return
+	}
+	if !check(r, await_posted("feed"), "which posts /srv/feed") {
+		finish(r, p, "and feedfs is taken down")
+		return
+	}
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/feed", "/mnt/feed") == vfs.OK, "and the kernel mounts it at /mnt/feed") {
+		finish(r, p, "and feedfs is taken down")
+		return
+	}
+
+	ID1 :: "000000006aaa4c80.5755209cc066ae5a"
+	ID2 :: "000000006aab96f8.6ccf908bcc1f4bee"
+	ID3 :: "000000006aad106e.7f920dcf24c8d8b8"
+	check(r, net_file_write("/mnt/feed/ctl", "fetch /lib/tests/one.atom"), "a saved atom feed's path written to ctl is fetched, and the write returns when it is in")
+	check(r, net_file_write("/mnt/feed/ctl", "fetch /lib/tests/two.rss"), "and a saved rss feed's")
+	check(r, !net_file_write("/mnt/feed/ctl", "fetch /lib/tests/page.gmi"), "a file that is not a feed is refused")
+	check(r, !net_file_write("/mnt/feed/new", "to nobody\n\nhello"), "a write to new is refused: a feed is read only")
+
+	lbuf: [2048]u8
+	check(r, dir_names("/mnt/feed", lbuf[:]) == "ctl me new event dict notify one two", "the network lists its six files and a conversation a feed")
+	check(r, dir_names("/mnt/feed/one", lbuf[:]) == ID1 + " " + ID2 + " " + ID3, "a conversation lists its entries by id, which is time order")
+	check(r, dir_names("/mnt/feed/one/" + ID1, lbuf[:]) == "from date subject body type raw hash replyto replies links", "and an entry is the shape's files")
+	text: [1024]u8
+	n := web_read_file("/mnt/feed/one/" + ID1 + "/subject", text[:])
+	check(r, string(text[:max(n, 0)]) == "First post", "subject is the entry's title")
+	n = web_read_file("/mnt/feed/one/" + ID1 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "Glenda", "from is its author")
+	n = web_read_file("/mnt/feed/one/" + ID1 + "/date", text[:])
+	check(r, string(text[:max(n, 0)]) == "1789545600 2026-09-16T08:00:00Z", "date is seconds since the epoch and the feed's text")
+	n = web_read_file("/mnt/feed/one/" + ID1 + "/body", text[:])
+	check(r, string(text[:max(n, 0)]) == "Hello, feed.", "body is its text")
+	n = web_read_file("/mnt/feed/one/" + ID1 + "/type", text[:])
+	check(r, string(text[:max(n, 0)]) == "text/plain", "type is the body's media type")
+	n = web_read_file("/mnt/feed/one/" + ID1 + "/hash", text[:])
+	check(r, string(text[:max(n, 0)]) == "6eea6772cb789a929f6bbac871317104021d3142e6339852979151b1934b86e3", "hash is sha256 of the entry's own markup")
+	n = web_read_file("/mnt/feed/one/" + ID1 + "/links", text[:])
+	check(r, string(text[:max(n, 0)]) == "https://one.example/1", "links is what it points at")
+	n = web_read_file("/mnt/feed/one/" + ID3 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == ID1, "a reply names the id it answers")
+	check(r, dir_names("/mnt/feed/one/" + ID1 + "/replies", lbuf[:]) == ID3 && dir_names("/mnt/feed/one/" + ID3 + "/replies", lbuf[:]) == "", "and replies under the first entry lists the reply, and under the reply nothing")
+	n = web_read_file("/mnt/feed/one/" + ID1 + "/replies/" + ID3 + "/subject", text[:])
+	check(r, string(text[:max(n, 0)]) == "Re: First post", "walked one level down, the reply is the same shape")
+	n = web_read_file("/mnt/feed/ctl", text[:])
+	check(r, n > 0 && libodin.contains(string(text[:n]), "one 3 /lib/tests/one.atom") && libodin.contains(string(text[:n]), "two 2 /lib/tests/two.rss"), "a read of ctl says what each feed holds and where it came from")
+	// One read, since a read of event is one line and the file never ends.
+	n = read_once("/mnt/feed/event", text[:])
+	check(r, string(text[:max(n, 0)]) == "one/" + ID2 + "\n", "a read of event answers the first entry that landed, the file's first")
+	n = web_read_file("/mnt/feed/dict", text[:])
+	check(r, n > 0 && libodin.contains(string(text[:n]), "fetch name url"), "and dict names the verbs")
+
+	// The union is the timeline.
+	bound := vfs.bind_path(vfs.boot_namespace, "/mnt/feed/one", "/mnt/all", .After) == vfs.OK
+	bound = vfs.bind_path(vfs.boot_namespace, "/mnt/feed/two", "/mnt/all", .After) == vfs.OK && bound
+	check(r, bound, "two conversations bind after one another under /mnt/all")
+	all := dir_names("/mnt/all", lbuf[:])
+	check(r, libodin.contains(all, ID1) && libodin.contains(all, ID3) && libodin.contains(all, "000000006aa9922c.older") && libodin.contains(all, "000000006aac8284.cdeb28bad934d3fd") && count_words(all) == 5, "and the union lists all five entries as one timeline")
+	n = web_read_file("/mnt/all/000000006aa9922c.older/subject", text[:])
+	check(r, string(text[:max(n, 0)]) == "Older news", "which reads either feed's entry by its id alone")
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/all") == vfs.OK, "the union comes apart")
+
+	snames := [?]string{"rc", "/lib/tests/feed.rc"}
+	script_says(r, "/bin/rc", snames[:], PATIENCE * 40, "the shell starts on the feed script", "ok", "and the shell bound the two feeds and read the timeline in order, first to last")
+	reap_orphans()
+
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/feed") == vfs.OK, "the mount of feedfs comes down")
+	check(r, srv.remove("feed") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(p, PATIENCE * 5), "and feedfs, its pipe gone, exits")
+	finish(r, p, "and is taken down")
+	reap_orphans()
+}
+
+// dir_names lists a directory's entries in the order it answers them, one
+// space between names, into `into`.
+@(private = "file")
+dir_names :: proc(path: string, into: []u8) -> string {
+	dc, err := vfs.resolve(vfs.boot_namespace, path)
+	if err != vfs.OK {
+		return "?"
+	}
+	defer vfs.chan_close(dc)
+	if vfs.chan_open(dc, vfs.O_RDONLY | vfs.O_DIRECTORY) != vfs.OK {
+		return "?"
+	}
+	raw: [4096]u8
+	n := 0
+	offset := u64(0)
+	for {
+		ln, lerr := vfs.readdir(dc, offset, raw[:])
+		if lerr != vfs.OK || ln == 0 {
+			break
+		}
+		c := vectra9.cursor_from(raw[:ln])
+		for {
+			e, ok := vectra9.next_dirent(&c)
+			if !ok {
+				break
+			}
+			offset = e.offset
+			if n > 0 && n < len(into) {
+				into[n] = ' '
+				n += 1
+			}
+			n += copy(into[n:], e.name)
+		}
+	}
+	return string(into[:n])
+}
+
+// read_once opens a file and reads it once, for a file where each read is
+// one answer and the file never ends.
+@(private = "file")
+read_once :: proc(path: string, into: []u8) -> int {
+	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
+	if err != vfs.OK {
+		return -1
+	}
+	defer vfs.chan_close(c)
+	n, rerr := vfs.chan_read(c, 0, into)
+	if rerr != vfs.OK {
+		return -1
+	}
+	return n
+}
+
+@(private = "file")
+count_words :: proc(s: string) -> int {
+	n := 0
+	in_word := false
+	for i in 0 ..< len(s) {
+		if s[i] == ' ' {
+			in_word = false
+		} else if !in_word {
+			in_word = true
+			n += 1
+		}
+	}
+	return n
 }
 
 // plumb_send writes one packed message to the plumber's send file, and

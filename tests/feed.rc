@@ -1,0 +1,17 @@
+# feed.rc: two feeds bound together are one timeline, read from the shell.
+# The self-test fetched them into feedfs. This binds their conversations
+# under /mnt/all and reads the union in order, since `ls` sorts and the ids
+# are the dates. The exit word is `ok` or what went wrong.
+if(! test -e /mnt/feed/ctl) mount /srv/feed /mnt/feed
+bind -a /mnt/feed/one /mnt/all
+bind -a /mnt/feed/two /mnt/all
+n=`{ls -p /mnt/all | wc -l}
+if(! ~ $n 5) exit 'not five entries: '$n
+first=`{ls -p /mnt/all | read}
+last=`{ls -p /mnt/all | tail -n 1}
+s=`{cat /mnt/all/$first/subject}
+if(! ~ $"s 'Older news') exit 'first is not the oldest: '$"s
+s=`{cat /mnt/all/$last/subject}
+if(! ~ $"s 'Re: First post') exit 'last is not the newest: '$"s
+unmount /mnt/all
+exit ok

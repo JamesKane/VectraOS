@@ -8,16 +8,20 @@ parse and encode as a query. Three small PNGs decode to their pixels, one of
 each shape a page uses, and two JPEGs decode to within a few levels of what
 the host's own decoder made of them. Each lays out to the rows a
 narrow column gives them, counted here by hand. That is `docs/WEB.md` step
-1's "a page of each kind lays out to the numbers".
+1's "a page of each kind lays out to the numbers". Then the two saved feeds
+parse to the messages their entries are, with the ids, dates and hashes
+worked out by hand, which is step 2's shape before any server serves it.
 */
 package doctest
 
 import "vsys:abi"
 import "vsys:libdoc"
+import "vsys:libfeed"
 import "vsys:libgemtext"
 import "vsys:libhtml"
 import "vsys:libimage"
 import "vsys:libmark"
+import "vsys:libmsg"
 import "vsys:libuser"
 
 fail :: proc "contextless" (what: string) -> ! {
@@ -223,6 +227,45 @@ start :: proc "c" (block: ^abi.Args) {
 		gray, gok := libimage.decode(JPG_GRAY[:], context.allocator)
 		want(gok && gray.w == 32 && gray.h == 16 && near(&gray, 0, 0, 0, 0, 0, 2) && near(&gray, 31, 15, 60, 60, 60, 2) && near(&gray, 16, 8, 163, 163, 163, 2), "a gray picture decodes to its levels")
 		libimage.image_free(&gray, context.allocator)
+	}
+
+	// -- Feeds -------------------------------------------------------------------
+	{
+		atom, aok := libuser.read_file("/lib/tests/one.atom", context.allocator)
+		want(aok, "feed: the atom fixture reads")
+		f, ok := libfeed.parse(string(atom))
+		want(ok && len(f.entries) == 3 && f.title == "One & Only" && f.link == "https://one.example/", "an atom feed parses to its three entries, its title and its link")
+		// The file's order: the second post, the first, then the reply.
+		want(f.entries[1].id == "000000006aaa4c80.5755209cc066ae5a" && f.entries[1].date == 1789545600, "an id is the date in hex and the network's id hashed, since a tag is no file name")
+		want(f.entries[0].date == 1789630200 && f.entries[0].date_text == "2026-09-17T09:30:00+02:00", "an rfc 3339 date with an offset is seconds since the epoch, and the text is kept")
+		want(f.entries[0].from == "Glenda" && f.entries[0].subject == "Second post" && f.entries[0].type == "text/html" && f.entries[0].body == "<p>Two &amp; a half</p>", "html content decodes once, to its markup")
+		want(f.entries[1].type == "text/plain" && f.entries[1].body == "Hello, feed." && f.entries[1].links == "https://one.example/1\n", "a text summary is the body, and a link is a line")
+		want(f.entries[2].from == "One & Only" && f.entries[2].replyto == f.entries[1].id, "an entry with no author is from the feed, and in-reply-to resolves to the other entry's id")
+		want(f.entries[2].body == "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Quite so.</p></div>", "xhtml content is its markup as it stands")
+
+		net: libmsg.Net
+		libmsg.init(&net)
+		c := libmsg.conv(&net, "one")
+		for m in f.entries {
+			libmsg.add(&net, c, m)
+		}
+		want(len(c.msgs) == 3 && c.msgs[0].id < c.msgs[1].id && c.msgs[1].id < c.msgs[2].id, "added to a conversation they stand in time order")
+		want(string(c.msgs[0].hash[:]) == "6eea6772cb789a929f6bbac871317104021d3142e6339852979151b1934b86e3", "and a message's hash is sha256 of the entry's own markup")
+		want(len(net.convs) == 2 && net.ecount == 3, "and each landing is an event")
+
+		rss, rok := libuser.read_file("/lib/tests/two.rss", context.allocator)
+		want(rok, "the rss fixture reads")
+		g, gok := libfeed.parse(string(rss))
+		want(gok && len(g.entries) == 2 && g.title == "Two" && g.link == "https://two.example/", "an rss feed parses to its two items, its title and its link")
+		want(g.entries[0].id == "000000006aa9922c.older" && g.entries[0].from == "Bob" && g.entries[0].type == "text/html" && g.entries[0].body == "<p>Plain <b>bold</b> news</p>", "a guid that is a name is kept, a creator is the sender, and cdata is markup")
+		want(g.entries[0].links == "https://two.example/older\nhttps://two.example/older.mp3\n", "an enclosure is a link after the item's own")
+		want(g.entries[1].date == 1789690500 && g.entries[1].from == "Two" && g.entries[1].type == "text/plain" && g.entries[1].body == "Just text, no tags.", "an rfc 822 date with a numeric zone, and an item with no creator is from the feed")
+		_, pok := libfeed.parse("<html><body>no</body></html>")
+		want(!pok, "a page is not a feed")
+		d, dok := libfeed.parse_date("15 Sep 26 18:45 EST")
+		want(dok && d == 1789515900, "a two-digit year and a named zone read")
+		buf: [64]u8
+		want(libfeed.decode("a &amp; b &#169; <![CDATA[<x>&amp;]]> &bogus;", buf[:]) == "a & b \u00a9 <x>&amp; &bogus;", "entities decode, cdata stands, and an unknown entity is kept")
 	}
 
 	libuser.exits("ok")

@@ -150,6 +150,7 @@ user_programs := [?]User_Program {
 	{name = "tlssrv", path = "tests/tlssrv"},
 	{name = "webfs", path = "servers/webfs"},
 	{name = "plumber", path = "servers/plumber"},
+	{name = "feedfs", path = "servers/feedfs"},
 	{name = "plumb", path = "cmd/plumb"},
 	{name = "doctest", path = "tests/doc"},
 	{name = "mothra", path = "apps/mothra"},
@@ -1440,6 +1441,9 @@ stage_vectra :: proc(arch: string, host: string) {
 	copy_file("tests/page.jpg", fmt.tprintf("%s/lib/tests/page.jpg", root))
 	copy_file("tests/plumb.rules", fmt.tprintf("%s/lib/tests/plumb.rules", root))
 	copy_file("tests/plumb.rc", fmt.tprintf("%s/lib/tests/plumb.rc", root))
+	copy_file("tests/one.atom", fmt.tprintf("%s/lib/tests/one.atom", root))
+	copy_file("tests/two.rss", fmt.tprintf("%s/lib/tests/two.rss", root))
+	copy_file("tests/feed.rc", fmt.tprintf("%s/lib/tests/feed.rc", root))
 	// The plumber's rules: what a message nobody addressed does, docs/GHOST.md 5.
 	ensure_dir(fmt.tprintf("%s/lib/plumb", root))
 	copy_file("lib/plumb/rules", fmt.tprintf("%s/lib/plumb/rules", root))
