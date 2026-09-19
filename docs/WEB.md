@@ -786,8 +786,20 @@ the proof asks.
 
 `poll N` fetches every feed again each N seconds, on a thread with a
 timer. The shell proves it: a feed file changed under a one-second poll
-gains its entry with no fetch asked for. Not yet: the compose window,
-which waits on a network that takes `new`.
+gains its entry with no fetch asked for.
+
+Compose is in, one window for every network. It is a form whose action
+is the network's `new`: the address, the subject, a hidden `replyto`,
+the body and a Send button. It opens on `compose:/mnt/mail`, or on a
+`mailto:` address with the address filled. On `c` over a message it
+opens as a reply, with the address, the subject and `replyto` filled.
+Sent, the reader shows the network's `sent/`. Refused, the page says
+why.
+
+The boot line opens it on a `mailto:` address, types a subject and a
+body, and reads the message back from the scripted submission server.
+The body is one line, until the toolkit has a text editor. Step 2 is
+complete.
 
 `sys/libmime` is in. It unfolds RFC 5322 headers and cuts RFC 2045
 parts at their boundaries, one level down at a time. A part's bytes

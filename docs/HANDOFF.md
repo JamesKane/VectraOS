@@ -558,8 +558,11 @@ the documents it points at.
    IMAP into the shape, with the password from `factotum`'s new
    `proto=pass`. It submits a write to `new` over SMTP. The boot line
    proves both against `tests/imapsrv` and `tests/smtpsrv`. Mail is
-   the first network that takes `new`. Next: the compose
-   window in the reader, then `libpgp` and the seal.
+   the first network that takes `new`.
+
+   The compose window is in, the reader's form on a network's `new`,
+   typed into on the boot line. Step 2 is complete. Next: `libpgp`
+   and the seal.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
