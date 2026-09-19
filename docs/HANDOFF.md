@@ -564,7 +564,10 @@ the documents it points at.
    typed into on the boot line. Step 2 is complete. `sys/libpgp`
    reads and writes RFC 9580's keys, signatures and version 2 sealed
    data, its own vectors made again octet for octet on the boot line.
-   Next: `factotum`'s `openpgp` protocol, then Autocrypt.
+   `factotum`'s `openpgp` protocol holds the identity, derived from the
+   passphrase so it lives nowhere, and seals and signs for a program
+   over rpc. Next: Autocrypt, the key in the headers, and the seal in
+   `mailfs`.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a

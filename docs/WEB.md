@@ -887,8 +887,21 @@ So the boot line makes the RFC's sample message again from the RFC's
 own ephemeral secret, session key, salt and padding, octet for octet.
 It makes the sample signed message the same way from its salt and time.
 A message sealed on random parameters opens again, and
-not with its final tag bent. Not yet: RSA and ECDSA keys, the locked
-secret key, and `factotum`'s `openpgp` protocol.
+not with its final tag bent. Not yet: RSA and ECDSA keys and the locked
+secret key.
+
+`factotum` holds the key. `proto=openpgp` derives an identity from the
+passphrase and a label, the fleet's way with `openpgp.` before the
+domain. `libpgp` derives the seeds, the creation time and the signature
+salts from it. So the certificate is the same octets on any machine. The rpc verbs are `cert`, `decrypt` of a session key packet to
+the session key, and `sign` of a digest. `libpgp` signs in two halves
+for it: `sign_begin` hashes and lays the packet out, and `sign_finish`
+takes the sixty-four octets from whoever holds the secret.
+
+The boot line proves the identity lives nowhere: the same passphrase
+derived in a program gives factotum's fingerprint and certificate. A
+message sealed to it opens with the session key factotum hands back,
+and a signature factotum makes verifies against the certificate.
 
 ### Step 4: the two networks
 
