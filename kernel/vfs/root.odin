@@ -84,8 +84,10 @@ ROOT_NODES := [?]Static_Node {
 	// section 4.
 	{name = "feed", parent = 6, dir = true},
 	{name = "all", parent = 6, dir = true},
-	// Where mail is mounted, `docs/WEB.md` section 6.
+	// Where mail is mounted, `docs/WEB.md` section 6, and a second mail
+	// server the self-test runs as the other side of a handshake.
 	{name = "mail", parent = 6, dir = true},
+	{name = "mail2", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

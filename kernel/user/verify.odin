@@ -10879,6 +10879,87 @@ verify_feedfs :: proc(r: ^Result) {
 	reap_orphans()
 }
 
+/*
+verify_securejoin runs Delta Chat's verification handshake between the
+mailfs at /mnt/mail, Glenda, and a second at /mnt/mail2, Bob, both with
+their identities in factotum, over a spool of files under /usr/glenda.
+The control comes first: an invite with a fingerprint that is not
+Glenda's stops Bob at the second step, and verified stays no on both
+sides. Then the invite as made: four fetches later, verified reads yes on
+both. That is docs/WEB.md section 6's "a SecureJoin between two mailfs on
+a pipe ends with verified on both sides, and one control ends with no".
+*/
+@(private = "file")
+verify_securejoin :: proc(r: ^Result, host: string) {
+	bargs := [?]string{"mailfs", "-s", "mail2"}
+	bargv := new(Argv)
+	_ = argv_from(bargv, bargs[:])
+	pb := start_path(r, "/bin/mailfs", "a second mailfs starts, Bob's, posting another name", bargv)
+	if pb == nil {
+		return
+	}
+	if !check(r, await_posted("mail2"), "which posts /srv/mail2") || !check(r, srv.mount(vfs.boot_namespace, "/srv/mail2", "/mnt/mail2") == vfs.OK, "and the kernel mounts it at /mnt/mail2") {
+		finish(r, pb, "and Bob's mailfs is taken down")
+		return
+	}
+	line_buf: [512]u8
+	check(r, net_file_write("/mnt/mail2/ctl", libodin_cat(line_buf[:], "account bob ", host, " 1143 plain")), "Bob's account")
+	check(r, net_file_write("/mnt/mail2/ctl", "identity home"), "and his identity, factotum's second key")
+	check(r, net_file_write("/mnt/mail2/ctl", "spool /usr/glenda/spool"), "and both sides on one spool of files")
+	check(r, net_file_write("/mnt/mail/ctl", "spool /usr/glenda/spool"), "instead of the servers")
+	text: [4096]u8
+
+	// The control: the invite with a fingerprint that is not Glenda's.
+	check(r, net_file_write("/mnt/mail/ctl", "invite"), "Glenda makes an invite")
+	n := web_read_file("/mnt/mail/ctl", text[:])
+	invite := invite_line(string(text[:max(n, 0)]))
+	check(r, len(invite) > 100 && libodin.has_prefix(invite, "OPENPGP4FPR:"), "which ctl shows: her fingerprint, address and the two secrets")
+	bent: [512]u8
+	bn := copy(bent[:], invite)
+	bent[12] = bent[12] == '0' ? '1' : '0'
+	check(r, net_file_write("/mnt/mail2/ctl", libodin_cat(line_buf[:], "join ", string(bent[:bn]))), "Bob joins an invite whose fingerprint is bent, and his request goes out plain with his key")
+	check(r, net_file_write("/mnt/mail/ctl", "fetch") && net_file_write("/mnt/mail2/ctl", "fetch") && net_file_write("/mnt/mail/ctl", "fetch") && net_file_write("/mnt/mail2/ctl", "fetch"), "the sides fetch in turn")
+	n = web_read_file(libodin_cat(line_buf[:], "/mnt/mail2/contacts/glenda@", host, "/verified"), text[:])
+	check(r, string(text[:max(n, 0)]) == "no", "and Bob stopped at the key that was not the invite's: Glenda stays unverified with him")
+	n = web_read_file(libodin_cat(line_buf[:], "/mnt/mail/contacts/bob@", host, "/verified"), text[:])
+	check(r, string(text[:max(n, 0)]) == "no", "and Bob stays unverified with her, no auth having come")
+
+	// The invite as made.
+	check(r, net_file_write("/mnt/mail/ctl", "invite"), "Glenda makes a fresh invite")
+	n = web_read_file("/mnt/mail/ctl", text[:])
+	invite = invite_line(string(text[:max(n, 0)]))
+	check(r, net_file_write("/mnt/mail2/ctl", libodin_cat(line_buf[:], "join ", invite)), "and Bob joins it")
+	check(r, net_file_write("/mnt/mail/ctl", "fetch") && net_file_write("/mnt/mail2/ctl", "fetch") && net_file_write("/mnt/mail/ctl", "fetch") && net_file_write("/mnt/mail2/ctl", "fetch"), "the sides fetch in turn: request, auth-required, request-with-auth, confirm")
+	n = web_read_file(libodin_cat(line_buf[:], "/mnt/mail/contacts/bob@", host, "/verified"), text[:])
+	check(r, string(text[:max(n, 0)]) == "yes", "and Bob is verified with Glenda: his auth and fingerprint held")
+	n = web_read_file(libodin_cat(line_buf[:], "/mnt/mail2/contacts/glenda@", host, "/verified"), text[:])
+	check(r, string(text[:max(n, 0)]) == "yes", "and Glenda with Bob: her key was the invite's, and her confirm came sealed")
+
+	check(r, net_file_write("/mnt/mail/ctl", "spool off"), "Glenda goes back to her servers")
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/mail2") == vfs.OK, "the mount of Bob's mailfs comes down")
+	check(r, srv.remove("mail2") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(pb, PATIENCE * 5), "and it exits")
+	finish(r, pb, "and is taken down")
+}
+
+// invite_line answers the invite a mail server's ctl shows, or empty.
+@(private = "file")
+invite_line :: proc(status: string) -> string {
+	at := 0
+	for at < len(status) {
+		e := at
+		for e < len(status) && status[e] != '\n' {
+			e += 1
+		}
+		line := status[at:e]
+		if libodin.has_prefix(line, "invite ") {
+			return line[len("invite "):]
+		}
+		at = e + 1
+	}
+	return ""
+}
+
 // dir_names lists a directory's entries in the order it answers them, one
 // space between names, into `into`.
 @(private = "file")
@@ -11013,6 +11094,7 @@ verify_mailfs :: proc(r: ^Result) {
 	check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=glenda server=", host, " !password=hunter2")), "a pass key is written to factotum: a user, a server and the password")
 	check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=nobody server=", host, " !password=wrong")), "and a second, with a password the server will refuse")
 	check(r, net_file_write("/mnt/factotum/ctl", "key proto=openpgp user=glenda dom=home !passphrase=correct-horse"), "and the openpgp identity, from the same passphrase as before, so it is the same key")
+	check(r, net_file_write("/mnt/factotum/ctl", "key proto=openpgp user=bob dom=home !passphrase=bobs-secret"), "and one for Bob, the other side of a handshake")
 	listing: [1024]u8
 	n := web_read_file("/mnt/factotum/ctl", listing[:])
 	got := string(listing[:max(n, 0)])
@@ -11155,6 +11237,11 @@ verify_mailfs :: proc(r: ^Result) {
 					check(r, string(sm.exit.text[:sm.exit.text_len]) == "ok", "with ok: two messages taken and one refused")
 					finish(r, sm, "and is taken down")
 				}
+
+				// SecureJoin, between this mailfs and a second, over a spool of
+				// files: a bent fingerprint first, which must end in no, then
+				// the invite as made, which ends in yes on both sides.
+				verify_securejoin(r, host)
 
 				// The wrong password: the server refuses the login, and the fetch says so.
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")

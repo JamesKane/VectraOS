@@ -11,7 +11,8 @@ with the type it declares, and `raw` is the RFC 5322 bytes. A message's
 `In-Reply-To` that names another message here becomes `replyto`.
 
     /mnt/mail/ctl        account USER SERVER [PORT] [plain]; fetch;
-                         smtp SERVER [PORT] [plain]; identity DOM
+                         smtp SERVER [PORT] [plain]; identity DOM;
+                         seal on|off; spool DIR|off; invite; join LINE
     /mnt/mail/me         the address, and the key's fingerprint
     /mnt/mail/new        a message out: to, subject, replyto, attach, body
     /mnt/mail/inbox/     the mailbox, every message a directory
@@ -63,7 +64,7 @@ NAME_MAX :: 64
 MAX_MESSAGE :: 4 * 1024 * 1024
 LINE_MAX :: 8192
 
-DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nidentity dom         the openpgp key factotum holds for the user in dom, for the seal\nseal on|off          whether a message to a contact without a key is refused\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nspool dir            mail as files under dir instead of servers, off to stop\ninvite               make an invite for a contact to join verified, shown on ctl\njoin line            join a contact's invite, which runs the handshake over the next fetches\nidentity dom         the openpgp key factotum holds for the user in dom, for the seal\nseal on|off          whether a message to a contact without a key is refused\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Account :: struct {
 	set:    bool,
@@ -100,11 +101,21 @@ status: [dynamic]u8
 me_text: [NAME_MAX * 3 + 80]u8
 roots: []^x509.Certificate
 
+srv_name: [64]u8
+srv_len: int
+
+// `mailfs [-s name]` posts `/srv/name`, `mail` unless said, so two can run.
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
-	_ = libuser.args(block)
+	args := libuser.args(block)
+	srv_len = copy(srv_name[:], "/srv/mail")
+	for i := 1; i + 1 < len(args); i += 1 {
+		if args[i] == "-s" {
+			srv_len = len(libuser.cat_into(srv_name[:], "/srv/", args[i + 1]))
+		}
+	}
 	libthread.main(threadmain, nil)
 }
 
@@ -120,7 +131,7 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	net.on_new = on_new
 	status = make([dynamic]u8, 0, 256)
 	roots = load_roots("/lib/tls/roots")
-	why := libmsg.serve(&net, "/srv/mail")
+	why := libmsg.serve(&net, string(srv_name[:srv_len]))
 	libthread.threadexitsall(why == .Removed ? "" : "hangup")
 }
 
@@ -170,6 +181,31 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		smtp = Account{set = true, plain = plain == "plain"}
 		smtp.slen = copy(smtp.server[:], server)
 		smtp.plen = copy(smtp.port[:], port)
+		rebuild_status()
+		return 0
+	case "spool":
+		dir, _ := word(rest)
+		if dir == "off" {
+			spool.set = false
+		} else {
+			if dir == "" || len(dir) > 255 {
+				return vectra9.EINVAL
+			}
+			spool.set = true
+			spool.dlen = copy(spool.dir[:], dir)
+		}
+		rebuild_status()
+		return 0
+	case "invite":
+		if !make_invite() {
+			return vectra9.EINVAL
+		}
+		rebuild_status()
+		return 0
+	case "join":
+		if !start_join(rest) {
+			return vectra9.EINVAL
+		}
 		rebuild_status()
 		return 0
 	case "seal":
@@ -227,7 +263,7 @@ set_me :: proc() {
 // on_new takes a message out: the block is read, a message is built of it,
 // and a thread submits it while the write waits.
 on_new :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errno {
-	if !account.set || !smtp.set {
+	if !account.set || !(smtp.set || spool.set) {
 		return vectra9.EINVAL
 	}
 	n := libmsg.parse_new(text)
@@ -301,6 +337,7 @@ Send :: struct {
 	rcpts:   [MAX_RCPT][NAME_MAX * 2]u8,
 	rlen:    [MAX_RCPT]int,
 	nrcpt:   int,
+	extra:   string, // Header lines the handshake adds, CRLF ended
 }
 
 send_free :: proc(s: ^Send) {
@@ -397,6 +434,7 @@ build_message :: proc(s: ^Send, n: ^libmsg.New) -> bool {
 		// The person wants only sealed mail, and a recipient has no key.
 		return false
 	}
+	put(s, s.extra)
 	append(&s.text, ..content)
 	return true
 }
@@ -537,7 +575,7 @@ send_thread :: proc "contextless" (arg: rawptr) {
 	if s.io == nil {
 		err = vectra9.EIO
 	} else {
-		err = submit(s)
+		err = deliver(s)
 		if s.tls != nil {
 			free(s.tls)
 		}
@@ -569,6 +607,18 @@ send_thread :: proc "contextless" (arg: rawptr) {
 
 // submit runs one SMTP submission: the greeting, EHLO, AUTH PLAIN, the
 // envelope, DATA with the message dot-stuffed and dot-ended, QUIT.
+// deliver sends a built message: into the spool, or over SMTP.
+deliver :: proc(s: ^Send) -> vectra9.Errno {
+	if spool.set {
+		if !deliver_spool(s) {
+			s.why = "the spool would not take it"
+			return vectra9.EIO
+		}
+		return 0
+	}
+	return submit(s)
+}
+
 submit :: proc(s: ^Send) -> vectra9.Errno {
 	f := &s.f
 	user := string(account.user[:account.ulen])
@@ -682,6 +732,9 @@ connect :: proc(f: ^Fetch, server, port: string, plain: bool) -> bool {
 // -- The session --------------------------------------------------------------------
 
 fetch :: proc(f: ^Fetch) -> vectra9.Errno {
+	if spool.set {
+		return fetch_spool()
+	}
 	user := string(account.user[:account.ulen])
 	server := string(account.server[:account.slen])
 	pass: [256]u8
@@ -785,9 +838,16 @@ add_message :: proc(conv: ^libmsg.Conv, raw: string) {
 	note_autocrypt(&p)
 	group: [128]u8
 	glen := 0
-	if p.type == "multipart/encrypted" && !unseal(&p, &m, group[:], &glen) {
-		delete(m.body)
-		m.body = clone("(a sealed message this key does not open)")
+	jh: Join_Headers
+	take_join_headers(&p.headers, &jh)
+	sealed := p.type == "multipart/encrypted"
+	opened := false
+	if sealed {
+		opened = unseal(&p, &m, group[:], &glen, &jh)
+		if !opened {
+			delete(m.body)
+			m.body = clone("(a sealed message this key does not open)")
+		}
 	}
 	netid := ""
 	if mid, has := libmime.header(&p.headers, "message-id"); has {
@@ -817,6 +877,10 @@ add_message :: proc(conv: ^libmsg.Conv, raw: string) {
 		}
 	}
 	twin := msg_clone(&m)
+	handshake := jh.slen > 0 && conv.name == "inbox" && (!sealed || (opened && m.body != "(a sealed message whose signature did not verify)"))
+	if handshake {
+		join_handle(&m, &jh, sealed)
+	}
 	libmsg.add(&net, conv, m)
 	if len(chat_name) > 0 && chat_name != "inbox" && chat_name != "sent" && chat_name != "notify" {
 		libmsg.add(&net, libmsg.conv(&net, chat_name), twin)
@@ -1084,6 +1148,16 @@ rebuild_status :: proc() {
 		append(&status, ..identity.dom[:identity.dlen])
 		append(&status, ' ')
 		append(&status, ..identity.fpr[:])
+		append(&status, '\n')
+	}
+	if spool.set {
+		append(&status, ..transmute([]u8)string("spool "))
+		append(&status, ..spool.dir[:spool.dlen])
+		append(&status, '\n')
+	}
+	if join.ilen > 0 && join.stage == .Invited {
+		append(&status, ..transmute([]u8)string("invite "))
+		append(&status, ..join.invite[:join.ilen])
 		append(&status, '\n')
 	}
 	if smtp.set {

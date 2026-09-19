@@ -223,7 +223,7 @@ seal_content :: proc(s: ^Send, subject: string, content: []u8) -> bool {
 	append(&keys, libpgp.find_subkey(&parsed[s.nrcpt], libpgp.ALGO_X25519))
 
 	// The inner message: the subject and the content.
-	inner := make([]u8, len(content) + len(subject) + 64)
+	inner := make([]u8, len(content) + len(subject) + len(s.extra) + 64)
 	defer delete(inner)
 	n := 0
 	if len(subject) > 0 {
@@ -231,6 +231,7 @@ seal_content :: proc(s: ^Send, subject: string, content: []u8) -> bool {
 		n += copy(inner[n:], subject)
 		n += copy(inner[n:], "\r\n")
 	}
+	n += copy(inner[n:], s.extra)
 	n += copy(inner[n:], content)
 
 	rnd: [160]u8
@@ -307,7 +308,7 @@ key packets go to factotum until one opens, the data opens here with the
 session key, and the inner message's subject, body and type replace the
 outer's. False when it did not open, and the message says so as its body.
 */
-unseal :: proc(p: ^libmime.Part, m: ^libmsg.Msg, group: []u8, glen: ^int) -> bool {
+unseal :: proc(p: ^libmime.Part, m: ^libmsg.Msg, group: []u8, glen: ^int, jh: ^Join_Headers) -> bool {
 	armored := ""
 	for &sub in p.parts {
 		if sub.type == "application/octet-stream" {
@@ -403,6 +404,7 @@ unseal :: proc(p: ^libmime.Part, m: ^libmsg.Msg, group: []u8, glen: ^int) -> boo
 		if gid, has := libmime.header(&inner.headers, "chat-group-id"); has {
 			glen^ = copy(group, libmime.trim(gid))
 		}
+		take_join_headers(&inner.headers, jh)
 		body, btype := libmime.text_body(&inner)
 		delete(m.body)
 		delete(m.type)
