@@ -275,3 +275,44 @@ trim_space :: proc "contextless" (s: string) -> string #no_bounds_check {
 	}
 	return s[a:b]
 }
+
+// format_822 writes `secs` as mail writes a date, `Sat, 19 Sep 2026
+// 07:00:00 +0000`, into `into`, thirty-one bytes.
+format_822 :: proc "contextless" (secs: i64, into: []u8) -> string #no_bounds_check {
+	if len(into) < 31 {
+		return ""
+	}
+	days_text := "SunMonTueWedThuFriSat"
+	months_text := "JanFebMarAprMayJunJulAugSepOctNovDec"
+	y, mo, d, h, mi, s := calendar(secs)
+	days := secs / 86400
+	if secs < 0 && secs % 86400 != 0 {
+		days -= 1
+	}
+	wd := int((days + 4) % 7)
+	if wd < 0 {
+		wd += 7
+	}
+	copy(into[0:3], days_text[wd * 3:wd * 3 + 3])
+	into[3], into[4] = ',', ' '
+	pad2(into[5:7], d)
+	into[7] = ' '
+	copy(into[8:11], months_text[(mo - 1) * 3:(mo - 1) * 3 + 3])
+	into[11] = ' '
+	pad2(into[12:14], y / 100)
+	pad2(into[14:16], y % 100)
+	into[16] = ' '
+	pad2(into[17:19], h)
+	into[19] = ':'
+	pad2(into[20:22], mi)
+	into[22] = ':'
+	pad2(into[23:25], s)
+	copy(into[25:31], " +0000")
+	return string(into[:31])
+}
+
+@(private = "file")
+pad2 :: proc "contextless" (into: []u8, v: int) #no_bounds_check {
+	into[0] = u8('0' + v / 10 % 10)
+	into[1] = u8('0' + v % 10)
+}

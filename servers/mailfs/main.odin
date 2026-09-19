@@ -10,15 +10,25 @@ and subject come off its headers, its body is the part a reader shows
 with the type it declares, and `raw` is the RFC 5322 bytes. A message's
 `In-Reply-To` that names another message here becomes `replyto`.
 
-    /mnt/mail/ctl        account USER SERVER [PORT] [plain]; fetch
+    /mnt/mail/ctl        account USER SERVER [PORT] [plain]; fetch;
+                         smtp SERVER [PORT] [plain]
     /mnt/mail/me         the address
-    /mnt/mail/new        refused, until SMTP submission is in
+    /mnt/mail/new        a message out: to, subject, replyto, attach, body
     /mnt/mail/inbox/     the mailbox, every message a directory
+    /mnt/mail/sent/      what went out, the same shape
+
+A write to `new` is section 4's block. `to` is one address or several
+with commas, `replyto` an id in the inbox, whose message id goes in
+`In-Reply-To`, and `attach` a path, sent as a base64 part. The message
+is submitted over SMTP with `AUTH PLAIN`, the same password from
+factotum for the SMTP server's name, and the write returns when the
+server has taken it, or says why not. What went out is a message of
+`sent/`.
 
 The wire is TLS unless `plain` is said, over the trust roots in
-`/lib/tls/roots`, and the boot line runs it plain against a scripted
-server on this machine's own stack. Not yet: IDLE as the read that
-parks, `new` over SMTP, the seal, contacts and chats.
+`/lib/tls/roots`, and the boot line runs it plain against scripted
+servers on this machine's own stack. Not yet: IDLE as the read that
+parks, STARTTLS on 587, the seal, contacts and chats.
 */
 package mailfs
 
@@ -40,7 +50,7 @@ NAME_MAX :: 64
 MAX_MESSAGE :: 4 * 1024 * 1024
 LINE_MAX :: 8192
 
-DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\nfetch                take every message of the inbox\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Account :: struct {
 	set:    bool,
@@ -72,6 +82,7 @@ Fetch :: struct {
 
 net: libmsg.Net
 account: Account
+smtp: Account // Its user is the account's
 status: [dynamic]u8
 me_text: [NAME_MAX * 3]u8
 roots: []^x509.Certificate
@@ -89,6 +100,7 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	context = libuser.heap_context()
 	libmsg.init(&net)
 	_ = libmsg.conv(&net, "inbox")
+	_ = libmsg.conv(&net, "sent")
 	net.dict = DICT
 	net.on_ctl = on_ctl
 	net.on_new = on_new
@@ -127,6 +139,25 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		net.me = libuser.cat_into(me_text[:], user, "@", server, "\n")
 		rebuild_status()
 		return 0
+	case "smtp":
+		server, r2 := word(rest)
+		port, r3 := word(r2)
+		plain, _ := word(r3)
+		if port == "plain" {
+			plain = port
+			port = ""
+		}
+		if server == "" || len(server) > NAME_MAX * 2 || len(port) > 7 {
+			return vectra9.EINVAL
+		}
+		if port == "" {
+			port = "465"
+		}
+		smtp = Account{set = true, plain = plain == "plain"}
+		smtp.slen = copy(smtp.server[:], server)
+		smtp.plen = copy(smtp.port[:], port)
+		rebuild_status()
+		return 0
 	case "fetch":
 		if !account.set {
 			return vectra9.EINVAL
@@ -145,10 +176,36 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	return vectra9.EINVAL
 }
 
-// on_new refuses, until submission over SMTP is in.
+// on_new takes a message out: the block is read, a message is built of it,
+// and a thread submits it while the write waits.
 on_new :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errno {
-	_, _, _ = net, tag, text
-	return vectra9.EPERM
+	if !account.set || !smtp.set {
+		return vectra9.EINVAL
+	}
+	n := libmsg.parse_new(text)
+	defer libmsg.new_free(&n)
+	if bad, has_bad := libmsg.new_unknown(&n); has_bad {
+		libuser.eprint("mailfs: new: no such header here: ", bad, "\n")
+		return vectra9.EINVAL
+	}
+	to, has_to := libmsg.new_header(&n, "to")
+	if !has_to || len(to) == 0 {
+		return vectra9.EINVAL
+	}
+	s := new(Send)
+	s.tag = tag
+	s.count = len(text)
+	s.fd = -1
+	if !build_message(s, &n) {
+		send_free(s)
+		return vectra9.EINVAL
+	}
+	if libthread.threadcreate(send_thread, s, 256 * 1024) < 0 {
+		send_free(s)
+		return vectra9.ENOSPC
+	}
+	lib9p.hold(&net.srv)
+	return 0
 }
 
 fetch_thread :: proc "contextless" (arg: rawptr) {
@@ -183,6 +240,329 @@ fetch_thread :: proc "contextless" (arg: rawptr) {
 	libthread.threadexits("")
 }
 
+// -- Sending ------------------------------------------------------------------------
+
+MAX_RCPT :: 16
+ATTACH_MAX :: 1024 * 1024
+
+// One message on its way out: the held write, the message built, and its
+// recipients.
+Send :: struct {
+	using f: Fetch,
+	text:    [dynamic]u8, // The RFC 5322 message, CRLF lines
+	rcpts:   [MAX_RCPT][NAME_MAX * 2]u8,
+	rlen:    [MAX_RCPT]int,
+	nrcpt:   int,
+}
+
+send_free :: proc(s: ^Send) {
+	delete(s.text)
+	free(s)
+}
+
+/*
+build_message writes the block as a message: From is the account's
+address, To the block's, Date now, a Message-ID of random hex at the
+server, In-Reply-To the inbox message `replyto` names, and the body as
+UTF-8 text, or a multipart with a base64 part per `attach`. False for a
+recipient that is no address, or an attachment that cannot be read.
+*/
+build_message :: proc(s: ^Send, n: ^libmsg.New) -> bool {
+	s.text = make([dynamic]u8, 0, 4096)
+	to, _ := libmsg.new_header(n, "to")
+	// The recipients, for RCPT TO, each a box.
+	at := 0
+	for at < len(to) {
+		e := at
+		for e < len(to) && to[e] != ',' {
+			e += 1
+		}
+		box := libmime.trim(to[at:e])
+		at = e + 1
+		if len(box) == 0 {
+			continue
+		}
+		if !libodin.contains(box, "@") || s.nrcpt >= MAX_RCPT {
+			return false
+		}
+		s.rlen[s.nrcpt] = copy(s.rcpts[s.nrcpt][:], box)
+		s.nrcpt += 1
+	}
+	if s.nrcpt == 0 {
+		return false
+	}
+	user := string(account.user[:account.ulen])
+	server := string(account.server[:account.slen])
+	put(s, "From: ")
+	put(s, user)
+	put(s, "@")
+	put(s, server)
+	put(s, "\r\nTo: ")
+	put(s, libmime.trim(to))
+	put(s, "\r\n")
+	if subject, has := libmsg.new_header(n, "subject"); has {
+		put(s, "Subject: ")
+		put(s, subject)
+		put(s, "\r\n")
+	}
+	when_: [40]u8
+	put(s, "Date: ")
+	put(s, libmsg.format_822(now_seconds(), when_[:]))
+	put(s, "\r\nMessage-ID: <")
+	rnd: [16]u8
+	hex: [32]u8
+	_ = fill_random(rnd[:])
+	libmsg.hex_of(rnd[:], hex[:])
+	put(s, string(hex[:]))
+	put(s, "@")
+	put(s, server)
+	put(s, ">\r\n")
+	if replyto, has := libmsg.new_header(n, "replyto"); has && len(replyto) > 0 {
+		inbox := libmsg.conv(&net, "inbox")
+		if i := libmsg.find(inbox, replyto); i >= 0 {
+			if mid, found := message_id_of(inbox.msgs[i].raw); found {
+				put(s, "In-Reply-To: <")
+				put(s, mid)
+				put(s, ">\r\n")
+			}
+		}
+	}
+	put(s, "MIME-Version: 1.0\r\n")
+	_, has_attach := libmsg.new_attach(n, 0)
+	if !has_attach {
+		put(s, "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+		put_body(s, n.body)
+		return true
+	}
+	// A multipart: the text, then a base64 part an attachment.
+	boundary := "=_vectra_part_"
+	put(s, "Content-Type: multipart/mixed; boundary=\"")
+	put(s, boundary)
+	put(s, "\"\r\n\r\n--")
+	put(s, boundary)
+	put(s, "\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+	put_body(s, n.body)
+	for k := 0; ; k += 1 {
+		path, has := libmsg.new_attach(n, k)
+		if !has {
+			break
+		}
+		data, ok := libuser.read_file(path, context.allocator)
+		if !ok || len(data) > ATTACH_MAX {
+			return false
+		}
+		defer delete(data)
+		put(s, "\r\n--")
+		put(s, boundary)
+		put(s, "\r\nContent-Type: application/octet-stream; name=\"")
+		put(s, libuser.basename(path))
+		put(s, "\"\r\nContent-Disposition: attachment; filename=\"")
+		put(s, libuser.basename(path))
+		put(s, "\"\r\nContent-Transfer-Encoding: base64\r\n\r\n")
+		enc := make([]u8, len(data) * 4 / 3 + len(data) / 57 * 2 + 8)
+		m := libmime.encode_base64(data, enc)
+		append(&s.text, ..enc[:m])
+		delete(enc)
+		put(s, "\r\n")
+	}
+	put(s, "--")
+	put(s, boundary)
+	put(s, "--\r\n")
+	return true
+}
+
+// put_body writes the body with CRLF lines, and a line that begins with a
+// dot doubled, which is what the wire wants.
+put_body :: proc(s: ^Send, body: string) {
+	at := 0
+	for at < len(body) {
+		e := at
+		for e < len(body) && body[e] != '\n' {
+			e += 1
+		}
+		line := body[at:e]
+		if len(line) > 0 && line[len(line) - 1] == '\r' {
+			line = line[:len(line) - 1]
+		}
+		if len(line) > 0 && line[0] == '.' {
+			append(&s.text, '.')
+		}
+		put(s, line)
+		put(s, "\r\n")
+		at = e + 1
+	}
+}
+
+put :: proc(s: ^Send, text: string) {
+	append(&s.text, ..transmute([]u8)text)
+}
+
+// message_id_of answers a message's Message-ID, brackets off.
+message_id_of :: proc(raw: string) -> (string, bool) {
+	head, _ := libmime.split_head(raw)
+	h := libmime.parse_headers(head)
+	defer {
+		delete(h.text)
+		delete(h.list)
+	}
+	mid, has := libmime.header(&h, "message-id")
+	if !has {
+		return "", false
+	}
+	// A copy, since the headers go with this call.
+	@(static) keep: [256]u8
+	n := copy(keep[:], angle_off(mid))
+	return string(keep[:n]), true
+}
+
+send_thread :: proc "contextless" (arg: rawptr) {
+	context = libuser.heap_context()
+	s := (^Send)(arg)
+	err := vectra9.Errno(0)
+	s.io = libthread.ioproc()
+	if s.io == nil {
+		err = vectra9.EIO
+	} else {
+		err = submit(s)
+		if s.tls != nil {
+			free(s.tls)
+		}
+		if s.fd >= 0 {
+			libnet.hangup(string(s.dir[:s.dirlen]))
+			_ = libuser.close(s.fd)
+		}
+		libthread.ioclose(s.io)
+	}
+	if err != 0 && s.why != "" {
+		libuser.eprint("mailfs: ", s.why, "\n")
+	}
+	if err == 0 {
+		// What went out is a message of sent/, its own copy of the bytes.
+		sent := libmsg.conv(&net, "sent")
+		add_message(sent, clone(string(s.text[:])))
+		rebuild_status()
+	}
+	if req := lib9p.find_held_tag(&net.srv, s.tag); req != nil {
+		if err == 0 {
+			_ = lib9p.respond(req, vectra9.Rwrite{count = u32(s.count)})
+		} else {
+			_ = lib9p.respond(req, vectra9.error_reply(err))
+		}
+	}
+	send_free(s)
+	libthread.threadexits("")
+}
+
+// submit runs one SMTP submission: the greeting, EHLO, AUTH PLAIN, the
+// envelope, DATA with the message dot-stuffed and dot-ended, QUIT.
+submit :: proc(s: ^Send) -> vectra9.Errno {
+	f := &s.f
+	user := string(account.user[:account.ulen])
+	server := string(smtp.server[:smtp.slen])
+	pass: [256]u8
+	password, has := ask_password(user, server, pass[:])
+	if !has {
+		f.why = "factotum holds no password for the submission server"
+		return vectra9.EPERM
+	}
+	if !connect(f, server, string(smtp.port[:smtp.plen]), smtp.plain) {
+		return vectra9.EIO
+	}
+	if !expect(f, "220") {
+		f.why = "no greeting from the submission server"
+		return vectra9.EIO
+	}
+	cmd: [1024]u8
+	if !say(f, libuser.cat_into(cmd[:], "EHLO ", string(account.server[:account.slen]), "\r\n")) || !expect(f, "250") {
+		f.why = "EHLO was refused"
+		return vectra9.EIO
+	}
+	// AUTH PLAIN: a NUL, the user, a NUL, the password, in base64.
+	plain: [512]u8
+	pn := 0
+	plain[pn] = 0
+	pn += 1
+	pn += copy(plain[pn:], user)
+	plain[pn] = 0
+	pn += 1
+	pn += copy(plain[pn:], password)
+	b64: [768]u8
+	bn := libmime.encode_base64(plain[:pn], b64[:])
+	if !say(f, libuser.cat_into(cmd[:], "AUTH PLAIN ", string(b64[:bn]), "\r\n")) || !expect(f, "235") {
+		f.why = "the submission server refused the password"
+		return vectra9.EPERM
+	}
+	if !say(f, libuser.cat_into(cmd[:], "MAIL FROM:<", user, "@", string(account.server[:account.slen]), ">\r\n")) || !expect(f, "250") {
+		f.why = "MAIL FROM was refused"
+		return vectra9.EIO
+	}
+	for i in 0 ..< s.nrcpt {
+		if !say(f, libuser.cat_into(cmd[:], "RCPT TO:<", string(s.rcpts[i][:s.rlen[i]]), ">\r\n")) || !expect(f, "250") {
+			f.why = "a recipient was refused"
+			return vectra9.EINVAL
+		}
+	}
+	if !say(f, "DATA\r\n") || !expect(f, "354") {
+		f.why = "DATA was refused"
+		return vectra9.EIO
+	}
+	if !say(f, string(s.text[:])) || !say(f, ".\r\n") || !expect(f, "250") {
+		f.why = "the message was not taken"
+		return vectra9.EIO
+	}
+	_ = say(f, "QUIT\r\n")
+	_ = expect(f, "221")
+	return 0
+}
+
+// expect reads a reply, its continuation lines too, and says whether its
+// code is `code`.
+expect :: proc(f: ^Fetch, code: string) -> bool {
+	for {
+		line, ok := read_line(f)
+		if !ok || len(line) < 3 {
+			return false
+		}
+		if len(line) > 3 && line[3] == '-' {
+			continue
+		}
+		return line[:3] == code
+	}
+}
+
+// connect dials and, unless plain, runs the TLS handshake.
+connect :: proc(f: ^Fetch, server, port: string, plain: bool) -> bool {
+	spec_buf: [256]u8
+	spec := libuser.cat_into(spec_buf[:], "tcp!", server, "!", port)
+	fd, dirlen, dok := libnet.dial_dir_via(spec, f.dir[:], libnet.Dial_IO{ctx = f, read = dial_read, write = dial_write})
+	if !dok {
+		f.why = "cannot dial the server"
+		return false
+	}
+	f.fd = fd
+	f.dirlen = dirlen
+	if plain {
+		return true
+	}
+	if len(roots) == 0 {
+		f.why = "no trust roots, so no TLS"
+		return false
+	}
+	f.tls = new(libtls.Client)
+	libtls.client_init(f.tls, libtls.IO{ctx = f, read = tls_read, write = tls_write}, roots, time.unix(now_seconds(), 0), server)
+	priv: [32]u8
+	random: [32]u8
+	if !fill_random(priv[:]) || !fill_random(random[:]) {
+		f.why = "no entropy from /dev/random"
+		return false
+	}
+	if !libtls.client_handshake(f.tls, priv, random) {
+		f.why = "the TLS handshake failed"
+		return false
+	}
+	return true
+}
+
 // -- The session --------------------------------------------------------------------
 
 fetch :: proc(f: ^Fetch) -> vectra9.Errno {
@@ -195,32 +575,8 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 		return vectra9.EPERM
 	}
 
-	spec_buf: [256]u8
-	spec := libuser.cat_into(spec_buf[:], "tcp!", server, "!", string(account.port[:account.plen]))
-	fd, dirlen, dok := libnet.dial_dir_via(spec, f.dir[:], libnet.Dial_IO{ctx = f, read = dial_read, write = dial_write})
-	if !dok {
-		f.why = "cannot dial the server"
+	if !connect(f, server, string(account.port[:account.plen]), account.plain) {
 		return vectra9.EIO
-	}
-	f.fd = fd
-	f.dirlen = dirlen
-	if !account.plain {
-		if len(roots) == 0 {
-			f.why = "no trust roots, so no TLS"
-			return vectra9.EIO
-		}
-		f.tls = new(libtls.Client)
-		libtls.client_init(f.tls, libtls.IO{ctx = f, read = tls_read, write = tls_write}, roots, time.unix(now_seconds(), 0), server)
-		priv: [32]u8
-		random: [32]u8
-		if !fill_random(priv[:]) || !fill_random(random[:]) {
-			f.why = "no entropy from /dev/random"
-			return vectra9.EIO
-		}
-		if !libtls.client_handshake(f.tls, priv, random) {
-			f.why = "the TLS handshake failed"
-			return vectra9.EIO
-		}
 	}
 
 	// The greeting, then a login.
@@ -545,10 +901,20 @@ rebuild_status :: proc() {
 		append(&status, ..account.port[:account.plen])
 		append(&status, ..transmute([]u8)string(account.plain ? " plain\n" : " tls\n"))
 	}
+	if smtp.set {
+		append(&status, ..transmute([]u8)string("smtp "))
+		append(&status, ..smtp.server[:smtp.slen])
+		append(&status, ' ')
+		append(&status, ..smtp.port[:smtp.plen])
+		append(&status, ..transmute([]u8)string(smtp.plain ? " plain\n" : " tls\n"))
+	}
 	inbox := libmsg.conv(&net, "inbox")
+	sent := libmsg.conv(&net, "sent")
 	num: [24]u8
 	append(&status, ..transmute([]u8)string("inbox "))
 	append(&status, ..transmute([]u8)libuser.itoa(num[:], i64(len(inbox.msgs))))
+	append(&status, ..transmute([]u8)string("\nsent "))
+	append(&status, ..transmute([]u8)libuser.itoa(num[:], i64(len(sent.msgs))))
 	append(&status, '\n')
 	net.status = string(status[:])
 }

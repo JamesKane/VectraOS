@@ -10954,6 +10954,13 @@ the reply's `replyto` the first message's id. A second account with a
 wrong password is refused by the server, and the fetch says so. That is
 `docs/WEB.md` section 6's "a saved IMAP session through a pipe becomes an
 inbox of the right shape".
+
+Then the other direction: `tests/smtpsrv` takes a submission. A message
+written to `new` as section 4's block, a reply to the first message with
+a line that begins with a dot, comes out of the scripted server as a
+message with the headers built for it and the dot-stuffing undone, and
+lands in `sent/` in the shape. A recipient the server refuses fails the
+write, and a header no network knows fails it before any wire.
 */
 @(private = "file")
 verify_mailfs :: proc(r: ^Result) {
@@ -11023,7 +11030,29 @@ verify_mailfs :: proc(r: ^Result) {
 				n = web_read_file("/mnt/mail/inbox/" + ID2 + "/from", text[:])
 				check(r, string(text[:max(n, 0)]) == "Bob Jones <bob@example.net>", "and its sender reads")
 				check(r, dir_names("/mnt/mail/inbox/" + ID1 + "/replies", lbuf[:]) == ID2, "so replies under the first lists the reply")
-				check(r, !net_file_write("/mnt/mail/new", "to: bob@example.net\n\nhello"), "a write to new is refused, until submission is in")
+				// Out: a submission server, and a message written to new.
+				sargs := [?]string{"smtpsrv", "1587", "/usr/glenda/sent.eml"}
+				sargv := new(Argv)
+				_ = argv_from(sargv, sargs[:])
+				if sm := start_path(r, "/bin/smtpsrv", "a scripted SMTP submission server starts", sargv); sm != nil {
+					sync.delay(PATIENCE)
+					check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "smtp ", host, " 1587 plain")), "the submission server is named on ctl")
+					check(r, !net_file_write("/mnt/mail/new", "colour: blue\n\nx"), "a write to new with a header no network knows is refused before any wire")
+					check(r, net_file_write("/mnt/mail/new", "to: bob@example.net\nsubject: hello there\nreplyto: " + ID1 + "\n\nA line.\n.dot line\n"), "a message written to new as the block is submitted, and the write returns when it is taken")
+					sent := dir_names("/mnt/mail/sent", lbuf[:])
+					check(r, count_words(sent) == 1, "and what went out is a message of sent")
+					n = web_read_file(libodin_cat(line_buf[:], "/mnt/mail/sent/", sent, "/subject"), text[:])
+					check(r, string(text[:max(n, 0)]) == "hello there", "with its subject")
+					n = web_read_file("/usr/glenda/sent.eml", text[:], raw = true)
+					arrived := string(text[:max(n, 0)])
+					check(r, n > 0 && libodin.contains(arrived, libodin_cat(line_buf[:], "From: glenda@", host, "\r\n")) && libodin.contains(arrived, "To: bob@example.net\r\n") && libodin.contains(arrived, "Subject: hello there\r\n"), "the server got the message with its From, To and Subject built")
+					check(r, libodin.contains(arrived, "In-Reply-To: <one@example.org>\r\n"), "and In-Reply-To names the message the reply answers, by its message id")
+					check(r, libodin.contains(arrived, "\r\n\r\nA line.\r\n.dot line\r\n"), "and the body whole, its dot-stuffing undone by the server")
+					check(r, !net_file_write("/mnt/mail/new", "to: nobody@nowhere\n\nx"), "a recipient the server refuses fails the write")
+					check(r, wait(sm, PATIENCE * 5), "and the submission server, both sessions served, exits")
+					check(r, string(sm.exit.text[:sm.exit.text_len]) == "ok", "with ok: one message taken and one refused")
+					finish(r, sm, "and is taken down")
+				}
 
 				// The wrong password: the server refuses the login, and the fetch says so.
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")

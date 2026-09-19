@@ -767,3 +767,34 @@ trim :: proc "contextless" (s: string) -> string #no_bounds_check {
 	}
 	return s[a:b]
 }
+
+// encode_base64 writes `data` as base64 into `into`, seventy-six columns a
+// line with CRLF, the way a mail part is written. Answers the length.
+encode_base64 :: proc "contextless" (data: []u8, into: []u8) -> int #no_bounds_check {
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	n := 0
+	col := 0
+	i := 0
+	for i < len(data) {
+		if n + 6 > len(into) {
+			return n
+		}
+		b0 := u32(data[i])
+		b1 := i + 1 < len(data) ? u32(data[i + 1]) : 0
+		b2 := i + 2 < len(data) ? u32(data[i + 2]) : 0
+		v := b0 << 16 | b1 << 8 | b2
+		into[n] = alphabet[v >> 18 & 63]
+		into[n + 1] = alphabet[v >> 12 & 63]
+		into[n + 2] = i + 1 < len(data) ? alphabet[v >> 6 & 63] : '='
+		into[n + 3] = i + 2 < len(data) ? alphabet[v & 63] : '='
+		n += 4
+		col += 4
+		i += 3
+		if col >= 76 && i < len(data) {
+			into[n], into[n + 1] = '\r', '\n'
+			n += 2
+			col = 0
+		}
+	}
+	return n
+}
