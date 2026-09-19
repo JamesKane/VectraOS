@@ -14,6 +14,8 @@ the opening half.
 package pgptest
 
 import "vsys:abi"
+import "vsys:libauth"
+import "vsys:libcrypto"
 import "vsys:libpgp"
 import "vsys:libuser"
 
@@ -42,8 +44,14 @@ SUBKEY_FPR := [?]u8{0x12, 0xc8, 0x3f, 0x1e, 0x70, 0x6f, 0x63, 0x08, 0xfe, 0x15, 
 
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
-	_ = block
 	context = libuser.startup()
+	args := libuser.args(block)
+	// `pgptest factotum` drives the seal through factotum's openpgp
+	// protocol, once factotum holds a key.
+	if len(args) >= 2 && args[1] == "factotum" {
+		check_factotum()
+		libuser.exits("ok")
+	}
 
 	c, ok := libpgp.parse_cert(CERT[:])
 	want(ok && c.nsub == 1 && c.nsigs == 2 && c.primary.version == 6 && c.primary.algo == libpgp.ALGO_ED25519, "the sample certificate parses to a v6 Ed25519 primary, one subkey and two signatures")
@@ -118,6 +126,98 @@ start :: proc "c" (block: ^abi.Args) {
 	want(!ok4, "and not with its final tag bent")
 
 	libuser.exits("ok")
+}
+
+/*
+check_factotum is the seal through `factotum`: the certificate comes over
+rpc and verifies; the same passphrase derived here gives the same
+fingerprint, which is the identity living nowhere; a message sealed to
+the certificate opens with the session key factotum hands back, the
+private key never leaving it; and a signature factotum makes over a
+digest verifies against the certificate.
+*/
+check_factotum :: proc() {
+	rpc := libuser.open("/mnt/factotum/rpc", abi.O_RDWR)
+	if rpc < 0 {
+		_ = libuser.mount("/srv/factotum", "/mnt/factotum", 0)
+		rpc = libuser.open("/mnt/factotum/rpc", abi.O_RDWR)
+	}
+	want(rpc >= 0, "factotum: its rpc file opens")
+	reply: [4096]u8
+	want(ask(int(rpc), "start openpgp user=glenda dom=home", reply[:]) == "ok", "start openpgp finds the key the suite wrote")
+	line := ask(int(rpc), "cert", reply[:])
+	want(len(line) > 5 && line[:5] == "cert ", "cert answers the certificate in hex")
+	cert: [1024]u8
+	cn := libcrypto.hex_decode(cert[:], line[5:])
+	c, ok := libpgp.parse_cert(cert[:cn])
+	want(ok && c.nsub == 1 && libpgp.verify_cert(&c), "which parses and verifies: a primary, a subkey and two self-signatures")
+
+	// The identity lives nowhere: the passphrase gives the fingerprint here.
+	material: [32]u8
+	want(libauth.derive_static(material[:], "correct-horse", "glenda", "openpgp.home"), "the passphrase derives here too")
+	mine: libpgp.Identity
+	want(libpgp.derive_identity(&mine, material[:]), "into an identity")
+	want(string(mine.primary.fingerprint[:32]) == string(c.primary.fingerprint[:32]) && string(mine.cert[:mine.cert_len]) == string(cert[:cn]), "whose fingerprint and certificate are factotum's, octet for octet")
+
+	// Sealed to the certificate, opened with the session key factotum gives.
+	rnd: [96]u8
+	want(fill_random(rnd[:]), "the machine has entropy")
+	sp: libpgp.Seal_Params
+	copy(sp.ephemeral[:], rnd[:32])
+	sp.session = rnd[32:64]
+	copy(sp.salt[:], rnd[64:96])
+	sp.padding = rnd[:9]
+	sp.chunk = 6
+	sealed: [1024]u8
+	sn := libpgp.seal_message(&c.subkeys[0], transmute([]u8)string("sealed to the key factotum holds"), sp, sealed[:])
+	want(sn > 0, "a message seals to the certificate's subkey")
+	pk, after, pok := libpgp.next(sealed[:sn], 0)
+	want(pok && pk.tag == libpgp.PKESK, "its first packet is the session key packet")
+	hexbuf: [1024]u8
+	line = ask(int(rpc), libuser.cat_into(reply[:2048], "decrypt ", libcrypto.hex_encode(hexbuf[:], pk.body)), reply[2048:])
+	want(len(line) > 8 && line[:8] == "session ", "which factotum decrypts to the session key")
+	session: [32]u8
+	kn := libcrypto.hex_decode(session[:], line[8:])
+	want(kn == 32 && string(session[:32]) == string(rnd[32:64]), "the very session key that sealed it")
+	dp, _, dok := libpgp.next(sealed[:sn], after)
+	want(dok && dp.tag == libpgp.SEIPD, "the sealed data follows")
+	seipd, sok := libpgp.parse_seipd(dp)
+	out: [1024]u8
+	on := libpgp.open_seipd(&seipd, session[:kn], out[:])
+	l, lok := libpgp.first_literal(out[:max(on, 0)])
+	want(sok && on > 0 && lok && string(l.data) == "sealed to the key factotum holds", "and the data opens here with it, the private key never having left factotum")
+
+	// Signed by factotum over a digest made here, verified against the certificate.
+	job: libpgp.Sign_Job
+	doc := transmute([]u8)string("a line to sign")
+	want(libpgp.sign_begin(&job, &c.primary, libpgp.Sign_Input{type = 0, data = doc}, nil, libpgp.Sign_Params{created = 1789800000}), "a signature begins here, up to the digest")
+	line = ask(int(rpc), libuser.cat_into(reply[:2048], "sign ", libcrypto.hex_encode(hexbuf[:], job.digest[:job.dn])), reply[2048:])
+	want(len(line) > 4 && line[:4] == "sig ", "which factotum signs")
+	sig: [64]u8
+	want(libcrypto.hex_decode(sig[:], line[4:]) == 64, "with sixty-four octets")
+	pkt: [512]u8
+	pn := libpgp.sign_finish(&job, sig[:], pkt[:])
+	sp2, _, _ := libpgp.next(pkt[:max(pn, 0)], 0)
+	sg, gok := libpgp.parse_signature(sp2)
+	want(pn > 0 && gok && libpgp.verify_data(&c.primary, &sg, doc), "and the packet finished here verifies against the certificate")
+	want(!libpgp.verify_data(&c.primary, &sg, transmute([]u8)string("another line")), "and not over another line")
+	_ = libuser.close(int(rpc))
+}
+
+// ask writes a line to the rpc file and reads the answer on the same fid.
+ask :: proc(rpc: int, line: string, into: []u8) -> string {
+	if libuser.write(rpc, transmute([]u8)line) != i64(len(line)) {
+		return ""
+	}
+	n := libuser.read(rpc, into)
+	if n <= 0 {
+		return ""
+	}
+	s := string(into[:n])
+	for len(s) > 0 && s[len(s) - 1] == '\n' {
+		s = s[:len(s) - 1]
+	}
+	return s
 }
 
 fill_random :: proc(buf: []u8) -> bool {

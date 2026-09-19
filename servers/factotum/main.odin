@@ -24,9 +24,21 @@ The rpc conversation, hex for every byte string:
 
     start pass user=U server=S                      ->  password <text>
 
+    start openpgp user=U dom=D                      ->  ok
+    cert                                            ->  cert <hex>
+    decrypt <hex session key packet body>           ->  session <hex>
+    sign <hex digest>                               ->  sig <hex>
+
 `proto=pass` is a password for a server, what Plan 9's factotum held for
 `upas`: `mailfs` asks for it at login and never keeps it, `docs/WEB.md`
 section 6. The listing on `ctl` never shows it.
+
+`proto=openpgp` is `docs/WEB.md` section 6's seal: an OpenPGP identity
+derived from the passphrase and a label, so it lives nowhere and a second
+machine has the same. `cert` is its transferable public key. A decrypt
+hands back the session key a packet holds, a sign the signature over a
+digest, and the private key stays here. The listing shows the
+fingerprint.
 
 `done` names the far side by its static public key and hands over the two
 transport keys, the initiator's sending key first. Those go to `sys/libauth`,
@@ -46,6 +58,7 @@ import "vsys:lib9p"
 import "vsys:libauth"
 import "vsys:libcrypto"
 import "vsys:libodin"
+import "vsys:libpgp"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
@@ -56,6 +69,7 @@ NODE_RPC :: i32(2)
 FRAME :: 1200
 
 MAX_KEYS :: 8
+MAX_PGP :: 4
 NAME_MAX :: 32
 
 Key :: struct {
@@ -83,6 +97,18 @@ Pass :: struct {
 
 passes: [MAX_KEYS]Pass
 
+// An OpenPGP identity, derived, and the name it was derived for.
+Pgp :: struct {
+	used: bool,
+	user: [NAME_MAX]u8,
+	ulen: int,
+	dom:  [NAME_MAX]u8,
+	dlen: int,
+	id:   libpgp.Identity,
+}
+
+pgps: [MAX_PGP]Pgp
+
 // Why the last `key` line was refused, for the read that follows the write.
 key_why: string
 
@@ -96,7 +122,7 @@ Stage :: enum u8 {
 }
 
 MAX_CONVS :: 8
-REPLY_MAX :: 512
+REPLY_MAX :: 2560
 
 Conv :: struct {
 	used:      bool,
@@ -107,6 +133,7 @@ Conv :: struct {
 	recv:      libauth.Cipher,
 	reply:     [REPLY_MAX]u8,
 	reply_len: int,
+	pgp:       ^Pgp, // An openpgp conversation's identity
 }
 
 convs: [MAX_CONVS]Conv
@@ -173,6 +200,9 @@ key_add :: proc(line: string) -> bool #no_bounds_check {
 	if has_proto && proto == "pass" {
 		return pass_add(line)
 	}
+	if has_proto && proto == "openpgp" {
+		return pgp_add(line)
+	}
 	dom, has_dom := attr(line, "dom=")
 	if !has_user || !has_dom || !has_proto || proto != "noise" || len(user) > NAME_MAX || len(dom) > NAME_MAX {
 		key_why = "error a key wants proto=noise user= dom=, or proto=pass user= server=\n"
@@ -211,6 +241,60 @@ key_add :: proc(line: string) -> bool #no_bounds_check {
 	k.spriv = spriv
 	libauth.public_of(k.spub[:], k.spriv[:])
 	return true
+}
+
+/*
+pgp_add takes `proto=openpgp user= dom= !passphrase=`: the passphrase is
+taken to thirty-two octets the fleet's way, with `openpgp.` before the
+domain so the seal's key is not the handshake's, and `libpgp` derives the
+identity from them.
+*/
+pgp_add :: proc(line: string) -> bool #no_bounds_check {
+	user, has_user := attr(line, "user=")
+	dom, has_dom := attr(line, "dom=")
+	pass, has_pass := attr(line, "!passphrase=")
+	if !has_user || !has_dom || !has_pass || len(user) > NAME_MAX || len(dom) > NAME_MAX - 8 {
+		key_why = "error an openpgp key wants user= dom= !passphrase=\n"
+		return false
+	}
+	p := pgp_find(user, dom)
+	if p == nil {
+		for i in 0 ..< MAX_PGP {
+			if !pgps[i].used {
+				p = &pgps[i]
+				break
+			}
+		}
+	}
+	if p == nil {
+		key_why = "error no room for another identity\n"
+		return false
+	}
+	label: [NAME_MAX + 8]u8
+	material: [32]u8
+	if !libauth.derive_static(material[:], pass, user, libuser.cat_into(label[:], "openpgp.", dom)) {
+		key_why = "error the key would not derive: no memory for it\n"
+		return false
+	}
+	p^ = Pgp{used = true}
+	p.ulen = copy(p.user[:], user)
+	p.dlen = copy(p.dom[:], dom)
+	if !libpgp.derive_identity(&p.id, material[:]) {
+		p.used = false
+		key_why = "error the identity would not derive\n"
+		return false
+	}
+	return true
+}
+
+pgp_find :: proc "contextless" (user, dom: string) -> ^Pgp #no_bounds_check {
+	for i in 0 ..< MAX_PGP {
+		p := &pgps[i]
+		if p.used && string(p.user[:p.ulen]) == user && string(p.dom[:p.dlen]) == dom {
+			return p
+		}
+	}
+	return nil
 }
 
 // pass_add takes `proto=pass user= server= !password=`. One for the same
@@ -304,7 +388,68 @@ key_list :: proc "contextless" (into: []u8) -> string #no_bounds_check {
 		libodin.put_str(&sink, string(p.server[:p.slen]))
 		libodin.put_str(&sink, "\n")
 	}
+	for i in 0 ..< MAX_PGP {
+		p := &pgps[i]
+		if !p.used {
+			continue
+		}
+		libodin.put_str(&sink, "key proto=openpgp user=")
+		libodin.put_str(&sink, string(p.user[:p.ulen]))
+		libodin.put_str(&sink, " dom=")
+		libodin.put_str(&sink, string(p.dom[:p.dlen]))
+		libodin.put_str(&sink, " fpr=")
+		libodin.put_str(&sink, libcrypto.hex_encode(hex[:], p.id.primary.fingerprint[:32]))
+		libodin.put_str(&sink, "\n")
+	}
 	return libodin.str(&sink)
+}
+
+// -- The seal's verbs ---------------------------------------------------------------
+
+// rpc_decrypt takes a session key packet's body in hex, opens the session
+// key with the identity's X25519 secret, and answers it in hex.
+rpc_decrypt :: proc(c: ^Conv, hex: string) -> bool #no_bounds_check {
+	body: [512]u8
+	n := libcrypto.hex_decode(body[:], hex)
+	if n <= 0 {
+		set_reply(c, "error decrypt wants a packet body in hex")
+		return false
+	}
+	e, ok := libpgp.parse_pkesk(libpgp.Packet{tag = libpgp.PKESK, body = body[:n]})
+	if !ok {
+		set_reply(c, "error not a session key packet this reads")
+		return false
+	}
+	session: [libpgp.MAX_SESSION]u8
+	sn := libpgp.open_session(&e, &c.pgp.id.subkey, session[:])
+	if sn == 0 {
+		set_reply(c, "error the session key did not open with this key")
+		return false
+	}
+	out: [2 * libpgp.MAX_SESSION]u8
+	set_reply(c, libuser.cat_into(c.reply[:], "session ", libcrypto.hex_encode(out[:], session[:sn])))
+	return true
+}
+
+// rpc_sign takes a digest in hex and answers the Ed25519 signature over it.
+rpc_sign :: proc(c: ^Conv, hex: string) -> bool #no_bounds_check {
+	digest: [64]u8
+	n := libcrypto.hex_decode(digest[:], hex)
+	if n != 32 && n != 64 {
+		set_reply(c, "error sign wants a digest of 32 or 64 octets in hex")
+		return false
+	}
+	job: libpgp.Sign_Job
+	copy(job.digest[:], digest[:n])
+	job.dn = n
+	sig: [64]u8
+	if !libpgp.sign_digest(&job, &c.pgp.id.primary, sig[:]) {
+		set_reply(c, "error the signature would not make")
+		return false
+	}
+	out: [128]u8
+	set_reply(c, libuser.cat_into(c.reply[:], "sig ", libcrypto.hex_encode(out[:], sig[:])))
+	return true
 }
 
 // -- The handshake, a line at a time ------------------------------------------------
@@ -377,6 +522,15 @@ rpc_write :: proc(c: ^Conv, line: string) -> bool #no_bounds_check {
 		return rpc_start(c, l[6:])
 	case len(l) > 4 && l[:4] == "msg ":
 		return rpc_msg(c, l[4:])
+	case l == "cert" && c.pgp != nil:
+		hex := make([]u8, 2 * c.pgp.id.cert_len)
+		defer delete(hex)
+		set_reply(c, libuser.cat_into(c.reply[:], "cert ", libcrypto.hex_encode(hex, c.pgp.id.cert[:c.pgp.id.cert_len])))
+		return true
+	case len(l) > 8 && l[:8] == "decrypt " && c.pgp != nil:
+		return rpc_decrypt(c, l[8:])
+	case len(l) > 5 && l[:5] == "sign " && c.pgp != nil:
+		return rpc_sign(c, l[5:])
 	case l == "finish":
 		if c.stage != .Msg2_Sent {
 			set_reply(c, "error not there yet")
@@ -398,6 +552,20 @@ rpc_start :: proc(c: ^Conv, rest: string) -> bool #no_bounds_check {
 		}
 	}
 	user, has_user := attr(rest, "user=")
+	if role == "openpgp" {
+		dom, has_dom := attr(rest, "dom=")
+		if !has_user || !has_dom {
+			set_reply(c, "error user= and dom= wanted")
+			return false
+		}
+		c.pgp = pgp_find(user, dom)
+		if c.pgp == nil {
+			set_reply(c, "error no openpgp key for that user and domain")
+			return false
+		}
+		set_reply(c, "ok")
+		return true
+	}
 	if role == "pass" {
 		server, has_server := attr(rest, "server=")
 		if !has_user || !has_server {

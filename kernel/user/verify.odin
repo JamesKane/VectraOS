@@ -9646,6 +9646,17 @@ verify_factotum :: proc(r: ^Result) {
 	if check(r, srv.mount(vfs.boot_namespace, "/srv/factotum", "/mnt/factotum") == vfs.OK, "and the kernel mounts it at /mnt/factotum") {
 		names := [?]string{"authtest"}
 		script_says(r, "/bin/authtest", names[:], PATIENCE * 40, "a program drives its keys and a handshake", "ok", "and both ends of the handshake hold the same keys")
+
+		// The seal's identity: an openpgp key from a passphrase, its
+		// fingerprint in the listing, and a program that seals and signs
+		// through factotum without the private key.
+		check(r, net_file_write("/mnt/factotum/ctl", "key proto=openpgp user=glenda dom=home !passphrase=correct-horse"), "an openpgp key is derived from a passphrase and a label")
+		listing: [2048]u8
+		n := web_read_file("/mnt/factotum/ctl", listing[:])
+		got := string(listing[:max(n, 0)])
+		check(r, n > 0 && libodin.contains(got, "key proto=openpgp user=glenda dom=home fpr=") && !libodin.contains(got, "correct-horse"), "and the listing shows its fingerprint and keeps the passphrase")
+		pnames := [?]string{"pgptest", "factotum"}
+		script_says(r, "/bin/pgptest", pnames[:], PATIENCE * 60, "a program on the seal starts against factotum", "ok", "and the certificate came over rpc, the same passphrase gave the same identity here, a message sealed to it opened with the session key factotum handed back, and a signature factotum made verified")
 	}
 	if c, err := vfs.open_path(vfs.boot_namespace, "/mnt/factotum/ctl", vfs.O_RDONLY); err == vfs.OK {
 		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of its file is factotum's stop")

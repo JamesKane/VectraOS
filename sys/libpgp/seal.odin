@@ -263,52 +263,125 @@ Sign_Params :: struct {
 }
 
 /*
-sign_data writes a version 6 Ed25519 signature packet of `type` (0 binary,
-1 text) over `data` by `signer`, whose secret must be there, into `out`,
-and answers the packet's length or -1. The hashed subpackets are the time
-and the issuer's fingerprint, the way the RFC's samples are made.
+What a signature is over. A document of a type, 0 binary or 1 text; a key
+alone, for a direct-key signature; a key and its subkey, for a binding.
 */
-sign_data :: proc(signer: ^Key, type: int, data: []u8, p: Sign_Params, out: []u8) -> int {
+Sign_Input :: struct {
+	type:    int,
+	data:    []u8, // A document's bytes
+	primary: ^Key, // For a signature over a key
+	subkey:  ^Key, // And its subkey, for a binding
+}
+
+/*
+A signature part way: its packet body up to the salt, and the digest to
+sign. `sign_begin` makes one, whoever holds the secret signs the digest,
+and `sign_finish` writes the packet. `factotum` is the one that holds the
+secret in this system, and a program asks it for the sixty-four octets.
+*/
+Sign_Job :: struct {
+	body:   [320]u8,
+	n:      int,
+	digest: [64]u8,
+	dn:     int,
+	salt:   [32]u8,
+}
+
+/*
+sign_begin lays out a version 6 Ed25519 signature packet over `input` by
+the key with `fingerprint`, up to the salt, and hashes what it signs. The
+hashed subpackets are the time, then `extra` as given, then the issuer's
+fingerprint, the way the RFC's samples are made.
+*/
+sign_begin :: proc(job: ^Sign_Job, signer: ^Key, input: Sign_Input, extra: []u8, p: Sign_Params) -> bool {
 	p := p
-	if signer.algo != ALGO_ED25519 || len(signer.secret) != 32 || signer.version != 6 {
-		return -1
+	if signer.algo != ALGO_ED25519 || signer.version != 6 || 5 + 1 + len(extra) + 2 + signer.fpr_len > 200 {
+		return false
 	}
-	body: [256]u8
-	n := 0
-	body[0], body[1], body[2], body[3] = 6, u8(type), ALGO_ED25519, HASH_SHA512
-	n = 4
-	hashed := 5 + 1 + 1 + 1 + 1 + signer.fpr_len // creation time; issuer fingerprint
+	body := job.body[:]
+	body[0], body[1], body[2], body[3] = 6, u8(input.type), ALGO_ED25519, HASH_SHA512
+	n := 4
+	hashed := 6 + len(extra) + 2 + 1 + signer.fpr_len
 	body[n], body[n + 1], body[n + 2], body[n + 3] = 0, 0, 0, u8(hashed)
 	n += 4
 	body[n], body[n + 1] = 5, 0x82 // Critical: signature creation time
 	body[n + 2], body[n + 3], body[n + 4], body[n + 5] = u8(p.created >> 24), u8(p.created >> 16), u8(p.created >> 8), u8(p.created)
 	n += 6
+	n += copy(body[n:], extra)
 	body[n], body[n + 1], body[n + 2] = u8(2 + signer.fpr_len), SUB_ISSUER_FPR, 6
 	n += 3
 	n += copy(body[n:], signer.fingerprint[:signer.fpr_len])
-	s := Signature{version = 6, type = type, algo = ALGO_ED25519, hash = HASH_SHA512, salt = p.salt[:], trailer = body[:n]}
+	job.salt = p.salt
+	s := Signature{version = 6, type = input.type, algo = ALGO_ED25519, hash = HASH_SHA512, salt = job.salt[:], trailer = body[:n]}
 	ctx: hash.Context
-	if !begin_hash(&ctx, &s) || !hash_document(&ctx, type, data) {
-		return -1
+	if !begin_hash(&ctx, &s) {
+		return false
 	}
-	digest: [64]u8
-	dn := finish_digest(&ctx, &s, digest[:])
-	// The unhashed area is empty, then the digest's first two octets, the
-	// salt, and the signature over the digest.
+	switch {
+	case input.type == 0x1F && input.primary != nil:
+		hash_key(&ctx, input.primary)
+	case input.type == 0x18 && input.primary != nil && input.subkey != nil:
+		hash_key(&ctx, input.primary)
+		hash_key(&ctx, input.subkey)
+	case input.type <= 1:
+		if !hash_document(&ctx, input.type, input.data) {
+			return false
+		}
+	case:
+		return false
+	}
+	job.dn = finish_digest(&ctx, &s, job.digest[:])
+	// The unhashed area is empty, then the digest's first two octets and
+	// the salt. The signature over the digest comes with `sign_finish`.
 	body[n], body[n + 1], body[n + 2], body[n + 3] = 0, 0, 0, 0
 	n += 4
-	body[n], body[n + 1] = digest[0], digest[1]
+	body[n], body[n + 1] = job.digest[0], job.digest[1]
 	n += 2
 	body[n] = 32
 	n += 1
-	n += copy(body[n:], p.salt[:])
-	priv: ed25519.Private_Key
-	if !ed25519.private_key_set_bytes(&priv, signer.secret) {
+	n += copy(body[n:], job.salt[:])
+	job.n = n
+	return true
+}
+
+// sign_finish writes the packet with `sig`, the sixty-four octets over the
+// job's digest, into `out`, and answers the length or -1.
+sign_finish :: proc(job: ^Sign_Job, sig: []u8, out: []u8) -> int {
+	if len(sig) != 64 || job.n == 0 {
 		return -1
 	}
-	ed25519.sign(&priv, digest[:dn], body[n:n + 64])
-	n += 64
-	return put_packet(out, 0, SIGNATURE, body[:n])
+	copy(job.body[job.n:], sig)
+	return put_packet(out, 0, SIGNATURE, job.body[:job.n + 64])
+}
+
+// sign_digest signs a job's digest with a secret Ed25519 key held here.
+sign_digest :: proc(job: ^Sign_Job, signer: ^Key, sig: []u8) -> bool {
+	if len(signer.secret) != 32 || len(sig) != 64 {
+		return false
+	}
+	priv: ed25519.Private_Key
+	if !ed25519.private_key_set_bytes(&priv, signer.secret) {
+		return false
+	}
+	ed25519.sign(&priv, job.digest[:job.dn], sig)
+	return true
+}
+
+/*
+sign_data writes a version 6 Ed25519 signature packet of `type` (0 binary,
+1 text) over `data` by `signer`, whose secret must be there, into `out`,
+and answers the packet's length or -1.
+*/
+sign_data :: proc(signer: ^Key, type: int, data: []u8, p: Sign_Params, out: []u8) -> int {
+	job: Sign_Job
+	if !sign_begin(&job, signer, Sign_Input{type = type, data = data}, nil, p) {
+		return -1
+	}
+	sig: [64]u8
+	if !sign_digest(&job, signer, sig[:]) {
+		return -1
+	}
+	return sign_finish(&job, sig[:], out)
 }
 
 /*
@@ -556,8 +629,8 @@ open_message :: proc(data: []u8, sub: ^Key, out: []u8) -> (l: Literal, ok: bool)
 }
 
 // open_session unwraps the session key an X25519 PKESK carries, with the
-// subkey's secret. Answers its length, or zero.
-@(private = "file")
+// subkey's secret. Answers its length, or zero. `factotum` runs this for
+// a program that holds no secret, and hands the session key back.
 open_session :: proc(e: ^Pkesk, sub: ^Key, into: []u8) -> int {
 	if sub.algo != ALGO_X25519 || len(sub.secret) != 32 || len(sub.public) != 32 || len(e.wrapped) < 24 || len(e.wrapped) - 8 > len(into) {
 		return 0
@@ -578,7 +651,7 @@ open_session :: proc(e: ^Pkesk, sub: ^Key, into: []u8) -> int {
 
 // open_seipd opens a version 2 packet's chunks into `out` and answers the
 // plaintext's length, or -1 when a tag does not hold or the mode is not OCB.
-@(private = "file")
+// A program with the session key from `factotum` opens the data itself.
 open_seipd :: proc(s: ^Seipd, session: []u8, out: []u8) -> int {
 	if s.aead != AEAD_OCB || s.chunk > 16 {
 		return -1
