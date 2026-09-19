@@ -956,8 +956,15 @@ It is proven on a spool. `spool DIR` makes mail files under a
 directory, so two servers on one machine exchange mail with nothing
 between them. The boot line runs the handshake between this mailfs and
 a second. A bent fingerprint first ends in `no`, then the invite whole
-ends in `yes`. Not yet: chatmail, and the handshake over the servers,
-which waits on IDLE.
+ends in `yes`. Not yet: the handshake over the servers, which waits on
+IDLE.
+
+Chatmail is in. `account dcaccount:URL` makes the relay's request
+through `webfs`, a POST that answers an address and a password. The
+password goes to `factotum` under the address's host. The address is
+the account, the submission server is its host over TLS, and the seal
+is on. `seal off` is refused, since the relay refuses cleartext. The
+boot line runs it against a scripted relay on the machine's own stack.
 
 ### Step 4: the two networks
 

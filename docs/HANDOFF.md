@@ -571,11 +571,14 @@ the documents it points at.
    Autocrypt is in: the key in every header out, and a key in kept
    under `contacts/`. A message to contacts with keys is sealed and
    signed inside, and a sealed message in is opened through factotum
-   and its signature checked. `seal on` refuses plain mail. A chat is
-   a thread, the same messages under the other address or the group
-   id. SecureJoin verifies a contact between two of these on a spool
-   of files, sealed, with its control. Next: chatmail's account in one
-   request, and the handshake over the servers once IDLE is in.
+   and its signature checked. `seal on` refuses plain mail.
+
+   A chat is a thread, the same messages under the other address or
+   the group id. SecureJoin verifies a contact between two of these on
+   a spool of files, sealed, with its control. Chatmail is an account
+   in one request, through `webfs`. Next: IDLE, and the handshake over
+   the servers on it, which finishes step 3. Then step 4's two
+   networks.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
