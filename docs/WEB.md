@@ -876,9 +876,19 @@ chunk opens in OCB, and the final tag last.
 The boot line runs RFC 9580's own vectors through it from ring 3. The
 sample certificate gives its fingerprints and its signatures verify.
 The sample message opens to its text, and is refused with a byte
-flipped. The sample signed message verifies. Not yet: the sealing
-side, RSA and ECDSA keys, the locked secret key, and `factotum`'s
-`openpgp` protocol.
+flipped. The sample signed message verifies.
+
+The sealing side is in. `seal_message` writes the session key packet,
+then version 2 sealed data holding the literal and a padding packet.
+`sign_message` writes a one-pass packet, the literal and the signature.
+Each takes its random octets as parameters.
+
+So the boot line makes the RFC's sample message again from the RFC's
+own ephemeral secret, session key, salt and padding, octet for octet.
+It makes the sample signed message the same way from its salt and time.
+A message sealed on random parameters opens again, and
+not with its final tag bent. Not yet: RSA and ECDSA keys, the locked
+secret key, and `factotum`'s `openpgp` protocol.
 
 ### Step 4: the two networks
 
