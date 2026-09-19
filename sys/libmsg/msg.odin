@@ -49,10 +49,11 @@ import "vsys:vectra9"
 
 FRAME :: 8192 + 512
 
-// What a write to `ctl` or `new` does. Zero for done, or an errno. A
-// callback that must wait calls `lib9p.hold(&net.srv)` and answers later
-// through `lib9p.find_held_tag(&net.srv, tag)`; what it returns is then
-// ignored.
+// What a write to `ctl` or `new` does. Zero for done, or an errno. The
+// text is the write as written, its newline still on, so a callback that
+// holds answers `Rwrite` with the whole count. A callback that must wait
+// calls `lib9p.hold(&net.srv)` and answers later through
+// `lib9p.find_held_tag(&net.srv, tag)`; what it returns is then ignored.
 Ctl_Fn :: #type proc(net: ^Net, tag: vectra9.Tag, line: string) -> vectra9.Errno
 New_Fn :: #type proc(net: ^Net, tag: vectra9.Tag, text: string) -> vectra9.Errno
 
@@ -343,11 +344,7 @@ handler :: proc "contextless" (
 				reply^ = vectra9.error_reply(vectra9.EPERM)
 				return
 			}
-			line := string(m.data)
-			for len(line) > 0 && (line[len(line) - 1] == '\n' || line[len(line) - 1] == ' ') {
-				line = line[:len(line) - 1]
-			}
-			err := net.on_ctl(net, tag, line)
+			err := net.on_ctl(net, tag, string(m.data))
 			if err != 0 {
 				reply^ = vectra9.error_reply(err)
 				return

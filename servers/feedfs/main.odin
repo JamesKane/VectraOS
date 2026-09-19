@@ -6,7 +6,7 @@ conversation of its entries, each a message directory in `sys/libmsg`'s
 shape, so a feed reads like a mailbox or a room. It is the smallest
 network there is, and it needs no login, which is why it comes first.
 
-    /mnt/feed/ctl              fetch [name] url-or-path; remove name
+    /mnt/feed/ctl              fetch [name] url-or-path; remove name; poll seconds
     /mnt/feed/me               empty: a feed knows nobody
     /mnt/feed/new              refused: a feed is read only
     /mnt/feed/event            `name/id` when an entry lands
@@ -20,7 +20,9 @@ URL > ctl` returns when the entries are there or says why not. A name not
 given is the URL's host, or the file's name without its suffix. Fetching
 a feed again refreshes it: an entry already there is replaced by id.
 
-Not yet: a poll, a proc with a timer, so a feed refreshes itself.
+`poll N` on `ctl` fetches every feed again each N seconds, on a thread
+of its own with a timer, and `poll 0` stops it. An entry that arrived
+lands like any other, and `event` says so.
 */
 package feedfs
 
@@ -39,7 +41,7 @@ MAX_FEEDS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: 512
 
-DICT :: "fetch name url       fetch a feed by its URL or path into the conversation called name\nremove name          empty a feed's conversation\nread: <name>/<id>    an entry: from, date, subject, body, type, raw, hash, links\n"
+DICT :: "fetch name url       fetch a feed by its URL or path into the conversation called name\nremove name          empty a feed's conversation\npoll seconds:int     fetch every feed again each so many seconds, 0 to stop\nread: <name>/<id>    an entry: from, date, subject, body, type, raw, hash, links\n"
 
 // What a conversation was fetched from, by its index among the network's.
 Source :: struct {
@@ -62,6 +64,8 @@ Fetch :: struct {
 net: libmsg.Net
 sources: [MAX_FEEDS]Source
 status: [dynamic]u8
+poll_secs: int
+polling: bool
 
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -85,7 +89,11 @@ threadmain :: proc "contextless" (arg: rawptr) {
 
 // on_ctl takes `fetch [name] source` and `remove name`. A fetch holds the
 // write and starts a thread that answers it.
-on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, line: string) -> vectra9.Errno {
+on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errno {
+	line := text
+	for len(line) > 0 && (line[len(line) - 1] == '\n' || line[len(line) - 1] == ' ') {
+		line = line[:len(line) - 1]
+	}
 	verb, rest := word(line)
 	switch verb {
 	case "fetch":
@@ -103,7 +111,7 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, line: string) -> vectra9.Errn
 		}
 		f := new(Fetch)
 		f.tag = tag
-		f.count = len(line)
+		f.count = len(text) // The whole write, or the writer sees a short one
 		f.nlen = copy(f.name[:], name)
 		f.slen = copy(f.source[:], source)
 		if libthread.threadcreate(fetch_thread, f, 256 * 1024) < 0 {
@@ -111,6 +119,21 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, line: string) -> vectra9.Errn
 			return vectra9.ENOSPC
 		}
 		lib9p.hold(&net.srv)
+		return 0
+	case "poll":
+		count, _ := word(rest)
+		secs, ok := libuser.atoi(count)
+		if !ok || secs < 0 || secs > 86400 {
+			return vectra9.EINVAL
+		}
+		poll_secs = int(secs)
+		if poll_secs > 0 && !polling {
+			if libthread.threadcreate(poll_thread, nil, 256 * 1024) < 0 {
+				return vectra9.ENOSPC
+			}
+			polling = true
+		}
+		rebuild_status()
 		return 0
 	case "remove":
 		name, _ := word(rest)
@@ -130,6 +153,38 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, line: string) -> vectra9.Errn
 on_new :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errno {
 	_, _, _ = net, tag, text
 	return vectra9.EPERM
+}
+
+// poll_thread fetches every feed again each `poll_secs` seconds, until
+// that is zero. The sleep is on an io proc, so the server runs meanwhile.
+poll_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	context = libuser.heap_context()
+	io := libthread.ioproc()
+	if io == nil {
+		polling = false
+		libthread.threadexits("")
+	}
+	for poll_secs > 0 {
+		_ = libthread.iosleep(io, poll_secs * 1000)
+		if poll_secs == 0 {
+			break
+		}
+		for i := 1; i < len(net.convs) && i < MAX_FEEDS; i += 1 {
+			if sources[i].len == 0 {
+				continue
+			}
+			f := new(Fetch)
+			f.io = io
+			f.nlen = copy(f.name[:], net.convs[i].name)
+			f.slen = copy(f.source[:], sources[i].text[:sources[i].len])
+			_ = fetch(f)
+			free(f)
+		}
+	}
+	polling = false
+	libthread.ioclose(io)
+	libthread.threadexits("")
 }
 
 // fetch_thread reads the source, parses it, and puts the entries into
@@ -272,6 +327,12 @@ read_small :: proc(f: ^Fetch, path: string, into: []u8) -> int {
 // name, how many entries, and its source.
 rebuild_status :: proc() {
 	clear(&status)
+	if poll_secs > 0 {
+		num: [24]u8
+		append(&status, ..transmute([]u8)string("poll "))
+		append(&status, ..transmute([]u8)libuser.itoa(num[:], i64(poll_secs)))
+		append(&status, '\n')
+	}
 	for c, i in net.convs {
 		if i == 0 || sources[i].len == 0 {
 			continue

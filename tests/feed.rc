@@ -14,4 +14,27 @@ if(! ~ $"s 'Older news') exit 'first is not the oldest: '$"s
 s=`{cat /mnt/all/$last/subject}
 if(! ~ $"s 'Re: First post') exit 'last is not the newest: '$"s
 unmount /mnt/all
+# The poll: a feed copied where it can change, fetched, then changed under
+# a one-second poll, gains its new entry without another fetch.
+cp /lib/tests/two.rss $home/three.rss
+if(! echo fetch three $home/three.rss > /mnt/feed/ctl) exit 'the fetch write did not return whole'
+n=`{ls -p /mnt/feed/three | wc -l}
+if(! ~ $n 2) exit 'three has not two entries: '$n
+echo poll 1 > /mnt/feed/ctl
+# The file grows an item: its lines but the closing two, the item, and
+# the closing two again, each appended. `mv` will not overwrite, so the
+# old goes first.
+grep -v '</channel>' /lib/tests/two.rss | grep -v '</rss>' > $home/three.new
+echo '<item><title>Late news</title><guid>late</guid><pubDate>Sat, 19 Sep 2026 01:00:00 GMT</pubDate><description>Late.</description></item>' >> $home/three.new
+echo '</channel>' >> $home/three.new
+echo '</rss>' >> $home/three.new
+rm $home/three.rss
+mv $home/three.new $home/three.rss
+sleep 3
+n=`{ls -p /mnt/feed/three | wc -l}
+echo poll 0 > /mnt/feed/ctl
+rm $home/three.rss
+if(! ~ $n 3) exit 'the poll did not bring the late entry: '$n
+s=`{cat /mnt/feed/three/*late/subject}
+if(! ~ $"s 'Late news') exit 'late entry subject: '$"s
 exit ok
