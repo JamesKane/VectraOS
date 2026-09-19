@@ -8,7 +8,9 @@ what arrived and sending what it answers, so the program holds no key and the
 passphrase never crosses the network. Two files, mounted at `/mnt/factotum`:
 
     ctl   write: key proto=noise user=glenda dom=home !passphrase=...
+                 key proto=pass user=glenda server=imap.example !password=...
           read:  key proto=noise user=glenda dom=home pub=<hex>   (one line each)
+                 key proto=pass user=glenda server=imap.example
     rpc   a conversation per open, the handshake a line at a time
 
 The rpc conversation, hex for every byte string:
@@ -19,6 +21,12 @@ The rpc conversation, hex for every byte string:
     start responder user=U dom=D                    ->  ok
     msg <hex>                                       ->  msg <hex>
     finish                                          ->  done <peer> <send> <recv>
+
+    start pass user=U server=S                      ->  password <text>
+
+`proto=pass` is a password for a server, what Plan 9's factotum held for
+`upas`: `mailfs` asks for it at login and never keeps it, `docs/WEB.md`
+section 6. The listing on `ctl` never shows it.
 
 `done` names the far side by its static public key and hands over the two
 transport keys, the initiator's sending key first. Those go to `sys/libauth`,
@@ -61,6 +69,19 @@ Key :: struct {
 }
 
 keys: [MAX_KEYS]Key
+
+// A password for a server, handed to a program that asks over `rpc`.
+Pass :: struct {
+	used:   bool,
+	user:   [NAME_MAX]u8,
+	ulen:   int,
+	server: [NAME_MAX * 2]u8,
+	slen:   int,
+	secret: [128]u8,
+	plen:   int,
+}
+
+passes: [MAX_KEYS]Pass
 
 // Why the last `key` line was refused, for the read that follows the write.
 key_why: string
@@ -148,10 +169,13 @@ domain replaces the old one. Answers false for a line it cannot make a key of.
 */
 key_add :: proc(line: string) -> bool #no_bounds_check {
 	user, has_user := attr(line, "user=")
-	dom, has_dom := attr(line, "dom=")
 	proto, has_proto := attr(line, "proto=")
+	if has_proto && proto == "pass" {
+		return pass_add(line)
+	}
+	dom, has_dom := attr(line, "dom=")
 	if !has_user || !has_dom || !has_proto || proto != "noise" || len(user) > NAME_MAX || len(dom) > NAME_MAX {
-		key_why = "error a key wants proto=noise user= dom=\n"
+		key_why = "error a key wants proto=noise user= dom=, or proto=pass user= server=\n"
 		return false
 	}
 	spriv: [32]u8
@@ -187,6 +211,46 @@ key_add :: proc(line: string) -> bool #no_bounds_check {
 	k.spriv = spriv
 	libauth.public_of(k.spub[:], k.spriv[:])
 	return true
+}
+
+// pass_add takes `proto=pass user= server= !password=`. One for the same
+// user and server replaces the old.
+pass_add :: proc(line: string) -> bool #no_bounds_check {
+	user, has_user := attr(line, "user=")
+	server, has_server := attr(line, "server=")
+	secret, has_secret := attr(line, "!password=")
+	if !has_user || !has_server || !has_secret || len(user) > NAME_MAX || len(server) > NAME_MAX * 2 || len(secret) > 128 {
+		key_why = "error a pass key wants user= server= !password=\n"
+		return false
+	}
+	p := pass_find(user, server)
+	if p == nil {
+		for i in 0 ..< MAX_KEYS {
+			if !passes[i].used {
+				p = &passes[i]
+				break
+			}
+		}
+	}
+	if p == nil {
+		key_why = "error no room for another key\n"
+		return false
+	}
+	p^ = Pass{used = true}
+	p.ulen = copy(p.user[:], user)
+	p.slen = copy(p.server[:], server)
+	p.plen = copy(p.secret[:], secret)
+	return true
+}
+
+pass_find :: proc "contextless" (user, server: string) -> ^Pass #no_bounds_check {
+	for i in 0 ..< MAX_KEYS {
+		p := &passes[i]
+		if p.used && string(p.user[:p.ulen]) == user && string(p.server[:p.slen]) == server {
+			return p
+		}
+	}
+	return nil
 }
 
 // attr finds `name=value` in a line and answers the value, up to the next
@@ -227,6 +291,17 @@ key_list :: proc "contextless" (into: []u8) -> string #no_bounds_check {
 		libodin.put_str(&sink, string(k.dom[:k.dlen]))
 		libodin.put_str(&sink, " pub=")
 		libodin.put_str(&sink, libcrypto.hex_encode(hex[:], k.spub[:]))
+		libodin.put_str(&sink, "\n")
+	}
+	for i in 0 ..< MAX_KEYS {
+		p := &passes[i]
+		if !p.used {
+			continue
+		}
+		libodin.put_str(&sink, "key proto=pass user=")
+		libodin.put_str(&sink, string(p.user[:p.ulen]))
+		libodin.put_str(&sink, " server=")
+		libodin.put_str(&sink, string(p.server[:p.slen]))
 		libodin.put_str(&sink, "\n")
 	}
 	return libodin.str(&sink)
@@ -323,6 +398,21 @@ rpc_start :: proc(c: ^Conv, rest: string) -> bool #no_bounds_check {
 		}
 	}
 	user, has_user := attr(rest, "user=")
+	if role == "pass" {
+		server, has_server := attr(rest, "server=")
+		if !has_user || !has_server {
+			set_reply(c, "error user= and server= wanted")
+			return false
+		}
+		p := pass_find(user, server)
+		if p == nil {
+			set_reply(c, "error no key for that user and server")
+			return false
+		}
+		line: [REPLY_MAX]u8
+		set_reply(c, libuser.cat_into(line[:], "password ", string(p.secret[:p.plen])))
+		return true
+	}
 	dom, has_dom := attr(rest, "dom=")
 	if !has_user || !has_dom {
 		set_reply(c, "error user= and dom= wanted")

@@ -10206,6 +10206,10 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 	// server lands in the store under its hash, over http and over https.
 	verify_webfs(r)
 
+	// And mail as files, `docs/WEB.md` step 3: a saved IMAP session becomes
+	// an inbox of the shape, the password asked of factotum.
+	verify_mailfs(r)
+
 	// -- Teardown, a remove of one of its files -------------------------------
 
 	// The names first: each stops on a remove of its file, as the stack does.
@@ -10936,6 +10940,116 @@ plumb_send :: proc(src, dst, type, data, attr: string) -> bool {
 	text := libodin_cat(buf[:], src, "\n", dst, "\n", "", "\n", type, "\n", attr, "\n", libodin.str(&sink), "\n", data)
 	n, werr := vfs.chan_write(c, 0, transmute([]u8)text)
 	return werr == vfs.OK && int(n) == len(text)
+}
+
+/*
+verify_mailfs runs `servers/mailfs` against `tests/imapsrv`, a scripted
+IMAP server on this machine's stack, with the account's password held by
+`factotum` under `proto=pass`. The kernel gives factotum the password and
+asks it back over `rpc`, the way mailfs does, and sees the listing keep the
+secret. Then mailfs is told the account and to fetch, and `inbox/` holds
+the two messages the server sent, in time order, each the shape: the
+sender and subject decoded off the headers, the body the plain part, and
+the reply's `replyto` the first message's id. A second account with a
+wrong password is refused by the server, and the fetch says so. That is
+`docs/WEB.md` section 6's "a saved IMAP session through a pipe becomes an
+inbox of the right shape".
+*/
+@(private = "file")
+verify_mailfs :: proc(r: ^Result) {
+	local: [64]u8
+	ln := web_read_file("/net/local", local[:])
+	if ln <= 0 {
+		return
+	}
+	host := string(local[:ln])
+	count0 := srv.count()
+
+	// factotum, with the password.
+	pf := start_path(r, "/bin/factotum", "the loader starts factotum for the mail's password")
+	if pf == nil {
+		return
+	}
+	check(r, await_posted("factotum"), "which posts /srv/factotum")
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/factotum", "/mnt/factotum") == vfs.OK, "and the kernel mounts it at /mnt/factotum") {
+		finish(r, pf, "and factotum is taken down")
+		return
+	}
+	line_buf: [256]u8
+	check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=glenda server=", host, " !password=hunter2")), "a pass key is written to factotum: a user, a server and the password")
+	check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=nobody server=", host, " !password=wrong")), "and a second, with a password the server will refuse")
+	listing: [1024]u8
+	n := web_read_file("/mnt/factotum/ctl", listing[:])
+	got := string(listing[:max(n, 0)])
+	check(r, n > 0 && libodin.contains(got, "key proto=pass user=glenda server=") && !libodin.contains(got, "hunter2"), "the listing names the key and keeps the secret")
+	answer: [128]u8
+	an := net_file_ask("/mnt/factotum/rpc", libodin_cat(line_buf[:], "start pass user=glenda server=", host), answer[:])
+	check(r, an > 0 && string(answer[:an]) == "password hunter2", "and rpc hands the password to a program that asks for it by user and server")
+
+	// The scripted server, then mailfs.
+	iargs := [?]string{"imapsrv", "1143"}
+	iargv := new(Argv)
+	_ = argv_from(iargv, iargs[:])
+	im := start_path(r, "/bin/imapsrv", "a scripted IMAP server starts", iargv)
+	if im != nil {
+		sync.delay(PATIENCE)
+		p := start_path(r, "/bin/mailfs", "the loader starts mailfs, mail as files")
+		if p != nil {
+			mounted := check(r, await_posted("mail"), "which posts /srv/mail") && check(r, srv.mount(vfs.boot_namespace, "/srv/mail", "/mnt/mail") == vfs.OK, "and the kernel mounts it at /mnt/mail")
+			if mounted {
+				ID1 :: "000000006aac8284.3714e3891dc03ae6"
+				ID2 :: "000000006aacfd90.1ccd7668973d1eec"
+				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account glenda ", host, " 1143 plain")), "an account is a user, a server and a port on ctl")
+				text: [2048]u8
+				n = web_read_file("/mnt/mail/me", text[:])
+				check(r, string(text[:max(n, 0)]) == libodin_cat(line_buf[:], "glenda@", host), "and me is the address")
+				check(r, net_file_write("/mnt/mail/ctl", "fetch"), "fetch logs in with the password from factotum and takes the inbox")
+				lbuf: [512]u8
+				check(r, dir_names("/mnt/mail/inbox", lbuf[:]) == ID1 + " " + ID2, "and inbox lists the two messages by id, in time order, the message id hashed into the name")
+				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/subject", text[:])
+				check(r, string(text[:max(n, 0)]) == "A message with two parts and an file", "a subject is unfolded and its encoded words decoded")
+				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/from", text[:])
+				check(r, string(text[:max(n, 0)]) == "Gl\u00e9nda of Plan 9 <glenda@example.org>", "from is the sender, decoded")
+				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/type", text[:])
+				check(r, string(text[:max(n, 0)]) == "text/plain", "type is the plain part's")
+				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/body", text[:])
+				check(r, libodin.has_prefix(string(text[:max(n, 0)]), "Caf\u00e9 au lait"), "and body is that part, decoded from its transfer encoding and charset")
+				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/date", text[:])
+				check(r, string(text[:max(n, 0)]) == "1789690500 Thu, 17 Sep 2026 20:15:00 -0400", "date is seconds since the epoch and the header's text")
+				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/raw", text[:], raw = true)
+				check(r, n > 0 && libodin.has_prefix(string(text[:n]), "From: =?utf-8?q?"), "raw is the message as the server sent it")
+				n = web_read_file("/mnt/mail/inbox/" + ID2 + "/replyto", text[:])
+				check(r, string(text[:max(n, 0)]) == ID1, "a reply's In-Reply-To becomes the first message's id")
+				n = web_read_file("/mnt/mail/inbox/" + ID2 + "/from", text[:])
+				check(r, string(text[:max(n, 0)]) == "Bob Jones <bob@example.net>", "and its sender reads")
+				check(r, dir_names("/mnt/mail/inbox/" + ID1 + "/replies", lbuf[:]) == ID2, "so replies under the first lists the reply")
+				check(r, !net_file_write("/mnt/mail/new", "to: bob@example.net\n\nhello"), "a write to new is refused, until submission is in")
+
+				// The wrong password: the server refuses the login, and the fetch says so.
+				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")
+				check(r, !net_file_write("/mnt/mail/ctl", "fetch"), "is refused by the server, and its fetch fails")
+				check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/mail") == vfs.OK, "the mount of mailfs comes down")
+			}
+			check(r, srv.remove("mail") == vfs.OK, "and the kernel takes its name away")
+			check(r, wait(p, PATIENCE * 5), "and mailfs, its pipe gone, exits")
+			finish(r, p, "and is taken down")
+		}
+		check(r, wait(im, PATIENCE * 5), "and the scripted server, both sessions served, exits")
+		check(r, string(im.exit.text[:im.exit.text_len]) == "ok", "with ok: one login and one refusal")
+		finish(r, im, "and is taken down")
+	}
+
+	if c, err := vfs.open_path(vfs.boot_namespace, "/mnt/factotum/ctl", vfs.O_RDONLY); err == vfs.OK {
+		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of its file is factotum's stop")
+		vfs.chan_close(c)
+	}
+	check(r, wait(pf, PATIENCE), "and factotum exits")
+	check(r, srv.remove("factotum") == vfs.OK, "and the kernel takes its name away")
+	finish(r, pf, "and factotum is taken down")
+	pipe.quiesce()
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/factotum") == vfs.OK, "and its mount comes down")
+	check(r, srv.count() == count0, "and /srv holds what it held")
+	reap_orphans()
 }
 
 /*

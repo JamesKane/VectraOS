@@ -151,6 +151,8 @@ user_programs := [?]User_Program {
 	{name = "webfs", path = "servers/webfs"},
 	{name = "plumber", path = "servers/plumber"},
 	{name = "feedfs", path = "servers/feedfs"},
+	{name = "mailfs", path = "servers/mailfs"},
+	{name = "imapsrv", path = "tests/imapsrv"},
 	{name = "plumb", path = "cmd/plumb"},
 	{name = "doctest", path = "tests/doc"},
 	{name = "mothra", path = "apps/mothra"},
