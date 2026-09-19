@@ -859,8 +859,26 @@ password from `factotum`.
 The write returns once the server takes the message, or says why not.
 What went out is a message of `sent/`. The boot line submits a reply to
 `tests/smtpsrv` and reads it back whole from the file the server wrote.
-Not yet: IDLE, STARTTLS, `libpgp` and the seal, Autocrypt, contacts,
-chats, chatmail and SecureJoin.
+Not yet: IDLE, STARTTLS, Autocrypt, contacts, chats, chatmail and
+SecureJoin.
+
+`sys/libpgp` opens. It reads the packets: keys of version 4 and 6 on
+Ed25519 and X25519, with their fingerprints. It reads a signature of
+either version, the X25519 session key packet and version 2 sealed
+data. OCB is two hundred lines over `core:crypto/aes`, and the key wrap
+is RFC 3394's. It verifies a signature over a key, a user id or a
+document.
+
+It opens a message in four steps. The session key comes by
+X25519 and HKDF. The message key and nonce come by HKDF again. Each
+chunk opens in OCB, and the final tag last.
+
+The boot line runs RFC 9580's own vectors through it from ring 3. The
+sample certificate gives its fingerprints and its signatures verify.
+The sample message opens to its text, and is refused with a byte
+flipped. The sample signed message verifies. Not yet: the sealing
+side, RSA and ECDSA keys, the locked secret key, and `factotum`'s
+`openpgp` protocol.
 
 ### Step 4: the two networks
 

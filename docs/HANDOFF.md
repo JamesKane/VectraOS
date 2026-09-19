@@ -561,8 +561,10 @@ the documents it points at.
    the first network that takes `new`.
 
    The compose window is in, the reader's form on a network's `new`,
-   typed into on the boot line. Step 2 is complete. Next: `libpgp`
-   and the seal.
+   typed into on the boot line. Step 2 is complete. `sys/libpgp`
+   opens: RFC 9580's keys, signatures and version 2 sealed data, its
+   own vectors proven on the boot line. Next: the sealing side, then
+   `factotum`'s `openpgp` protocol and Autocrypt.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
