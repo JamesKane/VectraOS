@@ -825,6 +825,21 @@ step 2 and `docs/FLEET.md` step 2 for `factotum`.
 Boot line: RFC 9580's vectors, a saved IMAP session, a sealed message
 out, and a SecureJoin over a pipe with its control.
 
+**Where it stands.** `servers/mailfs` is the first cut. The account is
+a line on `ctl`. The password is asked of `factotum`'s new `proto=pass`
+at login and never kept. `fetch` is IMAP4rev1, TLS unless `plain` is
+said.
+
+Every message of the inbox is a directory of the shape. Its sender and
+subject are decoded off its headers by `libmime`, the plain part is the
+body, and `In-Reply-To` resolves to `replyto`.
+
+The boot line runs it plain against `tests/imapsrv`, a scripted server
+on the machine's own stack. The saved two-part mail and its reply land
+as an inbox. A wrong password is refused, and the fetch says so. Not yet: IDLE,
+`new` over SMTP, `libpgp` and the seal, Autocrypt, contacts, chats,
+chatmail and SecureJoin.
+
 ### Step 4: the two networks
 
 `servers/fedifs`, `servers/atfs`, `sys/libcid`, `factotum`'s `oauth`

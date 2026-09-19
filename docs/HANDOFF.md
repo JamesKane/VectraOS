@@ -551,9 +551,14 @@ the documents it points at.
    and the shell reads it in order. `mothra` on a directory of messages
    is the timeline, and a message is a page, through `libmsg`'s reading
    half. `sys/libmime` reads mail's headers and parts, and `libmsg`
-   reads a write to `new` with it, and `feedfs` polls. Next: the
-   compose window, which waits on step 3's mail, the first network
-   that takes `new`.
+   reads a write to `new` with it, and `feedfs` polls. The compose
+   window waits on a network that takes `new`.
+
+   **Step 3, mail, is open.** `servers/mailfs` fetches an inbox over
+   IMAP, with the password from `factotum`'s new `proto=pass`, into
+   the shape, proven against `tests/imapsrv` on the boot line. Next:
+   `new` over SMTP submission, then the compose window, then `libpgp`
+   and the seal.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
@@ -1042,8 +1047,9 @@ sys/                  The ~20 ring 3 libraries. libuser (the syscall wrappers
                       libdoc + libgemtext + libmark + libhtml (a page as
                       blocks, and the parsers into it, docs/WEB.md 1),
                       libimage (PNG and JPEG to pixels), libplumb (the plumber's
-                      message, docs/GHOST.md 5), libmsg + libfeed (a message
-                      as a directory, and feeds into it, docs/WEB.md 4),
+                      message, docs/GHOST.md 5), libmsg + libfeed + libmime (a
+                      message as a directory, feeds and mail into it,
+                      docs/WEB.md 4),
                       libregex, libfmt, libodin, libkbd, libkey, libfont,
                       libposix (docs/DEVTOOLS.md 7). docs/WEB.md.
 servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
@@ -1051,8 +1057,8 @@ servers/              A dozen ring 3 file servers: ramfs/memfs (heap trees),
                       ring 3), intuition (the draw server + compositor),
                       netfs/cs/dns (the network as files), fatfs/kfs (the ESP
                       and the writable disk), factotum (keys and the handshake),
-                      webfs (the web as files, docs/WEB.md), feedfs (the
-                      first network, docs/WEB.md 4).
+                      webfs (the web as files, docs/WEB.md), feedfs and
+                      mailfs (the first networks, docs/WEB.md 4 and 6).
 apps/                 rc (the shell), terminal, filemgr, muidemo, tracker,
                       mothra (the reader, docs/WEB.md step 1).
                       docs/RC.md, docs/DRAW.md, docs/WORKBENCH.md.
