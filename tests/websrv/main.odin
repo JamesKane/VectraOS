@@ -141,6 +141,16 @@ serve_one :: proc(lfd: i64, served: string) {
 	}
 	ok := true
 	switch rpath {
+	case "/new":
+		// A chatmail relay's answer: an account made on this machine's own
+		// address, for docs/WEB.md section 6's account in one request.
+		local: [64]u8
+		ln := read_small("/net/local", local[:])
+		out: [256]u8
+		json := libuser.cat_into(out[:], "{\"email\": \"ac1@", string(local[:max(ln, 0)]), "\", \"password\": \"relay-made\"}\n")
+		head: [160]u8
+		num: [16]u8
+		ok = libuser.write_full(int(dfd), transmute([]u8)libuser.cat_into(head[:], "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ", libuser.itoa(num[:], i64(len(json))), "\r\nConnection: close\r\n\r\n")) && libuser.write_full(int(dfd), transmute([]u8)json)
 	case "/login":
 		if !post {
 			ok = libuser.write_full(int(dfd), transmute([]u8)string(LOGIN_HEAD)) && libuser.write_full(int(dfd), transmute([]u8)string(LOGIN_BODY))
@@ -212,6 +222,20 @@ serve_one :: proc(lfd: i64, served: string) {
 }
 
 // header_int answers a header's number, or zero.
+read_small :: proc "contextless" (path: string, into: []u8) -> int {
+	fd := libuser.open(path, abi.O_RDONLY)
+	if fd < 0 {
+		return -1
+	}
+	n := libuser.read(int(fd), into)
+	_ = libuser.close(int(fd))
+	// The address, its newline off.
+	for n > 0 && (into[n - 1] == '\n' || into[n - 1] == '\r') {
+		n -= 1
+	}
+	return int(n)
+}
+
 header_int :: proc "contextless" (text: string, name: string) -> int {
 	pos := 0
 	for pos < len(text) {

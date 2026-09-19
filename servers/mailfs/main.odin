@@ -10,7 +10,7 @@ and subject come off its headers, its body is the part a reader shows
 with the type it declares, and `raw` is the RFC 5322 bytes. A message's
 `In-Reply-To` that names another message here becomes `replyto`.
 
-    /mnt/mail/ctl        account USER SERVER [PORT] [plain]; fetch;
+    /mnt/mail/ctl        account USER SERVER [PORT] [plain]; account dcaccount:URL; fetch;
                          smtp SERVER [PORT] [plain]; identity DOM;
                          seal on|off; spool DIR|off; invite; join LINE
     /mnt/mail/me         the address, and the key's fingerprint
@@ -64,7 +64,7 @@ NAME_MAX :: 64
 MAX_MESSAGE :: 4 * 1024 * 1024
 LINE_MAX :: 8192
 
-DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nspool dir            mail as files under dir instead of servers, off to stop\ninvite               make an invite for a contact to join verified, shown on ctl\njoin line            join a contact's invite, which runs the handshake over the next fetches\nidentity dom         the openpgp key factotum holds for the user in dom, for the seal\nseal on|off          whether a message to a contact without a key is refused\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\naccount dcaccount:url             a chatmail account in one request: the relay answers the address and password\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nspool dir            mail as files under dir instead of servers, off to stop\ninvite               make an invite for a contact to join verified, shown on ctl\njoin line            join a contact's invite, which runs the handshake over the next fetches\nidentity dom         the openpgp key factotum holds for the user in dom, for the seal\nseal on|off          whether a message to a contact without a key is refused\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Account :: struct {
 	set:    bool,
@@ -143,6 +143,9 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	verb, rest := word(line)
 	switch verb {
 	case "account":
+		if libodin.has_prefix(rest, "dcaccount:") {
+			return start_chatmail(tag, len(text), rest[len("dcaccount:"):])
+		}
 		user, r2 := word(rest)
 		server, r3 := word(r2)
 		port, r4 := word(r3)
@@ -214,6 +217,10 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		case "on":
 			seal_only = true
 		case "off":
+			if chatmail {
+				// The relay refuses cleartext, so this cannot go off.
+				return vectra9.EPERM
+			}
 			seal_only = false
 		case:
 			return vectra9.EINVAL
@@ -1141,7 +1148,7 @@ rebuild_status :: proc() {
 		append(&status, ..transmute([]u8)string(account.plain ? " plain\n" : " tls\n"))
 	}
 	if seal_only {
-		append(&status, ..transmute([]u8)string("seal on\n"))
+		append(&status, ..transmute([]u8)string(chatmail ? "seal on, chatmail\n" : "seal on\n"))
 	}
 	if identity.set {
 		append(&status, ..transmute([]u8)string("identity "))

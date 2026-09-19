@@ -10942,6 +10942,54 @@ verify_securejoin :: proc(r: ^Result, host: string) {
 	finish(r, pb, "and is taken down")
 }
 
+/*
+verify_chatmail runs webfs again and a scripted relay on this machine's
+stack, and gives mailfs a dcaccount: URL. One request later the address
+is the account, the password is in factotum under the address's host, and
+the seal is on and cannot go off: docs/WEB.md section 6's "chatmail is an
+account in one request".
+*/
+@(private = "file")
+verify_chatmail :: proc(r: ^Result, host: string) {
+	wnames := [?]string{"webfs", "-s", "/usr/glenda/lib/web"}
+	wargv := new(Argv)
+	_ = argv_from(wargv, wnames[:])
+	pw := start_path(r, "/bin/webfs", "webfs starts again, for the relay's request", wargv)
+	if pw == nil {
+		return
+	}
+	if !check(r, await_posted("web"), "and posts /srv/web") || !check(r, srv.mount(vfs.boot_namespace, "/srv/web", "/mnt/web") == vfs.OK, "which the kernel mounts") {
+		finish(r, pw, "and webfs is taken down")
+		return
+	}
+	sargs := [?]string{"websrv", "8081", "1"}
+	sargv := new(Argv)
+	_ = argv_from(sargv, sargs[:])
+	if relay := start_path(r, "/bin/websrv", "a scripted chatmail relay starts", sargv); relay != nil {
+		sync.delay(PATIENCE)
+		line_buf: [256]u8
+		local: [64]u8
+		ln := web_read_file("/net/local", local[:])
+		check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account dcaccount:http://", string(local[:ln]), ":8081/new")), "a dcaccount URL on ctl asks the relay for an account")
+		text: [2048]u8
+		n := web_read_file("/mnt/mail/ctl", text[:])
+		got := string(text[:max(n, 0)])
+		check(r, n > 0 && libodin.contains(got, libodin_cat(line_buf[:], "account ac1 ", host, " 993 tls")) && libodin.contains(got, "seal on, chatmail"), "and the address the relay answered is the account, over TLS, with the seal on")
+		n = web_read_file("/mnt/mail/me", text[:])
+		check(r, libodin.has_prefix(string(text[:max(n, 0)]), libodin_cat(line_buf[:], "ac1@", host)), "and me is the new address")
+		n = web_read_file("/mnt/factotum/ctl", text[:])
+		got = string(text[:max(n, 0)])
+		check(r, n > 0 && libodin.contains(got, libodin_cat(line_buf[:], "key proto=pass user=ac1 server=", host)) && !libodin.contains(got, "relay-made"), "and the password the relay made is in factotum under the address's host, unshown")
+		check(r, !net_file_write("/mnt/mail/ctl", "seal off"), "and seal off is refused: the relay refuses cleartext")
+		check(r, wait(relay, PATIENCE * 5), "and the relay, its one request served, exits")
+		finish(r, relay, "and is taken down")
+	}
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
+	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	finish(r, pw, "and is taken down")
+}
+
 // invite_line answers the invite a mail server's ctl shows, or empty.
 @(private = "file")
 invite_line :: proc(status: string) -> string {
@@ -11242,6 +11290,10 @@ verify_mailfs :: proc(r: ^Result) {
 				// files: a bent fingerprint first, which must end in no, then
 				// the invite as made, which ends in yes on both sides.
 				verify_securejoin(r, host)
+
+				// Chatmail: an account in one request, through webfs, from a
+				// scripted relay.
+				verify_chatmail(r, host)
 
 				// The wrong password: the server refuses the login, and the fetch says so.
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")
