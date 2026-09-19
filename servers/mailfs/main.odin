@@ -16,7 +16,13 @@ with the type it declares, and `raw` is the RFC 5322 bytes. A message's
     /mnt/mail/new        a message out: to, subject, replyto, attach, body
     /mnt/mail/inbox/     the mailbox, every message a directory
     /mnt/mail/sent/      what went out, the same shape
+    /mnt/mail/<chat>/    a thread: the messages with one address, or a group's
     /mnt/mail/contacts/  an address a directory: name, key, fingerprint, verified
+
+A chat is a thread. Every message in or out is in `inbox/` or `sent/` as
+mail shows it, and in a chat as a messenger shows it: named for the
+other address, or for the `Chat-Group-ID` header a group's messages
+carry inside the seal. The same message stands in both.
 
 `identity DOM` names the openpgp key factotum holds for the account's
 user in DOM, and `seal.odin` is Autocrypt on it: the key in every
@@ -751,9 +757,10 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	return 0
 }
 
-// add_message makes a message of RFC 5322 bytes and puts it in the inbox.
-// The bytes are the message's raw text, kept.
-add_message :: proc(inbox: ^libmsg.Conv, raw: string) {
+// add_message makes a message of RFC 5322 bytes and puts it in `conv`,
+// `inbox` or `sent`, and in its chat. The bytes are the message's raw
+// text, kept.
+add_message :: proc(conv: ^libmsg.Conv, raw: string) {
 	p, ok := libmime.parse(raw)
 	if !ok {
 		delete(raw)
@@ -776,7 +783,9 @@ add_message :: proc(inbox: ^libmsg.Conv, raw: string) {
 	m.body = clone(body)
 	m.type = clone(btype != "" ? btype : "text/plain")
 	note_autocrypt(&p)
-	if p.type == "multipart/encrypted" && !unseal(&p, &m) {
+	group: [128]u8
+	glen := 0
+	if p.type == "multipart/encrypted" && !unseal(&p, &m, group[:], &glen) {
 		delete(m.body)
 		m.body = clone("(a sealed message this key does not open)")
 	}
@@ -794,7 +803,58 @@ add_message :: proc(inbox: ^libmsg.Conv, raw: string) {
 		m.replyto = clone(angle_off(irt))
 	}
 	m.raw = raw
-	libmsg.add(&net, inbox, m)
+	// The chat it belongs to: the group's id, else the other address.
+	chat: [256]u8
+	chat_name := ""
+	if glen > 0 {
+		chat_name = libuser.cat_into(chat[:], "group-", safe_name(string(group[:glen])))
+	} else {
+		peer_header := conv.name == "sent" ? "to" : "from"
+		if peer, has := libmime.header(&p.headers, peer_header); has {
+			name_buf: [256]u8
+			_, box := libmime.address(peer, name_buf[:])
+			chat_name = libuser.cat_into(chat[:], safe_name(box))
+		}
+	}
+	twin := msg_clone(&m)
+	libmsg.add(&net, conv, m)
+	if len(chat_name) > 0 && chat_name != "inbox" && chat_name != "sent" && chat_name != "notify" {
+		libmsg.add(&net, libmsg.conv(&net, chat_name), twin)
+	} else {
+		libmsg.msg_free(&twin)
+	}
+}
+
+// msg_clone answers a message with strings of its own.
+msg_clone :: proc(m: ^libmsg.Msg) -> libmsg.Msg {
+	c := m^
+	c.id = clone(m.id)
+	c.from = clone(m.from)
+	c.date_text = clone(m.date_text)
+	c.subject = clone(m.subject)
+	c.body = clone(m.body)
+	c.type = clone(m.type)
+	c.raw = clone(m.raw)
+	c.replyto = clone(m.replyto)
+	c.links = clone(m.links)
+	return c
+}
+
+// safe_name keeps the letters, digits and `@ . _ -` of a name and turns
+// the rest to `_`, so an address or a group id is a directory's name.
+safe_name :: proc "contextless" (s: string) -> string {
+	@(static) buf: [256]u8
+	n := 0
+	for i in 0 ..< len(s) {
+		if n >= len(buf) {
+			break
+		}
+		c := s[i]
+		ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '@' || c == '.' || c == '_' || c == '-'
+		buf[n] = ok ? c : '_'
+		n += 1
+	}
+	return string(buf[:n])
 }
 
 // resolve_replies turns each `replyto` that still names a message id into

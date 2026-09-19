@@ -11064,6 +11064,12 @@ verify_mailfs :: proc(r: ^Result) {
 				check(r, string(text[:max(n, 0)]) == "Bob Jones <bob@example.net>", "and its sender reads")
 				check(r, dir_names("/mnt/mail/inbox/" + ID1 + "/replies", lbuf[:]) == ID2, "so replies under the first lists the reply")
 
+				// The chats: the same messages, threaded by the other address.
+				check(r, dir_names("/mnt/mail/bob@example.net", lbuf[:]) == ID2 + " " + ID3 + " " + ID4, "a chat named for Bob's address holds his three messages, the same directories inbox has")
+				check(r, dir_names("/mnt/mail/glenda@example.org", lbuf[:]) == ID1, "and one for the first message's sender holds it")
+				n = web_read_file("/mnt/mail/bob@example.net/" + ID3 + "/body", text[:])
+				check(r, string(text[:max(n, 0)]) == "the sealed body", "a message reads the same in its chat")
+
 				// Autocrypt in: the reply's header left Bob's key in contacts.
 				check(r, dir_names("/mnt/mail/contacts", lbuf[:]) == "bob@example.net", "the reply's Autocrypt header made a contact of its address")
 				n = web_read_file("/mnt/mail/contacts/bob@example.net/name", text[:])
@@ -11096,6 +11102,9 @@ verify_mailfs :: proc(r: ^Result) {
 					check(r, net_file_write("/mnt/mail/new", "to: bob@example.net\nsubject: hello there\nreplyto: " + ID1 + "\n\nA line.\n.dot line\n"), "a message written to new as the block is submitted, and the write returns when it is taken")
 					sent := dir_names("/mnt/mail/sent", lbuf[:])
 					check(r, count_words(sent) == 1, "and what went out is a message of sent")
+					bob_chat: [512]u8
+					chat := dir_names("/mnt/mail/bob@example.net", bob_chat[:])
+					check(r, count_words(chat) == 4 && libodin.contains(chat, sent), "and of the chat with Bob, beside his three")
 					n = web_read_file(libodin_cat(line_buf[:], "/mnt/mail/sent/", sent, "/subject"), text[:])
 					check(r, string(text[:max(n, 0)]) == "hello there", "with its subject")
 					n = web_read_file("/usr/glenda/sent.eml", text[:], raw = true)

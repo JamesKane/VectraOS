@@ -307,7 +307,7 @@ key packets go to factotum until one opens, the data opens here with the
 session key, and the inner message's subject, body and type replace the
 outer's. False when it did not open, and the message says so as its body.
 */
-unseal :: proc(p: ^libmime.Part, m: ^libmsg.Msg) -> bool {
+unseal :: proc(p: ^libmime.Part, m: ^libmsg.Msg, group: []u8, glen: ^int) -> bool {
 	armored := ""
 	for &sub in p.parts {
 		if sub.type == "application/octet-stream" {
@@ -399,6 +399,9 @@ unseal :: proc(p: ^libmime.Part, m: ^libmsg.Msg) -> bool {
 		if subject, has := libmime.header(&inner.headers, "subject"); has {
 			delete(m.subject)
 			m.subject = clone(libmime.decode_words(subject, buf[:]))
+		}
+		if gid, has := libmime.header(&inner.headers, "chat-group-id"); has {
+			glen^ = copy(group, libmime.trim(gid))
 		}
 		body, btype := libmime.text_body(&inner)
 		delete(m.body)
