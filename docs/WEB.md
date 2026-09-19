@@ -836,9 +836,19 @@ body, and `In-Reply-To` resolves to `replyto`.
 
 The boot line runs it plain against `tests/imapsrv`, a scripted server
 on the machine's own stack. The saved two-part mail and its reply land
-as an inbox. A wrong password is refused, and the fetch says so. Not yet: IDLE,
-`new` over SMTP, `libpgp` and the seal, Autocrypt, contacts, chats,
-chatmail and SecureJoin.
+as an inbox. A wrong password is refused, and the fetch says so.
+
+`new` is in, over SMTP submission. The block written becomes a message.
+From is the account, Date is now, a Message-ID is made, and In-Reply-To
+is the inbox message `replyto` names. The body goes as text, or as a
+multipart with a base64 part per `attach`. `AUTH PLAIN` uses the same
+password from `factotum`.
+
+The write returns once the server takes the message, or says why not.
+What went out is a message of `sent/`. The boot line submits a reply to
+`tests/smtpsrv` and reads it back whole from the file the server wrote.
+Not yet: IDLE, STARTTLS, `libpgp` and the seal, Autocrypt, contacts,
+chats, chatmail and SecureJoin.
 
 ### Step 4: the two networks
 

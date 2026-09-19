@@ -555,10 +555,11 @@ the documents it points at.
    window waits on a network that takes `new`.
 
    **Step 3, mail, is open.** `servers/mailfs` fetches an inbox over
-   IMAP, with the password from `factotum`'s new `proto=pass`, into
-   the shape, proven against `tests/imapsrv` on the boot line. Next:
-   `new` over SMTP submission, then the compose window, then `libpgp`
-   and the seal.
+   IMAP into the shape, with the password from `factotum`'s new
+   `proto=pass`. It submits a write to `new` over SMTP. The boot line
+   proves both against `tests/imapsrv` and `tests/smtpsrv`. Mail is
+   the first network that takes `new`. Next: the compose
+   window in the reader, then `libpgp` and the seal.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
