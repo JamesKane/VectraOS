@@ -24,6 +24,9 @@ is then its wire, its record, and nothing about 9P.
     <conv>/<id>/replyto the id this answers, or empty
     <conv>/<id>/replies/ what answered it, one level down
     <conv>/<id>/links   what the message points at, one per line
+    <dir>/<name>/<file> a tree beside the conversations: `contacts/`,
+                        one directory an address, its files name, key
+                        and verified
 
 An id sorts by time: the date in sixteen hex digits, a dot, and the
 network's own id, so a listing is in order without sorting anything. A
@@ -59,8 +62,28 @@ New_Fn :: #type proc(net: ^Net, tag: vectra9.Tag, text: string) -> vectra9.Errno
 
 MAX_EVENTS :: 256
 
+// A tree beside the conversations: a directory of directories of files,
+// the way `contacts/<address>/{name,key,verified}` is. Read only.
+Xfile :: struct {
+	name: string,
+	text: string, // Owned
+}
+
+Xsub :: struct {
+	name:  string,
+	files: [dynamic]Xfile,
+}
+
+Xdir :: struct {
+	name: string,
+	subs: [dynamic]Xsub,
+}
+
+MAX_XFILES :: 8
+
 Net :: struct {
 	convs:  [dynamic]Conv, // `notify` is the first
+	extras: [dynamic]Xdir, // The trees beside them
 	me:     string,
 	dict:   string,
 	status: string, // What a read of `ctl` answers
@@ -81,7 +104,76 @@ Net :: struct {
 // init makes a network with its `notify` conversation and nothing else.
 init :: proc(net: ^Net) {
 	net.convs = make([dynamic]Conv, 0, 8)
+	net.extras = make([dynamic]Xdir, 0, 2)
 	_ = conv(net, "notify")
+}
+
+// extra answers the tree called `name` beside the conversations, made if
+// it was not there.
+extra :: proc(net: ^Net, name: string) -> ^Xdir {
+	for &x in net.extras {
+		if x.name == name {
+			return &x
+		}
+	}
+	own := make([]u8, len(name))
+	copy(own, name)
+	append(&net.extras, Xdir{name = string(own), subs = make([dynamic]Xsub, 0, 8)})
+	return &net.extras[len(net.extras) - 1]
+}
+
+// xsub answers the directory called `name` in a tree, made if it was not.
+xsub :: proc(x: ^Xdir, name: string) -> ^Xsub {
+	for &d in x.subs {
+		if d.name == name {
+			return &d
+		}
+	}
+	own := make([]u8, len(name))
+	copy(own, name)
+	append(&x.subs, Xsub{name = string(own), files = make([dynamic]Xfile, 0, MAX_XFILES)})
+	return &x.subs[len(x.subs) - 1]
+}
+
+// xset sets a file's text in a directory, its own copy, replacing what
+// the file held.
+xset :: proc(d: ^Xsub, name: string, text: string) {
+	own := make([]u8, len(text))
+	copy(own, text)
+	for &f in d.files {
+		if f.name == name {
+			delete(f.text)
+			f.text = string(own)
+			return
+		}
+	}
+	if len(d.files) >= MAX_XFILES {
+		delete(own)
+		return
+	}
+	nm := make([]u8, len(name))
+	copy(nm, name)
+	append(&d.files, Xfile{name = string(nm), text = string(own)})
+}
+
+// xget answers a file's text in a directory, or false.
+xget :: proc "contextless" (d: ^Xsub, name: string) -> (string, bool) {
+	for f in d.files {
+		if f.name == name {
+			return f.text, true
+		}
+	}
+	return "", false
+}
+
+// xfind answers the directory called `name` in a tree, or nil.
+xfind :: proc "contextless" (x: ^Xdir, name: string) -> ^Xsub {
+	for &d in x.subs {
+		if d.name == name {
+			return &d
+		}
+	}
+	return nil
 }
 
 // conv answers the conversation called `name`, made if it was not there.
@@ -235,6 +327,9 @@ Kind :: enum u8 {
 	Replyto,
 	Replies,
 	Links,
+	Xdir, // A tree beside the conversations: its index in the conv field
+	Xsub, // A directory in it: the sub's index in the msg field's low twelve bits
+	Xfile, // A file in that: the file's index in the msg field's high three
 }
 
 MSG_FILES := [?]Kind{.From, .Date, .Subject, .Body, .Type, .Raw, .Hash, .Replyto, .Replies, .Links}
@@ -266,7 +361,21 @@ msg_of :: proc "contextless" (node: i32) -> int {
 }
 
 is_dir :: proc "contextless" (kind: Kind) -> bool {
-	return kind == .Root || kind == .Conv || kind == .Msg || kind == .Replies
+	return kind == .Root || kind == .Conv || kind == .Msg || kind == .Replies || kind == .Xdir || kind == .Xsub
+}
+
+// An extra tree's node: the sub's index in the low twelve bits of the msg
+// field and the file's index above them.
+xnode :: proc "contextless" (kind: Kind, xi: int, si: int, fi: int) -> i32 {
+	return node_of(kind, xi, si | fi << 12)
+}
+
+xsub_of :: proc "contextless" (node: i32) -> int {
+	return msg_of(node) & 0xFFF
+}
+
+xfile_of :: proc "contextless" (node: i32) -> int {
+	return msg_of(node) >> 12
 }
 
 @(private = "file")
@@ -427,8 +536,14 @@ text_of :: proc(net: ^Net, node: i32) -> (text: []u8, found: bool) {
 		return nil, true
 	case .Dict:
 		return transmute([]u8)net.dict, true
-	case .Root, .Conv, .Msg, .Replies, .Event:
+	case .Root, .Conv, .Msg, .Replies, .Event, .Xdir, .Xsub:
 		return nil, false
+	case .Xfile:
+		xi, si, fi := conv_of(node), xsub_of(node), xfile_of(node)
+		if xi < 0 || xi >= len(net.extras) || si < 0 || si >= len(net.extras[xi].subs) || fi < 0 || fi >= len(net.extras[xi].subs[si].files) {
+			return nil, false
+		}
+		return transmute([]u8)net.extras[xi].subs[si].files[fi].text, true
 	case .From, .Date, .Subject, .Body, .Type, .Raw, .Hash, .Replyto, .Links:
 		ci, mi := conv_of(node), msg_of(node)
 		if ci < 0 || ci >= len(net.convs) || mi < 0 || mi >= len(net.convs[ci].msgs) {
@@ -509,12 +624,14 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 	ci, mi := conv_of(from), msg_of(from)
 	if name == ".." {
 		#partial switch kind {
-		case .Root, .Conv:
+		case .Root, .Conv, .Xdir:
 			return node_of(.Root, -1, -1)
 		case .Msg:
 			return node_of(.Conv, ci, -1)
 		case .Replies:
 			return node_of(.Msg, ci, mi)
+		case .Xsub:
+			return node_of(.Xdir, ci, -1)
 		}
 		return -1
 	}
@@ -527,6 +644,30 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 		}
 		if i := conv_index(net, name); i >= 0 {
 			return node_of(.Conv, i, -1)
+		}
+		for x, i in net.extras {
+			if x.name == name {
+				return node_of(.Xdir, i, -1)
+			}
+		}
+	case .Xdir:
+		if ci < 0 || ci >= len(net.extras) {
+			return -1
+		}
+		for d, i in net.extras[ci].subs {
+			if d.name == name {
+				return xnode(.Xsub, ci, i, 0)
+			}
+		}
+	case .Xsub:
+		si := xsub_of(from)
+		if ci < 0 || ci >= len(net.extras) || si < 0 || si >= len(net.extras[ci].subs) {
+			return -1
+		}
+		for f, i in net.extras[ci].subs[si].files {
+			if f.name == name {
+				return xnode(.Xfile, ci, si, i)
+			}
 		}
 	case .Conv:
 		if ci < 0 || ci >= len(net.convs) {
@@ -573,14 +714,42 @@ readdir :: proc(net: ^Net, m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) 
 	i := int(m.offset)
 	#partial switch kind {
 	case .Root:
-		for i < len(ROOT_FILES) + len(net.convs) {
+		for i < len(ROOT_FILES) + len(net.convs) + len(net.extras) {
 			e: vectra9.Dirent
 			if i < len(ROOT_FILES) {
 				e = vectra9.Dirent{qid = qid_of(node_of(Kind(int(Kind.Ctl) + i), -1, -1)), type = vectra9.DT_REG, name = ROOT_FILES[i]}
-			} else {
+			} else if i < len(ROOT_FILES) + len(net.convs) {
 				k := i - len(ROOT_FILES)
 				e = vectra9.Dirent{qid = qid_of(node_of(.Conv, k, -1)), type = vectra9.DT_DIR, name = net.convs[k].name}
+			} else {
+				k := i - len(ROOT_FILES) - len(net.convs)
+				e = vectra9.Dirent{qid = qid_of(node_of(.Xdir, k, -1)), type = vectra9.DT_DIR, name = net.extras[k].name}
 			}
+			if !put(&c, e, i) {
+				break
+			}
+			i += 1
+		}
+	case .Xdir:
+		if ci < 0 || ci >= len(net.extras) {
+			break
+		}
+		x := &net.extras[ci]
+		for i < len(x.subs) {
+			e := vectra9.Dirent{qid = qid_of(xnode(.Xsub, ci, i, 0)), type = vectra9.DT_DIR, name = x.subs[i].name}
+			if !put(&c, e, i) {
+				break
+			}
+			i += 1
+		}
+	case .Xsub:
+		si := xsub_of(node)
+		if ci < 0 || ci >= len(net.extras) || si < 0 || si >= len(net.extras[ci].subs) {
+			break
+		}
+		d := &net.extras[ci].subs[si]
+		for i < len(d.files) {
+			e := vectra9.Dirent{qid = qid_of(xnode(.Xfile, ci, si, i)), type = vectra9.DT_REG, name = d.files[i].name}
 			if !put(&c, e, i) {
 				break
 			}

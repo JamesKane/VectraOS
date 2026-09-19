@@ -23,7 +23,13 @@ import "vsys:libuser"
 USER :: "glenda"
 PASSWORD :: "hunter2"
 
-REPLY :: "From: Bob Jones <bob@example.net>\r\nTo: glenda@example.org\r\nSubject: Re: A message with two parts\r\nDate: Fri, 18 Sep 2026 09:00:00 +0000\r\nMessage-ID: <two@example.net>\r\nIn-Reply-To: <one@example.org>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nGot it, thanks.\r\n"
+// The reply carries Bob's key the Autocrypt way: RFC 9580's sample
+// certificate, whose secret key the seal's test holds.
+REPLY :: "From: Bob Jones <bob@example.net>\r\nTo: glenda@example.org\r\nSubject: Re: A message with two parts\r\nDate: Fri, 18 Sep 2026 09:00:00 +0000\r\nMessage-ID: <two@example.net>\r\nIn-Reply-To: <one@example.org>\r\nAutocrypt: addr=bob@example.net; prefer-encrypt=mutual;\r\n keydata=xioGY4d/4xsAAAAg+U2nu0jWCmHlZ3BqZYfQMxmZu52JGggkLq2EVD34laPCsQYfGwoAAABCBYJj\r\n h3/jAwsJBwUVCg4IDAIWAAKbAwIeCSIhBssYbE8GCaaX5NUt+mxyKwwfHifBilZwj2Ul7Ce62azJ\r\n BScJAgcCAAAAAK0oIBA+LX0ifsDm185Ecds2v8lwgyU2kCcUmKfvBXbAf6rhRYWzuQOwEn7E/aLw\r\n IwRaLsdry0+VcallHhSu4RN6HWaEQsiPlR4zxP/TP7mhfVEe7XWPxtnMUMtf15OyA51YBM4qBmOH\r\n f+MZAAAAIIaTJINn+eUBXbki+PSAld2nhJh/LVmFsS+60WyvXkQ1wpsGGBsKAAAALAWCY4d/4wKb\r\n DCIhBssYbE8GCaaX5NUt+mxyKwwfHifBilZwj2Ul7Ce62azJAAAAAAQBIKbpGG2dWTX8j+VjFM21\r\n J0hqWlEg+bdiojWnKfA5AQpWUWtnNwDEM0g12vYxoWM8Y81W+bHBw805I8kWVkXU6vFOi+HWvv/i\r\n ra7ofJu16NnoUkhclkUrk0mXubZvyl4GBg==\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nGot it, thanks.\r\n"
+
+// A third message, when the seal's test left one: sealed to the key
+// factotum holds, so the inbox opens it.
+SEALED_PATH :: "/usr/glenda/sealed.eml"
 
 fail :: proc "contextless" (what: string) -> ! {
 	libuser.eprint("imapsrv: ", what, "\n")
@@ -40,6 +46,7 @@ start :: proc "c" (block: ^abi.Args) {
 	if !fok {
 		fail("read the saved mail")
 	}
+	sealed, _ := libuser.read_file(SEALED_PATH, context.allocator)
 
 	addr: [64]u8
 	spec := libuser.cat_into(addr[:], "tcp!*!", port)
@@ -61,7 +68,7 @@ start :: proc "c" (block: ^abi.Args) {
 	logged := 0
 	refused := 0
 	for logged + refused < 2 {
-		how := serve_one(lfd, served, first)
+		how := serve_one(lfd, served, first, sealed)
 		if how {
 			logged += 1
 		} else {
@@ -77,7 +84,7 @@ start :: proc "c" (block: ^abi.Args) {
 
 // serve_one takes the next connection and runs the session. True when the
 // client logged in and fetched, false when it was refused.
-serve_one :: proc(lfd: i64, served: string, first: []u8) -> bool {
+serve_one :: proc(lfd: i64, served: string, first: []u8, sealed: []u8) -> bool {
 	path: [160]u8
 	line: [64]u8
 	n := libuser.read(int(lfd), line[:])
@@ -137,7 +144,8 @@ serve_one :: proc(lfd: i64, served: string, first: []u8) -> bool {
 				continue
 			}
 			selected = true
-			say(dfd, "* 2 EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 1] UIDs valid\r\n* OK [UIDNEXT 103] Predicted next UID\r\n* FLAGS (\\Seen \\Answered)\r\n")
+			say(dfd, len(sealed) > 0 ? "* 3 EXISTS\r\n" : "* 2 EXISTS\r\n")
+			say(dfd, "* 0 RECENT\r\n* OK [UIDVALIDITY 1] UIDs valid\r\n* OK [UIDNEXT 104] Predicted next UID\r\n* FLAGS (\\Seen \\Answered)\r\n")
 			say(dfd, libuser.cat_into(out[64:], tag, " OK [READ-WRITE] SELECT completed\r\n"))
 		case "UID":
 			sub, _ := word(args)
@@ -147,6 +155,9 @@ serve_one :: proc(lfd: i64, served: string, first: []u8) -> bool {
 			}
 			literal(dfd, 1, 101, first)
 			literal(dfd, 2, 102, transmute([]u8)string(REPLY))
+			if len(sealed) > 0 {
+				literal(dfd, 3, 103, sealed)
+			}
 			say(dfd, libuser.cat_into(out[64:], tag, " OK FETCH completed\r\n"))
 		case "LOGOUT":
 			say(dfd, "* BYE imapsrv logging out\r\n")

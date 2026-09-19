@@ -16,6 +16,7 @@ package pgptest
 import "vsys:abi"
 import "vsys:libauth"
 import "vsys:libcrypto"
+import "vsys:libmime"
 import "vsys:libpgp"
 import "vsys:libuser"
 
@@ -50,6 +51,12 @@ start :: proc "c" (block: ^abi.Args) {
 	// protocol, once factotum holds a key.
 	if len(args) >= 2 && args[1] == "factotum" {
 		check_factotum()
+		libuser.exits("ok")
+	}
+	// `pgptest unseal FILE` opens a mail sealed to RFC 9580's sample key,
+	// which the mail test has Bob hold, and checks what mailfs sealed.
+	if len(args) >= 3 && args[1] == "unseal" {
+		check_unseal(args[2])
 		libuser.exits("ok")
 	}
 
@@ -91,7 +98,7 @@ start :: proc "c" (block: ^abi.Args) {
 	sp.chunk = 6
 	sealed: [1024]u8
 	pubsub := libpgp.find_subkey(&c, libpgp.ALGO_X25519)
-	sn := libpgp.seal_message(pubsub, transmute([]u8)string("Hello, world!"), sp, sealed[:])
+	sn := libpgp.seal_message([]^libpgp.Key{pubsub}, transmute([]u8)string("Hello, world!"), sp, sealed[:])
 	want(sn == len(MESSAGE) && string(sealed[:sn]) == string(MESSAGE[:]), "sealing with the RFC's ephemeral secret, session key, salt and padding makes its sample message, octet for octet")
 
 	// And the signing side against the sample signed message, with its salt
@@ -117,7 +124,7 @@ start :: proc "c" (block: ^abi.Args) {
 		big[i] = u8(i * 7)
 	}
 	sealed_big := make([]u8, 12000)
-	bn := libpgp.seal_message(pubsub, big, rp, sealed_big)
+	bn := libpgp.seal_message([]^libpgp.Key{pubsub}, big, rp, sealed_big)
 	opened := make([]u8, 12000)
 	l3, ok3 := libpgp.open_message(sealed_big[:bn], sub, opened)
 	want(bn > 0 && ok3 && string(l3.data) == string(big), "a message sealed here with random parameters opens here, three chunks of AES-256 whole")
@@ -169,7 +176,7 @@ check_factotum :: proc() {
 	sp.padding = rnd[:9]
 	sp.chunk = 6
 	sealed: [1024]u8
-	sn := libpgp.seal_message(&c.subkeys[0], transmute([]u8)string("sealed to the key factotum holds"), sp, sealed[:])
+	sn := libpgp.seal_message([]^libpgp.Key{&c.subkeys[0]}, transmute([]u8)string("sealed to the key factotum holds"), sp, sealed[:])
 	want(sn > 0, "a message seals to the certificate's subkey")
 	pk, after, pok := libpgp.next(sealed[:sn], 0)
 	want(pok && pk.tag == libpgp.PKESK, "its first packet is the session key packet")
@@ -202,6 +209,53 @@ check_factotum :: proc() {
 	want(pn > 0 && gok && libpgp.verify_data(&c.primary, &sg, doc), "and the packet finished here verifies against the certificate")
 	want(!libpgp.verify_data(&c.primary, &sg, transmute([]u8)string("another line")), "and not over another line")
 	_ = libuser.close(int(rpc))
+
+	// A mail sealed to factotum's key, left for the mail test's server to
+	// serve: the inbox must open it through factotum.
+	inner := "Subject: sealed subject\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nthe sealed body\r\n"
+	want(fill_random(rnd[:]), "entropy for the sealed mail")
+	copy(sp.ephemeral[:], rnd[:32])
+	sp.session = rnd[32:64]
+	copy(sp.salt[:], rnd[64:96])
+	sn = libpgp.seal_message([]^libpgp.Key{&c.subkeys[0]}, transmute([]u8)inner, sp, sealed[:])
+	armored: [2048]u8
+	an := libpgp.armor("PGP MESSAGE", sealed[:sn], armored[:])
+	want(sn > 0 && an > 0, "the sealed mail's body armors")
+	_ = libuser.remove("/usr/glenda/sealed.eml")
+	fd := libuser.create("/usr/glenda/sealed.eml", abi.O_WRONLY, 0o644)
+	want(fd >= 0, "the sealed mail's file is made")
+	head := "From: Carol <carol@example.org>\r\nTo: glenda@example.org\r\nSubject: ...\r\nDate: Sat, 19 Sep 2026 12:00:00 +0000\r\nMessage-ID: <three@example.org>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=\"sealed_bound\"\r\n\r\n--sealed_bound\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n--sealed_bound\r\nContent-Type: application/octet-stream; name=\"encrypted.asc\"\r\n\r\n"
+	want(libuser.write_full(int(fd), transmute([]u8)head) && libuser.write_full(int(fd), armored[:an]) && libuser.write_full(int(fd), transmute([]u8)string("--sealed_bound--\r\n")), "and written")
+	_ = libuser.close(int(fd))
+}
+
+// check_unseal opens the mail at `path`, sealed by mailfs to Bob's key, the
+// RFC's sample key, and checks the subject and body inside.
+check_unseal :: proc(path: string) {
+	text, ok := libuser.read_file(path, context.allocator)
+	want(ok, "unseal: the sent mail reads")
+	outer, pok := libmime.parse(string(text))
+	want(pok && outer.type == "multipart/encrypted" && len(outer.parts) == 2, "it is multipart/encrypted with two parts")
+	subj, _ := libmime.header(&outer.headers, "subject")
+	want(subj == "...", "and its outer subject is the placeholder")
+	ac, has_ac := libmime.header(&outer.headers, "autocrypt")
+	want(has_ac && len(ac) > 100, "and it carries an Autocrypt header")
+	armored := outer.parts[1].body
+	packets: [8192]u8
+	n := libpgp.armor_decode(armored, packets[:])
+	want(n > 0, "the second part is armored packets")
+	s, sok := libpgp.parse_cert(SECRET[:])
+	want(sok, "Bob's secret key parses")
+	sub := libpgp.find_subkey(&s, libpgp.ALGO_X25519)
+	out: [8192]u8
+	l, lok := libpgp.open_message(packets[:n], sub, out[:])
+	want(lok, "which open with Bob's key: the message was sealed to the key his header carried")
+	inner, iok := libmime.parse(string(l.data))
+	want(iok, "to an inner message")
+	isubj, _ := libmime.header(&inner.headers, "subject")
+	want(isubj == "hello there", "with the real subject inside")
+	body, _ := libmime.text_body(&inner)
+	want(body == "A line.\r\n.dot line\r\n", "and the body whole inside")
 }
 
 // ask writes a line to the rpc file and reads the answer on the same fid.

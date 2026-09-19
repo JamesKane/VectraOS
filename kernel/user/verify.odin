@@ -11012,6 +11012,7 @@ verify_mailfs :: proc(r: ^Result) {
 	line_buf: [256]u8
 	check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=glenda server=", host, " !password=hunter2")), "a pass key is written to factotum: a user, a server and the password")
 	check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=nobody server=", host, " !password=wrong")), "and a second, with a password the server will refuse")
+	check(r, net_file_write("/mnt/factotum/ctl", "key proto=openpgp user=glenda dom=home !passphrase=correct-horse"), "and the openpgp identity, from the same passphrase as before, so it is the same key")
 	listing: [1024]u8
 	n := web_read_file("/mnt/factotum/ctl", listing[:])
 	got := string(listing[:max(n, 0)])
@@ -11033,13 +11034,17 @@ verify_mailfs :: proc(r: ^Result) {
 			if mounted {
 				ID1 :: "000000006aac8284.3714e3891dc03ae6"
 				ID2 :: "000000006aacfd90.1ccd7668973d1eec"
+				ID3 :: "000000006aae7940.b1ffcbb1bb626e10"
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account glenda ", host, " 1143 plain")), "an account is a user, a server and a port on ctl")
 				text: [2048]u8
 				n = web_read_file("/mnt/mail/me", text[:])
 				check(r, string(text[:max(n, 0)]) == libodin_cat(line_buf[:], "glenda@", host), "and me is the address")
+				check(r, net_file_write("/mnt/mail/ctl", "identity home"), "identity names the openpgp key factotum holds for the user")
+				n = web_read_file("/mnt/mail/me", text[:])
+				check(r, libodin.has_prefix(string(text[:max(n, 0)]), libodin_cat(line_buf[:], "glenda@", host, "\nfpr ")), "and me gains the key's fingerprint")
 				check(r, net_file_write("/mnt/mail/ctl", "fetch"), "fetch logs in with the password from factotum and takes the inbox")
 				lbuf: [512]u8
-				check(r, dir_names("/mnt/mail/inbox", lbuf[:]) == ID1 + " " + ID2, "and inbox lists the two messages by id, in time order, the message id hashed into the name")
+				check(r, dir_names("/mnt/mail/inbox", lbuf[:]) == ID1 + " " + ID2 + " " + ID3, "and inbox lists the three messages by id, in time order, the message id hashed into the name")
 				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/subject", text[:])
 				check(r, string(text[:max(n, 0)]) == "A message with two parts and an file", "a subject is unfolded and its encoded words decoded")
 				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/from", text[:])
@@ -11057,6 +11062,26 @@ verify_mailfs :: proc(r: ^Result) {
 				n = web_read_file("/mnt/mail/inbox/" + ID2 + "/from", text[:])
 				check(r, string(text[:max(n, 0)]) == "Bob Jones <bob@example.net>", "and its sender reads")
 				check(r, dir_names("/mnt/mail/inbox/" + ID1 + "/replies", lbuf[:]) == ID2, "so replies under the first lists the reply")
+
+				// Autocrypt in: the reply's header left Bob's key in contacts.
+				check(r, dir_names("/mnt/mail/contacts", lbuf[:]) == "bob@example.net", "the reply's Autocrypt header made a contact of its address")
+				n = web_read_file("/mnt/mail/contacts/bob@example.net/name", text[:])
+				check(r, string(text[:max(n, 0)]) == "Bob Jones", "with the sender's name")
+				n = web_read_file("/mnt/mail/contacts/bob@example.net/fingerprint", text[:])
+				check(r, string(text[:max(n, 0)]) == "cb186c4f0609a697e4d52dfa6c722b0c1f1e27c18a56708f6525ec27bad9acc9", "the key's fingerprint, the RFC's sample key's")
+				n = web_read_file("/mnt/mail/contacts/bob@example.net/key", text[:])
+				check(r, n > 0 && libodin.has_prefix(string(text[:n]), "-----BEGIN PGP PUBLIC KEY BLOCK-----"), "the key armored")
+				n = web_read_file("/mnt/mail/contacts/bob@example.net/verified", text[:])
+				check(r, string(text[:max(n, 0)]) == "no", "and verified says no, until a handshake says yes")
+
+				// A sealed message in: the seal's test left one sealed to this
+				// identity, and the inbox opened it through factotum.
+				n = web_read_file("/mnt/mail/inbox/" + ID3 + "/subject", text[:])
+				check(r, string(text[:max(n, 0)]) == "sealed subject", "a message sealed to the identity opens: its subject is the one inside, not the placeholder")
+				n = web_read_file("/mnt/mail/inbox/" + ID3 + "/body", text[:])
+				check(r, string(text[:max(n, 0)]) == "the sealed body", "and its body is the text inside, opened with the session key factotum handed back")
+				n = web_read_file("/mnt/mail/inbox/" + ID3 + "/raw", text[:], raw = true)
+				check(r, n > 0 && libodin.contains(string(text[:n]), "multipart/encrypted"), "while raw is the sealed message as it came")
 				// Out: a submission server, and a message written to new.
 				sargs := [?]string{"smtpsrv", "1587", "/usr/glenda/sent.eml", "2"}
 				sargv := new(Argv)
@@ -11072,16 +11097,18 @@ verify_mailfs :: proc(r: ^Result) {
 					check(r, string(text[:max(n, 0)]) == "hello there", "with its subject")
 					n = web_read_file("/usr/glenda/sent.eml", text[:], raw = true)
 					arrived := string(text[:max(n, 0)])
-					check(r, n > 0 && libodin.contains(arrived, libodin_cat(line_buf[:], "From: glenda@", host, "\r\n")) && libodin.contains(arrived, "To: bob@example.net\r\n") && libodin.contains(arrived, "Subject: hello there\r\n"), "the server got the message with its From, To and Subject built")
+					check(r, n > 0 && libodin.contains(arrived, libodin_cat(line_buf[:], "From: glenda@", host, "\r\n")) && libodin.contains(arrived, "To: bob@example.net\r\n") && libodin.contains(arrived, "Subject: ...\r\n"), "the server got the message with its From and To built, and the placeholder subject, since Bob has a key")
 					check(r, libodin.contains(arrived, "In-Reply-To: <one@example.org>\r\n"), "and In-Reply-To names the message the reply answers, by its message id")
-					check(r, libodin.contains(arrived, "\r\n\r\nA line.\r\n.dot line\r\n"), "and the body whole, its dot-stuffing undone by the server")
+					check(r, libodin.contains(arrived, libodin_cat(line_buf[:], "Autocrypt: addr=glenda@", host, "; prefer-encrypt=mutual;")) && libodin.contains(arrived, "Content-Type: multipart/encrypted;"), "and it carries the person's key in its Autocrypt header and is sealed")
+					unames := [?]string{"pgptest", "unseal", "/usr/glenda/sent.eml"}
+					script_says(r, "/bin/pgptest", unames[:], PATIENCE * 10, "a program with Bob's secret key starts on it", "ok", "and opens it: the real subject and the body whole are inside, sealed to the key Bob's header carried")
 					check(r, !net_file_write("/mnt/mail/new", "to: nobody@nowhere\n\nx"), "a recipient the server refuses fails the write")
 
 					// The compose window: typed into, and sent through new.
 					if s := devfs.raw_surface(); s != nil && s.pixels != nil && s.bytes_pp == 4 {
 						dcount0 := srv.count()
 						if ps := start_draw_server(r, s, "the loader starts the draw server for the compose window", "which posts /srv/draw for the reader to find", "and paints a desktop before the reader opens a window"); ps != nil {
-							cnames := [?]string{"mothra", "mailto:bob@example.net"}
+							cnames := [?]string{"mothra", "mailto:carol@example.org"}
 							cargv := new(Argv)
 							_ = argv_from(cargv, cnames[:])
 							if pm := start_path(r, "/bin/mothra", "the loader starts the reader on a mailto address, the compose window", cargv); pm != nil {
@@ -11101,7 +11128,7 @@ verify_mailfs :: proc(r: ^Result) {
 									sync.delay(1)
 								}
 								check(r, arrived, "and the typed subject reaches the submission server through new, the window's form written as the block")
-								check(r, arrived && libodin.contains(string(text[:max(n, 0)]), "\r\n\r\ntyped body\r\n") && libodin.contains(string(text[:max(n, 0)]), "To: bob@example.net\r\n"), "with the typed body and the address the mailto filled in")
+								check(r, arrived && libodin.contains(string(text[:max(n, 0)]), "\r\n\r\ntyped body\r\n") && libodin.contains(string(text[:max(n, 0)]), "To: carol@example.org\r\n"), "with the typed body and the address the mailto filled in, plain since Carol has no key here")
 								_ = notepg_kernel(pm.note_group, "kill")
 								check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
 								finish(r, pm, "and is taken down")

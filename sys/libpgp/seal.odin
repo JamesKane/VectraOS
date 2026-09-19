@@ -434,14 +434,14 @@ Seal_Params :: struct {
 }
 
 /*
-seal_message writes a message sealed to `recipient`, an X25519 key: a
-version 6 session key packet naming it, and version 2 sealed data in
+seal_message writes a message sealed to `recipients`, X25519 keys: a
+version 6 session key packet naming each, and version 2 sealed data in
 AES-OCB holding the literal data, binary, and the padding. Answers the
-length written, or -1.
+length written, or -1. The one ephemeral key serves every recipient.
 */
-seal_message :: proc(recipient: ^Key, data: []u8, p: Seal_Params, out: []u8) -> int {
+seal_message :: proc(recipients: []^Key, data: []u8, p: Seal_Params, out: []u8) -> int {
 	p := p
-	if recipient.algo != ALGO_X25519 || len(recipient.public) != 32 || recipient.version != 6 {
+	if len(recipients) == 0 {
 		return -1
 	}
 	klen := len(p.session)
@@ -454,34 +454,40 @@ seal_message :: proc(recipient: ^Key, data: []u8, p: Seal_Params, out: []u8) -> 
 	case:
 		return -1
 	}
-	// The session key packet.
+	// A session key packet a recipient.
 	eph_pub: [32]u8
 	x25519.scalarmult_basepoint(eph_pub[:], p.ephemeral[:])
-	shared: [32]u8
-	x25519.scalarmult(shared[:], p.ephemeral[:], recipient.public)
-	ikm: [96]u8
-	copy(ikm[:32], eph_pub[:])
-	copy(ikm[32:64], recipient.public)
-	copy(ikm[64:], shared[:])
-	kek: [16]u8
-	hkdf.extract_and_expand(.SHA256, nil, ikm[:], transmute([]u8)string("OpenPGP X25519"), kek[:])
-	pk: [128]u8
-	n := 0
-	pk[0], pk[1], pk[2] = 6, u8(1 + recipient.fpr_len), 6
-	n = 3
-	n += copy(pk[n:], recipient.fingerprint[:recipient.fpr_len])
-	pk[n] = ALGO_X25519
-	n += 1
-	n += copy(pk[n:], eph_pub[:])
-	pk[n] = u8(klen + 8)
-	n += 1
-	if !wrap(kek[:], p.session, pk[n:n + klen + 8]) {
-		return -1
-	}
-	n += klen + 8
-	at := put_packet(out, 0, PKESK, pk[:n])
-	if at < 0 {
-		return -1
+	at := 0
+	for recipient in recipients {
+		if recipient.algo != ALGO_X25519 || len(recipient.public) != 32 || recipient.version != 6 {
+			return -1
+		}
+		shared: [32]u8
+		x25519.scalarmult(shared[:], p.ephemeral[:], recipient.public)
+		ikm: [96]u8
+		copy(ikm[:32], eph_pub[:])
+		copy(ikm[32:64], recipient.public)
+		copy(ikm[64:], shared[:])
+		kek: [16]u8
+		hkdf.extract_and_expand(.SHA256, nil, ikm[:], transmute([]u8)string("OpenPGP X25519"), kek[:])
+		pk: [128]u8
+		n := 0
+		pk[0], pk[1], pk[2] = 6, u8(1 + recipient.fpr_len), 6
+		n = 3
+		n += copy(pk[n:], recipient.fingerprint[:recipient.fpr_len])
+		pk[n] = ALGO_X25519
+		n += 1
+		n += copy(pk[n:], eph_pub[:])
+		pk[n] = u8(klen + 8)
+		n += 1
+		if !wrap(kek[:], p.session, pk[n:n + klen + 8]) {
+			return -1
+		}
+		n += klen + 8
+		at = put_packet(out, at, PKESK, pk[:n])
+		if at < 0 {
+			return -1
+		}
 	}
 	// The plaintext: the literal and the padding.
 	plain := make([]u8, len(data) + len(p.padding) + 32)

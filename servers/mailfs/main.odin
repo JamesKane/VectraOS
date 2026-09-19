@@ -11,11 +11,18 @@ with the type it declares, and `raw` is the RFC 5322 bytes. A message's
 `In-Reply-To` that names another message here becomes `replyto`.
 
     /mnt/mail/ctl        account USER SERVER [PORT] [plain]; fetch;
-                         smtp SERVER [PORT] [plain]
-    /mnt/mail/me         the address
+                         smtp SERVER [PORT] [plain]; identity DOM
+    /mnt/mail/me         the address, and the key's fingerprint
     /mnt/mail/new        a message out: to, subject, replyto, attach, body
     /mnt/mail/inbox/     the mailbox, every message a directory
     /mnt/mail/sent/      what went out, the same shape
+    /mnt/mail/contacts/  an address a directory: name, key, fingerprint, verified
+
+`identity DOM` names the openpgp key factotum holds for the account's
+user in DOM, and `seal.odin` is Autocrypt on it: the key in every
+message's header, a key that arrives kept under `contacts/`, a message to
+contacts with keys sealed, and a sealed message in opened with the
+session key factotum hands back.
 
 A write to `new` is section 4's block. `to` is one address or several
 with commas, `replyto` an id in the inbox, whose message id goes in
@@ -50,7 +57,7 @@ NAME_MAX :: 64
 MAX_MESSAGE :: 4 * 1024 * 1024
 LINE_MAX :: 8192
 
-DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nidentity dom         the openpgp key factotum holds for the user in dom, for the seal\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Account :: struct {
 	set:    bool,
@@ -84,7 +91,7 @@ net: libmsg.Net
 account: Account
 smtp: Account // Its user is the account's
 status: [dynamic]u8
-me_text: [NAME_MAX * 3]u8
+me_text: [NAME_MAX * 3 + 80]u8
 roots: []^x509.Certificate
 
 @(export, link_name = "_start")
@@ -101,6 +108,7 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	libmsg.init(&net)
 	_ = libmsg.conv(&net, "inbox")
 	_ = libmsg.conv(&net, "sent")
+	_ = libmsg.extra(&net, "contacts")
 	net.dict = DICT
 	net.on_ctl = on_ctl
 	net.on_new = on_new
@@ -136,7 +144,7 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		account.ulen = copy(account.user[:], user)
 		account.slen = copy(account.server[:], server)
 		account.plen = copy(account.port[:], port)
-		net.me = libuser.cat_into(me_text[:], user, "@", server, "\n")
+		set_me()
 		rebuild_status()
 		return 0
 	case "smtp":
@@ -158,6 +166,17 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		smtp.plen = copy(smtp.port[:], port)
 		rebuild_status()
 		return 0
+	case "identity":
+		dom, _ := word(rest)
+		if !account.set || dom == "" || len(dom) > NAME_MAX {
+			return vectra9.EINVAL
+		}
+		if !identity_set(dom) {
+			return vectra9.ENOENT
+		}
+		set_me()
+		rebuild_status()
+		return 0
 	case "fetch":
 		if !account.set {
 			return vectra9.EINVAL
@@ -174,6 +193,17 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		return 0
 	}
 	return vectra9.EINVAL
+}
+
+// set_me writes `me`: the address, and the key's fingerprint when there is one.
+set_me :: proc() {
+	user := string(account.user[:account.ulen])
+	server := string(account.server[:account.slen])
+	if identity.set {
+		net.me = libuser.cat_into(me_text[:], user, "@", server, "\nfpr ", string(identity.fpr[:]), "\n")
+	} else {
+		net.me = libuser.cat_into(me_text[:], user, "@", server, "\n")
+	}
 }
 
 // on_new takes a message out: the block is read, a message is built of it,
@@ -328,13 +358,56 @@ build_message :: proc(s: ^Send, n: ^libmsg.New) -> bool {
 		}
 	}
 	put(s, "MIME-Version: 1.0\r\n")
+	put_autocrypt(s)
+	// The content, built apart: the outer message takes it as it is, or
+	// sealed when every recipient has a key.
+	head_len := len(s.text)
+	if !put_content(s, n) {
+		return false
+	}
+	content := make([]u8, len(s.text) - head_len)
+	defer delete(content)
+	copy(content, s.text[head_len:])
+	subject, _ := libmsg.new_header(n, "subject")
+	resize(&s.text, head_len)
+	// The subject goes inside a sealed message, and a placeholder outside.
+	if seal_content(s, subject, content) {
+		fix_subject(s, head_len)
+		return true
+	}
+	append(&s.text, ..content)
+	return true
+}
+
+// fix_subject replaces the subject line in the headers built so far with
+// the placeholder a sealed message shows outside.
+fix_subject :: proc(s: ^Send, head_len: int) {
+	text := string(s.text[:head_len])
+	at := libodin_index(text, "\r\nSubject: ")
+	if at < 0 {
+		return
+	}
+	e := at + 2
+	for e < len(text) && text[e] != '\n' {
+		e += 1
+	}
+	rest := make([]u8, len(s.text) - e - 1)
+	copy(rest, s.text[e + 1:])
+	resize(&s.text, at + 2)
+	put(s, "Subject: ...\r\n")
+	append(&s.text, ..rest)
+	delete(rest)
+}
+
+// put_content writes the content type, encoding and body: plain text, or
+// a multipart with a base64 part an attachment.
+put_content :: proc(s: ^Send, n: ^libmsg.New) -> bool {
 	_, has_attach := libmsg.new_attach(n, 0)
 	if !has_attach {
 		put(s, "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
 		put_body(s, n.body)
 		return true
 	}
-	// A multipart: the text, then a base64 part an attachment.
 	boundary := "=_vectra_part_"
 	put(s, "Content-Type: multipart/mixed; boundary=\"")
 	put(s, boundary)
@@ -371,8 +444,8 @@ build_message :: proc(s: ^Send, n: ^libmsg.New) -> bool {
 	return true
 }
 
-// put_body writes the body with CRLF lines, and a line that begins with a
-// dot doubled, which is what the wire wants.
+// put_body writes the body with CRLF lines. The wire's dot-stuffing is
+// done as the message goes out, not here, since the content may be sealed.
 put_body :: proc(s: ^Send, body: string) {
 	at := 0
 	for at < len(body) {
@@ -384,13 +457,32 @@ put_body :: proc(s: ^Send, body: string) {
 		if len(line) > 0 && line[len(line) - 1] == '\r' {
 			line = line[:len(line) - 1]
 		}
-		if len(line) > 0 && line[0] == '.' {
-			append(&s.text, '.')
-		}
 		put(s, line)
 		put(s, "\r\n")
 		at = e + 1
 	}
+}
+
+// dot_stuffed answers the message with a line that begins with a dot
+// doubled, which is what DATA wants, its own copy.
+dot_stuffed :: proc(text: []u8) -> []u8 {
+	dots := 0
+	for i in 0 ..< len(text) {
+		if text[i] == '.' && (i == 0 || text[i - 1] == '\n') {
+			dots += 1
+		}
+	}
+	out := make([]u8, len(text) + dots)
+	n := 0
+	for i in 0 ..< len(text) {
+		if text[i] == '.' && (i == 0 || text[i - 1] == '\n') {
+			out[n] = '.'
+			n += 1
+		}
+		out[n] = text[i]
+		n += 1
+	}
+	return out
 }
 
 put :: proc(s: ^Send, text: string) {
@@ -506,7 +598,9 @@ submit :: proc(s: ^Send) -> vectra9.Errno {
 		f.why = "DATA was refused"
 		return vectra9.EIO
 	}
-	if !say(f, string(s.text[:])) || !say(f, ".\r\n") || !expect(f, "250") {
+	wire := dot_stuffed(s.text[:])
+	defer delete(wire)
+	if !say(f, string(wire)) || !say(f, ".\r\n") || !expect(f, "250") {
 		f.why = "the message was not taken"
 		return vectra9.EIO
 	}
@@ -665,6 +759,11 @@ add_message :: proc(inbox: ^libmsg.Conv, raw: string) {
 	body, btype := libmime.text_body(&p)
 	m.body = clone(body)
 	m.type = clone(btype != "" ? btype : "text/plain")
+	note_autocrypt(&p)
+	if p.type == "multipart/encrypted" && !unseal(&p, &m) {
+		delete(m.body)
+		m.body = clone("(a sealed message this key does not open)")
+	}
 	netid := ""
 	if mid, has := libmime.header(&p.headers, "message-id"); has {
 		netid = angle_off(mid)
@@ -900,6 +999,13 @@ rebuild_status :: proc() {
 		append(&status, ' ')
 		append(&status, ..account.port[:account.plen])
 		append(&status, ..transmute([]u8)string(account.plain ? " plain\n" : " tls\n"))
+	}
+	if identity.set {
+		append(&status, ..transmute([]u8)string("identity "))
+		append(&status, ..identity.dom[:identity.dlen])
+		append(&status, ' ')
+		append(&status, ..identity.fpr[:])
+		append(&status, '\n')
 	}
 	if smtp.set {
 		append(&status, ..transmute([]u8)string("smtp "))
