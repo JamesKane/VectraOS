@@ -939,7 +939,25 @@ directory named for the other address, or `group-` and the
 `Chat-Group-ID` a group's messages carry inside the seal. The same
 message is in both.
 The boot line sees Bob's three messages and the reply to him in the
-chat named for his address. Not yet: chatmail and SecureJoin.
+chat named for his address.
+
+SecureJoin is in. `invite` on `ctl` makes an invite as Delta Chat
+does. It is the fingerprint, the address and two secrets, and `ctl`
+shows it.
+
+`join` with an invite sends the request, plain, with the joiner's key. The inviter answers sealed. The joiner checks that the
+inviter's key is the invite's, and sends the auth sealed. The inviter
+checks the auth and the fingerprint, and confirms sealed.
+
+Then `verified` reads `yes` on both sides. The handshake's headers ride
+inside the seal.
+
+It is proven on a spool. `spool DIR` makes mail files under a
+directory, so two servers on one machine exchange mail with nothing
+between them. The boot line runs the handshake between this mailfs and
+a second. A bent fingerprint first ends in `no`, then the invite whole
+ends in `yes`. Not yet: chatmail, and the handshake over the servers,
+which waits on IDLE.
 
 ### Step 4: the two networks
 

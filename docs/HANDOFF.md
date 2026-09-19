@@ -573,7 +573,9 @@ the documents it points at.
    signed inside, and a sealed message in is opened through factotum
    and its signature checked. `seal on` refuses plain mail. A chat is
    a thread, the same messages under the other address or the group
-   id. Next: chatmail's account in one request, and SecureJoin.
+   id. SecureJoin verifies a contact between two of these on a spool
+   of files, sealed, with its control. Next: chatmail's account in one
+   request, and the handshake over the servers once IDLE is in.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
