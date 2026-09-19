@@ -551,8 +551,9 @@ the documents it points at.
    and the shell reads it in order. `mothra` on a directory of messages
    is the timeline, and a message is a page, through `libmsg`'s reading
    half. `sys/libmime` reads mail's headers and parts, and `libmsg`
-   reads a write to `new` with it. Next: the poll and the compose
-   window.
+   reads a write to `new` with it, and `feedfs` polls. Next: the
+   compose window, which waits on step 3's mail, the first network
+   that takes `new`.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a

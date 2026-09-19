@@ -782,7 +782,12 @@ the raw text.
 makes a conversation, through `webfs` for a URL and the file for a
 path. The fetch runs on a thread and the write waits for it, so the
 shell knows when the entries are in, or why not. `new` is refused, as
-the proof asks. Not yet: the poll, and the compose window.
+the proof asks.
+
+`poll N` fetches every feed again each N seconds, on a thread with a
+timer. The shell proves it: a feed file changed under a one-second poll
+gains its entry with no fetch asked for. Not yet: the compose window,
+which waits on a network that takes `new`.
 
 `sys/libmime` is in. It unfolds RFC 5322 headers and cuts RFC 2045
 parts at their boundaries, one level down at a time. A part's bytes
