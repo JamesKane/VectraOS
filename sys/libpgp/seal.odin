@@ -391,20 +391,8 @@ it, text-canonical for 'u'. Answers the length written, or -1.
 */
 sign_message :: proc(signer: ^Key, data: []u8, format: u8, p: Sign_Params, out: []u8) -> int {
 	p := p
-	if signer.version != 6 {
-		return -1
-	}
 	type := format == 'b' ? 0 : 1
-	one: [128]u8
-	n := 0
-	one[0], one[1], one[2], one[3], one[4] = 6, u8(type), HASH_SHA512, ALGO_ED25519, 32
-	n = 5
-	n += copy(one[n:], p.salt[:])
-	// The fingerprint bare: a version 6 one-pass packet has no count on it.
-	n += copy(one[n:], signer.fingerprint[:signer.fpr_len])
-	one[n] = 1 // The last one-pass packet before the data
-	n += 1
-	at := put_packet(out, 0, ONE_PASS, one[:n])
+	at := put_one_pass(out, 0, signer, type, p.salt[:])
 	if at < 0 {
 		return -1
 	}
@@ -417,6 +405,56 @@ sign_message :: proc(signer: ^Key, data: []u8, format: u8, p: Sign_Params, out: 
 		return -1
 	}
 	return at + sn
+}
+
+// put_one_pass writes a version 6 one-pass signature packet by `signer`
+// of `type` with `salt` at `at`, and answers where the literal goes.
+put_one_pass :: proc(out: []u8, at: int, signer: ^Key, type: int, salt: []u8) -> int {
+	if signer.version != 6 || len(salt) != 32 {
+		return -1
+	}
+	one: [128]u8
+	one[0], one[1], one[2], one[3], one[4] = 6, u8(type), HASH_SHA512, ALGO_ED25519, 32
+	n := 5
+	n += copy(one[n:], salt)
+	// The fingerprint bare: a version 6 one-pass packet has no count on it.
+	n += copy(one[n:], signer.fingerprint[:signer.fpr_len])
+	one[n] = 1 // The last one-pass packet before the data
+	n += 1
+	return put_packet(out, at, ONE_PASS, one[:n])
+}
+
+/*
+inner_message reads what sealed data held: the literal, and the signature
+over it when the packets are a signed message. `signed` says whether one
+was there; `sig` is it, to verify with `verify_data` against the sender's
+key.
+*/
+inner_message :: proc(data: []u8) -> (l: Literal, sig: Signature, signed: bool, ok: bool) {
+	at := 0
+	have_literal := false
+	for {
+		p, after, pok := next(data, at)
+		if !pok {
+			break
+		}
+		at = after
+		switch p.tag {
+		case LITERAL:
+			l, have_literal = parse_literal(p)
+		case SIGNATURE:
+			if !have_literal {
+				return l, sig, false, false
+			}
+			s, sok := parse_signature(p)
+			if !sok {
+				return l, sig, false, false
+			}
+			return l, s, true, true
+		case ONE_PASS, PADDING:
+		}
+	}
+	return l, sig, false, have_literal
 }
 
 // -- Sealing ------------------------------------------------------------------------------
@@ -440,6 +478,21 @@ AES-OCB holding the literal data, binary, and the padding. Answers the
 length written, or -1. The one ephemeral key serves every recipient.
 */
 seal_message :: proc(recipients: []^Key, data: []u8, p: Seal_Params, out: []u8) -> int {
+	packets := make([]u8, len(data) + 16)
+	defer delete(packets)
+	pn := put_literal(packets, 0, 'b', data)
+	if pn < 0 {
+		return -1
+	}
+	return seal_packets(recipients, packets[:pn], p, out)
+}
+
+/*
+seal_packets is `seal_message` over packets already made, a signed
+message's one-pass, literal and signature say, with the padding after
+them. What a mail seals is signed inside first, so this is what it calls.
+*/
+seal_packets :: proc(recipients: []^Key, packets: []u8, p: Seal_Params, out: []u8) -> int {
 	p := p
 	if len(recipients) == 0 {
 		return -1
@@ -489,11 +542,11 @@ seal_message :: proc(recipients: []^Key, data: []u8, p: Seal_Params, out: []u8) 
 			return -1
 		}
 	}
-	// The plaintext: the literal and the padding.
-	plain := make([]u8, len(data) + len(p.padding) + 32)
+	// The plaintext: the packets and the padding.
+	plain := make([]u8, len(packets) + len(p.padding) + 16)
 	defer delete(plain)
-	pn := put_literal(plain, 0, 'b', data)
-	pn = put_packet(plain, pn, PADDING, p.padding)
+	copy(plain, packets)
+	pn := put_packet(plain, len(packets), PADDING, p.padding)
 	if pn < 0 {
 		return -1
 	}

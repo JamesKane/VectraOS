@@ -11035,6 +11035,7 @@ verify_mailfs :: proc(r: ^Result) {
 				ID1 :: "000000006aac8284.3714e3891dc03ae6"
 				ID2 :: "000000006aacfd90.1ccd7668973d1eec"
 				ID3 :: "000000006aae7940.b1ffcbb1bb626e10"
+				ID4 :: "000000006aae8048.a9fe6197082cb3cc"
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account glenda ", host, " 1143 plain")), "an account is a user, a server and a port on ctl")
 				text: [2048]u8
 				n = web_read_file("/mnt/mail/me", text[:])
@@ -11044,7 +11045,7 @@ verify_mailfs :: proc(r: ^Result) {
 				check(r, libodin.has_prefix(string(text[:max(n, 0)]), libodin_cat(line_buf[:], "glenda@", host, "\nfpr ")), "and me gains the key's fingerprint")
 				check(r, net_file_write("/mnt/mail/ctl", "fetch"), "fetch logs in with the password from factotum and takes the inbox")
 				lbuf: [512]u8
-				check(r, dir_names("/mnt/mail/inbox", lbuf[:]) == ID1 + " " + ID2 + " " + ID3, "and inbox lists the three messages by id, in time order, the message id hashed into the name")
+				check(r, dir_names("/mnt/mail/inbox", lbuf[:]) == ID1 + " " + ID2 + " " + ID3 + " " + ID4, "and inbox lists the four messages by id, in time order, the message id hashed into the name")
 				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/subject", text[:])
 				check(r, string(text[:max(n, 0)]) == "A message with two parts and an file", "a subject is unfolded and its encoded words decoded")
 				n = web_read_file("/mnt/mail/inbox/" + ID1 + "/from", text[:])
@@ -11079,7 +11080,9 @@ verify_mailfs :: proc(r: ^Result) {
 				n = web_read_file("/mnt/mail/inbox/" + ID3 + "/subject", text[:])
 				check(r, string(text[:max(n, 0)]) == "sealed subject", "a message sealed to the identity opens: its subject is the one inside, not the placeholder")
 				n = web_read_file("/mnt/mail/inbox/" + ID3 + "/body", text[:])
-				check(r, string(text[:max(n, 0)]) == "the sealed body", "and its body is the text inside, opened with the session key factotum handed back")
+				check(r, string(text[:max(n, 0)]) == "the sealed body", "and its body is the text inside, opened with the session key factotum handed back, its signature verified against Bob's contact key")
+				n = web_read_file("/mnt/mail/inbox/" + ID4 + "/body", text[:])
+				check(r, string(text[:max(n, 0)]) == "(a sealed message whose signature did not verify)", "and the same sealed message with its signature bent is refused, and says so")
 				n = web_read_file("/mnt/mail/inbox/" + ID3 + "/raw", text[:], raw = true)
 				check(r, n > 0 && libodin.contains(string(text[:n]), "multipart/encrypted"), "while raw is the sealed message as it came")
 				// Out: a submission server, and a message written to new.
@@ -11103,6 +11106,9 @@ verify_mailfs :: proc(r: ^Result) {
 					unames := [?]string{"pgptest", "unseal", "/usr/glenda/sent.eml"}
 					script_says(r, "/bin/pgptest", unames[:], PATIENCE * 10, "a program with Bob's secret key starts on it", "ok", "and opens it: the real subject and the body whole are inside, sealed to the key Bob's header carried")
 					check(r, !net_file_write("/mnt/mail/new", "to: nobody@nowhere\n\nx"), "a recipient the server refuses fails the write")
+					check(r, net_file_write("/mnt/mail/ctl", "seal on"), "seal on asks for sealed mail only")
+					check(r, !net_file_write("/mnt/mail/new", "to: carol@example.org\nsubject: plain\n\nx"), "and a message to a contact without a key is refused before any wire")
+					check(r, net_file_write("/mnt/mail/ctl", "seal off"), "and seal off lets it go again")
 
 					// The compose window: typed into, and sent through new.
 					if s := devfs.raw_surface(); s != nil && s.pixels != nil && s.bytes_pp == 4 {

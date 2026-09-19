@@ -9,7 +9,10 @@ literal inside version 2 sealed data, the outer message is
 `multipart/encrypted` with a placeholder subject, and the real subject
 is inside. The person's own key is sealed to as well, so `sent/` reads.
 A sealed message in is opened with the session key `factotum` hands
-back, and the private key never comes here.
+back, and the private key never comes here. The content is signed inside
+the seal, by factotum's key, and a sealed message in whose signature does
+not verify against the sender's contact key is refused. `seal on` refuses
+a message to a contact without a key.
 */
 package mailfs
 
@@ -33,6 +36,9 @@ Identity :: struct {
 }
 
 identity: Identity
+
+// Whether an unsealed message out is refused.
+seal_only: bool
 
 // identity_set fetches the certificate factotum holds for the account's
 // user in `dom`, and keeps it. False when factotum has no such key.
@@ -227,19 +233,49 @@ seal_content :: proc(s: ^Send, subject: string, content: []u8) -> bool {
 	}
 	n += copy(inner[n:], content)
 
-	rnd: [128]u8
+	rnd: [160]u8
 	if !fill_random(rnd[:]) {
 		return false
 	}
+	// Signed inside, by the key factotum holds: the one-pass packet, the
+	// literal, and the signature factotum makes over the digest.
+	packets := make([]u8, n + 512)
+	defer delete(packets)
+	salt: [32]u8
+	copy(salt[:], rnd[128:160])
+	pn := libpgp.put_one_pass(packets, 0, &own.primary, 0, salt[:])
+	if pn < 0 {
+		return false
+	}
+	pn = libpgp.put_literal(packets, pn, 'b', inner[:n])
+	if pn < 0 {
+		return false
+	}
+	job: libpgp.Sign_Job
+	gp: libpgp.Sign_Params
+	gp.created = u32(now_seconds())
+	gp.salt = salt
+	if !libpgp.sign_begin(&job, &own.primary, libpgp.Sign_Input{type = 0, data = inner[:n]}, nil, gp) {
+		return false
+	}
+	sig: [64]u8
+	if !factotum_sign(job.digest[:job.dn], sig[:]) {
+		return false
+	}
+	gn := libpgp.sign_finish(&job, sig[:], packets[pn:])
+	if gn < 0 {
+		return false
+	}
+	pn += gn
 	sp: libpgp.Seal_Params
 	copy(sp.ephemeral[:], rnd[:32])
 	sp.session = rnd[32:64]
 	copy(sp.salt[:], rnd[64:96])
 	sp.padding = rnd[96:96 + int(rnd[127] % 24) + 8]
 	sp.chunk = 6
-	sealed := make([]u8, n + 256 + 128 * len(keys))
+	sealed := make([]u8, pn + 256 + 128 * len(keys))
 	defer delete(sealed)
-	sn := libpgp.seal_message(keys[:], inner[:n], sp, sealed)
+	sn := libpgp.seal_packets(keys[:], packets[:pn], sp, sealed)
 	if sn < 0 {
 		return false
 	}
@@ -346,9 +382,13 @@ unseal :: proc(p: ^libmime.Part, m: ^libmsg.Msg) -> bool {
 		if on < 0 {
 			return false
 		}
-		l, lok := libpgp.first_literal(out[:on])
+		l, sig, signed, lok := libpgp.inner_message(out[:on])
 		if !lok {
 			return false
+		}
+		if signed && !signature_holds(&sig, l.data, m.from) {
+			m.body = clone("(a sealed message whose signature did not verify)")
+			return true
 		}
 		inner, iok := libmime.parse(string(l.data))
 		if !iok {
@@ -367,6 +407,52 @@ unseal :: proc(p: ^libmime.Part, m: ^libmsg.Msg) -> bool {
 		m.type = clone(btype != "" ? btype : "text/plain")
 		return true
 	}
+}
+
+/*
+signature_holds checks a sealed message's inner signature against its
+sender's key: the contact's under `from`'s address, or the person's own
+when the sender is the person. A sender with no key here cannot be
+checked, and the signature is let stand, unverified.
+*/
+signature_holds :: proc(sig: ^libpgp.Signature, data: []u8, from: string) -> bool {
+	name_buf: [256]u8
+	_, box := libmime.address(from, name_buf[:])
+	me_buf: [256]u8
+	me := libuser.cat_into(me_buf[:], string(account.user[:account.ulen]), "@", string(account.server[:account.slen]))
+	cert: [2048]u8
+	c: libpgp.Cert
+	ok := false
+	if box == me && identity.set {
+		c, ok = libpgp.parse_cert(identity.cert[:identity.clen])
+	} else {
+		c, ok = contact_key(box, cert[:])
+	}
+	if !ok {
+		return true
+	}
+	return libpgp.verify_data(&c.primary, sig, data)
+}
+
+// factotum_sign asks factotum for the signature over a digest.
+factotum_sign :: proc(digest: []u8, sig: []u8) -> bool {
+	rpc := open_factotum()
+	if rpc < 0 {
+		return false
+	}
+	defer _ = libuser.close(rpc)
+	ask_buf: [256]u8
+	reply := make([]u8, 2048)
+	defer delete(reply)
+	if rpc_ask(rpc, libuser.cat_into(ask_buf[:], "start openpgp user=", string(account.user[:account.ulen]), " dom=", string(identity.dom[:identity.dlen])), reply) != "ok" {
+		return false
+	}
+	hexbuf: [160]u8
+	line := rpc_ask(rpc, libuser.cat_into(reply[:512], "sign ", libcrypto.hex_encode(hexbuf[:], digest)), reply[512:])
+	if !libodin.has_prefix(line, "sig ") {
+		return false
+	}
+	return libcrypto.hex_decode(sig, line[4:]) == 64
 }
 
 // -- factotum -------------------------------------------------------------------------------

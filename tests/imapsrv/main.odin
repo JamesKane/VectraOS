@@ -30,6 +30,9 @@ REPLY :: "From: Bob Jones <bob@example.net>\r\nTo: glenda@example.org\r\nSubject
 // A third message, when the seal's test left one: sealed to the key
 // factotum holds, so the inbox opens it.
 SEALED_PATH :: "/usr/glenda/sealed.eml"
+// And a fourth, sealed the same but with its signature bent, for the
+// inbox to refuse.
+BAD_PATH :: "/usr/glenda/sealed-bad.eml"
 
 fail :: proc "contextless" (what: string) -> ! {
 	libuser.eprint("imapsrv: ", what, "\n")
@@ -47,6 +50,7 @@ start :: proc "c" (block: ^abi.Args) {
 		fail("read the saved mail")
 	}
 	sealed, _ := libuser.read_file(SEALED_PATH, context.allocator)
+	bad, _ := libuser.read_file(BAD_PATH, context.allocator)
 
 	addr: [64]u8
 	spec := libuser.cat_into(addr[:], "tcp!*!", port)
@@ -68,7 +72,7 @@ start :: proc "c" (block: ^abi.Args) {
 	logged := 0
 	refused := 0
 	for logged + refused < 2 {
-		how := serve_one(lfd, served, first, sealed)
+		how := serve_one(lfd, served, first, sealed, bad)
 		if how {
 			logged += 1
 		} else {
@@ -84,7 +88,7 @@ start :: proc "c" (block: ^abi.Args) {
 
 // serve_one takes the next connection and runs the session. True when the
 // client logged in and fetched, false when it was refused.
-serve_one :: proc(lfd: i64, served: string, first: []u8, sealed: []u8) -> bool {
+serve_one :: proc(lfd: i64, served: string, first: []u8, sealed: []u8, bad: []u8) -> bool {
 	path: [160]u8
 	line: [64]u8
 	n := libuser.read(int(lfd), line[:])
@@ -144,7 +148,10 @@ serve_one :: proc(lfd: i64, served: string, first: []u8, sealed: []u8) -> bool {
 				continue
 			}
 			selected = true
-			say(dfd, len(sealed) > 0 ? "* 3 EXISTS\r\n" : "* 2 EXISTS\r\n")
+			count := 2 + (len(sealed) > 0 ? 1 : 0) + (len(bad) > 0 ? 1 : 0)
+			num: [8]u8
+			line: [32]u8
+			say(dfd, libuser.cat_into(line[:], "* ", libuser.itoa(num[:], i64(count)), " EXISTS\r\n"))
 			say(dfd, "* 0 RECENT\r\n* OK [UIDVALIDITY 1] UIDs valid\r\n* OK [UIDNEXT 104] Predicted next UID\r\n* FLAGS (\\Seen \\Answered)\r\n")
 			say(dfd, libuser.cat_into(out[64:], tag, " OK [READ-WRITE] SELECT completed\r\n"))
 		case "UID":
@@ -157,6 +164,9 @@ serve_one :: proc(lfd: i64, served: string, first: []u8, sealed: []u8) -> bool {
 			literal(dfd, 2, 102, transmute([]u8)string(REPLY))
 			if len(sealed) > 0 {
 				literal(dfd, 3, 103, sealed)
+			}
+			if len(bad) > 0 {
+				literal(dfd, 4, 104, bad)
 			}
 			say(dfd, libuser.cat_into(out[64:], tag, " OK FETCH completed\r\n"))
 		case "LOGOUT":

@@ -57,7 +57,7 @@ NAME_MAX :: 64
 MAX_MESSAGE :: 4 * 1024 * 1024
 LINE_MAX :: 8192
 
-DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nidentity dom         the openpgp key factotum holds for the user in dom, for the seal\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nidentity dom         the openpgp key factotum holds for the user in dom, for the seal\nseal on|off          whether a message to a contact without a key is refused\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Account :: struct {
 	set:    bool,
@@ -164,6 +164,18 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		smtp = Account{set = true, plain = plain == "plain"}
 		smtp.slen = copy(smtp.server[:], server)
 		smtp.plen = copy(smtp.port[:], port)
+		rebuild_status()
+		return 0
+	case "seal":
+		how, _ := word(rest)
+		switch how {
+		case "on":
+			seal_only = true
+		case "off":
+			seal_only = false
+		case:
+			return vectra9.EINVAL
+		}
 		rebuild_status()
 		return 0
 	case "identity":
@@ -374,6 +386,10 @@ build_message :: proc(s: ^Send, n: ^libmsg.New) -> bool {
 	if seal_content(s, subject, content) {
 		fix_subject(s, head_len)
 		return true
+	}
+	if seal_only {
+		// The person wants only sealed mail, and a recipient has no key.
+		return false
 	}
 	append(&s.text, ..content)
 	return true
@@ -999,6 +1015,9 @@ rebuild_status :: proc() {
 		append(&status, ' ')
 		append(&status, ..account.port[:account.plen])
 		append(&status, ..transmute([]u8)string(account.plain ? " plain\n" : " tls\n"))
+	}
+	if seal_only {
+		append(&status, ..transmute([]u8)string("seal on\n"))
 	}
 	if identity.set {
 		append(&status, ..transmute([]u8)string("identity "))
