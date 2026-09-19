@@ -920,8 +920,19 @@ The boot line sees Bob's header make a contact. It sees a message
 sealed to the identity open in the inbox. It sees a reply to Bob sealed
 to his key, and a program that holds the key opens it. `libpgp` gained
 armor and sealing to several keys, and `libmsg` a tree beside the
-conversations for `contacts/`. Not yet: the seal's signature, `seal
-on`, chats, chatmail and SecureJoin.
+conversations for `contacts/`.
+
+The seal is signed inside. What goes out sealed is a signed message in
+the sealed data, and factotum makes the signature over the digest. A
+sealed message in with a signature is checked against the sender's
+contact key, and refused when it does not hold. A sender with no key
+here is let stand, unverified. `seal on` refuses a message to a contact
+without a key, and `seal off` lets it go.
+
+The boot line opens a sealed message signed by Bob, and refuses the
+same with its signature bent. It sees the reply to Bob signed inside by
+factotum's key, and `seal on` refuse a plain message. Not yet: chats,
+chatmail and SecureJoin.
 
 ### Step 4: the two networks
 
