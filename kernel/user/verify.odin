@@ -643,6 +643,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_feedfs(&r)
 	verify_netfs(&r)
 	verify_cryptotest(&r)
+	verify_pgptest(&r)
 	verify_fonttest(&r)
 	verify_debugtest(&r)
 	verify_users(&r)
@@ -9984,6 +9985,17 @@ RFC 8439, X25519 against RFC 7748, and BLAKE2s against a fixed digest.
 verify_cryptotest :: proc(r: ^Result) {
 	names := [?]string{"cryptotest"}
 	script_says(r, "/bin/cryptotest", names[:], PATIENCE * 5, "a program on the fleet's cryptography starts", "ok", "and every cipher matched its published vector")
+}
+
+// verify_pgptest runs `pgptest`, RFC 9580's own test vectors through
+// `sys/libpgp` from ring 3: the sample certificate's fingerprints and
+// signatures, the sample message opened and refused when bent, and the
+// sample signed message verified. `docs/WEB.md` step 3's boot line, the
+// opening half.
+@(private = "file")
+verify_pgptest :: proc(r: ^Result) {
+	names := [?]string{"pgptest"}
+	script_says(r, "/bin/pgptest", names[:], PATIENCE * 10, "a program on the seal starts", "ok", "and RFC 9580's vectors verified and opened through libpgp")
 }
 
 /*

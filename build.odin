@@ -154,6 +154,7 @@ user_programs := [?]User_Program {
 	{name = "mailfs", path = "servers/mailfs"},
 	{name = "imapsrv", path = "tests/imapsrv"},
 	{name = "smtpsrv", path = "tests/smtpsrv"},
+	{name = "pgptest", path = "tests/pgp"},
 	{name = "plumb", path = "cmd/plumb"},
 	{name = "doctest", path = "tests/doc"},
 	{name = "mothra", path = "apps/mothra"},
