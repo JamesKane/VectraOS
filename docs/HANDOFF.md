@@ -571,8 +571,9 @@ the documents it points at.
    Autocrypt is in: the key in every header out, and a key in kept
    under `contacts/`. A message to contacts with keys is sealed and
    signed inside, and a sealed message in is opened through factotum
-   and its signature checked. `seal on` refuses plain mail. Next:
-   chats, chatmail and SecureJoin.
+   and its signature checked. `seal on` refuses plain mail. A chat is
+   a thread, the same messages under the other address or the group
+   id. Next: chatmail's account in one request, and SecureJoin.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a

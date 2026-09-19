@@ -931,8 +931,15 @@ without a key, and `seal off` lets it go.
 
 The boot line opens a sealed message signed by Bob, and refuses the
 same with its signature bent. It sees the reply to Bob signed inside by
-factotum's key, and `seal on` refuse a plain message. Not yet: chats,
-chatmail and SecureJoin.
+factotum's key, and `seal on` refuse a plain message.
+
+Chats are in. Every message in or out stands in `inbox/` or `sent/`
+as mail shows it, and in a chat as a messenger shows it. A chat is a
+directory named for the other address, or `group-` and the
+`Chat-Group-ID` a group's messages carry inside the seal. The same
+message is in both.
+The boot line sees Bob's three messages and the reply to him in the
+chat named for his address. Not yet: chatmail and SecureJoin.
 
 ### Step 4: the two networks
 
