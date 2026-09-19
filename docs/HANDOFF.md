@@ -566,8 +566,12 @@ the documents it points at.
    data, its own vectors made again octet for octet on the boot line.
    `factotum`'s `openpgp` protocol holds the identity, derived from the
    passphrase so it lives nowhere, and seals and signs for a program
-   over rpc. Next: Autocrypt, the key in the headers, and the seal in
-   `mailfs`.
+   over rpc.
+
+   Autocrypt is in: the key in every header out, and a key in kept
+   under `contacts/`. A message to contacts with keys is sealed, and a
+   sealed message in is opened through factotum. Next: the seal's
+   signature and `seal on`, then chats, chatmail and SecureJoin.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a

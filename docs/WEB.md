@@ -903,6 +903,26 @@ derived in a program gives factotum's fingerprint and certificate. A
 message sealed to it opens with the session key factotum hands back,
 and a signature factotum makes verifies against the certificate.
 
+Autocrypt is in. `identity DOM` on `mailfs`'s `ctl` names the key
+factotum holds, and `me` gains its fingerprint. Every message out
+carries the certificate in an `Autocrypt:` header. Every message in
+with one lands its key under `contacts/<address>/`: the name, the key
+armored, its fingerprint, and `verified` as `no`.
+
+A message to contacts that all have a key is sealed. The content goes
+as the literal inside version 2 sealed data to their keys and the
+person's own, so `sent/` reads. The outer message is
+`multipart/encrypted` with a placeholder subject, and the real subject
+is inside. A sealed message in opens with the session key factotum
+hands back.
+
+The boot line sees Bob's header make a contact. It sees a message
+sealed to the identity open in the inbox. It sees a reply to Bob sealed
+to his key, and a program that holds the key opens it. `libpgp` gained
+armor and sealing to several keys, and `libmsg` a tree beside the
+conversations for `contacts/`. Not yet: the seal's signature, `seal
+on`, chats, chatmail and SecureJoin.
+
 ### Step 4: the two networks
 
 `servers/fedifs`, `servers/atfs`, `sys/libcid`, `factotum`'s `oauth`
