@@ -429,7 +429,7 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 	request = vectra9.Msg(vectra9.Tread{fid = 1, offset = 2, count = 8})
 	libodin.check(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "and every slot is a slot again")
 	st = mnt.wire_stats(&wire)
-	libodin.check(r, st.discards == 9, "the server discarded all nine sat-on requests")
+	libodin.check(r, st.discards == 1 + mnt.MAX_REQUESTS, "the server discarded every sat-on request, a pool's worth and the one before")
 	r.flushed = int(st.flushes)
 
 	// -- A reply nobody asked for ---------------------------------------------

@@ -126,9 +126,16 @@ space is.
 Small on purpose. A tag pool is a server resource. A client that can grow one
 without bound can exhaust the machine through a legal sequence of legal
 messages. That is the same argument that fixes the static server's fid table.
-Eight is more than the whole kernel currently has threads to fill.
+
+Eight was more than the whole kernel had threads to fill. A ring 3 server
+that holds a read open changed that: every window on the draw server keeps
+two reads parked, its keyboard's and its mouse's, and each holds a slot for
+as long as the window stands. A desktop with two shells, a toast and its own
+windows held eight, and the next request from anyone parked for ever on the
+wire, the suite's remove of a window among them. Sixteen is eight windows'
+worth. The arena grows with it, so a slot's payload is what it was.
 */
-MAX_REQUESTS :: 8
+MAX_REQUESTS :: 16
 
 // Requests occupy the lower half. Each one's flush partner sits directly above
 // it. See the file comment for why the flush cannot be allowed to queue.
