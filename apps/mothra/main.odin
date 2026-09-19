@@ -12,7 +12,9 @@ A form's parts are rows too. Tab selects the next one, typing fills a
 field, Space turns a check, and Return sends the form, as a query or as a
 POST body through `webfs`. A press on a link's row follows it, and the
 page it leads to takes the window. `b` goes back, `j` and `k` move a row,
-`n` and `p` a page, `r` fetches again, `q` and Escape close.
+`n` and `p` a page, `r` fetches again, `q` and Escape close, and `c`
+over a message opens a reply to it in the compose window, which
+`compose.odin` is: a form whose action is a network's `new`.
 
 A URL is fetched through `/mnt/web`, `servers/webfs`. So every scheme it
 speaks is one this reads, and the page lands in the store on the way. A
@@ -113,6 +115,7 @@ Kind :: enum {
 	Html,
 	Picture, // PNG or JPEG, by libimage
 	Directory, // A timeline, a message or a listing, by libmsg
+	Compose, // The window that writes to a network's new
 }
 
 @(export, link_name = "_start")
@@ -425,6 +428,10 @@ submit :: proc "contextless" (form: int) {
 		return
 	}
 	action := libdoc.form_action(&doc, form)
+	if is_compose(action) {
+		compose_send(action, values)
+		return
+	}
 	target: [URL_MAX]u8
 	tn := 0
 	if len(action) == 0 {
@@ -615,6 +622,8 @@ on_key :: proc "contextless" (w: ^libmui.Window, k: u8) -> bool {
 		page.top = max(page.top - max(visible - 1, 1), 0)
 	case 'b':
 		back()
+	case 'c':
+		compose_reply()
 	case 'r':
 		_ = load(string(current[:current_len]))
 		relayout()
@@ -732,7 +741,9 @@ load :: proc "contextless" (target: string, post: []u8 = nil) -> bool {
 	text: []u8
 	kind: Kind
 	ok: bool
-	if has_scheme(target) {
+	if starts_with(target, "compose:") || starts_with(target, "mailto:") {
+		kind, ok = .Compose, true
+	} else if has_scheme(target) {
 		text, kind, ok = fetch(target, post)
 	} else if libmsg.path_is_dir(target) {
 		kind, ok = .Directory, true
@@ -750,6 +761,10 @@ load :: proc "contextless" (target: string, post: []u8 = nil) -> bool {
 	showing_pic = false
 	in_place = kind == .Directory
 	switch kind {
+	case .Compose:
+		if !compose_load(target) {
+			return false
+		}
 	case .Directory:
 		if !load_dir(target) {
 			return false

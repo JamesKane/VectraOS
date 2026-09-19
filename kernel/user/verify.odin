@@ -10961,6 +10961,10 @@ a line that begins with a dot, comes out of the scripted server as a
 message with the headers built for it and the dot-stuffing undone, and
 lands in `sent/` in the shape. A recipient the server refuses fails the
 write, and a header no network knows fails it before any wire.
+
+Then the compose window: the reader opens on a `mailto:` address, the
+kernel types a subject and a body into its form and Return, and the
+scripted server gets the message the window wrote to `new`.
 */
 @(private = "file")
 verify_mailfs :: proc(r: ^Result) {
@@ -11031,7 +11035,7 @@ verify_mailfs :: proc(r: ^Result) {
 				check(r, string(text[:max(n, 0)]) == "Bob Jones <bob@example.net>", "and its sender reads")
 				check(r, dir_names("/mnt/mail/inbox/" + ID1 + "/replies", lbuf[:]) == ID2, "so replies under the first lists the reply")
 				// Out: a submission server, and a message written to new.
-				sargs := [?]string{"smtpsrv", "1587", "/usr/glenda/sent.eml"}
+				sargs := [?]string{"smtpsrv", "1587", "/usr/glenda/sent.eml", "2"}
 				sargv := new(Argv)
 				_ = argv_from(sargv, sargs[:])
 				if sm := start_path(r, "/bin/smtpsrv", "a scripted SMTP submission server starts", sargv); sm != nil {
@@ -11049,8 +11053,41 @@ verify_mailfs :: proc(r: ^Result) {
 					check(r, libodin.contains(arrived, "In-Reply-To: <one@example.org>\r\n"), "and In-Reply-To names the message the reply answers, by its message id")
 					check(r, libodin.contains(arrived, "\r\n\r\nA line.\r\n.dot line\r\n"), "and the body whole, its dot-stuffing undone by the server")
 					check(r, !net_file_write("/mnt/mail/new", "to: nobody@nowhere\n\nx"), "a recipient the server refuses fails the write")
-					check(r, wait(sm, PATIENCE * 5), "and the submission server, both sessions served, exits")
-					check(r, string(sm.exit.text[:sm.exit.text_len]) == "ok", "with ok: one message taken and one refused")
+
+					// The compose window: typed into, and sent through new.
+					if s := devfs.raw_surface(); s != nil && s.pixels != nil && s.bytes_pp == 4 {
+						dcount0 := srv.count()
+						if ps := start_draw_server(r, s, "the loader starts the draw server for the compose window", "which posts /srv/draw for the reader to find", "and paints a desktop before the reader opens a window"); ps != nil {
+							cnames := [?]string{"mothra", "mailto:bob@example.net"}
+							cargv := new(Argv)
+							_ = argv_from(cargv, cnames[:])
+							if pm := start_path(r, "/bin/mothra", "the loader starts the reader on a mailto address, the compose window", cargv); pm != nil {
+								bx, _, _ := await_bar(s)
+								check(r, bx >= 0, "and the reader opens a framed window on the form")
+								sync.delay(PATIENCE)
+								// Tab to the address, Tab to the subject, the subject, Tab to
+								// the body, the body, and Return sends.
+								type_text("\t\ttyped subject\ttyped body\n")
+								arrived := false
+								for _ in 0 ..< PATIENCE * 40 {
+									n = web_read_file("/usr/glenda/sent.eml", text[:], raw = true)
+									arrived = n > 0 && libodin.contains(string(text[:n]), "Subject: typed subject\r\n")
+									if arrived {
+										break
+									}
+									sync.delay(1)
+								}
+								check(r, arrived, "and the typed subject reaches the submission server through new, the window's form written as the block")
+								check(r, arrived && libodin.contains(string(text[:max(n, 0)]), "\r\n\r\ntyped body\r\n") && libodin.contains(string(text[:max(n, 0)]), "To: bob@example.net\r\n"), "with the typed body and the address the mailto filled in")
+								_ = notepg_kernel(pm.note_group, "kill")
+								check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
+								finish(r, pm, "and is taken down")
+							}
+							stop_draw_server(r, ps, dcount0)
+						}
+					}
+					check(r, wait(sm, PATIENCE * 5), "and the submission server, its sessions served, exits")
+					check(r, string(sm.exit.text[:sm.exit.text_len]) == "ok", "with ok: two messages taken and one refused")
 					finish(r, sm, "and is taken down")
 				}
 

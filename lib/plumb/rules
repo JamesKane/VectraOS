@@ -15,6 +15,12 @@ data matches 'gemini://[^ ]+'
 plumb to web
 plumb client window mothra $0
 
+# An address: the reader's compose window, with the address filled.
+type is text
+data matches 'mailto:[^ ]+'
+plumb to web
+plumb client window mothra $0
+
 # A page on this machine, by its suffix, and a picture the same way.
 type is text
 data matches '[a-zA-Z0-9_/.\-]+\.(gmi|md|html?|txt|png|jpe?g)'

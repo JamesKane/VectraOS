@@ -10,7 +10,10 @@ test reads what arrived. A recipient at `nowhere` is refused with 550,
 which is the session that must fail. Then it exits `ok`, or the name of
 the step that did not hold.
 
-    smtpsrv [port] [file]   default 1587 and /usr/glenda/sent.eml
+    smtpsrv [port] [file] [taken]   default 1587, /usr/glenda/sent.eml, 1
+
+`taken` is how many messages to take before the exit; each overwrites
+the file. One refused session is always waited for.
 */
 package smtpsrv
 
@@ -34,6 +37,12 @@ start :: proc "c" (block: ^abi.Args) {
 	args := libuser.args(block)
 	port := len(args) >= 2 ? args[1] : "1587"
 	out := len(args) >= 3 ? args[2] : "/usr/glenda/sent.eml"
+	want := 1
+	if len(args) >= 4 {
+		if v, ok := libuser.atoi(args[3]); ok && v > 0 {
+			want = int(v)
+		}
+	}
 
 	addr: [64]u8
 	spec := libuser.cat_into(addr[:], "tcp!*!", port)
@@ -52,7 +61,7 @@ start :: proc "c" (block: ^abi.Args) {
 
 	taken := 0
 	refused := 0
-	for taken + refused < 2 {
+	for taken < want || refused < 1 {
 		if serve_one(lfd, served, out) {
 			taken += 1
 		} else {
@@ -60,8 +69,8 @@ start :: proc "c" (block: ^abi.Args) {
 		}
 	}
 	_ = libuser.close(int(lfd))
-	if taken != 1 || refused != 1 {
-		fail("one message taken and one refused wanted")
+	if taken != want || refused != 1 {
+		fail("the messages taken and one refused wanted")
 	}
 	libuser.exits("ok")
 }
