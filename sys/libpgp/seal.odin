@@ -121,12 +121,19 @@ verify_cert :: proc(c: ^Cert) -> bool {
 // signature over the bytes, a text one over them with CRLF line ends.
 verify_data :: proc(key: ^Key, s: ^Signature, data: []u8) -> bool {
 	ctx: hash.Context
-	if !begin_hash(&ctx, s) {
+	if !begin_hash(&ctx, s) || !hash_document(&ctx, s.type, data) {
 		return false
 	}
-	switch s.type {
+	return finish_verify(&ctx, s, key)
+}
+
+// hash_document feeds a document as its signature type has it: the bytes
+// for a binary signature, the lines with CRLF ends for a text one.
+@(private = "file")
+hash_document :: proc(ctx: ^hash.Context, type: int, data: []u8) -> bool {
+	switch type {
 	case 0x00:
-		hash.update(&ctx, data)
+		hash.update(ctx, data)
 	case 0x01:
 		at := 0
 		crlf := [2]u8{'\r', '\n'}
@@ -136,16 +143,16 @@ verify_data :: proc(key: ^Key, s: ^Signature, data: []u8) -> bool {
 				if end > at && data[end - 1] == '\r' {
 					end -= 1
 				}
-				hash.update(&ctx, data[at:end])
-				hash.update(&ctx, crlf[:])
+				hash.update(ctx, data[at:end])
+				hash.update(ctx, crlf[:])
 				at = i + 1
 			}
 		}
-		hash.update(&ctx, data[at:])
+		hash.update(ctx, data[at:])
 	case:
 		return false
 	}
-	return finish_verify(&ctx, s, key)
+	return true
 }
 
 /*
@@ -215,16 +222,8 @@ hash_key :: proc(ctx: ^hash.Context, k: ^Key) {
 // against the packet's, and verifies the Ed25519 signature over the digest.
 @(private = "file")
 finish_verify :: proc(ctx: ^hash.Context, s: ^Signature, key: ^Key) -> bool {
-	hash.update(ctx, s.trailer)
-	tail: [6]u8
-	tail[0] = u8(s.version)
-	tail[1] = 0xFF
-	n := len(s.trailer)
-	tail[2], tail[3], tail[4], tail[5] = u8(n >> 24), u8(n >> 16), u8(n >> 8), u8(n)
-	hash.update(ctx, tail[:])
 	digest: [64]u8
-	dn := s.hash == HASH_SHA512 ? 64 : 32
-	hash.final(ctx, digest[:dn])
+	dn := finish_digest(ctx, s, digest[:])
 	if digest[0] != s.left[0] || digest[1] != s.left[1] {
 		return false
 	}
@@ -236,6 +235,273 @@ finish_verify :: proc(ctx: ^hash.Context, s: ^Signature, key: ^Key) -> bool {
 		return false
 	}
 	return ed25519.verify(&pub, digest[:dn], s.material)
+}
+
+// finish_digest hashes the trailer and its tail and answers the digest's
+// length in `digest`.
+@(private = "file")
+finish_digest :: proc(ctx: ^hash.Context, s: ^Signature, digest: []u8) -> int {
+	hash.update(ctx, s.trailer)
+	tail: [6]u8
+	tail[0] = u8(s.version)
+	tail[1] = 0xFF
+	n := len(s.trailer)
+	tail[2], tail[3], tail[4], tail[5] = u8(n >> 24), u8(n >> 16), u8(n >> 8), u8(n)
+	hash.update(ctx, tail[:])
+	dn := s.hash == HASH_SHA512 ? 64 : 32
+	hash.final(ctx, digest[:dn])
+	return dn
+}
+
+// -- Signing ---------------------------------------------------------------------------
+
+// What a signature is made with, beside the key: its time, and the salt a
+// version 6 signature hashes first, thirty-two random octets.
+Sign_Params :: struct {
+	created: u32,
+	salt:    [32]u8,
+}
+
+/*
+sign_data writes a version 6 Ed25519 signature packet of `type` (0 binary,
+1 text) over `data` by `signer`, whose secret must be there, into `out`,
+and answers the packet's length or -1. The hashed subpackets are the time
+and the issuer's fingerprint, the way the RFC's samples are made.
+*/
+sign_data :: proc(signer: ^Key, type: int, data: []u8, p: Sign_Params, out: []u8) -> int {
+	p := p
+	if signer.algo != ALGO_ED25519 || len(signer.secret) != 32 || signer.version != 6 {
+		return -1
+	}
+	body: [256]u8
+	n := 0
+	body[0], body[1], body[2], body[3] = 6, u8(type), ALGO_ED25519, HASH_SHA512
+	n = 4
+	hashed := 5 + 1 + 1 + 1 + 1 + signer.fpr_len // creation time; issuer fingerprint
+	body[n], body[n + 1], body[n + 2], body[n + 3] = 0, 0, 0, u8(hashed)
+	n += 4
+	body[n], body[n + 1] = 5, 0x82 // Critical: signature creation time
+	body[n + 2], body[n + 3], body[n + 4], body[n + 5] = u8(p.created >> 24), u8(p.created >> 16), u8(p.created >> 8), u8(p.created)
+	n += 6
+	body[n], body[n + 1], body[n + 2] = u8(2 + signer.fpr_len), SUB_ISSUER_FPR, 6
+	n += 3
+	n += copy(body[n:], signer.fingerprint[:signer.fpr_len])
+	s := Signature{version = 6, type = type, algo = ALGO_ED25519, hash = HASH_SHA512, salt = p.salt[:], trailer = body[:n]}
+	ctx: hash.Context
+	if !begin_hash(&ctx, &s) || !hash_document(&ctx, type, data) {
+		return -1
+	}
+	digest: [64]u8
+	dn := finish_digest(&ctx, &s, digest[:])
+	// The unhashed area is empty, then the digest's first two octets, the
+	// salt, and the signature over the digest.
+	body[n], body[n + 1], body[n + 2], body[n + 3] = 0, 0, 0, 0
+	n += 4
+	body[n], body[n + 1] = digest[0], digest[1]
+	n += 2
+	body[n] = 32
+	n += 1
+	n += copy(body[n:], p.salt[:])
+	priv: ed25519.Private_Key
+	if !ed25519.private_key_set_bytes(&priv, signer.secret) {
+		return -1
+	}
+	ed25519.sign(&priv, digest[:dn], body[n:n + 64])
+	n += 64
+	return put_packet(out, 0, SIGNATURE, body[:n])
+}
+
+/*
+sign_message writes an inline-signed message: a one-pass signature
+packet, the literal data in `format` ('b' or 'u'), and the signature over
+it, text-canonical for 'u'. Answers the length written, or -1.
+*/
+sign_message :: proc(signer: ^Key, data: []u8, format: u8, p: Sign_Params, out: []u8) -> int {
+	p := p
+	if signer.version != 6 {
+		return -1
+	}
+	type := format == 'b' ? 0 : 1
+	one: [128]u8
+	n := 0
+	one[0], one[1], one[2], one[3], one[4] = 6, u8(type), HASH_SHA512, ALGO_ED25519, 32
+	n = 5
+	n += copy(one[n:], p.salt[:])
+	// The fingerprint bare: a version 6 one-pass packet has no count on it.
+	n += copy(one[n:], signer.fingerprint[:signer.fpr_len])
+	one[n] = 1 // The last one-pass packet before the data
+	n += 1
+	at := put_packet(out, 0, ONE_PASS, one[:n])
+	if at < 0 {
+		return -1
+	}
+	at = put_literal(out, at, format, data)
+	if at < 0 {
+		return -1
+	}
+	sn := sign_data(signer, type, data, p, out[at:])
+	if sn < 0 {
+		return -1
+	}
+	return at + sn
+}
+
+// -- Sealing ------------------------------------------------------------------------------
+
+// What a message is sealed with, beside the recipient's key: an ephemeral
+// X25519 secret, the session key (sixteen octets for AES-128, thirty-two
+// for AES-256), the salt, and the padding packet's octets. Every one is
+// random in use, and the RFC's in the test that reproduces its sample.
+Seal_Params :: struct {
+	ephemeral: [32]u8,
+	session:   []u8,
+	salt:      [32]u8,
+	padding:   []u8,
+	chunk:     u8, // The chunk size octet, 6 for 4 KiB chunks
+}
+
+/*
+seal_message writes a message sealed to `recipient`, an X25519 key: a
+version 6 session key packet naming it, and version 2 sealed data in
+AES-OCB holding the literal data, binary, and the padding. Answers the
+length written, or -1.
+*/
+seal_message :: proc(recipient: ^Key, data: []u8, p: Seal_Params, out: []u8) -> int {
+	p := p
+	if recipient.algo != ALGO_X25519 || len(recipient.public) != 32 || recipient.version != 6 {
+		return -1
+	}
+	klen := len(p.session)
+	cipher := 0
+	switch klen {
+	case 16:
+		cipher = CIPHER_AES128
+	case 32:
+		cipher = CIPHER_AES256
+	case:
+		return -1
+	}
+	// The session key packet.
+	eph_pub: [32]u8
+	x25519.scalarmult_basepoint(eph_pub[:], p.ephemeral[:])
+	shared: [32]u8
+	x25519.scalarmult(shared[:], p.ephemeral[:], recipient.public)
+	ikm: [96]u8
+	copy(ikm[:32], eph_pub[:])
+	copy(ikm[32:64], recipient.public)
+	copy(ikm[64:], shared[:])
+	kek: [16]u8
+	hkdf.extract_and_expand(.SHA256, nil, ikm[:], transmute([]u8)string("OpenPGP X25519"), kek[:])
+	pk: [128]u8
+	n := 0
+	pk[0], pk[1], pk[2] = 6, u8(1 + recipient.fpr_len), 6
+	n = 3
+	n += copy(pk[n:], recipient.fingerprint[:recipient.fpr_len])
+	pk[n] = ALGO_X25519
+	n += 1
+	n += copy(pk[n:], eph_pub[:])
+	pk[n] = u8(klen + 8)
+	n += 1
+	if !wrap(kek[:], p.session, pk[n:n + klen + 8]) {
+		return -1
+	}
+	n += klen + 8
+	at := put_packet(out, 0, PKESK, pk[:n])
+	if at < 0 {
+		return -1
+	}
+	// The plaintext: the literal and the padding.
+	plain := make([]u8, len(data) + len(p.padding) + 32)
+	defer delete(plain)
+	pn := put_literal(plain, 0, 'b', data)
+	pn = put_packet(plain, pn, PADDING, p.padding)
+	if pn < 0 {
+		return -1
+	}
+	// The sealed data packet, its chunks and the final tag.
+	body := make([]u8, 4 + 32 + pn + (pn / (1 << uint(p.chunk + 6)) + 2) * TAG)
+	defer delete(body)
+	body[0], body[1], body[2], body[3] = 2, u8(cipher), AEAD_OCB, p.chunk
+	copy(body[4:36], p.salt[:])
+	info := [5]u8{0xC0 | SEIPD, 2, u8(cipher), AEAD_OCB, p.chunk}
+	derived: [32 + NONCE - 8]u8
+	hkdf.extract_and_expand(.SHA256, p.salt[:], p.session, info[:], derived[:klen + NONCE - 8])
+	o: Ocb
+	ocb_init(&o, derived[:klen])
+	nonce: [NONCE]u8
+	copy(nonce[:], derived[klen:klen + NONCE - 8])
+	size := 1 << uint(p.chunk + 6)
+	bn := 36
+	index := u64(0)
+	pat := 0
+	for pat < pn {
+		m := min(size, pn - pat)
+		put_index(nonce[:], index)
+		if !ocb_seal(&o, nonce[:], info[:], plain[pat:pat + m], body[bn:]) {
+			return -1
+		}
+		bn += m + TAG
+		pat += m
+		index += 1
+	}
+	put_index(nonce[:], index)
+	aad: [13]u8
+	copy(aad[:5], info[:])
+	t := u64(pn)
+	for k in 0 ..< 8 {
+		aad[5 + k] = u8(t >> uint(8 * (7 - k)))
+	}
+	if !ocb_seal(&o, nonce[:], aad[:], nil, body[bn:]) {
+		return -1
+	}
+	bn += TAG
+	at = put_packet(out, at, SEIPD, body[:bn])
+	return at
+}
+
+// -- Writing packets ------------------------------------------------------------------------
+
+// put_packet writes a packet in the OpenPGP format at `at` and answers
+// where the next goes, or -1 when it does not fit.
+put_packet :: proc(out: []u8, at: int, tag: int, body: []u8) -> int #no_bounds_check {
+	if at < 0 || at + 6 + len(body) > len(out) {
+		return -1
+	}
+	out[at] = 0xC0 | u8(tag)
+	n := put_length(out, at + 1, len(body))
+	copy(out[n:], body)
+	return n + len(body)
+}
+
+// put_length writes an OpenPGP format length at `at` and answers where
+// the body goes.
+put_length :: proc(out: []u8, at: int, n: int) -> int #no_bounds_check {
+	switch {
+	case n < 192:
+		out[at] = u8(n)
+		return at + 1
+	case n < 8384:
+		v := n - 192
+		out[at] = u8(v >> 8 + 192)
+		out[at + 1] = u8(v & 0xFF)
+		return at + 2
+	}
+	out[at] = 255
+	out[at + 1], out[at + 2], out[at + 3], out[at + 4] = u8(n >> 24), u8(n >> 16), u8(n >> 8), u8(n)
+	return at + 5
+}
+
+// put_literal writes a literal data packet with no name and a zero date.
+put_literal :: proc(out: []u8, at: int, format: u8, data: []u8) -> int #no_bounds_check {
+	if at < 0 || at + 12 + len(data) > len(out) {
+		return -1
+	}
+	head := [6]u8{format, 0, 0, 0, 0, 0}
+	out[at] = 0xC0 | LITERAL
+	n := put_length(out, at + 1, len(head) + len(data))
+	copy(out[n:], head[:])
+	copy(out[n + len(head):], data)
+	return n + len(head) + len(data)
 }
 
 // -- Opening a message ------------------------------------------------------------------
