@@ -124,6 +124,13 @@ serve_one :: proc(lfd: i64, served: string) {
 		sp += 1
 	}
 	rpath := text[:sp]
+	// A query rides after the path, and the path is what is answered.
+	for i in 0 ..< len(rpath) {
+		if rpath[i] == '?' {
+			rpath = rpath[:i]
+			break
+		}
+	}
 	// A POST's body follows the blank line, Content-Length bytes of it,
 	// which may still be on the wire.
 	body := ""
@@ -159,6 +166,26 @@ serve_one :: proc(lfd: i64, served: string) {
 			ok = say_json(dfd, 200, "{\"id\": \"1\", \"username\": \"glenda\", \"acct\": \"glenda\", \"display_name\": \"Glenda\"}\n")
 		} else {
 			ok = say_json(dfd, 401, "{\"error\": \"The access token is invalid\"}\n")
+		}
+	case "/xrpc/com.atproto.server.createSession":
+		// A PDS making a session on an app password: one handle, one
+		// password, a token and a DID back.
+		if post && libodin.contains(body, "\"identifier\": \"alice.one.example\"") && libodin.contains(body, "\"password\": \"app-pass-1\"") {
+			ok = say_json(dfd, 200, "{\"accessJwt\": \"jwt-7\", \"refreshJwt\": \"jwt-8\", \"handle\": \"alice.one.example\", \"did\": \"did:plc:alice1\"}\n")
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"AuthenticationRequired\", \"message\": \"Invalid identifier or password\"}\n")
+		}
+	case "/xrpc/app.bsky.feed.getTimeline":
+		// The timeline, the saved one, for the session's token and nobody else.
+		if bearer == "Bearer jwt-7" {
+			tl, tok := libuser.read_file("/lib/tests/timeline.json", context.allocator)
+			if !tok {
+				fail("read the saved timeline")
+			}
+			ok = say_json(dfd, 200, string(tl))
+			delete(tl)
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"AuthMissing\"}\n")
 		}
 	case "/api/v1/timelines/home":
 		// The home timeline, the saved one, for the token and nobody else.

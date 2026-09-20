@@ -22,10 +22,8 @@ answered are kept, since a token request wants them.
 package fedifs
 
 import "core:encoding/json"
-import "vsys:abi"
 import "vsys:lib9p"
 import "vsys:libmsg"
-import "vsys:libodin"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
@@ -211,8 +209,8 @@ trade_code :: proc(l: ^Login, code: string) -> bool {
 	}
 	// The token to factotum, under the account's name and the host.
 	line: [512]u8
-	key := libuser.cat_into(line[:], "key proto=oauth user=", acct, " server=", host_of(base), " !token=", string(token[:tlen]))
-	if !factotum_write(key) {
+	key := libuser.cat_into(line[:], "key proto=oauth user=", acct, " server=", libmsg.host_of(base), " !token=", string(token[:tlen]))
+	if !libmsg.factotum_write(key) {
 		l.why = "factotum would not take the token"
 		return false
 	}
@@ -238,72 +236,14 @@ set_me :: proc() {
 		net.me = ""
 		return
 	}
-	net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "@", host_of(string(account.base[:account.blen])), "\n")
-}
-
-// host_of answers a URL's host, with its port when it has one.
-host_of :: proc "contextless" (base: string) -> string {
-	s := base
-	i := 0
-	for i + 2 < len(s) && s[i:i + 3] != "://" {
-		i += 1
-	}
-	if i + 3 <= len(s) {
-		s = s[i + 3:]
-	}
-	e := 0
-	for e < len(s) && s[e] != '/' {
-		e += 1
-	}
-	return s[:e]
+	net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "@", libmsg.host_of(string(account.base[:account.blen])), "\n")
 }
 
 // ask_token asks factotum for the account's token over rpc, into `into`.
 ask_token :: proc(into: []u8) -> (string, bool) {
-	rpc := libuser.open("/mnt/factotum/rpc", abi.O_RDWR)
-	if rpc < 0 {
-		if libuser.mount("/srv/factotum", "/mnt/factotum", 0) < 0 {
-			return "", false
-		}
-		rpc = libuser.open("/mnt/factotum/rpc", abi.O_RDWR)
-		if rpc < 0 {
-			return "", false
-		}
-	}
-	defer _ = libuser.close(int(rpc))
 	ask: [512]u8
-	question := libuser.cat_into(ask[:], "start oauth user=", string(account.user[:account.ulen]), " server=", host_of(string(account.base[:account.blen])))
-	if libuser.write(int(rpc), transmute([]u8)question) != i64(len(question)) {
-		return "", false
-	}
-	n := libuser.read(int(rpc), into)
-	if n <= 0 {
-		return "", false
-	}
-	line := string(into[:n])
-	for len(line) > 0 && line[len(line) - 1] == '\n' {
-		line = line[:len(line) - 1]
-	}
-	if !libodin.has_prefix(line, "token ") {
-		return "", false
-	}
-	return line[len("token "):], true
-}
-
-// factotum_write writes a line to factotum's ctl, mounting it if need be.
-factotum_write :: proc(line: string) -> bool {
-	ctl := libuser.open("/mnt/factotum/ctl", abi.O_WRONLY)
-	if ctl < 0 {
-		if libuser.mount("/srv/factotum", "/mnt/factotum", 0) < 0 {
-			return false
-		}
-		ctl = libuser.open("/mnt/factotum/ctl", abi.O_WRONLY)
-		if ctl < 0 {
-			return false
-		}
-	}
-	defer _ = libuser.close(int(ctl))
-	return libuser.write(int(ctl), transmute([]u8)line) == i64(len(line))
+	question := libuser.cat_into(ask[:], "start oauth user=", string(account.user[:account.ulen]), " server=", libmsg.host_of(string(account.base[:account.blen])))
+	return libmsg.factotum_ask(question, "token ", into)
 }
 
 // timeline_url answers the URL of one of the account's own timelines,

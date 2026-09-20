@@ -11387,6 +11387,77 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 }
 
 /*
+verify_at_login runs webfs again and a scripted PDS on this machine's
+stack, and logs atfs in: docs/WEB.md section 7's app password on
+createSession. The app password is a pass key in factotum; a wrong one
+is refused by the server; the right one ends with the session's token
+in factotum under proto=oauth, unshown, and me the handle and the DID.
+Then `fetch home` takes the account's timeline with the token, and an
+account whose token the server refuses cannot.
+*/
+@(private = "file")
+verify_at_login :: proc(r: ^Result, host: string) {
+	wnames := [?]string{"webfs", "-s", "/usr/glenda/lib/web"}
+	wargv := new(Argv)
+	_ = argv_from(wargv, wnames[:])
+	pw := start_path(r, "/bin/webfs", "webfs starts again, for the PDS's requests", wargv)
+	if pw == nil {
+		return
+	}
+	if !check(r, await_posted("web"), "and posts /srv/web") || !check(r, srv.mount(vfs.boot_namespace, "/srv/web", "/mnt/web") == vfs.OK, "which the kernel mounts") {
+		finish(r, pw, "and webfs is taken down")
+		return
+	}
+	sargs := [?]string{"websrv", "8081", "4"}
+	sargv := new(Argv)
+	_ = argv_from(sargv, sargs[:])
+	pds := start_path(r, "/bin/websrv", "a scripted PDS starts, four requests to serve", sargv)
+	pa := start_path(r, "/bin/atfs", "and atfs starts again")
+	if pds != nil && pa != nil {
+		sync.delay(PATIENCE)
+		line_buf: [512]u8
+		text: [2048]u8
+		base_buf: [128]u8
+		base := libodin_cat(base_buf[:], "http://", host, ":8081")
+		if check(r, await_posted("at"), "which posts /srv/at") && check(r, srv.mount(vfs.boot_namespace, "/srv/at", "/mnt/at") == vfs.OK, "and the kernel mounts it at /mnt/at") {
+			check(r, !net_file_write("/mnt/at/ctl", libodin_cat(line_buf[:], "login ", base, " alice.one.example")), "a login with no app password in factotum is refused before any wire")
+			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=alice.one.example server=", host, ":8081 !password=wrong-pass")), "an app password goes to factotum as a pass key, a wrong one first")
+			check(r, !net_file_write("/mnt/at/ctl", libodin_cat(line_buf[:], "login ", base, " alice.one.example")), "and the server refuses the session, and the write says so")
+			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=alice.one.example server=", host, ":8081 !password=app-pass-1")), "then the right one")
+			check(r, net_file_write("/mnt/at/ctl", libodin_cat(line_buf[:], "login ", base, " alice.one.example")), "and login makes the session, the write returning once the token is in factotum")
+			n := web_read_file("/mnt/at/me", text[:])
+			check(r, string(text[:max(n, 0)]) == "alice.one.example\ndid did:plc:alice1", "and me is the handle and the DID the session named")
+			n = web_read_file("/mnt/factotum/ctl", text[:])
+			got := string(text[:max(n, 0)])
+			check(r, n > 0 && libodin.contains(got, libodin_cat(line_buf[:], "key proto=oauth user=alice.one.example server=", host, ":8081")) && !libodin.contains(got, "jwt-7"), "and factotum lists the token's key under the handle and the host, and keeps the token")
+			AT1 :: "000000006aad0f24.cdaa9ac7e2c76a9b"
+			AT4 :: "000000006aad20b8.41f0a883e9334b00"
+			check(r, net_file_write("/mnt/at/ctl", "fetch home"), "fetch home takes the account's timeline, the token from factotum in the request")
+			lbuf: [2048]u8
+			listed := dir_names("/mnt/at/home", lbuf[:])
+			check(r, count_words(listed) == 4 && libodin.contains(listed, AT1) && libodin.contains(listed, AT4), "and the four posts the server holds are the conversation")
+			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=oauth user=nobody server=", host, ":8081 !token=bad")), "a token the server will refuse goes to factotum for another account")
+			check(r, net_file_write("/mnt/at/ctl", libodin_cat(line_buf[:], "account ", base, " nobody")), "and account names that account")
+			check(r, !net_file_write("/mnt/at/ctl", "fetch home"), "whose fetch the server refuses, and the write says so")
+			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/at") == vfs.OK, "the mount of atfs comes down")
+		}
+		check(r, srv.remove("at") == vfs.OK, "and the kernel takes its name away")
+		check(r, wait(pa, PATIENCE * 5), "and atfs exits")
+		finish(r, pa, "and is taken down")
+		check(r, wait(pds, PATIENCE * 5), "and the PDS, its four requests served, exits")
+		check(r, string(pds.exit.text[:pds.exit.text_len]) == "ok", "with ok")
+		finish(r, pds, "and is taken down")
+	} else {
+		finish(r, pa, "atfs is taken down")
+		finish(r, pds, "and the PDS")
+	}
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
+	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	finish(r, pw, "and is taken down")
+}
+
+/*
 verify_chatmail runs webfs again and a scripted relay on this machine's
 stack, and gives mailfs a dcaccount: URL. One request later the address
 is the account, the password is in factotum under the address's host, and
@@ -11746,6 +11817,10 @@ verify_mailfs :: proc(r: ^Result) {
 				// The fediverse login: the authorization code flow against a
 				// scripted instance, ending with a token in factotum.
 				verify_fedi_login(r, host)
+
+				// The AT login: a session on an app password from factotum,
+				// its token back in factotum.
+				verify_at_login(r, host)
 
 				// The wrong password: the server refuses the login, and the fetch says so.
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")

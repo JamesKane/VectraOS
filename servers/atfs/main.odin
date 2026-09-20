@@ -10,8 +10,9 @@ and the write to `ctl` waits for it. A name not given is the URL's
 host, or the file's name without its suffix. Fetching again refreshes:
 a post already there is replaced by id.
 
-    /mnt/at/ctl              fetch [name] url-or-path; remove name
-    /mnt/at/me               empty until a login
+    /mnt/at/ctl              fetch [name] url-or-path; fetch home; remove name;
+                             login PDS HANDLE; account PDS HANDLE
+    /mnt/at/me               the handle and the DID, once there is a session
     /mnt/at/new              refused until a login
     /mnt/at/event            `name/id` when a post lands
     /mnt/at/dict             the verbs above
@@ -30,8 +31,12 @@ CID, the hash of the record's DAG-CBOR, and `sys/libcid` makes the
 bytes again from the JSON and hashes them. A record that checks is
 served with its CID as `hash`, the network's own name for it. One that
 does not is served with `hash` empty, and a line in `notify/` names
-it. Not yet: the login, the account's own timelines and notifications,
-a post written to `new`, and a record by URI.
+it.
+
+`login.odin` is the account: a session on an app password, its token
+in `factotum`, and `fetch home` then takes the account's timeline with
+it. Not yet: notifications, a post written to `new`, and a record by
+URI.
 */
 package atfs
 
@@ -49,7 +54,7 @@ MAX_CONVS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: libmsg.SOURCE_MAX
 
-DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nremove name          empty a conversation\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's timeline, with its token\nremove name          empty a conversation\nlogin pds handle     a session on the app password factotum holds, its token kept by factotum\naccount pds handle   an account whose token factotum holds already\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Source :: struct {
 	text: [SOURCE_MAX]u8,
@@ -130,6 +135,18 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		libmsg.conv_clear(&net.convs[i])
 		rebuild_status()
 		return 0
+	case "login":
+		base, r2 := word(rest)
+		user, _ := word(r2)
+		return start_login(tag, len(text), base, user)
+	case "account":
+		base, r2 := word(rest)
+		user, _ := word(r2)
+		if !set_account(base, user) {
+			return vectra9.EINVAL
+		}
+		rebuild_status()
+		return 0
 	}
 	return vectra9.EINVAL
 }
@@ -168,7 +185,26 @@ fetch_thread :: proc "contextless" (arg: rawptr) {
 fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	source := string(f.source[:f.slen])
 	name := string(f.name[:f.nlen])
-	text, ok := libmsg.read_source(f.io, source)
+	text: []u8
+	ok: bool
+	urlbuf: [BASE_MAX + 64]u8
+	if url := timeline_url(source, urlbuf[:]); url != "" {
+		// The account's own timeline, with its token from factotum.
+		tok: [256]u8
+		token, has := ask_token(tok[:])
+		if !has {
+			return vectra9.EPERM
+		}
+		auth: [300]u8
+		status: int
+		text, status, ok = libmsg.request(f.io, url, "", libuser.cat_into(auth[:], "Authorization: Bearer ", token, "\n"), "")
+		if ok && status != 200 {
+			delete(text)
+			return vectra9.EPERM
+		}
+	} else {
+		text, ok = libmsg.read_source(f.io, source)
+	}
 	if !ok {
 		return vectra9.EIO
 	}
@@ -345,6 +381,13 @@ resolve_replies :: proc(c: ^libmsg.Conv) {
 
 rebuild_status :: proc() {
 	clear(&status)
+	if account.set {
+		append(&status, ..transmute([]u8)string("account "))
+		append(&status, ..account.base[:account.blen])
+		append(&status, ' ')
+		append(&status, ..account.user[:account.ulen])
+		append(&status, '\n')
+	}
 	for c, i in net.convs {
 		if i == 0 || sources[i].len == 0 {
 			continue

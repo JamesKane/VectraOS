@@ -1035,9 +1035,20 @@ header goes on the request, through `libmsg.request`, which is a
 method, headers and a body over a conversation. The boot line runs
 the flow against `tests/websrv`, which serves the instance's four
 paths: a wrong code refused, the right one ending with the token in
-factotum, and a token the instance refuses refusing the fetch. Not
-yet: the page through `mothra`, the login on AT, notifications, a post
-written to `new`, any object by URL or URI, and `$bytes` in a record.
+factotum, and a token the instance refuses refusing the fetch.
+
+The AT login is in, `servers/atfs/login.odin`: an app password on
+`createSession` first, as the plan says. `login PDS HANDLE` asks
+`factotum` for the app password under `proto=pass`, the handle and the
+host, and the session's token goes back under `proto=oauth`; `me` is
+the handle and the DID. `fetch home` is `getTimeline` with the token.
+Factotum's ctl and rpc are reached through `libmsg` now, for both
+logins. The boot line runs it against the scripted server's two XRPC
+paths: a wrong password refused, the right one ending with the token
+in factotum, and a token the server refuses refusing the fetch. Not
+yet: OAuth on AT with PAR, PKCE and DPoP, the page through `mothra`,
+notifications, a post written to `new`, any object by URL or URI, and
+`$bytes` in a record.
 
 ### Step 5: chat
 
