@@ -11405,10 +11405,10 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 		finish(r, pw, "and webfs is taken down")
 		return
 	}
-	sargs := [?]string{"websrv", "8081", "8"}
+	sargs := [?]string{"websrv", "8081", "10"}
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
-	inst := start_path(r, "/bin/websrv", "a scripted instance starts, eight requests to serve", sargv)
+	inst := start_path(r, "/bin/websrv", "a scripted instance starts, ten requests to serve", sargv)
 	fnames := [?]string{"fedifs", "-s", "/usr/glenda/lib/web"}
 	fargv := new(Argv)
 	_ = argv_from(fargv, fnames[:])
@@ -11453,6 +11453,10 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 			n = web_read_file("/usr/glenda/lib/web/sent/" + ID9 + ".json", text[:], raw = true)
 			check(r, n > 0 && libodin.contains(string(text[:n]), "\"id\": \"113000000000000009\""), "and the store keeps what went out under sent, the status as the instance sent it")
 			check(r, !net_file_write("/mnt/fedi/new", "colour: blue\n\nx"), "a write to new with a header no network knows is refused before any wire")
+			// A picture on a status: uploaded first, then the status carries it.
+			check(r, net_file_write("/mnt/fedi/new", "attach: /lib/tests/dot.png\n\nA picture.\n"), "a status with an attach line uploads the file first, as multipart form data, and posts the status with the media the instance named")
+			n = web_read_file("/mnt/fedi/home/" + ID9 + "/links", text[:])
+			check(r, libodin.contains(string(text[:max(n, 0)]), "https://one.example/media/m-1.png"), "and the status the instance answered carries the picture among its links")
 			NOTE :: "000000006aad35d0.af5f29eabd18685e"
 			check(r, net_file_write("/mnt/fedi/ctl", libodin_cat(line_buf[:], "object notes ", base, "/objects/note7")), "an object anywhere is fetched by its URL, with Accept: application/activity+json")
 			check(r, dir_names("/mnt/fedi/notes", lbuf[:]) == NOTE, "and is a message of the conversation named, the instance having answered activity JSON to that header")
@@ -11464,7 +11468,7 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 		check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
 		check(r, wait(pf, PATIENCE * 5), "and fedifs exits")
 		finish(r, pf, "and is taken down")
-		check(r, wait(inst, PATIENCE * 5), "and the instance, its eight requests served, exits")
+		check(r, wait(inst, PATIENCE * 5), "and the instance, its ten requests served, exits")
 		check(r, string(inst.exit.text[:inst.exit.text_len]) == "ok", "with ok")
 		finish(r, inst, "and is taken down")
 	} else {
@@ -11499,10 +11503,10 @@ verify_at_login :: proc(r: ^Result, host: string) {
 		finish(r, pw, "and webfs is taken down")
 		return
 	}
-	sargs := [?]string{"websrv", "8081", "6"}
+	sargs := [?]string{"websrv", "8081", "8"}
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
-	pds := start_path(r, "/bin/websrv", "a scripted PDS starts, six requests to serve", sargv)
+	pds := start_path(r, "/bin/websrv", "a scripted PDS starts, eight requests to serve", sargv)
 	anames := [?]string{"atfs", "-s", "/usr/glenda/lib/web"}
 	aargv := new(Argv)
 	_ = argv_from(aargv, anames[:])
@@ -11546,6 +11550,13 @@ verify_at_login :: proc(r: ^Result, host: string) {
 			check(r, string(text[:max(n, 0)]) == "bafyreinewrecordnewrecordnewrecordnewrecordnewrecordnewrecordq", "and hash is the CID the server named it by")
 			n = web_read_file(libodin_cat(line_buf[:], "/usr/glenda/lib/web/sent/", fresh, ".json"), text[:], raw = true)
 			check(r, n > 0 && libodin.contains(string(text[:n]), "\"$type\": \"app.bsky.feed.post\"") && libodin.contains(string(text[:n]), "\"parent\": {\"uri\": \"at://did:plc:alice1/app.bsky.feed.post/3kfirst\""), "and the store keeps the record as sent under sent")
+			// A picture on a post: uploaded as a blob first, embedded in the record.
+			before = dir_names("/mnt/at/home", before_buf[:])
+			check(r, net_file_write("/mnt/at/new", "attach: /lib/tests/dot.png\n\nA picture on AT.\n"), "a post with an attach line uploads the file as a blob first, and puts the record with it embedded as an image")
+			after = dir_names("/mnt/at/home", lbuf[:])
+			fresh = new_word(before, after)
+			n = web_read_file(libodin_cat(line_buf[:], "/usr/glenda/lib/web/sent/", fresh, ".json"), text[:], raw = true)
+			check(r, len(fresh) > 0 && n > 0 && libodin.contains(string(text[:n]), "\"$type\": \"app.bsky.embed.images\"") && libodin.contains(string(text[:n]), "\"$link\": \"bafkreiblobdotpng"), "and the record kept under sent embeds the blob the server named")
 			check(r, net_file_write("/mnt/at/ctl", "record at://did:plc:alice1/app.bsky.feed.post/3kfirst"), "a record is fetched by its URI, its repository, collection and key asked of the server")
 			check(r, dir_names("/mnt/at/records", lbuf[:]) == AT1, "and lands in records, checked against its CID")
 			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=oauth user=nobody server=", host, ":8081 !token=bad")), "a token the server will refuse goes to factotum for another account")
@@ -11556,7 +11567,7 @@ verify_at_login :: proc(r: ^Result, host: string) {
 		check(r, srv.remove("at") == vfs.OK, "and the kernel takes its name away")
 		check(r, wait(pa, PATIENCE * 5), "and atfs exits")
 		finish(r, pa, "and is taken down")
-		check(r, wait(pds, PATIENCE * 5), "and the PDS, its six requests served, exits")
+		check(r, wait(pds, PATIENCE * 5), "and the PDS, its eight requests served, exits")
 		check(r, string(pds.exit.text[:pds.exit.text_len]) == "ok", "with ok")
 		finish(r, pds, "and is taken down")
 	} else {

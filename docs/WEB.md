@@ -1105,8 +1105,15 @@ takes it off the one request and trades it, so nothing is pasted.
 `mothra` follows where a response sends it, up to five hops, which
 the approval's answer is. The boot line opens the scripted page in
 the reader, presses its one button, and sees the token land in
-`factotum`; without a screen the code goes by hand. Not yet: the
-refresh, an attachment on a post out, and `$bytes` in a record.
+`factotum`; without a screen the code goes by hand.
+
+Media on a post is in, on both. An `attach` line on `new` is a file
+uploaded first, as multipart form data to the instance or as a blob
+to the server, and the status then carries the media the instance
+named, or the record embeds the blob as an image. The boot line posts
+a one-pixel picture on each. `$bytes` in a record is CBOR bytes now.
+Not yet: the refresh, and an image read back as a part directory,
+which section 4 leaves to mail.
 
 ### Step 5: chat
 

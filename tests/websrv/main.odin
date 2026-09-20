@@ -248,6 +248,20 @@ serve_one :: proc(lfd: i64, served: string) {
 		} else {
 			ok = say_json(dfd, 401, "{\"error\": \"AuthMissing\"}\n")
 		}
+	case "/api/v2/media":
+		// An upload, as multipart form data, named by the instance.
+		if post && bearer == "Bearer token-42" && libodin.contains(body, "filename=\"dot.png\"") && libodin.contains(body, "Content-Type: image/png") && libodin.contains(body, "\x89PNG") {
+			ok = say_json(dfd, 200, "{\"id\": \"m-1\", \"type\": \"image\", \"url\": \"https://one.example/media/m-1.png\"}\n")
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"not an upload this instance takes\"}\n")
+		}
+	case "/xrpc/com.atproto.repo.uploadBlob":
+		// A blob, the bytes as they are, named by its CID.
+		if post && (bearer == "Bearer jwt-7" || bearer == "DPoP dtok-9") && header_value(text, "content-type") == "image/png" && libodin.contains(body, "\x89PNG") {
+			ok = say_json(dfd, 200, "{\"blob\": {\"$type\": \"blob\", \"ref\": {\"$link\": \"bafkreiblobdotpngblobdotpngblobdotpngblobdotpngblobdotpngblobq\"}, \"mimeType\": \"image/png\", \"size\": 69}}\n")
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"not a blob this server takes\"}\n")
+		}
 	case "/api/v1/statuses":
 		// A status posted: the form's fields, answered as the status made.
 		if post && bearer == "Bearer token-42" {
@@ -271,7 +285,11 @@ serve_one :: proc(lfd: i64, served: string) {
 			libodin.put_str(&sink, string(cw[:max(cn, 0)]))
 			libodin.put_str(&sink, "\", \"url\": \"https://one.example/@glenda/9\", \"content\": \"<p>")
 			libodin.put_str(&sink, string(st[:max(sn, 0)]))
-			libodin.put_str(&sink, "</p>\", \"reblog\": null, \"account\": {\"id\": \"1\", \"acct\": \"glenda\", \"display_name\": \"Glenda\"}, \"media_attachments\": [], \"card\": null}\n")
+			libodin.put_str(&sink, "</p>\", \"reblog\": null, \"account\": {\"id\": \"1\", \"acct\": \"glenda\", \"display_name\": \"Glenda\"}, \"media_attachments\": [")
+			if libodin.contains(body, "media_ids%5B%5D=m-1") || libodin.contains(body, "media_ids[]=m-1") {
+				libodin.put_str(&sink, "{\"id\": \"m-1\", \"type\": \"image\", \"url\": \"https://one.example/media/m-1.png\"}")
+			}
+			libodin.put_str(&sink, "], \"card\": null}\n")
 			ok = say_json(dfd, 200, libodin.str(&sink))
 		} else {
 			ok = say_json(dfd, 401, "{\"error\": \"The access token is invalid\"}\n")
@@ -279,6 +297,12 @@ serve_one :: proc(lfd: i64, served: string) {
 	case "/xrpc/com.atproto.repo.createRecord":
 		// A record put: named by a URI and a CID.
 		if post && bearer == "Bearer jwt-7" && libodin.contains(body, "\"collection\": \"app.bsky.feed.post\"") && libodin.contains(body, "\"$type\": \"app.bsky.feed.post\"") {
+			// A record with a picture gets a name of its own, so two records
+			// put in one second are two.
+			if libodin.contains(body, "app.bsky.embed.images") {
+				ok = say_json(dfd, 200, "{\"uri\": \"at://did:plc:alice1/app.bsky.feed.post/3kpicnew\", \"cid\": \"bafyreipicturenewpicturenewpicturenewpicturenewpicturenewpictq\"}\n")
+				break
+			}
 			ok = say_json(dfd, 200, "{\"uri\": \"at://did:plc:alice1/app.bsky.feed.post/3knew\", \"cid\": \"bafyreinewrecordnewrecordnewrecordnewrecordnewrecordnewrecordq\"}\n")
 		} else {
 			ok = say_json(dfd, 401, "{\"error\": \"AuthMissing\"}\n")

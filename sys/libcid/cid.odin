@@ -11,8 +11,8 @@ DAG-CBOR is CBOR, RFC 8949, with the choices IPLD made: every integer
 in its shortest form, a float always eight bytes, a map's keys sorted
 by length and then by their bytes, no indefinite lengths, and a link a
 tag 42 over the CID's bytes behind a zero. In JSON a link is
-`{"$link": "b..."}` and bytes are `{"$bytes": "..."}`; the first is
-turned back, the second is not yet.
+`{"$link": "b..."}` and bytes are `{"$bytes": "..."}`, base64; both are
+turned back.
 
 A CID here is version 1, the dag-cbor codec, sha2-256, base32 lower
 case behind its `b`. `core:encoding/json` parses, with integers kept
@@ -109,6 +109,9 @@ dag_cbor :: proc(v: json.Value, out: ^[dynamic]u8) -> bool {
 			if link, is_link := m["$link"]; is_link {
 				return put_link(link, out)
 			}
+			if bytes, is_bytes := m["$bytes"]; is_bytes {
+				return put_bytes(bytes, out)
+			}
 		}
 		// The keys in the codec's order: by length, then by their bytes.
 		keys := make([dynamic]string, 0, len(m))
@@ -158,6 +161,61 @@ put_link :: proc(link: json.Value, out: ^[dynamic]u8) -> bool {
 	append(out, 0)
 	append(out, ..raw[:n])
 	return true
+}
+
+// put_bytes writes a `{"$bytes": base64}` as a byte string.
+put_bytes :: proc(bytes: json.Value, out: ^[dynamic]u8) -> bool {
+	s, is_str := bytes.(json.String)
+	if !is_str {
+		return false
+	}
+	raw := make([]u8, len(s))
+	defer delete(raw)
+	n := base64_decode(string(s), raw)
+	if n < 0 {
+		return false
+	}
+	put_head(out, 2, u64(n))
+	append(out, ..raw[:n])
+	return true
+}
+
+// base64_decode reads standard base64, padding or not, into `into`, and
+// answers how many bytes, or -1 for a character outside the alphabet.
+base64_decode :: proc(text: string, into: []u8) -> int {
+	n := 0
+	bits: u32 = 0
+	have: u32 = 0
+	for c in transmute([]u8)text {
+		v: u32
+		switch {
+		case c >= 'A' && c <= 'Z':
+			v = u32(c - 'A')
+		case c >= 'a' && c <= 'z':
+			v = u32(c - 'a') + 26
+		case c >= '0' && c <= '9':
+			v = u32(c - '0') + 52
+		case c == '+' || c == '-':
+			v = 62
+		case c == '/' || c == '_':
+			v = 63
+		case c == '=' || c == '\n' || c == '\r':
+			continue
+		case:
+			return -1
+		}
+		bits = bits << 6 | v
+		have += 6
+		if have >= 8 {
+			have -= 8
+			if n >= len(into) {
+				return -1
+			}
+			into[n] = u8(bits >> have)
+			n += 1
+		}
+	}
+	return n
 }
 
 // put_head writes a major type and its argument in the shortest form.
