@@ -11782,9 +11782,15 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 /*
 verify_matrix_login runs webfs again and a scripted homeserver on this
 machine's stack, and logs matrixfs in: the password from factotum, the
-token back in factotum, a sync with it, and a message written to new
-put in a room, docs/WEB.md section 8's "a message written to new comes
-out of a scripted server" before the seal.
+token back in factotum and the device's keys uploaded signed, a sync
+with it, and a message written to new put in a room. The room is
+encrypted, so the message goes sealed: the homeserver holds a second
+device, Bob, whose keys are queried and claimed, the room's Megolm key
+goes to him by Olm, and he opens the event and writes what it said:
+docs/WEB.md section 8's "a message written to new comes out of a
+scripted server as a Megolm event the test opens". Then a sync after
+carries Bob's own key by Olm and an event he sealed, which opens in
+the room: "a sealed message opened by a test key".
 */
 @(private = "file")
 verify_matrix_login :: proc(r: ^Result, host: string) {
@@ -11799,11 +11805,14 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 		finish(r, pw, "and webfs is taken down")
 		return
 	}
-	sargs := [?]string{"websrv", "8081", "4"}
+	sargs := [?]string{"websrv", "8081", "9"}
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
-	hs := start_path(r, "/bin/websrv", "a scripted homeserver starts, four requests to serve", sargv)
-	pm := start_path(r, "/bin/matrixfs", "and matrixfs starts again")
+	hs := start_path(r, "/bin/websrv", "a scripted homeserver starts, nine requests to serve", sargv)
+	mnames := [?]string{"matrixfs", "-s", "/usr/glenda/lib/web"}
+	margv := new(Argv)
+	_ = argv_from(margv, mnames[:])
+	pm := start_path(r, "/bin/matrixfs", "and matrixfs starts again, with a store", margv)
 	if hs != nil && pm != nil {
 		sync.delay(PATIENCE)
 		line_buf: [512]u8
@@ -11816,7 +11825,7 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=glenda server=", host, ":8081 !password=hunter2")), "then the right one")
 			check(r, net_file_write("/mnt/matrix/ctl", libodin_cat(line_buf[:], "login ", base, " glenda")), "and login gets a token, the write returning once it is in factotum")
 			n := web_read_file("/mnt/matrix/me", text[:])
-			check(r, string(text[:max(n, 0)]) == "@glenda:one.example\ndevice VECTRA1", "and me is the user id and the device id the homeserver named")
+			check(r, libodin.has_prefix(string(text[:max(n, 0)]), "@glenda:one.example\ndevice VECTRA1\ncurve25519 ") && libodin.contains(string(text[:max(n, 0)]), "\ned25519 "), "and me is the user id, the device id the homeserver named, and the device's two keys, made and uploaded signed at login")
 			n = web_read_file("/mnt/factotum/ctl", text[:])
 			got := string(text[:max(n, 0)])
 			check(r, n > 0 && libodin.contains(got, libodin_cat(line_buf[:], "key proto=oauth user=@glenda:one.example server=", host, ":8081")) && !libodin.contains(got, "syt-1"), "and factotum lists the token's key under the user id and the host, and keeps the token")
@@ -11827,7 +11836,9 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			check(r, count_words(listed) == 3 && libodin.contains(listed, E1), "and the room the homeserver holds is the conversation")
 			before_buf: [2048]u8
 			before := dir_names("/mnt/matrix/vectra", before_buf[:])
-			check(r, net_file_write("/mnt/matrix/new", "to: vectra\nreplyto: " + E1 + "\n\nHello from Vectra.\n"), "a message written to new, to the room by name, is put with the token, and the write returns when the homeserver has named the event")
+			n = web_read_file("/mnt/matrix/ctl", text[:])
+			check(r, n > 0 && libodin.contains(string(text[:n]), "room vectra !vectra:one.example sealed"), "and ctl says the room is sealed, off its state")
+			check(r, net_file_write("/mnt/matrix/new", "to: vectra\nreplyto: " + E1 + "\n\nHello from Vectra.\n"), "a message written to new, to the room by name, goes sealed: Bob's keys queried and a one-time key claimed, the room's key to him by Olm, the event by Megolm, and the write returns when the homeserver has named the event")
 			after := dir_names("/mnt/matrix/vectra", lbuf[:])
 			fresh := new_word(before, after)
 			check(r, count_words(after) == 4 && len(fresh) > 0, "and the event is in the room under the id the homeserver gave, dated now")
@@ -11835,15 +11846,28 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			check(r, string(text[:max(n, 0)]) == "Hello from Vectra.", "with the text written")
 			n = web_read_file(libodin_cat(line_buf[:], "/mnt/matrix/vectra/", fresh, "/replyto"), text[:])
 			check(r, string(text[:max(n, 0)]) == E1, "answering the event replyto named")
-			n = web_read_file(libodin_cat(line_buf[:], "/mnt/matrix/vectra/", fresh, "/raw"), text[:], raw = true)
-			check(r, n > 0 && libodin.contains(string(text[:n]), "\"m.in_reply_to\": {\"event_id\": \"$e1\"}"), "and the event kept relates to it by the event id")
+			n = web_read_file("/usr/glenda/matrix-bob.txt", text[:], raw = true)
+			check(r, string(text[:max(n, 0)]) == "Hello from Vectra.", "and Bob, on the homeserver, opened the room key by Olm and the event by Megolm, and wrote what it said")
+			// The sync after: Bob's key by Olm, and an event he sealed.
+			check(r, net_file_write("/mnt/matrix/ctl", "sync"), "the sync after carries Bob's room key in a to-device event, sealed by Olm on a one-time key this device uploaded")
+			listed = dir_names("/mnt/matrix/vectra", lbuf[:])
+			SEALED :: "000000006aad6af0.05bbf82ba4bd7084"
+			check(r, count_words(listed) == 5 && libodin.contains(listed, SEALED), "and an event he sealed with it, in the room")
+			n = web_read_file("/mnt/matrix/vectra/" + SEALED + "/body", text[:])
+			check(r, string(text[:max(n, 0)]) == "Sealed from Bob.", "which opened with the session his key named: a sealed message opened by a test key")
+			n = web_read_file("/mnt/matrix/vectra/" + SEALED + "/from", text[:])
+			check(r, string(text[:max(n, 0)]) == "@bob:two.example", "from Bob")
+			n = web_read_file("/mnt/matrix/vectra/" + SEALED + "/raw", text[:], raw = true)
+			check(r, n > 0 && libodin.contains(string(text[:n]), "\"algorithm\": \"m.megolm.v1.aes-sha2\""), "while raw is the sealed event as it came")
+			n = web_read_file("/usr/glenda/lib/web/keys/matrix", text[:])
+			check(r, dir_names("/usr/glenda/lib/web/keys/matrix", lbuf[:]) != "" && dir_names("/usr/glenda/lib/web/keys/matrix", lbuf[:]) != "?", "and the store keeps the session under keys/matrix, exported, for the history it opens after a restart")
 			check(r, !net_file_write("/mnt/matrix/new", "to: nowhere\n\nx"), "a message to a room this account is not in is refused before any wire")
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/matrix") == vfs.OK, "the mount of matrixfs comes down")
 		}
 		check(r, srv.remove("matrix") == vfs.OK, "and the kernel takes its name away")
 		check(r, wait(pm, PATIENCE * 5), "and matrixfs exits")
 		finish(r, pm, "and is taken down")
-		check(r, wait(hs, PATIENCE * 5), "and the homeserver, its four requests served, exits")
+		check(r, wait(hs, PATIENCE * 5), "and the homeserver, its nine requests served, exits")
 		check(r, string(hs.exit.text[:hs.exit.text_len]) == "ok", "with ok")
 		finish(r, hs, "and is taken down")
 	} else {

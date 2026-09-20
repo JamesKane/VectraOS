@@ -1149,8 +1149,25 @@ reference implementation's own known answers, one step, a jump of
 sealing and opening in any order, refusing a bent message and a bent
 share; and an Olm session both ways, a pre-key message first, a
 message opened out of order with its kept key, and a bent one refused.
-Not yet: the seal in `matrixfs`, `join`, `leave`, `invite`, `members`,
-`typing`, and the long poll behind `event`.
+The seal is in `matrixfs`. At login the device makes a Curve25519
+identity key, an Ed25519 signing key and one-time keys from
+`/dev/random`, and uploads them signed over their canonical JSON. A
+room whose state says it is encrypted takes a message out as a Megolm
+event: the room's outbound session seals it, and its key goes first to
+every member's devices, each queried, a one-time key claimed, an Olm
+session made on it and an `m.room_key` sealed in it and sent to the
+device. A to-device event that comes in under Olm opens with the
+session it names, a pre-key message making one on the one-time key it
+was made for, and the room key inside becomes a Megolm session kept
+under `keys/matrix/` in the store, exported, so history opens after a
+restart. A sealed room event opens with the session its key named, or
+is served as a message that says the key never came. The boot line's
+homeserver holds a second device, Bob, on the same library: Glenda's
+sealed message opens on his side and what it said lands in a file the
+test reads, and the sync after carries his key by Olm and an event he
+sealed, which opens in her room. Not yet: `join`, `leave`, `invite`,
+`members`, `typing`, the long poll behind `event`, the device
+requester, and the store sealed under the passphrase.
 
 ### Step 6: publishing, and the ghost
 

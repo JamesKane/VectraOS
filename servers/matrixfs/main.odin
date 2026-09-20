@@ -22,8 +22,13 @@ offline proof, or the account's, with its token from `factotum`.
 under `proto=oauth`, the way the networks keep theirs. `sync` is
 `/sync` from the last batch, with the token. A write to `new` names a
 room and puts the event with the token, and the event the server
-named lands in the room. Not yet: the seal, `join`, `leave`, `invite`,
-`members`, `typing`, and the long poll behind `event`.
+named lands in the room. `seal.odin` is the seal: the device's keys
+made and uploaded at login, a message out in an encrypted room sealed
+by Megolm with the session's key shared by Olm first, and a sealed
+event in opened with the session its key named. `-s DIR` names the
+store, where `keys/matrix/` keeps the sessions that came. Not yet:
+`join`, `leave`, `invite`, `members`, `typing`, the long poll behind
+`event`, and the device requester.
 */
 package matrixfs
 
@@ -44,13 +49,22 @@ ROOM_ID_MAX :: 256
 
 DICT :: "sync path            a saved sync's path into the rooms, or the account's sync with its token when no path is given\nlogin base user      log in at the server with the password factotum holds, the token kept by factotum\naccount base user    an account whose token factotum holds already\nwrite: new           a message out: a to line naming the room, a replyto line, an empty line, the body\nread: <room>/<id>    an event: from, date, subject, body, type, raw, hash, replyto, links\n"
 
-// A room known: its id, and the conversation it is.
+// A room known: its id, the conversation it is, its members, and
+// whether its messages are sealed.
 Room :: struct {
-	id:   [ROOM_ID_MAX]u8,
-	ilen: int,
-	name: [NAME_MAX]u8,
-	nlen: int,
+	id:        [ROOM_ID_MAX]u8,
+	ilen:      int,
+	name:      [NAME_MAX]u8,
+	nlen:      int,
+	members:   [MAX_MEMBERS][NAME_MAX]u8,
+	mlen:      [MAX_MEMBERS]int,
+	nmembers:  int,
+	encrypted: bool,
 }
+
+// The store: `-s DIR`, where the keys that came are kept.
+store: [256]u8
+store_len: int
 
 Account :: struct {
 	set:    bool,
@@ -96,7 +110,12 @@ me_text: [NAME_MAX + 80]u8
 start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
-	_ = libuser.args(block)
+	args := libuser.args(block)
+	for i := 1; i + 1 < len(args); i += 1 {
+		if args[i] == "-s" {
+			store_len = copy(store[:], args[i + 1])
+		}
+	}
 	libthread.main(threadmain, nil)
 }
 
@@ -278,6 +297,11 @@ do_login :: proc(j: ^Job, base: string, user: string) -> vectra9.Errno {
 	account.blen = copy(account.base[:], base)
 	account.ulen = copy(account.user[:], user_id)
 	account.dlen = copy(account.device[:], device)
+	// The device's keys, made now and uploaded signed.
+	if !make_device() || !upload_keys(j.io) {
+		j.why = "the device's keys would not upload"
+		return vectra9.EIO
+	}
 	set_me()
 	rebuild_status()
 	return 0
@@ -288,7 +312,9 @@ set_me :: proc() {
 		net.me = ""
 		return
 	}
-	if account.dlen > 0 {
+	if account.dlen > 0 && device.set {
+		net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "\ndevice ", string(account.device[:account.dlen]), "\ncurve25519 ", string(device.identity_b64[:device.ib64]), "\ned25519 ", string(device.sign_b64[:device.sb64]), "\n")
+	} else if account.dlen > 0 {
 		net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "\ndevice ", string(account.device[:account.dlen]), "\n")
 	} else {
 		net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "\n")
@@ -359,10 +385,13 @@ take_sync :: proc(text: string) -> bool {
 	if nb := libmsg.str_of(top, "next_batch"); nb != "" && len(nb) < len(account.batch) {
 		account.balen = copy(account.batch[:], nb)
 	}
+	// What came to this device first, so a key is known when its event is.
+	take_to_device(top)
 	rooms_obj, has_rooms := libmsg.obj_of(top, "rooms")
 	if !has_rooms {
 		return false
 	}
+	libuser.eprint("matrixfs: a sync came, next batch ", libmsg.str_of(top, "next_batch"), "\n")
 	if join, has := libmsg.obj_of(rooms_obj, "join"); has {
 		for id, rv in (map[string]json.Value)(join) {
 			room, is := rv.(json.Object)
@@ -388,7 +417,7 @@ take_sync :: proc(text: string) -> bool {
 // message events in its conversation.
 take_room :: proc(id: string, room: json.Object, text: string) {
 	name_buf: [NAME_MAX]u8
-	name := room_name_of(id, room, name_buf[:])
+	name, named := room_name_of(id, room, name_buf[:])
 	r := room_by_id(id)
 	if r == nil {
 		if nrooms >= MAX_ROOMS || len(id) > ROOM_ID_MAX {
@@ -397,8 +426,12 @@ take_room :: proc(id: string, room: json.Object, text: string) {
 		r = &rooms[nrooms]
 		nrooms += 1
 		r.ilen = copy(r.id[:], id)
+		r.nlen = copy(r.name[:], name)
+	} else if named {
+		// A sync that repeats the room without its state keeps its name.
+		r.nlen = copy(r.name[:], name)
 	}
-	r.nlen = copy(r.name[:], name)
+	take_state(r, room)
 	c := libmsg.conv(&net, string(r.name[:r.nlen]))
 	if timeline, has := libmsg.obj_of(room, "timeline"); has {
 		if events, has_events := libmsg.arr_of(timeline, "events"); has_events {
@@ -409,6 +442,8 @@ take_room :: proc(id: string, room: json.Object, text: string) {
 				}
 				if m, made := event_message(e, text); made {
 					libmsg.add(&net, c, m)
+				} else {
+					libuser.eprint("matrixfs: an event of ", libmsg.str_of(e, "type"), " is no message\n")
 				}
 			}
 		}
@@ -416,9 +451,51 @@ take_room :: proc(id: string, room: json.Object, text: string) {
 	resolve_replies(c)
 }
 
-// room_name_of answers a room's name off its state, or its id made
-// plain: the `!` off and the `:` a `_`.
-room_name_of :: proc(id: string, room: json.Object, into: []u8) -> string {
+// take_state reads a room's state for its members and its seal.
+take_state :: proc(r: ^Room, room: json.Object) {
+	for key in ([?]string{"state", "timeline"}) {
+		if part, has := libmsg.obj_of(room, key); has {
+			if events, has_events := libmsg.arr_of(part, "events"); has_events {
+				for ev in events {
+					e, is := ev.(json.Object)
+					if !is {
+						continue
+					}
+					switch libmsg.str_of(e, "type") {
+					case "m.room.encryption":
+						r.encrypted = true
+					case "m.room.member":
+						content, has_content := libmsg.obj_of(e, "content")
+						who := libmsg.str_of(e, "state_key")
+						if !has_content || who == "" {
+							continue
+						}
+						joined := libmsg.str_of(content, "membership") == "join"
+						at := -1
+						for i in 0 ..< r.nmembers {
+							if string(r.members[i][:r.mlen[i]]) == who {
+								at = i
+								break
+							}
+						}
+						if joined && at < 0 && r.nmembers < MAX_MEMBERS && len(who) <= NAME_MAX {
+							r.mlen[r.nmembers] = copy(r.members[r.nmembers][:], who)
+							r.nmembers += 1
+						} else if !joined && at >= 0 {
+							r.nmembers -= 1
+							r.members[at] = r.members[r.nmembers]
+							r.mlen[at] = r.mlen[r.nmembers]
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// room_name_of answers a room's name off its state, and whether the
+// state named it, or its id made plain: the `!` off and the `:` a `_`.
+room_name_of :: proc(id: string, room: json.Object, into: []u8) -> (string, bool) {
 	for key in ([?]string{"state", "invite_state"}) {
 		if state, has := libmsg.obj_of(room, key); has {
 			if events, has_events := libmsg.arr_of(state, "events"); has_events {
@@ -426,7 +503,7 @@ room_name_of :: proc(id: string, room: json.Object, into: []u8) -> string {
 					if e, is := ev.(json.Object); is && libmsg.str_of(e, "type") == "m.room.name" {
 						if content, has_content := libmsg.obj_of(e, "content"); has_content {
 							if name := libmsg.str_of(content, "name"); name != "" {
-								return libuser.cat_into(into, safe_name(name))
+								return libuser.cat_into(into, safe_name(name)), true
 							}
 						}
 					}
@@ -448,7 +525,7 @@ room_name_of :: proc(id: string, room: json.Object, into: []u8) -> string {
 		into[n] = ok ? c : '_'
 		n += 1
 	}
-	return string(into[:n])
+	return string(into[:n]), false
 }
 
 /*
@@ -458,13 +535,40 @@ taken off, or the formatted body as HTML, an image's media as a link,
 and what it replies to. `raw` is the event's own bytes out of the sync.
 */
 event_message :: proc(e: json.Object, text: string) -> (m: libmsg.Msg, ok: bool) {
-	if libmsg.str_of(e, "type") != "m.room.message" {
+	kind := libmsg.str_of(e, "type")
+	if kind != "m.room.message" && kind != "m.room.encrypted" {
 		return m, false
 	}
 	event_id := libmsg.str_of(e, "event_id")
 	content, has_content := libmsg.obj_of(e, "content")
 	if event_id == "" || !has_content {
 		return m, false
+	}
+	// A sealed event opens into the event inside, whose content is the
+	// message's; one that will not open is a message that says so.
+	opened: json.Value
+	defer json.destroy_value(opened)
+	sealed_why := ""
+	if kind == "m.room.encrypted" {
+		plain, why := open_event(content)
+		libuser.eprint("matrixfs: sealed event ", event_id, why == "" ? " opened" : " did not open: ", why, "\n")
+		if plain != "" {
+			ov, oerr := json.parse_string(plain, .JSON)
+			delete(plain)
+			if oerr == .None {
+				opened = ov
+				if oo, is := ov.(json.Object); is {
+					if oc, has_oc := libmsg.obj_of(oo, "content"); has_oc {
+						content = oc
+					}
+				}
+			} else {
+				json.destroy_value(ov)
+				sealed_why = "(a sealed message that opened to no event)"
+			}
+		} else {
+			sealed_why = why
+		}
 	}
 	ms: i64 = 0
 	if tsv, has := (map[string]json.Value)(e)["origin_server_ts"]; has {
@@ -484,7 +588,10 @@ event_message :: proc(e: json.Object, text: string) -> (m: libmsg.Msg, ok: bool)
 	body := libmsg.str_of(content, "body")
 	formatted := libmsg.str_of(content, "formatted_body")
 	msgtype := libmsg.str_of(content, "msgtype")
-	if formatted != "" && libmsg.str_of(content, "format") == "org.matrix.custom.html" {
+	if sealed_why != "" {
+		m.body = clone(sealed_why)
+		m.type = clone("text/plain")
+	} else if formatted != "" && libmsg.str_of(content, "format") == "org.matrix.custom.html" {
 		m.body = clone(strip_mx_reply(formatted))
 		m.type = clone("text/html")
 	} else {
@@ -615,7 +722,7 @@ strip_mx_reply :: proc "contextless" (html: string) -> string {
 // name as the body, under the room id's hash.
 take_invite :: proc(id: string, room: json.Object) {
 	name_buf: [NAME_MAX]u8
-	name := room_name_of(id, room, name_buf[:])
+	name, _ := room_name_of(id, room, name_buf[:])
 	inviter := ""
 	if state, has := libmsg.obj_of(room, "invite_state"); has {
 		if events, has_events := libmsg.arr_of(state, "events"); has_events {
@@ -700,10 +807,29 @@ do_send :: proc(j: ^Job) -> vectra9.Errno {
 		}
 	}
 	put(&content, "}")
+	// In an encrypted room the event goes sealed, its key shared first.
+	event_type := "m.room.message"
+	wire := content
+	sealed: [dynamic]u8
+	defer delete(sealed)
+	if r.encrypted {
+		if !device.set {
+			j.why = "the room is encrypted and this device has no keys: log in first"
+			return vectra9.EPERM
+		}
+		ri := room_index(r)
+		sealed = make([dynamic]u8, 0, len(content) + 1024)
+		if !seal_out(j.io, r, ri, string(content[:]), &sealed) {
+			j.why = "the message would not seal, or its key would not go to the members"
+			return vectra9.EIO
+		}
+		event_type = "m.room.encrypted"
+		wire = sealed
+	}
 	account.txn += 1
 	num: [24]u8
 	url: [BASE_MAX + ROOM_ID_MAX + 128]u8
-	text, status, ok := as_account(j.io, "PUT", libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/rooms/", string(r.id[:r.ilen]), "/send/m.room.message/vectra", libuser.itoa(num[:], i64(account.txn))), "Content-Type: application/json\n", string(content[:]))
+	text, status, ok := as_account(j.io, "PUT", libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/rooms/", string(r.id[:r.ilen]), "/send/", event_type, "/vectra", libuser.itoa(num[:], i64(account.txn))), "Content-Type: application/json\n", string(wire[:]))
 	defer delete(text)
 	if !ok {
 		j.why = "factotum holds no token for the account, or the wire would not"
@@ -765,6 +891,15 @@ event_id_of :: proc(raw: string) -> string {
 
 // -- Small things ------------------------------------------------------------------
 
+room_index :: proc "contextless" (r: ^Room) -> int {
+	for i in 0 ..< nrooms {
+		if &rooms[i] == r {
+			return i
+		}
+	}
+	return 0
+}
+
 room_by_id :: proc "contextless" (id: string) -> ^Room {
 	for i in 0 ..< nrooms {
 		if string(rooms[i].id[:rooms[i].ilen]) == id {
@@ -798,6 +933,9 @@ rebuild_status :: proc() {
 		append(&status, ..r.name[:r.nlen])
 		append(&status, ' ')
 		append(&status, ..r.id[:r.ilen])
+		if r.encrypted {
+			append(&status, ..transmute([]u8)string(" sealed"))
+		}
 		append(&status, '\n')
 	}
 	net.status = string(status[:])

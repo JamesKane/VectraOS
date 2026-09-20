@@ -14,6 +14,14 @@
        }
       },
       {
+       "type": "m.room.encryption",
+       "state_key": "",
+       "sender": "@glenda:one.example",
+       "content": {
+        "algorithm": "m.megolm.v1.aes-sha2"
+       }
+      },
+      {
        "type": "m.room.member",
        "state_key": "@glenda:one.example",
        "sender": "@glenda:one.example",

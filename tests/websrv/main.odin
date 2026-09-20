@@ -17,8 +17,12 @@ package websrv
 
 import "vsys:abi"
 import "core:crypto/ecdsa"
+import "core:crypto/ed25519"
 import "core:crypto/hash"
+import "core:encoding/json"
 import "vsys:libjws"
+import "vsys:libmsg"
+import "vsys:libolm"
 import "vsys:libnet"
 import "vsys:libodin"
 import "vsys:libuser"
@@ -72,6 +76,7 @@ start :: proc "c" (block: ^abi.Args) {
 		fail("listen")
 	}
 	libuser.eprint("websrv: listening at ", served, "\n")
+	bob_init()
 	for _ in 0 ..< count {
 		serve_one(lfd, served)
 	}
@@ -159,12 +164,36 @@ serve_one :: proc(lfd: i64, served: string) {
 	libuser.eprint("websrv: ", post ? "POST " : "GET ", rpath, "\n")
 	// A bearer token in the request, for the instance's paths.
 	bearer := header_value(text, "authorization")
-	// A room's event put: its path names the room and the event type.
+	// A room's event put: its path names the room and the event type. A
+	// sealed one opens with the session Glenda shared, and what it said
+	// goes into a file for the test to read.
 	if post && libodin.has_prefix(rpath, "/_matrix/client/v3/rooms/") && libodin.contains(rpath, "/send/m.room.message/") {
 		if bearer == "Bearer syt-1" && libodin.contains(body, "\"msgtype\": \"m.text\"") {
 			ok = say_json(dfd, 200, "{\"event_id\": \"$sent1\"}\n")
 		} else {
 			ok = say_json(dfd, 401, "{\"errcode\": \"M_UNKNOWN_TOKEN\"}\n")
+		}
+		if !ok {
+			fail("write the reply")
+		}
+		return
+	}
+	if post && libodin.has_prefix(rpath, "/_matrix/client/v3/rooms/") && libodin.contains(rpath, "/send/m.room.encrypted/") {
+		if bearer == "Bearer syt-1" && bob_open_event(body) {
+			ok = say_json(dfd, 200, "{\"event_id\": \"$sealed_out\"}\n")
+		} else {
+			ok = say_json(dfd, 400, "{\"errcode\": \"M_UNKNOWN\", \"error\": \"the sealed event would not open here\"}\n")
+		}
+		if !ok {
+			fail("write the reply")
+		}
+		return
+	}
+	if post && libodin.has_prefix(rpath, "/_matrix/client/v3/sendToDevice/m.room.encrypted/") {
+		if bearer == "Bearer syt-1" && bob_take_to_device(body) {
+			ok = say_json(dfd, 200, "{}\n")
+		} else {
+			ok = say_json(dfd, 400, "{\"errcode\": \"M_UNKNOWN\", \"error\": \"the to-device message would not open here\"}\n")
 		}
 		if !ok {
 			fail("write the reply")
@@ -277,6 +306,25 @@ serve_one :: proc(lfd: i64, served: string) {
 		} else {
 			ok = say_json(dfd, 401, "{\"error\": \"not a blob this server takes\"}\n")
 		}
+	case "/_matrix/client/v3/keys/upload":
+		// Glenda's device keys and one-time keys, kept for Bob to use.
+		if post && bearer == "Bearer syt-1" && glenda_take_keys(body) {
+			ok = say_json(dfd, 200, "{\"one_time_key_counts\": {\"signed_curve25519\": 8}}\n")
+		} else {
+			ok = say_json(dfd, 400, "{\"errcode\": \"M_UNKNOWN\", \"error\": \"keys this server does not take\"}\n")
+		}
+	case "/_matrix/client/v3/keys/query":
+		if post && bearer == "Bearer syt-1" && libodin.contains(body, "@bob:two.example") {
+			ok = say_json(dfd, 200, bob_device_keys())
+		} else {
+			ok = say_json(dfd, 200, "{\"device_keys\": {}, \"failures\": {}}\n")
+		}
+	case "/_matrix/client/v3/keys/claim":
+		if post && bearer == "Bearer syt-1" && libodin.contains(body, "@bob:two.example") {
+			ok = say_json(dfd, 200, bob_one_time_key())
+		} else {
+			ok = say_json(dfd, 200, "{\"one_time_keys\": {}, \"failures\": {}}\n")
+		}
 	case "/_matrix/client/v3/login":
 		// A homeserver's login: one user and password, a token and a device.
 		if post && libodin.contains(body, "\"user\": \"glenda\"") && libodin.contains(body, "\"password\": \"hunter2\"") {
@@ -285,8 +333,11 @@ serve_one :: proc(lfd: i64, served: string) {
 			ok = say_json(dfd, 403, "{\"errcode\": \"M_FORBIDDEN\", \"error\": \"Invalid password\"}\n")
 		}
 	case "/_matrix/client/v3/sync":
-		// The saved sync, for the token.
-		if bearer == "Bearer syt-1" {
+		// The saved sync, for the token; the sync after it carries Bob's
+		// room key by Olm and an event he sealed, once Glenda's keys are up.
+		if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_2") && bob_ready {
+			ok = say_json(dfd, 200, bob_sync())
+		} else if bearer == "Bearer syt-1" {
 			sy, sok := libuser.read_file("/lib/tests/sync.json", context.allocator)
 			if !sok {
 				fail("read the saved sync")
@@ -701,6 +752,290 @@ hex_byte :: proc "contextless" (c: u8) -> u8 {
 		return c - 'A' + 10
 	}
 	return 0
+}
+
+// -- Bob's device, the far side of the seal ---------------------------------------
+
+/*
+Bob is a device this server holds, with keys made from fixed seeds. It
+answers Glenda's key query and claim, opens the room key she sends it
+by Olm, opens the event she seals with it and writes what she said to
+/usr/glenda/matrix-bob.txt, and, once her keys are up, makes a Megolm
+session of its own, shares it with her by Olm on a one-time key she
+uploaded, and seals an event with it for the sync after her first.
+*/
+BOB_USER :: "@bob:two.example"
+BOB_DEVICE :: "BOBDEV"
+BOB_OUT :: "/usr/glenda/matrix-bob.txt"
+
+bob_identity: [32]u8
+bob_identity_pub: [32]u8
+bob_sign: ed25519.Private_Key
+bob_sign_pub: [32]u8
+bob_one_time: [32]u8
+bob_one_time_pub: [32]u8
+bob_session: libolm.Session // With Glenda's device, made from her pre-key message
+bob_session_set: bool
+bob_megolm_in: libolm.Inbound // Glenda's room key
+bob_megolm_in_set: bool
+bob_ready: bool // Glenda's keys are up
+glenda_curve: [32]u8
+glenda_ed: [32]u8
+glenda_one_time: [32]u8
+glenda_user: [64]u8
+glenda_ulen: int
+
+bob_init :: proc() {
+	for i in 0 ..< 32 {
+		bob_identity[i] = u8(i * 7 + 3)
+		bob_one_time[i] = u8(i * 11 + 5)
+	}
+	seed: [32]u8
+	for i in 0 ..< 32 {
+		seed[i] = u8(i * 13 + 7)
+	}
+	libolm.basepoint(bob_identity_pub[:], bob_identity[:])
+	libolm.basepoint(bob_one_time_pub[:], bob_one_time[:])
+	_ = ed25519.private_key_set_bytes(&bob_sign, seed[:])
+	ed25519.private_key_public_bytes(&bob_sign, bob_sign_pub[:])
+}
+
+b64 :: proc(data: []u8, into: []u8) -> string {
+	n := libolm.b64_encode(data, into)
+	return string(into[:max(n, 0)])
+}
+
+// bob_device_keys answers a key query with Bob's device.
+bob_device_keys :: proc() -> string {
+	@(static) out: [1024]u8
+	c: [48]u8
+	e: [48]u8
+	return libuser.cat_into(out[:], "{\"device_keys\": {\"", BOB_USER, "\": {\"", BOB_DEVICE, "\": {\"user_id\": \"", BOB_USER, "\", \"device_id\": \"", BOB_DEVICE, "\", \"algorithms\": [\"m.olm.v1.curve25519-aes-sha2\", \"m.megolm.v1.aes-sha2\"], \"keys\": {\"curve25519:", BOB_DEVICE, "\": \"", b64(bob_identity_pub[:], c[:]), "\", \"ed25519:", BOB_DEVICE, "\": \"", b64(bob_sign_pub[:], e[:]), "\"}, \"signatures\": {}}}}, \"failures\": {}}\n")
+}
+
+// bob_one_time_key answers a claim with Bob's one key.
+bob_one_time_key :: proc() -> string {
+	@(static) out: [512]u8
+	k: [48]u8
+	return libuser.cat_into(out[:], "{\"one_time_keys\": {\"", BOB_USER, "\": {\"", BOB_DEVICE, "\": {\"signed_curve25519:AAAAAQ\": {\"key\": \"", b64(bob_one_time_pub[:], k[:]), "\", \"signatures\": {}}}}}, \"failures\": {}}\n")
+}
+
+// glenda_take_keys keeps the keys Glenda's device uploaded: her identity
+// and signing keys, and one one-time key for Bob to begin a session on.
+glenda_take_keys :: proc(body: string) -> bool {
+	v, err := json.parse_string(body, .JSON)
+	defer json.destroy_value(v)
+	top, is_obj := v.(json.Object)
+	if err != .None || !is_obj {
+		return false
+	}
+	dk, has := libmsg.obj_of(top, "device_keys")
+	if !has {
+		return false
+	}
+	glenda_ulen = copy(glenda_user[:], libmsg.str_of(dk, "user_id"))
+	keys, has_keys := libmsg.obj_of(dk, "keys")
+	if !has_keys {
+		return false
+	}
+	got_c, got_e := false, false
+	for name, val in (map[string]json.Value)(keys) {
+		s, is := val.(json.String)
+		if !is {
+			continue
+		}
+		if len(name) > 11 && name[:11] == "curve25519:" {
+			got_c = libolm.b64_decode(string(s), glenda_curve[:]) == 32
+		} else if len(name) > 8 && name[:8] == "ed25519:" {
+			got_e = libolm.b64_decode(string(s), glenda_ed[:]) == 32
+		}
+	}
+	otk, has_otk := libmsg.obj_of(top, "one_time_keys")
+	got_o := false
+	if has_otk {
+		for _, val in (map[string]json.Value)(otk) {
+			if ko, is := val.(json.Object); is {
+				got_o = libolm.b64_decode(libmsg.str_of(ko, "key"), glenda_one_time[:]) == 32
+				if got_o {
+					break
+				}
+			}
+		}
+	}
+	bob_ready = got_c && got_e && got_o
+	return bob_ready
+}
+
+// bob_take_to_device opens the room key Glenda sent Bob by Olm, and keeps
+// the Megolm session it carries.
+bob_take_to_device :: proc(body: string) -> bool {
+	v, err := json.parse_string(body, .JSON)
+	defer json.destroy_value(v)
+	top, is_obj := v.(json.Object)
+	if err != .None || !is_obj {
+		return false
+	}
+	messages, has := libmsg.obj_of(top, "messages")
+	if !has {
+		return false
+	}
+	u, has_u := libmsg.obj_of(messages, BOB_USER)
+	if !has_u {
+		return false
+	}
+	d, has_d := libmsg.obj_of(u, BOB_DEVICE)
+	if !has_d {
+		return false
+	}
+	ct, has_ct := libmsg.obj_of(d, "ciphertext")
+	if !has_ct {
+		return false
+	}
+	c: [48]u8
+	mine, for_bob := libmsg.obj_of(ct, b64(bob_identity_pub[:], c[:]))
+	if !for_bob {
+		return false
+	}
+	raw := make([]u8, 4096)
+	defer delete(raw)
+	n := libolm.b64_decode(libmsg.str_of(mine, "body"), raw)
+	if n <= 0 {
+		return false
+	}
+	if !libolm.inbound(&bob_session, bob_identity[:], bob_one_time[:], raw[:n]) {
+		return false
+	}
+	bob_session_set = true
+	plain := make([]u8, n)
+	defer delete(plain)
+	pn, ok := libolm.decrypt(&bob_session, raw[:n], plain, true)
+	if !ok {
+		return false
+	}
+	pv, perr := json.parse_string(string(plain[:pn]), .JSON)
+	defer json.destroy_value(pv)
+	po, pis := pv.(json.Object)
+	if perr != .None || !pis || libmsg.str_of(po, "type") != "m.room_key" {
+		return false
+	}
+	content, has_content := libmsg.obj_of(po, "content")
+	if !has_content {
+		return false
+	}
+	share := make([]u8, 512)
+	defer delete(share)
+	sn := libolm.b64_decode(libmsg.str_of(content, "session_key"), share)
+	if sn < libolm.EXPORT_BYTES || !libolm.session_import(&bob_megolm_in, share[:sn]) {
+		return false
+	}
+	bob_megolm_in_set = true
+	return true
+}
+
+// bob_open_event opens the Megolm event Glenda sealed and writes what it
+// says, the body of the message inside, to the file.
+bob_open_event :: proc(body: string) -> bool {
+	if !bob_megolm_in_set {
+		return false
+	}
+	v, err := json.parse_string(body, .JSON)
+	defer json.destroy_value(v)
+	content, is_obj := v.(json.Object)
+	if err != .None || !is_obj || libmsg.str_of(content, "algorithm") != "m.megolm.v1.aes-sha2" {
+		return false
+	}
+	raw := make([]u8, 4096)
+	defer delete(raw)
+	n := libolm.b64_decode(libmsg.str_of(content, "ciphertext"), raw)
+	if n <= 0 {
+		return false
+	}
+	plain := make([]u8, n)
+	defer delete(plain)
+	pn, _, ok := libolm.group_decrypt(&bob_megolm_in, raw[:n], plain)
+	if !ok {
+		return false
+	}
+	pv, perr := json.parse_string(string(plain[:pn]), .JSON)
+	defer json.destroy_value(pv)
+	po, pis := pv.(json.Object)
+	if perr != .None || !pis || libmsg.str_of(po, "type") != "m.room.message" {
+		return false
+	}
+	inner, has_inner := libmsg.obj_of(po, "content")
+	if !has_inner {
+		return false
+	}
+	_ = libuser.remove(BOB_OUT)
+	fd := libuser.create(BOB_OUT, abi.O_WRONLY, 0o644)
+	if fd < 0 {
+		return false
+	}
+	text := libmsg.str_of(inner, "body")
+	wrote := libuser.write_full(int(fd), transmute([]u8)text)
+	_ = libuser.close(int(fd))
+	return wrote
+}
+
+/*
+bob_sync answers the sync after the first: Bob's own Megolm session,
+shared with Glenda by Olm on the one-time key she uploaded, as a
+to-device event, and an event in the room sealed with it, so her rooms
+open a message her device never had the key for until then.
+*/
+bob_sync :: proc() -> string {
+	@(static) out: [8192]u8
+	seed: [128]u8
+	sign_seed: [32]u8
+	for i in 0 ..< 128 {
+		seed[i] = u8(i * 3 + 17)
+	}
+	for i in 0 ..< 32 {
+		sign_seed[i] = u8(i * 5 + 19)
+	}
+	mo: libolm.Outbound
+	if !libolm.outbound_init(&mo, seed[:], sign_seed[:]) {
+		fail("bob's megolm session")
+	}
+	sid: [48]u8
+	session_id := b64(mo.pub[:], sid[:])
+	share: [libolm.SHARE_BYTES]u8
+	_ = libolm.session_share(&mo, share[:])
+	share_b64: [320]u8
+	shared := b64(share[:], share_b64[:])
+	// The room key, sealed by Olm for Glenda's device on her one-time key.
+	base_priv, ratchet_priv: [32]u8
+	for i in 0 ..< 32 {
+		base_priv[i] = u8(i * 23 + 1)
+		ratchet_priv[i] = u8(i * 29 + 2)
+	}
+	s: libolm.Session
+	if !libolm.outbound(&s, bob_identity[:], glenda_curve[:], glenda_one_time[:], base_priv[:], ratchet_priv[:]) {
+		fail("bob's olm session")
+	}
+	ge: [48]u8
+	be: [48]u8
+	plain: [1024]u8
+	p := libuser.cat_into(plain[:], "{\"content\":{\"algorithm\":\"m.megolm.v1.aes-sha2\",\"room_id\":\"!vectra:one.example\",\"session_id\":\"", session_id, "\",\"session_key\":\"", shared, "\"},\"keys\":{\"ed25519\":\"", b64(bob_sign_pub[:], be[:]), "\"},\"recipient\":\"", string(glenda_user[:glenda_ulen]), "\",\"recipient_keys\":{\"ed25519\":\"", b64(glenda_ed[:], ge[:]), "\"},\"sender\":\"", BOB_USER, "\",\"sender_device\":\"", BOB_DEVICE, "\",\"type\":\"m.room_key\"}")
+	sealed: [2048]u8
+	sn := libolm.encrypt(&s, transmute([]u8)p, sealed[:], nil)
+	if sn <= 0 {
+		fail("bob seals the room key")
+	}
+	olm_b64: [3072]u8
+	olm := b64(sealed[:sn], olm_b64[:])
+	// An event in the room, sealed with Bob's session.
+	event_plain := "{\"content\":{\"body\":\"Sealed from Bob.\",\"msgtype\":\"m.text\"},\"room_id\":\"!vectra:one.example\",\"type\":\"m.room.message\"}"
+	event_sealed: [1024]u8
+	en := libolm.group_encrypt(&mo, transmute([]u8)event_plain, event_sealed[:])
+	if en <= 0 {
+		fail("bob seals an event")
+	}
+	ev_b64: [1536]u8
+	ev := b64(event_sealed[:en], ev_b64[:])
+	bc: [48]u8
+	gc: [48]u8
+	return libuser.cat_into(out[:], "{\"next_batch\": \"s_3\", \"to_device\": {\"events\": [{\"type\": \"m.room.encrypted\", \"sender\": \"", BOB_USER, "\", \"content\": {\"algorithm\": \"m.olm.v1.curve25519-aes-sha2\", \"sender_key\": \"", b64(bob_identity_pub[:], bc[:]), "\", \"ciphertext\": {\"", b64(glenda_curve[:], gc[:]), "\": {\"type\": 0, \"body\": \"", olm, "\"}}}}]}, \"rooms\": {\"join\": {\"!vectra:one.example\": {\"timeline\": {\"events\": [{\"type\": \"m.room.encrypted\", \"event_id\": \"$sealed_in\", \"sender\": \"", BOB_USER, "\", \"origin_server_ts\": 1789750000000, \"content\": {\"algorithm\": \"m.megolm.v1.aes-sha2\", \"sender_key\": \"", b64(bob_identity_pub[:], bc[:]), "\", \"device_id\": \"", BOB_DEVICE, "\", \"session_id\": \"", session_id, "\", \"ciphertext\": \"", ev, "\"}}], \"prev_batch\": \"p_3\", \"limited\": false}}}}}\n")
 }
 
 // header_value answers a request header's value by its name, lower
