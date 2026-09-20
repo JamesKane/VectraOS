@@ -599,8 +599,10 @@ the documents it points at.
    a scripted login that ends with a token. Any object by URL and any
    record by URI are in too, and so is OAuth on AT with PAR, PKCE and
    DPoP, the key in `factotum` under `proto=dpop` and a proof on every
-   request. What section 7 still names beyond it: the authorize page
-   through `mothra`, and media on a post. Then step 5's chat on Matrix.
+   request, and the authorize page through `mothra`, `atfs` a loopback
+   client that takes the code off the browser's one request. What
+   section 7 still names beyond it: media on a post. Then step 5's
+   chat on Matrix.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
