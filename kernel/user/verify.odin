@@ -10943,6 +10943,243 @@ verify_securejoin :: proc(r: ^Result, host: string) {
 }
 
 /*
+verify_idle runs the servers between two mailfs: `tests/smtpsrv -d`, a
+relay that delivers into a directory of mailboxes, and `tests/imapsrv -m`
+over each mailbox, which answers IDLE. Glenda's mailfs and Bob's each
+keep a session idling. A message Bob writes to new crosses the relay and
+lands in Glenda's inbox with no fetch asked, and her event answers with
+it: docs/WEB.md section 6's "IDLE is the read that parks, so event
+answers the moment the server has something". Then the SecureJoin
+handshake runs the same way, Bob inviting and Glenda joining, each step
+taken as it lands and answered on a sender thread, and ends with Glenda
+verified with Bob: the handshake over the servers.
+*/
+@(private = "file")
+verify_idle :: proc(r: ^Result, host: string) {
+	RELAY :: "/usr/glenda/relay"
+	gbox: [128]u8
+	bbox: [128]u8
+	glenda_box := libodin_cat(gbox[:], RELAY, "/glenda@", host)
+	bob_box := libodin_cat(bbox[:], RELAY, "/bob@", host)
+
+	// The servers: a mailbox each, and the relay between.
+	ga := [?]string{"imapsrv", "1144", "-m", glenda_box, "glenda", "hunter2"}
+	gargv := new(Argv)
+	_ = argv_from(gargv, ga[:])
+	pg := start_path(r, "/bin/imapsrv", "a mailbox server starts over Glenda's directory of the relay", gargv)
+	if pg == nil {
+		return
+	}
+	ba := [?]string{"imapsrv", "1145", "-m", bob_box, "bob", "hunter2"}
+	bargv := new(Argv)
+	_ = argv_from(bargv, ba[:])
+	pbs := start_path(r, "/bin/imapsrv", "and one over Bob's", bargv)
+	ra := [?]string{"smtpsrv", "1588", "-d", RELAY}
+	rargv := new(Argv)
+	_ = argv_from(rargv, ra[:])
+	prs := start_path(r, "/bin/smtpsrv", "and the relay, which delivers into those directories", rargv)
+	sync.delay(PATIENCE)
+
+	line_buf: [512]u8
+	text: [2048]u8
+	if pbs != nil && prs != nil {
+		checkv(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=bob server=", host, " !password=hunter2")), "Bob's password goes to factotum, for his login and his submission")
+
+		// Glenda's session.
+		checkv(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account glenda ", host, " 1144 plain")), "Glenda's account moves to the server over her relay mailbox")
+		checkv(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "smtp ", host, " 1588 plain")), "and her submission to the relay")
+		n := 0
+
+		// Bob's mailfs, before either session idles: a program starting
+		// beside a mailbox server's polling of the disk posts late.
+		bm := [?]string{"mailfs", "-s", "mail2"}
+		bmargv := new(Argv)
+		_ = argv_from(bmargv, bm[:])
+		pb := start_path(r, "/bin/mailfs", "Bob's mailfs starts again", bmargv)
+		if pb != nil {
+			mounted := checkv(r, await_posted("mail2"), "which posts /srv/mail2") && checkv(r, srv.mount(vfs.boot_namespace, "/srv/mail2", "/mnt/mail2") == vfs.OK, "and the kernel mounts it at /mnt/mail2")
+			if mounted {
+				checkv(r, net_file_write("/mnt/mail2/ctl", libodin_cat(line_buf[:], "account bob ", host, " 1145 plain")), "Bob's account is the server over his mailbox")
+				checkv(r, net_file_write("/mnt/mail2/ctl", "identity home"), "and his identity")
+				checkv(r, net_file_write("/mnt/mail2/ctl", libodin_cat(line_buf[:], "smtp ", host, " 1588 plain")), "and his submission to the same relay")
+
+				// The sessions.
+				checkv(r, net_file_write("/mnt/mail/ctl", "idle"), "idle logs in, selects the inbox, and the write returns once Glenda's session idles")
+				n = web_read_file("/mnt/mail/ctl", text[:])
+				checkv(r, n > 0 && libodin.contains(string(text[:n]), "idle\n"), "which ctl says")
+				checkv(r, net_file_write("/mnt/mail2/ctl", "idle"), "and Bob's session idles too")
+
+				// A message over the servers, with no fetch asked.
+				before_buf: [2048]u8
+				before := dir_names("/mnt/mail/inbox", before_buf[:])
+				checkv(r, net_file_write("/mnt/mail2/new", libodin_cat(line_buf[:], "to: glenda@", host, "\nsubject: over the servers\n\nno fetch asked\n")), "Bob writes a message to Glenda, and the relay takes it")
+				after_buf: [2048]u8
+				after := ""
+				landed := false
+				for _ in 0 ..< PATIENCE * 10 {
+					after = dir_names("/mnt/mail/inbox", after_buf[:])
+					if count_words(after) > count_words(before) {
+						landed = true
+						break
+					}
+					sync.delay(1)
+				}
+				checkv(r, landed, "and it lands in Glenda's inbox with no fetch asked: her server said a message came under IDLE, and her session took it")
+				fresh := new_word(before, after)
+				found := false
+				if landed && len(fresh) > 0 {
+					// The event was queued as the message went in, so every read
+					// here answers at once, and one of them names it.
+					want := libodin_cat(line_buf[:], "inbox/", fresh, "\n")
+					want_buf: [160]u8
+					wn := copy(want_buf[:], want)
+					for _ in 0 ..< 300 {
+						en := event_line("/mnt/mail/event", text[:])
+						if en <= 0 {
+							break
+						}
+						if string(text[:en]) == string(want_buf[:wn]) {
+							found = true
+							break
+						}
+					}
+				}
+				checkv(r, found, "and event answered with it, inbox/<id>, the read that parks")
+				n = web_read_file(libodin_cat(line_buf[:], "/mnt/mail/inbox/", fresh, "/subject"), text[:])
+				checkv(r, string(text[:max(n, 0)]) == "over the servers", "with the subject Bob wrote")
+
+				// The handshake over the servers: Bob invites, Glenda joins.
+				gsent_buf: [2048]u8
+				bsent_buf: [2048]u8
+				gsent := count_words(dir_names("/mnt/mail/sent", gsent_buf[:]))
+				bsent := count_words(dir_names("/mnt/mail2/sent", bsent_buf[:]))
+				checkv(r, net_file_write("/mnt/mail2/ctl", "invite"), "Bob makes an invite")
+				n = web_read_file("/mnt/mail2/ctl", text[:])
+				invite := invite_line(string(text[:max(n, 0)]))
+				checkv(r, len(invite) > 100, "which his ctl shows")
+				checkv(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "join ", invite)), "and Glenda joins it: her request goes to his mailbox through the relay")
+				verified := false
+				for _ in 0 ..< PATIENCE * 20 {
+					n = web_read_file(libodin_cat(line_buf[:], "/mnt/mail2/contacts/glenda@", host, "/verified"), text[:])
+					if string(text[:max(n, 0)]) == "yes" {
+						verified = true
+						break
+					}
+					sync.delay(1)
+				}
+				checkv(r, verified, "and Glenda is verified with Bob: the request, the auth-required, the auth and the confirm each landed under IDLE and were answered from the session")
+				// The confirm lands in Bob's sent/ once the relay has taken
+				// it, which is after his verified said yes.
+				counted := false
+				for _ in 0 ..< PATIENCE * 5 {
+					gsent2 := count_words(dir_names("/mnt/mail/sent", gsent_buf[:]))
+					bsent2 := count_words(dir_names("/mnt/mail2/sent", bsent_buf[:]))
+					if gsent2 == gsent + 2 && bsent2 == bsent + 2 {
+						counted = true
+						break
+					}
+					sync.delay(1)
+				}
+				checkv(r, counted, "her request and her auth went from her session on a sender thread, his auth-required and his confirm from his")
+
+				// The end of the sessions.
+				checkv(r, net_file_write("/mnt/mail/ctl", "idle off") && net_file_write("/mnt/mail2/ctl", "idle off"), "idle off says DONE and logs out")
+				gone := false
+				for _ in 0 ..< PATIENCE * 5 {
+					n = web_read_file("/mnt/mail/ctl", text[:])
+					if n > 0 && !libodin.contains(string(text[:n]), "idle\n") {
+						gone = true
+						break
+					}
+					sync.delay(1)
+				}
+				checkv(r, gone, "and ctl no longer says idle")
+				checkv(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/mail2") == vfs.OK, "the mount of Bob's mailfs comes down")
+			}
+			checkv(r, srv.remove("mail2") == vfs.OK, "and the kernel takes its name away")
+			checkv(r, wait(pb, PATIENCE * 5), "and it exits")
+			finish(r, pb, "and is taken down")
+		}
+	}
+
+	// The servers go on until ended.
+	if prs != nil {
+		_ = notepg_kernel(prs.note_group, "kill")
+		checkv(r, end(prs, PATIENCE * 5), "the relay, told to end, ends")
+		finish(r, prs, "and is taken down")
+	}
+	if pbs != nil {
+		_ = notepg_kernel(pbs.note_group, "kill")
+		checkv(r, end(pbs, PATIENCE * 5), "Bob's mailbox server ends")
+		finish(r, pbs, "and is taken down")
+	}
+	_ = notepg_kernel(pg.note_group, "kill")
+	checkv(r, end(pg, PATIENCE * 5), "and Glenda's")
+	finish(r, pg, "and is taken down")
+}
+
+// checkv is check, and a failure said on the console as it happens, so the
+// serial log has every one and not the tally's first few.
+@(private = "file")
+checkv :: proc(r: ^Result, ok: bool, what: string) -> bool {
+	if !ok {
+		line: [512]u8
+		net_file_write("/dev/cons", libodin_cat(line[:], "verify: FAIL ", what, "\n"))
+	}
+	return check(r, ok, what)
+}
+
+// event_line reads one line of an event file: one read, since a second
+// would park until the next event.
+@(private = "file")
+event_line :: proc(path: string, into: []u8) -> int {
+	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
+	if err != vfs.OK {
+		return -1
+	}
+	defer vfs.chan_close(c)
+	n, rerr := vfs.chan_read(c, 0, into)
+	if rerr != vfs.OK {
+		return -1
+	}
+	return int(n)
+}
+
+// new_word answers the word of `after` that `before` does not have, or "".
+@(private = "file")
+new_word :: proc(before, after: string) -> string {
+	at := 0
+	for at < len(after) {
+		e := at
+		for e < len(after) && after[e] != ' ' {
+			e += 1
+		}
+		w := after[at:e]
+		at = e + 1
+		if len(w) == 0 {
+			continue
+		}
+		have := false
+		bat := 0
+		for bat < len(before) {
+			be := bat
+			for be < len(before) && before[be] != ' ' {
+				be += 1
+			}
+			if before[bat:be] == w {
+				have = true
+				break
+			}
+			bat = be + 1
+		}
+		if !have {
+			return w
+		}
+	}
+	return ""
+}
+
+/*
 verify_chatmail runs webfs again and a scripted relay on this machine's
 stack, and gives mailfs a dcaccount: URL. One request later the address
 is the account, the password is in factotum under the address's host, and
@@ -11290,6 +11527,10 @@ verify_mailfs :: proc(r: ^Result) {
 				// files: a bent fingerprint first, which must end in no, then
 				// the invite as made, which ends in yes on both sides.
 				verify_securejoin(r, host)
+
+				// IDLE, and the handshake over the servers: a relay and a
+				// mailbox server each, both sides idling, no fetch asked.
+				verify_idle(r, host)
 
 				// Chatmail: an account in one request, through webfs, from a
 				// scripted relay.

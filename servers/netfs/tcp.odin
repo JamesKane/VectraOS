@@ -36,7 +36,7 @@ import "vsys:libodin"
 import "vsys:libuser"
 import "vsys:vectra9"
 
-MAX_TCP :: 8
+MAX_TCP :: 16 // A mail session idling, a web page and the listeners between them: eight was full
 TCP_RQ :: 2048 // The received stream a conversation holds
 MSS :: 512 // The most payload one segment carries
 BACKLOG :: 4

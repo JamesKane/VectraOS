@@ -11,7 +11,7 @@ with the type it declares, and `raw` is the RFC 5322 bytes. A message's
 `In-Reply-To` that names another message here becomes `replyto`.
 
     /mnt/mail/ctl        account USER SERVER [PORT] [plain]; account dcaccount:URL; fetch;
-                         smtp SERVER [PORT] [plain]; identity DOM;
+                         idle [on|off]; smtp SERVER [PORT] [plain]; identity DOM;
                          seal on|off; spool DIR|off; invite; join LINE
     /mnt/mail/me         the address, and the key's fingerprint
     /mnt/mail/new        a message out: to, subject, replyto, attach, body
@@ -41,8 +41,9 @@ server has taken it, or says why not. What went out is a message of
 
 The wire is TLS unless `plain` is said, over the trust roots in
 `/lib/tls/roots`, and the boot line runs it plain against scripted
-servers on this machine's own stack. Not yet: IDLE as the read that
-parks, STARTTLS on 587, the seal, contacts and chats.
+servers on this machine's own stack. `idle` keeps a session with the
+server and takes each message as it lands, `idle.odin`, so `event`
+answers as it does. Not yet: STARTTLS on 587.
 */
 package mailfs
 
@@ -64,7 +65,7 @@ NAME_MAX :: 64
 MAX_MESSAGE :: 4 * 1024 * 1024
 LINE_MAX :: 8192
 
-DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\naccount dcaccount:url             a chatmail account in one request: the relay answers the address and password\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nspool dir            mail as files under dir instead of servers, off to stop\ninvite               make an invite for a contact to join verified, shown on ctl\njoin line            join a contact's invite, which runs the handshake over the next fetches\nidentity dom         the openpgp key factotum holds for the user in dom, for the seal\nseal on|off          whether a message to a contact without a key is refused\nfetch                take every message of the inbox\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "account user server port plain    the account: its user and server, the port (993), and plain for no TLS\naccount dcaccount:url             a chatmail account in one request: the relay answers the address and password\nsmtp server port plain            where to submit mail, the port (465), and plain for no TLS\nspool dir            mail as files under dir instead of servers, off to stop\ninvite               make an invite for a contact to join verified, shown on ctl\njoin line            join a contact's invite, which runs the handshake over the next fetches\nidentity dom         the openpgp key factotum holds for the user in dom, for the seal\nseal on|off          whether a message to a contact without a key is refused\nfetch                take every message of the inbox\nidle on|off          a session kept with the server: what lands is taken as it lands, and event says so\nwrite: new           a message out: to, subject, replyto, attach lines, an empty line, the body\nread: inbox/<id>     a message: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Account :: struct {
 	set:    bool,
@@ -238,6 +239,16 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		set_me()
 		rebuild_status()
 		return 0
+	case "idle":
+		how, _ := word(rest)
+		switch how {
+		case "", "on":
+			return start_idle(tag, len(text))
+		case "off":
+			stop_idle()
+			return 0
+		}
+		return vectra9.EINVAL
 	case "fetch":
 		if !account.set {
 			return vectra9.EINVAL
@@ -287,6 +298,7 @@ on_new :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	s.tag = tag
 	s.count = len(text)
 	s.fd = -1
+	s.held = true
 	if !build_message(s, &n) {
 		send_free(s)
 		return vectra9.EINVAL
@@ -345,6 +357,7 @@ Send :: struct {
 	rlen:    [MAX_RCPT]int,
 	nrcpt:   int,
 	extra:   string, // Header lines the handshake adds, CRLF ended
+	held:    bool, // A write to new waits on this; a handshake step has no writer
 }
 
 send_free :: proc(s: ^Send) {
@@ -601,11 +614,13 @@ send_thread :: proc "contextless" (arg: rawptr) {
 		add_message(sent, clone(string(s.text[:])))
 		rebuild_status()
 	}
-	if req := lib9p.find_held_tag(&net.srv, s.tag); req != nil {
-		if err == 0 {
-			_ = lib9p.respond(req, vectra9.Rwrite{count = u32(s.count)})
-		} else {
-			_ = lib9p.respond(req, vectra9.error_reply(err))
+	if s.held {
+		if req := lib9p.find_held_tag(&net.srv, s.tag); req != nil {
+			if err == 0 {
+				_ = lib9p.respond(req, vectra9.Rwrite{count = u32(s.count)})
+			} else {
+				_ = lib9p.respond(req, vectra9.error_reply(err))
+			}
 		}
 	}
 	send_free(s)
@@ -742,6 +757,22 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	if spool.set {
 		return fetch_spool()
 	}
+	if err := login(f, "a1", "a2"); err != 0 {
+		return err
+	}
+	from := 1
+	if !take_messages(f, "a3", &from) {
+		return vectra9.EIO
+	}
+	_ = say(f, "a4 LOGOUT\r\n")
+	_ = until_tagged(f, "a4")
+	rebuild_status()
+	return 0
+}
+
+// login dials the account's server with the password from factotum,
+// reads the greeting, logs in and selects the inbox, under the two tags.
+login :: proc(f: ^Fetch, login_tag, select_tag: string) -> vectra9.Errno {
 	user := string(account.user[:account.ulen])
 	server := string(account.server[:account.slen])
 	pass: [256]u8
@@ -750,41 +781,51 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 		f.why = "factotum holds no password for this account"
 		return vectra9.EPERM
 	}
-
 	if !connect(f, server, string(account.port[:account.plen]), account.plain) {
 		return vectra9.EIO
 	}
-
-	// The greeting, then a login.
 	greet, gok := read_line(f)
 	if !gok || !libodin.has_prefix(greet, "* OK") {
 		f.why = "no greeting"
 		return vectra9.EIO
 	}
 	cmd: [512]u8
-	if !say(f, libuser.cat_into(cmd[:], "a1 LOGIN \"", user, "\" \"", password, "\"\r\n")) || !until_tagged(f, "a1") {
+	if !say(f, libuser.cat_into(cmd[:], login_tag, " LOGIN \"", user, "\" \"", password, "\"\r\n")) || !until_tagged(f, login_tag) {
 		f.why = "the login was refused"
 		return vectra9.EPERM
 	}
-	if !say(f, "a2 SELECT INBOX\r\n") || !until_tagged(f, "a2") {
+	if !say(f, libuser.cat_into(cmd[:], select_tag, " SELECT INBOX\r\n")) || !until_tagged(f, select_tag) {
 		f.why = "the inbox would not select"
 		return vectra9.EIO
 	}
-	if !say(f, "a3 UID FETCH 1:* (UID BODY.PEEK[])\r\n") {
-		return vectra9.EIO
+	return 0
+}
+
+/*
+take_messages fetches every message of the inbox from UID `next^` on,
+puts each in `inbox/` and its chat, and moves `next^` past the last. A
+server asked for `N:*` beyond its last UID answers the last message
+again, which is skipped here by its UID. False, with `why`, when the
+wire or the server would not.
+*/
+take_messages :: proc(f: ^Fetch, tag: string, next: ^int) -> bool {
+	cmd: [128]u8
+	num: [24]u8
+	if !say(f, libuser.cat_into(cmd[:], tag, " UID FETCH ", libuser.itoa(num[:], i64(next^)), ":* (UID BODY.PEEK[])\r\n")) {
+		f.why = "the fetch would not go"
+		return false
 	}
 	inbox := libmsg.conv(&net, "inbox")
-	got := 0
 	for {
 		line, ok := read_line(f)
 		if !ok {
 			f.why = "the fetch ended early"
-			return vectra9.EIO
+			return false
 		}
-		if libodin.has_prefix(line, "a3 ") {
-			if !libodin.has_prefix(line, "a3 OK") {
+		if len(line) > len(tag) && line[:len(tag)] == tag && line[len(tag)] == ' ' {
+			if !libodin.has_prefix(line[len(tag) + 1:], "OK") {
 				f.why = "the fetch was refused"
-				return vectra9.EIO
+				return false
 			}
 			break
 		}
@@ -797,24 +838,29 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 		}
 		if size > MAX_MESSAGE {
 			f.why = "a message too large to hold"
-			return vectra9.EIO
+			return false
 		}
+		uid := uid_of(line)
 		raw := make([]u8, size)
 		if !read_bytes(f, raw) {
 			delete(raw)
 			f.why = "a message ended early"
-			return vectra9.EIO
+			return false
 		}
 		// The rest of the response, up to its closing parenthesis.
 		_, _ = read_line(f)
+		if uid > 0 && uid < next^ {
+			// The last message again, already here.
+			delete(raw)
+			continue
+		}
 		add_message(inbox, string(raw))
-		got += 1
+		if uid >= next^ {
+			next^ = uid + 1
+		}
 	}
 	resolve_replies(inbox)
-	_ = say(f, "a4 LOGOUT\r\n")
-	_ = until_tagged(f, "a4")
-	rebuild_status()
-	return 0
+	return true
 }
 
 // add_message makes a message of RFC 5322 bytes and puts it in `conv`,
@@ -1156,6 +1202,9 @@ rebuild_status :: proc() {
 		append(&status, ' ')
 		append(&status, ..identity.fpr[:])
 		append(&status, '\n')
+	}
+	if idle != nil {
+		append(&status, ..transmute([]u8)string("idle\n"))
 	}
 	if spool.set {
 		append(&status, ..transmute([]u8)string("spool "))

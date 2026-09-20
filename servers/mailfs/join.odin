@@ -23,6 +23,8 @@ inside the seal.
 The spool is mail as files: `spool DIR` on `ctl` makes `fetch` read
 `DIR/<own address>/` and a message out land in `DIR/<recipient>/`, so
 two of these on one machine exchange mail with no server between them.
+Over the servers the handshake runs under `idle`: a step lands, is
+answered, and the answer goes out over SMTP on a thread of its own.
 */
 package mailfs
 
@@ -30,6 +32,7 @@ import "vsys:abi"
 import "vsys:libmime"
 import "vsys:libmsg"
 import "vsys:libodin"
+import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
 
@@ -282,11 +285,11 @@ set_verified :: proc(addr: string) {
 }
 
 // send_step sends one handshake message to `to`, with the step and any
-// more headers, sealed when the recipient has a key.
+// more headers, sealed when the recipient has a key. Into the spool it
+// goes now; over the servers it goes on a sender thread, since this is
+// called from the session that took the step it answers.
 send_step :: proc(to: string, step: string, more: string) -> bool {
-	if !spool.set {
-		// The handshake sends from the fetch, which has no dial of its own
-		// yet: over servers it waits on IDLE and a sender thread.
+	if !spool.set && !smtp.set {
 		return false
 	}
 	block: [1024]u8
@@ -301,6 +304,13 @@ send_step :: proc(to: string, step: string, more: string) -> bool {
 	if !build_message(s, &n) {
 		send_free(s)
 		return false
+	}
+	if !spool.set {
+		if libthread.threadcreate(send_thread, s, 256 * 1024) < 0 {
+			send_free(s)
+			return false
+		}
+		return true
 	}
 	ok := deliver(s) == 0
 	if ok {

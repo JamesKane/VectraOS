@@ -956,8 +956,7 @@ It is proven on a spool. `spool DIR` makes mail files under a
 directory, so two servers on one machine exchange mail with nothing
 between them. The boot line runs the handshake between this mailfs and
 a second. A bent fingerprint first ends in `no`, then the invite whole
-ends in `yes`. Not yet: the handshake over the servers, which waits on
-IDLE.
+ends in `yes`.
 
 Chatmail is in. `account dcaccount:URL` makes the relay's request
 through `webfs`, a POST that answers an address and a password. The
@@ -965,6 +964,24 @@ password goes to `factotum` under the address's host. The address is
 the account, the submission server is its host over TLS, and the seal
 is on. `seal off` is refused, since the relay refuses cleartext. The
 boot line runs it against a scripted relay on the machine's own stack.
+
+IDLE is in, and step 3 with it. `idle` on `ctl` keeps a session with
+the server: a login, the inbox, what was new, and then IDLE, RFC 2177.
+The server says a message landed, the session says DONE, takes what is
+new by UID, and idles again. What it takes lands in `inbox/` and its
+chat as a fetch's does, so `event` answers as it lands. `idle off` says
+DONE and logs out. A handshake step that lands under IDLE is answered
+on a sender thread over SMTP, since the session must get back to the
+wire, and that is the handshake over the servers.
+
+The boot line runs the servers between two mailfs: `tests/smtpsrv -d`,
+a relay that delivers into a directory of mailboxes, and `tests/imapsrv
+-m` over each mailbox, which answers IDLE off a reader thread. Bob's
+message to Glenda lands in her inbox with no fetch asked, and her
+`event` names it. Then Bob invites and Glenda joins, and four steps
+later, each taken as it landed, Glenda is verified with Bob. Not yet:
+STARTTLS on 587, and the re-issue of IDLE every twenty-nine minutes the
+RFC asks of a long session.
 
 ### Step 4: the two networks
 

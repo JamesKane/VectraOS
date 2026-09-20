@@ -14,6 +14,14 @@ the step that did not hold.
 
 `taken` is how many messages to take before the exit; each overwrites
 the file. One refused session is always waited for.
+
+With `-d` it is a relay instead: a message taken lands in
+`DIR/<recipient>/NNNNNN.eml` for each recipient, numbered in the order
+taken, which is the mailbox `tests/imapsrv -m` serves. Any AUTH PLAIN is
+taken, since the relay is between two accounts, and the sessions go on
+until the program is ended.
+
+    smtpsrv PORT -d DIR
 */
 package smtpsrv
 
@@ -25,6 +33,12 @@ USER :: "glenda"
 PASSWORD :: "hunter2"
 // AUTH PLAIN's line for the two above: NUL glenda NUL hunter2, in base64.
 AUTH_OK :: "AGdsZW5kYQBodW50ZXIy"
+
+MAX_RCPT :: 16
+
+relay: bool
+relay_dir: string
+relay_next: int // The last number given
 
 fail :: proc "contextless" (what: string) -> ! {
 	libuser.eprint("smtpsrv: ", what, "\n")
@@ -38,7 +52,11 @@ start :: proc "c" (block: ^abi.Args) {
 	port := len(args) >= 2 ? args[1] : "1587"
 	out := len(args) >= 3 ? args[2] : "/usr/glenda/sent.eml"
 	want := 1
-	if len(args) >= 4 {
+	if len(args) >= 4 && args[2] == "-d" {
+		relay = true
+		relay_dir = args[3]
+		_ = libuser.mkdir(relay_dir)
+	} else if len(args) >= 4 {
 		if v, ok := libuser.atoi(args[3]); ok && v > 0 {
 			want = int(v)
 		}
@@ -59,6 +77,11 @@ start :: proc "c" (block: ^abi.Args) {
 	}
 	libuser.eprint("smtpsrv: listening at ", served, "\n")
 
+	if relay {
+		for {
+			_ = serve_one(lfd, served, out)
+		}
+	}
 	taken := 0
 	refused := 0
 	for taken < want || refused < 1 {
@@ -109,6 +132,10 @@ serve_one :: proc(lfd: i64, served: string, out: string) -> bool {
 	libuser.reader_init(&rd, int(dfd))
 	authed := false
 	taken := false
+	// The envelope's recipients, for the relay.
+	rcpts: [MAX_RCPT][256]u8
+	rlen: [MAX_RCPT]int
+	nrcpt := 0
 	for {
 		req, got := libuser.read_line(&rd)
 		if !got {
@@ -122,23 +149,34 @@ serve_one :: proc(lfd: i64, served: string, out: string) -> bool {
 		case "AUTH":
 			_, cred := word(args)
 			cred, _ = word(cred)
-			if cred == AUTH_OK {
+			if relay || cred == AUTH_OK {
 				authed = true
 				say(dfd, "235 Authentication successful\r\n")
 			} else {
 				say(dfd, "535 Authentication failed\r\n")
 			}
 		case "MAIL":
+			nrcpt = 0
 			say(dfd, authed ? "250 OK\r\n" : "530 Authentication required\r\n")
 		case "RCPT":
 			if has_suffix(args, "nowhere>") || has_suffix(args, "nowhere>\r") {
 				say(dfd, "550 No such user here\r\n")
 			} else {
+				if box := boxed(args); len(box) > 0 && nrcpt < MAX_RCPT {
+					rlen[nrcpt] = copy(rcpts[nrcpt][:], box)
+					nrcpt += 1
+				}
 				say(dfd, "250 OK\r\n")
 			}
 		case "DATA":
 			say(dfd, "354 End data with <CR><LF>.<CR><LF>\r\n")
-			if take_message(&rd, out) {
+			ok := false
+			if relay {
+				ok = take_relay(&rd, rcpts[:nrcpt], rlen[:nrcpt])
+			} else {
+				ok = take_message(&rd, out)
+			}
+			if ok {
 				taken = true
 				say(dfd, "250 OK: queued\r\n")
 			} else {
@@ -183,6 +221,69 @@ take_message :: proc(rd: ^libuser.Reader, out: string) -> bool {
 			fail("write the message")
 		}
 	}
+}
+
+// take_relay reads the message the same way, whole, and writes it into
+// each recipient's directory under the next number.
+take_relay :: proc(rd: ^libuser.Reader, rcpts: [][256]u8, rlen: []int) -> bool {
+	text := make([dynamic]u8, 0, 4096)
+	defer delete(text)
+	for {
+		l, got := libuser.read_line(rd)
+		if !got {
+			return false
+		}
+		if len(l) > 0 && l[len(l) - 1] == '\r' {
+			l = l[:len(l) - 1]
+		}
+		if l == "." {
+			break
+		}
+		if len(l) > 1 && l[0] == '.' && l[1] == '.' {
+			l = l[1:]
+		}
+		append(&text, ..transmute([]u8)l)
+		append(&text, '\r', '\n')
+	}
+	relay_next += 1
+	num: [24]u8
+	digits := libuser.itoa(num[:], i64(relay_next))
+	padded: [8]u8
+	for i in 0 ..< 6 {
+		padded[i] = '0'
+	}
+	copy(padded[6 - len(digits):6], digits)
+	path: [512]u8
+	for i in 0 ..< len(rcpts) {
+		dir := libuser.cat_into(path[:], relay_dir, "/", string(rcpts[i][:rlen[i]]))
+		_ = libuser.mkdir(dir)
+		file: [512]u8
+		full := libuser.cat_into(file[:], dir, "/", string(padded[:6]), ".eml")
+		_ = libuser.remove(full)
+		fd := libuser.create(full, abi.O_WRONLY, 0o644)
+		if fd < 0 {
+			return false
+		}
+		ok := libuser.write_full(int(fd), text[:])
+		_ = libuser.close(int(fd))
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// boxed answers the address between the angle brackets of `TO:<...>`.
+boxed :: proc "contextless" (args: string) -> string {
+	open := -1
+	for i in 0 ..< len(args) {
+		if args[i] == '<' {
+			open = i
+		} else if args[i] == '>' && open >= 0 {
+			return args[open + 1:i]
+		}
+	}
+	return ""
 }
 
 say :: proc(dfd: i64, text: string) {
