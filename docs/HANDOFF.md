@@ -589,9 +589,11 @@ the documents it points at.
    fediverse login is in: the authorization code flow against a
    scripted instance, ending with a token in `factotum` under the new
    `proto=oauth`, and `fetch home` with it. The source reading and the
-   reach into JSON live in `libmsg` now. Next: the login on AT with an
-   app password on `createSession`, then OAuth with DPoP, the page
-   through `mothra`, notifications, and a post written to `new`.
+   reach into JSON live in `libmsg` now, and so is factotum's door.
+   The AT login is in too, an app password on `createSession` and the
+   session's token in `factotum`. Next: notifications into `notify/`
+   on both, a post written to `new`, then OAuth on AT with DPoP and
+   the page through `mothra`.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
