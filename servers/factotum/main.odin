@@ -10,6 +10,7 @@ passphrase never crosses the network. Two files, mounted at `/mnt/factotum`:
     ctl   write: key proto=noise user=glenda dom=home !passphrase=...
                  key proto=pass user=glenda server=imap.example !password=...
                  key proto=oauth user=glenda server=mastodon.example !token=...
+                 key proto=dpop user=alice server=pds.example
           read:  key proto=noise user=glenda dom=home pub=<hex>   (one line each)
                  key proto=pass user=glenda server=imap.example
                  key proto=oauth user=glenda server=mastodon.example
@@ -27,6 +28,10 @@ The rpc conversation, hex for every byte string:
     start pass user=U server=S                      ->  password <text>
     start oauth user=U server=S                     ->  token <text>
 
+    start dpop user=U server=S                      ->  ok
+    jwk                                             ->  jwk <json>
+    proof htm=M htu=URL [nonce=N] [ath=<token>]     ->  proof <jws>
+
     start openpgp user=U dom=D                      ->  ok
     cert                                            ->  cert <hex>
     decrypt <hex session key packet body>           ->  session <hex>
@@ -37,6 +42,11 @@ The rpc conversation, hex for every byte string:
 section 6. The listing on `ctl` never shows it. `proto=oauth` is the same
 shape for an access token a network's login ended in, `docs/WEB.md`
 section 7: `fedifs` puts it here and asks for it on every request.
+`proto=dpop` is the key a DPoP-bound token is bound to, RFC 9449: a
+P-256 key made here when the line is written, never leaving. `jwk` is
+its public half as a JWK, and `proof` signs one request's proof, its
+method, URL, the server's nonce and the token's hash, for `atfs` to
+carry as the `DPoP` header. The listing shows the key without its bytes.
 
 `proto=openpgp` is `docs/WEB.md` section 6's seal: an OpenPGP identity
 derived from the passphrase and a label, so it lives nowhere and a second
@@ -61,7 +71,9 @@ import "base:runtime"
 import "vsys:abi"
 import "vsys:lib9p"
 import "vsys:libauth"
+import "core:crypto/ecdsa"
 import "vsys:libcrypto"
+import "vsys:libjws"
 import "vsys:libodin"
 import "vsys:libpgp"
 import "vsys:libthread"
@@ -103,6 +115,19 @@ Pass :: struct {
 
 passes: [MAX_KEYS]Pass
 
+// A DPoP key: P-256, made here, for a user at a server.
+Dpop :: struct {
+	used:   bool,
+	user:   [NAME_MAX]u8,
+	ulen:   int,
+	server: [NAME_MAX * 2]u8,
+	slen:   int,
+	priv:   ecdsa.Private_Key,
+	pub:    ecdsa.Public_Key,
+}
+
+dpops: [MAX_KEYS]Dpop
+
 // An OpenPGP identity, derived, and the name it was derived for.
 Pgp :: struct {
 	used: bool,
@@ -140,6 +165,7 @@ Conv :: struct {
 	reply:     [REPLY_MAX]u8,
 	reply_len: int,
 	pgp:       ^Pgp, // An openpgp conversation's identity
+	dpop:      ^Dpop, // A dpop conversation's key
 }
 
 convs: [MAX_CONVS]Conv
@@ -208,6 +234,9 @@ key_add :: proc(line: string) -> bool #no_bounds_check {
 	}
 	if has_proto && proto == "oauth" {
 		return pass_add(line, true)
+	}
+	if has_proto && proto == "dpop" {
+		return dpop_add(line)
 	}
 	if has_proto && proto == "openpgp" {
 		return pgp_add(line)
@@ -337,6 +366,113 @@ pass_add :: proc(line: string, oauth: bool) -> bool #no_bounds_check {
 	return true
 }
 
+// dpop_add takes `proto=dpop user= server=` and makes the key, from
+// thirty-two random bytes. One for the same user and server replaces
+// the old, and the token bound to the old is then dead, as it should be.
+dpop_add :: proc(line: string) -> bool #no_bounds_check {
+	user, has_user := attr(line, "user=")
+	server, has_server := attr(line, "server=")
+	if !has_user || !has_server || len(user) > NAME_MAX || len(server) > NAME_MAX * 2 {
+		key_why = "error a dpop key wants user= server=\n"
+		return false
+	}
+	d := dpop_find(user, server)
+	if d == nil {
+		for i in 0 ..< MAX_KEYS {
+			if !dpops[i].used {
+				d = &dpops[i]
+				break
+			}
+		}
+	}
+	if d == nil {
+		key_why = "error no room for another key\n"
+		return false
+	}
+	seed: [32]u8
+	if !fresh_ephemeral(seed[:]) {
+		key_why = "error no entropy for the key\n"
+		return false
+	}
+	d^ = Dpop{used = true}
+	if !ecdsa.private_key_set_bytes(&d.priv, .SECP256R1, seed[:]) {
+		d.used = false
+		key_why = "error the key would not take\n"
+		return false
+	}
+	// The public half, from its point's bytes, so it is a key of its own
+	// with its curve named, which the copy the private key holds is not.
+	point: [65]u8
+	ecdsa.private_key_public_bytes(&d.priv, point[:])
+	if !ecdsa.public_key_set_bytes(&d.pub, .SECP256R1, point[:]) {
+		d.used = false
+		key_why = "error the key's public half would not take\n"
+		return false
+	}
+	d.ulen = copy(d.user[:], user)
+	d.slen = copy(d.server[:], server)
+	return true
+}
+
+dpop_find :: proc "contextless" (user, server: string) -> ^Dpop #no_bounds_check {
+	for i in 0 ..< MAX_KEYS {
+		d := &dpops[i]
+		if d.used && string(d.user[:d.ulen]) == user && string(d.server[:d.slen]) == server {
+			return d
+		}
+	}
+	return nil
+}
+
+// rpc_proof signs one request's DPoP proof: `proof htm=M htu=URL
+// [nonce=N] [ath=<token>]`, the token hashed into the proof.
+rpc_proof :: proc(c: ^Conv, rest: string) -> bool {
+	htm, has_m := attr(rest, "htm=")
+	htu, has_u := attr(rest, "htu=")
+	if !has_m || !has_u {
+		set_reply(c, "error htm= and htu= wanted")
+		return false
+	}
+	nonce, _ := attr(rest, "nonce=")
+	token, _ := attr(rest, "ath=")
+	rnd: [16]u8
+	if !fresh_ephemeral(rnd[:]) {
+		set_reply(c, "error no entropy")
+		return false
+	}
+	jti_hex: [32]u8
+	jti := libcrypto.hex_encode(jti_hex[:], rnd[:])
+	header: [256]u8
+	payload: [1024]u8
+	jws: [2048]u8
+	proof := libjws.sign_es256(&c.dpop.priv, libjws.dpop_header(&c.dpop.pub, header[:]), libjws.dpop_payload(jti, htm, htu, now_seconds(), nonce, token, payload[:]), jws[:])
+	if proof == "" {
+		set_reply(c, "error the proof would not sign")
+		return false
+	}
+	set_reply(c, libuser.cat_into(c.reply[:], "proof ", proof))
+	return true
+}
+
+now_seconds :: proc "contextless" () -> i64 {
+	fd := libuser.open("/dev/time", abi.O_RDONLY)
+	if fd < 0 {
+		return 0
+	}
+	line: [96]u8
+	n := libuser.read(int(fd), line[:])
+	_ = libuser.close(int(fd))
+	sec: i64
+	for i in 0 ..< int(n) {
+		ch := line[i]
+		if ch < '0' || ch > '9' {
+			break
+		}
+		sec = sec * 10 + i64(ch - '0')
+	}
+	return sec
+}
+
 pass_find :: proc "contextless" (user, server: string, oauth: bool) -> ^Pass #no_bounds_check {
 	for i in 0 ..< MAX_KEYS {
 		p := &passes[i]
@@ -396,6 +532,17 @@ key_list :: proc "contextless" (into: []u8) -> string #no_bounds_check {
 		libodin.put_str(&sink, string(p.user[:p.ulen]))
 		libodin.put_str(&sink, " server=")
 		libodin.put_str(&sink, string(p.server[:p.slen]))
+		libodin.put_str(&sink, "\n")
+	}
+	for i in 0 ..< MAX_KEYS {
+		d := &dpops[i]
+		if !d.used {
+			continue
+		}
+		libodin.put_str(&sink, "key proto=dpop user=")
+		libodin.put_str(&sink, string(d.user[:d.ulen]))
+		libodin.put_str(&sink, " server=")
+		libodin.put_str(&sink, string(d.server[:d.slen]))
 		libodin.put_str(&sink, "\n")
 	}
 	for i in 0 ..< MAX_PGP {
@@ -541,6 +688,12 @@ rpc_write :: proc(c: ^Conv, line: string) -> bool #no_bounds_check {
 		return rpc_decrypt(c, l[8:])
 	case len(l) > 5 && l[:5] == "sign " && c.pgp != nil:
 		return rpc_sign(c, l[5:])
+	case l == "jwk" && c.dpop != nil:
+		jwk: [160]u8
+		set_reply(c, libuser.cat_into(c.reply[:], "jwk ", libjws.jwk_p256(&c.dpop.pub, jwk[:])))
+		return true
+	case len(l) > 6 && l[:6] == "proof " && c.dpop != nil:
+		return rpc_proof(c, l[6:])
 	case l == "finish":
 		if c.stage != .Msg2_Sent {
 			set_reply(c, "error not there yet")
@@ -571,6 +724,20 @@ rpc_start :: proc(c: ^Conv, rest: string) -> bool #no_bounds_check {
 		c.pgp = pgp_find(user, dom)
 		if c.pgp == nil {
 			set_reply(c, "error no openpgp key for that user and domain")
+			return false
+		}
+		set_reply(c, "ok")
+		return true
+	}
+	if role == "dpop" {
+		server, has_server := attr(rest, "server=")
+		if !has_user || !has_server {
+			set_reply(c, "error user= and server= wanted")
+			return false
+		}
+		c.dpop = dpop_find(user, server)
+		if c.dpop == nil {
+			set_reply(c, "error no dpop key for that user and server")
 			return false
 		}
 		set_reply(c, "ok")

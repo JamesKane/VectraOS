@@ -25,6 +25,7 @@ BASE_MAX :: 256
 
 Account :: struct {
 	set:  bool,
+	dpop: bool, // The token is bound to a key, and every request carries a proof
 	base: [BASE_MAX]u8, // The PDS: a URL's scheme and host
 	blen: int,
 	user: [NAME_MAX]u8, // The handle

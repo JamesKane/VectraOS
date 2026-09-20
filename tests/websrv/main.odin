@@ -16,6 +16,9 @@ self-test runs it and has `webfs` fetch from it, `docs/WEB.md` step 0.
 package websrv
 
 import "vsys:abi"
+import "core:crypto/ecdsa"
+import "core:crypto/hash"
+import "vsys:libjws"
 import "vsys:libnet"
 import "vsys:libodin"
 import "vsys:libuser"
@@ -47,6 +50,7 @@ start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)
 	port := len(args) >= 2 ? args[1] : "8080"
+	served_port = port
 	count := 1
 	if len(args) >= 3 {
 		if v, ok := libuser.atoi(args[2]); ok && v > 0 {
@@ -156,18 +160,35 @@ serve_one :: proc(lfd: i64, served: string) {
 		// A Mastodon instance registering a client: the id and the secret
 		// the authorization and the token requests carry.
 		ok = post && say_json(dfd, 200, "{\"client_id\": \"cid-1\", \"client_secret\": \"csecret-1\", \"name\": \"vectra\"}\n")
-	case "/oauth/token":
-		// The code the person pasted, for a token. One code is good.
-		if post && libodin.contains(body, "code=cafe") && libodin.contains(body, "client_id=cid-1") && libodin.contains(body, "grant_type=authorization_code") {
-			ok = say_json(dfd, 200, "{\"access_token\": \"token-42\", \"token_type\": \"Bearer\", \"scope\": \"read write follow\"}\n")
-		} else {
-			ok = say_json(dfd, 401, "{\"error\": \"invalid_grant\"}\n")
-		}
 	case "/api/v1/accounts/verify_credentials":
 		if bearer == "Bearer token-42" {
 			ok = say_json(dfd, 200, "{\"id\": \"1\", \"username\": \"glenda\", \"acct\": \"glenda\", \"display_name\": \"Glenda\"}\n")
 		} else {
 			ok = say_json(dfd, 401, "{\"error\": \"The access token is invalid\"}\n")
+		}
+	case "/oauth/par":
+		// A pushed authorization request, with a proof on the key the
+		// token will be bound to.
+		if post && dpop_ok(text, "POST", rpath, "") && libodin.contains(body, "code_challenge_method=S256") && libodin.contains(body, "client_id=http://localhost") && libodin.contains(body, "response_type=code") {
+			ok = say_json(dfd, 201, "{\"request_uri\": \"urn:ietf:params:oauth:request_uri:req-1\", \"expires_in\": 60}\n")
+		} else {
+			ok = say_json(dfd, 400, "{\"error\": \"invalid_request\"}\n")
+		}
+	case "/oauth/token":
+		if post && libodin.contains(body, "code_verifier=") {
+			// AT: the code from the loopback, proved on the key.
+			if dpop_ok(text, "POST", rpath, "") && libodin.contains(body, "code=dcode") && libodin.contains(body, "client_id=http://localhost") {
+				ok = say_json(dfd, 200, "{\"access_token\": \"dtok-9\", \"token_type\": \"DPoP\", \"sub\": \"did:plc:alice1\", \"scope\": \"atproto transition:generic\"}\n")
+			} else {
+				ok = say_json(dfd, 400, "{\"error\": \"invalid_grant\"}\n")
+			}
+			break
+		}
+		// The fediverse: the code the person pasted, for a token. One code is good.
+		if post && libodin.contains(body, "code=cafe") && libodin.contains(body, "client_id=cid-1") && libodin.contains(body, "grant_type=authorization_code") {
+			ok = say_json(dfd, 200, "{\"access_token\": \"token-42\", \"token_type\": \"Bearer\", \"scope\": \"read write follow\"}\n")
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"invalid_grant\"}\n")
 		}
 	case "/xrpc/com.atproto.server.createSession":
 		// A PDS making a session on an app password: one handle, one
@@ -178,7 +199,28 @@ serve_one :: proc(lfd: i64, served: string) {
 			ok = say_json(dfd, 401, "{\"error\": \"AuthenticationRequired\", \"message\": \"Invalid identifier or password\"}\n")
 		}
 	case "/xrpc/app.bsky.feed.getTimeline":
-		// The timeline, the saved one, for the session's token and nobody else.
+		// The timeline, the saved one, for the session's token and nobody
+		// else. A token bound to a key wants a proof, and the proof wants
+		// this server's nonce, given once and then expected.
+		if bearer == "Bearer dtok-9" {
+			ok = say_json(dfd, 401, "{\"error\": \"a bound token is not a bearer\"}\n")
+			break
+		}
+		if bearer == "DPoP dtok-9" {
+			if !dpop_ok(text, "GET", rpath, "dtok-9") {
+				ok = say_json(dfd, 401, "{\"error\": \"invalid_dpop_proof\"}\n")
+			} else if !proof_has_nonce(text, "n0nce") {
+				ok = say_json_with(dfd, 401, "DPoP-Nonce: n0nce\r\nWWW-Authenticate: DPoP error=\"use_dpop_nonce\"\r\n", "{\"error\": \"use_dpop_nonce\"}\n")
+			} else {
+				tl, tok := libuser.read_file("/lib/tests/timeline.json", context.allocator)
+				if !tok {
+					fail("read the saved timeline")
+				}
+				ok = say_json(dfd, 200, string(tl))
+				delete(tl)
+			}
+			break
+		}
 		if bearer == "Bearer jwt-7" {
 			tl, tok := libuser.read_file("/lib/tests/timeline.json", context.allocator)
 			if !tok {
@@ -406,12 +448,121 @@ has_blank_line :: proc "contextless" (data: []u8) -> bool #no_bounds_check {
 
 // say_json answers a JSON body with a status.
 say_json :: proc(dfd: i64, status: int, body: string) -> bool {
-	head: [160]u8
+	return say_json_with(dfd, status, "", body)
+}
+
+// say_json_with is say_json with more header lines, CRLF ended.
+say_json_with :: proc(dfd: i64, status: int, extra: string, body: string) -> bool {
+	head: [400]u8
 	num: [16]u8
-	reason := status == 200 ? "OK" : status == 401 ? "Unauthorized" : "Bad Request"
+	reason := status == 200 ? "OK" : status == 201 ? "Created" : status == 401 ? "Unauthorized" : "Bad Request"
 	snum: [8]u8
-	h := libuser.cat_into(head[:], "HTTP/1.1 ", libuser.itoa(snum[:], i64(status)), " ", reason, "\r\nContent-Type: application/json\r\nContent-Length: ", libuser.itoa(num[:], i64(len(body))), "\r\nConnection: close\r\n\r\n")
+	h := libuser.cat_into(head[:], "HTTP/1.1 ", libuser.itoa(snum[:], i64(status)), " ", reason, "\r\nContent-Type: application/json\r\nContent-Length: ", libuser.itoa(num[:], i64(len(body))), "\r\n", extra, "Connection: close\r\n\r\n")
 	return libuser.write_full(int(dfd), transmute([]u8)h) && libuser.write_full(int(dfd), transmute([]u8)body)
+}
+
+served_port: string
+
+/*
+dpop_ok verifies the request's DPoP proof, RFC 9449, the way a server
+does: the JWS checks against the key its own header carries, and its
+payload names this method and this URI, and the token's hash when the
+request carries one. That is docs/WEB.md section 7's "a DPoP proof the
+test verifies with the public key carries the right method and URL".
+*/
+dpop_ok :: proc(text: string, method: string, path: string, token: string) -> bool {
+	proof := header_value(text, "dpop")
+	if proof == "" {
+		libuser.eprint("websrv: dpop: no proof\n")
+		return false
+	}
+	hbuf: [512]u8
+	pbuf: [1024]u8
+	// The key is in the header, so the header is read once unverified.
+	d1 := 0
+	for d1 < len(proof) && proof[d1] != '.' {
+		d1 += 1
+	}
+	hn := libjws.base64url_decode(proof[:d1], hbuf[:])
+	if hn <= 0 {
+		libuser.eprint("websrv: dpop: the header would not decode\n")
+		return false
+	}
+	jwk_at := libodin_index(string(hbuf[:hn]), "\"jwk\":")
+	if jwk_at < 0 {
+		libuser.eprint("websrv: dpop: no jwk in the header\n")
+		return false
+	}
+	pub: ecdsa.Public_Key
+	if !libjws.jwk_to_p256(string(hbuf[jwk_at + 6:hn - 1]), &pub) {
+		libuser.eprint("websrv: dpop: the jwk is not a P-256 key: ", string(hbuf[jwk_at + 6:hn - 1]), "\n")
+		return false
+	}
+	header, payload, ok := libjws.verify_es256(proof, &pub, hbuf[:], pbuf[:])
+	if !ok {
+		libuser.eprint("websrv: dpop: the signature does not verify\n")
+		return false
+	}
+	if !libodin.contains(header, "\"typ\":\"dpop+jwt\"") || !libodin.contains(header, "\"alg\":\"ES256\"") {
+		libuser.eprint("websrv: dpop: the header is not a dpop+jwt on ES256\n")
+		return false
+	}
+	local: [64]u8
+	ln := read_small("/net/local", local[:])
+	want: [256]u8
+	htu := libuser.cat_into(want[:], "\"htu\":\"http://", string(local[:max(ln, 0)]), ":", served_port, path, "\"")
+	htm: [32]u8
+	if !libodin.contains(payload, libuser.cat_into(htm[:], "\"htm\":\"", method, "\"")) || !libodin.contains(payload, htu) {
+		libuser.eprint("websrv: dpop: the method or the URI is not this request's: ", payload, " wanted ", htu, "\n")
+		return false
+	}
+	if token != "" {
+		digest: [32]u8
+		hash.hash_bytes_to_buffer(.SHA256, transmute([]u8)token, digest[:])
+		ath: [48]u8
+		an := libjws.base64url_encode(digest[:], ath[:])
+		claim: [80]u8
+		if !libodin.contains(payload, libuser.cat_into(claim[:], "\"ath\":\"", string(ath[:an]), "\"")) {
+			libuser.eprint("websrv: dpop: the token's hash is not in the proof\n")
+			return false
+		}
+	}
+	return true
+}
+
+// proof_has_nonce says whether the request's proof names `nonce`.
+proof_has_nonce :: proc(text: string, nonce: string) -> bool {
+	proof := header_value(text, "dpop")
+	d1 := 0
+	for d1 < len(proof) && proof[d1] != '.' {
+		d1 += 1
+	}
+	d2 := d1 + 1
+	for d2 < len(proof) && proof[d2] != '.' {
+		d2 += 1
+	}
+	if d1 >= len(proof) || d2 >= len(proof) {
+		return false
+	}
+	pbuf: [1024]u8
+	pn := libjws.base64url_decode(proof[d1 + 1:d2], pbuf[:])
+	if pn <= 0 {
+		return false
+	}
+	claim: [160]u8
+	return libodin.contains(string(pbuf[:pn]), libuser.cat_into(claim[:], "\"nonce\":\"", nonce, "\""))
+}
+
+libodin_index :: proc "contextless" (s: string, want: string) -> int {
+	if len(want) == 0 || len(s) < len(want) {
+		return -1
+	}
+	for i in 0 ..< len(s) - len(want) + 1 {
+		if s[i:i + len(want)] == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // form_value answers a form field's value, decoded, into `into`: `+` a

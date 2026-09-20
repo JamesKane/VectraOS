@@ -1078,9 +1078,26 @@ hash. `record [name] uri` on `atfs` is `getRecord` with the
 repository, the collection and the key off the URI, the value a post
 whose author is the repository, checked against the CID beside it.
 The boot line reads a saved note and a saved record offline, and
-fetches both through the scripted server. Not yet: OAuth on AT with
-PAR, PKCE and DPoP, the page through `mothra`, an attachment on a
-post out, and `$bytes` in a record.
+fetches both through the scripted server.
+
+OAuth on AT is in, `servers/atfs/oauth.odin`: PAR, PKCE and DPoP. The
+key a token is bound to lives in `factotum` under the new
+`proto=dpop`, P-256, made there and never leaving; `sys/libjws` is the
+JWS on ES256 and the JWK a key is carried as. `oauth PDS HANDLE` makes
+the key unless there is one, draws a PKCE verifier, pushes the
+authorization request with a proof, and `ctl` shows the page to
+approve on with the request URI. This program is a loopback client,
+so the page sends the browser to the loopback address with the code,
+and `code CODE` trades it with the verifier for a token bound to the
+key. From then on every request as the account carries the token as
+`DPoP` and a proof factotum signs, with the server's nonce once it has
+given one. The plan had `webfs` add the header; the proof is per
+request and the key is factotum's, so `atfs` asks factotum and adds
+it, which is one fewer thing `webfs` knows. The boot line runs the
+flow against the scripted server, which verifies every proof with the
+key in its own header, its method, its URI and the token's hash, and
+demands its nonce once. Not yet: the page through `mothra`, the
+refresh, an attachment on a post out, and `$bytes` in a record.
 
 ### Step 5: chat
 

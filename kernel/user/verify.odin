@@ -11570,6 +11570,87 @@ verify_at_login :: proc(r: ^Result, host: string) {
 }
 
 /*
+verify_at_oauth runs webfs again and a scripted authorization server on
+this machine's stack, and logs atfs in the way the protocol wants now:
+docs/WEB.md section 7's OAuth with PAR, PKCE and DPoP. `oauth` makes a
+DPoP key in factotum, pushes the authorization request with a proof on
+it, and ctl shows the page to approve on with the request URI the server
+gave. `code` trades the code with the PKCE verifier for a token bound to
+the key, DPoP not Bearer, into factotum. Then `fetch home` carries the
+token and a proof, the server demands its nonce once, and the proof
+goes again with it. The server verifies every proof with the key in its
+own header, its method and its URI, and the token's hash: "a DPoP proof
+the test verifies with the public key carries the right method and URL".
+*/
+@(private = "file")
+verify_at_oauth :: proc(r: ^Result, host: string) {
+	wnames := [?]string{"webfs", "-s", "/usr/glenda/lib/web"}
+	wargv := new(Argv)
+	_ = argv_from(wargv, wnames[:])
+	pw := start_path(r, "/bin/webfs", "webfs starts again, for the authorization server's requests", wargv)
+	if pw == nil {
+		return
+	}
+	if !check(r, await_posted("web"), "and posts /srv/web") || !check(r, srv.mount(vfs.boot_namespace, "/srv/web", "/mnt/web") == vfs.OK, "which the kernel mounts") {
+		finish(r, pw, "and webfs is taken down")
+		return
+	}
+	sargs := [?]string{"websrv", "8081", "5"}
+	sargv := new(Argv)
+	_ = argv_from(sargv, sargs[:])
+	as := start_path(r, "/bin/websrv", "a scripted authorization server starts, five requests to serve", sargv)
+	pa := start_path(r, "/bin/atfs", "and atfs starts again")
+	if as != nil && pa != nil {
+		sync.delay(PATIENCE)
+		line_buf: [512]u8
+		text: [2048]u8
+		base_buf: [128]u8
+		base := libodin_cat(base_buf[:], "http://", host, ":8081")
+		if check(r, await_posted("at"), "which posts /srv/at") && check(r, srv.mount(vfs.boot_namespace, "/srv/at", "/mnt/at") == vfs.OK, "and the kernel mounts it at /mnt/at") {
+			// Factotum's half first, asked the way atfs asks: a key, and a
+			// proof signed on it over one rpc conversation.
+			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=dpop user=alice.one.example server=", host, ":8081")), "a dpop key for the handle at the host is made in factotum")
+			answer1: [128]u8
+			answer2: [2048]u8
+			a1, a2 := rpc_two("/mnt/factotum/rpc", libodin_cat(line_buf[:], "start dpop user=alice.one.example server=", host, ":8081"), "proof htm=POST htu=http://example/oauth/par", answer1[:], answer2[:])
+			check(r, a1 > 0 && string(answer1[:a1]) == "ok", "and rpc takes start dpop for that user and server")
+			check(r, a2 > 6 && libodin.has_prefix(string(answer2[:a2]), "proof ey"), "and then signs a proof, a JWS whose header base64url begins ey")
+			check(r, net_file_write("/mnt/at/ctl", libodin_cat(line_buf[:], "oauth ", base, " alice.one.example")), "oauth names the server and the handle, and the write returns once the request is pushed")
+			n := web_read_file("/mnt/factotum/ctl", text[:])
+			check(r, n > 0 && libodin.contains(string(text[:n]), libodin_cat(line_buf[:], "key proto=dpop user=alice.one.example server=", host, ":8081")), "a DPoP key for the handle at the host is in factotum, made there")
+			n = web_read_file("/mnt/at/ctl", text[:])
+			check(r, n > 0 && libodin.contains(string(text[:n]), libodin_cat(line_buf[:], "authorize ", base, "/oauth/authorize?client_id=http://localhost&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Areq-1")), "and ctl shows the page to approve on, with the request URI the server gave for the pushed request, whose proof it verified")
+			check(r, !net_file_write("/mnt/at/ctl", "code wrong"), "a code the server does not know is refused")
+			check(r, net_file_write("/mnt/at/ctl", "code dcode"), "the code the page sent back is traded, with the verifier and a proof, and the write returns once the bound token is in factotum")
+			n = web_read_file("/mnt/at/me", text[:])
+			check(r, string(text[:max(n, 0)]) == "alice.one.example\ndid did:plc:alice1", "and me is the handle and the DID the token is for")
+			n = web_read_file("/mnt/factotum/ctl", text[:])
+			got := string(text[:max(n, 0)])
+			check(r, n > 0 && libodin.contains(got, libodin_cat(line_buf[:], "key proto=oauth user=alice.one.example server=", host, ":8081")) && !libodin.contains(got, "dtok-9"), "and factotum lists the token's key, and keeps the token")
+			AT1 :: "000000006aad0f24.cdaa9ac7e2c76a9b"
+			check(r, net_file_write("/mnt/at/ctl", "fetch home"), "fetch home carries the token as DPoP with a proof, is asked for the server's nonce once, and goes again with it")
+			lbuf: [2048]u8
+			listed := dir_names("/mnt/at/home", lbuf[:])
+			check(r, count_words(listed) == 4 && libodin.contains(listed, AT1), "and the timeline is the conversation, the server having verified the proof's key, method, URI, nonce and token hash")
+			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/at") == vfs.OK, "the mount of atfs comes down")
+		}
+		check(r, srv.remove("at") == vfs.OK, "and the kernel takes its name away")
+		check(r, wait(pa, PATIENCE * 5), "and atfs exits")
+		finish(r, pa, "and is taken down")
+		check(r, wait(as, PATIENCE * 5), "and the authorization server, its requests served, exits")
+		check(r, string(as.exit.text[:as.exit.text_len]) == "ok", "with ok")
+		finish(r, as, "and is taken down")
+	} else {
+		finish(r, pa, "atfs is taken down")
+		finish(r, as, "and the authorization server")
+	}
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
+	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	finish(r, pw, "and is taken down")
+}
+
+/*
 verify_chatmail runs webfs again and a scripted relay on this machine's
 stack, and gives mailfs a dcaccount: URL. One request later the address
 is the account, the password is in factotum under the address's host, and
@@ -11934,6 +12015,10 @@ verify_mailfs :: proc(r: ^Result) {
 				// its token back in factotum.
 				verify_at_login(r, host)
 
+				// The other way in on AT: OAuth with PAR, PKCE and DPoP, the
+				// token bound to a key factotum holds.
+				verify_at_oauth(r, host)
+
 				// The wrong password: the server refuses the login, and the fetch says so.
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")
 				check(r, !net_file_write("/mnt/mail/ctl", "fetch"), "is refused by the server, and its fetch fails")
@@ -12119,6 +12204,40 @@ web_read_file :: proc(path: string, into: []u8, raw := false) -> int {
 		total -= 1
 	}
 	return total
+}
+
+// rpc_two asks a message file two questions on one open, the second
+// after the first's answer, and answers both lengths.
+@(private = "file")
+rpc_two :: proc(path: string, q1: string, q2: string, into1: []u8, into2: []u8) -> (n1: int, n2: int) {
+	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDWR)
+	if err != vfs.OK {
+		return -1, -1
+	}
+	defer vfs.chan_close(c)
+	if w, werr := vfs.chan_write(c, 0, transmute([]u8)q1); werr != vfs.OK || int(w) != len(q1) {
+		return -1, -1
+	}
+	got, rerr := vfs.chan_read(c, 0, into1)
+	if rerr != vfs.OK {
+		return -1, -1
+	}
+	n1 = int(got)
+	for n1 > 0 && (into1[n1 - 1] == '\n' || into1[n1 - 1] == '\r') {
+		n1 -= 1
+	}
+	if w, werr := vfs.chan_write(c, 0, transmute([]u8)q2); werr != vfs.OK || int(w) != len(q2) {
+		return n1, -1
+	}
+	got, rerr = vfs.chan_read(c, 0, into2)
+	if rerr != vfs.OK {
+		return n1, -1
+	}
+	n2 = int(got)
+	for n2 > 0 && (into2[n2 - 1] == '\n' || into2[n2 - 1] == '\r') {
+		n2 -= 1
+	}
+	return n1, n2
 }
 
 // libodin_cat joins strings into `buf`, the way libuser.cat_into does.

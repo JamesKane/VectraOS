@@ -12,7 +12,8 @@ a post already there is replaced by id.
 
     /mnt/at/ctl              fetch [name] url-or-path; fetch home; remove name;
                              fetch notifications [path]; record [name] uri-or-path;
-                             login PDS HANDLE; account PDS HANDLE
+                             login PDS HANDLE; oauth PDS HANDLE; code CODE;
+                             account PDS HANDLE
     /mnt/at/me               the handle and the DID, once there is a session
     /mnt/at/new              a post out: replyto, an empty line, the text
     /mnt/at/event            `name/id` when a post lands
@@ -36,7 +37,9 @@ it.
 
 `login.odin` is the account: a session on an app password, its token
 in `factotum`, and `fetch home` then takes the account's timeline with
-it.
+it. `oauth.odin` is the other way in, OAuth with PAR, PKCE and DPoP: a
+token bound to a key `factotum` holds, and a proof it signs on every
+request.
 
 `post.odin` is a post written to `new`, a record put in the account's
 repository, the answer into `home` and under `sent/` of the store `-s
@@ -68,7 +71,7 @@ MAX_CONVS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: libmsg.SOURCE_MAX
 
-DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nrecord name uri      fetch a record by its URI into the conversation called name, checked against its CID\nremove name          empty a conversation\nlogin pds handle     a session on the app password factotum holds, its token kept by factotum\naccount pds handle   an account whose token factotum holds already\nwrite: new           a post out: a replyto line, an empty line, the text\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nrecord name uri      fetch a record by its URI into the conversation called name, checked against its CID\nremove name          empty a conversation\nlogin pds handle     a session on the app password factotum holds, its token kept by factotum\noauth pds handle     OAuth: a key in factotum, a pushed request, and the page to approve on\ncode code            trade the code the page sent back for a token bound to the key\naccount pds handle   an account whose token factotum holds already\nwrite: new           a post out: a replyto line, an empty line, the text\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Source :: struct {
 	text: [SOURCE_MAX]u8,
@@ -160,6 +163,13 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		base, r2 := word(rest)
 		user, _ := word(r2)
 		return start_login(tag, len(text), base, user)
+	case "oauth":
+		base, r2 := word(rest)
+		user, _ := word(r2)
+		return start_oauth(tag, len(text), .Push, base, user)
+	case "code":
+		code, _ := word(rest)
+		return start_oauth(tag, len(text), .Code, code, "")
 	case "account":
 		base, r2 := word(rest)
 		user, _ := word(r2)
@@ -215,14 +225,8 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	urlbuf: [BASE_MAX + 64]u8
 	if url := timeline_url(source, urlbuf[:]); url != "" {
 		// The account's own timeline, with its token from factotum.
-		tok: [256]u8
-		token, has := ask_token(tok[:])
-		if !has {
-			return vectra9.EPERM
-		}
-		auth: [300]u8
 		status: int
-		text, status, ok = libmsg.request(f.io, url, "", libuser.cat_into(auth[:], "Authorization: Bearer ", token, "\n"), "")
+		text, status, ok = as_account(f.io, "GET", url, "", "")
 		if ok && status != 200 {
 			delete(text)
 			return vectra9.EPERM
@@ -531,8 +535,28 @@ resolve_replies :: proc(c: ^libmsg.Conv) {
 
 // -- Small things ------------------------------------------------------------------
 
+// as_account makes one request with the account's token: as Bearer, or
+// bound to the key with a proof, the server's nonce carried back.
+as_account :: proc(io: ^libthread.Ioproc, method: string, url: string, headers: string, body: string) -> (text: []u8, status: int, ok: bool) {
+	tok: [256]u8
+	token, has := ask_token(tok[:])
+	if !has {
+		return nil, 0, false
+	}
+	if account.dpop {
+		return dpop_request(io, method, url, headers, body, token)
+	}
+	all: [1024]u8
+	return libmsg.request(io, url, method, libuser.cat_into(all[:], headers, "Authorization: Bearer ", token, "\n"), body)
+}
+
 rebuild_status :: proc() {
 	clear(&status)
+	if oauth.set && oauth.alen > 0 {
+		append(&status, ..transmute([]u8)string("authorize "))
+		append(&status, ..oauth.auth[:oauth.alen])
+		append(&status, '\n')
+	}
 	if account.set {
 		append(&status, ..transmute([]u8)string("account "))
 		append(&status, ..account.base[:account.blen])

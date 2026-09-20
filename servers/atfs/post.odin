@@ -141,12 +141,6 @@ post_thread :: proc "contextless" (arg: rawptr) {
 // the post into home under the URI and CID answered, and the record
 // into the store.
 put_record :: proc(p: ^Post) -> vectra9.Errno {
-	tok: [256]u8
-	token, has := ask_token(tok[:])
-	if !has {
-		p.why = "factotum holds no token for the account"
-		return vectra9.EPERM
-	}
 	body := make([dynamic]u8, 0, len(p.record) + 256)
 	defer delete(body)
 	put(&body, "{\"repo\": \"")
@@ -155,11 +149,13 @@ put_record :: proc(p: ^Post) -> vectra9.Errno {
 	append(&body, ..p.record[:])
 	put(&body, "}")
 	url: [BASE_MAX + 64]u8
-	auth: [400]u8
-	headers := libuser.cat_into(auth[:], "Authorization: Bearer ", token, "\nContent-Type: application/json\n")
-	text, status, ok := libmsg.request(p.io, libuser.cat_into(url[:], string(account.base[:account.blen]), "/xrpc/com.atproto.repo.createRecord"), "POST", headers, string(body[:]))
+	text, status, ok := as_account(p.io, "POST", libuser.cat_into(url[:], string(account.base[:account.blen]), "/xrpc/com.atproto.repo.createRecord"), "Content-Type: application/json\n", string(body[:]))
 	defer delete(text)
-	if !ok || status != 200 {
+	if !ok {
+		p.why = "factotum holds no token for the account, or the wire would not"
+		return vectra9.EPERM
+	}
+	if status != 200 {
 		p.why = "the server would not take the record"
 		return vectra9.EIO
 	}

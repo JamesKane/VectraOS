@@ -72,21 +72,33 @@ and its status code, and false when the conversation would not run.
 `headers` is zero or more `Name: value` lines, one per line.
 */
 request :: proc(io: ^libthread.Ioproc, url: string, method: string, headers: string, body: string) -> (text: []u8, status: int, ok: bool) {
+	text, status, _, ok = request_with(io, url, method, headers, body, "", nil)
+	return text, status, ok
+}
+
+/*
+request_with is `request`, and one response header answered too: the
+value of `want` into `hbuf`, `hlen` its length, or zero when the
+response did not carry it. A server that binds a token to a key gives
+its nonce in one, `DPoP-Nonce`, and a request must carry it back.
+*/
+request_with :: proc(io: ^libthread.Ioproc, url: string, method: string, headers: string, body: string, want: string, hbuf: []u8) -> (text: []u8, status: int, hlen: int, ok: bool) {
 	num: [16]u8
 	n := read_small(io, "/mnt/web/clone", num[:])
 	if n <= 0 {
 		_ = libthread.iomount(io, "/srv/web", "/mnt/web", 0)
 		n = read_small(io, "/mnt/web/clone", num[:])
 		if n <= 0 {
-			return nil, 0, false
+			return nil, 0, 0, false
 		}
 	}
 	conv := string(num[:n])
 	path: [128]u8
-	line: [SOURCE_MAX + 8]u8
+	// A header line may carry a signed proof, which is longer than a URL.
+	line: [4096]u8
 	ctl := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/ctl"), abi.O_WRONLY)
 	if ctl < 0 {
-		return nil, 0, false
+		return nil, 0, 0, false
 	}
 	req := libuser.cat_into(line[:], "url ", url)
 	wrote := libthread.iowrite(io, int(ctl), transmute([]u8)req) == i64(len(req))
@@ -108,25 +120,36 @@ request :: proc(io: ^libthread.Ioproc, url: string, method: string, headers: str
 	}
 	_ = libuser.close(int(ctl))
 	if !wrote {
-		return nil, 0, false
+		return nil, 0, 0, false
 	}
 	if len(body) > 0 {
 		pb := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/postbody"), abi.O_WRONLY)
 		if pb < 0 {
-			return nil, 0, false
+			return nil, 0, 0, false
 		}
 		sent := libthread.iowrite(io, int(pb), transmute([]u8)body) == i64(len(body))
 		_ = libuser.close(int(pb))
 		if !sent {
-			return nil, 0, false
+			return nil, 0, 0, false
 		}
 	}
 	bfd := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/body"), abi.O_RDONLY)
 	if bfd < 0 {
-		return nil, 0, false
+		return nil, 0, 0, false
 	}
 	text, ok = read_all(io, int(bfd))
 	_ = libuser.close(int(bfd))
+	if want != "" && hbuf != nil {
+		// The response's headers, for the one wanted, whatever its case.
+		hfd := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/headers"), abi.O_RDONLY)
+		if hfd >= 0 {
+			if all, hok := read_all(io, int(hfd)); hok {
+				hlen = header_of(string(all), want, hbuf)
+				delete(all)
+			}
+			_ = libuser.close(int(hfd))
+		}
+	}
 	code: [64]u8
 	if cn := read_small(io, libuser.cat_into(path[:], "/mnt/web/", conv, "/status"), code[:]); cn > 0 {
 		for i in 0 ..< cn {
@@ -140,7 +163,51 @@ request :: proc(io: ^libthread.Ioproc, url: string, method: string, headers: str
 		_ = libthread.iowrite(io, int(hctl), transmute([]u8)string("hangup"))
 		_ = libuser.close(int(hctl))
 	}
-	return text, status, ok
+	return text, status, hlen, ok
+}
+
+// header_of answers the value of the header `name` in a block of header
+// lines, its case ignored, copied into `into`; zero when absent.
+header_of :: proc "contextless" (all: string, name: string, into: []u8) -> int {
+	at := 0
+	for at < len(all) {
+		e := at
+		for e < len(all) && all[e] != '\n' {
+			e += 1
+		}
+		line := all[at:e]
+		at = e + 1
+		if len(line) > 0 && line[len(line) - 1] == '\r' {
+			line = line[:len(line) - 1]
+		}
+		if len(line) <= len(name) || line[len(name)] != ':' {
+			continue
+		}
+		same := true
+		for i in 0 ..< len(name) {
+			a := line[i]
+			b := name[i]
+			if a >= 'A' && a <= 'Z' {
+				a += 32
+			}
+			if b >= 'A' && b <= 'Z' {
+				b += 32
+			}
+			if a != b {
+				same = false
+				break
+			}
+		}
+		if !same {
+			continue
+		}
+		v := line[len(name) + 1:]
+		for len(v) > 0 && v[0] == ' ' {
+			v = v[1:]
+		}
+		return copy(into, v)
+	}
+	return 0
 }
 
 // read_all reads a descriptor to its end, up to SOURCE_BYTES.
