@@ -1,0 +1,53 @@
+{
+  "feed": [
+    {
+      "post": {
+        "uri": "at://did:plc:bob22/app.bsky.feed.post/3kreply",
+        "cid": "bafyreidapi6sxqcrxn5mjzyu2bx66u6ylu5bfqdau4ifkxkzebispvdzse",
+        "author": {"did": "did:plc:bob22", "handle": "bob.two.example", "displayName": "Bob Jones"},
+        "record": {
+          "$type": "app.bsky.feed.post",
+          "text": "Reply on AT.",
+          "createdAt": "2026-09-18T11:15:00.000Z",
+          "reply": {
+            "root": {"uri": "at://did:plc:alice1/app.bsky.feed.post/3kfirst", "cid": "bafyreicetkpcso3otre6mxnejq6vqzrcnr6ajipdxq3mmtpviqjawpw4wi"},
+            "parent": {"uri": "at://did:plc:alice1/app.bsky.feed.post/3kfirst", "cid": "bafyreicetkpcso3otre6mxnejq6vqzrcnr6ajipdxq3mmtpviqjawpw4wi"}
+          }
+        },
+        "replyCount": 0,
+        "indexedAt": "2026-09-18T11:15:01.000Z"
+      }
+    },
+    {
+      "post": {
+        "uri": "at://did:plc:carol3/app.bsky.feed.post/3kpic",
+        "cid": "bafyreiaulhbpzazhrkqzzf7wmsj5gw2rpff2a3sjqvormxekjn6zm36pnq",
+        "author": {"did": "did:plc:carol3", "handle": "carol.one.example"},
+        "record": {
+          "$type": "app.bsky.feed.post",
+          "text": "A picture on AT.",
+          "createdAt": "2026-09-18T10:45:00.000Z",
+          "embed": {"$type": "app.bsky.embed.images", "images": [{"alt": "a picture", "image": {"$type": "blob", "ref": {"$link": "bafkreieswl5fqaujlayx4qel3bhm7jypl3rvweqzshn4emwetulggu3qrm"}, "mimeType": "image/png", "size": 1234}}]}
+        },
+        "embed": {"$type": "app.bsky.embed.images#view", "images": [{"thumb": "https://cdn.one.example/thumb/pic.png", "fullsize": "https://cdn.one.example/full/pic.png", "alt": "a picture"}]},
+        "replyCount": 0,
+        "indexedAt": "2026-09-18T10:45:01.000Z"
+      }
+    },
+    {
+      "post": {
+        "uri": "at://did:plc:alice1/app.bsky.feed.post/3kfirst",
+        "cid": "bafyreicetkpcso3otre6mxnejq6vqzrcnr6ajipdxq3mmtpviqjawpw4wi",
+        "author": {"did": "did:plc:alice1", "handle": "alice.one.example", "displayName": "Alice"},
+        "record": {
+          "$type": "app.bsky.feed.post",
+          "text": "Hello, AT.",
+          "createdAt": "2026-09-18T10:15:00.000Z"
+        },
+        "replyCount": 1,
+        "indexedAt": "2026-09-18T10:15:01.000Z"
+      }
+    }
+  ],
+  "cursor": "2026-09-18T10:15:00.000Z"
+}

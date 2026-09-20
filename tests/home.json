@@ -1,0 +1,44 @@
+[
+  {
+    "id": "113000000000000003",
+    "created_at": "2026-09-18T11:00:00.000Z",
+    "in_reply_to_id": "113000000000000001",
+    "in_reply_to_account_id": "1",
+    "spoiler_text": "",
+    "visibility": "public",
+    "url": "https://two.example/@bob/3",
+    "content": "<p>Reply from two.</p>",
+    "reblog": null,
+    "account": {"id": "2", "username": "bob", "acct": "bob@two.example", "display_name": "Bob Jones", "url": "https://two.example/@bob"},
+    "media_attachments": [],
+    "card": null
+  },
+  {
+    "id": "113000000000000002",
+    "created_at": "2026-09-18T10:30:00.000Z",
+    "in_reply_to_id": null,
+    "in_reply_to_account_id": null,
+    "spoiler_text": "",
+    "visibility": "public",
+    "url": "https://one.example/@carol/2",
+    "content": "<p>A picture.</p>",
+    "reblog": null,
+    "account": {"id": "3", "username": "carol", "acct": "carol", "display_name": "", "url": "https://one.example/@carol"},
+    "media_attachments": [{"id": "9", "type": "image", "url": "https://one.example/media/2.png", "description": "a picture"}],
+    "card": null
+  },
+  {
+    "id": "113000000000000001",
+    "created_at": "2026-09-18T10:00:00.000Z",
+    "in_reply_to_id": null,
+    "in_reply_to_account_id": null,
+    "spoiler_text": "",
+    "visibility": "public",
+    "url": "https://one.example/@glenda/1",
+    "content": "<p>Hello, fediverse.</p>",
+    "reblog": null,
+    "account": {"id": "1", "username": "glenda", "acct": "glenda", "display_name": "Glenda", "url": "https://one.example/@glenda"},
+    "media_attachments": [],
+    "card": {"url": "https://one.example/about", "title": "About one"}
+  }
+]

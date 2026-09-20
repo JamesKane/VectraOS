@@ -641,6 +641,8 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_mothra(&r)
 	verify_plumber(&r)
 	verify_feedfs(&r)
+	verify_fedifs(&r)
+	verify_atfs(&r)
 	verify_netfs(&r)
 	verify_cryptotest(&r)
 	verify_pgptest(&r)
@@ -10733,6 +10735,140 @@ verify_plumber :: proc(r: ^Result) {
 }
 
 /*
+verify_fedifs runs `servers/fedifs` on a saved Mastodon home timeline,
+`docs/WEB.md` section 7's "a saved timeline from each network through a
+pipe becomes a directory of the right shape". Three statuses land as
+three messages in time order: the account's name and address as from,
+created_at as the date, the content as an HTML body, the URL and the
+attachment and the card as links, and the reply's in_reply_to_id
+resolved to the first status's id. A file that is not a timeline is
+refused, and so is a write to new, since there is no login yet.
+*/
+@(private = "file")
+verify_fedifs :: proc(r: ^Result) {
+	p := start_path(r, "/bin/fedifs", "the loader starts fedifs, the fediverse as conversations")
+	if p == nil {
+		return
+	}
+	if !check(r, await_posted("fedi"), "which posts /srv/fedi") || !check(r, srv.mount(vfs.boot_namespace, "/srv/fedi", "/mnt/fedi") == vfs.OK, "and the kernel mounts it at /mnt/fedi") {
+		finish(r, p, "and fedifs is taken down")
+		return
+	}
+	ID1 :: "000000006aad0ba0.113000000000000001"
+	ID2 :: "000000006aad12a8.113000000000000002"
+	ID3 :: "000000006aad19b0.113000000000000003"
+	check(r, net_file_write("/mnt/fedi/ctl", "fetch /lib/tests/home.json"), "a saved home timeline's path written to ctl is fetched, and the write returns when it is in")
+	check(r, !net_file_write("/mnt/fedi/ctl", "fetch /lib/tests/page.gmi"), "a file that is not a timeline is refused")
+	check(r, !net_file_write("/mnt/fedi/new", "to nobody\n\nhello"), "and a write to new, with no login to post as")
+	lbuf: [2048]u8
+	check(r, dir_names("/mnt/fedi", lbuf[:]) == "ctl me new event dict notify home", "the network lists its files and the timeline, named for the file")
+	check(r, dir_names("/mnt/fedi/home", lbuf[:]) == ID1 + " " + ID2 + " " + ID3, "the timeline lists its statuses by id, time order, the instance's id kept as the name")
+	text: [2048]u8
+	n := web_read_file("/mnt/fedi/home/" + ID1 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "Glenda <glenda>", "from is the account's name and address")
+	n = web_read_file("/mnt/fedi/home/" + ID2 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "carol", "or the address alone when it has no name")
+	n = web_read_file("/mnt/fedi/home/" + ID1 + "/date", text[:])
+	check(r, string(text[:max(n, 0)]) == "1789725600 2026-09-18T10:00:00.000Z", "date is seconds since the epoch and the instance's text")
+	n = web_read_file("/mnt/fedi/home/" + ID1 + "/body", text[:])
+	check(r, string(text[:max(n, 0)]) == "<p>Hello, fediverse.</p>", "body is the content")
+	n = web_read_file("/mnt/fedi/home/" + ID1 + "/type", text[:])
+	check(r, string(text[:max(n, 0)]) == "text/html", "which is HTML, and type says so")
+	n = web_read_file("/mnt/fedi/home/" + ID1 + "/links", text[:])
+	check(r, string(text[:max(n, 0)]) == "https://one.example/@glenda/1\nhttps://one.example/about", "links is the status's URL and its card's")
+	n = web_read_file("/mnt/fedi/home/" + ID2 + "/links", text[:])
+	check(r, string(text[:max(n, 0)]) == "https://one.example/@carol/2\nhttps://one.example/media/2.png", "or its URL and its attachment's")
+	n = web_read_file("/mnt/fedi/home/" + ID3 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == ID1, "a reply's in_reply_to_id becomes the first status's id")
+	check(r, dir_names("/mnt/fedi/home/" + ID1 + "/replies", lbuf[:]) == ID3, "so replies under the first lists the reply")
+	n = web_read_file("/mnt/fedi/home/" + ID3 + "/raw", text[:], raw = true)
+	check(r, n > 0 && text[0] == '{' && libodin.contains(string(text[:n]), "\"id\": \"113000000000000003\""), "raw is the status as the instance sent it, its own bytes out of the array")
+	n = web_read_file("/mnt/fedi/ctl", text[:])
+	check(r, n > 0 && libodin.contains(string(text[:n]), "home 3 /lib/tests/home.json"), "a read of ctl says what the timeline holds and where it came from")
+	n = read_once("/mnt/fedi/event", text[:])
+	check(r, string(text[:max(n, 0)]) == "home/" + ID3 + "\n", "a read of event answers the first status that landed, the newest, since the instance lists them newest first")
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/fedi") == vfs.OK, "the mount of fedifs comes down")
+	check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(p, PATIENCE * 5), "and fedifs, its pipe gone, exits")
+	finish(r, p, "and is taken down")
+}
+
+/*
+verify_atfs runs `servers/atfs` on a saved AT timeline, a `getTimeline`
+answer, `docs/WEB.md` section 7's other half of "a saved timeline from
+each network through a pipe becomes a directory of the right shape".
+Three posts land as three messages: the author's name and handle as
+from, the record's createdAt as the date, its text as a plain body, its
+page on the web and its image as links, and the reply's parent URI
+resolved to the first post's id through the URI's hash. Then the two
+networks' timelines bind after one another under /mnt/all and list as
+one, six posts in time order: docs/WEB.md step 4's "two saved timelines
+bound as one".
+*/
+@(private = "file")
+verify_atfs :: proc(r: ^Result) {
+	p := start_path(r, "/bin/atfs", "the loader starts atfs, the AT network as conversations")
+	if p == nil {
+		return
+	}
+	if !check(r, await_posted("at"), "which posts /srv/at") || !check(r, srv.mount(vfs.boot_namespace, "/srv/at", "/mnt/at") == vfs.OK, "and the kernel mounts it at /mnt/at") {
+		finish(r, p, "and atfs is taken down")
+		return
+	}
+	AT1 :: "000000006aad0f24.cdaa9ac7e2c76a9b"
+	AT2 :: "000000006aad162c.9bab1ce9906bfd01"
+	AT3 :: "000000006aad1d34.1b7ea8dcfa0c72aa"
+	check(r, net_file_write("/mnt/at/ctl", "fetch /lib/tests/timeline.json"), "a saved timeline's path written to ctl is fetched, and the write returns when it is in")
+	check(r, !net_file_write("/mnt/at/ctl", "fetch /lib/tests/home.json"), "a file that is not an AT timeline, the fediverse's, is refused")
+	lbuf: [2048]u8
+	check(r, dir_names("/mnt/at/timeline", lbuf[:]) == AT1 + " " + AT2 + " " + AT3, "the timeline lists its posts by id, time order, sixteen hex digits of the URI's hash as the name")
+	text: [2048]u8
+	n := web_read_file("/mnt/at/timeline/" + AT1 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "Alice <alice.one.example>", "from is the author's name and handle")
+	n = web_read_file("/mnt/at/timeline/" + AT1 + "/date", text[:])
+	check(r, string(text[:max(n, 0)]) == "1789726500 2026-09-18T10:15:00.000Z", "date is seconds since the epoch and the record's text")
+	n = web_read_file("/mnt/at/timeline/" + AT1 + "/body", text[:])
+	check(r, string(text[:max(n, 0)]) == "Hello, AT.", "body is the record's text")
+	n = web_read_file("/mnt/at/timeline/" + AT1 + "/type", text[:])
+	check(r, string(text[:max(n, 0)]) == "text/plain", "which is plain, and type says so")
+	n = web_read_file("/mnt/at/timeline/" + AT2 + "/links", text[:])
+	check(r, string(text[:max(n, 0)]) == "https://bsky.app/profile/carol.one.example/post/3kpic\nhttps://cdn.one.example/full/pic.png", "links is the post's page on the web and its image full size")
+	n = web_read_file("/mnt/at/timeline/" + AT3 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == AT1, "a reply's parent URI becomes the first post's id, through the same hash")
+	check(r, dir_names("/mnt/at/timeline/" + AT1 + "/replies", lbuf[:]) == AT3, "so replies under the first lists the reply")
+	n = web_read_file("/mnt/at/timeline/" + AT3 + "/raw", text[:], raw = true)
+	check(r, n > 0 && text[0] == '{' && libodin.contains(string(text[:n]), "\"uri\": \"at://did:plc:bob22/app.bsky.feed.post/3kreply\""), "raw is the feed item as the server sent it")
+
+	// The union is the timeline: both networks' under one name.
+	ID1 :: "000000006aad0ba0.113000000000000001"
+	ID2 :: "000000006aad12a8.113000000000000002"
+	ID3 :: "000000006aad19b0.113000000000000003"
+	fedi := start_path(r, "/bin/fedifs", "fedifs starts again beside it")
+	if fedi != nil {
+		mounted := check(r, await_posted("fedi"), "and posts /srv/fedi") && check(r, srv.mount(vfs.boot_namespace, "/srv/fedi", "/mnt/fedi") == vfs.OK, "which the kernel mounts at /mnt/fedi")
+		if mounted {
+			check(r, net_file_write("/mnt/fedi/ctl", "fetch /lib/tests/home.json"), "with the fediverse's saved timeline in")
+			bound := vfs.bind_path(vfs.boot_namespace, "/mnt/fedi/home", "/mnt/all", .After) == vfs.OK
+			bound = vfs.bind_path(vfs.boot_namespace, "/mnt/at/timeline", "/mnt/all", .After) == vfs.OK && bound
+			check(r, bound, "the two timelines bind after one another under /mnt/all")
+			all := dir_names("/mnt/all", lbuf[:])
+			check(r, count_words(all) == 6 && libodin.contains(all, ID1) && libodin.contains(all, AT1) && libodin.contains(all, ID2) && libodin.contains(all, AT2) && libodin.contains(all, ID3) && libodin.contains(all, AT3), "and the union lists all six posts as one timeline, each network's in time order and a sort of the names the whole")
+			n = web_read_file("/mnt/all/" + AT2 + "/body", text[:])
+			check(r, string(text[:max(n, 0)]) == "A picture on AT.", "which reads either network's post by its id alone")
+			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/all") == vfs.OK, "the union comes apart")
+			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/fedi") == vfs.OK, "and the mount of fedifs comes down")
+		}
+		check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
+		check(r, wait(fedi, PATIENCE * 5), "and it exits")
+		finish(r, fedi, "and is taken down")
+	}
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/at") == vfs.OK, "the mount of atfs comes down")
+	check(r, srv.remove("at") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(p, PATIENCE * 5), "and atfs, its pipe gone, exits")
+	finish(r, p, "and is taken down")
+}
+
+/*
 verify_feedfs runs `servers/feedfs` on two saved feeds, the offline proof of
 `docs/WEB.md` section 4's shape. A feed's path written to `ctl` makes a
 conversation of its entries, each a directory of files, in time order by
@@ -11034,7 +11170,7 @@ verify_idle :: proc(r: ^Result, host: string) {
 					want_buf: [160]u8
 					wn := copy(want_buf[:], want)
 					for _ in 0 ..< 300 {
-						en := event_line("/mnt/mail/event", text[:])
+						en := read_once("/mnt/mail/event", text[:])
 						if en <= 0 {
 							break
 						}
@@ -11127,22 +11263,6 @@ checkv :: proc(r: ^Result, ok: bool, what: string) -> bool {
 		net_file_write("/dev/cons", libodin_cat(line[:], "verify: FAIL ", what, "\n"))
 	}
 	return check(r, ok, what)
-}
-
-// event_line reads one line of an event file: one read, since a second
-// would park until the next event.
-@(private = "file")
-event_line :: proc(path: string, into: []u8) -> int {
-	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
-	if err != vfs.OK {
-		return -1
-	}
-	defer vfs.chan_close(c)
-	n, rerr := vfs.chan_read(c, 0, into)
-	if rerr != vfs.OK {
-		return -1
-	}
-	return int(n)
 }
 
 // new_word answers the word of `after` that `before` does not have, or "".

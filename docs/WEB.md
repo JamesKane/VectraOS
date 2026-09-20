@@ -992,6 +992,31 @@ protocol, DPoP. About 5,600 lines. Needs step 2 and `docs/FLEET.md` step
 Boot line: two saved timelines bound as one, a record that fails its
 CID, and a scripted login that ends with a token.
 
+**Where it stands.** `servers/fedifs` is the first cut: a timeline's
+source on `ctl`, a saved one's path read as it is or a URL through
+`webfs`, and each status a message. The account's name and address
+are `from`, `created_at` the date, the content warning the subject,
+the content an HTML body, the URL, the attachments and the card the
+links, and `in_reply_to_id` resolves to `replyto`. A boost is the
+boosted status under the boost's id and date. The instance's own id
+is the message's name, since it is digits. `raw` keeps the status's
+own bytes out of the array, so `hash` is the instance's text. The
+boot line reads `tests/home.json`, three statuses with a reply and an
+attachment.
+
+`servers/atfs` is the same shape over a `getTimeline` answer: the
+author's name and handle, the record's `createdAt` and text, the post's
+page on the web and its images as links, and the reply's parent URI as
+`replyto`. A post's name is its URI, which is no file name, so the id
+carries the URI's hash and a reply resolves by the same. `raw` is the
+feed item whole. The boot line reads `tests/timeline.json`, and then
+binds the two timelines under `/mnt/all`, where six posts list as one
+in time order. The source reading and the reach into JSON moved into
+`libmsg`, `source.odin` and `json.odin`, for both. Not yet: the login
+on either network, the account's own timelines and notifications, a
+post written to `new`, any object by URL or URI, and the CID a record
+checks against.
+
 ### Step 5: chat
 
 `servers/matrixfs`, `sys/libolm`, the device requester. About 4,600

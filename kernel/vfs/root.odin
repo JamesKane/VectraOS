@@ -88,6 +88,10 @@ ROOT_NODES := [?]Static_Node {
 	// server the self-test runs as the other side of a handshake.
 	{name = "mail", parent = 6, dir = true},
 	{name = "mail2", parent = 6, dir = true},
+	// Where the two social networks are mounted, `docs/WEB.md` section 7:
+	// the fediverse and the AT network, each its conversations.
+	{name = "fedi", parent = 6, dir = true},
+	{name = "at", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.
