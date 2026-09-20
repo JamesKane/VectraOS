@@ -14,7 +14,7 @@ a post already there is replaced by id.
                              fetch notifications [path]; login PDS HANDLE;
                              account PDS HANDLE
     /mnt/at/me               the handle and the DID, once there is a session
-    /mnt/at/new              refused until a login
+    /mnt/at/new              a post out: replyto, an empty line, the text
     /mnt/at/event            `name/id` when a post lands
     /mnt/at/dict             the verbs above
     /mnt/at/<name>/<id>/     a post, `libmsg`'s files
@@ -38,13 +38,17 @@ it.
 in `factotum`, and `fetch home` then takes the account's timeline with
 it.
 
+`post.odin` is a post written to `new`, a record put in the account's
+repository, the answer into `home` and under `sent/` of the store `-s
+DIR` names.
+
 `fetch notifications` takes what came back, into `notify/`: a reply, a
 mention, a quote, a like, a repost or a follow is a message from the
 account that did it, its reason the subject, and the post it concerns
 named by `replyto`. A post a notification carries lands in `home` too,
 so a reply is a message under `replies/` of what it answered. A saved
-answer's path is the offline proof. Not yet: a post written to `new`,
-and a record by URI.
+answer's path is the offline proof. Not yet: a record by URI, and an
+image on a post out.
 */
 package atfs
 
@@ -62,7 +66,7 @@ MAX_CONVS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: libmsg.SOURCE_MAX
 
-DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nremove name          empty a conversation\nlogin pds handle     a session on the app password factotum holds, its token kept by factotum\naccount pds handle   an account whose token factotum holds already\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nremove name          empty a conversation\nlogin pds handle     a session on the app password factotum holds, its token kept by factotum\naccount pds handle   an account whose token factotum holds already\nwrite: new           a post out: a replyto line, an empty line, the text\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Source :: struct {
 	text: [SOURCE_MAX]u8,
@@ -87,7 +91,12 @@ status: [dynamic]u8
 start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
-	_ = libuser.args(block)
+	args := libuser.args(block)
+	for i := 1; i + 1 < len(args); i += 1 {
+		if args[i] == "-s" {
+			store_len = copy(store[:], args[i + 1])
+		}
+	}
 	libthread.main(threadmain, nil)
 }
 
@@ -159,10 +168,11 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	return vectra9.EINVAL
 }
 
-// on_new refuses until there is a login to post with.
+// on_new puts the block in the account's repository, and refuses
+// without a session.
 on_new :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errno {
-	_, _, _ = net, tag, text
-	return vectra9.EPERM
+	_ = net
+	return start_post(tag, text)
 }
 
 fetch_thread :: proc "contextless" (arg: rawptr) {

@@ -311,6 +311,29 @@ format_822 :: proc "contextless" (secs: i64, into: []u8) -> string #no_bounds_ch
 	return string(into[:31])
 }
 
+// format_3339 writes `secs` as the social networks write a date,
+// `2026-09-18T12:30:00.000Z`, into `into`, twenty-four bytes.
+format_3339 :: proc "contextless" (secs: i64, into: []u8) -> string #no_bounds_check {
+	if len(into) < 24 {
+		return ""
+	}
+	y, mo, d, h, mi, s := calendar(secs)
+	pad2(into[0:2], y / 100)
+	pad2(into[2:4], y % 100)
+	into[4] = '-'
+	pad2(into[5:7], mo)
+	into[7] = '-'
+	pad2(into[8:10], d)
+	into[10] = 'T'
+	pad2(into[11:13], h)
+	into[13] = ':'
+	pad2(into[14:16], mi)
+	into[16] = ':'
+	pad2(into[17:19], s)
+	copy(into[19:24], ".000Z")
+	return string(into[:24])
+}
+
 @(private = "file")
 pad2 :: proc "contextless" (into: []u8, v: int) #no_bounds_check {
 	into[0] = u8('0' + v / 10 % 10)

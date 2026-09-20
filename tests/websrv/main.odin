@@ -187,6 +187,41 @@ serve_one :: proc(lfd: i64, served: string) {
 		} else {
 			ok = say_json(dfd, 401, "{\"error\": \"AuthMissing\"}\n")
 		}
+	case "/api/v1/statuses":
+		// A status posted: the form's fields, answered as the status made.
+		if post && bearer == "Bearer token-42" {
+			st: [1024]u8
+			cw: [256]u8
+			irt: [64]u8
+			sn := form_value(body, "status", st[:])
+			cn := form_value(body, "spoiler_text", cw[:])
+			rn := form_value(body, "in_reply_to_id", irt[:])
+			out: [2048]u8
+			sink := libodin.sink_from(out[:])
+			libodin.put_str(&sink, "{\"id\": \"113000000000000009\", \"created_at\": \"2026-09-18T12:30:00.000Z\", \"in_reply_to_id\": ")
+			if rn > 0 {
+				libodin.put_str(&sink, "\"")
+				libodin.put_str(&sink, string(irt[:rn]))
+				libodin.put_str(&sink, "\"")
+			} else {
+				libodin.put_str(&sink, "null")
+			}
+			libodin.put_str(&sink, ", \"spoiler_text\": \"")
+			libodin.put_str(&sink, string(cw[:max(cn, 0)]))
+			libodin.put_str(&sink, "\", \"url\": \"https://one.example/@glenda/9\", \"content\": \"<p>")
+			libodin.put_str(&sink, string(st[:max(sn, 0)]))
+			libodin.put_str(&sink, "</p>\", \"reblog\": null, \"account\": {\"id\": \"1\", \"acct\": \"glenda\", \"display_name\": \"Glenda\"}, \"media_attachments\": [], \"card\": null}\n")
+			ok = say_json(dfd, 200, libodin.str(&sink))
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"The access token is invalid\"}\n")
+		}
+	case "/xrpc/com.atproto.repo.createRecord":
+		// A record put: named by a URI and a CID.
+		if post && bearer == "Bearer jwt-7" && libodin.contains(body, "\"collection\": \"app.bsky.feed.post\"") && libodin.contains(body, "\"$type\": \"app.bsky.feed.post\"") {
+			ok = say_json(dfd, 200, "{\"uri\": \"at://did:plc:alice1/app.bsky.feed.post/3knew\", \"cid\": \"bafyreinewrecordnewrecordnewrecordnewrecordnewrecordnewrecordq\"}\n")
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"AuthMissing\"}\n")
+		}
 	case "/api/v1/timelines/home":
 		// The home timeline, the saved one, for the token and nobody else.
 		if bearer == "Bearer token-42" {
@@ -361,6 +396,52 @@ say_json :: proc(dfd: i64, status: int, body: string) -> bool {
 	snum: [8]u8
 	h := libuser.cat_into(head[:], "HTTP/1.1 ", libuser.itoa(snum[:], i64(status)), " ", reason, "\r\nContent-Type: application/json\r\nContent-Length: ", libuser.itoa(num[:], i64(len(body))), "\r\nConnection: close\r\n\r\n")
 	return libuser.write_full(int(dfd), transmute([]u8)h) && libuser.write_full(int(dfd), transmute([]u8)body)
+}
+
+// form_value answers a form field's value, decoded, into `into`: `+` a
+// space and `%XX` a byte. -1 when the field is not there.
+form_value :: proc "contextless" (body: string, name: string, into: []u8) -> int {
+	pos := 0
+	for pos < len(body) {
+		amp := pos
+		for amp < len(body) && body[amp] != '&' {
+			amp += 1
+		}
+		pair := body[pos:amp]
+		pos = amp + 1
+		if len(pair) > len(name) && pair[:len(name)] == name && pair[len(name)] == '=' {
+			v := pair[len(name) + 1:]
+			n := 0
+			i := 0
+			for i < len(v) && n < len(into) {
+				c := v[i]
+				if c == '+' {
+					into[n] = ' '
+				} else if c == '%' && i + 2 < len(v) {
+					into[n] = hex_byte(v[i + 1]) << 4 | hex_byte(v[i + 2])
+					i += 2
+				} else {
+					into[n] = c
+				}
+				n += 1
+				i += 1
+			}
+			return n
+		}
+	}
+	return -1
+}
+
+hex_byte :: proc "contextless" (c: u8) -> u8 {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10
+	}
+	return 0
 }
 
 // header_value answers a request header's value by its name, lower

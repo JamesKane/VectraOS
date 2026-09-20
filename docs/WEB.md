@@ -1056,9 +1056,22 @@ is a message under `replies/` of what it answered: section 7's "the
 link that came back". A saved answer's path is the offline proof, and
 the boot line runs one on each: a mention and a reply land under the
 first post's `replies/`, a favourite and a like name what they
-concern, a follow says nothing. Not yet: OAuth on AT with PAR, PKCE
-and DPoP, the page through `mothra`, a post written to `new`, any
-object by URL or URI, and `$bytes` in a record.
+concern, a follow says nothing.
+
+A post written to `new` is in, on both. The block is section 4's: the
+body the status or the text, `subject` a content warning on the
+fediverse, and `replyto` an id in `home`, which becomes
+`in_reply_to_id` by the instance's id, or the reply's parent and root
+by URI and CID on AT. The write waits for the server, with the token
+from `factotum`. What the server answers lands in `home`, the status
+as it made it or the record under the URI and CID it named, and under
+`sent/` of the store `-s DIR` names, the way section 7 keeps what the
+person owns before the network has it. The boot line posts a reply on
+each against the scripted server, which echoes the status and names
+the record, and reads both back from `home`, `replies/` and the store.
+Not yet: OAuth on AT with PAR, PKCE and DPoP, the page through
+`mothra`, any object by URL or URI, an attachment on a post out, and
+`$bytes` in a record.
 
 ### Step 5: chat
 

@@ -182,6 +182,50 @@ read_small :: proc(io: ^libthread.Ioproc, path: string, into: []u8) -> int {
 	return total
 }
 
+// now_seconds answers the clock, seconds since the epoch, off /dev/time.
+now_seconds :: proc "contextless" () -> i64 {
+	fd := libuser.open("/dev/time", abi.O_RDONLY)
+	if fd < 0 {
+		return 0
+	}
+	line: [96]u8
+	n := libuser.read(int(fd), line[:])
+	_ = libuser.close(int(fd))
+	sec: i64
+	for i in 0 ..< int(n) {
+		c := line[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		sec = sec * 10 + i64(c - '0')
+	}
+	return sec
+}
+
+// keep_sent writes what a network answered for a message written to
+// `new` under `dir/sent/<id>.json`, the record or the activity as the
+// server sent it, so what the person wrote is theirs before the network
+// has it. Nothing is kept when `dir` is empty.
+keep_sent :: proc(dir: string, id: string, text: string) -> bool {
+	if dir == "" {
+		return true
+	}
+	path: [512]u8
+	_ = libuser.mkdir(dir)
+	sent := libuser.cat_into(path[:], dir, "/sent")
+	_ = libuser.mkdir(sent)
+	full: [512]u8
+	name := libuser.cat_into(full[:], sent, "/", id, ".json")
+	_ = libuser.remove(name)
+	fd := libuser.create(name, abi.O_WRONLY, 0o644)
+	if fd < 0 {
+		return false
+	}
+	ok := libuser.write_full(int(fd), transmute([]u8)text)
+	_ = libuser.close(int(fd))
+	return ok
+}
+
 // name_for is the conversation a source is called when no name is given:
 // a URL's host, or a path's last element without its suffix.
 name_for :: proc "contextless" (source: string) -> string {

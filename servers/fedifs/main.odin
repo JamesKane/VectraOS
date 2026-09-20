@@ -16,7 +16,7 @@ replaced by id.
                                fetch notifications [path]; login BASE; code CODE;
                                account BASE USER
     /mnt/fedi/me               the account, once there is one
-    /mnt/fedi/new              refused until a login
+    /mnt/fedi/new              a status out: subject, replyto, an empty line, the body
     /mnt/fedi/event            `name/id` when a status lands
     /mnt/fedi/dict             the verbs above
     /mnt/fedi/<name>/<id>/     a status, `libmsg`'s files
@@ -33,13 +33,16 @@ sent it.
 with a token in `factotum`, and `fetch home` then takes the account's
 home timeline with it.
 
+`post.odin` is a status written to `new`, posted as the account, the
+answer into `home` and under `sent/` of the store `-s DIR` names.
+
 `fetch notifications` takes what came back, into `notify/`: a mention,
 a favourite, a boost or a follow is a message from the account that
 did it, its kind the subject, and the status it concerns named by
 `replyto`. A status a notification carries lands in `home` too, so a
 reply is a message under `replies/` of what it answered. A saved
-answer's path is the offline proof. Not yet: a status written to
-`new`, and any object by URL.
+answer's path is the offline proof. Not yet: any object by URL, and
+an attachment on a status out.
 */
 package fedifs
 
@@ -56,7 +59,7 @@ MAX_CONVS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: libmsg.SOURCE_MAX
 
-DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's home timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nremove name          empty a conversation\nlogin base           register with the instance at base, and show the page to approve on\ncode code            trade the code the page showed for a token, kept by factotum\naccount base user    an account whose token factotum holds already\nread: <name>/<id>    a status: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's home timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nremove name          empty a conversation\nlogin base           register with the instance at base, and show the page to approve on\ncode code            trade the code the page showed for a token, kept by factotum\naccount base user    an account whose token factotum holds already\nwrite: new           a status out: subject, replyto lines, an empty line, the body\nread: <name>/<id>    a status: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 // What a conversation was fetched from, by its index among the network's.
 Source :: struct {
@@ -83,7 +86,12 @@ status: [dynamic]u8
 start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
-	_ = libuser.args(block)
+	args := libuser.args(block)
+	for i := 1; i + 1 < len(args); i += 1 {
+		if args[i] == "-s" {
+			store_len = copy(store[:], args[i + 1])
+		}
+	}
 	libthread.main(threadmain, nil)
 }
 
@@ -159,10 +167,10 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	return vectra9.EINVAL
 }
 
-// on_new refuses until there is a login to post with.
+// on_new posts the block as the account, and refuses without one.
 on_new :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errno {
-	_, _, _ = net, tag, text
-	return vectra9.EPERM
+	_ = net
+	return start_post(tag, text)
 }
 
 fetch_thread :: proc "contextless" (arg: rawptr) {
