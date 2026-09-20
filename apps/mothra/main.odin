@@ -869,7 +869,42 @@ the body to its end, then the status and the headers. It answers the body
 with the kind its media type says. When `/mnt/web` is not mounted yet,
 it is mounted here from `/srv/web`.
 */
+/*
+fetch reads a page, and follows where a response sends it: a form's
+answer that lives elsewhere, or a page that moved, up to five hops. A
+redirect is fetched with GET, and the page is then the place landed on,
+so a link resolves against it. A login that sends the browser to a
+loopback address with a code in its query is one of these.
+*/
 fetch :: proc(url: string, post: []u8 = nil) -> (text: []u8, kind: Kind, ok: bool) {
+	u_buf: [URL_MAX]u8
+	un := copy(u_buf[:], url)
+	p := post
+	for _ in 0 ..< 6 {
+		redirect_len = 0
+		text, kind, ok = fetch_once(string(u_buf[:un]), p)
+		if !ok || redirect_len == 0 {
+			return text, kind, ok
+		}
+		delete(text)
+		target: [URL_MAX]u8
+		tn := resolve(string(redirect_buf[:redirect_len]), target[:])
+		if tn <= 0 {
+			return nil, .Plain, false
+		}
+		libuser.eprint("mothra: sent on to ", string(target[:tn]), "\n")
+		un = copy(u_buf[:], target[:tn])
+		p = nil
+		current_len = copy(current[:], u_buf[:un])
+	}
+	return nil, .Plain, false
+}
+
+// Where the last response sent the reader, when it did.
+redirect_buf: [URL_MAX]u8
+redirect_len: int
+
+fetch_once :: proc(url: string, post: []u8 = nil) -> (text: []u8, kind: Kind, ok: bool) {
 	num: [16]u8
 	n := read_small("/mnt/web/clone", num[:])
 	if n <= 0 {
@@ -937,6 +972,11 @@ fetch :: proc(url: string, post: []u8 = nil) -> (text: []u8, kind: Kind, ok: boo
 		hn := read_small(libuser.cat_into(path[:], "/mnt/web/", conv, "/headers"), headers[:])
 		cn := header_value(string(headers[:max(hn, 0)]), "content-type", ctype[:])
 		kind = kind_of_type(string(ctype[:cn]), url)
+		// A response that sends the reader elsewhere: its status is 3xx and
+		// it names the place.
+		if sn >= 3 && status[0] == '3' {
+			redirect_len = header_value(string(headers[:max(hn, 0)]), "location", redirect_buf[:])
+		}
 	}
 	// The conversation is done with, and its slot goes back.
 	if hctl := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/ctl"), abi.O_WRONLY); hctl >= 0 {

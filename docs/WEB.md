@@ -1096,7 +1096,16 @@ request and the key is factotum's, so `atfs` asks factotum and adds
 it, which is one fewer thing `webfs` knows. The boot line runs the
 flow against the scripted server, which verifies every proof with the
 key in its own header, its method, its URI and the token's hash, and
-demands its nonce once. Not yet: the page through `mothra`, the
+demands its nonce once.
+
+The page through `mothra` is in. `atfs` is a loopback client: it
+listens on this machine's own address while the page is open, the
+page's approval sends the browser there with the code, and `atfs`
+takes it off the one request and trades it, so nothing is pasted.
+`mothra` follows where a response sends it, up to five hops, which
+the approval's answer is. The boot line opens the scripted page in
+the reader, presses its one button, and sees the token land in
+`factotum`; without a screen the code goes by hand. Not yet: the
 refresh, an attachment on a post out, and `$bytes` in a record.
 
 ### Step 5: chat

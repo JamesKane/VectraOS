@@ -153,6 +153,7 @@ serve_one :: proc(lfd: i64, served: string) {
 		body = string(req[head_end:min(head_end + want, got)])
 	}
 	ok := true
+	libuser.eprint("websrv: ", post ? "POST " : "GET ", rpath, "\n")
 	// A bearer token in the request, for the instance's paths.
 	bearer := header_value(text, "authorization")
 	switch rpath {
@@ -168,9 +169,25 @@ serve_one :: proc(lfd: i64, served: string) {
 		}
 	case "/oauth/par":
 		// A pushed authorization request, with a proof on the key the
-		// token will be bound to.
+		// token will be bound to. Where to send the browser, and the
+		// state, are kept for the approval.
 		if post && dpop_ok(text, "POST", rpath, "") && libodin.contains(body, "code_challenge_method=S256") && libodin.contains(body, "client_id=http://localhost") && libodin.contains(body, "response_type=code") {
+			par_rlen = form_value(body, "redirect_uri", par_redirect[:])
+			par_slen = form_value(body, "state", par_state[:])
 			ok = say_json(dfd, 201, "{\"request_uri\": \"urn:ietf:params:oauth:request_uri:req-1\", \"expires_in\": 60}\n")
+		} else {
+			ok = say_json(dfd, 400, "{\"error\": \"invalid_request\"}\n")
+		}
+	case "/oauth/authorize":
+		// The page to approve on, and the approval: a form whose answer
+		// sends the browser back to the client with the code.
+		if !post {
+			ok = libuser.write_full(int(dfd), transmute([]u8)string(AUTHORIZE_HEAD)) && libuser.write_full(int(dfd), transmute([]u8)string(AUTHORIZE_BODY))
+			break
+		}
+		if libodin.contains(body, "request_uri=") && par_rlen > 0 {
+			loc: [512]u8
+			ok = say_redirect(dfd, libuser.cat_into(loc[:], string(par_redirect[:par_rlen]), "?code=dcode&state=", string(par_state[:max(par_slen, 0)])))
 		} else {
 			ok = say_json(dfd, 400, "{\"error\": \"invalid_request\"}\n")
 		}
@@ -462,6 +479,23 @@ say_json_with :: proc(dfd: i64, status: int, extra: string, body: string) -> boo
 }
 
 served_port: string
+
+// What the pushed request said: where to send the browser, and the state.
+par_redirect: [256]u8
+par_rlen: int
+par_state: [64]u8
+par_slen: int
+
+// The page to approve on: one button, and the request it approves.
+AUTHORIZE_HEAD :: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 255\r\nConnection: close\r\n\r\n"
+AUTHORIZE_BODY :: "<html><head><title>Approve</title></head><body><h1>Approve</h1><p>Let this client act as you?</p><form method=\"post\" action=\"/oauth/authorize\"><input type=\"hidden\" name=\"request_uri\" value=\"req-1\"><input type=\"submit\" value=\"Approve\"></form></body></html>"
+
+// say_redirect sends the browser elsewhere.
+say_redirect :: proc(dfd: i64, location: string) -> bool {
+	head: [640]u8
+	h := libuser.cat_into(head[:], "HTTP/1.1 303 See Other\r\nLocation: ", location, "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+	return libuser.write_full(int(dfd), transmute([]u8)h)
+}
 
 /*
 dpop_ok verifies the request's DPoP proof, RFC 9449, the way a server

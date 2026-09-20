@@ -11575,10 +11575,13 @@ this machine's stack, and logs atfs in the way the protocol wants now:
 docs/WEB.md section 7's OAuth with PAR, PKCE and DPoP. `oauth` makes a
 DPoP key in factotum, pushes the authorization request with a proof on
 it, and ctl shows the page to approve on with the request URI the server
-gave. `code` trades the code with the PKCE verifier for a token bound to
-the key, DPoP not Bearer, into factotum. Then `fetch home` carries the
-token and a proof, the server demands its nonce once, and the proof
-goes again with it. The server verifies every proof with the key in its
+gave. Then the page: the reader opens it, the kernel presses its one
+button, the server sends the browser to the loopback address with the
+code, and atfs, listening there, trades the code with the PKCE verifier
+for a token bound to the key, DPoP not Bearer, into factotum: "a
+scripted authorization page through mothra ends with a token in
+factotum". Then `fetch home` carries the token and a proof, the server
+demands its nonce once, and the proof goes again with it. The server verifies every proof with the key in its
 own header, its method and its URI, and the token's hash: "a DPoP proof
 the test verifies with the public key carries the right method and URL".
 */
@@ -11595,10 +11598,12 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 		finish(r, pw, "and webfs is taken down")
 		return
 	}
-	sargs := [?]string{"websrv", "8081", "5"}
+	// The server serves until it is ended, since the page's path and the
+	// hand's differ in how many requests they make.
+	sargs := [?]string{"websrv", "8081", "99"}
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
-	as := start_path(r, "/bin/websrv", "a scripted authorization server starts, five requests to serve", sargv)
+	as := start_path(r, "/bin/websrv", "a scripted authorization server starts", sargv)
 	pa := start_path(r, "/bin/atfs", "and atfs starts again")
 	if as != nil && pa != nil {
 		sync.delay(PATIENCE)
@@ -11620,8 +11625,46 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 			check(r, n > 0 && libodin.contains(string(text[:n]), libodin_cat(line_buf[:], "key proto=dpop user=alice.one.example server=", host, ":8081")), "a DPoP key for the handle at the host is in factotum, made there")
 			n = web_read_file("/mnt/at/ctl", text[:])
 			check(r, n > 0 && libodin.contains(string(text[:n]), libodin_cat(line_buf[:], "authorize ", base, "/oauth/authorize?client_id=http://localhost&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Areq-1")), "and ctl shows the page to approve on, with the request URI the server gave for the pushed request, whose proof it verified")
-			check(r, !net_file_write("/mnt/at/ctl", "code wrong"), "a code the server does not know is refused")
-			check(r, net_file_write("/mnt/at/ctl", "code dcode"), "the code the page sent back is traded, with the verifier and a proof, and the write returns once the bound token is in factotum")
+			// The page: the reader opens it, the kernel presses Approve, and
+			// the code comes back to the listener.
+			approved := false
+			if s := devfs.raw_surface(); s != nil && s.pixels != nil && s.bytes_pp == 4 {
+				dcount0 := srv.count()
+				if ps := start_draw_server(r, s, "the loader starts the draw server for the authorize page", "which posts /srv/draw for the reader to find", "and paints a desktop before the reader opens a window"); ps != nil {
+					auth_buf: [768]u8
+					auth_url := authorize_line(string(text[:max(n, 0)]), auth_buf[:])
+					mnames := [?]string{"mothra", auth_url}
+					margv := new(Argv)
+					_ = argv_from(margv, mnames[:])
+					if pm := start_path(r, "/bin/mothra", "the loader starts the reader on the page to approve on", margv); pm != nil {
+						bx, _, _ := await_bar(s)
+						check(r, bx >= 0, "and the reader opens a framed window on the page")
+						// The page comes over the wire after the window opens.
+						sync.delay(PATIENCE * 3)
+						// Tab to the one button, and Return presses it.
+						type_text("\t\n")
+						// The trade is what sets me, so me is the proof it happened.
+						for _ in 0 ..< PATIENCE * 20 {
+							n = web_read_file("/mnt/at/me", text[:])
+							approved = string(text[:max(n, 0)]) == "alice.one.example\ndid did:plc:alice1"
+							if approved {
+								break
+							}
+							sync.delay(1)
+						}
+						check(r, approved, "and pressing Approve sends the browser to the loopback address with the code, where atfs takes it and trades it for a token bound to the key, into factotum")
+						_ = notepg_kernel(pm.note_group, "kill")
+						check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
+						finish(r, pm, "and is taken down")
+					}
+					stop_draw_server(r, ps, dcount0)
+				}
+			}
+			if !approved {
+				// No glass to press the button on: the code by hand.
+				check(r, net_file_write("/mnt/at/ctl", "code dcode"), "the code is traded by hand, with the verifier and a proof")
+			}
+			sync.delay(PATIENCE)
 			n = web_read_file("/mnt/at/me", text[:])
 			check(r, string(text[:max(n, 0)]) == "alice.one.example\ndid did:plc:alice1", "and me is the handle and the DID the token is for")
 			n = web_read_file("/mnt/factotum/ctl", text[:])
@@ -11637,8 +11680,8 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 		check(r, srv.remove("at") == vfs.OK, "and the kernel takes its name away")
 		check(r, wait(pa, PATIENCE * 5), "and atfs exits")
 		finish(r, pa, "and is taken down")
-		check(r, wait(as, PATIENCE * 5), "and the authorization server, its requests served, exits")
-		check(r, string(as.exit.text[:as.exit.text_len]) == "ok", "with ok")
+		_ = notepg_kernel(as.note_group, "kill")
+		check(r, end(as, PATIENCE * 5), "and the authorization server, told to end, ends")
 		finish(r, as, "and is taken down")
 	} else {
 		finish(r, pa, "atfs is taken down")
@@ -12204,6 +12247,25 @@ web_read_file :: proc(path: string, into: []u8, raw := false) -> int {
 		total -= 1
 	}
 	return total
+}
+
+// authorize_line answers the page a network's ctl says to approve on.
+@(private = "file")
+authorize_line :: proc(status: string, into: []u8) -> string {
+	at := 0
+	for at < len(status) {
+		e := at
+		for e < len(status) && status[e] != '\n' {
+			e += 1
+		}
+		line := status[at:e]
+		if libodin.has_prefix(line, "authorize ") {
+			n := copy(into, line[len("authorize "):])
+			return string(into[:n])
+		}
+		at = e + 1
+	}
+	return ""
 }
 
 // rpc_two asks a message file two questions on one open, the second

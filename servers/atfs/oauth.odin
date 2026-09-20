@@ -12,11 +12,15 @@ shows the page to approve on:
     authorize PDS/oauth/authorize?client_id=...&request_uri=...
 
 The person approves there and the server sends the browser to the
-loopback address with a code in its query. `code CODE` trades it, with
-the verifier and a proof, for a token bound to the key, `DPoP` rather
-than `Bearer`, and the token goes to `factotum` under `proto=oauth`
-with the account's DID, the way the app password's session did. The
-server's nonce, when it demands one, rides back in the next proof.
+loopback address with a code in its query. This program listens there,
+on this machine's own address at CALLBACK_PORT, takes the code off the
+one request the browser makes, answers a line to close the window on,
+and trades the code with the verifier and a proof for a token bound to
+the key, `DPoP` rather than `Bearer`. The token goes to `factotum`
+under `proto=oauth` with the account's DID, the way the app password's
+session did. `code CODE` trades a code by hand when the browser is
+elsewhere. The server's nonce, when it demands one, rides back in the
+next proof.
 */
 package atfs
 
@@ -26,12 +30,13 @@ import "vsys:abi"
 import "vsys:lib9p"
 import "vsys:libjws"
 import "vsys:libmsg"
+import "vsys:libnet"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
 
 CLIENT_ID :: "http://localhost"
-CALLBACK :: "http://127.0.0.1/callback"
+CALLBACK_PORT :: "8091"
 AT_SCOPE :: "atproto transition:generic"
 
 // The flow in progress, between `oauth` and `code`.
@@ -45,6 +50,8 @@ Oauth :: struct {
 	vlen:     int,
 	state:    [40]u8,
 	slen:     int,
+	callback: [160]u8, // Where the page sends the browser: this machine, CALLBACK_PORT
+	clen:     int,
 	nonce:    [128]u8, // The server's last DPoP nonce, or none
 	nlen:     int,
 	auth:     [768]u8, // The page to open, once the request is pushed
@@ -137,6 +144,13 @@ push_request :: proc(j: ^Oauth_Job, base: string, user: string) -> bool {
 	oauth = Oauth{set = true}
 	oauth.blen = copy(oauth.base[:], base)
 	oauth.ulen = copy(oauth.user[:], user)
+	local: [64]u8
+	ln := libmsg.read_small(j.io, "/net/local", local[:])
+	if ln <= 0 {
+		j.why = "no address of this machine for the callback"
+		return false
+	}
+	oauth.clen = len(libuser.cat_into(oauth.callback[:], "http://", string(local[:ln]), ":", CALLBACK_PORT, "/callback"))
 	// The key, in factotum, unless there is one for the handle and host.
 	line: [512]u8
 	probe: [64]u8
@@ -163,7 +177,7 @@ push_request :: proc(j: ^Oauth_Job, base: string, user: string) -> bool {
 	}
 	oauth.slen = len(hex_of(rnd[:16], oauth.state[:]))
 	form: [1024]u8
-	body := libuser.cat_into(form[:], "response_type=code&client_id=", CLIENT_ID, "&redirect_uri=", CALLBACK, "&code_challenge=", string(challenge[:cn]), "&code_challenge_method=S256&state=", string(oauth.state[:oauth.slen]), "&scope=atproto+transition%3Ageneric&login_hint=", user)
+	body := libuser.cat_into(form[:], "response_type=code&client_id=", CLIENT_ID, "&redirect_uri=", string(oauth.callback[:oauth.clen]), "&code_challenge=", string(challenge[:cn]), "&code_challenge_method=S256&state=", string(oauth.state[:oauth.slen]), "&scope=atproto+transition%3Ageneric&login_hint=", user)
 	url: [BASE_MAX + 64]u8
 	text, status, ok := dpop_request(j.io, "POST", libuser.cat_into(url[:], base, "/oauth/par"), "Content-Type: application/x-www-form-urlencoded\n", body, "")
 	defer delete(text)
@@ -186,7 +200,169 @@ push_request :: proc(j: ^Oauth_Job, base: string, user: string) -> bool {
 	}
 	encoded: [512]u8
 	oauth.alen = len(libuser.cat_into(oauth.auth[:], base, "/oauth/authorize?client_id=", CLIENT_ID, "&request_uri=", form_encode_into(request_uri, encoded[:])))
+	// The listener for the code, before the page can send it.
+	if libthread.threadcreate(callback_thread, nil, 256 * 1024) < 0 {
+		j.why = "no thread to listen for the code"
+		return false
+	}
 	return true
+}
+
+/*
+callback_thread listens where the page sends the browser, takes the
+code and the state off the one request, answers a line to close the
+window on, and trades the code. A state that is not this flow's is
+refused, and nothing is traded.
+*/
+callback_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	context = libuser.heap_context()
+	io := libthread.ioproc()
+	if io != nil {
+		serve_callback(io)
+		libthread.ioclose(io)
+	}
+	libthread.threadexits("")
+}
+
+// serve_callback is the listener's one request, on the thread's io proc.
+serve_callback :: proc(io: ^libthread.Ioproc) {
+	spec: [32]u8
+	dir: [libnet.DIAL_MAX]u8
+	dirlen, ok := libnet.announce(libuser.cat_into(spec[:], "tcp!*!", CALLBACK_PORT), dir[:])
+	if !ok {
+		libuser.eprint("atfs: cannot listen for the code\n")
+		return
+	}
+	served := string(dir[:dirlen])
+	path: [160]u8
+	lfd := libuser.open(libnet.join(path[:], served, "listen"), abi.O_RDONLY)
+	if lfd < 0 {
+		return
+	}
+	line: [64]u8
+	n := libthread.ioread(io, int(lfd), line[:])
+	_ = libuser.close(int(lfd))
+	if n <= 0 {
+		return
+	}
+	at := 0
+	for at < int(n) && line[at] >= '0' && line[at] <= '9' {
+		at += 1
+	}
+	cut := 0
+	for i in 0 ..< len(served) {
+		if served[i] == '/' {
+			cut = i
+		}
+	}
+	base: [160]u8
+	accepted := libuser.cat_into(base[:], served[:cut + 1], string(line[:at]))
+	dfd := libuser.open(libnet.join(path[:], accepted, "data"), abi.O_RDWR)
+	if dfd < 0 {
+		return
+	}
+	req: [2048]u8
+	got := 0
+	for got < len(req) {
+		m := libthread.ioread(io, int(dfd), req[got:])
+		if m <= 0 {
+			break
+		}
+		got += int(m)
+		if libodin_contains(string(req[:got]), "\r\n\r\n") || libodin_contains(string(req[:got]), "\n\n") {
+			break
+		}
+	}
+	code: [256]u8
+	state: [64]u8
+	cn := query_value(string(req[:got]), "code", code[:])
+	sn := query_value(string(req[:got]), "state", state[:])
+	good := cn > 0 && sn > 0 && string(state[:sn]) == string(oauth.state[:oauth.slen])
+	libuser.eprint("atfs: the browser came back to the callback, ", good ? "this login's code" : "not this login's", "\n")
+	answer := good ? "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 70\r\nConnection: close\r\n\r\n<html><body><p>Signed in. You may close this window.</p></body></html>" : "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 21\r\nConnection: close\r\n\r\nnot this login's code"
+	_ = libthread.iowrite(io, int(dfd), transmute([]u8)answer)
+	_ = libuser.close(int(dfd))
+	libnet.hangup(accepted)
+	if good {
+		j: Oauth_Job
+		j.io = io
+		if trade_code(&j, string(code[:cn])) {
+			set_me()
+			rebuild_status()
+		} else if j.why != "" {
+			libuser.eprint("atfs: ", j.why, "\n")
+		}
+	}
+}
+
+// query_value answers a query field's value off a request line, decoded.
+query_value :: proc "contextless" (req: string, name: string, into: []u8) -> int {
+	q := 0
+	for q < len(req) && req[q] != '?' {
+		q += 1
+	}
+	if q >= len(req) {
+		return -1
+	}
+	e := q + 1
+	for e < len(req) && req[e] != ' ' && req[e] != '\r' && req[e] != '\n' {
+		e += 1
+	}
+	query := req[q + 1:e]
+	pos := 0
+	for pos < len(query) {
+		amp := pos
+		for amp < len(query) && query[amp] != '&' {
+			amp += 1
+		}
+		pair := query[pos:amp]
+		pos = amp + 1
+		if len(pair) > len(name) && pair[:len(name)] == name && pair[len(name)] == '=' {
+			v := pair[len(name) + 1:]
+			n := 0
+			i := 0
+			for i < len(v) && n < len(into) {
+				c := v[i]
+				if c == '+' {
+					into[n] = ' '
+				} else if c == '%' && i + 2 < len(v) {
+					into[n] = hex_nibble(v[i + 1]) << 4 | hex_nibble(v[i + 2])
+					i += 2
+				} else {
+					into[n] = c
+				}
+				n += 1
+				i += 1
+			}
+			return n
+		}
+	}
+	return -1
+}
+
+hex_nibble :: proc "contextless" (c: u8) -> u8 {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10
+	}
+	return 0
+}
+
+libodin_contains :: proc "contextless" (s: string, want: string) -> bool {
+	if len(want) == 0 || len(s) < len(want) {
+		return false
+	}
+	for i in 0 ..< len(s) - len(want) + 1 {
+		if s[i:i + len(want)] == want {
+			return true
+		}
+	}
+	return false
 }
 
 // trade_code trades the code for a token bound to the key, and puts the
@@ -195,7 +371,7 @@ trade_code :: proc(j: ^Oauth_Job, code: string) -> bool {
 	base := string(oauth.base[:oauth.blen])
 	user := string(oauth.user[:oauth.ulen])
 	form: [1024]u8
-	body := libuser.cat_into(form[:], "grant_type=authorization_code&code=", code, "&redirect_uri=", CALLBACK, "&client_id=", CLIENT_ID, "&code_verifier=", string(oauth.verifier[:oauth.vlen]))
+	body := libuser.cat_into(form[:], "grant_type=authorization_code&code=", code, "&redirect_uri=", string(oauth.callback[:oauth.clen]), "&client_id=", CLIENT_ID, "&code_verifier=", string(oauth.verifier[:oauth.vlen]))
 	url: [BASE_MAX + 64]u8
 	text, status, ok := dpop_request(j.io, "POST", libuser.cat_into(url[:], base, "/oauth/token"), "Content-Type: application/x-www-form-urlencoded\n", body, "")
 	defer delete(text)
