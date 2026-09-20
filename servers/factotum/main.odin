@@ -9,8 +9,10 @@ passphrase never crosses the network. Two files, mounted at `/mnt/factotum`:
 
     ctl   write: key proto=noise user=glenda dom=home !passphrase=...
                  key proto=pass user=glenda server=imap.example !password=...
+                 key proto=oauth user=glenda server=mastodon.example !token=...
           read:  key proto=noise user=glenda dom=home pub=<hex>   (one line each)
                  key proto=pass user=glenda server=imap.example
+                 key proto=oauth user=glenda server=mastodon.example
     rpc   a conversation per open, the handshake a line at a time
 
 The rpc conversation, hex for every byte string:
@@ -23,6 +25,7 @@ The rpc conversation, hex for every byte string:
     finish                                          ->  done <peer> <send> <recv>
 
     start pass user=U server=S                      ->  password <text>
+    start oauth user=U server=S                     ->  token <text>
 
     start openpgp user=U dom=D                      ->  ok
     cert                                            ->  cert <hex>
@@ -31,7 +34,9 @@ The rpc conversation, hex for every byte string:
 
 `proto=pass` is a password for a server, what Plan 9's factotum held for
 `upas`: `mailfs` asks for it at login and never keeps it, `docs/WEB.md`
-section 6. The listing on `ctl` never shows it.
+section 6. The listing on `ctl` never shows it. `proto=oauth` is the same
+shape for an access token a network's login ended in, `docs/WEB.md`
+section 7: `fedifs` puts it here and asks for it on every request.
 
 `proto=openpgp` is `docs/WEB.md` section 6's seal: an OpenPGP identity
 derived from the passphrase and a label, so it lives nowhere and a second
@@ -87,6 +92,7 @@ keys: [MAX_KEYS]Key
 // A password for a server, handed to a program that asks over `rpc`.
 Pass :: struct {
 	used:   bool,
+	oauth:  bool, // The secret is an access token, not a password
 	user:   [NAME_MAX]u8,
 	ulen:   int,
 	server: [NAME_MAX * 2]u8,
@@ -198,7 +204,10 @@ key_add :: proc(line: string) -> bool #no_bounds_check {
 	user, has_user := attr(line, "user=")
 	proto, has_proto := attr(line, "proto=")
 	if has_proto && proto == "pass" {
-		return pass_add(line)
+		return pass_add(line, false)
+	}
+	if has_proto && proto == "oauth" {
+		return pass_add(line, true)
 	}
 	if has_proto && proto == "openpgp" {
 		return pgp_add(line)
@@ -297,17 +306,18 @@ pgp_find :: proc "contextless" (user, dom: string) -> ^Pgp #no_bounds_check {
 	return nil
 }
 
-// pass_add takes `proto=pass user= server= !password=`. One for the same
-// user and server replaces the old.
-pass_add :: proc(line: string) -> bool #no_bounds_check {
+// pass_add takes `proto=pass user= server= !password=`, or with `oauth`
+// `proto=oauth user= server= !token=`. One for the same user and server
+// replaces the old.
+pass_add :: proc(line: string, oauth: bool) -> bool #no_bounds_check {
 	user, has_user := attr(line, "user=")
 	server, has_server := attr(line, "server=")
-	secret, has_secret := attr(line, "!password=")
+	secret, has_secret := attr(line, oauth ? "!token=" : "!password=")
 	if !has_user || !has_server || !has_secret || len(user) > NAME_MAX || len(server) > NAME_MAX * 2 || len(secret) > 128 {
-		key_why = "error a pass key wants user= server= !password=\n"
+		key_why = oauth ? "error an oauth key wants user= server= !token=\n" : "error a pass key wants user= server= !password=\n"
 		return false
 	}
-	p := pass_find(user, server)
+	p := pass_find(user, server, oauth)
 	if p == nil {
 		for i in 0 ..< MAX_KEYS {
 			if !passes[i].used {
@@ -320,17 +330,17 @@ pass_add :: proc(line: string) -> bool #no_bounds_check {
 		key_why = "error no room for another key\n"
 		return false
 	}
-	p^ = Pass{used = true}
+	p^ = Pass{used = true, oauth = oauth}
 	p.ulen = copy(p.user[:], user)
 	p.slen = copy(p.server[:], server)
 	p.plen = copy(p.secret[:], secret)
 	return true
 }
 
-pass_find :: proc "contextless" (user, server: string) -> ^Pass #no_bounds_check {
+pass_find :: proc "contextless" (user, server: string, oauth: bool) -> ^Pass #no_bounds_check {
 	for i in 0 ..< MAX_KEYS {
 		p := &passes[i]
-		if p.used && string(p.user[:p.ulen]) == user && string(p.server[:p.slen]) == server {
+		if p.used && p.oauth == oauth && string(p.user[:p.ulen]) == user && string(p.server[:p.slen]) == server {
 			return p
 		}
 	}
@@ -382,7 +392,7 @@ key_list :: proc "contextless" (into: []u8) -> string #no_bounds_check {
 		if !p.used {
 			continue
 		}
-		libodin.put_str(&sink, "key proto=pass user=")
+		libodin.put_str(&sink, p.oauth ? "key proto=oauth user=" : "key proto=pass user=")
 		libodin.put_str(&sink, string(p.user[:p.ulen]))
 		libodin.put_str(&sink, " server=")
 		libodin.put_str(&sink, string(p.server[:p.slen]))
@@ -566,19 +576,19 @@ rpc_start :: proc(c: ^Conv, rest: string) -> bool #no_bounds_check {
 		set_reply(c, "ok")
 		return true
 	}
-	if role == "pass" {
+	if role == "pass" || role == "oauth" {
 		server, has_server := attr(rest, "server=")
 		if !has_user || !has_server {
 			set_reply(c, "error user= and server= wanted")
 			return false
 		}
-		p := pass_find(user, server)
+		p := pass_find(user, server, role == "oauth")
 		if p == nil {
 			set_reply(c, "error no key for that user and server")
 			return false
 		}
 		line: [REPLY_MAX]u8
-		set_reply(c, libuser.cat_into(line[:], "password ", string(p.secret[:p.plen])))
+		set_reply(c, libuser.cat_into(line[:], role == "oauth" ? "token " : "password ", string(p.secret[:p.plen])))
 		return true
 	}
 	dom, has_dom := attr(rest, "dom=")

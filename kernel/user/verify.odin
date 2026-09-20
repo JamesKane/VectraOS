@@ -11313,6 +11313,80 @@ new_word :: proc(before, after: string) -> string {
 }
 
 /*
+verify_fedi_login runs webfs again and a scripted Mastodon instance on
+this machine's stack, and logs fedifs in: docs/WEB.md section 7's
+authorization code flow with the out-of-band redirect, and step 4's "a
+scripted login that ends with a token". `login` registers the app and
+ctl shows the page to approve on; a wrong code is refused; the right
+code ends with the token in factotum under proto=oauth, unshown, and me
+the account. Then `fetch home` takes the account's home timeline with
+the token, and an account whose token the instance refuses cannot.
+*/
+@(private = "file")
+verify_fedi_login :: proc(r: ^Result, host: string) {
+	wnames := [?]string{"webfs", "-s", "/usr/glenda/lib/web"}
+	wargv := new(Argv)
+	_ = argv_from(wargv, wnames[:])
+	pw := start_path(r, "/bin/webfs", "webfs starts again, for the instance's requests", wargv)
+	if pw == nil {
+		return
+	}
+	if !check(r, await_posted("web"), "and posts /srv/web") || !check(r, srv.mount(vfs.boot_namespace, "/srv/web", "/mnt/web") == vfs.OK, "which the kernel mounts") {
+		finish(r, pw, "and webfs is taken down")
+		return
+	}
+	sargs := [?]string{"websrv", "8081", "6"}
+	sargv := new(Argv)
+	_ = argv_from(sargv, sargs[:])
+	inst := start_path(r, "/bin/websrv", "a scripted instance starts, six requests to serve", sargv)
+	pf := start_path(r, "/bin/fedifs", "and fedifs starts again")
+	if inst != nil && pf != nil {
+		sync.delay(PATIENCE)
+		line_buf: [512]u8
+		text: [2048]u8
+		base := libodin_cat(line_buf[:], "http://", host, ":8081")
+		base_buf: [128]u8
+		bn := copy(base_buf[:], base)
+		base = string(base_buf[:bn])
+		if check(r, await_posted("fedi"), "which posts /srv/fedi") && check(r, srv.mount(vfs.boot_namespace, "/srv/fedi", "/mnt/fedi") == vfs.OK, "and the kernel mounts it at /mnt/fedi") {
+			check(r, net_file_write("/mnt/fedi/ctl", libodin_cat(line_buf[:], "login ", base)), "login names the instance, and the write returns once the app is registered")
+			n := web_read_file("/mnt/fedi/ctl", text[:])
+			check(r, n > 0 && libodin.contains(string(text[:n]), libodin_cat(line_buf[:], "authorize ", base, "/oauth/authorize?response_type=code&client_id=cid-1&redirect_uri=urn:ietf:wg:oauth:2.0:oob&scope=read+write+follow")), "and ctl shows the page to approve on, with the client id the instance gave and the out-of-band redirect")
+			check(r, !net_file_write("/mnt/fedi/ctl", "code wrong"), "a code the instance does not know is refused")
+			check(r, net_file_write("/mnt/fedi/ctl", "code cafe"), "the code the page showed is traded for a token, and the write returns when the token is in factotum")
+			n = web_read_file("/mnt/fedi/me", text[:])
+			check(r, string(text[:max(n, 0)]) == libodin_cat(line_buf[:], "glenda@", host, ":8081"), "and me is the account the token is, as the instance named it")
+			n = web_read_file("/mnt/factotum/ctl", text[:])
+			got := string(text[:max(n, 0)])
+			check(r, n > 0 && libodin.contains(got, libodin_cat(line_buf[:], "key proto=oauth user=glenda server=", host, ":8081")) && !libodin.contains(got, "token-42"), "and factotum lists the token's key under the account and the host, and keeps the token")
+			ID1 :: "000000006aad0ba0.113000000000000001"
+			ID2 :: "000000006aad12a8.113000000000000002"
+			ID3 :: "000000006aad19b0.113000000000000003"
+			check(r, net_file_write("/mnt/fedi/ctl", "fetch home"), "fetch home takes the account's home timeline, the token from factotum in the request")
+			lbuf: [2048]u8
+			check(r, dir_names("/mnt/fedi/home", lbuf[:]) == ID1 + " " + ID2 + " " + ID3, "and the three statuses the instance holds are the conversation")
+			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=oauth user=nobody server=", host, ":8081 !token=bad")), "a token the instance will refuse goes to factotum for another account")
+			check(r, net_file_write("/mnt/fedi/ctl", libodin_cat(line_buf[:], "account ", base, " nobody")), "and account names that account, whose token factotum holds already")
+			check(r, !net_file_write("/mnt/fedi/ctl", "fetch home"), "whose fetch the instance refuses, and the write says so")
+			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/fedi") == vfs.OK, "the mount of fedifs comes down")
+		}
+		check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
+		check(r, wait(pf, PATIENCE * 5), "and fedifs exits")
+		finish(r, pf, "and is taken down")
+		check(r, wait(inst, PATIENCE * 5), "and the instance, its six requests served, exits")
+		check(r, string(inst.exit.text[:inst.exit.text_len]) == "ok", "with ok")
+		finish(r, inst, "and is taken down")
+	} else {
+		finish(r, pf, "fedifs is taken down")
+		finish(r, inst, "and the instance")
+	}
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
+	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	finish(r, pw, "and is taken down")
+}
+
+/*
 verify_chatmail runs webfs again and a scripted relay on this machine's
 stack, and gives mailfs a dcaccount: URL. One request later the address
 is the account, the password is in factotum under the address's host, and
@@ -11668,6 +11742,10 @@ verify_mailfs :: proc(r: ^Result) {
 				// Chatmail: an account in one request, through webfs, from a
 				// scripted relay.
 				verify_chatmail(r, host)
+
+				// The fediverse login: the authorization code flow against a
+				// scripted instance, ending with a token in factotum.
+				verify_fedi_login(r, host)
 
 				// The wrong password: the server refuses the login, and the fetch says so.
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")

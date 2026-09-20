@@ -12,8 +12,9 @@ says why not. A name not given is the URL's host, or the file's name
 without its suffix. Fetching again refreshes: a status already there is
 replaced by id.
 
-    /mnt/fedi/ctl              fetch [name] url-or-path; remove name
-    /mnt/fedi/me               empty until a login
+    /mnt/fedi/ctl              fetch [name] url-or-path; fetch home; remove name;
+                               login BASE; code CODE; account BASE USER
+    /mnt/fedi/me               the account, once there is one
     /mnt/fedi/new              refused until a login
     /mnt/fedi/event            `name/id` when a status lands
     /mnt/fedi/dict             the verbs above
@@ -25,8 +26,12 @@ content as an HTML body, its URL and its attachments as links, and what
 it answers as `replyto`. A boost is the boosted status under the
 boost's id and date. The message's id is the instance's own, which is
 digits, so a reply resolves by it. `raw` is the status as the instance
-sent it. Not yet: the login, the account's own timelines and
-notifications, a status written to `new`, and any object by URL.
+sent it.
+
+`login.odin` is the account: the authorization code flow that ends
+with a token in `factotum`, and `fetch home` then takes the account's
+home timeline with it. Not yet: notifications, a status written to
+`new`, and any object by URL.
 */
 package fedifs
 
@@ -43,7 +48,7 @@ MAX_CONVS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: libmsg.SOURCE_MAX
 
-DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nremove name          empty a conversation\nread: <name>/<id>    a status: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's home timeline, with its token\nremove name          empty a conversation\nlogin base           register with the instance at base, and show the page to approve on\ncode code            trade the code the page showed for a token, kept by factotum\naccount base user    an account whose token factotum holds already\nread: <name>/<id>    a status: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 // What a conversation was fetched from, by its index among the network's.
 Source :: struct {
@@ -128,6 +133,20 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		libmsg.conv_clear(&net.convs[i])
 		rebuild_status()
 		return 0
+	case "login":
+		base, _ := word(rest)
+		return start_login(tag, len(text), .Register, base)
+	case "code":
+		code, _ := word(rest)
+		return start_login(tag, len(text), .Code, code)
+	case "account":
+		base, r2 := word(rest)
+		user, _ := word(r2)
+		if !set_account(base, user) {
+			return vectra9.EINVAL
+		}
+		rebuild_status()
+		return 0
 	}
 	return vectra9.EINVAL
 }
@@ -165,7 +184,26 @@ fetch_thread :: proc "contextless" (arg: rawptr) {
 fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	source := string(f.source[:f.slen])
 	name := string(f.name[:f.nlen])
-	text, ok := libmsg.read_source(f.io, source)
+	text: []u8
+	ok: bool
+	urlbuf: [BASE_MAX + 64]u8
+	if url := timeline_url(source, urlbuf[:]); url != "" {
+		// The account's own timeline, with its token from factotum.
+		tok: [256]u8
+		token, has := ask_token(tok[:])
+		if !has {
+			return vectra9.EPERM
+		}
+		auth: [300]u8
+		status: int
+		text, status, ok = libmsg.request(f.io, url, "", libuser.cat_into(auth[:], "Authorization: Bearer ", token, "\n"), "")
+		if ok && status != 200 {
+			delete(text)
+			return vectra9.EPERM
+		}
+	} else {
+		text, ok = libmsg.read_source(f.io, source)
+	}
 	if !ok {
 		return vectra9.EIO
 	}
@@ -300,6 +338,18 @@ resolve_replies :: proc(c: ^libmsg.Conv) {
 // conversation, its name, how many statuses, and its source.
 rebuild_status :: proc() {
 	clear(&status)
+	if account.alen > 0 && !account.set {
+		append(&status, ..transmute([]u8)string("authorize "))
+		append(&status, ..account.authorize[:account.alen])
+		append(&status, '\n')
+	}
+	if account.set {
+		append(&status, ..transmute([]u8)string("account "))
+		append(&status, ..account.base[:account.blen])
+		append(&status, ' ')
+		append(&status, ..account.user[:account.ulen])
+		append(&status, '\n')
+	}
 	for c, i in net.convs {
 		if i == 0 || sources[i].len == 0 {
 			continue

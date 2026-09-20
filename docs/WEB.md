@@ -1020,10 +1020,24 @@ their bytes, a link a tag 42 over the CID's bytes, and hashes it into
 a CID of version 1 in base32. `atfs` checks each post's record against
 the CID the server gave, and serves the CID as `hash` when it holds, or
 an empty `hash` and a line in `notify/` when it does not. The boot
-line's fourth post was altered after its CID was made. Not yet: the
-login on either network, the account's own timelines and
-notifications, a post written to `new`, any object by URL or URI, and
-`$bytes` in a record.
+line's fourth post was altered after its CID was made.
+
+The fediverse login is in, `servers/fedifs/login.odin`. `login BASE`
+registers the app with the instance and `ctl` shows the page to
+approve on, the authorization code flow with the out-of-band redirect.
+`code CODE` trades the code for a token, asks the instance whose it
+is, and puts the token in `factotum` under `proto=oauth`, the
+account's name and the host; `me` is then the account. `fetch home`
+takes the account's home timeline with the token, asked of factotum on
+each request and never kept. `account BASE USER` names an account
+whose token factotum holds already. `webfs` learned nothing: the
+header goes on the request, through `libmsg.request`, which is a
+method, headers and a body over a conversation. The boot line runs
+the flow against `tests/websrv`, which serves the instance's four
+paths: a wrong code refused, the right one ending with the token in
+factotum, and a token the instance refuses refusing the fetch. Not
+yet: the page through `mothra`, the login on AT, notifications, a post
+written to `new`, any object by URL or URI, and `$bytes` in a record.
 
 ### Step 5: chat
 

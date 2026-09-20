@@ -140,7 +140,38 @@ serve_one :: proc(lfd: i64, served: string) {
 		body = string(req[head_end:min(head_end + want, got)])
 	}
 	ok := true
+	// A bearer token in the request, for the instance's paths.
+	bearer := header_value(text, "authorization")
 	switch rpath {
+	case "/api/v1/apps":
+		// A Mastodon instance registering a client: the id and the secret
+		// the authorization and the token requests carry.
+		ok = post && say_json(dfd, 200, "{\"client_id\": \"cid-1\", \"client_secret\": \"csecret-1\", \"name\": \"vectra\"}\n")
+	case "/oauth/token":
+		// The code the person pasted, for a token. One code is good.
+		if post && libodin.contains(body, "code=cafe") && libodin.contains(body, "client_id=cid-1") && libodin.contains(body, "grant_type=authorization_code") {
+			ok = say_json(dfd, 200, "{\"access_token\": \"token-42\", \"token_type\": \"Bearer\", \"scope\": \"read write follow\"}\n")
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"invalid_grant\"}\n")
+		}
+	case "/api/v1/accounts/verify_credentials":
+		if bearer == "Bearer token-42" {
+			ok = say_json(dfd, 200, "{\"id\": \"1\", \"username\": \"glenda\", \"acct\": \"glenda\", \"display_name\": \"Glenda\"}\n")
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"The access token is invalid\"}\n")
+		}
+	case "/api/v1/timelines/home":
+		// The home timeline, the saved one, for the token and nobody else.
+		if bearer == "Bearer token-42" {
+			home, hok := libuser.read_file("/lib/tests/home.json", context.allocator)
+			if !hok {
+				fail("read the saved timeline")
+			}
+			ok = say_json(dfd, 200, string(home))
+			delete(home)
+		} else {
+			ok = say_json(dfd, 401, "{\"error\": \"The access token is invalid\"}\n")
+		}
 	case "/new":
 		// A chatmail relay's answer: an account made on this machine's own
 		// address, for docs/WEB.md section 6's account in one request.
@@ -293,4 +324,52 @@ has_blank_line :: proc "contextless" (data: []u8) -> bool #no_bounds_check {
 		}
 	}
 	return false
+}
+
+// say_json answers a JSON body with a status.
+say_json :: proc(dfd: i64, status: int, body: string) -> bool {
+	head: [160]u8
+	num: [16]u8
+	reason := status == 200 ? "OK" : status == 401 ? "Unauthorized" : "Bad Request"
+	snum: [8]u8
+	h := libuser.cat_into(head[:], "HTTP/1.1 ", libuser.itoa(snum[:], i64(status)), " ", reason, "\r\nContent-Type: application/json\r\nContent-Length: ", libuser.itoa(num[:], i64(len(body))), "\r\nConnection: close\r\n\r\n")
+	return libuser.write_full(int(dfd), transmute([]u8)h) && libuser.write_full(int(dfd), transmute([]u8)body)
+}
+
+// header_value answers a request header's value by its name, lower
+// case, or "".
+header_value :: proc "contextless" (text: string, name: string) -> string {
+	pos := 0
+	for pos < len(text) {
+		eol := pos
+		for eol < len(text) && text[eol] != '\n' {
+			eol += 1
+		}
+		hl := text[pos:eol]
+		pos = eol + 1
+		if len(hl) > 0 && hl[len(hl) - 1] == '\r' {
+			hl = hl[:len(hl) - 1]
+		}
+		if len(hl) > len(name) + 1 && hl[len(name)] == ':' {
+			same := true
+			for i in 0 ..< len(name) {
+				c := hl[i]
+				if c >= 'A' && c <= 'Z' {
+					c += 32
+				}
+				if c != name[i] {
+					same = false
+					break
+				}
+			}
+			if same {
+				v := hl[len(name) + 1:]
+				for len(v) > 0 && v[0] == ' ' {
+					v = v[1:]
+				}
+				return v
+			}
+		}
+	}
+	return ""
 }

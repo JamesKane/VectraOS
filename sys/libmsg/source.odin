@@ -65,6 +65,84 @@ read_url :: proc(io: ^libthread.Ioproc, url: string) -> (text: []u8, ok: bool) {
 	return text, ok
 }
 
+/*
+request makes one request through webfs with more than a URL: a method,
+header lines, and a body for a POST. It answers the response's body
+and its status code, and false when the conversation would not run.
+`headers` is zero or more `Name: value` lines, one per line.
+*/
+request :: proc(io: ^libthread.Ioproc, url: string, method: string, headers: string, body: string) -> (text: []u8, status: int, ok: bool) {
+	num: [16]u8
+	n := read_small(io, "/mnt/web/clone", num[:])
+	if n <= 0 {
+		_ = libthread.iomount(io, "/srv/web", "/mnt/web", 0)
+		n = read_small(io, "/mnt/web/clone", num[:])
+		if n <= 0 {
+			return nil, 0, false
+		}
+	}
+	conv := string(num[:n])
+	path: [128]u8
+	line: [SOURCE_MAX + 8]u8
+	ctl := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/ctl"), abi.O_WRONLY)
+	if ctl < 0 {
+		return nil, 0, false
+	}
+	req := libuser.cat_into(line[:], "url ", url)
+	wrote := libthread.iowrite(io, int(ctl), transmute([]u8)req) == i64(len(req))
+	if wrote && method != "" {
+		req = libuser.cat_into(line[:], "method ", method)
+		wrote = libthread.iowrite(io, int(ctl), transmute([]u8)req) == i64(len(req))
+	}
+	at := 0
+	for wrote && at < len(headers) {
+		e := at
+		for e < len(headers) && headers[e] != '\n' {
+			e += 1
+		}
+		if e > at {
+			req = libuser.cat_into(line[:], "header ", headers[at:e])
+			wrote = libthread.iowrite(io, int(ctl), transmute([]u8)req) == i64(len(req))
+		}
+		at = e + 1
+	}
+	_ = libuser.close(int(ctl))
+	if !wrote {
+		return nil, 0, false
+	}
+	if len(body) > 0 {
+		pb := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/postbody"), abi.O_WRONLY)
+		if pb < 0 {
+			return nil, 0, false
+		}
+		sent := libthread.iowrite(io, int(pb), transmute([]u8)body) == i64(len(body))
+		_ = libuser.close(int(pb))
+		if !sent {
+			return nil, 0, false
+		}
+	}
+	bfd := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/body"), abi.O_RDONLY)
+	if bfd < 0 {
+		return nil, 0, false
+	}
+	text, ok = read_all(io, int(bfd))
+	_ = libuser.close(int(bfd))
+	code: [64]u8
+	if cn := read_small(io, libuser.cat_into(path[:], "/mnt/web/", conv, "/status"), code[:]); cn > 0 {
+		for i in 0 ..< cn {
+			if code[i] < '0' || code[i] > '9' {
+				break
+			}
+			status = status * 10 + int(code[i] - '0')
+		}
+	}
+	if hctl := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/ctl"), abi.O_WRONLY); hctl >= 0 {
+		_ = libthread.iowrite(io, int(hctl), transmute([]u8)string("hangup"))
+		_ = libuser.close(int(hctl))
+	}
+	return text, status, ok
+}
+
 // read_all reads a descriptor to its end, up to SOURCE_BYTES.
 read_all :: proc(io: ^libthread.Ioproc, fd: int) -> (text: []u8, ok: bool) {
 	buf := make([dynamic]u8, 0, 16384)
