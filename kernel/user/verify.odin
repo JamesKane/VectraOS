@@ -10787,6 +10787,33 @@ verify_fedifs :: proc(r: ^Result) {
 	check(r, n > 0 && libodin.contains(string(text[:n]), "home 3 /lib/tests/home.json"), "a read of ctl says what the timeline holds and where it came from")
 	n = read_once("/mnt/fedi/event", text[:])
 	check(r, string(text[:max(n, 0)]) == "home/" + ID3 + "\n", "a read of event answers the first status that landed, the newest, since the instance lists them newest first")
+
+	// What came back: notifications into notify, and a mention's status
+	// into home, under replies of what it answered.
+	ID4 :: "000000006aad243c.113000000000000004"
+	N1 :: "000000006aad243c.900000000000000001"
+	N2 :: "000000006aad27c0.900000000000000002"
+	N3 :: "000000006aad2b44.900000000000000003"
+	check(r, net_file_write("/mnt/fedi/ctl", "fetch notifications /lib/tests/notifications.json"), "a saved notifications answer's path is fetched into notify")
+	check(r, dir_names("/mnt/fedi/notify", lbuf[:]) == N1 + " " + N2 + " " + N3, "and notify lists the three by id, time order")
+	n = web_read_file("/mnt/fedi/notify/" + N1 + "/subject", text[:])
+	check(r, string(text[:max(n, 0)]) == "mention", "a notification's kind is its subject")
+	n = web_read_file("/mnt/fedi/notify/" + N1 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "Bob Jones <bob@two.example>", "from is the account that did it")
+	n = web_read_file("/mnt/fedi/notify/" + N1 + "/body", text[:])
+	check(r, string(text[:max(n, 0)]) == "<p>@glenda a mention that answers.</p>", "body is the status it carries")
+	n = web_read_file("/mnt/fedi/notify/" + N1 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == ID4, "and replyto names that status by its id")
+	check(r, dir_names("/mnt/fedi/home", lbuf[:]) == ID1 + " " + ID2 + " " + ID3 + " " + ID4, "which landed in home")
+	n = web_read_file("/mnt/fedi/home/" + ID4 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == ID1, "answering the first status")
+	check(r, dir_names("/mnt/fedi/home/" + ID1 + "/replies", lbuf[:]) == ID3 + " " + ID4, "so replies under the first lists it beside the earlier reply: the link that came back")
+	n = web_read_file("/mnt/fedi/notify/" + N2 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == ID1, "a favourite names the status favourited")
+	n = web_read_file("/mnt/fedi/notify/" + N3 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "Dave <dave@three.example>", "and a follow is from the follower")
+	n = web_read_file("/mnt/fedi/notify/" + N3 + "/body", text[:])
+	check(r, n == 0, "with nothing to say")
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/fedi") == vfs.OK, "the mount of fedifs comes down")
 	check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
 	check(r, wait(p, PATIENCE * 5), "and fedifs, its pipe gone, exits")
@@ -10851,6 +10878,30 @@ verify_atfs :: proc(r: ^Result) {
 	check(r, dir_names("/mnt/at/notify", lbuf[:]) == AT4, "with a line in notify under its id")
 	n = web_read_file("/mnt/at/notify/" + AT4 + "/body", text[:])
 	check(r, string(text[:max(n, 0)]) == "at://did:plc:dave4/app.bsky.feed.post/3kbent", "that names the record by its URI")
+
+	// What came back: notifications into notify, and a reply's post into
+	// home, under replies of what it answered.
+	AT5 :: "000000006aad243c.6de5409e1fd904a4"
+	AN2 :: "000000006aad27c0.54af3754a5a62fc2"
+	AN3 :: "000000006aad2b44.3577f531c1263a32"
+	check(r, net_file_write("/mnt/at/ctl", "fetch home /lib/tests/timeline.json"), "the timeline is fetched again as home, the account's own")
+	check(r, net_file_write("/mnt/at/ctl", "fetch notifications /lib/tests/atnotify.json"), "and a saved notifications answer's path into notify")
+	check(r, dir_names("/mnt/at/notify", lbuf[:]) == AT4 + " " + AT5 + " " + AN2 + " " + AN3, "and notify lists the three beside the failed record's line, by id, time order")
+	n = web_read_file("/mnt/at/notify/" + AT5 + "/subject", text[:])
+	check(r, string(text[:max(n, 0)]) == "reply", "a notification's reason is its subject")
+	n = web_read_file("/mnt/at/notify/" + AT5 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "Bob Jones <bob.two.example>", "from is the account that did it")
+	n = web_read_file("/mnt/at/notify/" + AT5 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == AT5, "and replyto names the post it carries")
+	n = web_read_file("/mnt/at/home/" + AT5 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == AT1, "which landed in home, answering the first post")
+	check(r, dir_names("/mnt/at/home/" + AT1 + "/replies", lbuf[:]) == AT3 + " " + AT5, "so replies under the first lists it beside the earlier reply: the link that came back")
+	n = web_read_file("/mnt/at/home/" + AT5 + "/hash", text[:])
+	check(r, n > 0 && libodin.has_prefix(string(text[:n]), "bafyrei"), "and its record checked against its CID on the way in")
+	n = web_read_file("/mnt/at/notify/" + AN2 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == AT1, "a like names the post liked, by its subject")
+	n = web_read_file("/mnt/at/notify/" + AN3 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "Dave <dave.two.example>", "and a follow is from the follower")
 
 	// The union is the timeline: both networks' under one name.
 	ID1 :: "000000006aad0ba0.113000000000000001"

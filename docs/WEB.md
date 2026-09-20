@@ -1045,10 +1045,20 @@ the handle and the DID. `fetch home` is `getTimeline` with the token.
 Factotum's ctl and rpc are reached through `libmsg` now, for both
 logins. The boot line runs it against the scripted server's two XRPC
 paths: a wrong password refused, the right one ending with the token
-in factotum, and a token the server refuses refusing the fetch. Not
-yet: OAuth on AT with PAR, PKCE and DPoP, the page through `mothra`,
-notifications, a post written to `new`, any object by URL or URI, and
-`$bytes` in a record.
+in factotum, and a token the server refuses refusing the fetch.
+
+Notifications are in, on both. `fetch notifications` takes what came
+back into `notify/`: a message from the account that did it, its kind
+or reason as the subject, the status or record it carries as the body,
+and the status or post it concerns named by `replyto`. A status or post
+a notification carries lands in `home` too, so a reply that came back
+is a message under `replies/` of what it answered: section 7's "the
+link that came back". A saved answer's path is the offline proof, and
+the boot line runs one on each: a mention and a reply land under the
+first post's `replies/`, a favourite and a like name what they
+concern, a follow says nothing. Not yet: OAuth on AT with PAR, PKCE
+and DPoP, the page through `mothra`, a post written to `new`, any
+object by URL or URI, and `$bytes` in a record.
 
 ### Step 5: chat
 

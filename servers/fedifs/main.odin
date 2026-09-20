@@ -13,7 +13,8 @@ without its suffix. Fetching again refreshes: a status already there is
 replaced by id.
 
     /mnt/fedi/ctl              fetch [name] url-or-path; fetch home; remove name;
-                               login BASE; code CODE; account BASE USER
+                               fetch notifications [path]; login BASE; code CODE;
+                               account BASE USER
     /mnt/fedi/me               the account, once there is one
     /mnt/fedi/new              refused until a login
     /mnt/fedi/event            `name/id` when a status lands
@@ -30,7 +31,14 @@ sent it.
 
 `login.odin` is the account: the authorization code flow that ends
 with a token in `factotum`, and `fetch home` then takes the account's
-home timeline with it. Not yet: notifications, a status written to
+home timeline with it.
+
+`fetch notifications` takes what came back, into `notify/`: a mention,
+a favourite, a boost or a follow is a message from the account that
+did it, its kind the subject, and the status it concerns named by
+`replyto`. A status a notification carries lands in `home` too, so a
+reply is a message under `replies/` of what it answered. A saved
+answer's path is the offline proof. Not yet: a status written to
 `new`, and any object by URL.
 */
 package fedifs
@@ -48,7 +56,7 @@ MAX_CONVS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: libmsg.SOURCE_MAX
 
-DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's home timeline, with its token\nremove name          empty a conversation\nlogin base           register with the instance at base, and show the page to approve on\ncode code            trade the code the page showed for a token, kept by factotum\naccount base user    an account whose token factotum holds already\nread: <name>/<id>    a status: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's home timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nremove name          empty a conversation\nlogin base           register with the instance at base, and show the page to approve on\ncode code            trade the code the page showed for a token, kept by factotum\naccount base user    an account whose token factotum holds already\nread: <name>/<id>    a status: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 // What a conversation was fetched from, by its index among the network's.
 Source :: struct {
@@ -213,6 +221,9 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	if !is_array {
 		return vectra9.EINVAL
 	}
+	if name == "notifications" {
+		return take_notifications(text, ranges[:], source)
+	}
 	c := libmsg.conv(&net, name)
 	i := libmsg.conv_index(&net, name)
 	got := 0
@@ -231,6 +242,162 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	src.len = copy(src.text[:], source)
 	rebuild_status()
 	return 0
+}
+
+// -- Notifications ----------------------------------------------------------------
+
+/*
+take_notifications puts each notification into notify/, and the status
+one carries into home. The notification is a message from the account
+that did it: its kind as the subject, the status's content as the body,
+and the status's id as replyto, so a reader finds what it concerns.
+*/
+take_notifications :: proc(text: []u8, ranges: [][2]int, source: string) -> vectra9.Errno {
+	notify := libmsg.conv(&net, "notify")
+	home := libmsg.conv(&net, "home")
+	got := 0
+	for rg in ranges {
+		raw := string(text[rg[0]:rg[1]])
+		v, err := json.parse_string(raw, .JSON)
+		if err != .None {
+			json.destroy_value(v)
+			continue
+		}
+		o, is_obj := v.(json.Object)
+		if !is_obj {
+			json.destroy_value(v)
+			continue
+		}
+		id := libmsg.str_of(o, "id")
+		kind := libmsg.str_of(o, "type")
+		if id == "" || kind == "" {
+			json.destroy_value(v)
+			continue
+		}
+		n: libmsg.Msg
+		n.date_text = clone(libmsg.str_of(o, "created_at"))
+		n.date, _ = libmsg.parse_date(n.date_text)
+		idbuf: [128]u8
+		n.id = clone(libmsg.make_id(n.date, id, idbuf[:]))
+		n.from = clone(actor_of(o))
+		n.subject = clone(kind)
+		n.type = clone("text/html")
+		n.raw = clone(raw)
+		// The status it carries: into home, and named by replyto.
+		if status, has := libmsg.obj_of(o, "status"); has {
+			sid := libmsg.str_of(status, "id")
+			sdate, _ := libmsg.parse_date(libmsg.str_of(status, "created_at"))
+			n.replyto = clone(libmsg.make_id(sdate, sid, idbuf[:]))
+			n.body = clone(libmsg.str_of(status, "content"))
+			links := make([dynamic]u8, 0, 128)
+			put_link(&links, libmsg.str_of(status, "url"))
+			n.links = string(links[:])
+			if at := libmsg.array_at(raw, "status"); at < 0 {
+				// The status's own bytes are the object under "status".
+				if s_at := object_at(raw, "status"); s_at >= 0 {
+					if m, made := status_message(raw[s_at:object_end(raw, s_at)]); made {
+						libmsg.add(&net, home, m)
+					}
+				}
+			}
+		}
+		json.destroy_value(v)
+		libmsg.add(&net, notify, n)
+		got += 1
+	}
+	resolve_replies(home)
+	if got == 0 && len(ranges) > 0 {
+		return vectra9.EINVAL
+	}
+	i := libmsg.conv_index(&net, "notify")
+	src := &sources[i]
+	src.len = copy(src.text[:], source)
+	rebuild_status()
+	return 0
+}
+
+// actor_of answers the account a notification came from, as `from`.
+actor_of :: proc(o: json.Object) -> string {
+	@(static) buf: [512]u8
+	name := ""
+	handle := ""
+	if acct, has := libmsg.obj_of(o, "account"); has {
+		name = libmsg.str_of(acct, "display_name")
+		handle = libmsg.str_of(acct, "acct")
+	}
+	if name == "" {
+		return handle
+	}
+	return libuser.cat_into(buf[:], name, " <", handle, ">")
+}
+
+// object_at answers where the object under the top-level key `key`
+// begins in `text`, its `{`, or -1.
+object_at :: proc(text: string, key: string) -> int {
+	depth := 0
+	in_string := false
+	i := 0
+	for i < len(text) {
+		c := text[i]
+		if in_string {
+			if c == '\\' {
+				i += 1
+			} else if c == '"' {
+				in_string = false
+			}
+			i += 1
+			continue
+		}
+		switch c {
+		case '"':
+			if depth == 1 && i + len(key) + 1 < len(text) && text[i + 1:i + 1 + len(key)] == key && text[i + 1 + len(key)] == '"' {
+				j := i + len(key) + 2
+				for j < len(text) && (text[j] == ' ' || text[j] == ':' || text[j] == '\n' || text[j] == '\r' || text[j] == '\t') {
+					j += 1
+				}
+				if j < len(text) && text[j] == '{' {
+					return j
+				}
+			}
+			in_string = true
+		case '[', '{':
+			depth += 1
+		case ']', '}':
+			depth -= 1
+		}
+		i += 1
+	}
+	return -1
+}
+
+// object_end answers where the object beginning at `at` ends, one past
+// its closing brace.
+object_end :: proc(text: string, at: int) -> int {
+	depth := 0
+	in_string := false
+	for i := at; i < len(text); i += 1 {
+		c := text[i]
+		if in_string {
+			if c == '\\' {
+				i += 1
+			} else if c == '"' {
+				in_string = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			in_string = true
+		case '{', '[':
+			depth += 1
+		case '}', ']':
+			depth -= 1
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(text)
 }
 
 // -- A status as a message ------------------------------------------------------

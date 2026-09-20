@@ -11,7 +11,8 @@ host, or the file's name without its suffix. Fetching again refreshes:
 a post already there is replaced by id.
 
     /mnt/at/ctl              fetch [name] url-or-path; fetch home; remove name;
-                             login PDS HANDLE; account PDS HANDLE
+                             fetch notifications [path]; login PDS HANDLE;
+                             account PDS HANDLE
     /mnt/at/me               the handle and the DID, once there is a session
     /mnt/at/new              refused until a login
     /mnt/at/event            `name/id` when a post lands
@@ -35,8 +36,15 @@ it.
 
 `login.odin` is the account: a session on an app password, its token
 in `factotum`, and `fetch home` then takes the account's timeline with
-it. Not yet: notifications, a post written to `new`, and a record by
-URI.
+it.
+
+`fetch notifications` takes what came back, into `notify/`: a reply, a
+mention, a quote, a like, a repost or a follow is a message from the
+account that did it, its reason the subject, and the post it concerns
+named by `replyto`. A post a notification carries lands in `home` too,
+so a reply is a message under `replies/` of what it answered. A saved
+answer's path is the offline proof. Not yet: a post written to `new`,
+and a record by URI.
 */
 package atfs
 
@@ -54,7 +62,7 @@ MAX_CONVS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: libmsg.SOURCE_MAX
 
-DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's timeline, with its token\nremove name          empty a conversation\nlogin pds handle     a session on the app password factotum holds, its token kept by factotum\naccount pds handle   an account whose token factotum holds already\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nremove name          empty a conversation\nlogin pds handle     a session on the app password factotum holds, its token kept by factotum\naccount pds handle   an account whose token factotum holds already\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Source :: struct {
 	text: [SOURCE_MAX]u8,
@@ -209,6 +217,9 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 		return vectra9.EIO
 	}
 	defer delete(text)
+	if name == "notifications" {
+		return take_notifications(text, source)
+	}
 	at := libmsg.array_at(string(text), "feed")
 	if at < 0 {
 		return vectra9.EINVAL
@@ -258,6 +269,13 @@ item_message :: proc(raw: string) -> (m: libmsg.Msg, ok: bool) {
 	if !has_post {
 		return m, false
 	}
+	return post_message(post, raw)
+}
+
+// post_message makes the message of a post's view: its URI, author and
+// record, which a feed item holds under `post` and a notification holds
+// at its top. `raw` is what the message keeps.
+post_message :: proc(post: json.Object, raw: string) -> (m: libmsg.Msg, ok: bool) {
 	uri := libmsg.str_of(post, "uri")
 	if uri == "" {
 		return m, false
@@ -329,6 +347,123 @@ note_failed :: proc(uri: string, date: i64, date_text: string) {
 	n.body = clone(uri)
 	n.type = clone("text/plain")
 	libmsg.add(&net, libmsg.conv(&net, "notify"), n)
+}
+
+/*
+take_notifications puts each notification into notify/, and the post
+one carries, a reply, a mention or a quote, into home. The notification
+is a message from the account that did it: its reason as the subject,
+the record's text as the body, and the post it concerns as replyto: the
+carried post's own id, or the subject's.
+*/
+take_notifications :: proc(text: []u8, source: string) -> vectra9.Errno {
+	at := libmsg.array_at(string(text), "notifications")
+	if at < 0 {
+		return vectra9.EINVAL
+	}
+	ranges, is_array := libmsg.elements(string(text), at)
+	defer delete(ranges)
+	if !is_array {
+		return vectra9.EINVAL
+	}
+	notify := libmsg.conv(&net, "notify")
+	home := libmsg.conv(&net, "home")
+	got := 0
+	for rg in ranges {
+		raw := string(text[rg[0]:rg[1]])
+		v, err := json.parse_string(raw, .JSON, true)
+		if err != .None {
+			json.destroy_value(v)
+			continue
+		}
+		o, is_obj := v.(json.Object)
+		if !is_obj {
+			json.destroy_value(v)
+			continue
+		}
+		uri := libmsg.str_of(o, "uri")
+		reason := libmsg.str_of(o, "reason")
+		if uri == "" || reason == "" {
+			json.destroy_value(v)
+			continue
+		}
+		record, _ := libmsg.obj_of(o, "record")
+		n: libmsg.Msg
+		n.date_text = clone(libmsg.str_of(record, "createdAt"))
+		if n.date_text == "" {
+			n.date_text = clone(libmsg.str_of(o, "indexedAt"))
+		}
+		n.date, _ = libmsg.parse_date(n.date_text)
+		idbuf: [128]u8
+		n.id = clone(libmsg.make_id(n.date, uri, idbuf[:]))
+		name := ""
+		handle := ""
+		if author, has := libmsg.obj_of(o, "author"); has {
+			name = libmsg.str_of(author, "displayName")
+			handle = libmsg.str_of(author, "handle")
+		}
+		from: [512]u8
+		n.from = clone(name == "" ? handle : libuser.cat_into(from[:], name, " <", handle, ">"))
+		n.subject = clone(reason)
+		n.body = clone(libmsg.str_of(record, "text"))
+		n.type = clone("text/plain")
+		n.raw = clone(raw)
+		switch reason {
+		case "reply", "mention", "quote":
+			// The post itself, into home, and the notification names it.
+			if m, made := post_message(o, raw); made {
+				n.replyto = clone(m.id)
+				links := make([dynamic]u8, 0, 128)
+				put_link(&links, libuser.cat_into(from[:], "https://bsky.app/profile/", handle, "/post/", rkey_of(uri)))
+				n.links = string(links[:])
+				libmsg.add(&net, home, m)
+			}
+		case:
+			// What it concerns, by the subject's URI: the post's id, when
+			// home has it, else the URI's hash dated zero.
+			if subject := libmsg.str_of(o, "reasonSubject"); subject != "" {
+				n.replyto = clone(subject)
+			}
+		}
+		json.destroy_value(v)
+		libmsg.add(&net, notify, n)
+		got += 1
+	}
+	resolve_replies(home)
+	resolve_against(notify, home)
+	if got == 0 && len(ranges) > 0 {
+		return vectra9.EINVAL
+	}
+	i := libmsg.conv_index(&net, "notify")
+	src := &sources[i]
+	src.len = copy(src.text[:], source)
+	rebuild_status()
+	return 0
+}
+
+// resolve_against turns each `replyto` of `c` that still names a URI
+// into the id of the post in `against` that bears it.
+resolve_against :: proc(c: ^libmsg.Conv, against: ^libmsg.Conv) {
+	for &m in c.msgs {
+		if m.replyto == "" || (len(m.replyto) > 17 && m.replyto[16] == '.') {
+			continue
+		}
+		idbuf: [128]u8
+		zero := libmsg.make_id(0, m.replyto, idbuf[:])
+		tail := zero[17:]
+		found := ""
+		for other in against.msgs {
+			if len(other.id) > 17 && other.id[17:] == tail {
+				found = other.id
+				break
+			}
+		}
+		if found == "" {
+			found = zero
+		}
+		delete(m.replyto)
+		m.replyto = clone(found)
+	}
 }
 
 // rkey_of answers the last element of an AT URI, the record's key.

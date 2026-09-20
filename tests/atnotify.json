@@ -1,0 +1,69 @@
+{
+  "notifications": [
+    {
+      "uri": "at://did:plc:dave4/app.bsky.graph.follow/3kfollow",
+      "cid": "bafyreigxfovbmx32bhm3o766ihe7egrlemeeqeynp67rpfsz65y4jiglyu",
+      "author": {
+        "did": "did:plc:dave4",
+        "handle": "dave.two.example",
+        "displayName": "Dave"
+      },
+      "reason": "follow",
+      "record": {
+        "$type": "app.bsky.graph.follow",
+        "subject": "did:plc:alice1",
+        "createdAt": "2026-09-18T12:15:00.000Z"
+      },
+      "isRead": false,
+      "indexedAt": "2026-09-18T12:15:01.000Z"
+    },
+    {
+      "uri": "at://did:plc:carol3/app.bsky.feed.like/3klike",
+      "cid": "bafyreig4bpl7dlstc36dploywfmynwlo5445jhjbh57rhtmsaliwzfo3bi",
+      "author": {
+        "did": "did:plc:carol3",
+        "handle": "carol.one.example"
+      },
+      "reason": "like",
+      "reasonSubject": "at://did:plc:alice1/app.bsky.feed.post/3kfirst",
+      "record": {
+        "$type": "app.bsky.feed.like",
+        "subject": {
+          "uri": "at://did:plc:alice1/app.bsky.feed.post/3kfirst",
+          "cid": "bafyreicetkpcso3otre6mxnejq6vqzrcnr6ajipdxq3mmtpviqjawpw4wi"
+        },
+        "createdAt": "2026-09-18T12:00:00.000Z"
+      },
+      "isRead": false,
+      "indexedAt": "2026-09-18T12:00:01.000Z"
+    },
+    {
+      "uri": "at://did:plc:bob22/app.bsky.feed.post/3knotify",
+      "cid": "bafyreigmu5hzzh44mwggerxyg37xk6ezt25zato2xzgmg6obrrzpdxvkda",
+      "author": {
+        "did": "did:plc:bob22",
+        "handle": "bob.two.example",
+        "displayName": "Bob Jones"
+      },
+      "reason": "reply",
+      "reasonSubject": "at://did:plc:alice1/app.bsky.feed.post/3kfirst",
+      "record": {
+        "$type": "app.bsky.feed.post",
+        "text": "A reply that notifies.",
+        "createdAt": "2026-09-18T11:45:00.000Z",
+        "reply": {
+          "root": {
+            "uri": "at://did:plc:alice1/app.bsky.feed.post/3kfirst",
+            "cid": "bafyreicetkpcso3otre6mxnejq6vqzrcnr6ajipdxq3mmtpviqjawpw4wi"
+          },
+          "parent": {
+            "uri": "at://did:plc:alice1/app.bsky.feed.post/3kfirst",
+            "cid": "bafyreicetkpcso3otre6mxnejq6vqzrcnr6ajipdxq3mmtpviqjawpw4wi"
+          }
+        }
+      },
+      "isRead": false,
+      "indexedAt": "2026-09-18T11:45:01.000Z"
+    }
+  ]
+}
