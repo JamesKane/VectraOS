@@ -576,9 +576,11 @@ the documents it points at.
    A chat is a thread, the same messages under the other address or
    the group id. SecureJoin verifies a contact between two of these on
    a spool of files, sealed, with its control. Chatmail is an account
-   in one request, through `webfs`. Next: IDLE, and the handshake over
-   the servers on it, which finishes step 3. Then step 4's two
-   networks.
+   in one request, through `webfs`. IDLE keeps a session with the
+   server and takes each message as it lands, so `event` answers as it
+   does, and the handshake runs over the servers on it, a relay and a
+   mailbox server each on the bench. **Step 3 is complete.** Next: step
+   4's two networks.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
@@ -966,6 +968,25 @@ at address `0x4a` in `sched::unpark`, under `mutex_unlock` in
 `wire_submit`, under `chan_close`. The self-test was done and `memfs` had
 just been typed at the shell. A waiter record with no thread on it is the
 shape. Not chased.
+
+A fourth, seen in two of four amd64 boots on 20 September 2026 and
+not before: the tool script's `kill` check, `sleep 100 & kill $apid;
+wait $apid`. Once the kernel's run of the script never came back, with
+the backquote's `rc` and its `sleep` left standing, Blocked and unnoted,
+so the kill written to `/proc/N/ctl` never ended the sleep. Once the
+shell's own run after boot got an empty `$status` instead of `sys:
+killed`. `&` answers as soon as the child is forked, and the child is
+still `rc` until its exec, so a kill that lands during the exec is the
+shape to look at first: one that is dropped with the old address space
+gives the hang, and one that ends the child before it is `sleep` gives
+the empty status. Nothing under `cmd/kill`, `cmd/sleep`, `apps/rc` or
+the note path changed in the weeks before. Not chased.
+
+A fifth, the same day, in four of twelve amd64 boots: `verify_workbench`'s
+`the kernel mounts the notice service`, `srv.mount` of `/srv/wb` at `/mnt`
+refused once the server has posted. Seen on the tree before the day's
+change and after it, alone each time, with every other check of the boot
+held. Not chased.
 
 And one that is not a one-off: on riscv64 alone, three boots in seven end
 the suite's heap bracket three objects short, `leaked 3`, with every check
