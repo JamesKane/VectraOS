@@ -85,7 +85,7 @@ NODE_CTL :: i32(1)
 NODE_RPC :: i32(2)
 FRAME :: 1200
 
-MAX_KEYS :: 8
+MAX_KEYS :: 32 // Noise, pass, oauth and dpop keys each; a session on every network needs a few
 MAX_PGP :: 4
 NAME_MAX :: 32
 

@@ -118,11 +118,14 @@ serve_one :: proc(lfd: i64, served: string) {
 		}
 	}
 	post := got >= 5 && string(req[:5]) == "POST "
-	if !post && (got < 4 || string(req[:4]) != "GET ") {
-		fail("not a GET or a POST")
+	put_ := got >= 4 && string(req[:4]) == "PUT "
+	if !post && !put_ && (got < 4 || string(req[:4]) != "GET ") {
+		fail("not a GET, a POST or a PUT")
 	}
+	// A PUT is a POST here: a body by its length, answered by its path.
+	post = post || put_
 	// The path is the second word of the request line.
-	text := string(req[post ? 5 : 4:got])
+	text := string(req[put_ ? 4 : post ? 5 : 4:got])
 	sp := 0
 	for sp < len(text) && text[sp] != ' ' {
 		sp += 1
@@ -156,6 +159,18 @@ serve_one :: proc(lfd: i64, served: string) {
 	libuser.eprint("websrv: ", post ? "POST " : "GET ", rpath, "\n")
 	// A bearer token in the request, for the instance's paths.
 	bearer := header_value(text, "authorization")
+	// A room's event put: its path names the room and the event type.
+	if post && libodin.has_prefix(rpath, "/_matrix/client/v3/rooms/") && libodin.contains(rpath, "/send/m.room.message/") {
+		if bearer == "Bearer syt-1" && libodin.contains(body, "\"msgtype\": \"m.text\"") {
+			ok = say_json(dfd, 200, "{\"event_id\": \"$sent1\"}\n")
+		} else {
+			ok = say_json(dfd, 401, "{\"errcode\": \"M_UNKNOWN_TOKEN\"}\n")
+		}
+		if !ok {
+			fail("write the reply")
+		}
+		return
+	}
 	switch rpath {
 	case "/api/v1/apps":
 		// A Mastodon instance registering a client: the id and the secret
@@ -261,6 +276,25 @@ serve_one :: proc(lfd: i64, served: string) {
 			ok = say_json(dfd, 200, "{\"blob\": {\"$type\": \"blob\", \"ref\": {\"$link\": \"bafkreiblobdotpngblobdotpngblobdotpngblobdotpngblobdotpngblobq\"}, \"mimeType\": \"image/png\", \"size\": 69}}\n")
 		} else {
 			ok = say_json(dfd, 401, "{\"error\": \"not a blob this server takes\"}\n")
+		}
+	case "/_matrix/client/v3/login":
+		// A homeserver's login: one user and password, a token and a device.
+		if post && libodin.contains(body, "\"user\": \"glenda\"") && libodin.contains(body, "\"password\": \"hunter2\"") {
+			ok = say_json(dfd, 200, "{\"user_id\": \"@glenda:one.example\", \"access_token\": \"syt-1\", \"device_id\": \"VECTRA1\"}\n")
+		} else {
+			ok = say_json(dfd, 403, "{\"errcode\": \"M_FORBIDDEN\", \"error\": \"Invalid password\"}\n")
+		}
+	case "/_matrix/client/v3/sync":
+		// The saved sync, for the token.
+		if bearer == "Bearer syt-1" {
+			sy, sok := libuser.read_file("/lib/tests/sync.json", context.allocator)
+			if !sok {
+				fail("read the saved sync")
+			}
+			ok = say_json(dfd, 200, string(sy))
+			delete(sy)
+		} else {
+			ok = say_json(dfd, 401, "{\"errcode\": \"M_UNKNOWN_TOKEN\"}\n")
 		}
 	case "/api/v1/statuses":
 		// A status posted: the form's fields, answered as the status made.

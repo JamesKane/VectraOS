@@ -92,6 +92,8 @@ ROOT_NODES := [?]Static_Node {
 	// the fediverse and the AT network, each its conversations.
 	{name = "fedi", parent = 6, dir = true},
 	{name = "at", parent = 6, dir = true},
+	// Where chat is mounted, `docs/WEB.md` section 8: a person's rooms.
+	{name = "matrix", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

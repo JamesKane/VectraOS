@@ -1,0 +1,140 @@
+{
+ "next_batch": "s_2",
+ "rooms": {
+  "join": {
+   "!vectra:one.example": {
+    "state": {
+     "events": [
+      {
+       "type": "m.room.name",
+       "state_key": "",
+       "sender": "@glenda:one.example",
+       "content": {
+        "name": "vectra"
+       }
+      },
+      {
+       "type": "m.room.member",
+       "state_key": "@glenda:one.example",
+       "sender": "@glenda:one.example",
+       "content": {
+        "membership": "join",
+        "displayname": "Glenda"
+       }
+      },
+      {
+       "type": "m.room.member",
+       "state_key": "@bob:two.example",
+       "sender": "@bob:two.example",
+       "content": {
+        "membership": "join",
+        "displayname": "Bob Jones"
+       }
+      }
+     ]
+    },
+    "timeline": {
+     "events": [
+      {
+       "type": "m.room.message",
+       "event_id": "$e1",
+       "sender": "@glenda:one.example",
+       "origin_server_ts": 1789740000000,
+       "content": {
+        "msgtype": "m.text",
+        "body": "Hello, room."
+       }
+      },
+      {
+       "type": "m.room.message",
+       "event_id": "$e2",
+       "sender": "@bob:two.example",
+       "origin_server_ts": 1789741800000,
+       "content": {
+        "msgtype": "m.text",
+        "body": "> <@glenda:one.example> Hello, room.\n\nA reply in the room.",
+        "format": "org.matrix.custom.html",
+        "formatted_body": "<mx-reply><blockquote>Hello, room.</blockquote></mx-reply>A reply in the room.",
+        "m.relates_to": {
+         "m.in_reply_to": {
+          "event_id": "$e1"
+         }
+        }
+       }
+      },
+      {
+       "type": "m.room.message",
+       "event_id": "$e3",
+       "sender": "@bob:two.example",
+       "origin_server_ts": 1789743600000,
+       "content": {
+        "msgtype": "m.image",
+        "body": "pic.png",
+        "url": "mxc://one.example/abc123",
+        "info": {
+         "mimetype": "image/png"
+        }
+       }
+      }
+     ],
+     "prev_batch": "p_1",
+     "limited": false
+    }
+   },
+   "!plain:one.example": {
+    "state": {
+     "events": [
+      {
+       "type": "m.room.member",
+       "state_key": "@carol:one.example",
+       "sender": "@carol:one.example",
+       "content": {
+        "membership": "join"
+       }
+      }
+     ]
+    },
+    "timeline": {
+     "events": [
+      {
+       "type": "m.room.message",
+       "event_id": "$e4",
+       "sender": "@carol:one.example",
+       "origin_server_ts": 1789740900000,
+       "content": {
+        "msgtype": "m.text",
+        "body": "In the unnamed room."
+       }
+      }
+     ],
+     "prev_batch": "p_2",
+     "limited": false
+    }
+   }
+  },
+  "invite": {
+   "!secret:two.example": {
+    "invite_state": {
+     "events": [
+      {
+       "type": "m.room.name",
+       "state_key": "",
+       "sender": "@bob:two.example",
+       "content": {
+        "name": "secret"
+       }
+      },
+      {
+       "type": "m.room.member",
+       "state_key": "@glenda:one.example",
+       "sender": "@bob:two.example",
+       "content": {
+        "membership": "invite"
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

@@ -643,6 +643,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_feedfs(&r)
 	verify_fedifs(&r)
 	verify_atfs(&r)
+	verify_matrixfs(&r)
 	verify_netfs(&r)
 	verify_cryptotest(&r)
 	verify_pgptest(&r)
@@ -10952,6 +10953,67 @@ verify_atfs :: proc(r: ^Result) {
 }
 
 /*
+verify_matrixfs runs `servers/matrixfs` on a saved sync, docs/WEB.md
+section 8's "a saved sync through a pipe becomes rooms of the right
+shape". Two joined rooms land as two conversations, one named by its
+state and one by its id made plain, their message events in time order
+with the sender, the server's time, the body with the reply fallback
+off, an image's media as a link, and a reply resolved to the event it
+answers; and an invite is a line in notify from the inviter, the room's
+name its body.
+*/
+@(private = "file")
+verify_matrixfs :: proc(r: ^Result) {
+	p := start_path(r, "/bin/matrixfs", "the loader starts matrixfs, rooms as conversations")
+	if p == nil {
+		return
+	}
+	if !check(r, await_posted("matrix"), "which posts /srv/matrix") || !check(r, srv.mount(vfs.boot_namespace, "/srv/matrix", "/mnt/matrix") == vfs.OK, "and the kernel mounts it at /mnt/matrix") {
+		finish(r, p, "and matrixfs is taken down")
+		return
+	}
+	E1 :: "000000006aad43e0.89750ae9d56358c1"
+	E2 :: "000000006aad4ae8.7ffaf27067059faf"
+	E3 :: "000000006aad51f0.5f4933fb2d4f4bdd"
+	E4 :: "000000006aad4764.af05bd90f8d75c6b"
+	INV :: "0000000000000000.31378611cdb298ad"
+	check(r, net_file_write("/mnt/matrix/ctl", "sync /lib/tests/sync.json"), "a saved sync's path written to ctl is taken, and the write returns when the rooms are in")
+	check(r, !net_file_write("/mnt/matrix/ctl", "sync /lib/tests/home.json"), "a file that is not a sync is refused")
+	lbuf: [2048]u8
+	listing := dir_names("/mnt/matrix", lbuf[:])
+	check(r, libodin.contains(listing, " vectra") && libodin.contains(listing, " plain_one.example") && count_words(listing) == 8, "the network lists its files, notify, and the two rooms: one by its name, one by its id made plain")
+	check(r, dir_names("/mnt/matrix/vectra", lbuf[:]) == E1 + " " + E2 + " " + E3, "a room lists its message events by id, time order, the event id's hash the name")
+	text: [2048]u8
+	n := web_read_file("/mnt/matrix/vectra/" + E1 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "@glenda:one.example", "from is the sender's user id")
+	n = web_read_file("/mnt/matrix/vectra/" + E1 + "/date", text[:])
+	check(r, string(text[:max(n, 0)]) == "1789740000 2026-09-18T14:00:00.000Z", "date is the server's time, its milliseconds made seconds")
+	n = web_read_file("/mnt/matrix/vectra/" + E1 + "/body", text[:])
+	check(r, string(text[:max(n, 0)]) == "Hello, room.", "body is the event's text")
+	n = web_read_file("/mnt/matrix/vectra/" + E2 + "/body", text[:])
+	check(r, string(text[:max(n, 0)]) == "A reply in the room.", "a reply's body is its formatted body with the quoted reply taken off")
+	n = web_read_file("/mnt/matrix/vectra/" + E2 + "/replyto", text[:])
+	check(r, string(text[:max(n, 0)]) == E1, "and replyto names the event it answers")
+	check(r, dir_names("/mnt/matrix/vectra/" + E1 + "/replies", lbuf[:]) == E2, "so replies under the first lists it")
+	n = web_read_file("/mnt/matrix/vectra/" + E3 + "/links", text[:])
+	check(r, string(text[:max(n, 0)]) == "https://one.example/_matrix/media/v3/download/one.example/abc123", "an image's media is a link, the mxc URI made a download URL")
+	n = web_read_file("/mnt/matrix/vectra/" + E3 + "/raw", text[:], raw = true)
+	check(r, n > 0 && text[0] == '{' && libodin.contains(string(text[:n]), "\"event_id\": \"$e3\"") && libodin.contains(string(text[:n]), "mxc://one.example/abc123"), "raw is the event's own bytes out of the sync")
+	check(r, dir_names("/mnt/matrix/plain_one.example", lbuf[:]) == E4, "the unnamed room holds its one event")
+	check(r, dir_names("/mnt/matrix/notify", lbuf[:]) == INV, "an invite is a line in notify")
+	n = web_read_file("/mnt/matrix/notify/" + INV + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "@bob:two.example", "from the inviter")
+	n = web_read_file("/mnt/matrix/notify/" + INV + "/body", text[:])
+	check(r, string(text[:max(n, 0)]) == "secret", "with the room's name as its body")
+	n = web_read_file("/mnt/matrix/ctl", text[:])
+	check(r, n > 0 && libodin.contains(string(text[:n]), "room vectra !vectra:one.example"), "and ctl says each room's name and id")
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/matrix") == vfs.OK, "the mount of matrixfs comes down")
+	check(r, srv.remove("matrix") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(p, PATIENCE * 5), "and matrixfs, its pipe gone, exits")
+	finish(r, p, "and is taken down")
+}
+
+/*
 verify_feedfs runs `servers/feedfs` on two saved feeds, the offline proof of
 `docs/WEB.md` section 4's shape. A feed's path written to `ctl` makes a
 conversation of its entries, each a directory of files, in time order by
@@ -11705,6 +11767,83 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 }
 
 /*
+verify_matrix_login runs webfs again and a scripted homeserver on this
+machine's stack, and logs matrixfs in: the password from factotum, the
+token back in factotum, a sync with it, and a message written to new
+put in a room, docs/WEB.md section 8's "a message written to new comes
+out of a scripted server" before the seal.
+*/
+@(private = "file")
+verify_matrix_login :: proc(r: ^Result, host: string) {
+	wnames := [?]string{"webfs", "-s", "/usr/glenda/lib/web"}
+	wargv := new(Argv)
+	_ = argv_from(wargv, wnames[:])
+	pw := start_path(r, "/bin/webfs", "webfs starts again, for the homeserver's requests", wargv)
+	if pw == nil {
+		return
+	}
+	if !check(r, await_posted("web"), "and posts /srv/web") || !check(r, srv.mount(vfs.boot_namespace, "/srv/web", "/mnt/web") == vfs.OK, "which the kernel mounts") {
+		finish(r, pw, "and webfs is taken down")
+		return
+	}
+	sargs := [?]string{"websrv", "8081", "4"}
+	sargv := new(Argv)
+	_ = argv_from(sargv, sargs[:])
+	hs := start_path(r, "/bin/websrv", "a scripted homeserver starts, four requests to serve", sargv)
+	pm := start_path(r, "/bin/matrixfs", "and matrixfs starts again")
+	if hs != nil && pm != nil {
+		sync.delay(PATIENCE)
+		line_buf: [512]u8
+		text: [2048]u8
+		base_buf: [128]u8
+		base := libodin_cat(base_buf[:], "http://", host, ":8081")
+		if check(r, await_posted("matrix"), "which posts /srv/matrix") && check(r, srv.mount(vfs.boot_namespace, "/srv/matrix", "/mnt/matrix") == vfs.OK, "and the kernel mounts it at /mnt/matrix") {
+			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=glenda server=", host, ":8081 !password=wrong")), "a password goes to factotum as a pass key, a wrong one first")
+			check(r, !net_file_write("/mnt/matrix/ctl", libodin_cat(line_buf[:], "login ", base, " glenda")), "and the homeserver refuses the login, and the write says so")
+			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=glenda server=", host, ":8081 !password=hunter2")), "then the right one")
+			check(r, net_file_write("/mnt/matrix/ctl", libodin_cat(line_buf[:], "login ", base, " glenda")), "and login gets a token, the write returning once it is in factotum")
+			n := web_read_file("/mnt/matrix/me", text[:])
+			check(r, string(text[:max(n, 0)]) == "@glenda:one.example\ndevice VECTRA1", "and me is the user id and the device id the homeserver named")
+			n = web_read_file("/mnt/factotum/ctl", text[:])
+			got := string(text[:max(n, 0)])
+			check(r, n > 0 && libodin.contains(got, libodin_cat(line_buf[:], "key proto=oauth user=@glenda:one.example server=", host, ":8081")) && !libodin.contains(got, "syt-1"), "and factotum lists the token's key under the user id and the host, and keeps the token")
+			E1 :: "000000006aad43e0.89750ae9d56358c1"
+			check(r, net_file_write("/mnt/matrix/ctl", "sync"), "sync takes the account's rooms with the token")
+			lbuf: [2048]u8
+			listed := dir_names("/mnt/matrix/vectra", lbuf[:])
+			check(r, count_words(listed) == 3 && libodin.contains(listed, E1), "and the room the homeserver holds is the conversation")
+			before_buf: [2048]u8
+			before := dir_names("/mnt/matrix/vectra", before_buf[:])
+			check(r, net_file_write("/mnt/matrix/new", "to: vectra\nreplyto: " + E1 + "\n\nHello from Vectra.\n"), "a message written to new, to the room by name, is put with the token, and the write returns when the homeserver has named the event")
+			after := dir_names("/mnt/matrix/vectra", lbuf[:])
+			fresh := new_word(before, after)
+			check(r, count_words(after) == 4 && len(fresh) > 0, "and the event is in the room under the id the homeserver gave, dated now")
+			n = web_read_file(libodin_cat(line_buf[:], "/mnt/matrix/vectra/", fresh, "/body"), text[:])
+			check(r, string(text[:max(n, 0)]) == "Hello from Vectra.", "with the text written")
+			n = web_read_file(libodin_cat(line_buf[:], "/mnt/matrix/vectra/", fresh, "/replyto"), text[:])
+			check(r, string(text[:max(n, 0)]) == E1, "answering the event replyto named")
+			n = web_read_file(libodin_cat(line_buf[:], "/mnt/matrix/vectra/", fresh, "/raw"), text[:], raw = true)
+			check(r, n > 0 && libodin.contains(string(text[:n]), "\"m.in_reply_to\": {\"event_id\": \"$e1\"}"), "and the event kept relates to it by the event id")
+			check(r, !net_file_write("/mnt/matrix/new", "to: nowhere\n\nx"), "a message to a room this account is not in is refused before any wire")
+			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/matrix") == vfs.OK, "the mount of matrixfs comes down")
+		}
+		check(r, srv.remove("matrix") == vfs.OK, "and the kernel takes its name away")
+		check(r, wait(pm, PATIENCE * 5), "and matrixfs exits")
+		finish(r, pm, "and is taken down")
+		check(r, wait(hs, PATIENCE * 5), "and the homeserver, its four requests served, exits")
+		check(r, string(hs.exit.text[:hs.exit.text_len]) == "ok", "with ok")
+		finish(r, hs, "and is taken down")
+	} else {
+		finish(r, pm, "matrixfs is taken down")
+		finish(r, hs, "and the homeserver")
+	}
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
+	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	finish(r, pw, "and is taken down")
+}
+
+/*
 verify_chatmail runs webfs again and a scripted relay on this machine's
 stack, and gives mailfs a dcaccount: URL. One request later the address
 is the account, the password is in factotum under the address's host, and
@@ -12072,6 +12211,10 @@ verify_mailfs :: proc(r: ^Result) {
 				// The other way in on AT: OAuth with PAR, PKCE and DPoP, the
 				// token bound to a key factotum holds.
 				verify_at_oauth(r, host)
+
+				// Chat: a login at a scripted homeserver, a sync with the
+				// token, and a message put in a room.
+				verify_matrix_login(r, host)
 
 				// The wrong password: the server refuses the login, and the fetch says so.
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")

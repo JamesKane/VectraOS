@@ -1123,6 +1123,21 @@ lines. Needs step 2 and `docs/FLEET.md` step 2.
 Boot line: the Olm and Megolm vectors, a saved sync, and a sealed
 message out.
 
+**Where it stands.** `servers/matrixfs` is the first cut, on the
+client-server API and no seal yet. A sync is the source: a saved one's
+path, or the account's with its token. Each joined room is a
+conversation, named by its state or by its id made plain, its message
+events messages with the sender, the server's time, the body with the
+reply fallback taken off or the formatted body as HTML, an image's
+media as a link, and a reply resolved by the event id's hash; an
+invite is a line in `notify/`. `login BASE USER` sends the password
+`factotum` holds and keeps the token there, the networks' way. A
+message written to `new` names a room and is put with the token, and
+the event the homeserver names lands in the room. The boot line reads
+`tests/sync.json` offline, and logs in, syncs and sends against the
+scripted server. Not yet: the seal, `join`, `leave`, `invite`,
+`members`, `typing`, and the long poll behind `event`.
+
 ### Step 6: publishing, and the ghost
 
 `cmd/httpd`, `cmd/gemd`, `cmd/mkfeed`, `cmd/webmention`, `/mnt/mention`,
