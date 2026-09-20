@@ -596,10 +596,10 @@ the documents it points at.
    answered. A post written to `new` goes out on both and comes back
    into `home` and the store's `sent/`. **Step 4's boot line is met**:
    two saved timelines bound as one, a record that fails its CID, and
-   a scripted login that ends with a token. What section 7 still names
-   beyond it: OAuth on AT with PAR, PKCE and DPoP, the authorize page
-   through `mothra`, any object by URL or URI, and media on a post.
-   Then step 5's chat on Matrix.
+   a scripted login that ends with a token. Any object by URL and any
+   record by URI are in too. What section 7 still names beyond it:
+   OAuth on AT with PAR, PKCE and DPoP, the authorize page through
+   `mothra`, and media on a post. Then step 5's chat on Matrix.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
