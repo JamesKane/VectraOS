@@ -19,7 +19,12 @@ Msg :: struct {
 	raw:       string, // What the network sent
 	replyto:   string,
 	links:     string, // One per line
-	hash:      [64]u8, // sha256 of `raw`, as hex
+	hash:      [64]u8, // sha256 of `raw`, as hex, unless the network named it
+	hash_len:  int,
+	// Whether the network named the message itself, the way a record's CID
+	// does: `add` then leaves `hash` as the server set it, which may be
+	// empty for a record that failed its check.
+	hash_own:  bool,
 }
 
 Conv :: struct {

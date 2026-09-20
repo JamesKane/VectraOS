@@ -205,9 +205,12 @@ from its raw text, so a translator need not know sha256.
 */
 add :: proc(net: ^Net, c: ^Conv, m: Msg) {
 	m := m
-	digest: [32]u8
-	hash.hash_bytes_to_buffer(.SHA256, transmute([]u8)m.raw, digest[:])
-	hex_of(digest[:], m.hash[:])
+	if !m.hash_own {
+		digest: [32]u8
+		hash.hash_bytes_to_buffer(.SHA256, transmute([]u8)m.raw, digest[:])
+		hex_of(digest[:], m.hash[:])
+		m.hash_len = 64
+	}
 	at := len(c.msgs)
 	for i in 0 ..< len(c.msgs) {
 		if c.msgs[i].id == m.id {
@@ -564,7 +567,7 @@ text_of :: proc(net: ^Net, node: i32) -> (text: []u8, found: bool) {
 		case .Raw:
 			return transmute([]u8)m.raw, true
 		case .Hash:
-			return line_of(net, string(m.hash[:])), true
+			return line_of(net, string(m.hash[:m.hash_len])), true
 		case .Replyto:
 			return line_of(net, m.replyto), true
 		case .Links:

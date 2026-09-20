@@ -49,7 +49,7 @@ read_msg :: proc(dir: string, allocator := context.allocator) -> (m: Msg, ok: bo
 	m.links = read_whole(dir, "links")
 	h := read_line(dir, "hash")
 	defer delete(h)
-	copy(m.hash[:], h)
+	m.hash_len = copy(m.hash[:], h)
 	return m, true
 }
 

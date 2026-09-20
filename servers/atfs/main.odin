@@ -23,9 +23,15 @@ the web and its images as links, and the record its reply names as
 `replyto`. A post's name is its URI, which is no file name, so the id
 carries sixteen hex digits of the URI's hash, and a reply resolves by
 the same hash. `raw` is the feed item as the server sent it: the post,
-and the reply and the reason beside it. Not yet: the login, the
-account's own timelines and notifications, a post written to `new`,
-a record by URI, and the CID a record checks against.
+and the reply and the reason beside it.
+
+A record checks against its hash. The server names each post by its
+CID, the hash of the record's DAG-CBOR, and `sys/libcid` makes the
+bytes again from the JSON and hashes them. A record that checks is
+served with its CID as `hash`, the network's own name for it. One that
+does not is served with `hash` empty, and a line in `notify/` names
+it. Not yet: the login, the account's own timelines and notifications,
+a post written to `new`, and a record by URI.
 */
 package atfs
 
@@ -33,6 +39,7 @@ import "base:runtime"
 import "core:encoding/json"
 import "vsys:abi"
 import "vsys:lib9p"
+import "vsys:libcid"
 import "vsys:libmsg"
 import "vsys:libthread"
 import "vsys:libuser"
@@ -200,7 +207,8 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 // item_message makes the message of one feed item's JSON, `{post, reply,
 // reason}`. False for an item with no post, or one with no URI.
 item_message :: proc(raw: string) -> (m: libmsg.Msg, ok: bool) {
-	v, err := json.parse_string(raw, .JSON)
+	// The integers kept as integers, or a size would hash as a float.
+	v, err := json.parse_string(raw, .JSON, true)
 	if err != .None {
 		json.destroy_value(v)
 		return m, false
@@ -258,7 +266,33 @@ item_message :: proc(raw: string) -> (m: libmsg.Msg, ok: bool) {
 	}
 	m.links = string(links[:])
 	m.raw = clone(raw)
+	// The record against its name: the CID the server gave is the hash
+	// of the record's DAG-CBOR, or the record is not what it says.
+	m.hash_own = true
+	cid := libmsg.str_of(post, "cid")
+	got, made := libcid.value_cid(record, m.hash[:])
+	if made && got == cid {
+		m.hash_len = len(got)
+	} else {
+		m.hash_len = 0
+		note_failed(uri, m.date, m.date_text)
+	}
 	return m, true
+}
+
+// note_failed puts a line in notify/ for a record that failed its check:
+// the URI as the body, under the post's own id.
+note_failed :: proc(uri: string, date: i64, date_text: string) {
+	n: libmsg.Msg
+	idbuf: [128]u8
+	n.id = clone(libmsg.make_id(date, uri, idbuf[:]))
+	n.from = clone("atfs")
+	n.date = date
+	n.date_text = clone(date_text)
+	n.subject = clone("a record failed its check")
+	n.body = clone(uri)
+	n.type = clone("text/plain")
+	libmsg.add(&net, libmsg.conv(&net, "notify"), n)
 }
 
 // rkey_of answers the last element of an AT URI, the record's key.

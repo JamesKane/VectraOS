@@ -2,6 +2,20 @@
   "feed": [
     {
       "post": {
+        "uri": "at://did:plc:dave4/app.bsky.feed.post/3kbent",
+        "cid": "bafyreia7caqxmhcbvfn43wssh4xaomq3qeqges4urxaqvxwjdwxskzxega",
+        "author": {"did": "did:plc:dave4", "handle": "dave.two.example", "displayName": "Dave"},
+        "record": {
+          "$type": "app.bsky.feed.post",
+          "text": "Bent on AT, altered after the fact.",
+          "createdAt": "2026-09-18T11:30:00.000Z"
+        },
+        "replyCount": 0,
+        "indexedAt": "2026-09-18T11:30:01.000Z"
+      }
+    },
+    {
+      "post": {
         "uri": "at://did:plc:bob22/app.bsky.feed.post/3kreply",
         "cid": "bafyreidapi6sxqcrxn5mjzyu2bx66u6ylu5bfqdau4ifkxkzebispvdzse",
         "author": {"did": "did:plc:bob22", "handle": "bob.two.example", "displayName": "Bob Jones"},

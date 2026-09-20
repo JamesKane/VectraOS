@@ -10797,13 +10797,15 @@ verify_fedifs :: proc(r: ^Result) {
 verify_atfs runs `servers/atfs` on a saved AT timeline, a `getTimeline`
 answer, `docs/WEB.md` section 7's other half of "a saved timeline from
 each network through a pipe becomes a directory of the right shape".
-Three posts land as three messages: the author's name and handle as
+Four posts land as four messages: the author's name and handle as
 from, the record's createdAt as the date, its text as a plain body, its
 page on the web and its image as links, and the reply's parent URI
-resolved to the first post's id through the URI's hash. Then the two
-networks' timelines bind after one another under /mnt/all and list as
-one, six posts in time order: docs/WEB.md step 4's "two saved timelines
-bound as one".
+resolved to the first post's id through the URI's hash. A record's CID
+is made again from its JSON through libcid and served as hash, and one
+altered after its CID was made reads empty with a line in notify. Then
+the two networks' timelines bind after one another under /mnt/all and
+list as one: docs/WEB.md step 4's "two saved timelines bound as one, a
+record that fails its CID".
 */
 @(private = "file")
 verify_atfs :: proc(r: ^Result) {
@@ -10818,10 +10820,11 @@ verify_atfs :: proc(r: ^Result) {
 	AT1 :: "000000006aad0f24.cdaa9ac7e2c76a9b"
 	AT2 :: "000000006aad162c.9bab1ce9906bfd01"
 	AT3 :: "000000006aad1d34.1b7ea8dcfa0c72aa"
+	AT4 :: "000000006aad20b8.41f0a883e9334b00"
 	check(r, net_file_write("/mnt/at/ctl", "fetch /lib/tests/timeline.json"), "a saved timeline's path written to ctl is fetched, and the write returns when it is in")
 	check(r, !net_file_write("/mnt/at/ctl", "fetch /lib/tests/home.json"), "a file that is not an AT timeline, the fediverse's, is refused")
 	lbuf: [2048]u8
-	check(r, dir_names("/mnt/at/timeline", lbuf[:]) == AT1 + " " + AT2 + " " + AT3, "the timeline lists its posts by id, time order, sixteen hex digits of the URI's hash as the name")
+	check(r, dir_names("/mnt/at/timeline", lbuf[:]) == AT1 + " " + AT2 + " " + AT3 + " " + AT4, "the timeline lists its posts by id, time order, sixteen hex digits of the URI's hash as the name")
 	text: [2048]u8
 	n := web_read_file("/mnt/at/timeline/" + AT1 + "/from", text[:])
 	check(r, string(text[:max(n, 0)]) == "Alice <alice.one.example>", "from is the author's name and handle")
@@ -10839,6 +10842,16 @@ verify_atfs :: proc(r: ^Result) {
 	n = web_read_file("/mnt/at/timeline/" + AT3 + "/raw", text[:], raw = true)
 	check(r, n > 0 && text[0] == '{' && libodin.contains(string(text[:n]), "\"uri\": \"at://did:plc:bob22/app.bsky.feed.post/3kreply\""), "raw is the feed item as the server sent it")
 
+	// A record checks against its hash: the CID the server gave is the
+	// hash of the record's DAG-CBOR made again from the JSON.
+	n = web_read_file("/mnt/at/timeline/" + AT1 + "/hash", text[:])
+	check(r, string(text[:max(n, 0)]) == "bafyreicetkpcso3otre6mxnejq6vqzrcnr6ajipdxq3mmtpviqjawpw4wi", "hash is the record's CID, the network's own name for it, since the record's DAG-CBOR hashes to it")
+	n = web_read_file("/mnt/at/timeline/" + AT4 + "/hash", text[:])
+	check(r, n == 0, "and a record whose text was altered after its CID was made reads an empty hash")
+	check(r, dir_names("/mnt/at/notify", lbuf[:]) == AT4, "with a line in notify under its id")
+	n = web_read_file("/mnt/at/notify/" + AT4 + "/body", text[:])
+	check(r, string(text[:max(n, 0)]) == "at://did:plc:dave4/app.bsky.feed.post/3kbent", "that names the record by its URI")
+
 	// The union is the timeline: both networks' under one name.
 	ID1 :: "000000006aad0ba0.113000000000000001"
 	ID2 :: "000000006aad12a8.113000000000000002"
@@ -10852,7 +10865,7 @@ verify_atfs :: proc(r: ^Result) {
 			bound = vfs.bind_path(vfs.boot_namespace, "/mnt/at/timeline", "/mnt/all", .After) == vfs.OK && bound
 			check(r, bound, "the two timelines bind after one another under /mnt/all")
 			all := dir_names("/mnt/all", lbuf[:])
-			check(r, count_words(all) == 6 && libodin.contains(all, ID1) && libodin.contains(all, AT1) && libodin.contains(all, ID2) && libodin.contains(all, AT2) && libodin.contains(all, ID3) && libodin.contains(all, AT3), "and the union lists all six posts as one timeline, each network's in time order and a sort of the names the whole")
+			check(r, count_words(all) == 7 && libodin.contains(all, ID1) && libodin.contains(all, AT1) && libodin.contains(all, ID2) && libodin.contains(all, AT2) && libodin.contains(all, ID3) && libodin.contains(all, AT3) && libodin.contains(all, AT4), "and the union lists all seven posts as one timeline, each network's in time order and a sort of the names the whole")
 			n = web_read_file("/mnt/all/" + AT2 + "/body", text[:])
 			check(r, string(text[:max(n, 0)]) == "A picture on AT.", "which reads either network's post by its id alone")
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/all") == vfs.OK, "the union comes apart")

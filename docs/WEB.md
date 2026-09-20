@@ -1012,10 +1012,18 @@ carries the URI's hash and a reply resolves by the same. `raw` is the
 feed item whole. The boot line reads `tests/timeline.json`, and then
 binds the two timelines under `/mnt/all`, where six posts list as one
 in time order. The source reading and the reach into JSON moved into
-`libmsg`, `source.odin` and `json.odin`, for both. Not yet: the login
-on either network, the account's own timelines and notifications, a
-post written to `new`, any object by URL or URI, and the CID a record
-checks against.
+`libmsg`, `source.odin` and `json.odin`, for both.
+
+A record checks against its hash. `sys/libcid` makes a record's
+DAG-CBOR again from its JSON, the keys sorted by length and then by
+their bytes, a link a tag 42 over the CID's bytes, and hashes it into
+a CID of version 1 in base32. `atfs` checks each post's record against
+the CID the server gave, and serves the CID as `hash` when it holds, or
+an empty `hash` and a line in `notify/` when it does not. The boot
+line's fourth post was altered after its CID was made. Not yet: the
+login on either network, the account's own timelines and
+notifications, a post written to `new`, any object by URL or URI, and
+`$bytes` in a record.
 
 ### Step 5: chat
 
