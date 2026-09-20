@@ -591,9 +591,10 @@ the documents it points at.
    `proto=oauth`, and `fetch home` with it. The source reading and the
    reach into JSON live in `libmsg` now, and so is factotum's door.
    The AT login is in too, an app password on `createSession` and the
-   session's token in `factotum`. Next: notifications into `notify/`
-   on both, a post written to `new`, then OAuth on AT with DPoP and
-   the page through `mothra`.
+   session's token in `factotum`. Notifications land in `notify/` on
+   both, and a reply that came back lands under `replies/` of what it
+   answered. Next: a post written to `new` on both, then OAuth on AT
+   with DPoP and the page through `mothra`.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
@@ -994,6 +995,13 @@ shape to look at first: one that is dropped with the old address space
 gives the hang, and one that ends the child before it is `sleep` gives
 the empty status. Nothing under `cmd/kill`, `cmd/sleep`, `apps/rc` or
 the note path changed in the weeks before. Not chased.
+
+A sixth, once in twelve boots that evening: the mail compose window's
+`the typed subject reaches the submission server through new`, with the
+scripted submission server and `mailfs` left standing after it. The
+keys are typed after `await_bar` and one PATIENCE; a boot that ran a
+quarter slower than its neighbours is the one that missed, so the
+window most likely took its keys before its form had focus. Not chased.
 
 A fifth, the same day, in four of twelve amd64 boots: `verify_workbench`'s
 `the kernel mounts the notice service`, `srv.mount` of `/srv/wb` at `/mnt`
