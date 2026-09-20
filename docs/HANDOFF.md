@@ -600,9 +600,10 @@ the documents it points at.
    record by URI are in too, and so is OAuth on AT with PAR, PKCE and
    DPoP, the key in `factotum` under `proto=dpop` and a proof on every
    request, and the authorize page through `mothra`, `atfs` a loopback
-   client that takes the code off the browser's one request. What
-   section 7 still names beyond it: media on a post. Then step 5's
-   chat on Matrix.
+   client that takes the code off the browser's one request. Media on
+   a post is in on both. **Everything section 7 names is in**, but for
+   the token refresh and an image read back as a part directory, which
+   section 4 leaves to mail. Next: step 5's chat on Matrix.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
