@@ -125,8 +125,10 @@ serve_one :: proc(lfd: i64, served: string) {
 	}
 	rpath := text[:sp]
 	// A query rides after the path, and the path is what is answered.
+	query := ""
 	for i in 0 ..< len(rpath) {
 		if rpath[i] == '?' {
+			query = rpath[i + 1:]
 			rpath = rpath[:i]
 			break
 		}
@@ -221,6 +223,20 @@ serve_one :: proc(lfd: i64, served: string) {
 			ok = say_json(dfd, 200, "{\"uri\": \"at://did:plc:alice1/app.bsky.feed.post/3knew\", \"cid\": \"bafyreinewrecordnewrecordnewrecordnewrecordnewrecordnewrecordq\"}\n")
 		} else {
 			ok = say_json(dfd, 401, "{\"error\": \"AuthMissing\"}\n")
+		}
+	case "/objects/note7":
+		// An object in the fediverse, for a client that asks for activity JSON.
+		if header_value(text, "accept") == "application/activity+json" {
+			ok = say_json(dfd, 200, `{"@context": "https://www.w3.org/ns/activitystreams", "id": "https://one.example/users/glenda/statuses/7", "type": "Note", "published": "2026-09-18T13:00:00.000Z", "attributedTo": "https://one.example/users/glenda", "inReplyTo": null, "summary": null, "content": "<p>An object by URL.</p>", "url": "https://one.example/@glenda/7", "to": ["https://www.w3.org/ns/activitystreams#Public"], "attachment": [{"type": "Document", "mediaType": "image/png", "url": "https://one.example/media/7.png", "name": "a picture"}]}` + "\n")
+		} else {
+			ok = say_json(dfd, 406, "{\"error\": \"Not Acceptable\"}\n")
+		}
+	case "/xrpc/com.atproto.repo.getRecord":
+		// A record by its repository, collection and key.
+		if libodin.contains(query, "repo=did:plc:alice1") && libodin.contains(query, "collection=app.bsky.feed.post") && libodin.contains(query, "rkey=3kfirst") {
+			ok = say_json(dfd, 200, `{"uri": "at://did:plc:alice1/app.bsky.feed.post/3kfirst", "cid": "bafyreicetkpcso3otre6mxnejq6vqzrcnr6ajipdxq3mmtpviqjawpw4wi", "value": {"$type": "app.bsky.feed.post", "text": "Hello, AT.", "createdAt": "2026-09-18T10:15:00.000Z"}}` + "\n")
+		} else {
+			ok = say_json(dfd, 400, "{\"error\": \"RecordNotFound\"}\n")
 		}
 	case "/api/v1/timelines/home":
 		// The home timeline, the saved one, for the token and nobody else.

@@ -1049,7 +1049,13 @@ fetch :: proc(f: ^Fetch) {
 	libodin.put_str(&sink, u.path)
 	libodin.put_str(&sink, " HTTP/1.1\r\nHost: ")
 	libodin.put_str(&sink, u.host)
-	libodin.put_str(&sink, "\r\nUser-Agent: vectra-webfs/0\r\nAccept: */*\r\nAccept-Encoding: gzip\r\nConnection: close\r\n")
+	libodin.put_str(&sink, "\r\nUser-Agent: vectra-webfs/0\r\n")
+	// Anything is accepted, unless the conversation's own headers say
+	// what: a client asking for activity JSON must not also say */*.
+	if !extra_has(c, "accept:") {
+		libodin.put_str(&sink, "Accept: */*\r\n")
+	}
+	libodin.put_str(&sink, "Accept-Encoding: gzip\r\nConnection: close\r\n")
 	if !c.cookies_off {
 		jar_header(&sink, u.host, u.path)
 	}
@@ -1744,4 +1750,37 @@ read_chunked :: proc(f: ^Fetch, first: []u8) -> bool {
 			pos = 0
 		}
 	}
+}
+
+// extra_has says whether the conversation's own headers name `name`, lower
+// case with its colon, at the start of a line.
+extra_has :: proc "contextless" (c: ^Conv, name: string) -> bool {
+	extra := string(c.extra[:c.extra_len])
+	at := 0
+	for at < len(extra) {
+		e := at
+		for e < len(extra) && extra[e] != '\n' {
+			e += 1
+		}
+		line := extra[at:e]
+		at = e + 1
+		if len(line) < len(name) {
+			continue
+		}
+		same := true
+		for i in 0 ..< len(name) {
+			ch := line[i]
+			if ch >= 'A' && ch <= 'Z' {
+				ch += 32
+			}
+			if ch != name[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return true
+		}
+	}
+	return false
 }

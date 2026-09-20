@@ -13,8 +13,8 @@ without its suffix. Fetching again refreshes: a status already there is
 replaced by id.
 
     /mnt/fedi/ctl              fetch [name] url-or-path; fetch home; remove name;
-                               fetch notifications [path]; login BASE; code CODE;
-                               account BASE USER
+                               fetch notifications [path]; object [name] url-or-path;
+                               login BASE; code CODE; account BASE USER
     /mnt/fedi/me               the account, once there is one
     /mnt/fedi/new              a status out: subject, replyto, an empty line, the body
     /mnt/fedi/event            `name/id` when a status lands
@@ -41,8 +41,9 @@ a favourite, a boost or a follow is a message from the account that
 did it, its kind the subject, and the status it concerns named by
 `replyto`. A status a notification carries lands in `home` too, so a
 reply is a message under `replies/` of what it answered. A saved
-answer's path is the offline proof. Not yet: any object by URL, and
-an attachment on a status out.
+answer's path is the offline proof. `object.odin` is any object by
+URL, an actor or a note anywhere, as a message. Not yet: an attachment
+on a status out.
 */
 package fedifs
 
@@ -59,7 +60,7 @@ MAX_CONVS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: libmsg.SOURCE_MAX
 
-DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's home timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nremove name          empty a conversation\nlogin base           register with the instance at base, and show the page to approve on\ncode code            trade the code the page showed for a token, kept by factotum\naccount base user    an account whose token factotum holds already\nwrite: new           a status out: subject, replyto lines, an empty line, the body\nread: <name>/<id>    a status: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's home timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nobject name url      fetch any actor or object in the fediverse by its URL into the conversation called name\nremove name          empty a conversation\nlogin base           register with the instance at base, and show the page to approve on\ncode code            trade the code the page showed for a token, kept by factotum\naccount base user    an account whose token factotum holds already\nwrite: new           a status out: subject, replyto lines, an empty line, the body\nread: <name>/<id>    a status: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 // What a conversation was fetched from, by its index among the network's.
 Source :: struct {
@@ -71,6 +72,7 @@ Source :: struct {
 Fetch :: struct {
 	tag:    vectra9.Tag,
 	count:  int, // The write's byte count, answered when it is done
+	object: bool, // One object by URL, not a timeline
 	name:   [NAME_MAX]u8,
 	nlen:   int,
 	source: [SOURCE_MAX]u8,
@@ -116,7 +118,7 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	}
 	verb, rest := word(line)
 	switch verb {
-	case "fetch":
+	case "fetch", "object":
 		a, b := word(rest)
 		name, source := a, b
 		if b == "" {
@@ -132,6 +134,7 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		f := new(Fetch)
 		f.tag = tag
 		f.count = len(text)
+		f.object = verb == "object"
 		f.nlen = copy(f.name[:], name)
 		f.slen = copy(f.source[:], source)
 		if libthread.threadcreate(fetch_thread, f, 256 * 1024) < 0 {
@@ -198,6 +201,9 @@ fetch_thread :: proc "contextless" (arg: rawptr) {
 // fetch reads the source, makes a message of each status, and puts them
 // in their conversation. EINVAL for a source that is not a timeline.
 fetch :: proc(f: ^Fetch) -> vectra9.Errno {
+	if f.object {
+		return fetch_object(f)
+	}
 	source := string(f.source[:f.slen])
 	name := string(f.name[:f.nlen])
 	text: []u8

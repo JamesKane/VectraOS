@@ -1069,9 +1069,18 @@ as it made it or the record under the URI and CID it named, and under
 person owns before the network has it. The boot line posts a reply on
 each against the scripted server, which echoes the status and names
 the record, and reads both back from `home`, `replies/` and the store.
-Not yet: OAuth on AT with PAR, PKCE and DPoP, the page through
-`mothra`, any object by URL or URI, an attachment on a post out, and
-`$bytes` in a record.
+
+Any object by URL or URI is in. `object [name] url` on `fedifs` is a
+GET with `Accept: application/activity+json`, and the actor or the
+object answered is a message: who it is attributed to, its content,
+its page and its attachments, and what it replies to by the URL's
+hash. `record [name] uri` on `atfs` is `getRecord` with the
+repository, the collection and the key off the URI, the value a post
+whose author is the repository, checked against the CID beside it.
+The boot line reads a saved note and a saved record offline, and
+fetches both through the scripted server. Not yet: OAuth on AT with
+PAR, PKCE and DPoP, the page through `mothra`, an attachment on a
+post out, and `$bytes` in a record.
 
 ### Step 5: chat
 

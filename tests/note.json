@@ -1,0 +1,22 @@
+{
+  "@context": "https://www.w3.org/ns/activitystreams",
+  "id": "https://one.example/users/glenda/statuses/7",
+  "type": "Note",
+  "published": "2026-09-18T13:00:00.000Z",
+  "attributedTo": "https://one.example/users/glenda",
+  "inReplyTo": null,
+  "summary": null,
+  "content": "<p>An object by URL.</p>",
+  "url": "https://one.example/@glenda/7",
+  "to": [
+    "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "attachment": [
+    {
+      "type": "Document",
+      "mediaType": "image/png",
+      "url": "https://one.example/media/7.png",
+      "name": "a picture"
+    }
+  ]
+}

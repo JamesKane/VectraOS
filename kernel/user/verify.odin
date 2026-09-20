@@ -10814,6 +10814,17 @@ verify_fedifs :: proc(r: ^Result) {
 	check(r, string(text[:max(n, 0)]) == "Dave <dave@three.example>", "and a follow is from the follower")
 	n = web_read_file("/mnt/fedi/notify/" + N3 + "/body", text[:])
 	check(r, n == 0, "with nothing to say")
+
+	// Any object by URL: a saved note, as a message of its own conversation.
+	NOTE :: "000000006aad35d0.af5f29eabd18685e"
+	check(r, net_file_write("/mnt/fedi/ctl", "object notes /lib/tests/note.json"), "a saved ActivityStreams object's path is fetched into a conversation of its own")
+	check(r, dir_names("/mnt/fedi/notes", lbuf[:]) == NOTE, "which lists it under its URL's hash and its published date")
+	n = web_read_file("/mnt/fedi/notes/" + NOTE + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "https://one.example/users/glenda", "from is who it is attributed to")
+	n = web_read_file("/mnt/fedi/notes/" + NOTE + "/body", text[:])
+	check(r, string(text[:max(n, 0)]) == "<p>An object by URL.</p>", "body is its content")
+	n = web_read_file("/mnt/fedi/notes/" + NOTE + "/links", text[:])
+	check(r, string(text[:max(n, 0)]) == "https://one.example/@glenda/7\nhttps://one.example/media/7.png", "and links its page and its attachment")
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/fedi") == vfs.OK, "the mount of fedifs comes down")
 	check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
 	check(r, wait(p, PATIENCE * 5), "and fedifs, its pipe gone, exits")
@@ -10902,6 +10913,14 @@ verify_atfs :: proc(r: ^Result) {
 	check(r, string(text[:max(n, 0)]) == AT1, "a like names the post liked, by its subject")
 	n = web_read_file("/mnt/at/notify/" + AN3 + "/from", text[:])
 	check(r, string(text[:max(n, 0)]) == "Dave <dave.two.example>", "and a follow is from the follower")
+
+	// A record by URI: a saved getRecord answer, checked against its CID.
+	check(r, net_file_write("/mnt/at/ctl", "record records /lib/tests/record.json"), "a saved getRecord answer's path is fetched into a conversation of its own")
+	check(r, dir_names("/mnt/at/records", lbuf[:]) == AT1, "which lists the record under its URI's hash and its date")
+	n = web_read_file("/mnt/at/records/" + AT1 + "/from", text[:])
+	check(r, string(text[:max(n, 0)]) == "did:plc:alice1", "from is the repository, since a record names no handle")
+	n = web_read_file("/mnt/at/records/" + AT1 + "/hash", text[:])
+	check(r, n > 0 && libodin.has_prefix(string(text[:n]), "bafyrei"), "and its value hashes to the CID beside it")
 
 	// The union is the timeline: both networks' under one name.
 	ID1 :: "000000006aad0ba0.113000000000000001"
@@ -11386,10 +11405,10 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 		finish(r, pw, "and webfs is taken down")
 		return
 	}
-	sargs := [?]string{"websrv", "8081", "7"}
+	sargs := [?]string{"websrv", "8081", "8"}
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
-	inst := start_path(r, "/bin/websrv", "a scripted instance starts, seven requests to serve", sargv)
+	inst := start_path(r, "/bin/websrv", "a scripted instance starts, eight requests to serve", sargv)
 	fnames := [?]string{"fedifs", "-s", "/usr/glenda/lib/web"}
 	fargv := new(Argv)
 	_ = argv_from(fargv, fnames[:])
@@ -11434,6 +11453,9 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 			n = web_read_file("/usr/glenda/lib/web/sent/" + ID9 + ".json", text[:], raw = true)
 			check(r, n > 0 && libodin.contains(string(text[:n]), "\"id\": \"113000000000000009\""), "and the store keeps what went out under sent, the status as the instance sent it")
 			check(r, !net_file_write("/mnt/fedi/new", "colour: blue\n\nx"), "a write to new with a header no network knows is refused before any wire")
+			NOTE :: "000000006aad35d0.af5f29eabd18685e"
+			check(r, net_file_write("/mnt/fedi/ctl", libodin_cat(line_buf[:], "object notes ", base, "/objects/note7")), "an object anywhere is fetched by its URL, with Accept: application/activity+json")
+			check(r, dir_names("/mnt/fedi/notes", lbuf[:]) == NOTE, "and is a message of the conversation named, the instance having answered activity JSON to that header")
 			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=oauth user=nobody server=", host, ":8081 !token=bad")), "a token the instance will refuse goes to factotum for another account")
 			check(r, net_file_write("/mnt/fedi/ctl", libodin_cat(line_buf[:], "account ", base, " nobody")), "and account names that account, whose token factotum holds already")
 			check(r, !net_file_write("/mnt/fedi/ctl", "fetch home"), "whose fetch the instance refuses, and the write says so")
@@ -11442,7 +11464,7 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 		check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
 		check(r, wait(pf, PATIENCE * 5), "and fedifs exits")
 		finish(r, pf, "and is taken down")
-		check(r, wait(inst, PATIENCE * 5), "and the instance, its seven requests served, exits")
+		check(r, wait(inst, PATIENCE * 5), "and the instance, its eight requests served, exits")
 		check(r, string(inst.exit.text[:inst.exit.text_len]) == "ok", "with ok")
 		finish(r, inst, "and is taken down")
 	} else {
@@ -11477,10 +11499,10 @@ verify_at_login :: proc(r: ^Result, host: string) {
 		finish(r, pw, "and webfs is taken down")
 		return
 	}
-	sargs := [?]string{"websrv", "8081", "5"}
+	sargs := [?]string{"websrv", "8081", "6"}
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
-	pds := start_path(r, "/bin/websrv", "a scripted PDS starts, five requests to serve", sargv)
+	pds := start_path(r, "/bin/websrv", "a scripted PDS starts, six requests to serve", sargv)
 	anames := [?]string{"atfs", "-s", "/usr/glenda/lib/web"}
 	aargv := new(Argv)
 	_ = argv_from(aargv, anames[:])
@@ -11524,6 +11546,8 @@ verify_at_login :: proc(r: ^Result, host: string) {
 			check(r, string(text[:max(n, 0)]) == "bafyreinewrecordnewrecordnewrecordnewrecordnewrecordnewrecordq", "and hash is the CID the server named it by")
 			n = web_read_file(libodin_cat(line_buf[:], "/usr/glenda/lib/web/sent/", fresh, ".json"), text[:], raw = true)
 			check(r, n > 0 && libodin.contains(string(text[:n]), "\"$type\": \"app.bsky.feed.post\"") && libodin.contains(string(text[:n]), "\"parent\": {\"uri\": \"at://did:plc:alice1/app.bsky.feed.post/3kfirst\""), "and the store keeps the record as sent under sent")
+			check(r, net_file_write("/mnt/at/ctl", "record at://did:plc:alice1/app.bsky.feed.post/3kfirst"), "a record is fetched by its URI, its repository, collection and key asked of the server")
+			check(r, dir_names("/mnt/at/records", lbuf[:]) == AT1, "and lands in records, checked against its CID")
 			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=oauth user=nobody server=", host, ":8081 !token=bad")), "a token the server will refuse goes to factotum for another account")
 			check(r, net_file_write("/mnt/at/ctl", libodin_cat(line_buf[:], "account ", base, " nobody")), "and account names that account")
 			check(r, !net_file_write("/mnt/at/ctl", "fetch home"), "whose fetch the server refuses, and the write says so")
@@ -11532,7 +11556,7 @@ verify_at_login :: proc(r: ^Result, host: string) {
 		check(r, srv.remove("at") == vfs.OK, "and the kernel takes its name away")
 		check(r, wait(pa, PATIENCE * 5), "and atfs exits")
 		finish(r, pa, "and is taken down")
-		check(r, wait(pds, PATIENCE * 5), "and the PDS, its five requests served, exits")
+		check(r, wait(pds, PATIENCE * 5), "and the PDS, its six requests served, exits")
 		check(r, string(pds.exit.text[:pds.exit.text_len]) == "ok", "with ok")
 		finish(r, pds, "and is taken down")
 	} else {

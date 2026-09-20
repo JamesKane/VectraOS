@@ -11,8 +11,8 @@ host, or the file's name without its suffix. Fetching again refreshes:
 a post already there is replaced by id.
 
     /mnt/at/ctl              fetch [name] url-or-path; fetch home; remove name;
-                             fetch notifications [path]; login PDS HANDLE;
-                             account PDS HANDLE
+                             fetch notifications [path]; record [name] uri-or-path;
+                             login PDS HANDLE; account PDS HANDLE
     /mnt/at/me               the handle and the DID, once there is a session
     /mnt/at/new              a post out: replyto, an empty line, the text
     /mnt/at/event            `name/id` when a post lands
@@ -47,8 +47,9 @@ mention, a quote, a like, a repost or a follow is a message from the
 account that did it, its reason the subject, and the post it concerns
 named by `replyto`. A post a notification carries lands in `home` too,
 so a reply is a message under `replies/` of what it answered. A saved
-answer's path is the offline proof. Not yet: a record by URI, and an
-image on a post out.
+answer's path is the offline proof. `record.odin` is a record by URI,
+asked of the account's server and checked against its CID. Not yet:
+an image on a post out.
 */
 package atfs
 
@@ -58,6 +59,7 @@ import "vsys:abi"
 import "vsys:lib9p"
 import "vsys:libcid"
 import "vsys:libmsg"
+import "vsys:libodin"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
@@ -66,7 +68,7 @@ MAX_CONVS :: 64
 NAME_MAX :: 64
 SOURCE_MAX :: libmsg.SOURCE_MAX
 
-DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nremove name          empty a conversation\nlogin pds handle     a session on the app password factotum holds, its token kept by factotum\naccount pds handle   an account whose token factotum holds already\nwrite: new           a post out: a replyto line, an empty line, the text\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "fetch name url       fetch a timeline by its URL or path into the conversation called name\nfetch home           fetch the account's timeline, with its token\nfetch notifications  fetch what came back into notify/, a saved answer's path or the account's\nrecord name uri      fetch a record by its URI into the conversation called name, checked against its CID\nremove name          empty a conversation\nlogin pds handle     a session on the app password factotum holds, its token kept by factotum\naccount pds handle   an account whose token factotum holds already\nwrite: new           a post out: a replyto line, an empty line, the text\nread: <name>/<id>    a post: from, date, subject, body, type, raw, hash, replyto, links\n"
 
 Source :: struct {
 	text: [SOURCE_MAX]u8,
@@ -76,6 +78,7 @@ Source :: struct {
 Fetch :: struct {
 	tag:    vectra9.Tag,
 	count:  int,
+	record: bool, // One record by URI, not a timeline
 	name:   [NAME_MAX]u8,
 	nlen:   int,
 	source: [SOURCE_MAX]u8,
@@ -119,12 +122,12 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	}
 	verb, rest := word(line)
 	switch verb {
-	case "fetch":
+	case "fetch", "record":
 		a, b := word(rest)
 		name, source := a, b
 		if b == "" {
 			source = a
-			name = libmsg.name_for(a)
+			name = verb == "record" && libodin.has_prefix(a, "at://") ? "records" : libmsg.name_for(a)
 		}
 		if name == "" || source == "" || !libmsg.is_name(name) || len(name) > NAME_MAX || len(source) > SOURCE_MAX {
 			return vectra9.EINVAL
@@ -135,6 +138,7 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		f := new(Fetch)
 		f.tag = tag
 		f.count = len(text)
+		f.record = verb == "record"
 		f.nlen = copy(f.name[:], name)
 		f.slen = copy(f.source[:], source)
 		if libthread.threadcreate(fetch_thread, f, 256 * 1024) < 0 {
@@ -201,6 +205,9 @@ fetch_thread :: proc "contextless" (arg: rawptr) {
 // and puts them in their conversation. EINVAL for a source that is
 // not a timeline.
 fetch :: proc(f: ^Fetch) -> vectra9.Errno {
+	if f.record {
+		return fetch_record(f)
+	}
 	source := string(f.source[:f.slen])
 	name := string(f.name[:f.nlen])
 	text: []u8
