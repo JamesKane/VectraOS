@@ -611,9 +611,12 @@ the documents it points at.
    room; the boot line runs it offline on `tests/sync.json` and
    against the scripted server. `sys/libolm` is in, Olm and Megolm,
    proven on the machine against the reference implementation's own
-   ratchet answers. Next: the seal in `matrixfs`, device keys up and a
-   room key across by Olm, a room event sealed by Megolm; then the
-   device requester, and the rest of the room's verbs.
+   ratchet answers. The seal is in `matrixfs`: device keys up at login,
+   a room's key across by Olm to each member's device, a room event
+   sealed by Megolm and one opened, both ways against the scripted
+   homeserver's own second device. Next: the device requester, the
+   room's verbs (`join`, `leave`, `invite`, `members`, `typing`), the
+   long poll behind `event`, and the store sealed under the passphrase.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
@@ -1014,6 +1017,15 @@ shape to look at first: one that is dropped with the old address space
 gives the hang, and one that ends the child before it is `sleep` gives
 the empty status. Nothing under `cmd/kill`, `cmd/sleep`, `apps/rc` or
 the note path changed in the weeks before. Not chased.
+
+A seventh, four times in about forty boots on 20 September: the boot
+runs the whole user suite to `verify_eiafs`'s wire line and then goes
+silent, no summary and no `boot complete`, in the graphical tests that
+follow. Console marks between those tests never caught it: every boot
+with the marks in passed. Once it followed a scripted server's
+"nothing connected" at the start of the mail tests; the other three
+followed nothing. Not chased; the gdb stub and the lldb walk in
+`docs/TESTING.md` are the way in when it stands again.
 
 A sixth, once in twelve boots that evening: the mail compose window's
 `the typed subject reaches the submission server through new`, with the
