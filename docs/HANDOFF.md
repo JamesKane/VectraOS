@@ -579,8 +579,19 @@ the documents it points at.
    in one request, through `webfs`. IDLE keeps a session with the
    server and takes each message as it lands, so `event` answers as it
    does, and the handshake runs over the servers on it, a relay and a
-   mailbox server each on the bench. **Step 3 is complete.** Next: step
-   4's two networks.
+   mailbox server each on the bench. **Step 3 is complete.**
+
+   **Step 4 is under way.** `servers/fedifs` and `servers/atfs` read a
+   saved timeline each into `libmsg`'s shape, and the two bind under
+   `/mnt/all` as one. `sys/libcid` makes a record's DAG-CBOR again and
+   hashes it, so `atfs` serves a record's CID as `hash` when it holds
+   and an empty one with a line in `notify/` when it does not. The
+   fediverse login is in: the authorization code flow against a
+   scripted instance, ending with a token in `factotum` under the new
+   `proto=oauth`, and `fetch home` with it. The source reading and the
+   reach into JSON live in `libmsg` now. Next: the login on AT with an
+   app password on `createSession`, then OAuth with DPoP, the page
+   through `mothra`, notifications, and a post written to `new`.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
