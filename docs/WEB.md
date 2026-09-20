@@ -1135,8 +1135,22 @@ invite is a line in `notify/`. `login BASE USER` sends the password
 message written to `new` names a room and is put with the token, and
 the event the homeserver names lands in the room. The boot line reads
 `tests/sync.json` offline, and logs in, syncs and sends against the
-scripted server. Not yet: the seal, `join`, `leave`, `invite`,
-`members`, `typing`, and the long poll behind `event`.
+scripted server.
+
+`sys/libolm` is in: Olm's triple Diffie-Hellman and double ratchet on
+X25519, HMAC-SHA-256 and AES-256 in CBC mode, the CBC a page over
+`core:crypto/aes`, with pre-key and compact messages, chains each
+way, and the keys kept for a message that comes late; and Megolm's
+ratchet, its keys, its signed messages, and the session sharing and
+export formats. Nothing in it draws randomness, so a test fixes every
+key. The boot line runs `tests/olm`: Megolm's ratchet against the
+reference implementation's own known answers, one step, a jump of
+2^24, a jump to 0x1041506 and the wraps at 2^32; a Megolm session
+sealing and opening in any order, refusing a bent message and a bent
+share; and an Olm session both ways, a pre-key message first, a
+message opened out of order with its kept key, and a bent one refused.
+Not yet: the seal in `matrixfs`, `join`, `leave`, `invite`, `members`,
+`typing`, and the long poll behind `event`.
 
 ### Step 6: publishing, and the ghost
 

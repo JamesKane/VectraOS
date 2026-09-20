@@ -647,6 +647,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_netfs(&r)
 	verify_cryptotest(&r)
 	verify_pgptest(&r)
+	verify_olmtest(&r)
 	verify_fonttest(&r)
 	verify_debugtest(&r)
 	verify_users(&r)
@@ -10580,6 +10581,18 @@ verify_fdtest :: proc(r: ^Result) {
 		"ok",
 		"and #d reaches the pipe the descriptor points at -- what cpu -f exports",
 	)
+}
+
+/*
+verify_olmtest runs `tests/olm`: docs/WEB.md section 8's "Olm's and
+Megolm's published test vectors seal and open through libolm". Megolm's
+ratchet against the reference's known answers, a Megolm session sealing
+and opening in any order, and an Olm session both ways from fixed keys.
+*/
+@(private = "file")
+verify_olmtest :: proc(r: ^Result) {
+	names := [?]string{"olmtest"}
+	script_says(r, "/bin/olmtest", names[:], PATIENCE * 20, "a program on the seal starts", "ok", "and Megolm's ratchet matches the reference's answers, a session seals and opens in any order, and Olm runs both ways")
 }
 
 verify_rc :: proc(r: ^Result) {
