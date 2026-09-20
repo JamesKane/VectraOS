@@ -609,9 +609,11 @@ the documents it points at.
    as conversations, logs in at a homeserver with the password
    `factotum` holds, syncs with the token, and puts a message in a
    room; the boot line runs it offline on `tests/sync.json` and
-   against the scripted server. Next: `sys/libolm`, Olm and Megolm,
-   proven on Megolm's published ratchet answers, then the seal in
-   `matrixfs`, and the device requester.
+   against the scripted server. `sys/libolm` is in, Olm and Megolm,
+   proven on the machine against the reference implementation's own
+   ratchet answers. Next: the seal in `matrixfs`, device keys up and a
+   room key across by Olm, a room event sealed by Megolm; then the
+   device requester, and the rest of the room's verbs.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
