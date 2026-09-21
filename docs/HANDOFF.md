@@ -637,8 +637,23 @@ the documents it points at.
    endpoint. All proven on the boot line, both directions and the
    control. The two ghost classes (`social`, `post`) are staged under
    `/lib/ghost/ns`. Left: the boot line's last clause, the ghost reading
-   a timeline in the `social` class, blocked on `docs/GHOST.md` step 1,
-   which is unbuilt. That plan's `ghost` and `ask` come first.
+   a timeline in the `social` class, which needs `docs/GHOST.md` step 1.
+
+   **The ghost work is begun, to unblock that.** `docs/GHOST.md` step 0
+   is done: `servers/modelfs` serves a model as files with the stub
+   backend, `modelfs -e SCRIPT`, that every ghost check runs against; the
+   boot line writes a request and reads the Messages API's stream events
+   back. `/mnt/model` and `/mnt/ghost` are mounts. Next is step 1:
+   `servers/ghost` (the loop over `modelfs`, the seven tools, the
+   sandbox a `RFNAMEG|RFNOMNT|RFNOTEG` child builds from a class file)
+   and `cmd/ask` (the line client). Its boot line is section 4's sandbox
+   checks and their control: a tool write inside `/n/work` lands and one
+   outside is refused, `run curl` and `read /proc/1/status` find nothing,
+   a stale write is caught, a `kill` parks on `confirm`, and the control
+   is a child without `RFNOMNT` where `run bind` succeeds and the sandbox
+   check fails. That step, run in the `social` class over the networks
+   this tree already serves, is what makes the WEB boot line's last
+   clause pass. It is about three thousand lines and wants fresh context.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
