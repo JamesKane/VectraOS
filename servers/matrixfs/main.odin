@@ -12,13 +12,15 @@ replies to as `replyto`, by the event id's hash. An invite is a line in
 offline proof, or the account's, with its token from `factotum`.
 
     /mnt/matrix/ctl          sync [path]; login BASE USER; account BASE USER;
-                             join ROOM; leave <room>; invite <room> USER; idle [off]
+                             join ROOM; leave <room>; invite <room> USER; idle [off];
+                             verify DEVICE; verified DEVICE
     /mnt/matrix/me           the user id and the device id, once logged in
     /mnt/matrix/new          a message out: to <room>, replyto, an empty line, the body
     /mnt/matrix/notify/      an invite: from the inviter, the room's name the body
     /mnt/matrix/<room>/      the room, one message directory per event
     /mnt/matrix/<room>/members   who is in it, one a line
     /mnt/matrix/<room>/typing    a read that parks, and answers who is typing
+    /mnt/matrix/devices/<dev>/   a device whose keys came: user, keys, fingerprint, verified
 
 `login BASE USER` sends the password `factotum` holds under
 `proto=pass` for the user at the host, and the access token comes back
@@ -35,8 +37,9 @@ joins a room by its id or alias, and it lands with the next sync;
 `idle` is the long poll behind `event`: a thread syncs from the last
 batch with the server holding the request until something comes, and
 what comes lands as it would from `sync`, a message on `event`, who is
-typing in the room's `typing`. `idle off` ends it. Not yet: the device
-requester.
+typing in the room's `typing`. `idle off` ends it. `device.odin` is
+the requester: `verify DEVICE` shows its fingerprint to compare, and
+`verified DEVICE` is the person's yes.
 */
 package matrixfs
 
@@ -55,7 +58,7 @@ NAME_MAX :: 64
 BASE_MAX :: 256
 ROOM_ID_MAX :: 256
 
-DICT :: "sync path            a saved sync's path into the rooms, or the account's sync with its token when no path is given\nlogin base user      log in at the server with the password factotum holds, the token kept by factotum\naccount base user    an account whose token factotum holds already\njoin room            join a room by its id or alias; it lands with the next sync\nleave room           leave a room, by its name here\ninvite room user     invite a user to a room\nidle                 sync from the server as things come, until idle off\nwrite: new           a message out: a to line naming the room, a replyto line, an empty line, the body\nread: <room>/<id>    an event: from, date, subject, body, type, raw, hash, replyto, links\nread: <room>/members who is in the room, one a line\nread: <room>/typing  parks, and answers who is typing\n"
+DICT :: "sync path            a saved sync's path into the rooms, or the account's sync with its token when no path is given\nlogin base user      log in at the server with the password factotum holds, the token kept by factotum\naccount base user    an account whose token factotum holds already\njoin room            join a room by its id or alias; it lands with the next sync\nleave room           leave a room, by its name here\ninvite room user     invite a user to a room\nidle                 sync from the server as things come, until idle off\nwrite: new           a message out: a to line naming the room, a replyto line, an empty line, the body\nread: <room>/<id>    an event: from, date, subject, body, type, raw, hash, replyto, links\nread: <room>/members who is in the room, one a line\nread: <room>/typing  parks, and answers who is typing\nverify device        ask to verify a device: its fingerprint on ctl, in notify, and on the desktop's notice, to compare with the other screen\nverified device      the person's yes: the device is verified\nread: devices/<dev>/ a device whose keys came: user, curve25519, ed25519, fingerprint, verified\n"
 
 // A room known: its id, the conversation it is, its members, and
 // whether its messages are sealed.
@@ -147,6 +150,7 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	_ = arg
 	context = libuser.heap_context()
 	libmsg.init(&net)
+	_ = libmsg.extra(&net, "devices")
 	net.dict = DICT
 	net.on_ctl = on_ctl
 	net.on_new = on_new
@@ -208,6 +212,18 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 			return vectra9.ENOENT
 		}
 		return start_job(tag, len(text), .Invite, room, user)
+	case "verify":
+		dev, _ := libmsg.word(rest)
+		if dev == "" {
+			return vectra9.EINVAL
+		}
+		return ask_verify(dev) ? 0 : vectra9.ENOENT
+	case "verified":
+		dev, _ := libmsg.word(rest)
+		if dev == "" {
+			return vectra9.EINVAL
+		}
+		return set_verified(dev) ? 0 : vectra9.ENOENT
 	case "idle":
 		off, _ := libmsg.word(rest)
 		if off == "off" {
@@ -352,8 +368,8 @@ do_login :: proc(j: ^Job, base: string, user: string) -> vectra9.Errno {
 	}
 	token := libmsg.str_of(o, "access_token")
 	user_id := libmsg.str_of(o, "user_id")
-	device := libmsg.str_of(o, "device_id")
-	if token == "" || user_id == "" || len(token) > 128 || len(user_id) > NAME_MAX || len(device) > 63 {
+	dev_id := libmsg.str_of(o, "device_id")
+	if token == "" || user_id == "" || len(token) > 128 || len(user_id) > NAME_MAX || len(dev_id) > 63 {
 		j.why = "the server answered no token"
 		return vectra9.EIO
 	}
@@ -364,11 +380,14 @@ do_login :: proc(j: ^Job, base: string, user: string) -> vectra9.Errno {
 	account = Account{set = true}
 	account.blen = copy(account.base[:], base)
 	account.ulen = copy(account.user[:], user_id)
-	account.dlen = copy(account.device[:], device)
-	// The device's keys, made now and uploaded signed.
+	account.dlen = copy(account.device[:], dev_id)
+	// The device's keys, made now and uploaded signed; its own is verified.
 	if !make_device() || !upload_keys(j.io) {
 		j.why = "the device's keys would not upload"
 		return vectra9.EIO
+	}
+	if note_device(user_id, dev_id, string(device.identity_b64[:device.ib64]), string(device.sign_b64[:device.sb64])) != nil {
+		_ = set_verified(dev_id)
 	}
 	set_me()
 	rebuild_status()
@@ -704,6 +723,7 @@ event_message :: proc(e: json.Object, raw: string) -> (m: libmsg.Msg, ok: bool) 
 	opened: json.Value
 	defer json.destroy_value(opened)
 	sealed_why := ""
+	sealed_content := content // The wire's content, which names the device
 	if kind == "m.room.encrypted" {
 		plain, why := open_event(content)
 		if plain != "" {
@@ -734,6 +754,14 @@ event_message :: proc(e: json.Object, raw: string) -> (m: libmsg.Msg, ok: bool) 
 	body := libmsg.str_of(content, "body")
 	formatted := libmsg.str_of(content, "formatted_body")
 	msgtype := libmsg.str_of(content, "msgtype")
+	if kind == "m.room.encrypted" {
+		// Marked by the device that sealed it, unless that one is verified.
+		dev := libmsg.str_of(sealed_content, "device_id")
+		if mark := device_subject(dev); mark != "" {
+			sbuf: [128]u8
+			m.subject = libmsg.clone(libuser.cat_into(sbuf[:], mark, " ", dev))
+		}
+	}
 	if sealed_why != "" {
 		m.body = libmsg.clone(sealed_why)
 		m.type = libmsg.clone("text/plain")
@@ -1093,6 +1121,14 @@ rebuild_status :: proc() {
 	}
 	if idle != nil {
 		append(&status, ..transmute([]u8)string("idle\n"))
+	}
+	if asking_len > 0 {
+		fp, _ := libmsg.xget(libmsg.xsub(libmsg.extra(&net, "devices"), string(asking[:asking_len])), "fingerprint")
+		append(&status, ..transmute([]u8)string("verify "))
+		append(&status, ..asking[:asking_len])
+		append(&status, ' ')
+		append(&status, ..transmute([]u8)fp)
+		append(&status, '\n')
 	}
 	for i in 0 ..< nrooms {
 		r := &rooms[i]

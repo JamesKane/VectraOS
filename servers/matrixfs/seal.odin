@@ -311,6 +311,7 @@ share_room_key :: proc(io: ^libthread.Ioproc, r: ^Room, mo: ^Megolm_Out) -> bool
 			if curve_b64 == "" || ed_b64 == "" {
 				continue
 			}
+			_ = note_device(user_id, dev_id, curve_b64, ed_b64)
 			if !send_room_key(io, user_id, dev_id, curve_b64, ed_b64, r, mo, string(share_b64[:shn])) {
 				return false
 			}
@@ -548,6 +549,10 @@ open_to_device :: proc(sender_key_b64: string, body_b64: string, prekey: bool) {
 	content, has_content := libmsg.obj_of(o, "content")
 	if !has_content || libmsg.str_of(content, "algorithm") != "m.megolm.v1.aes-sha2" {
 		return
+	}
+	// The device it came from, by the keys the plaintext names.
+	if keys, has_keys := libmsg.obj_of(o, "keys"); has_keys {
+		_ = note_device(libmsg.str_of(o, "sender"), libmsg.str_of(o, "sender_device"), sender_key_b64, libmsg.str_of(keys, "ed25519"))
 	}
 	keep_room_key(libmsg.str_of(content, "session_id"), libmsg.str_of(content, "session_key"))
 }

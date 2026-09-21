@@ -365,8 +365,8 @@ serve_one :: proc(lfd: i64, served: string) {
 		// room key by Olm and an event he sealed, once Glenda's keys are up.
 		if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_2") && bob_ready {
 			ok = say_json(dfd, 200, bob_sync())
-		} else if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_3") {
-			ok = say_json(dfd, 200, LIVE_SYNC)
+		} else if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_3") && bob_mo_set {
+			ok = say_json(dfd, 200, bob_live_sync())
 		} else if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_4") {
 			ok = say_json(dfd, 200, secret_joined ? SECRET_SYNC : EMPTY_SYNC_4)
 		} else if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_5") {
@@ -813,13 +813,14 @@ bob_megolm_in: libolm.Inbound // Glenda's room key
 bob_megolm_in_set: bool
 bob_ready: bool // Glenda's keys are up
 secret_joined: bool // Glenda joined the room Bob invited her to
+bob_mo: libolm.Outbound // Bob's room session, once shared
+bob_mo_set: bool
+bob_session_id: [48]u8
+bob_sid_len: int
 
-// What the long poll pulls after Bob's sync: Bob typing in the sealed
-// room and a line in the plain one, then, once Glenda has joined the
-// room he invited her to, that room with its state and his welcome,
-// then nothing new.
-LIVE_SYNC :: `{"next_batch": "s_4", "rooms": {"join": {"!vectra:one.example": {"ephemeral": {"events": [{"type": "m.typing", "content": {"user_ids": ["@bob:two.example"]}}]}}, "!plain:one.example": {"timeline": {"events": [{"type": "m.room.message", "event_id": "$live1", "sender": "@carol:one.example", "origin_server_ts": 1789760000000, "content": {"msgtype": "m.text", "body": "Live from the poll."}}], "prev_batch": "p_4", "limited": false}}}}}
-`
+// What the long poll pulls after the live sync: once Glenda has joined
+// the room Bob invited her to, that room with its state and his
+// welcome, then nothing new.
 SECRET_SYNC :: `{"next_batch": "s_5", "rooms": {"join": {"!secret:two.example": {"state": {"events": [{"type": "m.room.name", "state_key": "", "sender": "@bob:two.example", "content": {"name": "secret"}}, {"type": "m.room.member", "state_key": "@bob:two.example", "sender": "@bob:two.example", "content": {"membership": "join"}}, {"type": "m.room.member", "state_key": "@glenda:one.example", "sender": "@glenda:one.example", "content": {"membership": "join"}}]}, "timeline": {"events": [{"type": "m.room.message", "event_id": "$welcome", "sender": "@bob:two.example", "origin_server_ts": 1789770000000, "content": {"msgtype": "m.text", "body": "Welcome to secret."}}], "prev_batch": "p_5", "limited": false}}}}}
 `
 EMPTY_SYNC_4 :: `{"next_batch": "s_4", "rooms": {"join": {}}}
@@ -1039,14 +1040,15 @@ bob_sync :: proc() -> string {
 	for i in 0 ..< 32 {
 		sign_seed[i] = u8(i * 5 + 19)
 	}
-	mo: libolm.Outbound
-	if !libolm.outbound_init(&mo, seed[:], sign_seed[:]) {
+	mo := &bob_mo
+	if !libolm.outbound_init(mo, seed[:], sign_seed[:]) {
 		fail("bob's megolm session")
 	}
-	sid: [48]u8
-	session_id := b64(mo.pub[:], sid[:])
+	bob_mo_set = true
+	bob_sid_len = len(b64(mo.pub[:], bob_session_id[:]))
+	session_id := string(bob_session_id[:bob_sid_len])
 	share: [libolm.SHARE_BYTES]u8
-	_ = libolm.session_share(&mo, share[:])
+	_ = libolm.session_share(mo, share[:])
 	share_b64: [320]u8
 	shared := b64(share[:], share_b64[:])
 	// The room key, sealed by Olm for Glenda's device on her one-time key.
@@ -1071,17 +1073,37 @@ bob_sync :: proc() -> string {
 	olm_b64: [3072]u8
 	olm := b64(sealed[:sn], olm_b64[:])
 	// An event in the room, sealed with Bob's session.
-	event_plain := "{\"content\":{\"body\":\"Sealed from Bob.\",\"msgtype\":\"m.text\"},\"room_id\":\"!vectra:one.example\",\"type\":\"m.room.message\"}"
+	evbuf: [2048]u8
+	ev := bob_sealed_event(evbuf[:], "$sealed_in", "1789750000000", "Sealed from Bob.")
+	bc: [48]u8
+	gc: [48]u8
+	return libuser.cat_into(out[:], "{\"next_batch\": \"s_3\", \"to_device\": {\"events\": [{\"type\": \"m.room.encrypted\", \"sender\": \"", BOB_USER, "\", \"content\": {\"algorithm\": \"m.olm.v1.curve25519-aes-sha2\", \"sender_key\": \"", b64(bob_identity_pub[:], bc[:]), "\", \"ciphertext\": {\"", b64(glenda_curve[:], gc[:]), "\": {\"type\": 0, \"body\": \"", olm, "\"}}}}]}, \"rooms\": {\"join\": {\"!vectra:one.example\": {\"timeline\": {\"events\": [", ev, "], \"prev_batch\": \"p_3\", \"limited\": false}}}}}\n")
+}
+
+// bob_sealed_event answers one m.room.encrypted event of Bob's session,
+// as the sync carries it, with `body` sealed inside.
+bob_sealed_event :: proc(into: []u8, event_id: string, ts: string, body: string) -> string {
+	plain: [512]u8
+	event_plain := libuser.cat_into(plain[:], "{\"content\":{\"body\":\"", body, "\",\"msgtype\":\"m.text\"},\"room_id\":\"!vectra:one.example\",\"type\":\"m.room.message\"}")
 	event_sealed: [1024]u8
-	en := libolm.group_encrypt(&mo, transmute([]u8)event_plain, event_sealed[:])
+	en := libolm.group_encrypt(&bob_mo, transmute([]u8)event_plain, event_sealed[:])
 	if en <= 0 {
 		fail("bob seals an event")
 	}
 	ev_b64: [1536]u8
 	ev := b64(event_sealed[:en], ev_b64[:])
 	bc: [48]u8
-	gc: [48]u8
-	return libuser.cat_into(out[:], "{\"next_batch\": \"s_3\", \"to_device\": {\"events\": [{\"type\": \"m.room.encrypted\", \"sender\": \"", BOB_USER, "\", \"content\": {\"algorithm\": \"m.olm.v1.curve25519-aes-sha2\", \"sender_key\": \"", b64(bob_identity_pub[:], bc[:]), "\", \"ciphertext\": {\"", b64(glenda_curve[:], gc[:]), "\": {\"type\": 0, \"body\": \"", olm, "\"}}}}]}, \"rooms\": {\"join\": {\"!vectra:one.example\": {\"timeline\": {\"events\": [{\"type\": \"m.room.encrypted\", \"event_id\": \"$sealed_in\", \"sender\": \"", BOB_USER, "\", \"origin_server_ts\": 1789750000000, \"content\": {\"algorithm\": \"m.megolm.v1.aes-sha2\", \"sender_key\": \"", b64(bob_identity_pub[:], bc[:]), "\", \"device_id\": \"", BOB_DEVICE, "\", \"session_id\": \"", session_id, "\", \"ciphertext\": \"", ev, "\"}}], \"prev_batch\": \"p_3\", \"limited\": false}}}}}\n")
+	return libuser.cat_into(into, "{\"type\": \"m.room.encrypted\", \"event_id\": \"", event_id, "\", \"sender\": \"", BOB_USER, "\", \"origin_server_ts\": ", ts, ", \"content\": {\"algorithm\": \"m.megolm.v1.aes-sha2\", \"sender_key\": \"", b64(bob_identity_pub[:], bc[:]), "\", \"device_id\": \"", BOB_DEVICE, "\", \"session_id\": \"", string(bob_session_id[:bob_sid_len]), "\", \"ciphertext\": \"", ev, "\"}}")
+}
+
+// bob_live_sync is what the long poll pulls after Bob's sync: Bob typing
+// in the sealed room and a second sealed line of his, and a line in the
+// plain room.
+bob_live_sync :: proc() -> string {
+	@(static) out: [4096]u8
+	evbuf: [2048]u8
+	ev := bob_sealed_event(evbuf[:], "$sealed_live", "1789760000000", "Sealed again from Bob.")
+	return libuser.cat_into(out[:], "{\"next_batch\": \"s_4\", \"rooms\": {\"join\": {\"!vectra:one.example\": {\"ephemeral\": {\"events\": [{\"type\": \"m.typing\", \"content\": {\"user_ids\": [\"@bob:two.example\"]}}]}, \"timeline\": {\"events\": [", ev, "], \"prev_batch\": \"p_4\", \"limited\": false}}, \"!plain:one.example\": {\"timeline\": {\"events\": [{\"type\": \"m.room.message\", \"event_id\": \"$live1\", \"sender\": \"@carol:one.example\", \"origin_server_ts\": 1789760000000, \"content\": {\"msgtype\": \"m.text\", \"body\": \"Live from the poll.\"}}], \"prev_batch\": \"p_4\", \"limited\": false}}}}}\n")
 }
 
 // header_value answers a request header's value by its name, lower

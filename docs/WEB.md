@@ -1185,8 +1185,22 @@ its state with its members and welcome; an invite and a leave are
 taken. Two threads asking through `webfs` at once found a slot race:
 a conversation just taken off `clone` and not yet written to could be
 reclaimed for the next `clone`, so `webfs` now reclaims those last.
-Not yet: the device requester, and the store sealed under the
-passphrase.
+The device requester is in. `devices/` holds every device whose keys
+this one has learned, from the key query when a room key goes to it
+or from a room key that came from it: whose it is, its two keys, its
+fingerprint, the signing key in groups of four the way the other
+screen shows a session key, and whether it is verified; this device's
+own is. `verify DEVICE` on `ctl` is the requester: the fingerprint
+goes on `ctl`, into `notify/` as a message from the device's user
+whose subject is `verify`, and to Workbench's notice file when the
+desktop is up, asking the person to compare it with the other screen;
+`verified DEVICE` is their yes. A sealed message from a device not
+verified carries `unverified device DEVICE` as its subject, every one
+it sent, and one from a device never seen `unknown device`; once the
+device is verified, what it seals after that carries nothing. On the
+boot line Bob's first sealed line is so marked, the requester runs
+for his device, and a second line of his that the poll brings after
+the yes is not. Not yet: the store sealed under the passphrase.
 
 ### Step 6: publishing, and the ghost
 
