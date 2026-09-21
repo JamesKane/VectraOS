@@ -189,6 +189,34 @@ serve_one :: proc(lfd: i64, served: string) {
 		}
 		return
 	}
+	// The room's verbs: a join lands the invited room in the sync after,
+	// an invite and a leave are taken as said.
+	if post && libodin.has_prefix(rpath, "/_matrix/client/v3/join/") {
+		if bearer == "Bearer syt-1" && rpath[len("/_matrix/client/v3/join/"):] == "!secret:two.example" {
+			secret_joined = true
+			ok = say_json(dfd, 200, "{\"room_id\": \"!secret:two.example\"}\n")
+		} else {
+			ok = say_json(dfd, 403, "{\"errcode\": \"M_FORBIDDEN\"}\n")
+		}
+		if !ok {
+			fail("write the reply")
+		}
+		return
+	}
+	if post && rpath == "/_matrix/client/v3/rooms/!secret:two.example/invite" {
+		ok = say_json(dfd, bearer == "Bearer syt-1" && libodin.contains(body, "\"@carol:one.example\"") ? 200 : 403, "{}\n")
+		if !ok {
+			fail("write the reply")
+		}
+		return
+	}
+	if post && rpath == "/_matrix/client/v3/rooms/!secret:two.example/leave" {
+		ok = say_json(dfd, bearer == "Bearer syt-1" ? 200 : 403, "{}\n")
+		if !ok {
+			fail("write the reply")
+		}
+		return
+	}
 	if post && libodin.has_prefix(rpath, "/_matrix/client/v3/sendToDevice/m.room.encrypted/") {
 		if bearer == "Bearer syt-1" && bob_take_to_device(body) {
 			ok = say_json(dfd, 200, "{}\n")
@@ -337,6 +365,12 @@ serve_one :: proc(lfd: i64, served: string) {
 		// room key by Olm and an event he sealed, once Glenda's keys are up.
 		if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_2") && bob_ready {
 			ok = say_json(dfd, 200, bob_sync())
+		} else if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_3") {
+			ok = say_json(dfd, 200, LIVE_SYNC)
+		} else if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_4") {
+			ok = say_json(dfd, 200, secret_joined ? SECRET_SYNC : EMPTY_SYNC_4)
+		} else if bearer == "Bearer syt-1" && libodin.contains(query, "since=s_5") {
+			ok = say_json(dfd, 200, EMPTY_SYNC_5)
 		} else if bearer == "Bearer syt-1" {
 			sy, sok := libuser.read_file("/lib/tests/sync.json", context.allocator)
 			if !sok {
@@ -778,6 +812,20 @@ bob_session: libolm.Session // With Glenda's device, made from her pre-key messa
 bob_megolm_in: libolm.Inbound // Glenda's room key
 bob_megolm_in_set: bool
 bob_ready: bool // Glenda's keys are up
+secret_joined: bool // Glenda joined the room Bob invited her to
+
+// What the long poll pulls after Bob's sync: Bob typing in the sealed
+// room and a line in the plain one, then, once Glenda has joined the
+// room he invited her to, that room with its state and his welcome,
+// then nothing new.
+LIVE_SYNC :: `{"next_batch": "s_4", "rooms": {"join": {"!vectra:one.example": {"ephemeral": {"events": [{"type": "m.typing", "content": {"user_ids": ["@bob:two.example"]}}]}}, "!plain:one.example": {"timeline": {"events": [{"type": "m.room.message", "event_id": "$live1", "sender": "@carol:one.example", "origin_server_ts": 1789760000000, "content": {"msgtype": "m.text", "body": "Live from the poll."}}], "prev_batch": "p_4", "limited": false}}}}}
+`
+SECRET_SYNC :: `{"next_batch": "s_5", "rooms": {"join": {"!secret:two.example": {"state": {"events": [{"type": "m.room.name", "state_key": "", "sender": "@bob:two.example", "content": {"name": "secret"}}, {"type": "m.room.member", "state_key": "@bob:two.example", "sender": "@bob:two.example", "content": {"membership": "join"}}, {"type": "m.room.member", "state_key": "@glenda:one.example", "sender": "@glenda:one.example", "content": {"membership": "join"}}]}, "timeline": {"events": [{"type": "m.room.message", "event_id": "$welcome", "sender": "@bob:two.example", "origin_server_ts": 1789770000000, "content": {"msgtype": "m.text", "body": "Welcome to secret."}}], "prev_batch": "p_5", "limited": false}}}}}
+`
+EMPTY_SYNC_4 :: `{"next_batch": "s_4", "rooms": {"join": {}}}
+`
+EMPTY_SYNC_5 :: `{"next_batch": "s_5", "rooms": {"join": {}}}
+`
 glenda_curve: [32]u8
 glenda_ed: [32]u8
 glenda_one_time: [32]u8

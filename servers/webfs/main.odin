@@ -275,8 +275,11 @@ keep :: proc(c: ^Conv) {
 conv_alloc takes a free slot, or reclaims one nothing holds. A conversation
 outlives its descriptors, as `netfs`'s do. So a shell can write `ctl`, read
 `body` and then `hash` as three commands. A finished or never-used one with no
-descriptor on it is done, and its slot serves the next when none is free. A
-`hangup` frees a slot at once.
+descriptor on it is done, and its slot serves the next when none is free: a
+finished one first, then an idle one that was written to, and one just taken
+off `clone` and not yet written to last of all, since its taker is on the way
+to `ctl` with nothing holding the slot for them meanwhile. A `hangup` frees a
+slot at once.
 */
 conv_alloc :: proc "contextless" () -> int {
 	context = libuser.heap_context()
@@ -287,10 +290,19 @@ conv_alloc :: proc "contextless" () -> int {
 			break
 		}
 	}
-	if slot < 0 {
+	for pass in 0 ..< 3 {
+		if slot >= 0 {
+			break
+		}
 		for i in 0 ..< MAX_CONVS {
 			c := &convs[i]
-			if c.refs == 0 && (c.state == .Done || c.state == .Failed || c.state == .Idle) {
+			if c.refs != 0 {
+				continue
+			}
+			done := c.state == .Done || c.state == .Failed
+			idle := c.state == .Idle && c.url_len > 0
+			fresh := c.state == .Idle && c.url_len == 0
+			if (pass == 0 && done) || (pass == 1 && idle) || (pass == 2 && fresh) {
 				conv_free(i)
 				slot = i
 				break

@@ -24,6 +24,8 @@ is then its wire, its record, and nothing about 9P.
     <conv>/<id>/replyto the id this answers, or empty
     <conv>/<id>/replies/ what answered it, one level down
     <conv>/<id>/links   what the message points at, one per line
+    <conv>/<file>       a file beside the messages, the server's: a room's
+                        `members`, and `typing`, a read that parks
     <dir>/<name>/<file> a tree beside the conversations: `contacts/`,
                         one directory an address, its files name, key
                         and verified
@@ -189,6 +191,69 @@ conv :: proc(net: ^Net, name: string) -> ^Conv {
 	return &net.convs[len(net.convs) - 1]
 }
 
+// conv_file makes the file called `name` in a conversation's directory,
+// empty, answering it; one that `parks` holds a read until it has text.
+conv_file :: proc(c: ^Conv, name: string, parks := false) -> ^Cfile {
+	for &f in c.files {
+		if f.name == name {
+			return &f
+		}
+	}
+	if c.files == nil {
+		c.files = make([dynamic]Cfile, 0, 4)
+	}
+	own := make([]u8, len(name))
+	copy(own, name)
+	append(&c.files, Cfile{name = string(own), parks = parks})
+	return &c.files[len(c.files) - 1]
+}
+
+// cset sets a conversation file's text, its own copy, and answers the
+// reads parked on it when it now has some.
+cset :: proc(net: ^Net, c: ^Conv, name: string, text: string) {
+	f := conv_file(c, name)
+	delete(f.text)
+	own := make([]u8, len(text))
+	copy(own, text)
+	f.text = string(own)
+	if len(text) == 0 {
+		return
+	}
+	ci := conv_index(net, c.name)
+	fi := 0
+	for &g, i in c.files {
+		if &g == f {
+			fi = i
+		}
+	}
+	want := Cfile_Want{net = net, node = node_of(.Cfile, ci, fi)}
+	for {
+		req, ok := lib9p.held(&net.srv, &want, wants_cfile)
+		if !ok {
+			return
+		}
+		m := req.msg.(vectra9.Tread)
+		room := min(len(req.payload), int(m.count))
+		_ = lib9p.respond(req, vectra9.Rread{data = slice_window(transmute([]u8)f.text, m.offset, req.payload[:room])})
+	}
+}
+
+@(private = "file")
+Cfile_Want :: struct {
+	net:  ^Net,
+	node: i32,
+}
+
+@(private = "file")
+wants_cfile :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
+	w := (^Cfile_Want)(arg)
+	#partial switch m in request^ {
+	case vectra9.Tread:
+		return libuser.fid_lookup(&w.net.fids, m.fid) == w.node
+	}
+	return false
+}
+
 conv_index :: proc "contextless" (net: ^Net, name: string) -> int {
 	for c, i in net.convs {
 		if c.name == name {
@@ -333,6 +398,7 @@ Kind :: enum u8 {
 	Xdir, // A tree beside the conversations: its index in the conv field
 	Xsub, // A directory in it: the sub's index in the msg field's low twelve bits
 	Xfile, // A file in that: the file's index in the msg field's high three
+	Cfile, // A file beside a conversation's messages: its index in the msg field
 }
 
 MSG_FILES := [?]Kind{.From, .Date, .Subject, .Body, .Type, .Raw, .Hash, .Replyto, .Replies, .Links}
@@ -438,6 +504,13 @@ handler :: proc "contextless" (
 			reply^ = vectra9.Rread{data = pop_event(net, buf[:room])}
 			return
 		}
+		if kind == .Cfile {
+			// A file that parks holds the read until it has something to say.
+			if f := cfile_of(net, node); f != nil && f.parks && len(f.text) == 0 {
+				lib9p.hold(&net.srv)
+				return
+			}
+		}
 		text, found := text_of(net, node)
 		if !found {
 			reply^ = vectra9.error_reply(vectra9.ENOENT)
@@ -541,6 +614,11 @@ text_of :: proc(net: ^Net, node: i32) -> (text: []u8, found: bool) {
 		return transmute([]u8)net.dict, true
 	case .Root, .Conv, .Msg, .Replies, .Event, .Xdir, .Xsub:
 		return nil, false
+	case .Cfile:
+		if f := cfile_of(net, node); f != nil {
+			return transmute([]u8)f.text, true
+		}
+		return nil, false
 	case .Xfile:
 		xi, si, fi := conv_of(node), xsub_of(node), xfile_of(node)
 		if xi < 0 || xi >= len(net.extras) || si < 0 || si >= len(net.extras[xi].subs) || fi < 0 || fi >= len(net.extras[xi].subs[si].files) {
@@ -575,6 +653,15 @@ text_of :: proc(net: ^Net, node: i32) -> (text: []u8, found: bool) {
 		}
 	}
 	return nil, false
+}
+
+@(private = "file")
+cfile_of :: proc "contextless" (net: ^Net, node: i32) -> ^Cfile {
+	ci, fi := conv_of(node), msg_of(node)
+	if ci < 0 || ci >= len(net.convs) || fi < 0 || fi >= len(net.convs[ci].files) {
+		return nil
+	}
+	return &net.convs[ci].files[fi]
 }
 
 // A one-line file ends in a newline, so `cat` leaves the prompt where it
@@ -629,7 +716,7 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 		#partial switch kind {
 		case .Root, .Conv, .Xdir:
 			return node_of(.Root, -1, -1)
-		case .Msg:
+		case .Msg, .Cfile:
 			return node_of(.Conv, ci, -1)
 		case .Replies:
 			return node_of(.Msg, ci, mi)
@@ -678,6 +765,11 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 		}
 		if i := find(&net.convs[ci], name); i >= 0 {
 			return node_of(.Msg, ci, i)
+		}
+		for f, i in net.convs[ci].files {
+			if f.name == name {
+				return node_of(.Cfile, ci, i)
+			}
 		}
 	case .Msg:
 		for n, i in MSG_NAMES {
@@ -763,8 +855,14 @@ readdir :: proc(net: ^Net, m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []u8) 
 			break
 		}
 		conv := &net.convs[ci]
-		for i < len(conv.msgs) {
-			e := vectra9.Dirent{qid = qid_of(node_of(.Msg, ci, i)), type = vectra9.DT_DIR, name = conv.msgs[i].id}
+		for i < len(conv.msgs) + len(conv.files) {
+			e: vectra9.Dirent
+			if i < len(conv.msgs) {
+				e = vectra9.Dirent{qid = qid_of(node_of(.Msg, ci, i)), type = vectra9.DT_DIR, name = conv.msgs[i].id}
+			} else {
+				k := i - len(conv.msgs)
+				e = vectra9.Dirent{qid = qid_of(node_of(.Cfile, ci, k)), type = vectra9.DT_REG, name = conv.files[k].name}
+			}
 			if !put(&c, e, i) {
 				break
 			}

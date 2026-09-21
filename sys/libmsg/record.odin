@@ -28,8 +28,18 @@ Msg :: struct {
 }
 
 Conv :: struct {
-	name: string,
-	msgs: [dynamic]Msg, // In id order
+	name:  string,
+	msgs:  [dynamic]Msg, // In id order
+	files: [dynamic]Cfile, // Beside the messages: a room's `members`, `typing`
+}
+
+// A file in a conversation's directory, beside its messages: read only,
+// its text the server's. One that parks answers a read only once it
+// holds something, the way `typing` answers who.
+Cfile :: struct {
+	name:  string,
+	text:  string, // Owned
+	parks: bool,
 }
 
 // find answers the index of the message called `id` in `c`, or -1.

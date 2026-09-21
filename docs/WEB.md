@@ -1165,9 +1165,28 @@ is served as a message that says the key never came. The boot line's
 homeserver holds a second device, Bob, on the same library: Glenda's
 sealed message opens on his side and what it said lands in a file the
 test reads, and the sync after carries his key by Olm and an event he
-sealed, which opens in her room. Not yet: `join`, `leave`, `invite`,
-`members`, `typing`, the long poll behind `event`, the device
-requester, and the store sealed under the passphrase.
+sealed, which opens in her room.
+
+The room's verbs and the long poll are in. `join ROOM` joins by id or
+alias and the room lands with the next sync; `leave <room>` leaves and
+empties the room, its directory staying for a reader's path; `invite
+<room> USER` invites. A room's directory holds two files beside its
+events, which `libmsg` now serves for any network: `members`, one a
+line off the room's state, and `typing`, a read that parks until
+someone is and answers who, off the sync's ephemeral events. `idle` is
+the long poll behind `event`: a thread syncs from the last batch with
+the server holding the request until something comes, takes it the way
+`sync` does, and asks again; a server that answers at once with
+nothing new is asked again after a pause; `idle off` ends it. On the
+boot line the poll brings a message in the plain room, which a read of
+`event` is answered with, and Bob typing in the sealed room, which a
+read of its `typing` answers; a join brings the invited room named by
+its state with its members and welcome; an invite and a leave are
+taken. Two threads asking through `webfs` at once found a slot race:
+a conversation just taken off `clone` and not yet written to could be
+reclaimed for the next `clone`, so `webfs` now reclaims those last.
+Not yet: the device requester, and the store sealed under the
+passphrase.
 
 ### Step 6: publishing, and the ghost
 

@@ -10995,9 +10995,11 @@ verify_matrixfs :: proc(r: ^Result) {
 	lbuf: [2048]u8
 	listing := dir_names("/mnt/matrix", lbuf[:])
 	check(r, libodin.contains(listing, " vectra") && libodin.contains(listing, " plain_one.example") && count_words(listing) == 8, "the network lists its files, notify, and the two rooms: one by its name, one by its id made plain")
-	check(r, dir_names("/mnt/matrix/vectra", lbuf[:]) == E1 + " " + E2 + " " + E3, "a room lists its message events by id, time order, the event id's hash the name")
+	check(r, dir_names("/mnt/matrix/vectra", lbuf[:]) == E1 + " " + E2 + " " + E3 + " members typing", "a room lists its message events by id, time order, the event id's hash the name, and its two files after them")
 	text: [2048]u8
-	n := web_read_file("/mnt/matrix/vectra/" + E1 + "/from", text[:])
+	n := web_read_file("/mnt/matrix/vectra/members", text[:])
+	check(r, string(text[:max(n, 0)]) == "@glenda:one.example\n@bob:two.example", "members is who the state says is in the room, one a line")
+	n = web_read_file("/mnt/matrix/vectra/" + E1 + "/from", text[:])
 	check(r, string(text[:max(n, 0)]) == "@glenda:one.example", "from is the sender's user id")
 	n = web_read_file("/mnt/matrix/vectra/" + E1 + "/date", text[:])
 	check(r, string(text[:max(n, 0)]) == "1789740000 2026-09-18T14:00:00.000Z", "date is the server's time, its milliseconds made seconds")
@@ -11012,7 +11014,7 @@ verify_matrixfs :: proc(r: ^Result) {
 	check(r, string(text[:max(n, 0)]) == "https://one.example/_matrix/media/v3/download/one.example/abc123", "an image's media is a link, the mxc URI made a download URL")
 	n = web_read_file("/mnt/matrix/vectra/" + E3 + "/raw", text[:], raw = true)
 	check(r, n > 0 && text[0] == '{' && libodin.contains(string(text[:n]), "\"event_id\": \"$e3\"") && libodin.contains(string(text[:n]), "mxc://one.example/abc123"), "raw is the event's own bytes out of the sync")
-	check(r, dir_names("/mnt/matrix/plain_one.example", lbuf[:]) == E4, "the unnamed room holds its one event")
+	check(r, dir_names("/mnt/matrix/plain_one.example", lbuf[:]) == E4 + " members typing", "the unnamed room holds its one event")
 	check(r, dir_names("/mnt/matrix/notify", lbuf[:]) == INV, "an invite is a line in notify")
 	n = web_read_file("/mnt/matrix/notify/" + INV + "/from", text[:])
 	check(r, string(text[:max(n, 0)]) == "@bob:two.example", "from the inviter")
@@ -11805,10 +11807,11 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 		finish(r, pw, "and webfs is taken down")
 		return
 	}
-	sargs := [?]string{"websrv", "8081", "9"}
+	// The homeserver serves until it is ended: the long poll asks as it likes.
+	sargs := [?]string{"websrv", "8081", "99"}
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
-	hs := start_path(r, "/bin/websrv", "a scripted homeserver starts, nine requests to serve", sargv)
+	hs := start_path(r, "/bin/websrv", "a scripted homeserver starts", sargv)
 	mnames := [?]string{"matrixfs", "-s", "/usr/glenda/lib/web"}
 	margv := new(Argv)
 	_ = argv_from(margv, mnames[:])
@@ -11833,14 +11836,14 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			check(r, net_file_write("/mnt/matrix/ctl", "sync"), "sync takes the account's rooms with the token")
 			lbuf: [2048]u8
 			listed := dir_names("/mnt/matrix/vectra", lbuf[:])
-			check(r, count_words(listed) == 3 && libodin.contains(listed, E1), "and the room the homeserver holds is the conversation")
+			check(r, count_words(listed) == 5 && libodin.contains(listed, E1), "and the room the homeserver holds is the conversation")
 			n = web_read_file("/mnt/matrix/ctl", text[:])
 			check(r, n > 0 && libodin.contains(string(text[:n]), "room vectra !vectra:one.example sealed"), "and ctl says the room is sealed, off its state")
 			check(r, net_file_write("/mnt/matrix/new", "to: vectra\nreplyto: " + E1 + "\n\nHello from Vectra.\n"), "a message written to new, to the room by name, goes sealed: Bob's keys queried and a one-time key claimed, the room's key to him by Olm, the event by Megolm, and the write returns when the homeserver has named the event")
 			abuf: [2048]u8
 			after := dir_names("/mnt/matrix/vectra", abuf[:])
 			fresh := new_word(listed, after)
-			check(r, count_words(after) == 4 && len(fresh) > 0, "and the event is in the room under the id the homeserver gave, dated now")
+			check(r, count_words(after) == 6 && len(fresh) > 0, "and the event is in the room under the id the homeserver gave, dated now")
 			n = web_read_file(libodin_cat(line_buf[:], "/mnt/matrix/vectra/", fresh, "/body"), text[:])
 			check(r, string(text[:max(n, 0)]) == "Hello from Vectra.", "with the text written")
 			n = web_read_file(libodin_cat(line_buf[:], "/mnt/matrix/vectra/", fresh, "/replyto"), text[:])
@@ -11851,7 +11854,7 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			check(r, net_file_write("/mnt/matrix/ctl", "sync"), "the sync after carries Bob's room key in a to-device event, sealed by Olm on a one-time key this device uploaded")
 			listed = dir_names("/mnt/matrix/vectra", lbuf[:])
 			SEALED :: "000000006aad6af0.05bbf82ba4bd7084"
-			check(r, count_words(listed) == 5 && libodin.contains(listed, SEALED), "and an event he sealed with it, in the room")
+			check(r, count_words(listed) == 7 && libodin.contains(listed, SEALED), "and an event he sealed with it, in the room")
 			n = web_read_file("/mnt/matrix/vectra/" + SEALED + "/body", text[:])
 			check(r, string(text[:max(n, 0)]) == "Sealed from Bob.", "which opened with the session his key named: a sealed message opened by a test key")
 			n = web_read_file("/mnt/matrix/vectra/" + SEALED + "/from", text[:])
@@ -11861,13 +11864,68 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			kept := dir_names("/usr/glenda/lib/web/keys/matrix", lbuf[:])
 			check(r, kept != "" && kept != "?", "and the store keeps the session under keys/matrix, exported, for the history it opens after a restart")
 			check(r, !net_file_write("/mnt/matrix/new", "to: nowhere\n\nx"), "a message to a room this account is not in is refused before any wire")
+			// The long poll: what comes lands on event, and who is typing.
+			LIVE :: "000000006aad9200.76c371bcf5b5f12f"
+			WELCOME :: "000000006aadb910.5810b5f548b04061"
+			check(r, net_file_write("/mnt/matrix/ctl", "idle"), "idle starts the long poll: a thread syncs from the last batch as things come, and the write returns once it runs")
+			n = web_read_file("/mnt/matrix/ctl", text[:])
+			check(r, n > 0 && libodin.contains(string(text[:n]), "idle\n"), "and ctl says so")
+			ebuf: [256]u8
+			last := ""
+			for _ in 0 ..< 12 {
+				en := read_once("/mnt/matrix/event", ebuf[:])
+				last = string(ebuf[:max(en, 0)])
+				if last == "plain_one.example/" + LIVE + "\n" {
+					break
+				}
+			}
+			check(r, last == "plain_one.example/" + LIVE + "\n", "a read of event, the lines queued before it drained, is answered with the line the poll brought: a message in the plain room")
+			n = web_read_file("/mnt/matrix/plain_one.example/" + LIVE + "/body", text[:])
+			check(r, string(text[:max(n, 0)]) == "Live from the poll.", "which is in the room")
+			n = web_read_file("/mnt/matrix/vectra/typing", text[:])
+			check(r, string(text[:max(n, 0)]) == "@bob:two.example", "and a read of the sealed room's typing, which parks until someone is, answers Bob, off the sync's ephemeral events")
+			n = web_read_file("/mnt/matrix/vectra/members", text[:])
+			check(r, string(text[:max(n, 0)]) == "@glenda:one.example\n@bob:two.example", "and members is the two of them")
+			// The room's verbs.
+			check(r, net_file_write("/mnt/matrix/ctl", "join !secret:two.example"), "join names the room the invite in notify is for, by its id, and the write returns when the homeserver has taken it")
+			last = ""
+			for _ in 0 ..< 4 {
+				en := read_once("/mnt/matrix/event", ebuf[:])
+				last = string(ebuf[:max(en, 0)])
+				if last == "secret/" + WELCOME + "\n" {
+					break
+				}
+			}
+			check(r, last == "secret/" + WELCOME + "\n", "and the poll brings the room, named by its state, its welcome on event")
+			n = web_read_file("/mnt/matrix/secret/members", text[:])
+			check(r, string(text[:max(n, 0)]) == "@bob:two.example\n@glenda:one.example", "with its members")
+			n = web_read_file("/mnt/matrix/ctl", text[:])
+			check(r, n > 0 && libodin.contains(string(text[:n]), "room secret !secret:two.example"), "and ctl lists it")
+			check(r, net_file_write("/mnt/matrix/ctl", "invite secret @carol:one.example"), "invite names a room here and a user, and the homeserver takes it")
+			check(r, !net_file_write("/mnt/matrix/ctl", "invite nowhere @carol:one.example"), "to a room this account is not in it is refused before any wire")
+			check(r, net_file_write("/mnt/matrix/ctl", "leave secret"), "leave names a room here, and the homeserver takes it")
+			check(r, dir_names("/mnt/matrix/secret", lbuf[:]) == "members typing", "and the room is emptied, its directory staying for a reader's path")
+			n = web_read_file("/mnt/matrix/ctl", text[:])
+			check(r, n > 0 && !libodin.contains(string(text[:n]), "room secret"), "and ctl no longer lists it")
+			check(r, !net_file_write("/mnt/matrix/new", "to: secret\n\nx"), "and a message to it is refused")
+			check(r, net_file_write("/mnt/matrix/ctl", "idle off"), "idle off ends the poll")
+			stopped := false
+			for _ in 0 ..< PATIENCE * 5 {
+				n = web_read_file("/mnt/matrix/ctl", text[:])
+				if n > 0 && !libodin.contains(string(text[:n]), "idle\n") {
+					stopped = true
+					break
+				}
+				sync.delay(1)
+			}
+			check(r, stopped, "and the thread leaves inside the patience, ctl no longer saying idle")
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/matrix") == vfs.OK, "the mount of matrixfs comes down")
 		}
 		check(r, srv.remove("matrix") == vfs.OK, "and the kernel takes its name away")
 		check(r, wait(pm, PATIENCE * 5), "and matrixfs exits")
 		finish(r, pm, "and is taken down")
-		check(r, wait(hs, PATIENCE * 5), "and the homeserver, its nine requests served, exits")
-		check(r, string(hs.exit.text[:hs.exit.text_len]) == "ok", "with ok")
+		_ = notepg_kernel(hs.note_group, "kill")
+		check(r, end(hs, PATIENCE * 5), "and the homeserver, told to end, ends")
 		finish(r, hs, "and is taken down")
 	} else {
 		finish(r, pm, "matrixfs is taken down")

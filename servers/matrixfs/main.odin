@@ -11,11 +11,14 @@ replies to as `replyto`, by the event id's hash. An invite is a line in
 `notify/`. A sync is the source: a saved one's path, which is the
 offline proof, or the account's, with its token from `factotum`.
 
-    /mnt/matrix/ctl          sync [path]; login BASE USER; account BASE USER
+    /mnt/matrix/ctl          sync [path]; login BASE USER; account BASE USER;
+                             join ROOM; leave <room>; invite <room> USER; idle [off]
     /mnt/matrix/me           the user id and the device id, once logged in
     /mnt/matrix/new          a message out: to <room>, replyto, an empty line, the body
     /mnt/matrix/notify/      an invite: from the inviter, the room's name the body
     /mnt/matrix/<room>/      the room, one message directory per event
+    /mnt/matrix/<room>/members   who is in it, one a line
+    /mnt/matrix/<room>/typing    a read that parks, and answers who is typing
 
 `login BASE USER` sends the password `factotum` holds under
 `proto=pass` for the user at the host, and the access token comes back
@@ -26,9 +29,14 @@ named lands in the room. `seal.odin` is the seal: the device's keys
 made and uploaded at login, a message out in an encrypted room sealed
 by Megolm with the session's key shared by Olm first, and a sealed
 event in opened with the session its key named. `-s DIR` names the
-store, where `keys/matrix/` keeps the sessions that came. Not yet:
-`join`, `leave`, `invite`, `members`, `typing`, the long poll behind
-`event`, and the device requester.
+store, where `keys/matrix/` keeps the sessions that came. `join ROOM`
+joins a room by its id or alias, and it lands with the next sync;
+`leave <room>` leaves and empties it; `invite <room> USER` invites.
+`idle` is the long poll behind `event`: a thread syncs from the last
+batch with the server holding the request until something comes, and
+what comes lands as it would from `sync`, a message on `event`, who is
+typing in the room's `typing`. `idle off` ends it. Not yet: the device
+requester.
 */
 package matrixfs
 
@@ -47,7 +55,7 @@ NAME_MAX :: 64
 BASE_MAX :: 256
 ROOM_ID_MAX :: 256
 
-DICT :: "sync path            a saved sync's path into the rooms, or the account's sync with its token when no path is given\nlogin base user      log in at the server with the password factotum holds, the token kept by factotum\naccount base user    an account whose token factotum holds already\nwrite: new           a message out: a to line naming the room, a replyto line, an empty line, the body\nread: <room>/<id>    an event: from, date, subject, body, type, raw, hash, replyto, links\n"
+DICT :: "sync path            a saved sync's path into the rooms, or the account's sync with its token when no path is given\nlogin base user      log in at the server with the password factotum holds, the token kept by factotum\naccount base user    an account whose token factotum holds already\njoin room            join a room by its id or alias; it lands with the next sync\nleave room           leave a room, by its name here\ninvite room user     invite a user to a room\nidle                 sync from the server as things come, until idle off\nwrite: new           a message out: a to line naming the room, a replyto line, an empty line, the body\nread: <room>/<id>    an event: from, date, subject, body, type, raw, hash, replyto, links\nread: <room>/members who is in the room, one a line\nread: <room>/typing  parks, and answers who is typing\n"
 
 // A room known: its id, the conversation it is, its members, and
 // whether its messages are sealed.
@@ -98,7 +106,22 @@ Job_Kind :: enum u8 {
 	Sync,
 	Login,
 	Send,
+	Join,
+	Leave,
+	Invite,
+	Idle,
 }
+
+// The long poll: the thread that syncs as things come, or nil.
+Idle :: struct {
+	stop: bool, // `idle off` was said
+	io:   ^libthread.Ioproc,
+}
+
+IDLE_TIMEOUT :: "30000" // Milliseconds the server holds a sync
+IDLE_PACE :: 20 // Ticks between syncs when the server answered at once with nothing new
+
+idle: ^Idle
 
 net: libmsg.Net
 rooms: [MAX_ROOMS]Room
@@ -160,6 +183,46 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		set_me()
 		rebuild_status()
 		return 0
+	case "join":
+		room, _ := libmsg.word(rest)
+		if room == "" || !account.set {
+			return vectra9.EINVAL
+		}
+		return start_job(tag, len(text), .Join, room, "")
+	case "leave":
+		room, _ := libmsg.word(rest)
+		if room == "" || !account.set {
+			return vectra9.EINVAL
+		}
+		if room_by_name(room) == nil {
+			return vectra9.ENOENT
+		}
+		return start_job(tag, len(text), .Leave, room, "")
+	case "invite":
+		room, r2 := libmsg.word(rest)
+		user, _ := libmsg.word(r2)
+		if room == "" || user == "" || len(user) > NAME_MAX || !account.set {
+			return vectra9.EINVAL
+		}
+		if room_by_name(room) == nil {
+			return vectra9.ENOENT
+		}
+		return start_job(tag, len(text), .Invite, room, user)
+	case "idle":
+		off, _ := libmsg.word(rest)
+		if off == "off" {
+			if idle != nil {
+				idle.stop = true
+			}
+			return 0
+		}
+		if !account.set {
+			return vectra9.EINVAL
+		}
+		if idle != nil {
+			return vectra9.EBUSY
+		}
+		return start_job(tag, len(text), .Idle, "", "")
 	}
 	return vectra9.EINVAL
 }
@@ -227,12 +290,21 @@ job_thread :: proc "contextless" (arg: rawptr) {
 			err = do_login(j, string(j.arg[:j.alen]), string(j.arg2[:j.a2len]))
 		case .Send:
 			err = do_send(j)
+		case .Join:
+			err = do_join(j, string(j.arg[:j.alen]))
+		case .Leave:
+			err = do_leave(j, string(j.arg[:j.alen]))
+		case .Invite:
+			err = do_invite(j, string(j.arg[:j.alen]), string(j.arg2[:j.a2len]))
+		case .Idle:
+			err = do_idle(j)
 		}
 		libthread.ioclose(j.io)
 	}
 	if err != 0 && j.why != "" {
 		libuser.eprint("matrixfs: ", j.why, "\n")
 	}
+	// The write that asked, unless it was answered already, the way idle's is.
 	if req := lib9p.find_held_tag(&net.srv, j.tag); req != nil {
 		if err == 0 {
 			_ = lib9p.respond(req, vectra9.Rwrite{count = u32(j.count)})
@@ -403,7 +475,29 @@ take_sync :: proc(text: string) -> bool {
 			take_invite(id, room)
 		}
 	}
+	if left, has := libmsg.obj_of(rooms_obj, "leave"); has {
+		for id in (map[string]json.Value)(left) {
+			if r := room_by_id(id); r != nil {
+				forget_room(r)
+			}
+		}
+	}
 	return true
+}
+
+// forget_room takes a room this account left out of the table, and
+// empties its conversation, which stays, so a reader's path still walks.
+forget_room :: proc(r: ^Room) {
+	c := libmsg.conv(&net, string(r.name[:r.nlen]))
+	libmsg.conv_clear(c)
+	libmsg.cset(&net, c, "members", "")
+	libmsg.cset(&net, c, "typing", "")
+	nrooms -= 1
+	last := &rooms[nrooms]
+	if r != last {
+		r^ = last^
+	}
+	last^ = Room{}
 }
 
 // take_room names the room off its state and puts its timeline's
@@ -426,6 +520,34 @@ take_room :: proc(id: string, room: json.Object, text: string) {
 	}
 	take_state(r, room)
 	c := libmsg.conv(&net, string(r.name[:r.nlen]))
+	set_members(c, r)
+	_ = libmsg.conv_file(c, "typing", parks = true)
+	// Who is typing: the ephemeral m.typing, whose list is the whole truth.
+	if eph, has := libmsg.obj_of(room, "ephemeral"); has {
+		if events, has_events := libmsg.arr_of(eph, "events"); has_events {
+			for ev in events {
+				e, is := ev.(json.Object)
+				if !is || libmsg.str_of(e, "type") != "m.typing" {
+					continue
+				}
+				content, has_content := libmsg.obj_of(e, "content")
+				if !has_content {
+					continue
+				}
+				who := make([dynamic]u8, 0, 128)
+				defer delete(who)
+				if ids, has_ids := libmsg.arr_of(content, "user_ids"); has_ids {
+					for idv in ids {
+						if user, is_s := idv.(json.String); is_s {
+							libmsg.put(&who, string(user))
+							libmsg.put(&who, "\n")
+						}
+					}
+				}
+				libmsg.cset(&net, c, "typing", string(who[:]))
+			}
+		}
+	}
 	if timeline, has := libmsg.obj_of(room, "timeline"); has {
 		if events, has_events := libmsg.arr_of(timeline, "events"); has_events {
 			// Each event's own bytes, by its place in the array's text.
@@ -481,6 +603,17 @@ key_at :: proc(text: string, quoted: string, from: int, to: int) -> int {
 		return -1
 	}
 	return libmsg.skip_json_space(text, j + 1)
+}
+
+// set_members writes a room's members file, one a line.
+set_members :: proc(c: ^libmsg.Conv, r: ^Room) {
+	text := make([dynamic]u8, 0, 256)
+	defer delete(text)
+	for i in 0 ..< r.nmembers {
+		libmsg.put(&text, string(r.members[i][:r.mlen[i]]))
+		libmsg.put(&text, "\n")
+	}
+	libmsg.cset(&net, c, "members", string(text[:]))
 }
 
 // take_state reads a room's state for its members and its seal.
@@ -817,6 +950,118 @@ event_id_of :: proc(raw: string) -> string {
 	return string(keep[:n])
 }
 
+// -- The room's verbs --------------------------------------------------------------
+
+// do_join joins a room by its id or alias. The room lands with the next
+// sync, as the server tells it.
+do_join :: proc(j: ^Job, room: string) -> vectra9.Errno {
+	url: [BASE_MAX + ROOM_ID_MAX + 64]u8
+	text, status, ok := as_account(j.io, "POST", libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/join/", room), "Content-Type: application/json\n", "{}")
+	delete(text)
+	if !ok {
+		j.why = "factotum holds no token for the account, or the wire would not"
+		return vectra9.EPERM
+	}
+	if status != 200 {
+		j.why = "the server would not join the room"
+		return vectra9.EIO
+	}
+	return 0
+}
+
+// do_leave leaves a room named here, and empties it.
+do_leave :: proc(j: ^Job, name: string) -> vectra9.Errno {
+	r := room_by_name(name)
+	if r == nil {
+		return vectra9.ENOENT
+	}
+	url: [BASE_MAX + ROOM_ID_MAX + 64]u8
+	text, status, ok := as_account(j.io, "POST", libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/rooms/", string(r.id[:r.ilen]), "/leave"), "Content-Type: application/json\n", "{}")
+	delete(text)
+	if !ok {
+		j.why = "factotum holds no token for the account, or the wire would not"
+		return vectra9.EPERM
+	}
+	if status != 200 {
+		j.why = "the server would not let the account leave"
+		return vectra9.EIO
+	}
+	forget_room(r)
+	rebuild_status()
+	return 0
+}
+
+// do_invite invites a user to a room named here.
+do_invite :: proc(j: ^Job, name: string, user: string) -> vectra9.Errno {
+	r := room_by_name(name)
+	if r == nil {
+		return vectra9.ENOENT
+	}
+	body := make([dynamic]u8, 0, 128)
+	defer delete(body)
+	libmsg.put(&body, "{\"user_id\": ")
+	libmsg.put_json_string(&body, user)
+	libmsg.put(&body, "}")
+	url: [BASE_MAX + ROOM_ID_MAX + 64]u8
+	text, status, ok := as_account(j.io, "POST", libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/rooms/", string(r.id[:r.ilen]), "/invite"), "Content-Type: application/json\n", string(body[:]))
+	delete(text)
+	if !ok {
+		j.why = "factotum holds no token for the account, or the wire would not"
+		return vectra9.EPERM
+	}
+	if status != 200 {
+		j.why = "the server would not send the invite"
+		return vectra9.EIO
+	}
+	return 0
+}
+
+/*
+do_idle is the long poll behind `event`: a sync from the last batch
+with the server holding the request until something comes, taken the
+way `sync` takes one, again and again until `idle off`. The write that
+asked is answered once the loop runs. A server that answers at once
+with nothing new, a scripted one, is asked again after a pause.
+*/
+do_idle :: proc(j: ^Job) -> vectra9.Errno {
+	i := new(Idle)
+	i.io = j.io
+	idle = i
+	rebuild_status()
+	if req := lib9p.find_held_tag(&net.srv, j.tag); req != nil {
+		_ = lib9p.respond(req, vectra9.Rwrite{count = u32(j.count)})
+	}
+	err := vectra9.Errno(0)
+	for !i.stop {
+		url: [BASE_MAX + 256]u8
+		u := libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/sync?timeout=", IDLE_TIMEOUT, account.balen > 0 ? "&since=" : "", string(account.batch[:account.balen]))
+		before: [128]u8
+		bn := copy(before[:], account.batch[:account.balen])
+		text, status, ok := as_account(j.io, "", u, "", "")
+		if !ok || status != 200 {
+			delete(text)
+			j.why = i.stop ? "" : "idle: the session ended"
+			err = i.stop ? 0 : vectra9.EIO
+			break
+		}
+		taken := take_sync(string(text))
+		delete(text)
+		if !taken {
+			j.why = "idle: the server answered no sync"
+			err = vectra9.EIO
+			break
+		}
+		rebuild_status()
+		if string(before[:bn]) == string(account.batch[:account.balen]) && !i.stop {
+			_ = libthread.iosleep(j.io, IDLE_PACE)
+		}
+	}
+	idle = nil
+	free(i)
+	rebuild_status()
+	return err
+}
+
 // -- Small things ------------------------------------------------------------------
 
 room_by_id :: proc "contextless" (id: string) -> ^Room {
@@ -845,6 +1090,9 @@ rebuild_status :: proc() {
 		append(&status, ' ')
 		append(&status, ..account.user[:account.ulen])
 		append(&status, '\n')
+	}
+	if idle != nil {
+		append(&status, ..transmute([]u8)string("idle\n"))
 	}
 	for i in 0 ..< nrooms {
 		r := &rooms[i]
