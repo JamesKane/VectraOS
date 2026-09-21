@@ -587,11 +587,7 @@ keep_room_key :: proc(session_id: string, session_key_b64: string) {
 	}
 	slot.used = true
 	slot.ilen = copy(slot.id[:], session_id)
-	if store_len > 0 {
-		exported: [libolm.EXPORT_BYTES]u8
-		_ = libolm.session_export(&slot.session, exported[:])
-		_ = libmsg.keep_under(string(store[:store_len]), "keys/matrix", safe_name(session_id), exported[:], 0o600)
-	}
+	keep_session(safe_name(session_id), &slot.session)
 }
 
 // megolm_by_id answers the inbound session called `session_id`, or nil.

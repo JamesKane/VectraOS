@@ -138,9 +138,14 @@ start :: proc "c" (block: ^abi.Args) {
 	context = {}
 	#force_no_inline runtime._startup_runtime()
 	args := libuser.args(block)
-	for i := 1; i + 1 < len(args); i += 1 {
-		if args[i] == "-s" {
+	for i := 1; i < len(args); i += 1 {
+		if args[i] == "-s" && i + 1 < len(args) {
 			store_len = copy(store[:], args[i + 1])
+			i += 1
+		} else if args[i] == "-i" && i + 2 < len(args) {
+			ident_ulen = copy(ident_user[:], args[i + 1])
+			ident_dlen = copy(ident_dom[:], args[i + 2])
+			i += 2
 		}
 	}
 	libthread.main(threadmain, nil)
@@ -155,6 +160,11 @@ threadmain :: proc "contextless" (arg: rawptr) {
 	net.on_ctl = on_ctl
 	net.on_new = on_new
 	status = make([dynamic]u8, 0, 256)
+	// The store's key, and the history it opens: sealed sessions loaded.
+	if store_secret() {
+		loaded = load_store()
+	}
+	rebuild_status()
 	why := libmsg.serve(&net, "/srv/matrix")
 	libthread.threadexitsall(why == .Removed ? "" : "hangup")
 }
@@ -1117,6 +1127,12 @@ rebuild_status :: proc() {
 		append(&status, ..account.base[:account.blen])
 		append(&status, ' ')
 		append(&status, ..account.user[:account.ulen])
+		append(&status, '\n')
+	}
+	if loaded > 0 {
+		num: [24]u8
+		append(&status, ..transmute([]u8)string("store "))
+		append(&status, ..transmute([]u8)libuser.itoa(num[:], i64(loaded)))
 		append(&status, '\n')
 	}
 	if idle != nil {

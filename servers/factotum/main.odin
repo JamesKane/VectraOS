@@ -32,6 +32,8 @@ The rpc conversation, hex for every byte string:
     jwk                                             ->  jwk <json>
     proof htm=M htu=URL [nonce=N] [ath=<token>]     ->  proof <jws>
 
+    start secret user=U dom=D label=L               ->  secret <hex>
+
     start openpgp user=U dom=D                      ->  ok
     cert                                            ->  cert <hex>
     decrypt <hex session key packet body>           ->  session <hex>
@@ -47,6 +49,11 @@ P-256 key made here when the line is written, never leaving. `jwk` is
 its public half as a JWK, and `proof` signs one request's proof, its
 method, URL, the server's nonce and the token's hash, for `atfs` to
 carry as the `DPoP` header. The listing shows the key without its bytes.
+
+A `secret` derives a labelled thirty-two-byte key from the noise static
+key HKDF gives, so a program that must seal a file at rest, `matrixfs`'s
+key store, `docs/WEB.md` section 8, gets a key that is the passphrase's
+and lives nowhere. The static key never leaves.
 
 `proto=openpgp` is `docs/WEB.md` section 6's seal: an OpenPGP identity
 derived from the passphrase and a label, so it lives nowhere and a second
@@ -72,6 +79,7 @@ import "vsys:abi"
 import "vsys:lib9p"
 import "vsys:libauth"
 import "core:crypto/ecdsa"
+import "core:crypto/hkdf"
 import "vsys:libcrypto"
 import "vsys:libjws"
 import "vsys:libodin"
@@ -707,6 +715,7 @@ rpc_write :: proc(c: ^Conv, line: string) -> bool #no_bounds_check {
 }
 
 rpc_start :: proc(c: ^Conv, rest: string) -> bool #no_bounds_check {
+	hexline: [80]u8
 	role := rest
 	for i in 0 ..< len(rest) {
 		if rest[i] == ' ' {
@@ -756,6 +765,25 @@ rpc_start :: proc(c: ^Conv, rest: string) -> bool #no_bounds_check {
 		}
 		line: [REPLY_MAX]u8
 		set_reply(c, libuser.cat_into(line[:], role == "oauth" ? "token " : "password ", string(p.secret[:p.plen])))
+		return true
+	}
+	if role == "secret" {
+		dom, has_dom := attr(rest, "dom=")
+		label, has_label := attr(rest, "label=")
+		if !has_user || !has_dom || !has_label || len(label) > NAME_MAX {
+			set_reply(c, "error user=, dom= and label= wanted")
+			return false
+		}
+		k := key_find(user, dom)
+		if k == nil {
+			set_reply(c, "error no key for that user")
+			return false
+		}
+		secret: [32]u8
+		info: [NAME_MAX + 16]u8
+		hkdf.extract_and_expand(.SHA256, nil, k.spriv[:], transmute([]u8)libuser.cat_into(info[:], "factotum secret ", label), secret[:])
+		hex: [64]u8
+		set_reply(c, libuser.cat_into(hexline[:], "secret ", libcrypto.hex_encode(hex[:], secret[:])))
 		return true
 	}
 	dom, has_dom := attr(rest, "dom=")

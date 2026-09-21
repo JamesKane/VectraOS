@@ -11812,10 +11812,10 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
 	hs := start_path(r, "/bin/websrv", "a scripted homeserver starts", sargv)
-	mnames := [?]string{"matrixfs", "-s", "/usr/glenda/lib/web"}
+	mnames := [?]string{"matrixfs", "-s", "/usr/glenda/lib/web", "-i", "glenda", "home"}
 	margv := new(Argv)
 	_ = argv_from(margv, mnames[:])
-	pm := start_path(r, "/bin/matrixfs", "and matrixfs starts again, with a store", margv)
+	pm := start_path(r, "/bin/matrixfs", "and matrixfs starts again, with a store and an identity to seal it under", margv)
 	if hs != nil && pm != nil {
 		sync.delay(PATIENCE)
 		line_buf: [512]u8
@@ -11823,6 +11823,7 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 		base_buf: [128]u8
 		base := libodin_cat(base_buf[:], "http://", host, ":8081")
 		if check(r, await_posted("matrix"), "which posts /srv/matrix") && check(r, srv.mount(vfs.boot_namespace, "/srv/matrix", "/mnt/matrix") == vfs.OK, "and the kernel mounts it at /mnt/matrix") {
+			check(r, net_file_write("/mnt/factotum/ctl", "key proto=noise user=glenda dom=home !passphrase=open sesame"), "a noise key from the passphrase goes to factotum: the store's key is derived from it")
 			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=glenda server=", host, ":8081 !password=wrong")), "a password goes to factotum as a pass key, a wrong one first")
 			check(r, !net_file_write("/mnt/matrix/ctl", libodin_cat(line_buf[:], "login ", base, " glenda")), "and the homeserver refuses the login, and the write says so")
 			check(r, net_file_write("/mnt/factotum/ctl", libodin_cat(line_buf[:], "key proto=pass user=glenda server=", host, ":8081 !password=hunter2")), "then the right one")
@@ -11894,7 +11895,12 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			n = web_read_file("/mnt/matrix/ctl", text[:])
 			check(r, n > 0 && !libodin.contains(string(text[:n]), "verify BOBDEV"), "and ctl no longer asks")
 			kept := dir_names("/usr/glenda/lib/web/keys/matrix", lbuf[:])
-			check(r, kept != "" && kept != "?", "and the store keeps the session under keys/matrix, exported, for the history it opens after a restart")
+			check(r, kept != "" && kept != "?", "and the store keeps the session under keys/matrix, sealed, for the history it opens after a restart")
+			// The stored file is sealed under the passphrase key: a nonce, the
+			// 165-byte export, and a 16-byte tag, not the export in the clear.
+			sbuf: [512]u8
+			sn := web_read_file(libodin_cat(line_buf[:], "/usr/glenda/lib/web/keys/matrix/", kept), sbuf[:], raw = true)
+			check(r, sn == 12 + 165 + 16, "and the file is a nonce, the sealed export and its tag, not the export in the clear")
 			check(r, !net_file_write("/mnt/matrix/new", "to: nowhere\n\nx"), "a message to a room this account is not in is refused before any wire")
 			// The long poll: what comes lands on event, and who is typing.
 			LIVE :: "000000006aad9200.76c371bcf5b5f12f"
@@ -11961,6 +11967,22 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 		check(r, srv.remove("matrix") == vfs.OK, "and the kernel takes its name away")
 		check(r, wait(pm, PATIENCE * 5), "and matrixfs exits")
 		finish(r, pm, "and is taken down")
+		// The history opens after a restart: a fresh matrixfs on the same
+		// store and identity loads the sealed session, off the disk alone,
+		// no login and no sync.
+		r2names := [?]string{"matrixfs", "-s", "/usr/glenda/lib/web", "-i", "glenda", "home"}
+		r2argv := new(Argv)
+		_ = argv_from(r2argv, r2names[:])
+		pm2 := start_path(r, "/bin/matrixfs", "a fresh matrixfs starts on the same store and identity", r2argv)
+		if pm2 != nil && check(r, await_posted("matrix"), "which posts /srv/matrix") && check(r, srv.mount(vfs.boot_namespace, "/srv/matrix", "/mnt/matrix") == vfs.OK, "and the kernel mounts it") {
+			rtext: [512]u8
+			rn := web_read_file("/mnt/matrix/ctl", rtext[:])
+			check(r, rn > 0 && libodin.contains(string(rtext[:rn]), "store 1"), "and ctl says store 1: the sealed session opened under the key derived from the passphrase and was loaded, so history survives a restart")
+			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/matrix") == vfs.OK, "the mount comes down")
+		}
+		check(r, srv.remove("matrix") == vfs.OK, "and the kernel takes its name away")
+		check(r, wait(pm2, PATIENCE * 5), "and the fresh matrixfs exits")
+		finish(r, pm2, "and is taken down")
 		_ = notepg_kernel(hs.note_group, "kill")
 		check(r, end(hs, PATIENCE * 5), "and the homeserver, told to end, ends")
 		finish(r, hs, "and is taken down")

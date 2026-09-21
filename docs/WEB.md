@@ -1200,7 +1200,23 @@ it sent, and one from a device never seen `unknown device`; once the
 device is verified, what it seals after that carries nothing. On the
 boot line Bob's first sealed line is so marked, the requester runs
 for his device, and a second line of his that the poll brings after
-the yes is not. Not yet: the store sealed under the passphrase.
+the yes is not.
+
+The store is sealed under the passphrase, which ends step 5. A Megolm
+session that came in is exported and kept under `keys/matrix/` in the
+store, each file sealed with AES-256-GCM under a key `factotum` derives
+from the noise static key the passphrase became, for this identity and
+the label `matrix`: a nonce, the sealed export, and the tag. `-i user
+dom` names the fleet identity the key is derived for; without it, or
+without `-s`, nothing is written and nothing is loaded. At startup the
+sealed sessions are opened under the key and imported, their real ids
+recovered from the signing key inside, so history opens after a
+restart. `factotum` grew a `secret` the request asks for, the
+passphrase-derived key that lets a program seal a file at rest without
+the key ever touching the disk. On the boot line the stored file is a
+nonce, the export and the tag and not the export in the clear, and a
+fresh `matrixfs` on the same store and identity loads the session off
+the disk alone, its `ctl` saying `store 1`, no login and no sync.
 
 ### Step 6: publishing, and the ghost
 
