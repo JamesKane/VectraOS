@@ -614,9 +614,11 @@ the documents it points at.
    ratchet answers. The seal is in `matrixfs`: device keys up at login,
    a room's key across by Olm to each member's device, a room event
    sealed by Megolm and one opened, both ways against the scripted
-   homeserver's own second device. Next: the device requester, the
-   room's verbs (`join`, `leave`, `invite`, `members`, `typing`), the
-   long poll behind `event`, and the store sealed under the passphrase.
+   homeserver's own second device. The room's verbs are in: `join`,
+   `leave`, `invite`, and `members` and `typing` as files in the room,
+   `typing` a read that parks, both served by `libmsg` for any network;
+   and `idle` is the long poll behind `event`. Next: the device
+   requester, and the store sealed under the passphrase.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
