@@ -141,6 +141,7 @@ user_programs := [?]User_Program {
 	{name = "dnstest", path = "tests/dns"},
 	{name = "exportfs", path = "cmd/exportfs"},
 	{name = "listen", path = "cmd/listen"},
+	{name = "httpd", path = "cmd/httpd"},
 	{name = "srv", path = "cmd/srv"},
 	{name = "import", path = "cmd/import"},
 	{name = "cpu", path = "cmd/cpu"},

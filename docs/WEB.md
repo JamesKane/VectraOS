@@ -1218,6 +1218,22 @@ nonce, the export and the tag and not the export in the clear, and a
 fresh `matrixfs` on the same store and identity loads the session off
 the disk alone, its `ctl` saying `store 1`, no login and no sync.
 
+**Step 6 is under way.** `cmd/httpd` serves a directory as HTTP/1.1,
+static and nothing else. A `.md` file is rendered to HTML by
+`sys/libmark` and `sys/libdoc`, so a page is written once; a `/` asks
+for `index.html` or `index.md`; a static file is served as it is by its
+type; nothing is executed and no path climbs out of the root. With a
+port it announces `tcp!*!port` and serves a count of connections, or
+forever; with none it serves one connection on descriptors zero and
+one, the way `listen` runs it from `/lib/service/tcpNN`. The boot line
+writes a small site under a root, serves it, and fetches it back
+through `webfs`: the `.md` page rendered with its markup made safe, the
+stylesheet as it is, and the root answered by its index. Next: `gemd`
+the same directory on Gemini, `cmd/mkfeed`, `cmd/webmention` and
+`/mnt/mention`, the `dict` files and the two ghost classes. The ghost
+reading a timeline in the `social` class waits on `docs/GHOST.md` step
+1, which is not built.
+
 ### Step 6: publishing, and the ghost
 
 `cmd/httpd`, `cmd/gemd`, `cmd/mkfeed`, `cmd/webmention`, `/mnt/mention`,

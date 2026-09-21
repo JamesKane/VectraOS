@@ -12369,6 +12369,10 @@ verify_mailfs :: proc(r: ^Result) {
 				// token, and a message put in a room.
 				verify_matrix_login(r, host)
 
+				// Publishing: a directory served as HTTP, static and .md
+				// rendered, fetched back through webfs.
+				verify_httpd(r, host)
+
 				// The wrong password: the server refuses the login, and the fetch says so.
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")
 				check(r, !net_file_write("/mnt/mail/ctl", "fetch"), "is refused by the server, and its fetch fails")
@@ -12532,10 +12536,117 @@ verify_webfs :: proc(r: ^Result) {
 	finish(r, p, "and is taken down")
 }
 
+/*
+verify_httpd runs webfs and cmd/httpd on this machine's stack. A small
+site is written under a root, httpd serves it, and webfs fetches it
+back: a .md page rendered to HTML, a static file served as it is, and a
+directory answered by its index. docs/WEB.md section 9's "a page served
+both ways", the HTTP half.
+*/
+@(private = "file")
+verify_httpd :: proc(r: ^Result, host: string) {
+	wnames := [?]string{"webfs", "-s", "/usr/glenda/lib/web"}
+	wargv := new(Argv)
+	_ = argv_from(wargv, wnames[:])
+	pw := start_path(r, "/bin/webfs", "webfs starts again, to fetch the site back", wargv)
+	if pw == nil {
+		return
+	}
+	if !check(r, await_posted("web"), "and posts /srv/web") || !check(r, srv.mount(vfs.boot_namespace, "/srv/web", "/mnt/web") == vfs.OK, "which the kernel mounts") {
+		finish(r, pw, "and webfs is taken down")
+		return
+	}
+	// The site: a root, an index, a page and a static file.
+	_ = make_disk_dir("/usr/glenda/site")
+	made := write_disk_file("/usr/glenda/site/index.md", "# Home\n\nWelcome to the site.\n\n- one\n- two\n\n[the page](/page.md)\n")
+	made = write_disk_file("/usr/glenda/site/page.md", "# The Page\n\nA paragraph with <b>markup</b> & an ampersand.\n\n> a quote\n") && made
+	made = write_disk_file("/usr/glenda/site/style.css", "body { color: black; }\n") && made
+	check(r, made, "a small site is written under a root: an index, a page and a stylesheet")
+	// Five connections, one per fetch below, then httpd exits cleanly the
+	// way the step-0 web server does, so its listen leaves nothing held.
+	sargs := [?]string{"httpd", "-r", "/usr/glenda/site", "8082", "5"}
+	sargv := new(Argv)
+	_ = argv_from(sargv, sargs[:])
+	ps := start_path(r, "/bin/httpd", "httpd starts, the site served as HTTP", sargv)
+	if ps != nil {
+		sync.delay(PATIENCE)
+		url_buf: [128]u8
+		body: [4096]u8
+		hash: [80]u8
+		// The .md page, rendered to HTML.
+		bn, _, ok := web_fetch(libodin_cat(url_buf[:], "http://", host, ":8082/page.md"), body[:], hash[:])
+		got := string(body[:max(bn, 0)])
+		check(r, ok && libodin.contains(got, "<h1>The Page</h1>") && libodin.contains(got, "<p>A paragraph with &lt;b&gt;markup&lt;/b&gt; &amp; an ampersand.</p>") && libodin.contains(got, "<blockquote>a quote</blockquote>"), "a .md page is rendered to HTML, its heading, its paragraph with the markup made safe, and its quote")
+		// The static file, served as it is.
+		bn, _, ok = web_fetch(libodin_cat(url_buf[:], "http://", host, ":8082/style.css"), body[:], hash[:])
+		check(r, ok && string(body[:max(bn, 0)]) == "body { color: black; }\n", "a static file is served as it is")
+		// The root, answered by its index.
+		bn, _, ok = web_fetch(libodin_cat(url_buf[:], "http://", host, ":8082/"), body[:], hash[:])
+		check(r, ok && libodin.contains(string(body[:max(bn, 0)]), "<h1>Home</h1>") && libodin.contains(string(body[:max(bn, 0)]), "<li>one</li>"), "a directory is answered by its index, its list rendered")
+		// A page that is not there: httpd answers a 404, whose body says
+		// so; webfs serves the body of a non-200, so the body is the proof.
+		bn, _, _ = web_fetch(libodin_cat(url_buf[:], "http://", host, ":8082/nope.md"), body[:], hash[:])
+		check(r, libodin.contains(string(body[:max(bn, 0)]), "not found"), "a page that is not there is a 404, whose body says not found")
+		// A path that climbs out of the root is not served, whether the
+		// client normalised it away or httpd refused it.
+		bn, _, _ = web_fetch(libodin_cat(url_buf[:], "http://", host, ":8082/../secret"), body[:], hash[:])
+		got2 := string(body[:max(bn, 0)])
+		check(r, libodin.contains(got2, "not found") || libodin.contains(got2, "bad request"), "and a path that climbs out of the root is not served")
+		// Its five connections served, httpd exits on its own; a kill is
+		// the fallback if a fetch never reached it.
+		if !wait(ps, PATIENCE * 5) {
+			_ = notepg_kernel(ps.note_group, "kill")
+			_ = end(ps, PATIENCE * 5)
+		}
+		check(r, exit_done(ps), "and httpd, its five connections served, exits")
+		finish(r, ps, "and is taken down")
+	} else {
+		finish(r, ps, "httpd is taken down")
+	}
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
+	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	finish(r, pw, "and is taken down")
+}
+
+// make_disk_dir makes a directory on the disk, true if it is there after.
+@(private = "file")
+make_disk_dir :: proc(path: string) -> bool {
+	c, err := vfs.create_path(vfs.boot_namespace, path, vfs.O_RDONLY, vfs.DMDIR | 0o755)
+	if err == vfs.OK {
+		vfs.chan_close(c)
+		return true
+	}
+	// Already there is as good as made.
+	c2, e2 := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
+	if e2 == vfs.OK {
+		vfs.chan_close(c2)
+		return true
+	}
+	return false
+}
+
+// write_disk_file writes `content` to `path`, replacing what was there:
+// a file persisted on the disk from a last boot is removed first, the way
+// the servers overwrite, since kfs create does not truncate.
+@(private = "file")
+write_disk_file :: proc(path: string, content: string) -> bool {
+	if old, oerr := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY); oerr == vfs.OK {
+		_ = vfs.chan_remove(old)
+		vfs.chan_close(old)
+	}
+	c, err := vfs.create_path(vfs.boot_namespace, path, vfs.O_WRONLY, 0o644)
+	if err != vfs.OK {
+		return false
+	}
+	defer vfs.chan_close(c)
+	n, werr := vfs.chan_write(c, 0, transmute([]u8)content)
+	return werr == vfs.OK && n == len(content)
+}
+
 // web_read_file reads a whole small file into `into` and answers the count,
 // or -1. Newlines at the end are trimmed unless `raw`, since a name file ends
 // with one and a stored body is compared byte for byte.
-@(private = "file")
 web_read_file :: proc(path: string, into: []u8, raw := false) -> int {
 	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
 	if err != vfs.OK {
