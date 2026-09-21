@@ -625,8 +625,20 @@ the documents it points at.
    the passphrase: each exported session is kept sealed with AES-GCM
    under a key `factotum` derives from the passphrase for the identity
    `-i` names, and loaded at startup, so history opens after a restart.
-   **Step 5 is complete**: every item section 8 names is in. Next: step
-   6, publishing and the ghost.
+      under the passphrase, which ends step 5. **Step 5 is complete**: every
+   item section 8 names is in.
+
+   **Step 6 is under way, its publishing half done.** `cmd/httpd` serves a
+   directory as HTTP with `.md` rendered to HTML, `cmd/gemd` the same
+   directory as Gemini over TLS, and `cmd/mkfeed` an Atom feed for it.
+   Webmention is in both ways: `httpd` takes a `POST /mention`, verifies
+   the source links here, and keeps it; `servers/mentionfs` serves the
+   kept mentions at `/mnt/mention`; `cmd/webmention` tells each target's
+   endpoint. All proven on the boot line, both directions and the
+   control. The two ghost classes (`social`, `post`) are staged under
+   `/lib/ghost/ns`. Left: the boot line's last clause, the ghost reading
+   a timeline in the `social` class, blocked on `docs/GHOST.md` step 1,
+   which is unbuilt. That plan's `ghost` and `ask` come first.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a

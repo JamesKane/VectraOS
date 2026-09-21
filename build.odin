@@ -1411,6 +1411,13 @@ stage_vectra :: proc(arch: string, host: string) {
 	}
 	copy_file("apps/rc/rcmain", fmt.tprintf("%s/lib/rcmain", root))
 	copy_file("apps/rc/init", fmt.tprintf("%s/lib/init", root))
+	// The ghost's namespace classes, docs/WEB.md section 10: what a task
+	// may reach. Data for docs/GHOST.md's ghost, which reads them; inert
+	// until it is built.
+	ensure_dir(fmt.tprintf("%s/lib/ghost", root))
+	ensure_dir(fmt.tprintf("%s/lib/ghost/ns", root))
+	copy_file("lib/ghost/ns/social", fmt.tprintf("%s/lib/ghost/ns/social", root))
+	copy_file("lib/ghost/ns/post", fmt.tprintf("%s/lib/ghost/ns/post", root))
 	// The namespace as a file, docs/FLEET.md step 3: the binds a fresh process
 	// starts from, and the self-test's own to replay (kept out of /lib/tests,
 	// which tools.rc enumerates).

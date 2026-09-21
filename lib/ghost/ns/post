@@ -1,0 +1,13 @@
+# /lib/ghost/ns/post: a task that may post, docs/WEB.md section 10. It
+# is `social`, and the `new` of each network is reachable, with the
+# requester in front of it: a write to `new` asks the person first. A
+# task that talks the model into posting still finds a person who must
+# say yes.
+bind /$cputype/bin /bin
+bind -a /rc/bin /bin
+bind /mnt/plumb /mnt/plumb
+bind /mnt/mail /mnt/mail
+bind /mnt/matrix /mnt/matrix
+bind /mnt/fedi /mnt/fedi
+bind /mnt/at /mnt/at
+bind /mnt/mention /mnt/mention

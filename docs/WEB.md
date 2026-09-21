@@ -1271,6 +1271,22 @@ classes.
 Boot line: a page served both ways, a mention in and out with its
 control, and the ghost reading a timeline in the `social` class.
 
+**Where it stands.** The publishing half is in and proven. `cmd/httpd`
+serves a directory as HTTP, static and `.md` rendered to HTML;
+`cmd/gemd` serves the same directory as Gemini over TLS, the `.md` raw;
+`cmd/mkfeed` writes an Atom feed for it. Webmention is in both ways:
+`httpd` advertises its endpoint and takes a `POST /mention`, fetching
+the source and keeping it only when it links to the target, and
+`servers/mentionfs` serves the kept mentions at `/mnt/mention`, filed
+under the page each is about; `cmd/webmention` reads a page and tells
+each target's endpoint. The boot line proves a page served both ways, a
+mention out to a scripted endpoint, and one in with its control. Every
+network server already serves its `dict`. The two ghost classes,
+`social` and `post`, are staged under `/lib/ghost/ns`. The one item
+left is the boot line's last clause, the ghost reading a timeline in
+the `social` class, which needs `docs/GHOST.md` step 1's `ghost`, not
+yet built; the classes wait for it, inert until then.
+
 ### Deferred, with the reason written down
 
 - **JavaScript.** A page that is a program needs an engine, and an
