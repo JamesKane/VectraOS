@@ -143,6 +143,8 @@ user_programs := [?]User_Program {
 	{name = "listen", path = "cmd/listen"},
 	{name = "httpd", path = "cmd/httpd"},
 	{name = "mkfeed", path = "cmd/mkfeed"},
+	{name = "webmention", path = "cmd/webmention"},
+	{name = "mentionfs", path = "servers/mentionfs"},
 	{name = "srv", path = "cmd/srv"},
 	{name = "import", path = "cmd/import"},
 	{name = "cpu", path = "cmd/cpu"},

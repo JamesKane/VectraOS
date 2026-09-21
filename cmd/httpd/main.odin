@@ -42,6 +42,9 @@ start :: proc "c" (block: ^abi.Args) {
 		if args[i] == "-r" && i + 1 < len(args) {
 			root = string(root_buf[:copy(root_buf[:], args[i + 1])])
 			i += 1
+		} else if args[i] == "-m" && i + 1 < len(args) {
+			mention_store = string(mention_buf[:copy(mention_buf[:], args[i + 1])])
+			i += 1
 		} else if port == "" {
 			port = args[i]
 		} else if !seen_count {
@@ -308,7 +311,9 @@ respond :: proc(wfd: int, status: int, ctype: string, body: string, head: bool) 
 	head_buf: [512]u8
 	num: [24]u8
 	reason := status == 200 ? "OK" : status == 404 ? "Not Found" : status == 400 ? "Bad Request" : status == 202 ? "Accepted" : status == 405 ? "Method Not Allowed" : "Error"
-	h := libuser.cat_into(head_buf[:], "HTTP/1.1 ", libuser.itoa(num[:], i64(status)), " ", reason, "\r\nContent-Type: ", ctype, "\r\nContent-Length: ", libuser.itoa(num[:], i64(len(body))), "\r\nConnection: close\r\n\r\n")
+	// The Webmention endpoint is advertised on every response, so a client
+	// with a page here discovers where to tell us about a link to it.
+	h := libuser.cat_into(head_buf[:], "HTTP/1.1 ", libuser.itoa(num[:], i64(status)), " ", reason, "\r\nContent-Type: ", ctype, "\r\nContent-Length: ", libuser.itoa(num[:], i64(len(body))), "\r\nLink: </mention>; rel=\"webmention\"\r\nConnection: close\r\n\r\n")
 	_ = libuser.write_full(wfd, transmute([]u8)h)
 	if !head && len(body) > 0 {
 		_ = libuser.write_full(wfd, transmute([]u8)body)

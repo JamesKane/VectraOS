@@ -12373,6 +12373,10 @@ verify_mailfs :: proc(r: ^Result) {
 				// rendered, fetched back through webfs.
 				verify_httpd(r, host)
 
+				// The two-way link: a mention out to a scripted endpoint,
+				// and one in, verified, kept and served at /mnt/mention.
+				verify_webmention(r, host)
+
 				// The wrong password: the server refuses the login, and the fetch says so.
 				check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "account nobody ", host, " 1143 plain")), "a second account, whose password is wrong")
 				check(r, !net_file_write("/mnt/mail/ctl", "fetch"), "is refused by the server, and its fetch fails")
@@ -12621,6 +12625,120 @@ verify_httpd :: proc(r: ^Result, host: string) {
 		finish(r, ps, "and is taken down")
 	} else {
 		finish(r, ps, "httpd is taken down")
+	}
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
+	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	finish(r, pw, "and is taken down")
+}
+
+/*
+verify_webmention runs webfs, a scripted endpoint, httpd and mentionfs.
+It proves the two-way link both ways: cmd/webmention finds the link in a
+page and tells a scripted endpoint, which records the source and target;
+and a mention posted to httpd, whose source links to the target, is
+verified, kept, and served by mentionfs at /mnt/mention, while a source
+that does not link here is refused. docs/WEB.md section 9.
+*/
+@(private = "file")
+verify_webmention :: proc(r: ^Result, host: string) {
+	wnames := [?]string{"webfs", "-s", "/usr/glenda/lib/web"}
+	wargv := new(Argv)
+	_ = argv_from(wargv, wnames[:])
+	pw := start_path(r, "/bin/webfs", "webfs starts again, for the mentions", wargv)
+	if pw == nil {
+		return
+	}
+	if !check(r, await_posted("web"), "and posts /srv/web") || !check(r, srv.mount(vfs.boot_namespace, "/srv/web", "/mnt/web") == vfs.OK, "which the kernel mounts") {
+		finish(r, pw, "and webfs is taken down")
+		return
+	}
+	// The scripted endpoint, and httpd with a mention store.
+	enames := [?]string{"websrv", "8083", "99"}
+	eargv := new(Argv)
+	_ = argv_from(eargv, enames[:])
+	es := start_path(r, "/bin/websrv", "a scripted endpoint starts", eargv)
+	hnames := [?]string{"httpd", "-r", "/usr/glenda/site", "-m", "/usr/glenda/lib/web", "8082", "99"}
+	hargv := new(Argv)
+	_ = argv_from(hargv, hnames[:])
+	ph := start_path(r, "/bin/httpd", "httpd starts, with a mention store", hargv)
+	if es != nil && ph != nil {
+		sync.delay(PATIENCE)
+		url_buf: [160]u8
+		line_buf: [256]u8
+		body: [4096]u8
+		hash: [80]u8
+		// -- Out: a page's link told to the endpoint --------------------------
+		// A page of the person's own, linking to the endpoint's target.
+		src_link := libodin_cat(line_buf[:], "http://", host, ":8083/wm-target")
+		made := write_disk_file("/usr/glenda/site/out.md", libodin_cat(body[:], "# Out\n\nA nod to [a page](", src_link, ").\n"))
+		check(r, made, "a page is written that links to a page with an endpoint")
+		mnames := [?]string{"webmention", "-s", "http://vectra.example/out.html", "/usr/glenda/site/out.md"}
+		margv := new(Argv)
+		_ = argv_from(margv, mnames[:])
+		pm := start_path(r, "/bin/webmention", "webmention reads the page and tells each link", margv)
+		if pm != nil {
+			check(r, wait(pm, PATIENCE * 5), "and webmention exits")
+			finish(r, pm, "and is taken down")
+			rn := web_read_file("/usr/glenda/wm-received.txt", body[:], raw = true)
+			got := string(body[:max(rn, 0)])
+			tgt_buf: [160]u8
+			want_tgt := libodin_cat(tgt_buf[:], "target=http://", host, ":8083/wm-target")
+			check(r, libodin.contains(got, "source=http://vectra.example/out.html") && libodin.contains(got, want_tgt), "the endpoint, discovered from the target's Link header, was told the source and the target")
+		}
+		// -- In: a mention received, verified, and served ---------------------
+		// A source that links to the target here is a mention kept. Its URL
+		// keeps its own buffer, since url_buf is reused for the POST below.
+		src_buf: [96]u8
+		src_url := libodin_cat(src_buf[:], "http://", host, ":8083/wm-source")
+		form: [512]u8
+		fn := libodin_cat(form[:], "source=", src_url, "&target=http%3A%2F%2Fvectra.example%2Fpage.html")
+		// httpd's answer body is the proof: web_fetch reports ok on a 2xx.
+		bn, _, ok := web_fetch(libodin_cat(url_buf[:], "http://", host, ":8082/mention"), body[:], hash[:], post = fn)
+		check(r, ok && libodin.contains(string(body[:max(bn, 0)]), "accepted"), "a mention posted to httpd, whose source links to the target, is accepted")
+		// A source that does not link here is refused, its body saying so.
+		nn := libodin_cat(form[:], "source=http://", host, ":8083/wm-nolink&target=http%3A%2F%2Fvectra.example%2Fpage.html")
+		bn, _, _ = web_fetch(libodin_cat(url_buf[:], "http://", host, ":8082/mention"), body[:], hash[:], post = nn)
+		check(r, libodin.contains(string(body[:max(bn, 0)]), "does not link"), "and one whose source does not link here is refused, the control")
+		// mentionfs serves the kept mention at /mnt/mention.
+		snames := [?]string{"mentionfs", "-s", "/usr/glenda/lib/web"}
+		sargv := new(Argv)
+		_ = argv_from(sargv, snames[:])
+		pms := start_path(r, "/bin/mentionfs", "mentionfs starts on the mention store", sargv)
+		if pms != nil && check(r, await_posted("mention"), "which posts /srv/mention") && check(r, srv.mount(vfs.boot_namespace, "/srv/mention", "/mnt/mention") == vfs.OK, "and the kernel mounts it at /mnt/mention") {
+			lbuf: [1024]u8
+			listing := dir_names("/mnt/mention", lbuf[:])
+			check(r, libodin.contains(listing, "page.html"), "the mention is filed under the page it is about, page.html")
+			ids := dir_names("/mnt/mention/page.html", lbuf[:])
+			id := ids
+			for i in 0 ..< len(ids) {
+				if ids[i] == ' ' {
+					id = ids[:i]
+					break
+				}
+			}
+			check(r, len(id) > 0, "which holds the mention as a message")
+			n := web_read_file(libodin_cat(line_buf[:], "/mnt/mention/page.html/", id, "/from"), body[:])
+			check(r, string(body[:max(n, 0)]) == src_url, "from is the source that mentioned the page")
+			n = web_read_file(libodin_cat(line_buf[:], "/mnt/mention/page.html/", id, "/subject"), body[:])
+			check(r, string(body[:max(n, 0)]) == "http://vectra.example/page.html", "subject is the target page")
+			n = web_read_file(libodin_cat(line_buf[:], "/mnt/mention/page.html/", id, "/body"), body[:])
+			check(r, string(body[:max(n, 0)]) == "Source", "and body is the source's title, off the page httpd fetched")
+			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/mention") == vfs.OK, "the mount of mentionfs comes down")
+		}
+		check(r, srv.remove("mention") == vfs.OK, "and the kernel takes mentionfs's name away")
+		_ = notepg_kernel(pms.note_group, "kill")
+		check(r, end(pms, PATIENCE * 5), "and mentionfs, told to end, ends")
+		finish(r, pms, "and is taken down")
+		_ = notepg_kernel(ph.note_group, "kill")
+		check(r, end(ph, PATIENCE * 5), "httpd, told to end, ends")
+		finish(r, ph, "and is taken down")
+		_ = notepg_kernel(es.note_group, "kill")
+		check(r, end(es, PATIENCE * 5), "and the endpoint, told to end, ends")
+		finish(r, es, "and is taken down")
+	} else {
+		finish(r, ph, "httpd is taken down")
+		finish(r, es, "and the endpoint")
 	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")

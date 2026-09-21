@@ -94,6 +94,9 @@ ROOT_NODES := [?]Static_Node {
 	{name = "at", parent = 6, dir = true},
 	// Where chat is mounted, `docs/WEB.md` section 8: a person's rooms.
 	{name = "matrix", parent = 6, dir = true},
+	// Where the mentions a person's pages drew are mounted, `docs/WEB.md`
+	// section 9: the other end of the two-way link.
+	{name = "mention", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

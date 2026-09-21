@@ -489,6 +489,46 @@ serve_one :: proc(lfd: i64, served: string) {
 		libodin.put_uint(&hs, u64(len(b)))
 		libodin.put_str(&hs, "\r\nConnection: close\r\n\r\n")
 		ok = libuser.write_full(int(dfd), transmute([]u8)libodin.str(&hs)) && libuser.write_full(int(dfd), transmute([]u8)b)
+	// Webmention, docs/WEB.md section 9. `/wm-target` advertises the
+	// endpoint in a Link header, for a sender to discover. `/mention`
+	// records what a sender posted, into a file the test reads.
+	// `/wm-source` is a page that links to the target httpd verifies
+	// against, and `/wm-nolink` one that does not.
+	case "/wm-target":
+		ok = say_json_with(dfd, 200, "Link: </mention>; rel=\"webmention\"\r\n", "a page with an endpoint\n")
+	case "/mention":
+		src := ""
+		tgt := ""
+		pos := 0
+		for pos < len(body) {
+			amp := pos
+			for amp < len(body) && body[amp] != '&' {
+				amp += 1
+			}
+			pair := body[pos:amp]
+			pos = amp + 1
+			if len(pair) > 7 && pair[:7] == "source=" {
+				src = pair[7:]
+			} else if len(pair) > 7 && pair[:7] == "target=" {
+				tgt = pair[7:]
+			}
+		}
+		// The values arrive form-encoded; a real endpoint decodes them.
+		sbuf: [512]u8
+		tbuf: [512]u8
+		sn := wm_url_decode(src, sbuf[:])
+		tn := wm_url_decode(tgt, tbuf[:])
+		rec: [1200]u8
+		_ = libuser.remove(WM_OUT)
+		if wfd := libuser.create(WM_OUT, abi.O_WRONLY, 0o644); wfd >= 0 {
+			_ = libuser.write_full(int(wfd), transmute([]u8)libuser.cat_into(rec[:], "source=", string(sbuf[:sn]), " target=", string(tbuf[:tn]), "\n"))
+			_ = libuser.close(int(wfd))
+		}
+		ok = say_json(dfd, 202, "accepted\n")
+	case "/wm-source":
+		ok = say_json(dfd, 200, "<html><head><title>Source</title></head><body><p>See <a href=\"http://vectra.example/page.html\">the page</a>.</p></body></html>\n")
+	case "/wm-nolink":
+		ok = say_json(dfd, 200, "<html><head><title>Unrelated</title></head><body><p>Nothing here.</p></body></html>\n")
 	case "/":
 		ok = libuser.write_full(int(dfd), transmute([]u8)string(CHUNKED))
 	case "/gz":
@@ -801,6 +841,7 @@ uploaded, and seals an event with it for the sync after her first.
 BOB_USER :: "@bob:two.example"
 BOB_DEVICE :: "BOBDEV"
 BOB_OUT :: "/usr/glenda/matrix-bob.txt"
+WM_OUT :: "/usr/glenda/wm-received.txt"
 
 bob_identity: [32]u8
 bob_identity_pub: [32]u8
@@ -1104,6 +1145,49 @@ bob_live_sync :: proc() -> string {
 	evbuf: [2048]u8
 	ev := bob_sealed_event(evbuf[:], "$sealed_live", "1789760000000", "Sealed again from Bob.")
 	return libuser.cat_into(out[:], "{\"next_batch\": \"s_4\", \"rooms\": {\"join\": {\"!vectra:one.example\": {\"ephemeral\": {\"events\": [{\"type\": \"m.typing\", \"content\": {\"user_ids\": [\"@bob:two.example\"]}}]}, \"timeline\": {\"events\": [", ev, "], \"prev_batch\": \"p_4\", \"limited\": false}}, \"!plain:one.example\": {\"timeline\": {\"events\": [{\"type\": \"m.room.message\", \"event_id\": \"$live1\", \"sender\": \"@carol:one.example\", \"origin_server_ts\": 1789760000000, \"content\": {\"msgtype\": \"m.text\", \"body\": \"Live from the poll.\"}}], \"prev_batch\": \"p_4\", \"limited\": false}}}}}\n")
+}
+
+// wm_url_decode decodes a form value's percent-escapes and pluses.
+wm_url_decode :: proc "contextless" (s: string, out: []u8) -> int {
+	n := 0
+	i := 0
+	for i < len(s) && n < len(out) {
+		c := s[i]
+		if c == '+' {
+			out[n] = ' '
+			n += 1
+			i += 1
+		} else if c == '%' && i + 2 < len(s) {
+			hi := wm_hex(s[i + 1])
+			lo := wm_hex(s[i + 2])
+			if hi >= 0 && lo >= 0 {
+				out[n] = u8(hi << 4 | lo)
+				n += 1
+				i += 3
+			} else {
+				out[n] = c
+				n += 1
+				i += 1
+			}
+		} else {
+			out[n] = c
+			n += 1
+			i += 1
+		}
+	}
+	return n
+}
+
+wm_hex :: proc "contextless" (c: u8) -> int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c - 'a') + 10
+	case c >= 'A' && c <= 'F':
+		return int(c - 'A') + 10
+	}
+	return -1
 }
 
 // header_value answers a request header's value by its name, lower

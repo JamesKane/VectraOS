@@ -1232,9 +1232,23 @@ stylesheet as it is, and the root answered by its index. `cmd/mkfeed`
 writes an Atom feed for a directory, one entry a page, its title the
 page's first heading and its link the page served as `.html`, so a site
 is a feed the moment it exists and `feedfs` follows it; the boot line
-writes the feed and serves it back through `httpd`. Next: `gemd`
-the same directory on Gemini, `cmd/webmention` and
-`/mnt/mention`, the `dict` files and the two ghost classes. The ghost
+writes the feed and serves it back through `httpd`. Webmention is in,
+both ways. `httpd` advertises its endpoint in a `Link` header, and a
+POST to `/mention` carries `source` and `target`: `httpd` fetches the
+source through `webfs`, and, when it links to the target, writes it as
+a file under the mention store, refusing a source that does not link
+here. `mentionfs` serves that store at `/mnt/mention`, each mention a
+message filed under the page it is about, its `from` the source, its
+subject the target, its body the source's title, so a page has a
+`notify/`-like conversation. `cmd/webmention` reads a page, finds its
+links, discovers each target's endpoint from the `Link` header, and
+posts the mention. The boot line proves both directions and the
+control: a mention sent to a scripted endpoint that records the source
+and target, and one received, verified, kept and served, with a source
+that does not link here refused. `factotum` gained no part in this; a
+mention is public. Next: `gemd` the same directory on Gemini, the
+`dict` files and the two ghost classes. The ghost reading a timeline in
+the `social` class waits on `docs/GHOST.md` step 1. The ghost
 reading a timeline in the `social` class waits on `docs/GHOST.md` step
 1, which is not built.
 
