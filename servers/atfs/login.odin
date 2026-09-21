@@ -129,8 +129,7 @@ create_session :: proc(l: ^Login) -> bool {
 		l.why = "the session answered no token"
 		return false
 	}
-	line: [512]u8
-	if !libmsg.factotum_write(libuser.cat_into(line[:], "key proto=oauth user=", user, " server=", host, " !token=", token)) {
+	if !libmsg.keep_token(user, host, token) {
 		l.why = "factotum would not take the token"
 		return false
 	}
@@ -164,13 +163,6 @@ set_me :: proc() {
 	} else {
 		net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "\n")
 	}
-}
-
-// ask_token asks factotum for the account's token, into `into`.
-ask_token :: proc(into: []u8) -> (string, bool) {
-	ask: [512]u8
-	question := libuser.cat_into(ask[:], "start oauth user=", string(account.user[:account.ulen]), " server=", libmsg.host_of(string(account.base[:account.blen])))
-	return libmsg.factotum_ask(question, "token ", into)
 }
 
 // timeline_url answers the URL of one of the account's own timelines,

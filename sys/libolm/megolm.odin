@@ -13,7 +13,7 @@ package libolm
 import "core:crypto/ed25519"
 
 Ratchet :: struct {
-	data:    [4][32]u8,
+	data:    [RATCHET_BYTES]u8, // Four parts of thirty-two bytes
 	counter: u32,
 }
 
@@ -25,9 +25,7 @@ ratchet_init :: proc(m: ^Ratchet, seed: []u8, counter: u32) -> bool {
 	if len(seed) < RATCHET_BYTES {
 		return false
 	}
-	for j in 0 ..< 4 {
-		copy(m.data[j][:], seed[j * 32:(j + 1) * 32])
-	}
+	copy(m.data[:], seed[:RATCHET_BYTES])
 	m.counter = counter
 	return true
 }
@@ -36,7 +34,12 @@ ratchet_init :: proc(m: ^Ratchet, seed: []u8, counter: u32) -> bool {
 // under the part `from`.
 @(private = "file")
 rehash :: proc(m: ^Ratchet, from: int, to: int) {
-	hmac_byte(m.data[from][:], u8(to), m.data[to][:])
+	hmac_byte(part(m, from), u8(to), part(m, to))
+}
+
+@(private = "file")
+part :: proc "contextless" (m: ^Ratchet, j: int) -> []u8 {
+	return m.data[j * 32:(j + 1) * 32]
 }
 
 // ratchet_advance winds the ratchet one step.
@@ -83,11 +86,7 @@ ratchet_advance_to :: proc(m: ^Ratchet, target: u32) {
 
 // ratchet_keys derives the keys the ratchet's current value seals with.
 ratchet_keys :: proc(m: ^Ratchet, k: ^Keys) {
-	flat: [RATCHET_BYTES]u8
-	for j in 0 ..< 4 {
-		copy(flat[j * 32:], m.data[j][:])
-	}
-	derive_keys(flat[:], "MEGOLM_KEYS", k)
+	derive_keys(m.data[:], "MEGOLM_KEYS", k)
 }
 
 // -- Sessions ---------------------------------------------------------------------
@@ -148,9 +147,7 @@ put_ratchet :: proc(m: ^Ratchet, pub: []u8, version: u8, dst: []u8) -> int {
 	dst[2] = u8(m.counter >> 16)
 	dst[3] = u8(m.counter >> 8)
 	dst[4] = u8(m.counter)
-	for j in 0 ..< 4 {
-		copy(dst[5 + j * 32:], m.data[j][:])
-	}
+	copy(dst[5:133], m.data[:])
 	copy(dst[133:165], pub)
 	return EXPORT_BYTES
 }
@@ -234,37 +231,19 @@ group_decrypt :: proc(i: ^Inbound, msg: []u8, dst: []u8) -> (n: int, index: u32,
 	body := msg[1:len(msg) - 72]
 	cipher: []u8
 	has_index := false
-	at := 0
-	for at < len(body) {
-		tag, tn, tok := get_varint(body[at:])
-		if !tok {
+	for at := 0; at < len(body); {
+		tag, num, bytes, next, fok := next_field(body, at)
+		if !fok {
 			return 0, 0, false
 		}
-		at += tn
-		switch tag & 7 {
-		case 0:
-			v, vn, vok := get_varint(body[at:])
-			if !vok {
-				return 0, 0, false
-			}
-			at += vn
-			if tag == 0x08 {
-				index = u32(v)
-				has_index = true
-			}
-		case 2:
-			l, ln, lok := get_varint(body[at:])
-			if !lok || at + ln + int(l) > len(body) {
-				return 0, 0, false
-			}
-			at += ln
-			if tag == 0x12 {
-				cipher = body[at:at + int(l)]
-			}
-			at += int(l)
-		case:
-			return 0, 0, false
+		switch tag {
+		case 0x08:
+			index = u32(num)
+			has_index = true
+		case 0x12:
+			cipher = bytes
 		}
+		at = next
 	}
 	if !has_index || cipher == nil {
 		return 0, 0, false
@@ -281,14 +260,7 @@ group_decrypt :: proc(i: ^Inbound, msg: []u8, dst: []u8) -> (n: int, index: u32,
 	ratchet_advance_to(&r, index)
 	k: Keys
 	ratchet_keys(&r, &k)
-	want: [8]u8
-	mac8(k.mac[:], msg[:len(msg) - 72], want[:])
-	got := msg[len(msg) - 72:len(msg) - 64]
-	diff: u8 = 0
-	for b in 0 ..< 8 {
-		diff |= want[b] ~ got[b]
-	}
-	if diff != 0 {
+	if !mac8_ok(k.mac[:], msg[:len(msg) - 72], msg[len(msg) - 72:len(msg) - 64]) {
 		return 0, index, false
 	}
 	n, ok = cbc_decrypt(k.aes[:], k.iv[:], cipher, dst)

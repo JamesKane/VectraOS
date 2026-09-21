@@ -123,10 +123,10 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	for len(line) > 0 && (line[len(line) - 1] == '\n' || line[len(line) - 1] == ' ') {
 		line = line[:len(line) - 1]
 	}
-	verb, rest := word(line)
+	verb, rest := libmsg.word(line)
 	switch verb {
 	case "fetch", "record":
-		a, b := word(rest)
+		a, b := libmsg.word(rest)
 		name, source := a, b
 		if b == "" {
 			source = a
@@ -151,7 +151,7 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		lib9p.hold(&net.srv)
 		return 0
 	case "remove":
-		name, _ := word(rest)
+		name, _ := libmsg.word(rest)
 		i := libmsg.conv_index(net, name)
 		if i < 0 || name == "notify" {
 			return vectra9.ENOENT
@@ -160,19 +160,19 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		rebuild_status()
 		return 0
 	case "login":
-		base, r2 := word(rest)
-		user, _ := word(r2)
+		base, r2 := libmsg.word(rest)
+		user, _ := libmsg.word(r2)
 		return start_login(tag, len(text), base, user)
 	case "oauth":
-		base, r2 := word(rest)
-		user, _ := word(r2)
+		base, r2 := libmsg.word(rest)
+		user, _ := libmsg.word(r2)
 		return start_oauth(tag, len(text), .Push, base, user)
 	case "code":
-		code, _ := word(rest)
+		code, _ := libmsg.word(rest)
 		return start_oauth(tag, len(text), .Code, code, "")
 	case "account":
-		base, r2 := word(rest)
-		user, _ := word(r2)
+		base, r2 := libmsg.word(rest)
+		user, _ := libmsg.word(r2)
 		if !set_account(base, user) {
 			return vectra9.EINVAL
 		}
@@ -263,7 +263,7 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	if got == 0 && len(ranges) > 0 {
 		return vectra9.EINVAL
 	}
-	resolve_replies(c)
+	libmsg.resolve_replies(c)
 	src := &sources[i]
 	src.len = copy(src.text[:], source)
 	rebuild_status()
@@ -302,10 +302,10 @@ post_message :: proc(post: json.Object, raw: string) -> (m: libmsg.Msg, ok: bool
 		return m, false
 	}
 	record, _ := libmsg.obj_of(post, "record")
-	m.date_text = clone(libmsg.str_of(record, "createdAt"))
+	m.date_text = libmsg.clone(libmsg.str_of(record, "createdAt"))
 	m.date, _ = libmsg.parse_date(m.date_text)
 	idbuf: [128]u8
-	m.id = clone(libmsg.make_id(m.date, uri, idbuf[:]))
+	m.id = libmsg.clone(libmsg.make_id(m.date, uri, idbuf[:]))
 	name := ""
 	handle := ""
 	if author, has := libmsg.obj_of(post, "author"); has {
@@ -314,33 +314,33 @@ post_message :: proc(post: json.Object, raw: string) -> (m: libmsg.Msg, ok: bool
 	}
 	from: [512]u8
 	if name == "" {
-		m.from = clone(handle)
+		m.from = libmsg.clone(handle)
 	} else {
-		m.from = clone(libuser.cat_into(from[:], name, " <", handle, ">"))
+		m.from = libmsg.clone(libuser.cat_into(from[:], name, " <", handle, ">"))
 	}
 	m.subject = ""
-	m.body = clone(libmsg.str_of(record, "text"))
-	m.type = clone("text/plain")
+	m.body = libmsg.clone(libmsg.str_of(record, "text"))
+	m.type = libmsg.clone("text/plain")
 	if reply, has := libmsg.obj_of(record, "reply"); has {
 		if parent, has_parent := libmsg.obj_of(reply, "parent"); has_parent {
-			m.replyto = clone(libmsg.str_of(parent, "uri"))
+			m.replyto = libmsg.clone(libmsg.str_of(parent, "uri"))
 		}
 	}
 	// Links: the post's page on the web, then its images full size.
 	links := make([dynamic]u8, 0, 256)
 	page: [256]u8
-	put_link(&links, libuser.cat_into(page[:], "https://bsky.app/profile/", handle, "/post/", rkey_of(uri)))
+	libmsg.put_link(&links, libuser.cat_into(page[:], "https://bsky.app/profile/", handle, "/post/", rkey_of(uri)))
 	if embed, has := libmsg.obj_of(post, "embed"); has {
 		if images, has_images := libmsg.arr_of(embed, "images"); has_images {
 			for img in images {
 				if io, is := img.(json.Object); is {
-					put_link(&links, libmsg.str_of(io, "fullsize"))
+					libmsg.put_link(&links, libmsg.str_of(io, "fullsize"))
 				}
 			}
 		}
 	}
 	m.links = string(links[:])
-	m.raw = clone(raw)
+	m.raw = libmsg.clone(raw)
 	// The record against its name: the CID the server gave is the hash
 	// of the record's DAG-CBOR, or the record is not what it says.
 	m.hash_own = true
@@ -360,13 +360,13 @@ post_message :: proc(post: json.Object, raw: string) -> (m: libmsg.Msg, ok: bool
 note_failed :: proc(uri: string, date: i64, date_text: string) {
 	n: libmsg.Msg
 	idbuf: [128]u8
-	n.id = clone(libmsg.make_id(date, uri, idbuf[:]))
-	n.from = clone("atfs")
+	n.id = libmsg.clone(libmsg.make_id(date, uri, idbuf[:]))
+	n.from = libmsg.clone("atfs")
 	n.date = date
-	n.date_text = clone(date_text)
-	n.subject = clone("a record failed its check")
-	n.body = clone(uri)
-	n.type = clone("text/plain")
+	n.date_text = libmsg.clone(date_text)
+	n.subject = libmsg.clone("a record failed its check")
+	n.body = libmsg.clone(uri)
+	n.type = libmsg.clone("text/plain")
 	libmsg.add(&net, libmsg.conv(&net, "notify"), n)
 }
 
@@ -410,13 +410,13 @@ take_notifications :: proc(text: []u8, source: string) -> vectra9.Errno {
 		}
 		record, _ := libmsg.obj_of(o, "record")
 		n: libmsg.Msg
-		n.date_text = clone(libmsg.str_of(record, "createdAt"))
+		n.date_text = libmsg.clone(libmsg.str_of(record, "createdAt"))
 		if n.date_text == "" {
-			n.date_text = clone(libmsg.str_of(o, "indexedAt"))
+			n.date_text = libmsg.clone(libmsg.str_of(o, "indexedAt"))
 		}
 		n.date, _ = libmsg.parse_date(n.date_text)
 		idbuf: [128]u8
-		n.id = clone(libmsg.make_id(n.date, uri, idbuf[:]))
+		n.id = libmsg.clone(libmsg.make_id(n.date, uri, idbuf[:]))
 		name := ""
 		handle := ""
 		if author, has := libmsg.obj_of(o, "author"); has {
@@ -424,18 +424,18 @@ take_notifications :: proc(text: []u8, source: string) -> vectra9.Errno {
 			handle = libmsg.str_of(author, "handle")
 		}
 		from: [512]u8
-		n.from = clone(name == "" ? handle : libuser.cat_into(from[:], name, " <", handle, ">"))
-		n.subject = clone(reason)
-		n.body = clone(libmsg.str_of(record, "text"))
-		n.type = clone("text/plain")
-		n.raw = clone(raw)
+		n.from = libmsg.clone(name == "" ? handle : libuser.cat_into(from[:], name, " <", handle, ">"))
+		n.subject = libmsg.clone(reason)
+		n.body = libmsg.clone(libmsg.str_of(record, "text"))
+		n.type = libmsg.clone("text/plain")
+		n.raw = libmsg.clone(raw)
 		switch reason {
 		case "reply", "mention", "quote":
 			// The post itself, into home, and the notification names it.
 			if m, made := post_message(o, raw); made {
-				n.replyto = clone(m.id)
+				n.replyto = libmsg.clone(m.id)
 				links := make([dynamic]u8, 0, 128)
-				put_link(&links, libuser.cat_into(from[:], "https://bsky.app/profile/", handle, "/post/", rkey_of(uri)))
+				libmsg.put_link(&links, libuser.cat_into(from[:], "https://bsky.app/profile/", handle, "/post/", rkey_of(uri)))
 				n.links = string(links[:])
 				libmsg.add(&net, home, m)
 			}
@@ -443,14 +443,14 @@ take_notifications :: proc(text: []u8, source: string) -> vectra9.Errno {
 			// What it concerns, by the subject's URI: the post's id, when
 			// home has it, else the URI's hash dated zero.
 			if subject := libmsg.str_of(o, "reasonSubject"); subject != "" {
-				n.replyto = clone(subject)
+				n.replyto = libmsg.clone(subject)
 			}
 		}
 		json.destroy_value(v)
 		libmsg.add(&net, notify, n)
 		got += 1
 	}
-	resolve_replies(home)
+	libmsg.resolve_replies(home)
 	resolve_against(notify, home)
 	if got == 0 && len(ranges) > 0 {
 		return vectra9.EINVAL
@@ -483,7 +483,7 @@ resolve_against :: proc(c: ^libmsg.Conv, against: ^libmsg.Conv) {
 			found = zero
 		}
 		delete(m.replyto)
-		m.replyto = clone(found)
+		m.replyto = libmsg.clone(found)
 	}
 }
 
@@ -497,49 +497,13 @@ rkey_of :: proc "contextless" (uri: string) -> string {
 	return uri
 }
 
-put_link :: proc(links: ^[dynamic]u8, url: string) {
-	if url == "" {
-		return
-	}
-	if len(links) > 0 {
-		append(links, '\n')
-	}
-	append(links, ..transmute([]u8)url)
-}
-
-// resolve_replies turns each `replyto` that still names a URI into the
-// full id of the post that bears it, by the URI's hash, or leaves it
-// dated zero.
-resolve_replies :: proc(c: ^libmsg.Conv) {
-	for &m in c.msgs {
-		if m.replyto == "" || (len(m.replyto) > 17 && m.replyto[16] == '.') {
-			continue
-		}
-		idbuf: [128]u8
-		zero := libmsg.make_id(0, m.replyto, idbuf[:])
-		tail := zero[17:]
-		found := ""
-		for other in c.msgs {
-			if len(other.id) > 17 && other.id[17:] == tail {
-				found = other.id
-				break
-			}
-		}
-		if found == "" {
-			found = zero
-		}
-		delete(m.replyto)
-		m.replyto = clone(found)
-	}
-}
-
 // -- Small things ------------------------------------------------------------------
 
 // as_account makes one request with the account's token: as Bearer, or
 // bound to the key with a proof, the server's nonce carried back.
 as_account :: proc(io: ^libthread.Ioproc, method: string, url: string, headers: string, body: string) -> (text: []u8, status: int, ok: bool) {
 	tok: [256]u8
-	token, has := ask_token(tok[:])
+	token, has := libmsg.ask_token(string(account.user[:account.ulen]), libmsg.host_of(string(account.base[:account.blen])), tok[:])
 	if !has {
 		return nil, 0, false
 	}
@@ -577,29 +541,4 @@ rebuild_status :: proc() {
 		append(&status, '\n')
 	}
 	net.status = string(status[:])
-}
-
-clone :: proc(s: string) -> string {
-	if len(s) == 0 {
-		return ""
-	}
-	own := make([]u8, len(s))
-	copy(own, s)
-	return string(own)
-}
-
-word :: proc "contextless" (s: string) -> (first: string, rest: string) {
-	i := 0
-	for i < len(s) && s[i] == ' ' {
-		i += 1
-	}
-	start := i
-	for i < len(s) && s[i] != ' ' {
-		i += 1
-	}
-	first = s[start:i]
-	for i < len(s) && s[i] == ' ' {
-		i += 1
-	}
-	return first, s[i:]
 }

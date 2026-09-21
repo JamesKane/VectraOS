@@ -202,3 +202,74 @@ put_pad :: proc "contextless" (into: []u8, v: int) #no_bounds_check {
 		x /= 10
 	}
 }
+
+// -- Small things a network's server wants --------------------------------------
+
+// clone answers an owned copy of `s`, "" for "".
+clone :: proc(s: string) -> string {
+	if len(s) == 0 {
+		return ""
+	}
+	own := make([]u8, len(s))
+	copy(own, s)
+	return string(own)
+}
+
+// word answers the first space-separated word of `s` and the rest after
+// the spaces that follow it.
+word :: proc "contextless" (s: string) -> (first: string, rest: string) {
+	i := 0
+	for i < len(s) && s[i] == ' ' {
+		i += 1
+	}
+	start := i
+	for i < len(s) && s[i] != ' ' {
+		i += 1
+	}
+	first = s[start:i]
+	for i < len(s) && s[i] == ' ' {
+		i += 1
+	}
+	return first, s[i:]
+}
+
+// put_link adds a URL to a message's links, one a line; "" adds nothing.
+put_link :: proc(links: ^[dynamic]u8, url: string) {
+	if url == "" {
+		return
+	}
+	if len(links) > 0 {
+		append(links, '\n')
+	}
+	append(links, ..transmute([]u8)url)
+}
+
+/*
+resolve_replies turns each `replyto` that still names a network id into
+the id of the message that bears it, by the network id's hash: the tail
+of `make_id` for it, which is what the message's own id ends in. One
+already resolved, a date and a dot in front, is left alone; one that
+names a message not here becomes the hash under a zero date.
+*/
+resolve_replies :: proc(c: ^Conv) {
+	for &m in c.msgs {
+		if m.replyto == "" || (len(m.replyto) > 17 && m.replyto[16] == '.') {
+			continue
+		}
+		idbuf: [128]u8
+		zero := make_id(0, m.replyto, idbuf[:])
+		tail := zero[17:]
+		found := ""
+		for other in c.msgs {
+			if len(other.id) > 17 && other.id[17:] == tail {
+				found = other.id
+				break
+			}
+		}
+		if found == "" {
+			found = zero
+		}
+		delete(m.replyto)
+		m.replyto = clone(found)
+	}
+}

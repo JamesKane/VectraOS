@@ -74,3 +74,16 @@ host_of :: proc "contextless" (url: string) -> string {
 	}
 	return s[:e]
 }
+
+// keep_token gives factotum an account's access token, under proto=oauth
+// for the user at the host: the line every network writes after a login.
+keep_token :: proc(user: string, host: string, token: string) -> bool {
+	line: [512]u8
+	return factotum_write(libuser.cat_into(line[:], "key proto=oauth user=", user, " server=", host, " !token=", token))
+}
+
+// ask_token asks factotum for that token back, into `into`.
+ask_token :: proc(user: string, host: string, into: []u8) -> (string, bool) {
+	ask: [512]u8
+	return factotum_ask(libuser.cat_into(ask[:], "start oauth user=", user, " server=", host), "token ", into)
+}

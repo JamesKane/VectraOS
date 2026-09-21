@@ -191,7 +191,7 @@ ends_with :: proc "contextless" (s, suffix: string) -> bool {
 
 // uid_of answers the UID a FETCH response line carries, `(UID N`, or zero.
 uid_of :: proc "contextless" (line: string) -> int {
-	at := libodin_index(line, " UID ")
+	at := libodin.index(line, " UID ")
 	if at < 0 {
 		return 0
 	}

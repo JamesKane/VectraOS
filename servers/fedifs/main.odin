@@ -116,10 +116,10 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	for len(line) > 0 && (line[len(line) - 1] == '\n' || line[len(line) - 1] == ' ') {
 		line = line[:len(line) - 1]
 	}
-	verb, rest := word(line)
+	verb, rest := libmsg.word(line)
 	switch verb {
 	case "fetch", "object":
-		a, b := word(rest)
+		a, b := libmsg.word(rest)
 		name, source := a, b
 		if b == "" {
 			source = a
@@ -144,7 +144,7 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		lib9p.hold(&net.srv)
 		return 0
 	case "remove":
-		name, _ := word(rest)
+		name, _ := libmsg.word(rest)
 		i := libmsg.conv_index(net, name)
 		if i < 0 || name == "notify" {
 			return vectra9.ENOENT
@@ -153,14 +153,14 @@ on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 		rebuild_status()
 		return 0
 	case "login":
-		base, _ := word(rest)
+		base, _ := libmsg.word(rest)
 		return start_login(tag, len(text), .Register, base)
 	case "code":
-		code, _ := word(rest)
+		code, _ := libmsg.word(rest)
 		return start_login(tag, len(text), .Code, code)
 	case "account":
-		base, r2 := word(rest)
-		user, _ := word(r2)
+		base, r2 := libmsg.word(rest)
+		user, _ := libmsg.word(r2)
 		if !set_account(base, user) {
 			return vectra9.EINVAL
 		}
@@ -212,7 +212,7 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	if url := timeline_url(source, urlbuf[:]); url != "" {
 		// The account's own timeline, with its token from factotum.
 		tok: [256]u8
-		token, has := ask_token(tok[:])
+		token, has := libmsg.ask_token(string(account.user[:account.ulen]), libmsg.host_of(string(account.base[:account.blen])), tok[:])
 		if !has {
 			return vectra9.EPERM
 		}
@@ -251,7 +251,7 @@ fetch :: proc(f: ^Fetch) -> vectra9.Errno {
 	if got == 0 && len(ranges) > 0 {
 		return vectra9.EINVAL
 	}
-	resolve_replies(c)
+	libmsg.resolve_replies(c)
 	src := &sources[i]
 	src.len = copy(src.text[:], source)
 	rebuild_status()
@@ -289,27 +289,27 @@ take_notifications :: proc(text: []u8, ranges: [][2]int, source: string) -> vect
 			continue
 		}
 		n: libmsg.Msg
-		n.date_text = clone(libmsg.str_of(o, "created_at"))
+		n.date_text = libmsg.clone(libmsg.str_of(o, "created_at"))
 		n.date, _ = libmsg.parse_date(n.date_text)
 		idbuf: [128]u8
-		n.id = clone(libmsg.make_id(n.date, id, idbuf[:]))
-		n.from = clone(actor_of(o))
-		n.subject = clone(kind)
-		n.type = clone("text/html")
-		n.raw = clone(raw)
+		n.id = libmsg.clone(libmsg.make_id(n.date, id, idbuf[:]))
+		n.from = libmsg.clone(actor_of(o))
+		n.subject = libmsg.clone(kind)
+		n.type = libmsg.clone("text/html")
+		n.raw = libmsg.clone(raw)
 		// The status it carries: into home, and named by replyto.
 		if status, has := libmsg.obj_of(o, "status"); has {
 			sid := libmsg.str_of(status, "id")
 			sdate, _ := libmsg.parse_date(libmsg.str_of(status, "created_at"))
-			n.replyto = clone(libmsg.make_id(sdate, sid, idbuf[:]))
-			n.body = clone(libmsg.str_of(status, "content"))
+			n.replyto = libmsg.clone(libmsg.make_id(sdate, sid, idbuf[:]))
+			n.body = libmsg.clone(libmsg.str_of(status, "content"))
 			links := make([dynamic]u8, 0, 128)
-			put_link(&links, libmsg.str_of(status, "url"))
+			libmsg.put_link(&links, libmsg.str_of(status, "url"))
 			n.links = string(links[:])
 			if at := libmsg.array_at(raw, "status"); at < 0 {
 				// The status's own bytes are the object under "status".
 				if s_at := object_at(raw, "status"); s_at >= 0 {
-					if m, made := status_message(raw[s_at:object_end(raw, s_at)]); made {
+					if m, made := status_message(raw[s_at:libmsg.object_end(raw, s_at)]); made {
 						libmsg.add(&net, home, m)
 					}
 				}
@@ -319,7 +319,7 @@ take_notifications :: proc(text: []u8, ranges: [][2]int, source: string) -> vect
 		libmsg.add(&net, notify, n)
 		got += 1
 	}
-	resolve_replies(home)
+	libmsg.resolve_replies(home)
 	if got == 0 && len(ranges) > 0 {
 		return vectra9.EINVAL
 	}
@@ -384,36 +384,6 @@ object_at :: proc(text: string, key: string) -> int {
 	return -1
 }
 
-// object_end answers where the object beginning at `at` ends, one past
-// its closing brace.
-object_end :: proc(text: string, at: int) -> int {
-	depth := 0
-	in_string := false
-	for i := at; i < len(text); i += 1 {
-		c := text[i]
-		if in_string {
-			if c == '\\' {
-				i += 1
-			} else if c == '"' {
-				in_string = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			in_string = true
-		case '{', '[':
-			depth += 1
-		case '}', ']':
-			depth -= 1
-			if depth == 0 {
-				return i + 1
-			}
-		}
-	}
-	return len(text)
-}
-
 // -- A status as a message ------------------------------------------------------
 
 /*
@@ -440,10 +410,10 @@ status_message :: proc(raw: string) -> (m: libmsg.Msg, ok: bool) {
 	if rb, has := libmsg.obj_of(o, "reblog"); has {
 		inner = rb
 	}
-	m.date_text = clone(libmsg.str_of(o, "created_at"))
+	m.date_text = libmsg.clone(libmsg.str_of(o, "created_at"))
 	m.date, _ = libmsg.parse_date(m.date_text)
 	idbuf: [128]u8
-	m.id = clone(libmsg.make_id(m.date, id, idbuf[:]))
+	m.id = libmsg.clone(libmsg.make_id(m.date, id, idbuf[:]))
 	// From: the display name and the address, or the address alone.
 	name := ""
 	handle := ""
@@ -453,64 +423,30 @@ status_message :: proc(raw: string) -> (m: libmsg.Msg, ok: bool) {
 	}
 	from: [512]u8
 	if name == "" {
-		m.from = clone(handle)
+		m.from = libmsg.clone(handle)
 	} else {
-		m.from = clone(libuser.cat_into(from[:], name, " <", handle, ">"))
+		m.from = libmsg.clone(libuser.cat_into(from[:], name, " <", handle, ">"))
 	}
-	m.subject = clone(libmsg.str_of(inner, "spoiler_text"))
-	m.body = clone(libmsg.str_of(inner, "content"))
-	m.type = clone("text/html")
-	m.replyto = clone(libmsg.str_of(o, "in_reply_to_id"))
+	m.subject = libmsg.clone(libmsg.str_of(inner, "spoiler_text"))
+	m.body = libmsg.clone(libmsg.str_of(inner, "content"))
+	m.type = libmsg.clone("text/html")
+	m.replyto = libmsg.clone(libmsg.str_of(o, "in_reply_to_id"))
 	// Links: the status's URL, its attachments, and its card.
 	links := make([dynamic]u8, 0, 256)
-	put_link(&links, libmsg.str_of(inner, "url"))
+	libmsg.put_link(&links, libmsg.str_of(inner, "url"))
 	if media, has := libmsg.arr_of(inner, "media_attachments"); has {
 		for item in media {
 			if mo, is := item.(json.Object); is {
-				put_link(&links, libmsg.str_of(mo, "url"))
+				libmsg.put_link(&links, libmsg.str_of(mo, "url"))
 			}
 		}
 	}
 	if card, has := libmsg.obj_of(inner, "card"); has {
-		put_link(&links, libmsg.str_of(card, "url"))
+		libmsg.put_link(&links, libmsg.str_of(card, "url"))
 	}
 	m.links = string(links[:])
-	m.raw = clone(raw)
+	m.raw = libmsg.clone(raw)
 	return m, true
-}
-
-put_link :: proc(links: ^[dynamic]u8, url: string) {
-	if url == "" {
-		return
-	}
-	if len(links) > 0 {
-		append(links, '\n')
-	}
-	append(links, ..transmute([]u8)url)
-}
-
-// resolve_replies turns each `replyto` that names a status by the
-// instance's id into the full id of the message that bears it, or leaves
-// it dated zero, the way mail and feeds do.
-resolve_replies :: proc(c: ^libmsg.Conv) {
-	for &m in c.msgs {
-		if m.replyto == "" || (len(m.replyto) > 17 && m.replyto[16] == '.') {
-			continue
-		}
-		found := ""
-		for other in c.msgs {
-			if len(other.id) > 17 && other.id[17:] == m.replyto {
-				found = other.id
-				break
-			}
-		}
-		idbuf: [128]u8
-		if found == "" {
-			found = libmsg.make_id(0, m.replyto, idbuf[:])
-		}
-		delete(m.replyto)
-		m.replyto = clone(found)
-	}
 }
 
 // -- Small things ------------------------------------------------------------------
@@ -544,29 +480,4 @@ rebuild_status :: proc() {
 		append(&status, '\n')
 	}
 	net.status = string(status[:])
-}
-
-clone :: proc(s: string) -> string {
-	if len(s) == 0 {
-		return ""
-	}
-	own := make([]u8, len(s))
-	copy(own, s)
-	return string(own)
-}
-
-word :: proc "contextless" (s: string) -> (first: string, rest: string) {
-	i := 0
-	for i < len(s) && s[i] == ' ' {
-		i += 1
-	}
-	start := i
-	for i < len(s) && s[i] != ' ' {
-		i += 1
-	}
-	first = s[start:i]
-	for i < len(s) && s[i] == ' ' {
-		i += 1
-	}
-	return first, s[i:]
 }

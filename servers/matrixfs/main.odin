@@ -60,6 +60,7 @@ Room :: struct {
 	mlen:      [MAX_MEMBERS]int,
 	nmembers:  int,
 	encrypted: bool,
+	out:       Megolm_Out, // Its outbound session, once a message has gone
 }
 
 // The store: `-s DIR`, where the keys that came are kept.
@@ -132,28 +133,24 @@ threadmain :: proc "contextless" (arg: rawptr) {
 }
 
 on_ctl :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errno {
-	line := text
-	for len(line) > 0 && (line[len(line) - 1] == '\n' || line[len(line) - 1] == ' ') {
-		line = line[:len(line) - 1]
-	}
-	verb, rest := word(line)
+	verb, rest := libmsg.word(libodin.trim_space(text))
 	switch verb {
 	case "sync":
-		path, _ := word(rest)
+		path, _ := libmsg.word(rest)
 		if path == "" && !account.set {
 			return vectra9.EINVAL
 		}
 		return start_job(tag, len(text), .Sync, path, "")
 	case "login":
-		base, r2 := word(rest)
-		user, _ := word(r2)
+		base, r2 := libmsg.word(rest)
+		user, _ := libmsg.word(r2)
 		if !libmsg.is_url(base) || len(base) > BASE_MAX || user == "" || len(user) > NAME_MAX {
 			return vectra9.EINVAL
 		}
 		return start_job(tag, len(text), .Login, base, user)
 	case "account":
-		base, r2 := word(rest)
-		user, _ := word(r2)
+		base, r2 := libmsg.word(rest)
+		user, _ := libmsg.word(r2)
 		if !libmsg.is_url(base) || len(base) > BASE_MAX || user == "" || len(user) > NAME_MAX {
 			return vectra9.EINVAL
 		}
@@ -187,7 +184,7 @@ on_new :: proc(net: ^libmsg.Net, tag: vectra9.Tag, text: string) -> vectra9.Errn
 	j.tag = tag
 	j.count = len(text)
 	j.kind = .Send
-	j.text = clone(text)
+	j.text = libmsg.clone(text)
 	if libthread.threadcreate(job_thread, j, 256 * 1024) < 0 {
 		delete(j.text)
 		free(j)
@@ -262,11 +259,11 @@ do_login :: proc(j: ^Job, base: string, user: string) -> vectra9.Errno {
 	}
 	body := make([dynamic]u8, 0, 512)
 	defer delete(body)
-	put(&body, "{\"type\": \"m.login.password\", \"identifier\": {\"type\": \"m.id.user\", \"user\": ")
-	put_json_string(&body, user)
-	put(&body, "}, \"password\": ")
-	put_json_string(&body, password)
-	put(&body, ", \"initial_device_display_name\": \"vectra\"}")
+	libmsg.put(&body, "{\"type\": \"m.login.password\", \"identifier\": {\"type\": \"m.id.user\", \"user\": ")
+	libmsg.put_json_string(&body, user)
+	libmsg.put(&body, "}, \"password\": ")
+	libmsg.put_json_string(&body, password)
+	libmsg.put(&body, ", \"initial_device_display_name\": \"vectra\"}")
 	url: [BASE_MAX + 64]u8
 	text, status, ok := libmsg.request(j.io, libuser.cat_into(url[:], base, "/_matrix/client/v3/login"), "POST", "Content-Type: application/json\n", string(body[:]))
 	defer delete(text)
@@ -288,8 +285,7 @@ do_login :: proc(j: ^Job, base: string, user: string) -> vectra9.Errno {
 		j.why = "the server answered no token"
 		return vectra9.EIO
 	}
-	line: [512]u8
-	if !libmsg.factotum_write(libuser.cat_into(line[:], "key proto=oauth user=", user_id, " server=", host, " !token=", token)) {
+	if !libmsg.keep_token(user_id, host, token) {
 		j.why = "factotum would not take the token"
 		return vectra9.EIO
 	}
@@ -312,10 +308,9 @@ set_me :: proc() {
 		net.me = ""
 		return
 	}
-	if account.dlen > 0 && device.set {
+	// A device, with its keys, is a login's; an account named has neither.
+	if device.set {
 		net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "\ndevice ", string(account.device[:account.dlen]), "\ncurve25519 ", string(device.identity_b64[:device.ib64]), "\ned25519 ", string(device.sign_b64[:device.sb64]), "\n")
-	} else if account.dlen > 0 {
-		net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "\ndevice ", string(account.device[:account.dlen]), "\n")
 	} else {
 		net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "\n")
 	}
@@ -323,9 +318,8 @@ set_me :: proc() {
 
 // as_account makes one request with the account's token.
 as_account :: proc(io: ^libthread.Ioproc, method: string, url: string, headers: string, body: string) -> (text: []u8, status: int, ok: bool) {
-	ask: [512]u8
 	tok: [256]u8
-	token, has := libmsg.factotum_ask(libuser.cat_into(ask[:], "start oauth user=", string(account.user[:account.ulen]), " server=", libmsg.host_of(string(account.base[:account.blen]))), "token ", tok[:])
+	token, has := libmsg.ask_token(string(account.user[:account.ulen]), libmsg.host_of(string(account.base[:account.blen])), tok[:])
 	if !has {
 		return nil, 0, false
 	}
@@ -348,7 +342,7 @@ do_sync :: proc(j: ^Job, path: string) -> vectra9.Errno {
 		}
 	} else {
 		url: [BASE_MAX + 256]u8
-		u := account.balen > 0 ? libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/sync?timeout=0&since=", string(account.batch[:account.balen])) : libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/sync?timeout=0")
+		u := libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/sync?timeout=0", account.balen > 0 ? "&since=" : "", string(account.batch[:account.balen]))
 		status: int
 		text, status, ok = as_account(j.io, "", u, "", "")
 		if !ok {
@@ -391,7 +385,6 @@ take_sync :: proc(text: string) -> bool {
 	if !has_rooms {
 		return false
 	}
-	libuser.eprint("matrixfs: a sync came, next batch ", libmsg.str_of(top, "next_batch"), "\n")
 	if join, has := libmsg.obj_of(rooms_obj, "join"); has {
 		for id, rv in (map[string]json.Value)(join) {
 			room, is := rv.(json.Object)
@@ -435,20 +428,59 @@ take_room :: proc(id: string, room: json.Object, text: string) {
 	c := libmsg.conv(&net, string(r.name[:r.nlen]))
 	if timeline, has := libmsg.obj_of(room, "timeline"); has {
 		if events, has_events := libmsg.arr_of(timeline, "events"); has_events {
-			for ev in events {
+			// Each event's own bytes, by its place in the array's text.
+			ranges: [dynamic][2]int
+			if at := timeline_at(text, id); at >= 0 {
+				ranges, _ = libmsg.elements(text, at)
+			}
+			defer delete(ranges)
+			for ev, k in events {
 				e, is := ev.(json.Object)
 				if !is {
 					continue
 				}
-				if m, made := event_message(e, text); made {
+				raw := k < len(ranges) ? text[ranges[k][0]:ranges[k][1]] : ""
+				if m, made := event_message(e, raw); made {
 					libmsg.add(&net, c, m)
-				} else {
-					libuser.eprint("matrixfs: an event of ", libmsg.str_of(e, "type"), " is no message\n")
 				}
 			}
 		}
 	}
-	resolve_replies(c)
+	libmsg.resolve_replies(c)
+}
+
+/*
+timeline_at answers where a joined room's timeline events array begins
+in the sync's text, or -1: the room's id as a key, `timeline` as a key
+inside its object, `events` inside that. A room's id turns up only as
+a key, so the first is the room.
+*/
+timeline_at :: proc(text: string, id: string) -> int {
+	needle: [ROOM_ID_MAX + 2]u8
+	at := key_at(text, libuser.cat_into(needle[:], "\"", id, "\""), 0, len(text))
+	if at < 0 {
+		return -1
+	}
+	end := libmsg.object_end(text, at)
+	at = key_at(text, "\"timeline\"", at, end)
+	if at < 0 {
+		return -1
+	}
+	return key_at(text, "\"events\"", at, libmsg.object_end(text, at))
+}
+
+// key_at answers where the value of the member named `quoted` begins,
+// looking between `from` and `to`, or -1.
+key_at :: proc(text: string, quoted: string, from: int, to: int) -> int {
+	i := libodin.index(text[from:to], quoted)
+	if i < 0 {
+		return -1
+	}
+	j := libmsg.skip_json_space(text, from + i + len(quoted))
+	if j >= to || text[j] != ':' {
+		return -1
+	}
+	return libmsg.skip_json_space(text, j + 1)
 }
 
 // take_state reads a room's state for its members and its seal.
@@ -515,17 +547,7 @@ room_name_of :: proc(id: string, room: json.Object, into: []u8) -> (string, bool
 	if len(plain) > 0 && plain[0] == '!' {
 		plain = plain[1:]
 	}
-	n := 0
-	for i in 0 ..< len(plain) {
-		if n >= len(into) {
-			break
-		}
-		c := plain[i]
-		ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-'
-		into[n] = ok ? c : '_'
-		n += 1
-	}
-	return string(into[:n]), false
+	return libuser.cat_into(into, safe_name(plain)), false
 }
 
 /*
@@ -534,7 +556,7 @@ from, the server's time as the date, the body with the reply fallback
 taken off, or the formatted body as HTML, an image's media as a link,
 and what it replies to. `raw` is the event's own bytes out of the sync.
 */
-event_message :: proc(e: json.Object, text: string) -> (m: libmsg.Msg, ok: bool) {
+event_message :: proc(e: json.Object, raw: string) -> (m: libmsg.Msg, ok: bool) {
 	kind := libmsg.str_of(e, "type")
 	if kind != "m.room.message" && kind != "m.room.encrypted" {
 		return m, false
@@ -551,7 +573,6 @@ event_message :: proc(e: json.Object, text: string) -> (m: libmsg.Msg, ok: bool)
 	sealed_why := ""
 	if kind == "m.room.encrypted" {
 		plain, why := open_event(content)
-		libuser.eprint("matrixfs: sealed event ", event_id, why == "" ? " opened" : " did not open: ", why, "\n")
 		if plain != "" {
 			ov, oerr := json.parse_string(plain, .JSON)
 			delete(plain)
@@ -570,33 +591,25 @@ event_message :: proc(e: json.Object, text: string) -> (m: libmsg.Msg, ok: bool)
 			sealed_why = why
 		}
 	}
-	ms: i64 = 0
-	if tsv, has := (map[string]json.Value)(e)["origin_server_ts"]; has {
-		#partial switch t in tsv {
-		case json.Integer:
-			ms = i64(t)
-		case json.Float:
-			ms = i64(t)
-		}
-	}
+	ms, _ := libmsg.int_of(e, "origin_server_ts")
 	m.date = ms / 1000
 	when_: [32]u8
-	m.date_text = clone(libmsg.format_3339(m.date, when_[:]))
+	m.date_text = libmsg.clone(libmsg.format_3339(m.date, when_[:]))
 	idbuf: [128]u8
-	m.id = clone(libmsg.make_id(m.date, event_id, idbuf[:]))
-	m.from = clone(libmsg.str_of(e, "sender"))
+	m.id = libmsg.clone(libmsg.make_id(m.date, event_id, idbuf[:]))
+	m.from = libmsg.clone(libmsg.str_of(e, "sender"))
 	body := libmsg.str_of(content, "body")
 	formatted := libmsg.str_of(content, "formatted_body")
 	msgtype := libmsg.str_of(content, "msgtype")
 	if sealed_why != "" {
-		m.body = clone(sealed_why)
-		m.type = clone("text/plain")
+		m.body = libmsg.clone(sealed_why)
+		m.type = libmsg.clone("text/plain")
 	} else if formatted != "" && libmsg.str_of(content, "format") == "org.matrix.custom.html" {
-		m.body = clone(strip_mx_reply(formatted))
-		m.type = clone("text/html")
+		m.body = libmsg.clone(strip_mx_reply(formatted))
+		m.type = libmsg.clone("text/html")
 	} else {
-		m.body = clone(strip_reply_fallback(body))
-		m.type = clone("text/plain")
+		m.body = libmsg.clone(strip_reply_fallback(body))
+		m.type = libmsg.clone("text/plain")
 	}
 	links := make([dynamic]u8, 0, 128)
 	if msgtype == "m.image" || msgtype == "m.file" || msgtype == "m.video" || msgtype == "m.audio" {
@@ -610,77 +623,18 @@ event_message :: proc(e: json.Object, text: string) -> (m: libmsg.Msg, ok: bool)
 			}
 			if slash < len(rest) {
 				url: [512]u8
-				put_link(&links, libuser.cat_into(url[:], "https://", rest[:slash], "/_matrix/media/v3/download/", rest[:slash], "/", rest[slash + 1:]))
+				libmsg.put_link(&links, libuser.cat_into(url[:], "https://", rest[:slash], "/_matrix/media/v3/download/", rest[:slash], "/", rest[slash + 1:]))
 			}
 		}
 	}
 	m.links = string(links[:])
 	if rel, has := libmsg.obj_of(content, "m.relates_to"); has {
 		if irt, has_irt := libmsg.obj_of(rel, "m.in_reply_to"); has_irt {
-			m.replyto = clone(libmsg.str_of(irt, "event_id"))
+			m.replyto = libmsg.clone(libmsg.str_of(irt, "event_id"))
 		}
 	}
-	// The event's own bytes, found by its id in the sync's text.
-	m.raw = clone(event_bytes(text, event_id))
+	m.raw = libmsg.clone(raw)
 	return m, true
-}
-
-// event_bytes answers the object in `text` that holds `"event_id": ID`,
-// or "" when it is not there.
-event_bytes :: proc(text: string, event_id: string) -> string {
-	needle: [300]u8
-	n := libuser.cat_into(needle[:], "\"event_id\": \"", event_id, "\"")
-	at := libodin_index(text, n)
-	if at < 0 {
-		return ""
-	}
-	// Back to the object's opening brace at depth one above the id.
-	depth := 0
-	start := -1
-	for i := at; i >= 0; i -= 1 {
-		c := text[i]
-		if c == '}' {
-			depth += 1
-		} else if c == '{' {
-			if depth == 0 {
-				start = i
-				break
-			}
-			depth -= 1
-		}
-	}
-	if start < 0 {
-		return ""
-	}
-	return text[start:object_end(text, start)]
-}
-
-object_end :: proc(text: string, at: int) -> int {
-	depth := 0
-	in_string := false
-	for i := at; i < len(text); i += 1 {
-		c := text[i]
-		if in_string {
-			if c == '\\' {
-				i += 1
-			} else if c == '"' {
-				in_string = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			in_string = true
-		case '{', '[':
-			depth += 1
-		case '}', ']':
-			depth -= 1
-			if depth == 0 {
-				return i + 1
-			}
-		}
-	}
-	return len(text)
 }
 
 // strip_reply_fallback takes the quoted lines a reply's plain body
@@ -737,38 +691,13 @@ take_invite :: proc(id: string, room: json.Object) {
 	}
 	n: libmsg.Msg
 	idbuf: [128]u8
-	n.id = clone(libmsg.make_id(0, id, idbuf[:]))
-	n.from = clone(inviter)
-	n.subject = clone("invite")
-	n.body = clone(name)
-	n.type = clone("text/plain")
-	n.raw = clone(id)
+	n.id = libmsg.clone(libmsg.make_id(0, id, idbuf[:]))
+	n.from = libmsg.clone(inviter)
+	n.subject = libmsg.clone("invite")
+	n.body = libmsg.clone(name)
+	n.type = libmsg.clone("text/plain")
+	n.raw = libmsg.clone(id)
 	libmsg.add(&net, libmsg.conv(&net, "notify"), n)
-}
-
-// resolve_replies turns each `replyto` that still names an event id
-// into the id of the message that bears it, by the event id's hash.
-resolve_replies :: proc(c: ^libmsg.Conv) {
-	for &m in c.msgs {
-		if m.replyto == "" || (len(m.replyto) > 17 && m.replyto[16] == '.') {
-			continue
-		}
-		idbuf: [128]u8
-		zero := libmsg.make_id(0, m.replyto, idbuf[:])
-		tail := zero[17:]
-		found := ""
-		for other in c.msgs {
-			if len(other.id) > 17 && other.id[17:] == tail {
-				found = other.id
-				break
-			}
-		}
-		if found == "" {
-			found = zero
-		}
-		delete(m.replyto)
-		m.replyto = clone(found)
-	}
 }
 
 // -- A message out --------------------------------------------------------------------
@@ -790,8 +719,8 @@ do_send :: proc(j: ^Job) -> vectra9.Errno {
 	c := libmsg.conv(&net, string(r.name[:r.nlen]))
 	content := make([dynamic]u8, 0, 512)
 	defer delete(content)
-	put(&content, "{\"msgtype\": \"m.text\", \"body\": ")
-	put_json_string(&content, body)
+	libmsg.put(&content, "{\"msgtype\": \"m.text\", \"body\": ")
+	libmsg.put_json_string(&content, body)
 	reply_id := ""
 	if replyto, has := libmsg.new_header(&n, "replyto"); has && len(replyto) > 0 {
 		i := libmsg.find(c, replyto)
@@ -801,12 +730,12 @@ do_send :: proc(j: ^Job) -> vectra9.Errno {
 		reply_id = replyto
 		// The event answered, by its id out of what the message kept.
 		if eid := event_id_of(c.msgs[i].raw); eid != "" {
-			put(&content, ", \"m.relates_to\": {\"m.in_reply_to\": {\"event_id\": ")
-			put_json_string(&content, eid)
-			put(&content, "}}")
+			libmsg.put(&content, ", \"m.relates_to\": {\"m.in_reply_to\": {\"event_id\": ")
+			libmsg.put_json_string(&content, eid)
+			libmsg.put(&content, "}}")
 		}
 	}
-	put(&content, "}")
+	libmsg.put(&content, "}")
 	// In an encrypted room the event goes sealed, its key shared first.
 	event_type := "m.room.message"
 	wire := content
@@ -817,9 +746,8 @@ do_send :: proc(j: ^Job) -> vectra9.Errno {
 			j.why = "the room is encrypted and this device has no keys: log in first"
 			return vectra9.EPERM
 		}
-		ri := room_index(r)
 		sealed = make([dynamic]u8, 0, len(content) + 1024)
-		if !seal_out(j.io, r, ri, string(content[:]), &sealed) {
+		if !seal_out(j.io, r, string(content[:]), &sealed) {
 			j.why = "the message would not seal, or its key would not go to the members"
 			return vectra9.EIO
 		}
@@ -854,22 +782,22 @@ do_send :: proc(j: ^Job) -> vectra9.Errno {
 	m: libmsg.Msg
 	m.date = libmsg.now_seconds()
 	when_: [32]u8
-	m.date_text = clone(libmsg.format_3339(m.date, when_[:]))
+	m.date_text = libmsg.clone(libmsg.format_3339(m.date, when_[:]))
 	idbuf: [128]u8
-	m.id = clone(libmsg.make_id(m.date, event_id, idbuf[:]))
-	m.from = clone(string(account.user[:account.ulen]))
-	m.body = clone(body)
-	m.type = clone("text/plain")
-	m.replyto = clone(reply_id)
+	m.id = libmsg.clone(libmsg.make_id(m.date, event_id, idbuf[:]))
+	m.from = libmsg.clone(string(account.user[:account.ulen]))
+	m.body = libmsg.clone(body)
+	m.type = libmsg.clone("text/plain")
+	m.replyto = libmsg.clone(reply_id)
 	// What the room keeps: the event as this side would see it come back.
 	view := make([dynamic]u8, 0, len(content) + 256)
-	put(&view, "{\"type\": \"m.room.message\", \"event_id\": ")
-	put_json_string(&view, event_id)
-	put(&view, ", \"sender\": ")
-	put_json_string(&view, string(account.user[:account.ulen]))
-	put(&view, ", \"content\": ")
+	libmsg.put(&view, "{\"type\": \"m.room.message\", \"event_id\": ")
+	libmsg.put_json_string(&view, event_id)
+	libmsg.put(&view, ", \"sender\": ")
+	libmsg.put_json_string(&view, string(account.user[:account.ulen]))
+	libmsg.put(&view, ", \"content\": ")
 	append(&view, ..content[:])
-	put(&view, "}")
+	libmsg.put(&view, "}")
 	m.raw = string(view[:])
 	libmsg.add(&net, c, m)
 	rebuild_status()
@@ -890,15 +818,6 @@ event_id_of :: proc(raw: string) -> string {
 }
 
 // -- Small things ------------------------------------------------------------------
-
-room_index :: proc "contextless" (r: ^Room) -> int {
-	for i in 0 ..< nrooms {
-		if &rooms[i] == r {
-			return i
-		}
-	}
-	return 0
-}
 
 room_by_id :: proc "contextless" (id: string) -> ^Room {
 	for i in 0 ..< nrooms {
@@ -955,82 +874,3 @@ safe_name :: proc "contextless" (s: string) -> string {
 	}
 	return string(buf[:n])
 }
-
-put_link :: proc(links: ^[dynamic]u8, url: string) {
-	if url == "" {
-		return
-	}
-	if len(links) > 0 {
-		append(links, '\n')
-	}
-	append(links, ..transmute([]u8)url)
-}
-
-put :: proc(out: ^[dynamic]u8, s: string) {
-	append(out, ..transmute([]u8)s)
-}
-
-put_json_string :: proc(out: ^[dynamic]u8, s: string) {
-	hex := "0123456789abcdef"
-	append(out, '"')
-	for c in transmute([]u8)s {
-		switch c {
-		case '"':
-			append(out, '\\', '"')
-		case '\\':
-			append(out, '\\', '\\')
-		case '\n':
-			append(out, '\\', 'n')
-		case '\r':
-			append(out, '\\', 'r')
-		case '\t':
-			append(out, '\\', 't')
-		case:
-			if c < 0x20 {
-				append(out, '\\', 'u', '0', '0', hex[c >> 4], hex[c & 15])
-			} else {
-				append(out, c)
-			}
-		}
-	}
-	append(out, '"')
-}
-
-libodin_index :: proc "contextless" (s: string, want: string) -> int {
-	if len(want) == 0 || len(s) < len(want) {
-		return -1
-	}
-	for i in 0 ..< len(s) - len(want) + 1 {
-		if s[i:i + len(want)] == want {
-			return i
-		}
-	}
-	return -1
-}
-
-clone :: proc(s: string) -> string {
-	if len(s) == 0 {
-		return ""
-	}
-	own := make([]u8, len(s))
-	copy(own, s)
-	return string(own)
-}
-
-word :: proc "contextless" (s: string) -> (first: string, rest: string) {
-	i := 0
-	for i < len(s) && s[i] == ' ' {
-		i += 1
-	}
-	start := i
-	for i < len(s) && s[i] != ' ' {
-		i += 1
-	}
-	first = s[start:i]
-	for i < len(s) && s[i] == ' ' {
-		i += 1
-	}
-	return first, s[i:]
-}
-
-_ :: libodin

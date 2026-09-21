@@ -127,10 +127,10 @@ serve_one :: proc(lfd: i64, served: string) {
 	if !post && !put_ && (got < 4 || string(req[:4]) != "GET ") {
 		fail("not a GET, a POST or a PUT")
 	}
+	// The path is the second word of the request line.
+	text := string(req[post ? 5 : 4:got])
 	// A PUT is a POST here: a body by its length, answered by its path.
 	post = post || put_
-	// The path is the second word of the request line.
-	text := string(req[put_ ? 4 : post ? 5 : 4:got])
 	sp := 0
 	for sp < len(text) && text[sp] != ' ' {
 		sp += 1
@@ -161,7 +161,7 @@ serve_one :: proc(lfd: i64, served: string) {
 		body = string(req[head_end:min(head_end + want, got)])
 	}
 	ok := true
-	libuser.eprint("websrv: ", post ? "POST " : "GET ", rpath, "\n")
+	libuser.eprint("websrv: ", put_ ? "PUT " : post ? "POST " : "GET ", rpath, "\n")
 	// A bearer token in the request, for the instance's paths.
 	bearer := header_value(text, "authorization")
 	// A room's event put: its path names the room and the event type. A
@@ -775,7 +775,6 @@ bob_sign_pub: [32]u8
 bob_one_time: [32]u8
 bob_one_time_pub: [32]u8
 bob_session: libolm.Session // With Glenda's device, made from her pre-key message
-bob_session_set: bool
 bob_megolm_in: libolm.Inbound // Glenda's room key
 bob_megolm_in_set: bool
 bob_ready: bool // Glenda's keys are up
@@ -801,7 +800,7 @@ bob_init :: proc() {
 }
 
 b64 :: proc(data: []u8, into: []u8) -> string {
-	n := libolm.b64_encode(data, into)
+	n := libodin.b64_encode(data, into)
 	return string(into[:max(n, 0)])
 }
 
@@ -845,9 +844,9 @@ glenda_take_keys :: proc(body: string) -> bool {
 			continue
 		}
 		if len(name) > 11 && name[:11] == "curve25519:" {
-			got_c = libolm.b64_decode(string(s), glenda_curve[:]) == 32
+			got_c = libodin.b64_decode(string(s), glenda_curve[:]) == 32
 		} else if len(name) > 8 && name[:8] == "ed25519:" {
-			got_e = libolm.b64_decode(string(s), glenda_ed[:]) == 32
+			got_e = libodin.b64_decode(string(s), glenda_ed[:]) == 32
 		}
 	}
 	otk, has_otk := libmsg.obj_of(top, "one_time_keys")
@@ -855,7 +854,7 @@ glenda_take_keys :: proc(body: string) -> bool {
 	if has_otk {
 		for _, val in (map[string]json.Value)(otk) {
 			if ko, is := val.(json.Object); is {
-				got_o = libolm.b64_decode(libmsg.str_of(ko, "key"), glenda_one_time[:]) == 32
+				got_o = libodin.b64_decode(libmsg.str_of(ko, "key"), glenda_one_time[:]) == 32
 				if got_o {
 					break
 				}
@@ -898,14 +897,13 @@ bob_take_to_device :: proc(body: string) -> bool {
 	}
 	raw := make([]u8, 4096)
 	defer delete(raw)
-	n := libolm.b64_decode(libmsg.str_of(mine, "body"), raw)
+	n := libodin.b64_decode(libmsg.str_of(mine, "body"), raw)
 	if n <= 0 {
 		return false
 	}
 	if !libolm.inbound(&bob_session, bob_identity[:], bob_one_time[:], raw[:n]) {
 		return false
 	}
-	bob_session_set = true
 	plain := make([]u8, n)
 	defer delete(plain)
 	pn, ok := libolm.decrypt(&bob_session, raw[:n], plain, true)
@@ -924,7 +922,7 @@ bob_take_to_device :: proc(body: string) -> bool {
 	}
 	share := make([]u8, 512)
 	defer delete(share)
-	sn := libolm.b64_decode(libmsg.str_of(content, "session_key"), share)
+	sn := libodin.b64_decode(libmsg.str_of(content, "session_key"), share)
 	if sn < libolm.EXPORT_BYTES || !libolm.session_import(&bob_megolm_in, share[:sn]) {
 		return false
 	}
@@ -946,7 +944,7 @@ bob_open_event :: proc(body: string) -> bool {
 	}
 	raw := make([]u8, 4096)
 	defer delete(raw)
-	n := libolm.b64_decode(libmsg.str_of(content, "ciphertext"), raw)
+	n := libodin.b64_decode(libmsg.str_of(content, "ciphertext"), raw)
 	if n <= 0 {
 		return false
 	}

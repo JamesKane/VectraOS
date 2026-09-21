@@ -12,6 +12,7 @@ package mailfs
 
 import "vsys:abi"
 import "vsys:lib9p"
+import "vsys:libodin"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
@@ -209,7 +210,7 @@ read_small :: proc(j: ^Chatmail_Job, path: string, into: []u8) -> int {
 json_string :: proc "contextless" (text: string, key: string, into: []u8) -> int {
 	quoted: [64]u8
 	q := libuser.cat_into(quoted[:], "\"", key, "\"")
-	at := libodin_index(text, q)
+	at := libodin.index(text, q)
 	if at < 0 {
 		return -1
 	}

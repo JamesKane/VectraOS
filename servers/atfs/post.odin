@@ -62,15 +62,15 @@ start_post :: proc(tag: vectra9.Tag, text: string) -> vectra9.Errno {
 	p := new(Post)
 	p.tag = tag
 	p.count = len(text)
-	p.text = clone(body)
+	p.text = libmsg.clone(body)
 	p.date = libmsg.now_seconds()
 	p.record = make([dynamic]u8, 0, 512)
 	when_: [32]u8
-	put(&p.record, "{\"$type\": \"app.bsky.feed.post\", \"text\": ")
-	put_json_string(&p.record, body)
-	put(&p.record, ", \"createdAt\": \"")
-	put(&p.record, libmsg.format_3339(p.date, when_[:]))
-	put(&p.record, "\"")
+	libmsg.put(&p.record, "{\"$type\": \"app.bsky.feed.post\", \"text\": ")
+	libmsg.put_json_string(&p.record, body)
+	libmsg.put(&p.record, ", \"createdAt\": \"")
+	libmsg.put(&p.record, libmsg.format_3339(p.date, when_[:]))
+	libmsg.put(&p.record, "\"")
 	if replyto, has := libmsg.new_header(&n, "replyto"); has && len(replyto) > 0 {
 		home := libmsg.conv(&net, "home")
 		i := libmsg.find(home, replyto)
@@ -92,16 +92,16 @@ start_post :: proc(tag: vectra9.Tag, text: string) -> vectra9.Errno {
 				}
 			}
 		}
-		put(&p.record, ", \"reply\": {\"root\": {\"uri\": \"")
-		put(&p.record, ruri)
-		put(&p.record, "\", \"cid\": \"")
-		put(&p.record, rcid)
-		put(&p.record, "\"}, \"parent\": {\"uri\": \"")
-		put(&p.record, puri)
-		put(&p.record, "\", \"cid\": \"")
-		put(&p.record, pcid)
-		put(&p.record, "\"}}")
-		p.parent = clone(replyto)
+		libmsg.put(&p.record, ", \"reply\": {\"root\": {\"uri\": \"")
+		libmsg.put(&p.record, ruri)
+		libmsg.put(&p.record, "\", \"cid\": \"")
+		libmsg.put(&p.record, rcid)
+		libmsg.put(&p.record, "\"}, \"parent\": {\"uri\": \"")
+		libmsg.put(&p.record, puri)
+		libmsg.put(&p.record, "\", \"cid\": \"")
+		libmsg.put(&p.record, pcid)
+		libmsg.put(&p.record, "\"}}")
+		p.parent = libmsg.clone(replyto)
 	}
 	for k in 0 ..< MAX_ATTACH {
 		path, has := libmsg.new_attach(&n, k)
@@ -158,7 +158,7 @@ post_thread :: proc "contextless" (arg: rawptr) {
 put_record :: proc(p: ^Post) -> vectra9.Errno {
 	// The blobs first, each embedded as an image, then the record closes.
 	if p.nattach > 0 {
-		put(&p.record, ", \"embed\": {\"$type\": \"app.bsky.embed.images\", \"images\": [")
+		libmsg.put(&p.record, ", \"embed\": {\"$type\": \"app.bsky.embed.images\", \"images\": [")
 		for k in 0 ..< p.nattach {
 			blob := make([dynamic]u8, 0, 256)
 			defer delete(blob)
@@ -167,22 +167,22 @@ put_record :: proc(p: ^Post) -> vectra9.Errno {
 				return vectra9.EIO
 			}
 			if k > 0 {
-				put(&p.record, ", ")
+				libmsg.put(&p.record, ", ")
 			}
-			put(&p.record, "{\"alt\": \"\", \"image\": ")
+			libmsg.put(&p.record, "{\"alt\": \"\", \"image\": ")
 			append(&p.record, ..blob[:])
-			put(&p.record, "}")
+			libmsg.put(&p.record, "}")
 		}
-		put(&p.record, "]}")
+		libmsg.put(&p.record, "]}")
 	}
-	put(&p.record, "}")
+	libmsg.put(&p.record, "}")
 	body := make([dynamic]u8, 0, len(p.record) + 256)
 	defer delete(body)
-	put(&body, "{\"repo\": \"")
-	put(&body, string(account.did[:account.dlen]))
-	put(&body, "\", \"collection\": \"app.bsky.feed.post\", \"record\": ")
+	libmsg.put(&body, "{\"repo\": \"")
+	libmsg.put(&body, string(account.did[:account.dlen]))
+	libmsg.put(&body, "\", \"collection\": \"app.bsky.feed.post\", \"record\": ")
 	append(&body, ..p.record[:])
-	put(&body, "}")
+	libmsg.put(&body, "}")
 	url: [BASE_MAX + 64]u8
 	text, status, ok := as_account(p.io, "POST", libuser.cat_into(url[:], string(account.base[:account.blen]), "/xrpc/com.atproto.repo.createRecord"), "Content-Type: application/json\n", string(body[:]))
 	defer delete(text)
@@ -214,29 +214,29 @@ put_record :: proc(p: ^Post) -> vectra9.Errno {
 	}
 	// The post as a view, the record inside: what home keeps as raw.
 	view := make([dynamic]u8, 0, len(p.record) + 512)
-	put(&view, "{\"uri\": \"")
-	put(&view, string(uri[:ulen]))
-	put(&view, "\", \"cid\": \"")
-	put(&view, string(cid[:clen]))
-	put(&view, "\", \"author\": {\"did\": \"")
-	put(&view, string(account.did[:account.dlen]))
-	put(&view, "\", \"handle\": \"")
-	put(&view, string(account.user[:account.ulen]))
-	put(&view, "\"}, \"record\": ")
+	libmsg.put(&view, "{\"uri\": \"")
+	libmsg.put(&view, string(uri[:ulen]))
+	libmsg.put(&view, "\", \"cid\": \"")
+	libmsg.put(&view, string(cid[:clen]))
+	libmsg.put(&view, "\", \"author\": {\"did\": \"")
+	libmsg.put(&view, string(account.did[:account.dlen]))
+	libmsg.put(&view, "\", \"handle\": \"")
+	libmsg.put(&view, string(account.user[:account.ulen]))
+	libmsg.put(&view, "\"}, \"record\": ")
 	append(&view, ..p.record[:])
-	put(&view, "}")
+	libmsg.put(&view, "}")
 	m: libmsg.Msg
 	idbuf: [128]u8
-	m.id = clone(libmsg.make_id(p.date, string(uri[:ulen]), idbuf[:]))
-	m.from = clone(string(account.user[:account.ulen]))
+	m.id = libmsg.clone(libmsg.make_id(p.date, string(uri[:ulen]), idbuf[:]))
+	m.from = libmsg.clone(string(account.user[:account.ulen]))
 	m.date = p.date
 	when_: [32]u8
-	m.date_text = clone(libmsg.format_3339(p.date, when_[:]))
-	m.body = clone(p.text)
-	m.type = clone("text/plain")
-	m.replyto = clone(p.parent)
+	m.date_text = libmsg.clone(libmsg.format_3339(p.date, when_[:]))
+	m.body = libmsg.clone(p.text)
+	m.type = libmsg.clone("text/plain")
+	m.replyto = libmsg.clone(p.parent)
 	page: [256]u8
-	m.links = clone(libuser.cat_into(page[:], "https://bsky.app/profile/", string(account.user[:account.ulen]), "/post/", rkey_of(string(uri[:ulen]))))
+	m.links = libmsg.clone(libuser.cat_into(page[:], "https://bsky.app/profile/", string(account.user[:account.ulen]), "/post/", rkey_of(string(uri[:ulen]))))
 	m.raw = string(view[:])
 	// The server named the record: its CID is the hash, this side's own.
 	m.hash_own = true
@@ -268,7 +268,7 @@ upload_blob :: proc(p: ^Post, path: string, into: ^[dynamic]u8) -> bool {
 	if at < 0 {
 		return false
 	}
-	append(into, ..transmute([]u8)string(text)[at:object_end(string(text), at)])
+	append(into, ..transmute([]u8)string(text)[at:libmsg.object_end(string(text), at)])
 	return true
 }
 
@@ -331,34 +331,6 @@ object_at :: proc(text: string, key: string) -> int {
 	return -1
 }
 
-object_end :: proc(text: string, at: int) -> int {
-	depth := 0
-	in_string := false
-	for i := at; i < len(text); i += 1 {
-		c := text[i]
-		if in_string {
-			if c == '\\' {
-				i += 1
-			} else if c == '"' {
-				in_string = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			in_string = true
-		case '{', '[':
-			depth += 1
-		case '}', ']':
-			depth -= 1
-			if depth == 0 {
-				return i + 1
-			}
-		}
-	}
-	return len(text)
-}
-
 // uri_cid_of answers a post's URI and CID out of what its message kept
 // as raw: a feed item, with them under `post`, or a view with them at
 // the top. The strings are the caller's until the next call.
@@ -382,35 +354,4 @@ uri_cid_of :: proc(raw: string) -> (uri: string, cid: string, ok: bool) {
 	un := copy(ubuf[:], u)
 	cn := copy(cbuf[:], c)
 	return string(ubuf[:un]), string(cbuf[:cn]), true
-}
-
-put :: proc(out: ^[dynamic]u8, s: string) {
-	append(out, ..transmute([]u8)s)
-}
-
-// put_json_string appends `s` as a JSON string, quoted and escaped.
-put_json_string :: proc(out: ^[dynamic]u8, s: string) {
-	hex := "0123456789abcdef"
-	append(out, '"')
-	for c in transmute([]u8)s {
-		switch c {
-		case '"':
-			append(out, '\\', '"')
-		case '\\':
-			append(out, '\\', '\\')
-		case '\n':
-			append(out, '\\', 'n')
-		case '\r':
-			append(out, '\\', 'r')
-		case '\t':
-			append(out, '\\', 't')
-		case:
-			if c < 0x20 {
-				append(out, '\\', 'u', '0', '0', hex[c >> 4], hex[c & 15])
-			} else {
-				append(out, c)
-			}
-		}
-	}
-	append(out, '"')
 }

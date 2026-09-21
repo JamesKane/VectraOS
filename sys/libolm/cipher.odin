@@ -8,7 +8,6 @@ authenticates a message.
 package libolm
 
 import "core:crypto/aes"
-import "core:crypto/hash"
 import "core:crypto/hkdf"
 import "core:crypto/hmac"
 
@@ -93,6 +92,18 @@ mac8 :: proc(key: []u8, msg: []u8, out: []u8) {
 	copy(out, full[:8])
 }
 
+// mac8_ok answers whether `got` is the MAC of `msg` under `key`, compared
+// in constant time.
+mac8_ok :: proc(key: []u8, msg: []u8, got: []u8) -> bool {
+	want: [8]u8
+	mac8(key, msg, want[:])
+	diff: u8 = 0
+	for b in 0 ..< 8 {
+		diff |= want[b] ~ got[b]
+	}
+	return diff == 0
+}
+
 // hmac_byte writes HMAC-SHA-256 of one byte under `key` into `out`, which
 // may be the key itself.
 hmac_byte :: proc(key: []u8, b: u8, out: []u8) {
@@ -101,8 +112,6 @@ hmac_byte :: proc(key: []u8, b: u8, out: []u8) {
 	hmac.sum(.SHA256, full[:], msg[:], key)
 	copy(out, full[:])
 }
-
-_ :: hash
 
 // -- The payload's numbers ----------------------------------------------------------
 
@@ -143,4 +152,37 @@ get_varint :: proc "contextless" (src: []u8) -> (v: u64, n: int, ok: bool) {
 		shift += 7
 	}
 	return 0, 0, false
+}
+
+/*
+next_field reads one field of a payload at `at`: its tag, then a number
+for a varint field or the bytes for a length-delimited one, and answers
+where the next begins. Any other wire type, or a length past the end, is
+not ok.
+*/
+next_field :: proc "contextless" (body: []u8, at: int) -> (tag: u64, num: u64, bytes: []u8, next: int, ok: bool) {
+	tn: int
+	tag, tn, ok = get_varint(body[at:])
+	if !ok {
+		return
+	}
+	next = at + tn
+	switch tag & 7 {
+	case 0:
+		vn: int
+		num, vn, ok = get_varint(body[next:])
+		next += vn
+	case 2:
+		l, ln, lok := get_varint(body[next:])
+		if !lok || next + ln + int(l) > len(body) {
+			ok = false
+			return
+		}
+		next += ln
+		bytes = body[next:next + int(l)]
+		next += int(l)
+	case:
+		ok = false
+	}
+	return
 }

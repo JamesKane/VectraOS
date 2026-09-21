@@ -37,7 +37,7 @@ read_msg :: proc(dir: string, allocator := context.allocator) -> (m: Msg, ok: bo
 	if !is_message(dir) {
 		return m, false
 	}
-	m.id = clone_str(libuser.basename(dir))
+	m.id = clone(libuser.basename(dir))
 	m.from = read_line(dir, "from")
 	m.subject = read_line(dir, "subject")
 	m.type = read_line(dir, "type")
@@ -78,7 +78,7 @@ read_conv :: proc(dir: string, allocator := context.allocator) -> (rows: []Msg, 
 			continue
 		}
 		m: Msg
-		m.id = clone_str(name)
+		m.id = clone(name)
 		m.from = read_line(sub, "from")
 		m.subject = read_line(sub, "subject")
 		date := read_line(sub, "date")
@@ -121,7 +121,7 @@ split_date :: proc(line: string) -> (secs: i64, text: string) {
 	}
 	secs, _ = libuser.atoi(line[:i])
 	if i < len(line) {
-		return secs, clone_str(line[i + 1:])
+		return secs, clone(line[i + 1:])
 	}
 	return secs, ""
 }
@@ -163,16 +163,5 @@ read_first_line :: proc(dir: string, name: string) -> string {
 	for end < int(n) && buf[end] != '\n' {
 		end += 1
 	}
-	return clone_str(string(buf[:end]))
+	return clone(string(buf[:end]))
 }
-
-@(private = "file")
-clone_str :: proc(s: string) -> string {
-	if len(s) == 0 {
-		return ""
-	}
-	own := make([]u8, len(s))
-	copy(own, s)
-	return string(own)
-}
-

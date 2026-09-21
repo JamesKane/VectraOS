@@ -473,6 +473,17 @@ read_full :: proc "contextless" (fd: int, buf: []u8) -> bool {
 	return true
 }
 
+// read_random fills `buf` from /dev/random, false when it could not.
+read_random :: proc "contextless" (buf: []u8) -> bool {
+	fd := open("/dev/random", abi.O_RDONLY)
+	if fd < 0 {
+		return false
+	}
+	n := read(int(fd), buf)
+	_ = close(int(fd))
+	return int(n) == len(buf)
+}
+
 // write_full is the same loop outward. The kernel bounds one call's copy, so
 // a frame longer than that bound crosses in pieces. False means the far side
 // stopped accepting before the last byte.

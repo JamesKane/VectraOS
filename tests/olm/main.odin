@@ -53,23 +53,8 @@ EXPECTED3 := [128]u8{
 	0xd5, 0x6f, 0x03, 0xe2, 0x44, 0x16, 0xb9, 0x8e, 0x1c, 0xfd, 0x97, 0xc2, 0x06, 0xaa, 0x90, 0x7a,
 }
 
-flat :: proc(m: ^libolm.Ratchet, into: []u8) -> []u8 {
-	for j in 0 ..< 4 {
-		copy(into[j * 32:], m.data[j][:])
-	}
-	return into[:128]
-}
-
 same :: proc(a, b: []u8) -> bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i in 0 ..< len(a) {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return string(a) == string(b)
 }
 
 @(export, link_name = "_start")
@@ -77,26 +62,25 @@ start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	_ = libuser.args(block)
 	seed := transmute([]u8)string(SEED)
-	buf: [128]u8
 
 	// -- Megolm's ratchet against the reference's known answers --------------------
 	m: libolm.Ratchet
 	_ = libolm.ratchet_init(&m, seed, 0)
 	libolm.ratchet_advance(&m)
-	if m.counter != 1 || !same(flat(&m, buf[:]), EXPECTED1[:]) {
+	if m.counter != 1 || !same(m.data[:], EXPECTED1[:]) {
 		fail("megolm advance one step")
 	}
 	_ = libolm.ratchet_init(&m, seed, 0)
 	libolm.ratchet_advance_to(&m, 1)
-	if m.counter != 1 || !same(flat(&m, buf[:]), EXPECTED1[:]) {
+	if m.counter != 1 || !same(m.data[:], EXPECTED1[:]) {
 		fail("megolm advance_to one")
 	}
 	libolm.ratchet_advance_to(&m, 0x1000000)
-	if m.counter != 0x1000000 || !same(flat(&m, buf[:]), EXPECTED2[:]) {
+	if m.counter != 0x1000000 || !same(m.data[:], EXPECTED2[:]) {
 		fail("megolm advance_to 2^24")
 	}
 	libolm.ratchet_advance_to(&m, 0x1041506)
-	if m.counter != 0x1041506 || !same(flat(&m, buf[:]), EXPECTED3[:]) {
+	if m.counter != 0x1041506 || !same(m.data[:], EXPECTED3[:]) {
 		fail("megolm advance_to 0x1041506")
 	}
 	m1, m2: libolm.Ratchet
@@ -104,15 +88,14 @@ start :: proc "c" (block: ^abi.Args) {
 	libolm.ratchet_advance_to(&m1, 0x1000000)
 	_ = libolm.ratchet_init(&m2, seed, 0)
 	libolm.ratchet_advance_to(&m2, 0x2000000)
-	buf2: [128]u8
-	if m1.counter != 0x1000000 || !same(flat(&m1, buf[:]), flat(&m2, buf2[:])) {
+	if m1.counter != 0x1000000 || !same(m1.data[:], m2.data[:]) {
 		fail("megolm wraparound")
 	}
 	_ = libolm.ratchet_init(&m1, seed, 0xffffffff)
 	libolm.ratchet_advance_to(&m1, 0)
 	_ = libolm.ratchet_init(&m2, seed, 0xffffffff)
 	libolm.ratchet_advance(&m2)
-	if m1.counter != 0 || m2.counter != 0 || !same(flat(&m1, buf[:]), flat(&m2, buf2[:])) {
+	if m1.counter != 0 || m2.counter != 0 || !same(m1.data[:], m2.data[:]) {
 		fail("megolm overflow by one")
 	}
 	_ = libolm.ratchet_init(&m1, seed, 1)
@@ -120,7 +103,7 @@ start :: proc "c" (block: ^abi.Args) {
 	libolm.ratchet_advance_to(&m1, 0)
 	_ = libolm.ratchet_init(&m2, seed, 1)
 	libolm.ratchet_advance_to(&m2, 0)
-	if m1.counter != 0 || !same(flat(&m1, buf[:]), flat(&m2, buf2[:])) {
+	if m1.counter != 0 || !same(m1.data[:], m2.data[:]) {
 		fail("megolm overflow")
 	}
 
@@ -194,8 +177,8 @@ start :: proc "c" (block: ^abi.Args) {
 		alice_ratchet2[i] = u8(i * 19 + 8)
 	}
 	bob_id_pub, bob_one_time_pub: [32]u8
-	libolm_basepoint(bob_id_pub[:], bob_id[:])
-	libolm_basepoint(bob_one_time_pub[:], bob_one_time[:])
+	libolm.basepoint(bob_id_pub[:], bob_id[:])
+	libolm.basepoint(bob_one_time_pub[:], bob_one_time[:])
 	alice: libolm.Session
 	if !libolm.outbound(&alice, alice_id[:], bob_id_pub[:], bob_one_time_pub[:], alice_base[:], alice_ratchet[:]) {
 		fail("olm outbound")
@@ -246,8 +229,4 @@ start :: proc "c" (block: ^abi.Args) {
 	}
 	libuser.eprint("olmtest: Megolm's ratchet matches the reference's answers, a session seals and opens in any order, and Olm runs both ways ok\n")
 	libuser.exits("ok")
-}
-
-libolm_basepoint :: proc(dst: []u8, scalar: []u8) {
-	libolm.basepoint(dst, scalar)
 }

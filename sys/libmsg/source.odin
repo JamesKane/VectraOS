@@ -277,18 +277,32 @@ keep_sent :: proc(dir: string, id: string, text: string) -> bool {
 	if dir == "" {
 		return true
 	}
+	name: [512]u8
+	return keep_under(dir, "sent", libuser.cat_into(name[:], id, ".json"), transmute([]u8)text)
+}
+
+// keep_under writes `bytes` as the file `name` under `dir/sub`, making
+// the directories on the way; `sub` may be more than one deep.
+keep_under :: proc(dir: string, sub: string, name: string, bytes: []u8, mode: u64 = 0o644) -> bool {
 	path: [512]u8
 	_ = libuser.mkdir(dir)
-	sent := libuser.cat_into(path[:], dir, "/sent")
-	_ = libuser.mkdir(sent)
-	full: [512]u8
-	name := libuser.cat_into(full[:], sent, "/", id, ".json")
-	_ = libuser.remove(name)
-	fd := libuser.create(name, abi.O_WRONLY, 0o644)
+	at := 0
+	for at <= len(sub) {
+		end := at
+		for end < len(sub) && sub[end] != '/' {
+			end += 1
+		}
+		_ = libuser.mkdir(libuser.cat_into(path[:], dir, "/", sub[:end]))
+		at = end + 1
+	}
+	full: [640]u8
+	file := libuser.cat_into(full[:], dir, "/", sub, "/", name)
+	_ = libuser.remove(file)
+	fd := libuser.create(file, abi.O_WRONLY, mode)
 	if fd < 0 {
 		return false
 	}
-	ok := libuser.write_full(int(fd), transmute([]u8)text)
+	ok := libuser.write_full(int(fd), bytes)
 	_ = libuser.close(int(fd))
 	return ok
 }

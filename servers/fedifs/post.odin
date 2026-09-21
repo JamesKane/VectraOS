@@ -125,7 +125,7 @@ post_thread :: proc "contextless" (arg: rawptr) {
 // home and the store.
 post :: proc(p: ^Post) -> vectra9.Errno {
 	tok: [256]u8
-	token, has := ask_token(tok[:])
+	token, has := libmsg.ask_token(string(account.user[:account.ulen]), libmsg.host_of(string(account.base[:account.blen])), tok[:])
 	if !has {
 		p.why = "factotum holds no token for the account"
 		return vectra9.EPERM
@@ -159,7 +159,7 @@ post :: proc(p: ^Post) -> vectra9.Errno {
 	_ = libmsg.keep_sent(string(store[:store_len]), id, string(text))
 	home := libmsg.conv(&net, "home")
 	libmsg.add(&net, home, m)
-	resolve_replies(home)
+	libmsg.resolve_replies(home)
 	rebuild_status()
 	return 0
 }

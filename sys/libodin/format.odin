@@ -172,13 +172,19 @@ levels share. Plain, and quadratic in the worst case, which is what a search
 over a line of a file wants.
 */
 contains :: proc "contextless" (text: string, want: string) -> bool #no_bounds_check {
+	return index(text, want) >= 0
+}
+
+// index answers where `want` first begins in `text`, or -1. An empty
+// `want` begins at the start.
+index :: proc "contextless" (text: string, want: string) -> int #no_bounds_check {
 	if len(want) > len(text) {
-		return false
+		return -1
 	}
 	for i := 0; i + len(want) <= len(text); i += 1 {
 		if text[i:i + len(want)] == want {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }

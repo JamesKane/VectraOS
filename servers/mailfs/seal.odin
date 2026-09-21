@@ -94,7 +94,7 @@ note_autocrypt :: proc(p: ^libmime.Part) {
 	}
 	key := make([]u8, 4096)
 	defer delete(key)
-	kd_start := libodin_index(value, "keydata=")
+	kd_start := libodin.index(value, "keydata=")
 	if kd_start < 0 {
 		return
 	}
@@ -487,16 +487,4 @@ rpc_ask :: proc(rpc: int, line: string, into: []u8) -> string {
 		s = s[:len(s) - 1]
 	}
 	return s
-}
-
-libodin_index :: proc "contextless" (s: string, want: string) -> int {
-	if len(want) == 0 || len(s) < len(want) {
-		return -1
-	}
-	for i in 0 ..= len(s) - len(want) {
-		if s[i:i + len(want)] == want {
-			return i
-		}
-	}
-	return -1
 }

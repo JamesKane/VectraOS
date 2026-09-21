@@ -31,6 +31,7 @@ import "vsys:lib9p"
 import "vsys:libjws"
 import "vsys:libmsg"
 import "vsys:libnet"
+import "vsys:libodin"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
@@ -162,7 +163,7 @@ push_request :: proc(j: ^Oauth_Job, base: string, user: string) -> bool {
 	}
 	// PKCE: a verifier of thirty-two random bytes, its challenge their hash.
 	rnd: [32]u8
-	if !fill_random(rnd[:]) {
+	if !libuser.read_random(rnd[:]) {
 		j.why = "no entropy"
 		return false
 	}
@@ -171,7 +172,7 @@ push_request :: proc(j: ^Oauth_Job, base: string, user: string) -> bool {
 	hash.hash_bytes_to_buffer(.SHA256, oauth.verifier[:oauth.vlen], digest[:])
 	challenge: [48]u8
 	cn := libjws.base64url_encode(digest[:], challenge[:])
-	if !fill_random(rnd[:16]) {
+	if !libuser.read_random(rnd[:16]) {
 		j.why = "no entropy"
 		return false
 	}
@@ -270,7 +271,7 @@ serve_callback :: proc(io: ^libthread.Ioproc) {
 			break
 		}
 		got += int(m)
-		if libodin_contains(string(req[:got]), "\r\n\r\n") || libodin_contains(string(req[:got]), "\n\n") {
+		if libodin.contains(string(req[:got]), "\r\n\r\n") || libodin.contains(string(req[:got]), "\n\n") {
 			break
 		}
 	}
@@ -353,18 +354,6 @@ hex_nibble :: proc "contextless" (c: u8) -> u8 {
 	return 0
 }
 
-libodin_contains :: proc "contextless" (s: string, want: string) -> bool {
-	if len(want) == 0 || len(s) < len(want) {
-		return false
-	}
-	for i in 0 ..< len(s) - len(want) + 1 {
-		if s[i:i + len(want)] == want {
-			return true
-		}
-	}
-	return false
-}
-
 // trade_code trades the code for a token bound to the key, and puts the
 // token in factotum under the account.
 trade_code :: proc(j: ^Oauth_Job, code: string) -> bool {
@@ -392,8 +381,7 @@ trade_code :: proc(j: ^Oauth_Job, code: string) -> bool {
 		j.why = "the server answered no token bound to the key"
 		return false
 	}
-	line: [512]u8
-	if !libmsg.factotum_write(libuser.cat_into(line[:], "key proto=oauth user=", user, " server=", libmsg.host_of(base), " !token=", token)) {
+	if !libmsg.keep_token(user, libmsg.host_of(base), token) {
 		j.why = "factotum would not take the token"
 		return false
 	}
@@ -496,16 +484,6 @@ make_proof :: proc(method: string, url: string, nonce: string, token: string, in
 		e -= 1
 	}
 	return string(into[6:e]), true
-}
-
-fill_random :: proc(buf: []u8) -> bool {
-	fd := libuser.open("/dev/random", abi.O_RDONLY)
-	if fd < 0 {
-		return false
-	}
-	n := libuser.read(int(fd), buf)
-	_ = libuser.close(int(fd))
-	return int(n) == len(buf)
 }
 
 hex_of :: proc "contextless" (bytes: []u8, into: []u8) -> string {

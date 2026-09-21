@@ -15,13 +15,13 @@ served with a body that says so.
 */
 package matrixfs
 
+import "core:crypto/ed25519"
 import "core:encoding/json"
-import "vsys:abi"
 import "vsys:libmsg"
+import "vsys:libodin"
 import "vsys:libolm"
 import "vsys:libthread"
 import "vsys:libuser"
-import "vsys:vectra9"
 
 MAX_ONE_TIME :: 8
 MAX_OLM :: 8
@@ -30,18 +30,17 @@ MAX_MEMBERS :: 16
 
 // This device's keys.
 Device :: struct {
-	set:        bool,
-	identity:   [32]u8, // Curve25519, private
+	set:          bool,
+	identity:     [32]u8, // Curve25519, private
 	identity_pub: [32]u8,
-	sign:       [32]u8, // Ed25519 seed
-	sign_pub:   [32]u8,
-	one_time:   [MAX_ONE_TIME][32]u8,
+	sign:         ed25519.Private_Key,
+	sign_pub:     [32]u8,
+	one_time:     [MAX_ONE_TIME][32]u8,
 	one_time_pub: [MAX_ONE_TIME][32]u8,
-	none_time:  int,
 	identity_b64: [48]u8,
-	ib64:       int,
-	sign_b64:   [48]u8,
-	sb64:       int,
+	ib64:         int,
+	sign_b64:     [48]u8,
+	sb64:         int,
 }
 
 // An Olm session with one far device, by its identity key.
@@ -59,43 +58,40 @@ Megolm_In :: struct {
 	session: libolm.Inbound,
 }
 
-// A room's outbound Megolm session, made when the first message goes.
+// A room's outbound Megolm session, made and shared with the members
+// when the first message goes.
 Megolm_Out :: struct {
 	set:     bool,
 	session: libolm.Outbound,
 	id:      [48]u8,
 	ilen:    int,
-	shared:  bool, // Its key has gone to the members
 }
 
 device: Device
 peers: [MAX_OLM]Olm_Peer
 megolm_in: [MAX_MEGOLM_IN]Megolm_In
-megolm_out: [MAX_ROOMS]Megolm_Out
 
 // -- The device's keys ------------------------------------------------------------
 
-// make_device draws the keys from /dev/random.
+// make_device draws the keys from /dev/random: the identity key, the
+// signing seed, and the one-time keys, in one read.
 make_device :: proc() -> bool {
-	if !fill_random(device.identity[:]) || !fill_random(device.sign[:]) {
+	seed: [32 + 32 + MAX_ONE_TIME * 32]u8
+	if !libuser.read_random(seed[:]) {
 		return false
 	}
+	copy(device.identity[:], seed[:32])
 	libolm.basepoint(device.identity_pub[:], device.identity[:])
-	sk: ed25519_key
-	if !ed25519_from_seed(&sk, device.sign[:]) {
+	if !ed25519.private_key_set_bytes(&device.sign, seed[32:64]) {
 		return false
 	}
-	ed25519_pub(&sk, device.sign_pub[:])
-	device.none_time = 0
+	ed25519.private_key_public_bytes(&device.sign, device.sign_pub[:])
 	for i in 0 ..< MAX_ONE_TIME {
-		if !fill_random(device.one_time[i][:]) {
-			return false
-		}
+		copy(device.one_time[i][:], seed[64 + i * 32:96 + i * 32])
 		libolm.basepoint(device.one_time_pub[i][:], device.one_time[i][:])
-		device.none_time += 1
 	}
-	device.ib64 = libolm.b64_encode(device.identity_pub[:], device.identity_b64[:])
-	device.sb64 = libolm.b64_encode(device.sign_pub[:], device.sign_b64[:])
+	device.ib64 = libodin.b64_encode(device.identity_pub[:], device.identity_b64[:])
+	device.sb64 = libodin.b64_encode(device.sign_pub[:], device.sign_b64[:])
 	device.set = true
 	return true
 }
@@ -107,65 +103,72 @@ signature is Ed25519 over the object's canonical JSON, its keys in
 order and no space between, which is what is built here.
 */
 upload_keys :: proc(io: ^libthread.Ioproc) -> bool {
-	user := string(account.user[:account.ulen])
 	dev := string(account.device[:account.dlen])
 	body := make([dynamic]u8, 0, 4096)
 	defer delete(body)
-	// The device keys, canonical, then signed.
 	canon := make([dynamic]u8, 0, 512)
 	defer delete(canon)
-	put(&canon, "{\"algorithms\":[\"m.olm.v1.curve25519-aes-sha2\",\"m.megolm.v1.aes-sha2\"],\"device_id\":")
-	put_json_string(&canon, dev)
-	put(&canon, ",\"keys\":{\"curve25519:")
-	put(&canon, dev)
-	put(&canon, "\":\"")
-	put(&canon, string(device.identity_b64[:device.ib64]))
-	put(&canon, "\",\"ed25519:")
-	put(&canon, dev)
-	put(&canon, "\":\"")
-	put(&canon, string(device.sign_b64[:device.sb64]))
-	put(&canon, "\"},\"user_id\":")
-	put_json_string(&canon, user)
-	put(&canon, "}")
-	sig: [88]u8
-	sn := sign_canonical(canon[:], sig[:])
-	put(&body, "{\"device_keys\":")
-	append(&body, ..canon[:len(canon) - 1])
-	put(&body, ",\"signatures\":{")
-	put_json_string(&body, user)
-	put(&body, ":{\"ed25519:")
-	put(&body, dev)
-	put(&body, "\":\"")
-	put(&body, string(sig[:sn]))
-	put(&body, "\"}}},\"one_time_keys\":{")
-	for i in 0 ..< device.none_time {
+	libmsg.put(&canon, "{\"algorithms\":[\"m.olm.v1.curve25519-aes-sha2\",\"m.megolm.v1.aes-sha2\"],\"device_id\":")
+	libmsg.put_json_string(&canon, dev)
+	libmsg.put(&canon, ",\"keys\":{")
+	put_key_name(&canon, "curve25519", dev)
+	libmsg.put(&canon, string(device.identity_b64[:device.ib64]))
+	libmsg.put(&canon, "\",")
+	put_key_name(&canon, "ed25519", dev)
+	libmsg.put(&canon, string(device.sign_b64[:device.sb64]))
+	libmsg.put(&canon, "\"},\"user_id\":")
+	libmsg.put_json_string(&canon, string(account.user[:account.ulen]))
+	libmsg.put(&canon, "}")
+	libmsg.put(&body, "{\"device_keys\":")
+	put_signed(&body, canon[:])
+	libmsg.put(&body, ",\"one_time_keys\":{")
+	for i in 0 ..< MAX_ONE_TIME {
 		if i > 0 {
-			put(&body, ",")
+			libmsg.put(&body, ",")
 		}
 		kb64: [48]u8
-		kn := libolm.b64_encode(device.one_time_pub[i][:], kb64[:])
+		kn := libodin.b64_encode(device.one_time_pub[i][:], kb64[:])
 		clear(&canon)
-		put(&canon, "{\"key\":\"")
-		put(&canon, string(kb64[:kn]))
-		put(&canon, "\"}")
-		sn = sign_canonical(canon[:], sig[:])
-		put(&body, "\"signed_curve25519:")
-		put(&body, one_time_id(i))
-		put(&body, "\":{\"key\":\"")
-		put(&body, string(kb64[:kn]))
-		put(&body, "\",\"signatures\":{")
-		put_json_string(&body, user)
-		put(&body, ":{\"ed25519:")
-		put(&body, dev)
-		put(&body, "\":\"")
-		put(&body, string(sig[:sn]))
-		put(&body, "\"}}}")
+		libmsg.put(&canon, "{\"key\":\"")
+		libmsg.put(&canon, string(kb64[:kn]))
+		libmsg.put(&canon, "\"}")
+		libmsg.put(&body, "\"signed_curve25519:")
+		libmsg.put(&body, one_time_id(i))
+		libmsg.put(&body, "\":")
+		put_signed(&body, canon[:])
 	}
-	put(&body, "}}")
+	libmsg.put(&body, "}}")
 	url: [BASE_MAX + 64]u8
 	text, status, ok := as_account(io, "POST", libuser.cat_into(url[:], string(account.base[:account.blen]), "/_matrix/client/v3/keys/upload"), "Content-Type: application/json\n", string(body[:]))
 	delete(text)
 	return ok && status == 200
+}
+
+// put_key_name writes a key's name as an object's member, `"algo:id":"`,
+// up to the value's opening quote.
+put_key_name :: proc(out: ^[dynamic]u8, algo: string, id: string) {
+	libmsg.put(out, "\"")
+	libmsg.put(out, algo)
+	libmsg.put(out, ":")
+	libmsg.put(out, id)
+	libmsg.put(out, "\":\"")
+}
+
+// put_signed writes a canonical object with this device's signature in
+// it: the object but its closing brace, then `signatures` under the user
+// and the device's signing key.
+put_signed :: proc(out: ^[dynamic]u8, canon: []u8) {
+	sig: [64]u8
+	ed25519.sign(&device.sign, canon, sig[:])
+	sig_b64: [88]u8
+	sn := libodin.b64_encode(sig[:], sig_b64[:])
+	append(out, ..canon[:len(canon) - 1])
+	libmsg.put(out, ",\"signatures\":{")
+	libmsg.put_json_string(out, string(account.user[:account.ulen]))
+	libmsg.put(out, ":{")
+	put_key_name(out, "ed25519", string(account.device[:account.dlen]))
+	libmsg.put(out, string(sig_b64[:sn]))
+	libmsg.put(out, "\"}}}")
 }
 
 // one_time_id names a one-time key: the letters AAAAAA and its number.
@@ -176,17 +179,6 @@ one_time_id :: proc "contextless" (i: int) -> string {
 	return string(buf[:6])
 }
 
-// sign_canonical signs canonical JSON with the device's key, base64.
-sign_canonical :: proc(canon: []u8, into: []u8) -> int {
-	sk: ed25519_key
-	if !ed25519_from_seed(&sk, device.sign[:]) {
-		return 0
-	}
-	sig: [64]u8
-	ed25519_sign(&sk, canon, sig[:])
-	return libolm.b64_encode(sig[:], into)
-}
-
 // -- A message out, sealed --------------------------------------------------------
 
 /*
@@ -194,35 +186,29 @@ seal_out seals a room message as a Megolm event's content. The room's
 outbound session is made on first use, and its key shared with the
 members' devices first, by Olm. Answers the content JSON into `into`.
 */
-seal_out :: proc(io: ^libthread.Ioproc, r: ^Room, ri: int, content_json: string, into: ^[dynamic]u8) -> bool {
-	mo := &megolm_out[ri]
+seal_out :: proc(io: ^libthread.Ioproc, r: ^Room, content_json: string, into: ^[dynamic]u8) -> bool {
+	mo := &r.out
 	if !mo.set {
-		seed: [128]u8
-		sign_seed: [32]u8
-		if !fill_random(seed[:]) || !fill_random(sign_seed[:]) {
+		seed: [128 + 32]u8
+		if !libuser.read_random(seed[:]) || !libolm.outbound_init(&mo.session, seed[:128], seed[128:]) {
 			return false
 		}
-		if !libolm.outbound_init(&mo.session, seed[:], sign_seed[:]) {
-			return false
-		}
-		mo.ilen = libolm.b64_encode(mo.session.pub[:], mo.id[:])
-		mo.set = true
-		mo.shared = false
-	}
-	if !mo.shared {
+		mo.ilen = libodin.b64_encode(mo.session.pub[:], mo.id[:])
+		// A share that fails leaves the session unmade: the next message
+		// makes and shares a fresh one.
 		if !share_room_key(io, r, mo) {
 			return false
 		}
-		mo.shared = true
+		mo.set = true
 	}
 	// The plaintext: the event, and the room it is for.
 	plain := make([dynamic]u8, 0, len(content_json) + 128)
 	defer delete(plain)
-	put(&plain, "{\"content\":")
-	put(&plain, content_json)
-	put(&plain, ",\"room_id\":")
-	put_json_string(&plain, string(r.id[:r.ilen]))
-	put(&plain, ",\"type\":\"m.room.message\"}")
+	libmsg.put(&plain, "{\"content\":")
+	libmsg.put(&plain, content_json)
+	libmsg.put(&plain, ",\"room_id\":")
+	libmsg.put_json_string(&plain, string(r.id[:r.ilen]))
+	libmsg.put(&plain, ",\"type\":\"m.room.message\"}")
 	sealed := make([]u8, len(plain) + 128)
 	defer delete(sealed)
 	n := libolm.group_encrypt(&mo.session, plain[:], sealed)
@@ -231,16 +217,16 @@ seal_out :: proc(io: ^libthread.Ioproc, r: ^Room, ri: int, content_json: string,
 	}
 	b64 := make([]u8, n * 4 / 3 + 8)
 	defer delete(b64)
-	bn := libolm.b64_encode(sealed[:n], b64)
-	put(into, "{\"algorithm\": \"m.megolm.v1.aes-sha2\", \"sender_key\": \"")
-	put(into, string(device.identity_b64[:device.ib64]))
-	put(into, "\", \"device_id\": ")
-	put_json_string(into, string(account.device[:account.dlen]))
-	put(into, ", \"session_id\": \"")
-	put(into, string(mo.id[:mo.ilen]))
-	put(into, "\", \"ciphertext\": \"")
-	put(into, string(b64[:bn]))
-	put(into, "\"}")
+	bn := libodin.b64_encode(sealed[:n], b64)
+	libmsg.put(into, "{\"algorithm\": \"m.megolm.v1.aes-sha2\", \"sender_key\": \"")
+	libmsg.put(into, string(device.identity_b64[:device.ib64]))
+	libmsg.put(into, "\", \"device_id\": ")
+	libmsg.put_json_string(into, string(account.device[:account.dlen]))
+	libmsg.put(into, ", \"session_id\": \"")
+	libmsg.put(into, string(mo.id[:mo.ilen]))
+	libmsg.put(into, "\", \"ciphertext\": \"")
+	libmsg.put(into, string(b64[:bn]))
+	libmsg.put(into, "\"}")
 	return true
 }
 
@@ -256,7 +242,7 @@ share_room_key :: proc(io: ^libthread.Ioproc, r: ^Room, mo: ^Megolm_Out) -> bool
 	// Who to ask for: every member but this user.
 	query := make([dynamic]u8, 0, 512)
 	defer delete(query)
-	put(&query, "{\"device_keys\":{")
+	libmsg.put(&query, "{\"device_keys\":{")
 	first := true
 	for i in 0 ..< r.nmembers {
 		member := string(r.members[i][:r.mlen[i]])
@@ -264,13 +250,13 @@ share_room_key :: proc(io: ^libthread.Ioproc, r: ^Room, mo: ^Megolm_Out) -> bool
 			continue
 		}
 		if !first {
-			put(&query, ",")
+			libmsg.put(&query, ",")
 		}
 		first = false
-		put_json_string(&query, member)
-		put(&query, ":[]")
+		libmsg.put_json_string(&query, member)
+		libmsg.put(&query, ":[]")
 	}
-	put(&query, "}}")
+	libmsg.put(&query, "}}")
 	if first {
 		return true // Nobody else: nothing to share
 	}
@@ -296,7 +282,7 @@ share_room_key :: proc(io: ^libthread.Ioproc, r: ^Room, mo: ^Megolm_Out) -> bool
 		return false
 	}
 	share_b64: [320]u8
-	shn := libolm.b64_encode(share[:], share_b64[:])
+	shn := libodin.b64_encode(share[:], share_b64[:])
 	for user_id, dv in (map[string]json.Value)(users) {
 		devices, is_devs := dv.(json.Object)
 		if !is_devs {
@@ -315,9 +301,9 @@ share_room_key :: proc(io: ^libthread.Ioproc, r: ^Room, mo: ^Megolm_Out) -> bool
 			ed_b64 := ""
 			for kname, kval in (map[string]json.Value)(keys) {
 				if s, is := kval.(json.String); is {
-					if len(kname) > 11 && kname[:11] == "curve25519:" {
+					if libodin.has_prefix(kname, "curve25519:") {
 						curve_b64 = string(s)
-					} else if len(kname) > 8 && kname[:8] == "ed25519:" {
+					} else if libodin.has_prefix(kname, "ed25519:") {
 						ed_b64 = string(s)
 					}
 				}
@@ -339,11 +325,11 @@ send_room_key :: proc(io: ^libthread.Ioproc, user_id: string, dev_id: string, cu
 	base := string(account.base[:account.blen])
 	claim := make([dynamic]u8, 0, 256)
 	defer delete(claim)
-	put(&claim, "{\"one_time_keys\":{")
-	put_json_string(&claim, user_id)
-	put(&claim, ":{")
-	put_json_string(&claim, dev_id)
-	put(&claim, ":\"signed_curve25519\"}}}")
+	libmsg.put(&claim, "{\"one_time_keys\":{")
+	libmsg.put_json_string(&claim, user_id)
+	libmsg.put(&claim, ":{")
+	libmsg.put_json_string(&claim, dev_id)
+	libmsg.put(&claim, ":\"signed_curve25519\"}}}")
 	url: [BASE_MAX + 64]u8
 	text, status, ok := as_account(io, "POST", libuser.cat_into(url[:], base, "/_matrix/client/v3/keys/claim"), "Content-Type: application/json\n", string(claim[:]))
 	defer delete(text)
@@ -351,7 +337,8 @@ send_room_key :: proc(io: ^libthread.Ioproc, user_id: string, dev_id: string, cu
 		return false
 	}
 	// The one-time key: the first key object under the user and device.
-	one_time_b64 := ""
+	their_one_time: [32]u8
+	got_one_time := false
 	{
 		v, err := json.parse_string(string(text), .JSON)
 		defer json.destroy_value(v)
@@ -373,19 +360,12 @@ send_room_key :: proc(io: ^libthread.Ioproc, user_id: string, dev_id: string, cu
 		}
 		for _, kv in (map[string]json.Value)(d) {
 			if ko, is := kv.(json.Object); is {
-				one_time_b64 = libmsg.str_of(ko, "key")
+				got_one_time = libodin.b64_decode(libmsg.str_of(ko, "key"), their_one_time[:]) == 32
 			}
 		}
-		if one_time_b64 == "" {
-			return false
-		}
-		@(static) keep: [64]u8
-		kn := copy(keep[:], one_time_b64)
-		one_time_b64 = string(keep[:kn])
 	}
 	their_curve: [32]u8
-	their_one_time: [32]u8
-	if libolm.b64_decode(curve_b64, their_curve[:]) != 32 || libolm.b64_decode(one_time_b64, their_one_time[:]) != 32 {
+	if !got_one_time || libodin.b64_decode(curve_b64, their_curve[:]) != 32 {
 		return false
 	}
 	// An Olm session to the device, on fresh keys of our own.
@@ -393,12 +373,11 @@ send_room_key :: proc(io: ^libthread.Ioproc, user_id: string, dev_id: string, cu
 	if p == nil {
 		return false
 	}
-	base_priv: [32]u8
-	ratchet_priv: [32]u8
-	if !fill_random(base_priv[:]) || !fill_random(ratchet_priv[:]) {
+	fresh: [64]u8
+	if !libuser.read_random(fresh[:]) {
 		return false
 	}
-	if !libolm.outbound(&p.session, device.identity[:], their_curve[:], their_one_time[:], base_priv[:], ratchet_priv[:]) {
+	if !libolm.outbound(&p.session, device.identity[:], their_curve[:], their_one_time[:], fresh[:32], fresh[32:]) {
 		return false
 	}
 	p.used = true
@@ -406,23 +385,23 @@ send_room_key :: proc(io: ^libthread.Ioproc, user_id: string, dev_id: string, cu
 	// The m.room_key, as the Olm plaintext.
 	plain := make([dynamic]u8, 0, 1024)
 	defer delete(plain)
-	put(&plain, "{\"content\":{\"algorithm\":\"m.megolm.v1.aes-sha2\",\"room_id\":")
-	put_json_string(&plain, string(r.id[:r.ilen]))
-	put(&plain, ",\"session_id\":\"")
-	put(&plain, string(mo.id[:mo.ilen]))
-	put(&plain, "\",\"session_key\":\"")
-	put(&plain, share_b64)
-	put(&plain, "\"},\"keys\":{\"ed25519\":\"")
-	put(&plain, string(device.sign_b64[:device.sb64]))
-	put(&plain, "\"},\"recipient\":")
-	put_json_string(&plain, user_id)
-	put(&plain, ",\"recipient_keys\":{\"ed25519\":\"")
-	put(&plain, ed_b64)
-	put(&plain, "\"},\"sender\":")
-	put_json_string(&plain, string(account.user[:account.ulen]))
-	put(&plain, ",\"sender_device\":")
-	put_json_string(&plain, string(account.device[:account.dlen]))
-	put(&plain, ",\"type\":\"m.room_key\"}")
+	libmsg.put(&plain, "{\"content\":{\"algorithm\":\"m.megolm.v1.aes-sha2\",\"room_id\":")
+	libmsg.put_json_string(&plain, string(r.id[:r.ilen]))
+	libmsg.put(&plain, ",\"session_id\":\"")
+	libmsg.put(&plain, string(mo.id[:mo.ilen]))
+	libmsg.put(&plain, "\",\"session_key\":\"")
+	libmsg.put(&plain, share_b64)
+	libmsg.put(&plain, "\"},\"keys\":{\"ed25519\":\"")
+	libmsg.put(&plain, string(device.sign_b64[:device.sb64]))
+	libmsg.put(&plain, "\"},\"recipient\":")
+	libmsg.put_json_string(&plain, user_id)
+	libmsg.put(&plain, ",\"recipient_keys\":{\"ed25519\":\"")
+	libmsg.put(&plain, ed_b64)
+	libmsg.put(&plain, "\"},\"sender\":")
+	libmsg.put_json_string(&plain, string(account.user[:account.ulen]))
+	libmsg.put(&plain, ",\"sender_device\":")
+	libmsg.put_json_string(&plain, string(account.device[:account.dlen]))
+	libmsg.put(&plain, ",\"type\":\"m.room_key\"}")
 	sealed := make([]u8, len(plain) + 512)
 	defer delete(sealed)
 	n := libolm.encrypt(&p.session, plain[:], sealed, nil)
@@ -431,20 +410,20 @@ send_room_key :: proc(io: ^libthread.Ioproc, user_id: string, dev_id: string, cu
 	}
 	b64 := make([]u8, n * 4 / 3 + 8)
 	defer delete(b64)
-	bn := libolm.b64_encode(sealed[:n], b64)
+	bn := libodin.b64_encode(sealed[:n], b64)
 	msg := make([dynamic]u8, 0, bn + 512)
 	defer delete(msg)
-	put(&msg, "{\"messages\":{")
-	put_json_string(&msg, user_id)
-	put(&msg, ":{")
-	put_json_string(&msg, dev_id)
-	put(&msg, ":{\"algorithm\":\"m.olm.v1.curve25519-aes-sha2\",\"sender_key\":\"")
-	put(&msg, string(device.identity_b64[:device.ib64]))
-	put(&msg, "\",\"ciphertext\":{\"")
-	put(&msg, curve_b64)
-	put(&msg, "\":{\"type\":0,\"body\":\"")
-	put(&msg, string(b64[:bn]))
-	put(&msg, "\"}}}}}}")
+	libmsg.put(&msg, "{\"messages\":{")
+	libmsg.put_json_string(&msg, user_id)
+	libmsg.put(&msg, ":{")
+	libmsg.put_json_string(&msg, dev_id)
+	libmsg.put(&msg, ":{\"algorithm\":\"m.olm.v1.curve25519-aes-sha2\",\"sender_key\":\"")
+	libmsg.put(&msg, string(device.identity_b64[:device.ib64]))
+	libmsg.put(&msg, "\",\"ciphertext\":{\"")
+	libmsg.put(&msg, curve_b64)
+	libmsg.put(&msg, "\":{\"type\":0,\"body\":\"")
+	libmsg.put(&msg, string(b64[:bn]))
+	libmsg.put(&msg, "\"}}}}}}")
 	account.txn += 1
 	num: [24]u8
 	text2, status2, ok2 := as_account(io, "PUT", libuser.cat_into(url[:], base, "/_matrix/client/v3/sendToDevice/m.room.encrypted/vectra", libuser.itoa(num[:], i64(account.txn))), "Content-Type: application/json\n", string(msg[:]))
@@ -473,6 +452,7 @@ take_to_device takes a sync's to-device events: an m.room.encrypted
 under Olm for this device's identity key opens with the session it
 names, a pre-key message making a new session on the one-time key it
 was made for, and an m.room_key inside becomes a Megolm session kept.
+One for another device's key is another device's.
 */
 take_to_device :: proc(top: json.Object) {
 	td, has := libmsg.obj_of(top, "to_device")
@@ -499,20 +479,11 @@ take_to_device :: proc(top: json.Object) {
 		}
 		mine, for_me := libmsg.obj_of(ciphertexts, string(device.identity_b64[:device.ib64]))
 		if !for_me {
-			libuser.eprint("matrixfs: a to-device message not for this device's key ", string(device.identity_b64[:device.ib64]), "\n")
 			continue
 		}
 		body := libmsg.str_of(mine, "body")
-		kind: i64 = -1
-		if tv, has_t := (map[string]json.Value)(mine)["type"]; has_t {
-			#partial switch t in tv {
-			case json.Integer:
-				kind = i64(t)
-			case json.Float:
-				kind = i64(t)
-			}
-		}
-		if body == "" || kind < 0 {
+		kind, has_kind := libmsg.int_of(mine, "type")
+		if body == "" || !has_kind {
 			continue
 		}
 		open_to_device(sender_key, body, kind == 0)
@@ -521,12 +492,12 @@ take_to_device :: proc(top: json.Object) {
 
 open_to_device :: proc(sender_key_b64: string, body_b64: string, prekey: bool) {
 	their_curve: [32]u8
-	if libolm.b64_decode(sender_key_b64, their_curve[:]) != 32 {
+	if libodin.b64_decode(sender_key_b64, their_curve[:]) != 32 {
 		return
 	}
 	raw := make([]u8, len(body_b64))
 	defer delete(raw)
-	n := libolm.b64_decode(body_b64, raw)
+	n := libodin.b64_decode(body_b64, raw)
 	if n <= 0 {
 		return
 	}
@@ -542,7 +513,7 @@ open_to_device :: proc(sender_key_b64: string, body_b64: string, prekey: bool) {
 			return
 		}
 		which := -1
-		for i in 0 ..< device.none_time {
+		for i in 0 ..< MAX_ONE_TIME {
 			if string(device.one_time_pub[i][:]) == string(one_time) {
 				which = i
 				break
@@ -579,28 +550,21 @@ open_to_device :: proc(sender_key_b64: string, body_b64: string, prekey: bool) {
 		return
 	}
 	keep_room_key(libmsg.str_of(content, "session_id"), libmsg.str_of(content, "session_key"))
-	libuser.eprint("matrixfs: a room key came by Olm for session ", libmsg.str_of(content, "session_id"), "\n")
 }
 
 // keep_room_key makes an inbound Megolm session of a shared key, under
 // its id, and exports it into the store.
 keep_room_key :: proc(session_id: string, session_key_b64: string) {
-	if session_id == "" || len(session_id) > 47 {
+	if session_id == "" || len(session_id) > len(megolm_in[0].id) {
 		return
 	}
 	share := make([]u8, len(session_key_b64))
 	defer delete(share)
-	n := libolm.b64_decode(session_key_b64, share)
+	n := libodin.b64_decode(session_key_b64, share)
 	if n < libolm.EXPORT_BYTES {
 		return
 	}
-	slot: ^Megolm_In
-	for &m in megolm_in {
-		if m.used && string(m.id[:m.ilen]) == session_id {
-			slot = &m
-			break
-		}
-	}
+	slot := megolm_by_id(session_id)
 	if slot == nil {
 		for &m in megolm_in {
 			if !m.used {
@@ -619,24 +583,20 @@ keep_room_key :: proc(session_id: string, session_key_b64: string) {
 	slot.used = true
 	slot.ilen = copy(slot.id[:], session_id)
 	if store_len > 0 {
-		dir: [512]u8
-		_ = libuser.mkdir(string(store[:store_len]))
-		keys := libuser.cat_into(dir[:], string(store[:store_len]), "/keys")
-		_ = libuser.mkdir(keys)
-		mdir: [512]u8
-		mpath := libuser.cat_into(mdir[:], keys, "/matrix")
-		_ = libuser.mkdir(mpath)
 		exported: [libolm.EXPORT_BYTES]u8
 		_ = libolm.session_export(&slot.session, exported[:])
-		path: [640]u8
-		name := libuser.cat_into(path[:], mpath, "/", safe_name(session_id))
-		_ = libuser.remove(name)
-		fd := libuser.create(name, abi.O_WRONLY, 0o600)
-		if fd >= 0 {
-			_ = libuser.write_full(int(fd), exported[:])
-			_ = libuser.close(int(fd))
+		_ = libmsg.keep_under(string(store[:store_len]), "keys/matrix", safe_name(session_id), exported[:], 0o600)
+	}
+}
+
+// megolm_by_id answers the inbound session called `session_id`, or nil.
+megolm_by_id :: proc(session_id: string) -> ^Megolm_In {
+	for &m in megolm_in {
+		if m.used && string(m.id[:m.ilen]) == session_id {
+			return &m
 		}
 	}
+	return nil
 }
 
 // open_event opens a Megolm room event's content and answers the plain
@@ -647,41 +607,21 @@ open_event :: proc(content: json.Object) -> (plain: string, why: string) {
 	if session_id == "" || ciphertext == "" {
 		return "", "(a sealed message with no session named)"
 	}
-	var: ^Megolm_In
-	for &m in megolm_in {
-		if m.used && string(m.id[:m.ilen]) == session_id {
-			var = &m
-			break
-		}
-	}
-	if var == nil {
+	m := megolm_by_id(session_id)
+	if m == nil {
 		return "", "(a sealed message whose key this device never had)"
 	}
 	raw := make([]u8, len(ciphertext))
 	defer delete(raw)
-	n := libolm.b64_decode(ciphertext, raw)
+	n := libodin.b64_decode(ciphertext, raw)
 	if n <= 0 {
 		return "", "(a sealed message that is not base64)"
 	}
 	out := make([]u8, n)
-	pn, _, ok := libolm.group_decrypt(&var.session, raw[:n], out)
+	pn, _, ok := libolm.group_decrypt(&m.session, raw[:n], out)
 	if !ok {
 		delete(out)
 		return "", "(a sealed message that would not open)"
 	}
 	return string(out[:pn]), ""
 }
-
-// -- Small things ------------------------------------------------------------------
-
-fill_random :: proc(buf: []u8) -> bool {
-	fd := libuser.open("/dev/random", abi.O_RDONLY)
-	if fd < 0 {
-		return false
-	}
-	n := libuser.read(int(fd), buf)
-	_ = libuser.close(int(fd))
-	return int(n) == len(buf)
-}
-
-_ :: vectra9

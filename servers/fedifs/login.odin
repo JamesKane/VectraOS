@@ -208,9 +208,7 @@ trade_code :: proc(l: ^Login, code: string) -> bool {
 		return false
 	}
 	// The token to factotum, under the account's name and the host.
-	line: [512]u8
-	key := libuser.cat_into(line[:], "key proto=oauth user=", acct, " server=", libmsg.host_of(base), " !token=", string(token[:tlen]))
-	if !libmsg.factotum_write(key) {
+	if !libmsg.keep_token(acct, libmsg.host_of(base), string(token[:tlen])) {
 		l.why = "factotum would not take the token"
 		return false
 	}
@@ -237,13 +235,6 @@ set_me :: proc() {
 		return
 	}
 	net.me = libuser.cat_into(me_text[:], string(account.user[:account.ulen]), "@", libmsg.host_of(string(account.base[:account.blen])), "\n")
-}
-
-// ask_token asks factotum for the account's token over rpc, into `into`.
-ask_token :: proc(into: []u8) -> (string, bool) {
-	ask: [512]u8
-	question := libuser.cat_into(ask[:], "start oauth user=", string(account.user[:account.ulen]), " server=", libmsg.host_of(string(account.base[:account.blen])))
-	return libmsg.factotum_ask(question, "token ", into)
 }
 
 // timeline_url answers the URL of one of the account's own timelines,

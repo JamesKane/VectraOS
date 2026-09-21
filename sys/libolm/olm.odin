@@ -199,14 +199,13 @@ encrypt :: proc(s: ^Session, plain: []u8, dst: []u8, ratchet_priv: []u8) -> int 
 	}
 	dst[m] = 3
 	m += 1
-	for part in ([3][]u8{s.their_one_time[:], s.base_pub[:], s.identity_pub[:]}) {
+	tags := [3]u8{0x0A, 0x12, 0x1A}
+	for part, i in ([3][]u8{s.their_one_time[:], s.base_pub[:], s.identity_pub[:]}) {
+		dst[m] = tags[i]
 		dst[m + 1] = 32
 		copy(dst[m + 2:], part)
 		m += 34
 	}
-	dst[1] = 0x0A
-	dst[35] = 0x12
-	dst[69] = 0x1A
 	dst[m] = 0x22
 	m += 1
 	m += put_varint(dst[m:], u64(n))
@@ -284,13 +283,7 @@ decrypt :: proc(s: ^Session, msg: []u8, dst: []u8, prekey: bool) -> (n: int, ok:
 	}
 	k: Keys
 	derive_keys(mkey[:], "OLM_KEYS", &k)
-	want: [8]u8
-	mac8(k.mac[:], signed, want[:])
-	diff: u8 = 0
-	for b in 0 ..< 8 {
-		diff |= want[b] ~ mac[b]
-	}
-	if diff != 0 {
+	if !mac8_ok(k.mac[:], signed, mac) {
 		return 0, false
 	}
 	n, ok = cbc_decrypt(k.aes[:], k.iv[:], cipher, dst)
@@ -319,40 +312,21 @@ parse_message :: proc(msg: []u8) -> (ratchet_pub: []u8, index: u32, cipher: []u8
 	body := msg[1:len(msg) - 8]
 	mac = msg[len(msg) - 8:]
 	has_index := false
-	at := 0
-	for at < len(body) {
-		tag, tn, tok := get_varint(body[at:])
-		if !tok {
+	for at := 0; at < len(body); {
+		tag, num, bytes, next, fok := next_field(body, at)
+		if !fok {
 			return
 		}
-		at += tn
-		switch tag & 7 {
-		case 0:
-			v, vn, vok := get_varint(body[at:])
-			if !vok {
-				return
-			}
-			at += vn
-			if tag == 0x10 {
-				index = u32(v)
-				has_index = true
-			}
-		case 2:
-			l, ln, lok := get_varint(body[at:])
-			if !lok || at + ln + int(l) > len(body) {
-				return
-			}
-			at += ln
-			switch tag {
-			case 0x0A:
-				ratchet_pub = body[at:at + int(l)]
-			case 0x22:
-				cipher = body[at:at + int(l)]
-			}
-			at += int(l)
-		case:
-			return
+		switch tag {
+		case 0x0A:
+			ratchet_pub = bytes
+		case 0x10:
+			index = u32(num)
+			has_index = true
+		case 0x22:
+			cipher = bytes
 		}
+		at = next
 	}
 	ok = has_index && len(ratchet_pub) == 32 && cipher != nil
 	return
@@ -365,40 +339,22 @@ parse_prekey :: proc(msg: []u8) -> (one_time, base, identity, inner: []u8, ok: b
 		return
 	}
 	body := msg[1:]
-	at := 0
-	for at < len(body) {
-		tag, tn, tok := get_varint(body[at:])
-		if !tok {
+	for at := 0; at < len(body); {
+		tag, _, bytes, next, fok := next_field(body, at)
+		if !fok {
 			return
 		}
-		at += tn
-		switch tag & 7 {
-		case 0:
-			_, vn, vok := get_varint(body[at:])
-			if !vok {
-				return
-			}
-			at += vn
-		case 2:
-			l, ln, lok := get_varint(body[at:])
-			if !lok || at + ln + int(l) > len(body) {
-				return
-			}
-			at += ln
-			switch tag {
-			case 0x0A:
-				one_time = body[at:at + int(l)]
-			case 0x12:
-				base = body[at:at + int(l)]
-			case 0x1A:
-				identity = body[at:at + int(l)]
-			case 0x22:
-				inner = body[at:at + int(l)]
-			}
-			at += int(l)
-		case:
-			return
+		switch tag {
+		case 0x0A:
+			one_time = bytes
+		case 0x12:
+			base = bytes
+		case 0x1A:
+			identity = bytes
+		case 0x22:
+			inner = bytes
 		}
+		at = next
 	}
 	ok = len(one_time) == 32 && len(base) == 32 && len(identity) == 32 && inner != nil
 	return

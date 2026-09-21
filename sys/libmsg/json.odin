@@ -18,6 +18,20 @@ str_of :: proc(o: json.Object, key: string) -> string {
 	return ""
 }
 
+// int_of answers the number field `key` of `o` as an integer, and
+// whether it was there as a number.
+int_of :: proc(o: json.Object, key: string) -> (i64, bool) {
+	if v, has := (map[string]json.Value)(o)[key]; has {
+		#partial switch t in v {
+		case json.Integer:
+			return i64(t), true
+		case json.Float:
+			return i64(t), true
+		}
+	}
+	return 0, false
+}
+
 // obj_of answers the object field `key` of `o`.
 obj_of :: proc(o: json.Object, key: string) -> (json.Object, bool) {
 	if v, has := (map[string]json.Value)(o)[key]; has {
@@ -146,4 +160,67 @@ skip_json_space :: proc "contextless" (s: string, at: int) -> int {
 
 is_json_space :: proc "contextless" (c: u8) -> bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// object_end answers where the object or array beginning at `at` ends,
+// one past its closing bracket, strings walked with their escapes.
+object_end :: proc "contextless" (text: string, at: int) -> int {
+	depth := 0
+	in_string := false
+	for i := at; i < len(text); i += 1 {
+		c := text[i]
+		if in_string {
+			if c == '\\' {
+				i += 1
+			} else if c == '"' {
+				in_string = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			in_string = true
+		case '{', '[':
+			depth += 1
+		case '}', ']':
+			depth -= 1
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(text)
+}
+
+// -- JSON out ------------------------------------------------------------------------
+
+put :: proc(out: ^[dynamic]u8, s: string) {
+	append(out, ..transmute([]u8)s)
+}
+
+// put_json_string appends `s` as a JSON string, quoted and escaped.
+put_json_string :: proc(out: ^[dynamic]u8, s: string) {
+	hex := "0123456789abcdef"
+	append(out, '"')
+	for c in transmute([]u8)s {
+		switch c {
+		case '"':
+			append(out, '\\', '"')
+		case '\\':
+			append(out, '\\', '\\')
+		case '\n':
+			append(out, '\\', 'n')
+		case '\r':
+			append(out, '\\', 'r')
+		case '\t':
+			append(out, '\\', 't')
+		case:
+			if c < 0x20 {
+				append(out, '\\', 'u', '0', '0', hex[c >> 4], hex[c & 15])
+			} else {
+				append(out, c)
+			}
+		}
+	}
+	append(out, '"')
 }

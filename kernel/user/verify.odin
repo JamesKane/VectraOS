@@ -11834,13 +11834,12 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			lbuf: [2048]u8
 			listed := dir_names("/mnt/matrix/vectra", lbuf[:])
 			check(r, count_words(listed) == 3 && libodin.contains(listed, E1), "and the room the homeserver holds is the conversation")
-			before_buf: [2048]u8
-			before := dir_names("/mnt/matrix/vectra", before_buf[:])
 			n = web_read_file("/mnt/matrix/ctl", text[:])
 			check(r, n > 0 && libodin.contains(string(text[:n]), "room vectra !vectra:one.example sealed"), "and ctl says the room is sealed, off its state")
 			check(r, net_file_write("/mnt/matrix/new", "to: vectra\nreplyto: " + E1 + "\n\nHello from Vectra.\n"), "a message written to new, to the room by name, goes sealed: Bob's keys queried and a one-time key claimed, the room's key to him by Olm, the event by Megolm, and the write returns when the homeserver has named the event")
-			after := dir_names("/mnt/matrix/vectra", lbuf[:])
-			fresh := new_word(before, after)
+			abuf: [2048]u8
+			after := dir_names("/mnt/matrix/vectra", abuf[:])
+			fresh := new_word(listed, after)
 			check(r, count_words(after) == 4 && len(fresh) > 0, "and the event is in the room under the id the homeserver gave, dated now")
 			n = web_read_file(libodin_cat(line_buf[:], "/mnt/matrix/vectra/", fresh, "/body"), text[:])
 			check(r, string(text[:max(n, 0)]) == "Hello from Vectra.", "with the text written")
@@ -11859,8 +11858,8 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			check(r, string(text[:max(n, 0)]) == "@bob:two.example", "from Bob")
 			n = web_read_file("/mnt/matrix/vectra/" + SEALED + "/raw", text[:], raw = true)
 			check(r, n > 0 && libodin.contains(string(text[:n]), "\"algorithm\": \"m.megolm.v1.aes-sha2\""), "while raw is the sealed event as it came")
-			n = web_read_file("/usr/glenda/lib/web/keys/matrix", text[:])
-			check(r, dir_names("/usr/glenda/lib/web/keys/matrix", lbuf[:]) != "" && dir_names("/usr/glenda/lib/web/keys/matrix", lbuf[:]) != "?", "and the store keeps the session under keys/matrix, exported, for the history it opens after a restart")
+			kept := dir_names("/usr/glenda/lib/web/keys/matrix", lbuf[:])
+			check(r, kept != "" && kept != "?", "and the store keeps the session under keys/matrix, exported, for the history it opens after a restart")
 			check(r, !net_file_write("/mnt/matrix/new", "to: nowhere\n\nx"), "a message to a room this account is not in is refused before any wire")
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/matrix") == vfs.OK, "the mount of matrixfs comes down")
 		}

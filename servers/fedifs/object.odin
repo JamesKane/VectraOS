@@ -48,7 +48,7 @@ fetch_object :: proc(f: ^Fetch) -> vectra9.Errno {
 	c := libmsg.conv(&net, name)
 	i := libmsg.conv_index(&net, name)
 	libmsg.add(&net, c, m)
-	resolve_replies(c)
+	libmsg.resolve_replies(c)
 	src := &sources[i]
 	src.len = copy(src.text[:], source)
 	rebuild_status()
@@ -68,36 +68,36 @@ object_message :: proc(raw: string) -> (m: libmsg.Msg, ok: bool) {
 	if id == "" || kind == "" {
 		return m, false
 	}
-	m.date_text = clone(libmsg.str_of(o, "published"))
+	m.date_text = libmsg.clone(libmsg.str_of(o, "published"))
 	m.date, _ = libmsg.parse_date(m.date_text)
 	idbuf: [128]u8
-	m.id = clone(libmsg.make_id(m.date, id, idbuf[:]))
-	m.raw = clone(raw)
+	m.id = libmsg.clone(libmsg.make_id(m.date, id, idbuf[:]))
+	m.raw = libmsg.clone(raw)
 	links := make([dynamic]u8, 0, 256)
 	switch kind {
 	case "Person", "Service", "Group", "Organization", "Application":
 		// An actor: named, described, and a page on the web.
-		m.from = clone(libmsg.str_of(o, "preferredUsername"))
-		m.subject = clone(libmsg.str_of(o, "name"))
-		m.body = clone(libmsg.str_of(o, "summary"))
-		m.type = clone("text/html")
-		put_link(&links, libmsg.str_of(o, "url"))
+		m.from = libmsg.clone(libmsg.str_of(o, "preferredUsername"))
+		m.subject = libmsg.clone(libmsg.str_of(o, "name"))
+		m.body = libmsg.clone(libmsg.str_of(o, "summary"))
+		m.type = libmsg.clone("text/html")
+		libmsg.put_link(&links, libmsg.str_of(o, "url"))
 	case:
 		// A Note, an Article, a Question: content, from whoever it is
 		// attributed to, answering what it replies to.
-		m.from = clone(libmsg.str_of(o, "attributedTo"))
-		m.subject = clone(libmsg.str_of(o, "summary"))
+		m.from = libmsg.clone(libmsg.str_of(o, "attributedTo"))
+		m.subject = libmsg.clone(libmsg.str_of(o, "summary"))
 		if m.subject == "" {
-			m.subject = clone(libmsg.str_of(o, "name"))
+			m.subject = libmsg.clone(libmsg.str_of(o, "name"))
 		}
-		m.body = clone(libmsg.str_of(o, "content"))
-		m.type = clone("text/html")
-		m.replyto = clone(libmsg.str_of(o, "inReplyTo"))
-		put_link(&links, libmsg.str_of(o, "url"))
+		m.body = libmsg.clone(libmsg.str_of(o, "content"))
+		m.type = libmsg.clone("text/html")
+		m.replyto = libmsg.clone(libmsg.str_of(o, "inReplyTo"))
+		libmsg.put_link(&links, libmsg.str_of(o, "url"))
 		if attachments, has := libmsg.arr_of(o, "attachment"); has {
 			for item in attachments {
 				if a, is := item.(json.Object); is {
-					put_link(&links, libmsg.str_of(a, "url"))
+					libmsg.put_link(&links, libmsg.str_of(a, "url"))
 				}
 			}
 		}

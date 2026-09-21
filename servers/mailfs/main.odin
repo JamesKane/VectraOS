@@ -463,7 +463,7 @@ build_message :: proc(s: ^Send, n: ^libmsg.New) -> bool {
 // the placeholder a sealed message shows outside.
 fix_subject :: proc(s: ^Send, head_len: int) {
 	text := string(s.text[:head_len])
-	at := libodin_index(text, "\r\nSubject: ")
+	at := libodin.index(text, "\r\nSubject: ")
 	if at < 0 {
 		return
 	}

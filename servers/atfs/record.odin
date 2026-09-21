@@ -51,7 +51,7 @@ fetch_record :: proc(f: ^Fetch) -> vectra9.Errno {
 	c := libmsg.conv(&net, name)
 	i := libmsg.conv_index(&net, name)
 	libmsg.add(&net, c, m)
-	resolve_replies(c)
+	libmsg.resolve_replies(c)
 	src := &sources[i]
 	src.len = copy(src.text[:], source)
 	rebuild_status()
