@@ -12626,6 +12626,31 @@ verify_httpd :: proc(r: ^Result, host: string) {
 	} else {
 		finish(r, ps, "httpd is taken down")
 	}
+	// The same site on Gemini: gemd serves it over TLS, and webfs fetches
+	// gemini://<this machine>/page.md, the .md served as it is. The cert in
+	// /lib/tls/roots names this machine, so a fetch by that name verifies.
+	sysname: [64]u8
+	syn := web_read_file("/net/sysname", sysname[:])
+	if syn > 0 {
+		gnames := [?]string{"gemd", "-r", "/usr/glenda/site", "1965", "1"}
+		gargv := new(Argv)
+		_ = argv_from(gargv, gnames[:])
+		pg := start_path(r, "/bin/gemd", "gemd serves the site over Gemini", gargv)
+		if pg != nil {
+			sync.delay(PATIENCE)
+			gurl: [128]u8
+			gbody: [4096]u8
+			ghash: [80]u8
+			bn, _, ok := web_fetch(libodin_cat(gurl[:], "gemini://", string(sysname[:syn]), ":1965/page.md"), gbody[:], ghash[:])
+			check(r, ok && libodin.contains(string(gbody[:max(bn, 0)]), "# The Page") && libodin.contains(string(gbody[:max(bn, 0)]), "> a quote"), "the same .md page is served over Gemini as it is, its gemtext raw")
+			if !wait(pg, PATIENCE * 5) {
+				_ = notepg_kernel(pg.note_group, "kill")
+				_ = end(pg, PATIENCE * 5)
+			}
+			check(r, exit_done(pg), "and gemd, its connection served, exits")
+			finish(r, pg, "and is taken down")
+		}
+	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
 	check(r, wait(pw, PATIENCE * 5), "and webfs exits")

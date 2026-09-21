@@ -1246,9 +1246,18 @@ posts the mention. The boot line proves both directions and the
 control: a mention sent to a scripted endpoint that records the source
 and target, and one received, verified, kept and served, with a source
 that does not link here refused. `factotum` gained no part in this; a
-mention is public. Next: `gemd` the same directory on Gemini, the
-`dict` files and the two ghost classes. The ghost reading a timeline in
-the `social` class waits on `docs/GHOST.md` step 1. The ghost
+mention is public.
+
+`cmd/gemd` serves the same directory as Gemini, one TLS 1.3 connection
+a request, so a `.md` is read on the web and here from one file, served
+as it is since gemtext is close enough. It uses the test identity in
+`/lib/tls/roots` that `tlssrv` does, the certificate this machine's
+name, so a client that dials by that name verifies it, and answers a
+`gemini://host/path` request with a status, a media type and the body.
+The boot line has `webfs` fetch the same `.md` page over Gemini and
+sees its gemtext raw, so the page is served both ways. Next: the `dict`
+files and the two ghost classes. The ghost reading a timeline in the
+`social` class waits on `docs/GHOST.md` step 1, which is not built. The ghost
 reading a timeline in the `social` class waits on `docs/GHOST.md` step
 1, which is not built.
 
