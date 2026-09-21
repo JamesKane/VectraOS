@@ -59,15 +59,15 @@ start :: proc "c" (block: ^abi.Args) {
 	when_ := libmsg.format_3339(libmsg.now_seconds(), now[:])
 
 	feed := make([dynamic]u8, 0, 4096)
-	put(&feed, "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\">\n  <title>")
-	put_escaped(&feed, title)
-	put(&feed, "</title>\n  <link href=\"")
-	put_attr(&feed, base)
-	put(&feed, "\" rel=\"alternate\"/>\n  <updated>")
-	put(&feed, when_)
-	put(&feed, "</updated>\n  <id>")
-	put_attr(&feed, base)
-	put(&feed, "</id>\n")
+	libmsg.put(&feed, "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\">\n  <title>")
+	libmsg.put_html_text(&feed, title)
+	libmsg.put(&feed, "</title>\n  <link href=\"")
+	libmsg.put_html_attr(&feed, base)
+	libmsg.put(&feed, "\" rel=\"alternate\"/>\n  <updated>")
+	libmsg.put(&feed, when_)
+	libmsg.put(&feed, "</updated>\n  <id>")
+	libmsg.put_html_attr(&feed, base)
+	libmsg.put(&feed, "</id>\n")
 
 	entries := 0
 	for name in names {
@@ -79,18 +79,18 @@ start :: proc "c" (block: ^abi.Args) {
 		heading := page_title(path)
 		link: [512]u8
 		href := libuser.cat_into(link[:], base, "/", web_name(name))
-		put(&feed, "  <entry>\n    <title>")
-		put_escaped(&feed, heading == "" ? name : heading)
-		put(&feed, "</title>\n    <link href=\"")
-		put_attr(&feed, href)
-		put(&feed, "\"/>\n    <id>")
-		put_attr(&feed, href)
-		put(&feed, "</id>\n    <updated>")
-		put(&feed, when_)
-		put(&feed, "</updated>\n  </entry>\n")
+		libmsg.put(&feed, "  <entry>\n    <title>")
+		libmsg.put_html_text(&feed, heading == "" ? name : heading)
+		libmsg.put(&feed, "</title>\n    <link href=\"")
+		libmsg.put_html_attr(&feed, href)
+		libmsg.put(&feed, "\"/>\n    <id>")
+		libmsg.put_html_attr(&feed, href)
+		libmsg.put(&feed, "</id>\n    <updated>")
+		libmsg.put(&feed, when_)
+		libmsg.put(&feed, "</updated>\n  </entry>\n")
 		entries += 1
 	}
-	put(&feed, "</feed>\n")
+	libmsg.put(&feed, "</feed>\n")
 
 	if out == "" {
 		_ = libuser.write_full(1, feed[:])
@@ -137,13 +137,13 @@ page_title :: proc(path: string) -> string {
 
 // is_page says whether a file name is a page a feed lists.
 is_page :: proc "contextless" (name: string) -> bool {
-	return has_suffix(name, ".md") || has_suffix(name, ".html") || has_suffix(name, ".htm") || has_suffix(name, ".gmi")
+	return libodin.has_suffix(name, ".md") || libodin.has_suffix(name, ".html") || libodin.has_suffix(name, ".htm") || libodin.has_suffix(name, ".gmi")
 }
 
 // web_name answers the name a page is linked as: a `.md` becomes `.html`.
 web_name :: proc "contextless" (name: string) -> string {
 	@(static) buf: [256]u8
-	if has_suffix(name, ".md") {
+	if libodin.has_suffix(name, ".md") {
 		n := copy(buf[:], name[:len(name) - 3])
 		n += copy(buf[n:], ".html")
 		return string(buf[:n])
@@ -151,40 +151,7 @@ web_name :: proc "contextless" (name: string) -> string {
 	return name
 }
 
-put :: proc(out: ^[dynamic]u8, s: string) {
-	append(out, ..transmute([]u8)s)
-}
 
-put_escaped :: proc(out: ^[dynamic]u8, s: string) {
-	for c in transmute([]u8)s {
-		switch c {
-		case '<':
-			put(out, "&lt;")
-		case '>':
-			put(out, "&gt;")
-		case '&':
-			put(out, "&amp;")
-		case:
-			append(out, c)
-		}
-	}
-}
 
-put_attr :: proc(out: ^[dynamic]u8, s: string) {
-	for c in transmute([]u8)s {
-		switch c {
-		case '"':
-			put(out, "&quot;")
-		case '&':
-			put(out, "&amp;")
-		case:
-			append(out, c)
-		}
-	}
-}
 
-has_suffix :: proc "contextless" (s, suffix: string) -> bool {
-	return len(s) >= len(suffix) && s[len(s) - len(suffix):] == suffix
-}
 
-_ :: libodin

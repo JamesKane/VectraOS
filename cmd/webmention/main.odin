@@ -76,8 +76,7 @@ start :: proc "c" (block: ^abi.Args) {
 // when the endpoint accepted it.
 send_one :: proc(source: string, target: string) -> bool {
 	headers: [2048]u8
-	body: [4096]u8
-	hn, _ := fetch(target, "", "", headers[:], body[:])
+	hn, _ := fetch(target, "", "", headers[:])
 	endpoint: [1024]u8
 	en := endpoint_of(string(headers[:hn]), target, endpoint[:])
 	if en == 0 {
@@ -87,11 +86,11 @@ send_one :: proc(source: string, target: string) -> bool {
 	form: [2200]u8
 	fn := 0
 	fn += copy(form[fn:], "source=")
-	fn += url_encode(form[fn:], source)
+	fn += libodin.url_encode(form[fn:], source)
 	fn += copy(form[fn:], "&target=")
-	fn += url_encode(form[fn:], target)
+	fn += libodin.url_encode(form[fn:], target)
 	rh: [512]u8
-	_, pcode := fetch(string(endpoint[:en]), string(form[:fn]), "application/x-www-form-urlencoded", rh[:], body[:])
+	_, pcode := fetch(string(endpoint[:en]), string(form[:fn]), "application/x-www-form-urlencoded", rh[:])
 	return pcode >= 200 && pcode < 300
 }
 
@@ -108,8 +107,8 @@ endpoint_of :: proc "contextless" (headers: string, target: string, out: []u8) -
 		line := headers[at:e]
 		if line_is(line, "link") && has_webmention_rel(line) {
 			// The URL is between the first `<` and `>`.
-			lt := index_of(line, "<")
-			gt := index_of(line, ">")
+			lt := libodin.index(line, "<")
+			gt := libodin.index(line, ">")
 			if lt >= 0 && gt > lt {
 				url := line[lt + 1:gt]
 				return resolve(target, url, out)
@@ -121,7 +120,7 @@ endpoint_of :: proc "contextless" (headers: string, target: string, out: []u8) -
 }
 
 has_webmention_rel :: proc "contextless" (line: string) -> bool {
-	return index_of(line, "webmention") >= 0
+	return libodin.index(line, "webmention") >= 0
 }
 
 // resolve joins a possibly-relative endpoint to the target's origin.
@@ -130,7 +129,7 @@ resolve :: proc "contextless" (target: string, url: string, out: []u8) -> int {
 		return copy(out, url)
 	}
 	// The origin of the target: scheme, host, up to the first slash of the path.
-	i := index_of(target, "://")
+	i := libodin.index(target, "://")
 	if i < 0 {
 		return copy(out, url)
 	}
@@ -153,7 +152,8 @@ fetch reads `url` through webfs: a GET, or a POST when `body` is given.
 Answers the response headers into `hbuf` and its length, and the status
 code. Plain file operations, one request at a time.
 */
-fetch :: proc(url: string, body: string, ctype: string, hbuf: []u8, into: []u8) -> (hlen: int, status: int) {
+fetch :: proc(url: string, body: string, ctype: string, hbuf: []u8) -> (hlen: int, status: int) {
+	drain: [1024]u8
 	num: [16]u8
 	n := read_small("/mnt/web/clone", num[:])
 	if n <= 0 {
@@ -192,7 +192,7 @@ fetch :: proc(url: string, body: string, ctype: string, hbuf: []u8, into: []u8) 
 	bfd := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/body"), abi.O_RDONLY)
 	if bfd >= 0 {
 		for {
-			got := libuser.read(int(bfd), into)
+			got := libuser.read(int(bfd), drain[:])
 			if got <= 0 {
 				break
 			}
@@ -243,23 +243,6 @@ read_small :: proc(path: string, into: []u8) -> int {
 	return total
 }
 
-url_encode :: proc "contextless" (out: []u8, s: string) -> int {
-	hex := "0123456789ABCDEF"
-	n := 0
-	for c in transmute([]u8)s {
-		unreserved := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~'
-		if unreserved && n < len(out) {
-			out[n] = c
-			n += 1
-		} else if n + 3 <= len(out) {
-			out[n] = '%'
-			out[n + 1] = hex[c >> 4]
-			out[n + 2] = hex[c & 15]
-			n += 3
-		}
-	}
-	return n
-}
 
 is_http :: proc "contextless" (s: string) -> bool {
 	return libodin.has_prefix(s, "http://") || libodin.has_prefix(s, "https://")
@@ -282,14 +265,3 @@ line_is :: proc "contextless" (line: string, name: string) -> bool {
 	return true
 }
 
-index_of :: proc "contextless" (haystack: string, needle: string) -> int {
-	if len(needle) == 0 || len(needle) > len(haystack) {
-		return -1
-	}
-	for i := 0; i + len(needle) <= len(haystack); i += 1 {
-		if haystack[i:i + len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
-}

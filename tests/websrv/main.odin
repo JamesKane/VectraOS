@@ -497,27 +497,11 @@ serve_one :: proc(lfd: i64, served: string) {
 	case "/wm-target":
 		ok = say_json_with(dfd, 200, "Link: </mention>; rel=\"webmention\"\r\n", "a page with an endpoint\n")
 	case "/mention":
-		src := ""
-		tgt := ""
-		pos := 0
-		for pos < len(body) {
-			amp := pos
-			for amp < len(body) && body[amp] != '&' {
-				amp += 1
-			}
-			pair := body[pos:amp]
-			pos = amp + 1
-			if len(pair) > 7 && pair[:7] == "source=" {
-				src = pair[7:]
-			} else if len(pair) > 7 && pair[:7] == "target=" {
-				tgt = pair[7:]
-			}
-		}
-		// The values arrive form-encoded; a real endpoint decodes them.
+		// The form values, percent-decoded, as a real endpoint keeps them.
 		sbuf: [512]u8
 		tbuf: [512]u8
-		sn := wm_url_decode(src, sbuf[:])
-		tn := wm_url_decode(tgt, tbuf[:])
+		sn := form_value(body, "source", sbuf[:])
+		tn := form_value(body, "target", tbuf[:])
 		rec: [1200]u8
 		_ = libuser.remove(WM_OUT)
 		if wfd := libuser.create(WM_OUT, abi.O_WRONLY, 0o644); wfd >= 0 {
@@ -1147,48 +1131,6 @@ bob_live_sync :: proc() -> string {
 	return libuser.cat_into(out[:], "{\"next_batch\": \"s_4\", \"rooms\": {\"join\": {\"!vectra:one.example\": {\"ephemeral\": {\"events\": [{\"type\": \"m.typing\", \"content\": {\"user_ids\": [\"@bob:two.example\"]}}]}, \"timeline\": {\"events\": [", ev, "], \"prev_batch\": \"p_4\", \"limited\": false}}, \"!plain:one.example\": {\"timeline\": {\"events\": [{\"type\": \"m.room.message\", \"event_id\": \"$live1\", \"sender\": \"@carol:one.example\", \"origin_server_ts\": 1789760000000, \"content\": {\"msgtype\": \"m.text\", \"body\": \"Live from the poll.\"}}], \"prev_batch\": \"p_4\", \"limited\": false}}}}}\n")
 }
 
-// wm_url_decode decodes a form value's percent-escapes and pluses.
-wm_url_decode :: proc "contextless" (s: string, out: []u8) -> int {
-	n := 0
-	i := 0
-	for i < len(s) && n < len(out) {
-		c := s[i]
-		if c == '+' {
-			out[n] = ' '
-			n += 1
-			i += 1
-		} else if c == '%' && i + 2 < len(s) {
-			hi := wm_hex(s[i + 1])
-			lo := wm_hex(s[i + 2])
-			if hi >= 0 && lo >= 0 {
-				out[n] = u8(hi << 4 | lo)
-				n += 1
-				i += 3
-			} else {
-				out[n] = c
-				n += 1
-				i += 1
-			}
-		} else {
-			out[n] = c
-			n += 1
-			i += 1
-		}
-	}
-	return n
-}
-
-wm_hex :: proc "contextless" (c: u8) -> int {
-	switch {
-	case c >= '0' && c <= '9':
-		return int(c - '0')
-	case c >= 'a' && c <= 'f':
-		return int(c - 'a') + 10
-	case c >= 'A' && c <= 'F':
-		return int(c - 'A') + 10
-	}
-	return -1
-}
 
 // header_value answers a request header's value by its name, lower
 // case, or "".

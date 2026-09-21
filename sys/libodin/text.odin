@@ -12,6 +12,21 @@ has_prefix :: proc "contextless" (s, prefix: string) -> bool #no_bounds_check {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
+has_suffix :: proc "contextless" (s, suffix: string) -> bool #no_bounds_check {
+	return len(s) >= len(suffix) && s[len(s) - len(suffix):] == suffix
+}
+
+// has_dotdot says whether a path holds a `..`, the guard a file server
+// wants so a request cannot climb out of the root it serves.
+has_dotdot :: proc "contextless" (p: string) -> bool #no_bounds_check {
+	for i := 0; i + 1 < len(p); i += 1 {
+		if p[i] == '.' && p[i + 1] == '.' {
+			return true
+		}
+	}
+	return false
+}
+
 is_space :: proc "contextless" (b: u8) -> bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }

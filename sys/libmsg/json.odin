@@ -198,6 +198,53 @@ put :: proc(out: ^[dynamic]u8, s: string) {
 	append(out, ..transmute([]u8)s)
 }
 
+// put_html_text appends `s` as HTML text, its `<`, `>` and `&` made safe.
+// The unescaped runs go in one append, not a byte at a time.
+put_html_text :: proc(out: ^[dynamic]u8, s: string) {
+	put_html(out, s, false)
+}
+
+// put_html_attr appends `s` inside a double-quoted attribute: `"`, `<`
+// and `&` made safe.
+put_html_attr :: proc(out: ^[dynamic]u8, s: string) {
+	put_html(out, s, true)
+}
+
+@(private = "file")
+put_html :: proc(out: ^[dynamic]u8, s: string, attr: bool) {
+	run := 0
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		esc := ""
+		switch c {
+		case '&':
+			esc = "&amp;"
+		case '<':
+			esc = "&lt;"
+		case '>':
+			if !attr {
+				esc = "&gt;"
+			}
+		case '"':
+			if attr {
+				esc = "&quot;"
+			}
+		}
+		if esc != "" {
+			if i > run {
+				append(out, ..transmute([]u8)s[run:i])
+			}
+			append(out, ..transmute([]u8)esc)
+			run = i + 1
+		}
+		i += 1
+	}
+	if len(s) > run {
+		append(out, ..transmute([]u8)s[run:])
+	}
+}
+
 // put_json_string appends `s` as a JSON string, quoted and escaped.
 put_json_string :: proc(out: ^[dynamic]u8, s: string) {
 	hex := "0123456789abcdef"

@@ -13,6 +13,8 @@ made a name, so the same mention twice is one file.
 package httpd
 
 import "vsys:abi"
+import "vsys:libmsg"
+import "vsys:libodin"
 import "vsys:libuser"
 
 mention_store: string
@@ -41,7 +43,7 @@ take_post :: proc(wfd: int, target: string, headers: string, body: string) {
 	// refused: a source that does not link here is not a mention.
 	page := make([dynamic]u8, 0, 8192)
 	defer delete(page)
-	if !fetch(source, &page) || !contains(string(page[:]), tg) {
+	if !fetch(source, &page) || !libodin.contains(string(page[:]), tg) {
 		respond(wfd, 400, "text/plain", "the source does not link to the target\n", false)
 		return
 	}
@@ -49,13 +51,13 @@ take_post :: proc(wfd: int, target: string, headers: string, body: string) {
 	// The file, its name the source and target hashed to a word.
 	file := make([dynamic]u8, 0, 512)
 	defer delete(file)
-	put(&file, "source: ")
-	put(&file, source)
-	put(&file, "\ntarget: ")
-	put(&file, tg)
-	put(&file, "\ntitle: ")
-	put(&file, title)
-	put(&file, "\n")
+	libmsg.put(&file, "source: ")
+	libmsg.put(&file, source)
+	libmsg.put(&file, "\ntarget: ")
+	libmsg.put(&file, tg)
+	libmsg.put(&file, "\ntitle: ")
+	libmsg.put(&file, title)
+	libmsg.put(&file, "\n")
 	name: [80]u8
 	nn := hash_name(source, tg, name[:])
 	dir: [320]u8
@@ -157,54 +159,14 @@ form_value :: proc "contextless" (body: string, name: string, out: []u8) -> int 
 		}
 		pair := body[at:e]
 		if len(pair) > len(name) + 1 && pair[:len(name)] == name && pair[len(name)] == '=' {
-			return url_decode(pair[len(name) + 1:], out)
+			return libodin.url_decode(pair[len(name) + 1:], out)
 		}
 		at = e + 1
 	}
 	return 0
 }
 
-url_decode :: proc "contextless" (s: string, out: []u8) -> int {
-	n := 0
-	i := 0
-	for i < len(s) && n < len(out) {
-		c := s[i]
-		if c == '+' {
-			out[n] = ' '
-			n += 1
-			i += 1
-		} else if c == '%' && i + 2 < len(s) {
-			hi := hexval(s[i + 1])
-			lo := hexval(s[i + 2])
-			if hi >= 0 && lo >= 0 {
-				out[n] = u8(hi << 4 | lo)
-				n += 1
-				i += 3
-			} else {
-				out[n] = c
-				n += 1
-				i += 1
-			}
-		} else {
-			out[n] = c
-			n += 1
-			i += 1
-		}
-	}
-	return n
-}
 
-hexval :: proc "contextless" (c: u8) -> int {
-	switch {
-	case c >= '0' && c <= '9':
-		return int(c - '0')
-	case c >= 'a' && c <= 'f':
-		return int(c - 'a') + 10
-	case c >= 'A' && c <= 'F':
-		return int(c - 'A') + 10
-	}
-	return -1
-}
 
 // hash_name answers a file name for a mention: a stable word of the
 // source and target, so the same pair writes one file.
@@ -229,30 +191,16 @@ hash_name :: proc "contextless" (source: string, target: string, out: []u8) -> i
 // page_title answers the text of a page's <title>, or "".
 page_title :: proc "contextless" (html: string) -> string {
 	open := "<title>"
-	i := index_of(html, open)
+	i := libodin.index(html, open)
 	if i < 0 {
 		return ""
 	}
 	start := i + len(open)
-	j := index_of(html[start:], "</title>")
+	j := libodin.index(html[start:], "</title>")
 	if j < 0 {
 		return ""
 	}
 	return html[start:start + j]
 }
 
-contains :: proc "contextless" (haystack: string, needle: string) -> bool {
-	return index_of(haystack, needle) >= 0
-}
 
-index_of :: proc "contextless" (haystack: string, needle: string) -> int {
-	if len(needle) == 0 || len(needle) > len(haystack) {
-		return -1
-	}
-	for i := 0; i + len(needle) <= len(haystack); i += 1 {
-		if haystack[i:i + len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
-}

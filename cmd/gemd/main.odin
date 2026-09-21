@@ -21,6 +21,7 @@ package gemd
 
 import "vsys:abi"
 import "vsys:libnet"
+import "vsys:libodin"
 import "vsys:libtls"
 import "vsys:libuser"
 
@@ -31,6 +32,7 @@ CERT_PRIV :: [32]u8{
 	0xce, 0xcf, 0xb3, 0xa8, 0x8d, 0x01, 0xb7, 0x43, 0xda, 0x72, 0x23, 0x9b, 0xa3, 0x6b, 0xaa, 0x3c,
 }
 
+conn: Conn
 root: string
 root_buf: [256]u8
 cert: []u8
@@ -133,12 +135,11 @@ accept_one :: proc(lfd: int, served: string) {
 	if dfd < 0 {
 		return
 	}
-	c := new(Conn)
-	c.fd = int(dfd)
+	c := &conn
+	c^ = Conn{fd = int(dfd)}
 	if handshake(c) && read_request(c) {
 		answer(c)
 	}
-	free(c)
 	_ = libuser.close(int(dfd))
 	libnet.hangup(accepted)
 }
@@ -163,12 +164,12 @@ handshake :: proc(c: ^Conn) -> bool {
 		return false
 	}
 	rn := libtls.write_plaintext_record(libtls.CONTENT_HANDSHAKE, c.msg[:shn], c.tx[:])
-	if rn < 0 || !write_all(c.fd, c.tx[:rn]) {
+	if rn < 0 || !libuser.write_full(c.fd, c.tx[:rn]) {
 		return false
 	}
 	ccs := [1]u8{0x01}
 	rn = libtls.write_plaintext_record(libtls.CONTENT_CHANGE_CIPHER_SPEC, ccs[:], c.tx[:])
-	if rn < 0 || !write_all(c.fd, c.tx[:rn]) {
+	if rn < 0 || !libuser.write_full(c.fd, c.tx[:rn]) {
 		return false
 	}
 	if !send_message(c, libtls.server_encrypted_extensions) ||
@@ -223,9 +224,9 @@ answer :: proc(c: ^Conn) {
 	}
 	// The path after the host: gemini://host/path.
 	p := "/"
-	if i := index_of(req, "://"); i >= 0 {
+	if i := libodin.index(req, "://"); i >= 0 {
 		rest := req[i + 3:]
-		slash := index_of(rest, "/")
+		slash := libodin.index(rest, "/")
 		if slash >= 0 {
 			p = rest[slash:]
 		}
@@ -257,7 +258,7 @@ close_down :: proc(c: ^Conn) {
 // read_page reads the file at `p` out of the root, its body owned by the
 // caller and its Gemini media type. A `/` asks for index.gmi or index.md.
 read_page :: proc(p: string) -> ([]u8, string, bool) {
-	if p == "" || p[0] != '/' || has_dotdot(p) {
+	if p == "" || p[0] != '/' || libodin.has_dotdot(p) {
 		return nil, "", false
 	}
 	rel := p[1:]
@@ -281,16 +282,16 @@ read_page :: proc(p: string) -> ([]u8, string, bool) {
 // media_type answers a file's Gemini media type. A `.md` and a `.gmi` are
 // gemtext, served as they are.
 media_type :: proc "contextless" (name: string) -> string {
-	if has_suffix(name, ".md") || has_suffix(name, ".gmi") {
+	if libodin.has_suffix(name, ".md") || libodin.has_suffix(name, ".gmi") {
 		return "text/gemini"
 	}
-	if has_suffix(name, ".txt") {
+	if libodin.has_suffix(name, ".txt") {
 		return "text/plain"
 	}
-	if has_suffix(name, ".png") {
+	if libodin.has_suffix(name, ".png") {
 		return "image/png"
 	}
-	if has_suffix(name, ".jpg") || has_suffix(name, ".jpeg") {
+	if libodin.has_suffix(name, ".jpg") || libodin.has_suffix(name, ".jpeg") {
 		return "image/jpeg"
 	}
 	return "application/octet-stream"
@@ -299,14 +300,14 @@ media_type :: proc "contextless" (name: string) -> string {
 // -- The TLS record plumbing, as tlssrv frames it ---------------------------------
 
 recv_record :: proc(c: ^Conn) -> (wire: u8, full: []u8, ok: bool) {
-	if !read_full(c.fd, c.rx[:libtls.RECORD_HEADER]) {
+	if !libuser.read_full(c.fd, c.rx[:libtls.RECORD_HEADER]) {
 		return 0, nil, false
 	}
 	length := int(c.rx[3]) << 8 | int(c.rx[4])
 	if length > libtls.MAX_CIPHERTEXT {
 		return 0, nil, false
 	}
-	if !read_full(c.fd, c.rx[libtls.RECORD_HEADER:][:length]) {
+	if !libuser.read_full(c.fd, c.rx[libtls.RECORD_HEADER:][:length]) {
 		return 0, nil, false
 	}
 	return c.rx[0], c.rx[:libtls.RECORD_HEADER + length], true
@@ -314,7 +315,7 @@ recv_record :: proc(c: ^Conn) -> (wire: u8, full: []u8, ok: bool) {
 
 send_sealed :: proc(c: ^Conn, inner: u8, payload: []u8) -> bool {
 	n := libtls.seal_record(&c.srv.conn.write, inner, payload, c.tx[:])
-	return n >= 0 && write_all(c.fd, c.tx[:n])
+	return n >= 0 && libuser.write_full(c.fd, c.tx[:n])
 }
 
 send_message :: proc(c: ^Conn, step: proc(s: ^libtls.Server, out: []u8) -> int) -> bool {
@@ -325,29 +326,7 @@ send_message :: proc(c: ^Conn, step: proc(s: ^libtls.Server, out: []u8) -> int) 
 	return send_sealed(c, libtls.CONTENT_HANDSHAKE, c.msg[:n])
 }
 
-read_full :: proc(fd: int, buf: []u8) -> bool {
-	got := 0
-	for got < len(buf) {
-		n := libuser.read(fd, buf[got:])
-		if n <= 0 {
-			return false
-		}
-		got += int(n)
-	}
-	return true
-}
 
-write_all :: proc(fd: int, buf: []u8) -> bool {
-	sent := 0
-	for sent < len(buf) {
-		n := libuser.write(fd, buf[sent:])
-		if n <= 0 {
-			return false
-		}
-		sent += int(n)
-	}
-	return true
-}
 
 // -- Small things -----------------------------------------------------------------
 
@@ -355,27 +334,5 @@ line_done :: proc "contextless" (req: []u8) -> bool {
 	return len(req) > 0 && req[len(req) - 1] == '\n'
 }
 
-has_suffix :: proc "contextless" (s, suffix: string) -> bool {
-	return len(s) >= len(suffix) && s[len(s) - len(suffix):] == suffix
-}
 
-has_dotdot :: proc "contextless" (p: string) -> bool {
-	for i in 0 ..< len(p) {
-		if p[i] == '.' && i + 1 < len(p) && p[i + 1] == '.' {
-			return true
-		}
-	}
-	return false
-}
 
-index_of :: proc "contextless" (haystack: string, needle: string) -> int {
-	if len(needle) == 0 || len(needle) > len(haystack) {
-		return -1
-	}
-	for i := 0; i + len(needle) <= len(haystack); i += 1 {
-		if haystack[i:i + len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
-}

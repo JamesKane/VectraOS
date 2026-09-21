@@ -20,6 +20,7 @@ package httpd
 import "vsys:abi"
 import "vsys:libmark"
 import "vsys:libdoc"
+import "vsys:libmsg"
 import "vsys:libnet"
 import "vsys:libodin"
 import "vsys:libuser"
@@ -130,8 +131,8 @@ serve_conn :: proc(rfd: int, wfd: int) {
 	}
 	line := string(req[:got])
 	// The request line: METHOD SP PATH SP VERSION.
-	method, rest := libodin_word(line)
-	target, _ := libodin_word(rest)
+	method, rest := word(line)
+	target, _ := word(rest)
 	if method == "POST" {
 		body := ""
 		if he := blank_line_end(req[:got]); he > 0 {
@@ -165,7 +166,7 @@ serve_path :: proc(wfd: int, target: string, head: bool) {
 			break
 		}
 	}
-	if p == "" || p[0] != '/' || has_dotdot(p) {
+	if p == "" || p[0] != '/' || libodin.has_dotdot(p) {
 		respond(wfd, 400, "text/plain", "bad request\n", head)
 		return
 	}
@@ -176,7 +177,7 @@ serve_path :: proc(wfd: int, target: string, head: bool) {
 	if dir_target {
 		if body, ctype, ok := read_index(full[:], rel); ok {
 			respond(wfd, 200, ctype, body, head)
-			delete_body(body, ctype)
+			delete(transmute([]u8)body)
 			return
 		}
 		respond(wfd, 404, "text/plain", "not found\n", head)
@@ -184,7 +185,7 @@ serve_path :: proc(wfd: int, target: string, head: bool) {
 	}
 	path := libuser.cat_into(full[:], root, "/", rel)
 	// A `.md` is rendered; anything else is served as it is.
-	if has_suffix(rel, ".md") {
+	if libodin.has_suffix(rel, ".md") {
 		if body, ok := render_md(path); ok {
 			respond(wfd, 200, "text/html; charset=utf-8", body, head)
 			delete(body)
@@ -216,9 +217,6 @@ read_index :: proc(scratch: []u8, rel: string) -> (string, string, bool) {
 	return "", "", false
 }
 
-delete_body :: proc(body: string, ctype: string) {
-	delete(transmute([]u8)body)
-}
 
 // -- The Markdown page ------------------------------------------------------------
 
@@ -236,19 +234,19 @@ render_md :: proc(path: string) -> (string, bool) {
 	libmark.parse(&d, string(src))
 	out := make([dynamic]u8, 0, len(src) * 2 + 256)
 	t := libdoc.title(&d)
-	put(&out, "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>")
-	put_escaped(&out, t == "" ? "page" : t)
-	put(&out, "</title></head><body>\n")
+	libmsg.put(&out, "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>")
+	libmsg.put_html_text(&out, t == "" ? "page" : t)
+	libmsg.put(&out, "</title></head><body>\n")
 	in_list := false
 	for i in 0 ..< len(d.blocks) {
 		b := &d.blocks[i]
 		if b.kind == .Item {
 			if !in_list {
-				put(&out, "<ul>\n")
+				libmsg.put(&out, "<ul>\n")
 				in_list = true
 			}
 		} else if in_list {
-			put(&out, "</ul>\n")
+			libmsg.put(&out, "</ul>\n")
 			in_list = false
 		}
 		text := libdoc.block_text(&d, i)
@@ -257,49 +255,49 @@ render_md :: proc(path: string) -> (string, bool) {
 		case .Heading:
 			lvl := b.level < 1 ? 1 : b.level > 3 ? 3 : b.level
 			tag := lvl == 1 ? "h1" : lvl == 2 ? "h2" : "h3"
-			put(&out, "<")
-			put(&out, tag)
-			put(&out, ">")
-			put_escaped(&out, text)
-			put(&out, "</")
-			put(&out, tag)
-			put(&out, ">\n")
+			libmsg.put(&out, "<")
+			libmsg.put(&out, tag)
+			libmsg.put(&out, ">")
+			libmsg.put_html_text(&out, text)
+			libmsg.put(&out, "</")
+			libmsg.put(&out, tag)
+			libmsg.put(&out, ">\n")
 		case .Text:
-			put(&out, "<p>")
-			put_escaped(&out, text)
-			put(&out, "</p>\n")
+			libmsg.put(&out, "<p>")
+			libmsg.put_html_text(&out, text)
+			libmsg.put(&out, "</p>\n")
 		case .Link:
-			put(&out, "<p><a href=\"")
-			put_attr(&out, href)
-			put(&out, "\">")
-			put_escaped(&out, text == "" ? href : text)
-			put(&out, "</a></p>\n")
+			libmsg.put(&out, "<p><a href=\"")
+			libmsg.put_html_attr(&out, href)
+			libmsg.put(&out, "\">")
+			libmsg.put_html_text(&out, text == "" ? href : text)
+			libmsg.put(&out, "</a></p>\n")
 		case .Item:
-			put(&out, "<li>")
-			put_escaped(&out, text)
-			put(&out, "</li>\n")
+			libmsg.put(&out, "<li>")
+			libmsg.put_html_text(&out, text)
+			libmsg.put(&out, "</li>\n")
 		case .Quote:
-			put(&out, "<blockquote>")
-			put_escaped(&out, text)
-			put(&out, "</blockquote>\n")
+			libmsg.put(&out, "<blockquote>")
+			libmsg.put_html_text(&out, text)
+			libmsg.put(&out, "</blockquote>\n")
 		case .Pre:
-			put(&out, "<pre>")
-			put_escaped(&out, text)
-			put(&out, "</pre>\n")
+			libmsg.put(&out, "<pre>")
+			libmsg.put_html_text(&out, text)
+			libmsg.put(&out, "</pre>\n")
 		case .Image:
-			put(&out, "<img src=\"")
-			put_attr(&out, href)
-			put(&out, "\" alt=\"")
-			put_attr(&out, text)
-			put(&out, "\">\n")
+			libmsg.put(&out, "<img src=\"")
+			libmsg.put_html_attr(&out, href)
+			libmsg.put(&out, "\" alt=\"")
+			libmsg.put_html_attr(&out, text)
+			libmsg.put(&out, "\">\n")
 		case .Rule:
-			put(&out, "<hr>\n")
+			libmsg.put(&out, "<hr>\n")
 		}
 	}
 	if in_list {
-		put(&out, "</ul>\n")
+		libmsg.put(&out, "</ul>\n")
 	}
-	put(&out, "</body></html>\n")
+	libmsg.put(&out, "</body></html>\n")
 	return string(out[:]), true
 }
 
@@ -322,22 +320,22 @@ respond :: proc(wfd: int, status: int, ctype: string, body: string, head: bool) 
 
 // content_type answers the media type by a file name's suffix.
 content_type :: proc "contextless" (name: string) -> string {
-	if has_suffix(name, ".html") || has_suffix(name, ".htm") {
+	if libodin.has_suffix(name, ".html") || libodin.has_suffix(name, ".htm") {
 		return "text/html; charset=utf-8"
 	}
-	if has_suffix(name, ".css") {
+	if libodin.has_suffix(name, ".css") {
 		return "text/css"
 	}
-	if has_suffix(name, ".txt") || has_suffix(name, ".gmi") {
+	if libodin.has_suffix(name, ".txt") || libodin.has_suffix(name, ".gmi") {
 		return "text/plain; charset=utf-8"
 	}
-	if has_suffix(name, ".png") {
+	if libodin.has_suffix(name, ".png") {
 		return "image/png"
 	}
-	if has_suffix(name, ".jpg") || has_suffix(name, ".jpeg") {
+	if libodin.has_suffix(name, ".jpg") || libodin.has_suffix(name, ".jpeg") {
 		return "image/jpeg"
 	}
-	if has_suffix(name, ".xml") || has_suffix(name, ".atom") {
+	if libodin.has_suffix(name, ".xml") || libodin.has_suffix(name, ".atom") {
 		return "application/atom+xml"
 	}
 	return "application/octet-stream"
@@ -345,56 +343,12 @@ content_type :: proc "contextless" (name: string) -> string {
 
 // -- Small things -----------------------------------------------------------------
 
-put :: proc(out: ^[dynamic]u8, s: string) {
-	append(out, ..transmute([]u8)s)
-}
 
-// put_escaped writes text as HTML content: `<`, `>` and `&` made safe.
-put_escaped :: proc(out: ^[dynamic]u8, s: string) {
-	for c in transmute([]u8)s {
-		switch c {
-		case '<':
-			put(out, "&lt;")
-		case '>':
-			put(out, "&gt;")
-		case '&':
-			put(out, "&amp;")
-		case:
-			append(out, c)
-		}
-	}
-}
 
-// put_attr writes text inside a double-quoted attribute: `"` and `&` safe.
-put_attr :: proc(out: ^[dynamic]u8, s: string) {
-	for c in transmute([]u8)s {
-		switch c {
-		case '"':
-			put(out, "&quot;")
-		case '&':
-			put(out, "&amp;")
-		case '<':
-			put(out, "&lt;")
-		case:
-			append(out, c)
-		}
-	}
-}
 
-has_suffix :: proc "contextless" (s, suffix: string) -> bool {
-	return len(s) >= len(suffix) && s[len(s) - len(suffix):] == suffix
-}
 
-has_dotdot :: proc "contextless" (p: string) -> bool {
-	for i in 0 ..< len(p) {
-		if p[i] == '.' && i + 1 < len(p) && p[i + 1] == '.' {
-			return true
-		}
-	}
-	return false
-}
 
-libodin_word :: proc "contextless" (s: string) -> (first: string, rest: string) {
+word :: proc "contextless" (s: string) -> (first: string, rest: string) {
 	i := 0
 	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
 		i += 1
@@ -465,4 +419,3 @@ lower_eq :: proc "contextless" (a, b: string) -> bool {
 	return true
 }
 
-_ :: libodin
