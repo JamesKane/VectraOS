@@ -621,8 +621,12 @@ the documents it points at.
    in: `devices/` with each device's fingerprint and whether it is
    verified, `verify` and `verified` on `ctl`, the ask on `ctl`, in
    `notify/` and on the desktop's notice, and a sealed message from a
-   device not verified marked by its subject. Next: the store sealed
-   under the passphrase, which ends step 5.
+   device not verified marked by its subject. The store is sealed under
+   the passphrase: each exported session is kept sealed with AES-GCM
+   under a key `factotum` derives from the passphrase for the identity
+   `-i` names, and loaded at startup, so history opens after a restart.
+   **Step 5 is complete**: every item section 8 names is in. Next: step
+   6, publishing and the ghost.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
