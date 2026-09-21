@@ -12562,9 +12562,25 @@ verify_httpd :: proc(r: ^Result, host: string) {
 	made = write_disk_file("/usr/glenda/site/page.md", "# The Page\n\nA paragraph with <b>markup</b> & an ampersand.\n\n> a quote\n") && made
 	made = write_disk_file("/usr/glenda/site/style.css", "body { color: black; }\n") && made
 	check(r, made, "a small site is written under a root: an index, a page and a stylesheet")
-	// Five connections, one per fetch below, then httpd exits cleanly the
+	// A feed for the site: mkfeed writes an Atom file, one entry a page,
+	// which httpd then serves and a person with feedfs follows.
+	base_url: [96]u8
+	bu := libodin_cat(base_url[:], "http://", host, ":8082")
+	fnames := [?]string{"mkfeed", "-b", bu, "-t", "Glenda's site", "/usr/glenda/site", "/usr/glenda/site/feed.atom"}
+	fargv := new(Argv)
+	_ = argv_from(fargv, fnames[:])
+	pf := start_path(r, "/bin/mkfeed", "mkfeed writes an Atom feed for the site", fargv)
+	if pf != nil {
+		check(r, wait(pf, PATIENCE * 5), "and mkfeed exits")
+		finish(r, pf, "and is taken down")
+		fbuf: [4096]u8
+		fn := web_read_file("/usr/glenda/site/feed.atom", fbuf[:], raw = true)
+		feed := string(fbuf[:max(fn, 0)])
+		check(r, libodin.contains(feed, "<feed xmlns=\"http://www.w3.org/2005/Atom\">") && libodin.contains(feed, "<title>The Page</title>") && libodin.contains(feed, "<link href=\"" + "http://") && libodin.contains(feed, "/page.html\"/>") && libodin.contains(feed, "<title>Home</title>"), "the feed is Atom, an entry a page, its title the page's heading and its link the page as .html")
+	}
+	// Six connections, one per fetch below, then httpd exits cleanly the
 	// way the step-0 web server does, so its listen leaves nothing held.
-	sargs := [?]string{"httpd", "-r", "/usr/glenda/site", "8082", "5"}
+	sargs := [?]string{"httpd", "-r", "/usr/glenda/site", "8082", "6"}
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
 	ps := start_path(r, "/bin/httpd", "httpd starts, the site served as HTTP", sargv)
@@ -12592,13 +12608,16 @@ verify_httpd :: proc(r: ^Result, host: string) {
 		bn, _, _ = web_fetch(libodin_cat(url_buf[:], "http://", host, ":8082/../secret"), body[:], hash[:])
 		got2 := string(body[:max(bn, 0)])
 		check(r, libodin.contains(got2, "not found") || libodin.contains(got2, "bad request"), "and a path that climbs out of the root is not served")
-		// Its five connections served, httpd exits on its own; a kill is
+		// The feed, served with its Atom type.
+		bn, _, ok = web_fetch(libodin_cat(url_buf[:], "http://", host, ":8082/feed.atom"), body[:], hash[:])
+		check(r, ok && libodin.contains(string(body[:max(bn, 0)]), "<title>The Page</title>"), "and the feed is served, so the site is followable")
+		// Its six connections served, httpd exits on its own; a kill is
 		// the fallback if a fetch never reached it.
 		if !wait(ps, PATIENCE * 5) {
 			_ = notepg_kernel(ps.note_group, "kill")
 			_ = end(ps, PATIENCE * 5)
 		}
-		check(r, exit_done(ps), "and httpd, its five connections served, exits")
+		check(r, exit_done(ps), "and httpd, its six connections served, exits")
 		finish(r, ps, "and is taken down")
 	} else {
 		finish(r, ps, "httpd is taken down")

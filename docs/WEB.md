@@ -1228,8 +1228,12 @@ forever; with none it serves one connection on descriptors zero and
 one, the way `listen` runs it from `/lib/service/tcpNN`. The boot line
 writes a small site under a root, serves it, and fetches it back
 through `webfs`: the `.md` page rendered with its markup made safe, the
-stylesheet as it is, and the root answered by its index. Next: `gemd`
-the same directory on Gemini, `cmd/mkfeed`, `cmd/webmention` and
+stylesheet as it is, and the root answered by its index. `cmd/mkfeed`
+writes an Atom feed for a directory, one entry a page, its title the
+page's first heading and its link the page served as `.html`, so a site
+is a feed the moment it exists and `feedfs` follows it; the boot line
+writes the feed and serves it back through `httpd`. Next: `gemd`
+the same directory on Gemini, `cmd/webmention` and
 `/mnt/mention`, the `dict` files and the two ghost classes. The ghost
 reading a timeline in the `social` class waits on `docs/GHOST.md` step
 1, which is not built.
