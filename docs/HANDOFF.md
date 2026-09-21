@@ -617,8 +617,12 @@ the documents it points at.
    homeserver's own second device. The room's verbs are in: `join`,
    `leave`, `invite`, and `members` and `typing` as files in the room,
    `typing` a read that parks, both served by `libmsg` for any network;
-   and `idle` is the long poll behind `event`. Next: the device
-   requester, and the store sealed under the passphrase.
+   and `idle` is the long poll behind `event`. The device requester is
+   in: `devices/` with each device's fingerprint and whether it is
+   verified, `verify` and `verified` on `ctl`, the ask on `ctl`, in
+   `notify/` and on the desktop's notice, and a sealed message from a
+   device not verified marked by its subject. Next: the store sealed
+   under the passphrase, which ends step 5.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a
