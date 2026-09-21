@@ -97,6 +97,10 @@ ROOT_NODES := [?]Static_Node {
 	// Where the mentions a person's pages drew are mounted, `docs/WEB.md`
 	// section 9: the other end of the two-way link.
 	{name = "mention", parent = 6, dir = true},
+	// Where a model is mounted, `docs/GHOST.md` section 3: a directory it
+	// answers from, and where the ghost is mounted, section 4.
+	{name = "model", parent = 6, dir = true},
+	{name = "ghost", parent = 6, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

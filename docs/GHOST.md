@@ -489,6 +489,18 @@ thousand of it the engine. Needs the disk and the heap.
 Boot line: the stub answers a request as events. By hand: a small model
 completes a sentence on QEMU.
 
+**Where it stands.** `servers/modelfs` is in with the stub backend.
+`modelfs -e SCRIPT` reads a file of canned replies, each a run of the
+Messages API's stream events, a reply ended by a line of `==`. A client
+reads `new` for a session number, writes the request to the session's
+`request`, and reads `reply`, which parks until the request is written
+and then answers one event a read, ending at the stream's end; `usage`
+counts the tokens and `ctl` names the models offered. The boot line
+writes a request and reads the canned text events and the stop back.
+The local engine, `sys/libinfer`, is the deferred half: a GGUF reader
+and the llama forward pass, a backend behind these same files, a manual
+check when it lands.
+
 ### Step 1: `ghost` and `ask`
 
 `servers/ghost`, `cmd/ask`, `/lib/ghost/ns`, the memory backend. About

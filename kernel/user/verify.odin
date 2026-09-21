@@ -641,6 +641,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_mothra(&r)
 	verify_plumber(&r)
 	verify_feedfs(&r)
+	verify_modelfs(&r)
 	verify_fedifs(&r)
 	verify_atfs(&r)
 	verify_matrixfs(&r)
@@ -11029,6 +11030,56 @@ verify_matrixfs :: proc(r: ^Result) {
 }
 
 /*
+verify_modelfs runs `servers/modelfs` on the stub backend, docs/GHOST.md
+step 0's boot line: a request written to the stub comes back as the
+Messages API's stream events, one a read. The engine is a manual check;
+the stub is what every ghost check runs against.
+*/
+@(private = "file")
+verify_modelfs :: proc(r: ^Result) {
+	names := [?]string{"modelfs", "-e", "/lib/tests/model.script"}
+	argv := new(Argv)
+	if !check(r, argv != nil && argv_from(argv, names[:]), "a record for modelfs's arguments") {
+		return
+	}
+	p := start_path(r, "/bin/modelfs", "the loader starts modelfs, a model as files, the stub behind them", argv)
+	if p == nil {
+		return
+	}
+	if !check(r, await_posted("model"), "which posts /srv/model") {
+		finish(r, p, "and modelfs is taken down")
+		return
+	}
+	if !check(r, srv.mount(vfs.boot_namespace, "/srv/model", "/mnt/model") == vfs.OK, "and the kernel mounts it at /mnt/model") {
+		finish(r, p, "and modelfs is taken down")
+		return
+	}
+	text: [2048]u8
+	n := web_read_file("/mnt/model/ctl", text[:])
+	check(r, string(text[:max(n, 0)]) == "stub", "ctl names the models offered, the stub the one here")
+	// A session off `new`, its number, then the request and the reply.
+	n = web_read_file("/mnt/model/new", text[:])
+	check(r, string(text[:max(n, 0)]) == "0", "a read of new answers a session number")
+	lbuf: [512]u8
+	check(r, dir_names("/mnt/model/0", lbuf[:]) == "ctl request reply usage", "a session lists its files")
+	check(r, net_file_write("/mnt/model/0/request", "{\"model\": \"stub\", \"messages\": [{\"role\": \"user\", \"content\": \"say hello\"}], \"max_tokens\": 64}"), "the request goes to the model as the Messages API's JSON")
+	// The reply is a stream: web_read_file reads it to its end, the events
+	// one a read, concatenated as it accumulates them.
+	n = web_read_file("/mnt/model/0/reply", text[:], raw = true)
+	reply := string(text[:max(n, 0)])
+	check(r, libodin.contains(reply, "\"type\": \"content_block_delta\"") && libodin.contains(reply, "\"text\": \"hello\"") && libodin.contains(reply, "\"text\": \", ghost\"") && libodin.contains(reply, "\"stop_reason\": \"end_turn\"") && libodin.contains(reply, "\"type\": \"message_stop\""), "and the reply comes back as the API's stream events: the text deltas and the stop, one a read, ended at the stream's end")
+	check(r, count_lines(reply) == 7, "seven events, the ones the script named")
+	n = web_read_file("/mnt/model/0/usage", text[:])
+	check(r, n > 0 && libodin.contains(string(text[:n]), "out 7"), "and usage counts the tokens, the events out")
+	check(r, net_file_write("/mnt/model/0/ctl", "hangup"), "hangup ends the session")
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/model") == vfs.OK, "the mount of modelfs comes down")
+	check(r, srv.remove("model") == vfs.OK, "and the kernel takes its name away")
+	check(r, wait(p, PATIENCE * 5), "and modelfs, its pipe gone, exits")
+	finish(r, p, "and is taken down")
+	reap_orphans()
+}
+
+/*
 verify_feedfs runs `servers/feedfs` on two saved feeds, the offline proof of
 `docs/WEB.md` section 4's shape. A feed's path written to `ctl` makes a
 conversation of its entries, each a directory of files, in time order by
@@ -12124,6 +12175,18 @@ count_words :: proc(s: string) -> int {
 			in_word = false
 		} else if !in_word {
 			in_word = true
+			n += 1
+		}
+	}
+	return n
+}
+
+// count_lines answers how many newline-ended lines a string holds.
+@(private = "file")
+count_lines :: proc(s: string) -> int {
+	n := 0
+	for i in 0 ..< len(s) {
+		if s[i] == '\n' {
 			n += 1
 		}
 	}
