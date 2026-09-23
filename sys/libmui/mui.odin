@@ -69,6 +69,8 @@ Theme :: struct {
 	warn:   libpal.RGB,
 	ok:     libpal.RGB,
 	fault:  libpal.RGB,
+	// The face each role draws in, `fonts.odin`. None named is the cells.
+	faces:  [Face_Role]Face_Spec,
 }
 
 default_theme :: Theme {
@@ -544,12 +546,13 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 		o.minw, o.minh = 0, 0
 		o.maxw, o.maxh = BIG, BIG
 	case .Text:
-		w := rune_len(o.label) * FONT_W
+		w := text_width(t, .Interface, o.label)
+		h := text_height(t, .Interface)
 		o.minw, o.maxw = w, w
-		o.minh, o.maxh = FONT_H, FONT_H
+		o.minh, o.maxh = h, h
 	case .Button:
-		cw := drawn_len(o.label) * FONT_W + 2 * t.hpad + 2 * t.bevel
-		ch := FONT_H + 2 * t.vpad + 2 * t.bevel
+		cw := text_width(t, .Chrome, strip_hotkey(o.label)) + 2 * t.hpad + 2 * t.bevel
+		ch := max(text_height(t, .Chrome), FONT_H) + 2 * t.vpad + 2 * t.bevel
 		o.minw, o.minh = cw, ch
 		o.maxw, o.maxh = BIG, BIG
 	case .Checkmark:

@@ -60,7 +60,7 @@ paint_node :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 	case .Text:
 		// A label draws as written: an underscore in it is a character,
 		// not a hotkey mark, which only a button's label carries.
-		glyphs(c, o.x, o.y, o.label, px(t.ink))
+		face_text(c, t, .Interface, o.x, o.y, o.label, px(t.ink))
 	case .Button:
 		raised(c, o, t)
 		label_centered(c, o, t)
@@ -345,11 +345,44 @@ glyphs :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, s: string, i
 	}
 }
 
-// label_centered writes a button's text centred in its face, a hotkey
-// underscore skipped the way the layout counted it.
+// label_centered writes a button's text centred in its face, in the chrome
+// face, a hotkey underscore skipped the way the layout counted it.
 label_centered :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
-	tw := drawn_len(o.label) * FONT_W
-	glyphs(c, o.x + (o.w - tw) / 2, o.y + (o.h - FONT_H) / 2, strip_hotkey(o.label), px(t.ink))
+	shown := strip_hotkey(o.label)
+	tw := text_width(t, .Chrome, shown)
+	th := text_height(t, .Chrome)
+	face_text(c, t, .Chrome, o.x + (o.w - tw) / 2, o.y + (o.h - th) / 2, shown, px(t.ink))
+}
+
+/*
+face_text lays a string in a role's face with its line's top at (x, y). Each
+glyph's mask is blended in the ink over what is there, so the edges are smooth
+on any ground. The role's capitals and tracking are applied here and in
+`text_width` alike, so what is measured is what is drawn. A role with no face
+draws in the cells.
+*/
+face_text :: proc "contextless" (c: ^libraster.Canvas, t: ^Theme, role: Face_Role, x: int, y: int, s: string, ink: u32) {
+	f := face_of(t, role)
+	if f == nil {
+		glyphs(c, x, y, s, ink)
+		return
+	}
+	spec := &t.faces[role]
+	space, _ := libfont.face_glyph(f, ' ')
+	pen := x
+	base := y + f.ascent
+	for r in s {
+		ch := spec.caps ? libfont.upper(r) : r
+		g, ok := libfont.face_glyph(f, ch)
+		if !ok {
+			pen += space.advance + spec.track
+			continue
+		}
+		if g.w > 0 {
+			libraster.coverage(c, pen + g.left, base - g.top, g.mask, g.w, g.h, ink)
+		}
+		pen += g.advance + spec.track
+	}
 }
 
 // strip_hotkey returns a label with one `_` before a letter removed, into a

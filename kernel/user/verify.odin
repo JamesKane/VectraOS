@@ -5331,6 +5331,20 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 		}
 		if found_label {
 			check(r, true, "with an amber label on it, its glyphs laid in the ink over the face")
+			// And in the chrome face, `docs/CHROME.md` brick 4: its edges are
+			// coverage, so a pixel between the amber and the magnesium stands
+			// beside the ink, which the one-bit cells never drew.
+			smooth := false
+			band: for row in gtop ..< gbot {
+				for x in max(gx - bw / 4, 0) ..< min(gx + bw / 4, s.width) {
+					v := fb.get_raw(s, x, row)
+					if v != amber && v != magnesium && between_px(v, amber, magnesium) {
+						smooth = true
+						break band
+					}
+				}
+			}
+			check(r, smooth, "and the label's edges are smooth, a pixel between the ink and the face: the baked chrome face")
 		} else {
 			// What stood there instead, so the next miss names itself: the
 			// face's rows, the band's census, and the column as runs of what
@@ -10190,6 +10204,18 @@ wctl_geo :: proc(path: string) -> (x: int, y: int, w: int, h: int, current: bool
 	hidden = libodin.contains(text, " hidden")
 	ok = ok1 && ok2 && ok3 && ok4
 	return
+}
+
+// between_px reports whether each channel of `v` lies between the same
+// channel of `a` and `b`: a pixel blended from the two.
+between_px :: proc "contextless" (v: u32, a: u32, b: u32) -> bool {
+	for shift in ([3]uint{16, 8, 0}) {
+		x, lo, hi := int(v >> shift & 0xFF), int(a >> shift & 0xFF), int(b >> shift & 0xFF)
+		if x < min(lo, hi) || x > max(lo, hi) {
+			return false
+		}
+	}
+	return true
 }
 
 // wctl_frame reads a window's wctl line: the rectangle, and the frame's four

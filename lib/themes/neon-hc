@@ -22,6 +22,11 @@ colour bevel.lo  000000
 colour lcd.bg    140e00
 colour lcd.fg    ffc940
 
+font.chrome     /lib/font/chrome/11.face  track 1 caps   # buttons, titles, legends
+font.interface  /lib/font/interface/13.face   # labels
+font.readout    /lib/font/readout/20.face     # LCD readouts
+font.namespace  /lib/font/namespace/12.face   # paths and status lines
+
 panel       panel           # a window's body
 raised      raised          # a control's face
 face.lit    bevel.hi        # its top-left edge

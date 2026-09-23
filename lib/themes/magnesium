@@ -14,6 +14,10 @@ bevel       2               # the depth of a raised edge
 well        2               # the depth of a sunken one
 pad         4               # a group's inset
 gap         4               # between children
+font.chrome     /lib/font/chrome/11.face  track 1 caps   # buttons, titles, legends
+font.interface  /lib/font/interface/13.face   # labels
+font.readout    /lib/font/readout/20.face     # LCD readouts
+font.namespace  /lib/font/namespace/12.face   # paths and status lines
 frame.edge  3               # the window frame: the raised border,
 frame.title 20              # the title bar's height,
 frame.well  2               # and the recess round the client area

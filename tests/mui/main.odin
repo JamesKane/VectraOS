@@ -67,6 +67,18 @@ count_in :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, w: int, h:
 	return n
 }
 
+// blends reports whether every channel of `v` lies between the same channel
+// of `a` and `b`: a pixel an edge blended from the two.
+blends :: proc "contextless" (v: u32, a: u32, b: u32) -> bool {
+	for shift in ([3]uint{16, 8, 0}) {
+		x, lo, hi := int(v >> shift & 0xFF), int(a >> shift & 0xFF), int(b >> shift & 0xFF)
+		if x < min(lo, hi) || x > max(lo, hi) {
+			return false
+		}
+	}
+	return true
+}
+
 // has_colour reports whether one colour is anywhere on the canvas.
 has_colour :: proc "contextless" (c: ^libraster.Canvas, color: u32) -> bool {
 	return count_in(c, 0, 0, c.w, c.h, color) > 0
@@ -308,6 +320,44 @@ start :: proc "c" (block: ^abi.Args) {
 		libmui.lay(col, 0, 0, 100, 40, &tl)
 		c := paint_tree(col, &tl)
 		want(count_in(&c, word.x, word.y, libmui.FONT_W, libmui.FONT_H, libpal.xrgb(tl.ink)) > 0, "and a label of it draws its letter")
+	}
+
+	// -- The look's faces: proportional, and smooth at the edge ---------------
+	//
+	// `docs/CHROME.md` brick 4. A theme names a baked face per role, and a
+	// label in it is measured by its glyphs' advances and drawn as coverage:
+	// an edge pixel is a blend of the ink and the ground, which the 8x16
+	// cells, one bit a pixel, can never make.
+	{
+		tf := libmui.default_theme
+		libmui.parse_theme(&tf, "font.interface /lib/font/interface/13.face\nfont.chrome /lib/font/chrome/11.face track 1 caps\n")
+		want(libmui.face_of(&tf, .Interface) != nil, "the interface face opens from /lib/font")
+		want(libmui.face_of(&tf, .Chrome) != nil, "and the chrome face")
+		want(libmui.text_width(&tf, .Interface, "iiii") < libmui.text_width(&tf, .Interface, "MMMM"), "the face is proportional: four i are narrower than four M")
+		want(libmui.text_width(&tf, .Chrome, "ok") == libmui.text_width(&tf, .Chrome, "OK"), "a role in capitals measures its small letters as capitals")
+		plain := libmui.default_theme
+		libmui.parse_theme(&plain, "font.chrome /lib/font/chrome/11.face caps\n")
+		want(libmui.text_width(&tf, .Chrome, "OK") == libmui.text_width(&plain, .Chrome, "OK") + 1, "and its tracking adds a pixel between two letters")
+
+		col := libmui.group(false)
+		word := libmui.text("Workbench")
+		libmui.add(col, word)
+		libmui.fit(col, &tf)
+		main_check(word.minw, libmui.text_width(&tf, .Interface, "Workbench"), "a label is as wide as its face measures it")
+		libmui.lay(col, 0, 0, 200, 40, &tf)
+		c := paint_tree(col, &tf)
+		ink, ground := libpal.xrgb(tf.ink), libpal.xrgb(tf.ground)
+		want(count_in(&c, word.x, word.y, word.w, word.h, ink) > 0, "the label's letters are in the ink")
+		between := 0
+		for y in word.y ..< word.y + word.h {
+			for x in word.x ..< word.x + word.w {
+				v := libraster.get(&c, x, y)
+				if v != ink && v != ground && blends(v, ink, ground) {
+					between += 1
+				}
+			}
+		}
+		want(between > 0, "and its edges are smooth: pixels between the ink and the ground")
 	}
 
 	// -- A list is rows in a well, one on a bar of the face ------------------

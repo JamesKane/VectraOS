@@ -226,33 +226,57 @@ The license text goes in `/lib/font/OFL.txt` beside them.
 **The faces are baked on the host, not rasterized on the target.** A
 TrueType rasterizer in ring 3 is a large piece of code that the target does
 not need. The faces come at a few sizes, and a size is a set of pixels that
-never change. So `tools/gensubfont.py`, which already writes `/lib/font`'s
-subfonts, learns to open an OFL file and write a subfont per size. Each
-glyph is an 8-bit coverage mask with its own width, and the file is checked
-in the way `latin1.subf` is. The target reads a coverage mask and blends it
+never change. So `tools/genface.py` opens each OFL file in `tools/fonts`
+and writes a `.face` file per size. Each glyph is an 8-bit coverage mask
+with its own advance and its place from the pen. The file is checked in the
+way `latin1.subf` is.
+
+The target reads a coverage mask and blends it
 with `libraster.coverage`, which is the whole text path.
 
-    /lib/font/chrome/11.font        Chakra Petch 600, 11 px, ASCII and Latin-1
-    /lib/font/interface/13.font     IBM Plex Sans Condensed, 13 px
-    /lib/font/readout/20.font       VT323, 20 px, and 32 for the dock's clock
-    /lib/font/namespace/12.font     IBM Plex Mono, 12 px
+    /lib/font/chrome/11.face        Chakra Petch 600, 11 px
+    /lib/font/interface/13.face     IBM Plex Sans Condensed, 13 px
+    /lib/font/readout/20.face       VT323, 20 px, and 32.face for the dock's clock
+    /lib/font/namespace/12.face     IBM Plex Mono, 12 px
 
-**The subfont format grows a depth.** A `.font` line names a subfont, and
-the subfont today holds one bit per pixel in a fixed cell. A header word
-says the depth, 1 or 8, and a width table follows the bits. A reader of a
-1-bit file sees no change. `sys/libfont.Loader` hands back a glyph's mask
-and width. `apps/terminal` and the kernel console keep the 8 by 16 face,
-which is a fifth face and stays the fixed one.
+Each carries ASCII, Latin-1, the dashes and quotes, and the arrows, the
+ranges `/lib/font/default.font` gives the 8x16 face.
+
+**A face is a file of its own, not a deeper subfont.** The plan was a depth
+word in the subfont format. A subfont is a fixed cell, and a proportional
+face is not one. Bending the format would teach the console's loader a shape
+it never draws. `sys/libfont`'s `face.odin` reads a `.face`
+over a buffer the caller holds: the header, the rune ranges, a record per
+glyph, and the masks. `apps/terminal` and the kernel console keep the 8 by
+16 face, which is a fifth face and stays the fixed one.
+
+The generator lifts each glyph's coverage by a small factor, held to 255.
+That is the stem darkening a renderer does for small light text on a dark
+ground. It gives most glyphs a pixel of full ink.
 
 **Tracking and upper case are the toolkit's.** The `chrome` face is set in
 capitals with wide letter spacing, 0.14 em for a menu title. That is layout,
-not glyphs, so `sys/libmui`'s text measure takes a tracking and a case from
-the role. The theme names a face per role:
+not glyphs, so `sys/libmui`'s text measure takes a tracking in pixels and a
+case from the role. The theme names a face per role:
 
-    font.chrome      /lib/font/chrome/11.font     track 14 upper
-    font.interface   /lib/font/interface/13.font
-    font.readout     /lib/font/readout/20.font
-    font.namespace   /lib/font/namespace/12.font
+    font.chrome      /lib/font/chrome/11.face     track 1 caps
+    font.interface   /lib/font/interface/13.face
+    font.readout     /lib/font/readout/20.face
+    font.namespace   /lib/font/namespace/12.face
+
+A role the theme names nothing for draws in the 8x16 cells, so a theme with
+no font lines is the look before this section. `libmui.face_of` loads a
+file the first time a role asks for it and keeps it for the program's
+life. `text_width` and `face_text` apply the same capitals and tracking, so
+what is measured is what is drawn.
+
+**Which gadgets wear the faces now.** A `Text` label wears `interface` and
+a `Button` wears `chrome`. A `List`, a `String` field, an icon's name and a
+menu's rows stay in the 8x16 cells. Their layout counts cells: `sys/libdoc`
+wraps a page to a column count, and `apps/mothra`, `apps/prefs` and
+Workbench size their windows in cells. Moving those to the faces is a later
+brick. The server's window titles move to `chrome` in brick 5, with the
+frame.
 
 ## 6. Icons: vector, by kind, with an emblem
 
@@ -628,10 +652,14 @@ look.
      window's first theme read and that answer moved the number past a
      look nobody loaded. Faster painting opened the gap. The first answer
      loads the files too.
-4. **The faces.** `gensubfont.py` reading OFL files, the 8-bit subfont, the
-   four faces checked in, and the toolkit's tracking and case. The check:
-   a label's pixels include a value between its ink and its ground, which
-   a 1-bit face cannot make. Medium.
+4. **The faces. Done, September 2026.** `tools/genface.py` bakes the four
+   OFL fonts into `.face` files, `sys/libfont` reads them, and the theme
+   names one per role with its tracking and case. Labels and buttons wear
+   them. In `tests/mui` a face is proportional, and capitals and tracking
+   measure as they draw. A label's edge has pixels between its ink and its
+   ground. On the glass, the demo's button label has a
+   pixel between the amber and the magnesium, which the one-bit cells
+   never drew. A control with no faces fails exactly those.
 5. **The frame, A.** Brushed bars, the new metrics, the focus line and the
    title glow in the server, and the halo and shadow of `docs/DRAW.md`
    section 19. The check: a pixel just outside the front window's frame is

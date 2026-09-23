@@ -158,6 +158,14 @@ apply_line :: proc "contextless" (t: ^Theme, line: string) {
 		set_color(&t.ok, value)
 	case "fault":
 		set_color(&t.fault, value)
+	case "font.chrome":
+		set_face(&t.faces[.Chrome], value, rest)
+	case "font.interface":
+		set_face(&t.faces[.Interface], value, rest)
+	case "font.readout":
+		set_face(&t.faces[.Readout], value, rest)
+	case "font.namespace":
+		set_face(&t.faces[.Namespace], value, rest)
 	}
 	// A role this build does not know is skipped here. `font` and `pointer`
 	// are left for the half of the toolkit that reads them.
@@ -170,6 +178,43 @@ set_color :: proc "contextless" (dst: ^libpal.RGB, value: string) {
 	if c, ok := libpal.colours_parse(&theme_colours, value); ok {
 		dst^ = c
 	}
+}
+
+/*
+set_face reads a face role's line: the `.face` file, then `track N` for the
+pixels between letters and `caps` for a role set in capitals, in either order.
+A path too long for the spec leaves the role as it was.
+*/
+set_face :: proc "contextless" (dst: ^Face_Spec, path: string, rest: string) {
+	if len(path) == 0 || len(path) > FACE_PATH {
+		return
+	}
+	spec := Face_Spec{}
+	spec.n = copy(spec.path[:], path)
+	_, more := word(rest)
+	for {
+		w: string
+		w, more = word(more)
+		if w == "" {
+			break
+		}
+		switch w {
+		case "caps":
+			spec.caps = true
+		case "track":
+			n: string
+			n, more = word(more)
+			v := 0
+			for k in 0 ..< len(n) {
+				if n[k] < '0' || n[k] > '9' {
+					break
+				}
+				v = v * 10 + int(n[k] - '0')
+			}
+			spec.track = min(v, 8)
+		}
+	}
+	dst^ = spec
 }
 
 // The colours the files being read define, `colour NAME VALUE`. Emptied at
@@ -465,6 +510,7 @@ that shows the theme walks this, so it stays right when a role is added.
 THEME_ROLES := [?]string{
 	"ground", "face", "face.lit", "face.shade", "text", "hot", "link", "dim",
 	"focus", "warn", "ok", "fault",
+	"font.chrome", "font.interface", "font.readout", "font.namespace",
 	"bevel", "well", "pad", "gap", "hpad", "vpad",
 }
 
@@ -504,6 +550,13 @@ theme_value :: proc "contextless" (t: ^Theme, role: string, out: []u8) -> string
 		return rgb(t.ok, out)
 	case "fault":
 		return rgb(t.fault, out)
+	case "font.chrome", "font.interface", "font.readout", "font.namespace":
+		for name, r in FACE_ROLES {
+			if name == role {
+				f := &t.faces[r]
+				return string(out[:copy(out, f.path[:f.n])])
+			}
+		}
 	case "bevel":
 		return libuser.itoa(out, i64(t.bevel))
 	case "well":

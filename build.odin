@@ -1439,6 +1439,14 @@ stage_vectra :: proc(arch: string, host: string) {
 	for sf in ([]string{"latin1.subf", "punct.subf", "arrows.subf"}) {
 		copy_file(fmt.tprintf("lib/font/%s", sf), fmt.tprintf("%s/lib/font/%s", root, sf))
 	}
+	// The look's four faces, docs/CHROME.md section 5: coverage baked on the
+	// host from OFL fonts by `tools/genface.py`, and the license they ship
+	// under.
+	copy_file("lib/font/OFL.txt", fmt.tprintf("%s/lib/font/OFL.txt", root))
+	for face in ([]string{"chrome/11.face", "interface/13.face", "readout/20.face", "readout/32.face", "namespace/12.face"}) {
+		ensure_dir(fmt.tprintf("%s/lib/font/%s", root, face[:strings.index_byte(face, '/')]))
+		copy_file(fmt.tprintf("lib/font/%s", face), fmt.tprintf("%s/lib/font/%s", root, face))
+	}
 	// The draw server's two files: the chords, and where a window opens.
 	copy_file("servers/intuition/keys", fmt.tprintf("%s/lib/keys", root))
 	copy_file("servers/intuition/workspaces", fmt.tprintf("%s/lib/workspaces", root))
