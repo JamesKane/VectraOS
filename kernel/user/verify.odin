@@ -5850,6 +5850,103 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		}
 	}
 
+	// -- Chords: any wctl word, a mode, and alt and a drag -----------------------------
+
+	/*
+	`docs/WORKBENCH.md` step 5's chords. The kernel gives the server a `home`
+	and a keys file there, the shipped one and three lines more, and a
+	reload reads it. A chord bound to a `wctl` word acts on the window in
+	front. A mode entered by a chord takes plain keys, each acting, until
+	Escape. And alt with a drag anywhere on a window moves it. The shell in
+	front is the window each acts on, and each puts it back.
+	*/
+	// The draw server's own files, at a mount point of their own: `/mnt` holds
+	// the notice service here.
+	desk_mounted := srv.mount(vfs.boot_namespace, "/srv/draw", "/n/desk") == vfs.OK
+	if front := front_wctl("/n/desk/"); desk_mounted && front != "" {
+		keys: [4096]u8
+		kn := web_read_file("/lib/keys", keys[:], raw = true)
+		extra := "alt-s snap left\nmode nudge alt-r 5000\n[nudge] l move +8 +0\n"
+		ktext: [4600]u8
+		kt := copy(ktext[:], keys[:max(kn, 0)])
+		kt += copy(ktext[kt:], extra)
+		_ = env.set(ps.env, "home", "/usr/glenda")
+		_ = make_disk_dir("/usr/glenda")
+		_ = make_disk_dir("/usr/glenda/lib")
+		kwrote := check(r, write_disk_file("/usr/glenda/lib/keys", string(ktext[:kt])), "a keys file with three chords more is written")
+		if !kwrote {
+			c, cerr := vfs.open_path(vfs.boot_namespace, "/usr/glenda/lib/keys", vfs.O_WRONLY)
+			dbg: [160]u8
+			sink := libodin.sink_from(dbg[:])
+			libodin.put_str(&sink, "keys-diag: open ")
+			libodin.put_str(&sink, vectra9.errno_name(cerr))
+			if cerr == vfs.OK {
+				libodin.put_str(&sink, " iounit ")
+				libodin.put_int(&sink, i64(vfs.chan_iounit(c)))
+				n, werr := vfs.chan_write(c, 0, ktext[:min(kt, 256)])
+				libodin.put_str(&sink, " write ")
+				libodin.put_str(&sink, vectra9.errno_name(werr))
+				libodin.put_str(&sink, " n ")
+				libodin.put_int(&sink, i64(n))
+				vfs.chan_close(c)
+			}
+			libodin.put_str(&sink, "\n")
+			_ = net_file_write("/dev/cons", libodin.str(&sink))
+		}
+		if kwrote && check(r, net_file_write("/n/desk/ctl", "reload"), "and read on a reload") {
+			x0, y0, w0, h0, _, _, _ := wctl_geo(front)
+			inject_chord(0x1F) // 's' is make 0x1F
+			sx, _, sw, _, _, _, _ := wctl_geo(front)
+			check(r, sx == 0 && sw == s.width / 2, "a chord bound to a wctl word, snap left, acts on the window in front")
+			inject_chord(0x2C) // 'z' is make 0x2C: zoom puts a snapped window back
+			zx, zy, zw, zh, _, _, _ := wctl_geo(front)
+			check(r, zx == x0 && zy == y0 && zw == w0 && zh == h0, "and alt-z puts it back")
+
+			inject_chord(0x13) // 'r' is make 0x13: into the mode
+			report: [512]u8
+			rn := read_once("/n/desk/ctl", report[:])
+			check(r, rn > 0 && libodin.contains(string(report[:rn]), "mode nudge"), "alt-r enters a mode, which the server's ctl names")
+			for _ in 0 ..< 2 {
+				devfs.scancode_tap(0x26) // 'l' down
+				devfs.scancode_tap(0xA6) // and up
+				sync.delay(5)
+			}
+			lx, _, _, _, _, _, _ := wctl_geo(front)
+			check(r, lx == x0 + 16, "and two plain l's in it each move the window right by eight, no modifier held")
+			devfs.scancode_tap(0x01) // Escape down
+			devfs.scancode_tap(0x81) // and up
+			sync.delay(5)
+			rn = read_once("/n/desk/ctl", report[:])
+			check(r, rn > 0 && !libodin.contains(string(report[:rn]), "mode nudge"), "and Escape leaves the mode")
+			_ = net_file_write(front, wctl_pair("move ", x0, y0))
+
+			// Alt held, a press in the window's well, a drag and the release.
+			cx, cy := x0 + w0 / 2, y0 + h0 / 2
+			if devfs.tree().mouse.present && point_to(cx, cy) {
+				devfs.scancode_tap(0x38) // alt down
+				sync.delay(5)
+				_ = inject_move(0, 0, 1)
+				_ = wait_pointer(cx, cy)
+				_ = inject_move(30, 0, 1)
+				_ = wait_pointer(cx + 30, cy)
+				_ = inject_move(0, 0, 0)
+				_ = wait_pointer(cx + 30, cy)
+				devfs.scancode_tap(0xB8) // alt up
+				sync.delay(5)
+				mx2, _, _, _, _, _, _ := wctl_geo(front)
+				check(r, mx2 == x0 + 30, "alt and a drag in the window's well moves the window, a mouse bind")
+				_ = net_file_write(front, wctl_pair("move ", x0, y0))
+			}
+		}
+		remove_file("/usr/glenda/lib/keys")
+		_ = net_file_write("/n/desk/ctl", "reload")
+	} else {
+		check(r, false, "the draw server mounts for the chord checks, a window in front")
+	}
+	if desk_mounted {
+		_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/desk")
+	}
+
 	// One more, the bound chord again, counted in the table.
 	shells1 := count_windows()
 	inject_chord(0x31) // 'n' is make 0x31
@@ -9768,6 +9865,25 @@ parse_mouse :: proc "contextless" (line: []u8) -> (x: int, y: int, b: int, ok: b
 	return
 }
 
+// front_wctl names the wctl of the window in front, the one whose report says
+// `current`, or "".
+@(private = "file") front_wctl_buf: [32]u8
+
+@(private = "file")
+front_wctl :: proc(base: string) -> string {
+	for i in 0 ..< 16 {
+		sink := libodin.sink_from(front_wctl_buf[:])
+		libodin.put_str(&sink, base)
+		libodin.put_int(&sink, i64(i))
+		libodin.put_str(&sink, "/wctl")
+		path := libodin.str(&sink)
+		if _, _, _, _, cur, hid, ok := wctl_geo(path); ok && cur && !hid {
+			return path
+		}
+	}
+	return ""
+}
+
 // wctl_pair is a wctl line of a verb and two numbers, in a buffer of its own.
 @(private = "file") wctl_pair_buf: [64]u8
 
@@ -13554,8 +13670,17 @@ write_disk_file :: proc(path: string, content: string) -> bool {
 		return false
 	}
 	defer vfs.chan_close(c)
-	n, werr := vfs.chan_write(c, 0, transmute([]u8)content)
-	return werr == vfs.OK && n == len(content)
+	// In pieces a message carries: a file past one frame is several writes.
+	at := 0
+	for at < len(content) {
+		piece := min(len(content) - at, 512, max(vfs.chan_iounit(c), 64))
+		n, werr := vfs.chan_write(c, u64(at), transmute([]u8)content[at:at + piece])
+		if werr != vfs.OK || n <= 0 {
+			return false
+		}
+		at += n
+	}
+	return true
 }
 
 // web_read_file reads a whole small file into `into` and answers the count,

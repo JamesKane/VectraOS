@@ -3,17 +3,20 @@
 # The draw server reads this file at start and on a `reload` line to
 # /srv/draw/ctl, from $home/lib/keys first and /lib/keys second. A chord is
 # a key with alt, ctrl and shift in front of it. The actions the server
-# knows it does itself. Any other action goes out, verbatim, as a line on
-# /srv/draw/hotkey, which the desktop reads.
+# knows it does itself, and any `wctl` word acts on the window in front.
+# Any other action goes out, verbatim, as a line on /srv/draw/hotkey,
+# which the desktop reads. A number with a sign is relative, one without
+# absolute. `mode`, `[mode]`, `repeat`, `release` and mouse binds such as
+# `alt-button1 drag move` are described in the server's keys.odin.
 
 alt-w        close                 # the window in front
 alt-tab      cycle                 # the focus to the next window
 alt-z        zoom
 alt-b        back
-alt-up       move 0 -16            # nudge the window in front
-alt-down     move 0 16
-alt-left     move -16 0
-alt-right    move 16 0
+alt-up       move +0 -16           # nudge the window in front: a sign is relative
+alt-down     move +0 +16
+alt-left     move -16 +0
+alt-right    move +16 +0
 alt-1        workspace 1
 alt-2        workspace 2
 alt-3        workspace 3
@@ -31,3 +34,4 @@ alt-space    overview              # every workspace at once
 alt-n        window rc -i          # a new shell, which the desktop runs
 alt-e        execute               # Execute Command...
 alt-m        menu                  # the desktop's first menu
+alt-button1  drag move             # alt and a drag anywhere on a window moves it

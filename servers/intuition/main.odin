@@ -475,6 +475,13 @@ desk_chrome :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_b
 		ln := workspace_lamp(pieces[:], x, y, i + 1)
 		desk_pieces(pieces[:ln], sx0, sy0, sx1, sy1)
 	}
+	// The mode lamp, under the workspaces' when the keys file has a mode:
+	// copper and lit while one is on.
+	if nmodes > 0 {
+		x, y := lamp_at(WORKSPACES)
+		ln := libdraw.lamp(pieces[:], x, y, LAMP, libpal.COPPER, mode_on != 0)
+		desk_pieces(pieces[:ln], sx0, sy0, sx1, sy1)
+	}
 }
 
 // lamp_at is where workspace `i + 1`'s indicator sits: down the right edge,
@@ -1352,6 +1359,10 @@ key_message :: proc "contextless" (msg: []u8) #no_bounds_check {
 	body := msg[1:]
 	switch msg[0] {
 	case 'c':
+		// A mode on takes the keys it acts on, and no window sees them.
+		if mode_key(body) {
+			return
+		}
 		w := stack_top()
 		if w < 0 || !windows[w].used {
 			return

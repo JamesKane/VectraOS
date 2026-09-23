@@ -902,29 +902,40 @@ section 18.
   a title pattern snaps the window right, the program's first window snaps
   it left and makes it current, and a zoom puts it back.
 
-- **Chords whose action is any `wctl` word.** Medium. Today `chord_act`
-  in `servers/intuition/keys.odin` knows its own ten words, and
-  `run_wctl` in `files.odin` knows a different list. The plan makes a
-  chord's action any `wctl` word, applied to the window in front. So a
-  word added to `wctl` is bindable the day it exists. The chord-only
-  words, `cycle`, `next`, `prev`, `send` and `overview`, stay. Anything
-  neither list knows still goes to the desktop on `hotkey`, which is the
-  split section 4 draws.
+- **Chords whose action is any `wctl` word. Done, September 2026.**
+  `chord_act` in `servers/intuition/keys.odin` keeps the chord-only words,
+  `close`, `cycle`, `zoom`, `back`, `workspace`, `next`, `prev`, `send`,
+  `overview` and now `mode`, and gives anything else to `run_wctl` on the
+  window in front. So `alt-s snap left` works, and a word added to `wctl`
+  is bindable the day it exists. What `wctl` refuses still goes to the
+  desktop on `hotkey`. The move and size grammar is settled by sign: a
+  number with a sign is relative and a bare one absolute, axis by axis,
+  so the shipped nudges read `move +0 -16`.
 
-  One conflict needs settling first. The chord `move 0 -16` is relative,
-  and `wctl move X Y` is absolute. One grammar serves both if a relative
-  number carries a sign: `move +0 -16`, `size +32 +0`.
+  The four shapes are in the keys file:
 
-  Four more shapes, each a few lines of the keys file:
+      mode resize alt-r 1500      # alt-r enters, 1.5 s of no key leaves
+      [resize] left  size -16 +0  # a key in the mode, no modifier
+      repeat alt-equal  size +32 +0   # again on the keyboard's repeat
+      release alt  menu           # a modifier tapped alone, on release
+      alt-button1  drag move      # a mouse bind; `drag size` too
 
-      mode resize alt-r 1500      # alt-r enters, 1.5 s of nothing leaves
-      [resize] left  size -16 +0  # a line in the mode
-      repeat alt-equal  size +32 +0   # again while held
-      release alt  menu           # on the key's release, so a tap differs
-      alt-button1  drag move      # a mouse bind: alt and a drag moves
+  A key typed in a mode reaches no window: `kbdfs` sends a key's `c`
+  message before its `k`, so the mode takes the characters in the `c`
+  path, `mode_key`. Escape, or a key the mode does not bind, leaves it,
+  and so does the timeout, measured at the next key. The mode lamp, a
+  tenth under the nine workspace lamps, is copper and lit while a mode is
+  on, and the server's `ctl` names it. `alt-button1 drag move` ships. A
+  `reload` now reads the keys file again too, which its header always
+  said it did.
 
-  A mode with a timeout is also a leader key. The current mode shows
-  on the bar, because a mode a person cannot see is a trap.
+  The check is in `verify_workbench`, with a shell in front: the kernel
+  gives the server a `home` and a keys file with three lines more, and a
+  reload reads it. A chord bound to `snap left` snaps the shell and alt-z
+  puts it back; alt-r enters a mode the `ctl` names, two plain `l` keys in
+  it each move the window eight, and Escape leaves it; and alt with a
+  drag in the window's well moves it. `repeat` and `release` are read and
+  wired but not yet driven by a check.
 
 - **A screen lock.** Small. Workbench's first menu and a chord write
   `lock` to `/srv/draw/ctl`. That puts `intuition` in a mode that takes

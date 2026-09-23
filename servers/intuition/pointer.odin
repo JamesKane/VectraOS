@@ -214,6 +214,26 @@ pointer_move :: proc "contextless" (x: int, y: int, b: u8, msec: u64) #no_bounds
 	}
 
 	w := window_at(x, y)
+	// A mouse bind: a button with the modifiers it names drags the window
+	// under the pointer, wherever on it the press lands. Alt and a drag moves.
+	if pressed != 0 && w >= 0 && windows[w].kind == .Normal {
+		held := mods_held()
+		for i in 0 ..< nmouse_binds {
+			mb := &mouse_binds[i]
+			if pressed & mb.button == 0 || mb.mods == 0 || held != mb.mods {
+				continue
+			}
+			win := &windows[w]
+			window_raise(win, w)
+			if mb.size {
+				_, _, cw, ch := frame_client(win)
+				drag = Drag{kind = .Size, win = w, x0 = x, y0 = y, ox = cw, oy = ch}
+			} else {
+				drag = Drag{kind = .Move, win = w, x0 = x, y0 = y, ox = win.x, oy = win.y}
+			}
+			return
+		}
+	}
 	if pressed & 1 != 0 && w >= 0 {
 		win := &windows[w]
 		switch hit_test(win, x - win.x, y - win.y) {

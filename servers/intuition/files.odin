@@ -34,6 +34,12 @@ server_report :: proc "contextless" (out: []u8) -> int {
 	at = put_report(out, at, " of ")
 	at = put_number(out, at, WORKSPACES)
 	at = put_report(out, at, "\n")
+	// The mode the keys are in, when one is on.
+	if mode_on > 0 {
+		at = put_report(out, at, "mode ")
+		at = put_report(out, at, string(modes[mode_on - 1].name[:modes[mode_on - 1].n]))
+		at = put_report(out, at, "\n")
+	}
 	// A window asked to close that has not, past its grace: a line each, so
 	// the desktop can offer a person `Kill`. See `window_close_request`.
 	now := uptime_ms()
@@ -83,8 +89,11 @@ run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_ch
 			return vectra9.EINVAL
 		}
 		rules_load()
+		keys_load()
 		theme_rechrome()
 		theme_bump()
+		lx, ly := lamp_at(WORKSPACES)
+		desk_paint(lx, ly, lx + LAMP, ly + LAMP)
 		return vectra9.Errno(0)
 	case "diag":
 		// The image pool's use, so a person can see how near the cap a
