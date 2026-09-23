@@ -894,8 +894,9 @@ section 18.
   A match is terms that must all hold: `name=` exactly, `title=` a pattern
   where `*` is any run, `app=` the program, `first` no other window of its
   kind up, and `transient` a window with a parent. The program arrives as
-  `app` on `wctl`, which `cmd/window` writes from the command's name; a
-  toolkit program does not write it yet. A line in the old form, a name
+  `app` on `wctl`, which `cmd/window` writes from the command's name and
+  `sys/libmui` from the process's name in its `/proc/N/status`; the
+  window's `ctl` report says it, after the geometry. A line in the old form, a name
   and a number, still reads as `name=` and `workspace`. A rule's own lines
   never apply rules again. The check is in `verify_pointer`: the kernel
   gives the server a `home`, writes a rules file there and a `reload`, and

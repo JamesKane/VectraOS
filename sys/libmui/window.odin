@@ -184,10 +184,46 @@ window_bounds :: proc "contextless" (win: ^Window, mine: int) #no_bounds_check {
 	if win.root.maxw < BIG && win.root.maxh < BIG {
 		_ = libuser.write(int(wctl), transmute([]u8)libuser.cat_into(line[:], "maxsize ", libuser.itoa(a[:], i64(win.root.maxw)), " ", libuser.itoa(b[:], i64(win.root.maxh))))
 	}
+	// The program, for the server's rules: `app` on `wctl`, as `cmd/window`
+	// writes it for the programs it runs.
+	if app := app_name(); app != "" {
+		_ = libuser.write(int(wctl), transmute([]u8)libuser.cat_into(line[:], "app ", app))
+	}
 	if win.parent != nil && win.parent.id != mine && !win.parent.done {
 		_ = libuser.write(int(wctl), transmute([]u8)libuser.cat_into(line[:], "parent ", libuser.itoa(a[:], i64(win.parent.id))))
 	}
 	_ = libuser.close(int(wctl))
+}
+
+/*
+app_name is this program's name, the first word of its `/proc/N/status`,
+which is the process's name, read once. `args` would be emptier: a program
+the kernel starts has none. The server's rules match a window on it.
+*/
+@(private = "file") app_buf: [48]u8
+@(private = "file") app_len: int = -1
+
+app_name :: proc "contextless" () -> string #no_bounds_check {
+	if app_len >= 0 {
+		return string(app_buf[:app_len])
+	}
+	app_len = 0
+	pb: [48]u8
+	nb: [24]u8
+	fd := libuser.open(libuser.cat_into(pb[:], "/proc/", libuser.itoa(nb[:], i64(libuser.getpid())), "/status"), abi.O_RDONLY)
+	if fd < 0 {
+		return ""
+	}
+	buf: [128]u8
+	n := libuser.read(int(fd), buf[:])
+	_ = libuser.close(int(fd))
+	end := 0
+	for end < max(int(n), 0) && buf[end] != ' ' && buf[end] != '\n' && buf[end] != 0 {
+		end += 1
+	}
+	first := string(buf[:end])
+	app_len = copy(app_buf[:], libuser.basename(first))
+	return string(app_buf[:app_len])
 }
 
 // data_sink writes an atlas batch to a window's data stream.

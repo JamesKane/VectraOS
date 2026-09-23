@@ -1882,6 +1882,13 @@ window_report :: proc "contextless" (out: []u8, win: ^Window) -> int #no_bounds_
 	at = put_report(out, at, " ")
 	at = put_number(out, at, cw * 4)
 	at = put_report(out, at, " 32\n")
+	// The program, once it said: a word a rule matches on. After the four
+	// numbers, so a reader of the geometry never sees it.
+	if win.app_n > 0 {
+		at = put_report(out, at, "app ")
+		at = put_report(out, at, string(win.app[:win.app_n]))
+		at = put_report(out, at, "\n")
+	}
 	return at
 }
 

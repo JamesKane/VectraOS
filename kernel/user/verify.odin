@@ -5386,6 +5386,10 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	// teardown below mounts it again to stop the server.
 	if face && check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the server, to ask it to reload") {
 		defer check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "and takes the mount down after")
+		// The toolkit said what program the window is, for the rules.
+		ab: [128]u8
+		an := read_once("/mnt/0/ctl", ab[:])
+		check(r, an > 0 && libodin.contains(string(ab[:an]), "app muidemo"), "the toolkit names its program on wctl, and the window's ctl says app muidemo")
 		copper := fb.pack(s, fb.COPPER)
 		probe_y := gtop + 1
 		_ = make_disk_dir("/usr/glenda")
