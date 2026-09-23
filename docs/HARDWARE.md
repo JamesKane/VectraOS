@@ -274,12 +274,54 @@ Normal cacheable memory is the same index in each, and device memory the
 same. That is a boot-time invariant, checked once, rather than a rule per
 mapping.
 
+**A third kind of mapping, for memory a device reads and the CPU only
+writes.** `segattach` maps two kinds today, `kernel/user/syscall.odin`. A
+register window is device memory, and a framebuffer is normal memory,
+cached write-back. The vendor's tree marks no device on this SoC
+`dma-coherent`, and the display processors are among them. A framebuffer
+store that stays in a cache line may then never reach the glass.
+
+Write-combining is the attribute for that memory. On arm64 it is normal
+non-cacheable, which is already `MAIR_EL1` index 1. Only the `Write_Through`
+flag selects that index, and no caller sets it. The amd64 port programs no
+PAT, so its one uncached type is the strict one. So `segattach` gains a
+third kind, write-combining, and the walkers' attribute registers carry it
+at the same index.
+
+The framebuffer takes it first. The GPU's rings and command buffers take
+it next, because the CPU fills them and never reads them back. A store
+fence before the doorbell is then part of the submit. That is step 1, and
+it is small.
+
 **Coherence is a fact about the port, not a policy.** Whether a device's
 port on the interconnect snoops the CPU's caches is a hardware fact, and
 section 5 records it per device. Where it does, a store is visible to
 the device after a barrier. Where it does not, the program cleans the
 lines it wrote, with a call the library makes beside the doorbell. A
 program never guesses. The node's `dma` file reports which, on read.
+
+**The clean a program makes needs a way in, and it is not there yet.**
+`Walker.clean` in `docs/SMMU.md` cleans page table entries and nothing
+else. A cache maintenance instruction at EL0 traps unless `SCTLR_EL1.UCI`
+is set, and the kernel does not set it. So the kernel sets it on every
+core. A program can then clean a line with `DC CVAC` and clean and
+invalidate one with `DC CIVAC`. EL0 has no plain invalidate, so the second
+serves for a buffer the device wrote.
+
+**A buffer has an owner, and the handover does the maintenance.** The
+owner is one of three: `cpu`, `dev` or `shared`. A handover to `dev`
+cleans the range when the device does not snoop. A handover to `cpu`
+invalidates it before the program reads. `shared` is legal only on a port
+that snoops. The library holds the owner, because a doorbell is a store
+and the kernel is not on the path.
+
+**A missed handover is a report, not a frame that is wrong once an hour.**
+In a checked build, the submit looks at the owner of every buffer the job
+names. A buffer still owned by `cpu`, on a device whose `dma` file says
+`coherent no`, is a line on the program's error output. On amd64 and on
+the `virt` boards every device snoops, so the calls cost nothing there.
+The check runs on `virt` with the library told its device does not snoop.
+This comes before step 5's GPU work, and it is small.
 
 **A process that ends takes its devices with it.** `space_destroy` walks
 the attached list before the tables go, and detaches each walker by
@@ -325,7 +367,8 @@ read.
 The tree lists all twelve redistributor bases, at a stride of
 `0x4_0000` rather than the `0x2_0000` the architecture's minimum would
 give. A GICv3 driver that assumed the minimum would program eleven wrong
-addresses, so the driver reads the list.
+addresses, so the driver reads the list. `gic3.odin` assumes the minimum
+today, and step 0's remainder, section 12, retires it.
 
 The vendor enables only the first SMMU. The PCIe one is present in the
 silicon and switched off in the tree. So the disk and the network cards
@@ -732,7 +775,25 @@ the machine.
 
 **PSCI** starts a core, stops one, and turns the machine off. Limine
 starts the cores today, and PSCI is what a halt needs, which
-`docs/HANDOFF.md` lists as absent.
+`docs/HANDOFF.md` lists as absent. The kernel makes no PSCI call yet. The
+tree's `psci` node names the conduit, `smc` on this board and `hvc` on
+QEMU's `virt`.
+
+Step 1 makes three calls beyond start and stop. `SYSTEM_OFF` is the halt,
+and it is also what the critical trip below calls. `SYSTEM_RESET` is a
+reboot. `CPU_SUSPEND` is the one that saves power.
+
+An idle core runs `wfi` today, which stops its clock and keeps it powered.
+Twelve cores that do that are twelve cores that draw current for nothing.
+The tree's `idle-states` node names three states: a core sleep per tier
+and a cluster sleep. Each has a suspend parameter, an exit latency and a
+minimum residency. The idle loop picks the deepest state whose residency
+fits before the core's next deadline, and passes its parameter.
+
+Every one of the three is marked `local-timer-stop`. A core in one does not
+wake on its own timer, so it enters one only when another wake is sure to
+reach it. The first cut enters a state only when the core has no deadline
+armed, and keeps `wfi` otherwise.
 
 **SCMI** is how the OS asks the power management core for a clock rate,
 a performance level or a temperature, over the mailbox. The kernel
@@ -744,6 +805,48 @@ ring 3 driver writes there to clock its device.
 A second agent, over an SMC, is the device power domains, and the kernel
 publishes those in the same directory as `power` files. A driver that
 cannot turn its device on serves a directory that says so.
+
+**An absent reading reads `unknown`, never 0.** A sensor the agent cannot
+read, or a domain that reports nothing, answers the word. A program that
+cannot tell cold from unmeasured will one day cook something.
+
+**Heat is a model first, on QEMU.** `/dev/scmi` as written above is proven
+on the board only, and that breaks section 12's own rule. So the first
+`/dev/scmi` is a model on `virt`, behind the same files. It is a program,
+and a test binds it over the name, the way this tree binds any fake. Its
+zones warm in proportion to the busy time `/dev/sysstat` reports, and cool
+towards an ambient value.
+
+Each zone of the model has trip points with a hysteresis, as the vendor's
+tree gives them. A performance cap written to a domain's `ctl` slows the
+warming, so a cap feeds back into the reading. The real agent later
+replaces the readings and nothing above them changes.
+
+**A trip is a line on a stream.** `/dev/scmi/events` parks a reader until
+a zone crosses a trip. It answers one line per crossing: the zone, the
+trip's kind, `up` or `down`, and the reading in millidegrees. The model
+and the real agent both serve it.
+
+**The policy is a program, `powerd`.** It reads `events` in a loop and
+does nothing between two lines. On a passive trip upward it lowers the
+zone's domain one performance level. It then moves busy background work
+to the efficiency cores and lowers its priority, through `/proc/N/ctl`.
+On the trip downward it gives both back.
+
+`/proc/N/ctl` takes neither word today. It takes `kill`, `stop`, `start`,
+the two user words and the debugger's. The scheduler already filters a
+thread by a set of classes, `pick_cpu`, and nothing in ring 3 sets that
+set. So `/proc/N/ctl` gains `class` with a set of classes, and `pri` with
+a ceiling. What `powerd` may touch is what its namespace holds. A machine
+that does not want it binds no `/proc` into it.
+
+**The kernel keeps only the critical trip.** By the time a program is
+scheduled, a part over its critical number is out of its specification.
+So the kernel reads the sensors itself at the tree's polling interval,
+and calls `SYSTEM_OFF` above that number. The vendor's tree names ten
+zones and passive trips only, at 70 to 95 degrees, and no critical one.
+The critical number is therefore a constant this port chooses, above the
+highest passive trip, in one place.
 
 ## 11. The development loop, which is the point
 
@@ -937,25 +1040,90 @@ is their design, written before the code. It has the tables, the walker
 list on a space, the `dma` file's words, the fault stream, and the order of
 commits.
 
+**Still to do: the platform from the tree.** The first bullet of this step
+is half done. `#t` publishes the tree, and the kernel still reads none of
+its own bases from it. So the arm64 port is a `virt`-board port, not an
+arm64 port. Each base is a constant: the GIC's in `gic.odin` and
+`gic3.odin`, the UART's in `early.odin`, and the ECAM window's in
+`pci.odin`.
+
+Two of the constants are wrong for the board in a way that fails quietly.
+`gic3.odin` steps between redistributors at `0x2_0000` in one region,
+mapped for eight. The board has twelve regions at `0x4_0000`, section 5.
+And the PL011's init writes a baud divisor for QEMU's 24 MHz clock. On the
+board that garbles the one console a first boot has.
+
+- **Every base from the tree.** The GIC's distributor and redistributor
+  regions, the UART, and each root port's ECAM window become reads of
+  `reg`. The early window runs before the kernel walks the tree. So it
+  keeps one base per `--board` target, and the tree then names the
+  console the kernel keeps.
+- **The redistributors by the list.** The kernel maps each region the
+  tree names. It steps in each by the frame size `GICR_TYPER` reports, and
+  stops at the frame whose `Last` bit is set. The walk already stops at
+  `Last`, and the stride and the region are what change.
+- **The console by `/chosen/stdout-path`.** The tree names the UART the
+  firmware writes to, and that one is the console.
+- **A UART the firmware enabled is left alone.** If `UARTEN` is set at
+  entry, the kernel keeps the divisor and the line control it finds. It
+  programs a divisor only for a UART that is off.
+
+Proves, in three checks, on both GIC lines. The self-test reads each base
+the kernel uses back from `/dev/tree` and compares. No platform base is a
+constant in `kernel/arch/arm64` except the early window's. The UEFI
+firmware QEMU boots enables the PL011, and its divisor after the kernel's
+init is the one it had at entry.
+
+The exit is that the port stops being `virt`-only. The size is small to
+medium, about 400 lines. The riscv64 port's PLIC and ECAM take the same
+change after it.
+
 ### Step 1: the board boots
 
-`build.odin`, `kernel/arch/arm64`, `boot/`, about 800 lines.
+`build.odin`, `kernel/arch/arm64`, `boot/`, about 800 lines, and about
+1,560 more for the four small parts on `virt` below.
 
 - **A `--board=orangepi6` target** that stages an ESP for a stick, with
   Limine's aarch64 binary, and compiles the vendor's tree for the board
   into the kernel.
 - **The console** is the PL011 at the base the tree names, and the early
-  window moves to it.
-- **The firmware's framebuffer**, through Limine, as on `virt`.
+  window moves to it. Step 0's remainder has already made the kernel
+  leave the firmware's divisor alone.
+- **The firmware's framebuffer**, through Limine, as on `virt`, mapped
+  write-combining, section 4.
 - **The cores**, all twelve, through the tree's `cpus` node and PSCI, and
   the two tiers from MIDR.
 - **SCMI**, the mailbox agent and the SMC agent, as `/dev/scmi`, with a
   read of one temperature as the proof it works.
 
+Four more parts are small, and each is checkable on `virt` before the
+board arrives. They keep this step true to the rule at the top of this
+section.
+
+- **Write-combining**, the third kind of mapping in section 4, for the
+  framebuffer first. About 60 lines across the two ports' page tables and
+  `segattach`, and PAT setup on amd64.
+- **Cache maintenance a program can call**, section 4. `SCTLR_EL1.UCI` on
+  every core, and the owner and the handover in a library. About 150
+  lines. It has to land before step 5.
+- **PSCI beyond start and stop**, section 10. `SYSTEM_OFF` as the halt,
+  `SYSTEM_RESET`, and `CPU_SUSPEND` with the tree's idle states. About
+  150 lines.
+- **Heat as a model, and `powerd`**, section 10. The model behind
+  `/dev/scmi`'s files, `events`, the two `/proc/N/ctl` words, `powerd`,
+  and the kernel's critical trip. Medium, about 1,200 lines.
+
 Proves, in three checks, on the serial line. `boot complete` with the
 suite green on twelve cores. `ps` on the serial shell shows a thread per
 class, and `cat /dev/scmi/sensor/0` answers a temperature. The chassis
 is on the monitor.
+
+And in four more, on `virt`. `halt` ends the QEMU process. A pixel
+written through a write-combining framebuffer mapping reads back from the
+glass. A buffer handed to a device that does not snoop with no
+maintenance, in a checked build, is a report line. A load drives a model
+zone over its passive trip. `powerd` caps the domain and moves the load to
+the efficiency cores, and the zone falls back under its trip.
 
 ### Step 2: a disk, a keyboard, and the desktop on the board
 
@@ -1088,11 +1256,20 @@ each its own document in whatever order a reason arrives.
   display driver has a working system to be tested in.
 - **The vendor's tree is compiled in, not trusted from the firmware.** A
   setup menu is not a build input.
+- **Every platform base comes from the tree, and a UART the firmware
+  enabled keeps its divisor.** The reversal is a board whose tree is
+  wrong, and then the fix is the tree this repository owns.
+- **The policy on heat is a program, and the kernel keeps only the
+  critical trip.** `powerd` can stop, restart or change, and the machine
+  still powers off before it burns. The reversal is a part that overheats
+  faster than a program is scheduled below the critical number.
 
 ## 14. Sizes and order of dependence
 
-    step 0  the model      tree 800, gicv3 700, smmu 700, blkfs 900      nothing before it
-    step 1  the board      build 200, uart 100, psci 200, scmi 400       step 0
+    step 0  the model      tree 800, gicv3 700, smmu 700, blkfs 900,     nothing before it
+                           platform from the tree 400
+    step 1  the board      build 200, uart 100, psci 350, scmi 400,      step 0
+                           wc 60, cache 150, heat model and powerd 1,200
     step 2  disk, input    nvmefs 1,500, usbfs 3,500, hid 600            step 1
     step 3  network        etherfs 1,200, netfs 3,000, 9pserve 800       step 2
     step 4  display        dpufs 2,500                                   step 1

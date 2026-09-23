@@ -421,6 +421,8 @@ A program with no `.vxd` reads as bytes, which is what it is.
 **Where it lives.** `/lib/debug/<name>.vxd` on the disk, staged by the
 build with the tools. `/bin` is served from the image and stays small.
 The engine opens `text`, takes the program's name, and looks there.
+A name alone can find a file from an earlier build, so the header carries
+a hash of the image it describes. Step 4 in section 10 has the plan.
 
 **The kernel gets the same.** `build.odin` makes `vectra.vxd`, and embeds
 the `procs` table alone in the kernel. The panic screen resolves its
@@ -448,7 +450,8 @@ evaluator, and one io proc per target parked on `waitstop`.
     /mnt/dbg/N/frames/K/regs
                             the registers as frame K saw them
     /mnt/dbg/N/breaks       the breakpoints, one per line, with hit counts
-    /mnt/dbg/N/eval         write an expression, read its value
+    /mnt/dbg/N/eval         write an expression, read its value on the
+                            same fid
     /mnt/dbg/N/dis          the disassembly around pc, from the .vxd
     /mnt/dbg/N/mem          the process's memory, through /proc
     /mnt/dbg/N/procs        the other procs of the same program
@@ -689,6 +692,18 @@ one, so two programs with their own thread-local storage do not read each
 other's. `tests/tls.rc` runs two C programs at once, each checking its
 thread-locals held across thirty sleeps.
 
+**Not yet: two flags for the debugger.** `compile_c` passes `-gdwarf-4`
+and no unwind flag, so clang writes its CFI to `.eh_frame`, and
+`link_user.ld` discards that section. With
+`-fno-asynchronous-unwind-tables` beside `-g`, clang writes the same CFI
+to `.debug_frame` instead. That section is not allocated, never reaches
+the `.vx`, and is what step 4's `unwind` rows read.
+
+The second flag is `-fdebug-prefix-map`, which maps the host's checkout to
+one fixed root. A line row then names `/sys/src/...` and not a path on one
+person's disk, so `/lib/src` finds the file on any machine. Both flags are
+two lines in `compile_c`, and they land with step 4's `unwind` rows.
+
 ### Step 1: the clock, the store, and sound
 
 `kernel/devfs`, `servers/intuition`, `kernel/drivers/sound` or a ring 3
@@ -848,6 +863,31 @@ Frame bases are `rsp` or `CFA-32` on amd64. With no CFI the engine will
 need the frame chain to place the second, which is section 7's problem,
 named here so it is not forgotten.
 
+**Not yet, and each small.** Three changes to the file and its converter,
+each ahead of the step 5 work that reads it.
+
+*A `.vxd` names its image.* The header holds a magic, a version and an
+architecture, and nothing ties it to one build. `servers/dbgfs` finds the
+file by the program's name alone. A `.vxd` left over from an earlier build
+then answers wrong lines with no error. `elf_to_debug` writes a 64-bit
+FNV-1a hash of the finished `.vx` into the header, and the version goes to
+2. The reader refuses version 1 by name. FNV is enough because the threat
+is a stale file and not an attacker. About 60 lines.
+
+*`unwind` rows from C.* Step 0's `-fno-asynchronous-unwind-tables` puts
+clang's CFI in `.debug_frame`, and the converter reads it into the table
+section 6 draws. Odin writes no `.debug_frame` at this version, so an Odin
+frame stays on the frame chain. About 400 lines, most of them the CFI
+reader.
+
+*A successor column in `dis`.* Step 5's software step needs every place
+an instruction can go, and the machine has no decoder to find them.
+`llvm-objdump` already names a direct branch's target in its text.
+`elf_to_debug` keeps it in each `dis` row with a flow word: `fall`,
+`branch`, `call`, `indirect` or `ret`. An `indirect` row also names the
+register that holds the target. About 150 lines, most of it the three
+architectures' mnemonics, landing with the step 5 work that plants on it.
+
 ### Step 5: `dbgfs` and `db`
 
 `servers/dbgfs`, `cmd/db`, `tests/debuggee`. About 4,700 lines. Needs
@@ -877,6 +917,42 @@ planted again before the program goes on. And a breakpoint is the size
 of the instruction it replaces: riscv64 code has two-byte instructions,
 and a four-byte `ebreak` over one spills into the next, so the engine
 plants `c.ebreak` there.
+
+Not yet, in the order they should land. The first three are small, about
+100 lines each. The fourth is medium.
+
+*A stale debug file is no debug file.* At the exec's stop, the engine
+hashes `/proc/N/text` and compares it with the hash in the `.vxd` header,
+from step 4. A mismatch is the case the control already proves, a target
+with no debug file. `status` says why by name, `debug file is stale:
+debuggee.vxd`, so a person rebuilds and does not trust a wrong line.
+
+*`eval` is a conversation per fid.* Today a target holds one answer,
+`eval_out`, and every reader of `eval` sees the last write from anyone.
+The window, `db` and the ghost then read each other's answers. The answer
+moves to the fid. A write and a read on one open descriptor are one
+private question and answer, as with `/net/cs`. Section 7's script opens
+`eval` once, with `<>`, for the write and the read.
+
+*A stop counter, and `if=N`.* Each stop of a target adds one to its `seq`,
+and `status` reports it. A word written to `ctl` may carry `if=N`. When
+`seq` is no longer N, the engine refuses the word as stale and does
+nothing. An agent that planned a step from an old view then cannot step
+after a person pressed `cont`. This is `docs/GHOST.md` section 5's
+`if_seq`, the ghost's rule for every file it writes, applied to one
+target.
+
+*A software step that follows branches.* The kernel's `step` answers
+EOPNOTSUPP on arm64 and riscv64. The engine steps there with a breakpoint
+on the next row of `dis`, which is wrong when the instruction branches.
+The fix reads step 4's successor column and plants a temporary breakpoint
+at every place the instruction can go. That is the next instruction, a
+direct target, and for `indirect` or `ret` the address in the named
+register, read from the stopped frame.
+
+The engine runs to whichever breakpoint comes first and lifts them all.
+The machine still has no decoder. About 400 lines, and the control is a
+step across a taken branch.
 
 ### Step 6: the window
 
@@ -910,6 +986,23 @@ for a Return. It holds the descriptor now.
 Not yet: a watch list, memory at an address, the procs, the program's
 output, and `finish`, which waits on the frame walk step 5 waits on.
 Source comes from `/lib/src`, which stages the debuggee's alone.
+
+The memory panel and the layout, planned here and small, about 600
+lines. They land after the watch list.
+
+- *One page a repaint.* The panel reads the 4 KiB page that holds its
+  address in one read of `mem`, and formats every row from that buffer.
+  A read per word shown is what makes other debuggers slow at this.
+- *Pointers followed in a margin.* In the pointer format, each word that
+  lands in a mapped segment shows the first bytes it points at, in a
+  margin beside the row.
+- *The layout is a file.* The panels are a tree of splits, each two
+  rectangles and a fraction a person drags. The tree is saved to
+  `$home/lib/dbg.layout`, one line per node, and read at open.
+- *A latency budget, as an exit number.* The window measures its first
+  frame and one step's repaint against `/dev/time`, and exits nonzero
+  over budget. The self-test then fails on a slow window, as it fails on
+  a wrong one. The budget is one frame, 16 ms, for each.
 
 ### Step 7: `sys/libposix`
 
@@ -953,6 +1046,58 @@ that half unlocks. And the socket's server side -- `bind`, `listen`,
 boundary is proven; the large C++ programs that ride it are the next
 increment.
 
+**Not yet: the gaps `clang` and `lld` will find.** Each is small, and each
+lands before the two measurements.
+
+- *A descriptor table of the library's own.* `fcntl` answers zero for
+  every command but `F_DUPFD`, so close-on-exec does nothing. The library
+  keeps its flags per descriptor and carries the table across `exec` in a
+  file under `/env`. Before the exec it parks each close-on-exec
+  descriptor on a high number. After a failed exec it puts each one back,
+  and `execve` returns -1 with `errno` set.
+- *`execve` replaces the environment.* Today it writes `envp` into the
+  shared `/env` beside what is there. It forks a fresh group with
+  `RFCENVG` first, so the new program sees `envp` and nothing else.
+- *`waitpid` honors its flags.* The kernel's `await` already takes a pid,
+  so other children's exits stay in the kernel for a later call. The
+  library throws `flags` away, so `WNOHANG` blocks. `WNOHANG` asks `/proc`
+  whether the child is still there, and returns 0 when it is.
+- *Real signal numbers from notes.* `waitpid` reports any note that ended
+  a child as status 1, and `signal.c`'s table sends every `sys:` note to
+  `SIGSEGV`. One table maps both ways: `sys: trap:` notes to `SIGSEGV`,
+  `SIGILL` or `SIGFPE` by their text, and a closed pipe to `SIGPIPE`.
+- *`O_APPEND` on every write.* `open` seeks to the end once. The table
+  records the flag, and `write` seeks to the end before each write, as
+  APE did.
+- *`sigaction` and `sigprocmask`.* A handler table with flags, and a
+  mask that queues a blocked note and delivers the queue when unblocked.
+
+**Not yet: a libposix that tests on the host.** `docs/TESTING.md` puts
+every proof on the machine, and that stays. A POSIX library has one more
+class of bug, the logic between a flag and a file, and a host catches
+that faster.
+
+Each entry point is written under a `px_` name. One file,
+built for the target alone, exports each `px_` name under its POSIX name.
+The host then links the library beside its own libc with no collision. A
+host test runs it over a mock kernel that logs every call, under ASan and
+UBSan. Section 6's host test of the converter is the precedent. Medium,
+about 600 lines, and it lands before mlibc, so the rename is done once.
+
+**Not yet: where imported code came from.** mlibc is the first large tree
+this repository imports, and `libc++` follows. Each imported directory
+carries a `PROVENANCE` file with the upstream URL and commit, and a
+`MODIFICATIONS.md` that lists each local change and why. An update is
+then a diff against a named commit. The two files come first, before the
+import itself.
+
+**Not yet: a scripting runtime, the first real exercise.** Lua, and then
+QuickJS, built on this library. Each is a real C program of useful size
+that expects a POSIX, and each is smaller than `clang`. With them a person
+writes and runs programs on the machine before the compiler runs there.
+Lua lands first, as soon as the descriptor table and `waitpid` are in.
+Medium each.
+
 ### Step 8: self-hosting
 
 The `vectra` target in the Odin compiler, `build.odin` on the machine.
@@ -960,6 +1105,25 @@ About 1,800 lines. Needs step 7, and `docs/HARDWARE.md` step 3 for a
 tree that fits.
 
 Boot line: the machine builds a kernel and boots it.
+
+Not yet, and none of it started. Two named deliverables come before the
+boot line.
+
+- *`git` on the machine.* 9front's `git` is a native program of about
+  8,500 lines with no `libgit2` under it. It talks to a real remote over
+  HTTPS, and here that is `servers/webfs` or `sys/libtls`, which exist.
+  With it the machine clones and commits its own tree. It lands once step
+  7's library holds, and before the compiler runs here. Medium.
+- *An ABI note in every image.* Each program carries a
+  `.note.vectra.abi-tag` with the ABI version `sys/abi/abi.odin` states.
+  `elf_to_image` copies the version into the `VECTRA02` header, and a
+  `.vx` built on the machine gets it the same way. The loader refuses an
+  image built against other numbers, with a reason that names both
+  versions. Today a stale image calls the
+  wrong numbers and fails in a way nobody can read. A fleet tree already
+  mixes images, and a compiler on the machine makes stale ones common.
+  About 60 lines in the loader and the linker script, landing with `clang`
+  on the machine.
 
 ## 11. Decisions taken here, and what would reverse them
 
@@ -999,6 +1163,26 @@ Boot line: the machine builds a kernel and boots it.
 - **mlibc, not musl and not a libc of this tree's.** The reversal is
   mlibc unmaintained, in which case the `sysdeps` directory is the
   portable part and moves.
+- **A debug file names its image by a hash, and a mismatch is no debug
+  file.** A wrong line is worse than no line. The reversal is a hash that
+  costs too much at attach. Then the hash moves into the `VECTRA02`
+  header, and the engine reads it without a pass over the text.
+- **A step without hardware help is breakpoints at every successor, and
+  the build names the successors.** The machine keeps no decoder. The
+  reversal is an architecture where the build cannot know a successor,
+  and none of the three is one.
+- **A question and its answer share a fid.** `eval` answers the
+  descriptor that asked, as `/net/cs` does, so two clients never read
+  each other's answers.
+- **A word written against an old view is refused.** `if=N` is the
+  ghost's `if_seq`. The reversal is none: a client that does not care
+  leaves the word off.
+- **libposix is tested on the host too, and the machine still decides.**
+  A departure from `docs/TESTING.md`, for one library whose bugs are
+  logic and not hardware. The reversal is a host test that passes and a
+  boot test that fails for the same cause, which says the mock is wrong.
+- **Imported code says where it came from.** A `PROVENANCE` file and a
+  `MODIFICATIONS.md` per imported directory. Nothing reverses it.
 - **Sound before the GPU.** A sound device is a page of driver on a bus
   the tree already has. The GPU is `docs/HARDWARE.md`'s fifth step.
 

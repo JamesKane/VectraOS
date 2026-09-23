@@ -263,6 +263,8 @@ per directory:
 | `docs/DEVTOOLS.md` | The plan for development tools: C and C++ on the build the tree has, a platform library over files, `/proc` whole, debug information as a flat file, a debugger that is a file server, POSIX as mlibc over the calls, and a compiler on the machine | Starting any of its nine steps, adding a language, a library a C program links, or a file the debugger reads |
 | `docs/FLEET.md` | The plan for several machines, Plan 9's way: `/net` as files, 9P served as well as dialled, users as key pairs with `factotum` and a Noise handshake, roles as init scripts, root over the network, one tree for three architectures, `cpu`, and a queue that is a directory | Starting any of its six steps, adding a network service, touching who may do what to whom, or adding a fast path that must keep a file fallback |
 | `docs/GHOST.md` | The plan for the agent: models as file servers, local and cloud behind one directory, a ghost with seven tools and a namespace for a sandbox, an application contract of three files that `libmui` serves free, the plumber, and MCP both ways | Starting any of its seven steps, making an application scriptable, adding a tool, or touching what the ghost may reach |
+| `docs/EDIT.md` | The plan for the editor the plumber, the ghost's `edit` class and the debugger wait for: sam's command language on a rope that never changes in place, acme's files as its tree under the application contract, and tree-sitter and remote language servers in order | Starting the editor, or changing what `/mnt/app/editor` serves |
+| `docs/PKG.md` | The plan for packages and updates: files named by hash, signed releases, install as a bind so rollback is an unbind, and `pkg verify` first | Updating a machine without a host checkout, or staging a release |
 | `docs/WEB.md` | The plan for the world beyond the fleet, on the federated protocols people already use: `webfs` and TLS, a store of every body by hash and every link both ways, one message shape for mail, posts, rooms and feeds, a union that is a timeline, `mothra` the reader, mail as the sealed messenger Delta Chat's way, ActivityPub and the AT Protocol, Matrix, and a site from a directory | Starting any of its seven steps, adding a network, touching a key or a token, or wanting the font past 128 glyphs |
 | `docs/TESTING.md` | The self-test discipline and the negative controls | Adding a self-test, or trusting one |
 | `docs/STYLE.md` | ASD-STE100: the two modes, the seven checked rules, the project dictionary | Writing a comment or a document, or fixing what `build.odin -- lint` names |
@@ -1107,6 +1109,24 @@ after it. Sixty plain boots on four cores and three arm64 boots followed,
 all clean, where the sweep before it lost several in sixty.
 
 ### Smaller things worth doing when convenient
+
+- **Fixes a review of plan-neo found, September 2026**, each written into
+  its document as a plan. They are small, and some bite before the step they
+  sit in:
+  - The mouse queue. The server keeps one line per window, so a quick click
+    reaches a slow client as the release alone (`docs/WORKBENCH.md` step 5).
+  - The arm64 platform bases from the tree. The redistributor stride
+    `0x2_0000` and the PL011 divisor are wrong on the Sky1 (`docs/HARDWARE.md`
+    step 0).
+  - Cache maintenance a program can call, and write-combining for the
+    framebuffer (`docs/HARDWARE.md` section 4).
+  - `eval` answered per fid in `dbgfs`, and a `.vxd` tied to the image it
+    describes (`docs/DEVTOOLS.md` step 5).
+  - A bare ENOEXEC that names the program, the pages and the budget
+    (`docs/USER.md`).
+  - The application contract's refinements, which must land before GHOST
+    step 2 builds it: per-fid replies, `seq` and `if_seq`, the event ring,
+    `state`, optional arguments and jobs (`docs/GHOST.md` section 5).
 
 - Make `check_base_revision()` a hard stop rather than a warning.
 - `servers/kbdfs` has its own copy of the scancode translation and it answers

@@ -203,13 +203,20 @@ counted across the cores rather than on the core the checker started on.
   console. (QEMU drives the device from its own window, so the boot self-test
   proves the translation with synthetic events rather than a real keypress.)
 - **The 16550 on riscv64** is reached through the firmware and not mapped.
-- **The device tree** is parsed for one property. The GIC, the PLIC and
-  the UART addresses are the `virt` board's, assumed as the I/O APIC's is
-  on amd64.
+- **The device tree** is published as `/dev/tree`, and the kernel reads
+  none of its own bases from it. The GIC, the PLIC and the UART addresses
+  are the `virt` board's, assumed as the I/O APIC's is on amd64. The
+  GICv3 driver steps between redistributors at `virt`'s `0x2_0000`, and
+  the PL011's init writes a divisor for QEMU's 24 MHz clock. Both are
+  wrong on the OrangePi. `docs/HARDWARE.md` section 12, step 0's
+  remainder, is the plan that retires all of this bullet and the next.
 - **The PCI ECAM base.** `0x4010000000` on arm64 and `0x30000000` on
   riscv64, the `virt` boards' own, assumed the same way. The PC reaches
   configuration space through ports `0xCF8`/`0xCFC` and needs no base.
   See `docs/DISK.md`.
+- **No PSCI call, and no halt.** Limine starts the cores, an idle core
+  runs `wfi`, and nothing turns the machine off. `docs/HARDWARE.md`
+  section 10 plans `SYSTEM_OFF`, `SYSTEM_RESET` and `CPU_SUSPEND`.
 - **Big.LITTLE.** `cpu_class` answers `.Performance` for every core. The
   scheduler already knows the three tiers, and the MIDR table that would
   fill them in is not written.

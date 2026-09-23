@@ -205,6 +205,10 @@ bar starts one that ends in a `move`. A press anywhere in a window
 raises it and gives it the focus, which is the click-to-front rule
 Workbench 2 had and `rio` has.
 
+A hangup gives a program no chance to save. Step 5 plans the close gadget
+as a request the program answers, with today's hangup kept as `Kill`
+behind a grace period.
+
 **Three kinds of window a desktop needs**, each a `wctl` word at open:
 
     backdrop   behind every other window, never raised, never framed, the
@@ -755,8 +759,10 @@ took a `close` word on `wctl`, alt-w's own hangup, and the mouse thread
 asks for it: the key read answers nothing, and `window_run` takes it from
 there. **The server keeps one mouse line per window**, the latest, so a
 press and release a tick apart reach a slow client as the release alone;
-the suite's injected clicks are held forty milliseconds each, which a
-person's are too. And the notice service is posted and served before the
+the suite's injected clicks are held, `CLICK_HOLD` in
+`kernel/user/verify.odin`, 120 ticks before the release and 120 after,
+which a person's are too. Step 5's mouse queue is the fix, and the hold
+goes with it. And the notice service is posted and served before the
 first window opens, mounted at `/mnt/wb` by the desktop itself through an
 io proc (`libthread.iomount`, since the server it waits on is a thread of
 the same proc) and by `init` for the console's shell.
@@ -772,6 +778,162 @@ Each its own document, in whatever order a reason arrives.
 - **A font past 128 glyphs**, deferred in `docs/HANDOFF.md` with its
   reason. The theme names a font file so that the day has somewhere to
   land.
+
+**Planned from a review, September 2026. None of what follows is built.**
+A review of a sibling desktop, `plan-neo`, found the gaps below in this
+one. Each item names its size and where it lands. The first is the
+priority, because the suite works around it today. The compositor's half
+of the review, a frame clock and a `stats` file, is `docs/DRAW.md`
+section 18.
+
+- **A mouse queue, so no click is lost.** Small to medium. Today a window
+  holds one mouse line, the latest. `mouse_deliver` in
+  `servers/intuition/files.odin` overwrites `mx`, `my`, `mb` and `mmsec`
+  and bumps `mseq`, and `mouse_line` answers only when `mseq` is past
+  `mread`. `pointer_move` in `pointer.odin` decides which window a line
+  goes to.
+
+  The plan is a ring per window, sixteen lines deep, with a sequence
+  number on each entry. `mseq` and `mread` become the ring's head and
+  tail. When the ring is full, the rule is `plan-neo`'s
+  (`docs/desktop-protocol.md`, the delivery rules). Plain motion is
+  coalesced: a new motion replaces the newest unread motion, and only
+  when no button change is queued after it. A line that changes the
+  buttons is never dropped. Neither is the `close` line below, or a
+  resize line (`rio`'s `r`) when the server grows one.
+
+  A ring full of lines that must not drop belongs to a client that no
+  longer reads. Sixteen lines is more clicks than a person makes between
+  two reads of a live client. The grace period of the close request below
+  is the answer to a client that no longer reads. Keys are not
+  in this file, because they queue in `cons` already.
+
+  The line stays `rio`'s `m x y b msec`, so no reader changes. Sixteen
+  lines of twenty-four bytes for each of thirty-two windows is twelve
+  kilobytes, three pages of the server's 112-page bss budget. The check
+  injects a press and a release a tick apart onto a window whose reader
+  is parked, and reads both. Then `CLICK_HOLD` in `kernel/user/verify.odin`
+  goes, and the step 4 note about a menu choice the suite cannot drive
+  goes with it.
+
+- **Close as a request.** Small. The close gadget and the `close` chord
+  hang up the session today, `window_hangup` in `pointer.odin`, and a
+  program cannot save. The plan is a `close` line on the window's
+  `mouse` queue, which the program answers by ending itself with the
+  `wctl close` it writes now. `sys/libmui` gains `on_close`. A program
+  that sets it saves and then ends, and one that does not ends at once.
+
+  The grace period is a theme metric, `closegrace`, five seconds by
+  default. A program still up after it is offered to a person as `Kill`
+  on Workbench's `Window` menu. `Kill` is today's hangup, a `kill N` line to
+  `/srv/draw/ctl`. A client that never reads its `mouse` never hears the
+  request, so the grace period is its whole answer. `apps/terminal`
+  learns the line and ends at once, because it has nothing to save.
+
+- **Theme reload for every `libmui` program.** Small to medium. Today
+  only `apps/workbench` reads the theme files (`apps/workbench/theme.odin`),
+  and only it and `intuition` follow a change. Every other program on the
+  toolkit wears the chassis, `sys/libmui`'s `default_theme`, whatever the
+  person chose.
+
+  The plan moves the reading into `sys/libmui`, so a window opens in the
+  person's theme. `intuition` serves `/srv/draw/theme`, a generation
+  number that a `reload` bumps. A read parks until the number changes.
+  The window loop gets a fourth channel, from an io proc that reads that
+  file. On a change it reads the two files again, calls `parse_theme`,
+  lays the tree out again with `window_relayout`, and repaints.
+
+  No program state is lost, because the tree holds no look. A theme
+  change takes the same path as a resize. A program a `cpu` runs reads
+  the file under `$wsys`, so a remote window follows the terminal's
+  theme. The check writes a theme that names `face` as `copper` and
+  writes `reload`. It then sees the pixel under a button change in a
+  program that is not Workbench.
+
+- **More `wctl` words.** Small each.
+
+      snap left|right|full    half or all of the screen below the bar
+      snap grid C R I         cell I of a grid C wide and R high
+      minsize W H             the least the sizing corner and `size` give
+      maxsize W H             the most
+      parent N                a transient of window N
+
+  A snap keeps the window's own geometry the way `zoom` does, so `zoom`
+  after a snap puts it back. `sys/libmui` writes `minsize` and `maxsize`
+  from its root group's least and most, which every MUI object already
+  answers. So a person cannot size a toolkit window past its layout. A
+  transient stays above its parent. It is raised, hidden and sent to a
+  workspace with it, and a `Requester` names the window that opened it.
+
+- **Rules that do more than place.** Small once the `wctl` words exist.
+  The `workspaces` file becomes a rules file. A line is a match and a
+  list of `wctl` words, separated by commas, applied when a window is
+  named:
+
+      # rules: a match, and the wctl words it applies
+      name=terminal       workspace 2
+      title=Debugger*     workspace 3, snap right
+      app=view first      snap grid 2 1 0
+      transient           raise
+
+  A match is on the name, a title pattern, the program, and whether the
+  window is the first of its kind or a transient. The program is new to
+  the server. It arrives as an `app` word on `wctl`, which `cmd/window`
+  and `sys/libmui` write from the command's name. Section 8's decision on
+  rules names this reversal, and a rule is now something that wants it.
+  A line in today's form, a name and a number, still reads as
+  `name=` and `workspace`.
+
+- **Chords whose action is any `wctl` word.** Medium. Today `chord_act`
+  in `servers/intuition/keys.odin` knows its own ten words, and
+  `run_wctl` in `files.odin` knows a different list. The plan makes a
+  chord's action any `wctl` word, applied to the window in front. So a
+  word added to `wctl` is bindable the day it exists. The chord-only
+  words, `cycle`, `next`, `prev`, `send` and `overview`, stay. Anything
+  neither list knows still goes to the desktop on `hotkey`, which is the
+  split section 4 draws.
+
+  One conflict needs settling first. The chord `move 0 -16` is relative,
+  and `wctl move X Y` is absolute. One grammar serves both if a relative
+  number carries a sign: `move +0 -16`, `size +32 +0`.
+
+  Four more shapes, each a few lines of the keys file:
+
+      mode resize alt-r 1500      # alt-r enters, 1.5 s of nothing leaves
+      [resize] left  size -16 +0  # a line in the mode
+      repeat alt-equal  size +32 +0   # again while held
+      release alt  menu           # on the key's release, so a tap differs
+      alt-button1  drag move      # a mouse bind: alt and a drag moves
+
+  A mode with a timeout is also a leader key. The current mode shows
+  on the bar, because a mode a person cannot see is a trap.
+
+- **A screen lock.** Small. Workbench's first menu and a chord write
+  `lock` to `/srv/draw/ctl`. That puts `intuition` in a mode that takes
+  the keyboard and the mouse and paints a lock over the whole glass. No
+  window gets a key or a line, and no chord acts. `factotum` derives a
+  key from the typed passphrase, as it does for `cmd/auth`. The lock
+  compares its public half with the user's line in `/adm/keys`.
+  So the server holds no key and links no crypto.
+
+  A match leaves the mode and repaints the glass from the stores. The
+  check is that a key typed while locked reaches no window.
+
+- **Theme scopes, and a way to ask.** A role may carry a scope,
+  `view/text` or `button.face`, and the more specific line wins. A
+  `style_explain` query says which file and line set a value, and
+  which lines it beat. The query alone is small. It is worth having
+  before any scope exists, because a merge of two files is already a
+  cascade a person may not follow.
+
+- **Frames and backgrounds by name.** The theme file names a frame or a
+  ground once, `frame thin` or `ground grid`, and a role names one. A
+  new frame style is then a theme edit and not code.
+
+- **A preferences window generated from the theme's keys.** One `libmui`
+  program walks the roles the parser knows and shows each with its
+  value and the file that set it. It stays correct when a role is
+  added, which is how MUI's own preferences worked.
 
 ## 8. Decisions taken here, and what would reverse them
 
@@ -803,7 +965,15 @@ Each its own document, in whatever order a reason arrives.
 - **A rule is on a window's name.** The server knows nothing else about
   a program, and the name is what a person reads on the bar. A rule on
   a program's path would need the server told who claimed a window,
-  which is a field on `new` that nothing else wants.
+  which is a field on `new` that nothing else wants. Step 5's richer
+  rules plan that reversal, as an `app` word on `wctl` rather than a
+  field on `new`. A rule on the program is now something a person asks
+  for.
+- **Only plain motion may be coalesced (planned, step 5).** A mouse line
+  that changes the buttons is an event, and a line that only moves the
+  pointer is a sample. A client that misses a sample loses nothing,
+  because the next one says where the pointer is. A client that misses a
+  press loses a click. The reversal is none.
 - **The overview is the compositor's, and scales by skipping.** A
   smoother picture is a filter over the stores, which is a day's work
   the day someone minds. No program redraws for it, which is the point.

@@ -576,6 +576,48 @@ The lesson is narrower than the section above and worth keeping separate.
 a comparison is not a test.** The check asks whether the answer is an address
 at all now, and only then whether it is a different one.
 
+## Planned: `fsstress`, one client for every file server
+
+**Not yet built.** Every file server here has its own checks, and each
+check asks what its author thought to ask. plan-neo's `cmd/fsstress`
+asks the same questions of any server over 9P, and plan-neo's boot test
+runs it alone and as two copies at once. `tests/fsstress` is that
+client for Vectra, and this is what it does:
+
+- It makes a tree of files, and each file holds a pattern derived from
+  its own name. So a read that came back from the wrong file is wrong
+  data, not only a wrong length.
+- It reads every file back through a fresh walk from the root, never
+  through the fid that wrote it. A server that caches by fid and loses a
+  write shows here.
+- It appends, truncates and renames through `wstat`, and checks the
+  length and the name after each.
+- It writes 64 KiB in one call and reads it back whole, then in 13-byte
+  pieces. Thirteen is prime, so the pieces straddle the 8 KiB
+  `MSIZE_DEFAULT` boundary at a different offset every time round.
+- It runs as two clients at once against one server, each in its own
+  tree, and checks both trees at the end.
+
+The boot line points it at `kfs`, `memfs` and an `exportfs` import of
+either. A server that passes alone and fails beside a second client
+has a lock to find. A server that passes locally and fails over the
+import has a transport bug, and `docs/TRANSPORT.md` is where to look.
+
+## A port a person chose hides what a port a machine chose finds
+
+plan-neo's kernel `ip/ipaux.c` built a connection hash from the remote
+port shifted left sixteen bits, in an `int`. A port above 32767 shifts
+into the sign bit, the remainder comes out negative, and the table
+index reads four gigabytes past the table. Every manual run passed,
+because a person types ports like 9 and 564 and 1717. The automated
+test took its port from the shell's pid, and failed on the first run.
+
+**A test that dials or announces takes a port the machine chooses,
+above 32767.** Vectra's tests use fixed low ports today, and each one
+is a place the same bug could hide. The fix is a port from the pid or
+the clock, with bit 15 set. Then every run crosses the sign boundary a
+person never types.
+
 ## See also
 
 - `docs/SCHED.md` — the preemption self-test, and why it spins inside itself.

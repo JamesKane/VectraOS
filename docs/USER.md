@@ -1798,6 +1798,17 @@ and everything it holds stay until the machine stops.
   `mem.spaces` and `srv.MAX_SERVICES` make. This is also the first code in
   Vectra that anything untrusted reaches. A record a program can make the
   kernel allocate is a record a program can exhaust the machine through.
+- **A program over `MAX_PROGRAM_FRAMES` gets a bare `ENOEXEC`.** Planned,
+  not yet built. `load_v2` in `kernel/user/image.odin` refuses an image
+  whose segments exceed the budget, and the caller learns only that the
+  file is not a program. That cost two sessions. A server's bss grew past
+  the budget, and later `core:crypto`'s tables did, and each time the
+  first guess was a bad build.
+
+  The plan is one `klog` line at the refusal. It names the program, the
+  pages it asked for, and the budget: `exec /bin/NAME: N pages, budget M`. The same rule holds for every fixed table
+  that overflows. The refusal names the table, the count and the limit,
+  and the errno alone is not the report.
 - **No SMAP and no SMEP.** Neither bit is set in CR4, so the kernel may still
   read and execute a user page. It has no reason to, and the day it does by
   accident these are what would say so.

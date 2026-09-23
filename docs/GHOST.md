@@ -288,26 +288,49 @@ and the sandbox check fails.
 ## 5. Applications, and the contract that makes them scriptable
 
 An application that wants to be driven serves a tree under `/mnt/app/
-<name>`, and three files are the contract.
+<id>`, and three files are the contract.
 
-    ctl        lines of verbs, one per line, the way every ctl here works
-    dict       the vocabulary: one verb per line, its arguments, and one
-               sentence, in the form the ghost turns into a tool
+    ctl        lines of verbs, one per line, the way every ctl here works,
+               and a read on the same fid answers each line's result
+    dict       the vocabulary: one verb per line, its arguments, its
+               result, and one sentence, in the form the ghost turns
+               into a tool
     event      a read that parks, and answers what the application did,
                one line per event, for a script that waits for one
 
-    # /mnt/app/editor/dict
-    open path            open a file in a new window
-    goto line            move the cursor to a line in the current window
-    replace from to      replace the first match in the selection
-    save                 write the current window
-    text                 read: the current window's text, on the `text` file
+Beside them, `state` is the application's model as one snapshot. The
+refinements below are a plan: the reply on `ctl`, the change counter,
+the event ring, `state`, optional arguments, long verbs and the
+registry. Step 2 in section 9 builds them. Today the plumber is the only
+part of this section that runs.
 
-A line of `dict` is a verb, its argument names, and a description, and
-a tool is generated from it with a string per argument. An application
-that wants a typed argument writes `line:int`. A file beside `ctl` that
-answers a read is listed with `read:` and becomes a `read` the ghost
-knows the meaning of.
+    # /mnt/app/editor/dict
+    open path               -> win:int        open a file in a new window
+    goto line:int           -> q0:int q1:int  move to a line
+    find ?all:bool pattern  -> q0:int q1:int  select the next match
+    replace from to         -> count:int      replace in the selection
+    save ?path                                write the current window
+    text                    read: the current window's text
+    state                   read: the windows, the dot, and seq
+
+A line of `dict` is a verb, its argument names, what it answers, and a
+description. A tool is generated from it with a string per argument.
+An application that wants a typed argument writes `line:int`. A name
+after `->` is a field of the reply, typed the same way, and the
+generator writes those fields into the tool's description. A file
+beside `ctl` that answers a read is listed with `read:` and becomes a
+`read` the ghost knows the meaning of. `docs/EDIT.md` section 5 has the
+editor's whole `dict`.
+
+**An optional argument is named.** Every tool is `strict`, section 6,
+so a schema must say which arguments a call may leave out. `?all:bool`
+in `dict` is optional, and the schema lists it outside `required`.
+
+On a `ctl` line an option is one word, `all=true`, between the verb and
+the positional arguments. The tokenizer takes a leading word as an option
+only when the `dict` declares its name. The generator writes a lone
+`--` after the options. A person at `echo` writes one only when a
+positional value starts with a declared name and `=`.
 
 **An argument that can carry any text is the last on its line.** A
 `ctl` line is split on spaces, and a file name with a space in it, or a
@@ -321,13 +344,92 @@ Omarchy's shell built its notices by pasting the text into bash, and a
 video's title ran as a command. A line that is a verb and its rest
 cannot be made to.
 
+**A reply belongs to the fid that wrote the verb.** A client writes a
+line to `ctl` and reads the same fid, and the read answers that line's
+result. The result is one JSON object per line: `ok`, `verb`, `seq` and
+the fields the `dict` names, or `ok` false and an `error`. A write of
+three lines answers three replies, in order. An error never aborts the
+lines after it. Two clients on two fids never see each other's replies.
+
+    open /n/work/pong.odin
+        {"ok":true,"verb":"open","seq":1,"win":1}
+    goto 31
+        {"ok":true,"verb":"goto","seq":2,"q0":612,"q1":612}
+    goto thirty
+        {"ok":false,"error":"line: not a number","seq":2}
+
+This is the conversation `/net/cs` and `factotum` hold with each
+client. The generated tool's result is the reply, so "act, then check"
+is one call and not two. A write with no read after it, `echo` at a
+prompt, still runs the verb, and the reply goes nowhere.
+
+**A change counter guards a verb.** Each application keeps `seq`, a
+number that grows by one with each change a person or a script makes.
+Every reply, every event and every `state` snapshot carries it. A verb
+that changes something may carry `if_seq=N`, in the option shape above.
+The application refuses the verb as `stale`, with the present `seq`,
+when the two differ. That is the `write` tool's qid-version check,
+section 4, for an application's verbs in place of a file's bytes.
+
+It matters when a person and the ghost drive one application at once.
+The ghost plans an edit against a snapshot, the person types, and the
+edit is refused rather than landing on text that moved. The ghost reads
+`state` again and plans again.
+
+**`event` starts at the present.** An open sees what happens after it,
+not history, because history is what `state` is for. The application
+keeps the last 256 events in a ring. A reader that falls further behind
+skips to the oldest event the ring still holds, and the gap shows as a
+jump in `seq`. An event is a JSON line with `seq`, `event`, and enough
+to update a local copy without a read. The editor's `insert` carries
+`q0`, `q1` and `n`, and that is the whole change.
+
+**`state` is the model, not the view.** An open takes a snapshot, and a
+new open takes a new one. Every read at a later offset reads that same
+snapshot, so a read that takes a while cannot tear. For the editor the
+model is the files, the dot, the dirty flag and `seq`. It never holds a
+pixel or a gadget name.
+
+**A long verb answers at once.** A search over a tree, or an import,
+answers `{"ok":true,"job":N}` straight away. It posts an event `done`
+with the same `job` and the result when it ends. The generated tool
+waits on `event` for that line, up to the `run` deadline, and answers
+it. Past the deadline the tool answers the job line, and the model reads
+`event` itself.
+
 **`libmui` serves the contract for free.** A toolkit program's gadgets
 have names, because a hotkey needs a label. The toolkit serves
 `gadgets/<name>` under the application's tree. A read answers a gadget's
 state, a write presses it or sets it, and `dict` is generated from the
 gadget tree. So every toolkit program is scriptable the day it links, with
-no line written. An application adds verbs of its own beside the generated
-ones.
+no line written. The toolkit also keeps `seq`, checks `if_seq`, holds
+the event ring, answers each fid's replies, and takes the `state`
+snapshot.
+
+A verb runs on the window's event thread, the thread that takes the
+person's keys. So no key lands between the `if_seq` check and the
+change it guards.
+
+**The generated verbs are a floor.** A `dict` made from gadgets has the
+shape of the view: `press find`, `set pattern`. A model and a person
+both say `find the next TODO`. So an application adds verbs of its own
+beside the generated ones, named as a person would say them. It also
+serves its own `state` in place of the gadgets' one.
+
+**`/mnt/app` is a registry.** `servers/appfs` serves it, with an `index`
+of one line per application: the id, the pid, the name and the version.
+An application posts its tree as `/srv/app.<id>` and writes `register`
+to `/mnt/app/ctl`. The first instance of a program takes its name as its
+id, and a second editor is `editor.2`. `appfs` makes an empty directory
+per id, and a namespace that wants an application mounts its `/srv`
+entry there.
+
+The ghost mounts each line of `index` when a session starts, and again
+when `index` changes. A tool is named `<id>_<verb>`, with the dot of an
+id as `_`. An application that arrives mid-session reaches the model
+through tool search, section 4. Its tools join the searchable set after
+the seven and never before them, so the cached prefix holds. A tool of
+an application that left answers `no such application`.
 
 **The plumber is how programs talk.** `servers/plumber` serves
 `/mnt/plumb`, with `send` and a directory of ports. A message is a source,
@@ -360,9 +462,11 @@ The ghost attaches, reads `status` and `bt`, opens the top frame's
 fix is a second prompt, in the `edit` class, on the source, and the
 requester asks before the first write as it always does.
 
-An editor is the application that most wants a `dict` and does not exist
-yet. `sam`'s command language is its `dict` when it does, and `acme`'s
-files are its tree.
+The editor is the application that most wants a `dict`, and it is not
+built. `docs/EDIT.md` is its plan. `sam`'s command language is its
+`dict` and `acme`'s files are its tree. The instance the `edit` class
+binds runs inside the session's namespace, so its `e` and `w` reach
+what the tools reach and nothing more.
 
 **A program asks the ghost the same way.** A write to `/mnt/ghost/new`
 and a prompt. `sys/libapp` wraps it in one call for a game that wants
@@ -380,6 +484,15 @@ test program's gadget and its state reads back changed. A `plumb` of a
 file name opens it in the test program. `event` answers the press. And
 a script drives the same gadget with `echo` and `cat`, because the
 contract is files.
+
+Then the refinements. Two fids that write at once each read their own
+reply. A bad line between two good ones answers an error, and both good
+ones run.
+
+A verb with a stale `if_seq` answers `stale` and changes nothing. A reader that sleeps through 300 events reads a jump in `seq`.
+A `state` read in two halves is one snapshot, with a change between
+the halves. A second instance of the test program is in `index` with
+`.2` on its id.
 
 ## 6. The cloud, and the wire to it
 
@@ -543,11 +656,15 @@ rule a message takes.
 
 ### Step 2: the application contract
 
-`sys/libmui`'s `gadgets` and `dict`, `servers/plumber`, the terminal's
-and Workbench's trees, the tool generator and tool search. About 2,400
-lines. Needs `docs/WORKBENCH.md` step 3.
+`sys/libmui`'s `gadgets`, `dict` and `state`, with the reply per fid,
+`seq` and `if_seq`, and the event ring. `servers/plumber`,
+`servers/appfs` and its `index`, the terminal's and Workbench's trees,
+the tool generator with optional arguments, reply fields and long verbs,
+and tool search. About 3,000 lines, 600 of them the refinements. Needs
+`docs/WORKBENCH.md` step 3.
 
-Boot line: section 5's gadget, plumb and event checks.
+Boot line: section 5's gadget, plumb and event checks, and its reply,
+`stale`, gap, snapshot and registry checks.
 
 **Where it stands.** The plumber is built. `servers/plumber` serves
 `/mnt/plumb` with `send`, `rules` and a file per port the rules name,
@@ -560,12 +677,13 @@ A rule starts a program by its words and never through a shell.
 
 `cmd/plumb` sends from the shell, and `init` starts the plumber on a
 terminal. `/lib/plumb/rules` routes a URL or a page to the `web` port,
-and a `file:line` to `edit`, which waits for an editor. `mothra` holds
-the web port open, and a press on a link goes out through `send` and
-comes back in. The boot line routes a URL, a file line and a note that
-starts a program, and refuses a line no rule takes. Not yet: `libmui`'s
-`gadgets` and `dict`, the terminal's and Workbench's trees, and the tool
-generator.
+and a `file:line` to `edit`, which waits for the editor `docs/EDIT.md`
+plans. `mothra` holds the web port open, and a press on a link goes out
+through `send` and comes back in. The boot line routes a URL, a file
+line and a note that starts a program, and refuses a line no rule takes.
+Not yet: `libmui`'s half of the contract, which is `gadgets`, `dict`,
+`state`, the reply per fid, `seq` and the event ring. Nor `appfs`, the
+terminal's and Workbench's trees, or the tool generator.
 
 ### Step 3: the window and the chords
 
@@ -633,9 +751,16 @@ Boot line: section 8's two checks.
 - **The requester is for four actions, named.** Not for every write.
   The reversal is a person who wants more asked, and it is a line in
   the class file.
-- **The application contract is three files, and `libmui` serves it
-  free.** The reversal is an application that is not files, and the
-  answer is `look`.
+- **The application contract is three files and a snapshot, and
+  `libmui` serves it free.** A reply per fid, a change counter on every
+  reply, and a ring of events. With them a person and the ghost can
+  drive one program at once. The reversal is an application that is not files,
+  and the answer is `look`.
+- **Arguments are `rc`'s words, and replies are JSON.** Words, because a
+  person types them at `echo`. JSON, because the reply is the tool's
+  result, whole, and a model reads JSON. The reversal is a reply a
+  person reads more than a program does, and then the application
+  serves a second file for it.
 - **The key lives in `factotum`.** No program holds it, and the tools
   cannot reach `factotum`. The reversal is none.
 - **The default model is `claude-opus-5`, at adaptive thinking, and
@@ -668,7 +793,8 @@ Boot line: section 8's two checks.
 
     step 0  modelfs        modelfs 800, libinfer 4,000, stub 200, tests 200     the disk
     step 1  ghost          ghost 2,200, ask 300, ns files 100, memory 200, tests 200   step 0
-    step 2  applications   libmui 800, plumber 800, trees 400, generator 400    step 1, WORKBENCH 3
+    step 2  applications   libmui 1,100, plumber 800, appfs 200, trees 400,     step 1, WORKBENCH 3
+                           generator 500
     step 3  the window     apps/ghost 1,300, menu 100, libapp 100, tests 100    step 2, WORKBENCH 4
     step 4  the cloud      tlsclient 3,500, webfs 1,500, factotum 200,          step 1, FLEET 0 and 2
                            backend 600, router 200, tests 500
@@ -685,6 +811,8 @@ with no network at all.
   runs on, and the fleet a model server joins.
 - `docs/WORKBENCH.md` -- `libmui`, whose gadgets become a `dict`, and
   the desktop that grows a chord and a menu.
+- `docs/EDIT.md` -- the editor, the application the `edit` class binds,
+  planned on section 5's contract.
 - `docs/DEVTOOLS.md` -- the debugger the ghost drives through files, the
   POSIX library the port needs, and `sys/libapp`.
 - `docs/HARDWARE.md` -- the GPU and NPU as directories, which the

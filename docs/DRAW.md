@@ -907,6 +907,12 @@ never a pixel. Merging rectangles cannot be caught, and neither can boxing a
 move's two places into one. Both are in the table because a speed mutation that
 failed a check would mean a check was watching the wrong thing.
 
+They are inert to a readback, not to a count. A region that never merges
+composites more area, and a boxed move composites the ground between the two
+places. The server knows both numbers and says neither. Section 18's `stats`
+file is the plan that says them, and with it both rows become catches. That is
+planned, not built.
+
 **And one mutation is not a check's to catch.** Removing `size`'s bound against
 the allocation lets a client write past its own `segalloc` run. The boot stops
 rather than failing a check, and that is the right answer. The bound is memory
@@ -940,6 +946,19 @@ first time the answer was that the test was asking the wrong process.
   rectangles exists to avoid. An opaque window is what finally makes it
   correct, so this is the first milestone where it *could* be done. Worth it at
   more windows than two.
+
+  `MAX_WINDOWS` is thirty-two now (`servers/intuition/main.odin`). A desktop with a backdrop, a bar, two
+  drawers and a shell already stacks five opaque rectangles over the same
+  ground. The backdrop covers the screen below the bar, so every pixel under
+  a window is written at least twice on each composite that reaches it. The
+  plan is a front-to-back walk that subtracts each opaque window from the
+  damage before the next one paints. It is small once section 18's `stats`
+  file exists, and its measure is that file's `occluded` field. A boot check
+  asserts a share above zero with two windows overlapped, so the walk cannot
+  regress silently.
+- **The flush composites in the request path.** `window_flush` is `flush`'s
+  whole body, so one client that flushes in a loop takes every turn the serve
+  loop has. Section 18 is the plan. Medium.
 - **Nothing on a frame can be pressed.** No close, no resize handle, no drag.
   Every one of those is a `ctl` line already, so what is missing is a pointing
   device, which this system does not have.
@@ -1592,3 +1611,121 @@ line acts on is `KF|n`, at least `0xF00D`, which needs three bytes in its
 sequence always decodes to a rune the line drops anyway. The rule now belongs
 to `core:unicode/utf8`, which is the right place for a property that is about
 the encoding rather than about this system.
+
+## 18. A frame clock, and speed as a number (planned)
+
+**Written before the code. None of this section is built.** A review of a
+sibling project's desktop, `plan-neo`'s `docs/desktop-performance.md`, found
+three things this server shares with the one it reviewed. The flush composites
+in the request path. Nothing paces a client. And no number says how fast the
+compositor is, so section 12 records its speed mutations as inert.
+
+### The flush composites, and every other client waits
+
+`window_flush` in `servers/intuition/main.odin` is `flush`'s whole body. The
+`flush` verb on `data` calls it, and so does a write to a window's `store` file,
+which is what `sys/libapp`'s `present` sends each frame. It walks the damage
+onto the glass before the serve loop answers the request. The server is one
+proc of threads, so while it composites, no other client's request is read.
+
+A client that flushes in a loop therefore composites as fast as the processor
+allows. Each composite takes the serve loop's turn, and every other window
+waits behind it. Nothing limits the loop, because nothing in the server keeps
+time. The only clock the compositor sees is the arrival of the next request.
+
+### The plan: a flush marks, a clock composites
+
+**A flush records damage and returns.** The window's own region, `win.dmg`,
+already holds what the client drew since its last flush. The flush adds that
+window to a list of windows with damage, and answers at once. It composites
+nothing.
+
+**A compositor thread composites once a tick.** It parks until some window has
+damage. It then waits for the next frame boundary, walks every damaged window's
+region into one screen region, and composites that region once. A client that
+flushes a thousand times between two boundaries gets one composite, and the
+other clients do not see its loop.
+
+The wait is an io proc's sleep, `libthread.iosleep`. A plain sleep syscall in a
+thread parks the whole proc and starves its siblings. The boundary is a
+fixed period of sixteen milliseconds. A device can give a better one later: a
+virtio-gpu fence, or a display controller's vertical blank on real hardware.
+
+A thread and not a proc, and that is a choice with a reversal. The stores, the
+stack and the glass are in the one proc's memory now, and a thread shares them
+with no lock. A proc of its own would let a composite run on another core while
+the serve loop answers. That is worth it the day one composite takes longer
+than one request. That day needs a lock around the stack and the damage list.
+
+**An idle desktop composites nothing.** The thread wakes on damage, not on the
+clock. A compositor that woke sixty times a second to find nothing new would
+spend a laptop's battery on nothing. Wake on damage, composite on the clock.
+
+**Each client learns that its frame reached the glass.** A window's directory
+grows one file, `frame`. A read parks until a composite that included this
+window's damage, and answers the frame's number and its time in `/dev/time`'s
+nanoseconds. That is the event `present`'s `vsync` argument waits for, and
+`sys/libapp`'s comment calls it "a later rung". With it, a game's loop is
+`paint, present, read frame`, at the compositor's rate and never ahead of it.
+A client that does not read `frame` loses nothing, because the file is only a
+clock.
+
+This is a refresh event of a kind section 11 did not retire. A backing store
+answers "what do I redraw", and the answer stays "nothing". The `frame` file
+answers "when may I draw again", which no backing store can answer.
+
+**The cursor stays off this path.** A pointer move erases and redraws the
+cursor straight on the glass, as `cursor_show` does now, and does not wait for
+a tick. A cursor that moved at the frame rate would feel slow under a
+person's hand before any window did.
+
+Medium: the damage list, the thread and its io proc, the `frame` file and its
+held reads, and `present` reading it. The checks: a client flushes one hundred
+times inside a tick and `composites` moves by at most two. A second client's
+flush between them still lands.
+
+### A `stats` file, so a speed rule is a number
+
+A rule about speed that nothing measures is a preference. `/srv/draw/stats` is
+a read-only file at the server's root, read as text, one field a line:
+
+    frames      4211         composites the clock has run
+    composites  4211         walks of a region onto the glass
+    dropped     0            composites that ran past the next boundary
+    lastms      1.4          the last composite, in milliseconds
+    p50ms       1.2          the median over the last 64 composites
+    p99ms       3.8          the 99th percentile over the same 64
+    damage      18432        pixels in the last composite's region
+    occluded    62           per cent of window area skipped, last composite
+
+The times come from the fast counter `sys/libapp` already reads (`rdtsc`,
+`cntvct_el0`, `rdtime`), calibrated off `/dev/time` once at start. The 64
+samples are a ring in the bss, which is 256 bytes.
+
+**The checks assert counts and areas, not times.** A time under QEMU depends on
+the host. A check on milliseconds would fail on a busy machine and pass on a
+fast broken one. What `verify_draw` asserts are the numbers a readback
+cannot see:
+
+- **An idle desktop.** Read `composites`, wait a second with nothing drawn,
+  read it again. The two numbers are equal.
+- **A loop is paced.** The check in the section above.
+- **A line of glyphs is one line.** After `apps/terminal` renders a line,
+  `damage` is at most one line's width times its height. This catches the
+  mutation where `region_add` never merges, which section 12's table records
+  as inert.
+- **A move damages two places, not the ground between them.** After a `move`
+  far across the screen, `damage` is at most twice the window's area. This
+  catches the boxed move, the other inert row.
+- **Occlusion is real.** With two windows overlapped, `occluded` is above zero.
+  This check waits for the front-to-back walk in section 12's "What is left".
+
+Small: a ring, eight counters and a read, then the five checks. The milliseconds
+stay in the file for a person to read, and for the day a real board makes them
+worth a check.
+
+### The order
+
+The `stats` file comes first, because it is small and it measures the other
+two. The frame clock comes second, and its pacing check reads `stats`. The
+front-to-back walk comes last, and its check is the `occluded` field.
