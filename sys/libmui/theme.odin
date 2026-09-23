@@ -19,7 +19,11 @@ parser testable with a string and no disk.
 */
 package libmui
 
+import "vsys:abi"
+import "vsys:libdraw"
 import "vsys:libpal"
+import "vsys:libthread"
+import "vsys:libuser"
 
 /*
 ui_theme is the look every window takes unless it sets its own: the current
@@ -147,4 +151,196 @@ word :: proc "contextless" (s: string) -> (first: string, rest: string) {
 		i += 1
 	}
 	return s[start:i], s[i:]
+}
+
+// -- The files, and following them -------------------------------------------
+
+/*
+The look is read here, once, for every program on the toolkit: `/lib/theme`
+is the shipped one, `$home/lib/theme` the person's, and the later line for a
+role wins. The personal file may start with `use <name>`, which reads
+`/lib/themes/<name>` in place of `/lib/theme` and merges the rest over it.
+`window_open` loads it the first time, so a window opens in the person's
+theme and not the chassis. `apps/workbench` used to be the only program that
+read these files; the reading moved here so none has to.
+
+A change follows. `intuition` serves a generation number, `theme` beside its
+`ctl`, which a `reload` bumps, and a read at offset N answers once the number
+passes N. The first window a program opens starts `theme_watch`, which waits
+there and, on a change, reads the files again and lays out every window of
+this program that follows the shared theme. No state is lost, because the
+tree holds no look: a theme change takes the path a resize takes.
+*/
+THEME_MAX :: 1024
+
+theme_loaded: bool
+@(private = "file") theme_home_buf: [THEME_MAX]u8
+@(private = "file") theme_base_buf: [THEME_MAX]u8
+@(private = "file") theme_merge_buf: [2 * THEME_MAX]u8
+@(private = "file") theme_path_buf: [256]u8
+@(private = "file") theme_env_buf: [128]u8
+
+// theme_load reads the two files, merges them, and makes the result the look
+// new windows take. It lays no open window out; `theme_watch` does that.
+theme_load :: proc "contextless" () #no_bounds_check {
+	home := theme_read(theme_home_path(), theme_home_buf[:])
+	base_path := "/lib/theme"
+	body := home
+	if name, rest, ok := theme_use(home); ok {
+		base_path = theme_themes_path(name)
+		body = rest
+	}
+	base := theme_read(base_path, theme_base_buf[:])
+	w := copy(theme_merge_buf[:], base)
+	if w < len(theme_merge_buf) {
+		theme_merge_buf[w] = '\n'
+		w += 1
+	}
+	w += copy(theme_merge_buf[w:], body)
+	t: Theme
+	parse_theme(&t, string(theme_merge_buf[:w]))
+	set_theme(t)
+	theme_loaded = true
+}
+
+// theme_home is `$home`, or `/usr/glenda` when the environment names none.
+theme_home :: proc "contextless" () -> string {
+	home := libuser.getenv("home", theme_env_buf[:])
+	for len(home) > 0 && (home[len(home) - 1] == '\n' || home[len(home) - 1] == 0) {
+		home = home[:len(home) - 1]
+	}
+	return home != "" ? home : "/usr/glenda"
+}
+
+// theme_home_path is `$home/lib/theme`.
+theme_home_path :: proc "contextless" () -> string {
+	return libuser.cat_into(theme_path_buf[:], theme_home(), "/lib/theme")
+}
+
+// theme_themes_path is `/lib/themes/<name>`.
+theme_themes_path :: proc "contextless" (name: string) -> string {
+	return libuser.cat_into(theme_path_buf[:], "/lib/themes/", name)
+}
+
+// theme_read reads a whole file into `buf`, or answers nothing when it will
+// not open.
+theme_read :: proc "contextless" (path: string, buf: []u8) -> []u8 {
+	fd := libuser.open(path, abi.O_RDONLY)
+	if fd < 0 {
+		return buf[:0]
+	}
+	n := libuser.read(int(fd), buf)
+	_ = libuser.close(int(fd))
+	return buf[:max(int(n), 0)]
+}
+
+// theme_use reads a leading `use <name>` line: the base's name and the rest of
+// the file after that line. False when the first line is not `use`.
+theme_use :: proc "contextless" (text: []u8) -> (name: string, rest: []u8, ok: bool) #no_bounds_check {
+	e := 0
+	for e < len(text) && text[e] != '\n' {
+		e += 1
+	}
+	next := e < len(text) ? e + 1 : e
+	verb, after := word(string(text[:e]))
+	if verb != "use" {
+		return "", text, false
+	}
+	nm, _ := word(after)
+	if nm == "" {
+		return "", text, false
+	}
+	return nm, text[next:], true
+}
+
+// The windows of this program that follow the shared theme, so a change can
+// lay each out again. A window leaves when it is done.
+MAX_FOLLOWERS :: 32
+
+@(private = "file") followers: [MAX_FOLLOWERS]^Window
+@(private = "file") watching: bool
+
+theme_follow :: proc "contextless" (win: ^Window) {
+	for i in 0 ..< MAX_FOLLOWERS {
+		if followers[i] == win {
+			return
+		}
+	}
+	for i in 0 ..< MAX_FOLLOWERS {
+		if followers[i] == nil {
+			followers[i] = win
+			break
+		}
+	}
+	if !watching {
+		watching = true
+		n := copy(watch_base[:], win.base)
+		watch_base_n = n
+		if libthread.threadcreate(theme_watch, nil) < 0 {
+			watching = false
+		}
+	}
+}
+
+theme_unfollow :: proc "contextless" (win: ^Window) {
+	for i in 0 ..< MAX_FOLLOWERS {
+		if followers[i] == win {
+			followers[i] = nil
+		}
+	}
+}
+
+@(private = "file") watch_base: [128]u8
+@(private = "file") watch_base_n: int
+
+/*
+theme_watch parks on the draw server's `theme` through an io proc of its own,
+and on each new generation reads the files again and lays out every window
+that follows. The first read answers at once, with the generation the
+program opened under, and changes nothing. A read that ends is a server
+without the file, or gone, and the thread leaves.
+*/
+@(private = "file")
+theme_watch :: proc "contextless" (arg: rawptr) #no_bounds_check {
+	_ = arg
+	io := libthread.ioproc()
+	if io == nil {
+		watching = false
+		return
+	}
+	pb: [160]u8
+	fd := libuser.open(libuser.cat_into(pb[:], string(watch_base[:watch_base_n]), "/theme"), abi.O_RDONLY)
+	if fd < 0 {
+		libthread.ioclose(io)
+		watching = false
+		return
+	}
+	gen: u64 = 0
+	buf: [32]u8
+	for {
+		n := libthread.iopread(io, int(fd), buf[:], gen)
+		if n <= 0 {
+			break
+		}
+		at := 0
+		now, ok := libdraw.scan_u64(buf[:int(n)], &at)
+		if !ok || now <= gen {
+			continue
+		}
+		if gen != 0 {
+			theme_load()
+			for i in 0 ..< MAX_FOLLOWERS {
+				w := followers[i]
+				if w == nil || w.done {
+					continue
+				}
+				w.theme = ui_theme
+				window_relayout(w)
+			}
+		}
+		gen = now
+	}
+	_ = libuser.close(int(fd))
+	libthread.ioclose(io)
+	watching = false
 }

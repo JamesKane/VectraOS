@@ -19,6 +19,7 @@ superset, so the terminal need not change to keep working.
 */
 package intuition
 
+import "vsys:lib9p"
 import "vsys:libdraw"
 import "vsys:libuser"
 import "vsys:vectra9"
@@ -83,6 +84,7 @@ run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_ch
 		}
 		rules_load()
 		theme_rechrome()
+		theme_bump()
 		return vectra9.Errno(0)
 	case "diag":
 		// The image pool's use, so a person can see how near the cap a
@@ -112,6 +114,54 @@ run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_ch
 		return vectra9.Errno(0)
 	}
 	return vectra9.EINVAL
+}
+
+// -- theme ----------------------------------------------------------------------------
+
+/*
+The theme's generation, served as `theme` at the root. It starts at one and a
+`reload` bumps it. A read at offset N answers once the number is past N, and
+is held until then, so a client that keeps the last number it read waits on
+the next with one pread and no state here. `sys/libmui`'s `theme_watch` is the
+client: every program on the toolkit reads the files again and lays itself
+out when this moves, which is how a theme reaches windows that are not the
+desktop's. `docs/WORKBENCH.md` step 5.
+*/
+theme_gen: u64 = 1
+
+theme_gen_line :: proc "contextless" (out: []u8) -> int {
+	nb: [24]u8
+	s := libuser.itoa(nb[:], i64(theme_gen))
+	n := copy(out, s)
+	if n < len(out) {
+		out[n] = '\n'
+		n += 1
+	}
+	return n
+}
+
+@(private = "file")
+wants_theme :: proc "contextless" (arg: rawptr, request: ^vectra9.Msg) -> bool {
+	_ = arg
+	#partial switch m in request^ {
+	case vectra9.Tread:
+		return fid_node(m.fid) == NODE_THEME && m.offset < theme_gen
+	}
+	return false
+}
+
+// theme_bump moves the generation on and answers every read waiting for it.
+theme_bump :: proc "contextless" () {
+	theme_gen += 1
+	for {
+		req, ok := lib9p.held(&srv, nil, wants_theme)
+		if !ok {
+			return
+		}
+		m := req.msg.(vectra9.Tread)
+		room := min(len(req.payload), int(m.count))
+		_ = lib9p.respond(req, vectra9.Rread{data = req.payload[:theme_gen_line(req.payload[:room])]})
+	}
 }
 
 // -- hotkey ---------------------------------------------------------------------------

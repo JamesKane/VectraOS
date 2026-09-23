@@ -832,25 +832,26 @@ section 18.
   and a frame's `dt` was zero for every game. `libdraw.scan_u64` is the
   scanner a clock's fields take now, in both.
 
-- **Theme reload for every `libmui` program.** Small to medium. Today
-  only `apps/workbench` reads the theme files (`apps/workbench/theme.odin`),
-  and only it and `intuition` follow a change. Every other program on the
-  toolkit wears the chassis, `sys/libmui`'s `default_theme`, whatever the
-  person chose.
+- **Theme reload for every `libmui` program. Done, September 2026.** The
+  reading moved into `sys/libmui/theme.odin`: `theme_load` reads
+  `/lib/theme` or the `use`d `/lib/themes/<name>` and `$home/lib/theme`
+  over it, and `window_open` calls it the first time, so every window
+  opens in the person's theme. `intuition` serves `theme` at its root, a
+  generation number a `reload` bumps. A read at offset N answers once the
+  number passes N and is held until then, so a client keeps the last
+  number it read and waits with one pread, with no state in the server.
+  The first window a program opens starts `theme_watch`, a thread on an io
+  proc of its own, which on a new generation loads the files again and
+  lays out every window that follows the shared theme. A window whose
+  program set its own theme, and a popup, do not follow.
 
-  The plan moves the reading into `sys/libmui`, so a window opens in the
-  person's theme. `intuition` serves `/srv/draw/theme`, a generation
-  number that a `reload` bumps. A read parks until the number changes.
-  The window loop gets a fourth channel, from an io proc that reads that
-  file. On a change it reads the two files again, calls `parse_theme`,
-  lays the tree out again with `window_relayout`, and repaints.
-
-  No program state is lost, because the tree holds no look. A theme
-  change takes the same path as a resize. A program a `cpu` runs reads
-  the file under `$wsys`, so a remote window follows the terminal's
-  theme. The check writes a theme that names `face` as `copper` and
-  writes `reload`. It then sees the pixel under a button change in a
-  program that is not Workbench.
+  Workbench's `Theme...` writes `use` and then `reload`, and its own
+  windows follow by the same watcher as every other program's. The check
+  is in `verify_muiwin`: a personal theme that names `face copper` and a
+  `reload`, and the demo's button face, a program that is not Workbench,
+  is copper; the file removed and a second reload, and it is magnesium
+  again. A program a `cpu` runs watches `theme` under `$wsys`, so it
+  follows the terminal's theme.
 
 - **More `wctl` words.** Small each.
 

@@ -36,28 +36,8 @@ theme_n: int
 
 // theme_load reads the two files, merges them, and sets the look new windows
 // take. It does not lay open windows out; `theme_apply` does that.
-theme_load :: proc "contextless" () #no_bounds_check {
-	context = wb_ctx
-	home := theme_read(home_theme_path(), home_buf[:])
-
-	base_path := "/lib/theme"
-	body := home
-	if name, rest, ok := theme_use(home); ok {
-		base_path = themes_path(name)
-		body = rest
-	}
-	base := theme_read(base_path, base_buf[:])
-
-	// The base first, the personal body after it, so the later line wins. The
-	// parser resets to the chassis and applies both in order.
-	w := copy(merge_buf[:], base)
-	if w < len(merge_buf) {
-		merge_buf[w] = '\n';w += 1
-	}
-	w += copy(merge_buf[w:], body)
-	t: libmui.Theme
-	libmui.parse_theme(&t, string(merge_buf[:w]))
-	libmui.set_theme(t)
+theme_load :: proc "contextless" () {
+	libmui.theme_load()
 }
 
 /*
@@ -133,24 +113,9 @@ open window out again in the new look, section 5's "every window lays itself
 out again". The picker is on its way out, so it is not among them.
 */
 theme_apply :: proc "contextless" () {
-	context = wb_ctx
-	theme_load()
-	theme_relay(bar)
-	theme_relay(back)
-	for i in 0 ..< MAX_DRAWERS {
-		if drawers[i] != nil && drawers[i].used {
-			theme_relay(&drawers[i].win)
-		}
-	}
-}
-
-@(private = "file")
-theme_relay :: proc "contextless" (w: ^libmui.Window) {
-	if w == nil {
-		return
-	}
-	w.theme = libmui.ui_theme
-	libmui.window_relayout(w)
+	// The server re-chromes its frames and bumps the theme's generation, and
+	// every program on the toolkit, this one among them, lays itself out.
+	server_ctl("reload")
 }
 
 /*

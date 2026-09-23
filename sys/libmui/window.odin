@@ -173,8 +173,16 @@ because the loop that follows does.
 */
 window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -> bool #no_bounds_check {
 	win.root = root
+	// The person's theme, read the first time a window opens. A window that
+	// takes the shared theme follows it when it changes; one whose program
+	// set its own keeps that.
+	if !theme_loaded {
+		theme_load()
+	}
+	follows := false
 	if win.theme.pad == 0 && win.theme.gap == 0 {
 		win.theme = ui_theme
+		follows = true
 	}
 	if !win.set_up {
 		window_defaults(win)
@@ -340,6 +348,9 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 		return refused("an atlas would not bake: the server's image pool is full, or a write failed")
 	}
 	window_paint(win)
+	if follows && win.kind != .Popup {
+		theme_follow(win)
+	}
 	return true
 }
 
@@ -604,6 +615,7 @@ program of one never needs to, since its exit is the close.
 */
 window_close :: proc "contextless" (win: ^Window) {
 	win.done = true
+	theme_unfollow(win)
 	if win.mouse_fd >= 0 {
 		_ = libuser.close(win.mouse_fd)
 		win.mouse_fd = -1

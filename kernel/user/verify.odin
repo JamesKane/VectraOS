@@ -5250,6 +5250,10 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 		return
 	}
 
+	// The person's theme is the shipped one here: a personal file an
+	// interrupted boot left would dress the demo, and the reload check
+	// below writes its own.
+	remove_file("/usr/glenda/lib/theme")
 	pd := start_path(r, "/bin/muidemo", "the loader starts the toolkit demo")
 	if pd == nil {
 		return
@@ -5367,6 +5371,72 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 		}
 	}
 
+	// -- A theme change reaches a program that is not the desktop -----------------
+
+	/*
+	`docs/WORKBENCH.md` step 5: every program on the toolkit follows the
+	theme. A personal theme names the face copper, `reload` on the server's
+	`ctl` bumps its `theme` generation, and the demo -- which is not
+	Workbench, and read no theme of its own -- lays itself out again, its
+	button face now copper. The file goes and a second reload brings the
+	magnesium back.
+	*/
+	// The demo mounted the server in its own namespace; the kernel mounts it
+	// here to write `reload`, and takes the mount down after, as the
+	// teardown below mounts it again to stop the server.
+	if face && check(r, srv.mount(vfs.boot_namespace, "/srv/draw", "/mnt") == vfs.OK, "the kernel mounts the server, to ask it to reload") {
+		defer check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "and takes the mount down after")
+		copper := fb.pack(s, fb.COPPER)
+		probe_y := gtop + 1
+		_ = make_disk_dir("/usr/glenda")
+		_ = make_disk_dir("/usr/glenda/lib")
+		wrote := write_disk_file("/usr/glenda/lib/theme", "face copper\n")
+		turned := false
+		if wrote && net_file_write("/mnt/ctl", "reload") {
+			for _ in 0 ..< PATIENCE * 20 {
+				if fb.get_raw(s, gx, probe_y) == copper {
+					turned = true
+					break
+				}
+				sync.delay(1)
+			}
+		}
+		if !check(r, turned, "a theme that names the face copper, and a reload, and the demo's button face is copper: a program that is not the desktop follows the theme") {
+			dbg: [256]u8
+			sink := libodin.sink_from(dbg[:])
+			libodin.put_str(&sink, "theme-diag: wrote ")
+			libodin.put_str(&sink, wrote ? "yes" : "no")
+			libodin.put_str(&sink, " probe ")
+			libodin.put_int(&sink, i64(gx))
+			libodin.put_str(&sink, ",")
+			libodin.put_int(&sink, i64(probe_y))
+			libodin.put_str(&sink, " pix ")
+			libodin.put_hex(&sink, u64(fb.get_raw(s, gx, probe_y)))
+			libodin.put_str(&sink, " mag ")
+			libodin.put_hex(&sink, u64(magnesium))
+			libodin.put_str(&sink, " copper ")
+			libodin.put_hex(&sink, u64(copper))
+			tg: [32]u8
+			tn := read_once("/mnt/theme", tg[:])
+			libodin.put_str(&sink, " gen ")
+			libodin.put_str(&sink, string(tg[:max(tn, 0)]))
+			libodin.put_str(&sink, "\n")
+			_ = net_file_write("/dev/cons", libodin.str(&sink))
+		}
+		remove_file("/usr/glenda/lib/theme")
+		back := false
+		if net_file_write("/mnt/ctl", "reload") {
+			for _ in 0 ..< PATIENCE * 20 {
+				if fb.get_raw(s, gx, probe_y) == magnesium {
+					back = true
+					break
+				}
+				sync.delay(1)
+			}
+		}
+		check(r, back, "and with the file gone, a second reload brings the magnesium back")
+	}
+
 	// -- A relay click on a gadget --------------------------------------------
 
 	/*
@@ -5413,10 +5483,10 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	Pressed low in the window, the menu spills past the bottom edge onto the
 	desktop, and that is where it is read: the window's ground is slate and the
 	desktop is slate, but a menu's buttons are magnesium, a colour neither has
-	below the window until the menu is there. Opening is proven, not choosing:
-	an injected click on a just-opened popup is the race `verify_workbench`'s
-	menu check names, so the item is left to a person and the dismiss -- a
-	press on the bare desktop -- is proven instead.
+	below the window until the menu is there. Opening is proven here, and the
+	dismiss, a press on the bare desktop. Choosing an item on a popup that
+	just opened is proven on Workbench's menu, `verify_workbench`, now that a
+	window's mouse is a queue.
 	*/
 	// The window's right edge is the bar's, plus its border; the menu is read
 	// in the desktop just past it, where a magnesium button stands out against
