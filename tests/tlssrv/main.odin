@@ -16,7 +16,10 @@ a small capsule.
 `tests/web.rc` runs it against `tlsclient` from the boot self-test,
 `docs/WEB.md` step 0.
 
-    tlssrv [port]                 default 4433
+    tlssrv [port] [-u]            default 4433
+
+`-u` serves `/lib/tests/capsule.der` instead: a self-signed certificate no
+trust root names, the capsule `webfs` trusts on first use.
 
 The server side of the handshake is `sys/libtls/server.odin`. This file frames
 records and moves them, one message per record, the way a plain peer would.
@@ -33,6 +36,12 @@ import "vsys:libuser"
 CERT_PRIV :: [32]u8{
 	0x92, 0xf2, 0x9e, 0x14, 0x1a, 0x76, 0xb7, 0xa3, 0x24, 0x15, 0x22, 0x91, 0x8e, 0x97, 0x45, 0x9f,
 	0xce, 0xcf, 0xb3, 0xa8, 0x8d, 0x01, 0xb7, 0x43, 0xda, 0x72, 0x23, 0x9b, 0xa3, 0x6b, 0xaa, 0x3c,
+}
+
+// The private scalar of `tests/capsule.der`, the certificate no root names.
+CAPSULE_PRIV :: [32]u8{
+	0x4e, 0x03, 0x09, 0x95, 0x70, 0x03, 0x65, 0x00, 0xd1, 0x81, 0x45, 0x4e, 0x6e, 0x44, 0x35, 0x9b,
+	0xc7, 0x24, 0xa2, 0x1b, 0x42, 0x11, 0xe7, 0x32, 0x38, 0x95, 0x80, 0x70, 0xf4, 0x17, 0xf1, 0x6b,
 }
 
 // What an HTTP request is answered with: a body by Content-Length.
@@ -182,18 +191,19 @@ accept :: proc(port: string) -> (fd: int, accepted: string) {
 start :: proc "c" (block: ^abi.Args) {
 	context = libuser.startup()
 	args := libuser.args(block)
-	port := len(args) >= 2 ? args[1] : "4433"
+	port := len(args) >= 2 && args[1] != "-u" ? args[1] : "4433"
+	untrusted := len(args) >= 2 && args[len(args) - 1] == "-u"
 
 	// The identity: the trust store's first certificate, the test one the
 	// build stages ahead of the host's roots, and its key.
-	store, cok := libuser.read_file("/lib/tls/roots", context.allocator)
+	store, cok := libuser.read_file(untrusted ? "/lib/tests/capsule.der" : "/lib/tls/roots", context.allocator)
 	first := libtls.der_len(store)
 	if !cok || first <= 0 {
 		fail("read the certificate")
 	}
 	cert := store[:first]
 	f := new(Fixture)
-	priv := CERT_PRIV
+	priv := untrusted ? CAPSULE_PRIV : CERT_PRIV
 	if !libtls.server_init(&f.srv, cert, priv[:]) {
 		fail("set the key")
 	}

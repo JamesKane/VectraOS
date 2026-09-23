@@ -43,9 +43,23 @@ same files: `status` is the `20 text/gemini` line, and `body` the rest.
 inflated whole before it is served: `core:compress/zlib` inflates the deflate
 stream inside the frame.
 
-Not yet: a connection kept for the next request, and the WebSocket. Each is a
-step this file grows by. And `dial` runs through the fetch's io proc, so the
-loop never waits out a connect or a name.
+**A connection is kept for the next request**, `wire.odin`. A response
+framed by its length or chunked, from a server that did not say close, leaves
+its connection in a small pool keyed by scheme, host and port. The next fetch
+there takes it, and dials again once if the server had closed it meanwhile.
+
+**The WebSocket is the same conversation.** `ctl upgrade` before the first
+open, and the fetch asks for the upgrade. After `101` and a checked accept,
+`ws` is the socket: a read answers one frame, a write sends one, a ping is
+answered, and `hangup` closes it. `wire.odin`.
+
+**A capsule is trusted on first use.** A Gemini certificate that chains to no
+root is let through, and its sha256 is held to the one first seen for that
+host and port, in `<store>/known`, a line each. A certificate that changed is
+refused until the line is edited. `wire.odin`.
+
+`dial` runs through the fetch's io proc, so the loop never waits out a connect
+or a name.
 */
 package webfs
 
@@ -82,11 +96,13 @@ CONV_HEADERS :: i32(3)
 CONV_STATUS :: i32(4)
 CONV_HASH :: i32(5)
 CONV_POSTBODY :: i32(6)
+CONV_WS :: i32(7)
 
 State :: enum u8 {
 	Idle, // A conversation with no fetch yet
 	Fetching, // The request is out, the status line not yet in
 	Streaming, // The headers are in, the body arriving
+	Socket, // Upgraded: frames each way on `ws`
 	Done, // The body ended; the hash is known
 	Failed, // The fetch did not complete
 }
@@ -113,6 +129,17 @@ Conv :: struct {
 	body:      [dynamic]u8,
 	hash_hex:  [64]u8,
 	why:       string, // A failure's reason, for the log
+
+	// The WebSocket, once `ctl upgrade` asked for one. Frames that arrived and
+	// no read took yet, how far into the first one the reads have got, the
+	// fetch that owns the connection, and the lock every write takes -- which
+	// is also what a write waiting for the handshake sleeps under.
+	upgrade:   bool,
+	frames:    [dynamic][]u8,
+	fpos:      int,
+	fetch:     ^Fetch,
+	wlock:     libthread.QLock,
+	up:        libthread.Rendez,
 }
 
 convs: [MAX_CONVS]Conv
@@ -318,6 +345,7 @@ conv_alloc :: proc "contextless" () -> int {
 	c.headers = make([dynamic]u8, libuser.allocator())
 	c.body = make([dynamic]u8, libuser.allocator())
 	c.packed = make([dynamic]u8, libuser.allocator())
+	c.frames = make([dynamic][]u8, libuser.allocator())
 	c.method_len = copy(c.method[:], "GET")
 	return slot
 }
@@ -329,6 +357,10 @@ conv_free :: proc "contextless" (i: int) {
 	delete(c.headers)
 	delete(c.body)
 	delete(c.packed)
+	for fr in c.frames {
+		delete(fr)
+	}
+	delete(c.frames)
 	c^ = Conv{}
 }
 
@@ -343,7 +375,7 @@ conv_of :: proc "contextless" (node: i32) -> (i: int, kind: i32, ok: bool) {
 	v := node - CONV_BASE
 	i = int(v / CONV_STRIDE)
 	kind = v % CONV_STRIDE
-	if i >= MAX_CONVS || kind > CONV_POSTBODY {
+	if i >= MAX_CONVS || kind > CONV_WS {
 		return 0, 0, false
 	}
 	return i, kind, true
@@ -404,6 +436,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 			return conv_node(i, CONV_HASH)
 		case "postbody":
 			return conv_node(i, CONV_POSTBODY)
+		case "ws":
+			return conv_node(i, CONV_WS)
 		}
 	}
 	return -1
@@ -432,7 +466,6 @@ handler :: proc "contextless" (
 ) #no_bounds_check {
 	_ = state
 	_ = s
-	_ = tag
 	context = libuser.heap_context()
 
 	if !libuser.default_reply(request, reply) {
@@ -461,7 +494,7 @@ handler :: proc "contextless" (
 				return
 			}
 			// The first open of what the response fills starts the fetch.
-			if kind == CONV_BODY || kind == CONV_HEADERS || kind == CONV_STATUS || kind == CONV_HASH {
+			if kind == CONV_BODY || kind == CONV_HEADERS || kind == CONV_STATUS || kind == CONV_HASH || kind == CONV_WS {
 				if c.state == .Idle {
 					if c.url_len == 0 {
 						reply^ = vectra9.error_reply(vectra9.EINVAL)
@@ -571,6 +604,18 @@ handler :: proc "contextless" (
 			}
 			append(&c.post, ..m.data)
 			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
+		case CONV_WS:
+			// A frame out. It waits for the handshake, and for any write
+			// ahead of it, on a thread of its own, so the loop goes on.
+			if !c.upgrade || c.state == .Done || c.state == .Failed {
+				reply^ = vectra9.error_reply(vectra9.EPIPE)
+				return
+			}
+			if !ws_write_start(c, tag, m.data) {
+				reply^ = vectra9.error_reply(vectra9.ENOSPC)
+				return
+			}
+			lib9p.hold(&srv)
 		case:
 			reply^ = vectra9.error_reply(vectra9.EPERM)
 		}
@@ -663,6 +708,8 @@ read_ready :: proc "contextless" (c: ^Conv, kind: i32, offset: u64) -> bool {
 		return c.state == .Streaming || c.state == .Done || c.state == .Failed
 	case CONV_HASH:
 		return c.state == .Done || c.state == .Failed
+	case CONV_WS:
+		return len(c.frames) > 0 || c.state == .Done || c.state == .Failed
 	}
 	return true
 }
@@ -689,6 +736,8 @@ answer_read :: proc "contextless" (c: ^Conv, kind: i32, offset: u64, into: []u8,
 		n := copy(line[:], c.hash_hex[:])
 		line[n] = '\n'
 		reply^ = vectra9.Rread{data = slice_window(line[:n + 1], offset, into)}
+	case CONV_WS:
+		reply^ = vectra9.Rread{data = ws_take_frame(c, into)}
 	case:
 		reply^ = vectra9.Rread{data = nil}
 	}
@@ -762,8 +811,8 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 		}
 	} else {
 		i, _, _ := conv_of(node)
-		names := [?]string{"ctl", "body", "headers", "status", "hash", "postbody"}
-		kinds := [?]i32{CONV_CTL, CONV_BODY, CONV_HEADERS, CONV_STATUS, CONV_HASH, CONV_POSTBODY}
+		names := [?]string{"ctl", "body", "headers", "status", "hash", "postbody", "ws"}
+		kinds := [?]i32{CONV_CTL, CONV_BODY, CONV_HEADERS, CONV_STATUS, CONV_HASH, CONV_POSTBODY, CONV_WS}
 		for k := int(m.offset); k < len(names); k += 1 {
 			if vectra9.remaining(&c) < vectra9.dirent_size(names[k]) {
 				break
@@ -820,7 +869,18 @@ run_ctl :: proc "contextless" (c: ^Conv, text: string) -> bool {
 			return true
 		}
 		return false
+	case "upgrade":
+		if c.state != .Idle {
+			return false
+		}
+		c.upgrade = true
+		return true
 	case "hangup":
+		if c.state == .Socket {
+			// The socket closes by its handshake: a close frame out, the
+			// server's back, and the reader ends the conversation.
+			return ws_close_start(c)
+		}
 		if c.state == .Fetching || c.state == .Streaming {
 			return false
 		}
@@ -835,6 +895,7 @@ run_ctl :: proc "contextless" (c: ^Conv, text: string) -> bool {
 		clear(&c.packed)
 		c.gzip = false
 		c.status_len = 0
+		c.upgrade = false
 		return true
 	}
 	return false
@@ -898,7 +959,7 @@ split_url :: proc "contextless" (text: string) -> (u: Url, ok: bool) {
 	} else {
 		u.host = authority
 		switch u.scheme {
-		case "https":
+		case "https", "wss":
 			u.port = "443"
 		case "gemini":
 			u.port = "1965"
@@ -909,7 +970,16 @@ split_url :: proc "contextless" (text: string) -> (u: Url, ok: bool) {
 	if len(u.host) == 0 || len(u.port) == 0 {
 		return u, false
 	}
-	return u, u.scheme == "http" || u.scheme == "https" || u.scheme == "gemini"
+	switch u.scheme {
+	case "http", "https", "gemini", "ws", "wss":
+		return u, true
+	}
+	return u, false
+}
+
+// sealed says a scheme's connection is TLS.
+sealed :: proc "contextless" (scheme: string) -> bool {
+	return scheme == "https" || scheme == "wss" || scheme == "gemini"
 }
 
 // A fetch in flight: the connection, the io proc it reads through, and the
@@ -921,6 +991,18 @@ Fetch :: struct {
 	dir:   [libnet.DIAL_MAX]u8,
 	dirlen: int,
 	tls:   ^libtls.Client,
+
+	// The keep-alive pool's: where the connection goes, whether it was taken
+	// from the pool, whether it may go back, and since when it has idled.
+	key:    [URL_MAX]u8,
+	keylen: int,
+	reused: bool,
+	keep:   bool,
+	since:  i64,
+
+	// A WebSocket's writes go through an io proc of their own, because the
+	// reader is parked in the first one for as long as the socket is up.
+	wio:    ^libthread.Ioproc,
 }
 
 tls_read :: proc(ctx: rawptr, buf: []u8) -> int {
@@ -930,7 +1012,13 @@ tls_read :: proc(ctx: rawptr, buf: []u8) -> int {
 
 tls_write :: proc(ctx: rawptr, buf: []u8) -> int {
 	f := (^Fetch)(ctx)
-	return int(libthread.iowrite(f.io, f.fd, buf))
+	return int(libthread.iowrite(write_io(f), f.fd, buf))
+}
+
+// write_io is the io proc a write goes through: the socket's own once it is
+// up, and the fetch's before.
+write_io :: proc "contextless" (f: ^Fetch) -> ^libthread.Ioproc {
+	return f.wio != nil ? f.wio : f.io
 }
 
 // The dial's parking calls, through the fetch's io proc: the `connect` line
@@ -959,7 +1047,7 @@ stream_write :: proc(f: ^Fetch, data: []u8) -> bool {
 	}
 	sent := 0
 	for sent < len(data) {
-		n := libthread.iowrite(f.io, f.fd, data[sent:])
+		n := libthread.iowrite(write_io(f), f.fd, data[sent:])
 		if n <= 0 {
 			return false
 		}
@@ -982,21 +1070,21 @@ fetch_thread :: proc "contextless" (arg: rawptr) {
 	}
 	// The end, whichever way: the held reads learn it, the store keeps a
 	// body that ended, and the record goes if nothing else holds it.
-	if c.state == .Done {
+	if c.state == .Done && !c.upgrade {
 		keep(c)
 	}
+	// Under the write lock, so no write is mid-frame on the connection that
+	// is about to go, and none after this finds it.
+	libthread.qlock(&c.wlock)
+	c.fetch = nil
+	libthread.qunlock(&c.wlock)
 	answer_held(c)
-	if f.tls != nil {
-		free(f.tls)
+	ws_wake(c)
+	if f.keep && c.state == .Done {
+		pool_put(f)
+	} else {
+		conn_drop(f)
 	}
-	if f.fd >= 0 {
-		libnet.hangup(string(f.dir[:f.dirlen]))
-		_ = libuser.close(f.fd)
-	}
-	if f.io != nil {
-		libthread.ioclose(f.io)
-	}
-	free(f)
 	i := int(uintptr(rawptr(c)) - uintptr(rawptr(&convs[0]))) / size_of(Conv)
 	release(i)
 	libthread.threadexits("")
@@ -1008,9 +1096,10 @@ fail_fetch :: proc "contextless" (c: ^Conv, why: string) {
 	libuser.eprint("webfs: ", why, "\n")
 }
 
-// fetch runs one HTTP/1.1 exchange over the conversation's URL. The dial, the
-// TLS handshake when the scheme is https, the request, the status line and the
-// headers. Then the body, framed whichever of the three ways the headers say.
+// fetch runs one exchange over the conversation's URL: a connection, taken
+// from the pool or dialled, then the request and the response. A pooled
+// connection the server closed while it idled answers nothing, and the fetch
+// dials once more rather than fail.
 fetch :: proc(f: ^Fetch) {
 	c := f.c
 	u, uok := split_url(string(c.url[:c.url_len]))
@@ -1018,45 +1107,85 @@ fetch :: proc(f: ^Fetch) {
 		fail_fetch(c, "a URL this client does not understand")
 		return
 	}
+	f.keylen = len(libuser.cat_into(f.key[:], u.scheme, "!", u.host, "!", u.port))
+	if u.scheme != "gemini" && !c.upgrade {
+		if p := pool_take(string(f.key[:f.keylen])); p != nil {
+			adopt(f, p)
+		}
+	}
+	if !f.reused && !connect(f, u) {
+		return
+	}
+	if u.scheme == "gemini" {
+		fetch_gemini(f, u)
+		return
+	}
+	if exchange(f, u) != .Stale {
+		return
+	}
+	conn_close(f)
+	f.reused = false
+	if connect(f, u) && exchange(f, u) == .Stale {
+		fail_fetch(c, "the server closed the connection")
+	}
+}
 
+// connect dials the host, and runs the TLS handshake when the scheme wants
+// one. A Gemini capsule's certificate is held to the one first seen.
+connect :: proc(f: ^Fetch, u: Url) -> bool {
+	c := f.c
 	spec_buf: [512]u8
 	spec := libuser.cat_into(spec_buf[:], "tcp!", u.host, "!", u.port)
 	fd, dirlen, dok := libnet.dial_dir_via(spec, f.dir[:], libnet.Dial_IO{ctx = f, read = dial_read, write = dial_write})
 	if !dok {
 		fail_fetch(c, "cannot dial the host")
-		return
+		return false
 	}
 	f.fd = fd
 	f.dirlen = dirlen
-
-	if u.scheme == "https" || u.scheme == "gemini" {
-		if len(roots) == 0 {
-			fail_fetch(c, "no trust roots, so no https")
-			return
-		}
-		f.tls = new(libtls.Client)
-		libtls.client_init(f.tls, libtls.IO{ctx = f, read = tls_read, write = tls_write}, roots, time.unix(now_seconds(), 0), u.host)
-		priv: [32]u8
-		random: [32]u8
-		if !fill_random(priv[:]) || !fill_random(random[:]) {
-			fail_fetch(c, "no entropy from /dev/random")
-			return
-		}
-		if !libtls.client_handshake(f.tls, priv, random) {
-			fail_fetch(c, "the TLS handshake failed")
-			return
-		}
+	if !sealed(u.scheme) {
+		return true
 	}
-
+	if len(roots) == 0 && u.scheme != "gemini" {
+		fail_fetch(c, "no trust roots, so no https")
+		return false
+	}
+	f.tls = new(libtls.Client)
+	libtls.client_init(f.tls, libtls.IO{ctx = f, read = tls_read, write = tls_write}, roots, time.unix(now_seconds(), 0), u.host)
 	if u.scheme == "gemini" {
-		fetch_gemini(f, u)
-		return
+		libtls.client_tofu(f.tls)
 	}
+	priv: [32]u8
+	random: [32]u8
+	if !fill_random(priv[:]) || !fill_random(random[:]) {
+		fail_fetch(c, "no entropy from /dev/random")
+		return false
+	}
+	if !libtls.client_handshake(f.tls, priv, random) {
+		fail_fetch(c, "the TLS handshake failed")
+		return false
+	}
+	if u.scheme == "gemini" && !tofu_check(f, u) {
+		fail_fetch(c, "the capsule's certificate is not the one first seen for it")
+		return false
+	}
+	return true
+}
 
-	// The request.
+Exchange :: enum u8 {
+	Ok,
+	Failed,
+	Stale, // A pooled connection that answered nothing: dial and try again
+}
+
+// exchange sends the request and takes the response: the status line, the
+// headers, and the body framed whichever way they say. An upgrade ends in the
+// WebSocket, read here until it closes.
+exchange :: proc(f: ^Fetch, u: Url) -> Exchange {
+	c := f.c
 	req: [REQUEST_MAX]u8
 	sink := libodin.sink_from(req[:])
-	libodin.put_str(&sink, string(c.method[:c.method_len]))
+	libodin.put_str(&sink, c.upgrade ? "GET" : string(c.method[:c.method_len]))
 	libodin.put_str(&sink, " ")
 	libodin.put_str(&sink, u.path)
 	libodin.put_str(&sink, " HTTP/1.1\r\nHost: ")
@@ -1067,20 +1196,33 @@ fetch :: proc(f: ^Fetch) {
 	if !extra_has(c, "accept:") {
 		libodin.put_str(&sink, "Accept: */*\r\n")
 	}
-	libodin.put_str(&sink, "Accept-Encoding: gzip\r\nConnection: close\r\n")
+	ws_key: [32]u8
+	ws_keylen := 0
+	if c.upgrade {
+		ws_keylen = ws_request_headers(&sink, ws_key[:])
+		if ws_keylen == 0 {
+			fail_fetch(c, "no entropy for the WebSocket key")
+			return .Failed
+		}
+	} else {
+		libodin.put_str(&sink, "Accept-Encoding: gzip\r\n")
+	}
 	if !c.cookies_off {
 		jar_header(&sink, u.host, u.path)
 	}
-	if len(c.post) > 0 {
+	if len(c.post) > 0 && !c.upgrade {
 		libodin.put_str(&sink, "Content-Length: ")
 		libodin.put_uint(&sink, u64(len(c.post)))
 		libodin.put_str(&sink, "\r\n")
 	}
 	libodin.put_str(&sink, string(c.extra[:c.extra_len]))
 	libodin.put_str(&sink, "\r\n")
-	if !stream_write(f, transmute([]u8)libodin.str(&sink)) || (len(c.post) > 0 && !stream_write(f, c.post[:])) {
+	if !stream_write(f, transmute([]u8)libodin.str(&sink)) || (len(c.post) > 0 && !c.upgrade && !stream_write(f, c.post[:])) {
+		if f.reused {
+			return .Stale
+		}
 		fail_fetch(c, "could not send the request")
-		return
+		return .Failed
 	}
 
 	// The status line and the headers, up to the empty line.
@@ -1091,25 +1233,37 @@ fetch :: proc(f: ^Fetch) {
 	for body_start < 0 {
 		n := stream_read(f, chunk[:])
 		if n <= 0 {
+			if f.reused && len(head) == 0 {
+				return .Stale
+			}
 			fail_fetch(c, "the response ended before its headers")
-			return
+			return .Failed
 		}
 		append(&head, ..chunk[:n])
 		body_start = find_blank_line(head[:])
 		if body_start < 0 && len(head) > HEADERS_MAX {
 			fail_fetch(c, "the headers are too long")
-			return
+			return .Failed
 		}
 	}
-	if !parse_head(c, string(head[:body_start])) {
+	text := string(head[:body_start])
+	if !parse_head(c, text) {
 		fail_fetch(c, "a status line this client does not understand")
-		return
+		return .Failed
 	}
-	framing := body_framing(string(head[:body_start]))
-	if v, has := header_value(string(head[:body_start]), "content-encoding"); has && libodin.contains(v, "gzip") {
+	jar_take(text, u.host)
+	if c.upgrade {
+		if !ws_accepted(text, string(ws_key[:ws_keylen])) {
+			fail_fetch(c, "the server did not take the WebSocket")
+			return .Failed
+		}
+		ws_run(f, head[body_start:])
+		return .Ok
+	}
+	framing := body_framing(text)
+	if v, has := header_value(text, "content-encoding"); has && libodin.contains(v, "gzip") {
 		c.gzip = true
 	}
-	jar_take(string(head[:body_start]), u.host)
 	c.state = .Streaming
 	answer_held(c)
 
@@ -1126,16 +1280,18 @@ fetch :: proc(f: ^Fetch) {
 	}
 	if !ok {
 		fail_fetch(c, "the body ended early")
-		return
+		return .Failed
 	}
 	if c.gzip && !inflate_gzip(c) {
 		fail_fetch(c, "the gzip body would not inflate")
-		return
+		return .Failed
 	}
 	digest: [32]u8
 	hash.hash_bytes_to_buffer(.SHA256, c.body[:], digest[:])
 	hex_of(digest[:], c.hash_hex[:])
 	c.state = .Done
+	f.keep = framing.kind != .Until_Close && reusable(text)
+	return .Ok
 }
 
 fill_random :: proc(buf: []u8) -> bool {
@@ -1743,7 +1899,21 @@ read_chunked :: proc(f: ^Fetch, first: []u8) -> bool {
 		}
 		data_at := eol + 2
 		if size == 0 {
-			return true
+			// The trailer, to its empty line, read off the wire too: a
+			// connection kept for the next request must start clean.
+			for {
+				if len(raw) >= data_at + 2 && raw[data_at] == '\r' && raw[data_at + 1] == '\n' {
+					return true
+				}
+				if end := find_blank_line(raw[data_at:]); end >= 0 {
+					return true
+				}
+				n := stream_read(f, chunk[:])
+				if n <= 0 {
+					return false
+				}
+				append(&raw, ..chunk[:n])
+			}
 		}
 		// The chunk's bytes and its CRLF, read until they are all here.
 		for len(raw) < data_at + size + 2 {

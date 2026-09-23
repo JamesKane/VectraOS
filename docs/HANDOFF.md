@@ -496,9 +496,11 @@ the documents it points at.
    the store), the Gemini scheme, and the dial through the fetch's io
    proc, each on the boot line against the same two fixtures.
 
-   **What is left in step 0**: a connection kept for the next request,
-   the WebSocket, and Gemini's trust-on-first-use. The `links` index is
-   the reader's, and step 1 keeps it.
+   **Step 0 is complete, September 2026**: the connection kept for the
+   next request, the WebSocket (`ctl upgrade`, then `ws`), and Gemini's
+   trust-on-first-use (`libtls`'s `client_tofu` and `<store>/known`), all
+   in `servers/webfs/wire.odin` and proven on the boot line. The `links`
+   index is the reader's, and step 1 keeps it.
 
    **Step 1, the reader, has begun.** `sys/libdoc` is the page as blocks
    and one layout to rows. `sys/libgemtext` and `sys/libmark` parse into
@@ -637,8 +639,9 @@ the documents it points at.
    and answers with it, and a `fetch` it writes to the network's `ctl` is
    EROFS. The read-only half is a new kernel bind, `bind -r`
    (`docs/NAMESPACE.md`). `post` is `social` until its requester in front
-   of `new` is built. **What is left of WEB** is step 0's remainder: a
-   connection kept for the next request, the WebSocket and TOFU.
+   of `new` is built. **Every WEB step's boot line is met.** What is left
+   is the "Not yet" notes still open in `docs/WEB.md`'s steps, each step's
+   deferred list, and the ghost's `post` requester.
 
    **GHOST steps 0 and 1 are done, which unblocks that.** Step 0 is
    `servers/modelfs`, a model as files, with the stub backend `modelfs -e

@@ -63,6 +63,13 @@ Conn :: struct {
 	leaf_rsa_e:     [8]u8,
 	leaf_rsa_e_len: int,
 
+	// The leaf certificate's sha256, over its DER, whether or not it chained:
+	// what a trust-on-first-use client remembers a host by. `chained` says the
+	// leaf verified to a root; it is false only when `tofu` let it through.
+	leaf_sha256: [32]u8,
+	chained:     bool,
+	tofu:        bool, // A leaf that chains to no root is accepted, unchained
+
 	// Record keys: `write` seals what this end sends, `read` opens what it gets.
 	write: Record_Keys,
 	read:  Record_Keys,

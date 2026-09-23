@@ -237,11 +237,27 @@ own, and the dial's parking calls go through that io proc too
 The boot line fetches, from `tests/websrv` over http, a chunked body, a
 gzipped one, a response that sets a cookie and one that echoes the
 cookie sent (and does not when `cookies off`), and from `tests/tlssrv` a
-body over https and a capsule over gemini. Not yet: a connection kept
-for the next request, the WebSocket, and Gemini's trust-on-first-use.
-A capsule's self-signed certificate today must chain to
-`/lib/tls/roots` like any other. The `links` index is the reader's, and
-step 1 keeps it.
+body over https and a capsule over gemini.
+
+**Step 0 is complete, September 2026.** The last three are in
+`servers/webfs/wire.odin`. A response framed by its length or chunked,
+from an HTTP/1.1 server that did not say close, leaves its connection in
+a pool of four, keyed by scheme, host and port, for half a minute. The
+next fetch there takes it, and dials once more when the server had
+dropped it while it idled. `ctl upgrade` makes the conversation a
+WebSocket, RFC 6455. The key's accept is checked, and `ws` is then a
+frame per read and per write. A ping is answered, fragments are joined,
+and `hangup` closes it by the handshake. A Gemini capsule whose
+certificate chains to no root is trusted on first use. `libtls` gained
+the mode, which still checks the server's signature, and the leaf's
+sha256 is held to the line `<store>/known` wrote the first time. An https
+fetch never trusts on first use. The boot line fetches three times from
+a server that counts a connection's requests and drops it after two, and
+reads `keep 1`, `keep 2`, `keep 1`. It trades frames with a scripted
+socket that pings and reports the pong. It takes a capsule's unrooted
+certificate the first time and the second, refuses it once its line is
+edited, and refuses it over https. The `links` index is the reader's,
+and step 1 keeps it.
 
 ## 4. The message shape, and the union that is a timeline
 

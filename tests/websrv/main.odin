@@ -8,6 +8,14 @@ chunks, the framing a client must reassemble. `/gz` is a body gzipped, with
 the header that says so. `/cookie` sets a cookie. `/whoami` answers with the
 `Cookie` header it was sent, or `none`.
 
+`/ka` keeps the connection: it answers `keep N`, N the requests this
+connection has carried, and takes the next request on it. After the second
+it hangs up without saying so, the way a server ends a connection that
+idled, so a client that kept it must dial again. A later `/ka` connection
+says close, since this server serves one connection at a time. `/ws` is a WebSocket: it
+pings first, echoes each text frame as `echo: ` and the text, and answers a
+close with `pongs N`, how many pongs came back, and a close of its own.
+
 Then it exits `ok`, or the name of the step that did not hold. The boot
 self-test runs it and has `webfs` fetch from it, `docs/WEB.md` step 0.
 
@@ -513,6 +521,10 @@ serve_one :: proc(lfd: i64, served: string) {
 		ok = say_json(dfd, 200, "<html><head><title>Source</title></head><body><p>See <a href=\"http://vectra.example/page.html\">the page</a>.</p></body></html>\n")
 	case "/wm-nolink":
 		ok = say_json(dfd, 200, "<html><head><title>Unrelated</title></head><body><p>Nothing here.</p></body></html>\n")
+	case "/ka":
+		ok = serve_keepalive(dfd, req[:])
+	case "/ws":
+		ok = serve_websocket(dfd, text)
 	case "/":
 		ok = libuser.write_full(int(dfd), transmute([]u8)string(CHUNKED))
 	case "/gz":
@@ -554,6 +566,129 @@ serve_one :: proc(lfd: i64, served: string) {
 	}
 	libnet.hangup(accepted)
 	_ = libuser.close(int(dfd))
+}
+
+// serve_keepalive answers `/ka` and every `/ka` after it on the same
+// connection, up to two, then ends it unannounced. Only the first connection
+// is kept: a later one says close, because this server takes one connection
+// at a time and one it waited on would hold every other client out.
+ka_connections: int
+
+serve_keepalive :: proc(dfd: i64, req: []u8) -> bool {
+	ka_connections += 1
+	if ka_connections > 1 {
+		KA_CLOSE :: "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nkeep 1\n"
+		return libuser.write_full(int(dfd), transmute([]u8)string(KA_CLOSE))
+	}
+	for n in 1 ..= 2 {
+		body: [16]u8
+		b := libuser.cat_into(body[:], "keep ", n == 1 ? "1" : "2", "\n")
+		head: [128]u8
+		hs := libodin.sink_from(head[:])
+		libodin.put_str(&hs, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ")
+		libodin.put_uint(&hs, u64(len(b)))
+		libodin.put_str(&hs, "\r\n\r\n")
+		if !libuser.write_full(int(dfd), transmute([]u8)libodin.str(&hs)) || !libuser.write_full(int(dfd), transmute([]u8)b) {
+			return false
+		}
+		if n == 2 {
+			break
+		}
+		// The next request on this connection, to its empty line.
+		got := 0
+		for !has_blank_line(req[:got]) {
+			m := libuser.read(int(dfd), req[got:])
+			if m <= 0 {
+				return true // The client let it go: fine
+			}
+			got += int(m)
+		}
+		if got < 8 || string(req[:8]) != "GET /ka " {
+			return false
+		}
+	}
+	return true
+}
+
+WS_GUID :: "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+// serve_websocket takes the upgrade, pings, echoes text frames, and answers
+// a close with the pongs it counted.
+serve_websocket :: proc(dfd: i64, text: string) -> bool {
+	key := header_value(text, "sec-websocket-key")
+	if key == "" {
+		return false
+	}
+	joined: [96]u8
+	j := libuser.cat_into(joined[:], key, WS_GUID)
+	digest: [20]u8
+	hash.hash_bytes_to_buffer(.Insecure_SHA1, transmute([]u8)j, digest[:])
+	acc: [32]u8
+	an := libodin.b64_encode(digest[:], acc[:])
+	for an % 4 != 0 {
+		acc[an] = '='
+		an += 1
+	}
+	head: [256]u8
+	h := libuser.cat_into(head[:], "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ", string(acc[:an]), "\r\n\r\n")
+	if !libuser.write_full(int(dfd), transmute([]u8)h) {
+		return false
+	}
+	ping := [3]u8{0x89, 0x01, 'p'}
+	if !libuser.write_full(int(dfd), ping[:]) {
+		return false
+	}
+	pongs := 0
+	raw: [8192]u8
+	have := 0
+	for {
+		// One frame, masked as a client's is: the header, the mask, the payload.
+		if have >= 2 {
+			op := raw[0] & 0x0F
+			length := int(raw[1] & 0x7F)
+			at := 2
+			if length == 126 && have >= 4 {
+				length = int(raw[2]) << 8 | int(raw[3])
+				at = 4
+			}
+			if (length < 126 || at == 4) && have >= at + 4 + length {
+				mask := raw[at:at + 4]
+				payload := raw[at + 4:at + 4 + length]
+				for i in 0 ..< length {
+					payload[i] ~= mask[i & 3]
+				}
+				switch op {
+				case 0x1:
+					out: [600]u8
+					e := libuser.cat_into(out[2:], "echo: ", string(payload))
+					out[0] = 0x81
+					out[1] = u8(len(e))
+					if !libuser.write_full(int(dfd), out[:2 + len(e)]) {
+						return false
+					}
+				case 0xA:
+					pongs += 1
+				case 0x8:
+					out: [32]u8
+					nb: [8]u8
+					e := libuser.cat_into(out[2:], "pongs ", libuser.itoa(nb[:], i64(pongs)))
+					out[0] = 0x81
+					out[1] = u8(len(e))
+					bye := [4]u8{0x88, 0x02, 0x03, 0xE8}
+					return libuser.write_full(int(dfd), out[:2 + len(e)]) && libuser.write_full(int(dfd), bye[:])
+				}
+				used := at + 4 + length
+				copy(raw[:], raw[used:have])
+				have -= used
+				continue
+			}
+		}
+		m := libuser.read(int(dfd), raw[have:])
+		if m <= 0 {
+			return false
+		}
+		have += int(m)
+	}
 }
 
 // header_int answers a header's number, or zero.

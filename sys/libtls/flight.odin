@@ -138,6 +138,9 @@ certificate :: proc(
 			c.state = .Failed
 			return false
 		}
+		if n_certs == 0 {
+			hash.hash_bytes_to_buffer(.SHA256, der, c.leaf_sha256[:])
+		}
 		certs[n_certs] = cert
 		n_certs += 1
 	}
@@ -165,12 +168,18 @@ certificate :: proc(
 		dns_name      = dns_name,
 		required_eku  = x509.EKU_Bit.Server_Auth,
 	}
+	// Trust on first use, for a Gemini capsule's self-signed certificate: a
+	// leaf that chains to no root is let through unchained, and the caller
+	// holds its fingerprint to the one it saw before. The signature is still
+	// checked at CertificateVerify, so the server must hold the leaf's key.
 	chain, verr := x509.verify_chain(leaf, opts, allocator)
-	if verr != .None {
+	if verr == .None {
+		delete(chain, allocator)
+		c.chained = true
+	} else if !c.tofu {
 		c.state = .Failed
 		return false
 	}
-	delete(chain, allocator)
 
 	// Keep the leaf's public key for the CertificateVerify to come.
 	if !capture_leaf_key(c, leaf) {

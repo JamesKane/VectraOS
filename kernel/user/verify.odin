@@ -12693,6 +12693,70 @@ verify_mailfs :: proc(r: ^Result) {
 	reap_orphans()
 }
 
+// remove_file takes a file away by name, if it is there.
+@(private = "file")
+remove_file :: proc(path: string) {
+	c, err := vfs.resolve(vfs.boot_namespace, path)
+	if err != vfs.OK {
+		return
+	}
+	_ = vfs.chan_remove(c)
+	vfs.chan_close(c)
+}
+
+// tofu_fetch runs `tlssrv -u`, the capsule no root names, for one fetch.
+@(private = "file")
+tofu_fetch :: proc(r: ^Result, url: string, body: []u8, hash: []u8, what: string) -> bool {
+	targs := [?]string{"tlssrv", "4433", "-u"}
+	targv := new(Argv)
+	_ = argv_from(targv, targs[:])
+	ts := start_path(r, "/bin/tlssrv", what, targv)
+	if ts == nil {
+		return false
+	}
+	sync.delay(PATIENCE)
+	bn, _, ok := web_fetch(url, body, hash)
+	for i in bn ..< len(body) {
+		body[i] = 0
+	}
+	// The server ends either way: it served, or the client hung up on it.
+	_ = wait(ts, PATIENCE * 5)
+	finish(r, ts, "and it is taken down")
+	return ok
+}
+
+// web_socket drives `/mnt/web/N/ws` against websrv's `/ws`: frames each way,
+// the ping the server sent answered, and a close answered with the count.
+@(private = "file")
+web_socket :: proc(r: ^Result, url: string) {
+	num: [16]u8
+	n := web_read_file("/mnt/web/clone", num[:])
+	conv := string(num[:max(n, 0)])
+	path: [128]u8
+	line: [256]u8
+	ctl := libodin_cat(path[:], "/mnt/web/", conv, "/ctl")
+	if !check(r, n > 0 && net_file_write(ctl, libodin_cat(line[:], "url ", url)) && net_file_write(ctl, "upgrade"), "a conversation asks for a WebSocket with ctl upgrade") {
+		return
+	}
+	c, err := vfs.open_path(vfs.boot_namespace, libodin_cat(path[:], "/mnt/web/", conv, "/ws"), vfs.O_RDWR)
+	if !check(r, err == vfs.OK, "and the open of ws starts the upgrade") {
+		return
+	}
+	frame: [256]u8
+	_, werr := vfs.chan_write(c, 0, transmute([]u8)string("hello"))
+	got, rerr := vfs.chan_read(c, 0, frame[:])
+	check(r, werr == vfs.OK && rerr == vfs.OK && string(frame[:got]) == "echo: hello", "a write is a frame out, and a read the frame that came back")
+	_, werr = vfs.chan_write(c, 0, transmute([]u8)string("two"))
+	got, rerr = vfs.chan_read(c, 0, frame[:])
+	check(r, werr == vfs.OK && rerr == vfs.OK && string(frame[:got]) == "echo: two", "a second frame each way")
+	check(r, net_file_write(libodin_cat(path[:], "/mnt/web/", conv, "/ctl"), "hangup"), "hangup closes the socket")
+	got, rerr = vfs.chan_read(c, 0, frame[:])
+	check(r, rerr == vfs.OK && string(frame[:got]) == "pongs 1", "and the server's last frame says the ping it sent was answered")
+	got, rerr = vfs.chan_read(c, 0, frame[:])
+	check(r, rerr == vfs.OK && got == 0, "and then the socket ends")
+	vfs.chan_close(c)
+}
+
 /*
 verify_webfs runs `servers/webfs`, the HTTP client as files, against two
 scripted servers on this machine's own stack: `websrv`, plain HTTP with a
@@ -12731,7 +12795,7 @@ verify_webfs :: proc(r: ^Result) {
 
 	// Plain HTTP, a chunked body.
 	{
-		wargs := [?]string{"websrv", "8080", "6"}
+		wargs := [?]string{"websrv", "8080", "9"}
 		wargv := new(Argv)
 		_ = argv_from(wargv, wargs[:])
 		ws := start_path(r, "/bin/websrv", "a scripted HTTP server starts", wargv)
@@ -12777,6 +12841,20 @@ verify_webfs :: proc(r: ^Result) {
 			url = libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/login")
 			bn, hn, ok = web_fetch(url, body[:], hash[:], "", nil, "user=glenda&pass=secret&next=%2F")
 			check(r, ok && string(body[:bn]) == "welcome glenda\n", "a POST carries its body, and the server answers what it was sent")
+
+			// A connection kept for the next request: the server counts the
+			// requests a connection carried, and drops it after two.
+			url = libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/ka")
+			bn, hn, ok = web_fetch(url, body[:], hash[:])
+			check(r, ok && string(body[:bn]) == "keep 1\n", "a response that did not say close leaves its connection kept")
+			bn, hn, ok = web_fetch(url, body[:], hash[:])
+			check(r, ok && string(body[:bn]) == "keep 2\n", "and the next request there rides the same connection")
+			bn, hn, ok = web_fetch(url, body[:], hash[:])
+			check(r, ok && string(body[:bn]) == "keep 1\n", "and one the server dropped while it idled is dialled again, with no error")
+
+			// The WebSocket: upgraded, a ping answered, frames each way, a close.
+			url = libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/ws")
+			web_socket(r, url)
 			check(r, wait(ws, PATIENCE * 5), "and the scripted server, its connections served, exits")
 			finish(r, ws, "and is taken down")
 		}
@@ -12821,6 +12899,32 @@ verify_webfs :: proc(r: ^Result) {
 			check(r, wait(ts, PATIENCE * 5), "and the TLS server exits")
 			finish(r, ts, "and is taken down")
 		}
+	}
+
+	// Trust on first use: a capsule whose certificate no root names.
+	{
+		CAPSULE_FP :: "f8b32a654ccbeb0c19e5a882d3f3faf4eca6a8e47f7576e546e888d93d86df8c"
+		url_buf: [128]u8
+		key_buf: [128]u8
+		url := libodin_cat(url_buf[:], "gemini://", string(sysname[:sn]), ":4433/")
+		key := libodin_cat(key_buf[:], string(sysname[:sn]), "!4433 ", CAPSULE_FP)
+		body: [1024]u8
+		hash: [80]u8
+		known: [512]u8
+		remove_file("/usr/glenda/lib/web/known")
+		ok := tofu_fetch(r, url, body[:], hash[:], "a capsule starts with a certificate no root names")
+		check(r, ok && string(body[:len("# hello, gemini\n")]) == "# hello, gemini\n", "webfs trusts it on first use")
+		kn := web_read_file("/usr/glenda/lib/web/known", known[:])
+		check(r, kn > 0 && string(known[:kn]) == key, "and writes down its host, port and fingerprint")
+		ok = tofu_fetch(r, url, body[:], hash[:], "the capsule starts again, the same certificate")
+		check(r, ok, "the same certificate the next time is taken")
+		check(r, net_file_write("/usr/glenda/lib/web/known", libodin_cat(key_buf[:], string(sysname[:sn]), "!4433 00000000000000000000000000000000000000000000000000000000000000ff\n")), "the line is edited, as for a key that changed")
+		ok = tofu_fetch(r, url, body[:], hash[:], "the capsule starts a third time")
+		check(r, !ok, "and a certificate that is not the one written down is refused")
+		url = libodin_cat(url_buf[:], "https://", string(sysname[:sn]), ":4433/")
+		ok = tofu_fetch(r, url, body[:], hash[:], "the capsule's server answers https")
+		check(r, !ok, "and https never trusts on first use: the certificate must chain")
+		remove_file("/usr/glenda/lib/web/known")
 	}
 
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")

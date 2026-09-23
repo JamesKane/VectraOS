@@ -100,6 +100,22 @@ client_init :: proc(cl: ^Client, io: IO, roots: []^x509.Certificate, now: time.T
 	cl.server_name = server_name
 }
 
+/*
+client_tofu asks for trust on first use: a leaf that chains to no root is
+accepted, and the caller checks `client_peer`'s fingerprint against the one it
+kept for the host. Set before the handshake. Gemini's convention, and nothing
+else's: an https fetch never asks for it.
+*/
+client_tofu :: proc(cl: ^Client) {
+	cl.conn.tofu = true
+}
+
+// client_peer answers the server leaf's sha256, and whether it chained to a
+// root. Good once the handshake is done.
+client_peer :: proc(cl: ^Client) -> (fingerprint: [32]u8, chained: bool) {
+	return cl.conn.leaf_sha256, cl.conn.chained
+}
+
 // -- The stream helpers ------------------------------------------------------
 
 // io_read_full fills `buf` completely, or returns false at end of stream or on
