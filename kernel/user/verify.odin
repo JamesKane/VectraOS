@@ -9290,7 +9290,7 @@ verify_windows :: proc(
 				verify_ctl(r, s, win_w, win_h, ox, oy, sy, fw, A3, first_ctl, server)
 		vfs.chan_close(again)
 
-		verify_pointer(r, s, fw, ox, oy)
+		verify_pointer(r, s, fw, ox, oy, server)
 	}
 
 }
@@ -9314,7 +9314,7 @@ A machine with no mouse -- the two `virt` boards -- has nothing to inject
 into, and the block is skipped rather than failed.
 */
 @(private = "file")
-verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #no_bounds_check {
+verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, server: ^Process) #no_bounds_check {
 	if !devfs.tree().mouse.present {
 		return
 	}
@@ -9502,6 +9502,36 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #n
 			fx, fy, fw2, fh, _, _, _ := wctl_geo("/mnt/1/wctl")
 			check(r, fx == x0 && fy == y0 && fw2 == w0 && fh == h0, "and the window is back where it began")
 		}
+	}
+
+	// -- Rules that apply wctl words ---------------------------------------------------
+
+	/*
+	`docs/WORKBENCH.md` step 5's rules: a match and the wctl lines it applies.
+	The server reads `$home/lib/workspaces`, so the kernel gives it a `home`
+	and writes one there: a title pattern that snaps the window right, a
+	program's first window that snaps it left, and a line in the old form,
+	a name and a number, that still reads. A zoom puts the window back.
+	*/
+	if server != nil && server.env != nil {
+		_ = env.set(server.env, "home", "/usr/glenda")
+		_ = make_disk_dir("/usr/glenda")
+		_ = make_disk_dir("/usr/glenda/lib")
+		rx0, ry0, rw0, rh0, _, _, _ := wctl_geo("/mnt/1/wctl")
+		wrote := write_disk_file("/usr/glenda/lib/workspaces", "# the self-test's rules\ntitle=rule* snap right\napp=ruletest first snap left, current\nrulewin 1\n")
+		if check(r, wrote && net_file_write("/mnt/ctl", "reload"), "a rules file is written and read on a reload") {
+			check(r, net_file_write("/mnt/1/ctl", "name rulewin"), "the window is named")
+			tx, _, _, _, _, _, _ := wctl_geo("/mnt/1/wctl")
+			check(r, tx == s.width / 2, "and a rule on a title pattern snaps it right")
+			check(r, net_file_write("/mnt/1/wctl", "app ruletest"), "the window says what program it is")
+			ax, _, _, _, cur, _, _ := wctl_geo("/mnt/1/wctl")
+			check(r, ax == 0 && cur, "and a rule on the program's first window snaps it left and makes it current, two lines in one rule")
+			_ = net_file_write("/mnt/1/wctl", "zoom")
+			zx, zy, zw, zh, _, _, _ := wctl_geo("/mnt/1/wctl")
+			check(r, zx == rx0 && zy == ry0 && zw == rw0 && zh == rh0, "and a zoom puts it back where it began")
+		}
+		remove_file("/usr/glenda/lib/workspaces")
+		_ = net_file_write("/mnt/ctl", "reload")
 	}
 
 	// -- The close gadget asks, and a window that will not go is killed ------------------

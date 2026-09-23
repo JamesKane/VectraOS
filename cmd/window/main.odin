@@ -242,6 +242,12 @@ start :: proc "c" (block: ^abi.Args) {
 	title := "name terminal"
 	_ = libuser.write(int(ctl), transmute([]u8)title)
 	_ = libuser.close(int(ctl))
+	// The program the window runs, for the server's rules: `app` on `wctl`.
+	if wfd := libuser.open(libdraw.win_path(path_buf[:], "/mnt", mine, "wctl"), abi.O_WRONLY); wfd >= 0 {
+		app: [48]u8
+		_ = libuser.write(int(wfd), transmute([]u8)libuser.cat_into(app[:], "app ", libuser.basename(cmd_path)))
+		_ = libuser.close(int(wfd))
+	}
 
 	/*
 	This window's own `/dev`, which is `rio`'s `filsysmount` one bind

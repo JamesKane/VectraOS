@@ -445,6 +445,7 @@ run_wctl takes one of `rio`'s lines, or one of the four this server adds.
     snap left|right|full, snap grid C R I   a half, the whole, or a cell
     minsize W H, maxsize W H   what a resize may give
     parent N       a transient of window N, or -1 for none
+    app NAME       the program the window is, for the rules
     backdrop       one of the three kinds a desktop needs
     bar
     popup
@@ -527,6 +528,14 @@ run_wctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bo
 		window_state(win, st)
 	case "snap":
 		return window_snap(win, rest)
+	case "app":
+		// The program the window is, for the rules: a word, set once.
+		name, tail := word(rest)
+		if len(name) == 0 || len(name) > len(win.app) || len(trim(tail)) != 0 {
+			return vectra9.EINVAL
+		}
+		win.app_n = copy(win.app[:], name)
+		rules_apply(win_at)
 	case "minsize", "maxsize":
 		w, tail := word(rest)
 		h, end := word(tail)

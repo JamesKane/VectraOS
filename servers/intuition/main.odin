@@ -929,10 +929,8 @@ window_name :: proc "contextless" (win: ^Window, name: []u8) -> vectra9.Errno #n
 		win.title_n = n
 
 	bar_show(win)
-	// And where a window with this name belongs, if a rule says.
-	if ws := rule_for(win.title[:n]); ws > 0 {
-		window_place(win, ws)
-	}
+	// And what the rules say of a window of this name.
+	rules_apply(int(uintptr(win) - uintptr(&windows[0])) / size_of(Window))
 	return vectra9.Errno(0)
 }
 
@@ -1035,6 +1033,10 @@ Window :: struct {
 	min_h:     int,
 	max_w:     int,
 	max_h:     int,
+
+	// The program that said so with `app` on `wctl`, for a rule to match.
+	app:       [32]u8,
+	app_n:     int,
 
 	// The window this one is a transient of, or -1: `parent N` on `wctl`.
 	// A transient is raised over its parent and hidden and sent to a
@@ -2199,6 +2201,7 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	win.zoomed = false
 	win.min_w, win.min_h, win.max_w, win.max_h = 0, 0, 0, 0
 	win.parent = -1
+	win.app_n = 0
 	// A window that named this slot as its parent named a window that is
 	// gone; it is nobody's transient now, not the new window's.
 	for i in 0 ..< MAX_WINDOWS {

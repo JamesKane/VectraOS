@@ -880,24 +880,27 @@ section 18.
   front with window 0 and hides and returns with it. It ends where it
   began.
 
-- **Rules that do more than place.** Small once the `wctl` words exist.
-  The `workspaces` file becomes a rules file. A line is a match and a
-  list of `wctl` words, separated by commas, applied when a window is
-  named:
+- **Rules that do more than place. Done, September 2026.** The
+  `workspaces` file is a rules file, `servers/intuition/workspace.odin`.
+  A line is a match and `wctl` lines separated by commas, applied when a
+  window is named and again when it says what program it is:
 
-      # rules: a match, and the wctl words it applies
+      # rules: a match, and the wctl lines it applies
       name=terminal       workspace 2
       title=Debugger*     workspace 3, snap right
       app=view first      snap grid 2 1 0
       transient           raise
 
-  A match is on the name, a title pattern, the program, and whether the
-  window is the first of its kind or a transient. The program is new to
-  the server. It arrives as an `app` word on `wctl`, which `cmd/window`
-  and `sys/libmui` write from the command's name. Section 8's decision on
-  rules names this reversal, and a rule is now something that wants it.
-  A line in today's form, a name and a number, still reads as
-  `name=` and `workspace`.
+  A match is terms that must all hold: `name=` exactly, `title=` a pattern
+  where `*` is any run, `app=` the program, `first` no other window of its
+  kind up, and `transient` a window with a parent. The program arrives as
+  `app` on `wctl`, which `cmd/window` writes from the command's name; a
+  toolkit program does not write it yet. A line in the old form, a name
+  and a number, still reads as `name=` and `workspace`. A rule's own lines
+  never apply rules again. The check is in `verify_pointer`: the kernel
+  gives the server a `home`, writes a rules file there and a `reload`, and
+  a title pattern snaps the window right, the program's first window snaps
+  it left and makes it current, and a zoom puts it back.
 
 - **Chords whose action is any `wctl` word.** Medium. Today `chord_act`
   in `servers/intuition/keys.odin` knows its own ten words, and

@@ -181,10 +181,31 @@ window_place :: proc "contextless" (win: ^Window, ws: int) #no_bounds_check {
 
 MAX_RULES :: 32
 
+/*
+A rule is a match and the `wctl` lines it applies, `docs/WORKBENCH.md` step 5.
+
+    # rules: a match, and the wctl words it applies
+    name=terminal       workspace 2
+    title=Debugger*     workspace 3, snap right
+    app=view first      snap grid 2 1 0
+    transient           raise
+
+A match is terms, each of which must hold: `name=` the window's name exactly,
+`title=` its name against a pattern where `*` is any run, `app=` the program
+that said so with `app` on `wctl`, `first` no other window of its kind up,
+and `transient` a window with a parent. The first word that is not a term
+begins the lines, separated by commas, each run as a `wctl` line on the
+window. A line in the old form, a name and a number, is `name=` that name
+and `workspace` that number, so an old file reads as it did.
+*/
 Rule :: struct {
-	name: [MAX_TITLE]u8,
-	n:    int,
-	ws:   int,
+	name:      []u8, // `name=`, or empty for any
+	title:     []u8, // `title=`, a pattern, or empty for any
+	app:       []u8, // `app=`, or empty for any
+	first:     bool,
+	transient: bool,
+	lines:     []u8, // The wctl lines, comma separated
+	old:       [16]u8, // `workspace N` for a line in the old form
 }
 
 rules: [MAX_RULES]Rule
@@ -192,15 +213,17 @@ nrules: int
 
 // The file's bytes, read once into a buffer the rules point into.
 rules_text: [4096]u8
+rules_n: int
 
 /*
 rules_load reads the rules file, the user's first and the machine's
-second, and keeps what parses. A line that is not a name and a number is
-skipped, which is what a comment is.
+second, and keeps what parses. A line with no lines to apply is skipped,
+which is what a comment is.
 */
 rules_load :: proc "contextless" () #no_bounds_check {
 	nrules = 0
 	n := read_user_file("workspaces", rules_text[:])
+	rules_n = n
 	if n <= 0 {
 		return
 	}
@@ -215,32 +238,144 @@ rules_load :: proc "contextless" () #no_bounds_check {
 		if hash := index_byte(line, '#'); hash >= 0 {
 			line = line[:hash]
 		}
-		name, rest := word(line)
-		if len(name) == 0 {
+		r := Rule{}
+		rest := line
+		// The old form: a bare name and a workspace number, and nothing else.
+		w1, r1 := word(rest)
+		w2, r2 := word(r1)
+		if len(w1) > 0 && index_byte(w1, '=') < 0 && !is_term(w1) {
+			if ws, ok := libdraw.scan_int_str(w2); ok && ws >= 1 && ws <= WORKSPACES && len(trim(r2)) == 0 {
+				r.name = w1
+				k := copy(r.old[:], "workspace ")
+				k += copy(r.old[k:], w2)
+				rules[nrules] = r
+				rules[nrules].lines = rules[nrules].old[:k]
+				nrules += 1
+				continue
+			}
+		}
+		// The terms, then the lines.
+		for {
+			w, after := word(rest)
+			if len(w) == 0 || !is_term(w) {
+				break
+			}
+			switch {
+			case has_prefix(w, "name="):
+				r.name = w[5:]
+			case has_prefix(w, "title="):
+				r.title = w[6:]
+			case has_prefix(w, "app="):
+				r.app = w[4:]
+			case string(w) == "first":
+				r.first = true
+			case string(w) == "transient":
+				r.transient = true
+			}
+			rest = after
+		}
+		r.lines = trim(rest)
+		if len(r.lines) == 0 {
 			continue
 		}
-		num, _ := word(rest)
-		ws, ok := libdraw.scan_int_str(num)
-		if !ok || ws < 1 || ws > WORKSPACES {
-			continue
-		}
-		r := &rules[nrules]
-		r.n = copy(r.name[:], name)
-		r.ws = ws
+		rules[nrules] = r
 		nrules += 1
 	}
 }
 
-// rule_for answers the workspace a rule names for a window's name, or
-// zero.
-rule_for :: proc "contextless" (name: []u8) -> int #no_bounds_check {
+@(private = "file")
+is_term :: proc "contextless" (w: []u8) -> bool {
+	return has_prefix(w, "name=") || has_prefix(w, "title=") || has_prefix(w, "app=") || string(w) == "first" || string(w) == "transient"
+}
+
+@(private = "file")
+has_prefix :: proc "contextless" (w: []u8, p: string) -> bool {
+	return len(w) >= len(p) && string(w[:len(p)]) == p
+}
+
+// rules_applying keeps a rule's own lines from applying rules again.
+@(private = "file") rules_applying: bool
+
+/*
+rules_apply runs every rule that matches window `at`, when it is named and
+when it says what program it is. Each matching rule's lines run in order,
+as `wctl` lines the window might have written itself.
+*/
+rules_apply :: proc "contextless" (at: int) #no_bounds_check {
+	if rules_applying {
+		return
+	}
+	rules_applying = true
+	defer rules_applying = false
+	win := &windows[at]
 	for i in 0 ..< nrules {
 		r := &rules[i]
-		if r.n == len(name) && string(r.name[:r.n]) == string(name) {
-			return r.ws
+		if !rule_matches(r, at) {
+			continue
+		}
+		rest := r.lines
+		for len(rest) > 0 {
+			k := index_byte(rest, ',')
+			one := rest
+			if k >= 0 {
+				one = rest[:k]
+				rest = rest[k + 1:]
+			} else {
+				rest = rest[:0]
+			}
+			if cmd := trim(one); len(cmd) > 0 && win.used {
+				_ = run_wctl(at, cmd)
+			}
 		}
 	}
-	return 0
+}
+
+@(private = "file")
+rule_matches :: proc "contextless" (r: ^Rule, at: int) -> bool #no_bounds_check {
+	win := &windows[at]
+	name := win.title[:win.title_n]
+	if len(r.name) > 0 && string(r.name) != string(name) {
+		return false
+	}
+	if len(r.title) > 0 && !glob(r.title, name) {
+		return false
+	}
+	if len(r.app) > 0 && string(r.app) != string(win.app[:win.app_n]) {
+		return false
+	}
+	if r.transient && win.parent < 0 {
+		return false
+	}
+	if r.first {
+		// Of its kind: its program when it named one, else its name.
+		for i in 0 ..< MAX_WINDOWS {
+			o := &windows[i]
+			if i == at || !o.used {
+				continue
+			}
+			same := win.app_n > 0 ? string(o.app[:o.app_n]) == string(win.app[:win.app_n]) : string(o.title[:o.title_n]) == string(name)
+			if same {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// glob matches `text` against `pat`, where `*` is any run of bytes.
+glob :: proc "contextless" (pat: []u8, text: []u8) -> bool #no_bounds_check {
+	if len(pat) == 0 {
+		return len(text) == 0
+	}
+	if pat[0] == '*' {
+		for i in 0 ..= len(text) {
+			if glob(pat[1:], text[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	return len(text) > 0 && pat[0] == text[0] && glob(pat[1:], text[1:])
 }
 
 /*

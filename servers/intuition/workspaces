@@ -1,9 +1,21 @@
-# workspaces: a window's name, and the workspace it opens on.
+# workspaces: rules, a match and the wctl lines it applies to a window.
 #
 # The draw server reads this file at start and on a `reload` line to
 # /srv/draw/ctl, from $home/lib/workspaces first and /lib/workspaces
-# second, and applies a rule when a window is named. A window with no rule
-# stays on the workspace it was born on, which is the current one.
+# second, and applies each rule that matches when a window is named and
+# when it says what program it is (`app` on wctl). A window no rule
+# matches stays where it was born, on the current workspace.
 #
-#   terminal   2
-#   view       3
+# A match is terms, all of which must hold:
+#   name=NAME      the window's name, exactly
+#   title=PATTERN  its name, `*` any run
+#   app=PROGRAM    the program, as `window` and the toolkit say it
+#   first          no other window of its kind is up
+#   transient      a window with a parent
+# then wctl lines separated by commas. A name and a number is the old
+# form, `name=` and `workspace`.
+#
+#   terminal              2
+#   title=Debugger*       workspace 3, snap right
+#   app=view first        snap grid 2 1 0
+#   transient             raise
