@@ -42,6 +42,12 @@ th_bar := CHASSIS_BAR
 th_bar_lit := CHASSIS_BAR_LIT
 th_bar_shade := CHASSIS_BAR_SHADE
 
+// The frame's three numbers, `frame.edge`, `frame.title` and `frame.well`.
+// A theme that names none draws the chassis's, `FRAME_EDGE` and the rest.
+th_frame_edge := FRAME_EDGE
+th_frame_title := FRAME_TITLE
+th_frame_well := FRAME_WELL
+
 /*
 The desktop's ground, by name, `docs/WORKBENCH.md` step 5. The theme file
 names a ground once and picks one:
@@ -88,9 +94,10 @@ th_closegrace_ms := CLOSE_GRACE_MS
 @(private = "file") home_buf: [THEME_MAX]u8
 @(private = "file") base_buf: [THEME_MAX]u8
 
-// Comfortably over the 769-byte shipped `/lib/theme`, the largest file either
-// buffer holds; a `themes/*` base or a personal file is far smaller.
-THEME_MAX :: 1024
+// Over the shipped `/lib/theme`, the largest file either buffer holds, with
+// room for a scheme's `colour` lines. It was 1024 until the shipped file
+// passed it and its last lines, the desk's pick among them, went unread.
+THEME_MAX :: 4096
 
 /*
 theme_reload reads `$home/lib/theme`, resolves a leading `use <name>` to its
@@ -106,6 +113,7 @@ theme_reload :: proc "contextless" () #no_bounds_check {
 	th_bar = CHASSIS_BAR
 	th_bar_lit = CHASSIS_BAR_LIT
 	th_bar_shade = CHASSIS_BAR_SHADE
+	th_frame_edge, th_frame_title, th_frame_well = FRAME_EDGE, FRAME_TITLE, FRAME_WELL
 	th_closegrace_ms = CLOSE_GRACE_MS
 	ndesk_defs = 0
 	desk_pick_n = 0
@@ -190,7 +198,18 @@ itself out again". The gadgets inside are the client's to redraw, off the same
 the restacked frames to the glass at once.
 */
 theme_rechrome :: proc "contextless" () #no_bounds_check {
+	ox, oy := inset_x(), inset_y()
 	theme_reload()
+	// A frame of another size moves every framed window's client area. Each
+	// keeps its area's size and its pixels, and the window grows or shrinks
+	// around it, so a client that draws nothing new still shows what it drew.
+	if ox != inset_x() || oy != inset_y() {
+		for i in 0 ..< MAX_WINDOWS {
+			if windows[i].used {
+				window_reframe(&windows[i], ox, oy)
+			}
+		}
+	}
 	// The ground may have changed: lay it again under every window.
 	desk_paint(0, 0, scr_w, scr_h)
 	for i in 0 ..< MAX_WINDOWS {
@@ -247,10 +266,25 @@ theme_apply_line :: proc "contextless" (line: []u8) #no_bounds_check {
 		desk_define(after)
 	case "desk.ground":
 		desk_pick_n = copy(desk_pick[:], value)
+	case "frame.edge":
+		set_metric(&th_frame_edge, value, 1, libdraw.MAX_DEPTH)
+	case "frame.title":
+		set_metric(&th_frame_title, value, FRAME_TITLE_MIN, FRAME_TITLE_MAX)
+	case "frame.well":
+		set_metric(&th_frame_well, value, 1, libdraw.MAX_DEPTH)
 	case "closegrace":
 		if secs, ok := libdraw.scan_int_str(value); ok && secs >= 0 && secs <= 600 {
 			th_closegrace_ms = u64(secs) * 1000
 		}
+	}
+}
+
+// set_metric reads a number into `dst` when it is inside `lo..hi`, and leaves
+// the chassis value when it is not.
+@(private = "file")
+set_metric :: proc "contextless" (dst: ^int, value: []u8, lo: int, hi: int) {
+	if v, ok := libdraw.scan_int_str(value); ok && v >= lo && v <= hi {
+		dst^ = v
 	}
 }
 

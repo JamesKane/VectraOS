@@ -560,13 +560,13 @@ desk_pieces :: proc "contextless" (pieces: []libdraw.Piece, sx0: int, sy0: int, 
 /*
 And what a `frame` makes: a bevel's edges, and two panels.
 
-Written against the three depths a frame is actually made of rather than
-against `MAX_DEPTH`, which no part of a frame uses. Raising `FRAME_EDGE` is
-what should grow this array, and against `MAX_DEPTH` it would not have.
+Written against the deepest edge and well a theme may name, which is
+`MAX_DEPTH` now that the depths are the theme's, `th_frame_edge` and
+`th_frame_well`, rather than constants.
 
 Its own bound rather than `libdraw.MAX_PIECES`, which is what one panel makes.
 */
-MAX_FRAME_PIECES :: 4 * FRAME_EDGE + (1 + 4) + (1 + 4 * FRAME_WELL) + 4 * libdraw.MAX_GADGET_PIECES + (libdraw.MAX_PIECES + 1)
+MAX_FRAME_PIECES :: 4 * libdraw.MAX_DEPTH + (1 + 4) + (1 + 4 * libdraw.MAX_DEPTH) + 4 * libdraw.MAX_GADGET_PIECES + (libdraw.MAX_PIECES + 1)
 
 /*
 The window frame's three numbers, and the only three a window's chassis has.
@@ -584,24 +584,44 @@ readbacks by the same amount and could not import `servers/`. That made the
 test agree with the code under test: no mutation of a frame's geometry could
 fail a check. The test finds a window's client area by scanning the glass for
 it now, so these are layout policy in the one process that has any.
+
+**These three are the chassis's, and the theme may name others**,
+`frame.edge`, `frame.title` and `frame.well`, `docs/CHROME.md` brick 1. The
+frame drawn is `th_frame_edge`, `th_frame_title` and `th_frame_well` in
+`theme.odin`. A client learns where its area begins from the insets on its
+`wctl` line, never from a copy of these.
 */
 FRAME_EDGE :: 3
 FRAME_TITLE :: 20
 FRAME_WELL :: 2
 
-// `libdraw.edges` and `libdraw.panel` clamp to `MAX_DEPTH`, and a clamped frame
-// would leave a band of the window that `window_frame` below does not tile. The
-// tiling is what clears a reused slot, so the clamp is a compile error rather
-// than a gap.
+// The bounds a theme's frame numbers are held to. `libdraw.edges` and
+// `libdraw.panel` clamp to `MAX_DEPTH`, and a clamped frame would leave a band
+// of the window that `window_frame` below does not tile. The tiling is what
+// clears a reused slot, so a depth past it is refused at the parse rather than
+// drawn as a gap. A bar must hold a glyph and its gadgets.
+FRAME_TITLE_MIN :: libfont.FONT_HEIGHT + 2
+FRAME_TITLE_MAX :: 40
 #assert(FRAME_EDGE <= libdraw.MAX_DEPTH)
 #assert(FRAME_WELL <= libdraw.MAX_DEPTH)
+#assert(FRAME_TITLE >= FRAME_TITLE_MIN && FRAME_TITLE <= FRAME_TITLE_MAX)
 
 // Where the client area begins inside a window, which is the one piece of
-// frame arithmetic that does not depend on the window's size. A caller that
-// wants only the origin reads these rather than inventing a width to hand
-// `frame_client`.
-FRAME_INSET_X :: FRAME_EDGE + FRAME_WELL
-FRAME_INSET_Y :: FRAME_EDGE + FRAME_TITLE + FRAME_WELL
+// frame arithmetic that does not depend on the window's size: the left and
+// right inset, and the top. The bottom is the same as the sides.
+inset_x :: proc "contextless" () -> int {
+	return th_frame_edge + th_frame_well
+}
+
+inset_y :: proc "contextless" () -> int {
+	return th_frame_edge + th_frame_title + th_frame_well
+}
+
+// gadget_size is a frame gadget's side, inside the bar with two pixels of
+// trim around it.
+gadget_size :: proc "contextless" () -> int {
+	return th_frame_title - 4
+}
 
 // What the bar keeps clear around its text. The bar is `FRAME_TITLE` tall and
 // a glyph is sixteen, so the vertical half of this is what centres one.
@@ -653,7 +673,7 @@ passes (0, 0). Answers how many pieces it wrote; size the array by
 `MAX_FRAME_PIECES`.
 */
 window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, h: int, lit: bool) -> int #no_bounds_check {
-	n := libdraw.edges(out, x, y, w, h, .Raised, th_plinth_lit, th_plinth_shade, FRAME_EDGE)
+	n := libdraw.edges(out, x, y, w, h, .Raised, th_plinth_lit, th_plinth_shade, th_frame_edge)
 	if n == 0 {
 		return 0
 	}
@@ -663,7 +683,7 @@ window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int
 	// fact rather than three: `frame_bar_at` is where the bar is, and this
 	// asks it rather than deriving the same numbers a second time.
 	bx, by, bw, bh := frame_bar_at(x, y, w)
-	n += libdraw.well(out[n:], bx, by + bh, bw, h - (by - y) - bh - FRAME_EDGE, FRAME_WELL)
+	n += libdraw.well(out[n:], bx, by + bh, bw, h - (by - y) - bh - th_frame_edge, th_frame_well)
 	// And the gadgets, over the bar and the corner. `gadget_at` is where
 	// each sits, and `hit_test` asks it too, so a press lands where the
 	// gadget was drawn.
@@ -705,7 +725,7 @@ frame_bar :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, l
 // across. The painter that draws the name needs it, and so does whatever
 // repaints one bar's worth of glass.
 frame_bar_at :: proc "contextless" (x: int, y: int, w: int) -> (int, int, int, int) {
-	return x + FRAME_EDGE, y + FRAME_EDGE, w - 2 * FRAME_EDGE, FRAME_TITLE
+	return x + th_frame_edge, y + th_frame_edge, w - 2 * th_frame_edge, th_frame_title
 }
 
 /*
@@ -724,7 +744,8 @@ frame_client :: proc "contextless" (win: ^Window) -> (x: int, y: int, cw: int, c
 	if !framed(win) {
 		return 0, 0, win.w, win.h
 	}
-	return FRAME_INSET_X, FRAME_INSET_Y, win.w - 2 * FRAME_INSET_X, win.h - FRAME_INSET_Y - FRAME_INSET_X
+	ix, iy := inset_x(), inset_y()
+	return ix, iy, win.w - 2 * ix, win.h - iy - ix
 }
 
 // frame_window is the inverse: the window a client area of `cw` by `ch` needs
@@ -734,7 +755,8 @@ frame_window :: proc "contextless" (win: ^Window, cw: int, ch: int) -> (w: int, 
 	if !framed(win) {
 		return cw, ch
 	}
-	return cw + 2 * FRAME_INSET_X, ch + FRAME_INSET_Y + FRAME_INSET_X
+	ix, iy := inset_x(), inset_y()
+	return cw + 2 * ix, ch + iy + ix
 }
 
 // framed says whether a window wears a frame. The three kinds a desktop
@@ -819,8 +841,8 @@ state_lamp :: proc "contextless" (out: []libdraw.Piece, win: ^Window) -> int #no
 		return 0
 	}
 	bx, by, _, _ := frame_bar_at(0, 0, win.w)
-	lx := bx + FRAME_PAD + GADGET + 2
-	ly := by + (FRAME_TITLE - LAMP) / 2
+	lx := bx + FRAME_PAD + gadget_size() + 2
+	ly := by + (th_frame_title - LAMP) / 2
 	color := win.state == .Working ? libpal.PHOSPHOR : libpal.AMBER
 	return libdraw.lamp(out, lx, ly, LAMP, color, true)
 }
@@ -904,12 +926,12 @@ title_text :: proc "contextless" (win: ^Window) #no_bounds_check {
 	// The name starts past the close gadget and stops before the two at
 	// the right. A window that wants a person has a lamp in that first gap,
 	// so its name starts one lamp further in; see `state_lamp`.
-	tx := bx + FRAME_PAD + GADGET + 2
+	tx := bx + FRAME_PAD + gadget_size() + 2
 	if win.state != .Idle {
 		tx += STATE_LAMP_GAP
 	}
 	ty := by + (bh - libfont.FONT_HEIGHT) / 2
-	right := bx + bw - FRAME_PAD - 2 * GADGET - 4
+	right := bx + bw - FRAME_PAD - 2 * gadget_size() - 4
 	// The name is UTF-8, so a glyph is one rune and not one byte: the column
 	// steps per rune, and a rune past ASCII comes from a subfont the loader
 	// keeps. A rune no range holds draws nothing and still takes its column.
@@ -1870,7 +1892,7 @@ read_geometry :: proc "contextless" (report: []u8) -> bool {
 	// And a window has to have room for a client area inside its frame. A
 	// screen too small for one is a geometry this server cannot draw on,
 	// which is the refusal it already makes for a depth it cannot pack.
-	if win_w <= 2 * FRAME_INSET_X || win_h <= FRAME_INSET_Y + FRAME_INSET_X {
+	if win_w <= 2 * inset_x() || win_h <= inset_y() + inset_x() {
 		return false
 	}
 	return win_w <= scr_w
@@ -2165,7 +2187,7 @@ cascade_x :: proc "contextless" (i: int) -> int {
 cascade_y :: proc "contextless" (i: int) -> int {
 	span := max(scr_h - win_h, 1)
 	across := max((scr_w - win_w) / max(win_w / 2, 1) + 1, 1)
-	return ((i / across) * FRAME_TITLE) % (span + 1)
+	return ((i / across) * th_frame_title) % (span + 1)
 }
 
 /*
@@ -2504,6 +2526,52 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 	}
 	repaint(win.x, win.y, max(ow, nw), max(oh, nh))
 	return vectra9.Errno(0)
+}
+
+/*
+window_reframe moves a window's client pixels to where a new frame puts them,
+after a theme `reload` changes the frame's numbers. `ox` and `oy` are the
+insets the window was drawn with.
+
+**The client area keeps its size and its pixels.** A client that paints
+through the command stream sends client coordinates, which the server moves
+by the insets, so it needs to know nothing. A client that paints the store
+reads its origin off the `store` file again, and one that places a popup reads
+the insets off `wctl` again. So the window grows or shrinks by the change, and
+the rows move inside the run, in the order that never reads a row already
+written. A frame the run cannot hold at this size gives up client rows and
+columns from the right and the bottom, the way a `size` past the glass would
+be refused. The caller repaints the whole glass after.
+*/
+window_reframe :: proc "contextless" (win: ^Window, ox: int, oy: int) #no_bounds_check {
+	if !framed(win) {
+		return
+	}
+	cw := max(win.w - 2 * ox, 0)
+	ch := max(win.h - oy - ox, 0)
+	nx, ny := inset_x(), inset_y()
+	cw = min(cw, win.stride - 2 * nx)
+	ch = min(ch, win.rows - ny - nx)
+	if cw <= 0 || ch <= 0 {
+		return
+	}
+	move_row :: proc "contextless" (win: ^Window, r: int, ox, oy, nx, ny, cw: int) #no_bounds_check {
+		src := (oy + r) * win.stride + ox
+		dst := (ny + r) * win.stride + nx
+		copy(win.pixels[dst:dst + cw], win.pixels[src:src + cw])
+	}
+	if ny > oy || (ny == oy && nx > ox) {
+		for r := ch - 1; r >= 0; r -= 1 {
+			move_row(win, r, ox, oy, nx, ny, cw)
+		}
+	} else {
+		for r in 0 ..< ch {
+			move_row(win, r, ox, oy, nx, ny, cw)
+		}
+	}
+	win.w = cw + 2 * nx
+	win.h = ch + ny + nx
+	window_chrome(win)
 }
 
 /*

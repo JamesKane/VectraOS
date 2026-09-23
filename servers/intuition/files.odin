@@ -426,13 +426,19 @@ answer_hotkeys :: proc "contextless" () {
 
 /*
 wctl_report is what a read of a window's `wctl` answers, which is `rio`'s
-line with the workspace after it:
+line with the workspace after it, and the frame's insets after that:
 
-    x y w h current visible 2
+    x y w h current visible 2 5 25 5 5
 
 The rectangle is the window's, frame and all, on the screen. That is
 what a client that moves itself wants to know, and what `ctl` does not
 say. `current` or `notcurrent` is the focus, and `visible` or `hidden`.
+
+The insets are left, top, right and bottom: where the client area sits
+inside that rectangle. A window with no frame answers four zeros. A client
+adds the first two to `x y` for its area's place on the screen, and reads
+them again when it needs it, because a theme `reload` may change the frame,
+`docs/CHROME.md` brick 1.
 */
 wctl_report :: proc "contextless" (out: []u8, win: ^Window) -> int {
 	at := put_number(out, 0, win.x)
@@ -445,6 +451,11 @@ wctl_report :: proc "contextless" (out: []u8, win: ^Window) -> int {
 	at = put_report(out, at, focused(win) ? " current" : " notcurrent")
 	at = put_report(out, at, win.hidden ? " hidden " : " visible ")
 	at = put_number(out, at, win.workspace)
+	cx, cy, cw, ch := frame_client(win)
+	for v in ([4]int{cx, cy, win.w - cx - cw, win.h - cy - ch}) {
+		at = put_report(out, at, " ")
+		at = put_number(out, at, v)
+	}
 	return put_report(out, at, "\n")
 }
 
@@ -707,8 +718,8 @@ transients_raise :: proc "contextless" (at: int) #no_bounds_check {
 window_size_at :: proc "contextless" (win: ^Window, x: int, y: int, w: int, h: int) -> vectra9.Errno {
 	cw, ch := w, h
 	if framed(win) {
-		cw -= 2 * FRAME_INSET_X
-		ch -= FRAME_INSET_Y + FRAME_INSET_X
+		cw -= 2 * inset_x()
+		ch -= inset_y() + inset_x()
 	}
 	if err := window_size(win, cw, ch); err != vectra9.Errno(0) {
 		return err

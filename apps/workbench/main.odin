@@ -290,6 +290,7 @@ bar_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
 			which = i
 		}
 	}
+	libmui.window_locate(w)
 	open_menu(which, w.sx + (titles[which] != nil ? titles[which].x : 0), w.sy + BAR_H)
 }
 
@@ -477,6 +478,7 @@ back_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 }
 
 back_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
+	libmui.window_locate(w)
 	open_menu(0, w.sx + x, w.sy + y)
 }
 

@@ -48,6 +48,7 @@ on_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 on_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
 	menu.win = &menu_win
 	menu.handler = menu_chosen
+	libmui.window_locate(w)
 	libmui.menu_open(&menu, menu_items[:], w.sx + x, w.sy + y)
 }
 

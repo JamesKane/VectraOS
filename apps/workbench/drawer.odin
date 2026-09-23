@@ -225,6 +225,7 @@ drawer_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 
 drawer_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
 	front = (^Drawer)(w.user)
+	libmui.window_locate(w)
 	open_menu(2, w.sx + x, w.sy + y)
 }
 
@@ -321,6 +322,7 @@ drawer_drop :: proc "contextless" (w: ^libmui.Window, item: int, x: int, y: int)
 		return
 	}
 	// The screen point the drop landed on, from the source's client origin.
+	libmui.window_locate(w)
 	dst := drawer_at(w.sx + x, w.sy + y)
 	if dst == nil || dst == src {
 		return // released on nothing, or back on its own drawer
@@ -360,6 +362,7 @@ drawer_at :: proc "contextless" (sx: int, sy: int) -> ^Drawer #no_bounds_check {
 		if d == nil || !d.used {
 			continue
 		}
+		libmui.window_locate(&d.win)
 		if sx >= d.win.sx && sx < d.win.sx + d.win.cw && sy >= d.win.sy && sy < d.win.sy + d.win.ch {
 			return d
 		}

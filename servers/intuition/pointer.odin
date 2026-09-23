@@ -114,9 +114,6 @@ grab_win: int
 // which is the border, the well and a corner of the client area.
 SIZE_GRIP :: 12
 
-// The gadgets' size, inside the bar with two pixels of copper around each.
-GADGET :: FRAME_TITLE - 4
-
 // What a press landed on.
 Hit :: enum u8 {
 	None,
@@ -355,11 +352,11 @@ gadget_at :: proc "contextless" (win: ^Window, g: libdraw.Gadget) -> (x: int, y:
 	bx, by, bw, _ := frame_bar_at(0, 0, win.w)
 	switch g {
 	case .Close:
-		return bx + 2, by + 2, GADGET
+		return bx + 2, by + 2, gadget_size()
 	case .Zoom:
-		return bx + bw - 2 - GADGET, by + 2, GADGET
+		return bx + bw - 2 - gadget_size(), by + 2, gadget_size()
 	case .Depth:
-		return bx + bw - 4 - 2 * GADGET, by + 2, GADGET
+		return bx + bw - 4 - 2 * gadget_size(), by + 2, gadget_size()
 	case .Size:
 		return win.w - SIZE_GRIP, win.h - SIZE_GRIP, SIZE_GRIP
 	}

@@ -333,13 +333,11 @@ window's store as it paints the bar now. The third is outside every window,
 so the compositor draws it, `docs/DRAW.md` section 19. At `glow 0` the
 frame keeps the line and the letters, and there is no halo.
 
-**The frame's size moves, and that is the blocker `docs/WORKBENCH.md` step
-5 names.** A 24-pixel bar with a 1-pixel edge is not today's 20 and 3.
+**The frame's size moves, and brick 1 cleared the way for it.** A 24-pixel bar with a 1-pixel edge is not today's 20 and 3.
 `sys/libmui` places its client area by `FRAME_INSET_X` and `FRAME_INSET_Y`,
-constants copied from the server. So the first brick of this plan is the
-server saying a window's insets on its `ctl` line, and every client reading
-them. After that, a frame's metrics are the theme's. That is "frames by
-name", which step 5 left waiting.
+constants copied from the server. So the first brick of this plan put
+the insets on a window's `wctl` line, for every client to read. A frame's
+metrics are the theme's now, and brick 5 changes the numbers.
 
 ## 8. B, C, D: one menu, three places
 
@@ -569,11 +567,16 @@ Each brick ends with a check in `kernel/user/verify.odin`, on three
 architectures, and a screendump in `docs/` where the brick changes the
 look.
 
-1. **Insets on `ctl`.** The server reports a window's frame insets. The
-   toolkit, `cmd/window` and `sys/libapp` read them, and the copied
-   constants go. The check: a theme that widens the bar moves a toolkit
-   window's client area, and its button is still where a press lands.
-   Small. This is also step 5's "frames by name".
+1. **Insets on `wctl`. Done, September 2026.** The window's `wctl` line
+   ends with the frame's four insets, and the theme names the frame's
+   three numbers, `frame.edge`, `frame.title` and `frame.well`. The toolkit
+   reads the insets with `window_locate`, and the copied constants are
+   gone. `sys/libapp` already read its origin off the `store` file, and
+   `cmd/window` never needed one. A reload that changes the frame keeps
+   each client area's size and pixels, and the window grows round it. The
+   check: a theme with `frame.title 30` moves the demo's face ten rows
+   down under a taller bar, with its client area the same size. This is
+   also step 5's "frames by name".
 2. **Schemes.** `colour` lines, the job roles and their old names, the
    four scheme files, and `tools/contrast.py` in `lint`. The check: `use
    daylight` and a reload repaint a toolkit window's face in daylight's

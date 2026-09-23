@@ -5488,6 +5488,54 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			check(r, restored, "and with the file gone the shipped grid is laid again")
 		}
 
+		/*
+		A frame by name, `docs/CHROME.md` brick 1. The server says a window's
+		insets on its `wctl` line, and a theme may size the bar. The client
+		area keeps its size and its pixels and the window grows round it, so
+		the demo's face moves down by what the bar gained, and the rows the
+		client had at the top are bar now.
+		*/
+		wx, wy, ww, wh, l0, t0, r0, b0, wok := wctl_frame("/mnt/0/wctl")
+		check(r, wok && l0 == 5 && t0 == 25 && r0 == 5 && b0 == 5, "the window's wctl line says the frame's insets, 5 25 5 5 for the chassis frame")
+		gb: [96]u8
+		gn := read_once("/mnt/0/ctl", gb[:])
+		cw0, ch0, _, _, _ := libdraw.parse_geometry(gb[:max(gn, 0)])
+		if wok && write_disk_file("/usr/glenda/lib/theme", "frame.title 30\n") && net_file_write("/mnt/ctl", "reload") {
+			grown := false
+			for _ in 0 ..< PATIENCE * 10 {
+				if _, _, _, h1, _, t1, _, _, ok1 := wctl_frame("/mnt/0/wctl"); ok1 && t1 == 35 && h1 == wh + 10 {
+					grown = true
+					break
+				}
+				sync.delay(1)
+			}
+			check(r, grown, "a theme that names frame.title 30, and a reload, and the top inset is 35 and the window ten rows taller")
+			gn = read_once("/mnt/0/ctl", gb[:])
+			cw1, ch1, _, _, _ := libdraw.parse_geometry(gb[:max(gn, 0)])
+			check(r, cw1 == cw0 && ch1 == ch0, "and the client area keeps its size, so the client lays out nothing")
+			moved := false
+			for _ in 0 ..< PATIENCE * 10 {
+				if fb.get_raw(s, gx, probe_y + 10) == magnesium && fb.get_raw(s, wx + ww / 2, wy + 30) == copper {
+					moved = true
+					break
+				}
+				sync.delay(1)
+			}
+			check(r, moved, "and the demo's face sits ten rows lower, under a copper bar where its client area began")
+			remove_file("/usr/glenda/lib/theme")
+			shrunk := false
+			if net_file_write("/mnt/ctl", "reload") {
+				for _ in 0 ..< PATIENCE * 10 {
+					if _, _, _, h2, _, t2, _, _, ok2 := wctl_frame("/mnt/0/wctl"); ok2 && t2 == 25 && h2 == wh {
+						shrunk = true
+						break
+					}
+					sync.delay(1)
+				}
+			}
+			check(r, shrunk, "and with the file gone the chassis frame comes back at its old size")
+		}
+
 		// The preferences window: a toolkit window of every role, walked
 		// off the parser's own list.
 		if pp := start_path(r, "/bin/prefs", "the preferences window starts"); pp != nil {
@@ -10098,6 +10146,40 @@ wctl_geo :: proc(path: string) -> (x: int, y: int, w: int, h: int, current: bool
 	hidden = libodin.contains(text, " hidden")
 	ok = ok1 && ok2 && ok3 && ok4
 	return
+}
+
+// wctl_frame reads a window's wctl line: the rectangle, and the frame's four
+// insets after the workspace, `docs/CHROME.md` brick 1. The two focus words
+// are skipped, so the numbers are x y w h, the workspace, then the insets.
+wctl_frame :: proc(path: string) -> (x, y, w, h, l, t, rr, b: int, ok: bool) {
+	line: [128]u8
+	n := read_once(path, line[:])
+	if n <= 0 {
+		return
+	}
+	nums: [9]int
+	got := 0
+	at := 0
+	for at < n && got < len(nums) {
+		for at < n && (line[at] == ' ' || line[at] == '\n') {
+			at += 1
+		}
+		start := at
+		for at < n && line[at] != ' ' && line[at] != '\n' {
+			at += 1
+		}
+		if at == start {
+			break
+		}
+		if v, vok := libdraw.scan_int_str(line[start:at]); vok {
+			nums[got] = v
+			got += 1
+		}
+	}
+	if got < len(nums) {
+		return
+	}
+	return nums[0], nums[1], nums[2], nums[3], nums[5], nums[6], nums[7], nums[8], true
 }
 
 // wctl_place reads a window's wctl and answers where the window is.

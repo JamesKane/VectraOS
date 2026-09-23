@@ -208,7 +208,7 @@ there and, on a change, reads the files again and lays out every window of
 this program that follows the shared theme. No state is lost, because the
 tree holds no look: a theme change takes the path a resize takes.
 */
-THEME_MAX :: 1024
+THEME_MAX :: 4096
 
 theme_loaded: bool
 @(private = "file") theme_home_buf: [THEME_MAX]u8

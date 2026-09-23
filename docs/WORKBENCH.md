@@ -1020,8 +1020,7 @@ section 18.
   other two are beaten, and as `style`, where it is another program's and
   copper wins; and `prefs` opens a toolkit window of its own.
 
-- **Frames and backgrounds by name. The grounds are done, September
-  2026; frames wait.** The theme file names a desktop ground once and
+- **Frames and backgrounds by name. Done, September 2026.** The theme file names a desktop ground once and
   picks one, `servers/intuition/theme.odin`:
 
       desk grid   grid  slate_deep void 32   # pattern, ground, line, step
@@ -1036,13 +1035,18 @@ section 18.
   that defines `desk flat plain copper` and picks it turns the desktop
   copper, and with the file gone the grid comes back.
 
-  Frames by name wait. A frame's metrics are geometry the client shares:
-  `sys/libmui` places its client area by `FRAME_INSET_X` and `_Y`, the
-  server's constants copied. A frame a theme could size would move every
-  client's area under it. That wants the server to say a window's insets
-  on `wctl`, and every client to read them, before a theme may name one.
-  That is brick 1 of step 6, because the study's frame changes the
-  metrics.
+  A frame's metrics are the theme's too, `frame.edge`, `frame.title` and
+  `frame.well`, which is brick 1 of step 6. `sys/libmui` placed its client
+  area by the server's inset constants, copied. So the window's `wctl` line
+  now ends with the frame's four insets: left, top, right and bottom.
+  `libmui.window_locate` reads them when a program turns a point in its
+  window into one on the screen, for a popup or a drop. A reload that
+  changes the frame keeps every client area's size and pixels, and the
+  window grows round it, `window_reframe` in `servers/intuition`. The
+  check is in `verify_muiwin`. The chassis says `5 25 5 5`. A theme with
+  `frame.title 30` makes the top inset 35 and the window ten rows taller.
+  The client area keeps its size, and the demo's face sits ten rows lower
+  under a copper bar. With the file gone the chassis frame comes back.
 
 ### Step 6: the chrome study
 
@@ -1050,8 +1054,9 @@ section 18.
 three bricks come first and in that order, because the rest paint through
 them:
 
-1. The server says a window's frame insets on `ctl`, and the copied
-   `FRAME_INSET` constants go. This is step 5's "frames by name".
+1. The server says a window's frame insets on `wctl`, and the copied
+   `FRAME_INSET` constants go. This is step 5's "frames by name". Done,
+   September 2026.
 2. Schemes: `colour` lines, the job roles, four scheme files, and a
    contrast check in `lint`.
 3. `sys/libraster`, and the toolkit painting its window's store in place

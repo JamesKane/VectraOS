@@ -145,11 +145,6 @@ Kind :: enum u8 {
 	Popup,
 }
 
-// The frame's client offsets, the server's `FRAME_INSET_X` and `_Y`: three
-// of edge, two of well, and the twenty of the title bar above.
-FRAME_INSET_X :: 5
-FRAME_INSET_Y :: 25
-
 // Two presses on one gadget within this many milliseconds are a double click.
 DOUBLE_MS :: 400
 
@@ -361,21 +356,7 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 
 	// Where the client area is on the screen, off `wctl`, so a popup opened
 	// at a point in this window lands under the pointer.
-	win.sx, win.sy = 0, 0
-	if wfd := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "wctl"), abi.O_RDONLY); wfd >= 0 {
-		wn := libuser.read(int(wfd), win.geo[:])
-		_ = libuser.close(int(wfd))
-		at := 0
-		if x, xok := libdraw.scan_int(win.geo[:max(int(wn), 0)], &at); xok {
-			if y, yok := libdraw.scan_int(win.geo[:max(int(wn), 0)], &at); yok {
-				win.sx, win.sy = x, y
-				if win.kind == .Normal {
-					win.sx += FRAME_INSET_X
-					win.sy += FRAME_INSET_Y
-				}
-			}
-		}
-	}
+	window_locate(win)
 
 	// This window's own /dev, when the program is the window's alone, so a
 	// program it starts inherits the window as its console. The files open
@@ -1018,4 +999,59 @@ walk_interactive :: proc "contextless" (
 	for c := o.first; c != nil; c = c.next {
 		walk_interactive(c, current, first, found_current, next)
 	}
+}
+
+/*
+window_locate reads where the window's client area is on the screen into
+`sx` and `sy`, off its `wctl` line: the window's corner, and the frame's
+left and top insets after the workspace. The server says the insets, so a
+theme with another frame moves no client by a number it copied.
+
+A window moves, and a `reload` may change its frame, so a program asks
+again before it turns a point in its window into a point on the screen:
+a popup's place, or a drop's. False when the line cannot be read, and
+`sx`/`sy` keep what they held.
+*/
+window_locate :: proc "contextless" (win: ^Window) -> bool #no_bounds_check {
+	// Buffers of its own: a program calls this from whichever thread holds
+	// the event, and the window's own buffers belong to the loop.
+	path: [128]u8
+	buf: [96]u8
+	wfd := libuser.open(libdraw.win_path(path[:], win.base, win.id, "wctl"), abi.O_RDONLY)
+	if wfd < 0 {
+		return false
+	}
+	wn := libuser.read(int(wfd), buf[:])
+	_ = libuser.close(int(wfd))
+	line := buf[:max(int(wn), 0)]
+	// The numbers in order, the two focus words skipped: x y w h, the
+	// workspace, then the insets left, top, right and bottom.
+	nums: [9]int
+	got := 0
+	at := 0
+	for at < len(line) && got < len(nums) {
+		for at < len(line) && (line[at] == ' ' || line[at] == '\t' || line[at] == '\n') {
+			at += 1
+		}
+		start := at
+		for at < len(line) && line[at] != ' ' && line[at] != '\t' && line[at] != '\n' {
+			at += 1
+		}
+		if at == start {
+			break
+		}
+		if v, ok := libdraw.scan_int_str(line[start:at]); ok {
+			nums[got] = v
+			got += 1
+		}
+	}
+	if got < 2 {
+		return false
+	}
+	win.sx, win.sy = nums[0], nums[1]
+	if got == len(nums) {
+		win.sx += nums[6]
+		win.sy += nums[7]
+	}
+	return true
 }
