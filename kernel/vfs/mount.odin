@@ -53,6 +53,9 @@ Mount_Order :: enum {
 // carry it. `union_create_target` says what happens when none does.
 Mount_Flag :: enum {
 	Create,
+	// `bind -r`: the member and everything walked from it refuse every
+	// change. See `Chan.readonly`.
+	Read_Only,
 }
 
 Mount_Flags :: bit_set[Mount_Flag]
@@ -307,6 +310,9 @@ bind :: proc(
 	if m == nil {
 		chan_close(member_chan)
 		return vectra9.ENOMEM
+	}
+	if .Read_Only in flags {
+		member_chan.readonly = true
 	}
 	m.chan = member_chan
 	m.flags = flags
@@ -779,6 +785,9 @@ ns_describe :: proc(ns: ^Namespace, out: []u8) -> int #no_bounds_check {
 				}
 				if .Create in m.flags {
 					libodin.put_str(&sink, " -c")
+				}
+				if .Read_Only in m.flags {
+					libodin.put_str(&sink, " -r")
 				}
 				libodin.put_str(&sink, " ")
 				libodin.put_str(&sink, string(m.source[:m.source_len]))

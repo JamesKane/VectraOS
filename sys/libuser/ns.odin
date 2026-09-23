@@ -7,9 +7,10 @@ code. `$cputype` and any other `#e` variable in a path is expanded first, which
 is how `/$cputype/bin` in `/lib/namespace` becomes this machine's own tools.
 Plan 9's `newns`, the call `login` and `cpu` build a fresh world with.
 
-A line is `[bind|mount] [-a|-b|-c] source target`; a `#` line and a blank one
-are skipped. `-a` binds after what is there, `-b` before, and `-c` is accepted
-and does nothing yet, the way `bind`(1) has it.
+A line is `[bind|mount] [-a|-b|-c|-r] source target`; a `#` line and a blank
+one are skipped. `-a` binds after what is there, `-b` before, `-r` makes the
+bind read-only, and `-c` is accepted and does nothing yet, the way `bind`(1)
+has it.
 */
 package libuser
 
@@ -72,6 +73,7 @@ ns_apply :: proc "contextless" (line: string) -> bool #no_bounds_check {
 		return false
 	}
 	order := abi.ORDER_REPLACE
+	readonly := u64(0)
 	src: string
 	// The flags, then the two names.
 	for {
@@ -84,6 +86,8 @@ ns_apply :: proc "contextless" (line: string) -> bool #no_bounds_check {
 				order = abi.ORDER_BEFORE
 			case 'c':
 			// Accepted, and nothing yet -- `bind`(1) says the same.
+			case 'r':
+				readonly = abi.ORDER_READONLY
 			}
 			continue
 		}
@@ -96,7 +100,7 @@ ns_apply :: proc "contextless" (line: string) -> bool #no_bounds_check {
 	sbuf, dbuf: [256]u8
 	source := ns_expand(src, sbuf[:])
 	target := ns_expand(dst, dbuf[:])
-	r := verb == "mount" ? mount(source, target, order) : bind(source, target, order)
+	r := verb == "mount" ? mount(source, target, order) : bind(source, target, order | readonly)
 	return r >= 0
 }
 

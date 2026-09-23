@@ -53,6 +53,8 @@ check tee beta `{cat d/five}
 check env x=marker `{x=marker env | grep '^x='}
 rm -r d
 check rm end `{ls; echo end}
+# A read-only bind of this directory refuses the write a plain bind lets through.
+check bindr 'ro rw' `{bind -r /mnt /n/remote && {echo x > /n/remote/f || echo ro}; unmount /n/remote; bind /mnt /n/remote && echo y > /n/remote/f && echo rw; unmount /n/remote; rm /mnt/f}
 cd /
 check unmount gone `{unmount /mnt && echo gone}
 rm /srv/memfs

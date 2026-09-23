@@ -230,6 +230,36 @@ client side. A resolve leaves a fid bound but unopened, and a read of it comes
 back `EINVAL`. A second fid opened as a directory refuses its clone with
 `EBUSY`.
 
+## Two locks a namespace can carry
+
+**A read-only bind, `bind -r`.** A bind with `Mount_Flag.Read_Only` marks
+the member it stores, and every chan walked or cloned from that member
+inherits the mark, `Chan.readonly`. An open for writing, a create, a
+remove, a rename and a wstat through such a chan answer EROFS in the
+kernel, before a message reaches the server. The mark belongs to the path
+by which the namespace reached a file, not to the file. The same server
+bound plainly elsewhere, in this namespace or another, stays writable. A
+descriptor opened before the bind is not affected, which is Plan 9's rule
+for every bind. `ns` prints the flag as `-r`, and `newns` reads it back.
+
+Plan 9 has no read-only bind. It reaches the same end with a file's mode
+and a user who cannot write it, or with `exportfs -R`. Vectra takes the
+bind because the ghost's `social` class, `docs/WEB.md` section 10, must
+reach a person's networks and must not change them. The user `ghost`
+that a mode check needs is not written yet, and a class is a list of
+binds. `tests/tools.rc` checks both halves: the write refused through
+`bind -r`, and the same write let through a plain bind of the same
+directory.
+
+A union is not re-bound read-only by binding it onto itself. `bind -r X
+X` resolves `X` to the union's first member and replaces the union with
+it. A class that wants a union read-only binds each member with `-r`.
+
+**`RFNOMNT`, Plan 9's `noattach`.** A namespace can be locked against
+every later bind, mount, unmount and `#name`, and every fork inherits the
+lock. `docs/USER.md` has the flag and `docs/GHOST.md` section 4 the
+sandbox it makes.
+
 ## Known gaps
 
 - **Only a read can be given up on.** `chan_read_for` is the one operation with

@@ -11209,6 +11209,8 @@ verify_ghost :: proc(r: ^Result) {
 		ghost_stop(r, gp)
 	}
 
+	ghost_social(r, text[:])
+
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/model") == vfs.OK, "the mount of modelfs comes down")
 	check(r, srv.remove("model") == vfs.OK, "and its name")
 	check(r, wait(mp, PATIENCE * 5), "and modelfs exits")
@@ -11216,6 +11218,55 @@ verify_ghost :: proc(r: ^Result) {
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/n/remote") == vfs.OK, "the work directory's mount comes down")
 	check(r, srv.remove("ghostwork") == vfs.OK, "and its name, which ends memfs")
 	reap_orphans()
+}
+
+/*
+ghost_social is `docs/WEB.md` step 6's last clause: the ghost reads a
+timeline in the `social` class. `feedfs` serves the saved atom feed at
+`/mnt/feed`, and the class binds it with `bind -r`. The ghost lists the
+conversation and reads an entry's body. A change to the network, a
+`fetch` written to its `ctl`, answers EROFS. The model, which no class
+names, answers no such file.
+*/
+@(private = "file")
+ghost_social :: proc(r: ^Result, text: []u8) {
+	names := [?]string{"feedfs"}
+	argv := new(Argv)
+	if !check(r, argv != nil && argv_from(argv, names[:]), "a record for feedfs's arguments") {
+		return
+	}
+	fp := start_path(r, "/bin/feedfs", "feedfs starts, the timeline the social class reads", argv)
+	if fp == nil {
+		return
+	}
+	if !check(r, await_posted("feed") && srv.mount(vfs.boot_namespace, "/srv/feed", "/mnt/feed") == vfs.OK, "and is mounted at /mnt/feed") {
+		finish(r, fp, "and feedfs is taken down")
+		return
+	}
+	check(r, net_file_write("/mnt/feed/ctl", "fetch /lib/tests/one.atom"), "the saved atom feed is fetched")
+
+	gp := ghost_start(r, false)
+	if gp != nil {
+		n := web_read_file("/mnt/ghost/new", text)
+		check(r, n > 0 && net_file_write("/mnt/ghost/0/ctl", "class social") && net_file_write("/mnt/ghost/0/prompt", "what is new in my feeds"), "a session in the social class takes the prompt")
+		n = web_read_file("/mnt/ghost/0/reply", text, raw = true)
+		check(r, string(text[:max(n, 0)]) == "Hello, feed.", "and answers with what the timeline said")
+		n = web_read_file("/mnt/ghost/0/log", text, raw = true)
+		log := string(text[:max(n, 0)])
+		ghost_logv(r, log, "tool ls {\"path\": \"/mnt/feed/one\"}\n  ok 000000006aaa4c80.5755209cc066ae5a/", "the ghost lists the conversation, its entries by id")
+		ghost_logv(r, log, "/body\"}\n  ok Hello, feed.", "and reads an entry's body")
+		ghost_logv(r, log, "rc: /mnt/feed/ctl: EROFS", "a change to the network is refused: the class binds it read only")
+		ghost_logv(r, log, "\"/mnt/model/ctl\"}\n  error ENOENT", "and the model, in no class, is not there")
+		n = web_read_file("/mnt/ghost/0/ns", text, raw = true)
+		check(r, libodin.contains(string(text[:max(n, 0)]), "bind -r /mnt/feed /mnt/feed"), "ns shows the read-only bind")
+		check(r, dir_names("/mnt/feed", text) == "ctl me new event dict notify one", "and the network outside the sandbox took no fetch")
+		ghost_stop(r, gp)
+	}
+
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/feed") == vfs.OK, "the mount of feedfs comes down")
+	check(r, srv.remove("feed") == vfs.OK, "and its name")
+	check(r, wait(fp, PATIENCE * 5), "and feedfs exits")
+	finish(r, fp, "and is taken down")
 }
 
 // ghost_start starts the ghost, `-u` for the control, and mounts it.
@@ -13335,7 +13386,7 @@ serial log, one `ok name` per tool, and its exit word is `N ok` or
 `failed` and the names. The count is a constant here, so a check added to
 the script without a change here fails the boot, and says so.
 */
-TOOLS_OK :: "37 ok"
+TOOLS_OK :: "38 ok"
 
 verify_tools :: proc(r: ^Result) {
 	names := [?]string{"rc", "/lib/tests/tools.rc"}

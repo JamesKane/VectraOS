@@ -729,7 +729,7 @@ two_paths :: proc "contextless" (
 // enum does not have is `.Replace`.
 @(private = "file")
 mount_order :: proc "contextless" (order: u64) -> vfs.Mount_Order {
-	switch order {
+	switch order & 0xFF {
 	case 1: return .Before
 	case 2: return .After
 	}
@@ -773,7 +773,11 @@ sys_bind :: proc(src: uintptr, src_len: int, dst: uintptr, dst_len: int, order: 
 		return -i64(perr)
 	}
 
-	err := vfs.bind_path(p.ns, source, target, mount_order(order))
+	flags: vfs.Mount_Flags
+	if order & abi.ORDER_READONLY != 0 {
+		flags += {.Read_Only}
+	}
+	err := vfs.bind_path(p.ns, source, target, mount_order(order), flags)
 	if err != vfs.OK {
 		return -i64(err)
 	}

@@ -1,11 +1,13 @@
 # /lib/ghost/ns/social: a task that reads the person's networks,
 # docs/WEB.md section 10. The mounts the tree ships in no class; this
-# class adds the four networks and the mentions, read only. The store
-# is in every class, so it is not named here. factotum stays out.
+# class adds the feeds, the four networks and the mentions, read only:
+# `bind -r` makes every change under them refuse, so a network's `new`
+# and `ctl` answer EROFS. factotum stays out.
 bind /n/fs/$cputype/bin /bin
 bind /mnt/plumb /mnt/plumb
-bind /mnt/mail /mnt/mail
-bind /mnt/matrix /mnt/matrix
-bind /mnt/fedi /mnt/fedi
-bind /mnt/at /mnt/at
-bind /mnt/mention /mnt/mention
+bind -r /mnt/feed /mnt/feed
+bind -r /mnt/mail /mnt/mail
+bind -r /mnt/matrix /mnt/matrix
+bind -r /mnt/fedi /mnt/fedi
+bind -r /mnt/at /mnt/at
+bind -r /mnt/mention /mnt/mention

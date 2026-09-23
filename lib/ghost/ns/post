@@ -1,12 +1,13 @@
 # /lib/ghost/ns/post: a task that may post, docs/WEB.md section 10. It
-# is `social`, and the `new` of each network is reachable, with the
-# requester in front of it: a write to `new` asks the person first. A
-# task that talks the model into posting still finds a person who must
-# say yes.
+# is to be `social` with each network's `new` reachable behind the
+# requester: a write to `new` asks the person first. That requester is
+# not built yet, so until it is this class is `social`, read only, and a
+# task that talks the model into posting finds a refusal, not a post.
 bind /n/fs/$cputype/bin /bin
 bind /mnt/plumb /mnt/plumb
-bind /mnt/mail /mnt/mail
-bind /mnt/matrix /mnt/matrix
-bind /mnt/fedi /mnt/fedi
-bind /mnt/at /mnt/at
-bind /mnt/mention /mnt/mention
+bind -r /mnt/feed /mnt/feed
+bind -r /mnt/mail /mnt/mail
+bind -r /mnt/matrix /mnt/matrix
+bind -r /mnt/fedi /mnt/fedi
+bind -r /mnt/at /mnt/at
+bind -r /mnt/mention /mnt/mention

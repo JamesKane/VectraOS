@@ -181,6 +181,7 @@ server_walk1 :: proc(from: ^Chan, name: string) -> (^Chan, Errno) #no_bounds_che
 	}
 	nc.tree_root = from.tree_root
 	nc.mounted_over = chan_incref(from.mounted_over)
+	nc.readonly = from.readonly
 	return nc, OK
 }
 

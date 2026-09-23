@@ -435,17 +435,13 @@ the documents it points at.
    month, with mlibc itself and the compiler on the machine still ahead.
    Step 1 needs nothing before it, and steps 7 and 8 have step 0 under
    them.
-6. **The fleet, from step 3.** `docs/FLEET.md` is the plan, and steps 0
-   (the network), 1 (9P both ways) and 2 (users, `factotum`, the Noise
-   handshake, kfs owners) are done and on the bench. **Step 3 is next:**
-   roles as init scripts, root over the network, and one tree that serves
-   three architectures, with `cmd/timesync` and the real-time clock. Steps
-   4 (`cpu`) and 5 (the fleet's tools, the queue) follow it. Its bench is
-   two QEMU machines of two architectures on one laptop, driven by
-   `scripts/fleet.py`. The one loose end in step 2 is a permanent person
-   stage in that bench (the manual proof is reliable; the scripted one
-   flaked on console timing), and `/adm` on writable kfs so `auth newuser`
-   can append rather than the build staging the line.
+6. **The fleet.** `docs/FLEET.md` is the plan, and steps 0 to 5 are done
+   and on the bench: the network, 9P both ways, users and the Noise
+   handshake, roles and a diskless multi-architecture boot, `cpu` and
+   `rx` with the terminal's devices, a window and `^C` across, and the
+   fleet's tools and job queue. What is left is its deferred list, and
+   two loose ends from step 2: a permanent person stage in the scripted
+   bench, and `/adm` on writable kfs so `auth newuser` appends.
 7. **The ghost.** `docs/GHOST.md` is the plan, written before its code.
    A model is a file server with a local engine and a cloud backend
    behind one directory. The ghost runs the API's loop with seven tools
@@ -607,7 +603,7 @@ the documents it points at.
    the token refresh and an image read back as a part directory, which
    section 4 leaves to mail.
 
-   **Step 5 is under way.** `servers/matrixfs` reads a sync into rooms
+   **Step 5 is complete.** `servers/matrixfs` reads a sync into rooms
    as conversations, logs in at a homeserver with the password
    `factotum` holds, syncs with the token, and puts a message in a
    room; the boot line runs it offline on `tests/sync.json` and
@@ -627,19 +623,22 @@ the documents it points at.
    the passphrase: each exported session is kept sealed with AES-GCM
    under a key `factotum` derives from the passphrase for the identity
    `-i` names, and loaded at startup, so history opens after a restart.
-      under the passphrase, which ends step 5. **Step 5 is complete**: every
-   item section 8 names is in.
+   Every item section 8 names is in.
 
-   **Step 6 is under way, its publishing half done.** `cmd/httpd` serves a
+   **Step 6 is complete, September 2026.** `cmd/httpd` serves a
    directory as HTTP with `.md` rendered to HTML, `cmd/gemd` the same
    directory as Gemini over TLS, and `cmd/mkfeed` an Atom feed for it.
    Webmention is in both ways: `httpd` takes a `POST /mention`, verifies
    the source links here, and keeps it; `servers/mentionfs` serves the
    kept mentions at `/mnt/mention`; `cmd/webmention` tells each target's
    endpoint. All proven on the boot line, both directions and the
-   control. The two ghost classes (`social`, `post`) are staged under
-   `/lib/ghost/ns`. Left: the boot line's last clause, the ghost reading
-   a timeline in the `social` class, which needs `docs/GHOST.md` step 1.
+   control. The last clause runs in `verify_ghost`: a ghost session in the
+   `social` class lists a `feedfs` conversation, reads an entry's body,
+   and answers with it, and a `fetch` it writes to the network's `ctl` is
+   EROFS. The read-only half is a new kernel bind, `bind -r`
+   (`docs/NAMESPACE.md`). `post` is `social` until its requester in front
+   of `new` is built. **What is left of WEB** is step 0's remainder: a
+   connection kept for the next request, the WebSocket and TOFU.
 
    **GHOST steps 0 and 1 are done, which unblocks that.** Step 0 is
    `servers/modelfs`, a model as files, with the stub backend `modelfs -e
@@ -657,10 +656,8 @@ the documents it points at.
    `/proc/1/status` is ENOENT, a stale write is refused, a `kill` parks on
    `confirm` and a no refuses it, and a `bind` is EPERM. The control,
    `ghost -u`, forks without the lock, and the same bind succeeds.
-   `tests/ghost.rc` drives `ask`. **Next for WEB:** the boot line's last
-   clause, a scripted ghost in the `social` class reading a timeline over
-   `feedfs`. The class files now name `/n/fs/$cputype/bin`, the path that
-   resolves here. Step 1's leftovers are in `docs/GHOST.md`: memory, the
+   `tests/ghost.rc` drives `ask`. The class files name
+   `/n/fs/$cputype/bin`, the path that resolves here. Step 1's leftovers are in `docs/GHOST.md`: memory, the
    persisted transcript, the `debug` class, and the `post` requester.
 
    `webfs` and TLS are built once, for

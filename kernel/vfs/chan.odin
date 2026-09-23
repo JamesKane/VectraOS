@@ -59,6 +59,16 @@ Chan :: struct {
 	// The server's chunk bound from `Rlopen`/`Rlcreate`, or zero for "no
 	// promise". `chan_iounit` folds it into what a bulk caller chunks by.
 	iounit: u32,
+
+	/*
+	Reached through a read-only bind, `bind -r`. The member a bind stores is
+	marked, and every chan walked or cloned from it inherits the mark, so the
+	whole tree under it is read-only in that namespace and nowhere else. An
+	open for writing, a create, a remove, a rename and a wstat answer EROFS
+	before a message goes. The ghost's `social` class is why: the networks
+	are in reach and their `new` and `ctl` refuse. `docs/NAMESPACE.md`.
+	*/
+	readonly: bool,
 }
 
 // Linux open flags, as 9P2000.L carries them. Only the ones a Vectra server
@@ -173,6 +183,9 @@ instead.
 chan_open :: proc(c: ^Chan, flags: u32) -> Errno {
 	if c == nil {
 		return vectra9.EBADF
+	}
+	if c.readonly && (flags & 0o3 != O_RDONLY || flags & O_TRUNC != 0) {
+		return vectra9.EROFS
 	}
 	request := vectra9.Msg(vectra9.Tlopen{fid = c.fid, flags = flags})
 	reply: vectra9.Msg
@@ -340,6 +353,9 @@ chan_create :: proc(c: ^Chan, name: string, flags: u32, mode: u32) -> Errno {
 	if c == nil {
 		return vectra9.EBADF
 	}
+	if c.readonly {
+		return vectra9.EROFS
+	}
 	request := vectra9.Msg(vectra9.Tlcreate{fid = c.fid, name = name, flags = flags, mode = mode})
 	reply: vectra9.Msg
 	if e := rpc(c.server, &request, &reply); e != OK {
@@ -394,6 +410,9 @@ chan_remove :: proc(c: ^Chan) -> Errno {
 	if c.fid == vectra9.NOFID {
 		return vectra9.EBADF
 	}
+	if c.readonly {
+		return vectra9.EROFS
+	}
 
 	request := vectra9.Msg(vectra9.Tremove{fid = c.fid})
 	reply: vectra9.Msg
@@ -427,6 +446,9 @@ chan_rename :: proc(c: ^Chan, d: ^Chan, name: string) -> Errno {
 	}
 	if c.server != d.server {
 		return vectra9.EXDEV
+	}
+	if c.readonly || d.readonly {
+		return vectra9.EROFS
 	}
 	request := vectra9.Msg(vectra9.Trename{fid = c.fid, dfid = d.fid, name = name})
 	reply: vectra9.Msg
@@ -471,6 +493,9 @@ SETATTR_SIZE :: u32(0x0000_0008)
 chan_setattr :: proc(c: ^Chan, attr: vectra9.Tsetattr) -> Errno {
 	if c == nil {
 		return vectra9.EBADF
+	}
+	if c.readonly {
+		return vectra9.EROFS
 	}
 	request := attr
 	request.fid = c.fid
@@ -532,6 +557,7 @@ chan_clone :: proc(c: ^Chan) -> (^Chan, Errno) {
 	nc.tree_root = c.tree_root
 	nc.mounted_over = chan_incref(c.mounted_over)
 	nc.union_head = mount_point_incref(c.union_head)
+	nc.readonly = c.readonly
 	return nc, OK
 }
 

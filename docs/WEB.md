@@ -647,8 +647,9 @@ rather than at a URL that will rot.
 **None of it is in the sandbox by default.** `docs/GHOST.md` section 4's
 classes name what a task may reach, and `/mnt/mail`, `/mnt/matrix`,
 `/mnt/fedi` and `/mnt/at` are in none of the classes the tree ships. A
-class `social` adds them read-only, and a class `post` adds `new` with
-the requester in front of it. A task that talks the model into posting
+class `social` adds them read-only, with `bind -r`, so every change under
+them answers EROFS. A class `post` is to add `new` with the requester in
+front of it. Until that requester is built, `post` is `social`. A task that talks the model into posting
 finds no `new`, and one in the `post` class finds a person who must say
 yes.
 
@@ -1256,10 +1257,8 @@ name, so a client that dials by that name verifies it, and answers a
 `gemini://host/path` request with a status, a media type and the body.
 The boot line has `webfs` fetch the same `.md` page over Gemini and
 sees its gemtext raw, so the page is served both ways. Next: the `dict`
-files and the two ghost classes. The ghost reading a timeline in the
-`social` class waits on `docs/GHOST.md` step 1, which is not built. The ghost
-reading a timeline in the `social` class waits on `docs/GHOST.md` step
-1, which is not built.
+files and the two ghost classes, then the ghost reading a timeline in the
+`social` class, which step 6 closed.
 
 ### Step 6: publishing, and the ghost
 
@@ -1281,11 +1280,18 @@ the source and keeping it only when it links to the target, and
 under the page each is about; `cmd/webmention` reads a page and tells
 each target's endpoint. The boot line proves a page served both ways, a
 mention out to a scripted endpoint, and one in with its control. Every
-network server already serves its `dict`. The two ghost classes,
-`social` and `post`, are staged under `/lib/ghost/ns`. The one item
-left is the boot line's last clause, the ghost reading a timeline in
-the `social` class, which needs `docs/GHOST.md` step 1's `ghost`, not
-yet built; the classes wait for it, inert until then.
+network server already serves its `dict`.
+
+**Step 6 is complete, September 2026.** The last clause runs in
+`verify_ghost`. `feedfs` serves the saved atom feed at `/mnt/feed`, and a
+ghost session in the `social` class lists the conversation, reads an
+entry's body, and answers with it. A `fetch` its script writes to the
+network's `ctl` is refused with EROFS, and the model, in no class, is
+not there. The read-only half is a new kernel bind, `bind -r`, whose
+member and everything walked from it refuse every change,
+`docs/NAMESPACE.md`. The `social` class binds the feeds, the four
+networks and the mentions with it. `post` is the same until its
+requester in front of `new` is built, `docs/GHOST.md` section 4.
 
 ### Deferred, with the reason written down
 

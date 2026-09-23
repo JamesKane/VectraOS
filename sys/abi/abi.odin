@@ -92,6 +92,8 @@ O_TRUNC :: u64(0o1000)
 ORDER_REPLACE :: u64(0)
 ORDER_BEFORE :: u64(1)
 ORDER_AFTER :: u64(2)
+// A flag beside the order, not an order: the bind is read-only, `bind -r`.
+ORDER_READONLY :: u64(0x100)
 
 // What a child may inherit, as bits `spawn` takes. Zero shares the namespace
 // and copies the descriptors, which is Plan 9's default and Vectra's.

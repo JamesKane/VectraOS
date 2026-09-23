@@ -104,3 +104,42 @@
 {"type": "content_block_stop", "index": 0}
 {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
 {"type": "message_stop"}
+==
+# The social class, docs/WEB.md step 6's last clause: the ghost reads a
+# timeline, the feed network's conversation, and its entry's body.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "s1", "name": "ls", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"/mnt/feed/one\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "s2", "name": "read", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"/mnt/feed/one/000000006aaa4c80.5755209cc066ae5a/body\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# A change to the network, which the read-only bind refuses.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "s3", "name": "run", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"script\": \"echo fetch /lib/tests/two.rss > /mnt/feed/ctl\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# The model, which no class names.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "s4", "name": "read", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"/mnt/model/ctl\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello, feed."}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+{"type": "message_stop"}
