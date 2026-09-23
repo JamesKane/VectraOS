@@ -13413,12 +13413,40 @@ verify_mailfs :: proc(r: ^Result) {
 							cargv := new(Argv)
 							_ = argv_from(cargv, cnames[:])
 							if pm := start_path(r, "/bin/mothra", "the loader starts the reader on a mailto address, the compose window", cargv); pm != nil {
-								bx, _, _ := await_bar(s)
+								bx, by, bw := await_bar(s)
 								check(r, bx >= 0, "and the reader opens a framed window on the form")
-								sync.delay(PATIENCE)
-								// Tab to the address, Tab to the subject, the subject, Tab to
-								// the body, the body, and Return sends.
-								type_text("\t\ttyped subject\ttyped body\n")
+								/*
+								The first Tab selects the address, and a selected row sits on a
+								bar of the face. That bar is the sign the reader's key loop is
+								running, so the rest is typed only once it shows. A fixed delay
+								here used to lose the whole line now and then: typed before the
+								reader read keys, the form stayed empty and nothing was sent.
+								A Tab with no bar after it is typed again.
+								*/
+								face := fb.pack(s, fb.MAGNESIUM)
+								selected := false
+								for _ in 0 ..< 5 {
+									type_text("\t")
+									for _ in 0 ..< PATIENCE * 5 {
+										for y in by + 30 ..< min(by + 400, s.height) {
+											if _, run := row_span(s, y, face, bx + 4, bx + bw - 4); run > 100 {
+												selected = true
+												break
+											}
+										}
+										if selected {
+											break
+										}
+										sync.delay(1)
+									}
+									if selected {
+										break
+									}
+								}
+								check(r, selected, "and a Tab selects the address row, on a bar of the face: the reader is reading keys")
+								// Tab to the subject, the subject, Tab to the body, the body, and
+								// Return sends.
+								type_text("\ttyped subject\ttyped body\n")
 								arrived := false
 								for _ in 0 ..< PATIENCE * 40 {
 									n = web_read_file("/usr/glenda/sent.eml", text[:], raw = true)
