@@ -660,7 +660,7 @@ look.
    ground. On the glass, the demo's button label has a
    pixel between the amber and the magnesium, which the one-bit cells
    never drew. A control with no faces fails exactly those.
-5. **The frame, A. Done, September 2026, but for the gadgets.** The theme
+5. **The frame, A. Done, September 2026.** The theme
    line `frame.style metal` makes every bar brushed metal, `bar` to
    `bar.shade` with two hairline patterns. The front window's bar has a
    `focus` line along its foot. Its title is in the chrome face, `text` over
@@ -679,8 +679,14 @@ look.
    file gone, the pixel is the desktop's again. A control that paints no
    effects fails the first.
 
-   What is left: the gadgets are still the chassis's amber on magnesium.
-   The chassis stays the default, `/lib/theme`, because the suite's glass
+   On a metal bar the close, zoom and depth gadgets are the study's keys.
+   Each is a raised key in the scheme's `raised`, lit at the top, with a
+   twelve-pixel glyph in `text`. Close is a square with a dot, zoom a square
+   with a small one in its corner, depth two squares. A check reads the
+   zoom glyph's outline where the chassis gadget had plain face, and a
+   control that draws the chassis gadgets fails it.
+
+   What is left: the chassis stays the default, `/lib/theme`, because the suite's glass
    checks read the chassis's colours by name. Moving the default to `neon`
    means those checks read the theme's roles first, which is a brick of its
    own.

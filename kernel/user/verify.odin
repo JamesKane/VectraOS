@@ -5632,6 +5632,25 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 				}
 			}
 			check(r, lined, "and frame.style metal makes the bar a gradient with a focus line along its foot")
+			/*
+			And its gadgets are the study's keys, a glyph in `text` drawn in
+			outline. In the chassis metrics the zoom gadget is sixteen square
+			at the bar's right, and its glyph's twelve-pixel box starts two in.
+			The left edge of that box, halfway down, is amber in the metal key
+			and the plain magnesium face in the chassis's gadget.
+			*/
+			zx, zy := wx + ww - 21 + 2, wy + 5 + 2 + 6
+			keyed := false
+			if lined {
+				for _ in 0 ..< PATIENCE * 5 {
+					if v := fb.get_raw(s, zx, zy); (v >> 16 & 0xFF) > 160 && v != fb.pack(s, fb.AMBER) {
+						keyed = true
+						break
+					}
+					sync.delay(1)
+				}
+			}
+			check(r, keyed, "and its zoom gadget is the study's key: the glyph's outline in the text colour, where the chassis gadget was plain face")
 			remove_file("/usr/glenda/lib/theme")
 			cleared := false
 			if net_file_write("/mnt/ctl", "reload") {

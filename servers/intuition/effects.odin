@@ -205,18 +205,17 @@ bar_dress :: proc "contextless" (win: ^Window) #no_bounds_check {
 	libraster.hairline(&c, bx, by, bw, bh, 3, 0xFFFFFF, 9, true)
 	libraster.hairline(&c, bx + 1, by, bw, bh, 7, 0x000000, 15, true)
 
-	// The gadgets and the state lamp again, over the metal.
-	pieces: [MAX_FRAME_PIECES]libdraw.Piece
-	n := 0
+	// The gadgets over the metal, the study's keys, and the state lamp.
 	probe := Window{w = win.w, h = win.h}
 	for g in libdraw.Gadget {
 		if g == .Size {
 			continue
 		}
 		gx, gy, gs := gadget_at(&probe, g)
-		n += libdraw.gadget(pieces[n:], gx, gy, gs, g, false)
+		metal_gadget(&c, gx, gy, gs, g)
 	}
-	n += state_lamp(pieces[n:], win)
+	pieces: [MAX_FRAME_PIECES]libdraw.Piece
+	n := state_lamp(pieces[:], win)
 	win_pieces(win, pieces[:n])
 
 	front := focused(win)
@@ -224,6 +223,47 @@ bar_dress :: proc "contextless" (win: ^Window) #no_bounds_check {
 		libraster.fill(&c, bx, by + bh - 1, bw, 1, pack_rgb(th_focus))
 	}
 	title_face(win, &c, front)
+}
+
+/*
+metal_gadget draws one of a metal bar's gadgets as the study draws it. It is a
+raised key, the scheme's `raised` a little lit at the top and graded down to
+itself, with a one-pixel bevel. A twelve-pixel glyph in `text` sits on it.
+
+The glyphs keep Intuition's meanings. Close is a square with a dot in it. Zoom is a
+square with a small one in its corner. Depth is two squares, the front one
+solid over the back one's corner.
+*/
+@(private = "file")
+metal_gadget :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, size: int, g: libdraw.Gadget) {
+	raised := pack_rgb(th_raised)
+	libraster.vgrad(c, x, y, size, size, libraster.mix(raised, 0xFFFFFF, 36), raised)
+	libraster.bevel(c, x, y, size, size, 1, pack_rgb(th_plinth_lit), pack_rgb(th_plinth_shade))
+	ink := pack_rgb(th_text)
+	gx := x + (size - 12) / 2
+	gy := y + (size - 12) / 2
+	switch g {
+	case .Close:
+		outline(c, gx, gy, 12, 12, ink, 191)
+		libraster.fill(c, gx + 4, gy + 4, 4, 4, ink)
+	case .Zoom:
+		outline(c, gx, gy, 12, 12, ink, 191)
+		outline(c, gx + 2, gy + 2, 6, 6, ink, 255)
+	case .Depth:
+		outline(c, gx, gy, 8, 8, ink, 191)
+		libraster.fill(c, gx + 4, gy + 4, 8, 8, 0)
+		libraster.fill(c, gx + 5, gy + 5, 6, 6, ink)
+	case .Size:
+	}
+}
+
+// outline is a rectangle's one-pixel border in a colour at alpha `a`.
+@(private = "file")
+outline :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, w: int, h: int, color: u32, a: u32) {
+	libraster.tint(c, x, y, w, 1, color, a)
+	libraster.tint(c, x, y + h - 1, w, 1, color, a)
+	libraster.tint(c, x, y + 1, 1, h - 2, color, a)
+	libraster.tint(c, x + w - 1, y + 1, 1, h - 2, color, a)
 }
 
 /*

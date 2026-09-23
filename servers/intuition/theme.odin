@@ -60,6 +60,7 @@ pixels. The chassis names none of them and draws the frame it always did.
 */
 th_frame_metal := false
 th_focus := libpal.CYAN
+th_raised := libpal.MAGNESIUM // a metal bar's gadget keys, the toolkit's `face`
 th_text := libpal.AMBER
 th_dim := libpal.AMBER_DIM
 th_glow := 0
@@ -143,6 +144,7 @@ theme_reload :: proc "contextless" () #no_bounds_check {
 	th_frame_edge, th_frame_title, th_frame_well = FRAME_EDGE, FRAME_TITLE, FRAME_WELL
 	th_frame_metal = false
 	th_focus, th_text, th_dim = libpal.CYAN, libpal.AMBER, libpal.AMBER_DIM
+	th_raised = libpal.MAGNESIUM
 	th_glow, th_shadow = 0, 0
 	chrome_path_n = 0
 	th_chrome_track, th_chrome_caps = 0, false
@@ -317,6 +319,8 @@ theme_apply_line :: proc "contextless" (line: []u8) #no_bounds_check {
 		th_frame_metal = string(value) == "metal"
 	case "focus":
 		set_color(&th_focus, string(value))
+	case "face", "raised":
+		set_color(&th_raised, string(value))
 	case "text":
 		set_color(&th_text, string(value))
 	case "dim":
