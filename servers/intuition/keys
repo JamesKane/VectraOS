@@ -34,4 +34,5 @@ alt-space    overview              # every workspace at once
 alt-n        window rc -i          # a new shell, which the desktop runs
 alt-e        execute               # Execute Command...
 alt-m        menu                  # the desktop's first menu
+alt-l        lock                  # the screen lock, until the passphrase
 alt-button1  drag move             # alt and a drag anywhere on a window moves it

@@ -181,6 +181,11 @@ pointer_move :: proc "contextless" (x: int, y: int, b: u8, msec: u64) #no_bounds
 	}
 	cursor_show()
 
+	// Locked, the pointer moves and nothing else: no window hears it.
+	if locked {
+		return
+	}
+
 	// The overview owns the pointer while it is up: a press begins a gesture
 	// and the release decides it -- a tile switched to, or a window dragged to
 	// another workspace. See `overview_release`.

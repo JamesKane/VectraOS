@@ -229,6 +229,80 @@ key_find :: proc "contextless" (user, dom: string) -> ^Key #no_bounds_check {
 }
 
 /*
+key_check takes a `check` line: `user=`, `dom=` and `!passphrase=`. The key
+the passphrase derives is compared, public half to public half, with the one
+factotum holds for that user and domain, or, holding none, with the user's
+line in `/adm/keys`. Nothing is stored and nothing replaced, so a wrong
+passphrase costs nothing. The screen lock asks this, `docs/WORKBENCH.md`
+step 5: the draw server holds no key and links no crypto.
+*/
+key_check :: proc(line: string) -> bool #no_bounds_check {
+	user, has_user := attr(line, "user=")
+	dom, has_dom := attr(line, "dom=")
+	pass, has_pass := attr(line, "!passphrase=")
+	if !has_user || !has_dom || !has_pass || len(user) > NAME_MAX || len(dom) > NAME_MAX {
+		key_why = "error check wants user= dom= !passphrase=\n"
+		return false
+	}
+	spriv, spub, want: [32]u8
+	if !libauth.derive_static(spriv[:], pass, user, dom) {
+		key_why = "error the key would not derive: no memory for it\n"
+		return false
+	}
+	libauth.public_of(spub[:], spriv[:])
+	spriv = {}
+	if k := key_find(user, dom); k != nil {
+		want = k.spub
+	} else {
+		data, ok := libuser.read_file("/adm/keys", context.allocator)
+		if !ok {
+			key_why = "error no key held and no /adm/keys\n"
+			return false
+		}
+		defer delete(data)
+		found := false
+		text := string(data)
+		at := 0
+		for at < len(text) && !found {
+			e := at
+			for e < len(text) && text[e] != '\n' {
+				e += 1
+			}
+			ln := text[at:e]
+			at = e + 1
+			i := 0
+			for i < len(ln) && ln[i] != ' ' && ln[i] != '\t' {
+				i += 1
+			}
+			if ln[:i] != user {
+				continue
+			}
+			for i < len(ln) && (ln[i] == ' ' || ln[i] == '\t') {
+				i += 1
+			}
+			j := i
+			for j < len(ln) && ln[j] != ' ' && ln[j] != '\t' {
+				j += 1
+			}
+			found = libcrypto.hex_decode(want[:], ln[i:j]) == 32
+		}
+		if !found {
+			key_why = "error no key for that user\n"
+			return false
+		}
+	}
+	same := u8(0)
+	for i in 0 ..< 32 {
+		same |= spub[i] ~ want[i]
+	}
+	if same != 0 {
+		key_why = "error that is not the passphrase\n"
+		return false
+	}
+	return true
+}
+
+/*
 key_add takes a `key` line: `proto=noise`, a `user=`, a `dom=`, and either
 `!passphrase=` to derive the private key from or `!private=` giving it in
 hex, which is how a host's key file is loaded. A key for the same user and
@@ -1011,8 +1085,14 @@ handler :: proc "contextless" (
 		switch node {
 		case NODE_CTL:
 			line := string(m.data)
-			key_why = "error a line here begins with `key`\n"
-			ok2 := len(line) > 4 && line[:4] == "key " && key_add(line[4:])
+			key_why = "error a line here begins with `key` or `check`\n"
+			ok2: bool
+			switch {
+			case len(line) > 4 && line[:4] == "key ":
+				ok2 = key_add(line[4:])
+			case len(line) > 6 && line[:6] == "check ":
+				ok2 = key_check(line[6:])
+			}
 			if sl := ctl_slot(m.fid); sl != nil {
 				sl.reply_len = copy(sl.reply[:], ok2 ? "ok\n" : key_why)
 			}

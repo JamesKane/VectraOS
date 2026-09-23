@@ -378,6 +378,11 @@ it closes. Never per flush: nothing else paints the glass while this server
 holds it, so the desktop under a window that has not moved is still there.
 */
 desk_paint :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bounds_check {
+	if locked {
+		lock_paint(sx0, sy0, sx1, sy1)
+		cursor_show()
+		return
+	}
 	x0 := max(sx0, 0)
 	y0 := max(sy0, 0)
 	x1 := min(sx1, scr_w)
@@ -1241,6 +1246,11 @@ rather than the front of it: the beginning of a command is the part somebody
 meant.
 */
 type_at :: proc "contextless" (w: int, b: u8) #no_bounds_check {
+	// Locked, every key is the lock's, and no window sees one.
+	if locked {
+		lock_key(b)
+		return
+	}
 	if windows[w].cons_raw {
 		libuser.ring_push(&kbd[w], b)
 		answer_cons(w)
@@ -1359,6 +1369,12 @@ key_message :: proc "contextless" (msg: []u8) #no_bounds_check {
 	body := msg[1:]
 	switch msg[0] {
 	case 'c':
+		if locked {
+			for b in body {
+				lock_key(b)
+			}
+			return
+		}
 		// A mode on takes the keys it acts on, and no window sees them.
 		if mode_key(body) {
 			return
@@ -1756,6 +1772,9 @@ threadmain :: proc "contextless" (arg: rawptr) {
 		msize   = FRAME,
 	}
 		if libthread.threadcreate(key_thread, nil) < 0 {
+		libthread.threadexitsall("threadcreate")
+	}
+	if !lock_start() {
 		libthread.threadexitsall("threadcreate")
 	}
 	// The pointer, on a machine that has one. The two `virt` boards have
@@ -2533,7 +2552,7 @@ This is the one place that knows where a window sits, which is why `run_fill`
 and `run_blit` no longer do.
 */
 paint_window :: proc "contextless" (win: ^Window, area: ^Region) #no_bounds_check {
-	if !win.used || win.workspace != current_ws || win.hidden {
+	if locked || !win.used || win.workspace != current_ws || win.hidden {
 		return
 	}
 	for ai in 0 ..< area.n {

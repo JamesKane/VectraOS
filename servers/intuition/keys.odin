@@ -375,7 +375,8 @@ modifier is held. A modifier press fires nothing itself.
 */
 keys_update :: proc "contextless" (down: bool, runes: []rune) #no_bounds_check {
 	mods := mods_of(runes)
-	if down && mods != 0 {
+	// Locked, no chord acts: the keys are the lock's.
+	if down && mods != 0 && !locked {
 		for r in runes {
 			if is_mod(r) {
 				continue
@@ -402,7 +403,7 @@ keys_update :: proc "contextless" (down: bool, runes: []rune) #no_bounds_check {
 		} else if len(runes) == 1 && nheld_keys == 0 {
 			tap_mod = runes[0]
 		}
-	} else if tap_mod != 0 {
+	} else if tap_mod != 0 && !locked {
 		still := false
 		for r in runes {
 			if r == tap_mod {
@@ -603,6 +604,8 @@ chord_act :: proc "contextless" (action: []u8) -> bool #no_bounds_check {
 		}
 	case "overview":
 		overview_toggle()
+	case "lock":
+		lock_on()
 	case:
 		// Any `wctl` word, on the window in front: a word added there is
 		// bindable the day it exists. One it does not know is the desktop's.

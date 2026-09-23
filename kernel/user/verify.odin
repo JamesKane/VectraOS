@@ -5895,29 +5895,45 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		}
 		if kwrote && check(r, net_file_write("/n/desk/ctl", "reload"), "and read on a reload") {
 			x0, y0, w0, h0, _, _, _ := wctl_geo(front)
+			// A chord crosses kbdfs to the server on its own time, so each
+			// check waits for what it names.
 			inject_chord(0x1F) // 's' is make 0x1F
-			sx, _, sw, _, _, _, _ := wctl_geo(front)
-			check(r, sx == 0 && sw == s.width / 2, "a chord bound to a wctl word, snap left, acts on the window in front")
+			check(r, await_geo(front, 0, -1, s.width / 2, -1), "a chord bound to a wctl word, snap left, acts on the window in front")
 			inject_chord(0x2C) // 'z' is make 0x2C: zoom puts a snapped window back
-			zx, zy, zw, zh, _, _, _ := wctl_geo(front)
-			check(r, zx == x0 && zy == y0 && zw == w0 && zh == h0, "and alt-z puts it back")
+			check(r, await_geo(front, x0, y0, w0, h0), "and alt-z puts it back")
 
 			inject_chord(0x13) // 'r' is make 0x13: into the mode
 			report: [512]u8
-			rn := read_once("/n/desk/ctl", report[:])
-			check(r, rn > 0 && libodin.contains(string(report[:rn]), "mode nudge"), "alt-r enters a mode, which the server's ctl names")
+			rn := 0
+			in_mode := false
+			for _ in 0 ..< PATIENCE * 5 {
+				rn = read_once("/n/desk/ctl", report[:])
+				if rn > 0 && libodin.contains(string(report[:rn]), "mode nudge") {
+					in_mode = true
+					break
+				}
+				sync.delay(1)
+			}
+			check(r, in_mode, "alt-r enters a mode, which the server's ctl names")
 			for _ in 0 ..< 2 {
 				devfs.scancode_tap(0x26) // 'l' down
 				devfs.scancode_tap(0xA6) // and up
 				sync.delay(5)
 			}
-			lx, _, _, _, _, _, _ := wctl_geo(front)
-			check(r, lx == x0 + 16, "and two plain l's in it each move the window right by eight, no modifier held")
+			check(r, await_geo(front, x0 + 16, -1, -1, -1), "and two plain l's in it each move the window right by eight, no modifier held")
 			devfs.scancode_tap(0x01) // Escape down
 			devfs.scancode_tap(0x81) // and up
 			sync.delay(5)
-			rn = read_once("/n/desk/ctl", report[:])
-			check(r, rn > 0 && !libodin.contains(string(report[:rn]), "mode nudge"), "and Escape leaves the mode")
+			left := false
+			for _ in 0 ..< PATIENCE * 5 {
+				rn = read_once("/n/desk/ctl", report[:])
+				if rn > 0 && !libodin.contains(string(report[:rn]), "mode nudge") {
+					left = true
+					break
+				}
+				sync.delay(1)
+			}
+			check(r, left, "and Escape leaves the mode")
 			_ = net_file_write(front, wctl_pair("move ", x0, y0))
 
 			// Alt held, a press in the window's well, a drag and the release.
@@ -5933,8 +5949,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 				_ = wait_pointer(cx + 30, cy)
 				devfs.scancode_tap(0xB8) // alt up
 				sync.delay(5)
-				mx2, _, _, _, _, _, _ := wctl_geo(front)
-				check(r, mx2 == x0 + 30, "alt and a drag in the window's well moves the window, a mouse bind")
+				check(r, await_geo(front, x0 + 30, -1, -1, -1), "alt and a drag in the window's well moves the window, a mouse bind")
 				_ = net_file_write(front, wctl_pair("move ", x0, y0))
 			}
 		}
@@ -9631,6 +9646,81 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 		_ = net_file_write("/mnt/ctl", "reload")
 	}
 
+	// -- The screen lock ---------------------------------------------------------------
+
+	/*
+	`docs/WORKBENCH.md` step 5's lock. The kernel reaches factotum at
+	`/n/remote`, since `/mnt` is the draw server here; the draw server mounts
+	it at its own `/mnt/factotum` when it asks. `factotum` holds Glenda's key, and the
+	draw server is told she is the person. `lock` covers the glass and takes
+	the keys. A `q` typed while locked reaches no window, a wrong passphrase
+	leaves the lock standing, and hers takes it down. Then a line typed at
+	the window is `z` alone, which a `q` that got through would have led.
+	*/
+	if server != nil && server.env != nil {
+		pf := start_path(r, "/bin/factotum", "factotum starts for the lock")
+		if pf != nil && check(r, await_posted("factotum") && srv.mount(vfs.boot_namespace, "/srv/factotum", "/n/remote") == vfs.OK, "and is mounted") {
+			check(r, net_file_write("/n/remote/ctl", "key proto=noise user=glenda dom=home !passphrase=open sesame"), "Glenda's key goes to factotum")
+			_ = env.set(server.env, "user", "glenda")
+			_ = env.set(server.env, "dom", "home")
+			lcons, lerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/cons", vfs.O_RDONLY)
+			if check(r, lerr == vfs.OK, "the window's cons opens, a reader parked on it") {
+				mount_reader = Mount_Reader{c = lcons}
+				reading := sched.spawn("lock-read", mount_read_thread, nil) != nil
+				check(r, net_file_write("/mnt/ctl", "lock"), "lock is taken")
+				rep: [512]u8
+				rn := read_once("/mnt/ctl", rep[:])
+				check(r, rn > 0 && libodin.contains(string(rep[:rn]), "locked"), "and the server's ctl says locked")
+				lpx := second_x + 40 + fw - 20
+				lpy := 24 + oy + 40
+				check(r, fb.get_raw(s, lpx, lpy) == fb.pack(s, fb.VOID), "and the window's well is gone from the glass, the lock over it")
+				type_text("q")
+				type_text("wrong\n")
+				still := true
+				for _ in 0 ..< PATIENCE * 20 {
+					sync.delay(1)
+				}
+				rn = read_once("/mnt/ctl", rep[:])
+				still = rn > 0 && libodin.contains(string(rep[:rn]), "locked")
+				check(r, still, "a wrong passphrase leaves the lock standing")
+				type_text("open sesame\n")
+				unlocked := false
+				for _ in 0 ..< PATIENCE * 100 {
+					rn = read_once("/mnt/ctl", rep[:])
+					if rn > 0 && !libodin.contains(string(rep[:rn]), "locked") {
+						unlocked = true
+						break
+					}
+					sync.delay(5)
+				}
+				check(r, unlocked, "and hers takes it down")
+				got_back := false
+				for _ in 0 ..< PATIENCE * 5 {
+					if fb.get_raw(s, lpx, lpy) == fb.pack(s, fb.SLATE) {
+						got_back = true
+						break
+					}
+					sync.delay(1)
+				}
+				check(r, got_back, "and the window is back on the glass")
+				type_text("z\n")
+				line_ok := reading && sync.await_flag(&mount_reader.done, PATIENCE) && string(mount_reader.buf[:max(mount_reader.n, 0)]) == "z\n"
+				check(r, line_ok, "and the window's next line is z alone: the q typed while locked never reached it")
+				vfs.chan_close(lcons)
+			}
+		}
+		if c, err := vfs.open_path(vfs.boot_namespace, "/n/remote/ctl", vfs.O_RDONLY); err == vfs.OK {
+			_ = vfs.chan_remove(c)
+			vfs.chan_close(c)
+		}
+		if pf != nil {
+			_ = wait(pf, PATIENCE)
+			finish(r, pf, "and factotum is taken down")
+		}
+		_ = srv.remove("factotum")
+		_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/remote")
+	}
+
 	// -- The close gadget asks, and a window that will not go is killed ------------------
 
 	/*
@@ -9882,6 +9972,20 @@ front_wctl :: proc(base: string) -> string {
 		}
 	}
 	return ""
+}
+
+// await_geo waits for a window's wctl report to say a place or size; -1 is
+// any. For a change that crosses another process first: a chord, a drag.
+@(private = "file")
+await_geo :: proc(path: string, x: int, y: int, w: int, h: int) -> bool {
+	for _ in 0 ..< PATIENCE * 5 {
+		gx, gy, gw, gh, _, _, ok := wctl_geo(path)
+		if ok && (x < 0 || gx == x) && (y < 0 || gy == y) && (w < 0 || gw == w) && (h < 0 || gh == h) {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
 }
 
 // wctl_pair is a wctl line of a verb and two numbers, in a buffer of its own.

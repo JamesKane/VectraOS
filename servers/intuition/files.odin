@@ -34,6 +34,9 @@ server_report :: proc "contextless" (out: []u8) -> int {
 	at = put_report(out, at, " of ")
 	at = put_number(out, at, WORKSPACES)
 	at = put_report(out, at, "\n")
+	if locked {
+		at = put_report(out, at, "locked\n")
+	}
 	// The mode the keys are in, when one is on.
 	if mode_on > 0 {
 		at = put_report(out, at, "mode ")
@@ -62,6 +65,7 @@ run_server_ctl takes one line for the server itself.
 
     workspace N   make N the current workspace
     reload        read the rules file again
+    lock          the screen lock: every key the lock's until the passphrase
     kill N        hang window N up now: what the close gadget did before it
                   asked, and what a person answers a window that will not go
 */
@@ -75,6 +79,12 @@ run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_ch
 			return vectra9.EINVAL
 		}
 		workspace_switch(ws)
+		return vectra9.Errno(0)
+	case "lock":
+		if len(trim(rest)) != 0 {
+			return vectra9.EINVAL
+		}
+		lock_on()
 		return vectra9.Errno(0)
 	case "kill":
 		num, tail := word(rest)

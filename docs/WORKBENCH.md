@@ -937,16 +937,28 @@ section 18.
   drag in the window's well moves it. `repeat` and `release` are read and
   wired but not yet driven by a check.
 
-- **A screen lock.** Small. Workbench's first menu and a chord write
-  `lock` to `/srv/draw/ctl`. That puts `intuition` in a mode that takes
-  the keyboard and the mouse and paints a lock over the whole glass. No
-  window gets a key or a line, and no chord acts. `factotum` derives a
-  key from the typed passphrase, as it does for `cmd/auth`. The lock
-  compares its public half with the user's line in `/adm/keys`.
-  So the server holds no key and links no crypto.
+- **A screen lock. Done, September 2026.** `lock` on the server's `ctl`,
+  Workbench's `Lock` item in its first menu, and the chord `alt-l` put
+  `intuition` in a mode, `servers/intuition/lock.odin`, that takes the
+  keyboard and the mouse and paints a lock over the whole glass: the void,
+  a copper plate, and an amber dot on it for each character typed. No
+  window gets a key or a line, no chord acts, and no window's pixels
+  show, because `paint_window` and `desk_paint` both answer to the lock.
 
-  A match leaves the mode and repaints the glass from the stores. The
-  check is that a key typed while locked reaches no window.
+  Return asks `factotum`, through a new `check user= dom=
+  !passphrase=` on its `ctl`. It derives the key and compares its public
+  half with the one `factotum` holds for the person, or with their line in
+  `/adm/keys` when it holds none, and stores nothing, so a wrong passphrase
+  replaces no key. The server takes the person from its `/env/user` and
+  `/env/dom`, holds no key and links no crypto, and asks from a thread on
+  an io proc of its own while the derivation runs. It mounts
+  `/srv/factotum` at `/mnt/factotum` when its namespace lacks it.
+
+  The check is in `verify_pointer`: `factotum` holds Glenda's key and the
+  server is told she is the person. `lock` covers the window's well, a `q`
+  and a wrong passphrase leave the lock standing, hers takes it down and
+  the window comes back, and the window's next line is `z` alone, so the
+  `q` never reached it.
 
 - **Theme scopes, and a way to ask.** A role may carry a scope,
   `view/text` or `button.face`, and the more specific line wins. A
