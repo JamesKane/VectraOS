@@ -167,23 +167,31 @@ mothra_main :: proc "contextless" (arg: rawptr) {
 	win.bind_dev = true
 	win.own_exit = true
 
+	_ = libthread.proccreate(startup_watch, nil, 8 * 1024)
+	startup_step = "load"
 	if !load(string(current[:current_len])) {
 		libuser.eprint("mothra: cannot read ", string(current[:current_len]), "\n")
 		libthread.threadexitsall("read")
 	}
+	startup_step = "window_open"
 	if !libmui.window_open(&win, page_title(), showing_pic ? pic_root : page_root) {
 		libthread.threadexitsall("open")
 	}
 	// Now the window has a width, the page is laid out to it.
+	startup_step = "relayout"
 	relayout()
+	startup_step = "fill_column"
 	fill_column()
+	startup_step = "window_paint"
 	libmui.window_paint(&win)
 	// The plumber's web port, when there is a plumber: a page plumbed from
 	// anywhere opens here.
+	startup_step = "open_port"
 	plumb_fd = libplumb.open_port("web")
 	if plumb_fd >= 0 {
 		_ = libthread.threadcreate(plumb_thread, nil)
 	}
+	startup_step = "running"
 	libmui.window_run(&win)
 	libthread.threadexits("")
 }
@@ -1043,4 +1051,35 @@ header_value :: proc "contextless" (headers: string, name: string, into: []u8) -
 		return copy(into, v)
 	}
 	return 0
+}
+
+/*
+The startup watch. Now and then under the self-test, the reader opens its
+window and never reads a key, and a form typed into stays empty. No run with
+a trace in it caught that yet. So the reader names each step of its start in
+`startup_step`, and a proc of its own looks after ten seconds.
+
+A reader that reached its key loop by then says nothing. One that did not
+prints the step it is in on the console, `#c/cons`, which reaches the serial
+log past the window's own `/dev` bind. A proc and not a thread, because a
+thread cannot run while the proc's one thread is blocked in the step that
+stuck.
+*/
+startup_step: string = "start"
+STARTUP_WATCH_TICKS :: 10_000
+
+startup_watch :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	_ = libuser.sleep(STARTUP_WATCH_TICKS)
+	step := startup_step
+	if step == "running" {
+		return
+	}
+	if fd := libuser.open("#c/cons", abi.O_WRONLY); fd >= 0 {
+		pid: [24]u8
+		line: [160]u8
+		msg := libuser.cat_into(line[:], "mothra ", libuser.itoa(pid[:], i64(libuser.getpid())), ": still starting after ten seconds, at ", step, "\n")
+		_ = libuser.write(int(fd), transmute([]u8)msg)
+		_ = libuser.close(int(fd))
+	}
 }
