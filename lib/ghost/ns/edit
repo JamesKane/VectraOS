@@ -1,0 +1,8 @@
+# /lib/ghost/ns/edit: a task on a directory, docs/GHOST.md section 4.
+# The task's directory at /n/work, the tools, and the plumber, and nothing
+# else: every name the ghost had that this file does not bind is taken
+# down before a tool runs, and then the table is locked. `$work` is the
+# session's `work`, set in the tool's environment before these lines run.
+bind /n/fs/$cputype/bin /bin
+bind $work /n/work
+bind /mnt/plumb /mnt/plumb

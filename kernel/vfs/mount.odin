@@ -263,6 +263,10 @@ bind :: proc(
 	if ns == nil || source == nil || over == nil {
 		return vectra9.EINVAL
 	}
+	// `RFNOMNT` locked the table. See `Namespace.noattach`.
+	if ns.noattach {
+		return vectra9.EPERM
+	}
 
 	// Mounting a file over a directory, or the reverse, would produce a
 	// namespace where the type of a name depends on which member answered.
@@ -437,6 +441,9 @@ chan is just a handle on it.
 unmount :: proc(ns: ^Namespace, source: ^Chan, over: ^Chan) -> Errno #no_bounds_check {
 	if ns == nil || over == nil {
 		return vectra9.EINVAL
+	}
+	if ns.noattach {
+		return vectra9.EPERM
 	}
 
 	// Members leave the list under the lock, and are freed outside it, for the

@@ -147,6 +147,8 @@ user_programs := [?]User_Program {
 	{name = "webmention", path = "cmd/webmention"},
 	{name = "mentionfs", path = "servers/mentionfs"},
 	{name = "modelfs", path = "servers/modelfs"},
+	{name = "ghost", path = "servers/ghost"},
+	{name = "ask", path = "cmd/ask"},
 	{name = "srv", path = "cmd/srv"},
 	{name = "import", path = "cmd/import"},
 	{name = "cpu", path = "cmd/cpu"},
@@ -1412,11 +1414,12 @@ stage_vectra :: proc(arch: string, host: string) {
 	}
 	copy_file("apps/rc/rcmain", fmt.tprintf("%s/lib/rcmain", root))
 	copy_file("apps/rc/init", fmt.tprintf("%s/lib/init", root))
-	// The ghost's namespace classes, docs/WEB.md section 10: what a task
-	// may reach. Data for docs/GHOST.md's ghost, which reads them; inert
-	// until it is built.
+	// The ghost's namespace classes, docs/GHOST.md section 4 and docs/WEB.md
+	// section 10: what a task may reach. `servers/ghost` replays one in the
+	// sandbox every tool runs in.
 	ensure_dir(fmt.tprintf("%s/lib/ghost", root))
 	ensure_dir(fmt.tprintf("%s/lib/ghost/ns", root))
+	copy_file("lib/ghost/ns/edit", fmt.tprintf("%s/lib/ghost/ns/edit", root))
 	copy_file("lib/ghost/ns/social", fmt.tprintf("%s/lib/ghost/ns/social", root))
 	copy_file("lib/ghost/ns/post", fmt.tprintf("%s/lib/ghost/ns/post", root))
 	// The namespace as a file, docs/FLEET.md step 3: the binds a fresh process
@@ -1474,6 +1477,8 @@ stage_vectra :: proc(arch: string, host: string) {
 	copy_file("tests/dot.png", fmt.tprintf("%s/lib/tests/dot.png", root))
 	copy_file("tests/sync.json", fmt.tprintf("%s/lib/tests/sync.json", root))
 	copy_file("tests/model.script", fmt.tprintf("%s/lib/tests/model.script", root))
+	copy_file("tests/ghost.script", fmt.tprintf("%s/lib/tests/ghost.script", root))
+	copy_file("tests/ghost.rc", fmt.tprintf("%s/lib/tests/ghost.rc", root))
 	copy_file("tests/mail.eml", fmt.tprintf("%s/lib/tests/mail.eml", root))
 	// The plumber's rules: what a message nobody addressed does, docs/GHOST.md 5.
 	ensure_dir(fmt.tprintf("%s/lib/plumb", root))

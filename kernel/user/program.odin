@@ -565,8 +565,9 @@ EBADF. Under `RFFDG` the parent's copy still holds it, and the close
 answers zero. One blob, two runs, and the flag is the only difference.
 
 `refuser` holds the flag word to its refusals: each unimplemented or
-contradictory word answers EINVAL, and the two harmless self forms answer
-zero.
+contradictory word answers EINVAL, and the harmless self forms answer
+zero. One of those is the mount lock on a namespace of its own, and a
+bind, an unmount and a `#name` after it are what the lock refuses.
 */
 FORKER_PID :: 1
 FORKER_STATUS :: 3
@@ -624,6 +625,10 @@ REFUSER_BOTH_FDG :: 4
 REFUSER_NOMNT :: 5
 REFUSER_NOTHING :: 6
 REFUSER_NOTEG :: 7
+REFUSER_BIND :: 8 // A bind after the lock
+REFUSER_DEVICE :: 9 // A `#name` after the lock
+REFUSER_UNMOUNT :: 10 // An unmount after the lock
+REFUSER_OPEN :: 11 // A name the table already had, still open to it
 
 // The line the kernel writes through a mounted `/srv/niner`, which `niner`
 // forwards to the console. It lives here rather than in the blob: the payload

@@ -1,0 +1,106 @@
+# The stub's replies for docs/GHOST.md step 1's boot line: the sandbox
+# checks, their control, and `ask`. One modelfs answers every request the
+# check makes, in this order, so the order here is the check's.
+#
+# The sandbox session, one turn. Two writes in one reply: one inside
+# /n/work, which lands, and one outside it, which is refused. Both results
+# go back in one message.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "w1", "name": "write", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"/n/work/note\", "}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "\"text\": \"hello\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "w2", "name": "write", "input": {}}}
+{"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"/lib/note\", \"text\": \"x\"}"}}
+{"type": "content_block_stop", "index": 1}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# A network the sandbox does not have.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "r1", "name": "run", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"script\": \"curl http://example.com/\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# Another process, which the sandbox cannot name.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "p1", "name": "read", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"/proc/1/status\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# A read, which records the version the stale check holds a write to.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "n1", "name": "read", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"/n/work/note\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# The file changes under the read.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "r2", "name": "run", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"script\": \"echo changed > /n/work/note\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# A write the read no longer describes: stale.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "w3", "name": "write", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"/n/work/note\", \"text\": \"mine\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# A script that takes something away parks on confirm.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "k1", "name": "run", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"script\": \"kill 1\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# A bind, which the lock refuses.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "b1", "name": "run", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"script\": \"bind -a /n/work /bin && echo bound\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+# The turn ends.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "done"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+{"type": "message_stop"}
+==
+# The control, a ghost started with -u: the same bind, and no lock to
+# refuse it.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "c1", "name": "run", "input": {}}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"script\": \"bind -a /n/work /bin && echo bound\"}"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+{"type": "message_stop"}
+==
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "control done"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+{"type": "message_stop"}
+==
+# `ask`, the line client: a question at a prompt, and its answer.
+{"type": "message_start", "message": {"role": "assistant", "model": "stub"}}
+{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hello, "}}
+{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "person"}}
+{"type": "content_block_stop", "index": 0}
+{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+{"type": "message_stop"}

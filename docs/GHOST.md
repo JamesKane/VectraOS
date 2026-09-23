@@ -214,11 +214,15 @@ again, so the table the ghost built is the table the tools have. A class
 file names what goes in it.
 
     # /lib/ghost/ns/edit: a task on a directory, with the editor
+    bind /n/fs/$cputype/bin /bin
     bind $work /n/work
     bind /mnt/app/editor /mnt/app/editor
     bind /mnt/plumb /mnt/plumb
-    bind /$cputype/bin /bin
-    bind -a /rc/bin /bin
+
+A class file is an allow list, not a set of additions. The child copies
+the ghost's namespace, replays the class, and then unmounts every name
+the ghost had mounted that the class does not bind, deepest first, before
+it locks the table. What the class does not name is an empty directory.
 
 There is no `/net`, no `/proc`, no `/srv`, no `/dev` beyond `null` and
 `cons`, and no `$home`. A `write` outside `/n/work` fails on the mode
@@ -509,6 +513,33 @@ check when it lands.
 line says so.
 
 Boot line: section 4's sandbox checks, and its control.
+
+**Where it stands.** `servers/ghost` and `cmd/ask` are in, with the
+`edit` class. The kernel grew `RFNOMNT`, Plan 9's `noattach` on the
+namespace, which a fork inherits, and it refuses bind, mount, unmount and
+`#name`. The loop is the API's over `modelfs`, and every tool call forks
+a sandbox child on the session's io proc (`libthread.iorun`, new here). A
+read of `ns` forks one that prints its own table. `read`, `ls`, `write`
+with the qid-version staleness check, `run` with a thirty-second
+deadline, `plumb` and `ask` all work, and `look` answers that it waits
+for step 3. The requester asks through `confirm` for a first write to an
+existing file, a script that names `rm`, `kill` or `mv`, and every tool
+in the `admin` class. No answer in a minute is no.
+
+The boot line runs against `tests/ghost.script` with `memfs` as the work
+directory. A write inside `/n/work` lands, and one outside it is refused
+with EROFS, because nothing writable is named there. The mode check waits
+for the user `ghost`. `run curl` finds no `curl`, `read /proc/1/status`
+finds no `/proc`, a write after a script changed the file is stale, a
+`kill` parks on `confirm` and the no refuses it, and a `bind` is EPERM.
+The control, `ghost -u`, forks without the lock, and the same `bind`
+succeeds. `tests/ghost.rc` drives `ask`.
+
+Not yet: the memory directory and the `memory` tool, the transcript
+persisted under `$home/lib/ghost/sessions`, the `debug` class and `ask
+-p`, the requester in front of `post`'s `new`, and a `plumb` whose rule
+starts a program asking first, which waits for the plumber to say which
+rule a message takes.
 
 ### Step 2: the application contract
 

@@ -100,6 +100,32 @@ ns_apply :: proc "contextless" (line: string) -> bool #no_bounds_check {
 	return r >= 0
 }
 
+/*
+ns_target answers the target of one namespace line, `$var` expanded into
+`buf`, or "" for a comment, a blank line, or a line that is not a `bind` or
+a `mount`. The ghost's sandbox keeps the names its class file binds and
+unmounts the rest, `docs/GHOST.md` section 4, and this is how it reads a
+class file's names the way `newns` applied them.
+*/
+ns_target :: proc "contextless" (line: string, buf: []u8) -> string #no_bounds_check {
+	verb, rest := ns_word(line)
+	if verb != "bind" && verb != "mount" {
+		return ""
+	}
+	src: string
+	for {
+		src, rest = ns_word(rest)
+		if len(src) < 2 || src[0] != '-' {
+			break
+		}
+	}
+	dst, _ := ns_word(rest)
+	if src == "" || dst == "" {
+		return ""
+	}
+	return ns_expand(dst, buf)
+}
+
 // ns_word takes the first run of non-space off `s` and answers it and the
 // rest, skipping the spaces and tabs on either side.
 @(private = "file")

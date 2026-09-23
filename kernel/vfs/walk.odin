@@ -469,6 +469,10 @@ resolve_ex :: proc(ns: ^Namespace, path: string, cross_last: bool) -> (^Chan, Er
 	start := 0
 
 	if path[0] == '#' {
+		// A namespace locked by `RFNOMNT` names nothing it was not given.
+		if ns.noattach {
+			return nil, vectra9.EPERM
+		}
 		end := device_spec_len(path)
 		cur, err = device_attach(path[:end])
 		if err != OK {

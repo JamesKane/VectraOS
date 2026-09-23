@@ -3,8 +3,7 @@
 # requester in front of it: a write to `new` asks the person first. A
 # task that talks the model into posting still finds a person who must
 # say yes.
-bind /$cputype/bin /bin
-bind -a /rc/bin /bin
+bind /n/fs/$cputype/bin /bin
 bind /mnt/plumb /mnt/plumb
 bind /mnt/mail /mnt/mail
 bind /mnt/matrix /mnt/matrix

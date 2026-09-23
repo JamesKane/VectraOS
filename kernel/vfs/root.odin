@@ -101,6 +101,9 @@ ROOT_NODES := [?]Static_Node {
 	// answers from, and where the ghost is mounted, section 4.
 	{name = "model", parent = 6, dir = true},
 	{name = "ghost", parent = 6, dir = true},
+	// Where a ghost's tools find the directory their task is on: the class
+	// file binds `$work` here, `docs/GHOST.md` section 4.
+	{name = "work", parent = 7, dir = true},
 }
 
 // How many conventional directories the root serves, not counting `/` itself.

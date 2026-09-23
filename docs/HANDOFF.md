@@ -449,7 +449,7 @@ the documents it points at.
    behind one directory. The ghost runs the API's loop with seven tools
    over files, in a namespace forked with `RFNOMNT` as its sandbox.
    Every application serves `ctl`, `dict` and `event`, and `libmui`
-   serves them for free. Its first two steps need nothing but the disk.
+   serves them for free. Steps 0 and 1 are done (see WEB below).
 
    **Step 2 is open, with the plumber in.** `servers/plumber` serves
    `/mnt/plumb`: `send`, `rules`, and a file per port, on Plan 9's
@@ -639,21 +639,27 @@ the documents it points at.
    `/lib/ghost/ns`. Left: the boot line's last clause, the ghost reading
    a timeline in the `social` class, which needs `docs/GHOST.md` step 1.
 
-   **The ghost work is begun, to unblock that.** `docs/GHOST.md` step 0
-   is done: `servers/modelfs` serves a model as files with the stub
-   backend, `modelfs -e SCRIPT`, that every ghost check runs against; the
-   boot line writes a request and reads the Messages API's stream events
-   back. `/mnt/model` and `/mnt/ghost` are mounts. Next is step 1:
-   `servers/ghost` (the loop over `modelfs`, the seven tools, the
-   sandbox a `RFNAMEG|RFNOMNT|RFNOTEG` child builds from a class file)
-   and `cmd/ask` (the line client). Its boot line is section 4's sandbox
-   checks and their control: a tool write inside `/n/work` lands and one
-   outside is refused, `run curl` and `read /proc/1/status` find nothing,
-   a stale write is caught, a `kill` parks on `confirm`, and the control
-   is a child without `RFNOMNT` where `run bind` succeeds and the sandbox
-   check fails. That step, run in the `social` class over the networks
-   this tree already serves, is what makes the WEB boot line's last
-   clause pass. It is about three thousand lines and wants fresh context.
+   **GHOST steps 0 and 1 are done, which unblocks that.** Step 0 is
+   `servers/modelfs`, a model as files, with the stub backend `modelfs -e
+   SCRIPT` that every ghost check runs against. A request is its bytes up
+   to the close, so it can be longer than a frame. Step 1 is
+   `servers/ghost` and `cmd/ask`. The ghost runs the API's loop over
+   `modelfs`, and every tool call forks a sandbox child on the session's
+   io proc (`libthread.iorun`, new). The child copies the namespace,
+   replays `/lib/ghost/ns/<class>`, unmounts every name the class does not
+   bind (deepest first, and it refuses a table procfs cut short), and
+   then locks it with `RFNOMNT`. The kernel gained that as Plan 9's
+   `noattach`, on the namespace and inherited by every fork. The boot line
+   (`verify_ghost`, `tests/ghost.script`) proves each check: a write inside
+   `/n/work` lands and one outside is EROFS, `run curl` finds no `curl`,
+   `/proc/1/status` is ENOENT, a stale write is refused, a `kill` parks on
+   `confirm` and a no refuses it, and a `bind` is EPERM. The control,
+   `ghost -u`, forks without the lock, and the same bind succeeds.
+   `tests/ghost.rc` drives `ask`. **Next for WEB:** the boot line's last
+   clause, a scripted ghost in the `social` class reading a timeline over
+   `feedfs`. The class files now name `/n/fs/$cputype/bin`, the path that
+   resolves here. Step 1's leftovers are in `docs/GHOST.md`: memory, the
+   persisted transcript, the `debug` class, and the `post` requester.
 
    `webfs` and TLS are built once, for
    this and the ghost's cloud. After step 0: a message is a

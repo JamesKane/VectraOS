@@ -2,8 +2,7 @@
 # docs/WEB.md section 10. The mounts the tree ships in no class; this
 # class adds the four networks and the mentions, read only. The store
 # is in every class, so it is not named here. factotum stays out.
-bind /$cputype/bin /bin
-bind -a /rc/bin /bin
+bind /n/fs/$cputype/bin /bin
 bind /mnt/plumb /mnt/plumb
 bind /mnt/mail /mnt/mail
 bind /mnt/matrix /mnt/matrix

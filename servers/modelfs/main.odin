@@ -16,6 +16,10 @@ is a manual check until it lands.
                             event a read, ending at the stream's end
     /mnt/model/N/usage      tokens in, tokens out, cache reads, the cost
 
+A request may be longer than a frame, so it is its bytes up to the
+close: a write at offset zero begins one, and the clunk of `request`, or
+the first read of `reply`, takes it.
+
 The stub's script is replies, each a run of event lines, one JSON
 object a line, a reply ended by a line of `==`. A `#` line is a comment.
 Each request written takes the next reply, cycling, so a multi-turn
@@ -55,7 +59,8 @@ Session :: struct {
 	request:   [dynamic]u8,
 	events:    [dynamic]string, // The reply's events, owned, one a read
 	epos:      int, // The next event a read of `reply` answers
-	streaming: bool, // A request has been written; events are loaded
+	streaming: bool, // A request has been taken; events are loaded
+	pending:   bool, // A request is written and not yet taken
 	in_toks:   int,
 	out_toks:  int,
 }
@@ -175,6 +180,7 @@ sess_free :: proc(i: int) {
 // on this session.
 take_request :: proc(i: int) {
 	s := &sessions[i]
+	s.pending = false
 	for ev in s.events {
 		delete(ev)
 	}
@@ -299,7 +305,7 @@ handler :: proc "contextless" (
 		if !ok {
 			return
 		}
-		write_file(node, m.data, reply)
+		write_file(node, m.offset, m.data, reply)
 	case vectra9.Treaddir:
 		readdir(m, reply, buf)
 	case vectra9.Tgetattr:
@@ -325,6 +331,13 @@ handler :: proc "contextless" (
 			blksize = 512,
 		}
 	case vectra9.Tclunk:
+		// The close of `request` ends it: the stub takes it now.
+		if node := libuser.fid_lookup(&fids, m.fid); node >= SESS_BASE && kind_of(node) == SESS_REQUEST {
+			si := sess_of(node)
+			if si < MAX_SESSIONS && sessions[si].used && sessions[si].pending {
+				take_request(si)
+			}
+		}
 		libuser.fid_release(&fids, m.fid)
 		reply^ = vectra9.Rclunk{}
 	case vectra9.Tremove:
@@ -359,6 +372,9 @@ read_file :: proc "contextless" (node: i32, offset: u64, into: []u8, reply: ^vec
 		reply^ = vectra9.Rread{data = slice_window(usage_line(si), offset, into)}
 	case k == SESS_REPLY && si >= 0 && si < MAX_SESSIONS && sessions[si].used:
 		s := &sessions[si]
+		if s.pending {
+			take_request(si)
+		}
 		if s.epos < len(s.events) {
 			// A stream: the next event whole, the byte offset ignored.
 			ev := s.events[s.epos]
@@ -378,8 +394,9 @@ read_file :: proc "contextless" (node: i32, offset: u64, into: []u8, reply: ^vec
 	}
 }
 
-// write_file takes a write to `ctl`, `request` or a session's `ctl`.
-write_file :: proc "contextless" (node: i32, data: []u8, reply: ^vectra9.Msg) {
+// write_file takes a write to `ctl`, `request` or a session's `ctl`. A
+// write to `request` at offset zero begins a new request.
+write_file :: proc "contextless" (node: i32, offset: u64, data: []u8, reply: ^vectra9.Msg) {
 	context = libuser.heap_context()
 	k := kind_of(node)
 	si := sess_of(node)
@@ -403,8 +420,13 @@ write_file :: proc "contextless" (node: i32, data: []u8, reply: ^vectra9.Msg) {
 			reply^ = vectra9.error_reply(vectra9.EINVAL)
 		}
 	case k == SESS_REQUEST && si >= 0 && si < MAX_SESSIONS && sessions[si].used:
-		append(&sessions[si].request, ..data)
-		take_request(si)
+		s := &sessions[si]
+		if offset == 0 {
+			clear(&s.request)
+		}
+		append(&s.request, ..data)
+		s.pending = true
+		s.streaming = false
 		reply^ = vectra9.Rwrite{count = u32(len(data))}
 	case:
 		reply^ = vectra9.error_reply(vectra9.EPERM)

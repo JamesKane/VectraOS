@@ -40,8 +40,8 @@ here, one process per parked request, and that each one is dear.
   design. Sixteen priorities, per-core queues, a 10 ms slice, preemption
   from the tick. Nothing here changes.
 - **`rfork` with Plan 9's flags**: `RFPROC RFMEM RFFDG RFCFDG RFNAMEG
-  RFCNAMEG RFENVG RFCENVG RFNOTEG RFNOWAIT`. `RFREND` and `RFNOMNT` are
-  refused. The segment rules are Plan 9's, text shared always, the stack
+  RFCNAMEG RFENVG RFCENVG RFNOTEG RFNOWAIT RFREND RFNOMNT`. `RFNOMNT`
+  came with the ghost's sandbox, `docs/GHOST.md` section 4. The segment rules are Plan 9's, text shared always, the stack
   copied always; only the copy is eager.
 - **Notes**, with a handler, `noted`, note groups, delivered at the door
   and the tick, unwinding a parked `sleep_noted` as `EINTR`. What is

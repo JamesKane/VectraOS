@@ -31,6 +31,8 @@ Io_Op :: enum u8 {
 	Write,
 	Sleep, // `ticks` in `fd`: a wait a thread may make without parking its proc
 	Mount, // `path` on `target` in `order`: a mount whose server is a thread of this proc
+	Await, // the child `fd` names, its ending word into `buf`: a wait a thread may make
+	Run, // `fn(arg)` on the io proc: work that blocks more than once, Plan 9's `iocall`
 	Exit, // leave the loop, so `ioclose` can give the proc back
 }
 
@@ -42,8 +44,14 @@ Io_Call :: struct {
 	path:   string,
 	target: string,
 	order:  u64,
+	fn:     Io_Fn,
+	arg:    rawptr,
 	result: i64,
 }
+
+// What `iorun` runs on the io proc. It may block as often as it likes, and
+// may not allocate from a context: it is a proc of its own.
+Io_Fn :: #type proc "contextless" (arg: rawptr) -> i64
 
 Ioproc :: struct {
 	calls:   ^Chan, // `^Io_Call` to the io proc
@@ -56,8 +64,9 @@ Ioproc :: struct {
 IO_STACK :: 4096
 
 // ioproc makes an io proc, or answers nil when there is no memory or no
-// proc for it.
-ioproc :: proc "contextless" () -> ^Ioproc {
+// proc for it. The stack is the least a read needs; a caller that `iorun`s
+// real work there asks for more.
+ioproc :: proc "contextless" (stacksize := IO_STACK) -> ^Ioproc {
 	io := (^Ioproc)(libuser.heap_alloc(size_of(Ioproc)))
 	if io == nil {
 		return nil
@@ -68,7 +77,7 @@ ioproc :: proc "contextless" () -> ^Ioproc {
 	if io.calls == nil || io.replies == nil {
 		return nil
 	}
-	io.pid = proccreate(io_loop, io, IO_STACK)
+	io.pid = proccreate(io_loop, io, stacksize)
 	if io.pid < 0 {
 		return nil
 	}
@@ -135,6 +144,10 @@ io_loop :: proc "contextless" (arg: rawptr) {
 			c.result = libuser.sleep(u64(c.fd))
 		case .Mount:
 			c.result = libuser.mount(c.path, c.target, c.order)
+		case .Await:
+			c.result = libuser.await(u64(c.fd), c.buf)
+		case .Run:
+			c.result = c.fn(c.arg)
 		case .Exit:
 		}
 		sendp(io.replies, c)
@@ -184,6 +197,27 @@ iopread :: proc "contextless" (io: ^Ioproc, fd: int, buf: []u8, offset: u64) -> 
 // which is what a desktop's clock must never do.
 iosleep :: proc "contextless" (io: ^Ioproc, ticks: int) -> i64 {
 	c := Io_Call{op = .Sleep, fd = ticks}
+	return iocall(io, &c)
+}
+
+// ioawait is `libuser.await` made from a thread: the child's ending, `<pid>
+// <status>`, into `buf`, and the proc runs its other threads while the
+// child runs. A server that forks a child per request waits for it so.
+// Like `await` it answers `-EAGAIN` now and then, and a caller loops.
+ioawait :: proc "contextless" (io: ^Ioproc, pid: u64, buf: []u8) -> i64 {
+	c := Io_Call{op = .Await, fd = int(pid), buf = buf}
+	return iocall(io, &c)
+}
+
+/*
+iorun runs `fn(arg)` on the io proc and answers what it answers: a piece of
+work that blocks several times, done as one call. A child forked there is
+the io proc's, so the `await` that collects it belongs in the same `fn`.
+The ghost forks a tool's sandbox, reads its output and waits for it so,
+and the thread that asked parks on a channel the whole time.
+*/
+iorun :: proc "contextless" (io: ^Ioproc, fn: Io_Fn, arg: rawptr) -> i64 {
+	c := Io_Call{op = .Run, fn = fn, arg = arg}
 	return iocall(io, &c)
 }
 

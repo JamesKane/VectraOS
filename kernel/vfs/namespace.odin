@@ -41,6 +41,17 @@ Namespace :: struct {
 	and a lock that sleeps is not one.
 	*/
 	lock:        sync.RW_Lock,
+
+	/*
+	Plan 9's `pg->noattach`, set by `rfork(RFNOMNT)`: no `bind`, `mount` or
+	`unmount` in this namespace again, and no `#name` either, since a device
+	attach is a mount by another road. Set once and never cleared, and every
+	fork inherits it, clean or copied, so a child cannot shed the lock by
+	asking for an empty table and rebuilding. `docs/GHOST.md` section 4 is
+	why: the ghost builds the table its tools run in and then locks it, so
+	the table it built is the table they have.
+	*/
+	noattach:    bool,
 }
 
 /*
@@ -146,7 +157,11 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 		return nil
 	}
 	if .Clean in flags {
-		return ns_new()
+		clean := ns_new()
+		if clean != nil {
+			clean.noattach = ns.noattach
+		}
+		return clean
 	}
 	if .Copy not_in flags {
 		return ns_incref(ns)
@@ -156,6 +171,7 @@ ns_fork :: proc(ns: ^Namespace, flags: Fork_Flags = {}) -> ^Namespace #no_bounds
 	if child == nil {
 		return nil
 	}
+	child.noattach = ns.noattach
 
 	/*
 	The root is cloned first, on its own, because cloning is a message: it

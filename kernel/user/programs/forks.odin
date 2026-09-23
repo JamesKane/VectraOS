@@ -52,15 +52,22 @@ fdforker :: proc "contextless" (cells: ^Cells, flags: u64) -> ! {
 
 // refuser asks for every flag word the kernel refuses, and records each
 // refusal -- and for the words it grants in place, which record zero.
+// The mount lock goes on a copy of the namespace, so the table it locks
+// is its own, and then a bind and a `#name` record what the lock answers.
 refuser :: proc "contextless" (cells: ^Cells) -> ! {
 	cells[0] = 0x5245465552454655
 	put(cells, 1, libuser.rfork(abi.RFENVG))
 	put(cells, 2, libuser.rfork(abi.RFNOWAIT))
 	put(cells, 3, libuser.rfork(abi.RFMEM))
 	put(cells, 4, libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFCFDG))
-	put(cells, 5, libuser.rfork(abi.RFNOMNT))
+	put(cells, 5, libuser.rfork(abi.RFNAMEG | abi.RFNOMNT))
 	put(cells, 6, libuser.rfork(0))
 	put(cells, 7, libuser.rfork(abi.RFNOTEG))
+	put(cells, 8, libuser.bind("/bin", "/n/remote", abi.ORDER_REPLACE))
+	put(cells, 9, libuser.open("#c/cons", abi.O_RDONLY))
+	put(cells, 10, libuser.unmount("", "/bin"))
+	fd := libuser.open("/bin", abi.O_RDONLY)
+	put(cells, 11, fd >= 0 ? 0 : fd)
 	libuser.exit(0)
 }
 

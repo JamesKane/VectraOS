@@ -947,9 +947,13 @@ child's death must not close its sibling's files. The exit paths detach
 the table before publishing the exit record. `unload` releases only what
 is still attached, and the chans close when the last holder leaves.
 
-The flag word is Plan 9's bit for bit. The unimplemented bits -- `RFREND`,
-`RFNOMNT` -- are refused with EINVAL rather than skipped, so each can come
-to mean its whole self later. `RFNOTEG` is accepted and recorded.
+The flag word is Plan 9's bit for bit. A bit not implemented is refused
+with EINVAL rather than skipped, so it can come to mean its whole self
+later, which is how `RFREND` and `RFNOMNT` both arrived. `RFNOMNT` is
+Plan 9's `noattach`: the namespace, not the process, is locked against
+bind, mount, unmount and `#name`, and every fork inherits the lock. The
+ghost builds its tools' table and then locks it, `docs/GHOST.md` section
+4. `RFNOTEG` is accepted and recorded.
 `RFNOWAIT` is implemented now, below. `RFENVG` and `RFCENVG` do to the
 environment group what `RFFDG` and `RFCFDG` do to the descriptor table;
 `docs/ENV.md` has the group. Without `RFPROC` the namespace, descriptor

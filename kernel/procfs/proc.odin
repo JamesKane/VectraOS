@@ -309,7 +309,25 @@ read :: proc(m: vectra9.Tread, reply: ^vectra9.Msg, buf: []u8) #no_bounds_check 
 		if m.offset == 0 {
 			n = user.proc_note_take(pid, buf[:room])
 		}
-	case .Dir, .Status, .Ns, .Ctl, .Args, .Segment, .Fd:
+	case .Ns:
+		// A namespace can outgrow a stack buffer, and a table cut short is
+		// the one answer a sandbox must never believe, `servers/ghost`. So
+		// it renders on the heap, and a render that fills the buffer is cut
+		// mid-line, which the reader can see.
+		text := make([]u8, NS_TEXT_MAX)
+		if text == nil {
+			reply^ = vectra9.error_reply(vectra9.ENOMEM)
+			return
+		}
+		total := render(pid, f, text)
+		if total < 0 {
+			delete(text)
+			reply^ = vectra9.error_reply(vectra9.ESRCH)
+			return
+		}
+		n = copy(buf[:room], vfs.read_slice(text[:total], m.offset, m.count))
+		delete(text)
+	case .Dir, .Status, .Ctl, .Args, .Segment, .Fd:
 		text: [2048]u8
 		total := render(pid, f, text[:])
 		if total < 0 {
@@ -422,6 +440,9 @@ ctl :: proc(pid: u64, text: string) -> vfs.Errno {
 	}
 	return vfs.OK
 }
+
+// The most of a namespace's `ns` lines a read renders.
+NS_TEXT_MAX :: 16 * 1024
 
 // render writes a file's text into `out` and answers its length, or -1 for
 // a pid that is gone.

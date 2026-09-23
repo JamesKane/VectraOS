@@ -642,6 +642,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	verify_plumber(&r)
 	verify_feedfs(&r)
 	verify_modelfs(&r)
+	verify_ghost(&r)
 	verify_fedifs(&r)
 	verify_atfs(&r)
 	verify_matrixfs(&r)
@@ -3068,9 +3069,13 @@ verify_rfork :: proc(r: ^Result) {
 			cell(p, REFUSER_BOTH_FDG) == refused(vectra9.EINVAL),
 			"copy-and-clean together is refused",
 		)
-		check(r, cell(p, REFUSER_NOMNT) == refused(vectra9.EINVAL), "mount restriction is refused")
 		check(r, cell(p, REFUSER_NOTHING) == 0, "while no flags at all asks for nothing and gets it")
 		check(r, cell(p, REFUSER_NOTEG) == 0, "and a fresh note group is granted in place")
+		check(r, cell(p, REFUSER_NOMNT) == 0, "the mount lock on a namespace of its own is granted in place")
+		check(r, cell(p, REFUSER_BIND) == refused(vectra9.EPERM), "and after it a bind is refused")
+		check(r, cell(p, REFUSER_UNMOUNT) == refused(vectra9.EPERM), "and an unmount")
+		check(r, cell(p, REFUSER_DEVICE) == refused(vectra9.EPERM), "and a #name, the attach by another road")
+		check(r, cell(p, REFUSER_OPEN) == 0, "while a name the table already had still opens")
 	}
 	finish(r, p, "and the refuser is taken down")
 
@@ -11077,6 +11082,176 @@ verify_modelfs :: proc(r: ^Result) {
 	check(r, wait(p, PATIENCE * 5), "and modelfs, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 	reap_orphans()
+}
+
+/*
+verify_ghost is `docs/GHOST.md` step 1's boot line: the ghost's loop over
+the stub model, the sandbox its tools run in, and its control.
+
+`memfs` is the task's directory, mounted at `/n/remote` and named to the
+ghost as `work`. The stub's script, `tests/ghost.script`, is one turn of
+tool calls. A write inside `/n/work` lands, and one outside is refused. A
+`run curl` finds no `curl`, and a `read /proc/1/status` no `/proc`. A
+write to a file a script changed since the read is stale. A `kill` parks
+on `confirm`, and this answers no. A `bind` is refused, because the
+namespace is locked. The log says each, and `ns` shows the table the
+tools had.
+
+The control is the ghost started with `-u`, which forks its tools without
+`RFNOMNT`: the same `bind` then succeeds, so the check above is the lock
+and not an accident of the table. Then `tests/ghost.rc` drives `ask`.
+
+The mode check waits for `docs/FLEET.md` step 2's user `ghost`: the write
+outside `/n/work` is refused because nothing writable is named there, and
+the refusal is EROFS rather than a permission.
+*/
+@(private = "file")
+verify_ghost :: proc(r: ^Result) {
+	// The task's directory, in the namespace the ghost starts from.
+	wnames := [?]string{"memfs", "/srv/ghostwork"}
+	wargv := new(Argv)
+	if !check(r, wargv != nil && argv_from(wargv, wnames[:]), "a record for memfs's arguments") {
+		return
+	}
+	wp := start_path(r, "/bin/memfs", "memfs starts, the ghost's work directory", wargv)
+	if wp == nil {
+		return
+	}
+	check(r, wait(wp, PATIENCE * 5), "and leaves its server behind, detached")
+	finish(r, wp, "and its first half is collected")
+	if !check(r, await_posted("ghostwork") && srv.mount(vfs.boot_namespace, "/srv/ghostwork", "/n/remote") == vfs.OK, "which is mounted at /n/remote") {
+		return
+	}
+
+	mnames := [?]string{"modelfs", "-e", "/lib/tests/ghost.script"}
+	margv := new(Argv)
+	if !check(r, margv != nil && argv_from(margv, mnames[:]), "a record for modelfs's arguments") {
+		return
+	}
+	mp := start_path(r, "/bin/modelfs", "the stub model starts on the ghost's script", margv)
+	if mp == nil {
+		return
+	}
+	if !check(r, await_posted("model") && srv.mount(vfs.boot_namespace, "/srv/model", "/mnt/model") == vfs.OK, "and is mounted at /mnt/model") {
+		finish(r, mp, "and modelfs is taken down")
+		return
+	}
+
+	text: [8192]u8
+	gp := ghost_start(r, false)
+	if gp != nil {
+		n := web_read_file("/mnt/ghost/new", text[:])
+		check(r, string(text[:max(n, 0)]) == "0", "a read of new answers a session")
+		lbuf: [256]u8
+		check(r, dir_names("/mnt/ghost/0", lbuf[:]) == "ctl prompt reply confirm log status tools ns", "which lists its eight files")
+		check(r, net_file_write("/mnt/ghost/0/ctl", "work /n/remote"), "ctl names the work directory")
+		check(r, !net_file_write("/mnt/ghost/0/ctl", "class ../post"), "and refuses a class that is not one word")
+		n = web_read_file("/mnt/ghost/0/tools", text[:])
+		tools := string(text[:max(n, 0)])
+		check(r, libodin.contains(tools, "\"name\": \"read\"") && libodin.contains(tools, "\"name\": \"run\"") && libodin.contains(tools, "\"name\": \"look\""), "tools is the seven, as the API's JSON")
+
+		// The namespace the tools will have, printed by a sandbox child.
+		n = web_read_file("/mnt/ghost/0/ns", text[:], raw = true)
+		ns := string(text[:max(n, 0)])
+		if !check(r, libodin.contains(ns, "/n/remote /n/work") && libodin.contains(ns, " /bin\n"), "ns shows the class's binds: the work directory at /n/work, and the tools") {
+			_ = net_file_write("/dev/cons", ns)
+		}
+		check(r, n > 0 && !libodin.contains(ns, "/proc") && !libodin.contains(ns, "/mnt/model") && !libodin.contains(ns, "/mnt/ghost") && !libodin.contains(ns, "/srv"), "and nothing the class did not name: no /proc, no model, no ghost, no /srv")
+
+		check(r, net_file_write("/mnt/ghost/0/prompt", "do the sandbox checks"), "the prompt starts a turn")
+		// The kill parks the turn on confirm, and this read parks with it.
+		q: [256]u8
+		qn := read_once("/mnt/ghost/0/confirm", q[:])
+		check(r, qn > 0 && string(q[:qn]) == "run kill 1\n", "a script that names kill parks on confirm, and the read answers the question")
+		n = web_read_file("/mnt/ghost/0/status", text[:])
+		check(r, string(text[:max(n, 0)]) == "Waiting", "while status says Waiting")
+		check(r, net_file_write("/mnt/ghost/0/confirm", "no"), "the answer is no")
+		n = web_read_file("/mnt/ghost/0/reply", text[:], raw = true)
+		check(r, string(text[:max(n, 0)]) == "done", "the reply streams the answer's text, and ends with the turn")
+		n = web_read_file("/mnt/ghost/0/status", text[:])
+		check(r, string(text[:max(n, 0)]) == "Idle", "and status is Idle")
+
+		n = web_read_file("/mnt/ghost/0/log", text[:], raw = true)
+		log := string(text[:max(n, 0)])
+		ghost_logv(r, log, "tool write {\"path\": \"/n/work/note\", \"text\": \"hello\"}\n  ok wrote 5 bytes", "a write inside /n/work lands")
+		ghost_logv(r, log, "\"/lib/note\", \"text\": \"x\"}\n  error EROFS", "and one outside it is refused, nothing writable named there (the mode check waits for the user ghost)")
+		ghost_logv(r, log, "curl: not found", "run curl finds no curl")
+		ghost_logv(r, log, "/proc/1/status\"}\n  error ENOENT", "read /proc/1/status finds no /proc")
+		ghost_logv(r, log, "\"mine\"}\n  error stale", "a write to a file a script changed since the read is stale")
+		ghost_logv(r, log, "confirm run kill 1\n  answer no\n  error the person said no", "the kill waited on confirm and the no refused it")
+		ghost_logv(r, log, "bind: /n/work on /bin: EPERM", "and a bind is refused: the namespace is locked")
+		wrote := web_read_file("/n/remote/note", q[:])
+		check(r, string(q[:max(wrote, 0)]) == "changed", "the file holds what the script wrote, not the stale write")
+		check(r, net_file_write("/mnt/ghost/0/ctl", "hangup"), "hangup ends the session")
+		ghost_stop(r, gp)
+	}
+
+	// The control: the tools forked without the lock.
+	gp = ghost_start(r, true)
+	if gp != nil {
+		n := web_read_file("/mnt/ghost/new", text[:])
+		check(r, n > 0 && net_file_write("/mnt/ghost/0/ctl", "work /n/remote") && net_file_write("/mnt/ghost/0/prompt", "the control"), "the control ghost takes a session and a prompt")
+		n = web_read_file("/mnt/ghost/0/reply", text[:], raw = true)
+		check(r, string(text[:max(n, 0)]) == "control done", "and ends its turn")
+		n = web_read_file("/mnt/ghost/0/log", text[:], raw = true)
+		log := string(text[:max(n, 0)])
+		if !check(r, libodin.contains(log, "  ok bound") && !libodin.contains(log, "EPERM"), "control: without RFNOMNT the same bind succeeds, so the sandbox check fails without the lock") {
+			_ = net_file_write("/dev/cons", log)
+		}
+		ghost_stop(r, gp)
+	}
+
+	// `ask`, the line client, from the shell.
+	gp = ghost_start(r, false)
+	if gp != nil {
+		names := [?]string{"rc", "/lib/tests/ghost.rc"}
+		script_says(r, "/bin/rc", names[:], PATIENCE * 50, "the shell starts on the ask script", "ok", "ask streams the answer to its terminal")
+		ghost_stop(r, gp)
+	}
+
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/model") == vfs.OK, "the mount of modelfs comes down")
+	check(r, srv.remove("model") == vfs.OK, "and its name")
+	check(r, wait(mp, PATIENCE * 5), "and modelfs exits")
+	finish(r, mp, "and is taken down")
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/n/remote") == vfs.OK, "the work directory's mount comes down")
+	check(r, srv.remove("ghostwork") == vfs.OK, "and its name, which ends memfs")
+	reap_orphans()
+}
+
+// ghost_start starts the ghost, `-u` for the control, and mounts it.
+@(private = "file")
+ghost_start :: proc(r: ^Result, unlocked: bool) -> ^Process {
+	names := [?]string{"ghost", "-u"}
+	argv := new(Argv)
+	if !check(r, argv != nil && argv_from(argv, names[:unlocked ? 2 : 1]), "a record for the ghost's arguments") {
+		return nil
+	}
+	p := start_path(r, "/bin/ghost", unlocked ? "the ghost starts unlocked, the control" : "the ghost starts, an agent over the stub", argv)
+	if p == nil {
+		return nil
+	}
+	if !check(r, await_posted("ghost") && srv.mount(vfs.boot_namespace, "/srv/ghost", "/mnt/ghost") == vfs.OK, "and is mounted at /mnt/ghost") {
+		finish(r, p, "and the ghost is taken down")
+		return nil
+	}
+	return p
+}
+
+@(private = "file")
+ghost_stop :: proc(r: ^Result, p: ^Process) {
+	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/ghost") == vfs.OK, "the ghost's mount comes down")
+	check(r, srv.remove("ghost") == vfs.OK, "and its name")
+	check(r, wait(p, PATIENCE * 5), "and the ghost, its pipe gone, exits")
+	finish(r, p, "and is taken down")
+}
+
+// ghost_logv checks the log holds `want`, and echoes the log to the
+// console when it does not, so one boot shows every step the ghost took.
+@(private = "file")
+ghost_logv :: proc(r: ^Result, log: string, want: string, what: string) {
+	if !check(r, libodin.contains(log, want), what) {
+		_ = net_file_write("/dev/cons", log)
+	}
 }
 
 /*

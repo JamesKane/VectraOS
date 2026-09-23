@@ -1,0 +1,7 @@
+# ghost.rc: `ask`, the line client, against the ghost and the stub model
+# the boot self-test runs, docs/GHOST.md section 4. The answer streams to
+# the terminal, which here is the backquote. The exit word is `ok` or what
+# came back instead.
+x=`{ask -w /n/remote say hello}
+if(! ~ $"x 'hello, person') exit 'ask said '^$"x
+exit ok

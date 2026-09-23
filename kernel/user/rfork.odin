@@ -38,6 +38,7 @@ private stack.
     RFNOTEG    a new note group of one
     RFENVG     copy the environment group rather than share it
     RFCENVG    a clean environment group, holding nothing
+    RFNOMNT    no bind, mount, unmount or `#name` in the namespace again
 
 Text and read-only segments are shared always -- nothing can write them, so
 a copy would buy isolation from nothing. Descriptors default to *shared*,
@@ -49,10 +50,16 @@ hold.
 posted to every process in it but the poster. A child forked without the
 flag hears its parent's group notes, and one forked with it does not. The
 environment follows the descriptors' rule exactly: shared unless the word
-says copy or clean, and `kernel/env` is the directory a group is. The
-rest -- `RFREND`, `RFNOMNT` -- name machinery Vectra does not have
-(rendezvous groups, mount control). They are refused rather than skipped.
-A flag that is quietly ignored can never mean anything later.
+says copy or clean, and `kernel/env` is the directory a group is.
+Anything else in the word is refused rather than skipped. A flag that is
+quietly ignored can never mean anything later.
+
+`RFNOMNT` locks the namespace, Plan 9's `noattach`, and it is a property of
+the namespace rather than of the process. So a process that shares its
+parent's locks its parent's too, as Plan 9's does, and a sandbox asks for
+`RFNAMEG` in the same word or before. The ghost is why it exists: it builds
+the table its tools run in and then locks it, `docs/GHOST.md` section 4. A
+fork inherits the lock whatever it asks for, `vfs.ns_fork`.
 
 ## Who collects an rfork child
 
@@ -91,7 +98,7 @@ RFNOMNT :: abi.RFNOMNT
 // The bits this kernel implements. Everything else in the word is refused,
 // including bits Plan 9 has and Vectra does not yet honour.
 @(private = "file")
-RFORK_KNOWN :: RFPROC | RFMEM | RFFDG | RFCFDG | RFNAMEG | RFCNAMEG | RFENVG | RFCENVG | RFNOTEG | RFNOWAIT | RFREND
+RFORK_KNOWN :: RFPROC | RFMEM | RFFDG | RFCFDG | RFNAMEG | RFCNAMEG | RFENVG | RFCENVG | RFNOTEG | RFNOWAIT | RFREND | RFNOMNT
 
 /*
 sys_rfork is the call, dispatched with the frame because the frame is the
@@ -147,6 +154,11 @@ rfork_self :: proc(p: ^Process, flags: u64) -> i64 {
 		old := p.ns
 		p.ns = fresh
 		vfs.ns_close(old)
+	}
+	// After the swap above, so `RFNAMEG | RFNOMNT` locks the copy and not
+	// the table the caller shared until a moment ago.
+	if flags & RFNOMNT != 0 {
+		p.ns.noattach = true
 	}
 
 	if flags & (RFFDG | RFCFDG) != 0 {
@@ -246,6 +258,9 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 	if child.ns == nil {
 		unload(child)
 		return -i64(vectra9.ENOMEM)
+	}
+	if flags & RFNOMNT != 0 {
+		child.ns.noattach = true
 	}
 
 	switch {
