@@ -73,11 +73,17 @@ which was a binary icon format with a position in it. The CLI, and
 system requesters that stop the machine. A window's menus on the screen
 bar, for a reason section 4 gives.
 
-**Kept as it is.** The chassis: heavy bevels, brushed magnesium over deep
-slate, amber and cyan and phosphor, copper on the bar in front. The theme
-file's defaults are `sys/libpal`'s table and `docs/DRAW.md`'s chrome. A
-user who never edits the file sees the machine the kernel painted at
-boot.
+**Kept as it is, until `docs/CHROME.md`.** The chassis: heavy bevels,
+brushed magnesium over deep slate, amber and cyan and phosphor, copper on
+the bar in front. The theme file's defaults are `sys/libpal`'s table and
+`docs/DRAW.md`'s chrome. A user who never edits the file sees the machine
+the kernel painted at boot.
+
+**From `plan-neo`'s chrome study, planned.** `docs/CHROME.md` adopts the
+study's look. That is the neon scheme, surfaces as materials, four faces
+and vector icons. It is also NeXT's docked main menu, a dock of live tiles,
+a top bar of status, and a column viewer. The chassis becomes the `magnesium` scheme, one line
+away. Step 6 is the order.
 
 ## 2. Who owns what
 
@@ -96,6 +102,9 @@ boot.
                            no frame
     sys/libmui             the toolkit: objects, groups and layout, gadgets,
                            requesters, menus, hotkeys, the theme file
+    sys/libraster          planned, `docs/CHROME.md`: gradients, noise,
+                           bevels, blur, coverage and paths, painted into
+                           a window's store
     apps/workbench         the desktop: the screen bar and its menus, the
                            backdrop and its icons, drawer windows, tools
                            and projects, `Execute Command...`, `Shell`
@@ -225,6 +234,12 @@ program's menus, and here the server draws nothing but chrome. A program
 that wants a menu opens a popup where the pointer is on button 3, which
 is `rio`'s way and MUI's `Popmenu`. The screen bar's menus are
 Workbench's popups, opened from the bar.
+
+`docs/CHROME.md` section 8 keeps this rule and moves where a menu shows.
+One menu tree shows three ways. It is docked at the top left as NeXT's
+main menu, a popup at the pointer, or torn off into a panel that stays.
+That adds two kinds of window, `menu` and `panel`, and takes the menus off
+the screen bar. It is planned.
 
 **A window that wants a person says so on `wctl`.** `state working`,
 `state waiting` and `state idle` are three words a program writes, and
@@ -438,6 +453,15 @@ chrome and the gadgets inside it are one look. The unfocused bar is not
 its own role: it is the focused bar one step down its own table, the
 lamp's rule. A theme that names nothing is the chassis.
 
+**Schemes and job roles are planned**, `docs/CHROME.md` section 3. A theme
+may define colours with `colour` lines, and a scheme is a file of them.
+Four ship: `neon`, the default, `neon-hc`, `daylight`, and `magnesium`
+for the chassis. Roles name a job, `accent`, `focus`, `warn`, `ok`, `fault`, and
+today's names read as other names for them. The effects, `glow`, `shadow`,
+`scan`, `bloom` and `motion`, are roles with numbers. The toolkit then
+paints its window's store, section 2 of that document, and grows `Knob`,
+`Readout`, `Led` and `PageList`.
+
 **The toolkit is not the window manager and not the desktop.** It draws
 inside a window it was given. What a program on it looks like is the
 theme's business, where its window goes is `intuition`'s, and what it
@@ -466,7 +490,13 @@ bar opens the menus, one popup per title:
     Icons       Open, Copy, Rename..., Information..., Delete...
     Tools       every file in /lib/wb/tools, by name
 
-**Icons are kinds, not files.** A directory is a drawer, a file under
+**Icons are kinds, not files.** `docs/CHROME.md` sections 6, 11 and 12
+plan the next shape of this section. The icons become vector files that
+repaint with the scheme, with more kinds and an emblem. A drawer gains a
+column view. The screen bar becomes a top bar of status, beside a dock on
+the right edge. The rules below hold until then.
+
+**Today, a kind is what a `stat` answers.** A directory is a drawer, a file under
 `/bin` or with its execute bit is a tool, anything else is a project. Each
 kind has one image, drawn in the chassis's vocabulary. A drawer is a
 plinth with a bar and a tool is a plinth with a lamp. A project is a well
@@ -1011,11 +1041,26 @@ section 18.
   server's constants copied. A frame a theme could size would move every
   client's area under it. That wants the server to say a window's insets
   on `wctl`, and every client to read them, before a theme may name one.
+  That is brick 1 of step 6, because the study's frame changes the
+  metrics.
 
-- **A preferences window generated from the theme's keys.** One `libmui`
-  program walks the roles the parser knows and shows each with its
-  value and the file that set it. It stays correct when a role is
-  added, which is how MUI's own preferences worked.
+### Step 6: the chrome study
+
+`docs/CHROME.md` is the plan, and its section 14 is the order. The first
+three bricks come first and in that order, because the rest paint through
+them:
+
+1. The server says a window's frame insets on `ctl`, and the copied
+   `FRAME_INSET` constants go. This is step 5's "frames by name".
+2. Schemes: `colour` lines, the job roles, four scheme files, and a
+   contrast check in `lint`.
+3. `sys/libraster`, and the toolkit painting its window's store in place
+   of the per-face atlas.
+
+After those come the four faces and the frame with its halo,
+`docs/DRAW.md` section 19. Then the menus, the icons, readouts and LEDs,
+the dock and the top bar, the preferences pages, and the column viewer.
+None of it is built.
 
 ## 8. Decisions taken here, and what would reverse them
 
@@ -1027,14 +1072,17 @@ section 18.
 - **Menus are popups the program draws**, not a strip the server
   draws. The server draws chrome and nothing else, and a menu is not
   chrome. The reversal is a server that takes a menu description, which
-  is a seventh verb's worth of protocol.
+  is a seventh verb's worth of protocol. `docs/CHROME.md`'s docked
+  main menu keeps the rule: the program draws it, and the server only
+  places a window of the kind `menu`.
 - **One keys file, three readers, one grammar.** The server acts on the
   window manager's words and forwards the rest on `hotkey`. A toolkit
   program's hotkeys are its labels'. A second grammar for launches
   would be a second file to teach.
 - **The look is a file, and the default is the chassis.** A theme that
   names nothing is `docs/DRAW.md` section 12. A program that named a
-  colour would be the bug.
+  colour would be the bug. Step 6 moves the default to the study's neon
+  scheme, and the chassis stays as `use magnesium`.
 - **Icons by kind, not by file.** A `stat` says what a thing is. The day
   a person wants a picture of their own is the day a `$home/lib/wb/icons`
   tree exists, and it does not change the kind rule.
@@ -1084,6 +1132,8 @@ section 18.
     step 3  libmui       libmui 2,500, window 150, tests 400           step 2
     step 4  workbench    workbench 1,900, view 400, init               step 3
     step 5  the rest     each its own                                  step 4
+    step 6  chrome       libraster 1,500, intuition 900, libmui 2,000,  step 5's insets
+                         workbench 1,500, prefs 600, faces and icons
 
 Step 1's three parts are independent and can proceed at once. Step 3's
 `window` needs only step 2 and can come before the toolkit.

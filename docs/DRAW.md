@@ -580,6 +580,9 @@ lamps are flat, and the state the rule is actually about -- an unlit lamp dark
 in its own colour -- is a rectangle in both rings. A client that wants a
 gradient sends one fill per row. **A gradient verb would be the seventh verb
 section 5 guards against**, and a row of fills is what a client library is for.
+A client on the window store paints its gradient in its own memory, which
+needs no verb at all. `docs/CHROME.md` builds the look on that, and section
+19 draws the few effects that fall outside a window.
 
 ### One table, both rings
 
@@ -1729,3 +1732,84 @@ worth a check.
 The `stats` file comes first, because it is small and it measures the other
 two. The frame clock comes second, and its pacing check reads `stats`. The
 front-to-back walk comes last, and its check is the `occluded` field.
+
+## 19. Chrome outside a window: glow, shadow, scanlines, glass (planned)
+
+**Written before the code. None of this section is built.** `docs/CHROME.md`
+adopts a look whose surfaces are gradients, noise and glows. Its rule is that
+every effect inside a window is the client's, painted in the window's store.
+The client needs no verb for that, and section 12's rule against a gradient
+verb stands. This section is the other half: the effects that fall outside
+every window's rectangle, which only the compositor may draw.
+
+### Four effects, and the one rule they share
+
+    halo       a glow in the focus colour around the front window's frame
+    shadow     a darkened ramp under and beside every window
+    scan       every second row of the glass darkened, a CRT's lines
+    glass      a blur of the desk under the overview's tiles
+
+**Each is chrome, from the server's own state.** The server knows which
+window is in front, where each window is, and what the theme's `glow`,
+`shadow` and `scan` roles say. A client sends nothing for any of them, and
+cannot. They join the cursor as things the compositor draws over the pixels
+of other windows.
+
+**A window stays opaque.** The halo and the shadow are blended onto what lies
+beneath a window, and never onto the window itself. So the front-to-back walk
+of section 12's "What is left" still subtracts a window whole. A halo is not
+opaque, so it subtracts nothing. The walk paints it after the windows under
+it and before the window it belongs to.
+
+### What each one costs
+
+**The halo is four ramps, baked once per size.** A glow of radius R around a
+W by H frame is a strip R deep on each side, with the corners. Each strip is
+an 8-bit ramp that the server bakes when the front window changes size or
+the theme changes. A composite that reaches the halo blends the ramp in the
+`focus` colour onto the pixels already there. At R of 26 and a window of 800
+by 600, that is about 75,000 blends, and only where damage reaches it. At
+`glow 0` there are no ramps and no blends.
+
+**The shadow is the halo's shape in black, offset down.** Every window has
+one, so its radius is small, 8 by default, and its ramps are baked per size
+the same way. The study's shadow is 50 pixels deep. That is a blend of about
+a sixth of the screen per window, which this compositor cannot afford on
+every composite. So the theme's `shadow` is a width, and 0 turns it off.
+
+**Damage grows by the margin.** A window's damage reaches R pixels past its
+rectangle when it has a halo, and its shadow's width when it has one. A move,
+a size, a raise, and a focus change all damage the old margin and the new
+one. `stats`' `damage` field, section 18, is how a check sees that the
+margin is the only growth.
+
+**Scanlines are a pass over the damage, last.** With `scan 1`, the composite
+darkens every second row of its region by the scheme's `scan` strength,
+after the windows and before the cursor. The cursor stays sharp. It is one
+multiply per pixel on half the rows of what changed, and off by default.
+
+**Glass is the overview's ground.** The overview already scales every
+workspace by three from the stores. Its ground becomes the current desk
+scaled by three, blurred with three box passes, and darkened. The blur is
+at a ninth of the pixels, once per overview opening. The tiles go on top of
+it as now.
+
+### The controls
+
+- A pixel two past the front window's frame, with `glow 60`, is brighter in
+  the focus hue than the same pixel with `glow 0`. A mutation that bakes no
+  ramp fails it.
+- The same pixel beside a window that is not in front is the desk's colour,
+  so the halo follows the focus. A focus change moves it.
+- With `shadow 0` and `glow 0`, `stats`' `damage` after a move is at most
+  twice the window's area, which is section 18's check. With them on, it is
+  at most twice the window's area grown by the margin.
+- With `scan 1`, two rows of the desk one apart differ, and with `scan 0`
+  they do not.
+
+### The order
+
+After section 18's `stats` file, because its checks read `damage`. The halo
+first, because `docs/CHROME.md`'s frame needs it. The shadow, the scanlines
+and the glass after it, each small. Medium in all: about 600 lines in
+`servers/intuition`, with the ramps in its bss sized for the largest window.

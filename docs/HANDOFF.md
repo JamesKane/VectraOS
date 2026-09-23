@@ -22,6 +22,9 @@ A modular operating system in Odin. Three ideas define it:
 - **"Cyberpunk Workstation 1994" UX.** Heavy skeuomorphic bevels, brushed dark
   magnesium over deep slate, amber/cyan/phosphor accents, copper trim, a
   software dirty-rect compositor, and tracker-synthesised relay clicks.
+  `docs/CHROME.md` plans its next form from `plan-neo`'s chrome study: a
+  neon scheme, surfaces as materials, four faces, vector icons, and NeXT's
+  docked menu. None of that is built.
 - **An agent in the shell.** A model is a file server, the ghost acts
   through the same files a person uses, every application serves a control
   tree, and a namespace is its sandbox. `docs/GHOST.md` is the plan, and it
@@ -258,6 +261,7 @@ per directory:
 | `docs/THREAD.md` | `sys/libthread`, `sys/lib9p` — procs, threads, channels, `alt`, and a server that holds no lock | Writing a program that waits on two things, a server whose reads park, or anything with a channel in it |
 | `docs/DRAW.md` | The draw protocol, written before its code, and everything the screen grew after it: the window, the compositor, the chrome vocabulary and the one palette (`sys/libdraw`, `sys/libpal`) | Building the draw server, its client library, the fb mapping, or anything that draws in either ring |
 | `docs/WORKBENCH.md` | The plan for a desktop, Amiga's way: a mouse, gadgets, chords from a keys file, a MUI-shaped toolkit whose look is a theme file, and Workbench | Starting any of its four steps, or adding a file a window serves |
+| `docs/CHROME.md` | The plan for the look, from `plan-neo`'s chrome study: schemes and job roles, materials painted by `sys/libraster`, four baked faces, vector icons, docked and torn-off menus, the dock, the top bar, and the column viewer | Changing how anything on the desktop looks, adding a theme role, or drawing outside a window |
 | `docs/HARDWARE.md` | The plan for real hardware, the OrangePi 6 Plus: the device tree as files, drivers in ring 3 behind a walker, a device that walks the process's own tables, the GPU and NPU as directories, and the board's facts from the vendor tree | Starting any of its eight steps, adding a driver, or wondering what the kernel does and does not do for a device |
 | `docs/SMMU.md` | `kernel/smmu` and the `dma` file, written before their code: the SMMUv3 as QEMU models it, the stream table and context descriptor, the walker list a space carries, the fault stream, the capability check, and `blkfs` in outline | Attaching a device to a process, touching the unmap path on arm64, writing a ring 3 driver with bus mastery, or wondering why a kernel driver's disk answers EIO |
 | `docs/DEVTOOLS.md` | The plan for development tools: C and C++ on the build the tree has, a platform library over files, `/proc` whole, debug information as a flat file, a debugger that is a file server, POSIX as mlibc over the calls, and a compiler on the machine | Starting any of its nine steps, adding a language, a library a C program links, or a file the debugger reads |
@@ -402,6 +406,8 @@ the documents it points at.
    explain`, `apps/prefs`, and desktop grounds by name. What is left:
    frames by name (the insets must go on `wctl` first), the fault
    notice's ghost half (GHOST step 3), and class-scoped theme roles.
+   Step 6 is the chrome study, `docs/CHROME.md`. Its first brick is the
+   frame insets on `wctl`, which is also what frames by name wait on.
 2. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
    Plan 9's `threadnotify`, so a proc other than the first can end the
    program and a note can be caught rather than end a proc. A guard page
