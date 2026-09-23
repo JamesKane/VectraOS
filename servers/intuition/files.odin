@@ -118,34 +118,103 @@ hotkey_pop :: proc "contextless" (out: []u8) -> int #no_bounds_check {
 // -- mouse ------------------------------------------------------------------------------
 
 /*
+A window's mouse lines are a queue, so no click is lost.
+
+The server used to keep one line per window, the latest, and a press and
+its release a tick apart reached a client busy between two reads as the
+release alone: no click. Now each window holds a ring of lines not yet
+read, sixteen deep, `plan-neo`'s rule for what may go when it fills.
+
+    motion        a line whose buttons are the line before's. A new one
+                  replaces the newest unread line when that is motion
+                  too, so a pointer swept across a busy window costs one
+                  line, not a ringful
+    button change a line whose buttons differ. Never coalesced, never
+                  dropped while motion can go instead
+
+A ring full of button changes belongs to a client that no longer reads, and
+the oldest then goes, so the newest state is the one kept. Keys are not in
+this file: they queue in `cons`.
+*/
+MOUSE_RING :: 16
+
+Mouse_Event :: struct {
+	x, y:    i32,
+	msec:    u64,
+	buttons: u8,
+	motion:  bool, // Its buttons are the line before's
+}
+
+/*
 mouse_deliver records one movement over window `w`, in the client area's
 coordinates, and answers any read held for it. The line is `rio`'s, the
 same 49 bytes `/dev/mouse` writes, so a program reads both by one rule.
 */
 mouse_deliver :: proc "contextless" (w: int, x: int, y: int, buttons: u8, msec: u64) #no_bounds_check {
 	win := &windows[w]
-		cx, cy, _, _ := frame_client(win)
-	win.mx = x - win.x - cx
-	win.my = y - win.y - cy
-	win.mb = buttons
-	win.mmsec = msec
+	cx, cy, _, _ := frame_client(win)
+	e := Mouse_Event {
+		x       = i32(x - win.x - cx),
+		y       = i32(y - win.y - cy),
+		msec    = msec,
+		buttons = buttons,
+	}
+	queued := int(win.mseq - win.mread)
+	prev := queued > 0 ? win.mq[(win.mseq - 1) % MOUSE_RING].buttons : win.mlastb
+	e.motion = buttons == prev
+	if e.motion && queued > 0 {
+		newest := &win.mq[(win.mseq - 1) % MOUSE_RING]
+		if newest.motion {
+			newest^ = e
+			answer_mouse(w)
+			return
+		}
+	}
+	if queued >= MOUSE_RING {
+		if e.motion {
+			// Full, and this only says where the pointer went: the lines
+			// queued say more, and the next change carries the place.
+			return
+		}
+		mouse_evict(win)
+	}
+	win.mq[win.mseq % MOUSE_RING] = e
 	win.mseq += 1
 	answer_mouse(w)
 }
 
-// mouse_line writes the latest movement over a window as a line and marks
-// it read. Zero when nothing is newer than the last line.
+// mouse_evict makes room in a full ring: the oldest motion line goes, or,
+// when every line is a button change, the oldest line.
+@(private = "file")
+mouse_evict :: proc "contextless" (win: ^Window) #no_bounds_check {
+	victim := win.mread
+	for i := win.mread; i < win.mseq; i += 1 {
+		if win.mq[i % MOUSE_RING].motion {
+			victim = i
+			break
+		}
+	}
+	for i := victim; i > win.mread; i -= 1 {
+		win.mq[i % MOUSE_RING] = win.mq[(i - 1) % MOUSE_RING]
+	}
+	win.mread += 1
+}
+
+// mouse_line writes the oldest unread movement over a window as a line and
+// takes it off the ring. Zero when nothing is waiting.
 mouse_line :: proc "contextless" (win: ^Window, out: []u8) -> int #no_bounds_check {
 	if len(out) < MOUSE_LINE || win.mseq == win.mread {
 		return 0
 	}
-	win.mread = win.mseq
+	e := win.mq[win.mread % MOUSE_RING]
+	win.mread += 1
+	win.mlastb = e.buttons
 	out[0] = 'm'
 	at := 1
-	at = put_field(out, at, win.mx)
-	at = put_field(out, at, win.my)
-	at = put_field(out, at, int(win.mb))
-	at = put_field(out, at, int(win.mmsec))
+	at = put_field(out, at, int(e.x))
+	at = put_field(out, at, int(e.y))
+	at = put_field(out, at, int(e.buttons))
+	at = put_field(out, at, int(e.msec))
 	return at
 }
 

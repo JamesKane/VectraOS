@@ -1113,8 +1113,8 @@ all clean, where the sweep before it lost several in sixty.
 - **Fixes a review of plan-neo found, September 2026**, each written into
   its document as a plan. They are small, and some bite before the step they
   sit in:
-  - The mouse queue. The server keeps one line per window, so a quick click
-    reaches a slow client as the release alone (`docs/WORKBENCH.md` step 5).
+  - ~~The mouse queue.~~ Done, September 2026: a ring of sixteen lines per
+    window, and no click is lost (`docs/WORKBENCH.md` step 5).
   - The arm64 platform bases from the tree. The redistributor stride
     `0x2_0000` and the PL011 divisor are wrong on the Sky1 (`docs/HARDWARE.md`
     step 0).

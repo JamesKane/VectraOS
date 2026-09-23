@@ -5443,7 +5443,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			if !(inject_move(0, 0, CLICK_MENU) && wait_pointer(px, py)) {
 				continue
 			}
-			sync.delay(CLICK_HOLD)
+			sync.delay(MENU_HOLD)
 			_ = inject_move(0, 0, 0)
 			for _ in 0 ..< PATIENCE * 10 {
 				if bar_has(s, mx0, py, mx1 - mx0, my1 - py, magnesium) {
@@ -5661,65 +5661,87 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		check(r, closed, "and an alt-w closes the drawer, its bar gone from the glass")
 	}
 
-	// -- 2. The first menu opens on button three -------------------------------------
+	// -- 2. The first menu opens on button three, and Shell is chosen on it -----------
 
 	/*
 	The bar's first title opens its menu, a popup with `Shell` among its
-	items. The choice on that item is a click on a popup that just opened,
-	and the draw server keeps only the latest mouse line per window, so a
-	press onto a window whose reader has not run yet is gone before it is
-	read -- an injected click on a fresh popup is a race the glass cannot
-	be driven through reliably. So this proves the menu opens with the item
-	on it, and leaves the choosing to a person. `docs/workbench-step4-
-	desktop.png` is a shell opened from that menu by hand. The shell this
-	suite types at is the one the bound chord opens below, keyboard-driven
-	and with no such race.
+	items, and a click on that item opens a shell in a window. The click
+	lands on a popup that just opened, whose reader may not have run yet.
+	That used to be a race the glass could not be driven through, because
+	the draw server kept one mouse line per window and the release wrote
+	over the press. A window's `mouse` is a queue now, and the press waits
+	for the reader. The chosen shell is closed again with an alt-w, so the
+	shells the suite types at below are the ones the bound chord opens.
 	*/
 	title_x := amber_group(s, WB_BAR_H / 2, amber, 2)
 	shells0 := count_windows()
-	menu_ok := false
+	menu_ok, chose := false, false
 	if check(r, title_x > 0, "the first menu title stands after the wordmark on the bar") {
-		// The press that opens the menu can miss -- a tap collapses into its
-		// release when the bar is between reads -- so it is retried, each
-		// retry first clicking the bare backdrop to close a menu a prior try
-		// left standing, which the toolkit would not open a second over.
-		for attempt in 0 ..< 6 {
-			if attempt > 0 {
-				_ = point_to(s.width / 2, s.height / 2)
-				_ = click_held()
-			}
-			if !point_to(title_x + 8, WB_BAR_H / 2) {
+		// Up to three rounds of open-and-choose. A round that finds the popup
+		// but whose click opens nothing says so on the console, with where it
+		// clicked and what the glass held, and the next round starts clean.
+		for round in 0 ..< 3 {
+			item_x, item_y, opened := wb_menu_open(s, title_x, magnesium, round > 0)
+			menu_ok = menu_ok || opened
+			if !opened || !point_to(item_x, item_y) {
 				continue
 			}
-			if !(inject_move(0, 0, CLICK_MENU) && wait_pointer(title_x + 8, WB_BAR_H / 2)) {
-				continue
-			}
-			sync.delay(CLICK_HOLD)
-			_ = inject_move(0, 0, 0)
-			// The popup opens at the title's gadget, past the label's own left
-			// padding, so it is found by its pixels: the first row under the
-			// bar carries the top button, a wide magnesium span. `Shell` is
-			// its third item, a third run of face down a column a dozen pixels
-			// inside the button's left edge, clear of bevel and centred label.
-			mcol := -1
-			for _ in 0 ..< PATIENCE * 2 {
-				if first, last := scan_row(s, WB_BAR_H + 12, magnesium, title_x, s.width - 8); first >= 0 && last - first > 60 {
-					mcol = first + 12
-					break
+			pix_before := fb.get_raw(s, item_x, item_y)
+			if click_held() {
+				// A window program started cold reads itself, its shell and
+				// its font off the disk first, so the wait is the long one.
+				for _ in 0 ..< 10 {
+					if await_windows(shells0 + 1) {
+						chose = true
+						break
+					}
 				}
-				sync.delay(1)
 			}
-			if mcol >= 0 && nth_face_run(s, mcol, WB_BAR_H, magnesium, 3) >= 0 {
-				menu_ok = true
+			if chose {
 				break
 			}
+			dbg: [256]u8
+			sink := libodin.sink_from(dbg[:])
+			libodin.put_str(&sink, "menu-diag: round ")
+			libodin.put_int(&sink, i64(round))
+			libodin.put_str(&sink, " item ")
+			libodin.put_int(&sink, i64(item_x))
+			libodin.put_str(&sink, ",")
+			libodin.put_int(&sink, i64(item_y))
+			libodin.put_str(&sink, " pix ")
+			libodin.put_hex(&sink, u64(pix_before))
+			libodin.put_str(&sink, " now ")
+			libodin.put_hex(&sink, u64(fb.get_raw(s, item_x, item_y)))
+			libodin.put_str(&sink, " windows ")
+			libodin.put_int(&sink, i64(count_windows()))
+			libodin.put_str(&sink, "\n")
+			_ = net_file_write("/dev/cons", libodin.str(&sink))
 		}
 	}
 	check(r, menu_ok, "button three on it opens a menu, a popup with a third item where Shell sits")
-	// The menu down again, so the shells and the toast below have clear glass.
-	// A press on the bare backdrop, outside the popup, is what closes it.
-	_ = point_to(s.width / 2, s.height / 2)
-	_ = click_held()
+	check(r, chose, "and a click on Shell, on the popup that just opened, opens a shell in a window")
+	if chose {
+		// Its bar in front first, so the chord closes it and not what was
+		// in front before it claimed its window.
+		bx, _, _ := await_title_bar(s)
+		closed := false
+		for _ in 0 ..< 3 {
+			if bx < 0 {
+				break
+			}
+			inject_chord(0x11) // 'w' is make 0x11: the chosen shell, in front, closes
+			if await_windows(shells0) {
+				closed = true
+				break
+			}
+		}
+		check(r, closed, "which an alt-w closes again")
+	} else {
+		// The menu down again, so the shells and the toast below have clear
+		// glass. A press on the bare backdrop, outside the popup, closes it.
+		_ = point_to(s.width / 2, s.height / 2)
+		_ = click_held()
+	}
 
 	// -- 3. A shell in a window, typed at, and one more on the chord ------------------
 
@@ -5942,15 +5964,14 @@ await_windows :: proc(want: int) -> bool {
 }
 
 /*
-button_held presses one rio button where the pointer is, holds it, and
-releases, with a hold either side.
+button_held presses one rio button where the pointer is and releases it, a
+couple of ticks apart, so the two are two packets.
 
-**This is the whole of why a click is reliable.** The draw server keeps one
-mouse line per window, the latest, and marks it read; a press and the
-release after it, landing between two of the client's reads, reach the
-client as the release alone -- button zero, no click. So the press is held
-long enough that a client busy baking a face still reads it before it goes.
-A person's press lasts longer than a program's turn, and so does this one.
+It used to hold the press for more than a hundred ticks either side. The
+draw server kept one mouse line per window, and a press and release a tick
+apart reached a busy client as the release alone. A window's `mouse` is a
+queue now, `servers/intuition/files.odin`, and a button change is never
+coalesced, so a click is a click however slowly the client reads.
 */
 @(private = "file")
 button_held :: proc(button: u8) -> bool {
@@ -5958,11 +5979,10 @@ button_held :: proc(button: u8) -> bool {
 	if !inject_move(0, 0, button) || !wait_pointer(cx, cy) {
 		return false
 	}
-	sync.delay(CLICK_HOLD)
+	sync.delay(CLICK_GAP)
 	if !inject_move(0, 0, 0) || !wait_pointer(cx, cy) {
 		return false
 	}
-	sync.delay(CLICK_HOLD)
 	return true
 }
 
@@ -5980,11 +6000,14 @@ click_held :: proc() -> bool {
 	return button_held(CLICK_LEFT)
 }
 
-// How long an injected press is held, and the gap before the next. Generous
-// on purpose: a window baking a full face between its mouse reads can be
-// tens of ticks between them, and a shorter hold lets the release overwrite
-// the press before the read. See `button_held`.
-CLICK_HOLD :: 120
+// The ticks between an injected press and its release: enough to make them
+// two packets. See `button_held`.
+CLICK_GAP :: 2
+
+// How long the menu button is held on a menu, as a person holds it: the menu
+// opens on the press and chooses on the release, so the hold is what gives
+// the menu time to open under the pointer. Not a workaround.
+MENU_HOLD :: 120
 
 // row_span answers the start and length of the longest span of `want`
 // along row `y` between `x0` and `x1`, where a span is pixels of it fewer
@@ -6058,6 +6081,48 @@ title_bar :: proc "contextless" (s: ^fb.Surface, copper: u32) -> (bx: int, by: i
 		}
 	}
 	return -1, -1, 0
+}
+
+/*
+wb_menu_open opens the Workbench bar's first menu with button three and
+finds `Shell` on it: the popup opens at the title, so it is found by its
+pixels, the first row under the bar carrying the top button, a wide
+magnesium span, and `Shell` the third run of face down a column a dozen
+pixels inside the button's left edge. A try after the first clicks the bare
+backdrop first, to close a menu a prior try left standing. Answers the
+item's point, and whether the menu opened.
+*/
+@(private = "file")
+wb_menu_open :: proc(s: ^fb.Surface, title_x: int, magnesium: u32, reset: bool) -> (x: int, y: int, ok: bool) {
+	for attempt in 0 ..< 6 {
+		if attempt > 0 || reset {
+			_ = point_to(s.width / 2, s.height / 2)
+			_ = click_held()
+			sync.delay(PATIENCE / 4)
+		}
+		if !point_to(title_x + 8, WB_BAR_H / 2) {
+			continue
+		}
+		if !(inject_move(0, 0, CLICK_MENU) && wait_pointer(title_x + 8, WB_BAR_H / 2)) {
+			continue
+		}
+		sync.delay(MENU_HOLD)
+		_ = inject_move(0, 0, 0)
+		mcol := -1
+		for _ in 0 ..< PATIENCE * 2 {
+			if first, last := scan_row(s, WB_BAR_H + 12, magnesium, title_x, s.width - 8); first >= 0 && last - first > 60 {
+				mcol = first + 12
+				break
+			}
+			sync.delay(1)
+		}
+		if mcol >= 0 {
+			if iy := nth_face_run(s, mcol, WB_BAR_H, magnesium, 3); iy >= 0 {
+				return mcol + 20, iy, true
+			}
+		}
+	}
+	return -1, -1, false
 }
 
 // nth_face_run answers the middle row of the n-th run of `face` down column
@@ -9242,19 +9307,50 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #n
 	gx0, gy0 := mouse.position()
 	_ = inject_move(0, 0, 1) // press button 1, beginning the grab
 	_ = wait_pointer(gx0, gy0)
-	mount_reader = Mount_Reader{c = mf}
-	if check(r, sched.spawn("grab-read", mount_read_thread, nil) != nil, "a thread reads the grabbing window's mouse") {
-		_ = inject_move(-50, 0, 1) // drag left out of the window, button held
-		dwoke := sync.await_flag(&mount_reader.done, PATIENCE)
-		dragx, _, dragb, dok := parse_mouse(mount_reader.buf[:max(mount_reader.n, 0)])
-		check(
-			r,
-			dwoke && dok && dragb & 1 != 0 && dragx < 0,
-			"a drag out of the window is still delivered to it, the pointer past its own edge",
-		)
+	_ = inject_move(-50, 0, 1) // drag left out of the window, button held
+	_ = wait_pointer(gx0 - 50, gy0)
+	// The window's mouse is a queue: the press comes first, then the drag.
+	dragged := false
+	for _ in 0 ..< MOUSE_LINES_MAX {
+		dragx, _, dragb, dok := mouse_next(mf)
+		if !dok {
+			break
+		}
+		if dragb & 1 != 0 && dragx < 0 {
+			dragged = true
+			break
+		}
 	}
+	check(r, dragged, "a drag out of the window is still delivered to it, the pointer past its own edge")
 	_ = inject_move(0, 0, 0) // release, ending the grab
 	_ = wait_pointer(gx0 - 50, gy0)
+
+	/*
+	No click is lost. A press and its release a tick apart, with no read in
+	flight, both reach the window: the lines read in order hold the press
+	and, next, the release. With one line kept per window the release wrote
+	over the press, and a client between two reads saw no click.
+	*/
+	if check(r, point_to(second_x + ox + 20, oy + 20), "the pointer goes back into the window") {
+		px, py := mouse.position()
+		_ = inject_move(0, 0, 1)
+		sync.delay(1)
+		_ = inject_move(0, 0, 0)
+		_ = wait_pointer(px, py)
+		saw_press, saw_release := false, false
+		for _ in 0 ..< MOUSE_LINES_MAX {
+			_, _, b, ok := mouse_next(mf)
+			if !ok {
+				break
+			}
+			if saw_press {
+				saw_release = b == 0
+				break
+			}
+			saw_press = b & 1 != 0
+		}
+		check(r, saw_press && saw_release, "a press and its release a tick apart both reach the window, in order: no click is lost")
+	}
 	vfs.chan_close(mf)
 
 	// -- A drag on the bar moves the window -----------------------------------------
@@ -9295,6 +9391,24 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #n
 	}
 	check(r, is_desk(s, probe_x, probe_y), "and the window is off the glass, with the desktop where it was")
 	vfs.chan_close(cons)
+}
+
+// The most lines a window's mouse ring holds, and so the most a reader
+// looking for one line need take. `MOUSE_RING` in `servers/intuition`.
+MOUSE_LINES_MAX :: 16
+
+// mouse_next reads one line off a window's `mouse`, on a thread, so a read
+// that would park fails the check instead of wedging the suite.
+@(private = "file")
+mouse_next :: proc(mf: ^vfs.Chan) -> (x: int, y: int, b: int, ok: bool) {
+	mount_reader = Mount_Reader{c = mf}
+	if sched.spawn("mouse-next", mount_read_thread, nil) == nil {
+		return
+	}
+	if !sync.await_flag(&mount_reader.done, PATIENCE) {
+		return
+	}
+	return parse_mouse(mount_reader.buf[:max(mount_reader.n, 0)])
 }
 
 // point_to moves the pointer to a screen position by injected packets,

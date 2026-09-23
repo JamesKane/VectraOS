@@ -1009,15 +1009,14 @@ Window :: struct {
 	// lamp goes hot while any window is waiting. See `Window_State`.
 	state:     Window_State,
 
-	// The pointer's last movement over this window, in the client area's
-	// coordinates, and which one a read of `mouse` last answered. See
-	// `files.odin`.
-	mx:        int,
-	my:        int,
-	mb:        u8,
-	mmsec:     u64,
+	// The pointer's movements over this window not yet read, in the client
+	// area's coordinates: a ring, `mseq` its head and `mread` its tail, and
+	// the buttons the last line read carried. Motion is coalesced and a
+	// button change never is. See `files.odin`.
+	mq:        [MOUSE_RING]Mouse_Event,
 	mseq:      u64,
 	mread:     u64,
+	mlastb:    u8,
 		mouse_fid:  vectra9.Fid,
 	mouse_held: bool,
 
@@ -2171,6 +2170,7 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	win.state = .Idle
 		win.mseq = 0
 	win.mread = 0
+	win.mlastb = 0
 	win.mouse_held = false
 	win.hangup = false
 	win.has_cursor = false

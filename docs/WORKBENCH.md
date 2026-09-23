@@ -707,16 +707,13 @@ closes them. It writes a line to `notice`, reads it back off `history`,
 and sees the toast's pixels in the bar's corner.
 
 **What the suite drives, and what a person does.** Choosing an item off an
-open menu is a click on a popup that opened a moment earlier, and the draw
-server keeps one mouse line per window, the latest -- a press onto a window
-whose reader has not run yet is overwritten by its release before it is
-read. An injected click on a fresh popup is a race the glass cannot be
-driven through reliably, so the suite proves the menu opens with the item
-on it and leaves the choosing to a person; `docs/workbench-step4-desktop.png`
-is a shell opened from that menu by hand. The shell the suite types at is
-the one the bound chord opens, keyboard-driven, with no such race. A plain
-left click and a plain right-button menu-open are reliable once the press
-is held past a busy client's read, which `button_held` in the suite does.
+open menu is a click on a popup that opened a moment earlier, whose reader
+may not have run yet. That was a race the suite could not drive while the
+draw server kept one mouse line per window, since the release wrote over
+the press. Step 5's mouse queue retired it, September 2026: the suite now
+opens the first menu, clicks `Shell` on the fresh popup, sees one more
+window, and closes it with an alt-w. The shell the suite types at is
+still the one the bound chord opens.
 
 From the serial line, `window ls` opens a window with a listing in it.
 Then `ps` shows the desktop as one proc of threads and its io procs.
@@ -757,12 +754,10 @@ item undone until a key came. Closing the files under that read ends
 nothing, because a read in flight outlives its descriptor. So the server
 took a `close` word on `wctl`, alt-w's own hangup, and the mouse thread
 asks for it: the key read answers nothing, and `window_run` takes it from
-there. **The server keeps one mouse line per window**, the latest, so a
-press and release a tick apart reach a slow client as the release alone;
-the suite's injected clicks are held, `CLICK_HOLD` in
-`kernel/user/verify.odin`, 120 ticks before the release and 120 after,
-which a person's are too. Step 5's mouse queue is the fix, and the hold
-goes with it. And the notice service is posted and served before the
+there. The server kept one mouse line per window, the latest, so a press
+and release a tick apart reached a slow client as the release alone, and
+the suite held each injected click 120 ticks either side. Step 5's mouse
+queue fixed that, and a click is two ticks now. And the notice service is posted and served before the
 first window opens, mounted at `/mnt/wb` by the desktop itself through an
 io proc (`libthread.iomount`, since the server it waits on is a thread of
 the same proc) and by `init` for the console's shell.
@@ -786,35 +781,27 @@ priority, because the suite works around it today. The compositor's half
 of the review, a frame clock and a `stats` file, is `docs/DRAW.md`
 section 18.
 
-- **A mouse queue, so no click is lost.** Small to medium. Today a window
-  holds one mouse line, the latest. `mouse_deliver` in
-  `servers/intuition/files.odin` overwrites `mx`, `my`, `mb` and `mmsec`
-  and bumps `mseq`, and `mouse_line` answers only when `mseq` is past
-  `mread`. `pointer_move` in `pointer.odin` decides which window a line
-  goes to.
+- **A mouse queue, so no click is lost. Done, September 2026.** Each
+  window holds a ring of sixteen unread lines,
+  `servers/intuition/files.odin`, with `mseq` and `mread` its head and
+  tail, instead of one line, the latest. The rule for what goes is
+  `plan-neo`'s (`docs/desktop-protocol.md`, the delivery rules). A motion
+  line, whose buttons are the line before's, replaces the newest unread
+  line when that is motion too. A line that changes the buttons is never
+  coalesced. When the ring is full a new motion line is dropped, and a
+  button change pushes out the oldest motion line, or the oldest line when
+  every line is a change. A ring full of changes belongs to a client that
+  no longer reads, and the close request's grace period below is the
+  answer to that. Keys are not in this file, because they queue in `cons`.
 
-  The plan is a ring per window, sixteen lines deep, with a sequence
-  number on each entry. `mseq` and `mread` become the ring's head and
-  tail. When the ring is full, the rule is `plan-neo`'s
-  (`docs/desktop-protocol.md`, the delivery rules). Plain motion is
-  coalesced: a new motion replaces the newest unread motion, and only
-  when no button change is queued after it. A line that changes the
-  buttons is never dropped. Neither is the `close` line below, or a
-  resize line (`rio`'s `r`) when the server grows one.
-
-  A ring full of lines that must not drop belongs to a client that no
-  longer reads. Sixteen lines is more clicks than a person makes between
-  two reads of a live client. The grace period of the close request below
-  is the answer to a client that no longer reads. Keys are not
-  in this file, because they queue in `cons` already.
-
-  The line stays `rio`'s `m x y b msec`, so no reader changes. Sixteen
-  lines of twenty-four bytes for each of thirty-two windows is twelve
-  kilobytes, three pages of the server's 112-page bss budget. The check
-  injects a press and a release a tick apart onto a window whose reader
-  is parked, and reads both. Then `CLICK_HOLD` in `kernel/user/verify.odin`
-  goes, and the step 4 note about a menu choice the suite cannot drive
-  goes with it.
+  The line stays `rio`'s `m x y b msec`, so no reader changed. The check,
+  in `verify_pointer`, injects a press and a release a tick apart with no
+  read in flight, and reads the press and then the release. A mutation
+  that coalesces every line fails it. The suite's click hold went from
+  120 ticks either side to a two-tick gap, and step 4's menu choice is
+  driven now: a click on `Shell` on a popup that just opened. The
+  grab check reads the queue in order to the line past the window's edge,
+  which is where a queue and a single line differ.
 
 - **Close as a request.** Small. The close gadget and the `close` chord
   hang up the session today, `window_hangup` in `pointer.odin`, and a
