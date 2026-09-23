@@ -12,3 +12,7 @@ well        2               # the depth of a sunken one
 pad         4               # a group's inset
 gap         4               # between children
 closegrace  5               # seconds a window asked to close has, before Kill
+desk grid   grid  slate_deep void 32   # the desktop's grounds, by name: a pattern,
+desk plain  plain slate_deep           # a ground, a line and a step, and
+desk dots   dots  slate_deep slate 16  # the one the desktop lays
+desk.ground grid

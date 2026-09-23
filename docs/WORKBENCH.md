@@ -990,9 +990,27 @@ section 18.
   other two are beaten, and as `style`, where it is another program's and
   copper wins; and `prefs` opens a toolkit window of its own.
 
-- **Frames and backgrounds by name.** The theme file names a frame or a
-  ground once, `frame thin` or `ground grid`, and a role names one. A
-  new frame style is then a theme edit and not code.
+- **Frames and backgrounds by name. The grounds are done, September
+  2026; frames wait.** The theme file names a desktop ground once and
+  picks one, `servers/intuition/theme.odin`:
+
+      desk grid   grid  slate_deep void 32   # pattern, ground, line, step
+      desk plain  plain slate_deep
+      desk dots   dots  slate_deep slate 16
+      desk.ground grid
+
+  `desk_paint` lays the pattern the theme picked, grid, plain or dots, and
+  the overview's tiles wear its ground. A `reload` lays it again under
+  every window. `/lib/theme` ships the three and picks the grid, which is
+  the look the chassis always had. The check, in `verify_muiwin`: a theme
+  that defines `desk flat plain copper` and picks it turns the desktop
+  copper, and with the file gone the grid comes back.
+
+  Frames by name wait. A frame's metrics are geometry the client shares:
+  `sys/libmui` places its client area by `FRAME_INSET_X` and `_Y`, the
+  server's constants copied. A frame a theme could size would move every
+  client's area under it. That wants the server to say a window's insets
+  on `wctl`, and every client to read them, before a theme may name one.
 
 - **A preferences window generated from the theme's keys.** One `libmui`
   program walks the roles the parser knows and shows each with its

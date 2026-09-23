@@ -396,19 +396,38 @@ desk_paint :: proc "contextless" (sx0: int, sy0: int, sx1: int, sy1: int) #no_bo
 	Two modulo operations per pixel became one per row, over a loop that runs a
 	million times at start and half that on every close, move and resize.
 	*/
-		for y in y0 ..< y1 {
+	// The ground the theme names, `desk.ground`: a grid, plain, or dots.
+	// See `theme.odin`.
+	step := max(desk_step, 2)
+	for y in y0 ..< y1 {
 		dst := screen_at(y)
-		if y % DESK_STEP == 0 {
+		switch desk_kind {
+		case .Plain:
 			for x in x0 ..< x1 {
-				dst[x] = DESK_GRID
+				dst[x] = desk_ground
 			}
-			continue
-		}
-		for x in x0 ..< x1 {
-			dst[x] = DESK_GROUND
-		}
-		for x := ((x0 + DESK_STEP - 1) / DESK_STEP) * DESK_STEP; x < x1; x += DESK_STEP {
-			dst[x] = DESK_GRID
+		case .Dots:
+			for x in x0 ..< x1 {
+				dst[x] = desk_ground
+			}
+			if y % step == 0 {
+				for x := ((x0 + step - 1) / step) * step; x < x1; x += step {
+					dst[x] = desk_line
+				}
+			}
+		case .Grid:
+			if y % step == 0 {
+				for x in x0 ..< x1 {
+					dst[x] = desk_line
+				}
+				continue
+			}
+			for x in x0 ..< x1 {
+				dst[x] = desk_ground
+			}
+			for x := ((x0 + step - 1) / step) * step; x < x1; x += step {
+				dst[x] = desk_line
+			}
 		}
 	}
 	desk_chrome(x0, y0, x1, y1)

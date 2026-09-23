@@ -5456,6 +5456,38 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 		}
 		check(r, back, "and with the file gone, a second reload brings the magnesium back")
 
+		// A desktop ground by name: a theme that defines one and picks it. The
+		// server reads the person's theme under its own `$home`.
+		_ = env.set(ps.env, "home", "/usr/glenda")
+		dpx, dpy := s.width - 12, s.height - 12
+		before := fb.get_raw(s, dpx, dpy)
+		is_desk_px := before == fb.pack(s, fb.SLATE_DEEP) || before == fb.pack(s, fb.VOID)
+		if check(r, is_desk_px, "the desktop shows at the glass's bottom right, clear of the demo") {
+			recoloured := false
+			if write_disk_file("/usr/glenda/lib/theme", "desk flat plain copper\ndesk.ground flat\n") && net_file_write("/mnt/ctl", "reload") {
+				for _ in 0 ..< PATIENCE * 10 {
+					if fb.get_raw(s, dpx, dpy) == copper {
+						recoloured = true
+						break
+					}
+					sync.delay(1)
+				}
+			}
+			check(r, recoloured, "a theme that defines a ground, desk flat plain copper, and picks it lays it: a new ground is a theme edit")
+			remove_file("/usr/glenda/lib/theme")
+			restored := false
+			if net_file_write("/mnt/ctl", "reload") {
+				for _ in 0 ..< PATIENCE * 10 {
+					if fb.get_raw(s, dpx, dpy) == before {
+						restored = true
+						break
+					}
+					sync.delay(1)
+				}
+			}
+			check(r, restored, "and with the file gone the shipped grid is laid again")
+		}
+
 		// The preferences window: a toolkit window of every role, walked
 		// off the parser's own list.
 		if pp := start_path(r, "/bin/prefs", "the preferences window starts"); pp != nil {

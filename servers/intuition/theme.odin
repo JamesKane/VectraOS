@@ -42,6 +42,44 @@ th_bar := CHASSIS_BAR
 th_bar_lit := CHASSIS_BAR_LIT
 th_bar_shade := CHASSIS_BAR_SHADE
 
+/*
+The desktop's ground, by name, `docs/WORKBENCH.md` step 5. The theme file
+names a ground once and picks one:
+
+    desk grid   grid  slate_deep void 32    # pattern, ground, line, step
+    desk plain  plain slate_deep
+    desk dots   dots  slate_deep slate 16
+    desk.ground grid
+
+A new ground is then a theme edit and not code. A `desk.ground` naming
+nothing defined, or none at all, is the chassis grid.
+*/
+Desk_Kind :: enum u8 {
+	Grid,
+	Plain,
+	Dots,
+}
+
+Desk_Def :: struct {
+	name:   [16]u8,
+	n:      int,
+	kind:   Desk_Kind,
+	ground: u32,
+	line:   u32,
+	step:   int,
+}
+
+MAX_DESKS :: 8
+desk_defs: [MAX_DESKS]Desk_Def
+ndesk_defs: int
+desk_pick: [16]u8
+desk_pick_n: int
+
+desk_kind := Desk_Kind.Grid
+desk_ground := DESK_GROUND
+desk_line := DESK_GRID
+desk_step := DESK_STEP
+
 // How long a window asked to close has before the desktop offers `Kill`,
 // the theme's `closegrace` in seconds. See `window_close_request`.
 CLOSE_GRACE_MS :: u64(5000)
@@ -69,6 +107,8 @@ theme_reload :: proc "contextless" () #no_bounds_check {
 	th_bar_lit = CHASSIS_BAR_LIT
 	th_bar_shade = CHASSIS_BAR_SHADE
 	th_closegrace_ms = CLOSE_GRACE_MS
+	ndesk_defs = 0
+	desk_pick_n = 0
 
 	home := theme_read_home(home_buf[:])
 
@@ -82,6 +122,64 @@ theme_reload :: proc "contextless" () #no_bounds_check {
 
 	theme_apply_text(base_buf[:base])
 	theme_apply_text(body)
+	desk_resolve()
+}
+
+// desk_resolve makes the ground `desk.ground` names the one `desk_paint`
+// lays, or the chassis grid.
+desk_resolve :: proc "contextless" () #no_bounds_check {
+	desk_kind, desk_ground, desk_line, desk_step = .Grid, DESK_GROUND, DESK_GRID, DESK_STEP
+	for i in 0 ..< ndesk_defs {
+		d := &desk_defs[i]
+		if string(d.name[:d.n]) == string(desk_pick[:desk_pick_n]) {
+			desk_kind, desk_ground, desk_line, desk_step = d.kind, d.ground, d.line, d.step
+			return
+		}
+	}
+}
+
+// pack is a palette colour as the glass's word.
+@(private = "file")
+pack :: proc "contextless" (c: libpal.RGB) -> u32 {
+	return u32(c[0]) << 16 | u32(c[1]) << 8 | u32(c[2])
+}
+
+// desk_define takes a `desk NAME PATTERN GROUND [LINE] [STEP]` line.
+@(private = "file")
+desk_define :: proc "contextless" (rest: []u8) #no_bounds_check {
+	if ndesk_defs >= MAX_DESKS {
+		return
+	}
+	name, r1 := word(rest)
+	kind, r2 := word(r1)
+	gw, r3 := word(r2)
+	lw, r4 := word(r3)
+	sw, _ := word(r4)
+	d := Desk_Def{step = DESK_STEP, line = DESK_GRID}
+	switch string(kind) {
+	case "grid":
+		d.kind = .Grid
+	case "plain":
+		d.kind = .Plain
+	case "dots":
+		d.kind = .Dots
+	case:
+		return
+	}
+	g, gok := libpal.parse_color(string(gw))
+	if len(name) == 0 || len(name) > len(d.name) || !gok {
+		return
+	}
+	d.ground = pack(g)
+	if l, lok := libpal.parse_color(string(lw)); lok {
+		d.line = pack(l)
+	}
+	if st, sok := libdraw.scan_int_str(sw); sok && st >= 2 && st <= 256 {
+		d.step = st
+	}
+	d.n = copy(d.name[:], name)
+	desk_defs[ndesk_defs] = d
+	ndesk_defs += 1
 }
 
 /*
@@ -93,6 +191,8 @@ the restacked frames to the glass at once.
 */
 theme_rechrome :: proc "contextless" () #no_bounds_check {
 	theme_reload()
+	// The ground may have changed: lay it again under every window.
+	desk_paint(0, 0, scr_w, scr_h)
 	for i in 0 ..< MAX_WINDOWS {
 		if windows[i].used {
 			window_chrome(&windows[i])
@@ -143,6 +243,10 @@ theme_apply_line :: proc "contextless" (line: []u8) #no_bounds_check {
 		set_color(&th_plinth_lit, string(value))
 	case "plinth.shade":
 		set_color(&th_plinth_shade, string(value))
+	case "desk":
+		desk_define(after)
+	case "desk.ground":
+		desk_pick_n = copy(desk_pick[:], value)
 	case "closegrace":
 		if secs, ok := libdraw.scan_int_str(value); ok && secs >= 0 && secs <= 600 {
 			th_closegrace_ms = u64(secs) * 1000

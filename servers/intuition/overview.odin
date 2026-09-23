@@ -88,7 +88,7 @@ overview_tile :: proc "contextless" (ws: int) #no_bounds_check {
 	for y in 0 ..< th {
 		dst := screen_at(ty + y)
 		for x in 0 ..< tw {
-			dst[tx + x] = DESK_GROUND
+			dst[tx + x] = desk_ground
 		}
 	}
 	// Every window on this workspace, back to front, scaled into the cell.
