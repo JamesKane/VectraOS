@@ -660,10 +660,30 @@ look.
    ground. On the glass, the demo's button label has a
    pixel between the amber and the magnesium, which the one-bit cells
    never drew. A control with no faces fails exactly those.
-5. **The frame, A.** Brushed bars, the new metrics, the focus line and the
-   title glow in the server, and the halo and shadow of `docs/DRAW.md`
-   section 19. The check: a pixel just outside the front window's frame is
-   brighter than the same pixel with `glow 0`. Medium.
+5. **The frame, A. Done, September 2026, but for the gadgets.** The theme
+   line `frame.style metal` makes every bar brushed metal, `bar` to
+   `bar.shade` with two hairline patterns. The front window's bar has a
+   `focus` line along its foot. Its title is in the chrome face, `text` over
+   a faint `focus` glow, and every other title is `dim`.
+   `servers/intuition/effects.odin` paints them into each window's store
+   with `sys/libraster`.
+
+   The halo and the shadow of `docs/DRAW.md` section
+   19 are the theme's `glow` and `shadow`. The three schemes of section 3
+   turn all of it on with the study's metrics: a 24-pixel bar and a 1-pixel
+   edge. `docs/chrome-neon-frame.png` is the demo under `use neon`.
+
+   The checks are in `verify_muiwin`. With `glow 60`, a pixel beside the
+   front window's frame turns toward the focus colour. With `frame.style
+   metal`, the bar's foot is the focus line and its rows differ. With the
+   file gone, the pixel is the desktop's again. A control that paints no
+   effects fails the first.
+
+   What is left: the gadgets are still the chassis's amber on magnesium.
+   The chassis stays the default, `/lib/theme`, because the suite's glass
+   checks read the chassis's colours by name. Moving the default to `neon`
+   means those checks read the theme's roles first, which is a brick of its
+   own.
 6. **Menus, B to D.** The `menu` and `panel` kinds, the docked menu, and
    tear-off. Workbench moves its menus into its main menu. The check: the
    docked menu shows for the front program and hides for another, and a

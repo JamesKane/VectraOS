@@ -1064,6 +1064,9 @@ them:
    of the per-face atlas. Done, September 2026.
 
 Brick 4, the four faces baked from OFL fonts, is done too, September 2026.
+So is brick 5, the metal frame with its halo and shadow, but for the
+gadgets. The chassis stays the default until the suite's colour checks read
+the theme's roles.
 
 After those come the four faces and the frame with its halo,
 `docs/DRAW.md` section 19. Then the menus, the icons, readouts and LEDs,

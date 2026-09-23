@@ -167,11 +167,11 @@ window_place :: proc "contextless" (win: ^Window, ws: int) #no_bounds_check {
 	win.workspace = ws
 	if old == current_ws && !win.hidden {
 		desk_paint(win.x, win.y, win.x + win.w, win.y + win.h)
-		repaint(win.x, win.y, win.w, win.h)
+		repaint_window(win.x, win.y, win.w, win.h)
 	}
 	refocus(was)
 	if ws == current_ws && !win.hidden {
-		repaint(win.x, win.y, win.w, win.h)
+		repaint_window(win.x, win.y, win.w, win.h)
 	}
 	lamp_show(old)
 	lamp_show(ws)

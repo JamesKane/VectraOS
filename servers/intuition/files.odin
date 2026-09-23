@@ -635,7 +635,7 @@ window_lower :: proc "contextless" (at: int) #no_bounds_check {
 	refocus(was)
 	win := &windows[at]
 	if win.workspace == current_ws && !win.hidden {
-		repaint(win.x, win.y, win.w, win.h)
+		repaint_window(win.x, win.y, win.w, win.h)
 	}
 }
 
@@ -749,7 +749,7 @@ window_hide :: proc "contextless" (win: ^Window, hidden: bool) {
 	if hidden {
 		desk_paint(win.x, win.y, win.x + win.w, win.y + win.h)
 	}
-	repaint(win.x, win.y, win.w, win.h)
+	repaint_window(win.x, win.y, win.w, win.h)
 }
 
 /*
@@ -774,7 +774,7 @@ window_kind :: proc "contextless" (win: ^Window, at: int, kind: Window_Kind) {
 	}
 	window_chrome(win)
 	if win.workspace == current_ws && !win.hidden {
-		repaint(win.x, win.y, win.w, win.h)
+		repaint_window(win.x, win.y, win.w, win.h)
 	}
 }
 

@@ -5572,7 +5572,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			worn := false
 			if write_disk_file("/usr/glenda/lib/theme", sc.text) && net_file_write("/mnt/ctl", "reload") {
 				for _ in 0 ..< PATIENCE * 20 {
-					if fb.get_raw(s, gx, probe_y) == face_px && fb.get_raw(s, wx + ww / 2, wy + 13) == bar_px {
+					if fb.get_raw(s, gx, probe_y) == face_px && bar_colour_near(s, wx + ww / 2, wy, bar_px) {
 						worn = true
 						break
 					}
@@ -5593,6 +5593,58 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			}
 		}
 		check(r, unworn, "and with the file gone the chassis's magnesium and copper come back")
+
+		/*
+		The frame past the chassis, `docs/CHROME.md` brick 5. A `glow` puts a
+		halo of `focus`, cyan in the chassis, round the front window, drawn by
+		the compositor on the pixels beside the window: one just right of the
+		demo's frame turns toward cyan. `frame.style metal` makes the bar
+		brushed metal with a line of `focus` along its foot. With the file gone
+		the pixel beside the window is the desktop's again, exactly.
+		*/
+		hx, hy := wx + ww + 2, wy + 40
+		if hx < s.width {
+			plain := fb.get_raw(s, hx, hy)
+			haloed := false
+			if write_disk_file("/usr/glenda/lib/theme", "glow 60\n") && net_file_write("/mnt/ctl", "reload") {
+				for _ in 0 ..< PATIENCE * 20 {
+					v := fb.get_raw(s, hx, hy)
+					if v != plain && (v >> 8 & 0xFF) > (plain >> 8 & 0xFF) && (v & 0xFF) > (plain & 0xFF) {
+						haloed = true
+						break
+					}
+					sync.delay(1)
+				}
+			}
+			check(r, haloed, "a theme with glow 60 lays a halo round the front window: a pixel beside its frame turns toward cyan")
+			cyan = fb.pack(s, fb.CYAN)
+			lined := false
+			if write_disk_file("/usr/glenda/lib/theme", "glow 60\nframe.style metal\n") && net_file_write("/mnt/ctl", "reload") {
+				// The bar is FRAME_EDGE down and FRAME_TITLE tall in the chassis
+				// metrics, so its last row is the edge plus the title less one.
+				foot := wy + 3 + 20 - 1
+				for _ in 0 ..< PATIENCE * 20 {
+					if fb.get_raw(s, wx + ww / 2, foot) == cyan && fb.get_raw(s, wx + ww / 2 + 1, wy + 4) != fb.get_raw(s, wx + ww / 2 + 1, foot - 2) {
+						lined = true
+						break
+					}
+					sync.delay(1)
+				}
+			}
+			check(r, lined, "and frame.style metal makes the bar a gradient with a focus line along its foot")
+			remove_file("/usr/glenda/lib/theme")
+			cleared := false
+			if net_file_write("/mnt/ctl", "reload") {
+				for _ in 0 ..< PATIENCE * 20 {
+					if fb.get_raw(s, hx, hy) == plain {
+						cleared = true
+						break
+					}
+					sync.delay(1)
+				}
+			}
+			check(r, cleared, "and with the file gone the pixel beside the window is the desktop's again, exactly")
+		}
 
 		// The preferences window: a toolkit window of every role, walked
 		// off the parser's own list.
@@ -10216,6 +10268,21 @@ between_px :: proc "contextless" (v: u32, a: u32, b: u32) -> bool {
 		}
 	}
 	return true
+}
+
+// bar_colour_near looks for one colour in a box at the top of a window's bar:
+// a flat bar is the colour through, and a scheme's metal bar has it on its
+// top row, between the hairlines. The box is 21 columns from `x` and the
+// first 30 rows from `y`.
+bar_colour_near :: proc "contextless" (s: ^fb.Surface, x: int, y: int, want: u32) -> bool {
+	for row in y ..< min(y + 30, s.height) {
+		for col in x ..< min(x + 21, s.width) {
+			if fb.get_raw(s, col, row) == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // wctl_frame reads a window's wctl line: the rectangle, and the frame's four

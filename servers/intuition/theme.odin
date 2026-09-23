@@ -21,6 +21,7 @@ package intuition
 
 import "vsys:abi"
 import "vsys:libdraw"
+import "vsys:libfont"
 import "vsys:libpal"
 import "vsys:libuser"
 
@@ -47,6 +48,32 @@ th_bar_shade := CHASSIS_BAR_SHADE
 th_frame_edge := FRAME_EDGE
 th_frame_title := FRAME_TITLE
 th_frame_well := FRAME_WELL
+
+/*
+The frame's look past the chassis, `docs/CHROME.md` section 7. `frame.style
+metal` makes every bar brushed metal, `bar` down to `bar.shade`, with a line
+of `focus` under the front window's and its title in the `chrome` face, in
+`text` in front and `dim` behind. `glow` and `shadow` are the compositor's,
+`docs/DRAW.md` section 19: a halo in `focus` round the front window, its
+strength in per cent, and a shadow under every framed window, its width in
+pixels. The chassis names none of them and draws the frame it always did.
+*/
+th_frame_metal := false
+th_focus := libpal.CYAN
+th_text := libpal.AMBER
+th_dim := libpal.AMBER_DIM
+th_glow := 0
+th_shadow := 0
+
+// The chrome face, `font.chrome`, for a metal bar's title: the file in a
+// buffer of the server's own, with the tracking and capitals the line names.
+@(private = "file") chrome_buf: [CHROME_FACE_MAX]u8
+CHROME_FACE_MAX :: 32 * 1024
+th_chrome: libfont.Face
+th_chrome_track := 0
+th_chrome_caps := false
+@(private = "file") chrome_path: [64]u8
+@(private = "file") chrome_path_n: int
 
 /*
 The desktop's ground, by name, `docs/WORKBENCH.md` step 5. The theme file
@@ -114,6 +141,11 @@ theme_reload :: proc "contextless" () #no_bounds_check {
 	th_bar_lit = CHASSIS_BAR_LIT
 	th_bar_shade = CHASSIS_BAR_SHADE
 	th_frame_edge, th_frame_title, th_frame_well = FRAME_EDGE, FRAME_TITLE, FRAME_WELL
+	th_frame_metal = false
+	th_focus, th_text, th_dim = libpal.CYAN, libpal.AMBER, libpal.AMBER_DIM
+	th_glow, th_shadow = 0, 0
+	chrome_path_n = 0
+	th_chrome_track, th_chrome_caps = 0, false
 	th_closegrace_ms = CLOSE_GRACE_MS
 	ndesk_defs = 0
 	desk_pick_n = 0
@@ -136,6 +168,8 @@ theme_reload :: proc "contextless" () #no_bounds_check {
 	theme_apply_text(base_buf[:base])
 	theme_apply_text(body)
 	desk_resolve()
+	chrome_load()
+	effects_prepare()
 }
 
 // desk_resolve makes the ground `desk.ground` names the one `desk_paint`
@@ -279,10 +313,55 @@ theme_apply_line :: proc "contextless" (line: []u8) #no_bounds_check {
 		set_metric(&th_frame_title, value, FRAME_TITLE_MIN, FRAME_TITLE_MAX)
 	case "frame.well":
 		set_metric(&th_frame_well, value, 1, libdraw.MAX_DEPTH)
+	case "frame.style":
+		th_frame_metal = string(value) == "metal"
+	case "focus":
+		set_color(&th_focus, string(value))
+	case "text":
+		set_color(&th_text, string(value))
+	case "dim":
+		set_color(&th_dim, string(value))
+	case "glow":
+		set_metric(&th_glow, value, 0, 100)
+	case "shadow":
+		set_metric(&th_shadow, value, 0, SHADOW_MAX)
+	case "font.chrome":
+		chrome_path_n = copy(chrome_path[:], value)
+		rest := after
+		_, rest = word(rest)
+		for {
+			w: []u8
+			w, rest = word(rest)
+			if len(w) == 0 {
+				break
+			}
+			switch string(w) {
+			case "caps":
+				th_chrome_caps = true
+			case "track":
+				n: []u8
+				n, rest = word(rest)
+				set_metric(&th_chrome_track, n, 0, 8)
+			}
+		}
 	case "closegrace":
 		if secs, ok := libdraw.scan_int_str(value); ok && secs >= 0 && secs <= 600 {
 			th_closegrace_ms = u64(secs) * 1000
 		}
+	}
+}
+
+// chrome_load reads the `font.chrome` file the theme named into the server's
+// buffer, or leaves the face closed, which draws a title in the 8x16 cells.
+@(private = "file")
+chrome_load :: proc "contextless" () {
+	th_chrome = {}
+	if chrome_path_n == 0 {
+		return
+	}
+	n := read_whole(string(chrome_path[:chrome_path_n]), chrome_buf[:])
+	if n > 0 && n < len(chrome_buf) {
+		_ = libfont.face_open(&th_chrome, chrome_buf[:n])
 	}
 }
 

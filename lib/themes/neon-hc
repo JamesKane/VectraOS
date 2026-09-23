@@ -27,6 +27,13 @@ font.interface  /lib/font/interface/13.face   # labels
 font.readout    /lib/font/readout/20.face     # LCD readouts
 font.namespace  /lib/font/namespace/12.face   # paths and status lines
 
+frame.style metal         # a brushed bar, a focus line on the front one
+frame.edge  1
+frame.title 24
+frame.well  1
+glow        60              # the front window's halo, per cent
+shadow      6               # a shadow under every window, in pixels
+
 panel       panel           # a window's body
 raised      raised          # a control's face
 face.lit    bevel.hi        # its top-left edge

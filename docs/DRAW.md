@@ -1733,9 +1733,20 @@ The `stats` file comes first, because it is small and it measures the other
 two. The frame clock comes second, and its pacing check reads `stats`. The
 front-to-back walk comes last, and its check is the `occluded` field.
 
-## 19. Chrome outside a window: glow, shadow, scanlines, glass (planned)
+## 19. Chrome outside a window: glow, shadow, scanlines, glass (partly built)
 
-**Written before the code. None of this section is built.** `docs/CHROME.md`
+**Written before the code. The halo and the shadow are built, September
+2026, in `servers/intuition/effects.odin`. Scanlines and glass are not.**
+
+The built half differs from this plan in one way. A composite whose area
+reaches a window's margin lays the desktop under the whole area first. It then
+walks the stack from the ground, each window's effects just before its pixels.
+The glass keeps what it is given, and a blend laid over a blend would brighten
+a pixel each time.
+
+The ramps are made per theme, not per window size, because
+a ramp by squared distance from the edge fits every size. An area that
+reaches no margin keeps the fast path. `docs/CHROME.md`
 adopts a look whose surfaces are gradients, noise and glows. Its rule is that
 every effect inside a window is the client's, painted in the window's store.
 The client needs no verb for that, and section 12's rule against a gradient

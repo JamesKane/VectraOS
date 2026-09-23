@@ -839,7 +839,7 @@ window_chrome :: proc "contextless" (win: ^Window, keep_client := false) {
 	n := window_frame(pieces[:], 0, 0, win.w, win.h, focused(win), keep_client)
 	n += state_lamp(pieces[n:], win)
 	win_pieces(win, pieces[:n])
-	title_text(win)
+	bar_dress(win)
 }
 
 /*
@@ -896,7 +896,7 @@ title_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
 	}
 	n += state_lamp(pieces[n:], win)
 	win_pieces(win, pieces[:n])
-	title_text(win)
+	bar_dress(win)
 }
 
 /*
@@ -937,7 +937,7 @@ edge at a whole character, so the first one that will not fit ends the whole
 loop, and the column range is settled before the rows are walked. The bar is
 taller than a glyph by `FRAME_PAD`, so no row of one can leave it.
 */
-title_text :: proc "contextless" (win: ^Window) #no_bounds_check {
+title_text :: proc "contextless" (win: ^Window, ink: u32 = TITLE_FG) #no_bounds_check {
 		bx, by, bw, bh := frame_bar_at(0, 0, win.w)
 	// The name starts past the close gadget and stops before the two at
 	// the right. A window that wants a person has a lamp in that first gap,
@@ -974,7 +974,7 @@ title_text :: proc "contextless" (win: ^Window) #no_bounds_check {
 			dst := win.pixels[(ty + line) * win.stride:]
 			for c in 0 ..< wide {
 				if bits & (0x80 >> u8(c)) != 0 {
-					dst[gx + c] = TITLE_FG
+					dst[gx + c] = ink
 				}
 			}
 		}
@@ -1223,6 +1223,15 @@ refocus :: proc "contextless" (was: int) #no_bounds_check {
 	}
 	if now >= 0 {
 		bar_show(&windows[now])
+	}
+	// The halo follows the focus: both margins, the old front's and the new.
+	if th_glow > 0 && !locked {
+		for at in ([2]int{was, now}) {
+			if at >= 0 && windows[at].used && windows[at].workspace == current_ws && !windows[at].hidden {
+				w := &windows[at]
+				repaint_window(w.x, w.y, w.w, w.h)
+			}
+		}
 	}
 }
 
@@ -2450,9 +2459,10 @@ window_move :: proc "contextless" (win: ^Window, nx: int, ny: int) -> vectra9.Er
 	The two are the same size, so the difference is at most two bands.
 	*/
 	desk_band(ox, oy, win.w, win.h, nx, ny)
+	m := effects_on() ? effect_margin() : 0
 	region_clear(&scratch)
-	region_add(&scratch, ox, oy, win.w, win.h)
-	region_add(&scratch, nx, ny, win.w, win.h)
+	region_add(&scratch, ox - m, oy - m, win.w + 2 * m, win.h + 2 * m)
+	region_add(&scratch, nx - m, ny - m, win.w + 2 * m, win.h + 2 * m)
 	composite(&scratch)
 	return vectra9.Errno(0)
 }
@@ -2540,7 +2550,7 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 	if nh < oh {
 		desk_paint(win.x, win.y + nh, win.x + max(ow, nw), win.y + oh)
 	}
-	repaint(win.x, win.y, max(ow, nw), max(oh, nh))
+	repaint_window(win.x, win.y, max(ow, nw), max(oh, nh))
 	return vectra9.Errno(0)
 }
 
@@ -2643,7 +2653,20 @@ and cost a rectangle split, and an opaque window is what would finally make it
 correct. It is the trade to revisit at more windows than two.
 */
 composite :: proc "contextless" (area: ^Region) #no_bounds_check {
+	// With a halo or a shadow in the theme, an area that reaches a window's
+	// margin is laid from the ground, and each window's effects go down just
+	// before its pixels. See `effects.odin`.
+	effects := effects_on() && margins_touch(area)
+	if effects {
+		for ai in 0 ..< area.n {
+			a := area.rects[ai]
+			desk_paint(a.x0, a.y0, a.x1, a.y1)
+		}
+	}
 	for si in 0 ..< stack_n {
+		if effects {
+			paint_effects(&windows[stack[si]], area)
+		}
 		paint_window(&windows[stack[si]], area)
 	}
 	cursor_show()
