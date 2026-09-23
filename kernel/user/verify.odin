@@ -5427,6 +5427,22 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			libodin.put_str(&sink, "\n")
 			_ = net_file_write("/dev/cons", libodin.str(&sink))
 		}
+		// A line scoped to the demo wins in the demo, whatever its order.
+		cyan := fb.pack(s, fb.CYAN)
+		scoped := false
+		if write_disk_file("/usr/glenda/lib/theme", "face copper\nmuidemo/face cyan\n") && net_file_write("/mnt/ctl", "reload") {
+			for _ in 0 ..< PATIENCE * 20 {
+				if fb.get_raw(s, gx, probe_y) == cyan {
+					scoped = true
+					break
+				}
+				sync.delay(1)
+			}
+		}
+		check(r, scoped, "a line scoped to the demo, muidemo/face cyan, wins in the demo over the unscoped copper")
+		// And which line set it, asked of `style`.
+		snames := [?]string{"rc", "/lib/tests/style.rc"}
+		script_says(r, "/bin/rc", snames[:], PATIENCE * 20, "the shell starts on the style script", "ok", "style explain says which line won and which it beat, as the demo sees it and as another program does")
 		remove_file("/usr/glenda/lib/theme")
 		back := false
 		if net_file_write("/mnt/ctl", "reload") {
@@ -5439,6 +5455,31 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			}
 		}
 		check(r, back, "and with the file gone, a second reload brings the magnesium back")
+
+		// The preferences window: a toolkit window of every role, walked
+		// off the parser's own list.
+		if pp := start_path(r, "/bin/prefs", "the preferences window starts"); pp != nil {
+			opened := false
+			// Whichever window it took: the one whose ctl says app prefs.
+			search: for _ in 0 ..< PATIENCE * 20 {
+				for wi in 0 ..< 8 {
+					pb: [128]u8
+					path := mnt_file(pb[:], wi, "/ctl")
+					cb: [128]u8
+					pn := read_once(path, cb[:])
+					if pn > 0 && libodin.contains(string(cb[:pn]), "app prefs") {
+						opened = true
+						break search
+					}
+				}
+				sync.delay(5)
+			}
+			check(r, opened, "and opens a toolkit window of its own, the second on the glass")
+			_ = notepg_kernel(pp.note_group, "kill")
+			check(r, end(pp, PATIENCE * 5), "and, told to end, ends")
+			finish(r, pp, "and is taken down")
+			reap_orphans()
+		}
 	}
 
 	// -- A relay click on a gadget --------------------------------------------

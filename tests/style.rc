@@ -1,0 +1,12 @@
+# style.rc: which theme line set a value, run by the boot self-test while
+# $home/lib/theme holds `face copper` and `muidemo/face cyan`, docs/WORKBENCH.md
+# step 5. As muidemo sees it, the scoped line wins over both others; as any
+# other program sees it, the scoped line is that program's and copper wins.
+# The exit word is `ok` or what came back instead.
+x=`{style explain face muidemo}
+want='face cyan /usr/glenda/lib/theme:2 wins face copper /usr/glenda/lib/theme:1 beaten face magnesium /lib/theme:6 beaten'
+if(! ~ $"x $want) exit 'as muidemo: '^$"x
+y=`{style explain face}
+want='face cyan /usr/glenda/lib/theme:2 another program''s face copper /usr/glenda/lib/theme:1 wins face magnesium /lib/theme:6 beaten'
+if(! ~ $"y $want) exit 'as style: '^$"y
+exit ok

@@ -203,6 +203,12 @@ the kernel starts has none. The server's rules match a window on it.
 @(private = "file") app_buf: [48]u8
 @(private = "file") app_len: int = -1
 
+// set_app_name names the program as another would see it: `cmd/style`
+// explains a theme for a program it is not.
+set_app_name :: proc "contextless" (name: string) {
+	app_len = copy(app_buf[:], name)
+}
+
 app_name :: proc "contextless" () -> string #no_bounds_check {
 	if app_len >= 0 {
 		return string(app_buf[:app_len])

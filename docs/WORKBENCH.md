@@ -961,12 +961,34 @@ section 18.
   the window comes back, and the window's next line is `z` alone, so the
   `q` never reached it.
 
-- **Theme scopes, and a way to ask.** A role may carry a scope,
-  `view/text` or `button.face`, and the more specific line wins. A
-  `style_explain` query says which file and line set a value, and
-  which lines it beat. The query alone is small. It is worth having
-  before any scope exists, because a merge of two files is already a
-  cascade a person may not follow.
+- **Theme scopes, and a way to ask. Done, September 2026, the program
+  scope.** A role may carry a program's name, `muidemo/face cyan`, and
+  that line wins in that program over every unscoped one whatever their
+  order: `parse_theme` applies the unscoped lines, then the ones scoped to
+  `app_name()`, the same name a window gives the server's rules. The class
+  scope, `button.face`, waits for a `Theme` with a value per class; today
+  a role is one value for every gadget.
+
+  `libmui.theme_explain` says which line set a role: every line that names
+  it in the two files, in the order read, with its file and line, marked
+  `wins`, `beaten`, or `another program's`, or `chassis` for a role no file
+  names. `THEME_ROLES` is every role the parser knows, and three that had
+  a value and no role got one: `hot`, `link` and `dim`. `cmd/style` is the
+  query: `style` prints each role's winning line, and `style explain ROLE
+  [APP]` every line, as that program sees it.
+
+- **A preferences window generated from the theme's keys. Done,
+  September 2026.** `apps/prefs` is a toolkit window of every role in
+  `THEME_ROLES`, each with its value now and the line that set it, so a
+  role added to the parser is a row with no line of `prefs` changed.
+  `Reload` reloads the draw server and reads the rows again. It shows,
+  and the files are edited by hand; `style explain` says the rest.
+
+  The checks are in `verify_muiwin`: a theme with `face copper` and
+  `muidemo/face cyan` paints the demo's face cyan; `tests/style.rc` reads
+  `style explain face` as the demo, where the scoped line wins and the
+  other two are beaten, and as `style`, where it is another program's and
+  copper wins; and `prefs` opens a toolkit window of its own.
 
 - **Frames and backgrounds by name.** The theme file names a frame or a
   ground once, `frame thin` or `ground grid`, and a role names one. A

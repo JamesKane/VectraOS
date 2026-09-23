@@ -21,6 +21,7 @@ package libmui
 
 import "vsys:abi"
 import "vsys:libdraw"
+import "vsys:libodin"
 import "vsys:libpal"
 import "vsys:libthread"
 import "vsys:libuser"
@@ -49,19 +50,49 @@ names a role this build does not know still loads.
 */
 parse_theme :: proc "contextless" (t: ^Theme, text: string) #no_bounds_check {
 	t^ = default_theme
-	i := 0
-	for i < len(text) {
-		// One line, up to the newline or the end.
-		start := i
-		for i < len(text) && text[i] != '\n' {
-			i += 1
+	// Two passes: the unscoped lines, then the lines scoped to this program,
+	// `muidemo/face copper`, so a scoped line wins whatever its order. A line
+	// scoped to another program is not this one's.
+	app := app_name()
+	for pass in 0 ..< 2 {
+		i := 0
+		for i < len(text) {
+			start := i
+			for i < len(text) && text[i] != '\n' {
+				i += 1
+			}
+			line := text[start:i]
+			if i < len(text) {
+				i += 1 // Step over the newline.
+			}
+			scope, rest, scoped := line_scope(line)
+			if pass == 0 && !scoped {
+				apply_line(t, line)
+			} else if pass == 1 && scoped && scope == app && app != "" {
+				apply_line(t, rest)
+			}
 		}
-		line := text[start:i]
-		if i < len(text) {
-			i += 1 // Step over the newline.
-		}
-		apply_line(t, line)
 	}
+}
+
+/*
+line_scope splits a scoped line, `muidemo/face copper`, into its scope and
+the line it scopes. A role's own dots are not a scope, and a `/` after the
+role's first word is part of the value.
+*/
+line_scope :: proc "contextless" (line: string) -> (scope: string, rest: string, scoped: bool) #no_bounds_check {
+	i := 0
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i += 1
+	}
+	start := i
+	for i < len(line) && line[i] != ' ' && line[i] != '\t' {
+		if line[i] == '/' {
+			return line[start:i], line[i + 1:], true
+		}
+		i += 1
+	}
+	return "", line, false
 }
 
 // apply_line reads one `role value` line into `t`. A comment or a blank line
@@ -109,6 +140,12 @@ apply_line :: proc "contextless" (t: ^Theme, line: string) {
 		set_metric(&t.hpad, value)
 	case "vpad":
 		set_metric(&t.vpad, value)
+	case "hot":
+		set_color(&t.hot, value)
+	case "link":
+		set_color(&t.link, value)
+	case "dim":
+		set_color(&t.dim, value)
 	}
 	// A role this build does not know is skipped here. `font` and `pointer`
 	// are left for the half of the toolkit that reads them.
@@ -343,4 +380,173 @@ theme_watch :: proc "contextless" (arg: rawptr) #no_bounds_check {
 	_ = libuser.close(int(fd))
 	libthread.ioclose(io)
 	watching = false
+}
+
+// -- Asking which line set a value -------------------------------------------
+
+/*
+THEME_ROLES is every role the parser knows, in the file's order. A program
+that shows the theme walks this, so it stays right when a role is added.
+*/
+THEME_ROLES := [?]string{
+	"ground", "face", "face.lit", "face.shade", "text", "hot", "link", "dim",
+	"bevel", "well", "pad", "gap", "hpad", "vpad",
+}
+
+// theme_value writes a role's value in `t` as the file would: six hex digits
+// for a colour, a number for a metric.
+theme_value :: proc "contextless" (t: ^Theme, role: string, out: []u8) -> string #no_bounds_check {
+	rgb := proc "contextless" (c: libpal.RGB, out: []u8) -> string {
+		hex := "0123456789abcdef"
+		for k in 0 ..< 3 {
+			out[2 * k] = hex[c[k] >> 4]
+			out[2 * k + 1] = hex[c[k] & 15]
+		}
+		return string(out[:6])
+	}
+	switch role {
+	case "ground":
+		return rgb(t.ground, out)
+	case "face":
+		return rgb(t.face, out)
+	case "face.lit":
+		return rgb(t.lit, out)
+	case "face.shade":
+		return rgb(t.shade, out)
+	case "text":
+		return rgb(t.ink, out)
+	case "hot":
+		return rgb(t.hot, out)
+	case "link":
+		return rgb(t.link, out)
+	case "dim":
+		return rgb(t.dim, out)
+	case "bevel":
+		return libuser.itoa(out, i64(t.bevel))
+	case "well":
+		return libuser.itoa(out, i64(t.well))
+	case "pad":
+		return libuser.itoa(out, i64(t.pad))
+	case "gap":
+		return libuser.itoa(out, i64(t.gap))
+	case "hpad":
+		return libuser.itoa(out, i64(t.hpad))
+	case "vpad":
+		return libuser.itoa(out, i64(t.vpad))
+	}
+	return ""
+}
+
+/*
+theme_explain says which line set a role and which it beat: every line that
+names it, in the two files in the order the parser reads them, the one that
+wins marked. A line scoped to this program beats every unscoped line, and a
+later line beats an earlier one of the same kind. A line scoped to another
+program is shown and marked as that program's. A role named nowhere is the
+chassis. The answer is text, a line an entry, into `out`.
+
+    face copper    /usr/glenda/lib/theme:2   wins
+    face magnesium /lib/theme:6              beaten
+*/
+theme_explain :: proc "contextless" (role: string, out: []u8) -> int #no_bounds_check {
+	home := theme_read(theme_home_path(), theme_home_buf[:])
+	home_path_buf: [256]u8
+	home_path := libuser.cat_into(home_path_buf[:], theme_home(), "/lib/theme")
+	base_path_buf: [256]u8
+	base_path := libuser.cat_into(base_path_buf[:], "/lib/theme")
+	body := home
+	skipped := 0
+	if name, rest, ok := theme_use(home); ok {
+		base_path = libuser.cat_into(base_path_buf[:], "/lib/themes/", name)
+		body = rest
+		skipped = 1
+	}
+	base := theme_read(base_path, theme_base_buf[:])
+	app := app_name()
+
+	Entry :: struct {
+		path:   string,
+		line:   int,
+		value:  string,
+		scoped: bool,
+		mine:   bool,
+	}
+	entries: [32]Entry
+	n := 0
+	sources := [2]string{string(base), string(body)}
+	paths := [2]string{base_path, home_path}
+	for src, si in sources {
+		lineno := si == 1 ? skipped : 0
+		i := 0
+		for i < len(src) && n < len(entries) {
+			start := i
+			for i < len(src) && src[i] != '\n' {
+				i += 1
+			}
+			line := src[start:i]
+			if i < len(src) {
+				i += 1
+			}
+			lineno += 1
+			for k in 0 ..< len(line) {
+				if line[k] == '#' {
+					line = line[:k]
+					break
+				}
+			}
+			scope, rest, scoped := line_scope(line)
+			r, after := word(rest)
+			v, _ := word(after)
+			if r != role || v == "" {
+				continue
+			}
+			entries[n] = Entry{path = paths[si], line = lineno, value = v, scoped = scoped, mine = !scoped || (scope == app && app != "")}
+			n += 1
+		}
+	}
+	// The winner: the last scoped line that is this program's, else the
+	// last unscoped one.
+	win := -1
+	for k in 0 ..< n {
+		if entries[k].scoped && entries[k].mine {
+			win = k
+		}
+	}
+	if win < 0 {
+		for k in 0 ..< n {
+			if !entries[k].scoped {
+				win = k
+			}
+		}
+	}
+	sink := libodin.sink_from(out)
+	if n == 0 {
+		t := default_theme
+		vb: [24]u8
+		libodin.put_str(&sink, role)
+		libodin.put_str(&sink, " ")
+		libodin.put_str(&sink, theme_value(&t, role, vb[:]))
+		libodin.put_str(&sink, " chassis wins\n")
+		return len(libodin.str(&sink))
+	}
+	nb: [24]u8
+	for k := n - 1; k >= 0; k -= 1 {
+		e := &entries[k]
+		libodin.put_str(&sink, role)
+		libodin.put_str(&sink, " ")
+		libodin.put_str(&sink, e.value)
+		libodin.put_str(&sink, " ")
+		libodin.put_str(&sink, e.path)
+		libodin.put_str(&sink, ":")
+		libodin.put_str(&sink, libuser.itoa(nb[:], i64(e.line)))
+		switch {
+		case k == win:
+			libodin.put_str(&sink, " wins\n")
+		case !e.mine:
+			libodin.put_str(&sink, " another program's\n")
+		case:
+			libodin.put_str(&sink, " beaten\n")
+		}
+	}
+	return len(libodin.str(&sink))
 }

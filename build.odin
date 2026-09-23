@@ -101,6 +101,7 @@ user_programs := [?]User_Program {
 	{name = "blkfs", path = "servers/blkfs"},
 	{name = "workbench", path = "apps/workbench"},
 	{name = "view", path = "apps/view"},
+	{name = "prefs", path = "apps/prefs"},
 	{name = "pwd", path = "cmd/pwd"},
 	{name = "mkdir", path = "cmd/mkdir"},
 	{name = "rm", path = "cmd/rm"},
@@ -149,6 +150,7 @@ user_programs := [?]User_Program {
 	{name = "modelfs", path = "servers/modelfs"},
 	{name = "ghost", path = "servers/ghost"},
 	{name = "ask", path = "cmd/ask"},
+	{name = "style", path = "cmd/style"},
 	{name = "srv", path = "cmd/srv"},
 	{name = "import", path = "cmd/import"},
 	{name = "cpu", path = "cmd/cpu"},
@@ -1480,6 +1482,7 @@ stage_vectra :: proc(arch: string, host: string) {
 	copy_file("tests/ghost.script", fmt.tprintf("%s/lib/tests/ghost.script", root))
 	copy_file("tests/ghost.rc", fmt.tprintf("%s/lib/tests/ghost.rc", root))
 	copy_file("tests/capsule.der", fmt.tprintf("%s/lib/tests/capsule.der", root))
+	copy_file("tests/style.rc", fmt.tprintf("%s/lib/tests/style.rc", root))
 	copy_file("tests/mail.eml", fmt.tprintf("%s/lib/tests/mail.eml", root))
 	// The plumber's rules: what a message nobody addressed does, docs/GHOST.md 5.
 	ensure_dir(fmt.tprintf("%s/lib/plumb", root))
