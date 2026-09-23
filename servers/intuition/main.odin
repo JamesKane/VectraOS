@@ -1028,7 +1028,20 @@ Window :: struct {
 		mouse_fid:  vectra9.Fid,
 	mouse_held: bool,
 
-		// Where a zoomed window was, so a second zoom puts it back.
+	// The least and most client size a resize may give, zero for no
+	// bound: `minsize` and `maxsize` on `wctl`, which `sys/libmui` writes
+	// from its tree's own least and most.
+	min_w:     int,
+	min_h:     int,
+	max_w:     int,
+	max_h:     int,
+
+	// The window this one is a transient of, or -1: `parent N` on `wctl`.
+	// A transient is raised over its parent and hidden and sent to a
+	// workspace with it.
+	parent:    int,
+
+		// Where a zoomed or snapped window was, so a zoom puts it back.
 	zoomed:    bool,
 	zx:        int,
 	zy:        int,
@@ -2184,6 +2197,15 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	win.hangup = false
 	win.has_cursor = false
 	win.zoomed = false
+	win.min_w, win.min_h, win.max_w, win.max_h = 0, 0, 0, 0
+	win.parent = -1
+	// A window that named this slot as its parent named a window that is
+	// gone; it is nobody's transient now, not the new window's.
+	for i in 0 ..< MAX_WINDOWS {
+		if windows[i].parent == int(uintptr(win) - uintptr(&windows[0])) / size_of(Window) {
+			windows[i].parent = -1
+		}
+	}
 	region_clear(&win.dmg)
 	/*
 	And the keystrokes, which is the same rule as the pixels one line up.
@@ -2365,6 +2387,21 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 	if ncw <= 0 || nch <= 0 {
 		return vectra9.EINVAL
 	}
+	// The window's own bounds, `minsize` and `maxsize`: a sizing drag and a
+	// `size` line both stop at them.
+	ncw, nch := ncw, nch
+	if win.min_w > 0 {
+		ncw = max(ncw, win.min_w)
+	}
+	if win.min_h > 0 {
+		nch = max(nch, win.min_h)
+	}
+	if win.max_w > 0 {
+		ncw = min(ncw, win.max_w)
+	}
+	if win.max_h > 0 {
+		nch = min(nch, win.max_h)
+	}
 		nw, nh := frame_window(win, ncw, nch)
 	/*
 	And the run already holds it, because the run is the whole screen's.
@@ -2419,6 +2456,7 @@ whatever was in front before it. `refocus` is the second, and it is a bar
 rather than a window because a bar is all that focus is drawn as.
 */
 window_raise :: proc "contextless" (win: ^Window, at: int) #no_bounds_check {
+	defer transients_raise(at)
 	was := stack_top()
 	if was == at {
 		return

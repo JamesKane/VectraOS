@@ -9443,6 +9443,67 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #n
 	}
 	check(r, moved, "and the window is where the drag left it, which wctl says")
 
+	// -- snap, minsize, maxsize and parent on wctl -------------------------------------
+
+	/*
+	`docs/WORKBENCH.md` step 5's wctl words. A snap puts the window on half the
+	screen or a grid cell and a zoom puts it back where it was. A size stops
+	at the window's own least and most. And a transient of window 0 comes to
+	the front when window 0 does, and hides with it. The window ends where it
+	began, for the close checks after.
+	*/
+	{
+		x0, y0, w0, h0, _, _, gok := wctl_geo("/mnt/1/wctl")
+		if check(r, gok, "the window's wctl reports its place and size") {
+			check(r, net_file_write("/mnt/1/wctl", "snap left"), "snap left is taken")
+			sx, _, sw, _, _, _, _ := wctl_geo("/mnt/1/wctl")
+			check(r, sx == 0 && sw == s.width / 2, "and the window is the left half of the screen")
+			check(r, net_file_write("/mnt/1/wctl", "zoom"), "zoom after a snap")
+			zx, zy, zw, zh, _, _, _ := wctl_geo("/mnt/1/wctl")
+			check(r, zx == x0 && zy == y0 && zw == w0 && zh == h0, "puts it back where it was")
+			check(r, net_file_write("/mnt/1/wctl", "snap grid 2 2 3"), "snap grid 2 2 3 is taken")
+			gx, gy, gw, _, _, _, _ := wctl_geo("/mnt/1/wctl")
+			check(r, gx == s.width / 2 && gw == s.width / 2 && gy >= s.height / 2 - 1, "and the window is the grid's last cell, the bottom right")
+			check(r, !net_file_write("/mnt/1/wctl", "snap grid 2 2 4"), "a cell past the grid is refused")
+			_ = net_file_write("/mnt/1/wctl", "zoom")
+
+			// The frame's own size, from a size written and the size read back.
+			_ = net_file_write("/mnt/1/wctl", "size 400 300")
+			_, _, w1, h1, _, _, _ := wctl_geo("/mnt/1/wctl")
+			dx, dy := w1 - 400, h1 - 300
+			_ = net_file_write("/mnt/1/wctl", "minsize 350 250")
+			_ = net_file_write("/mnt/1/wctl", "size 100 100")
+			_, _, w2, h2, _, _, _ := wctl_geo("/mnt/1/wctl")
+			check(r, w2 == 350 + dx && h2 == 250 + dy, "a size under minsize stops at it")
+			_ = net_file_write("/mnt/1/wctl", "minsize 0 0")
+			_ = net_file_write("/mnt/1/wctl", "maxsize 360 260")
+			_ = net_file_write("/mnt/1/wctl", "size 900 700")
+			_, _, w3, h3, _, _, _ := wctl_geo("/mnt/1/wctl")
+			check(r, w3 == 360 + dx && h3 == 260 + dy, "and a size over maxsize stops at that")
+			_ = net_file_write("/mnt/1/wctl", "maxsize 0 0")
+			_ = net_file_write("/mnt/1/wctl", wctl_pair("size ", w0 - dx, h0 - dy))
+			_ = net_file_write("/mnt/1/wctl", wctl_pair("move ", x0, y0))
+
+			// A transient of window 0.
+			if _, _, _, _, _, _, ok0 := wctl_geo("/mnt/0/wctl"); ok0 {
+				check(r, net_file_write("/mnt/1/wctl", "parent 0"), "parent 0 makes the window a transient of window 0")
+				_ = net_file_write("/mnt/0/wctl", "current")
+				_, _, _, _, cur, _, _ := wctl_geo("/mnt/1/wctl")
+				check(r, cur, "and when window 0 comes to the front, its transient comes over it")
+				_ = net_file_write("/mnt/0/wctl", "hide")
+				_, _, _, _, _, hid, _ := wctl_geo("/mnt/1/wctl")
+				check(r, hid, "and hides with it")
+				_ = net_file_write("/mnt/0/wctl", "unhide")
+				_, _, _, _, _, hid2, _ := wctl_geo("/mnt/1/wctl")
+				check(r, !hid2, "and comes back with it")
+				_ = net_file_write("/mnt/1/wctl", "parent -1")
+				_ = net_file_write("/mnt/1/wctl", "current")
+			}
+			fx, fy, fw2, fh, _, _, _ := wctl_geo("/mnt/1/wctl")
+			check(r, fx == x0 && fy == y0 && fw2 == w0 && fh == h0, "and the window is back where it began")
+		}
+	}
+
 	// -- The close gadget asks, and a window that will not go is killed ------------------
 
 	/*
@@ -9674,6 +9735,41 @@ parse_mouse :: proc "contextless" (line: []u8) -> (x: int, y: int, b: int, ok: b
 		return
 	}
 	b, ok = libdraw.scan_int(line, &at)
+	return
+}
+
+// wctl_pair is a wctl line of a verb and two numbers, in a buffer of its own.
+@(private = "file") wctl_pair_buf: [64]u8
+
+@(private = "file")
+wctl_pair :: proc(verb: string, a: int, b: int) -> string {
+	sink := libodin.sink_from(wctl_pair_buf[:])
+	libodin.put_str(&sink, verb)
+	libodin.put_int(&sink, i64(a))
+	libodin.put_str(&sink, " ")
+	libodin.put_int(&sink, i64(b))
+	return libodin.str(&sink)
+}
+
+// wctl_geo reads a window's wctl report: its place and size, whether it is
+// the current window, and whether it is hidden.
+@(private = "file")
+wctl_geo :: proc(path: string) -> (x: int, y: int, w: int, h: int, current: bool, hidden: bool, ok: bool) {
+	line: [128]u8
+	n := read_once(path, line[:])
+	if n <= 0 {
+		return
+	}
+	text := string(line[:n])
+	at := 0
+	ok1, ok2, ok3, ok4: bool
+	x, ok1 = libdraw.scan_int(line[:n], &at)
+	y, ok2 = libdraw.scan_int(line[:n], &at)
+	w, ok3 = libdraw.scan_int(line[:n], &at)
+	h, ok4 = libdraw.scan_int(line[:n], &at)
+	current = libodin.contains(text, " current")
+	hidden = libodin.contains(text, " hidden")
+	ok = ok1 && ok2 && ok3 && ok4
 	return
 }
 

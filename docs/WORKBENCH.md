@@ -853,20 +853,32 @@ section 18.
   again. A program a `cpu` runs watches `theme` under `$wsys`, so it
   follows the terminal's theme.
 
-- **More `wctl` words.** Small each.
+- **More `wctl` words. Done, September 2026.**
 
       snap left|right|full    half or all of the screen below the bar
       snap grid C R I         cell I of a grid C wide and R high
       minsize W H             the least the sizing corner and `size` give
       maxsize W H             the most
-      parent N                a transient of window N
+      parent N                a transient of window N; -1 is none
 
   A snap keeps the window's own geometry the way `zoom` does, so `zoom`
-  after a snap puts it back. `sys/libmui` writes `minsize` and `maxsize`
-  from its root group's least and most, which every MUI object already
-  answers. So a person cannot size a toolkit window past its layout. A
-  transient stays above its parent. It is raised, hidden and sent to a
-  workspace with it, and a `Requester` names the window that opened it.
+  after a snap puts it back, and a second snap keeps the first place.
+  `window_size` clamps every resize to the bounds, the sizing corner's and
+  a `size` line's alike. `sys/libmui` writes `minsize` from its root's
+  least and `maxsize` from its most when the tree has one, so a person
+  cannot size a toolkit window past its layout. A transient is raised over
+  its parent whenever the parent comes to the front, and hidden, shown and
+  sent to a workspace with it. A parent is one level deep, never itself a
+  transient, and a slot reused forgets the transients the old window had.
+  `sys/libmui`'s `Window.parent` writes the word for a window a program
+  opens from another; the programs that open requesters do not set it yet.
+
+  The check is in `verify_pointer`, on window 1: a snap left is the left
+  half and a zoom puts it back, a grid's last cell is the bottom right and
+  a cell past the grid is refused, a size under `minsize` and one over
+  `maxsize` stop at them, and as window 0's transient it comes to the
+  front with window 0 and hides and returns with it. It ends where it
+  began.
 
 - **Rules that do more than place.** Small once the `wctl` words exist.
   The `workspaces` file becomes a rules file. A line is a match and a

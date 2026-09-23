@@ -99,6 +99,10 @@ Window :: struct {
 	// or false to stay open, to ask the person something first. Unset, the
 	// window ends at once. `docs/WORKBENCH.md` step 5.
 	on_close:  proc "contextless" (win: ^Window) -> bool,
+	// The window that opened this one, for a requester: it is written as
+	// `parent` on `wctl`, so the server keeps it above that window and moves
+	// and hides it with it.
+	parent:    ^Window,
 	press_x:   int, // where the last press landed, for the drag threshold
 	press_y:   int,
 	user:      rawptr,
@@ -157,6 +161,33 @@ window_defaults :: proc "contextless" (win: ^Window) {
 	win.bind_dev = true
 	win.own_exit = true
 	win.set_up = true
+}
+
+/*
+window_bounds tells the server what the tree allows: its least size as
+`minsize`, and its most as `maxsize` when the tree has one, so a person
+cannot size a toolkit window past its layout. And `parent`, when the program
+named the window that opened this one. A normal window only: a bar, a
+backdrop and a popup are sized by their program alone.
+*/
+window_bounds :: proc "contextless" (win: ^Window, mine: int) #no_bounds_check {
+	if win.kind != .Normal || win.root == nil {
+		return
+	}
+	wctl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "wctl"), abi.O_WRONLY)
+	if wctl < 0 {
+		return
+	}
+	line: [48]u8
+	a, b: [16]u8
+	_ = libuser.write(int(wctl), transmute([]u8)libuser.cat_into(line[:], "minsize ", libuser.itoa(a[:], i64(win.root.minw)), " ", libuser.itoa(b[:], i64(win.root.minh))))
+	if win.root.maxw < BIG && win.root.maxh < BIG {
+		_ = libuser.write(int(wctl), transmute([]u8)libuser.cat_into(line[:], "maxsize ", libuser.itoa(a[:], i64(win.root.maxw)), " ", libuser.itoa(b[:], i64(win.root.maxh))))
+	}
+	if win.parent != nil && win.parent.id != mine && !win.parent.done {
+		_ = libuser.write(int(wctl), transmute([]u8)libuser.cat_into(line[:], "parent ", libuser.itoa(a[:], i64(win.parent.id))))
+	}
+	_ = libuser.close(int(wctl))
 }
 
 // data_sink writes an atlas batch to a window's data stream.
@@ -341,6 +372,7 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 
 	// The tree in the client area, the atlases it needs, and the first paint.
 	fit(root, &win.theme)
+	window_bounds(win, mine)
 	lay(root, 0, 0, win.cw, win.ch, &win.theme)
 	set_focus_first(win)
 	sink := Sink{write = data_sink, user = rawptr(uintptr(win.data_fd))}

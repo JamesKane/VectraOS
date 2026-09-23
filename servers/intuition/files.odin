@@ -442,6 +442,9 @@ run_wctl takes one of `rio`'s lines, or one of the four this server adds.
     hide           off the glass, still on its workspace
     unhide         back
     workspace N    onto workspace N
+    snap left|right|full, snap grid C R I   a half, the whole, or a cell
+    minsize W H, maxsize W H   what a resize may give
+    parent N       a transient of window N, or -1 for none
     backdrop       one of the three kinds a desktop needs
     bar
     popup
@@ -522,6 +525,37 @@ run_wctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bo
 			return vectra9.EINVAL
 		}
 		window_state(win, st)
+	case "snap":
+		return window_snap(win, rest)
+	case "minsize", "maxsize":
+		w, tail := word(rest)
+		h, end := word(tail)
+		wv, wok := libdraw.scan_int_str(w)
+		hv, hok := libdraw.scan_int_str(h)
+		if !wok || !hok || wv < 0 || hv < 0 || len(trim(end)) != 0 {
+			return vectra9.EINVAL
+		}
+		if string(verb) == "minsize" {
+			win.min_w, win.min_h = wv, hv
+		} else {
+			win.max_w, win.max_h = wv, hv
+		}
+	case "parent":
+		num, tail := word(rest)
+		p, ok := libdraw.scan_int_str(num)
+		if !ok || len(trim(tail)) != 0 || p == win_at || p < -1 || p >= MAX_WINDOWS || (p >= 0 && !windows[p].used) {
+			return vectra9.EINVAL
+		}
+		// One level: a transient's parent is a window that is no transient,
+		// so raising, hiding and moving never chase a loop.
+		if p >= 0 && windows[p].parent >= 0 {
+			return vectra9.EINVAL
+		}
+		win.parent = p
+		if p >= 0 {
+			window_place(win, windows[p].workspace)
+			window_raise(&windows[p], p)
+		}
 	case "backdrop":
 		window_kind(win, win_at, .Backdrop)
 	case "bar":
@@ -582,6 +616,64 @@ window_zoom :: proc "contextless" (win: ^Window) {
 	_ = window_size_at(win, 0, bar_height(), scr_w, scr_h - bar_height())
 }
 
+/*
+window_snap is `snap`: a window to half or all of the screen below the bar,
+or one cell of a grid, with the place it was kept the way `zoom` keeps it,
+so a `zoom` puts it back. A second snap keeps the first place, not the
+snapped one.
+
+    snap left|right|full
+    snap grid C R I          cell I of C across and R down, row by row
+*/
+window_snap :: proc "contextless" (win: ^Window, rest: []u8) -> vectra9.Errno #no_bounds_check {
+	how, tail := word(rest)
+	top := bar_height()
+	W, H := scr_w, scr_h - top
+	x, y, w, h: int
+	switch string(how) {
+	case "left":
+		x, y, w, h = 0, top, W / 2, H
+	case "right":
+		x, y, w, h = W / 2, top, W - W / 2, H
+	case "full":
+		x, y, w, h = 0, top, W, H
+	case "grid":
+		cs, t1 := word(tail)
+		rs, t2 := word(t1)
+		is, t3 := word(t2)
+		c, cok := libdraw.scan_int_str(cs)
+		r, rok := libdraw.scan_int_str(rs)
+		i, iok := libdraw.scan_int_str(is)
+		if !cok || !rok || !iok || c < 1 || r < 1 || c > 8 || r > 8 || i < 0 || i >= c * r || len(trim(t3)) != 0 {
+			return vectra9.EINVAL
+		}
+		cw, ch := W / c, H / r
+		x, y, w, h = (i % c) * cw, top + (i / c) * ch, cw, ch
+		tail = nil
+	case:
+		return vectra9.EINVAL
+	}
+	if len(trim(tail)) != 0 {
+		return vectra9.EINVAL
+	}
+	if !win.zoomed {
+		win.zx, win.zy, win.zw, win.zh = win.x, win.y, win.w, win.h
+		win.zoomed = true
+	}
+	return window_size_at(win, x, y, w, h)
+}
+
+// transients_raise puts every transient of window `at` over it, so a
+// requester is never under the window that opened it.
+transients_raise :: proc "contextless" (at: int) #no_bounds_check {
+	for i in 0 ..< MAX_WINDOWS {
+		t := &windows[i]
+		if i != at && t.used && t.parent == at && stack_top() != i {
+			window_raise(t, i)
+		}
+	}
+}
+
 // window_size_at moves and resizes a window in one repaint: the frame is
 // laid out at the new size, and both places are composited.
 window_size_at :: proc "contextless" (win: ^Window, x: int, y: int, w: int, h: int) -> vectra9.Errno {
@@ -599,6 +691,13 @@ window_size_at :: proc "contextless" (win: ^Window, x: int, y: int, w: int, h: i
 // window_hide takes a window off the glass and keeps everything else
 // about it, or puts it back.
 window_hide :: proc "contextless" (win: ^Window, hidden: bool) {
+	// Its transients go and come back with it.
+	at := int(uintptr(win) - uintptr(&windows[0])) / size_of(Window)
+	for i in 0 ..< MAX_WINDOWS {
+		if i != at && windows[i].used && windows[i].parent == at {
+			window_hide(&windows[i], hidden)
+		}
+	}
 	if win.hidden == hidden {
 		return
 	}

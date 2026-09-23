@@ -155,6 +155,13 @@ window_place :: proc "contextless" (win: ^Window, ws: int) #no_bounds_check {
 	if ws < 1 || ws > WORKSPACES || ws == win.workspace {
 		return
 	}
+	// A transient goes where its parent goes.
+	at := int(uintptr(win) - uintptr(&windows[0])) / size_of(Window)
+	for i in 0 ..< MAX_WINDOWS {
+		if i != at && windows[i].used && windows[i].parent == at {
+			window_place(&windows[i], ws)
+		}
+	}
 	was := stack_top()
 	old := win.workspace
 	win.workspace = ws
