@@ -274,7 +274,7 @@ chord_act :: proc "contextless" (action: []u8) -> bool #no_bounds_check {
 	switch string(verb) {
 	case "close":
 		if front >= 0 {
-			window_hangup(&windows[front])
+			window_close_request(&windows[front])
 		}
 	case "zoom":
 		if front >= 0 {

@@ -803,19 +803,34 @@ section 18.
   grab check reads the queue in order to the line past the window's edge,
   which is where a queue and a single line differ.
 
-- **Close as a request.** Small. The close gadget and the `close` chord
-  hang up the session today, `window_hangup` in `pointer.odin`, and a
-  program cannot save. The plan is a `close` line on the window's
-  `mouse` queue, which the program answers by ending itself with the
-  `wctl close` it writes now. `sys/libmui` gains `on_close`. A program
-  that sets it saves and then ends, and one that does not ends at once.
+- **Close as a request. Done, September 2026.** The close gadget and the
+  `close` chord ask now, `window_close_request` in
+  `servers/intuition/pointer.odin`. A window whose `mouse` somebody has
+  open gets a `c` line on its mouse queue, a line of the `m` line's width
+  that a reader knowing only `m` skips by its first byte. A window nobody
+  reads the pointer of could never hear the question, so it is hung up at
+  once, as before, and a shell in a `window` is one of those. `sys/libmui`
+  gained `on_close`: a program with work to keep keeps it there and
+  answers whether to end now, and unset the window ends at once.
+  `sys/libapp` hears the line as `quit`. A second close of a window
+  already asked asks nothing more.
 
-  The grace period is a theme metric, `closegrace`, five seconds by
-  default. A program still up after it is offered to a person as `Kill`
-  on Workbench's `Window` menu. `Kill` is today's hangup, a `kill N` line to
-  `/srv/draw/ctl`. A client that never reads its `mouse` never hears the
-  request, so the grace period is its whole answer. `apps/terminal`
-  learns the line and ends at once, because it has nothing to save.
+  The grace period is the theme's `closegrace`, in seconds, five by
+  default, read by `intuition` beside the frame's roles. A window asked
+  and still up past it is listed on the server's `ctl` report as
+  `closing N title`. Workbench's Window menu reads that when it opens and
+  grows a `Kill title` for each, which writes `kill N`, a hangup, the
+  close gadget's old answer. The check is in `verify_pointer`: with the
+  window's `mouse` held, the gadget puts a `c` line on it and the window
+  stays; past the grace `ctl` lists it; and `kill 1` hangs it up. The
+  alt-w on a Workbench drawer, a toolkit window, goes through the request
+  and still closes it.
+
+  The clock under the grace found a bug on the way. `libdraw.scan_int`
+  refuses a number past 2^24, and `/dev/time`'s every field is past it, so
+  the uptime read as zero. `libapp`'s `read_uptime` read it the same way,
+  and a frame's `dt` was zero for every game. `libdraw.scan_u64` is the
+  scanner a clock's fields take now, in both.
 
 - **Theme reload for every `libmui` program.** Small to medium. Today
   only `apps/workbench` reads the theme files (`apps/workbench/theme.odin`),

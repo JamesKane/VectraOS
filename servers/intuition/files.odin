@@ -32,7 +32,22 @@ server_report :: proc "contextless" (out: []u8) -> int {
 	at = put_number(out, at, current_ws)
 	at = put_report(out, at, " of ")
 	at = put_number(out, at, WORKSPACES)
-	return put_report(out, at, "\n")
+	at = put_report(out, at, "\n")
+	// A window asked to close that has not, past its grace: a line each, so
+	// the desktop can offer a person `Kill`. See `window_close_request`.
+	now := uptime_ms()
+	for i in 0 ..< MAX_WINDOWS {
+		win := &windows[i]
+		if !win.used || !win.closing || win.hangup || now < win.close_at {
+			continue
+		}
+		at = put_report(out, at, "closing ")
+		at = put_number(out, at, i)
+		at = put_report(out, at, " ")
+		at = put_report(out, at, string(win.title[:win.title_n]))
+		at = put_report(out, at, "\n")
+	}
+	return at
 }
 
 /*
@@ -40,6 +55,8 @@ run_server_ctl takes one line for the server itself.
 
     workspace N   make N the current workspace
     reload        read the rules file again
+    kill N        hang window N up now: what the close gadget did before it
+                  asked, and what a person answers a window that will not go
 */
 run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_check {
 	verb, rest := word(data)
@@ -51,6 +68,14 @@ run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_ch
 			return vectra9.EINVAL
 		}
 		workspace_switch(ws)
+		return vectra9.Errno(0)
+	case "kill":
+		num, tail := word(rest)
+		w, ok := libdraw.scan_int_str(num)
+		if !ok || w < 0 || w >= MAX_WINDOWS || !windows[w].used || len(trim(tail)) != 0 {
+			return vectra9.EINVAL
+		}
+		window_hangup(&windows[w])
 		return vectra9.Errno(0)
 	case "reload":
 		if len(trim(rest)) != 0 {
@@ -70,6 +95,20 @@ run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_ch
 		libuser.eprint(" of ")
 		libuser.eprint(libuser.itoa(tmp[:], i64(img_cap)))
 		libuser.eprint("\n")
+		// And the close requests outstanding, against the clock.
+		libuser.eprint("intuition: uptime ms ")
+		libuser.eprint(libuser.itoa(tmp[:], i64(uptime_ms())))
+		libuser.eprint("\n")
+		for i in 0 ..< MAX_WINDOWS {
+			win := &windows[i]
+			if win.used && win.closing {
+				libuser.eprint("intuition: closing ")
+				libuser.eprint(libuser.itoa(tmp[:], i64(i)))
+				libuser.eprint(" at ")
+				libuser.eprint(libuser.itoa(tmp[:], i64(win.close_at)))
+				libuser.eprint(win.hangup ? " hung up\n" : "\n")
+			}
+		}
 		return vectra9.Errno(0)
 	}
 	return vectra9.EINVAL
@@ -143,6 +182,7 @@ Mouse_Event :: struct {
 	msec:    u64,
 	buttons: u8,
 	motion:  bool, // Its buttons are the line before's
+	close:   bool, // Not a movement: the `c` line, a close asked of the client
 }
 
 /*
@@ -183,6 +223,23 @@ mouse_deliver :: proc "contextless" (w: int, x: int, y: int, buttons: u8, msec: 
 	answer_mouse(w)
 }
 
+/*
+mouse_close puts the `c` line on a window's queue: the close gadget or the
+chord, asking the client to end itself. It is a change, never coalesced,
+and a full ring makes room for it the way it does for a button.
+*/
+mouse_close :: proc "contextless" (w: int) #no_bounds_check {
+	win := &windows[w]
+	queued := int(win.mseq - win.mread)
+	prev := queued > 0 ? win.mq[(win.mseq - 1) % MOUSE_RING].buttons : win.mlastb
+	if queued >= MOUSE_RING {
+		mouse_evict(win)
+	}
+	win.mq[win.mseq % MOUSE_RING] = Mouse_Event{buttons = prev, close = true}
+	win.mseq += 1
+	answer_mouse(w)
+}
+
 // mouse_evict makes room in a full ring: the oldest motion line goes, or,
 // when every line is a button change, the oldest line.
 @(private = "file")
@@ -209,7 +266,9 @@ mouse_line :: proc "contextless" (win: ^Window, out: []u8) -> int #no_bounds_che
 	e := win.mq[win.mread % MOUSE_RING]
 	win.mread += 1
 	win.mlastb = e.buttons
-	out[0] = 'm'
+	// The close request is a line of the same width, `c` and zeroes, so a
+	// reader that knows only `m` skips it by its first byte.
+	out[0] = e.close ? 'c' : 'm'
 	at := 1
 	at = put_field(out, at, int(e.x))
 	at = put_field(out, at, int(e.y))

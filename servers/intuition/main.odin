@@ -1017,6 +1017,13 @@ Window :: struct {
 	mseq:      u64,
 	mread:     u64,
 	mlastb:    u8,
+
+	// A close asked of the client, not yet done: the `c` line is on its
+	// mouse queue, and past `close_at`, milliseconds of uptime, the window
+	// is listed on the server's `ctl` for a person to kill. See
+	// `window_close_request`.
+	closing:   bool,
+	close_at:  u64,
 		mouse_fid:  vectra9.Fid,
 	mouse_held: bool,
 
@@ -2171,6 +2178,7 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 		win.mseq = 0
 	win.mread = 0
 	win.mlastb = 0
+	win.closing = false
 	win.mouse_held = false
 	win.hangup = false
 	win.has_cursor = false
@@ -3402,7 +3410,7 @@ handler :: proc "contextless" (
 			return
 		}
 
-		line: [160]u8
+		line: [1024]u8
 		n := 0
 		switch {
 		case node == NODE_NEW:

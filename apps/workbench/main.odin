@@ -293,6 +293,54 @@ bar_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
 	open_menu(which, w.sx + (titles[which] != nil ? titles[which].x : 0), w.sy + BAR_H)
 }
 
+/*
+The Window menu grows a `Kill` for each window the desktop asked to close
+that has not, past the theme's `closegrace`: the server lists them on its
+`ctl`, `closing N title`. Choosing one hangs the window up, `kill N`, which
+is what the close gadget did before it asked. `docs/WORKBENCH.md` step 5.
+*/
+KILL_MAX :: 4
+kill_ids: [KILL_MAX]int
+kill_n: int
+kill_labels: [KILL_MAX][64]u8
+window_items: [len(MENU_WINDOW) + KILL_MAX]string
+
+window_menu_items :: proc "contextless" () -> []string #no_bounds_check {
+	n := copy(window_items[:], MENU_WINDOW[:])
+	kill_n = 0
+	report: [1024]u8
+	fd := libuser.open("/mnt/ctl", abi.O_RDONLY)
+	if fd < 0 {
+		return window_items[:n]
+	}
+	got := libuser.read(int(fd), report[:])
+	_ = libuser.close(int(fd))
+	text := string(report[:max(int(got), 0)])
+	for len(text) > 0 && kill_n < KILL_MAX {
+		eol := 0
+		for eol < len(text) && text[eol] != '\n' {
+			eol += 1
+		}
+		line := text[:eol]
+		text = text[min(eol + 1, len(text)):]
+		verb, rest := first_word(line)
+		if verb != "closing" {
+			continue
+		}
+		num, title := first_word(rest)
+		id, ok := libuser.atoi(num)
+		if !ok {
+			continue
+		}
+		label := libuser.cat_into(kill_labels[kill_n][:], "Kill ", title == "" ? num : title)
+		kill_ids[kill_n] = int(id)
+		window_items[n] = label
+		n += 1
+		kill_n += 1
+	}
+	return window_items[:n]
+}
+
 // open_menu opens one title's menu at a point on the screen.
 open_menu :: proc "contextless" (which: int, x: int, y: int) {
 	if menu.open {
@@ -304,7 +352,7 @@ open_menu :: proc "contextless" (which: int, x: int, y: int) {
 	case 0:
 		items = wb_menu_n > 0 ? wb_menu[:wb_menu_n] : MENU_WORKBENCH[:]
 	case 1:
-		items = MENU_WINDOW[:]
+		items = window_menu_items()
 	case 2:
 		items = MENU_ICONS[:]
 	case:

@@ -9373,8 +9373,17 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #n
 	}
 	check(r, moved, "and the window is where the drag left it, which wctl says")
 
-	// -- The close gadget hangs the keyboard up ----------------------------------------
+	// -- The close gadget asks, and a window that will not go is killed ------------------
 
+	/*
+	A window whose pointer somebody reads is asked to close, not hung up: a
+	`c` line on its mouse queue, which a toolkit program answers by ending
+	itself. This window's reader is the suite, which does not answer, so
+	the window stays. Past the theme's `closegrace` the server lists it on
+	its `ctl` as `closing`, and `kill 1` is what the desktop's `Kill`
+	writes. A window nobody reads the pointer of is hung up at once, as a
+	shell in a `window` is when the suite alt-w's it.
+	*/
 	cons, cerr := vfs.open_path(vfs.boot_namespace, "/mnt/1/cons", vfs.O_RDONLY)
 	if !check(r, cerr == vfs.OK && cons != nil, "the window's cons opens") {
 		return
@@ -9382,8 +9391,48 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int) #n
 	probe_x := second_x + 40 + fw - 20
 	probe_y := 24 + oy + 40
 	check(r, fb.get_raw(s, probe_x, probe_y) == fb.pack(s, fb.SLATE), "the window's well is on the glass past the first window's edge")
+	mf2, merr2 := vfs.open_path(vfs.boot_namespace, "/mnt/1/mouse", vfs.O_RDONLY)
+	if !check(r, merr2 == vfs.OK && mf2 != nil, "its mouse opens again, so the window has a reader to ask") {
+		vfs.chan_close(cons)
+		return
+	}
 	check(r, point_to(second_x + 40 + ox + 8, 24 + oy / 2), "the pointer is moved onto the close gadget")
 	check(r, press_and_move(0, 0), "and pressed")
+	asked := false
+	for _ in 0 ..< MOUSE_LINES_MAX {
+		mount_reader = Mount_Reader{c = mf2}
+		if sched.spawn("close-read", mount_read_thread, nil) == nil || !sync.await_flag(&mount_reader.done, PATIENCE) {
+			break
+		}
+		if mount_reader.n > 0 && mount_reader.buf[0] == 'c' {
+			asked = true
+			break
+		}
+	}
+	check(r, asked, "the press asks the window to close: a c line on its mouse queue")
+	check(r, fb.get_raw(s, probe_x, probe_y) == fb.pack(s, fb.SLATE), "and the window stays, since its reader did not answer")
+	listed := false
+	report: [512]u8
+	for _ in 0 ..< PATIENCE * 40 {
+		n := read_once("/mnt/ctl", report[:])
+		if n > 0 && libodin.contains(string(report[:n]), "closing 1 ") {
+			listed = true
+			break
+		}
+		sync.delay(10)
+	}
+	if !check(r, listed, "past the grace the server lists it on ctl as closing, for the desktop's Kill") {
+		n := read_once("/mnt/ctl", report[:])
+		_ = net_file_write("/dev/cons", "close-diag: ctl said: ")
+		_ = net_file_write("/dev/cons", string(report[:max(n, 0)]))
+		tb: [128]u8
+		tn := read_once("/dev/time", tb[:])
+		_ = net_file_write("/dev/cons", "close-diag: time: ")
+		_ = net_file_write("/dev/cons", string(tb[:max(tn, 0)]))
+		_ = net_file_write("/mnt/ctl", "diag")
+	}
+	check(r, net_file_write("/mnt/ctl", "kill 1"), "and kill 1 is taken")
+	vfs.chan_close(mf2)
 	mount_reader = Mount_Reader{c = cons}
 	if check(r, sched.spawn("cons-read", mount_read_thread, nil) != nil, "a thread to read the keyboard") {
 		ended := sync.await_flag(&mount_reader.done, PATIENCE)

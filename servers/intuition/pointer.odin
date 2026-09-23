@@ -218,7 +218,7 @@ pointer_move :: proc "contextless" (x: int, y: int, b: u8, msec: u64) #no_bounds
 		win := &windows[w]
 		switch hit_test(win, x - win.x, y - win.y) {
 		case .Close:
-			window_hangup(win)
+			window_close_request(win)
 			return
 		case .Depth:
 			window_lower(w)
@@ -339,6 +339,53 @@ gadget_at :: proc "contextless" (win: ^Window, g: libdraw.Gadget) -> (x: int, y:
 		return win.w - SIZE_GRIP, win.h - SIZE_GRIP, SIZE_GRIP
 	}
 	return 0, 0, 0
+}
+
+/*
+window_close_request is the close gadget and the `close` chord: the client
+is asked, so a program with work to keep can keep it. A `c` line goes on the
+window's mouse queue, and a program on `sys/libmui` or `sys/libapp` ends
+itself when it reads it. A window nobody reads the pointer of could never
+hear the question, so it is hung up at once, as before. One that was asked
+and is still up after the theme's `closegrace` is listed on the server's
+`ctl`, and the desktop offers a person `Kill`, which is `kill N`. A second
+close of a window already asked asks nothing more.
+*/
+window_close_request :: proc "contextless" (win: ^Window) #no_bounds_check {
+	if !win.mouse_held {
+		window_hangup(win)
+		return
+	}
+	if win.closing {
+		return
+	}
+	w := int(uintptr(win) - uintptr(&windows[0])) / size_of(Window)
+	win.closing = true
+	win.close_at = uptime_ms() + th_closegrace_ms
+	mouse_close(w)
+}
+
+// uptime_ms is the milliseconds since boot, off `/dev/time`'s fifth field.
+uptime_ms :: proc "contextless" () -> u64 #no_bounds_check {
+	fd := libuser.open("/dev/time", abi.O_RDONLY)
+	if fd < 0 {
+		return 0
+	}
+	buf: [96]u8
+	n := libuser.read(int(fd), buf[:])
+	_ = libuser.close(int(fd))
+	// `scan_u64`, not `scan_int`: every field here is past a coordinate's cap.
+	at := 0
+	for _ in 0 ..< 4 {
+		if _, ok := libdraw.scan_u64(buf[:max(int(n), 0)], &at); !ok {
+			return 0
+		}
+	}
+	up, ok := libdraw.scan_u64(buf[:max(int(n), 0)], &at)
+	if !ok {
+		return 0
+	}
+	return up / 1_000_000
 }
 
 /*

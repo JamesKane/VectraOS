@@ -237,6 +237,31 @@ scan_int :: proc "contextless" (data: []u8, at: ^int) -> (int, bool) #no_bounds_
 }
 
 /*
+scan_u64 reads an unsigned decimal the way `scan_int` does, with no cap:
+for a clock's fields, whose seconds and nanoseconds are far past the
+2^24 a coordinate is held to. False at no digits, or past what a u64
+holds.
+*/
+scan_u64 :: proc "contextless" (data: []u8, at: ^int) -> (u64, bool) #no_bounds_check {
+	i := at^
+	for i < len(data) && (data[i] == ' ' || data[i] == '\t') {
+		i += 1
+	}
+	start := i
+	value: u64 = 0
+	for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+		d := u64(data[i] - '0')
+		if value > (max(u64) - d) / 10 {
+			return 0, false
+		}
+		value = value * 10 + d
+		i += 1
+	}
+	at^ = i
+	return value, i > start
+}
+
+/*
 The draw server's tree, named once for both sides of it.
 
     /new       read it, and it answers which window has no session

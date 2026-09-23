@@ -268,6 +268,14 @@ drawer_window_menu :: proc "contextless" (item: int) {
 		if d != nil {
 			snapshot_save(d.path, d.grid, d.names)
 		}
+	case:
+		// A `Kill` the menu grew for a window that would not close.
+		k := item - len(MENU_WINDOW)
+		if k >= 0 && k < kill_n {
+			line: [32]u8
+			nb: [16]u8
+			server_ctl(libuser.cat_into(line[:], "kill ", libuser.itoa(nb[:], i64(kill_ids[k]))))
+		}
 	}
 }
 

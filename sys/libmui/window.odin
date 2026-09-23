@@ -94,6 +94,11 @@ Window :: struct {
 	// outside the window. The program maps that to a drop. See
 	// `docs/WORKBENCH.md` section 6 and `window_open`'s comment on the grab.
 	on_drop:   proc "contextless" (win: ^Window, item: int, x: int, y: int),
+	// The desktop asked this window to close, the close gadget or alt-w. A
+	// program with work to keep keeps it here and answers true to end now,
+	// or false to stay open, to ask the person something first. Unset, the
+	// window ends at once. `docs/WORKBENCH.md` step 5.
+	on_close:  proc "contextless" (win: ^Window) -> bool,
 	press_x:   int, // where the last press landed, for the drag threshold
 	press_y:   int,
 	user:      rawptr,
@@ -693,6 +698,14 @@ says so. A button 3 press is the program's, through `on_menu`, with the point
 it landed on, which is where a menu opens.
 */
 mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
+	// A `c` line is the desktop asking the window to close. `on_close` says
+	// whether it ends now, and with none it does.
+	if len(data) >= 1 && data[0] == 'c' {
+		if win.on_close == nil || win.on_close(win) {
+			win.done = true
+		}
+		return
+	}
 	if len(data) < 1 || data[0] != 'm' {
 		return
 	}

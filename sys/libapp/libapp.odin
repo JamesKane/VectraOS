@@ -458,6 +458,12 @@ mouse_io :: proc "contextless" (arg: rawptr) #no_bounds_check {
 			app.quit = true
 			return
 		}
+		// The desktop asked the window to close: the program hears it as
+		// `quit` on its next frame, and ends by its own path.
+		if line[0] == 'c' {
+			app.quit = true
+			continue
+		}
 		x, y, b, ok := parse_mouse(line[:int(got)])
 		if !ok {
 			continue
@@ -499,17 +505,20 @@ read_uptime :: proc "contextless" (app: ^App) -> u64 #no_bounds_check {
 	}
 	at := 0
 	// sec nsec fastticks fasthz uptime -- the fifth is what a dt needs.
+	// `scan_u64`: `scan_int` stops at 2^24, and every field here is past
+	// it, so with it this answered the last uptime for ever and a frame's
+	// dt was zero.
 	for _ in 0 ..< 4 {
-		_, ok := libdraw.scan_int(buf[:int(n)], &at)
+		_, ok := libdraw.scan_u64(buf[:int(n)], &at)
 		if !ok {
 			return app.last_uptime
 		}
 	}
-	up, ok := libdraw.scan_int(buf[:int(n)], &at)
-	if !ok || up < 0 {
+	up, ok := libdraw.scan_u64(buf[:int(n)], &at)
+	if !ok {
 		return app.last_uptime
 	}
-	return u64(up)
+	return up
 }
 
 // -- Small helpers ------------------------------------------------------------

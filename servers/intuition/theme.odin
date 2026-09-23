@@ -20,6 +20,7 @@ word `Workbench > Theme...` sends after it writes a new `use` line.
 package intuition
 
 import "vsys:abi"
+import "vsys:libdraw"
 import "vsys:libpal"
 import "vsys:libuser"
 
@@ -40,6 +41,11 @@ th_plinth_shade := CHASSIS_PLINTH_SHADE
 th_bar := CHASSIS_BAR
 th_bar_lit := CHASSIS_BAR_LIT
 th_bar_shade := CHASSIS_BAR_SHADE
+
+// How long a window asked to close has before the desktop offers `Kill`,
+// the theme's `closegrace` in seconds. See `window_close_request`.
+CLOSE_GRACE_MS :: u64(5000)
+th_closegrace_ms := CLOSE_GRACE_MS
 
 @(private = "file") home_buf: [THEME_MAX]u8
 @(private = "file") base_buf: [THEME_MAX]u8
@@ -62,6 +68,7 @@ theme_reload :: proc "contextless" () #no_bounds_check {
 	th_bar = CHASSIS_BAR
 	th_bar_lit = CHASSIS_BAR_LIT
 	th_bar_shade = CHASSIS_BAR_SHADE
+	th_closegrace_ms = CLOSE_GRACE_MS
 
 	home := theme_read_home(home_buf[:])
 
@@ -136,6 +143,10 @@ theme_apply_line :: proc "contextless" (line: []u8) #no_bounds_check {
 		set_color(&th_plinth_lit, string(value))
 	case "plinth.shade":
 		set_color(&th_plinth_shade, string(value))
+	case "closegrace":
+		if secs, ok := libdraw.scan_int_str(value); ok && secs >= 0 && secs <= 600 {
+			th_closegrace_ms = u64(secs) * 1000
+		}
 	}
 }
 
