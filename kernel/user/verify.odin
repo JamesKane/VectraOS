@@ -5536,6 +5536,50 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			check(r, shrunk, "and with the file gone the chassis frame comes back at its old size")
 		}
 
+		/*
+		Schemes, `docs/CHROME.md` brick 2. A scheme is a file of `colour`
+		lines and roles by job, picked with `use`. The toolkit and the server
+		read one table of names, so `use neon` turns the demo's face neon's
+		`raised` and the front bar neon's `metal.hi`. A personal file may
+		define a colour of its own and name it.
+		*/
+		schemes := [?]struct {
+			text: string,
+			face: fb.RGB,
+			bar:  fb.RGB,
+			what: string,
+		}{
+			{"use neon\n", {0x2a, 0x21, 0x50}, {0x4a, 0x41, 0x78}, "use neon, and a reload, and the demo's face is neon's raised and the front bar neon's metal: one scheme for both halves"},
+			{"use daylight\n", {0xf1, 0xee, 0xf8}, {0xf6, 0xf4, 0xfb}, "use daylight turns them daylight's"},
+			{"colour sig 123456\nface sig\n", {0x12, 0x34, 0x56}, fb.COPPER, "a personal colour line, colour sig 123456, names a colour a role may take"},
+		}
+		for sc in schemes {
+			face_px, bar_px := fb.pack(s, sc.face), fb.pack(s, sc.bar)
+			worn := false
+			if write_disk_file("/usr/glenda/lib/theme", sc.text) && net_file_write("/mnt/ctl", "reload") {
+				for _ in 0 ..< PATIENCE * 20 {
+					if fb.get_raw(s, gx, probe_y) == face_px && fb.get_raw(s, wx + ww / 2, wy + 13) == bar_px {
+						worn = true
+						break
+					}
+					sync.delay(1)
+				}
+			}
+			check(r, worn, sc.what)
+		}
+		remove_file("/usr/glenda/lib/theme")
+		unworn := false
+		if net_file_write("/mnt/ctl", "reload") {
+			for _ in 0 ..< PATIENCE * 20 {
+				if fb.get_raw(s, gx, probe_y) == magnesium && fb.get_raw(s, wx + ww / 2, wy + 13) == copper {
+					unworn = true
+					break
+				}
+				sync.delay(1)
+			}
+		}
+		check(r, unworn, "and with the file gone the chassis's magnesium and copper come back")
+
 		// The preferences window: a toolkit window of every role, walked
 		// off the parser's own list.
 		if pp := start_path(r, "/bin/prefs", "the preferences window starts"); pp != nil {

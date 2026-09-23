@@ -50,10 +50,13 @@ names a role this build does not know still loads.
 */
 parse_theme :: proc "contextless" (t: ^Theme, text: string) #no_bounds_check {
 	t^ = default_theme
-	// Two passes: the unscoped lines, then the lines scoped to this program,
-	// `muidemo/face copper`, so a scoped line wins whatever its order. A line
-	// scoped to another program is not this one's.
+	theme_colours = {}
+	// Three passes. The `colour` lines first, so a role may name a colour
+	// defined anywhere in the files. Then the unscoped lines, then the lines
+	// scoped to this program, `muidemo/face copper`, so a scoped line wins
+	// whatever its order. A line scoped to another program is not this one's.
 	app := app_name()
+	colour_lines(&theme_colours, text)
 	for pass in 0 ..< 2 {
 		i := 0
 		for i < len(text) {
@@ -116,8 +119,9 @@ apply_line :: proc "contextless" (t: ^Theme, line: string) {
 	}
 
 	// A colour role takes a palette name or six hex digits. A metric role
-	// takes a number.
-	switch role {
+	// takes a number. A job role, `docs/CHROME.md` section 3, is another
+	// name for the role it sets: `role_name` says which.
+	switch role_name(role) {
 	case "ground":
 		set_color(&t.ground, value)
 	case "face":
@@ -146,6 +150,14 @@ apply_line :: proc "contextless" (t: ^Theme, line: string) {
 		set_color(&t.link, value)
 	case "dim":
 		set_color(&t.dim, value)
+	case "focus":
+		set_color(&t.focus, value)
+	case "warn":
+		set_color(&t.warn, value)
+	case "ok":
+		set_color(&t.ok, value)
+	case "fault":
+		set_color(&t.fault, value)
 	}
 	// A role this build does not know is skipped here. `font` and `pointer`
 	// are left for the half of the toolkit that reads them.
@@ -155,9 +167,69 @@ apply_line :: proc "contextless" (t: ^Theme, line: string) {
 // alone if it can read neither. The grammar is `libpal.parse_color`'s, shared
 // with the server that themes the frame.
 set_color :: proc "contextless" (dst: ^libpal.RGB, value: string) {
-	if c, ok := libpal.parse_color(value); ok {
+	if c, ok := libpal.colours_parse(&theme_colours, value); ok {
 		dst^ = c
 	}
+}
+
+// The colours the files being read define, `colour NAME VALUE`. Emptied at
+// the start of every parse.
+@(private = "file")
+theme_colours: libpal.Colours
+
+/*
+colour_lines reads every unscoped `colour NAME VALUE` line in `text` into `t`,
+in order, so a later line wins and a colour may be named in terms of one
+defined above it. `servers/intuition` reads the frame's roles with the same
+procedure, so the two halves of the look agree on every name.
+*/
+colour_lines :: proc "contextless" (t: ^libpal.Colours, text: string) #no_bounds_check {
+	i := 0
+	for i < len(text) {
+		start := i
+		for i < len(text) && text[i] != '\n' {
+			i += 1
+		}
+		line := text[start:i]
+		if i < len(text) {
+			i += 1
+		}
+		for k in 0 ..< len(line) {
+			if line[k] == '#' {
+				line = line[:k]
+				break
+			}
+		}
+		kw, rest := word(line)
+		if kw != "colour" {
+			continue
+		}
+		name, after := word(rest)
+		value, _ := word(after)
+		_ = libpal.colours_define(t, name, value)
+	}
+}
+
+/*
+role_name is the role a name in the file sets. The job roles of
+`docs/CHROME.md` section 3 are other names for the roles the toolkit has
+always had: `panel` is a window's `ground`, `raised` is a control's `face`,
+and `accent` is `hot`. The rest are their own names.
+*/
+role_name :: proc "contextless" (role: string) -> string {
+	switch role {
+	case "panel":
+		return "ground"
+	case "raised":
+		return "face"
+	case "raised.lit":
+		return "face.lit"
+	case "raised.shade":
+		return "face.shade"
+	case "accent":
+		return "hot"
+	}
+	return role
 }
 
 // set_metric reads a non-negative number into `dst`, and leaves it alone on
@@ -390,6 +462,7 @@ that shows the theme walks this, so it stays right when a role is added.
 */
 THEME_ROLES := [?]string{
 	"ground", "face", "face.lit", "face.shade", "text", "hot", "link", "dim",
+	"focus", "warn", "ok", "fault",
 	"bevel", "well", "pad", "gap", "hpad", "vpad",
 }
 
@@ -404,7 +477,7 @@ theme_value :: proc "contextless" (t: ^Theme, role: string, out: []u8) -> string
 		}
 		return string(out[:6])
 	}
-	switch role {
+	switch role_name(role) {
 	case "ground":
 		return rgb(t.ground, out)
 	case "face":
@@ -421,6 +494,14 @@ theme_value :: proc "contextless" (t: ^Theme, role: string, out: []u8) -> string
 		return rgb(t.link, out)
 	case "dim":
 		return rgb(t.dim, out)
+	case "focus":
+		return rgb(t.focus, out)
+	case "warn":
+		return rgb(t.warn, out)
+	case "ok":
+		return rgb(t.ok, out)
+	case "fault":
+		return rgb(t.fault, out)
 	case "bevel":
 		return libuser.itoa(out, i64(t.bevel))
 	case "well":
@@ -497,7 +578,7 @@ theme_explain :: proc "contextless" (role: string, out: []u8) -> int #no_bounds_
 			scope, rest, scoped := line_scope(line)
 			r, after := word(rest)
 			v, _ := word(after)
-			if r != role || v == "" {
+			if role_name(r) != role_name(role) || v == "" {
 				continue
 			}
 			entries[n] = Entry{path = paths[si], line = lineno, value = v, scoped = scoped, mine = !scoped || (scope == app && app != "")}

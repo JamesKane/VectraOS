@@ -128,6 +128,11 @@ theme_reload :: proc "contextless" () #no_bounds_check {
 	}
 	base := read_whole(base_path, base_buf[:])
 
+	// The `colour` lines of both files first, so a frame role may name a
+	// colour a scheme defines, `docs/CHROME.md` section 3.
+	th_colours = {}
+	theme_colour_text(base_buf[:base])
+	theme_colour_text(body)
 	theme_apply_text(base_buf[:base])
 	theme_apply_text(body)
 	desk_resolve()
@@ -293,8 +298,37 @@ set_metric :: proc "contextless" (dst: ^int, value: []u8, lo: int, hi: int) {
 // is `libpal.parse_color`'s, shared with `sys/libmui`'s reader for the gadgets.
 @(private = "file")
 set_color :: proc "contextless" (dst: ^libpal.RGB, value: string) {
-	if c, ok := libpal.parse_color(value); ok {
+	if c, ok := libpal.colours_parse(&th_colours, value); ok {
 		dst^ = c
+	}
+}
+
+// The colours the theme files define, which a frame role may name.
+@(private = "file")
+th_colours: libpal.Colours
+
+// theme_colour_text reads every `colour NAME VALUE` line of a file into
+// `th_colours`, the rule `sys/libmui`'s `colour_lines` follows for the
+// gadgets. A scoped line is a program's own and not the frame's.
+@(private = "file")
+theme_colour_text :: proc "contextless" (text: []u8) #no_bounds_check {
+	rest := text
+	for len(rest) > 0 {
+		line: []u8
+		line, rest = theme_line(rest)
+		for k in 0 ..< len(line) {
+			if line[k] == '#' {
+				line = line[:k]
+				break
+			}
+		}
+		kw, after := word(line)
+		if string(kw) != "colour" {
+			continue
+		}
+		name, r2 := word(after)
+		value, _ := word(r2)
+		_ = libpal.colours_define(&th_colours, string(name), string(value))
 	}
 }
 

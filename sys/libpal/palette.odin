@@ -193,3 +193,67 @@ hex_rgb :: proc "contextless" (value: string) -> (RGB, bool) {
 	}
 	return RGB{nibbles[0] << 4 | nibbles[1], nibbles[2] << 4 | nibbles[3], nibbles[4] << 4 | nibbles[5]}, true
 }
+
+/*
+Colours is a theme's own names for colours, `docs/CHROME.md` section 3. A
+theme file may define one with a line
+
+    colour mag  ff2bd6
+
+and name it after that wherever a role takes a colour. A scheme is a file of
+these lines, so a change of scheme changes every colour and moves no role.
+
+Each theme reader holds a table of its own and empties it before a read, so
+two readers never share one. A name the table holds wins over the palette's
+own, which is how a scheme's `amber` is its own hue and not this table's.
+*/
+MAX_COLOURS :: 40
+COLOUR_NAME :: 16
+
+Colours :: struct {
+	names:  [MAX_COLOURS][COLOUR_NAME]u8,
+	lens:   [MAX_COLOURS]u8,
+	values: [MAX_COLOURS]RGB,
+	n:      int,
+}
+
+// colours_define adds a name, or replaces the colour a name already has, so
+// a later line wins as it does for a role. The value is read by
+// `colours_parse`, so a name may be defined in terms of another. False for a
+// name too long, a full table, or a value that is not a colour.
+colours_define :: proc "contextless" (t: ^Colours, name: string, value: string) -> bool #no_bounds_check {
+	if len(name) == 0 || len(name) > COLOUR_NAME {
+		return false
+	}
+	c, ok := colours_parse(t, value)
+	if !ok {
+		return false
+	}
+	for i in 0 ..< t.n {
+		if string(t.names[i][:t.lens[i]]) == name {
+			t.values[i] = c
+			return true
+		}
+	}
+	if t.n >= MAX_COLOURS {
+		return false
+	}
+	copy(t.names[t.n][:], name)
+	t.lens[t.n] = u8(len(name))
+	t.values[t.n] = c
+	t.n += 1
+	return true
+}
+
+// colours_parse reads a colour the way `parse_color` does, with the table's
+// names first. A nil table is `parse_color`.
+colours_parse :: proc "contextless" (t: ^Colours, value: string) -> (RGB, bool) #no_bounds_check {
+	if t != nil {
+		for i in 0 ..< t.n {
+			if string(t.names[i][:t.lens[i]]) == value {
+				return t.values[i], true
+			}
+		}
+	}
+	return parse_color(value)
+}

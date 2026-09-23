@@ -453,14 +453,15 @@ chrome and the gadgets inside it are one look. The unfocused bar is not
 its own role: it is the focused bar one step down its own table, the
 lamp's rule. A theme that names nothing is the chassis.
 
-**Schemes and job roles are planned**, `docs/CHROME.md` section 3. A theme
+**Schemes and job roles are done**, `docs/CHROME.md` section 3. A theme
 may define colours with `colour` lines, and a scheme is a file of them.
-Four ship: `neon`, the default, `neon-hc`, `daylight`, and `magnesium`
-for the chassis. Roles name a job, `accent`, `focus`, `warn`, `ok`, `fault`, and
-today's names read as other names for them. The effects, `glow`, `shadow`,
-`scan`, `bloom` and `motion`, are roles with numbers. The toolkit then
-paints its window's store, section 2 of that document, and grows `Knob`,
-`Readout`, `Led` and `PageList`.
+Four ship: `neon`, `neon-hc`, `daylight`, and `magnesium` for the chassis.
+Roles name a job, `accent`, `focus`, `warn`, `ok`, `fault`, and the
+toolkit's older names read as other names for them.
+
+The rest is planned. The effects, `glow`, `shadow`, `scan`, `bloom` and `motion`, are roles
+with numbers. The toolkit paints its window's store, section 2 of that
+document, and grows `Knob`, `Readout`, `Led` and `PageList`.
 
 **The toolkit is not the window manager and not the desktop.** It draws
 inside a window it was given. What a program on it looks like is the
@@ -1058,7 +1059,7 @@ them:
    `FRAME_INSET` constants go. This is step 5's "frames by name". Done,
    September 2026.
 2. Schemes: `colour` lines, the job roles, four scheme files, and a
-   contrast check in `lint`.
+   contrast check in `lint`. Done, September 2026.
 3. `sys/libraster`, and the toolkit painting its window's store in place
    of the per-face atlas.
 

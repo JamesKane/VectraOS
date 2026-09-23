@@ -1,0 +1,43 @@
+# neon-hc: neon at high contrast: black panels, white text, brighter signal.
+# A scheme from docs/CHROME.md section 3: the colours by name, then the
+# roles by job. `use neon-hc` in $home/lib/theme picks it.
+
+colour void      000000
+colour panel     0d0d14
+colour raised    1d1d2b
+colour well      000000
+colour edge      000000
+colour text      ffffff
+colour dim       d8d8f2
+colour mag       ff5ce6
+colour cyan      5cf3ff
+colour amber     ffc940
+colour green     6bff4f
+colour red       ff6b82
+colour violet    c29cff
+colour metal.hi  3b3b50
+colour metal.lo  15151f
+colour bevel.hi  9e9ea1
+colour bevel.lo  000000
+colour lcd.bg    140e00
+colour lcd.fg    ffc940
+
+panel       panel           # a window's body
+raised      raised          # a control's face
+face.lit    bevel.hi        # its top-left edge
+face.shade  bevel.lo        # its bottom-right edge
+text        text
+dim         dim
+accent      mag             # the selection, the default button
+focus       cyan            # the active window, the focus ring
+warn        amber
+ok          green
+fault       red
+link        violet
+bar         metal.hi        # the title bar's metal
+bar.lit     bevel.hi
+bar.shade   metal.lo
+plinth.lit  bevel.hi        # the frame's raised border
+plinth.shade bevel.lo
+desk neon-hc dots void raised 24
+desk.ground neon-hc

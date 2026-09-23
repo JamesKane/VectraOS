@@ -1,0 +1,44 @@
+# neon: the chrome study's default: violet panels over a near-black void, neon as signal.
+# A scheme from docs/CHROME.md section 3: the colours by name, then the
+# roles by job. `use neon` in $home/lib/theme picks it.
+
+colour void      0a0a18
+colour panel     1b1535
+colour raised    2a2150
+colour well      110d24
+colour edge      000000
+colour text      e8e6ff
+colour dim       a49cd6
+colour mag       ff2bd6
+colour cyan      00e5ff
+colour amber     ffb000
+colour green     39ff14
+colour red       ff3b5c
+colour violet    9d5cff
+colour violet.lit b28aff   # link text: the study's violet fails 4.5 on raised
+colour metal.hi  4a4178
+colour metal.lo  211a40
+colour bevel.hi  594e82
+colour bevel.lo  0a0814
+colour lcd.bg    1d1405
+colour lcd.fg    ffb000
+
+panel       panel           # a window's body
+raised      raised          # a control's face
+face.lit    bevel.hi        # its top-left edge
+face.shade  bevel.lo        # its bottom-right edge
+text        text
+dim         dim
+accent      mag             # the selection, the default button
+focus       cyan            # the active window, the focus ring
+warn        amber
+ok          green
+fault       red
+link        violet.lit
+bar         metal.hi        # the title bar's metal
+bar.lit     bevel.hi
+bar.shade   metal.lo
+plinth.lit  bevel.hi        # the frame's raised border
+plinth.shade bevel.lo
+desk neon dots void raised 24
+desk.ground neon

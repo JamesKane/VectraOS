@@ -1446,7 +1446,7 @@ stage_vectra :: proc(arch: string, host: string) {
 	// both read `/lib/theme`.
 	copy_file("lib/theme", fmt.tprintf("%s/lib/theme", root))
 	ensure_dir(fmt.tprintf("%s/lib/themes", root))
-	for name in ([?]string{"phosphor", "cyan", "copper"}) {
+	for name in ([?]string{"phosphor", "cyan", "copper", "neon", "neon-hc", "daylight", "magnesium"}) {
 		copy_file(fmt.tprintf("lib/themes/%s", name), fmt.tprintf("%s/lib/themes/%s", root, name))
 	}
 	// The desktop's tools and types, `docs/WORKBENCH.md` section 6: a tool
@@ -2136,8 +2136,13 @@ checker itself is Python rather than Odin. The job is regular expressions over
 text, and it has to run over the `.md` files as well as the source.
 
 A finding exits non-zero, so this works as a gate. The tree is at zero.
+`tools/contrast.py` runs first, over the schemes under `lib/themes`.
 */
 lint :: proc(opts: Options) {
+	// The schemes first, `docs/CHROME.md` section 3: a text role under 4.5 to 1
+	// on a panel is a finding the same way a sentence is.
+	step("checking the schemes' contrast")
+	run([]string{"python3", "tools/contrast.py"})
 	step("checking prose against ASD-STE100")
 	args := [dynamic]string{"python3", "tools/ste-lint.py"}
 	defer delete(args)

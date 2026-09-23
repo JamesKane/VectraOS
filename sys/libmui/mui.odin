@@ -63,6 +63,12 @@ Theme :: struct {
 	hot:    libpal.RGB,
 	link:   libpal.RGB,
 	dim:    libpal.RGB,
+	// The signal colours, `docs/CHROME.md` section 3's job roles: the
+	// active thing, a warning, a good state, and a fault.
+	focus:  libpal.RGB,
+	warn:   libpal.RGB,
+	ok:     libpal.RGB,
+	fault:  libpal.RGB,
 }
 
 default_theme :: Theme {
@@ -80,6 +86,10 @@ default_theme :: Theme {
 	hot    = libpal.AMBER_HOT,
 	link   = libpal.CYAN,
 	dim    = libpal.AMBER_DIM,
+	focus  = libpal.CYAN,
+	warn   = libpal.AMBER,
+	ok     = libpal.PHOSPHOR,
+	fault  = libpal.ALERT,
 }
 
 // The styles a list's rows may wear, one byte a row in `styles`. A page is

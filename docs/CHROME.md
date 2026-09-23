@@ -104,7 +104,9 @@ scheme is a theme file of `colour` lines and nothing else, so switching
 scheme changes every colour and moves no role. The `use` line already picks
 a file under `/lib/themes`, and a scheme is one of those files.
 
-**Three schemes ship, and the study's neon is the default.**
+**Three schemes ship, and the study's neon becomes the default at brick
+5.** Until the frame and the toolkit wear the materials, `/lib/theme` stays
+the chassis, and `use neon` is one line.
 
 | Name | Void | Panel | Raised | Well | Text | Dim |
 |---|---|---|---|---|---|---|
@@ -135,12 +137,13 @@ job, and the scheme names the hue:
     link        violet    a link, the desk's glow
     panel       panel     a window's body
     raised      raised    a control's face
-    well        well      a sunk field
     text, dim   text, dim labels, and labels that cannot act
 
-Today's roles keep working as other names for these: `face` for `raised`,
-`ground` for `well`, `hot` for `accent`. A personal theme written last
-month still reads.
+The toolkit's roles and the job roles name the same values: `ground` is
+`panel`, `face` is `raised`, and `hot` is `accent`. A personal theme written
+last month still reads. `well` stays the metric it is, the depth of a sunk
+field. The colour of a sunk field waits for brick 3. `sys/libraster` is the
+first painter to draw one apart from the panel.
 
 **The effects are roles too, and each is a number.** These are the study's
 Effects page, as lines a person may write:
@@ -577,10 +580,16 @@ look.
    check: a theme with `frame.title 30` moves the demo's face ten rows
    down under a taller bar, with its client area the same size. This is
    also step 5's "frames by name".
-2. **Schemes.** `colour` lines, the job roles and their old names, the
-   four scheme files, and `tools/contrast.py` in `lint`. The check: `use
-   daylight` and a reload repaint a toolkit window's face in daylight's
-   `raised`. Small.
+2. **Schemes. Done, September 2026.** `colour` lines, read into a
+   `libpal.Colours` table by both readers. The job roles, as other names
+   for the toolkit's roles, and `focus`, `warn`, `ok` and `fault` new. The
+   four scheme files, and `tools/contrast.py` in `lint`. The study's
+   violet fails 4.5 as link text on `raised`, so neon's `link` is a lighter
+   violet, `b28aff`.
+
+   The checks: `use neon` makes the demo's face neon's
+   `raised` and the front bar neon's `metal.hi`. `use daylight` makes them
+   daylight's. A personal `colour` line names a colour a role takes.
 3. **`sys/libraster`, and the toolkit on its store.** The operations of
    section 4, the toolkit painting its window's store, and the per-face
    atlas removed. `tests/raster` checks each operation against known

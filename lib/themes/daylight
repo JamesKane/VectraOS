@@ -1,0 +1,43 @@
+# daylight: the light scheme: lilac panels, dark text, deep signal colours.
+# A scheme from docs/CHROME.md section 3: the colours by name, then the
+# roles by job. `use daylight` in $home/lib/theme picks it.
+
+colour void      c6c0da
+colour panel     e3dfef
+colour raised    f1eef8
+colour well      d3cee5
+colour edge      3a3358
+colour text      17122e
+colour dim       4b4470
+colour mag       b0008f
+colour cyan      006b7a
+colour amber     8a5a00
+colour green     1c7a00
+colour red       b3002d
+colour violet    5b2fc2
+colour metal.hi  f6f4fb
+colour metal.lo  bab3d4
+colour bevel.hi  fefdfe
+colour bevel.lo  8f88a7
+colour lcd.bg    c3cfa2
+colour lcd.fg    1c2410
+
+panel       panel           # a window's body
+raised      raised          # a control's face
+face.lit    bevel.hi        # its top-left edge
+face.shade  bevel.lo        # its bottom-right edge
+text        text
+dim         dim
+accent      mag             # the selection, the default button
+focus       cyan            # the active window, the focus ring
+warn        amber
+ok          green
+fault       red
+link        violet
+bar         metal.hi        # the title bar's metal
+bar.lit     bevel.hi
+bar.shade   metal.lo
+plinth.lit  bevel.hi        # the frame's raised border
+plinth.shade bevel.lo
+desk daylight dots void raised 24
+desk.ground daylight
