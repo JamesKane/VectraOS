@@ -15,10 +15,10 @@ its parent's inset, which is what proves the walk recurses.
 package muitest
 
 import "vsys:abi"
-import "vsys:libdraw"
 import "vsys:libfont"
 import "vsys:libmui"
 import "vsys:libpal"
+import "vsys:libraster"
 import "vsys:libuser"
 
 fail :: proc "contextless" (what: string) -> ! {
@@ -38,104 +38,38 @@ want :: proc "contextless" (cond: bool, what: string) {
 	}
 }
 
-// The buffer paint writes its command stream into, and the atlas paint blits
-// labels from. The atlas is `cmd/window`'s, six strips of the 8x16 font.
-paint_buf: [4096]u8
+// The canvas a paint goes into: the tree's pixels, read back by the checks.
+CW :: 320
+CH :: 200
+cpix: [CW * CH]u32
 
-ATLAS :: libdraw.Atlas {
-	first_image_id = 1,
-	per_image      = 16,
-	cell_w         = libfont.FONT_WIDTH,
-	cell_h         = libfont.FONT_HEIGHT,
-	n              = 1,
-	ranges         = {0 = {lo = libfont.FONT_FIRST, hi = libfont.FONT_LAST, offset = 0}},
+// paint_tree paints a laid-out tree into a fresh canvas, cleared to a colour
+// no theme uses, so every pixel the checks count was the painter's.
+paint_tree :: proc "contextless" (root: ^libmui.Object, t: ^libmui.Theme) -> libraster.Canvas {
+	for i in 0 ..< len(cpix) {
+		cpix[i] = 0x123456
+	}
+	c := libraster.canvas(raw_data(cpix[:]), CW, CW, CH)
+	libmui.paint(&c, root, t)
+	return c
 }
 
-// has_fill reports whether the command stream in `b[:end]` holds a fill with
-// this colour. A fill's fields are id, x, y, w, h, colour, so the colour is
-// the sixth word after the header.
-has_fill :: proc "contextless" (b: []u8, end: int, color: u32) -> bool #no_bounds_check {
-	at := 0
-	for at + libdraw.HEADER <= end {
-		size := int(libdraw.get_u16(b, at))
-		if size < libdraw.HEADER {
-			break
-		}
-		verb := b[at + 2]
-		if verb == libdraw.FILL {
-			c := libdraw.get_u32(b, at + libdraw.HEADER + 20)
-			if c == color {
-				return true
+// count_in counts the pixels of one colour in a rectangle of the canvas.
+count_in :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, w: int, h: int, color: u32) -> int {
+	n := 0
+	for row in max(y, 0) ..< min(y + h, c.h) {
+		for col in max(x, 0) ..< min(x + w, c.w) {
+			if libraster.get(c, col, row) == color {
+				n += 1
 			}
 		}
-		at += size
-	}
-	return false
-}
-
-// count_verb counts commands of one kind in the stream.
-count_verb :: proc "contextless" (b: []u8, end: int, verb: u8) -> int #no_bounds_check {
-	n := 0
-	at := 0
-	for at + libdraw.HEADER <= end {
-		size := int(libdraw.get_u16(b, at))
-		if size < libdraw.HEADER {
-			break
-		}
-		if b[at + 2] == verb {
-			n += 1
-		}
-		at += size
 	}
 	return n
 }
 
-// A sink that records the atlas batches into a buffer the test reads back.
-rec_buf: [140000]u8
-rec_len: int
-scratch: [1000]u8
-
-rec_write :: proc "contextless" (user: rawptr, data: []u8) -> bool #no_bounds_check {
-	n := copy(rec_buf[rec_len:], data)
-	rec_len += n
-	return n == len(data)
-}
-
-rec_sink :: proc "contextless" () -> libmui.Sink {
-	rec_len = 0
-	return libmui.Sink{write = rec_write, user = nil}
-}
-
-drop_write :: proc "contextless" (user: rawptr, data: []u8) -> bool {
-	_, _ = user, data
-	return true
-}
-
-// drop_sink takes every batch and keeps none, for a bake whose stream
-// the check does not read.
-drop_sink :: proc "contextless" () -> libmui.Sink {
-	return libmui.Sink{write = drop_write, user = nil}
-}
-
-// blit_from_range reports whether any blit in the stream reads its source from
-// an image id in [lo, hi]. A blit's fields are dst, dx, dy, src, so src is the
-// fourth word after the header.
-blit_from_range :: proc "contextless" (b: []u8, end: int, lo: u32, hi: u32) -> bool #no_bounds_check {
-	at := 0
-	for at + libdraw.HEADER <= end {
-		size := int(libdraw.get_u16(b, at))
-		if size < libdraw.HEADER {
-			break
-		}
-		if b[at + 2] == libdraw.BLIT {
-			src := libdraw.get_u32(b, at + libdraw.HEADER + 12)
-			if src >= lo && src <= hi {
-				return true
-			}
-		}
-		at += size
-	}
-	return false
+// has_colour reports whether one colour is anywhere on the canvas.
+has_colour :: proc "contextless" (c: ^libraster.Canvas, color: u32) -> bool {
+	return count_in(c, 0, 0, c.w, c.h, color) > 0
 }
 
 @(export, link_name = "_start")
@@ -226,8 +160,8 @@ start :: proc "c" (block: ^abi.Args) {
 
 	// -- The painter draws the tree it laid out, in the theme's colours -------
 	//
-	// A painted button leaves a ground fill behind it, a face fill on it, and
-	// a blit for each letter of its label.
+	// A painted button leaves the ground behind it, a face on it, and its
+	// label's letters in the ink on the face.
 	{
 		t2 := libmui.default_theme
 		col := libmui.group(false)
@@ -236,14 +170,11 @@ start :: proc "c" (block: ^abi.Args) {
 		libmui.fit(col, &t2)
 		libmui.lay(col, 0, 0, 120, 60, &t2)
 
-		f2: libmui.Fonts
-		libmui.font_init(&f2, 1)
-		want(libmui.font_prepare(col, &f2, scratch[:], rec_sink(), &t2), "the atlases baked")
-		end := libmui.paint(paint_buf[:], 0, col, 1, &f2, &t2)
-		want(end > 0, "the paint fit the buffer")
-		want(has_fill(paint_buf[:], end, libpal.xrgb(t2.ground)), "the window ground was filled")
-		want(has_fill(paint_buf[:], end, libpal.xrgb(t2.face)), "the button face was filled")
-		want(count_verb(paint_buf[:], end, libdraw.BLIT) >= 2, "the label was blitted")
+		c := paint_tree(col, &t2)
+		want(has_colour(&c, libpal.xrgb(t2.ground)), "the window ground was painted")
+		want(count_in(&c, go.x, go.y, go.w, go.h, libpal.xrgb(t2.face)) > 0, "the button face was painted")
+		want(count_in(&c, go.x, go.y, go.w, go.h, libpal.xrgb(t2.ink)) > 0, "the label's letters are on the face, in the ink")
+		want(count_in(&c, 120, 0, CW - 120, CH, 0x123456) == (CW - 120) * CH, "and nothing past the window's area")
 	}
 
 	// -- A theme's face line changes every button's fill ----------------------
@@ -259,12 +190,9 @@ start :: proc "c" (block: ^abi.Args) {
 		libmui.fit(col, &t3)
 		libmui.lay(col, 0, 0, 120, 60, &t3)
 
-		f3: libmui.Fonts
-		libmui.font_init(&f3, 1)
-		want(libmui.font_prepare(col, &f3, scratch[:], rec_sink(), &t3), "the copper atlas baked")
-		end := libmui.paint(paint_buf[:], 0, col, 1, &f3, &t3)
-		want(has_fill(paint_buf[:], end, libpal.xrgb(libpal.COPPER)), "the copper face was filled")
-		want(!has_fill(paint_buf[:], end, libpal.xrgb(libpal.MAGNESIUM)), "no magnesium face was left")
+		c := paint_tree(col, &t3)
+		want(has_colour(&c, libpal.xrgb(libpal.COPPER)), "the copper face was painted")
+		want(!has_colour(&c, libpal.xrgb(libpal.MAGNESIUM)), "no magnesium face was left")
 	}
 
 	// -- A click finds the gadget under it, through labels and groups ---------
@@ -313,34 +241,27 @@ start :: proc "c" (block: ^abi.Args) {
 		want(libmui.hit(req.root, req.root.first.x + 2, req.root.first.y + 2) == nil, "the message text takes no click")
 	}
 
-	// -- One atlas per colour a label is drawn in, baked once ----------------
+	// -- A label draws on any ground, with no atlas ---------------------------
 	//
-	// A text label wants ink on the ground and a button label ink on the face,
-	// two colours, so two atlases are baked. A second button of the same face
-	// reuses the first, so the count stays two. The button's label then blits
-	// from the face atlas, ids seven through twelve, not the ground's one to
-	// six.
+	// A text label's letters lie on the ground and a button's on its face, in
+	// the one ink, with no glyphs baked per colour pair: a label is its bits
+	// laid over whatever is under it. A face of any colour takes one.
 	{
 		tf := libmui.default_theme
+		tf.face = libpal.RGB{0x2a, 0x21, 0x50}
 		col := libmui.group(false)
-		libmui.add(col, libmui.text("File"))
-		libmui.add(col, libmui.button("Open"))
-		libmui.add(col, libmui.button("Save"))
+		file := libmui.text("File")
+		open := libmui.button("Open")
+		libmui.add(col, file)
+		libmui.add(col, open)
 		libmui.fit(col, &tf)
 		libmui.lay(col, 0, 0, 200, 120, &tf)
 
-		fonts: libmui.Fonts
-		libmui.font_init(&fonts, 1)
-		sink := rec_sink()
-		want(libmui.font_prepare(col, &fonts, scratch[:], sink, &tf), "the atlases baked")
-		want(fonts.n == 2, "two colours made two atlases")
-		want(count_verb(rec_buf[:], rec_len, libdraw.ALLOC) == 2 * libmui.STRIPS, "each atlas allocated its strips")
-
-		end := libmui.paint(paint_buf[:], 0, col, 1, &fonts, &tf)
-		want(end > 0, "the paint fit the buffer")
-		// The ground atlas took ids 1..6, the face atlas 7..12.
-		want(blit_from_range(paint_buf[:], end, 1, 6), "a label blit from the ground atlas")
-		want(blit_from_range(paint_buf[:], end, 7, 12), "a button label blit from the face atlas")
+		c := paint_tree(col, &tf)
+		ink := libpal.xrgb(tf.ink)
+		want(count_in(&c, file.x, file.y, file.w, file.h, ink) > 0, "a text label's letters are on the ground")
+		want(count_in(&c, open.x, open.y, open.w, open.h, ink) > 0, "and a button's on a face of any colour")
+		want(count_in(&c, open.x, open.y, open.w, open.h, libpal.xrgb(tf.face)) > 0, "with the face round them")
 	}
 
 	// -- The theme is read from a file, a role at a time ----------------------
@@ -365,31 +286,28 @@ start :: proc "c" (block: ^abi.Args) {
 		want(th.face == libmui.default_theme.face, "an empty file is the chassis")
 	}
 
-	// -- A baked face carries the font past ASCII -----------------------------
+	// -- A label carries the font past ASCII ---------------------------------
 	//
-	// Every test above baked with the past-ASCII font unopened, which is the
-	// ASCII-only path a `Fonts` took before this milestone. This opens
-	// `/lib/font` the way `window_open` does and bakes one face: it names more
-	// than the one ASCII range, locates a Latin-1 letter and refuses a rune no
-	// range holds, and allocates more strips than ASCII alone would -- the
-	// subfonts uploaded in this ink over this background.
+	// Every test above drew with the past-ASCII font unopened, the ASCII-only
+	// path. This opens `/lib/font` the way `window_open` does: a Latin-1
+	// letter now has a glyph and draws, and a rune no range holds does not.
 	{
 		libmui.font_load()
 		want(libmui.text_font.ready, "the past-ASCII font opens from /lib/font")
+		cell: [libfont.FONT_HEIGHT]u8
+		_, e_ok := libfont.loader_glyph(&libmui.text_font, 'é', cell[:])
+		want(e_ok, "a Latin-1 letter has a glyph")
+		_, cjk := libfont.loader_glyph(&libmui.text_font, rune(0x4E00), cell[:])
+		want(!cjk, "a rune no range holds does not")
 
-		fonts: libmui.Fonts
-		libmui.font_init(&fonts, 1)
-		sink := rec_sink()
-		a, ok := libmui.font_for(&fonts, libpal.AMBER, libpal.SLATE, scratch[:], sink)
-		want(ok, "a face bakes with the font loaded")
-		want(a.n >= 2, "the atlas names ASCII and at least one range past it")
-
-		_, _, e_ok := libdraw.atlas_locate(a, 'é')
-		want(e_ok, "a Latin-1 letter is in the atlas")
-		_, _, cjk := libdraw.atlas_locate(a, rune(0x4E00))
-		want(!cjk, "a rune no range holds is not")
-
-		want(count_verb(rec_buf[:], rec_len, libdraw.ALLOC) > libmui.STRIPS, "it allocated more strips than ASCII alone")
+		tl := libmui.default_theme
+		col := libmui.group(false)
+		word := libmui.text("é")
+		libmui.add(col, word)
+		libmui.fit(col, &tl)
+		libmui.lay(col, 0, 0, 100, 40, &tl)
+		c := paint_tree(col, &tl)
+		want(count_in(&c, word.x, word.y, libmui.FONT_W, libmui.FONT_H, libpal.xrgb(tl.ink)) > 0, "and a label of it draws its letter")
 	}
 
 	// -- A list is rows in a well, one on a bar of the face ------------------
@@ -419,16 +337,13 @@ start :: proc "c" (block: ^abi.Args) {
 		main_check(libmui.list_row_at(l, l.y + tl.well + 2 * libmui.FONT_H + 3, &tl), 4, "the third drawn row is row four")
 		main_check(libmui.list_row_at(l, l.y + l.h - 1, &tl), -1, "past the last drawn row is no row")
 
-		// Two full-font faces are more strips than `rec_buf` holds, and the
-		// stream is not read here, so the strips go to a sink that drops them.
-		fl: libmui.Fonts
-		libmui.font_init(&fl, 1)
-		want(libmui.font_prepare(col, &fl, scratch[:], drop_sink(), &tl), "the list's two atlases baked")
-		end := libmui.paint(paint_buf[:], 0, col, 1, &fl, &tl)
-		want(end > 0, "the list's paint fit the buffer")
-		want(has_fill(paint_buf[:], end, libpal.xrgb(tl.face)), "the selected row sits on a bar of the face")
-		// "two", "three", "four", "five" drawn: sixteen glyphs.
-		main_check(count_verb(paint_buf[:], end, libdraw.BLIT), 16, "the four drawn rows are blitted, glyph by glyph")
+		c := paint_tree(col, &tl)
+		sel_y := l.y + tl.well + 2 * libmui.FONT_H
+		want(count_in(&c, l.x + tl.well, sel_y, l.w - 2 * tl.well, libmui.FONT_H, libpal.xrgb(tl.face)) > 0, "the selected row sits on a bar of the face")
+		// "two", "three", "four", "five" drawn: ink on each of the four rows.
+		for k in 0 ..< 4 {
+			want(count_in(&c, l.x + tl.well, l.y + tl.well + k * libmui.FONT_H, l.w - 2 * tl.well, libmui.FONT_H, libpal.xrgb(tl.ink)) > 0, "each of the four drawn rows has its letters")
+		}
 		want(libmui.hit(col, l.x + 10, l.y + 10) == l, "a click in the well lands on the list")
 	}
 
@@ -457,14 +372,10 @@ start :: proc "c" (block: ^abi.Args) {
 		main_check(libmui.icons_cell_at(g, g.x + ti.well + libmui.ICON_W + 5, g.y + ti.well + libmui.ICON_H + 5, &ti), -1, "and a cell past the last icon is no icon")
 		g.top = 0
 		g.sel = 4
-		fi: libmui.Fonts
-		libmui.font_init(&fi, 1)
-		want(libmui.font_prepare(col, &fi, scratch[:], drop_sink(), &ti), "the grid's two atlases baked")
-		end := libmui.paint(paint_buf[:], 0, col, 1, &fi, &ti)
-		want(end > 0, "the grid's paint fit the buffer")
-		want(has_fill(paint_buf[:], end, libpal.xrgb(libpal.COPPER)), "a drawer wears a copper bar")
-		want(has_fill(paint_buf[:], end, libpal.xrgb(libpal.PHOSPHOR)), "a tool wears a phosphor lamp")
-		want(has_fill(paint_buf[:], end, libpal.xrgb(ti.face)), "and the selected name sits on a bar of the face")
+		c := paint_tree(col, &ti)
+		want(has_colour(&c, libpal.xrgb(libpal.COPPER)), "a drawer wears a copper bar")
+		want(has_colour(&c, libpal.xrgb(libpal.PHOSPHOR)), "a tool wears a phosphor lamp")
+		want(has_colour(&c, libpal.xrgb(ti.face)), "and the selected name sits on a bar of the face")
 		want(libmui.hit(col, g.x + 10, g.y + 10) == g, "a click in the well lands on the grid")
 	}
 

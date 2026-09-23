@@ -301,6 +301,8 @@ rfork_proc :: proc(parent: ^Process, frame: ^arch.Trap_Frame, flags: u64) -> i64
 		unload(child)
 		return -i64(vectra9.ENOMEM)
 	}
+	// A note its group got while it was being made.
+	note_born(child)
 	child.kstack_lo = uintptr(raw_data(child.thread.stack))
 	child.kstack_hi = child.thread.kstack_top
 

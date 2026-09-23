@@ -150,6 +150,11 @@ Proc :: struct {
 procs: ^Proc
 procs_lock: libuser.Spin
 
+// Set by `threadexitsall` under `procs_lock`: the program is ending, and a
+// proc made after this would outlive it. `proccreate` refuses once it is set.
+@(private)
+procs_ending: bool
+
 // The private word: see the file comment. Its address is the same in every
 // proc and its contents are each proc's own.
 slot: ^^Proc
@@ -309,11 +314,23 @@ proccreate :: proc "contextless" (fn: Thread_Fn, arg: rawptr, stacksize := STACK
 	if p.detached {
 		flags |= abi.RFNOWAIT
 	}
-	pid := vectra_proc_fork(abi.SYS_RFORK, flags, stack_top(p.stack), proc_entry, p)
-	if pid < 0 {
-		return pid
+	/*
+	The fork and the pid under `procs_lock`, so `threadexitsall` never walks
+	the list while a proc is half made. It notes every proc by its pid, and a
+	proc whose pid was still zero was passed by: a program ended while
+	another of its procs made an io proc, and the io proc stood on after it,
+	waiting on a parent that was gone. `docs/CHROME.md` brick 3 met it.
+	*/
+	libuser.lock(&procs_lock)
+	if procs_ending {
+		libuser.unlock(&procs_lock)
+		return -1
 	}
-	p.pid = u64(pid)
+	pid := vectra_proc_fork(abi.SYS_RFORK, flags, stack_top(p.stack), proc_entry, p)
+	if pid >= 0 {
+		p.pid = u64(pid)
+	}
+	libuser.unlock(&procs_lock)
 	return pid
 }
 
@@ -502,6 +519,7 @@ program hears `status` from a machine that holds nothing of it any more.
 threadexitsall :: proc "contextless" (status: string) -> ! {
 	me := current()
 	libuser.lock(&procs_lock)
+	procs_ending = true
 	for q := procs; q != nil; q = q.next {
 		if q != me && q.pid != 0 {
 			_ = libuser.note(q.pid, "threadexitsall")

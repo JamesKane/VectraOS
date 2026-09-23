@@ -590,11 +590,44 @@ look.
    The checks: `use neon` makes the demo's face neon's
    `raised` and the front bar neon's `metal.hi`. `use daylight` makes them
    daylight's. A personal `colour` line names a colour a role takes.
-3. **`sys/libraster`, and the toolkit on its store.** The operations of
-   section 4, the toolkit painting its window's store, and the per-face
-   atlas removed. `tests/raster` checks each operation against known
-   pixels on the host and on the target. The check: the demo's button face
-   is a gradient, read as two different rows. Medium: about 1,500 lines.
+3. **`sys/libraster`, and the toolkit on its store. Done, September
+   2026.** The operations of section 4 are `sys/libraster`, and
+   `tests/raster` checks each against pixels worked out by hand. The
+   toolkit paints its window's store and writes `store` to show it. A
+   label is its glyph's bits laid in the ink, so the per-face atlas and
+   its images are gone.
+
+   The toolkit reads the store's line before each
+   paint, which also gives it a size the server set, a thing it never
+   heard before. A remote window paints a copy and sends the rows that
+   changed. `tests/mui` reads its checks off a canvas now. The faces stay
+   flat until brick 5 gives them their materials.
+
+   The brick found five things, each fixed where it lives:
+
+   - **A toolkit window holds five descriptors**, and the store is the
+     fifth. Workbench with a drawer open passed thirty-two, so `MAX_FDS`
+     is sixty-four.
+   - **A shared run walled in the heap.** `map_reserve` gave a store the
+     first hole above the mapping base, just past a heap still at its
+     first 64 KiB, and `segbrk` could not grow the heap. Workbench could
+     not make one more io proc and ended. Shared runs map from
+     `SHARED_BASE`, four gigabytes, now.
+   - **A theme reload painted over the client.** The server's re-chrome
+     laid the well's face over a client area the client had already
+     repainted in its own process. `window_chrome` keeps the client area
+     for a reload and a reframe.
+   - **A proc made as its program ended stood on.** `threadexitsall`
+     notes each proc by its pid, and passed one whose pid was not yet
+     known. `proccreate` forks under `procs_lock` and refuses once the
+     program is ending. The kernel's `notepg` passed a child still being
+     forked the same way, and a note now waits in its record,
+     `note_born`.
+   - **A reload before the watcher's first read was lost.** The theme
+     watcher took its first answer as the baseline. A reload between the
+     window's first theme read and that answer moved the number past a
+     look nobody loaded. Faster painting opened the gap. The first answer
+     loads the files too.
 4. **The faces.** `gensubfont.py` reading OFL files, the 8-bit subfont, the
    four faces checked in, and the toolkit's tracking and case. The check:
    a label's pixels include a value between its ink and its ground, which

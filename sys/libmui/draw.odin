@@ -1,69 +1,57 @@
 /*
-draw -- a laid-out tree becomes a stream of `sys/libdraw` commands.
+draw -- a laid-out tree becomes pixels.
 
 After `fit` and `lay` give every node a rectangle, `paint` walks the tree and
-writes the commands that draw it. A fill sits behind the gadgets. Each raised
-control has a face and a bevel, and each label a run of glyph blits. The commands go into a caller's buffer in `docs/DRAW.md`'s wire format,
-the same one `cmd/window` pumps down `/srv/draw`. Nothing here opens a file or
-touches a pixel, so `tests/mui` reads the stream back and checks it.
+paints it into a `sys/libraster` canvas. The canvas is the window's store, which
+the draw server composites straight from, `docs/CHROME.md` brick 3. A fill sits behind
+the gadgets. Each raised control has a face and a bevel, and each label is its
+glyphs laid in the ink over whatever is under them. Nothing here opens a file,
+so `tests/mui` paints into a canvas of its own and reads the pixels back.
+
+**The labels need no atlas.** The draw server's `blit` is opaque, so the toolkit
+once baked its glyphs per ink and background and blitted them. A label on a
+gradient had no one background to bake. A glyph laid into the store is a set of
+pixels over what is already there, which any ground takes. That is the per-face
+atlas gone, and the image pool with it.
 
 The look is the theme's. A button's face is `Theme.face`, its highlight and
 shadow the two edges beside it, and its label the ink. A theme file that sets
-`face` to copper changes every button's fill, which is the whole of what a
-face does. The bevel lights the top and left edges and darkens the bottom and
-right, the light fixed at the top-left as the chrome has it.
+`face` to copper changes every button's fill, which is the whole of what a face
+does. The bevel lights the top and left edges and darkens the bottom and right. The
+light is at the top left, as the chrome has it.
 */
 package libmui
 
 import "vsys:libdraw"
+import "vsys:libfont"
 import "vsys:libpal"
+import "vsys:libraster"
+
+// px is a palette colour as a pixel word.
+@(private = "file")
+px :: proc "contextless" (c: libpal.RGB) -> u32 {
+	return libraster.rgb(c)
+}
 
 /*
-paint writes the commands to draw `root` and its descendants onto image `dst`,
-starting at offset `at` in buffer `b`. Labels blit from the atlases `f` holds,
-so a caller runs `font_prepare` first to bake them. It returns the new offset,
-or a negative number if the buffer filled. For the toolkit's own windows one
-batch holds a whole tree, so the simple form is one call.
+paint draws `root` and its descendants into `c`, whose (0, 0) is the client
+area's corner. The window's ground goes down once, behind everything the tree
+draws on it.
 */
-paint :: proc "contextless" (
-	b: []u8,
-	at: int,
-	root: ^Object,
-	dst: u32,
-	f: ^Fonts,
-	t: ^Theme,
-) -> int {
+paint :: proc "contextless" (c: ^libraster.Canvas, root: ^Object, t: ^Theme) {
 	if root == nil {
-		return at
+		return
 	}
-	// The window ground, once, behind everything the tree draws on it.
-	nat := libdraw.put_fill(
-		b,
-		at,
-		dst,
-		u32(root.x),
-		u32(root.y),
-		u32(root.w),
-		u32(root.h),
-		libpal.xrgb(t.ground),
-	)
-	return paint_node(b, nat, root, dst, f, t)
+	libraster.fill(c, root.x, root.y, root.w, root.h, px(t.ground))
+	paint_node(c, root, t)
 }
 
 // paint_node draws one node and then its children. A group draws only its
 // children, so a container leaves no mark of its own.
-paint_node :: proc "contextless" (
-	b: []u8,
-	at: int,
-	o: ^Object,
-	dst: u32,
-	f: ^Fonts,
-	t: ^Theme,
-) -> int {
-	if o == nil || at < 0 {
-		return at
+paint_node :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	if o == nil {
+		return
 	}
-	nat := at
 	switch o.class {
 	case .Space:
 	// Glue draws nothing. The ground behind it already reads as blank.
@@ -72,94 +60,54 @@ paint_node :: proc "contextless" (
 	case .Text:
 		// A label draws as written: an underscore in it is a character,
 		// not a hotkey mark, which only a button's label carries.
-		if a, ok := font_get(f, t.ink, t.ground); ok {
-			nat, _, _ = libdraw.put_text(b, nat, a, dst, u32(o.x), u32(o.y), o.label)
-		}
+		glyphs(c, o.x, o.y, o.label, px(t.ink))
 	case .Button:
-		nat = raised(b, nat, o, dst, t)
-		if a, ok := font_get(f, t.ink, t.face); ok {
-			nat = label_centered(b, nat, o, dst, a, t)
-		}
+		raised(c, o, t)
+		label_centered(c, o, t)
 	case .Checkmark:
-		nat = raised(b, nat, o, dst, t)
+		raised(c, o, t)
 		if o.on {
 			// A lit lamp is the ink shrunk inside the bevel.
 			m := t.bevel + 3
-			nat = libdraw.put_fill(
-				b,
-				nat,
-				dst,
-				u32(o.x + m),
-				u32(o.y + m),
-				u32(o.w - 2 * m),
-				u32(o.h - 2 * m),
-				libpal.xrgb(t.ink),
-			)
+			libraster.fill(c, o.x + m, o.y + m, o.w - 2 * m, o.h - 2 * m, px(t.ink))
 		}
 	case .String:
-		// A recessed well: the ground, sunk, with a dark edge over a lit one.
-		nat = libdraw.put_fill(b, nat, dst, u32(o.x), u32(o.y), u32(o.w), u32(o.h), libpal.xrgb(t.shade))
-		nat = libdraw.put_fill(
-			b,
-			nat,
-			dst,
-			u32(o.x + t.bevel),
-			u32(o.y + t.bevel),
-			u32(o.w - 2 * t.bevel),
-			u32(o.h - 2 * t.bevel),
-			libpal.xrgb(t.ground),
-		)
-		if a, ok := font_get(f, t.ink, t.ground); ok && o.edit_n > 0 {
+		// A recessed well: the ground, sunk, with a dark edge round it.
+		libraster.fill(c, o.x, o.y, o.w, o.h, px(t.shade))
+		libraster.fill(c, o.x + t.bevel, o.y + t.bevel, o.w - 2 * t.bevel, o.h - 2 * t.bevel, px(t.ground))
+		if o.edit_n > 0 {
 			cells := (o.w - 2 * t.well) / FONT_W
-			shown := clip_cells(field_text(o), cells)
-			nat, _, _ = libdraw.put_text(b, nat, a, dst, u32(o.x + t.well), u32(o.y + t.well), shown)
+			glyphs(c, o.x + t.well, o.y + t.well, clip_cells(field_text(o), cells), px(t.ink))
 		}
 	case .List:
-		nat = list_rows(b, nat, o, dst, f, t)
+		list_rows(c, o, t)
 	case .Icons:
-		nat = icon_cells(b, nat, o, dst, f, t)
+		icon_cells(c, o, t)
 	case .Picture:
-		// The well alone. The pixels go straight to the window after the
-		// tree is painted, since they outgrow any command buffer.
-		nat = libdraw.put_fill(b, nat, dst, u32(o.x), u32(o.y), u32(o.w), u32(o.h), libpal.xrgb(t.shade))
-		nat = libdraw.put_fill(b, nat, dst, u32(o.x + t.well), u32(o.y + t.well), u32(o.w - 2 * t.well), u32(o.h - 2 * t.well), libpal.xrgb(t.ground))
+		well(c, o.x, o.y, o.w, o.h, t)
+		picture(c, o, t)
 	}
-	for c := o.first; c != nil; c = c.next {
-		nat = paint_node(b, nat, c, dst, f, t)
+	for k := o.first; k != nil; k = k.next {
+		paint_node(c, k, t)
 	}
-	return nat
+}
+
+// well is a sunk field: the shade as its edge, the ground inside.
+@(private = "file")
+well :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, w: int, h: int, t: ^Theme) {
+	libraster.fill(c, x, y, w, h, px(t.shade))
+	libraster.fill(c, x + t.well, y + t.well, w - 2 * t.well, h - 2 * t.well, px(t.ground))
 }
 
 /*
 list_rows draws a list: a well like a string gadget's, then the rows from
 `top` down as far as the well holds. Each is clipped to the well's width. The
-selected row sits on a bar of the face colour, in the ink baked for that
-face, so it reads as the one pressed. A row past the end draws nothing, and
-the well behind it already reads as blank.
+selected row sits on a bar of the face colour, so it reads as the one pressed.
+A row past the end draws nothing, and the well behind it already reads as
+blank. The pictures standing on rows go down last, cut at the well's edge.
 */
-list_rows :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fonts, t: ^Theme) -> int {
-	nat := libdraw.put_fill(b, at, dst, u32(o.x), u32(o.y), u32(o.w), u32(o.h), libpal.xrgb(t.shade))
-	nat = libdraw.put_fill(
-		b,
-		nat,
-		dst,
-		u32(o.x + t.well),
-		u32(o.y + t.well),
-		u32(o.w - 2 * t.well),
-		u32(o.h - 2 * t.well),
-		libpal.xrgb(t.ground),
-	)
-	plain, pok := font_get(f, t.ink, t.ground)
-	lit, lok := font_get(f, t.ink, t.face)
-	if !pok {
-		return nat
-	}
-	// The styled inks, when the list has styles: absent, a row falls back
-	// to plain.
-	hot, hok := font_get(f, t.hot, t.ground)
-	link, kok := font_get(f, t.link, t.ground)
-	dim, dok := font_get(f, t.dim, t.ground)
-	field, fok := font_get(f, t.ink, t.shade)
+list_rows :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	well(c, o.x, o.y, o.w, o.h, t)
 	cells := (o.w - 2 * t.well) / FONT_W
 	n := list_visible(o, t)
 	x := o.x + t.well
@@ -170,56 +118,104 @@ list_rows :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fon
 		}
 		y := o.y + t.well + k * FONT_H
 		style := row_style(o, row)
-		atlas := plain
+		ink := t.ink
 		switch style {
-		case STYLE_HEADING:
-			if hok {
-				atlas = hot
-			}
+		case STYLE_HEADING, STYLE_BUTTON:
+			ink = t.hot
 		case STYLE_LINK:
-			if kok {
-				atlas = link
-			}
+			ink = t.link
 		case STYLE_QUOTE:
-			if dok {
-				atlas = dim
-			}
-		case STYLE_BUTTON:
-			if hok {
-				atlas = hot
-			}
+			ink = t.dim
 		case STYLE_FIELD:
 			// A recessed bar, the way a string gadget's well reads.
-			if fok {
-				nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y), u32(o.w - 2 * t.well), u32(FONT_H), libpal.xrgb(t.shade))
-				atlas = field
-			}
+			libraster.fill(c, x, y, o.w - 2 * t.well, FONT_H, px(t.shade))
 		}
-		if row == o.sel && lok {
-			nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y), u32(o.w - 2 * t.well), u32(FONT_H), libpal.xrgb(t.face))
-			atlas = lit
+		if row == o.sel {
+			libraster.fill(c, x, y, o.w - 2 * t.well, FONT_H, px(t.face))
+			ink = t.ink
 		}
 		if style == STYLE_RULE {
 			// A line across the well, at the row's middle.
-			nat = libdraw.put_fill(b, nat, dst, u32(x + FONT_W), u32(y + FONT_H / 2), u32(max(o.w - 2 * t.well - 2 * FONT_W, 1)), 1, libpal.xrgb(t.face))
+			libraster.fill(c, x + FONT_W, y + FONT_H / 2, max(o.w - 2 * t.well - 2 * FONT_W, 1), 1, px(t.face))
 			continue
 		}
 		if style == STYLE_PICTURE {
-			// The picture lands after the tree's paint. The row is its stand.
+			// The picture lands below. The row is its stand.
 			continue
 		}
-		shown := clip_cells(o.rows[row], cells)
-		next, _, _ := libdraw.put_text(b, nat, atlas, dst, u32(x), u32(y), shown)
-		if next < 0 {
-			return next
-		}
-		nat = next
+		glyphs(c, x, y, clip_cells(o.rows[row], cells), px(ink))
 	}
-	return nat
+	if o.pics != nil {
+		list_pictures(c, o, t)
+	}
 }
 
-// clip_cells answers the longest prefix of `s` that draws in `cells` cells,
-// counting a multi-byte rune as one.
+/*
+list_pictures lays the pictures standing on a list's rows. Each sits under its
+caption row, a cell in from the well's left, shrunk to the well's width if
+wider. A picture half scrolled off is cut at the well's edge, the way its rows
+are. It paints through a canvas no taller than the rows shown.
+*/
+@(private = "file")
+list_pictures :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	n := list_visible(o, t)
+	top_y := o.y + t.well
+	avail := o.w - 2 * t.well - 2 * FONT_W
+	if avail <= 0 || n <= 0 || top_y < 0 || top_y >= c.h {
+		return
+	}
+	shown := sub_canvas(c, 0, top_y, c.w, min(n * FONT_H, c.h - top_y))
+	for &p in o.pics {
+		if p.pix == nil || p.pw <= 0 || p.ph <= 0 || len(p.pix) < p.pw * p.ph * 4 {
+			continue
+		}
+		if p.row + p.tall <= o.top || p.row >= o.top + n {
+			continue
+		}
+		dw := min(p.pw, avail)
+		dh := max(p.ph * dw / p.pw, 1)
+		dx := o.x + t.well + FONT_W
+		dy := (p.row - o.top) * FONT_H
+		libraster.copy_scaled(&shown, p.pix, p.pw, p.ph, dx, dy, dw, dh)
+	}
+}
+
+/*
+picture lays a picture gadget's pixels in its well. A picture larger than the
+well is shrunk to fit it, its shape kept, by taking one source pixel per
+destination pixel. A smaller one is drawn as it is, centred. Alpha is blended
+over the well's ground.
+*/
+@(private = "file")
+picture :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	if o.pix == nil || o.pw <= 0 || o.ph <= 0 || len(o.pix) < o.pw * o.ph * 4 {
+		return
+	}
+	ax, ay := o.x + t.well, o.y + t.well
+	aw, ah := o.w - 2 * t.well, o.h - 2 * t.well
+	if aw <= 0 || ah <= 0 {
+		return
+	}
+	dw, dh := o.pw, o.ph
+	if dw > aw || dh > ah {
+		if dw * ah > dh * aw {
+			dh = max(o.ph * aw / o.pw, 1)
+			dw = aw
+		} else {
+			dw = max(o.pw * ah / o.ph, 1)
+			dh = ah
+		}
+	}
+	libraster.copy_scaled(c, o.pix, o.pw, o.ph, ax + (aw - dw) / 2, ay + (ah - dh) / 2, dw, dh)
+}
+
+// sub_canvas is the part of `c` at (x, y), `w` by `h`, as a canvas of its own.
+// What paints through it is cut at its edges.
+@(private = "file")
+sub_canvas :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, w: int, h: int) -> libraster.Canvas #no_bounds_check {
+	return libraster.canvas(c.pix[y * c.stride + x:], c.stride, max(w, 0), max(h, 0))
+}
+
 /*
 icon_cells draws an icon grid. First the well, then a cell per name from
 the top row down as far as the well holds. Each cell is a picture of its
@@ -228,23 +224,8 @@ as a list's selected row does. The pictures are the chassis's vocabulary,
 `docs/WORKBENCH.md` section 6. A drawer is a plinth with a bar, a tool a
 plinth with a lamp, and a project a well with lines in it.
 */
-icon_cells :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fonts, t: ^Theme) -> int {
-	nat := libdraw.put_fill(b, at, dst, u32(o.x), u32(o.y), u32(o.w), u32(o.h), libpal.xrgb(t.shade))
-	nat = libdraw.put_fill(
-		b,
-		nat,
-		dst,
-		u32(o.x + t.well),
-		u32(o.y + t.well),
-		u32(o.w - 2 * t.well),
-		u32(o.h - 2 * t.well),
-		libpal.xrgb(t.ground),
-	)
-	plain, pok := font_get(f, t.ink, t.ground)
-	lit, lok := font_get(f, t.ink, t.face)
-	if !pok {
-		return nat
-	}
+icon_cells :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	well(c, o.x, o.y, o.w, o.h, t)
 	// Free placement, for Snapshot: each cell at its own point in the well,
 	// rather than the grid. A cell that would fall outside the well is
 	// skipped, so a placement near an edge clips rather than spills.
@@ -255,92 +236,71 @@ icon_cells :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, f: ^Fo
 			if cx < o.x + t.well || cy < o.y + t.well || cx + ICON_W > o.x + o.w - t.well || cy + ICON_H > o.y + o.h - t.well {
 				continue
 			}
-			nat = icon_one(b, nat, o, i, cx, cy, dst, plain, lit, lok, t)
-			if nat < 0 {
-				return nat
-			}
+			icon_one(c, o, i, cx, cy, t)
 		}
-		return nat
+		return
 	}
-
 	cols := icons_cols(o, t)
 	rows := icons_visible(o, t)
 	for r in 0 ..< rows {
-		for c in 0 ..< cols {
-			i := (o.top + r) * cols + c
+		for k in 0 ..< cols {
+			i := (o.top + r) * cols + k
 			if i < 0 || i >= len(o.rows) {
 				break
 			}
-			cx := o.x + t.well + c * ICON_W
-			cy := o.y + t.well + r * ICON_H
-			nat = icon_one(b, nat, o, i, cx, cy, dst, plain, lit, lok, t)
-			if nat < 0 {
-				return nat
-			}
+			icon_one(c, o, i, o.x + t.well + k * ICON_W, o.y + t.well + r * ICON_H, t)
 		}
 	}
-	return nat
 }
 
-// icon_one draws one cell of an icon grid at `(cx, cy)`: the picture of its
-// kind above, its name under it, on a bar of the face when it is the selected
-// one. Both the grid and free placement draw a cell this way.
-icon_one :: proc "contextless" (b: []u8, at: int, o: ^Object, i: int, cx: int, cy: int, dst: u32, plain: libdraw.Atlas, lit: libdraw.Atlas, lok: bool, t: ^Theme) -> int #no_bounds_check {
+// icon_one draws one cell of an icon grid at `(cx, cy)`. The picture of its
+// kind is above, and its name under it, on a bar of the face when selected. Both the grid and free placement draw a cell this way.
+icon_one :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, i: int, cx: int, cy: int, t: ^Theme) #no_bounds_check {
 	kind := ICON_PROJECT
 	if o.kinds != nil && i < len(o.kinds) {
 		kind = o.kinds[i]
 	}
-	nat := icon_picture(b, at, dst, cx + (ICON_W - 40) / 2, cy + 6, kind, t)
+	icon_picture(c, cx + (ICON_W - 40) / 2, cy + 6, kind, t)
 	shown := clip_cells(o.rows[i], NAME_CELLS)
 	tw := drawn_len(shown) * FONT_W
 	tx := cx + (ICON_W - tw) / 2
 	ty := cy + ICON_H - FONT_H - 4
-	atlas := plain
-	if i == o.sel && lok {
-		nat = libdraw.put_fill(b, nat, dst, u32(tx - 2), u32(ty), u32(tw + 4), u32(FONT_H), libpal.xrgb(t.face))
-		atlas = lit
+	if i == o.sel {
+		libraster.fill(c, tx - 2, ty, tw + 4, FONT_H, px(t.face))
 	}
-	next, _, _ := libdraw.put_text(b, nat, atlas, dst, u32(tx), u32(ty), shown)
-	return next
+	glyphs(c, tx, ty, shown, px(t.ink))
 }
 
 // icon_picture is one kind's picture, forty by twenty-eight, at a point.
-icon_picture :: proc "contextless" (b: []u8, at: int, dst: u32, x: int, y: int, kind: u8, t: ^Theme) -> int {
+icon_picture :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, kind: u8, t: ^Theme) {
 	W :: 40
 	H :: 28
-	nat := at
 	switch kind {
 	case ICON_DRAWER, ICON_TOOL:
 		// A plinth: the face with a lit top and left, a shaded bottom and right.
-		nat = plinth(b, nat, dst, x, y, W, H, t)
+		plinth(c, x, y, W, H, t)
 		if kind == ICON_DRAWER {
 			// The drawer's bar, copper across the top like a window's.
-			nat = libdraw.put_fill(b, nat, dst, u32(x + t.bevel), u32(y + t.bevel), u32(W - 2 * t.bevel), 5, libpal.xrgb(libpal.COPPER))
+			libraster.fill(c, x + t.bevel, y + t.bevel, W - 2 * t.bevel, 5, px(libpal.COPPER))
 		} else {
 			// The tool's lamp, phosphor in a socket at the corner.
-			nat = libdraw.put_fill(b, nat, dst, u32(x + W - 12), u32(y + 4), 8, 8, libpal.xrgb(t.shade))
-			nat = libdraw.put_fill(b, nat, dst, u32(x + W - 11), u32(y + 5), 6, 6, libpal.xrgb(libpal.PHOSPHOR))
+			libraster.fill(c, x + W - 12, y + 4, 8, 8, px(t.shade))
+			libraster.fill(c, x + W - 11, y + 5, 6, 6, px(libpal.PHOSPHOR))
 		}
 	case:
 		// A project: a well, and three lines of ink in it.
-		nat = libdraw.put_fill(b, nat, dst, u32(x + 4), u32(y), u32(W - 8), u32(H), libpal.xrgb(t.shade))
-		nat = libdraw.put_fill(b, nat, dst, u32(x + 4 + t.well), u32(y + t.well), u32(W - 8 - 2 * t.well), u32(H - 2 * t.well), libpal.xrgb(t.ground))
+		libraster.fill(c, x + 4, y, W - 8, H, px(t.shade))
+		libraster.fill(c, x + 4 + t.well, y + t.well, W - 8 - 2 * t.well, H - 2 * t.well, px(t.ground))
 		for k in 0 ..< 3 {
-			nat = libdraw.put_fill(b, nat, dst, u32(x + 10), u32(y + 6 + k * 7), u32(W - 20), 2, libpal.xrgb(t.ink))
+			libraster.fill(c, x + 10, y + 6 + k * 7, W - 20, 2, px(t.ink))
 		}
 	}
-	return nat
 }
 
 // plinth is `raised` for a rectangle that is not a node.
-plinth :: proc "contextless" (b: []u8, at: int, dst: u32, x: int, y: int, w: int, h: int, t: ^Theme) -> int {
-	nat := libdraw.put_fill(b, at, dst, u32(x), u32(y), u32(w), u32(h), libpal.xrgb(t.face))
-	edge := t.bevel
-	nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y), u32(w), u32(edge), libpal.xrgb(t.lit))
-	nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y), u32(edge), u32(h), libpal.xrgb(t.lit))
-	nat = libdraw.put_fill(b, nat, dst, u32(x), u32(y + h - edge), u32(w), u32(edge), libpal.xrgb(t.shade))
-	nat = libdraw.put_fill(b, nat, dst, u32(x + w - edge), u32(y), u32(edge), u32(h), libpal.xrgb(t.shade))
-	return nat
+plinth :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, w: int, h: int, t: ^Theme) {
+	libraster.fill(c, x, y, w, h, px(t.face))
+	libraster.bevel(c, x, y, w, h, t.bevel, px(t.lit), px(t.shade))
 }
 
 clip_cells :: proc "contextless" (s: string, cells: int) -> string {
@@ -358,70 +318,38 @@ clip_cells :: proc "contextless" (s: string, cells: int) -> string {
 }
 
 // raised draws a control's face with a bevel: the face, a lit top-left edge,
-// and a dark bottom-right edge. A pressed control swaps the two edges, which a
-// caller signals by leaving `on` set on a momentary press.
-raised :: proc "contextless" (b: []u8, at: int, o: ^Object, dst: u32, t: ^Theme) -> int {
-	nat := libdraw.put_fill(b, at, dst, u32(o.x), u32(o.y), u32(o.w), u32(o.h), libpal.xrgb(t.face))
-	edge := t.bevel
-	// Top edge and left edge, the highlight.
-	nat = libdraw.put_fill(b, nat, dst, u32(o.x), u32(o.y), u32(o.w), u32(edge), libpal.xrgb(t.lit))
-	nat = libdraw.put_fill(b, nat, dst, u32(o.x), u32(o.y), u32(edge), u32(o.h), libpal.xrgb(t.lit))
-	// Bottom edge and right edge, the shadow.
-	nat = libdraw.put_fill(
-		b,
-		nat,
-		dst,
-		u32(o.x),
-		u32(o.y + o.h - edge),
-		u32(o.w),
-		u32(edge),
-		libpal.xrgb(t.shade),
-	)
-	nat = libdraw.put_fill(
-		b,
-		nat,
-		dst,
-		u32(o.x + o.w - edge),
-		u32(o.y),
-		u32(edge),
-		u32(o.h),
-		libpal.xrgb(t.shade),
-	)
-	return nat
+// and a dark bottom-right edge.
+raised :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	plinth(c, o.x, o.y, o.w, o.h, t)
 }
 
-// label writes a node's text at (x, y), skipping a hotkey underscore the way
-// the layout counted it.
-label :: proc "contextless" (
-	b: []u8,
-	at: int,
-	o: ^Object,
-	x: int,
-	y: int,
-	dst: u32,
-	atlas: libdraw.Atlas,
-	t: ^Theme,
-) -> int {
-	// The drawn text with a single hotkey underscore removed.
-	drawn := strip_hotkey(o.label)
-	nat, _, _ := libdraw.put_text(b, at, atlas, dst, u32(x), u32(y), drawn)
-	return nat
+/*
+glyphs lays a string's glyphs at (x, y) in one ink, a cell each, over whatever
+is there. A rune past ASCII comes from the font `window_open` loads. A rune no
+range holds takes its cell and draws nothing, as a title does.
+*/
+glyphs :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, s: string, ink: u32) #no_bounds_check {
+	cell: [libfont.FONT_HEIGHT]u8
+	col := 0
+	i := 0
+	for i < len(s) {
+		r, size := libdraw.decode_rune(transmute([]u8)s[i:])
+		if size <= 0 {
+			break
+		}
+		i += size
+		if _, ok := libfont.loader_glyph(&text_font, r, cell[:]); ok {
+			libraster.bits(c, x + col * FONT_W, y, cell[:], ink)
+		}
+		col += 1
+	}
 }
 
-// label_centered writes a button's text centred in its face.
-label_centered :: proc "contextless" (
-	b: []u8,
-	at: int,
-	o: ^Object,
-	dst: u32,
-	atlas: libdraw.Atlas,
-	t: ^Theme,
-) -> int {
-	n := drawn_len(o.label)
-	tw := n * FONT_W
-	x := o.x + (o.w - tw) / 2
-	y := o.y + (o.h - FONT_H) / 2
-	return label(b, at, o, x, y, dst, atlas, t)
+// label_centered writes a button's text centred in its face, a hotkey
+// underscore skipped the way the layout counted it.
+label_centered :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	tw := drawn_len(o.label) * FONT_W
+	glyphs(c, o.x + (o.w - tw) / 2, o.y + (o.h - FONT_H) / 2, strip_hotkey(o.label), px(t.ink))
 }
 
 // strip_hotkey returns a label with one `_` before a letter removed, into a
@@ -443,8 +371,8 @@ strip_hotkey :: proc "contextless" (label: string) -> string #no_bounds_check {
 	n := 0
 	i := 0
 	for i < len(label) {
-		c := label[i]
-		if c == '_' && i + 1 < len(label) {
+		ch := label[i]
+		if ch == '_' && i + 1 < len(label) {
 			d := label[i + 1]
 			is_letter := (d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z')
 			if is_letter {
@@ -452,7 +380,7 @@ strip_hotkey :: proc "contextless" (label: string) -> string #no_bounds_check {
 				continue
 			}
 		}
-		hotkey_buf[n] = c
+		hotkey_buf[n] = ch
 		n += 1
 		i += 1
 	}

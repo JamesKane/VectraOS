@@ -2,34 +2,30 @@
 window -- a `/srv/draw` window a gadget tree lives in, and the loop that runs it.
 
 This is the toolkit made live. `window_open` claims a window, lays the tree out,
-bakes the atlases, and paints it once. `window_run` is the event loop the plan
+attaches the window's store, and paints it once. `window_run` is the event loop the plan
 calls `rio`'s. A thread per file that parks reads the mouse and the keys through
 a `sys/libthread` io proc, one proc, no lock. A click is hit-tested down the
 tree, and a key goes to the focus. Tab moves it, Return presses the default, and
 Escape the cancel, so a requester needs no mouse.
 
-The window's own surface is image id zero, and the atlases count up from one. A
-paint is pumped to the `data` stream one wire slot at a time, on command
-boundaries, the budget `cmd/window` keeps. When a gadget is pressed the window's
-`handler` hears its id. So a program on the toolkit learns a button was hit
+A paint goes into the window's store, the shared buffer the draw server
+composites from, `docs/DEVTOOLS.md` step 1, and a write to `store` shows it.
+A program a `cpu` runs cannot map the terminal's store, so it paints a copy of
+its own and sends the rows that changed as `load` commands, `docs/FLEET.md`
+section 7. When a gadget is pressed the window's `handler` hears its id. So a program on the toolkit learns a button was hit
 without knowing a pixel.
 */
 package libmui
 
 import "vsys:abi"
 import "vsys:libdraw"
-import "vsys:libpal"
+import "vsys:libraster"
 import "vsys:libthread"
 import "vsys:libuser"
 import "vsys:vectra9"
 
 // One wire slot's worth of body, the most a write to `/srv/draw` may carry.
 SLOT :: vectra9.WIRE_SLOT - vectra9.IOHDRSZ
-
-// A whole tree's commands. A glyph is one blit of thirty-six bytes, and a
-// window of lists is a page of glyphs. Eighty by forty is over a hundred
-// thousand bytes, which this holds with room.
-PAINT_MAX :: 160 * 1024
 
 /*
 A live window: the files it holds, the client area it was given, the tree it
@@ -47,12 +43,10 @@ Window :: struct {
 	sx:        int, // Where the client area is on the screen, for a popup
 	sy:        int, // opened at a point in it
 	theme:     Theme,
-	fonts:     Fonts,
 	root:      ^Object,
 	focus:     ^Object,
 	pressed:   ^Object, // The gadget a mouse press landed on, awaiting release
 	done:      bool,
-	overflowed: bool, // A paint that did not fit was reported
 	handler:   proc "contextless" (win: ^Window, id: int),
 
 	/*
@@ -120,8 +114,25 @@ Window :: struct {
 	mouse_io:  ^libthread.Ioproc,
 	mouse_done: ^libthread.Chan,
 
-	scratch:   [SLOT]u8, // One slot, for atlas uploads and paint flushes
-	paint_buf: [PAINT_MAX]u8, // A whole tree's commands, pumped from here in slots
+	/*
+	The store: the shared run the server composites from, mapped here by
+	the id its `store` file names, with `stride` words a row and the client
+	area at (`cx`, `cy`) in it. A remote window paints `local` instead, the
+	client area packed tight, and keeps `sent`, the frame the terminal has,
+	so a paint sends only the rows that changed.
+	*/
+	store_fd:  int,
+	store:     [^]u32,
+	store_id:  u64,
+	stride:    int,
+	cx:        int,
+	cy:        int,
+	remote:    bool,
+	local:     [^]u32,
+	sent:      [^]u32,
+	local_n:   int, // the words `local` and `sent` each hold
+
+	scratch:   [SLOT]u8, // One slot, for a remote paint's `load` commands
 	geo:       [160]u8,
 	path:      [64]u8,
 	keys:      [64]u8,
@@ -227,15 +238,9 @@ app_name :: proc "contextless" () -> string #no_bounds_check {
 	return string(app_buf[:app_len])
 }
 
-// data_sink writes an atlas batch to a window's data stream.
-data_sink :: proc "contextless" (user: rawptr, data: []u8) -> bool {
-	fd := int(uintptr(user))
-	return libuser.write(fd, data) == i64(len(data))
-}
-
 /*
-window_open claims a window, lays `root` out in the client area, bakes the
-atlases, and paints it once. It returns false at the first step that fails,
+window_open claims a window, lays `root` out in the client area, attaches its
+store, and paints it once. It returns false at the first step that fails,
 each of which is a window a program cannot have. It runs inside `libthread`,
 because the loop that follows does.
 */
@@ -255,10 +260,15 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	if !win.set_up {
 		window_defaults(win)
 	}
-	font_init(&win.fonts, 1)
-	// The font past ASCII, so a label with an accent in it bakes and draws.
-	// Not fatal: a face falls back to the baked ASCII table.
+	// The font past ASCII, so a label with an accent in it draws. Not
+	// fatal: a label falls back to the baked ASCII table.
 	font_load()
+	win.data_fd, win.cons_fd, win.consctl_fd, win.mouse_fd = -1, -1, -1, -1
+	win.store_fd = -1
+	win.store = nil
+	win.local = nil
+	win.sent = nil
+	win.local_n = 0
 
 	// The draw server's files. A program a `cpu` runs finds its terminal's
 	// window system already in its namespace, named by `$wsys`, and opens the
@@ -300,13 +310,13 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 
 	ctl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "ctl"), abi.O_RDWR)
 	if ctl < 0 {
-		return refused("the window's ctl will not open")
+		return unopened(win, "the window's ctl will not open")
 	}
 	n := libuser.read(int(ctl), win.geo[:])
 	w, h, _, _, gok := libdraw.parse_geometry(win.geo[:max(int(n), 0)])
 	if !gok {
 		_ = libuser.close(int(ctl))
-		return refused("the window's ctl reports no geometry")
+		return unopened(win, "the window's ctl reports no geometry")
 	}
 	win.cw, win.ch = w, h
 	// The bar's name.
@@ -363,12 +373,12 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	// by their path either way, which is how a program holds several.
 	if win.bind_dev {
 		if libuser.bind(libdraw.win_dir(win.path[:], win.base, mine), "/dev", abi.ORDER_BEFORE) < 0 {
-			return refused("the window's directory will not bind over /dev")
+			return unopened(win, "the window's directory will not bind over /dev")
 		}
 	}
 	cons := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "cons"), abi.O_RDONLY)
 	if cons < 0 {
-		return refused("the window's cons will not open")
+		return unopened(win, "the window's cons will not open")
 	}
 	win.cons_fd = int(cons)
 	// Raw mode lasts while a consctl descriptor is open, `/dev/consctl`'s
@@ -393,20 +403,31 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	win.last_press = nil
 	win.last_buttons = 0
 
-	// The tree in the client area, the atlases it needs, and the first paint.
+	// The store the tree is painted into.
+	if !store_attach(win, mine) {
+		window_close(win)
+		return false
+	}
+
+	// The tree in the client area, and the first paint.
 	fit(root, &win.theme)
 	window_bounds(win, mine)
 	lay(root, 0, 0, win.cw, win.ch, &win.theme)
 	set_focus_first(win)
-	sink := Sink{write = data_sink, user = rawptr(uintptr(win.data_fd))}
-	if !font_prepare(root, &win.fonts, win.scratch[:], sink, &win.theme) {
-		return refused("an atlas would not bake: the server's image pool is full, or a write failed")
-	}
 	window_paint(win)
 	if follows && win.kind != .Popup {
 		theme_follow(win)
 	}
 	return true
+}
+
+// unopened gives back what a `window_open` that failed part way had opened,
+// its files and its store, so a program that asks again has not lost them,
+// and answers the refusal.
+@(private = "file")
+unopened :: proc "contextless" (win: ^Window, why: string) -> bool {
+	window_close(win)
+	return refused(why)
 }
 
 // refused says on standard error why a window could not be had, and
@@ -417,189 +438,174 @@ refused :: proc "contextless" (why: string) -> bool {
 	return false
 }
 
-// window_relayout lays the tree out again in the client area, bakes any
-// atlas a new gadget needs, and paints. A program whose rows or labels
-// changed calls this, so a longer label takes the room it now needs.
+// window_relayout lays the tree out again in the client area and paints. A
+// program whose rows or labels changed calls this, so a longer label takes
+// the room it now needs.
 window_relayout :: proc "contextless" (win: ^Window) #no_bounds_check {
 	fit(win.root, &win.theme)
 	lay(win.root, 0, 0, win.cw, win.ch, &win.theme)
-	sink := Sink{write = data_sink, user = rawptr(uintptr(win.data_fd))}
-	_ = font_prepare(win.root, &win.fonts, win.scratch[:], sink, &win.theme)
 	window_paint(win)
 }
 
-// window_paint redraws the whole tree and flushes it to the glass. A tree
-// whose commands outgrow the buffer says so once, rather than drawing
-// nothing in silence.
+/*
+store_attach opens the window's `store` file and maps the run it names, the
+way `sys/libapp` does. A remote window, whose store is the terminal's memory
+and does not cross the wire, gets a run of its own instead. False, said on
+standard error, when neither can be had.
+*/
+@(private = "file")
+store_attach :: proc "contextless" (win: ^Window, mine: int) -> bool #no_bounds_check {
+	sfd := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "store"), abi.O_RDWR)
+	if sfd < 0 {
+		return refused("the window has no store file")
+	}
+	win.store_fd = int(sfd)
+	if !store_read(win) {
+		return refused("the store file named no run to attach")
+	}
+	addr, aerr := libuser.shmattach(win.store_id)
+	if aerr >= 0 {
+		win.store = ([^]u32)(addr)
+		return true
+	}
+	win.remote = true
+	return local_fit(win)
+}
+
+/*
+store_read reads the `store` file's line, `id stride cx cy cw ch`, again. The
+client area's place moves when a theme changes the frame, and its size when a
+person sizes the window, so a paint asks first. False when the line is not
+six numbers with an id.
+*/
+@(private = "file")
+store_read :: proc "contextless" (win: ^Window) -> bool #no_bounds_check {
+	line: [96]u8
+	n := libuser.pread(win.store_fd, line[:], 0)
+	data := line[:max(int(n), 0)]
+	at := 0
+	id, a := libdraw.scan_int(data, &at)
+	stride, b := libdraw.scan_int(data, &at)
+	cx, c := libdraw.scan_int(data, &at)
+	cy, d := libdraw.scan_int(data, &at)
+	cw, e := libdraw.scan_int(data, &at)
+	ch, f := libdraw.scan_int(data, &at)
+	if !a || !b || !c || !d || !e || !f || id == 0 || stride <= 0 {
+		return false
+	}
+	win.store_id = u64(id)
+	win.stride, win.cx, win.cy = stride, cx, cy
+	win.cw, win.ch = cw, ch
+	return true
+}
+
+// local_fit makes a remote window's two runs hold the client area, grown when
+// the area grew. `sent` starts unlike anything painted, so the first paint
+// sends every row.
+@(private = "file")
+local_fit :: proc "contextless" (win: ^Window) -> bool #no_bounds_check {
+	need := win.cw * win.ch
+	if need <= win.local_n && win.local != nil {
+		return true
+	}
+	if win.local != nil {
+		libuser.heap_free(win.local)
+		libuser.heap_free(win.sent)
+	}
+	win.local = ([^]u32)(libuser.heap_alloc(need * size_of(u32)))
+	win.sent = ([^]u32)(libuser.heap_alloc(need * size_of(u32)))
+	if win.local == nil || win.sent == nil {
+		win.local_n = 0
+		return refused("no memory for the window's pixels")
+	}
+	win.local_n = need
+	for i in 0 ..< need {
+		win.sent[i] = 0xFF000000
+	}
+	return true
+}
+
+/*
+window_paint redraws the whole tree into the store and shows it. The store's
+line is read first: a size the server gave the window lays the tree out again,
+and a frame of another size moves where the client area sits in the run.
+*/
 window_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
-	end := paint(win.paint_buf[:], 0, win.root, 0, &win.fonts, &win.theme)
-	if end <= 0 {
-		if !win.overflowed {
-			win.overflowed = true
-			libuser.eprint("mui: the tree's paint outgrew the buffer\n")
+	if win.store_fd < 0 {
+		return
+	}
+	ow, oh := win.cw, win.ch
+	if !store_read(win) {
+		return
+	}
+	if (win.cw != ow || win.ch != oh) && win.root != nil {
+		lay(win.root, 0, 0, win.cw, win.ch, &win.theme)
+	}
+	if win.remote {
+		if !local_fit(win) {
+			return
 		}
+		c := libraster.canvas(win.local, win.cw, win.cw, win.ch)
+		paint(&c, win.root, &win.theme)
+		present_rows(win)
 		return
 	}
-	flush_batches(win, win.paint_buf[:], end)
-	upload_pictures(win, win.root)
-	// One flush command of its own, so the server shows the frame.
-	fat := libdraw.put_flush(win.scratch[:], 0)
-	if fat > 0 {
-		_ = libuser.write(win.data_fd, win.scratch[:fat])
-	}
-}
-
-// upload_pictures sends every picture gadget's pixels after the tree's
-// paint, each straight into the window.
-upload_pictures :: proc "contextless" (win: ^Window, o: ^Object) {
-	if o == nil {
+	if win.store == nil {
 		return
 	}
-	if o.class == .Picture && o.pix != nil && o.pw > 0 && o.ph > 0 && len(o.pix) >= o.pw * o.ph * 4 {
-		picture_upload(win, o)
-	}
-	if o.class == .List && o.pics != nil {
-		list_pictures_upload(win, o)
-	}
-	for c := o.first; c != nil; c = c.next {
-		upload_pictures(win, c)
-	}
+	c := libraster.canvas(win.store[win.cy * win.stride + win.cx:], win.stride, win.cw, win.ch)
+	paint(&c, win.root, &win.theme)
+	// The whole client area, which the server moves in past the frame.
+	line: [48]u8
+	a, b: [16]u8
+	_ = libuser.write(win.store_fd, transmute([]u8)libuser.cat_into(line[:], "0 0 ", libuser.itoa(a[:], i64(win.cw)), " ", libuser.itoa(b[:], i64(win.ch))))
 }
 
 /*
-list_pictures_upload loads the pictures standing on a list's rows. Each
-sits under its caption row, a cell in from the well's left, shrunk to the
-well's width if wider. Only the rows the well shows are loaded: a picture half
-scrolled off is cut at the well's edge, the way its rows are.
+present_rows sends a remote window's paint: each row that differs from what the
+terminal has, from its first changed pixel to its last, as `load` commands into
+image zero, a wire slot or less each. Then a `flush` composites them. A click
+that lights one button sends that button's rows, not the window.
 */
-list_pictures_upload :: proc "contextless" (win: ^Window, o: ^Object) {
-	t := &win.theme
-	n := list_visible(o, t)
-	top_y := o.y + t.well
-	bottom_y := top_y + n * FONT_H
-	avail := o.w - 2 * t.well - 2 * FONT_W
-	if avail <= 0 || n <= 0 {
-		return
-	}
-	for &p in o.pics {
-		if p.pix == nil || p.pw <= 0 || p.ph <= 0 || len(p.pix) < p.pw * p.ph * 4 {
-			continue
-		}
-		if p.row + p.tall <= o.top || p.row >= o.top + n {
-			continue
-		}
-		dw := min(p.pw, avail)
-		dh := max(p.ph * dw / p.pw, 1)
-		dx := o.x + t.well + FONT_W
-		dy := top_y + (p.row - o.top) * FONT_H
-		load_pixels(win, p.pix, p.pw, p.ph, dx, dy, dw, dh, top_y, bottom_y, t.ground)
-	}
-}
-
-/*
-picture_upload loads a picture's pixels into the window, `sys/libapp`'s
-way. `load` commands go into image zero, a run of a row each, every one
-a wire slot or less. A picture larger than the well is shrunk to fit it,
-its shape kept, by taking one source pixel per destination pixel. A
-smaller one is drawn as it is, centred. Alpha is laid over the well's
-ground, since the blit is opaque.
-*/
-picture_upload :: proc "contextless" (win: ^Window, o: ^Object) #no_bounds_check {
-	t := &win.theme
-	ax, ay := o.x + t.well, o.y + t.well
-	aw, ah := o.w - 2 * t.well, o.h - 2 * t.well
-	if aw <= 0 || ah <= 0 {
-		return
-	}
-	dw, dh := o.pw, o.ph
-	if dw > aw || dh > ah {
-		if dw * ah > dh * aw {
-			dh = max(o.ph * aw / o.pw, 1)
-			dw = aw
-		} else {
-			dw = max(o.pw * ah / o.ph, 1)
-			dh = ah
-		}
-	}
-	ox, oy := ax + (aw - dw) / 2, ay + (ah - dh) / 2
-	load_pixels(win, o.pix, o.pw, o.ph, ox, oy, dw, dh, ay, ay + ah, t.ground)
-}
-
-// load_pixels loads `pw` by `ph` RGBA pixels into the window, scaled to
-// `dw` by `dh` at (`dx`, `dy`), one source pixel a destination pixel. Rows
-// outside `cy0` to `cy1` are not sent, which is how a picture clips to the
-// well it stands in. Alpha is laid over `ground`.
-load_pixels :: proc "contextless" (win: ^Window, pix: []u8, pw, ph: int, dx, dy, dw, dh: int, cy0, cy1: int, ground: libpal.RGB) #no_bounds_check {
-	slot: [SLOT]u8 = ---
-	run_buf: [SLOT]u8 = ---
-	max_px := (SLOT - libdraw.HEADER - 20) / 4
-	for y in 0 ..< dh {
-		if dy + y < cy0 || dy + y >= cy1 {
-			continue
-		}
-		sy := y * ph / dh
-		x := 0
-		for x < dw {
-			run := min(max_px, dw - x)
-			for i in 0 ..< run {
-				sx := (x + i) * pw / dw
-				p := pix[(sy * pw + sx) * 4:]
-				a := int(p[3])
-				r := (int(p[0]) * a + int(ground[0]) * (255 - a)) / 255
-				g := (int(p[1]) * a + int(ground[1]) * (255 - a)) / 255
-				b := (int(p[2]) * a + int(ground[2]) * (255 - a)) / 255
-				run_buf[i * 4] = u8(b)
-				run_buf[i * 4 + 1] = u8(g)
-				run_buf[i * 4 + 2] = u8(r)
-				run_buf[i * 4 + 3] = 0
+@(private = "file")
+present_rows :: proc "contextless" (win: ^Window) #no_bounds_check {
+	slot := win.scratch[:]
+	max_px := max((SLOT - libdraw.HEADER - 20) / 4, 1)
+	pix: [SLOT]u8 = ---
+	for y in 0 ..< win.ch {
+		row := win.local[y * win.cw:]
+		was := win.sent[y * win.cw:]
+		lo, hi := -1, -1
+		for x in 0 ..< win.cw {
+			if row[x] != was[x] {
+				if lo < 0 {
+					lo = x
+				}
+				hi = x
 			}
-			end := libdraw.put_load(slot[:], 0, 0, u32(dx + x), u32(dy + y), u32(run), 1, run_buf[:run * 4])
+		}
+		if lo < 0 {
+			continue
+		}
+		x := lo
+		for x <= hi {
+			run := min(max_px, hi + 1 - x)
+			for i in 0 ..< run {
+				libdraw.put_u32(pix[:], i * 4, row[x + i])
+			}
+			end := libdraw.put_load(slot, 0, 0, u32(x), u32(y), u32(run), 1, pix[:run * 4])
 			if end > 0 {
-				slot_write(win, slot[:end])
+				_ = libuser.write(win.data_fd, slot[:end])
 			}
 			x += run
 		}
-	}
-}
-
-// flush_batches writes a command stream to the data fd in wire slots, never
-// splitting a command across two writes.
-flush_batches :: proc "contextless" (win: ^Window, b: []u8, end: int) #no_bounds_check {
-	start := 0
-	at := 0
-	for at < end {
-		size := int(libdraw.get_u16(b, at))
-		if size < libdraw.HEADER {
-			break
+		for k in lo ..= hi {
+			was[k] = row[k]
 		}
-		if at + size - start > SLOT {
-			// The command at `at` would overflow the slot, so flush up to it.
-			if at > start {
-				slot_write(win, b[start:at])
-				start = at
-			}
-		}
-		at += size
 	}
-	if end > start {
-		slot_write(win, b[start:end])
+	if end := libdraw.put_flush(slot, 0); end > 0 {
+		_ = libuser.write(win.data_fd, slot[:end])
 	}
-}
-
-// slot_write is one write of a slot's commands, and says so on standard
-// error when the server took less than all of it. The server executes a
-// write up to the first command it refuses and answers the error, so a
-// refusal here is a batch half drawn -- a face with no label on it -- and
-// a program that said nothing about it was a boot that could not either.
-@(private = "file")
-slot_write :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
-	n := libuser.write(win.data_fd, data)
-	if n == i64(len(data)) {
-		return
-	}
-	got: [24]u8
-	want: [24]u8
-	libuser.eprint("mui: draw write took ", libuser.itoa(got[:], n), " of ", libuser.itoa(want[:], i64(len(data))), "\n")
 }
 
 /*
@@ -687,7 +693,22 @@ window_close :: proc "contextless" (win: ^Window) {
 		_ = libuser.close(win.data_fd)
 		win.data_fd = -1
 	}
-	font_init(&win.fonts, 1)
+	// The store back: the mapping of the shared run, or a remote window's
+	// own two runs.
+	if win.store != nil {
+		_ = libuser.segdetach(uintptr(win.store))
+		win.store = nil
+	}
+	if win.local != nil {
+		libuser.heap_free(win.local)
+		libuser.heap_free(win.sent)
+		win.local, win.sent, win.local_n = nil, nil, 0
+	}
+	if win.store_fd >= 0 {
+		_ = libuser.close(win.store_fd)
+		win.store_fd = -1
+	}
+	win.remote = false
 }
 
 // mouse_thread reads the window's pointer and turns each line into an event.

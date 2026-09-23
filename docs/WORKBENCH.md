@@ -1061,7 +1061,7 @@ them:
 2. Schemes: `colour` lines, the job roles, four scheme files, and a
    contrast check in `lint`. Done, September 2026.
 3. `sys/libraster`, and the toolkit painting its window's store in place
-   of the per-face atlas.
+   of the per-face atlas. Done, September 2026.
 
 After those come the four faces and the frame with its halo,
 `docs/DRAW.md` section 19. Then the menus, the icons, readouts and LEDs,

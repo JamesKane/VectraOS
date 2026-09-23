@@ -1245,6 +1245,22 @@ search and not two.
 MAPPING_BASE :: uintptr(0x1000_0000)
 
 /*
+Where a shared buffer's mapping is looked for: above the stack, clear of the
+region a heap grows up through.
+
+**A heap grows in place.** `sys/libuser`'s heap is one run from `segalloc`,
+extended by `segbrk`, which keeps the base and needs the pages past its end
+free. A shared run searched for from `MAPPING_BASE` lands on the first hole,
+which is often just past a heap still at its first 64 KiB, and walls it in.
+The toolkit's windows met that the day each attached its store,
+`docs/CHROME.md` brick 3: Workbench, with a bar and a backdrop attached,
+could not grow its heap for one more io proc and ended. A window's store is
+four megabytes and long-lived, so it goes far from the heap. Four gigabytes is
+above `STACK_TOP` and inside every port's user range.
+*/
+SHARED_BASE :: uintptr(0x1_0000_0000)
+
+/*
 map_reserve finds a span of a process's address space, without mapping anything
 into it.
 
@@ -1264,13 +1280,13 @@ is the same rule `proc_add_segment` and every walk of `p.segs` already keep. A
 second core makes this a lock, named in `docs/HANDOFF.md` with the others.
 */
 @(private = "file")
-map_reserve :: proc "contextless" (p: ^Process, pages: int) -> (va: uintptr, ok: bool) #no_bounds_check {
+map_reserve :: proc "contextless" (p: ^Process, pages: int, from := MAPPING_BASE) -> (va: uintptr, ok: bool) #no_bounds_check {
 	if p == nil || pages <= 0 {
 		return 0, false
 	}
 	span := uintptr(pages) * uintptr(arch.PAGE_SIZE)
 
-	cand := MAPPING_BASE
+	cand := from
 	for {
 		if cand + span > mem.USER_MAX || cand + span < cand {
 			return 0, false
@@ -1532,7 +1548,7 @@ here, beside `map_reserve` and `map_run`, which are this file's.
 */
 @(private = "file")
 shm_map :: proc "contextless" (p: ^Process, id: u64, phys: uintptr, pages: int) -> i64 {
-	va, room := map_reserve(p, pages)
+	va, room := map_reserve(p, pages, SHARED_BASE)
 	if !room {
 		shm_release(id)
 		return -i64(vectra9.ENOMEM)

@@ -436,16 +436,18 @@ theme_watch :: proc "contextless" (arg: rawptr) #no_bounds_check {
 		if !ok || now <= gen {
 			continue
 		}
-		if gen != 0 {
-			theme_load()
-			for i in 0 ..< MAX_FOLLOWERS {
-				w := followers[i]
-				if w == nil || w.done {
-					continue
-				}
-				w.theme = ui_theme
-				window_relayout(w)
+		// The first answer loads too. The files were read when the first
+		// window opened, before this watcher's first read, and a `reload`
+		// between the two moved the number past a look nobody loaded: the
+		// baseline would have swallowed it. One read of the files more, once.
+		theme_load()
+		for i in 0 ..< MAX_FOLLOWERS {
+			w := followers[i]
+			if w == nil || w.done {
+				continue
 			}
+			w.theme = ui_theme
+			window_relayout(w)
 		}
 		gen = now
 	}

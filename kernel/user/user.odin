@@ -303,6 +303,10 @@ Process :: struct {
 	// only ever hears a note as an ending.
 	note_buf: [NOTE_MAX]u8,
 	note_len: int,
+	// A note posted while the process was live and had no thread yet: one a
+	// group got while this child was being forked. `note_born` delivers it
+	// once the thread exists. See `post_note`.
+	note_early: bool,
 
 	/*
 	The ring 3 note handler, and the state one delivery is in.
@@ -389,9 +393,11 @@ Fd :: struct {
 	offset: u64,
 }
 
-// Thirty-two, up from sixteen, because a shell holds a few for itself and a
-// pipeline holds two per stage.
-MAX_FDS :: 32
+// Sixty-four, up from thirty-two, because a toolkit window holds five: its
+// data, cons, consctl, mouse and store, `docs/CHROME.md` brick 3. A desktop
+// with a bar, a backdrop and a few drawers open passed thirty-two. It was
+// sixteen before that, until a shell's pipelines outgrew it.
+MAX_FDS :: 64
 
 /*
 The programs, from a fixed table.
@@ -1048,17 +1054,46 @@ record in between. The callers that hold it are `proc_note`, `end`, and the
 group senders `notepg_kernel` and `sys_note`. See `on_thread_reaped`.
 */
 post_note :: proc "contextless" (p: ^Process, text: string) -> bool {
-	if p == nil || !p.live || p.thread == nil {
+	if p == nil || !p.live {
 		return false
 	}
 	if intrinsics.volatile_load(&p.exit.done) {
 		return false
+	}
+	/*
+	A process live with no thread yet is one being born: a fork past its
+	claim and before its thread, or a spawn the same. A `notepg` to its group
+	in that window used to pass it by, and the parent took the note and ended
+	while the child lived on, waiting for a parent that was gone. A libthread
+	program killed as it made an io proc left that proc standing, `docs/CHROME.md`
+	brick 3. So the note waits in the record, and `note_born` delivers it.
+	*/
+	if p.thread == nil {
+		set_note_text(p, text)
+		p.note_early = true
+		return true
 	}
 
 	set_note_text(p, text)
 	p.stop_wake = false
 	sched.note_thread(p.thread)
 	return true
+}
+
+/*
+note_born delivers a note that reached a process before its thread did, once
+the thread exists. Every place that gives a process its thread calls it. Under
+`table_lock`, so a `notepg` either sees the thread and notes it or ran before
+and left the note here: never neither.
+*/
+note_born :: proc "contextless" (p: ^Process) {
+	guard := sync.acquire(&table_lock)
+	if p.note_early && p.thread != nil {
+		p.note_early = false
+		p.stop_wake = false
+		sched.note_thread(p.thread)
+	}
+	sync.release(&table_lock, guard)
 }
 
 // set_note_text is the note's words into the record, cut to what it holds.
@@ -1388,6 +1423,7 @@ launch :: proc(p: ^Process, arg: u64 = 0, arg2: u64 = 0) -> bool {
 	if p.thread == nil {
 		return false
 	}
+	note_born(p)
 	p.kstack_lo = uintptr(raw_data(p.thread.stack))
 	p.kstack_hi = p.thread.kstack_top
 	loaded += 1

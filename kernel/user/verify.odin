@@ -5224,12 +5224,12 @@ verify_muiwin spawns the toolkit demo and reads its window off the glass.
 
 `apps/muidemo` is the first program on `sys/libmui`. This is the live half of
 the toolkit's proof, the half `tests/mui` cannot make: it opens a real window,
-lays a gadget tree out in it, bakes the per-colour atlases, and paints. The
+lays a gadget tree out in it, and paints it into the window's store. The
 checks are the glass's. The focused window wears a copper bar. A button face is
 magnesium, in the middle of the window and below the bar, where no frame edge
 reaches, so it is the client drawing and not the server's frame. A label on that
-face is amber, blitted from an atlas baked for that one colour, which is the
-whole of the "Amiga look" the six-verb protocol is held to for.
+face is amber, its glyph's bits laid in the ink over the face in the store,
+`docs/CHROME.md` brick 3, which is the "Amiga look" with no atlas under it.
 
 The teardown is the terminal's: the server is stopped by a remove of a window's
 ctl, and both processes come down.
@@ -5276,7 +5276,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 
 	// A button face is magnesium, below the bar and inside the window, clear of
 	// the few pixels of magnesium frame at either edge. The client's paint
-	// follows the frame by an atlas upload's worth of writes, so this polls
+	// follows the frame by a moment, so this polls
 	// three interior columns until a run of face appears under one.
 	magnesium := fb.pack(s, fb.MAGNESIUM)
 	gtop, gbot, gx := -1, -1, -1
@@ -5297,7 +5297,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	face := check(r, gtop > 0, "and paints a button face inside it, which is the client drawing through the toolkit")
 
 	/*
-	A label on that face is amber, blitted from the atlas baked for it.
+	A label on that face is amber, its glyphs laid in the ink over the face.
 
 	The face's extent is measured again on every look, and that is the whole
 	of this check's history. The face poll above returns the moment a run of
@@ -5330,13 +5330,13 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			sync.delay(1)
 		}
 		if found_label {
-			check(r, true, "with an amber label on it, blitted from an atlas baked for that one colour")
+			check(r, true, "with an amber label on it, its glyphs laid in the ink over the face")
 		} else {
 			// What stood there instead, so the next miss names itself: the
 			// face's rows, the band's census, and the column as runs of what
 			// each pixel is -- M face, L lit edge, D dark edge, G the window
 			// ground, S the well, A amber, o anything else.
-			sink := detail_for("with an amber label on it, blitted from an atlas baked for that one colour")
+			sink := detail_for("with an amber label on it, its glyphs laid in the ink over the face")
 			libodin.put_str(&sink, "none in face rows ")
 			libodin.put_int(&sink, i64(gtop))
 			libodin.put_str(&sink, "..")
@@ -5800,7 +5800,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		return
 	}
 	// The notice service is the desktop's last thread, and it runs after
-	// the bar and the backdrop have baked their atlases and painted, so
+	// the bar and the backdrop have attached their stores and painted, so
 	// its post gets the patience the glass gets.
 	posted_wb := false
 	for _ in 0 ..< 20 {
@@ -10398,6 +10398,11 @@ or the name of the first step that failed.
 verify_mui :: proc(r: ^Result) {
 	names := [?]string{"mui"}
 	script_says(r, "/bin/mui", names[:], PATIENCE * 5, "a program on the toolkit's layout starts", "ok", "and every rectangle matched the weights")
+
+	// The look's painter, `docs/CHROME.md` brick 3: each of `sys/libraster`'s
+	// operations against pixels worked out by hand.
+	rnames := [?]string{"rastertest"}
+	script_says(r, "/bin/rastertest", rnames[:], PATIENCE * 5, "a program on the look's painter starts", "ok", "and every gradient, disc, grain, bevel, shadow, blur, mask and outline came out as worked by hand")
 
 	// The reader's document model, `docs/WEB.md` step 1: a gemtext page
 	// and a markdown page parse to their blocks and lay out to the rows a

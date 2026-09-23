@@ -219,7 +219,9 @@ theme_rechrome :: proc "contextless" () #no_bounds_check {
 	desk_paint(0, 0, scr_w, scr_h)
 	for i in 0 ..< MAX_WINDOWS {
 		if windows[i].used {
-			window_chrome(&windows[i])
+			// The frame alone: a client that paints its store may have
+			// painted its new look already, and the well's face is its.
+			window_chrome(&windows[i], keep_client = true)
 		}
 	}
 	repaint(0, 0, scr_w, scr_h)

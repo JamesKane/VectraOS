@@ -238,6 +238,7 @@ spawn_path :: proc(parent: ^Process, path: string, flags: u64 = 0, argv: ^Argv =
 		unload(p)
 		return nil, vectra9.ENOMEM
 	}
+	note_born(p)
 	p.kstack_lo = uintptr(raw_data(p.thread.stack))
 	p.kstack_hi = p.thread.kstack_top
 

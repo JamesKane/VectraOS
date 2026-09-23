@@ -672,7 +672,7 @@ Coordinates are the window's own, so a server painting into a window's store
 passes (0, 0). Answers how many pieces it wrote; size the array by
 `MAX_FRAME_PIECES`.
 */
-window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, h: int, lit: bool) -> int #no_bounds_check {
+window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, h: int, lit: bool, keep_client := false) -> int #no_bounds_check {
 	n := libdraw.edges(out, x, y, w, h, .Raised, th_plinth_lit, th_plinth_shade, th_frame_edge)
 	if n == 0 {
 		return 0
@@ -683,7 +683,14 @@ window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int
 	// fact rather than three: `frame_bar_at` is where the bar is, and this
 	// asks it rather than deriving the same numbers a second time.
 	bx, by, bw, bh := frame_bar_at(x, y, w)
-	n += libdraw.well(out[n:], bx, by + bh, bw, h - (by - y) - bh - th_frame_edge, th_frame_well)
+	wh := h - (by - y) - bh - th_frame_edge
+	if keep_client {
+		// The recess's ring and not its face, which is the client area: a
+		// client that paints its store may have painted it already.
+		n += libdraw.edges(out[n:], bx, by + bh, bw, wh, .Recessed, libpal.MAGNESIUM_LIT, libpal.VOID, th_frame_well)
+	} else {
+		n += libdraw.well(out[n:], bx, by + bh, bw, wh, th_frame_well)
+	}
 	// And the gadgets, over the bar and the corner. `gadget_at` is where
 	// each sits, and `hit_test` asks it too, so a press lands where the
 	// gadget was drawn.
@@ -810,17 +817,26 @@ bar, and the name on it.
 Called when a window opens and when it changes shape, and never per draw. The
 frame is memory like everything else in the run, so it survives being covered
 the way a client's pixels do.
+
+`keep_client` paints the frame and not the client area under it, for a theme
+`reload` and a frame of another size. A client that paints its store paints in
+its own process and may have laid its new look down before this runs, which
+the command stream, one serve loop in order, never allowed. An open and a
+resize still clear the area, because the client paints after either.
 */
-window_chrome :: proc "contextless" (win: ^Window) {
+window_chrome :: proc "contextless" (win: ^Window, keep_client := false) {
 	pieces: [MAX_FRAME_PIECES]libdraw.Piece
 	if !framed(win) {
+		if keep_client {
+			return
+		}
 		// No frame, and the well's face is still what a client that draws
 		// nothing gets, over the whole rectangle.
 		pieces[0] = libdraw.Piece{0, 0, win.w, win.h, libpal.SLATE}
 		win_pieces(win, pieces[:1])
 		return
 	}
-	n := window_frame(pieces[:], 0, 0, win.w, win.h, focused(win))
+	n := window_frame(pieces[:], 0, 0, win.w, win.h, focused(win), keep_client)
 	n += state_lamp(pieces[n:], win)
 	win_pieces(win, pieces[:n])
 	title_text(win)
@@ -2571,7 +2587,7 @@ window_reframe :: proc "contextless" (win: ^Window, ox: int, oy: int) #no_bounds
 	}
 	win.w = cw + 2 * nx
 	win.h = ch + ny + nx
-	window_chrome(win)
+	window_chrome(win, keep_client = true)
 }
 
 /*
