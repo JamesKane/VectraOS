@@ -528,6 +528,19 @@ handler :: proc "contextless" (
 			}
 			i := conv_alloc()
 			if i < 0 {
+				// Every conversation is held. Said on the console, with each
+				// one's state and descriptors, since a program that meets it
+				// sees only a refused request.
+				full := libodin.sink_from(buf[:room])
+				libodin.put_str(&full, "webfs: every conversation is held:")
+				for k in 0 ..< MAX_CONVS {
+					libodin.put_str(&full, " ")
+					libodin.put_uint(&full, u64(convs[k].state))
+					libodin.put_str(&full, "/")
+					libodin.put_uint(&full, u64(convs[k].refs))
+				}
+				libodin.put_str(&full, "\n")
+				libuser.eprint(libodin.str(&full))
 				reply^ = vectra9.error_reply(vectra9.ENOSPC)
 				return
 			}

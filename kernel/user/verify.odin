@@ -376,6 +376,11 @@ type_text :: proc(text: string) {
 
 // mnt_file names one window's file under the server's mount: `/mnt/<i><name>`.
 @(private = "file")
+// How many windows the draw server holds, `servers/intuition`'s
+// `MAX_WINDOWS`. A scan for a window walks them all. After the menu checks,
+// a desktop holds slots past sixteen.
+DRAW_SLOTS :: 32
+
 mnt_file :: proc "contextless" (buf: []u8, i: int, name: string, base := "/mnt") -> string {
 	n := copy(buf, base)
 	buf[n] = '/'
@@ -5024,19 +5029,28 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	arrived, which is what `rio` does in the window itself and what every
 	Plan 9 program that draws its own text does for itself.
 
-	The last glyph is polled rather than the first. The server paints a batch
-	left to right, so the first says only that the batch began.
+	The last glyph is polled first, and then the other two. The glass is read
+	from another core while the server copies the terminal's damage onto it,
+	and the copy is not one store. A cell the caret just left can read half
+	painted for a tick after the next glyph is whole.
 	*/
 	echoed, echo_ticks := await_glyph(s, ox + 40, y0, '!', PATIENCE * 10)
 	r.echo_ticks = echo_ticks
 	check(r, echoed, "and yet appear on the glass, because the window that draws them holds the line")
-	if glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i') {
+	both := false
+	for _ in 0 ..< PATIENCE {
+		if glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i') {
+			both = true
+			break
+		}
+		sync.delay(1)
+	}
+	if both {
 		check(r, true, "every one of them, before any newline says the line is finished")
 	} else {
-		// Seen once in twelve boots with the third glyph on the glass and
-		// one of the first two not. The failure says what each cell held
-		// instead, and whether the pair was right a moment later, because
-		// a glyph that arrives late and one that never does are two bugs.
+		// The failure says what each cell held, and whether the pair was
+		// right later still. A glyph that arrives late and one that never
+		// does are two bugs.
 		sink := detail_for("every one of them, before any newline says the line is finished")
 		libodin.put_str(&sink, "h ")
 		libodin.put_str(&sink, cell_says(s, ox + 24, y0, 'h'))
@@ -5080,14 +5094,12 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		sync.delay(1)
 	}
 	check(r, erased, "a backspace takes the last character off the field it was drawn in")
-	check(
-		r,
-		glyph_on_glass(s, ox + 32, y0, 'i'),
-		"and leaves the rest of the line where it was",
-	)
+	kept, _ := await_glyph(s, ox + 32, y0, 'i', PATIENCE)
+	check(r, kept, "and leaves the rest of the line where it was")
 	// And the caret came back with it, which is the cursor this milestone
-	// gave the line. It sits where the next character goes.
-	check(r, caret_at(s, ox + 40, y0), "and the caret comes back with it, to where the next one goes")
+	// gave the line. It sits where the next character goes, and not where
+	// the rubbed-out one went, polled as the moves below are.
+	check(r, await_caret(s, ox + 40, ox + 48, y0), "and the caret comes back with it, to where the next one goes")
 
 	/*
 	And `^A` moves it to the front of the line, where a person can see it.
@@ -5690,14 +5702,14 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			// The popup is found where it opened, at the pointer, and its
 			// submenu at its right edge; each item by the runs of face down
 			// its column.
-			px, py, pw, _, pok := await_window_at(wx0 + ww0 / 2, wy0 + wh0 / 2)
+			px, py, pw, ph, pok := await_window_at(wx0 + ww0 / 2, wy0 + wh0 / 2)
 			if pok {
 				stage = 1
-				if iy := await_face_run(s, px + 10, py, face, 2); iy >= 0 && point_to(px + pw / 2, iy) && click_held() {
+				if iy := await_key(s, px + 10, py, ph, face, 2, 48); iy >= 0 && point_to(px + pw / 2, iy) && click_held() {
 					stage = 2
-					if cx, cy, cw, _, cok := await_window_at(px + pw, -1); cok {
+					if cx, cy, cw, ch, cok := await_window_at(px + pw, -1); cok {
 						stage = 3
-						if jy := await_face_run(s, cx + 10, cy, face, 2); jy >= 0 && point_to(cx + cw / 2, jy) && click_held() {
+						if jy := await_key(s, cx + 10, cy, ch, face, 2, 12); jy >= 0 && point_to(cx + cw / 2, jy) && click_held() {
 							stage = 4
 							for _ in 0 ..< PATIENCE * 10 {
 								if sx, _, _, _, _, _, _, _, sok := wctl_frame("/mnt/0/wctl"); sok && sx == s.width / 2 {
@@ -5804,9 +5816,9 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 				dstage := 0
 				if iy := await_face_run(s, dx + 10, dy, face, 2); iy >= 0 && point_to(dx + 24, iy) && click_held() {
 					dstage = 1
-					if cx, cy, cw, _, cok := await_window_at(dx + dw, -1); cok {
+					if cx, cy, cw, ch, cok := await_window_at(dx + dw, -1); cok {
 						dstage = 2
-						if jy := await_face_run(s, cx + cw - 12, cy, face, 2); jy >= 0 && point_to(cx + 24, jy) && click_held() {
+						if jy := await_key(s, cx + cw - 12, cy, ch, face, 2, 12); jy >= 0 && point_to(cx + 24, jy) && click_held() {
 							dstage = 3
 							for _ in 0 ..< PATIENCE * 10 {
 								if sx, _, _, _, _, _, _, _, sok := wctl_frame("/mnt/0/wctl"); sok && sx == s.width / 2 {
@@ -5876,9 +5888,9 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 							face := fb.pack(s, fb.MAGNESIUM)
 							if iy := await_face_run(s, tx + tw - tl - 12, ty, face, 2); iy >= 0 && point_to(tx + tl + 24, iy) && click_held() {
 								tstage = 3
-								if cx, cy, cw, _, cok := await_window_at(tx + tw - tl, -1); cok {
+								if cx, cy, cw, ch, cok := await_window_at(tx + tw - tl, -1); cok {
 									tstage = 4
-									if jy := await_face_run(s, cx + cw - 12, cy, face, 2); jy >= 0 && point_to(cx + 24, jy) && click_held() {
+									if jy := await_key(s, cx + cw - 12, cy, ch, face, 2, 12); jy >= 0 && point_to(cx + 24, jy) && click_held() {
 										tstage = 5
 										for _ in 0 ..< PATIENCE * 10 {
 											if sx, _, _, _, _, _, _, _, sok := wctl_frame("/mnt/0/wctl"); sok && sx == s.width / 2 {
@@ -5917,7 +5929,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			opened := false
 			// Whichever window it took: the one whose ctl says app prefs.
 			search: for _ in 0 ..< PATIENCE * 20 {
-				for wi in 0 ..< 16 {
+				for wi in 0 ..< DRAW_SLOTS {
 					pb: [128]u8
 					path := mnt_file(pb[:], wi, "/ctl")
 					cb: [128]u8
@@ -6180,14 +6192,27 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 	}
 	check(r, lipped, "and lays the backdrop's icons under it, Home's drawer first with its copper lip")
 
+	/*
+	Workbench is up when its dock is. The dock opens last, once the notice
+	service's mount is done, and a window is an ordinary one, in front,
+	until its kind arrives. A check that drove the desktop before then
+	raced the dock's own opening: the alt-w below, meant for a drawer, once
+	closed the dock instead.
+	*/
+	desk_up := srv.mount(vfs.boot_namespace, "/srv/draw", "/n/desk") == vfs.OK
+	docked, _, _, _ := await_slot_at(WB_DOCK_X, WB_BAR_H + WB_DOCK_Y, "/n/desk")
+	check(r, desk_up && docked > 0, "and docks its main menu, the last of its windows, before anything drives it")
+	if desk_up {
+		_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/desk")
+	}
+
 	// -- 1. A double click on Home opens a drawer ----------------------------------
 
 	// A double click is two presses close enough in the server's own clock,
 	// which the injected pair does not always land inside on the first try.
 	// So the click is retried until a drawer's bar appears, a few times
-	// before it is called a failure. The wait is a long one: a drawer that
-	// opened slowly and a retry make two drawers, and the second outlives the
-	// close below.
+	// before it is called a failure. The wait is a long one, so a drawer
+	// that opens slowly is not clicked open twice.
 	home_x, home_y := WB_DOCK_ROOM + libmui_icon_w() / 2, WB_BAR_H + libmui_icon_h() / 2
 	check(r, point_to(home_x, home_y), "the pointer is moved onto Home")
 	dx, dy, dw := -1, -1, 0
@@ -6231,15 +6256,6 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 			sync.delay(1)
 		}
 		check(r, closed, "and an alt-w closes the drawer, its bar gone from the glass")
-		// A second drawer a retried click opened goes too, so the dock below
-		// is shown over the backdrop alone.
-		for _ in 0 ..< 3 {
-			if x, _, _ := title_bar_within(s, PATIENCE / 2, WB_DOCK_ROOM); x < 0 {
-				break
-			}
-			inject_chord(0x11)
-			sync.delay(PATIENCE / 2)
-		}
 	}
 
 	// -- 2. The docked main menu, and Shell chosen on it ------------------------------
@@ -6920,8 +6936,8 @@ wb_menu_open :: proc(s: ^fb.Surface, dx: int, dy: int, magnesium: u32, reset: bo
 		if dslot < 0 {
 			continue
 		}
-		if cx, cy, _, _, cok := await_window_at(dx + dw, -1, "/n/desk"); cok {
-			if jy := await_face_run(s, cx + 10, cy, magnesium, 3); jy >= 0 {
+		if cx, cy, _, ch, cok := await_window_at(dx + dw, -1, "/n/desk"); cok {
+			if jy := await_key(s, cx + 10, cy, ch, magnesium, 3, 12); jy >= 0 {
 				return cx + 24, jy, true
 			}
 		}
@@ -7908,12 +7924,16 @@ verify_mapping :: proc(r: ^Result) {
 	untracked_before := mem.pmm_stats().untracked_frees
 	segs_before := segment_stats().live
 
-	p := start_blob(r, "mapper", program_mapper(), "a process is loaded that asks for memory", u64(corner))
+	p := hold_blob(r, "mapper", program_mapper(), "a process is loaded that asks for memory")
 	if p == nil {
 		return
 	}
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_FB)), "with the screen's name in its page")
 	check(r, set_bytes(p, SLOT_B, bytes_of(PATH_CONS)), "and a stream's name beside it")
+	// Staged, and only now a thread. Launched before the staging, the mapper
+	// sometimes read its page first. It opened a name not yet there, and the
+	// open answered -2, one boot in fifty.
+	check(r, launch(p, u64(corner)), "and it launches")
 
 	if comes_back(r, p, "and it comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_MAPPER, "having reached its first instruction")
@@ -10591,7 +10611,7 @@ parse_mouse :: proc "contextless" (line: []u8) -> (x: int, y: int, b: int, ok: b
 
 @(private = "file")
 front_wctl :: proc(base: string) -> string {
-	for i in 0 ..< 16 {
+	for i in 0 ..< DRAW_SLOTS {
 		sink := libodin.sink_from(front_wctl_buf[:])
 		libodin.put_str(&sink, base)
 		libodin.put_int(&sink, i64(i))
@@ -10671,7 +10691,7 @@ between_px :: proc "contextless" (v: u32, a: u32, b: u32) -> bool {
 // place, unframed and hidden, which is why the frame and the showing are asked.
 await_panel_at :: proc(x: int, y: int) -> (slot: int, fx: int, fy: int, fw: int) {
 	for _ in 0 ..< PATIENCE * 10 {
-		for wi in 1 ..< 16 {
+		for wi in 1 ..< DRAW_SLOTS {
 			pb: [64]u8
 			path := mnt_file(pb[:], wi, "/wctl")
 			wx, wy, ww, _, l, _, _, _, wok := wctl_frame(path)
@@ -10691,7 +10711,7 @@ await_panel_at :: proc(x: int, y: int) -> (slot: int, fx: int, fy: int, fw: int)
 // slot, its corner and its width, or a slot of -1.
 await_slot_at :: proc(x: int, y: int, base := "/mnt") -> (slot: int, fx: int, fy: int, fw: int) {
 	for _ in 0 ..< PATIENCE * 10 {
-		for wi in 1 ..< 16 {
+		for wi in 1 ..< DRAW_SLOTS {
 			pb: [64]u8
 			if wx, wy, ww, _, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl", base)); wok && wx == x && wy == y && ww > 0 {
 				return wi, wx, wy, ww
@@ -10709,7 +10729,7 @@ await_slot_at :: proc(x: int, y: int, base := "/mnt") -> (slot: int, fx: int, fy
 // put it and not by its number.
 await_window_at :: proc(x: int, y: int, base := "/mnt") -> (fx: int, fy: int, fw: int, fh: int, ok: bool) {
 	for _ in 0 ..< PATIENCE * 10 {
-		for wi in 1 ..< 16 {
+		for wi in 1 ..< DRAW_SLOTS {
 			pb: [64]u8
 			if wx, wy, ww, wh, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl", base)); wok && wx == x && (y < 0 || wy == y) && ww > 0 {
 				return wx, wy, ww, wh, true
@@ -10718,6 +10738,47 @@ await_window_at :: proc(x: int, y: int, base := "/mnt") -> (fx: int, fy: int, fw
 		sync.delay(1)
 	}
 	return
+}
+
+/*
+await_key is `await_face_run` for a popup that just opened: the n-th of its
+own keys, counted inside its rectangle, `top` to `top + h`. And only once
+its first key begins within `first_by` of its top, which is the popup's own
+paint. Before that the glass under it still shows the window beneath, whose
+buttons are the same face. A count read then clicked a key too high:
+`Snap left` for `Snap right`.
+*/
+await_key :: proc(s: ^fb.Surface, x: int, top: int, h: int, face: u32, n: int, first_by: int) -> int {
+	for _ in 0 ..< PATIENCE * 10 {
+		if first := nth_face_run_in(s, x, top, top + h, face, 1, true); first >= 0 && first <= top + first_by {
+			if y := nth_face_run_in(s, x, top, top + h, face, n, false); y >= 0 {
+				return y
+			}
+		}
+		sync.delay(1)
+	}
+	return -1
+}
+
+// nth_face_run_in is `nth_face_run` between two rows. With `start` it answers
+// where the run begins rather than its middle.
+nth_face_run_in :: proc "contextless" (s: ^fb.Surface, x: int, y0: int, y1: int, face: u32, n: int, start: bool) -> int #no_bounds_check {
+	runs, from := 0, -1
+	for y in max(y0, 0) ..< min(y1, s.height) + 1 {
+		on := y < min(y1, s.height) && fb.get_raw(s, x, y) == face
+		if on && from < 0 {
+			from = y
+		} else if !on && from >= 0 {
+			if y - from >= 8 {
+				runs += 1
+				if runs == n {
+					return start ? from : (from + y) / 2
+				}
+			}
+			from = -1
+		}
+	}
+	return -1
 }
 
 // await_face_run waits for the n-th run of a face down a column to show,
@@ -13350,12 +13411,37 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 					margv := new(Argv)
 					_ = argv_from(margv, mnames[:])
 					if pm := start_path(r, "/bin/mothra", "the loader starts the reader on the page to approve on", margv); pm != nil {
-						bx, _, _ := await_bar(s)
+						bx, by, bw := await_bar(s)
 						check(r, bx >= 0, "and the reader opens a framed window on the page")
-						// The page comes over the wire after the window opens.
-						sync.delay(PATIENCE * 3)
-						// Tab to the one button, and Return presses it.
-						type_text("\t\n")
+						/*
+						The page comes over the wire after the window opens.
+						Keys typed before the reader reads them are lost. So a
+						Tab goes to the one button, until its row sits on a bar
+						of the face, as the compose check waits for the address
+						row. Then Return presses it.
+						*/
+						face := fb.pack(s, fb.MAGNESIUM)
+						selected := false
+						for _ in 0 ..< 5 {
+							type_text("\t")
+							for _ in 0 ..< PATIENCE * 5 {
+								for y in by + 30 ..< min(by + 400, s.height) {
+									if _, run := row_span(s, y, face, bx + 4, bx + bw - 4); run > 100 {
+										selected = true
+										break
+									}
+								}
+								if selected {
+									break
+								}
+								sync.delay(1)
+							}
+							if selected {
+								break
+							}
+						}
+						check(r, selected, "and a Tab selects the Approve button, on a bar of the face: the reader is reading keys")
+						type_text("\n")
 						// The trade is what sets me, so me is the proof it happened.
 						for _ in 0 ..< PATIENCE * 20 {
 							n = web_read_file("/mnt/at/me", text[:])

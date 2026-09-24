@@ -310,24 +310,13 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	}
 	win.data_fd = int(fd)
 
-	ctl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "ctl"), abi.O_RDWR)
-	if ctl < 0 {
-		return unopened(win, "the window's ctl will not open")
-	}
-	n := libuser.read(int(ctl), win.geo[:])
-	w, h, _, _, gok := libdraw.parse_geometry(win.geo[:max(int(n), 0)])
-	if !gok {
-		_ = libuser.close(int(ctl))
-		return unopened(win, "the window's ctl reports no geometry")
-	}
-	win.cw, win.ch = w, h
-	// The bar's name.
-	name_at := copy(win.line[:], "name ")
-	name_at += copy(win.line[name_at:], title)
-	_ = libuser.write(int(ctl), win.line[:name_at])
-	// The kind, the size and the place a program asked for, each a line the
-	// server takes before the first paint. The geometry is read again
-	// after, because a kind or a size changes it.
+	/*
+	The kind first, before anything else is said of the window. The server
+	makes every new window an ordinary one, framed and in front, until its
+	kind arrives. A menu or a popup in that state is the window a close
+	chord meant for another closes. `docs/CHROME.md` brick 8 met it: the
+	desktop's dock, opening late, took an alt-w a check sent a drawer.
+	*/
 	if win.kind != .Normal {
 		wctl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "wctl"), abi.O_WRONLY)
 		if wctl >= 0 {
@@ -346,6 +335,25 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 			_ = libuser.close(int(wctl))
 		}
 	}
+
+	ctl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "ctl"), abi.O_RDWR)
+	if ctl < 0 {
+		return unopened(win, "the window's ctl will not open")
+	}
+	n := libuser.read(int(ctl), win.geo[:])
+	w, h, _, _, gok := libdraw.parse_geometry(win.geo[:max(int(n), 0)])
+	if !gok {
+		_ = libuser.close(int(ctl))
+		return unopened(win, "the window's ctl reports no geometry")
+	}
+	win.cw, win.ch = w, h
+	// The bar's name.
+	name_at := copy(win.line[:], "name ")
+	name_at += copy(win.line[name_at:], title)
+	_ = libuser.write(int(ctl), win.line[:name_at])
+	// The size and the place a program asked for, each a line the server
+	// takes before the first paint. The geometry is read again after,
+	// because a kind or a size changes it.
 	if win.want_w > 0 && win.want_h > 0 {
 		at := copy(win.line[:], "size ")
 		at += len(libuser.itoa(win.line[at:], i64(win.want_w)))

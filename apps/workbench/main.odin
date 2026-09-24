@@ -226,7 +226,15 @@ wb_main :: proc "contextless" (arg: rawptr) {
 	notice_post()
 	_ = libthread.threadcreate(notice_thread, nil)
 	_ = libthread.threadcreate(mount_thread, nil)
-	libthread.yield()
+	// `notice_thread`, a thread of this proc, answers the mount's handshake,
+	// and the handshake has a deadline. A window opened meanwhile runs a
+	// long while without yielding. A handshake that missed its deadline tore
+	// the wire down for good, and every later mount of /srv/wb was refused.
+	// So no window opens until the mount is done. `docs/CHROME.md` brick 6d met it for
+	// the dock, and the backdrop's reading of the namespace met it again.
+	if notice_mounted != nil {
+		_ = libthread.recvul(notice_mounted)
+	}
 
 	// The look, from /lib/theme and $home/lib/theme, before a window opens so
 	// each takes it. `docs/WORKBENCH.md` section 5.
@@ -254,21 +262,12 @@ wb_main :: proc "contextless" (arg: rawptr) {
 
 /*
 dock_thread opens the main menu, docked over the backdrop and shown while the
-desktop or a drawer is in front, once `/srv/wb` is mounted.
-
-**It waits for the notice service's handshake.** The notice service is a thread
-of this proc, and the kernel's handshake with it, for the mount `mount_thread`
-asks, has a deadline. A thread that opens a window runs a long while without
-yielding. The dock opened in that window of time kept the handshake past its
-deadline. The kernel then tears the wire down, the service ends, and
-`/srv/wb` never answers a mount again. So the dock opens after the mount.
+desktop or a drawer is in front. The notice service's mount ends before it starts.
+The main thread waited for it before any window, for the reason it gives.
 */
 dock_thread :: proc "contextless" (arg: rawptr) {
 	_ = arg
 	context = wb_ctx
-	if notice_mounted != nil {
-		_ = libthread.recvul(notice_mounted)
-	}
 	_ = libmui.menu_dock(&main_menu, back, "Workbench", top_nodes[:])
 	libthread.threadexits("")
 }

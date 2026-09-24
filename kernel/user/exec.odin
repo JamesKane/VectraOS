@@ -42,6 +42,7 @@ failure, and on success the value it would have returned is never read.
 */
 package user
 
+import "base:intrinsics"
 import "kernel:arch"
 import "kernel:mem"
 import "kernel:sched"
@@ -173,7 +174,15 @@ sys_exec :: proc(frame: ^arch.Trap_Frame, addr: uintptr, length: int, argv_addr:
 		// pending-note flag set. It was for the handler and the text that are
 		// gone now; left set, the new program dies at its first boundary on a
 		// note nobody sent it. Clearing it completes the note reset above.
-		sched.clear_note(t)
+		//
+		// A kill is not such a note. It is the kernel's, for the process and
+		// not its text, and it outlives the exec, as Plan 9's `Proc_exitme`
+		// does. A shell's `sleep 100 & kill $apid` can land the kill between
+		// the fork and the exec. It was cleared here, and the new program ran
+		// on with nobody left to end it.
+		if !intrinsics.volatile_load(&p.stopping) {
+			sched.clear_note(t)
+		}
 		t.space = space
 	}
 	mem.space_switch(space)
