@@ -252,6 +252,7 @@ Mouse_Event :: struct {
 	buttons: u8,
 	motion:  bool, // Its buttons are the line before's
 	close:   bool, // Not a movement: the `c` line, a close asked of the client
+	resize:  bool, // Not a movement: the `r` line, the window's size changed
 }
 
 /*
@@ -309,6 +310,30 @@ mouse_close :: proc "contextless" (w: int) #no_bounds_check {
 	answer_mouse(w)
 }
 
+/*
+mouse_resize puts the `r` line on a window's queue, `rio`'s resize message:
+the server changed the window's size, by a snap, a zoom or the sizing corner,
+and a client that paints its store learns to paint the new area. A second one
+while the first is unread says nothing more, so it is not queued.
+*/
+mouse_resize :: proc "contextless" (w: int) #no_bounds_check {
+	win := &windows[w]
+	if !win.mouse_held {
+		return
+	}
+	queued := int(win.mseq - win.mread)
+	if queued > 0 && win.mq[(win.mseq - 1) % MOUSE_RING].resize {
+		return
+	}
+	prev := queued > 0 ? win.mq[(win.mseq - 1) % MOUSE_RING].buttons : win.mlastb
+	if queued >= MOUSE_RING {
+		mouse_evict(win)
+	}
+	win.mq[win.mseq % MOUSE_RING] = Mouse_Event{buttons = prev, resize = true}
+	win.mseq += 1
+	answer_mouse(w)
+}
+
 // mouse_evict makes room in a full ring: the oldest motion line goes, or,
 // when every line is a button change, the oldest line.
 @(private = "file")
@@ -337,7 +362,7 @@ mouse_line :: proc "contextless" (win: ^Window, out: []u8) -> int #no_bounds_che
 	win.mlastb = e.buttons
 	// The close request is a line of the same width, `c` and zeroes, so a
 	// reader that knows only `m` skips it by its first byte.
-	out[0] = e.close ? 'c' : 'm'
+	out[0] = e.close ? 'c' : e.resize ? 'r' : 'm'
 	at := 1
 	at = put_field(out, at, int(e.x))
 	at = put_field(out, at, int(e.y))
@@ -608,12 +633,15 @@ run_wctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bo
 			window_place(win, windows[p].workspace)
 			window_raise(&windows[p], p)
 		}
+		menus_sync()
 	case "backdrop":
 		window_kind(win, win_at, .Backdrop)
 	case "bar":
 		window_kind(win, win_at, .Bar)
 	case "popup":
 		window_kind(win, win_at, .Popup)
+	case "menu":
+		window_kind(win, win_at, .Menu)
 	case:
 		return vectra9.EINVAL
 	}
@@ -784,6 +812,13 @@ window_kind :: proc "contextless" (win: ^Window, at: int, kind: Window_Kind) {
 		// it. Raise it: `stack_add` floats a popup above every normal window,
 		// so this puts the toast or the menu back on top where it belongs.
 		window_raise(win, at)
+	case .Menu:
+		// A docked menu goes to the top left, below any bar, and floats
+		// with the popups. It shows only while its program is in front,
+		// which `menus_sync` settles once the menu names its `parent`.
+		_ = window_move(win, MENU_DOCK_X, bar_height() + MENU_DOCK_Y)
+		window_raise(win, at)
+		menus_sync()
 	}
 	window_chrome(win)
 	if win.workspace == current_ws && !win.hidden {

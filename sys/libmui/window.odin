@@ -154,6 +154,7 @@ Kind :: enum u8 {
 	Backdrop,
 	Bar,
 	Popup,
+	Menu, // A docked main menu, `docs/CHROME.md` section 8
 }
 
 // Two presses on one gadget within this many milliseconds are a double click.
@@ -335,6 +336,8 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 				word = "bar"
 			case .Popup:
 				word = "popup"
+			case .Menu:
+				word = "menu"
 			}
 			_ = libuser.write(int(wctl), transmute([]u8)word)
 			_ = libuser.close(int(wctl))
@@ -412,6 +415,16 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	// The tree in the client area, and the first paint.
 	fit(root, &win.theme)
 	window_bounds(win, mine)
+	// A docked menu names the window it serves, which is what shows it while
+	// that window is in front and hides it otherwise.
+	if win.kind == .Menu && win.parent != nil {
+		if wctl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "wctl"), abi.O_WRONLY); wctl >= 0 {
+			line: [32]u8
+			nb: [16]u8
+			_ = libuser.write(int(wctl), transmute([]u8)libuser.cat_into(line[:], "parent ", libuser.itoa(nb[:], i64(win.parent.id))))
+			_ = libuser.close(int(wctl))
+		}
+	}
 	lay(root, 0, 0, win.cw, win.ch, &win.theme)
 	set_focus_first(win)
 	window_paint(win)
@@ -792,6 +805,12 @@ mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 		if win.on_close == nil || win.on_close(win) {
 			win.done = true
 		}
+		return
+	}
+	// An `r` line is the server's resize: the window is another size, and
+	// the store's line says which. A paint reads it and lays the tree out.
+	if len(data) >= 1 && data[0] == 'r' {
+		window_paint(win)
 		return
 	}
 	if len(data) < 1 || data[0] != 'm' {

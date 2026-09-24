@@ -717,8 +717,34 @@ look.
    reader for ever. A hung-up window's `mouse` now answers every
    read with nothing, as its `cons` does.
 
-   6b, the docked menu, 6c, tear-off, and 6d, Workbench's menus as its
-   main menu, are ahead.
+   **6b, the docked menu, B, is done, September 2026.** A window of the new
+   `menu` kind names the window it serves with `parent`. The server puts it
+   at the top left, below any bar, and stacks it with the popups. It is
+   never the focus, and a press on its title drags it.
+
+   `menus_sync` shows a
+   docked menu only while its parent, or a transient of it, is in front,
+   and runs on every change of focus. `libmui.menu_dock` opens a tree that
+   way. It stays up and tells each choice at once, a submenu's through the
+   same cascade. muidemo docks its tree.
+
+   The checks read the dock shown with the demo in front. It hides behind
+   a window the kernel claims, and shows again when that window goes. They
+   choose `Snap right` through the dock. A failure names the stage it
+   reached.
+
+   6b found two things. A popup is born an ordinary window, the front for a
+   moment, which hid the dock. The front came back to where it began, and
+   nothing showed the dock again. So `refocus` settles the menus even when the
+   front did not change.
+
+   And a window the server sized, by a snap, a zoom
+   or the sizing corner, was left blank, because its client never heard.
+   The server now puts `rio`'s `r` line on the window's `mouse`, and the
+   toolkit paints the new area on it. A check reads the demo's face back
+   after a snap and a zoom.
+
+   6c, tear-off, and 6d, Workbench's menus as its main menu, are ahead.
 7. **Icons, J.** The icon format, `libraster.path`, the kinds with the
    namespace as witness, the emblem, and the Recycler. The check: a union
    directory's icon has the emblem's colour in its corner, and a plain

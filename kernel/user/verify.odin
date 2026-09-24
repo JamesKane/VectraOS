@@ -5296,6 +5296,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	}
 	face := check(r, gtop > 0, "and paints a button face inside it, which is the client drawing through the toolkit")
 
+
 	/*
 	A label on that face is amber, its glyphs laid in the ink over the face.
 
@@ -5666,6 +5667,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			check(r, cleared, "and with the file gone the pixel beside the window is the desktop's again, exactly")
 		}
 
+
 		/*
 		A menu is a tree, `docs/CHROME.md` brick 6. Button 3 in the demo opens
 		its menu at the pointer: a title, then a key per item, the second of
@@ -5727,6 +5729,104 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 					sync.delay(1)
 				}
 			}
+			/*
+			The server sized the demo twice, the snap and the zoom back, and
+			each time told it with an `r` line on its `mouse`, `rio`'s resize.
+			The toolkit paints the new area on it: the button face is where it
+			was, and not the blank ground a resize leaves a client that never
+			heard.
+			*/
+			if snapped {
+				repainted := false
+				for _ in 0 ..< PATIENCE * 10 {
+					if fb.get_raw(s, gx, probe_y) == magnesium {
+						repainted = true
+						break
+					}
+					sync.delay(1)
+				}
+				check(r, repainted, "and sized by the server and back, the demo hears the resize and paints its face again")
+			}
+		}
+
+
+		/*
+		The docked main menu, `docs/CHROME.md` brick 6b. The demo docks its tree
+		as a window of the `menu` kind, which the server puts at the top left
+		and shows only while the demo is in front. A window the kernel claims
+		comes to the front and the dock hides. Given back, the demo is in front
+		again and the dock shows. A choice made on the dock, two menus deep,
+		reaches the demo as the popup's does: Snap right.
+		*/
+		if slot, dx, dy, dw := await_slot_at(8, 8); slot > 0 {
+			pb: [64]u8
+			dock := mnt_file(pb[:], slot, "/wctl")
+			_, _, _, _, _, hidden0, _ := wctl_geo(dock)
+			check(r, !hidden0, "the demo's main menu is docked at the top left, a menu window shown while the demo is in front")
+			nb: [16]u8
+			nn := read_once("/mnt/new", nb[:])
+			at := 0
+			other, ook := libdraw.scan_int(nb[:max(nn, 0)], &at)
+			db: [64]u8
+			if ook {
+				if data, derr := vfs.open_path(vfs.boot_namespace, mnt_file(db[:], other, "/data"), vfs.O_WRONLY); derr == vfs.OK && data != nil {
+					hid := false
+					for _ in 0 ..< PATIENCE * 10 {
+						if _, _, _, _, _, h, gok := wctl_geo(dock); gok && h {
+							hid = true
+							break
+						}
+						sync.delay(1)
+					}
+					check(r, hid, "and another program's window in front hides it")
+					vfs.chan_close(data)
+					shown_again := false
+					for _ in 0 ..< PATIENCE * 10 {
+						if _, _, _, _, _, h, gok := wctl_geo(dock); gok && !h {
+							shown_again = true
+							break
+						}
+						sync.delay(1)
+					}
+					check(r, shown_again, "and with that window gone the demo is in front and its menu shows again")
+				}
+			}
+			if devfs.tree().mouse.present {
+				face := fb.pack(s, fb.MAGNESIUM)
+				right := false
+				dstage := 0
+				if iy := await_face_run(s, dx + dw - 12, dy, face, 2); iy >= 0 && point_to(dx + 24, iy) && click_held() {
+					dstage = 1
+					if cx, cy, cw, _, cok := await_window_at(dx + dw, -1); cok {
+						dstage = 2
+						if jy := await_face_run(s, cx + cw - 12, cy, face, 2); jy >= 0 && point_to(cx + 24, jy) && click_held() {
+							dstage = 3
+							for _ in 0 ..< PATIENCE * 10 {
+								if sx, _, _, _, _, _, _, _, sok := wctl_frame("/mnt/0/wctl"); sok && sx == s.width / 2 {
+									right = true
+									break
+								}
+								sync.delay(1)
+							}
+						}
+					}
+				}
+				dwhat :: "and Snap right chosen on the dock, two menus deep, snaps the demo right"
+				if !check(r, right, dwhat) {
+					sink := detail_for(dwhat)
+					libodin.put_str(&sink, "reached stage ")
+					libodin.put_int(&sink, i64(dstage))
+					fail_detail(r, &sink)
+				}
+				if right {
+					_ = net_file_write("/mnt/0/wctl", "zoom")
+				} else {
+					_ = point_to(s.width - 24, s.height - 24)
+					_ = click_held()
+				}
+			}
+		} else {
+			check(r, false, "the demo's main menu is docked at the top left, a menu window shown while the demo is in front")
 		}
 
 		// The preferences window: a toolkit window of every role, walked
@@ -10120,14 +10220,22 @@ MOUSE_LINES_MAX :: 16
 // that would park fails the check instead of wedging the suite.
 @(private = "file")
 mouse_next :: proc(mf: ^vfs.Chan) -> (x: int, y: int, b: int, ok: bool) {
-	mount_reader = Mount_Reader{c = mf}
-	if sched.spawn("mouse-next", mount_read_thread, nil) == nil {
-		return
+	// An `r` line is a resize, not a movement, and the checks here ask for
+	// movements: it is read past.
+	for _ in 0 ..< 8 {
+		mount_reader = Mount_Reader{c = mf}
+		if sched.spawn("mouse-next", mount_read_thread, nil) == nil {
+			return
+		}
+		if !sync.await_flag(&mount_reader.done, PATIENCE) {
+			return
+		}
+		if mount_reader.n > 0 && mount_reader.buf[0] == 'r' {
+			continue
+		}
+		return parse_mouse(mount_reader.buf[:max(mount_reader.n, 0)])
 	}
-	if !sync.await_flag(&mount_reader.done, PATIENCE) {
-		return
-	}
-	return parse_mouse(mount_reader.buf[:max(mount_reader.n, 0)])
+	return
 }
 
 // point_to moves the pointer to a screen position by injected packets,
@@ -10355,6 +10463,21 @@ between_px :: proc "contextless" (v: u32, a: u32, b: u32) -> bool {
 		}
 	}
 	return true
+}
+
+// await_slot_at waits for a window whose corner is at (x, y) and answers its
+// slot, its corner and its width, or a slot of -1.
+await_slot_at :: proc(x: int, y: int) -> (slot: int, fx: int, fy: int, fw: int) {
+	for _ in 0 ..< PATIENCE * 10 {
+		for wi in 1 ..< 10 {
+			pb: [64]u8
+			if wx, wy, ww, _, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl")); wok && wx == x && wy == y && ww > 0 {
+				return wi, wx, wy, ww
+			}
+		}
+		sync.delay(1)
+	}
+	return -1, 0, 0, 0
 }
 
 // await_window_at waits for a window whose corner is at (x, y), a y below

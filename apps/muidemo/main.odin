@@ -26,6 +26,8 @@ win: libmui.Window
 // A menu is a popup, so it is a window of its own, separate from the panel's.
 menu: libmui.Menu
 menu_win: libmui.Window
+dock: libmui.Menu
+dock_win: libmui.Window
 // The menu is a tree, `docs/CHROME.md` section 8: a title, an item with a
 // shortcut, a submenu, and Close.
 window_items := [2]libmui.Menu_Node{{label = "Snap left"}, {label = "Snap right"}}
@@ -117,6 +119,11 @@ demo_main :: proc "contextless" (arg: rawptr) {
 	if !libmui.window_open(&win, "Workbench", col) {
 		libthread.threadexitsall("open")
 	}
+	// Its main menu, docked at the top left while the demo is in front: the
+	// same tree the button 3 menu shows, `docs/CHROME.md` section 8.
+	dock.win = &dock_win
+	dock.handler = menu_chosen
+	_ = libmui.menu_dock(&dock, &win, "Demo", menu_nodes[:])
 	libmui.window_run(&win)
 	libthread.threadexits("")
 }

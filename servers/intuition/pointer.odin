@@ -257,6 +257,12 @@ pointer_move :: proc "contextless" (x: int, y: int, b: u8, msec: u64) #no_bounds
 			drag = Drag{kind = .Move, win = w, x0 = x, y0 = y, ox = win.x, oy = win.y}
 			return
 		case .Client:
+			// A docked menu is dragged by its title, its top rows, and a
+			// press there is the server's and not the menu's.
+			if win.kind == .Menu && y - win.y < MENU_GRIP {
+				drag = Drag{kind = .Move, win = w, x0 = x, y0 = y, ox = win.x, oy = win.y}
+				return
+			}
 			if win.kind == .Normal {
 				window_raise(win, w)
 			}

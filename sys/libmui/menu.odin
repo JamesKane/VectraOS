@@ -61,6 +61,10 @@ Menu :: struct {
 	child_win:  ^Window,
 	waiting:    bool,
 	done:       ^libthread.Chan,
+
+	// A docked menu stays up: a choice is told at once and the window
+	// stays, `docs/CHROME.md` section 8's main menu.
+	docked:     bool,
 }
 
 /*
@@ -157,18 +161,71 @@ menu_open_tree :: proc "contextless" (m: ^Menu, menu_title: string, nodes: []Men
 
 // menu_press is the popup's handler: an item chosen, or Escape, ends it. An
 // item with a submenu opens the submenu and leaves this menu to wait for it.
+// A docked menu tells its choice at once and stays up.
 @(private = "file")
 menu_press :: proc "contextless" (win: ^Window, id: int) {
 	m := (^Menu)(win.user)
 	if id >= 1 && id - 1 < len(m.nodes) {
 		m.chosen = id - 1
+		m.sub_chosen = -1
 		if m.nodes[id - 1].sub != nil {
 			if menu_cascade(m, id - 1) {
 				return
 			}
 		}
+		if m.docked {
+			if m.handler != nil {
+				m.handler(m, m.chosen)
+			}
+			return
+		}
 	}
-	win.done = true
+	if !m.docked {
+		win.done = true
+	}
+}
+
+/*
+menu_dock opens `m` as a program's docked main menu, NeXT's, `docs/CHROME.md`
+section 8. It is a window of the `menu` kind that the server puts at the top
+left and shows only while `parent` is in front. It stays up. Each choice is
+told to `handler` as it is made, a submenu's through `sub_chosen`, and the menu
+goes when the program closes it or ends.
+*/
+menu_dock :: proc "contextless" (m: ^Menu, parent: ^Window, menu_title: string, nodes: []Menu_Node) -> bool {
+	if m == nil || m.win == nil || m.open || len(nodes) == 0 {
+		return false
+	}
+	win := m.win
+	if win.theme.pad == 0 && win.theme.gap == 0 {
+		win.theme = ui_theme
+	}
+	m.title = menu_title
+	root := menu_build(m, nodes, &win.theme)
+	if root == nil {
+		return false
+	}
+	win.kind = .Menu
+	win.parent = parent
+	win.bind_dev = false
+	win.own_exit = false
+	win.set_up = true
+	win.placed = false
+	win.want_w = root.minw
+	win.want_h = root.minh
+	win.handler = menu_press
+	win.user = rawptr(m)
+	m.docked = true
+	m.chosen = -1
+	m.sub_chosen = -1
+	m.waiting = false
+	m.open = true
+	if !window_open(win, menu_title, root) {
+		m.open = false
+		return false
+	}
+	_ = libthread.threadcreate(menu_thread, m)
+	return true
 }
 
 /*
@@ -213,6 +270,14 @@ menu_cascade :: proc "contextless" (m: ^Menu, i: int) -> bool {
 menu_child_done :: proc "contextless" (cm: ^Menu, item: int) {
 	m := (^Menu)(cm.user)
 	m.sub_chosen = item
+	if m.docked {
+		// The main menu stays up: the choice two deep is told now.
+		m.waiting = false
+		if item >= 0 && m.handler != nil {
+			m.handler(m, m.chosen)
+		}
+		return
+	}
 	if item < 0 {
 		m.chosen = -1
 	}
@@ -233,7 +298,7 @@ menu_thread :: proc "contextless" (arg: rawptr) {
 		m.waiting = false
 	}
 	m.open = false
-	if m.handler != nil {
+	if m.handler != nil && !m.docked {
 		m.handler(m, m.chosen)
 	}
 	libthread.threadexits("")

@@ -51,6 +51,7 @@ Window_Kind :: enum u8 {
 	Backdrop,
 	Bar,
 	Popup,
+	Menu, // a docked main menu, `docs/CHROME.md` section 8
 }
 
 // Window_State is what a window says about whether it wants a person, on its

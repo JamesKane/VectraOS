@@ -1186,11 +1186,48 @@ stack_top :: proc "contextless" () -> int #no_bounds_check {
 		// `mouse_thread` in `sys/libmui` says a popup is never focused. Focus
 		// stays on the window under them, so keys typed while a toast is up
 		// reach the window the person is working in.
-		if windows[w].workspace == current_ws && !windows[w].hidden && windows[w].kind != .Bar && windows[w].kind != .Popup {
+		if windows[w].workspace == current_ws && !windows[w].hidden && windows[w].kind != .Bar && windows[w].kind != .Popup && windows[w].kind != .Menu {
 			return w
 		}
 	}
 	return -1
+}
+
+/*
+The docked main menus, `docs/CHROME.md` section 8. A menu window names the
+window it serves with `parent`, and shows only while that window, or one of
+its transients, is the front. Every other docked menu is hidden, so the top
+left of the screen carries the menu of the program in use and no other.
+
+The menu's `hidden` is set here directly and not through `window_hide`, which
+refocuses: a docked menu is never the focus, so showing or hiding one moves
+nothing else, and `refocus` calls this.
+*/
+MENU_DOCK_X :: 8
+MENU_DOCK_Y :: 8
+// The rows at a docked menu's top a press drags it by: its title.
+MENU_GRIP :: 24
+
+menus_sync :: proc "contextless" () #no_bounds_check {
+	front := stack_top()
+	for i in 0 ..< MAX_WINDOWS {
+		m := &windows[i]
+		if !m.used || m.kind != .Menu {
+			continue
+		}
+		want := front >= 0 && m.parent >= 0 && (front == m.parent || windows[front].parent == m.parent)
+		if m.hidden == !want {
+			continue
+		}
+		m.hidden = !want
+		if m.workspace != current_ws || locked {
+			continue
+		}
+		if m.hidden {
+			desk_paint(m.x, m.y, m.x + m.w, m.y + m.h)
+		}
+		repaint_window(m.x, m.y, m.w, m.h)
+	}
 }
 
 focused :: proc "contextless" (win: ^Window) -> bool #no_bounds_check {
@@ -1216,6 +1253,11 @@ session before its bar is drawn. The new front cannot be: it is in the stack.
 refocus :: proc "contextless" (was: int) #no_bounds_check {
 	now := stack_top()
 	if now == was {
+		// The front can come back where it began and still have moved in
+		// between: a popup is born an ordinary window, the front for a
+		// moment, which hid the docked menu. So the menus are settled either
+		// way. It repaints only a menu whose showing changed.
+		menus_sync()
 		return
 	}
 	if was >= 0 && windows[was].used {
@@ -1224,6 +1266,7 @@ refocus :: proc "contextless" (was: int) #no_bounds_check {
 	if now >= 0 {
 		bar_show(&windows[now])
 	}
+	menus_sync()
 	// The halo follows the focus: both margins, the old front's and the new.
 	if th_glow > 0 && !locked {
 		for at in ([2]int{was, now}) {
@@ -1483,14 +1526,15 @@ key_message :: proc "contextless" (msg: []u8) #no_bounds_check {
 // it -- see `docs/DRAW.md` and the toast in `apps/workbench/notice.odin`.
 stack_add :: proc "contextless" (win: int) #no_bounds_check {
 	stack_drop(win)
-	if windows[win].kind == .Popup {
+	if windows[win].kind == .Popup || windows[win].kind == .Menu {
 		stack[stack_n] = win
 		stack_n += 1
 		return
 	}
-	// Below the run of popups at the top, above everything else.
+	// Below the run of popups at the top, above everything else. A docked
+	// menu floats in that run with them.
 	ins := stack_n
-	for ins > 0 && windows[stack[ins - 1]].kind == .Popup {
+	for ins > 0 && (windows[stack[ins - 1]].kind == .Popup || windows[stack[ins - 1]].kind == .Menu) {
 		ins -= 1
 	}
 	for i := stack_n; i > ins; i -= 1 {
@@ -2536,6 +2580,8 @@ window_size :: proc "contextless" (win: ^Window, ncw: int, nch: int) -> vectra9.
 		win.w = nw
 	win.h = nh
 	window_chrome(win)
+	// The client hears it, `rio`'s `r` line, and paints the new area.
+	mouse_resize(int(uintptr(win) - uintptr(&windows[0])) / size_of(Window))
 	region_clear(&win.dmg)
 	if win.workspace != current_ws || win.hidden {
 		return vectra9.Errno(0)
