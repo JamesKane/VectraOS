@@ -3594,6 +3594,12 @@ handler :: proc "contextless" (
 				reply^ = vectra9.Rread{data = buf[:got]}
 				return
 			}
+			// A hung-up window has no more lines: its reader hears so now,
+			// where a held read would wait for ever. See `answer_mouse`.
+			if windows[w].hangup {
+				reply^ = vectra9.Rread{data = nil}
+				return
+			}
 			lib9p.hold(&srv)
 			return
 		}

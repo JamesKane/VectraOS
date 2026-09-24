@@ -420,6 +420,7 @@ window_hangup :: proc "contextless" (win: ^Window) #no_bounds_check {
 	win.hangup = true
 	w := int(uintptr(win) - uintptr(&windows[0])) / size_of(Window)
 	answer_cons(w)
+	answer_mouse(w)
 	window_hide(win, true)
 }
 

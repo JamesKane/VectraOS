@@ -35,6 +35,9 @@ BIG :: 1 << 20
 
 // The font is fixed at one cell, as `sys/libfont` draws it.
 FONT_W :: 8
+// A menu item's room between its label and its shortcut, and its arrow's width.
+ITEM_GAP :: 16
+ITEM_ARROW :: 8
 FONT_H :: 16
 
 // -- The theme: the numbers the look is made of ------------------------------
@@ -69,6 +72,11 @@ Theme :: struct {
 	warn:   libpal.RGB,
 	ok:     libpal.RGB,
 	fault:  libpal.RGB,
+	// A menu title's metal, `bar` at its top to `bar.shade` at its foot.
+	// These are the roles the server's title bars read, so a menu wears the
+	// frame's.
+	metal_hi: libpal.RGB,
+	metal_lo: libpal.RGB,
 	// The face each role draws in, `fonts.odin`. None named is the cells.
 	faces:  [Face_Role]Face_Spec,
 }
@@ -92,6 +100,8 @@ default_theme :: Theme {
 	warn   = libpal.AMBER,
 	ok     = libpal.PHOSPHOR,
 	fault  = libpal.ALERT,
+	metal_hi = libpal.COPPER,
+	metal_lo = libpal.COPPER_DARK,
 }
 
 // The styles a list's rows may wear, one byte a row in `styles`. A page is
@@ -128,6 +138,8 @@ Class :: enum u8 {
 	List, // Rows of text in a well, one selected, scrolled by its top row
 	Icons, // Cells in a well, a picture and a name each, one selected, scrolled by rows
 	Picture, // Pixels in a well, fitted to it, stretches both ways
+	Item, // A menu's key: a label, a shortcut at the right, an arrow for a submenu
+	Title, // A menu's title: a metal strip with the name in the chrome face
 }
 
 // The kinds an icon is, `docs/WORKBENCH.md` section 6: a directory is a
@@ -203,6 +215,11 @@ Object :: struct {
 	// on its rows. Either may be nil, for a list of plain rows.
 	styles:   []u8,
 	pics:     []Row_Picture,
+
+	// A menu item's shortcut, drawn at its right, and whether it opens a
+	// submenu, which draws an arrow there instead.
+	shortcut: string,
+	has_sub:  bool,
 }
 
 // row_style answers a row's style, plain when the list has none.
@@ -237,6 +254,25 @@ text :: proc "contextless" (label: string) -> ^Object {
 
 button :: proc "contextless" (label: string) -> ^Object {
 	o := obj(.Button)
+	if o != nil {o.label = label}
+	return o
+}
+
+// item is a menu's key, `docs/CHROME.md` section 8: its label, and a
+// shortcut or a submenu's arrow at its right.
+item :: proc "contextless" (label: string, shortcut: string = "", has_sub: bool = false) -> ^Object {
+	o := obj(.Item)
+	if o != nil {
+		o.label = label
+		o.shortcut = shortcut
+		o.has_sub = has_sub
+	}
+	return o
+}
+
+// title is a menu's name on a strip of metal.
+title :: proc "contextless" (label: string) -> ^Object {
+	o := obj(.Title)
 	if o != nil {o.label = label}
 	return o
 }
@@ -555,6 +591,21 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 		ch := max(text_height(t, .Chrome), FONT_H) + 2 * t.vpad + 2 * t.bevel
 		o.minw, o.minh = cw, ch
 		o.maxw, o.maxh = BIG, BIG
+	case .Item:
+		w := 2 * t.hpad + 2 * t.bevel + text_width(t, .Interface, o.label)
+		if o.has_sub {
+			w += ITEM_GAP + ITEM_ARROW
+		} else if o.shortcut != "" {
+			w += ITEM_GAP + text_width(t, .Namespace, o.shortcut)
+		}
+		h := max(text_height(t, .Interface), FONT_H) + 2 * t.vpad + 2 * t.bevel
+		o.minw, o.minh = w, h
+		o.maxw, o.maxh = BIG, h
+	case .Title:
+		w := 2 * t.hpad + text_width(t, .Chrome, o.label)
+		h := text_height(t, .Chrome) + 8
+		o.minw, o.minh = w, h
+		o.maxw, o.maxh = BIG, h
 	case .Checkmark:
 		s := FONT_H + 2 * t.bevel
 		o.minw, o.maxw = s, s

@@ -14,6 +14,7 @@ looks like beside the terminal.
 package muidemo
 
 import "vsys:abi"
+import "vsys:libdraw"
 import "vsys:libmui"
 import "vsys:libthread"
 import "vsys:libuser"
@@ -25,7 +26,14 @@ win: libmui.Window
 // A menu is a popup, so it is a window of its own, separate from the panel's.
 menu: libmui.Menu
 menu_win: libmui.Window
-menu_items := [3]string{"New View", "Refresh", "Close"}
+// The menu is a tree, `docs/CHROME.md` section 8: a title, an item with a
+// shortcut, a submenu, and Close.
+window_items := [2]libmui.Menu_Node{{label = "Snap left"}, {label = "Snap right"}}
+menu_nodes := [3]libmui.Menu_Node{
+	{label = "New View", shortcut = "alt-n"},
+	{label = "Window", sub = window_items[:]},
+	{label = "Close", shortcut = "alt-w"},
+}
 
 @(export, link_name = "_start")
 start :: proc "c" (block: ^abi.Args) {
@@ -49,13 +57,25 @@ on_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
 	menu.win = &menu_win
 	menu.handler = menu_chosen
 	libmui.window_locate(w)
-	libmui.menu_open(&menu, menu_items[:], w.sx + x, w.sy + y)
+	libmui.menu_open_tree(&menu, "Demo", menu_nodes[:], w.sx + x, w.sy + y)
 }
 
 // menu_chosen hears which item was picked, or -1 if the menu closed on
-// nothing. `Close` ends the program; the others are the menu showing it works.
+// nothing. `Close` ends the program. `Window`'s submenu snaps the demo's own
+// window through its `wctl`, which is how the self-test sees a choice made two
+// menus deep.
 menu_chosen :: proc "contextless" (m: ^libmui.Menu, item: int) {
-	if item == 2 {
+	switch item {
+	case 1:
+		words := [2]string{"snap left", "snap right"}
+		if m.sub_chosen >= 0 && m.sub_chosen < len(words) {
+			path: [128]u8
+			if fd := libuser.open(libdraw.win_path(path[:], win.base, win.id, "wctl"), abi.O_WRONLY); fd >= 0 {
+				_ = libuser.write(int(fd), transmute([]u8)words[m.sub_chosen])
+				_ = libuser.close(int(fd))
+			}
+		}
+	case 2:
 		win.done = true
 	}
 }

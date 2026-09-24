@@ -450,7 +450,7 @@ start :: proc "c" (block: ^abi.Args) {
 	{
 		tm := libmui.default_theme
 		m: libmui.Menu
-		items := [?]string{"About...", "Execute Command...", "Shell", "Quit"}
+		items := [?]libmui.Menu_Node{{label = "About..."}, {label = "Execute Command..."}, {label = "Shell"}, {label = "Quit"}}
 		root := libmui.menu_build(&m, items[:], &tm)
 		want(root != nil, "a menu builds its column")
 		n := 0
@@ -465,6 +465,30 @@ start :: proc "c" (block: ^abi.Args) {
 		main_check(m.buttons[1].id, 2, "each tagged by its place")
 		want(root.minw >= widest, "and the column as wide as the longest label")
 		main_check(root.minw, m.buttons[1].minw + 2 * tm.pad, "which is Execute Command's")
+	}
+
+	// -- A menu is a tree: a title, a shortcut, a submenu's arrow ----------------
+	//
+	// `docs/CHROME.md` section 8. A titled menu puts its name on a strip of
+	// the frame's metal over the keys. An item with a shortcut is wider by it,
+	// and an item with a submenu says so, which draws its arrow.
+	{
+		tm := libmui.default_theme
+		m: libmui.Menu
+		m.title = "Demo"
+		sub := [?]libmui.Menu_Node{{label = "Snap left"}, {label = "Snap right"}}
+		items := [?]libmui.Menu_Node{{label = "New", shortcut = "alt-n"}, {label = "Window", sub = sub[:]}, {label = "New"}}
+		root := libmui.menu_build(&m, items[:], &tm)
+		want(root != nil && root.first != nil && root.first.class == .Title, "a titled menu puts its title first")
+		want(m.buttons[1].has_sub && !m.buttons[0].has_sub, "and an item with a submenu says so")
+		want(m.buttons[0].minw > m.buttons[2].minw, "and an item with a shortcut is wider by it")
+		libmui.lay(root, 0, 0, root.minw, root.minh, &tm)
+		c := paint_tree(root, &tm)
+		t := root.first
+		want(libraster.get(&c, t.x + 2, t.y) != libraster.get(&c, t.x + 2, t.y + t.h - 1), "the title is a strip of graded metal")
+		key := m.buttons[1]
+		ink := libpal.xrgb(tm.ink)
+		want(count_in(&c, key.x + key.w - tm.hpad - libmui.ITEM_ARROW - 4, key.y, libmui.ITEM_ARROW + 4, key.h, ink) > 0, "and the submenu's key has its arrow at the right, in the ink")
 	}
 
 	// -- An icon grid's free placement, for Snapshot --------------------------

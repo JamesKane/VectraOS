@@ -158,6 +158,10 @@ apply_line :: proc "contextless" (t: ^Theme, line: string) {
 		set_color(&t.ok, value)
 	case "fault":
 		set_color(&t.fault, value)
+	case "bar":
+		set_color(&t.metal_hi, value)
+	case "bar.shade":
+		set_color(&t.metal_lo, value)
 	case "font.chrome":
 		set_face(&t.faces[.Chrome], value, rest)
 	case "font.interface":

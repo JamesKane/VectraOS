@@ -5651,6 +5651,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 				}
 			}
 			check(r, keyed, "and its zoom gadget is the study's key: the glyph's outline in the text colour, where the chassis gadget was plain face")
+
 			remove_file("/usr/glenda/lib/theme")
 			cleared := false
 			if net_file_write("/mnt/ctl", "reload") {
@@ -5663,6 +5664,69 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 				}
 			}
 			check(r, cleared, "and with the file gone the pixel beside the window is the desktop's again, exactly")
+		}
+
+		/*
+		A menu is a tree, `docs/CHROME.md` brick 6. Button 3 in the demo opens
+		its menu at the pointer: a title, then a key per item, the second of
+		which, Window, has a submenu. A click on it opens the submenu beside it,
+		a second popup, and a click on its second item, Snap right, reaches the
+		demo two menus deep: it snaps its own window to the right half.
+		*/
+		if wx0, wy0, ww0, wh0, _, _, _, _, gok := wctl_frame("/mnt/0/wctl"); gok && devfs.tree().mouse.present && point_to(wx0 + ww0 / 2, wy0 + wh0 / 2) {
+			_ = button_held(CLICK_MENU)
+			face := fb.pack(s, fb.MAGNESIUM)
+			snapped := false
+			stage := 0
+			// The popup is found where it opened, at the pointer, and its
+			// submenu at its right edge; each item by the runs of face down
+			// its column.
+			px, py, pw, _, pok := await_window_at(wx0 + ww0 / 2, wy0 + wh0 / 2)
+			if pok {
+				stage = 1
+				if iy := await_face_run(s, px + 10, py, face, 2); iy >= 0 && point_to(px + pw / 2, iy) && click_held() {
+					stage = 2
+					if cx, cy, cw, _, cok := await_window_at(px + pw, -1); cok {
+						stage = 3
+						if jy := await_face_run(s, cx + 10, cy, face, 2); jy >= 0 && point_to(cx + cw / 2, jy) && click_held() {
+							stage = 4
+							for _ in 0 ..< PATIENCE * 10 {
+								if sx, _, _, _, _, _, _, _, sok := wctl_frame("/mnt/0/wctl"); sok && sx == s.width / 2 {
+									snapped = true
+									break
+								}
+								sync.delay(1)
+							}
+						}
+					}
+				}
+			}
+			what :: "a menu at the pointer opens its Window submenu beside it, and Snap right, two menus deep, snaps the demo right"
+			if !check(r, snapped, what) {
+				sink := detail_for(what)
+				libodin.put_str(&sink, "reached stage ")
+				libodin.put_int(&sink, i64(stage))
+				libodin.put_str(&sink, " popup ")
+				libodin.put_int(&sink, i64(px))
+				libodin.put_str(&sink, ",")
+				libodin.put_int(&sink, i64(py))
+				libodin.put_str(&sink, " wide ")
+				libodin.put_int(&sink, i64(pw))
+				fail_detail(r, &sink)
+				// A menu left standing goes, with a press on the bare desktop.
+				_ = point_to(s.width - 24, s.height - 24)
+				_ = click_held()
+			}
+			// Back where it began: a zoom after a snap restores, and only then.
+			if snapped {
+				_ = net_file_write("/mnt/0/wctl", "zoom")
+				for _ in 0 ..< PATIENCE * 5 {
+					if bx2, _, _, _, _, _, _, _, bok := wctl_frame("/mnt/0/wctl"); bok && bx2 == wx0 {
+						break
+					}
+					sync.delay(1)
+				}
+			}
 		}
 
 		// The preferences window: a toolkit window of every role, walked
@@ -6544,17 +6608,21 @@ wb_menu_open :: proc(s: ^fb.Surface, title_x: int, magnesium: u32, reset: bool) 
 		}
 		sync.delay(MENU_HOLD)
 		_ = inject_move(0, 0, 0)
-		mcol := -1
+		// The keys are read down a column just inside their right edge: a
+		// menu's labels sit at the left of its keys, `docs/CHROME.md` section
+		// 8, and a column through the letters would break a key's run of face.
+		mcol, mleft := -1, -1
 		for _ in 0 ..< PATIENCE * 2 {
 			if first, last := scan_row(s, WB_BAR_H + 12, magnesium, title_x, s.width - 8); first >= 0 && last - first > 60 {
-				mcol = first + 12
+				mcol = last - 6
+				mleft = first
 				break
 			}
 			sync.delay(1)
 		}
 		if mcol >= 0 {
 			if iy := nth_face_run(s, mcol, WB_BAR_H, magnesium, 3); iy >= 0 {
-				return mcol + 20, iy, true
+				return mleft + 32, iy, true
 			}
 		}
 	}
@@ -10287,6 +10355,36 @@ between_px :: proc "contextless" (v: u32, a: u32, b: u32) -> bool {
 		}
 	}
 	return true
+}
+
+// await_window_at waits for a window whose corner is at (x, y), a y below
+// zero matching any, across the slots past window 0, and answers its place
+// and size. A slot nobody holds still answers its `wctl`, with the geometry a
+// window there would be born with, so a popup is found by where its program
+// put it and not by its number.
+await_window_at :: proc(x: int, y: int) -> (fx: int, fy: int, fw: int, fh: int, ok: bool) {
+	for _ in 0 ..< PATIENCE * 10 {
+		for wi in 1 ..< 10 {
+			pb: [64]u8
+			if wx, wy, ww, wh, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl")); wok && wx == x && (y < 0 || wy == y) && ww > 0 {
+				return wx, wy, ww, wh, true
+			}
+		}
+		sync.delay(1)
+	}
+	return
+}
+
+// await_face_run waits for the n-th run of a face down a column to show,
+// as a popup's keys do once its program has painted them.
+await_face_run :: proc(s: ^fb.Surface, x: int, y0: int, face: u32, n: int) -> int {
+	for _ in 0 ..< PATIENCE * 10 {
+		if y := nth_face_run(s, x, y0, face, n); y >= 0 {
+			return y
+		}
+		sync.delay(1)
+	}
+	return -1
 }
 
 // bar_colour_near looks for one colour in a box at the top of a window's bar:

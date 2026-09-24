@@ -86,6 +86,10 @@ paint_node :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 	case .Picture:
 		well(c, o.x, o.y, o.w, o.h, t)
 		picture(c, o, t)
+	case .Item:
+		menu_item(c, o, t)
+	case .Title:
+		menu_title(c, o, t)
 	}
 	for k := o.first; k != nil; k = k.next {
 		paint_node(c, k, t)
@@ -207,6 +211,53 @@ picture :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 		}
 	}
 	libraster.copy_scaled(c, o.pix, o.pw, o.ph, ax + (aw - dw) / 2, ay + (ah - dh) / 2, dw, dh)
+}
+
+/*
+menu_item draws a menu's key, `docs/CHROME.md` section 8. It is a raised face
+with the label at the left in the interface face. At the right is the shortcut
+in the namespace face in `dim`, or an arrow for a submenu.
+*/
+@(private = "file")
+menu_item :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	raised(c, o, t)
+	lh := text_height(t, .Interface)
+	face_text(c, t, .Interface, o.x + t.bevel + t.hpad, o.y + (o.h - lh) / 2, o.label, px(t.ink))
+	right := o.x + o.w - t.bevel - t.hpad
+	if o.has_sub {
+		// A right-pointing triangle, eight wide, centred on the key.
+		S :: libraster.SUB
+		cy := o.y + o.h / 2
+		tri := [3]libraster.Point{{(right - ITEM_ARROW) * S, (cy - 4) * S}, {right * S, cy * S}, {(right - ITEM_ARROW) * S, (cy + 4) * S}}
+		ends := [1]int{3}
+		if c.w <= len(arrow_scratch) {
+			libraster.path(c, tri[:], ends[:], px(t.ink), arrow_scratch[:])
+		}
+	} else if o.shortcut != "" {
+		sw := text_width(t, .Namespace, o.shortcut)
+		sh := text_height(t, .Namespace)
+		face_text(c, t, .Namespace, right - sw, o.y + (o.h - sh) / 2, o.shortcut, px(t.dim))
+	}
+}
+
+// The arrow's row of coverage, one word a pixel across the widest canvas. Not
+// on the stack: a menu paints on a `libthread` thread, whose stack is small,
+// and eight kilobytes there ran it over. A program paints one window at a
+// time, so one row serves.
+@(private = "file")
+arrow_scratch: [2048]u32
+
+/*
+menu_title draws a menu's title. It is a strip of the frame's metal, `bar` down
+to `bar.shade` with two hairline patterns, with the name in the chrome face.
+*/
+@(private = "file")
+menu_title :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	libraster.vgrad(c, o.x, o.y, o.w, o.h, px(t.metal_hi), px(t.metal_lo))
+	libraster.hairline(c, o.x, o.y, o.w, o.h, 3, 0xFFFFFF, 9, true)
+	libraster.hairline(c, o.x + 1, o.y, o.w, o.h, 7, 0x000000, 15, true)
+	th := text_height(t, .Chrome)
+	face_text(c, t, .Chrome, o.x + t.hpad, o.y + (o.h - th) / 2, o.label, px(t.ink))
 }
 
 // sub_canvas is the part of `c` at (x, y), `w` by `h`, as a canvas of its own.

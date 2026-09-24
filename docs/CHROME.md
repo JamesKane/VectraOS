@@ -694,6 +694,31 @@ look.
    tear-off. Workbench moves its menus into its main menu. The check: the
    docked menu shows for the front program and hides for another, and a
    torn-off `Tools` panel stays after the popup closes. Medium.
+
+   **6a, the tree at the pointer, C, is done, September 2026.** A menu is a
+   tree of `Menu_Node`s, each a label, a shortcut, and a submenu.
+   `menu_open_tree` shows it under an optional title, a strip of the
+   frame's metal with the name in the chrome face. Each item is an `Item`,
+   a raised key. Its label is at the left in the interface face. Its shortcut
+   is at the right in the namespace face, or an arrow for a submenu.
+
+   Choosing an item with a submenu opens the submenu beside it as a second
+   popup. A press there closes the first menu, so the first menu waits and
+   answers once for the two, `chosen` and `sub_chosen`. `menu_open` keeps
+   its flat form for the programs that had it.
+
+   The check drives muidemo's tree: button 3 opens `Demo` at the pointer,
+   `Window` opens its submenu, and `Snap right` snaps the demo's window.
+
+   The cascade found two bugs. `window_locate` added the top and right
+   insets where it meant the left and top, so a popup opened 20 pixels
+   right of the pointer. And a hung-up window never answered a `mouse`
+   read, held or new. A menu ended from another thread waited on its mouse
+   reader for ever. A hung-up window's `mouse` now answers every
+   read with nothing, as its `cons` does.
+
+   6b, the docked menu, 6c, tear-off, and 6d, Workbench's menus as its
+   main menu, are ahead.
 7. **Icons, J.** The icon format, `libraster.path`, the kinds with the
    namespace as witness, the emblem, and the Recycler. The check: a union
    directory's icon has the emblem's colour in its corner, and a plain

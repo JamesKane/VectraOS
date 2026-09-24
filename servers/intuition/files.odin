@@ -399,6 +399,19 @@ drain_mouse :: proc "contextless" (arg: rawptr, buf: []u8) -> int {
 }
 
 answer_mouse :: proc "contextless" (w: int) {
+	// A hung-up window answers every mouse read with nothing, as its `cons`
+	// does. A reader parked here learns the window is gone and its program
+	// can wind the window down; left parked, a menu ended from another thread
+	// waited on its mouse reader for ever. `docs/CHROME.md` brick 6 met it.
+	if windows[w].hangup {
+		for {
+			req, ok := lib9p.held(&srv, rawptr(uintptr(w)), wants_mouse)
+			if !ok {
+				return
+			}
+			_ = lib9p.respond(req, vectra9.Rread{data = nil})
+		}
+	}
 	answer_held(rawptr(uintptr(w)), wants_mouse, drain_mouse)
 }
 

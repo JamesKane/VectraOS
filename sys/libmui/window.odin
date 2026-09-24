@@ -1071,8 +1071,9 @@ window_locate :: proc "contextless" (win: ^Window) -> bool #no_bounds_check {
 	}
 	win.sx, win.sy = nums[0], nums[1]
 	if got == len(nums) {
-		win.sx += nums[6]
-		win.sy += nums[7]
+		// x y w h, the workspace at 4, then left at 5 and top at 6.
+		win.sx += nums[5]
+		win.sy += nums[6]
 	}
 	return true
 }
