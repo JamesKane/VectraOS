@@ -6602,6 +6602,30 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 			sync.delay(1)
 		}
 		check(r, toasted, "and the toast's pixels are in the bar's corner")
+
+		/*
+		The Recycler, `docs/CHROME.md` section 6. `recycle PATH` on the
+		ctl is `Delete...` on a path: the file leaves its drawer for
+		`$home/lib/wb/recycler`. A second of the same name takes a number
+		and keeps the first. `empty` removes what the Recycler holds.
+		*/
+		{
+			fb: [16]u8
+			wrote := write_disk_file("/usr/glenda/recycle-me", "one\n")
+			moved := wrote && net_file_write("/mnt/ctl", "recycle /usr/glenda/recycle-me") &&
+				web_read_file("/usr/glenda/recycle-me", fb[:], raw = true) < 0 &&
+				web_read_file("/usr/glenda/lib/wb/recycler/recycle-me", fb[:], raw = true) == 4
+			check(r, moved, "recycle on Workbench's ctl moves a file into $home/lib/wb/recycler, out of its drawer")
+			second := write_disk_file("/usr/glenda/recycle-me", "two\n") && net_file_write("/mnt/ctl", "recycle /usr/glenda/recycle-me") &&
+				web_read_file("/usr/glenda/lib/wb/recycler/recycle-me.2", fb[:], raw = true) == 4 && string(fb[:4]) == "two\n" &&
+				web_read_file("/usr/glenda/lib/wb/recycler/recycle-me", fb[:], raw = true) == 4 && string(fb[:4]) == "one\n"
+			check(r, second, "and a second of the same name takes a number, the first kept")
+			emptied := net_file_write("/mnt/ctl", "empty") &&
+				web_read_file("/usr/glenda/lib/wb/recycler/recycle-me", fb[:], raw = true) < 0 &&
+				web_read_file("/usr/glenda/lib/wb/recycler/recycle-me.2", fb[:], raw = true) < 0 &&
+				web_read_file("/usr/glenda/lib/wb/recycler", fb[:], raw = true) >= 0
+			check(r, emptied, "and empty removes what the Recycler holds, and keeps the Recycler")
+		}
 		pipe.quiesce()
 		check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "the notice mount comes down")
 	}

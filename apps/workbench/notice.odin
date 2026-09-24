@@ -11,7 +11,8 @@ console's:
     history    the last ten, one per line, newest last.
     ctl        `quiet` and `loud`, and the verbs a notice's action may be:
                `open`, `run`, `ask`, `workspace`, each with the rest of the
-               line as its argument.
+               line as its argument. `recycle PATH` is `Delete...` on a
+               path, and `empty` empties the Recycler, `recycler.odin`.
 
 A notice draws as a toast below the bar's right corner for five seconds,
 in a popup the machine's frame around it, and a click on it runs the
@@ -429,7 +430,7 @@ notice_handler :: proc "contextless" (
 			case:
 				verb, _ := first_word(line)
 				switch verb {
-				case "open", "run", "ask", "workspace", "execute", "shell":
+				case "open", "run", "ask", "workspace", "execute", "shell", "recycle", "empty":
 					run_action(line)
 				case:
 					reply^ = vectra9.error_reply(vectra9.EINVAL)

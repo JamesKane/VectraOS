@@ -443,13 +443,25 @@ drawer_icons_menu :: proc "contextless" (item: int) {
 		post_notice("workbench", "Rename waits for a requester", "")
 	case 3: // Information...
 		information(path)
-	case 4: // Delete...
+	case 4: // Delete...: to the Recycler, or out of it
 		if d == nil {
 			post_notice("workbench", "The backdrop's icons stay", "")
-		} else if libuser.remove(path) == 0 {
+		} else if recycle(path, kind) {
 			drawer_update(d)
+			recycler_update(d)
 		} else {
 			post_notice("workbench", "Cannot delete that", "")
+		}
+	}
+}
+
+// recycler_update reads an open Recycler drawer again, other than `skip`,
+// so a delete or an emptying shows in it.
+recycler_update :: proc "contextless" (skip: ^Drawer) {
+	for i in 0 ..< MAX_DRAWERS {
+		r := drawers[i]
+		if r != nil && r.used && r != skip && r.path == recycler_path() {
+			drawer_update(r)
 		}
 	}
 }

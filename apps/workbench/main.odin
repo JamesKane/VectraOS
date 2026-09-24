@@ -100,7 +100,7 @@ tool_n: int
 tools_read: bool
 
 // The menu's items, built per title.
-MENU_WORKBENCH := [?]string{"About...", "Execute Command...", "Shell", "Snapshot", "Clean Up", "Theme...", "Reload", "Lock", "Quit"}
+MENU_WORKBENCH := [?]string{"About...", "Execute Command...", "Shell", "Snapshot", "Clean Up", "Theme...", "Reload", "Lock", "Empty Recycler", "Quit"}
 MENU_WINDOW := [?]string{"New Drawer", "Open Parent", "Close", "Update", "Select All", "Clean Up", "Snapshot"}
 MENU_ICONS := [?]string{"Open", "Copy", "Rename...", "Information...", "Delete..."}
 menu_items: [MAX_TOOLS]string
@@ -455,7 +455,12 @@ menu_chosen :: proc "contextless" (m: ^libmui.Menu, item: int) {
 			server_ctl("reload")
 		case 7: // Lock: the server takes the glass until the passphrase
 			server_ctl("lock")
-		case 8:
+		case 8: // Empty Recycler: what Delete... put there, gone
+			if !recycler_empty() {
+				post_notice("workbench", "Some of the Recycler would not empty", "")
+			}
+			recycler_update(nil)
+		case 9:
 			libthread.threadexitsall("")
 		case:
 			// A `Shell on <host>` past the base items: open a `cpu` shell on
@@ -495,6 +500,10 @@ open_backdrop :: proc "contextless" () -> bool {
 				back_icon(name, libuser.join("/n", name), libmui.ICON_DRAWER)
 			}
 		}
+	}
+	// The Recycler, last, where `Delete...` puts what it takes.
+	if recycler_make() {
+		back_icon("Recycler", recycler_path(), libmui.ICON_DRAWER)
 	}
 	back_grid = libmui.icons(3)
 	back_grid.rows = back_names[:back_n]
@@ -688,6 +697,25 @@ run_action :: proc "contextless" (line: string) {
 		spawn_window(rest)
 	case "workspace":
 		server_ctl(line)
+	case "recycle":
+		// `Delete...` on a path: into the Recycler, and the drawers that
+		// show either end read again.
+		if recycle(rest, path_kind(rest)) {
+			recycler_update(nil)
+			for i in 0 ..< MAX_DRAWERS {
+				d := drawers[i]
+				if d != nil && d.used && d.path == parent_of(rest) {
+					drawer_update(d)
+				}
+			}
+		} else {
+			post_notice("workbench", "Cannot delete that", "")
+		}
+	case "empty":
+		if !recycler_empty() {
+			post_notice("workbench", "Some of the Recycler would not empty", "")
+		}
+		recycler_update(nil)
 	case "quit":
 		libthread.threadexitsall("")
 	case "window":

@@ -833,6 +833,20 @@ look.
    raised or opened was painted alone, over any docked menu, panel or popup
    above it in the stack. It is laid back to front now when one of those
    covers it.
+
+   **7c, the Recycler, is done, September 2026.** `Delete...` moves the
+   selection to `$home/lib/wb/recycler`, `apps/workbench/recycler.odin`.
+   The move is a rename on one server, so a drawer goes whole. Across
+   servers a file is copied and removed, and a drawer is refused. A name
+   the Recycler already holds takes a number. A delete in the Recycler
+   removes the file for good.
+
+   The Recycler is the last icon on the backdrop, drawn as `recycler` in a
+   scheme with icons. `Empty Recycler` on the Workbench menu removes what
+   it holds, a drawer and all under it. Workbench's `ctl` takes the same
+   two acts as `recycle PATH` and `empty`, so a script or a notice's
+   action may ask for them. The checks drive the `ctl`: a file moves in,
+   a second of its name takes `.2`, and `empty` leaves the Recycler bare.
 8. **Readouts and LEDs, F**, with the `status` convention and
    `cmd/srvstat`. The check: `srvstat` names a posted server green and a
    removed one off. Small.

@@ -7,6 +7,7 @@ the namespace as a second witness. This file names the icon for each path.
 when it does not.
 
     home      $home
+    recycler  $home/lib/wb/recycler, where Delete... puts a file
     union     a directory with more than one member in the namespace
     remote    a directory mounted from a /srv name that is an ndb machine,
               which `import` posts
@@ -121,6 +122,9 @@ is_machine :: proc "contextless" (name: string) -> bool {
 picture_of :: proc "contextless" (path: string, name: string, kind: u8) -> string {
 	if path == home_path() {
 		return "home"
+	}
+	if path == recycler_path() {
+		return "recycler"
 	}
 	if kind == libmui.ICON_DRAWER {
 		if p := ns_find(path); p != nil {
