@@ -28,7 +28,6 @@ import "vsys:libraster"
 import "vsys:libuser"
 
 ICON_FILE_MAX :: 24 * 1024
-MAX_ICONS :: 24
 MAX_ICON_SHAPES :: 24
 // The largest an icon is drawn, in pixels, and the most points one shape
 // holds. `tools/svg2icon.py` writes none larger.
@@ -56,9 +55,6 @@ Icon_Shape :: struct {
 
 @(private = "file")
 Icon :: struct {
-	path:   [FACE_PATH + 32]u8,
-	n:      int,
-	ready:  bool,
 	view:   int, // The view's width, in hundredths of a unit
 	text:   []u8,
 	pts:    []libraster.Point, // In hundredths of a unit
@@ -67,58 +63,97 @@ Icon :: struct {
 	count:  int,
 }
 
-@(private = "file")
-icons_loaded: [MAX_ICONS]Icon
+/*
+The icons a program asks for, by the hash of their paths. An entry
+remembers a path with no file as well as one with. So a grid of tools with no
+icons of their own opens each missing file once. The icons are on the heap
+for the program's life: a program draws few.
+*/
+ICON_TABLE :: 256
 
 @(private = "file")
-icons_n: int
+Icon_Entry :: struct {
+	hash: u64,
+	used: bool,
+	icon: ^Icon,
+}
+
+@(private = "file")
+icon_table: [ICON_TABLE]Icon_Entry
+
+@(private = "file")
+icon_home_buf: [128]u8
+
+@(private = "file")
+icon_home_n: int
 
 /*
-icon_of is the icon a theme names `name`, read from its `icons` directory on
-first use. It is nil when the theme names no directory, or the file will not
-read or parse. The caller then draws the chassis picture in its place.
+icon_of is the icon named `name`, read on first use. A person's
+`$home/lib/icons` is read first, so a file there replaces the scheme's. Then
+the directory the theme's `icons` line names. It is nil when the theme names
+no directory, or no file reads and parses. The caller then draws the next
+picture it has.
 */
 @(private = "file")
 icon_of :: proc "contextless" (t: ^Theme, name: string) -> ^Icon #no_bounds_check {
-	if t.icons_n == 0 {
+	if t.icons_n == 0 || name == "" {
 		return nil
 	}
-	pb: [FACE_PATH + 32]u8
-	path := libuser.cat_into(pb[:], string(t.icons[:t.icons_n]), "/")
-	w := len(path)
-	w += copy(pb[w:], name)
-	w += copy(pb[w:], ".icon")
-	path = string(pb[:w])
-	for i in 0 ..< icons_n {
-		if string(icons_loaded[i].path[:icons_loaded[i].n]) == path {
-			return icons_loaded[i].ready ? &icons_loaded[i] : nil
+	if icon_home_n == 0 {
+		icon_home_n = len(libuser.cat_into(icon_home_buf[:], theme_home(), "/lib/icons"))
+	}
+	pb: [FACE_PATH + 64]u8
+	if ic := icon_at(libuser.cat_into(pb[:], string(icon_home_buf[:icon_home_n]), "/", name, ".icon")); ic != nil {
+		return ic
+	}
+	return icon_at(libuser.cat_into(pb[:], string(t.icons[:t.icons_n]), "/", name, ".icon"))
+}
+
+// icon_at is the icon in one file, from the table or read now.
+@(private = "file")
+icon_at :: proc "contextless" (path: string) -> ^Icon #no_bounds_check {
+	h := u64(0xcbf29ce484222325)
+	for k in 0 ..< len(path) {
+		h = (h ~ u64(path[k])) * 0x100000001b3
+	}
+	for probe in 0 ..< ICON_TABLE {
+		e := &icon_table[(int(h % ICON_TABLE) + probe) % ICON_TABLE]
+		if e.used && e.hash == h {
+			return e.icon
+		}
+		if !e.used {
+			e.used = true
+			e.hash = h
+			e.icon = icon_load(path)
+			return e.icon
 		}
 	}
-	if icons_n >= MAX_ICONS {
-		return nil
-	}
-	ic := &icons_loaded[icons_n]
-	icons_n += 1
-	ic.n = copy(ic.path[:], path)
+	return nil
+}
+
+// icon_load reads and parses one file onto the heap, or answers nil. A file
+// that reads and will not parse keeps its memory, which is small and rare.
+@(private = "file")
+icon_load :: proc "contextless" (path: string) -> ^Icon #no_bounds_check {
 	scratch := libuser.heap_alloc(ICON_FILE_MAX)
 	if scratch == nil {
 		return nil
 	}
+	defer libuser.heap_free(scratch)
 	got := text_read(nil, path, ([^]u8)(scratch)[:ICON_FILE_MAX])
 	if got <= 0 || got >= ICON_FILE_MAX {
-		libuser.heap_free(scratch)
 		return nil
 	}
 	keep := libuser.heap_alloc(got)
-	if keep == nil {
-		libuser.heap_free(scratch)
+	mem := libuser.heap_alloc(size_of(Icon))
+	if keep == nil || mem == nil {
 		return nil
 	}
+	ic := (^Icon)(mem)
+	ic^ = {}
 	ic.text = ([^]u8)(keep)[:got]
 	copy(ic.text, ([^]u8)(scratch)[:got])
-	libuser.heap_free(scratch)
-	ic.ready = icon_parse(ic)
-	return ic.ready ? ic : nil
+	return icon_parse(ic) ? ic : nil
 }
 
 /*

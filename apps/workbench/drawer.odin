@@ -27,6 +27,7 @@ Drawer :: struct {
 	names: []string,
 	paths: []string,
 	kinds: []u8,
+	pics:  []string,
 	grid:  ^libmui.Object,
 	title: ^libmui.Object,
 }
@@ -140,6 +141,7 @@ open_drawer :: proc "contextless" (path: string) {
 	d.grid = libmui.icons(3)
 	d.grid.rows = d.names
 	d.grid.kinds = d.kinds
+	d.grid.pictures = d.pics
 	d.grid.id = 1
 	d.title = libmui.text(d.path)
 	col := libmui.group(false)
@@ -182,6 +184,8 @@ drawer_read :: proc "contextless" (d: ^Drawer) -> bool {
 	d.names = make([]string, n)
 	d.paths = make([]string, n)
 	d.kinds = make([]u8, n)
+	d.pics = make([]string, n)
+	ns_read()
 	for i in 0 ..< n {
 		d.names[i] = names[i]
 		d.paths[i] = libuser.join(d.path, names[i])
@@ -190,6 +194,7 @@ drawer_read :: proc "contextless" (d: ^Drawer) -> bool {
 		if libuser.stat(d.paths[i], &st) == 0 {
 			d.kinds[i] = kind_of(d.paths[i], &st)
 		}
+		d.pics[i] = picture_of(d.paths[i], d.names[i], d.kinds[i])
 	}
 	return true
 }
@@ -205,6 +210,7 @@ drawer_thread :: proc "contextless" (arg: rawptr) {
 	delete(d.names)
 	delete(d.paths)
 	delete(d.kinds)
+	delete(d.pics)
 	d.used = false
 	libthread.threadexits("")
 }
@@ -286,9 +292,11 @@ drawer_update :: proc "contextless" (d: ^Drawer) {
 	delete(d.names)
 	delete(d.paths)
 	delete(d.kinds)
+	delete(d.pics)
 	if drawer_read(d) {
 		d.grid.rows = d.names
 		d.grid.kinds = d.kinds
+		d.grid.pictures = d.pics
 		if d.grid.sel >= len(d.names) {
 			d.grid.sel = -1
 		}

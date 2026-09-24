@@ -90,6 +90,7 @@ back_grid: ^libmui.Object
 back_names: [MAX_BACK]string
 back_paths: [MAX_BACK]string
 back_kinds: [MAX_BACK]u8
+back_pics: [MAX_BACK]string
 back_n: int
 
 // The tools under /lib/wb/tools, read once when the menu first opens.
@@ -481,6 +482,7 @@ menu_chosen :: proc "contextless" (m: ^libmui.Menu, item: int) {
 open_backdrop :: proc "contextless" () -> bool {
 	context = wb_ctx
 	back_n = 0
+	ns_read()
 	back_icon("Home", home_path(), libmui.ICON_DRAWER)
 	back_icon("System", "/", libmui.ICON_DRAWER)
 	back_icon("Tools", "/bin", libmui.ICON_DRAWER)
@@ -497,6 +499,7 @@ open_backdrop :: proc "contextless" () -> bool {
 	back_grid = libmui.icons(3)
 	back_grid.rows = back_names[:back_n]
 	back_grid.kinds = back_kinds[:back_n]
+	back_grid.pictures = back_pics[:back_n]
 	back_grid.id = 1
 	// The docked main menu's corner kept clear at the left.
 	col := libmui.group(true)
@@ -529,6 +532,7 @@ back_icon :: proc "contextless" (name: string, path: string, kind: u8) {
 	back_names[back_n] = name
 	back_paths[back_n] = path
 	back_kinds[back_n] = kind
+	back_pics[back_n] = picture_of(path, name, kind)
 	back_n += 1
 }
 

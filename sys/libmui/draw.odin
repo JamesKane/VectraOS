@@ -320,8 +320,11 @@ icon_one :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, i: int, cx: in
 	if o.kinds != nil && i < len(o.kinds) {
 		kind = o.kinds[i]
 	}
-	// The theme's icon when it names a directory of them, else the chassis's.
-	if !icon_named(c, icon_kind_name(kind), cx + (ICON_W - ICON_PICTURE) / 2, cy + 4, ICON_PICTURE, t) {
+	// With a theme that names icons, the cell's own icon, else its kind's.
+	// Else the chassis's picture.
+	ix, iy := cx + (ICON_W - ICON_PICTURE) / 2, cy + 4
+	own := o.pictures != nil && i < len(o.pictures) && icon_named(c, o.pictures[i], ix, iy, ICON_PICTURE, t)
+	if !own && !icon_named(c, icon_kind_name(kind), ix, iy, ICON_PICTURE, t) {
 		icon_picture(c, cx + (ICON_W - 40) / 2, cy + 6, kind, t)
 	}
 	shown := clip_cells(o.rows[i], NAME_CELLS)

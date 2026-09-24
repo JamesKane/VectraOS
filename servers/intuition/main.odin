@@ -2787,7 +2787,23 @@ repaint :: proc "contextless" (x: int, y: int, w: int, h: int) {
 	composite(&scratch)
 }
 
-repaint_top :: proc "contextless" (win: ^Window) {
+repaint_top :: proc "contextless" (win: ^Window) #no_bounds_check {
+	// A window raised or opened goes under the popups, the docked menus and
+	// the panels, `stack_add`. One of those over it keeps its place on the
+	// glass, so the area is laid back to front.
+	at := int(uintptr(win) - uintptr(&windows[0])) / size_of(Window)
+	above := false
+	for si := stack_n - 1; si >= 0 && stack[si] != at; si -= 1 {
+		o := &windows[stack[si]]
+		if o.workspace == current_ws && !o.hidden && o.x < win.x + win.w && win.x < o.x + o.w && o.y < win.y + win.h && win.y < o.y + o.h {
+			above = true
+			break
+		}
+	}
+	if above {
+		repaint(win.x, win.y, win.w, win.h)
+		return
+	}
 	region_clear(&scratch)
 	region_add(&scratch, win.x, win.y, win.w, win.h)
 	paint_window(win, &scratch)

@@ -6185,14 +6185,16 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 	// A double click is two presses close enough in the server's own clock,
 	// which the injected pair does not always land inside on the first try.
 	// So the click is retried until a drawer's bar appears, a few times
-	// before it is called a failure.
+	// before it is called a failure. The wait is a long one: a drawer that
+	// opened slowly and a retry make two drawers, and the second outlives the
+	// close below.
 	home_x, home_y := WB_DOCK_ROOM + libmui_icon_w() / 2, WB_BAR_H + libmui_icon_h() / 2
 	check(r, point_to(home_x, home_y), "the pointer is moved onto Home")
 	dx, dy, dw := -1, -1, 0
 	for _ in 0 ..< 5 {
 		_ = click_held()
 		_ = click_held()
-		if x, y, w := title_bar_within(s, PATIENCE * 2); x >= 0 {
+		if x, y, w := title_bar_within(s, PATIENCE * 6, WB_DOCK_ROOM); x >= 0 {
 			dx, dy, dw = x, y, w
 			break
 		}
@@ -6229,6 +6231,15 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 			sync.delay(1)
 		}
 		check(r, closed, "and an alt-w closes the drawer, its bar gone from the glass")
+		// A second drawer a retried click opened goes too, so the dock below
+		// is shown over the backdrop alone.
+		for _ in 0 ..< 3 {
+			if x, _, _ := title_bar_within(s, PATIENCE / 2, WB_DOCK_ROOM); x < 0 {
+				break
+			}
+			inject_chord(0x11)
+			sync.delay(PATIENCE / 2)
+		}
 	}
 
 	// -- 2. The docked main menu, and Shell chosen on it ------------------------------
@@ -6300,7 +6311,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 	if chose {
 		// Its bar in front first, so the chord closes it and not what was
 		// in front before it claimed its window.
-		bx, _, _ := await_title_bar(s)
+		bx, _, _ := await_title_bar(s, WB_DOCK_ROOM)
 		closed := false
 		for _ in 0 ..< 3 {
 			if bx < 0 {
@@ -6332,7 +6343,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 	if check(r, await_windows(shells0 + 1), "an alt-n opens a shell in a window, one more in the process table") {
 		// Its window is the one in front, its bar copper. The well below the
 		// bar, and the prompt eight pixels into it.
-		bx, by, bw := await_title_bar(s)
+		bx, by, bw := await_title_bar(s, WB_DOCK_ROOM)
 		if check(r, bx >= 0, "the shell's window is on the glass, its bar copper") {
 			slate := fb.pack(s, fb.SLATE)
 			ox, oy := -1, -1
@@ -6508,6 +6519,56 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		check(r, true, "an alt-w closes each shell window in turn, front first")
 	}
 
+	/*
+	The icons by the namespace, `docs/CHROME.md` section 6. With a scheme
+	that names icons, a served or union directory wears a cyan emblem in its
+	corner, and a plain one does not. System, `/`, is the second cell and a
+	plain directory. The kernel mounted kbdfs at `/n/kbd`, so one of the
+	cells after the third is a served one. The shells are closed, so the
+	backdrop is bare. The chassis comes back after, and Home's copper lip.
+	*/
+	{
+		emblem_mounted := srv.mount(vfs.boot_namespace, "/srv/draw", "/n/desk") == vfs.OK
+		_ = make_disk_dir("/usr/glenda")
+		_ = make_disk_dir("/usr/glenda/lib")
+		emblemed, plain := false, false
+		if emblem_mounted && write_disk_file("/usr/glenda/lib/theme", "use neon\n") && net_file_write("/n/desk/ctl", "reload") {
+			for _ in 0 ..< PATIENCE * 20 {
+				for i in 3 ..< 8 {
+					if wb_corner_cyan(s, i) {
+						emblemed = true
+					}
+				}
+				if emblemed {
+					plain = !wb_corner_cyan(s, 1)
+					break
+				}
+				sync.delay(1)
+			}
+		}
+		check(r, emblemed, "with a scheme that names icons, a served directory on the backdrop wears a cyan emblem in its corner")
+		check(r, plain, "and System, a plain directory, wears none")
+		remove_file("/usr/glenda/lib/theme")
+		if emblem_mounted {
+			_ = net_file_write("/n/desk/ctl", "reload")
+			relipped := false
+			for _ in 0 ..< PATIENCE * 20 {
+				for y in WB_BAR_H ..< WB_BAR_H + libmui_icon_h() {
+					if first, _ := scan_row(s, y, copper, WB_DOCK_ROOM, WB_DOCK_ROOM + libmui_icon_w()); first >= 0 {
+						relipped = true
+						break
+					}
+				}
+				if relipped {
+					break
+				}
+				sync.delay(1)
+			}
+			check(r, relipped, "and with the file gone the chassis's pictures come back, Home's copper lip")
+			_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/desk")
+		}
+	}
+
 	// -- 4. A notice, written and read back ------------------------------------------
 
 	if check(r, srv.mount(vfs.boot_namespace, "/srv/wb", "/mnt") == vfs.OK, "the kernel mounts the notice service") {
@@ -6597,6 +6658,27 @@ WB_BAR_H :: 24
 WB_DOCK_X :: 8
 WB_DOCK_Y :: 8
 WB_DOCK_ROOM :: 160
+
+/*
+wb_corner_cyan answers whether cell `i` of Workbench's backdrop has an
+emblem's cyan in the lower right of its picture. The picture is 36 pixels
+square, centred in the 96-pixel cell and 4 below the grid's top, and the
+emblem sits in its lower right quarter.
+*/
+@(private = "file")
+wb_corner_cyan :: proc "contextless" (s: ^fb.Surface, i: int) -> bool {
+	x0 := WB_DOCK_ROOM + i * libmui_icon_w() + libmui_icon_w() / 2
+	n := 0
+	for y in WB_BAR_H + 20 ..< min(WB_BAR_H + 46, s.height) {
+		for x in x0 ..< min(x0 + 24, s.width) {
+			v := fb.get_raw(s, x, y)
+			if channel(s, v, s.red_shift, s.red_size) < 120 && channel(s, v, s.green_shift, s.green_size) > 150 && channel(s, v, s.blue_shift, s.blue_size) > 180 {
+				n += 1
+			}
+		}
+	}
+	return n >= 12
+}
 
 @(private = "file")
 libmui_icon_w :: proc "contextless" () -> int {
@@ -6740,7 +6822,7 @@ row_span :: proc "contextless" (s: ^fb.Surface, y: int, want: u32, x0: int, x1: 
 // that carries a contiguous run of copper wider than a hundred pixels,
 // which is the bar of the window in front and nothing else on the desktop.
 @(private = "file")
-await_title_bar :: proc(s: ^fb.Surface) -> (bx: int, by: int, bw: int) {
+await_title_bar :: proc(s: ^fb.Surface, from := 8) -> (bx: int, by: int, bw: int) {
 	copper := fb.pack(s, fb.COPPER)
 	bx, by, bw = -1, -1, 0
 	// A window program started cold reads itself, its shell and its font
@@ -6748,7 +6830,7 @@ await_title_bar :: proc(s: ^fb.Surface) -> (bx: int, by: int, bw: int) {
 	// wait is the suite's longest.
 	deadline := sched.ticks() + PATIENCE * 100
 	for sched.ticks() < deadline {
-		bx, by, bw = title_bar(s, copper)
+		bx, by, bw = title_bar(s, copper, from)
 		if bx >= 0 {
 			break
 		}
@@ -6761,12 +6843,14 @@ await_title_bar :: proc(s: ^fb.Surface) -> (bx: int, by: int, bw: int) {
 // than a hundred pixels on a row of the top half. A bar that wide crosses
 // one of the columns sampled sixty-four apart, so those are read down
 // first and only a row with copper on one is measured -- a whole-glass
-// read every tick is what a compositor on another core would feel.
+// read every tick is what a compositor on another core would feel. The
+// search starts `from` pixels in. Workbench's checks start past the docked
+// menu's corner, whose title strip is copper and as wide as a bar.
 @(private = "file")
-title_bar :: proc "contextless" (s: ^fb.Surface, copper: u32) -> (bx: int, by: int, bw: int) #no_bounds_check {
+title_bar :: proc "contextless" (s: ^fb.Surface, copper: u32, from := 8) -> (bx: int, by: int, bw: int) #no_bounds_check {
 	for y in 4 ..< s.height / 2 {
 		hit := false
-		for x := 40; x < s.width - 8; x += 64 {
+		for x := max(40, from); x < s.width - 8; x += 64 {
 			if fb.get_raw(s, x, y) == copper {
 				hit = true
 				break
@@ -6775,7 +6859,7 @@ title_bar :: proc "contextless" (s: ^fb.Surface, copper: u32) -> (bx: int, by: i
 		if !hit {
 			continue
 		}
-		if start, run := row_span(s, y, copper, 8, s.width - 8); run > 100 {
+		if start, run := row_span(s, y, copper, from, s.width - 8); run > 100 {
 			return start, y, run
 		}
 	}
@@ -6848,11 +6932,11 @@ nth_face_run :: proc "contextless" (s: ^fb.Surface, x: int, y0: int, face: u32, 
 // short-patience form the retries use, where a full `await_title_bar` per
 // attempt would be minutes.
 @(private = "file")
-title_bar_within :: proc(s: ^fb.Surface, ticks: int) -> (bx: int, by: int, bw: int) {
+title_bar_within :: proc(s: ^fb.Surface, ticks: int, from := 8) -> (bx: int, by: int, bw: int) {
 	copper := fb.pack(s, fb.COPPER)
 	deadline := sched.ticks() + u64(ticks)
 	for sched.ticks() < deadline {
-		if x, y, w := title_bar(s, copper); x >= 0 {
+		if x, y, w := title_bar(s, copper, from); x >= 0 {
 			return x, y, w
 		}
 		sync.delay(1)

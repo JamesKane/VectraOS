@@ -195,9 +195,12 @@ Object :: struct {
 	id:     int, // A caller's own tag, returned in events
 	// A list's rows, which the caller owns, and how it shows them. An
 	// icon grid's rows are its names, and `kinds` says the picture each
-	// wears. `top` is then its first row of cells.
+	// wears. `pictures`, when set, names each cell's icon, `icon.odin`,
+	// which a theme with icons draws before the kind's. `top` is then its
+	// first row of cells.
 	rows:     []string,
 	kinds:    []u8,
+	pictures: []string,
 	top:      int, // The first row drawn
 	sel:      int, // The selected row, or -1
 	min_rows: int, // The rows `fit` asks room for

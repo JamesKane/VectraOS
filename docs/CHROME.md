@@ -809,6 +809,30 @@ look.
    The checks fill with each paint, and draw `folder` and `union` from their
    files. The folder is warm through its body, and the union's emblem is
    cyan in its corner.
+
+   **7b, the kinds by the namespace, is done, September 2026.** Workbench
+   names an icon for each path, `apps/workbench/picture.odin`, by the table
+   above. It reads its own `/proc/N/ns` each time a drawer reads its
+   directory. A mount point with more than one member is a union. A mount of
+   a `/srv` name that ndb names as a machine is remote, since `import` posts
+   the host's name. A mount of any other `/srv` name is served.
+
+   An icon grid takes the names as `pictures`. A name with no file falls
+   back to the kind's icon, and that to the chassis picture. So a tool with
+   no icon of its own is `tool`. `$home/lib/icons` is read before the
+   scheme's directory. A file that is missing is remembered as missing, so
+   a drawer of tools opens each missing file once.
+
+   The check sets `use neon` under the desktop. A served directory on the
+   backdrop, `/n/kbd`, wears the cyan emblem in its corner, and System does
+   not. With the file gone, Home's copper lip comes back.
+
+   7b found two bugs in the server. The `close` chord closed whatever was in
+   front, and with every shell closed that was Workbench's backdrop. A
+   backdrop has no close gadget, so the chord now leaves it. And a window
+   raised or opened was painted alone, over any docked menu, panel or popup
+   above it in the stack. It is laid back to front now when one of those
+   covers it.
 8. **Readouts and LEDs, F**, with the `status` convention and
    `cmd/srvstat`. The check: `srvstat` names a posted server green and a
    removed one off. Small.

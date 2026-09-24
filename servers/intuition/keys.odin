@@ -554,7 +554,10 @@ chord_act :: proc "contextless" (action: []u8) -> bool #no_bounds_check {
 	front := stack_top()
 	switch string(verb) {
 	case "close":
-		if front >= 0 {
+		// A backdrop is the desktop, with no close gadget, so the chord
+		// leaves it: a close pressed once too often would take the desktop.
+		// Its program ends it from its own menu.
+		if front >= 0 && windows[front].kind != .Backdrop {
 			window_close_request(&windows[front])
 		}
 	case "zoom":
