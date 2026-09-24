@@ -850,6 +850,25 @@ look.
 8. **Readouts and LEDs, F**, with the `status` convention and
    `cmd/srvstat`. The check: `srvstat` names a posted server green and a
    removed one off. Small.
+
+   **Brick 8 is done, September 2026.** `cmd/srvstat` reads each name in
+   `/srv`, or the names it is given, and prints the name, the LED's colour
+   and why. Each name is read on an io proc of its own. That proc takes a
+   namespace of its own, mounts the name at `/mnt` and reads `status`. A
+   sleeper beside it answers `timeout` after two seconds. So a late mount
+   lands where no other read looks.
+
+   libmui has two classes more. A `Readout` is an LCD `cells` wide, its
+   characters in the readout face over their unlit `8`s. An `Led` holds a
+   state in `sel`. The theme roles are `lcd.bg`, `lcd.fg` and `lcd.ghost`,
+   and the schemes point them at their `lcd` colours. `bloom` waits for a
+   readout on the glass that wants it.
+
+   The checks: `tests/srvstat.rc` finds `feed` green and a missing name
+   off. It writes `degraded`, then `failed`, as `status` at kfs's root,
+   `/usr`, and finds kfs amber, then red. `tests/mui` reads a readout's
+   glass, lit and ghost pixels, and an LED green, red, and unlit in its own
+   colour.
 9. **The dock and the top bar, H and I.** `bar` with an edge, the dock
    file, and the tiles. The check: a tile's LED lights when its program's
    window opens and goes dark when it closes. Medium.

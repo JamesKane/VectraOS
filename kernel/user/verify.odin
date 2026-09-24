@@ -12730,6 +12730,12 @@ verify_feedfs :: proc(r: ^Result) {
 	script_says(r, "/bin/rc", snames[:], PATIENCE * 40, "the shell starts on the feed script", "ok", "and the shell bound the two feeds and read the timeline in order, first to last")
 	reap_orphans()
 
+	// The LEDs, `docs/CHROME.md` section 10: `srvstat` reads a posted
+	// server green, a missing name off, and a `status` word amber or red.
+	lnames := [?]string{"rc", "/lib/tests/srvstat.rc"}
+	script_says(r, "/bin/rc", lnames[:], PATIENCE * 40, "the shell starts on the srvstat script", "ok", "and srvstat names feed green, a missing name off, and kfs amber and red by its status word")
+	reap_orphans()
+
 	// The reading half: a program reads the conversation back from its files.
 	dnames := [?]string{"doctest", "msgs", "/mnt/feed/one"}
 	script_says(r, "/bin/doctest", dnames[:], PATIENCE * 5, "a program on the message shape starts on the conversation", "ok", "and reads its rows, a message, and a reply back from the files")

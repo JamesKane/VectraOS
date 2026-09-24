@@ -29,6 +29,9 @@ font.namespace  /lib/font/namespace/12.face   # paths and status lines
 
 frame.style metal         # a brushed bar, a focus line on the front one
 icons       /lib/icons    # the study's drawn icons, docs/CHROME.md section 6
+lcd.bg      lcd.bg        # the readout's glass and lit segments, docs/CHROME.md section 10
+lcd.fg      lcd.fg
+lcd.ghost   13            # the unlit segments, in parts in 100
 frame.edge  1
 frame.title 24
 frame.well  1

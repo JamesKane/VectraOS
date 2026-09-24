@@ -162,6 +162,12 @@ apply_line :: proc "contextless" (t: ^Theme, line: string) {
 		set_color(&t.metal_hi, value)
 	case "bar.shade":
 		set_color(&t.metal_lo, value)
+	case "lcd.bg":
+		set_color(&t.lcd_bg, value)
+	case "lcd.fg":
+		set_color(&t.lcd_fg, value)
+	case "lcd.ghost":
+		set_metric(&t.lcd_ghost, value)
 	case "font.chrome":
 		set_face(&t.faces[.Chrome], value, rest)
 	case "font.interface":
@@ -524,6 +530,7 @@ that shows the theme walks this, so it stays right when a role is added.
 THEME_ROLES := [?]string{
 	"ground", "face", "face.lit", "face.shade", "text", "hot", "link", "dim",
 	"focus", "warn", "ok", "fault",
+	"lcd.bg", "lcd.fg", "lcd.ghost",
 	"font.chrome", "font.interface", "font.readout", "font.namespace", "icons",
 	"bevel", "well", "pad", "gap", "hpad", "vpad",
 }
@@ -571,6 +578,12 @@ theme_value :: proc "contextless" (t: ^Theme, role: string, out: []u8) -> string
 				return string(out[:copy(out, f.path[:f.n])])
 			}
 		}
+	case "lcd.bg":
+		return rgb(t.lcd_bg, out)
+	case "lcd.fg":
+		return rgb(t.lcd_fg, out)
+	case "lcd.ghost":
+		return libuser.itoa(out, i64(t.lcd_ghost))
 	case "icons":
 		return string(out[:copy(out, t.icons[:t.icons_n])])
 	case "bevel":

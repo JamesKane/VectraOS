@@ -153,6 +153,7 @@ user_programs := [?]User_Program {
 	{name = "ask", path = "cmd/ask"},
 	{name = "style", path = "cmd/style"},
 	{name = "srv", path = "cmd/srv"},
+	{name = "srvstat", path = "cmd/srvstat"},
 	{name = "import", path = "cmd/import"},
 	{name = "cpu", path = "cmd/cpu"},
 	{name = "rx", path = "cmd/rx"},
@@ -1489,6 +1490,7 @@ stage_vectra :: proc(arch: string, host: string) {
 	copy_file("tests/one.atom", fmt.tprintf("%s/lib/tests/one.atom", root))
 	copy_file("tests/two.rss", fmt.tprintf("%s/lib/tests/two.rss", root))
 	copy_file("tests/feed.rc", fmt.tprintf("%s/lib/tests/feed.rc", root))
+	copy_file("tests/srvstat.rc", fmt.tprintf("%s/lib/tests/srvstat.rc", root))
 	copy_file("tests/home.json", fmt.tprintf("%s/lib/tests/home.json", root))
 	copy_file("tests/timeline.json", fmt.tprintf("%s/lib/tests/timeline.json", root))
 	copy_file("tests/notifications.json", fmt.tprintf("%s/lib/tests/notifications.json", root))

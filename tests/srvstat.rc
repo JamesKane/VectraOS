@@ -1,0 +1,17 @@
+# srvstat.rc: the LEDs srvstat reads, docs/CHROME.md section 10. A posted
+# server that answers is green, and a name /srv does not hold is off. A
+# `status` word at a server's root sets its LED. kfs's root is /usr, so a
+# word written there is kfs's own. The exit word is `ok` or what went wrong.
+s=`{srvstat feed}
+if(! ~ $s(2) green) exit 'feed is not green: '$"s
+s=`{srvstat nosuch}
+if(! ~ $s(2) off) exit 'a name /srv lacks is not off: '$"s
+echo degraded > /usr/status
+s=`{srvstat kfs}
+rm /usr/status
+if(! ~ $s(2) amber) exit 'kfs saying degraded is not amber: '$"s
+echo failed > /usr/status
+s=`{srvstat kfs}
+rm /usr/status
+if(! ~ $s(2) red) exit 'kfs saying failed is not red: '$"s
+exit ok

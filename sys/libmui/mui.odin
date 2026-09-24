@@ -81,6 +81,11 @@ Theme :: struct {
 	// frame's.
 	metal_hi: libpal.RGB,
 	metal_lo: libpal.RGB,
+	// An LCD's glass and its lit segments, and how strong its unlit ones
+	// show, in parts in 100: `docs/CHROME.md` section 10's readout.
+	lcd_bg:    libpal.RGB,
+	lcd_fg:    libpal.RGB,
+	lcd_ghost: int,
 	// The face each role draws in, `fonts.odin`. None named is the cells.
 	faces:  [Face_Role]Face_Spec,
 	// The directory of `.icon` files an icon grid draws, `icon.odin`. None
@@ -110,6 +115,9 @@ default_theme :: Theme {
 	fault  = libpal.ALERT,
 	metal_hi = libpal.COPPER,
 	metal_lo = libpal.COPPER_DARK,
+	lcd_bg   = libpal.RGB{0x1D, 0x14, 0x05},
+	lcd_fg   = libpal.AMBER,
+	lcd_ghost = 13,
 }
 
 // The styles a list's rows may wear, one byte a row in `styles`. A page is
@@ -148,7 +156,16 @@ Class :: enum u8 {
 	Picture, // Pixels in a well, fitted to it, stretches both ways
 	Item, // A menu's key: a label, a shortcut at the right, an arrow for a submenu
 	Title, // A menu's title: a metal strip with the name in the chrome face
+	Readout, // An LCD: characters in the readout face over their unlit segments
+	Led, // A state's lamp: `ok`, `warn`, `fault`, or unlit
 }
+
+// An LED's states, `docs/CHROME.md` section 10, in an `Led`'s `sel`. Unlit
+// is dark in its own colour and never grey.
+LED_OFF :: 0
+LED_OK :: 1
+LED_WARN :: 2
+LED_FAULT :: 3
 
 // The kinds an icon is, `docs/WORKBENCH.md` section 6: a directory is a
 // drawer, a program is a tool, anything else is a project. Each kind has one
@@ -234,6 +251,9 @@ Object :: struct {
 
 	// A strut: a space of this width exactly, which does not stretch.
 	strut:    int,
+
+	// A readout: the characters it has room for, whatever its label says.
+	cells:    int,
 }
 
 // row_style answers a row's style, plain when the list has none.
@@ -288,6 +308,25 @@ item :: proc "contextless" (label: string, shortcut: string = "", has_sub: bool 
 title :: proc "contextless" (label: string) -> ^Object {
 	o := obj(.Title)
 	if o != nil {o.label = label}
+	return o
+}
+
+// readout is an LCD `cells` characters wide showing `label`, `docs/CHROME.md`
+// section 10. A caller changes the label and repaints, as a clock does.
+readout :: proc "contextless" (label: string, cells: int) -> ^Object {
+	o := obj(.Readout)
+	if o != nil {
+		o.label = label
+		o.cells = cells
+	}
+	return o
+}
+
+// led is a lamp in a state, `LED_OK` and the rest. A caller sets `sel` to
+// change it.
+led :: proc "contextless" (state: int) -> ^Object {
+	o := obj(.Led)
+	if o != nil {o.sel = state}
 	return o
 }
 
@@ -631,6 +670,14 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 		h := text_height(t, .Chrome) + 8
 		o.minw, o.minh = w, h
 		o.maxw, o.maxh = BIG, h
+	case .Readout:
+		w := max(o.cells, rune_len(o.label)) * readout_cell(t) + 2 * READOUT_PAD
+		h := text_height(t, .Readout) + 2 * READOUT_PAD
+		o.minw, o.maxw = w, w
+		o.minh, o.maxh = h, h
+	case .Led:
+		o.minw, o.maxw = LED_SIZE, LED_SIZE
+		o.minh, o.maxh = LED_SIZE, LED_SIZE
 	case .Checkmark:
 		s := FONT_H + 2 * t.bevel
 		o.minw, o.maxw = s, s

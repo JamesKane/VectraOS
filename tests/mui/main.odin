@@ -538,6 +538,43 @@ start :: proc "c" (block: ^abi.Args) {
 		main_check(int(tt.ground.r), int(libpal.SLATE_DEEP.r), "a role named nowhere keeps the chassis")
 	}
 
+	// -- A readout and its LEDs, `docs/CHROME.md` section 10 ------------------
+	//
+	// A readout is `lcd.bg` glass with its lit characters in `lcd.fg`, and
+	// under them the unlit `8`s at `lcd.ghost`: a pixel of the `8` that the
+	// `1` does not light shows the ghost. An LED is its state's colour, and
+	// an unlit one is darker than a lit one in the same colour.
+	{
+		tl := libmui.default_theme
+		row := libmui.group(true)
+		ro := libmui.readout("1", 1)
+		ok := libmui.led(libmui.LED_OK)
+		bad := libmui.led(libmui.LED_FAULT)
+		off := libmui.led(libmui.LED_OFF)
+		want(row != nil && ro != nil && ok != nil && bad != nil && off != nil, "a readout and three LEDs are made")
+		libmui.add(row, ro)
+		libmui.add(row, ok)
+		libmui.add(row, bad)
+		libmui.add(row, off)
+		libmui.fit(row, &tl)
+		libmui.lay(row, 0, 0, 200, 60, &tl)
+		c := paint_tree(row, &tl)
+		glass := libraster.rgb(tl.lcd_bg)
+		lit := libraster.rgb(tl.lcd_fg)
+		ghost := libraster.mix(glass, lit, u32(tl.lcd_ghost) * 255 / 100)
+		want(count_in(&c, ro.x, ro.y, ro.w, ro.h, glass) > 0, "a readout's glass is lcd.bg")
+		want(count_in(&c, ro.x, ro.y, ro.w, ro.h, lit) > 0, "its lit character is lcd.fg")
+		want(count_in(&c, ro.x, ro.y, ro.w, ro.h, ghost) > 0, "and the segments the 1 leaves unlit show at lcd.ghost")
+		centre :: proc "contextless" (c: ^libraster.Canvas, o: ^libmui.Object) -> u32 {
+			return libraster.get(c, o.x + o.w / 2, o.y + o.h / 2)
+		}
+		g, r := centre(&c, ok), centre(&c, bad)
+		want(g >> 8 & 0xFF > g >> 16 & 0xFF, "an ok LED is green")
+		want(r >> 16 & 0xFF > r >> 8 & 0xFF, "a fault LED is red")
+		d := libraster.get(&c, off.x + off.w / 2, off.y + off.h / 2)
+		want(d >> 8 & 0xFF < g >> 8 & 0xFF && d >> 8 & 0xFF > d >> 16 & 0xFF, "an unlit LED is dark in its own colour, not grey")
+	}
+
 	// -- An icon is drawn from its outlines, `docs/CHROME.md` section 6 -------
 	//
 	// The chassis names no icons, so a grid keeps its pictures. A scheme
