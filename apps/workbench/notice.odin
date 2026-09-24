@@ -99,8 +99,16 @@ mount_thread :: proc "contextless" (arg: rawptr) {
 			libthread.ioclose(io)
 		}
 	}
+	// The handshake is over, whichever way it went: `dock_thread` may open
+	// its window now. See there.
+	if notice_mounted != nil {
+		libthread.sendul(notice_mounted, 1)
+	}
 	libthread.threadexits("")
 }
+
+// Told once the notice service's mount is done, for `dock_thread`.
+notice_mounted: ^libthread.Chan
 
 // notice_thread serves /srv/wb for as long as it is mounted.
 notice_thread :: proc "contextless" (arg: rawptr) {

@@ -239,7 +239,7 @@ Workbench's popups, opened from the bar.
 One menu tree shows three ways. It is docked at the top left as NeXT's
 main menu, a popup at the pointer, or torn off into a panel that stays.
 That adds two kinds of window, `menu` and `panel`, and takes the menus off
-the screen bar. It is planned.
+the screen bar. It is built, September 2026, bricks 6a to 6d.
 
 **A window that wants a person says so on `wctl`.** `state working`,
 `state waiting` and `state idle` are three words a program writes, and
@@ -481,8 +481,17 @@ sit between them. The numbers come from a `/dev/sysstat` this step
 adds to `#c`, the frame counts the boot line already prints. The lamps
 are the server's, painted into the bar's strip on every switch. When a
 ghost is on, its spend for the day sits beside the memory, read off
-`/mnt/model/N/usage`, so a budget is never a surprise. Button 3 on the
-bar opens the menus, one popup per title:
+`/mnt/model/N/usage`, so a budget is never a surprise.
+
+**The menus are Workbench's main menu, docked at the top left below the
+bar**, `docs/CHROME.md` section 8. The bar carries none. The dock shows
+while the backdrop or a drawer is in front. It names the program's `app`,
+and the server shows it over that program's windows.
+
+Each of the four
+is a submenu of it, filled just before it opens. Button 3 on the bar, the
+backdrop or a drawer opens the same tree at the pointer, and `alt-m` opens
+it too. The backdrop keeps 160 pixels at its left clear for the dock:
 
         Workbench   About..., Execute Command..., Shell, Overview, Reload,
                 Quit

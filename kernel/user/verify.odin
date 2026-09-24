@@ -376,8 +376,10 @@ type_text :: proc(text: string) {
 
 // mnt_file names one window's file under the server's mount: `/mnt/<i><name>`.
 @(private = "file")
-mnt_file :: proc "contextless" (buf: []u8, i: int, name: string) -> string {
-	n := copy(buf, "/mnt/")
+mnt_file :: proc "contextless" (buf: []u8, i: int, name: string, base := "/mnt") -> string {
+	n := copy(buf, base)
+	buf[n] = '/'
+	n += 1
 	// Two digits past nine: a desktop with menus and panels up is past ten.
 	if i >= 10 {
 		buf[n] = u8('0' + i / 10)
@@ -6157,7 +6159,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		}
 		sync.delay(1)
 	}
-	if !check(r, titled, "and draws its bar across the top of the screen, the menu titles amber on it") {
+	if !check(r, titled, "and draws its bar across the top of the screen, its wordmark amber on it") {
 		return
 	}
 
@@ -6166,7 +6168,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 	lipped := false
 	for _ in 0 ..< PATIENCE * 20 {
 		for y in WB_BAR_H ..< WB_BAR_H + libmui_icon_h() {
-			if first, _ := scan_row(s, y, copper, 0, libmui_icon_w()); first >= 0 {
+			if first, _ := scan_row(s, y, copper, WB_DOCK_ROOM, WB_DOCK_ROOM + libmui_icon_w()); first >= 0 {
 				lipped = true
 				break
 			}
@@ -6184,7 +6186,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 	// which the injected pair does not always land inside on the first try.
 	// So the click is retried until a drawer's bar appears, a few times
 	// before it is called a failure.
-	home_x, home_y := libmui_icon_w() / 2, WB_BAR_H + libmui_icon_h() / 2
+	home_x, home_y := WB_DOCK_ROOM + libmui_icon_w() / 2, WB_BAR_H + libmui_icon_h() / 2
 	check(r, point_to(home_x, home_y), "the pointer is moved onto Home")
 	dx, dy, dw := -1, -1, 0
 	for _ in 0 ..< 5 {
@@ -6229,27 +6231,34 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		check(r, closed, "and an alt-w closes the drawer, its bar gone from the glass")
 	}
 
-	// -- 2. The first menu opens on button three, and Shell is chosen on it -----------
+	// -- 2. The docked main menu, and Shell chosen on it ------------------------------
 
 	/*
-	The bar's first title opens its menu, a popup with `Shell` among its
-	items, and a click on that item opens a shell in a window. The click
-	lands on a popup that just opened, whose reader may not have run yet.
+	Workbench's main menu is docked at the top left, below the bar, and the
+	bar carries no menus, `docs/CHROME.md` section 8. Its `Workbench` key
+	opens that submenu beside the dock, a popup with `Shell` among its items,
+	and a click on that item opens a shell in a window. The click lands on a
+	popup that just opened, whose reader may not have run yet.
 	That used to be a race the glass could not be driven through, because
 	the draw server kept one mouse line per window and the release wrote
 	over the press. A window's `mouse` is a queue now, and the press waits
 	for the reader. The chosen shell is closed again with an alt-w, so the
 	shells the suite types at below are the ones the bound chord opens.
 	*/
-	title_x := amber_group(s, WB_BAR_H / 2, amber, 2)
+	// The main menu, docked at the top left below the bar, where the bar's
+	// menu titles were, `docs/CHROME.md` section 8.
+	// The draw server at `/n/desk` for these, `/mnt` being the notice
+	// service's later: taken down again at the section's end.
+	menu_mounted := srv.mount(vfs.boot_namespace, "/srv/draw", "/n/desk") == vfs.OK
+	dslot, dock_x, dock_y, _ := await_slot_at(WB_DOCK_X, WB_BAR_H + WB_DOCK_Y, "/n/desk")
 	shells0 := count_windows()
 	menu_ok, chose := false, false
-	if check(r, title_x > 0, "the first menu title stands after the wordmark on the bar") {
+	if check(r, dslot > 0, "Workbench docks its main menu at the top left, below the bar") {
 		// Up to three rounds of open-and-choose. A round that finds the popup
 		// but whose click opens nothing says so on the console, with where it
 		// clicked and what the glass held, and the next round starts clean.
 		for round in 0 ..< 3 {
-			item_x, item_y, opened := wb_menu_open(s, title_x, magnesium, round > 0)
+			item_x, item_y, opened := wb_menu_open(s, dock_x, dock_y, magnesium, round > 0)
 			menu_ok = menu_ok || opened
 			if !opened || !point_to(item_x, item_y) {
 				continue
@@ -6286,8 +6295,8 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 			_ = net_file_write("/dev/cons", libodin.str(&sink))
 		}
 	}
-	check(r, menu_ok, "button three on it opens a menu, a popup with a third item where Shell sits")
-	check(r, chose, "and a click on Shell, on the popup that just opened, opens a shell in a window")
+	check(r, menu_ok, "the dock's Workbench key opens its submenu beside the dock, Shell its third item")
+	check(r, chose, "and a click on Shell in that submenu, a popup that just opened, opens a shell in a window")
 	if chose {
 		// Its bar in front first, so the chord closes it and not what was
 		// in front before it claimed its window.
@@ -6309,6 +6318,10 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		// glass. A press on the bare backdrop, outside the popup, closes it.
 		_ = point_to(s.width / 2, s.height / 2)
 		_ = click_held()
+	}
+
+	if menu_mounted {
+		_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/desk")
 	}
 
 	// -- 3. A shell in a window, typed at, and one more on the chord ------------------
@@ -6578,6 +6591,12 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 // the bar's height and an icon cell. Written here rather than imported,
 // because the kernel links neither.
 WB_BAR_H :: 24
+// Workbench's docked main menu: where the server puts it below the bar, and
+// the room the backdrop keeps clear for it at its left, `apps/workbench`'s
+// `DOCK_ROOM`.
+WB_DOCK_X :: 8
+WB_DOCK_Y :: 8
+WB_DOCK_ROOM :: 160
 
 @(private = "file")
 libmui_icon_w :: proc "contextless" () -> int {
@@ -6764,45 +6783,38 @@ title_bar :: proc "contextless" (s: ^fb.Surface, copper: u32) -> (bx: int, by: i
 }
 
 /*
-wb_menu_open opens the Workbench bar's first menu with button three and
-finds `Shell` on it: the popup opens at the title, so it is found by its
-pixels, the first row under the bar carrying the top button, a wide
-magnesium span, and `Shell` the third run of face down a column a dozen
-pixels inside the button's left edge. A try after the first clicks the bare
-backdrop first, to close a menu a prior try left standing. Answers the
-item's point, and whether the menu opened.
+wb_menu_open opens the `Workbench` submenu of Workbench's docked main menu,
+`docs/CHROME.md` section 8: a click on the dock's first key, at the top left
+below the bar, opens it beside the dock. Answers `Shell`'s point on it, the
+third run of face down a column ten pixels in, and whether it opened. A try
+after the first clicks the bare backdrop first.
 */
 @(private = "file")
-wb_menu_open :: proc(s: ^fb.Surface, title_x: int, magnesium: u32, reset: bool) -> (x: int, y: int, ok: bool) {
+wb_menu_open :: proc(s: ^fb.Surface, dx: int, dy: int, magnesium: u32, reset: bool) -> (x: int, y: int, ok: bool) {
 	for attempt in 0 ..< 6 {
 		if attempt > 0 || reset {
+			// A submenu a prior try left standing goes with a press on the
+			// bare backdrop, clear of the dock and the icons.
 			_ = point_to(s.width / 2, s.height / 2)
 			_ = click_held()
 			sync.delay(PATIENCE / 4)
 		}
-		if !point_to(title_x + 8, WB_BAR_H / 2) {
+		// The dock's first key, `Workbench`, under its title: read down a
+		// column ten pixels in, left of the labels and clear of the title's
+		// tear-off gadget at its right.
+		iy := await_face_run(s, dx + 10, dy, magnesium, 1)
+		if iy < 0 || !point_to(dx + 24, iy) || !click_held() {
 			continue
 		}
-		if !(inject_move(0, 0, CLICK_MENU) && wait_pointer(title_x + 8, WB_BAR_H / 2)) {
+		// Its submenu opens at the dock's right edge, and `Shell` is its
+		// third key.
+		dslot, _, _, dw := await_slot_at(dx, dy, "/n/desk")
+		if dslot < 0 {
 			continue
 		}
-		sync.delay(MENU_HOLD)
-		_ = inject_move(0, 0, 0)
-		// The keys are read down a column just inside their right edge: a
-		// menu's labels sit at the left of its keys, `docs/CHROME.md` section
-		// 8, and a column through the letters would break a key's run of face.
-		mcol, mleft := -1, -1
-		for _ in 0 ..< PATIENCE * 2 {
-			if first, last := scan_row(s, WB_BAR_H + 12, magnesium, title_x, s.width - 8); first >= 0 && last - first > 60 {
-				mcol = last - 6
-				mleft = first
-				break
-			}
-			sync.delay(1)
-		}
-		if mcol >= 0 {
-			if iy := nth_face_run(s, mcol, WB_BAR_H, magnesium, 3); iy >= 0 {
-				return mleft + 32, iy, true
+		if cx, cy, _, _, cok := await_window_at(dx + dw, -1, "/n/desk"); cok {
+			if jy := await_face_run(s, cx + 10, cy, magnesium, 3); jy >= 0 {
+				return cx + 24, jy, true
 			}
 		}
 	}
@@ -10569,11 +10581,11 @@ await_panel_at :: proc(x: int, y: int) -> (slot: int, fx: int, fy: int, fw: int)
 
 // await_slot_at waits for a window whose corner is at (x, y) and answers its
 // slot, its corner and its width, or a slot of -1.
-await_slot_at :: proc(x: int, y: int) -> (slot: int, fx: int, fy: int, fw: int) {
+await_slot_at :: proc(x: int, y: int, base := "/mnt") -> (slot: int, fx: int, fy: int, fw: int) {
 	for _ in 0 ..< PATIENCE * 10 {
 		for wi in 1 ..< 16 {
 			pb: [64]u8
-			if wx, wy, ww, _, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl")); wok && wx == x && wy == y && ww > 0 {
+			if wx, wy, ww, _, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl", base)); wok && wx == x && wy == y && ww > 0 {
 				return wi, wx, wy, ww
 			}
 		}
@@ -10587,11 +10599,11 @@ await_slot_at :: proc(x: int, y: int) -> (slot: int, fx: int, fy: int, fw: int) 
 // and size. A slot nobody holds still answers its `wctl`, with the geometry a
 // window there would be born with, so a popup is found by where its program
 // put it and not by its number.
-await_window_at :: proc(x: int, y: int) -> (fx: int, fy: int, fw: int, fh: int, ok: bool) {
+await_window_at :: proc(x: int, y: int, base := "/mnt") -> (fx: int, fy: int, fw: int, fh: int, ok: bool) {
 	for _ in 0 ..< PATIENCE * 10 {
 		for wi in 1 ..< 16 {
 			pb: [64]u8
-			if wx, wy, ww, wh, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl")); wok && wx == x && (y < 0 || wy == y) && ww > 0 {
+			if wx, wy, ww, wh, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl", base)); wok && wx == x && (y < 0 || wy == y) && ww > 0 {
 				return wx, wy, ww, wh, true
 			}
 		}

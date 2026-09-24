@@ -224,6 +224,9 @@ Object :: struct {
 	// submenu, which draws an arrow there instead.
 	shortcut: string,
 	has_sub:  bool,
+
+	// A strut: a space of this width exactly, which does not stretch.
+	strut:    int,
 }
 
 // row_style answers a row's style, plain when the list has none.
@@ -283,6 +286,14 @@ title :: proc "contextless" (label: string) -> ^Object {
 
 space :: proc "contextless" () -> ^Object {
 	return obj(.Space)
+}
+
+// strut is a space `w` wide that does not stretch: room kept clear, as the
+// backdrop keeps the docked menu's corner.
+strut :: proc "contextless" (w: int) -> ^Object {
+	o := obj(.Space)
+	if o != nil {o.strut = w}
+	return o
 }
 
 checkmark :: proc "contextless" (on: bool) -> ^Object {
@@ -585,6 +596,9 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 	case .Space:
 		o.minw, o.minh = 0, 0
 		o.maxw, o.maxh = BIG, BIG
+		if o.strut > 0 {
+			o.minw, o.maxw = o.strut, o.strut
+		}
 	case .Text:
 		w := text_width(t, .Interface, o.label)
 		h := text_height(t, .Interface)

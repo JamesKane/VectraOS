@@ -420,11 +420,16 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 	window_bounds(win, mine)
 	// A docked menu names the window it serves, which is what shows it while
 	// that window is in front and hides it otherwise.
+	// It names its program too: the server shows it over every window of
+	// that program, a desktop's drawers as well as its backdrop.
 	if win.kind == .Menu && win.parent != nil {
 		if wctl := libuser.open(libdraw.win_path(win.path[:], win.base, mine, "wctl"), abi.O_WRONLY); wctl >= 0 {
-			line: [32]u8
+			line: [64]u8
 			nb: [16]u8
 			_ = libuser.write(int(wctl), transmute([]u8)libuser.cat_into(line[:], "parent ", libuser.itoa(nb[:], i64(win.parent.id))))
+			if app := app_name(); app != "" {
+				_ = libuser.write(int(wctl), transmute([]u8)libuser.cat_into(line[:], "app ", app))
+			}
 			_ = libuser.close(int(wctl))
 		}
 	}

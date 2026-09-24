@@ -603,7 +603,12 @@ run_wctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bo
 			return vectra9.EINVAL
 		}
 		win.app_n = copy(win.app[:], name)
-		rules_apply(win_at)
+		// The rules place ordinary windows. A docked menu names its program
+		// to be shown over that program's windows, and a rule would move it.
+		if win.kind == .Normal {
+			rules_apply(win_at)
+		}
+		menus_sync()
 	case "minsize", "maxsize":
 		w, tail := word(rest)
 		h, end := word(tail)

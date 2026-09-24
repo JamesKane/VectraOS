@@ -1222,6 +1222,11 @@ menus_sync :: proc "contextless" () #no_bounds_check {
 			continue
 		}
 		want := front >= 0 && m.parent >= 0 && (front == m.parent || windows[front].parent == m.parent)
+		// Or a window of the same program: a desktop's drawers as well as
+		// its backdrop, `docs/CHROME.md` section 8.
+		if !want && front >= 0 && m.app_n > 0 && windows[front].app_n == m.app_n {
+			want = string(windows[front].app[:m.app_n]) == string(m.app[:m.app_n])
+		}
 		if m.hidden == !want {
 			continue
 		}

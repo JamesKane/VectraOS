@@ -764,7 +764,26 @@ look.
    the title. So a check that counts a menu's keys down a column reads
    clear of it. The dock's check met that.
 
-   6d, Workbench's menus as its main menu, is ahead.
+   **6d, Workbench's menus as its main menu, is done, September 2026.**
+   Workbench docks one tree, `Workbench`, `Window`, `Icons` and `Tools`,
+   each a submenu of today's items, filled just before it opens through
+   `Menu.on_cascade`. The bar keeps its wordmark, its memory and its
+   lamps, and carries no menus. Button 3 anywhere on Workbench opens the
+   same tree at the pointer.
+
+   A docked menu names its program's `app`. The
+   server shows it while any window of that program is in front, a drawer
+   as well as the backdrop. The backdrop keeps its left 160 pixels
+   clear, a `strut`, so the dock covers no icon.
+
+   The check clicks the dock's `Workbench` key and `Shell` in the submenu,
+   and a shell opens.
+
+   6d found a deadline. Workbench's notice service is a thread of its own
+   proc. The kernel's handshake with it, for the mount Workbench asks at
+   start, has a deadline. A window opened in that time kept the thread from
+   answering, and the kernel tore the wire down for good. So the dock opens
+   once that mount is done.
 7. **Icons, J.** The icon format, `libraster.path`, the kinds with the
    namespace as witness, the emblem, and the Recycler. The check: a union
    directory's icon has the emblem's colour in its corner, and a plain

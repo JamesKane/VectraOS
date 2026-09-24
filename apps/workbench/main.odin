@@ -52,10 +52,26 @@ TYPES_FILE :: "/lib/wb/types"
 bar: ^libmui.Window
 back: ^libmui.Window
 
-// The one menu, and the popup it draws in.
+// The menu at the pointer, and the popup it draws in.
 menu: libmui.Menu
 menu_win: ^libmui.Window
-menu_title: int // Which title's menu is open
+menu_title: int // Which of the four submenus the choice was in
+
+/*
+The main menu, docked at the top left while the desktop is in front,
+`docs/CHROME.md` section 8. It is one tree of the four menus the screen bar
+carried, `Workbench`, `Window`, `Icons` and `Tools`, each a submenu. The
+menu at the pointer is a copy of the same tree. A submenu is filled just
+before it opens. The Window menu grows a `Kill` per window asked to close,
+and the Tools menu is a directory.
+*/
+main_menu: libmui.Menu
+main_win: ^libmui.Window
+top_nodes: [4]libmui.Menu_Node
+sub_nodes: [4][libmui.MENU_ITEMS]libmui.Menu_Node
+
+// The room the backdrop keeps clear at its left for the docked main menu.
+DOCK_ROOM :: 160
 
 screen_w, screen_h: int
 
@@ -66,7 +82,6 @@ wb_ctx: runtime.Context
 // The bar's own labels, and the storage the memory line is written into.
 mem_label: ^libmui.Object
 mem_text: [64]u8
-titles: [4]^libmui.Object
 TITLES := [4]string{"Workbench", "Window", "Icons", "Tools"}
 
 // The backdrop's icons: the names, the paths under them, and the kinds.
@@ -193,10 +208,20 @@ wb_main :: proc "contextless" (arg: rawptr) {
 		libthread.threadexitsall("no memory")
 	}
 	menu.win = menu_win
-	menu.handler = menu_chosen
+	menu.handler = main_chosen
+	menu.on_cascade = main_cascade
+	main_win = new(libmui.Window)
+	if main_win == nil {
+		libthread.threadexitsall("no memory")
+	}
+	main_menu.win = main_win
+	main_menu.handler = main_chosen
+	main_menu.on_cascade = main_cascade
+	fill_menus()
 
 	// The notice service first, posted and served before a window opens,
 	// so `init` and the desktop's own mount find a server answering.
+	notice_mounted = libthread.chancreate(size_of(u64), 1)
 	notice_post()
 	_ = libthread.threadcreate(notice_thread, nil)
 	_ = libthread.threadcreate(mount_thread, nil)
@@ -219,10 +244,32 @@ wb_main :: proc "contextless" (arg: rawptr) {
 	}
 	_ = libthread.threadcreate(window_thread, bar)
 	_ = libthread.threadcreate(window_thread, back)
+	_ = libthread.threadcreate(dock_thread, nil)
 	_ = libthread.threadcreate(memory_thread, nil)
 	_ = libthread.threadcreate(toast_thread, nil)
 	hotkey_loop()
 	libthread.threadexitsall("")
+}
+
+/*
+dock_thread opens the main menu, docked over the backdrop and shown while the
+desktop or a drawer is in front, once `/srv/wb` is mounted.
+
+**It waits for the notice service's handshake.** The notice service is a thread
+of this proc, and the kernel's handshake with it, for the mount `mount_thread`
+asks, has a deadline. A thread that opens a window runs a long while without
+yielding. The dock opened in that window of time kept the handshake past its
+deadline. The kernel then tears the wire down, the service ends, and
+`/srv/wb` never answers a mount again. So the dock opens after the mount.
+*/
+dock_thread :: proc "contextless" (arg: rawptr) {
+	_ = arg
+	context = wb_ctx
+	if notice_mounted != nil {
+		_ = libthread.recvul(notice_mounted)
+	}
+	_ = libmui.menu_dock(&main_menu, back, "Workbench", top_nodes[:])
+	libthread.threadexits("")
 }
 
 // window_thread runs one window's loop until the window is done.
@@ -253,12 +300,6 @@ open_bar :: proc "contextless" () -> bool {
 	row := libmui.group(true)
 	libmui.add(row, libmui.text("Vectra Workbench"))
 	libmui.add(row, libmui.space())
-	for i in 0 ..< 4 {
-		titles[i] = libmui.text(TITLES[i])
-		libmui.add(row, titles[i])
-		libmui.add(row, libmui.space())
-	}
-	libmui.add(row, libmui.space())
 	mem_label = libmui.text(memory_line())
 	libmui.add(row, mem_label)
 
@@ -279,19 +320,11 @@ bar_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 	_ = id
 }
 
-// bar_menu is button 3 on the bar: the title under the point opens its
-// menu, and a point on no title opens the first.
+// bar_menu is button 3 on the bar: the main menu at the pointer. The bar
+// carries no menus of its own, `docs/CHROME.md` section 8.
 bar_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
-	_ = y
-	which := 0
-	for i in 0 ..< 4 {
-		t := titles[i]
-		if t != nil && x >= t.x && x < t.x + t.w {
-			which = i
-		}
-	}
 	libmui.window_locate(w)
-	open_menu(which, w.sx + (titles[which] != nil ? titles[which].x : 0), w.sy + BAR_H)
+	open_menu(0, w.sx + x, w.sy + y)
 }
 
 /*
@@ -342,29 +375,56 @@ window_menu_items :: proc "contextless" () -> []string #no_bounds_check {
 	return window_items[:n]
 }
 
-// open_menu opens one title's menu at a point on the screen.
+// open_menu opens a copy of the main menu at a point on the screen, the
+// menu at the pointer. `which` is the submenu a caller had in mind, and the
+// whole tree opens, as a program's menu at the pointer does.
 open_menu :: proc "contextless" (which: int, x: int, y: int) {
+	_ = which
 	if menu.open {
 		return
 	}
-	menu_title = which
-	items: []string
-	switch which {
-	case 0:
-		items = wb_menu_n > 0 ? wb_menu[:wb_menu_n] : MENU_WORKBENCH[:]
-	case 1:
-		items = window_menu_items()
-	case 2:
-		items = MENU_ICONS[:]
-	case:
-		read_tools()
-		items = tool_names[:tool_n]
-		if tool_n == 0 {
-			menu_items[0] = "(no tools)"
-			items = menu_items[:1]
-		}
+	fill_menus()
+	_ = libmui.menu_open_tree(&menu, "Workbench", top_nodes[:], x, y)
+}
+
+// fill_menus lays the four submenus down from what each lists now. They are
+// the base Workbench items and a `Shell on` per machine, the Window items and
+// a `Kill` per window asked to close, the icon verbs, and the tools.
+fill_menus :: proc "contextless" () {
+	lists: [4][]string
+	lists[0] = wb_menu_n > 0 ? wb_menu[:wb_menu_n] : MENU_WORKBENCH[:]
+	lists[1] = window_menu_items()
+	lists[2] = MENU_ICONS[:]
+	read_tools()
+	lists[3] = tool_names[:tool_n]
+	if tool_n == 0 {
+		menu_items[0] = "(no tools)"
+		lists[3] = menu_items[:1]
 	}
-	_ = libmui.menu_open(&menu, items, x, y)
+	for i in 0 ..< 4 {
+		n := min(len(lists[i]), libmui.MENU_ITEMS)
+		for k in 0 ..< n {
+			sub_nodes[i][k] = libmui.Menu_Node{label = lists[i][k]}
+		}
+		top_nodes[i] = libmui.Menu_Node{label = TITLES[i], sub = sub_nodes[i][:n]}
+	}
+}
+
+// main_cascade fills the submenus just before one opens.
+main_cascade :: proc "contextless" (m: ^libmui.Menu, i: int) {
+	_ = m
+	_ = i
+	fill_menus()
+}
+
+// main_chosen hears a choice two deep, on the dock or at the pointer: the
+// submenu is the item, and the choice in it is `sub_chosen`.
+main_chosen :: proc "contextless" (m: ^libmui.Menu, item: int) {
+	if item < 0 || m.sub_chosen < 0 {
+		return
+	}
+	menu_title = item
+	menu_chosen(m, m.sub_chosen)
 }
 
 // menu_chosen hears the item, and runs what it means.
@@ -438,7 +498,9 @@ open_backdrop :: proc "contextless" () -> bool {
 	back_grid.rows = back_names[:back_n]
 	back_grid.kinds = back_kinds[:back_n]
 	back_grid.id = 1
-	col := libmui.group(false)
+	// The docked main menu's corner kept clear at the left.
+	col := libmui.group(true)
+	libmui.add(col, libmui.strut(DOCK_ROOM))
 	libmui.add(col, back_grid)
 
 	back.kind = .Backdrop

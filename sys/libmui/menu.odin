@@ -65,6 +65,10 @@ Menu :: struct {
 	// A docked menu stays up: a choice is told at once and the window
 	// stays, `docs/CHROME.md` section 8's main menu.
 	docked:     bool,
+
+	// Called just before item `i`'s submenu opens, so a program whose
+	// submenu changes, a list of windows or of tools, fills it now.
+	on_cascade: proc "contextless" (m: ^Menu, i: int),
 }
 
 /*
@@ -224,6 +228,7 @@ menu_tear :: proc "contextless" (m: ^Menu) -> bool {
 	tm.win = tw
 	tm.handler = m.handler
 	tm.user = m.user
+	tm.on_cascade = m.on_cascade
 	tw.theme = m.win.theme
 	_ = window_locate(m.win)
 	return menu_stay(tm, .Panel, nil, m.title, "", m.nodes, true, m.win.sx, m.win.sy)
@@ -296,6 +301,9 @@ menu_cascade :: proc "contextless" (m: ^Menu, i: int) -> bool {
 	}
 	if m.child.open || m.done == nil {
 		return false
+	}
+	if m.on_cascade != nil {
+		m.on_cascade(m, i)
 	}
 	key := m.buttons[i]
 	_ = window_locate(m.win)
