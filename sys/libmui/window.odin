@@ -155,6 +155,7 @@ Kind :: enum u8 {
 	Bar,
 	Popup,
 	Menu, // A docked main menu, `docs/CHROME.md` section 8
+	Panel, // A torn-off menu: a small frame and a close gadget
 }
 
 // Two presses on one gadget within this many milliseconds are a double click.
@@ -338,6 +339,8 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 				word = "popup"
 			case .Menu:
 				word = "menu"
+			case .Panel:
+				word = "panel"
 			}
 			_ = libuser.write(int(wctl), transmute([]u8)word)
 			_ = libuser.close(int(wctl))

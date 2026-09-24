@@ -259,7 +259,7 @@ pointer_move :: proc "contextless" (x: int, y: int, b: u8, msec: u64) #no_bounds
 		case .Client:
 			// A docked menu is dragged by its title, its top rows, and a
 			// press there is the server's and not the menu's.
-			if win.kind == .Menu && y - win.y < MENU_GRIP {
+			if win.kind == .Menu && y - win.y < MENU_GRIP && x - win.x < win.w - MENU_TEAR_W {
 				drag = Drag{kind = .Move, win = w, x0 = x, y0 = y, ox = win.x, oy = win.y}
 				return
 			}
@@ -330,6 +330,9 @@ hit_test :: proc "contextless" (win: ^Window, lx: int, ly: int) -> Hit {
 		return .Client
 	}
 	for g in libdraw.Gadget {
+		if !has_gadget(win.kind, g) {
+			continue
+		}
 		gx, gy, gs := gadget_at(win, g)
 		if lx >= gx && lx < gx + gs && ly >= gy && ly < gy + gs {
 			switch g {
@@ -349,6 +352,13 @@ hit_test :: proc "contextless" (win: ^Window, lx: int, ly: int) -> Hit {
 		return .Bar
 	}
 	return .Client
+}
+
+// has_gadget says whether a kind of window wears a gadget. A torn-off panel
+// wears the close gadget alone, OPEN LOOK's pushpin: it is closed, and
+// neither zoomed, sent back, nor sized.
+has_gadget :: proc "contextless" (kind: Window_Kind, g: libdraw.Gadget) -> bool {
+	return kind != .Panel || g == .Close
 }
 
 // gadget_at is where one gadget sits in a window's own coordinates, and

@@ -81,6 +81,7 @@ menu_build :: proc "contextless" (m: ^Menu, nodes: []Menu_Node, t: ^Theme) -> ^O
 	m.nodes = nodes
 	if m.title != "" {
 		if tt := title(m.title); tt != nil {
+			tt.id = MENU_TEAR_ID
 			add(col, tt)
 		}
 	}
@@ -165,6 +166,15 @@ menu_open_tree :: proc "contextless" (m: ^Menu, menu_title: string, nodes: []Men
 @(private = "file")
 menu_press :: proc "contextless" (win: ^Window, id: int) {
 	m := (^Menu)(win.user)
+	// A press on the title tears the menu off into a panel that stays, and
+	// a popup it tore from goes.
+	if id == MENU_TEAR_ID {
+		_ = menu_tear(m)
+		if !m.docked {
+			win.done = true
+		}
+		return
+	}
 	if id >= 1 && id - 1 < len(m.nodes) {
 		m.chosen = id - 1
 		m.sub_chosen = -1
@@ -193,6 +203,39 @@ told to `handler` as it is made, a submenu's through `sub_chosen`, and the menu
 goes when the program closes it or ends.
 */
 menu_dock :: proc "contextless" (m: ^Menu, parent: ^Window, menu_title: string, nodes: []Menu_Node) -> bool {
+	return menu_stay(m, .Menu, parent, menu_title, menu_title, nodes, false, 0, 0)
+}
+
+/*
+menu_tear tears a menu off, `docs/CHROME.md` section 8's D. The same tree
+opens as a window of the `panel` kind where the menu stood. It is a small frame
+with a close gadget alone, and it stays until it is closed: OPEN LOOK's
+pushpin. The panel has a menu and a window of its own on the heap. It tells its
+choices to the menu's own handler, as the menu would.
+*/
+menu_tear :: proc "contextless" (m: ^Menu) -> bool {
+	tm := (^Menu)(libuser.heap_alloc(size_of(Menu)))
+	tw := (^Window)(libuser.heap_alloc(size_of(Window)))
+	if tm == nil || tw == nil {
+		return false
+	}
+	tm^ = {}
+	tw^ = {}
+	tm.win = tw
+	tm.handler = m.handler
+	tm.user = m.user
+	tw.theme = m.win.theme
+	_ = window_locate(m.win)
+	return menu_stay(tm, .Panel, nil, m.title, "", m.nodes, true, m.win.sx, m.win.sy)
+}
+
+/*
+menu_stay opens a menu that stays up, a docked one or a torn-off panel. It is
+a window of `kind` with `name` on its frame, or none, and the tree under
+`menu_title`. Each choice is told at once.
+*/
+@(private = "file")
+menu_stay :: proc "contextless" (m: ^Menu, kind: Kind, parent: ^Window, name: string, menu_title: string, nodes: []Menu_Node, placed: bool, x: int, y: int) -> bool {
 	if m == nil || m.win == nil || m.open || len(nodes) == 0 {
 		return false
 	}
@@ -205,12 +248,16 @@ menu_dock :: proc "contextless" (m: ^Menu, parent: ^Window, menu_title: string, 
 	if root == nil {
 		return false
 	}
-	win.kind = .Menu
+	// A panel wears its name on its frame, so its title is its bar's.
+	m.title = name
+	win.kind = kind
 	win.parent = parent
 	win.bind_dev = false
 	win.own_exit = false
 	win.set_up = true
-	win.placed = false
+	win.placed = placed
+	win.at_x = x
+	win.at_y = y
 	win.want_w = root.minw
 	win.want_h = root.minh
 	win.handler = menu_press
@@ -220,7 +267,7 @@ menu_dock :: proc "contextless" (m: ^Menu, parent: ^Window, menu_title: string, 
 	m.sub_chosen = -1
 	m.waiting = false
 	m.open = true
-	if !window_open(win, menu_title, root) {
+	if !window_open(win, name, root) {
 		m.open = false
 		return false
 	}

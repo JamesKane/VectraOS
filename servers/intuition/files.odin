@@ -642,6 +642,8 @@ run_wctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bo
 		window_kind(win, win_at, .Popup)
 	case "menu":
 		window_kind(win, win_at, .Menu)
+	case "panel":
+		window_kind(win, win_at, .Panel)
 	case:
 		return vectra9.EINVAL
 	}
@@ -811,6 +813,10 @@ window_kind :: proc "contextless" (win: ^Window, at: int, kind: Window_Kind) {
 		// ordinary window, so a window that opened in between now sits over
 		// it. Raise it: `stack_add` floats a popup above every normal window,
 		// so this puts the toast or the menu back on top where it belongs.
+		window_raise(win, at)
+	case .Panel:
+		// A torn-off menu floats over the ordinary windows and under the
+		// popups, where `stack_add` puts it, and keeps the place it tore at.
 		window_raise(win, at)
 	case .Menu:
 		// A docked menu goes to the top left, below any bar, and floats

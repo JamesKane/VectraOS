@@ -52,6 +52,7 @@ Window_Kind :: enum u8 {
 	Bar,
 	Popup,
 	Menu, // a docked main menu, `docs/CHROME.md` section 8
+	Panel, // a torn-off menu: a small frame with a close gadget alone
 }
 
 // Window_State is what a window says about whether it wants a person, on its

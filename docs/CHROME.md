@@ -744,7 +744,27 @@ look.
    toolkit paints the new area on it. A check reads the demo's face back
    after a snap and a zoom.
 
-   6c, tear-off, and 6d, Workbench's menus as its main menu, are ahead.
+   **6c, tear-off, D, is done, September 2026.** A titled menu has a
+   tear-off gadget at the right of its title, a small key with a pin on it.
+   A press on the title tears the menu off. `menu_tear` opens the same
+   tree in a window of the new `panel` kind, where the menu stood. A popup
+   it tore from goes.
+
+   A panel is framed with the close gadget alone, since `has_gadget` gives
+   it no zoom, depth or sizing corner. It stacks over the ordinary windows
+   and under the popups and docked menus, and never takes the focus. A
+   press outside it does not end it, as it ends a popup. It stays up and
+   tells each choice at once, as a docked menu does, a submenu's through
+   the same cascade. A docked menu's drag grip leaves the gadget's corner
+   to the menu, so a docked menu tears off too.
+
+   The checks tear the demo's menu off at the pointer and find the panel
+   framed where it stood. A press on the bare desktop leaves it, and `Snap
+   right` chosen on it snaps the demo. The tear gadget is a key of face on
+   the title. So a check that counts a menu's keys down a column reads
+   clear of it. The dock's check met that.
+
+   6d, Workbench's menus as its main menu, is ahead.
 7. **Icons, J.** The icon format, `libraster.path`, the kinds with the
    namespace as witness, the emblem, and the Recycler. The check: a union
    directory's icon has the emblem's colour in its corner, and a plain

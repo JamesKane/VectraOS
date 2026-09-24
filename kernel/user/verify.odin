@@ -378,7 +378,12 @@ type_text :: proc(text: string) {
 @(private = "file")
 mnt_file :: proc "contextless" (buf: []u8, i: int, name: string) -> string {
 	n := copy(buf, "/mnt/")
-	buf[n] = u8('0' + i)
+	// Two digits past nine: a desktop with menus and panels up is past ten.
+	if i >= 10 {
+		buf[n] = u8('0' + i / 10)
+		n += 1
+	}
+	buf[n] = u8('0' + i % 10)
 	n += 1
 	n += copy(buf[n:], name)
 	return string(buf[:n])
@@ -5795,7 +5800,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 				face := fb.pack(s, fb.MAGNESIUM)
 				right := false
 				dstage := 0
-				if iy := await_face_run(s, dx + dw - 12, dy, face, 2); iy >= 0 && point_to(dx + 24, iy) && click_held() {
+				if iy := await_face_run(s, dx + 10, dy, face, 2); iy >= 0 && point_to(dx + 24, iy) && click_held() {
 					dstage = 1
 					if cx, cy, cw, _, cok := await_window_at(dx + dw, -1); cok {
 						dstage = 2
@@ -5816,6 +5821,15 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 					sink := detail_for(dwhat)
 					libodin.put_str(&sink, "reached stage ")
 					libodin.put_int(&sink, i64(dstage))
+					lb: [128]u8
+					ln := read_once("/mnt/0/wctl", lb[:])
+					libodin.put_str(&sink, "; demo ")
+					libodin.put_str(&sink, string(lb[:max(ln - 1, 0)]))
+					db2: [64]u8
+					dn := read_once(dock, lb[:])
+					_ = db2
+					libodin.put_str(&sink, "; dock ")
+					libodin.put_str(&sink, string(lb[:max(dn - 1, 0)]))
 					fail_detail(r, &sink)
 				}
 				if right {
@@ -5829,13 +5843,79 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			check(r, false, "the demo's main menu is docked at the top left, a menu window shown while the demo is in front")
 		}
 
+		/*
+		A menu torn off, `docs/CHROME.md` brick 6c. A press on the title of the
+		demo's menu at the pointer tears it off: the popup goes, and the same
+		items stand in a window of the `panel` kind where it was, framed with a
+		close gadget alone. A press on the bare desktop, which ends a popup,
+		leaves the panel standing. A choice made on it, two menus deep, reaches
+		the demo. And its close gadget's `close` takes it down.
+		*/
+		if devfs.tree().mouse.present {
+			if wx0, wy0, ww0, wh0, _, _, _, _, gok := wctl_frame("/mnt/0/wctl"); gok && point_to(wx0 + ww0 / 2, wy0 + wh0 / 2) {
+				_ = button_held(CLICK_MENU)
+				tstage := 0
+				tore, stood, chose := false, false, false
+				if px, py, pw, _, pok := await_window_at(wx0 + ww0 / 2, wy0 + wh0 / 2); pok {
+					tstage = 1
+					if point_to(px + pw - 10, py + 6) && click_held() {
+						tstage = 2
+						if slot, tx, ty, tw := await_panel_at(px, py); slot > 0 {
+							tore = true
+							pb: [64]u8
+							pwctl := mnt_file(pb[:], slot, "/wctl")
+							_, _, _, _, tl, _, _, _, _ := wctl_frame(pwctl)
+							_ = point_to(s.width - 24, s.height - 24)
+							_ = click_held()
+							sync.delay(PATIENCE)
+							if _, _, _, _, _, hid, hok := wctl_geo(pwctl); hok && !hid {
+								stood = true
+							}
+							face := fb.pack(s, fb.MAGNESIUM)
+							if iy := await_face_run(s, tx + tw - tl - 12, ty, face, 2); iy >= 0 && point_to(tx + tl + 24, iy) && click_held() {
+								tstage = 3
+								if cx, cy, cw, _, cok := await_window_at(tx + tw - tl, -1); cok {
+									tstage = 4
+									if jy := await_face_run(s, cx + cw - 12, cy, face, 2); jy >= 0 && point_to(cx + 24, jy) && click_held() {
+										tstage = 5
+										for _ in 0 ..< PATIENCE * 10 {
+											if sx, _, _, _, _, _, _, _, sok := wctl_frame("/mnt/0/wctl"); sok && sx == s.width / 2 {
+												chose = true
+												break
+											}
+											sync.delay(1)
+										}
+									}
+								}
+							}
+							_ = net_file_write(pwctl, "close")
+						}
+					}
+				}
+				twhat :: "a press on the menu's title tears it off: a panel with a close gadget stands where the menu was"
+				if !check(r, tore, twhat) {
+					sink := detail_for(twhat)
+					libodin.put_str(&sink, "reached stage ")
+					libodin.put_int(&sink, i64(tstage))
+					fail_detail(r, &sink)
+					_ = point_to(s.width - 24, s.height - 24)
+					_ = click_held()
+				}
+				check(r, stood, "and a press on the bare desktop, which ends a popup, leaves the panel standing")
+				check(r, chose, "and Snap right chosen on the panel, two menus deep, snaps the demo right")
+				if chose {
+					_ = net_file_write("/mnt/0/wctl", "zoom")
+				}
+			}
+		}
+
 		// The preferences window: a toolkit window of every role, walked
 		// off the parser's own list.
 		if pp := start_path(r, "/bin/prefs", "the preferences window starts"); pp != nil {
 			opened := false
 			// Whichever window it took: the one whose ctl says app prefs.
 			search: for _ in 0 ..< PATIENCE * 20 {
-				for wi in 0 ..< 8 {
+				for wi in 0 ..< 16 {
 					pb: [128]u8
 					path := mnt_file(pb[:], wi, "/ctl")
 					cb: [128]u8
@@ -10465,11 +10545,33 @@ between_px :: proc "contextless" (v: u32, a: u32, b: u32) -> bool {
 	return true
 }
 
+// await_panel_at waits for a framed window shown with its corner at (x, y), a
+// torn-off panel where the menu it came from stood, and answers its slot, x, y
+// and width, or a slot of -1. The dead popup's slot still answers at the same
+// place, unframed and hidden, which is why the frame and the showing are asked.
+await_panel_at :: proc(x: int, y: int) -> (slot: int, fx: int, fy: int, fw: int) {
+	for _ in 0 ..< PATIENCE * 10 {
+		for wi in 1 ..< 16 {
+			pb: [64]u8
+			path := mnt_file(pb[:], wi, "/wctl")
+			wx, wy, ww, _, l, _, _, _, wok := wctl_frame(path)
+			if !wok || wx != x || wy != y || l <= 0 {
+				continue
+			}
+			if _, _, _, _, _, hid, hok := wctl_geo(path); hok && !hid {
+				return wi, wx, wy, ww
+			}
+		}
+		sync.delay(1)
+	}
+	return -1, 0, 0, 0
+}
+
 // await_slot_at waits for a window whose corner is at (x, y) and answers its
 // slot, its corner and its width, or a slot of -1.
 await_slot_at :: proc(x: int, y: int) -> (slot: int, fx: int, fy: int, fw: int) {
 	for _ in 0 ..< PATIENCE * 10 {
-		for wi in 1 ..< 10 {
+		for wi in 1 ..< 16 {
 			pb: [64]u8
 			if wx, wy, ww, _, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl")); wok && wx == x && wy == y && ww > 0 {
 				return wi, wx, wy, ww
@@ -10487,7 +10589,7 @@ await_slot_at :: proc(x: int, y: int) -> (slot: int, fx: int, fy: int, fw: int) 
 // put it and not by its number.
 await_window_at :: proc(x: int, y: int) -> (fx: int, fy: int, fw: int, fh: int, ok: bool) {
 	for _ in 0 ..< PATIENCE * 10 {
-		for wi in 1 ..< 10 {
+		for wi in 1 ..< 16 {
 			pb: [64]u8
 			if wx, wy, ww, wh, _, _, _, _, wok := wctl_frame(mnt_file(pb[:], wi, "/wctl")); wok && wx == x && (y < 0 || wy == y) && ww > 0 {
 				return wx, wy, ww, wh, true

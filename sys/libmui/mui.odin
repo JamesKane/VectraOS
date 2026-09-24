@@ -38,6 +38,10 @@ FONT_W :: 8
 // A menu item's room between its label and its shortcut, and its arrow's width.
 ITEM_GAP :: 16
 ITEM_ARROW :: 8
+// A menu title's tear-off gadget, at its right, and the id a press on the
+// title reports.
+TEAR_W :: 14
+MENU_TEAR_ID :: 1000
 FONT_H :: 16
 
 // -- The theme: the numbers the look is made of ------------------------------
@@ -602,7 +606,7 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 		o.minw, o.minh = w, h
 		o.maxw, o.maxh = BIG, h
 	case .Title:
-		w := 2 * t.hpad + text_width(t, .Chrome, o.label)
+		w := 2 * t.hpad + text_width(t, .Chrome, o.label) + ITEM_GAP + TEAR_W
 		h := text_height(t, .Chrome) + 8
 		o.minw, o.minh = w, h
 		o.maxw, o.maxh = BIG, h

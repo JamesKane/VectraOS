@@ -208,7 +208,7 @@ bar_dress :: proc "contextless" (win: ^Window) #no_bounds_check {
 	// The gadgets over the metal, the study's keys, and the state lamp.
 	probe := Window{w = win.w, h = win.h}
 	for g in libdraw.Gadget {
-		if g == .Size {
+		if g == .Size || !has_gadget(win.kind, g) {
 			continue
 		}
 		gx, gy, gs := gadget_at(&probe, g)

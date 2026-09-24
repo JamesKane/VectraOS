@@ -258,6 +258,15 @@ menu_title :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 	libraster.hairline(c, o.x + 1, o.y, o.w, o.h, 7, 0x000000, 15, true)
 	th := text_height(t, .Chrome)
 	face_text(c, t, .Chrome, o.x + t.hpad, o.y + (o.h - th) / 2, o.label, px(t.ink))
+	// The tear-off gadget: a small raised key at the right with a pin on it,
+	// OPEN LOOK's, a head and a shaft.
+	gs := TEAR_W
+	gx := o.x + o.w - t.hpad / 2 - gs
+	gy := o.y + (o.h - gs) / 2
+	libraster.fill(c, gx, gy, gs, gs, px(t.face))
+	libraster.bevel(c, gx, gy, gs, gs, 1, px(t.lit), px(t.shade))
+	libraster.fill(c, gx + gs / 2 - 2, gy + 3, 4, 4, px(t.ink))
+	libraster.fill(c, gx + gs / 2 - 1, gy + 7, 1, gs - 10, px(t.ink))
 }
 
 // sub_canvas is the part of `c` at (x, y), `w` by `h`, as a canvas of its own.

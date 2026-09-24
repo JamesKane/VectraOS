@@ -672,7 +672,7 @@ Coordinates are the window's own, so a server painting into a window's store
 passes (0, 0). Answers how many pieces it wrote; size the array by
 `MAX_FRAME_PIECES`.
 */
-window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, h: int, lit: bool, keep_client := false) -> int #no_bounds_check {
+window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int, h: int, lit: bool, keep_client := false, kind := Window_Kind.Normal) -> int #no_bounds_check {
 	n := libdraw.edges(out, x, y, w, h, .Raised, th_plinth_lit, th_plinth_shade, th_frame_edge)
 	if n == 0 {
 		return 0
@@ -696,6 +696,9 @@ window_frame :: proc "contextless" (out: []libdraw.Piece, x: int, y: int, w: int
 	// gadget was drawn.
 	probe := Window{w = w, h = h}
 	for g in libdraw.Gadget {
+		if !has_gadget(kind, g) {
+			continue
+		}
 		gx, gy, gs := gadget_at(&probe, g)
 		n += libdraw.gadget(out[n:], x + gx, y + gy, gs, g, false)
 	}
@@ -770,7 +773,7 @@ frame_window :: proc "contextless" (win: ^Window, cw: int, ch: int) -> (w: int, 
 // needs do not: a backdrop, a bar and a popup are their client's whole
 // rectangle. See `workspace.odin`.
 framed :: proc "contextless" (win: ^Window) -> bool {
-	return win.kind == .Normal
+	return win.kind == .Normal || win.kind == .Panel
 }
 
 /*
@@ -836,7 +839,7 @@ window_chrome :: proc "contextless" (win: ^Window, keep_client := false) {
 		win_pieces(win, pieces[:1])
 		return
 	}
-	n := window_frame(pieces[:], 0, 0, win.w, win.h, focused(win), keep_client)
+	n := window_frame(pieces[:], 0, 0, win.w, win.h, focused(win), keep_client, win.kind)
 	n += state_lamp(pieces[n:], win)
 	win_pieces(win, pieces[:n])
 	bar_dress(win)
@@ -888,7 +891,7 @@ title_paint :: proc "contextless" (win: ^Window) #no_bounds_check {
 	n := frame_bar(pieces[:], 0, 0, win.w, focused(win))
 	probe := Window{w = win.w, h = win.h}
 	for g in libdraw.Gadget {
-		if g == .Size {
+		if g == .Size || !has_gadget(win.kind, g) {
 			continue
 		}
 		gx, gy, gs := gadget_at(&probe, g)
@@ -1186,7 +1189,7 @@ stack_top :: proc "contextless" () -> int #no_bounds_check {
 		// `mouse_thread` in `sys/libmui` says a popup is never focused. Focus
 		// stays on the window under them, so keys typed while a toast is up
 		// reach the window the person is working in.
-		if windows[w].workspace == current_ws && !windows[w].hidden && windows[w].kind != .Bar && windows[w].kind != .Popup && windows[w].kind != .Menu {
+		if windows[w].workspace == current_ws && !windows[w].hidden && windows[w].kind != .Bar && windows[w].kind != .Popup && windows[w].kind != .Menu && windows[w].kind != .Panel {
 			return w
 		}
 	}
@@ -1207,6 +1210,9 @@ MENU_DOCK_X :: 8
 MENU_DOCK_Y :: 8
 // The rows at a docked menu's top a press drags it by: its title.
 MENU_GRIP :: 24
+// The corner at the right of a menu's title that tears it off, which the grip
+// leaves to the menu.
+MENU_TEAR_W :: 20
 
 menus_sync :: proc "contextless" () #no_bounds_check {
 	front := stack_top()
@@ -1526,16 +1532,24 @@ key_message :: proc "contextless" (msg: []u8) #no_bounds_check {
 // it -- see `docs/DRAW.md` and the toast in `apps/workbench/notice.odin`.
 stack_add :: proc "contextless" (win: int) #no_bounds_check {
 	stack_drop(win)
-	if windows[win].kind == .Popup || windows[win].kind == .Menu {
+	kind := windows[win].kind
+	if kind == .Popup || kind == .Menu {
 		stack[stack_n] = win
 		stack_n += 1
 		return
 	}
 	// Below the run of popups at the top, above everything else. A docked
-	// menu floats in that run with them.
+	// menu floats in that run with them. A torn-off panel goes under that
+	// run and over every ordinary window, and an ordinary window under the
+	// panels too.
 	ins := stack_n
-	for ins > 0 && (windows[stack[ins - 1]].kind == .Popup || windows[stack[ins - 1]].kind == .Menu) {
-		ins -= 1
+	for ins > 0 {
+		above := windows[stack[ins - 1]].kind
+		if above == .Popup || above == .Menu || (kind == .Normal && above == .Panel) {
+			ins -= 1
+			continue
+		}
+		break
 	}
 	for i := stack_n; i > ins; i -= 1 {
 		stack[i] = stack[i - 1]
