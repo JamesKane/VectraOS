@@ -286,20 +286,27 @@ left, and a soft shadow. They show at 16, 32, 64 and 128 pixels. A bitmap
 per size is four files per icon that drift apart. One outline drawn at each
 size is one file. The format is text, so a diff shows what changed:
 
-    # folder: the study's amber drawer
-    view 64 64
-    shape  fill warn   stroke edge 2   M 6 18 L 26 18 L 30 22 L 58 22 L 58 54 L 6 54 Z
-    shape  fill warn.lit               M 6 26 L 58 26 L 58 30 L 6 30 Z
-    shadow 3 4 30                      # dx, dy, per cent, cast to the bottom right
-    lod    16 32                       # the shapes after this line only from 16 to 32 px
-    shape  fill edge                   M 8 20 L 56 20 L 56 22 L 8 22 Z
+    # folder: from the chrome study's i-folder, by tools/svg2icon.py
+    view 32 32
+    shape solid #000000 alpha 97 : 28.50,28.60 28.11,29.14 ...
+    shape lin 3.50 10.50 3.50 28.00 0:#ffe08a 115:amber 255:#c26f00 alpha 255 : ...
+    shape solid #170c2c alpha 255 : 4.31,10.93 11.81,8.43 ... | ...
 
-A fill names a role, so a scheme repaints every icon. `warn.lit` is a role
-one step lighter, the lamp's rule `docs/DRAW.md` section 12 already has for
-an unlit lamp. `lod` is HVIF's level of detail: a shape that only reads at
-one size is drawn at that size and no other. `libraster.path` fills a shape
-with nonzero winding and four vertical samples a pixel, which is the
-antialiasing the study's edges need at 16 pixels.
+A line is one shape, filled. Its paint is `solid`, `lin` along a line, or
+`rad` out from a point, with stops from 0 to 255. Then an alpha, then its
+contours in the view's units, split by `|`. A colour is `#` and six hex
+digits, or a name the scheme defines with a `colour` line. So a scheme
+repaints every icon. `name*55` is that colour at 55 parts in 100, toward
+black.
+
+The target fills outlines and does nothing else. `tools/svg2icon.py` does
+the rest on the host, from the study's SVG. It flattens curves and arcs,
+turns an ellipse into a polygon, expands a stroke into filled quads and
+joints, and applies a transform. The shadow is a shape of its own, a dark
+ellipse at an alpha, as the study draws it. `libraster.path_paint` fills a
+shape with nonzero winding and four vertical samples a pixel, which is the
+antialiasing the study's edges need at 16 pixels. HVIF's level of detail
+waits for an icon that needs it.
 
 **The kind rule stays, and the kinds grow.** `docs/WORKBENCH.md` section 6
 says an icon is a kind a `stat` can answer, never a file beside the file.
@@ -788,6 +795,20 @@ look.
    namespace as witness, the emblem, and the Recycler. The check: a union
    directory's icon has the emblem's colour in its corner, and a plain
    directory's does not. Medium.
+
+   **7a, the format and the drawing, is done, September 2026.**
+   `tools/svg2icon.py` writes the study's sixteen icons to `lib/icons`.
+   `libraster.path_paint` fills a shape with a solid, linear or radial
+   paint at an alpha. `sys/libmui/icon.odin` reads a file once, keeps it,
+   and draws it at any size.
+
+   A theme's `icons` line names the directory. neon, neon-hc and daylight name `/lib/icons`, and the chassis and
+   magnesium name none, so they keep the plinth pictures. An icon grid draws
+   a drawer as `folder`, a tool as `tool` and a project as `file`.
+
+   The checks fill with each paint, and draw `folder` and `union` from their
+   files. The folder is warm through its body, and the union's emblem is
+   cyan in its corner.
 8. **Readouts and LEDs, F**, with the `status` convention and
    `cmd/srvstat`. The check: `srvstat` names a posted server green and a
    removed one off. Small.

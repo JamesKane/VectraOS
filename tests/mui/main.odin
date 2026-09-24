@@ -538,5 +538,44 @@ start :: proc "c" (block: ^abi.Args) {
 		main_check(int(tt.ground.r), int(libpal.SLATE_DEEP.r), "a role named nowhere keeps the chassis")
 	}
 
+	// -- An icon is drawn from its outlines, `docs/CHROME.md` section 6 -------
+	//
+	// The chassis names no icons, so a grid keeps its pictures. A scheme
+	// names the directory, and the icon comes from its file: a folder is warm
+	// through its body, and a union's emblem is cyan in its corner.
+	{
+		for i in 0 ..< len(cpix) {
+			cpix[i] = 0x123456
+		}
+		c := libraster.canvas(raw_data(cpix[:]), CW, CW, CH)
+		chassis := libmui.default_theme
+		want(!libmui.icon_named(&c, "folder", 0, 0, 36, &chassis), "the chassis draws no icon of its own")
+		ti: libmui.Theme
+		libmui.parse_theme(&ti, "icons /lib/icons\ncolour cyan 00e5ff\ncolour amber ffb000")
+		want(libmui.icon_named(&c, "folder", 0, 0, 36, &ti), "a scheme's icon is read from its file")
+		warm := 0
+		for y in 10 ..< 28 {
+			for x in 8 ..< 28 {
+				v := libraster.get(&c, x, y)
+				if v >> 16 & 0xFF > 170 && v & 0xFF < 100 {
+					warm += 1
+				}
+			}
+		}
+		want(warm > 150, "a folder icon is warm through its body")
+		want(libmui.icon_named(&c, "union", 40, 0, 36, &ti), "a union's icon is read too")
+		cyan := 0
+		for y in 21 ..< 34 {
+			for x in 40 + 22 ..< 40 + 35 {
+				v := libraster.get(&c, x, y)
+				if v >> 16 & 0xFF < 120 && v >> 8 & 0xFF > 150 && v & 0xFF > 180 {
+					cyan += 1
+				}
+			}
+		}
+		want(cyan > 20, "and its emblem is cyan in its corner")
+		want(!libmui.icon_named(&c, "nothing", 80, 0, 36, &ti), "an icon with no file is none")
+	}
+
 	libuser.exits("ok")
 }

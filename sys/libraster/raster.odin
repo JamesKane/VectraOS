@@ -421,13 +421,51 @@ Each pixel row is sampled on four lines. On each line the spans between
 crossings count their length in sixteenths of a pixel into `scratch`, one
 word a pixel across the canvas. A pixel's alpha is its count
 over the most it could hold. So an edge at any angle is smooth, and nothing
-here takes a square root or a float.
+here takes a float.
 */
 PATH_ROWS :: 4
 MAX_CROSS :: 64
 
-path :: proc "contextless" (c: ^Canvas, pts: []Point, ends: []int, color: u32, scratch: []u32) #no_bounds_check {
-	if len(pts) < 3 || len(scratch) < c.w {
+path :: proc "contextless" (c: ^Canvas, pts: []Point, ends: []int, color: u32, scratch: []u32) {
+	p := Paint{kind = .Solid, color = color, alpha = 255}
+	path_paint(c, pts, ends, &p, scratch)
+}
+
+/*
+A Paint is what an outline is filled with. It is one colour, or a gradient
+along a line or out from a point, with an alpha over the whole. A gradient's
+stops are at 0 to 255 along it, in order, each with a colour. `a` and `b` are
+the line's two ends in sixteenths of a pixel. A radial paint is centred on `a`,
+with its radius in `r`, in sixteenths too.
+
+A pixel past either end takes the end stop. `docs/CHROME.md` section 6's icons are filled with these.
+*/
+Paint_Kind :: enum u8 {
+	Solid,
+	Linear,
+	Radial,
+}
+
+MAX_STOPS :: 4
+
+Stop :: struct {
+	at:    u32,
+	color: u32,
+}
+
+Paint :: struct {
+	kind:  Paint_Kind,
+	color: u32,
+	alpha: u32,
+	a, b:  Point,
+	r:     int,
+	stops: [MAX_STOPS]Stop,
+	n:     int,
+}
+
+// path_paint is `path` with a paint in place of a colour.
+path_paint :: proc "contextless" (c: ^Canvas, pts: []Point, ends: []int, paint: ^Paint, scratch: []u32) #no_bounds_check {
+	if len(pts) < 3 || len(scratch) < c.w || paint.alpha == 0 {
 		return
 	}
 	// The outline's rows.
@@ -498,9 +536,65 @@ path :: proc "contextless" (c: ^Canvas, pts: []Point, ends: []int, color: u32, s
 			if v == 0 {
 				continue
 			}
-			line[col] = blend(line[col], color, min(v * 255 / full, 255))
+			color := paint.color
+			if paint.kind != .Solid {
+				color = paint_at(paint, col * SUB + SUB / 2, row * SUB + SUB / 2)
+			}
+			line[col] = blend(line[col], color, min(v * 255 / full, 255) * paint.alpha / 255)
 		}
 	}
+}
+
+// paint_at is a gradient's colour at a point in sixteenths of a pixel.
+@(private)
+paint_at :: proc "contextless" (p: ^Paint, x: int, y: int) -> u32 #no_bounds_check {
+	if p.n == 0 {
+		return p.color
+	}
+	t := 0
+	switch p.kind {
+	case .Solid:
+		return p.color
+	case .Linear:
+		dx, dy := p.b.x - p.a.x, p.b.y - p.a.y
+		l2 := dx * dx + dy * dy
+		if l2 > 0 {
+			t = ((x - p.a.x) * dx + (y - p.a.y) * dy) * 255 / l2
+		}
+	case .Radial:
+		if p.r > 0 {
+			t = isqrt((x - p.a.x) * (x - p.a.x) + (y - p.a.y) * (y - p.a.y)) * 255 / p.r
+		}
+	}
+	at := u32(clamp(t, 0, 255))
+	if at <= p.stops[0].at {
+		return p.stops[0].color
+	}
+	for i in 1 ..< p.n {
+		lo, hi := p.stops[i - 1], p.stops[i]
+		if at <= hi.at {
+			if hi.at == lo.at {
+				return hi.color
+			}
+			return mix(lo.color, hi.color, (at - lo.at) * 255 / (hi.at - lo.at))
+		}
+	}
+	return p.stops[p.n - 1].color
+}
+
+// isqrt is the whole square root of `v`, by Newton's steps.
+@(private)
+isqrt :: proc "contextless" (v: int) -> int {
+	if v <= 0 {
+		return 0
+	}
+	x := v
+	y := (x + 1) / 2
+	for y < x {
+		x = y
+		y = (x + v / x) / 2
+	}
+	return x
 }
 
 // span adds the part of each pixel that `xa..xb`, in sixteenths, covers.

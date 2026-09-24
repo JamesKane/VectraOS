@@ -320,7 +320,10 @@ icon_one :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, i: int, cx: in
 	if o.kinds != nil && i < len(o.kinds) {
 		kind = o.kinds[i]
 	}
-	icon_picture(c, cx + (ICON_W - 40) / 2, cy + 6, kind, t)
+	// The theme's icon when it names a directory of them, else the chassis's.
+	if !icon_named(c, icon_kind_name(kind), cx + (ICON_W - ICON_PICTURE) / 2, cy + 4, ICON_PICTURE, t) {
+		icon_picture(c, cx + (ICON_W - 40) / 2, cy + 6, kind, t)
+	}
 	shown := clip_cells(o.rows[i], NAME_CELLS)
 	tw := drawn_len(shown) * FONT_W
 	tx := cx + (ICON_W - tw) / 2

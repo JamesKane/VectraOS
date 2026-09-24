@@ -170,6 +170,10 @@ apply_line :: proc "contextless" (t: ^Theme, line: string) {
 		set_face(&t.faces[.Readout], value, rest)
 	case "font.namespace":
 		set_face(&t.faces[.Namespace], value, rest)
+	case "icons":
+		if len(value) <= FACE_PATH {
+			t.icons_n = copy(t.icons[:], value)
+		}
 	}
 	// A role this build does not know is skipped here. `font` and `pointer`
 	// are left for the half of the toolkit that reads them.
@@ -225,6 +229,12 @@ set_face :: proc "contextless" (dst: ^Face_Spec, path: string, rest: string) {
 // the start of every parse.
 @(private = "file")
 theme_colours: libpal.Colours
+
+// theme_colour is a colour by name as the last theme read defines it, or the
+// palette's, or six hex digits. An icon names its colours this way.
+theme_colour :: proc "contextless" (name: string) -> (libpal.RGB, bool) {
+	return libpal.colours_parse(&theme_colours, name)
+}
 
 /*
 colour_lines reads every unscoped `colour NAME VALUE` line in `text` into `t`,
@@ -514,7 +524,7 @@ that shows the theme walks this, so it stays right when a role is added.
 THEME_ROLES := [?]string{
 	"ground", "face", "face.lit", "face.shade", "text", "hot", "link", "dim",
 	"focus", "warn", "ok", "fault",
-	"font.chrome", "font.interface", "font.readout", "font.namespace",
+	"font.chrome", "font.interface", "font.readout", "font.namespace", "icons",
 	"bevel", "well", "pad", "gap", "hpad", "vpad",
 }
 
@@ -561,6 +571,8 @@ theme_value :: proc "contextless" (t: ^Theme, role: string, out: []u8) -> string
 				return string(out[:copy(out, f.path[:f.n])])
 			}
 		}
+	case "icons":
+		return string(out[:copy(out, t.icons[:t.icons_n])])
 	case "bevel":
 		return libuser.itoa(out, i64(t.bevel))
 	case "well":

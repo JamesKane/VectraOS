@@ -1458,6 +1458,16 @@ stage_vectra :: proc(arch: string, host: string) {
 	for name in ([?]string{"phosphor", "cyan", "copper", "neon", "neon-hc", "daylight", "magnesium"}) {
 		copy_file(fmt.tprintf("lib/themes/%s", name), fmt.tprintf("%s/lib/themes/%s", root, name))
 	}
+	// The icons a scheme draws, docs/CHROME.md section 6, from the chrome
+	// study by tools/svg2icon.py.
+	ensure_dir(fmt.tprintf("%s/lib/icons", root))
+	if icons, err := os.read_all_directory_by_path("lib/icons", context.temp_allocator); err == nil {
+		for fi in icons {
+			if strings.has_suffix(fi.name, ".icon") {
+				copy_file(fmt.tprintf("lib/icons/%s", fi.name), fmt.tprintf("%s/lib/icons/%s", root, fi.name))
+			}
+		}
+	}
 	// The desktop's tools and types, `docs/WORKBENCH.md` section 6: a tool
 	// is a file whose first line is its command, and a type is a suffix
 	// and the tool that opens it.

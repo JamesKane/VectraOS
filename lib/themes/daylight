@@ -28,6 +28,7 @@ font.readout    /lib/font/readout/20.face     # LCD readouts
 font.namespace  /lib/font/namespace/12.face   # paths and status lines
 
 frame.style metal         # a brushed bar, a focus line on the front one
+icons       /lib/icons    # the study's drawn icons, docs/CHROME.md section 6
 frame.edge  1
 frame.title 24
 frame.well  1

@@ -83,6 +83,10 @@ Theme :: struct {
 	metal_lo: libpal.RGB,
 	// The face each role draws in, `fonts.odin`. None named is the cells.
 	faces:  [Face_Role]Face_Spec,
+	// The directory of `.icon` files an icon grid draws, `icon.odin`. None
+	// named is the chassis's pictures.
+	icons:   [FACE_PATH]u8,
+	icons_n: int,
 }
 
 default_theme :: Theme {

@@ -209,6 +209,40 @@ start :: proc "c" (block: ^abi.Args) {
 		want(libraster.get(&c, 2, 2) == WHITE && libraster.get(&c, 14, 14) == BLACK, "and inside it is whole, outside it untouched")
 	}
 
+	// -- An outline fills with a gradient, and at an alpha ----------------------
+	{
+		S :: libraster.SUB
+		sq := [4]libraster.Point{{0, 0}, {32 * S, 0}, {32 * S, 32 * S}, {0, 32 * S}}
+		ends := [1]int{4}
+		// Red at the top to blue at the foot.
+		c := fresh(BLACK)
+		lin := libraster.Paint{kind = .Linear, alpha = 255, a = {0, 0}, b = {0, 32 * S}, n = 2}
+		lin.stops[0] = {0, RED}
+		lin.stops[1] = {255, BLUE}
+		libraster.path_paint(&c, sq[:], ends[:], &lin, scratch[:])
+		top, foot := libraster.get(&c, 16, 0), libraster.get(&c, 16, 31)
+		want(chan(top, 16) > 240 && chan(top, 0) < 15, "a linear paint is its first stop at its start")
+		want(chan(foot, 0) > 240 && chan(foot, 16) < 15, "and its last at its end")
+		mid := libraster.get(&c, 16, 16)
+		want(chan(mid, 16) > 100 && chan(mid, 0) > 100, "and a mix of the two between")
+
+		// Red at the centre to blue at the radius and past it.
+		c = fresh(BLACK)
+		rad := libraster.Paint{kind = .Radial, alpha = 255, a = {16 * S, 16 * S}, r = 12 * S, n = 2}
+		rad.stops[0] = {0, RED}
+		rad.stops[1] = {255, BLUE}
+		libraster.path_paint(&c, sq[:], ends[:], &rad, scratch[:])
+		want(chan(libraster.get(&c, 16, 16), 16) > 230, "a radial paint is its first stop at its centre")
+		want(libraster.get(&c, 1, 1) == BLUE, "and its last past its radius")
+
+		// A solid paint at half its alpha is half over the ground.
+		c = fresh(BLACK)
+		half := libraster.Paint{kind = .Solid, color = WHITE, alpha = 128}
+		libraster.path_paint(&c, sq[:], ends[:], &half, scratch[:])
+		h := chan(libraster.get(&c, 8, 8), 8)
+		want(h > 120 && h < 136, "a paint at half its alpha is half over what is under it")
+	}
+
 	// -- A curve is flattened to its end ---------------------------------------
 	{
 		out: [libraster.CUBIC_STEPS]libraster.Point
