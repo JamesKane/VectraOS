@@ -265,7 +265,12 @@ sandbox :: proc "contextless" (t: ^Tool_Run, out: int, other: int) -> ! {
 				break
 			}
 		}
-		if !dup && nstrip < MAX_STRIP {
+		if !dup {
+			// A mount past the list would stay, and the lock below would
+			// keep it. So the sandbox is refused, as a table cut short is.
+			if nstrip == MAX_STRIP {
+				fail("the namespace has too many mounts to strip")
+			}
 			strip[nstrip] = target
 			nstrip += 1
 		}
