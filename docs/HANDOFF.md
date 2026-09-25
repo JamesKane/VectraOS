@@ -424,8 +424,7 @@ the documents it points at.
    - the neon scheme is not the default `/lib/theme` yet. The chassis
      stays the default because many checks read its colours by name.
 
-   The last commit, b404373 (brick 11), may not be pushed yet: ask
-   before pushing, and work on `main`.
+   Work on `main`, and ask before pushing.
 2. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
    Plan 9's `threadnotify`, so a proc other than the first can end the
    program and a note can be caught rather than end a proc. A guard page
