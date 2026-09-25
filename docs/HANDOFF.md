@@ -22,9 +22,10 @@ A modular operating system in Odin. Three ideas define it:
 - **"Cyberpunk Workstation 1994" UX.** Heavy skeuomorphic bevels, brushed dark
   magnesium over deep slate, amber/cyan/phosphor accents, copper trim, a
   software dirty-rect compositor, and tracker-synthesised relay clicks.
-  `docs/CHROME.md` plans its next form from `plan-neo`'s chrome study: a
-  neon scheme, surfaces as materials, four faces, vector icons, and NeXT's
-  docked menu. None of that is built.
+  `docs/CHROME.md` is its next form, from `plan-neo`'s chrome study. It
+  brings schemes over job roles, surfaces as materials, four faces, vector
+  icons, NeXT's docked menu, a dock, and a column viewer. All eleven of its bricks are
+  built, September 2026, with a few named gaps (section 6).
 - **An agent in the shell.** A model is a file server, the ghost acts
   through the same files a person uses, every application serves a control
   tree, and a namespace is its sandbox. `docs/GHOST.md` is the plan, and it
@@ -48,8 +49,8 @@ the ESP.
 
 The machine boots and brings up memory, a namespace, a scheduler and a
 preempting timer. It publishes `#c` at `/dev`, `#s` at `/srv`, `#b` at
-`/bin`, `#e` at `/env` and `#p` at `/proc`. It then runs its self-tests --
-about 1600 checks, the userland suite alone over a thousand -- and idles a
+`/bin`, `#e` at `/env` and `#p` at `/proc`. It then runs its self-tests.
+The userland suite alone is 2,408 checks, September 2026. Then it idles a
 shell on the console with a windowed desktop beside it.
 
 **What it can do**, and which document says why:
@@ -404,10 +405,27 @@ the documents it points at.
    apply `wctl` words, chords with modes and mouse binds, a screen lock
    checked through `factotum`, program-scoped theme lines with `style
    explain`, `apps/prefs`, and desktop grounds by name. What is left:
-   frames by name (the insets must go on `wctl` first), the fault
-   notice's ghost half (GHOST step 3), and class-scoped theme roles.
-   Step 6 is the chrome study, `docs/CHROME.md`. Its first brick is the
-   frame insets on `wctl`, which is also what frames by name wait on.
+   frames by name, the fault notice's ghost half (GHOST step 3), and
+   class-scoped theme roles.
+
+   Step 6, the chrome study, `docs/CHROME.md`, is built, September 2026.
+   That is all eleven bricks of its section 14. Each has a `Brick N is
+   done` paragraph there that says what went in and what it found. The
+   bricks are insets on `wctl`, schemes, `sys/libraster`, baked faces, the
+   metal frame, menus as trees, vector icons with a Recycler, `srvstat`
+   and LEDs, the dock and the status bar, preferences with the server's
+   `overlay`, and a drawer as columns. What it left, each named in its brick:
+
+   - preferences' Keys, Workspaces and Servers pages;
+   - `bloom` on a readout;
+   - the column view's shelf and scroller, and icons in its rows;
+   - the dock's `load` column shows memory until `/dev/sysstat` reports
+     processor time;
+   - the neon scheme is not the default `/lib/theme` yet. The chassis
+     stays the default because many checks read its colours by name.
+
+   The last commit, b404373 (brick 11), may not be pushed yet: ask
+   before pushing, and work on `main`.
 2. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
    Plan 9's `threadnotify`, so a proc other than the first can end the
    program and a note can be caught rather than end a proc. A guard page
@@ -984,6 +1002,48 @@ open is small and named there: a note handler in the library, so a proc
 other than the first can end the program; a guard page under a thread's
 stack; and the kernel change that would let a proc of threads read its
 own pipe.
+
+### Flakes: how to hunt them, and the ones still open
+
+September 2026's hunt made a boot of the whole suite green five times in
+five, from about one in five. Every cause was a real bug or a check that
+raced, and none was the machine being slow. What it taught:
+
+- **Boot and read the verdict.** `run --serial=file` on the build driver
+  boots headless to `build/serial.log`. Wait for `boot complete`, then `grep -a '] user '`
+  for the userland verdict and `grep -a 'also:'` for every failed check
+  after the first. The build's 600 seconds include compiling, so the first
+  boot after a three-architecture `check` can time out with an empty log.
+- **Look for a check that interferes with a later one before blaming
+  timing.** The worst flake was the dock click. A check's alt-w, meant for
+  a drawer, closed the dock instead, since a window is an ordinary one until
+  its kind arrives. An A/B that skips one section is the fast test.
+- **A read of the glass is not atomic.** The server copies damage from
+  another core. Poll for the state a check wants, never read it once.
+- **Stage a program's page before it runs.** `hold_blob`, set the bytes,
+  then `launch`. A launch first is a race the program sometimes wins.
+- **Count a popup's keys inside the popup**, once its own first key
+  shows. A count to the screen's foot counted the window beneath.
+- **Check what diagnostic code is live before trusting its log.** An A/B
+  that wrote `close` to the front window once made the fault it was
+  chasing. A print in a hot path hides a timing flake, so print only on
+  the rare path.
+
+Still open, each seen once or rarely:
+
+- `matrixfs`'s `leave`: the POST never reaches the test homeserver. The
+  suspicion is `webfs`'s sixteen conversations, each held by a long poll a
+  client gave up on. webfs now says `every conversation is held` on the
+  console, with each one's state, when that happens.
+- `libapp`'s pointer marker, once.
+- The demo not repainting after a theme reload, once. The theme file was
+  written and the generation moved, and five instrumented boots did not
+  repeat it.
+- **The kfs scratch disk fills across boots.** `build/disk.img` is made
+  once and kept, and something leaks space in it. A full disk fails dozens
+  of web and feed checks with ENOSPC. Move the image aside and the build
+  makes a fresh one. The suspicion is kfs not freeing a large test file's
+  blocks on remove.
 
 ### Standing gaps
 
