@@ -39,19 +39,20 @@ through `vfs.server_flushed`. That bit goes clear when a slot is claimed. A
 flag of this server's own would need the same clearing, at a moment this server
 cannot see.
 
-## A worker for every request, and one more to serve the flush
+## A worker for every request
 
-`WORKERS` is `mnt.MAX_REQUESTS + 1`. The transport carries at most
-`MAX_REQUESTS` requests at once, so a worker for every slot lets every read park
-without ever waiting for a worker. The one beyond that serves the `Tflush` that
-unsticks a parked read, and a flush never parks. It marks the request, calls the
-abort hook, and returns.
+A parked read holds its worker for as long as it waits. So the connection
+grows a worker whenever a request finds every worker busy. A flush, which
+never parks, always finds one. That is `mnt.Conn`'s `grow`, on a pool that
+grows too.
+This is Plan 9's thread of its own for every request.
 
-This is Plan 9's thread of its own for every request. It was too many threads to
-want when this server was first written. The file comment said so. Nine threads
-over an eight-slot transport is cheap. The stall it retires had a fourth read of
-`/dev/cons` wait on a worker that a third read held parked. A byte at the port
-freed the whole chain at once.
+It was a fixed `mnt.MAX_REQUESTS + 1` once, a worker for each of sixteen
+slots and one spare for the flush. Every held console, mouse and tap read
+across the machine shared those sixteen, and the request after them parked
+with no note to end it. `docs/LIMITS.md` has the account. The stall before
+that had a fourth read of `/dev/cons` wait on a worker a third read held
+parked, on a transport of eight.
 */
 package devfs
 
@@ -61,7 +62,6 @@ import "kernel:drivers/console"
 import "kernel:drivers/virtio"
 import "kernel:drivers/fb"
 import "kernel:drivers/uart"
-import "kernel:mnt"
 import "kernel:sched"
 import "kernel:sync"
 import "kernel:mem"
@@ -141,13 +141,14 @@ DEV_NODES := [?]Dev_Node {
 DEV_FILES :: len(DEV_NODES) - 1
 
 /*
-One parked reader's wait, one per request slot.
+One parked reader's wait.
 
 The condition procedure gets one `rawptr` and needs two facts: which stream to
 look at, and which request to ask the transport about. Odin has no closure that
-does not allocate, so the pair is a struct with a slot of its own. Indexed by
-tag, because a tag is what names a request slot on this transport and there is
-one wait per slot by construction. The tree is `dev_tree`, the one instance.
+does not allocate, so the pair is a struct. It lives on the worker's own stack
+while the read is parked. That is exactly as long as the condition reads it,
+as `#t`'s `Irq_Wait` does. A table of them indexed by tag was one more thing
+sixteen long. The tree is `dev_tree`, the one instance.
 */
 @(private = "file")
 Read_Wait :: struct {
@@ -181,7 +182,6 @@ Dev_Tree :: struct {
 	// `kernel/vfs/fidtab.odin`.
 	fids:   vfs.Fid_Table,
 	lock:   sync.Spinlock,
-	waits:  [mnt.MAX_REQUESTS]Read_Wait,
 
 	/*
 	How many fids hold each file whose open state *means* something.
@@ -202,14 +202,12 @@ Dev_Tree :: struct {
 }
 
 /*
-A worker for every request slot, and one more.
-
-See the file comment. Every one of the `MAX_REQUESTS` slots can hold a parked
-read, and the spare serves the flush that unsticks one. The spare is exactly one
-because a flush never parks: it marks the request, calls the abort hook, and
-returns.
+The workers the server starts with. A parked read holds its worker. So the
+connection grows one more whenever a request finds every worker busy, and a
+flush always finds one: `mnt.Conn`'s `grow`. There were once one per request
+slot and one spare, and sixteen slots.
 */
-WORKERS :: mnt.MAX_REQUESTS + 1
+WORKERS :: 4
 
 // Fids this server will hand out at once. A ceiling rather than a guess -- see
 // `vfs.fidtab_init`. Four files means a client would have to clone the same
@@ -254,7 +252,7 @@ init :: proc(ns: ^vfs.Namespace, screen: ^console.Console, port: ^uart.Port, raw
 		vfs.fidtab_destroy(&t.fids)
 		return vectra9.EPROTO
 	}
-	if !vfs.server_start(&t.server, WORKERS, 0, devfs_abort) {
+	if !vfs.server_start(&t.server, WORKERS, 0, devfs_abort, grow = true) {
 		vfs.fidtab_destroy(&t.fids)
 		return vectra9.ENOMEM
 	}
@@ -701,7 +699,7 @@ devfs_abort is what `kernel/mnt` calls when a Tflush names a live request.
 It wakes every parked reader rather than the one that was flushed, and that is
 not laziness. This hook is handed a tag. What identifies a parked reader is the
 rendezvous it is on, rather than a tag. `wakeup_all` costs one pass over
-a list at most `WORKERS` long. Each woken thread re-tests its own condition,
+a list as long as the reads parked on that stream. Each woken thread re-tests its own condition,
 and the ones nothing flushed park again. `sync.sleep` loops for exactly this
 reason.
 
@@ -947,30 +945,6 @@ devfs_walk :: proc "contextless" (t: ^Dev_Tree, m: vectra9.Twalk, reply: ^vectra
 	vfs.fidtab_walk(&t.fids, m, reply, nil, step, walk_qid)
 }
 
-/*
-wait_slot names the wait for this request's slot, and the stream it is on.
-
-Nil for a tag this server cannot index. Such a tag is one it cannot ask the
-transport about, so a park on it could never be flushed. Refusing beats
-parking with no way out.
-*/
-@(private = "file")
-wait_slot :: proc "contextless" (
-	t: ^Dev_Tree,
-	tag: vectra9.Tag,
-	tap: ^Tap,
-	mouse: ^Mouse_File,
-) -> ^Read_Wait #no_bounds_check {
-	if int(tag) >= mnt.MAX_REQUESTS {
-		return nil
-	}
-	w := &t.waits[int(tag)]
-	w.tag = tag
-	w.tap = tap
-	w.mouse = mouse
-	return w
-}
-
 // Read_Take is one attempt to answer a parked read: the bytes it found, and
 // whether the read is answered. A read not answered parks.
 @(private = "file")
@@ -1210,37 +1184,25 @@ devfs_read :: proc "contextless" (
 		reply^ = vectra9.Rread{data = fbctl_report(t.raw, m.offset, buf[:room])}
 
 	case .Cons:
-		w := wait_slot(t, tag, nil, nil)
-		if w == nil {
-			reply^ = vectra9.error_reply(vectra9.EIO)
-			return
-		}
+		w := Read_Wait{tag = tag}
 		// The reader owns the console for a typed interrupt from here on.
 		if console_owner != nil {
 			if group := console_owner(); group != 0 {
 				t.cons.owner_group = group
 			}
 		}
-		park_read(t, w, &t.cons.ready, buf[:room], take_cons, reply)
+		park_read(t, &w, &t.cons.ready, buf[:room], take_cons, reply)
 
 	case .Scancode, .Eia0:
 		tp := DEV_NODES[node].kind == .Scancode ? &t.scancode : &t.serial
-		w := wait_slot(t, tag, tp, nil)
-		if w == nil {
-			reply^ = vectra9.error_reply(vectra9.EIO)
-			return
-		}
-		park_read(t, w, &tp.ready, buf[:room], take_tap, reply)
+		w := Read_Wait{tag = tag, tap = tp}
+		park_read(t, &w, &tp.ready, buf[:room], take_tap, reply)
 
 	case .Mouse:
 		// One line per movement, and a park until there is one newer than
 		// the last line answered. The same flush-first loop as the taps.
-		w := wait_slot(t, tag, nil, &t.mouse)
-		if w == nil {
-			reply^ = vectra9.error_reply(vectra9.EIO)
-			return
-		}
-		park_read(t, w, &t.mouse.ready, buf[:room], take_mouse, reply)
+		w := Read_Wait{tag = tag, mouse = &t.mouse}
+		park_read(t, &w, &t.mouse.ready, buf[:room], take_mouse, reply)
 
 	case .Dir:
 		// Answered above, and named here so the switch is exhaustive rather

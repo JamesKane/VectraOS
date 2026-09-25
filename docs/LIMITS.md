@@ -144,7 +144,9 @@ These break Rule 2, and they come first.
 | Limit | Where | What a full one does |
 |---|---|---|
 | Mount wire requests, 16 | `kernel/mnt/wire.odin` | Parked for ever. **Fixed, September 2026:** the pool grows by chunks of 16 up to the tag space. |
-| In-kernel `Conn` requests, 16, and its workers | `kernel/mnt/mnt.odin`, `kernel/devfs`, `kernel/tree` | Parks with no note. One pool serves all of `#c` and one all of `#t`, and every held cons, mouse or interrupt read holds a slot and a worker. |
+| In-kernel `Conn` requests, 16, and its workers | `kernel/mnt/mnt.odin`, `kernel/devfs`, `kernel/tree` | Parked with no note. One pool served all of `#c` and one all of `#t`, and every held cons, mouse or interrupt read held a slot and a worker. **Fixed, September 2026:** the pool is the wire's, `kernel/mnt/pool.odin`, and a `Conn` that asks grows a worker when a request finds every one busy. |
+| kfs inodes, 1024 | `servers/kfs/disk.odin` | Files per volume, whatever its size. A 64 MiB scratch volume ran out of files with nine tenths of its blocks free, and every later write was `ENOSPC`. **Fixed, September 2026:** a ream makes one inode per four blocks. |
+| Close loops to 32 | `cmd/window`, `apps/terminal`, `servers/ghost/sandbox.odin` | A child closed descriptors 3 to 31 before exec, and the table ran to 63. A shell kept the write end of its own input pipe and never exited. The sandbox kept whatever sat above 31. **Fixed, September 2026:** `libuser.close_from`, to `abi.MAX_FDS`, which the kernel's table is. |
 | Rendezvous table, `REND_MAX` 64 | `kernel/user/user.odin` | A full table answered as a note does, and `libthread`'s `proc_meet` retried at once, so it spun. **Fixed, September 2026:** there is no table. A sleeper's own process record is its entry, found through a hash, as Plan 9's `rendhash` is. |
 | `exportfs` readers, 4 | `cmd/exportfs/main.odin` | Four parked reads stall every read behind them. A full queue runs the read on the serve loop, which can wedge the export. It is on the `cpu` path. |
 | Stream wires, `MAX_CHAN_WIRES` 8 | `kernel/pipe/chanwire.odin` | A nil wire makes the mount fall back to `netfs`'s own server, so the mount reaches the wrong tree without an error. |
@@ -170,6 +172,7 @@ These keep Rule 2 and break Rule 1 or Rule 4.
 | Shared buffers, `SHM_MAX` 64 | `kernel/user/shm.odin` | One per window store, machine-wide. |
 | Theme followers, 32 | `sys/libmui/theme.odin` | The 33rd window of a program does not hear a theme change. |
 | Icon cache, 256 | `sys/libmui/icon.odin` | Never evicts, so icons stop drawing once it is full. |
+| The web store | `servers/webfs` | Keeps every body it fetches under its hash, and its `names` index, for ever. It is a cache with no eviction, the file-per-body that filled the scratch volume's inodes. The self-test now clears it each run. The store itself still needs a bound. |
 
 ### 3.3 Sized for one machine, where memory should size them
 
@@ -212,8 +215,10 @@ each is a Rule 2 or Rule 8 bug, not a size.
    still ignored.
 3. `REND_MAX`: the table goes, and the sleepers are the table. *Done,
    September 2026.* `tests/abi` puts 72 children to sleep at once.
-4. The in-kernel `Conn`: a held read gives its worker back, as a held request
-   does in `lib9p`, and the pool grows as the wire's does.
+4. The in-kernel `Conn`: the pool grows as the wire's does, and the
+   workers grow with the requests that park in them. *Done, September
+   2026.* A held read still holds a worker while it waits, Plan 9's thread
+   per request.
 5. `exportfs` reads that park stop holding a reader, the same change.
 6. Stream wires grow, and a failed build is an error and never another
    server.

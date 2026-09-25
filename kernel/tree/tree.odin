@@ -26,7 +26,6 @@ package tree
 import "base:intrinsics"
 
 import "kernel:arch"
-import "kernel:mnt"
 import "kernel:smmu"
 import "kernel:sync"
 import "kernel:vfs"
@@ -59,14 +58,14 @@ tree_static: vfs.Static_Tree
 @(private)
 node_count: int
 
-// The worker threads `#t` runs on. A read of an `irq` file parks until the line
-// fires, and a parked handler on the synchronous transport takes its caller's
-// thread down with it -- so `#t` moves onto `kernel/mnt`, where a parked read
-// holds one worker and the others still answer property and `mmio` reads. One
-// worker per in-flight request, plus one so the flush that unwedges a parked
-// read is never itself waiting for a worker.
+// The worker threads `#t` starts with. A read of an `irq` file parks until the
+// line fires, and a parked handler on the synchronous transport takes its
+// caller's thread down with it -- so `#t` moves onto `kernel/mnt`, where a
+// parked read holds one worker and the others still answer property and
+// `mmio` reads. The connection grows a worker whenever a request finds every
+// one busy, so the flush that unwedges a parked read always finds one.
 @(private)
-WORKERS :: mnt.MAX_REQUESTS + 1
+WORKERS :: 4
 
 /*
 Mmio is one node's register window, kept beside the node table because a
@@ -1018,7 +1017,7 @@ init :: proc(ns: ^vfs.Namespace, dtb: rawptr) -> vfs.Errno {
 	// comes before `register_device`, so nothing reaches this server while it is
 	// still on its own stack -- the same order `devfs` keeps, and for the same
 	// reason: the synchronous transport hands a parked handler no way back.
-	if !vfs.server_start(&tree_server, WORKERS, 0, tree_abort) {
+	if !vfs.server_start(&tree_server, WORKERS, 0, tree_abort, grow = true) {
 		return vectra9.ENOMEM
 	}
 	if !vfs.register_device(&tree_server) {

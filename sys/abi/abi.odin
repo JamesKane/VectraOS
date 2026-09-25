@@ -19,6 +19,12 @@ here is behaviour. This package imports nothing and decides nothing.
 */
 package abi
 
+// Descriptors one process may hold: the kernel's table size, and the bound
+// a program that closes every descriptor above some number walks to. One
+// number, here, so a copy cannot fall behind the kernel's. See
+// `docs/LIMITS.md`, Rule 7.
+MAX_FDS :: 64
+
 SYS_NOP :: u64(0)
 SYS_ARGS :: u64(1)
 SYS_WRITE :: u64(2)

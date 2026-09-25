@@ -194,9 +194,7 @@ sandbox :: proc "contextless" (t: ^Tool_Run, out: int, other: int) -> ! {
 	_ = libuser.dup(out, 1)
 	_ = libuser.dup(out, 2)
 	_ = libuser.close(0)
-	for fd in 3 ..< 32 {
-		_ = libuser.close(fd)
-	}
+	libuser.close_from(3)
 
 	// `$work` is the class file's name for the task's directory. The
 	// environment is a copy, so the ghost's own is untouched.

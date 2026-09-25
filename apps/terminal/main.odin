@@ -266,9 +266,7 @@ start :: proc "c" (block: ^abi.Args) {
 		_ = libuser.dup(in_r, 0)
 		_ = libuser.dup(out_w, 1)
 		_ = libuser.dup(out_w, 2)
-		for i in 3 ..< 32 {
-			_ = libuser.close(i)
-		}
+		libuser.close_from(3)
 		argv := [?]string{"rc"}
 		_ = libuser.exec(SHELL, argv[:])
 		libuser.exit(0x72)

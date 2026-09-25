@@ -145,7 +145,10 @@ start :: proc "c" (block: ^abi.Args) {
 	// How full the volume is, each boot. A volume that fills across boots
 	// shows here as a free count falling from one boot to the next.
 	if mounted {
-		libuser.eprint("kfs: ", device, ": ", itoa_u32(vol.free), " blocks free at mount\n")
+		// Two prints: `itoa_u32` answers into one buffer, so a second call in
+		// the same line writes over the first.
+		libuser.eprint("kfs: ", device, ": ", itoa_u32(vol.free), " blocks free at mount, ")
+		libuser.eprint(itoa_u32(vol.sb.inodes), " inodes\n")
 	}
 
 	// A commit a stop interrupted was finished by the mount; say so, since

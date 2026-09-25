@@ -26,14 +26,14 @@ much, and left the question open on exactly those grounds.
 ## The tag is the slot
 
 A `Tflush` names a request by its tag, so the server has to be able to find one
-by tag. The cheapest structure that does that is an array, so the pool *is* the
-tag space. Slot `i` has tag `i`.
+by tag. So the pool *is* the tag space. Slot `i` has tag `i`, in chunks that
+grow as clients need them, `pool.odin`.
 
-A tag that is not an index into the pool names no request. The protocol
-requires an answer for that case rather than an error.
+A tag that names no slot names no request. The protocol requires an answer
+for that case rather than an error.
 
-The upper half of the pool is reserved. Slot `i + MAX_REQUESTS` is the flush
-partner of slot `i` and belongs to whoever owns `i`. That is not a
+The upper half of the tag space is reserved. Tag `i + FLUSH_TAG` is the flush
+slot of request `i` and belongs to whoever owns `i`. That is not a
 micro-optimisation. It is the only thing between this design and a deadlock.
 
 A client whose request is stuck has to be able to send a `Tflush`. If that
@@ -120,26 +120,16 @@ import "kernel:sync"
 import "vsys:vectra9"
 
 /*
-How many requests may be outstanding at once, and therefore how large the tag
-space is.
+The requests a pool's first chunk holds, and each chunk after it. A pool
+grows a chunk at a time up to the tag space, `pool.odin`, so this is not a
+limit on requests in flight. A caller's arena covers the first chunk.
 
-Small on purpose. A tag pool is a server resource. A client that can grow one
-without bound can exhaust the machine through a legal sequence of legal
-messages. That is the same argument that fixes the static server's fid table.
-
-Eight was more than the whole kernel had threads to fill. A ring 3 server
-that holds a read open changed that: every window on the draw server keeps
-two reads parked, its keyboard's and its mouse's, and each holds a slot for
-as long as the window stands. A desktop with two shells, a toast and its own
-windows held eight, and the next request from anyone parked for ever on the
-wire, the suite's remove of a window among them. Sixteen is eight windows'
-worth. The arena grows with it, so a slot's payload is what it was.
+It was the limit once. Eight was more than the whole kernel had threads to
+fill, until a ring 3 server held reads open: every window on the draw server
+keeps two parked. A desktop filled eight, then sixteen, and the next request
+from anyone parked for ever. `docs/LIMITS.md` has the account.
 */
 MAX_REQUESTS :: 16
-
-// Requests occupy the lower half. Each one's flush partner sits directly above
-// it. See the file comment for why the flush cannot be allowed to queue.
-POOL :: 2 * MAX_REQUESTS
 
 /*
 The smallest payload buffer a slot may have.
@@ -207,7 +197,10 @@ Rpc :: struct {
 	payload: []u8,
 
 	settled: sync.Rendez, // Woken when `state` becomes Done
-	next:    ^Rpc, // Work queue link
+	next:    ^Rpc, // Work queue link, or the pool's free list
+	// This request's own flush slot, tagged `FLUSH_TAG` above it. A flush
+	// never competes for a slot a stuck request holds. See `pool.odin`.
+	own_flush: ^Rpc,
 }
 
 /*
@@ -251,7 +244,7 @@ Conn :: struct {
 	session: vectra9.Session,
 
 	lock:    sync.Spinlock,
-	pool:    [POOL]Rpc,
+	pool:    Pool, // The slots, in chunks that grow, `pool.odin`
 	head:    ^Rpc, // Work queue, oldest first
 	tail:    ^Rpc,
 
@@ -271,6 +264,18 @@ Conn :: struct {
 	// The worker threads, as each starts, for a report of where they are.
 	threads:  [64]^sched.Thread,
 	nthreads: int,
+
+	/*
+	Workers on demand, for a server whose reads park in the handler: a
+	console, a mouse, an interrupt stream. Each parked read holds its worker,
+	so a fixed number of workers was a ceiling on parked reads. With `grow`
+	set, a client that queues work finds the queue longer than the idle
+	workers and starts one more, Plan 9's thread per request. `queued` and
+	`idle` are under `lock`.
+	*/
+	grow:    bool,
+	queued:  int,
+	idle:    int,
 
 	stats:   Stats,
 }
@@ -320,17 +325,10 @@ init :: proc "contextless" (
 		}
 	}
 
-	for i in 0 ..< POOL {
-		r := &c.pool[i]
-		r.tag = vectra9.Tag(i)
-		r.state = .Free
-		r.partner = nil
-		r.next = nil
-		r.flushed = false
-		r.payload = nil
-		if c.per > 0 && i < MAX_REQUESTS {
-			r.payload = payload[i * c.per:][:c.per]
-		}
+	// The first chunk's payloads are the caller's arena, and a chunk the
+	// pool grows allocates its own.
+	if !pool_init(&c.pool, c.per, c.per > 0 ? payload[:MAX_REQUESTS * c.per] : nil) {
+		return false
 	}
 
 	c.session = vectra9.session_from(transport(c))
@@ -417,21 +415,21 @@ transport_call_for :: proc "contextless" (
 
 // -- The pool ----------------------------------------------------------------
 
-@(private)
-is_request_tag :: proc "contextless" (t: vectra9.Tag) -> bool {
-	return int(t) < MAX_REQUESTS
+// release gives back what `init` and growth allocated, after `serve_stop`.
+// The arena stays the caller's.
+release :: proc "contextless" (c: ^Conn) {
+	pool_free(&c.pool)
 }
 
-// flush_partner is the reserved flush slot above a request's, in whichever
-// pool the request lives in.
 @(private)
-flush_partner :: proc "contextless" (pool: ^[POOL]Rpc, r: ^Rpc) -> ^Rpc #no_bounds_check {
-	return &pool[int(r.tag) + MAX_REQUESTS]
+is_request_tag :: proc "contextless" (t: vectra9.Tag) -> bool {
+	return int(t) < FLUSH_TAG
 }
 
 // enqueue puts a filled-in slot on the work queue. The lock is the caller's.
 @(private = "file")
-enqueue :: proc "contextless" (c: ^Conn, r: ^Rpc) {
+enqueue :: proc "contextless" (c: ^Conn, r: ^Rpc) -> (more: bool) {
+	c.queued += 1
 	r.next = nil
 	if c.tail == nil {
 		c.head = r
@@ -439,6 +437,7 @@ enqueue :: proc "contextless" (c: ^Conn, r: ^Rpc) {
 		c.tail.next = r
 	}
 	c.tail = r
+	return c.grow && !c.stop && c.queued > c.idle
 }
 
 @(private)
@@ -452,25 +451,20 @@ dequeue :: proc "contextless" (c: ^Conn) -> ^Rpc {
 		c.tail = nil
 	}
 	r.next = nil
+	c.queued -= 1
 	return r
 }
 
 @(private = "file")
 slot_free :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
 	c := cast(^Conn)arg
-	if intrinsics.volatile_load(&c.stop) {
-		return true
-	}
-	for i in 0 ..< MAX_REQUESTS {
-		if intrinsics.volatile_load(&c.pool[i].state) == .Free {
-			return true
-		}
-	}
-	return false
+	return intrinsics.volatile_load(&c.stop) || pool_ready(&c.pool)
 }
 
 /*
-take claims a request slot, waiting for one if the pool is full.
+take claims a request slot, from the free list, or from a chunk it grows when
+the list is empty, `pool.odin`. It waits only while another client grows, or
+when the whole tag space is in flight.
 
 Claimed by a move to `Queued` under the lock, before anything fills the request
 in. The state is what reserves it, and the work queue is what makes a worker
@@ -481,25 +475,29 @@ message in happens with the lock down.
 take :: proc "contextless" (c: ^Conn) -> ^Rpc #no_bounds_check {
 	for {
 		guard := sync.acquire(&c.lock)
-		if !c.stop {
-			for i in 0 ..< MAX_REQUESTS {
-				r := &c.pool[i]
-				if r.state == .Free {
-					r.state = .Queued
-					r.flushed = false
-					r.partner = nil
-					sync.release(&c.lock, guard)
-					return r
-				}
-			}
-		}
-		stopped := c.stop
-		c.stats.waited += 1
-		sync.release(&c.lock, guard)
-
-		if stopped {
+		if c.stop {
+			sync.release(&c.lock, guard)
 			return nil
 		}
+		if r := pool_pop(&c.pool); r != nil {
+			r.state = .Queued
+			r.flushed = false
+			r.partner = nil
+			sync.release(&c.lock, guard)
+			return r
+		}
+		if pool_can_grow(&c.pool) {
+			c.pool.growing = true
+			sync.release(&c.lock, guard)
+			made := pool_grow(&c.pool, &c.lock)
+			sync.wakeup_all(&c.free)
+			if !made {
+				return nil
+			}
+			continue
+		}
+		c.stats.waited += 1
+		sync.release(&c.lock, guard)
 		sync.sleep(&c.free, slot_free, c)
 	}
 }
@@ -511,6 +509,7 @@ give_back :: proc "contextless" (c: ^Conn, r: ^Rpc) {
 	r.partner = nil
 	r.flushed = false
 	r.client = nil
+	pool_push(&c.pool, r)
 	sync.release(&c.lock, guard)
 
 	sync.wakeup(&c.free)
@@ -776,9 +775,12 @@ submit :: proc "contextless" (c: ^Conn, request: ^vectra9.Msg) -> ^Rpc {
 
 	guard := sync.acquire(&c.lock)
 	c.stats.requests += 1
-	enqueue(c, r)
+	more := enqueue(c, r)
 	sync.release(&c.lock, guard)
 
+	if more {
+		add_worker(c)
+	}
 	sync.wakeup(&c.work)
 	return r
 }
@@ -792,7 +794,7 @@ to do with `r` and said so. `r`'s tag is the caller's again.
 */
 @(private = "file")
 flush :: proc "contextless" (c: ^Conn, r: ^Rpc) {
-	f := flush_partner(&c.pool, r)
+	f := r.own_flush
 
 	f.request = vectra9.Msg(vectra9.Tflush{oldtag = r.tag})
 	f.reply = {}
@@ -802,9 +804,12 @@ flush :: proc "contextless" (c: ^Conn, r: ^Rpc) {
 
 	guard := sync.acquire(&c.lock)
 	f.state = .Queued
-	enqueue(c, f)
+	more := enqueue(c, f)
 	sync.release(&c.lock, guard)
 
+	if more {
+		add_worker(c)
+	}
 	sync.wakeup(&c.work)
 	sync.sleep(&f.settled, is_done, f)
 

@@ -412,7 +412,7 @@ Fd :: struct {
 // data, cons, consctl, mouse and store, `docs/CHROME.md` brick 3. A desktop
 // with a bar, a backdrop and a few drawers open passed thirty-two. It was
 // sixteen before that, until a shell's pipelines outgrew it.
-MAX_FDS :: 64
+MAX_FDS :: abi.MAX_FDS
 
 /*
 The programs, from a fixed table.

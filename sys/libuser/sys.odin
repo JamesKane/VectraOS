@@ -73,6 +73,17 @@ close :: proc "contextless" (fd: int) -> i64 {
 	return raw1(abi.SYS_CLOSE, u64(fd))
 }
 
+// close_from closes every descriptor from `lo` up, as a child does before it
+// execs, so nothing its parent held open reaches the program it becomes.
+// A loop to a copied number once stopped at 31 while the table ran to 63.
+// A shell then kept the write end of its own input pipe, and never saw it
+// end.
+close_from :: proc "contextless" (lo: int) {
+	for fd in lo ..< abi.MAX_FDS {
+		_ = close(fd)
+	}
+}
+
 // seek moves a descriptor's cursor to an absolute offset. There is no
 // whence, which is the kernel's rule rather than an omission here.
 seek :: proc "contextless" (fd: int, offset: u64) -> i64 {

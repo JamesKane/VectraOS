@@ -97,23 +97,6 @@ Wire_IO :: struct {
 	write: proc "contextless" (data: rawptr, frame: []u8) -> bool,
 }
 
-// Slots a chunk of the pool holds, and so how many requests one growth adds.
-WIRE_CHUNK :: 16
-
-// The first tag of the flush half. A request's flush partner answers to the
-// request's tag plus this. The two halves split the 16-bit tag space, and
-// `NOTAG`, the top of it, is left to Tversion.
-FLUSH_TAG :: 0x8000
-
-// Requests one wire can have in flight: the request half of the tag space.
-WIRE_MAX_REQUESTS :: FLUSH_TAG - 1
-
-// Bytes a flush slot's frame buffer holds. An Rflush is seven bytes, and a
-// server that sends more under a flush tag is answering a question nobody
-// asked. The size check poisons the wire before this bound matters.
-@(private = "file")
-FLUSH_FRAME :: 32
-
 Wire_Stats :: struct {
 	requests: u64,
 	flushes:  u64, // Tflush frames sent
@@ -133,14 +116,8 @@ Wire :: struct {
 	session:     vectra9.Session,
 
 	lock:        sync.Spinlock,
-	// The pool: chunks of slots, found by tag through `chunks`, and the free
-	// request slots on a list threaded through `Rpc.next`. `growing` says a
-	// client is allocating the next chunk, so the others wait for it rather
-	// than allocate one each.
-	chunks:      []^Wire_Chunk,
-	nchunks:     int,
-	spare:       ^Rpc,
-	growing:     bool,
+	// The slots, in chunks that grow, `pool.odin`. Under `lock`.
+	pool:        Pool,
 	per:         int,
 
 	/*
@@ -169,17 +146,6 @@ Wire :: struct {
 }
 
 /*
-One chunk of the pool: `WIRE_CHUNK` request slots, each with its flush partner
-and the buffers both reply into. Allocated whole and never moved.
-*/
-Wire_Chunk :: struct {
-	requests: [WIRE_CHUNK]Rpc,
-	flushes:  [WIRE_CHUNK]Rpc,
-	flush_store: [WIRE_CHUNK][FLUSH_FRAME]u8,
-	store:    []u8, // WIRE_CHUNK reply buffers of `per` bytes each
-}
-
-/*
 wire_init prepares a wire over `io`. It does not start the reader --
 `wire_start` does, because the reader is a thread.
 
@@ -199,8 +165,6 @@ wire_init :: proc "contextless" (w: ^Wire, io: Wire_IO, slot: int) -> bool #no_b
 	w.reader_live = false
 	w.version = nil
 	w.stats = {}
-	w.spare = nil
-	w.growing = false
 
 	if slot < MIN_PAYLOAD {
 		w.per = 0
@@ -211,16 +175,9 @@ wire_init :: proc "contextless" (w: ^Wire, io: Wire_IO, slot: int) -> bool #no_b
 	if w.xmit == nil {
 		return false
 	}
-	c := chunk_new(w, 0)
-	if c == nil {
+	if !pool_init(&w.pool, slot) {
 		return false
 	}
-	w.chunks = make([]^Wire_Chunk, 4)
-	if w.chunks == nil {
-		chunk_free(c)
-		return false
-	}
-	chunk_install(w, c)
 
 	w.session = vectra9.session_from(wire_transport(w))
 	w.session.msize = min(vectra9.MSIZE_DEFAULT, u32(w.per))
@@ -237,80 +194,9 @@ wire_free :: proc "contextless" (w: ^Wire) {
 		return
 	}
 	context = mem.kernel_context()
-	for i in 0 ..< w.nchunks {
-		chunk_free(w.chunks[i])
-	}
-	delete(w.chunks)
+	pool_free(&w.pool)
 	delete(w.xmit)
-	w.chunks = nil
-	w.nchunks = 0
 	w.xmit = nil
-	w.spare = nil
-}
-
-// chunk_new allocates chunk number `n`, its slots tagged and free, or nil.
-@(private = "file")
-chunk_new :: proc(w: ^Wire, n: int) -> ^Wire_Chunk #no_bounds_check {
-	c := new(Wire_Chunk)
-	if c == nil {
-		return nil
-	}
-	c.store = make([]u8, WIRE_CHUNK * w.per)
-	if c.store == nil {
-		free(c)
-		return nil
-	}
-	for i in 0 ..< WIRE_CHUNK {
-		r := &c.requests[i]
-		f := &c.flushes[i]
-		r.tag = vectra9.Tag(n * WIRE_CHUNK + i)
-		f.tag = r.tag + FLUSH_TAG
-		r.state, f.state = .Free, .Free
-		r.payload = c.store[i * w.per:][:w.per]
-		f.payload = c.flush_store[i][:]
-		// On a wire `partner` is fixed: the flush slot a request sends from.
-		r.partner = f
-	}
-	return c
-}
-
-@(private = "file")
-chunk_free :: proc(c: ^Wire_Chunk) {
-	if c == nil {
-		return
-	}
-	delete(c.store)
-	free(c)
-}
-
-// chunk_install adds a chunk to the pool and its slots to the free list. The
-// index has room for it. The lock is the caller's, or nobody else has the wire.
-@(private = "file")
-chunk_install :: proc "contextless" (w: ^Wire, c: ^Wire_Chunk) #no_bounds_check {
-	w.chunks[w.nchunks] = c
-	w.nchunks += 1
-	for i := WIRE_CHUNK - 1; i >= 0; i -= 1 {
-		c.requests[i].next = w.spare
-		w.spare = &c.requests[i]
-	}
-	w.stats.slots += WIRE_CHUNK
-}
-
-// slot_of answers the slot a tag names, request or flush, or nil. The lock is
-// the caller's.
-@(private = "file")
-slot_of :: proc "contextless" (w: ^Wire, tag: vectra9.Tag) -> ^Rpc #no_bounds_check {
-	t := int(tag)
-	flush := t >= FLUSH_TAG
-	if flush {
-		t -= FLUSH_TAG
-	}
-	k := t / WIRE_CHUNK
-	if k >= w.nchunks {
-		return nil
-	}
-	c := w.chunks[k]
-	return flush ? &c.flushes[t % WIRE_CHUNK] : &c.requests[t % WIRE_CHUNK]
 }
 
 // wire_start puts the reader thread on the wire.
@@ -334,7 +220,10 @@ wire_session :: proc "contextless" (w: ^Wire) -> ^vectra9.Session {
 wire_stats :: proc "contextless" (w: ^Wire) -> Wire_Stats {
 	g := sync.acquire(&w.lock)
 	defer sync.release(&w.lock, g)
-	return w.stats
+	st := w.stats
+	st.slots = w.pool.slots
+	st.refused = w.pool.refused
+	return st
 }
 
 // wire_broken reports whether the connection is past saving. Every call on a
@@ -427,15 +316,12 @@ wire_call_noted_t :: proc "contextless" (
 
 // -- The pool, again ----------------------------------------------------------
 
-// wire_slot_free is the condition a client waits on for a slot. It is a slot
-// on the free list, the wire gone, or room to grow and nobody growing.
+// wire_slot_free is the condition a client waits on for a slot: the pool has
+// one to give, or the wire is gone.
 @(private = "file")
 wire_slot_free :: proc "contextless" (arg: rawptr) -> bool #no_bounds_check {
 	w := cast(^Wire)arg
-	if intrinsics.volatile_load(&w.broken) || intrinsics.volatile_load(&w.spare) != nil {
-		return true
-	}
-	return !intrinsics.volatile_load(&w.growing) && intrinsics.volatile_load(&w.nchunks) * WIRE_CHUNK < WIRE_MAX_REQUESTS
+	return intrinsics.volatile_load(&w.broken) || pool_ready(&w.pool)
 }
 
 /*
@@ -452,19 +338,19 @@ wire_take :: proc "contextless" (w: ^Wire) -> ^Rpc #no_bounds_check {
 			sync.release(&w.lock, g)
 			return nil
 		}
-		if r := w.spare; r != nil {
-			w.spare = r.next
-			r.next = nil
+		if r := pool_pop(&w.pool); r != nil {
 			r.state = .Queued
 			r.err = .None
 			r.reply = {}
 			sync.release(&w.lock, g)
 			return r
 		}
-		if !w.growing && w.nchunks * WIRE_CHUNK < WIRE_MAX_REQUESTS {
-			w.growing = true
+		if pool_can_grow(&w.pool) {
+			w.pool.growing = true
 			sync.release(&w.lock, g)
-			if !wire_grow(w) {
+			made := pool_grow(&w.pool, &w.lock)
+			sync.wakeup_all(&w.free)
+			if !made {
 				return nil
 			}
 			continue
@@ -475,57 +361,11 @@ wire_take :: proc "contextless" (w: ^Wire) -> ^Rpc #no_bounds_check {
 	}
 }
 
-/*
-wire_grow allocates the next chunk and installs it, the index doubled first
-when it is full. The allocation is made with no lock held, and `growing` keeps
-it to one client at a time. False means the memory was not there. The request
-that asked fails, and the wire goes on.
-*/
-@(private = "file")
-wire_grow :: proc "contextless" (w: ^Wire) -> bool #no_bounds_check {
-	context = mem.kernel_context()
-	n := w.nchunks // stable while `growing` is ours
-	c := chunk_new(w, n)
-	index: []^Wire_Chunk
-	if c != nil && n == len(w.chunks) {
-		index = make([]^Wire_Chunk, 2 * len(w.chunks))
-		if index == nil {
-			chunk_free(c)
-			c = nil
-		}
-	}
-
-	made := c != nil
-	old: []^Wire_Chunk
-	g := sync.acquire(&w.lock)
-	if made && !w.broken {
-		if index != nil {
-			copy(index, w.chunks[:n])
-			old, w.chunks = w.chunks, index
-			index = nil
-		}
-		chunk_install(w, c)
-		c = nil
-	} else if !made {
-		w.stats.refused += 1
-	}
-	w.growing = false
-	sync.release(&w.lock, g)
-	sync.wakeup_all(&w.free)
-
-	delete(old)
-	// The wire broke while the chunk was made, and nothing will use it.
-	chunk_free(c)
-	delete(index)
-	return made
-}
-
 @(private = "file")
 wire_give_back :: proc "contextless" (w: ^Wire, r: ^Rpc) {
 	g := sync.acquire(&w.lock)
 	r.state = .Free
-	r.next = w.spare
-	w.spare = r
+	pool_push(&w.pool, r)
 	sync.release(&w.lock, g)
 	sync.wakeup(&w.free)
 }
@@ -718,7 +558,7 @@ request nor its flush is not one this wire can wait for.
 */
 @(private = "file")
 wire_flush :: proc "contextless" (w: ^Wire, r: ^Rpc) #no_bounds_check {
-	f := r.partner
+	f := r.own_flush
 
 	g := sync.acquire(&w.lock)
 	f.state = .Queued
@@ -777,8 +617,8 @@ poison :: proc "contextless" (w: ^Wire, hangup: bool) #no_bounds_check {
 	w.stats.poisoned = true
 	w.stats.hangup = hangup
 	w.version = nil
-	for k in 0 ..< w.nchunks {
-		c := w.chunks[k]
+	for k in 0 ..< w.pool.nchunks {
+		c := pool_chunk(&w.pool, k)
 		for i in 0 ..< WIRE_CHUNK {
 			for r in ([2]^Rpc{&c.requests[i], &c.flushes[i]}) {
 				if r.state == .Queued || r.state == .Running {
@@ -790,10 +630,11 @@ poison :: proc "contextless" (w: ^Wire, hangup: bool) #no_bounds_check {
 	}
 	sync.release(&w.lock, g)
 
-	// The chunks stay while the wire does. No chunk is added once it is
-	// broken, so the walk after the lock is dropped sees the same pool.
-	for k in 0 ..< w.nchunks {
-		c := w.chunks[k]
+	// The chunks stay while the wire does, and a lookup takes no lock,
+	// `pool.odin`. So this walk with the lock down reads nothing freed. A chunk added meanwhile holds no request, since `wire_take`
+	// refuses a broken wire.
+	for k in 0 ..< w.pool.nchunks {
+		c := pool_chunk(&w.pool, k)
 		for i in 0 ..< WIRE_CHUNK {
 			sync.wakeup_all(&c.requests[i].settled)
 			sync.wakeup_all(&c.flushes[i].settled)
@@ -849,7 +690,7 @@ route :: proc "contextless" (w: ^Wire, tag: vectra9.Tag) -> ^Rpc #no_bounds_chec
 	if tag == vectra9.NOTAG {
 		r = w.version
 	} else {
-		r = slot_of(w, tag)
+		r = pool_slot(&w.pool, tag)
 	}
 	if r == nil || r.state != .Queued {
 		return nil

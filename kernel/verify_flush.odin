@@ -519,6 +519,7 @@ verify_flush :: proc() #no_bounds_check {
 	libodin.check(&r, final.unsettled == 0, "no Rflush ever arrived before its request was settled")
 
 	mnt.serve_stop(&conn)
+	mnt.release(&conn)
 	libodin.check(&r, verify_transparency(&r), "a real server behind a queue answers as it always did")
 
 	// Last, and after every `serve_stop` returns. Whoever runs next frees a
@@ -605,6 +606,7 @@ verify_transparency :: proc(r: ^Flush_Result) -> bool #no_bounds_check {
 	if !mnt.serve_start(&plain_conn, 1) {
 		return false
 	}
+	defer mnt.release(&plain_conn)
 	defer mnt.serve_stop(&plain_conn)
 
 	s := mnt.session(&plain_conn)

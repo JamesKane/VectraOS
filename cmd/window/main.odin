@@ -321,9 +321,7 @@ start :: proc "c" (block: ^abi.Args) {
 		_ = libuser.dup(in_r, 0)
 		_ = libuser.dup(out_w, 1)
 		_ = libuser.dup(out_w, 2)
-		for i in 3 ..< 32 {
-			_ = libuser.close(i)
-		}
+		libuser.close_from(3)
 		e := libuser.exec(cmd_path, cmd_argv)
 		die(0x72, "the command would not run", e)
 	}

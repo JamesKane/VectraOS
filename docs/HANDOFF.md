@@ -1063,11 +1063,18 @@ Still open, each seen once or rarely:
   what a full one does. The mount wire's request pool was the first fix. It
   grows by chunks up to the tag space, so a third drawer no longer freezes
   Workbench. Section 4 there is the order for the rest, wedges first.
-- **The kfs scratch disk fills across boots.** `build/disk.img` is made
-  once and kept, and something leaks space in it. A full disk fails dozens
-  of web and feed checks with ENOSPC. Move the image aside and the build
-  makes a fresh one. The suspicion is kfs not freeing a large test file's
-  blocks on remove.
+- **Fixed, September 2026: the kfs scratch disk that filled across boots.**
+  It ran out of inodes, not blocks: 1,023 of 1,024 after 243 boots, with
+  nine tenths of the blocks free. The web store keeps a file per unique
+  body and a post leaves a record per run. The self-test now clears
+  `$home/lib/web` when it starts, and a ream makes one inode per four
+  blocks. kfs prints its free blocks and inodes at mount, so a volume that
+  fills shows it boot by boot.
+- **Fixed, September 2026: the first boot of a fresh volume.** Three
+  shells stayed, each reading an input pipe it held the write end of.
+  `window` closed descriptors 3 to 31 before it ran the shell. On a
+  first boot Workbench holds more files, so the pipes landed at 32 and
+  up. `libuser.close_from` closes to the kernel's own bound.
 
 ### Standing gaps
 

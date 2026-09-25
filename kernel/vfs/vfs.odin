@@ -278,6 +278,7 @@ server_start :: proc(
 	workers: int = 2,
 	payload: int = 0,
 	abort: proc "contextless" (server: rawptr, tag: vectra9.Tag) = nil,
+	grow := false,
 ) -> bool {
 	if sv == nil || sv.conn != nil || workers <= 0 {
 		return false
@@ -298,15 +299,18 @@ server_start :: proc(
 	}
 
 	if !mnt.init(conn, sv.direct.handler, sv.direct.server, abort, arena) {
+		mnt.release(conn)
 		free(conn)
 		delete(arena)
 		return false
 	}
+	conn.grow = grow
 	if !mnt.serve_start(conn, workers) {
 		// Whatever started has to come down. `serve_stop` waits for it, which
 		// is the only way to know the threads are off this connection before
 		// the memory under them goes.
 		mnt.serve_stop(conn)
+		mnt.release(conn)
 		free(conn)
 		delete(arena)
 		return false
@@ -348,6 +352,7 @@ server_stop :: proc(sv: ^Server) {
 		return
 	}
 	mnt.serve_stop(sv.conn)
+	mnt.release(sv.conn)
 
 	next_fid := sv.session.next_fid
 	free(sv.conn)

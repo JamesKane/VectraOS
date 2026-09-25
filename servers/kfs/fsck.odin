@@ -117,7 +117,7 @@ memory and reconciles the disk to it once.
 */
 check_volume :: proc() -> Check {
 	c: Check
-	seen = make([]u8, (INODES + 7) / 8)
+	seen = make([]u8, (vol.sb.inodes + 7) / 8)
 	used = make([]u8, (vol.sb.blocks + 7) / 8)
 	if seen == nil || used == nil {
 		return c

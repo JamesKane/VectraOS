@@ -76,9 +76,21 @@ SINGLE_START :: DIRECT
 DOUBLE_START :: DIRECT + INDIRECT_ENTRIES
 MAX_FILE_BLOCKS :: DOUBLE_START + INDIRECT_ENTRIES * INDIRECT_ENTRIES
 
-// How many inodes a ream makes: one per file the volume can hold.
-INODES :: 1024
-INODE_BLOCKS :: INODES / INODES_PER_BLOCK
+/*
+How many inodes a ream makes: one per file the volume can hold. One for every
+four blocks of the volume, never fewer than `INODES_MIN`, and a whole number
+of table blocks. The count was a fixed 1024 once, whatever the disk. A 64 MiB
+scratch volume ran out of files with nine tenths of its blocks free.
+The superblock records the count, so a volume reamed before this keeps its
+1024 and reads as it did. `docs/LIMITS.md`.
+*/
+INODES_MIN :: 1024
+INODES_PER_DATA :: 4
+
+inode_count :: proc "contextless" (blocks: u32) -> u32 {
+	n := max(blocks / INODES_PER_DATA, INODES_MIN)
+	return (n + INODES_PER_BLOCK - 1) / INODES_PER_BLOCK * INODES_PER_BLOCK
+}
 
 ROOT_INODE :: u32(1)
 
@@ -784,17 +796,19 @@ ream :: proc(fd: int, size: u64, generation: u64) -> (ok: bool, why: string) {
 		return false, "too small to hold a volume"
 	}
 	bitmap_blocks := (blocks + BLOCK * 8 - 1) / (BLOCK * 8)
-	journal_start := 1 + bitmap_blocks + INODE_BLOCKS
+	inodes := inode_count(blocks)
+	inode_blocks := inodes / INODES_PER_BLOCK
+	journal_start := 1 + bitmap_blocks + inode_blocks
 	vol.sb = Superblock {
 		blocks         = blocks,
 		bitmap_start   = 1,
 		bitmap_blocks  = bitmap_blocks,
 		inode_start    = 1 + bitmap_blocks,
-		inode_blocks   = INODE_BLOCKS,
+		inode_blocks   = inode_blocks,
 		journal_start  = journal_start,
 		journal_blocks = JOURNAL_BLOCKS,
 		data_start     = journal_start + JOURNAL_BLOCKS,
-		inodes         = INODES,
+		inodes         = inodes,
 		generation     = generation,
 	}
 	if vol.sb.data_start >= blocks {

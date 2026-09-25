@@ -93,6 +93,22 @@ serve_stop :: proc "contextless" (c: ^Conn) {
 	sync.sleep(&c.quiet, all_gone, c)
 }
 
+/*
+add_worker starts one more worker on a connection that grows them, for a
+client whose request found every worker busy. A worker that will not start
+leaves the request to the ones there are, which is the connection it was
+before it could grow.
+*/
+@(private)
+add_worker :: proc "contextless" (c: ^Conn) {
+	context = mem.kernel_context()
+	if sched.spawn("9p-worker", worker, c) != nil {
+		g := sync.acquire(&c.lock)
+		c.workers += 1
+		sync.release(&c.lock, g)
+	}
+}
+
 @(private = "file")
 all_gone :: proc "contextless" (arg: rawptr) -> bool {
 	return intrinsics.volatile_load(&(cast(^Conn)arg).live) == 0
@@ -124,9 +140,13 @@ worker :: proc "contextless" (arg: rawptr) {
 	sync.release(&c.lock, guard)
 
 	for {
+		gi := sync.acquire(&c.lock)
+		c.idle += 1
+		sync.release(&c.lock, gi)
 		sync.sleep(&c.work, have_work, c)
 
 		g := sync.acquire(&c.lock)
+		c.idle -= 1
 		r := dequeue(c)
 		if r != nil {
 			r.state = .Running
@@ -196,8 +216,8 @@ serve_flush :: proc "contextless" (c: ^Conn, f: ^Rpc, oldtag: vectra9.Tag) -> bo
 		return true
 	}
 
-	old := &c.pool[int(oldtag)]
-	if old.state == .Free || old.state == .Done {
+	old := pool_slot(&c.pool, oldtag)
+	if old == nil || old.state == .Free || old.state == .Done {
 		// Already settled. The client will find its reply where it left it,
 		// and Rflush is honest either way.
 		c.stats.stale += 1
@@ -254,7 +274,10 @@ flushed :: proc "contextless" (c: ^Conn, tag: vectra9.Tag) -> bool #no_bounds_ch
 	if !is_request_tag(tag) {
 		return false
 	}
-	return intrinsics.volatile_load(&c.pool[int(tag)].flushed)
+	// No lock: a device's wait condition asks this, in interrupt context on
+	// `#t`. The lookup is lock-free, `pool.odin`.
+	r := pool_slot(&c.pool, tag)
+	return r != nil && intrinsics.volatile_load(&r.flushed)
 }
 
 // requester answers the thread that submitted the request this tag names, or
@@ -264,5 +287,6 @@ requester :: proc "contextless" (c: ^Conn, tag: vectra9.Tag) -> ^sched.Thread #n
 	if !is_request_tag(tag) {
 		return nil
 	}
-	return intrinsics.volatile_load(&c.pool[int(tag)].client)
+	r := pool_slot(&c.pool, tag)
+	return r != nil ? intrinsics.volatile_load(&r.client) : nil
 }

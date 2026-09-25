@@ -1605,6 +1605,45 @@ start_timer_here :: proc "contextless" () -> bool {
 
 // online_count is how many cores dispatch. One until `cpu_online` is called
 // from a second.
+// queue_report writes each online core's queued threads, highest level
+// first, as `name@level`, for a failure report. Under the scheduler's lock,
+// so the lists hold still while they are walked.
+queue_report :: proc "contextless" (sink: ^libodin.Sink) #no_bounds_check {
+	guard := sync.acquire(&lock)
+	defer sync.release(&lock, guard)
+	for k in 0 ..< cpu_count {
+		c := &cpus[k]
+		if !c.online {
+			continue
+		}
+		libodin.put_str(sink, " [q")
+		libodin.put_uint(sink, u64(k))
+		libodin.put_str(sink, " ready ")
+		libodin.put_uint(sink, u64(c.runq.ready))
+		libodin.put_str(sink, ":")
+		shown := 0
+		for level := PRIORITY_LEVELS - 1; level >= 0; level -= 1 {
+			for t := c.runq.level[level].head; t != nil && shown < 24; t = t.next {
+				libodin.put_str(sink, " ")
+				libodin.put_str(sink, t.name)
+				libodin.put_str(sink, "@")
+				libodin.put_uint(sink, u64(level))
+				shown += 1
+			}
+		}
+		libodin.put_str(sink, "]")
+	}
+}
+
+// running_on answers the thread core `k` runs now, or nil, for a report.
+// Read without a lock: the answer is a moment old when it arrives.
+running_on :: proc "contextless" (k: int) -> ^Thread {
+	if k < 0 || k >= cpu_count {
+		return nil
+	}
+	return intrinsics.volatile_load(&cpus[k].current)
+}
+
 online_count :: proc "contextless" () -> int {
 	n := 0
 	for i in 0 ..< cpu_count {

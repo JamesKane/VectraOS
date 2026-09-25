@@ -207,6 +207,34 @@ blocked_dump :: proc "contextless" (what: string) #no_bounds_check {
 	libodin.put_str(&sink, " mouse lost ")
 	libodin.put_uint(&sink, intrinsics.volatile_load(&devfs.tree().mouse.lost))
 	libodin.put_str(&sink, "]")
+	// What each core runs right now, by thread name.
+	libodin.put_str(&sink, " [cores")
+	for k in 0 ..< sched.online_count() {
+		libodin.put_str(&sink, " ")
+		if t := sched.running_on(k); t != nil {
+			libodin.put_str(&sink, t.name)
+		} else {
+			libodin.put_str(&sink, "-")
+		}
+	}
+	libodin.put_str(&sink, "]")
+	sched.queue_report(&sink)
+	// The device tree's connection: how many workers, how many idle, what
+	// waits for one.
+	if c := devfs.tree().server.conn; c != nil {
+		libodin.put_str(&sink, " [#c workers ")
+		libodin.put_uint(&sink, u64(intrinsics.volatile_load(&c.workers)))
+		libodin.put_str(&sink, " live ")
+		libodin.put_uint(&sink, u64(intrinsics.volatile_load(&c.live)))
+		libodin.put_str(&sink, " idle ")
+		libodin.put_uint(&sink, u64(intrinsics.volatile_load(&c.idle)))
+		libodin.put_str(&sink, " queued ")
+		libodin.put_uint(&sink, u64(intrinsics.volatile_load(&c.queued)))
+		libodin.put_str(&sink, intrinsics.volatile_load(&c.head) != nil ? " work waiting" : " no work")
+		libodin.put_str(&sink, " slots ")
+		libodin.put_uint(&sink, c.pool.slots)
+		libodin.put_str(&sink, "]")
+	}
 	libodin.put_str(&sink, "\n")
 	for i in 0 ..< MAX_PROCESSES {
 		p := &processes[i]
@@ -235,7 +263,9 @@ blocked_dump :: proc "contextless" (what: string) #no_bounds_check {
 		// A park other than the idle ones gets the kernel text addresses on
 		// its stack, for `llvm-symbolizer` against build/vectra.elf. The idle
 		// ones are a read, a pread and a rendezvous.
-		if c != 0 && c - 1 != 7 && c - 1 != 33 && c - 1 != 39 && p.thread != nil && p.thread.state == .Blocked {
+		// A Ready one caught inside a call gets its stack too: it was stopped
+		// there and has not run since.
+		if c != 0 && c - 1 != 7 && c - 1 != 33 && c - 1 != 39 && p.thread != nil && (p.thread.state == .Blocked || p.thread.state == .Ready) {
 			lo, hi := mem.kernel_text_range()
 			at := uintptr(rawptr(p.thread.resume.frame)) & ~uintptr(7)
 			libodin.put_str(&sink, "    stack")
@@ -554,6 +584,15 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	objects**, which is a run that gave back more than it took. A bracket that
 	can go negative is not measuring what it says.
 	*/
+	/*
+	What an earlier boot's run left on the scratch disk goes first. The web
+	store keeps a body per unique fetch, and a post keeps a record per run.
+	A volume booted a few hundred times ran out of inodes. A run that stops
+	part way leaves its own too. Nothing here is meant to outlive the run
+	that made it.
+	*/
+	remove_tree("/usr/glenda/lib/web")
+
 	resident_live = stats().live
 	settle()
 	before_heap := mem.live_objects(mem.heap_stats())
@@ -3241,7 +3280,10 @@ forked_child :: proc "contextless" (parent: ^Process) -> ^Process #no_bounds_che
 // the suite's patience. Bounded, because a hang says nothing.
 @(private = "file")
 await_posted :: proc(name: string) -> bool {
-	for _ in 0 ..< PATIENCE {
+	// A server posts after it reads what it starts on, off the disk. Two
+	// seconds, as the other waits for progress have. It answers the moment
+	// the name is there.
+	for _ in 0 ..< PATIENCE * 10 {
 		if srv.lookup(name) != nil {
 			return true
 		}
@@ -3314,6 +3356,35 @@ drain_pinned :: proc(r: ^Result, pin_before: int, what: string) {
 		libodin.put_str(&sink, " objects held, live:")
 		describe_live(&sink)
 		fail_detail(r, &sink)
+		// And what each live process still holds open, `/proc/N/fd`: a
+		// descriptor someone forgot is how a pipe stays open behind a reader.
+		for i in 0 ..< MAX_PROCESSES {
+			q := &processes[i]
+			if !q.live || q.pid <= 4 {
+				continue
+			}
+			pb: [48]u8
+			nb: [24]u8
+			ps := libodin.sink_from(pb[:])
+			libodin.put_str(&ps, "/proc/")
+			libodin.put_uint(&ps, q.pid)
+			libodin.put_str(&ps, "/fd")
+			fdb: [1024]u8
+			fn := web_read_file(libodin.str(&ps), fdb[:], raw = true)
+			_ = nb
+			line: [1200]u8
+			ls := libodin.sink_from(line[:])
+			libodin.put_str(&ls, "fd-dump ")
+			libodin.put_str(&ls, q.name)
+			libodin.put_str(&ls, "#")
+			libodin.put_uint(&ls, q.pid)
+			libodin.put_str(&ls, ":\n")
+			libodin.put_str(&ls, string(fdb[:max(fn, 0)]))
+			libodin.put_str(&ls, "\n")
+			if port := devfs.tree().cons.port; port != nil {
+				uart.write_string(port, libodin.str(&ls))
+			}
+		}
 	} else {
 		check(r, true, what)
 	}
@@ -3499,10 +3570,16 @@ start_draw_server :: proc(r: ^Result, s: ^fb.Surface, what_start: string, what_p
 	if ps == nil {
 		return nil
 	}
+	// A server that fails a check here is ended here. The caller gets nil and
+	// stops nothing, and a server left standing would hold `/srv/draw` against
+	// every stage after this one.
 	if !check(r, await_posted("draw"), what_posted) {
+		finish(r, ps, "and the draw server that did not post is taken down")
 		return nil
 	}
 	if !check(r, desk_measure(s), what_desk) {
+		finish(r, ps, "and the draw server that did not paint is taken down")
+		_ = srv.remove("draw")
 		return nil
 	}
 	return ps
@@ -14552,6 +14629,59 @@ verify_mailfs :: proc(r: ^Result) {
 
 // remove_file takes a file away by name, if it is there.
 @(private = "file")
+/*
+remove_tree removes a directory and everything under it, or a file. It reads
+the directory from its start and removes what it finds, until nothing is
+left. A removal moves the offsets the next read would have used. `depth`
+bounds it, for a tree that is not the shape expected.
+*/
+remove_tree :: proc(path: string, depth := 0) {
+	if depth > 8 {
+		return
+	}
+	for _ in 0 ..< 64 {
+		dc, err := vfs.resolve(vfs.boot_namespace, path)
+		if err != vfs.OK {
+			return
+		}
+		if vfs.chan_open(dc, vfs.O_RDONLY | vfs.O_DIRECTORY) != vfs.OK {
+			// Not a directory: a file, removed as one.
+			vfs.chan_close(dc)
+			remove_file(path)
+			return
+		}
+		raw: [2048]u8
+		ln, lerr := vfs.readdir(dc, 0, raw[:])
+		vfs.chan_close(dc)
+		if lerr != vfs.OK || ln == 0 {
+			break
+		}
+		c := vectra9.cursor_from(raw[:ln])
+		took := 0
+		for {
+			e, ok := vectra9.next_dirent(&c)
+			if !ok {
+				break
+			}
+			if e.name == "." || e.name == ".." {
+				continue
+			}
+			child: [256]u8
+			cp := libodin_cat(child[:], path, "/", e.name)
+			if .Dir in e.qid.kind {
+				remove_tree(cp, depth + 1)
+			} else {
+				remove_file(cp)
+			}
+			took += 1
+		}
+		if took == 0 {
+			break
+		}
+	}
+	remove_file(path)
+}
+
 remove_file :: proc(path: string) {
 	c, err := vfs.resolve(vfs.boot_namespace, path)
 	if err != vfs.OK {

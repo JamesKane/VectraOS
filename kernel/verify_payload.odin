@@ -415,6 +415,7 @@ verify_payload :: proc() #no_bounds_check {
 		if libodin.check(&r, mnt.serve_start(&bare, 1), "while one worker is still allowed") {
 			mnt.serve_stop(&bare)
 		}
+		mnt.release(&bare)
 	}
 
 	if !libodin.check(
@@ -542,6 +543,7 @@ verify_payload :: proc() #no_bounds_check {
 	}
 
 	mnt.serve_stop(&pay_conn)
+	mnt.release(&pay_conn)
 
 	// -- A real server, listed by four threads at once -----------------------
 
@@ -575,6 +577,7 @@ verify_concurrent_listing :: proc(r: ^Payload_Result) -> bool #no_bounds_check {
 	if !mnt.serve_start(&dir_conn, LISTERS) {
 		return false
 	}
+	defer mnt.release(&dir_conn)
 	defer mnt.serve_stop(&dir_conn)
 
 	if vectra9.negotiate(mnt.session(&dir_conn)) != .None {
