@@ -89,6 +89,11 @@ Drag :: struct {
 	y0:   int,
 	ox:   int, // Where the window was, or how big its client area was
 	oy:   int,
+	// The pointer's offset from the press that was last applied. An event
+	// that has not moved it moves nothing. So a release cannot undo what a
+	// `wctl` word did to the window since the last motion.
+	dx:   int,
+	dy:   int,
 }
 
 drag: Drag
@@ -293,11 +298,14 @@ drag_follow :: proc "contextless" (released: u8) #no_bounds_check {
 	}
 	dx := ptr_x - drag.x0
 	dy := ptr_y - drag.y0
-	#partial switch drag.kind {
-	case .Move:
-		_ = window_move(win, drag.ox + dx, drag.oy + dy)
-	case .Size:
-		_ = window_size(win, max(drag.ox + dx, 8), max(drag.oy + dy, 8))
+	if dx != drag.dx || dy != drag.dy {
+		drag.dx, drag.dy = dx, dy
+		#partial switch drag.kind {
+		case .Move:
+			_ = window_move(win, drag.ox + dx, drag.oy + dy)
+		case .Size:
+			_ = window_size(win, max(drag.ox + dx, 8), max(drag.oy + dy, 8))
+		}
 	}
 	if released & 1 != 0 {
 		drag.kind = .None

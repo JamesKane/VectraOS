@@ -31,6 +31,7 @@ LOCK_DOTS :: 16
 
 locked: bool
 lock_checking: bool
+lock_tries: int // Checks made, for the refusal's line
 lock_pending: bool // A Return typed while a check ran: check again after it
 lock_buf: [LOCK_MAX]u8
 lock_n: int
@@ -172,6 +173,7 @@ lock_check :: proc "contextless" () #no_bounds_check {
 	user := env_word("/env/user", ub[:])
 	dom := env_word("/env/dom", db[:])
 	if user == "" || dom == "" {
+		libuser.eprint("intuition: the lock has no user or dom to check\n")
 		return
 	}
 	fd := libuser.open("/mnt/factotum/ctl", abi.O_WRONLY)
@@ -180,16 +182,23 @@ lock_check :: proc "contextless" () #no_bounds_check {
 		fd = libuser.open("/mnt/factotum/ctl", abi.O_WRONLY)
 	}
 	if fd < 0 {
+		libuser.eprint("intuition: the lock cannot reach factotum\n")
 		return
 	}
 	line: [LOCK_MAX + 160]u8
 	text := libuser.cat_into(line[:], "check proto=noise user=", user, " dom=", dom, " !passphrase=", string(pass[:pn]))
-	ok := libthread.iowrite(lock_io, int(fd), transmute([]u8)text) == i64(len(text))
+	got := libthread.iowrite(lock_io, int(fd), transmute([]u8)text)
 	line = {}
 	_ = libuser.close(int(fd))
-	if ok {
+	if got == i64(len(text)) {
 		lock_off()
+	} else {
+		// The refusal and its reason, with the length checked and never the
+		// passphrase itself.
+		nb, lb: [24]u8
+		libuser.eprint("intuition: the lock's check was refused, ", libuser.errstr(got), ", a line of ", libuser.itoa(lb[:], i64(pn)), " bytes, try ", libuser.itoa(nb[:], i64(lock_tries + 1)), "\n")
 	}
+	lock_tries += 1
 }
 
 // env_word reads a variable of `/env` and trims it to its first word.

@@ -10500,6 +10500,63 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 	}
 	check(r, moved, "and the window is where the drag left it, which wctl says")
 
+	/*
+	A wctl word in the middle of a drag keeps its effect. The bar is pressed
+	and moved ten pixels, and wctl shows the move. Then `snap left` is written
+	with the button still down, and the button comes up. A release used to
+	apply the drag's offset again. It put the window back where the drag had
+	it, when a snap raced a release. It moves nothing now, because the
+	pointer did not move.
+	*/
+	if moved {
+		cx, cy := mouse.position()
+		held := inject_move(0, 0, 1) && wait_pointer(cx, cy) && inject_move(10, 0, 1) && wait_pointer(cx + 10, cy)
+		mid := false
+		for _ in 0 ..< PATIENCE {
+			if x, _, ok := wctl_place(wctl); ok && x == second_x + 50 {
+				mid = true
+				break
+			}
+			sync.delay(1)
+		}
+		snapped := held && mid && net_file_write("/mnt/1/wctl", "snap left")
+		_ = inject_move(0, 0, 0) && wait_pointer(cx + 10, cy)
+		kept := snapped
+		for _ in 0 ..< PATIENCE {
+			if x, _, ok := wctl_place(wctl); !ok || x != 0 {
+				kept = false
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, kept, "a snap written in the middle of a drag stays when the button comes up")
+		// Back where the drag checks left it, for the checks that follow. A
+		// zoom undoes the snap, so the server keeps no snapped place. A move
+		// takes back the ten pixels.
+		_ = net_file_write("/mnt/1/wctl", "zoom")
+		for _ in 0 ..< PATIENCE {
+			if x, _, ok := wctl_place(wctl); ok && x == second_x + 50 {
+				break
+			}
+			sync.delay(1)
+		}
+		mb: [48]u8
+		ms := libodin.sink_from(mb[:])
+		libodin.put_str(&ms, "move ")
+		libodin.put_int(&ms, i64(second_x + 40))
+		libodin.put_str(&ms, " 24")
+		_ = net_file_write("/mnt/1/wctl", libodin.str(&ms))
+		back := false
+		for _ in 0 ..< PATIENCE {
+			if x, y, ok := wctl_place(wctl); ok && x == second_x + 40 && y == 24 {
+				back = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, back, "and a move puts it back where the drag left it")
+	}
+
 	// -- snap, minsize, maxsize and parent on wctl -------------------------------------
 
 	/*

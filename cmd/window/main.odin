@@ -168,6 +168,14 @@ shell ending.
 // own, so this is the one convention `window` keeps.
 path_buf2: [64]u8
 
+// die says why this window could not be, on the desktop's error stream, and
+// exits with the code the comment above names. It is spawned detached, so
+// the code alone reaches nobody.
+die :: proc "contextless" (code: u64, why: string, err: i64) -> ! {
+	libuser.eprint("window: ", why, err < 0 ? ": " : "", err < 0 ? libuser.errstr(err) : "", "\n")
+	libuser.exit(code)
+}
+
 resolve :: proc "contextless" (name: string) -> string #no_bounds_check {
 	for i in 0 ..< len(name) {
 		if name[i] == '/' {
@@ -202,40 +210,40 @@ start :: proc "c" (block: ^abi.Args) {
 	// kernel's console may be a shell of its own that wants its echo. An
 	// earlier terminal wrote `echooff` here, from the days it read the
 	// kernel's console itself.
-	if libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE) < 0 {
-		libuser.exit(0x74)
+	if e := libuser.mount("/srv/draw", "/mnt", abi.ORDER_BEFORE); e < 0 {
+		die(0x74, "the draw server would not mount", e)
 	}
 
 	// Which window is this one's, and then the claim on it: `/mnt/new` names
 	// the window with no session, and opening its `data` is the claim.
 	nfd := libuser.open("/mnt/new", abi.O_RDONLY)
 	if nfd < 0 {
-		libuser.exit(0x74)
+		die(0x74, "no window to claim, /mnt/new", nfd)
 	}
 	nn := libuser.read(int(nfd), geo[:])
 	_ = libuser.close(int(nfd))
 	scan := 0
 	mine, mok := libdraw.scan_int(geo[:max(int(nn), 0)], &scan)
 	if !mok {
-		libuser.exit(0x76)
+		die(0x76, "/mnt/new named no window", 0)
 	}
 
 	fd := libuser.open(libdraw.win_path(path_buf[:], "/mnt", mine, "data"), abi.O_WRONLY)
 	if fd < 0 {
-		libuser.exit(0x75)
+		die(0x75, "the window's data would not open", fd)
 	}
 	data_fd = int(fd)
 
 	// The client area's geometry decides the grid, and the bar gets a name.
 	ctl := libuser.open(libdraw.win_path(path_buf[:], "/mnt", mine, "ctl"), abi.O_RDWR)
 	if ctl < 0 {
-		libuser.exit(0x75)
+		die(0x75, "the window's ctl would not open", ctl)
 	}
 	n := libuser.read(int(ctl), geo[:])
 	w, h, _, _, gok := libdraw.parse_geometry(geo[:max(int(n), 0)])
 	if !gok || h < 56 || w < 80 {
 		_ = libuser.close(int(ctl))
-		libuser.exit(0x76)
+		die(0x76, "a window too small to draw on", 0)
 	}
 	cols = min((w - 2 * TEXT_X) / libfont.FONT_WIDTH, MAX_COLS)
 	rows = min((h - 2 * TEXT_Y) / libfont.FONT_HEIGHT, MAX_ROWS)
@@ -256,20 +264,20 @@ start :: proc "c" (block: ^abi.Args) {
 	bind does not move a file already held. Then raw, because this program
 	is the one that draws what is typed.
 	*/
-	if libuser.bind(libdraw.win_dir(path_buf[:], "/mnt", mine), "/dev", abi.ORDER_BEFORE) < 0 {
-		libuser.exit(0x78)
+	if e := libuser.bind(libdraw.win_dir(path_buf[:], "/mnt", mine), "/dev", abi.ORDER_BEFORE); e < 0 {
+		die(0x78, "the window would not bind over /dev", e)
 	}
 	cons := libuser.open("/dev/cons", abi.O_RDONLY)
 	if cons < 0 {
-		libuser.exit(0x78)
+		die(0x78, "the window's cons would not open", cons)
 	}
 	wctl := libuser.open("/dev/consctl", abi.O_WRONLY)
 	if wctl < 0 {
-		libuser.exit(0x78)
+		die(0x78, "the window's consctl would not open", wctl)
 	}
 	raw := "rawon"
-	if libuser.write(int(wctl), transmute([]u8)raw) != i64(len(raw)) {
-		libuser.exit(0x78)
+	if e := libuser.write(int(wctl), transmute([]u8)raw); e != i64(len(raw)) {
+		die(0x78, "rawon was refused", e)
 	}
 
 	for r in 0 ..< MAX_ROWS {
@@ -297,7 +305,7 @@ start :: proc "c" (block: ^abi.Args) {
 	in_pipe := libuser.pipe()
 	out_pipe := libuser.pipe()
 	if in_pipe < 0 || out_pipe < 0 {
-		libuser.exit(0x72)
+		die(0x72, "no pipe for the shell", min(in_pipe, out_pipe))
 	}
 	in_r, in_w := abi.pipe_ends(in_pipe)
 	out_r, out_w := abi.pipe_ends(out_pipe)
@@ -306,7 +314,7 @@ start :: proc "c" (block: ^abi.Args) {
 	// it runs, and not this program.
 	shell := libuser.rfork(abi.RFPROC | abi.RFFDG | abi.RFNOTEG)
 	if shell < 0 {
-		libuser.exit(0x72)
+		die(0x72, "the shell's fork was refused", shell)
 	}
 	shell_pid = u64(shell)
 	if shell == 0 {
@@ -316,8 +324,8 @@ start :: proc "c" (block: ^abi.Args) {
 		for i in 3 ..< 32 {
 			_ = libuser.close(i)
 		}
-		_ = libuser.exec(cmd_path, cmd_argv)
-		libuser.exit(0x72)
+		e := libuser.exec(cmd_path, cmd_argv)
+		die(0x72, "the command would not run", e)
 	}
 	_ = libuser.close(in_r)
 	_ = libuser.close(out_w)
@@ -585,7 +593,7 @@ newline :: proc "contextless" () #no_bounds_check {
 
 send :: proc "contextless" (buf: []u8, at: int) {
 	if at <= 0 || !libuser.write_full(data_fd, buf[:at]) {
-		libuser.exit(0x78)
+		die(0x78, "a draw write was refused", 0)
 	}
 }
 
@@ -688,6 +696,6 @@ draw write that fails does; there is no half-drawn font to fall back to.
 upload_font :: proc "contextless" () #no_bounds_check {
 	_ = libfont.loader_open(&text_font, "/lib/font/default.font", font_read, nil)
 	if _, ok := libdraw.bake_atlas(&atlas, 1, &text_font, FG, BG, cmd[:], band[:], font_write, nil); !ok {
-		libuser.exit(0x78)
+		die(0x78, "the draw server's image pool refused the font", 0)
 	}
 }

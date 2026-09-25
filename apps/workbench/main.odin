@@ -787,7 +787,9 @@ spawn_window :: proc "contextless" (cmdline: string) {
 	// kernel reaps each when its window closes. Without this a closed shell
 	// or tool would sit in the process table forever, a slot the desktop
 	// leaks every time it launches one.
-	_ = libuser.spawn("/bin/window", abi.SPAWN_NOWAIT, argv[:n])
+	if e := libuser.spawn("/bin/window", abi.SPAWN_NOWAIT, argv[:n]); e < 0 {
+		libuser.eprint("workbench: /bin/window would not start: ", libuser.errstr(e), "\n")
+	}
 }
 
 // run_tool runs one of /lib/wb/tools: the file's first line is its command.

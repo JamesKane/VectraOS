@@ -1044,11 +1044,18 @@ odd park, which is how both were found.
 
 Still open, each seen once or rarely:
 
-- **The draw server's slow end, open.** One boot in about fifteen, a draw
-  server's `exits` outlasts the check's patience at the end of a stage, and
-  Workbench sits in a `close` at the same time. It finishes later. The
-  failure dump now prints the kernel stack of such a park, so the next one
-  names where it waits.
+- **Three seen once or twice, and not since the drag fix.** One is a draw
+  server whose `exits` outlasted the check at the end of a stage. One is
+  the screen lock that refused the right passphrase. One is an alt-n that
+  opened no shell.
+
+  The hunt loaded the host to shift the timing, and it found a real race.
+  A drag's release applied its offset again, and undid a `wctl` word
+  written since the last motion. It moves nothing now if the pointer did
+  not move. Twelve loaded boots then ran green, and none of the three came
+  back. If one does, the failure dump names each process's system call
+  and stack. The lock, `window` and Workbench's spawn now say why they
+  refuse.
 - `libapp`'s pointer marker, once.
 - **Fixed tables are a plan now, not a flake.** `docs/LIMITS.md` surveys
   how Plan 9, Linux, Fuchsia, seL4, XNU and NT size their tables. It sets
