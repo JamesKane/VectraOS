@@ -129,9 +129,10 @@ NODE_HOTKEY :: i32(3) // The chords the server does not act on, for the desktop
 NODE_SNARF :: i32(4) // rio's /dev/snarf: the shared clipboard. See `snarf.odin`
 NODE_SNARFHIST :: i32(5) // what a cut pushed off the buffer, ten deep
 NODE_THEME :: i32(6) // the theme's generation, which a `reload` bumps. See `files.odin`
+NODE_OVERLAY :: i32(7) // theme lines kept in memory, over the files: a session's `Use`. See `theme.odin`
 
-// A window's nine nodes, in one block apiece after the seven fixed ones.
-NODE_BASE :: i32(7)
+// A window's nine nodes, in one block apiece after the eight fixed ones.
+NODE_BASE :: i32(8)
 NODE_PER :: i32(9)
 PART_DIR :: i32(0)
 PART_DATA :: i32(1)
@@ -3409,6 +3410,8 @@ name_of :: proc "contextless" (node: i32) -> string #no_bounds_check {
 		return "snarfhist"
 	case NODE_THEME:
 		return "theme"
+	case NODE_OVERLAY:
+		return "overlay"
 	}
 	w := node_win(node)
 	if w < 0 {
@@ -3464,6 +3467,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 #no_bounds_check {
 			return NODE_SNARFHIST
 		case "theme":
 			return NODE_THEME
+		case "overlay":
+			return NODE_OVERLAY
 		}
 		if w := libdraw.win_index(name); w >= 0 && w < MAX_WINDOWS {
 			return node_of(w, PART_DIR)
@@ -3711,6 +3716,14 @@ handler :: proc "contextless" (
 			reply^ = vectra9.Rread{data = buf[:snarfhist_read(buf[:room], m.offset)]}
 			return
 		}
+		if node == NODE_OVERLAY {
+			room := min(len(buf), int(m.count))
+			from := min(int(m.offset), overlay_n)
+			upto := min(overlay_n, from + room)
+			n := copy(buf[:room], overlay_text[from:upto])
+			reply^ = vectra9.Rread{data = buf[:n]}
+			return
+		}
 		if node == NODE_THEME {
 			// A read at offset N answers once the generation passes N, and
 			// is held until then. See `theme_gen`.
@@ -3762,6 +3775,22 @@ handler :: proc "contextless" (
 		}
 		if node == NODE_SNARF {
 			reply^ = vectra9.Rwrite{count = u32(snarf_write(m.offset, m.data))}
+			return
+		}
+		if node == NODE_OVERLAY {
+			// A write at offset zero replaces the lines, so a blank line
+			// clears them. Every window's look follows, as on a `reload`.
+			if m.offset == 0 {
+				overlay_n = 0
+			}
+			if int(m.offset) != overlay_n || overlay_n + len(m.data) > len(overlay_text) {
+				reply^ = vectra9.error_reply(vectra9.EINVAL)
+				return
+			}
+			overlay_n += copy(overlay_text[overlay_n:], m.data)
+			theme_rechrome()
+			theme_bump()
+			reply^ = vectra9.Rwrite{count = u32(len(m.data))}
 			return
 		}
 		if node == NODE_SNARFHIST || node == NODE_THEME {
@@ -3889,11 +3918,11 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 		return
 	}
 
-	// The root holds `new`, `ctl`, `hotkey`, `snarf`, `snarfhist` and `theme`,
-	// then a directory per window. A window's directory holds its own files and the
+	// The root holds `new`, `ctl`, `hotkey`, `snarf`, `snarfhist`, `theme` and
+	// `overlay`, then a directory per window. A window's directory holds its own files and the
 	// two shared snarf names, so the bind over `/dev` carries `/dev/snarf`.
 	per := int(NODE_PER) - 1
-	count := root ? 6 + MAX_WINDOWS : per + 2
+	count := root ? 7 + MAX_WINDOWS : per + 2
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
 	for i := int(m.offset); i < count; i += 1 {
@@ -3913,8 +3942,10 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 				child = NODE_SNARFHIST
 			case 5:
 				child = NODE_THEME
+			case 6:
+				child = NODE_OVERLAY
 			case:
-				child = node_of(i - 6, PART_DIR)
+				child = node_of(i - 7, PART_DIR)
 				kind = vectra9.DT_DIR
 			}
 		} else {

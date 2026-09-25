@@ -28,7 +28,6 @@ import "vsys:libpal"
 import "vsys:libraster"
 
 // px is a palette colour as a pixel word.
-@(private = "file")
 px :: proc "contextless" (c: libpal.RGB) -> u32 {
 	return libraster.rgb(c)
 }
@@ -56,7 +55,8 @@ paint_node :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 	case .Space:
 	// Glue draws nothing. The ground behind it already reads as blank.
 	case .Group:
-	// A container draws nothing of its own.
+		// A container draws nothing of its own, but a titled one's frame.
+		widget_paint(c, o, t)
 	case .Text:
 		// A label draws as written: an underscore in it is a character,
 		// not a hotkey mark, which only a button's label carries.
@@ -96,14 +96,20 @@ paint_node :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 		led_paint(c, o, t)
 	case .Tile:
 		tile_paint(c, o, t)
+	case .Cycle, .Knob, .PageList:
+		widget_paint(c, o, t)
 	}
+	i := 0
 	for k := o.first; k != nil; k = k.next {
-		paint_node(c, k, t)
+		// A page list draws the page it shows and no other.
+		if o.class != .PageList || i == o.sel {
+			paint_node(c, k, t)
+		}
+		i += 1
 	}
 }
 
 // well is a sunk field: the shade as its edge, the ground inside.
-@(private = "file")
 well :: proc "contextless" (c: ^libraster.Canvas, x: int, y: int, w: int, h: int, t: ^Theme) {
 	libraster.fill(c, x, y, w, h, px(t.shade))
 	libraster.fill(c, x + t.well, y + t.well, w - 2 * t.well, h - 2 * t.well, px(t.ground))

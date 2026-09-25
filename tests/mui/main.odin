@@ -575,6 +575,66 @@ start :: proc "c" (block: ^abi.Args) {
 		want(d >> 8 & 0xFF < g >> 8 & 0xFF && d >> 8 & 0xFF > d >> 16 & 0xFF, "an unlit LED is dark in its own colour, not grey")
 	}
 
+	// -- The preferences' classes, `docs/CHROME.md` section 9 ------------------
+	//
+	// A cycle is as wide as its widest choice and steps through them. A knob
+	// turns a step for every four pixels dragged up, and stops at its top. A
+	// page list lays the page it names and gives the others no room, and a
+	// press on a row changes the page. A titled group takes room for its
+	// title and draws it in `dim`.
+	{
+		tw := libmui.default_theme
+		choices := [3]string{"a", "bbbb", "cc"}
+		cy := libmui.cycle(choices[:])
+		libmui.fit(cy, &tw)
+		want(cy.minw >= libmui.text_width(&tw, .Interface, "bbbb") + libmui.CYCLE_SEG, "a cycle is as wide as its widest choice and its segment")
+		libmui.widget_activate(cy)
+		want(cy.sel == 1, "a click takes the next choice")
+		libmui.widget_activate(cy)
+		libmui.widget_activate(cy)
+		want(cy.sel == 0, "and the last goes round to the first")
+
+		kn := libmui.knob(0, 10, 4)
+		kw: libmui.Window
+		kw.press_y = 100
+		libmui.widget_press(&kw, kn, 0, 100)
+		want(libmui.widget_drag(&kw, kn, 92) && kn.sel == 6, "a knob dragged eight pixels up turns two steps")
+		_ = libmui.widget_drag(&kw, kn, 0)
+		want(kn.sel == 10, "and stops at its top")
+
+		names := [2]string{"One", "Two"}
+		pl := libmui.page_list(names[:])
+		p1 := libmui.group(false)
+		libmui.add(p1, libmui.text("first"))
+		p2 := libmui.group(false)
+		libmui.add(p2, libmui.text("second"))
+		libmui.add(pl, p1)
+		libmui.add(pl, p2)
+		libmui.fit(pl, &tw)
+		libmui.lay(pl, 0, 0, 300, 200, &tw)
+		want(p1.w > 0 && p2.w == 0, "a page list lays the page it names and gives the other no room")
+		row := libmui.page_row(&tw)
+		kw.theme = tw
+		libmui.widget_press(&kw, pl, pl.x + 4, pl.y + tw.well + row + row / 2)
+		want(pl.sel == 1 && p2.w > 0 && p1.w == 0, "and a press on the second row lays the second page")
+
+		plain := libmui.group(false)
+		libmui.add(plain, libmui.text("x"))
+		framed := libmui.titled("Frame", false)
+		libmui.add(framed, libmui.text("x"))
+		libmui.fit(plain, &tw)
+		libmui.fit(framed, &tw)
+		want(framed.minh > plain.minh && framed.minw > plain.minw, "a titled group takes room round its children for its frame and title")
+		libmui.lay(framed, 0, 0, 200, 80, &tw)
+		c := paint_tree(framed, &tw)
+		want(count_in(&c, 0, 0, 200, libmui.text_height(&tw, .Chrome) + 2, libraster.rgb(tw.dim)) > 0 || has_colour(&c, libraster.rgb(tw.dim)), "and draws its title in dim, set into the frame")
+		kc := libmui.knob(0, 10, 10)
+		libmui.fit(kc, &tw)
+		libmui.lay(kc, 20, 20, libmui.KNOB_SIZE, libmui.KNOB_SIZE, &tw)
+		ck := paint_tree(kc, &tw)
+		want(has_colour(&ck, libraster.rgb(tw.focus)), "and a knob draws its mark in the focus colour")
+	}
+
 	// -- An icon is drawn from its outlines, `docs/CHROME.md` section 6 -------
 	//
 	// The chassis names no icons, so a grid keeps its pictures. A scheme

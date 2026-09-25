@@ -101,6 +101,7 @@ Window :: struct {
 	parent:    ^Window,
 	press_x:   int, // where the last press landed, for the drag threshold
 	press_y:   int,
+	press_value: int, // a knob's value at the press, which a drag turns from
 	user:      rawptr,
 	last_press: ^Object,
 	last_ms:   int,
@@ -250,17 +251,6 @@ because the loop that follows does.
 */
 window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -> bool #no_bounds_check {
 	win.root = root
-	// The person's theme, read the first time a window opens. A window that
-	// takes the shared theme follows it when it changes; one whose program
-	// set its own keeps that.
-	if !theme_loaded {
-		theme_load()
-	}
-	follows := false
-	if win.theme.pad == 0 && win.theme.gap == 0 {
-		win.theme = ui_theme
-		follows = true
-	}
 	if !win.set_up {
 		window_defaults(win)
 	}
@@ -292,6 +282,19 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 		} else {
 			_ = libuser.close(int(probe))
 		}
+	}
+	// The person's theme, read the first time a window opens. That waits for
+	// the draw server's files, since its `overlay` is the last of the
+	// theme's texts. A window that takes the shared theme follows it when it
+	// changes; one whose program set its own keeps that.
+	theme_base_set(win.base)
+	if !theme_loaded {
+		theme_load()
+	}
+	follows := false
+	if win.theme.pad == 0 && win.theme.gap == 0 {
+		win.theme = ui_theme
+		follows = true
 	}
 	nfd := libuser.open(libuser.cat_into(win.path[:], win.base, "/new"), abi.O_RDONLY)
 	if nfd < 0 {
@@ -873,6 +876,12 @@ mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 			win.last_ms = ms
 			win.press_x = x
 			win.press_y = y
+			widget_press(win, win.pressed, x, y)
+			window_paint(win)
+		}
+	} else if down && was && win.pressed != nil {
+		// A move with the button down: a knob turns with it.
+		if widget_drag(win, win.pressed, y) {
 			window_paint(win)
 		}
 	} else if !down && was {
@@ -987,6 +996,10 @@ activate :: proc "contextless" (win: ^Window, g: ^Object) #no_bounds_check {
 	relay_click()
 	if g.class == .Checkmark {
 		g.on = !g.on
+		window_paint(win)
+	}
+	if g.class == .Cycle || g.class == .PageList {
+		widget_activate(g)
 		window_paint(win)
 	}
 	win.arg = g.sel

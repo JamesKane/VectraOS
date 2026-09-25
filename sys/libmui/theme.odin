@@ -334,6 +334,8 @@ The look is read here, once, for every program on the toolkit: `/lib/theme`
 is the shipped one, `$home/lib/theme` the person's, and the later line for a
 role wins. The personal file may start with `use <name>`, which reads
 `/lib/themes/<name>` in place of `/lib/theme` and merges the rest over it.
+The draw server's `overlay` comes last: lines a session's `Use` wrote, kept
+in the server's memory and in no file, `docs/CHROME.md` section 9.
 `window_open` loads it the first time, so a window opens in the person's
 theme and not the chassis. `apps/workbench` used to be the only program that
 read these files; the reading moved here so none has to.
@@ -350,12 +352,25 @@ THEME_MAX :: 4096
 theme_loaded: bool
 @(private = "file") theme_home_buf: [THEME_MAX]u8
 @(private = "file") theme_base_buf: [THEME_MAX]u8
-@(private = "file") theme_merge_buf: [2 * THEME_MAX]u8
+@(private = "file") theme_merge_buf: [3 * THEME_MAX]u8
+@(private = "file") theme_over_buf: [THEME_MAX]u8
+@(private = "file") overlay_base_buf: [128]u8
+@(private = "file") overlay_base_n: int
+
+// theme_base_set names the draw server's mount, where its `overlay` is read:
+// the first window's, for every read after.
+theme_base_set :: proc "contextless" (base: string) {
+	if overlay_base_n == 0 {
+		overlay_base_n = copy(overlay_base_buf[:], base)
+	}
+}
+
 @(private = "file") theme_path_buf: [256]u8
 @(private = "file") theme_env_buf: [128]u8
 
-// theme_load reads the two files, merges them, and makes the result the look
-// new windows take. It lays no open window out; `theme_watch` does that.
+// theme_load reads the two files and the draw server's overlay, merges them in
+// that order, and makes the result the look new windows take. It lays no
+// open window out. `theme_watch` does that.
 theme_load :: proc "contextless" () #no_bounds_check {
 	home := theme_read(theme_home_path(), theme_home_buf[:])
 	base_path := "/lib/theme"
@@ -371,6 +386,16 @@ theme_load :: proc "contextless" () #no_bounds_check {
 		w += 1
 	}
 	w += copy(theme_merge_buf[w:], body)
+	// The draw server's overlay last: a session's `Use`, over both files.
+	if overlay_base_n > 0 {
+		pb: [160]u8
+		over := theme_read(libuser.cat_into(pb[:], string(overlay_base_buf[:overlay_base_n]), "/overlay"), theme_over_buf[:])
+		if len(over) > 0 && w < len(theme_merge_buf) {
+			theme_merge_buf[w] = '\n'
+			w += 1
+			w += copy(theme_merge_buf[w:], over)
+		}
+	}
 	t: Theme
 	parse_theme(&t, string(theme_merge_buf[:w]))
 	set_theme(t)

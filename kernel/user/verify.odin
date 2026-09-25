@@ -5615,6 +5615,38 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 		check(r, unworn, "and with the file gone the chassis's magnesium and copper come back")
 
 		/*
+		The overlay, `docs/CHROME.md` section 9: theme lines the draw server
+		keeps in memory, over the files, which is what `Use` in the
+		preferences writes. `face copper` there turns the demo's face copper,
+		and no file is written. A blank line in its place takes it back.
+		*/
+		copper_face := fb.pack(s, fb.COPPER)
+		used := false
+		if net_file_write("/mnt/overlay", "face copper\n") {
+			for _ in 0 ..< PATIENCE * 20 {
+				if fb.get_raw(s, gx, probe_y) == copper_face {
+					used = true
+					break
+				}
+				sync.delay(1)
+			}
+		}
+		check(r, used, "a line written to the draw server's overlay, face copper, turns the demo's face copper")
+		ob: [16]u8
+		check(r, web_read_file("/usr/glenda/lib/theme", ob[:], raw = true) < 0, "and writes no theme file")
+		cancelled := false
+		if net_file_write("/mnt/overlay", "\n") {
+			for _ in 0 ..< PATIENCE * 20 {
+				if fb.get_raw(s, gx, probe_y) == magnesium {
+					cancelled = true
+					break
+				}
+				sync.delay(1)
+			}
+		}
+		check(r, cancelled, "and a blank line written over it puts the chassis's magnesium back")
+
+		/*
 		The frame past the chassis, `docs/CHROME.md` brick 5. A `glow` puts a
 		halo of `focus`, cyan in the chassis, round the front window, drawn by
 		the compositor on the pixels beside the window: one just right of the

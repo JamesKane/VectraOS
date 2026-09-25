@@ -159,6 +159,9 @@ Class :: enum u8 {
 	Readout, // An LCD: characters in the readout face over their unlit segments
 	Led, // A state's lamp: `ok`, `warn`, `fault`, or unlit
 	Tile, // A dock's tile: raised, square, an icon and an LED in its corner
+	Cycle, // A key that steps through its choices, `widgets.odin`
+	Knob, // A disc turned by a vertical drag, a value from `lo` to `hi`
+	PageList, // A list of pages, the chosen one laid at its right
 }
 
 // An LED's states, `docs/CHROME.md` section 10, in an `Led`'s `sel`. Unlit
@@ -255,6 +258,9 @@ Object :: struct {
 
 	// A readout: the characters it has room for, whatever its label says.
 	cells:    int,
+
+	// A knob's range, `sel` the value in it.
+	lo, hi:   int,
 }
 
 // row_style answers a row's style, plain when the list has none.
@@ -702,6 +708,8 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 	case .Tile:
 		o.minw, o.maxw = TILE_SIZE, TILE_SIZE
 		o.minh, o.maxh = TILE_SIZE, TILE_SIZE
+	case .Cycle, .Knob, .PageList:
+		_ = widget_fit(o, t)
 	case .Checkmark:
 		s := FONT_H + 2 * t.bevel
 		o.minw, o.maxw = s, s
@@ -762,6 +770,13 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 			o.minh, o.maxh = min_a, max_a
 			o.minw, o.maxw = min_c, max_c
 		}
+		// A titled group's frame and legend take room round the children.
+		if side, top := legend_side(o), legend_top(o, t); side > 0 {
+			o.minw += 2 * side
+			o.minh += top + side
+			if o.maxw < BIG {o.maxw += 2 * side}
+			if o.maxh < BIG {o.maxh += top + side}
+		}
 	}
 	// A node that can grow and has no weight yet takes a weight of one. Equal
 	// siblings then share the room equally.
@@ -792,13 +807,18 @@ lay :: proc "contextless" (o: ^Object, x: int, y: int, w: int, h: int, t: ^Theme
 		return
 	}
 	o.x, o.y, o.w, o.h = x, y, w, h
+	if o.class == .PageList {
+		page_list_lay(o, t)
+		return
+	}
 	if o.class != .Group || o.first == nil {
 		return
 	}
-	inx := x + t.pad
-	iny := y + t.pad
-	inw := w - 2 * t.pad
-	inh := h - 2 * t.pad
+	side, top := legend_side(o), legend_top(o, t)
+	inx := x + t.pad + side
+	iny := y + t.pad + top
+	inw := w - 2 * t.pad - 2 * side
+	inh := h - 2 * t.pad - top - side
 
 	n := 0
 	total_min_a := 0

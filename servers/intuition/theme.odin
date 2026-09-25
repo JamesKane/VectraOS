@@ -122,6 +122,15 @@ th_closegrace_ms := CLOSE_GRACE_MS
 @(private = "file") home_buf: [THEME_MAX]u8
 @(private = "file") base_buf: [THEME_MAX]u8
 
+/*
+The overlay: theme lines kept in memory and applied after both files, the
+root's `overlay` file. `apps/prefs`'s `Use` writes it, for this session and
+no file. A restart forgets it, which is what `Use` means, and a write of
+nothing empties it. `docs/CHROME.md` section 9.
+*/
+overlay_text: [THEME_MAX]u8
+overlay_n: int
+
 // Over the shipped `/lib/theme`, the largest file either buffer holds, with
 // room for a scheme's `colour` lines. It was 1024 until the shipped file
 // passed it and its last lines, the desk's pick among them, went unread.
@@ -167,8 +176,10 @@ theme_reload :: proc "contextless" () #no_bounds_check {
 	th_colours = {}
 	theme_colour_text(base_buf[:base])
 	theme_colour_text(body)
+	theme_colour_text(overlay_text[:overlay_n])
 	theme_apply_text(base_buf[:base])
 	theme_apply_text(body)
+	theme_apply_text(overlay_text[:overlay_n])
 	desk_resolve()
 	chrome_load()
 	effects_prepare()

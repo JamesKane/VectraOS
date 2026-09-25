@@ -909,6 +909,30 @@ look.
 10. **Preferences, E**, with the pages, the new classes, and `overlay`. The
     check: `Use` of a changed face repaints a second program, and `Cancel`
     puts it back with no file written. Medium.
+
+    **Brick 10 is done, September 2026, but for three pages.** The draw
+    server serves `overlay` at its root: theme lines in its memory, applied
+    after both files by it and by the toolkit. A write replaces them and
+    bumps the theme's generation, so every window follows, and a blank line
+    empties them. The toolkit reads the overlay once it has the server's
+    files, so a theme now loads after the mount.
+
+    `sys/libmui/widgets.odin` has the classes the page draws: `Cycle`,
+    `Knob`, `PageList`, and a group with a title set into its frame. A knob
+    turns by a vertical drag, which the toolkit now follows between the
+    press and the release.
+
+    `apps/prefs` is the study's layout: a page list, framed groups, a
+    gadget per role's type, and Save, Use and Cancel. Use writes the
+    changed roles, and a new scheme's own lines, to the overlay. Save
+    writes `$home/lib/theme` and empties the overlay. Cancel empties it and
+    puts the gadgets back. The Keys, Workspaces and Servers pages wait:
+    each is a file or a reader of its own.
+
+    The checks: `face copper` in the overlay turns the demo's face copper
+    and writes no file, and a blank line puts the chassis back. `tests/mui`
+    steps a cycle, turns a knob by a drag, changes a page list's page, and
+    reads a titled group's legend.
 11. **The column viewer, G.** The check: a column for a union lists the
     members' entries in bind order and its tag names them. Medium.
 
