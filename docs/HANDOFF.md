@@ -1040,9 +1040,9 @@ Still open, each seen once or rarely:
   console, with each one's state, when that happens.
 - `libapp`'s pointer marker, once.
 - **The toolkit demo's stage fails about one boot in three**, September
-  2026, each time at a different check. Four have been seen: the repaint after
-  a theme reload, a popup that stayed open, a gadget's relay click, and the
-  bar's gadgets after a name. They came
+  2026, each time at a different check. Four checks failed there. One is
+  the repaint after a theme reload, and one a popup that stayed open. The
+  others are a gadget's relay click and the bar's gadgets after a name. They came
   before and after the wire's pool grew, at about the same rate. It is one
   stage, so one cause is likely, and it wants a hunt of its own.
 - **Fixed tables are a plan now, not a flake.** `docs/LIMITS.md` surveys
