@@ -53,6 +53,19 @@ Wire_Result :: struct {
 @(private = "file")
 STALL :: u64(99)
 
+// Tags the script can sit on at once, which bounds `STUCK`.
+STALL_TAGS :: 128
+
+// Clients the pool test puts in flight at once. They fill more than two of
+// the pool's chunks, so the pool must grow twice to hold them. That is also
+// more than the sixteen a fixed pool once held.
+STUCK :: 2 * mnt.WIRE_CHUNK + 1
+
+// How long a stuck client waits before it gives up and flushes. Long enough
+// that every one of `STUCK` is in flight before the first gives up, so the
+// pool has to hold them all at once.
+STUCK_TICKS :: 50
+
 /*
 The scripted server -- a process stood in for by a thread.
 
@@ -73,7 +86,7 @@ Script :: struct {
 	wrong_dialect: bool, // Answer Tversion with a version nothing here speaks
 
 	served:     int,
-	stalled:    u32, // Bitmask of tags being sat on, one bit per pool slot
+	stalled:    [2]u64, // Bitmask of tags being sat on, the first STALL_TAGS
 	done:       bool,
 }
 
@@ -132,10 +145,10 @@ script_answer :: proc "contextless" (s: ^Script, tag: vectra9.Tag, msg: ^vectra9
 		}
 		return script_send(s, tag, vectra9.Rread{data = payload[:count]})
 	case vectra9.Tflush:
-		if int(m.oldtag) < 32 && s.stalled & (1 << u32(m.oldtag)) != 0 {
+		if t := int(m.oldtag); t < STALL_TAGS && s.stalled[t / 64] & (1 << u64(t % 64)) != 0 {
 			// Discard the stalled request rather than answer it. Legal, and
 			// the wire's `discards` counter is the check on the other side.
-			s.stalled &~= 1 << u32(m.oldtag)
+			s.stalled[t / 64] &~= 1 << u64(t % 64)
 		}
 		return script_send(s, tag, vectra9.Rflush{})
 	case vectra9.Tclunk:
@@ -173,8 +186,8 @@ script_server :: proc "contextless" (arg: rawptr) {
 		}
 
 		if m, is_read := msg.(vectra9.Tread); is_read && m.offset == STALL {
-			if int(tag) < 32 {
-				s.stalled |= 1 << u32(tag)
+			if t := int(tag); t < STALL_TAGS {
+				s.stalled[t / 64] |= 1 << u64(t % 64)
 			}
 			continue
 		}
@@ -236,7 +249,7 @@ wire_client :: proc "contextless" (arg: rawptr) {
 	if c.stall {
 		// The server will sit on this for ever, so the deadline is the test:
 		// giving up must work with every slot in the same state.
-		err := vectra9.call_for(c.session, &request, &reply, 5, buf[:])
+		err := vectra9.call_for(c.session, &request, &reply, STUCK_TICKS, buf[:])
 		c.ok = err == .Interrupted
 		intrinsics.volatile_store(&c.done, true)
 		return
@@ -274,7 +287,7 @@ wire_io_write :: proc "contextless" (data: rawptr, frame: []u8) -> bool {
 // wire_up builds one pipe, one scripted server on end 0, and one wire on end
 // 1. False when any part would not start, with the checks naming which.
 @(private = "file")
-wire_up :: proc(r: ^Wire_Result, s: ^Script, w: ^mnt.Wire, arena: []u8) -> bool {
+wire_up :: proc(r: ^Wire_Result, s: ^Script, w: ^mnt.Wire) -> bool {
 	s^ = Script {
 		end = 0,
 	}
@@ -284,8 +297,8 @@ wire_up :: proc(r: ^Wire_Result, s: ^Script, w: ^mnt.Wire, arena: []u8) -> bool 
 	}
 	if !libodin.check(
 		r,
-		mnt.wire_init(w, mnt.Wire_IO{data = s, read = wire_io_read, write = wire_io_write}, arena),
-		"the wire divides its arena",
+		mnt.wire_init(w, mnt.Wire_IO{data = s, read = wire_io_read, write = wire_io_write}, 1024),
+		"the wire allocates its first chunk",
 	) {
 		return false
 	}
@@ -313,6 +326,7 @@ wire_down :: proc(s: ^Script, w: ^mnt.Wire) -> bool {
 	mnt.wire_join(w)
 	left := sync.await_flag(&s.done, WIRE_PATIENCE)
 	pipe.close_end(s.p, 1)
+	mnt.wire_free(w)
 	return left
 }
 
@@ -323,15 +337,9 @@ wire_poisoned :: proc "contextless" (arg: rawptr) -> bool {
 
 @(private = "file")
 verify_wire_run :: proc(r: ^Wire_Result) {
-	arena := make([]u8, 1024 * (mnt.MAX_REQUESTS + 1))
-	if !libodin.check(r, arena != nil, "an arena for the wire") {
-		return
-	}
-	defer delete(arena)
-
 	script: Script
 	wire: mnt.Wire
-	if !wire_up(r, &script, &wire, arena) {
+	if !wire_up(r, &script, &wire) {
 		return
 	}
 	session := mnt.wire_session(&wire)
@@ -398,15 +406,18 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 	// -- Every slot stuck at once, and every client can still leave -----------
 
 	/*
-	This is the reserved flush slot earning its keep. Eight clients fill the
-	pool with requests the server sits on, and all eight give up. Each flush
-	goes out from its request's reserved partner, so none of them queues for
-	the resource the stuck requests hold. The alternative arrangement
-	deadlocks here, with nothing having sent an illegal message.
+	This is the reserved flush slot earning its keep, and the pool growing.
+	More clients than two chunks hold send requests the server sits on, all
+	in flight at once, so the pool grows to hold them. Then all of them give
+	up. Each flush goes out from its request's own partner, so none of them
+	queues for the resource the stuck requests hold. The alternative
+	arrangement deadlocks here, with nothing having sent an illegal message.
 	*/
-	stuck: [mnt.MAX_REQUESTS]Wire_Client
+	st = mnt.wire_stats(&wire)
+	libodin.check(r, st.slots == mnt.WIRE_CHUNK, "the pool starts at one chunk")
+	stuck: [STUCK]Wire_Client
 	started := 0
-	for i in 0 ..< mnt.MAX_REQUESTS {
+	for i in 0 ..< STUCK {
 		stuck[i] = Wire_Client {
 			session = session,
 			offset  = STALL,
@@ -416,10 +427,10 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 			started += 1
 		}
 	}
-	libodin.check(r, started == mnt.MAX_REQUESTS, "a client per request slot starts")
+	libodin.check(r, started == STUCK, "more stuck clients start than two chunks hold")
 	all_back := true
 	all_flushed := true
-	for i in 0 ..< mnt.MAX_REQUESTS {
+	for i in 0 ..< STUCK {
 		all_back = all_back && sync.await_flag(&stuck[i].done, WIRE_PATIENCE)
 		all_flushed = all_flushed && stuck[i].ok
 	}
@@ -429,7 +440,8 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 	request = vectra9.Msg(vectra9.Tread{fid = 1, offset = 2, count = 8})
 	libodin.check(r, vectra9.call(session, &request, &reply, buf[:]) == .None, "and every slot is a slot again")
 	st = mnt.wire_stats(&wire)
-	libodin.check(r, st.discards == 1 + mnt.MAX_REQUESTS, "the server discarded every sat-on request, a pool's worth and the one before")
+	libodin.check(r, st.discards == 1 + STUCK, "the server discarded every sat-on request, all of them and the one before")
+	libodin.check(r, st.slots >= STUCK && st.refused == 0, "the pool grew to hold them all, a chunk at a time, and refused none")
 	r.flushed = int(st.flushes)
 
 	// -- A reply nobody asked for ---------------------------------------------
@@ -470,7 +482,7 @@ verify_wire_run :: proc(r: ^Wire_Result) {
 
 	script2: Script
 	wire2: mnt.Wire
-	if !wire_up(r, &script2, &wire2, arena) {
+	if !wire_up(r, &script2, &wire2) {
 		return
 	}
 	session2 := mnt.wire_session(&wire2)

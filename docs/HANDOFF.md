@@ -424,6 +424,11 @@ the documents it points at.
      stays the default because many checks read its colours by name.
 
    Work on `main`, and ask before pushing.
+
+   **Limits are next beside it.** `docs/LIMITS.md` section 4 is the
+   order. The wedges and the one security bug come first. Then come the
+   ceilings a desktop reaches, and tables sized from memory. Last is a
+   `/dev/limits` file that says how full each pool is.
 2. **What `docs/THREAD.md` leaves open.** A note handler in `libthread`,
    Plan 9's `threadnotify`, so a proc other than the first can end the
    program and a note can be caught rather than end a proc. A guard page
@@ -1034,16 +1039,18 @@ Still open, each seen once or rarely:
   client gave up on. webfs now says `every conversation is held` on the
   console, with each one's state, when that happens.
 - `libapp`'s pointer marker, once.
-- The demo not repainting after a theme reload, once. The theme file was
-  written and the generation moved, and five instrumented boots did not
-  repeat it.
-- **Workbench has a window ceiling, and it is not a flake.** Every
-  window keeps two reads parked on the draw server's wire, and a wire
-  has `mnt.MAX_REQUESTS` slots, sixteen. Workbench's own five windows
-  and two drawers fill it, and the next write parks for ever: a third
-  drawer wedges the desktop. `docs/CHROME.md` brick 11 has the reading.
-  The fix is a larger pool or a slot that a held read does not keep, in
-  `kernel/mnt`.
+- **The toolkit demo's stage fails about one boot in three**, September
+  2026, each time at a different check. Four have been seen: the repaint after
+  a theme reload, a popup that stayed open, a gadget's relay click, and the
+  bar's gadgets after a name. They came
+  before and after the wire's pool grew, at about the same rate. It is one
+  stage, so one cause is likely, and it wants a hunt of its own.
+- **Fixed tables are a plan now, not a flake.** `docs/LIMITS.md` surveys
+  how Plan 9, Linux, Fuchsia, seL4, XNU and NT size their tables. It sets
+  the policy Vectra takes from them, and ranks every limit in the tree by
+  what a full one does. The mount wire's request pool was the first fix. It
+  grows by chunks up to the tag space, so a third drawer no longer freezes
+  Workbench. Section 4 there is the order for the rest, wedges first.
 - **The kfs scratch disk fills across boots.** `build/disk.img` is made
   once and kept, and something leaks space in it. A full disk fails dozens
   of web and feed checks with ENOSPC. Move the image aside and the build

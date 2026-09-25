@@ -41,7 +41,6 @@ Chan_Wire :: struct {
 	c:     ^vfs.Chan,
 	w:     ^mnt.Wire,
 	sv:    ^vfs.Server,
-	arena: []u8,
 }
 
 @(private = "file")
@@ -120,19 +119,18 @@ chan_server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		return nil
 	}
 	cw := &chan_wires[slot]
-	arena := make([]u8, WIRE_ARENA)
 	w := new(mnt.Wire)
 	sv := new(vfs.Server)
-	if arena == nil || w == nil || sv == nil {
-		free_wire_build(nil, arena, w, sv)
+	if w == nil || sv == nil {
+		free_wire_build(nil, w, sv)
 		return nil
 	}
-	cw^ = Chan_Wire{used = true, staked = true, c = vfs.chan_incref(c), w = w, sv = sv, arena = arena}
-	if !mnt.wire_init(w, mnt.Wire_IO{data = cw, read = chan_wire_read, write = chan_wire_write}, arena) ||
+	cw^ = Chan_Wire{used = true, staked = true, c = vfs.chan_incref(c), w = w, sv = sv}
+	if !mnt.wire_init(w, mnt.Wire_IO{data = cw, read = chan_wire_read, write = chan_wire_write}, WIRE_SLOT_BYTES) ||
 	   !mnt.wire_start(w) {
 		vfs.chan_close(cw.c)
 		cw^ = {}
-		free_wire_build(nil, arena, w, sv)
+		free_wire_build(nil, w, sv)
 		return nil
 	}
 	sv.name = "stream"
@@ -208,6 +206,6 @@ chan_wire_retire :: proc(cw: ^Chan_Wire) {
 
 @(private = "file")
 chan_wire_free :: proc(cw: ^Chan_Wire) {
-	free_wire_build(nil, cw.arena, cw.w, cw.sv)
+	free_wire_build(nil, cw.w, cw.sv)
 	cw^ = {}
 }

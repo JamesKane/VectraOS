@@ -25,7 +25,7 @@ with ENXIO, which is `/srv`'s sentence for a name whose service is not there.
 
 ## What is pinned, and what releases it
 
-A successful build pins three things: the wire and its arena, the server
+A successful build pins three things: the wire and its pool, the server
 record, and one reference on the posted chan. The reference is the
 load-bearing one. Removing a `/srv` name closes the entry's chan. Without
 this reference, that close would reach the pipe and poison the wire under
@@ -62,12 +62,11 @@ import "kernel:sync"
 import "kernel:vfs"
 import "vsys:vectra9"
 
-// Bytes for the wire's arena: one reply buffer per request slot plus the
-// transmit buffer. What one slot holds becomes the connection's msize. The
-// slot size is the protocol's `WIRE_SLOT`, so a ring 3 client sizes its
-// writes by the number this arena is cut from.
+// Bytes one of the wire's reply buffers holds. It becomes the connection's
+// msize. The slot size is the protocol's `WIRE_SLOT`, so a ring 3 client
+// sizes its writes by the same number the wire does.
 @(private)
-WIRE_ARENA :: vectra9.WIRE_SLOT * (mnt.MAX_REQUESTS + 1)
+WIRE_SLOT_BYTES :: vectra9.WIRE_SLOT
 
 // Ticks the Tversion answer may take before the connection is torn down. Half
 // a second of a parked server that has only to read seven bytes and echo them.
@@ -82,11 +81,12 @@ Wire_End :: struct {
 }
 
 // free_wire_build gives back what a build allocated, in whatever state it
-// reached. Every argument may be nil, so an unwind names them all.
+// reached, the wire's pool with it. Every argument may be nil, so an unwind
+// names them all.
 @(private)
-free_wire_build :: proc(we: ^Wire_End, arena: []u8, w: ^mnt.Wire, sv: ^vfs.Server) {
+free_wire_build :: proc(we: ^Wire_End, w: ^mnt.Wire, sv: ^vfs.Server) {
 	free(we)
-	delete(arena)
+	mnt.wire_free(w)
 	free(w)
 	free(sv)
 }
@@ -173,19 +173,18 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	}
 
 	we := new(Wire_End)
-	arena := make([]u8, WIRE_ARENA)
 	w := new(mnt.Wire)
 	sv := new(vfs.Server)
-	if we == nil || arena == nil || w == nil || sv == nil {
-		free_wire_build(we, arena, w, sv)
+	if we == nil || w == nil || sv == nil {
+		free_wire_build(we, w, sv)
 		clear_building(t, p)
 		return nil
 	}
 	we^ = Wire_End{p = p, end = end}
 
-	if !mnt.wire_init(w, mnt.Wire_IO{data = we, read = wire_read, write = wire_write}, arena) ||
+	if !mnt.wire_init(w, mnt.Wire_IO{data = we, read = wire_read, write = wire_write}, WIRE_SLOT_BYTES) ||
 	   !mnt.wire_start(w) {
-		free_wire_build(we, arena, w, sv)
+		free_wire_build(we, w, sv)
 		clear_building(t, p)
 		return nil
 	}
@@ -211,7 +210,7 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 		p.server9 = nil
 		p.building = false
 		sync.release(&t.lock, g4)
-		free_wire_build(we, arena, w, sv)
+		free_wire_build(we, w, sv)
 		return nil
 	}
 
@@ -221,7 +220,6 @@ server_for :: proc(c: ^vfs.Chan) -> ^vfs.Server {
 	g5 := sync.acquire(&t.lock)
 	p.server9 = sv
 	p.wire_end = end
-	p.wire_arena = arena
 	// The pin described in the file comment. Without this reference, removing
 	// the /srv name would close the chan and the close would reach the pipe.
 	// The wire would then poison under every mount the removal was not allowed
@@ -320,10 +318,8 @@ wire_release :: proc(sv: ^vfs.Server) {
 
 	g2 := sync.acquire(&t.lock)
 	w := cast(^mnt.Wire)sv.session.transport.data
-	arena := p.wire_arena
 	pinned := p.pinned
 	p.wire_end = 0
-	p.wire_arena = nil
 	p.pinned = nil
 	p.staked = false
 	sync.release(&t.lock, g2)
@@ -350,7 +346,7 @@ wire_release :: proc(sv: ^vfs.Server) {
 
 	we := cast(^Wire_End)w.io.data
 	free(we)
-	delete(arena)
+	mnt.wire_free(w)
 	free(w)
 	free(sv)
 

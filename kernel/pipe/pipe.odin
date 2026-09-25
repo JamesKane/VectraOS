@@ -106,11 +106,9 @@ Pipe :: struct {
 	wire_end: int, // Which end `server9`'s wire drives, when it exists
 
 	// What the wire's release has to give back, kept here because nothing
-	// else can reconstruct it. The arena the wire was built over, the chan
-	// reference that pins the posted end, and whether a `/srv` name still
-	// stakes the connection. All under `Pipe_Table.lock`, all zero when
+	// else can reconstruct it. The chan reference that pins the posted end,
+	// and whether a `/srv` name still stakes the connection. All under `Pipe_Table.lock`, all zero when
 	// `server9` is nil. See `serve9.odin`.
-	wire_arena: []u8,
 	pinned:     ^vfs.Chan,
 	staked:     bool,
 	// A wire is being built over this pipe right now, by a mount that has
