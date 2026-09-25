@@ -2160,6 +2160,39 @@ verify_mouse_file :: proc(t: ^libodin.Tally) {
 	x, y, b, parsed := parse_mouse_line(line)
 	libodin.tally(t, parsed && x == x0 + 7 && y == y0 - 2, "carrying the position the packet moved to")
 	libodin.tally(t, parsed && b == 4, "and the right button, as rio numbers it")
+
+	/*
+	A click the reader was too busy to see is still a click. The right
+	button comes up, and the left goes down and up, all before the next
+	read. A file that kept only the latest state would answer the last
+	release alone, and the reader would never see the left press. The
+	queue answers all three changes, in order.
+	*/
+	seq0 := intrinsics.volatile_load(&devfs.tree().mouse.seq)
+	mouse.feed_packet(0x08, 0, 0)
+	mouse.feed_packet(0x09, 0, 0)
+	mouse.feed_packet(0x08, 0, 0)
+	for _ in 0 ..< 200 {
+		if intrinsics.volatile_load(&devfs.tree().mouse.seq) >= seq0 + 3 {
+			break
+		}
+		sync.delay(1)
+	}
+	want := [3]int{0, 1, 0}
+	seen := 0
+	for w in want {
+		if !devfs.mouse_available(&devfs.tree().mouse) {
+			break
+		}
+		lb: [64]u8
+		n, rerr := vfs.chan_read(c, 0, lb[:])
+		_, _, bb, ok := parse_mouse_line(string(lb[:max(n, 0)]))
+		if rerr != vfs.OK || !ok || bb != w {
+			break
+		}
+		seen += 1
+	}
+	libodin.tally(t, seen == 3, "a release, a press and a release before one read come out as three lines, in order: a busy reader loses no click")
 	vfs.chan_close(c)
 }
 

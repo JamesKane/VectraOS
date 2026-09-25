@@ -544,6 +544,13 @@ handler :: proc "contextless" (
 				reply^ = vectra9.error_reply(vectra9.ENOSPC)
 				return
 			}
+			// The clone becomes the conversation's `ctl`, and holds it while
+			// it is open, as Plan 9's does. When every slot is taken, a
+			// conversation with nothing open on it may go to the next `clone`.
+			// So a client that keeps this open keeps its conversation.
+			libuser.fid_bind(&fids, m.fid, conv_node(i, CONV_CTL))
+			libuser.fid_open(&fids, m.fid)
+			convs[i].refs += 1
 			sink := libodin.sink_from(buf[:room])
 			libodin.put_uint(&sink, u64(i))
 			libodin.put_str(&sink, "\n")

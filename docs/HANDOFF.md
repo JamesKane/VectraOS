@@ -1032,19 +1032,24 @@ raced, and none was the machine being slow. What it taught:
   chasing. A print in a hot path hides a timing flake, so print only on
   the rare path.
 
+**Fixed, September 2026:** the toolkit demo's stage failing one boot in
+three, and `matrixfs`'s `leave` one boot in five. `/dev/mouse` kept only
+the latest state, so a press and its release before the draw server's
+next read were one release: the click was lost. It queues button changes
+now, as 9front's does. And a webfs client closed `body` before it read
+`status`, so a full table gave its finished conversation away between the
+two. An open `clone` holds its conversation now, as Plan 9's does. A
+failed check prints every live process's system call, and a stack for an
+odd park, which is how both were found.
+
 Still open, each seen once or rarely:
 
-- `matrixfs`'s `leave`: the POST never reaches the test homeserver. The
-  suspicion is `webfs`'s sixteen conversations, each held by a long poll a
-  client gave up on. webfs now says `every conversation is held` on the
-  console, with each one's state, when that happens.
+- **The draw server's slow end, open.** One boot in about fifteen, a draw
+  server's `exits` outlasts the check's patience at the end of a stage, and
+  Workbench sits in a `close` at the same time. It finishes later. The
+  failure dump now prints the kernel stack of such a park, so the next one
+  names where it waits.
 - `libapp`'s pointer marker, once.
-- **The toolkit demo's stage fails about one boot in three**, September
-  2026, each time at a different check. Four checks failed there. One is
-  the repaint after a theme reload, and one a popup that stayed open. The
-  others are a gadget's relay click and the bar's gadgets after a name. They came
-  before and after the wire's pool grew, at about the same rate. It is one
-  stage, so one cause is likely, and it wants a hunt of its own.
 - **Fixed tables are a plan now, not a flake.** `docs/LIMITS.md` surveys
   how Plan 9, Linux, Fuchsia, seL4, XNU and NT size their tables. It sets
   the policy Vectra takes from them, and ranks every limit in the tree by

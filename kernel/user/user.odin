@@ -358,6 +358,11 @@ Process :: struct {
 	*/
 	trace_note:    bool, // `startstop`: stop before the next note is delivered
 	trace_syscall: bool, // `startsyscall`: stop at the next system call's entry
+	// The system call this process is inside, plus one, or zero outside
+	// one, and its first argument. Plan 9's `psstate`: what a blocked
+	// process waits in, which a hung check names.
+	in_call:       u64,
+	call_arg:      u64,
 	trace_return:  bool, // and once more before that call returns
 	hang:          bool, // `hang`: stop at the next exec, before its first instruction
 	stepping:      bool, // `step`: the frame carries the step flag, and its trap is a stop

@@ -27,19 +27,48 @@ read_source :: proc(io: ^libthread.Ioproc, source: string) -> (text: []u8, ok: b
 	return read_all(io, int(fd))
 }
 
+/*
+web_clone takes a conversation off webfs's `clone`, mounting `/srv/web` at
+`/mnt/web` first when it is not there. It answers the descriptor and the
+conversation's number, or -1.
+
+**The descriptor is the hold on the conversation.** webfs keeps a
+conversation while a descriptor is open on it, and an open `clone` becomes
+the conversation's `ctl`. A conversation with nothing open on it may go to
+the next `clone` when all of them are taken. So a caller keeps this open
+until its last read and its `hangup`, and closes it last. A caller that
+closed it between its `ctl` write and its `status` read once read another
+request's status, or none. Plan 9's webfs has the same rule.
+*/
+web_clone :: proc(io: ^libthread.Ioproc, num: []u8) -> (fd: int, conv: string) {
+	cfd := libuser.open("/mnt/web/clone", abi.O_RDONLY)
+	if cfd < 0 {
+		_ = libthread.iomount(io, "/srv/web", "/mnt/web", 0)
+		cfd = libuser.open("/mnt/web/clone", abi.O_RDONLY)
+		if cfd < 0 {
+			return -1, ""
+		}
+	}
+	n := libthread.ioread(io, int(cfd), num)
+	for n > 0 && (num[n - 1] == '\n' || num[n - 1] == '\r') {
+		n -= 1
+	}
+	if n <= 0 {
+		_ = libuser.close(int(cfd))
+		return -1, ""
+	}
+	return int(cfd), string(num[:n])
+}
+
 // read_url fetches `url` through webfs at /mnt/web, mounting it from
 // /srv/web when it is not there, and answers the body.
 read_url :: proc(io: ^libthread.Ioproc, url: string) -> (text: []u8, ok: bool) {
 	num: [16]u8
-	n := read_small(io, "/mnt/web/clone", num[:])
-	if n <= 0 {
-		_ = libthread.iomount(io, "/srv/web", "/mnt/web", 0)
-		n = read_small(io, "/mnt/web/clone", num[:])
-		if n <= 0 {
-			return nil, false
-		}
+	hold, conv := web_clone(io, num[:])
+	if hold < 0 {
+		return nil, false
 	}
-	conv := string(num[:n])
+	defer _ = libuser.close(hold)
 	path: [128]u8
 	line: [SOURCE_MAX + 8]u8
 	ctl := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/ctl"), abi.O_WRONLY)
@@ -84,15 +113,11 @@ its nonce in one, `DPoP-Nonce`, and a request must carry it back.
 */
 request_with :: proc(io: ^libthread.Ioproc, url: string, method: string, headers: string, body: string, want: string, hbuf: []u8) -> (text: []u8, status: int, hlen: int, ok: bool) {
 	num: [16]u8
-	n := read_small(io, "/mnt/web/clone", num[:])
-	if n <= 0 {
-		_ = libthread.iomount(io, "/srv/web", "/mnt/web", 0)
-		n = read_small(io, "/mnt/web/clone", num[:])
-		if n <= 0 {
-			return nil, 0, 0, false
-		}
+	hold, conv := web_clone(io, num[:])
+	if hold < 0 {
+		return nil, 0, 0, false
 	}
-	conv := string(num[:n])
+	defer _ = libuser.close(hold)
 	path: [128]u8
 	// A header line may carry a signed proof, which is longer than a URL.
 	line: [4096]u8

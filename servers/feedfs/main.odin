@@ -254,16 +254,13 @@ read_source :: proc(f: ^Fetch, source: string) -> (text: []u8, ok: bool) {
 }
 
 read_url :: proc(f: ^Fetch, url: string) -> (text: []u8, ok: bool) {
+	// The clone stays open to the end: it is the hold on the conversation.
 	num: [16]u8
-	n := read_small(f, "/mnt/web/clone", num[:])
-	if n <= 0 {
-		_ = libthread.iomount(f.io, "/srv/web", "/mnt/web", 0)
-		n = read_small(f, "/mnt/web/clone", num[:])
-		if n <= 0 {
-			return nil, false
-		}
+	hold, conv := libmsg.web_clone(f.io, num[:])
+	if hold < 0 {
+		return nil, false
 	}
-	conv := string(num[:n])
+	defer _ = libuser.close(hold)
 	path: [128]u8
 	line: [SOURCE_MAX + 8]u8
 	ctl := libuser.open(libuser.cat_into(path[:], "/mnt/web/", conv, "/ctl"), abi.O_WRONLY)

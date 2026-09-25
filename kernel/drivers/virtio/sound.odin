@@ -114,6 +114,8 @@ cards: [MAX_CARDS]Card
 // reaching the device is a number that moved rather than a sound nobody hears.
 @(private = "file")
 total_played: u64
+// Periods the device did not acknowledge inside `SND_TX_TIMEOUT_MS`.
+tx_timeouts: u64
 
 // sound_present reports whether a card came up with its stream running, for
 // the boot line and the device file that will not open without one.
@@ -391,6 +393,7 @@ sound_play :: proc "contextless" (data: []u8) -> int #no_bounds_check {
 		kick(q, 0, SND_VQ_TX)
 
 		if !wait_drained(q, SND_TX_TIMEOUT_MS) {
+			intrinsics.volatile_store(&tx_timeouts, intrinsics.volatile_load(&tx_timeouts) + 1)
 			break
 		}
 		q.last_used = q.used_ring[1]

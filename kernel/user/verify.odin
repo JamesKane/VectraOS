@@ -39,6 +39,7 @@ import "kernel:arch"
 import "kernel:devfs"
 import "kernel:drivers/fb"
 import "kernel:drivers/mouse"
+import "kernel:drivers/uart"
 import "kernel:drivers/virtio"
 import "kernel:ether"
 import "kernel:env"
@@ -169,7 +170,95 @@ Result :: struct {
 
 @(private = "file")
 check :: proc "contextless" (r: ^Result, ok: bool, what: string) -> bool {
+	if !ok {
+		blocked_dump(what)
+	}
 	return libodin.tally(&r.tally, ok, what)
+}
+
+/*
+blocked_dump writes where every live process is, for a failed check. That is
+its thread's state, and the system call it is inside with the first argument.
+A park that is not an idle one also gets the kernel text addresses on its
+stack. It goes straight to the serial port, for the first `DUMPS` failures of
+a boot. A passing boot pays nothing, and a cascade does not bury the log. The flake hunt of September 2026 found both its causes
+with it.
+*/
+@(private = "file")
+DUMPS :: 3
+@(private = "file")
+dumps_made: int
+
+@(private = "file")
+blocked_dump :: proc "contextless" (what: string) #no_bounds_check {
+	port := devfs.tree().cons.port
+	if port == nil || dumps_made >= DUMPS {
+		return
+	}
+	dumps_made += 1
+	@(static) line: [16384]u8
+	sink := libodin.sink_from(line[:])
+	libodin.put_str(&sink, "blocked-dump: ")
+	libodin.put_str(&sink, what)
+	libodin.put_str(&sink, " [audio played ")
+	libodin.put_uint(&sink, virtio.sound_played())
+	libodin.put_str(&sink, " timeouts ")
+	libodin.put_uint(&sink, intrinsics.volatile_load(&virtio.tx_timeouts))
+	libodin.put_str(&sink, " mouse lost ")
+	libodin.put_uint(&sink, intrinsics.volatile_load(&devfs.tree().mouse.lost))
+	libodin.put_str(&sink, "]")
+	libodin.put_str(&sink, "\n")
+	for i in 0 ..< MAX_PROCESSES {
+		p := &processes[i]
+		if !p.live {
+			continue
+		}
+		libodin.put_str(&sink, "  ")
+		libodin.put_str(&sink, p.name)
+		libodin.put_str(&sink, "#")
+		libodin.put_uint(&sink, p.pid)
+		libodin.put_str(&sink, " T")
+		if p.thread != nil {
+			libodin.put_uint(&sink, u64(p.thread.state))
+		}
+		libodin.put_str(&sink, " call ")
+		c := intrinsics.volatile_load(&p.in_call)
+		if c == 0 {
+			libodin.put_str(&sink, "-")
+		} else {
+			libodin.put_uint(&sink, c - 1)
+			libodin.put_str(&sink, "(")
+			libodin.put_uint(&sink, p.call_arg)
+			libodin.put_str(&sink, ")")
+		}
+		libodin.put_str(&sink, "\n")
+		// A park other than the idle ones gets the kernel text addresses on
+		// its stack, for `llvm-symbolizer` against build/vectra.elf. The idle
+		// ones are a read, a pread and a rendezvous.
+		if c != 0 && c - 1 != 7 && c - 1 != 33 && c - 1 != 39 && p.thread != nil && p.thread.state == .Blocked {
+			lo, hi := mem.kernel_text_range()
+			at := uintptr(rawptr(p.thread.resume.frame)) & ~uintptr(7)
+			libodin.put_str(&sink, "    stack")
+			found := 0
+			for _ in 0 ..< 1024 {
+				if found >= 24 {
+					break
+				}
+				if _, ok := mem.translate(mem.kernel_address_space(), at); !ok {
+					break
+				}
+				v := uintptr((^u64)(rawptr(at))^)
+				if v >= lo && v < hi {
+					libodin.put_str(&sink, " ")
+					libodin.put_hex(&sink, u64(v), 0)
+					found += 1
+				}
+				at += 8
+			}
+			libodin.put_str(&sink, "\n")
+		}
+	}
+	uart.write_string(port, libodin.str(&sink))
 }
 
 /*
@@ -5290,8 +5379,18 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 	// The bar wears its gadgets: a magnesium face on the copper trim, which a
 	// rename must repaint rather than paint over. A window sets its name at
 	// startup, so a bar that erased its gadgets on rename would show none here.
+	// The copper can reach the glass a moment before the gadgets on it, so
+	// this polls, as every read of the glass must.
 	bar_mag := fb.pack(s, fb.MAGNESIUM)
-	check(r, bar_has(s, bx, by, bw, 20, bar_mag), "and the bar keeps its close, depth and zoom gadgets after the name is set")
+	gadgets := false
+	for _ in 0 ..< PATIENCE * 10 {
+		if bar_has(s, bx, by, bw, 20, bar_mag) {
+			gadgets = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, gadgets, "and the bar keeps its close, depth and zoom gadgets after the name is set")
 
 	// A button face is magnesium, below the bar and inside the window, clear of
 	// the few pixels of magnesium frame at either edge. The client's paint
@@ -14396,7 +14495,8 @@ tofu_fetch :: proc(r: ^Result, url: string, body: []u8, hash: []u8, what: string
 @(private = "file")
 web_socket :: proc(r: ^Result, url: string) {
 	num: [16]u8
-	n := web_read_file("/mnt/web/clone", num[:])
+	hold, n := web_clone_hold(num[:])
+	defer if hold != nil {vfs.chan_close(hold)}
 	conv := string(num[:max(n, 0)])
 	path: [128]u8
 	line: [256]u8
@@ -14559,9 +14659,9 @@ verify_webfs :: proc(r: ^Result) {
 			body: [1024]u8
 			hash: [80]u8
 			status: [128]u8
-			bn, _, ok := web_fetch(url, body[:], hash[:], "", status[:])
+			bn, _, ok := web_fetch(url, body[:], hash[:], "", status[:], crowd = true)
 			check(r, ok && string(body[:bn]) == "# hello, gemini\n", "webfs fetches a gemini capsule: one TLS connection, one line, one response")
-			check(r, libodin.contains(string(status[:]), "20 text/gemini"), "and its status is the capsule's status and media type")
+			check(r, libodin.contains(string(status[:]), "20 text/gemini"), "and its status is the capsule's status and media type, read after twenty more conversations: an open clone holds its conversation")
 			check(r, wait(ts, PATIENCE * 5), "and the TLS server exits")
 			finish(r, ts, "and is taken down")
 		}
@@ -14877,6 +14977,26 @@ write_disk_file :: proc(path: string, content: string) -> bool {
 // web_read_file reads a whole small file into `into` and answers the count,
 // or -1. Newlines at the end are trimmed unless `raw`, since a name file ends
 // with one and a stored body is compared byte for byte.
+// web_clone_hold takes a conversation off webfs's clone and keeps the chan,
+// which holds the conversation until it is closed. The caller closes it last.
+// See `libmsg.web_clone`.
+web_clone_hold :: proc(into: []u8) -> (^vfs.Chan, int) {
+	c, err := vfs.open_path(vfs.boot_namespace, "/mnt/web/clone", vfs.O_RDONLY)
+	if err != vfs.OK {
+		return nil, -1
+	}
+	n, rerr := vfs.chan_read(c, 0, into)
+	got := rerr == vfs.OK ? int(n) : 0
+	for got > 0 && (into[got - 1] == '\n' || into[got - 1] == '\r') {
+		got -= 1
+	}
+	if got <= 0 {
+		vfs.chan_close(c)
+		return nil, -1
+	}
+	return c, got
+}
+
 web_read_file :: proc(path: string, into: []u8, raw := false) -> int {
 	c, err := vfs.open_path(vfs.boot_namespace, path, vfs.O_RDONLY)
 	if err != vfs.OK {
@@ -14968,13 +15088,14 @@ hash's lengths (the hash with its newline), and whether every step held.
 @(private = "file") web_why: string
 
 @(private = "file")
-web_fetch :: proc(url: string, body: []u8, hash: []u8, ctl_extra: string = "", status: []u8 = nil, post: string = "") -> (bn: int, hn: int, ok: bool) {
+web_fetch :: proc(url: string, body: []u8, hash: []u8, ctl_extra: string = "", status: []u8 = nil, post: string = "", crowd := false) -> (bn: int, hn: int, ok: bool) {
 	num: [16]u8
-	n := web_read_file("/mnt/web/clone", num[:])
+	hold, n := web_clone_hold(num[:])
 	if n <= 0 {
 		web_why = "clone"
 		return 0, 0, false
 	}
+	defer vfs.chan_close(hold)
 	conv := string(num[:n])
 	path: [128]u8
 	line: [1100]u8
@@ -15021,6 +15142,15 @@ web_fetch :: proc(url: string, body: []u8, hash: []u8, ctl_extra: string = "", s
 	vfs.chan_close(h)
 	if rerr != vfs.OK {
 		return bn, 0, false
+	}
+	if crowd {
+		// More conversations off `clone` than webfs has, each closed at once,
+		// so it must reclaim. This one is done, with nothing open on its
+		// files. But its clone is still held, so it stays ours.
+		for _ in 0 ..< 20 {
+			other: [16]u8
+			_ = web_read_file("/mnt/web/clone", other[:])
+		}
 	}
 	if status != nil {
 		_ = web_read_file(libodin_cat(path[:], "/mnt/web/", conv, "/status"), status)

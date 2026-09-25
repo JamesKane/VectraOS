@@ -336,6 +336,10 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 	number, args := arch.syscall_request(frame)
 	a0, a1, a2, a3, a4, a5 := args[0], args[1], args[2], args[3], args[4], args[5]
 
+	if p != nil {
+		p.call_arg = a0
+		intrinsics.volatile_store(&p.in_call, number + 1)
+	}
 	result: i64
 	switch number {
 	case SYS_NOP:
@@ -450,6 +454,9 @@ dispatch :: proc "c" (frame: ^arch.Trap_Frame) {
 		result = sys_alarm(a0)
 	case:
 		result = -i64(vectra9.ENOSYS)
+	}
+	if p != nil {
+		intrinsics.volatile_store(&p.in_call, 0)
 	}
 
 	arch.set_syscall_result(frame, result)

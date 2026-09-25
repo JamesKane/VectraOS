@@ -219,6 +219,9 @@ serve_one :: proc(lfd: i64, served: string) {
 		return
 	}
 	if post && rpath == "/_matrix/client/v3/rooms/!secret:two.example/leave" {
+		if bearer != "Bearer syt-1" {
+			libuser.eprint("websrv: leave refused, the token was '", bearer, "'\n")
+		}
 		ok = say_json(dfd, bearer == "Bearer syt-1" ? 200 : 403, "{}\n")
 		if !ok {
 			fail("write the reply")

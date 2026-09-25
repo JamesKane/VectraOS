@@ -155,7 +155,9 @@ waits for a person who has an XMPP server.
 ghost's cloud backend is their second client. `docs/HANDOFF.md` lists
 the rewrite this refuses.
 
-    /mnt/web/clone         read it for a conversation's number
+    /mnt/web/clone         read it for a conversation's number. The
+                           open descriptor becomes that conversation's
+                           ctl, and holds it until it is closed
     /mnt/web/N/ctl         url, method, header, cookies off, hangup
     /mnt/web/N/postbody    what a POST sends
     /mnt/web/N/body        the response, a read that streams
@@ -1202,6 +1204,11 @@ its state with its members and welcome; an invite and a leave are
 taken. Two threads asking through `webfs` at once found a slot race:
 a conversation just taken off `clone` and not yet written to could be
 reclaimed for the next `clone`, so `webfs` now reclaims those last.
+Then a `leave` failed one boot in five with no status at all. The client
+closed `body` and then opened `status`, and between the two a full table
+gave the finished conversation to another `clone`. Now an open `clone`
+becomes the conversation's `ctl` and holds it, as Plan 9's does, and every
+client keeps it open to the end: `libmsg.web_clone`.
 The device requester is in. `devices/` holds every device whose keys
 this one has learned, from the key query when a room key goes to it
 or from a room key that came from it: whose it is, its two keys, its

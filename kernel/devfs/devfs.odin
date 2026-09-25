@@ -478,6 +478,7 @@ mark_open :: proc "contextless" (t: ^Dev_Tree, fid: vectra9.Fid) -> (kind: Dev_K
 		return kind, t.fb_opens == 1, vfs.OK
 	case .Mouse:
 		t.mouse.opens += 1
+		mouse_forget(&t.mouse)
 		return kind, t.mouse.opens == 1, vfs.OK
 	}
 	return kind, false, vfs.OK

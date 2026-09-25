@@ -478,6 +478,12 @@ line per movement, in `rio`'s widths, and one reader at a time. Nothing
 is diverted, because nothing in the kernel wanted the pointer first.
 `docs/MOUSE.md` is the driver and the file together.
 
+A change of the buttons also goes on a queue of sixteen, which a read
+drains first, as 9front's does. A press and its release that both land
+before the reader comes back are then two lines. With only the latest
+state, the press was lost, and the self-test's clicks failed one boot in
+three.
+
 ## A worker for every request, and one to serve the flush
 
 `WORKERS` is `mnt.MAX_REQUESTS + 1`. The transport carries at most

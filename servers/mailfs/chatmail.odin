@@ -132,15 +132,15 @@ account_chatmail :: proc(j: ^Chatmail_Job, url: string) -> bool {
 // proc, and answers the body's length in `into`, or -1.
 web_post :: proc(j: ^Chatmail_Job, url: string, into: []u8) -> int {
 	num: [16]u8
-	n := read_small(j, "/mnt/web/clone", num[:])
+	hold, n := clone_hold(j, num[:])
 	mounted := false
-	if n <= 0 {
+	if hold < 0 {
 		if libthread.iomount(j.io, "/srv/web", "/mnt/web", 0) < 0 {
 			return -1
 		}
 		mounted = true
-		n = read_small(j, "/mnt/web/clone", num[:])
-		if n <= 0 {
+		hold, n = clone_hold(j, num[:])
+		if hold < 0 {
 			_ = libuser.unmount("", "/mnt/web")
 			return -1
 		}
@@ -150,6 +150,9 @@ web_post :: proc(j: ^Chatmail_Job, url: string, into: []u8) -> int {
 	defer if mounted {
 		_ = libuser.unmount("", "/mnt/web")
 	}
+	// The clone stays open to the end, before the unmount: it is the hold
+	// on the conversation, `libmsg.web_clone`.
+	defer _ = libuser.close(hold)
 	conv := string(num[:n])
 	path: [128]u8
 	line: [1024]u8
@@ -182,6 +185,24 @@ web_post :: proc(j: ^Chatmail_Job, url: string, into: []u8) -> int {
 		_ = libuser.close(int(hctl))
 	}
 	return total
+}
+
+// clone_hold opens webfs's clone and reads the conversation's number, and
+// keeps the descriptor, which holds the conversation. -1 when it will not.
+clone_hold :: proc(j: ^Chatmail_Job, into: []u8) -> (fd: int, n: int) {
+	cfd := libuser.open("/mnt/web/clone", abi.O_RDONLY)
+	if cfd < 0 {
+		return -1, 0
+	}
+	got := int(libthread.ioread(j.io, int(cfd), into))
+	for got > 0 && (into[got - 1] == '\n' || into[got - 1] == '\r') {
+		got -= 1
+	}
+	if got <= 0 {
+		_ = libuser.close(int(cfd))
+		return -1, 0
+	}
+	return int(cfd), got
 }
 
 read_small :: proc(j: ^Chatmail_Job, path: string, into: []u8) -> int {

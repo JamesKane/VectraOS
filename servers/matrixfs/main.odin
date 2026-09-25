@@ -1021,7 +1021,11 @@ do_leave :: proc(j: ^Job, name: string) -> vectra9.Errno {
 		return vectra9.EPERM
 	}
 	if status != 200 {
-		j.why = "the server would not let the account leave"
+		// The status says which refusal it was, a token the server did not
+		// know or an answer that was not the leave's.
+		@(static) why_buf: [96]u8
+		nb: [24]u8
+		j.why = libuser.cat_into(why_buf[:], "the server would not let the account leave: status ", libuser.itoa(nb[:], i64(status)))
 		return vectra9.EIO
 	}
 	forget_room(r)

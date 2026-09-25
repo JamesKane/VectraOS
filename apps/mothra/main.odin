@@ -914,14 +914,15 @@ redirect_len: int
 
 fetch_once :: proc(url: string, post: []u8 = nil) -> (text: []u8, kind: Kind, ok: bool) {
 	num: [16]u8
-	n := read_small("/mnt/web/clone", num[:])
+	hold, n := clone_hold(num[:])
 	if n <= 0 {
 		_ = libuser.mount("/srv/web", "/mnt/web", 0)
-		n = read_small("/mnt/web/clone", num[:])
+		hold, n = clone_hold(num[:])
 		if n <= 0 {
 			return nil, .Plain, false
 		}
 	}
+	defer _ = libuser.close(hold)
 	conv := string(num[:n])
 	path: [128]u8
 	line: [URL_MAX + 8]u8
@@ -1082,4 +1083,23 @@ startup_watch :: proc "contextless" (arg: rawptr) {
 		_ = libuser.write(int(fd), transmute([]u8)msg)
 		_ = libuser.close(int(fd))
 	}
+}
+
+// clone_hold opens webfs's clone and reads the conversation's number, and
+// keeps the descriptor: it holds the conversation until it is closed, which
+// is last. See `libmsg.web_clone`. -1 when it will not.
+clone_hold :: proc(into: []u8) -> (fd: int, n: int) {
+	cfd := libuser.open("/mnt/web/clone", abi.O_RDONLY)
+	if cfd < 0 {
+		return -1, 0
+	}
+	got := int(libuser.read(int(cfd), into))
+	for got > 0 && (into[got - 1] == '\n' || into[got - 1] == '\r') {
+		got -= 1
+	}
+	if got <= 0 {
+		_ = libuser.close(int(cfd))
+		return -1, 0
+	}
+	return int(cfd), got
 }
