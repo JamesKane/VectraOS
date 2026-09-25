@@ -258,6 +258,41 @@ blocked_dump :: proc "contextless" (what: string) #no_bounds_check {
 			libodin.put_str(&sink, "\n")
 		}
 	}
+	// Where each of the device tree's workers is: `w` waiting for work, or a
+	// stack for one inside a handler.
+	if c := devfs.tree().server.conn; c != nil {
+		lo, hi := mem.kernel_text_range()
+		for k in 0 ..< min(c.nthreads, len(c.threads)) {
+			t := c.threads[k]
+			if t == nil {
+				continue
+			}
+			libodin.put_str(&sink, "  #c worker ")
+			libodin.put_uint(&sink, u64(k))
+			libodin.put_str(&sink, " T")
+			libodin.put_uint(&sink, u64(t.state))
+			if t.state == .Blocked || t.state == .Ready {
+				at := uintptr(rawptr(t.resume.frame)) & ~uintptr(7)
+				found := 0
+				for _ in 0 ..< 1024 {
+					if found >= 12 {
+						break
+					}
+					if _, ok := mem.translate(mem.kernel_address_space(), at); !ok {
+						break
+					}
+					v := uintptr((^u64)(rawptr(at))^)
+					if v >= lo && v < hi {
+						libodin.put_str(&sink, " ")
+						libodin.put_hex(&sink, u64(v), 0)
+						found += 1
+					}
+					at += 8
+				}
+			}
+			libodin.put_str(&sink, "\n")
+		}
+	}
 	uart.write_string(port, libodin.str(&sink))
 }
 

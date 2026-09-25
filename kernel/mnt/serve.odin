@@ -117,6 +117,10 @@ worker :: proc "contextless" (arg: rawptr) {
 
 	guard := sync.acquire(&c.lock)
 	c.live += 1
+	if c.nthreads < len(c.threads) {
+		c.threads[c.nthreads] = sched.current()
+		c.nthreads += 1
+	}
 	sync.release(&c.lock, guard)
 
 	for {

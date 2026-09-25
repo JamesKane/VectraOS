@@ -142,6 +142,12 @@ start :: proc "c" (block: ^abi.Args) {
 		}
 	}
 
+	// How full the volume is, each boot. A volume that fills across boots
+	// shows here as a free count falling from one boot to the next.
+	if mounted {
+		libuser.eprint("kfs: ", device, ": ", itoa_u32(vol.free), " blocks free at mount\n")
+	}
+
 	// A commit a stop interrupted was finished by the mount; say so, since
 	// it is the journal doing the one thing it exists for.
 	if mounted && vol.replayed > 0 {

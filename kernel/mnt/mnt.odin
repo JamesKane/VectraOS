@@ -268,6 +268,10 @@ Conn :: struct {
 	live:    int,
 	stop:    bool,
 
+	// The worker threads, as each starts, for a report of where they are.
+	threads:  [64]^sched.Thread,
+	nthreads: int,
+
 	stats:   Stats,
 }
 
