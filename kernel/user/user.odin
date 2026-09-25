@@ -363,6 +363,16 @@ Process :: struct {
 	// process waits in, which a hung check names.
 	in_call:       u64,
 	call_arg:      u64,
+
+	// A rendezvous this process sleeps in. The tag, the value it left or was
+	// given, whether a partner came, its chain, and its wake, all under
+	// `rend_lock`. See `rendezvous`.
+	rend_tag:      u64,
+	rend_value:    u64,
+	rend_matched:  bool,
+	rend_waiting:  bool,
+	rend_next:     ^Process,
+	rend_wake:     sync.Rendez,
 	trace_return:  bool, // and once more before that call returns
 	hang:          bool, // `hang`: stop at the next exec, before its first instruction
 	stepping:      bool, // `step`: the frame carries the step flag, and its trap is a stop
@@ -617,73 +627,99 @@ notepg_kernel :: proc "contextless" (group: u64, text: string, except: ^Process 
 }
 
 /*
-Rendezvous: a table of tags with a process asleep on each, Plan 9's
-`rendezvous(2)`. The first caller with a tag takes an entry, leaves its
-value and sleeps; the second finds the entry, swaps its value for the
-sleeper's, marks it matched and wakes the sleeper; each returns with the
-other's value. A tag is private to the callers' rendezvous group. An entry
-whose sleeper was noted goes back unmatched.
+Rendezvous: Plan 9's `rendezvous(2)`. The first caller with a tag leaves its
+value and sleeps. The second finds it, swaps its value for the sleeper's,
+marks it matched and wakes the sleeper. Each returns with the other's value.
+A tag is private to the callers' rendezvous group. A sleeper that is noted
+goes back unmatched.
+
+**The sleepers are the table.** A process waits on one tag at a time. So its
+own record carries the tag, the value and the wake. A waiter is found through
+a hash of chains threaded through the records, as Plan 9's `rendhash` is.
+There is no table of entries to fill. It was 64 entries once, and every
+sleeping `libthread` proc holds one. A full table answered as a note does,
+and `proc_meet` asked again at once and spun. See `docs/LIMITS.md`.
 */
-REND_MAX :: 64
+@(private = "file")
+REND_HASH :: 64
 
 @(private = "file")
-Rend_Entry :: struct {
-	used:    bool,
-	matched: bool,
-	group:   u64,
-	tag:     u64,
-	value:   u64,
-	wake:    sync.Rendez,
-}
-
-@(private = "file")
-rendezvous_table: [REND_MAX]Rend_Entry
+rend_hash: [REND_HASH]^Process
 
 @(private = "file")
 rend_lock: sync.Spinlock
 
 @(private = "file")
+rend_bucket :: proc "contextless" (group: u64, tag: u64) -> int {
+	return int((tag ~ (tag >> 17) ~ group * 0x9E3779B97F4A7C15) % REND_HASH)
+}
+
+@(private = "file")
 rend_matched :: proc "contextless" (arg: rawptr) -> bool {
-	return intrinsics.volatile_load(&(^Rend_Entry)(arg).matched)
+	return intrinsics.volatile_load(&(^Process)(arg).rend_matched)
+}
+
+// rend_unlink takes a sleeper off its chain. The lock is the caller's.
+@(private = "file")
+rend_unlink :: proc "contextless" (q: ^Process) #no_bounds_check {
+	at := &rend_hash[rend_bucket(q.rend_group, q.rend_tag)]
+	for at^ != nil {
+		if at^ == q {
+			at^ = q.rend_next
+			q.rend_next = nil
+			q.rend_waiting = false
+			return
+		}
+		at = &at^.rend_next
+	}
+}
+
+// rend_forget takes a record off its chain before the record is released.
+// A sleeper unlinks itself when it wakes, so this finds one only when a
+// record goes with its thread never having woken.
+@(private)
+rend_forget :: proc "contextless" (p: ^Process) {
+	guard := sync.acquire(&rend_lock)
+	if p.rend_waiting {
+		rend_unlink(p)
+	}
+	sync.release(&rend_lock, guard)
 }
 
 // rendezvous is the call: the partner's value, or `ok` false when a note
-// interrupted the wait or the table is full.
+// interrupted the wait.
 @(private)
 rendezvous :: proc "contextless" (p: ^Process, tag: u64, value: u64) -> (partner: u64, ok: bool) #no_bounds_check {
 	guard := sync.acquire(&rend_lock)
-	for i in 0 ..< REND_MAX {
-		e := &rendezvous_table[i]
-		if e.used && !e.matched && e.group == p.rend_group && e.tag == tag {
-			partner = e.value
-			e.value = value
-			intrinsics.volatile_store(&e.matched, true)
+	b := rend_bucket(p.rend_group, tag)
+	for q := rend_hash[b]; q != nil; q = q.rend_next {
+		if q.rend_group == p.rend_group && q.rend_tag == tag {
+			rend_unlink(q)
+			partner = q.rend_value
+			q.rend_value = value
+			intrinsics.volatile_store(&q.rend_matched, true)
 			sync.release(&rend_lock, guard)
-			_ = sync.wakeup(&e.wake)
+			_ = sync.wakeup(&q.rend_wake)
 			return partner, true
 		}
 	}
-	slot := -1
-	for i in 0 ..< REND_MAX {
-		if !rendezvous_table[i].used {
-			slot = i
-			break
-		}
-	}
-	if slot < 0 {
-		sync.release(&rend_lock, guard)
-		return 0, false
-	}
-	e := &rendezvous_table[slot]
-	e^ = Rend_Entry{used = true, group = p.rend_group, tag = tag, value = value}
+	p.rend_tag = tag
+	p.rend_value = value
+	p.rend_matched = false
+	p.rend_waiting = true
+	p.rend_next = rend_hash[b]
+	rend_hash[b] = p
 	sync.release(&rend_lock, guard)
 
-	woke := sync.sleep_noted(&e.wake, rend_matched, e)
+	woke := sync.sleep_noted(&p.rend_wake, rend_matched, p)
 	guard = sync.acquire(&rend_lock)
-	met := intrinsics.volatile_load(&e.matched)
-	partner = e.value
-	e.used = false
-	e.matched = false
+	met := intrinsics.volatile_load(&p.rend_matched)
+	if p.rend_waiting {
+		// Noted before a partner came: off the chain, with nothing exchanged.
+		rend_unlink(p)
+	}
+	partner = p.rend_value
+	p.rend_matched = false
 	sync.release(&rend_lock, guard)
 	return partner, woke || met
 }
@@ -1845,6 +1881,7 @@ unload :: proc(p: ^Process) {
 	// otherwise, which then finds `p.thread` gone and frees it. The release is
 	// under the lock, so a claim on another core sees the slot whole and free,
 	// not half zeroed and live. See `on_thread_reaped`.
+	rend_forget(p)
 	guard := sync.acquire(&table_lock)
 	dead := p.thread
 	reaped := dead != nil && dead.reaped

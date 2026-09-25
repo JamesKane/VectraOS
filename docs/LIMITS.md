@@ -145,7 +145,7 @@ These break Rule 2, and they come first.
 |---|---|---|
 | Mount wire requests, 16 | `kernel/mnt/wire.odin` | Parked for ever. **Fixed, September 2026:** the pool grows by chunks of 16 up to the tag space. |
 | In-kernel `Conn` requests, 16, and its workers | `kernel/mnt/mnt.odin`, `kernel/devfs`, `kernel/tree` | Parks with no note. One pool serves all of `#c` and one all of `#t`, and every held cons, mouse or interrupt read holds a slot and a worker. |
-| Rendezvous table, `REND_MAX` 64 | `kernel/user/user.odin` | A full table answers as a note does, and `libthread`'s `proc_meet` retries at once, so it spins. Every sleeping proc and io proc holds an entry. |
+| Rendezvous table, `REND_MAX` 64 | `kernel/user/user.odin` | A full table answered as a note does, and `libthread`'s `proc_meet` retried at once, so it spun. **Fixed, September 2026:** there is no table. A sleeper's own process record is its entry, found through a hash, as Plan 9's `rendhash` is. |
 | `exportfs` readers, 4 | `cmd/exportfs/main.odin` | Four parked reads stall every read behind them. A full queue runs the read on the serve loop, which can wedge the export. It is on the `cpu` path. |
 | Stream wires, `MAX_CHAN_WIRES` 8 | `kernel/pipe/chanwire.odin` | A nil wire makes the mount fall back to `netfs`'s own server, so the mount reaches the wrong tree without an error. |
 | TCP accept backlog, 4 | `servers/netfs/tcp.odin` | The SYN\|ACK goes out and the connection is not queued. The peer thinks it is connected, and the slot is never reclaimed. |
@@ -210,8 +210,8 @@ each is a Rule 2 or Rule 8 bug, not a size.
 2. The ghost sandbox strips every mount, or refuses to start the turn.
    *The overflow is refused, September 2026.* An `unmount` that fails is
    still ignored.
-3. `REND_MAX`: a full table is an error that `proc_meet` reports, and then
-   the table grows.
+3. `REND_MAX`: the table goes, and the sleepers are the table. *Done,
+   September 2026.* `tests/abi` puts 72 children to sleep at once.
 4. The in-kernel `Conn`: a held read gives its worker back, as a held request
    does in `lib9p`, and the pool grows as the wire's does.
 5. `exportfs` reads that park stop holding a reader, the same change.

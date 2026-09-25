@@ -16,6 +16,7 @@ package abitest
 
 import "base:intrinsics"
 import "core:fmt"
+import "core:strings"
 
 import "vsys:abi"
 import "vsys:libfmt"
@@ -329,6 +330,54 @@ main :: proc(args: []string) {
 	n = libuser.await(u64(meeter), said[:])
 	if n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d met", meeter) {
 		fail("rendezvous child")
+	}
+
+	// -- More sleepers in rendezvous than the old table held ----------------
+	//
+	// The kernel kept 64 rendezvous entries, and a full table answered as a
+	// note does. Each sleeper's own record is its entry now, so 72 children
+	// asleep at once each meet the parent and get the value meant for them.
+	MANY :: 72
+	sleepers: [MANY]i64
+	for i in 0 ..< MANY {
+		c := libuser.rfork(abi.RFPROC | abi.RFFDG)
+		if c == 0 {
+			got, ok := libuser.rendezvous(u64(0x7000 + i), u64(i))
+			libuser.exits(ok && got == u64(1000 + i) ? "met" : "missed")
+		}
+		sleepers[i] = c
+	}
+	_ = libuser.sleep(50)
+	// The kernel may refuse a child, and that child then exits. The parent meets only the ones
+	// still waiting. So a refusal is a failure, and never a parent asleep on
+	// a tag nobody holds.
+	refused := 0
+	for i in 0 ..< MANY {
+		sb: [128]u8
+		pb: [48]u8
+		st := ""
+		if fd := libuser.open(fmt.bprintf(pb[:], "/proc/%d/status", sleepers[i]), abi.O_RDONLY); fd >= 0 {
+			sn := libuser.read(int(fd), sb[:])
+			_ = libuser.close(int(fd))
+			st = string(sb[:max(sn, 0)])
+		}
+		if sleepers[i] < 0 || !strings.contains(st, "Blocked") {
+			refused += 1
+			continue
+		}
+		back, ok := libuser.rendezvous(u64(0x7000 + i), u64(1000 + i))
+		if !ok || back != u64(i) {
+			refused += 1
+		}
+	}
+	if refused > 0 {
+		fail("rendezvous past 64")
+	}
+	for i in 0 ..< MANY {
+		n = libuser.await(u64(sleepers[i]), said[:])
+		if n <= 0 || string(said[:n]) != fmt.bprintf(want[:], "%d met", sleepers[i]) {
+			fail("rendezvous sleeper past 64")
+		}
 	}
 
 	// -- A semaphore in shared memory, released to a waiting child ---------
