@@ -6769,6 +6769,45 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 			first, last := index_of(view, "\tfeed.rc\n"), index_of(view, "\tdock\n")
 			check(r, first >= 0 && last > first, "and lists their entries in bind order, the tests' before the desktop's")
 			check(r, libodin.contains(view, "status on "), "and the status line names the server behind the folder")
+
+			/*
+			The shelf and the scroller. `shelf PATH` is a drop on the
+			shelf: the path is kept in `$home/lib/wb/shelf` and the view
+			lists it, and `unshelf` takes it off. Four `column` choices
+			from the root make five columns. That is more than the three
+			that show, so the view moves along to the deepest and a
+			scroller shows. `scroll 0` is the thumb dragged back to the start. The
+			drawer in front is columns already, so `columns /` goes to the
+			root in it, as its icon path does, and opens no window.
+			*/
+			sb: [256]u8
+			await_view :: proc(want_s: string, vb: []u8) -> string {
+				vn := 0
+				for _ in 0 ..< PATIENCE * 10 {
+					vn = web_read_file("/mnt/view", vb, raw = true)
+					if vn > 0 && libodin.contains(string(vb[:vn]), want_s) {
+						break
+					}
+					sync.delay(1)
+				}
+				return string(vb[:max(vn, 0)])
+			}
+			shelved := net_file_write("/mnt/ctl", "shelf /lib/tests")
+			view = await_view("shelf /lib/tests\n", vb[:])
+			sn := web_read_file("/usr/glenda/lib/wb/shelf", sb[:], raw = true)
+			check(r, shelved && libodin.contains(view, "shelf /lib/tests\n") && sn > 0 && libodin.contains(string(sb[:sn]), "/lib/tests\n"), "shelf on Workbench's ctl keeps a path on the shelf, in $home/lib/wb/shelf")
+			unshelved := net_file_write("/mnt/ctl", "unshelf /lib/tests")
+			view = await_view("columns\nshown", vb[:])
+			sn = web_read_file("/usr/glenda/lib/wb/shelf", sb[:], raw = true)
+			check(r, unshelved && !libodin.contains(view, "shelf /lib/tests") && !libodin.contains(string(sb[:max(sn, 0)]), "/lib/tests"), "and unshelf takes it off")
+
+			deep := net_file_write("/mnt/ctl", "columns /") && net_file_write("/mnt/ctl", "column usr") &&
+				net_file_write("/mnt/ctl", "column glenda") && net_file_write("/mnt/ctl", "column lib") &&
+				net_file_write("/mnt/ctl", "column wb")
+			view = await_view("column /usr/glenda/lib/wb\n", vb[:])
+			check(r, deep && libodin.contains(view, "shown 2 3 of 5 scroller\n"), "five columns deep, the view shows the deepest three and a scroller")
+			view = net_file_write("/mnt/ctl", "scroll 0") ? await_view("shown 0 ", vb[:]) : ""
+			check(r, libodin.contains(view, "shown 0 3 of 5 scroller\n"), "and scroll 0 shows the first three")
 		}
 		pipe.quiesce()
 		check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "the notice mount comes down")

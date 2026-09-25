@@ -6,7 +6,8 @@ opens, so the desktop a person arranged comes back. Clean Up drops the
 placement and the grid lays the icons out again; a Snapshot after that forgets
 them.
 
-The file is one text line per placed icon: `key<tab>name<tab>x<tab>y`. The key
+The file is one text line per placed icon: `key<tab>name<tab>x<tab>y`. A
+line with no name is the drawer's view: `1` for columns, `columns.odin`. The key
 is a drawer's path, or `backdrop` for the desktop -- a real path starts with a
 slash, so the two never collide. A save merges: it keeps every line that is
 not the key's and writes the key's afresh, so one window's Snapshot leaves the
@@ -36,7 +37,7 @@ snapshot_save writes `grid`'s placed positions under `key`, merged into the one
 file so the other windows' lines are kept. Nothing placed writes nothing for
 the key, which is how Clean Up then Snapshot forgets an arrangement.
 */
-snapshot_save :: proc "contextless" (key: string, grid: ^libmui.Object, names: []string) #no_bounds_check {
+snapshot_save :: proc "contextless" (key: string, grid: ^libmui.Object, names: []string, columns := false) #no_bounds_check {
 	context = wb_ctx
 	old: [SNAP_MAX]u8
 	on := 0
@@ -57,7 +58,10 @@ snapshot_save :: proc "contextless" (key: string, grid: ^libmui.Object, names: [
 		}
 		i = e
 	}
-	// Write this key's placed lines afresh.
+	// Write this key's placed lines afresh, and its view when it is columns.
+	if columns {
+		w += snap_put(out[w:], key, "", 1, 0)
+	}
 	if grid != nil && grid.place != nil {
 		m := min(len(names), len(grid.place))
 		for c in 0 ..< m {
@@ -67,7 +71,7 @@ snapshot_save :: proc "contextless" (key: string, grid: ^libmui.Object, names: [
 			w += snap_put(out[w:], key, names[c], grid.place[c][0], grid.place[c][1])
 		}
 	}
-	snap_mkdirs()
+	wb_mkdirs()
 	_ = libuser.remove(snapshot_path())
 	if fd := libuser.create(snapshot_path(), abi.O_WRONLY, 0o644); fd >= 0 {
 		_ = libuser.write(int(fd), out[:w])
@@ -76,8 +80,9 @@ snapshot_save :: proc "contextless" (key: string, grid: ^libmui.Object, names: [
 }
 
 // snapshot_load applies the saved positions for `key` to `grid`, matching each
-// saved name to its cell. A name no longer in the window is skipped.
-snapshot_load :: proc "contextless" (key: string, grid: ^libmui.Object, names: []string) #no_bounds_check {
+// saved name to its cell. A name no longer in the window is skipped. It
+// answers whether the drawer was kept seen as columns.
+snapshot_load :: proc "contextless" (key: string, grid: ^libmui.Object, names: []string) -> (columns: bool) #no_bounds_check {
 	context = wb_ctx
 	buf: [SNAP_MAX]u8
 	n := 0
@@ -94,6 +99,10 @@ snapshot_load :: proc "contextless" (key: string, grid: ^libmui.Object, names: [
 		if !ok || lk != key {
 			continue
 		}
+		if nm == "" {
+			columns = x == 1
+			continue
+		}
 		for c in 0 ..< len(names) {
 			if names[c] == nm {
 				t := libmui.default_theme
@@ -102,6 +111,7 @@ snapshot_load :: proc "contextless" (key: string, grid: ^libmui.Object, names: [
 			}
 		}
 	}
+	return
 }
 
 // snap_line_is reports whether a line (newline and all) is `key`'s: the key,
@@ -149,10 +159,9 @@ snap_parse :: proc "contextless" (line: []u8) -> (key: string, name: string, x: 
 	return string(line[:t0]), string(line[t0 + 1:t1]), int(xv), int(yv), true
 }
 
-// snap_mkdirs makes `$home/lib` and `$home/lib/wb`, so the file has somewhere
+// wb_mkdirs makes `$home/lib` and `$home/lib/wb`, so a file has somewhere
 // to land. An existing directory is left alone.
-@(private = "file")
-snap_mkdirs :: proc "contextless" () #no_bounds_check {
+wb_mkdirs :: proc "contextless" () #no_bounds_check {
 	b: [256]u8
 	n := copy(b[:], home_path())
 	n += copy(b[n:], "/lib")

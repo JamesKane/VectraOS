@@ -96,7 +96,7 @@ paint_node :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 		led_paint(c, o, t)
 	case .Tile:
 		tile_paint(c, o, t)
-	case .Cycle, .Knob, .PageList:
+	case .Cycle, .Knob, .PageList, .Scroller:
 		widget_paint(c, o, t)
 	}
 	i := 0
@@ -124,7 +124,10 @@ blank. The pictures standing on rows go down last, cut at the well's edge.
 */
 list_rows :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 	well(c, o.x, o.y, o.w, o.h, t)
-	cells := (o.w - 2 * t.well) / FONT_W
+	// A list with kinds wears a small picture at each row's left, and its
+	// text starts past it.
+	mark := o.kinds != nil ? ROW_MARK : 0
+	cells := (o.w - 2 * t.well - mark) / FONT_W
 	n := list_visible(o, t)
 	x := o.x + t.well
 	for k in 0 ..< n {
@@ -159,10 +162,46 @@ list_rows :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 			// The picture lands below. The row is its stand.
 			continue
 		}
-		glyphs(c, x, y, clip_cells(o.rows[row], cells), px(ink))
+		if mark > 0 {
+			row_mark(c, o, row, x, y, t)
+		}
+		glyphs(c, x + mark, y, clip_cells(o.rows[row], cells), px(ink))
 	}
 	if o.pics != nil {
 		list_pictures(c, o, t)
+	}
+}
+
+// ROW_MARK is the room a row's picture takes at its left: the picture, a row
+// high, and a gap.
+ROW_MARK :: FONT_H + 4
+
+/*
+row_mark draws the small picture at a list row's left, `docs/CHROME.md`
+section 11. It is the row's own icon at a row's height, else its kind's. With
+no icons, it is the chassis's picture of the kind in little. A drawer is a plinth with a copper
+bar, a tool a plinth with a lamp, and a project a well with lines.
+*/
+row_mark :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, row: int, x: int, y: int, t: ^Theme) #no_bounds_check {
+	kind := row < len(o.kinds) ? o.kinds[row] : ICON_PROJECT
+	own := o.pictures != nil && row < len(o.pictures) && icon_named(c, o.pictures[row], x + 1, y, FONT_H, t)
+	if own || icon_named(c, icon_kind_name(kind), x + 1, y, FONT_H, t) {
+		return
+	}
+	switch kind {
+	case ICON_DRAWER, ICON_TOOL:
+		plinth(c, x + 1, y + 3, 14, 11, t)
+		if kind == ICON_DRAWER {
+			libraster.fill(c, x + 2, y + 4, 12, 2, px(libpal.COPPER))
+		} else {
+			libraster.fill(c, x + 10, y + 5, 3, 3, px(libpal.PHOSPHOR))
+		}
+	case:
+		libraster.fill(c, x + 3, y + 2, 10, 13, px(t.shade))
+		libraster.fill(c, x + 4, y + 3, 8, 11, px(t.ground))
+		for k in 0 ..< 3 {
+			libraster.fill(c, x + 5, y + 5 + 3 * k, 6, 1, px(t.ink))
+		}
 	}
 }
 

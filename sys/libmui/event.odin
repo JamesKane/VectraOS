@@ -42,7 +42,7 @@ KEY_ESCAPE :: u8(0x1b)
 // interactive reports whether a class takes a click. A container and a label
 // pass a click through to whatever sits under them.
 interactive :: proc "contextless" (class: Class) -> bool {
-	return class == .Button || class == .Item || class == .Title || class == .Checkmark || class == .String || class == .List || class == .Icons || class == .Tile || class == .Cycle || class == .Knob || class == .PageList
+	return class == .Button || class == .Item || class == .Title || class == .Checkmark || class == .String || class == .List || class == .Icons || class == .Tile || class == .Cycle || class == .Knob || class == .PageList || class == .Scroller
 }
 
 // contains reports whether a node's rectangle holds a point.

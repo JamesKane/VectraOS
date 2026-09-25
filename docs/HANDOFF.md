@@ -418,7 +418,6 @@ the documents it points at.
 
    - preferences' Keys, Workspaces and Servers pages;
    - `bloom` on a readout;
-   - the column view's shelf and scroller, and icons in its rows;
    - the dock's `load` column shows memory until `/dev/sysstat` reports
      processor time;
    - the neon scheme is not the default `/lib/theme` yet. The chassis
@@ -1038,6 +1037,13 @@ Still open, each seen once or rarely:
 - The demo not repainting after a theme reload, once. The theme file was
   written and the generation moved, and five instrumented boots did not
   repeat it.
+- **Workbench has a window ceiling, and it is not a flake.** Every
+  window keeps two reads parked on the draw server's wire, and a wire
+  has `mnt.MAX_REQUESTS` slots, sixteen. Workbench's own five windows
+  and two drawers fill it, and the next write parks for ever: a third
+  drawer wedges the desktop. `docs/CHROME.md` brick 11 has the reading.
+  The fix is a larger pool or a slot that a held read does not keep, in
+  `kernel/mnt`.
 - **The kfs scratch disk fills across boots.** `build/disk.img` is made
   once and kept, and something leaks space in it. A full disk fails dozens
   of web and feed checks with ENOSPC. Move the image aside and the build

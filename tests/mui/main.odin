@@ -597,9 +597,9 @@ start :: proc "c" (block: ^abi.Args) {
 		kn := libmui.knob(0, 10, 4)
 		kw: libmui.Window
 		kw.press_y = 100
-		libmui.widget_press(&kw, kn, 0, 100)
-		want(libmui.widget_drag(&kw, kn, 92) && kn.sel == 6, "a knob dragged eight pixels up turns two steps")
-		_ = libmui.widget_drag(&kw, kn, 0)
+		_ = libmui.widget_press(&kw, kn, 0, 100)
+		want(libmui.widget_drag(&kw, kn, 0, 92) && kn.sel == 6, "a knob dragged eight pixels up turns two steps")
+		_ = libmui.widget_drag(&kw, kn, 0, 0)
 		want(kn.sel == 10, "and stops at its top")
 
 		names := [2]string{"One", "Two"}
@@ -615,7 +615,7 @@ start :: proc "c" (block: ^abi.Args) {
 		want(p1.w > 0 && p2.w == 0, "a page list lays the page it names and gives the other no room")
 		row := libmui.page_row(&tw)
 		kw.theme = tw
-		libmui.widget_press(&kw, pl, pl.x + 4, pl.y + tw.well + row + row / 2)
+		_ = libmui.widget_press(&kw, pl, pl.x + 4, pl.y + tw.well + row + row / 2)
 		want(pl.sel == 1 && p2.w > 0 && p1.w == 0, "and a press on the second row lays the second page")
 
 		plain := libmui.group(false)
@@ -633,6 +633,55 @@ start :: proc "c" (block: ^abi.Args) {
 		libmui.lay(kc, 20, 20, libmui.KNOB_SIZE, libmui.KNOB_SIZE, &tw)
 		ck := paint_tree(kc, &tw)
 		want(has_colour(&ck, libraster.rgb(tw.focus)), "and a knob draws its mark in the focus colour")
+	}
+
+	// -- The column view's classes, `docs/CHROME.md` section 11 ---------------
+	//
+	// A scroller's thumb is as wide as the part shown is of the whole. A
+	// press off the thumb takes it there, and a drag moves it along a step
+	// for every step's worth of track. A list with kinds wears a picture at
+	// each row's left, the chassis's copper bar for a drawer.
+	{
+		tw := libmui.default_theme
+		sw: libmui.Window
+		sw.theme = tw
+		sc := libmui.scroller(6, 3, 0)
+		libmui.fit(sc, &tw)
+		want(sc.minh == libmui.SCROLL_H && sc.maxw > sc.minw, "a scroller is a strip that stretches across")
+		libmui.lay(sc, 0, 0, 200, libmui.SCROLL_H, &tw)
+		track := 200 - 2 * tw.well
+		tx, thumb := libmui.scroller_thumb(sc, &tw)
+		want(thumb == track / 2 && tx == tw.well, "its thumb is half the track for three of six, at the left")
+		want(libmui.widget_press(&sw, sc, 199, 5) && sc.sel == 3, "a press at the far right takes the thumb there, the last three shown")
+		tx, thumb = libmui.scroller_thumb(sc, &tw)
+		want(tx + thumb == tw.well + track, "and the thumb ends where the track does")
+		_ = libmui.widget_press(&sw, sc, tx + thumb / 2, 5)
+		want(sc.sel == 3, "a press on the thumb moves nothing")
+		free := track - thumb
+		want(libmui.widget_drag(&sw, sc, tx + thumb / 2 - free / 3, 5) && sc.sel == 2, "a drag of a step's worth left shows one column earlier")
+		_ = libmui.widget_drag(&sw, sc, -500, 5)
+		want(sc.sel == 0, "and a drag far past the left stops at the first")
+		libmui.scroller_set(sc, 2, 3, 5)
+		want(sc.cells == 2 && sc.sel == 0, "and with fewer than it shows, it shows them all from the first")
+
+		names := [2]string{"lib", "notes"}
+		kinds := [2]u8{libmui.ICON_DRAWER, libmui.ICON_PROJECT}
+		plain := libmui.list(2)
+		plain.rows = names[:]
+		plain.sel = -1
+		libmui.fit(plain, &tw)
+		libmui.lay(plain, 0, 0, 160, 2 * libmui.FONT_H + 2 * tw.well, &tw)
+		cp := paint_tree(plain, &tw)
+		want(count_in(&cp, 0, 0, 160, 40, libraster.rgb(libpal.COPPER)) == 0, "a list with no kinds wears no pictures")
+		marked := libmui.list(2)
+		marked.rows = names[:]
+		marked.kinds = kinds[:]
+		marked.sel = -1
+		libmui.fit(marked, &tw)
+		libmui.lay(marked, 0, 0, 160, 2 * libmui.FONT_H + 2 * tw.well, &tw)
+		cm := paint_tree(marked, &tw)
+		want(count_in(&cm, tw.well, tw.well, libmui.ROW_MARK, libmui.FONT_H, libraster.rgb(libpal.COPPER)) > 0, "a list with kinds puts a drawer's copper bar at its row's left")
+		want(count_in(&cm, tw.well, tw.well + libmui.FONT_H, libmui.ROW_MARK, libmui.FONT_H, libraster.rgb(libpal.COPPER)) == 0, "and none on a project's row")
 	}
 
 	// -- An icon is drawn from its outlines, `docs/CHROME.md` section 6 -------

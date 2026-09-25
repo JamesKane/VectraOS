@@ -224,7 +224,11 @@ wb_main :: proc "contextless" (arg: rawptr) {
 	// so `init` and the desktop's own mount find a server answering.
 	notice_mounted = libthread.chancreate(size_of(u64), 1)
 	notice_post()
-	_ = libthread.threadcreate(notice_thread, nil)
+	// The notice thread runs what a ctl line asks, under the 9P handler's
+	// own buffers: a drawer opened, its snapshot read, its columns laid out.
+	// That is deeper than the default stack. A thread's stack is a heap
+	// block, so an overflow tears the heap under every proc.
+	_ = libthread.threadcreate(notice_thread, nil, NOTICE_STACK)
 	_ = libthread.threadcreate(mount_thread, nil)
 	// `notice_thread`, a thread of this proc, answers the mount's handshake,
 	// and the handshake has a deadline. A window opened meanwhile runs a
@@ -536,7 +540,7 @@ open_backdrop :: proc "contextless" () -> bool {
 		return false
 	}
 	// A saved arrangement, placed onto the laid grid and painted.
-	snapshot_load(BACKDROP_KEY, back_grid, back_names[:back_n])
+	_ = snapshot_load(BACKDROP_KEY, back_grid, back_names[:back_n])
 	libmui.window_paint(back)
 	return true
 }
@@ -569,6 +573,12 @@ back_menu :: proc "contextless" (w: ^libmui.Window, x: int, y: int) {
 // icon has nowhere else to go. `icon_reposition` and Snapshot are `drawer`'s.
 back_drop :: proc "contextless" (w: ^libmui.Window, item: int, x: int, y: int) {
 	context = wb_ctx
+	// Onto a drawer's shelf, `columns.odin`: kept there, and left in place.
+	libmui.window_locate(w)
+	if d := drawer_at(w.sx + x, w.sy + y); d != nil && item >= 0 && item < back_n && on_shelf(d, w.sx + x - d.win.sx, w.sy + y - d.win.sy) {
+		shelf_drop(back_paths[item])
+		return
+	}
 	icon_reposition(back_grid, item, x, y)
 	libmui.window_paint(back)
 }
@@ -719,11 +729,29 @@ run_action :: proc "contextless" (line: string) {
 			post_notice("workbench", "Cannot delete that", "")
 		}
 	case "columns":
-		// A drawer opened as columns, `columns.odin`.
-		open_drawer(rest)
-		if front != nil && front.path == rest {
-			columns_on(front)
+		// A drawer opened as columns, `columns.odin`. When the drawer in
+		// front is columns already, it goes there itself, as a click on its
+		// icon path does. No window is opened for it.
+		if front != nil && front.cols_shown {
+			columns_root(front, rest)
+		} else {
+			open_drawer(rest)
+			if front != nil && front.path == rest {
+				columns_on(front)
+			}
 		}
+	case "column":
+		// The entry of that name chosen in the deepest column, as a click.
+		columns_choose_name(front, rest)
+	case "scroll":
+		// The columns shown from that one, as the scroller moves them.
+		if n, ok := libuser.atoi(rest); ok {
+			columns_scroll(front, int(n))
+		}
+	case "shelf":
+		shelf_drop(rest)
+	case "unshelf":
+		shelf_remove(rest)
 	case "empty":
 		if !recycler_empty() {
 			post_notice("workbench", "Some of the Recycler would not empty", "")

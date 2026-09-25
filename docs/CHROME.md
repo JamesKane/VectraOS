@@ -936,8 +936,7 @@ look.
 11. **The column viewer, G.** The check: a column for a union lists the
     members' entries in bind order and its tag names them. Medium.
 
-    **Brick 11 is done, September 2026, but for the shelf and the
-    scroller.** `apps/workbench/columns.odin` turns a drawer to columns
+    **Brick 11 is done, September 2026.** `apps/workbench/columns.odin` turns a drawer to columns
     and back, from `Columns` on the Window menu. The icon path is a row of
     keys, one per element of the deepest column's path. The window shows
     the last three columns. A choice in a column opens the directory as
@@ -954,6 +953,49 @@ look.
     `/lib/tests` and then `/lib/wb` at `/mnt/all` before Workbench starts.
     `columns /mnt/all` shows the union's tag with both members, the tests'
     entries before the desktop's, and a status line.
+
+    **The shelf, the scroller and the rows' pictures followed, September
+    2026, and brick 11 is whole.** The shelf is a row of keys across the
+    top, one per line of `$home/lib/wb/shelf`, one shelf for every drawer.
+    An icon, a backdrop icon, or a column's row dropped on it is kept, and
+    a click on a key opens what it keeps. The toolkit now hears a drag that
+    begins on a list's row as well as on an icon. `unshelf PATH` on the
+    ctl takes one off, and no gesture does yet.
+
+    `sys/libmui` has a `Scroller`: a track with a thumb as wide as the part
+    shown is of the whole. A press off the thumb takes it there, and a drag
+    moves it along. It is heard while the button is still down, so the
+    columns follow the thumb. The view shows three columns from `first`,
+    and a choice deeper than that moves along to show it. A list given
+    `kinds` wears a picture a row high at each row's left. It is the
+    scheme's icon when the theme names icons, and the chassis's picture in
+    little when it does not.
+
+    The view's objects are made once and linked again on each change. The
+    first cut built a new tree on every click. That leaked, and a scroller
+    being dragged has to outlive the change it causes. `Snapshot` keeps
+    the view per drawer as a line with no name in the snapshot file.
+
+    Finishing it found two things. The first was a stack. Workbench's notice
+    thread runs what a ctl line asks for, under the 9P handler's own
+    buffers. For `columns` that is a drawer opened, its snapshot read, and
+    its columns laid out. That overran the default 16 KiB. A thread's stack is a heap block, so the
+    overrun tore the heap, and the main proc died on the next free. Its
+    other procs kept its windows up, so the desktop looked alive. The notice
+    thread has 64 KiB now.
+
+    The second is a ceiling, and it is still there. Every window holds two
+    reads open on the draw server's wire, and a wire carries
+    `mnt.MAX_REQUESTS`, sixteen. The bar, the backdrop, the dock, the tiles,
+    a toast and two drawers fill it. The next write from Workbench then
+    waits for a slot that no one gives back. So `columns PATH` goes to the
+    path in a drawer that is already columns, and the check opens no third
+    window.
+
+    The checks: `tests/mui` sizes and moves a scroller and finds a drawer
+    row's copper. The desktop's check keeps `/lib/tests` on the shelf and
+    takes it off, and then goes five columns deep from the root. The view
+    says `shown 2 3 of 5 scroller`, and `scroll 0` shows the first three.
 
 Bricks 1 to 3 come first and in that order, because every other brick
 paints through them. After brick 3, the order of the rest is the order a

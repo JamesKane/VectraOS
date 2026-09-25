@@ -169,7 +169,9 @@ open_drawer :: proc "contextless" (path: string) {
 	}
 	// The grid is laid now, so a saved arrangement can be placed onto it and
 	// painted before the window's own thread takes over.
-	snapshot_load(d.path, d.grid, d.names)
+	if snapshot_load(d.path, d.grid, d.names) {
+		columns_on(d)
+	}
 	libmui.window_paint(w)
 	front = d
 	_ = libthread.threadcreate(drawer_thread, d)
@@ -229,7 +231,7 @@ drawer_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 		w.done = true
 		return
 	}
-	if d.cols_shown && id >= ID_COLUMN {
+	if d.cols_shown && id >= ID_SCROLL {
 		columns_press(d, id, w.arg, w.clicks)
 		return
 	}
@@ -280,9 +282,9 @@ drawer_window_menu :: proc "contextless" (item: int) {
 			libmui.icons_clear(d.grid)
 			libmui.window_relayout(&d.win)
 		}
-	case 6: // Snapshot: keep this drawer's icon positions across sessions
+	case 6: // Snapshot: keep this drawer's icon positions, and its view, across sessions
 		if d != nil {
-			snapshot_save(d.path, d.grid, d.names)
+			snapshot_save(d.path, d.grid, d.names, d.cols_shown)
 		}
 	case 7: // Columns: the drawer as a browser, or back to its icons
 		if d != nil {
@@ -323,11 +325,13 @@ drawer_update :: proc "contextless" (d: ^Drawer) {
 
 /*
 drawer_drop is a file dragged out of a drawer and released. `w` is the drawer
-the drag began in, `item` the icon it began on, and `(x, y)` the release in
-`w`'s own coordinates -- which the server's grab may carry outside `w` and onto
-another drawer. Moving a file from one drawer to another is a `cp` and an `rm`,
-`docs/WORKBENCH.md` section 6; a drawer (a directory) is left where it is,
-since a move of one is a recursion this cut does not do.
+the drag began in, `item` the icon it began on, or the row of a column, and
+`(x, y)` the release in `w`'s own coordinates -- which the server's grab may
+carry outside `w` and onto another drawer. Moving a file from one drawer to
+another is a `cp` and an `rm`, `docs/WORKBENCH.md` section 6; a drawer (a
+directory) is left where it is, since a move of one is a recursion this cut
+does not do. Anything dropped on a column view's shelf is kept there instead,
+`columns.odin`.
 
 It runs on the source window's mouse thread and touches both drawers, but
 every step between here and the repaints is a synchronous call that `libthread`
@@ -336,14 +340,28 @@ does not yield on, so no other window's thread runs in the middle of it.
 drawer_drop :: proc "contextless" (w: ^libmui.Window, item: int, x: int, y: int) {
 	context = wb_ctx
 	src := (^Drawer)(w.user)
-	if src == nil || item < 0 || item >= len(src.paths) {
+	if src == nil {
 		return
 	}
-	// Released inside the same window: a reposition, free placement for
-	// Snapshot, not a move between drawers.
+	path, name, kind := "", "", u8(0)
+	if src.cols_shown {
+		path, kind = columns_dragged(src, w, item)
+		name = base_name(path)
+	} else if item >= 0 && item < len(src.paths) {
+		path, name, kind = src.paths[item], src.names[item], src.kinds[item]
+	}
+	if path == "" {
+		return
+	}
+	// Released inside the same window: onto its shelf, or, for icons, a
+	// reposition, free placement for Snapshot, not a move between drawers.
 	if x >= 0 && x < w.cw && y >= 0 && y < w.ch {
-		icon_reposition(src.grid, item, x, y)
-		libmui.window_paint(&src.win)
+		if on_shelf(src, x, y) {
+			shelf_drop(path)
+		} else if !src.cols_shown {
+			icon_reposition(src.grid, item, x, y)
+			libmui.window_paint(&src.win)
+		}
 		return
 	}
 	// The screen point the drop landed on, from the source's client origin.
@@ -352,17 +370,40 @@ drawer_drop :: proc "contextless" (w: ^libmui.Window, item: int, x: int, y: int)
 	if dst == nil || dst == src {
 		return // released on nothing, or back on its own drawer
 	}
-	if src.kinds[item] == libmui.ICON_DRAWER {
+	if on_shelf(dst, w.sx + x - dst.win.sx, w.sy + y - dst.win.sy) {
+		shelf_drop(path)
+		return
+	}
+	if kind == libmui.ICON_DRAWER {
 		post_notice("workbench", "Drag a file, not a drawer", "")
 		return
 	}
-	target := libuser.join(dst.path, src.names[item])
-	if !move_file(src.paths[item], target) {
+	target := libuser.join(dst.path, name)
+	if !move_file(path, target) {
 		post_notice("workbench", "Cannot move that", "")
 		return
 	}
-	drawer_update(src)
-	drawer_update(dst)
+	drawer_refresh(src)
+	drawer_refresh(dst)
+}
+
+// shelf_drop keeps a dropped path on the shelf, or says why not.
+shelf_drop :: proc "contextless" (path: string) {
+	if !shelf_add(path) {
+		post_notice("workbench", "The shelf is full", "")
+	}
+}
+
+// drawer_refresh reads a drawer again as it is seen: its icons, and its
+// columns when it is turned to them.
+drawer_refresh :: proc "contextless" (d: ^Drawer) {
+	drawer_update(d)
+	if d.cols_shown && d.cols != nil {
+		for k in 0 ..< d.cols.n {
+			_ = col_read(&d.cols.cols[k], d.cols.cols[k].path)
+		}
+		columns_show(d)
+	}
 }
 
 // icon_reposition gives an icon a free place under the point it was dropped,

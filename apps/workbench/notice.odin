@@ -13,9 +13,14 @@ console's:
                `open`, `run`, `ask`, `workspace`, each with the rest of the
                line as its argument. `recycle PATH` is `Delete...` on a
                path, and `empty` empties the Recycler, `recycler.odin`.
-               `columns PATH` opens a drawer as columns.
-    view       the drawer in front and how it is seen: its columns, a
-               union's members, and the server behind it, `columns.odin`.
+               `columns PATH` opens a drawer as columns, or goes there
+               in the drawer in front when it is columns. `column NAME`
+               chooses an entry in its deepest column. `scroll N` shows
+               the columns from the Nth. `shelf PATH` and `unshelf PATH`
+               keep a path on the shelf and take it off.
+    view       the drawer in front and how it is seen: its shelf, its
+               columns and which show, a union's members, and the server
+               behind it, `columns.odin`.
 
 A notice draws as a toast below the bar's right corner for five seconds,
 in a popup the machine's frame around it, and a click on it runs the
@@ -72,6 +77,8 @@ NODE_VIEW :: i32(4)
 fids: libuser.Fid_Table
 srv: lib9p.Srv
 FRAME :: 2048
+// The notice thread's stack, `wb_main` says why.
+NOTICE_STACK :: 64 * 1024
 
 // The served end of /srv/wb, posted by `notice_post` before any window
 // opens, and read by `notice_thread`. Negative when the post failed.
@@ -442,7 +449,7 @@ notice_handler :: proc "contextless" (
 			case:
 				verb, _ := first_word(line)
 				switch verb {
-				case "open", "run", "ask", "workspace", "execute", "shell", "recycle", "empty", "columns":
+				case "open", "run", "ask", "workspace", "execute", "shell", "recycle", "empty", "columns", "column", "scroll", "shelf", "unshelf":
 					run_action(line)
 				case:
 					reply^ = vectra9.error_reply(vectra9.EINVAL)

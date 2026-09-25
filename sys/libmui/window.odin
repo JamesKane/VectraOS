@@ -84,10 +84,11 @@ Window :: struct {
 	// it: a reader's scrolling, a game's controls. True means it was taken,
 	// and the window is painted again.
 	on_key:    proc "contextless" (win: ^Window, k: u8) -> bool,
-	// A press on an icon that releases somewhere other than where it began is
-	// a drag, not a click: `on_drop` hears the cell it began on and the point
-	// it released, in the window's own coordinates, which the grab may carry
-	// outside the window. The program maps that to a drop. See
+	// A press on an icon, or a list's row, that releases somewhere else is a
+	// drag, not a click. `on_drop` hears the cell or row it began on, and
+	// `pressed` is still the gadget. It hears the point of the release in the
+	// window's own coordinates, which the grab may carry outside the window.
+	// The program maps that to a drop. See
 	// `docs/WORKBENCH.md` section 6 and `window_open`'s comment on the grab.
 	on_drop:   proc "contextless" (win: ^Window, item: int, x: int, y: int),
 	// The desktop asked this window to close, the close gadget or alt-w. A
@@ -876,21 +877,27 @@ mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 			win.last_ms = ms
 			win.press_x = x
 			win.press_y = y
-			widget_press(win, win.pressed, x, y)
+			if widget_press(win, win.pressed, x, y) {
+				widget_heard(win, win.pressed)
+			}
 			window_paint(win)
 		}
 	} else if down && was && win.pressed != nil {
-		// A move with the button down: a knob turns with it.
-		if widget_drag(win, win.pressed, y) {
+		// A move with the button down: a knob turns with it, and a
+		// scroller's thumb follows it.
+		if widget_drag(win, win.pressed, x, y) {
+			widget_heard(win, win.pressed)
 			window_paint(win)
 		}
 	} else if !down && was {
-		// A press on an icon that moved before it released is a drag, not a
-		// click: the program hears the drop rather than an activation. The
-		// grab keeps the release coming here even when the pointer has left
-		// the window, so `x`/`y` may be outside it, which is a drop elsewhere.
+		// A press on an icon, or a list's row, that moved before the release
+		// is a drag, not a click. The program hears the drop and not an
+		// activation, and `pressed` is still the gadget the drag began in.
+		// The grab keeps the release coming here when the pointer is off the
+		// window, so `x`/`y` may be outside it, which is a drop elsewhere.
 		moved := abs(x - win.press_x) + abs(y - win.press_y)
-		if win.pressed != nil && win.pressed.class == .Icons && win.pressed.sel >= 0 && moved > DRAG_MIN && win.on_drop != nil {
+		from := win.pressed != nil && (win.pressed.class == .Icons || win.pressed.class == .List) && win.pressed.sel >= 0
+		if from && moved > DRAG_MIN && win.on_drop != nil {
 			win.on_drop(win, win.pressed.sel, x, y)
 		} else {
 			g := hit(win.root, x, y)
@@ -899,6 +906,15 @@ mouse_event :: proc "contextless" (win: ^Window, data: []u8) #no_bounds_check {
 			}
 		}
 		win.pressed = nil
+	}
+}
+
+// widget_heard tells the program a scroller moved, while the button is still
+// down, so what it scrolls follows the thumb. A knob is heard at the release.
+widget_heard :: proc "contextless" (win: ^Window, o: ^Object) {
+	if o.class == .Scroller && win.handler != nil {
+		win.arg = o.sel
+		win.handler(win, o.id)
 	}
 }
 

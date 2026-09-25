@@ -162,6 +162,7 @@ Class :: enum u8 {
 	Cycle, // A key that steps through its choices, `widgets.odin`
 	Knob, // A disc turned by a vertical drag, a value from `lo` to `hi`
 	PageList, // A list of pages, the chosen one laid at its right
+	Scroller, // A track across with a thumb: `sel` the first of `hi` shown, `cells` of them at once
 }
 
 // An LED's states, `docs/CHROME.md` section 10, in an `Led`'s `sel`. Unlit
@@ -216,7 +217,7 @@ Object :: struct {
 	id:     int, // A caller's own tag, returned in events
 	// A list's rows, which the caller owns, and how it shows them. An
 	// icon grid's rows are its names, and `kinds` says the picture each
-	// wears. `pictures`, when set, names each cell's icon, `icon.odin`,
+	// wears. A list with `kinds` wears a small one at each row's left. `pictures`, when set, names each cell's icon, `icon.odin`,
 	// which a theme with icons draws before the kind's. `top` is then its
 	// first row of cells.
 	rows:     []string,
@@ -708,7 +709,7 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 	case .Tile:
 		o.minw, o.maxw = TILE_SIZE, TILE_SIZE
 		o.minh, o.maxh = TILE_SIZE, TILE_SIZE
-	case .Cycle, .Knob, .PageList:
+	case .Cycle, .Knob, .PageList, .Scroller:
 		_ = widget_fit(o, t)
 	case .Checkmark:
 		s := FONT_H + 2 * t.bevel

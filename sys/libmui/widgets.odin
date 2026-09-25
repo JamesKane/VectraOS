@@ -8,13 +8,16 @@ widgets -- the classes the preferences draw, `docs/CHROME.md` section 9.
     PageList   a list of pages on its left, `rows`. The page `sel` names
                is laid out and drawn at its right. Its children are the
                pages, one for each row.
+    Scroller   a track across with a thumb, for a row of more than fits:
+               `hi` things, `cells` of them shown, `sel` the first shown.
+               A drag moves the thumb, and a press off it jumps there.
     titled     a Group with a `label`. A frame line runs round it. Its
                title is set into the top of the frame in the chrome face,
                as a `fieldset`'s legend is.
 
 Each is a class the layout knows. A program builds a page of them as it builds
 any tree. It hears a change through its handler with the gadget's `id`, as
-for a button.
+for a button. A scroller is heard as it moves, not only at the release.
 */
 package libmui
 
@@ -26,6 +29,9 @@ KNOB_SIZE :: 36
 KNOB_STEP :: 4
 // A titled group's frame: the space inside the line at the sides and foot.
 FRAME_SIDE :: 6
+// A scroller's height, and the shortest its thumb gets.
+SCROLL_H :: 14
+SCROLL_THUMB_MIN :: 12
 
 // cycle is a key that steps through `choices`, the first shown.
 cycle :: proc "contextless" (choices: []string) -> ^Object {
@@ -55,6 +61,22 @@ page_list :: proc "contextless" (names: []string) -> ^Object {
 		o.sel = 0
 	}
 	return o
+}
+
+// scroller is a track for `total` things, `shown` of them at once, from `first`.
+scroller :: proc "contextless" (total: int, shown: int, first: int) -> ^Object {
+	o := obj(.Scroller)
+	if o != nil {
+		scroller_set(o, total, shown, first)
+	}
+	return o
+}
+
+// scroller_set gives a scroller new numbers, the first kept in range.
+scroller_set :: proc "contextless" (o: ^Object, total: int, shown: int, first: int) {
+	o.hi = max(total, 1)
+	o.cells = clamp(shown, 1, o.hi)
+	o.sel = clamp(first, 0, o.hi - o.cells)
 }
 
 // titled is a group of children with a frame line and `title` set into it.
@@ -95,8 +117,37 @@ widget_fit :: proc "contextless" (o: ^Object, t: ^Theme) -> bool {
 		o.minw, o.minh = lw + t.gap + pw, ph
 		o.maxw, o.maxh = BIG, BIG
 		return true
+	case .Scroller:
+		o.minw, o.maxw = 4 * SCROLL_THUMB_MIN, BIG
+		o.minh, o.maxh = SCROLL_H, SCROLL_H
+		return true
 	}
 	return false
+}
+
+/*
+scroller_thumb is where a laid scroller's thumb is: its left and width, in a
+track that is the well's inside. The thumb is as wide as the part shown is of
+the whole, and no narrower than a finger's worth.
+*/
+scroller_thumb :: proc "contextless" (o: ^Object, t: ^Theme) -> (x: int, w: int) {
+	track := max(o.w - 2 * t.well, 1)
+	w = clamp(track * o.cells / max(o.hi, 1), min(SCROLL_THUMB_MIN, track), track)
+	span := o.hi - o.cells
+	x = o.x + t.well
+	if span > 0 {
+		x += (track - w) * o.sel / span
+	}
+	return
+}
+
+// scroller_step is how many things a move of `dx` pixels of the thumb is.
+scroller_step :: proc "contextless" (o: ^Object, dx: int, t: ^Theme) -> int {
+	_, w := scroller_thumb(o, t)
+	free := max(o.w - 2 * t.well - w, 1)
+	span := o.hi - o.cells
+	d := abs(dx) * span + free / 2
+	return dx < 0 ? -(d / free) : d / free
 }
 
 // legend_top is the room a titled group keeps above its children, for its
@@ -163,6 +214,8 @@ widget_paint :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme)
 		knob_paint(c, o, t)
 	case .PageList:
 		page_list_paint(c, o, t)
+	case .Scroller:
+		scroller_paint(c, o, t)
 	case .Group:
 		if o.label != "" {
 			legend_paint(c, o, t)
@@ -260,6 +313,23 @@ page_list_paint :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^The
 	}
 }
 
+// scroller_paint draws a scroller: a well, and the thumb a raised key in it.
+scroller_paint :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	well(c, o.x, o.y, o.w, o.h, t)
+	tx, tw := scroller_thumb(o, t)
+	th := o.h - 2 * t.well
+	libraster.fill(c, tx, o.y + t.well, tw, th, px(t.face))
+	libraster.fill(c, tx, o.y + t.well, tw, 1, px(t.lit))
+	libraster.fill(c, tx, o.y + t.well, 1, th, px(t.lit))
+	libraster.fill(c, tx, o.y + t.well + th - 1, tw, 1, px(t.shade))
+	libraster.fill(c, tx + tw - 1, o.y + t.well, 1, th, px(t.shade))
+	// A grip at the thumb's middle, three grooves, so it reads as a thing to move.
+	mx := tx + tw / 2
+	for k in -1 ..= 1 {
+		libraster.fill(c, mx + 3 * k, o.y + t.well + 3, 1, max(th - 6, 1), px(t.shade))
+	}
+}
+
 /*
 legend_paint draws a titled group's frame. A groove runs round it, a shade
 line and a lit one, from half way down the title. The title is in the chrome
@@ -289,10 +359,20 @@ legend_paint :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme)
 
 // -- Events -------------------------------------------------------------------------
 
-// widget_press is a press on one of the classes here, before the release:
-// a page list's row is chosen at once.
-widget_press :: proc "contextless" (win: ^Window, o: ^Object, x: int, y: int) {
+// widget_press is a press on one of the classes here, before the release.
+// A page list's row is chosen at once. A press on a scroller off its thumb
+// takes the thumb there. True when the press changed the gadget.
+widget_press :: proc "contextless" (win: ^Window, o: ^Object, x: int, y: int) -> bool {
 	#partial switch o.class {
+	case .Scroller:
+		was := o.sel
+		tx, tw := scroller_thumb(o, &win.theme)
+		if x < tx || x >= tx + tw {
+			o.sel = clamp(o.sel + scroller_step(o, x - (tx + tw / 2), &win.theme), 0, o.hi - o.cells)
+		}
+		win.press_value = o.sel
+		win.press_x = x
+		return o.sel != was
 	case .PageList:
 		if row := page_list_row(o, x, y, &win.theme); row >= 0 && row != o.sel {
 			o.sel = row
@@ -301,15 +381,22 @@ widget_press :: proc "contextless" (win: ^Window, o: ^Object, x: int, y: int) {
 	case .Knob:
 		win.press_value = o.sel
 	}
+	return false
 }
 
-// widget_drag is the pointer moving with the button down over a press on a
-// knob: up turns it toward `hi`, a step every `KNOB_STEP` pixels.
-widget_drag :: proc "contextless" (win: ^Window, o: ^Object, y: int) -> bool {
-	if o.class != .Knob {
+// widget_drag is the pointer moving with the button down over a press. A
+// knob turns toward `hi` as it goes up, a step every `KNOB_STEP` pixels. A
+// scroller's thumb follows the pointer across.
+widget_drag :: proc "contextless" (win: ^Window, o: ^Object, x: int, y: int) -> bool {
+	v := o.sel
+	#partial switch o.class {
+	case .Knob:
+		v = clamp(win.press_value + (win.press_y - y) / KNOB_STEP, o.lo, o.hi)
+	case .Scroller:
+		v = clamp(win.press_value + scroller_step(o, x - win.press_x, &win.theme), 0, o.hi - o.cells)
+	case:
 		return false
 	}
-	v := clamp(win.press_value + (win.press_y - y) / KNOB_STEP, o.lo, o.hi)
 	if v == o.sel {
 		return false
 	}
