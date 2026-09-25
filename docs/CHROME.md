@@ -872,6 +872,40 @@ look.
 9. **The dock and the top bar, H and I.** `bar` with an edge, the dock
    file, and the tiles. The check: a tile's LED lights when its program's
    window opens and goes dark when it closes. Medium.
+
+   **Brick 9 is done, September 2026.** The server takes `bar right` on
+   `wctl`. It keeps a right bar's strip clear of `zoom`, the `snap` words
+   and a new window's place, as it keeps the top bar's. Its report on
+   `ctl` has an `up NAME` line per program with an ordinary window up. A
+   new word, `front NAME`, brings that program's front window forward, or
+   answers ENOENT.
+
+   Workbench's dock is `apps/workbench/tiles.odin`: a `bar right` 80
+   pixels wide, of the tiles `/lib/wb/dock` and `$home/lib/wb/dock` name.
+   A `Tile` is a libmui class, raised, with its program's icon and an LED
+   the server's `up` lines light. A click is `front`, or the tile's
+   command. `clock` is a readout. `load` shows the memory in use, since the
+   kernel reports no processor time yet.
+
+   The bar is `apps/workbench/status.odin`: the workspace as nine LEDs and
+   a compact readout, the display's mode, and the last notice. A compact
+   readout draws in the namespace face, so it fits the short bar.
+
+   9 found three things. The desktop's own windows stayed on workspace 1:
+   its bars, backdrop and docked menus. So a switch took the bar that says
+   which workspace this is. They come along to the new one now.
+
+   A strut could grow as tall as it liked, so along a row it took a share of the
+   extra width. The backdrop's icons used half of theirs. A strut is rigid
+   now.
+
+   And the server's own workspace lamps stay, under the dock, for a
+   desktop that has none.
+
+   The checks: the rc tile's LED lights while a shell is up and goes dark
+   when the shells close. A switch to workspace 2 moves the bar's lit LED
+   along, and a switch back moves it home. Snap left takes half the screen
+   less the dock.
 10. **Preferences, E**, with the pages, the new classes, and `overlay`. The
     check: `Use` of a changed face repaints a second program, and `Cancel`
     puts it back with no file written. Medium.

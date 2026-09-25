@@ -136,6 +136,15 @@ workspace_switch :: proc "contextless" (ws: int) #no_bounds_check {
 	was := stack_top()
 	old := current_ws
 	current_ws = ws
+	// The desktop's own windows are on every workspace. Its bars, its
+	// backdrop and its docked menus come along, so a switch never takes the
+	// screen bar that shows which workspace this is.
+	for i in 0 ..< MAX_WINDOWS {
+		w := &windows[i]
+		if w.used && (w.kind == .Bar || w.kind == .Backdrop || w.kind == .Menu) {
+			w.workspace = ws
+		}
+	}
 	if was >= 0 && windows[was].used {
 		title_paint(&windows[was])
 	}

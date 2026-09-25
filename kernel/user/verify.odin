@@ -6357,6 +6357,20 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 	// which `/lib/keys` binds. Keyboard, so no pointer race.
 	inject_chord(0x31) // 'n' is make 0x31
 	if check(r, await_windows(shells0 + 1), "an alt-n opens a shell in a window, one more in the process table") {
+		/*
+		The dock, `docs/CHROME.md` section 12. Its first tile is `rc`'s.
+		Its LED lights while a window of rc's is up, off the server's
+		`up rc`. It goes dark when the shells close, below.
+		*/
+		lit := false
+		for _ in 0 ..< PATIENCE * 10 {
+			if wb_tile_lit(s) {
+				lit = true
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, lit, "and the dock's rc tile lights its LED, a window of rc's being up")
 		// Its window is the one in front, its bar copper. The well below the
 		// bar, and the prompt eight pixels into it.
 		bx, by, bw := await_title_bar(s, WB_DOCK_ROOM)
@@ -6436,7 +6450,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 			// A chord crosses kbdfs to the server on its own time, so each
 			// check waits for what it names.
 			inject_chord(0x1F) // 's' is make 0x1F
-			check(r, await_geo(front, 0, -1, s.width / 2, -1), "a chord bound to a wctl word, snap left, acts on the window in front")
+			check(r, await_geo(front, 0, -1, (s.width - WB_TILES_W) / 2, -1), "a chord bound to a wctl word, snap left, acts on the window in front, in the screen less the dock's strip")
 			inject_chord(0x2C) // 'z' is make 0x2C: zoom puts a snapped window back
 			check(r, await_geo(front, x0, y0, w0, h0), "and alt-z puts it back")
 
@@ -6534,6 +6548,15 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 	} else {
 		check(r, true, "an alt-w closes each shell window in turn, front first")
 	}
+	dark := false
+	for _ in 0 ..< PATIENCE * 10 {
+		if !wb_tile_lit(s) {
+			dark = true
+			break
+		}
+		sync.delay(1)
+	}
+	check(r, dark, "and with the shells gone the rc tile's LED is dark again")
 
 	/*
 	The icons by the namespace, `docs/CHROME.md` section 6. With a scheme
@@ -6585,6 +6608,47 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		}
 	}
 
+	/*
+	The bar is status, `docs/CHROME.md` section 12's I: nine LEDs, the
+	current workspace's lit. A switch to workspace 2 lights the next one
+	along. That says the bar came to the workspace with it. A switch back
+	lights the first again.
+	*/
+	{
+		ws_mounted := srv.mount(vfs.boot_namespace, "/srv/draw", "/n/desk") == vfs.OK
+		x1 := -1
+		for _ in 0 ..< PATIENCE * 10 {
+			if x1 = wb_bar_lit_x(s); x1 >= 0 {
+				break
+			}
+			sync.delay(1)
+		}
+		check(r, x1 >= 0, "the bar shows the workspace as a row of LEDs, the current one lit")
+		moved, back := false, false
+		if ws_mounted && x1 >= 0 && net_file_write("/n/desk/ctl", "workspace 2") {
+			for _ in 0 ..< PATIENCE * 10 {
+				if x2 := wb_bar_lit_x(s); x2 > x1 {
+					moved = true
+					break
+				}
+				sync.delay(1)
+			}
+			_ = net_file_write("/n/desk/ctl", "workspace 1")
+			for _ in 0 ..< PATIENCE * 10 {
+				if wb_bar_lit_x(s) == x1 {
+					back = true
+					break
+				}
+				sync.delay(1)
+			}
+		}
+		check(r, moved, "and a switch to workspace 2 lights the next, the bar coming along to it")
+		check(r, back, "and a switch back lights the first again")
+		if ws_mounted {
+			_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/desk")
+		}
+	}
+
 	// -- 4. A notice, written and read back ------------------------------------------
 
 	if check(r, srv.mount(vfs.boot_namespace, "/srv/wb", "/mnt") == vfs.OK, "the kernel mounts the notice service") {
@@ -6611,7 +6675,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		// whose face is magnesium where the backdrop was.
 		toasted := false
 		for _ in 0 ..< PATIENCE * 20 {
-			if first, _ := scan_row(s, WB_BAR_H + 4 + 8, magnesium, s.width / 2, s.width - 8); first >= 0 {
+			if first, _ := scan_row(s, WB_BAR_H + 4 + 8, magnesium, s.width / 2, s.width - WB_TILES_W); first >= 0 {
 				toasted = true
 				break
 			}
@@ -6698,6 +6762,40 @@ WB_BAR_H :: 24
 WB_DOCK_X :: 8
 WB_DOCK_Y :: 8
 WB_DOCK_ROOM :: 160
+// The tile dock down the right edge, `apps/workbench/tiles.odin`'s
+// `TILES_W`: a `bar right` the server keeps clear.
+WB_TILES_W :: 80
+
+// wb_bar_lit_x is the column of the first lit LED on the screen bar's left
+// half, the current workspace's, or -1.
+wb_bar_lit_x :: proc "contextless" (s: ^fb.Surface) -> int {
+	for x in 100 ..< s.width / 2 {
+		for y in 2 ..< WB_BAR_H - 2 {
+			v := fb.get_raw(s, x, y)
+			if channel(s, v, s.green_shift, s.green_size) > 200 && channel(s, v, s.red_shift, s.red_size) < 180 {
+				return x
+			}
+		}
+	}
+	return -1
+}
+
+/*
+wb_tile_lit answers whether the first tile's LED, `rc`'s, is lit: a bright
+green pixel in the dock's top right corner, where the tile's LED sits.
+Unlit, the LED is dark in its own colour.
+*/
+wb_tile_lit :: proc "contextless" (s: ^fb.Surface) -> bool {
+	for y in WB_BAR_H ..< WB_BAR_H + 30 {
+		for x in s.width - 40 ..< s.width {
+			v := fb.get_raw(s, x, y)
+			if channel(s, v, s.green_shift, s.green_size) > 200 && channel(s, v, s.red_shift, s.red_size) < 180 {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 /*
 wb_corner_cyan answers whether cell `i` of Workbench's backdrop has an

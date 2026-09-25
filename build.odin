@@ -1475,6 +1475,7 @@ stage_vectra :: proc(arch: string, host: string) {
 	ensure_dir(fmt.tprintf("%s/lib/wb", root))
 	ensure_dir(fmt.tprintf("%s/lib/wb/tools", root))
 	copy_file("lib/wb/types", fmt.tprintf("%s/lib/wb/types", root))
+	copy_file("lib/wb/dock", fmt.tprintf("%s/lib/wb/dock", root))
 	copy_file("lib/wb/tools/Shell", fmt.tprintf("%s/lib/wb/tools/Shell", root))
 	copy_file("lib/wb/tools/Toolkit", fmt.tprintf("%s/lib/wb/tools/Toolkit", root))
 	copy_file("tests/tools.rc", fmt.tprintf("%s/lib/tests/tools.rc", root))

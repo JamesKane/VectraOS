@@ -247,14 +247,22 @@ wb_main :: proc "contextless" (arg: rawptr) {
 		libuser.eprint("workbench: no bar\n")
 		libthread.threadexitsall("no bar")
 	}
+	// The dock files first: the backdrop ends where the dock begins.
+	want_clock, want_load = tiles_read()
 	if !open_backdrop() {
 		libuser.eprint("workbench: no backdrop\n")
 		libthread.threadexitsall("no backdrop")
 	}
 	_ = libthread.threadcreate(window_thread, bar)
 	_ = libthread.threadcreate(window_thread, back)
+	// The dock down the right edge, `docs/CHROME.md` section 12.
+	if open_tiles() {
+		_ = libthread.threadcreate(window_thread, tiles_win)
+		_ = libthread.threadcreate(tiles_thread, nil)
+	}
 	_ = libthread.threadcreate(dock_thread, nil)
 	_ = libthread.threadcreate(memory_thread, nil)
+	_ = libthread.threadcreate(status_thread, nil)
 	_ = libthread.threadcreate(toast_thread, nil)
 	hotkey_loop()
 	libthread.threadexitsall("")
@@ -299,7 +307,7 @@ screen_size :: proc "contextless" () {
 open_bar :: proc "contextless" () -> bool {
 	row := libmui.group(true)
 	libmui.add(row, libmui.text("Vectra Workbench"))
-	libmui.add(row, libmui.space())
+	status_build(row)
 	mem_label = libmui.text(memory_line())
 	libmui.add(row, mem_label)
 
@@ -520,7 +528,7 @@ open_backdrop :: proc "contextless" () -> bool {
 	back.set_up = true
 	back.placed = true
 	back.at_x, back.at_y = 0, BAR_H
-	back.want_w, back.want_h = screen_w, screen_h - BAR_H
+	back.want_w, back.want_h = screen_w - (has_tiles() ? TILES_W : 0), screen_h - BAR_H
 	back.handler = back_press
 	back.on_menu = back_menu
 	back.on_drop = back_drop

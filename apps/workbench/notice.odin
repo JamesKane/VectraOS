@@ -154,6 +154,7 @@ post_notice :: proc "contextless" (source: string, text: string, action: string)
 	n.n += copy(n.text[n.n:], text)
 	n.an = copy(n.action[:], action)
 	n.count = 1
+	status_set(text)
 	wake_toast(n)
 }
 
@@ -232,7 +233,8 @@ show_toast :: proc "contextless" (n: ^Notice) {
 	t.set_up = true
 	t.placed = true
 	t.want_w, t.want_h = col.minw, col.minh
-	t.at_x = max(screen_w - col.minw - 8, 0)
+	// Left of the dock, when there is one.
+	t.at_x = max(screen_w - (has_tiles() ? TILES_W : 0) - col.minw - 8, 0)
 	t.at_y = BAR_H + 4
 	t.handler = toast_press
 	t.user = rawptr(n)

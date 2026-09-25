@@ -43,6 +43,26 @@ server_report :: proc "contextless" (out: []u8) -> int {
 		at = put_report(out, at, string(modes[mode_on - 1].name[:modes[mode_on - 1].n]))
 		at = put_report(out, at, "\n")
 	}
+	// The programs with an ordinary window up, a line each by `app`: what a
+	// dock's LEDs show, `docs/CHROME.md` section 12. Each name once.
+	for i in 0 ..< MAX_WINDOWS {
+		win := &windows[i]
+		if !app_up(i) {
+			continue
+		}
+		first := true
+		for k in 0 ..< i {
+			if app_up(k) && windows[k].app_n == win.app_n && string(windows[k].app[:win.app_n]) == string(win.app[:win.app_n]) {
+				first = false
+				break
+			}
+		}
+		if first {
+			at = put_report(out, at, "up ")
+			at = put_report(out, at, string(win.app[:win.app_n]))
+			at = put_report(out, at, "\n")
+		}
+	}
 	// A window asked to close that has not, past its grace: a line each, so
 	// the desktop can offer a person `Kill`. See `window_close_request`.
 	now := uptime_ms()
@@ -60,6 +80,13 @@ server_report :: proc "contextless" (out: []u8) -> int {
 	return at
 }
 
+// app_up answers whether slot `i` is an ordinary window, up, that named its
+// program.
+app_up :: proc "contextless" (i: int) -> bool {
+	w := &windows[i]
+	return w.used && !w.hangup && w.kind == .Normal && w.app_n > 0
+}
+
 /*
 run_server_ctl takes one line for the server itself.
 
@@ -68,6 +95,8 @@ run_server_ctl takes one line for the server itself.
     lock          the screen lock: every key the lock's until the passphrase
     kill N        hang window N up now: what the close gadget did before it
                   asked, and what a person answers a window that will not go
+    front NAME    the front window of program NAME to the front, on its
+                  workspace: a dock tile's click. ENOENT when none is up
 */
 run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_check {
 	verb, rest := word(data)
@@ -86,6 +115,24 @@ run_server_ctl :: proc "contextless" (data: []u8) -> vectra9.Errno #no_bounds_ch
 		}
 		lock_on()
 		return vectra9.Errno(0)
+	case "front":
+		name, tail := word(rest)
+		if len(name) == 0 || len(trim(tail)) != 0 {
+			return vectra9.EINVAL
+		}
+		// The highest in the stack of that program's windows.
+		for si := stack_n - 1; si >= 0; si -= 1 {
+			w := stack[si]
+			win := &windows[w]
+			if app_up(w) && string(win.app[:win.app_n]) == string(name) {
+				if win.workspace != current_ws {
+					workspace_switch(win.workspace)
+				}
+				window_raise(win, w)
+				return vectra9.Errno(0)
+			}
+		}
+		return vectra9.ENOENT
 	case "kill":
 		num, tail := word(rest)
 		w, ok := libdraw.scan_int_str(num)
@@ -514,9 +561,10 @@ run_wctl takes one of `rio`'s lines, or one of the four this server adds.
     minsize W H, maxsize W H   what a resize may give
     parent N       a transient of window N, or -1 for none
     app NAME       the program the window is, for the rules
-    backdrop       one of the three kinds a desktop needs
-    bar
+    backdrop       one of the kinds a desktop needs
+    bar [top|right]   a strip on an edge that zoom and snap keep clear
     popup
+    menu, panel    a docked menu, and one torn off
 
 `close` is refused here for now. A hang up is the client's own clunk,
 and the server has no other way to end a session it did not start. The
@@ -642,6 +690,19 @@ run_wctl :: proc "contextless" (win_at: int, data: []u8) -> vectra9.Errno #no_bo
 	case "backdrop":
 		window_kind(win, win_at, .Backdrop)
 	case "bar":
+		// `bar`, `bar top` or `bar right`: the strip it keeps clear.
+		edge, tail := word(rest)
+		switch string(edge) {
+		case "", "top":
+			win.edge_right = false
+		case "right":
+			win.edge_right = true
+		case:
+			return vectra9.EINVAL
+		}
+		if len(trim(tail)) != 0 {
+			return vectra9.EINVAL
+		}
 		window_kind(win, win_at, .Bar)
 	case "popup":
 		window_kind(win, win_at, .Popup)
@@ -700,7 +761,7 @@ window_zoom :: proc "contextless" (win: ^Window) {
 	}
 	win.zx, win.zy, win.zw, win.zh = win.x, win.y, win.w, win.h
 	win.zoomed = true
-	_ = window_size_at(win, 0, bar_height(), scr_w, scr_h - bar_height())
+	_ = window_size_at(win, 0, bar_height(), scr_w - bar_right_width(), scr_h - bar_height())
 }
 
 /*
@@ -715,7 +776,7 @@ snapped one.
 window_snap :: proc "contextless" (win: ^Window, rest: []u8) -> vectra9.Errno #no_bounds_check {
 	how, tail := word(rest)
 	top := bar_height()
-	W, H := scr_w, scr_h - top
+	W, H := scr_w - bar_right_width(), scr_h - top
 	x, y, w, h: int
 	switch string(how) {
 	case "left":
@@ -861,8 +922,23 @@ window_state :: proc "contextless" (win: ^Window, st: Window_State) {
 // which is where a zoomed window begins.
 bar_height :: proc "contextless" () -> int #no_bounds_check {
 	for i in 0 ..< MAX_WINDOWS {
-		if windows[i].used && windows[i].kind == .Bar {
+		if windows[i].used && windows[i].kind == .Bar && !windows[i].edge_right {
 			return windows[i].h
+		}
+	}
+	return 0
+}
+
+/*
+bar_right_width is how much of the right edge a `bar right` keeps, the dock:
+from its left edge to the screen's. Zero with none. `zoom`, the `snap` words
+and a new window's place stay out of it, as they stay below the top bar.
+*/
+bar_right_width :: proc "contextless" () -> int #no_bounds_check {
+	for i in 0 ..< MAX_WINDOWS {
+		w := &windows[i]
+		if w.used && w.kind == .Bar && w.edge_right && !w.hidden && w.x < scr_w {
+			return scr_w - w.x
 		}
 	}
 	return 0

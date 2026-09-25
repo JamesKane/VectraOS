@@ -1,0 +1,8 @@
+# dock: the tiles down the right edge, docs/CHROME.md section 12. A tile
+# names its program, which is its icon and the `app` its windows say, and
+# what a click runs when none is up. $home/lib/wb/dock is read after this.
+tile  rc      window rc -i
+tile  prefs   prefs
+tile  mothra  window mothra
+clock                          # the time, in the readout face
+load                           # the memory in use, as a column of LEDs

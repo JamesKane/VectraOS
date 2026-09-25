@@ -1041,6 +1041,9 @@ its way out of and a desktop buys back.
 */
 Window :: struct {
 	owner:  vectra9.Fid,
+	// A bar's edge: the top strip, or the right, `docs/CHROME.md` section
+	// 12's dock. `bar right` on `wctl` sets it.
+	edge_right: bool,
 	x:      int,
 	y:      int,
 	w:      int,
@@ -2348,7 +2351,9 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	win.rows = scr_h
 	win.x = cascade_x(at)
 	// Below the screen bar, when a desktop has one: a bar is never covered,
-	// so a window born under it would be born half hidden.
+	// so a window born under it would be born half hidden. And clear of a
+	// bar on the right edge, the dock, for the same reason.
+	win.x = min(win.x, max(scr_w - bar_right_width() - win_w, 0))
 	win.y = min(cascade_y(at) + bar_height(), max(scr_h - win_h, 0))
 	win.w = win_w
 	win.h = win_h
@@ -2368,6 +2373,7 @@ window_open :: proc "contextless" (owner: vectra9.Fid, at: int) -> vectra9.Errno
 	win.min_w, win.min_h, win.max_w, win.max_h = 0, 0, 0, 0
 	win.parent = -1
 	win.app_n = 0
+	win.edge_right = false
 	// A window that named this slot as its parent named a window that is
 	// gone; it is nobody's transient now, not the new window's.
 	for i in 0 ..< MAX_WINDOWS {

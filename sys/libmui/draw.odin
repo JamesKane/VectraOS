@@ -94,6 +94,8 @@ paint_node :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 		readout_paint(c, o, t)
 	case .Led:
 		led_paint(c, o, t)
+	case .Tile:
+		tile_paint(c, o, t)
 	}
 	for k := o.first; k != nil; k = k.next {
 		paint_node(c, k, t)
@@ -497,13 +499,24 @@ LED_SIZE :: 12
 
 // readout_cell is how wide one character of a readout is. It is the readout
 // face's `8`, whose segments are the widest, or a cell with no face.
-readout_cell :: proc "contextless" (t: ^Theme) -> int {
-	if f := face_of(t, .Readout); f != nil {
+readout_cell :: proc "contextless" (t: ^Theme, role: Face_Role = .Readout) -> int {
+	if f := face_of(t, role); f != nil {
 		if g, ok := libfont.face_glyph(f, '8'); ok {
-			return g.advance + t.faces[.Readout].track
+			return g.advance + t.faces[role].track
 		}
 	}
 	return FONT_W
+}
+
+// readout_role is the face a readout draws in: the readout face, or the
+// namespace face for a compact one.
+readout_role :: proc "contextless" (o: ^Object) -> Face_Role {
+	return o.on ? .Namespace : .Readout
+}
+
+// readout_pad is the glass round a readout's characters.
+readout_pad :: proc "contextless" (o: ^Object) -> int {
+	return o.on ? 1 : READOUT_PAD
 }
 
 /*
@@ -518,17 +531,18 @@ readout_paint :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme
 	libraster.inset(c, o.x, o.y, o.w, o.h, 3, 110)
 	ghost := libraster.mix(px(t.lcd_bg), px(t.lcd_fg), u32(clamp(t.lcd_ghost, 0, 100)) * 255 / 100)
 	lit := px(t.lcd_fg)
-	cell := readout_cell(t)
+	role := readout_role(o)
+	cell := readout_cell(t, role)
 	cells := max(o.cells, rune_len(o.label))
-	x := o.x + READOUT_PAD
-	y := o.y + READOUT_PAD
+	x := o.x + readout_pad(o)
+	y := o.y + readout_pad(o)
 	for k in 0 ..< cells {
-		readout_char(c, t, x + k * cell, y, '8', ghost)
+		readout_char(c, t, x + k * cell, y, '8', ghost, role)
 	}
 	k := 0
 	for r in o.label {
 		if r != ' ' {
-			readout_char(c, t, x + k * cell, y, r, lit)
+			readout_char(c, t, x + k * cell, y, r, lit, role)
 		}
 		k += 1
 	}
@@ -536,8 +550,8 @@ readout_paint :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme
 
 // readout_char draws one character of the readout face. The cell's left is
 // at `x` and its line's top at `y`. With no face it is a cell's glyph.
-readout_char :: proc "contextless" (c: ^libraster.Canvas, t: ^Theme, x: int, y: int, r: rune, ink: u32) {
-	f := face_of(t, .Readout)
+readout_char :: proc "contextless" (c: ^libraster.Canvas, t: ^Theme, x: int, y: int, r: rune, ink: u32, role: Face_Role = .Readout) {
+	f := face_of(t, role)
 	if f == nil {
 		// The cells hold ASCII here. A readout shows digits and a few letters.
 		b := [1]u8{r < 128 ? u8(r) : '?'}
@@ -572,4 +586,25 @@ led_paint :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
 		return
 	}
 	libraster.radial(c, cx, cy, r, libraster.mix(outer, 0xFFFFFF, 110), outer)
+}
+
+// -- A dock's tile, `docs/CHROME.md` section 12 ---------------------------------
+
+TILE_SIZE :: 64
+TILE_ICON :: 44
+
+/*
+tile_paint draws a tile. It is raised, with the icon its `shortcut` names
+centred in it, or its label with no icon, and its LED top right. A tile's LED
+is lit when its program has a window up, which is the caller's to set.
+*/
+tile_paint :: proc "contextless" (c: ^libraster.Canvas, o: ^Object, t: ^Theme) {
+	raised(c, o, t)
+	ix, iy := o.x + (o.w - TILE_ICON) / 2, o.y + (o.h - TILE_ICON) / 2
+	if !icon_named(c, o.shortcut, ix, iy, TILE_ICON, t) {
+		shown := clip_cells(o.label, (o.w - 8) / FONT_W)
+		glyphs(c, o.x + (o.w - drawn_len(shown) * FONT_W) / 2, o.y + (o.h - FONT_H) / 2, shown, px(t.ink))
+	}
+	lamp := Object{class = .Led, sel = o.sel, x = o.x + o.w - LED_SIZE - 4, y = o.y + 4, w = LED_SIZE, h = LED_SIZE}
+	led_paint(c, &lamp, t)
 }

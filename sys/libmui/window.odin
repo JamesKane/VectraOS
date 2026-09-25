@@ -63,6 +63,8 @@ Window :: struct {
 	set up.
 	*/
 	kind:      Kind,
+	// A bar on the right edge rather than the top: the dock, `bar right`.
+	bar_right: bool,
 	want_w:    int,
 	want_h:    int,
 	placed:    bool,
@@ -323,7 +325,7 @@ window_open :: proc "contextless" (win: ^Window, title: string, root: ^Object) -
 			word := "backdrop"
 			#partial switch win.kind {
 			case .Bar:
-				word = "bar"
+				word = win.bar_right ? "bar right" : "bar"
 			case .Popup:
 				word = "popup"
 			case .Menu:

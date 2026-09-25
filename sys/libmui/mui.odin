@@ -158,6 +158,7 @@ Class :: enum u8 {
 	Title, // A menu's title: a metal strip with the name in the chrome face
 	Readout, // An LCD: characters in the readout face over their unlit segments
 	Led, // A state's lamp: `ok`, `warn`, `fault`, or unlit
+	Tile, // A dock's tile: raised, square, an icon and an LED in its corner
 }
 
 // An LED's states, `docs/CHROME.md` section 10, in an `Led`'s `sel`. Unlit
@@ -312,7 +313,9 @@ title :: proc "contextless" (label: string) -> ^Object {
 }
 
 // readout is an LCD `cells` characters wide showing `label`, `docs/CHROME.md`
-// section 10. A caller changes the label and repaints, as a clock does.
+// section 10. A caller changes the label and repaints, as a clock does. With
+// `on` set it is compact: the namespace face and a pixel of glass round it,
+// for a strip as short as the screen bar.
 readout :: proc "contextless" (label: string, cells: int) -> ^Object {
 	o := obj(.Readout)
 	if o != nil {
@@ -327,6 +330,21 @@ readout :: proc "contextless" (label: string, cells: int) -> ^Object {
 led :: proc "contextless" (state: int) -> ^Object {
 	o := obj(.Led)
 	if o != nil {o.sel = state}
+	return o
+}
+
+/*
+tile is a dock's tile, `docs/CHROME.md` section 12. It is a raised square
+with the icon `picture` names, and an LED top right in `sel`'s state.
+A theme with no icons shows the label in place of the icon. A click is the
+tile's, as a button's is.
+*/
+tile :: proc "contextless" (label: string, picture: string) -> ^Object {
+	o := obj(.Tile)
+	if o != nil {
+		o.label = label
+		o.shortcut = picture
+	}
 	return o
 }
 
@@ -642,8 +660,11 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 	case .Space:
 		o.minw, o.minh = 0, 0
 		o.maxw, o.maxh = BIG, BIG
+		// A strut is rigid both ways. Tall-as-you-like made it stretchy, so
+		// along a row it took a share of the extra width.
 		if o.strut > 0 {
 			o.minw, o.maxw = o.strut, o.strut
+			o.minh, o.maxh = 0, 0
 		}
 	case .Text:
 		w := text_width(t, .Interface, o.label)
@@ -671,13 +692,16 @@ fit :: proc "contextless" (o: ^Object, t: ^Theme) {
 		o.minw, o.minh = w, h
 		o.maxw, o.maxh = BIG, h
 	case .Readout:
-		w := max(o.cells, rune_len(o.label)) * readout_cell(t) + 2 * READOUT_PAD
-		h := text_height(t, .Readout) + 2 * READOUT_PAD
+		w := max(o.cells, rune_len(o.label)) * readout_cell(t, readout_role(o)) + 2 * readout_pad(o)
+		h := text_height(t, readout_role(o)) + 2 * readout_pad(o)
 		o.minw, o.maxw = w, w
 		o.minh, o.maxh = h, h
 	case .Led:
 		o.minw, o.maxw = LED_SIZE, LED_SIZE
 		o.minh, o.maxh = LED_SIZE, LED_SIZE
+	case .Tile:
+		o.minw, o.maxw = TILE_SIZE, TILE_SIZE
+		o.minh, o.maxh = TILE_SIZE, TILE_SIZE
 	case .Checkmark:
 		s := FONT_H + 2 * t.bevel
 		o.minw, o.maxw = s, s
