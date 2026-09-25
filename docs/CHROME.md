@@ -936,6 +936,25 @@ look.
 11. **The column viewer, G.** The check: a column for a union lists the
     members' entries in bind order and its tag names them. Medium.
 
+    **Brick 11 is done, September 2026, but for the shelf and the
+    scroller.** `apps/workbench/columns.odin` turns a drawer to columns
+    and back, from `Columns` on the Window menu. The icon path is a row of
+    keys, one per element of the deepest column's path. The window shows
+    the last three columns. A choice in a column opens the directory as
+    the next column, and a double click opens a file.
+
+    A column for a union keeps the kernel's order, which is bind order. A
+    tag under it names the members off `/proc/N/ns`. Any other column is
+    sorted. The status line names the server behind the deepest folder,
+    the covering mount's source, or `import` and the machine for a
+    machine's.
+
+    Workbench's served tree has `view`, which says what the drawer in
+    front shows, and its `ctl` takes `columns PATH`. The check binds
+    `/lib/tests` and then `/lib/wb` at `/mnt/all` before Workbench starts.
+    `columns /mnt/all` shows the union's tag with both members, the tests'
+    entries before the desktop's, and a status line.
+
 Bricks 1 to 3 come first and in that order, because every other brick
 paints through them. After brick 3, the order of the rest is the order a
 reason arrives.

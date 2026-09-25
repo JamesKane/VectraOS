@@ -101,7 +101,7 @@ tools_read: bool
 
 // The menu's items, built per title.
 MENU_WORKBENCH := [?]string{"About...", "Execute Command...", "Shell", "Snapshot", "Clean Up", "Theme...", "Reload", "Lock", "Empty Recycler", "Quit"}
-MENU_WINDOW := [?]string{"New Drawer", "Open Parent", "Close", "Update", "Select All", "Clean Up", "Snapshot"}
+MENU_WINDOW := [?]string{"New Drawer", "Open Parent", "Close", "Update", "Select All", "Clean Up", "Snapshot", "Columns"}
 MENU_ICONS := [?]string{"Open", "Copy", "Rename...", "Information...", "Delete..."}
 menu_items: [MAX_TOOLS]string
 
@@ -717,6 +717,12 @@ run_action :: proc "contextless" (line: string) {
 			}
 		} else {
 			post_notice("workbench", "Cannot delete that", "")
+		}
+	case "columns":
+		// A drawer opened as columns, `columns.odin`.
+		open_drawer(rest)
+		if front != nil && front.path == rest {
+			columns_on(front)
 		}
 	case "empty":
 		if !recycler_empty() {

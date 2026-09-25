@@ -6170,6 +6170,11 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		return
 	}
 
+	// A union for the column view below: the tests' files, then the
+	// desktop's. It is made before Workbench starts, so Workbench's
+	// namespace, a copy of this one, holds it.
+	all_bound := vfs.bind_path(vfs.boot_namespace, "/lib/tests", "/mnt/all", .Replace) == vfs.OK
+	all_bound = all_bound && vfs.bind_path(vfs.boot_namespace, "/lib/wb", "/mnt/all", .After) == vfs.OK
 	pw := start_path(r, "/bin/workbench", "the loader starts Workbench, as init does")
 	if pw == nil {
 		return
@@ -6394,8 +6399,9 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		Its LED lights while a window of rc's is up, off the server's
 		`up rc`. It goes dark when the shells close, below.
 		*/
+		// The dock reads the server's report once a second, then paints.
 		lit := false
-		for _ in 0 ..< PATIENCE * 10 {
+		for _ in 0 ..< PATIENCE * 30 {
 			if wb_tile_lit(s) {
 				lit = true
 				break
@@ -6581,7 +6587,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		check(r, true, "an alt-w closes each shell window in turn, front first")
 	}
 	dark := false
-	for _ in 0 ..< PATIENCE * 10 {
+	for _ in 0 ..< PATIENCE * 30 {
 		if !wb_tile_lit(s) {
 			dark = true
 			break
@@ -6738,6 +6744,32 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 				web_read_file("/usr/glenda/lib/wb/recycler", fb[:], raw = true) >= 0
 			check(r, emptied, "and empty removes what the Recycler holds, and keeps the Recycler")
 		}
+
+		/*
+		The column view, `docs/CHROME.md` section 11. `columns PATH` on the
+		ctl opens a drawer as columns, and `view` says what it shows. A
+		column for a union lists its members' entries in bind order, the
+		tests' before the desktop's, and its tag names the members. The
+		status line names the server behind the folder.
+		*/
+		if all_bound {
+			vb: [2048]u8
+			vn := 0
+			if net_file_write("/mnt/ctl", "columns /mnt/all") {
+				for _ in 0 ..< PATIENCE * 10 {
+					vn = web_read_file("/mnt/view", vb[:], raw = true)
+					if vn > 0 && libodin.contains(string(vb[:vn]), "column /mnt/all") {
+						break
+					}
+					sync.delay(1)
+				}
+			}
+			view := string(vb[:max(vn, 0)])
+			check(r, libodin.contains(view, "column /mnt/all union: /lib/tests /lib/wb"), "columns on Workbench's ctl opens a drawer as columns, and a union's column is tagged with its members")
+			first, last := index_of(view, "\tfeed.rc\n"), index_of(view, "\tdock\n")
+			check(r, first >= 0 && last > first, "and lists their entries in bind order, the tests' before the desktop's")
+			check(r, libodin.contains(view, "status on "), "and the status line names the server behind the folder")
+		}
 		pipe.quiesce()
 		check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK, "the notice mount comes down")
 	}
@@ -6780,6 +6812,9 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 	finish(r, pk, "and the translator is reaped")
 	pipe.quiesce()
 	_ = vfs.unmount_path(vfs.boot_namespace, "", "/n/kbd")
+	if all_bound {
+		_ = vfs.unmount_path(vfs.boot_namespace, "", "/mnt/all")
+	}
 	check(r, srv.count() == count0, "and /srv holds what it held")
 	drain_pinned(r, pin_before, "and the desktop's wires come back whole")
 }

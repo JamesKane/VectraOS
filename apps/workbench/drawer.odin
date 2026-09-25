@@ -30,6 +30,11 @@ Drawer :: struct {
 	pics:  []string,
 	grid:  ^libmui.Object,
 	title: ^libmui.Object,
+	// The column view, `columns.odin`, once the drawer is turned to it, and
+	// the icon tree it set aside.
+	cols:       ^Col_View,
+	icons_root: ^libmui.Object,
+	cols_shown: bool,
 }
 
 drawers: [MAX_DRAWERS]^Drawer
@@ -224,6 +229,10 @@ drawer_press :: proc "contextless" (w: ^libmui.Window, id: int) {
 		w.done = true
 		return
 	}
+	if d.cols_shown && id >= ID_COLUMN {
+		columns_press(d, id, w.arg, w.clicks)
+		return
+	}
 	if id == 1 && w.clicks == 2 && w.arg >= 0 && w.arg < len(d.paths) {
 		open_path(d.paths[w.arg], d.kinds[w.arg])
 	}
@@ -274,6 +283,14 @@ drawer_window_menu :: proc "contextless" (item: int) {
 	case 6: // Snapshot: keep this drawer's icon positions across sessions
 		if d != nil {
 			snapshot_save(d.path, d.grid, d.names)
+		}
+	case 7: // Columns: the drawer as a browser, or back to its icons
+		if d != nil {
+			if d.cols_shown {
+				columns_off(d)
+			} else {
+				columns_on(d)
+			}
 		}
 	case:
 		// A `Kill` the menu grew for a window that would not close.

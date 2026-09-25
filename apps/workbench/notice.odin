@@ -13,6 +13,9 @@ console's:
                `open`, `run`, `ask`, `workspace`, each with the rest of the
                line as its argument. `recycle PATH` is `Delete...` on a
                path, and `empty` empties the Recycler, `recycler.odin`.
+               `columns PATH` opens a drawer as columns.
+    view       the drawer in front and how it is seen: its columns, a
+               union's members, and the server behind it, `columns.odin`.
 
 A notice draws as a toast below the bar's right corner for five seconds,
 in a popup the machine's frame around it, and a click on it runs the
@@ -64,6 +67,7 @@ NODE_ROOT :: i32(0)
 NODE_NOTICE :: i32(1)
 NODE_HISTORY :: i32(2)
 NODE_CTL :: i32(3)
+NODE_VIEW :: i32(4)
 
 fids: libuser.Fid_Table
 srv: lib9p.Srv
@@ -317,6 +321,8 @@ name_of :: proc "contextless" (node: i32) -> string {
 		return "history"
 	case NODE_CTL:
 		return "ctl"
+	case NODE_VIEW:
+		return "view"
 	}
 	return ""
 }
@@ -338,6 +344,8 @@ step :: proc "contextless" (from: i32, name: string) -> i32 {
 		return NODE_HISTORY
 	case "ctl":
 		return NODE_CTL
+	case "view":
+		return NODE_VIEW
 	}
 	return -1
 }
@@ -389,6 +397,8 @@ notice_handler :: proc "contextless" (
 			}
 		case NODE_CTL:
 			n = copy(text[:], quiet ? "quiet\n" : "loud\n")
+		case NODE_VIEW:
+			n = view_report(text[:])
 		case:
 			reply^ = vectra9.error_reply(vectra9.EISDIR)
 			return
@@ -432,7 +442,7 @@ notice_handler :: proc "contextless" (
 			case:
 				verb, _ := first_word(line)
 				switch verb {
-				case "open", "run", "ask", "workspace", "execute", "shell", "recycle", "empty":
+				case "open", "run", "ask", "workspace", "execute", "shell", "recycle", "empty", "columns":
 					run_action(line)
 				case:
 					reply^ = vectra9.error_reply(vectra9.EINVAL)
@@ -500,7 +510,7 @@ readdir :: proc "contextless" (m: vectra9.Treaddir, reply: ^vectra9.Msg, buf: []
 	}
 	room := min(len(buf), int(m.count))
 	c := vectra9.cursor_from(buf[:room])
-	for child := i32(m.offset) + 1; child <= NODE_CTL; child += 1 {
+	for child := i32(m.offset) + 1; child <= NODE_VIEW; child += 1 {
 		if vectra9.remaining(&c) < vectra9.dirent_size(name_of(child)) {
 			break
 		}

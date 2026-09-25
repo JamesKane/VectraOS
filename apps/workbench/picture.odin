@@ -37,6 +37,8 @@ Ns_Point :: struct {
 	members: int,
 	source:  string,
 	mounted: bool,
+	// Each member's source, in bind order, the first four.
+	sources: [4]string,
 }
 
 ns_text: []u8
@@ -89,11 +91,15 @@ ns_read :: proc "contextless" () {
 		}
 		source, target := words[n - 2], words[n - 1]
 		if p := ns_find(target); p != nil {
+			if p.members < len(p.sources) {
+				p.sources[p.members] = source
+			}
 			p.members += 1
 			continue
 		}
 		if ns_n < MAX_NS_LINES {
 			ns_points[ns_n] = Ns_Point{target = target, members = 1, source = source, mounted = verb == "mount"}
+			ns_points[ns_n].sources[0] = source
 			ns_n += 1
 		}
 	}
@@ -106,6 +112,33 @@ ns_find :: proc "contextless" (target: string) -> ^Ns_Point {
 		}
 	}
 	return nil
+}
+
+/*
+server_of is what serves a path. It is the source of the mount point that
+covers it most closely: `/srv/kfs`, `#c`, or `import one` for a machine's. A path no
+mount point covers is the root's, `/`.
+*/
+server_of :: proc "contextless" (path: string) -> string {
+	best := -1
+	for k in 0 ..< ns_n {
+		t := ns_points[k].target
+		covers := path == t || t == "/" || (has_prefix(path, t) && len(path) > len(t) && path[len(t)] == '/')
+		if covers && (best < 0 || len(t) > len(ns_points[best].target)) {
+			best = k
+		}
+	}
+	if best < 0 {
+		return "/"
+	}
+	p := &ns_points[best]
+	if p.mounted && has_prefix(p.source, "/srv/") && is_machine(p.source[5:]) {
+		@(static) buf: [96]u8
+		n := copy(buf[:], "import ")
+		n += copy(buf[n:], p.source[5:])
+		return string(buf[:n])
+	}
+	return p.source
 }
 
 // is_machine answers whether ndb names a machine `name`, which is what
