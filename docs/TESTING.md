@@ -510,6 +510,33 @@ blit landed where the good boots put it, and the pixels were never wrong.
 later look, or it measures the moment it stopped.** A miss now prints the
 column as runs of what each pixel is, which is how the ruler was caught.
 
+## Two kinds of wait, and only one of them may be short
+
+A wait that ends the moment its condition holds costs a passing boot nothing
+past that moment. A process exiting, a name posted, a port listening, a pixel
+on the glass: each is progress, and its budget is `PROGRESS`, two seconds. A
+short budget there buys no speed. It only turns a slower moment into a failed
+check. A failed check early in a stage then becomes dozens after it.
+
+The other kind must run out to prove something did not happen. A read that
+should park is one, and a window that should stay is another. Each costs its
+whole budget on every boot. So it keeps a short one of its own, and says so
+where it is written.
+
+**A fixed pause before an action is a wait on nothing.** "Start the server,
+sleep 200 ms, dial it" fails the day the server is slower than the pause. The
+wait is for the thing the action needs: `await_listening` for a port,
+`await_posted` for a name, `await_parked_reading` for a process at its first
+read. **A single read of the glass is a race** with the server that
+composites it. A check of what should arrive polls, with `await_pixel`. A
+check of what must not be there reads once, after its positive half settles.
+
+September 2026 audited the user suite against this. It found 33 loops and
+154 helper calls with short positive waits. Fifteen fixed pauses stood before
+dials and mounts, and fourteen positive checks read the glass once. Two
+flakes were nothing else. A draw server had 200 ms to read its fonts and
+post, and a stage left that server standing when it missed.
+
 ## A bracket counts, and some errors keep every count even
 
 `docs/USER.md` found the case a bracket cannot see, and it is worth a rule of

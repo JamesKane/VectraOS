@@ -140,6 +140,18 @@ SHADOW_VA :: uintptr(0x0050_0000)
 @(private = "file")
 PATIENCE :: 200
 
+/*
+The budget for a wait that ends the moment its condition holds. That is a
+process exiting, a name posted, a pixel on the glass, a flag set. Ten patiences, two
+seconds. Such a wait costs a passing boot nothing past the moment it is
+satisfied, so a short one buys no speed. It only turns a machine that took a
+little longer into a failed check, and a failed check into a cascade.
+September 2026 found a server given 200 ms to read its fonts and post, and a
+full-screen repaint given the same. A wait that must run out to prove
+something did not happen is the other kind, and keeps its own count.
+*/
+PROGRESS :: PATIENCE * 10
+
 // How long to watch `spin` run before telling it to stop. Long enough for the
 // timer to preempt it many times, short enough to be noise in a boot.
 @(private = "file")
@@ -357,7 +369,7 @@ run_program :: proc(
 	libodin.put_str(&sink, "and ")
 	libodin.put_str(&sink, name)
 	libodin.put_str(&sink, " comes back")
-	if !check(r, wait(p, PATIENCE), libodin.str(&sink)) {
+	if !check(r, wait(p, PROGRESS), libodin.str(&sink)) {
 		return p
 	}
 
@@ -683,7 +695,7 @@ verify :: proc(column: proc "contextless" () -> int) -> (r: Result) {
 	record, and it has not run yet. The only thing that can have released this
 	table is the reaper, woken by the ending itself.
 	*/
-	hung_up := sync.await(fdt_level, &fdt_before, PATIENCE)
+	hung_up := sync.await(fdt_level, &fdt_before, PROGRESS)
 	check(&r, hung_up, "and its descriptors come back with nothing asking, which is the hangup")
 
 	/*
@@ -1037,7 +1049,7 @@ verify_spin :: proc(r: ^Result) {
 
 	// Wait for the mark rather than assume it. The program writes nothing until
 	// something dispatches it, and that is a scheduler decision.
-	started := await_cell(p, CELL_MARK, MARK_SPIN, PATIENCE)
+	started := await_cell(p, CELL_MARK, MARK_SPIN, PROGRESS)
 	check(r, started, "and runs, which is the first instruction ever executed in ring 3")
 
 	first := cell(p, CELL_COUNTER)
@@ -1073,7 +1085,7 @@ verify_spin :: proc(r: ^Result) {
 	// The other direction of the same page. The kernel writes, the program
 	// reads, and what it does about it is stop.
 	set_cell(p, CELL_STOP, 1)
-	check(r, wait(p, PATIENCE), "a word the kernel writes reaches it, and ends it")
+	check(r, wait(p, PROGRESS), "a word the kernel writes reaches it, and ends it")
 	check(r, p.exit.kind == .Invalid_Instruction, "on the instruction it runs to say so")
 	check(r, p.exit.from_user, "in ring 3")
 	check(
@@ -1176,7 +1188,7 @@ verify_syscalls :: proc(r: ^Result, column: proc "contextless" () -> int, held: 
 		return
 	}
 
-	if check(r, wait(p, PATIENCE), "and comes back from all of them") {
+	if check(r, wait(p, PROGRESS), "and comes back from all of them") {
 		check(r, cell(p, CELL_MARK) == MARK_PROBE, "having reached its first instruction")
 		check(r, cell(p, CELL_NOP) == 0, "a call that does nothing answers zero")
 		check(
@@ -1272,7 +1284,7 @@ verify_shadow :: proc(r: ^Result, held: ^[3]uintptr) {
 
 	set_cell(p, CELL_HANDOFF, u64(SHADOW_VA))
 
-	if check(r, wait(p, PATIENCE), "the program is told where it is and asks the kernel to read it") {
+	if check(r, wait(p, PROGRESS), "the program is told where it is and asks the kernel to read it") {
 		check(r, cell(p, CELL_MARK) == MARK_SHADOW, "having reached its first instruction")
 		check(
 			r,
@@ -1401,7 +1413,7 @@ verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held:
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_ZERO)), "with that path in its page")
 	check(r, launch(p, u64(len(PATH_ZERO))), "and it launches, staged")
 
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_READER, "having reached its first instruction")
 		check(r, cell(p, READER_OPENED) == 3, "with a descriptor of its own")
 		check(r, cell(p, READER_READ) == 8, "the read reported the bytes it asked for")
@@ -1440,7 +1452,7 @@ verify_processes :: proc(r: ^Result, column: proc "contextless" () -> int, held:
 
 	before = column()
 	check(r, launch(p, u64(len(PATH_NULL)), u64(len(REDIRECTED))), "and it launches, staged")
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		after := column()
 
 		check(r, cell(p, CELL_MARK) == MARK_BINDER, "having reached its first instruction")
@@ -1567,7 +1579,7 @@ verify_painter :: proc(r: ^Result) {
 	check(r, set_bytes(p, SLOT_C, pattern[:span]), "and pixel bytes to carry")
 
 	check(r, launch(p, u64(len(PATH_FB)), u64(span)), "and it launches, staged")
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_PAINTER, "having reached its first instruction")
 		check(r, cell(p, PAINTER_OPENED) == 3, "the screen's memory opened as a file")
 		check(r, cell(p, PAINTER_SEEKED) == offset, "the seek answered the offset it was given")
@@ -1643,7 +1655,7 @@ verify_scancode_reader :: proc(r: ^Result) {
 	}
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH_SCANCODE)), "with the path in its page")
 	check(r, launch(p, u64(len(PATH_SCANCODE))), "and it launches, staged")
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_READER, "having reached its first instruction")
 		check(r, cell(p, READER_OPENED) == 3, "the raw keyboard opened as a file")
 		check(r, cell(p, READER_READ) == 8, "the read answered eight raw scancodes")
@@ -1734,7 +1746,7 @@ verify_bulkio :: proc(r: ^Result) #no_bounds_check {
 	}
 
 	check(r, launch(p, u64(len(BULKIO_PATH)), u64(fboff)), "and it launches, staged")
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_BULKIO, "having reached its first instruction")
 		check(r, cell(p, BULKIO_OPENED) == 3, "the framebuffer opened")
 		check(
@@ -1869,7 +1881,7 @@ verify_loading :: proc(r: ^Result, column: proc "contextless" () -> int) {
 
 	p = start_path(r, "/bin/child", "a child with a clean namespace still loads, through its parent's", flags = SPAWN_NS_CLEAN)
 	if p != nil {
-		if check(r, wait(p, PATIENCE), "and runs") {
+		if check(r, wait(p, PROGRESS), "and runs") {
 			check(r, cell(p, CELL_MARK) == MARK_CHILD, "having reached its first instruction")
 			check(
 				r,
@@ -1924,7 +1936,7 @@ verify_parenthood :: proc(r: ^Result, column: proc "contextless" () -> int, held
 		"a process that is not the parent cannot collect it",
 	)
 
-	if check(r, wait(p, PATIENCE), "and it comes back, having raised two children") {
+	if check(r, wait(p, PROGRESS), "and it comes back, having raised two children") {
 		after := column()
 
 		check(r, cell(p, CELL_MARK) == MARK_PARENT, "having reached its first instruction")
@@ -2179,7 +2191,7 @@ verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int
 		vfs.chan_close(c)
 	}
 
-	if check(r, wait(p, PATIENCE), "the server exits on its own say-so") {
+	if check(r, wait(p, PROGRESS), "the server exits on its own say-so") {
 		check(r, p.exit.deliberate && p.exit.status == 0, "deliberately, with nothing to report")
 		check(r, cell(p, CELL_MARK) == MARK_NINER, "having reached its first instruction")
 		check(r, cell(p, NINER_PIPE) == NINER_FDS, "sys_pipe put the two ends on 3 and 4")
@@ -2230,7 +2242,7 @@ verify_service_answered :: proc(r: ^Result, column: proc "contextless" () -> int
 	The unmount's own thread therefore ran the counted release on the way
 	through: hang-up, join, and every one of the seven pinned objects back.
 	*/
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		sched.reap()
 		r.pinned = mem.live_objects(mem.heap_stats()) - pin_before
 		if r.pinned == 0 {
@@ -2525,7 +2537,7 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 		vfs.unmount_path(vfs.boot_namespace, "", "/mnt") == vfs.OK,
 		"the last mount comes down, and the release rides the unmount",
 	)
-	if check(r, wait(p, PATIENCE), "the server ends with nobody telling it to") {
+	if check(r, wait(p, PROGRESS), "the server ends with nobody telling it to") {
 		check(
 			r,
 			p.exit.deliberate && p.exit.status == RAMFS_HANGUP,
@@ -2541,7 +2553,7 @@ verify_runtime :: proc(r: ^Result, column: proc "contextless" () -> int) {
 	)
 
 	pinned := 0
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		sched.reap()
 		pinned = mem.live_objects(mem.heap_stats()) - pin_before
 		if pinned == 0 {
@@ -2584,7 +2596,7 @@ verify_notes :: proc(r: ^Result) {
 	// A tick that caught the thread before its first instruction read a
 	// counter of zero. The flake arrived the day the boot's timing
 	// shifted. The handshake is `verify_spin`'s, in one direction.
-	moving := await_cell_moves(p, CELL_COUNTER, PATIENCE)
+	moving := await_cell_moves(p, CELL_COUNTER, PROGRESS)
 	check(r, moving, "and its counter moves")
 
 	before := sync.now()
@@ -2672,7 +2684,7 @@ verify_handler :: proc(r: ^Result) {
 
 	// Registered and spinning before anything is posted. The counter is the
 	// proof of ring 3, the same proof `spin` gives.
-	registered := await_cell_moves(p, CATCHER_ROUNDS, PATIENCE)
+	registered := await_cell_moves(p, CATCHER_ROUNDS, PROGRESS)
 	check(r, registered, "it registers a handler and spins")
 	check(
 		r,
@@ -2682,7 +2694,7 @@ verify_handler :: proc(r: ^Result) {
 	check(r, cell(p, CATCHER_NOTIFIED) == 0, "and notify answered zero")
 
 	check(r, post_note(p, CATCHER_NOTE), "a note is posted to it, mid spin")
-	handled := await_cell_moves(p, CATCHER_HANDLED, PATIENCE)
+	handled := await_cell_moves(p, CATCHER_HANDLED, PROGRESS)
 	if !check(r, handled, "the tick hands the handler the frame it interrupted") {
 		finish(r, p, "and the catcher is taken down")
 		return
@@ -2696,7 +2708,7 @@ verify_handler :: proc(r: ^Result) {
 	check(r, cell(p, CATCHER_TEXT) == want, "the handler read the note's own text")
 
 	check(r, post_note(p, "again"), "a second note is posted, into its syscall loop")
-	if check(r, wait(p, PATIENCE), "and the program comes back from both") {
+	if check(r, wait(p, PROGRESS), "and the program comes back from both") {
 		check(r, cell(p, CATCHER_HANDLED) == 2, "each delivery ran the handler once")
 		check(
 			r,
@@ -2721,11 +2733,11 @@ verify_handler :: proc(r: ^Result) {
 		return
 	}
 
-	moving := await_cell_moves(p, DFLTNOTE_ROUNDS, PATIENCE)
+	moving := await_cell_moves(p, DFLTNOTE_ROUNDS, PROGRESS)
 	check(r, moving, "it registers and spins")
 
 	check(r, post_note(p, "enough"), "a note is posted")
-	if check(r, wait(p, PATIENCE), "and it ends") {
+	if check(r, wait(p, PROGRESS), "and it ends") {
 		check(r, cell(p, DFLTNOTE_RAN) == 1, "the handler ran first")
 		check(
 			r,
@@ -2762,15 +2774,15 @@ verify_stop :: proc(r: ^Result) {
 
 	// Spinning, with its handler registered, before the kernel acts. A stop
 	// before the handler exists would prove nothing about handlers.
-	armed := sync.await(catcher_armed, p, PATIENCE)
+	armed := sync.await(catcher_armed, p, PROGRESS)
 	check(r, armed, "it registers its handler and spins")
 	check(r, !destroy(p), "and the kernel cannot take it down while it runs, as before")
 
-	check(r, end(p, PATIENCE), "the kernel ends it, and it is gone inside the patience")
+	check(r, end(p, PROGRESS), "the kernel ends it, and it is gone inside the patience")
 	check(r, p.exit.noted && !p.exit.deliberate, "noted, and not on its own terms")
 	check(r, note(p) == "sys: killed", "with Plan 9's word for it")
 	check(r, cell(p, CATCHER_HANDLED) == 0, "and its handler never ran, because the kernel's word comes first")
-	check(r, stop(p, PATIENCE), "and the collection is the rest of the arc")
+	check(r, stop(p, PROGRESS), "and the collection is the rest of the arc")
 	check(r, stats().live == before, "so the machine holds no more processes than before")
 
 	/*
@@ -2790,14 +2802,14 @@ verify_stop :: proc(r: ^Result) {
 	if !launch_or_finish(r, p, "and it launches", "and is taken down") {
 		return
 	}
-	armed = sync.await(catcher_armed, p, PATIENCE)
+	armed = sync.await(catcher_armed, p, PROGRESS)
 	check(r, armed && post_note(p, CATCHER_NOTE), "it spins, and an ordinary note is posted to it")
-	sleeping := await_cell(p, CATCHER_HANDLED, 1, PATIENCE)
+	sleeping := await_cell(p, CATCHER_HANDLED, 1, PROGRESS)
 	check(r, sleeping, "which its handler catches, and it moves on to loop on sleep")
-	check(r, end(p, PATIENCE), "the kernel ends it there, at the door, inside the patience")
+	check(r, end(p, PROGRESS), "the kernel ends it there, at the door, inside the patience")
 	check(r, p.exit.noted && note(p) == "sys: killed", "noted, with the same word")
 	check(r, cell(p, CATCHER_HANDLED) == 1, "and its handler ran once, for the note, and not for the word")
-	check(r, stop(p, PATIENCE), "and it is collected")
+	check(r, stop(p, PROGRESS), "and it is collected")
 	check(r, stats().live == before, "leaving the machine as it was")
 }
 
@@ -2821,7 +2833,7 @@ verify_notepg :: proc(r: ^Result) {
 		return
 	}
 	r.spawned += 2
-	if !check(r, wait(p, PATIENCE), "and comes back") {
+	if !check(r, wait(p, PROGRESS), "and comes back") {
 		finish(r, p, "and is taken down")
 		return
 	}
@@ -2869,7 +2881,7 @@ verify_exec :: proc(r: ^Result, column: proc "contextless" () -> int) {
 	if !launch_or_finish(r, p, "and it launches", "and is taken down") {
 		return
 	}
-	if check(r, wait(p, PATIENCE), "and comes back, having become another program") {
+	if check(r, wait(p, PROGRESS), "and comes back, having become another program") {
 		after := column()
 
 		check(r, p.pid == pid_before, "under the pid it started with -- exec keeps the process")
@@ -2913,7 +2925,7 @@ verify_shared_class :: proc(r: ^Result) {
 	if p == nil {
 		return
 	}
-	if check(r, wait(p, PATIENCE), "and comes back, having forked and become another program") {
+	if check(r, wait(p, PROGRESS), "and comes back, having forked and become another program") {
 		check(r, cell(p, CELL_MARK) == MARK_CHILD, "the mark is the program it became")
 		check(r, p.exit.deliberate && p.exit.status == CHILD_STATUS, "which exited with its own status")
 
@@ -2974,7 +2986,7 @@ verify_reap :: proc(r: ^Result) {
 	if !launch_or_finish(r, p, "and it launches", "and is taken down") {
 		return
 	}
-	if !check(r, wait(p, PATIENCE), "the parent comes back") {
+	if !check(r, wait(p, PROGRESS), "the parent comes back") {
 		finish(r, p, "and is taken down")
 		return
 	}
@@ -2998,7 +3010,7 @@ verify_reap :: proc(r: ^Result) {
 	if !check(r, child != nil && child.detached, "the child stands alone, detached to the kernel") {
 		return
 	}
-	ran := await_cell(child, NOWAITER_CHILD_RAN, 1, PATIENCE)
+	ran := await_cell(child, NOWAITER_CHILD_RAN, 1, PROGRESS)
 	check(r, ran, "it runs with nobody watching, and waits for the kernel's word")
 
 	/*
@@ -3022,7 +3034,7 @@ verify_reap :: proc(r: ^Result) {
 // by the time this looks.
 @(private = "file")
 await_collected :: proc(p: ^Process, pid: u64) -> bool {
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		if !p.live || p.pid != pid {
 			return true
 		}
@@ -3059,7 +3071,7 @@ verify_rfork :: proc(r: ^Result) {
 	if p == nil {
 		return
 	}
-	if check(r, wait(p, PATIENCE), "and both of it come back") {
+	if check(r, wait(p, PROGRESS), "and both of it come back") {
 		check(r, cell(p, CELL_MARK) == MARK_FORKER, "having reached its first instruction")
 		check(r, i64(cell(p, FORKER_PID)) > 0, "the parent was answered a pid")
 		check(
@@ -3082,7 +3094,7 @@ verify_rfork :: proc(r: ^Result) {
 	if p == nil {
 		return
 	}
-	if !check(r, wait(p, PATIENCE), "the parent exits first, child still running") {
+	if !check(r, wait(p, PROGRESS), "the parent exits first, child still running") {
 		return
 	}
 	check(r, p.exit.deliberate && p.exit.status == MEMFORK_PARENT_STATUS, "and says so")
@@ -3127,7 +3139,7 @@ verify_rfork :: proc(r: ^Result) {
 	// The witness crossed the shared page, and the stop goes back the same
 	// way. It is written through what was the parent's data alias, now
 	// nobody's but the segment's.
-	saw := await_cell(child, MEMFORK_WITNESS, MEMFORK_WITNESS_VALUE, PATIENCE)
+	saw := await_cell(child, MEMFORK_WITNESS, MEMFORK_WITNESS_VALUE, PROGRESS)
 	check(r, saw, "the child's write arrived through the shared frame")
 	check(r, child.data == shared_data, "which is the frame the parent's alias named")
 
@@ -3164,7 +3176,7 @@ verify_rfork :: proc(r: ^Result) {
 	if p == nil {
 		return
 	}
-	if !check(r, wait(p, PATIENCE), "the parent grows, waits for the child to see, shrinks, and leaves") {
+	if !check(r, wait(p, PROGRESS), "the parent grows, waits for the child to see, shrinks, and leaves") {
 		return
 	}
 	check(r, p.exit.deliberate && p.exit.status == 0, "with zero, every call it made answered")
@@ -3176,7 +3188,7 @@ verify_rfork :: proc(r: ^Result) {
 	sharer := find_child(p.pid, cell(p, SHARER_PID))
 	if check(r, sharer != nil, "the child is still in the table") {
 		base := uintptr(cell(p, SHARER_BASE))
-		check(r, wait(sharer, PATIENCE), "and it ends")
+		check(r, wait(sharer, PROGRESS), "and it ends")
 		check(
 			r,
 			!sharer.exit.deliberate && sharer.exit.kind == .Page_Fault &&
@@ -3201,7 +3213,7 @@ verify_rfork :: proc(r: ^Result) {
 	if p == nil {
 		return
 	}
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, FDFORKER_WAITED) == 0, "the child closed descriptor 1 and left")
 		check(
 			r,
@@ -3215,7 +3227,7 @@ verify_rfork :: proc(r: ^Result) {
 	if p == nil {
 		return
 	}
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, FDFORKER_WAITED) == 0, "the child closed its copy's descriptor 1")
 		check(
 			r,
@@ -3231,7 +3243,7 @@ verify_rfork :: proc(r: ^Result) {
 	if p == nil {
 		return
 	}
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, REFUSER_ENVG) == 0, "an environment group of its own is granted in place")
 		check(r, cell(p, REFUSER_NOWAIT) == refused(vectra9.EINVAL), "dissociation is refused")
 		check(
@@ -3279,6 +3291,70 @@ forked_child :: proc "contextless" (parent: ^Process) -> ^Process #no_bounds_che
 // await_posted polls /srv for the name a spawned server should post, with
 // the suite's patience. Bounded, because a hang says nothing.
 @(private = "file")
+/*
+await_listening waits until a TCP conversation listens on `port`: a server
+started a moment ago is ready for a dial. It reads `/net/tcp/N/status` and
+`local`, which the stack serves. A fixed pause stood here once, and a server
+slower than the pause turned into a refused dial.
+*/
+await_listening :: proc(port: int) -> bool {
+	for _ in 0 ..< PROGRESS {
+		for n in 0 ..< 64 {
+			pb: [48]u8
+			ps := libodin.sink_from(pb[:])
+			libodin.put_str(&ps, "/net/tcp/")
+			libodin.put_uint(&ps, u64(n))
+			base := libodin.str(&ps)
+			sb: [64]u8
+			lb: [64]u8
+			tb: [64]u8
+			sn := web_read_file(libodin_cat(sb[:], base, "/status"), tb[:])
+			if sn <= 0 {
+				break // Past the last conversation the stack has
+			}
+			if !libodin.has_prefix(string(tb[:sn]), "Listen") {
+				continue
+			}
+			lp: [64]u8
+			ln := web_read_file(libodin_cat(lp[:], base, "/local"), lb[:])
+			want: [16]u8
+			ws := libodin.sink_from(want[:])
+			libodin.put_str(&ws, "!")
+			libodin.put_uint(&ws, u64(port))
+			if ln > 0 && libodin.has_suffix(string(lb[:ln]), libodin.str(&ws)) {
+				return true
+			}
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+// await_file_says waits until a file's contents start with `want`.
+await_file_says :: proc(path: string, want: string) -> bool {
+	for _ in 0 ..< PROGRESS {
+		b: [256]u8
+		n := web_read_file(path, b[:])
+		if n > 0 && libodin.has_prefix(string(b[:n]), want) {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+// await_parked_reading waits until a process is blocked in a read: loaded
+// off the disk and parked for its first input.
+await_parked_reading :: proc(p: ^Process) -> bool {
+	for _ in 0 ..< PROGRESS {
+		if p.thread != nil && p.thread.state == .Blocked && intrinsics.volatile_load(&p.in_call) == abi.SYS_READ + 1 {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
 await_posted :: proc(name: string) -> bool {
 	// A server posts after it reads what it starts on, off the disk. Two
 	// seconds, as the other waits for progress have. It answers the moment
@@ -3314,10 +3390,10 @@ settle :: proc() {
 	// returns. It dies a moment later, and the last holder of the server's
 	// namespace copy takes fifty-odd objects with it -- inside the next
 	// bracket, once in twenty boots, after the reaper wait alone was in.
-	_ = sync.await(live_is_resident, nil, PATIENCE)
-	_ = sync.await(settled, nil, PATIENCE)
+	_ = sync.await(live_is_resident, nil, PROGRESS)
+	_ = sync.await(settled, nil, PROGRESS)
 	sched.reap()
-	_ = sync.await(sched.all_reaped, nil, PATIENCE)
+	_ = sync.await(sched.all_reaped, nil, PROGRESS)
 }
 
 // The processes the machine holds when the suite begins, the servers boot
@@ -3337,7 +3413,7 @@ live_is_resident :: proc "contextless" (arg: rawptr) -> bool {
 @(private = "file")
 drain_pinned :: proc(r: ^Result, pin_before: int, what: string) {
 	pinned := 0
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		reap_orphans()
 		sched.reap()
 		pinned = mem.live_objects(mem.heap_stats()) - pin_before
@@ -3587,7 +3663,7 @@ start_draw_server :: proc(r: ^Result, s: ^fb.Surface, what_start: string, what_p
 
 @(private = "file")
 tenant_stop :: proc(r: ^Result, t: ^Tenant, w: Tenant_Stop) {
-	if check(r, wait(t.p, PATIENCE), w.exits) {
+	if check(r, wait(t.p, PROGRESS), w.exits) {
 		check(r, t.p.exit.deliberate && t.p.exit.status == 0, w.zero)
 	}
 	check(r, srv.remove(t.name) == vfs.OK, w.removed)
@@ -3739,7 +3815,7 @@ verify_consrv :: proc(r: ^Result) {
 
 	type_text(CONSRV_TYPED)
 
-	woke := sync.await_flag(&mount_reader.done, PATIENCE)
+	woke := sync.await_flag(&mount_reader.done, PROGRESS)
 	check(r, woke, "the parked read wakes when the line is typed")
 	check(
 		r,
@@ -3837,7 +3913,7 @@ verify_kbdfs :: proc(r: ^Result) {
 		devfs.scancode_tap(codes[i])
 	}
 	drained := false
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		if !devfs.tap_available(&devfs.tree().scancode) {
 			drained = true
 			break
@@ -3846,7 +3922,7 @@ verify_kbdfs :: proc(r: ^Result) {
 	}
 	check(r, drained, "and its reader child drains them from the raw stream")
 
-	woke := sync.await_flag(&mount_reader.done, PATIENCE)
+	woke := sync.await_flag(&mount_reader.done, PROGRESS)
 	check(r, woke, "the parked read wakes when the keys are pressed")
 	check(
 		r,
@@ -3914,7 +3990,7 @@ kbd_read :: proc(r: ^Result, c: ^vfs.Chan, want: string, what: string) -> bool {
 	if !check(r, sched.spawn("kbdfs-read", mount_read_thread, nil) != nil, "a thread to read the file") {
 		return false
 	}
-	woke := sync.await_flag(&mount_reader.done, PATIENCE)
+	woke := sync.await_flag(&mount_reader.done, PROGRESS)
 	return check(r, woke && mount_reader.err == vfs.OK && string(mount_reader.buf[:mount_reader.n]) == want, what)
 }
 
@@ -3976,7 +4052,7 @@ verify_eiafs :: proc(r: ^Result) {
 		devfs.serial_deliver(&devfs.tree().cons, sent[i])
 	}
 	drained := false
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		if !devfs.tap_available(&devfs.tree().serial) {
 			drained = true
 			break
@@ -3985,7 +4061,7 @@ verify_eiafs :: proc(r: ^Result) {
 	}
 	check(r, drained, "and its reader child drains them from the raw stream")
 
-	woke := sync.await_flag(&mount_reader.done, PATIENCE)
+	woke := sync.await_flag(&mount_reader.done, PROGRESS)
 	check(r, woke, "the parked read wakes when the wire speaks")
 	check(
 		r,
@@ -4444,7 +4520,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	at = libdraw.put_flush(buf[:], at)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr == vfs.OK, "a fill past the edge clips rather than errors")
-	check(r, fb.get_raw(s, ox + win_w - 1, sy) == C1, "and paints up to its client area's last pixel")
+	check(r, await_pixel(s, ox + win_w - 1, sy, C1), "and paints up to its client area's last pixel")
 	check(r, fb.get_raw(s, ox, sy + 1) == spill_before, "and spills nothing onto the row below")
 	/*
 	And nothing one pixel further, which is the client area's edge rather than
@@ -4485,7 +4561,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	at = libdraw.put_flush(buf[:], 0)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
 	check(r, werr == vfs.OK, "a flush of its own is answered")
-	check(r, fb.get_raw(s, ox + 8, sy) == C3, "and shows what stood before the bad command, which already drew")
+	check(r, await_pixel(s, ox + 8, sy, C3), "and shows what stood before the bad command, which already drew")
 
 	at = libdraw.put_free(buf[:], 0, 1)
 	_, werr = vfs.chan_write(dc, 0, buf[:at])
@@ -4556,7 +4632,7 @@ verify_draw :: proc(r: ^Result) #no_bounds_check {
 	check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove is answered, and is the stop")
 	vfs.chan_close(ctl)
 
-	if check(r, wait(p, PATIENCE), "the draw server exits") {
+	if check(r, wait(p, PROGRESS), "the draw server exits") {
 		check(
 			r,
 			p.exit.deliberate && p.exit.status == 0,
@@ -4767,7 +4843,7 @@ verify_popup_stack :: proc(r: ^Result) #no_bounds_check {
 		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
 		vfs.chan_close(ctl)
 	}
-	check(r, wait(p, PATIENCE), "the draw server exits")
+	check(r, wait(p, PROGRESS), "the draw server exits")
 	check(r, srv.remove("draw") == vfs.OK, "the kernel takes the name away")
 	finish(r, p, "and the draw server is taken down")
 	pipe.quiesce()
@@ -4826,7 +4902,7 @@ verify_store_client :: proc(r: ^Result, s: ^fb.Surface, ox: int, oy: int) {
 	set_cell(p, STORE_CY, cy)
 
 	check(r, launch(p, u64(len(PATH)), u64(len(FLUSH))), "and it launches, staged")
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_STORETEST, "having reached its first instruction")
 		check(r, i64(cell(p, STORE_ATTACH)) >= 0, "the window's store attached into the client's own space")
 		check(r, i64(cell(p, STORE_FD)) >= 0, "it opened the store to flush")
@@ -4903,7 +4979,7 @@ a process, which is what makes it a poll rather than a read.
 */
 @(private = "file")
 await_caret :: proc(s: ^fb.Surface, at: int, was: int, y: int) -> bool {
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		if caret_at(s, at, y) && !caret_at(s, was, y) {
 			return true
 		}
@@ -4915,6 +4991,28 @@ await_caret :: proc(s: ^fb.Surface, at: int, was: int, y: int) -> bool {
 // await_glyph is `await_caret` for a character: true once `ch` is on the
 // glass at the cell, with the ticks it took, which one caller reports.
 @(private = "file")
+/*
+await_pixel waits for one pixel of the glass to take a value. A read of the
+glass is not atomic with the server that composites it. So a check of what
+should arrive polls. A check of what must not be there reads once, after its
+positive half settles. `docs/HANDOFF.md`, reading a boot's flakes.
+*/
+await_pixel :: proc(s: ^fb.Surface, x: int, y: int, want: u32) -> bool {
+	for _ in 0 ..< PROGRESS {
+		if fb.get_raw(s, x, y) == want {
+			return true
+		}
+		sync.delay(1)
+	}
+	return false
+}
+
+// glyph_arrives is `await_glyph` answering only whether it came.
+glyph_arrives :: proc(s: ^fb.Surface, x: int, y: int, ch: u8) -> bool {
+	found, _ := await_glyph(s, x, y, ch, PROGRESS)
+	return found
+}
+
 await_glyph :: proc(s: ^fb.Surface, x: int, y: int, ch: u8, patience: int) -> (found: bool, ticks: int) {
 	for _ in 0 ..< patience {
 		if glyph_on_glass(s, x, y, ch) {
@@ -5127,7 +5225,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	*/
 	slate := fb.pack(s, fb.SLATE)
 	ox, oy, cy_end := -1, -1, -1
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		/*
 		The first run of not-desktop across a low row, which is the window.
 
@@ -5187,7 +5285,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	*/
 	prompted, _ := await_glyph(s, ox + 8, y0, '%', PATIENCE * 10)
 	check(r, prompted, "the terminal starts a shell in its window, whose prompt it draws")
-	check(r, glyph_on_glass(s, ox + 16, y0, ' '), "whose glyphs match the kernel's own font, pixel for pixel")
+	check(r, glyph_arrives(s, ox + 16, y0, ' '), "whose glyphs match the kernel's own font, pixel for pixel")
 
 	/*
 	And the bar across the top of its window says whose window it is.
@@ -5239,7 +5337,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	r.echo_ticks = echo_ticks
 	check(r, echoed, "and yet appear on the glass, because the window that draws them holds the line")
 	both := false
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		if glyph_on_glass(s, ox + 24, y0, 'h') && glyph_on_glass(s, ox + 32, y0, 'i') {
 			both = true
 			break
@@ -5287,7 +5385,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	*/
 	devfs.keyboard_sink(0x08)
 	erased := false
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		if cell_body_blank(s, ox + 40, y0) {
 			erased = true
 			break
@@ -5295,7 +5393,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		sync.delay(1)
 	}
 	check(r, erased, "a backspace takes the last character off the field it was drawn in")
-	kept, _ := await_glyph(s, ox + 32, y0, 'i', PATIENCE)
+	kept, _ := await_glyph(s, ox + 32, y0, 'i', PROGRESS)
 	check(r, kept, "and leaves the rest of the line where it was")
 	// And the caret came back with it, which is the cursor this milestone
 	// gave the line. It sits where the next character goes, and not where
@@ -5315,7 +5413,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		await_caret(s, ox + 24, ox + 40, y0),
 		"^A moves the caret to the front of the line, under the first letter",
 	)
-	check(r, glyph_on_glass(s, ox + 32, y0, 'i'), "and the line it is in is untouched")
+	check(r, glyph_arrives(s, ox + 32, y0, 'i'), "and the line it is in is untouched")
 
 	devfs.keyboard_sink(0x05)
 	check(
@@ -5330,7 +5428,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 	// The poll waits for the line's LAST glyph. The server paints the
 	// batch left to right, so the first glyph says only that the batch
 	// began. A poll of it once raced the two behind it.
-	rendered, _ := await_glyph(s, ox + 40, y0, '!', PATIENCE)
+	rendered, _ := await_glyph(s, ox + 40, y0, '!', PROGRESS)
 	check(r, rendered, "the newline completes the line and the terminal renders it")
 	check(
 		r,
@@ -5400,7 +5498,7 @@ verify_terminal :: proc(r: ^Result, column: proc "contextless" () -> int) #no_bo
 		vfs.chan_close(ctl)
 	}
 
-	if check(r, wait(ps, PATIENCE), "the draw server exits") {
+	if check(r, wait(ps, PROGRESS), "the draw server exits") {
 		check(
 			r,
 			ps.exit.deliberate && ps.exit.status == 0,
@@ -5905,7 +6003,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			zx, zy := wx + ww - 21 + 2, wy + 5 + 2 + 6
 			keyed := false
 			if lined {
-				for _ in 0 ..< PATIENCE * 5 {
+				for _ in 0 ..< PROGRESS {
 					if v := fb.get_raw(s, zx, zy); (v >> 16 & 0xFF) > 160 && v != fb.pack(s, fb.AMBER) {
 						keyed = true
 						break
@@ -5984,7 +6082,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			// Back where it began: a zoom after a snap restores, and only then.
 			if snapped {
 				_ = net_file_write("/mnt/0/wctl", "zoom")
-				for _ in 0 ..< PATIENCE * 5 {
+				for _ in 0 ..< PROGRESS {
 					if bx2, _, _, _, _, _, _, _, bok := wctl_frame("/mnt/0/wctl"); bok && bx2 == wx0 {
 						break
 					}
@@ -6186,7 +6284,7 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 			}
 			check(r, opened, "and opens a toolkit window of its own, the second on the glass")
 			_ = notepg_kernel(pp.note_group, "kill")
-			check(r, end(pp, PATIENCE * 5), "and, told to end, ends")
+			check(r, end(pp, PROGRESS), "and, told to end, ends")
 			finish(r, pp, "and is taken down")
 			reap_orphans()
 		}
@@ -6310,12 +6408,12 @@ verify_muiwin :: proc(r: ^Result) #no_bounds_check {
 		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
 		vfs.chan_close(ctl)
 	}
-	if check(r, wait(ps, PATIENCE), "the draw server exits") {
+	if check(r, wait(ps, PROGRESS), "the draw server exits") {
 		check(r, ps.exit.deliberate && ps.exit.status == 0, "with zero -- the remove was the stop it obeyed")
 	}
 	// The demo's cons and mouse are the server's files, so its reads end when
 	// the server does, and it comes down on its own.
-	check(r, wait(pd, PATIENCE), "and the demo comes down with the server, its files gone")
+	check(r, wait(pd, PROGRESS), "and the demo comes down with the server, its files gone")
 	check(r, srv.remove("draw") == vfs.OK, "the kernel takes the name away")
 	check(r, srv.count() == count0, "and /srv holds what it held")
 
@@ -6707,7 +6805,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 			report: [512]u8
 			rn := 0
 			in_mode := false
-			for _ in 0 ..< PATIENCE * 5 {
+			for _ in 0 ..< PROGRESS {
 				rn = read_once("/n/desk/ctl", report[:])
 				if rn > 0 && libodin.contains(string(report[:rn]), "mode nudge") {
 					in_mode = true
@@ -6726,7 +6824,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 			devfs.scancode_tap(0x81) // and up
 			sync.delay(5)
 			left := false
-			for _ in 0 ..< PATIENCE * 5 {
+			for _ in 0 ..< PROGRESS {
 				rn = read_once("/n/desk/ctl", report[:])
 				if rn > 0 && !libodin.contains(string(report[:rn]), "mode nudge") {
 					left = true
@@ -7036,7 +7134,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
 		vfs.chan_close(ctl)
 	}
-	if check(r, wait(ps, PATIENCE), "the draw server exits") {
+	if check(r, wait(ps, PROGRESS), "the draw server exits") {
 		check(r, ps.exit.deliberate && ps.exit.status == 0, "with zero -- the remove was the stop it obeyed")
 	}
 	// The desktop's windows are the server's files, so its loops end when
@@ -7054,7 +7152,7 @@ verify_workbench :: proc(r: ^Result) #no_bounds_check {
 		check(r, vfs.chan_remove(kc) == vfs.OK, "a remove stops the keyboard translator")
 		vfs.chan_close(kc)
 	}
-	check(r, wait(pk, PATIENCE), "the translator exits")
+	check(r, wait(pk, PROGRESS), "the translator exits")
 	check(r, srv.remove("kbdfs") == vfs.OK, "and the kernel takes its name away too")
 
 	finish(r, pw, "and the desktop is reaped")
@@ -7611,10 +7709,10 @@ verify_app :: proc(r: ^Result, path: string, ground: u32, want_marker: bool, wan
 		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of the window's ctl is the server's stop")
 		vfs.chan_close(ctl)
 	}
-	if check(r, wait(ps, PATIENCE), "the draw server exits") {
+	if check(r, wait(ps, PROGRESS), "the draw server exits") {
 		check(r, ps.exit.deliberate && ps.exit.status == 0, "with zero -- the remove was the stop it obeyed")
 	}
-	check(r, wait(pd, PATIENCE), "and the client comes down with it, its window gone")
+	check(r, wait(pd, PROGRESS), "and the client comes down with it, its window gone")
 
 	check(r, srv.remove("draw") == vfs.OK, "the kernel takes the name away")
 	check(r, srv.count() == count0, "and /srv holds what it held")
@@ -7658,7 +7756,7 @@ verify_tree_mmio :: proc(r: ^Result) #no_bounds_check {
 	}
 	check(r, set_bytes(p, SLOT_A, bytes_of(PATH)), "with the mmio path in its page")
 	check(r, launch(p, u64(len(PATH)), 0xFE0), "and it launches, staged with the id register's offset")
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_TREEMMIO, "having reached its first instruction")
 		check(r, i64(cell(p, TREEMMIO_FD)) >= 0, "it opened the mmio file")
 		check(r, i64(cell(p, TREEMMIO_ADDR)) >= 0, "the register window attached into its own space")
@@ -7746,7 +7844,7 @@ verify_tree_dma :: proc(r: ^Result) #no_bounds_check {
 	}
 	check(r, set_bytes(p, SLOT_A, bytes_of(DMA)), "with the dma path in its page")
 	check(r, launch(p, u64(len(DMA))), "and it launches, staged with the path length")
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_TREEDMA, "having reached its first instruction")
 		check(r, i64(cell(p, TREEDMA_FD)) >= 0, "it opened the dma file for writing")
 		check(r, i64(cell(p, TREEDMA_ATTACH)) > 0, "attach 16 <self> bound the scratch disk's stream to its own space")
@@ -7800,7 +7898,7 @@ verify_blkfs :: proc(r: ^Result) #no_bounds_check {
 		// Each step of the bring-up has its own exit code, so the log says
 		// which door was shut rather than that one was. These come before
 		// the posting's own check so the first failure is the door.
-		if wait(p, PATIENCE) {
+		if wait(p, PROGRESS) {
 			status := p.exit.status
 			check(r, status != 0x74, "it found the host's memory windows in ranges, and opened mmio32 or mmio64")
 			check(r, status != 0x75, "it attached the function's configuration page and mapped its three register structures")
@@ -7861,7 +7959,7 @@ verify_blkfs :: proc(r: ^Result) #no_bounds_check {
 		vfs.chan_close(ctl)
 	}
 
-	if check(r, wait(p, PATIENCE), "and the program exits") {
+	if check(r, wait(p, PROGRESS), "and the program exits") {
 		check(r, p.exit.deliberate && p.exit.status == 0, "deliberately, with nothing to report")
 	}
 	check(r, srv.remove("blkfs") == vfs.OK, "the kernel takes the name away")
@@ -7903,7 +8001,7 @@ verify_fixedseg :: proc(r: ^Result) #no_bounds_check {
 		return
 	}
 	check(r, launch(p, u64(AT)), "and it launches, asking for an address")
-	if check(r, wait(p, PATIENCE), "and comes back") {
+	if check(r, wait(p, PROGRESS), "and comes back") {
 		check(r, cell(p, CELL_MARK) == MARK_FIXEDSEG, "having reached its first instruction")
 		check(r, cell(p, FIXEDSEG_FIRST) == u64(AT), "segalloc placed the run at the address it named")
 		check(r, cell(p, FIXEDSEG_WITNESS) == 0x1234_5678, "and the run is real, a word written into it and read back")
@@ -7999,7 +8097,7 @@ verify_debugger :: proc(r: ^Result) #no_bounds_check {
 	stepped := false
 	for _ in 0 ..< 40 {
 		inject_key(0x1f)
-		for _ in 0 ..< PATIENCE * 4 {
+		for _ in 0 ..< PROGRESS {
 			if pc, ok := debuggee_pc(); ok && pc != entry {
 				stepped = true
 				break
@@ -8014,7 +8112,7 @@ verify_debugger :: proc(r: ^Result) #no_bounds_check {
 
 	// And a q is its Quit, which detaches the target and closes the window.
 	inject_key(0x10)
-	check(r, wait(pd, PATIENCE), "a q typed at the window is its quit, and the window comes down")
+	check(r, wait(pd, PROGRESS), "a q typed at the window is its quit, and the window comes down")
 
 	// -- Teardown: the engine by its name, the draw server the terminal's way --
 
@@ -8026,7 +8124,7 @@ verify_debugger :: proc(r: ^Result) #no_bounds_check {
 	// in for the unmount.
 	finish(r, pd, "the debugger's window is reaped, and its mount of the engine with it")
 	check(r, srv.remove("dbg") == vfs.OK, "the kernel takes the engine's name away")
-	check(r, wait(pe, PATIENCE), "and the engine ends when its last client and its name are gone")
+	check(r, wait(pe, PROGRESS), "and the engine ends when its last client and its name are gone")
 	// The engine has exited but is not reaped, and its stopped child is a
 	// zombie under it. Reaping the engine orphans the child, which the drain
 	// below collects.
@@ -8037,7 +8135,7 @@ verify_debugger :: proc(r: ^Result) #no_bounds_check {
 			check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
 			vfs.chan_close(ctl)
 		}
-		check(r, wait(ps, PATIENCE), "the draw server exits")
+		check(r, wait(ps, PROGRESS), "the draw server exits")
 		check(r, srv.remove("draw") == vfs.OK, "the kernel takes its name away")
 	}
 	pipe.quiesce()
@@ -8048,7 +8146,7 @@ verify_debugger :: proc(r: ^Result) #no_bounds_check {
 		check(r, vfs.chan_remove(kc) == vfs.OK, "a remove stops the keyboard translator")
 		vfs.chan_close(kc)
 	}
-	check(r, wait(pk, PATIENCE), "the translator exits")
+	check(r, wait(pk, PROGRESS), "the translator exits")
 	check(r, srv.remove("kbdfs") == vfs.OK, "the kernel takes its name away too")
 	check(r, srv.count() == count0, "and /srv holds what it held")
 	finish(r, ps, "the draw server is reaped")
@@ -8137,7 +8235,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		mount_reader = Mount_Reader{c = hk}
 		if check(r, sched.spawn("hotkey-read", mount_read_thread, nil) != nil, "a thread reads it") {
 			inject_chord(0x11 + 0x20) // 'n' is make 0x31
-			woke := sync.await_flag(&mount_reader.done, PATIENCE)
+			woke := sync.await_flag(&mount_reader.done, PROGRESS)
 			line := string(mount_reader.buf[:max(mount_reader.n, 0)])
 			if woke && line == "window rc -i\n" {
 				check(r, true, "an alt-n the server does not know reaches the desktop, verbatim")
@@ -8173,7 +8271,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		frame := fb.pack(s, fb.MAGNESIUM_HOT)
 		void := fb.pack(s, fb.VOID)
 		inject_chord(0x39) // space is make 0x39
-		dimmed := await_corner(s, void, PATIENCE)
+		dimmed := await_corner(s, void, PROGRESS)
 		check(r, dimmed, "an alt-space dims the glass to the overview's ground")
 
 		// A window dragged from one tile to another moves to that workspace,
@@ -8192,7 +8290,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		}
 
 		inject_chord(0x39)
-		closed := await_corner(s, frame, PATIENCE)
+		closed := await_corner(s, frame, PROGRESS)
 		check(r, closed, "and a second alt-space closes it, back to the window it covered")
 	}
 
@@ -8203,7 +8301,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		mount_reader = Mount_Reader{c = cons}
 		if check(r, sched.spawn("chord-cons", mount_read_thread, nil) != nil, "a thread reads it") {
 			inject_chord(0x11) // 'w' is make 0x11
-			ended := sync.await_flag(&mount_reader.done, PATIENCE)
+			ended := sync.await_flag(&mount_reader.done, PROGRESS)
 			check(r, ended && mount_reader.n == 0, "an alt-w hangs the window in front up, and its keyboard answers nothing")
 		}
 		vfs.chan_close(cons)
@@ -8216,7 +8314,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove stops the draw server")
 		vfs.chan_close(ctl)
 	}
-	check(r, wait(ps, PATIENCE), "the draw server exits")
+	check(r, wait(ps, PROGRESS), "the draw server exits")
 	check(r, srv.remove("draw") == vfs.OK, "the kernel takes its name away")
 	pipe.quiesce()
 	_ = vfs.unmount_path(vfs.boot_namespace, "", "/mnt")
@@ -8228,7 +8326,7 @@ verify_chords :: proc(r: ^Result) #no_bounds_check {
 		check(r, vfs.chan_remove(kc) == vfs.OK, "a remove stops the keyboard translator")
 		vfs.chan_close(kc)
 	}
-	check(r, wait(pk, PATIENCE), "the translator exits")
+	check(r, wait(pk, PROGRESS), "the translator exits")
 	check(r, srv.remove("kbdfs") == vfs.OK, "the kernel takes its name away too")
 
 	finish(r, ps, "and the draw server is taken down")
@@ -8826,7 +8924,7 @@ answer, which is the one the check exists to reject.
 type_settled :: proc(keys: []u8) -> bool #no_bounds_check {
 	before := devfs.cons_takes()
 	type_text(string(keys))
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		if devfs.cons_takes() >= before + u64(len(keys)) {
 			return true
 		}
@@ -8840,7 +8938,7 @@ type_settled :: proc(keys: []u8) -> bool #no_bounds_check {
 // discipline before it is in a window's ring.
 @(private = "file")
 wait_for_size :: proc(c: ^vfs.Chan, want: u64) -> bool {
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		if attr, err := vfs.chan_stat(c); err == vfs.OK && attr.size >= want {
 			return true
 		}
@@ -8910,7 +9008,7 @@ typed_to :: proc(r: ^Result, want: ^vfs.Chan, other: ^vfs.Chan, text: string, wh
 	devfs.keyboard_sink('\n')
 
 	waiting := u64(0)
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		if attr, err := vfs.chan_stat(want); err == vfs.OK && attr.size > 0 {
 			waiting = attr.size
 			break
@@ -9658,7 +9756,7 @@ verify_anon :: proc(r: ^Result) {
 	now, and the control fails where it should. The frame goes back after
 	the teardown, before the totals are read.
 	*/
-	asked := await_cell_moves(p, ANON_AGAIN, PATIENCE)
+	asked := await_cell_moves(p, ANON_AGAIN, PROGRESS)
 	check(r, asked, "the program asked twice and waits for the kernel's word before it grows")
 	wedge, wedged := mem.alloc_page()
 	check(r, wedged, "and the kernel takes the frame the allocator would have handed the grow")
@@ -10239,7 +10337,7 @@ verify_windows :: proc(
 	at = libdraw.put_flush(buf[:], at)
 	_, a2err := vfs.chan_write(first, 0, buf[:at])
 	check(r, a2err == vfs.OK, "the covered client fills its width a second time")
-	check(r, fb.get_raw(s, under_x, sy) == A2, "and its flush repaints what it owns")
+	check(r, await_pixel(s, under_x, sy, A2), "and its flush repaints what it owns")
 	check(
 		r,
 		fb.get_raw(s, ox + win_w - 1, sy) == B,
@@ -10261,7 +10359,7 @@ verify_windows :: proc(
 	at = libdraw.put_flush(buf[:], at)
 	_, werr = vfs.chan_write(second, 0, buf[:at])
 	check(r, werr == vfs.OK, "the second asks for a rectangle wider than the screen")
-	check(r, fb.get_raw(s, edge - 1, sy) == B, "and gets its window, out to its last column")
+	check(r, await_pixel(s, edge - 1, sy, B), "and gets its window, out to its last column")
 	check(r, fb.get_raw(s, edge, sy) == beyond_before, "and not one pixel past it")
 
 	/*
@@ -10282,7 +10380,7 @@ verify_windows :: proc(
 	at = libdraw.put_flush(buf[:], at)
 	_, blerr := vfs.chan_write(second, 0, buf[:at])
 	check(r, blerr == vfs.OK, "the second client loads an image and blits it")
-	check(r, fb.get_raw(s, second_ox + 16, sy) == MARK, "which lands inside its own window")
+	check(r, await_pixel(s, second_ox + 16, sy, MARK), "which lands inside its own window")
 	check(r, fb.get_raw(s, ox + 16, sy) != MARK, "and not in the window beside it")
 
 	/*
@@ -10298,7 +10396,7 @@ verify_windows :: proc(
 	if check(r, scerr == vfs.OK, "the second window's keyboard opens") {
 		type_text("zz")
 		devfs.keyboard_sink('\n')
-		for _ in 0 ..< PATIENCE {
+		for _ in 0 ..< PROGRESS {
 			if attr, e := vfs.chan_stat(stale_cons); e == vfs.OK && attr.size > 0 {
 				break
 			}
@@ -10335,17 +10433,17 @@ verify_windows :: proc(
 		to_two := "workspace 2\n"
 		_, e1 := vfs.chan_write(wctl, 0, transmute([]u8)to_two)
 		check(r, e1 == vfs.OK, "a window is sent to the second workspace by a wctl line")
-		check(r, fb.get_raw(s, second_ox, sy) == A2, "and leaves the glass, so the store below shows through")
+		check(r, await_pixel(s, second_ox, sy, A2), "and leaves the glass, so the store below shows through")
 		lamp_two := fb.get_raw(s, lamp_x, lamp_y)
 		check(r, lamp_two != lamp_dark, "and the second workspace's lamp says something is on it")
 		_, e2 := vfs.chan_write(sctl, 0, transmute([]u8)to_two)
 		check(r, e2 == vfs.OK, "a workspace line to the server's ctl switches to it")
-		check(r, fb.get_raw(s, second_ox, sy) == B, "and the window sent there is on the glass again")
+		check(r, await_pixel(s, second_ox, sy, B), "and the window sent there is on the glass again")
 		check(r, is_desk(s, ox, sy), "with the first window gone from it, and desktop where it was")
-		check(r, fb.get_raw(s, lamp_x, lamp_y) == fb.pack(s, fb.PHOSPHOR), "and its lamp is the lit one now")
+		check(r, await_pixel(s, lamp_x, lamp_y, fb.pack(s, fb.PHOSPHOR)), "and its lamp is the lit one now")
 		to_one := "workspace 1\n"
 		_, e3 := vfs.chan_write(sctl, 0, transmute([]u8)to_one)
-		check(r, e3 == vfs.OK && fb.get_raw(s, ox, sy) == A2, "and the first workspace comes back, with its window")
+		check(r, e3 == vfs.OK && await_pixel(s, ox, sy, A2), "and the first workspace comes back, with its window")
 		vfs.chan_close(wctl)
 		vfs.chan_close(sctl)
 	}
@@ -10366,7 +10464,7 @@ verify_windows :: proc(
 		is_desk(s, ground_x, ground_y),
 		"and where no window is left, the desktop is back",
 	)
-		check(r, fb.get_raw(s, lamp_x, lamp_y) == lamp_dark, "and the second workspace's lamp goes dark, its last window gone")
+		check(r, await_pixel(s, lamp_x, lamp_y, lamp_dark), "and the second workspace's lamp goes dark, its last window gone")
 	/*
 	And the front goes to what is left, which is the one path where focus
 	arrives at a window that did nothing to ask for it.
@@ -10512,14 +10610,14 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 	check(r, parked, "a read of it parks until the pointer moves over the window")
 
 		check(r, point_to(second_x + ox + 10, oy + 10), "the pointer is moved into the window's client area")
-	woke := sync.await_flag(&mount_reader.done, PATIENCE)
+	woke := sync.await_flag(&mount_reader.done, PROGRESS)
 	check(r, woke, "and the read wakes")
 	// The parked read caught the first movement into the window, which the
 	// pointer entered part-way to its mark, because it began over this
 	// window. A second read answers where it settled.
 	mount_reader = Mount_Reader{c = mf}
 	if sched.spawn("mouse-read2", mount_read_thread, nil) != nil {
-		for _ in 0 ..< PATIENCE {
+		for _ in 0 ..< PROGRESS {
 			if intrinsics.volatile_load(&mount_reader.done) {
 				break
 			}
@@ -10602,7 +10700,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 	check(r, point_to(second_x + 60, oy - 4), "the pointer is moved onto the bar")
 	check(r, press_and_move(40, 24), "pressed, dragged, and released")
 	moved := false
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		x, y, ok := wctl_place(wctl)
 		if ok && x == second_x + 40 && y == 24 {
 			moved = true
@@ -10624,7 +10722,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 		cx, cy := mouse.position()
 		held := inject_move(0, 0, 1) && wait_pointer(cx, cy) && inject_move(10, 0, 1) && wait_pointer(cx + 10, cy)
 		mid := false
-		for _ in 0 ..< PATIENCE {
+		for _ in 0 ..< PROGRESS {
 			if x, _, ok := wctl_place(wctl); ok && x == second_x + 50 {
 				mid = true
 				break
@@ -10646,7 +10744,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 		// zoom undoes the snap, so the server keeps no snapped place. A move
 		// takes back the ten pixels.
 		_ = net_file_write("/mnt/1/wctl", "zoom")
-		for _ in 0 ..< PATIENCE {
+		for _ in 0 ..< PROGRESS {
 			if x, _, ok := wctl_place(wctl); ok && x == second_x + 50 {
 				break
 			}
@@ -10659,7 +10757,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 		libodin.put_str(&ms, " 24")
 		_ = net_file_write("/mnt/1/wctl", libodin.str(&ms))
 		back := false
-		for _ in 0 ..< PATIENCE {
+		for _ in 0 ..< PROGRESS {
 			if x, y, ok := wctl_place(wctl); ok && x == second_x + 40 && y == 24 {
 				back = true
 				break
@@ -10787,7 +10885,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 				check(r, rn > 0 && libodin.contains(string(rep[:rn]), "locked"), "and the server's ctl says locked")
 				lpx := second_x + 40 + fw - 20
 				lpy := 24 + oy + 40
-				check(r, fb.get_raw(s, lpx, lpy) == fb.pack(s, fb.VOID), "and the window's well is gone from the glass, the lock over it")
+				check(r, await_pixel(s, lpx, lpy, fb.pack(s, fb.VOID)), "and the window's well is gone from the glass, the lock over it")
 				type_text("q")
 				type_text("wrong\n")
 				still := true
@@ -10809,7 +10907,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 				}
 				check(r, unlocked, "and hers takes it down")
 				got_back := false
-				for _ in 0 ..< PATIENCE * 5 {
+				for _ in 0 ..< PROGRESS {
 					if fb.get_raw(s, lpx, lpy) == fb.pack(s, fb.SLATE) {
 						got_back = true
 						break
@@ -10818,7 +10916,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 				}
 				check(r, got_back, "and the window is back on the glass")
 				type_text("z\n")
-				line_ok := reading && sync.await_flag(&mount_reader.done, PATIENCE) && string(mount_reader.buf[:max(mount_reader.n, 0)]) == "z\n"
+				line_ok := reading && sync.await_flag(&mount_reader.done, PROGRESS) && string(mount_reader.buf[:max(mount_reader.n, 0)]) == "z\n"
 				check(r, line_ok, "and the window's next line is z alone: the q typed while locked never reached it")
 				vfs.chan_close(lcons)
 			}
@@ -10828,7 +10926,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 			vfs.chan_close(c)
 		}
 		if pf != nil {
-			_ = wait(pf, PATIENCE)
+			_ = wait(pf, PROGRESS)
 			finish(r, pf, "and factotum is taken down")
 		}
 		_ = srv.remove("factotum")
@@ -10852,7 +10950,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 	}
 	probe_x := second_x + 40 + fw - 20
 	probe_y := 24 + oy + 40
-	check(r, fb.get_raw(s, probe_x, probe_y) == fb.pack(s, fb.SLATE), "the window's well is on the glass past the first window's edge")
+	check(r, await_pixel(s, probe_x, probe_y, fb.pack(s, fb.SLATE)), "the window's well is on the glass past the first window's edge")
 	mf2, merr2 := vfs.open_path(vfs.boot_namespace, "/mnt/1/mouse", vfs.O_RDONLY)
 	if !check(r, merr2 == vfs.OK && mf2 != nil, "its mouse opens again, so the window has a reader to ask") {
 		vfs.chan_close(cons)
@@ -10863,6 +10961,8 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 	asked := false
 	for _ in 0 ..< MOUSE_LINES_MAX {
 		mount_reader = Mount_Reader{c = mf2}
+		// A read that parks is the end of the lines, so this wait running out
+		// is the loop's way out, and keeps the short patience.
 		if sched.spawn("close-read", mount_read_thread, nil) == nil || !sync.await_flag(&mount_reader.done, PATIENCE) {
 			break
 		}
@@ -10897,7 +10997,7 @@ verify_pointer :: proc(r: ^Result, s: ^fb.Surface, fw: int, ox: int, oy: int, se
 	vfs.chan_close(mf2)
 	mount_reader = Mount_Reader{c = cons}
 	if check(r, sched.spawn("cons-read", mount_read_thread, nil) != nil, "a thread to read the keyboard") {
-		ended := sync.await_flag(&mount_reader.done, PATIENCE)
+		ended := sync.await_flag(&mount_reader.done, PROGRESS)
 		check(r, ended && mount_reader.err == vfs.OK && mount_reader.n == 0, "the keyboard answers nothing, which is how a program learns its window is gone")
 	}
 	check(r, is_desk(s, probe_x, probe_y), "and the window is off the glass, with the desktop where it was")
@@ -10919,7 +11019,7 @@ mouse_next :: proc(mf: ^vfs.Chan) -> (x: int, y: int, b: int, ok: bool) {
 		if sched.spawn("mouse-next", mount_read_thread, nil) == nil {
 			return
 		}
-		if !sync.await_flag(&mount_reader.done, PATIENCE) {
+		if !sync.await_flag(&mount_reader.done, PROGRESS) {
 			return
 		}
 		if mount_reader.n > 0 && mount_reader.buf[0] == 'r' {
@@ -11047,7 +11147,7 @@ inject_move :: proc(dx: int, dy: int, buttons: u8) -> bool {
 // patience.
 @(private = "file")
 wait_pointer :: proc(x: int, y: int) -> bool {
-	for _ in 0 ..< PATIENCE {
+	for _ in 0 ..< PROGRESS {
 		cx, cy := mouse.position()
 		if cx == x && cy == y {
 			sync.delay(2)
@@ -11100,7 +11200,7 @@ front_wctl :: proc(base: string) -> string {
 // any. For a change that crosses another process first: a chord, a drag.
 @(private = "file")
 await_geo :: proc(path: string, x: int, y: int, w: int, h: int) -> bool {
-	for _ in 0 ..< PATIENCE * 5 {
+	for _ in 0 ..< PROGRESS {
 		gx, gy, gw, gh, _, _, ok := wctl_geo(path)
 		if ok && (x < 0 || gx == x) && (y < 0 || gy == y) && (w < 0 || gw == w) && (h < 0 || gh == h) {
 			return true
@@ -11547,7 +11647,7 @@ verify_factotum :: proc(r: ^Result) {
 		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of its file is factotum's stop")
 		vfs.chan_close(c)
 	}
-	check(r, wait(p, PATIENCE), "and it exits")
+	check(r, wait(p, PROGRESS), "and it exits")
 	check(r, srv.remove("factotum") == vfs.OK, "and the kernel takes the name away")
 	check(r, srv.count() == count0, "and /srv holds what it held")
 	finish(r, p, "and factotum is taken down")
@@ -11567,7 +11667,7 @@ verify_users :: proc(r: ^Result) {
 	if p == nil {
 		return
 	}
-	check(r, wait(p, PATIENCE), "and ends")
+	check(r, wait(p, PROGRESS), "and ends")
 	check(r, user_of(p) == hostowner_name(), "with the host owner's name on it")
 	spath: [40]u8
 	if c, err := vfs.open_path(vfs.boot_namespace, proc_file(spath[:], p.pid, "status"), vfs.O_RDONLY); err == vfs.OK {
@@ -11631,7 +11731,7 @@ verify_debug :: proc(r: ^Result) {
 		finish(r, p, "and the held program is taken down")
 		return
 	}
-	armed := sync.await_flag(&p.trace_note, PATIENCE)
+	armed := sync.await_flag(&p.trace_note, PROGRESS)
 	check(r, armed, "which arms the stop before the program has a thread")
 	check(r, launch(p, 0), "and the program launches into it")
 	cerr, answered := ctl_answered()
@@ -11712,7 +11812,7 @@ verify_debug :: proc(r: ^Result) {
 	set_cell(p, CELL_STOP, 1)
 	_, serr = write_proc(pid, "ctl", 0, bytes_of("start"))
 	check(r, serr == vfs.OK, "start lets it go")
-	check(r, wait(p, PATIENCE), "and it runs to its own end")
+	check(r, wait(p, PROGRESS), "and it runs to its own end")
 	finish(r, p, "and the debugged program is taken down")
 
 	// -- startsyscall: in, and out --------------------------------------------
@@ -11724,7 +11824,7 @@ verify_debug :: proc(r: ^Result) {
 	pid = p.pid
 	check(r, set_bytes(p, MESSAGE_OFFSET, bytes_of(MESSAGE)), "with a line in its data page")
 	check(r, ctl_ask(pid, "startsyscall"), "a thread asks startsyscall")
-	armed = sync.await_flag(&p.trace_syscall, PATIENCE)
+	armed = sync.await_flag(&p.trace_syscall, PROGRESS)
 	check(r, armed && launch(p, u64(len(MESSAGE))), "and the program launches into it")
 	cerr, answered = ctl_answered()
 	check(r, answered && cerr == vfs.OK, "and startsyscall answers at the call's entry")
@@ -11738,7 +11838,7 @@ verify_debug :: proc(r: ^Result) {
 	n, rerr = read_proc(pid, "regs", 0, fbytes)
 	check(r, rerr == vfs.OK && arch.syscall_result(&frame) == i64(len(MESSAGE)), "with the write's answer on the frame")
 	_, serr = write_proc(pid, "ctl", 0, bytes_of("start"))
-	check(r, serr == vfs.OK && wait(p, PATIENCE), "and started again it exits")
+	check(r, serr == vfs.OK && wait(p, PROGRESS), "and started again it exits")
 	check(r, p.exit.deliberate && p.exit.status == 0x2A, "with the status it meant")
 	finish(r, p, "and it is taken down")
 
@@ -11771,7 +11871,7 @@ verify_debug :: proc(r: ^Result) {
 	n, _ = read_proc(ps.pid, "status", 0, status[:])
 	check(r, libodin.contains(string(status[:n]), " Stopped "), "and status says Stopped")
 	_, serr = write_proc(ps.pid, "ctl", 0, bytes_of("start"))
-	check(r, serr == vfs.OK && end(ps, PATIENCE), "started, it is ended by the kernel's word")
+	check(r, serr == vfs.OK && end(ps, PROGRESS), "started, it is ended by the kernel's word")
 	finish(r, ps, "and taken down")
 }
 
@@ -11995,7 +12095,7 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 			check(r, n > 0 && string(got[:n]) == "/net/tcp/clone 10.0.0.2!564\n", "and /net/cs finishes a dial string with it")
 			n = net_file_ask("/net/dns", "fs.test", got[:])
 			check(r, n > 0 && string(got[:n]) == "fs.test ip 10.0.0.2\n", "a name asked twice is answered from what dns remembers")
-			check(r, wait(ptest, PATIENCE), "and the resolver, asked once for the three, exits")
+			check(r, wait(ptest, PROGRESS), "and the resolver, asked once for the three, exits")
 			word := string(ptest.exit.text[:ptest.exit.text_len])
 			check(r, word == "ok", word == "ok" ? "with the question the one expected" : word)
 			finish(r, ptest, "and is taken down")
@@ -12131,7 +12231,7 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 			check(r, vfs.chan_remove(c) == vfs.OK, "a remove of its file is the name server's stop")
 			vfs.chan_close(c)
 		}
-		check(r, wait(which, PATIENCE), "and it exits")
+		check(r, wait(which, PROGRESS), "and it exits")
 		check(r, srv.remove(name) == vfs.OK, "and the kernel takes the name away")
 		finish(r, which, "and it is taken down")
 	}
@@ -12139,7 +12239,7 @@ verify_netserver :: proc(r: ^Result) #no_bounds_check {
 		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of one of its files is the stack's stop")
 		vfs.chan_close(c)
 	}
-	check(r, wait(p, PATIENCE), "the stack exits")
+	check(r, wait(p, PROGRESS), "the stack exits")
 	check(r, srv.remove("net") == vfs.OK, "the kernel takes the name away")
 	check(r, srv.count() == count0, "and /srv holds what it held")
 	finish(r, p, "and the stack is taken down")
@@ -12194,7 +12294,7 @@ net_file_holds :: proc(r: ^Result, path: string, want: string) -> bool #no_bound
 	defer vfs.chan_close(c)
 	// One open, and a read per pass. Opening inside the loop was a walk, an
 	// open and a clunk across the mount for every one of these.
-	for _ in 0 ..< PATIENCE * 4 {
+	for _ in 0 ..< PROGRESS {
 		n, rerr := vfs.chan_read(c, 0, buf[:])
 		if rerr == vfs.OK && n > 0 && libodin.contains(string(buf[:n]), want) {
 			return true
@@ -12311,7 +12411,7 @@ several ways to have got there, and a bare "it did not" costs a boot to
 place.
 */
 @(private = "file")
-comes_back :: proc(r: ^Result, p: ^Process, what: string, patience := PATIENCE) -> bool {
+comes_back :: proc(r: ^Result, p: ^Process, what: string, patience := PROGRESS) -> bool {
 	if wait(p, patience) {
 		return check(r, true, what)
 	}
@@ -12624,7 +12724,7 @@ verify_plumber :: proc(r: ^Result) {
 
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/plumb") == vfs.OK, "the mount of the plumber comes down")
 	check(r, srv.remove("plumb") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(p, PATIENCE * 5), "and the plumber, its pipe gone, exits")
+	check(r, wait(p, PROGRESS), "and the plumber, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 	reap_orphans()
 }
@@ -12722,7 +12822,7 @@ verify_fedifs :: proc(r: ^Result) {
 	check(r, string(text[:max(n, 0)]) == "https://one.example/@glenda/7\nhttps://one.example/media/7.png", "and links its page and its attachment")
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/fedi") == vfs.OK, "the mount of fedifs comes down")
 	check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(p, PATIENCE * 5), "and fedifs, its pipe gone, exits")
+	check(r, wait(p, PROGRESS), "and fedifs, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 }
 
@@ -12837,12 +12937,12 @@ verify_atfs :: proc(r: ^Result) {
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/fedi") == vfs.OK, "and the mount of fedifs comes down")
 		}
 		check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
-		check(r, wait(fedi, PATIENCE * 5), "and it exits")
+		check(r, wait(fedi, PROGRESS), "and it exits")
 		finish(r, fedi, "and is taken down")
 	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/at") == vfs.OK, "the mount of atfs comes down")
 	check(r, srv.remove("at") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(p, PATIENCE * 5), "and atfs, its pipe gone, exits")
+	check(r, wait(p, PROGRESS), "and atfs, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 }
 
@@ -12905,7 +13005,7 @@ verify_matrixfs :: proc(r: ^Result) {
 	check(r, n > 0 && libodin.contains(string(text[:n]), "room vectra !vectra:one.example"), "and ctl says each room's name and id")
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/matrix") == vfs.OK, "the mount of matrixfs comes down")
 	check(r, srv.remove("matrix") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(p, PATIENCE * 5), "and matrixfs, its pipe gone, exits")
+	check(r, wait(p, PROGRESS), "and matrixfs, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 }
 
@@ -12954,7 +13054,7 @@ verify_modelfs :: proc(r: ^Result) {
 	check(r, net_file_write("/mnt/model/0/ctl", "hangup"), "hangup ends the session")
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/model") == vfs.OK, "the mount of modelfs comes down")
 	check(r, srv.remove("model") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(p, PATIENCE * 5), "and modelfs, its pipe gone, exits")
+	check(r, wait(p, PROGRESS), "and modelfs, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 	reap_orphans()
 }
@@ -12992,7 +13092,7 @@ verify_ghost :: proc(r: ^Result) {
 	if wp == nil {
 		return
 	}
-	check(r, wait(wp, PATIENCE * 5), "and leaves its server behind, detached")
+	check(r, wait(wp, PROGRESS), "and leaves its server behind, detached")
 	finish(r, wp, "and its first half is collected")
 	if !check(r, await_posted("ghostwork") && srv.mount(vfs.boot_namespace, "/srv/ghostwork", "/n/remote") == vfs.OK, "which is mounted at /n/remote") {
 		return
@@ -13088,7 +13188,7 @@ verify_ghost :: proc(r: ^Result) {
 
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/model") == vfs.OK, "the mount of modelfs comes down")
 	check(r, srv.remove("model") == vfs.OK, "and its name")
-	check(r, wait(mp, PATIENCE * 5), "and modelfs exits")
+	check(r, wait(mp, PROGRESS), "and modelfs exits")
 	finish(r, mp, "and is taken down")
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/n/remote") == vfs.OK, "the work directory's mount comes down")
 	check(r, srv.remove("ghostwork") == vfs.OK, "and its name, which ends memfs")
@@ -13140,7 +13240,7 @@ ghost_social :: proc(r: ^Result, text: []u8) {
 
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/feed") == vfs.OK, "the mount of feedfs comes down")
 	check(r, srv.remove("feed") == vfs.OK, "and its name")
-	check(r, wait(fp, PATIENCE * 5), "and feedfs exits")
+	check(r, wait(fp, PROGRESS), "and feedfs exits")
 	finish(r, fp, "and is taken down")
 }
 
@@ -13167,7 +13267,7 @@ ghost_start :: proc(r: ^Result, unlocked: bool) -> ^Process {
 ghost_stop :: proc(r: ^Result, p: ^Process) {
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/ghost") == vfs.OK, "the ghost's mount comes down")
 	check(r, srv.remove("ghost") == vfs.OK, "and its name")
-	check(r, wait(p, PATIENCE * 5), "and the ghost, its pipe gone, exits")
+	check(r, wait(p, PROGRESS), "and the ghost, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 }
 
@@ -13298,7 +13398,7 @@ verify_feedfs :: proc(r: ^Result) {
 				}
 				check(r, !had_link && landed, "and the timeline's link rows reach the glass in the link's ink, which nothing under them wore")
 				_ = notepg_kernel(pm.note_group, "kill")
-				check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
+				check(r, end(pm, PROGRESS), "and the reader, told to end, ends")
 				finish(r, pm, "and is taken down")
 			}
 			// A message: the page on the left, and in the column its reply.
@@ -13318,7 +13418,7 @@ verify_feedfs :: proc(r: ^Result) {
 				}
 				check(r, in_column, "and the column beside it shows the reply as a link row")
 				_ = notepg_kernel(pe.note_group, "kill")
-				check(r, end(pe, PATIENCE * 5), "and the reader, told to end, ends")
+				check(r, end(pe, PROGRESS), "and the reader, told to end, ends")
 				finish(r, pe, "and is taken down")
 			}
 			stop_draw_server(r, ps, count0)
@@ -13328,7 +13428,7 @@ verify_feedfs :: proc(r: ^Result) {
 
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/feed") == vfs.OK, "the mount of feedfs comes down")
 	check(r, srv.remove("feed") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(p, PATIENCE * 5), "and feedfs, its pipe gone, exits")
+	check(r, wait(p, PROGRESS), "and feedfs, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 	reap_orphans()
 }
@@ -13392,7 +13492,7 @@ verify_securejoin :: proc(r: ^Result, host: string) {
 	check(r, net_file_write("/mnt/mail/ctl", "spool off"), "Glenda goes back to her servers")
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/mail2") == vfs.OK, "the mount of Bob's mailfs comes down")
 	check(r, srv.remove("mail2") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(pb, PATIENCE * 5), "and it exits")
+	check(r, wait(pb, PROGRESS), "and it exits")
 	finish(r, pb, "and is taken down")
 }
 
@@ -13432,7 +13532,7 @@ verify_idle :: proc(r: ^Result, host: string) {
 	rargv := new(Argv)
 	_ = argv_from(rargv, ra[:])
 	prs := start_path(r, "/bin/smtpsrv", "and the relay, which delivers into those directories", rargv)
-	sync.delay(PATIENCE)
+	_ = await_listening(1145) && await_listening(1588)
 
 	line_buf: [512]u8
 	text: [2048]u8
@@ -13525,7 +13625,7 @@ verify_idle :: proc(r: ^Result, host: string) {
 				// The confirm lands in Bob's sent/ once the relay has taken
 				// it, which is after his verified said yes.
 				counted := false
-				for _ in 0 ..< PATIENCE * 5 {
+				for _ in 0 ..< PROGRESS {
 					gsent2 := count_words(dir_names("/mnt/mail/sent", gsent_buf[:]))
 					bsent2 := count_words(dir_names("/mnt/mail2/sent", bsent_buf[:]))
 					if gsent2 == gsent + 2 && bsent2 == bsent + 2 {
@@ -13539,7 +13639,7 @@ verify_idle :: proc(r: ^Result, host: string) {
 				// The end of the sessions.
 				checkv(r, net_file_write("/mnt/mail/ctl", "idle off") && net_file_write("/mnt/mail2/ctl", "idle off"), "idle off says DONE and logs out")
 				gone := false
-				for _ in 0 ..< PATIENCE * 5 {
+				for _ in 0 ..< PROGRESS {
 					n = web_read_file("/mnt/mail/ctl", text[:])
 					if n > 0 && !libodin.contains(string(text[:n]), "idle\n") {
 						gone = true
@@ -13551,7 +13651,7 @@ verify_idle :: proc(r: ^Result, host: string) {
 				checkv(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/mail2") == vfs.OK, "the mount of Bob's mailfs comes down")
 			}
 			checkv(r, srv.remove("mail2") == vfs.OK, "and the kernel takes its name away")
-			checkv(r, wait(pb, PATIENCE * 5), "and it exits")
+			checkv(r, wait(pb, PROGRESS), "and it exits")
 			finish(r, pb, "and is taken down")
 		}
 	}
@@ -13559,16 +13659,16 @@ verify_idle :: proc(r: ^Result, host: string) {
 	// The servers go on until ended.
 	if prs != nil {
 		_ = notepg_kernel(prs.note_group, "kill")
-		checkv(r, end(prs, PATIENCE * 5), "the relay, told to end, ends")
+		checkv(r, end(prs, PROGRESS), "the relay, told to end, ends")
 		finish(r, prs, "and is taken down")
 	}
 	if pbs != nil {
 		_ = notepg_kernel(pbs.note_group, "kill")
-		checkv(r, end(pbs, PATIENCE * 5), "Bob's mailbox server ends")
+		checkv(r, end(pbs, PROGRESS), "Bob's mailbox server ends")
 		finish(r, pbs, "and is taken down")
 	}
 	_ = notepg_kernel(pg.note_group, "kill")
-	checkv(r, end(pg, PATIENCE * 5), "and Glenda's")
+	checkv(r, end(pg, PROGRESS), "and Glenda's")
 	finish(r, pg, "and is taken down")
 }
 
@@ -13649,7 +13749,7 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 	_ = argv_from(fargv, fnames[:])
 	pf := start_path(r, "/bin/fedifs", "and fedifs starts again, with a store", fargv)
 	if inst != nil && pf != nil {
-		sync.delay(PATIENCE)
+		_ = await_posted("fedi")
 		line_buf: [512]u8
 		text: [2048]u8
 		base := libodin_cat(line_buf[:], "http://", host, ":8081")
@@ -13701,9 +13801,9 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/fedi") == vfs.OK, "the mount of fedifs comes down")
 		}
 		check(r, srv.remove("fedi") == vfs.OK, "and the kernel takes its name away")
-		check(r, wait(pf, PATIENCE * 5), "and fedifs exits")
+		check(r, wait(pf, PROGRESS), "and fedifs exits")
 		finish(r, pf, "and is taken down")
-		check(r, wait(inst, PATIENCE * 5), "and the instance, its ten requests served, exits")
+		check(r, wait(inst, PROGRESS), "and the instance, its ten requests served, exits")
 		check(r, string(inst.exit.text[:inst.exit.text_len]) == "ok", "with ok")
 		finish(r, inst, "and is taken down")
 	} else {
@@ -13712,7 +13812,7 @@ verify_fedi_login :: proc(r: ^Result, host: string) {
 	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	check(r, wait(pw, PROGRESS), "and webfs exits")
 	finish(r, pw, "and is taken down")
 }
 
@@ -13747,7 +13847,7 @@ verify_at_login :: proc(r: ^Result, host: string) {
 	_ = argv_from(aargv, anames[:])
 	pa := start_path(r, "/bin/atfs", "and atfs starts again, with a store", aargv)
 	if pds != nil && pa != nil {
-		sync.delay(PATIENCE)
+		_ = await_posted("at")
 		line_buf: [512]u8
 		text: [2048]u8
 		base_buf: [128]u8
@@ -13800,9 +13900,9 @@ verify_at_login :: proc(r: ^Result, host: string) {
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/at") == vfs.OK, "the mount of atfs comes down")
 		}
 		check(r, srv.remove("at") == vfs.OK, "and the kernel takes its name away")
-		check(r, wait(pa, PATIENCE * 5), "and atfs exits")
+		check(r, wait(pa, PROGRESS), "and atfs exits")
 		finish(r, pa, "and is taken down")
-		check(r, wait(pds, PATIENCE * 5), "and the PDS, its eight requests served, exits")
+		check(r, wait(pds, PROGRESS), "and the PDS, its eight requests served, exits")
 		check(r, string(pds.exit.text[:pds.exit.text_len]) == "ok", "with ok")
 		finish(r, pds, "and is taken down")
 	} else {
@@ -13811,7 +13911,7 @@ verify_at_login :: proc(r: ^Result, host: string) {
 	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	check(r, wait(pw, PROGRESS), "and webfs exits")
 	finish(r, pw, "and is taken down")
 }
 
@@ -13852,7 +13952,7 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 	as := start_path(r, "/bin/websrv", "a scripted authorization server starts", sargv)
 	pa := start_path(r, "/bin/atfs", "and atfs starts again")
 	if as != nil && pa != nil {
-		sync.delay(PATIENCE)
+		_ = await_listening(8081)
 		line_buf: [512]u8
 		text: [2048]u8
 		base_buf: [128]u8
@@ -13896,7 +13996,7 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 						selected := false
 						for _ in 0 ..< 5 {
 							type_text("\t")
-							for _ in 0 ..< PATIENCE * 5 {
+							for _ in 0 ..< PROGRESS {
 								for y in by + 30 ..< min(by + 400, s.height) {
 									if _, run := row_span(s, y, face, bx + 4, bx + bw - 4); run > 100 {
 										selected = true
@@ -13925,7 +14025,7 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 						}
 						check(r, approved, "and pressing Approve sends the browser to the loopback address with the code, where atfs takes it and trades it for a token bound to the key, into factotum")
 						_ = notepg_kernel(pm.note_group, "kill")
-						check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
+						check(r, end(pm, PROGRESS), "and the reader, told to end, ends")
 						finish(r, pm, "and is taken down")
 					}
 					stop_draw_server(r, ps, dcount0)
@@ -13935,7 +14035,7 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 				// No glass to press the button on: the code by hand.
 				check(r, net_file_write("/mnt/at/ctl", "code dcode"), "the code is traded by hand, with the verifier and a proof")
 			}
-			sync.delay(PATIENCE)
+			_ = await_file_says("/mnt/at/me", "alice.one.example")
 			n = web_read_file("/mnt/at/me", text[:])
 			check(r, string(text[:max(n, 0)]) == "alice.one.example\ndid did:plc:alice1", "and me is the handle and the DID the token is for")
 			n = web_read_file("/mnt/factotum/ctl", text[:])
@@ -13949,10 +14049,10 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/at") == vfs.OK, "the mount of atfs comes down")
 		}
 		check(r, srv.remove("at") == vfs.OK, "and the kernel takes its name away")
-		check(r, wait(pa, PATIENCE * 5), "and atfs exits")
+		check(r, wait(pa, PROGRESS), "and atfs exits")
 		finish(r, pa, "and is taken down")
 		_ = notepg_kernel(as.note_group, "kill")
-		check(r, end(as, PATIENCE * 5), "and the authorization server, told to end, ends")
+		check(r, end(as, PROGRESS), "and the authorization server, told to end, ends")
 		finish(r, as, "and is taken down")
 	} else {
 		finish(r, pa, "atfs is taken down")
@@ -13960,7 +14060,7 @@ verify_at_oauth :: proc(r: ^Result, host: string) {
 	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	check(r, wait(pw, PROGRESS), "and webfs exits")
 	finish(r, pw, "and is taken down")
 }
 
@@ -14000,7 +14100,7 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 	_ = argv_from(margv, mnames[:])
 	pm := start_path(r, "/bin/matrixfs", "and matrixfs starts again, with a store and an identity to seal it under", margv)
 	if hs != nil && pm != nil {
-		sync.delay(PATIENCE)
+		_ = await_posted("matrix")
 		line_buf: [512]u8
 		text: [2048]u8
 		base_buf: [128]u8
@@ -14136,7 +14236,7 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			check(r, !net_file_write("/mnt/matrix/new", "to: secret\n\nx"), "and a message to it is refused")
 			check(r, net_file_write("/mnt/matrix/ctl", "idle off"), "idle off ends the poll")
 			stopped := false
-			for _ in 0 ..< PATIENCE * 5 {
+			for _ in 0 ..< PROGRESS {
 				n = web_read_file("/mnt/matrix/ctl", text[:])
 				if n > 0 && !libodin.contains(string(text[:n]), "idle\n") {
 					stopped = true
@@ -14148,7 +14248,7 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/matrix") == vfs.OK, "the mount of matrixfs comes down")
 		}
 		check(r, srv.remove("matrix") == vfs.OK, "and the kernel takes its name away")
-		check(r, wait(pm, PATIENCE * 5), "and matrixfs exits")
+		check(r, wait(pm, PROGRESS), "and matrixfs exits")
 		finish(r, pm, "and is taken down")
 		// The history opens after a restart: a fresh matrixfs on the same
 		// store and identity loads the sealed session, off the disk alone,
@@ -14164,10 +14264,10 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 			check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/matrix") == vfs.OK, "the mount comes down")
 		}
 		check(r, srv.remove("matrix") == vfs.OK, "and the kernel takes its name away")
-		check(r, wait(pm2, PATIENCE * 5), "and the fresh matrixfs exits")
+		check(r, wait(pm2, PROGRESS), "and the fresh matrixfs exits")
 		finish(r, pm2, "and is taken down")
 		_ = notepg_kernel(hs.note_group, "kill")
-		check(r, end(hs, PATIENCE * 5), "and the homeserver, told to end, ends")
+		check(r, end(hs, PROGRESS), "and the homeserver, told to end, ends")
 		finish(r, hs, "and is taken down")
 	} else {
 		finish(r, pm, "matrixfs is taken down")
@@ -14175,7 +14275,7 @@ verify_matrix_login :: proc(r: ^Result, host: string) {
 	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	check(r, wait(pw, PROGRESS), "and webfs exits")
 	finish(r, pw, "and is taken down")
 }
 
@@ -14203,7 +14303,7 @@ verify_chatmail :: proc(r: ^Result, host: string) {
 	sargv := new(Argv)
 	_ = argv_from(sargv, sargs[:])
 	if relay := start_path(r, "/bin/websrv", "a scripted chatmail relay starts", sargv); relay != nil {
-		sync.delay(PATIENCE)
+		_ = await_listening(8081)
 		line_buf: [256]u8
 		local: [64]u8
 		ln := web_read_file("/net/local", local[:])
@@ -14218,12 +14318,12 @@ verify_chatmail :: proc(r: ^Result, host: string) {
 		got = string(text[:max(n, 0)])
 		check(r, n > 0 && libodin.contains(got, libodin_cat(line_buf[:], "key proto=pass user=ac1 server=", host)) && !libodin.contains(got, "relay-made"), "and the password the relay made is in factotum under the address's host, unshown")
 		check(r, !net_file_write("/mnt/mail/ctl", "seal off"), "and seal off is refused: the relay refuses cleartext")
-		check(r, wait(relay, PATIENCE * 5), "and the relay, its one request served, exits")
+		check(r, wait(relay, PROGRESS), "and the relay, its one request served, exits")
 		finish(r, relay, "and is taken down")
 	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	check(r, wait(pw, PROGRESS), "and webfs exits")
 	finish(r, pw, "and is taken down")
 }
 
@@ -14406,7 +14506,7 @@ verify_mailfs :: proc(r: ^Result) {
 	_ = argv_from(iargv, iargs[:])
 	im := start_path(r, "/bin/imapsrv", "a scripted IMAP server starts", iargv)
 	if im != nil {
-		sync.delay(PATIENCE)
+		_ = await_listening(1143)
 		p := start_path(r, "/bin/mailfs", "the loader starts mailfs, mail as files")
 		if p != nil {
 			mounted := check(r, await_posted("mail"), "which posts /srv/mail") && check(r, srv.mount(vfs.boot_namespace, "/srv/mail", "/mnt/mail") == vfs.OK, "and the kernel mounts it at /mnt/mail")
@@ -14475,7 +14575,7 @@ verify_mailfs :: proc(r: ^Result) {
 				sargv := new(Argv)
 				_ = argv_from(sargv, sargs[:])
 				if sm := start_path(r, "/bin/smtpsrv", "a scripted SMTP submission server starts", sargv); sm != nil {
-					sync.delay(PATIENCE)
+					_ = await_listening(1587)
 					check(r, net_file_write("/mnt/mail/ctl", libodin_cat(line_buf[:], "smtp ", host, " 1587 plain")), "the submission server is named on ctl")
 					check(r, !net_file_write("/mnt/mail/new", "colour: blue\n\nx"), "a write to new with a header no network knows is refused before any wire")
 					check(r, net_file_write("/mnt/mail/new", "to: bob@example.net\nsubject: hello there\nreplyto: " + ID1 + "\n\nA line.\n.dot line\n"), "a message written to new as the block is submitted, and the write returns when it is taken")
@@ -14520,7 +14620,7 @@ verify_mailfs :: proc(r: ^Result) {
 								selected := false
 								for _ in 0 ..< 5 {
 									type_text("\t")
-									for _ in 0 ..< PATIENCE * 5 {
+									for _ in 0 ..< PROGRESS {
 										for y in by + 30 ..< min(by + 400, s.height) {
 											if _, run := row_span(s, y, face, bx + 4, bx + bw - 4); run > 100 {
 												selected = true
@@ -14552,13 +14652,13 @@ verify_mailfs :: proc(r: ^Result) {
 								check(r, arrived, "and the typed subject reaches the submission server through new, the window's form written as the block")
 								check(r, arrived && libodin.contains(string(text[:max(n, 0)]), "\r\n\r\ntyped body\r\n") && libodin.contains(string(text[:max(n, 0)]), "To: carol@example.org\r\n"), "with the typed body and the address the mailto filled in, plain since Carol has no key here")
 								_ = notepg_kernel(pm.note_group, "kill")
-								check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
+								check(r, end(pm, PROGRESS), "and the reader, told to end, ends")
 								finish(r, pm, "and is taken down")
 							}
 							stop_draw_server(r, ps, dcount0)
 						}
 					}
-					check(r, wait(sm, PATIENCE * 5), "and the submission server, its sessions served, exits")
+					check(r, wait(sm, PROGRESS), "and the submission server, its sessions served, exits")
 					check(r, string(sm.exit.text[:sm.exit.text_len]) == "ok", "with ok: two messages taken and one refused")
 					finish(r, sm, "and is taken down")
 				}
@@ -14606,10 +14706,10 @@ verify_mailfs :: proc(r: ^Result) {
 				check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/mail") == vfs.OK, "the mount of mailfs comes down")
 			}
 			check(r, srv.remove("mail") == vfs.OK, "and the kernel takes its name away")
-			check(r, wait(p, PATIENCE * 5), "and mailfs, its pipe gone, exits")
+			check(r, wait(p, PROGRESS), "and mailfs, its pipe gone, exits")
 			finish(r, p, "and is taken down")
 		}
-		check(r, wait(im, PATIENCE * 5), "and the scripted server, both sessions served, exits")
+		check(r, wait(im, PROGRESS), "and the scripted server, both sessions served, exits")
 		check(r, string(im.exit.text[:im.exit.text_len]) == "ok", "with ok: one login and one refusal")
 		finish(r, im, "and is taken down")
 	}
@@ -14618,7 +14718,7 @@ verify_mailfs :: proc(r: ^Result) {
 		check(r, vfs.chan_remove(c) == vfs.OK, "a remove of its file is factotum's stop")
 		vfs.chan_close(c)
 	}
-	check(r, wait(pf, PATIENCE), "and factotum exits")
+	check(r, wait(pf, PROGRESS), "and factotum exits")
 	check(r, srv.remove("factotum") == vfs.OK, "and the kernel takes its name away")
 	finish(r, pf, "and factotum is taken down")
 	pipe.quiesce()
@@ -14701,13 +14801,13 @@ tofu_fetch :: proc(r: ^Result, url: string, body: []u8, hash: []u8, what: string
 	if ts == nil {
 		return false
 	}
-	sync.delay(PATIENCE)
+	_ = await_listening(4433)
 	bn, _, ok := web_fetch(url, body, hash)
 	for i in bn ..< len(body) {
 		body[i] = 0
 	}
 	// The server ends either way: it served, or the client hung up on it.
-	_ = wait(ts, PATIENCE * 5)
+	_ = wait(ts, PROGRESS)
 	finish(r, ts, "and it is taken down")
 	return ok
 }
@@ -14788,7 +14888,7 @@ verify_webfs :: proc(r: ^Result) {
 		_ = argv_from(wargv, wargs[:])
 		ws := start_path(r, "/bin/websrv", "a scripted HTTP server starts", wargv)
 		if ws != nil {
-			sync.delay(PATIENCE)
+			_ = await_listening(8080)
 			url_buf: [128]u8
 			line_buf: [128]u8
 			url := libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/")
@@ -14843,7 +14943,7 @@ verify_webfs :: proc(r: ^Result) {
 			// The WebSocket: upgraded, a ping answered, frames each way, a close.
 			url = libodin_cat(url_buf[:], "http://", string(local[:ln]), ":8080/ws")
 			web_socket(r, url)
-			check(r, wait(ws, PATIENCE * 5), "and the scripted server, its connections served, exits")
+			check(r, wait(ws, PROGRESS), "and the scripted server, its connections served, exits")
 			finish(r, ws, "and is taken down")
 		}
 	}
@@ -14855,7 +14955,7 @@ verify_webfs :: proc(r: ^Result) {
 		_ = argv_from(targv, targs[:])
 		ts := start_path(r, "/bin/tlssrv", "a scripted TLS server starts for the web", targv)
 		if ts != nil {
-			sync.delay(PATIENCE)
+			_ = await_listening(4433)
 			url_buf: [128]u8
 			url := libodin_cat(url_buf[:], "https://", string(sysname[:sn]), ":4433/")
 			body: [1024]u8
@@ -14863,7 +14963,7 @@ verify_webfs :: proc(r: ^Result) {
 			bn, hn, ok := web_fetch(url, body[:], hash[:])
 			check(r, ok && string(body[:bn]) == "hello, secure web\n", "webfs fetches a body over https, the chain verified against the trust store")
 			check(r, hn == 65 && string(hash[:64]) == "43e8e41c52a64133b65e76d326756f682ffb1e2ce2293f8d61374529d1f08f70", "and its hash is that body's sha256")
-			check(r, wait(ts, PATIENCE * 5), "and the TLS server exits")
+			check(r, wait(ts, PROGRESS), "and the TLS server exits")
 			finish(r, ts, "and is taken down")
 		}
 	}
@@ -14875,7 +14975,7 @@ verify_webfs :: proc(r: ^Result) {
 		_ = argv_from(targv, targs[:])
 		ts := start_path(r, "/bin/tlssrv", "a scripted TLS server starts for gemini", targv)
 		if ts != nil {
-			sync.delay(PATIENCE)
+			_ = await_listening(4433)
 			url_buf: [128]u8
 			url := libodin_cat(url_buf[:], "gemini://", string(sysname[:sn]), ":4433/")
 			body: [1024]u8
@@ -14884,7 +14984,7 @@ verify_webfs :: proc(r: ^Result) {
 			bn, _, ok := web_fetch(url, body[:], hash[:], "", status[:], crowd = true)
 			check(r, ok && string(body[:bn]) == "# hello, gemini\n", "webfs fetches a gemini capsule: one TLS connection, one line, one response")
 			check(r, libodin.contains(string(status[:]), "20 text/gemini"), "and its status is the capsule's status and media type, read after twenty more conversations: an open clone holds its conversation")
-			check(r, wait(ts, PATIENCE * 5), "and the TLS server exits")
+			check(r, wait(ts, PROGRESS), "and the TLS server exits")
 			finish(r, ts, "and is taken down")
 		}
 	}
@@ -14917,7 +15017,7 @@ verify_webfs :: proc(r: ^Result) {
 
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(p, PATIENCE * 5), "and webfs, its pipe gone, exits")
+	check(r, wait(p, PROGRESS), "and webfs, its pipe gone, exits")
 	finish(r, p, "and is taken down")
 }
 
@@ -14956,7 +15056,7 @@ verify_httpd :: proc(r: ^Result, host: string) {
 	_ = argv_from(fargv, fnames[:])
 	pf := start_path(r, "/bin/mkfeed", "mkfeed writes an Atom feed for the site", fargv)
 	if pf != nil {
-		check(r, wait(pf, PATIENCE * 5), "and mkfeed exits")
+		check(r, wait(pf, PROGRESS), "and mkfeed exits")
 		finish(r, pf, "and is taken down")
 		fbuf: [4096]u8
 		fn := web_read_file("/usr/glenda/site/feed.atom", fbuf[:], raw = true)
@@ -14970,7 +15070,7 @@ verify_httpd :: proc(r: ^Result, host: string) {
 	_ = argv_from(sargv, sargs[:])
 	ps := start_path(r, "/bin/httpd", "httpd starts, the site served as HTTP", sargv)
 	if ps != nil {
-		sync.delay(PATIENCE)
+		_ = await_listening(8082)
 		url_buf: [128]u8
 		body: [4096]u8
 		hash: [80]u8
@@ -14998,9 +15098,9 @@ verify_httpd :: proc(r: ^Result, host: string) {
 		check(r, ok && libodin.contains(string(body[:max(bn, 0)]), "<title>The Page</title>"), "and the feed is served, so the site is followable")
 		// Its six connections served, httpd exits on its own; a kill is
 		// the fallback if a fetch never reached it.
-		if !wait(ps, PATIENCE * 5) {
+		if !wait(ps, PROGRESS) {
 			_ = notepg_kernel(ps.note_group, "kill")
-			_ = end(ps, PATIENCE * 5)
+			_ = end(ps, PROGRESS)
 		}
 		check(r, exit_done(ps), "and httpd, its six connections served, exits")
 		finish(r, ps, "and is taken down")
@@ -15018,15 +15118,15 @@ verify_httpd :: proc(r: ^Result, host: string) {
 		_ = argv_from(gargv, gnames[:])
 		pg := start_path(r, "/bin/gemd", "gemd serves the site over Gemini", gargv)
 		if pg != nil {
-			sync.delay(PATIENCE)
+			_ = await_listening(1965)
 			gurl: [128]u8
 			gbody: [4096]u8
 			ghash: [80]u8
 			bn, _, ok := web_fetch(libodin_cat(gurl[:], "gemini://", string(sysname[:syn]), ":1965/page.md"), gbody[:], ghash[:])
 			check(r, ok && libodin.contains(string(gbody[:max(bn, 0)]), "# The Page") && libodin.contains(string(gbody[:max(bn, 0)]), "> a quote"), "the same .md page is served over Gemini as it is, its gemtext raw")
-			if !wait(pg, PATIENCE * 5) {
+			if !wait(pg, PROGRESS) {
 				_ = notepg_kernel(pg.note_group, "kill")
-				_ = end(pg, PATIENCE * 5)
+				_ = end(pg, PROGRESS)
 			}
 			check(r, exit_done(pg), "and gemd, its connection served, exits")
 			finish(r, pg, "and is taken down")
@@ -15034,7 +15134,7 @@ verify_httpd :: proc(r: ^Result, host: string) {
 	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	check(r, wait(pw, PROGRESS), "and webfs exits")
 	finish(r, pw, "and is taken down")
 }
 
@@ -15069,7 +15169,7 @@ verify_webmention :: proc(r: ^Result, host: string) {
 	_ = argv_from(hargv, hnames[:])
 	ph := start_path(r, "/bin/httpd", "httpd starts, with a mention store", hargv)
 	if es != nil && ph != nil {
-		sync.delay(PATIENCE)
+		_ = await_listening(8083) && await_listening(8082)
 		url_buf: [160]u8
 		line_buf: [256]u8
 		body: [4096]u8
@@ -15084,7 +15184,7 @@ verify_webmention :: proc(r: ^Result, host: string) {
 		_ = argv_from(margv, mnames[:])
 		pm := start_path(r, "/bin/webmention", "webmention reads the page and tells each link", margv)
 		if pm != nil {
-			check(r, wait(pm, PATIENCE * 5), "and webmention exits")
+			check(r, wait(pm, PROGRESS), "and webmention exits")
 			finish(r, pm, "and is taken down")
 			rn := web_read_file("/usr/glenda/wm-received.txt", body[:], raw = true)
 			got := string(body[:max(rn, 0)])
@@ -15134,13 +15234,13 @@ verify_webmention :: proc(r: ^Result, host: string) {
 		}
 		check(r, srv.remove("mention") == vfs.OK, "and the kernel takes mentionfs's name away")
 		_ = notepg_kernel(pms.note_group, "kill")
-		check(r, end(pms, PATIENCE * 5), "and mentionfs, told to end, ends")
+		check(r, end(pms, PROGRESS), "and mentionfs, told to end, ends")
 		finish(r, pms, "and is taken down")
 		_ = notepg_kernel(ph.note_group, "kill")
-		check(r, end(ph, PATIENCE * 5), "httpd, told to end, ends")
+		check(r, end(ph, PROGRESS), "httpd, told to end, ends")
 		finish(r, ph, "and is taken down")
 		_ = notepg_kernel(es.note_group, "kill")
-		check(r, end(es, PATIENCE * 5), "and the endpoint, told to end, ends")
+		check(r, end(es, PROGRESS), "and the endpoint, told to end, ends")
 		finish(r, es, "and is taken down")
 	} else {
 		finish(r, ph, "httpd is taken down")
@@ -15148,7 +15248,7 @@ verify_webmention :: proc(r: ^Result, host: string) {
 	}
 	check(r, vfs.unmount_path(vfs.boot_namespace, "", "/mnt/web") == vfs.OK, "the mount of webfs comes down")
 	check(r, srv.remove("web") == vfs.OK, "and the kernel takes its name away")
-	check(r, wait(pw, PATIENCE * 5), "and webfs exits")
+	check(r, wait(pw, PROGRESS), "and webfs exits")
 	finish(r, pw, "and is taken down")
 }
 
@@ -15408,7 +15508,7 @@ verify_mothra :: proc(r: ^Result) #no_bounds_check {
 		// reads of the window's files. Ending the main process alone leaves
 		// them standing, so the whole group is noted, the way `^C` is.
 		_ = notepg_kernel(pm.note_group, "kill")
-		check(r, end(pm, PATIENCE * 5), "and the reader, told to end, ends")
+		check(r, end(pm, PROGRESS), "and the reader, told to end, ends")
 		finish(r, pm, "and is taken down")
 		// The reader kept the page's links, both ways: the index is one
 		// line a link, the page it was on and the page it names.
@@ -15440,7 +15540,7 @@ verify_mothra :: proc(r: ^Result) #no_bounds_check {
 		}
 		check(r, landed, "and the picture's corner pixels reach the glass, decoded and loaded")
 		_ = notepg_kernel(pi.note_group, "kill")
-		check(r, end(pi, PATIENCE * 5), "and the reader, told to end, ends")
+		check(r, end(pi, PROGRESS), "and the reader, told to end, ends")
 		finish(r, pi, "and is taken down")
 	}
 
@@ -15479,7 +15579,7 @@ verify_mothra :: proc(r: ^Result) #no_bounds_check {
 		}
 		check(r, in_column, "and the column beside the page shows the page that links here, read backwards from the index")
 		_ = notepg_kernel(pd.note_group, "kill")
-		check(r, end(pd, PATIENCE * 5), "and the reader, told to end, ends")
+		check(r, end(pd, PROGRESS), "and the reader, told to end, ends")
 		finish(r, pd, "and is taken down")
 	}
 
@@ -15496,7 +15596,7 @@ stop_draw_server :: proc(r: ^Result, ps: ^Process, count0: int) {
 			check(r, vfs.chan_remove(ctl) == vfs.OK, "a remove of a window's ctl is the server's stop")
 			vfs.chan_close(ctl)
 		}
-		check(r, wait(ps, PATIENCE), "and the draw server exits")
+		check(r, wait(ps, PROGRESS), "and the draw server exits")
 		check(r, srv.remove("draw") == vfs.OK, "and the kernel takes the name away")
 		check(r, srv.count() == count0, "and /srv holds what it held")
 		finish(r, ps, "and the draw server is reaped")
@@ -15576,11 +15676,11 @@ verify_interrupt :: proc(r: ^Result) {
 	if p == nil {
 		return
 	}
-	// Long enough to load off the disk and park in its first read.
-	sync.delay(PATIENCE)
+	// Until it is loaded and parked in its first read.
+	_ = await_parked_reading(p)
 	typed := interrupts_typed
 	devfs.keyboard_sink(0x03)
-	if check(r, wait(p, PATIENCE), "a typed ^C ends it inside the bound") {
+	if check(r, wait(p, PROGRESS), "a typed ^C ends it inside the bound") {
 		check(r, p.exit.noted && note(p) == "interrupt", "noted `interrupt`, which is the word ^C posts")
 		check(r, interrupts_typed == typed + 1, "and the console counted one interrupt")
 	}
