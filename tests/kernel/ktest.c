@@ -220,6 +220,14 @@ static void test_threads_and_calls(void) {
   wait_for_stage(&s, 3);
   CHECK(atomic_load(&s.stage) == 3);
   vx_handle_close(th);
+
+  // A call that times out takes back the request nobody read: the server
+  // never sees it.
+  request rq = {.n = 5}, reply = {};
+  vx_call call = {.wr_bytes = &rq, .wr_len = sizeof rq, .rd_bytes = &reply, .rd_cap = sizeof reply};
+  CHECK(vx_channel_call(ch[0], &call, after_ms(5)) == VX_ERR_TIMED_OUT);
+  vx_msg_size size;
+  CHECK(vx_channel_read(ch[1], &rq, sizeof rq, nullptr, 0, &size) == VX_ERR_SHOULD_WAIT);
   vx_handle_close(ch[0]);
   vx_handle_close(ch[1]);
 }

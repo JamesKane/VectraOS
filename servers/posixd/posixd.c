@@ -7,6 +7,12 @@
 // none yet is answered when one ends. The reply to a call can come later
 // than the call: the kernel matches it to the caller by its txid.
 //
+// Signals: posixd delivers each by thread_interrupt, which diverts a thread
+// of the target to its C library's handler (01 §9); the library keeps the
+// dispositions and the mask, and acts on it. SIGKILL, and a signal to a task
+// with no handler that would end it, posixd carries out itself, with
+// task_kill. A child's end is SIGCHLD to its parent.
+//
 // The table lives only here, so posixd is not restarted: a new one would
 // know no processes.
 
@@ -117,6 +123,42 @@ static uint32_t admit(vx_handle task, const proc *parent, int64_t pgid, bool set
   return POSIX_OK;
 }
 
+static void drain(vx_handle ch, proc *p, uint64_t key); // below
+
+// Signals waiting to be delivered: a call or an exit only queues them, and
+// the main loop delivers them, so delivering (which reads the target's calls)
+// never runs inside another call. By pid: a process that has gone on in a
+// new task (EXEC) still gets its signals.
+typedef struct outgoing {
+  int64_t pid, sig, sender;
+} outgoing;
+static outgoing outbox[4 * MAX_PROCS];
+static uint32_t outbox_count;
+
+static void post(const proc *t, int64_t sig, int64_t sender) {
+  if (outbox_count < sizeof outbox / sizeof outbox[0])
+    outbox[outbox_count++] = (outgoing){t->pid, sig, sender};
+  else
+    vx_print(VX_STR("posixd: too many signals at once; one is lost\n"));
+}
+
+// Signals t, from sender (a pid, or 0). Calls t has made are answered first,
+// so that the interrupt never ends one in flight; a WAIT it is blocked in is
+// let go here, as the interrupt ends it (the library calls again).
+static void deliver(proc *t, int64_t sig, int64_t sender) {
+  if (sig <= 0 || sig > POSIX_NSIG || !t->used || t->zombie) return;
+  if (sig == POSIX_SIGKILL) {
+    vx_task_kill(t->task, -256 - sig);
+    return;
+  }
+  uint32_t slot = (uint32_t)(t - procs);
+  drain(t->chan, t, key_for(KEY_CHANNEL, slot, t->gen));
+  if (!t->used || t->zombie) return;
+  t->waiting = false;
+  vx_status st = vx_thread_interrupt(t->task, 0, (uint64_t)sig | (uint64_t)sender << 16);
+  if (st == VX_ERR_BAD_STATE && !posix_default_ignored(sig)) vx_task_kill(t->task, -256 - sig); // no handler
+}
+
 static bool waits_for(const proc *parent, const proc *child) {
   if (child->ppid != parent->pid) return false;
   int64_t w = parent->wait_pid;
@@ -159,10 +201,12 @@ static void ended(proc *p, int64_t exit_status) {
     forget(p); // nobody will wait for it
     return;
   }
-  if (parent->waiting) reap_for(parent);
+  int64_t pid = p->pid;
+  if (parent->waiting) reap_for(parent); // which may forget p
+  post(parent, POSIX_SIGCHLD, pid);      // after the wait's answer, which it must not end
 }
 
-static void call(proc *p, const posix_msg *m, vx_handle handle) {
+[[gnu::nonnull(1)]] static void call(proc *p, const posix_msg *m, vx_handle handle) {
   uint32_t txid = m->h.txid, err = POSIX_OK;
   int64_t values[4] = {};
   uint32_t count = 0;
@@ -209,6 +253,37 @@ static void call(proc *p, const posix_msg *m, vx_handle handle) {
     reply(old_chan, txid, POSIX_OK, values, 1, ch[1]);
     vx_handle_close(old_chan);
     vx_handle_close(old_task);
+    return;
+  }
+  case POSIX_KILL: {
+    int64_t pid = m->arg[0], sig = m->arg[1];
+    if (sig < 0 || sig > POSIX_NSIG) {
+      err = POSIX_EINVAL;
+      break;
+    }
+    // Who: one process; the caller's group (0); every process but posixd
+    // and the caller (-1); or a group (-pgid).
+    proc *targets[MAX_PROCS];
+    uint32_t n = 0;
+    bool self = false;
+    for (uint32_t i = 0; i < MAX_PROCS; i++) {
+      proc *t = &procs[i];
+      if (!t->used || t->zombie) continue;
+      bool named = (pid > 0 && t->pid == pid) || (pid == 0 && t->pgid == p->pgid) || (pid == -1 && t != p) ||
+                   (pid < -1 && t->pgid == -pid);
+      if (!named) continue;
+      if (t == p)
+        self = true;
+      else
+        targets[n++] = t;
+    }
+    if (!n && !self) {
+      err = POSIX_ESRCH;
+      break;
+    }
+    values[count++] = self;
+    reply(p->chan, txid, POSIX_OK, values, count, VX_HANDLE_NONE); // before the others run
+    for (uint32_t i = 0; i < n; i++) post(targets[i], sig, p->pid);
     return;
   }
   case POSIX_IDS:
@@ -335,5 +410,11 @@ int vx_main(void) {
       else if (kind == KEY_CHANNEL && !p->zombie)
         drain(p->chan, p, pk[i].key);
     }
+    // Delivering may answer calls that queue more: until none are left.
+    for (uint32_t i = 0; i < outbox_count; i++) {
+      proc *t = by_pid(outbox[i].pid);
+      if (t) deliver(t, outbox[i].sig, outbox[i].sender);
+    }
+    outbox_count = 0;
   }
 }

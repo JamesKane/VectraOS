@@ -169,10 +169,11 @@ static bool thread_wake_token(thread *t, const void *token, int64_t result) {
   bool woke = token && t->wait_token == token;
   if (woke) {
     t->wait_token = nullptr;
-    t->wait_result = result;
     if (t->state == THREAD_BLOCKED) {
+      t->wait_result = result;
       make_ready(t);
     } else {
+      t->pending_result = result; // for its block, which returns at once
       t->wake_pending = true;
     }
   }
@@ -189,6 +190,7 @@ static int64_t thread_block(vx_instant deadline, vx_duration leeway) {
   spin_lock(&sched.lock);
   if (t->wake_pending) { // woken before it got here
     t->wake_pending = false;
+    t->wait_result = t->pending_result;
     spin_unlock(&sched.lock);
     return t->wait_result;
   }
@@ -309,7 +311,7 @@ static void sched_poke(thread *t) {
 
 static void sched_kick(thread *t, vx_status why) {
   spin_lock(&sched.lock);
-  if (t->wake_pending && t->wait_result == VX_ERR_KILLED) why = VX_ERR_KILLED; // a kill outranks the rest
+  if (t->wake_pending && t->pending_result == VX_ERR_KILLED) why = VX_ERR_KILLED; // a kill outranks the rest
   if (t->state == THREAD_BLOCKED) {
     t->wait_token = nullptr;
     t->wait_result = why;
@@ -317,8 +319,10 @@ static void sched_kick(thread *t, vx_status why) {
   } else if (t->state != THREAD_DEAD) {
     // Ready, or running here or elsewhere: if it is about to block, the block
     // returns at once; if it is in user mode on another CPU, interrupt it.
+    // Its next block's result is pending_result, never wait_result: a wait
+    // that has already ended (a reply handed to it, say) keeps its own.
     t->wake_pending = true;
-    t->wait_result = why;
+    t->pending_result = why;
     if (t->state == THREAD_RUNNING && t->cpu && t->cpu != this_cpu()) arch_send_resched(t->cpu);
   }
   spin_unlock(&sched.lock);

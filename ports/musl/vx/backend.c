@@ -30,6 +30,7 @@
 #include <limits.h>
 #include <stdckdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -77,6 +78,7 @@ static long vx_errno(vx_status st) {
 #include "memory.c"
 #include "start.c"
 #include "process.c"
+#include "signal.c"
 
 // The calls VectraOS does not do yet: -ENOSYS, and one line in the kernel log
 // the first time each is asked for, so a port that needs one says so.
@@ -98,7 +100,9 @@ static long vx_unimplemented(long n) {
   return -ENOSYS;
 }
 
-long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
+static bool sig_restarting; // the call is being made again after a signal (time_sleep keeps its deadline)
+
+static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
   switch (n) {
   // Files and descriptors (fd.c)
   case SYS_read: return fd_read((int)a1, (void *)a2, (size_t)a3);
@@ -134,6 +138,7 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
   case SYS_rmdir: return fd_unlinkat(AT_FDCWD, (const char *)a1, AT_REMOVEDIR);
   case SYS_dup2: return fd_dup2((int)a1, (int)a2);
   case SYS_readlink: return -EINVAL;
+  case SYS_pause: return sig_suspend(sig_mask);
   case SYS_fork:
   case SYS_vfork: return proc_fork();
   case SYS_pipe: return fd_pipe2((int *)a1, 0);
@@ -169,12 +174,17 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
   case SYS_getgid:
   case SYS_getegid: return 0;
   case SYS_uname: return proc_uname((struct utsname *)a1);
+  // Signals (signal.c)
   case SYS_tkill:
-  case SYS_tgkill: return proc_signal_self((int)(n == SYS_tkill ? a2 : a3));
-  case SYS_kill: return a1 == posix_pid() || a1 == 0 ? proc_signal_self((int)a2) : -ESRCH; // M4 step 3d
-  case SYS_rt_sigaction:
-  case SYS_rt_sigprocmask:
-  case SYS_sigaltstack: return 0; // nothing is delivered yet (M4 step 3)
+  case SYS_tgkill: return sig_kill(posix_pid(), (int)(n == SYS_tkill ? a2 : a3)); // one thread: the process
+  case SYS_kill: return sig_kill(a1, (int)a2);
+  case SYS_rt_sigaction: return sig_action((int)a1, (const k_sigaction *)a2, (k_sigaction *)a3);
+  case SYS_rt_sigprocmask: return sig_procmask((int)a1, (const uint64_t *)a2, (uint64_t *)a3);
+  case SYS_rt_sigpending: return *(uint64_t *)a1 = sig_pending, 0;
+  case SYS_rt_sigsuspend: return sig_suspend(*(const uint64_t *)a1);
+  case SYS_sigaltstack: // accepted, and not used: handlers run on the thread's stack
+    if (a2) *(stack_t *)a2 = (stack_t){.ss_flags = SS_DISABLE};
+    return 0;
   case SYS_prlimit64: return proc_prlimit((struct rlimit *)a4);
 #ifdef SYS_set_thread_area
   case SYS_set_thread_area: return proc_set_tls((uint64_t)a1); // x86_64's
@@ -183,13 +193,42 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
   // Time and waiting (start.c)
   case SYS_clock_gettime: return time_get((clockid_t)a1, (struct timespec *)a2);
   case SYS_clock_getres: return time_res((struct timespec *)a2);
-  case SYS_nanosleep: return time_sleep(CLOCK_MONOTONIC, 0, (const struct timespec *)a1);
-  case SYS_clock_nanosleep: return time_sleep((clockid_t)a1, (int)a2, (const struct timespec *)a3);
+  case SYS_nanosleep:
+    return time_sleep(CLOCK_MONOTONIC, 0, (const struct timespec *)a1, (struct timespec *)a2);
+  case SYS_clock_nanosleep:
+    return time_sleep((clockid_t)a1, (int)a2, (const struct timespec *)a3, (struct timespec *)a4);
+  case SYS_ppoll: // pause(), where there is no SYS_pause; poll itself waits for M4 step 4
+    if (a2 == 0 && a3 == 0) return sig_suspend(sig_mask);
+    return vx_unimplemented(n);
   case SYS_sched_yield: return 0;
   case SYS_futex: return time_futex((uint32_t *)a1, (int)a2, (uint32_t)a3, (const struct timespec *)a4);
 
   default: return vx_unimplemented(n);
   }
+}
+
+// Every call musl makes. A signal that arrives during one is delivered as it
+// returns (signal.c); the call is made again if no handler that wants EINTR
+// ran, as for SA_RESTART and ignored signals. sigsuspend and pause always
+// return EINTR.
+long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
+  sig_depth = sig_depth + 1;
+  long r = vx_dispatch(n, a1, a2, a3, a4, a5, a6);
+  sig_depth = sig_depth - 1;
+  while (sig_depth == 0 && (sig_pending & ~sig_mask)) {
+    bool eintr = sig_deliver_pending();
+    bool again = r == -EINTR && !eintr && n != SYS_rt_sigsuspend && n != SYS_ppoll;
+#ifdef SYS_pause
+    again = again && n != SYS_pause;
+#endif
+    if (!again) break;
+    sig_restarting = true;
+    sig_depth = sig_depth + 1;
+    r = vx_dispatch(n, a1, a2, a3, a4, a5, a6);
+    sig_depth = sig_depth - 1;
+    sig_restarting = false;
+  }
+  return r;
 }
 
 // The entry to a cancellation point (musl's pthread_cancel.c), as

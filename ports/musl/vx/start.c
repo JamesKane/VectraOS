@@ -10,6 +10,7 @@ int __libc_start_main(int (*main)(int, char **, char **), int argc, char **argv,
 
 static uint64_t proc_kernel_task_id; // the kernel's id for the task
 static void posix_init(void);        // process.c
+static void sig_init(void);          // signal.c
 
 // What Linux puts on a new process's stack, built here instead: argc, the
 // arguments, the environment and the auxiliary vector, one array as musl
@@ -53,6 +54,7 @@ static void proc_random(void) {
   vx_task_summary me;
   if (vx_self && vx_task_info(vx_self, &me) == VX_OK) proc_kernel_task_id = me.id;
   posix_init();
+  sig_init();
   proc_random();
 
   uintptr_t *w = proc_start.words;
@@ -90,15 +92,6 @@ static void proc_random(void) {
 }
 
 static uint64_t proc_kernel_id(void) { return proc_kernel_task_id; }
-
-// raise() and abort(): with no handlers yet, a signal does what its default
-// does. The ones that are ignored by default are; the rest end the process,
-// with 128 + the signal's number as its status, as a shell would report it.
-static long proc_signal_self(int sig) {
-  if (sig < 0 || sig > 64) return -EINVAL;
-  if (sig == 0 || sig == SIGCHLD || sig == SIGCONT || sig == SIGURG || sig == SIGWINCH) return 0;
-  proc_exit(128 + sig);
-}
 
 static long proc_uname(struct utsname *u) {
   *u = (struct utsname){};
@@ -154,12 +147,23 @@ static long time_deadline(const struct timespec *ts, bool absolute, vx_instant *
   return 0;
 }
 
-static long time_sleep(clockid_t clock, int flags, const struct timespec *req) {
+static bool sig_restarting; // backend.c
+
+// A sleep ends early with EINTR when a signal interrupts it, with what was
+// left in *rem; made again after the signal (signal.c), it keeps its deadline.
+static long time_sleep(clockid_t clock, int flags, const struct timespec *req, struct timespec *rem) {
   if (clock < 0 || clock > CLOCK_BOOTTIME_ALARM) return -EINVAL;
-  vx_instant deadline;
-  long st = time_deadline(req, flags & TIMER_ABSTIME, &deadline);
+  static vx_instant deadline;
+  long st = 0;
+  if (!sig_restarting) st = time_deadline(req, flags & TIMER_ABSTIME, &deadline);
   static const _Atomic uint32_t never;
-  while (st == 0 && vx_clock_read() < deadline) vx_futex_wait(&never, 0, deadline);
+  while (st == 0 && vx_clock_read() < deadline) {
+    if (vx_futex_wait(&never, 0, deadline) != VX_ERR_INTERRUPTED) continue;
+    vx_instant left = deadline - vx_clock_read();
+    if (left < 0) left = 0;
+    if (rem && !(flags & TIMER_ABSTIME)) *rem = (struct timespec){left / 1'000'000'000, left % 1'000'000'000};
+    return -EINTR;
+  }
   return st;
 }
 

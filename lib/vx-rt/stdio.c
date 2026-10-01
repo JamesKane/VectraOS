@@ -103,12 +103,12 @@ static void vx_console_print(vx_str s) {
 
 static struct {
   vx_handle in, out, port;
-  uint8_t msg[sizeof(vx_msg_header) + 4096]; // stdin's current message,
-  uint32_t msg_len, msg_pos;                 // and how much of it has been read
+  alignas(vx_msg_header) uint8_t msg[sizeof(vx_msg_header) + 4096]; // stdin's current message,
+  uint32_t msg_len, msg_pos;                                        // and how much of it has been read
   bool in_ended;
   bool closed_bound; // PEER_CLOSED on stdin is bound once; it fires once
   size_t len;
-  uint8_t line[sizeof(vx_msg_header) + 512]; // stdout's line, after a header
+  alignas(vx_msg_header) uint8_t line[sizeof(vx_msg_header) + 512]; // stdout's line, after a header
 } vx_stdio;
 
 static void vx_stdout_flush(void) {

@@ -84,7 +84,7 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 3a. Kernel: `task_create`'s `FORK`, a copy of the caller's memory and handle table (rings' and devices' memory left out, a handle to the caller becoming the child's) | Done | `f5f54eb` |
 | 3b. `posixd`: the process table (pids, parents, process groups, sessions) and `wait`; the back end's `getpid`, `setpgid`, `setsid` and the rest from it; `posix_spawn` and `posix_spawnp` in the back end, registering each child before it runs | Done | `5353e4b` |
 | 3c. libc: `fork` (the child reconnecting its namespace and console, reopening its files), `execve` (`posixd`'s `EXEC`: the same process in a new task), pipes over channels, descriptors and the working directory passed to children, `posix_spawn`'s file actions | Done | `7e09e6e` |
-| 3d. Signals: `sigaction`, `kill` through `posixd`, delivery by `thread_interrupt` to a libc trampoline, faults as `SIGSEGV` and the rest, `SIGCHLD` | To do | |
+| 3d. Signals: `sigaction`, `sigprocmask`, `sigsuspend`, `kill` through `posixd`, delivery by `thread_interrupt` to a libc trampoline (deferred to the back end's return, `EINTR` or `SA_RESTART`), faults as `SIGSEGV` and the rest, `SIGCHLD`. Kernel: `thread_interrupt` queues eight; a call that ends without its reply takes back an unread request; an interrupt no longer overwrites a finished wait's result | Done | not yet committed |
 | 3e. A RAM file system for `/tmp`; `/dev/null`, `/dev/zero`, `/dev/urandom`; the POSIX namespace template (`/lib/ns/posix`) | To do | |
 | 4. `ptyd`; sockets over `/net`; `poll` and `select`; the `posix` 9Px extension | To do | |
 | 5. Lua, sbase and dash, vendored | To do | |
@@ -121,8 +121,9 @@ Deferred deliberately, each with where it is due:
 | A file's offset is not shared with a child: the child opens it again (and a forked child's open directory starts again from its first entry) | `(a; b) > f` from a forked shell interleaves wrongly | M4 step 4 (open-file descriptions in the server, the `posix` extension) |
 | Pipes are channels of 4 KiB messages, not rings; a writer that finds the queue full polls | Throughput is modest | When a benchmark says so (01 §9 has rings) |
 | A forked child does not reconnect a dialed (TCP) mount cleanly: it dials again, and the old connection's state is left behind | — | When a POSIX program needs one |
+| Signals: no alternate signal stack, no registers in a handler's `ucontext`, no `sigqueue` or real-time queueing, no stopping (`SIGSTOP`, `SIGTSTP` are ignored); a 9P call (a file read, the console) is not interrupted, its handler runs when it is done | Job control and `Ctrl-C` at a blocked console read wait | M4 step 4 (`ptyd`, job control); the rest when a port needs it |
 | AVX, SVE and SME fault | Code built for x86-64-v1 and armv8-a runs; code that needs AVX or SVE does not | When a port needs them (XSAVE; SVE's state) |
-| FP/SIMD registers are not in `thread_state` or a `vx_exception` | A debugger cannot see them; an in-task handler (a signal handler, from step 3) must save them itself | M4 step 3 (signals), step 6 (`dbg`) |
+| FP/SIMD registers are not in `thread_state` or a `vx_exception` | A debugger cannot see them; the musl back end's signal entry saves them itself | M4 step 6 (`dbg`) |
 | `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |
 | IOMMU in pass-through only (QEMU) | A device can reach any memory; a dead driver's device could write freed memory before `devmgr` turns off its bus mastering | M5 |
 | `netd` restarting its driver session is not tested | | M3 |

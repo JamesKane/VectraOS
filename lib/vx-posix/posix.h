@@ -25,6 +25,8 @@ enum posix_call : uint32_t {
   POSIX_GETPGID,     // {pid}, 0 for the caller -> {pgid}
   POSIX_GETSID,      // {pid}, 0 for the caller -> {sid}
   POSIX_WAIT,        // {pid, options} as wait4's -> {pid, status} once a child has ended; {0} with WNOHANG
+  POSIX_KILL,        // {pid, sig} as kill's -> {1 if the caller is among those it names}: posixd signals the
+                     // others; the caller delivers to itself
   POSIX_EXEC,        // handles [a new task] -> {pid}, handles [its channel]: the caller's process goes on
                      // in the new task (execve), with its pid, parent, group, session and children; the
                      // caller's own task and channel are let go, and its end is not reported
@@ -50,7 +52,18 @@ static constexpr int64_t POSIX_WNOHANG = 1; // wait4's options, as Linux numbers
 // The wait status of a process that exited with status s (the kernel's exit
 // status): its low byte as an exit code; a fault (-1) as SIGSEGV; a kill for
 // signal n (-(256 + n), from posixd) as that signal; any other kill as SIGKILL.
-static constexpr int64_t POSIX_SIGKILL = 9, POSIX_SIGSEGV = 11;
+static constexpr int64_t POSIX_SIGKILL = 9, POSIX_SIGSEGV = 11, POSIX_SIGCHLD = 17, POSIX_SIGCONT = 18,
+                         POSIX_SIGURG = 23, POSIX_SIGWINCH = 28, POSIX_NSIG = 64;
+
+// A signal is delivered by thread_interrupt, with the value: the signal in
+// the low 16 bits, the sending pid above them (0 from posixd itself).
+static constexpr uint64_t POSIX_SIGNAL_MASK = 0xffff;
+
+// The signals whose default is to be ignored; every other one's ends the
+// process (stopping waits for job control, with ptyd).
+[[maybe_unused]] static bool posix_default_ignored(int64_t sig) {
+  return sig == POSIX_SIGCHLD || sig == POSIX_SIGCONT || sig == POSIX_SIGURG || sig == POSIX_SIGWINCH;
+}
 
 [[maybe_unused]] static int64_t posix_wait_status(int64_t s) {
   if (s >= 0) return (s & 0xff) << 8;

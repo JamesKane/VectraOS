@@ -102,7 +102,7 @@ typedef struct vx_spawn_args {
   void *ctx;
 } vx_spawn_args;
 
-static uint8_t vx_spawn_out[VX_CHANNEL_MAX_BYTES];
+alignas(vx_msg_header) static uint8_t vx_spawn_out[VX_CHANNEL_MAX_BYTES]; // written as a header first
 
 static void vx_close_all(const vx_handle *h, uint32_t n) {
   for (uint32_t i = 0; i < n; i++)

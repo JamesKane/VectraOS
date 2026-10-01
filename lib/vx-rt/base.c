@@ -391,8 +391,8 @@ typedef struct vx_spawn_info {
 static vx_spawn_info vx_spawn;
 static vx_handle vx_self; // the task's handle to itself, or VX_HANDLE_NONE
 
-static uint8_t vx_spawn_msg[VX_CHANNEL_MAX_BYTES];
-static char vx_spawn_scratch[VX_CHANNEL_MAX_BYTES]; // decoded values, which never grow
+alignas(vx_msg_header) static uint8_t vx_spawn_msg[VX_CHANNEL_MAX_BYTES]; // read as a header first
+static char vx_spawn_scratch[VX_CHANNEL_MAX_BYTES];                       // decoded values, which never grow
 
 // Takes the handle the spawn message calls `name`: it is the caller's from
 // here on, and a second take finds nothing. VX_HANDLE_NONE if there is none.

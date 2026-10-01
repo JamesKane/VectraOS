@@ -89,7 +89,10 @@ typedef struct vx_msg_size { // what channel_read and channel_call report
 //   bind=OLD new=NEW [flags=F]                           vx-ns replays it
 static constexpr uint32_t VX_SPAWN = 0x6e77'7073; // "spwn"
 
-// channel_call's buffers: what to send, and where the reply goes.
+// channel_call's buffers: what to send, and where the reply goes. A call that
+// ends without its reply (interrupted, or past its deadline) takes back its
+// request if the server has not read it yet: it is never answered, and its
+// handles are closed.
 typedef struct vx_call {
   const void *wr_bytes;
   const vx_handle *wr_handles;
@@ -341,7 +344,8 @@ enum vx_task_options : uint32_t { VX_TASK_FORK = 1 };
 //     the task, with thread 0): a call it is blocked in returns
 //     ERR_INTERRUPTED, and on its way back to user mode it is diverted to the
 //     in-task handler with an exception of kind INTERRUPT whose code is value.
-//     A task with no in-task handler is not interrupted (BAD_STATE).
+//     A task with no in-task handler is not interrupted (BAD_STATE). Up to
+//     eight wait for delivery, each its own exception; more is SHOULD_WAIT.
 // vmo_clone(vmo, offset, size, options, &out): a new VMO holding a copy of the
 //     range, charged in full (01 §5: commit, not overcommit).
 //

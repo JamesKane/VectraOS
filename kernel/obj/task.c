@@ -87,6 +87,8 @@ typedef enum thread_state : uint8_t {
 struct cpu;
 
 // Everything below `state` belongs to the scheduler and is under its lock.
+static constexpr uint32_t THREAD_MAX_INTERRUPTS = 8;
+
 struct thread {
   object obj;
   task *task;                           // nullptr for an idle thread
@@ -111,6 +113,7 @@ struct thread {
   vx_instant wake_late;      // wake_at plus its leeway: the timer may wait until here
   const void *wait_token;    // what it waits on, until it is woken or times out (sched.c)
   bool wake_pending;         // woken between joining a list of waiters and blocking
+  int64_t pending_result;    // and the result that block returns at once
   int64_t wait_result;
   // Exceptions and interrupts (obj/exception.c), under its task's lock.
   uint32_t id;            // in its task
@@ -119,8 +122,11 @@ struct thread {
   uint32_t suspend_count; // thread_suspend, less thread_resume
   bool parked;            // stopped on its way to user mode while suspended
   uint32_t exc_action;    // what exception_resume said: enum vx_resume_action, or 0
-  bool interrupt_pending; // thread_interrupt, not yet delivered
-  uint64_t interrupt_value;
+  // thread_interrupt's values not yet delivered, oldest first: each is its
+  // own exception (Plan 9 queued notes the same way).
+  bool interrupt_pending; // interrupt_count > 0, read without the lock
+  uint8_t interrupt_count;
+  uint64_t interrupt_queue[THREAD_MAX_INTERRUPTS];
   vx_exception exc; // the exception it stopped at
 };
 

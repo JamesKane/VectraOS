@@ -222,6 +222,20 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
       break;
     }
   }
+  // A call that ends without its reply (interrupted, timed out) takes back a
+  // request the server has not read yet, so the server never answers a call
+  // nobody waits for: a request it has read is its own to finish.
+  channel *server = channel_peer(c);
+  for (channel_msg **link = server && !w.reply ? &server->head : nullptr, *prev = nullptr; link && *link;
+       prev = *link, link = &(*link)->next) {
+    if (*link != request) continue;
+    *link = request->next;
+    if (server->tail == request) server->tail = prev;
+    server->count--;
+    server->bytes -= request->len;
+    *sent = false; // the caller's again, and freed with its handles
+    break;
+  }
   spin_unlock(&c->pair->lock);
   if (w.reply) {
     *reply = w.reply;

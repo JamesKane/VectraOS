@@ -12,8 +12,11 @@
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
+#include <sched.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <spawn.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,10 +54,34 @@ static double seconds(const struct timespec *t) { return (double)t->tv_sec + (do
 // pid, and the exit status says what it found.
 extern char **environ; // POSIX's, which <unistd.h> declares only for _GNU_SOURCE
 
+static volatile sig_atomic_t signals[65]; // how many of each signal a handler saw
+static volatile pid_t last_sender;
+static sigjmp_buf fault_jump;
+static void *volatile fault_address;
+
+// An address nothing is mapped at, for the faults the tests make on purpose:
+// made at run time, which keeps the static analyzer from flagging them.
+static volatile int *nowhere_at(void) { return (volatile int *)(uintptr_t)strtoul("16", nullptr, 10); }
+
+static void on_signal(int sig) { signals[sig]++; }
+
+static void on_signal_info(int sig, siginfo_t *info, void *uc) {
+  (void)uc;
+  signals[sig]++;
+  last_sender = info->si_pid;
+}
+
+static void on_fault(int sig, siginfo_t *info, void *uc) {
+  (void)uc;
+  signals[sig]++;
+  fault_address = info->si_addr;
+  siglongjmp(fault_jump, 1);
+}
+
 static int child_main(char **argv) {
   pid_t parent = (pid_t)strtol(argv[2], nullptr, 10);
   if (getppid() != parent || getpid() == parent || getsid(0) != getsid(parent)) return 1;
-  if (strcmp(argv[1], "exit") == 0) return (int)strtol(argv[3], nullptr, 10);
+  if (strcmp(argv[1], "exit") == 0) return argv[3] ? (int)strtol(argv[3], nullptr, 10) : 7;
   if (strcmp(argv[1], "group") == 0) return getpgrp() == getpid() ? 9 : 2; // POSIX_SPAWN_SETPGROUP, 0
   if (strcmp(argv[1], "sleep") == 0) {
     nanosleep(&(struct timespec){.tv_nsec = 100'000'000}, nullptr);
@@ -72,6 +99,24 @@ static int child_main(char **argv) {
     ok = ok && getcwd(cwd, sizeof cwd) && strcmp(cwd, "/boot") == 0;
     return ok ? 10 : 2;
   }
+  if (strcmp(argv[1], "signal") == 0) return kill(parent, SIGUSR1) == 0 ? 12 : 2;
+  if (strcmp(argv[1], "late") == 0) { // a signal to the parent while it sleeps
+    nanosleep(&(struct timespec){.tv_nsec = 50'000'000}, nullptr);
+    return kill(parent, SIGUSR1) == 0 ? 14 : 2;
+  }
+  if (strcmp(argv[1], "pause") == 0) { // ready (on its standard output), then waits for SIGUSR2
+    struct sigaction sa = {.sa_handler = on_signal};
+    sigset_t usr2, none;
+    sigemptyset(&usr2);
+    sigaddset(&usr2, SIGUSR2);
+    sigemptyset(&none);
+    sigprocmask(SIG_BLOCK, &usr2, nullptr); // so it cannot come between "ready" and the wait
+    sigaction(SIGUSR2, &sa, nullptr);
+    write(1, "ready", 5);
+    bool interrupted = sigsuspend(&none) == -1 && errno == EINTR;
+    return interrupted && signals[SIGUSR2] == 1 ? 13 : 2;
+  }
+  if (strcmp(argv[1], "segv") == 0) return *nowhere_at(); // default: the end, as SIGSEGV
   if (strcmp(argv[1], "env") == 0) {
     const char *greeting = getenv("GREETING");
     return greeting && strcmp(greeting, "hello") == 0 ? 4 : 2;
@@ -225,6 +270,108 @@ static void test_fork_exec_pipes(void) {
   close(file);
 }
 
+static int spawn_child(const char *what, posix_spawn_file_actions_t *fa, pid_t *child) {
+  char parent[24];
+  snprintf(parent, sizeof parent, "%d", (int)getpid());
+  char *args[] = {"ctest", (char *)what, parent, nullptr};
+  return posix_spawn(child, "/boot/bin/ctest", fa, nullptr, args, environ);
+}
+
+static double now_seconds(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return seconds(&t);
+}
+
+// Signals: to itself, blocked and pending, ignored, between processes;
+// faults; default actions; SIGCHLD; interrupted and restarted calls.
+static void test_signals(void) {
+  struct sigaction sa = {.sa_handler = on_signal},
+                   info = {.sa_sigaction = on_signal_info, .sa_flags = SA_SIGINFO};
+  CHECK(sigaction(SIGUSR1, &sa, nullptr) == 0);
+  CHECK(raise(SIGUSR1) == 0 && signals[SIGUSR1] == 1); // delivered before raise returns
+  sigset_t usr1, pending;
+  sigemptyset(&usr1);
+  sigaddset(&usr1, SIGUSR1);
+  CHECK(sigprocmask(SIG_BLOCK, &usr1, nullptr) == 0);
+  CHECK(raise(SIGUSR1) == 0 && signals[SIGUSR1] == 1); // blocked: pending
+  CHECK(sigpending(&pending) == 0 && sigismember(&pending, SIGUSR1));
+  CHECK(sigprocmask(SIG_UNBLOCK, &usr1, nullptr) == 0 && signals[SIGUSR1] == 2);
+  CHECK(signal(SIGUSR2, SIG_IGN) != SIG_ERR && raise(SIGUSR2) == 0 && signals[SIGUSR2] == 0);
+  signal(SIGUSR2, SIG_DFL);
+  errno = 0;
+  CHECK(sigaction(SIGKILL, &sa, nullptr) == -1 && errno == EINVAL);
+
+  // From another process, with its pid; the wait it interrupts goes on (SA_RESTART).
+  info.sa_flags |= SA_RESTART;
+  CHECK(sigaction(SIGUSR1, &info, nullptr) == 0);
+  pid_t child = 0;
+  int status = 0;
+  CHECK(spawn_child("signal", nullptr, &child) == 0);
+  CHECK(waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 12);
+  for (double end = now_seconds() + 1; signals[SIGUSR1] < 3 && now_seconds() < end;) sched_yield();
+  CHECK(signals[SIGUSR1] == 3 && last_sender == child);
+
+  // To a child that waits for it.
+  int p[2];
+  CHECK(pipe(p) == 0);
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_adddup2(&fa, p[1], 1);
+  posix_spawn_file_actions_addclose(&fa, p[0]);
+  CHECK(spawn_child("pause", &fa, &child) == 0);
+  posix_spawn_file_actions_destroy(&fa);
+  close(p[1]);
+  char ready[8] = {};
+  CHECK(read(p[0], ready, 5) == 5 && strcmp(ready, "ready") == 0);
+  close(p[0]);
+  CHECK(kill(child, SIGUSR2) == 0);
+  CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 13);
+
+  // Default actions: the end, with the signal in the wait status.
+  CHECK(spawn_child("sleep", nullptr, &child) == 0 && kill(child, SIGTERM) == 0);
+  CHECK(waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM);
+  CHECK(spawn_child("sleep", nullptr, &child) == 0 && kill(child, SIGKILL) == 0);
+  CHECK(waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+  CHECK(spawn_child("segv", nullptr, &child) == 0);
+  CHECK(waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
+  errno = 0;
+  CHECK(kill(99999, SIGTERM) == -1 && errno == ESRCH);
+
+  // A fault caught, and left by siglongjmp.
+  struct sigaction fault = {.sa_sigaction = on_fault, .sa_flags = SA_SIGINFO};
+  CHECK(sigaction(SIGSEGV, &fault, nullptr) == 0);
+  if (sigsetjmp(fault_jump, 1) == 0) (void)*nowhere_at();
+  CHECK(signals[SIGSEGV] == 1 && fault_address == (void *)nowhere_at());
+  signal(SIGSEGV, SIG_DFL);
+
+  // SIGCHLD, after the wait's answer.
+  CHECK(sigaction(SIGCHLD, &(struct sigaction){.sa_handler = on_signal, .sa_flags = SA_RESTART}, nullptr) ==
+        0);
+  // An earlier child's may still be on its way: this one's adds at least one.
+  int before = signals[SIGCHLD];
+  CHECK(spawn_child("exit", nullptr, &child) == 0);
+  CHECK(waitpid(child, &status, 0) == child);
+  for (double end = now_seconds() + 1; signals[SIGCHLD] <= before && now_seconds() < end;) sched_yield();
+  CHECK(signals[SIGCHLD] > before);
+  signal(SIGCHLD, SIG_DFL);
+
+  // A sleep a handler interrupts ends with EINTR and what was left; one that
+  // an ignored signal (SIGCHLD by default) interrupts goes on to its end.
+  CHECK(sigaction(SIGUSR1, &sa, nullptr) == 0); // not SA_RESTART
+  CHECK(spawn_child("late", nullptr, &child) == 0);
+  struct timespec rem = {};
+  double t0 = now_seconds();
+  CHECK(nanosleep(&(struct timespec){.tv_sec = 2}, &rem) == -1 && errno == EINTR && rem.tv_sec >= 1);
+  CHECK(now_seconds() - t0 < 1.5);
+  CHECK(waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 14);
+  CHECK(spawn_child("exit", nullptr, &child) == 0); // its SIGCHLD comes during the sleep
+  t0 = now_seconds();
+  CHECK(nanosleep(&(struct timespec){.tv_nsec = 300'000'000}, nullptr) == 0 && now_seconds() - t0 >= 0.3);
+  CHECK(waitpid(child, &status, 0) == child);
+  signal(SIGUSR1, SIG_DFL);
+}
+
 int main(int argc, char **argv) {
   if (argc >= 3 && strcmp(argv[1], "one") != 0) return child_main(argv);
   printf("ctest: hello from musl\n");
@@ -323,6 +470,7 @@ int main(int argc, char **argv) {
 
   test_processes();
   test_fork_exec_pipes();
+  test_signals();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

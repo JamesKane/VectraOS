@@ -92,7 +92,15 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
     if (vx_ring_prepare_sleep(&k->ring)) {
       vx_packet pk = {};
       vx_port_bind(k->port, k->end, VX_TRIGGER_COUNTER_GE, P9_KEY_BELL, (uint64_t)seen + 1);
-      if (vx_port_wait(k->port, VX_INFINITE, 0, &pk, 1) != 1 || pk.key == P9_KEY_CLOSED) break;
+      int64_t got = vx_port_wait(k->port, VX_INFINITE, 0, &pk, 1);
+      // An interrupt (a POSIX signal) does not end a call the server is
+      // answering: the wait goes on, and its handler runs once the call is
+      // done (01 §9). The binding made for this wait may fire later, too.
+      if (got == VX_ERR_INTERRUPTED) {
+        vx_ring_end_sleep(&k->ring);
+        continue;
+      }
+      if (got != 1 || pk.key == P9_KEY_CLOSED) break;
     }
     vx_ring_end_sleep(&k->ring);
   }

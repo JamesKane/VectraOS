@@ -138,14 +138,18 @@ static void exception_check_interrupt(void) {
   task *t = th->task;
   if (!__atomic_load_n(&th->interrupt_pending, __ATOMIC_RELAXED)) return;
   spin_lock(&t->lock);
-  bool pending = th->interrupt_pending;
-  uint64_t value = th->interrupt_value;
-  th->interrupt_pending = false;
+  bool pending = th->interrupt_count > 0;
+  uint64_t value = th->interrupt_queue[0];
+  if (pending) {
+    th->interrupt_count--;
+    for (uint32_t i = 0; i < th->interrupt_count; i++) th->interrupt_queue[i] = th->interrupt_queue[i + 1];
+  }
+  th->interrupt_pending = th->interrupt_count > 0; // the next goes when this one's handler resumes
   spin_unlock(&t->lock);
   if (!pending) return;
   // The wake that brought it here must not end its next wait as well.
   spin_lock(&sched.lock);
-  if (th->wake_pending && th->wait_result == VX_ERR_INTERRUPTED) th->wake_pending = false;
+  if (th->wake_pending && th->pending_result == VX_ERR_INTERRUPTED) th->wake_pending = false;
   spin_unlock(&sched.lock);
   struct trap_frame *f = arch_user_frame(th);
   vx_exception e = {
@@ -334,9 +338,12 @@ static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t value) {
   } else {
     for (thread *x = t->threads; x && !target; x = x->task_next)
       if (id ? x->id == id : !x->exc_stopped) target = x;
-    if (target) {
+    if (target && target->interrupt_count == THREAD_MAX_INTERRUPTS) {
+      st = VX_ERR_SHOULD_WAIT; // its queue is full: the caller may try again
+      target = nullptr;
+    } else if (target) {
+      target->interrupt_queue[target->interrupt_count++] = value;
       target->interrupt_pending = true;
-      target->interrupt_value = value;
       object_ref(&target->obj);
     } else {
       st = VX_ERR_NOT_FOUND;
@@ -345,7 +352,8 @@ static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t value) {
   spin_unlock(&t->lock);
   object_release(&t->obj);
   if (!target) return st;
-  sched_kick(target, VX_ERR_INTERRUPTED);
+  sched_kick(target, VX_ERR_INTERRUPTED); // out of a call it is blocked in,
+  sched_poke(target);                     // or into the kernel from user code on another CPU
   object_release(&target->obj);
   return VX_OK;
 }

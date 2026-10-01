@@ -204,7 +204,7 @@ static long console_write(const char *p, size_t n) {
 }
 
 static long pipe_write(const ofd *o, const uint8_t *p, size_t n) {
-  static uint8_t msg[sizeof(vx_msg_header) + FD_PIPE_CHUNK];
+  alignas(vx_msg_header) static uint8_t msg[sizeof(vx_msg_header) + FD_PIPE_CHUNK];
   size_t done = 0;
   while (done < n) {
     uint32_t k = n - done < FD_PIPE_CHUNK ? (uint32_t)(n - done) : FD_PIPE_CHUNK;
