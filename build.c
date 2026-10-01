@@ -1076,6 +1076,279 @@ static void write_gpt_disk(const char *path, const char *esp_path, uint64_t seed
   if (close(fd) != 0) die("cannot write %s", path);
 }
 
+// --- ISO 9660 with El Torito (image --iso, M3's deliverables) ---
+//
+// A CD image for UEFI. Its El Torito boot entry ("no emulation", platform
+// EFI) is a small FAT image holding only the loader; the loader then reads
+// its configuration, the kernel and the modules from the ISO 9660 tree, as
+// Limine does on a CD. An MBR in the system area also names the boot image
+// as a partition (type EFI), as xorriso's --efi-boot-part does: that is how
+// Limine finds which volume it was booted from. Names are plain ISO 9660
+// (upper case, "NAME.EXT;1"),
+// which Limine matches case-insensitively. Every date is zero, so the image
+// is reproducible.
+
+static constexpr uint32_t ISO_SECTOR = 2048;
+static constexpr int ISO_MAX_DIRS = 16;
+
+typedef struct iso_file {
+  const char *path; // in the ISO: "boot/vx/kernel.elf"
+  const char *from; // where it is on this machine
+  uint64_t size;    // filled in by write_iso
+} iso_file;
+
+// Copies the file at from to offset `at` of fd, a chunk at a time.
+static void copy_into(int fd, const char *path, const char *from, uint64_t at) {
+  int in = open(from, O_RDONLY);
+  if (in < 0) die("cannot read %s", from);
+  static char chunk[1 << 20];
+  for (ssize_t n; (n = read(in, chunk, sizeof chunk)) != 0; at += (uint64_t)n) {
+    if (n < 0) die("cannot read %s", from);
+    pwrite_all(fd, chunk, (size_t)n, at, path);
+  }
+  close(in);
+}
+
+static void iso_both16(uint8_t *p, uint16_t v) { // ISO 9660's both-endian fields
+  p[0] = p[3] = (uint8_t)v, p[1] = p[2] = (uint8_t)(v >> 8);
+}
+static void iso_both32(uint8_t *p, uint32_t v) {
+  put32(p, v);
+  p[4] = (uint8_t)(v >> 24), p[5] = (uint8_t)(v >> 16), p[6] = (uint8_t)(v >> 8), p[7] = (uint8_t)v;
+}
+
+// A directory record at p; its length.
+static size_t iso_record(uint8_t *p, uint32_t lba, uint32_t size, bool dir, const char *name,
+                         size_t name_len) {
+  size_t len = 33 + name_len + !(name_len & 1); // padded to an even length
+  memset(p, 0, len);
+  p[0] = (uint8_t)len;
+  iso_both32(p + 2, lba);
+  iso_both32(p + 10, size);
+  p[25] = dir ? 2 : 0;
+  iso_both16(p + 28, 1); // volume sequence number
+  p[32] = (uint8_t)name_len;
+  memcpy(p + 33, name, name_len);
+  return len;
+}
+
+static void iso_put(uint8_t *p, const char *s) { // the characters, without a NUL
+  for (size_t i = 0; s[i]; i++) p[i] = (uint8_t)s[i];
+}
+
+static void iso_text(uint8_t *p, size_t len, const char *s) { // a-characters, padded with spaces
+  memset(p, ' ', len);
+  for (size_t i = 0; i < len && s[i]; i++) p[i] = (uint8_t)s[i];
+}
+
+// A path component as ISO 9660 names it: upper case; a file gets ".EXT;1".
+static const char *iso_name(const char *name, size_t len, bool file) {
+  char out[40];
+  size_t n = 0;
+  bool dot = false;
+  for (size_t i = 0; i < len; i++) {
+    char c = name[i] >= 'a' && name[i] <= 'z' ? (char)(name[i] - 32) : name[i];
+    bool ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || (c == '.' && file && !dot);
+    if (!ok || n + 4 >= sizeof out) die("%.*s cannot be an ISO 9660 name", (int)len, name);
+    dot = dot || c == '.';
+    out[n++] = c;
+  }
+  if (file && !dot) out[n++] = '.';
+  if (file) out[n++] = ';', out[n++] = '1';
+  return fmt("%.*s", (int)n, out);
+}
+
+typedef struct iso_dir {
+  const char *path; // "" for the root
+  int parent;       // its index, once sorted
+  uint32_t lba;
+} iso_dir;
+
+static int iso_dir_index(const iso_dir *dirs, int count, const char *path, size_t len) {
+  for (int i = 0; i < count; i++)
+    if (strlen(dirs[i].path) == len && memcmp(dirs[i].path, path, len) == 0) return i;
+  return -1;
+}
+
+static int iso_depth(const char *path) {
+  int d = *path ? 1 : 0;
+  for (const char *p = path; *p; p++) d += *p == '/';
+  return d;
+}
+
+static void write_iso(const char *path, const char *boot_image, iso_file *files, int count,
+                      uint32_t disk_id) {
+  // The directories: each file's, and theirs, in path table order (by depth,
+  // then parent, then name).
+  iso_dir dirs[ISO_MAX_DIRS] = {{.path = ""}};
+  int ndirs = 1;
+  for (int f = 0; f < count; f++)
+    for (const char *p = files[f].path; (p = strchr(p, '/')); p++) {
+      size_t len = (size_t)(p - files[f].path);
+      if (iso_dir_index(dirs, ndirs, files[f].path, len) >= 0) continue;
+      if (ndirs == ISO_MAX_DIRS) die("too many directories for the ISO");
+      dirs[ndirs++] = (iso_dir){.path = fmt("%.*s", (int)len, files[f].path)};
+    }
+  for (int i = 1; i < ndirs; i++) // insertion sort: few directories
+    for (int k = i; k > 1; k--) {
+      int dk = iso_depth(dirs[k].path), dp = iso_depth(dirs[k - 1].path);
+      if (dk > dp || (dk == dp && strcmp(dirs[k].path, dirs[k - 1].path) >= 0)) break;
+      iso_dir t = dirs[k];
+      dirs[k] = dirs[k - 1];
+      dirs[k - 1] = t;
+    }
+  for (int i = 1; i < ndirs; i++) {
+    const char *slash = strrchr(dirs[i].path, '/');
+    dirs[i].parent = slash ? iso_dir_index(dirs, ndirs, dirs[i].path, (size_t)(slash - dirs[i].path)) : 0;
+  }
+
+  // The layout: descriptors, path tables, a sector per directory, the boot
+  // catalog, the boot image, then the files.
+  enum : uint32_t { PVD = 16, BOOT_RECORD, TERMINATOR, PATH_L, PATH_M, DIRS };
+  struct stat st;
+  if (stat(boot_image, &st) != 0) die("cannot stat %s", boot_image);
+  vx_str boot = {nullptr, (size_t)st.st_size}; // its length; it is copied in at the end
+  for (int f = 0; f < count; f++) {
+    if (stat(files[f].from, &st) != 0) die("cannot stat %s", files[f].from);
+    files[f].size = (uint64_t)st.st_size;
+  }
+  uint32_t lba = DIRS;
+  for (int i = 0; i < ndirs; i++) dirs[i].lba = lba++;
+  uint32_t catalog = lba++, boot_lba = lba;
+  lba += (uint32_t)((boot.len + ISO_SECTOR - 1) / ISO_SECTOR);
+  uint32_t *file_lba = alloc((size_t)count * sizeof *file_lba);
+  for (int f = 0; f < count; f++) {
+    file_lba[f] = lba;
+    lba += (uint32_t)((files[f].size + ISO_SECTOR - 1) / ISO_SECTOR);
+  }
+  uint32_t total = lba;
+  uint8_t *img = alloc((size_t)boot_lba * ISO_SECTOR); // the metadata; the rest is written in place
+  memset(img, 0, (size_t)boot_lba * ISO_SECTOR);
+
+  // Path tables, little-endian and big-endian.
+  uint8_t *pl = img + (size_t)PATH_L * ISO_SECTOR, *pm = img + (size_t)PATH_M * ISO_SECTOR;
+  size_t ptsize = 0;
+  for (int i = 0; i < ndirs; i++) {
+    const char *base = strrchr(dirs[i].path, '/');
+    base = base ? base + 1 : dirs[i].path;
+    const char *name = i ? iso_name(base, strlen(base), false) : "\\0";
+    size_t nlen = i ? strlen(name) : 1;
+    uint8_t *l = pl + ptsize, *m = pm + ptsize;
+    l[0] = m[0] = (uint8_t)nlen;
+    put32(l + 2, dirs[i].lba);
+    m[2] = (uint8_t)(dirs[i].lba >> 24), m[3] = (uint8_t)(dirs[i].lba >> 16),
+    m[4] = (uint8_t)(dirs[i].lba >> 8), m[5] = (uint8_t)dirs[i].lba;
+    uint16_t parent = (uint16_t)(dirs[i].parent + 1);
+    put16(l + 6, parent);
+    m[6] = (uint8_t)(parent >> 8), m[7] = (uint8_t)parent;
+    for (size_t k = 0; k < nlen; k++) l[8 + k] = m[8 + k] = (uint8_t)name[k];
+    ptsize += 8 + nlen + (nlen & 1);
+  }
+  if (ptsize > ISO_SECTOR) die("the ISO's path table does not fit a sector");
+
+  // Each directory: ".", "..", then its children sorted by name.
+  for (int i = 0; i < ndirs; i++) {
+    uint8_t *d = img + (size_t)dirs[i].lba * ISO_SECTOR;
+    size_t at = iso_record(d, dirs[i].lba, ISO_SECTOR, true, "\\0", 1);
+    at += iso_record(d + at, dirs[dirs[i].parent].lba, ISO_SECTOR, true, "\\1", 1);
+    const char *names[64];
+    uint32_t lbas[64], sizes[64];
+    bool isdir[64];
+    int n = 0;
+    size_t plen = strlen(dirs[i].path);
+    for (int k = 1; k < ndirs; k++)
+      if (dirs[k].parent == i) {
+        const char *base = dirs[k].path + (plen ? plen + 1 : 0);
+        names[n] = iso_name(base, strlen(base), false), lbas[n] = dirs[k].lba, sizes[n] = ISO_SECTOR,
+        isdir[n++] = true;
+      }
+    for (int f = 0; f < count; f++) {
+      const char *slash = strrchr(files[f].path, '/');
+      size_t dlen = slash ? (size_t)(slash - files[f].path) : 0;
+      if (dlen != plen || memcmp(files[f].path, dirs[i].path, plen) != 0) continue;
+      const char *base = slash ? slash + 1 : files[f].path;
+      names[n] = iso_name(base, strlen(base), true), lbas[n] = file_lba[f],
+      sizes[n] = (uint32_t)files[f].size, isdir[n++] = false;
+    }
+    if (i == 0) { // the boot pieces, in the root
+      names[n] = "BOOT.CAT;1", lbas[n] = catalog, sizes[n] = ISO_SECTOR, isdir[n++] = false;
+      names[n] = "EFIBOOT.IMG;1", lbas[n] = boot_lba, sizes[n] = (uint32_t)boot.len, isdir[n++] = false;
+    }
+    int order[64];
+    for (int k = 0; k < n; k++) order[k] = k;
+    for (int k = 1; k < n; k++)
+      for (int q = k; q > 0 && strcmp(names[order[q]], names[order[q - 1]]) < 0; q--) {
+        int t = order[q];
+        order[q] = order[q - 1];
+        order[q - 1] = t;
+      }
+    for (int k = 0; k < n; k++) {
+      int c = order[k];
+      if (at + 33 + strlen(names[c]) + 1 > ISO_SECTOR) die("an ISO directory does not fit a sector");
+      at += iso_record(d + at, lbas[c], sizes[c], isdir[c], names[c], strlen(names[c]));
+    }
+  }
+
+  uint8_t *pvd = img + (size_t)PVD * ISO_SECTOR;
+  pvd[0] = 1;
+  iso_put(pvd + 1, "CD001");
+  pvd[6] = 1;
+  iso_text(pvd + 8, 32, "");
+  iso_text(pvd + 40, 32, "VECTRAOS");
+  iso_both32(pvd + 80, total);
+  iso_both16(pvd + 120, 1);
+  iso_both16(pvd + 124, 1);
+  iso_both16(pvd + 128, ISO_SECTOR);
+  iso_both32(pvd + 132, (uint32_t)ptsize);
+  put32(pvd + 140, PATH_L);
+  pvd[148] = 0, pvd[149] = 0, pvd[150] = 0, pvd[151] = PATH_M; // big-endian
+  iso_record(pvd + 156, dirs[0].lba, ISO_SECTOR, true, "\\0", 1);
+  iso_text(pvd + 190, (size_t)128 * 4, "");
+  iso_text(pvd + 574, 128, "VECTRAOS BUILD");
+  iso_text(pvd + 702, (size_t)37 * 3, "");
+  for (size_t d = 0; d < 4; d++) memset(pvd + 813 + 17 * d, '0', 16); // dates: none
+  pvd[881] = 1;
+
+  uint8_t *br = img + (size_t)BOOT_RECORD * ISO_SECTOR; // El Torito's boot record
+  iso_put(br + 1, "CD001");
+  br[6] = 1;
+  iso_put(br + 7, "EL TORITO SPECIFICATION");
+  put32(br + 71, catalog);
+
+  uint8_t *term = img + (size_t)TERMINATOR * ISO_SECTOR;
+  term[0] = 255;
+  iso_put(term + 1, "CD001");
+  term[6] = 1;
+
+  uint8_t *cat = img + (size_t)catalog * ISO_SECTOR;
+  cat[0] = 1;    // the validation entry
+  cat[1] = 0xef; // EFI
+  cat[30] = 0x55, cat[31] = 0xaa;
+  uint16_t sum = 0;
+  for (int i = 0; i < 32; i += 2) sum = (uint16_t)(sum + (cat[i] | cat[i + 1] << 8));
+  put16(cat + 28, (uint16_t)-sum); // the words sum to 0
+  cat[32] = 0x88;                  // bootable, no emulation
+  uint64_t count512 = (boot.len + 511) / 512;
+  if (count512 > 0xffff) die("the ISO's boot image is too big for its catalog entry");
+  put16(cat + 38, (uint16_t)count512);
+  put32(cat + 40, boot_lba);
+
+  // The MBR: one partition, the boot image, in 512-byte sectors.
+  put32(img + 0x1b8, disk_id);
+  uint8_t *pe = img + 446;
+  pe[4] = 0xef;
+  put32(pe + 8, boot_lba * (ISO_SECTOR / 512));
+  put32(pe + 12, (uint32_t)count512);
+  img[510] = 0x55, img[511] = 0xaa;
+
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0 || ftruncate(fd, (off_t)total * ISO_SECTOR) != 0) die("cannot create %s", path);
+  pwrite_all(fd, img, (size_t)boot_lba * ISO_SECTOR, 0, path);
+  copy_into(fd, path, boot_image, (uint64_t)boot_lba * ISO_SECTOR);
+  for (int f = 0; f < count; f++) copy_into(fd, path, files[f].from, (uint64_t)file_lba[f] * ISO_SECTOR);
+  if (close(fd) != 0) die("cannot write %s", path);
+}
+
 static const char *out_dir(const arch *a, bool release) {
   return fmt("out/%s/%s", a->name, release ? "release" : "debug");
 }
@@ -1166,21 +1439,22 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
 // A non-empty cmdline is added to the boot entry, and `with` names test
 // programs for bootfs, for test scenarios.
 static bool make_image_in(const arch *a, bool release, const char *image, const char *cmdline,
-                          const char *with);
+                          const char *with, const char *iso);
 
 // Everything an image takes from the arena (each file it reads, the boot
 // image's archive) is given back once it is written: each scenario's process
 // makes one, after the image its parent made, all in one arena.
-static bool make_image(const arch *a, bool release, const char *image, const char *cmdline,
-                       const char *with) {
+static bool make_image(const arch *a, bool release, const char *image, const char *cmdline, const char *with,
+                       const char *iso) {
   size_t mark = arena_used;
-  bool ok = make_image_in(a, release, image, cmdline, with);
+  bool ok = make_image_in(a, release, image, cmdline, with, iso);
   arena_used = mark;
   return ok;
 }
 
+// With iso, a CD image of the same system partition too (write_iso).
 static bool make_image_in(const arch *a, bool release, const char *image, const char *cmdline,
-                          const char *with) {
+                          const char *with, const char *iso) {
   const vx_ndb_record *t = port_target_for(&limine, a);
   if (!t) die("no Limine target for %s", a->name);
   const char *loader_name = str_dup(vx_ndb_get(t, "output"));
@@ -1233,13 +1507,38 @@ static bool make_image_in(const arch *a, bool release, const char *image, const 
   }
   if (!mtools(MCOPY, esp, (const char *const[]){config, "::/boot/limine/limine.conf", nullptr})) return false;
   write_gpt_disk(image, esp, seed);
+  if (iso) { // the loader alone in a small FAT image; everything else in the ISO's own tree
+    fprintf(stderr, "  ISO   %s\n", iso);
+    const char *efiboot = fmt("%s.efiboot", image);
+    int efd = open(efiboot, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (efd < 0 || ftruncate(efd, 4 << 20) != 0) die("cannot create %s", efiboot);
+    close(efd);
+    if (!mtools(MFORMAT, efiboot, (const char *const[]){"-N", serial, "-v", "VECTRA", "::", nullptr}) ||
+        !mtools(MMD, efiboot, (const char *const[]){"::/EFI", "::/EFI/BOOT", nullptr}) ||
+        !mtools(MCOPY, efiboot, (const char *const[]){loader, fmt("::/EFI/BOOT/%s", loader_name), nullptr}))
+      return false;
+    iso_file files[16];
+    int nf = 0;
+    files[nf++] = (iso_file){.path = "boot/vx/kernel.elf", .from = kernel};
+    files[nf++] = (iso_file){.path = "boot/vx/bootfs.tar", .from = bootfs};
+    files[nf++] = (iso_file){.path = "boot/limine/limine.conf", .from = config};
+    for (int i = 0; i < USER_PROGRAM_COUNT && nf < 16; i++)
+      if (USER_PROGRAMS[i].where == IN_MODULE)
+        files[nf++] = (iso_file){.path = fmt("boot/vx/%s", USER_PROGRAMS[i].name),
+                                 .from = fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i].name)};
+    write_iso(iso, efiboot, files, nf, (uint32_t)seed);
+    unlink(efiboot);
+  }
   unlink(esp);
   unlink(bootfs);
   return true;
 }
 
+static bool want_iso; // image --iso
+
 static bool build_image(const arch *a, bool release) {
-  return build_arch(a, release) && make_image(a, release, image_path(a, release), nullptr, "");
+  const char *iso = want_iso ? fmt("%s/vectra-%s.iso", out_dir(a, release), a->name) : nullptr;
+  return build_arch(a, release) && make_image(a, release, image_path(a, release), nullptr, "", iso);
 }
 
 // --- qemu and test ---
@@ -1249,6 +1548,7 @@ typedef struct qemu_opts {
   bool gdb;
   bool test;         // serial on stdout, no monitor
   const char *share; // the directory vx9pserve serves at 10.0.2.100!5640
+  const char *cdrom; // boot this ISO as a CD, with no disk
 } qemu_opts;
 
 // host/vx9pserve, built for this machine: the 9P server VectraOS mounts over
@@ -1332,9 +1632,15 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   }
   cmd_addv(c, (const char *const[]){"-m", "512M", "-smp", "4", "-display", "none", "-no-reboot", nullptr});
   cmd_add(c, "-drive");
-  // A test never writes the image, so several can boot one image at once.
-  cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test ? ",snapshot=on" : ""));
-  cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk,disable-legacy=on", nullptr});
+  if (o.cdrom) { // on virtio-scsi, which both architectures' firmware boots from
+    cmd_add(c, fmt("if=none,id=cd,media=cdrom,readonly=on,file=%s", o.cdrom));
+    cmd_addv(c, (const char *const[]){"-device", "virtio-scsi-pci,id=scsi,disable-legacy=on", "-device",
+                                      "scsi-cd,drive=cd,bus=scsi.0", nullptr});
+  } else {
+    // A test never writes the image, so several can boot one image at once.
+    cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test ? ",snapshot=on" : ""));
+    cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk,disable-legacy=on", nullptr});
+  }
   // QEMU's user networking: the guest is 10.0.2.15, the host 10.0.2.2 (M3).
   // Each connection to 10.0.2.100!7 gets a `cat` on the host of its own (an
   // echo server, for the tcp scenario), and each to 10.0.2.100!5640 a
@@ -1394,6 +1700,9 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   int expect_count = 0, fail_count = 0;
   double timeout = 0;
   const char *cmdline = "", *with = "";
+  bool iso = false;                        // scenario=... iso: boot the ISO, as a CD
+  const char *host_file[8], *host_text[8]; // host=FILE text=...: in the share, once it passed
+  int host_count = 0;
   for (;;) {
     vx_ndb_record rec;
     vx_ndb_result res = vx_ndb_next(&r, &rec);
@@ -1406,6 +1715,16 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       if (end == t || *end) die("%s:%zu: timeout=%s is not a number of seconds", path, rec.line, t);
       cmdline = str_dup(vx_ndb_get(&rec, "cmdline"));
       with = str_dup(vx_ndb_get(&rec, "with"));
+      iso = vx_ndb_has(&rec, "iso");
+    } else if (vx_ndb_has(&rec, "host") && host_count < 8) {
+      vx_str file = vx_ndb_get(&rec, "host");
+      for (size_t k = 0; k < file.len; k++)
+        if (file.ptr[k] == '/' && (k + 2 < file.len && file.ptr[k + 1] == '.' && file.ptr[k + 2] == '.'))
+          die("%s:%zu: host= names a file inside the share", path, rec.line);
+      if (!file.len || file.ptr[0] == '/' || (file.len >= 2 && file.ptr[0] == '.' && file.ptr[1] == '.'))
+        die("%s:%zu: host= names a file inside the share", path, rec.line);
+      host_file[host_count] = str_dup(file);
+      host_text[host_count++] = str_dup(vx_ndb_get(&rec, "text"));
     } else if ((vx_ndb_has(&rec, "expect") || vx_ndb_has(&rec, "line") || vx_ndb_has(&rec, "prompt")) &&
                expect_count < 64) {
       const char *key = "expect";
@@ -1428,15 +1747,17 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     } else {
       if (expect_count == 64 || fail_count == 64)
         die("%s:%zu: more than 64 expect= or fail= records", path, rec.line);
-      die("%s:%zu: expected scenario=, expect=, line=, prompt=, fail=, send= or type=", path, rec.line);
+      die("%s:%zu: expected scenario=, expect=, line=, prompt=, fail=, send=, type= or host=", path,
+          rec.line);
     }
   }
   if (timeout <= 0 || expect_count == 0) die("%s: needs scenario= with a timeout, and an expect=", path);
 
-  const char *image = image_path(a, release);
-  if (*cmdline || *with) {
+  const char *image = image_path(a, release), *cdrom = nullptr;
+  if (*cmdline || *with || iso) {
     image = fmt("%s/test-%s.img", out_dir(a, release), name);
-    if (!make_image(a, release, image, cmdline, with)) return false;
+    if (iso) cdrom = fmt("%s/test-%s.iso", out_dir(a, release), name);
+    if (!make_image(a, release, image, cmdline, with, cdrom)) return false;
   }
 
   const char *log_path = fmt("%s/test-%s.log", out_dir(a, release), name);
@@ -1445,7 +1766,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
 
   cmd c = {};
   const char *share = fresh_share(fmt("%s/share-%s", out_dir(a, release), name));
-  qemu_cmd(&c, a, image, (qemu_opts){.kvm = kvm_usable(a), .test = true, .share = share});
+  qemu_cmd(&c, a, image, (qemu_opts){.kvm = kvm_usable(a), .test = true, .share = share, .cdrom = cdrom});
   if (verbose) cmd_print(&c);
   signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
   int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it
@@ -1544,6 +1865,18 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   close(fds[0]);
   close(keys[1]);
   fclose(log);
+
+  // What the guest was to leave on the host, in its copy of the share
+  // (with or without a final newline).
+  for (int k = 0; k < host_count && strcmp(verdict, "ok") == 0; k++) {
+    const char *file = fmt("%s/%s", share, host_file[k]);
+    struct stat st;
+    vx_str got = stat(file, &st) == 0 ? read_file(file) : (vx_str){"", 0};
+    if (got.len && got.ptr[got.len - 1] == '\n') got.len--;
+    if (got.len != strlen(host_text[k]) || memcmp(got.ptr, host_text[k], got.len) != 0)
+      verdict =
+          fmt("the host's %s is \"%.*s\", not \"%s\"", host_file[k], (int)got.len, got.ptr, host_text[k]);
+  }
 
   bool ok = strcmp(verdict, "ok") == 0;
   fprintf(stderr, "  TEST  %-11s %-8s %s (%.1f s)%s\n", name, a->name, ok ? "ok" : "FAIL",
@@ -2161,7 +2494,8 @@ static void usage(void) {
       "\n"
       "  all           [--arch A] [--release]          the kernel and Limine (both architectures by "
       "default)\n"
-      "  image         [--arch A] [--release]          a GPT disk image: out/A/MODE/vectra-A.img\n"
+      "  image         [--arch A] [--release] [--iso]  a GPT disk image: out/A/MODE/vectra-A.img;\n"
+      "                                                 with --iso, a UEFI CD image too: vectra-A.iso\n"
       "  qemu          [--arch A] [--release] [--kvm] [--gdb]   boot the image; Ctrl-A X quits\n"
       "  test          [--arch A] [--release] [--tcg] [scenario...]   boot headless and check "
       "tests/qemu/*.ndb;\n"
@@ -2174,7 +2508,7 @@ static void usage(void) {
       "first job\n"
       "\n"
       "A is x86_64 or aarch64. qemu defaults to x86_64.\n"
-      "Still to come: bench, image --iso, and in check, the vx-check models (M2).\n");
+      "Still to come: bench, and in check, the vx-check models (M2).\n");
   exit(2);
 }
 
@@ -2204,6 +2538,8 @@ int main(int argc, char **argv) {
       qo.gdb = true;
     } else if (strcmp(argv[i], "--tcg") == 0) {
       force_tcg = true;
+    } else if (strcmp(argv[i], "--iso") == 0 && strcmp(command, "image") == 0) {
+      want_iso = true;
     } else if (strcmp(argv[i], "--arch") == 0 && i + 1 < argc) {
       i++;
       for (int a = 0; a < ARCH_COUNT; a++)

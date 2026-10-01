@@ -28,7 +28,7 @@ What runs today, under QEMU on x86_64 and aarch64:
 ```sh
 cc -std=c23 -o build build.c     # once; after that ./build rebuilds itself
 ./build all                      # the kernel, user space and Limine, for x86_64 and aarch64
-./build image                    # GPT disk images → out/<arch>/debug/vectra-<arch>.img (reproducible)
+./build image [--iso]            # GPT disk images → out/<arch>/debug/vectra-<arch>.img, and UEFI CD images (reproducible)
 ./build qemu --arch aarch64      # boot one in QEMU on the serial console; Ctrl-A X quits (--kvm, --gdb)
 ./build test                     # boot headless on both architectures and check tests/qemu/*.ndb (--release, --tcg)
 ./build check                    # host tests, fuzzers, vendor-check, format, static analysis, build-time budget
