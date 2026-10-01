@@ -40,6 +40,7 @@ _Blueprint v0, 2026-09-30._
 - **Badges:** a 64-bit value that the minter attaches when creating a channel or ring endpoint for a client. The server sees it on every message, so it can tell clients apart without trusting what they claim, as with seL4 badges.
 - **Transfer:** handles move *only* through channels or through a ring's handle side channel, and the kernel moves them. A handle sent without `TRANSFER` is refused.
 - **No ambient authority:** a new task starts with exactly the handles its parent passes in the spawn message. There is no global lookup syscall.
+- **The spawn message:** a new task's first thread starts with one handle, its bootstrap channel. The first message there is the spawn message: a header, then ndb records (02 §4.1) that name each handle it carries (`self` is the task itself) and give the program its arguments and its namespace as `mount` and `bind` records, which `vx-ns` replays. The format is in `abi/vx/abi.h`. The parent builds the task with the ELF loader in `vx-rt` (§9); the kernel loads only the root task, and sends it a spawn message too.
 - **Revocation (v1):**
   1. Closing one end of a channel or ring disconnects the peer, which gets `PEER_CLOSED` on its port.
   2. Killing a task revokes everything it holds.
@@ -411,8 +412,8 @@ This is how LLVM, Python and Git run without touching the kernel.
 
 1. Firmware (UEFI or BIOS) loads **Limine**, which loads the kernel ELF and modules, sets up the higher-half direct map, and passes the memory map, framebuffer, RSDP or DTB, and SMP information. With Secure Boot on, Limine is signed, and the hash of its config is enrolled into the binary. The config gives the BLAKE2B hash of the kernel and of every module, so the firmware's measurement of Limine into TPM PCR 4 covers the whole chain. `keyd` seals keys to those PCRs (02 §6.2).
 2. The kernel sets up its page tables, physical allocator, per-CPU data, interrupt controller (APIC or GICv3), timer (TSC deadline or the arm generic timer) and IOMMU (on from the start in deny-all mode, with identity maps only for regions the firmware reserves, such as VT-d RMRRs and IORT RMRs; no device can DMA until `devmgr` gives it a `DmaDomain`, which closes the window that Thunderbolt and USB4 DMA attacks use), and brings up the other CPUs.
-3. The kernel creates the root task, `svcd`, from the `svcd` module. It passes the root `Resource`, the boot module VMOs (initrd), the framebuffer VMO and a debug-log capability.
-4. `svcd` starts `bootfs` (the initrd as a read-only 9Px tree), `devmgr`, drivers, `netd`, `posixd` and the rest, according to `/boot/svc/*.ndb`. It then starts the console shell on `/dev/cons`.
+3. The kernel creates the root task, `svcd`, from the `svcd` module. Its spawn message (§3) carries a handle to the task itself, the boot image (the `bootfs.tar` module, as a read-only VMO) and the kernel command line; the root `Resource` and the framebuffer VMO join them when their users do. Until there is a debug-log object, permission to write the kernel log is a task flag that a task's children inherit, so services can report before the console moves to user space (04 §5, M2).
+4. `svcd` reads the manifests in `boot/svc/*.ndb` from the boot image itself, since the server for it is one of the services it starts. It starts `bootfs` (the boot image as a read-only 9Px tree), `devmgr`, drivers, `netd`, `posixd` and the rest, each with only the handles and namespace its manifest names, and restarts those marked `restart` when they exit. It then starts the console shell on `/dev/cons`.
 
 ## 11. Security hardening checklist
 

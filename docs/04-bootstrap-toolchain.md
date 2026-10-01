@@ -76,6 +76,7 @@ NeoVectra/
 │   ├── vx-buffer/              vx_buffer, vx_buffer_desc, timeline helpers
 │   ├── vx-driver/              MMIO register accessors, DMA pools, IRQ glue, class-protocol skeletons
 │   ├── vx-ndb/                 ndb record parser and writer (02 §4.1); host and target
+│   ├── vx-tar/                 the boot image's ustar reader and deterministic writer; host and target
 │   ├── vx-net/                 first-party TCP/IP (used by netd)
 │   ├── vx-debug/               DWARF index, unwinder, expression evaluator, aarch64 disassembler (05 §11)
 │   ├── vx-prof/                profiling zones and sample decoding (05 §9)
@@ -84,11 +85,12 @@ NeoVectra/
 ├── drivers/                    bus-pci bus-dt bus-acpi drv-uart-16550 drv-uart-pl011 drv-virtio-{net,blk,console,input,gpu}
 ├── cmd/                        gsh ls cat echo ps mount bind ns cpu import ...
 ├── apps/                       first-party vxui apps: dbg (05)
-├── host/                       vx9pserve (serves a host directory over 9P/9Px), mkbootfs
+├── host/                       vx9pserve (serves a host directory over 9P/9Px)
 ├── ports/                      one directory per C import: port.ndb (sources, flags) plus patches
 ├── third_party/                vendored sources, one directory each, plus VENDOR.ndb
 ├── boot/                       limine.conf, svc manifests (boot/svc/*.ndb), namespace templates (boot/lib/ns/)
-├── tests/qemu/                 scenario files for `./build test`
+├── tests/                      host/ (library tests), fuzz/ (libFuzzer targets and corpora), kernel/ (ktest),
+│                               user/ (test services), qemu/ (scenario files for `./build test`)
 └── docs/                       00–05 (this blueprint), adr/, proto/ (versioned protocol specs)
 ```
 
@@ -142,7 +144,7 @@ The vendored total is not hidden in a footnote. Once Mesa arrives at M7 it will 
 **Image assembly:**
 1. Build the kernel ELF.
 2. Build the user-space ELFs.
-3. `mkbootfs` packs `boot/` and the binaries into `bootfs.tar`, a Limine module.
+3. `build` packs the boot image, `bootfs.tar`, a Limine module, with `vx-tar`'s writer: the namespace's mount points (`bin dev proc srv tmp`), the programs that live in it under `boot/bin`, and the service manifests under `boot/svc`. The archive is deterministic (fixed order, no times or owners). A test scenario's `with=` adds test services and their manifests from `tests/user/`.
 4. Build `limine.conf`.
 5. Create a FAT32 ESP with `mformat` and `mcopy` (mtools), then wrap it in a GPT disk image with `build`'s own GPT writer.
 
@@ -298,7 +300,7 @@ Rough effort for M1–M3 is 4–6 months for one experienced person working with
   - Every protocol under `docs/proto/` has a conformance test suite that runs against both our server and our client.
   - Every server's suite includes the hostile-client test: a client that speaks raw 9Px must not leave its attach root (02 §2).
 - **`vx-check`:** a small first-party model checker (`lib/vx-check`) that explores every interleaving of a bounded concurrent program written as per-thread state machines. Its memory model is a store-buffer model: stores wait in a per-thread buffer until flushed, and a fence waits for the buffer to drain. That is the reordering behind lost wake-ups; ARM's further reorderings are excluded by the protocols' acquire and release orderings, which the models do not try to break. A full C11 relaxed-atomics model is a later extension. Every model ships with deliberately broken variants the checker must reject. It is used for the ring wake-up protocol now, and the port and counter semantics and the lease-break logic as they arrive.
-- **Fuzzing:** the 9Px codec, the ring validators, the class protocols, `vx-ndb`, the font and model-file parsers, and the TLS library's record and certificate parsers are fuzzed by an in-tree harness built with clang's `-fsanitize=fuzzer,address,undefined` (libFuzzer from compiler-rt).
+- **Fuzzing:** the 9Px codec and server framework, the boot image's tar reader, the ring validators, the class protocols, `vx-ndb`, the font and model-file parsers, and the TLS library's record and certificate parsers are fuzzed by in-tree harnesses (`tests/fuzz/`) built with clang's `-fsanitize=fuzzer,address,undefined` (libFuzzer from compiler-rt). `./build check` replays each one's checked-in corpus and then fuzzes it for 10 s, keeping what it finds in `out/fuzz/`, so coverage grows from one check to the next.
 - **Code rules:** the house subset (§1.1). Assembly outside `kernel/arch/` and `vx-rt` needs an ADR, and so does any exception to the subset.
 - **Decisions:** `docs/adr/NNNN-title.md`. The first ones are:
   - 0001: toolchain trust;

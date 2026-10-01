@@ -66,7 +66,8 @@ static int64_t sys_debug_write(uint64_t ptr, uint64_t len) {
     uint64_t n = len < sizeof buf ? len : sizeof buf;
     vx_status st = copy_from_user(buf, ptr, n);
     if (st != VX_OK) return st;
-    console_user_write((vx_str){buf, n}, &this_cpu()->current->console_midline);
+    thread *self = this_cpu()->current;
+    console_user_write((vx_str){buf, n}, self->console_buf, sizeof self->console_buf, &self->console_len);
     ptr += n;
     len -= n;
   }
@@ -442,6 +443,7 @@ static int64_t sys_task_create(uint64_t name_ptr, uint64_t name_len, uint64_t ou
   task *t;
   st = task_create(name, &t);
   if (st != VX_OK) return st;
+  t->may_debug_write = current_task()->may_debug_write;
   return return_handle(&t->obj, ALL_RIGHTS, out);
 }
 

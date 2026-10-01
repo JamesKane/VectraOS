@@ -6,8 +6,8 @@
 // in pieces. Kernel code never moves to another CPU halfway through a line.
 //
 // User threads print through debug_write (console_user_write), and they can
-// move between CPUs between two calls, so their line state is their own: each
-// call goes straight out under the lock, with a timestamp at each line start.
+// move between CPUs between two calls, so each thread has a line buffer of its
+// own, and a line goes out whole when it ends (or fills the buffer).
 static struct {
   char buf[512];
   size_t len;
@@ -32,18 +32,17 @@ static void kput(vx_str s) {
   }
 }
 
-// One debug_write call's bytes; *midline is the writing thread's line state.
-static void console_user_write(vx_str s, bool *midline) {
-  spin_lock(&console_lock);
-  for (size_t i = 0; i < s.len;) {
-    if (!*midline) kput_stamp();
-    size_t start = i;
-    while (i < s.len && s.ptr[i] != '\n') i++;
-    if (i < s.len) i++; // the newline goes with its line
-    arch_console_write((vx_str){s.ptr + start, i - start});
-    *midline = s.ptr[i - 1] != '\n';
+// One debug_write call's bytes, into the writing thread's line buffer.
+static void console_user_write(vx_str s, char *buf, size_t cap, uint8_t *len) {
+  for (size_t i = 0; i < s.len; i++) {
+    buf[(*len)++] = s.ptr[i];
+    if (s.ptr[i] != '\n' && *len < cap) continue;
+    spin_lock(&console_lock);
+    kput_stamp();
+    arch_console_write((vx_str){buf, *len});
+    spin_unlock(&console_lock);
+    *len = 0;
   }
-  spin_unlock(&console_lock);
 }
 
 static void kput_cstr(const char *s) {

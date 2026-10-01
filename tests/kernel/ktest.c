@@ -513,8 +513,55 @@ static void test_vmo_rw(void) {
   vx_handle_close(vmo);
 }
 
-int vx_main(vx_handle task) {
-  self = task;
+// What svcd checked at M1 (04 §5): a port wait ends at its deadline and not
+// before, a self-posted packet is the next thing a wait returns, and a VMO
+// mapped where the kernel chooses is zeroed, writable, and stays mapped after
+// its handle closes.
+static void test_m1_basics(void) {
+  vx_handle port;
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  vx_packet got[4];
+  vx_instant start = vx_clock_read(), deadline = start + 10'000'000;
+  CHECK(vx_port_wait(port, deadline, 0, got, 4) == VX_ERR_TIMED_OUT);
+  CHECK(vx_clock_read() >= deadline);
+  CHECK(vx_port_post(port, &(vx_packet){.key = 42, .value = 7}) == VX_OK);
+  CHECK(vx_port_wait(port, VX_INFINITE, 0, got, 4) == 1 && got[0].key == 42 && got[0].value == 7 &&
+        got[0].trigger == VX_TRIGGER_USER);
+  vx_handle_close(port);
+
+  vx_handle vmo;
+  uint64_t addr = 0;
+  CHECK(vx_vmo_create(64ull * 1024, 0, &vmo) == VX_OK);
+  CHECK(vx_as_map(self, vmo, 0, 64ull * 1024, VX_MAP_WRITE, &addr) == VX_OK);
+  volatile uint64_t *words = (volatile uint64_t *)addr;
+  CHECK(words[0] == 0 && words[8191] == 0);
+  words[0] = 0x5678;
+  words[8191] = 0x1234;
+  CHECK(vx_handle_close(vmo) == VX_OK); // the mapping keeps it
+  CHECK(words[0] == 0x5678 && words[8191] == 0x1234);
+}
+
+// The kernel's spawn message for the root task (root.c): its name, a handle
+// to itself, the boot image, and the command line that chose ktest.
+static void test_spawn_message(void) {
+  CHECK(vx_self != VX_HANDLE_NONE);
+  CHECK(vx_spawn.name.len == 5 && memcmp(vx_spawn.name.ptr, "ktest", 5) == 0);
+  bool found = false;
+  for (size_t i = 0; i + 13 <= vx_spawn.cmdline.len; i++)
+    if (memcmp(vx_spawn.cmdline.ptr + i, "vx.root=ktest", 13) == 0) found = true;
+  CHECK(found);
+  vx_handle image = vx_spawn_take("bootimage");
+  CHECK(image != VX_HANDLE_NONE && vx_spawn_take("bootimage") == VX_HANDLE_NONE);
+  uint8_t magic[6] = {};
+  CHECK(vx_vmo_rw(image, VX_VMO_READ, 257, magic, 5) == VX_OK && memcmp(magic, "ustar", 5) == 0);
+  CHECK(vx_vmo_rw(image, VX_VMO_WRITE, 0, magic, 1) == VX_ERR_ACCESS); // read-only
+  vx_handle_close(image);
+}
+
+int vx_main(void) {
+  self = vx_self;
+  test_spawn_message();
+  test_m1_basics();
   test_channel_basics();
   test_handle_transfer();
   test_bindings();

@@ -76,6 +76,8 @@ Rversion msize=1048576 version="9P2000.x/1 +dref +map +notify"   # the server re
 
 That is the whole list: one local transport and one network transport.
 
+**Connecting over `9px+shm`.** A server reads a *listen channel*; `svcd` keeps its other end as `/srv/name`, and hands that end, duplicated, to whoever may mount the service. A client sends a connect request there with `channel_call`. The server creates a ring, keeps the server end, and replies with the client end and the ring's memory. So every connection is its own ring, as an SPSC ring requires (01 §4.3), and a connection is never shared: a child that inherits a mount connects again through its copy of the listen channel. Because `svcd` holds the listen channel and not the server, connections made while a server restarts wait for it instead of failing.
+
 - **Roaming** (a laptop changing networks) is handled by reconnect and replay (§6.8), not by the transport.
 - **NAT and firewalls** are handled by WireGuard or Tailscale overlays (§6.3).
 - **Virtual machines** reach their host over ordinary TCP (QEMU user networking), so there is no vsock transport.

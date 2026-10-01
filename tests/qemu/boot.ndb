@@ -1,13 +1,12 @@
-# tests/qemu/boot.ndb: M1's exit test (docs/04 §5). The kernel boots and
-# reports itself, then svcd, the first user task, shows that syscalls, ports
-# with deadlines, self-posts and VMO mappings work.
+# tests/qemu/boot.ndb: M1's exit test (docs/04 §5), as M2 left it. The kernel
+# boots and reports itself, then svcd, the first user task, starts bootfs from
+# the boot image. (svcd's M1 checks of ports and VMOs are in ktest now.)
 
 scenario=boot timeout=10
 expect="vx: kernel 0.1.0 $arch, "
 expect="svcd: hello from user space (task 1)"
-expect="svcd: port deadline wait ok: requested 10.000 ms, woke after "
-expect="svcd: self-post ok"
-expect="svcd: vmo map ok"
+expect="svcd: started bootfs (task 2)"
+expect="bootfs: serving "
 fail="vx: panic"
 fail="killed"
 fail="FAILED"

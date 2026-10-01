@@ -83,7 +83,22 @@ static void test_writer(void) {
   CHECK(!vx_ndb_end(&w));
 }
 
+static void test_numbers(void) {
+  static const char numbers[] = "a=0 b=18446744073709551615 c=18446744073709551616 d=007 e=-1 f=1x g\n";
+  vx_ndb_reader r = {.src = {numbers, sizeof numbers - 1}, .scratch = scratch, .scratch_cap = sizeof scratch};
+  vx_ndb_record rec;
+  CHECK(vx_ndb_next(&r, &rec) == VX_NDB_RECORD);
+  uint64_t v = 99;
+  CHECK(vx_ndb_get_u64(&rec, "a", &v) && v == 0);
+  CHECK(vx_ndb_get_u64(&rec, "b", &v) && v == UINT64_MAX);
+  v = 5;
+  CHECK(!vx_ndb_get_u64(&rec, "c", &v) && !vx_ndb_get_u64(&rec, "d", &v) && !vx_ndb_get_u64(&rec, "e", &v));
+  CHECK(!vx_ndb_get_u64(&rec, "f", &v) && !vx_ndb_get_u64(&rec, "g", &v) && !vx_ndb_get_u64(&rec, "h", &v));
+  CHECK(v == 5);
+}
+
 int main(void) {
+  test_numbers();
   test_writer();
   // Records, continuation lines, comments and blank lines.
   parsed p = parse("a=1 b=2 flag\n  c=3\nd=4");

@@ -5,8 +5,11 @@
 // M1 programs are built with -mgeneral-regs-only: the kernel does not save
 // FP/SIMD state across context switches yet. That comes with M2's threads.
 
+#pragma once // spawn.c and other parts of vx-rt include it too
+
 #include "rt.h"
 #include "../vx-mem/mem.c"
+#include "../vx-ndb/ndb.c"
 
 #ifdef __clang_analyzer__
 // The static analyzer cannot see a syscall instruction write through the
@@ -219,6 +222,13 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 
 [[maybe_unused]] static void vx_print(vx_str s) { vx_debug_write(s); }
 
+// A NUL-terminated string as a vx_str.
+[[maybe_unused]] static vx_str vx_cstr(const char *s) {
+  size_t n = 0;
+  while (s[n]) n++;
+  return (vx_str){s, n};
+}
+
 [[maybe_unused]] static void vx_print_u64(uint64_t v) {
   char buf[20];
   size_t i = sizeof buf;
@@ -244,9 +254,100 @@ uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647; // to come from the kernel's e
 // A smashed stack ends the task: the trap is reported by the kernel.
 [[noreturn]] void __stack_chk_fail(void) { __builtin_trap(); }
 
-// Called by _start with the handle the kernel passes. The thread ends with
-// vx_main's return value as its exit status.
-[[noreturn]] void vx_start(vx_handle self_task) { vx_thread_exit(vx_main(self_task)); }
+// --- The spawn message (abi.h) ---
+
+static constexpr uint32_t VX_SPAWN_MAX_ARGS = 32;
+
+typedef struct vx_spawn_info {
+  vx_str name;    // spawn=
+  vx_str text;    // all the records, for vx-ns and the program to read again
+  vx_str cmdline; // the root task's
+  vx_str args[VX_SPAWN_MAX_ARGS];
+  uint32_t argc;
+  vx_str handle_names[VX_CHANNEL_MAX_HANDLES];
+  vx_handle handles[VX_CHANNEL_MAX_HANDLES]; // VX_HANDLE_NONE once taken
+  uint32_t handle_count;
+} vx_spawn_info;
+
+static vx_spawn_info vx_spawn;
+static vx_handle vx_self; // the task's handle to itself, or VX_HANDLE_NONE
+
+static uint8_t vx_spawn_msg[VX_CHANNEL_MAX_BYTES];
+static char vx_spawn_scratch[VX_CHANNEL_MAX_BYTES]; // decoded values, which never grow
+
+// Takes the handle the spawn message calls `name`: it is the caller's from
+// here on, and a second take finds nothing. VX_HANDLE_NONE if there is none.
+[[maybe_unused]] static vx_handle vx_spawn_take(const char *name) {
+  size_t len = 0;
+  while (name[len]) len++;
+  for (uint32_t i = 0; i < vx_spawn.handle_count; i++) {
+    vx_str n = vx_spawn.handle_names[i];
+    if (n.len != len || memcmp(n.ptr, name, len) != 0 || !vx_spawn.handles[i]) continue;
+    vx_handle h = vx_spawn.handles[i];
+    vx_spawn.handles[i] = VX_HANDLE_NONE;
+    return h;
+  }
+  return VX_HANDLE_NONE;
+}
+
+// Finds the first record of the spawn message that has `key`. Its values stay
+// valid until the next call.
+[[maybe_unused]] static bool vx_spawn_record(const char *key, vx_ndb_record *out) {
+  static char scratch[VX_CHANNEL_MAX_BYTES];
+  vx_ndb_reader r = {.src = vx_spawn.text, .scratch = scratch, .scratch_cap = sizeof scratch};
+  while (vx_ndb_next(&r, out) == VX_NDB_RECORD)
+    if (vx_ndb_has(out, key)) return true;
+  return false;
+}
+
+// Reads the spawn message. A malformed one is reported and ignored: the
+// program starts with nothing, and its handles are closed.
+static void vx_read_spawn(vx_handle bootstrap) {
+  vx_handle got[VX_CHANNEL_MAX_HANDLES];
+  vx_msg_size size;
+  vx_status st =
+      vx_channel_read(bootstrap, vx_spawn_msg, sizeof vx_spawn_msg, got, VX_CHANNEL_MAX_HANDLES, &size);
+  vx_handle_close(bootstrap);
+  if (st != VX_OK) return;
+  const vx_msg_header *h = (const vx_msg_header *)vx_spawn_msg;
+  vx_ndb_reader r = {.src = {(const char *)vx_spawn_msg + sizeof *h, size.bytes - sizeof *h},
+                     .scratch = vx_spawn_scratch,
+                     .scratch_cap = sizeof vx_spawn_scratch};
+  bool ok = size.bytes >= sizeof *h && h->ordinal == VX_SPAWN;
+  bool named[VX_CHANNEL_MAX_HANDLES] = {};
+  vx_ndb_record rec;
+  vx_ndb_result res;
+  while (ok && (res = vx_ndb_next(&r, &rec)) == VX_NDB_RECORD) {
+    uint64_t index;
+    if (vx_ndb_has(&rec, "spawn")) {
+      vx_spawn.name = vx_ndb_get(&rec, "spawn");
+    } else if (vx_ndb_has(&rec, "cmdline")) {
+      vx_spawn.cmdline = vx_ndb_get(&rec, "cmdline");
+    } else if (vx_ndb_has(&rec, "arg")) {
+      if (vx_spawn.argc < VX_SPAWN_MAX_ARGS) vx_spawn.args[vx_spawn.argc++] = vx_ndb_get(&rec, "arg");
+    } else if (vx_ndb_has(&rec, "handle") && !vx_ndb_has(&rec, "mount")) {
+      ok = vx_ndb_get_u64(&rec, "index", &index) && index < size.handles && !named[index];
+      if (ok) named[index] = true, vx_spawn.handle_names[index] = vx_ndb_get(&rec, "handle");
+    }
+  }
+  if (!ok || res == VX_NDB_ERROR) {
+    vx_print(VX_STR("vx-rt: malformed spawn message\n"));
+    for (uint32_t i = 0; i < size.handles; i++) vx_handle_close(got[i]);
+    vx_spawn = (vx_spawn_info){};
+    return;
+  }
+  vx_spawn.text = r.src;
+  vx_spawn.handle_count = size.handles;
+  for (uint32_t i = 0; i < size.handles; i++) vx_spawn.handles[i] = got[i];
+  vx_self = vx_spawn_take("self");
+}
+
+// Called by _start with the bootstrap channel. The thread ends with vx_main's
+// return value as its exit status.
+[[noreturn]] void vx_start(vx_handle bootstrap) {
+  vx_read_spawn(bootstrap);
+  vx_thread_exit(vx_main());
+}
 
 #ifdef __x86_64__
 [[gnu::naked, noreturn]] void _start(void) {

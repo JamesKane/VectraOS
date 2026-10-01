@@ -16,6 +16,8 @@
 //
 // Requests complete as they arrive, so Tflush has nothing to cancel.
 
+#pragma once
+
 #include "codec.c"
 
 typedef struct p9_fs {

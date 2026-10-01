@@ -3,6 +3,8 @@
 // the ring transport (M2, step 4). Every reply is checked: its tag, that it
 // answers the request's type, and an Rerror's text back into a vx_status.
 
+#pragma once
+
 #include "codec.c"
 
 // Sends `len` bytes of request and fills `resp` (cap bytes) with the reply.

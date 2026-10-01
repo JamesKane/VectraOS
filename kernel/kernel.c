@@ -71,6 +71,7 @@ static uint64_t arch_thread_initial_sp(thread *t);
 #include "obj/process.c"
 #include "syscall/syscall.c"
 #include "elf.c"
+#include "../lib/vx-ndb/ndb.c"
 #include "root.c"
 #include "sched/smp.c"
 

@@ -68,6 +68,21 @@ typedef struct vx_msg_size { // what channel_read and channel_call report
   uint32_t handles;
 } vx_msg_size;
 
+// The spawn message (01 §9). A new task's first thread starts with one handle,
+// its bootstrap channel, and the first message there comes from its parent
+// (for the root task, from the kernel): this header with ordinal VX_SPAWN,
+// then ndb records (02 §4.1) saying what the message's handles are and what
+// the program is given:
+//
+//   spawn=NAME                       the program
+//   handle=NAME index=N              the message's handle N; "self" is the task
+//   arg=VALUE                        an argument; repeated, in order
+//   cmdline=VALUE                    the kernel command line (the root task's)
+//   bootimage size=N                 the boot image's length (the bootimage handle)
+//   mount=OLD handle=NAME [aname=A] [flags=F] [src=S]    the namespace, as
+//   bind=OLD new=NEW [flags=F]                           vx-ns replays it
+static constexpr uint32_t VX_SPAWN = 0x6e77'7073; // "spwn"
+
 // channel_call's buffers: what to send, and where the reply goes.
 typedef struct vx_call {
   const void *wr_bytes;

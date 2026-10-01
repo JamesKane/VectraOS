@@ -26,6 +26,7 @@
 
 #include "lib/vx-ndb/ndb.c"
 #include "lib/vx-sha256/sha256.c"
+#include "lib/vx-tar/tar.c"
 
 // ADR-0001: the toolchain is pinned to these exact binaries and versions.
 // Each pin is one line of the tool's --version output, compared exactly.
@@ -201,6 +202,12 @@ static vx_str read_file(const char *path) {
   fclose(f);
   p[n] = 0;
   return (vx_str){p, (size_t)n};
+}
+
+static void write_file(const char *path, vx_str data) {
+  FILE *f = fopen(path, "wb");
+  if (!f || fwrite(data.ptr, 1, data.len, f) != data.len || fclose(f) != 0)
+    die("cannot write %s: %s", path, strerror(errno));
 }
 
 typedef struct cmd {
@@ -814,9 +821,21 @@ static bool build_kernel(const arch *a, bool release) {
 // all, image, qemu, test
 
 // The user programs in the boot image, each one translation unit (04 §1.1).
-static const char *const USER_PROGRAMS[][2] = {
-    {"svcd", "servers/svcd/svcd.c"},
-    {"ktest", "tests/kernel/ktest.c"}, // the root task instead of svcd with vx.root=ktest
+// Where a program goes: a Limine module, which the kernel can start as the root
+// task; boot/bin in bootfs, where svcd finds it; or boot/bin only in the test
+// images whose scenario names it with `with=`, together with its manifest.
+typedef enum placement : uint8_t { IN_MODULE, IN_BOOTFS, IN_TESTS } placement;
+
+typedef struct program {
+  const char *name, *source;
+  placement where;
+} program;
+
+static const program USER_PROGRAMS[] = {
+    {"svcd", "servers/svcd/svcd.c", IN_MODULE},
+    {"ktest", "tests/kernel/ktest.c", IN_MODULE}, // the root task instead of svcd with vx.root=ktest
+    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS},
+    {"nstest", "tests/user/nstest.c", IN_TESTS},
 };
 static constexpr int USER_PROGRAM_COUNT = sizeof USER_PROGRAMS / sizeof USER_PROGRAMS[0];
 
@@ -850,7 +869,7 @@ static bool build_user_program(const arch *a, bool release, const char *name, co
 static bool build_arch(const arch *a, bool release) {
   if (!build_kernel(a, release)) return false;
   for (int i = 0; i < USER_PROGRAM_COUNT; i++)
-    if (!build_user_program(a, release, USER_PROGRAMS[i][0], USER_PROGRAMS[i][1])) return false;
+    if (!build_user_program(a, release, USER_PROGRAMS[i].name, USER_PROGRAMS[i].source)) return false;
   const vx_ndb_record *t = port_target_for(&limine, a);
   return !t || build_port_target(&limine, t);
 }
@@ -1023,9 +1042,76 @@ static bool mtools(const char *tool, const char *esp, const char *const *args) {
   return run(&c);
 }
 
+// The directories every boot image has: mount points for the namespace (02 §5)
+// and bootfs's own. In order, parents first.
+static const char *const BOOTFS_DIRS[] = {"bin", "boot", "boot/bin", "boot/svc", "dev", "proc", "srv", "tmp"};
+
+// Whether `name` is in the comma-separated list `with`.
+static bool listed(const char *with, const char *name) {
+  size_t n = strlen(name);
+  for (const char *p = with; *p;) {
+    const char *end = strchr(p, ',');
+    size_t len = end ? (size_t)(end - p) : strlen(p);
+    if (len == n && memcmp(p, name, n) == 0) return true;
+    p += len + (end != nullptr);
+  }
+  return false;
+}
+
+// mkbootfs (04 §3.4): packs the boot image's tree into a ustar archive, the
+// bootfs.tar module. The directories, boot/bin with each program that lives
+// in bootfs, and boot/svc with the service manifests from boot/svc/*.ndb.
+// `with` adds test programs and their manifests (tests/user/NAME.ndb). The
+// archive is deterministic: fixed order, no times or owners.
+static bool make_bootfs(const arch *a, bool release, const char *with, const char *out) {
+  static file_list manifests;
+  manifests = (file_list){};
+  port tree = {.src = root};
+  collect(&manifests, &tree, (vx_str){"boot/svc", 8}, ".ndb");
+
+  // Programs, then the system's manifests, then the tests': svcd starts
+  // services in this order, so a test's run after what it tests.
+  vx_str files[64];
+  const char *paths[64];
+  int count = 0;
+  size_t total = 0;
+  for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
+    const program *p = &USER_PROGRAMS[i];
+    if (p->where == IN_MODULE || (p->where == IN_TESTS && !listed(with, p->name))) continue;
+    files[count] = read_file(fmt("%s/%s", out_dir(a, release), p->name));
+    paths[count++] = fmt("boot/bin/%s", p->name);
+  }
+  for (int i = 0; i < manifests.count && count < 64; i++) {
+    files[count] = read_file(manifests.paths[i]);
+    paths[count++] = manifests.paths[i];
+  }
+  for (int i = 0; i < USER_PROGRAM_COUNT && count < 64; i++) {
+    if (USER_PROGRAMS[i].where != IN_TESTS || !listed(with, USER_PROGRAMS[i].name)) continue;
+    files[count] = read_file(fmt("tests/user/%s.ndb", USER_PROGRAMS[i].name));
+    paths[count++] = fmt("boot/svc/%s.ndb", USER_PROGRAMS[i].name);
+  }
+  for (int i = 0; i < count; i++) total += files[i].len + 2 * VX_TAR_BLOCK;
+
+  vx_tar_writer w = {.cap = total + (sizeof BOOTFS_DIRS / sizeof BOOTFS_DIRS[0] + 2) * VX_TAR_BLOCK};
+  w.buf = alloc(w.cap);
+  for (size_t i = 0; i < sizeof BOOTFS_DIRS / sizeof BOOTFS_DIRS[0]; i++)
+    vx_tar_add(&w, (vx_str){BOOTFS_DIRS[i], strlen(BOOTFS_DIRS[i])}, true, 0755, nullptr, 0);
+  for (int i = 0; i < count; i++) {
+    bool program = strncmp(paths[i], "boot/bin/", 9) == 0;
+    vx_tar_add(&w, (vx_str){paths[i], strlen(paths[i])}, false, program ? 0755 : 0644, files[i].ptr,
+               files[i].len);
+  }
+  size_t len = vx_tar_end(&w);
+  if (!len) die("cannot pack %s", out);
+  write_file(out, (vx_str){(const char *)w.buf, len});
+  return true;
+}
+
 // Writes a disk image for an architecture whose kernel and loader are built.
-// A non-empty cmdline is added to the boot entry, for test scenarios.
-static bool make_image(const arch *a, bool release, const char *image, const char *cmdline) {
+// A non-empty cmdline is added to the boot entry, and `with` names test
+// programs for bootfs, for test scenarios.
+static bool make_image(const arch *a, bool release, const char *image, const char *cmdline,
+                       const char *with) {
   const vx_ndb_record *t = port_target_for(&limine, a);
   if (!t) die("no Limine target for %s", a->name);
   const char *loader_name = str_dup(vx_ndb_get(t, "output"));
@@ -1033,6 +1119,8 @@ static bool make_image(const arch *a, bool release, const char *image, const cha
   const char *kernel = fmt("%s/kernel.elf", out_dir(a, release));
   const char *config = "boot/limine.conf";
   const char *esp = fmt("%s.esp", image);
+  const char *bootfs = fmt("%s.bootfs.tar", image);
+  if (!make_bootfs(a, release, with, bootfs)) return false;
   if (cmdline && *cmdline) {
     config = fmt("%s.conf", image);
     FILE *f = fopen(config, "w");
@@ -1046,8 +1134,10 @@ static bool make_image(const arch *a, bool release, const char *image, const cha
   seed = hash_bytes(seed, read_file(loader));
   seed = hash_bytes(seed, read_file(kernel));
   seed = hash_bytes(seed, read_file(config));
+  seed = hash_bytes(seed, read_file(bootfs));
   for (int i = 0; i < USER_PROGRAM_COUNT; i++)
-    seed = hash_bytes(seed, read_file(fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i][0])));
+    if (USER_PROGRAMS[i].where == IN_MODULE)
+      seed = hash_bytes(seed, read_file(fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i].name)));
 
   int fd = open(esp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd < 0 || ftruncate(fd, (off_t)ESP_BYTES) != 0) die("cannot create %s", esp);
@@ -1064,20 +1154,23 @@ static bool make_image(const arch *a, bool release, const char *image, const cha
   if (!mtools(MCOPY, esp, (const char *const[]){loader, fmt("::/EFI/BOOT/%s", loader_name), nullptr}))
     return false;
   if (!mtools(MCOPY, esp, (const char *const[]){kernel, "::/boot/vx/kernel.elf", nullptr})) return false;
-  for (int i = 0; i < USER_PROGRAM_COUNT; i++) { // Limine modules, until bootfs (M2)
-    const char *program = fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i][0]);
+  if (!mtools(MCOPY, esp, (const char *const[]){bootfs, "::/boot/vx/bootfs.tar", nullptr})) return false;
+  for (int i = 0; i < USER_PROGRAM_COUNT; i++) { // the root task's candidates
+    if (USER_PROGRAMS[i].where != IN_MODULE) continue;
+    const char *program = fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i].name);
     if (!mtools(MCOPY, esp,
-                (const char *const[]){program, fmt("::/boot/vx/%s", USER_PROGRAMS[i][0]), nullptr}))
+                (const char *const[]){program, fmt("::/boot/vx/%s", USER_PROGRAMS[i].name), nullptr}))
       return false;
   }
   if (!mtools(MCOPY, esp, (const char *const[]){config, "::/boot/limine/limine.conf", nullptr})) return false;
   write_gpt_disk(image, esp, seed);
   unlink(esp);
+  unlink(bootfs);
   return true;
 }
 
 static bool build_image(const arch *a, bool release) {
-  return build_arch(a, release) && make_image(a, release, image_path(a, release), nullptr);
+  return build_arch(a, release) && make_image(a, release, image_path(a, release), nullptr, "");
 }
 
 // --- qemu and test ---
@@ -1130,7 +1223,8 @@ static bool kvm_usable(const arch *a) {
 }
 
 // A scenario (tests/qemu/NAME.ndb): one scenario= record with a timeout in seconds
-// and, optionally, a kernel cmdline=; then expect= records, matched in order
+// and, optionally, a kernel cmdline= and with= (test programs to add to bootfs,
+// comma-separated, from tests/user/); then expect= records, matched in order
 // against serial output lines, and fail= records, any of which fails the test
 // when a line contains it. "$arch" in a pattern stands for the architecture's name.
 static const char *scenarios[64];
@@ -1154,7 +1248,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *expect[64], *fail[64];
   int expect_count = 0, fail_count = 0;
   double timeout = 0;
-  const char *cmdline = "";
+  const char *cmdline = "", *with = "";
   for (;;) {
     vx_ndb_record rec;
     vx_ndb_result res = vx_ndb_next(&r, &rec);
@@ -1166,6 +1260,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       timeout = strtod(t, &end);
       if (end == t || *end) die("%s:%zu: timeout=%s is not a number of seconds", path, rec.line, t);
       cmdline = str_dup(vx_ndb_get(&rec, "cmdline"));
+      with = str_dup(vx_ndb_get(&rec, "with"));
     } else if (vx_ndb_has(&rec, "expect") && expect_count < 64) {
       expect[expect_count++] = substitute_arch(vx_ndb_get(&rec, "expect"), a);
     } else if (vx_ndb_has(&rec, "fail") && fail_count < 64) {
@@ -1177,9 +1272,9 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   if (timeout <= 0 || expect_count == 0) die("%s: needs scenario= with a timeout, and an expect=", path);
 
   const char *image = image_path(a, release);
-  if (*cmdline) {
+  if (*cmdline || *with) {
     image = fmt("%s/test-%s.img", out_dir(a, release), name);
-    if (!make_image(a, release, image, cmdline)) return false;
+    if (!make_image(a, release, image, cmdline, with)) return false;
   }
 
   const char *log_path = fmt("%s/test-%s.log", out_dir(a, release), name);
@@ -1683,8 +1778,8 @@ static int os_units(unit *units, bool with_host_tests) {
     units[n++] = (unit){
         fmt("kernel %s", ARCHES[i].name), "kernel/kernel.c", {ARCHES[i].flags, HOUSE_FLAGS, KERNEL_FLAGS}};
     for (int k = 0; k < USER_PROGRAM_COUNT; k++)
-      units[n++] = (unit){fmt("%s %s", USER_PROGRAMS[k][0], ARCHES[i].name),
-                          USER_PROGRAMS[k][1],
+      units[n++] = (unit){fmt("%s %s", USER_PROGRAMS[k].name, ARCHES[i].name),
+                          USER_PROGRAMS[k].source,
                           {ARCHES[i].user_flags, HOUSE_FLAGS, USER_FLAGS}};
   }
   units[n++] = (unit){"build", "build.c", {HOST_C23}};
@@ -1780,7 +1875,7 @@ static bool check_build_time(void) {
     total += t;
     for (int k = 0; k < USER_PROGRAM_COUNT; k++) {
       t0 = now_seconds();
-      ok = build_user_program(&ARCHES[i], false, USER_PROGRAMS[k][0], USER_PROGRAMS[k][1]) && ok;
+      ok = build_user_program(&ARCHES[i], false, USER_PROGRAMS[k].name, USER_PROGRAMS[k].source) && ok;
       total += now_seconds() - t0;
     }
   }

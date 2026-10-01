@@ -22,6 +22,8 @@
 // only from a private copy, each entry is copied out exactly once, and an index
 // that runs ahead of the other marks the ring broken.
 
+#pragma once
+
 #include "../../abi/vx/abi.h"
 #if __STDC_HOSTED__
 #include <string.h> // host tests

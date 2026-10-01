@@ -55,8 +55,11 @@ typedef struct task {
   bool ending;         // its last thread has exited, or it was killed: torn down soon
   bool killed;
   int64_t exit_status;
-  observers obs;        // EXIT bindings
-  bool may_debug_write; // the root task's debug capability, until there is a debug-log object
+  observers obs; // EXIT bindings
+  // The root task's debug capability, until there is a debug-log object;
+  // a task gets it from the task that creates it, so services can report
+  // until the console is a user-space driver's (M2, step 5).
+  bool may_debug_write;
   char name[24];
 } task;
 
@@ -78,9 +81,10 @@ struct thread {
   uint64_t kernel_sp;       // saved by arch_context_switch
   uint64_t kstack;          // direct-map address of the kernel stack's base
   uint64_t user_entry, user_sp, user_arg, user_arg2;
-  uint32_t intent;      // enum vx_intent
-  bool last_of_task;    // its exit ended its task (reaped in sched.c)
-  bool console_midline; // its debug_write output is partway through a line
+  uint32_t intent;       // enum vx_intent
+  bool last_of_task;     // its exit ended its task (reaped in sched.c)
+  uint8_t console_len;   // bytes of a debug_write line not yet ended
+  char console_buf[160]; // which go out whole, at its newline
   thread_state state;
   struct thread *next;       // in the ready queue, or in a list of waiters (under that list's lock)
   struct thread *sleep_next; // in its CPU's sleep queue, ordered by wake_at

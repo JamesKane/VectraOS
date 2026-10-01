@@ -1,5 +1,7 @@
 // vx-ndb: the strict ndb record parser. See ndb.h for the format.
 
+#include <stdckdint.h>
+
 #include "ndb.h"
 
 // The reader's line counts lines consumed, so a zeroed reader starts at line 1.
@@ -232,6 +234,18 @@ static bool vx_ndb_has(const vx_ndb_record *rec, const char *key) {
   for (int i = 0; i < rec->count; i++)
     if (ndb_key_eq(rec->tuples[i].key, (vx_str){key, len})) return true;
   return false;
+}
+
+static bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out) {
+  vx_str v = vx_ndb_get(rec, key);
+  uint64_t n = 0;
+  if (!v.len || v.len > 20 || (v.len > 1 && v.ptr[0] == '0')) return false; // no leading zeros
+  for (size_t i = 0; i < v.len; i++) {
+    if (v.ptr[i] < '0' || v.ptr[i] > '9' || ckd_mul(&n, n, 10u) || ckd_add(&n, n, (uint64_t)(v.ptr[i] - '0')))
+      return false;
+  }
+  *out = n;
+  return true;
 }
 
 // --- Writer ---

@@ -59,6 +59,9 @@ typedef enum vx_ndb_result : int32_t {
 // zero-length value with a nullptr pointer, so test vx_ndb_has for flags.
 [[maybe_unused]] static vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key);
 [[maybe_unused]] static bool vx_ndb_has(const vx_ndb_record *rec, const char *key);
+// key's value as a decimal number: digits only, no sign, no leading zeros, no
+// overflow. False, with *out unchanged, otherwise or if the record lacks it.
+[[maybe_unused]] static bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out);
 
 // A record being written into a caller's buffer. Writing past the end, or a
 // key that could not be read back, sets `failed`, and the record must not be
