@@ -1,6 +1,6 @@
 # Milestones
 
-Where VectraOS stands against its milestones. What each milestone contains, and its exit test, are defined in [04 §5](04-bootstrap-toolchain.md#5-milestones-to-hello-world) (M1–M3) and [04 §6](04-bootstrap-toolchain.md#6-after-m3) (M4–M12); this file tracks progress against them. A commit that finishes a step updates it.
+Where VectraOS stands against its milestones. What each milestone contains, and its exit test, are defined in [04 §5](04-bootstrap-toolchain.md#5-milestones-to-hello-world) (M1–M3) and [04 §6](04-bootstrap-toolchain.md#6-after-m3) (M4–M12); this file tracks progress against them. A step's commit is recorded in the commit after it (a commit cannot name its own hash).
 
 Updated 2026-10-01.
 
@@ -59,7 +59,7 @@ In progress.
 | — A review of all the code to date, and its fixes; debug builds at `-O0` | Done | `917914b` |
 | 2. The virtio-pci transport, `drv-virtio-net`, driver matching in `devmgr`, rendezvous posts in `svcd`; the aarch64 LPI fix | Done | `acf4107` |
 | 3a. `vx-net` (Ethernet, ARP, IPv4, ICMP echo, UDP, DHCP), `netd` serving `/net` (`ipifc`, `icmp`, `udp`), `ping` | Done | `5ed5a2b` |
-| 3b. TCP in `vx-net` (NewReno, window scaling) and `/net/tcp` with `listen` | Done | `1614edd` |
+| 3b. TCP in `vx-net` (NewReno, window scaling) and `/net/tcp` with `listen` | Done | `3f536d0` |
 | 3c. The DNS stub and `/net/cs` | To do | |
 | 4. 9Px over TCP in the `vx-9p` client; `mount tcp!host!port` and `9p://host:port` | To do | |
 | 5. `host/vx9pserve`, and interoperability against a stock 9P2000 server (`u9fs` or 9front's `exportfs`) | To do | |
