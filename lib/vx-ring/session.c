@@ -77,3 +77,44 @@ static vx_status vx_session_map(vx_handle memory, bool client, const vx_ring_par
   vx_channel_write(listen, &rep, sizeof rep, nullptr, 0);
   return st;
 }
+
+// Dialling without waiting, for a client that cannot stall on a server that
+// may not be there (netd, before its driver starts). vx_session_ask writes
+// the request on the connector; when the connector is readable,
+// vx_session_answer reads the reply. Only one ask is outstanding per
+// connector, so nothing else may read it meanwhile.
+[[maybe_unused]] static vx_status vx_session_ask(vx_handle connector, uint32_t ordinal) {
+  vx_msg_header req = {.txid = 1, .ordinal = ordinal};
+  return vx_channel_write(connector, &req, sizeof req, nullptr, 0);
+}
+
+// The reply to vx_session_ask: SHOULD_WAIT if it has not come; ACCESS if the
+// server refused (it has a client already); otherwise the session, attached.
+[[maybe_unused]] static vx_status vx_session_answer(vx_handle connector, const vx_ring_params *params,
+                                                    vx_ring *r, vx_handle *end) {
+  *end = VX_HANDLE_NONE;
+  vx_msg_header rep;
+  vx_handle got[2] = {};
+  vx_msg_size size;
+  vx_status st = vx_channel_read(connector, &rep, sizeof rep, got, 2, &size);
+  if (st == VX_ERR_TOO_SMALL) { // not a reply this protocol makes: read it, to be rid of it
+    static uint8_t junk[VX_CHANNEL_MAX_BYTES];
+    static vx_handle junk_handles[VX_CHANNEL_MAX_HANDLES];
+    if (vx_channel_read(connector, junk, sizeof junk, junk_handles, VX_CHANNEL_MAX_HANDLES, &size) == VX_OK)
+      for (uint32_t i = 0; i < size.handles; i++) vx_handle_close(junk_handles[i]);
+    return VX_ERR_ACCESS;
+  }
+  if (st != VX_OK) return st;
+  if (size.bytes != sizeof rep || size.handles != 2) {
+    for (uint32_t i = 0; i < size.handles; i++) vx_handle_close(got[i]);
+    return VX_ERR_ACCESS;
+  }
+  st = vx_session_map(got[1], true, params, r);
+  vx_handle_close(got[1]); // the mapping keeps the memory
+  if (st != VX_OK) {
+    vx_handle_close(got[0]);
+    return st;
+  }
+  *end = got[0];
+  return VX_OK;
+}

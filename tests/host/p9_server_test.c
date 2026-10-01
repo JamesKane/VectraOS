@@ -79,10 +79,25 @@ static vx_status ram_stat(void *ctx, uint64_t node, p9_stat *out) {
   return VX_OK;
 }
 
+static uint64_t ram_clone_to; // opening /docs/a.txt moves the fid here, as a clone file does
+static uint64_t ram_opened_clunks[8], ram_opened_clunk_count;
+
 static vx_status ram_open(void *ctx, uint64_t node, uint8_t mode) {
   (void)ctx;
   if (mode & P9_OTRUNC) ram[node].len = 0;
   return VX_OK;
+}
+
+static vx_status ram_clone(void *ctx, uint64_t node, uint8_t mode, uint64_t *opened) {
+  (void)ctx, (void)mode;
+  if (node != 3 || !ram_clone_to) return VX_ERR_NOT_FOUND;
+  *opened = ram_clone_to;
+  return VX_OK;
+}
+
+static void ram_clunk(void *ctx, uint64_t node, bool opened) {
+  (void)ctx;
+  if (opened && ram_opened_clunk_count < 8) ram_opened_clunks[ram_opened_clunk_count++] = node;
 }
 
 static bool ram_not_yet; // reads and writes answer SHOULD_WAIT, as a console with nothing typed does
@@ -152,7 +167,9 @@ static p9_server server = {
            .readdir = ram_readdir,
            .write = ram_write,
            .create = ram_create,
-           .remove = ram_remove},
+           .remove = ram_remove,
+           .clone = ram_clone,
+           .clunk = ram_clunk},
     .max_msize = 8192,
     .supported = P9_EXT_DREF | P9_EXT_NOTIFY,
 };
@@ -327,8 +344,30 @@ static void test_deferral(void) {
 #undef SERVE
 }
 
+// An open may move its fid to another node (a clone file); the fid then reads,
+// stats and clunks as that node, and clunk says which fids were open.
+static void test_open_moves(void) {
+  static uint8_t tbuf[16384], rbuf[16384];
+  p9_server s = server;
+  p9_client c = {.rpc = loopback, .ctx = &s, .tbuf = tbuf, .rbuf = rbuf, .bufsize = sizeof tbuf};
+  uint32_t root = 0, f = 0, g = 0;
+  CHECK(p9c_version(&c, 8192, 0) == VX_OK && p9c_attach(&c, VX_STR(""), &root) == VX_OK);
+  ram_clone_to = 4;
+  ram_opened_clunk_count = 0;
+  CHECK(p9c_walk(&c, root, VX_STR("docs/a.txt"), &f) == VX_OK && p9c_open(&c, f, P9_OREAD) == VX_OK);
+  char buf[16];
+  CHECK(p9c_read(&c, f, 0, buf, sizeof buf) == 5 && memcmp(buf, "bravo", 5) == 0);
+  p9_stat st;
+  CHECK(p9c_stat(&c, f, &st) == VX_OK && st.qid.path == 4);
+  CHECK(p9c_walk(&c, root, VX_STR("b.txt"), &g) == VX_OK);
+  CHECK(p9c_clunk(&c, g) == VX_OK && ram_opened_clunk_count == 0); // never opened
+  CHECK(p9c_clunk(&c, f) == VX_OK && ram_opened_clunk_count == 1 && ram_opened_clunks[0] == 4);
+  ram_clone_to = 0;
+}
+
 int main(void) {
   test_client();
+  test_open_moves();
   test_deferral();
   test_hostile_client();
   return check_result();

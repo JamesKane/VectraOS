@@ -144,7 +144,7 @@ The vendored total is not hidden in a footnote. Once Mesa arrives at M7 it will 
 **Image assembly:**
 1. Build the kernel ELF.
 2. Build the user-space ELFs.
-3. `build` packs the boot image, `bootfs.tar`, a Limine module, with `vx-tar`'s writer: the namespace's mount points (`bin dev proc srv tmp`), the programs that live in it under `boot/bin`, the service manifests under `boot/svc`, and the driver manifests under `boot/drv`. The archive is deterministic (fixed order, no times or owners). A test scenario's `with=` adds test services and their manifests from `tests/user/`.
+3. `build` packs the boot image, `bootfs.tar`, a Limine module, with `vx-tar`'s writer: the namespace's mount points (`bin dev net proc srv tmp`), the programs that live in it under `boot/bin`, the service manifests under `boot/svc`, and the driver manifests under `boot/drv`. The archive is deterministic (fixed order, no times or owners). A test scenario's `with=` adds test services and their manifests from `tests/user/`.
 4. Build `limine.conf`.
 5. Create a FAT32 ESP with `mformat` and `mcopy` (mtools), then wrap it in a GPT disk image with `build`'s own GPT writer.
 

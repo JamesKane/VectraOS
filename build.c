@@ -866,6 +866,7 @@ static const program USER_PROGRAMS[] = {
     {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr},
     {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr},
     {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr},
+    {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr},
     {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr},
     {"ls", "cmd/ls.c", IN_BOOTFS, nullptr},
     {"cat", "cmd/cat.c", IN_BOOTFS, nullptr},
@@ -873,6 +874,7 @@ static const program USER_PROGRAMS[] = {
     {"ps", "cmd/ps.c", IN_BOOTFS, nullptr},
     {"ns", "cmd/ns.c", IN_BOOTFS, nullptr},
     {"tail", "cmd/tail.c", IN_BOOTFS, nullptr},
+    {"ping", "cmd/ping.c", IN_BOOTFS, nullptr},
     {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64"},
     {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64"},
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr},
@@ -1092,7 +1094,7 @@ static bool mtools(const char *tool, const char *esp, const char *const *args) {
 // The directories every boot image has: mount points for the namespace (02 §5)
 // and bootfs's own. In order, parents first.
 static const char *const BOOTFS_DIRS[] = {"bin", "boot", "boot/bin", "boot/drv", "boot/svc",
-                                          "dev", "proc", "srv",      "tmp"};
+                                          "dev", "net",  "proc",     "srv",      "tmp"};
 
 // Whether `name` is in the comma-separated list `with`.
 static bool listed(const char *with, const char *name) {

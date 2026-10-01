@@ -7,7 +7,7 @@
 //
 // A request the file server cannot do yet (p9_serve's P9_DEFER) is held, and
 // the connection takes nothing more until it completes: it is served again
-// after every event. (Holding one request per connection is what a
+// after every event, and after every tick. (Holding one request per connection is what a
 // synchronous client needs; Tflush of a held request comes with pipelining.)
 
 #pragma once
@@ -46,6 +46,9 @@ typedef struct p9_ring_server {
   bool listen_armed;
   void *ctx;
   void (*event)(void *ctx, const vx_packet *pk); // a packet with a key from P9_KEY_USER up
+  // Optional: does what is due by now, and says when to be called again
+  // (VX_INFINITE: never), as a protocol's retransmission timers need.
+  vx_instant (*tick)(void *ctx);
   p9_ring_conn conns[P9_RING_MAX_CONNS];
 } p9_ring_server;
 
@@ -174,9 +177,10 @@ static p9_drained p9_ring_drain(p9_ring_conn *c) {
     }
     if (idle && !s->listen_armed)
       s->listen_armed = vx_port_bind(s->port, s->listen, VX_TRIGGER_READABLE, P9_KEY_LISTEN, 0) == VX_OK;
+    vx_instant deadline = s->tick ? s->tick(s->ctx) : VX_INFINITE;
     if (idle) {
       vx_packet pk[16];
-      int64_t n = vx_port_wait(s->port, VX_INFINITE, 0, pk, 16);
+      int64_t n = vx_port_wait(s->port, deadline, 0, pk, 16); // TIMED_OUT: the tick is due
       for (int64_t j = 0; j < n; j++) {
         uint64_t key = pk[j].key, kind = key >> 40;
         uint32_t slot = key & 0xff, gen = (uint32_t)(key >> 8);

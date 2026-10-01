@@ -32,15 +32,18 @@ typedef struct p9_fs {
   vx_status (*parent)(void *ctx, uint64_t node, uint64_t *parent); // only below an attach root
   vx_status (*stat)(void *ctx, uint64_t node, p9_stat *out);       // its strings may live until the next call
   vx_status (*open)(void *ctx, uint64_t node, uint8_t mode);
+  // Optional: after an open, a clone file (02 §5) makes a new node, and the
+  // fid moves there, opened. NOT_FOUND: the node is not a clone file.
+  vx_status (*clone)(void *ctx, uint64_t node, uint8_t mode, uint64_t *opened);
   vx_status (*read)(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf,
                     uint32_t *count);                                             // files; or SHOULD_WAIT
   vx_status (*readdir)(void *ctx, uint64_t dir, uint32_t index, uint64_t *child); // NOT_FOUND past the end
   vx_status (*write)(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf,
                      uint32_t *count); // or null
   vx_status (*create)(void *ctx, uint64_t dir, vx_str name, uint32_t perm, uint8_t mode,
-                      uint64_t *node);           // or null
-  vx_status (*remove)(void *ctx, uint64_t node); // or null
-  void (*clunk)(void *ctx, uint64_t node);       // optional: a fid let the node go
+                      uint64_t *node);                  // or null
+  vx_status (*remove)(void *ctx, uint64_t node);        // or null
+  void (*clunk)(void *ctx, uint64_t node, bool opened); // optional: a fid let the node go
 } p9_fs;
 
 enum : uint32_t { P9_MAX_FIDS = 256 }; // per connection, for now
@@ -84,7 +87,7 @@ static p9_fid *p9_fid_new(p9_server *s, uint32_t fid) {
 }
 
 static void p9_fid_drop(p9_server *s, p9_fid *f) {
-  if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node);
+  if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, f->open);
   *f = (p9_fid){};
 }
 
@@ -93,6 +96,24 @@ static vx_status p9_qid_of(p9_server *s, uint64_t node, p9_qid *qid) {
   vx_status e = s->fs.stat(s->fs.ctx, node, &st);
   if (e == VX_OK) *qid = st.qid;
   return e;
+}
+
+// Opens a fid's node. A clone file moves the fid to the node it makes, as
+// opening /net/tcp/clone moves it to the new conversation's ctl (02 §5).
+static vx_status open_node(p9_server *s, p9_fid *f, uint8_t mode) {
+  vx_status e = s->fs.open(s->fs.ctx, f->node, mode);
+  uint64_t node;
+  if (e != VX_OK || !s->fs.clone) return e;
+  if ((e = s->fs.clone(s->fs.ctx, f->node, mode, &node)) != VX_OK) return e == VX_ERR_NOT_FOUND ? VX_OK : e;
+  p9_qid qid;
+  if ((e = p9_qid_of(s, node, &qid)) != VX_OK) {
+    if (s->fs.clunk) s->fs.clunk(s->fs.ctx, node, true); // opened, and let go at once
+    return e;
+  }
+  if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, false);
+  f->node = node;
+  f->qid = qid;
+  return VX_OK;
 }
 
 // A name the file server may see: not empty, not ".", no '/'.
@@ -223,7 +244,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         e = VX_ERR_NO_MEMORY; // too many fids
         break;
       }
-      if (n == f && s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node);
+      if (n == f && s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, false); // walked fids are never open
       uint64_t root = f->root;
       *n = (p9_fid){.fid = t.newfid, .used = true, .node = node, .root = root, .qid = qid};
       break;
@@ -248,7 +269,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         else
           e = s->fs.create(s->fs.ctx, f->node, t.name, t.perm, t.mode, &node);
         if (e == VX_OK) {
-          if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node);
+          if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, false);
           f->node = node;
           e = p9_qid_of(s, node, &f->qid);
         }
@@ -257,7 +278,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         if ((f->qid.type & P9_QTDIR) && writes)
           e = VX_ERR_ACCESS; // directories are only read
         else
-          e = s->fs.open(s->fs.ctx, f->node, t.mode);
+          e = open_node(s, f, t.mode);
       }
       if (e != VX_OK) break;
       f->open = true;
