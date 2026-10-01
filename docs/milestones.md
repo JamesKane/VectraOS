@@ -82,7 +82,7 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 2c. Kernel: FP/SIMD state (x87/SSE by FXSAVE; arm64 v0–v31, FPCR, FPSR) saved per thread; first-party programs no longer `-mgeneral-regs-only`; `thread_start` enters as if called | Done | `f225529` |
 | 2d. The vx back end (files, directories, stdio, memory, time, the process), compiler-rt's builtins vendored (ADR-0008), `./build` building `libc.a` and the `vectra-musl` sysroot; `ctest`, a C program against it, runs (`posix`) | Done | `a5ef5bf` |
 | 3a. Kernel: `task_create`'s `FORK`, a copy of the caller's memory and handle table (rings' and devices' memory left out, a handle to the caller becoming the child's) | Done | `f5f54eb` |
-| 3b. `posixd`: the process table (pids, parents, process groups, sessions) and `wait`; the back end's `getpid`, `setpgid`, `setsid` and the rest from it; `posix_spawn` and `posix_spawnp` in the back end, registering each child before it runs | Done | not yet committed |
+| 3b. `posixd`: the process table (pids, parents, process groups, sessions) and `wait`; the back end's `getpid`, `setpgid`, `setsid` and the rest from it; `posix_spawn` and `posix_spawnp` in the back end, registering each child before it runs | Done | `5353e4b` |
 | 3c. libc: `fork` (the child reconnecting its namespace and console), `execve`, pipes over channels, descriptors passed to children | To do | |
 | 3d. Signals: `sigaction`, `kill` through `posixd`, delivery by `thread_interrupt` to a libc trampoline, faults as `SIGSEGV` and the rest, `SIGCHLD` | To do | |
 | 3e. A RAM file system for `/tmp`; `/dev/null`, `/dev/zero`, `/dev/urandom`; the POSIX namespace template (`/lib/ns/posix`) | To do | |
