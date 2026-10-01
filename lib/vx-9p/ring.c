@@ -130,7 +130,7 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
   if (st == VX_OK) {
     k->c =
         (p9_client){.rpc = p9_ring_rpc, .ctx = k, .tbuf = k->tbuf, .rbuf = k->rbuf, .bufsize = P9_RING_MSIZE};
-    st = p9c_version(&k->c, P9_RING_MSIZE, 0);
+    st = p9c_version(&k->c, P9_RING_MSIZE, P9_EXT_POSIX | P9_EXT_XATTR); // what the server has of them
   }
   if (st != VX_OK) {
     if (k->end) vx_handle_close(k->end);

@@ -441,6 +441,86 @@ static void test_tmp_and_devices(void) {
   CHECK(getauxval(AT_RANDOM) != 0);
 }
 
+static bool write_file(const char *path, const char *text) {
+  FILE *f = fopen(path, "w");
+  bool ok = f && fputs(text, f) >= 0;
+  return f && fclose(f) == 0 && ok;
+}
+
+static bool file_is(const char *path, const char *text) {
+  char buf[64] = {};
+  FILE *f = fopen(path, "r");
+  size_t n = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
+  if (f) fclose(f);
+  return f && n == strlen(text) && memcmp(buf, text, n) == 0;
+}
+
+// The posix and xattr extensions, through tmpfs: rename, symbolic links,
+// chmod, truncate, utimensat, fsync.
+static void test_names_and_attributes(void) {
+  struct stat st;
+  char buf[64] = {};
+  CHECK(write_file("/tmp/r1", "renamed") && mkdir("/tmp/rd", 0755) == 0);
+  CHECK(rename("/tmp/r1", "/tmp/r2") == 0 && stat("/tmp/r1", &st) == -1 && file_is("/tmp/r2", "renamed"));
+  CHECK(rename("/tmp/r2", "/tmp/rd/r3") == 0 && file_is("/tmp/rd/r3", "renamed")); // across directories
+  CHECK(write_file("/tmp/other", "replaced") && rename("/tmp/other", "/tmp/rd/r3") == 0);
+  CHECK(file_is("/tmp/rd/r3", "replaced") && stat("/tmp/other", &st) == -1);
+  errno = 0;
+  CHECK(rename("/tmp/rd", "/tmp/rd/inside") == -1 && errno == EINVAL);
+  errno = 0;
+  CHECK(rename("/tmp/rd/r3", "/boot/r3") == -1 && errno == EXDEV); // another server
+
+  // Symbolic links: read, followed (at the end and on the way), or not.
+  CHECK(symlink("rd/r3", "/tmp/ln") == 0);
+  ssize_t n = readlink("/tmp/ln", buf, sizeof buf);
+  CHECK(n == 5 && memcmp(buf, "rd/r3", 5) == 0);
+  CHECK(lstat("/tmp/ln", &st) == 0 && S_ISLNK(st.st_mode));
+  CHECK(stat("/tmp/ln", &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 8 &&
+        file_is("/tmp/ln", "replaced"));
+  CHECK(symlink("/tmp/rd", "/tmp/dl") == 0 && file_is("/tmp/dl/r3", "replaced"));
+  bool saw_link = false;
+  DIR *d = opendir("/tmp");
+  for (struct dirent *e; d && (e = readdir(d));)
+    if (strcmp(e->d_name, "ln") == 0) saw_link = e->d_type == DT_LNK;
+  if (d) closedir(d);
+  CHECK(saw_link);
+  CHECK(symlink("/tmp/nothing", "/tmp/dangling") == 0 && lstat("/tmp/dangling", &st) == 0);
+  errno = 0;
+  CHECK(stat("/tmp/dangling", &st) == -1 && errno == ENOENT);
+  CHECK(symlink("/tmp/loop", "/tmp/loop") == 0);
+  errno = 0;
+  CHECK(open("/tmp/loop", O_RDONLY) == -1 && errno == ELOOP);
+  errno = 0;
+  CHECK(open("/tmp/ln", O_RDONLY | O_NOFOLLOW) == -1 && errno == ELOOP);
+  CHECK(unlink("/tmp/ln") == 0 && lstat("/tmp/ln", &st) == -1 &&
+        stat("/tmp/rd/r3", &st) == 0); // the link only
+  errno = 0;
+  CHECK(readlink("/tmp/rd/r3", buf, sizeof buf) == -1 && errno == EINVAL); // not a link
+
+  // Attributes.
+  CHECK(chmod("/tmp/rd/r3", 0600) == 0 && stat("/tmp/rd/r3", &st) == 0 && (st.st_mode & 0777) == 0600);
+  int fd = open("/tmp/rd/r3", O_RDWR);
+  CHECK(fd >= 0);
+  if (fd < 0) return; // the rest needs it
+  CHECK(fchmod(fd, 0640) == 0 && fstat(fd, &st) == 0 && (st.st_mode & 0777) == 0640);
+  CHECK(truncate("/tmp/rd/r3", 3) == 0 && stat("/tmp/rd/r3", &st) == 0 && st.st_size == 3);
+  CHECK(ftruncate(fd, 10) == 0 && fstat(fd, &st) == 0 && st.st_size == 10);
+  unsigned char tail[7];
+  memset(tail, 0xff, sizeof tail);
+  CHECK(pread(fd, tail, sizeof tail, 3) == 7 && all_zero(tail, sizeof tail)); // grown with zeros
+  CHECK(fsync(fd) == 0 && fdatasync(fd) == 0);
+  CHECK(utimensat(AT_FDCWD, "/tmp/rd/r3", (struct timespec[]){{.tv_nsec = UTIME_OMIT}, {.tv_sec = 1000}},
+                  0) == 0);
+  CHECK(stat("/tmp/rd/r3", &st) == 0 && st.st_mtime == 1000);
+  CHECK(futimens(fd, nullptr) == 0 && fstat(fd, &st) == 0 && st.st_mtime != 1000); // now
+  CHECK(chown("/tmp/rd/r3", 0, 0) == 0); // owners are not kept, and no one may not
+  errno = 0;
+  CHECK(link("/tmp/rd/r3", "/tmp/hard") == -1 && errno == EPERM);
+  close(fd);
+  CHECK(unlink("/tmp/dl") == 0 && unlink("/tmp/dangling") == 0 && unlink("/tmp/loop") == 0);
+  CHECK(unlink("/tmp/rd/r3") == 0 && rmdir("/tmp/rd") == 0);
+}
+
 int main(int argc, char **argv) {
   if (argc >= 3 && strcmp(argv[1], "one") != 0) return child_main(argv);
   printf("ctest: hello from musl\n");
@@ -541,6 +621,7 @@ int main(int argc, char **argv) {
   test_fork_exec_pipes();
   test_signals();
   test_tmp_and_devices();
+  test_names_and_attributes();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

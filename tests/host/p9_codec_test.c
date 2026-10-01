@@ -48,8 +48,59 @@ static p9_msg full_message(p9_type type) {
       .wqid = {{P9_QTDIR, 1, 2}, {P9_QTFILE, 3, 4}},
       .data = {data, sizeof data},
       .stat = {stat, stat_len},
+      .name2 = VX_STR("target"),
+      .gid = 13,
+      .mask = P9_GETATTR_BASIC,
+      .datasync = 1,
+      .attr = {.valid = P9_GETATTR_BASIC,
+               .qid = {P9_QTFILE, 5, 55},
+               .mode = P9_S_IFREG | 0644,
+               .uid = 1,
+               .gid = 2,
+               .nlink = 3,
+               .size = 4,
+               .blksize = 4096,
+               .blocks = 8,
+               .atime_sec = 10,
+               .atime_nsec = 11,
+               .mtime_sec = 12,
+               .mtime_nsec = 13,
+               .ctime_sec = 14,
+               .ctime_nsec = 15,
+               .btime_sec = 16,
+               .btime_nsec = 17,
+               .gen = 18,
+               .data_version = 19},
+      .setattr = {.valid = P9_SETATTR_MODE | P9_SETATTR_SIZE | P9_SETATTR_MTIME_SET,
+                  .mode = 0600,
+                  .uid = 3,
+                  .gid = 4,
+                  .size = 5,
+                  .atime_sec = 6,
+                  .atime_nsec = 7,
+                  .mtime_sec = 8,
+                  .mtime_nsec = 9},
   };
   return m;
+}
+
+// The fields 9P2000.L's messages add come back as they went.
+static void test_posix_fields(void) {
+  uint8_t buf[512];
+  p9_msg m = full_message(P9_Rgetattr), d;
+  size_t n = p9_encode(&m, buf, sizeof buf);
+  CHECK(n == 7 + 8 + 13 + 12 + 15 * 8); // Rgetattr's fixed size
+  CHECK(p9_decode(buf, n, &d) == VX_OK && d.attr.valid == P9_GETATTR_BASIC && d.attr.qid.path == 55);
+  CHECK(d.attr.mode == (P9_S_IFREG | 0644) && d.attr.mtime_nsec == 13 && d.attr.data_version == 19);
+  m = full_message(P9_Tsetattr);
+  n = p9_encode(&m, buf, sizeof buf);
+  CHECK(n == 7 + 4 + 4 + 12 + 5 * 8);
+  CHECK(p9_decode(buf, n, &d) == VX_OK && d.setattr.valid == m.setattr.valid && d.setattr.size == 5);
+  CHECK(d.setattr.mode == 0600 && d.setattr.mtime_sec == 8 && d.setattr.mtime_nsec == 9);
+  m = full_message(P9_Trenameat);
+  n = p9_encode(&m, buf, sizeof buf);
+  CHECK(p9_decode(buf, n, &d) == VX_OK && d.fid == 11 && d.newfid == 12 && d.name.len == 7 &&
+        d.name2.len == 6);
 }
 
 static void test_round_trips(void) {
@@ -82,7 +133,7 @@ static void test_round_trips(void) {
     buf[0] = (uint8_t)(n - 1);
     CHECK(p9_decode(buf, n, &d) == VX_ERR_INVALID);
   }
-  CHECK(types == 27);
+  CHECK(types == 41);               // 9P2000's 27 and the 14 of 9P2000.L's that posix and xattr use
   CHECK(P9_FIELDS[106] == nullptr); // there is no Terror
   CHECK(p9_encode(&(p9_msg){.type = (p9_type)106}, buf, sizeof buf) == 0);
   CHECK(p9_encode(&(p9_msg){.type = P9_Tclunk}, buf, 6) == 0); // does not fit
@@ -183,6 +234,7 @@ static void test_dir_next(void) {
 int main(void) {
   test_dir_next();
   test_round_trips();
+  test_posix_fields();
   test_traps();
   test_stat();
   test_versions();

@@ -2,7 +2,10 @@
 // /tmp by the POSIX template (boot/ns/posix.ndb).
 //
 // Files and directories are made, written, truncated and removed as 9P has
-// them; a file's bytes are in a mapping of its own that grows by doubling.
+// them, and renamed, changed (mode, size, times) and linked symbolically as
+// the posix and xattr extensions have them (docs/proto/posix.md). A file's
+// bytes are in a mapping of its own that grows by doubling; a symbolic
+// link's are its target.
 // A file removed while it is open keeps its bytes until the last fid that
 // opened it lets go, as POSIX has it; a node id names one node only, so a fid
 // to a removed one finds nothing. What it holds lives only in it, and is
@@ -17,12 +20,12 @@ static constexpr uint32_t TMPFS_MAX_NAME = 128;
 static constexpr uint32_t ROOT = 1;
 
 typedef struct node {
-  bool used, dir, removed;
+  bool used, dir, removed, link;
   uint32_t gen; // with the slot, the node's id: a removed node's id names nothing
   char name[TMPFS_MAX_NAME];
   uint8_t name_len;
   uint32_t parent, first_child, next_sibling;
-  uint32_t mode, mtime, version;
+  uint32_t mode, atime, mtime, version;
   uint32_t opens; // fids that opened it: a removed file keeps its bytes until 0
   uint8_t *data;
   uint64_t size, cap;
@@ -81,6 +84,8 @@ static vx_status reserve(node *n, uint64_t size) {
   return VX_OK;
 }
 
+static void append_child(uint32_t dir, uint32_t s); // below, with remove
+
 static uint32_t child_named(uint32_t dir, vx_str name) {
   for (uint32_t c = nodes[dir].first_child; c; c = nodes[c].next_sibling)
     if (nodes[c].name_len == name.len && memcmp(nodes[c].name, name.ptr, name.len) == 0) return c;
@@ -120,8 +125,8 @@ static vx_status fs_stat(void *ctx, uint64_t id, p9_stat *out) {
   const node *n = node_at(id, &s);
   if (!n) return VX_ERR_NOT_FOUND;
   *out = (p9_stat){.qid = {n->dir ? P9_QTDIR : P9_QTFILE, n->version, id},
-                   .mode = (n->dir ? P9_DMDIR : 0) | n->mode,
-                   .atime = n->mtime,
+                   .mode = (n->dir ? P9_DMDIR : 0) | (n->link ? P9_DMSYMLINK : 0) | n->mode,
+                   .atime = n->atime,
                    .mtime = n->mtime,
                    .length = n->dir ? 0 : n->size,
                    .name = s == ROOT ? VX_STR("/") : (vx_str){n->name, n->name_len},
@@ -215,12 +220,28 @@ static vx_status fs_create(void *ctx, uint64_t dir, vx_str name, uint32_t perm, 
     *n = (node){.gen = n->gen};
     return VX_ERR_ACCESS;
   }
-  uint32_t *link = &nodes[d].first_child; // children in the order they were made
-  while (*link) link = &nodes[*link].next_sibling;
-  *link = s;
-  nodes[d].mtime = now_seconds();
+  append_child(d, s);
   *out = id_of(s);
   return VX_OK;
+}
+
+static void unlink_child(uint32_t s) {
+  node *n = &nodes[s];
+  for (uint32_t *link = &nodes[n->parent].first_child; *link; link = &nodes[*link].next_sibling)
+    if (*link == s) {
+      *link = n->next_sibling;
+      break;
+    }
+  nodes[n->parent].mtime = now_seconds();
+  n->next_sibling = 0;
+}
+
+static void append_child(uint32_t dir, uint32_t s) { // children in the order they came
+  uint32_t *link = &nodes[dir].first_child;
+  while (*link) link = &nodes[*link].next_sibling;
+  *link = s;
+  nodes[s].parent = dir;
+  nodes[dir].mtime = now_seconds();
 }
 
 // A directory only when empty. The node leaves its directory at once; a file
@@ -232,15 +253,85 @@ static vx_status fs_remove(void *ctx, uint64_t id) {
   if (!n || n->removed) return VX_ERR_NOT_FOUND;
   if (s == ROOT) return VX_ERR_ACCESS;
   if (n->dir && n->first_child) return VX_ERR_EXISTS; // not empty
-  for (uint32_t *link = &nodes[n->parent].first_child; *link; link = &nodes[*link].next_sibling)
-    if (*link == s) {
-      *link = n->next_sibling;
-      break;
-    }
-  nodes[n->parent].mtime = now_seconds();
+  unlink_child(s);
   n->removed = true;
-  n->next_sibling = 0;
   if (!n->opens) free_node(n);
+  return VX_OK;
+}
+
+// --- The posix and xattr extensions ---
+
+static vx_status fs_setattr(void *ctx, uint64_t id, const p9_setattr *a) {
+  (void)ctx;
+  node *n = node_at(id, nullptr);
+  if (!n || n->removed) return VX_ERR_NOT_FOUND;
+  if (a->valid & P9_SETATTR_SIZE) {
+    if (n->dir || n->link) return VX_ERR_INVALID;
+    vx_status st = reserve(n, a->size);
+    if (st != VX_OK) return st;
+    if (a->size > n->size) memset(n->data + n->size, 0, a->size - n->size);
+    n->size = a->size;
+    n->version++;
+  }
+  if (a->valid & P9_SETATTR_MODE) n->mode = a->mode & 07777;
+  uint32_t now = now_seconds();
+  if (a->valid & P9_SETATTR_ATIME) n->atime = a->valid & P9_SETATTR_ATIME_SET ? (uint32_t)a->atime_sec : now;
+  if (a->valid & P9_SETATTR_MTIME) n->mtime = a->valid & P9_SETATTR_MTIME_SET ? (uint32_t)a->mtime_sec : now;
+  if (a->valid & P9_SETATTR_SIZE && !(a->valid & P9_SETATTR_MTIME)) n->mtime = now;
+  return VX_OK; // owners are not kept: uid and gid change nothing
+}
+
+// Moves olddir's entry to newdir as newname, replacing what is there as
+// POSIX's rename does: a file by a file, an empty directory by a directory.
+static vx_status fs_rename(void *ctx, uint64_t olddir, vx_str oldname, uint64_t newdir, vx_str newname) {
+  (void)ctx;
+  uint32_t from, to;
+  if (!node_at(olddir, &from) || !node_at(newdir, &to) || !nodes[to].dir || nodes[to].removed)
+    return VX_ERR_NOT_FOUND;
+  if (newname.len >= TMPFS_MAX_NAME) return VX_ERR_RANGE;
+  uint32_t s = child_named(from, oldname);
+  if (!s) return VX_ERR_NOT_FOUND;
+  for (uint32_t up = to; up; up = up == ROOT ? 0 : nodes[up].parent)
+    if (up == s) return VX_ERR_INVALID; // into itself
+  uint32_t there = child_named(to, newname);
+  if (there == s) return VX_OK;
+  if (there) {
+    node *t = &nodes[there];
+    if (t->dir != nodes[s].dir) return t->dir ? VX_ERR_EXISTS : VX_ERR_INVALID;
+    if (t->dir && t->first_child) return VX_ERR_EXISTS; // not empty
+    unlink_child(there);
+    t->removed = true;
+    if (!t->opens) free_node(t);
+  }
+  unlink_child(s);
+  memcpy(nodes[s].name, newname.ptr, newname.len);
+  nodes[s].name_len = (uint8_t)newname.len;
+  append_child(to, s);
+  return VX_OK;
+}
+
+static vx_status fs_symlink(void *ctx, uint64_t dir, vx_str name, vx_str target, uint64_t *out) {
+  if (!target.len) return VX_ERR_INVALID;
+  vx_status st = fs_create(ctx, dir, name, 0777, P9_OREAD, out);
+  if (st != VX_OK) return st;
+  node *n = node_at(*out, nullptr);
+  n->opens = 0; // made, not opened
+  n->link = true;
+  st = reserve(n, target.len);
+  if (st == VX_OK) {
+    memcpy(n->data, target.ptr, target.len);
+    n->size = target.len;
+  } else {
+    fs_remove(ctx, *out);
+  }
+  return st;
+}
+
+static vx_status fs_readlink(void *ctx, uint64_t id, vx_str *target) {
+  (void)ctx;
+  const node *n = node_at(id, nullptr);
+  if (!n || !n->link) return VX_ERR_INVALID;
+  *target = (vx_str){(const char *)n->data, n->size};
   return VX_OK;
 }
 
@@ -255,8 +346,13 @@ static p9_ring_server server = {
            .write = fs_write,
            .create = fs_create,
            .remove = fs_remove,
-           .clunk = fs_clunk},
+           .clunk = fs_clunk,
+           .setattr = fs_setattr,
+           .rename = fs_rename,
+           .symlink = fs_symlink,
+           .readlink = fs_readlink},
     .name = VX_STR("tmpfs"),
+    .supported = P9_EXT_POSIX | P9_EXT_XATTR,
 };
 
 int vx_main(void) {

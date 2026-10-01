@@ -21,3 +21,10 @@ P9_FIELD(WNAMES,  WNAMES, wname)   // nwname[2], then nwname strings
 P9_FIELD(WQIDS,   WQIDS,  wqid)    // nwqid[2], then nwqid qids
 P9_FIELD(DATA,    DATA,   data)    // count[4], then count bytes (count is set too)
 P9_FIELD(STAT,    STAT,   stat)    // n[2], then n bytes of stat
+// 9P2000.L's, for the posix and xattr extensions (02 §3.3, docs/proto/posix.md)
+P9_FIELD(NAME2,   STR,    name2)   // a second name: Trenameat's new one, Tsymlink's target, Rreadlink's
+P9_FIELD(GID,     U32,    gid)
+P9_FIELD(MASK,    U64,    mask)    // Tgetattr's request_mask
+P9_FIELD(DATASYNC, U32,   datasync)
+P9_FIELD(ATTR,    ATTR,   attr)    // Rgetattr's body, valid[8] first
+P9_FIELD(SETATTR, SETATTR, setattr) // Tsetattr's body, valid[4] first

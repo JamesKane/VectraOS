@@ -163,7 +163,9 @@ static bool verbose;
 static char root[1024]; // the repository root, absolute
 
 // One arena for the whole run. build is short-lived, so nothing is freed.
-static char arena[32 << 20];
+// 32 MiB ran out building aarch64's debug test images (with musl, M4); the
+// pages are the host's to map as they are touched.
+static char arena[128 << 20];
 static size_t arena_used;
 
 static void *alloc(size_t n) {

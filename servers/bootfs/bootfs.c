@@ -156,6 +156,7 @@ static p9_ring_server server = {
            .read = fs_read,
            .readdir = fs_readdir},
     .name = VX_STR("bootfs"),
+    .supported = P9_EXT_XATTR, // Tgetattr, for stat; nothing can be changed
 };
 
 int vx_main(void) {

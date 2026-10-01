@@ -177,10 +177,12 @@ static long fd_path(int dirfd, const char *path, char *out) {
 
 static void fd_stat_fill(struct stat *st, const p9_stat *s) {
   bool dir = s->mode & P9_DMDIR;
+  mode_t type = dir ? S_IFDIR : S_IFREG;
+  if (s->mode & P9_DMSYMLINK) type = S_IFLNK;
   *st = (struct stat){
       .st_dev = s->dev,
       .st_ino = s->qid.path,
-      .st_mode = (dir ? S_IFDIR : S_IFREG) | (s->mode & 0777),
+      .st_mode = type | (s->mode & 0777),
       .st_nlink = dir ? 2 : 1,
       .st_size = (off_t)s->length,
       .st_blksize = 4096,
@@ -189,6 +191,104 @@ static void fd_stat_fill(struct stat *st, const p9_stat *s) {
       .st_mtim = {.tv_sec = s->mtime},
       .st_ctim = {.tv_sec = s->mtime},
   };
+}
+
+// A fid's stat: Tgetattr's where the server has the xattr extension (times
+// to the nanosecond, links, inode), Tstat's otherwise.
+static vx_status fd_stat_fid(p9_client *c, uint32_t fid, struct stat *st) {
+  p9_attr a;
+  if (p9c_getattr(c, fid, &a) == VX_OK) {
+    *st = (struct stat){.st_ino = a.qid.path,
+                        .st_mode = a.mode,
+                        .st_nlink = (nlink_t)a.nlink,
+                        .st_uid = a.uid,
+                        .st_gid = a.gid,
+                        .st_size = (off_t)a.size,
+                        .st_blksize = (blksize_t)a.blksize,
+                        .st_blocks = (blkcnt_t)a.blocks,
+                        .st_atim = {(time_t)a.atime_sec, (long)a.atime_nsec},
+                        .st_mtim = {(time_t)a.mtime_sec, (long)a.mtime_nsec},
+                        .st_ctim = {(time_t)a.ctime_sec, (long)a.ctime_nsec}};
+    return VX_OK;
+  }
+  p9_stat s;
+  vx_status e = p9c_stat(c, fid, &s);
+  if (e == VX_OK) fd_stat_fill(st, &s);
+  return e;
+}
+
+// --- Symbolic links ---
+//
+// The servers walk names only, so the client follows links (docs/proto/
+// posix.md): a walk of the whole path that succeeds went through no link,
+// as a link is no directory, and only its last component may be one; a walk
+// that fails may have met one on the way, so its prefixes are looked at in
+// turn. Only connections with the posix extension can hold links.
+
+// Whether the path's last component is a link (1, with its target), is not
+// (0), or is not there (a negated errno).
+static int fd_link_at(const char *p, size_t len, char *target, size_t cap, size_t *tlen) {
+  p9_client *c = nullptr;
+  uint32_t fid = 0;
+  vx_status st = vx_ns_walk(fd_namespace(), (vx_str){p, len}, &c, &fid);
+  if (st != VX_OK) return (int)vx_errno(st);
+  int r = 0;
+  p9_stat s;
+  if ((c->extensions & P9_EXT_POSIX) && p9c_stat(c, fid, &s) == VX_OK && (s.mode & P9_DMSYMLINK)) {
+    vx_str t;
+    r = -EINVAL;
+    if (p9c_readlink(c, fid, &t) == VX_OK) r = t.len < cap ? 1 : -ENAMETOOLONG;
+    if (r == 1) memcpy(target, t.ptr, t.len), *tlen = t.len;
+  }
+  p9c_clunk(c, fid);
+  return r;
+}
+
+// path (cleaned, absolute, in out) with its links followed: every one, or all
+// but the last component's. Returns its length or a negated errno; a path
+// that is not there comes back as it is, for the caller to find so.
+static long fd_resolve(int dirfd, const char *path, bool follow, char *out) {
+  long n = fd_path(dirfd, path, out);
+  for (int hops = 0; n > 1; hops++) {
+    if (hops == 40) return -ELOOP;
+    size_t limit = (size_t)n; // what may be followed: all, or up to the last component's parent
+    if (!follow) {
+      while (limit > 1 && out[limit - 1] != '/') limit--;
+      if (limit > 1) limit--;
+    }
+    if (limit <= 1) return n;
+    char target[VX_NS_MAX_PATH];
+    size_t tlen = 0, at = limit;
+    int r = fd_link_at(out, limit, target, sizeof target, &tlen);
+    if (r < 0) { // not there: a link on the way, perhaps
+      r = 0;
+      for (at = 1; at <= limit && r == 0; at++) {
+        while (at < limit && out[at] != '/') at++;
+        r = fd_link_at(out, at, target, sizeof target, &tlen);
+        if (r == 0 && at == limit) return n;
+      }
+      at--;
+      if (r < 0) return n; // a component is missing: the caller finds so
+    }
+    if (r == 0) return n;
+    // out[0, at) is a link: its target, from its directory, and the rest after it.
+    char next[2 * VX_NS_MAX_PATH];
+    size_t len = 0, dir = at;
+    while (dir > 1 && out[dir - 1] != '/') dir--;
+    if (target[0] != '/') {
+      memcpy(next, out, dir);
+      len = dir;
+    }
+    if (len + tlen + 1 + ((size_t)n - at) > sizeof next) return -ENAMETOOLONG;
+    memcpy(next + len, target, tlen);
+    len += tlen;
+    next[len++] = '/';
+    memcpy(next + len, out + at, (size_t)n - at);
+    len += (size_t)n - at;
+    n = (long)vx_ns_clean((vx_str){next, len}, out, VX_NS_MAX_PATH);
+    if (!n) return -ENAMETOOLONG;
+  }
+  return n;
 }
 
 // --- Reading and writing ---
@@ -405,8 +505,12 @@ static long fd_lseek(int fd, long offset, int whence) {
 
 static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   char p[VX_NS_MAX_PATH];
-  long len = fd_path(dirfd, path, p);
+  long len = fd_resolve(dirfd, path, !(flags & O_NOFOLLOW), p);
   if (len < 0) return len;
+  char target[VX_NS_MAX_PATH];
+  size_t target_len;
+  if ((flags & O_NOFOLLOW) && fd_link_at(p, (size_t)len, target, sizeof target, &target_len) == 1)
+    return -ELOOP; // the last component is a link
   int acc = flags & O_ACCMODE;
   uint8_t mode9 = P9_OREAD;
   if (acc == O_WRONLY) mode9 = P9_OWRITE;
@@ -486,9 +590,9 @@ static long fd_fcntl(int fd, int cmd, long arg) {
 
 // Walks to path (cleaned into p, of *len bytes): true with *c and *fid,
 // which the caller clunks, or false with *err, a negated errno.
-static bool fd_walk(int dirfd, const char *path, p9_client **c, uint32_t *fid, char *p, size_t *len,
-                    long *err) {
-  long n = fd_path(dirfd, path, p);
+static bool fd_walk(int dirfd, const char *path, bool follow, p9_client **c, uint32_t *fid, char *p,
+                    size_t *len, long *err) {
+  long n = fd_resolve(dirfd, path, follow, p);
   if (n < 0) {
     *err = n;
     return false;
@@ -511,10 +615,7 @@ static long fd_fstat(int fd, struct stat *st) {
                         .st_blksize = 4096};
     return 0;
   }
-  p9_stat s;
-  vx_status vst = p9c_stat(o->f.c, o->f.fid, &s);
-  if (vst == VX_OK) fd_stat_fill(st, &s);
-  return vx_errno(vst);
+  return vx_errno(fd_stat_fid(o->f.c, o->f.fid, st));
 }
 
 static long fd_fstatat(int dirfd, const char *path, struct stat *st, int flag) {
@@ -524,10 +625,8 @@ static long fd_fstatat(int dirfd, const char *path, struct stat *st, int flag) {
   char p[VX_NS_MAX_PATH];
   size_t len;
   long r = 0;
-  if (!fd_walk(dirfd, path, &c, &fid, p, &len, &r)) return r;
-  p9_stat s;
-  vx_status vst = p9c_stat(c, fid, &s);
-  if (vst == VX_OK) fd_stat_fill(st, &s);
+  if (!fd_walk(dirfd, path, !(flag & AT_SYMLINK_NOFOLLOW), &c, &fid, p, &len, &r)) return r;
+  vx_status vst = fd_stat_fid(c, fid, st);
   p9c_clunk(c, fid);
   return vx_errno(vst);
 }
@@ -538,14 +637,14 @@ static long fd_faccessat(int dirfd, const char *path) {
   char p[VX_NS_MAX_PATH];
   size_t len;
   long r = 0;
-  if (!fd_walk(dirfd, path, &c, &fid, p, &len, &r)) return r;
+  if (!fd_walk(dirfd, path, true, &c, &fid, p, &len, &r)) return r;
   p9c_clunk(c, fid);
   return 0; // it exists; permissions are the server's to refuse when it is opened
 }
 
 static long fd_mkdirat(int dirfd, const char *path, mode_t mode) {
   char p[VX_NS_MAX_PATH];
-  long len = fd_path(dirfd, path, p);
+  long len = fd_resolve(dirfd, path, false, p);
   if (len < 0) return len;
   vx_ns_file f;
   vx_status st =
@@ -560,7 +659,7 @@ static long fd_unlinkat(int dirfd, const char *path, int flag) {
   char p[VX_NS_MAX_PATH];
   size_t len;
   long r = 0;
-  if (!fd_walk(dirfd, path, &c, &fid, p, &len, &r)) return r;
+  if (!fd_walk(dirfd, path, false, &c, &fid, p, &len, &r)) return r;
   p9_stat s;
   vx_status st = p9c_stat(c, fid, &s);
   if (st == VX_OK && !(s.mode & P9_DMDIR) != !(flag & AT_REMOVEDIR)) {
@@ -587,7 +686,7 @@ static long fd_chdir(const char *path) {
   char p[VX_NS_MAX_PATH];
   size_t len;
   long r = 0;
-  if (!fd_walk(AT_FDCWD, path, &c, &fid, p, &len, &r)) return r;
+  if (!fd_walk(AT_FDCWD, path, true, &c, &fid, p, &len, &r)) return r;
   p9_stat s;
   vx_status st = p9c_stat(c, fid, &s);
   p9c_clunk(c, fid);
@@ -637,7 +736,9 @@ static long fd_getdents(int fd, void *buf, size_t count) {
     d->d_ino = s.qid.path;
     d->d_off = ++o->dir_next;
     d->d_reclen = (unsigned short)reclen;
-    d->d_type = s.mode & P9_DMDIR ? DT_DIR : DT_REG;
+    d->d_type = DT_REG;
+    if (s.mode & P9_DMDIR) d->d_type = DT_DIR;
+    if (s.mode & P9_DMSYMLINK) d->d_type = DT_LNK;
     memcpy(d->d_name, s.name.ptr, name_len);
     d->d_name[name_len] = 0;
     written += reclen;
@@ -822,4 +923,129 @@ static void fd_after_fork(void) {
     o->dir_next = 0;
     *n = (ofd){}; // its fid is o's now
   }
+}
+
+// --- The posix and xattr extensions: names and attributes ---
+
+// path's parent directory, walked, and its last component's name (into p).
+static long fd_parent(int dirfd, const char *path, p9_client **c, uint32_t *fid, char *p, vx_str *name) {
+  long n = fd_resolve(dirfd, path, false, p);
+  if (n < 0) return n;
+  size_t slash = (size_t)n;
+  while (slash > 0 && p[slash - 1] != '/') slash--;
+  if (slash == (size_t)n) return -EINVAL; // "/"
+  *name = (vx_str){p + slash, (size_t)n - slash};
+  vx_str dir = {p, slash > 1 ? slash - 1 : 1};
+  vx_status st = vx_ns_walk(fd_namespace(), dir, c, fid);
+  if (st == VX_OK) return 0;
+  long e = vx_errno(st);
+  return e < 0 ? e : -EIO; // never 0: *c is set only on success
+}
+
+static long fd_status(vx_status st) { return st == VX_ERR_UNSUPPORTED ? -EPERM : vx_errno(st); }
+
+static long fd_renameat(int olddirfd, const char *old, int newdirfd, const char *new, unsigned flags) {
+  if (flags) return -EINVAL; // RENAME_NOREPLACE and the rest
+  char p1[VX_NS_MAX_PATH], p2[VX_NS_MAX_PATH];
+  vx_str n1, n2;
+  p9_client *c1 = nullptr, *c2 = nullptr;
+  uint32_t f1 = 0, f2 = 0;
+  long r = fd_parent(olddirfd, old, &c1, &f1, p1, &n1);
+  if (r < 0) return r;
+  r = fd_parent(newdirfd, new, &c2, &f2, p2, &n2);
+  if (r < 0) {
+    p9c_clunk(c1, f1);
+    return r;
+  }
+  r = c1 == c2 ? fd_status(p9c_renameat(c1, f1, n1, f2, n2)) : -EXDEV; // within one server only
+  p9c_clunk(c1, f1);
+  p9c_clunk(c2, f2);
+  return r;
+}
+
+static long fd_symlinkat(const char *target, int dirfd, const char *path) {
+  char p[VX_NS_MAX_PATH];
+  vx_str name;
+  p9_client *c = nullptr;
+  uint32_t fid = 0;
+  if (!*target) return -ENOENT;
+  long r = fd_parent(dirfd, path, &c, &fid, p, &name);
+  if (r < 0) return r;
+  r = fd_status(p9c_symlink(c, fid, name, (vx_str){target, strlen(target)}));
+  p9c_clunk(c, fid);
+  return r;
+}
+
+static long fd_readlinkat(int dirfd, const char *path, char *buf, size_t size) {
+  char p[VX_NS_MAX_PATH], target[VX_NS_MAX_PATH];
+  long n = fd_resolve(dirfd, path, false, p);
+  if (n < 0) return n;
+  size_t len = 0;
+  int r = fd_link_at(p, (size_t)n, target, sizeof target, &len);
+  if (r <= 0) return r ? r : -EINVAL; // not a link
+  if (len > size) len = size;         // cut short, as readlink does
+  memcpy(buf, target, len);
+  return (long)len;
+}
+
+// Tsetattr on what path names (following its links, unless told not to), or
+// on an open descriptor's file (fd >= 0, path null).
+static long fd_setattr(int fd, int dirfd, const char *path, bool follow, const p9_setattr *a) {
+  if (!path) {
+    const ofd *o = fd_get(fd);
+    if (!o) return -EBADF;
+    if (o->kind != OFD_FILE) return -EINVAL;
+    return fd_status(p9c_setattr(o->f.c, o->f.fid, a));
+  }
+  p9_client *c = nullptr;
+  uint32_t fid = 0;
+  char p[VX_NS_MAX_PATH];
+  size_t len;
+  long r = 0;
+  if (!fd_walk(dirfd, path, follow, &c, &fid, p, &len, &r)) return r;
+  r = fd_status(p9c_setattr(c, fid, a));
+  p9c_clunk(c, fid);
+  return r;
+}
+
+static long fd_chmod(int fd, int dirfd, const char *path, mode_t mode) {
+  return fd_setattr(fd, dirfd, path, true, &(p9_setattr){.valid = P9_SETATTR_MODE, .mode = mode & 07777});
+}
+
+static long fd_chown(int fd, int dirfd, const char *path, uid_t uid, gid_t gid, bool follow) {
+  p9_setattr a = {.uid = uid, .gid = gid};
+  if (uid != (uid_t)-1) a.valid |= P9_SETATTR_UID;
+  if (gid != (gid_t)-1) a.valid |= P9_SETATTR_GID;
+  return a.valid ? fd_setattr(fd, dirfd, path, follow, &a) : 0;
+}
+
+static long fd_truncate(int fd, const char *path, long size) {
+  if (size < 0) return -EINVAL;
+  return fd_setattr(fd, AT_FDCWD, path, true,
+                    &(p9_setattr){.valid = P9_SETATTR_SIZE, .size = (uint64_t)size});
+}
+
+// utimensat and futimens: each time now (UTIME_NOW, or no times at all), as
+// given, or left alone (UTIME_OMIT).
+static long fd_utimens(int dirfd, const char *path, const struct timespec *times, int flags) {
+  p9_setattr a = {};
+  for (int i = 0; i < 2; i++) {
+    long ns = times ? times[i].tv_nsec : UTIME_NOW;
+    if (ns == UTIME_OMIT) continue;
+    a.valid |= i ? P9_SETATTR_MTIME : P9_SETATTR_ATIME;
+    if (ns == UTIME_NOW) continue;
+    if (ns < 0 || ns >= 1'000'000'000) return -EINVAL;
+    a.valid |= i ? P9_SETATTR_MTIME_SET : P9_SETATTR_ATIME_SET;
+    *(i ? &a.mtime_sec : &a.atime_sec) = (uint64_t)times[i].tv_sec;
+    *(i ? &a.mtime_nsec : &a.atime_nsec) = (uint64_t)ns;
+  }
+  if (!a.valid) return 0;
+  return fd_setattr(path ? -1 : dirfd, dirfd, path, !(flags & AT_SYMLINK_NOFOLLOW), &a);
+}
+
+static long fd_fsync(int fd) {
+  const ofd *o = fd_get(fd);
+  if (!o) return -EBADF;
+  if (o->kind != OFD_FILE) return -EINVAL;
+  return vx_errno(p9c_fsync(o->f.c, o->f.fid));
 }

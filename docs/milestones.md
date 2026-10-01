@@ -86,7 +86,11 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 3c. libc: `fork` (the child reconnecting its namespace and console, reopening its files), `execve` (`posixd`'s `EXEC`: the same process in a new task), pipes over channels, descriptors and the working directory passed to children, `posix_spawn`'s file actions | Done | `7e09e6e` |
 | 3d. Signals: `sigaction`, `sigprocmask`, `sigsuspend`, `kill` through `posixd`, delivery by `thread_interrupt` to a libc trampoline (deferred to the back end's return, `EINTR` or `SA_RESTART`), faults as `SIGSEGV` and the rest, `SIGCHLD`. Kernel: `thread_interrupt` queues eight; a call that ends without its reply takes back an unread request; an interrupt no longer overwrites a finished wait's result | Done | `8c9b8c2` |
 | 3e. `tmpfs` (`/tmp`); `nullfs` (`/dev/null`, `zero`, `random`, `urandom`); the POSIX namespace template (`boot/ns/posix.ndb`, a manifest's `ns=posix`); entropy for user space: the bootloader's, from the kernel to svcd to whoever asks (`entropy=`), through `lib/vx-rand`'s generator; `getrandom` | Done | `b489831` |
-| 4. `ptyd`; sockets over `/net`; `poll` and `select`; the `posix` 9Px extension | To do | |
+| 4a. The `posix` and `xattr` 9Px extensions' 9P2000.L messages (`docs/proto/posix.md`): `Tgetattr`, `Tsetattr`, `Trenameat`, `Tsymlink`, `Treadlink`, `Tfsync`; in vx-9p's codec, server and client, `tmpfs`, and the back end (`rename`, symbolic links followed by the client, `chmod`, `truncate`, `utimensat`, `fsync`) | Done | not yet committed |
+| 4b. Open-file descriptions kept by the server (shared offsets and `O_APPEND` across `fork`, `dup` and children); byte-range locks | To do | |
+| 4c. `ptyd`, termios, job control (`SIGSTOP`, `SIGTSTP`, `tcsetpgrp`) | To do | |
+| 4d. `poll`, `select` and `ppoll` over every descriptor | To do | |
+| 4e. Sockets over `/net` | To do | |
 | 5. Lua, sbase and dash, vendored | To do | |
 | 6. The `procfs` debug files, crash directories, `lib/vx-debug`, `dbg -c`, `/sys/clock`, `vx-prof` zones | To do | |
 

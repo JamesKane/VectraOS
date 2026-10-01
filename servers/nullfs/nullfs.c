@@ -96,6 +96,7 @@ static p9_ring_server server = {
            .readdir = fs_readdir,
            .write = fs_write},
     .name = VX_STR("nullfs"),
+    .supported = P9_EXT_XATTR, // Tgetattr, for stat; nothing can be changed
 };
 
 int vx_main(void) {

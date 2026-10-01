@@ -35,7 +35,10 @@ enum : uint8_t { // qid.type and the top byte of a stat's mode
   P9_QTFILE = 0x00,
 };
 
-enum : uint32_t { P9_DMDIR = 0x8000'0000 }; // a stat's mode: a directory
+enum : uint32_t {
+  P9_DMDIR = 0x8000'0000,
+  P9_DMSYMLINK = 0x0200'0000
+}; // a stat's mode: a directory; a link (9P2000.u)
 
 enum : uint8_t { // Topen and Tcreate modes
   P9_OREAD = 0,
@@ -66,6 +69,53 @@ typedef enum p9_field : uint8_t {
 #undef P9_FIELD
 } p9_field;
 
+// Rgetattr's attributes and Tsetattr's, as 9P2000.L has them. A mode is
+// POSIX's (S_IFDIR and the rest), not 9P2000's.
+typedef struct p9_attr {
+  uint64_t valid; // which of the rest are set: P9_GETATTR_*
+  p9_qid qid;
+  uint32_t mode, uid, gid;
+  uint64_t nlink, rdev, size, blksize, blocks;
+  uint64_t atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec, btime_sec, btime_nsec;
+  uint64_t gen, data_version;
+} p9_attr;
+
+typedef struct p9_setattr {
+  uint32_t valid; // which of the rest to change: P9_SETATTR_*
+  uint32_t mode, uid, gid;
+  uint64_t size, atime_sec, atime_nsec, mtime_sec, mtime_nsec;
+} p9_setattr;
+
+enum : uint64_t { // Linux's numbers
+  P9_GETATTR_MODE = 0x1,
+  P9_GETATTR_NLINK = 0x2,
+  P9_GETATTR_UID = 0x4,
+  P9_GETATTR_GID = 0x8,
+  P9_GETATTR_RDEV = 0x10,
+  P9_GETATTR_ATIME = 0x20,
+  P9_GETATTR_MTIME = 0x40,
+  P9_GETATTR_CTIME = 0x80,
+  P9_GETATTR_INO = 0x100,
+  P9_GETATTR_SIZE = 0x200,
+  P9_GETATTR_BLOCKS = 0x400,
+  P9_GETATTR_BASIC = 0x7ff,
+};
+
+enum : uint32_t {
+  P9_SETATTR_MODE = 0x1,
+  P9_SETATTR_UID = 0x2,
+  P9_SETATTR_GID = 0x4,
+  P9_SETATTR_SIZE = 0x8,
+  P9_SETATTR_ATIME = 0x10, // to now, without ATIME_SET
+  P9_SETATTR_MTIME = 0x20,
+  P9_SETATTR_CTIME = 0x40,
+  P9_SETATTR_ATIME_SET = 0x80, // to atime_sec and atime_nsec
+  P9_SETATTR_MTIME_SET = 0x100,
+};
+
+// POSIX's file types in a p9_attr's mode.
+enum : uint32_t { P9_S_IFMT = 0170000, P9_S_IFDIR = 0040000, P9_S_IFREG = 0100000, P9_S_IFLNK = 0120000 };
+
 typedef struct p9_msg {
   p9_type type;
   uint16_t tag;
@@ -80,6 +130,11 @@ typedef struct p9_msg {
   p9_qid wqid[P9_MAXWELEM];
   vx_bytes data; // Rread, Twrite; its length is count
   vx_bytes stat; // Rstat, Twstat: one stat entry, its own size[2] included
+  vx_str name2;
+  uint32_t gid, datasync;
+  uint64_t mask;
+  p9_attr attr;
+  p9_setattr setattr;
 } p9_msg;
 
 // The fields of each message type, in wire order; nullptr for a type that does not exist.
@@ -183,6 +238,36 @@ static void p9_put_qid(p9_out *o, p9_qid q) {
       p9_put(&o, m->stat.len, 2);
       p9_put_bytes(&o, m->stat.ptr, m->stat.len);
       break;
+    case P9F_NAME2: p9_put_str(&o, m->name2); break;
+    case P9F_GID: p9_put(&o, m->gid, 4); break;
+    case P9F_MASK: p9_put(&o, m->mask, 8); break;
+    case P9F_DATASYNC: p9_put(&o, m->datasync, 4); break;
+    case P9F_ATTR: {
+      const p9_attr *a = &m->attr;
+      p9_put(&o, a->valid, 8);
+      p9_put_qid(&o, a->qid);
+      p9_put(&o, a->mode, 4);
+      p9_put(&o, a->uid, 4);
+      p9_put(&o, a->gid, 4);
+      const uint64_t rest[] = {a->nlink,      a->rdev,       a->size,       a->blksize,    a->blocks,
+                               a->atime_sec,  a->atime_nsec, a->mtime_sec,  a->mtime_nsec, a->ctime_sec,
+                               a->ctime_nsec, a->btime_sec,  a->btime_nsec, a->gen,        a->data_version};
+      for (size_t i = 0; i < sizeof rest / sizeof rest[0]; i++) p9_put(&o, rest[i], 8);
+      break;
+    }
+    case P9F_SETATTR: {
+      const p9_setattr *a = &m->setattr;
+      p9_put(&o, a->valid, 4);
+      p9_put(&o, a->mode, 4);
+      p9_put(&o, a->uid, 4);
+      p9_put(&o, a->gid, 4);
+      p9_put(&o, a->size, 8);
+      p9_put(&o, a->atime_sec, 8);
+      p9_put(&o, a->atime_nsec, 8);
+      p9_put(&o, a->mtime_sec, 8);
+      p9_put(&o, a->mtime_nsec, 8);
+      break;
+    }
     default: o.failed = true; break;
     }
   }
@@ -281,6 +366,36 @@ static p9_qid p9_get_qid(p9_in *in) {
     case P9F_STAT: {
       size_t n = (size_t)p9_get(&in, 2);
       m->stat = (vx_bytes){p9_get_bytes(&in, n), n};
+      break;
+    }
+    case P9F_NAME2: m->name2 = p9_get_str(&in); break;
+    case P9F_GID: m->gid = (uint32_t)p9_get(&in, 4); break;
+    case P9F_MASK: m->mask = p9_get(&in, 8); break;
+    case P9F_DATASYNC: m->datasync = (uint32_t)p9_get(&in, 4); break;
+    case P9F_ATTR: {
+      p9_attr *a = &m->attr;
+      a->valid = p9_get(&in, 8);
+      a->qid = p9_get_qid(&in);
+      a->mode = (uint32_t)p9_get(&in, 4);
+      a->uid = (uint32_t)p9_get(&in, 4);
+      a->gid = (uint32_t)p9_get(&in, 4);
+      uint64_t *rest[] = {&a->nlink,      &a->rdev,       &a->size,       &a->blksize,    &a->blocks,
+                          &a->atime_sec,  &a->atime_nsec, &a->mtime_sec,  &a->mtime_nsec, &a->ctime_sec,
+                          &a->ctime_nsec, &a->btime_sec,  &a->btime_nsec, &a->gen,        &a->data_version};
+      for (size_t i = 0; i < sizeof rest / sizeof rest[0]; i++) *rest[i] = p9_get(&in, 8);
+      break;
+    }
+    case P9F_SETATTR: {
+      p9_setattr *a = &m->setattr;
+      a->valid = (uint32_t)p9_get(&in, 4);
+      a->mode = (uint32_t)p9_get(&in, 4);
+      a->uid = (uint32_t)p9_get(&in, 4);
+      a->gid = (uint32_t)p9_get(&in, 4);
+      a->size = p9_get(&in, 8);
+      a->atime_sec = p9_get(&in, 8);
+      a->atime_nsec = p9_get(&in, 8);
+      a->mtime_sec = p9_get(&in, 8);
+      a->mtime_nsec = p9_get(&in, 8);
       break;
     }
     default: in.failed = true; break;

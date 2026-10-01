@@ -127,7 +127,21 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_unlinkat: return fd_unlinkat((int)a1, (const char *)a2, (int)a3);
   case SYS_getcwd: return fd_getcwd((char *)a1, (size_t)a2);
   case SYS_chdir: return fd_chdir((const char *)a1);
-  case SYS_readlinkat: return -EINVAL; // nothing is a symbolic link
+  case SYS_readlinkat: return fd_readlinkat((int)a1, (const char *)a2, (char *)a3, (size_t)a4);
+  case SYS_renameat: return fd_renameat((int)a1, (const char *)a2, (int)a3, (const char *)a4, 0);
+  case SYS_renameat2: return fd_renameat((int)a1, (const char *)a2, (int)a3, (const char *)a4, (unsigned)a5);
+  case SYS_symlinkat: return fd_symlinkat((const char *)a1, (int)a2, (const char *)a3);
+  case SYS_linkat: return -EPERM; // no server has hard links
+  case SYS_fchmod: return fd_chmod((int)a1, AT_FDCWD, nullptr, (mode_t)a2);
+  case SYS_fchmodat: return fd_chmod(-1, (int)a1, (const char *)a2, (mode_t)a3);
+  case SYS_fchown: return fd_chown((int)a1, AT_FDCWD, nullptr, (uid_t)a2, (gid_t)a3, true);
+  case SYS_fchownat:
+    return fd_chown(-1, (int)a1, (const char *)a2, (uid_t)a3, (gid_t)a4, !(a5 & AT_SYMLINK_NOFOLLOW));
+  case SYS_truncate: return fd_truncate(-1, (const char *)a1, a2);
+  case SYS_ftruncate: return fd_truncate((int)a1, nullptr, a2);
+  case SYS_utimensat: return fd_utimens((int)a1, (const char *)a2, (const struct timespec *)a3, (int)a4);
+  case SYS_fsync:
+  case SYS_fdatasync: return fd_fsync((int)a1);
   case SYS_umask: return 022;
 #ifdef SYS_open // x86_64's calls that aarch64 has only as their *at forms
   case SYS_open: return fd_openat(AT_FDCWD, (const char *)a1, (int)a2, (mode_t)a3);
@@ -138,7 +152,13 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_unlink: return fd_unlinkat(AT_FDCWD, (const char *)a1, 0);
   case SYS_rmdir: return fd_unlinkat(AT_FDCWD, (const char *)a1, AT_REMOVEDIR);
   case SYS_dup2: return fd_dup2((int)a1, (int)a2);
-  case SYS_readlink: return -EINVAL;
+  case SYS_readlink: return fd_readlinkat(AT_FDCWD, (const char *)a1, (char *)a2, (size_t)a3);
+  case SYS_rename: return fd_renameat(AT_FDCWD, (const char *)a1, AT_FDCWD, (const char *)a2, 0);
+  case SYS_symlink: return fd_symlinkat((const char *)a1, AT_FDCWD, (const char *)a2);
+  case SYS_link: return -EPERM;
+  case SYS_chmod: return fd_chmod(-1, AT_FDCWD, (const char *)a1, (mode_t)a2);
+  case SYS_chown: return fd_chown(-1, AT_FDCWD, (const char *)a1, (uid_t)a2, (gid_t)a3, true);
+  case SYS_lchown: return fd_chown(-1, AT_FDCWD, (const char *)a1, (uid_t)a2, (gid_t)a3, false);
   case SYS_pause: return sig_suspend(sig_mask);
   case SYS_fork:
   case SYS_vfork: return proc_fork();

@@ -47,6 +47,13 @@ typedef struct p9_fs {
                       uint64_t *node);                  // or null
   vx_status (*remove)(void *ctx, uint64_t node);        // or null
   void (*clunk)(void *ctx, uint64_t node, bool opened); // optional: a fid let the node go
+  // The posix and xattr extensions (docs/proto/posix.md), each optional: a
+  // server without one refuses its message. Rgetattr needs nothing new: it
+  // is made from stat.
+  vx_status (*setattr)(void *ctx, uint64_t node, const p9_setattr *a);
+  vx_status (*rename)(void *ctx, uint64_t olddir, vx_str oldname, uint64_t newdir, vx_str newname);
+  vx_status (*symlink)(void *ctx, uint64_t dir, vx_str name, vx_str target, uint64_t *node);
+  vx_status (*readlink)(void *ctx, uint64_t node, vx_str *target); // its bytes last until the next call
 } p9_fs;
 
 enum : uint32_t { P9_MAX_FIDS = 256 }; // per connection, for now
@@ -166,6 +173,68 @@ static vx_status p9_read_dir(p9_server *s, p9_fid *f, uint64_t offset, uint8_t *
   f->dir_offset += used;
   *count = used;
   return VX_OK;
+}
+
+// A stat's mode as POSIX has it, for Rgetattr.
+static uint32_t p9_posix_mode(uint32_t mode) {
+  uint32_t type = P9_S_IFREG;
+  if (mode & P9_DMDIR) type = P9_S_IFDIR;
+  if (mode & P9_DMSYMLINK) type = P9_S_IFLNK;
+  return type | (mode & 07777);
+}
+
+static bool p9_new_name_ok(vx_str name) {
+  return p9_good_name(name) && !(name.len == 2 && name.ptr[0] == '.' && name.ptr[1] == '.');
+}
+
+// The posix and xattr extensions' messages (docs/proto/posix.md): each only
+// once its extension is negotiated.
+static vx_status p9_serve_posix(p9_server *s, const p9_msg *t, p9_msg *r) {
+  bool xattr = t->type == P9_Tgetattr || t->type == P9_Tsetattr;
+  if (!(s->extensions & (xattr ? P9_EXT_XATTR : P9_EXT_POSIX))) return VX_ERR_UNSUPPORTED;
+  p9_fid *f = p9_fid_find(s, t->fid);
+  if (!f) return VX_ERR_BAD_HANDLE;
+  switch (t->type) {
+  case P9_Tgetattr: {
+    p9_stat st;
+    vx_status e = s->fs.stat(s->fs.ctx, f->node, &st);
+    if (e != VX_OK) return e;
+    bool dir = st.mode & P9_DMDIR;
+    r->attr = (p9_attr){.valid = P9_GETATTR_BASIC,
+                        .qid = st.qid,
+                        .mode = p9_posix_mode(st.mode),
+                        .nlink = dir ? 2 : 1,
+                        .size = st.length,
+                        .blksize = 4096,
+                        .blocks = (st.length + 511) / 512,
+                        .atime_sec = st.atime,
+                        .mtime_sec = st.mtime,
+                        .ctime_sec = st.mtime,
+                        .data_version = st.qid.version};
+    return VX_OK;
+  }
+  case P9_Tsetattr: return s->fs.setattr ? s->fs.setattr(s->fs.ctx, f->node, &t->setattr) : VX_ERR_ACCESS;
+  case P9_Trenameat: {
+    p9_fid *to = p9_fid_find(s, t->newfid);
+    if (!to) return VX_ERR_BAD_HANDLE;
+    if (!(f->qid.type & P9_QTDIR) || !(to->qid.type & P9_QTDIR)) return VX_ERR_INVALID;
+    if (!p9_new_name_ok(t->name) || !p9_new_name_ok(t->name2)) return VX_ERR_INVALID;
+    if (!s->fs.rename) return VX_ERR_ACCESS;
+    return s->fs.rename(s->fs.ctx, f->node, t->name, to->node, t->name2);
+  }
+  case P9_Tsymlink: {
+    uint64_t node;
+    if (!(f->qid.type & P9_QTDIR) || !p9_new_name_ok(t->name)) return VX_ERR_INVALID;
+    if (!s->fs.symlink) return VX_ERR_ACCESS;
+    vx_status e = s->fs.symlink(s->fs.ctx, f->node, t->name, t->name2, &node);
+    if (e == VX_OK) e = p9_qid_of(s, node, &r->qid);
+    if (e == VX_OK && s->fs.clunk) s->fs.clunk(s->fs.ctx, node, false); // no fid holds it
+    return e;
+  }
+  case P9_Treadlink: return s->fs.readlink ? s->fs.readlink(s->fs.ctx, f->node, &r->name2) : VX_ERR_INVALID;
+  case P9_Tfsync: return VX_OK;       // every server's writes are done when Rwrite is sent
+  default: return VX_ERR_UNSUPPORTED; // Tlink: no server has hard links
+  }
 }
 
 static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve the request again later
@@ -341,7 +410,14 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
       }
       break;
     }
-    case P9_Twstat: e = VX_ERR_UNSUPPORTED; break; // renames and chmod come with fsd
+    case P9_Twstat: e = VX_ERR_UNSUPPORTED; break; // renames and chmod: Trenameat and Tsetattr
+    case P9_Tgetattr:
+    case P9_Tsetattr:
+    case P9_Trenameat:
+    case P9_Tsymlink:
+    case P9_Treadlink:
+    case P9_Tfsync:
+    case P9_Tlink: e = p9_serve_posix(s, &t, &r); break;
     default: return 0;
     }
   }

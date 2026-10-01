@@ -143,3 +143,51 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
   p9_msg t = {.type = P9_Tremove, .fid = fid};
   return p9c_call(c, &t);
 }
+
+// --- The posix and xattr extensions (docs/proto/posix.md) ---
+//
+// Each needs its extension negotiated (c->extensions); without it the call
+// is UNSUPPORTED and sends nothing.
+
+[[maybe_unused]] static vx_status p9c_getattr(p9_client *c, uint32_t fid, p9_attr *out) {
+  if (!(c->extensions & P9_EXT_XATTR)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tgetattr, .fid = fid, .mask = P9_GETATTR_BASIC};
+  vx_status e = p9c_call(c, &t);
+  if (e == VX_OK) *out = c->reply.attr;
+  return e;
+}
+
+[[maybe_unused]] static vx_status p9c_setattr(p9_client *c, uint32_t fid, const p9_setattr *a) {
+  if (!(c->extensions & P9_EXT_XATTR)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tsetattr, .fid = fid, .setattr = *a};
+  return p9c_call(c, &t);
+}
+
+// Renames olddir's entry oldname to newname in newdir, both on this connection.
+[[maybe_unused]] static vx_status p9c_renameat(p9_client *c, uint32_t olddir, vx_str oldname, uint32_t newdir,
+                                               vx_str newname) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Trenameat, .fid = olddir, .name = oldname, .newfid = newdir, .name2 = newname};
+  return p9c_call(c, &t);
+}
+
+[[maybe_unused]] static vx_status p9c_symlink(p9_client *c, uint32_t dir, vx_str name, vx_str target) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tsymlink, .fid = dir, .name = name, .name2 = target};
+  return p9c_call(c, &t);
+}
+
+// A symbolic link's target; it points into the reply buffer, until the next call.
+[[maybe_unused]] static vx_status p9c_readlink(p9_client *c, uint32_t fid, vx_str *target) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Treadlink, .fid = fid};
+  vx_status e = p9c_call(c, &t);
+  if (e == VX_OK) *target = c->reply.name2;
+  return e;
+}
+
+[[maybe_unused]] static vx_status p9c_fsync(p9_client *c, uint32_t fid) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_OK; // a server without it has no later to write at
+  p9_msg t = {.type = P9_Tfsync, .fid = fid};
+  return p9c_call(c, &t);
+}
