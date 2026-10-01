@@ -38,6 +38,8 @@ static void arch_console_write(vx_str s) {
 // Selectors. SYSRET (step 5) needs user data just below user code.
 constexpr uint16_t SEL_KERNEL_CODE = 0x08;
 constexpr uint16_t SEL_KERNEL_DATA = 0x10;
+constexpr uint16_t SEL_USER_DATA   = 0x18 | 3;
+constexpr uint16_t SEL_USER_CODE   = 0x20 | 3;
 constexpr uint16_t SEL_TSS         = 0x28;
 
 typedef struct [[gnu::packed]] tss {
@@ -94,10 +96,33 @@ static inline void wrmsr(uint32_t msr, uint64_t v) {
     __asm__ volatile("wrmsr" : : "c"(msr), "a"((uint32_t)v), "d"((uint32_t)(v >> 32)));
 }
 
-constexpr uint32_t MSR_EFER = 0xc0000080;
+constexpr uint32_t MSR_EFER           = 0xc0000080;
+constexpr uint32_t MSR_STAR           = 0xc0000081;
+constexpr uint32_t MSR_LSTAR          = 0xc0000082;
+constexpr uint32_t MSR_FMASK          = 0xc0000084;
+constexpr uint32_t MSR_GS_BASE        = 0xc0000101;
+constexpr uint32_t MSR_KERNEL_GS_BASE = 0xc0000102;
+
+// Per-CPU data at %gs while in the kernel; entry.S reads the first two fields.
+typedef struct cpu_local {
+    uint64_t kernel_rsp;   // the current thread's kernel stack top
+    uint64_t user_rsp;     // scratch for SYSCALL
+} cpu_local;
+
+static cpu_local cpu0;
+
+extern const uint8_t syscall_entry[];   // entry.S
 
 static void arch_cpu_init(void) {
-    wrmsr(MSR_EFER, rdmsr(MSR_EFER) | 1ull << 11);   // NXE: the NX bit is honoured
+    // NXE: the NX bit is honoured. SCE: SYSCALL and SYSRET are enabled.
+    wrmsr(MSR_EFER, rdmsr(MSR_EFER) | 1ull << 11 | 1ull << 0);
+    // SYSCALL loads CS 0x08 and SS 0x10. SYSRET (not used yet; returns go
+    // through IRETQ) would load SS 0x18|3 and CS 0x20|3.
+    wrmsr(MSR_STAR, (uint64_t)0x10 << 48 | (uint64_t)SEL_KERNEL_CODE << 32);
+    wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
+    wrmsr(MSR_FMASK, 0x47700);   // clear TF, IF, DF, NT and AC on entry
+    wrmsr(MSR_GS_BASE, (uint64_t)&cpu0);
+    wrmsr(MSR_KERNEL_GS_BASE, 0);
     uint64_t cr0;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0 | 1ull << 16));   // WP: read-only means read-only, for the kernel too
@@ -237,22 +262,18 @@ static void arch_wait(void) {
     __asm__ volatile("sti\n\thlt\n\tcli" : : : "memory");
 }
 
-void x86_trap(trap_frame *f) {
-    if (f->vector == VECTOR_TIMER) {
-        wrmsr(X2APIC_EOI, 0);
-        timer_interrupt();
-        return;
-    }
-    if (f->vector == VECTOR_SPURIOUS) return;
+constexpr uint64_t VECTOR_SYSCALL = 0x100;   // entry.S
 
-    panic_start();
+// Describes an exception: "page fault at 0x... (read, not present, user)", say.
+static void kput_exception(const trap_frame *f) {
     if (f->vector == 14) {
         kput(VX_STR("page fault at "));
         kput_hex(read_cr2());
         kput(f->error & 16 ? VX_STR(" (execute, ") : f->error & 2 ? VX_STR(" (write, ") : VX_STR(" (read, "));
         kput(f->error & 1 ? VX_STR("protection") : VX_STR("not present"));
         kput(f->error & 4 ? VX_STR(", user)") : VX_STR(", kernel)"));
-    } else if (f->vector == 6 && ((const uint8_t *)f->rip)[0] == 0x0f && ((const uint8_t *)f->rip)[1] == 0xb9) {
+    } else if (f->vector == 6 && !(f->cs & 3) && ((const uint8_t *)f->rip)[0] == 0x0f &&
+               ((const uint8_t *)f->rip)[1] == 0xb9) {
         kput(VX_STR("undefined behaviour (UBSan trap)"));   // -fsanitize-trap emits ud1 (0f b9)
     } else if (f->vector < 32 && EXCEPTION_NAMES[f->vector]) {
         kput_cstr(EXCEPTION_NAMES[f->vector]);
@@ -262,10 +283,35 @@ void x86_trap(trap_frame *f) {
         kput(VX_STR("unexpected interrupt "));
         kput_u64(f->vector);
     }
-    kput(VX_STR(" at rip "));
-    kput_hex(f->rip);
-    panic_end(f->rip, f->rbp);
 }
+
+void x86_trap(trap_frame *f) {
+    bool from_user = f->cs & 3;
+    if (f->vector == VECTOR_SYSCALL) {
+        uint64_t args[6] = { f->rdi, f->rsi, f->rdx, f->r10, f->r8, f->r9 };
+        f->rax = (uint64_t)syscall_dispatch(f->rax, args);
+    } else if (f->vector == VECTOR_TIMER) {
+        wrmsr(X2APIC_EOI, 0);
+        timer_interrupt();
+    } else if (f->vector == VECTOR_SPURIOUS) {
+        return;
+    } else if (from_user) {
+        task_fault_start();
+        kput_exception(f);
+        kput(VX_STR(" at rip "));
+        kput_hex(f->rip);
+        kput(VX_STR("\n"));
+        thread_kill_current();
+    } else {
+        panic_start();
+        kput_exception(f);
+        kput(VX_STR(" at rip "));
+        kput_hex(f->rip);
+        panic_end(f->rip, f->rbp);
+    }
+    if (from_user && sched.resched) schedule();
+}
+
 
 [[noreturn]] static void arch_halt(void) {
     for (;;) __asm__ volatile("cli; hlt");
@@ -299,8 +345,32 @@ static uint64_t arch_pte_leaf(uint64_t pa, uint32_t flags, int level) {
     return e;
 }
 
+// Every task's top table shares the kernel's upper half by copying its 256
+// upper entries, so they must exist before the first task: fill them now with
+// empty tables (1 MiB in all), and later kernel mappings land in tables every
+// task already shares. COM1 is an I/O port, so there is nothing else to map.
 static void arch_kernel_mappings(uint64_t root) {
-    (void)root;   // COM1 is an I/O port; nothing to map yet
+    uint64_t *top = table_at(root);
+    for (int i = 256; i < 512; i++) {
+        if (arch_pte_valid(top[i])) continue;
+        uint64_t page = phys_alloc_zeroed(0);
+        if (!page) panic(VX_STR("no memory for page tables"));
+        top[i] = arch_pte_table(page);
+    }
+}
+
+static uint64_t arch_new_user_root(void) {
+    uint64_t root = phys_alloc_zeroed(0);
+    if (root) memcpy((uint64_t *)table_at(root) + 256, (uint64_t *)table_at(kernel_root) + 256, 256 * 8);
+    return root;
+}
+
+static void arch_switch_user_root(uint64_t root) {
+    __asm__ volatile("mov %0, %%cr3" : : "r"(root) : "memory");
+}
+
+static bool arch_pte_user_ok(uint64_t e, bool write) {
+    return (e & X86_PRESENT) && (e & X86_USER) && (!write || (e & X86_WRITE));
 }
 
 static void arch_switch_tables(uint64_t root) {
@@ -311,6 +381,35 @@ static void arch_switch_tables(uint64_t root) {
         "mov %1, %%cr4\n\t"   // clearing and restoring PGE drops global entries Limine may have left
         "mov %2, %%cr4"
         : : "r"(root), "r"(cr4 & ~(1ull << 7)), "r"(cr4) : "memory");
+}
+
+// --- Threads ---
+
+static void arch_set_kernel_stack(uint64_t top) {
+    cpu_tss.rsp[0]  = top;   // interrupts and exceptions from user mode
+    cpu0.kernel_rsp = top;   // SYSCALL
+}
+
+extern const uint8_t thread_trampoline[];   // entry.S
+[[noreturn]] void arch_enter_frame(trap_frame *f);
+
+// A new thread's stack, as arch_context_switch will pop it: six callee-saved
+// registers (r12 carrying the thread), then a return into thread_trampoline.
+// It starts below the space its first trap frame takes at the top of the
+// stack, so arch_enter_user can build that frame without overwriting itself.
+static uint64_t arch_thread_initial_sp(thread *t) {
+    uint64_t *sp = (uint64_t *)((trap_frame *)thread_kstack_top(t) - 1) - 7;
+    sp[3] = (uint64_t)t;                   // r12
+    sp[6] = (uint64_t)thread_trampoline;   // the return address
+    return (uint64_t)sp;
+}
+
+[[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t kstack_top) {
+    trap_frame *f = (trap_frame *)kstack_top - 1;
+    *f = (trap_frame){
+        .rdi = arg, .rip = entry, .cs = SEL_USER_CODE, .rflags = 0x202, .rsp = sp, .ss = SEL_USER_DATA,
+    };
+    arch_enter_frame(f);
 }
 
 // Limine enters here in long mode, with the higher half mapped, on a stack of

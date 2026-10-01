@@ -206,13 +206,14 @@ sudo dnf install xorriso            # optional ISO
 **Exit test** (`./build test --arch x86_64` and `--arch aarch64`, both in CI):
 
 ```
-[    0.412] vx: kernel 0.1.0 x86_64, 512 MiB, 4 cpus
-[    0.431] svcd: hello from user space (task 1)
-[    0.433] svcd: port deadline wait ok: requested 10.000 ms, woke after 10.041 ms
-[    0.434] svcd: self-post ok
+[    0.008] vx: kernel 0.1.0 x86_64, 461 MiB free, 4 cpus
+[    0.009] svcd: hello from user space (task 1)
+[    0.020] svcd: port deadline wait ok: requested 10.000 ms, woke after 10.150 ms
+[    0.020] svcd: self-post ok
+[    0.021] svcd: vmo map ok
 ```
 
-The test boots headless, matches these lines within 10 s, and fails on any kernel panic.
+The test (`tests/qemu/boot.ndb`) boots headless, matches these lines within 10 s, and fails on a kernel panic, a killed task or a failed check in `svcd`. Other scenarios in `tests/qemu/` cover the panic path and its backtrace, the kernel's page protections, the page allocator and the timer, each by a self-test the scenario names on the kernel command line.
 
 **Size:** about 5–7 kLOC.
 

@@ -18,6 +18,32 @@ typedef struct vx_str {         // length-carrying slice; never NUL-terminated
 
 #define VX_STR(lit) ((vx_str){ .ptr = (lit), .len = sizeof(lit) - 1 })
 
+constexpr vx_instant VX_INFINITE = INT64_MAX;   // a deadline that never comes
+
+// A port packet (docs/01 §4.4): 32 bytes.
+typedef struct vx_packet {
+    uint64_t   key;        // chosen by whoever bound or posted it
+    uint64_t   value;      // counter value, IRQ count, exit status; free for user posts
+    vx_instant timestamp;
+    uint32_t   source;     // the handle it came from, or 0 for port_post
+    uint32_t   trigger;    // enum vx_trigger
+} vx_packet;
+static_assert(sizeof(vx_packet) == 32);
+
+enum vx_trigger : uint32_t {
+    VX_TRIGGER_USER = 1,   // port_post
+};
+
+typedef struct vx_task_summary {   // what task_info returns
+    uint64_t id;
+    char     name[24];          // NUL-padded
+} vx_task_summary;
+
+enum vx_map_flags : uint32_t {   // as_map; a mapping is always readable
+    VX_MAP_WRITE = 1,
+    VX_MAP_EXEC  = 2,
+};
+
 enum vx_syscall : uint32_t {
 #define VX_SYSCALL(name) VX_SYS_##name,
 #include "syscalls.def"

@@ -68,11 +68,19 @@ static const char *const KERNEL_FLAGS[] = {
     "-Iabi", "-Ikernel", "-Ithird_party/limine/limine-protocol/include", nullptr,
 };
 
-static const char *const KERNEL_DEBUG_FLAGS[] = {
+// Debug builds of the OS tree, kernel and user space, trap on undefined behaviour.
+static const char *const DEBUG_FLAGS[] = {
     "-O1", "-fsanitize=undefined", "-fno-sanitize=function", "-fsanitize-trap=undefined", nullptr,
 };
 
-static const char *const KERNEL_RELEASE_FLAGS[] = { "-O2", nullptr };
+static const char *const RELEASE_FLAGS[] = { "-O2", nullptr };
+
+// First-party user programs in M1: freestanding, static, non-PIE, against
+// lib/vx-rt. No FP/SIMD until the kernel saves that state (M2).
+static const char *const USER_FLAGS[] = {
+    "-ffreestanding", "-fno-pic", "-mgeneral-regs-only",
+    "-fstack-protector-strong", "-mstack-protector-guard=global", nullptr,
+};
 
 static const char *const X86_64_FLAGS[] = {
     "--target=x86_64-unknown-none-elf", "-mno-red-zone", "-mcmodel=kernel",
@@ -83,14 +91,23 @@ static const char *const AARCH64_FLAGS[] = {
     "--target=aarch64-unknown-none-elf", "-mbranch-protection=standard", nullptr,
 };
 
+static const char *const X86_64_USER_FLAGS[] = {
+    "--target=x86_64-unknown-none-elf", "-fcf-protection=full", nullptr,
+};
+
+static const char *const AARCH64_USER_FLAGS[] = {
+    "--target=aarch64-unknown-none-elf", "-mbranch-protection=standard", nullptr,
+};
+
 typedef struct arch {
     const char        *name;
-    const char *const *flags;
+    const char *const *flags;        // the kernel
+    const char *const *user_flags;   // user programs
 } arch;
 
 static const arch ARCHES[] = {
-    { "x86_64",  X86_64_FLAGS  },
-    { "aarch64", AARCH64_FLAGS },
+    { "x86_64",  X86_64_FLAGS,  X86_64_USER_FLAGS  },
+    { "aarch64", AARCH64_FLAGS, AARCH64_USER_FLAGS },
 };
 constexpr int ARCH_COUNT = sizeof ARCHES / sizeof ARCHES[0];
 
@@ -681,7 +698,7 @@ static bool build_kernel(const arch *a, bool release) {
         cmd_addv(c, a->flags);
         cmd_addv(c, HOUSE_FLAGS);
         cmd_addv(c, KERNEL_FLAGS);
-        cmd_addv(c, release ? KERNEL_RELEASE_FLAGS : KERNEL_DEBUG_FLAGS);
+        cmd_addv(c, release ? RELEASE_FLAGS : DEBUG_FLAGS);
         cmd_add(c, fmt("-ffile-prefix-map=%s=/src", root));   // docs/05 §4
         cmd_add(c, "-c");
         cmd_add(c, sources[i]);
@@ -728,8 +745,44 @@ static bool build_kernel(const arch *a, bool release) {
 // ---------------------------------------------------------------------------
 // all, image, qemu, test
 
+// The user programs in the boot image, each one translation unit (04 §1.1).
+static const char *const USER_PROGRAMS[][2] = {
+    { "svcd", "servers/svcd/svcd.c" },
+};
+constexpr int USER_PROGRAM_COUNT = sizeof USER_PROGRAMS / sizeof USER_PROGRAMS[0];
+
+static bool build_user_program(const arch *a, bool release, const char *name, const char *source) {
+    const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
+    const char *obj = fmt("%s/%s.o", dir, name);
+    const char *elf = fmt("%s/%s", dir, name);
+    fprintf(stderr, "  CC    %-7s %s\n", name, a->name);
+    cmd cc = {};
+    cmd_add(&cc, CLANG);
+    cmd_addv(&cc, a->user_flags);
+    cmd_addv(&cc, HOUSE_FLAGS);
+    cmd_addv(&cc, USER_FLAGS);
+    cmd_addv(&cc, release ? RELEASE_FLAGS : DEBUG_FLAGS);
+    cmd_add(&cc, fmt("-ffile-prefix-map=%s=/src", root));
+    cmd_add(&cc, "-c");
+    cmd_add(&cc, source);
+    cmd_add(&cc, "-o");
+    cmd_add(&cc, obj);
+    if (!run(&cc)) return false;
+
+    cmd ld = {};
+    cmd_add(&ld, LLD);
+    cmd_addv(&ld, (const char *const[]){
+        "-static", "-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000", "-z", "noexecstack",
+        "-e", "_start", "-o", nullptr });
+    cmd_add(&ld, elf);
+    cmd_add(&ld, obj);
+    return run(&ld);
+}
+
 static bool build_arch(const arch *a, bool release) {
     if (!build_kernel(a, release)) return false;
+    for (int i = 0; i < USER_PROGRAM_COUNT; i++)
+        if (!build_user_program(a, release, USER_PROGRAMS[i][0], USER_PROGRAMS[i][1])) return false;
     const vx_ndb_record *t = port_target_for(&limine, a);
     return !t || build_port_target(&limine, t);
 }
@@ -913,6 +966,8 @@ static bool make_image(const arch *a, bool release, const char *image, const cha
     seed = hash_bytes(seed, read_file(loader));
     seed = hash_bytes(seed, read_file(kernel));
     seed = hash_bytes(seed, read_file(config));
+    for (int i = 0; i < USER_PROGRAM_COUNT; i++)
+        seed = hash_bytes(seed, read_file(fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i][0])));
 
     int fd = open(esp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0 || ftruncate(fd, (off_t)ESP_BYTES) != 0) die("cannot create %s", esp);
@@ -924,6 +979,11 @@ static bool make_image(const arch *a, bool release, const char *image, const cha
     if (!mtools(MMD, esp, (const char *const[]){ "::/EFI", "::/EFI/BOOT", "::/boot", "::/boot/vx", "::/boot/limine", nullptr })) return false;
     if (!mtools(MCOPY, esp, (const char *const[]){ loader, fmt("::/EFI/BOOT/%s", loader_name), nullptr })) return false;
     if (!mtools(MCOPY, esp, (const char *const[]){ kernel, "::/boot/vx/kernel.elf", nullptr })) return false;
+    for (int i = 0; i < USER_PROGRAM_COUNT; i++) {   // Limine modules, until bootfs (M2)
+        const char *program = fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i][0]);
+        if (!mtools(MCOPY, esp, (const char *const[]){ program, fmt("::/boot/vx/%s", USER_PROGRAMS[i][0]), nullptr }))
+            return false;
+    }
     if (!mtools(MCOPY, esp, (const char *const[]){ config, "::/boot/limine/limine.conf", nullptr })) return false;
     write_gpt_disk(image, esp, seed);
     unlink(esp);

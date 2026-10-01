@@ -71,6 +71,23 @@ constexpr uint64_t GICD_SIZE       = 0x1'0000;
 constexpr uint64_t GICR_PHYS       = 0x080a'0000;
 constexpr uint64_t GICR_FRAME_SIZE = 0x2'0000;
 
+// The user half has its own tables in TTBR0; the kernel's stay in TTBR1.
+static uint64_t arch_new_user_root(void) { return phys_alloc_zeroed(0); }
+
+// Without ASIDs yet, switching address spaces drops every cached translation.
+static void arch_switch_user_root(uint64_t root) {
+    __asm__ volatile("msr ttbr0_el1, %0\n\t"
+                     "isb\n\t"
+                     "tlbi vmalle1\n\t"
+                     "dsb ish\n\t"
+                     "isb"
+                     : : "r"(root) : "memory");
+}
+
+static bool arch_pte_user_ok(uint64_t e, bool write) {
+    return (e & PTE_VALID) && (e & PTE_USER) && (!write || !(e & PTE_READ_ONLY));
+}
+
 static void arch_kernel_mappings(uint64_t root) {
     uint64_t gicr_size = GICR_FRAME_SIZE * (boot.cpu_count ? boot.cpu_count : 1);
     if (!map_range(root, boot.hhdm + PL011_PHYS, PL011_PHYS, 4096, MAP_WRITE | MAP_DEVICE) ||
@@ -213,20 +230,44 @@ static void arch_cpu_init(void) {
 typedef struct trap_frame {   // the layout vectors.S builds
     uint64_t x[31];           // x29 is the frame pointer, x30 the link register
     uint64_t elr, spsr, esr, far;
+    uint64_t sp_el0;          // the user stack pointer
 } trap_frame;
-static_assert(sizeof(trap_frame) == 280);   // vectors.S reserves 288, keeping sp 16-byte aligned
+static_assert(sizeof(trap_frame) == 288);   // as vectors.S reserves; a multiple of 16
 
 static const char *const VECTOR_KINDS[4] = { "synchronous exception", "IRQ", "FIQ", "SError" };
 
-void aarch64_trap(trap_frame *f, uint64_t index) {
-    if ((index & 3) == 1) {   // IRQ
-        aarch64_irq();
-        return;
-    }
-    panic_start();
+// --- Threads ---
+
+static void arch_set_kernel_stack(uint64_t top) {
+    (void)top;   // SP_EL1 is already the current thread's stack: exceptions land on it
+}
+
+extern const uint8_t thread_trampoline[];   // vectors.S
+[[noreturn]] void arch_enter_frame(trap_frame *f);
+
+// A new thread's stack, as arch_context_switch will pop it: x19 to x30, with
+// x19 carrying the thread and x30 returning into thread_trampoline. It starts
+// below the space its first trap frame takes at the top of the stack, so
+// arch_enter_user can build that frame without overwriting itself.
+static uint64_t arch_thread_initial_sp(thread *t) {
+    uint64_t *sp = (uint64_t *)((trap_frame *)thread_kstack_top(t) - 1) - 12;
+    sp[0]  = (uint64_t)t;                   // x19
+    sp[11] = (uint64_t)thread_trampoline;   // x30
+    return (uint64_t)sp;
+}
+
+// Enters EL0 at entry with interrupts unmasked (SPSR = 0: EL0t, DAIF clear).
+[[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t kstack_top) {
+    trap_frame *f = (trap_frame *)kstack_top - 1;
+    *f = (trap_frame){ .x = { arg }, .elr = entry, .spsr = 0, .sp_el0 = sp };
+    arch_enter_frame(f);
+}
+
+// Describes an exception: "page fault at 0x... (read, not present, user)", say.
+static void kput_exception(const trap_frame *f, uint64_t index) {
     uint32_t ec  = (uint32_t)(f->esr >> 26) & 0x3f;
     uint32_t iss = (uint32_t)f->esr & 0x1ffffff;
-    if ((index & 3) == 0 && (ec == 0x24 || ec == 0x25)) {
+    if ((index & 3) == 0 && (ec == 0x24 || ec == 0x25)) {   // data abort
         kput(VX_STR("page fault at "));
         kput_hex(f->far);
         kput(iss & (1u << 6) ? VX_STR(" (write, ") : VX_STR(" (read, "));
@@ -243,9 +284,32 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
         kput(VX_STR(", ESR "));
         kput_hex(f->esr);
     }
-    kput(VX_STR(" at pc "));
-    kput_hex(f->elr);
-    panic_end(f->elr, f->x[29]);
+}
+
+constexpr uint32_t EC_SVC64 = 0x15;
+
+void aarch64_trap(trap_frame *f, uint64_t index) {
+    bool from_user = index >= 8;
+    uint32_t ec    = (uint32_t)(f->esr >> 26) & 0x3f;
+    if ((index & 3) == 1) {   // IRQ
+        aarch64_irq();
+    } else if (from_user && (index & 3) == 0 && ec == EC_SVC64) {
+        f->x[0] = (uint64_t)syscall_dispatch(f->x[8], f->x);
+    } else if (from_user) {
+        task_fault_start();
+        kput_exception(f, index);
+        kput(VX_STR(" at pc "));
+        kput_hex(f->elr);
+        kput(VX_STR("\n"));
+        thread_kill_current();
+    } else {
+        panic_start();
+        kput_exception(f, index);
+        kput(VX_STR(" at pc "));
+        kput_hex(f->elr);
+        panic_end(f->elr, f->x[29]);
+    }
+    if (from_user && sched.resched) schedule();
 }
 
 [[noreturn]] static void arch_halt(void) {

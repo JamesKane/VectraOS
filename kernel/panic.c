@@ -1,11 +1,26 @@
 // panic.c: console output, the kernel's symbol map, backtraces and panic.
 
-static void kput(vx_str s) { arch_console_write(s); }
+// Everything the console prints goes through kput, which starts every line
+// with a timestamp (time.c), whether the text comes from the kernel or from
+// debug_write.
+static bool console_at_line_start = true;
+
+static void kput(vx_str s) {
+    size_t i = 0;
+    while (i < s.len) {
+        if (console_at_line_start) kput_stamp();
+        size_t start = i;
+        while (i < s.len && s.ptr[i] != '\n') i++;
+        console_at_line_start = i < s.len;
+        if (i < s.len) i++;   // include the newline
+        arch_console_write((vx_str){ s.ptr + start, i - start });
+    }
+}
 
 static void kput_cstr(const char *s) {
     size_t n = 0;
     while (s[n]) n++;
-    arch_console_write((vx_str){ s, n });
+    kput((vx_str){ s, n });
 }
 
 static void kput_u64(uint64_t v) {
@@ -24,7 +39,7 @@ static void kput_hex(uint64_t v) {
     int shift = 60;
     while (shift > 0 && ((v >> shift) & 0xf) == 0) shift -= 4;
     for (; shift >= 0; shift -= 4) buf[n++] = "0123456789abcdef"[(v >> shift) & 0xf];
-    arch_console_write((vx_str){ buf, n });
+    kput((vx_str){ buf, n });
 }
 
 // The symbol map, which build links into .rodata (05 §4): for each function, in
@@ -92,7 +107,7 @@ static bool panicking;
 static void panic_start(void) {
     if (panicking) arch_halt();   // a fault inside a panic: stop rather than recurse
     panicking = true;
-    kput_stamp();
+    if (!console_at_line_start) kput(VX_STR("\n"));
     kput(VX_STR("vx: panic: "));
 }
 

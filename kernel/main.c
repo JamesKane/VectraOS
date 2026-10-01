@@ -27,7 +27,6 @@ static void selftest_phys(void) {
     uint64_t big = phys_alloc(PHYS_MAX_ORDER);
     if (!big) panic(VX_STR("selftest phys: no largest block after freeing"));
     phys_free(big, PHYS_MAX_ORDER);
-    kput_stamp();
     kput(VX_STR("vx: selftest phys ok\n"));
 }
 
@@ -51,7 +50,6 @@ static void selftest_timer(void) {
     vx_instant woke = clock_now();
     if (woke < deadline) panic(VX_STR("selftest timer: woke before the deadline"));
     if (woke - deadline > 20'000'000) panic(VX_STR("selftest timer: woke more than 20 ms late"));
-    kput_stamp();
     kput(VX_STR("vx: selftest timer ok: requested 10.000 ms, woke after "));
     kput_millis((uint64_t)(woke - start));
     kput(VX_STR(" ms\n"));
@@ -91,7 +89,6 @@ static void selftests(void) {
     paging_init();
     arch_timer_init();
 
-    kput_stamp();
     kput(VX_STR("vx: kernel 0.1.0 " VX_ARCH_NAME ", "));
     kput_u64(phys.free_pages >> 8);
     kput(VX_STR(" MiB free, "));
@@ -99,5 +96,6 @@ static void selftests(void) {
     kput(boot.cpu_count == 1 ? VX_STR(" cpu\n") : VX_STR(" cpus\n"));
 
     selftests();
-    arch_halt();
+    start_root_task();
+    sched_run();
 }

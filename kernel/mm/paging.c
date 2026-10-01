@@ -51,6 +51,18 @@ static bool map_range(uint64_t root, uint64_t va, uint64_t pa, uint64_t size, ui
     return true;
 }
 
+// True if va is mapped in root for user access, and writable if asked.
+static bool user_page_ok(uint64_t root, uint64_t va, bool write) {
+    uint64_t *t = table_at(root);
+    for (int level = 0; level <= 3; level++) {
+        uint64_t e = t[(va >> (39 - 9 * level)) & 511];
+        if (!arch_pte_valid(e)) return false;
+        if (!arch_pte_is_table(e, level)) return arch_pte_user_ok(e, write);
+        t = table_at(arch_pte_addr(e));
+    }
+    return false;
+}
+
 // Section bounds from the linker script.
 extern const uint8_t vx_text_start[], vx_text_end[], vx_rodata_start[], vx_rodata_end[];
 extern const uint8_t vx_data_start[], vx_data_end[], vx_boot_stack_bottom[], vx_boot_stack_top[];

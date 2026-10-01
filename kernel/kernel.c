@@ -2,6 +2,7 @@
 // included here, so the kernel is one translation unit.
 
 #include "vx/abi.h"
+#include <stdckdint.h>
 
 // -fstack-protector-strong with a global guard (docs/01 §11). boot_read
 // replaces this value with entropy from the bootloader.
@@ -31,17 +32,36 @@ static void     arch_wait(void);                 // sleep until an interrupt has
 
 static void kput_stamp(void);   // time.c
 
+// User address spaces and threads (obj/task.c, sched/sched.c).
+typedef struct thread thread;
+static uint64_t arch_new_user_root(void);            // a top table sharing the kernel half
+static void     arch_switch_user_root(uint64_t root);
+static bool     arch_pte_user_ok(uint64_t e, bool write);
+static void     arch_set_kernel_stack(uint64_t top); // where traps from user mode land
+static uint64_t arch_thread_initial_sp(thread *t);
+[[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t kstack_top);
+void arch_context_switch(uint64_t *save_sp, uint64_t load_sp);   // assembly
+[[noreturn]] void thread_entry(thread *t);
+
 // What the rest of the kernel provides to the architecture's entry point, which
 // calls it from assembly on the boot stack the linker script reserves
 // (vx_boot_stack_top), with an unmapped guard page below it.
 [[noreturn]] void kernel_main(void);
 
-#include "lib.c"
+#include "../lib/vx-mem/mem.c"
 #include "boot.c"
 #include "panic.c"
 #include "mm/phys.c"
 #include "mm/paging.c"
 #include "time.c"
+#include "obj/object.c"
+#include "obj/vmo.c"
+#include "obj/task.c"
+#include "sched/sched.c"
+#include "obj/port.c"
+#include "syscall/syscall.c"
+#include "elf.c"
+#include "root.c"
 
 #if defined(__x86_64__)
 #  define VX_ARCH_NAME "x86_64"

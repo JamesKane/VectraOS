@@ -1,5 +1,8 @@
-// lib.c: the four functions the compiler may call even in freestanding code.
-// no_builtin keeps clang from turning their loops back into calls to themselves.
+// vx-mem: the four functions the compiler may call even in freestanding code.
+// The kernel and vx-rt both include this file. no_builtin keeps clang from
+// turning the loops back into calls to themselves.
+
+#include "../../abi/vx/abi.h"
 
 [[clang::no_builtin]] void *memset(void *dst, int c, size_t n) {
     unsigned char *d = dst;

@@ -2,9 +2,12 @@
 //
 // Each of the 16 entries reserves a trap_frame (arch.c) on the stack, saves x0
 // and x1, puts its own index in x1 and branches to trap_common. That saves the
-// rest of the registers and the exception syndrome, and calls
-// aarch64_trap(frame, index). With VHE at EL2, the _el1 names reach the EL2
-// registers, so the same code serves both.
+// rest of the registers, the exception syndrome and the user stack pointer
+// (SP_EL0), and calls aarch64_trap(frame, index); trap_restore undoes it.
+// Exceptions from user mode arrive on SP_EL1, which is the top of the current
+// thread's kernel stack. With VHE at EL2, the _el1 names reach the EL2
+// registers, so the same code serves both. The file also holds the context
+// switch, the new-thread trampoline and arch_enter_frame.
 
 #define FRAME_SIZE 288
 
@@ -59,8 +62,14 @@ trap_common:
     mrs x2, esr_el1
     mrs x3, far_el1
     stp x2, x3, [sp, #264]
+    mrs x2, sp_el0
+    str x2, [sp, #280]
     mov x0, sp
     bl aarch64_trap
+    .globl trap_restore
+trap_restore:
+    ldr x2, [sp, #280]
+    msr sp_el0, x2
     ldp x2, x3, [sp, #248]
     msr elr_el1, x2
     msr spsr_el1, x3
@@ -82,3 +91,44 @@ trap_common:
     ldp x0, x1, [sp, #0]
     add sp, sp, #FRAME_SIZE
     eret
+
+// void arch_context_switch(uint64_t *save_sp, uint64_t load_sp)
+// Saves the callee-saved registers on this stack, switches stacks, and
+// restores the other thread's. A new thread's stack is set up
+// (arch_thread_initial_sp) so this "returns" into thread_trampoline.
+    .globl arch_context_switch
+arch_context_switch:
+    hint #34               // bti c
+    stp x19, x20, [sp, #-96]!
+    stp x21, x22, [sp, #16]
+    stp x23, x24, [sp, #32]
+    stp x25, x26, [sp, #48]
+    stp x27, x28, [sp, #64]
+    stp x29, x30, [sp, #80]
+    mov x9, sp
+    str x9, [x0]
+    mov sp, x1
+    ldp x21, x22, [sp, #16]
+    ldp x23, x24, [sp, #32]
+    ldp x25, x26, [sp, #48]
+    ldp x27, x28, [sp, #64]
+    ldp x29, x30, [sp, #80]
+    ldp x19, x20, [sp], #96
+    ret
+
+// A new thread's first stop: its thread pointer is in x19.
+    .globl thread_trampoline
+thread_trampoline:
+    hint #36               // bti j: reached by ret, but cheap to mark
+    mov x0, x19
+    mov x29, xzr
+    bl thread_entry
+    brk #0
+
+// [[noreturn]] void arch_enter_frame(trap_frame *f): return through a frame
+// built in memory, for a thread's first entry into user mode.
+    .globl arch_enter_frame
+arch_enter_frame:
+    hint #34
+    mov sp, x0
+    b trap_restore

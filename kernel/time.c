@@ -8,6 +8,8 @@
 // before the deadline only re-arms. The kernel is tickless (01 §8): nothing
 // fires unless a deadline is armed.
 
+static void sched_timer(void);   // sched/sched.c
+
 static struct {
     uint64_t hz;          // counter frequency, published in /sys/clock/info (02 §5.1)
     uint64_t ns_mult;     // ns = counter * ns_mult >> 32
@@ -55,6 +57,7 @@ static void timer_interrupt(void) {
     }
     clock.armed = 0;
     clock.fired++;
+    sched_timer();
 }
 
 // The log prefix: "[    s.mmm] ", seconds since kernel entry.
