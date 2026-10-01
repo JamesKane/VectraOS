@@ -93,6 +93,7 @@ struct thread {
   struct thread *task_next; // in its task's list, under the task's lock
   uint64_t kernel_sp;       // saved by arch_context_switch
   uint64_t kstack;          // the kernel stack's lowest address (mm/kstack.c)
+  uint64_t tls;             // its user thread pointer while it is not running (arch_tls_switch)
   uint64_t user_entry, user_sp, user_arg, user_arg2;
   bool started;          // thread_start has taken it (under its task's lock)
   uint32_t intent;       // enum vx_intent

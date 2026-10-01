@@ -653,6 +653,20 @@ static vx_status arch_frame_set_regs(trap_frame *f, const vx_regs *r) {
 
 // To pc(arg), with arg (16-aligned) as the stack pointer, and no frame or
 // return address to go back to.
+// TPIDR_EL0 is the user's to write directly; the kernel only keeps it with
+// its thread. Idle threads leave the last one in place, unused.
+static uint64_t arch_tls_read(void) {
+  uint64_t v;
+  __asm__ volatile("mrs %0, tpidr_el0" : "=r"(v));
+  return v;
+}
+static void arch_tls_write(uint64_t value) { __asm__ volatile("msr tpidr_el0, %0" : : "r"(value)); }
+
+static void arch_tls_switch(thread *prev, thread *next) {
+  if (prev->task) prev->tls = arch_tls_read();
+  if (next->task) arch_tls_write(next->tls);
+}
+
 static constexpr uint64_t SPSR_SS = 1ull << 21; // software step
 
 static void arch_frame_step(trap_frame *f, bool on) { f->spsr = on ? f->spsr | SPSR_SS : f->spsr & ~SPSR_SS; }

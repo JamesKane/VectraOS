@@ -252,13 +252,41 @@ static int64_t sys_exception_resume(vx_handle th, uint64_t id, uint64_t action, 
   return st;
 }
 
-static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size) {
-  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_SET_REGS) return VX_ERR_INVALID;
-  uint64_t need = op == VX_STATE_GET_EXCEPTION ? sizeof(vx_exception) : sizeof(vx_regs);
-  if (size < need) return VX_ERR_TOO_SMALL;
-  vx_regs regs;
-  vx_status st = op == VX_STATE_SET_REGS ? copy_from_user(&regs, buf, sizeof regs) : VX_OK;
+// A thread's own thread pointer, with a handle to its own task (any rights).
+static int64_t thread_tls_self(vx_handle th, uint64_t op, uint64_t buf) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, 0, &st);
+  if (!t) return st;
+  bool own = t == current_task();
+  object_release(&t->obj);
+  if (!own) return VX_ERR_INVALID;
+  uint64_t value = 0;
+  if (op == VX_STATE_GET_TLS) {
+    value = arch_tls_read();
+    return copy_to_user(buf, &value, sizeof value);
+  }
+  st = copy_from_user(&value, buf, sizeof value);
   if (st != VX_OK) return st;
+  if (value >= USER_TOP) return VX_ERR_RANGE; // x86_64's FS base must be canonical
+  arch_tls_write(value);
+  return VX_OK;
+}
+
+static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size) {
+  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_SET_TLS) return VX_ERR_INVALID;
+  bool tls_op = op == VX_STATE_GET_TLS || op == VX_STATE_SET_TLS;
+  uint64_t need = sizeof(vx_regs);
+  if (op == VX_STATE_GET_EXCEPTION) need = sizeof(vx_exception);
+  if (tls_op) need = sizeof(uint64_t);
+  if (size < need) return VX_ERR_TOO_SMALL;
+  if (tls_op && id == 0) return thread_tls_self(th, op, buf);
+  vx_regs regs;
+  uint64_t tls = 0;
+  vx_status st = VX_OK;
+  if (op == VX_STATE_SET_REGS) st = copy_from_user(&regs, buf, sizeof regs);
+  if (op == VX_STATE_SET_TLS) st = copy_from_user(&tls, buf, sizeof tls);
+  if (st != VX_OK) return st;
+  if (op == VX_STATE_SET_TLS && tls >= USER_TOP) return VX_ERR_RANGE;
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
   if (!t) return st;
   vx_status ignored;
@@ -280,12 +308,17 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
     e = target->exc;
   } else if (op == VX_STATE_GET_REGS) {
     arch_frame_regs(arch_user_frame(target), &e.regs);
-  } else {
+  } else if (op == VX_STATE_SET_REGS) {
     st = arch_frame_set_regs(arch_user_frame(target), &regs);
+  } else if (op == VX_STATE_GET_TLS) {
+    tls = target->tls; // it is not running: arch_tls_switch saved it
+  } else {
+    target->tls = tls; // loaded when it next runs
   }
   spin_unlock(&tt->lock);
   object_release(&target->obj);
-  if (st != VX_OK || op == VX_STATE_SET_REGS) return st;
+  if (st != VX_OK || op == VX_STATE_SET_REGS || op == VX_STATE_SET_TLS) return st;
+  if (op == VX_STATE_GET_TLS) return copy_to_user(buf, &tls, sizeof tls);
   return op == VX_STATE_GET_EXCEPTION ? copy_to_user(buf, &e, sizeof e)
                                       : copy_to_user(buf, &e.regs, sizeof e.regs);
 }

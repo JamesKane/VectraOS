@@ -312,6 +312,9 @@ static constexpr uint32_t VX_RIGHTS_SAME = 1u << 31; // handle_dup: the rights t
 // thread_state(task, thread, op, buffer, size): for a thread stopped at a
 //     port, GET_EXCEPTION reads its vx_exception; for one stopped or suspended,
 //     GET_REGS and SET_REGS its registers (DEBUG for a suspended one).
+//     GET_TLS and SET_TLS its thread pointer (x86_64's FS base, aarch64's
+//     TPIDR_EL0), a uint64_t, on the same terms; with thread 0, the caller's
+//     own, at any time (musl's __set_thread_area).
 // thread_suspend(task, thread), thread_resume(task, thread): counted, with the
 //     DEBUG right. A suspended thread stops before it next returns to user
 //     mode; thread_suspend returns once it has (stopped there, or blocked in a
@@ -376,4 +379,10 @@ typedef struct vx_mem_op { // task_mem_rw
   uint32_t write; // 1: buffer to address; 0: address to buffer
   int32_t status; // set by the kernel: a vx_status
 } vx_mem_op;
-enum vx_thread_state_op : uint32_t { VX_STATE_GET_EXCEPTION = 1, VX_STATE_GET_REGS, VX_STATE_SET_REGS };
+enum vx_thread_state_op : uint32_t {
+  VX_STATE_GET_EXCEPTION = 1,
+  VX_STATE_GET_REGS,
+  VX_STATE_SET_REGS,
+  VX_STATE_GET_TLS,
+  VX_STATE_SET_TLS,
+};

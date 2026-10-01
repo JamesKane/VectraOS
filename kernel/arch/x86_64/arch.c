@@ -182,7 +182,9 @@ static void arch_cpu_init(uint32_t index) {
   __asm__ volatile("mov %0, %%cr0" : : "r"((cr0 | 1ull << 16 | 1ull << 2) & ~(1ull << 1)));
   uint64_t cr4;
   __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-  __asm__ volatile("mov %0, %%cr4" : : "r"(cr4 & ~(1ull << 9 | 1ull << 10 | 1ull << 18)));
+  // FSGSBASE (bit 16) off as well: user code changes its FS base only
+  // through thread_state, and never its GS base, which swapgs relies on.
+  __asm__ volatile("mov %0, %%cr4" : : "r"(cr4 & ~(1ull << 9 | 1ull << 10 | 1ull << 16 | 1ull << 18)));
 
   uint8_t *ist = index == 0 ? &boot_ist_stacks[0][0] : nullptr;
   if (!ist) {
@@ -429,6 +431,18 @@ static vx_status arch_frame_set_regs(trap_frame *f, const vx_regs *r) {
   f->rflags = (r->rflags & USER_FLAGS) | 0x202; // IF, and bit 1, which is always set
   return VX_OK;                                 // cs and ss stay user mode's
 }
+
+static constexpr uint32_t MSR_FS_BASE = 0xc0000100;
+
+// Idle threads have no user thread pointer: the FS base of whoever ran last
+// stays, unused, until the next user thread loads its own.
+static void arch_tls_switch(thread *prev, thread *next) {
+  if (prev->task) prev->tls = rdmsr(MSR_FS_BASE);
+  if (next->task) wrmsr(MSR_FS_BASE, next->tls);
+}
+
+static uint64_t arch_tls_read(void) { return rdmsr(MSR_FS_BASE); }
+static void arch_tls_write(uint64_t value) { wrmsr(MSR_FS_BASE, value); }
 
 static constexpr uint64_t RFLAGS_TF = 0x100; // trap after the next instruction
 

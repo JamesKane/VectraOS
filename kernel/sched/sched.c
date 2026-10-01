@@ -125,6 +125,7 @@ static void schedule_locked(void) {
     c->slice_end = clock_now() + TIME_SLICE;
   }
   if (next != prev) {
+    arch_tls_switch(prev, next);
     next->state = THREAD_RUNNING;
     next->cpu = c;
     c->current = next;

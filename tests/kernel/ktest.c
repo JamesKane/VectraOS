@@ -1187,6 +1187,91 @@ static void test_debugger(void) {
   vx_handle_close(port);
 }
 
+// --- The thread pointer (musl's TLS) ---
+
+// The word the thread pointer points at, read through it as musl does.
+static uint64_t tls_word(void) {
+  uint64_t v;
+#ifdef __x86_64__
+  __asm__ volatile("movq %%fs:0, %0" : "=r"(v));
+#else
+  uint64_t *p;
+  __asm__ volatile("mrs %0, tpidr_el0" : "=r"(p));
+  v = *p;
+#endif
+  return v;
+}
+
+static bool tls_set(uint64_t value) {
+  return vx_thread_state(self, 0, VX_STATE_SET_TLS, &value, sizeof value) == VX_OK;
+}
+static uint64_t tls_get(void) {
+  uint64_t v = 0;
+  return vx_thread_state(self, 0, VX_STATE_GET_TLS, &v, sizeof v) == VX_OK ? v : 1;
+}
+
+static shared tls_shared;
+static _Atomic uint32_t tls_worker_bad;
+
+// Its own thread pointer, kept across the switches its sleeps cause.
+[[noreturn]] static void tls_worker(vx_handle unused, uint64_t arg) {
+  (void)unused, (void)arg;
+  static uint64_t mine = 0xb0b0'b0b0;
+  if (!tls_set((uint64_t)&mine)) atomic_fetch_add(&tls_worker_bad, 1);
+  set_stage(&tls_shared, 1);
+  for (int i = 0; i < 20; i++) {
+    if (tls_word() != mine || tls_get() != (uint64_t)&mine) atomic_fetch_add(&tls_worker_bad, 1);
+    _Atomic uint32_t never = 0;
+    vx_futex_wait(&never, 0, after_ms(1));
+  }
+  set_stage(&tls_shared, 2);
+  vx_thread_exit(0);
+}
+
+static void test_tls(void) {
+  static uint64_t main_word = 0xa1a1'a1a1;
+  vx_handle th, child, other;
+  CHECK(tls_set((uint64_t)&main_word) && tls_get() == (uint64_t)&main_word && tls_word() == main_word);
+  // Each thread keeps its own, though both sleep and run on whichever CPU.
+  uint64_t sp = new_stack();
+  CHECK(sp != 0);
+  CHECK(vx_thread_create(self, &th) == VX_OK);
+  CHECK(vx_thread_start(th, (uint64_t)tls_worker, sp, 0, 0) == VX_OK);
+  wait_for_stage(&tls_shared, 1);
+  for (int i = 0; i < 20; i++) {
+    CHECK(tls_word() == main_word);
+    _Atomic uint32_t never = 0;
+    vx_futex_wait(&never, 0, after_ms(1));
+  }
+  wait_for_stage(&tls_shared, 2);
+  CHECK(atomic_load(&tls_worker_bad) == 0);
+  CHECK(tls_word() == main_word && tls_get() == (uint64_t)&main_word);
+  vx_handle_close(th);
+
+  // Only a user address, and thread 0 only of the caller's own task.
+  uint64_t bad = 0xffff'8000'0000'0000; // the kernel half
+  CHECK(vx_thread_state(self, 0, VX_STATE_SET_TLS, &bad, sizeof bad) == VX_ERR_RANGE);
+  CHECK(vx_thread_state(self, 0, VX_STATE_SET_TLS, &bad, 4) == VX_ERR_TOO_SMALL);
+  CHECK(start_child(SPIN, &child));
+  CHECK(vx_thread_state(child, 0, VX_STATE_GET_TLS, &bad, sizeof bad) == VX_ERR_INVALID);
+  // Another thread's, while it is suspended: read, set, read back.
+  uint64_t v = 1;
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_TLS, &v, sizeof v) == VX_ERR_BAD_STATE); // running
+  CHECK(vx_thread_suspend(child, 1) == VX_OK);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_TLS, &v, sizeof v) == VX_OK && v == 0); // never set
+  v = 0x1000;
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_TLS, &v, sizeof v) == VX_OK);
+  v = 0;
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_TLS, &v, sizeof v) == VX_OK && v == 0x1000);
+  CHECK(vx_handle_dup(child, ((1u << VX_RIGHT_BIT_COUNT) - 1) & ~(uint32_t)VX_RIGHT_DEBUG, &other) == VX_OK);
+  CHECK(vx_thread_state(other, 1, VX_STATE_GET_TLS, &v, sizeof v) == VX_ERR_BAD_STATE); // DEBUG needed
+  vx_handle_close(other);
+  CHECK(vx_thread_resume(child, 1) == VX_OK);
+  CHECK(vx_task_kill(child, -5) == VX_OK);
+  vx_handle_close(child);
+  CHECK(tls_set(0));
+}
+
 static void test_vmo_clone(void) {
   vx_handle v, c;
   uint64_t words[2] = {11, 22}, got[2] = {};
@@ -1219,6 +1304,7 @@ int vx_main(void) {
   test_in_task();
   test_vmo_clone();
   test_debugger();
+  test_tls();
   test_nested_channels();
   test_rings();
   test_vmo_rw();

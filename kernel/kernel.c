@@ -80,6 +80,11 @@ static bool arch_frame_divert(struct trap_frame *f, uint64_t pc,
                               uint64_t arg);                // pc(arg), on a stack just below arg
 static void arch_frame_step(struct trap_frame *f, bool on); // trap after one user instruction
 static void arch_sync_icache(void *p, size_t len); // code written through a data mapping, made runnable
+// The user thread pointer (x86_64's FS base, aarch64's TPIDR_EL0): saved and
+// loaded with each switch between threads, and the running thread's, live.
+static void arch_tls_switch(thread *prev, thread *next);
+static uint64_t arch_tls_read(void);
+static void arch_tls_write(uint64_t value);
 
 // Device interrupts and I/O for user-space drivers (obj/device.c).
 static vx_status arch_irq_canonical(uint32_t line, uint32_t *out); // the number the line is known by
