@@ -32,6 +32,14 @@ static void counter_signal(counter *c, uint64_t v) {
   spin_unlock(&c->lock);
 }
 
+// Adds to the counter (a doorbell rings by one), firing what the new value reaches.
+static void counter_add(counter *c, uint64_t delta) {
+  spin_lock(&c->lock);
+  c->value += delta;
+  observers_fire(&c->obs, VX_TRIGGER_COUNTER_GE, c->value);
+  spin_unlock(&c->lock);
+}
+
 static uint64_t counter_read(counter *c) {
   spin_lock(&c->lock);
   uint64_t v = c->value;

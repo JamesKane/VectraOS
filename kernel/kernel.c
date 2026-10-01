@@ -66,6 +66,8 @@ static uint64_t arch_thread_initial_sp(thread *t);
 #include "obj/channel.c"
 #include "obj/counter.c"
 #include "obj/futex.c"
+#include "../lib/vx-ring/ring.c"
+#include "obj/ring.c"
 #include "obj/process.c"
 #include "syscall/syscall.c"
 #include "elf.c"

@@ -79,6 +79,86 @@ typedef struct vx_call {
   vx_msg_size actual;
 } vx_call;
 
+// --- Rings (01 §4.3) ---
+//
+// A ring is one VMO both sides map: this header, four index lines, the
+// submission and completion queues, and an arena for each side. The kernel
+// writes the header when it creates the ring and never reads the ring again;
+// lib/vx-ring is the protocol. Every offset is from the start of the VMO.
+
+static constexpr uint32_t VX_RING_MAGIC = 0x4252'5856; // "VXRB", little-endian
+static constexpr uint32_t VX_RING_VERSION = 1;
+static constexpr uint32_t VX_RING_NEED_WAKEUP = 1; // in a consumer line's flags: it sleeps, ring the doorbell
+
+typedef struct vx_ring_header {
+  uint32_t magic, version;
+  uint32_t sq_entries, cq_entries; // powers of two
+  uint32_t sqe_size, cqe_size;     // bytes per entry
+  uint32_t features;
+  uint32_t reserved;
+  uint64_t sq_offset, cq_offset; // the entries
+  uint64_t client_arena_offset, client_arena_size;
+  uint64_t server_arena_offset, server_arena_size;
+  uint64_t size; // of the whole VMO
+} vx_ring_header;
+
+// The four index lines start at 4096, 64 bytes apart, so no two sides write
+// one cache line: SQ tail (client), SQ head and flags (server), CQ tail
+// (server), CQ head and flags (client). Indices run free and wrap at 2^32.
+typedef struct vx_ring_index {
+  uint32_t index;
+  uint32_t flags; // the consumer lines only: VX_RING_NEED_WAKEUP
+  uint8_t pad[56];
+} vx_ring_index;
+static_assert(sizeof(vx_ring_index) == 64);
+
+static constexpr uint64_t VX_RING_INDEX_OFFSET = 4096;
+enum vx_ring_line : uint32_t { VX_RING_SQ_TAIL, VX_RING_SQ_HEAD, VX_RING_CQ_TAIL, VX_RING_CQ_HEAD };
+
+typedef struct vx_ring_params { // ring_create's request
+  uint32_t sq_entries, cq_entries;
+  uint32_t sqe_size, cqe_size;         // multiples of 16, at most 256
+  uint64_t client_arena, server_arena; // bytes, rounded up to pages
+} vx_ring_params;
+
+typedef struct vx_ring_handles { // ring_create's answer
+  vx_handle client, server;      // the two ends
+  vx_handle memory;              // the VMO; each side maps it
+} vx_ring_handles;
+
+enum vx_ring_xfer : uint32_t { // ring_xfer_handles
+  VX_RING_PUT = 0,             // handles -> a slot for the peer; returns the slot
+  VX_RING_TAKE = 1,            // a slot from the peer -> handles; returns their count
+};
+
+static constexpr uint32_t VX_RING_SLOTS = 16;       // per direction
+static constexpr uint32_t VX_RING_SLOT_HANDLES = 4; // per slot
+
+enum vx_sqe_flags : uint16_t { VX_SQE_LINK = 1, VX_SQE_DREF = 2, VX_SQE_HANDLES = 4, VX_SQE_FENCE = 8 };
+
+typedef struct vx_sqe { // the generic submission entry, 64 bytes (01 §4.3)
+  alignas(64) uint16_t opcode;
+  uint16_t flags;      // enum vx_sqe_flags
+  uint8_t reserved[4]; // no per-entry priority: the service class belongs to the ring
+  uint64_t user_data;  // echoed in the vx_cqe
+  uint64_t target;     // fid, block, socket, surface: the protocol's
+  uint64_t offset;
+  uint32_t arena_off; // valid with DREF
+  uint32_t len;
+  uint32_t handle_slot; // valid with HANDLES
+  uint32_t pad;
+  uint8_t inline_data[16];
+} vx_sqe;
+static_assert(sizeof(vx_sqe) == 64);
+
+typedef struct vx_cqe { // the generic completion entry, 32 bytes
+  alignas(32) uint64_t user_data;
+  int64_t result;
+  uint32_t flags, aux;
+  uint64_t aux2;
+} vx_cqe;
+static_assert(sizeof(vx_cqe) == 32);
+
 enum vx_vmo_op : uint32_t { // vmo_rw
   VX_VMO_READ = 0,
   VX_VMO_WRITE = 1,

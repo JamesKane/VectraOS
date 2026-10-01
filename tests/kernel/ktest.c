@@ -3,6 +3,7 @@
 // prints a line only when it fails; the last line counts them.
 
 #include "../../lib/vx-rt/rt.c"
+#include "../../lib/vx-ring/ring.c"
 #include <stdatomic.h>
 
 static uint32_t checks, failures;
@@ -362,6 +363,145 @@ static void test_nested_channels(void) {
   CHECK(vx_handle_close(chain) == VX_OK);
 }
 
+// --- Rings ---
+
+// Sleeps about a millisecond: a futex wait on a word that never changes.
+static void nap(void) {
+  static _Atomic uint32_t never;
+  vx_futex_wait(&never, 0, after_ms(1));
+}
+
+// Sleeps until this end's doorbell rings, unless an entry arrived while it was
+// getting ready (the protocol vx-check proves; tests/host/ring_model_test.c).
+static void ring_sleep(vx_ring *r, vx_handle end, vx_handle port) {
+  int64_t seen = vx_counter_read(end);
+  if (vx_ring_prepare_sleep(r)) {
+    vx_packet pk;
+    vx_port_bind(port, end, VX_TRIGGER_COUNTER_GE, 1, (uint64_t)seen + 1);
+    vx_port_wait(port, after_ms(2000), 0, &pk, 1);
+  }
+  vx_ring_end_sleep(r);
+}
+
+enum { OP_DOUBLE = 1, OP_COUNTER = 2, OP_STOP = 3 };
+
+typedef struct ring_shared {
+  vx_ring server;
+  vx_handle end;
+  _Atomic uint32_t stage;
+} ring_shared;
+
+// The server: answers OP_DOUBLE with twice its target, OP_COUNTER with the
+// value of the counter whose handle came in the entry's slot, and stops at OP_STOP.
+[[noreturn]] static void ring_server(vx_handle unused, uint64_t arg) {
+  (void)unused;
+  ring_shared *s = (ring_shared *)arg;
+  vx_handle port;
+  vx_port_create(0, &port);
+  for (bool stop = false; !stop;) {
+    vx_sqe in;
+    if (vx_ring_consume(&s->server, &in) != VX_OK) {
+      ring_sleep(&s->server, s->end, port);
+      continue;
+    }
+    vx_cqe out = {.user_data = in.user_data};
+    if (in.opcode == OP_DOUBLE) {
+      out.result = (int64_t)in.target * 2;
+    } else if (in.opcode == OP_COUNTER && (in.flags & VX_SQE_HANDLES)) {
+      vx_handle got = 0;
+      out.result = vx_ring_take_handles(s->end, in.handle_slot, &got, 1) == 1 ? vx_counter_read(got) : -1;
+      vx_handle_close(got);
+    } else {
+      stop = true;
+    }
+    vx_cqe *slot;
+    while (!(slot = vx_ring_produce_slot(&s->server))) nap(); // CQ full: let the client drain it
+    *slot = out;
+    if (vx_ring_produce(&s->server)) vx_ring_notify(s->end);
+  }
+  vx_handle_close(port);
+  atomic_store(&s->stage, 1);
+  vx_futex_wake(&s->stage, 1);
+  vx_thread_exit(0);
+}
+
+// Submits an entry, waiting for room if the SQ is full.
+static void ring_submit(vx_ring *r, vx_handle end, const vx_sqe *e) {
+  vx_sqe *slot;
+  while (!(slot = vx_ring_produce_slot(r))) nap(); // SQ full: let the server drain it
+  *slot = *e;
+  if (vx_ring_produce(r)) vx_ring_notify(end);
+}
+
+static void test_rings(void) {
+  vx_ring_handles h;
+  CHECK(vx_ring_create(&(vx_ring_params){3, 16, 64, 32, 0, 0}, &h) == VX_ERR_INVALID);
+  CHECK(vx_ring_create(&(vx_ring_params){16, 16, 64, 32, 4096, 4096}, &h) == VX_OK);
+  uint64_t base = 0, size;
+  vx_ring_header layout;
+  vx_ring_layout(&(vx_ring_params){16, 16, 64, 32, 4096, 4096}, &layout);
+  size = layout.size;
+  CHECK(vx_as_map(self, h.memory, 0, size, VX_MAP_WRITE, &base) == VX_OK);
+
+  static ring_shared s;
+  vx_ring client;
+  CHECK(vx_ring_attach(&client, (void *)base, size, true) == VX_OK);
+  CHECK(vx_ring_attach(&s.server, (void *)base, size, false) == VX_OK);
+  s.end = h.server;
+  vx_handle th;
+  CHECK(vx_thread_create(self, &th) == VX_OK);
+  CHECK(vx_thread_start(th, (uint64_t)ring_server, new_stack(), 0, (uint64_t)&s) == VX_OK);
+
+  // 200 requests through 16-entry queues: both sides wrap, and both sleep and wake.
+  vx_handle port;
+  vx_port_create(0, &port);
+  uint64_t sent = 0, done = 0;
+  bool right = true;
+  while (done < 200) {
+    if (sent < 200 && sent - done < 16) {
+      ring_submit(&client, h.client, &(vx_sqe){.opcode = OP_DOUBLE, .user_data = sent, .target = sent});
+      sent++;
+      continue;
+    }
+    vx_cqe c;
+    if (vx_ring_consume(&client, &c) == VX_OK) {
+      right = right && c.user_data == done && c.result == (int64_t)done * 2;
+      done++;
+    } else {
+      ring_sleep(&client, h.client, port);
+    }
+  }
+  CHECK(right);
+
+  // A handle through the side channel.
+  vx_handle counter;
+  CHECK(vx_counter_create(33, &counter) == VX_OK);
+  int64_t slot = vx_ring_put_handles(h.client, &counter, 1);
+  CHECK(slot >= 0);
+  CHECK(vx_counter_read(counter) == VX_ERR_BAD_HANDLE); // it left our table
+  ring_submit(
+      &client, h.client,
+      &(vx_sqe){
+          .opcode = OP_COUNTER, .flags = VX_SQE_HANDLES, .user_data = 500, .handle_slot = (uint32_t)slot});
+  vx_cqe c = {};
+  while (vx_ring_consume(&client, &c) != VX_OK) ring_sleep(&client, h.client, port);
+  CHECK(c.user_data == 500 && c.result == 33);
+  CHECK(vx_ring_take_handles(h.server, 15, &counter, 1) == VX_ERR_INVALID); // an empty slot
+
+  // Stop the server, then its end goes: the client sees PEER_CLOSED.
+  ring_submit(&client, h.client, &(vx_sqe){.opcode = OP_STOP});
+  while (atomic_load(&s.stage) != 1) vx_futex_wait(&s.stage, 0, after_ms(100));
+  vx_handle_close(th);
+  CHECK(vx_handle_close(h.server) == VX_OK);
+  vx_packet pk;
+  CHECK(vx_port_bind(port, h.client, VX_TRIGGER_PEER_CLOSED, 7, 0) == VX_OK);
+  CHECK(vx_port_wait(port, after_ms(100), 0, &pk, 1) == 1 && pk.key == 7);
+  CHECK(vx_ring_notify(h.client) == VX_ERR_PEER_CLOSED);
+  vx_handle_close(h.client);
+  vx_handle_close(h.memory);
+  vx_handle_close(port);
+}
+
 static void test_vmo_rw(void) {
   vx_handle vmo;
   char in[8] = "abcdefg", out[8] = {};
@@ -381,6 +521,7 @@ int vx_main(vx_handle task) {
   test_threads_and_calls();
   test_tasks();
   test_nested_channels();
+  test_rings();
   test_vmo_rw();
   vx_print(VX_STR("ktest: "));
   vx_print_u64(checks);

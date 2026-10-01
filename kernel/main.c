@@ -86,8 +86,10 @@ static void selftests(void) {
   kput_u64(atomic_load(&cpus_online));
   kput(atomic_load(&cpus_online) == 1 ? VX_STR(" cpu\n") : VX_STR(" cpus\n"));
 
-  start_root_task();
+  find_root_module();
   reclaim_boot_memory(); // every CPU is on the kernel's tables and stacks, and the responses are read
-  selftests();           // after the reclaim, so the allocator tests cover that memory too
+  selftests();           // after the reclaim, so the allocator tests cover that memory too, and before
+                         // the root task, so nothing else allocates while they count
+  start_root_task();
   sched_idle_loop();
 }

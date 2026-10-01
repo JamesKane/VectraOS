@@ -41,6 +41,7 @@ static void object_destroy(object *obj) {
   case OBJ_PORT: pool_free(&port_pool, obj); break;
   case OBJ_CHANNEL: channel_destroy((channel *)obj); break;
   case OBJ_COUNTER: counter_destroy((counter *)obj); break;
+  case OBJ_RING: ring_destroy((ring_end *)obj); break;
   case OBJ_TASK: task_destroy((task *)obj); break;
   case OBJ_THREAD: thread_destroy((thread *)obj); break;
   default: break;
@@ -315,12 +316,15 @@ static int64_t sys_counter_signal(vx_handle h, uint64_t value) {
   return VX_OK;
 }
 
+// counter_read on a counter, or on a ring end, whose doorbell it reads.
 static int64_t sys_counter_read(vx_handle h) {
   vx_status st;
-  counter *c = (counter *)handle_get(current_task(), h, OBJ_COUNTER, VX_RIGHT_READ, &st);
-  if (!c) return st;
+  object *o = handle_get(current_task(), h, OBJ_COUNTER, VX_RIGHT_READ, &st);
+  if (!o) o = handle_get(current_task(), h, OBJ_RING, VX_RIGHT_READ, &st);
+  if (!o) return st;
+  counter *c = o->type == OBJ_COUNTER ? (counter *)o : ((ring_end *)o)->doorbell;
   uint64_t v = counter_read(c);
-  object_release(&c->obj);
+  object_release(o);
   return v > INT64_MAX ? VX_ERR_RANGE : (int64_t)v;
 }
 
@@ -331,8 +335,8 @@ static int64_t sys_port_bind(vx_handle ph, vx_handle sh, uint64_t trigger, uint6
   port *p = (port *)handle_get(current_task(), ph, OBJ_PORT, VX_RIGHT_WRITE, &st);
   if (!p) return st;
   object *src = nullptr;
-  static const obj_type SOURCES[] = {OBJ_CHANNEL, OBJ_COUNTER, OBJ_TASK};
-  for (uint32_t i = 0; i < 3 && !src; i++)
+  static const obj_type SOURCES[] = {OBJ_CHANNEL, OBJ_COUNTER, OBJ_TASK, OBJ_RING};
+  for (uint32_t i = 0; i < 4 && !src; i++)
     src = handle_get(current_task(), sh, SOURCES[i], VX_RIGHT_WAIT, &st);
   binding *b = src ? binding_new(p, (uint32_t)trigger, key, threshold, sh) : nullptr;
   if (src && !b) st = VX_ERR_NO_MEMORY;
@@ -341,6 +345,8 @@ static int64_t sys_port_bind(vx_handle ph, vx_handle sh, uint64_t trigger, uint6
       st = channel_bind((channel *)src, b);
     else if (src->type == OBJ_COUNTER)
       st = counter_bind((counter *)src, b);
+    else if (src->type == OBJ_RING)
+      st = ring_bind((ring_end *)src, b);
     else
       st = task_bind((task *)src, b);
     if (st != VX_OK) binding_free(b);
@@ -348,6 +354,82 @@ static int64_t sys_port_bind(vx_handle ph, vx_handle sh, uint64_t trigger, uint6
   if (src) object_release(src);
   object_release(&p->obj);
   return st;
+}
+
+// --- Rings ---
+
+static int64_t sys_ring_create(uint64_t params_ptr, uint64_t out) {
+  vx_ring_params p;
+  vx_status st = copy_from_user(&p, params_ptr, sizeof p);
+  if (st != VX_OK) return st;
+  if (!user_range_ok(out, sizeof(vx_ring_handles), true)) return VX_ERR_INVALID;
+  ring_end *client, *server;
+  vmo *memory;
+  if ((st = ring_create(&p, &client, &server, &memory)) != VX_OK) return st;
+  static constexpr uint32_t END_RIGHTS = VX_RIGHT_READ | VX_RIGHT_WRITE | VX_RIGHT_WAIT | VX_RIGHT_SIGNAL |
+                                         VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
+  static constexpr uint32_t MEMORY_RIGHTS = VX_RIGHT_READ | VX_RIGHT_WRITE | VX_RIGHT_MAP |
+                                            VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
+  vx_ring_handles h = {};
+  task *t = current_task();
+  st = handle_add(t, &client->obj, END_RIGHTS, &h.client);
+  if (st == VX_OK) st = handle_add(t, &server->obj, END_RIGHTS, &h.server);
+  if (st == VX_OK) st = handle_add(t, &memory->obj, MEMORY_RIGHTS, &h.memory);
+  object_release(&client->obj);
+  object_release(&server->obj);
+  object_release(&memory->obj);
+  if (st == VX_OK) st = copy_to_user(out, &h, sizeof h);
+  if (st != VX_OK) {
+    if (h.client) handle_close(t, h.client);
+    if (h.server) handle_close(t, h.server);
+    if (h.memory) handle_close(t, h.memory);
+  }
+  return st;
+}
+
+static int64_t sys_ring_notify(vx_handle h) {
+  vx_status st;
+  ring_end *e = (ring_end *)handle_get(current_task(), h, OBJ_RING, VX_RIGHT_SIGNAL, &st);
+  if (!e) return st;
+  st = ring_notify(e);
+  object_release(&e->obj);
+  return st;
+}
+
+// ring_xfer_handles(ring, PUT, handles, count, 0) -> slot;
+// ring_xfer_handles(ring, TAKE, handles out, capacity, slot) -> count.
+static int64_t sys_ring_xfer(vx_handle h, uint64_t op, uint64_t handles, uint64_t count, uint64_t slot) {
+  if (op != VX_RING_PUT && op != VX_RING_TAKE) return VX_ERR_INVALID;
+  if (count > VX_RING_SLOT_HANDLES || (op == VX_RING_PUT && count == 0)) return VX_ERR_INVALID;
+  vx_handle values[VX_RING_SLOT_HANDLES];
+  vx_status st = VX_OK;
+  if (op == VX_RING_PUT)
+    st = copy_from_user(values, handles, count * sizeof(vx_handle));
+  else if (!user_range_ok(handles, count * sizeof(vx_handle), true))
+    st = VX_ERR_INVALID;
+  if (st != VX_OK) return st;
+  ring_end *e = (ring_end *)handle_get(current_task(), h, OBJ_RING, VX_RIGHT_WRITE, &st);
+  if (!e) return st;
+  moved_handle moved[VX_RING_SLOT_HANDLES];
+  int64_t result;
+  if (op == VX_RING_PUT) {
+    result = handles_take(current_task(), values, (uint32_t)count, &e->obj, moved);
+    if (result == VX_OK) {
+      result = ring_put(e, moved, (uint32_t)count);
+      if (result < 0)
+        for (uint32_t i = 0; i < count; i++) object_release(moved[i].obj); // gone, as with channel writes
+    }
+  } else {
+    uint32_t n = 0;
+    result = ring_take(e, (uint32_t)slot, moved, &n);
+    if (result == VX_OK && n > count) result = VX_ERR_TOO_SMALL; // nothing installed; the handles are lost
+    if (result == VX_OK) result = handles_put(current_task(), moved, n, values);
+    if (result == VX_OK) result = copy_to_user(handles, values, n * sizeof(vx_handle));
+    if (result == VX_OK) result = n;
+    for (uint32_t i = 0; i < n; i++) object_release(moved[i].obj);
+  }
+  object_release(&e->obj);
+  return result;
 }
 
 // --- Tasks and threads ---
@@ -479,6 +561,9 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_channel_write: return sys_channel_write((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_channel_read: return sys_channel_read((vx_handle)a[0], a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_channel_call: return sys_channel_call((vx_handle)a[0], a[1], (vx_instant)a[2]);
+  case VX_SYS_ring_create: return sys_ring_create(a[0], a[1]);
+  case VX_SYS_ring_notify: return sys_ring_notify((vx_handle)a[0]);
+  case VX_SYS_ring_xfer_handles: return sys_ring_xfer((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_vmo_create: return sys_vmo_create(a[0], a[1], a[2]);
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);

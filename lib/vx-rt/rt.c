@@ -129,6 +129,29 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_channel_call, ch, (uint64_t)args, (uint64_t)deadline, 0, 0, 0);
 }
 
+// --- Rings ---
+
+[[maybe_unused]] static vx_status vx_ring_create(const vx_ring_params *params, vx_ring_handles *out) {
+  *out = (vx_ring_handles){};
+  return (vx_status)vx_syscall(VX_SYS_ring_create, (uint64_t)params, (uint64_t)out, 0, 0, 0, 0);
+}
+
+// Rings the peer's doorbell: call it when vx_ring_produce says the peer sleeps.
+[[maybe_unused]] static vx_status vx_ring_notify(vx_handle end) {
+  return (vx_status)vx_syscall(VX_SYS_ring_notify, end, 0, 0, 0, 0, 0);
+}
+
+// Puts handles in a slot for the peer, returning the slot to name in an entry.
+[[maybe_unused]] static int64_t vx_ring_put_handles(vx_handle end, const vx_handle *handles, uint32_t count) {
+  return vx_syscall(VX_SYS_ring_xfer_handles, end, VX_RING_PUT, (uint64_t)handles, count, 0, 0);
+}
+
+// Takes the handles in the peer's slot, returning how many.
+[[maybe_unused]] static int64_t vx_ring_take_handles(vx_handle end, uint32_t slot, vx_handle *handles,
+                                                     uint32_t capacity) {
+  return vx_syscall(VX_SYS_ring_xfer_handles, end, VX_RING_TAKE, (uint64_t)handles, capacity, slot, 0);
+}
+
 // --- Counters, bindings, futexes ---
 
 [[maybe_unused]] static vx_status vx_counter_create(uint64_t initial, vx_handle *out) {

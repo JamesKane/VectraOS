@@ -18,20 +18,32 @@ static const struct limine_file *find_module(vx_str want) {
   return nullptr;
 }
 
-static void start_root_task(void) {
+// The root task's image, found while Limine's module records are still there
+// (they are in memory reclaim_boot_memory frees; the image itself is not).
+static struct {
+  const uint8_t *image;
+  uint64_t size;
+  char name[24];
+} root_module;
+
+static void find_root_module(void) {
   vx_str name = cmdline_value(VX_STR("vx.root"));
   if (!name.len || name.len > 23) name = VX_STR("svcd");
   const struct limine_file *module = find_module(name);
   if (!module) panic(VX_STR("no module for the root task"));
+  root_module.image = module->address;
+  root_module.size = module->size;
+  memcpy(root_module.name, name.ptr, name.len);
+}
 
-  char task_name[24] = {};
-  memcpy(task_name, name.ptr, name.len);
+static void start_root_task(void) {
+  const char *task_name = root_module.name;
   task *t;
   if (task_create(task_name, &t) != VX_OK) panic(VX_STR("cannot create the root task"));
   t->may_debug_write = true;
 
   uint64_t entry;
-  vx_status st = elf_load(t, module->address, module->size, &entry);
+  vx_status st = elf_load(t, root_module.image, root_module.size, &entry);
   if (st != VX_OK) panic(VX_STR("cannot load the root task"));
 
   vmo *stack;

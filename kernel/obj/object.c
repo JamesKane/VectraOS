@@ -13,6 +13,7 @@ typedef enum obj_type : uint8_t {
   OBJ_PORT,
   OBJ_CHANNEL,
   OBJ_COUNTER,
+  OBJ_RING,
 } obj_type;
 
 typedef struct object {
