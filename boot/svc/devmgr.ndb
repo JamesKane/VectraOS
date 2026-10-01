@@ -1,0 +1,4 @@
+# boot/svc/devmgr.ndb: the device manager (docs/01 §7.2): it finds the PCI
+# functions through the ACPI tables, with the root Resource.
+
+service=devmgr program=/boot/bin/devmgr resource acpi console restart

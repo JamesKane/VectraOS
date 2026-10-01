@@ -616,6 +616,43 @@ static void test_devices(void) {
 #else
   CHECK(vx_iorange_create(res, 0x2f8, 8, &h) == VX_ERR_UNSUPPORTED);
 #endif
+  // MSIs: picked by the kernel, for a PCI function (00:03.0 here, by requester ID).
+  vx_msi msi, msi2;
+  vx_handle m1, m2;
+  CHECK(vx_irq_create_msi(weak, 0x18, &h, &msi) == VX_ERR_ACCESS);
+  CHECK(vx_irq_create_msi(res, 0x18, &m1, &msi) == VX_OK && msi.address != 0);
+  CHECK(vx_irq_create_msi(res, 0x18, &m2, &msi2) == VX_OK);
+  CHECK(msi2.address == msi.address && msi2.data != msi.data); // one target; another vector or event
+#ifdef __x86_64__
+  CHECK((msi.address & 0xfff0'0000) == 0xfee0'0000);
+#endif
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  CHECK(vx_port_bind(port, m1, VX_TRIGGER_IRQ, 1, 0) == VX_OK);
+  CHECK(vx_port_wait(port, after_ms(2), 0, &pk, 1) == VX_ERR_TIMED_OUT); // no device writes it
+  vx_handle_close(port);
+  vx_handle_close(m1);
+  vx_handle_close(m2);
+  CHECK(vx_irq_create_msi(res, 0x18, &m1, &msi2) == VX_OK && msi2.data == msi.data); // freed, so given again
+  vx_handle_close(m1);
+
+  // A DMA domain (pass-through): device addresses for a VMO's pages, held until unmapped.
+  vx_handle dom, mem;
+  uint64_t addrs[4] = {};
+  CHECK(vx_dma_domain_create(weak, &dom) == VX_ERR_ACCESS);
+  CHECK(vx_dma_domain_create(res, &dom) == VX_OK);
+  CHECK(vx_vmo_create(16ull * 1024, 0, &mem) == VX_OK);
+  CHECK(vx_dma_map(dom, mem, 4096, 16ull * 1024, addrs) == VX_ERR_RANGE);
+  CHECK(vx_dma_map(dom, mem, 0, 16ull * 1024, addrs) == VX_OK);
+  CHECK(addrs[0] && addrs[3] && !(addrs[0] & 4095) && addrs[0] != addrs[1]);
+  CHECK(vx_vmo_create_physical(res, DEVICE, 4096, &h) == VX_OK);
+  CHECK(vx_dma_map(dom, h, 0, 4096, addrs) == VX_ERR_UNSUPPORTED); // not RAM: peer-to-peer comes later
+  vx_handle_close(h);
+  CHECK(vx_dma_unmap(dom, mem) == VX_OK);
+  CHECK(vx_dma_unmap(dom, mem) == VX_ERR_NOT_FOUND);
+  CHECK(vx_dma_map(dom, mem, 0, 4096, addrs) == VX_OK); // held by the domain when it closes, and let go
+  vx_handle_close(mem);
+  vx_handle_close(dom);
+
   vx_handle_close(weak);
   vx_handle_close(res);
 }

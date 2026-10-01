@@ -839,6 +839,7 @@ static const program USER_PROGRAMS[] = {
     {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr},
     {"constest", "tests/user/constest.c", IN_TESTS, nullptr},
     {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr},
+    {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr},
     {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr},
     {"ls", "cmd/ls.c", IN_BOOTFS, nullptr},
     {"cat", "cmd/cat.c", IN_BOOTFS, nullptr},
@@ -1229,7 +1230,10 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   cmd_add(c, "-drive");
   // A test never writes the image, so several can boot one image at once.
   cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test ? ",snapshot=on" : ""));
-  cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk", nullptr});
+  cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk,disable-legacy=on", nullptr});
+  // QEMU's user networking: the guest is 10.0.2.15, the host 10.0.2.2 (M3).
+  cmd_addv(c, (const char *const[]){"-netdev", "user,id=net0", "-device",
+                                    "virtio-net-pci,netdev=net0,disable-legacy=on", nullptr});
   if (o.test)
     cmd_addv(c, (const char *const[]){"-serial", "stdio", "-monitor", "none", nullptr});
   else

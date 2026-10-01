@@ -9,7 +9,8 @@
 // A manifest is ndb records: a service= record, then the records that belong
 // to it, up to the next service=.
 //
-//   service=NAME program=/boot/bin/PROG [post=SRV] [bootimage] [console] [tasks] [restart] [arch=A]
+//   service=NAME program=/boot/bin/PROG [post=SRV] [bootimage] [console] [tasks]
+//           [resource] [acpi] [restart] [arch=A]
 //   arg=VALUE                                  an argument, in order
 //   mount=OLD srv=SRV [aname=A] [flags=abc]    a mount in its namespace
 //   bind=OLD new=NEW [flags=abc]               a bind in its namespace
@@ -25,7 +26,8 @@
 // gets svcd's own task, and through it every task (procfs). arch: it runs
 // only on that architecture. vx.skip=NAME,... on the kernel command line
 // leaves services out. A service gets nothing that is not named
-// here: no ambient authority (01 §2).
+// here: no ambient authority (01 §2). resource and acpi: the root Resource
+// and the ACPI tables, which only devmgr needs.
 //
 // Drivers, the services with ioport, mmio or irq records, start first. svcd
 // mints their device objects from the root Resource once, keeps them, and
@@ -72,7 +74,8 @@ static post posts[MAX_SERVICES];
 static uint32_t post_count;
 static const uint8_t *image;
 static uint64_t image_size;
-static vx_handle image_vmo, port, resource;
+static vx_handle image_vmo, port, resource, acpi_vmo;
+static uint64_t acpi_size;
 static bool console_attached;
 
 #ifdef __x86_64__
@@ -226,6 +229,17 @@ static vx_status start(service *s) {
     st = vx_handle_dup(cons->client, CONNECTOR_RIGHTS, &handles[count]);
     handle_names[count++] = VX_STR("console");
   }
+  if (st == VX_OK && vx_ndb_has(&rec, "resource") && resource) { // root authority over devices: devmgr
+    st = vx_handle_dup(resource, VX_RIGHTS_SAME, &handles[count]);
+    handle_names[count++] = VX_STR("resource");
+  }
+  if (st == VX_OK && vx_ndb_has(&rec, "acpi") && acpi_vmo) {
+    st = vx_handle_dup(acpi_vmo, VX_RIGHTS_SAME, &handles[count]);
+    handle_names[count++] = VX_STR("acpi");
+    vx_ndb_flag(&w, "acpi");
+    vx_ndb_put_u64(&w, "size", acpi_size);
+    vx_ndb_end(&w);
+  }
   if (st == VX_OK && vx_ndb_has(&rec, "tasks")) { // svcd's own task: the whole tree, for procfs
     st = vx_handle_dup(vx_self, VX_RIGHT_INSPECT | VX_RIGHT_MANAGE | VX_RIGHT_TRANSFER, &handles[count]);
     handle_names[count++] = VX_STR("tasks");
@@ -357,6 +371,9 @@ int vx_main(void) {
 
   vx_ndb_record rec;
   resource = vx_spawn_take("resource");
+  acpi_vmo = vx_spawn_take("acpi");
+  if (acpi_vmo && (!vx_spawn_record("acpi", &rec) || !vx_ndb_get_u64(&rec, "size", &acpi_size)))
+    acpi_vmo = VX_HANDLE_NONE;
   image_vmo = vx_spawn_take("bootimage");
   uint64_t base = 0;
   if (!image_vmo || !vx_spawn_record("bootimage", &rec) || !vx_ndb_get_u64(&rec, "size", &image_size))

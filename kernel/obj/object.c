@@ -17,6 +17,7 @@ typedef enum obj_type : uint8_t {
   OBJ_RESOURCE,
   OBJ_IRQ,
   OBJ_IORANGE,
+  OBJ_DMA_DOMAIN,
 } obj_type;
 
 typedef struct object {

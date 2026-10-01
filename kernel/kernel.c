@@ -55,6 +55,10 @@ static uint64_t arch_thread_initial_sp(thread *t);
 static vx_status arch_irq_canonical(uint32_t line, uint32_t *out); // the number the line is known by
 static vx_status arch_irq_route(uint32_t line, bool *level);       // to the boot CPU, unmasked
 static void arch_irq_mask(uint32_t line, bool masked);
+struct vx_msi;
+static vx_status arch_msi_create(uint32_t source, uint32_t *line,
+                                 struct vx_msi *msi); // a free MSI line, routed
+static void arch_msi_destroy(uint32_t line);
 static bool arch_has_io_ports(void);
 static void arch_devices_init(void); // finds the interrupt controllers' device lines, after paging_init
 static bool arch_console_device(bool io, uint64_t base,
@@ -83,6 +87,7 @@ static void arch_io_switch(const struct task *t); // this CPU's I/O port permiss
 #include "obj/process.c"
 #include "syscall/syscall.c"
 #include "elf.c"
+#include "acpi.c"
 #include "../lib/vx-ndb/ndb.c"
 #include "root.c"
 #include "sched/smp.c"

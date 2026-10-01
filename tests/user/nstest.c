@@ -82,8 +82,12 @@ static void test_namespace(void) {
   programs[boot_bin.len] = 0;
   CHECK_STR(list("/bin"), programs); // the empty /bin, then /boot/bin
   CHECK(boot_bin.len > 6 && memcmp(programs, "bootfs nstest ", 14) == 0);
-  CHECK_STR(list("/dev"), "bootfs.ndb cons.ndb procfs.ndb shell.ndb nstest.ndb");
-  CHECK_STR(list("/boot/svc"), "bootfs.ndb cons.ndb procfs.ndb shell.ndb nstest.ndb");
+  vx_str svc = list("/boot/svc");
+  static char manifests[512];
+  memcpy(manifests, svc.ptr, svc.len); // list's buffer is reused
+  manifests[svc.len] = 0;
+  CHECK_STR(list("/dev"), manifests); // /dev's own (nothing), then boot/svc attached at /dev
+  CHECK(svc.len > 22 && memcmp(manifests, "bootfs.ndb cons.ndb ", 20) == 0);
 
   // A file, read through a bind and through a second attach.
   static const char want[] = "# boot/svc/bootfs.ndb";

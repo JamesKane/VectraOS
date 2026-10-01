@@ -40,8 +40,9 @@ static pool resource_pool = POOL_FOR(resource);
 static pool irq_pool = POOL_FOR(irq);
 static pool iorange_pool = POOL_FOR(iorange);
 
-static constexpr uint32_t MAX_IRQ_LINES = 1024;
-static irq *irq_lines[MAX_IRQ_LINES]; // under irq_lines_lock; at most one Irq per line
+static constexpr uint32_t MAX_IRQ_LINES = 2048;
+static constexpr uint32_t MSI_LINE_BASE = 1024; // lines from here are MSIs (arch_msi_create)
+static irq *irq_lines[MAX_IRQ_LINES];           // under irq_lines_lock; at most one Irq per line
 static spinlock irq_lines_lock;
 
 // A driver has the console's device. With vx.kconsole on the command line the
@@ -110,6 +111,25 @@ static vx_status irq_create(uint32_t line, irq **out) {
   return VX_OK;
 }
 
+// An MSI for the PCI function `source`: the architecture picks a free line
+// (it reads irq_lines, under irq_lines_lock) and says what to write where.
+static vx_status irq_create_msi(uint32_t source, irq **out, vx_msi *msi) {
+  irq *q = pool_alloc(&irq_pool);
+  if (!q) return VX_ERR_NO_MEMORY;
+  q->obj.type = OBJ_IRQ;
+  atomic_store_explicit(&q->obj.refs, 1, memory_order_relaxed);
+  spin_lock(&irq_lines_lock);
+  vx_status st = arch_msi_create(source, &q->line, msi);
+  if (st == VX_OK) irq_lines[q->line] = q;
+  spin_unlock(&irq_lines_lock);
+  if (st != VX_OK) {
+    pool_free(&irq_pool, q);
+    return st;
+  }
+  *out = q; // edge-triggered: never masked
+  return VX_OK;
+}
+
 // The line fired: called by the architecture's interrupt handler.
 static void irq_fire(uint32_t line) {
   spin_lock(&irq_lines_lock);
@@ -158,6 +178,7 @@ static void irq_ack(irq *q) {
 static void irq_destroy(irq *q) {
   spin_lock(&irq_lines_lock);
   arch_irq_mask(q->line, true);
+  if (q->line >= MSI_LINE_BASE) arch_msi_destroy(q->line);
   irq_lines[q->line] = nullptr;
   spin_unlock(&irq_lines_lock);
   observers_free(q->obs.head);
@@ -194,4 +215,66 @@ static vx_status task_enable_io(task *t, const iorange *r) {
   spin_unlock(&t->lock);
   if (st == VX_OK && t == this_cpu()->current->task) arch_io_switch(t);
   return st;
+}
+
+// --- DmaDomain ---
+//
+// What a device may reach by DMA (01 §6). There is no IOMMU behind it yet: a
+// pass-through domain gives devices physical addresses, so it is only safe
+// with devices QEMU emulates (04 §5, M3). It holds each VMO it maps, so the
+// pages stay where the device was told they are.
+
+static constexpr uint32_t DMA_MAPPINGS = 128;
+
+typedef struct dma_domain {
+  object obj;
+  spinlock lock;
+  vmo *mapped[DMA_MAPPINGS]; // a reference for each dma_map
+} dma_domain;
+
+static pool dma_pool = POOL_FOR(dma_domain);
+
+static vx_status dma_domain_create(dma_domain **out) {
+  dma_domain *d = pool_alloc(&dma_pool);
+  if (!d) return VX_ERR_NO_MEMORY;
+  d->obj.type = OBJ_DMA_DOMAIN;
+  atomic_store_explicit(&d->obj.refs, 1, memory_order_relaxed);
+  *out = d;
+  return VX_OK;
+}
+
+// Holds the VMO for the device and gives the address of each page of the range.
+static vx_status dma_map(dma_domain *d, vmo *v, uint64_t offset, uint64_t size, uint64_t *addresses) {
+  uint64_t end;
+  if (!size || (offset | size) & 4095 || ckd_add(&end, offset, size) || end > v->size) return VX_ERR_RANGE;
+  if (v->physical) return VX_ERR_UNSUPPORTED; // device memory: peer-to-peer comes later
+  spin_lock(&d->lock);
+  uint32_t slot = 0;
+  while (slot < DMA_MAPPINGS && d->mapped[slot]) slot++;
+  if (slot < DMA_MAPPINGS) {
+    object_ref(&v->obj);
+    d->mapped[slot] = v;
+  }
+  spin_unlock(&d->lock);
+  if (slot == DMA_MAPPINGS) return VX_ERR_NO_MEMORY;
+  for (uint64_t i = 0; i < size / 4096; i++) addresses[i] = v->pages[offset / 4096 + i];
+  return VX_OK;
+}
+
+// Lets go of every mapping of the VMO.
+static vx_status dma_unmap(dma_domain *d, const vmo *v) {
+  vmo *drop[DMA_MAPPINGS];
+  uint32_t n = 0;
+  spin_lock(&d->lock);
+  for (uint32_t i = 0; i < DMA_MAPPINGS; i++)
+    if (d->mapped[i] == v) drop[n++] = d->mapped[i], d->mapped[i] = nullptr;
+  spin_unlock(&d->lock);
+  for (uint32_t i = 0; i < n; i++) object_release(&drop[i]->obj);
+  return n ? VX_OK : VX_ERR_NOT_FOUND;
+}
+
+static void dma_domain_destroy(dma_domain *d) {
+  for (uint32_t i = 0; i < DMA_MAPPINGS; i++)
+    if (d->mapped[i]) object_drop(&d->mapped[i]->obj);
+  pool_free(&dma_pool, d);
 }

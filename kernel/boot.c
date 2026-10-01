@@ -16,10 +16,10 @@ LIMINE_REQUEST struct limine_memmap_request memmap_request = {.id = LIMINE_MEMMA
 LIMINE_REQUEST struct limine_mp_request mp_request = {.id = LIMINE_MP_REQUEST_ID,
                                                       .flags = LIMINE_MP_REQUEST_X86_64_X2APIC};
 LIMINE_REQUEST struct limine_tsc_frequency_request tsc_request = {.id = LIMINE_TSC_FREQUENCY_REQUEST_ID};
-LIMINE_REQUEST struct limine_rsdp_request rsdp_request = {.id = LIMINE_RSDP_REQUEST_ID}; // for the MADT
 #else
 LIMINE_REQUEST struct limine_mp_request mp_request = {.id = LIMINE_MP_REQUEST_ID};
 #endif
+LIMINE_REQUEST struct limine_rsdp_request rsdp_request = {.id = LIMINE_RSDP_REQUEST_ID}; // ACPI (acpi.c)
 LIMINE_REQUEST struct limine_entropy_request entropy_request = {.id = LIMINE_ENTROPY_REQUEST_ID,
                                                                 .value_count = 1};
 LIMINE_REQUEST struct limine_executable_cmdline_request cmdline_request = {
@@ -49,6 +49,7 @@ typedef struct boot_info {
   phys_range ram[MAX_RAM_RANGES];
   uint32_t ram_count;
   bool ram_incomplete;
+  uint64_t rsdp; // the ACPI RSDP's physical address, or 0 (acpi.c)
 } boot_info;
 
 static boot_info boot;
@@ -111,6 +112,12 @@ static uint64_t early_alloc(uint64_t pages) {
     memcpy(boot_cmdline, c, n); // the original is in memory reclaim_boot_memory frees
     boot.cmdline = (vx_str){boot_cmdline, n};
   }
+
+  // Limine's responses are in memory reclaim_boot_memory frees, so what is
+  // needed later is copied now. The RSDP's address is in the HHDM (it is
+  // physical only under base revision 3).
+  if (rsdp_request.response && rsdp_request.response->address)
+    boot.rsdp = (uint64_t)rsdp_request.response->address - boot.hhdm;
 
   struct limine_entropy_response *entropy = entropy_request.response;
   if (entropy && entropy->value_count >= 1) __stack_chk_guard = entropy->values[0];

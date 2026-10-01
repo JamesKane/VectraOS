@@ -277,7 +277,8 @@ static constexpr uint8_t VECTOR_TIMER = 0x20;
 static constexpr uint8_t VECTOR_RESCHED = 0x21; // another CPU made a thread ready
 static constexpr uint8_t VECTOR_SPURIOUS = 0xff;
 static constexpr uint8_t VECTOR_IRQ_BASE = 0x30; // device interrupts: VECTOR_IRQ_BASE + GSI
-static constexpr uint32_t MAX_GSI = 0xc0;        // up to vector 0xef
+static constexpr uint32_t MAX_GSI = 0x50;        // up to vector 0x7f
+static constexpr uint8_t VECTOR_MSI_FIRST = 0x80, VECTOR_MSI_LAST = 0xef; // MSIs: line MSI_LINE_BASE + vector
 
 typedef struct cpuid_regs {
   uint32_t a, b, c, d;
@@ -390,6 +391,9 @@ void x86_trap(trap_frame *f) {
     this_cpu()->resched = true;
   } else if (f->vector == VECTOR_SPURIOUS) {
     return;
+  } else if (f->vector >= VECTOR_MSI_FIRST && f->vector <= VECTOR_MSI_LAST) {
+    irq_fire(MSI_LINE_BASE + (uint32_t)f->vector);
+    wrmsr(X2APIC_EOI, 0);
   } else if (f->vector >= VECTOR_IRQ_BASE && f->vector < VECTOR_IRQ_BASE + MAX_GSI) {
     irq_fire((uint32_t)(f->vector - VECTOR_IRQ_BASE)); // a level line is masked before the EOI
     wrmsr(X2APIC_EOI, 0);
@@ -463,46 +467,6 @@ static void ioapic_write(const ioapic *a, uint32_t reg, uint32_t v) {
   a->regs[4] = v;
 }
 
-static uint32_t read32(const uint8_t *p) {
-  uint32_t v;
-  memcpy(&v, p, 4);
-  return v;
-}
-
-static uint64_t read64(const uint8_t *p) {
-  uint64_t v;
-  memcpy(&v, p, 8);
-  return v;
-}
-
-// Whether [pa, pa + len) is firmware or RAM memory, which the direct map covers.
-static bool in_direct_map(uint64_t pa, uint64_t len) {
-  for (uint32_t i = 0; i < boot.ram_count; i++)
-    if (pa >= boot.ram[i].base && len <= boot.ram[i].end - pa) return true;
-  return false;
-}
-
-// An ACPI table by signature, through the RSDT or XSDT; nullptr if there is none.
-static const uint8_t *acpi_table(const char sig[4]) {
-  // Limine gives the RSDP's address in the HHDM (it is physical only under base revision 3).
-  uint64_t rsdp_pa = rsdp_request.response ? (uint64_t)rsdp_request.response->address - boot.hhdm : 0;
-  if (!rsdp_pa || !in_direct_map(rsdp_pa, 36)) return nullptr;
-  const uint8_t *rsdp = phys_to_virt(rsdp_pa);
-  bool xsdt = rsdp[15] >= 2;
-  uint64_t root = xsdt ? read64(rsdp + 24) : read32(rsdp + 16);
-  if (!in_direct_map(root, 36)) return nullptr;
-  const uint8_t *sdt = phys_to_virt(root);
-  uint32_t len = read32(sdt + 4), entry = xsdt ? 8 : 4;
-  if (!in_direct_map(root, len)) return nullptr;
-  for (uint32_t off = 36; off + entry <= len; off += entry) {
-    uint64_t pa = xsdt ? read64(sdt + off) : read32(sdt + off);
-    if (!in_direct_map(pa, 36)) continue;
-    const uint8_t *t = phys_to_virt(pa);
-    if (memcmp(t, sig, 4) == 0 && in_direct_map(pa, read32(t + 4))) return t;
-  }
-  return nullptr;
-}
-
 // Finds the IOAPICs and the ISA overrides in the MADT, maps the IOAPICs and
 // masks every line. Without a MADT, irq_create has no lines to give.
 static void arch_devices_init(void) {
@@ -573,7 +537,25 @@ static vx_status arch_irq_route(uint32_t line, bool *level) {
   return VX_OK;
 }
 
+// An MSI is a write to the boot CPU's local APIC (x2APIC IDs above 255 need
+// interrupt remapping, which comes with the IOMMU) with a free vector. The
+// PCI function does not matter: any vector can come from any device.
+static vx_status arch_msi_create(uint32_t source, uint32_t *line, vx_msi *msi) {
+  (void)source;
+  for (uint32_t v = VECTOR_MSI_FIRST; v <= VECTOR_MSI_LAST; v++) {
+    if (irq_lines[MSI_LINE_BASE + v]) continue;
+    if (cpus[0].arch_id > 0xff) return VX_ERR_UNSUPPORTED;
+    *line = MSI_LINE_BASE + v;
+    *msi = (vx_msi){.address = 0xfee0'0000 | cpus[0].arch_id << 12, .data = v}; // fixed, edge
+    return VX_OK;
+  }
+  return VX_ERR_NO_MEMORY;
+}
+
+static void arch_msi_destroy(uint32_t line) { (void)line; } // nothing routes it but the device
+
 static void arch_irq_mask(uint32_t line, bool masked) {
+  if (line >= MSI_LINE_BASE) return; // an MSI: edge-triggered, and the device masks it if anything does
   const ioapic *a = ioapic_for(line);
   if (!a) return;
   uint32_t reg = 0x10 + 2 * (line - a->gsi_base);

@@ -3,7 +3,8 @@
 // the kernel's own tests). It gets the debug-write capability, and starts like
 // every task, with a bootstrap channel holding its spawn message (abi.h): a
 // handle to itself, the boot image (the bootfs.tar module, copied into a VMO),
-// the root Resource (device.c) and the kernel command line.
+// the ACPI tables (acpi.c), the root Resource (device.c) and the kernel
+// command line.
 
 LIMINE_REQUEST struct limine_module_request module_request = {.id = LIMINE_MODULE_REQUEST_ID};
 
@@ -46,48 +47,61 @@ static void find_root_module(void) {
 
 static constexpr uint32_t ROOT_RESOURCE_RIGHTS =
     VX_RIGHT_MANAGE | VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
-static constexpr uint32_t BOOT_IMAGE_RIGHTS =
+static constexpr uint32_t READ_ONLY_RIGHTS = // the boot image and the ACPI tables
     VX_RIGHT_READ | VX_RIGHT_MAP | VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
 
 // Writes the root task's spawn message into a new channel and returns the end
-// it reads from. The message holds references to t and to the boot image.
+// it reads from: a handle to itself, the boot image, the ACPI tables, the root
+// Resource, and the command line. The message holds the references.
 static channel *root_spawn_message(task *t) {
   static char text[1024];
   vx_ndb_writer w = {.buf = text, .cap = sizeof text};
   vx_ndb_put(&w, "spawn", (vx_str){root_module.name, root_module.name_len});
   vx_ndb_end(&w);
+  moved_handle given[4];
+  uint32_t count = 0;
+  object_ref(&t->obj);
+  given[count] = (moved_handle){&t->obj, ALL_RIGHTS};
   vx_ndb_put(&w, "handle", VX_STR("self"));
-  vx_ndb_put_u64(&w, "index", 0);
+  vx_ndb_put_u64(&w, "index", count++);
   vx_ndb_end(&w);
-  vmo *image = nullptr;
   if (root_module.bootfs) {
+    vmo *image;
     if (vmo_create(root_module.bootfs_size, &image) != VX_OK) panic(VX_STR("no memory for the boot image"));
     vmo_write(image, 0, root_module.bootfs, root_module.bootfs_size);
+    given[count] = (moved_handle){&image->obj, READ_ONLY_RIGHTS};
     vx_ndb_put(&w, "handle", VX_STR("bootimage"));
-    vx_ndb_put_u64(&w, "index", 1);
+    vx_ndb_put_u64(&w, "index", count++);
     vx_ndb_end(&w);
     vx_ndb_flag(&w, "bootimage");
     vx_ndb_put_u64(&w, "size", root_module.bootfs_size);
     vx_ndb_end(&w);
   }
+  uint64_t acpi_size;
+  vmo *acpi = acpi_export(&acpi_size);
+  if (acpi) {
+    given[count] = (moved_handle){&acpi->obj, READ_ONLY_RIGHTS};
+    vx_ndb_put(&w, "handle", VX_STR("acpi"));
+    vx_ndb_put_u64(&w, "index", count++);
+    vx_ndb_end(&w);
+    vx_ndb_flag(&w, "acpi");
+    vx_ndb_put_u64(&w, "size", acpi_size);
+    vx_ndb_end(&w);
+  }
+  given[count] = (moved_handle){&root_resource()->obj, ROOT_RESOURCE_RIGHTS};
   vx_ndb_put(&w, "handle", VX_STR("resource"));
-  vx_ndb_put_u64(&w, "index", image ? 2 : 1);
+  vx_ndb_put_u64(&w, "index", count++);
   vx_ndb_end(&w);
   vx_ndb_put(&w, "cmdline", boot.cmdline);
   vx_ndb_end(&w);
   if (w.failed) panic(VX_STR("the root task's spawn message does not fit"));
 
-  uint32_t count = image ? 3 : 2;
   channel_msg *m = msg_alloc((uint32_t)(sizeof(vx_msg_header) + w.len), count);
   channel *ours, *theirs;
   if (!m || channel_create(&ours, &theirs) != VX_OK) panic(VX_STR("cannot make the root task's channel"));
   *(vx_msg_header *)msg_body(m) = (vx_msg_header){.ordinal = VX_SPAWN};
   memcpy(msg_body(m) + sizeof(vx_msg_header), text, w.len);
-  object_ref(&t->obj);
-  m->handles[0] = (moved_handle){&t->obj, ALL_RIGHTS};
-  if (image)
-    m->handles[1] = (moved_handle){&image->obj, BOOT_IMAGE_RIGHTS}; // the message takes our reference
-  m->handles[count - 1] = (moved_handle){&root_resource()->obj, ROOT_RESOURCE_RIGHTS};
+  for (uint32_t i = 0; i < count; i++) m->handles[i] = given[i]; // the message takes our references
   if (channel_write(ours, m) != VX_OK) panic(VX_STR("cannot send the root task's spawn message"));
   object_release(&ours->obj); // the message stays queued; then the root task sees PEER_CLOSED
   return theirs;

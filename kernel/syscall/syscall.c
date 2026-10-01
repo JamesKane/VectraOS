@@ -47,6 +47,7 @@ static void object_destroy(object *obj) {
   case OBJ_RESOURCE: pool_free(&resource_pool, obj); break;
   case OBJ_IRQ: irq_destroy((irq *)obj); break;
   case OBJ_IORANGE: pool_free(&iorange_pool, obj); break;
+  case OBJ_DMA_DOMAIN: dma_domain_destroy((dma_domain *)obj); break;
   default: break;
   }
 }
@@ -188,15 +189,23 @@ static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out, vx_
 
 // --- Devices (obj/device.c) ---
 
-static int64_t sys_irq_create(vx_handle rh, uint64_t line, uint64_t options, uint64_t out) {
-  if (options || line > UINT32_MAX) return VX_ERR_INVALID;
+// irq_create(resource, line, options, &out, &msi): a line, or with VX_IRQ_MSI
+// an MSI for the PCI function `line` names, with what to program into it.
+static int64_t sys_irq_create(vx_handle rh, uint64_t line, uint64_t options, uint64_t out, uint64_t msi_out) {
+  if ((options & ~(uint64_t)VX_IRQ_MSI) || line > UINT32_MAX) return VX_ERR_INVALID;
   vx_status st;
   resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
   if (!r) return st;
   uint32_t canonical;
   irq *q = nullptr;
-  st = arch_irq_canonical((uint32_t)line, &canonical);
-  if (st == VX_OK) st = irq_create(canonical, &q);
+  vx_msi msi = {};
+  if (options & VX_IRQ_MSI) {
+    st = irq_create_msi((uint32_t)line, &q, &msi);
+    if (st == VX_OK && (st = copy_to_user(msi_out, &msi, sizeof msi)) != VX_OK) object_release(&q->obj);
+  } else {
+    st = arch_irq_canonical((uint32_t)line, &canonical);
+    if (st == VX_OK) st = irq_create(canonical, &q);
+  }
   object_release(&r->obj);
   if (st != VX_OK) return st;
   return return_handle(&q->obj, VX_RIGHT_WAIT | VX_RIGHT_WRITE | DEVICE_RIGHTS, out);
@@ -209,6 +218,51 @@ static int64_t sys_irq_ack(vx_handle h) {
   irq_ack(q);
   object_release(&q->obj);
   return VX_OK;
+}
+
+static int64_t sys_dma_domain_create(vx_handle rh, uint64_t options, uint64_t out) {
+  if (options) return VX_ERR_INVALID; // pass-through: the only kind so far
+  vx_status st;
+  resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
+  if (!r) return st;
+  dma_domain *d = nullptr;
+  st = dma_domain_create(&d);
+  object_release(&r->obj);
+  if (st != VX_OK) return st;
+  return return_handle(&d->obj, VX_RIGHT_MAP | DEVICE_RIGHTS, out);
+}
+
+// dma_map(domain, vmo, offset, size, addresses): batched, a page at a time.
+static int64_t sys_dma_map(vx_handle dh, vx_handle vh, uint64_t offset, uint64_t size, uint64_t out) {
+  static constexpr uint64_t MAX_PAGES = 512;
+  if (size / 4096 > MAX_PAGES || !user_range_ok(out, size / 4096 * sizeof(uint64_t), true))
+    return VX_ERR_INVALID;
+  vx_status st;
+  dma_domain *d = (dma_domain *)handle_get(current_task(), dh, OBJ_DMA_DOMAIN, VX_RIGHT_MAP, &st);
+  if (!d) return st;
+  vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, VX_RIGHT_READ | VX_RIGHT_WRITE, &st);
+  uint64_t addresses[MAX_PAGES];
+  if (v) {
+    st = dma_map(d, v, offset, size, addresses);
+    if (st == VX_OK && (st = copy_to_user(out, addresses, size / 4096 * sizeof(uint64_t))) != VX_OK)
+      dma_unmap(d, v);
+    object_release(&v->obj);
+  }
+  object_release(&d->obj);
+  return st;
+}
+
+static int64_t sys_dma_unmap(vx_handle dh, vx_handle vh) {
+  vx_status st;
+  dma_domain *d = (dma_domain *)handle_get(current_task(), dh, OBJ_DMA_DOMAIN, VX_RIGHT_MAP, &st);
+  if (!d) return st;
+  vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, 0, &st);
+  if (v) {
+    st = dma_unmap(d, v);
+    object_release(&v->obj);
+  }
+  object_release(&d->obj);
+  return st;
 }
 
 static int64_t sys_iorange_create(vx_handle rh, uint64_t base, uint64_t count, uint64_t out) {
@@ -656,8 +710,11 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_ring_notify: return sys_ring_notify((vx_handle)a[0]);
   case VX_SYS_ring_xfer_handles: return sys_ring_xfer((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_vmo_create: return sys_vmo_create(a[0], a[1], a[2], (vx_handle)a[3], a[4]);
-  case VX_SYS_irq_create: return sys_irq_create((vx_handle)a[0], a[1], a[2], a[3]);
+  case VX_SYS_irq_create: return sys_irq_create((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_irq_ack: return sys_irq_ack((vx_handle)a[0]);
+  case VX_SYS_dma_domain_create: return sys_dma_domain_create((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_dma_map: return sys_dma_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
+  case VX_SYS_dma_unmap: return sys_dma_unmap((vx_handle)a[0], (vx_handle)a[1]);
   case VX_SYS_iorange_create: return sys_iorange_create((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);

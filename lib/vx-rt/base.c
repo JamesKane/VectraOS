@@ -125,6 +125,31 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_irq_ack, irq, 0, 0, 0, 0, 0);
 }
 
+// An MSI for the PCI function `source` (its requester ID), and what the device
+// must write where to raise it.
+[[maybe_unused]] static vx_status vx_irq_create_msi(vx_handle resource, uint32_t source, vx_handle *out,
+                                                    vx_msi *msi) {
+  *out = VX_HANDLE_NONE;
+  *msi = (vx_msi){};
+  return (vx_status)vx_syscall(VX_SYS_irq_create, resource, source, VX_IRQ_MSI, (uint64_t)out, (uint64_t)msi,
+                               0);
+}
+
+[[maybe_unused]] static vx_status vx_dma_domain_create(vx_handle resource, vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_dma_domain_create, resource, 0, (uint64_t)out, 0, 0, 0);
+}
+
+// The device address of each page of [offset, offset + size), into addresses[size / 4096].
+[[maybe_unused]] static vx_status vx_dma_map(vx_handle domain, vx_handle vmo, uint64_t offset, uint64_t size,
+                                             uint64_t *addresses) {
+  return (vx_status)vx_syscall(VX_SYS_dma_map, domain, vmo, offset, size, (uint64_t)addresses, 0);
+}
+
+[[maybe_unused]] static vx_status vx_dma_unmap(vx_handle domain, vx_handle vmo) {
+  return (vx_status)vx_syscall(VX_SYS_dma_unmap, domain, vmo, 0, 0, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_iorange_create(vx_handle resource, uint16_t base, uint32_t count,
                                                     vx_handle *out) {
   *out = VX_HANDLE_NONE;

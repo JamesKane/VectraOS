@@ -254,7 +254,7 @@ still here
 ### M3 — Mount the network
 
 **Scope:**
-- `bus-pci`: ECAM, and MSI-X through `Irq` objects. On aarch64, `bus-dt` locates the PCIe host bridge.
+- `bus-pci`: ECAM, found through the ACPI MCFG table on both architectures (edk2 provides ACPI on arm64 QEMU), and MSI-X through `Irq` objects (on aarch64, LPIs through the GIC's ITS). `bus-dt` waits for boards without ACPI. In M3 the PCI scan runs inside `devmgr`.
 - The virtio-pci modern transport in `vx-driver`, and `drv-virtio-net` with rings to `netd`. `DmaDomain` runs in IOMMU pass-through mode, under QEMU only; virtio-iommu enforcement comes in M5. On real hardware the IOMMU stays in deny-all mode (01 §10), so M3's network drivers run only in QEMU.
 - `netd` on `vx-net`, first-party. It implements Ethernet, ARP, IPv4, ICMP echo, UDP, a DHCP client, TCP (NewReno, window scaling; no SACK yet) and a DNS stub, and serves `/net` in the Plan 9 layout (`clone`, `ctl`, `data`, `local`, `remote`, `status`) together with `/net/cs`.
 - 9Px over TCP in the `vx-9p` client. The `mount` command accepts `tcp!host!port` and `9p://host:port`.

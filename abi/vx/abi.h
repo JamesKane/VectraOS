@@ -187,10 +187,31 @@ static_assert(sizeof(vx_cqe) == 32);
 //       VX_TRIGGER_IRQ. A level-triggered line is masked when it fires until
 //       irq_ack; an edge-triggered one is never masked, and a binding made
 //       after it fired fires at once.
+//   irq_create(resource, source, VX_IRQ_MSI, &out, &msi)
+//       an MSI or MSI-X interrupt for the PCI function whose requester ID
+//       (bus << 8 | device << 3 | function) is `source`: the kernel picks
+//       it, and vx_msi says what the device must write, and where. Always
+//       edge-triggered. (x86_64: an APIC vector; arm64: an LPI, through the
+//       GIC's ITS, which knows the device by its requester ID.)
+//   dma_domain_create(resource, 0, &out)
+//       a DmaDomain: what a device may reach by DMA. In pass-through mode,
+//       the only one so far (QEMU; the IOMMU comes with M5), a device
+//       address is the physical address.
+//   dma_map(domain, vmo, offset, size, addresses)
+//       the device address of each page of [offset, offset + size), into
+//       addresses[size / 4096]; the domain holds the VMO until dma_unmap
+//   dma_unmap(domain, vmo)
 //   iorange_create(resource, base, count, &out)
 //       x86_64 only: I/O ports, which a task may use once as_map has been
 //       called with the IoRange in place of a VMO (offset, size and flags 0)
 enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1 };
+enum vx_irq_options : uint32_t { VX_IRQ_MSI = 1 };
+
+typedef struct vx_msi { // what a device writes to raise an MSI
+  uint64_t address;
+  uint32_t data;
+  uint32_t reserved;
+} vx_msi;
 
 enum vx_vmo_op : uint32_t { // vmo_rw
   VX_VMO_READ = 0,

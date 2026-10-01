@@ -70,6 +70,13 @@ static constexpr uint64_t GICD_PHYS = 0x0800'0000;
 static constexpr uint64_t GICD_SIZE = 0x1'0000;
 static constexpr uint64_t GICR_PHYS = 0x080a'0000;
 static constexpr uint64_t GICR_FRAME_SIZE = 0x2'0000;
+// MSIs are LPIs, through the ITS (below).
+static constexpr uint64_t ITS_PHYS_DEFAULT = 0x0808'0000; // QEMU virt's, if the MADT has none
+static constexpr uint32_t LPI_BASE = 8192, LPI_COUNT = 1024;
+static constexpr uint32_t LPI_ID_BITS = 14; // INTIDs up to 2^14: LPIs 8192..16383
+static constexpr uint32_t ITS_EVENTS = 32;  // per device
+
+static uint8_t *boot_rd; // the boot CPU's redistributor
 
 // The user half has its own tables in TTBR0; the kernel's stay in TTBR1.
 static uint64_t arch_new_user_root(void) { return phys_alloc_zeroed(0); }
@@ -191,6 +198,7 @@ static void arch_timer_init(void) {
     if (typer & (1u << 4)) break; // the last redistributor
   }
   if (!rd) panic(VX_STR("no GIC redistributor for this CPU"));
+  if (arch_cpu_index() == 0) boot_rd = rd; // LPIs (MSIs) go to the boot CPU
 
   volatile uint32_t *waker = (volatile uint32_t *)(rd + 0x14);
   *waker &= ~(1u << 1);         // clear ProcessorSleep
@@ -245,6 +253,8 @@ static void aarch64_irq(void) {
     timer_interrupt();
   } else if (intid == INTID_RESCHED) {
     this_cpu()->resched = true;
+  } else if (intid >= LPI_BASE && intid < LPI_BASE + LPI_COUNT) {
+    irq_fire(MSI_LINE_BASE + intid - LPI_BASE); // an MSI: edge-triggered, never masked
   } else if (intid >= 32) {
     irq_fire(intid); // a device's SPI: masked before the EOI, as it is level-triggered
   }
@@ -292,7 +302,149 @@ static vx_status arch_irq_route(uint32_t line, bool *level) {
   return VX_OK;
 }
 
+// --- MSIs: LPIs through the ITS ---
+//
+// A PCI function's MSI write goes to the ITS's translation register, with the
+// function's requester ID as its DeviceID and the data as an EventID. The ITS
+// maps the pair to an LPI, through tables in memory it is given, and sends
+// the LPI to a redistributor: here always the boot CPU's, through collection
+// 0. The kernel sets it all up the first time an MSI is created. LPIs are
+// edge-triggered and have no active state; one is turned off by clearing its
+// enable bit in the configuration table.
+
+static volatile uint8_t *its; // the ITS's registers
+static uint8_t *lpi_config;   // a byte for each LPI: priority, and bit 0 enables it
+static uint64_t *its_queue;   // the command queue, 64 KiB
+static uint32_t its_queue_at; // bytes written
+static uint64_t its_target;   // the redistributor, as MAPC and SYNC name it
+
+static struct {
+  uint32_t id;     // the DeviceID: a requester ID
+  uint32_t events; // a bit for each EventID in use
+  bool used;
+} its_devices[64];
+
+static struct {   // what each LPI in use was mapped from
+  uint8_t device; // in its_devices
+  uint8_t event;
+  bool used;
+} lpi_events[LPI_COUNT];
+
+static void its_command(uint64_t d0, uint64_t d1, uint64_t d2, uint64_t d3) {
+  uint64_t *c = its_queue + its_queue_at / 8;
+  c[0] = d0, c[1] = d1, c[2] = d2, c[3] = d3;
+  its_queue_at = (its_queue_at + 32) % (64 * 1024);
+  __asm__ volatile("dsb ishst" ::: "memory");
+  *(volatile uint64_t *)(its + 0x88) = its_queue_at;            // GITS_CWRITER
+  while (*(volatile uint64_t *)(its + 0x90) != its_queue_at) {} // GITS_CREADR: until it has run them
+}
+
+static void its_sync(void) { its_command(0x05, 0, its_target << 16, 0); }
+
+static uint64_t its_table(unsigned order) {
+  uint64_t pa = phys_alloc_zeroed(order);
+  if (!pa) panic(VX_STR("no memory for the ITS's tables"));
+  return pa;
+}
+
+static vx_status its_init(void) {
+  if (its) return VX_OK;
+  if (!boot_rd) return VX_ERR_UNSUPPORTED;
+  if (!(gicd_regs()[1] & (1u << 17))) return VX_ERR_UNSUPPORTED; // GICD_TYPER.LPIS
+  uint64_t pa = ITS_PHYS_DEFAULT;
+  const uint8_t *madt = acpi_table("APIC");
+  for (uint32_t off = 44, len = madt ? read32(madt + 4) : 0; off + 2 <= len && madt[off + 1] >= 2;
+       off += madt[off + 1])
+    if (madt[off] == 0xf && madt[off + 1] >= 20) pa = read64(madt + off + 8); // a GIC ITS structure
+  if (!map_range(kernel_root, boot.hhdm + pa, pa, 128ull * 1024, MAP_WRITE | MAP_DEVICE))
+    return VX_ERR_NO_MEMORY;
+  volatile uint8_t *regs = (volatile uint8_t *)(boot.hhdm + pa);
+  uint64_t typer = *(volatile uint64_t *)(regs + 0x08);
+
+  // The redistributor: its LPI configuration and pending tables, then LPIs on.
+  lpi_config = phys_to_virt(its_table(1));                       // 8 KiB: a byte for each of 8192 LPIs
+  for (uint32_t i = 0; i < LPI_COUNT; i++) lpi_config[i] = 0xa0; // a priority, disabled
+  uint64_t pending = its_table(4);                               // 64 KiB-aligned, as the GIC requires
+  *(volatile uint64_t *)(boot_rd + 0x70) =
+      ((uint64_t)lpi_config - boot.hhdm) | 1ull << 10 | 7ull << 7 | (LPI_ID_BITS - 1); // GICR_PROPBASER
+  *(volatile uint64_t *)(boot_rd + 0x78) = pending | 1ull << 10 | 7ull << 7;           // GICR_PENDBASER
+  *(volatile uint32_t *)(boot_rd + 0x00) |= 1;                                         // GICR_CTLR.EnableLPIs
+
+  // The ITS: the tables it asks for (devices and collections), then the command queue.
+  for (uint32_t n = 0; n < 8; n++) {
+    volatile uint64_t *baser = (volatile uint64_t *)(regs + 0x100 + 8ull * n);
+    uint64_t type = *baser >> 56 & 7, entry = (*baser >> 48 & 0x1f) + 1;
+    if (type != 1 && type != 4) continue; // devices, collections
+    uint32_t bits = type == 1 ? (uint32_t)(typer >> 13 & 0x1f) + 1 : 16;
+    uint64_t bytes = entry << bits, pages = (bytes + 4095) / 4096;
+    if (pages > 256) pages = 256; // 1 MiB of entries is room for every device QEMU has
+    unsigned order = 0;
+    while ((1ull << order) < pages) order++;
+    *baser = 1ull << 63 | 7ull << 59 | (entry - 1) << 48 | its_table(order) | 1ull << 10 | (pages - 1);
+  }
+  its_queue = phys_to_virt(its_table(4));
+  *(volatile uint64_t *)(regs + 0x80) =
+      1ull << 63 | 7ull << 59 | (uint64_t)its_queue - boot.hhdm | 1ull << 10 | 15;
+  *(volatile uint64_t *)(regs + 0x88) = 0;
+  *(volatile uint32_t *)(regs + 0x00) |= 1; // GITS_CTLR.Enabled
+  its = regs;
+
+  // Collection 0 is the boot CPU's redistributor, by address or by number as GITS_TYPER.PTA says.
+  uint64_t rd_pa = (uint64_t)boot_rd - boot.hhdm;
+  its_target = typer & (1ull << 19) ? rd_pa >> 16 : (*(volatile uint64_t *)(boot_rd + 0x08) >> 8 & 0xffff);
+  its_command(0x09, 0, 1ull << 63 | its_target << 16 | 0, 0); // MAPC: valid, target, ICID 0
+  its_sync();
+  return VX_OK;
+}
+
+static vx_status arch_msi_create(uint32_t source, uint32_t *line, vx_msi *msi) {
+  vx_status st = its_init();
+  if (st != VX_OK) return st;
+  uint32_t lpi = 0;
+  while (lpi < LPI_COUNT && irq_lines[MSI_LINE_BASE + lpi]) lpi++;
+  int dev = -1, free_dev = -1;
+  for (int i = 0; i < 64; i++) {
+    if (its_devices[i].used && its_devices[i].id == source) dev = i;
+    if (!its_devices[i].used && free_dev < 0) free_dev = i;
+  }
+  if (lpi == LPI_COUNT || (dev < 0 && free_dev < 0)) return VX_ERR_NO_MEMORY;
+  if (dev < 0) { // a new device: its interrupt translation table, then MAPD
+    dev = free_dev;
+    its_devices[dev] = (typeof(its_devices[0])){.id = source, .used = true};
+    uint64_t itt = its_table(0);
+    its_command(0x08 | (uint64_t)source << 32, 4 /* 5 EventID bits */, 1ull << 63 | itt, 0);
+  }
+  uint32_t event = 0;
+  while (event < ITS_EVENTS && its_devices[dev].events & (1u << event)) event++;
+  if (event == ITS_EVENTS) return VX_ERR_NO_MEMORY;
+  its_devices[dev].events |= 1u << event;
+  lpi_events[lpi] = (typeof(lpi_events[0])){.device = (uint8_t)dev, .event = (uint8_t)event, .used = true};
+  lpi_config[lpi] = 0xa0 | 1; // enabled
+  __asm__ volatile("dsb ishst" ::: "memory");
+  its_command(0x0a | (uint64_t)source << 32, event | (uint64_t)(LPI_BASE + lpi) << 32, 0,
+              0);                                          // MAPTI, to ICID 0
+  its_command(0x0c | (uint64_t)source << 32, event, 0, 0); // INV
+  its_sync();
+  *line = MSI_LINE_BASE + lpi;
+  *msi = (vx_msi){.address = ((uint64_t)its - boot.hhdm) + 0x1'0040, .data = event}; // GITS_TRANSLATER
+  return VX_OK;
+}
+
+// Turns the LPI off and forgets its event. (The ITS keeps the device's
+// table: devices come back, as restarted drivers do.)
+static void arch_msi_destroy(uint32_t line) {
+  uint32_t lpi = line - MSI_LINE_BASE;
+  if (lpi >= LPI_COUNT || !lpi_events[lpi].used) return;
+  lpi_config[lpi] = 0xa0;
+  uint32_t dev = lpi_events[lpi].device, event = lpi_events[lpi].event;
+  its_command(0x0f | (uint64_t)its_devices[dev].id << 32, event, 0, 0); // DISCARD
+  its_sync();
+  its_devices[dev].events &= ~(1u << event);
+  lpi_events[lpi].used = false;
+}
+
 static void arch_irq_mask(uint32_t line, bool masked) {
+  if (line >= MSI_LINE_BASE) return; // an MSI: edge-triggered; arch_msi_destroy turns it off
   if (line < 32 || line >= gic_lines) return;
   volatile uint32_t *d = gicd_regs();
   d[(masked ? 0x180 : 0x100) / 4 + line / 32] = 1u << (line % 32); // GICD_ICENABLER or GICD_ISENABLER
