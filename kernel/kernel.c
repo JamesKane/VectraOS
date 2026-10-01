@@ -44,9 +44,12 @@ static void kput_stamp(void); // time.c
 static uint64_t arch_new_user_root(void); // a top table sharing the kernel half
 static void arch_switch_user_root(uint64_t root);
 static bool arch_pte_user_ok(uint64_t e, bool write);
+static uint32_t arch_user_top_slots(void);       // top-table entries that belong to the user half
+static void arch_tlb_flush_page(uint64_t va);    // this CPU only
 static void arch_set_kernel_stack(uint64_t top); // where traps from user mode land
 static uint64_t arch_thread_initial_sp(thread *t);
-[[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t kstack_top);
+[[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t arg2,
+                                         uint64_t kstack_top);
 
 #include "../lib/vx-mem/mem.c"
 #include "sync.c"
@@ -60,6 +63,10 @@ static uint64_t arch_thread_initial_sp(thread *t);
 #include "obj/task.c"
 #include "sched/sched.c"
 #include "obj/port.c"
+#include "obj/channel.c"
+#include "obj/counter.c"
+#include "obj/futex.c"
+#include "obj/process.c"
 #include "syscall/syscall.c"
 #include "elf.c"
 #include "root.c"

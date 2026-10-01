@@ -811,6 +811,7 @@ static bool build_kernel(const arch *a, bool release) {
 // The user programs in the boot image, each one translation unit (04 §1.1).
 static const char *const USER_PROGRAMS[][2] = {
     {"svcd", "servers/svcd/svcd.c"},
+    {"ktest", "tests/kernel/ktest.c"}, // the root task instead of svcd with vx.root=ktest
 };
 static constexpr int USER_PROGRAM_COUNT = sizeof USER_PROGRAMS / sizeof USER_PROGRAMS[0];
 

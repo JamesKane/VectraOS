@@ -54,6 +54,62 @@ static bool map_range(uint64_t root, uint64_t va, uint64_t pa, uint64_t size, ui
   return true;
 }
 
+// The leaf entry mapping va in root, or nullptr if there is none.
+static uint64_t *leaf_entry(uint64_t root, uint64_t va, int *level_out) {
+  uint64_t *t = table_at(root);
+  for (int level = 0; level <= 3; level++) {
+    uint64_t *e = &t[(va >> (39 - 9 * level)) & 511];
+    if (!arch_pte_valid(*e)) return nullptr;
+    if (!arch_pte_is_table(*e, level)) {
+      *level_out = level;
+      return e;
+    }
+    t = table_at(arch_pte_addr(*e));
+  }
+  return nullptr;
+}
+
+// The physical address behind user address va in root, or 0 if it is not
+// mapped for user access. Futexes are keyed on it.
+static uint64_t user_page_pa(uint64_t root, uint64_t va) {
+  int level;
+  uint64_t *e = leaf_entry(root, va, &level);
+  if (!e || !arch_pte_user_ok(*e, false)) return 0;
+  uint64_t page = 1ull << (39 - 9 * level);
+  return arch_pte_addr(*e) + (va & (page - 1));
+}
+
+// Removes the 4 KiB mapping at va, if there is one, and drops it from this
+// CPU's TLB. (Other CPUs need a shootdown once as_unmap exists; until then this
+// only undoes mappings no thread has used yet, or tears down a dead task.)
+static void unmap_page(uint64_t root, uint64_t va) {
+  int level;
+  uint64_t *e = leaf_entry(root, va, &level);
+  if (!e || level != 3) return;
+  *e = 0;
+  arch_tlb_flush_page(va);
+}
+
+// Frees the user half's page tables and the top table itself. The leaves are
+// VMO pages, which their VMOs free. No CPU may be using the address space.
+// Three nested loops rather than recursion (04 §1.1).
+static void free_user_tables(uint64_t root) {
+  uint64_t *top = table_at(root);
+  for (uint32_t i = 0; i < arch_user_top_slots(); i++) {
+    if (!arch_pte_valid(top[i]) || !arch_pte_is_table(top[i], 0)) continue;
+    uint64_t *l1 = table_at(arch_pte_addr(top[i]));
+    for (uint32_t j = 0; j < 512; j++) {
+      if (!arch_pte_valid(l1[j]) || !arch_pte_is_table(l1[j], 1)) continue;
+      uint64_t *l2 = table_at(arch_pte_addr(l1[j]));
+      for (uint32_t k = 0; k < 512; k++)
+        if (arch_pte_valid(l2[k]) && arch_pte_is_table(l2[k], 2)) phys_free(arch_pte_addr(l2[k]), 0);
+      phys_free(arch_pte_addr(l1[j]), 0);
+    }
+    phys_free(arch_pte_addr(top[i]), 0);
+  }
+  phys_free(root, 0);
+}
+
 // True if va is mapped in root for user access, and writable if asked.
 static bool user_page_ok(uint64_t root, uint64_t va, bool write) {
   uint64_t *t = table_at(root);

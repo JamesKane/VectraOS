@@ -384,7 +384,7 @@ void x86_trap(trap_frame *f) {
     kput(VX_STR(" at rip "));
     kput_hex(f->rip);
     kput(VX_STR("\n"));
-    thread_kill_current();
+    task_fault_exit();
   } else {
     panic_start();
     kput_exception(f);
@@ -392,7 +392,7 @@ void x86_trap(trap_frame *f) {
     kput_hex(f->rip);
     panic_end(f->rip, f->rbp);
   }
-  if (from_user && this_cpu()->resched) schedule();
+  if (from_user) user_return();
 }
 
 [[noreturn]] static void arch_halt(void) {
@@ -447,9 +447,16 @@ static uint64_t arch_new_user_root(void) {
   return root;
 }
 
+// Loads a task's tables, or with root 0 (no task, as for the idle thread) the
+// kernel's own, whose user half is empty.
 static void arch_switch_user_root(uint64_t root) {
+  if (!root) root = kernel_root;
   __asm__ volatile("mov %0, %%cr3" : : "r"(root) : "memory");
 }
+
+static uint32_t arch_user_top_slots(void) { return 256; }
+
+static void arch_tlb_flush_page(uint64_t va) { __asm__ volatile("invlpg (%0)" : : "r"(va) : "memory"); }
 
 static bool arch_pte_user_ok(uint64_t e, bool write) {
   return (e & X86_PRESENT) && (e & X86_USER) && (!write || (e & X86_WRITE));
@@ -487,10 +494,12 @@ static uint64_t arch_thread_initial_sp(thread *t) {
   return (uint64_t)sp;
 }
 
-[[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t kstack_top) {
+[[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t arg2,
+                                         uint64_t kstack_top) {
   trap_frame *f = (trap_frame *)kstack_top - 1;
   *f = (trap_frame){
       .rdi = arg,
+      .rsi = arg2,
       .rip = entry,
       .cs = SEL_USER_CODE,
       .rflags = 0x202,

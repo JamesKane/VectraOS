@@ -1,10 +1,13 @@
 // panic.c: console output, the kernel's symbol map, backtraces and panic.
 
-// Everything the console prints goes through kput, whether it comes from the
-// kernel or from debug_write. Each CPU builds its line in its own buffer and
+// The kernel prints through kput. Each CPU builds its line in its own buffer and
 // prints it whole, after a timestamp (time.c), under the console lock, so lines
 // from different CPUs never interleave. A line longer than the buffer goes out
-// in pieces.
+// in pieces. Kernel code never moves to another CPU halfway through a line.
+//
+// User threads print through debug_write (console_user_write), and they can
+// move between CPUs between two calls, so their line state is their own: each
+// call goes straight out under the lock, with a timestamp at each line start.
 static struct {
   char buf[512];
   size_t len;
@@ -27,6 +30,20 @@ static void kput(vx_str s) {
     line->buf[line->len++] = s.ptr[i];
     if (s.ptr[i] == '\n' || line->len == sizeof line->buf) console_flush();
   }
+}
+
+// One debug_write call's bytes; *midline is the writing thread's line state.
+static void console_user_write(vx_str s, bool *midline) {
+  spin_lock(&console_lock);
+  for (size_t i = 0; i < s.len;) {
+    if (!*midline) kput_stamp();
+    size_t start = i;
+    while (i < s.len && s.ptr[i] != '\n') i++;
+    if (i < s.len) i++; // the newline goes with its line
+    arch_console_write((vx_str){s.ptr + start, i - start});
+    *midline = s.ptr[i - 1] != '\n';
+  }
+  spin_unlock(&console_lock);
 }
 
 static void kput_cstr(const char *s) {

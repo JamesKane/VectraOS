@@ -108,3 +108,16 @@ static bool cmdline_has(vx_str word) {
   }
   return false;
 }
+
+// The value of `key=value` on the kernel command line, or an empty string.
+static vx_str cmdline_value(vx_str key) {
+  vx_str c = boot.cmdline;
+  for (size_t i = 0; i < c.len;) {
+    while (i < c.len && c.ptr[i] == ' ') i++;
+    size_t start = i;
+    while (i < c.len && c.ptr[i] != ' ') i++;
+    if (i - start > key.len && c.ptr[start + key.len] == '=' && memcmp(c.ptr + start, key.ptr, key.len) == 0)
+      return (vx_str){c.ptr + start + key.len + 1, i - start - key.len - 1};
+  }
+  return (vx_str){};
+}

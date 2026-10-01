@@ -11,20 +11,60 @@ typedef enum obj_type : uint8_t {
   OBJ_THREAD,
   OBJ_VMO,
   OBJ_PORT,
+  OBJ_CHANNEL,
+  OBJ_COUNTER,
 } obj_type;
 
 typedef struct object {
   obj_type type;
   _Atomic uint32_t refs;
+  struct object *dying_next; // on its CPU's list of objects to destroy (object_release)
 } object;
 
 static void object_ref(object *obj) { atomic_fetch_add_explicit(&obj->refs, 1, memory_order_relaxed); }
 
 static void object_destroy(object *obj); // syscall/syscall.c, which knows every type
 
-// Drops a reference; the last one destroys the object.
+// Dropping references, without recursion.
+//
+// Destroying one object can release others: a channel end frees its queued
+// messages and the handles in them, which may be channel ends with messages of
+// their own, as deep as a program cares to nest them. So destruction never
+// recurses (04 §1.1). object_drop takes a reference away and, if it was the
+// last, queues the object on its CPU's dying list; object_drain destroys that
+// list one object at a time, including whatever those destructions drop in
+// turn. Destructors, and everything they call, only ever drop.
+//
+// object_release is drop then drain, for everywhere else. Drops made outside a
+// destructor are drained by the next release on that CPU, and on every return
+// to user mode. Destructors do not block, so a drain stays on one CPU.
+static struct {
+  object *head;
+  bool draining;
+} dying[MAX_CPUS];
+
+static void object_drop(object *obj) {
+  if (atomic_fetch_sub_explicit(&obj->refs, 1, memory_order_acq_rel) != 1) return;
+  typeof(dying[0]) *d = &dying[arch_cpu_index()];
+  obj->dying_next = d->head;
+  d->head = obj;
+}
+
+static void object_drain(void) {
+  typeof(dying[0]) *d = &dying[arch_cpu_index()];
+  if (d->draining) return; // an outer drain on this CPU will get to it
+  d->draining = true;
+  while (d->head) {
+    object *o = d->head;
+    d->head = o->dying_next;
+    object_destroy(o);
+  }
+  d->draining = false;
+}
+
 static void object_release(object *obj) {
-  if (atomic_fetch_sub_explicit(&obj->refs, 1, memory_order_acq_rel) == 1) object_destroy(obj);
+  object_drop(obj);
+  object_drain();
 }
 
 typedef struct pool {
@@ -62,3 +102,10 @@ static void pool_free(pool *p, void *o) {
 }
 
 #define POOL_FOR(type) {.size = (sizeof(type) + 15) & ~(size_t)15}
+
+// A source's port bindings that have not fired (obj/port.c), under the
+// source's own lock.
+struct binding;
+typedef struct observers {
+  struct binding *head;
+} observers;

@@ -75,7 +75,12 @@ static constexpr uint64_t GICR_FRAME_SIZE = 0x2'0000;
 static uint64_t arch_new_user_root(void) { return phys_alloc_zeroed(0); }
 
 // Without ASIDs yet, switching address spaces drops every cached translation.
+static uint64_t empty_user_root; // TTBR0 while a CPU runs no task, shared by all
+
+// Loads a task's tables into TTBR0, or with root 0 (no task, as for the idle
+// thread) the empty table.
 static void arch_switch_user_root(uint64_t root) {
+  if (!root) root = empty_user_root;
   __asm__ volatile("msr ttbr0_el1, %0\n\t"
                    "isb\n\t"
                    "tlbi vmalle1\n\t"
@@ -84,6 +89,12 @@ static void arch_switch_user_root(uint64_t root) {
                    :
                    : "r"(root)
                    : "memory");
+}
+
+static uint32_t arch_user_top_slots(void) { return 512; }
+
+static void arch_tlb_flush_page(uint64_t va) {
+  __asm__ volatile("dsb ishst\n\ttlbi vale1, %0\n\tdsb ish\n\tisb" : : "r"(va >> 12) : "memory");
 }
 
 static bool arch_pte_user_ok(uint64_t e, bool write) {
@@ -100,8 +111,6 @@ static void arch_kernel_mappings(uint64_t root) {
 
 // Installs the kernel's tables in TTBR1, and an empty table in TTBR0 until
 // there is a user address space, then drops every cached translation.
-static uint64_t empty_user_root; // TTBR0 while a CPU runs no task, shared by all
-
 static void arch_switch_tables(uint64_t root) {
   if (!empty_user_root)
     empty_user_root = phys_alloc_zeroed(0); // first on the boot CPU, before the others start
@@ -306,9 +315,10 @@ static uint64_t arch_thread_initial_sp(thread *t) {
 }
 
 // Enters EL0 at entry with interrupts unmasked (SPSR = 0: EL0t, DAIF clear).
-[[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t kstack_top) {
+[[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t arg2,
+                                         uint64_t kstack_top) {
   trap_frame *f = (trap_frame *)kstack_top - 1;
-  *f = (trap_frame){.x = {arg}, .elr = entry, .spsr = 0, .sp_el0 = sp};
+  *f = (trap_frame){.x = {arg, arg2}, .elr = entry, .spsr = 0, .sp_el0 = sp};
   arch_enter_frame(f);
 }
 
@@ -350,7 +360,7 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
     kput(VX_STR(" at pc "));
     kput_hex(f->elr);
     kput(VX_STR("\n"));
-    thread_kill_current();
+    task_fault_exit();
   } else {
     panic_start();
     kput_exception(f, index);
@@ -358,7 +368,7 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
     kput_hex(f->elr);
     panic_end(f->elr, f->x[29]);
   }
-  if (from_user && this_cpu()->resched) schedule();
+  if (from_user) user_return();
 }
 
 [[noreturn]] static void arch_halt(void) {

@@ -39,7 +39,11 @@ static void object_destroy(object *obj) {
   switch (obj->type) {
   case OBJ_VMO: vmo_destroy((vmo *)obj); break;
   case OBJ_PORT: pool_free(&port_pool, obj); break;
-  default: break; // tasks and threads never end in M1
+  case OBJ_CHANNEL: channel_destroy((channel *)obj); break;
+  case OBJ_COUNTER: counter_destroy((counter *)obj); break;
+  case OBJ_TASK: task_destroy((task *)obj); break;
+  case OBJ_THREAD: thread_destroy((thread *)obj); break;
+  default: break;
   }
 }
 
@@ -61,7 +65,7 @@ static int64_t sys_debug_write(uint64_t ptr, uint64_t len) {
     uint64_t n = len < sizeof buf ? len : sizeof buf;
     vx_status st = copy_from_user(buf, ptr, n);
     if (st != VX_OK) return st;
-    kput((vx_str){buf, n});
+    console_user_write((vx_str){buf, n}, &this_cpu()->current->console_midline);
     ptr += n;
     len -= n;
   }
@@ -72,8 +76,14 @@ static int64_t sys_task_info(vx_handle h, uint64_t out) {
   vx_status st;
   task *t = (task *)handle_get(current_task(), h, OBJ_TASK, VX_RIGHT_INSPECT, &st);
   if (!t) return st;
-  vx_task_summary info = {.id = t->id};
+  spin_lock(&t->lock);
+  vx_task_summary info = {.id = t->id,
+                          .state = t->state,
+                          .threads = t->live_threads,
+                          .exit_status = t->exit_status,
+                          .mapped = t->mapped};
   memcpy(info.name, t->name, sizeof info.name);
+  spin_unlock(&t->lock);
   object_release(&t->obj);
   return copy_to_user(out, &info, sizeof info);
 }
@@ -138,12 +148,15 @@ static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out) {
   vmo *v;
   vx_status st = vmo_create(size, &v);
   if (st != VX_OK) return st;
-  return return_handle(&v->obj, ALL_RIGHTS & ~(uint32_t)(VX_RIGHT_EXEC | VX_RIGHT_DEBUG), out);
+  // EXEC included: loaders and JITs map their own code. W^X holds per mapping
+  // (task_map), never per VMO.
+  return return_handle(&v->obj, ALL_RIGHTS & ~(uint32_t)VX_RIGHT_DEBUG, out);
 }
 
-// as_map(task, vmo, flags, &address): maps the whole VMO. The full call, with
-// offsets into the VMO and reservations (01 §5), lands with as_reserve.
-static int64_t sys_as_map(vx_handle th, vx_handle vh, uint64_t flags, uint64_t addr_ptr) {
+// as_map(task, vmo, offset, size, flags, &address): maps part of a VMO.
+// Reservations (01 §5) land with as_reserve.
+static int64_t sys_as_map(vx_handle th, vx_handle vh, uint64_t offset, uint64_t size, uint64_t flags,
+                          uint64_t addr_ptr) {
   if (flags & ~(uint64_t)(VX_MAP_WRITE | VX_MAP_EXEC)) return VX_ERR_INVALID;
   uint64_t va;
   vx_status st = copy_from_user(&va, addr_ptr, sizeof va);
@@ -154,7 +167,7 @@ static int64_t sys_as_map(vx_handle th, vx_handle vh, uint64_t flags, uint64_t a
                   (flags & VX_MAP_EXEC ? VX_RIGHT_EXEC : 0);
   vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, need, &st);
   if (v) {
-    st = task_map(t, v, (uint32_t)flags, &va);
+    st = task_map(t, v, offset, size, (uint32_t)flags, &va);
     object_release(&v->obj);
   }
   object_release(&t->obj);
@@ -162,17 +175,314 @@ static int64_t sys_as_map(vx_handle th, vx_handle vh, uint64_t flags, uint64_t a
   return copy_to_user(addr_ptr, &va, sizeof va);
 }
 
+// --- Channels ---
+
+static constexpr uint32_t CHANNEL_END_RIGHTS = VX_RIGHT_READ | VX_RIGHT_WRITE | VX_RIGHT_WAIT |
+                                               VX_RIGHT_SIGNAL | VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER |
+                                               VX_RIGHT_INSPECT;
+
+static int64_t sys_channel_create(uint64_t options, uint64_t out) {
+  if (options) return VX_ERR_INVALID;
+  if (!user_range_ok(out, 2 * sizeof(vx_handle), true)) return VX_ERR_INVALID;
+  channel *a, *b;
+  vx_status st = channel_create(&a, &b);
+  if (st != VX_OK) return st;
+  vx_handle h[2];
+  st = handle_add(current_task(), &a->obj, CHANNEL_END_RIGHTS, &h[0]);
+  if (st == VX_OK) {
+    st = handle_add(current_task(), &b->obj, CHANNEL_END_RIGHTS, &h[1]);
+    if (st != VX_OK) handle_close(current_task(), h[0]);
+  }
+  object_release(&a->obj);
+  object_release(&b->obj);
+  if (st != VX_OK) return st;
+  return copy_to_user(out, h, sizeof h);
+}
+
+// Builds a message from user memory: the body copied in, the handles moved out
+// of the caller's table (gone whatever happens next, as with every write).
+static vx_status msg_from_user(uint64_t bytes, uint32_t len, uint64_t handles, uint32_t count,
+                               const object *forbidden, channel_msg **out) {
+  if (len < sizeof(vx_msg_header) || len > VX_CHANNEL_MAX_BYTES || count > VX_CHANNEL_MAX_HANDLES)
+    return VX_ERR_INVALID;
+  vx_handle values[VX_CHANNEL_MAX_HANDLES];
+  vx_status st = copy_from_user(values, handles, count * sizeof(vx_handle));
+  if (st != VX_OK) return st;
+  channel_msg *m = msg_alloc(len, count);
+  if (!m) return VX_ERR_NO_MEMORY;
+  st = copy_from_user(msg_body(m), bytes, len);
+  if (st == VX_OK) st = handles_take(current_task(), values, count, forbidden, m->handles);
+  if (st != VX_OK) {
+    m->count = 0; // nothing was moved
+    msg_free(m);
+    return st;
+  }
+  *out = m;
+  return VX_OK;
+}
+
+// Gives the caller a message: the body copied out, the handles installed. The
+// caller has checked the user ranges. The message is freed either way.
+static vx_status msg_to_user(channel_msg *m, uint64_t bytes, uint64_t handles) {
+  vx_handle values[VX_CHANNEL_MAX_HANDLES];
+  vx_status st = copy_to_user(bytes, msg_body(m), m->len);
+  if (st == VX_OK) st = handles_put(current_task(), m->handles, m->count, values);
+  if (st == VX_OK) st = copy_to_user(handles, values, m->count * sizeof(vx_handle));
+  msg_free(m); // drops the message's references; installed handles hold their own
+  return st;
+}
+
+static int64_t sys_channel_write(vx_handle h, uint64_t bytes, uint64_t len, uint64_t handles,
+                                 uint64_t count) {
+  vx_status st;
+  channel *c = (channel *)handle_get(current_task(), h, OBJ_CHANNEL, VX_RIGHT_WRITE, &st);
+  if (!c) return st;
+  channel_msg *m;
+  st = msg_from_user(bytes, (uint32_t)len, handles, (uint32_t)count, &c->obj, &m);
+  if (st == VX_OK) {
+    st = channel_write(c, m);
+    if (st != VX_OK) msg_free(m);
+  }
+  object_release(&c->obj);
+  return st;
+}
+
+static int64_t sys_channel_read(vx_handle h, uint64_t bytes, uint64_t cap, uint64_t handles,
+                                uint64_t count_cap, uint64_t actual) {
+  if (cap > VX_CHANNEL_MAX_BYTES || count_cap > VX_CHANNEL_MAX_HANDLES) return VX_ERR_INVALID;
+  if (!user_range_ok(bytes, cap, true) || !user_range_ok(handles, count_cap * sizeof(vx_handle), true) ||
+      !user_range_ok(actual, sizeof(vx_msg_size), true))
+    return VX_ERR_INVALID;
+  vx_status st;
+  channel *c = (channel *)handle_get(current_task(), h, OBJ_CHANNEL, VX_RIGHT_READ, &st);
+  if (!c) return st;
+  channel_msg *m = nullptr;
+  vx_msg_size need = {};
+  st = channel_read(c, (uint32_t)cap, (uint32_t)count_cap, &m, &need);
+  object_release(&c->obj);
+  if (st == VX_OK || st == VX_ERR_TOO_SMALL) copy_to_user(actual, &need, sizeof need);
+  if (st != VX_OK) return st;
+  return msg_to_user(m, bytes, handles);
+}
+
+static int64_t sys_channel_call(vx_handle h, uint64_t args_ptr, vx_instant deadline) {
+  vx_call args;
+  vx_status st = copy_from_user(&args, args_ptr, sizeof args);
+  if (st != VX_OK) return st;
+  if (args.rd_cap > VX_CHANNEL_MAX_BYTES || args.rd_count_cap > VX_CHANNEL_MAX_HANDLES) return VX_ERR_INVALID;
+  if (!user_range_ok((uint64_t)args.rd_bytes, args.rd_cap, true) ||
+      !user_range_ok((uint64_t)args.rd_handles, args.rd_count_cap * sizeof(vx_handle), true))
+    return VX_ERR_INVALID;
+  channel *c = (channel *)handle_get(current_task(), h, OBJ_CHANNEL, VX_RIGHT_READ | VX_RIGHT_WRITE, &st);
+  if (!c) return st;
+  channel_msg *request, *reply = nullptr;
+  st = msg_from_user((uint64_t)args.wr_bytes, args.wr_len, (uint64_t)args.wr_handles, args.wr_count, &c->obj,
+                     &request);
+  if (st == VX_OK) {
+    bool sent;
+    st = channel_call(c, request, deadline, &reply, &sent);
+    if (!sent) msg_free(request); // once sent, it is the channel's
+  }
+  object_release(&c->obj);
+  if (st != VX_OK) return st;
+  args.actual = (vx_msg_size){reply->len, reply->count};
+  copy_to_user(args_ptr + offsetof(vx_call, actual), &args.actual, sizeof args.actual);
+  if (reply->len > args.rd_cap || reply->count > args.rd_count_cap) {
+    msg_free(reply);
+    return VX_ERR_TOO_SMALL;
+  }
+  return msg_to_user(reply, (uint64_t)args.rd_bytes, (uint64_t)args.rd_handles);
+}
+
+// --- Counters, bindings, futexes ---
+
+static int64_t sys_counter_create(uint64_t initial, uint64_t out) {
+  counter *c;
+  vx_status st = counter_create(initial, &c);
+  if (st != VX_OK) return st;
+  return return_handle(&c->obj,
+                       VX_RIGHT_READ | VX_RIGHT_SIGNAL | VX_RIGHT_WAIT | VX_RIGHT_DUPLICATE |
+                           VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT,
+                       out);
+}
+
+static int64_t sys_counter_signal(vx_handle h, uint64_t value) {
+  vx_status st;
+  counter *c = (counter *)handle_get(current_task(), h, OBJ_COUNTER, VX_RIGHT_SIGNAL, &st);
+  if (!c) return st;
+  counter_signal(c, value);
+  object_release(&c->obj);
+  return VX_OK;
+}
+
+static int64_t sys_counter_read(vx_handle h) {
+  vx_status st;
+  counter *c = (counter *)handle_get(current_task(), h, OBJ_COUNTER, VX_RIGHT_READ, &st);
+  if (!c) return st;
+  uint64_t v = counter_read(c);
+  object_release(&c->obj);
+  return v > INT64_MAX ? VX_ERR_RANGE : (int64_t)v;
+}
+
+// port_bind(port, source, trigger, key, threshold): a one-shot binding of a
+// channel end, counter or task to the port.
+static int64_t sys_port_bind(vx_handle ph, vx_handle sh, uint64_t trigger, uint64_t key, uint64_t threshold) {
+  vx_status st;
+  port *p = (port *)handle_get(current_task(), ph, OBJ_PORT, VX_RIGHT_WRITE, &st);
+  if (!p) return st;
+  object *src = nullptr;
+  static const obj_type SOURCES[] = {OBJ_CHANNEL, OBJ_COUNTER, OBJ_TASK};
+  for (uint32_t i = 0; i < 3 && !src; i++)
+    src = handle_get(current_task(), sh, SOURCES[i], VX_RIGHT_WAIT, &st);
+  binding *b = src ? binding_new(p, (uint32_t)trigger, key, threshold, sh) : nullptr;
+  if (src && !b) st = VX_ERR_NO_MEMORY;
+  if (b) {
+    if (src->type == OBJ_CHANNEL)
+      st = channel_bind((channel *)src, b);
+    else if (src->type == OBJ_COUNTER)
+      st = counter_bind((counter *)src, b);
+    else
+      st = task_bind((task *)src, b);
+    if (st != VX_OK) binding_free(b);
+  }
+  if (src) object_release(src);
+  object_release(&p->obj);
+  return st;
+}
+
+// --- Tasks and threads ---
+
+static int64_t sys_task_create(uint64_t name_ptr, uint64_t name_len, uint64_t out) {
+  char name[24] = {};
+  if (name_len >= sizeof name) return VX_ERR_RANGE;
+  vx_status st = copy_from_user(name, name_ptr, name_len);
+  if (st != VX_OK) return st;
+  task *t;
+  st = task_create(name, &t);
+  if (st != VX_OK) return st;
+  return return_handle(&t->obj, ALL_RIGHTS, out);
+}
+
+static int64_t sys_thread_create(vx_handle th, uint64_t out) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (!t) return st;
+  thread *thr;
+  spin_lock(&t->lock);
+  bool ending = t->ending || t->killed;
+  spin_unlock(&t->lock);
+  st = ending ? VX_ERR_BAD_STATE : thread_create(t, &thr);
+  object_release(&t->obj);
+  if (st != VX_OK) return st;
+  return return_handle(&thr->obj, ALL_RIGHTS, out);
+}
+
+// thread_start(thread, entry, sp, handle, arg2): the handle, unless 0, moves
+// from the caller to the thread's task, and the thread gets its value there as
+// its first argument.
+static int64_t sys_thread_start(vx_handle h, uint64_t entry, uint64_t sp, vx_handle arg, uint64_t arg2) {
+  vx_status st;
+  thread *th = (thread *)handle_get(current_task(), h, OBJ_THREAD, VX_RIGHT_MANAGE, &st);
+  if (!th) return st;
+  vx_handle moved = 0;
+  if (arg) {
+    moved_handle m;
+    st = handles_take(current_task(), &arg, 1, nullptr, &m);
+    if (st == VX_OK) {
+      st = handles_put(th->task, &m, 1, &moved);
+      object_release(m.obj);
+    }
+  }
+  if (st == VX_OK) {
+    st = thread_start(th, entry, sp, moved, arg2);
+    if (st != VX_OK && moved) handle_close(th->task, moved);
+  }
+  object_release(&th->obj);
+  return st;
+}
+
+static int64_t sys_task_kill(vx_handle h, uint64_t status) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), h, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (!t) return st;
+  task_kill(t, (int64_t)status);
+  object_release(&t->obj);
+  return VX_OK;
+}
+
+// --- Memory and handles ---
+
+// vmo_rw(vmo, op, offset, buffer, size): copies between a VMO and the caller's memory.
+static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t buf, uint64_t size) {
+  if (op != VX_VMO_READ && op != VX_VMO_WRITE) return VX_ERR_INVALID;
+  if (!user_range_ok(buf, size, op == VX_VMO_READ)) return VX_ERR_INVALID;
+  vx_status st;
+  vmo *v =
+      (vmo *)handle_get(current_task(), h, OBJ_VMO, op == VX_VMO_READ ? VX_RIGHT_READ : VX_RIGHT_WRITE, &st);
+  if (!v) return st;
+  uint64_t end;
+  if (ckd_add(&end, offset, size) || end > v->size) st = VX_ERR_RANGE;
+  for (uint64_t done = 0; st == VX_OK && done < size;) {
+    uint64_t at = offset + done, in_page = at & 4095, n = 4096 - in_page;
+    if (n > size - done) n = size - done;
+    uint8_t *page = (uint8_t *)phys_to_virt(v->pages[at / 4096]) + in_page;
+    if (op == VX_VMO_READ)
+      memcpy((void *)(buf + done), page, n);
+    else
+      memcpy(page, (const void *)(buf + done), n);
+    done += n;
+  }
+  object_release(&v->obj);
+  return st;
+}
+
+static int64_t sys_handle_dup(vx_handle h, uint64_t rights, uint64_t out) {
+  task *t = current_task();
+  spin_lock(&t->lock);
+  uint32_t index = h & 0xffff;
+  handle_entry *e = index && index < HANDLE_SLOTS ? &t->handles[index] : nullptr;
+  vx_status st = VX_OK;
+  object *obj = nullptr;
+  if (!e || !e->obj || e->generation != h >> 16)
+    st = VX_ERR_BAD_HANDLE;
+  else if (!(e->rights & VX_RIGHT_DUPLICATE) || (rights & ~(uint64_t)e->rights))
+    st = VX_ERR_ACCESS; // needs DUPLICATE, and can only reduce rights (01 §3)
+  else
+    obj = e->obj;
+  if (obj) object_ref(obj);
+  spin_unlock(&t->lock);
+  if (!obj) return st;
+  return return_handle(obj, (uint32_t)rights, out);
+}
+
 static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   switch (nr) {
   case VX_SYS_debug_write: return sys_debug_write(a[0], a[1]);
   case VX_SYS_clock_read: return clock_now();
+  case VX_SYS_task_create: return sys_task_create(a[0], a[1], a[2]);
+  case VX_SYS_task_kill: return sys_task_kill((vx_handle)a[0], a[1]);
   case VX_SYS_task_info: return sys_task_info((vx_handle)a[0], a[1]);
+  case VX_SYS_thread_create: return sys_thread_create((vx_handle)a[0], a[1]);
+  case VX_SYS_thread_start: return sys_thread_start((vx_handle)a[0], a[1], a[2], (vx_handle)a[3], a[4]);
+  case VX_SYS_thread_exit: thread_exit_current((int64_t)a[0]);
   case VX_SYS_port_create: return sys_port_create(a[0], a[1]);
+  case VX_SYS_port_bind: return sys_port_bind((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
   case VX_SYS_port_wait:
     return sys_port_wait((vx_handle)a[0], (vx_instant)a[1], (vx_duration)a[2], a[3], a[4]);
   case VX_SYS_port_post: return sys_port_post((vx_handle)a[0], a[1]);
+  case VX_SYS_counter_create: return sys_counter_create(a[0], a[1]);
+  case VX_SYS_counter_signal: return sys_counter_signal((vx_handle)a[0], a[1]);
+  case VX_SYS_counter_read: return sys_counter_read((vx_handle)a[0]);
+  case VX_SYS_futex_wait: return futex_wait(a[0], (uint32_t)a[1], (vx_instant)a[2]);
+  case VX_SYS_futex_wake: return futex_wake(a[0], (uint32_t)a[1]);
+  case VX_SYS_channel_create: return sys_channel_create(a[0], a[1]);
+  case VX_SYS_channel_write: return sys_channel_write((vx_handle)a[0], a[1], a[2], a[3], a[4]);
+  case VX_SYS_channel_read: return sys_channel_read((vx_handle)a[0], a[1], a[2], a[3], a[4], a[5]);
+  case VX_SYS_channel_call: return sys_channel_call((vx_handle)a[0], a[1], (vx_instant)a[2]);
   case VX_SYS_vmo_create: return sys_vmo_create(a[0], a[1], a[2]);
-  case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3]);
+  case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
+  case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
+  case VX_SYS_handle_dup: return sys_handle_dup((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_handle_close: return handle_close(current_task(), (vx_handle)a[0]);
   default: return VX_ERR_UNSUPPORTED;
   }

@@ -51,7 +51,7 @@ int vx_main(vx_handle self) {
   vx_handle vmo;
   uint64_t addr = 0;
   if ((st = vx_vmo_create(64ull * 1024, 0, &vmo)) != VX_OK) fail(VX_STR("vmo_create"), st);
-  if ((st = vx_as_map(self, vmo, VX_MAP_WRITE, &addr)) != VX_OK) fail(VX_STR("as_map"), st);
+  if ((st = vx_as_map(self, vmo, 0, 64ull * 1024, VX_MAP_WRITE, &addr)) != VX_OK) fail(VX_STR("as_map"), st);
   volatile uint64_t *words = (volatile uint64_t *)addr;
   if (words[0] != 0 || words[8191] != 0) fail(VX_STR("a new VMO is not zeroed"), 0);
   words[0] = 0x5678;

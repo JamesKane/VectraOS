@@ -23,6 +23,7 @@ typedef struct cpu {
   thread *sleepers; // blocked here with a deadline, earliest first
   vx_instant slice_end;
   bool resched;        // call schedule before returning to user mode
+  thread *reap;        // a thread that died here, for whoever runs next to free
   uint64_t idle_stack; // direct-map address of the idle stack's base (not CPU 0)
 } cpu;
 
@@ -39,6 +40,17 @@ static struct {
 static cpu *this_cpu(void) { return &cpus[arch_cpu_index()]; }
 
 static void sched_arm_timer(cpu *c);
+static void thread_reap(thread *t); // obj/process.c
+
+// Run after every switch, by the thread switched to: free the thread that died
+// on this CPU just before. It could not free the stack it was running on.
+static void reap_after_switch(void) {
+  cpu *c = this_cpu();
+  thread *dead = c->reap;
+  c->reap = nullptr;
+  spin_unlock(&sched.lock);
+  if (dead) thread_reap(dead);
+}
 
 static void run_enqueue(thread *t) {
   t->state = THREAD_READY;
@@ -110,17 +122,22 @@ static void schedule_locked(void) {
   }
   if (next != prev) {
     next->state = THREAD_RUNNING;
+    next->cpu = c;
     c->current = next;
-    if (next->task) {
-      arch_set_kernel_stack(thread_kstack_top(next));
-      if (!prev->task || prev->task != next->task) arch_switch_user_root(next->task->root);
-    }
+    if (next->task) arch_set_kernel_stack(thread_kstack_top(next));
+    // Leave a task's address space even for the idle thread, so a dead task's
+    // tables are on no CPU by the time its last thread is reaped.
+    if (prev->task != next->task) arch_switch_user_root(next->task ? next->task->root : 0);
   } else {
     prev->state = THREAD_RUNNING;
   }
   sched_arm_timer(c);
-  if (next != prev) arch_context_switch(&prev->kernel_sp, next->kernel_sp);
-  spin_unlock(&sched.lock);
+  if (next == prev) {
+    spin_unlock(&sched.lock);
+    return;
+  }
+  arch_context_switch(&prev->kernel_sp, next->kernel_sp);
+  reap_after_switch();
 }
 
 static void schedule(void) {
@@ -128,19 +145,25 @@ static void schedule(void) {
   schedule_locked();
 }
 
-// Wakes a thread that waits on port p, unless it has stopped waiting (its
-// deadline passed first). A thread between joining the port's waiters and
-// blocking keeps the wake for thread_block to find. Returns whether it woke.
-static bool thread_wake_from_port(thread *t, struct port *p) {
+// A thread waits on a token: whatever it queued itself on, such as a port, a
+// pending channel_call or a futex. It sets its token, joins that thing's list
+// of waiters under the thing's own lock, and then blocks.
+
+// Wakes t with `result` if it still waits on `token`, and not if it has stopped
+// waiting (its deadline passed first, or it is being killed). A thread between
+// joining a list and blocking keeps the wake for thread_block to find. Returns
+// whether it woke.
+static bool thread_wake_token(thread *t, const void *token, int64_t result) {
   spin_lock(&sched.lock);
-  bool woke = t->port == p;
+  bool woke = token && t->wait_token == token;
   if (woke) {
-    t->port = nullptr;
-    t->wait_result = VX_OK;
-    if (t->state == THREAD_BLOCKED)
+    t->wait_token = nullptr;
+    t->wait_result = result;
+    if (t->state == THREAD_BLOCKED) {
       make_ready(t);
-    else
+    } else {
       t->wake_pending = true;
+    }
   }
   spin_unlock(&sched.lock);
   return woke;
@@ -191,11 +214,19 @@ static void sched_timer(void) {
   vx_instant now = clock_now();
   while (c->sleepers && c->sleepers->wake_at <= now) {
     thread *t = c->sleepers;
-    t->port = nullptr; // a post that finds it later skips it
+    t->wait_token = nullptr; // a waker that finds it later skips it
     t->wait_result = VX_ERR_TIMED_OUT;
     make_ready(t);
   }
-  if (sched.run_head && now >= c->slice_end) c->resched = true;
+  if (now >= c->slice_end) {
+    // The slice is over: switch if someone is waiting, else give the running
+    // thread another one. (Re-arming the old, expired end would fire at once,
+    // forever, and the thread would never get back to user mode.)
+    if (sched.run_head)
+      c->resched = true;
+    else
+      c->slice_end = now + TIME_SLICE;
+  }
   sched_arm_timer(c);
   spin_unlock(&sched.lock);
 }
@@ -226,8 +257,8 @@ static void sched_start_thread(thread *t) {
 // architecture's trampoline, which calls this with the lock still held from the
 // switch. It never returns: it enters user mode.
 [[noreturn]] void thread_entry(thread *t) {
-  spin_unlock(&sched.lock);
-  arch_enter_user(t->user_entry, t->user_sp, t->user_arg, thread_kstack_top(t));
+  reap_after_switch();
+  arch_enter_user(t->user_entry, t->user_sp, t->user_arg, t->user_arg2, thread_kstack_top(t));
 }
 
 // Starts the report of a fault that kills the current thread:
@@ -241,10 +272,33 @@ static void task_fault_start(void) {
   kput(VX_STR(") killed: "));
 }
 
-// Ends the current thread after a fault it cannot recover from.
-[[noreturn]] static void thread_kill_current(void) {
+// Ends the current thread: it is never scheduled again, and the next thread to
+// run on this CPU reaps it. The caller has already accounted for it in its task
+// (obj/process.c).
+[[noreturn]] static void sched_exit_current(void) {
   spin_lock(&sched.lock);
-  this_cpu()->current->state = THREAD_DEAD;
+  cpu *c = this_cpu();
+  c->current->state = THREAD_DEAD;
+  c->reap = c->current;
   schedule_locked();
   panic(VX_STR("a dead thread was scheduled"));
+}
+
+// Gets a thread of a task being killed to notice (obj/process.c): a blocked
+// thread wakes with ERR_KILLED, wherever it waits; one running user code on
+// another CPU gets an interrupt, and checks on its way back to user mode.
+static void sched_kick_for_kill(thread *t) {
+  spin_lock(&sched.lock);
+  if (t->state == THREAD_BLOCKED) {
+    t->wait_token = nullptr;
+    t->wait_result = VX_ERR_KILLED;
+    make_ready(t);
+  } else if (t->state != THREAD_DEAD) {
+    // Ready, or running here or elsewhere: if it is about to block, the block
+    // returns at once; if it is in user mode on another CPU, interrupt it.
+    t->wake_pending = true;
+    t->wait_result = VX_ERR_KILLED;
+    if (t->state == THREAD_RUNNING && t->cpu && t->cpu != this_cpu()) arch_send_resched(t->cpu);
+  }
+  spin_unlock(&sched.lock);
 }

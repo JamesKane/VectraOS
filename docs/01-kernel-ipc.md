@@ -93,7 +93,7 @@ A server normally hands out a ring *through* a channel. A ring is created in one
 
 - They carry datagrams, not a byte stream. Each message has a 16-byte header `{txid, ordinal, flags, sender_intent}`, a body of up to 64 KiB, and up to 64 handles. The kernel writes `sender_intent`, the intent of the sending thread's scheduling context, so a server can trust it (§4.3).
 - `channel_write` copies the body into a kernel buffer and moves the handles. `channel_read` copies them out.
-- The per-endpoint queue is bounded by a byte and message budget charged to the *sender's* task, so a flood blocks or fails the sender, not the kernel.
+- The per-endpoint queue is bounded (64 messages and 1 MiB in v1, charged to the sender's budget once budgets exist), so a flood fails the sender with `SHOULD_WAIT`, never growing the kernel. Handles written to a channel leave the writer's table whether or not the write succeeds.
 - Readable and peer-closed signals are delivered to a bound port.
 
 ### 4.3 Rings
@@ -180,12 +180,12 @@ vx_status port_post(vx_handle port, const vx_packet *packet); // self-wake and u
 - There is **no separate timer object**. The deadline is a parameter of the wait, and the leeway lets the kernel coalesce wake-ups. Periodic work is a loop on absolute deadlines.
 - Packets are 32 bytes: `{key, source, trigger, value, timestamp}`, where `value` is the counter value, IRQ count or exit status. `port_wait` returns up to `out_len` packets at once (rule 11).
 - **One clock.** Every timestamp in the system is on the same monotonic clock, in nanoseconds: port packets, deadlines, frame and input events, the audio contract and debug events. Profiler zones record raw cycle counts, which `/sys/clock/info` converts to that clock (02 §5.1). No subsystem keeps a timebase of its own.
-- **Ports are bounded.** Each binding owns one packet, allocated when it is bound. Further signals from that source coalesce into it (its `value` is updated) until the waiter reads it, so a peer that signals in a loop costs the kernel nothing. `port_post` packets are charged to the poster's budget, and `port_post` fails with `SHOULD_WAIT` once the poster's quota is used up.
+- **Bindings are one-shot, and ports are bounded.** `port_bind` attaches a binding to a source for one trigger: `READABLE` or `PEER_CLOSED` on a channel end, `COUNTER_GE(v)` on a counter, `EXIT` on a task. It fires once, at once if its condition already holds, so no wake-up can be lost between checking and binding; a program re-binds after handling it. Each binding is the packet it will deliver, allocated when it is bound, so bindings can never overflow a port. `port_post` packets go in a fixed ring per port, and `port_post` fails with `SHOULD_WAIT` when it is full; charging them to the poster's budget comes with budgets.
 - A **Counter** is a kernel object with a monotonic value; it cannot go backwards. `counter_signal(c, v)` sets the value to `max(current, v)` and wakes every binding whose threshold is at or below it. Its current value is also visible in a read-only shared page, so polling costs no syscall. GPU drivers signal counters from their IRQ threads, which gives *timeline fences* that any process can wait on (§6.2).
 
 ### 4.5 Synchronous call fast path
 
-`channel_call(ch, msg, reply_buf, deadline)` sends a message and blocks for the reply in one kernel entry. If the server thread is waiting in `channel_read` on that channel, the kernel switches to it directly, **donating the caller's `SchedContext`**, so the server runs on the client's budget and intent, and switches back on reply. This is the seL4 IPC fast path. It exists for small latency-critical RPCs, such as `posixd` calls from libc, `keyd` signing, and `devmgr` queries. It is not used for bulk data.
+`channel_call(ch, msg, reply_buf, deadline)` sends a message and blocks for the reply in one kernel entry. If the server thread is waiting in `channel_read` on that channel, the kernel switches to it directly, **donating the caller's `SchedContext`**, so the server runs on the client's budget and intent, and switches back on reply. This is the seL4 IPC fast path. It exists for small latency-critical RPCs, such as `posixd` calls from libc, `keyd` signing, and `devmgr` queries. It is not used for bulk data. In v1 (M2) the kernel picks the request's `txid` and hands the reply whose `txid` matches straight to the waiting caller, never through the queue; donation and the direct switch come with scheduling contexts.
 
 ### 4.6 Futexes
 

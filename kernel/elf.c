@@ -51,8 +51,8 @@ static vx_status elf_load(task *t, const uint8_t *image, uint64_t size, uint64_t
     if (st != VX_OK) return st;
     vmo_write(v, ph[i].vaddr - base, image + ph[i].offset, ph[i].filesz);
     uint64_t va = base;
-    st =
-        task_map(t, v, (ph[i].flags & PF_W ? VX_MAP_WRITE : 0) | (ph[i].flags & PF_X ? VX_MAP_EXEC : 0), &va);
+    st = task_map(t, v, 0, v->size,
+                  (ph[i].flags & PF_W ? VX_MAP_WRITE : 0) | (ph[i].flags & PF_X ? VX_MAP_EXEC : 0), &va);
     object_release(&v->obj); // the mapping keeps it
     if (st != VX_OK) return st;
   }

@@ -84,10 +84,108 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_vmo_create, size, options, (uint64_t)out, 0, 0, 0);
 }
 
-// Maps a whole VMO into a task. *addr == 0 lets the kernel choose; the address
-// used is written back.
-[[maybe_unused]] static vx_status vx_as_map(vx_handle task, vx_handle vmo, uint32_t flags, uint64_t *addr) {
-  return (vx_status)vx_syscall(VX_SYS_as_map, task, vmo, flags, (uint64_t)addr, 0, 0);
+// Maps [offset, offset + size) of a VMO into a task. *addr == 0 lets the
+// kernel choose; the address used is written back.
+[[maybe_unused]] static vx_status vx_as_map(vx_handle task, vx_handle vmo, uint64_t offset, uint64_t size,
+                                            uint32_t flags, uint64_t *addr) {
+  return (vx_status)vx_syscall(VX_SYS_as_map, task, vmo, offset, size, flags, (uint64_t)addr);
+}
+
+[[maybe_unused]] static vx_status vx_vmo_rw(vx_handle vmo, enum vx_vmo_op op, uint64_t offset, void *buf,
+                                            uint64_t size) {
+  return (vx_status)vx_syscall(VX_SYS_vmo_rw, vmo, op, offset, (uint64_t)buf, size, 0);
+}
+
+[[maybe_unused]] static vx_status vx_handle_dup(vx_handle h, uint32_t rights, vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_handle_dup, h, rights, (uint64_t)out, 0, 0, 0);
+}
+
+// --- Channels ---
+
+[[maybe_unused]] static vx_status vx_channel_create(uint32_t options, vx_handle out[2]) {
+  out[0] = out[1] = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_channel_create, options, (uint64_t)out, 0, 0, 0, 0);
+}
+
+// The message starts with a vx_msg_header. The handles leave the caller's
+// table whether or not the write succeeds.
+[[maybe_unused]] static vx_status vx_channel_write(vx_handle ch, const void *bytes, uint32_t len,
+                                                   const vx_handle *handles, uint32_t count) {
+  return (vx_status)vx_syscall(VX_SYS_channel_write, ch, (uint64_t)bytes, len, (uint64_t)handles, count, 0);
+}
+
+// SHOULD_WAIT when nothing is queued; TOO_SMALL, with the sizes in *actual, when
+// the next message does not fit.
+[[maybe_unused]] static vx_status vx_channel_read(vx_handle ch, void *bytes, uint32_t cap, vx_handle *handles,
+                                                  uint32_t count_cap, vx_msg_size *actual) {
+  *actual = (vx_msg_size){};
+  return (vx_status)vx_syscall(VX_SYS_channel_read, ch, (uint64_t)bytes, cap, (uint64_t)handles, count_cap,
+                               (uint64_t)actual);
+}
+
+[[maybe_unused]] static vx_status vx_channel_call(vx_handle ch, vx_call *args, vx_instant deadline) {
+  args->actual = (vx_msg_size){};
+  return (vx_status)vx_syscall(VX_SYS_channel_call, ch, (uint64_t)args, (uint64_t)deadline, 0, 0, 0);
+}
+
+// --- Counters, bindings, futexes ---
+
+[[maybe_unused]] static vx_status vx_counter_create(uint64_t initial, vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_counter_create, initial, (uint64_t)out, 0, 0, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_counter_signal(vx_handle c, uint64_t value) {
+  return (vx_status)vx_syscall(VX_SYS_counter_signal, c, value, 0, 0, 0, 0);
+}
+
+[[maybe_unused]] static int64_t vx_counter_read(vx_handle c) {
+  return vx_syscall(VX_SYS_counter_read, c, 0, 0, 0, 0, 0);
+}
+
+// A one-shot binding: the port gets one packet with `key` when the source's
+// trigger holds (at once, if it already does).
+[[maybe_unused]] static vx_status vx_port_bind(vx_handle port, vx_handle source, enum vx_trigger trigger,
+                                               uint64_t key, uint64_t threshold) {
+  return (vx_status)vx_syscall(VX_SYS_port_bind, port, source, trigger, key, threshold, 0);
+}
+
+[[maybe_unused]] static vx_status vx_futex_wait(const _Atomic uint32_t *word, uint32_t expected,
+                                                vx_instant deadline) {
+  return (vx_status)vx_syscall(VX_SYS_futex_wait, (uint64_t)word, expected, (uint64_t)deadline, 0, 0, 0);
+}
+
+[[maybe_unused]] static int64_t vx_futex_wake(const _Atomic uint32_t *word, uint32_t count) {
+  return vx_syscall(VX_SYS_futex_wake, (uint64_t)word, count, 0, 0, 0, 0);
+}
+
+// --- Tasks and threads ---
+
+[[maybe_unused]] static vx_status vx_task_create(vx_str name, vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_task_create, (uint64_t)name.ptr, name.len, (uint64_t)out, 0, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_thread_create(vx_handle task, vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_thread_create, task, (uint64_t)out, 0, 0, 0, 0);
+}
+
+// Starts a thread at entry on stack sp. `handle`, unless 0, moves to the
+// thread's task and arrives as the first argument; arg2 is the second.
+[[maybe_unused]] static vx_status vx_thread_start(vx_handle thread, uint64_t entry, uint64_t sp,
+                                                  vx_handle handle, uint64_t arg2) {
+  return (vx_status)vx_syscall(VX_SYS_thread_start, thread, entry, sp, handle, arg2, 0);
+}
+
+[[maybe_unused]] [[noreturn]] static void vx_thread_exit(int64_t status) {
+  vx_syscall(VX_SYS_thread_exit, (uint64_t)status, 0, 0, 0, 0, 0);
+  __builtin_unreachable();
+}
+
+[[maybe_unused]] static vx_status vx_task_kill(vx_handle task, int64_t status) {
+  return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)status, 0, 0, 0, 0);
 }
 
 [[maybe_unused]] static vx_status vx_handle_close(vx_handle h) {
@@ -123,12 +221,9 @@ uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647; // to come from the kernel's e
 // A smashed stack ends the task: the trap is reported by the kernel.
 [[noreturn]] void __stack_chk_fail(void) { __builtin_trap(); }
 
-// Called by _start with the handle the kernel passes. There is no thread_exit
-// before M2, so a vx_main that returns ends in a trap the kernel reports.
-[[noreturn]] void vx_start(vx_handle self_task) {
-  vx_main(self_task);
-  __builtin_trap();
-}
+// Called by _start with the handle the kernel passes. The thread ends with
+// vx_main's return value as its exit status.
+[[noreturn]] void vx_start(vx_handle self_task) { vx_thread_exit(vx_main(self_task)); }
 
 #ifdef __x86_64__
 [[gnu::naked, noreturn]] void _start(void) {

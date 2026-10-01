@@ -30,13 +30,73 @@ typedef struct vx_packet {
 } vx_packet;
 static_assert(sizeof(vx_packet) == 32);
 
+// What a port binding waits for (port_bind). A binding is one-shot: it fires
+// once, at once if its condition already holds, and is gone.
 enum vx_trigger : uint32_t {
-  VX_TRIGGER_USER = 1, // port_post
+  VX_TRIGGER_USER = 1,    // port_post
+  VX_TRIGGER_READABLE,    // a channel end has a message to read
+  VX_TRIGGER_PEER_CLOSED, // a channel end's peer is gone
+  VX_TRIGGER_COUNTER_GE,  // a counter has reached the binding's threshold; value: the counter
+  VX_TRIGGER_EXIT,        // a task has ended; value: its exit status
 };
+
+// The intents a thread declares (01 §8). Until scheduling contexts land, every
+// thread is VX_INTENT_INTERACTIVE.
+enum vx_intent : uint32_t {
+  VX_INTENT_REALTIME = 1,
+  VX_INTENT_INTERACTIVE_FRAME,
+  VX_INTENT_INTERACTIVE,
+  VX_INTENT_THROUGHPUT,
+  VX_INTENT_BACKGROUND,
+};
+
+// Every channel message starts with this header (01 §4.2). The kernel writes
+// sender_intent; the rest is the protocol's.
+typedef struct vx_msg_header {
+  uint32_t txid;    // matches a reply to its call; 0 for a message that wants none
+  uint32_t ordinal; // the protocol's operation
+  uint32_t flags;
+  uint32_t sender_intent; // enum vx_intent of the sending thread
+} vx_msg_header;
+static_assert(sizeof(vx_msg_header) == 16);
+
+static constexpr uint32_t VX_CHANNEL_MAX_BYTES = 64 * 1024;
+static constexpr uint32_t VX_CHANNEL_MAX_HANDLES = 64;
+
+typedef struct vx_msg_size { // what channel_read and channel_call report
+  uint32_t bytes;
+  uint32_t handles;
+} vx_msg_size;
+
+// channel_call's buffers: what to send, and where the reply goes.
+typedef struct vx_call {
+  const void *wr_bytes;
+  const vx_handle *wr_handles;
+  void *rd_bytes;
+  vx_handle *rd_handles;
+  uint32_t wr_len, wr_count;
+  uint32_t rd_cap, rd_count_cap;
+  vx_msg_size actual;
+} vx_call;
+
+enum vx_vmo_op : uint32_t { // vmo_rw
+  VX_VMO_READ = 0,
+  VX_VMO_WRITE = 1,
+};
+
+typedef enum vx_task_state : uint32_t {
+  VX_TASK_NEW = 0, // no thread has started
+  VX_TASK_RUNNING,
+  VX_TASK_EXITED, // every thread has exited, or it was killed
+} vx_task_state;
 
 typedef struct vx_task_summary { // what task_info returns
   uint64_t id;
   char name[24]; // NUL-padded
+  vx_task_state state;
+  uint32_t threads;    // live threads
+  int64_t exit_status; // once EXITED
+  uint64_t mapped;     // bytes mapped into its address space
 } vx_task_summary;
 
 enum vx_map_flags : uint32_t { // as_map; a mapping is always readable
