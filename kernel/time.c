@@ -15,9 +15,13 @@ static struct {
   uint64_t ns_mult;    // ns = counter * ns_mult >> 32
   uint64_t count_mult; // counter = ns * count_mult >> 24
   uint64_t boot_count; // the counter at kernel entry: log timestamps count from here
-  uint64_t armed;      // the armed deadline as a counter value; 0 if none
-  volatile uint64_t fired;
 } clock;
+
+// Each CPU arms its own timer.
+static struct {
+  uint64_t armed;         // the armed deadline as a counter value; 0 if none
+  _Atomic uint64_t fired; // how many deadlines have passed here
+} cpu_timer[MAX_CPUS];
 
 static void clock_init(uint64_t hz, uint64_t boot_count) {
   if (!hz) panic(VX_STR("the cycle counter's frequency is unknown"));
@@ -43,20 +47,21 @@ static vx_instant clock_now(void) { return (vx_instant)counter_to_ns(arch_counte
 
 // Arms the timer for an absolute deadline on the monotonic clock.
 static void timer_arm(vx_instant deadline) {
-  clock.armed = ns_to_counter((uint64_t)deadline);
-  if (!clock.armed) clock.armed = 1;
-  arch_timer_arm(clock.armed);
+  uint64_t count = ns_to_counter((uint64_t)deadline);
+  cpu_timer[arch_cpu_index()].armed = count ? count : 1;
+  arch_timer_arm(cpu_timer[arch_cpu_index()].armed);
 }
 
 // Called by the architecture's timer interrupt, with the interrupt acknowledged.
 static void timer_interrupt(void) {
-  if (!clock.armed) return;
-  if (arch_counter() < clock.armed) { // early: a countdown ran out first
-    arch_timer_arm(clock.armed);
+  uint32_t i = arch_cpu_index();
+  if (!cpu_timer[i].armed) return;
+  if (arch_counter() < cpu_timer[i].armed) { // early: a countdown ran out first
+    arch_timer_arm(cpu_timer[i].armed);
     return;
   }
-  clock.armed = 0;
-  clock.fired++;
+  cpu_timer[i].armed = 0;
+  cpu_timer[i].fired++;
   sched_timer();
 }
 

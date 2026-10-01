@@ -71,19 +71,37 @@ static_assert(sizeof(idt_entry) == 16);
 // Double faults, NMIs and machine checks run on stacks of their own, so a
 // kernel stack overflow or a fault at the wrong moment still reaches the panic.
 enum : uint8_t { IST_DOUBLE_FAULT = 1, IST_NMI = 2, IST_MACHINE_CHECK = 3 };
-alignas(16) static uint8_t ist_stacks[3][8192];
+static constexpr size_t IST_STACK_SIZE = 8192;
+alignas(16) static uint8_t boot_ist_stacks[3][IST_STACK_SIZE]; // the boot CPU's, before the allocator exists
 
-static uint64_t gdt[7] = {
+static const uint64_t GDT_TEMPLATE[7] = {
     0,
     0x00af9a000000ffff, // 0x08 kernel code, 64-bit
     0x00cf92000000ffff, // 0x10 kernel data
     0x00cff2000000ffff, // 0x18 user data
     0x00affa000000ffff, // 0x20 user code, 64-bit
     0,
-    0, // 0x28 the TSS, 16 bytes, filled in at run time
+    0, // 0x28 the TSS, 16 bytes, filled in per CPU
 };
-static tss cpu_tss = {.iomap_base = sizeof(tss)};
+
+// Per-CPU data at %gs while in the kernel; entry.S reads the first two fields.
+typedef struct cpu_local {
+  uint64_t kernel_rsp; // the current thread's kernel stack top
+  uint64_t user_rsp;   // scratch for SYSCALL
+  uint64_t index;      // this CPU's index, for arch_cpu_index
+} cpu_local;
+
+// Each CPU has its own GDT (for its own TSS descriptor), TSS and GS data. The
+// IDT is shared.
+typedef struct x86_cpu {
+  uint64_t gdt[7];
+  tss tss;
+  cpu_local local;
+} x86_cpu;
+
+static x86_cpu x86_cpus[MAX_CPUS];
 static idt_entry idt[256];
+static bool percpu_ready; // %gs holds this CPU's cpu_local
 
 extern const uint64_t x86_vector_table[256]; // entry.S
 
@@ -104,17 +122,37 @@ static constexpr uint32_t MSR_FMASK = 0xc0000084;
 static constexpr uint32_t MSR_GS_BASE = 0xc0000101;
 static constexpr uint32_t MSR_KERNEL_GS_BASE = 0xc0000102;
 
-// Per-CPU data at %gs while in the kernel; entry.S reads the first two fields.
-typedef struct cpu_local {
-  uint64_t kernel_rsp; // the current thread's kernel stack top
-  uint64_t user_rsp;   // scratch for SYSCALL
-} cpu_local;
-
-static cpu_local cpu0;
-
 extern const uint8_t syscall_entry[]; // entry.S
 
-static void arch_cpu_init(void) {
+static uint32_t arch_cpu_index(void) {
+  if (!percpu_ready) return 0;
+  uint64_t index;
+  __asm__ volatile("movq %%gs:16, %0" : "=r"(index));
+  return (uint32_t)index;
+}
+
+static void arch_pause(void) { __asm__ volatile("pause"); }
+
+static void build_idt(void) {
+  for (int v = 0; v < 256; v++) {
+    uint64_t h = x86_vector_table[v];
+    idt[v] = (idt_entry){
+        .offset_low = (uint16_t)h,
+        .selector = SEL_KERNEL_CODE,
+        .type = 0x8e,
+        .offset_mid = (uint16_t)(h >> 16),
+        .offset_high = (uint32_t)(h >> 32),
+    };
+  }
+  idt[8].ist = IST_DOUBLE_FAULT;
+  idt[2].ist = IST_NMI;
+  idt[18].ist = IST_MACHINE_CHECK;
+}
+
+// Per CPU: control registers and MSRs, this CPU's GDT, TSS and GS data, and
+// the shared IDT (built by the boot CPU).
+static void arch_cpu_init(uint32_t index) {
+  x86_cpu *xc = &x86_cpus[index];
   // NXE: the NX bit is honoured. SCE: SYSCALL and SYSRET are enabled.
   wrmsr(MSR_EFER, rdmsr(MSR_EFER) | 1ull << 11 | 1ull << 0);
   // SYSCALL loads CS 0x08 and SS 0x10. SYSRET (not used yet; returns go
@@ -122,7 +160,8 @@ static void arch_cpu_init(void) {
   wrmsr(MSR_STAR, (uint64_t)0x10 << 48 | (uint64_t)SEL_KERNEL_CODE << 32);
   wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
   wrmsr(MSR_FMASK, 0x47700); // clear TF, IF, DF, NT and AC on entry
-  wrmsr(MSR_GS_BASE, (uint64_t)&cpu0);
+  xc->local.index = index;
+  wrmsr(MSR_GS_BASE, (uint64_t)&xc->local);
   wrmsr(MSR_KERNEL_GS_BASE, 0);
   uint64_t cr0;
   __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
@@ -130,13 +169,22 @@ static void arch_cpu_init(void) {
                    :
                    : "r"(cr0 | 1ull << 16)); // WP: read-only means read-only, for the kernel too
 
-  for (int i = 0; i < 3; i++) cpu_tss.ist[i] = (uint64_t)&ist_stacks[i][sizeof ist_stacks[i]];
-  uint64_t base = (uint64_t)&cpu_tss, limit = sizeof(tss) - 1;
-  gdt[5] = (limit & 0xffff) | (base & 0xffffff) << 16 | 0x89ull << 40 | ((limit >> 16) & 0xf) << 48 |
-           ((base >> 24) & 0xff) << 56;
-  gdt[6] = base >> 32;
+  uint8_t *ist = index == 0 ? &boot_ist_stacks[0][0] : nullptr;
+  if (!ist) {
+    uint64_t pa = phys_alloc_zeroed(3); // 32 KiB: three 8 KiB stacks
+    if (!pa) panic(VX_STR("no memory for interrupt stacks"));
+    ist = phys_to_virt(pa);
+  }
+  xc->tss = (tss){.iomap_base = sizeof(tss)};
+  for (size_t i = 0; i < 3; i++) xc->tss.ist[i] = (uint64_t)(ist + (i + 1) * IST_STACK_SIZE);
 
-  descriptor_ptr gp = {.limit = sizeof gdt - 1, .base = (uint64_t)gdt};
+  memcpy(xc->gdt, GDT_TEMPLATE, sizeof xc->gdt);
+  uint64_t base = (uint64_t)&xc->tss, limit = sizeof(tss) - 1;
+  xc->gdt[5] = (limit & 0xffff) | (base & 0xffffff) << 16 | 0x89ull << 40 | ((limit >> 16) & 0xf) << 48 |
+               ((base >> 24) & 0xff) << 56;
+  xc->gdt[6] = base >> 32;
+
+  descriptor_ptr gp = {.limit = sizeof xc->gdt - 1, .base = (uint64_t)xc->gdt};
   __asm__ volatile("lgdt %0\n\t"
                    "pushq %1\n\t"
                    "leaq 1f(%%rip), %%rax\n\t"
@@ -152,21 +200,10 @@ static void arch_cpu_init(void) {
                    : "m"(gp), "i"((uint64_t)SEL_KERNEL_CODE), "i"(SEL_KERNEL_DATA), "r"(SEL_TSS)
                    : "rax", "memory");
 
-  for (int v = 0; v < 256; v++) {
-    uint64_t h = x86_vector_table[v];
-    idt[v] = (idt_entry){
-        .offset_low = (uint16_t)h,
-        .selector = SEL_KERNEL_CODE,
-        .type = 0x8e,
-        .offset_mid = (uint16_t)(h >> 16),
-        .offset_high = (uint32_t)(h >> 32),
-    };
-  }
-  idt[8].ist = IST_DOUBLE_FAULT;
-  idt[2].ist = IST_NMI;
-  idt[18].ist = IST_MACHINE_CHECK;
+  if (index == 0) build_idt();
   descriptor_ptr ip = {.limit = sizeof idt - 1, .base = (uint64_t)idt};
   __asm__ volatile("lidt %0" : : "m"(ip) : "memory");
+  percpu_ready = true;
 }
 
 // --- Traps ---
@@ -225,7 +262,9 @@ static constexpr uint32_t X2APIC_DIVIDE = 0x83e;
 
 static bool tsc_deadline;
 static uint64_t apic_per_tsc; // APIC timer ticks per TSC tick, << 32
+static constexpr uint32_t X2APIC_ICR = 0x830;
 static constexpr uint8_t VECTOR_TIMER = 0x20;
+static constexpr uint8_t VECTOR_RESCHED = 0x21; // another CPU made a thread ready
 static constexpr uint8_t VECTOR_SPURIOUS = 0xff;
 
 typedef struct cpuid_regs {
@@ -246,13 +285,17 @@ static uint64_t arch_counter(void) {
 
 static uint64_t arch_counter_hz(void) { return tsc_request.response ? tsc_request.response->frequency : 0; }
 
+// Per CPU: this CPU's local APIC and its timer. The boot CPU also masks the
+// legacy PICs and, without TSC-deadline mode, measures the APIC timer once.
 static void arch_timer_init(void) {
   cpuid_regs features = cpuid(1);
   if (!(features.c & (1u << 21))) panic(VX_STR("the CPU has no x2APIC"));
   tsc_deadline = features.c & (1u << 24);
 
-  outb(0x21, 0xff); // mask both legacy PICs: interrupts come through the APICs only
-  outb(0xa1, 0xff);
+  if (arch_cpu_index() == 0) {
+    outb(0x21, 0xff); // mask both legacy PICs: interrupts come through the APICs only
+    outb(0xa1, 0xff);
+  }
   wrmsr(MSR_APIC_BASE, rdmsr(MSR_APIC_BASE) | 1ull << 11 | 1ull << 10); // enabled, x2APIC mode
   wrmsr(X2APIC_SPURIOUS, 0x100 | VECTOR_SPURIOUS);                      // software-enabled
 
@@ -263,6 +306,10 @@ static void arch_timer_init(void) {
   }
   // One-shot mode, masked while it is measured against the TSC for 1 ms.
   wrmsr(X2APIC_DIVIDE, 0xb); // divide by 1
+  if (apic_per_tsc) {        // measured on the boot CPU: every APIC timer runs at the same rate
+    wrmsr(X2APIC_LVT_TIMER, VECTOR_TIMER);
+    return;
+  }
   wrmsr(X2APIC_LVT_TIMER, VECTOR_TIMER | 1u << 16);
   uint64_t t0 = arch_counter(), wait = clock.hz / 1000;
   wrmsr(X2APIC_INITIAL, 0xffffffff);
@@ -284,6 +331,9 @@ static void arch_timer_arm(uint64_t count) {
   if (ticks > 0xffffffff) ticks = 0xffffffff;
   wrmsr(X2APIC_INITIAL, ticks);
 }
+
+// A fixed interrupt to one CPU by its x2APIC ID: one 64-bit write to the ICR.
+static void arch_send_resched(cpu *c) { wrmsr(X2APIC_ICR, c->arch_id << 32 | VECTOR_RESCHED); }
 
 // Enables interrupts for exactly one halt: sti takes effect after the next
 // instruction, so an interrupt cannot slip in between and be missed.
@@ -323,6 +373,9 @@ void x86_trap(trap_frame *f) {
   } else if (f->vector == VECTOR_TIMER) {
     wrmsr(X2APIC_EOI, 0);
     timer_interrupt();
+  } else if (f->vector == VECTOR_RESCHED) {
+    wrmsr(X2APIC_EOI, 0);
+    this_cpu()->resched = true;
   } else if (f->vector == VECTOR_SPURIOUS) {
     return;
   } else if (from_user) {
@@ -339,7 +392,7 @@ void x86_trap(trap_frame *f) {
     kput_hex(f->rip);
     panic_end(f->rip, f->rbp);
   }
-  if (from_user && sched.resched) schedule();
+  if (from_user && this_cpu()->resched) schedule();
 }
 
 [[noreturn]] static void arch_halt(void) {
@@ -416,8 +469,9 @@ static void arch_switch_tables(uint64_t root) {
 // --- Threads ---
 
 static void arch_set_kernel_stack(uint64_t top) {
-  cpu_tss.rsp[0] = top;  // interrupts and exceptions from user mode
-  cpu0.kernel_rsp = top; // SYSCALL
+  x86_cpu *xc = &x86_cpus[arch_cpu_index()];
+  xc->tss.rsp[0] = top;       // interrupts and exceptions from user mode
+  xc->local.kernel_rsp = top; // SYSCALL
 }
 
 extern const uint8_t thread_trampoline[]; // entry.S
@@ -444,6 +498,20 @@ static uint64_t arch_thread_initial_sp(thread *t) {
       .ss = SEL_USER_DATA,
   };
   arch_enter_frame(f);
+}
+
+// Limine starts each other CPU here, with its limine_mp_info in rdi, in the
+// same state as the boot CPU. smp_init left the top of the CPU's idle stack in
+// extra_argument, with the CPU's index just above it.
+static_assert(offsetof(struct limine_mp_info, extra_argument) == 24);
+
+[[gnu::naked, noreturn]] void ap_start(struct limine_mp_info *info) {
+  __asm__("endbr64\n\t"
+          "movq 24(%rdi), %rsp\n\t"
+          "movq 8(%rsp), %rdi\n\t"
+          "xorl %ebp, %ebp\n\t"
+          "call ap_main\n\t"
+          "ud2");
 }
 
 // Limine enters here in long mode, with the higher half mapped, on a stack of

@@ -39,6 +39,7 @@ typedef struct boot_info {
 } boot_info;
 
 static boot_info boot;
+static char boot_cmdline[256];
 
 static void *phys_to_virt(uint64_t pa) { return (void *)(pa + boot.hhdm); }
 
@@ -86,11 +87,24 @@ static uint64_t early_alloc(uint64_t pages) {
   if (cmdline_request.response && cmdline_request.response->cmdline) {
     const char *c = cmdline_request.response->cmdline;
     size_t n = 0;
-    while (c[n]) n++;
-    boot.cmdline = (vx_str){c, n};
+    while (c[n] && n < sizeof boot_cmdline) n++;
+    memcpy(boot_cmdline, c, n); // the original is in memory reclaim_boot_memory frees
+    boot.cmdline = (vx_str){boot_cmdline, n};
   }
 
   struct limine_entropy_response *entropy = entropy_request.response;
   if (entropy && entropy->value_count >= 1) __stack_chk_guard = entropy->values[0];
   return true;
+}
+
+// True if the kernel command line holds this word.
+static bool cmdline_has(vx_str word) {
+  vx_str c = boot.cmdline;
+  for (size_t i = 0; i < c.len;) {
+    while (i < c.len && c.ptr[i] == ' ') i++;
+    size_t start = i;
+    while (i < c.len && c.ptr[i] != ' ') i++;
+    if (i - start == word.len && memcmp(c.ptr + start, word.ptr, word.len) == 0) return true;
+  }
+  return false;
 }

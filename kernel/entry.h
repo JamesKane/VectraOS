@@ -9,8 +9,13 @@ typedef struct thread thread;
 struct trap_frame;
 
 // Limine enters _start, which moves to the boot stack and calls kernel_main.
+// It starts each other CPU at ap_start, which moves to that CPU's idle stack
+// and calls ap_main with its index.
+struct limine_mp_info;
 [[noreturn]] void _start(void);
 [[noreturn]] void kernel_main(void);
+[[noreturn]] void ap_start(struct limine_mp_info *info);
+[[noreturn]] void ap_main(uint32_t index);
 
 // The entry assembly: traps land in the architecture's handler; a new thread's
 // first C function is thread_entry; arch_context_switch switches kernel stacks;

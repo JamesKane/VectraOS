@@ -5,16 +5,19 @@
 // until the milestone that needs them. The argument conventions here are a
 // draft until ADR-0004 freezes vx-abi v0.
 
+static task *current_task(void) { return this_cpu()->current->task; }
+
 // User pointers are checked against the current task's page tables before the
-// kernel touches them. Mappings are only ever added in M1 and the kernel runs
-// with interrupts off on one CPU, so nothing can unmap them in between. (With
-// SMAP and PAN switched on, the copies will also open and close user access.)
+// kernel touches them. Mappings are only ever added in M1, so nothing can
+// unmap a range between the check and the copy; with as_unmap (M2) these
+// become copies that recover from a fault. (With SMAP and PAN switched on, they
+// will also open and close user access.)
 static bool user_range_ok(uint64_t addr, uint64_t len, bool write) {
   uint64_t end;
   if (len == 0) return true;
   if (ckd_add(&end, addr, len) || end > USER_TOP) return false;
   for (uint64_t page = addr & ~4095ull; page < end; page += 4096)
-    if (!user_page_ok(sched.current->task->root, page, write)) return false;
+    if (!user_page_ok(current_task()->root, page, write)) return false;
   return true;
 }
 
@@ -32,8 +35,7 @@ static vx_status copy_to_user(uint64_t dst, const void *src, uint64_t len) {
 
 static constexpr uint32_t ALL_RIGHTS = (1u << VX_RIGHT_BIT_COUNT) - 1;
 
-static void object_release(object *obj) {
-  if (--obj->refs) return;
+static void object_destroy(object *obj) {
   switch (obj->type) {
   case OBJ_VMO: vmo_destroy((vmo *)obj); break;
   case OBJ_PORT: pool_free(&port_pool, obj); break;
@@ -44,16 +46,16 @@ static void object_release(object *obj) {
 // Gives the current task a handle to a new object, dropping the creator's reference.
 static int64_t return_handle(object *obj, uint32_t rights, uint64_t out) {
   vx_handle h;
-  vx_status st = handle_add(sched.current->task->handles, obj, rights, &h);
+  vx_status st = handle_add(current_task(), obj, rights, &h);
   object_release(obj);
   if (st != VX_OK) return st;
   st = copy_to_user(out, &h, sizeof h);
-  if (st != VX_OK) handle_close(sched.current->task->handles, h);
+  if (st != VX_OK) handle_close(current_task(), h);
   return st;
 }
 
 static int64_t sys_debug_write(uint64_t ptr, uint64_t len) {
-  if (!sched.current->task->may_debug_write) return VX_ERR_ACCESS;
+  if (!current_task()->may_debug_write) return VX_ERR_ACCESS;
   char buf[256];
   while (len) {
     uint64_t n = len < sizeof buf ? len : sizeof buf;
@@ -68,10 +70,11 @@ static int64_t sys_debug_write(uint64_t ptr, uint64_t len) {
 
 static int64_t sys_task_info(vx_handle h, uint64_t out) {
   vx_status st;
-  task *t = (task *)handle_get(sched.current->task->handles, h, OBJ_TASK, VX_RIGHT_INSPECT, &st);
+  task *t = (task *)handle_get(current_task(), h, OBJ_TASK, VX_RIGHT_INSPECT, &st);
   if (!t) return st;
   vx_task_summary info = {.id = t->id};
   memcpy(info.name, t->name, sizeof info.name);
+  object_release(&t->obj);
   return copy_to_user(out, &info, sizeof info);
 }
 
@@ -83,54 +86,51 @@ static int64_t sys_port_create(uint64_t options, uint64_t out) {
   return return_handle(&p->obj, ALL_RIGHTS & ~(uint32_t)(VX_RIGHT_EXEC | VX_RIGHT_MAP | VX_RIGHT_DEBUG), out);
 }
 
-static int64_t sys_port_wait(vx_handle h, vx_instant deadline, vx_duration leeway, uint64_t out,
-                             uint64_t max) {
-  vx_status st;
-  port *p = (port *)handle_get(sched.current->task->handles, h, OBJ_PORT, VX_RIGHT_WAIT, &st);
-  if (!p) return st;
-  if (max == 0 || max > PORT_CAPACITY || leeway < 0) return VX_ERR_INVALID;
-  if (!user_range_ok(out, max * sizeof(vx_packet), true)) return VX_ERR_INVALID;
-
-  p->obj.refs++; // the port outlives this wait even if another thread closes the handle
-  int64_t result;
+// Returns packets as soon as any are queued; otherwise joins the waiters and
+// blocks. The reference handle_get took keeps the port alive through the wait,
+// even if another thread closes the handle meanwhile.
+static int64_t port_wait_on(port *p, vx_instant deadline, vx_duration leeway, uint64_t out, uint64_t max) {
   for (;;) {
-    if (p->count) {
-      vx_packet got[PORT_CAPACITY];
-      uint32_t n = port_take(p, got, (uint32_t)max);
-      result = copy_to_user(out, got, n * sizeof(vx_packet));
-      if (result == VX_OK) result = n;
-      break;
+    vx_packet got[PORT_CAPACITY];
+    uint32_t n = port_take(p, got, (uint32_t)max);
+    if (n) {
+      vx_status st = copy_to_user(out, got, n * sizeof(vx_packet));
+      return st == VX_OK ? n : st;
     }
-    if (clock_now() >= deadline) {
-      result = VX_ERR_TIMED_OUT;
-      break;
-    }
-    thread *t = sched.current;
-    t->port = p;
-    t->next = nullptr;
-    thread **link = &p->waiters;
-    while (*link) link = &(*link)->next;
-    *link = t;
+    if (clock_now() >= deadline) return VX_ERR_TIMED_OUT;
+    thread *t = this_cpu()->current;
+    if (!port_join_waiters(p, t)) continue; // a packet arrived meanwhile
     if (thread_block(deadline, leeway) == VX_ERR_TIMED_OUT) {
-      result = VX_ERR_TIMED_OUT;
-      break;
+      port_remove_waiter(p, t);
+      return VX_ERR_TIMED_OUT;
     }
   }
+}
+
+static int64_t sys_port_wait(vx_handle h, vx_instant deadline, vx_duration leeway, uint64_t out,
+                             uint64_t max) {
+  if (max == 0 || max > PORT_CAPACITY || leeway < 0) return VX_ERR_INVALID;
+  if (!user_range_ok(out, max * sizeof(vx_packet), true)) return VX_ERR_INVALID;
+  vx_status st;
+  port *p = (port *)handle_get(current_task(), h, OBJ_PORT, VX_RIGHT_WAIT, &st);
+  if (!p) return st;
+  int64_t result = port_wait_on(p, deadline, leeway, out, max);
   object_release(&p->obj);
   return result;
 }
 
 static int64_t sys_port_post(vx_handle h, uint64_t packet) {
-  vx_status st;
-  port *p = (port *)handle_get(sched.current->task->handles, h, OBJ_PORT, VX_RIGHT_SIGNAL, &st);
-  if (!p) return st;
   vx_packet pk;
-  st = copy_from_user(&pk, packet, sizeof pk);
+  vx_status st = copy_from_user(&pk, packet, sizeof pk);
   if (st != VX_OK) return st;
+  port *p = (port *)handle_get(current_task(), h, OBJ_PORT, VX_RIGHT_SIGNAL, &st);
+  if (!p) return st;
   pk.timestamp = clock_now();
   pk.source = 0;
   pk.trigger = VX_TRIGGER_USER;
-  return port_post(p, &pk);
+  st = port_post(p, &pk);
+  object_release(&p->obj);
+  return st;
 }
 
 static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out) {
@@ -144,17 +144,21 @@ static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out) {
 // as_map(task, vmo, flags, &address): maps the whole VMO. The full call, with
 // offsets into the VMO and reservations (01 §5), lands with as_reserve.
 static int64_t sys_as_map(vx_handle th, vx_handle vh, uint64_t flags, uint64_t addr_ptr) {
-  vx_status st;
-  task *t = (task *)handle_get(sched.current->task->handles, th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (flags & ~(uint64_t)(VX_MAP_WRITE | VX_MAP_EXEC)) return VX_ERR_INVALID;
+  uint64_t va;
+  vx_status st = copy_from_user(&va, addr_ptr, sizeof va);
+  if (st != VX_OK) return st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
   if (!t) return st;
   uint32_t need = VX_RIGHT_MAP | VX_RIGHT_READ | (flags & VX_MAP_WRITE ? VX_RIGHT_WRITE : 0) |
                   (flags & VX_MAP_EXEC ? VX_RIGHT_EXEC : 0);
-  vmo *v = (vmo *)handle_get(sched.current->task->handles, vh, OBJ_VMO, need, &st);
-  if (!v) return st;
-  if (flags & ~(uint64_t)(VX_MAP_WRITE | VX_MAP_EXEC)) return VX_ERR_INVALID;
-  uint64_t va;
-  if ((st = copy_from_user(&va, addr_ptr, sizeof va)) != VX_OK) return st;
-  if ((st = task_map(t, v, (uint32_t)flags, &va)) != VX_OK) return st;
+  vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, need, &st);
+  if (v) {
+    st = task_map(t, v, (uint32_t)flags, &va);
+    object_release(&v->obj);
+  }
+  object_release(&t->obj);
+  if (st != VX_OK) return st;
   return copy_to_user(addr_ptr, &va, sizeof va);
 }
 
@@ -169,7 +173,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_port_post: return sys_port_post((vx_handle)a[0], a[1]);
   case VX_SYS_vmo_create: return sys_vmo_create(a[0], a[1], a[2]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3]);
-  case VX_SYS_handle_close: return handle_close(sched.current->task->handles, (vx_handle)a[0]);
+  case VX_SYS_handle_close: return handle_close(current_task(), (vx_handle)a[0]);
   default: return VX_ERR_UNSUPPORTED;
   }
 }

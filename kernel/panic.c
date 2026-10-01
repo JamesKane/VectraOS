@@ -1,19 +1,31 @@
 // panic.c: console output, the kernel's symbol map, backtraces and panic.
 
-// Everything the console prints goes through kput, which starts every line
-// with a timestamp (time.c), whether the text comes from the kernel or from
-// debug_write.
-static bool console_at_line_start = true;
+// Everything the console prints goes through kput, whether it comes from the
+// kernel or from debug_write. Each CPU builds its line in its own buffer and
+// prints it whole, after a timestamp (time.c), under the console lock, so lines
+// from different CPUs never interleave. A line longer than the buffer goes out
+// in pieces.
+static struct {
+  char buf[512];
+  size_t len;
+} console_line[MAX_CPUS];
+
+static spinlock console_lock;
+
+static void console_flush(void) {
+  typeof(console_line[0]) *line = &console_line[arch_cpu_index()];
+  spin_lock(&console_lock);
+  kput_stamp();
+  arch_console_write((vx_str){line->buf, line->len});
+  spin_unlock(&console_lock);
+  line->len = 0;
+}
 
 static void kput(vx_str s) {
-  size_t i = 0;
-  while (i < s.len) {
-    if (console_at_line_start) kput_stamp();
-    size_t start = i;
-    while (i < s.len && s.ptr[i] != '\n') i++;
-    console_at_line_start = i < s.len;
-    if (i < s.len) i++; // include the newline
-    arch_console_write((vx_str){s.ptr + start, i - start});
+  typeof(console_line[0]) *line = &console_line[arch_cpu_index()];
+  for (size_t i = 0; i < s.len; i++) {
+    line->buf[line->len++] = s.ptr[i];
+    if (s.ptr[i] == '\n' || line->len == sizeof line->buf) console_flush();
   }
 }
 
@@ -30,7 +42,7 @@ static void kput_u64(uint64_t v) {
     buf[--i] = (char)('0' + v % 10);
     v /= 10;
   } while (v);
-  arch_console_write((vx_str){buf + i, sizeof buf - i});
+  kput((vx_str){buf + i, sizeof buf - i});
 }
 
 static void kput_hex(uint64_t v) {
@@ -101,13 +113,13 @@ static void backtrace(uint64_t pc, uint64_t fp) {
   }
 }
 
-static bool panicking;
+static _Atomic bool panicking;
 
 // Starts a panic message: "vx: panic: " and whatever the caller adds with kput.
 static void panic_start(void) {
-  if (panicking) arch_halt(); // a fault inside a panic: stop rather than recurse
-  panicking = true;
-  if (!console_at_line_start) kput(VX_STR("\n"));
+  if (atomic_exchange(&panicking, true)) arch_halt(); // a fault inside a panic, or two CPUs at once: stop
+
+  if (console_line[arch_cpu_index()].len) kput(VX_STR("\n"));
   kput(VX_STR("vx: panic: "));
 }
 

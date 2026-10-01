@@ -100,9 +100,13 @@ static void arch_kernel_mappings(uint64_t root) {
 
 // Installs the kernel's tables in TTBR1, and an empty table in TTBR0 until
 // there is a user address space, then drops every cached translation.
+static uint64_t empty_user_root; // TTBR0 while a CPU runs no task, shared by all
+
 static void arch_switch_tables(uint64_t root) {
-  uint64_t empty = phys_alloc_zeroed(0);
-  if (!empty) panic(VX_STR("no memory for page tables"));
+  if (!empty_user_root)
+    empty_user_root = phys_alloc_zeroed(0); // first on the boot CPU, before the others start
+  if (!empty_user_root) panic(VX_STR("no memory for page tables"));
+  uint64_t empty = empty_user_root;
   __asm__ volatile("dsb ishst\n\t"
                    "msr ttbr1_el1, %0\n\t"
                    "msr ttbr0_el1, %1\n\t"
@@ -140,6 +144,7 @@ static void arch_console_write(vx_str s) {
 
 // --- The clock and the timer: the generic timer's virtual counter, through the GICv3 ---
 
+static constexpr uint32_t INTID_RESCHED = 0;        // an SGI: another CPU made a thread ready
 static constexpr uint32_t INTID_VIRTUAL_TIMER = 27; // a PPI
 
 static uint64_t arch_counter(void) {
@@ -154,11 +159,13 @@ static uint64_t arch_counter_hz(void) {
   return v;
 }
 
-static volatile uint32_t *gicr_sgi; // this CPU's redistributor, SGI and PPI frame
-
+// Sets up the GIC for this CPU: the distributor once, on the boot CPU, then
+// this CPU's redistributor, with the timer's PPI and the reschedule SGI enabled.
 static void arch_timer_init(void) {
-  volatile uint32_t *gicd = (volatile uint32_t *)(boot.hhdm + GICD_PHYS);
-  gicd[0] = 1u << 4 | 1u << 1 | 1u << 0; // GICD_CTLR: affinity routing, both groups enabled
+  if (arch_cpu_index() == 0) {
+    volatile uint32_t *gicd = (volatile uint32_t *)(boot.hhdm + GICD_PHYS);
+    gicd[0] = 1u << 4 | 1u << 1 | 1u << 0; // GICD_CTLR: affinity routing, both groups enabled
+  }
 
   // Find this CPU's redistributor by its affinity.
   uint64_t mpidr;
@@ -180,10 +187,12 @@ static void arch_timer_init(void) {
   *waker &= ~(1u << 1);         // clear ProcessorSleep
   while (*waker & (1u << 2)) {} // wait for ChildrenAsleep to clear
 
-  gicr_sgi = (volatile uint32_t *)(rd + 0x1'0000);
-  gicr_sgi[0x080 / 4] |= 1u << INTID_VIRTUAL_TIMER;                   // GICR_IGROUPR0: group 1
-  ((volatile uint8_t *)gicr_sgi)[0x400 + INTID_VIRTUAL_TIMER] = 0x80; // priority
-  gicr_sgi[0x100 / 4] = 1u << INTID_VIRTUAL_TIMER;                    // GICR_ISENABLER0
+  volatile uint32_t *sgi = (volatile uint32_t *)(rd + 0x1'0000); // the SGI and PPI frame
+  uint32_t lines = 1u << INTID_VIRTUAL_TIMER | 1u << INTID_RESCHED;
+  sgi[0x080 / 4] |= lines;                                       // GICR_IGROUPR0: group 1
+  ((volatile uint8_t *)sgi)[0x400 + INTID_VIRTUAL_TIMER] = 0x80; // priorities
+  ((volatile uint8_t *)sgi)[0x400 + INTID_RESCHED] = 0x80;
+  sgi[0x100 / 4] = lines; // GICR_ISENABLER0
 
   // The CPU interface, through system registers.
   uint64_t sre;
@@ -223,19 +232,50 @@ static void aarch64_irq(void) {
   uint32_t intid = (uint32_t)iar & 0xffffff;
   if (intid >= 1020) return; // spurious
   if (intid == INTID_VIRTUAL_TIMER) {
-    __asm__ volatile("msr cntv_ctl_el0, xzr\n\tisb"); // disarm: the line is level-triggered
+    __asm__ volatile("msr cntv_ctl_el0, xzr\n\tisb"); // disarm before EOI: the line is level-triggered
     timer_interrupt();
+  } else if (intid == INTID_RESCHED) {
+    this_cpu()->resched = true;
   }
   __asm__ volatile("msr icc_eoir1_el1, %0" : : "r"(iar));
+}
+
+// An SGI to one CPU, named by its affinity: ICC_SGI1R_EL1 takes Aff3, Aff2 and
+// Aff1, and Aff0 as a bit in a target list.
+static void arch_send_resched(cpu *c) {
+  uint64_t a = c->arch_id;
+  uint64_t v = (a >> 32 & 0xff) << 48 | (a >> 16 & 0xff) << 32 | (uint64_t)INTID_RESCHED << 24 |
+               (a >> 8 & 0xff) << 16 | 1ull << (a & 0xf);
+  __asm__ volatile("dsb ishst\n\tmsr icc_sgi1r_el1, %0\n\tisb" : : "r"(v) : "memory");
 }
 
 // --- Exceptions ---
 
 extern const uint8_t aarch64_vectors[]; // vectors.S
 
-static void arch_cpu_init(void) {
-  __asm__ volatile("msr vbar_el1, %0\n\tisb" : : "r"(aarch64_vectors) : "memory");
+static bool percpu_ready; // TPIDR_EL1 holds this CPU's index
+
+// Per CPU: the vector table, the CPU's index in TPIDR_EL1, and MAIR attribute 2
+// as device memory (arch_console_init sets it early on the boot CPU).
+static void arch_cpu_init(uint32_t index) {
+  __asm__ volatile("msr vbar_el1, %0\n\t"
+                   "msr tpidr_el1, %1\n\t"
+                   "isb"
+                   :
+                   : "r"(aarch64_vectors), "r"((uint64_t)index)
+                   : "memory");
+  write_mair(read_mair() & ~(0xffull << 16));
+  percpu_ready = true;
 }
+
+static uint32_t arch_cpu_index(void) {
+  if (!percpu_ready) return 0;
+  uint64_t v;
+  __asm__ volatile("mrs %0, tpidr_el1" : "=r"(v));
+  return (uint32_t)v;
+}
+
+static void arch_pause(void) { __asm__ volatile("yield"); }
 
 typedef struct trap_frame { // the layout vectors.S builds
   uint64_t x[31];           // x29 is the frame pointer, x30 the link register
@@ -318,11 +358,28 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
     kput_hex(f->elr);
     panic_end(f->elr, f->x[29]);
   }
-  if (from_user && sched.resched) schedule();
+  if (from_user && this_cpu()->resched) schedule();
 }
 
 [[noreturn]] static void arch_halt(void) {
   for (;;) __asm__ volatile("msr daifset, #0xf\n\twfi");
+}
+
+// Limine starts each other CPU here, with its limine_mp_info in x0, in the
+// same state as the boot CPU. smp_init left the top of the CPU's idle stack in
+// extra_argument, with the CPU's index just above it.
+static_assert(offsetof(struct limine_mp_info, extra_argument) == 32);
+
+[[gnu::naked, noreturn]] void ap_start(struct limine_mp_info *info) {
+  __asm__("hint #34\n\t"
+          "ldr x9, [x0, #32]\n\t"
+          "msr spsel, #1\n\t"
+          "mov sp, x9\n\t"
+          "ldr x0, [sp, #8]\n\t"
+          "mov x29, xzr\n\t"
+          "mov x30, xzr\n\t"
+          "bl ap_main\n\t"
+          "brk #0");
 }
 
 // Limine enters here at EL1 (or EL2 with VHE), with the higher half mapped,

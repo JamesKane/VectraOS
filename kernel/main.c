@@ -1,17 +1,5 @@
 // main.c: the architecture-independent start of the kernel.
 
-// True if the kernel command line holds this word.
-static bool cmdline_has(vx_str word) {
-  vx_str c = boot.cmdline;
-  for (size_t i = 0; i < c.len;) {
-    while (i < c.len && c.ptr[i] == ' ') i++;
-    size_t start = i;
-    while (i < c.len && c.ptr[i] != ' ') i++;
-    if (i - start == word.len && memcmp(c.ptr + start, word.ptr, word.len) == 0) return true;
-  }
-  return false;
-}
-
 // Allocates a block of every order, checks alignment and the free count, frees
 // them all and checks that the count, and the largest block, come back.
 static void selftest_phys(void) {
@@ -44,9 +32,9 @@ static void kput_millis(uint64_t ns) {
 // come early, and must come within 20 ms of the deadline even under emulation.
 static void selftest_timer(void) {
   vx_instant start = clock_now(), deadline = start + 10'000'000;
-  uint64_t fired = clock.fired;
+  uint64_t fired = cpu_timer[0].fired;
   timer_arm(deadline);
-  while (clock.fired == fired) arch_wait();
+  while (cpu_timer[0].fired == fired) arch_wait();
   vx_instant woke = clock_now();
   if (woke < deadline) panic(VX_STR("selftest timer: woke before the deadline"));
   if (woke - deadline > 20'000'000) panic(VX_STR("selftest timer: woke more than 20 ms late"));
@@ -58,6 +46,7 @@ static void selftest_timer(void) {
 // Self-tests that tests/qemu scenarios ask for on the command line. The fault
 // tests end in a panic, which the scenario checks.
 static void selftests(void) {
+  if (cmdline_has(VX_STR("vx.selftest=smp"))) selftest_smp();
   if (cmdline_has(VX_STR("vx.selftest=timer"))) selftest_timer();
   if (cmdline_has(VX_STR("vx.selftest=phys"))) selftest_phys();
   if (cmdline_has(VX_STR("vx.selftest=fault"))) {
@@ -84,18 +73,21 @@ static void selftests(void) {
   arch_console_init();
   if (!ok) panic(VX_STR("the bootloader does not provide Limine base revision 6"));
   clock_init(arch_counter_hz(), entry);
-  arch_cpu_init();
+  arch_cpu_init(0);
   phys_init();
   paging_init();
   arch_timer_init();
+  sched_enter_cpu();
+  smp_init();
 
   kput(VX_STR("vx: kernel 0.1.0 " VX_ARCH_NAME ", "));
   kput_u64(phys.free_pages >> 8);
   kput(VX_STR(" MiB free, "));
-  kput_u64(boot.cpu_count);
-  kput(boot.cpu_count == 1 ? VX_STR(" cpu\n") : VX_STR(" cpus\n"));
+  kput_u64(atomic_load(&cpus_online));
+  kput(atomic_load(&cpus_online) == 1 ? VX_STR(" cpu\n") : VX_STR(" cpus\n"));
 
-  selftests();
   start_root_task();
-  sched_run();
+  reclaim_boot_memory(); // every CPU is on the kernel's tables and stacks, and the responses are read
+  selftests();           // after the reclaim, so the allocator tests cover that memory too
+  sched_idle_loop();
 }

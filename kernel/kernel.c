@@ -9,11 +9,18 @@
 // replaces this value with entropy from the bootloader.
 uintptr_t __stack_chk_guard = 0x595e9fbd94fda766;
 
+// The most CPUs the kernel runs on. Limine's others stay parked.
+static constexpr uint32_t MAX_CPUS = 64;
+
 // What each architecture provides to the rest of the kernel.
 static void arch_console_init(void);
 static void arch_console_write(vx_str s);
-static void arch_cpu_init(void); // exception vectors, and on x86_64 the GDT, TSS and IDT
+static void arch_cpu_init(uint32_t index); // this CPU: vectors, per-CPU data; on x86_64 the GDT, TSS and IDT
+static uint32_t arch_cpu_index(void);      // 0 until arch_cpu_init has run on the boot CPU
+static void arch_pause(void);              // a spin-wait hint
 [[noreturn]] static void arch_halt(void);
+struct cpu;
+static void arch_send_resched(struct cpu *c); // a reschedule interrupt to another CPU
 
 // Page-table entries, in the architecture's format (mm/paging.c).
 static bool arch_pte_valid(uint64_t e);
@@ -42,6 +49,7 @@ static uint64_t arch_thread_initial_sp(thread *t);
 [[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t kstack_top);
 
 #include "../lib/vx-mem/mem.c"
+#include "sync.c"
 #include "boot.c"
 #include "panic.c"
 #include "mm/phys.c"
@@ -55,6 +63,7 @@ static uint64_t arch_thread_initial_sp(thread *t);
 #include "syscall/syscall.c"
 #include "elf.c"
 #include "root.c"
+#include "sched/smp.c"
 
 #ifdef __x86_64__
 #define VX_ARCH_NAME "x86_64"

@@ -36,7 +36,7 @@ static void start_root_task(void) {
 
   vx_handle self;
   thread *th;
-  if (handle_add(t->handles, &t->obj, ALL_RIGHTS, &self) != VX_OK ||
+  if (handle_add(t, &t->obj, ALL_RIGHTS, &self) != VX_OK ||
       thread_create(t, entry, USER_STACK_TOP, self, &th) != VX_OK)
     panic(VX_STR("cannot start svcd"));
   sched_start_thread(th);

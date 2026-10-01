@@ -1,18 +1,18 @@
 // phys.c: the physical page allocator (docs/01 §5). A buddy allocator over the
 // memory map, in blocks of 2^order pages, order 0 (4 KiB) to PHYS_MAX_ORDER
-// (4 MiB). One zone and no per-CPU caches yet: the dma32 and contiguous zones,
-// NUMA nodes and per-CPU caches come with the drivers and SMP that need them.
-// Not yet safe on several CPUs at once.
+// (4 MiB). One zone, one lock and no per-CPU caches yet: the dma32 and
+// contiguous zones, NUMA nodes and per-CPU caches come when measurements ask.
 
 static constexpr unsigned PHYS_MAX_ORDER = 10;
-static constexpr uint8_t FRAME_FREE_HEAD =
-    0x80; // frame_state: first frame of a free block; low bits: its order
+// frame_state: the first frame of a free block has this bit, and its order in the low bits.
+static constexpr uint8_t FRAME_FREE_HEAD = 0x80;
 
 typedef struct free_block { // lives in the free memory itself, through the direct map
   struct free_block *next, *prev;
 } free_block;
 
 static struct {
+  spinlock lock;
   free_block *lists[PHYS_MAX_ORDER + 1];
   uint8_t *frame_state; // one byte per 4 KiB frame below `frames`
   uint64_t frames;
@@ -36,6 +36,7 @@ static void list_remove(unsigned order, uint64_t pa) {
 }
 
 static void phys_free(uint64_t pa, unsigned order) {
+  spin_lock(&phys.lock);
   phys.free_pages += 1ull << order;
   uint64_t frame = pa >> 12;
   while (order < PHYS_MAX_ORDER) {
@@ -48,13 +49,18 @@ static void phys_free(uint64_t pa, unsigned order) {
   }
   phys.frame_state[frame] = FRAME_FREE_HEAD | (uint8_t)order;
   list_push(order, frame << 12);
+  spin_unlock(&phys.lock);
 }
 
 // Returns the physical address of 2^order free pages, or 0 if there are none.
 static uint64_t phys_alloc(unsigned order) {
+  spin_lock(&phys.lock);
   unsigned k = order;
   while (k <= PHYS_MAX_ORDER && !phys.lists[k]) k++;
-  if (k > PHYS_MAX_ORDER) return 0;
+  if (k > PHYS_MAX_ORDER) {
+    spin_unlock(&phys.lock);
+    return 0;
+  }
   uint64_t pa = (uint64_t)phys.lists[k] - boot.hhdm;
   list_remove(k, pa);
   phys.frame_state[pa >> 12] = 0;
@@ -65,6 +71,7 @@ static uint64_t phys_alloc(unsigned order) {
     list_push(k, upper);
   }
   phys.free_pages -= 1ull << order;
+  spin_unlock(&phys.lock);
   return pa;
 }
 

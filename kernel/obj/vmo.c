@@ -30,8 +30,11 @@ static vx_status vmo_create(uint64_t size, vmo **out) {
     pool_free(&vmo_pool, v);
     return VX_ERR_NO_MEMORY;
   }
-  *v = (vmo){
-      .obj = {.type = OBJ_VMO, .refs = 1}, .size = size, .pages = phys_to_virt(list), .list_order = order};
+  v->obj.type = OBJ_VMO;
+  atomic_store_explicit(&v->obj.refs, 1, memory_order_relaxed);
+  v->size = size;
+  v->pages = phys_to_virt(list);
+  v->list_order = order;
   for (uint64_t i = 0; i < count; i++) {
     v->pages[i] = phys_alloc_zeroed(0);
     if (!v->pages[i]) {
