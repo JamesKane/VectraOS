@@ -1,0 +1,57 @@
+# The house clang-tidy checks (docs/04 §1.1, §1.2): the families that apply to
+# C, every finding an error. `./build check` runs it over each translation unit
+# of the OS tree with that unit's own flags. A check is left out only for a
+# reason given here.
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  concurrency-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-suspicious-include,
+  -portability-avoid-pragma-once,
+  -bugprone-reserved-identifier,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -cert-err33-c,
+  -concurrency-mt-unsafe,
+  -misc-include-cleaner,
+  -performance-no-int-to-ptr,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-braces-around-statements,
+  -readability-isolate-declaration,
+  -readability-implicit-bool-conversion,
+  -readability-uppercase-literal-suffix,
+  -readability-function-cognitive-complexity,
+  -readability-math-missing-parentheses
+# Why each is off:
+#   easily-swappable-parameters   most syscalls take several integers of one type; the ABI fixes their order
+#   suspicious-include            unity builds include .c files on purpose (04 §1.1)
+#   avoid-pragma-once             every compiler the tree is built with (one: the pinned clang) has it
+#   reserved-identifier, dcl37-c, dcl51-cpp
+#                                 the kernel and vx-rt must define __stack_chk_guard, __stack_chk_fail, memset...
+#   assignment-in-if-condition    `if ((st = call()) != VX_OK)` is the house idiom for checked calls
+#   multi-level-implicit-pointer-conversion
+#                                 C converts void * to T ** implicitly; a cast there would hide a real type error
+#   err33-c                       asks to check printf's result; build's progress output does not need it
+#   mt-unsafe                     build is single-threaded; the kernel calls no libc
+#   include-cleaner               unity builds include .c files on purpose (04 §1.1)
+#   no-int-to-ptr                 a kernel turns physical addresses into pointers through the direct map
+#   identifier-length             i, n, t and pa are clear in short scopes
+#   magic-numbers                 hardware registers, bit fields and ABI constants are numbers; each is named where it is defined
+#   braces-around-statements      the house format puts short ifs and loops on one line (.clang-format)
+#   isolate-declaration           `uint64_t lo, hi;` declares related values together
+#   implicit-bool-conversion      `if (!p)` and `if (flags & X)` are idiomatic C
+#   uppercase-literal-suffix      the house writes 1ull
+#   function-cognitive-complexity parsers, the trap handlers and build's commands are long by nature; review keeps them readable
+#   math-missing-parentheses      C's precedence of * over + needs no parentheses
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*'
+ExcludeHeaderFilterRegex: '.*/third_party/.*'   # vendored code keeps its upstream style

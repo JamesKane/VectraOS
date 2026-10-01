@@ -2,100 +2,100 @@
 
 // True if the kernel command line holds this word.
 static bool cmdline_has(vx_str word) {
-    vx_str c = boot.cmdline;
-    for (size_t i = 0; i < c.len;) {
-        while (i < c.len && c.ptr[i] == ' ') i++;
-        size_t start = i;
-        while (i < c.len && c.ptr[i] != ' ') i++;
-        if (i - start == word.len && memcmp(c.ptr + start, word.ptr, word.len) == 0) return true;
-    }
-    return false;
+  vx_str c = boot.cmdline;
+  for (size_t i = 0; i < c.len;) {
+    while (i < c.len && c.ptr[i] == ' ') i++;
+    size_t start = i;
+    while (i < c.len && c.ptr[i] != ' ') i++;
+    if (i - start == word.len && memcmp(c.ptr + start, word.ptr, word.len) == 0) return true;
+  }
+  return false;
 }
 
 // Allocates a block of every order, checks alignment and the free count, frees
 // them all and checks that the count, and the largest block, come back.
 static void selftest_phys(void) {
-    uint64_t before = phys.free_pages, taken = 0, pa[PHYS_MAX_ORDER + 1];
-    for (unsigned o = 0; o <= PHYS_MAX_ORDER; o++) {
-        pa[o] = phys_alloc(o);
-        if (!pa[o] || (pa[o] & ((4096ull << o) - 1))) panic(VX_STR("selftest phys: bad block"));
-        taken += 1ull << o;
-    }
-    if (phys.free_pages != before - taken) panic(VX_STR("selftest phys: free count after allocating"));
-    for (unsigned o = 0; o <= PHYS_MAX_ORDER; o++) phys_free(pa[o], o);
-    if (phys.free_pages != before) panic(VX_STR("selftest phys: free count after freeing"));
-    uint64_t big = phys_alloc(PHYS_MAX_ORDER);
-    if (!big) panic(VX_STR("selftest phys: no largest block after freeing"));
-    phys_free(big, PHYS_MAX_ORDER);
-    kput(VX_STR("vx: selftest phys ok\n"));
+  uint64_t before = phys.free_pages, taken = 0, pa[PHYS_MAX_ORDER + 1];
+  for (unsigned o = 0; o <= PHYS_MAX_ORDER; o++) {
+    pa[o] = phys_alloc(o);
+    if (!pa[o] || (pa[o] & ((4096ull << o) - 1))) panic(VX_STR("selftest phys: bad block"));
+    taken += 1ull << o;
+  }
+  if (phys.free_pages != before - taken) panic(VX_STR("selftest phys: free count after allocating"));
+  for (unsigned o = 0; o <= PHYS_MAX_ORDER; o++) phys_free(pa[o], o);
+  if (phys.free_pages != before) panic(VX_STR("selftest phys: free count after freeing"));
+  uint64_t big = phys_alloc(PHYS_MAX_ORDER);
+  if (!big) panic(VX_STR("selftest phys: no largest block after freeing"));
+  phys_free(big, PHYS_MAX_ORDER);
+  kput(VX_STR("vx: selftest phys ok\n"));
 }
 
 // Prints a duration in nanoseconds as milliseconds with three decimals.
 static void kput_millis(uint64_t ns) {
-    uint64_t us = ns / 1000;
-    kput_u64(us / 1000);
-    kput(VX_STR("."));
-    kput_u64(us % 1000 / 100);
-    kput_u64(us % 100 / 10);
-    kput_u64(us % 10);
+  uint64_t us = ns / 1000;
+  kput_u64(us / 1000);
+  kput(VX_STR("."));
+  kput_u64(us % 1000 / 100);
+  kput_u64(us % 100 / 10);
+  kput_u64(us % 10);
 }
 
 // Arms the timer 10 ms ahead and sleeps until it fires. The wake-up must never
 // come early, and must come within 20 ms of the deadline even under emulation.
 static void selftest_timer(void) {
-    vx_instant start = clock_now(), deadline = start + 10'000'000;
-    uint64_t fired = clock.fired;
-    timer_arm(deadline);
-    while (clock.fired == fired) arch_wait();
-    vx_instant woke = clock_now();
-    if (woke < deadline) panic(VX_STR("selftest timer: woke before the deadline"));
-    if (woke - deadline > 20'000'000) panic(VX_STR("selftest timer: woke more than 20 ms late"));
-    kput(VX_STR("vx: selftest timer ok: requested 10.000 ms, woke after "));
-    kput_millis((uint64_t)(woke - start));
-    kput(VX_STR(" ms\n"));
+  vx_instant start = clock_now(), deadline = start + 10'000'000;
+  uint64_t fired = clock.fired;
+  timer_arm(deadline);
+  while (clock.fired == fired) arch_wait();
+  vx_instant woke = clock_now();
+  if (woke < deadline) panic(VX_STR("selftest timer: woke before the deadline"));
+  if (woke - deadline > 20'000'000) panic(VX_STR("selftest timer: woke more than 20 ms late"));
+  kput(VX_STR("vx: selftest timer ok: requested 10.000 ms, woke after "));
+  kput_millis((uint64_t)(woke - start));
+  kput(VX_STR(" ms\n"));
 }
 
 // Self-tests that tests/qemu scenarios ask for on the command line. The fault
 // tests end in a panic, which the scenario checks.
 static void selftests(void) {
-    if (cmdline_has(VX_STR("vx.selftest=timer"))) selftest_timer();
-    if (cmdline_has(VX_STR("vx.selftest=phys"))) selftest_phys();
-    if (cmdline_has(VX_STR("vx.selftest=fault"))) {
-        // Nothing is mapped this far above the direct map's start.
-        volatile const uint64_t *p = (volatile const uint64_t *)(boot.hhdm + (1ull << 46));
-        (void)*p;
-    }
-    if (cmdline_has(VX_STR("vx.selftest=lower-half"))) {
-        // The lower half is empty until there is a user address space. (Address 8,
-        // not 0: a null load would stop at the debug kernel's UBSan check first.)
-        volatile const uint64_t *p = (volatile const uint64_t *)(uintptr_t)8;
-        (void)*p;
-    }
-    if (cmdline_has(VX_STR("vx.selftest=write-text"))) {
-        // Kernel code is read-only (W^X).
-        volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)&kernel_main;
-        *p = 0;
-    }
+  if (cmdline_has(VX_STR("vx.selftest=timer"))) selftest_timer();
+  if (cmdline_has(VX_STR("vx.selftest=phys"))) selftest_phys();
+  if (cmdline_has(VX_STR("vx.selftest=fault"))) {
+    // Nothing is mapped this far above the direct map's start.
+    volatile const uint64_t *p = (volatile const uint64_t *)(boot.hhdm + (1ull << 46));
+    (void)*p;
+  }
+  if (cmdline_has(VX_STR("vx.selftest=lower-half"))) {
+    // The lower half is empty until there is a user address space. (Address 8,
+    // not 0: a null load would stop at the debug kernel's UBSan check first.)
+    volatile const uint64_t *p = (volatile const uint64_t *)(uintptr_t)8;
+    (void)*p;
+  }
+  if (cmdline_has(VX_STR("vx.selftest=write-text"))) {
+    // Kernel code is read-only (W^X).
+    volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)&kernel_main;
+    *p = 0;
+  }
 }
 
 [[noreturn, clang::no_stack_protector]] void kernel_main(void) {
-    uint64_t entry = arch_counter();
-    bool ok = boot_read();
-    arch_console_init();
-    if (!ok) panic(VX_STR("the bootloader does not provide Limine base revision 6"));
-    clock_init(arch_counter_hz(), entry);
-    arch_cpu_init();
-    phys_init();
-    paging_init();
-    arch_timer_init();
+  uint64_t entry = arch_counter();
+  bool ok = boot_read();
+  arch_console_init();
+  if (!ok) panic(VX_STR("the bootloader does not provide Limine base revision 6"));
+  clock_init(arch_counter_hz(), entry);
+  arch_cpu_init();
+  phys_init();
+  paging_init();
+  arch_timer_init();
 
-    kput(VX_STR("vx: kernel 0.1.0 " VX_ARCH_NAME ", "));
-    kput_u64(phys.free_pages >> 8);
-    kput(VX_STR(" MiB free, "));
-    kput_u64(boot.cpu_count);
-    kput(boot.cpu_count == 1 ? VX_STR(" cpu\n") : VX_STR(" cpus\n"));
+  kput(VX_STR("vx: kernel 0.1.0 " VX_ARCH_NAME ", "));
+  kput_u64(phys.free_pages >> 8);
+  kput(VX_STR(" MiB free, "));
+  kput_u64(boot.cpu_count);
+  kput(boot.cpu_count == 1 ? VX_STR(" cpu\n") : VX_STR(" cpus\n"));
 
-    selftests();
-    start_root_task();
-    sched_run();
+  selftests();
+  start_root_task();
+  sched_run();
 }

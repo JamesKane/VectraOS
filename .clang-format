@@ -1,0 +1,22 @@
+# The house format (docs/04 §1.1): K&R, two-space indents, every opening
+# brace on the same line as its statement or declaration, function bodies
+# included. `./build check` runs clang-format --dry-run over the OS tree.
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 2
+ContinuationIndentWidth: 4
+UseTab: Never
+ColumnLimit: 110
+BreakBeforeBraces: Attach
+PointerAlignment: Right
+SpaceBeforeParens: ControlStatements
+IndentCaseLabels: false
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Empty
+AlignConsecutiveMacros: Consecutive
+AlignTrailingComments: true
+SortIncludes: Never
+ReflowComments: false

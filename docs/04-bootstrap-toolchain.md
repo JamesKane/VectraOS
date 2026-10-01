@@ -17,7 +17,7 @@ _Blueprint v0, 2026-09-30._
 
 ### 1.1 The house subset
 
-The rules below govern the OS tree: the kernel, libraries, servers, drivers, commands and `build`. They are enforced by warnings-as-errors, `clang-tidy` checks in CI, and review. Applications, including those written against `vxui.h`, build with whatever flags and style their authors choose.
+The rules below govern the OS tree: the kernel, libraries, servers, drivers, commands and `build`. They are enforced by warnings-as-errors, the clang static analyzer, `clang-tidy` and review, all run by `./build check`. `.clang-tidy` turns on the check families that apply to C (bugprone, CERT, concurrency, misc, performance, portability, readability), makes every finding an error, and gives the reason for each check it leaves out. Applications, including those written against `vxui.h`, build with whatever flags and style their authors choose.
 
 - **Flags everywhere:** `-std=c23 -Wall -Wextra -Werror -Wshadow -Wvla -Wimplicit-fallthrough -fno-strict-aliasing -ftrivial-auto-var-init=zero -g -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`, and `--build-id` at link time. Debug information and frame pointers are always on (05 §4), in leaf functions too, so a backtrace from a fault in a leaf does not skip its caller.
 - **C23 features we use:**
@@ -41,6 +41,8 @@ The rules below govern the OS tree: the kernel, libraries, servers, drivers, com
 - **Macros stay small,** and hide no control flow. The one exception is the X-macro table.
 - **One table, one truth.** A list that several places must agree on is one X-macro table in a `.def` header. That covers syscall numbers, rights, ring opcodes, 9Px messages, and each server's `ctl` verbs and file keys. The enum, the dispatch switch, the argument parser and the `.schema` text a server serves (which is also what `dbg` decodes with) all expand from the same table. Nothing is kept in sync by hand.
 - **Unity builds.** Each component is one translation unit; `kernel/kernel.c` includes every other kernel `.c` file. There are no header dependency graphs to track.
+- **Internal linkage by default.** File-scope constants are `static constexpr`: unlike C++, C gives a file-scope `constexpr` object external linkage. Functions and objects are `static` unless something outside C reaches them by name (the bootloader, assembly, the linker script or the compiler, as with `memset` and `__stack_chk_fail`), and those few are declared in a header that says why (`kernel/entry.h`, `lib/vx-rt/rt.h`, `lib/vx-mem/mem.h`).
+- **One format:** K&R, two-space indents, and every opening brace on the same line as its statement or declaration, function bodies included. `.clang-format` at the root encodes it, and `./build check` fails on any first-party C file it would change. Vendored code keeps its upstream format.
 
 ### 1.2 The safety net is tooling
 

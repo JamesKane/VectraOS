@@ -1,7 +1,5 @@
 # VectraOS
 
-*Project name: **VectraOS**. This folder is called `NeoVectra` to tell it apart from the earlier VectraOS tree in `../VectraOS`; this version simplifies that design by embracing Plan 9. Identifiers use the short prefix `vx`.*
-
 VectraOS is a new operating system for people who hack on systems. It combines:
 
 - a small **capability micro-kernel** whose IPC runs over lock-free shared-memory rings;

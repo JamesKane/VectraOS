@@ -12,39 +12,41 @@
 
 #include "../../abi/vx/abi.h"
 
-constexpr size_t VX_NDB_MAX_RECORD = 64 * 1024;
-constexpr int    VX_NDB_MAX_TUPLES = 128;
+static constexpr size_t VX_NDB_MAX_RECORD = (size_t)64 * 1024;
+static constexpr int VX_NDB_MAX_TUPLES = 128;
 
 typedef struct vx_ndb_tuple {
-    vx_str key;
-    vx_str value;       // ptr is nullptr for a flag
+  vx_str key;
+  vx_str value; // ptr is nullptr for a flag
 } vx_ndb_tuple;
 
 typedef struct vx_ndb_record {
-    vx_ndb_tuple tuples[VX_NDB_MAX_TUPLES];
-    int          count;
-    size_t       line;  // where the record starts, 1-based
+  vx_ndb_tuple tuples[VX_NDB_MAX_TUPLES];
+  int count;
+  size_t line; // where the record starts, 1-based
 } vx_ndb_record;
 
 // Decoded quoted and hex values are written to scratch, which the caller owns.
 // Values point into the source or into scratch, so both must outlive them.
 typedef struct vx_ndb_reader {
-    vx_str  src;
-    size_t  pos;
-    size_t  line;
-    char   *scratch;
-    size_t  scratch_cap;
-    size_t  scratch_used;
-    const char *error;       // set when vx_ndb_next returns VX_NDB_ERROR,
-    size_t      error_line;  // with the line it refers to
+  vx_str src;
+  size_t pos;
+  size_t line;
+  char *scratch;
+  size_t scratch_cap;
+  size_t scratch_used;
+  const char *error; // set when vx_ndb_next returns VX_NDB_ERROR,
+  size_t error_line; // with the line it refers to
 } vx_ndb_reader;
 
 typedef enum vx_ndb_result : int32_t {
-    VX_NDB_RECORD = 0,
-    VX_NDB_END    = 1,
-    VX_NDB_ERROR  = -1,
+  VX_NDB_RECORD = 0,
+  VX_NDB_END = 1,
+  VX_NDB_ERROR = -1,
 } vx_ndb_result;
 
+// Reads the next record into rec. At the end of the input, and on an error,
+// rec is left empty.
 [[maybe_unused]] static vx_ndb_result vx_ndb_next(vx_ndb_reader *r, vx_ndb_record *rec);
 
 // The library is compiled into each component that includes it (unity builds), so
@@ -53,4 +55,4 @@ typedef enum vx_ndb_result : int32_t {
 // The value of key, or a zero vx_str if the record lacks it. A flag gives a
 // zero-length value with a nullptr pointer, so test vx_ndb_has for flags.
 [[maybe_unused]] static vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key);
-[[maybe_unused]] static bool   vx_ndb_has(const vx_ndb_record *rec, const char *key);
+[[maybe_unused]] static bool vx_ndb_has(const vx_ndb_record *rec, const char *key);
